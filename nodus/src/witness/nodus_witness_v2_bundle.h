@@ -31,10 +31,11 @@
  * The bundle format is therefore a CONTAINER of already-canonical row
  * bytes, not a crypto-committed structure — no KAFADAN gate applies.
  *
- * ═══ CANONICAL LAYOUT (R3 W3, D-24 rev 4 (2); root-layout round K2) ═════
- *   magic "DNA.GBUNDLE.v4\0\0" (16 B) ‖ manifest_len u32 BE ‖ manifest ‖
- *   table_count u32 BE (= 5: validators, delegations,
- *   chain_config_history, supply_tracking, validator_stats) ‖ per table:
+ * ═══ CANONICAL LAYOUT (R3 W3, D-24 rev 4 (2); K2; final wipe W-A) ══════
+ *   magic "DNA.GBUNDLE.v5\0\0" (16 B) ‖ manifest_len u32 BE ‖ manifest ‖
+ *   table_count u32 BE (= 6: validators, delegations,
+ *   chain_config_history, supply_tracking, validator_stats,
+ *   v2_treasury — in THIS order) ‖ per table:
  *     name_len u16 BE ‖ name ‖ row_count u32 BE ‖ col_count u16 BE ‖
  *     per row (row_count of them), per column (col_count of them):
  *       type u8 (0 NULL / 1 INT / 2 TEXT / 3 BLOB — FLOAT rejects) ‖
@@ -50,6 +51,16 @@
  * `DNA.GBUNDLE.v4\0\0`. A `DNA.GBUNDLE.v3\0\0` bundle is refused BY ITS
  * MAGIC ("version-3 bundle format, refused"), the same way the v1 magic
  * is below — never read as a v4 frame.
+ *
+ * ═══ FINAL PRE-TESTNET WIPE, W-A (Fable F1) — v4 → v5 ═══════════════════
+ * The keyless treasury pools (`v2_treasury`) are seeded by the genesis
+ * DERIVATION and are a leg of the SYSTEM payload root ("DNA.SYSPAYL.v3")
+ * the manifest commits. A joiner never derives, so the bundle must carry
+ * them or the joiner's replanted genesis cannot reproduce the pin: the
+ * bundle carries SIX tables and the magic moved to `DNA.GBUNDLE.v5\0\0`.
+ * A `DNA.GBUNDLE.v4\0\0` bundle is refused BY ITS MAGIC ("version-4
+ * bundle format, refused") — its chain's genesis document is version 3,
+ * which this build does not read either.
  *
  * ═══ R3 W3 — THE MAGIC MOVED; THE OLD LANE CANNOT BE BUNDLED ════════════
  * R3 W3 moved the magic to `DNA.GBUNDLE.v3\0\0`. A version-2 chain (no stored
@@ -103,8 +114,15 @@
 extern "C" {
 #endif
 
-#define NODUS_V2_GBUNDLE_MAGIC   "DNA.GBUNDLE.v4\0\0"
+#define NODUS_V2_GBUNDLE_MAGIC   "DNA.GBUNDLE.v5\0\0"
 #define NODUS_V2_GBUNDLE_MAGIC_LEN 16
+
+/** The RETIRED five-table magic (final pre-testnet wipe, W-A): a v4
+ * bundle carries no `v2_treasury`. Kept only so
+ * `nodus_witness_v2_bundle_apply` names the refusal ("version-4 bundle
+ * format, refused"), exactly like the v3/v1 magics below. Never written
+ * by this build. */
+#define NODUS_V2_GBUNDLE_MAGIC_V4_RETIRED "DNA.GBUNDLE.v4\0\0"
 
 /** The RETIRED six-table magic (root-layout round K2, 2026-09-25): a v3
  * bundle carries `epoch_state`, which this build's schema no longer has.

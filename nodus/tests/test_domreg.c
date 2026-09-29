@@ -778,18 +778,20 @@ int main(void) {
                                 DNA_POOL_NONE, 4, 3, 1, 0) == 0, "ctx");
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, NULL)
           != 0, "retired SYSTEM ruleset v1 admitted"); OK();
-    /* the RETIRED previous versions (compiled − 1) admit nothing (O11:
-     * both domains advanced 2 → 3; v2 must resolve nothing) */
+    /* the RETIRED previous versions (compiled − 1) admit nothing. Since
+     * the final pre-testnet wipe that is CORE v3 (W-C advanced CORE
+     * 3 → 4) and SYSTEM v5 (W-A advanced SYSTEM 5 → 6); the labels name
+     * "compiled − 1" rather than a number so they cannot go stale. */
     CHECK(dna_exec_context_init(&ctx, chain, DNA_DOMAIN_CORE,
                                 DNA_POOL_NONE, 1, 3, core_rsv - 1, 0) == 0,
           "ctx");
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, NULL)
-          != 0, "retired CORE ruleset v2 admitted"); OK();
+          != 0, "retired CORE ruleset (compiled - 1) admitted"); OK();
     CHECK(dna_exec_context_init(&ctx, chain, DNA_DOMAIN_SYSTEM,
                                 DNA_POOL_NONE, 4, 3, sys_rsv - 1, 0) == 0,
           "ctx");
     CHECK(nodus_witness_domreg_admit_v2(fx.w, chain, &ctx, 0, 0, NULL)
-          != 0, "retired SYSTEM ruleset v2 admitted"); OK();
+          != 0, "retired SYSTEM ruleset (compiled - 1) admitted"); OK();
 
     /* wrong chain */
     CHECK(dna_exec_context_init(&ctx, chain2, DNA_DOMAIN_CORE,

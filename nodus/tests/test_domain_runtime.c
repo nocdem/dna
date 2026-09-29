@@ -55,7 +55,17 @@ static int g_checks = 0;
  * (f2dcdefa…4cce / e0a0bc43…7429) are DEAD. Oracle:
  * scratchpad exec_season_oracle.py. */
 static const uint8_t KAT_RS_SYSTEM[DNA_DOM_HASH_LEN] = {
-    /* O15F re-derivation: SYSTEM ruleset_version 4 → 5. The V2-lane
+    /* Final pre-testnet wipe, W-A (Fable F3): SYSTEM ruleset_version
+     * 5 → 6 — the SYSTEM state root gained the treasury leg
+     * ("DNA.SYS.v4"); the descriptor preimage differs from v5 ONLY in the
+     * ruleset_version field. (The pool-8 graduation refund W-A first
+     * carried was removed by the general-multisig decision; it never was
+     * a descriptor field.) The v6 digest comes from the INDEPENDENT
+     * ruleset oracle (control legs: the shipped SYSTEM v5 0efc48bf…f350 =
+     * RETIRED_RS_SYSTEM_V5 below, CORE v3 ed4b1bcd…4437), never from this
+     * build; the same value is nodus_witness_runtime.c SYS_RULESET_HASH.
+     *
+     * HISTORY — O15F re-derivation: SYSTEM ruleset_version 4 → 5. The V2-lane
      * CHAIN_CONFIG (runtime op 6) now narrows the accepted
      * TARGET_ACTIVE_COUNT range to [7..30] (reject 31), which changes the
      * accepted runtime-op-6 semantics; the version advances and the
@@ -68,6 +78,23 @@ static const uint8_t KAT_RS_SYSTEM[DNA_DOM_HASH_LEN] = {
      * BOTH shipped pins (SYSTEM v4 4fe76fed…7736, CORE v3 ed4b1bcd…4437)
      * byte-exactly before this value was accepted. The O12 value
      * 4fe76fed…7736 is DEAD. */
+    /* W-A PINNED (2026-09-29): SYSTEM v6 from
+     * shared/dnac/tests/ruleset_desc_oracle.py (control legs green). */
+    0x0e, 0xf9, 0x8b, 0xd0, 0xea, 0xe3, 0xbf, 0xcb,
+    0x3f, 0xca, 0x36, 0x2c, 0x68, 0x9e, 0x0a, 0xd9,
+    0x45, 0xaf, 0xe3, 0x18, 0xfa, 0x89, 0x7b, 0xa0,
+    0x55, 0xd9, 0x63, 0xab, 0xd0, 0x18, 0xcc, 0x71,
+    0x11, 0xcf, 0x35, 0x06, 0x33, 0x9d, 0x1c, 0x86,
+    0x28, 0xb5, 0xe3, 0xb8, 0x6a, 0x0c, 0x6e, 0x64,
+    0x7f, 0xeb, 0xde, 0xd9, 0xe1, 0xb1, 0x0f, 0xb8,
+    0xf5, 0x24, 0xe6, 0x4a, 0xab, 0x0b, 0x1a, 0x63
+};
+/* The RETIRED SYSTEM v5 ruleset digest (the O15F pin, 0efc48bf…f350),
+ * kept ONLY so the retired-tuple lookup below proves the EXACT identity
+ * an old committed v5 SYSTEM leg would name resolves NOTHING after W-A
+ * advanced SYSTEM to v6 — and as the oracle's control leg. NOT a live
+ * pin. */
+static const uint8_t RETIRED_RS_SYSTEM_V5[DNA_DOM_HASH_LEN] = {
     0x0e, 0xfc, 0x48, 0xbf, 0x13, 0xb8, 0xda, 0xd5,
     0x3f, 0x41, 0xb4, 0xe7, 0x62, 0x3c, 0xab, 0xed,
     0x26, 0x2d, 0x94, 0xb3, 0xbd, 0xae, 0x2a, 0x1a,
@@ -78,10 +105,34 @@ static const uint8_t KAT_RS_SYSTEM[DNA_DOM_HASH_LEN] = {
     0xd1, 0x89, 0x6c, 0x16, 0xb3, 0xf9, 0xf3, 0x50
 };
 static const uint8_t KAT_RS_CORE[DNA_DOM_HASH_LEN] = {
-    /* O11 — CORE ruleset_version 3: the rule list GREW to {1..7}
-     * (DNA_CORERULE_SYSFUND, the staking funding/release leg) and that
-     * op is executable. Same oracle + control legs as the SYSTEM pin;
-     * the burn-season value 746f584a…67a1 is DEAD. */
+    /* Final pre-testnet wipe, W-C (Fable F3): CORE ruleset_version 3 → 4
+     * — the TOKEN_CREATE fee floor is the governed chain_config param 6
+     * at the block's height (rtn_tc_exec against ctx->token_create_fee);
+     * the descriptor preimage differs from v3 ONLY in the ruleset_version
+     * field. General multisig (same v4, ONE bump) changed CORE's
+     * auth-kind allowlist to {1,3} and its ownership rule — neither is a
+     * descriptor field, so the v4 preimage stays exactly the W-C one.
+     * PINNED 2026-09-29 from the INDEPENDENT ruleset oracle
+     * (shared/dnac/tests/ruleset_desc_oracle.py; control leg CORE v3
+     * ed4b1bcd…4437 = RETIRED_RS_CORE_V3 below), never from this build;
+     * the same value is nodus_witness_runtime.c CORE_RULESET_HASH. */
+    0xc2, 0x19, 0xbd, 0x60, 0xce, 0x48, 0xab, 0x74,
+    0x2b, 0x58, 0xda, 0x7b, 0x8c, 0x9f, 0xfb, 0xb5,
+    0x6b, 0x78, 0x52, 0x00, 0x39, 0x9b, 0x19, 0x78,
+    0xd3, 0x69, 0xa4, 0x1a, 0xd5, 0xca, 0x2d, 0x6e,
+    0x81, 0x02, 0x28, 0x91, 0x79, 0xea, 0x18, 0xb3,
+    0x3a, 0xbb, 0x26, 0xec, 0xbb, 0xf5, 0x0d, 0xf8,
+    0xc1, 0xd1, 0x6f, 0xd8, 0x4e, 0x52, 0xcc, 0x97,
+    0x96, 0x49, 0x9e, 0x76, 0x05, 0xb2, 0x57, 0x30
+};
+/* The RETIRED CORE v3 ruleset digest (the O11 pin, ed4b1bcd…4437), kept
+ * ONLY so the retired-tuple lookup below proves the EXACT identity an old
+ * committed v3 CORE leg would name resolves NOTHING after W-C advanced
+ * CORE to v4 — and as the oracle's control leg. NOT a live pin.
+ * HISTORY — O11 — CORE ruleset_version 3: the rule list GREW to {1..7}
+ * (DNA_CORERULE_SYSFUND, the staking funding/release leg) and that op is
+ * executable. The burn-season value 746f584a…67a1 is DEAD. */
+static const uint8_t RETIRED_RS_CORE_V3[DNA_DOM_HASH_LEN] = {
     0xed, 0x4b, 0x1b, 0xcd, 0xf0, 0xe8, 0xf7, 0x8f,
     0x0b, 0x64, 0x98, 0x5e, 0x42, 0xd4, 0x1d, 0x51,
     0x81, 0xed, 0xd5, 0xd4, 0x85, 0x94, 0xbc, 0xeb,
@@ -133,8 +184,11 @@ static const uint8_t CORE_TYPES_EXP[6] = { 1, 2, 3, 11, 12, 13 };
 static const uint32_t CORE_RULES_EXP[7] = { 1, 2, 3, 4, 5, 6, 7 };
 static const uint32_t SYS_RULES_EXP[6]  = { 1, 2, 3, 4, 5, 6 };
 /* The compiled ruleset versions this build ships. */
-#define SYS_RSV  5u    /* O15F: op 6 CHAIN_CONFIG TARGET_ACTIVE range [7..30] */
-#define CORE_RSV 3u
+#define SYS_RSV  6u    /* W-A: the treasury leg + the genesis refund (was 5,
+                        * O15F: op 6 CHAIN_CONFIG TARGET_ACTIVE [7..30]) */
+#define CORE_RSV 4u    /* W-C: TOKEN_CREATE fee floor = chain_config param
+                        * 6 (was 3, O11: SYSFUND appended) — NOT FINAL
+                        * until the general-multisig package closes */
 
 int main(void) {
     /* ── 1. self-check ──────────────────────────────────────────────── */
@@ -226,10 +280,10 @@ int main(void) {
     /* the compiled versions the whole slice hangs from */
     CHECK(sys->ruleset_version == SYS_RSV &&
           sys->descriptor.ruleset_version == SYS_RSV,
-          "SYSTEM ruleset_version != 5 (O15F)"); OK();
+          "SYSTEM ruleset_version != 6 (W-A)"); OK();
     CHECK(core->ruleset_version == CORE_RSV &&
           core->descriptor.ruleset_version == CORE_RSV,
-          "CORE ruleset_version != 3 (O11)"); OK();
+          "CORE ruleset_version != 4 (W-C)"); OK();
     /* ascending order is load-bearing: rt_owns_type breaks early on a
      * greater element, and dna_ruleset_desc_hash rejects a non-ascending
      * list outright */
@@ -255,7 +309,17 @@ int main(void) {
     hit = nodus_runtime_lookup(DNA_DOMAIN_SYSTEM, DNA_RUNTIME_NATIVE_BUILTIN,
                                NODUS_DOMAIN_RUNTIME_ABI_V1, SYS_RSV,
                                sys->ruleset_hash);
-    CHECK(hit == sys, "SYSTEM exact lookup (ruleset v5)"); OK();
+    CHECK(hit == sys, "SYSTEM exact lookup (ruleset v6)"); OK();
+    /* W-A: the retired v5 — by version axis, and by its EXACT tuple
+     * (version 5 AND the real O15F digest) — resolves NOTHING. */
+    CHECK(nodus_runtime_lookup(DNA_DOMAIN_SYSTEM, DNA_RUNTIME_NATIVE_BUILTIN,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, 5,
+                               sys->ruleset_hash) == NULL,
+          "retired SYSTEM ruleset v5 (version axis) resolved (W-A)"); OK();
+    CHECK(nodus_runtime_lookup(DNA_DOMAIN_SYSTEM, DNA_RUNTIME_NATIVE_BUILTIN,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, 5,
+                               RETIRED_RS_SYSTEM_V5) == NULL,
+          "retired SYSTEM ruleset v5 (exact tuple) resolved (W-A)"); OK();
     /* EVERY retired SYSTEM ruleset resolves NOTHING — a leg naming v1
      * (CHAIN_CONFIG call v1), v2 (call v2, STAKE not yet executable),
      * v3 (O11 stake lifecycle, VALIDATOR_UPDATE not yet executable) or
@@ -288,7 +352,17 @@ int main(void) {
     hit = nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
                                NODUS_DOMAIN_RUNTIME_ABI_V1, CORE_RSV,
                                core->ruleset_hash);
-    CHECK(hit == core, "CORE exact lookup (ruleset v3)"); OK();
+    CHECK(hit == core, "CORE exact lookup (ruleset v4)"); OK();
+    /* W-C: the retired v3 — by version axis, and by its EXACT tuple
+     * (version 3 AND the real O11 digest) — resolves NOTHING. */
+    CHECK(nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, 3,
+                               core->ruleset_hash) == NULL,
+          "retired CORE ruleset v3 (version axis) resolved (W-C)"); OK();
+    CHECK(nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
+                               NODUS_DOMAIN_RUNTIME_ABI_V1, 3,
+                               RETIRED_RS_CORE_V3) == NULL,
+          "retired CORE ruleset v3 (exact tuple) resolved (W-C)"); OK();
     /* likewise for CORE: v1 (pre-burn) and v2 (pre-SYSFUND) are dead */
     CHECK(nodus_runtime_lookup(DNA_DOMAIN_CORE, DNA_RUNTIME_NATIVE_BUILTIN,
                                NODUS_DOMAIN_RUNTIME_ABI_V1, 1,

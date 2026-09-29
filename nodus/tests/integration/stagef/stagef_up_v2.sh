@@ -401,11 +401,13 @@ DU="${STAGEF_DECIMAL_UNIT:-100000000}"
 echo "[ok] econ parameters: epoch_length=$EL blocks_per_year=$BY decimal_unit=$DU"
 
 # ── R3 W3 (C2d) — THE VERSION-3 KEYS ────────────────────────────────
-# config_version = 3 is REQUIRED: since tokenomics-v3 P4 the config
-# parser refuses a file without it and accepts no other value
-# (nodus_v2_gen_config.c), gen_plan_build refuses anything but 3
+# config_version = 5 is REQUIRED (3 until the final pre-testnet wipe
+# W-A added the nine [treasury] blocks, 4 until general multisig added
+# the [genesis_output] blocks, both written at the end of the file):
+# the config parser refuses a file without it and accepts no other value
+# (nodus_v2_gen_config.c), gen_plan_build refuses anything but 5
 # (nodus_witness_v2_gen.c), and run_derive_v2_genesis (nodus-server.c)
-# calls only the version-3 derivation — the version-2 derivation is
+# calls only the cometbft derivation — the version-2 derivation is
 # deleted. Without this key stagef_up_v2.sh cannot derive at all.
 #
 # genesis_time_ms is MANDATORY for a version-3 document
@@ -429,7 +431,7 @@ GENESIS_TIME_MS=$(($(date -u +%s%N) / 1000000))
 # message says so explicitly). 1 is written down as the operator's
 # choice, not derived from anything.
 INITIAL_HEIGHT=1
-echo "[ok] version-3 keys: config_version=3 genesis_time_ms=$GENESIS_TIME_MS initial_height=$INITIAL_HEIGHT"
+echo "[ok] version-5 keys: config_version=5 genesis_time_ms=$GENESIS_TIME_MS initial_height=$INITIAL_HEIGHT"
 
 SELF_STAKE=1000000000000000          # DNAC_SELF_STAKE_AMOUNT: 10M x 10^8
 # ONE ALLOCATION PER NODE, not one for the whole chain.
@@ -484,8 +486,40 @@ PAYOUT_INTERVAL="${STAGEF_PAYOUT_INTERVAL_EPOCHS:-24}"
 case "$PAYOUT_INTERVAL" in
     ''|*[!0-9]*|0) echo "[FAIL] STAGEF_PAYOUT_INTERVAL_EPOCHS='$PAYOUT_INTERVAL' — must be a positive integer" >&2; exit 2 ;;
 esac
+# ── General multisig (config_version 5, decision 2026-09-29-general-
+# multisig.md ONAY 2): ONE GENESIS OUTPUT to a 2-of-3 address over the
+# identities of nodes 2, 3 and 4 — the coin test_cmt_multisig.sh spends
+# first. The address comes from `nodus-cli msig address` (the chain's own
+# encoder, shared/dnac/msig_wire.c), never recomputed in shell; its
+# descriptor and address are left in $BASE_DIR for the scenario. A
+# nodus-cli without the msig command (or none at all) is NOT a silent
+# fallback: the output is left out, the line below says so, and the
+# scenario then reports that the genesis-funded path did not run.
+MSIG_GENOUT=100000000000             # 1 000 NODUS
+MSIG_ADDR=""
+STAGEF_CLI="${STAGEF_NODUSCLI_BIN:-$STAGEF_REPO_ROOT/nodus/build/nodus-cli}"
+if [ "$C" -ge 4 ] && [ -x "$STAGEF_CLI" ]; then
+    if "$STAGEF_CLI" msig address --m 2 \
+           --pubkey "$(stagef_node_dir 2)/identity/nodus.pk" \
+           --pubkey "$(stagef_node_dir 3)/identity/nodus.pk" \
+           --pubkey "$(stagef_node_dir 4)/identity/nodus.pk" \
+           --descriptor-out "$BASE_DIR/msig_genesis_2of3.desc" \
+           > "$BASE_DIR/msig_genesis_address.log" 2>&1; then
+        MSIG_ADDR=$(awk '/ address /{print $NF; exit}' \
+                    "$BASE_DIR/msig_genesis_address.log")
+    fi
+fi
+if [ "${#MSIG_ADDR}" = 128 ]; then
+    echo "$MSIG_ADDR" > "$BASE_DIR/msig_genesis.addr"
+    echo "[ok] genesis output: $MSIG_GENOUT raw to the 2-of-3 address (nodes 2/3/4) ${MSIG_ADDR:0:16}..."
+else
+    MSIG_ADDR=""; MSIG_GENOUT=0
+    rm -f "$BASE_DIR/msig_genesis.addr"
+    echo "[warn] no genesis multisig output: nodus-cli ($STAGEF_CLI) missing or without 'msig address' — test_cmt_multisig.sh's genesis-funded path will not run"
+fi
 TOTAL=$(( SELF_STAKE * C + ALLOC * (C + 1) + PUMP_ALLOC * PUMP_LEAVES \
-          + PROBE_ALLOC + CAND_ALLOC * CANDIDATES + REWARD_POOL ))
+          + PROBE_ALLOC + CAND_ALLOC * CANDIDATES + REWARD_POOL \
+          + MSIG_GENOUT ))
 # Trial B: the extra pump identities' leaves (section 1d). K = 1 adds
 # exactly 0, so the total — and the line that writes it — is unchanged.
 TOTAL=$(( TOTAL + PUMP_ALLOC * PUMP_LEAVES * (PUMP_IDS - 1) ))
@@ -503,7 +537,7 @@ CONF="$BASE_DIR/v2_genesis.conf"
     # (nodus_witness_v2_gen_v3_defaults, which installs
     # cmt_default_consensus_params — nodus_witness_v2_gen.c:2327-2340),
     # never from a value typed in this file.
-    echo "config_version        = 3"
+    echo "config_version        = 5"
     echo "genesis_time_ms       = $GENESIS_TIME_MS"
     echo "initial_height        = $INITIAL_HEIGHT"
     echo "total_supply_raw      = $TOTAL"
@@ -517,6 +551,14 @@ CONF="$BASE_DIR/v2_genesis.conf"
     echo "inflation_start_block = 0"
     echo "reward_pool_initial   = $REWARD_POOL"
     echo "payout_interval_epochs = $PAYOUT_INTERVAL"
+    # Final pre-testnet wipe W-C: the governed fee parameters' genesis
+    # values, the production ones (decisions 2026-09-25-gas-price.md and
+    # 2026-09-28-token-create-fee-governance.md). They equal the
+    # builder's defaults, so writing them changes no byte of the
+    # document; they are written so the harness genesis names them. The
+    # gas-price rule is therefore ON from block 1 on every harness chain.
+    echo "gas_price_raw_per_unit = 121"
+    echo "token_create_fee_raw   = 100000000000"
     for n in $(seq 1 "$C"); do
         nd=$(stagef_node_dir "$n")
         pk=$(xxd -p -c 99999 "$nd/identity/nodus.pk")
@@ -524,11 +566,11 @@ CONF="$BASE_DIR/v2_genesis.conf"
         echo ""
         echo "[validator]"
         echo "pubkey                     = $pk"
-        # The node's OWN key is its payout key here, so the fingerprint
-        # the builder demands is exactly the identity's own nodus.fp —
-        # which IS sha3-512(nodus.pk). A real fleet would use a separate
-        # payout key; the builder's check is the same either way.
-        echo "unstake_destination_pubkey = $pk"
+        # The destination ADDRESS is the node's own fingerprint here (the
+        # production genesis names the Foundation multisig address); the
+        # builder checks its SHAPE only. The destination PUBKEY must be
+        # ALL ZERO on a genesis row (general multisig ONAY 2 — 5184 '0').
+        echo "unstake_destination_pubkey = $(printf '0%.0s' $(seq 5184))"
         echo "unstake_destination_fp     = $fp"
         echo "self_stake                 = $SELF_STAKE"
         echo "commission_bps             = 500"
@@ -622,6 +664,34 @@ CONF="$BASE_DIR/v2_genesis.conf"
                 echo "amount       = $PUMP_ALLOC"
             done
         done
+    fi
+
+    # ── THE NINE TREASURY POOLS (final pre-testnet wipe, W-A) ────────
+    # A version-4 document carries EXACTLY nine [treasury] blocks, pool
+    # order 1..9 (nodus_v2_gen_config.c refuses a missing, extra or
+    # out-of-order one). Every balance is 0 here — a legal pool balance —
+    # so Rule P.2 (Σ allocations + Σ self_stake + reward_pool_initial +
+    # Σ treasury == total_supply_raw) closes on the TOTAL computed above
+    # unchanged, and no leaf a scenario counts moves. What it still gives
+    # every scenario: the nine v2_treasury rows exist (a SYSTEM-root leg).
+    # General multisig (decision 2026-09-29-general-multisig.md) withdrew
+    # W-A's refund of a GENESIS validator's bond into pool 8: a harness
+    # genesis validator that graduates releases a locked UTXO to its own
+    # unstake_destination_fp (the release has never cared whether that
+    # address is one key or M-of-N; the production genesis names the
+    # Foundation multisig address there), and no block moves a pool.
+    for p in $(seq 1 9); do
+        echo ""
+        echo "[treasury]"
+        echo "pool_id = $p"
+        echo "balance = 0"
+    done
+    # General multisig (config_version 5): the genesis output (above).
+    if [ -n "$MSIG_ADDR" ]; then
+        echo ""
+        echo "[genesis_output]"
+        echo "owner  = $MSIG_ADDR"
+        echo "amount = $MSIG_GENOUT"
     fi
 } > "$CONF"
 echo "[ok] v2_genesis.conf built ($C validators, $(( C + 1 + PUMP_LEAVES * PUMP_IDS + 1 + CANDIDATES )) allocations incl. $PUMP_LEAVES pump x $PUMP_IDS identit(y/ies) + 1 probe + $CANDIDATES candidate leaves, $(stat -c%s "$CONF") bytes)"

@@ -5,8 +5,9 @@
  * A SOURCE fixture derives a successor genesis, persists the canonical
  * bundle, and serves it; a JOINER fixture with an empty DB re-derives the
  * genesis from the bundle bytes and adopts it ONLY when the derived
- * BlockID equals the pin. Byte-for-byte comparison of the five base
- * tables and the genesis identity proves the derivation is reproducible;
+ * BlockID equals the pin. Byte-for-byte comparison of the six base
+ * tables (five until the final pre-testnet wipe W-A added `v2_treasury`)
+ * and the genesis identity proves the derivation is reproducible;
  * the adversarial matrix proves a wrong pin / malformed bundle is
  * rejected with no adoption.
  *
@@ -15,12 +16,13 @@
  * fixtures — no parallel serializer.
  *
  * HOW IT CAN LIE (R3 W3 delta 7): `nodus_witness_v2_bundle_apply`
- * DELETEs, re-INSERTs and COMMITs the five base tables (six before the
- * root-layout round dropped epoch_state; its own BEGIN
+ * DELETEs, re-INSERTs and COMMITs the six base tables (six before the
+ * root-layout round dropped epoch_state too, five between it and W-A;
+ * its own BEGIN
  * IMMEDIATE / COMMIT) BEFORE the pin precheck ever runs, because the
  * document sits at the tail of the wire frame and must be fully parsed
  * first — a rejected pin therefore still leaves the sender's rows
- * planted in all five base tables on the scratch handle. The v3
+ * planted in all six base tables on the scratch handle. The v3
  * wrong-pin case (test_v3_bundle, "adopt with the WRONG pin") and the
  * foreign-bundle case ("foreign bundle") each assert only
  * `v3_has_doc(jw) == 0` afterwards — that proves NO GENESIS DOCUMENT
@@ -31,8 +33,9 @@
  * `join_scratch_clear`) property, not this function's, and this test
  * never exercises that discard path (each joiner directory here is
  * `rmrf`'d by the TEST itself, not by the production joiner). The
- * old-magic cases (v1, and since the root-layout round the six-table
- * v3), by contrast, ARE refused before their own BEGIN
+ * old-magic cases (v1, since the root-layout round the six-table v3,
+ * since W-A the five-table v4), by contrast, ARE refused before their
+ * own BEGIN
  * (bundle.c's magic check runs before any SQL), so they legitimately
  * assert a whole-DB digest is unchanged.
  *
@@ -307,7 +310,7 @@ static int v3cfg_make(v3cfgbox_t *b, uint8_t salt) {
     if (!b->cfg || !b->allocs) { v3cfg_free(b); return -1; }
 
     nodus_v2_gen_config_t *c = b->cfg;
-    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION_V3;
+    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION_V5;
     c->total_supply_raw      = DNAC_DEFAULT_TOTAL_SUPPLY;
     c->epoch_length          = (uint64_t)DNAC_EPOCH_LENGTH;
     c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;
@@ -327,6 +330,9 @@ static int v3cfg_make(v3cfgbox_t *b, uint8_t salt) {
         }
         v3_hex_lower_fp(v->unstake_destination_pubkey, DNAC_PUBKEY_SIZE,
                         v->unstake_destination_fp);
+        /* general multisig ONAY 2: a genesis row's destination pubkey is
+         * ALL ZERO (the fp above is only a shape-valid address) */
+        memset(v->unstake_destination_pubkey, 0, DNAC_PUBKEY_SIZE);
         v->self_stake     = DNAC_SELF_STAKE_AMOUNT;
         v->commission_bps = (uint16_t)(100 * (i + 1));
     }
@@ -348,6 +354,29 @@ static int v3cfg_make(v3cfgbox_t *b, uint8_t salt) {
      * this fixture's allocation spends the whole supply and it is not a
      * reward test — no pool reserved. */
     c->reward_pool_initial = 0;
+    /* W-A: the treasury pools are NON-ZERO here, so the bundle's
+     * `v2_treasury` rows carry real balances a joiner must reproduce
+     * (Fable F1) — pool i holds (i + 1) × 10^15 raw (Σ 45 × 10^15), and
+     * the allocation shrinks by that sum (Rule P.2). */
+    {
+        uint64_t sum = 0;
+        for (size_t t = 0; t < NODUS_V2_GEN_TREASURY_POOLS; t++) {
+            c->treasury[t].balance = (uint64_t)(t + 1) * 1000000000000000ULL;
+            sum += c->treasury[t].balance;
+        }
+        /* General multisig (config_version 5): two GENESIS OUTPUTS the
+         * joiner must re-derive from the carried document (not a bundle
+         * table) — 3 × 10^15 then 10^15 raw, owners 0xD1…/0xD2… (salted,
+         * so a foreign bundle's outputs differ) — carved out of the
+         * allocation too (Rule P.2). */
+        c->n_genesis_outputs = 2;
+        memset(c->genesis_outputs[0].owner, 0xD1 + salt, 64);
+        c->genesis_outputs[0].amount = 3000000000000000ULL;
+        memset(c->genesis_outputs[1].owner, 0xD2 + salt, 64);
+        c->genesis_outputs[1].amount = 1000000000000000ULL;
+        sum += 4000000000000000ULL;
+        b->allocs[0].amount = V3_TREASURY_RAW - sum;
+    }
     c->genesis_time_ms = 1700000000000ULL;
     c->initial_height  = 1;
     if (nodus_witness_v2_gen_v3_fill_comet_rows(c) != 0) {
@@ -422,14 +451,21 @@ static int v3_has_doc(nodus_witness_t *w) {
     return nodus_witness_v2_gen_stored_chain_id(w, id) == 0 ? 1 : 0;
 }
 
-/* The FIVE base tables the v4 bundle carries (root-layout round K2 —
- * `epoch_state` is gone; nodus_witness_v2_bundle.c BUNDLE_TABLES). */
+/* The SIX base tables the v5 bundle carries (root-layout round K2 —
+ * `epoch_state` is gone; W-A — `v2_treasury` appended;
+ * nodus_witness_v2_bundle.c BUNDLE_TABLES). */
 static const struct { const char *name; const char *order; } V3_TBL[] = {
     { "validators",           "pubkey_hash ASC" },
     { "delegations",          "delegator_hash ASC, validator_hash ASC" },
     { "chain_config_history", "param_id ASC, effective_block ASC" },
     { "supply_tracking",      "id ASC" },
     { "validator_stats",      "key ASC" },
+    { "v2_treasury",          "pool_id ASC" },
+    /* general multisig (config_version 5): NOT a bundle table — the
+     * joiner RE-DERIVES the genesis outputs from the carried document
+     * (F4.1); compared here all the same, because the joiner's utxo_set
+     * must come out byte-identical to the producer's */
+    { "utxo_set",             "nullifier ASC" },
 };
 #define N_V3_TBL (int)(sizeof(V3_TBL) / sizeof(V3_TBL[0]))
 
@@ -485,6 +521,57 @@ static int test_v3_bundle(void) {
             CHECK(table_digest(jw, V3_TBL[i].name, V3_TBL[i].order, db)
                       == 0, "digest joiner table"); OK();
             CHECK(memcmp(da, db, 64) == 0, "table byte-identical to source");
+            OK();
+        }
+        /* W-A (Fable F1): the joiner holds the SOURCE's nine pools with
+         * their non-zero balances — not an empty table that happened to
+         * digest equal. */
+        {
+            sqlite3_stmt *st = NULL;
+            CHECK(sqlite3_prepare_v2(jw->db,
+                      "SELECT COUNT(*), COALESCE(SUM(balance),-1) "
+                      "FROM v2_treasury", -1, &st, NULL) == SQLITE_OK,
+                  "treasury probe"); OK();
+            CHECK(sqlite3_step(st) == SQLITE_ROW, "treasury probe row");
+            int64_t n = sqlite3_column_int64(st, 0);
+            int64_t s = sqlite3_column_int64(st, 1);
+            sqlite3_finalize(st);
+            CHECK(n == (int64_t)NODUS_V2_GEN_TREASURY_POOLS &&
+                  s == (int64_t)(45ULL * 1000000000000000ULL),
+                  "the joiner replanted the nine non-zero treasury pools");
+            OK();
+        }
+        /* General multisig (F4.1): the joiner RE-DERIVED the two genesis
+         * outputs from the document — exactly two coins, 4 × 10^15 raw,
+         * each identity SHA3-512("DNA.GENOUT.v1" ‖ source_commit ‖ i)
+         * (the utxo_set digest above already proved byte-identity with
+         * the producer; this names WHAT was re-derived). */
+        {
+            uint8_t sc[NODUS_V2_GEN_SRCCOMMIT_LEN], n0[64], n1[64];
+            CHECK(nodus_witness_v2_gen_v3_source_commit(src_cfg.cfg, sc)
+                      == 0 &&
+                  nodus_witness_v2_gen_output_nullifier(sc, 0, n0) == 0 &&
+                  nodus_witness_v2_gen_output_nullifier(sc, 1, n1) == 0,
+                  "expected genesis-output identities"); OK();
+            sqlite3_stmt *st = NULL;
+            CHECK(sqlite3_prepare_v2(jw->db,
+                      "SELECT COUNT(*), COALESCE(SUM(amount),-1), "
+                      "SUM(nullifier = ?1 AND tx_hash = ?1 AND amount = "
+                      "3000000000000000), SUM(nullifier = ?2 AND tx_hash = "
+                      "?2 AND amount = 1000000000000000) FROM utxo_set",
+                      -1, &st, NULL) == SQLITE_OK, "utxo probe"); OK();
+            sqlite3_bind_blob(st, 1, n0, 64, SQLITE_TRANSIENT);
+            sqlite3_bind_blob(st, 2, n1, 64, SQLITE_TRANSIENT);
+            CHECK(sqlite3_step(st) == SQLITE_ROW, "utxo probe row");
+            int64_t n = sqlite3_column_int64(st, 0);
+            int64_t s = sqlite3_column_int64(st, 1);
+            int64_t h0 = sqlite3_column_int64(st, 2);
+            int64_t h1 = sqlite3_column_int64(st, 3);
+            sqlite3_finalize(st);
+            CHECK(n == 2 && s == (int64_t)4000000000000000ULL &&
+                  h0 == 1 && h1 == 1,
+                  "the joiner re-derived exactly the two genesis outputs "
+                  "(identity, tx_hash, amount)");
             OK();
         }
 
@@ -605,6 +692,70 @@ static int test_v3_bundle(void) {
         }
         free(tampered);
 
+        sqlite3_close(jw->db);
+        free(jw);
+        rmrf(jdir);
+    }
+
+    /* ── W-A: a TAMPERED `v2_treasury` row, CORRECT pin. The treasury is
+     * a leg of the SYSTEM payload root the manifest commits and of the
+     * SYSTEM state root inside app_hash, so a joiner that replants a
+     * different pool balance must NOT adopt. Located byte-precisely: the
+     * table's name bytes, then (serialize_table's layout) row_count u32 ‖
+     * col_count u16 ‖ row 0 = type(1) ‖ pool_id(8) ‖ type(1) ‖
+     * balance(8); every structural byte is ASSERTED before the flip, and
+     * the flip is the balance's LOW byte, so the row stays a valid
+     * non-negative INTEGER and only the ledger binding can refuse it.
+     * KILLED BY: dropping `v2_treasury` from BUNDLE_TABLES (the joiner
+     * then derives from an empty table and the correct bundle stops
+     * adopting — the first joiner case) or dropping treasury_root from
+     * the SYSTEM compositions (this tamper then adopts). */
+    {
+        char jdir[128];
+        CHECK(v3_mkdir_tmp(jdir, "trtamper") == 0, "joiner tmpdir"); OK();
+        nodus_witness_t *jw = v3_open_fresh(jdir, 0xAE);
+        CHECK(jw != NULL, "joiner db"); OK();
+
+        uint8_t *tampered = malloc(blen);
+        CHECK(tampered != NULL, "alloc tampered"); OK();
+        memcpy(tampered, bundle, blen);
+
+        static const char tname[] = "v2_treasury";
+        const size_t tnl = sizeof(tname) - 1;
+        const uint8_t *found = find_bytes(tampered, blen,
+                                          (const uint8_t *)tname, tnl);
+        CHECK(found != NULL && found >= tampered + 2,
+              "the v2_treasury table name is in the bundle"); OK();
+        size_t o = (size_t)(found - tampered);
+        CHECK(tampered[o - 2] == 0 && tampered[o - 1] == (uint8_t)tnl,
+              "its u16 name_len precedes it"); OK();
+        o += tnl;
+        CHECK(o + 4 + 2 + 1 + 8 + 1 + 8 <= blen, "row 0 fits"); OK();
+        CHECK(tampered[o] == 0 && tampered[o + 1] == 0 &&
+              tampered[o + 2] == 0 &&
+              tampered[o + 3] == (uint8_t)NODUS_V2_GEN_TREASURY_POOLS,
+              "row_count reads 9"); OK();
+        o += 4;
+        CHECK(tampered[o] == 0 && tampered[o + 1] == 2,
+              "col_count reads 2 (pool_id, balance)"); OK();
+        o += 2;
+        CHECK(tampered[o] == 1 && tampered[o + 8] == 1,
+              "row 0 col 0 is an INTEGER holding pool_id 1"); OK();
+        o += 9;
+        CHECK(tampered[o] == 1, "row 0 col 1 is an INTEGER (balance)"); OK();
+        o += 1;
+        tampered[o + 7] ^= 0x01;              /* the balance's low byte */
+
+        CHECK(nodus_witness_v2_bundle_apply(jw, tampered, blen, src_chain32)
+                  != 0,
+              "tampered treasury balance + correct pin REJECTS"); OK();
+        {
+            uint8_t *b3 = NULL; size_t b3len = 0;
+            CHECK(nodus_witness_v2_bundle_get(jw, &b3, &b3len) == 1,
+                  "the treasury-tampered apply did not reach adoption");
+            OK();
+        }
+        free(tampered);
         sqlite3_close(jw->db);
         free(jw);
         rmrf(jdir);
@@ -769,9 +920,9 @@ int main(void) {
      * frame, not garbage. KILLED BY: accepting NODUS_V2_GBUNDLE_MAGIC_V3_
      * RETIRED, or leaving NODUS_V2_GBUNDLE_MAGIC at "DNA.GBUNDLE.v3". */
     {
-        CHECK(memcmp(NODUS_V2_GBUNDLE_MAGIC, "DNA.GBUNDLE.v4\0\0",
+        CHECK(memcmp(NODUS_V2_GBUNDLE_MAGIC, "DNA.GBUNDLE.v5\0\0",
                      NODUS_V2_GBUNDLE_MAGIC_LEN) == 0,
-              "the current magic is DNA.GBUNDLE.v4"); OK();
+              "the current magic is DNA.GBUNDLE.v5 (W-A)"); OK();
         CHECK(memcmp(NODUS_V2_GBUNDLE_MAGIC_V3_RETIRED, "DNA.GBUNDLE.v3\0\0",
                      NODUS_V2_GBUNDLE_MAGIC_LEN) == 0,
               "the retired magic is DNA.GBUNDLE.v3"); OK();
@@ -801,6 +952,50 @@ int main(void) {
         CHECK(db_digest_all(j.w, after) == 0, "digest after"); OK();
         CHECK(memcmp(before, after, 64) == 0,
               "the refused v3 apply left the joiner's whole database "
+              "byte-identical"); OK();
+        CHECK(v3_has_doc(j.w) == 0, "no genesis document adopted"); OK();
+
+        fx_close(&j);
+    }
+
+    /* Final pre-testnet wipe, W-A (Fable F1): the FIVE-table
+     * `DNA.GBUNDLE.v4\0\0` format (no `v2_treasury`; its chain's document
+     * is version 3) is RETIRED the same way — refused BY ITS MAGIC,
+     * before anything past it is read, the joiner's database
+     * byte-identical. The body after the magic is a plausible v4 prefix
+     * (a manifest length and a table count of FIVE). KILLED BY: accepting
+     * NODUS_V2_GBUNDLE_MAGIC_V4_RETIRED, or leaving NODUS_V2_GBUNDLE_MAGIC
+     * at "DNA.GBUNDLE.v4". */
+    {
+        CHECK(memcmp(NODUS_V2_GBUNDLE_MAGIC_V4_RETIRED, "DNA.GBUNDLE.v4\0\0",
+                     NODUS_V2_GBUNDLE_MAGIC_LEN) == 0,
+              "the retired W-A magic is DNA.GBUNDLE.v4"); OK();
+
+        fixture_t j;
+        CHECK(fx_open(&j, "v4magic") == 0, "joiner fixture"); OK();
+
+        uint8_t v4_bundle[64];
+        memset(v4_bundle, 0, sizeof(v4_bundle));
+        memcpy(v4_bundle, NODUS_V2_GBUNDLE_MAGIC_V4_RETIRED,
+               NODUS_V2_GBUNDLE_MAGIC_LEN);
+        size_t off = NODUS_V2_GBUNDLE_MAGIC_LEN;
+        v4_bundle[off + 3] = 8;                   /* manifest_len u32 BE = 8 */
+        off += 4;
+        memset(v4_bundle + off, 0x42, 8);         /* 8 manifest bytes        */
+        off += 8;
+        v4_bundle[off + 3] = 5;                   /* table_count u32 BE = 5  */
+        uint8_t any_pin[32];
+        memset(any_pin, 0x99, sizeof(any_pin));
+
+        uint8_t before[64], after[64];
+        CHECK(db_digest_all(j.w, before) == 0, "digest before"); OK();
+        CHECK(nodus_witness_v2_bundle_apply(j.w, v4_bundle,
+                                            sizeof(v4_bundle),
+                                            any_pin) != 0,
+              "version-4 (five-table) magic REFUSED"); OK();
+        CHECK(db_digest_all(j.w, after) == 0, "digest after"); OK();
+        CHECK(memcmp(before, after, 64) == 0,
+              "the refused v4 apply left the joiner's whole database "
               "byte-identical"); OK();
         CHECK(v3_has_doc(j.w) == 0, "no genesis document adopted"); OK();
 

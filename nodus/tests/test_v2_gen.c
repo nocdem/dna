@@ -49,6 +49,7 @@
 
 #include "dnac/dnac.h"
 #include "dnac/manifest_wire.h"
+#include "dnac/msig_wire.h"         /* the Foundation multisig address */
 #include "dnac/validator.h"
 
 #include "crypto/hash/qgp_sha3.h"
@@ -212,10 +213,18 @@ static int cfg_make(cfgbox_t *b, uint8_t salt, uint32_t n_alloc,
     if (!b->cfg || !b->allocs) { cfg_free(b); return -1; }
 
     nodus_v2_gen_config_t *c = b->cfg;
-    /* tokenomics-v3 P4: 3 is the only version gen_plan_build accepts;
-     * this is the document BODY only — the tail is cfg_make_v3_ex's /
-     * cfg_make_v3's. */
-    c->config_version     = NODUS_V2_GEN_CONFIG_VERSION_V3;
+    /* W-A (final pre-testnet wipe): 4 is the only version gen_plan_build
+     * accepts (3 since tokenomics-v3 P4); this is the document BODY only —
+     * the tail is cfg_make_v3_ex's / cfg_make_v3's. The treasury pool IDS
+     * are part of the shared rules (entry i carries pool_id i + 1), so a
+     * body-only config states them too; every balance stays 0 — the §0
+     * composition spends the supply on the allocation + bonds, and the
+     * treasury's own rules live in test_v2_treasury.c. */
+    c->config_version     = NODUS_V2_GEN_CONFIG_VERSION_V5;   /* general
+                                                  * multisig: 5, no genesis
+                                                  * outputs in this body   */
+    for (size_t t = 0; t < NODUS_V2_GEN_TREASURY_POOLS; t++)
+        c->treasury[t].pool_id = (uint32_t)(t + 1);
     c->total_supply_raw   = DNAC_DEFAULT_TOTAL_SUPPLY;
     c->epoch_length       = (uint64_t)DNAC_EPOCH_LENGTH;
     /* Block 2C — the economic parameters. The three schedule constants
@@ -240,6 +249,9 @@ static int cfg_make(cfgbox_t *b, uint8_t salt, uint32_t n_alloc,
         }
         hex_lower_fp(v->unstake_destination_pubkey, DNAC_PUBKEY_SIZE,
                      v->unstake_destination_fp);
+        /* general multisig ONAY 2: a genesis row's destination pubkey is
+         * ALL ZERO (the fp above is only a shape-valid address) */
+        memset(v->unstake_destination_pubkey, 0, DNAC_PUBKEY_SIZE);
         v->self_stake     = DNAC_SELF_STAKE_AMOUNT;
         v->commission_bps = (uint16_t)(100 * (i + 1));
     }
@@ -451,9 +463,42 @@ static int test_happy_path(void) {
      * committed economic parameters and NOTHING else. tokenomics-v3 P2:
      * THREE rows now (blocks_per_year, decimal_unit, epoch_length) — the
      * retired INFLATION_START_BLOCK (param 3) is no longer seeded. The
-     * exact count is the assertion, so an extra row fails here. */
-    CHECK(q1(w->db, "SELECT COUNT(*) FROM chain_config_history") == 3,
-          "chain_config_history holds exactly the 3 economic parameters");
+     * exact count is the assertion, so an extra row fails here.
+     * W-C (final pre-testnet wipe, Fable F4): FIVE rows — the three
+     * economic parameters + the two governed fee parameters, param 5
+     * GAS_PRICE_RAW_PER_UNIT = 121 (decision 2026-09-25-gas-price.md
+     * "Son wipe paketi") and param 6 TOKEN_CREATE_FEE_RAW = 10^11
+     * (decision 2026-09-28-token-create-fee-governance.md), both at
+     * effective_block 0 with the document's values (cfg_make_v3_ex runs
+     * nodus_witness_v2_gen_v3_defaults). KILLED BY: dropping either row
+     * from gen_seed_state's list, or seeding the builder constant instead
+     * of the document field (the values are asserted literally). */
+    CHECK(q1(w->db, "SELECT COUNT(*) FROM chain_config_history") == 5,
+          "chain_config_history holds exactly the 3 economic parameters "
+          "+ the 2 governed fee parameters (W-C)");
+    CHECK(q1(w->db, "SELECT new_value FROM chain_config_history "
+                    "WHERE param_id = 5 AND effective_block = 0") == 121,
+          "param 5 GAS_PRICE_RAW_PER_UNIT = 121 is committed at height 0");
+    CHECK(q1(w->db, "SELECT new_value FROM chain_config_history "
+                    "WHERE param_id = 6 AND effective_block = 0")
+              == (int64_t)100000000000LL,
+          "param 6 TOKEN_CREATE_FEE_RAW = 10^11 (1 000 NODUS) is "
+          "committed at height 0");
+    {
+        uint64_t gp = 0, tf = 0;
+        CHECK(nodus_chain_config_get_u64(
+                  w, (uint8_t)DNAC_CFG_GAS_PRICE_RAW_PER_UNIT, 1, 0, &gp)
+                  == 0 && gp == 121 &&
+              nodus_chain_config_get_u64(
+                  w, (uint8_t)DNAC_CFG_TOKEN_CREATE_FEE_RAW, 1, 0, &tf)
+                  == 0 && tf == 100000000000ULL,
+              "the runtime accessor answers both at the first block");
+    }
+    CHECK(q1(w->db, "SELECT COUNT(*) FROM chain_config_history "
+                    "WHERE param_id IN (5, 6) AND (commit_block != 0 OR "
+                    "proposal_nonce != 0 OR created_at_unix != 0)") == 0,
+          "the governed genesis rows pin every provenance column to 0 "
+          "(no block, no proposal, no wall clock)");
     CHECK(q1(w->db, "SELECT COUNT(*) FROM chain_config_history "
                     "WHERE param_id = 3") == 0,
           "no retired INFLATION_START_BLOCK row is committed");
@@ -681,6 +726,21 @@ static int test_defect_L2F6(void) {
           "a non-exact self-bond REJECTS even when the total balances");
     cfg_free(&c);
 
+    /* ... and one raw unit ABOVE it (final pre-testnet wipe, W-B —
+     * decision 2026-09-28-treasury-pools-and-exact-self-stake.md item 5:
+     * "ne az ne fazla"). Balanced the other way: the allocation shrinks
+     * by the unit the bond grew, so Rule P.1's equality is the only
+     * violated rule.
+     * KILLED BY: Rule P.1 written as `>=` (the pre-W-B chain-side STAKE
+     * floor, and check_genesis_conf.sh's former `-ge`). */
+    CHECK(cfg_make(&c, 0, 1, 0) == 0, "cfg");
+    OK();
+    c.cfg->validators[3].self_stake = DNAC_SELF_STAKE_AMOUNT + 1;
+    c.allocs[0].amount = TREASURY_RAW - 1;      /* still sums to 10^17 */
+    CHECK(nodus_witness_v2_gen_config_validate(c.cfg) != 0,
+          "a self-bond ONE raw unit above the exact bond REJECTS");
+    cfg_free(&c);
+
     /* Rule P.3 — pairwise-distinct pubkeys.
      * KILL: drop the O(N²) loop and this config reaches the DB layer,
      * where the outcome would depend on a storage-layer PK collision
@@ -838,6 +898,41 @@ static int test_defect_L2F4(void) {
     c.cfg->validators[4].unstake_destination_fp[128] = 'a';
     CHECK(nodus_witness_v2_gen_config_validate(c.cfg) != 0,
           "an unterminated fingerprint REJECTS");
+    cfg_free(&c);
+
+    /* General multisig (decision 2026-09-29-general-multisig.md, design
+     * F4.4): a genesis row's destination is an ADDRESS checked by SHAPE
+     * only — the Foundation MULTISIG address, which no single
+     * unstake_destination_pubkey derives, is ACCEPTED on every seat.
+     * KILL: restore the former "fp == SHA3-512(dest pubkey)" rule and
+     * this config refuses. */
+    CHECK(cfg_make(&c, 0, 1, 0) == 0, "cfg");
+    OK();
+    {
+        static const char hexd[] = "0123456789abcdef";
+        uint8_t keys[3 * DNAC_PUBKEY_SIZE];
+        uint8_t desc[DNA_MSIG_MAX_DESC_LEN];
+        uint8_t addr[64];
+        size_t dlen = 0;
+        for (int k = 0; k < 3; k++)
+            memset(keys + (size_t)k * DNAC_PUBKEY_SIZE, 0x31 + k,
+                   DNAC_PUBKEY_SIZE);          /* ascending by construction */
+        CHECK(dna_msig_desc_encode(2, 3, keys, desc, sizeof(desc),
+                                   &dlen) == 0 &&
+              dna_msig_address(desc, dlen, addr) == 0,
+              "2-of-3 Foundation-style address");
+        for (uint16_t i = 0; i < c.cfg->n_validators; i++) {
+            uint8_t *fp = c.cfg->validators[i].unstake_destination_fp;
+            for (int b = 0; b < 64; b++) {
+                fp[2 * b]     = (uint8_t)hexd[addr[b] >> 4];
+                fp[2 * b + 1] = (uint8_t)hexd[addr[b] & 0xF];
+            }
+            fp[128] = 0;
+        }
+    }
+    CHECK(nodus_witness_v2_gen_config_validate(c.cfg) == 0,
+          "every genesis seat paying the Foundation MULTISIG address is "
+          "ACCEPTED (address shape only, no pubkey derivation)");
     cfg_free(&c);
 
     /* an out-of-range commission */
@@ -1209,22 +1304,34 @@ static int test_fail_closed(void) {
         cfg_free(&c);
     }
 
-    /* an unknown config version — and, since tokenomics-v3 P4, the
-     * DELETED one. 4 is a schema that never existed; 2 is the pure-V2
-     * schema whose derivation is gone (OBLIGATION atlas-dec-71525f3b).
-     * RED ON THE PRE-P4 TREE for the version-2 leg: gen_plan_build
-     * accepted 2 as a shared-rules body.
-     * MUTANT KILLED: restoring `config_version == 2` in gen_plan_build. */
+    /* an unknown config version — and the RETIRED ones. 5 is a schema
+     * that never existed; 3 is the version-3 document W-A retired (no
+     * treasury pools); 2 is the pure-V2 schema whose derivation is gone
+     * (OBLIGATION atlas-dec-71525f3b).
+     * MUTANT KILLED: restoring `config_version == 3` (or 2) in
+     * gen_plan_build. */
     {
         cfgbox_t c;
         CHECK(cfg_make(&c, 0, 1, 0) == 0, "cfg");
         OK();
-        c.cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION_V3 + 1;
+        c.cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION_V5 + 1;
         CHECK(nodus_witness_v2_gen_config_validate(c.cfg) != 0,
               "an unknown config_version REJECTS");
+        /* general multisig (ONAY 2): version 4 — W-A/W-C's document
+         * without the genesis outputs — is RETIRED.
+         * KILLED BY: restoring `config_version == 4` in gen_plan_build. */
+        c.cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION_V4;
+        CHECK(nodus_witness_v2_gen_config_validate(c.cfg) != 0,
+              "the retired version-4 schema REJECTS (general multisig)");
+        c.cfg->config_version = 3u;
+        CHECK(nodus_witness_v2_gen_config_validate(c.cfg) != 0,
+              "the retired version-3 schema REJECTS (W-A)");
         c.cfg->config_version = 2u;
         CHECK(nodus_witness_v2_gen_config_validate(c.cfg) != 0,
               "the deleted version-2 schema REJECTS");
+        c.cfg->config_version = NODUS_V2_GEN_CONFIG_VERSION_V5;
+        CHECK(nodus_witness_v2_gen_config_validate(c.cfg) == 0,
+              "version 5 is ACCEPTED (positive control)");
         cfg_free(&c);
     }
 
@@ -1257,7 +1364,7 @@ static int test_fail_closed(void) {
         CHECK(cfg_make(&c, 0, 1, 0) == 0, "cfg");
         OK();
 
-        CHECK(c.cfg->config_version == NODUS_V2_GEN_CONFIG_VERSION_V3 &&
+        CHECK(c.cfg->config_version == NODUS_V2_GEN_CONFIG_VERSION_V5 &&
               c.cfg->consensus_protocol == 0 &&
               c.cfg->genesis_time_ms == 0 &&
               c.cfg->n_comet_validators == 0,
@@ -1397,46 +1504,116 @@ static int hex_eq(const uint8_t *b, size_t n, const char *hex) {
  * a pure function of the field widths, so it holds at any economic
  * constants. It was the whole length of the version-2 encoding, which is
  * where the constant's name comes from; since tokenomics-v3 P4 deleted
- * that encoder it is used as "where the version-3 tail begins". */
+ * that encoder it is used as "where the version-3 tail begins". W-A does
+ * not change the body's LENGTH (only its config_version field reads 4). */
 #define KAT_V2_ENC_LEN       37481u
-#define KAT_A_ENC_LEN        56121u
-#define KAT_B_ENC_LEN        56130u
-#define KAT_C_ENC_LEN        56131u
-#define KAT_D_ENC_LEN        56121u
+/* W-A: the treasury block appended after payout_interval_epochs —
+ * 9 × (pool_id u32 + balance u64) = 108 bytes, no count field
+ * (nodus_witness_v2_gen.h layout table). */
+#define KAT_TREASURY_LEN     108u
+/* W-C: the two governed fee parameters appended after the treasury block
+ * — gas_price_raw_per_unit u64be ‖ token_create_fee_raw u64be = 16 bytes
+ * (nodus_witness_v2_gen.h layout table). The document now ENDS with
+ * them, so the treasury block sits KAT_FEE_LEN bytes before the end. */
+#define KAT_FEE_LEN          16u
+/* Document lengths: the version-3 lengths the oracle pinned (A/D 56121,
+ * B 56130, C 56131) + KAT_TREASURY_LEN + KAT_FEE_LEN — ARITHMETIC on the
+ * header's layout table, not a value read back from this build. The
+ * oracle must reproduce them. */
+/* General multisig (config_version 5, decision ONAY 2): the genesis
+ * outputs section — genesis_output_count u32be then 72 bytes each —
+ * appended after the fee fields. The A-D fixtures carry NO outputs, so
+ * it is the 4-byte zero count and the document now ENDS with it. */
+#define KAT_GENOUT_LEN       4u
+#define KAT_A_ENC_LEN        (56121u + KAT_TREASURY_LEN + KAT_FEE_LEN + \
+                              KAT_GENOUT_LEN)
+#define KAT_B_ENC_LEN        (56130u + KAT_TREASURY_LEN + KAT_FEE_LEN + \
+                              KAT_GENOUT_LEN)
+#define KAT_C_ENC_LEN        (56131u + KAT_TREASURY_LEN + KAT_FEE_LEN + \
+                              KAT_GENOUT_LEN)
+#define KAT_D_ENC_LEN        (56121u + KAT_TREASURY_LEN + KAT_FEE_LEN + \
+                              KAT_GENOUT_LEN)
 
+/* §5 CONTROL (general multisig, ONAY 2): every fixture validator's
+ * unstake_destination_pubkey is ALL ZERO (a genesis row must carry zeros —
+ * decision ONAY 2 item 2), and those 7 × 2592 bytes are part of the body
+ * it hashes (config_version rewritten to 2). PINNED 2026-09-29 from
+ * shared/dnac/tests/genesis_v3_oracle.py stage 5 (written by an agent that
+ * did not read this C). RETIRED value (dest pubkey = pubkey ^ 0x5A, the
+ * oracle's control leg):
+ *   523e2c971f1c44f06ad63cf8d0b4b4eb56ae7b98b58f8dc7afa09b97b523893a
+ *   5c408314a06f32e378b4f4f24764bb2763fe6fcdae8a1ccd63e279b09f4103bf */
 static const char *KAT_V2_ENC_SHA =
-    "523e2c971f1c44f06ad63cf8d0b4b4eb56ae7b98b58f8dc7afa09b97b523893a"
-    "5c408314a06f32e378b4f4f24764bb2763fe6fcdae8a1ccd63e279b09f4103bf";
+    "7e133584b15a8772be6ee9f4268bd41444103f3a449730cce9a5ec26ecb52520"
+    "40fe7dc606cc415d48fe1963e9410e6c1ec111ffceeb46ba9471f2010c219a7d";
 
+/* ═══ A-D history (final pre-testnet wipe) ═══════════════════════════════
+ * The A-D vectors moved three times in this package, each time re-emitted
+ * by shared/dnac/tests/genesis_v3_oracle.py (author != auditor), never by
+ * the executor that wrote this C:
+ *   W-A — config_version 4, the 108-byte treasury block appended (A, C, D:
+ *         nine zero balances, pool_id 1..9; B: the decision's nine
+ *         balances — see cfg_make_v3_b);
+ *   W-C — gas_price_raw_per_unit u64be ‖ token_create_fee_raw u64be after
+ *         the treasury block (A-D carry the builder defaults 121 and 10^11);
+ *   ONAY 2 — config_version 5, the genesis-output section, zeroed
+ *         destination pubkeys (below).
+ * RETIRED version-3 values (the oracle's stage-1b control legs):
+ *   A enc  e63e9ff5…32c8be64  (chain id / src commit coincide with it)
+ *   B enc  c9ab02d3…cfe32b4b  id f2e3e45c…d03a8940  src efa32045…d0e0ba8e
+ *   C enc  aacf24c3…644d57eb  (chain id coincides)
+ *   D enc  7925db18…0d1ef2b2  id 8f633f20…088b6040
+ * RETIRED W-A (config_version 4 without the fee fields) values — the
+ * oracle's stage-1c control legs:
+ *   A enc cc867861cb75f5135e4bb88dda3350a1b712da38abf120855340b448a7380406
+ *         fd445b197c745188c1282f7d34494588a2b8de89c7202e806007be4980925efa
+ *         (chain id / src commit coincide with it)
+ *   B enc 83d631380dd291a29d44441f1a661c506c3c279976318fc7cdf82da1d15f540a
+ *         e06847ad941898cff304e440a70376941be05d4e4deb354661e0bb3af9d0b460
+ *     id  dd4f448e4d0137ce78386cd639d31fbceca7b36e5ba2be22230351eb3dec3cae
+ *     src bcb91c4e5f4d258e591f23949f9af5e0bb0bd753fa3f83ad142e137bf730ab2a
+ *         1c3be07e25047842337984a351548c323682dd66fd7aa792f286da3cb22e28a5
+ *   C enc 0ef525aa070ba5dd5e5a56e3d438fe510831b2beadf724cc2f92a55bf7bb968d
+ *         0f743c0a91c3d0d105fd84a43d8b9700b63401b0019121282835a2e698837709
+ *         (chain id coincides)
+ *   D enc f3ebeb9d675afbfced3eb41e93e49ea7201a613108155a9c373c015331790d27
+ *         73b7b70c9d1435bc26648e7e167fd79c7dce21a452f07612150f1cc2652da202
+ *     id  75d47725f9b9dd551d5e1702294ee34e74b152962ff145672cee4daf5d892582
+ * ════════════════════════════════════════════════════════════════════════ */
+/* General multisig (ONAY 2) — the current A-D vectors:
+ * config_version reads 5, the 4-byte genesis-output count (0 for A-D)
+ * ends the document, and every validator's unstake_destination_pubkey
+ * is all zero. PINNED 2026-09-29 from shared/dnac/tests/genesis_v3_oracle.py
+ * stage 5 (V5_A-D; written by an agent that did not read this C). */
 static const char *KAT_A_ENC_SHA =
-    "e63e9ff5c6f9d2f13ef3276b8f678221d478211607dcbd66545c9d27f2b93fd6"
-    "244a44c16ec82c9785701bcb392949e4882ea4510fa3560a17b9973e32c8be64";
+    "b68fa0ba29ff9664f869b175395867b563419fff03b9b155a58238c6074e1d02"
+    "7a0556b552d1aacae31befc548cb27c0c5b60c4e0861ad70be33c371226da980";
 static const char *KAT_A_CHAIN_ID =
-    "e63e9ff5c6f9d2f13ef3276b8f678221d478211607dcbd66545c9d27f2b93fd6";
+    "b68fa0ba29ff9664f869b175395867b563419fff03b9b155a58238c6074e1d02";
 static const char *KAT_A_SRC_COMMIT =
-    "e63e9ff5c6f9d2f13ef3276b8f678221d478211607dcbd66545c9d27f2b93fd6"
-    "244a44c16ec82c9785701bcb392949e4882ea4510fa3560a17b9973e32c8be64";
+    "b68fa0ba29ff9664f869b175395867b563419fff03b9b155a58238c6074e1d02"
+    "7a0556b552d1aacae31befc548cb27c0c5b60c4e0861ad70be33c371226da980";
 
 static const char *KAT_B_ENC_SHA =
-    "c9ab02d3d443846aa435d27bb207d4f0c342f6f322833eb57a9455b7d4fa1cab"
-    "95de99861f3d709f097f9a353f8455c37f18a48e36490b412e08614ecfe32b4b";
+    "013414c90976bb1a5eba49c57fb1c10069eec1b6022ebc3050e7c2d8c6fa36a8"
+    "c7afef9dac04aed4e9ac1c1b01c1dc1a0deca4f1a6aa5b8e68312b14f2f0fdde";
 static const char *KAT_B_CHAIN_ID =
-    "f2e3e45cc11822a931cc0bcd4e42a25ea92108f5021e47be70263bf6d03a8940";
+    "8bf6dbc0b2ea0c3f87203fd843df50f1116f35e2af01891a14127a7443db30e2";
 static const char *KAT_B_SRC_COMMIT =
-    "efa32045899a99de4a846653811ae8316d4ea1e32e95f15059c53bf66853a70f"
-    "bc4d1d68e4d1aad86880dcbc58615b3b5d2a7ec173f8a3c09c047d61d0e0ba8e";
+    "c9dc177e2e78dd242a79444fa4ee2611cfa65023fba7aa013547e951000aba66"
+    "b4024d57cf0e8054dbccce37e1561a9c62ff0428017aa8554481e698d13c3692";
 
 static const char *KAT_C_ENC_SHA =
-    "aacf24c34b20d9fb8bb02209075f6c13e64902d2fdbddebb9b742d7b741bacae"
-    "2be6ab9caa58b40ff1fda9fbf5d81293479ae70361d3ee11dfafd565644d57eb";
+    "b0a3e51e7d07eb164499872ac824d3ba9e0538b6db4b6b881137b4b5d5f04029"
+    "2ccd0a0a3907cc0b8a5561fcf9cfe9a39f536680d302647d6d21d93f4dda1a53";
 static const char *KAT_C_CHAIN_ID =
-    "aacf24c34b20d9fb8bb02209075f6c13e64902d2fdbddebb9b742d7b741bacae";
+    "b0a3e51e7d07eb164499872ac824d3ba9e0538b6db4b6b881137b4b5d5f04029";
 
 static const char *KAT_D_ENC_SHA =
-    "7925db184e5883ed3b9563ca85d0b518b6ed6e2de00ccaea61def42a2dc5dc43"
-    "8d9eb9675696a6b4ddfe173a0e435937baf228d02a273522a492e06f0d1ef2b2";
+    "520397977ad0708e3784898ee88a0387cb97b65cd6e00474808aef7563153f17"
+    "4d71673bc37cf51ba2dd483bfaff4be6840c1a394962f05ac4929e44397c4004";
 static const char *KAT_D_CHAIN_ID =
-    "8f633f2022d6ae833817b604737a09cb881b3a130dd3cddd7540e723088b6040";
+    "4f67de1bf0f6ce8e9e460ff195cb7fec1f2b05500bfd22dfa034861509d495f6";
 
 /* ── the version-3 fixtures (the oracle's make_v3, transcribed) ─────── */
 
@@ -1491,9 +1668,28 @@ static int cfg_make_v3_b(cfgbox_t *b) {
      * which checks shape and the shared rules only; the version-3
      * content rule that pins it to 16 is nodus_witness_v2_gen_v3_validate,
      * which this vector never calls.) */
-    b->allocs[0].amount       = TREASURY_RAW - 123456789ULL;
     c->reward_divisor_log2    = 15ULL;
     c->payout_interval_epochs = 7ULL;
+    /* W-A: the treasury block away from its all-zero default too — the
+     * decision's nine pool amounts (decision 2026-09-28-treasury-pools-
+     * and-exact-self-stake.md §Karar 1, pool order = answer 11), raw
+     * ×10^8: 100M, 100M, 50M, 50M, 50M, 150M, 100M, 30M, 50M (Σ 680M).
+     * Rule P.2: the allocation carries what the reserve and the pools do
+     * not — TREASURY_RAW − 123456789 − 680M × 10^8. The oracle's B fixture
+     * must set exactly these values. */
+    {
+        static const uint64_t whole[NODUS_V2_GEN_TREASURY_POOLS] = {
+            100000000ULL, 100000000ULL, 50000000ULL, 50000000ULL,
+            50000000ULL, 150000000ULL, 100000000ULL, 30000000ULL,
+            50000000ULL
+        };
+        uint64_t sum = 0;
+        for (size_t t = 0; t < NODUS_V2_GEN_TREASURY_POOLS; t++) {
+            c->treasury[t].balance = whole[t] * 100000000ULL;
+            sum += c->treasury[t].balance;
+        }
+        b->allocs[0].amount = TREASURY_RAW - 123456789ULL - sum;
+    }
     return 0;
 }
 
@@ -1576,8 +1772,46 @@ static int test_v3_control(void) {
           enc[KAT_V2_ENC_LEN + 3] == NODUS_V2_GEN_CONSENSUS_COMETBFT,
           "the tail begins exactly at the 37481-byte body boundary");
     CHECK(enc[16] == 0 && enc[17] == 0 && enc[18] == 0 &&
-          enc[19] == NODUS_V2_GEN_CONFIG_VERSION_V3,
-          "the body's config_version field reads 3");
+          enc[19] == NODUS_V2_GEN_CONFIG_VERSION_V5,
+          "the body's config_version field reads 5 (general multisig)");
+    /* General multisig: the document ENDS with the genesis-output count,
+     * 0 for this fixture (u32 BE). */
+    CHECK(len > KAT_GENOUT_LEN &&
+          enc[len - 4] == 0 && enc[len - 3] == 0 &&
+          enc[len - 2] == 0 && enc[len - 1] == 0,
+          "the document ends with a zero genesis-output count (v5)");
+    /* W-C: the two governed fee parameters precede it —
+     * gas_price_raw_per_unit (121 = 0x79) then token_create_fee_raw
+     * (10^11 = 0x17_4876_E800), each u64 BE; cfg_make_v3 carries the
+     * builder defaults. */
+    {
+        static const uint8_t want_fee[16] = {
+            0, 0, 0, 0, 0, 0, 0, 0x79,
+            0, 0, 0, 0x17, 0x48, 0x76, 0xE8, 0x00
+        };
+        CHECK(len > KAT_FEE_LEN + KAT_GENOUT_LEN &&
+              memcmp(enc + len - KAT_GENOUT_LEN - KAT_FEE_LEN, want_fee,
+                     KAT_FEE_LEN) == 0,
+              "gas price 121 ‖ token fee 10^11 sit just before the "
+              "genesis-output count (W-C)");
+    }
+    /* W-A: the 108-byte treasury block precedes them — its last entry is
+     * pool_id 9 (u32 BE) followed by its 8-byte balance. */
+    {
+        const size_t tend = len - KAT_GENOUT_LEN - KAT_FEE_LEN; /* end of
+                                                  * the treasury           */
+        CHECK(tend > KAT_TREASURY_LEN &&
+              enc[tend - 12] == 0 && enc[tend - 11] == 0 &&
+              enc[tend - 10] == 0 && enc[tend - 9] == 9,
+              "the last treasury entry is pool 9, just before the fee "
+              "fields");
+        CHECK(enc[tend - KAT_TREASURY_LEN]     == 0 &&
+              enc[tend - KAT_TREASURY_LEN + 1] == 0 &&
+              enc[tend - KAT_TREASURY_LEN + 2] == 0 &&
+              enc[tend - KAT_TREASURY_LEN + 3] == 1,
+              "the treasury block starts with pool 1, 108 bytes before "
+              "the fee fields");
+    }
     uint8_t *body = malloc(KAT_V2_ENC_LEN);
     CHECK(body != NULL, "alloc");
     OK();
@@ -1776,6 +2010,12 @@ static int test_v3_sensitivity(void) {
             (c->reward_pool_initial -= 1, m.allocs[0].amount += 1));
     V3_SENS("reward_divisor_log2",    c->reward_divisor_log2 = 17);
     V3_SENS("payout_interval_epochs", c->payout_interval_epochs = 25);
+    /* W-A: a treasury balance — Rule P.2 binds it to the allocations the
+     * way it binds the reserve, so the allocation moves the other way. */
+    V3_SENS("treasury[7].balance (Foundation)",
+            (c->treasury[7].balance += 1, m.allocs[0].amount -= 1));
+    V3_SENS("treasury[0].balance (Storage)",
+            (c->treasury[0].balance += 5, m.allocs[0].amount -= 5));
 
     /* THE TWO ZEROING RULES. */
     {
@@ -1812,7 +2052,7 @@ static int test_v3_sensitivity(void) {
 
     cfg_free(&a);
     OK();
-    printf("  ok: 19 fields reach the id; the two blankings hold\n");
+    printf("  ok: 21 fields reach the id; the two blankings hold\n");
     return 0;
 }
 
@@ -1874,7 +2114,7 @@ static int test_v3_decode(void) {
         CHECK(alen == len && again && memcmp(again, enc, len) == 0,
               "byte-for-byte the same document");
         /* and the scalars a reader will actually act on */
-        CHECK(back->config_version == NODUS_V2_GEN_CONFIG_VERSION_V3 &&
+        CHECK(back->config_version == NODUS_V2_GEN_CONFIG_VERSION_V5 &&
               back->consensus_protocol == NODUS_V2_GEN_CONSENSUS_COMETBFT &&
               back->genesis_time_ms == KAT_GENESIS_TIME_MS &&
               back->initial_height == 1 &&
@@ -1888,6 +2128,19 @@ static int test_v3_decode(void) {
         CHECK(memcmp(&back->consensus_params, &d.cfg->consensus_params,
                      sizeof(back->consensus_params)) == 0,
               "and so do the consensus parameters, byte for byte");
+        {
+            int tr_ok = 1;
+            for (size_t t = 0; t < NODUS_V2_GEN_TREASURY_POOLS; t++)
+                if (back->treasury[t].pool_id != d.cfg->treasury[t].pool_id ||
+                    back->treasury[t].balance != d.cfg->treasury[t].balance)
+                    tr_ok = 0;
+            CHECK(tr_ok, "and so does the W-A treasury block");
+        }
+        CHECK(back->gas_price_raw_per_unit == d.cfg->gas_price_raw_per_unit &&
+              back->token_create_fee_raw   == d.cfg->token_create_fee_raw &&
+              back->token_create_fee_raw   != 0,
+              "and so do the W-C fee parameters (nonzero, so a decoder "
+              "that dropped them cannot pass)");
         free(again);
         free(al);
         free(back);
@@ -1925,6 +2178,61 @@ static int test_v3_decode(void) {
         v2enc[16] = 0; v2enc[17] = 0; v2enc[18] = 0; v2enc[19] = 2u;
         v3_reject("a version-2 encoding", v2enc, KAT_V2_ENC_LEN);
         free(v2enc);
+    }
+
+    /* ── W-A: the RETIRED version-3 document, and the treasury rule ──
+     * A version-3 document is this document minus its 108-byte treasury
+     * block with the version field reading 3 — refused by its VERSION,
+     * never read as a prefix. The same bytes reading 4 are refused for
+     * their LENGTH (the block is missing). And inside a well-formed
+     * version-4 document, a pool_id that is not its index + 1 — the last
+     * entry's, patched to 8 (a duplicate) and to 10 (out of the set) —
+     * is refused.
+     * KILLED BY: accepting config_version 3; reading a missing treasury
+     * block as zeros; not checking pool_id in the decoder. */
+    {
+        /* W-C: the fee fields follow the treasury block, and (general
+         * multisig) the 4-byte genesis-output count follows them, so the
+         * treasury ends KAT_GENOUT_LEN + KAT_FEE_LEN bytes before the
+         * document does. */
+        const size_t tend  = len - KAT_GENOUT_LEN - KAT_FEE_LEN;
+        const size_t v3len = tend - KAT_TREASURY_LEN;
+        uint8_t *m = malloc(len);
+        CHECK(m != NULL, "alloc");
+        OK();
+        memcpy(m, enc, len);
+        m[19] = 3u;
+        v3_reject("a retired version-3 document (no treasury block)", m,
+                  v3len);
+        /* General multisig (ONAY 2): the RETIRED version-4 document is
+         * exactly this one without its genesis-output section — refused
+         * by its VERSION, never read as a prefix.
+         * KILLED BY: accepting config_version 4 in the decoder. */
+        m[19] = (uint8_t)NODUS_V2_GEN_CONFIG_VERSION_V4;
+        v3_reject("a retired version-4 document (no genesis outputs)", m,
+                  len - KAT_GENOUT_LEN);
+        m[19] = (uint8_t)NODUS_V2_GEN_CONFIG_VERSION_V5;
+        v3_reject("a version-5 document missing its genesis-output count",
+                  m, len - KAT_GENOUT_LEN);
+        v3_reject("a version-5 document missing its treasury block", m,
+                  v3len);
+        /* W-C: a layout without the fee fields is refused for its
+         * LENGTH, never read with a defaulted fee; so is a document cut
+         * inside the fee fields.
+         * KILLED BY: a decoder that skips the fee fields when absent. */
+        v3_reject("a version-5 document missing its fee fields", m, tend);
+        v3_reject("a version-5 document cut inside its fee fields", m,
+                  tend + 8);
+        CHECK(m[tend - 9] == 9, "the last entry's pool_id low byte is 9");
+        OK();
+        m[tend - 9] = 8;
+        v3_reject("treasury entry 9 carrying pool_id 8 (duplicate)", m, len);
+        m[tend - 9] = 10;
+        v3_reject("treasury entry 9 carrying pool_id 10", m, len);
+        m[tend - 9] = 9;
+        m[tend - KAT_TREASURY_LEN + 3] = 0;
+        v3_reject("treasury entry 1 carrying pool_id 0", m, len);
+        free(m);
     }
 
     /* ── values the encoder can write and a DOCUMENT may not carry ─── */
@@ -2315,9 +2623,10 @@ static int test_v3_derive(void) {
           "start makes the State (node/setup.go:581)");
     CHECK(q1(db, "SELECT COUNT(*) FROM validators") == (int64_t)N_VAL,
           "seven validator rows");
-    CHECK(q1(db, "SELECT COUNT(*) FROM chain_config_history") == 3,
+    CHECK(q1(db, "SELECT COUNT(*) FROM chain_config_history") == 5,
           "the three committed economic parameters (tokenomics-v3 P2 "
-          "retired the fourth, INFLATION_START_BLOCK)");
+          "retired the fourth, INFLATION_START_BLOCK) + the two governed "
+          "fee parameters 5 and 6 (W-C)");
     CHECK(q1(db, "SELECT COALESCE(SUM(remaining),-1) FROM v2_dist_state")
               == (int64_t)(TREASURY_RAW - 200000000ULL * 100000000ULL),
           "the claim reserve holds the treasury less the reward reserve "
@@ -2325,6 +2634,15 @@ static int test_v3_derive(void) {
     CHECK(q1(db, "SELECT reward_pool FROM supply_tracking WHERE id = 1")
               == (int64_t)(200000000ULL * 100000000ULL),
           "and the reward reserve is the committed pool");
+    /* W-A: the treasury table holds EXACTLY the pool set, as the
+     * document states it (fixture A: nine zero balances). */
+    CHECK(q1(db, "SELECT COUNT(*) FROM v2_treasury") ==
+              (int64_t)NODUS_V2_GEN_TREASURY_POOLS &&
+          q1(db, "SELECT COUNT(*) FROM v2_treasury WHERE pool_id "
+                 "BETWEEN 1 AND 9") ==
+              (int64_t)NODUS_V2_GEN_TREASURY_POOLS &&
+          q1(db, "SELECT COALESCE(SUM(balance),-1) FROM v2_treasury") == 0,
+          "v2_treasury is seeded with the document's nine pools");
 
     /* the stored document IS the derived chain's identity.
      *
@@ -2466,11 +2784,15 @@ static int test_v3_derive(void) {
 
             if (tcase == 0) {
                 /* The chain_id field is the 32 bytes that sit 24 bytes
-                 * (the three tokenomics u64s) before the end. The offset
-                 * is ASSERTED against the known id before anything is
-                 * flipped, so a layout drift fails here instead of
-                 * silently patching some other field. */
-                const size_t off = dlen - 24 - 32;
+                 * (the three tokenomics u64s) + KAT_TREASURY_LEN (the W-A
+                 * treasury block) + KAT_FEE_LEN (the W-C fee fields) +
+                 * KAT_GENOUT_LEN (the v5 genesis-output count, 0 outputs)
+                 * before the end. The offset is ASSERTED
+                 * against the known id before anything is flipped, so a
+                 * layout drift fails here instead of silently patching
+                 * some other field. */
+                const size_t off = dlen - KAT_GENOUT_LEN - KAT_FEE_LEN -
+                                   KAT_TREASURY_LEN - 24 - 32;
                 CHECK(memcmp(doc + off, chain32, 32) == 0,
                       "the computed offset really is the chain_id field");
                 doc[off] ^= 0x01;
@@ -2633,6 +2955,20 @@ static int test_v3_row_equality(void) {
         CHECK(dir_is_clean(dir) == 1, "and left nothing behind");
         rmrf(dir);
         cfg_free(&v2);
+    }
+    /* W-A: nor a COMPLETE version-3 config — the retired document. */
+    {
+        cfgbox_t v3;
+        char dir[128];
+        CHECK(cfg_make_v3(&v3) == 0, "fixture");
+        v3.cfg->config_version = 3u;
+        CHECK(mkdir_tmp(dir, "v3retired") == 0, "tmpdir");
+        OK();
+        CHECK(nodus_witness_v2_gen_derive_v3(dir, v3.cfg, NULL) != 0,
+              "the derivation refuses a retired version-3 config (W-A)");
+        CHECK(dir_is_clean(dir) == 1, "and left nothing behind");
+        rmrf(dir);
+        cfg_free(&v3);
     }
 
     OK();

@@ -160,6 +160,12 @@ set(NODUS_SOURCES
     # tx_id). A separate wire family from V3; nothing calls it yet.
     ${SHARED_DIR}/dnac/env_wire.c
 
+    # General multisig (decision 2026-09-29-general-multisig.md) — the
+    # M-of-N DESCRIPTOR codec and the multisig ADDRESS = SHA3-512(
+    # descriptor). Pure SHA3, no nodus dependency; consumed by the CORE
+    # auth_kind 3 parser (nodus_witness_rt_native.c) and nodus-cli.
+    ${SHARED_DIR}/dnac/msig_wire.c
+
     # Ledger V2 — INACTIVE generic TYPED-EFFECT RESULT codec: the canonical,
     # bounded representation of the state mutations one leg proposes
     # (CREATE/SET/DELETE over opaque keys/values namespaced by a compiled
@@ -1667,6 +1673,13 @@ register_witness_test(test_v2_native)
 # classification in both directions, ceiling-boundary encode/decode.
 register_witness_test(test_v2_capacity)
 
+# General multisig (decision 2026-09-29-general-multisig.md) — the M-of-N
+# descriptor codec + address: tag bytes, the validation matrix, and the
+# address vectors of the independent oracle
+# (shared/dnac/tests/multisig_oracle.py; KAT constants are ORCHESTRATOR-
+# pasted placeholders until then — the test fails by design).
+register_witness_test(test_msig_wire)
+
 # Ledger V2 S6 — generic manifest/snapshot/claim codec: round-trips,
 # per-field root sensitivity, strict-decode negatives, deterministic
 # mutant fuzz, snapshot ordering/duplicates, shape-derived inclusion
@@ -1749,6 +1762,13 @@ register_witness_test(test_v2_committee_seed)
 # persist/get/apply round-trip, byte-identical base tables + genesis id
 # vs source, wrong-pin/malformed rejection with zero trace.
 register_witness_test(test_v2_bundle)
+
+# Final pre-testnet wipe, W-A — the keyless, locked treasury pools
+# (decision 2026-09-28-treasury-pools-and-exact-self-stake.md): the
+# genesis rules (pool set 1..9, Rule P.2 counting Σ treasury), the
+# derivation seeding `v2_treasury`, the supply equation's treasury term,
+# and the genesis-validator graduation refund helper (pool 8).
+register_witness_test(test_v2_treasury)
 
 # The version-3 genesis builder (the version-2 derivation was deleted in
 # tokenomics-v3 P4): the composition (allocations + 7 × 10M self-stake +

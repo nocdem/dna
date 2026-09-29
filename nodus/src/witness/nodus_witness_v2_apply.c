@@ -33,11 +33,13 @@
 #include "witness/nodus_witness_committee.h"   /* capacity season: the
                                         * governing snapshot resolution */
 /* HF-1: nodus/nodus_chain_config.h is back (R3 W4-C delta 2 had dropped
- * it with the retired DNAC_CFG_MAX_TXS_PER_BLOCK read). Its one use here
- * is env_gas_price_check's nodus_chain_config_get_u64 of
- * DNAC_CFG_GAS_PRICE_RAW_PER_UNIT. */
+ * it with the retired DNAC_CFG_MAX_TXS_PER_BLOCK read). Its uses here are
+ * nodus_chain_config_get_u64 of DNAC_CFG_GAS_PRICE_RAW_PER_UNIT
+ * (env_gas_price_check) and — final pre-testnet wipe W-C — of
+ * DNAC_CFG_TOKEN_CREATE_FEE_RAW (env_token_create_fee). */
 #include "nodus/nodus_chain_config.h"
-#include "nodus/nodus_types.h"         /* NODUS_W_BASE_TX_FEE            */
+#include "nodus/nodus_types.h"         /* NODUS_W_BASE_TX_FEE,
+                                        * NODUS_W_TOKEN_CREATE_FEE       */
 
 #include "dnac/dnac.h"                 /* DNAC_EPOCH_LENGTH (via apply.h,
                                         * kept explicit here too),
@@ -701,6 +703,35 @@ static const char *v2ap_hex8(const uint8_t *b, char out[17]) {
 #define V2AP_ENV_FAULT(...) \
     v2ap_reason(reason, reason_size, "FAULT: ", __VA_ARGS__)
 
+/* Final pre-testnet wipe W-C (decision 2026-09-28-token-create-fee-
+ * governance.md): the token-creation fee the CORE TOKEN_CREATE exec
+ * enforces — the COMMITTED chain_config param 6 (TOKEN_CREATE_FEE_RAW)
+ * active at `height`, the compiled NODUS_W_TOKEN_CREATE_FEE when no row is
+ * active. The SAME read discipline as env_gas_price_check: the one
+ * three-valued accessor over committed rows (cache ≡ DB), and a read that
+ * cannot be answered is a node FAULT, never a default — a guessed fee
+ * would let two nodes judge one TOKEN_CREATE differently. Filled into
+ * every exec context the engine builds (env_authorize_legs, exec_one_env)
+ * so the pure hooks never touch the database. `height` is the block being
+ * applied — tip + 1 on the CheckTx dry run, which builds its block the
+ * same way — so CheckTx and FinalizeBlock read the same row.
+ * @return 0 (value in *out) / -2 fault (reason written). */
+static int env_token_create_fee(nodus_witness_t *w, uint64_t height,
+                                uint64_t *out,
+                                char *reason, size_t reason_size)
+{
+    if (nodus_chain_config_get_u64(
+            w, (uint8_t)DNAC_CFG_TOKEN_CREATE_FEE_RAW, height,
+            NODUS_W_TOKEN_CREATE_FEE, out) < 0) {
+        V2AP_ENV_FAULT("token-create fee: TOKEN_CREATE_FEE_RAW at height "
+                       "%llu is unreadable on this node - refusing to "
+                       "judge a TOKEN_CREATE against a guessed fee",
+                       (unsigned long long)height);
+        return -2;
+    }
+    return 0;
+}
+
 /* A fault-injection point firing is a TEST harness event, not a real
  * defect — it says so in its own words rather than borrowing the words
  * of the check it stands in for. */
@@ -994,6 +1025,13 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
     }
 
     const dna_env_view_t *v = &pf->view;
+    /* W-C: the governed token-creation fee at this block's height, read
+     * ONCE per envelope (every leg judges against the same committed
+     * row) — a read fault aborts, never defaults. */
+    uint64_t tc_fee = 0;
+    if (env_token_create_fee(w, blk->global_height, &tc_fee,
+                             reason, reason_size) != 0)
+        return -2;
     for (uint16_t l = 0; l < v->leg_count; l++) {
         dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
         if (!d || !d->rt || !d->rt->exec) {          /* admission-scan
@@ -1035,6 +1073,7 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
         ctx.auth_context_commit = pf->auth_context_commit;
         ctx.leg_auth_digest     = pf->auth_digest[l];
         ctx.auth                = av;
+        ctx.token_create_fee    = tc_fee;
 
         /* ── mediated reads: request phase → engine-charged execution ─
          * TRUST NOTE: the count/length rejects below detect a hook that
@@ -1682,9 +1721,10 @@ static int env_gas_price_check(nodus_witness_t *w, const dna_env_view_t *v,
  * yes/no may point it at scratch.
  *
  * `reuse` / `reused_out` (CHECKTX-P1, both NULL on the apply path): a
- * caller-held verdict for an auth_kind-1 leg whose digest equals the one
- * derived here is taken instead of re-running the hook — the recheck
- * cache's light path. auth_kind 2 never takes this branch.
+ * caller-held verdict for an auth_kind-1 or auth_kind-3 (general
+ * multisig) leg whose digest equals the one derived here is taken
+ * instead of re-running the hook — the recheck cache's light path.
+ * auth_kind 2 never takes this branch.
  * `reused_out[l]` (DNA_ENV_MAX_LEGS slots) receives 1 for a reused leg.
  *
  * @return 0 every leg authorized; -1 a leg REFUSED (deterministic — the
@@ -1704,8 +1744,14 @@ static int env_authorize_legs(nodus_witness_t *w,
 {
     const dna_env_view_t *v = &p->view;
     uint16_t l;
+    uint64_t tc_fee = 0;
 
-    (void)w;
+    /* W-C: every ctx the engine builds carries the committed
+     * token-creation fee (runtime.h contract); no auth hook reads it
+     * today, but a hook must never see a ctx whose engine facts are
+     * partly zero. Same read, same fault rule as exec_one_env. */
+    if (env_token_create_fee(w, height, &tc_fee, reason, reason_size) != 0)
+        return -2;
     for (l = 0; l < v->leg_count; l++) {
         dom_ctx_t          *d = dom_for(doms, n_dom, v->leg[l].domain_id);
         nodus_rt_exec_ctx_t actx;
@@ -1723,10 +1769,19 @@ static int env_authorize_legs(nodus_witness_t *w,
         }
         if (reuse && l < reuse->leg_count && reuse->present &&
             reuse->digest && reuse->verdict && reuse->present[l] &&
-            v->leg[l].auth_kind == NODUS_RT_AUTHKIND_DSA87_MULTI_V1 &&
+            (v->leg[l].auth_kind == NODUS_RT_AUTHKIND_DSA87_MULTI_V1 ||
+             v->leg[l].auth_kind == NODUS_RT_AUTHKIND_DSA87_MSIG_V1) &&
             memcmp(reuse->digest[l], p->auth_digest[l], 64) == 0 &&
             reuse->verdict[l].n_signers >= 1 &&
-            reuse->verdict[l].n_signers <= NODUS_RT_AUTH_MAX_SIGNERS) {
+            reuse->verdict[l].n_signers <= NODUS_RT_AUTH_MAX_SIGNERS &&
+            /* general multisig (F1.3): a kind-3 verdict carries its
+             * descriptor facts, a kind-1 verdict none — the cache key
+             * is the wire_id, which commits the auth bytes, so the
+             * cached facts are the ones the hook would recompute */
+            (v->leg[l].auth_kind == NODUS_RT_AUTHKIND_DSA87_MSIG_V1
+                 ? (reuse->verdict[l].n_msig >= 1 &&
+                    reuse->verdict[l].n_msig <= NODUS_RT_MSIG_MAX_DESC)
+                 : (reuse->verdict[l].n_msig == 0))) {
             out_verdicts[l] = reuse->verdict[l];
             if (reused_out) {
                 reused_out[l] = 1;
@@ -1741,6 +1796,7 @@ static int env_authorize_legs(nodus_witness_t *w,
         actx.intent_id           = p->intent_id;
         actx.auth_context_commit = p->auth_context_commit;
         actx.leg_auth_digest     = p->auth_digest[l];
+        actx.token_create_fee    = tc_fee;
         /* the resolved snapshot view, ONLY for the kind that consumes it
          * (runtime.h's ctx contract) */
         actx.committee =
@@ -3565,6 +3621,12 @@ cmt_claim_failed:
              * of them and must NOT declare CORE: phase 9 rejects a
              * declared no-op as hard as phase 8 rejects an undeclared
              * mutation. The balance copy is out of every root. */
+            /* General multisig (decision 2026-09-29-general-multisig.md)
+             * withdrew W-A's genesis-seat refund into the Foundation
+             * treasury pool: EVERY graduate again releases its bond as a
+             * UTXO (a genesis seat's to the Foundation multisig
+             * address), so a graduate is again proof that utxo_set — a
+             * CORE leg — moved, and the graduate count is the input. */
             if (ep.n_graduates > 0 || ep.dist_accrued > 0 ||
                 ep.n_payday_utxos > 0) {
                 dom_ctx_t *dcore = dom_for(doms, n_dom, DNA_DOMAIN_CORE);

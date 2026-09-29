@@ -317,13 +317,20 @@ static const char *WITNESS_DB_SCHEMA =
      *                      (decision §3 "P2 tasarım soruları").
      *   v2_balance_copy    the frozen bonded balances at each epoch
      *                      boundary: one row per validator with
-     *                      self_stake > 0 (owner = the validator) and one
-     *                      per delegation. OUT of every root — derived
-     *                      at the boundary from committed (rooted)
-     *                      tables; a node whose copy diverged pays a
-     *                      different accrual at the next boundary and is
-     *                      caught there by accrual_root. Only the H-E and
-     *                      H copies are kept. */
+     *                      self_stake > 0 (owner = the validator, kind 0)
+     *                      and one per delegation (owner = the delegator,
+     *                      kind 1). `kind` is in the primary key since the
+     *                      final pre-testnet wipe, W-B (decision
+     *                      2026-09-28-treasury-pools-and-exact-self-
+     *                      stake.md item 6): a self-delegation's owner IS
+     *                      the validator, so without it the bond and the
+     *                      delegation would share a key. OUT of every
+     *                      root — derived at the boundary from committed
+     *                      (rooted) tables; a node whose copy diverged
+     *                      pays a different accrual at the next boundary
+     *                      and is caught there by accrual_root. The H-2E,
+     *                      H-E and H copies are kept (tokenomics-v3
+     *                      P3-2). */
     "CREATE TABLE IF NOT EXISTS v2_reward_accrual ("
     "  owner_fp BLOB PRIMARY KEY,"
     "  amount INTEGER NOT NULL"
@@ -332,8 +339,24 @@ static const char *WITNESS_DB_SCHEMA =
     "  epoch_start INTEGER NOT NULL,"
     "  validator_fp BLOB NOT NULL,"
     "  owner_fp BLOB NOT NULL,"
+    "  kind INTEGER NOT NULL,"
     "  amount INTEGER NOT NULL,"
-    "  PRIMARY KEY (epoch_start, validator_fp, owner_fp)"
+    "  PRIMARY KEY (epoch_start, validator_fp, owner_fp, kind)"
+    ");"
+    /* Final pre-testnet wipe, W-A (decision
+     * 2026-09-28-treasury-pools-and-exact-self-stake.md): the keyless,
+     * locked treasury pools — one balance per pool id 1..9 (tokenomics §1
+     * table order, decision answer 11). Seeded ONCE from the genesis
+     * document (nodus_witness_v2_gen.c gen_seed_state); a leg of
+     * system_state_root and system_payload_root (treasury_root,
+     * shared/dnac/ledger_roots_v2.h) and a term of the supply equation
+     * (nodus_witness_v2_claims.c). In the base schema for the reason the
+     * reward tables above are; the S16 rung (nodus_witness_v2_schema.c)
+     * keeps a byte-identical CREATE TABLE IF NOT EXISTS and verifies the
+     * shape. */
+    "CREATE TABLE IF NOT EXISTS v2_treasury ("
+    "  pool_id INTEGER PRIMARY KEY,"
+    "  balance INTEGER NOT NULL"
     ");"
     /* ── Ledger V2 S3 — per-epoch validator-set snapshots (INACTIVE).
      * Rows are written by nodus_witness_vset_insert and read back by

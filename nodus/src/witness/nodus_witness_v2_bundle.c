@@ -48,7 +48,8 @@ static const bundle_table_t BUNDLE_TABLES[] = {
      * Root-layout round (K2, 2026-09-25): `epoch_state` is no longer
      * carried — the table is dropped from the schema — so the bundle is
      * FIVE tables and its magic moved to "DNA.GBUNDLE.v4"
-     * (nodus_witness_v2_bundle.h). */
+     * (nodus_witness_v2_bundle.h). W-A appends `v2_treasury` below: SIX
+     * tables, "DNA.GBUNDLE.v5". */
     { "validators",            "pubkey_hash ASC" },
     { "delegations",           "delegator_hash ASC, validator_hash ASC" },
     { "chain_config_history",  "param_id ASC, effective_block ASC" },
@@ -65,6 +66,13 @@ static const bundle_table_t BUNDLE_TABLES[] = {
      * — a -2 fault, i.e. a deterministic halt on that node only.
      * `key` IS the primary key (nodus_witness.c:233-236). */
     { "validator_stats",       "key ASC" },
+    /* Final pre-testnet wipe, W-A (Fable F1, HIGH): the keyless treasury
+     * pools are seeded by the DERIVATION (gen_seed_state) and are a leg
+     * of the SYSTEM payload root the manifest commits — a joiner never
+     * runs the derivation, so without this table its genesis could not
+     * reproduce the pin. `pool_id` IS the primary key (nodus_witness.c
+     * v2_treasury). SIX tables; magic "DNA.GBUNDLE.v5". */
+    { "v2_treasury",           "pool_id ASC" },
 };
 #define BUNDLE_N_TABLES (sizeof(BUNDLE_TABLES) / sizeof(BUNDLE_TABLES[0]))
 
@@ -501,6 +509,12 @@ int nodus_witness_v2_bundle_apply(nodus_witness_t *w2,
         else if (memcmp(magic, NODUS_V2_GBUNDLE_MAGIC_V3_RETIRED,
                         NODUS_V2_GBUNDLE_MAGIC_LEN) == 0)
             QGP_LOG_ERROR(LOG_TAG, "%s", "version-3 bundle format, refused");
+        /* W-A: a v4 bundle carries FIVE tables and no `v2_treasury` —
+         * its chain's document is version 3, which this build refuses —
+         * refused BY ITS MAGIC, for the same reason as v1/v3 above. */
+        else if (memcmp(magic, NODUS_V2_GBUNDLE_MAGIC_V4_RETIRED,
+                        NODUS_V2_GBUNDLE_MAGIC_LEN) == 0)
+            QGP_LOG_ERROR(LOG_TAG, "%s", "version-4 bundle format, refused");
         return -1;
     }
     uint32_t mlen = rd_u32(&r);
@@ -641,6 +655,35 @@ int nodus_witness_v2_bundle_apply(nodus_witness_t *w2,
                                       doc, doc_len);
         nodus_cmt_store_release(&s);
         if (srv != CMT_OK) { free(doc); return -1; }
+    }
+
+    /* General multisig (config_version 5, decision 2026-09-29-general-
+     * multisig.md ONAY 2, design F4.1): the GENESIS OUTPUTS are not a
+     * bundle table — the joiner RE-DERIVES them from the document it
+     * already carries (and whose chain id was just checked against the
+     * pin), through the SAME writer the derivation uses
+     * (nodus_witness_v2_gen_seed_outputs), keyed by the SAME
+     * source_commit, at the SAME point relative to the genesis apply
+     * (after the SYSTEM seed, before the snapshots / registry / root —
+     * nodus_witness_v2_gen.c derive_v3 order). A tampered document fails
+     * the pin above; a tampered output would move app_hash and fail the
+     * app_hash check below. */
+    {
+        nodus_v2_gen_config_t *gc = calloc(1, sizeof(*gc));
+        nodus_v2_gen_alloc_t  *ga = NULL;
+        uint8_t sc[NODUS_V2_GEN_SRCCOMMIT_LEN];
+        int ok = gc &&
+                 nodus_witness_v2_gen_v3_decode(doc, doc_len, gc, &ga) == 0 &&
+                 nodus_witness_v2_gen_v3_source_commit(gc, sc) == 0 &&
+                 nodus_witness_v2_gen_seed_outputs(w2, gc, sc) == 0;
+        free(ga);
+        free(gc);
+        if (!ok) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "the carried document's genesis "
+                          "outputs could not be re-derived");
+            free(doc);
+            return -1;
+        }
     }
 
     if (nodus_witness_vset_commit_genesis(w2, 1) != 0) { free(doc); return -1; }

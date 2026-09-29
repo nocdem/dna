@@ -14,7 +14,9 @@
  *      and as a forged length field), truncation by 1, trailing +1,
  *      duplicate voter_id, duplicate pubkey, ruleset 0, ruleset 2, a
  *      nonzero reserved seed byte.
- *   4. validate_bonds: below-minimum rejects, exactly-at-minimum accepts.
+ *   4. (deleted — final pre-testnet wipe W-B removed the caller-less
+ *      dna_vset_validate_bonds policy helper it tested; the exact-bond
+ *      rule lives in the STAKE exec and the genesis Rule P.1.)
  *   5. The u16 count boundary: 128 distinct entries encode, decode and
  *      re-encode byte-identically.
  *
@@ -351,31 +353,6 @@ static int test_negatives(void) {
     return 0;
 }
 
-/* ── 4: validate_bonds ──────────────────────────────────────────────── */
-
-static int test_bonds(void) {
-    dna_vset_snapshot_t *s = make_fixture(720, 2);
-    CHECK(s != NULL, "alloc");
-    const uint64_t bond = 1000000000000000ULL;   /* both fixture entries */
-
-    CHECK(dna_vset_validate_bonds(s, bond) == 0,
-          "exactly-at-minimum rejected"); OK();
-    CHECK(dna_vset_validate_bonds(s, bond - 1) == 0,
-          "above-minimum rejected"); OK();
-    CHECK(dna_vset_validate_bonds(s, bond + 1) != 0,
-          "below-minimum accepted"); OK();
-    CHECK(dna_vset_validate_bonds(s, 0) == 0, "zero minimum rejected"); OK();
-
-    /* One under-bonded entry sinks the whole set. */
-    s->entries[1].self_bond = bond - 1;
-    CHECK(dna_vset_validate_bonds(s, bond) != 0,
-          "one under-bonded entry accepted"); OK();
-    CHECK(dna_vset_validate_bonds(NULL, bond) != 0, "NULL accepted"); OK();
-
-    dna_vset_free(&s);
-    return 0;
-}
-
 /* ── 5: the u16 count boundary — 128 entries ────────────────────────── */
 
 static int test_boundary_128(void) {
@@ -409,7 +386,6 @@ static int test_boundary_128(void) {
 int main(void) {
     if (test_kats_and_roundtrip() != 0) return 1;
     if (test_negatives() != 0) return 1;
-    if (test_bonds() != 0) return 1;
     if (test_boundary_128() != 0) return 1;
     printf("test_vset_wire: %d checks OK\n", g_checks);
     return 0;

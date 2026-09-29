@@ -250,6 +250,9 @@ static int cfg_make_v3_real(cfgbox_t *b)
         qgp_sha3_512(v->unstake_destination_pubkey, DNAC_PUBKEY_SIZE, d);
         hex64(d, h);
         memcpy(v->unstake_destination_fp, h, 129);
+        /* general multisig ONAY 2: a genesis row's destination pubkey is
+         * ALL ZERO (the fp above is only a shape-valid address) */
+        memset(v->unstake_destination_pubkey, 0, DNAC_PUBKEY_SIZE);
         v->self_stake     = DNAC_SELF_STAKE_AMOUNT;
         v->commission_bps = (uint16_t)(100 * (k + 1));
     }
@@ -267,6 +270,12 @@ static int cfg_make_v3_real(cfgbox_t *b)
         return -1;
     }
     c->reward_pool_initial = 0;
+    /* W-C: the builder's default genesis gas price (121) switches the
+     * fee rule ON from block 1; this file's spends pay the flat 0.01
+     * floor with a 200 000-unit ceiling (which at 121 would need 24.2M
+     * raw) and test the block QUERY, not fees — the chain opts out
+     * explicitly with a committed price-0 row. */
+    c->gas_price_raw_per_unit = 0;
     c->genesis_time_ms = GEN_TIME_MS;
     c->initial_height  = 1;
     if (nodus_witness_v2_gen_v3_fill_comet_rows(c) != 0) {

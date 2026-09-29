@@ -2583,6 +2583,13 @@ int nodus_client_dnac_fee_info(nodus_client_t *client,
              * which means "the price rule is off". */
             cbor_item_t v = cbor_decode_next(&dec);
             if (v.type == CBOR_ITEM_UINT) result_out->gas_price = v.uint_val;
+        } else if (key.tstr.len == 16 &&
+                   memcmp(key.tstr.ptr, "token_create_fee", 16) == 0) {
+            /* W-C: absent on an older server -> stays 0 (memset above);
+             * the caller then falls back to NODUS_W_TOKEN_CREATE_FEE. */
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT)
+                result_out->token_create_fee = v.uint_val;
         } else {
             cbor_decode_skip(&dec);
         }

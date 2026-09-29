@@ -215,6 +215,9 @@ static int cfg_make(cfgbox_t *b, uint8_t salt) {
          * candidate therefore carries the SAME total_stake (no
          * delegations exist yet on a fresh genesis), which is exactly
          * the tied-stake group the tiebreak test needs. */
+        /* general multisig ONAY 2: a genesis row's destination pubkey is
+         * ALL ZERO (the fp above is only a shape-valid address) */
+        memset(v->unstake_destination_pubkey, 0, DNAC_PUBKEY_SIZE);
         v->self_stake     = DNAC_SELF_STAKE_AMOUNT;
         v->commission_bps = (uint16_t)(100 * (i + 1));
     }
@@ -1145,7 +1148,8 @@ int main(void) {
             sqlite3_stmt *st = NULL;
             CHECK(sqlite3_prepare_v2(lf.w->db,
                       "INSERT INTO v2_balance_copy (epoch_start, "
-                      "validator_fp, owner_fp, amount) VALUES (0, ?1, ?1, 1)",
+                      "validator_fp, owner_fp, kind, amount) "
+                      "VALUES (0, ?1, ?1, 0, 1)",   /* kind 0: the bond */
                       -1, &st, NULL) == SQLITE_OK, "prep frozen row");
             sqlite3_bind_blob(st, 1, vfp, 64, SQLITE_TRANSIENT);
             CHECK(sqlite3_step(st) == SQLITE_DONE, "plant frozen row");

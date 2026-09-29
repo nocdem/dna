@@ -242,6 +242,12 @@ int main(void) {
          * (the test_v2_epoch.c §2e pattern) */
         r.status = (v == GRAD) ? (uint8_t)DNAC_VALIDATOR_RETIRING
                                : (uint8_t)DNAC_VALIDATOR_ACTIVE;
+        /* Every seat, the graduate included, is a GENESIS seat
+         * (active_since_block 1): since general multisig (decision
+         * 2026-09-29-general-multisig.md withdrew W-A's pool-8 refund) a
+         * genesis seat's graduation releases its bond as a UTXO like any
+         * other seat, so this bench's RELEASE path (bond UTXO + 2048
+         * delegation UTXOs) is the genesis-seat path too. */
         r.active_since_block = 1;
         fp_hex(r.pubkey, (char *)r.unstake_destination_fp);
         CHECK(nodus_validator_insert(w, &r) == 0, "validator");
@@ -381,6 +387,15 @@ int main(void) {
     CHECK(q1(w, "SELECT COUNT(*) FROM utxo_set WHERE output_index >= "
                 "1073741824 AND output_index < 2147483648") == N_DEL,
           "the graduate's 2048 delegations released as 2048 UTXOs");
+    /* The (genesis-seat) graduate's bond is released as its own UTXO
+     * (output_index NODUS_V2_EPGRAD_OUT_IDX) — no treasury refund since
+     * general multisig. */
+    {
+        char sql[128];
+        snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM utxo_set WHERE "
+                 "output_index = %u", (unsigned)NODUS_V2_EPGRAD_OUT_IDX);
+        CHECK(q1(w, sql) == 1, "the graduate's bond released as one UTXO");
+    }
     CHECK(q1(w, "SELECT COUNT(*) FROM delegations") ==
               (int64_t)N_VAL * N_DEL,
           "the graduate's delegation rows are gone, every other stays");

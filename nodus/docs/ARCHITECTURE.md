@@ -2135,7 +2135,7 @@ W3 makes the port the running consensus. Three packages landed after P0 and C2b 
 
 **The readiness side (C2c, D-17 rev 10 (8)):** the schema gates accept S14 — `nodus_witness_v2_pools_startup_check` and CORE `state_init` ADD S14 (the pool verification really runs there; before W3 an S14 database fell through `return 0` and was reported green), the preflight accepts S14 only, `nodus_witness_v2_genesis_cmt` narrows to S14 only. The derivation migrates to S14 FIRST (the W2 S12-then-climb order is withdrawn). The preflight's genesis check is rewritten against the stored DOCUMENT: present (`cmt_state` "genesisDoc") → the canonical-strict reader (`nodus_witness_v2_gen_stored_doc`) → its `chain_id` against the handle's 16-byte filename prefix → its `app_hash` against `nodus_witness_v2_committed_global_root` (NEW id 17 `GENESIS_APP_HASH_MISMATCH`, appended; ids 6 and 7 retired, never raised); the required-table list gains the five S14 stores. The whole-database digest is unchanged by a preflight (asserted).
 
-**The genesis bundle v3 and the pin (D-24 rev 4):** magic `DNA.GBUNDLE.v3\0\0`; layout magic ‖ manifest ‖ six base tables ‖ doc_len ‖ the genesis document *(since the root-layout round, 2026-09-25: magic `DNA.GBUNDLE.v4\0\0`, FIVE base tables — `epoch_state` dropped — and a v3 bundle is refused by its magic like v1; see "tokenomics-v3 root-layout round" below)*; a v1 bundle is refused by its magic; a chain with no stored document cannot be bundled. `bundle_apply` plants the tables, checks the carried document's self-hash against the pin BEFORE any genesis step, migrates the scratch to S14, stores the document, runs vset → domreg → `genesis_cmt`, and ACCEPTS only when the stored `chain_id == pin` AND `app_hash == the root just recomputed` — a tampered table cannot ride an untouched document. Zero trace on rejection is the joiner's scratch discard (`join_adopt`), not `bundle_apply`'s. The pin IS the 32-byte chain id everywhere: `--v2-genesis-pin <64hex>` (a 128-hex value is refused), `nodus_server_config.v2_genesis_pin[32]`, `w->v2_join.pin[32]`, verbs 24/25 `p` (their decoders hard-refuse a non-32-byte `p`); the ceremony prints the same value as `chain-id` and `v2-genesis-pin`, read back from the landed database through the canonical-strict reader. Measured: a seven-validator v3 bundle is 95 942 B → 2 chunks at 49 152.
+**The genesis bundle v3 and the pin (D-24 rev 4):** magic `DNA.GBUNDLE.v3\0\0`; layout magic ‖ manifest ‖ six base tables ‖ doc_len ‖ the genesis document *(since the root-layout round, 2026-09-25: magic `DNA.GBUNDLE.v4\0\0`, FIVE base tables — `epoch_state` dropped — and a v3 bundle is refused by its magic like v1; see "tokenomics-v3 root-layout round" below; since the final pre-testnet wipe W-A: magic `DNA.GBUNDLE.v5\0\0`, SIX base tables — `v2_treasury` appended — and a v4 bundle is refused by its magic, see "Final pre-testnet wipe, package W-A" below)*; a v1 bundle is refused by its magic; a chain with no stored document cannot be bundled. `bundle_apply` plants the tables, checks the carried document's self-hash against the pin BEFORE any genesis step, migrates the scratch to S14, stores the document, runs vset → domreg → `genesis_cmt`, and ACCEPTS only when the stored `chain_id == pin` AND `app_hash == the root just recomputed` — a tampered table cannot ride an untouched document. Zero trace on rejection is the joiner's scratch discard (`join_adopt`), not `bundle_apply`'s. The pin IS the 32-byte chain id everywhere: `--v2-genesis-pin <64hex>` (a 128-hex value is refused), `nodus_server_config.v2_genesis_pin[32]`, `w->v2_join.pin[32]`, verbs 24/25 `p` (their decoders hard-refuse a non-32-byte `p`); the ceremony prints the same value as `chain-id` and `v2-genesis-pin`, read back from the landed database through the canonical-strict reader. Measured: a seven-validator v3 bundle is 95 942 B → 2 chunks at 49 152.
 
 **What stays open, named:** `nodus_rt_core_invariant`'s genesis probe reads the height-0 `v2_blocks` row, so on a version-3 chain the absent-supply-row refusal is skipped (fail-open; `test_v2_gen` L2F1 stays RED; the fix — "a height-0 row OR a stored document" — is outside every W3 whitelist and is an OBLIGATION, D-17 rev 11 (11) — closed by W4-S below, and the height-0 probe itself deleted in tokenomics-v3 P4); `gen_plan_build` accepts only `config_version` 3 since tokenomics-v3 P4 (2026-09-24, nodus 0.19.73), which deleted the version-2 derivation and its encoder (the engine-side `genesis_ex` fixture lane followed in P4's second half — see the P4 update under "Moved, kept, converted" below); four closed-lane unit tests (`test_v2_epoch`, `test_v2_econ_params`, `test_bft_view_change_hardening`, `test_bft_view_boundary`) reopen legacy fixtures the gate now refuses — the operator decides skip-with-reason or conversion; block PRODUCTION is proven by the Genesis Protocol harness's Comet lane (package C2d), not by any unit test — a single process holds one of seven equal votes.
 
@@ -2514,8 +2514,11 @@ recipient).
   longer names it. The ORC-6 monotonicity rule described in the W4-CC
   section above no longer exists.
 - **P2-5 — the frozen balance copy.** `v2_balance_copy(epoch_start,
-  validator_fp, owner_fp, amount)` — one row per bond (owner = the
-  validator) and per delegation, raw SHA3-512(pubkey) keys — is written
+  validator_fp, owner_fp, kind, amount)`, primary key `(epoch_start,
+  validator_fp, owner_fp, kind)` — one row per bond (owner = the
+  validator, `kind` 0) and per delegation (owner = the delegator, `kind`
+  1; `kind` since W-B, below — a self-delegation's owner IS the
+  validator), raw SHA3-512(pubkey) keys — is written
   at genesis (copy(0)) and at every boundary H (copy(H)) — written LAST,
   right after `commit_next` builds snapshot(H+E) from the same state,
   with no stake movement in between — and every copy older than H−2E is
@@ -2537,10 +2540,11 @@ recipient).
   delegators split the net by their amounts in the SOURCE COPY — the copy
   the governing snapshot was built from, `src(H) = H ≥ 3E ? H−3E : 0`
   since P3's "okuma B" (snapshot(H−E) is built at H−2E from copy(H−3E);
-  it was H−2E in P2) (`v2ec_source_copy`), owner_fp ASC (`v2ec_pay_member`, `:928`).
-  **Consistency gate** (`v2ec_member_load`, `:857`): for every member the
-  source copy's self row must equal `self_bond` and its delegator rows
-  must sum to `total_stake − self_bond`, else FAULT (-2) — the two
+  it was H−2E in P2) (`v2ec_source_copy`), `(owner_fp, kind)` ASC
+  (`v2ec_pay_member`). **Consistency gate** (`v2ec_member_load`): for
+  every member the source copy's bond row (`kind` 0) must equal
+  `self_bond` and its delegation rows (`kind` 1, a self-delegation
+  included) must sum to `total_stake − self_bond`, else FAULT (-2) — the two
   structures are built at the same boundary from the same state, and
   `external_delegated == Σ delegations` holds for every writer (DELEGATE,
   UNDELEGATE, genesis 0), so the gate fires only on a node-local
@@ -3315,8 +3319,9 @@ Decisions: `docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md`
 - **Selection by frozen stake ("okuma B").** The snapshot built at
   boundary B (for B+E) takes the LIVE eligible set — ACTIVE/ELIGIBLE with
   live 2-epoch tenure (`nodus_validator_bonded_tenured`) — and ranks it by
-  the FROZEN total from copy(B−E): own copy row + Σ delegator rows,
-  absent = 0 (`nodus_witness_v2_balance_copy_frozen`); frozen total DESC,
+  the FROZEN total from copy(B−E): bond row (`kind` 0) + Σ delegation
+  rows (`kind` 1, a self-delegation included since W-B), absent = 0
+  (`nodus_witness_v2_balance_copy_frozen`); frozen total DESC,
   then the seeded tiebreak; a candidate with frozen total 0 is not seated
   (cometbft power 0 is removal). Entries carry the frozen `total_stake` /
   `self_bond`; commission is the live row's. The commit and the Rule N
@@ -3461,6 +3466,406 @@ entry "Root'a girsin" (2026-09-24) in
 - **Consensus-value change** (every SYSTEM root, every UTXO leaf, the
   bundle format) → devnet wipe + stop-all. dnac 0.18.11 / messenger
   0.11.24 carry the client leaf; no user-visible effect, no forced update.
+
+### Final pre-testnet wipe, package W-A — keyless, locked treasury pools (2026-09-29)
+
+Decision `docs/plans/decisions/2026-09-28-treasury-pools-and-exact-self-stake.md`
+(answers 7, 9, 11, 12, 13); design `docs/plans/2026-09-28-final-wipe-package-design.md`
+§1 W-A, §2, §7 (Fable F1/F3/F4/F8). The nine service/ecosystem pools stop
+being claimable genesis ALLOCATIONS held by a key and become committed
+chain state nobody holds a key to. There is NO exit rule in this build —
+the operator parked it (2026-09-28); the only writer after genesis is the
+genesis-validator graduation refund.
+
+- **State.** `v2_treasury(pool_id INTEGER PRIMARY KEY, balance INTEGER NOT
+  NULL)` — base schema (`nodus_witness.c`) and the S16 rung (byte-identical
+  CREATE + `table_cols_exact {pool_id, balance}`). Pool ids in the
+  tokenomics §1 table order (answer 11): 1 Storage, 2 Compute,
+  3 VPN/Bandwidth, 4 Future services, 5 Security/bug bounty, 6 Liquidity,
+  7 Ecosystem grants, 8 Foundation, 9 Community airdrop
+  (`NODUS_TREASURY_POOL_*`, `nodus_witness_roots_v2.h`). Founder (50M)
+  stays an ordinary allocation (decision §Karar 3).
+- **Root (answer 12, operator "1 ok").** The accrual leg's exact shape
+  (`shared/dnac/ledger_roots_v2.{h,c}`):
+  - leaf = `SHA3-512("DNA.TRLEAF.v1" 16 B ‖ pool_id u32 BE ‖ balance u64 BE)`;
+  - inner = `SHA3-512("DNA.TRNODE.v1" 16 B ‖ left ‖ right)`, pool_id
+    STRICTLY ascending (duplicates / descending reject), odd node
+    promoted, n == 1 → the leaf;
+  - empty → `SHA3-512("DNA.E.TREAS.v1" 16 B)` (`DNA_V2_EMPTY_TREASURY`,
+    appended to the empty-root enum);
+  - `system_state_root = SHA3-512("DNA.SYS.v4" ‖ validator ‖ delegation ‖
+    chain_config ‖ validator_set ‖ domain_registry ‖ manifest ‖
+    attendance ‖ treasury)` — 8 legs, treasury LAST (was 7 under
+    `"DNA.SYS.v3"`);
+  - `system_payload_root = SHA3-512("DNA.SYSPAYL.v3" ‖ validator ‖
+    delegation ‖ chain_config ‖ validator_set ‖ treasury)` — 5 legs (was 4
+    under `"DNA.SYSPAYL.v2"`); the treasury is SEEDED at genesis, so unlike
+    attendance/domreg/manifest it is a payload leg.
+  The loader `nodus_witness_treasury_root_v2` scans `pool_id ASC`; a
+  pool_id outside 1..9, a negative balance, a non-INTEGER column, a scan
+  fault or an absent table FAILS the root (no sqlite_master probe — the
+  table is in the base schema). Tag collision scan before adoption:
+  `git grep "DNA\.TR\|DNA\.E\.TREAS\|TRLEAF\|TRNODE"` — no prior use. A
+  SYSTEM leg (not CORE) because a future exit rule will be a SYSTEM leg
+  with a CORE sibling (Fable F2, the UNDELEGATE precedent).
+- **Supply equation** (`nodus_rt_core_invariant`,
+  `nodus_witness_v2_claims.c`): `+ treasury`, summed through the loader's
+  own row checks (`nodus_witness_treasury_total`) — a malformed row faults
+  the equation exactly as it faults the root.
+- **Genesis config file** (`nodus/tools/nodus_v2_gen_config.c`):
+  `config_version = 4` only, plus EXACTLY nine `[treasury]` blocks
+  (`pool_id`, `balance`, both required) in pool order 1..9 — a missing,
+  tenth or out-of-order block is refused with a sentence about the file.
+  Template and checker: `nodus/tools/genesis/` (one Founder allocation of
+  50M + nine pools totalling 680M; the Genesis Protocol harness writes
+  nine zero-balance blocks).
+- **Genesis document — `config_version` 4** (`NODUS_V2_GEN_CONFIG_VERSION_V4`;
+  3 is refused by `gen_plan_build`, the strict decoder and the verdict).
+  Appended after `payout_interval_epochs`: EXACTLY nine
+  `(pool_id u32 BE ‖ balance u64 BE)` entries, no count field (108 bytes);
+  entry i must carry pool_id i + 1, balance 0..INT64_MAX (0 legal).
+  Rule P.2: `Σ allocations + Σ self_stake + reward_pool_initial +
+  Σ treasury == total_supply_raw`; `total_claimable` excludes the treasury.
+  `_v3_defaults` writes the pool IDS only (the balances, like the
+  allocation amounts, have no default). `gen_seed_state` asserts
+  `v2_treasury` empty, inserts the nine rows, asserts exactly nine after,
+  and reads the total back through the loader (Fable F4's exact-count
+  discipline applied to the new table).
+- **Genesis bundle — `DNA.GBUNDLE.v5\0\0`** (Fable F1): SIX tables —
+  validators, delegations, chain_config_history, supply_tracking,
+  validator_stats, `v2_treasury` (`pool_id ASC`). A `DNA.GBUNDLE.v4\0\0`
+  bundle is refused BY ITS MAGIC ("version-4 bundle format, refused").
+- **Genesis-validator graduation refund** (answers 7, 13) — **WITHDRAWN
+  by general multisig** (section below): the helper, the credit primitive,
+  `n_grad_utxos` and the epoch branch are deleted; every graduate releases
+  a UTXO again. What W-A built, for the record:
+  `nodus_witness_treasury_graduation_refund` — a row with
+  `active_since_block <= 1` (the constitutional seed-set predicate,
+  `nodus_witness_validator.c:311-314`) credits its self-stake to pool 8
+  (Foundation) and asks the caller for NO UTXO; any later seat is left to
+  the ordinary UTXO release. No extra rule for a STAKE at height 1
+  (answer 13; such a row also refunds to pool 8 — accepted, deterministic).
+  **Wired** in `v2ep_graduate` (`nodus_witness_v2_epoch.c`): the helper
+  runs before the bond release and the UTXO is written only when it
+  answers "not a genesis seat". The boundary now reports
+  `nodus_v2_epoch_result_t.n_grad_utxos` (bond releases + delegation
+  releases actually written), and phase 6e (`nodus_witness_v2_apply.c`)
+  declares CORE on `n_grad_utxos > 0 || dist_accrued > 0 ||
+  n_payday_utxos > 0` — NOT on `n_graduates`. With the old condition a
+  boundary where a genesis seat with no delegations graduated ALONE
+  declared CORE, changed nothing in it, and phase 9 refused the block on
+  every node (a deterministic halt); `test_v2_treasury` §5 drives exactly
+  that boundary through the engine. SYSTEM is declared on every fired
+  boundary, so the treasury credit (a SYSTEM leg) is always declared.
+- **SYSTEM ruleset 5 → 6** (Fable F3): the preimage differs from v5 only
+  in `ruleset_version`; the v6 digest is an ORACLE PLACEHOLDER (all-zero)
+  in `nodus_witness_runtime.c` until the independent ruleset oracle pins
+  it — `nodus_witness_runtime_selfcheck` fails by design until then.
+  CORE stays at 3 (package W-C owns CORE).
+- **Tests.** `test_v2_treasury` (new: the pool-set rules, P.2 with Σ
+  treasury, the derivation seeding the nine rows, the supply term, the
+  refund helper); `test_roots_v2` (treasury leaf/root KATs, the 8-leg /
+  5-leg composition KATs, loader ↔ shared equality over an empty and a
+  seeded table, SYSTEM-not-CORE ownership, malformed-row fail-close);
+  `test_v2_bundle` (six tables byte-identical at the joiner with non-zero
+  pools, a tampered treasury balance refused with the correct pin, the v4
+  magic refused); `test_v2_gen` (version 3 refused, the treasury block at
+  the document's end, decoder pool_id rules, sensitivity). Every vector
+  whose preimage W-A changed is a marked KAT-PLACEHOLDER until an
+  independent oracle (not the author) fills it.
+- **Consensus-value change** (every SYSTEM root, the genesis document,
+  the bundle format) → devnet wipe + stop-all; no migration.
+
+### Final pre-testnet wipe, package W-B — self-stake exactly 10M, self-delegation allowed (2026-09-29)
+
+Decision `docs/plans/decisions/2026-09-28-treasury-pools-and-exact-self-stake.md`
+items 5 and 6; design `docs/plans/2026-09-28-final-wipe-package-design.md`
+§1 W-B, D4, G2, G3 and `docs/plans/2026-09-28-treasury-pools-exact-stake-design.md`
+§1.2, §1.4, §5a F7/F8.
+
+- **STAKE bond is EXACT** (item 5, "ne az ne fazla"): `rtn_stake_exec`
+  refuses `bond != DNAC_SELF_STAKE_AMOUNT` (10^15 raw) as a VERDICT — the
+  legacy `>=` floor is gone, and the former `bond > INT64_MAX` verdict is
+  subsumed by the equality. Same rule, same value, in every mirror:
+  genesis Rule P.1 (`gen_plan_build`, already `!=`),
+  `nodus/tools/genesis/check_genesis_conf.sh` (was `-ge`, now `-eq`),
+  `nodus-cli stake --bond` and `nodus-cli v2-envelope stake --bond` (both
+  refuse any other value before building). The caller-less
+  `dna_vset_validate_bonds` (`shared/dnac/vset_wire.{c,h}`, a `>=`
+  policy helper) is deleted.
+- **Self-delegation allowed** (item 6): Rule S — `rtn_delegate_exec`'s
+  pubkey comparison — is deleted. A DELEGATE whose delegator is the
+  target validator's own key is an ordinary delegation: every other rule
+  (bonded target, 100-NODUS minimum for a new row, 2048-delegator cap,
+  the 12-epoch UNDELEGATE lock) applies unchanged; it moves
+  `total_delegated` AND `external_delegated` (a legacy name — since W-B
+  "every delegation, self included"), so it counts toward the ranking key
+  and the voting power (`self_stake + external_delegated` live, bond +
+  Σ delegation rows frozen) like any other delegation. At graduation it
+  is released to its delegator — the validator's own fp — as a locked
+  UTXO; a GENESIS seat's bond goes to the Foundation (pool 8 under W-A,
+  the Foundation MULTISIG ADDRESS since general multisig), its
+  self-delegation does not (only the 10M came from the Foundation).
+- **The copy's `kind` column** (D4, G2): `v2_balance_copy` gains
+  `kind INTEGER NOT NULL` in its primary key, in the base schema
+  (`nodus_witness.c`) and the S16 rung (`nodus_witness_v2_schema.c`, same
+  CREATE, `table_cols_exact {epoch_start, validator_fp, owner_fp, kind,
+  amount}`) — without it a self-delegation's copy row collided with the
+  bond row on the primary key and the boundary FAULTED on every node.
+  The writer writes the bond as `kind` 0 and every delegation as `kind`
+  1; the one reader (`v2ec_member_copy`) orders by `(owner_fp, kind)`
+  (a total order — the two rows of a self-delegating validator are
+  adjacent, bond first) and FAULTS on a `kind` outside {0, 1} or a
+  `kind`-0 row not owned by the validator; `balance_copy_frozen`,
+  `v2ec_member_load` and `v2ec_pay_member` tell the bond from a
+  delegation by `kind`, never by `owner_fp == validator_fp`.
+- **Reward split with a self-delegation** (design §1.4 "Ödül", no extra
+  rule): the bond earns `base`; the self-delegation sits in `gross`, bears
+  the commission like every delegation, and takes its `x_d` of `net` —
+  all three land on the validator's one accrual row. Σ credited is
+  unchanged (`test_v2_econ` §8: the §2 composition with key 5's
+  delegation moved onto key 0 pays key 0 305 881 + 79 412, key 6 26 470,
+  Σ 999 997 — the same total).
+- **Client builder:** `nodus-cli v2-envelope delegate --keys <dir>
+  --validator <hex5184 pubkey> --amount <raw> (--dry-run | --submit
+  ip:port)` — the `v2-envelope stake` builder with the SYSTEM leg swapped
+  for DELEGATE (runtime_op 2, call 5192 B); `--validator` may be the
+  `--keys` identity's own key. Client-lane mirrors outside nodus still
+  carry Rule S and are not changed by W-B: `dnac/src/transaction/verify.c`,
+  `dnac/src/transaction/delegate.c`, the `dnac.h` / `transaction.h` comments.
+- **Ruleset.** STAKE and DELEGATE are SYSTEM rules; W-B changes their
+  accepted set in the SAME release as W-A's SYSTEM 5 → 6 bump (no v6
+  chain exists yet), so it rides v6 and no further bump is made.
+- **Tests.** `test_v2_native` (C6b: bond 10^15 + 1 refused; the old D1
+  Rule S refusal is now P7: a genesis validator's self-delegation commits,
+  both delegated buckets +amount, self_stake unchanged); `test_v2_econ`
+  §8 (copy kind split and order, frozen self/total, the split, a foreign
+  `kind`-0 row and `kind` 2 FAULT, opposite-order twin); `test_v2_gen`
+  (Rule P.1 +1 refused beside the −1 case); `test_vset_wire` (the deleted
+  helper's section removed); fixtures inserting copy rows name `kind`
+  (`test_v2_committee_seed`, `test_vset_persist`, `test_vset_boundary`,
+  `test_committee_election`, `test_cmt_host` column list). Harness:
+  `test_cmt_self_delegate.sh` (short-epoch build).
+- **Consensus-value change** (STAKE / DELEGATE acceptance, the copy's
+  shape feeding every reward and every selection) → the same devnet wipe
+  + stop-all as W-A; no migration. A pre-W-B database is refused: at S15
+  by the rung's shape check, at S16 by the copy writer's INSERT naming a
+  column the old table lacks (a boundary FAULT).
+
+### Final pre-testnet wipe, package W-C — genesis fee rows: gas price + governed token-creation fee (2026-09-29)
+
+Decisions `docs/plans/decisions/2026-09-25-gas-price.md` (section "Son wipe
+paketi": 121 at genesis, the gas rule ON from the first block) and
+`docs/plans/decisions/2026-09-28-token-create-fee-governance.md` (the
+token-creation fee becomes a governed parameter; 1 000 NODUS, ERGONOMIC
+grace); design `docs/plans/2026-09-28-final-wipe-package-design.md` §1 W-C,
+§7 Fable F3/F4.
+
+- **New chain-config parameter id 6 `TOKEN_CREATE_FEE_RAW`**
+  (`DNAC_CFG_TOKEN_CREATE_FEE_RAW`, `dnac/include/dnac/dnac.h`;
+  `CC_PARAM_TOKEN_CREATE_FEE`, `nodus_witness_chain_config.c`, pinned to
+  each other by `_Static_assert`). Range
+  `[DNAC_CFG_MIN_TOKEN_CREATE_FEE, DNAC_CFG_MAX_TOKEN_CREATE_FEE]` =
+  [10^8, 10^15] raw (1 NODUS … the pre-governance compiled
+  `NODUS_W_TOKEN_CREATE_FEE`, 10M NODUS — the range the design proposed);
+  grace class ERGONOMIC (720 blocks), named explicitly in
+  `nodus_chain_config_grace_for_param`. `DNAC_CFG_PARAM_MAX_ID` = 6;
+  `dnac_cfg_param_read_by_consensus` = {4, 5, 6}, so the SYSTEM
+  CHAIN_CONFIG exec, the 0x71 approval answer (`cc_appr_rules_chain_config`)
+  and the client mirror (`dnac/src/transaction/verify.c`) all accept id 6
+  through the one scalar authority. `chain_config_cache` widens with
+  `DNAC_CFG_PARAM_MAX_ID` (`nodus_witness.h`). `rt_native.c` pins that the
+  governed floor still dominates both generic fee floors and that the
+  ceiling equals the compiled constant.
+- **Genesis rows (Fable F4).** The version-4 genesis document gains two
+  fields after the treasury block: `gas_price_raw_per_unit u64 BE ‖
+  token_create_fee_raw u64 BE` (16 bytes; `config_version` stays 4 — W-A
+  and W-C share the one unreleased document version). `gen_seed_state`
+  writes them as `chain_config_history` rows param 5 and param 6 at
+  `effective_block` 0 in the same statement as the econ band
+  (provenance columns 0, `tx_hash` = source_commit), asserts EXACTLY
+  five rows (3 econ + 2 fee), and reads both back through
+  `nodus_chain_config_get_u64` at height 1. `nodus_witness_v2_gen_v3_defaults`
+  writes 121 and 10^11; `nodus_witness_v2_gen_v3_validate` refuses a
+  gas price above `DNAC_CFG_MAX_GAS_PRICE` and a token fee outside the
+  governed range, so a genesis can never commit a value no vote could
+  set. The chain id binds both (they are in the hashed document).
+- **Genesis config file** (`nodus/tools/nodus_v2_gen_config.c`): two
+  OPTIONAL top-level keys `gas_price_raw_per_unit` and
+  `token_create_fee_raw`, defaulted from `_v3_defaults` like
+  `reward_pool_initial`; duplicates refuse. The template and
+  `check_genesis_conf.sh` write / require them explicitly (121, 10^11);
+  the Genesis Protocol harness writes the same values
+  (`stagef_up_v2.sh`) — **every harness chain therefore runs with the gas
+  rule ON from block 1.**
+- **`dnac_fee_info`** (`handle_dnac_fee_info`) replies a fifth key,
+  `token_create_fee` — the committed param 6 at tip + 1, the compiled
+  `NODUS_W_TOKEN_CREATE_FEE` when no row is active; a read fault is an
+  error, never a fabricated value. The client decodes it into
+  `nodus_dnac_fee_info_t.token_create_fee` (`nodus_types.h`,
+  `nodus_client.c`; absent from an older server = 0).
+- **The consensus rule (CORE TOKEN_CREATE).** `nodus_rt_exec_ctx_t` gains
+  `token_create_fee` (`nodus_witness_runtime.h`). The engine fills it on
+  every ctx it builds — the per-envelope authorization stage
+  (`env_authorize_legs`) and read_plan/exec (`exec_one_env`), on both the
+  FinalizeBlock item loop and the CheckTx dry run — from
+  `env_token_create_fee` (`nodus_witness_v2_apply.c`):
+  `nodus_chain_config_get_u64(w, 6, H, NODUS_W_TOKEN_CREATE_FEE)` at the
+  block's height H (tip + 1 on the dry run), the gas price's read
+  discipline — a read fault is a node FAULT (-2), never a default. The
+  hooks stay pure. `rtn_tc_exec` (`nodus_witness_rt_native.c`) refuses
+  `fee < ctx->token_create_fee` (verdict) and treats a ctx value below
+  `DNAC_CFG_MIN_TOKEN_CREATE_FEE` as an engine fault (-2; no committed row
+  can carry one). With no param-6 row active the compiled
+  `NODUS_W_TOKEN_CREATE_FEE` is the floor, as before. This is param 6's
+  consensus reader, so `dnac_cfg_param_read_by_consensus` = {4, 5, 6}
+  honours decision `2026-09-23-height-activated-upgrades-before-testnet.md`
+  item 1 (a votable parameter is one the running consensus reads).
+- **CLI.** `nodus-cli v2-envelope token-create` takes the creation fee
+  from `dnac_fee_info` `token_create_fee` (tip + 1) on its session; an
+  explicit `--fee` below it is refused; an older server that does not
+  report it → the compiled `NODUS_W_TOKEN_CREATE_FEE`, with a warning.
+  The gas-price raise (`units × gas_price`) applies on top as before.
+- **CORE ruleset 3 → 4** (Fable F3): the TOKEN_CREATE fee floor above is
+  the semantic change; the descriptor differs from v3 only in `ruleset_version`; `CORE_RULESET_HASH` (`nodus_witness_runtime.c`)
+  and `KAT_RS_CORE` (`test_domain_runtime.c`) are 64-zero ORACLE
+  PLACEHOLDERS — `nodus_witness_runtime_selfcheck` fails by design until
+  the independent ruleset oracle fills them. **CORE v4 is not final**:
+  the general-multisig package of the same release also changes CORE
+  inside v4. The retired v3 digest `ed4b1bcd…4437` resolves nothing.
+- **Test chains opt out of the gas rule.** The builder default stays 121
+  (the decision's value); the shared fixture `tests/v2_genesis_fixture.h`
+  (`v2x_cfg_make`) and the self-built configs of `test_cmt_app` and
+  `test_v3_block_query` set `gas_price_raw_per_unit = 0` explicitly (their
+  envelopes pay small fees to isolate other rules). `v2x_seed_prepare`
+  seeds the same five height-0 rows `gen_seed_state` writes.
+- **Tests.** `test_v2_gen` (five rows, param 5 = 121 and param 6 = 10^11
+  at height 0, the document's last 16 bytes, the decoder round trip, a
+  document missing / cut inside the fee fields refused; every A-D
+  document vector back to KAT-PLACEHOLDER), `test_v2_gen_config` (the two
+  keys round-trip, default when absent, refuse when doubled, out-of-range
+  values refused by the verdict), `test_v2_native`
+  `test_system_cc_token_fee` (range, ERGONOMIC grace floor, activation at
+  the effective height through the real SYSTEM exec) and
+  `test_core_token_create_param6` (through the whole engine: with param 6
+  = 10^11 active, a creation paying 10^11 − 1 is refused and exactly
+  10^11 commits — 10^4 × below the compiled constant; a lower row
+  effective at height 2 does not govern height 1 and does govern
+  height 2), `dnac/tests/test_chain_config_verify.c` (read list {4, 5, 6},
+  id-6 range on the client mirror), `test_v2_gas_price`
+  (moved onto price-0 genesis documents where it needs the rule off; the
+  cache-capacity case counts the genesis row), `test_v2_econ_params`
+  (row totals), `test_domain_runtime` (CORE v4, retired v3 tuple).
+- **Consensus-value change** (genesis document, SYSTEM chain_config
+  acceptance, CORE ruleset identity) → the same devnet wipe + stop-all as
+  W-A; no migration.
+
+### Final pre-testnet wipe — general multisig: M-of-N addresses (2026-09-29)
+
+Decision `docs/plans/decisions/2026-09-29-general-multisig.md` (operator,
+APPROVED with design `docs/plans/2026-09-29-general-multisig-design.md`
+§7 rev 2). Pattern: Bitcoin P2SH/P2WSH (BIP-16/141 — address = hash of the
+locking script, the script revealed at spend time in the witness); the
+exact bytes are this project's own, **self-consistent, not externally
+audited** (independent oracle `shared/dnac/tests/multisig_oracle.py`).
+
+- **Descriptor + address** (`shared/dnac/msig_wire.{c,h}`, pure SHA3, in
+  libnodus): `"DNA.MSIG.v1"` (16 B, zero-padded) ‖ M u8 ‖ N u8 ‖ N ×
+  ML-DSA-87 pubkey, keys STRICTLY ascending, 2 ≤ N ≤ 7, 1 ≤ M ≤ N, no
+  key whose first 32 bytes are zero (the kind-1 signer rule);
+  address = SHA3-512(descriptor), 64 bytes — the UTXO owner field is
+  unchanged, a coin's owner is simply an address the chain learns the
+  meaning of only at spend time.
+- **auth_kind 3 `NODUS_RT_AUTHKIND_DSA87_MSIG_V1`** (CORE only; CORE
+  allowlist {1, 3}, SYSTEM stays {1, 2}): the kind-1 signer section
+  (same ML-DSA-87 signatures over the SAME leg auth_digest — no new
+  signature preimage) ‖ dcount u8 (1..7) ‖ dcount × (dlen u16 BE ‖
+  descriptor). Descriptors strictly ascending by address, dlen exact,
+  Σ N ≤ 15 per leg (`NODUS_RT_MSIG_MAX_KEYS`, operator decision F3.1), the
+  blob consumed exactly. The hook (`rtn_auth_msig`) records EVERY
+  descriptor's address and a satisfied flag (≥ M of its keys among the
+  verified signers, a byte-exact merge of two sorted lists) in the
+  verdict (F1.1) and judges nothing else.
+- **ONE ownership predicate** (`rtn_input_owned`, F2.1): SPEND, BURN,
+  TOKEN_CREATE and SYSFUND all decide "is this input owned" through it —
+  owner ∈ verified signer fps, or owner == a satisfied carried multisig
+  address — so a multisig coin funds transfers, burns, token-creation
+  fees and stake/delegate bonds alike. A carried descriptor that owns no
+  input refuses the leg AT EXEC (F1.2 — after its bytes were priced).
+  A verdict whose multisig facts disagree with its leg's auth_kind fails
+  closed.
+- **CheckTx recheck cache** (F1.3): kind-3 verdicts are cached and reused
+  exactly like kind-1 (the key is the wire_id, which commits the auth
+  bytes; a reused kind-3 verdict must carry 1..7 descriptor facts).
+- **Capacity**: the largest kind-3 blob (15 signers ‖ seven descriptors
+  holding Σ N = 15 keys) is 147 307 B; the worst admission-legal envelope
+  becomes DELEGATE (kind 2, 706 065) + 30 + TOKEN_CREATE 4 717 + 147 307
+  = **858 119 B** (was 819 098) — still inside `DNA_ENV_MAX_TOTAL_LEN` =
+  2^20 and above 2^19, so the ceiling is unchanged (`_Static_assert`s in
+  `nodus_witness_rt_native.c`, `test_v2_capacity`). The verdict grows
+  966 → 1 424 B: `NODUS_V2_APPLY_ENV_COST_BYTES` 21 824,
+  `NODUS_V2_ENV_BATCH_MAX` 3 075 (worst-case floor 3 027 > 3 002),
+  `NODUS_V2_APPLY_MAX_OPS` 17 237 — the delta-2 figures in the section
+  above (20 908 / 3 209 / 17 371) are history.
+- **Genesis-validator refund → the Foundation multisig address** (F4.4 /
+  F4.5): the genesis rule "unstake_destination_fp == SHA3-512(
+  unstake_destination_pubkey)" is REPLACED by the address-SHAPE check
+  alone (`gen_plan_build` — the graduation predicate); W-A's pool-8
+  refund, the credit primitive and `n_grad_utxos` are DELETED; every
+  graduate (a genesis seat included) releases a locked UTXO to its
+  destination, and phase 6e is back on `n_graduates`. The ceremony
+  checker (`tools/genesis/check_genesis_conf.sh`) recomputes the
+  Foundation address from the Foundation keys + M through `nodus-cli msig
+  address` and requires every genesis validator to pay it.
+  `unstake_destination_pubkey` MUST be all zero on a genesis row (ONAY 2
+  — see the genesis-outputs bullet below).
+- **CLI (F6.1)**, `nodus-cli`: `msig address` (offline), `v2-envelope
+  spend --msig` (UNSIGNED envelope + export; coins named explicitly with
+  `--in nullifier:amount`, because `dnac_utxo` lists only the session's
+  own fingerprint), `msig sign` (offline, re-derives the digest and
+  refuses a mismatch), `msig combine` (exactly the K signatures the
+  export fixed — auth_len is signed — ascending, the chain's auth hook run
+  locally, then submitted over any session).
+- **Rulesets:** CORE v4 is ONE bump for W-C + multisig (the allowlist is
+  not a descriptor field, so the v4 preimage is the W-C one; digest still
+  an ORACLE PLACEHOLDER). SYSTEM v6 unchanged (its comment no longer
+  claims the pool refund).
+- **Genesis outputs — genesis document version 5** (decision ONAY 2):
+  a new section after the W-C tail, `genesis_output_count u32 ‖ count ×
+  (owner[64] ‖ amount u64)`, DOCUMENT order (0..64 outputs; owner not
+  all-zero; amount 1..INT64_MAX); `config_version` 4 is RETIRED (builder,
+  decoder, verdict and the text parser's new `[genesis_output]` block).
+  Each output is a coin from height 0: nullifier = tx_hash =
+  SHA3-512(`"DNA.GENOUT.v1"` ‖ source_commit[64] ‖ index u32 BE),
+  output_index 0, block_height 0, unlock 0, domain CORE, native token —
+  keyed on `source_commit` (the document with chain_id AND app_hash
+  zeroed), which exists BEFORE the genesis apply: document →
+  source_commit → outputs → app_hash → chain_id (design §7's chain_id
+  form was circular and is VOID). ONE writer,
+  `nodus_witness_v2_gen_seed_outputs`, runs inside `gen_seed_state`
+  (before the root) AND in the joiner's `nodus_witness_v2_bundle_apply`
+  (re-derived from the carried, pin-checked document — no bundle table;
+  a tampered output moves app_hash and fails the adopt). Rule P.2 gains
+  `+ Σ genesis outputs`; `total_claimable` excludes them; the former "no
+  UTXO at genesis" post-condition is now an exact count AND sum. The
+  ceremony template moves the Foundation pools 5-9 into five outputs to
+  the Foundation multisig address (treasury rows 5-9 = 0); the harness
+  (`stagef_up_v2.sh`) writes one output to a 2-of-3 test address that
+  `test_cmt_multisig.sh` spends.
+- **Genesis validator rows: `unstake_destination_pubkey` MUST be all
+  zero** (ONAY 2 item 2) — refused otherwise by `gen_plan_build` and by
+  the ceremony checker; a later STAKE's refund is unchanged.
+- **Tests:** `test_msig_wire` (tag, validation matrix, oracle address
+  KATs — PLACEHOLDERS until pasted), `test_v2_native` §MSIG (kind-3 parse
+  matrix at the real hook; M-1 / wrong / unused descriptor / kind-1
+  spelling refused and 2-of-3 committed through the engine; a multisig
+  coin funding TOKEN_CREATE, STAKE and DELEGATE), `test_cmt_app`
+  `check_tx_recheck_kind3`, `test_v2_capacity` (858 119),
+  `test_v2_treasury` §4 (a genesis seat pays the multisig address),
+  `test_v2_gen` (a multisig destination accepted), harness
+  `test_cmt_multisig.sh` (2-of-3 funded by a transfer, spent 7/7).
+- **Consensus-value change** (CORE authorization + ownership, genesis
+  rule, graduation) → the same devnet wipe + stop-all; no migration.
 
 ### The 4004 p2p port — a literal port of cometbft @709fd12b's p2p layer (2026-09-26/27, nodus 0.20.0)
 
@@ -3660,7 +4065,8 @@ SQLite tables managed by the witness module (`nodus_witness_db.c`):
 | `epochs` | BFT-signed epoch roots |
 | `supply_tracking` | Genesis supply, `total_burned` (explicit burns only since tokenomics-v3 P2), `total_minted` (always 0), current supply, and `reward_pool` — the reserve every fee refills (P2). This row read `supply_state` / "burned fees" before P2; the table's name was always `supply_tracking` (`nodus_witness.c` base DDL). |
 | `v2_reward_accrual` | tokenomics-v3 P2: rewards credited at each boundary, one row per recipient fp, paid out and emptied at each payday; a leg of `core_state_root` |
-| `v2_balance_copy` | tokenomics-v3 P2/P3: the stake frozen at each boundary (three copies kept since P3: H−2E, H−E, H); read by the selection (okuma B) and the reward split; out of every root |
+| `v2_treasury` | final pre-testnet wipe W-A: the nine keyless, locked treasury pools (pool_id 1..9 → balance), seeded from the genesis document; a leg of `system_state_root` and `system_payload_root`; a term of the supply equation; no exit rule (parked) |
+| `v2_balance_copy` | tokenomics-v3 P2/P3: the stake frozen at each boundary (three copies kept since P3: H−2E, H−E, H); read by the selection (okuma B) and the reward split; out of every root. PK `(epoch_start, validator_fp, owner_fp, kind)` — `kind` 0 the bond, 1 a delegation (W-B: a self-delegation shares its owner with the bond) |
 | `committed_transactions` | Full serialized TX data (hub/spoke queries) |
 
 ### Witness startup and chain-database faults

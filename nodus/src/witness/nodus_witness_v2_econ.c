@@ -287,9 +287,19 @@ int nodus_witness_v2_econ_params_load(nodus_witness_t *w,
  * PART 1 — the frozen balance copy (design §7 P2-5)
  * ════════════════════════════════════════════════════════════════════ */
 
+/* The two `kind` values of a v2_balance_copy row (final pre-testnet wipe,
+ * W-B; decision 2026-09-28-treasury-pools-and-exact-self-stake.md item 6).
+ * Since self-delegation is allowed, a validator's own fp can own TWO rows
+ * of its validator — its bond and its delegation — so the owner fp alone
+ * no longer says which is which; `kind` does, and it is part of the
+ * primary key (epoch_start, validator_fp, owner_fp, kind). */
+#define V2EC_KIND_SELF   0   /* validators.self_stake, owner = validator */
+#define V2EC_KIND_DELEG  1   /* one delegations row, owner = delegator   */
+
 typedef struct {
     uint8_t  vfp[64];
     uint8_t  ofp[64];
+    uint8_t  kind;          /* V2EC_KIND_SELF / V2EC_KIND_DELEG          */
     uint64_t amount;
 } v2ec_copy_row_t;
 
@@ -299,7 +309,8 @@ typedef struct {
 } v2ec_copy_set_t;
 
 static int v2ec_copy_push(v2ec_copy_set_t *s, const uint8_t vpk[],
-                          const uint8_t opk[], uint64_t amount) {
+                          const uint8_t opk[], uint8_t kind,
+                          uint64_t amount) {
     if (s->n == s->cap) {
         size_t nc = s->cap ? s->cap * 2 : 64;
         v2ec_copy_row_t *nr = realloc(s->rows, nc * sizeof(*nr));
@@ -314,6 +325,7 @@ static int v2ec_copy_push(v2ec_copy_set_t *s, const uint8_t vpk[],
     } else if (qgp_sha3_512(opk, DNAC_PUBKEY_SIZE, r->ofp) != 0) {
         return -2;
     }
+    r->kind = kind;
     r->amount = amount;
     s->n++;
     return 0;
@@ -356,7 +368,8 @@ int nodus_witness_v2_balance_copy_write(nodus_witness_t *w,
             sqlite3_finalize(st);
             goto done;
         }
-        if (v2ec_copy_push(&set, pk, pk, (uint64_t)s) != 0) {
+        if (v2ec_copy_push(&set, pk, pk, V2EC_KIND_SELF,
+                           (uint64_t)s) != 0) {
             sqlite3_finalize(st);
             goto done;
         }
@@ -393,7 +406,8 @@ int nodus_witness_v2_balance_copy_write(nodus_witness_t *w,
             sqlite3_finalize(st);
             goto done;
         }
-        if (v2ec_copy_push(&set, vpk, dpk, (uint64_t)a) != 0) {
+        if (v2ec_copy_push(&set, vpk, dpk, V2EC_KIND_DELEG,
+                           (uint64_t)a) != 0) {
             sqlite3_finalize(st);
             goto done;
         }
@@ -405,15 +419,21 @@ int nodus_witness_v2_balance_copy_write(nodus_witness_t *w,
         goto done;
     }
 
-    /* ── 3. write — STRICT INSERT: an existing (epoch, validator, owner)
-     * row is a FAULT, never silently kept or replaced. Two ways it could
-     * arise, both local defects: a boundary writing the same epoch twice,
-     * or a self-delegation (delegator == validator) colliding with the
-     * validator's own row — Rule S refuses that at admission
-     * (nodus_witness_rt_native.c, rtn_delegate_exec). */
+    /* ── 3. write — STRICT INSERT: an existing (epoch, validator, owner,
+     * kind) row is a FAULT, never silently kept or replaced. The one way
+     * it could arise is a local defect: a boundary writing the same
+     * epoch twice. A SELF-DELEGATION (delegator == validator, allowed
+     * since the final pre-testnet wipe W-B — decision 2026-09-28-
+     * treasury-pools-and-exact-self-stake.md item 6; rtn_delegate_exec)
+     * does NOT collide with the validator's own bond row: the bond is
+     * kind 0 (step 1), the delegation kind 1 (step 2), and `kind` is part
+     * of the primary key. Step 1 yields at most one row per validator
+     * (validators.pubkey is unique) and step 2 at most one per
+     * (validator, delegator) (the delegations primary key), so the pair
+     * of steps can never produce a duplicate key on an honest node. */
     if (sqlite3_prepare_v2(w->db,
             "INSERT INTO v2_balance_copy (epoch_start, validator_fp, "
-            "owner_fp, amount) VALUES (?1, ?2, ?3, ?4)",
+            "owner_fp, kind, amount) VALUES (?1, ?2, ?3, ?4, ?5)",
             -1, &st, NULL) != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: insert prepare failed: "
                       "%s", (unsigned long long)epoch_start,
@@ -429,7 +449,8 @@ int nodus_witness_v2_balance_copy_write(nodus_witness_t *w,
                 != SQLITE_OK ||
             sqlite3_bind_blob(st, 3, set.rows[i].ofp, 64, SQLITE_TRANSIENT)
                 != SQLITE_OK ||
-            sqlite3_bind_int64(st, 4, (sqlite3_int64)set.rows[i].amount)
+            sqlite3_bind_int(st, 4, (int)set.rows[i].kind) != SQLITE_OK ||
+            sqlite3_bind_int64(st, 5, (sqlite3_int64)set.rows[i].amount)
                 != SQLITE_OK) {
             sqlite3_finalize(st);
             goto done;
@@ -743,14 +764,27 @@ static int v2ec_accrue(nodus_witness_t *w, const uint8_t owner_fp[64],
 }
 
 /* One (owner, amount) row this module reads: a copy(src) row of a
- * member, or an accrual row. */
+ * member (with its kind), or an accrual row (kind unused). */
 typedef struct {
     uint8_t  fp[64];
+    uint8_t  kind;          /* copy rows: V2EC_KIND_SELF / _DELEG        */
     uint64_t amount;
 } v2ec_row_t;
 
-/* The copy(`epoch_start`) rows of ONE member, owner_fp ASC (the owner_fp
- * order the delegators are paid in). @return 0 / -2. */
+/* The copy(`epoch_start`) rows of ONE member, in the TOTAL order
+ * (owner_fp ASC, kind ASC) — the order the delegators are paid in. The
+ * primary key is (epoch_start, validator_fp, owner_fp, kind), so within
+ * one (epoch, validator) the pair (owner_fp, kind) is unique and the
+ * order has no ties: a self-delegating validator's two rows (its bond,
+ * kind 0, and its delegation, kind 1) come out adjacent, bond first, on
+ * every node (design D4).
+ *
+ * The rows are CHECKED here, once, for every reader: kind must be 0 or
+ * 1, and a kind-0 (bond) row must be owned by the member itself — the
+ * writer (nodus_witness_v2_balance_copy_write step 1) writes nothing
+ * else, so any other shape is local corruption and a FAULT, never a
+ * value (security goal G2: a row cannot be read as "self" unless it is
+ * the bond). @return 0 / -2. */
 static int v2ec_member_copy(nodus_witness_t *w, uint64_t epoch_start,
                             const uint8_t vfp[64], v2ec_row_t **out,
                             size_t *n_out) {
@@ -758,9 +792,9 @@ static int v2ec_member_copy(nodus_witness_t *w, uint64_t epoch_start,
     *n_out = 0;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
-            "SELECT owner_fp, amount FROM v2_balance_copy "
+            "SELECT owner_fp, kind, amount FROM v2_balance_copy "
             "WHERE epoch_start = ?1 AND validator_fp = ?2 "
-            "ORDER BY owner_fp ASC", -1, &st, NULL) != SQLITE_OK)
+            "ORDER BY owner_fp ASC, kind ASC", -1, &st, NULL) != SQLITE_OK)
         return -2;
     if (sqlite3_bind_int64(st, 1, (sqlite3_int64)epoch_start) != SQLITE_OK ||
         sqlite3_bind_blob(st, 2, vfp, 64, SQLITE_TRANSIENT) != SQLITE_OK) {
@@ -773,8 +807,15 @@ static int v2ec_member_copy(nodus_witness_t *w, uint64_t epoch_start,
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
         const void *fp = sqlite3_column_blob(st, 0);
         int fp_len = sqlite3_column_bytes(st, 0);
-        sqlite3_int64 a = sqlite3_column_int64(st, 1);
-        if (!fp || fp_len != 64 || a < 0) {
+        sqlite3_int64 k = sqlite3_column_int64(st, 1);
+        sqlite3_int64 a = sqlite3_column_int64(st, 2);
+        if (!fp || fp_len != 64 || a < 0 ||
+            (k != V2EC_KIND_SELF && k != V2EC_KIND_DELEG) ||
+            (k == V2EC_KIND_SELF && memcmp(fp, vfp, 64) != 0)) {
+            QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: malformed row "
+                          "(owner %d bytes, kind %lld, amount %lld) — "
+                          "refusing", (unsigned long long)epoch_start,
+                          fp_len, (long long)k, (long long)a);
             sqlite3_finalize(st);
             free(arr);
             return -2;
@@ -787,6 +828,7 @@ static int v2ec_member_copy(nodus_witness_t *w, uint64_t epoch_start,
             cap = nc;
         }
         memcpy(arr[n].fp, fp, 64);
+        arr[n].kind = (uint8_t)k;
         arr[n].amount = (uint64_t)a;
         n++;
     }
@@ -819,8 +861,10 @@ int nodus_witness_v2_balance_copy_frozen(nodus_witness_t *w,
     uint64_t self = 0, total = 0;
     int ret = 0;
     for (size_t i = 0; i < n; i++) {
-        if (memcmp(rows[i].fp, vfp, 64) == 0)
-            self = rows[i].amount;          /* PK: at most one self row */
+        /* the bond row — NOT "the row owned by vfp": a self-delegation
+         * is also owned by vfp (kind 1) and counts in *total only */
+        if (rows[i].kind == V2EC_KIND_SELF)
+            self = rows[i].amount;          /* PK: at most one bond row */
         if (dna_ck_add_u64(total, rows[i].amount, &total) != 0) {
             ret = -1;
             break;
@@ -847,9 +891,10 @@ static uint64_t v2ec_muldiv(uint64_t a, uint64_t b, uint64_t d) {
 typedef struct {
     int         has_row;   /* 1 a `validators` row exists at H          */
     uint8_t     vfp[64];   /* raw SHA3-512(pubkey) — the accrual key     */
-    v2ec_row_t *copy;      /* its copy(src) rows, owner_fp ASC           */
+    v2ec_row_t *copy;      /* its copy(src) rows, (owner_fp, kind) ASC   */
     size_t      n_copy;
-    uint64_t    sum_d;     /* Σ a_d: every copy(src) row but the self row */
+    uint64_t    sum_d;     /* Σ a_d: every kind-1 (delegation) copy(src)
+                            * row — a self-delegation included          */
     uint64_t    power;     /* the entry's total_stake / DNAC_DECIMAL_UNIT */
 } v2ec_member_t;
 
@@ -900,14 +945,15 @@ static uint64_t v2ec_source_copy(uint64_t boundary_height) {
 /* PASS 1 — load ONE member of the governing snapshot and CHECK it
  * against the copy it was built from (design §7.1 "Tutarlılık kapısı"):
  *
- *   copy(src) self row amount       == entry.self_bond
- *                                      (an ABSENT self row counts 0)
- *   Σ copy(src) delegator rows      == entry.total_stake − entry.self_bond
+ *   copy(src) bond row (kind 0)     == entry.self_bond
+ *                                      (an ABSENT bond row counts 0)
+ *   Σ copy(src) delegation rows     == entry.total_stake − entry.self_bond
+ *     (kind 1 — a self-delegation included)
  *
  * Since tokenomics-v3 P3-1 ("okuma B") the two sides are the SAME rows
  * read twice: the entry's total_stake and self_bond were written by the
  * commit_next that built the snapshot FROM copy(src) — total = the
- * member's own copy row + Σ its delegator rows, self_bond = its own row
+ * member's bond row + Σ its delegation rows, self_bond = its bond row
  * (nodus_committee_compute_for_epoch, nodus_witness_committee.c) — and
  * v2ec_source_copy names exactly that copy. For the genesis-governed
  * epochs the entry comes from the live genesis rows (bootstrap path)
@@ -953,8 +999,8 @@ static int v2ec_member_load(nodus_witness_t *w, uint64_t src,
 
     uint64_t self = 0, sum_d = 0;
     for (size_t i = 0; i < m->n_copy; i++) {
-        if (memcmp(m->copy[i].fp, m->vfp, 64) == 0) {
-            self = m->copy[i].amount;        /* PK: at most one self row */
+        if (m->copy[i].kind == V2EC_KIND_SELF) {
+            self = m->copy[i].amount;        /* PK: at most one bond row */
             continue;
         }
         if (dna_ck_add_u64(sum_d, m->copy[i].amount, &sum_d) != 0)
@@ -986,11 +1032,14 @@ static int v2ec_member_load(nodus_witness_t *w, uint64_t src,
  *   commission = floor(gross × commission_bps / 10000)    (the entry's,
  *                frozen with the set)
  *   net        = gross − commission
- *   x_d        = floor(net × a_d / Σa_d), a_d the delegator's copy(src)
- *                amount, delegators in owner_fp ASC order
+ *   x_d        = floor(net × a_d / Σa_d), a_d a delegation row's (kind 1)
+ *                copy(src) amount, rows in (owner_fp, kind) ASC order
  *
  * base + commission accrue to the validator's fp, each x_d to its
- * delegator's fp. Σa_d == 0 with net > 0 leaves net in the pool (pass 1
+ * delegator's fp — for a self-delegation that is the validator's fp
+ * again, so it accrues base + commission + its x_d (v2ec_accrue adds
+ * onto an existing accrual row). Σa_d == 0 with net > 0 leaves net in
+ * the pool (pass 1
  * makes Σa_d == total_stake − self_bond, so net is 0 then anyway).
  * `*accrued_out` receives what was credited. Returns -2 on a fault; a
  * member that is not paid (no row, bar missed, zero share) returns 0
@@ -1047,11 +1096,20 @@ static int v2ec_pay_member(nodus_witness_t *w, uint64_t boundary_height,
         if (v2ec_accrue(w, m->vfp, vx) != 0) return -2;
         credited = vx;
     }
-    /* every delegator of copy(src), owner_fp ASC (the copy reader's own
-     * ORDER BY) — its share of `net` by its frozen amount a_d */
+    /* every delegation row of copy(src), (owner_fp, kind) ASC (the copy
+     * reader's own ORDER BY) — its share of `net` by its frozen amount
+     * a_d. A SELF-DELEGATION (owner == the member, kind 1; W-B, decision
+     * 2026-09-28-treasury-pools-and-exact-self-stake.md item 6) is paid
+     * HERE, as a delegation: it sits in gross (it is part of
+     * total_stake − self_bond), bears the commission like every other
+     * delegation, and takes its x_d of net — the commission it "pays"
+     * lands on its own fp above, so nothing is counted twice and no extra
+     * rule is needed (design 2026-09-28-treasury-pools-exact-stake-
+     * design.md §1.4 "Ödül"). Only the kind-0 bond row is skipped: it
+     * was paid as `base`. */
     if (net > 0 && m->sum_d > 0) {
         for (size_t i = 0; i < m->n_copy; i++) {
-            if (memcmp(m->copy[i].fp, m->vfp, 64) == 0) continue;
+            if (m->copy[i].kind == V2EC_KIND_SELF) continue;
             uint64_t x = v2ec_muldiv(net, m->copy[i].amount, m->sum_d);
             if (v2ec_accrue(w, m->copy[i].fp, x) != 0) return -2;
             if (dna_ck_add_u64(credited, x, &credited) != 0) return -2;

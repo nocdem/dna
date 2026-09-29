@@ -579,6 +579,13 @@ typedef struct {
                              *   0 = the rule is off, or an older server
                              *   that does not send the key. A builder
                              *   pays max(min_fee, units x gas_price). */
+    uint64_t token_create_fee; /**< Final pre-testnet wipe W-C: committed
+                             *   chain_config param 6 TOKEN_CREATE_FEE_RAW
+                             *   at tip + 1 (the server answers the
+                             *   compiled NODUS_W_TOKEN_CREATE_FEE when no
+                             *   row is active); 0 = an older server that
+                             *   does not send the key — the caller falls
+                             *   back to NODUS_W_TOKEN_CREATE_FEE. */
 } nodus_dnac_fee_info_t;
 
 /** Maximum inclusion-proof depth for anchored UTXO / TX proofs.

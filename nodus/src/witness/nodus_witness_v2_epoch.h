@@ -366,7 +366,12 @@
  * `supply_tracking` and `utxo_set` are all CORE legs) — declaring CORE
  * on a boundary that moved none of them would trip the "declared but
  * changed nothing" reject. That is why this function reports `fired`,
- * `n_graduates`, `dist_accrued` and `n_payday_utxos`.
+ * `n_graduates`, `dist_accrued` and `n_payday_utxos`. (W-A briefly sent
+ * a genesis seat's bond into the Foundation treasury pool with no UTXO
+ * and counted UTXO rows instead; general multisig — decision
+ * 2026-09-29-general-multisig.md — withdrew that refund: every graduate
+ * releases a bond UTXO, a genesis seat's to the Foundation multisig
+ * address, so a graduate again implies CORE moved.)
  *
  * Copyright (c) 2026 nocdem — SPDX-License-Identifier: MIT
  */

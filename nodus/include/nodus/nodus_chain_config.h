@@ -72,9 +72,10 @@ typedef struct nodus_witness nodus_witness_t;
  * checked on every block, nodus_witness_v2_econ_params_load.)
  *
  * WHY 200+. The band must never collide with a future
- * DNAC_CFG_* allocation, which grows upward from 1 (currently 5 — HF-1's
- * GAS_PRICE_RAW_PER_UNIT). Starting at 200 leaves 194 free governance
- * ids; a future allocation that reaches
+ * DNAC_CFG_* allocation, which grows upward from 1 (currently 6 — the
+ * final pre-testnet wipe W-C's TOKEN_CREATE_FEE_RAW, after HF-1's
+ * GAS_PRICE_RAW_PER_UNIT = 5). Starting at 200 leaves 193 free
+ * governance ids; a future allocation that reaches
  * this band collides with THIS COMMENT rather than silently overwriting a
  * committed economic parameter. The ids fit uint8_t, which is what the
  * merkle leaf preimage stores (nodus_witness_chain_config.c:387).
@@ -161,7 +162,7 @@ int nodus_chain_config_db_migrate(nodus_witness_t *w);
  * this function — the "proposer timer" consumer this docblock used to
  * list does not exist in the tree (grep, O15J Block 2 A2). Since 0.20.3
  * a NEW id-2 proposal is refused (scalar_rules consults dnac.h's
- * dnac_cfg_param_read_by_consensus, which lists 4 and 5) and nodus-cli no
+ * dnac_cfg_param_read_by_consensus, which lists 4, 5 and 6) and nodus-cli no
  * longer names it; an id-2 row committed before that stays readable
  * through this function — it never consults the read list.
  * tokenomics-v3 P2 (P2-4): the two "inflation gate" consumers this list
@@ -284,7 +285,7 @@ int nodus_chain_config_apply(nodus_witness_t *w,
  * per-param value bounds, and the signing/validity window shape
  * (signed_at != 0; valid_before > effective; valid_before > signed_at).
  * Since 0.20.3 the allowlist is the RUNNING consensus's read list —
- * dnac.h dnac_cfg_param_read_by_consensus (4 and 5), shared with the
+ * dnac.h dnac_cfg_param_read_by_consensus (4, 5 and 6), shared with the
  * client mirror dnac_tx_verify_chain_config_rules — so a proposal for an
  * id this consensus does not read (2) is refused like the retired 1 and 3.
  * Pure function — the ONE authority both the legacy apply path

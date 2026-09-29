@@ -207,17 +207,6 @@ int dna_vset_decode(const uint8_t *src, size_t len,
     return 0;
 }
 
-/* ── Policy ─────────────────────────────────────────────────────────── */
-
-int dna_vset_validate_bonds(const dna_vset_snapshot_t *snap,
-                            uint64_t min_self_bond_raw) {
-    if (vset_check(snap) != 0) return -1;
-    for (size_t i = 0; i < (size_t)snap->active_count; i++) {
-        if (snap->entries[i].self_bond < min_self_bond_raw) return -1;
-    }
-    return 0;
-}
-
 /* ── Hashing ────────────────────────────────────────────────────────── */
 
 int dna_vset_hash_bytes(const uint8_t *buf, size_t len,

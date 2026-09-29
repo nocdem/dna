@@ -16,8 +16,13 @@
  *     refuses MAX + 1; id 5's grace class is ERGONOMIC. False if the id
  *     were still outside the allowlist (the pre-HF-1 `default: -1`) or the
  *     ceiling were off by one.
+ *  (W-C, final pre-testnet wipe: every version-4 genesis commits a
+ *   height-0 id-5 row from the document. Cases 2 and 3 derive with a
+ *   price-0 document (gp_chain_open), so "rule OFF" below means a
+ *   committed price-0 row; case 4 counts the genesis row in its totals.)
  *  2. t_price_rule — on one chain:
- *     block 1 (no price row active, rule OFF) commits a SYSTEM-only
+ *     block 1 (only the genesis price-0 row active, rule OFF) commits a
+ *     SYSTEM-only
  *     governance envelope that sets price 121 from height 2, and a CORE
  *     envelope creating six zero-amount rows;
  *     cache ≡ DB: nodus_chain_config_get_u64 for id 5 answers, at every
@@ -41,13 +46,16 @@
  *     lower bound of the requirement once the rule is on) and one paying
  *     exactly the floor applies.
  *  3. t_rule_off_is_inert (design D3, the part a unit test can reach) —
- *     twin chains (same derivation, same chain id): X has no id-5 row at
- *     all, Y has a price-0 row active. On both, a spend paying 3 raw —
+ *     twin chains (same derivation, same chain id): X has only its
+ *     genesis price-0 row, Y also a VOTED price-0 row active (pre-W-C X
+ *     had no id-5 row at all; a W-C chain cannot reach that state). On
+ *     both, a spend paying 3 raw —
  *     below any price and below the flat floor — is admitted by the dry
  *     run and APPLIES with the same code, gas_wanted and gas_used, and
  *     block 2's tx_root is identical on both chains.
- *  4. t_cache_capacity — 64 rows of one param: the cache warms and
- *     answers the 64th; 65 rows: the cache stays COLD and get_u64 answers
+ *  4. t_cache_capacity — 64 rows of one param (the genesis row + 63
+ *     inserted): the cache warms and answers the last; 65 rows: the
+ *     cache stays COLD and get_u64 answers
  *     the 65th (the DB fallback), before and after a forced re-warm
  *     (nodus/BUGS.md "chain_config cache keeps only the OLDEST 64 rows").
  *
@@ -409,8 +417,36 @@ static int t_scalar_rule_matrix(void)
     CHECK(nodus_chain_config_scalar_rules(
               (uint8_t)(DNAC_CFG_PARAM_MAX_ID + 1), 0, 1, 1000, 500) != 0,
           "the id after the last one stays refused");
-    CHECK(DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_GAS_PRICE_RAW_PER_UNIT,
-          "id 5 is the allowlist's last id");
+    /* W-C appended id 6 (TOKEN_CREATE_FEE_RAW) after id 5. */
+    CHECK(DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_TOKEN_CREATE_FEE_RAW &&
+              DNAC_CFG_GAS_PRICE_RAW_PER_UNIT + 1 ==
+                  DNAC_CFG_TOKEN_CREATE_FEE_RAW,
+          "id 5 is followed by W-C's id 6, the allowlist's last id");
+    return 0;
+}
+
+/* W-C (final pre-testnet wipe): every version-4 genesis commits a
+ * height-0 id-5 row from the document's gas_price_raw_per_unit (builder
+ * default 121; the shared fixture v2x_cfg_make opts out to 0). The cases
+ * below that need the rule OFF at genesis derive with an EXPLICIT
+ * price-0 document through this helper — not relying on the fixture's
+ * opt-out — so "rule off" is a committed price-0 row, never an absent
+ * one: a W-C chain has no reachable "no id-5 row" state. */
+static int gp_chain_open(v2x_chain_t *c, const char *tag, uint8_t salt,
+                         uint64_t genesis_price)
+{
+    v2x_cfgbox_t box;
+
+    if (v2x_cfg_make(&box, salt) != 0) return -1;
+    box.cfg->gas_price_raw_per_unit = genesis_price;
+    if (v2x_chain_open_cfg(c, tag, &box) != 0) {
+        v2x_cfg_free(&box);            /* no-op if it was taken over     */
+        return -1;
+    }
+#ifdef NODUS_V2_TEST_SUPPLY
+    /* the v2x_chain_open arm, verbatim */
+    nodus_witness_v2_supply_test_bypass(1);
+#endif
     return 0;
 }
 
@@ -426,18 +462,21 @@ static int t_price_rule(void)
     uint64_t           tip = 0;
     static const uint8_t tags[6] = { 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6 };
 
-    CHECK(v2x_chain_open(&c, "gp_rule", 0x31) == 0, "version-3 chain");
+    CHECK(gp_chain_open(&c, "gp_rule", 0x31, 0) == 0,
+          "version-4 chain, genesis price 0");
     CHECK(v2x_table_init(c.w) == 0, "the scripted runtime table");
     e = calloc(12, sizeof(*e));
     b = calloc(1, sizeof(*b));
     CHECK(e && b, "alloc");
 
-    /* a chain with no id-5 row: the slot exists and answers "absent" */
+    /* W-C: the genesis id-5 row is PRESENT with value 0 — the rule is
+     * off (pre-HF-1 get_u64 answered -1: id >= CC_PARAM_SLOTS; pre-W-C a
+     * fresh chain answered ABSENT). The default passed (99) must not be
+     * what comes back. */
     {
         uint64_t p = 99;
-        CHECK(nodus_chain_config_get_u64(c.w, GP_PARAM, 1, 0, &p) == 1 &&
-              p == 0, "no row: get_u64 answers ABSENT with the default 0 "
-                      "(pre-HF-1 it answered -1: id >= CC_PARAM_SLOTS)");
+        CHECK(nodus_chain_config_get_u64(c.w, GP_PARAM, 1, 99, &p) == 0 &&
+              p == 0, "genesis row: get_u64 answers PRESENT, price 0");
     }
 
     /* ── block 1 (rule OFF): the price vote + the rows ─────────────── */
@@ -464,15 +503,17 @@ static int t_price_rule(void)
                       "get_u64 (cache) == direct SQL (DB) at every height");
             }
             CHECK(c.w->chain_config_cache_warm &&
-                  c.w->chain_config_cache_count[GP_PARAM] == 1,
-                  "the cache is warm and holds the one id-5 row");
+                  c.w->chain_config_cache_count[GP_PARAM] == 2,
+                  "the cache is warm and holds the two id-5 rows (the "
+                  "W-C genesis row + the block-1 vote)");
             c.w->chain_config_cache_warm = false;   /* 2nd pass: re-warm */
         }
     }
     {
         uint64_t p = 0;
-        CHECK(nodus_chain_config_get_u64(c.w, GP_PARAM, 1, 0, &p) == 1 &&
-              p == 0, "height 1: not yet effective");
+        CHECK(nodus_chain_config_get_u64(c.w, GP_PARAM, 1, 99, &p) == 0 &&
+              p == 0, "height 1: the vote not yet effective — the genesis "
+                      "price 0 still answers");
         CHECK(nodus_chain_config_get_u64(c.w, GP_PARAM, 2, 0, &p) == 0 &&
               p == GP_PRICE, "height 2: 121");
     }
@@ -562,8 +603,8 @@ static int t_rule_off_is_inert(void)
     uint64_t           p = 0;
     static const uint8_t tag1[1] = { 0xD1 };
 
-    CHECK(v2x_chain_open(&x, "gp_d3x", 0x32) == 0, "chain X");
-    CHECK(v2x_chain_open(&y, "gp_d3y", 0x32) == 0, "chain Y");
+    CHECK(gp_chain_open(&x, "gp_d3x", 0x32, 0) == 0, "chain X");
+    CHECK(gp_chain_open(&y, "gp_d3y", 0x32, 0) == 0, "chain Y");
     CHECK(memcmp(x.chain32, y.chain32, 32) == 0,
           "the twins are the SAME chain (same derivation, same id)");
     CHECK(v2x_table_init(x.w) == 0 && v2x_table_init(y.w) == 0,
@@ -586,10 +627,12 @@ static int t_rule_off_is_inert(void)
     CHECK(v2x_cmt_apply_ok(y.w, b) == 0, "Y block 1");
     y.w->chain_config_cache_warm = false;         /* HOW IT CAN LIE 2 */
 
-    CHECK(nodus_chain_config_get_u64(x.w, GP_PARAM, 2, 0, &p) == 1 && p == 0,
-          "X: no id-5 row at all (ABSENT, price 0)");
-    CHECK(nodus_chain_config_get_u64(y.w, GP_PARAM, 2, 0, &p) == 0 && p == 0,
-          "Y: an ACTIVE row whose value is 0");
+    /* W-C: X answers from its genesis price-0 row, Y from the voted
+     * price-0 row effective at 2 — two different rows, one answer. */
+    CHECK(nodus_chain_config_get_u64(x.w, GP_PARAM, 2, 99, &p) == 0 && p == 0,
+          "X: only the genesis row (price 0)");
+    CHECK(nodus_chain_config_get_u64(y.w, GP_PARAM, 2, 99, &p) == 0 && p == 0,
+          "Y: the voted row, ACTIVE, whose value is 0");
 
     CHECK(dry(x.w, &e[2], &code) == 0 && code == NODUS_V2_TX_OK,
           "X: the dry run admits the 3-raw spend");
@@ -636,8 +679,12 @@ static int t_rule_off_is_inert(void)
  * value k. The capacity is 64 — the second dimension of
  * nodus_witness.h `chain_config_cache[...][64]`.
  *
- * RED on the unfixed tree: with 65 rows the warm cache answered 64 at
- * height 10 000 and chain_config_cache_warm was true. */
+ * Since W-C the genesis row (effective 0) is the param's first row, so
+ * the counts are TOTALS including it (cache_cap_case).
+ *
+ * RED on the unfixed tree: with 65 rows in total the warm cache kept the
+ * oldest 64 (the genesis row + inserted rows 1..63) and answered 63 at
+ * height 10 000 instead of 64, with chain_config_cache_warm true. */
 static int insert_rows(nodus_witness_t *w, int n)
 {
     sqlite3_stmt *st = NULL;
@@ -666,25 +713,33 @@ static int insert_rows(nodus_witness_t *w, int n)
     return 0;
 }
 
+/* W-C: the chain already holds ONE id-5 row, the genesis row at
+ * effective_block 0 (value = the document's gas_price_raw_per_unit, read
+ * back from the config the chain came from rather than restated). So
+ * `n_rows` TOTAL rows = the genesis row + n_rows − 1 inserted ones, and
+ * "before the first inserted row" answers the genesis value. */
 static int cache_cap_case(int n_rows, int expect_warm)
 {
     v2x_chain_t c;
     uint64_t    p = 0;
     char        tag[32];
+    const int   n_ins = n_rows - 1;
 
     snprintf(tag, sizeof(tag), "gp_cap%d", n_rows);
-    CHECK(v2x_chain_open(&c, tag, 0x33) == 0, "version-3 chain");
-    CHECK(insert_rows(c.w, n_rows) == 0, "rows inserted");
+    CHECK(v2x_chain_open(&c, tag, 0x33) == 0, "version-4 chain");
+    const uint64_t gen_price = c.box.cfg->gas_price_raw_per_unit;
+    CHECK(insert_rows(c.w, n_ins) == 0, "rows inserted");
     c.w->chain_config_cache_warm = false;
 
     for (int pass = 0; pass < 2; pass++) {
         CHECK(nodus_chain_config_get_u64(c.w, GP_PARAM, 10000, 0, &p) == 0 &&
-              p == (uint64_t)n_rows,
+              p == (uint64_t)n_ins,
               "after the last row's effective height: the LAST row's value");
-        CHECK(nodus_chain_config_get_u64(c.w, GP_PARAM, 10 * 64, 0, &p) == 0 &&
-              p == 64, "at row 64's effective height: 64");
-        CHECK(nodus_chain_config_get_u64(c.w, GP_PARAM, 9, 0, &p) == 1 &&
-              p == 0, "before the first row: absent");
+        CHECK(nodus_chain_config_get_u64(c.w, GP_PARAM, 10 * 63, 0, &p) == 0 &&
+              p == 63, "at inserted row 63's effective height: 63");
+        CHECK(nodus_chain_config_get_u64(c.w, GP_PARAM, 9, 99, &p) == 0 &&
+              p == gen_price,
+              "before the first inserted row: the genesis row's price");
         CHECK((c.w->chain_config_cache_warm ? 1 : 0) == expect_warm,
               expect_warm ? "64 rows fit: the cache is warm"
                           : "65 rows do not fit: the cache stays COLD");

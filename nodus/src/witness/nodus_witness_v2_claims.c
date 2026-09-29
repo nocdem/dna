@@ -946,6 +946,8 @@ static int sum_q(nodus_witness_t *w, const char *sql, uint64_t *out) {
  *       commitments and nullifiers do not themselves move supply;
  *       admission is still C3-rejected, so live pool balances remain
  *       zero until then.)
+ *     + Σ v2_treasury.balance (final pre-testnet wipe, W-A — the keyless,
+ *       locked treasury pools, seeded from the genesis document)
  *
  * Foreign-domain rows in utxo_set FAIL the invariant (fail-closed): the
  * v1 UTXO table is this runtime's domain-local state; another runtime's
@@ -1120,8 +1122,23 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
      * above) holds the undistributed reserve plus every fee; `accrued`
      * (Σ v2_reward_accrual.amount) holds what the distribution credited
      * and the payday has not yet paid. The two move value between each
-     * other and utxo_set only, so the equation closes at every step. */
+     * other and utxo_set only, so the equation closes at every step.
+     *
+     * Final pre-testnet wipe, W-A (decision
+     * 2026-09-28-treasury-pools-and-exact-self-stake.md, "Arz denklemine
+     * yeni terim: Σ havuz bakiyesi"): + treasury = Σ v2_treasury.balance.
+     * Genesis moves the nine pool amounts OUT of the allocation list and
+     * INTO this table (Rule P.2 counts them), and NOTHING writes it
+     * later: general multisig (decision 2026-09-29-general-multisig.md)
+     * withdrew W-A's genesis-validator graduation refund into pool 8 —
+     * a genesis seat's bond is released into `utxo` like any seat's (to
+     * the Foundation multisig address), a bonds → utxo move the equation
+     * already balances. The sum goes through the treasury loader's own
+     * row checks
+     * (nodus_witness_treasury_total), never a bare SQL SUM: a malformed
+     * row is a fault here exactly as it is in treasury_root. */
     uint64_t utxo = 0, bonds = 0, delegated = 0, accrued = 0, unclaimed = 0;
+    uint64_t treasury = 0;
     const uint64_t pool = sup.reward_pool;
     /* the production helper OWNS the native-token representation rule —
      * one authority, never a parallel SQL mirror */
@@ -1132,6 +1149,7 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
               &delegated) != 0) return -1;
     if (sum_q(w, "SELECT COALESCE(SUM(amount),0) FROM v2_reward_accrual",
               &accrued) != 0) return -1;
+    if (nodus_witness_treasury_total(w, &treasury) != 0) return -1;
     /* Unclaimed distribution value TARGETING THIS RUNTIME'S NATIVE
      * ASSET only — a distribution targeting another domain/asset is
      * that runtime's invariant, never summed here. */
@@ -1163,17 +1181,19 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
     observed += unclaimed;
     if (shielded > UINT64_MAX - observed) return -1;
     observed += shielded;
+    if (treasury > UINT64_MAX - observed) return -1;
+    observed += treasury;
 
     if (expected != observed) {
         QGP_LOG_ERROR(LOG_TAG,
             "CORE INVARIANT VIOLATION: expected=%llu observed=%llu "
             "(utxo=%llu bonds=%llu delegated=%llu reward_pool=%llu "
-            "accrued=%llu unclaimed=%llu shielded=%llu)",
+            "accrued=%llu unclaimed=%llu shielded=%llu treasury=%llu)",
             (unsigned long long)expected, (unsigned long long)observed,
             (unsigned long long)utxo, (unsigned long long)bonds,
             (unsigned long long)delegated, (unsigned long long)pool,
             (unsigned long long)accrued, (unsigned long long)unclaimed,
-            (unsigned long long)shielded);
+            (unsigned long long)shielded, (unsigned long long)treasury);
         return -1;
     }
     return 0;

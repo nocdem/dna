@@ -80,12 +80,13 @@
 #define CC_MAX_SIGS                 CC_MAX_ACTIVE
 #define CC_PURPOSE_TAG_LEN          16
 #define CC_TX_TYPE                  10    /* DNAC_TX_CHAIN_CONFIG */
-#define CC_PARAM_MAX_ID             5
+#define CC_PARAM_MAX_ID             6
 #define CC_PARAM_MAX_TXS            1
 #define CC_PARAM_BLOCK_INTERVAL     2
 #define CC_PARAM_INFLATION_START    3
 #define CC_PARAM_TARGET_ACTIVE      4     /* S3 — DNAC_CFG_TARGET_ACTIVE_COUNT */
 #define CC_PARAM_GAS_PRICE          5     /* HF-1 — DNAC_CFG_GAS_PRICE_RAW_PER_UNIT */
+#define CC_PARAM_TOKEN_CREATE_FEE   6     /* W-C — DNAC_CFG_TOKEN_CREATE_FEE_RAW */
 /* Number of per-param cache rows dimensions: param ids are 1..CC_PARAM_MAX_ID
  * and index 0 is unused, so the arrays are CC_PARAM_MAX_ID + 1 wide. */
 #define CC_PARAM_SLOTS              (CC_PARAM_MAX_ID + 1)
@@ -104,6 +105,11 @@
  * "HF-1 O4": 1 000 000 raw/unit). The floor is 0, and 0 is legal: a vote
  * for 0 switches the price rule off again. */
 #define CC_MAX_GAS_PRICE            1000000ULL
+/* Final pre-testnet wipe W-C TOKEN_CREATE_FEE_RAW range (decision
+ * 2026-09-28-token-create-fee-governance.md; range proposed in design
+ * 2026-09-28-final-wipe-package-design.md §1 W-C): [1 NODUS, 10M NODUS]. */
+#define CC_MIN_TOKEN_CREATE_FEE     100000000ULL
+#define CC_MAX_TOKEN_CREATE_FEE     1000000000000000ULL
 
 static const uint8_t CC_PURPOSE_TAG[CC_PURPOSE_TAG_LEN] = {
     'D','N','A','C','_','C','C','_','v','1',0,0,0,0,0,0
@@ -141,6 +147,12 @@ _Static_assert(CC_PARAM_GAS_PRICE == DNAC_CFG_GAS_PRICE_RAW_PER_UNIT,
                "CC_PARAM_GAS_PRICE drift vs dnac param id");
 _Static_assert(CC_MAX_GAS_PRICE == DNAC_CFG_MAX_GAS_PRICE,
                "GAS_PRICE_RAW_PER_UNIT ceiling drift vs dnac");
+_Static_assert(CC_PARAM_TOKEN_CREATE_FEE == DNAC_CFG_TOKEN_CREATE_FEE_RAW,
+               "CC_PARAM_TOKEN_CREATE_FEE drift vs dnac param id");
+_Static_assert(CC_MIN_TOKEN_CREATE_FEE == DNAC_CFG_MIN_TOKEN_CREATE_FEE,
+               "TOKEN_CREATE_FEE_RAW floor drift vs dnac");
+_Static_assert(CC_MAX_TOKEN_CREATE_FEE == DNAC_CFG_MAX_TOKEN_CREATE_FEE,
+               "TOKEN_CREATE_FEE_RAW ceiling drift vs dnac");
 /* nodus_chain_config.h keeps this as a bare literal so it stays free of
  * shared/ includes — pin it here, the one TU that sees both. */
 _Static_assert(NODUS_CC_RATE_LIMIT_MAX_PROPOSERS == CC_MAX_ACTIVE,
@@ -671,6 +683,13 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
              * price rule off again, decision 2026-09-25-gas-price.md). */
             if (new_value > CC_MAX_GAS_PRICE) return -1;
             break;
+        case CC_PARAM_TOKEN_CREATE_FEE:
+            /* W-C: [CC_MIN_TOKEN_CREATE_FEE, CC_MAX_TOKEN_CREATE_FEE].
+             * Unlike the gas price there is no "off" value: token
+             * creation always costs at least one NODUS. */
+            if (new_value < CC_MIN_TOKEN_CREATE_FEE ||
+                new_value > CC_MAX_TOKEN_CREATE_FEE) return -1;
+            break;
         default:
             return -1;
     }
@@ -717,6 +736,10 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
             /* HF-1 — ERGONOMIC by decision (2026-09-25-gas-price.md,
              * detail decision 3: "bekleme süresi 720 blok"). Named
              * explicitly rather than left to `default:`. */
+        case CC_PARAM_TOKEN_CREATE_FEE:
+            /* W-C — ERGONOMIC by decision (2026-09-28-token-create-fee-
+             * governance.md, operator "Tamam yap": "bekleme ERGONOMIC
+             * 720 blok"). Named explicitly as well. */
         default:
             return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
     }

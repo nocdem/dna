@@ -175,9 +175,10 @@ extern "C" {
  * BUILD of the engine, exactly like `MAX_DOMS` elsewhere in this port —
  *
  *   PER-CLASS CAPS — `NODUS_V2_ENV_BATCH_MAX` (nodus_witness_v2_apply.h,
- *   moved here from nodus_witness_v2_env.h in delta 2 — 3 209, DERIVED
+ *   moved here from nodus_witness_v2_env.h in delta 2 — 3 075 since
+ *   general multisig grew the auth verdict (3 209 before), DERIVED
  *   from a MEMORY budget: `NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES` 64 MiB /
- *   `NODUS_V2_APPLY_ENV_COST_BYTES` 20 908 B; NOT the chain-config hard
+ *   `NODUS_V2_APPLY_ENV_COST_BYTES` 21 824 B (20 908 B before); NOT the chain-config hard
  *   cap delta 1 briefly tied it to — `MAX_TXS_PER_BLOCK` (id 1) and its
  *   `DNAC_CFG_MAX_TXS_HARD_CAP` are RETIRED/deleted as of delta 2/3)
  *   bounds envelopes; `min(claim_bound, NODUS_V2_APPLY_MAX_

@@ -17,7 +17,7 @@
  *     apply_epoch_boundary_transitions.
  *
  * The stored snapshots enter the chain's state root through
- * validator_set_root, a leg of nodus_witness_system_root_v2 ("DNA.SYS.v3",
+ * validator_set_root, a leg of nodus_witness_system_root_v2 ("DNA.SYS.v4",
  * shared/dnac/ledger_roots_v2.h) — the SYSTEM domain root under the
  * global root the block app_hash commits. (This comment used to say the
  * snapshots did NOT enter the live state_root because that was the

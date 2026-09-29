@@ -59,6 +59,16 @@
  *   §7  DETERMINISM TWIN — two fixtures seeded in OPPOSITE order agree
  *       on the SYSTEM and CORE roots after a paying boundary and after a
  *       payday.
+ *   §8  SELF-DELEGATION (final pre-testnet wipe W-B; decision 2026-09-28-
+ *       treasury-pools-and-exact-self-stake.md item 6) — a validator
+ *       delegating to itself: copy(0) holds its bond (kind 0) AND its
+ *       delegation (kind 1) under the (epoch, validator, owner, kind)
+ *       key, adjacent in (owner_fp, kind) order; the frozen reader counts
+ *       the delegation in the total (ranking / power) and not in self;
+ *       the boundary pays it as a delegation (commission applied, the
+ *       share on the validator's own accrual row, Σ credited unchanged);
+ *       a foreign kind-0 row or a kind outside {0,1} FAULTS; an
+ *       opposite-order twin agrees on both roots.
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * Compile flags: none beyond a default build (DNAC_EPOCH_LENGTH 720 — the
@@ -239,24 +249,35 @@ static uint64_t accrual_of(nodus_witness_t *w, int key) {
     return v;
 }
 
-/* The copy amount of (epoch, validator key, owner key); UINT64_MAX when
- * absent. */
-static uint64_t copy_of(nodus_witness_t *w, uint64_t epoch, int vkey,
-                        int okey) {
+/* The copy amount of (epoch, validator key, owner key, kind); UINT64_MAX
+ * when absent. kind 0 = the validator's bond, 1 = a delegation (W-B:
+ * `kind` is in the copy's primary key since a self-delegation's owner IS
+ * the validator). */
+static uint64_t copy_of_kind(nodus_witness_t *w, uint64_t epoch, int vkey,
+                             int okey, int kind) {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
             "SELECT amount FROM v2_balance_copy WHERE epoch_start = ?1 "
-            "AND validator_fp = ?2 AND owner_fp = ?3", -1, &st, NULL)
+            "AND validator_fp = ?2 AND owner_fp = ?3 AND kind = ?4", -1,
+            &st, NULL)
         != SQLITE_OK)
         return UINT64_MAX;
     sqlite3_bind_int64(st, 1, (sqlite3_int64)epoch);
     sqlite3_bind_blob(st, 2, g_fpraw[vkey], 64, SQLITE_TRANSIENT);
     sqlite3_bind_blob(st, 3, g_fpraw[okey], 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 4, kind);
     uint64_t v = UINT64_MAX;
     if (sqlite3_step(st) == SQLITE_ROW)
         v = (uint64_t)sqlite3_column_int64(st, 0);
     sqlite3_finalize(st);
     return v;
+}
+
+/* The fixtures without a self-delegation: owner == validator is the bond
+ * (kind 0), any other owner a delegation (kind 1). */
+static uint64_t copy_of(nodus_witness_t *w, uint64_t epoch, int vkey,
+                        int okey) {
+    return copy_of_kind(w, epoch, vkey, okey, vkey == okey ? 0 : 1);
 }
 
 /* floor(a × b / d) with a 128-bit intermediate — the in-test re-derivation
@@ -823,19 +844,23 @@ static int t_distribution_math(void) {
  * disagreement, which §3a now proves FAULTS. nodus_delegation_update,
  * used only by these cases, is deleted with them. */
 
-/* Set one copy row's amount by hand (the table is out of every root). */
+/* Set one copy row's amount by hand (the table is out of every root).
+ * Used only on fixtures without a self-delegation: owner == validator is
+ * the bond row (kind 0), any other owner a delegation row (kind 1). */
 static int copy_set(nodus_witness_t *w, uint64_t epoch, int vkey, int okey,
                     uint64_t amount) {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
             "UPDATE v2_balance_copy SET amount = ?1 WHERE epoch_start = ?2 "
-            "AND validator_fp = ?3 AND owner_fp = ?4", -1, &st, NULL)
+            "AND validator_fp = ?3 AND owner_fp = ?4 AND kind = ?5", -1,
+            &st, NULL)
         != SQLITE_OK)
         return -1;
     sqlite3_bind_int64(st, 1, (sqlite3_int64)amount);
     sqlite3_bind_int64(st, 2, (sqlite3_int64)epoch);
     sqlite3_bind_blob(st, 3, g_fpraw[vkey], 64, SQLITE_TRANSIENT);
     sqlite3_bind_blob(st, 4, g_fpraw[okey], 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 5, vkey == okey ? 0 : 1);
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     return (rc == SQLITE_DONE && sqlite3_changes(w->db) == 1) ? 0 : -1;
@@ -1088,7 +1113,7 @@ static int t_consistency_gate(void) {
         sqlite3_stmt *st = NULL;
         CHECK(sqlite3_prepare_v2(fx.w->db,
                   "INSERT INTO v2_balance_copy (epoch_start, validator_fp, "
-                  "owner_fp, amount) VALUES (0, ?1, ?2, 1)",
+                  "owner_fp, kind, amount) VALUES (0, ?1, ?2, 1, 1)",
                   -1, &st, NULL) == SQLITE_OK, "prep");
         sqlite3_bind_blob(st, 1, g_fpraw[0], 64, SQLITE_TRANSIENT);
         sqlite3_bind_blob(st, 2, g_fpraw[7], 64, SQLITE_TRANSIENT);
@@ -2033,6 +2058,213 @@ static int t_determinism_twin(void) {
     return 0;
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+ * §8 SELF-DELEGATION (final pre-testnet wipe, W-B)
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* SPECD with key 0 delegating D5_AMT TO ITSELF in place of key 5 (Rule S
+ * is gone — decision 2026-09-28-treasury-pools-and-exact-self-stake.md
+ * item 6), key 6 unchanged. Every amount is the §2 composition's, so the
+ * split is the §2 split with key 5's delegator share landing on key 0:
+ *   key 0 accrues base + commission (EXP_V0 = 305881) + its own
+ *   delegation's x_d (EXP_D5 = 79412) = 385293; key 6 EXP_D6 = 26470;
+ *   keys 1, 2 EXP_V12; Σ credited EXP_SUM = 999997 — the SAME total,
+ *   nothing counted twice (design 2026-09-28-treasury-pools-exact-stake-
+ *   design.md §1.4 "Ödül": the validator is paid the delegator share and
+ *   pays the commission to itself, no extra rule). */
+static const dspec_t DELS_SELF[2] = {
+    { 0, 0, D5_AMT },
+    { 6, 0, D6_AMT },
+};
+static const dspec_t DELS_SELF_REV[2] = {
+    { 6, 0, D6_AMT },
+    { 0, 0, D5_AMT },
+};
+#define EXP_V0_SELF  (EXP_V0 + EXP_D5)     /* 385 293 */
+
+/* Plant one hand row in copy(0) of validator key 0 (the table is out of
+ * every root). */
+static int copy_plant(nodus_witness_t *w, int okey, int kind,
+                      uint64_t amount) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO v2_balance_copy (epoch_start, validator_fp, "
+            "owner_fp, kind, amount) VALUES (0, ?1, ?2, ?3, ?4)", -1, &st,
+            NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, g_fpraw[0], 64, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 2, g_fpraw[okey], 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 3, kind);
+    sqlite3_bind_int64(st, 4, (sqlite3_int64)amount);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+/* RED ON THE PRE-W-B TREE: the copy writer's (epoch, validator, owner)
+ * key made the self-delegation collide with the bond row — the engine
+ * genesis's copy(0) INSERT failed, so stage 2 itself did not commit
+ * (and at a live boundary every node would have halted on the same
+ * FAULT); the readers took the row owned by the validator as "self".
+ * KILLED BY: dropping `kind` from the primary key or the INSERT;
+ * classifying "self" by owner_fp == validator_fp in any reader (the
+ * frozen self would read D5_AMT or BOND_BASE by row order and the gate
+ * would fault, or the self-delegation would be paid as base with no
+ * commission); skipping owner == validator in the delegator loop (key 0
+ * would lose its 79412); ordering by owner_fp alone (the two key-0 rows
+ * would have no defined order). */
+static int t_self_delegation(void) {
+    fixture_t fx;
+    CHECK(fx_stage1(&fx, "selfdel", SPECD, 3, DELS_SELF, 2) == 0,
+          "stage1");
+    CHECK(fx_stage2(&fx) == 0,
+          "stage2 — the engine genesis writes copy(0) with a "
+          "self-delegation (no primary-key collision)");
+    OK();
+
+    /* ── the copy: two rows owned by key 0 under validator 0 ─────────── */
+    CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_balance_copy "
+                   "WHERE epoch_start = 0") == 5,
+          "copy(0): three bonds + two delegations (one of them key 0's own)");
+    CHECK(copy_of_kind(fx.w, 0, 0, 0, 0) == BOND_BASE &&
+          copy_of_kind(fx.w, 0, 0, 0, 1) == D5_AMT &&
+          copy_of_kind(fx.w, 0, 0, 6, 1) == D6_AMT,
+          "key 0's bond is kind 0, its self-delegation kind 1, key 6's "
+          "delegation kind 1");
+    CHECK(copy_of_kind(fx.w, 0, 0, 6, 0) == UINT64_MAX,
+          "no kind-0 row for a foreign owner");
+    OK();
+
+    /* ── D4: the total order (owner_fp, kind) — key 0's two rows are
+     *    adjacent, bond first ───────────────────────────────────────── */
+    {
+        sqlite3_stmt *st = NULL;
+        CHECK(sqlite3_prepare_v2(fx.w->db,
+                  "SELECT owner_fp, kind FROM v2_balance_copy "
+                  "WHERE epoch_start = 0 AND validator_fp = ?1 "
+                  "ORDER BY owner_fp ASC, kind ASC", -1, &st, NULL)
+              == SQLITE_OK, "prep");
+        sqlite3_bind_blob(st, 1, g_fpraw[0], 64, SQLITE_TRANSIENT);
+        int idx = 0, i_bond = -1, i_self = -1, n = 0;
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            const void *o = sqlite3_column_blob(st, 0);
+            int k = sqlite3_column_int(st, 1);
+            if (o && memcmp(o, g_fpraw[0], 64) == 0) {
+                if (k == 0) i_bond = idx;
+                if (k == 1) i_self = idx;
+            }
+            idx++;
+            n++;
+        }
+        sqlite3_finalize(st);
+        CHECK(n == 3, "validator 0 holds three copy rows");
+        CHECK(i_bond >= 0 && i_self == i_bond + 1,
+              "the bond row comes IMMEDIATELY before the self-delegation "
+              "row in (owner_fp, kind) order");
+    }
+    OK();
+
+    /* ── ranking / voting power: the frozen reader ───────────────────── */
+    {
+        uint64_t self = 0, total = 0;
+        CHECK(nodus_witness_v2_balance_copy_frozen(fx.w, 0, g_pk[0], &self,
+                                                   &total) == 0,
+              "frozen read");
+        CHECK(self == BOND_BASE,
+              "frozen self = the kind-0 bond ONLY, not the self-delegation");
+        CHECK(total == BOND_BASE + D5_AMT + D6_AMT,
+              "frozen total counts the self-delegation like any "
+              "delegation — the ranking key and the voting power grow by it");
+    }
+    OK();
+    {
+        dnac_validator_record_t v;
+        memset(&v, 0, sizeof(v));
+        CHECK(nodus_validator_get(fx.w, g_pk[0], &v) == 0, "row");
+        CHECK(v.self_stake == BOND_BASE &&
+              v.total_delegated == D5_AMT + D6_AMT &&
+              v.external_delegated == D5_AMT + D6_AMT,
+              "live row: the self-delegation is in BOTH delegated buckets "
+              "(self_stake + external_delegated is the live ranking key)");
+    }
+    OK();
+
+    /* ── the split at boundary E ─────────────────────────────────────── */
+    {
+        split_t s;
+        split_specd(PAYOUT, D5_AMT, D6_AMT, &s);
+        CHECK(s.v0 + s.d5 == EXP_V0_SELF && s.d6 == EXP_D6 &&
+              s.sum == EXP_SUM,
+              "FIXTURE GUARD: 385293 / 26470 / 999997 match the formula");
+    }
+    OK();
+    CHECK(fx_drive(&fx, E, ALL3) == 0, "boundary E applies");
+    CHECK(accrual_of(fx.w, 0) == EXP_V0_SELF,
+          "key 0: base + commission + its own delegation's share");
+    CHECK(accrual_of(fx.w, 6) == EXP_D6,
+          "key 6: unchanged — the self-delegation took nothing from it");
+    CHECK(accrual_of(fx.w, 1) == EXP_V12 && accrual_of(fx.w, 2) == EXP_V12,
+          "keys 1, 2: full share");
+    CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_reward_accrual") == 4,
+          "four recipients: key 0 is ONE accrual row for both its roles");
+    CHECK(q1(fx.w, "SELECT reward_pool FROM supply_tracking")
+              == POOL - EXP_SUM,
+          "the pool is debited by exactly Σ credited — the same 999997 as "
+          "§2, nothing counted twice");
+    CHECK(supply_closes(fx.w), "the equation closes");
+    OK();
+
+    /* ── G2 fail-closed: a copy row that is not what the writer writes ─ */
+    {
+        uint64_t self = 0, total = 0;
+        CHECK(copy_plant(fx.w, 7, 0, 1) == 0, "plant a foreign kind-0 row");
+        CHECK(nodus_witness_v2_balance_copy_frozen(fx.w, 0, g_pk[0], &self,
+                                                   &total) == -1,
+              "a kind-0 (bond) row owned by anyone but the validator is a "
+              "FAULT, never a self amount");
+        CHECK(run_sql(fx.w->db, "DELETE FROM v2_balance_copy WHERE "
+                                "epoch_start = 0 AND amount = 1") == 0,
+              "remove");
+        CHECK(copy_plant(fx.w, 7, 2, 1) == 0, "plant a kind-2 row");
+        CHECK(nodus_witness_v2_balance_copy_frozen(fx.w, 0, g_pk[0], &self,
+                                                   &total) == -1,
+              "a kind outside {0, 1} is a FAULT");
+        CHECK(run_sql(fx.w->db, "DELETE FROM v2_balance_copy WHERE "
+                                "epoch_start = 0 AND amount = 1") == 0,
+              "remove");
+        CHECK(nodus_witness_v2_balance_copy_frozen(fx.w, 0, g_pk[0], &self,
+                                                   &total) == 0 &&
+              self == BOND_BASE, "clean again");
+    }
+    OK();
+    fx_close(&fx);
+
+    /* ── determinism twin: the same composition seeded in OPPOSITE order
+     *    agrees on both roots after the paying boundary ─────────────── */
+    {
+        fixture_t a, b;
+        CHECK(fx_stage1(&a, "selfdel_a", SPECD, 3, DELS_SELF, 2) == 0 &&
+              fx_stage2(&a) == 0, "a");
+        CHECK(fx_stage1(&b, "selfdel_b", SPECD_REV, 3, DELS_SELF_REV, 2)
+                  == 0 && fx_stage2(&b) == 0, "b");
+        CHECK(fx_drive(&a, E, ALL3) == 0 && fx_drive(&b, E, ALL3) == 0,
+              "drive both");
+        uint8_t sa[64], ca[64], sb[64], cb[64];
+        CHECK(nodus_witness_system_root_v2(a.w, sa) == 0 &&
+              nodus_witness_core_root_v2(a.w, ca) == 0 &&
+              nodus_witness_system_root_v2(b.w, sb) == 0 &&
+              nodus_witness_core_root_v2(b.w, cb) == 0, "roots");
+        CHECK(accrual_of(a.w, 0) == EXP_V0_SELF,
+              "not vacuous: the compared state paid the self-delegation");
+        CHECK(memcmp(sa, sb, 64) == 0 && memcmp(ca, cb, 64) == 0,
+              "the twins agree on SYSTEM and CORE");
+        fx_close(&a);
+        fx_close(&b);
+    }
+    OK();
+    return 0;
+}
+
 /* ══════════════════════════════════════════════════════════════════════ */
 
 int main(void) {
@@ -2058,6 +2290,8 @@ int main(void) {
         { "§6 F55/F56/F59 roll back whole", t_fault_distribution },
         { "§6 the payday stages roll back whole", t_fault_payday },
         { "§7 determinism twin", t_determinism_twin },
+        { "§8 a self-delegation: copy kind, ranking, split, twin (W-B)",
+          t_self_delegation },
     };
 
     for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {

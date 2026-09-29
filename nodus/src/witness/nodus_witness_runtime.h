@@ -183,7 +183,8 @@ typedef struct {
  * caller parameter and no runtime return value can substitute for it:
  * a leg whose auth hook did not return 0 never reaches execution.
  *
- * TWO supported schemes this release (capacity season):
+ * THREE supported schemes this release (capacity season; kind 3 —
+ * general multisig, final pre-testnet wipe):
  *
  *   auth_kind 1 — NODUS_RT_AUTHKIND_DSA87_MULTI_V1: auth_data =
  *     signer_count u8 (1..NODUS_RT_AUTH_MAX_SIGNERS)
@@ -235,6 +236,33 @@ typedef struct {
  *   property kind 1 already has for its signer set; it is the seam the
  *   intent-identity season inherits, not a soundness hole.
  *
+ *   auth_kind 3 — NODUS_RT_AUTHKIND_DSA87_MSIG_V1 (general multisig,
+ *   decision 2026-09-29-general-multisig.md, design §7 rev 2 — CORE
+ *   only): auth_data =
+ *     the ENTIRE kind-1 body (the signer section, same rules, same
+ *     signatures over the SAME leg auth_digest — there is NO new
+ *     signature preimage)
+ *     ‖ dcount u8 (1 .. NODUS_RT_MSIG_MAX_DESC)
+ *     ‖ dcount × ( dlen u16 BE ‖ descriptor[dlen] )
+ *   Each descriptor is a shared/dnac/msig_wire.h descriptor ("DNA.MSIG.v1"
+ *   ‖ M ‖ N ‖ N × pubkey, 2 <= N <= 7, 1 <= M <= N, keys strictly
+ *   ascending, no zero key), dlen EXACTLY 18 + N × 2592; descriptors
+ *   STRICTLY ascending by their ADDRESS SHA3-512(descriptor) (duplicates
+ *   and disorder reject — one canonical encoding); the SUM of N over the
+ *   leg's descriptors <= NODUS_RT_MSIG_MAX_KEYS (15, the signer ceiling
+ *   — design F3.1, operator decision); the blob is consumed EXACTLY.
+ *   The hook verifies the signers exactly as kind 1, then records EVERY
+ *   carried descriptor's address in the verdict with a SATISFIED flag:
+ *   satisfied iff at least M of the descriptor's keys are among the
+ *   verified signer keys. The hook REJECTS NOTHING on satisfaction or use
+ *   — whether an input is owned, and the "a carried descriptor no input
+ *   uses" rule, are EXEC decisions (design F1.2; the CORE exec's one
+ *   ownership predicate, nodus_witness_rt_native.c rtn_input_owned), so
+ *   the descriptor bytes are always priced (w_authbyte) before any exec
+ *   verdict. The descriptor bytes do NOT enter intent_id (they are
+ *   authorization bytes) — auth_kind does (F1.4): the kind-1 and kind-3
+ *   spellings of one transfer are two intents.
+ *
  * Every other auth_kind value REJECTS (unsupported scheme, fail-closed),
  * and a runtime accepts only the kinds its allowed_auth_kinds mask
  * declares (table field below).
@@ -242,6 +270,10 @@ typedef struct {
  * charges nothing, so authorization is never charged twice. */
 #define NODUS_RT_AUTHKIND_DSA87_MULTI_V1  ((uint8_t)1)
 #define NODUS_RT_AUTHKIND_DSA87_CC_V1     ((uint8_t)2)
+/** General multisig (decision 2026-09-29-general-multisig.md). NOTE the
+ *  name: kind 1 is already "..._MULTI_V1" (many SIGNERS); this is the
+ *  M-of-N ADDRESS scheme. */
+#define NODUS_RT_AUTHKIND_DSA87_MSIG_V1   ((uint8_t)3)
 /** DERIVED, not chosen: the largest signer cardinality any compiled
  *  runtime can legally require. CORE SPEND accepts up to 15 inputs
  *  (RTN_SPEND_MAX_IN, nodus_witness_rt_native.c — the mediated-read
@@ -254,6 +286,16 @@ typedef struct {
 #define NODUS_RT_AUTH_SIGNER_LEN          (2592u + 4627u)   /* pk ‖ sig  */
 /** One kind-2 approval: snapshot_index u16 BE ‖ ML-DSA-87 signature. */
 #define NODUS_RT_AUTH_APPROVAL_LEN        (2u + 4627u)
+/** auth_kind 3: the most descriptor KEYS one leg may carry (Σ N over its
+ *  descriptors) — the signer ceiling, operator decision 2026-09-29
+ *  (design §7 rev 2, F3.1: 15 descriptors × 15 keys would not fit the
+ *  1 MiB envelope; bounding the SUM keeps the worst case derived —
+ *  nodus_witness_rt_native.c capacity asserts). */
+#define NODUS_RT_MSIG_MAX_KEYS            NODUS_RT_AUTH_MAX_SIGNERS
+/** auth_kind 3: the most descriptors one leg may carry — DERIVED, not
+ *  chosen: Σ N <= 15 with every N >= DNA_MSIG_MIN_N (2) gives at most
+ *  floor(15 / 2) = 7 (msig_wire.h; pinned in rt_native.c). */
+#define NODUS_RT_MSIG_MAX_DESC            7
 /** Per-runtime auth-kind allowlist bits (allowed_auth_kinds). */
 #define NODUS_RT_AUTHKIND_BIT(k)          ((uint32_t)1u << (k))
 
@@ -274,8 +316,11 @@ typedef struct {
 
 /** The engine-owned verdict of ONE leg's verified authorization. Only
  *  the engine writes it (through the resolved auth hook); runtimes read
- *  it through ctx->auth. Kind 1 leaves the approval fields ZERO; kind 2
- *  fills them from the verified committee evidence. */
+ *  it through ctx->auth. Kind 1 leaves the approval AND multisig fields
+ *  ZERO; kind 2 fills the approval fields from the verified committee
+ *  evidence; kind 3 fills the multisig fields (F1.1: the verdict carries
+ *  the multisig decision, so exec binds to the verdict and never to
+ *  envelope bytes). */
 typedef struct {
     uint16_t n_signers;                  /* 1..NODUS_RT_AUTH_MAX_SIGNERS */
     uint8_t  signer_fp[NODUS_RT_AUTH_MAX_SIGNERS][64]; /* SHA3-512(pk)   */
@@ -283,6 +328,12 @@ typedef struct {
     uint16_t n_approvals;                /* verified DISTINCT approvals  */
     uint16_t committee_n;                /* resolved committee size the
                                           * approvals verified against   */
+    /* general multisig (kind 3 only): EVERY carried descriptor, in wire
+     * order (= strictly ascending address). 0 for kinds 1 and 2. */
+    uint16_t n_msig;                     /* 0..NODUS_RT_MSIG_MAX_DESC    */
+    uint8_t  msig_satisfied[NODUS_RT_MSIG_MAX_DESC];  /* 1 = >= M of its
+                                          * keys are verified signers    */
+    uint8_t  msig_addr[NODUS_RT_MSIG_MAX_DESC][64];   /* SHA3-512(desc)  */
 } nodus_rt_auth_verdict_t;
 
 /** The engine-owned execution context for one leg. Every pointer is a
@@ -327,6 +378,17 @@ typedef struct {
      * read_plan/exec consume committee FACTS only through the verdict
      * (n_approvals / committee_n), never the raw snapshot. */
     const nodus_rt_committee_t *committee;
+    /* Final pre-testnet wipe W-C (decision 2026-09-28-token-create-fee-
+     * governance.md): the COMMITTED chain_config param 6
+     * (TOKEN_CREATE_FEE_RAW) active at `global_height`, read by the
+     * ENGINE (nodus_witness_v2_apply.c env_token_create_fee — the gas
+     * price's read discipline: a read fault is a node FAULT, never a
+     * default) and handed in, because the hooks are pure and touch no
+     * database. With no row active it is the compiled
+     * NODUS_W_TOKEN_CREATE_FEE. Filled on every ctx the engine builds
+     * (auth stage and read_plan/exec); the CORE TOKEN_CREATE exec is its
+     * one consumer (rtn_tc_exec: fee >= this). A hook never chooses it. */
+    uint64_t       token_create_fee;
 } nodus_rt_exec_ctx_t;
 
 /**
@@ -540,8 +602,9 @@ const nodus_domain_runtime_t *nodus_runtime_builtin_table(size_t *n_out);
  * Self-check of the production table, fail-closed:
  *   - every entry's pinned ruleset_hash equals a FRESH
  *     dna_ruleset_desc_hash of its checked-in descriptor;
- *   - allowed_auth_kinds is non-zero, names only compiled kinds (1/2),
- *     and matches the configured shape exactly: SYSTEM {1,2}, CORE {1};
+ *   - allowed_auth_kinds is non-zero, names only compiled kinds (1/2/3),
+ *     and matches the configured shape exactly: SYSTEM {1,2}, CORE {1,3}
+ *     (general multisig, CORE v4);
  *   - descriptor identity fields (domain_id / runtime_abi /
  *     ruleset_version) equal the entry's tuple fields;
  *   - runtime_kind is NATIVE_BUILTIN;

@@ -38,10 +38,9 @@
 #include "dnac/vset_wire.h"
 
 #include "crypto/hash/qgp_sha3.h"
-#include "crypto/utils/qgp_fingerprint.h"    /* D7 — the payout-key ↔
-                                              * fingerprint derivation,
-                                              * the SAME converter the
-                                              * legacy staking path uses
+#include "crypto/utils/qgp_fingerprint.h"    /* qgp_fp_raw_to_hex — the
+                                              * SAME converter the legacy
+                                              * staking path uses
                                               * (nodus_witness_bft.c)   */
 #include "crypto/utils/qgp_log.h"
 
@@ -465,7 +464,11 @@ typedef struct {
     size_t           n_leaves;
     uint64_t         stake_total;    /* Σ self_stake                      */
     uint64_t         alloc_total;    /* Σ allocation amounts              */
-    uint64_t         total_claimable;/* total_supply_raw − stake_total    */
+    uint64_t         treasury_total; /* Σ treasury balances (W-A)         */
+    uint64_t         genout_total;   /* Σ genesis outputs (multisig, v5)  */
+    uint64_t         total_claimable;/* total_supply_raw − stake_total
+                                      * − reward pool − treasury_total
+                                      * − genout_total                    */
 } gen_plan_t;
 
 static void gen_plan_free(gen_plan_t *p) {
@@ -496,14 +499,20 @@ static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
     memset(p, 0, sizeof(*p));
 
     /* tokenomics-v3 P4 (OBLIGATION atlas-dec-71525f3b, "the version-2
-     * genesis path" is DELETED): the version-3 document is the only
-     * config this build derives. A version-2 config used to be accepted
-     * here and derived by nodus_witness_v2_gen_derive, which no longer
-     * exists. */
-    if (cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION_V3) {
-        QGP_LOG_ERROR(LOG_TAG, "config_version %u is not 3 — the version-3 "
-                      "(cometbft) genesis document is the only config this "
-                      "build derives; refusing",
+     * genesis path" is DELETED): the cometbft genesis document is the
+     * only config this build derives. A version-2 config used to be
+     * accepted here and derived by nodus_witness_v2_gen_derive, which no
+     * longer exists. W-A (final pre-testnet wipe): the document is
+     * version 4 — the version-3 layout plus the treasury pools — and a
+     * version-3 config is refused like any other. General multisig
+     * (decision 2026-09-29-general-multisig.md ONAY 2): version 5 — the
+     * version-4 layout plus the genesis outputs — and version 4 is
+     * refused the same way. */
+    if (cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION_V5) {
+        QGP_LOG_ERROR(LOG_TAG, "config_version %u is not 5 — the version-5 "
+                      "(cometbft + treasury pools + genesis outputs) genesis "
+                      "document is the only config this build derives; "
+                      "refusing",
                       (unsigned)cfg->config_version);
         return -1;
     }
@@ -647,61 +656,43 @@ static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
             return -1;
         }
 
-        /* ── D7 / G7 — THE PAYOUT FINGERPRINT MUST DERIVE FROM THE
-         * PAYOUT KEY ─────────────────────────────────────────────────
-         * The predicate above validates the fingerprint's SHAPE. It
-         * cannot validate its MEANING, and the meaning is where the
-         * money is: retirement releases the locked self-bond to the
-         * FINGERPRINT alone (v2ep_release_utxo takes
-         * v.unstake_destination_fp, nodus_witness_v2_epoch.c:397); the
-         * stored payout KEY is never consulted when choosing the
-         * destination. A transcription error in the ceremony config
-         * therefore sends DNAC_SELF_STAKE_AMOUNT to an address nobody
-         * holds a key for — permanently, per validator, with no
-         * on-chain recovery and no later block at which anyone could
-         * notice.
+        /* ── THE DESTINATION IS AN ADDRESS, CHECKED BY SHAPE ONLY ─────
+         * General multisig (decision 2026-09-29-general-multisig.md,
+         * operator answer: the seven genesis validators' self-stake
+         * returns to the FOUNDATION MULTISIG ADDRESS; design F4.4)
+         * REPLACES the former D7 / G7 rule "unstake_destination_fp ==
+         * SHA3-512(unstake_destination_pubkey)". A multisig address is
+         * SHA3-512 of a descriptor, not of one key, so no single pubkey
+         * can derive it and that rule would refuse exactly the
+         * destination the decision requires. For a genesis row the
+         * destination is therefore an ADDRESS — a single-key
+         * fingerprint or an M-of-N address alike — and consensus checks
+         * its SHAPE only: nodus_witness_v2_epoch_val_rec_ok above (128
+         * lowercase hex + NUL, the graduation's own predicate), which is
+         * all the release needs (v2ep_release_utxo reads the fingerprint
+         * alone). Its MEANING — that it is the Foundation address the
+         * known keys and threshold produce — is the ceremony's check
+         * (nodus/tools/genesis/check_genesis_conf.sh recomputes the
+         * multisig address from the listed pubkeys + M and compares), not
+         * a rule a node can evaluate without the descriptor.
          *
-         * ⚠ ORDER IS PART OF THE SPEC: this runs AFTER
-         * nodus_witness_v2_epoch_val_rec_ok, never before.
-         * test_v2_gen.c:628-659 mutates the fingerprint four times to
-         * prove the four SHAPE refusals (all-zero, short, uppercase,
-         * missing NUL). Every one of those mutants ALSO fails the
-         * derivation check — so if this ran first it would swallow all
-         * four: they would still assert `!= 0` and still report PASS,
-         * while no longer proving the thing their names claim. Running
-         * second leaves each existing assertion meaning exactly what it
-         * says.
-         *
-         * The derivation reuses the shared helpers rather than a local
-         * hex loop, for the same reason the L2-F4 check calls the
-         * graduation's own exported predicate: the legacy staking path
-         * builds this field with exactly these two calls
-         * (nodus_witness_bft.c:2505-2511), and a second implementation
-         * is a second thing that can drift. */
+         * `unstake_destination_pubkey` MUST BE ALL ZERO on a genesis row
+         * (decision ONAY 2, item 2): a genesis seat's destination is an
+         * address no single key opens, so the field has exactly one
+         * canonical value — no free bytes inside the chain-id preimage,
+         * and the STAKE rule's own convention for a destination that is
+         * not the staker's key (rtn_stake_exec writes zeros there). A
+         * later STAKE's refund is unaffected (its call's dest_fp). */
         {
-            uint8_t fp_raw[QGP_FP_RAW_BYTES];
-            char    fp_want[QGP_FP_HEX_BUFFER];
-            if (qgp_sha3_512(v->unstake_destination_pubkey,
-                             DNAC_PUBKEY_SIZE, fp_raw) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "validator[%u] payout fingerprint "
-                              "could not be derived — refusing", (unsigned)i);
-                return -1;
-            }
-            qgp_fp_raw_to_hex(fp_raw, fp_want);
-            /* All DNAC_FINGERPRINT_SIZE bytes, including the terminator:
-             * the predicate above already proved index 128 is 0 on the
-             * config side, and qgp_fp_raw_to_hex writes it on this side,
-             * so a full-width compare is exact rather than optimistic. */
-            if (memcmp(v->unstake_destination_fp, fp_want,
-                       DNAC_FINGERPRINT_SIZE) != 0) {
-                QGP_LOG_ERROR(LOG_TAG,
-                    "validator[%u] unstake_destination_fp does NOT derive "
-                    "from unstake_destination_pubkey — refusing. This "
-                    "validator's %llu raw self-bond would be released to an "
-                    "address no key opens. config=%.128s derived=%.128s",
-                    (unsigned)i,
-                    (unsigned long long)DNAC_SELF_STAKE_AMOUNT,
-                    (const char *)v->unstake_destination_fp, fp_want);
+            int allz = 1;
+            for (size_t b = 0; b < DNAC_PUBKEY_SIZE && allz; b++)
+                if (v->unstake_destination_pubkey[b] != 0) allz = 0;
+            if (!allz) {
+                QGP_LOG_ERROR(LOG_TAG, "validator[%u] "
+                              "unstake_destination_pubkey is not all zero "
+                              "— a genesis seat's destination is an "
+                              "address (the Foundation multisig), never a "
+                              "single payout key; refusing", (unsigned)i);
                 return -1;
             }
         }
@@ -808,15 +799,94 @@ static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
             return -1;
         }
 
+    /* ── W-A: the treasury pool set ───────────────────────────────────
+     * Decision 2026-09-28-treasury-pools-and-exact-self-stake.md answer
+     * 11: pool ids 1..9 in the tokenomics §1 table order. The array IS
+     * the pool set: entry i must carry pool_id i + 1, so the set is
+     * complete, duplicate-free and strictly ascending by construction —
+     * the same order the seeded table, treasury_root and the bundle read
+     * it in. A balance is bounded to what SQLite stores SIGNED (the
+     * R2-F8 rule for total_supply_raw below); 0 is legal. */
+    for (size_t i = 0; i < NODUS_V2_GEN_TREASURY_POOLS; i++) {
+        const nodus_v2_gen_treasury_t *t = &cfg->treasury[i];
+        if (t->pool_id != (uint32_t)(i + 1)) {
+            QGP_LOG_ERROR(LOG_TAG, "treasury[%zu] pool_id %u — entry %zu "
+                          "must carry pool_id %zu (the fixed pool set "
+                          "1..%u, ascending)", i, (unsigned)t->pool_id, i,
+                          i + 1, (unsigned)NODUS_V2_GEN_TREASURY_POOLS);
+            gen_plan_free(p);
+            return -1;
+        }
+        if (t->balance > (uint64_t)INT64_MAX) {
+            QGP_LOG_ERROR(LOG_TAG, "treasury pool %u balance %llu exceeds "
+                          "INT64_MAX — it cannot be stored without becoming "
+                          "negative", (unsigned)t->pool_id,
+                          (unsigned long long)t->balance);
+            gen_plan_free(p);
+            return -1;
+        }
+        if (add_u64(p->treasury_total, t->balance,
+                    &p->treasury_total) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "treasury sum overflow");
+            gen_plan_free(p);
+            return -1;
+        }
+    }
+
+    /* ── General multisig — the genesis outputs (config_version 5,
+     * decision 2026-09-29-general-multisig.md ONAY 2) ────────────────
+     * Coins that exist from height 0, owned by an ADDRESS (the
+     * Foundation's M-of-N multisig address is the reason they exist).
+     * Kept in DOCUMENT ORDER — the position is the coin's index in its
+     * identity — so NOT sorted and NOT deduplicated by owner (two outputs
+     * to one address are two coins with two indices). An all-zero owner
+     * is refused (no key or descriptor hashes to it — the value would be
+     * burned by a transcription slip); an amount is 1 .. INT64_MAX (the
+     * signed storage bound, R2-F8). Counted by Rule P.2 and NOT
+     * claimable (below). */
+    if (cfg->n_genesis_outputs > NODUS_V2_GEN_MAX_GENOUTS) {
+        QGP_LOG_ERROR(LOG_TAG, "%u genesis outputs exceeds %u",
+                      (unsigned)cfg->n_genesis_outputs,
+                      (unsigned)NODUS_V2_GEN_MAX_GENOUTS);
+        gen_plan_free(p);
+        return -1;
+    }
+    for (uint32_t i = 0; i < cfg->n_genesis_outputs; i++) {
+        const nodus_v2_gen_output_t *o = &cfg->genesis_outputs[i];
+        int allz = 1;
+        for (int b = 0; b < 64 && allz; b++)
+            if (o->owner[b] != 0) allz = 0;
+        if (allz) {
+            QGP_LOG_ERROR(LOG_TAG, "genesis output %u: all-zero owner — "
+                          "no key or descriptor hashes to it", (unsigned)i);
+            gen_plan_free(p);
+            return -1;
+        }
+        if (o->amount < 1 || o->amount > (uint64_t)INT64_MAX) {
+            QGP_LOG_ERROR(LOG_TAG, "genesis output %u: amount %llu outside "
+                          "1 .. INT64_MAX", (unsigned)i,
+                          (unsigned long long)o->amount);
+            gen_plan_free(p);
+            return -1;
+        }
+        if (add_u64(p->genout_total, o->amount, &p->genout_total) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "genesis output sum overflow");
+            gen_plan_free(p);
+            return -1;
+        }
+    }
+
     /* ── L2-F6 Rule P.2 — the supply sum ──────────────────────────────
      * genesis.c:120-152: Σ outputs + Σ self-bond == the chain's
      * committed initial supply. Under- AND over-allocation both reject.
      *
      * tokenomics-v3 P2 (P2-1): the reward reserve is part of the fixed
      * total supply (decision §1: 200M of the 1B "Konsensüs / validator
-     * ödülleri", no minting), so the rule becomes
-     *   Σ allocations + Σ self-stake + reward_pool_initial
-     *     == total_supply_raw. */
+     * ödülleri", no minting), and W-A carves the nine keyless treasury
+     * pools out of it the same way, and general multisig (v5) the
+     * genesis outputs, so the rule becomes
+     *   Σ allocations + Σ self-stake + reward_pool_initial + Σ treasury
+     *     + Σ genesis outputs == total_supply_raw. */
     const uint64_t pool_init = gen_reward_pool(cfg);
     if (cfg->total_supply_raw < 1) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "total_supply_raw must be >= 1");
@@ -842,11 +912,16 @@ static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
     {
         uint64_t locked = 0;
         if (add_u64(p->stake_total, pool_init, &locked) != 0 ||
+            add_u64(locked, p->treasury_total, &locked) != 0 ||
+            add_u64(locked, p->genout_total, &locked) != 0 ||
             locked > cfg->total_supply_raw) {
             QGP_LOG_ERROR(LOG_TAG, "stake-lock %llu + reward pool %llu "
-                          "exceeds total_supply_raw %llu (Rule P.2)",
+                          "+ treasury %llu + genesis outputs %llu exceeds "
+                          "total_supply_raw %llu (Rule P.2)",
                           (unsigned long long)p->stake_total,
                           (unsigned long long)pool_init,
+                          (unsigned long long)p->treasury_total,
+                          (unsigned long long)p->genout_total,
                           (unsigned long long)cfg->total_supply_raw);
             gen_plan_free(p);
             return -1;
@@ -855,7 +930,10 @@ static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
          * the leaf sum — that is what makes the check_totals call below
          * a real cross-check rather than a restatement of its own input.
          * The reserve is not claimable: it is the pool the distribution
-         * pays from (supply_tracking.reward_pool). */
+         * pays from (supply_tracking.reward_pool). Neither are the
+         * treasury pools (W-A): nobody holds a key to them. Nor the
+         * genesis outputs (v5): they are coins from height 0, not
+         * claims. */
         p->total_claimable = cfg->total_supply_raw - locked;
     }
 
@@ -863,13 +941,18 @@ static int gen_plan_build(const nodus_v2_gen_config_t *cfg, gen_plan_t *p) {
         uint64_t sum = 0;
         if (add_u64(p->alloc_total, p->stake_total, &sum) != 0 ||
             add_u64(sum, pool_init, &sum) != 0 ||
+            add_u64(sum, p->treasury_total, &sum) != 0 ||
+            add_u64(sum, p->genout_total, &sum) != 0 ||
             sum != cfg->total_supply_raw) {
             QGP_LOG_ERROR(LOG_TAG, "Σ allocations %llu + Σ self-stake %llu "
-                          "+ reward_pool_initial %llu != total_supply_raw "
-                          "%llu (Rule P.2)",
+                          "+ reward_pool_initial %llu + Σ treasury %llu + "
+                          "Σ genesis outputs %llu != total_supply_raw %llu "
+                          "(Rule P.2)",
                           (unsigned long long)p->alloc_total,
                           (unsigned long long)p->stake_total,
                           (unsigned long long)pool_init,
+                          (unsigned long long)p->treasury_total,
+                          (unsigned long long)p->genout_total,
                           (unsigned long long)cfg->total_supply_raw);
             gen_plan_free(p);
             return -1;
@@ -1120,18 +1203,38 @@ static int gen_seed_state(nodus_witness_t *w2,
      * (nodus_witness_chain_config.c:386-391) it IS carried in the genesis
      * bundle and IS seen by a whole-database digest, so it would break
      * the determinism twin. commit_block and proposal_nonce are 0 — no
-     * block committed these and no proposal produced them. */
+     * block committed these and no proposal produced them.
+     *
+     * W-C (final pre-testnet wipe): the SAME statement also commits the
+     * genesis values of the two GOVERNED fee parameters — param 5
+     * GAS_PRICE_RAW_PER_UNIT (decision 2026-09-25-gas-price.md "Son wipe
+     * paketi": 121, effective at height 0 so the gas rule is ON from the
+     * first block) and param 6 TOKEN_CREATE_FEE_RAW (decision
+     * 2026-09-28-token-create-fee-governance.md: 10^11). Unlike the band,
+     * these ids ARE governance ids: a later CHAIN_CONFIG vote adds a row
+     * at a higher effective_block (the grace floor keeps it > 0, so it
+     * can never collide with this row's (param_id, 0) key), and
+     * nodus_chain_config_get_u64 answers the latest row at or below the
+     * height. The values come from the document, which is hashed into
+     * the chain id. */
     {
         static const struct { unsigned param; const char *name; } econ[] = {
             { NODUS_CC_ECON_BLOCKS_PER_YEAR,  "blocks_per_year"       },
             { NODUS_CC_ECON_DECIMAL_UNIT,     "decimal_unit"          },
             { NODUS_CC_ECON_EPOCH_LENGTH,     "epoch_length"          },
+            { DNAC_CFG_GAS_PRICE_RAW_PER_UNIT, "gas_price_raw_per_unit" },
+            { DNAC_CFG_TOKEN_CREATE_FEE_RAW,  "token_create_fee_raw"  },
         };
         const uint64_t val[] = {
             cfg->blocks_per_year,
             cfg->decimal_unit,
             cfg->epoch_length,
+            cfg->gas_price_raw_per_unit,
+            cfg->token_create_fee_raw,
         };
+        _Static_assert(sizeof(econ) / sizeof(econ[0]) ==
+                           sizeof(val) / sizeof(val[0]),
+                       "every seeded chain_config row needs its value");
         const size_t n_econ = sizeof(econ) / sizeof(econ[0]);
 
         sqlite3_stmt *st = NULL;
@@ -1183,8 +1286,9 @@ static int gen_seed_state(nodus_witness_t *w2,
                           &n) != 0) return -1;
             if (n != (sqlite3_int64)n_econ) {
                 QGP_LOG_ERROR(LOG_TAG, "chain_config_history holds %lld rows "
-                              "after seeding %zu economic parameters — "
-                              "refusing", (long long)n, n_econ);
+                              "after seeding %zu genesis parameters (3 "
+                              "economic + 2 governed fee) — refusing",
+                              (long long)n, n_econ);
                 return -1;
             }
         }
@@ -1203,6 +1307,95 @@ static int gen_seed_state(nodus_witness_t *w2,
                               "does not read back as the config — ABORT");
                 return -1;
             }
+        }
+        /* W-C: the two governed rows read back through the RUNTIME's own
+         * accessor, at height 1 (the first block that obeys them) — the
+         * default passed is an impossible value for each, so an absent
+         * row cannot read back as the configured one. */
+        {
+            uint64_t gp = UINT64_MAX, tf = 0;
+            if (nodus_chain_config_get_u64(
+                    w2, (uint8_t)DNAC_CFG_GAS_PRICE_RAW_PER_UNIT, 1ULL,
+                    UINT64_MAX, &gp) != 0 ||
+                gp != cfg->gas_price_raw_per_unit ||
+                nodus_chain_config_get_u64(
+                    w2, (uint8_t)DNAC_CFG_TOKEN_CREATE_FEE_RAW, 1ULL,
+                    0ULL, &tf) != 0 ||
+                tf != cfg->token_create_fee_raw) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "the committed fee parameters "
+                              "do not read back as the config — ABORT");
+                return -1;
+            }
+        }
+    }
+
+    /* ── THE TREASURY POOLS (final pre-testnet wipe, W-A) ─────────────
+     * Decision 2026-09-28-treasury-pools-and-exact-self-stake.md: the
+     * nine pools are keyless and locked, seeded HERE from the document
+     * and nowhere else. Before the ledger genesis runs, so the SYSTEM
+     * payload root the manifest commits (nodus_witness_system_payload_
+     * root_v2, "DNA.SYSPAYL.v3") sees them, and before the supply
+     * post-condition, whose equation counts them.
+     *
+     * The same three-step discipline as the econ band above: the table
+     * is ASSERTED empty first (a future create_chain_db that seeded a
+     * pool row must fail loudly, never be overwritten), exactly
+     * NODUS_V2_GEN_TREASURY_POOLS rows are written in pool_id ASC (the
+     * array order gen_plan_build proved), and the table must then hold
+     * EXACTLY those rows and read back as the config. */
+    {
+        sqlite3_int64 n = -1;
+        if (gen_count(w2->db, "SELECT COUNT(*) FROM v2_treasury", &n) != 0)
+            return -1;
+        if (n != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "v2_treasury holds %lld rows before a "
+                          "pure-V2 genesis — refusing", (long long)n);
+            return -1;
+        }
+
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(w2->db,
+                "INSERT INTO v2_treasury (pool_id, balance) VALUES (?1, ?2)",
+                -1, &st, NULL) != SQLITE_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "%s",
+                          "treasury insert could not be prepared");
+            return -1;
+        }
+        for (size_t i = 0; i < NODUS_V2_GEN_TREASURY_POOLS; i++) {
+            sqlite3_reset(st);
+            sqlite3_clear_bindings(st);
+            sqlite3_bind_int64(st, 1, (sqlite3_int64)cfg->treasury[i].pool_id);
+            sqlite3_bind_int64(st, 2, (sqlite3_int64)cfg->treasury[i].balance);
+            if (sqlite3_step(st) != SQLITE_DONE) {
+                QGP_LOG_ERROR(LOG_TAG, "treasury pool %u could not be "
+                              "seeded: %s",
+                              (unsigned)cfg->treasury[i].pool_id,
+                              sqlite3_errmsg(w2->db));
+                sqlite3_finalize(st);
+                return -1;
+            }
+        }
+        sqlite3_finalize(st);
+
+        /* POST-CONDITION: exactly the pool set (Fable F4's exact-count
+         * discipline, applied to the new table). */
+        n = -1;
+        if (gen_count(w2->db, "SELECT COUNT(*) FROM v2_treasury", &n) != 0)
+            return -1;
+        if (n != (sqlite3_int64)NODUS_V2_GEN_TREASURY_POOLS) {
+            QGP_LOG_ERROR(LOG_TAG, "v2_treasury holds %lld rows after "
+                          "seeding %u pools — refusing", (long long)n,
+                          (unsigned)NODUS_V2_GEN_TREASURY_POOLS);
+            return -1;
+        }
+        /* READ-BACK through the consensus loader's own total: the value
+         * the supply equation will use must be the config's. */
+        uint64_t total = 0;
+        if (nodus_witness_treasury_total(w2, &total) != 0 ||
+            total != plan->treasury_total) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "the seeded treasury does not read "
+                          "back as the config — ABORT");
+            return -1;
         }
     }
 
@@ -1245,6 +1438,112 @@ static int gen_seed_state(nodus_witness_t *w2,
                 return -1;
             }
         }
+    }
+
+    /* General multisig (config_version 5, decision ONAY 2): the genesis
+     * outputs, BEFORE the genesis root is taken (the caller runs
+     * nodus_witness_v2_genesis_cmt after this seeder), through the ONE
+     * writer a joiner's bundle adopt also calls — so the committed
+     * utxo_set, and therefore app_hash, is the same on both paths. The
+     * identity uses source_commit, which exists already (document →
+     * source_commit → outputs → app_hash → chain_id). */
+    if (nodus_witness_v2_gen_seed_outputs(w2, cfg, source_commit) != 0)
+        return -1;
+    return 0;
+}
+
+/* ── General multisig: the genesis outputs (decision ONAY 2) ──────────── */
+
+/** "DNA.GENOUT.v1" (13 chars) + 3 zero bytes — collision-scanned against
+ *  the tree's "DNA.*" tags at introduction (no other tag spells it). */
+static const uint8_t GEN_TAG_GENOUT[16] = {
+    'D','N','A','.','G','E','N','O','U','T','.','v','1', 0, 0, 0
+};
+
+int nodus_witness_v2_gen_output_nullifier(
+        const uint8_t source_commit[NODUS_V2_GEN_SRCCOMMIT_LEN],
+        uint32_t index, uint8_t out[64]) {
+    if (!source_commit || !out) return -1;
+    uint8_t pre[16 + NODUS_V2_GEN_SRCCOMMIT_LEN + 4];
+    size_t off = 0;
+    memcpy(pre + off, GEN_TAG_GENOUT, 16);                    off += 16;
+    memcpy(pre + off, source_commit, NODUS_V2_GEN_SRCCOMMIT_LEN);
+    off += NODUS_V2_GEN_SRCCOMMIT_LEN;
+    put_be32(pre + off, index);                               off += 4;
+    if (off != sizeof(pre)) return -1;        /* 84-byte preimage proof */
+    return qgp_sha3_512(pre, off, out) == 0 ? 0 : -1;
+}
+
+int nodus_witness_v2_gen_seed_outputs(
+        nodus_witness_t *w, const nodus_v2_gen_config_t *cfg,
+        const uint8_t source_commit[NODUS_V2_GEN_SRCCOMMIT_LEN]) {
+    if (!w || !w->db || !cfg || !source_commit) return -1;
+    if (cfg->n_genesis_outputs > NODUS_V2_GEN_MAX_GENOUTS) return -1;
+
+    /* The genesis coins are the FIRST rows of utxo_set: anything already
+     * there is a broken derivation (or a replanted table), never merged. */
+    sqlite3_int64 n0 = -1;
+    if (gen_count(w->db, "SELECT COUNT(*) FROM utxo_set", &n0) != 0)
+        return -1;
+    if (n0 != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "utxo_set holds %lld rows before the genesis "
+                      "outputs are seeded — refusing", (long long)n0);
+        return -1;
+    }
+
+    uint64_t want_sum = 0;
+    for (uint32_t i = 0; i < cfg->n_genesis_outputs; i++) {
+        const nodus_v2_gen_output_t *o = &cfg->genesis_outputs[i];
+        if (o->amount < 1 || o->amount > (uint64_t)INT64_MAX ||
+            add_u64(want_sum, o->amount, &want_sum) != 0)
+            return -1;
+        uint8_t nul[64];
+        char owner_hex[QGP_FP_HEX_BUFFER];
+        if (nodus_witness_v2_gen_output_nullifier(source_commit, i,
+                                                  nul) != 0)
+            return -1;
+        qgp_fp_raw_to_hex(o->owner, owner_hex);
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "INSERT INTO utxo_set (nullifier, owner, amount, token_id, "
+                "tx_hash, output_index, block_height, created_at, "
+                "unlock_block, domain_id) VALUES "
+                "(?1, ?2, ?3, zeroblob(64), ?1, 0, 0, 0, 0, ?4)",
+                -1, &st, NULL) != SQLITE_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "genesis output insert prepare failed: %s",
+                          sqlite3_errmsg(w->db));
+            return -1;
+        }
+        sqlite3_bind_blob(st, 1, nul, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 2, owner_hex, 128, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 3, (sqlite3_int64)o->amount);
+        sqlite3_bind_int64(st, 4, (sqlite3_int64)DNA_DOMAIN_CORE);
+        int rc = sqlite3_step(st);
+        sqlite3_finalize(st);
+        if (rc != SQLITE_DONE || sqlite3_changes(w->db) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "genesis output %u could not be written "
+                          "(rc=%d): %s", (unsigned)i, rc,
+                          sqlite3_errmsg(w->db));
+            return -1;
+        }
+    }
+
+    /* The EXACT post-condition (the "no UTXO at genesis" invariant,
+     * restated): exactly the document's outputs, summing to exactly the
+     * document's total. */
+    sqlite3_int64 n1 = -1, s1 = -1;
+    if (gen_count(w->db, "SELECT COUNT(*) FROM utxo_set", &n1) != 0 ||
+        gen_count(w->db, "SELECT COALESCE(SUM(amount),0) FROM utxo_set",
+                  &s1) != 0)
+        return -1;
+    if (n1 != (sqlite3_int64)cfg->n_genesis_outputs || s1 < 0 ||
+        (uint64_t)s1 != want_sum) {
+        QGP_LOG_ERROR(LOG_TAG, "utxo_set holds %lld rows / %lld raw after "
+                      "seeding; the document has %u outputs / %llu raw",
+                      (long long)n1, (long long)s1,
+                      (unsigned)cfg->n_genesis_outputs,
+                      (unsigned long long)want_sum);
+        return -1;
     }
     return 0;
 }
@@ -1310,6 +1609,25 @@ _Static_assert(NODUS_V2_GEN_SRCCOMMIT_LEN == 64,
 #define GEN_V3_PAYOUT_INTERVAL_EPOCHS  \
         ((uint64_t)NODUS_V2_GEN_PAYOUT_INTERVAL_EPOCHS_DEFAULT)
 
+/* W-C (final pre-testnet wipe) — the genesis values of the two governed
+ * fee parameters, written by `_v3_defaults` and committed as height-0
+ * chain_config_history rows:
+ *   gas price 121 raw/unit — decision 2026-09-25-gas-price.md, "Son wipe
+ *     paketi" (operator 2026-09-28: "Gas ve kurallar 121 good");
+ *   token-creation fee 10^11 raw = 1 000 NODUS — decision
+ *     2026-09-28-token-create-fee-governance.md, operator "Tamam yap".
+ * Like the tokenomics numbers above they are COMMITTED GENESIS DATA: a
+ * config may name other values inside the governance range. */
+#define GEN_V3_GAS_PRICE_RAW_PER_UNIT  121ULL
+#define GEN_V3_TOKEN_CREATE_FEE_RAW    (1000ULL * 100000000ULL)
+_Static_assert(GEN_V3_GAS_PRICE_RAW_PER_UNIT <= DNAC_CFG_MAX_GAS_PRICE,
+               "the default genesis gas price is outside the governed "
+               "range");
+_Static_assert(GEN_V3_TOKEN_CREATE_FEE_RAW >= DNAC_CFG_MIN_TOKEN_CREATE_FEE &&
+                   GEN_V3_TOKEN_CREATE_FEE_RAW <= DNAC_CFG_MAX_TOKEN_CREATE_FEE,
+               "the default genesis token-creation fee is outside the "
+               "governed range");
+
 /* ── big-endian readers (the decoder's half of put_be*) ──────────────── */
 
 static uint16_t get_be16(const uint8_t *p) {
@@ -1366,9 +1684,15 @@ static uint64_t v3_u64(v3rd_t *r) {
  * be written at all, or could be written two ways. */
 static int gen_v3_shape_ok(const nodus_v2_gen_config_t *cfg) {
     if (!cfg) return -1;
-    if (cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION_V3) {
-        QGP_LOG_ERROR(LOG_TAG, "config_version %u is not the version-3 "
+    if (cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION_V5) {
+        QGP_LOG_ERROR(LOG_TAG, "config_version %u is not the version-5 "
                       "document's", (unsigned)cfg->config_version);
+        return -1;
+    }
+    if (cfg->n_genesis_outputs > NODUS_V2_GEN_MAX_GENOUTS) {
+        QGP_LOG_ERROR(LOG_TAG, "%u genesis outputs exceeds the array bound "
+                      "%u", (unsigned)cfg->n_genesis_outputs,
+                      (unsigned)NODUS_V2_GEN_MAX_GENOUTS);
         return -1;
     }
     if (cfg->n_comet_validators > NODUS_V2_GEN_MAX_VALIDATORS) {
@@ -1427,6 +1751,9 @@ static int gen_v3_tail_len(const nodus_v2_gen_config_t *cfg, size_t *out) {
     n += NODUS_V2_GEN_APP_HASH_LEN;
     n += NODUS_V2_GEN_CHAIN_ID_LEN;
     n += 8 + 8 + 8;                          /* the tokenomics fields    */
+    n += (size_t)NODUS_V2_GEN_TREASURY_POOLS * (4 + 8); /* W-A treasury  */
+    n += 8 + 8;                              /* W-C gas price, TC fee    */
+    n += 4 + (size_t)cfg->n_genesis_outputs * (64 + 8);   /* v5 outputs  */
     *out = n;
     return 0;
 }
@@ -1524,6 +1851,30 @@ static int gen_v3_encode_planned(const nodus_v2_gen_config_t *cfg,
     put_be64(p, cfg->reward_divisor_log2);                       p += 8;
     put_be64(p, cfg->payout_interval_epochs);                    p += 8;
 
+    /* W-A (config_version 4): the nine treasury pools, index order —
+     * which gen_plan_build (run by every caller of this function) has
+     * proved to be pool_id 1..9 ascending. No count field: the pool set
+     * is fixed (header layout table). */
+    for (size_t i = 0; i < NODUS_V2_GEN_TREASURY_POOLS; i++) {
+        put_be32(p, cfg->treasury[i].pool_id);                   p += 4;
+        put_be64(p, cfg->treasury[i].balance);                   p += 8;
+    }
+
+    /* W-C (config_version 4): the governed fee parameters' genesis
+     * values, last — header layout table. */
+    put_be64(p, cfg->gas_price_raw_per_unit);                    p += 8;
+    put_be64(p, cfg->token_create_fee_raw);                      p += 8;
+
+    /* General multisig (config_version 5, decision ONAY 2): the genesis
+     * outputs, count then DOCUMENT order — never sorted: the position is
+     * each coin's index in its identity. gen_plan_build proved every
+     * entry (owner not all-zero, 1 <= amount <= INT64_MAX). */
+    put_be32(p, cfg->n_genesis_outputs);                         p += 4;
+    for (uint32_t i = 0; i < cfg->n_genesis_outputs; i++) {
+        memcpy(p, cfg->genesis_outputs[i].owner, 64);            p += 64;
+        put_be64(p, cfg->genesis_outputs[i].amount);             p += 8;
+    }
+
     if ((size_t)(p - buf) != body_len + tail_len) {  /* the invariant */
         free(buf);
         return -1;
@@ -1541,7 +1892,7 @@ static int gen_v3_encode_flags(const nodus_v2_gen_config_t *cfg,
     if (!out || !out_len) return -1;
     *out = NULL;
     *out_len = 0;
-    if (!cfg || cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION_V3)
+    if (!cfg || cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION_V5)
         return -1;
     gen_plan_t plan;
     if (gen_plan_build(cfg, &plan) != 0) return -1;
@@ -1619,10 +1970,11 @@ int nodus_witness_v2_gen_v3_decode(const uint8_t *buf, size_t len,
 
     cfg_out->config_version = v3_u32(&r);
     if (r.err) return -1;
-    if (cfg_out->config_version != NODUS_V2_GEN_CONFIG_VERSION_V3) {
+    if (cfg_out->config_version != NODUS_V2_GEN_CONFIG_VERSION_V5) {
         QGP_LOG_ERROR(LOG_TAG, "genesis document: config_version %u is not "
-                      "3 — a version-2 encoding is not a prefix of this "
-                      "document", (unsigned)cfg_out->config_version);
+                      "5 — a version-4 (or older) encoding is not a "
+                      "prefix of this document",
+                      (unsigned)cfg_out->config_version);
         return -1;
     }
 
@@ -1809,6 +2161,57 @@ int nodus_witness_v2_gen_v3_decode(const uint8_t *buf, size_t len,
     cfg_out->payout_interval_epochs = v3_u64(&r);
     if (r.err) { free(allocs); return -1; }
 
+    /* W-A (config_version 4): EXACTLY the nine treasury pools, entry i
+     * reading pool_id i + 1 — the document rule, refused HERE (the
+     * decoder reads what is a document, not what is writable). A balance
+     * above INT64_MAX is left to the shared rules (gen_plan_build), the
+     * same authority that bounds total_supply_raw. */
+    for (size_t i = 0; i < NODUS_V2_GEN_TREASURY_POOLS; i++) {
+        uint32_t pid = v3_u32(&r);
+        uint64_t bal = v3_u64(&r);
+        if (r.err) { free(allocs); return -1; }
+        if (pid != (uint32_t)(i + 1)) {
+            QGP_LOG_ERROR(LOG_TAG, "genesis document: treasury entry %zu "
+                          "carries pool_id %u, not %zu", i, (unsigned)pid,
+                          i + 1);
+            free(allocs);
+            return -1;
+        }
+        cfg_out->treasury[i].pool_id = pid;
+        cfg_out->treasury[i].balance = bal;
+    }
+
+    /* W-C (config_version 4): the two governed fee parameters. Their
+     * RANGES are the document verdict's (nodus_witness_v2_gen_v3_
+     * validate), not the decoder's — the treasury-balance precedent. */
+    cfg_out->gas_price_raw_per_unit = v3_u64(&r);
+    cfg_out->token_create_fee_raw   = v3_u64(&r);
+    if (r.err) { free(allocs); return -1; }
+
+    /* General multisig (config_version 5): the genesis outputs. The
+     * count bound is the decoder's (it sizes a fixed array); owner and
+     * amount RULES are the shared rules' (gen_plan_build), the
+     * treasury-balance precedent. */
+    {
+        uint32_t ng = v3_u32(&r);
+        if (r.err) { free(allocs); return -1; }
+        if (ng > NODUS_V2_GEN_MAX_GENOUTS) {
+            QGP_LOG_ERROR(LOG_TAG, "genesis document: %u genesis outputs "
+                          "exceeds %u", (unsigned)ng,
+                          (unsigned)NODUS_V2_GEN_MAX_GENOUTS);
+            free(allocs);
+            return -1;
+        }
+        cfg_out->n_genesis_outputs = ng;
+        for (uint32_t i = 0; i < ng; i++) {
+            const uint8_t *ow = v3_take(&r, 64);
+            uint64_t amt = v3_u64(&r);
+            if (r.err || !ow) { free(allocs); return -1; }
+            memcpy(cfg_out->genesis_outputs[i].owner, ow, 64);
+            cfg_out->genesis_outputs[i].amount = amt;
+        }
+    }
+
     /* NO TRAILING BYTE. Two encodings of one document would be two chain
      * ids for one chain; a decoder that ignored a suffix would accept the
      * second of them. */
@@ -1828,8 +2231,14 @@ int nodus_witness_v2_gen_v3_decode(const uint8_t *buf, size_t len,
 
 int nodus_witness_v2_gen_v3_defaults(nodus_v2_gen_config_t *cfg) {
     if (!cfg) return -1;
-    cfg->config_version     = NODUS_V2_GEN_CONFIG_VERSION_V3;
+    cfg->config_version     = NODUS_V2_GEN_CONFIG_VERSION_V5;
     cfg->consensus_protocol = NODUS_V2_GEN_CONSENSUS_COMETBFT;
+    /* W-A: the pool IDS are structural (the fixed pool set 1..9, like
+     * config_version); the BALANCES are the config's and are NOT
+     * touched — they have no defensible default, exactly like the
+     * allocation amounts (header). */
+    for (size_t i = 0; i < NODUS_V2_GEN_TREASURY_POOLS; i++)
+        cfg->treasury[i].pool_id = (uint32_t)(i + 1);
     /* The PORT's own constructor, not a copy of its values: the test that
      * compares the encoded parameters with cmt_default_consensus_params
      * then proves the ENCODING, not a transcription that could agree with
@@ -1838,6 +2247,8 @@ int nodus_witness_v2_gen_v3_defaults(nodus_v2_gen_config_t *cfg) {
     cfg->reward_pool_initial    = GEN_V3_REWARD_POOL_INITIAL;
     cfg->reward_divisor_log2    = GEN_V3_REWARD_DIVISOR_LOG2;
     cfg->payout_interval_epochs = GEN_V3_PAYOUT_INTERVAL_EPOCHS;
+    cfg->gas_price_raw_per_unit = GEN_V3_GAS_PRICE_RAW_PER_UNIT;
+    cfg->token_create_fee_raw   = GEN_V3_TOKEN_CREATE_FEE_RAW;
     return 0;
 }
 
@@ -1917,9 +2328,9 @@ int nodus_witness_v2_gen_v3_fill_comet_rows(nodus_v2_gen_config_t *cfg) {
 
 int nodus_witness_v2_gen_v3_validate(const nodus_v2_gen_config_t *cfg) {
     if (!cfg) return -1;
-    if (cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION_V3) {
-        QGP_LOG_ERROR(LOG_TAG, "config_version %u is not 3 — this is not a "
-                      "version-3 config", (unsigned)cfg->config_version);
+    if (cfg->config_version != NODUS_V2_GEN_CONFIG_VERSION_V5) {
+        QGP_LOG_ERROR(LOG_TAG, "config_version %u is not 5 — this is not a "
+                      "version-5 config", (unsigned)cfg->config_version);
         return -1;
     }
     /* THE SHARED RULES FIRST, through their one authority. */
@@ -1971,6 +2382,26 @@ int nodus_witness_v2_gen_v3_validate(const nodus_v2_gen_config_t *cfg) {
         if (cfg->payout_interval_epochs == 0) {
             QGP_LOG_ERROR(LOG_TAG, "%s", "payout_interval_epochs is 0 — "
                           "the payday needs at least one epoch");
+            break;
+        }
+        /* W-C — the two governed fee parameters' genesis values, bounded
+         * by the SAME ranges the governance scalar rules apply
+         * (nodus_witness_chain_config.c, pinned to these dnac.h macros),
+         * so a genesis can never commit a value no vote could set. */
+        if (cfg->gas_price_raw_per_unit > DNAC_CFG_MAX_GAS_PRICE) {
+            QGP_LOG_ERROR(LOG_TAG, "gas_price_raw_per_unit %llu is above "
+                          "the governed ceiling %llu",
+                          (unsigned long long)cfg->gas_price_raw_per_unit,
+                          (unsigned long long)DNAC_CFG_MAX_GAS_PRICE);
+            break;
+        }
+        if (cfg->token_create_fee_raw < DNAC_CFG_MIN_TOKEN_CREATE_FEE ||
+            cfg->token_create_fee_raw > DNAC_CFG_MAX_TOKEN_CREATE_FEE) {
+            QGP_LOG_ERROR(LOG_TAG, "token_create_fee_raw %llu is outside "
+                          "the governed range [%llu, %llu]",
+                          (unsigned long long)cfg->token_create_fee_raw,
+                          (unsigned long long)DNAC_CFG_MIN_TOKEN_CREATE_FEE,
+                          (unsigned long long)DNAC_CFG_MAX_TOKEN_CREATE_FEE);
             break;
         }
         /* The reference's own parameter rules (types/params.go:145-206),
@@ -2409,10 +2840,15 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "deriving a cometbft (version 3) chain: %u "
-                 "validators, %zu allocations, %llu raw claimable of %llu "
-                 "total", (unsigned)cfg->n_validators, plan.n_leaves,
+    QGP_LOG_INFO(LOG_TAG, "deriving a cometbft (document version 5) chain: "
+                 "%u validators, %zu allocations, %llu raw claimable, %llu "
+                 "raw in the treasury pools, %u genesis outputs (%llu raw), "
+                 "of %llu total",
+                 (unsigned)cfg->n_validators, plan.n_leaves,
                  (unsigned long long)plan.total_claimable,
+                 (unsigned long long)plan.treasury_total,
+                 (unsigned)cfg->n_genesis_outputs,
+                 (unsigned long long)plan.genout_total,
                  (unsigned long long)cfg->total_supply_raw);
 
     /* ── 4. Provisional database name. The chain id does not exist yet —
@@ -2759,16 +3195,26 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
         }
 
         /* (d) The ledger post-conditions (carried over unchanged from
-         * the deleted version-2 derivation): no spendable value, the
-         * whole reserve claimable, exactly the configured bond, every
-         * committed validator row writable-shaped (L2-F4 at the
-         * committed-row level), and the conservation equation balancing
-         * (L2-F1, the producer half). */
-        sqlite3_int64 n_utxo = -1;
+         * the deleted version-2 derivation): spendable value EXACTLY the
+         * document's genesis outputs (general multisig, v5 — the former
+         * "no UTXO at genesis" rule, restated as an exact count AND an
+         * exact sum, after the genesis apply too), the whole reserve
+         * claimable, exactly the configured bond, every committed
+         * validator row writable-shaped (L2-F4 at the committed-row
+         * level), and the conservation equation balancing (L2-F1, the
+         * producer half). */
+        sqlite3_int64 n_utxo = -1, s_utxo = -1;
         if (gen_count(w2->db, "SELECT COUNT(*) FROM utxo_set",
-                      &n_utxo) != 0 || n_utxo != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s",
-                          "a genesis holds spendable UTXOs — ABORT");
+                      &n_utxo) != 0 ||
+            gen_count(w2->db, "SELECT COALESCE(SUM(amount),0) FROM utxo_set",
+                      &s_utxo) != 0 ||
+            n_utxo != (sqlite3_int64)cfg->n_genesis_outputs ||
+            s_utxo < 0 || (uint64_t)s_utxo != plan.genout_total) {
+            QGP_LOG_ERROR(LOG_TAG, "a genesis holds %lld UTXOs / %lld raw, "
+                          "the document %u genesis outputs / %llu raw — "
+                          "ABORT", (long long)n_utxo, (long long)s_utxo,
+                          (unsigned)cfg->n_genesis_outputs,
+                          (unsigned long long)plan.genout_total);
             break;
         }
         {

@@ -267,6 +267,9 @@ static int v2x_cfg_make(v2x_cfgbox_t *b, uint8_t salt) {
             v->unstake_destination_fp[2 * k + 1] = (uint8_t)hexd[d[k] & 0xF];
         }
         v->unstake_destination_fp[128] = 0;
+        /* general multisig ONAY 2: a genesis row's destination pubkey is
+         * ALL ZERO (the fp above is only a shape-valid address) */
+        memset(v->unstake_destination_pubkey, 0, DNAC_PUBKEY_SIZE);
         v->self_stake     = DNAC_SELF_STAKE_AMOUNT;
         v->commission_bps = (uint16_t)(100 * (i + 1));
     }
@@ -292,6 +295,16 @@ static int v2x_cfg_make(v2x_cfgbox_t *b, uint8_t salt) {
         return -1;
     }
     c->reward_pool_initial = 0;     /* the allocation carries the supply */
+    /* W-C: the builder's default genesis gas price is 121 (decision
+     * 2026-09-25-gas-price.md, "Son wipe paketi"), which switches the fee
+     * rule ON from block 1 and refuses every non-SYSTEM envelope paying
+     * less than max(units × 121, 10^6). The engine tests built on this
+     * fixture use small or zero fees to isolate OTHER rules, so the
+     * fixture chain starts with the rule OFF — a committed price-0 row,
+     * a legal genesis value. Tests of the gas rule set their own price
+     * (test_v2_gas_price.c gp_chain_open); the token-creation fee keeps
+     * the builder default (10^11). */
+    c->gas_price_raw_per_unit = 0;
     c->genesis_time_ms     = V2X_GENESIS_TIME_MS;
     c->initial_height      = 1;
     if (nodus_witness_v2_gen_v3_fill_comet_rows(c) != 0) {
@@ -530,12 +543,20 @@ static int v2x_seed_prepare(nodus_witness_t *w, const uint8_t file16[16],
         v2x_cfg_free(&box);
         return -1;
     }
-    const unsigned params[3] = { NODUS_CC_ECON_BLOCKS_PER_YEAR,
+    /* W-C: the SAME five height-0 rows gen_seed_state writes — the econ
+     * band + the governed fee parameters 5 (gas price) and 6 (token-
+     * creation fee), valued from the document this chain stores (so gas
+     * 0 here, v2x_cfg_make; token fee the builder default 10^11). */
+    const unsigned params[5] = { NODUS_CC_ECON_BLOCKS_PER_YEAR,
                                  NODUS_CC_ECON_DECIMAL_UNIT,
-                                 NODUS_CC_ECON_EPOCH_LENGTH };
-    const uint64_t vals[3] = { box.cfg->blocks_per_year,
+                                 NODUS_CC_ECON_EPOCH_LENGTH,
+                                 DNAC_CFG_GAS_PRICE_RAW_PER_UNIT,
+                                 DNAC_CFG_TOKEN_CREATE_FEE_RAW };
+    const uint64_t vals[5] = { box.cfg->blocks_per_year,
                                box.cfg->decimal_unit,
-                               box.cfg->epoch_length };
+                               box.cfg->epoch_length,
+                               box.cfg->gas_price_raw_per_unit,
+                               box.cfg->token_create_fee_raw };
     v2x_cfg_free(&box);
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
@@ -544,7 +565,7 @@ static int v2x_seed_prepare(nodus_witness_t *w, const uint8_t file16[16],
             "created_at_unix) VALUES (?1, ?2, ?3, 0, ?4, 0, 0)",
             -1, &st, NULL) != SQLITE_OK)
         return -1;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 5; i++) {
         sqlite3_reset(st);
         sqlite3_clear_bindings(st);
         sqlite3_bind_int64(st, 1, (sqlite3_int64)params[i]);
@@ -698,6 +719,39 @@ static int v2x_seed_rows(nodus_witness_t *w, uint8_t salt) {
                          "current_supply + %lld WHERE id = 1",
                          (long long)bonds, (long long)bonds);
                 if (v2x_sql(w->db, sql) != 0) break;
+            }
+        }
+
+        /* ── 5b. the treasury pools (final pre-testnet wipe, W-A) ─────
+         * gen_seed_state writes EXACTLY the nine v2_treasury rows every
+         * real genesis carries. A test that seeded none gets the nine at
+         * balance 0 — a legal document value that moves no supply term —
+         * so the seeded chain has the SYSTEM root shape of a real one
+         * (treasury_root over nine rows). General multisig withdrew W-A's
+         * genesis-seat refund into pool 8, so no block path writes a pool
+         * any more. A test that seeded its own rows (test_v2_treasury §4)
+         * keeps them; the table is then expected to hold exactly the
+         * nine. (This seeded path writes NO genesis outputs: a test that
+         * needs them derives a real chain — v2x_chain_open_cfg.) */
+        {
+            sqlite3_int64 n_tr = -1;
+            if (v2x_count(w->db, "SELECT COUNT(*) FROM v2_treasury",
+                          &n_tr) != 0) break;
+            if (n_tr == 0) {
+                char sql[96];
+                uint32_t p;
+                for (p = 1; p <= NODUS_V2_GEN_TREASURY_POOLS; p++) {
+                    snprintf(sql, sizeof(sql), "INSERT INTO v2_treasury "
+                             "(pool_id, balance) VALUES (%u, 0)",
+                             (unsigned)p);
+                    if (v2x_sql(w->db, sql) != 0) break;
+                }
+                if (p <= NODUS_V2_GEN_TREASURY_POOLS) break;
+            } else if (n_tr != (sqlite3_int64)NODUS_V2_GEN_TREASURY_POOLS) {
+                fprintf(stderr, "v2x_seed_rows: %lld v2_treasury rows — a "
+                        "genesis carries exactly %u\n", (long long)n_tr,
+                        (unsigned)NODUS_V2_GEN_TREASURY_POOLS);
+                break;
             }
         }
 

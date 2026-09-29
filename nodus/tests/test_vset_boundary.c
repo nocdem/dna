@@ -271,7 +271,8 @@ static int write_frozen_copy(nodus_witness_t *w, uint64_t epoch) {
         return -1;
     if (sqlite3_prepare_v2(w->db,
             "INSERT INTO v2_balance_copy (epoch_start, validator_fp, "
-            "owner_fp, amount) VALUES (?, ?, ?, ?)", -1, &ins, NULL)
+            "owner_fp, kind, amount) VALUES (?, ?, ?, ?, ?)", -1, &ins,
+            NULL)
         != SQLITE_OK) {
         sqlite3_finalize(sel);
         return -1;
@@ -289,7 +290,8 @@ static int write_frozen_copy(nodus_witness_t *w, uint64_t epoch) {
             sqlite3_bind_blob (ins, 2, vfp, 64, SQLITE_TRANSIENT);
             sqlite3_bind_blob (ins, 3, k == 0 ? vfp : dfp, 64,
                                SQLITE_TRANSIENT);
-            sqlite3_bind_int64(ins, 4, amt[k]);
+            sqlite3_bind_int  (ins, 4, k);   /* kind: 0 bond, 1 delegation */
+            sqlite3_bind_int64(ins, 5, amt[k]);
             if (sqlite3_step(ins) != SQLITE_DONE) ret = -1;
         }
     }

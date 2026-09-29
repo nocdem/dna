@@ -45,8 +45,9 @@
  *   6. (§11, O11) SYSTEM slice — STAKE + the CORE funding leg: the
  *      first CROSS-DOMAIN operation. Two positives (destination
  *      fingerprint derived from the staker's own key and not), a
- *      17-case adversarial matrix (funding, ownership, token purity,
- *      dust, the self-bond floor, the commission narrowing, duplicate
+ *      18-case adversarial matrix (funding, ownership, token purity,
+ *      dust, the EXACT self-bond — one unit under AND one over, W-B —
+ *      the commission narrowing, duplicate
  *      inputs, both fee rules, both missing-leg forms, sibling-op
  *      mismatch, extra signer, identity mismatch, both broken
  *      signatures), Rule I, and the two-leg identity/replay behaviour
@@ -131,6 +132,7 @@
 #include "dnac/env_wire.h"
 #include "dnac/env_preflight.h"
 #include "dnac/effect_wire.h"
+#include "dnac/msig_wire.h"     /* general multisig descriptors (§MSIG) */
 #include "dnac/cmt_pb.h"        /* CMT_PB_BLOCK_ID_FLAG_COMMIT (round 2,
                                  * R2-2 attendance feeding)              */
 #include "crypto/hash/qgp_sha3.h"
@@ -344,15 +346,17 @@ static int item_refused(nodus_witness_t *w, nodus_v2_block_t *b) {
     return v2x_cmt_refused_probe(w, b, 0, NULL);
 }
 
-/* seed one CORE utxo owned by key k; nullifier = SHA3(fp128 ‖ seed32)
- * — the SOURCE output-identity derivation, so the row is spendable. */
-static int seed_utxo(fixture_t *fx, int k, uint64_t amount,
-                     uint8_t seed_byte, uint64_t unlock,
-                     uint8_t nul_out[64]) {
+/* seed one CORE utxo owned by the 128-hex address `owner` (a key's fp or
+ * — general multisig — an M-of-N address); nullifier = SHA3(owner128 ‖
+ * seed32) — the SOURCE output-identity derivation, so the row is
+ * spendable. */
+static int seed_utxo_owner(fixture_t *fx, const char *owner,
+                           uint64_t amount, uint8_t seed_byte,
+                           uint64_t unlock, uint8_t nul_out[64]) {
     uint8_t seed[32];
     memset(seed, seed_byte, sizeof(seed));
     uint8_t pre[160];
-    memcpy(pre, g_fp[k], 128);
+    memcpy(pre, owner, 128);
     memcpy(pre + 128, seed, 32);
     if (qgp_sha3_512(pre, sizeof(pre), nul_out) != 0) return -1;
     sqlite3_stmt *st = NULL;
@@ -364,12 +368,19 @@ static int seed_utxo(fixture_t *fx, int k, uint64_t amount,
             -1, &st, NULL) != SQLITE_OK)
         return -1;
     sqlite3_bind_blob(st, 1, nul_out, 64, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st, 2, g_fp[k], 128, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, owner, 128, SQLITE_TRANSIENT);
     sqlite3_bind_int64(st, 3, (sqlite3_int64)amount);
     sqlite3_bind_int64(st, 4, (sqlite3_int64)unlock);
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     return rc == SQLITE_DONE ? 0 : -1;
+}
+
+/* seed one CORE utxo owned by key k (seed_utxo_owner over g_fp[k]) */
+static int seed_utxo(fixture_t *fx, int k, uint64_t amount,
+                     uint8_t seed_byte, uint64_t unlock,
+                     uint8_t nul_out[64]) {
+    return seed_utxo_owner(fx, g_fp[k], amount, seed_byte, unlock, nul_out);
 }
 
 #define VAL_BOND 1000ULL
@@ -584,6 +595,12 @@ typedef struct {
     int sign_with;                /* >0: sign with THIS key index instead
                                    * of the declared pubkeys' keys
                                    * (0 = no override)                   */
+    /* general multisig: non-NULL = auth_kind 3 (unless auth_kind is set
+     * explicitly) and these bytes (dcount ‖ descriptors — msig_tail) are
+     * appended after the signer section BEFORE the digest is derived, so
+     * the signatures bind the final auth_len */
+    const uint8_t *msig_tail;
+    uint32_t msig_tail_len;
 } sign_opt_t;
 
 /* The COMPILED ruleset version of a domain — never a literal. Every leg
@@ -612,9 +629,12 @@ static int env_build_signed(fixture_t *fx, env_t *e,
     if (opt_in) o = *opt_in;
 
     if (n_signers < 1 || n_signers > 15) return -1;   /* scheme cap 15 */
-    uint32_t auth_len = 1 + (uint32_t)n_signers * 7219u;
+    uint32_t auth_len = 1 + (uint32_t)n_signers * 7219u + o.msig_tail_len;
     uint8_t *auth = calloc(1, auth_len);
     if (!auth) return -1;
+    if (o.msig_tail)
+        memcpy(auth + 1 + (size_t)n_signers * 7219u, o.msig_tail,
+               o.msig_tail_len);
 
     /* ascending-pubkey signer order (canonical) */
     int ord[15];
@@ -642,7 +662,8 @@ static int env_build_signed(fixture_t *fx, env_t *e,
     /* the committed ruleset version, DERIVED from the compiled table */
     leg.hdr.ruleset_version = rsv_of(domain_id);
     leg.hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
-    leg.hdr.auth_kind = o.auth_kind ? o.auth_kind : 1;
+    leg.hdr.auth_kind = o.auth_kind ? o.auth_kind
+                      : (o.msig_tail ? NODUS_RT_AUTHKIND_DSA87_MSIG_V1 : 1);
     leg.hdr.call_len = call_len;
     leg.hdr.auth_len = auth_len;
     leg.hdr.res_max_effects = max_effects;
@@ -1148,11 +1169,15 @@ static int supply_identity_holds(nodus_witness_t *w) {
     uint64_t rp = q1(w, "SELECT reward_pool FROM supply_tracking");
     uint64_t ac = q1(w, "SELECT COALESCE(SUM(amount),0) "
                         "FROM v2_reward_accrual");
+    /* W-A (final pre-testnet wipe): the keyless treasury pools are a term
+     * of the equation (nodus_rt_core_invariant); no block path moves a
+     * pool balance after genesis in this build. */
+    uint64_t tr = q1(w, "SELECT COALESCE(SUM(balance),0) FROM v2_treasury");
     if (g == UINT64_MAX || m == UINT64_MAX || bu == UINT64_MAX ||
         ux == UINT64_MAX || bo == UINT64_MAX || dl == UINT64_MAX ||
-        rp == UINT64_MAX || ac == UINT64_MAX)
+        rp == UINT64_MAX || ac == UINT64_MAX || tr == UINT64_MAX)
         return 0;
-    return g + m - bu == ux + bo + dl + rp + ac;
+    return g + m - bu == ux + bo + dl + rp + ac + tr;
 }
 
 /* ══ 1. AUTH — the verified boundary ═══════════════════════════════ */
@@ -1548,7 +1573,9 @@ static int test_system_cc(void) {
             OK();
         }
         /* an auth kind outside the runtime's allowlist dies at
-         * admission (unknown kind 3 on a SYSTEM leg) */
+         * admission (kind 3 — general multisig — exists since the final
+         * pre-testnet wipe, but only CORE declares it: on a SYSTEM leg it
+         * is outside SYSTEM's {1,2}) */
         {
             sign_opt_t so;
             memset(&so, 0, sizeof(so));
@@ -1976,6 +2003,115 @@ static int test_system_cc_target_active_max(void) {
               "TARGET_ACTIVE_COUNT=6 must reject (floor 7)");
         OK();
     }
+
+    fx_close(&fx);
+    return 0;
+}
+
+/* ══ 3a-bis. W-C — TOKEN_CREATE_FEE_RAW (param 6) through the REAL
+ *    SYSTEM CHAIN_CONFIG exec ═══════════════════════════════════════
+ *
+ * Final pre-testnet wipe W-C (decision 2026-09-28-token-create-fee-
+ * governance.md; range [10^8, 10^15] from design 2026-09-28-final-wipe-
+ * package-design.md §1 W-C; grace ERGONOMIC). Proves, through
+ * nodus_rt_system_exec with a real 5-of-7 ML-DSA-87 quorum:
+ *   - id 6 is on the read list (a quorum vote COMMITS a row) — false on
+ *     the pre-W-C tree, where scalar_rules refused every id > 5;
+ *   - the range: 10^8 − 1 and 10^15 + 1 refused, the value between
+ *     commits;
+ *   - the grace is ERGONOMIC: effective = H + grace − 1 refused,
+ *     effective = H + grace commits (ids 4's SAFETY class would refuse
+ *     it — DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS > ERGONOMIC in every
+ *     build that has both, asserted below);
+ *   - the value governs ONLY from its effective height: get_u64 answers
+ *     the genesis param-6 row (v2x_seed_prepare seeds it, like
+ *     gen_seed_state) one block before it and the voted value from it.
+ * HOW IT CAN LIE: it proves the governance side of param 6 only; that a
+ * committed param-6 row changes what a token creation costs is
+ * test_core_token_create_param6's (the engine read + rtn_tc_exec). */
+static int test_system_cc_token_fee(void) {
+    fixture_t fx;
+    CHECK(fx_genesis(&fx, "cctcf") == 0, "genesis");
+    int voters5[5] = { 0, 1, 2, 3, 4 };
+    env_t e;
+    nodus_v2_block_t b;
+    const uint8_t  P   = (uint8_t)DNAC_CFG_TOKEN_CREATE_FEE_RAW;
+    const uint64_t G   = (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
+    const uint64_t VB  = 1ULL + G + 100000ULL;   /* clears scalar window
+                                                  * and freshness        */
+    const uint64_t V   = 50000000000ULL;          /* 500 NODUS, in range */
+
+    CHECK(nodus_chain_config_grace_for_param(P) == G,
+          "param 6 carries the ERGONOMIC grace class"); OK();
+    CHECK((uint64_t)DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS > G,
+          "FIXTURE GUARD: SAFETY > ERGONOMIC, so the H + G commit below "
+          "distinguishes the two classes"); OK();
+    CHECK(dnac_cfg_param_read_by_consensus(P),
+          "param 6 is on the consensus read list"); OK();
+
+    /* range: below the floor, above the ceiling — both refused at H=1 */
+    CHECK(cc_env(&fx, &e, 1, P, DNAC_CFG_MIN_TOKEN_CREATE_FEE - 1,
+                 1 + G, 0x61, 1, VB, voters5, 5, 0, NULL, NULL) == 0,
+          "build floor-1");
+    {
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(item_refused(fx.w, &b) == 0,
+              "TOKEN_CREATE_FEE_RAW 10^8 - 1 must reject");
+        OK();
+    }
+    CHECK(cc_env(&fx, &e, 1, P, DNAC_CFG_MAX_TOKEN_CREATE_FEE + 1,
+                 1 + G, 0x62, 1, VB, voters5, 5, 0, NULL, NULL) == 0,
+          "build ceiling+1");
+    {
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(item_refused(fx.w, &b) == 0,
+              "TOKEN_CREATE_FEE_RAW 10^15 + 1 must reject");
+        OK();
+    }
+    /* grace: one block short of H + G refuses */
+    CHECK(cc_env(&fx, &e, 1, P, V, G, 0x63, 1, VB, voters5, 5, 0,
+                 NULL, NULL) == 0, "build eff H+G-1");
+    {
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(item_refused(fx.w, &b) == 0,
+              "effective H + ERGONOMIC - 1 must reject (grace floor)");
+        OK();
+    }
+    /* exactly H + G commits */
+    CHECK(cc_env(&fx, &e, 1, P, V, 1 + G, 0x64, 1, VB, voters5, 5, 0,
+                 NULL, NULL) == 0, "build eff H+G");
+    {
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+              "a quorum vote for param 6 at the grace floor must commit");
+        OK();
+    }
+    CHECK((uint64_t)q1(fx.w, "SELECT new_value FROM chain_config_history "
+                   "WHERE param_id=6 AND effective_block > 0") == V &&
+          q1(fx.w, "SELECT COUNT(*) FROM chain_config_history "
+                   "WHERE param_id=6 AND effective_block > 0") == 1 &&
+          q1(fx.w, "SELECT effective_block FROM chain_config_history "
+                   "WHERE param_id=6 AND effective_block > 0") == 1 + G,
+          "exactly one voted param-6 row (beside the genesis row), with "
+          "the voted value and effective"); OK();
+    {
+        uint64_t v = 0, gen = 0;
+        CHECK(nodus_chain_config_get_u64(fx.w, P, 0, 0, &gen) == 0 &&
+              gen != V, "FIXTURE GUARD: the genesis param-6 row "
+                        "(v2x_seed_prepare) differs from the voted value");
+        CHECK(nodus_chain_config_get_u64(fx.w, P, G, 0, &v) == 0 &&
+              v == gen,
+              "one block before the effective height: the genesis row "
+              "still governs");
+        CHECK(nodus_chain_config_get_u64(fx.w, P, 1 + G,
+                                         NODUS_W_TOKEN_CREATE_FEE, &v) == 0 &&
+              v == V, "from the effective height: the voted fee");
+    }
+    OK();
 
     fx_close(&fx);
     return 0;
@@ -4216,7 +4352,167 @@ static int seed_tc_pre_genesis(fixture_t *fx) {
              "genesis_supply + %llu, current_supply = "
              "current_supply + %llu WHERE id = 1",
              (unsigned long long)TC_FEE, (unsigned long long)TC_FEE);
-    return run_sql(fx->w->db, sql);
+    if (run_sql(fx->w->db, sql) != 0) return -1;
+    /* W-C: the seeded genesis carries a param-6 row at the builder
+     * default (10^11, v2x_seed_prepare). This test's boundary cases are
+     * written against the compiled TC_FEE (10^15, the top of the
+     * governed range), so the fixture's genesis fee is set to exactly
+     * that — the floor they probe is then the committed param 6, as on a
+     * real chain, at the value they were written for. */
+    snprintf(sql, sizeof(sql),
+             "UPDATE chain_config_history SET new_value = %llu "
+             "WHERE param_id = 6 AND effective_block = 0",
+             (unsigned long long)TC_FEE);
+    if (run_sql(fx->w->db, sql) != 0 ||
+        sqlite3_changes(fx->w->db) != 1)
+        return -1;
+    fx->w->chain_config_cache_warm = false;
+    return 0;
+}
+
+/* ══ 9-bis. W-C — TOKEN_CREATE against the GOVERNED fee (param 6) ════
+ *
+ * Final pre-testnet wipe W-C (decision 2026-09-28-token-create-fee-
+ * governance.md; CORE ruleset 4). Through the WHOLE engine (the item's
+ * engine read of param 6 → ctx->token_create_fee → rtn_tc_exec):
+ *   - with param 6 = P = 10^11 active, a creation paying P − 1 is
+ *     refused and one paying exactly P commits — P is 10^4 × BELOW the
+ *     compiled NODUS_W_TOKEN_CREATE_FEE, so the commit is RED on the
+ *     pre-W-C tree (which enforced the compiled constant) and on any
+ *     tree that ignores the row;
+ *   - a second row P2 = 5·10^10 effective at height 2 does NOT govern
+ *     height 1 (P2 refused at 1) and DOES govern height 2 (P2 − 1
+ *     refused, P2 commits at 2) — the engine reads the row active at the
+ *     block's height, never the latest row.
+ * The two rows are written into the genesis state (g_fx_pre_genesis, the
+ * funding precedent), standing in for the genesis row (P) and a
+ * governance vote that has passed its grace (P2); the vote path and its
+ * ERGONOMIC grace are test_system_cc_token_fee's. This seeded fixture has
+ * no param-5 row, so the gas rule is off and the fee floor is the only
+ * fee rule in play. */
+#define TCG_P   100000000000ULL          /* 10^11 = 1 000 NODUS          */
+#define TCG_P2   50000000000ULL          /* 5·10^10                      */
+_Static_assert(TCG_P < NODUS_W_TOKEN_CREATE_FEE &&
+                   TCG_P2 >= DNAC_CFG_MIN_TOKEN_CREATE_FEE,
+               "the governed fees must sit below the compiled constant "
+               "and inside the governed range");
+static uint8_t g_tcg_nul[2][64];
+
+static int seed_tcg_pre_genesis(fixture_t *fx) {
+    if (seed_funding(fx, 7, TCG_P + 3000000, 0x51, g_tcg_nul[0]) != 0 ||
+        seed_funding(fx, 7, TCG_P2 + 3000000, 0x52, g_tcg_nul[1]) != 0)
+        return -1;
+    /* the seeded genesis row (v2x_seed_prepare) is param 6 at height 0;
+     * pin it to P explicitly (it is the builder default today, but the
+     * test must not depend on that), then add the height-2 row */
+    if (run_sql(fx->w->db,
+            "UPDATE chain_config_history SET new_value = 100000000000 "
+            "WHERE param_id = 6 AND effective_block = 0") != 0 ||
+        sqlite3_changes(fx->w->db) != 1)
+        return -1;
+    if (run_sql(fx->w->db,
+            "INSERT INTO chain_config_history (param_id, new_value, "
+            "effective_block, commit_block, tx_hash, proposal_nonce, "
+            "created_at_unix) VALUES "
+            "(6, 50000000000, 2, 0, zeroblob(64), 1, 0)") != 0)
+        return -1;
+    /* the inserts bypass the mutate path's invalidation */
+    fx->w->chain_config_cache_warm = false;
+    return 0;
+}
+
+static int test_core_token_create_param6(void) {
+    fixture_t fx;
+    g_fx_pre_genesis = seed_tcg_pre_genesis;
+    CHECK(fx_genesis(&fx, "tcg") == 0, "genesis (param-6 rows + funding)");
+    int s7[1] = { 7 };
+    env_t e;
+    nodus_v2_block_t b;
+    static uint8_t tokA[64], tokB[64];
+    memset(tokA, 0x6A, 64);
+    memset(tokB, 0x6B, 64);
+    uint8_t insA[1][64], insB[1][64];
+    memcpy(insA[0], g_tcg_nul[0], 64);
+    memcpy(insB[0], g_tcg_nul[1], 64);
+
+    {
+        uint64_t v = 0;
+        CHECK(nodus_chain_config_get_u64(fx.w,
+                  (uint8_t)DNAC_CFG_TOKEN_CREATE_FEE_RAW, 1, 0, &v) == 0 &&
+              v == TCG_P, "FIXTURE GUARD: param 6 = P at height 1");
+        CHECK(nodus_chain_config_get_u64(fx.w,
+                  (uint8_t)DNAC_CFG_TOKEN_CREATE_FEE_RAW, 2, 0, &v) == 0 &&
+              v == TCG_P2, "FIXTURE GUARD: param 6 = P2 at height 2");
+        OK();
+    }
+
+    /* height 1: P − 1 refused (change absorbs the difference, so the
+     * floor is the only violated rule) */
+    {
+        out_spec_t o[2] = { { 7, 777, 0x61, tokA },
+                            { 7, 3000001, 0x62, NULL } };
+        CHECK(tc_env(&fx, &e, tokA, "GovToken", "GT", 8, insA, 1, o, 2,
+                     TCG_P - 1, s7, 1, NULL) == 0, "build P-1");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(item_refused(fx.w, &b) == 0,
+              "a creation paying param 6 - 1 must reject");
+        OK();
+    }
+    /* height 1: P2 refused — the P2 row is effective only from 2 */
+    {
+        out_spec_t o[2] = { { 7, 777, 0x63, tokA },
+                            { 7, TCG_P - TCG_P2 + 3000000, 0x64, NULL } };
+        CHECK(tc_env(&fx, &e, tokA, "GovToken", "GT", 8, insA, 1, o, 2,
+                     TCG_P2, s7, 1, NULL) == 0, "build P2 at 1");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(item_refused(fx.w, &b) == 0,
+              "the later, lower row must not govern before its effective "
+              "height");
+        OK();
+    }
+    /* height 1: exactly P commits — far below the compiled constant */
+    {
+        out_spec_t o[2] = { { 7, 777, 0x65, tokA },
+                            { 7, 3000000, 0x66, NULL } };
+        CHECK(tc_env(&fx, &e, tokA, "GovToken", "GT", 8, insA, 1, o, 2,
+                     TCG_P, s7, 1, NULL) == 0, "build P");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+              "a creation paying exactly param 6 must commit");
+        OK();
+    }
+    CHECK(tok_rows(fx.w, tokA) == 1, "tokA registered"); OK();
+
+    /* height 2: P2 − 1 refused, P2 commits */
+    {
+        out_spec_t o[2] = { { 7, 777, 0x67, tokB },
+                            { 7, 3000001, 0x68, NULL } };
+        CHECK(tc_env(&fx, &e, tokB, "GovTokenB", "GB", 8, insB, 1, o, 2,
+                     TCG_P2 - 1, s7, 1, NULL) == 0, "build P2-1");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 2, &ve, 1);
+        CHECK(item_refused(fx.w, &b) == 0,
+              "at height 2 a creation paying P2 - 1 must reject");
+        OK();
+    }
+    {
+        out_spec_t o[2] = { { 7, 777, 0x69, tokB },
+                            { 7, 3000000, 0x6A, NULL } };
+        CHECK(tc_env(&fx, &e, tokB, "GovTokenB", "GB", 8, insB, 1, o, 2,
+                     TCG_P2, s7, 1, NULL) == 0, "build P2");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 2, &ve, 1);
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+              "at height 2 a creation paying exactly P2 must commit");
+        OK();
+    }
+    CHECK(tok_rows(fx.w, tokB) == 1, "tokB registered"); OK();
+
+    fx_close(&fx);
+    return 0;
 }
 
 static int test_core_token_create(void) {
@@ -4980,6 +5276,12 @@ static int test_hook_level_pins(void) {
     ctx.intent_id = iid;
     ctx.wire_id = iid;
     ctx.auth = &av;
+    /* W-C: the engine hands the hook the committed param-6 fee. This
+     * hook-level case builds the ctx itself; the envelope pays TC_FEE
+     * (the compiled constant, the top of the governed range), so the
+     * floor handed in is that value — the honest exec must accept at
+     * exactly the floor. */
+    ctx.token_create_fee = TC_FEE;
 
     nodus_rt_read_req_t reqs[NODUS_RT_MAX_READS];
     uint16_t nr = 0;
@@ -5101,6 +5403,10 @@ typedef struct {
     int     break_sys_sig;   /* flip one byte of leg0's first signature */
     int     break_core_sig;
     int     sys_sign_with;   /* >0: sign leg0 with THIS key's secret    */
+    /* general multisig: non-NULL = the CORE leg carries auth_kind 3 with
+     * this descriptor tail (msig_tail) after its signer section */
+    const uint8_t *core_msig_tail;
+    uint32_t       core_msig_tail_len;
 } two_opt_t;
 
 /* Build + sign the canonical 2-leg envelope: leg0 SYSTEM(sys_op),
@@ -5122,10 +5428,14 @@ static int two_leg_build(fixture_t *fx, env_t *e,
     if (n_sys < 1 || n_sys > 15 || n_core < 1 || n_core > 15) return -1;
 
     uint32_t alen[2] = { 1 + (uint32_t)n_sys * 7219u,
-                         1 + (uint32_t)n_core * 7219u };
+                         1 + (uint32_t)n_core * 7219u +
+                             o.core_msig_tail_len };
     uint8_t *auth[2];
     auth[0] = calloc(1, alen[0]);
     auth[1] = calloc(1, alen[1]);
+    if (auth[1] && o.core_msig_tail)
+        memcpy(auth[1] + 1 + (size_t)n_core * 7219u, o.core_msig_tail,
+               o.core_msig_tail_len);
     dna_env_leg_in_t legs[2];
     dna_env_in_t in;
     dna_env_view_t v;
@@ -5168,7 +5478,8 @@ static int two_leg_build(fixture_t *fx, env_t *e,
     legs[1].hdr.runtime_op = core_op;
     legs[1].hdr.ruleset_version = rsv_of(DNA_DOMAIN_CORE);
     legs[1].hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
-    legs[1].hdr.auth_kind = 1;
+    legs[1].hdr.auth_kind = o.core_msig_tail
+                                ? NODUS_RT_AUTHKIND_DSA87_MSIG_V1 : 1;
     legs[1].hdr.call_len = core_len;
     legs[1].hdr.auth_len = alen[1];
     legs[1].hdr.res_max_effects = 40;
@@ -5487,6 +5798,30 @@ static int test_system_stake(void) {
         mk_block(&b, 1, &ve, 1);
         CHECK(item_refused(fx.w, &b) == 0,
               "C6 bond below DNAC_SELF_STAKE_AMOUNT must reject");
+        OK();
+    }
+    /* C6b bond ONE raw unit ABOVE the self-bond (final pre-testnet wipe,
+     * W-B — decision 2026-09-28-treasury-pools-and-exact-self-stake.md
+     * item 5, "ne az ne fazla"). Balanced for the larger lock: the change
+     * shrinks by the unit the bond grew, so the exact-amount rule is the
+     * only violated one. The positive stakes below (S1, S2 …) bond
+     * exactly STAKE_BOND and pin the accepted edge.
+     * RED ON THE PRE-W-B TREE: `bond < DNAC_SELF_STAKE_AMOUNT` admitted
+     * it and the stake committed.
+     * KILLED BY: the rule written as `<` (a floor) instead of `!=`. */
+    {
+        out_spec_t o[1] = { { 9, STAKE_CHANGE - 1, 0x5F, NULL } };
+        uint32_t sl = stake_call_build(scall, sizeof(scall), 9, STAKE_BPS,
+                                       STAKE_BOND + 1, fp9);
+        uint32_t fl = spend_call_build(fcall, sizeof(fcall), in9, 1, o, 1);
+        CHECK(sl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_STAKE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s9, 1, s9, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(item_refused(fx.w, &b) == 0,
+              "C6b bond above DNAC_SELF_STAKE_AMOUNT must reject (exact)");
         OK();
     }
     /* C7 commission above the bound (the LABELED NARROWING). tokenomics-v3
@@ -6452,7 +6787,7 @@ static int test_system_delegate(void) {
     int s9[1] = { 9 }, s10[1] = { 10 }, s11[1] = { 11 };
     static uint8_t scall[8192], fcall[8192];
     /* every funding row this test spends ahead of a refusal-only block
-     * is a GENESIS row (fx_pre … fx_seal): D1's key-0 funding, D10b's
+     * is a GENESIS row (fx_pre … fx_seal): P7's key-0 funding, D10b's
      * LOCKED funding (unlock 1000, never reached), N4b's and D9's */
     uint8_t f9[64], f10[64], f11[64], f0[64], flk[64], f9x[64], f9c[64];
     CHECK(seed_funding(&fx, 9, DLG_FUND, 0xD1, f9) == 0, "fund 9");
@@ -6504,23 +6839,10 @@ static int test_system_delegate(void) {
     CHECK(fx_seal(&fx) == 0, "genesis");
 
     /* ── negatives (digest-proven no-ops at height 1) ───────────────── */
-    /* D1 self-delegation (Rule S) — key 0 delegating to itself. It is
-     * also funded (f0, a genesis row), so only Rule S rejects. */
-    {
-        int s0[1] = { 0 };
-        uint32_t sl = deleg_call_build(scall, sizeof(scall), 0, 0,
-                                       DLG_AMOUNT);
-        uint32_t fl = fund_call(fcall, sizeof(fcall), f0, 0, DLG_CHANGE,
-                                0x11);
-        CHECK(sl && fl, "call");
-        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_DELEGATE, scall, sl,
-                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
-                            s0, 1, s0, 1, NULL) == 0, "build");
-        nodus_v2_envelope_t ve = { e.bytes, e.len };
-        mk_block(&b, 1, &ve, 1);
-        CHECK(item_refused(fx.w, &b) == 0,
-              "D1 self-delegation must reject (Rule S)"); OK();
-    }
+    /* D1 (self-delegation refused, Rule S) is GONE: the final pre-testnet
+     * wipe W-B allows it (decision 2026-09-28-treasury-pools-and-exact-
+     * self-stake.md item 6) — its f0 funding now drives the POSITIVE P7
+     * at the end of this section. */
     /* D2 unknown validator (the stray key has no row) */
     {
         uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, K_STRAY,
@@ -7088,6 +7410,65 @@ static int test_system_delegate(void) {
               tbe64(d + TDEL_AMT_OFF) == (uint64_t)DNAC_MIN_DELEGATION,
               "P6 the row holds exactly the minimum"); OK();
         CHECK(supply_identity_holds(fx.w), "P5/P6 supply identity"); OK();
+    }
+
+    /* ── P7 SELF-DELEGATION commits (final pre-testnet wipe, W-B —
+     *    decision 2026-09-28-treasury-pools-and-exact-self-stake.md item
+     *    6: "Kendine delegasyon serbest … bu miktar sıralamaya ve oy
+     *    gücüne eklenir"). Key 0 — an ACTIVE genesis validator — delegates
+     *    DLG_AMOUNT to ITSELF with the same key, funded by its genesis
+     *    row f0 (untouched until here: D1 used it only in a refusal).
+     *    By hand: validator 0's totals were 2·DLG_AMOUNT + 1 (P1 + P2 +
+     *    P5, key 9) + DLG_AMOUNT (P3, key 10) = 3·DLG_AMOUNT + 1; P7 adds
+     *    DLG_AMOUNT to BOTH total_delegated and external_delegated (the
+     *    bucket ranking and voting power add to self_stake), a NEW
+     *    delegation row (0 → 0) opens, self_stake stays VAL_BOND.
+     *    RED ON THE PRE-W-B TREE: Rule S refused it (the old D1).
+     *    KILLED BY: restoring the pubkey comparison; writing the amount
+     *    into self_stake instead of the delegated buckets; moving only
+     *    total_delegated (the ranking key would not grow). ───────────── */
+    {
+        int s0[1] = { 0 };
+        uint8_t dk00[128], v[TVAL_REC_LEN], d[TDEL_REC_LEN];
+        CHECK(deleg_key_of(0, 0, dk00) == 0, "key");
+        CHECK(sysrow_read(fx.w, 4, vk0, 64, v, TVAL_REC_LEN) == 1, "row");
+        const uint64_t tot0 = tbe64(v + TVAL_TOT_OFF);
+        const uint64_t ext0 = tbe64(v + TVAL_EXT_OFF);
+        CHECK(tot0 == 3 * DLG_AMOUNT + 1 && ext0 == tot0,
+              "P7 FIXTURE GUARD: validator 0 carries P1+P2+P3+P5");
+        CHECK(sysrow_read(fx.w, 5, dk00, 128, d, TDEL_REC_LEN) == 0,
+              "P7 no self-delegation row before");
+        const uint64_t ndel0 = q1(fx.w, "SELECT COUNT(*) FROM delegations");
+        uint32_t sl = deleg_call_build(scall, sizeof(scall), 0, 0,
+                                       DLG_AMOUNT);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), f0, 0, DLG_CHANGE,
+                                0x11);
+        CHECK(sl && fl, "call");
+        CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_DELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s0, 1, s0, 1, NULL) == 0, "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 7, &ve, 1);
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+              "P7 a self-delegation (delegator == validator) commits"); OK();
+        CHECK(sysrow_read(fx.w, 5, dk00, 128, d, TDEL_REC_LEN) == 1 &&
+              memcmp(d, g_pk[0], 2592) == 0 &&
+              memcmp(d + 2592, g_pk[0], 2592) == 0 &&
+              tbe64(d + TDEL_AMT_OFF) == DLG_AMOUNT &&
+              tbe64(d + TDEL_AT_OFF) == 7,
+              "P7 the delegation row (0 → 0), exact"); OK();
+        CHECK(q1(fx.w, "SELECT COUNT(*) FROM delegations") == ndel0 + 1,
+              "P7 exactly one new delegation row"); OK();
+        CHECK(sysrow_read(fx.w, 4, vk0, 64, v, TVAL_REC_LEN) == 1, "row");
+        CHECK(tbe64(v + TVAL_TOT_OFF) == tot0 + DLG_AMOUNT &&
+              tbe64(v + TVAL_EXT_OFF) == ext0 + DLG_AMOUNT,
+              "P7 BOTH delegated buckets grew — the self-delegation counts "
+              "toward ranking and voting power like any delegation"); OK();
+        CHECK(tbe64(v + TVAL_SELF_OFF) == VAL_BOND,
+              "P7 self_stake is untouched (a self-delegation is not bond)");
+        OK();
+        CHECK(utxo_rows(fx.w, f0) == 0, "P7 the funding input is spent");
+        CHECK(supply_identity_holds(fx.w), "P7 supply identity"); OK();
     }
     fx_close(&fx);
     return 0;
@@ -8571,6 +8952,12 @@ static int test_undelegate_release_lock(void) {
             ctx.intent_id = iid;
             ctx.wire_id = iid;
             ctx.auth = &av;
+            /* W-C: the engine hands the hook the committed param-6 fee;
+             * this hook-level case builds the ctx itself and pays TC_FEE,
+             * so the floor handed in is that value (as at the TOKEN_CREATE
+             * hook case above). Left at 0 the hook reports a node fault
+             * (-2), and the unlock + 1 leg would test nothing. */
+            ctx.token_create_fee = TC_FEE;
             CHECK(core_exec_at(&fx, &v, 0, &ctx, U5, res, sizeof(res), &rl)
                       == -1,
                   "L6 a TOKEN_CREATE paid by the release AT its unlock "
@@ -9683,7 +10070,9 @@ static int vupd_fixture_funded(fixture_t *fx, const char *tag,
  * drive crosses boundary E (5 is still an entry of snapshot(E), the
  * genesis-frozen set, so its graduation is DEFERRED — R5-3) and boundary
  * 2E (snapshot(2E) was built at E from ACTIVE/ELIGIBLE rows only, so 5
- * graduates: UNSTAKED, bond released, its delegation released to key 10
+ * graduates: UNSTAKED, its bond released as a locked UTXO to its
+ * destination (a genesis seat like any other since general multisig
+ * withdrew W-A's pool-8 refund), its delegation released to key 10
  * locked to 2E + 12E and the row deleted — P3-3/P3-4); then key 5 sends
  * a fresh STAKE (2E+1), which REVIVES the row.
  * Asserted after the revive: ACTIVE, the new bond, the new commission,
@@ -9718,6 +10107,14 @@ static int test_restake_after_graduation(void) {
      * drive needed under the legacy fixture (whose genesis left it 0,
      * and a graduation REFUSES to take it below 0) is gone with it. */
     CHECK(active_count(fx.w) > 0, "fixture guard: bonded validators seeded");
+    /* validator 5 is a GENESIS seat (active_since_block 1): since general
+     * multisig (decision 2026-09-29-general-multisig.md withdrew W-A's
+     * pool-8 refund) its graduation releases the bond as a locked UTXO
+     * to its destination like any seat's, and pool 8 stays put —
+     * asserted at 2E. */
+    const uint64_t pool8_0 =
+        q1(fx.w, "SELECT balance FROM v2_treasury WHERE pool_id = 8");
+    CHECK(pool8_0 != UINT64_MAX, "fixture guard: pool 8 seeded");
     /* every out-of-band seed lands BEFORE h1, whose SYSFUND leg declares
      * CORE touched and absorbs the drift (the §5 drive's note) */
     CHECK(seed_funding(&fx, 10, DLG_FUND, 0xD1, f10) == 0, "fund 10");
@@ -9814,6 +10211,20 @@ static int test_restake_after_graduation(void) {
                      DNAC_UNDELEGATE_LOCK_EPOCHS) * E));
         CHECK(q1(fx.w, sql) == 1,
               "2E: key 10's release coin, locked to 2E + 12E (P3-4)"); OK();
+        CHECK(q1(fx.w, "SELECT balance FROM v2_treasury WHERE pool_id = 8")
+                  == pool8_0,
+              "2E: pool 8 untouched — no treasury refund (general "
+              "multisig withdrew W-A's)"); OK();
+        snprintf(sql, sizeof(sql),
+                 "SELECT COUNT(*) FROM utxo_set WHERE output_index = %u "
+                 "AND amount = %llu AND unlock_block = %llu",
+                 (unsigned)NODUS_V2_EPGRAD_OUT_IDX,
+                 (unsigned long long)VAL_BOND,
+                 (unsigned long long)((2 + (uint64_t)
+                     DNAC_VALIDATOR_UNBOND_EPOCHS) * E));
+        CHECK(q1(fx.w, sql) == 1,
+              "2E: the genesis seat's bond released as ONE locked UTXO "
+              "to its destination"); OK();
         CHECK(supply_identity_holds(fx.w), "2E supply identity"); OK();
     }
 
@@ -11050,6 +11461,505 @@ static int test_undelegate_totals_underflow(void) {
     return 0;
 }
 
+/* ══ §MSIG GENERAL MULTISIG (auth_kind 3) ═══════════════════════════════
+ * Decision docs/plans/decisions/2026-09-29-general-multisig.md, design
+ * §7 rev 2. Every signature here is a REAL ML-DSA-87 signature over the
+ * engine-derived leg digest; descriptors are built by the shared codec
+ * (shared/dnac/msig_wire.h) over the test's real public keys.
+ *
+ * PROVES:
+ *   A. the kind-3 PARSE matrix at the auth hook (nodus_rt_auth_dsa87_v1):
+ *      a legal 2-of-3 verdict carries n_msig 1, the address
+ *      SHA3-512(descriptor) and satisfied = 1; with M-1 signers the hook
+ *      still ACCEPTS and records satisfied = 0 (the exec decides — F1.2);
+ *      Σ N = 16 (7 + 7 + 2 keys), descriptors out of address order, a
+ *      duplicate descriptor, dcount 0, a trailing byte, a dlen one short
+ *      of its descriptor, a zero-prefix descriptor key and a wrong tag
+ *      are all REFUSED (-1).
+ *   B. M-of-N SPEND through the REAL engine (blocks): M-1 signers
+ *      refused; a descriptor whose address is not the input's owner
+ *      refused; a carried descriptor no input uses refused; the kind-1
+ *      spelling (no descriptor) of the multisig coin refused; M signers
+ *      with the right descriptor COMMIT and the supply identity holds.
+ *   C. a multisig coin funds the CORE side of every other op through the
+ *      ONE ownership predicate (F2.1): a TOKEN_CREATE fee, a STAKE bond
+ *      (SYSFUND sibling) and a DELEGATE amount — each commits.
+ * KILLED BY: an ownership loop that ignores the verdict's multisig facts
+ *   (B positive and every C case refuse); satisfaction judged at the hook
+ *   (A M-1 case returns -1); no unused-descriptor rule (B unused commits);
+ *   dropping any framing check (the matching A case verifies).
+ * HOW IT CAN LIE: the multisig coins are seeded into the genesis state
+ *   (fx_pre … fx_seal), not produced by a transfer (the harness scenario
+ *   test_cmt_multisig.sh funds one by a transfer); the parse matrix calls
+ *   the hook directly with a test-built context (ctx fields beyond the
+ *   leg digest are not read by the auth hook). */
+
+typedef struct { uint8_t m; int n; int keys[7]; } msig_spec_t;
+
+static uint8_t g_ms_desc[3][DNA_MSIG_MAX_DESC_LEN];
+
+/* descriptor over test keys, keys sorted ascending by pubkey (the one
+ * canonical order); addr = SHA3-512(descriptor). @return 0 / -1. */
+static int msig_desc_of(const msig_spec_t *s, uint8_t *out, size_t *len,
+                        uint8_t addr[64]) {
+    static uint8_t keys[7 * 2592];
+    int ord[7];
+    if (s->n < 2 || s->n > 7) return -1;
+    for (int i = 0; i < s->n; i++) ord[i] = s->keys[i];
+    for (int a = 1; a < s->n; a++)
+        for (int b = a; b > 0 &&
+             memcmp(g_pk[ord[b - 1]], g_pk[ord[b]], 2592) > 0; b--) {
+            int t = ord[b];
+            ord[b] = ord[b - 1];
+            ord[b - 1] = t;
+        }
+    for (int i = 0; i < s->n; i++)
+        memcpy(keys + (size_t)i * 2592, g_pk[ord[i]], 2592);
+    if (dna_msig_desc_encode(s->m, (uint8_t)s->n, keys, out,
+                             DNA_MSIG_MAX_DESC_LEN, len) != 0)
+        return -1;
+    return dna_msig_address(out, *len, addr) == 0 ? 0 : -1;
+}
+
+static void msig_hex(const uint8_t raw[64], char out[129]) {
+    static const char hexd[] = "0123456789abcdef";
+    for (int b = 0; b < 64; b++) {
+        out[2 * b]     = hexd[raw[b] >> 4];
+        out[2 * b + 1] = hexd[raw[b] & 0xF];
+    }
+    out[128] = '\0';
+}
+
+/* the kind-3 descriptor tail dcount ‖ (dlen u16 BE ‖ descriptor)… for
+ * up to 3 specs. sort_by_addr = 1 emits them ascending by address (the
+ * canonical order); 0 emits them AS GIVEN (negative cases).
+ * @return tail length / 0 on error. */
+static uint32_t msig_tail(uint8_t *dst, size_t cap, const msig_spec_t *s,
+                          int n, int sort_by_addr) {
+    size_t len[3];
+    uint8_t addr[3][64];
+    int ord[3];
+    if (n < 0 || n > 3) return 0;
+    for (int i = 0; i < n; i++) {
+        if (msig_desc_of(&s[i], g_ms_desc[i], &len[i], addr[i]) != 0)
+            return 0;
+        ord[i] = i;
+    }
+    if (sort_by_addr)
+        for (int a = 1; a < n; a++)
+            for (int b = a; b > 0 &&
+                 memcmp(addr[ord[b - 1]], addr[ord[b]], 64) > 0; b--) {
+                int t = ord[b];
+                ord[b] = ord[b - 1];
+                ord[b - 1] = t;
+            }
+    size_t off = 0;
+    if (cap < 1) return 0;
+    dst[off++] = (uint8_t)n;
+    for (int i = 0; i < n; i++) {
+        size_t l = len[ord[i]];
+        if (off + 2 + l > cap) return 0;
+        dst[off++] = (uint8_t)(l >> 8);
+        dst[off++] = (uint8_t)l;
+        memcpy(dst + off, g_ms_desc[ord[i]], l);
+        off += l;
+    }
+    return (uint32_t)off;
+}
+
+/* run the REAL auth hook over leg 0 of a single-leg CORE envelope, with
+ * the leg digest derived exactly as the engine does. */
+static int msig_hook(fixture_t *fx, const env_t *e,
+                     nodus_rt_auth_verdict_t *av) {
+    dna_env_view_t v;
+    if (dna_env_decode(e->bytes, e->len, &v) != 0) return -9;
+    size_t n = 0;
+    const nodus_domain_runtime_t *bt = nodus_runtime_builtin_table(&n);
+    uint8_t cc[64], acc[64], dig[64];
+    if (dna_env_call_commit(&v, 0, bt[1].ruleset_hash, cc) != 0 ||
+        dna_env_auth_context_commit(&v, fx->chain_id,
+            (const uint8_t (*)[64])cc, acc) != 0 ||
+        dna_env_auth_digest(acc, 0, v.leg[0].domain_id,
+                            v.leg[0].runtime_op, dig) != 0)
+        return -9;
+    nodus_rt_exec_ctx_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.chain_id = fx->chain_id;
+    ctx.global_height = 1;
+    ctx.leg_auth_digest = dig;
+    ctx.token_create_fee = TC_FEE;
+    return nodus_rt_auth_dsa87_v1(&bt[1], &v, 0, &ctx, av);
+}
+
+#define MS_AMT  (UTXO_A)                 /* a plain multisig coin        */
+
+static int test_core_multisig(void) {
+    printf("\n§MSIG general multisig — auth_kind 3\n");
+    fixture_t fx;
+    env_t e;
+    nodus_v2_block_t b;
+    static uint8_t tail[48 * 1024], tail2[48 * 1024];
+    static uint8_t scall[8192], fcall[8192];
+    const msig_spec_t D23 = { 2, 3, { 7, 8, 9 } };      /* the Foundation-
+                                                         * style 2-of-3   */
+    const msig_spec_t DX  = { 2, 3, { 7, 8, 10 } };     /* wrong address  */
+    const msig_spec_t D22 = { 2, 2, { 10, 11 } };       /* unrelated      */
+    uint8_t a23[64];
+    char    a23hex[129];
+    {
+        size_t l = 0;
+        CHECK(msig_desc_of(&D23, g_ms_desc[0], &l, a23) == 0, "D23");
+        msig_hex(a23, a23hex);
+    }
+
+    CHECK(fx_pre(&fx, "msig") == 0, "pre-genesis");
+    uint8_t u_sp[64], u_tc[64], u_st[64], u_dl[64], u7[64];
+    CHECK(seed_utxo_owner(&fx, a23hex, MS_AMT, 0xA1, 0, u_sp) == 0 &&
+          seed_utxo_owner(&fx, a23hex, TC_FEE, 0xA3, 0, u_tc) == 0 &&
+          seed_utxo_owner(&fx, a23hex, STAKE_FUND, 0xA4, 0, u_st) == 0 &&
+          seed_utxo_owner(&fx, a23hex, DLG_FUND, 0xA5, 0, u_dl) == 0,
+          "multisig coins owned by the 2-of-3 address");
+    {
+        char sql[224];
+        uint64_t add = MS_AMT + TC_FEE + STAKE_FUND + DLG_FUND;
+        snprintf(sql, sizeof(sql),
+                 "UPDATE supply_tracking SET genesis_supply = "
+                 "genesis_supply + %llu, current_supply = "
+                 "current_supply + %llu WHERE id = 1",
+                 (unsigned long long)add, (unsigned long long)add);
+        CHECK(run_sql(fx.w->db, sql) == 0, "supply rebalance");
+    }
+    CHECK(seed_funding(&fx, 7, MS_AMT, 0xA6, u7) == 0, "a key-7 coin");
+    CHECK(fx_seal(&fx) == 0, "genesis");
+
+    /* ── A. the parse matrix at the hook ──────────────────────────────── */
+    {
+        int s78[2] = { 7, 8 }, s7[1] = { 7 };
+        uint8_t ins[1][64];
+        memcpy(ins[0], u_sp, 64);
+        out_spec_t o[1] = { { 8, MS_AMT - FEE_MIN, 0x11, NULL } };
+        nodus_rt_auth_verdict_t av;
+        sign_opt_t so;
+        uint32_t tl;
+
+        /* legal 2-of-3 */
+        tl = msig_tail(tail, sizeof(tail), &D23, 1, 1);
+        CHECK(tl == 1u + 2u + 7794u, "tail = dcount + dlen + 18 + 3x2592");
+        memset(&so, 0, sizeof(so));
+        so.msig_tail = tail;
+        so.msig_tail_len = tl;
+        CHECK(spend_env(&fx, &e, ins, 1, o, 1, FEE_MIN, s78, 2, &so) == 0,
+              "build");
+        CHECK(msig_hook(&fx, &e, &av) == 0 && av.n_signers == 2 &&
+              av.n_msig == 1 && av.msig_satisfied[0] == 1 &&
+              memcmp(av.msig_addr[0], a23, 64) == 0,
+              "A legal 2-of-3: verdict carries the address, satisfied");
+        OK();
+        /* M-1 signers: the hook records, never judges */
+        CHECK(spend_env(&fx, &e, ins, 1, o, 1, FEE_MIN, s7, 1, &so) == 0,
+              "build");
+        CHECK(msig_hook(&fx, &e, &av) == 0 && av.n_msig == 1 &&
+              av.msig_satisfied[0] == 0,
+              "A M-1 signers: accepted by the hook, satisfied = 0");
+        OK();
+
+        /* Σ N = 16: 7 + 7 + 2 distinct keys (every descriptor legal on
+         * its own — only the per-leg key total is violated) */
+        {
+            msig_spec_t s[3] = { { 1, 7, { 0, 1, 2, 3, 4, 5, 6 } },
+                                 { 1, 7, { 7, 8, 9, 10, 11, 12, 13 } },
+                                 { 1, 2, { 14, 15 } } };
+            tl = msig_tail(tail2, sizeof(tail2), s, 3, 1);
+            CHECK(tl > 0, "Σ N 16 tail");
+        }
+        memset(&so, 0, sizeof(so));
+        so.msig_tail = tail2;
+        so.msig_tail_len = tl;
+        CHECK(spend_env(&fx, &e, ins, 1, o, 1, FEE_MIN, s78, 2, &so) == 0,
+              "build");
+        CHECK(msig_hook(&fx, &e, &av) == -1 && av.n_msig == 0,
+              "A Σ N = 16 refused (and the verdict is zeroed)");
+        OK();
+
+        /* two descriptors emitted DESCENDING by address */
+        {
+            msig_spec_t s[2] = { D23, D22 };
+            uint32_t t_as = msig_tail(tail2, sizeof(tail2), s, 2, 1);
+            CHECK(t_as > 0, "sorted tail");
+            /* re-emit in the reverse of the sorted order */
+            uint8_t a0[64], a1[64];
+            size_t l0 = 0, l1 = 0;
+            CHECK(msig_desc_of(&s[0], g_ms_desc[0], &l0, a0) == 0 &&
+                  msig_desc_of(&s[1], g_ms_desc[1], &l1, a1) == 0, "descs");
+            msig_spec_t r[2];
+            if (memcmp(a0, a1, 64) < 0) { r[0] = s[1]; r[1] = s[0]; }
+            else                        { r[0] = s[0]; r[1] = s[1]; }
+            tl = msig_tail(tail2, sizeof(tail2), r, 2, 0);
+            CHECK(tl == t_as, "same length, other order");
+            memset(&so, 0, sizeof(so));
+            so.msig_tail = tail2;
+            so.msig_tail_len = tl;
+            CHECK(spend_env(&fx, &e, ins, 1, o, 1, FEE_MIN, s78, 2, &so)
+                      == 0, "build");
+            CHECK(msig_hook(&fx, &e, &av) == -1,
+                  "A descriptors out of address order refused");
+            OK();
+        }
+        /* duplicate descriptor */
+        {
+            msig_spec_t s[2] = { D23, D23 };
+            tl = msig_tail(tail2, sizeof(tail2), s, 2, 0);
+            memset(&so, 0, sizeof(so));
+            so.msig_tail = tail2;
+            so.msig_tail_len = tl;
+            CHECK(tl > 0 && spend_env(&fx, &e, ins, 1, o, 1, FEE_MIN, s78,
+                                      2, &so) == 0, "build");
+            CHECK(msig_hook(&fx, &e, &av) == -1,
+                  "A duplicate descriptor refused");
+            OK();
+        }
+        /* dcount 0 — a second spelling of kind 1 */
+        {
+            tail2[0] = 0;
+            memset(&so, 0, sizeof(so));
+            so.msig_tail = tail2;
+            so.msig_tail_len = 1;
+            CHECK(spend_env(&fx, &e, ins, 1, o, 1, FEE_MIN, s78, 2, &so)
+                      == 0, "build");
+            CHECK(msig_hook(&fx, &e, &av) == -1, "A dcount 0 refused");
+            OK();
+        }
+        /* trailing byte after a legal tail */
+        {
+            tl = msig_tail(tail2, sizeof(tail2), &D23, 1, 1);
+            tail2[tl] = 0x00;
+            memset(&so, 0, sizeof(so));
+            so.msig_tail = tail2;
+            so.msig_tail_len = tl + 1;
+            CHECK(spend_env(&fx, &e, ins, 1, o, 1, FEE_MIN, s78, 2, &so)
+                      == 0, "build");
+            CHECK(msig_hook(&fx, &e, &av) == -1, "A trailing byte refused");
+            OK();
+        }
+        /* dlen one short of its descriptor (framing self-consistent,
+         * descriptor length no longer 18 + N x 2592) */
+        {
+            tl = msig_tail(tail2, sizeof(tail2), &D23, 1, 1);
+            uint32_t dl = ((uint32_t)tail2[1] << 8) | tail2[2];
+            dl -= 1;
+            tail2[1] = (uint8_t)(dl >> 8);
+            tail2[2] = (uint8_t)dl;
+            memset(&so, 0, sizeof(so));
+            so.msig_tail = tail2;
+            so.msig_tail_len = tl - 1;
+            CHECK(spend_env(&fx, &e, ins, 1, o, 1, FEE_MIN, s78, 2, &so)
+                      == 0, "build");
+            CHECK(msig_hook(&fx, &e, &av) == -1,
+                  "A dlen that does not match N refused");
+            OK();
+        }
+        /* a zero-prefix descriptor key (first 32 bytes zero — the kind-1
+         * signer rule) and a wrong tag, both on raw bytes */
+        {
+            tl = msig_tail(tail2, sizeof(tail2), &D23, 1, 1);
+            memset(tail2 + 3 + 18, 0, 32);          /* key[0] prefix     */
+            memset(&so, 0, sizeof(so));
+            so.msig_tail = tail2;
+            so.msig_tail_len = tl;
+            CHECK(spend_env(&fx, &e, ins, 1, o, 1, FEE_MIN, s78, 2, &so)
+                      == 0, "build");
+            CHECK(msig_hook(&fx, &e, &av) == -1,
+                  "A zero-prefix descriptor key refused");
+            OK();
+            tl = msig_tail(tail2, sizeof(tail2), &D23, 1, 1);
+            tail2[3] ^= 0x01;                       /* 'D' of the tag    */
+            CHECK(spend_env(&fx, &e, ins, 1, o, 1, FEE_MIN, s78, 2, &so)
+                      == 0, "build");
+            CHECK(msig_hook(&fx, &e, &av) == -1,
+                  "A wrong descriptor tag refused");
+            OK();
+        }
+        /* kind 1 carries no multisig facts */
+        CHECK(spend_env(&fx, &e, ins, 1, o, 1, FEE_MIN, s78, 2, NULL) == 0,
+              "build");
+        CHECK(msig_hook(&fx, &e, &av) == 0 && av.n_msig == 0,
+              "A a kind-1 verdict has n_msig 0");
+        OK();
+    }
+
+    /* ── B. M-of-N SPEND through the engine ───────────────────────────── */
+    {
+        int s78[2] = { 7, 8 }, s7[1] = { 7 };
+        uint8_t ins[1][64];
+        memcpy(ins[0], u_sp, 64);
+        out_spec_t o[1] = { { 8, MS_AMT - FEE_MIN, 0x21, NULL } };
+        sign_opt_t so;
+        uint32_t tl;
+
+        tl = msig_tail(tail, sizeof(tail), &D23, 1, 1);
+        memset(&so, 0, sizeof(so));
+        so.msig_tail = tail;
+        so.msig_tail_len = tl;
+        CHECK(spend_env(&fx, &e, ins, 1, o, 1, FEE_MIN, s7, 1, &so) == 0,
+              "build");
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(item_refused(fx.w, &b) == 0,
+              "B M-1 signers cannot spend the 2-of-3 coin");
+        OK();
+
+        tl = msig_tail(tail2, sizeof(tail2), &DX, 1, 1);
+        memset(&so, 0, sizeof(so));
+        so.msig_tail = tail2;
+        so.msig_tail_len = tl;
+        CHECK(spend_env(&fx, &e, ins, 1, o, 1, FEE_MIN, s78, 2, &so) == 0,
+              "build");
+        ve.env_bytes = e.bytes; ve.env_len = e.len;
+        mk_block(&b, 1, &ve, 1);
+        CHECK(item_refused(fx.w, &b) == 0,
+              "B a descriptor whose address is not the owner refused");
+        OK();
+
+        {
+            msig_spec_t s[2] = { D23, D22 };
+            tl = msig_tail(tail2, sizeof(tail2), s, 2, 1);
+            memset(&so, 0, sizeof(so));
+            so.msig_tail = tail2;
+            so.msig_tail_len = tl;
+            CHECK(spend_env(&fx, &e, ins, 1, o, 1, FEE_MIN, s78, 2, &so)
+                      == 0, "build");
+            ve.env_bytes = e.bytes; ve.env_len = e.len;
+            mk_block(&b, 1, &ve, 1);
+            CHECK(item_refused(fx.w, &b) == 0,
+                  "B a carried descriptor no input uses refused (F1.2)");
+            OK();
+        }
+        {
+            /* a key-7 coin spent under kind 3 with D23 carried: the
+             * descriptor owns nothing → refused; the SAME spend as
+             * kind 1 is the control below */
+            uint8_t i7[1][64];
+            memcpy(i7[0], u7, 64);
+            out_spec_t o7[1] = { { 8, MS_AMT - FEE_MIN, 0x22, NULL } };
+            memset(&so, 0, sizeof(so));
+            so.msig_tail = tail;
+            so.msig_tail_len = msig_tail(tail, sizeof(tail), &D23, 1, 1);
+            CHECK(spend_env(&fx, &e, i7, 1, o7, 1, FEE_MIN, s78, 2, &so)
+                      == 0, "build");
+            ve.env_bytes = e.bytes; ve.env_len = e.len;
+            mk_block(&b, 1, &ve, 1);
+            CHECK(item_refused(fx.w, &b) == 0,
+                  "B a descriptor carried beside a plain-owned input only "
+                  "is unused → refused");
+            OK();
+        }
+        CHECK(spend_env(&fx, &e, ins, 1, o, 1, FEE_MIN, s78, 2, NULL) == 0,
+              "build");
+        ve.env_bytes = e.bytes; ve.env_len = e.len;
+        mk_block(&b, 1, &ve, 1);
+        CHECK(item_refused(fx.w, &b) == 0,
+              "B the kind-1 spelling (no descriptor) cannot spend a "
+              "multisig coin");
+        OK();
+
+        /* the positive: 2 of 3 sign, the right descriptor */
+        memset(&so, 0, sizeof(so));
+        so.msig_tail = tail;
+        so.msig_tail_len = msig_tail(tail, sizeof(tail), &D23, 1, 1);
+        CHECK(spend_env(&fx, &e, ins, 1, o, 1, FEE_MIN, s78, 2, &so) == 0,
+              "build");
+        ve.env_bytes = e.bytes; ve.env_len = e.len;
+        mk_block(&b, 1, &ve, 1);
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+              "B 2-of-3 signers + the descriptor COMMIT the spend");
+        OK();
+        CHECK(utxo_rows(fx.w, u_sp) == 0, "B the multisig coin is spent");
+        uint8_t n8[64];
+        CHECK(out_nul(8, 0x21, n8) == 0 && utxo_rows(fx.w, n8) == 1,
+              "B key 8 received the output");
+        CHECK(supply_identity_holds(fx.w), "B supply identity"); OK();
+    }
+
+    /* ── C. a multisig coin funds the other CORE ops (F2.1) ───────────── */
+    {
+        int s89[2] = { 8, 9 }, s79[2] = { 7, 9 };
+        uint32_t tl = msig_tail(tail, sizeof(tail), &D23, 1, 1);
+        CHECK(tl > 0, "tail");
+
+        /* TOKEN_CREATE whose creation fee is paid by the 2-of-3 coin */
+        {
+            static uint8_t tokM[64];
+            memset(tokM, 0x4D, sizeof(tokM));
+            uint8_t i1[1][64];
+            memcpy(i1[0], u_tc, 64);
+            out_spec_t o[1] = { { 8, 1000, 0x31, tokM } };
+            sign_opt_t so;
+            memset(&so, 0, sizeof(so));
+            so.msig_tail = tail;
+            so.msig_tail_len = tl;
+            CHECK(tc_env(&fx, &e, tokM, "Msig", "MS", 8, i1, 1, o, 1,
+                         TC_FEE, s89, 2, &so) == 0, "build");
+            nodus_v2_envelope_t ve = { e.bytes, e.len };
+            mk_block(&b, 2, &ve, 1);
+            CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+                  "C a TOKEN_CREATE fee paid by the multisig coin COMMITS");
+            OK();
+            CHECK(tok_rows(fx.w, tokM) == 1, "C the token is registered");
+        }
+        /* STAKE by key 12, its bond funded by the 2-of-3 coin (the
+         * SYSTEM record leg is key 12's own kind-1 signature) */
+        {
+            int s12[1] = { 12 };
+            uint8_t fp12[64];
+            CHECK(key_fp_raw(12, fp12) == 0, "fp12");
+            uint32_t sl = stake_call_build(scall, sizeof(scall), 12,
+                                           STAKE_BPS, STAKE_BOND, fp12);
+            uint32_t fl = fund_call(fcall, sizeof(fcall), u_st, 12,
+                                    STAKE_CHANGE, 0x32);
+            CHECK(sl && fl, "call");
+            two_opt_t to;
+            memset(&to, 0, sizeof(to));
+            to.core_msig_tail = tail;
+            to.core_msig_tail_len = tl;
+            CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_STAKE, scall, sl,
+                                DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                                s12, 1, s79, 2, &to) == 0, "build");
+            nodus_v2_envelope_t ve = { e.bytes, e.len };
+            mk_block(&b, 3, &ve, 1);
+            CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+                  "C a STAKE bond funded by the multisig coin COMMITS");
+            OK();
+            CHECK(utxo_rows(fx.w, u_st) == 0, "C the funding coin is spent");
+        }
+        /* DELEGATE of key 13 to genesis validator 5, the amount funded
+         * by the 2-of-3 coin */
+        {
+            int s13[1] = { 13 };
+            uint32_t sl = deleg_call_build(scall, sizeof(scall), 13, 5,
+                                           DLG_AMOUNT);
+            uint32_t fl = fund_call(fcall, sizeof(fcall), u_dl, 13,
+                                    DLG_CHANGE, 0x33);
+            CHECK(sl && fl, "call");
+            two_opt_t to;
+            memset(&to, 0, sizeof(to));
+            to.core_msig_tail = tail;
+            to.core_msig_tail_len = tl;
+            CHECK(two_leg_build(&fx, &e, DNA_SYSRULE_DELEGATE, scall, sl,
+                                DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                                s13, 1, s89, 2, &to) == 0, "build");
+            nodus_v2_envelope_t ve = { e.bytes, e.len };
+            mk_block(&b, 4, &ve, 1);
+            CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+                  "C a DELEGATE amount funded by the multisig coin COMMITS");
+            OK();
+            CHECK(utxo_rows(fx.w, u_dl) == 0, "C the funding coin is spent");
+        }
+        CHECK(supply_identity_holds(fx.w), "C supply identity"); OK();
+    }
+    fx_close(&fx);
+    return 0;
+}
+
 int main(void) {
     /* This file pins which domain roots a given runtime op moves: "op X
      * moves SYSTEM", "op X must NOT move CORE". The O15J per-block mint
@@ -11064,12 +11974,14 @@ int main(void) {
     if (test_authority() != 0) return 1;
     if (test_system_cc() != 0) return 1;
     if (test_system_cc_target_active_max() != 0) return 1;
+    if (test_system_cc_token_fee() != 0) return 1;
     if (test_committee_capacity() != 0) return 1;
     if (test_core_spend() != 0) return 1;
     if (test_engine() != 0) return 1;
     if (test_intent_engine() != 0) return 1;
     if (test_core_burn() != 0) return 1;
     if (test_core_token_create() != 0) return 1;
+    if (test_core_token_create_param6() != 0) return 1;
     if (test_hook_level_pins() != 0) return 1;
     if (test_system_stake() != 0) return 1;
     if (test_o11_hook_pins() != 0) return 1;
@@ -11087,6 +11999,7 @@ int main(void) {
     if (test_spend_effect_decl() != 0) return 1;
     if (test_resubmission_no_halt() != 0) return 1;
     if (test_undelegate_totals_underflow() != 0) return 1;
+    if (test_core_multisig() != 0) return 1;
     printf("test_v2_native: ALL OK (%d checks)\n", g_checks);
     return 0;
 }

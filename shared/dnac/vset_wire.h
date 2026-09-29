@@ -193,20 +193,6 @@ int dna_vset_encode(const dna_vset_snapshot_t *snap,
 int dna_vset_decode(const uint8_t *src, size_t len,
                     dna_vset_snapshot_t **out);
 
-/* ── Policy ─────────────────────────────────────────────────────────── */
-
-/**
- * Every entry must satisfy self_bond >= min_self_bond_raw.
- *
- * The minimum is CHAIN-SPECIFIC and passed in by the caller — it is
- * deliberately NOT hard-coded here, because this codec is shared by
- * libdna and libnodus and must stay usable by any chain built on it.
- *
- * @return 0 if every entry passes, -1 on NULL or on the first violation.
- */
-int dna_vset_validate_bonds(const dna_vset_snapshot_t *snap,
-                            uint64_t min_self_bond_raw);
-
 /* ── Hashing ────────────────────────────────────────────────────────── */
 
 /** snapshot_hash = SHA3-512("DNA.VSET.v1" ‖ canonical bytes). @return 0/-1. */

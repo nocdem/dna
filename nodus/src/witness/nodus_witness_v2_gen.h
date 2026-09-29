@@ -118,9 +118,14 @@
  * ── THE REWARD RESERVE (tokenomics-v3 P2, P2-1) ─────────────────────
  * A version-3 config's `reward_pool_initial` is carved OUT of the fixed
  * `total_supply_raw` (decision file §1: no minting; 200M of 1B is the
- * validator reward reserve): Rule P.2 is
- *   Σ allocations + Σ self_stake + reward_pool_initial == total_supply_raw
- * and supply_tracking.reward_pool is seeded with it. `reward_divisor_log2`
+ * validator reward reserve), and so — since the final pre-testnet wipe
+ * (package W-A, config_version 4) — are the nine keyless treasury pools
+ * (`treasury[]`, decision 2026-09-28-treasury-pools-and-exact-self-stake
+ * .md): Rule P.2 is
+ *   Σ allocations + Σ self_stake + reward_pool_initial + Σ treasury
+ *     == total_supply_raw
+ * supply_tracking.reward_pool is seeded with the reserve and `v2_treasury`
+ * with the nine pool balances. `reward_divisor_log2`
  * has ONE legal value
  * (NODUS_V2_GEN_REWARD_DIVISOR_LOG2) and `payout_interval_epochs` must be
  * >= 1 (nodus_witness_v2_gen_v3_validate).
@@ -160,7 +165,8 @@
  *   L2-F2  dna_dist_check_totals is called against the manifest's
  *          total_claimable, which is derived independently as
  *          total_supply_raw − Σ self_stake − reward_pool_initial
- *          (tokenomics-v3 P2: the reserve is not claimable).
+ *          − Σ treasury (tokenomics-v3 P2: the reserve is not
+ *          claimable; W-A: neither are the locked treasury pools).
  *   L2-F3  the claim window is pinned to [0, UINT64_MAX]; any other
  *          window is refused.
  *   L2-F4  every seeded validator row is validated against
@@ -181,6 +187,7 @@
 #define NODUS_WITNESS_V2_GEN_H
 
 #include "witness/nodus_witness.h"
+#include "witness/nodus_witness_roots_v2.h" /* NODUS_TREASURY_POOL_*     */
 
 #include "dnac/dnac.h"              /* DNAC_PUBKEY_SIZE, DNAC_*_SIZE     */
 #include "dnac/cmt_genesis.h"       /* cmt_genesis_doc_t (version 3)     */
@@ -193,8 +200,70 @@
 extern "C" {
 #endif
 
-/** The ONLY config schema this build understands (D-18 rev 4). Any
- *  other value is refused by gen_plan_build.
+/** RETIRED since general multisig (see NODUS_V2_GEN_CONFIG_VERSION_V5
+ *  below): no path of this build accepts 4 any more. Kept ONLY for the
+ *  retired-version refusal tests. What it was:
+ *
+ *  4 — final pre-testnet wipe, package W-A (decision
+ *  2026-09-28-treasury-pools-and-exact-self-stake.md; design
+ *  2026-09-28-final-wipe-package-design.md §1 W-A and Fable F8): the
+ *  version-3 document with the nine keyless treasury pools APPENDED
+ *  after `payout_interval_epochs` (the layout table below) and counted
+ *  by Rule P.2. Every other field and its position are unchanged. */
+#define NODUS_V2_GEN_CONFIG_VERSION_V4   4u
+
+/** The ONLY config schema this build understands since general multisig
+ *  (decision 2026-09-29-general-multisig.md, ONAY 2): the version-4
+ *  document with the GENESIS OUTPUTS section appended after the W-C tail
+ *  (layout table below). Version 4 is RETIRED — refused by
+ *  gen_plan_build, the strict decoder, the verdict and the config parser,
+ *  exactly as W-A retired 3. `_v3_defaults` writes 5. */
+#define NODUS_V2_GEN_CONFIG_VERSION_V5   5u
+
+/** Upper bound on genesis outputs (a release bound of this builder, not a
+ *  protocol value): the Foundation's pools need a handful; refuse rather
+ *  than carry an unbounded list inside a ~255 KB config struct. */
+#define NODUS_V2_GEN_MAX_GENOUTS         64u
+
+/** The 16-byte zero-padded tag of the genesis-output coin identity:
+ *  "DNA.GENOUT.v1" (13 chars + 3 zero bytes). */
+#define NODUS_V2_GEN_GENOUT_TAG          "DNA.GENOUT.v1"
+
+/**
+ * One GENESIS OUTPUT (general multisig, decision ONAY 2): a coin that
+ * exists from height 0, written straight into `utxo_set` by the
+ * derivation (and re-derived by a joiner from the carried document).
+ *
+ *   owner   64 RAW address bytes — a single-key fingerprint or an M-of-N
+ *           multisig address (shared/dnac/msig_wire.h); all-zero refused.
+ *           Stored as 128 lowercase hex, the utxo_set owner form.
+ *   amount  raw native units, 1 .. INT64_MAX.
+ *
+ * Its coin identity (ONAY 2 — NOT the design §7 chain_id form, which was
+ * circular: chain_id hashes app_hash, the root AFTER these rows exist):
+ *   nullifier    = SHA3-512("DNA.GENOUT.v1" 16 B ‖ source_commit[64]
+ *                           ‖ index u32 BE)
+ *   tx_hash      = nullifier, output_index 0, block_height 0,
+ *   unlock_block = 0, domain CORE, token native (all-zero).
+ * `index` is the 0-based position in the document's list. source_commit
+ * is the hash of the document with chain_id AND app_hash zeroed, so it
+ * exists BEFORE the genesis apply: document → source_commit → outputs →
+ * app_hash → chain_id, no cycle.
+ */
+typedef struct {
+    uint8_t  owner[64];
+    uint64_t amount;
+} nodus_v2_gen_output_t;
+
+/** RETIRED (W-A): the version-3 value. NO path of this build accepts
+ *  it — gen_plan_build, the decoder and the verdict all refuse it. It
+ *  is kept ONLY because consumers outside W-A's file whitelist still
+ *  name it (the config-file parser nodus/tools/nodus_v2_gen_config.c,
+ *  tests/v2_genesis_fixture.h and the test fixtures that build a
+ *  config — they set it before `_v3_defaults` overwrites it); each must
+ *  move to NODUS_V2_GEN_CONFIG_VERSION_V5, after which this macro is
+ *  deleted. (V4 above is RETIRED too since general multisig; it stays
+ *  named for the retired-version refusal tests.)
  *
  *  3 — FLEET-TM-R3 W2 (R3-C1, package C1b). The config BODY (the table
  *  below; version 2 was that body alone, with the Block 2C economic
@@ -293,6 +362,11 @@ extern "C" {
  * demands. A row that violates it passes genesis (the validator merkle
  * leaf legally hashes 128 zero bytes) and then halts the chain at the
  * first graduation boundary; the builder therefore refuses it here.
+ * It is an ADDRESS — a single-key fingerprint or, for the genesis seats,
+ * the Foundation's M-of-N multisig address (general multisig, decision
+ * 2026-09-29-general-multisig.md) — and consensus checks its SHAPE only;
+ * it is NOT required to equal SHA3-512(unstake_destination_pubkey) any
+ * more (the ceremony checker verifies what it means).
  */
 typedef struct {
     uint8_t  pubkey[DNAC_PUBKEY_SIZE];                     /* 2592 */
@@ -317,6 +391,26 @@ typedef struct {
     uint8_t  dest_binding[64];
     uint64_t amount;             /* raw base units; MUST be >= 1        */
 } nodus_v2_gen_alloc_t;
+
+/** W-A: the number of treasury entries a document carries — EXACTLY the
+ *  pool set (1..9), never a variable count. */
+#define NODUS_V2_GEN_TREASURY_POOLS   NODUS_TREASURY_POOL_COUNT
+
+/**
+ * W-A — one keyless, locked treasury pool as the genesis document
+ * carries it: `pool_id` MUST equal its index + 1 (1 Storage … 9
+ * Community airdrop, the tokenomics §1 table order — decision answer
+ * 11), so the array is the pool set in strictly ascending pool_id order
+ * by construction. `balance` is raw base units, 0 .. INT64_MAX; 0 is
+ * LEGAL (a pool the config leaves empty — the builder has no opinion on
+ * the amounts, exactly as it has none on the allocations; the decision's
+ * amounts are the ceremony template's, tools/genesis/). Seeded verbatim
+ * into `v2_treasury`.
+ */
+typedef struct {
+    uint32_t pool_id;
+    uint64_t balance;
+} nodus_v2_gen_treasury_t;
 
 /**
  * VERSION 3 ONLY — one cometbft `GenesisValidator`
@@ -359,10 +453,10 @@ typedef struct {
  * nodus_witness_t does, and it does so sooner than before.
  */
 typedef struct {
-    uint32_t config_version;     /* NODUS_V2_GEN_CONFIG_VERSION_V3      */
+    uint32_t config_version;     /* NODUS_V2_GEN_CONFIG_VERSION_V5      */
     uint64_t total_supply_raw;   /* == Σ allocations + Σ self_stake
-                                  * + reward_pool_initial
-                                  * (tokenomics-v3 P2 Rule P.2)         */
+                                  * + reward_pool_initial + Σ treasury
+                                  * (Rule P.2, tokenomics-v3 P2 + W-A)  */
 
     /* ── THE ECONOMIC PARAMETERS (Block 2C) ───────────────────────────
      * All four are hashed into source_commit; the first three are
@@ -448,6 +542,37 @@ typedef struct {
     uint64_t reward_pool_initial;
     uint64_t reward_divisor_log2;
     uint64_t payout_interval_epochs;
+
+    /* W-A (config_version 4): the nine keyless, locked treasury pools,
+     * index i carrying pool_id i + 1. Carved out of total_supply_raw by
+     * Rule P.2 and seeded into `v2_treasury` (gen_seed_state). */
+    nodus_v2_gen_treasury_t treasury[NODUS_V2_GEN_TREASURY_POOLS];
+
+    /* W-C (config_version 4, final pre-testnet wipe — decisions
+     * 2026-09-25-gas-price.md "Son wipe paketi" and 2026-09-28-token-
+     * create-fee-governance.md): the two GOVERNED fee parameters' genesis
+     * values. Each is committed as a height-0 chain_config_history row
+     * (param 5 / param 6, gen_seed_state) and hashed into the document,
+     * so the chain id binds them; later changes are governance votes.
+     *   gas_price_raw_per_unit  [0, DNAC_CFG_MAX_GAS_PRICE] — 0 is legal
+     *                           (the gas rule starts OFF); default 121.
+     *   token_create_fee_raw    [DNAC_CFG_MIN_TOKEN_CREATE_FEE,
+     *                            DNAC_CFG_MAX_TOKEN_CREATE_FEE];
+     *                           default 10^11 (1 000 NODUS).
+     * Range-checked by nodus_witness_v2_gen_v3_validate — the SAME
+     * bounds the governance scalar rules apply, so a genesis value is
+     * always one a vote could also have set. */
+    uint64_t gas_price_raw_per_unit;
+    uint64_t token_create_fee_raw;
+
+    /* General multisig (config_version 5, decision 2026-09-29-general-
+     * multisig.md ONAY 2): the GENESIS OUTPUTS, in document order (the
+     * order IS the index of each coin's identity — never sorted). Counted
+     * by Rule P.2, excluded from total_claimable, seeded into utxo_set by
+     * gen_seed_state and re-derived by a joiner (bundle adopt) through
+     * nodus_witness_v2_gen_seed_outputs. 0 outputs is legal. */
+    uint32_t n_genesis_outputs;  /* 0 .. NODUS_V2_GEN_MAX_GENOUTS         */
+    nodus_v2_gen_output_t genesis_outputs[NODUS_V2_GEN_MAX_GENOUTS];
 } nodus_v2_gen_config_t;
 
 /*
@@ -497,9 +622,13 @@ typedef struct {
 /**
  * Validate a config against the SHARED genesis rules (gen_plan_build),
  * touching no filesystem and no database: the schedule constants, the
- * claim window, Rule P.1/P.2/P.3, the validator shape and
- * payout-fingerprint derivation, the allocation set — and, since
- * tokenomics-v3 P4, config_version == 3.
+ * claim window, Rule P.1/P.2/P.3, the validator shape (the destination
+ * address by shape only since general multisig), the allocation set, the treasury pool
+ * set (pool_id == index + 1, balance <= INT64_MAX), the genesis outputs
+ * (count <= NODUS_V2_GEN_MAX_GENOUTS, owner not all-zero, amount 1 ..
+ * INT64_MAX; counted by Rule P.2, excluded from total_claimable), every
+ * genesis validator's unstake_destination_pubkey ALL ZERO — and
+ * config_version == 5 (general multisig; 4 under W-A/W-C, 3 before).
  *
  * It does NOT check the version-3 tail (consensus protocol, genesis
  * time, parameters, Comet rows); a 0 here means "the shared rules pass",
@@ -530,9 +659,10 @@ int nodus_witness_v2_gen_is_pure(const char *db_path);
  *
  * ── THE CANONICAL ENCODING ────────────────────────────────────────────
  * Every integer BIG-ENDIAN; a signed value is 8-byte two's complement.
- * The body is the table above, with `config_version` reading 3 — it is
- * produced by ONE function (`gen_encode_planned`), never by a second
- * copy of the layout. APPENDED after it, in this order:
+ * The body is the table above, with `config_version` reading 4 (W-A; 3
+ * before it) — it is produced by ONE function (`gen_encode_planned`),
+ * never by a second copy of the layout. APPENDED after it, in this
+ * order:
  *
  *   consensus_protocol              u32be   1 = cometbft @709fd12b
  *   genesis_time                    u64be   UTC milliseconds
@@ -569,6 +699,25 @@ int nodus_witness_v2_gen_is_pure(const char *db_path);
  *   reward_pool_initial             u64be
  *   reward_divisor_log2             u64be
  *   payout_interval_epochs          u64be
+ *   ── config_version 4 (W-A) ──
+ *   × EXACTLY 9 (NODUS_V2_GEN_TREASURY_POOLS), NO count field — the
+ *     pool set is fixed, not a list:
+ *               pool_id             u32be   MUST read index + 1 (1..9)
+ *               balance             u64be   0 .. INT64_MAX
+ *   ── config_version 4 (W-C) ──
+ *   gas_price_raw_per_unit          u64be   0 .. DNAC_CFG_MAX_GAS_PRICE
+ *   token_create_fee_raw            u64be   DNAC_CFG_MIN_TOKEN_CREATE_FEE
+ *                                           .. DNAC_CFG_MAX_TOKEN_CREATE_FEE
+ *   (9 × 12 + 2 × 8 = 124 bytes; a version-4 document is exactly 124
+ *    bytes longer than the version-3 document with the same other
+ *    fields. W-A and W-C landed in the SAME unreleased version 4.)
+ *   ── config_version 5 (general multisig, decision ONAY 2) ──
+ *   genesis_output_count            u32be   0 .. NODUS_V2_GEN_MAX_GENOUTS
+ *     × count, DOCUMENT ORDER (the index of each coin's identity):
+ *               owner                 64    raw address, not all-zero
+ *               amount              u64be   1 .. INT64_MAX
+ *   (4 + 72 × count bytes; a version-5 document with no outputs is
+ *    exactly 4 bytes longer than the version-4 one.)
  *
  * ── THE TWO HASHES, AND WHY THEY ZERO DIFFERENT FIELDS ────────────────
  *   chain_id      = SHA3-512(the whole encoding, tag included, with the
@@ -596,7 +745,8 @@ int nodus_witness_v2_gen_is_pure(const char *db_path);
 /**
  * Fill the version-3 fields that have a DEFAULT — and only those.
  *
- *   config_version         = 3
+ *   config_version         = 5 (general multisig; 4 under W-A/W-C)
+ *   treasury[i].pool_id    = i + 1 (structural, like config_version)
  *   consensus_protocol     = cometbft
  *   consensus_params       = cmt_default_consensus_params() verbatim
  *                            (the function itself, never a copy of its
@@ -605,10 +755,17 @@ int nodus_witness_v2_gen_is_pure(const char *db_path);
  *   reward_pool_initial    = 200 000 000 × 10^8
  *   reward_divisor_log2    = 16
  *   payout_interval_epochs = 24
+ *   gas_price_raw_per_unit = 121          (W-C; decision 2026-09-25-
+ *                                           gas-price.md "Son wipe paketi")
+ *   token_create_fee_raw   = 10^11        (W-C; 1 000 NODUS, decision
+ *                                           2026-09-28-token-create-fee-
+ *                                           governance.md)
  *
- * `genesis_time_ms`, `initial_height`, the validators, the allocations
- * and the economic parameters are NOT touched: none of them has a
- * defensible default and each reaches the chain id.
+ * `genesis_time_ms`, `initial_height`, the validators, the allocations,
+ * the treasury BALANCES and the economic parameters are NOT touched:
+ * none of them has a defensible default and each reaches the chain id.
+ * (The treasury balances therefore stay whatever the caller holds — 0
+ * in a calloc'd config — exactly like the allocation amounts.)
  *
  * @return 0 / -1 on NULL.
  */
@@ -637,11 +794,15 @@ int nodus_witness_v2_gen_v3_defaults(nodus_v2_gen_config_t *cfg);
 int nodus_witness_v2_gen_v3_fill_comet_rows(nodus_v2_gen_config_t *cfg);
 
 /**
- * The VERSION-3 verdict: the shared rules (config_validate) plus every
- * version-3 rule — consensus_protocol == cometbft, genesis_time_ms != 0,
+ * The document verdict (the name is historical — since general multisig
+ * it accepts config_version 5 ONLY): the shared rules (config_validate) plus every
+ * tail rule — consensus_protocol == cometbft, genesis_time_ms != 0,
  * initial_height <= INT64_MAX, the consensus params' own ValidateBasic
  * (cmt_consensus_params_validate_basic), at least one key type, every
- * name_len <= 63, and ROW EQUALITY: every carried Comet row must equal
+ * name_len <= 63, the W-C fee parameters inside their governed ranges
+ * (gas_price_raw_per_unit <= DNAC_CFG_MAX_GAS_PRICE, token_create_fee_raw
+ * in [DNAC_CFG_MIN_TOKEN_CREATE_FEE, DNAC_CFG_MAX_TOKEN_CREATE_FEE]), and
+ * ROW EQUALITY: every carried Comet row must equal
  * the row derived from the stake entries.
  *
  * `app_hash` and `chain_id` are NOT constrained here — they are outputs,
@@ -669,9 +830,10 @@ int nodus_witness_v2_gen_v3_encode(const nodus_v2_gen_config_t *cfg,
 
 /**
  * The STRICT inverse of the encoder: exact length, every count and
- * length bound checked, no trailing byte, and a version field that must
- * read 3 — a version-2 encoding is REFUSED here rather than read as a
- * prefix.
+ * length bound checked, no trailing byte, every treasury pool_id equal
+ * to its index + 1, the genesis-output count within its bound, and a
+ * version field that must read 5 — a version-4 (or older) encoding is
+ * REFUSED here rather than read as a prefix.
  *
  * @param buf/len     the encoded document.
  * @param cfg_out     caller-allocated (~240 KB — calloc it, never a
@@ -739,7 +901,8 @@ int nodus_witness_v2_gen_to_cmt_doc(const nodus_v2_gen_config_t *cfg,
  *     (S16 since tokenomics-v3 P2) BEFORE the ledger genesis runs;
  *   · the SYSTEM state is seeded from the config (validators,
  *     validator_stats.active_count, supply_tracking with the reward
- *     reserve, the committed econ band), then the genesis validator-set
+ *     reserve, the committed econ band, the nine `v2_treasury` pool
+ *     rows — W-A), then the genesis validator-set
  *     snapshots (epoch 0 and E) and the domain registry;
  *   · the genesis apply is the Comet entry
  *     (nodus_witness_v2_genesis_cmt) — NO height-0 `v2_blocks` row is
@@ -881,6 +1044,35 @@ int nodus_witness_v2_gen_stored_doc_present(nodus_witness_t *w);
  */
 int nodus_witness_v2_gen_stored_chain_id(
         nodus_witness_t *w, uint8_t out32[NODUS_V2_GEN_CHAIN_ID_LEN]);
+
+/**
+ * General multisig (decision ONAY 2) — the genesis-output coin identity:
+ *   out = SHA3-512("DNA.GENOUT.v1" 16 B ‖ source_commit[64] ‖ index u32 BE)
+ * (84-byte preimage). PURE. @return 0 / -1 (NULL, hash backend).
+ */
+int nodus_witness_v2_gen_output_nullifier(
+        const uint8_t source_commit[NODUS_V2_GEN_SRCCOMMIT_LEN],
+        uint32_t index, uint8_t out[64]);
+
+/**
+ * Seed the document's genesis outputs into `utxo_set` — THE ONE writer,
+ * shared by the derivation (gen_seed_state, before the genesis root is
+ * taken) and a joiner's bundle adopt (nodus_witness_v2_bundle_apply,
+ * re-deriving from the CARRIED document, before its genesis apply), so
+ * the two cannot write different rows. Each row: nullifier = tx_hash =
+ * nodus_witness_v2_gen_output_nullifier(source_commit, i), owner = the
+ * 128-hex form of owner, amount, token all-zero, output_index 0,
+ * block_height 0, unlock_block 0, domain CORE. Then the EXACT
+ * post-condition: utxo_set holds exactly n_genesis_outputs rows whose
+ * amounts sum to Σ outputs (so it must run on a utxo_set that is empty —
+ * it refuses one that is not). Runs in the caller's transaction (none
+ * opened here).
+ * @param source_commit  nodus_witness_v2_gen_v3_source_commit(cfg).
+ * @return 0 / -1 (a refusal or a DB fault, logged).
+ */
+int nodus_witness_v2_gen_seed_outputs(
+        nodus_witness_t *w, const nodus_v2_gen_config_t *cfg,
+        const uint8_t source_commit[NODUS_V2_GEN_SRCCOMMIT_LEN]);
 
 #ifdef __cplusplus
 }

@@ -9,7 +9,10 @@
  * _derive_v3. No parallel parser, no re-implemented encoder.
  * (tokenomics-v3 P4 deleted the version-2 derivation, its source_commit
  * and the parser's "absent config_version means 2" rule; the golden file
- * is a version-3 document and every derivation goes through
+ * is a cometbft document — config_version 5 since general multisig
+ * (4 since the final pre-testnet wipe W-A), with its nine [treasury]
+ * blocks and two [genesis_output] blocks — and every derivation goes
+ * through
  * nodus_witness_v2_gen_derive_v3 — the entry the ceremony uses.)
  *
  * Sections:
@@ -19,8 +22,8 @@
  *   §2  D-I5: the same file parsed twice yields an identical
  *       source_commit, and it equals the in-memory reference's
  *   §3  every refusal, one case each, each naming what it kills
- *   §4  D7 / G7: a well-shaped fingerprint that does not DERIVE from
- *       the payout key is refused; the derived one is accepted
+ *   §4  general multisig: a genesis destination is an address checked
+ *       by shape only; a non-zero unstake_destination_pubkey is refused
  *   §5  D4 / G4: re-deriving with a different config REFUSES; with the
  *       same config it is the idempotent success it claims to be
  *   §6  D3 / G6: a derivation leaves the partial-wipe marker in the
@@ -123,6 +126,21 @@ static int g_checks = 0;
 /* ── the §0 composition, identical to test_v2_gen.c's ────────────────── */
 
 #define TREASURY_RAW   93000000000000000ULL          /* 930,000,000 DNAC */
+/* W-A (config_version 4): the reference composition carves the nine
+ * keyless treasury pools out of that remainder — pool i + 1 holds
+ * (i + 1) × 10^15 raw (Σ 45 × 10^15, non-zero so every [treasury] block
+ * is a real value the parser must carry) — and the single allocation
+ * keeps the rest (Rule P.2: allocation + 7 × 10M + Σ pools == supply). */
+#define POOL_RAW(i)    ((uint64_t)((i) + 1) * 1000000000000000ULL)
+#define POOLS_RAW      45000000000000000ULL
+/* General multisig (config_version 5): two genesis outputs, also carved
+ * out of the remainder, so every [genesis_output] block is a real value
+ * the parser must carry and keep IN FILE ORDER (output 0 is the LARGER
+ * one, so a parser that sorted by amount would be caught). */
+#define GENOUT_N       2u
+#define GENOUT_RAW(i)  ((i) == 0 ? 3000000000000000ULL : 1000000000000000ULL)
+#define GENOUTS_RAW    4000000000000000ULL
+#define ALLOC_RAW      (TREASURY_RAW - POOLS_RAW - GENOUTS_RAW)
 #define N_VAL          ((uint16_t)DNAC_COMMITTEE_SIZE)
 #define GOLDEN_CAP     262144u
 
@@ -196,8 +214,20 @@ static int cfg_make(cfgbox_t *b, uint16_t c0_extra) {
     if (!b->cfg || !b->allocs) { cfg_free(b); return -1; }
 
     nodus_v2_gen_config_t *c = b->cfg;
-    /* tokenomics-v3 P4: 3 is the only version; the tail is cfg_make_v3's */
-    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION_V3;
+    /* General multisig: 5 is the only version (4 under W-A/W-C, 3 since
+     * tokenomics-v3 P4); the tail is cfg_make_v3's. The treasury pools
+     * and the genesis outputs are body-independent shared-rule fields, so
+     * they are set here with the rest of the composition. */
+    c->config_version        = NODUS_V2_GEN_CONFIG_VERSION_V5;
+    for (size_t t = 0; t < NODUS_V2_GEN_TREASURY_POOLS; t++) {
+        c->treasury[t].pool_id = (uint32_t)(t + 1);
+        c->treasury[t].balance = POOL_RAW(t);
+    }
+    c->n_genesis_outputs = GENOUT_N;
+    for (uint32_t g = 0; g < GENOUT_N; g++) {
+        memset(c->genesis_outputs[g].owner, (int)(0xC1 + g), 64);
+        c->genesis_outputs[g].amount = GENOUT_RAW(g);
+    }
     c->total_supply_raw      = DNAC_DEFAULT_TOTAL_SUPPLY;
     c->epoch_length          = (uint64_t)DNAC_EPOCH_LENGTH;
     c->blocks_per_year       = (uint64_t)DNAC_BLOCKS_PER_YEAR;
@@ -216,6 +246,9 @@ static int cfg_make(cfgbox_t *b, uint16_t c0_extra) {
         }
         hex_lower_fp(v->unstake_destination_pubkey, DNAC_PUBKEY_SIZE,
                      v->unstake_destination_fp);
+        /* general multisig ONAY 2: a genesis row's destination pubkey is
+         * ALL ZERO (the fp above is only a shape-valid address) */
+        memset(v->unstake_destination_pubkey, 0, DNAC_PUBKEY_SIZE);
         v->self_stake     = DNAC_SELF_STAKE_AMOUNT;
         v->commission_bps = (uint16_t)(100 * (i + 1));
     }
@@ -231,7 +264,7 @@ static int cfg_make(cfgbox_t *b, uint16_t c0_extra) {
         for (size_t bb = 0; bb < sizeof(owner); bb++)
             owner[bb] = (uint8_t)(0xA0 + (bb & 0x1F));
         qgp_sha3_512(owner, sizeof(owner), a->dest_binding);
-        a->amount = TREASURY_RAW;
+        a->amount = ALLOC_RAW;
     }
     c->n_allocs = 1;
     c->allocs   = b->allocs;
@@ -300,6 +333,12 @@ static char *golden_text(const nodus_v2_gen_config_t *c) {
          (unsigned long long)c->reward_pool_initial);
     EMIT("payout_interval_epochs = %llu\n",
          (unsigned long long)c->payout_interval_epochs);
+    /* W-C: the governed fee parameters' genesis values, written
+     * explicitly for the same reason (test_wc_fee_keys covers absence). */
+    EMIT("gas_price_raw_per_unit = %llu\n",
+         (unsigned long long)c->gas_price_raw_per_unit);
+    EMIT("token_create_fee_raw = %llu\n",
+         (unsigned long long)c->token_create_fee_raw);
     EMIT("total_supply_raw = %llu\n",
          (unsigned long long)c->total_supply_raw);
     EMIT("epoch_length = %llu\n", (unsigned long long)c->epoch_length);
@@ -331,6 +370,23 @@ static char *golden_text(const nodus_v2_gen_config_t *c) {
         bin2hex(a->dest_binding, 64, hex);
         EMIT("dest_binding = %s\n", hex);
         EMIT("amount = %llu\n", (unsigned long long)a->amount);
+    }
+
+    /* W-A: the nine [treasury] blocks, LAST — pool order 1..9. */
+    for (size_t i = 0; i < NODUS_V2_GEN_TREASURY_POOLS; i++) {
+        EMIT("\n[treasury]\n");
+        EMIT("pool_id = %u\n", (unsigned)c->treasury[i].pool_id);
+        EMIT("balance = %llu\n", (unsigned long long)c->treasury[i].balance);
+    }
+
+    /* General multisig (config_version 5): the [genesis_output] blocks,
+     * after the treasury, in DOCUMENT order (= each coin's index). */
+    for (uint32_t i = 0; i < c->n_genesis_outputs; i++) {
+        EMIT("\n[genesis_output]\n");
+        bin2hex(c->genesis_outputs[i].owner, 64, hex);
+        EMIT("owner = %s\n", hex);
+        EMIT("amount = %llu\n",
+             (unsigned long long)c->genesis_outputs[i].amount);
     }
 #undef EMIT
     return t;
@@ -426,6 +482,10 @@ static int test_golden_roundtrip(void) {
 
     cfgbox_t ref;
     CHECK(cfg_make_v3(&ref) == 0, "reference config (version 3)");
+    /* W-C: NON-default fee parameters (inside the governed ranges), so a
+     * round trip proves the FILE's value wins over the builder default. */
+    ref.cfg->gas_price_raw_per_unit = 7;
+    ref.cfg->token_create_fee_raw   = 123456789ULL;
     OK();
 
     char dir[128];
@@ -452,16 +512,44 @@ static int test_golden_roundtrip(void) {
           "claim_start_height is forced to 0");
     CHECK(got->claim_end_height == UINT64_MAX,
           "claim_end_height is forced to UINT64_MAX");
-    /* tokenomics-v3 P4: config_version is REQUIRED in the file and 3 is
-     * its only value (it was forced to 2 when absent before P4). */
-    CHECK(got->config_version == NODUS_V2_GEN_CONFIG_VERSION_V3,
-          "config_version is the file's 3");
+    /* config_version is REQUIRED in the file and, since W-A, 4 is its
+     * only value (3 since tokenomics-v3 P4; forced to 2 when absent
+     * before P4). */
+    CHECK(got->config_version == NODUS_V2_GEN_CONFIG_VERSION_V5,
+          "config_version is the file's 5");
+    /* General multisig: the [genesis_output] blocks round-trip IN FILE
+     * ORDER (output 0 is the larger amount — a sorting parser fails). */
+    {
+        int go_ok = got->n_genesis_outputs == GENOUT_N;
+        for (uint32_t g = 0; go_ok && g < GENOUT_N; g++) {
+            uint8_t want[64];
+            memset(want, (int)(0xC1 + g), 64);
+            if (memcmp(got->genesis_outputs[g].owner, want, 64) != 0 ||
+                got->genesis_outputs[g].amount != GENOUT_RAW(g))
+                go_ok = 0;
+        }
+        CHECK(go_ok, "the [genesis_output] blocks round-trip in file "
+                     "order, owner and amount the file's");
+    }
+    {
+        int tr_ok = 1;
+        for (size_t t = 0; t < NODUS_V2_GEN_TREASURY_POOLS; t++)
+            if (got->treasury[t].pool_id != (uint32_t)(t + 1) ||
+                got->treasury[t].balance != POOL_RAW(t))
+                tr_ok = 0;
+        CHECK(tr_ok, "W-A: the nine [treasury] blocks round-trip, pool "
+                     "order 1..9, every balance the file's");
+    }
     CHECK(got->genesis_time_ms == ref.cfg->genesis_time_ms &&
           got->initial_height  == ref.cfg->initial_height,
           "the two required version-3 keys round-trip");
     CHECK(got->reward_pool_initial    == ref.cfg->reward_pool_initial &&
           got->payout_interval_epochs == ref.cfg->payout_interval_epochs,
           "the reward reserve and the payday period round-trip");
+    CHECK(got->gas_price_raw_per_unit == 7 &&
+          got->token_create_fee_raw   == 123456789ULL,
+          "W-C: the two governed fee parameters round-trip (the file's "
+          "non-default values, not the builder's)");
 
     /* The five the file MUST name. */
     CHECK(got->total_supply_raw      == ref.cfg->total_supply_raw,
@@ -614,7 +702,7 @@ static int test_refusals(void) {
              "total_supply_raw = %llu\n",
              (unsigned long long)DNAC_DEFAULT_TOTAL_SUPPLY);
     snprintf(amount_line, sizeof(amount_line), "amount = %llu\n",
-             (unsigned long long)TREASURY_RAW);
+             (unsigned long long)ALLOC_RAW);
 
     /* DUPLICATE KEY. Appending a SECOND identical line means the value
      * is not in dispute — only the repetition is. A parser that resolved
@@ -775,8 +863,9 @@ static int test_refusals(void) {
                        "a CRLF line ending REFUSES");
     }
 
-    /* AN [allocation] BLOCK MISSING A KEY — decided at EOF, since the
-     * allocation block is the last one in the file. */
+    /* AN [allocation] BLOCK MISSING A KEY — decided at the first
+     * [treasury] header that follows it (W-A: the treasury blocks are the
+     * last ones in the file). */
     expect_refusal(dir, g, amount_line, "",
                    "an incomplete [allocation] block REFUSES");
 
@@ -806,10 +895,133 @@ static int test_refusals(void) {
      * legal value).
      * MUTANT KILLED: re-admitting 2 in nv2gc_assign_top, or restoring the
      * "absent means 2" default at EOF. */
-    expect_refusal(dir, g, "config_version = 3\n", "config_version = 2\n",
+    expect_refusal(dir, g, "config_version = 5\n", "config_version = 2\n",
                    "config_version 2 (the deleted schema) REFUSES");
-    expect_refusal(dir, g, "config_version = 3\n", "",
+    expect_refusal(dir, g, "config_version = 5\n", "",
                    "a file with NO config_version REFUSES");
+    /* W-A: version 3 is RETIRED — refused at the line, the rest of the
+     * mutant is the golden version-5 document.
+     * MUTANT KILLED: accepting NODUS_V2_GEN_CONFIG_VERSION_V3 in
+     * nv2gc_assign_top. */
+    expect_refusal(dir, g, "config_version = 5\n", "config_version = 3\n",
+                   "config_version 3 (retired by W-A) REFUSES");
+    /* General multisig (ONAY 2): version 4 is RETIRED the same way.
+     * MUTANT KILLED: accepting NODUS_V2_GEN_CONFIG_VERSION_V4. */
+    expect_refusal(dir, g, "config_version = 5\n", "config_version = 4\n",
+                   "config_version 4 (retired by general multisig) "
+                   "REFUSES");
+
+    /* ── General multisig: the [genesis_output] blocks ────────────────
+     * Each mutant changes ONE thing about the LAST block (output 1).
+     * KILLED BY: a missing-key / unknown-key / hex / P.2 rule dropped. */
+    {
+        char hex1[129], blk[256];
+        uint8_t ow[64];
+        memset(ow, 0xC2, 64);
+        bin2hex(ow, 64, hex1);
+        snprintf(blk, sizeof(blk), "owner = %s\namount = %llu\n", hex1,
+                 (unsigned long long)GENOUT_RAW(1));
+        expect_refusal(dir, g, blk, "",
+                       "a [genesis_output] block with no keys REFUSES");
+        {
+            char noamt[160];
+            snprintf(noamt, sizeof(noamt), "owner = %s\n", hex1);
+            expect_refusal(dir, g, blk, noamt,
+                           "a [genesis_output] block without amount "
+                           "REFUSES");
+        }
+        {
+            char unk[300];
+            snprintf(unk, sizeof(unk), "owner = %s\nindex = 1\namount = "
+                     "%llu\n", hex1, (unsigned long long)GENOUT_RAW(1));
+            expect_refusal(dir, g, blk, unk,
+                           "an unknown key in a [genesis_output] block "
+                           "REFUSES");
+        }
+        {
+            char shorthex[300];
+            snprintf(shorthex, sizeof(shorthex), "owner = %.126s\namount = "
+                     "%llu\n", hex1, (unsigned long long)GENOUT_RAW(1));
+            expect_refusal(dir, g, blk, shorthex,
+                           "a 126-hex genesis-output owner REFUSES");
+        }
+        {
+            char zero[300];
+            snprintf(zero, sizeof(zero), "owner = %0128d\namount = %llu\n",
+                     0, (unsigned long long)GENOUT_RAW(1));
+            expect_refusal(dir, g, blk, zero,
+                           "an all-zero genesis-output owner REFUSES "
+                           "(gen_plan_build)");
+        }
+        {
+            char more[300];
+            snprintf(more, sizeof(more), "owner = %s\namount = %llu\n",
+                     hex1, (unsigned long long)(GENOUT_RAW(1) + 1));
+            expect_refusal(dir, g, blk, more,
+                           "a genesis output one raw unit too large "
+                           "REFUSES (Rule P.2)");
+        }
+    }
+
+    /* ── W-A: the [treasury] blocks ───────────────────────────────────
+     * Each mutant changes ONE thing about the nine blocks at the end of
+     * the golden file. */
+    {
+        char b9[96];
+        snprintf(b9, sizeof(b9), "pool_id = 9\nbalance = %llu\n",
+                 (unsigned long long)POOL_RAW(8));
+        /* a MISSING pool (block 9 emptied to a bare header → incomplete)
+         * and a whole block removed (8 blocks) */
+        expect_refusal(dir, g, b9, "",
+                       "a [treasury] block with no keys REFUSES");
+        {
+            char hb9[112];
+            snprintf(hb9, sizeof(hb9), "\n[treasury]\n%s", b9);
+            expect_refusal(dir, g, hb9, "\n",
+                           "EIGHT [treasury] blocks REFUSE (exactly nine)");
+            char ten[256];
+            snprintf(ten, sizeof(ten), "%s\n[treasury]\npool_id = 10\n"
+                     "balance = 0\n", hb9);
+            expect_refusal(dir, g, hb9, ten,
+                           "a TENTH [treasury] block REFUSES (array bound)");
+        }
+        /* out of order: block 9 names pool 8 */
+        {
+            char b9as8[96];
+            snprintf(b9as8, sizeof(b9as8), "pool_id = 8\nbalance = %llu\n",
+                     (unsigned long long)POOL_RAW(8));
+            expect_refusal(dir, g, b9, b9as8,
+                           "a [treasury] block out of pool order REFUSES");
+        }
+        /* a missing balance key, and a non-integer balance */
+        {
+            char nobal[32];
+            snprintf(nobal, sizeof(nobal), "pool_id = 9\n");
+            expect_refusal(dir, g, b9, nobal,
+                           "a [treasury] block without balance REFUSES");
+            char badbal[64];
+            snprintf(badbal, sizeof(badbal), "pool_id = 9\nbalance = -1\n");
+            expect_refusal(dir, g, b9, badbal,
+                           "a negative treasury balance REFUSES");
+        }
+        /* an unknown key inside a [treasury] block */
+        {
+            char unk[128];
+            snprintf(unk, sizeof(unk), "pool_id = 9\npool = 9\nbalance = "
+                     "%llu\n", (unsigned long long)POOL_RAW(8));
+            expect_refusal(dir, g, b9, unk,
+                           "an unknown key in a [treasury] block REFUSES");
+        }
+        /* a pool_id that is not a uint32 */
+        {
+            char big[96];
+            snprintf(big, sizeof(big), "pool_id = 4294967305\nbalance = "
+                     "%llu\n", (unsigned long long)POOL_RAW(8));
+            expect_refusal(dir, g, b9, big,
+                           "a pool_id above UINT32_MAX REFUSES (never "
+                           "truncated to 9)");
+        }
+    }
 
     /* ── THE BRANCHES THE FIRST CUT LEFT UNCOVERED ───────────────────
      * Found by a read-only review of this file, not by a failure. Each
@@ -846,15 +1058,28 @@ static int test_refusals(void) {
      * never exercised. Here the last line is a truncated key, so the
      * refusal proves the line was READ (not dropped) as well. */
     {
-        char *trunc = replace_first(g, "amount = ", "amoun");
-        CHECK(trunc != NULL, "needle present");
-        if (trunc) {
-            size_t L = strlen(trunc);
-            while (L > 0 && trunc[L - 1] == '\n') L--;
-            expect_refusal_raw(dir, trunc, L,
-                               "a final line with NO trailing newline is "
-                               "still read, and still refused");
-            free(trunc);
+        /* W-A: the truncated key is the last [treasury] block's
+         * `balance` line: everything up to it, then "balanc" with no
+         * newline (general multisig: the [genesis_output] blocks after
+         * it are dropped with the rest — the refusal is the truncated
+         * line, reached first). */
+        const char *last = NULL;
+        for (const char *p = strstr(g, "\nbalance = "); p;
+             p = strstr(p + 1, "\nbalance = "))
+            last = p;
+        CHECK(last != NULL, "needle present");
+        if (last) {
+            size_t head = (size_t)(last - g) + 1;    /* keep the '\n'   */
+            char *trunc = malloc(head + 8);
+            CHECK(trunc != NULL, "alloc");
+            if (trunc) {
+                memcpy(trunc, g, head);
+                memcpy(trunc + head, "balanc", 6);
+                expect_refusal_raw(dir, trunc, head + 6,
+                                   "a final line with NO trailing newline "
+                                   "is still read, and still refused");
+                free(trunc);
+            }
         }
     }
 
@@ -915,13 +1140,27 @@ static int test_refusals(void) {
      * refusal to gen_plan_build. Both refuse now, and the parser's
      * message is the one an operator can act on. */
     {
+        /* W-A: the nine [treasury] blocks follow the allocation, so the
+         * allocation span [allocation .. first [treasury]) is CUT OUT and
+         * the treasury is kept — otherwise the refusal could come from
+         * the treasury count instead of the allocation count. */
         char *at = strstr(g, "[allocation]");
-        CHECK(at != NULL, "allocation block present");
-        if (at) {
+        char *tb = strstr(g, "[treasury]");
+        CHECK(at != NULL && tb != NULL && tb > at,
+              "allocation and treasury blocks present");
+        if (at && tb && tb > at) {
             size_t head = (size_t)(at - g);
-            expect_refusal_raw(dir, g, head,
-                               "a config with ZERO [allocation] blocks "
-                               "REFUSES");
+            size_t tail = strlen(tb);
+            char *noalloc = malloc(head + tail + 1);
+            CHECK(noalloc != NULL, "alloc");
+            if (noalloc) {
+                memcpy(noalloc, g, head);
+                memcpy(noalloc + head, tb, tail + 1);
+                expect_refusal_raw(dir, noalloc, head + tail,
+                                   "a config with ZERO [allocation] blocks "
+                                   "REFUSES");
+                free(noalloc);
+            }
         }
     }
 
@@ -934,63 +1173,64 @@ static int test_refusals(void) {
 }
 
 /* ════════════════════════════════════════════════════════════════════
- * §4 — D7 / G7: the payout fingerprint must derive from the payout key
+ * §4 — general multisig (decision 2026-09-29-general-multisig.md ONAY
+ *      2): a genesis row's destination is an ADDRESS (shape only) and
+ *      its unstake_destination_pubkey MUST be all zero. (The former D7 /
+ *      G7 rule "fp == SHA3-512(dest pubkey)" is REPLACED — a multisig
+ *      address derives from no single key.)
  * ══════════════════════════════════════════════════════════════════ */
 
 static int test_payout_fp_derivation(void) {
-    printf("§4 D7 — unstake_destination_fp must derive from "
-           "unstake_destination_pubkey\n");
+    printf("§4 genesis destination: address by shape, dest pubkey all "
+           "zero\n");
 
     cfgbox_t ref;
     CHECK(cfg_make(&ref, 0) == 0, "reference config");
     OK();
 
-    /* The ACCEPT half. Without it this section could pass while refusing
-     * everything, which proves nothing. */
+    /* The ACCEPT half: zero dest pubkeys, shape-valid addresses. */
     CHECK(nodus_witness_v2_gen_config_validate(ref.cfg) == 0,
-          "a fingerprint that DOES derive from the payout key is accepted");
+          "zero dest pubkeys with shape-valid destination addresses are "
+          "accepted");
 
-    /* The REFUSE half. The wrong fingerprint is deliberately
-     * WELL-SHAPED — 128 lowercase hex, NUL at index 128 — because it is
-     * SHA3-512 of a different key (the validator's OWN signing pubkey
-     * rather than its payout pubkey). Garbage bytes here would be caught
-     * by nodus_witness_v2_epoch_val_rec_ok and the case would pass on
-     * the parent build without proving anything.
-     *
-     * The cost of the miss this kills: retirement releases the locked
-     * self-bond to the FINGERPRINT alone (nodus_witness_v2_epoch.c:397),
-     * so a transcription error strands DNAC_SELF_STAKE_AMOUNT
-     * permanently, per validator, with no on-chain recovery. */
+    /* An address that derives from NO key in the config (SHA3 of the
+     * validator's own signing key, well-shaped) is ACCEPTED — the old
+     * derivation rule is gone. KILLED BY: restoring D7. */
+    {
+        cfgbox_t other;
+        CHECK(cfg_make(&other, 0) == 0, "config");
+        OK();
+        hex_lower_fp(other.cfg->validators[3].pubkey, DNAC_PUBKEY_SIZE,
+                     other.cfg->validators[3].unstake_destination_fp);
+        CHECK(nodus_witness_v2_gen_config_validate(other.cfg) == 0,
+              "a well-shaped destination that derives from no carried "
+              "key is ACCEPTED (address by shape only)");
+        cfg_free(&other);
+    }
+
+    /* The REFUSE half: one non-zero byte anywhere in one validator's
+     * unstake_destination_pubkey (first byte, last byte).
+     * KILLED BY: dropping the all-zero rule in gen_plan_build. */
     {
         cfgbox_t bad;
         CHECK(cfg_make(&bad, 0) == 0, "config");
         OK();
-        hex_lower_fp(bad.cfg->validators[3].pubkey, DNAC_PUBKEY_SIZE,
-                     bad.cfg->validators[3].unstake_destination_fp);
-
-        /* State the premise rather than assuming it: the mutant must
-         * still pass the SHAPE predicate, or this test is measuring the
-         * shape rule a second time. */
-        int lowercase_hex = 1;
-        for (size_t i = 0; i < 128; i++) {
-            uint8_t ch = bad.cfg->validators[3].unstake_destination_fp[i];
-            if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')))
-                lowercase_hex = 0;
-        }
-        CHECK(lowercase_hex &&
-              bad.cfg->validators[3].unstake_destination_fp[128] == 0,
-              "the wrong fingerprint is still WELL-SHAPED — so only the "
-              "derivation rule can refuse it");
-
+        bad.cfg->validators[2].unstake_destination_pubkey[0] = 0x01;
         CHECK(nodus_witness_v2_gen_config_validate(bad.cfg) != 0,
-              "a well-shaped fingerprint that does NOT derive from the "
-              "payout key REFUSES");
+              "a non-zero first byte of unstake_destination_pubkey "
+              "REFUSES");
+        bad.cfg->validators[2].unstake_destination_pubkey[0] = 0x00;
+        bad.cfg->validators[2]
+            .unstake_destination_pubkey[DNAC_PUBKEY_SIZE - 1] = 0x80;
+        CHECK(nodus_witness_v2_gen_config_validate(bad.cfg) != 0,
+              "a non-zero last byte of unstake_destination_pubkey "
+              "REFUSES");
         cfg_free(&bad);
     }
 
     cfg_free(&ref);
     OK();
-    printf("  ok: the payout fingerprint is bound to the payout key\n");
+    printf("  ok: address by shape; the destination pubkey is all zero\n");
     return 0;
 }
 
@@ -1211,11 +1451,126 @@ static int test_bootstrap_start_on_a_v2_chain(void) {
     return 0;
 }
 
+/* ════════════════════════════════════════════════════════════════════
+ * §W-C — the two governed fee keys: optional, defaulted, never doubled
+ *
+ * Final pre-testnet wipe W-C (decisions 2026-09-25-gas-price.md "Son
+ * wipe paketi" and 2026-09-28-token-create-fee-governance.md). Proves:
+ *   - a file that does NOT name gas_price_raw_per_unit /
+ *     token_create_fee_raw parses to the BUILDER's defaults, 121 and
+ *     10^11 (nodus_witness_v2_gen_v3_defaults) — false if the parser
+ *     left them 0 (a 0 token fee is then refused only at derivation) or
+ *     restated its own numbers;
+ *   - naming either twice REFUSES (the file's duplicate-key rule);
+ *   - a value outside the governed range PARSES (the parser decides no
+ *     value) but the derivation's verdict refuses it.
+ * ══════════════════════════════════════════════════════════════════ */
+
+static int test_wc_fee_keys(void) {
+    printf("§W-C the governed fee keys: default, duplicate, range\n");
+
+    cfgbox_t ref;
+    CHECK(cfg_make_v3(&ref) == 0, "reference config");
+    ref.cfg->gas_price_raw_per_unit = 7;          /* non-default, so an */
+    ref.cfg->token_create_fee_raw   = 123456789ULL; /* absent key shows */
+    OK();
+
+    char dir[128];
+    CHECK(mkdir_tmp(dir, "wcfee") == 0, "tmpdir");
+    OK();
+    char *text = golden_text(ref.cfg);
+    CHECK(text != NULL, "serialise");
+    OK();
+
+    char path[256];
+    snprintf(path, sizeof(path), "%s/nofee.conf", dir);
+    char *t1 = replace_first(text, "gas_price_raw_per_unit = 7\n", "");
+    char *t2 = t1 ? replace_first(t1, "token_create_fee_raw = 123456789\n",
+                                  "") : NULL;
+    CHECK(t1 != NULL && t2 != NULL, "both fee lines are in the golden");
+    OK();
+    CHECK(write_text(path, t2) == 0, "write");
+    nodus_v2_gen_config_t *got = NULL;
+    CHECK(nodus_v2_gen_config_parse_file(path, &got) == 0,
+          "a file without the two fee keys parses");
+    OK();
+    CHECK(got->gas_price_raw_per_unit == 121ULL &&
+          got->token_create_fee_raw   == 100000000000ULL,
+          "absent keys take the builder's defaults (121; 10^11)");
+    CHECK(nodus_witness_v2_gen_v3_validate(got) == 0,
+          "and the defaulted config is derivable");
+    nodus_v2_gen_config_free(got);
+    got = NULL;
+    OK();
+
+    expect_refusal(dir, text, "gas_price_raw_per_unit = 7\n",
+                   "gas_price_raw_per_unit = 7\n"
+                   "gas_price_raw_per_unit = 7\n",
+                   "a duplicate gas_price_raw_per_unit REFUSES");
+    expect_refusal(dir, text, "token_create_fee_raw = 123456789\n",
+                   "token_create_fee_raw = 123456789\n"
+                   "token_create_fee_raw = 123456789\n",
+                   "a duplicate token_create_fee_raw REFUSES");
+    OK();
+
+    /* Out of range: the parser accepts the number, the verdict refuses
+     * it — below the 10^8 floor, above the 10^15 ceiling, and a gas
+     * price above DNAC_CFG_MAX_GAS_PRICE. */
+    {
+        static const struct { const char *needle, *repl, *what; } rng[] = {
+            { "token_create_fee_raw = 123456789\n",
+              "token_create_fee_raw = 99999999\n",
+              "token_create_fee_raw 10^8 - 1 is refused by the verdict" },
+            { "token_create_fee_raw = 123456789\n",
+              "token_create_fee_raw = 1000000000000001\n",
+              "token_create_fee_raw 10^15 + 1 is refused by the verdict" },
+            { "gas_price_raw_per_unit = 7\n",
+              "gas_price_raw_per_unit = 1000001\n",
+              "gas_price_raw_per_unit MAX + 1 is refused by the verdict" },
+        };
+        for (size_t i = 0; i < sizeof(rng) / sizeof(rng[0]); i++) {
+            char *m = replace_first(text, rng[i].needle, rng[i].repl);
+            CHECK(m != NULL, "needle present");
+            if (!m) continue;
+            CHECK(write_text(path, m) == 0, "write");
+            nodus_v2_gen_config_t *g2 = NULL;
+            CHECK(nodus_v2_gen_config_parse_file(path, &g2) == 0,
+                  "the parser decides no value — it parses");
+            if (g2) {
+                CHECK(nodus_witness_v2_gen_v3_validate(g2) != 0,
+                      rng[i].what);
+                nodus_v2_gen_config_free(g2);
+            }
+            free(m);
+        }
+        /* the two bounds themselves are legal */
+        char *lo = replace_first(text, "token_create_fee_raw = 123456789\n",
+                                 "token_create_fee_raw = 100000000\n");
+        CHECK(lo != NULL && write_text(path, lo) == 0, "write floor");
+        nodus_v2_gen_config_t *g3 = NULL;
+        CHECK(nodus_v2_gen_config_parse_file(path, &g3) == 0 && g3 &&
+              nodus_witness_v2_gen_v3_validate(g3) == 0,
+              "token_create_fee_raw exactly 10^8 is derivable");
+        nodus_v2_gen_config_free(g3);
+        free(lo);
+    }
+
+    free(t2);
+    free(t1);
+    free(text);
+    cfg_free(&ref);
+    rmrf(dir);
+    OK();
+    printf("  ok: defaults, duplicates and ranges behave\n");
+    return 0;
+}
+
 /* ════════════════════════════════════════════════════════════════════ */
 
 int main(void) {
     printf("=== test_v2_gen_config — the V2 genesis config text form ===\n");
     if (test_golden_roundtrip()) goto fail;
+    if (test_wc_fee_keys()) goto fail;
     if (test_determinism_twin()) goto fail;
     if (test_refusals()) goto fail;
     if (test_payout_fp_derivation()) goto fail;

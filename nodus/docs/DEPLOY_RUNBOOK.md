@@ -197,12 +197,27 @@ build dependency, and a ceremony performed once must not depend on which
 libraries a host happened to have.
 
 A complete, commented template with the decision's numbers (1B supply, 200M
-reward reserve, 7 × 10M bonds, the ten pool allocations) and a checker live in
-`nodus/tools/genesis/` (`testnet_v3.conf.template`, `check_genesis_conf.sh`,
-`README.md`) — start from there. The shape:
+reward reserve, 7 × 10M bonds, the Founder allocation, the nine treasury
+pools of which the Foundation's five are genesis outputs to the Foundation
+multisig address) and a checker live in `nodus/tools/genesis/`
+(`testnet_v3.conf.template`, `check_genesis_conf.sh`, `README.md`) — start
+from there. The checker needs the Foundation's keys and threshold (it
+recomputes the Foundation multisig address through `nodus-cli msig
+address`):
 
 ```
-config_version         = 3          # REQUIRED; only 3 is accepted (P4)
+./check_genesis_conf.sh genesis.conf --cli /path/to/nodus-cli \
+    --foundation-m 2 --foundation-pubkey keyA/nodus.pk \
+    --foundation-pubkey keyB/nodus.pk --foundation-pubkey keyC/nodus.pk \
+    [--derive /path/to/nodus-server]
+```
+
+The shape (abridged — the `[treasury]`, W-C fee keys and
+`[genesis_output]` blocks are in the template):
+
+```
+config_version         = 5          # REQUIRED; only 5 is accepted
+                                    # (general multisig; 4 = W-A/W-C)
 genesis_time_ms        = <UTC ms, written ONCE, the same in every copy>
 initial_height         = 1
 total_supply_raw       = 100000000000000000
@@ -215,8 +230,8 @@ payout_interval_epochs = 24
 
 [validator]                         # exactly 7 of these
 pubkey                     = <5184 hex chars>
-unstake_destination_pubkey = <5184 hex chars>
-unstake_destination_fp     = <128 hex chars — SHA3-512 of the payout pubkey>
+unstake_destination_pubkey = <5184 '0' characters — MUST be all zero>
+unstake_destination_fp     = <128 hex chars — the Foundation multisig address>
 self_stake                 = 1000000000000000
 commission_bps             = 500
 
@@ -224,6 +239,10 @@ commission_bps             = 500
 source_id    = <128 hex chars>
 dest_binding = <128 hex chars — SHA3-512 of the claimant's pubkey>
 amount       = 5000000000000
+
+[genesis_output]                    # 0 or more, FILE ORDER = coin index
+owner  = <128 hex chars — an address, e.g. the Foundation multisig>
+amount = 5000000000000000
 ```
 
 The parser refuses rather than repairs: a duplicate key, an unknown key, a
