@@ -105,35 +105,6 @@ static void conr_sleep(cmt_conr_peer_slot_t *slot, cmt_conr_routine_t routine,
     slot->asleep[routine]        = true;
 }
 
-/**
- * cometbft@v0.38.26 types/proposal.go:82-96 — `(p *Proposal)
- * ValidateBlockSize(maxBlockSizeBytes)`, reached through
- * consensus/reactor.go:1650-1654 (`ProposalMessage.ValidateBlockSize`).
- * LABELLED DEVIATION — LOCATION ONLY: the method belongs to types/
- * (cmt_proposal.c), which this re-pin package does not own; the body is
- * the reference's line for line. The same bound is applied a second time
- * by the state machine at state.go:1925-1932 (cmt_cs.c,
- * "ErrProposalTooManyParts"), exactly as in the reference.
- * @return CMT_OK, or CMT_REJECT for "proposal has too many parts".
- */
-static int conr_proposal_validate_block_size(const cmt_proposal_t *p,
-                                             int64_t max_block_size_bytes)
-{
-    int64_t total_parts;
-    int64_t max_parts;
-
-    if (max_block_size_bytes == -1) {                            /* :87 */
-        max_block_size_bytes = (int64_t)CMT_MAX_BLOCK_SIZE_BYTES; /* :88 */
-    }
-    total_parts = (int64_t)p->block_id.part_set_header.total;    /* :90 */
-    max_parts   = (max_block_size_bytes - 1) /
-                  (int64_t)CMT_BLOCK_PART_SIZE_BYTES + 1;        /* :91 */
-    if (total_parts > max_parts) {                               /* :92 */
-        return CMT_REJECT;                                       /* :93 */
-    }
-    return CMT_OK;                                               /* :95 */
-}
-
 /** Reset the send-side message scratch to one kind. */
 static cmt_msg_t *conr_msg_begin(cmt_conr_t *conR, cmt_msg_kind_t kind)
 {
@@ -979,8 +950,10 @@ int cmt_conr_receive(cmt_conr_t *conR, int peer_idx, uint8_t channel_id,
              * state machine's queue. PEER-REACHABLE → the reference's
              * StopPeerForError(ErrProposalTooManyParts), here the host row
              * with its own reason code; Receive returns (:329). */
-            if (conr_proposal_validate_block_size(&msg->u.proposal.proposal,
-                                                  max_bytes) != CMT_OK) {
+            /* ProposalMessage.ValidateBlockSize (reactor.go:1650-1654) →
+             * types/proposal.go:82-96, ported in cmt_proposal.c. */
+            if (cmt_proposal_validate_block_size(&msg->u.proposal.proposal,
+                                                 max_bytes) != CMT_OK) {
                 QGP_LOG_ERROR(LOG_TAG, "Rejecting oversized proposal from "
                               "peer %d at height %lld (parts %u)", peer_idx,
                               (long long)msg->u.proposal.proposal.height,
