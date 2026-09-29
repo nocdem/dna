@@ -1538,6 +1538,294 @@ static int witness_cmt_raw_sign(void *ctx, const uint8_t *sign_bytes,
     return CMT_OK;
 }
 
+/* ══ the block sync reactor's store / executor rows ═══════════════════
+ *
+ * cmt_bsync_host_t's `exec_ctx` half (shared/dnac/cmt_bsync_reactor.h,
+ * "THE HOST"): every row reaches the SAME store and the SAME block
+ * executor the consensus state machine uses (design D1 — a synced block
+ * is applied exactly as a committed one is). The p2p half is the 4004
+ * host's (nodus_witness_p2p_bsync_host_fill). One allocation holds the
+ * reactor and this storage; the reactor is its FIRST member, so the
+ * pointer the p2p host keeps (nodus_witness_p2p_bsync) is the
+ * allocation's own. */
+typedef struct {
+    cmt_bsync_reactor_t       r;            /* FIRST — see above          */
+    nodus_cmt_node_t         *n;            /* borrowed                   */
+    cmt_conr_t               *conr;         /* borrowed                   */
+    /* bs_load_block's storage, valid until its next call */
+    nodus_cmt_block_decode_t  dec;
+    cmt_pb_arena_t            dec_arena;
+    uint8_t                  *dec_buf;
+    size_t                    dec_buf_cap;
+    cmt_block_t               block;
+    /* bs_load_block_extended_commit's storage */
+    cmt_extended_commit_sig_t *ext_sigs;
+    cmt_pb_arena_t            ext_arena;
+    /* ss_load_abci_params' scratch state */
+    cmt_state_t               ss_state;
+    cmt_state_storage_t      *ss_storage;
+} witness_bsync_t;
+
+static void witness_bsync_serve_release(witness_bsync_t *wb)
+{
+    free(wb->dec_buf);
+    wb->dec_buf = NULL;
+    wb->dec_buf_cap = 0;
+    free(wb->dec_arena.buf);
+    memset(&wb->dec_arena, 0, sizeof(wb->dec_arena));
+    free(wb->dec.txs);
+    wb->dec.txs = NULL;
+    wb->dec.txs_cap = 0;
+}
+
+static void witness_bsync_destroy(witness_bsync_t *wb)
+{
+    if (!wb) return;
+    cmt_bsync_reactor_free(&wb->r);
+    witness_bsync_serve_release(wb);
+    free(wb->dec.pb_evidence);
+    free(wb->dec.evidence);
+    free(wb->dec.pb_sigs);
+    free(wb->dec.sigs);
+    free(wb->ext_sigs);
+    free(wb->ext_arena.buf);
+    free(wb->ss_storage);
+    free(wb);
+}
+
+/* store/store.go:102-113 Base / Height (blocksync/reactor.go:195-196). */
+static int wb_bs_base(void *ctx, int64_t *out) {
+    witness_bsync_t *wb = (witness_bsync_t *)ctx;
+    if (!out) return CMT_FAULT;
+    *out = nodus_cmt_bs_base(&wb->n->store);
+    return CMT_OK;
+}
+
+static int wb_bs_height(void *ctx, int64_t *out) {
+    witness_bsync_t *wb = (witness_bsync_t *)ctx;
+    if (!out) return CMT_FAULT;
+    *out = nodus_cmt_bs_height(&wb->n->store);
+    return CMT_OK;
+}
+
+/* store/store.go:137-167 LoadBlock (blocksync/reactor.go:213). The
+ * storage is sized from the block's own BlockMeta (block_size, num_txs)
+ * and kept until the next call, instead of a permanent Block.MaxBytes
+ * buffer. */
+static int wb_bs_load_block(void *ctx, int64_t height, cmt_block_t **out,
+                            size_t *out_size_hint, bool *out_found) {
+    witness_bsync_t        *wb = (witness_bsync_t *)ctx;
+    nodus_cmt_block_meta_t *meta;
+    bool                    found = false;
+    int64_t                 bsize, ntx;
+    int                     rc;
+
+    if (!out || !out_size_hint || !out_found) return CMT_FAULT;
+    *out = NULL;
+    *out_found = false;
+    meta = (nodus_cmt_block_meta_t *)malloc(sizeof(*meta));
+    if (!meta) return CMT_FAULT;
+    rc = nodus_cmt_bs_load_block_meta(&wb->n->store, height, meta, &found);
+    if (rc != CMT_OK || !found) {
+        free(meta);
+        return rc;
+    }
+    bsize = meta->block_size;
+    ntx   = meta->num_txs;
+    free(meta);
+    if (bsize < 0 || ntx < 0 || (uint64_t)bsize > (uint64_t)SIZE_MAX / 2u)
+        return CMT_FAULT;
+
+    witness_bsync_serve_release(wb);
+    wb->dec_buf_cap = (size_t)bsize + 4096u;
+    wb->dec_buf = (uint8_t *)malloc(wb->dec_buf_cap);
+    wb->dec_arena.cap = (size_t)bsize + 1u;
+    wb->dec_arena.buf = (uint8_t *)malloc(wb->dec_arena.cap);
+    wb->dec_arena.used = 0;
+    wb->dec.txs_cap = (size_t)ntx;
+    wb->dec.txs = (cmt_pb_bytes_t *)calloc(ntx ? (size_t)ntx : 1u,
+                                           sizeof(*wb->dec.txs));
+    wb->dec.arena = &wb->dec_arena;
+    if (!wb->dec_buf || !wb->dec_arena.buf || !wb->dec.txs) {
+        witness_bsync_serve_release(wb);
+        return CMT_FAULT;
+    }
+    rc = nodus_cmt_bs_load_block(&wb->n->store, height, wb->dec_buf,
+                                 wb->dec_buf_cap, &wb->dec, &wb->block,
+                                 &found);
+    if (rc != CMT_OK) return rc;
+    if (!found) return CMT_OK;
+    *out = &wb->block;
+    *out_size_hint = (size_t)bsize;
+    *out_found = true;
+    return CMT_OK;
+}
+
+/* store/store.go:292-315 LoadBlockExtendedCommit (reactor.go:229, :344). */
+static int wb_bs_load_ext_commit(void *ctx, int64_t height,
+                                 cmt_extended_commit_t *out, bool *out_found) {
+    witness_bsync_t *wb = (witness_bsync_t *)ctx;
+
+    wb->ext_arena.used = 0;
+    return nodus_cmt_bs_load_block_extended_commit(&wb->n->store, height,
+                                                   wb->ext_sigs,
+                                                   (size_t)CMT_VALSET_MAX,
+                                                   &wb->ext_arena, out,
+                                                   out_found);
+}
+
+/* store.go:449-473 SaveBlock / :480-514 SaveBlockWithExtendedCommit
+ * (reactor.go:538, :544) — the consensus host table's own rows. */
+static int wb_bs_save_block(void *ctx, cmt_block_t *block,
+                            const cmt_part_set_t *parts,
+                            const cmt_commit_t *seen_commit) {
+    witness_bsync_t *wb = (witness_bsync_t *)ctx;
+    return wb->n->host.bs_save_block(wb->n->be, block, parts, seen_commit);
+}
+
+static int wb_bs_save_block_ext(void *ctx, cmt_block_t *block,
+                                const cmt_part_set_t *parts,
+                                const cmt_extended_commit_t *ec) {
+    witness_bsync_t *wb = (witness_bsync_t *)ctx;
+    return wb->n->host.bs_save_block_with_extended_commit(wb->n->be, block,
+                                                          parts, ec);
+}
+
+/* reactor.go:222 `blockExec.Store().Load()` → :228's ConsensusParams.ABCI. */
+static int wb_ss_load_abci_params(void *ctx, cmt_abci_params_t *out) {
+    witness_bsync_t *wb = (witness_bsync_t *)ctx;
+    if (!out) return CMT_FAULT;
+    if (nodus_cmt_ss_load(&wb->n->store, &wb->ss_state) != CMT_OK)
+        return CMT_FAULT;
+    *out = wb->ss_state.consensus_params.abci;
+    return CMT_OK;
+}
+
+/* state/execution.go:190-197 ValidateBlock (reactor.go:501). */
+static int wb_validate_block(void *ctx, const cmt_state_t *state,
+                             cmt_block_t *block) {
+    witness_bsync_t *wb = (witness_bsync_t *)ctx;
+    return nodus_cmt_host_validate_block(wb->n->be, state, block);
+}
+
+/* state/execution.go:199-203 ApplyVerifiedBlock (reactor.go:549). */
+static int wb_apply_verified_block(void *ctx, const cmt_block_id_t *block_id,
+                                   cmt_block_t *block,
+                                   cmt_state_t *in_out_state) {
+    witness_bsync_t *wb = (witness_bsync_t *)ctx;
+    return nodus_cmt_host_apply_verified_block(wb->n->be, block_id, block,
+                                               in_out_state);
+}
+
+/* consensus/reactor.go:107-141 SwitchToConsensus (blocksync/reactor.go:
+ * 429-432). `cmt_conr_switch_to_consensus` reaches `cmt_cs_start` — so
+ * THIS is where the state machine starts on a node that block-synced, and
+ * where `cs_started` becomes true (advisor finding B:
+ * nodus_cmt_node_release stops the state machine only when it ran). */
+static int wb_switch_to_consensus(void *ctx, const cmt_state_t *state,
+                                  bool skip_wal) {
+    witness_bsync_t *wb = (witness_bsync_t *)ctx;
+    int rc = cmt_conr_switch_to_consensus(wb->conr, state, skip_wal);
+
+    if (rc != CMT_OK) return rc;
+    wb->n->cs_started = true;
+    QGP_LOG_INFO(LOG_TAG, "block sync done at height %lld (%llu block(s) "
+                 "synced) — consensus started", (long long)state->last_block_height,
+                 (unsigned long long)cmt_bsync_reactor_blocks_synced(&wb->r));
+    return CMT_OK;
+}
+
+/* node/setup.go:219-225 onlyValidatorIsUs(state, localAddr): more than
+ * one validator → false; otherwise `bytes.Equal(localAddr, valAddr)` with
+ * `GetByIndex(0)` — nil for an empty set, so an empty set equals only an
+ * empty local address. */
+static bool witness_only_validator_is_us(const cmt_state_t *state,
+                                         const uint8_t *local_addr,
+                                         size_t local_addr_len) {
+    const cmt_validator_set_t *vs = &state->validators;
+
+    if (cmt_validator_set_size(vs) > 1) return false;              /* :220 */
+    if (cmt_validator_set_size(vs) == 0 || vs->validators == NULL)
+        return local_addr_len == 0;                                /* :223 nil */
+    return vs->validators[0].address_len == local_addr_len &&
+           memcmp(vs->validators[0].address, local_addr,
+                  local_addr_len) == 0;                            /* :224 */
+}
+
+/* Build the block sync reactor over `node` (node.go:405-408 →
+ * setup.go:296 NewReactorWithAddr(state.Copy(), …, blockSync, localAddr)).
+ * @return the reactor wrapper, or NULL (logged). */
+static witness_bsync_t *witness_bsync_new(nodus_witness_t *witness,
+                                          nodus_cmt_node_t *node,
+                                          cmt_conr_t *conr, bool block_sync,
+                                          const uint8_t *local_addr,
+                                          size_t local_addr_len) {
+    witness_bsync_t   *wb = (witness_bsync_t *)calloc(1, sizeof(*wb));
+    cmt_bsync_host_t   bh;
+    cmt_bsync_limits_t lim;
+    size_t             max_ev;
+
+    if (!wb) return NULL;
+    wb->n = node;
+    wb->conr = conr;
+    max_ev = node->limits.max_evidence ? node->limits.max_evidence : 1u;
+    wb->dec.pb_evidence = (cmt_pb_evidence_t *)calloc(max_ev,
+                                                      sizeof(*wb->dec.pb_evidence));
+    wb->dec.pb_evidence_cap = node->limits.max_evidence;
+    wb->dec.evidence = (cmt_pb_evidence_t *)calloc(max_ev,
+                                                   sizeof(*wb->dec.evidence));
+    wb->dec.evidence_cap = node->limits.max_evidence;
+    wb->dec.pb_sigs = (cmt_commit_sig_t *)calloc((size_t)CMT_VALSET_MAX,
+                                                 sizeof(*wb->dec.pb_sigs));
+    wb->dec.pb_sigs_cap = (size_t)CMT_VALSET_MAX;
+    wb->dec.sigs = (cmt_commit_sig_t *)calloc((size_t)CMT_VALSET_MAX,
+                                              sizeof(*wb->dec.sigs));
+    wb->dec.sigs_cap = (size_t)CMT_VALSET_MAX;
+    wb->ext_sigs = (cmt_extended_commit_sig_t *)calloc((size_t)CMT_VALSET_MAX,
+                                                       sizeof(*wb->ext_sigs));
+    /* The p2p lane's own ext-commit arena bound (nodus_witness_p2p.c
+     * lane_prepare): CMT_VALSET_MAX × 4096. */
+    wb->ext_arena.cap = (size_t)CMT_VALSET_MAX * 4096u;
+    wb->ext_arena.buf = (uint8_t *)malloc(wb->ext_arena.cap);
+    wb->ss_storage = (cmt_state_storage_t *)calloc(1, sizeof(*wb->ss_storage));
+    if (!wb->dec.pb_evidence || !wb->dec.evidence || !wb->dec.pb_sigs ||
+        !wb->dec.sigs || !wb->ext_sigs || !wb->ext_arena.buf ||
+        !wb->ss_storage ||
+        cmt_state_init(&wb->ss_state, wb->ss_storage) != CMT_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "out of memory building the block sync "
+                      "reactor");
+        witness_bsync_destroy(wb);
+        return NULL;
+    }
+
+    memset(&bh, 0, sizeof(bh));
+    if (nodus_witness_p2p_bsync_host_fill(witness->p2p, &bh) != CMT_OK) {
+        witness_bsync_destroy(wb);
+        return NULL;
+    }
+    bh.exec_ctx                           = wb;
+    bh.bs_base                            = wb_bs_base;
+    bh.bs_height                          = wb_bs_height;
+    bh.bs_load_block                      = wb_bs_load_block;
+    bh.bs_load_block_extended_commit      = wb_bs_load_ext_commit;
+    bh.bs_save_block                      = wb_bs_save_block;
+    bh.bs_save_block_with_extended_commit = wb_bs_save_block_ext;
+    bh.ss_load_abci_params                = wb_ss_load_abci_params;
+    bh.validate_block                     = wb_validate_block;
+    bh.apply_verified_block               = wb_apply_verified_block;
+    bh.switch_to_consensus                = wb_switch_to_consensus;
+    lim.max_txs      = node->limits.max_txs;
+    lim.max_evidence = node->limits.max_evidence;
+    if (cmt_bsync_reactor_init(&wb->r, node->state, block_sync, local_addr,
+                               local_addr_len, &bh, &lim) != CMT_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "the block sync reactor could not be "
+                      "built (store and state heights disagree?)");
+        witness_bsync_destroy(wb);
+        return NULL;
+    }
+    return wb;
+}
+
 /**
  * Item 2 — constructs the startup table (`nodus_cmt_node_init`,
  * node.go:285-422) and the two reactors over the 4004 p2p host's seam
@@ -1566,8 +1854,9 @@ static int witness_cmt_raw_sign(void *ctx, const uint8_t *sign_bytes,
  * chain (role set, the gate printed "chain role: COMETBFT") but nothing
  * ever built the startup table, so `witness_cmt_tick` returned
  * INT64_MAX forever (`cmt_node == NULL`, :1653 below) and the node
- * never caught up — there is no blocksync in this port; catch-up IS the
- * reactor's stored-part gossip, which needs the reactor. In the
+ * never caught up — catch-up needs the reactors (the block sync reactor
+ * on 0x40 since the 2026-09-29 blocksync port, and the consensus
+ * reactor's stored-part gossip once it has switched). In the
  * reference there is no mid-life adoption (a node starts with its
  * genesis document already); the honest port of "the node now starts
  * with this genesis" is to run, after adoption, exactly the
@@ -1617,6 +1906,8 @@ int nodus_witness_cmt_live_init(nodus_witness_t *witness) {
     nodus_cmt_node_t *node = (nodus_cmt_node_t *)calloc(1, sizeof(*node));
     cmt_conr_t       *conr = (cmt_conr_t       *)calloc(1, sizeof(*conr));
     cmt_memr_t       *memr = (cmt_memr_t       *)calloc(1, sizeof(*memr));
+    witness_bsync_t  *bsync = NULL;
+    bool block_sync = false;
     char pvpath[768];
     int  pn;
 
@@ -1666,13 +1957,24 @@ int nodus_witness_cmt_live_init(nodus_witness_t *witness) {
         goto fail;
     }
 
-    /* D-23 rev 7 item 18 — wait_sync is ALWAYS false, recorded deviation:
-     * block sync is not ported (R3-S); a node behind its peers catches
-     * up through the consensus reactor's own stored-part gossip
-     * (reactor.go:575-590, ported), never a separate blocksync reactor.
-     * recv_arena = the p2p host's, per cmt_conr.h's "THE RECEIVE ARENA"
-     * note (one message's bound, reset by every receive). */
-    if (cmt_conr_init(conr, node->cs, /*wait_sync=*/false,
+    /* node.go:373-375 — `blockSync := !onlyValidatorIsUs(state,
+     * localAddr)`, decided on the state the handshake left
+     * (node->state, reloaded at nodus_witness_cmt_node.c's step 5) and
+     * this node's validator address (node->pv->address, privval
+     * file.go:48, derived at node.go:346). It is the consensus reactor's
+     * `waitSync` (node.go:410-413 `stateSync || blockSync`; no state sync
+     * here) AND the block sync reactor's `blockSync` (:405). This
+     * REPLACES D-23 rev 7 item 18's "wait_sync always false" deviation
+     * (decision 2026-09-29-blocksync-before-testnet.md). recv_arena = the
+     * p2p host's, per cmt_conr.h's "THE RECEIVE ARENA" note. */
+    {
+        const uint8_t *laddr = node->pv ? node->pv->address : NULL;
+        size_t laddr_len = node->pv ? (size_t)CMT_ADDRESS_SIZE : 0u;
+
+        block_sync = !witness_only_validator_is_us(node->state, laddr,
+                                                   laddr_len);
+    }
+    if (cmt_conr_init(conr, node->cs, /*wait_sync=*/block_sync,
                       nodus_witness_p2p_conr_host(witness->p2p),
                       witness->p2p,
                       nodus_witness_p2p_recv_arena(witness->p2p)) != CMT_OK) {
@@ -1687,6 +1989,18 @@ int nodus_witness_cmt_live_init(nodus_witness_t *witness) {
         goto fail;
     }
     nodus_witness_p2p_lane_bind(witness->p2p, conr, memr);
+
+    /* node.go:397-408 — the block sync reactor, over the node's state
+     * copy (setup.go:296) and the same store/executor (design D1). Bound
+     * on channel 0x40 now; started by the tick with the other two
+     * (witness_cmt_tick). */
+    bsync = witness_bsync_new(witness, node, conr, block_sync,
+                              node->pv ? node->pv->address : NULL,
+                              node->pv ? (size_t)CMT_ADDRESS_SIZE : 0u);
+    if (!bsync) {
+        goto fail;
+    }
+    nodus_witness_p2p_bsync_bind(witness->p2p, &bsync->r);
 
     if (nodus_cmt_node_start(node) != CMT_OK) {
         fprintf(stderr, "%s: the cometbft consensus WAL could not be "
@@ -1705,10 +2019,15 @@ int nodus_witness_cmt_live_init(nodus_witness_t *witness) {
             "the consensus and mempool reactors start once genesis time "
             "is reached\n", LOG_TAG,
             (unsigned long long)node->state->last_block_height);
+    QGP_LOG_INFO(LOG_TAG, "block sync %s (node.go:375 blockSync = "
+                 "!onlyValidatorIsUs)", block_sync ? "ON — consensus starts "
+                 "after catching up" : "OFF — this node is the only "
+                 "validator");
     return 0;
 
 fail:
     nodus_witness_p2p_lane_unbind(witness->p2p);
+    witness_bsync_destroy(bsync);
     if (conr) { cmt_conr_free(conr); free(conr); }
     if (memr) { cmt_memr_free(memr); free(memr); }
     if (node) { nodus_cmt_node_release(node); free(node); }
@@ -1720,9 +2039,22 @@ fail:
  * legacy tick body on a version-3 chain. Runs AFTER the witness
  * transport poll (item 3(a), already done by the caller) and drives:
  * (b) the state machine, bounded per tick; (c) the transport glue's peer
- * scan, deferred closes and both reactors' own ticks; (d) the host's
- * timer when due; (d2) the consensus WAL's 2 s flush and 5 s size check
- * when due; returns (e) the earliest of the next deadlines.
+ * scan, deferred closes and the reactors' own ticks (consensus, mempool
+ * and — while this node block-syncs — the block sync reactor's
+ * poolRoutine, which is where the switch to consensus happens); (d) the
+ * host's timer when due; (d2) the consensus WAL's 2 s flush and 5 s size
+ * check when due; returns (e) the earliest of the next deadlines.
+ *
+ * WHILE THE CONSENSUS REACTOR WAITS FOR BLOCK SYNC (cmt_conr_wait_sync):
+ * (b) and (d) are SKIPPED — advisor finding A of the blocksync design
+ * (docs/plans/2026-09-29-blocksync-port-design.md §5). The reference
+ * never runs the state machine's receiveRoutine before `cs.Start()`
+ * (consensus/reactor.go:83-88, :131; state.go:398), and `cs.Start()` is
+ * what SwitchToConsensus calls; stepping `cs` or firing its timer before
+ * that would run a state machine that has not started. The gate is read
+ * AGAIN after (c), because (c) is where the switch happens: the tick that
+ * switched fires the freshly armed round-0 timer at once instead of one
+ * poll later.
  *
  * A CMT_FAULT anywhere is node-local (the W1.7 rule): logged, and this
  * node stops participating in consensus by clearing `witness->running`
@@ -1735,10 +2067,11 @@ fail:
  * @return the earliest of the glue's, the timer's and the WAL tickers'
  *         next deadline, in nanoseconds (host clock); INT64_MAX when none
  *         is pending
- *         or the lane is not yet live. NOT currently threaded into the
- *         server's poll wait (nodus_server.c still polls at a fixed
- *         50 ms) — see this package's report, item 3, for why that is
- *         reported as a simplification rather than implemented.
+ *         or the lane is not yet live. `nodus_witness_tick` narrows the
+ *         4004 p2p host's wait to it (min(50 ms, deadline)); the server's
+ *         OTHER polls (client and inter-node TCP, nodus_server.c) still
+ *         wait up to 50 ms each, so a loop iteration can take longer than
+ *         the deadline asks.
  *
  * ORCHESTRATOR delta 8, item A — NO UNIT TEST DRIVES THE CLOCK-FAULT
  * BRANCHES (both `n->now(...) != CMT_OK` sites below). `n->now` is
@@ -1797,13 +2130,30 @@ static int64_t witness_cmt_tick(nodus_witness_t *witness) {
             cmt_time_unix_nano(n->doc.genesis_time)) {
             return INT64_MAX;
         }
+        /* The reference's switch starts its reactors by ranging over a
+         * map (p2p/switch.go:76, :236-241) — in no fixed order. This port
+         * takes their AddReactor order, MEMPOOL, BLOCKSYNC, CONSENSUS
+         * (node/setup.go:432-435), one of the orders the reference can
+         * take. */
         if (cmt_memr_start(memr) != CMT_OK) {
             fprintf(stderr, "%s: CMT_FAULT starting the mempool reactor — "
                     "consensus participation stops\n", LOG_TAG);
             witness->running = false;
             return INT64_MAX;
         }
-        int rc = cmt_conr_start(conr);   /* reaches cmt_cs_start inside */
+        {
+            cmt_bsync_reactor_t *bs = nodus_witness_p2p_bsync(witness->p2p);
+
+            /* blocksync/reactor.go:132-146 OnStart — the pool and the
+             * poolRoutine start only when blockSync. */
+            if (bs && cmt_bsync_reactor_start(bs) != CMT_OK) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "CMT_FAULT starting the block "
+                              "sync reactor — consensus participation stops");
+                witness->running = false;
+                return INT64_MAX;
+            }
+        }
+        int rc = cmt_conr_start(conr);   /* cmt_cs_start unless wait_sync */
         if (rc != CMT_OK) {
             fprintf(stderr, "%s: the consensus reactor failed to start "
                     "(rc %d) — consensus participation stops\n", LOG_TAG,
@@ -1811,10 +2161,15 @@ static int64_t witness_cmt_tick(nodus_witness_t *witness) {
             witness->running = false;
             return INT64_MAX;
         }
-        n->cs_started = true;   /* nodus_witness_cmt_node.h's contract:
-                                  * the caller sets this once cmt_conr_start
-                                  * has actually reached cmt_cs_start. */
-        /* Both reactors run: every connected peer enters them now, in
+        /* nodus_witness_cmt_node.h's contract: `cs_started` is true
+         * exactly when cmt_cs_start has run. cmt_conr_start reaches it
+         * only when !wait_sync (consensus/reactor.go:83-88); a node that
+         * block-syncs starts it at SwitchToConsensus, whose host row sets
+         * the flag (wb_switch_to_consensus) — advisor finding B. */
+        if (!cmt_conr_wait_sync(conr)) {
+            n->cs_started = true;
+        }
+        /* The reactors run: every connected peer enters them now, in
          * the reference's addPeer order (R-P2P-47). */
         if (nodus_witness_p2p_lane_live(witness->p2p) != CMT_OK) {
             fprintf(stderr, "%s: CMT_FAULT admitting the connected peers "
@@ -1834,8 +2189,10 @@ static int64_t witness_cmt_tick(nodus_witness_t *witness) {
      * drains one full proposal in a single tick without starving (c)'s
      * peer scan and deferred closes for the whole tick when many events
      * arrive at once (a vote flood, or a catch-up replay of stored
-     * parts); the remainder, if any, runs on the next tick. */
-    for (int i = 0; i < WITNESS_CMT_STEP_BUDGET; i++) {
+     * parts); the remainder, if any, runs on the next tick. Skipped while
+     * the consensus reactor waits for block sync (header, finding A). */
+    for (int i = 0; i < WITNESS_CMT_STEP_BUDGET && !cmt_conr_wait_sync(conr);
+         i++) {
         if (!cmt_cs_has_work(n->cs)) break;
         bool worked = false;
         if (cmt_cs_step(n->cs, &worked) != CMT_OK) {
@@ -1847,9 +2204,11 @@ static int64_t witness_cmt_tick(nodus_witness_t *witness) {
         if (!worked) break;
     }
 
-    /* (c) — both reactors' own ticks (and the StopPeerForErrors they
-     * raised), every iteration, AFTER the p2p host's pass (nodus_witness_
-     * tick) and never from inside a reactor callback. */
+    /* (c) — the reactors' own ticks — consensus, mempool and the block
+     * sync reactor's poolRoutine (which may switch to consensus here) —
+     * and the StopPeerForErrors they raised, every iteration, AFTER the
+     * p2p host's pass (nodus_witness_tick) and never from inside a
+     * reactor callback. */
     int64_t net_deadline = INT64_MAX;
     if (nodus_witness_p2p_lane_tick(witness->p2p, &net_deadline) != CMT_OK) {
         fprintf(stderr, "%s: CMT_FAULT in a reactor tick — consensus "
@@ -1871,7 +2230,10 @@ static int64_t witness_cmt_tick(nodus_witness_t *witness) {
         witness->running = false;
         return INT64_MAX;
     }
-    if (nodus_cmt_host_timer_due(n->be, cmt_time_unix_nano(now_t2))) {
+    /* Finding A (header): no timer while waiting for block sync. Read
+     * again here — (c) may just have switched. */
+    if (!cmt_conr_wait_sync(conr) &&
+        nodus_cmt_host_timer_due(n->be, cmt_time_unix_nano(now_t2))) {
         if (cmt_cs_on_timer_expired(n->cs) != CMT_OK) {
             fprintf(stderr, "%s: CMT_FAULT firing the consensus timer — "
                     "consensus participation stops\n", LOG_TAG);
@@ -2278,8 +2640,15 @@ void nodus_witness_close(nodus_witness_t *witness) {
         cmt_memr_t       *memr = (cmt_memr_t *)witness->cmt_memr;
         cmt_conr_t       *conr = (cmt_conr_t *)witness->cmt_conr;
         nodus_cmt_node_t *node = (nodus_cmt_node_t *)witness->cmt_node;
+        /* The block sync reactor's allocation (witness_bsync_t; the
+         * reactor is its first member) — taken before the unbind clears
+         * the host's pointer. */
+        witness_bsync_t  *bsync =
+            (witness_bsync_t *)nodus_witness_p2p_bsync(witness->p2p);
 
         nodus_witness_p2p_lane_unbind(witness->p2p);
+        if (bsync) cmt_bsync_reactor_stop(&bsync->r);  /* reactor.go:166-174 */
+        witness_bsync_destroy(bsync);
         if (memr && witness->cmt_live) (void)cmt_memr_stop(memr);
         if (conr && witness->cmt_live) (void)cmt_conr_stop(conr);
         if (memr) { cmt_memr_free(memr); free(memr); }

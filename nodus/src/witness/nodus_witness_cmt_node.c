@@ -2250,9 +2250,14 @@ int nodus_cmt_node_start(nodus_cmt_node_t *n)
      * through `conR.conS.Start()` — `(*Reactor) OnStart`
      * (consensus/reactor.go:74-91), which this port's `cmt_conr_start`
      * ports verbatim: it calls `cmt_cs_start(conR->cs)` itself, exactly
-     * once, when `!conR->wait_sync` (cmt_conr.c:464-470) — and D-23 rev 7
-     * item 18 keeps `wait_sync` false always (no-blocksync deviation), so
-     * that branch is always taken.
+     * once, when `!conR->wait_sync` (cmt_conr.c:464-470). `wait_sync` is
+     * node.go:375's `blockSync` since the blocksync port (decision
+     * 2026-09-29-blocksync-before-testnet.md, which removed D-23 rev 7
+     * item 18's "always false" deviation): a node that is not the only
+     * validator starts with `wait_sync` true, and `cmt_cs_start` is then
+     * reached later through `cmt_conr_switch_to_consensus`
+     * (consensus/reactor.go:107-141), called by the block sync reactor
+     * once it has caught up (blocksync/reactor.go:424-432).
      *
      * `nodus_cmt_node_t` does not own a `cmt_conr_t`: the reactor's host
      * table (`cmt_conr_host_t`) belongs to the 4004 p2p host
@@ -2260,7 +2265,8 @@ int nodus_cmt_node_start(nodus_cmt_node_t *n)
      * nodus_witness_cmt_net held it before), which this module has no
      * reason to depend on. The caller (nodus_witness_init) therefore
      * builds `cmt_conr_t` itself, over `n->cs`, AFTER this function
-     * returns, and starts it — which is what reaches `cmt_cs_start`. This
+     * returns, and starts it — which is what reaches `cmt_cs_start`
+     * (directly, or at the switch from block sync). This
      * is a discrepancy from D-23 rev 7 (17)'s literal text ("then calls
      * cmt_conr_start and cmt_memr_start"), which was written before the
      * glue's host-table ownership was fixed by C2b; flagged as a

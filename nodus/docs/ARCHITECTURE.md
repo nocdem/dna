@@ -1932,12 +1932,14 @@ cannot decide). Return contract everywhere: 0 / −1 / −2, as in `qc_v2.h`.
 | `cmt_results.{h,c}` | `types/results.go` | ABCIResults root + proof |
 | `cmt_params.{h,c}` | `types/params.go` | ConsensusParams flat hash, `ValidateBasic` / `ValidateUpdate` / `Update`, defaults, pubkey type name `"mldsa87"` |
 | `cmt_genesis.{h,c}` | `types/genesis.go` | GenesisDoc `ValidateAndComplete` (addresses checked or derived; chain id ≤ 32 bytes by operator decision), `ValidatorHash` |
-| `cmt_validation.{h,c}` | `types/validation.go` | `VerifyCommit`: strictly more than 2/3, EVERY non-absent signature verified, NIL verified but not counted; batch path unreachable (no ML-DSA-87 batch verifier); light-client family out of scope |
+| `cmt_validation.{h,c}` | `types/validation.go` | `VerifyCommit`: strictly more than 2/3, EVERY non-absent signature verified, NIL verified but not counted; batch path unreachable (no ML-DSA-87 batch verifier); `VerifyCommitLight` / `…AllSignatures` (validation.go:61-115, only COMMIT entries looked at, early exit past 2/3 unless all-signatures) ported with the blocksync reactor (2026-09-29); the Trusting half of the light family out of scope |
 | `cmt_evidence.{h,c}` | `types/evidence.go` | DuplicateVoteEvidence — bare bytes, FLAT hash, canonical pair order; `EvidenceList.Hash` (the header's EvidenceHash), `Has`; wrapper codec (branch 1 only) |
 | `cmt_state.{h,c}` | `state/state.go` | `State`, `Copy`, `IsEmpty`, `MakeBlock`, `MedianTime` (weighted by voting power, address lookup), `MakeGenesisState` |
 
-Not ported, by rule: the light-client / evidence-pool / blocksync callers (scope rule of
-the local port map), batch verification, JSON and file I/O (host). Every departure from
+Not ported, by rule: the light-client / evidence-pool callers (scope rule of
+the local port map), batch verification, JSON and file I/O (host). The blocksync
+caller was on this list until the blocksync port (2026-09-29, "Block sync" below)
+brought `VerifyCommitLight` in with it. Every departure from
 the reference is enumerated in the local `tasks/reference-deviation-register.md` (rows
 R1A-*, R1B-*, R1C-*, R1D-*). Vectors come from four independent Python oracles under
 `shared/dnac/tests/` (`hashlib.sha3_512`, the K-1 rules, no port code imported) and from
@@ -2123,7 +2125,7 @@ W3 makes the port the running consensus. Three packages landed after P0 and C2b 
 
 **The post-open gate (`witness_post_open_gate`, both open paths) has three outcomes.** (a) The S14 stores (`cmt_state` AND `cmt_blockstore`) exist and carry a canonical-strict stored genesis document (`nodus_witness_v2_gen_stored_chain_id` succeeds): a version-3 chain — accepted, `v2_successor` set, `v2_chain32` = the document's chain id. (b) No S14 stores, an empty legacy `blocks` table and no pure-V2 genesis manifest: genuinely pre-genesis — accepted with no role (an ordinary fresh boot, and the ceremony's own scratch database, which `nodus_witness_v2_gen_derive_v3` creates through `nodus_witness_create_chain_db` before its first migration). (c) Anything else — a non-empty legacy `blocks` table, a pre-Comet Ledger V2 chain below S14, exactly one of the two S14 catalogue rows (a half-migrated schema is never a fresh chain), or any catalogue/probe FAULT — REFUSED, fail closed, logged, the handle closed. `nodus_witness_v2_chain_id` is deliberately not the gate's probe: its row-present branch would admit a pre-Comet chain.
 
-**The binding (`witness_cmt_live_init`, only when the gate set the role):** `nodus_cmt_node_init` builds the startup table (W2); the WITNESS then builds the transport glue (`nodus_cmt_net_init`, C2b) and the two reactors — `cmt_conr_init(wait_sync=false, host table = the glue's, recv_arena = the glue's 64 MiB runway)` and `cmt_memr_init` — binds them, and `nodus_cmt_node_start` opens the consensus WAL and only then binds it to the host (until that moment the host's WAL rows are the reference's `nilWAL` no-ops, state.go:174 / wal.go:426-431). `raw_sign` is ML-DSA-87 over the exact canonical bytes with the server's identity key — no NDS1/purpose wrapper, because peers verify the reference's canonical form. The reactors are NOT started here.
+**The binding (`witness_cmt_live_init`, only when the gate set the role):** `nodus_cmt_node_init` builds the startup table (W2); the WITNESS then builds the transport glue (`nodus_cmt_net_init`, C2b) and the two reactors — `cmt_conr_init(wait_sync=false, host table = the glue's, recv_arena = the glue's 64 MiB runway)` (since the 2026-09-29 blocksync port `wait_sync` = node.go:375's `blockSync` — see "Block sync" below) and `cmt_memr_init` — binds them, and `nodus_cmt_node_start` opens the consensus WAL and only then binds it to the host (until that moment the host's WAL rows are the reference's `nilWAL` no-ops, state.go:174 / wal.go:426-431). `raw_sign` is ML-DSA-87 over the exact canonical bytes with the server's identity key — no NDS1/purpose wrapper, because peers verify the reference's canonical form. The reactors are NOT started here.
 
 **The tick on a version-3 chain (`nodus_witness_tick` → `witness_mesh_tick` → `witness_cmt_tick`):** poll the witness transport (its wait narrowed to the earliest deadline the previous tick returned, at most 50 ms; the server's other polls are untouched) → transport-mesh maintenance (`nodus_witness_peer_tick`: dead-connection sweep, dialing every roster witness with backoff, the IDENT exchange; the 60 s roster refresh from the DHT registry with an IMMEDIATE swap — no legacy round phase exists on this lane) → the Comet share: the genesis-time wait (node.go:518-524, evaluated once per tick; when due, `cmt_memr_start` then `cmt_conr_start`, which is what reaches `cmt_cs_start`), a drain of `cmt_cs_step` bounded to 512 steps per tick, `nodus_cmt_net_tick` (deferred closes, the peer scan, both reactors' ticks), `cmt_cs_on_timer_expired` when the host's deadline has passed and a bounded drain again, the earliest deadline returned. A CMT_FAULT anywhere — a failed clock read included — logs and clears `witness->running`: the node stops participating (the W1.7 rule), never a peer blame. Nothing else of the legacy tick runs on a version-3 chain. The first C2a round omitted the mesh step and the reactors would have had zero peers forever — found by reading, proven by the live test's mesh case.
 
@@ -3604,6 +3606,36 @@ numbered register row (R-P2P-n) in the local design doc
 - Verified: ctest 189/189; harness short-epoch 15/0/0, production 11 PASS /
   4 SKIP / 0 FAIL, stop-all with the signed-at-next-height precondition PASS and
   its negative control halting, GROW-7-32 PASS.
+
+### Block sync — `blocksync/` of cometbft @709fd12b on channel 0x40 (2026-09-29)
+
+Decision `docs/plans/decisions/2026-09-29-blocksync-before-testnet.md` (operator:
+before testnet; "follow the reference" — MaxMsgSize = MaxBlockSizeBytes + 5,
+VerifyCommitLight ported); design `docs/plans/2026-09-29-blocksync-port-design.md`.
+It removes D-23 rev 7 item 18's "no-blocksync deviation".
+
+| File | Reference | What |
+|---|---|---|
+| `shared/dnac/cmt_bsync_msgs.{h,c}` | `blocksync/msgs.go`, `errors.go`, `proto/tendermint/blocksync/types.pb.go` | the five messages (BlockRequest, NoBlockResponse, BlockResponse{block, ext_commit}, StatusRequest, StatusResponse) byte-for-byte as the generated code: every sum member framed even when empty (`22 00` is StatusRequest), last sum occurrence wins, repeated Block / ExtendedCommit occurrences inside one BlockResponse MERGE (kept as the concatenation); `ValidateMsg`; MaxMsgSize 104 857 605 |
+| `shared/dnac/cmt_bsync_pool.{h,c}` | `blocksync/pool.go` | the pool: requesters (one per height, a second peer within 50 of the pool height), peers and bans keyed by the p2p ID (never a slot index), peerConnWait 3 s, 2 ms request pacing, peerTimeout 15 s, retry 30 s, 60 s ban, receive-rate floor 128 KB/s (`cmt_flowrate`), `IsCaughtUp`, `RemovePeerAndRedoAllPeerRequests`; every goroutine / timer / 1-deep channel is a tick deadline or an "at most one pending" flag; labelled deviations BS-1..BS-4 in the header |
+| `shared/dnac/cmt_bsync_reactor.{h,c}` | `blocksync/reactor.go` | serve (`respondToPeer`), `Receive` (keeps serving after the switch), the poolRoutine: every 10 ms (and at once again after each block, bounded per tick) verify block h with block h+1's LastCommit (`VerifyCommitLight`), `ValidateBlock`, the ext-commit rule, then PopRequest → SAVE → APPLY (the consensus executor's own rows); status every 10 s; every 1 s switch when caught up (or when this node holds ≥ 1/3 of the power) — `SwitchToConsensus` with the reactor's OWN state and skipWAL = blocksSynced > 0; deviations BS-5..BS-9 in the header |
+| `nodus_witness_p2p.{h,c}` | `node/node.go:949-955`, `p2p/switch.go` | the third shim on 0x40 (listed first in NodeInfo, as the reference does); R-P2P-47: a message before the lane is live — a pinned joiner with no chain, a node before genesis time — is DROPPED, the sender is not stopped, EXCEPT a StatusResponse: ⚠ DEVIATION (the reference has no pre-live window — switch.go:234-246 starts reactors before accepting peers) the latest one per peer (lane slot, keyed by p2p ID, ≤ 32-byte canonical copy) is held and replayed into the started reactor at `lane_live`, so the pool knows the peers' heights at once instead of at the 10 s status broadcast; discarded on peer removal and unbind; the reactor's StopPeerForError is deferred through the peer's index |
+| `nodus_witness.c` | `node/node.go:373-413`, `setup.go:219-225`, `:296` | `blockSync = !onlyValidatorIsUs` → `cmt_conr_init(wait_sync = blockSync)` and the reactor over a copy of the node's state; started with the other two (MEMPOOL, BLOCKSYNC, CONSENSUS); while the consensus reactor waits for sync the tick does NOT step the state machine or fire its timer (the reference starts `receiveRoutine` only in `cs.Start()`); `cs_started` becomes true only when `cmt_cs_start` actually ran (at `cmt_conr_start` without sync, at the switch otherwise) |
+
+Clock: the host clock (`witness_cmt_now`, the consensus one) is read by the reactor
+at start (pool.go:114, the three tickers of reactor.go:322-331), once per tick (the
+tick form of the goroutines' sleeps and timers) and once per Receive that reaches the
+pool (ban check, receive-rate Monitor, peer timeout); only this node's request
+scheduling depends on it — VerifyCommitLight, ValidateBlock and the apply read no time
+(decision `2026-09-25-consensus-clock-scope-correction.md`; its enumeration is
+extended by the ORCHESTRATOR). Mixed-version clusters: a node without the port lists
+no 0x40 and is never sent to on it (peer.go:309-325); the FIRST upgraded node waits in
+block sync until a second 0x40 peer exists (pool.go:208-212 — IsCaughtUp needs a
+peer), so a rolling upgrade takes two nodes back to back (decision record). Tests:
+`test_cmt_bsync_msgs`, `test_cmt_bsync_pool`, `test_cmt_bsync_reactor`,
+`test_witness_p2p` (1b') for the held StatusResponse; harness `test_cmt_blocksync.sh`
+(in the sweep, between `test_v2_rewards.sh` and `test_cmt_rule_n_retire.sh`; its
+distance is capped at epoch/2 − 2 so the stopped node is never Rule-N-retired).
 
 ### Consensus flow (cometbft @709fd12b, the only lane)
 

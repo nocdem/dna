@@ -1192,6 +1192,32 @@ int cmt_validator_set_verify_commit(cmt_validator_set_t *vals,
                              height, commit, err);                /* :701 */
 }
 
+/* :708-712 (vals *ValidatorSet) VerifyCommitLight() — the whole body is
+ * the one delegation at :711. */
+int cmt_validator_set_verify_commit_light(cmt_validator_set_t *vals,
+                                          const uint8_t *chain_id,
+                                          size_t chain_id_len,
+                                          const cmt_pb_block_id_t *block_id,
+                                          int64_t height,
+                                          const cmt_pb_commit_t *commit,
+                                          cmt_vs_error_t *err)
+{
+    return cmt_verify_commit_light(chain_id, chain_id_len, vals, block_id,
+                                   height, commit, err);          /* :711 */
+}
+
+/* :716-720 (vals *ValidatorSet) VerifyCommitLightAllSignatures() — the
+ * one delegation at :719. */
+int cmt_validator_set_verify_commit_light_all_signatures(
+        cmt_validator_set_t *vals, const uint8_t *chain_id,
+        size_t chain_id_len, const cmt_pb_block_id_t *block_id,
+        int64_t height, const cmt_pb_commit_t *commit, cmt_vs_error_t *err)
+{
+    return cmt_verify_commit_light_all_signatures(chain_id, chain_id_len,
+                                                  vals, block_id, height,
+                                                  commit, err);    /* :719 */
+}
+
 /* :91-113 ValidateBasic() */
 int cmt_validator_set_validate_basic(const cmt_validator_set_t *vals)
 {

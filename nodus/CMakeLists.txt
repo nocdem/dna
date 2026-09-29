@@ -471,6 +471,16 @@ set(NODUS_SOURCES
     ${SHARED_DIR}/dnac/cmt_p2p_addrbook.c
     ${SHARED_DIR}/dnac/cmt_p2p_pex.c
 
+    # cometbft @709fd12b → C port — blocksync/ (decision
+    # 2026-09-29-blocksync-before-testnet.md): msgs.go + errors.go + the
+    # channel-0x40 proto codec, pool.go (requesters, peers by p2p ID, ban,
+    # timeouts as tick deadlines) and reactor.go (serve, verify with
+    # VerifyCommitLight, apply, SwitchToConsensus). Driven by the witness
+    # p2p host's third reactor shim.
+    ${SHARED_DIR}/dnac/cmt_bsync_msgs.c
+    ${SHARED_DIR}/dnac/cmt_bsync_pool.c
+    ${SHARED_DIR}/dnac/cmt_bsync_reactor.c
+
     # Ledger V2 O15B — canonical BlockMessage v1 wire codec. Structure and
     # bounds ONLY: it computes no consensus value and touches no committed
     # state, so it can never become a second engine. Production-dormant with
@@ -1301,6 +1311,26 @@ add_test(NAME test_cmt_mem COMMAND test_cmt_mem)
 add_executable(test_cmt_memr tests/test_cmt_memr.c)
 target_link_libraries(test_cmt_memr nodus dsa nodus crypto)
 add_test(NAME test_cmt_memr COMMAND test_cmt_memr)
+
+# cometbft @709fd12b → C port — blocksync (decision
+# 2026-09-29-blocksync-before-testnet.md): the channel-0x40 message codec
+# against hand-derived types.pb.go vectors, the block pool under a fake
+# clock (peerConnWait, requests, second peer, timeouts, ban, redo,
+# IsCaughtUp), and the reactor over an in-memory switch with a real signed
+# chain (serve, two-store sync, bad commit → stop + ban + redo, switch to
+# consensus). No network, no files; default build, `ctest -j` safe; each
+# header says how it can lie.
+add_executable(test_cmt_bsync_msgs tests/test_cmt_bsync_msgs.c)
+target_link_libraries(test_cmt_bsync_msgs nodus dsa nodus crypto)
+add_test(NAME test_cmt_bsync_msgs COMMAND test_cmt_bsync_msgs)
+
+add_executable(test_cmt_bsync_pool tests/test_cmt_bsync_pool.c)
+target_link_libraries(test_cmt_bsync_pool nodus dsa nodus crypto)
+add_test(NAME test_cmt_bsync_pool COMMAND test_cmt_bsync_pool)
+
+add_executable(test_cmt_bsync_reactor tests/test_cmt_bsync_reactor.c)
+target_link_libraries(test_cmt_bsync_reactor nodus dsa nodus crypto)
+add_test(NAME test_cmt_bsync_reactor COMMAND test_cmt_bsync_reactor)
 
 # cometbft @709fd12b → C port, fleet P2P-PORT phase F1 —
 # p2p/conn/secret_connection_test.go: the handshake over an in-memory pipe

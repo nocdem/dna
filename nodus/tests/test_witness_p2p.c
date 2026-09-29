@@ -13,6 +13,16 @@
  *  (1b) A REAL-SOCKET CONNECTION: Q dials P over 127.0.0.1 and both switch
  *       peer sets name the other's ID (the ID is derived from the
  *       authenticated key, so a wrong key could not produce it).
+ *  (1b') BLOCK SYNC 0x40 BEFORE LIVE (the held-StatusResponse DEVIATION,
+ *       nodus_witness_p2p.h "THE BLOCK SYNC SEAM"): before Q's lane is
+ *       live, P sends a BlockRequest and two StatusResponses (41, then
+ *       42) on 0x40. Q stops nobody, holds only the LATEST (42), and at
+ *       lane_live — its block sync reactor built and started first —
+ *       the reactor's pool already knows P at height 42 (base 1,
+ *       maxPeerHeight 42) with NO tick and NO status broadcast
+ *       (reactor.go:325), and the held entry is consumed. Q's pool
+ *       routine is then stopped (P serves no blocks; its requests would
+ *       time P out during (1c)-(1e)).
  *  (1c) CONSENSUS ON 0x20: a real marshalled NewRoundStep sent by P on
  *       channel 0x20 lands in Q's cmt_conr_t — Q's PeerState for P reads
  *       height 5, round 0. Q's lane went live AFTER the connection existed
@@ -415,7 +425,86 @@ typedef struct {
     cmt_memr_t           memr;
     bool tc_up, conr_up, mem_up, memr_up;
     nodus_witness_p2p_t *p;
+    /* (1b') the block sync reactor, when `want_bs` (built, started and
+     * bound BEFORE lane_live, as nodus_witness.c does) */
+    bool                 want_bs;
+    cmt_bsync_reactor_t *bs;
 } lane_t;
+
+/* The block sync reactor's store/executor rows for (1b'): an EMPTY store
+ * at the genesis state's height 0 — nothing to serve, nothing to apply
+ * (no block reaches this reactor here). */
+static int bs_h_zero(void *ctx, int64_t *out) { (void)ctx; *out = 0; return CMT_OK; }
+static int bs_h_load(void *ctx, int64_t h, cmt_block_t **out, size_t *hint,
+                     bool *found)
+{
+    (void)ctx; (void)h; (void)hint;
+    *out = NULL;
+    *found = false;
+    return CMT_OK;
+}
+static int bs_h_ext(void *ctx, int64_t h, cmt_extended_commit_t *out, bool *found)
+{
+    (void)ctx; (void)h; (void)out;
+    *found = false;
+    return CMT_OK;
+}
+static int bs_h_save(void *ctx, cmt_block_t *b, const cmt_part_set_t *ps,
+                     const cmt_commit_t *c)
+{
+    (void)ctx; (void)b; (void)ps; (void)c;
+    return CMT_FAULT;
+}
+static int bs_h_save_ext(void *ctx, cmt_block_t *b, const cmt_part_set_t *ps,
+                         const cmt_extended_commit_t *ec)
+{
+    (void)ctx; (void)b; (void)ps; (void)ec;
+    return CMT_FAULT;
+}
+static int bs_h_abci(void *ctx, cmt_abci_params_t *out)
+{
+    (void)ctx;
+    memset(out, 0, sizeof(*out));
+    return CMT_OK;
+}
+static int bs_h_validate(void *ctx, const cmt_state_t *st, cmt_block_t *b)
+{
+    (void)ctx; (void)st; (void)b;
+    return CMT_FAULT;
+}
+static int bs_h_apply(void *ctx, const cmt_block_id_t *id, cmt_block_t *b,
+                      cmt_state_t *st)
+{
+    (void)ctx; (void)id; (void)b; (void)st;
+    return CMT_FAULT;
+}
+
+static int lane_bs_up(lane_t *l, nodus_witness_p2p_t *p) {
+    cmt_bsync_host_t   h;
+    cmt_bsync_limits_t lim;
+
+    memset(&h, 0, sizeof(h));
+    if (nodus_witness_p2p_bsync_host_fill(p, &h) != CMT_OK) return -1;
+    h.exec_ctx = NULL;
+    h.bs_base = bs_h_zero;
+    h.bs_height = bs_h_zero;
+    h.bs_load_block = bs_h_load;
+    h.bs_load_block_extended_commit = bs_h_ext;
+    h.bs_save_block = bs_h_save;
+    h.bs_save_block_with_extended_commit = bs_h_save_ext;
+    h.ss_load_abci_params = bs_h_abci;
+    h.validate_block = bs_h_validate;
+    h.apply_verified_block = bs_h_apply;
+    lim.max_txs = 16;
+    lim.max_evidence = 1;
+    l->bs = calloc(1, sizeof(*l->bs));
+    if (l->bs == NULL ||
+        cmt_bsync_reactor_init(l->bs, l->tc.genesis, true, NULL, 0, &h, &lim) != CMT_OK ||
+        cmt_bsync_reactor_start(l->bs) != CMT_OK)
+        return -1;
+    nodus_witness_p2p_bsync_bind(p, l->bs);
+    return 0;
+}
 
 static int lane_up(lane_t *l, nodus_witness_p2p_t *p) {
     l->p = p;
@@ -443,12 +532,19 @@ static int lane_up(lane_t *l, nodus_witness_p2p_t *p) {
     l->memr_up = true;
     if (cmt_memr_start(&l->memr) != CMT_OK) return -1;
     nodus_witness_p2p_lane_bind(p, &l->conr, &l->memr);
+    if (l->want_bs && lane_bs_up(l, p) != 0) return -1;
     return nodus_witness_p2p_lane_live(p) == CMT_OK ? 0 : -1;
 }
 
 /* Before the host is freed (the host lets go of the reactors first). */
 static void lane_down(lane_t *l) {
     if (l->p != NULL) nodus_witness_p2p_lane_unbind(l->p);
+    if (l->bs != NULL) {
+        cmt_bsync_reactor_stop(l->bs);
+        cmt_bsync_reactor_free(l->bs);
+        free(l->bs);
+        l->bs = NULL;
+    }
     if (l->memr_up) cmt_memr_free(&l->memr);
     if (l->mem_up)  cmt_mem_free(&l->mem);
     if (l->conr_up) cmt_conr_free(&l->conr);
@@ -571,6 +667,16 @@ static bool pred_has(void *ctx) {
     return has_peer(x->p, x->id);
 }
 
+/* (1b') the host holds `id`'s StatusResponse at height 42. The two
+ * statuses travel on one channel in order, so 42 held means 41 was
+ * seen and replaced. */
+static bool pred_bs_held_42(void *ctx) {
+    has_t *x = (has_t *)ctx;
+    int64_t h = -1;
+
+    return nodus_witness_p2p_bsync_status_held(x->p, x->id, &h) && h == 42;
+}
+
 static bool pred_join_done(void *ctx) {
     return !nodus_witness_v2_join_active((nodus_witness_t *)ctx);
 }
@@ -639,8 +745,52 @@ static int part1(void) {
     CHECK(nodus_witness_p2p_peer_count(P) == 1 &&
           nodus_witness_p2p_peer_count(Q) == 1, "(1b) one peer each");
 
-    /* Q's lane goes live AFTER the connection exists: R-P2P-47. */
-    CHECK(lane_up(lQ, Q) == 0, "Q's lane");
+    /* (1b') 0x40 BEFORE Q's lane is live (the block sync seam's
+     * DEVIATION, nodus_witness_p2p.h): P sends a BlockRequest (dropped,
+     * P not stopped) and then TWO StatusResponses; Q holds only the
+     * latest, and the moment its lane goes live — block sync reactor
+     * started first — the pool knows P at height 42 without any tick,
+     * i.e. without waiting for the 10 s status broadcast (reactor.go:325). */
+    {
+        cmt_bsync_msg_t m;
+        uint8_t b[32];
+        size_t n = 0;
+        const cmt_bsync_peer_t *bp;
+        has_t hq = { Q, idp };
+
+        cmt_bsync_msg_init(&m);
+        m.kind = CMT_BSYNC_MSG_BLOCK_REQUEST;
+        m.height = 1;
+        CHECK(cmt_bsync_msg_marshal(&m, b, sizeof(b), &n) == CMT_OK, "(1b') BlockRequest");
+        CHECK(nodus_witness_p2p_send(P, idq, CMT_BSYNC_CHANNEL, b, n), "(1b') send BlockRequest");
+        m.kind = CMT_BSYNC_MSG_STATUS_RESPONSE;
+        m.base = 1;
+        m.height = 41;
+        CHECK(cmt_bsync_msg_marshal(&m, b, sizeof(b), &n) == CMT_OK, "(1b') status 41");
+        CHECK(nodus_witness_p2p_send(P, idq, CMT_BSYNC_CHANNEL, b, n), "(1b') send status 41");
+        m.height = 42;
+        CHECK(cmt_bsync_msg_marshal(&m, b, sizeof(b), &n) == CMT_OK, "(1b') status 42");
+        CHECK(nodus_witness_p2p_send(P, idq, CMT_BSYNC_CHANNEL, b, n), "(1b') send status 42");
+        CHECK(drive(d, 2, pred_bs_held_42, &hq, WAIT_MS),
+              "(1b') Q holds P's LATEST StatusResponse (42, not 41) before "
+              "its lane is live");
+        CHECK(has_peer(Q, idp) && has_peer(P, idq),
+              "(1b') nothing received before live stops the peer");
+
+        lQ->want_bs = true;
+        CHECK(lane_up(lQ, Q) == 0, "Q's lane (with block sync)");
+        bp = cmt_bsync_pool_peer(cmt_bsync_reactor_pool(lQ->bs), idp);
+        CHECK(bp != NULL && bp->height == 42 && bp->base == 1,
+              "(1b') at lane_live the pool knows P at 42 — no tick, no broadcast");
+        CHECK(cmt_bsync_pool_max_peer_height(cmt_bsync_reactor_pool(lQ->bs)) == 42,
+              "(1b') maxPeerHeight 42");
+        CHECK(!nodus_witness_p2p_bsync_status_held(Q, idp, NULL),
+              "(1b') the held status is consumed by the replay");
+        /* Stop the pool routine: P serves no blocks (it has no block sync
+         * reactor), so Q's requests would time P out (pool.go:623-631) in
+         * the middle of (1c)-(1e). Receive keeps working when stopped. */
+        cmt_bsync_reactor_stop(lQ->bs);
+    }
     d[1].lane = true;
     pr.lb = lQ;
     CHECK(drive(d, 2, pred_linked, &pr, WAIT_MS),

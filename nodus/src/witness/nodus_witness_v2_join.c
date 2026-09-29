@@ -321,8 +321,10 @@ static int join_adopt(nodus_witness_t *w) {
      * the post-open gate printed the COMETBFT role — then NOTHING. No
      * startup table was ever built, so `witness_cmt_tick`
      * (nodus_witness.c) found `cmt_node == NULL` and returned INT64_MAX
-     * every tick, forever; there is no blocksync in this port, so the
-     * node also never caught up any other way.
+     * every tick, forever; every catch-up path (the block sync reactor
+     * on 0x40, since the 2026-09-29 blocksync port, and the consensus
+     * reactor's gossip) is built by this construction, so the node also
+     * never caught up any other way.
      *
      * PRECONDITIONS, proven by reading, not assumed: the scan just above
      * has already run `witness_post_open_gate` on `w` (the SAME gate
@@ -350,8 +352,8 @@ static int join_adopt(nodus_witness_t *w) {
                  "bundle (pin matched) — the cometbft server binding is "
                  "built and will go live at the next tick (genesis time "
                  "is already in the past for a joiner), catching up "
-                 "through the consensus reactor's own stored-part "
-                 "gossip");
+                 "through the block sync reactor (0x40) before "
+                 "consensus starts");
     return 0;
 }
 

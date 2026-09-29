@@ -53,8 +53,11 @@
  *     ML-DSA-87), the KEM key nodus.mlkem_{pk,sk}. Our NodeInfo: network =
  *     the 32-byte version-3 chain id in hex (a joiner that has not adopted
  *     yet puts its genesis pin there — the same 32 bytes), P2P version 8,
- *     channels 0x20-0x23, 0x30, 0x70, 0x71 and 0x00 when PEX is on, a
- *     non-empty moniker, an IP-literal listen address.
+ *     channels 0x40 (first, as node/node.go:949-955 lists
+ *     BlocksyncChannel first), 0x20-0x23, 0x30, 0x70, 0x71 and 0x00 when
+ *     PEX is on, a non-empty moniker, an IP-literal listen address. A peer
+ *     of an older build does not list 0x40; nothing is ever sent to it on
+ *     that channel (cmt_p2p_peer.c peer_has_channel, peer.go:309-325).
  *   · the BONDED SET (K2 / N5): the local chain's `validators` rows with
  *     status ACTIVE (0) or ELIGIBLE (4), plus the members of the committees
  *     for tip + 1 and tip − 1 (the two committees the deleted B1 IDENT gate
@@ -68,9 +71,40 @@
  *   · the address book file, next to the chain database, replaced
  *     atomically (temporary file + fsync + rename).
  *   · the REACTORS: PEX (0x00), the consensus reactor cmt_conr
- *     (0x20-0x23), the mempool reactor cmt_memr (0x30), and two nodus
- *     reactors — 0x70 the genesis bundle (the former tier-3 verbs 24/25)
- *     and 0x71 the governance approval (the former verbs 40/41).
+ *     (0x20-0x23), the mempool reactor cmt_memr (0x30), the block sync
+ *     reactor cmt_bsync (0x40; decision 2026-09-29-blocksync-before-
+ *     testnet.md), and two nodus reactors — 0x70 the genesis bundle (the
+ *     former tier-3 verbs 24/25) and 0x71 the governance approval (the
+ *     former verbs 40/41). Registration order is CONSENSUS, MEMPOOL,
+ *     BLOCKSYNC: the consensus shim's InitPeer assigns the peer's index,
+ *     so it must run first. The reference registers MEMPOOL, BLOCKSYNC,
+ *     CONSENSUS (setup.go:432-435) but runs InitPeer / AddPeer by ranging
+ *     over a map (p2p/switch.go:76, :829-831, :858-860), in no fixed
+ *     order — this fixed order is one it can take. It decides only which
+ *     reactor's AddPeer message a new peer receives first.
+ *
+ * ── THE BLOCK SYNC SEAM ────────────────────────────────────────────────
+ * cmt_bsync names a peer by its p2p ID (`cmt_p2p_peer_id`), never by an
+ * index: its pool bans an identity, and a ban must outlive the
+ * connection (blocksync/pool.go:464). The shim follows R-P2P-47 like the
+ * other two: before `nodus_witness_p2p_lane_live` (no chain yet — a
+ * pinned-genesis joiner — or genesis time not reached) a 0x40 message is
+ * DROPPED, never answered and never a reason to stop the peer — EXCEPT a
+ * StatusResponse: ⚠ DEVIATION (no reference counterpart; the reference's
+ * switch starts every reactor before accepting a peer, p2p/switch.go:
+ * 234-246, so it has no pre-live window) — the LATEST StatusResponse per
+ * peer (its lane slot, keyed by the p2p ID, one small canonical copy) is
+ * held and replayed into the reactor at `lane_live`, so the pool knows
+ * the peer's height at once instead of at its 10 s status broadcast
+ * (reactor.go:325); discarded on peer removal and unbind. At `lane_live`
+ * every connected peer gets the reactor's AddPeer (our StatusResponse,
+ * reactor.go:190-203) after the consensus and mempool reactors' own, then
+ * its held StatusResponse; the caller starts the block sync reactor
+ * BEFORE `lane_live`. After the switch to consensus the reactor stays bound
+ * and keeps SERVING (reactor.go:251-305 has no "switched" branch).
+ * Its StopPeerForError is deferred like the others (the peer is found by
+ * ID, then by its index); a peer that holds no index (all
+ * CMT_CONR_MAX_PEERS in use) cannot be deferred and is only logged.
  *
  * ── THE CONSENSUS SEAM ─────────────────────────────────────────────────
  * cmt_conr / cmt_memr name a peer by an INDEX (0 .. CMT_CONR_MAX_PEERS−1).
@@ -117,6 +151,7 @@
 #include "dnac/cmt_p2p_switch.h"
 #include "dnac/cmt_conr.h"
 #include "dnac/cmt_memr.h"
+#include "dnac/cmt_bsync_reactor.h"
 #include "dnac/cmt_time.h"
 
 #include "nodus/nodus_types.h"
@@ -454,15 +489,44 @@ cmt_pb_arena_t        *nodus_witness_p2p_recv_arena(nodus_witness_p2p_t *p);
 /** The reactors the shims now feed (both constructed, not yet started). */
 void nodus_witness_p2p_lane_bind(nodus_witness_p2p_t *p, cmt_conr_t *conr,
                                  cmt_memr_t *memr);
-/** Both reactors are running: admit every connected peer (R-P2P-47). */
+/** The reactors are running: admit every connected peer (R-P2P-47) —
+ *  consensus and mempool InitPeer / AddPeer, then the block sync
+ *  reactor's AddPeer when one is bound. */
 int  nodus_witness_p2p_lane_live(nodus_witness_p2p_t *p);
-/** cmt_conr_tick + cmt_memr_tick, then the deferred StopPeerForErrors.
- *  @return CMT_OK or CMT_FAULT; `*next_deadline_ns` the earlier of the
- *  two reactors' deadlines (INT64_MAX = none). */
+/** cmt_conr_tick + cmt_memr_tick (+ cmt_bsync_reactor_tick when bound),
+ *  then the deferred StopPeerForErrors.
+ *  @return CMT_OK or CMT_FAULT; `*next_deadline_ns` the earliest of the
+ *  reactors' deadlines (INT64_MAX = none). */
 int  nodus_witness_p2p_lane_tick(nodus_witness_p2p_t *p,
                                  int64_t *next_deadline_ns);
-/** Detach the reactors (before they are freed): every peer leaves them. */
+/** Detach the reactors (before they are freed): every peer leaves them;
+ *  the block sync reactor is unbound too (not freed — its owner frees
+ *  it). */
 void nodus_witness_p2p_lane_unbind(nodus_witness_p2p_t *p);
+
+/**
+ * The block sync reactor's p2p rows (file header, "THE BLOCK SYNC SEAM"):
+ * `try_send` / `send` / `broadcast` on channel 0x40 and the deferred
+ * `stop_peer_for_error`, all with `ctx` = this host, and `now` = the lane
+ * clock given to `nodus_witness_p2p_lane_prepare` (the consensus clock).
+ * The store / executor rows (`exec_ctx`) are the caller's. Requires a
+ * prepared lane. @return CMT_OK; CMT_FAULT on NULL / unprepared lane.
+ */
+int  nodus_witness_p2p_bsync_host_fill(nodus_witness_p2p_t *p,
+                                       cmt_bsync_host_t *out);
+/** Bind the block sync reactor the 0x40 shim feeds (constructed, not yet
+ *  started); NULL unbinds. The host never frees it. */
+void nodus_witness_p2p_bsync_bind(nodus_witness_p2p_t *p,
+                                  cmt_bsync_reactor_t *bsync);
+/** The bound block sync reactor, or NULL. */
+cmt_bsync_reactor_t *nodus_witness_p2p_bsync(const nodus_witness_p2p_t *p);
+/** Test/diagnostic accessor: true while a StatusResponse `peer_id` sent
+ *  before the lane went live is held for replay (file header, "THE BLOCK
+ *  SYNC SEAM", the DEVIATION); `*out_height` (may be NULL) receives the
+ *  held message's height. */
+bool nodus_witness_p2p_bsync_status_held(const nodus_witness_p2p_t *p,
+                                         const char *peer_id,
+                                         int64_t *out_height);
 
 #ifdef __cplusplus
 }

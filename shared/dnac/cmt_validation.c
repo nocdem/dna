@@ -310,3 +310,78 @@ int cmt_verify_commit(const uint8_t *chain_id, size_t chain_id_len,
                                     needed, CMT_SIG_POLICY_COMMIT,
                                     true, true, err);
 }
+
+/* ══ VerifyCommitLight family ═════════════════════════════════════════ */
+
+/* cometbft@709fd12b types/validation.go:84-115 —
+ * verifyCommitLightInternal() */
+static int verify_commit_light_internal(const uint8_t *chain_id,
+                                        size_t chain_id_len,
+                                        cmt_validator_set_t *vals,
+                                        const cmt_block_id_t *block_id,
+                                        int64_t height,
+                                        const cmt_commit_t *commit,
+                                        bool count_all_signatures,
+                                        cmt_vs_error_t *err)
+{
+    int64_t total;
+    int64_t needed;
+    int     rc;
+
+    err_none(err);
+
+    rc = cmt_verify_basic_vals_and_commit(vals, commit, height, block_id);
+    if (rc != CMT_OK) {
+        return rc;                                            /* :93-95  */
+    }
+    /* :98 — `vals.TotalVotingPower() * 2 / 3`, guarded exactly as
+     * cmt_verify_commit's :36 is (MaxTotalVotingPower = MaxInt64/8,
+     * validator_set.go:27, :319-324). */
+    rc = cmt_validator_set_total_voting_power(vals, &total);
+    if (rc != CMT_OK) {
+        return rc;
+    }
+    if (total > (int64_t)CMT_MAX_TOTAL_VOTING_POWER || total < 0) {
+        return CMT_FAULT;                /* unreachable; see cmt_verify_commit */
+    }
+    needed = total * 2 / 3;
+
+    if (cmt_should_batch_verify(vals, commit)) {
+        /* :107-110 — the batch path. UNREACHABLE for the reason given at
+         * cmt_verify_commit's :45-48 site. */
+        return CMT_FAULT;
+    }
+    /* :113-114 — single verification with the light pair (:101, :104),
+     * the caller's countAllSignatures, and lookUpByIndex TRUE. */
+    return cmt_verify_commit_single(chain_id, chain_id_len, vals, commit,
+                                    needed, CMT_SIG_POLICY_LIGHT,
+                                    count_all_signatures, true, err);
+}
+
+/* cometbft@709fd12b types/validation.go:61-69 — VerifyCommitLight() */
+int cmt_verify_commit_light(const uint8_t *chain_id, size_t chain_id_len,
+                            cmt_validator_set_t *vals,
+                            const cmt_block_id_t *block_id,
+                            int64_t height,
+                            const cmt_commit_t *commit,
+                            cmt_vs_error_t *err)
+{
+    return verify_commit_light_internal(chain_id, chain_id_len, vals,
+                                        block_id, height, commit,
+                                        false, err);                  /* :68 */
+}
+
+/* cometbft@709fd12b types/validation.go:74-82 —
+ * VerifyCommitLightAllSignatures() */
+int cmt_verify_commit_light_all_signatures(const uint8_t *chain_id,
+                                           size_t chain_id_len,
+                                           cmt_validator_set_t *vals,
+                                           const cmt_block_id_t *block_id,
+                                           int64_t height,
+                                           const cmt_commit_t *commit,
+                                           cmt_vs_error_t *err)
+{
+    return verify_commit_light_internal(chain_id, chain_id_len, vals,
+                                        block_id, height, commit,
+                                        true, err);                   /* :81 */
+}
