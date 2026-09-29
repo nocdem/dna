@@ -1,10 +1,12 @@
 /**
  * @file shared/dnac/cmt_bsync_pool.h
- * @brief cometbft @709fd12b `blocksync/pool.go` ported to C — the block
- *        pool: which peer is asked for which height, and the blocks that
- *        came back, until the reactor has verified and applied them.
+ * @brief cometbft `blocksync/pool.go` (pin v0.38.26, see "REFERENCE PIN"
+ *        below) ported to C — the block pool: which peer is asked for
+ *        which height, and the blocks that came back, until the reactor
+ *        has verified and applied them.
  *
- * Governing records: docs/plans/decisions/2026-09-29-blocksync-before-testnet.md,
+ * Governing records: docs/plans/decisions/2026-09-30-cometbft-pin-v0.38.26.md,
+ * docs/plans/decisions/2026-09-29-blocksync-before-testnet.md,
  * docs/plans/2026-09-29-blocksync-port-design.md (§1 "Goroutine'ler YOK",
  * §2 D2/D3, §3 G2/G4), docs/plans/decisions/2026-09-25-consensus-clock-
  * scope-correction.md (the clock is read where the reference reads it,
@@ -61,7 +63,8 @@
  *   :850/:892 retryTimer         → the requester step
  * Every one schedules or rate-limits THIS node's requests. Nothing here
  * decides a block's validity, a vote or a stored row: a block is
- * accepted only by the reactor, and only after VerifyCommitLight.
+ * accepted only by the reactor, and only after VerifyCommit (the full
+ * check, cometbft@v0.38.26 blocksync/reactor.go:580-585).
  *
  * ── ORDER (design §2 D3) ───────────────────────────────────────────────
  * The reference's maps are iterated in Go's random order (`removePeer`
@@ -101,6 +104,46 @@
  *         a Go nil-pointer panic inside Receive. Here the Monitor update
  *         is skipped when it was never created, and stopping an unarmed
  *         timeout is a no-op.
+ *   BS-10 OWN FIX, not the reference's (R1-2, red-team round 1; decision
+ *         docs/plans/decisions/2026-09-30-cometbft-pin-v0.38.26.md and
+ *         2026-09-29-blocksync-before-testnet.md "R1-2"). The reference —
+ *         UNCHANGED in v0.38.26 (pool.go:360-364 AddBlock, :712-733
+ *         setBlock, :643-651 decrPending) — decrements `numPending` and the
+ *         sender's `numPending` for EVERY copy a matching peer sends, also
+ *         when the requester already holds a block (setBlock returns true
+ *         at :718-721). A peer that re-sends one block therefore drives
+ *         both counters below zero and re-arms its own 15 s timeout with
+ *         every copy: it is never timed out, and block sync never ends.
+ *         Here:
+ *           · each requester slot (`peer_id`, `second_peer_id`) carries a
+ *             `delivered` flag, set when that slot's peer delivers, cleared
+ *             when the slot is reset (`rq_reset`) or assigned anew;
+ *           · the slot's PEER is decremented at most once per assignment;
+ *           · the POOL counter is decremented only when the block is
+ *             actually stored (the copy of the other slot, which the
+ *             reference also counts, is not);
+ *           · a copy from a slot that has already delivered, while the
+ *             requester holds a block, is dropped SILENTLY — no
+ *             send_error: an honest slow peer may legitimately answer a
+ *             request twice (after a retry). A slot that already delivered
+ *             but whose block was since discarded (the other peer's copy
+ *             was kept and then refused, `rq_reset`) IS stored when it
+ *             sends again — it is the only copy on offer — but its peer
+ *             is not decremented a second time;
+ *           · `decrPending` on a peer already at 0 changes nothing and does
+ *             NOT re-arm its timeout (the counter never goes below 0).
+ *         Node-local: which peer serves a block and when it is timed out;
+ *         never which block is accepted (that is the commit's).
+ *
+ * ── REFERENCE PIN ──────────────────────────────────────────────────────
+ * cometbft v0.38.26 since 2026-09-30 (decision
+ * 2026-09-30-cometbft-pin-v0.38.26.md). Lines marked `v0.38.26` are read
+ * from that tree; every other `:NNN` still names the @709fd12b pool.go
+ * (renumbering pending). The v0.38.26 changes ported here:
+ * HasPendingRequestFrom (:202-213), PopRequest's maxPeerHeight refresh
+ * (:275-276), SetPeerRange's base > height ban (:388-396) and its
+ * updateMaxPeerHeight tail (:425), updateMaxPeerHeight's skip of a peer
+ * pruned beyond the pool height (:468-482).
  *
  * ── REPRODUCED QUIRKS (not fixed; node-local) ──────────────────────────
  *   · `reset("")` (:865-866 when `secondPeerID` is empty) matches an empty
@@ -253,6 +296,10 @@ typedef struct {
     char                 second_peer_id[CMT_P2P_ID_CAP]; /* :654 */
     char                 got_block_from[CMT_P2P_ID_CAP]; /* :655 */
     cmt_bsync_block_t   *block;                        /* :656-657 block + extCommit */
+    /* BS-10 (own fix, header): the slot's peer has delivered this height
+     * since the slot was last assigned. */
+    bool                 peer_delivered;
+    bool                 second_delivered;
 
     /* the three 1-deep channels (:648-650) */
     bool                 got_block_ch;
@@ -348,6 +395,13 @@ bool cmt_bsync_pool_is_running(const cmt_bsync_pool_t *pool);
 int cmt_bsync_pool_tick(cmt_bsync_pool_t *pool, int64_t now_ns,
                         int64_t *out_deadline_ns);
 
+/** cometbft@v0.38.26 blocksync/pool.go:202-213 — `HasPendingRequestFrom(
+ *  peerID)`: whether any requester names `peer_id` in either slot
+ *  (`didRequestFrom`, :762-766). The reactor's FilterMsgBytes asks it
+ *  before decoding a BlockResponse (reactor.go:311-314). */
+bool cmt_bsync_pool_has_pending_request_from(const cmt_bsync_pool_t *pool,
+                                             const char *peer_id);
+
 /** pool.go:193-200 — `GetStatus()`. Any out pointer may be NULL. */
 void cmt_bsync_pool_get_status(const cmt_bsync_pool_t *pool, int64_t *height,
                                int32_t *num_pending, size_t *len_requesters);
@@ -368,8 +422,10 @@ void cmt_bsync_pool_peek_two_blocks(const cmt_bsync_pool_t *pool,
 
 /**
  * pool.go:246-267 — `PopRequest()`: removes the requester at `height`,
- * `height++`, and notifies the next minBlocksForSingleRequest requesters
- * of the new height (:262-266). OWNERSHIP of the popped requester's block
+ * `height++`, re-evaluates maxPeerHeight (cometbft@v0.38.26
+ * blocksync/pool.go:275-276: a peer whose base was just beyond the old
+ * height may now count), and notifies the next minBlocksForSingleRequest
+ * requesters of the new height (:262-266). OWNERSHIP of the popped requester's block
  * passes to the caller through `*out_block` (the reference keeps using
  * `first` after the pop, reactor.go:534-549; Go's GC is what keeps it
  * alive there). The reference PANICS when there is no requester (:252-254)
@@ -407,10 +463,11 @@ void cmt_bsync_pool_redo_request_from(cmt_bsync_pool_t *pool, int64_t height,
  * TAKES OWNERSHIP of `b` in every case: it is either stored in the
  * requester or freed here (the reference drops the reference and lets GC
  * collect it — at :315-320, :328-335, :338-342 and the `bpr.block != nil`
- * branch of setBlock, :688-691).
- * @return CMT_OK; CMT_REJECT for each of the reference's error returns
- *         (a `send_error` has been made where the reference makes one);
- *         CMT_FAULT on NULL.
+ * branch of setBlock, :688-691). The counters follow BS-10 (header), not
+ * the reference's :344-348.
+ * @return CMT_OK (also for a copy BS-10 drops silently); CMT_REJECT for
+ *         each of the reference's error returns (a `send_error` has been
+ *         made where the reference makes one); CMT_FAULT on NULL.
  */
 int cmt_bsync_pool_add_block(cmt_bsync_pool_t *pool, const char *peer_id,
                              cmt_bsync_block_t *b, int64_t now_ns);
@@ -422,10 +479,12 @@ int64_t cmt_bsync_pool_height(const cmt_bsync_pool_t *pool);
 int64_t cmt_bsync_pool_max_peer_height(const cmt_bsync_pool_t *pool);
 
 /**
- * pool.go:367-402 — `SetPeerRange(peerID, base, height)`: a known peer
- * that reports a LOWER base or height is removed and banned (:374-383); an
- * unknown one is ignored while banned (:387-390), otherwise added at the
- * FRONT of the sorted list (:391-396). maxPeerHeight follows (:399-401).
+ * pool.go:367-402 — `SetPeerRange(peerID, base, height)`: a peer reporting
+ * base > height is removed if known and banned (cometbft@v0.38.26
+ * blocksync/pool.go:388-396); a known peer that reports a LOWER base or
+ * height is removed and banned (:374-383); an unknown one is ignored while
+ * banned (:387-390), otherwise added at the FRONT of the sorted list
+ * (:391-396). maxPeerHeight is then recomputed (v0.38.26 :425).
  * @return CMT_OK; CMT_FAULT on NULL or allocation failure.
  */
 int cmt_bsync_pool_set_peer_range(cmt_bsync_pool_t *pool, const char *peer_id,
