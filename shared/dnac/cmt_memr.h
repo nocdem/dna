@@ -97,8 +97,17 @@
  * so a payload that does not decode, or a `Message` with no `sum`
  * (message.go:42-43), calls the host's `stop_peer_for_error` and returns
  * CMT_REJECT — which is also what `Receive`'s own `default` branch
- * (:170-173) does for a message that is not a `Txs`. An EMPTY `Txs`
- * (:145-148) is logged and ignored: no disconnect. The descriptor's
+ * (:170-173) does for a message that is not a `Txs`. Since the v0.38.26
+ * re-pin (decisions/2026-09-30-cometbft-pin-v0.38.26.md) the step BEFORE
+ * the unmarshal is ported too: p2p/peer.go:408-413 hands the raw bytes to
+ * the reactor's `FilterMsgBytes` (v0.38.26 reactor.go:140-146 →
+ * mempool/filter.go, #5946), and a refusal stops the peer. So a `Txs`
+ * with NO entry, an EMPTY entry, an entry above `max_tx_bytes`, entries
+ * summing above max(max_tx_bytes, max_batch_bytes) (both defaults leave
+ * that at 1 MiB — `max_batch_bytes` is 0), or malformed framing now
+ * DISCONNECTS; the "EMPTY `Txs` is logged and ignored" branch of
+ * :145-148 is kept, as the reference keeps it, and is no longer
+ * reached from the wire. The descriptor's
  * `RecvMessageCapacity` (:83) is enforced by the reference's transport
  * (p2p/conn, deliberately unpinned — pin record rev 15); it is enforced
  * HERE at the reactor boundary, so the decoder never sees more bytes than
@@ -352,6 +361,21 @@ int cmt_memr_remove_peer(cmt_memr_t *memR, int peer_slot);
 int cmt_memr_receive(cmt_memr_t *memR, int peer_slot,
                      const uint8_t *bytes, size_t len,
                      const uint8_t *peer_p2p_id, size_t peer_p2p_id_len);
+
+/**
+ * cometbft@v0.38.26 mempool/reactor.go:140-146 — `FilterMsgBytes`, the
+ * reactor's `p2p.MsgBytesFilter` (base_reactor.go:46-52; declared at
+ * reactor.go:19). Not the mempool channel, or no bytes → CMT_OK (:142-143);
+ * otherwise `cmt_pb_mempool_filter_msg_bytes` with the config's
+ * `max_tx_bytes` and `max_batch_bytes` (:145). `cmt_memr_receive` calls it
+ * before decoding (p2p/peer.go:408-413, folded — header "RECEIVE").
+ * Exposed for the host and for filter_test.go's channel guard.
+ * @param out_err may be NULL.
+ * @return CMT_OK; CMT_REJECT (the peer is to be stopped); CMT_FAULT on NULL.
+ */
+int cmt_memr_filter_msg_bytes(const cmt_memr_t *memR, uint8_t channel_id,
+                              const uint8_t *bytes, size_t len,
+                              cmt_pb_mempool_filter_err_t *out_err);
 
 /**
  * reactor.go:185-259 — every peer's `broadcastTxRoutine`, one pass each

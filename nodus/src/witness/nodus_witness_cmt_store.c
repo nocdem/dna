@@ -2,6 +2,14 @@
  * @file nodus_witness_cmt_store.c
  * @brief cometbft @709fd12b store/store.go + state/store.go over SQLite.
  *        Contract and every file:line: nodus_witness_cmt_store.h.
+ *
+ * RE-PIN to v0.38.26 (decisions/2026-09-30-cometbft-pin-v0.38.26.md):
+ * store/store.go changed in two places only — IsEmpty's predicate
+ * rewritten (:98, same set; cited at `nodus_cmt_bs_is_empty`) and
+ * SaveBlockStoreState's doc comment (:661-662, one line longer). Bare
+ * `:NNN` citations here stay 709fd12b numbers; for store.go lines after
+ * :658 the v0.38.26 number is one higher. state/store.go is unchanged
+ * between the two pins.
  */
 
 #include "witness/nodus_witness_cmt_store.h"
@@ -667,7 +675,10 @@ int nodus_cmt_store_init(nodus_cmt_store_t *s, sqlite3 *db,
 
 bool nodus_cmt_bs_is_empty(const nodus_cmt_store_t *s)
 {
-    return s && s->base == s->height && s->base == 0;               /* :98 */
+    /* cometbft@v0.38.26 store/store.go:98 — `bs.base == 0 && bs.height
+     * == 0`; the 709fd12b form `base == height && base == 0` is the same
+     * predicate. */
+    return s && s->base == 0 && s->height == 0;                     /* :98 */
 }
 
 int64_t nodus_cmt_bs_base(const nodus_cmt_store_t *s)

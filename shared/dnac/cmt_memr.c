@@ -358,6 +358,27 @@ int cmt_memr_remove_peer(cmt_memr_t *memR, int peer_slot)
     return CMT_OK;
 }
 
+/* ══ cometbft@v0.38.26 mempool/reactor.go:140-146 — FilterMsgBytes ═══ */
+
+int cmt_memr_filter_msg_bytes(const cmt_memr_t *memR, uint8_t channel_id,
+                              const uint8_t *bytes, size_t len,
+                              cmt_pb_mempool_filter_err_t *out_err)
+{
+    if (out_err != NULL) {
+        *out_err = CMT_PB_MEMPOOL_FILTER_OK;
+    }
+    if (memR == NULL || memR->config == NULL || (bytes == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    if (channel_id != (uint8_t)CMT_MEM_CHANNEL || len == 0) {      /* :142 */
+        return CMT_OK;                                             /* :143 */
+    }
+    return cmt_pb_mempool_filter_msg_bytes(bytes, len,
+                                           memR->config->max_tx_bytes,
+                                           memR->config->max_batch_bytes,
+                                           out_err);               /* :145 */
+}
+
 /* ══ receive (:140-177) ═══════════════════════════════════════════════ */
 
 int cmt_memr_receive(cmt_memr_t *memR, int peer_slot,
@@ -367,7 +388,9 @@ int cmt_memr_receive(cmt_memr_t *memR, int peer_slot,
     cmt_pb_mempool_message_t    msg;
     const cmt_pb_mempool_txs_t *txs;
     cmt_mem_tx_info_t           info;
+    cmt_pb_mempool_filter_err_t ferr;
     size_t                      k;
+    int                         frc;
 
     if (memR == NULL || (bytes == NULL && len != 0)) {
         return CMT_FAULT;
@@ -386,6 +409,29 @@ int cmt_memr_receive(cmt_memr_t *memR, int peer_slot,
         QGP_LOG_ERROR(LOG_TAG, "mempool message of %zu bytes exceeds the"
                       " channel capacity %zu; stopping peer %d", len,
                       memR->recv_message_capacity, peer_slot);
+        memR->host->stop_peer_for_error(memR->host->ctx, peer_slot);
+        return CMT_REJECT;
+    }
+    /* cometbft@v0.38.26 p2p/peer.go:408-413 (#5946) — "give reactors a
+     * chance to reject the raw bytes before unmarshalling": the mempool
+     * reactor's MsgBytesFilter (reactor.go:140-146) runs on the raw
+     * bytes, and a refusal panics into the connection's recover, which
+     * stops the peer. Folded here with the unmarshal and Unwrap that
+     * follow it in onReceive (header "RECEIVE"). PEER-REACHABLE →
+     * stop_peer_for_error + CMT_REJECT. Since the re-pin a `Txs` with no
+     * entry, an EMPTY entry, or an entry above max_tx_bytes disconnects
+     * the sender here, before the decode, instead of reaching :155-158 /
+     * CheckTx. */
+    frc = cmt_memr_filter_msg_bytes(memR, (uint8_t)CMT_MEM_CHANNEL,
+                                    bytes, len, &ferr);
+    if (frc == CMT_FAULT) {
+        return CMT_FAULT;
+    }
+    if (frc != CMT_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "rejected msg on chID %#x from peer %d "
+                      "(filter reason %d); stopping peer",
+                      (unsigned)CMT_MEM_CHANNEL, peer_slot,
+                      (int)ferr);                        /* peer.go:411 */
         memR->host->stop_peer_for_error(memR->host->ctx, peer_slot);
         return CMT_REJECT;
     }
@@ -409,7 +455,9 @@ int cmt_memr_receive(cmt_memr_t *memR, int peer_slot,
         return CMT_REJECT;
     }
 
-    /* :141 debug log; :143 — the Txs branch. */
+    /* :141 debug log; :143 — the Txs branch. The empty-Txs test below is
+     * kept as the reference keeps it (v0.38.26 :155-158), though the
+     * filter above now refuses a message with no entry first. */
     if (txs->txs_len == 0) {                                       /* :145 */
         QGP_LOG_ERROR(LOG_TAG, "received empty txs from peer %d",
                       peer_slot);                                  /* :146 */

@@ -61,6 +61,11 @@
  *   proto/tendermint/mempool/types.proto    14 lines  47977b93…
  *   proto/tendermint/mempool/types.pb.go   557 lines  0975d433…
  *   proto/tendermint/mempool/message.go     31 lines  d21f89b0…
+ * Added by the v0.38.26 re-pin (decisions/2026-09-30-cometbft-pin-
+ * v0.38.26.md) for `cmt_pb_mempool_filter_msg_bytes`; local copy
+ * /home/nocdem/refs/cometbft-v0.38.26, SHA-256 of that copy:
+ *   mempool/filter.go                      129 lines  76de8095…
+ *   internal/protowire/protowire.go        127 lines  668b3246…
  * Governing records: umbrella rev 4 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * K-1 rev 2 (atlas-dec-3ba8153088b0d60c63083028023b61be),
  * INVARIANT (atlas-dec-7495d3372e004b24b4f6cc7bff5caf07),
@@ -203,6 +208,51 @@ int cmt_pb_mempool_txs_wrap(const cmt_pb_mempool_txs_t *m,
  *  @return CMT_OK, CMT_REJECT, CMT_FAULT on NULL. */
 int cmt_pb_mempool_message_unwrap(const cmt_pb_mempool_message_t *m,
                                   const cmt_pb_mempool_txs_t **out);
+
+/* ── cometbft@v0.38.26 mempool/filter.go — the raw-bytes filter ─────── */
+
+/**
+ * Why `cmt_pb_mempool_filter_msg_bytes` refused, one value per error the
+ * reference returns: the five sentinel errors of internal/protowire
+ * (protowire.go:17-34) and the four of mempool/filter.go (:18-19, :118,
+ * :126). Pure diagnosis — every non-OK value is the same refusal.
+ */
+typedef enum {
+    CMT_PB_MEMPOOL_FILTER_OK                    = 0,
+    CMT_PB_MEMPOOL_FILTER_VARINT_OVERFLOW       = 1, /* protowire.go:21 ErrVarintOverflow      */
+    CMT_PB_MEMPOOL_FILTER_TRUNCATED_VARINT      = 2, /* protowire.go:23 ErrTruncatedVarint     */
+    CMT_PB_MEMPOOL_FILTER_OUT_OF_BOUNDS         = 3, /* protowire.go:26 ErrOutOfBounds         */
+    CMT_PB_MEMPOOL_FILTER_ILLEGAL_FIELD_NUMBER  = 4, /* protowire.go:29 ErrIllegalFieldNumber  */
+    CMT_PB_MEMPOOL_FILTER_UNSUPPORTED_WIRE_TYPE = 5, /* protowire.go:32 ErrUnsupportedWireType */
+    CMT_PB_MEMPOOL_FILTER_NO_TRANSACTIONS       = 6, /* filter.go:18 errNoTransactions         */
+    CMT_PB_MEMPOOL_FILTER_EMPTY_TRANSACTION     = 7, /* filter.go:19 errEmptyTransaction       */
+    CMT_PB_MEMPOOL_FILTER_TX_TOO_LARGE          = 8, /* filter.go:118 "exceeds max_tx_bytes"   */
+    CMT_PB_MEMPOOL_FILTER_BATCH_TOO_LARGE       = 9  /* filter.go:126 "exceeds %d byte budget" */
+} cmt_pb_mempool_filter_err_t;
+
+/**
+ * cometbft@v0.38.26 mempool/filter.go:46-79 — `filterMempoolMsgBytes`
+ * (#5946, with #5948's 32-bit tag truncation), over the raw wire bytes of
+ * a `tendermint.mempool.Message`, BEFORE any decode. Rules (filter.go:
+ * 35-45): every varint / tag / length within the buffer; no EMPTY
+ * transaction; none above `max_tx_bytes`; their sum at most
+ * max(max_tx_bytes, max_batch_bytes); at least one transaction. A
+ * non-positive limit disables that size check (:32-33).
+ *
+ * The walk is the reference's internal/protowire cursor, ported beside it
+ * (cmt_pb_mempool.c): it names a field with `int32(wire >> 3)` exactly as
+ * the generated decoder above does (`r_tag`, cmt_pb_wire.h), so the filter
+ * and `cmt_pb_mempool_message_unmarshal` always agree on which bytes are a
+ * transaction; and unlike the decoder's skipper it REFUSES group wire
+ * types 3/4 (protowire.go:114-115).
+ *
+ * @param out_err may be NULL; receives why on CMT_REJECT, OK otherwise.
+ * @return CMT_OK; CMT_REJECT (peer-reachable) on any rule; CMT_FAULT for
+ *         NULL bytes with a non-zero length.
+ */
+int cmt_pb_mempool_filter_msg_bytes(const uint8_t *msg, size_t len,
+                                    int max_tx_bytes, int max_batch_bytes,
+                                    cmt_pb_mempool_filter_err_t *out_err);
 
 #ifdef __cplusplus
 }

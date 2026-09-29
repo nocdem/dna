@@ -42,7 +42,8 @@
  *   · the channel descriptor is {0x30, 5, Message{Txs{[MaxTxBytes]}}
  *     .Size()} and that size is the oracle's (:71-89);
  *   · on receive: undecodable bytes, a Message with no sum, and a
- *     payload above the capacity STOP THE PEER; an empty Txs does not;
+ *     payload above the capacity STOP THE PEER; since the v0.38.26
+ *     re-pin an empty Txs does too (it did not in 709fd12b);
  *     an unknown field is skipped; a multi-tx Txs is admitted whole;
  *     the sender id recorded on a received transaction is the peer's
  *     mempool id (:140-177 and p2p/peer.go:407-422);
@@ -1124,10 +1125,14 @@ static int t_receive(void)
     free(huge);
     OK();
 
-    /* An empty Txs: logged, ignored, NOT a disconnect (:145-148). */
-    CHECK(cmt_memr_receive(&node->memR, 5, empty_txs, sizeof(empty_txs), NULL, 0) == CMT_OK,
-          "empty Txs → OK");
-    CHECK(node->stop_calls == 3 && cmt_mem_size(&node->mem) == 0, "no stop, nothing added");
+    /* An empty Txs. CHANGED BY THE v0.38.26 RE-PIN: in 709fd12b it was
+     * logged and ignored at :145-148, no disconnect; since v0.38.26
+     * p2p/peer.go:408-413 runs the reactor's FilterMsgBytes first, and
+     * filter.go:75-76 (errNoTransactions) refuses a message with no
+     * entry — the peer is stopped before the decode. */
+    CHECK(cmt_memr_receive(&node->memR, 5, empty_txs, sizeof(empty_txs), NULL, 0) == CMT_REJECT,
+          "empty Txs → REJECT (v0.38.26 filter)");
+    CHECK(node->stop_calls == 4 && cmt_mem_size(&node->mem) == 0, "stopped, nothing added");
     OK();
 
     /* An unknown field is skipped and the tx admitted, with the peer's
@@ -1146,7 +1151,7 @@ static int t_receive(void)
     CHECK(cmt_memr_receive(&node->memR, 5, two_txs, sizeof(two_txs), NULL, 0) == CMT_OK, "two txs");
     CHECK(cmt_mem_size(&node->mem) == 3, "c=d and e=f admitted");
     CHECK(cmt_memr_receive(&node->memR, 5, bad_tx, sizeof(bad_tx), NULL, 0) == CMT_OK, "app-refused tx");
-    CHECK(cmt_mem_size(&node->mem) == 3 && node->stop_calls == 3, "refused by the app: no stop");
+    CHECK(cmt_mem_size(&node->mem) == 3 && node->stop_calls == 4, "refused by the app: no stop");
     CHECK(cmt_memr_receive(&node->memR, 5, two_txs, sizeof(two_txs), NULL, 0) == CMT_OK,
           "duplicates → ErrTxInCache, logged (:160-161)");
     CHECK(cmt_mem_size(&node->mem) == 3, "unchanged");
@@ -1452,6 +1457,393 @@ static int t_semaphore_newcomer_waits(void)
     return 0;
 }
 
+/* ══ cometbft@v0.38.26 mempool/filter_test.go + internal/protowire/
+ *    protowire_test.go — the raw-bytes filter (#5946, #5948) ══════════
+ *
+ * WHAT THESE PROVE: that `cmt_pb_mempool_filter_msg_bytes` refuses
+ * exactly what filter.go refuses — a message with no transaction, an
+ * EMPTY transaction (the heap-amplification vector: `0a 00` per entry),
+ * a transaction above max_tx_bytes, a batch whose sum exceeds
+ * max(max_tx_bytes, max_batch_bytes), and any framing the protowire
+ * cursor cannot walk — and passes the rest; that a disguised field
+ * number (a tag whose field number only equals 1 after the int32
+ * truncation) is read as field 1 by the filter AND by the decoder, so an
+ * empty entry cannot slip past the filter that the decoder would then
+ * deliver; and that `cmt_memr_receive` runs the filter before decoding
+ * and stops the peer on a refusal. Every refusal is asserted with its
+ * REASON (the reference asserts only `require.Error`; STRONGER).
+ *
+ * RED before the port: `cmt_pb_mempool_filter_msg_bytes` and
+ * `cmt_memr_filter_msg_bytes` did not exist (the file did not compile),
+ * and `cmt_memr_receive` decoded a 10 000-empty-entry batch and offered
+ * each empty entry to CheckTx without stopping the peer.
+ *
+ * HOW THEY CAN LIE: the wire bytes are built with this tree's own
+ * encoder (`cmt_pb_mempool_message_marshal`), not with Go's; its
+ * byte-identity with the generated encoder is test_cmt_pb's claim. */
+
+/** filter_test.go:15-21 `marshalTxsMsg` — Message{Txs{txs}} on the wire.
+ *  `lens[k]` bytes of 0xA5 per entry (content is irrelevant to every
+ *  rule). Returns a heap buffer the caller frees. */
+static uint8_t *marshal_txs_msg(const size_t *lens, size_t n, size_t *out_len)
+{
+    cmt_pb_mempool_message_t msg;
+    cmt_pb_bytes_t          *slots;
+    uint8_t                 *payload;
+    uint8_t                 *out;
+    size_t                   max_len = 0;
+    size_t                   cap;
+    size_t                   k;
+
+    for (k = 0; k < n; k++) {
+        if (lens[k] > max_len) {
+            max_len = lens[k];
+        }
+    }
+    slots   = (cmt_pb_bytes_t *)calloc(n == 0 ? 1u : n, sizeof(*slots));
+    payload = (uint8_t *)malloc(max_len == 0 ? 1u : max_len);
+    if (slots == NULL || payload == NULL) {
+        free(slots);
+        free(payload);
+        return NULL;
+    }
+    memset(payload, 0xA5, max_len == 0 ? 1u : max_len);
+    for (k = 0; k < n; k++) {
+        slots[k].data = (lens[k] == 0) ? NULL : payload;
+        slots[k].len  = lens[k];
+    }
+    msg.txs.txs     = slots;
+    msg.txs.txs_cap = (n == 0) ? 1u : n;
+    cmt_pb_mempool_message_init(&msg);
+    msg.sum         = CMT_PB_MEMPOOL_MSG_TXS;
+    msg.txs.txs_len = n;
+    cap = cmt_pb_mempool_message_size(&msg);
+    out = (uint8_t *)malloc(cap == 0 ? 1u : cap);
+    if (out == NULL ||
+        cmt_pb_mempool_message_marshal(&msg, out, cap, out_len) != CMT_OK) {
+        free(out);
+        out = NULL;
+    }
+    free(slots);
+    free(payload);
+    return out;
+}
+
+/** Run the filter on Message{Txs{lens…}} and compare with `want`. */
+static int filter_row(const char *name, const size_t *lens, size_t n,
+                      int max_tx, int max_batch,
+                      cmt_pb_mempool_filter_err_t want)
+{
+    cmt_pb_mempool_filter_err_t err;
+    uint8_t *b;
+    size_t   len = 0;
+    int      rc;
+
+    b = marshal_txs_msg(lens, n, &len);
+    CHECK(b != NULL, "marshalTxsMsg");
+    rc = cmt_pb_mempool_filter_msg_bytes(b, len, max_tx, max_batch, &err);
+    free(b);
+    if (err != want) {
+        fprintf(stderr, "filter row %s: reason %d, want %d\n", name, (int)err,
+                (int)want);
+    }
+    CHECK(rc == ((want == CMT_PB_MEMPOOL_FILTER_OK) ? CMT_OK : CMT_REJECT), name);
+    CHECK(err == want, name);
+    return 0;
+}
+
+/* filter_test.go:23-97 — TestFilterMempoolMsgBytes, all eight rows. */
+static int t_filter_msg_bytes(void)
+{
+    enum { MAX_TX = 1024, MAX_BATCH = 4096 };                 /* :24-25 */
+    static const size_t one_hello[] = { 11 };                 /* "hello world" */
+    static const size_t batch3[]    = { 6, 6, 8 };            /* tx-one/two/three */
+    static const size_t at_max[]    = { MAX_TX };
+    static const size_t one_empty[] = { 0 };
+    static const size_t over_tx[]   = { MAX_TX + 1 };
+    size_t *empties;
+    size_t *ones;
+    size_t  k;
+
+    CHECK(filter_row("valid single tx", one_hello, 1, MAX_TX, MAX_BATCH,
+                     CMT_PB_MEMPOOL_FILTER_OK) == 0, "row");          /* :44-47 */
+    CHECK(filter_row("valid batch", batch3, 3, MAX_TX, MAX_BATCH,
+                     CMT_PB_MEMPOOL_FILTER_OK) == 0, "row");          /* :49-52 */
+    CHECK(filter_row("valid tx at max size", at_max, 1, MAX_TX, MAX_BATCH,
+                     CMT_PB_MEMPOOL_FILTER_OK) == 0, "row");          /* :54-57 */
+    CHECK(filter_row("empty txs list", NULL, 0, MAX_TX, MAX_BATCH,
+                     CMT_PB_MEMPOOL_FILTER_NO_TRANSACTIONS) == 0, "row"); /* :59-62 */
+    CHECK(filter_row("single empty entry", one_empty, 1, MAX_TX, MAX_BATCH,
+                     CMT_PB_MEMPOOL_FILTER_EMPTY_TRANSACTION) == 0, "row"); /* :64-67 */
+
+    /* :27-31, :69-72 — 10 000 empty entries: cheap on the wire, huge
+     * len(txs). */
+    empties = (size_t *)calloc(10000u, sizeof(*empties));
+    CHECK(empties != NULL, "alloc");
+    CHECK(filter_row("empty-entry packing attack", empties, 10000u, MAX_TX,
+                     MAX_BATCH, CMT_PB_MEMPOOL_FILTER_EMPTY_TRANSACTION) == 0,
+          "row");
+    free(empties);
+
+    CHECK(filter_row("tx exceeds max_tx_bytes", over_tx, 1, MAX_TX, MAX_BATCH,
+                     CMT_PB_MEMPOOL_FILTER_TX_TOO_LARGE) == 0, "row"); /* :74-77 */
+
+    /* :33-37, :79-82 — maxBatchBytes+1 one-byte entries. */
+    ones = (size_t *)calloc((size_t)MAX_BATCH + 1u, sizeof(*ones));
+    CHECK(ones != NULL, "alloc");
+    for (k = 0; k < (size_t)MAX_BATCH + 1u; k++) {
+        ones[k] = 1u;
+    }
+    CHECK(filter_row("batch exceeds byte budget", ones, (size_t)MAX_BATCH + 1u,
+                     MAX_TX, MAX_BATCH,
+                     CMT_PB_MEMPOOL_FILTER_BATCH_TOO_LARGE) == 0, "row");
+    free(ones);
+    OK();
+    return 0;
+}
+
+/* filter_test.go:99-106 — TestFilterMempoolMsgBytes_Unlimited. */
+static int t_filter_unlimited(void)
+{
+    static const size_t big[]       = { (size_t)1 << 20 };
+    static const size_t one_empty[] = { 0 };
+
+    CHECK(filter_row("1 MiB tx, limits 0/0", big, 1, 0, 0,
+                     CMT_PB_MEMPOOL_FILTER_OK) == 0, "size checks disabled (:103)");
+    CHECK(filter_row("empty entry, limits 0/0", one_empty, 1, 0, 0,
+                     CMT_PB_MEMPOOL_FILTER_EMPTY_TRANSACTION) == 0,
+          "empty entries still refused (:105)");
+    OK();
+    return 0;
+}
+
+/* filter_test.go:108-114 — TestFilterMempoolMsgBytes_Malformed. */
+static int t_filter_malformed(void)
+{
+    static const uint8_t trunc[] = { 0x0a, 0xff };
+    static const uint8_t oob[]   = { 0x0a, 0x7f };
+    cmt_pb_mempool_filter_err_t err;
+
+    CHECK(cmt_pb_mempool_filter_msg_bytes(trunc, sizeof(trunc), 1024, 4096, &err)
+              == CMT_REJECT && err == CMT_PB_MEMPOOL_FILTER_TRUNCATED_VARINT,
+          "truncated varint for the outer length (:110)");
+    CHECK(cmt_pb_mempool_filter_msg_bytes(oob, sizeof(oob), 1024, 4096, &err)
+              == CMT_REJECT && err == CMT_PB_MEMPOOL_FILTER_OUT_OF_BOUNDS,
+          "length past the end of the buffer (:113)");
+    CHECK(cmt_pb_mempool_filter_msg_bytes(NULL, 1, 1024, 4096, &err) == CMT_FAULT,
+          "NULL bytes with a length: FAULT");
+    OK();
+    return 0;
+}
+
+/* filter_test.go:116-132 — TestFilterMempoolMsgBytes_DisguisedFieldNumber-
+ * NotBypassed (#5948): `8a 80 80 80 80 01` is field 1 only after
+ * int32(wire >> 3). The decoder must read TWO entries, the second
+ * empty; the filter must refuse it as an empty transaction. */
+static int t_filter_disguised_field_number(void)
+{
+    static const uint8_t msg_bytes[] = {
+        0x0a, 0x0a,                                   /* Message.txs = inner (10 bytes) */
+        0x0a, 0x01, 0x41,                             /* field 1, len 1, "A" */
+        0x8a, 0x80, 0x80, 0x80, 0x80, 0x01, 0x00      /* disguised field 1, len 0 */
+    };
+    cmt_pb_mempool_message_t    msg;
+    cmt_pb_bytes_t              slots[4];
+    uint8_t                     arena_buf[64];
+    cmt_pb_arena_t              arena;
+    const cmt_pb_mempool_txs_t *txs;
+    cmt_pb_mempool_filter_err_t err;
+
+    /* :123-128 — sanity: the real parser decodes two entries. */
+    arena.buf  = arena_buf;
+    arena.cap  = sizeof(arena_buf);
+    arena.used = 0;
+    msg.txs.txs     = slots;
+    msg.txs.txs_cap = 4u;
+    cmt_pb_mempool_message_init(&msg);
+    CHECK(cmt_pb_mempool_message_unmarshal(msg_bytes, sizeof(msg_bytes), &msg,
+                                           &arena) == CMT_OK,
+          "msg.Unmarshal (:126)");
+    CHECK(cmt_pb_mempool_message_unwrap(&msg, &txs) == CMT_OK, "a Txs");
+    CHECK(txs->txs_len == 2u, "two entries (:127)");
+    CHECK(txs->txs[1].len == 0u, "the second empty (:128)");
+
+    /* :130-131 — the filter agrees and refuses. */
+    CHECK(cmt_pb_mempool_filter_msg_bytes(msg_bytes, sizeof(msg_bytes), 1024,
+                                          4096, &err) == CMT_REJECT,
+          "the filter refuses it (:131)");
+    CHECK(err == CMT_PB_MEMPOOL_FILTER_EMPTY_TRANSACTION,
+          "as an EMPTY transaction — it read the disguised tag as field 1");
+    OK();
+    return 0;
+}
+
+/* filter_test.go:136-147 — TestFilterMempoolMsgBytes_BatchBudgetIsMax. */
+static int t_filter_batch_budget_is_max(void)
+{
+    enum { MAX_TX = 4096, MAX_BATCH = 1024 };                 /* :137-138 */
+    static const size_t big[]  = { MAX_BATCH + 1 };
+    static const size_t over[] = { MAX_TX, 1 };
+
+    CHECK(filter_row("one tx above maxBatchBytes, within maxTxBytes", big, 1,
+                     MAX_TX, MAX_BATCH, CMT_PB_MEMPOOL_FILTER_OK) == 0,
+          "allowed (:142-143)");
+    CHECK(filter_row("total above the larger limit", over, 2, MAX_TX, MAX_BATCH,
+                     CMT_PB_MEMPOOL_FILTER_BATCH_TOO_LARGE) == 0,
+          "refused (:146-147)");
+    OK();
+    return 0;
+}
+
+/* filter_test.go:149-161 — TestReactorFilterMsgBytes_ChannelGuard, with
+ * the default config (:150). */
+static int t_filter_channel_guard(void)
+{
+    static const size_t three_empty[] = { 0, 0, 0 };
+    net_t  *net = (net_t *)calloc(1, sizeof(*net));
+    cmt_mempool_config_t        cfg;
+    cmt_pb_mempool_filter_err_t err;
+    uint8_t *bad;
+    size_t   len = 0;
+
+    CHECK(net != NULL, "alloc");
+    (void)cmt_mempool_config_default(&cfg);
+    CHECK(net_make(net, 1, &cfg) == 0, "one node");
+    bad = marshal_txs_msg(three_empty, 3, &len);             /* :154 */
+    CHECK(bad != NULL, "marshalTxsMsg");
+    CHECK(cmt_memr_filter_msg_bytes(&net->nodes[0]->memR, 0x00, bad, len, &err)
+              == CMT_OK,
+          "non-mempool channel: passes through untouched (:156)");
+    CHECK(cmt_memr_filter_msg_bytes(&net->nodes[0]->memR,
+                                    (uint8_t)CMT_MEM_CHANNEL, NULL, 0, &err)
+              == CMT_OK,
+          "empty payload: nothing to validate (:158)");
+    CHECK(cmt_memr_filter_msg_bytes(&net->nodes[0]->memR,
+                                    (uint8_t)CMT_MEM_CHANNEL, bad, len, &err)
+              == CMT_REJECT && err == CMT_PB_MEMPOOL_FILTER_EMPTY_TRANSACTION,
+          "mempool channel with abusive payload: rejected (:160)");
+    free(bad);
+    OK();
+    net_free(net);
+    free(net);
+    return 0;
+}
+
+/* internal/protowire/protowire_test.go (v0.38.26, 108 lines) — the
+ * cursor is file-local to cmt_pb_mempool.c, so its rows are driven
+ * THROUGH the filter: a top-level field whose tag or body exercises the
+ * row, and the reason code the cursor produced. */
+static int t_protowire_cursor(void)
+{
+    /* A trailing valid Txs{"x"} so that a SKIPPED field is followed by a
+     * transaction and the message is otherwise acceptable. */
+#define TAIL 0x0a, 0x03, 0x0a, 0x01, 'x'
+    static const uint8_t varint_300[] = { 0x10, 0xac, 0x02, TAIL };    /* ReadVarint 300 → skipped field 2 */
+    static const uint8_t overflow[]   = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                                          0xff, 0xff, 0xff, 0xff, 0xff }; /* ReadVarint_Overflow */
+    static const uint8_t truncated[]  = { 0xff };                       /* ReadVarint_Truncated */
+    static const uint8_t illegal0[]   = { 0x00 };                       /* ReadTag_IllegalFieldNumber */
+    static const uint8_t illegal31[]  = { 0x80, 0x80, 0x80, 0x80, 0x40 }; /* int32(2^31) < 0 */
+    static const uint8_t skip_f64[]   = { 0x11, 1, 2, 3, 4, 5, 6, 7, 8, TAIL };
+    static const uint8_t skip_bytes[] = { 0x12, 0x02, 'x', 'y', TAIL };
+    static const uint8_t skip_f32[]   = { 0x15, 1, 2, 3, 4, TAIL };
+    static const uint8_t group[]      = { 0x13, TAIL };                  /* SkipField_Unsupported (wt 3) */
+    static const uint8_t endgroup1[]  = { 0x0c };                        /* field 1, wt 4 */
+    static const uint8_t f64_oob[]    = { 0x11, 1, 2 };                  /* SkipField_OutOfBounds */
+    static const uint8_t ld_oob[]     = { 0x12, 0x05, 'a' };             /* ReadLengthDelimited_OutOfBounds */
+#undef TAIL
+    static const struct {
+        const char                  *name;
+        const uint8_t               *b;
+        size_t                       n;
+        cmt_pb_mempool_filter_err_t  want;
+    } rows[] = {
+        { "ReadVarint 300 (skipped)",    varint_300, sizeof(varint_300), CMT_PB_MEMPOOL_FILTER_OK },
+        { "ReadVarint_Overflow",         overflow,   sizeof(overflow),   CMT_PB_MEMPOOL_FILTER_VARINT_OVERFLOW },
+        { "ReadVarint_Truncated",        truncated,  sizeof(truncated),  CMT_PB_MEMPOOL_FILTER_TRUNCATED_VARINT },
+        { "ReadTag_IllegalFieldNumber",  illegal0,   sizeof(illegal0),   CMT_PB_MEMPOOL_FILTER_ILLEGAL_FIELD_NUMBER },
+        { "ReadTag int32(2^31) illegal", illegal31,  sizeof(illegal31),  CMT_PB_MEMPOOL_FILTER_ILLEGAL_FIELD_NUMBER },
+        { "SkipField fixed64",           skip_f64,   sizeof(skip_f64),   CMT_PB_MEMPOOL_FILTER_OK },
+        { "SkipField bytes",             skip_bytes, sizeof(skip_bytes), CMT_PB_MEMPOOL_FILTER_OK },
+        { "SkipField fixed32",           skip_f32,   sizeof(skip_f32),   CMT_PB_MEMPOOL_FILTER_OK },
+        { "SkipField_Unsupported (3)",   group,      sizeof(group),      CMT_PB_MEMPOOL_FILTER_UNSUPPORTED_WIRE_TYPE },
+        { "SkipField_Unsupported (4)",   endgroup1,  sizeof(endgroup1),  CMT_PB_MEMPOOL_FILTER_UNSUPPORTED_WIRE_TYPE },
+        { "SkipField_OutOfBounds",       f64_oob,    sizeof(f64_oob),    CMT_PB_MEMPOOL_FILTER_OUT_OF_BOUNDS },
+        { "ReadLengthDelimited_OOB",     ld_oob,     sizeof(ld_oob),     CMT_PB_MEMPOOL_FILTER_OUT_OF_BOUNDS }
+    };
+    size_t r;
+
+    for (r = 0; r < sizeof(rows) / sizeof(rows[0]); r++) {
+        cmt_pb_mempool_filter_err_t err;
+        int rc = cmt_pb_mempool_filter_msg_bytes(rows[r].b, rows[r].n, 1024,
+                                                 4096, &err);
+
+        if (err != rows[r].want) {
+            fprintf(stderr, "protowire row %s: reason %d, want %d\n",
+                    rows[r].name, (int)err, (int)rows[r].want);
+        }
+        CHECK(err == rows[r].want, rows[r].name);
+        CHECK(rc == ((rows[r].want == CMT_PB_MEMPOOL_FILTER_OK) ? CMT_OK
+                                                                : CMT_REJECT),
+              rows[r].name);
+    }
+    OK();
+    return 0;
+}
+
+/* p2p/peer.go:408-413 (v0.38.26) folded into cmt_memr_receive — the
+ * production path. Port's own case (the reference's filter tests call
+ * the filter directly). */
+static int t_receive_filter(void)
+{
+    static const uint8_t disguised[] = {
+        0x0a, 0x0a, 0x0a, 0x01, 0x41,
+        0x8a, 0x80, 0x80, 0x80, 0x80, 0x01, 0x00
+    };
+    net_t  *net = (net_t *)calloc(1, sizeof(*net));
+    cmt_mempool_config_t cfg;
+    node_t *node;
+    size_t *empties;
+    uint8_t *b;
+    size_t   len = 0;
+    int      check_tx_before;
+
+    CHECK(net != NULL, "alloc");
+    (void)cmt_mempool_config_default(&cfg);
+    CHECK(net_make(net, 1, &cfg) == 0, "one node");
+    node = net->nodes[0];
+    CHECK(cmt_memr_start(&node->memR) == CMT_OK, "start");
+    CHECK(cmt_memr_init_peer(&node->memR, 5) == CMT_OK, "InitPeer(5)");
+
+    /* 10 000 empty entries: the heap-amplification batch. */
+    empties = (size_t *)calloc(10000u, sizeof(*empties));
+    CHECK(empties != NULL, "alloc");
+    b = marshal_txs_msg(empties, 10000u, &len);
+    free(empties);
+    CHECK(b != NULL, "marshalTxsMsg");
+    check_tx_before = node->app.check_tx_calls;
+    CHECK(cmt_memr_receive(&node->memR, 5, b, len, NULL, 0) == CMT_REJECT,
+          "the empty-entry batch is refused before the decode");
+    CHECK(node->stop_calls == 1 && node->last_stopped_slot == 5,
+          "and its sender stopped (peer.go:411)");
+    CHECK(node->app.check_tx_calls == check_tx_before,
+          "no entry reached CheckTx");
+    free(b);
+
+    /* The disguised field number: the decoder alone would deliver "A"
+     * and an EMPTY entry to CheckTx. */
+    CHECK(cmt_memr_receive(&node->memR, 5, disguised, sizeof(disguised),
+                           NULL, 0) == CMT_REJECT,
+          "the disguised empty entry is refused");
+    CHECK(node->stop_calls == 2, "stopped again");
+    CHECK(node->app.check_tx_calls == check_tx_before && cmt_mem_size(&node->mem) == 0,
+          "nothing reached CheckTx, nothing added");
+    OK();
+    net_free(net);
+    free(net);
+    return 0;
+}
+
 typedef struct {
     const char *name;
     int       (*fn)(void);
@@ -1475,6 +1867,19 @@ int main(void)
         { "cursor_after_removal (:195-208, :238-247)",           t_cursor_after_removal },
         { "semaphore_newcomer_waits (x/sync semaphore.go:52, :69-71, :133-160; port's own)",
           t_semaphore_newcomer_waits },
+        { "filter_msg_bytes (v0.38.26 TestFilterMempoolMsgBytes)", t_filter_msg_bytes },
+        { "filter_unlimited (v0.38.26 TestFilterMempoolMsgBytes_Unlimited)", t_filter_unlimited },
+        { "filter_malformed (v0.38.26 TestFilterMempoolMsgBytes_Malformed)", t_filter_malformed },
+        { "filter_disguised_field_number (v0.38.26 ..._DisguisedFieldNumberNotBypassed)",
+          t_filter_disguised_field_number },
+        { "filter_batch_budget_is_max (v0.38.26 ..._BatchBudgetIsMax)",
+          t_filter_batch_budget_is_max },
+        { "filter_channel_guard (v0.38.26 TestReactorFilterMsgBytes_ChannelGuard)",
+          t_filter_channel_guard },
+        { "protowire_cursor (v0.38.26 internal/protowire/protowire_test.go, via the filter)",
+          t_protowire_cursor },
+        { "receive_filter (v0.38.26 p2p/peer.go:408-413 folded; port's own)",
+          t_receive_filter },
     };
     size_t i;
     size_t n = sizeof(cases) / sizeof(cases[0]);
