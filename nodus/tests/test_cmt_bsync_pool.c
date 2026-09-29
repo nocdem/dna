@@ -1,5 +1,5 @@
 /**
- * Nodus — cometbft @709fd12b C port, blocksync: the block pool of
+ * Nodus — cometbft C port (pin v0.38.26), blocksync: the block pool of
  * `shared/dnac/cmt_bsync_pool.c` (blocksync/pool.go), driven by a fake
  * clock and a recording host.
  *
@@ -36,7 +36,23 @@
  *     (:328-333); one below it is only "already committed" (:335);
  *   · IsCaughtUp is false with no peers (:209-212) and true once the pool
  *     height reaches maxPeerHeight − 1 (:220);
- *   · after Stop nothing is requested and the requesters are gone (BS-3).
+ *   · after Stop nothing is requested and the requesters are gone (BS-3);
+ *   · R1-2 / BS-10 (the labelled OWN FIX, decision
+ *     2026-09-30-cometbft-pin-v0.38.26.md; the reference is unchanged in
+ *     v0.38.26, pool.go:360-364, :712-733, :643-651): a peer that re-sends
+ *     a block it already delivered changes NO counter, is NOT blamed and
+ *     does NOT push its timeout out — the timeout fires 15 s after its
+ *     FIRST delivery; when both peers of a requester deliver, each peer
+ *     is decremented once and the pool counter only for the stored copy,
+ *     and a third copy changes nothing. Without BS-10 the copy at +10 s
+ *     re-arms the timeout to +25 s and the +15 s TIMEOUT check fails;
+ *     the pool counter reaches 0 after A's copy and −1 after B's third;
+ *   · v0.38.26 upstream cases (pkgA_tests.diff): a StatusResponse with
+ *     base > height bans the peer, known or not (pool.go:388-396); a peer
+ *     whose base is above the pool height is left out of maxPeerHeight
+ *     until PopRequest reaches its base (:275-276, :468-482);
+ *     HasPendingRequestFrom sees both peer slots and forgets popped
+ *     requesters (:202-213).
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * COMPILE FLAGS: `CMT_SOFTWARE_VERSION` (every cmt_* target). A DEFAULT
@@ -57,7 +73,11 @@
  *     implied by the peers surviving the other cases.
  *  3. The reference's own pool_test.go (UNPINNED — not in the reference
  *     tarball's pin list) is not ported line by line; these cases are
- *     built from pool.go's lines named above.
+ *     built from pool.go's lines named above. The three v0.38.26 cases ARE
+ *     ported from pool_test.go's new tests, with the requesters made by
+ *     the pool's own ticks instead of written into the map by hand.
+ *  4. Cites not marked v0.38.26 name cometbft @709fd12b pool.go lines
+ *     (the pin moved to v0.38.26 on 2026-09-30; renumbering is pending).
  *
  * @file test_cmt_bsync_pool.c
  */
@@ -379,6 +399,219 @@ static int t_lower_height_and_caught_up(void)
     return 0;
 }
 
+/* ══ R1-2 — the labelled OWN FIX (cmt_bsync_pool.h, BS-10) ═══════════ */
+
+static int32_t peer_pending(const cmt_bsync_pool_t *pool, const char *id)
+{
+    const cmt_bsync_peer_t *p = cmt_bsync_pool_peer(pool, id);
+
+    return p != NULL ? p->num_pending : -999;
+}
+
+static int32_t pool_pending(const cmt_bsync_pool_t *pool)
+{
+    int32_t np = -999;
+
+    cmt_bsync_pool_get_status(pool, NULL, &np, NULL);
+    return np;
+}
+
+/* One peer re-sends a block it already delivered. In the reference
+ * (v0.38.26 pool.go:360-364 + :643-651, unchanged since 709fd12b) every copy
+ * decrements both counters and re-arms the peer's timeout, so a peer that
+ * repeats one block every < 15 s is never timed out. With BS-10 the copy
+ * changes nothing and the timeout fires 15 s after the FIRST delivery. */
+static int t_duplicate_same_peer(void)
+{
+    cmt_bsync_pool_t        pool;
+    const cmt_bsync_peer_t *pa;
+    int64_t                 t1 = T0 + 4 * SEC;
+
+    CHECK(pool_new(&pool, 1) == CMT_OK, "init"); OK();
+    CHECK(cmt_bsync_pool_start(&pool, T0) == CMT_OK, "start"); OK();
+    CHECK(cmt_bsync_pool_set_peer_range(&pool, PA, 1, 3, T0) == CMT_OK, "A 1..3"); OK();
+    CHECK(run(&pool, T0 + 3 * SEC, T0 + 3 * SEC + 10 * MS) == 0, "run"); OK();
+    CHECK(count_req(1, PA) == 1 && count_req(2, PA) == 1 && count_req(3, PA) == 1,
+          "1..3 asked of A, the only peer"); OK();
+    CHECK(peer_pending(&pool, PA) == 3 && pool_pending(&pool) == 3,
+          "A pending 3, pool pending 3"); OK();
+
+    /* the first, real delivery */
+    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), t1) == CMT_OK, "blk 1"); OK();
+    pa = cmt_bsync_pool_peer(&pool, PA);
+    CHECK(pa != NULL && pa->num_pending == 2 && pool_pending(&pool) == 2,
+          "one real delivery: both counters −1"); OK();
+    CHECK(pa->timeout_armed && pa->timeout_at_ns == t1 + 15 * SEC,
+          "timeout re-armed at the delivery (:649)"); OK();
+
+    /* the same block again at +10 s: nothing changes, nobody is blamed */
+    g_nerr = 0;
+    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), t1 + 10 * SEC) == CMT_OK,
+          "copy at +10 s is dropped silently"); OK();
+    CHECK(pa->num_pending == 2 && pool_pending(&pool) == 2,
+          "copy: counters unchanged (BS-10)"); OK();
+    CHECK(pa->timeout_armed && pa->timeout_at_ns == t1 + 15 * SEC,
+          "copy: the timeout is NOT pushed out"); OK();
+    CHECK(g_nerr == 0, "copy: no send_error (an honest slow peer may resend)"); OK();
+
+    /* the timeout fires 15 s after the first delivery */
+    CHECK(cmt_bsync_pool_tick(&pool, t1 + 15 * SEC - 1 * MS, NULL) == CMT_OK &&
+          !has_err(PA, CMT_BSYNC_PEER_ERR_TIMEOUT), "not yet at 14.999 s"); OK();
+    CHECK(cmt_bsync_pool_tick(&pool, t1 + 15 * SEC, NULL) == CMT_OK &&
+          has_err(PA, CMT_BSYNC_PEER_ERR_TIMEOUT),
+          "TIMEOUT 15 s after the first real delivery (:653-661)"); OK();
+
+    /* a copy after the timeout: still nothing */
+    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), t1 + 20 * SEC) == CMT_OK &&
+          pa->num_pending == 2 && pool_pending(&pool) == 2 && !pa->timeout_armed,
+          "copy at +20 s: counters unchanged, the spent timer not re-armed"); OK();
+    cmt_bsync_pool_free(&pool);
+    return 0;
+}
+
+/* Both peers of one requester deliver (pool.go:720 "getting a block from
+ * both peers is not an error"): each peer −1 once; the pool counter −1
+ * only for the copy that is stored; a third copy changes nothing. */
+static int t_two_peers_both_deliver(void)
+{
+    cmt_bsync_pool_t pool;
+
+    CHECK(pool_new(&pool, 1) == CMT_OK, "init"); OK();
+    CHECK(cmt_bsync_pool_start(&pool, T0) == CMT_OK, "start"); OK();
+    CHECK(cmt_bsync_pool_set_peer_range(&pool, PA, 1, 2, T0) == CMT_OK, "A"); OK();
+    CHECK(cmt_bsync_pool_set_peer_range(&pool, PB, 1, 2, T0) == CMT_OK, "B"); OK();
+    CHECK(run(&pool, T0 + 3 * SEC, T0 + 3 * SEC + 10 * MS) == 0, "run"); OK();
+    CHECK(count_req(1, PA) == 1 && count_req(1, PB) == 1 &&
+          count_req(2, PA) == 1 && count_req(2, PB) == 1,
+          "1 and 2 asked of both (:876-878)"); OK();
+    CHECK(peer_pending(&pool, PA) == 2 && peer_pending(&pool, PB) == 2 &&
+          pool_pending(&pool) == 2, "A 2, B 2, pool 2"); OK();
+
+    g_nerr = 0;
+    CHECK(cmt_bsync_pool_add_block(&pool, PB, blk(1), T0 + 4 * SEC) == CMT_OK,
+          "B's 1 stored"); OK();
+    CHECK(peer_pending(&pool, PB) == 1 && pool_pending(&pool) == 1,
+          "B −1, pool −1"); OK();
+    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), T0 + 4 * SEC) == CMT_OK,
+          "A's 1 is not an error (:720)"); OK();
+    CHECK(peer_pending(&pool, PA) == 1 && pool_pending(&pool) == 1,
+          "A −1 once; the pool counter NOT again (nothing stored)"); OK();
+    CHECK(cmt_bsync_pool_add_block(&pool, PB, blk(1), T0 + 5 * SEC) == CMT_OK &&
+          cmt_bsync_pool_add_block(&pool, PA, blk(1), T0 + 5 * SEC) == CMT_OK,
+          "third and fourth copies accepted as no-ops"); OK();
+    CHECK(peer_pending(&pool, PA) == 1 && peer_pending(&pool, PB) == 1 &&
+          pool_pending(&pool) == 1, "third copy dropped: nothing changes"); OK();
+    CHECK(pool_pending(&pool) >= 0, "pool pending never below zero"); OK();
+    CHECK(g_nerr == 0, "no send_error for any copy"); OK();
+    CHECK(strcmp(cmt_bsync_pool_requester(&pool, 1)->got_block_from, PB) == 0,
+          "the first copy is the one kept (:718-725)"); OK();
+    cmt_bsync_pool_free(&pool);
+    return 0;
+}
+
+/* ══ upstream v0.38.26 pool_test.go cases (pkgA_tests.diff) ═════════ */
+
+/* TestBlockPoolBansPeerWithBaseGreaterThanHeight (v0.38.26
+ * blocksync/pool.go:388-396). Not reachable from the wire here —
+ * ValidateMsg already refuses a StatusResponse with base > height
+ * (msgs.go:47-49, the peer is stopped) — but SetPeerRange is ported with
+ * its own guard, as upstream has both. */
+static int t_bans_base_greater_than_height(void)
+{
+    cmt_bsync_pool_t pool;
+
+    CHECK(pool_new(&pool, 1) == CMT_OK, "init"); OK();
+    CHECK(cmt_bsync_pool_set_peer_range(&pool, PX, 500, 100, T0) == CMT_OK, "bad"); OK();
+    CHECK(cmt_bsync_pool_is_peer_banned(&pool, PX, T0),
+          "peer reporting base > height must be banned"); OK();
+    CHECK(cmt_bsync_pool_peer(&pool, PX) == NULL &&
+          cmt_bsync_pool_max_peer_height(&pool) == 0,
+          "banned peer must not raise maxPeerHeight"); OK();
+
+    /* a KNOWN peer that turns base > height is removed and banned too */
+    CHECK(cmt_bsync_pool_set_peer_range(&pool, PA, 1, 10, T0) == CMT_OK &&
+          cmt_bsync_pool_max_peer_height(&pool) == 10, "A at 10"); OK();
+    CHECK(cmt_bsync_pool_set_peer_range(&pool, PA, 20, 10, T0) == CMT_OK &&
+          cmt_bsync_pool_peer(&pool, PA) == NULL &&
+          cmt_bsync_pool_is_peer_banned(&pool, PA, T0) &&
+          cmt_bsync_pool_max_peer_height(&pool) == 0,
+          "known peer: removed (:391-393), banned (:394)"); OK();
+    cmt_bsync_pool_free(&pool);
+    return 0;
+}
+
+/* TestBlockPoolMaxPeerHeightRefreshesOnPopRequest (v0.38.26
+ * blocksync/pool.go:275-276, :468-482). */
+static int t_max_peer_height_refreshes_on_pop(void)
+{
+    cmt_bsync_pool_t   pool;
+    cmt_bsync_block_t *popped = NULL;
+    int                i;
+
+    CHECK(pool_new(&pool, 10) == CMT_OK, "init at 10"); OK();
+    CHECK(cmt_bsync_pool_set_peer_range(&pool, PA, 1, 20, T0) == CMT_OK, "A 1..20"); OK();
+    CHECK(cmt_bsync_pool_set_peer_range(&pool, PB, 15, 100, T0) == CMT_OK, "B 15..100"); OK();
+    CHECK(cmt_bsync_pool_max_peer_height(&pool) == 20,
+          "B is pruned ahead of pool.height and must not contribute yet"); OK();
+
+    /* requesters for 10.. so PopRequest has something to pop */
+    CHECK(cmt_bsync_pool_start(&pool, T0) == CMT_OK, "start"); OK();
+    CHECK(run(&pool, T0 + 3 * SEC, T0 + 3 * SEC + 20 * MS) == 0, "run"); OK();
+    for (i = 0; i < 4; i++) {
+        CHECK(cmt_bsync_pool_pop_request(&pool, &popped) == CMT_OK, "pop"); OK();
+        cmt_bsync_block_free(popped);
+    }
+    CHECK(cmt_bsync_pool_height(&pool) == 14 &&
+          cmt_bsync_pool_max_peer_height(&pool) == 20, "at 14 B still excluded"); OK();
+    CHECK(cmt_bsync_pool_pop_request(&pool, &popped) == CMT_OK, "pop to 15"); OK();
+    cmt_bsync_block_free(popped);
+    CHECK(cmt_bsync_pool_height(&pool) == 15 &&
+          cmt_bsync_pool_max_peer_height(&pool) == 100,
+          "B must contribute once pool.height reaches its base, without "
+          "re-sending status"); OK();
+    cmt_bsync_pool_free(&pool);
+    return 0;
+}
+
+/* TestBlockPoolHasPendingRequestFrom (v0.38.26 blocksync/pool.go:202-213). */
+static int t_has_pending_request_from(void)
+{
+    cmt_bsync_pool_t   pool;
+    cmt_bsync_block_t *popped = NULL;
+
+    CHECK(pool_new(&pool, 1) == CMT_OK, "init"); OK();
+    CHECK(!cmt_bsync_pool_has_pending_request_from(&pool, PA) &&
+          !cmt_bsync_pool_has_pending_request_from(&pool, PB) &&
+          !cmt_bsync_pool_has_pending_request_from(&pool, PX), "initial state"); OK();
+    CHECK(cmt_bsync_pool_start(&pool, T0) == CMT_OK, "start"); OK();
+    CHECK(cmt_bsync_pool_set_peer_range(&pool, PA, 1, 2, T0) == CMT_OK, "A 1..2"); OK();
+    CHECK(cmt_bsync_pool_set_peer_range(&pool, PB, 1, 2, T0) == CMT_OK, "B 1..2"); OK();
+    CHECK(run(&pool, T0 + 3 * SEC, T0 + 3 * SEC + 10 * MS) == 0, "run"); OK();
+    /* B entered the sorted list last, at the FRONT (:419-422): B is the
+     * first peer of both requesters and A the second (:876-878). */
+    CHECK(strcmp(cmt_bsync_pool_requester(&pool, 1)->peer_id, PB) == 0 &&
+          strcmp(cmt_bsync_pool_requester(&pool, 1)->second_peer_id, PA) == 0 &&
+          strcmp(cmt_bsync_pool_requester(&pool, 2)->peer_id, PB) == 0 &&
+          strcmp(cmt_bsync_pool_requester(&pool, 2)->second_peer_id, PA) == 0,
+          "B first, A second at 1 and 2"); OK();
+    CHECK(cmt_bsync_pool_has_pending_request_from(&pool, PB),
+          "requested peer should be reported as pending"); OK();
+    CHECK(cmt_bsync_pool_has_pending_request_from(&pool, PA),
+          "secondary peer slot should count as pending"); OK();
+    CHECK(!cmt_bsync_pool_has_pending_request_from(&pool, PX),
+          "non-requested peer must not be reported as pending"); OK();
+
+    /* removing both requesters drops the pending state */
+    CHECK(cmt_bsync_pool_pop_request(&pool, &popped) == CMT_OK, "pop 1"); OK();
+    cmt_bsync_block_free(popped);
+    CHECK(cmt_bsync_pool_pop_request(&pool, &popped) == CMT_OK, "pop 2"); OK();
+    cmt_bsync_block_free(popped);
+    CHECK(!cmt_bsync_pool_has_pending_request_from(&pool, PA) &&
+          !cmt_bsync_pool_has_pending_request_from(&pool, PB), "none left"); OK();
+    cmt_bsync_pool_free(&pool);
+    return 0;
+}
+
 typedef struct {
     const char *name;
     int (*fn)(void);
@@ -392,6 +625,11 @@ int main(void)
         { "peerTimeout (onTimeout)",                         t_peer_timeout },
         { "retryTimer",                                      t_retry_timer },
         { "lower height report, IsCaughtUp",                 t_lower_height_and_caught_up },
+        { "R1-2: one peer re-sends one block (BS-10)",       t_duplicate_same_peer },
+        { "R1-2: both peers deliver, third copy (BS-10)",    t_two_peers_both_deliver },
+        { "v0.38.26: base > height is banned",               t_bans_base_greater_than_height },
+        { "v0.38.26: maxPeerHeight refreshed on pop",        t_max_peer_height_refreshes_on_pop },
+        { "v0.38.26: HasPendingRequestFrom",                 t_has_pending_request_from },
     };
     size_t i;
     size_t failed = 0u;

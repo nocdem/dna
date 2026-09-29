@@ -1,8 +1,10 @@
 /**
  * @file shared/dnac/cmt_bsync_pool.c
- * @brief cometbft @709fd12b `blocksync/pool.go` in C — see
- *        cmt_bsync_pool.h for the goroutine → tick statement, the clock
- *        list and the labelled deviations BS-1..BS-4.
+ * @brief cometbft `blocksync/pool.go` in C (pin v0.38.26 since 2026-09-30;
+ *        unmarked line cites are still @709fd12b — see the header's
+ *        "REFERENCE PIN") — see cmt_bsync_pool.h for the goroutine → tick
+ *        statement, the clock list, the labelled deviations BS-1..BS-4 and
+ *        the own fix BS-10 (R1-2).
  *
  * NOTHING HERE READS A CLOCK: every time is the caller's `now_ns`.
  *
@@ -123,11 +125,16 @@ static void peer_incr_pending(const cmt_bsync_pool_t *pool,
     peer->num_pending++;                                           /* :610 */
 }
 
-/* :613-621 decrPending(recvSize) — BS-4 for the two guards. */
+/* :613-621 decrPending(recvSize) — BS-4 for the two guards; BS-10 for the
+ * third: at 0 nothing changes and the timeout is NOT re-armed (the
+ * reference would go to −1 and re-arm it, v0.38.26 pool.go:643-651). */
 static void peer_decr_pending(const cmt_bsync_pool_t *pool,
                               cmt_bsync_peer_t *peer, size_t recv_size,
                               int64_t now_ns)
 {
+    if (peer->num_pending <= 0) {
+        return;                                                    /* BS-10 */
+    }
     peer->num_pending--;                                           /* :614 */
     if (peer->num_pending == 0) {
         peer->timeout_armed = false;                               /* :616 */
@@ -163,21 +170,46 @@ static void send_error(const cmt_bsync_pool_t *pool, const char *peer_id,
 
 /* ══ bpRequester's helpers (:681-834) ═════════════════════════════════ */
 
-/* :682-703 setBlock(). 0 = the peer does not match (false); 1 = a block
- * was already held (true, `b` NOT taken); 2 = stored (true, `b` taken). */
-static int rq_set_block(cmt_bsync_requester_t *r, cmt_bsync_block_t *b,
-                        const char *peer_id)
+/* What rq_set_block did (BS-10 splits the reference's `true`). */
+typedef enum {
+    RQ_SET_NO_MATCH  = 0,  /* :684-687 false — the sender was not asked     */
+    RQ_SET_HELD      = 1,  /* :688-691 true — a block is held; `b` NOT taken */
+    RQ_SET_STORED    = 2,  /* :693-701 true — `b` stored and taken          */
+    RQ_SET_DUPLICATE = 3   /* BS-10 — a held block, and this slot has
+                            * already delivered: `b` NOT taken, no counter  */
+} rq_set_t;
+
+/* :682-703 setBlock() (v0.38.26 pool.go:712-733), with the BS-10 slot
+ * flags. `*out_first` is true when the matching slot delivers for the
+ * FIRST time since its assignment — the only case its peer is
+ * decremented. */
+static rq_set_t rq_set_block(cmt_bsync_requester_t *r, cmt_bsync_block_t *b,
+                             const char *peer_id, bool *out_first)
 {
-    if (!id_eq(r->peer_id, peer_id) && !id_eq(r->second_peer_id, peer_id)) {
-        return 0;                                                  /* :684-687 */
+    bool *delivered;
+
+    *out_first = false;
+    if (id_eq(r->peer_id, peer_id)) {
+        delivered = &r->peer_delivered;
+    } else if (id_eq(r->second_peer_id, peer_id)) {
+        delivered = &r->second_delivered;
+    } else {
+        return RQ_SET_NO_MATCH;                                    /* :684-687 */
     }
-    if (r->block != NULL) {
-        return 1;                                                  /* :688-691 */
+    if (r->block != NULL) {                                        /* :688-691 */
+        if (*delivered) {
+            return RQ_SET_DUPLICATE;                               /* BS-10 */
+        }
+        *delivered = true;
+        *out_first = true;
+        return RQ_SET_HELD;
     }
+    *out_first = !*delivered;
+    *delivered = true;
     r->block = b;                                                  /* :693-694 */
     id_set(r->got_block_from, peer_id);                            /* :695 */
     r->got_block_ch = true;          /* :698-701 — a full channel drops it */
-    return 2;
+    return RQ_SET_STORED;
 }
 
 /* :732-736 didRequestFrom() */
@@ -211,8 +243,10 @@ static bool rq_reset(cmt_bsync_pool_t *pool, cmt_bsync_requester_t *r,
     }
     if (id_eq(r->peer_id, pid)) {                                  /* :759 */
         r->peer_id[0] = '\0';
+        r->peer_delivered = false;                                 /* BS-10 */
     } else {
         r->second_peer_id[0] = '\0';                               /* :762 */
+        r->second_delivered = false;                               /* BS-10 */
     }
     return removed;
 }
@@ -255,13 +289,19 @@ static void sort_peers(cmt_bsync_pool_t *pool)
     }
 }
 
-/* :443-452 updateMaxPeerHeight() */
+/* cometbft@v0.38.26 blocksync/pool.go:467-482 updateMaxPeerHeight() */
 static void update_max_peer_height(cmt_bsync_pool_t *pool)
 {
     int64_t max = 0;
     size_t  i;
 
     for (i = 0; i < pool->n_peers; i++) {
+        if (pool->height > 0 && pool->peers[i]->base > pool->height) {
+            /* v0.38.26 :471-476 — "Blocks a malicious peer from poisoning
+             * maxPeerHeight with an inflated base/height pair no peer can
+             * actually serve, which would stall IsCaughtUp forever." */
+            continue;
+        }
         if (pool->peers[i]->height > max) {
             max = pool->peers[i]->height;
         }
@@ -488,6 +528,7 @@ static bool rq_pick_second_peer_and_send_request(cmt_bsync_pool_t *pool,
     second = pick_incr_available_peer(pool, r->height, r->peer_id, now_ns); /* :815 */
     if (second != NULL) {
         id_set(r->second_peer_id, second->id);                     /* :818 */
+        r->second_delivered = false;                  /* BS-10: a new assignment */
         send_request(pool, r->height, second->id);                 /* :821 */
         return true;
     }
@@ -524,6 +565,7 @@ static void rq_step(cmt_bsync_pool_t *pool, cmt_bsync_requester_t *r,
                 return;
             }
             id_set(r->peer_id, peer->id);                          /* :797-799 */
+            r->peer_delivered = false;                /* BS-10: a new assignment */
             send_request(pool, r->height, peer->id);               /* :801 */
 
             /* :845-848 */
@@ -781,6 +823,25 @@ void cmt_bsync_pool_get_status(const cmt_bsync_pool_t *pool, int64_t *height,
     }
 }
 
+/* cometbft@v0.38.26 blocksync/pool.go:202-213 HasPendingRequestFrom() —
+ * every requester, in height order (the reference's map order does not
+ * matter: the answer is an OR). */
+bool cmt_bsync_pool_has_pending_request_from(const cmt_bsync_pool_t *pool,
+                                             const char *peer_id)
+{
+    size_t i;
+
+    if (pool == NULL || !id_ok(peer_id)) {
+        return false;
+    }
+    for (i = 0; i < pool->n_requesters; i++) {                     /* :207 */
+        if (rq_did_request_from(pool->requesters[i], peer_id)) {   /* :208 */
+            return true;                                           /* :209 */
+        }
+    }
+    return false;                                                  /* :212 */
+}
+
 /* :202-223 IsCaughtUp() */
 bool cmt_bsync_pool_is_caught_up(const cmt_bsync_pool_t *pool, int64_t now_ns)
 {
@@ -858,6 +919,10 @@ int cmt_bsync_pool_pop_request(cmt_bsync_pool_t *pool,
             (pool->n_requesters - 1u) * sizeof(pool->requesters[0]));
     pool->n_requesters--;
     pool->height++;                                                /* :260 */
+    /* cometbft@v0.38.26 blocksync/pool.go:275-276 — "Re-evaluate
+     * maxPeerHeight: peers whose pruned base was just beyond the previous
+     * pool.height may now be able to contribute". */
+    update_max_peer_height(pool);
     /* :262-266 */
     for (i = 0; i < (size_t)CMT_BSYNC_MIN_BLOCKS_FOR_SINGLE_REQUEST &&
                 i < pool->n_requesters; i++) {
@@ -929,7 +994,8 @@ int cmt_bsync_pool_add_block(cmt_bsync_pool_t *pool, const char *peer_id,
     cmt_bsync_requester_t *r;
     int64_t                height;
     size_t                 size;
-    int                    set;
+    rq_set_t               set;
+    bool                   first = false;
     int                    pidx;
 
     if (pool == NULL || b == NULL || !id_ok(peer_id)) {
@@ -964,8 +1030,8 @@ int cmt_bsync_pool_add_block(cmt_bsync_pool_t *pool, const char *peer_id,
         return CMT_REJECT;
     }
 
-    set = rq_set_block(r, b, peer_id);                             /* :338 */
-    if (set == 0) {
+    set = rq_set_block(r, b, peer_id, &first);                     /* :338 */
+    if (set == RQ_SET_NO_MATCH) {
         QGP_LOG_ERROR(LOG_TAG, "requested block #%lld from %s/%s, not %s",
                       (long long)height, r->peer_id, r->second_peer_id,
                       peer_id);                                    /* :339 */
@@ -973,16 +1039,31 @@ int cmt_bsync_pool_add_block(cmt_bsync_pool_t *pool, const char *peer_id,
         cmt_bsync_block_free(b);
         return CMT_REJECT;
     }
-    if (set == 1) {
+    if (set == RQ_SET_DUPLICATE) {
+        /* BS-10: this slot already delivered and a block is held — the
+         * copy changes nothing and blames nobody. */
+        QGP_LOG_DEBUG(LOG_TAG, "dropping a repeated block #%lld from %s",
+                      (long long)height, peer_id);
+        cmt_bsync_block_free(b);
+        return CMT_OK;
+    }
+    if (set == RQ_SET_HELD) {
         /* :690 "getting a block from both peers is not an error" — the
-         * second copy is not kept, and the accounting below still runs. */
+         * second copy is not kept. */
         cmt_bsync_block_free(b);
     }
 
-    pool->num_pending--;                                           /* :344 */
-    pidx = find_peer(pool, peer_id);                               /* :345 */
-    if (pidx >= 0) {
-        peer_decr_pending(pool, pool->peers[pidx], size, now_ns);  /* :347 */
+    /* The reference decrements both counters for every copy (v0.38.26
+     * pool.go:360-364); BS-10: the pool counter only for the stored
+     * copy, the peer once per assignment. */
+    if (set == RQ_SET_STORED) {
+        pool->num_pending--;                                       /* :344 */
+    }
+    if (first) {
+        pidx = find_peer(pool, peer_id);                           /* :345 */
+        if (pidx >= 0) {
+            peer_decr_pending(pool, pool->peers[pidx], size, now_ns); /* :347 */
+        }
     }
     return CMT_OK;                                                 /* :350 */
 }
@@ -1007,6 +1088,18 @@ int cmt_bsync_pool_set_peer_range(cmt_bsync_pool_t *pool, const char *peer_id,
 
     if (pool == NULL || !id_ok(peer_id)) {
         return CMT_FAULT;
+    }
+    /* cometbft@v0.38.26 blocksync/pool.go:388-396 — "A peer whose own
+     * reported base exceeds its own height is structurally impossible and
+     * treated as malicious." */
+    if (base > height) {
+        QGP_LOG_INFO(LOG_TAG, "Peer %s reporting base greater than height "
+                     "(base %lld, height %lld)", peer_id, (long long)base,
+                     (long long)height);                           /* :390 */
+        if (find_peer(pool, peer_id) >= 0) {                       /* :391 */
+            remove_peer_locked(pool, peer_id);                     /* :392 */
+        }
+        return ban_peer_locked(pool, peer_id, now_ns);             /* :394-395 */
     }
     idx = find_peer(pool, peer_id);                                /* :372 */
     if (idx >= 0) {
@@ -1063,9 +1156,7 @@ int cmt_bsync_pool_set_peer_range(cmt_bsync_pool_t *pool, const char *peer_id,
         pool->sorted_peers[0] = peer;
         pool->n_sorted++;
     }
-    if (height > pool->max_peer_height) {                          /* :399 */
-        pool->max_peer_height = height;                            /* :400 */
-    }
+    update_max_peer_height(pool);           /* cometbft@v0.38.26 pool.go:425 */
     return CMT_OK;
 }
 

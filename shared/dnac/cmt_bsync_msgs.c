@@ -404,6 +404,158 @@ fail:
     return rc;
 }
 
+/* ══ SigCount stub (cometbft@v0.38.26 proto/tendermint/blocksync/
+ *    stub.pb.go:561-1102, nosig.go) — see the header ══════════════════ */
+
+static void count_inc(size_t *n)
+{
+    if (*n != SIZE_MAX) {
+        (*n)++;
+    }
+}
+
+/* SigCountCommit / SigCountExtendedCommit .Unmarshal (:855-939,
+ * :940-1024): field 4 is a repeated NoSig, counted and never read. */
+static int stub_sigs(const uint8_t *in, size_t len, size_t *count)
+{
+    size_t off = 0;
+
+    while (off < len) {
+        size_t         pre = off;
+        int32_t        fn;
+        uint32_t       wt;
+        const uint8_t *p;
+        size_t         n;
+
+        if (r_tag(in, len, &off, &fn, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        if (fn == 4) {
+            if (wt != 2u || r_ld(in, len, &off, &p, &n) != CMT_OK) {
+                return CMT_REJECT;                        /* :885, :970 */
+            }
+            count_inc(count);                             /* :914, :999 */
+        } else {
+            off = pre;
+            if (pb_skip(in, len, &off) != CMT_OK) {
+                return CMT_REJECT;
+            }
+        }
+    }
+    return CMT_OK;
+}
+
+/* SigCountBlock.Unmarshal (:769-854): field 4 last_commit, merged. */
+static int stub_block(const uint8_t *in, size_t len, size_t *commit_sigs)
+{
+    size_t off = 0;
+
+    while (off < len) {
+        size_t         pre = off;
+        int32_t        fn;
+        uint32_t       wt;
+        const uint8_t *p;
+        size_t         n;
+
+        if (r_tag(in, len, &off, &fn, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        if (fn == 4) {
+            if (wt != 2u || r_ld(in, len, &off, &p, &n) != CMT_OK) {
+                return CMT_REJECT;                        /* :799 */
+            }
+            if (stub_sigs(p, n, commit_sigs) != CMT_OK) {  /* :827-831 */
+                return CMT_REJECT;
+            }
+        } else {
+            off = pre;
+            if (pb_skip(in, len, &off) != CMT_OK) {
+                return CMT_REJECT;
+            }
+        }
+    }
+    return CMT_OK;
+}
+
+/* SigCountBlockResponse.Unmarshal (:647-768): block 1, ext_commit 2,
+ * both merged. */
+static int stub_block_response(const uint8_t *in, size_t len,
+                               size_t *commit_sigs, size_t *ext_sigs)
+{
+    size_t off = 0;
+
+    while (off < len) {
+        size_t         pre = off;
+        int32_t        fn;
+        uint32_t       wt;
+        const uint8_t *p;
+        size_t         n;
+
+        if (r_tag(in, len, &off, &fn, &wt) != CMT_OK) {
+            return CMT_REJECT;
+        }
+        if (fn == 1 || fn == 2) {
+            if (wt != 2u || r_ld(in, len, &off, &p, &n) != CMT_OK) {
+                return CMT_REJECT;                        /* :677, :713 */
+            }
+            if ((fn == 1 ? stub_block(p, n, commit_sigs)          /* :705 */
+                         : stub_sigs(p, n, ext_sigs)) != CMT_OK) { /* :741 */
+                return CMT_REJECT;
+            }
+        } else {
+            off = pre;
+            if (pb_skip(in, len, &off) != CMT_OK) {
+                return CMT_REJECT;
+            }
+        }
+    }
+    return CMT_OK;
+}
+
+/* SigCountMessage.Unmarshal (:561-646): field 3 block_response, merged
+ * across occurrences (:619); every other field skipped. */
+int cmt_bsync_msg_sig_count(const uint8_t *in, size_t len,
+                            bool *out_is_block_response,
+                            size_t *out_commit_sigs, size_t *out_ext_sigs)
+{
+    size_t off = 0;
+
+    if (out_is_block_response == NULL || out_commit_sigs == NULL ||
+        out_ext_sigs == NULL || (in == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    *out_is_block_response = false;
+    *out_commit_sigs       = 0;
+    *out_ext_sigs          = 0;
+    while (off < len) {
+        size_t         pre = off;
+        int32_t        fn;
+        uint32_t       wt;
+        const uint8_t *p;
+        size_t         n;
+
+        if (r_tag(in, len, &off, &fn, &wt) != CMT_OK) {
+            return CMT_REJECT;                            /* :583-588 */
+        }
+        if (fn == 3) {
+            if (wt != 2u || r_ld(in, len, &off, &p, &n) != CMT_OK) {
+                return CMT_REJECT;                        /* :591-618 */
+            }
+            *out_is_block_response = true;                /* :619-621 */
+            if (stub_block_response(p, n, out_commit_sigs,
+                                    out_ext_sigs) != CMT_OK) {
+                return CMT_REJECT;                        /* :622-624 */
+            }
+        } else {
+            off = pre;
+            if (pb_skip(in, len, &off) != CMT_OK) {
+                return CMT_REJECT;                        /* :626-638 */
+            }
+        }
+    }
+    return CMT_OK;
+}
+
 /* ══ ValidateMsg (msgs.go:21-56) ══════════════════════════════════════ */
 
 int cmt_bsync_validate_msg(const cmt_bsync_msg_t *m, cmt_bsync_msg_err_t *err)

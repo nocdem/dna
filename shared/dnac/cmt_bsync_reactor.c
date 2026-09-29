@@ -1,7 +1,9 @@
 /**
  * @file shared/dnac/cmt_bsync_reactor.c
- * @brief cometbft @709fd12b `blocksync/reactor.go` in C — see the header
- *        for the tick form, the clock sites and deviations BS-5..BS-9.
+ * @brief cometbft `blocksync/reactor.go` in C (pin v0.38.26; unmarked
+ *        line cites are still @709fd12b — header "REFERENCE PIN") — see
+ *        the header for the tick form, the clock sites and deviations
+ *        BS-5..BS-9, BS-11, BS-12.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -9,7 +11,9 @@
 
 #include "dnac/cmt_bsync_reactor.h"
 #include "dnac/cmt_pb_store.h"      /* cmt_pb_block_unmarshal            */
-#include "dnac/cmt_validation.h"    /* cmt_verify_commit_light           */
+#include "dnac/cmt_validation.h"    /* cmt_verify_commit                 */
+#include "dnac/cmt_vote.h"          /* cmt_vote_verify_extension         */
+#include "dnac/cmt_vote_set.h"      /* CMT_MAX_VOTES_COUNT               */
 
 #include "crypto/utils/qgp_log.h"
 
@@ -633,14 +637,113 @@ done:
     return rc;
 }
 
-/* ══ Receive (reactor.go:251-305) ═════════════════════════════════════ */
+/* ══ handlePeerResponse (cometbft@v0.38.26 reactor.go:256-277) ════════ */
+
+/* The BlockResponse case of Receive (v0.38.26 :361-362), in its own
+ * function as upstream moved it. @return CMT_OK; CMT_REJECT when the peer
+ * was stopped; CMT_FAULT on memory or the clock. */
+static int handle_peer_response(cmt_bsync_reactor_t *bcR,
+                                const cmt_bsync_msg_t *m, const char *peer_id)
+{
+    cmt_bsync_block_t *b = NULL;
+    int                which = 0;
+    int64_t            now_ns;
+    int                rc;
+
+    rc = decode_block_response(bcR, m, &b, &which);
+    if (rc == CMT_FAULT) {
+        return CMT_FAULT;
+    }
+    if (rc != CMT_OK) {
+        if (which == 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Peer %s sent us invalid block",
+                          peer_id);                                /* :259 */
+            stop_peer(bcR, peer_id, CMT_BSYNC_STOP_INVALID_BLOCK); /* :260 */
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to convert extended commit "
+                          "from proto (peer %s)", peer_id);        /* :268 */
+            stop_peer(bcR, peer_id, CMT_BSYNC_STOP_INVALID_EXT);   /* :269 */
+        }
+        return CMT_REJECT;
+    }
+    if (reactor_now(bcR, &now_ns) != CMT_OK) {
+        cmt_bsync_block_free(b);
+        return CMT_FAULT;
+    }
+    /* :274 — AddBlock takes the block in every case. */
+    if (cmt_bsync_pool_add_block(&bcR->pool, peer_id, b, now_ns) != CMT_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to add block (peer %s)", peer_id); /* :275 */
+    }
+    return CMT_OK;
+}
+
+/* ══ FilterMsgBytes (cometbft@v0.38.26 reactor.go:279-346) ════════════ */
+
+/* :324-346 validateMaxVotes() */
+static cmt_bsync_filter_err_t validate_max_votes(size_t commit_sigs,
+                                                 size_t ext_sigs)
+{
+    if (commit_sigs > (size_t)CMT_MAX_VOTES_COUNT) {               /* :338 */
+        return CMT_BSYNC_FILTER_TOO_MANY_COMMIT_SIGS;
+    }
+    if (ext_sigs > (size_t)CMT_MAX_VOTES_COUNT) {                  /* :341 */
+        return CMT_BSYNC_FILTER_TOO_MANY_EXT_SIGS;
+    }
+    return CMT_BSYNC_FILTER_OK;                                    /* :345 */
+}
+
+int cmt_bsync_reactor_filter_msg_bytes(const cmt_bsync_reactor_t *bcR,
+                                       const char *peer_id,
+                                       const uint8_t *bytes, size_t len,
+                                       cmt_bsync_filter_err_t *why)
+{
+    cmt_bsync_filter_err_t e = CMT_BSYNC_FILTER_OK;
+    bool                   is_br = false;
+    size_t                 commit_sigs = 0, ext_sigs = 0;
+    int                    rc;
+
+    if (why != NULL) {
+        *why = CMT_BSYNC_FILTER_OK;
+    }
+    if (bcR == NULL || !id_ok(peer_id) || (bytes == NULL && len != 0)) {
+        return CMT_FAULT;
+    }
+    if (len == 0) {
+        return CMT_OK;                                             /* :283-285 */
+    }
+    /* :287-292 — the allocation-free stub view */
+    rc = cmt_bsync_msg_sig_count(bytes, len, &is_br, &commit_sigs, &ext_sigs);
+    if (rc == CMT_FAULT) {
+        return CMT_FAULT;
+    }
+    if (rc != CMT_OK) {
+        e = CMT_BSYNC_FILTER_MALFORMED;                            /* :291 */
+    } else if (!is_br) {
+        return CMT_OK;                                             /* :293-297 */
+    } else if (!bcR->block_sync) {
+        e = CMT_BSYNC_FILTER_NOT_ACTIVE;                           /* :300-302 */
+    } else if (!cmt_bsync_pool_is_running(&bcR->pool)) {
+        e = validate_max_votes(commit_sigs, ext_sigs);             /* :307-309 */
+    } else if (!cmt_bsync_pool_has_pending_request_from(&bcR->pool, peer_id)) {
+        e = CMT_BSYNC_FILTER_UNSOLICITED;                          /* :312-314 */
+    } else {
+        e = validate_max_votes(commit_sigs, ext_sigs);             /* :317-319 */
+    }
+    if (why != NULL) {
+        *why = e;
+    }
+    return e == CMT_BSYNC_FILTER_OK ? CMT_OK : CMT_REJECT;         /* :321 */
+}
+
+/* ══ Receive (reactor.go:251-305; v0.38.26 :349-384) ══════════════════ */
 
 int cmt_bsync_reactor_receive(cmt_bsync_reactor_t *bcR, const char *peer_id,
                               const uint8_t *bytes, size_t len)
 {
-    cmt_bsync_msg_t     m;
-    cmt_bsync_msg_err_t verr = CMT_BSYNC_MSG_ERR_NONE;
-    int                 rc = CMT_OK;
+    cmt_bsync_msg_t        m;
+    cmt_bsync_msg_err_t    verr = CMT_BSYNC_MSG_ERR_NONE;
+    cmt_bsync_filter_err_t ferr = CMT_BSYNC_FILTER_OK;
+    int                    rc = CMT_OK;
 
     if (bcR == NULL || !id_ok(peer_id) || (bytes == NULL && len != 0)) {
         return CMT_FAULT;
@@ -651,6 +754,18 @@ int cmt_bsync_reactor_receive(cmt_bsync_reactor_t *bcR, const char *peer_id,
         QGP_LOG_ERROR(LOG_TAG, "blocksync message of %zu bytes exceeds "
                       "MaxMsgSize; stopping peer %s", len, peer_id);
         stop_peer(bcR, peer_id, CMT_BSYNC_STOP_OVERSIZE);
+        return CMT_REJECT;
+    }
+    /* v0.38.26 p2p/peer.go:408-413 — the filter, before the unmarshal. */
+    rc = cmt_bsync_reactor_filter_msg_bytes(bcR, peer_id, bytes, len, &ferr);
+    if (rc == CMT_FAULT) {
+        return CMT_FAULT;
+    }
+    if (rc != CMT_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "rejected msg on chID 0x40 from %s (filter "
+                      "%d); stopping peer", peer_id, (int)ferr);   /* peer.go:411 */
+        stop_peer(bcR, peer_id, ferr == CMT_BSYNC_FILTER_MALFORMED ?
+                  CMT_BSYNC_STOP_UNDECODABLE : CMT_BSYNC_STOP_FILTER);
         return CMT_REJECT;
     }
     cmt_bsync_msg_init(&m);
@@ -677,40 +792,9 @@ int cmt_bsync_reactor_receive(cmt_bsync_reactor_t *bcR, const char *peer_id,
     case CMT_BSYNC_MSG_BLOCK_REQUEST:                              /* :262 */
         (void)respond_to_peer(bcR, m.height, peer_id);             /* :263 */
         break;
-    case CMT_BSYNC_MSG_BLOCK_RESPONSE: {                           /* :264 */
-        cmt_bsync_block_t *b = NULL;
-        int                which = 0;
-        int64_t            now_ns;
-
-        rc = decode_block_response(bcR, &m, &b, &which);
-        if (rc == CMT_FAULT) {
-            break;
-        }
-        if (rc != CMT_OK) {
-            if (which == 0) {
-                QGP_LOG_ERROR(LOG_TAG, "Peer %s sent us invalid block",
-                              peer_id);                            /* :267 */
-                stop_peer(bcR, peer_id, CMT_BSYNC_STOP_INVALID_BLOCK); /* :268 */
-            } else {
-                QGP_LOG_ERROR(LOG_TAG, "failed to convert extended commit "
-                              "from proto (peer %s)", peer_id);    /* :276-278 */
-                stop_peer(bcR, peer_id, CMT_BSYNC_STOP_INVALID_EXT); /* :279 */
-            }
-            rc = CMT_REJECT;
-            break;
-        }
-        if (reactor_now(bcR, &now_ns) != CMT_OK) {
-            cmt_bsync_block_free(b);
-            rc = CMT_FAULT;
-            break;
-        }
-        /* :284 — AddBlock takes the block in every case. */
-        if (cmt_bsync_pool_add_block(&bcR->pool, peer_id, b, now_ns) != CMT_OK) {
-            QGP_LOG_ERROR(LOG_TAG, "failed to add block (peer %s)", peer_id); /* :285 */
-        }
-        rc = CMT_OK;
+    case CMT_BSYNC_MSG_BLOCK_RESPONSE:              /* v0.38.26 :361-362 */
+        rc = handle_peer_response(bcR, &m, peer_id);
         break;
-    }
     case CMT_BSYNC_MSG_STATUS_REQUEST: {                           /* :287 */
         cmt_bsync_msg_t resp;
 
@@ -771,8 +855,134 @@ static bool local_node_blocks_the_chain(cmt_bsync_reactor_t *bcR)
     return bcR->state.validators.validators[idx].voting_power >= total / 3; /* :313 */
 }
 
-/* :480-555 — one block: MakePartSet, VerifyCommitLight, ValidateBlock,
- * the extended-commit rule, then PopRequest → Save → Apply.
+/* cometbft@v0.38.26 types/validator_set.go:717-757 —
+ * `(vals *ValidatorSet) VerifyCommitExtended(chainID, blockID, height,
+ * extCommit)` over the reactor's own validator set (reactor.go:591
+ * `state.Validators`). BS-12: placed here, built from the types layer's
+ * API. "extCommit must already be validated by ValidateBasic" (:718) —
+ * cmt_extended_commit_from_proto ran it at decode (cmt_block.h:654-656).
+ * @return CMT_OK; CMT_REJECT (the reference's error — a peer's fault);
+ *         CMT_FAULT on memory or a backend failure. */
+static int verify_commit_extended(cmt_bsync_reactor_t *bcR,
+                                  const cmt_block_id_t *block_id,
+                                  int64_t height,
+                                  const cmt_extended_commit_t *ec)
+{
+    cmt_validator_set_t *vals = &bcR->state.validators;
+    cmt_commit_sig_t    *sigs = NULL;
+    cmt_commit_t         commit;
+    cmt_pb_vote_t       *vote = NULL;
+    size_t               n;
+    size_t               i;
+    int                  rc;
+
+    if (ec == NULL) {
+        return CMT_REJECT;                     /* :725-727 "nil extended commit" */
+    }
+    /* :729-733 — 1. ensure vote extensions */
+    rc = cmt_extended_commit_ensure_extensions(ec, true);
+    if (rc != CMT_OK) {
+        return rc;
+    }
+    /* :735-739 — 2. verify regular commit (extCommit.ToCommit()) */
+    n    = ec->extended_signatures_len;
+    sigs = (cmt_commit_sig_t *)calloc(n != 0u ? n : 1u, sizeof(*sigs));
+    if (sigs == NULL) {
+        return CMT_FAULT;
+    }
+    rc = cmt_extended_commit_to_commit(ec, sigs, n != 0u ? n : 1u, &commit);
+    if (rc == CMT_OK) {
+        rc = cmt_verify_commit(bcR->state.chain_id, bcR->state.chain_id_len,
+                               vals, block_id, height, &commit, NULL);
+    }
+    if (rc != CMT_OK) {
+        free(sigs);
+        return rc;
+    }
+    /* :741-754 — 3. check signatures */
+    vote = (cmt_pb_vote_t *)malloc(sizeof(*vote));
+    if (vote == NULL) {
+        free(sigs);
+        return CMT_FAULT;
+    }
+    for (i = 0; i < n && rc == CMT_OK; i++) {
+        cmt_validator_t val;
+        uint8_t        *scratch;
+        size_t          cap;
+
+        /* :743-748 — "should not happen as we verified the commit above" */
+        if (cmt_validator_set_get_by_index(vals, (int32_t)i, &val) != CMT_OK ||
+            !val.pub_key.present) {
+            QGP_LOG_ERROR(LOG_TAG, "unable to find val #%zu out of %zu vals",
+                          i, cmt_validator_set_size(vals));
+            rc = CMT_REJECT;
+            break;
+        }
+        /* :750 extCommit.GetExtendedVote(idx) */
+        rc = cmt_extended_commit_get_extended_vote(ec, (int32_t)i, vote);
+        if (rc != CMT_OK) {
+            break;
+        }
+        /* :751 vote.VerifyExtension(chainID, val.PubKey); the scratch
+         * holds the extension sign bytes (cmt_vote.h: 64 + 11 + the
+         * extension's length, plus the chain ID). */
+        cap = 128u + bcR->state.chain_id_len + vote->extension.len;
+        scratch = (uint8_t *)malloc(cap);
+        if (scratch == NULL) {
+            rc = CMT_FAULT;
+            break;
+        }
+        rc = cmt_vote_verify_extension(bcR->state.chain_id,
+                                       bcR->state.chain_id_len, vote,
+                                       val.pub_key.key, scratch, cap);
+        free(scratch);
+        if (rc == CMT_REJECT) {
+            QGP_LOG_ERROR(LOG_TAG, "invalid vote extension signature (val "
+                          "#%zu)", i);                             /* :752 */
+        }
+    }
+    free(vote);
+    free(sigs);
+    return rc;                                                     /* :756 */
+}
+
+/* cometbft@v0.38.26 blocksync/reactor.go:655-677 handleValidationFailure()
+ * — the peers that delivered `height_a` and `height_b` are removed,
+ * banned, their requests redone, and stopped with ErrReactorValidation;
+ * the second only when it is a different peer (:668-670).
+ * @return CMT_OK; CMT_FAULT when the pool has no requester (a Go panic). */
+static int handle_validation_failure(cmt_bsync_reactor_t *bcR,
+                                     int64_t height_a, int64_t height_b,
+                                     int64_t now_ns)
+{
+    char id_a[CMT_P2P_ID_CAP];
+    char id_b[CMT_P2P_ID_CAP];
+
+    QGP_LOG_ERROR(LOG_TAG, "Error in validation (height %lld)",
+                  (long long)height_a);                            /* :656 */
+    if (cmt_bsync_pool_remove_peer_and_redo_all_peer_requests(
+            &bcR->pool, height_a, now_ns, id_a) != CMT_OK) {       /* :660 */
+        return CMT_FAULT;
+    }
+    if (id_a[0] != '\0') {
+        stop_peer(bcR, id_a, CMT_BSYNC_STOP_VALIDATION);           /* :661-665 */
+    }
+    if (cmt_bsync_pool_remove_peer_and_redo_all_peer_requests(
+            &bcR->pool, height_b, now_ns, id_b) != CMT_OK) {       /* :667 */
+        return CMT_FAULT;
+    }
+    if (strcmp(id_a, id_b) == 0) {
+        return CMT_OK;                                             /* :668-670 */
+    }
+    if (id_b[0] != '\0') {
+        stop_peer(bcR, id_b, CMT_BSYNC_STOP_VALIDATION);           /* :672-676 */
+    }
+    return CMT_OK;
+}
+
+/* :480-555 (v0.38.26 :556-645) — one block: MakePartSet, the extension
+ * presence rule, VerifyCommit, VerifyCommitExtended, ValidateBlock, then
+ * PopRequest → Save → Apply.
  * @return CMT_OK (processed or refused-and-redone); CMT_FAULT (BS-8);
  *         CMT_REJECT when MakePartSet failed — the routine ends (BS-7). */
 static int process_first(cmt_bsync_reactor_t *bcR, cmt_bsync_block_t *first,
@@ -841,31 +1051,8 @@ static int process_first(cmt_bsync_reactor_t *bcR, cmt_bsync_block_t *first,
         return CMT_FAULT;
     }
 
-    /* :496-497 — verify the first block with the SECOND's LastCommit. */
-    if (second->block.last_commit == NULL) {
-        verr = CMT_REJECT;           /* ValidateBasic refuses a nil one */
-    } else {
-        verr = cmt_verify_commit_light(bcR->state.chain_id,
-                                       bcR->state.chain_id_len,
-                                       &bcR->state.validators, &first_id,
-                                       first->block.header.height,
-                                       second->block.last_commit, NULL);
-    }
-    if (verr == CMT_FAULT) {
-        free(scratch);
-        free(parts);
-        return CMT_FAULT;
-    }
-    if (verr == CMT_OK) {                                          /* :499 */
-        verr = bcR->host.validate_block(bcR->host.exec_ctx, &bcR->state,
-                                        &first->block);            /* :501 */
-        if (verr == CMT_FAULT) {
-            free(scratch);
-            free(parts);
-            return CMT_FAULT;
-        }
-    }
-    /* :503-510 — extensions present iff enabled at this height. */
+    /* v0.38.26 :568-578 — vote extension validations FIRST: an extended
+     * commit present iff extensions are enabled at this height. */
     present_ext = first->has_ext_commit;
     if (cmt_abci_params_vote_extensions_enabled(
             bcR->state.consensus_params.abci, first->block.header.height,
@@ -876,50 +1063,57 @@ static int process_first(cmt_bsync_reactor_t *bcR, cmt_bsync_block_t *first,
         free(parts);
         return CMT_FAULT;
     }
-    if (present_ext != ext_enabled) {                              /* :505 */
+    if (present_ext != ext_enabled) {                              /* :571 */
         QGP_LOG_ERROR(LOG_TAG, "non-nil extended commit must be received iff "
                       "vote extensions are enabled for its height (height "
                       "%lld, non-nil extended commit %d, extensions enabled "
                       "%d)", (long long)first->block.header.height,
-                      (int)present_ext, (int)ext_enabled);         /* :506-509 */
-        verr = CMT_REJECT;
+                      (int)present_ext, (int)ext_enabled);         /* :572-575 */
+        verr = CMT_REJECT;                                         /* :576-577 */
     }
-    if (verr == CMT_OK && ext_enabled) {                           /* :511 */
-        verr = cmt_extended_commit_ensure_extensions(&first->ext_commit,
-                                                     true);        /* :513 */
-        if (verr == CMT_FAULT) {
-            free(scratch);
-            free(parts);
-            return CMT_FAULT;
+
+    /* v0.38.26 :580-585 — "Fully verify second.LastCommit to ensure all
+     * signatures are valid." VerifyCommit, not VerifyCommitLight: every
+     * non-absent signature is checked, so the commit saved below as this
+     * block's seen commit (:625) cannot carry a bad one (R1-1). */
+    if (verr == CMT_OK) {
+        if (second->block.last_commit == NULL) {
+            verr = CMT_REJECT;       /* ValidateBasic refuses a nil one */
+        } else {
+            verr = cmt_verify_commit(bcR->state.chain_id,
+                                     bcR->state.chain_id_len,
+                                     &bcR->state.validators, &first_id,
+                                     first->block.header.height,
+                                     second->block.last_commit, NULL); /* :581 */
         }
     }
-    if (verr != CMT_OK) {                                          /* :515 */
-        char    p1[CMT_P2P_ID_CAP];
-        char    p2[CMT_P2P_ID_CAP];
+    /* v0.38.26 :587-595 — "Fully verify extended commit if present". */
+    if (verr == CMT_OK && ext_enabled) {
+        verr = verify_commit_extended(bcR, &first_id,
+                                      first->block.header.height,
+                                      &first->ext_commit);         /* :591 */
+    }
+    /* v0.38.26 :597-613 — validate the block before it is persisted.
+     * BS-11: the full ValidateBlock for EVERY block (the reference uses
+     * ValidateBlockSkipLastCommit once blocksSynced > 0, :605-608). */
+    if (verr == CMT_OK) {
+        verr = bcR->host.validate_block(bcR->host.exec_ctx, &bcR->state,
+                                        &first->block);            /* :610 */
+    }
+    if (verr == CMT_FAULT) {
+        free(scratch);
+        free(parts);
+        return CMT_FAULT;
+    }
+    if (verr != CMT_OK) {                          /* :576, :583, :592, :611 */
         int64_t h1 = first->block.header.height;
         int64_t h2 = second->block.header.height;
 
         free(scratch);
         free(parts);
-        QGP_LOG_ERROR(LOG_TAG, "Error in validation (height %lld)",
-                      (long long)h1);                              /* :516 */
-        /* :517-523 — `first` and `second` are freed inside the calls
-         * (the requesters are reset), so their heights were copied. */
-        if (cmt_bsync_pool_remove_peer_and_redo_all_peer_requests(
-                &bcR->pool, h1, now_ns, p1) != CMT_OK) {
-            return CMT_FAULT;
-        }
-        if (p1[0] != '\0') {
-            stop_peer(bcR, p1, CMT_BSYNC_STOP_VALIDATION);         /* :522 */
-        }
-        if (cmt_bsync_pool_remove_peer_and_redo_all_peer_requests(
-                &bcR->pool, h2, now_ns, p2) != CMT_OK) {           /* :524 */
-            return CMT_FAULT;
-        }
-        if (p2[0] != '\0' && strcmp(p2, p1) != 0) {                /* :526 */
-            stop_peer(bcR, p2, CMT_BSYNC_STOP_VALIDATION);         /* :529 */
-        }
-        return CMT_OK;                                             /* :531 */
+        /* `first` and `second` are freed inside (the requesters are
+         * reset), so only their heights are passed. */
+        return handle_validation_failure(bcR, h1, h2, now_ns);     /* continue FOR_LOOP */
     }
 
     /* :534 PopRequest — `first` now belongs to this function. */

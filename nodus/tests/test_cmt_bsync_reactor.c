@@ -1,5 +1,5 @@
 /**
- * Nodus — cometbft @709fd12b C port, blocksync: the block sync reactor of
+ * Nodus — cometbft C port (pin v0.38.26), blocksync: the block sync reactor of
  * `shared/dnac/cmt_bsync_reactor.c` (blocksync/reactor.go) over an
  * IN-MEMORY switch in this file, with a real chain of signed blocks.
  *
@@ -21,8 +21,9 @@
  *   · SYNC (reactor.go:318-572): node B (genesis state, empty store,
  *     blockSync) connected to node A (NB signed blocks, serving only)
  *     requests after peerConnWait, verifies block h with block h+1's
- *     LastCommit (VerifyCommitLight, :496-497 — REAL ML-DSA-87 signatures
- *     over Commit.VoteSignBytes), saves h with h+1's LastCommit as its
+ *     LastCommit (VerifyCommit, EVERY signature — cometbft@v0.38.26
+ *     reactor.go:580-585 — REAL ML-DSA-87 signatures over
+ *     Commit.VoteSignBytes), saves h with h+1's LastCommit as its
  *     seen commit (:544) BEFORE applying it (:549), and ends with
  *     last_block_height NB−1, the same last BlockID and the same app hash
  *     as the chain's own state at NB−1 — every stored block's hash equal
@@ -30,12 +31,33 @@
  *   · the SWITCH (:382-438): once caught up (pool.go:220) B calls
  *     SwitchToConsensus exactly once, with its OWN state at NB−1 and
  *     skipWAL = true (blocksSynced > 0, :431), and its poolRoutine ends;
- *   · a BAD COMMIT (:515-531): node X serves honest blocks 1..K and a
- *     block K+1 whose LastCommit has a corrupted signature at index 0 (the
- *     largest power, so VerifyCommitLight's early exit cannot pass it by);
- *     B applies 1..K−1, refuses K, stops X with ErrReactorValidation, bans
- *     it, and when an honest node A is connected afterwards finishes at
- *     NB−1 with the honest chain's state — block K included, from A.
+ *   · a BAD COMMIT (v0.38.26 :576-583, :655-677): node X serves honest
+ *     blocks 1..K and a block K+1 whose LastCommit has a corrupted
+ *     signature at index 0 (the largest power); B applies 1..K−1, refuses
+ *     K, stops X with ErrReactorValidation, bans it, and when an honest
+ *     node A is connected afterwards finishes at NB−1 with the honest
+ *     chain's state — block K included, from A, saved with the honest
+ *     K+1's LastCommit;
+ *   · R1-1 — a bad signature AFTER the 2/3 threshold (upstream #5711's
+ *     "invalid signature after 2/3+ threshold"): the same, with the
+ *     corrupted signature at the LAST index (power 10 of 100). The old
+ *     light check (VerifyCommitLight, @709fd12b :496-497) exits at
+ *     40 + 30 > 66 without verifying it and would store K with that commit
+ *     as its seen commit — the commit that later halts the switch to
+ *     consensus; with VerifyCommit X is stopped and K refused. Without the
+ *     change this case fails at "X stopped";
+ *   · FilterMsgBytes (v0.38.26 :279-346, TestFilterMsgBytes): a
+ *     BlockResponse to a reactor built without block sync is NOT_ACTIVE;
+ *     with no requester, or from a peer no requester names, UNSOLICITED;
+ *     from the asked peer it passes; MaxVotesCount commit signatures pass,
+ *     one more (commit or extended) is refused, and so are two halves in
+ *     duplicate fields and an oversized response behind an empty
+ *     BlockRequest field; a BlockRequest and empty bytes pass; Receive
+ *     stops an unsolicited sender with reason FILTER; after the pool stops
+ *     any peer's response passes except an oversized one;
+ *   · a LATE BlockResponse after the switch (upstream
+ *     TestPeerNotDisconnectedOnLateBlockResponseAfterConsensusSwitch,
+ *     #5959): A's real block 1 arriving after B switched does not stop A.
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * COMPILE FLAGS: `CMT_SOFTWARE_VERSION` (every cmt_* target). A DEFAULT
@@ -59,9 +81,23 @@
  *  3. The switch is in-memory and FIFO, with no send-queue limits: a full
  *     queue (TrySend false, :362-363) is not exercised.
  *  4. Vote extensions stay disabled (the default consensus params), so the
- *     ext-commit branches (:503-514, :537-538) are not driven.
+ *     ext-commit branches — the presence rule (v0.38.26 :568-578),
+ *     VerifyCommitExtended (:587-595, BS-12) and the save with the
+ *     extended commit (:618-619) — are NOT driven. Upstream's
+ *     TestCheckExtendedCommit cases ("extra ext commit when disabled",
+ *     "missing ext commit when enabled", "all absent signatures", "invalid
+ *     signature after 2/3+ threshold" on the EXTENDED commit) need a chain
+ *     signed with vote extensions, which this fixture does not build: they
+ *     are NOT ported, and BS-12 is compiled but untested here.
  *  5. `validate_block`'s REJECT branch and the BS-7 MakePartSet failure
- *     are not driven.
+ *     are not driven. The fake `validate_block` accepts everything, so
+ *     BS-11 (the full ValidateBlock on every block) is not observable here.
+ *  6. The filter's requester for "the asked peer" is made by the pool's
+ *     own ticks with no connected peer (the request's TrySend fails and is
+ *     only logged), not written into the requester map as upstream's
+ *     seedRequester does. "ignores other channels" is not a case here: the
+ *     switch hands this reactor only 0x40 bytes.
+ *  7. Cites not marked v0.38.26 name the @709fd12b reactor.go.
  *
  * @file test_cmt_bsync_reactor.c
  */
@@ -73,6 +109,7 @@
 #include "dnac/cmt_genesis.h"
 #include "dnac/cmt_validator_set.h"
 #include "dnac/cmt_vote.h"
+#include "dnac/cmt_vote_set.h"      /* CMT_MAX_VOTES_COUNT */
 #include "dnac/cmt_block.h"
 #include "dnac/cmt_part_set.h"
 
@@ -125,6 +162,12 @@ static uint8_t              g_app_hash_at[NB + 1][64];
 static cmt_block_t          g_bad_block;           /* height KBAD + 1 */
 static cmt_commit_t         g_bad_commit;          /* commit KBAD, sig 0 bad */
 static cmt_commit_sig_t     g_bad_sigs[NVALS];
+/* R1-1: the same block KBAD + 1 whose LastCommit has the signature of the
+ * SMALLEST power (index NVALS − 1, power 10 of 100) corrupted: the light
+ * check stops at 40 + 30 = 70 > 66 and never sees it; the full one does. */
+static cmt_block_t          g_bad_late_block;
+static cmt_commit_t         g_bad_late_commit;
+static cmt_commit_sig_t     g_bad_late_sigs[NVALS];
 
 /* The fake executor's apply (header, "HOW IT CAN LIE" 1). The generator
  * and the syncing node use this SAME function. */
@@ -301,6 +344,13 @@ static int build_chain(void)
             g_bad_commit.signatures = g_bad_sigs;
             g_bad_sigs[0].signature[10] ^= 0x01;
             if (make_block_at(h, &g_bad_commit, &g_bad_block) != CMT_OK) {
+                return 1;
+            }
+            g_bad_late_commit = g_commits[KBAD];
+            memcpy(g_bad_late_sigs, g_csigs[KBAD], sizeof(g_bad_late_sigs));
+            g_bad_late_commit.signatures = g_bad_late_sigs;
+            g_bad_late_sigs[NVALS - 1].signature[10] ^= 0x01;
+            if (make_block_at(h, &g_bad_late_commit, &g_bad_late_block) != CMT_OK) {
                 return 1;
             }
         }
@@ -518,11 +568,11 @@ static int h_switch(void *ctx, const cmt_state_t *st, bool skip_wal)
     return CMT_OK;
 }
 
-/* `top` > 0 makes a serving store over blocks 1..top (X's block KBAD+1
- * is the bad one when `bad`); the store is filled BEFORE the reactor is
+/* `top` > 0 makes a serving store over blocks 1..top (block KBAD+1 is
+ * `bad` when that is not NULL); the store is filled BEFORE the reactor is
  * built, whose :93 check compares it with the state. */
 static int node_init(node_t *n, const char *id, const cmt_state_t *state,
-                     bool block_sync, int64_t top, bool bad)
+                     bool block_sync, int64_t top, cmt_block_t *bad)
 {
     cmt_bsync_host_t   h;
     cmt_bsync_limits_t lim;
@@ -531,7 +581,7 @@ static int node_init(node_t *n, const char *id, const cmt_state_t *state,
     memset(n, 0, sizeof(*n));
     snprintf(n->id, CMT_P2P_ID_CAP, "%s", id);
     for (k = 1; k <= top; k++) {
-        n->serve[k] = (bad && k == KBAD + 1) ? &g_bad_block : &g_blocks[k];
+        n->serve[k] = (bad != NULL && k == KBAD + 1) ? bad : &g_blocks[k];
     }
     n->base = top > 0 ? 1 : 0;
     n->height = top;
@@ -560,7 +610,7 @@ static int node_init(node_t *n, const char *id, const cmt_state_t *state,
 }
 
 /* A serving node over the honest chain (blocks 1..top), or X's. */
-static int serving_node(node_t *n, const char *id, int64_t top, bool bad)
+static int serving_node(node_t *n, const char *id, int64_t top, cmt_block_t *bad)
 {
     cmt_state_storage_t *stor = (cmt_state_storage_t *)calloc(1, sizeof(*stor));
     cmt_state_t          st;
@@ -665,6 +715,16 @@ static int deliver(node_t **nodes, int n)
     return 0;
 }
 
+/* Drop whatever an earlier case left queued: its nodes are about to be
+ * re-initialised (bad_commit_run runs twice over the same statics). */
+static void q_reset(void)
+{
+    while (g_qh < g_qt) {
+        free(g_q[g_qh++].bytes);
+    }
+    g_qh = g_qt = 0;
+}
+
 /* Tick every node and deliver, 1 ms at a time, until `until_ns` or
  * `stop_when` holds. */
 static int pump(node_t **nodes, int n, int64_t until_ns,
@@ -720,7 +780,7 @@ static int t_serving(void)
     size_t         n = 0;
     cmt_bsync_msg_t m;
 
-    CHECK(serving_node(&a, ID_A, NB, false) == 0, "A"); OK();
+    CHECK(serving_node(&a, ID_A, NB, NULL) == 0, "A"); OK();
     memset(&p, 0, sizeof(p));
     snprintf(p.id, CMT_P2P_ID_CAP, "%s", ID_P);
     CHECK(cmt_bsync_reactor_start(&a.r) == CMT_OK, "start A"); OK();
@@ -799,8 +859,8 @@ static int t_sync_and_switch(void)
     const cmt_state_t *st;
     int64_t       h;
 
-    CHECK(serving_node(&a, ID_A, NB, false) == 0, "A"); OK();
-    CHECK(node_init(&b, ID_B, &g_genesis, true, 0, false) == CMT_OK,
+    CHECK(serving_node(&a, ID_A, NB, NULL) == 0, "A"); OK();
+    CHECK(node_init(&b, ID_B, &g_genesis, true, 0, NULL) == CMT_OK,
           "B (blockSync)"); OK();
     CHECK(cmt_bsync_reactor_start(&a.r) == CMT_OK &&
           cmt_bsync_reactor_start(&b.r) == CMT_OK, "start"); OK();
@@ -846,12 +906,44 @@ static int t_sync_and_switch(void)
               g_qt == before + 1, "B still answers after the switch"); OK();
         CHECK(deliver(nodes, 2) == 0, "deliver"); OK();
     }
+
+    /* TestPeerNotDisconnectedOnLateBlockResponseAfterConsensusSwitch
+     * (v0.38.26 reactor_test.go; reactor.go:303-309, #5959): after the
+     * switch A answers one of B's requests late — block 1, a REAL block.
+     * The filter lets it through (pool stopped: only the signature cap),
+     * the pool finds no requester, and A is NOT stopped. */
+    {
+        uint8_t        *blk = (uint8_t *)malloc(1u << 20);
+        uint8_t        *msg = (uint8_t *)malloc((1u << 20) + 16u);
+        size_t          bl = 0, ml = 0;
+        cmt_bsync_msg_t m;
+        int             stops = b.nstops;
+
+        CHECK(blk != NULL && msg != NULL &&
+              cmt_block_marshal(&g_blocks[1], blk, 1u << 20, &bl) == CMT_OK,
+              "marshal block 1"); OK();
+        cmt_bsync_msg_init(&m);
+        m.kind      = CMT_BSYNC_MSG_BLOCK_RESPONSE;
+        m.has_block = true;
+        m.block     = blk;
+        m.block_len = bl;
+        CHECK(cmt_bsync_msg_marshal(&m, msg, (1u << 20) + 16u, &ml) == CMT_OK,
+              "BlockResponse{block 1}"); OK();
+        CHECK(cmt_bsync_reactor_receive(&b.r, ID_A, msg, ml) == CMT_OK &&
+              b.nstops == stops && peer_of(&b, ID_A) != NULL,
+              "a late in-flight BlockResponse does not disconnect A"); OK();
+        free(blk);
+        free(msg);
+        CHECK(deliver(nodes, 2) == 0 && peer_of(&b, ID_A) != NULL, "still linked"); OK();
+    }
     node_free(&a);
     node_free(&b);
     return 0;
 }
 
-static int t_bad_commit(void)
+/* X serves 1..KBAD honest and `bad` at KBAD+1 (whose LastCommit — the
+ * commit FOR block KBAD — carries one corrupted signature). */
+static int bad_commit_run(cmt_block_t *bad)
 {
     static node_t a, b, x;
     node_t       *nodes[3] = { &a, &b, &x };
@@ -859,9 +951,10 @@ static int t_bad_commit(void)
     int           i;
     bool          stopped_x = false;
 
-    CHECK(serving_node(&x, ID_X, KBAD + 1, true) == 0, "X (bad KBAD+1)"); OK();
-    CHECK(serving_node(&a, ID_A, NB, false) == 0, "A"); OK();
-    CHECK(node_init(&b, ID_B, &g_genesis, true, 0, false) == CMT_OK, "B"); OK();
+    q_reset();
+    CHECK(serving_node(&x, ID_X, KBAD + 1, bad) == 0, "X (bad KBAD+1)"); OK();
+    CHECK(serving_node(&a, ID_A, NB, NULL) == 0, "A"); OK();
+    CHECK(node_init(&b, ID_B, &g_genesis, true, 0, NULL) == CMT_OK, "B"); OK();
     CHECK(cmt_bsync_reactor_start(&a.r) == CMT_OK &&
           cmt_bsync_reactor_start(&b.r) == CMT_OK &&
           cmt_bsync_reactor_start(&x.r) == CMT_OK, "start"); OK();
@@ -883,7 +976,7 @@ static int t_bad_commit(void)
             stopped_x = true;
         }
     }
-    CHECK(stopped_x, "X stopped with ErrReactorValidation (:522)"); OK();
+    CHECK(stopped_x, "X stopped with ErrReactorValidation (v0.38.26 :660-665)"); OK();
     CHECK(cmt_bsync_pool_is_peer_banned(cmt_bsync_reactor_pool(&b.r), ID_X, g_now),
           "X banned (pool.go:280)"); OK();
     st = cmt_bsync_reactor_state(&b.r);
@@ -902,9 +995,221 @@ static int t_bad_commit(void)
           "the honest chain's state"); OK();
     CHECK(b.saved[KBAD] && memcmp(b.saved_hash[KBAD], g_ids[KBAD].hash, 64) == 0,
           "KBAD stored — the honest one, from A"); OK();
+    CHECK(b.saved_seen_height[KBAD] == KBAD,
+          "and saved with the honest KBAD+1's LastCommit"); OK();
     node_free(&a);
     node_free(&b);
     node_free(&x);
+    return 0;
+}
+
+/* The corrupted signature is index 0, the largest power: even the light
+ * check (VerifyCommitLight) reaches it before the threshold. */
+static int t_bad_commit(void)
+{
+    return bad_commit_run(&g_bad_block);
+}
+
+/* R1-1 (red-team round 1) / upstream #5711 "invalid signature after 2/3+
+ * threshold": the corrupted signature is the LAST index, the smallest
+ * power. VerifyCommitLight (the @709fd12b reactor.go:496-497) exits at
+ * 40 + 30 = 70 > 66 without verifying it, so B would store block KBAD
+ * with this commit as its seen commit and X would never be stopped —
+ * this case then fails at "X stopped". VerifyCommit (v0.38.26
+ * reactor.go:580-585) checks every non-absent signature and refuses it. */
+static int t_bad_commit_after_threshold(void)
+{
+    return bad_commit_run(&g_bad_late_block);
+}
+
+/* ══ FilterMsgBytes (v0.38.26 reactor.go:279-346; TestFilterMsgBytes) ═ */
+
+static size_t uv_size(uint64_t v)
+{
+    size_t n = 1;
+
+    while (v >= 0x80u) {
+        v >>= 7;
+        n++;
+    }
+    return n;
+}
+
+static size_t put_uv(uint8_t *out, uint64_t v)
+{
+    size_t n = 0;
+
+    while (v >= 0x80u) {
+        out[n++] = (uint8_t)(v | 0x80u);
+        v >>= 7;
+    }
+    out[n++] = (uint8_t)v;
+    return n;
+}
+
+/* upstream's blockResponseBytesWithSigs (test_cmt_bsync_msgs.c has the
+ * same helper; each entry `22 02 08 01`, opaque to the stub). Heap. */
+static uint8_t *br_with_sigs(size_t commit_sigs, size_t ext_sigs, size_t *out_len)
+{
+    size_t   commit_body = commit_sigs * 4u;
+    size_t   ext_body = ext_sigs * 4u;
+    size_t   block_body = 1u + uv_size(commit_body) + commit_body;
+    size_t   br_body = (1u + uv_size(block_body) + block_body) +
+                       (1u + uv_size(ext_body) + ext_body);
+    size_t   total = 1u + uv_size(br_body) + br_body;
+    uint8_t *b = (uint8_t *)malloc(total);
+    size_t   o = 0, i;
+
+    if (b == NULL) {
+        return NULL;
+    }
+    b[o++] = 0x1a;
+    o += put_uv(b + o, br_body);
+    b[o++] = 0x0a;
+    o += put_uv(b + o, block_body);
+    b[o++] = 0x22;
+    o += put_uv(b + o, commit_body);
+    for (i = 0; i < commit_sigs; i++) {
+        b[o++] = 0x22; b[o++] = 0x02; b[o++] = 0x08; b[o++] = 0x01;
+    }
+    b[o++] = 0x12;
+    o += put_uv(b + o, ext_body);
+    for (i = 0; i < ext_sigs; i++) {
+        b[o++] = 0x22; b[o++] = 0x02; b[o++] = 0x08; b[o++] = 0x01;
+    }
+    *out_len = o;
+    return b;
+}
+
+/* One filter call; the expected reason (FILTER_OK = let through). */
+static bool filt(const node_t *n, const char *peer, const uint8_t *b, size_t len,
+                 cmt_bsync_filter_err_t want)
+{
+    cmt_bsync_filter_err_t why = (cmt_bsync_filter_err_t)99;
+    int rc = cmt_bsync_reactor_filter_msg_bytes(&n->r, peer, b, len, &why);
+
+    return why == want &&
+           rc == (want == CMT_BSYNC_FILTER_OK ? CMT_OK : CMT_REJECT);
+}
+
+/* Filter a `br_with_sigs(c, e)` response from `peer`. */
+static bool filt_sigs(const node_t *n, const char *peer, size_t c, size_t e,
+                      cmt_bsync_filter_err_t want)
+{
+    size_t   len = 0;
+    uint8_t *b = br_with_sigs(c, e, &len);
+    bool     ok = b != NULL && filt(n, peer, b, len, want);
+
+    free(b);
+    return ok;
+}
+
+static int t_filter_msg_bytes(void)
+{
+    static node_t a, b;
+    static const uint8_t br_empty[] = { 0x1a, 0x02, 0x0a, 0x00 }; /* BlockResponse{Block{}} */
+    static const uint8_t req[]      = { 0x0a, 0x02, 0x08, 0x01 }; /* BlockRequest{1}       */
+    cmt_bsync_pool_t *pool;
+    uint8_t          *x, *y, *cat;
+    size_t            nx = 0, ny = 0;
+    int64_t           t0;
+    size_t            half = (size_t)CMT_MAX_VOTES_COUNT / 2u + 1u;
+
+    q_reset();
+    /* "rejects BlockResponse when blocksync never ran" — A serves only */
+    CHECK(serving_node(&a, ID_A, NB, NULL) == 0, "A"); OK();
+    CHECK(cmt_bsync_reactor_start(&a.r) == CMT_OK, "start A"); OK();
+    CHECK(filt(&a, ID_P, br_empty, sizeof(br_empty), CMT_BSYNC_FILTER_NOT_ACTIVE),
+          "blocksync not active (:300-302)"); OK();
+
+    CHECK(node_init(&b, ID_B, &g_genesis, true, 0, NULL) == CMT_OK, "B"); OK();
+    CHECK(cmt_bsync_reactor_start(&b.r) == CMT_OK, "start B"); OK();
+    t0 = g_now;
+    pool = cmt_bsync_reactor_pool(&b.r);
+
+    /* "rejects unsolicited BlockResponse with no requesters" */
+    CHECK(filt(&b, ID_P, br_empty, sizeof(br_empty), CMT_BSYNC_FILTER_UNSOLICITED),
+          "no requesters → unsolicited (:312-314)"); OK();
+    /* "allows non-BlockResponse messages", "ignores empty bytes" */
+    CHECK(filt(&b, ID_P, req, sizeof(req), CMT_BSYNC_FILTER_OK),
+          "a BlockRequest passes (:293-297)"); OK();
+    CHECK(filt(&b, ID_P, NULL, 0, CMT_BSYNC_FILTER_OK), "empty passes (:283-285)"); OK();
+    {
+        static const uint8_t junk[] = { 0x0c };
+
+        CHECK(filt(&b, ID_P, junk, sizeof(junk), CMT_BSYNC_FILTER_MALFORMED),
+              "the stub refuses wire type 4 (:290-292)"); OK();
+    }
+
+    /* seed a requester for height 1 asking A (the pool's own ticks, not
+     * a hand-written map entry as upstream's seedRequester) */
+    CHECK(cmt_bsync_pool_set_peer_range(pool, ID_A, 1, 1, t0) == CMT_OK, "A's range"); OK();
+    CHECK(cmt_bsync_pool_tick(pool, t0 + 3 * SEC, NULL) == CMT_OK &&
+          cmt_bsync_pool_tick(pool, t0 + 3 * SEC + 2 * MS, NULL) == CMT_OK, "ticks"); OK();
+    CHECK(cmt_bsync_pool_has_pending_request_from(pool, ID_A), "height 1 asked of A"); OK();
+
+    CHECK(filt(&b, ID_P, br_empty, sizeof(br_empty), CMT_BSYNC_FILTER_UNSOLICITED),
+          "from a peer we did not ask → unsolicited"); OK();
+    CHECK(filt(&b, ID_A, br_empty, sizeof(br_empty), CMT_BSYNC_FILTER_OK),
+          "from the solicited peer → allowed"); OK();
+    CHECK(filt_sigs(&b, ID_A, (size_t)CMT_MAX_VOTES_COUNT, 0, CMT_BSYNC_FILTER_OK),
+          "MaxVotesCount commit signatures allowed"); OK();
+    CHECK(filt_sigs(&b, ID_A, (size_t)CMT_MAX_VOTES_COUNT + 1u, 0,
+                    CMT_BSYNC_FILTER_TOO_MANY_COMMIT_SIGS),
+          "MaxVotesCount + 1 commit signatures refused (:338-340)"); OK();
+    CHECK(filt_sigs(&b, ID_A, 0, (size_t)CMT_MAX_VOTES_COUNT + 1u,
+                    CMT_BSYNC_FILTER_TOO_MANY_EXT_SIGS),
+          "MaxVotesCount + 1 extended signatures refused (:341-343)"); OK();
+
+    /* "splitting signatures across duplicate Block fields" */
+    x = br_with_sigs(half, 0, &nx);
+    y = br_with_sigs(half, 0, &ny);
+    cat = (x && y) ? (uint8_t *)malloc(nx + ny) : NULL;
+    CHECK(cat != NULL, "alloc"); OK();
+    memcpy(cat, x, nx);
+    memcpy(cat + nx, y, ny);
+    CHECK(filt(&b, ID_A, cat, nx + ny, CMT_BSYNC_FILTER_TOO_MANY_COMMIT_SIGS),
+          "two halves in duplicate fields are summed and refused"); OK();
+    free(x);
+    free(y);
+    free(cat);
+    /* "first byte is not BlockResponse proto tag" */
+    x = br_with_sigs((size_t)CMT_MAX_VOTES_COUNT + 1u, 0, &nx);
+    cat = x ? (uint8_t *)malloc(nx + 2u) : NULL;
+    CHECK(cat != NULL, "alloc"); OK();
+    cat[0] = 0x0a;
+    cat[1] = 0x00;
+    memcpy(cat + 2, x, nx);
+    CHECK(filt(&b, ID_A, cat, nx + 2u, CMT_BSYNC_FILTER_TOO_MANY_COMMIT_SIGS),
+          "an empty BlockRequest field first does not hide the response"); OK();
+    free(x);
+    free(cat);
+
+    /* through Receive: the unsolicited peer is STOPPED, reason FILTER
+     * (p2p/peer.go:410-412) */
+    {
+        static node_t xn;                  /* h_stop records only connected peers */
+
+        memset(&xn, 0, sizeof(xn));
+        snprintf(xn.id, CMT_P2P_ID_CAP, "%s", ID_X);
+        b.peers[b.npeers++] = &xn;
+    }
+    CHECK(cmt_bsync_reactor_receive(&b.r, ID_X, br_empty, sizeof(br_empty)) == CMT_REJECT &&
+          b.nstops == 1 && strcmp(b.stop_id[0], ID_X) == 0 &&
+          b.stop_reason[0] == (int)CMT_BSYNC_STOP_FILTER,
+          "Receive stops an unsolicited sender with FILTER"); OK();
+    b.npeers = 0;
+
+    /* "allows late BlockResponse after pool stops for consensus switch",
+     * and "rejects oversized BlockResponse after pool stops" */
+    cmt_bsync_pool_stop(pool);
+    CHECK(filt(&b, ID_P, br_empty, sizeof(br_empty), CMT_BSYNC_FILTER_OK),
+          "pool stopped: any peer's response passes the filter (:307-309)"); OK();
+    CHECK(filt_sigs(&b, ID_P, (size_t)CMT_MAX_VOTES_COUNT + 1u, 0,
+                    CMT_BSYNC_FILTER_TOO_MANY_COMMIT_SIGS),
+          "pool stopped: the signature cap still applies"); OK();
+    node_free(&a);
+    node_free(&b);
     return 0;
 }
 
@@ -919,6 +1224,8 @@ int main(void)
         { "serving + boundary refusals (reactor.go:190-305)",  t_serving },
         { "two-store sync + SwitchToConsensus (:318-572)",     t_sync_and_switch },
         { "bad commit → stop + ban + redo (:515-531)",         t_bad_commit },
+        { "R1-1: bad signature after 2/3 (v0.38.26 :580-585)", t_bad_commit_after_threshold },
+        { "FilterMsgBytes (v0.38.26 :279-346)",                t_filter_msg_bytes },
     };
     size_t i;
     size_t failed = 0u;

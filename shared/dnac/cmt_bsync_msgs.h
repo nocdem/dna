@@ -3,7 +3,12 @@
  * @brief cometbft @709fd12b `blocksync/msgs.go` + `blocksync/errors.go` +
  *        `proto/tendermint/blocksync/types.proto` (its generated
  *        `types.pb.go` codec) ported to C — the five messages of the
- *        block sync channel 0x40.
+ *        block sync channel 0x40 — plus, from cometbft@v0.38.26 (the pin
+ *        since 2026-09-30, decision 2026-09-30-cometbft-pin-v0.38.26.md),
+ *        the SigCount stub of `stub.proto` / `stub.pb.go` / `nosig.go`
+ *        (`cmt_bsync_msg_sig_count`). msgs.go, errors.go and types.pb.go
+ *        are unchanged between the two pins for what is ported here;
+ *        their cites below are the @709fd12b lines.
  *
  * Governing records: docs/plans/decisions/2026-09-29-blocksync-before-testnet.md
  * (operator, "Referanstan gidelim": MaxMsgSize = MaxBlockSizeBytes + 5,
@@ -192,6 +197,51 @@ int cmt_bsync_msg_marshal(const cmt_bsync_msg_t *m, uint8_t *out, size_t cap,
  */
 int cmt_bsync_msg_unmarshal(const uint8_t *in, size_t len,
                             cmt_bsync_msg_t *out);
+
+/**
+ * cometbft@v0.38.26 proto/tendermint/blocksync/stub.proto (the whole file)
+ * + stub.pb.go `SigCountMessage.Unmarshal` (:561-646) and the four member
+ * decoders (:647-1024), with nosig.go's `NoSig` — the stripped view of a
+ * Message that the reactor's FilterMsgBytes (v0.38.26 reactor.go:287-297)
+ * decodes BEFORE the real one, to count signatures without building them.
+ *
+ * SigCountMessage { SigCountBlockResponse block_response = 3; }
+ * SigCountBlockResponse { SigCountBlock block = 1;
+ *                         SigCountExtendedCommit ext_commit = 2; }
+ * SigCountBlock { SigCountCommit last_commit = 4; }
+ * SigCountCommit { repeated NoSig signatures = 4; }
+ * SigCountExtendedCommit { repeated NoSig extended_signatures = 4; }
+ * — the same field numbers our full decoders read: Message.block_response
+ * 3 (cmt_bsync_msgs.c, case 3), Block.last_commit 4 (cmt_pb_store.c,
+ * cmt_pb_block_unmarshal case 4), Commit.signatures 4 and
+ * ExtendedCommit.extended_signatures 4 (cmt_pb.c, case 4 of each).
+ *
+ * ⚠ THE STUB MERGES WHERE THE FULL DECODER DOES NOT. Every nested field is
+ * `if m.X == nil { m.X = &X{} }; m.X.Unmarshal(...)` (stub.pb.go :619,
+ * :705, :741, :827) — a repeated field 3 merges into the SAME
+ * BlockResponse (the full `Message.Unmarshal` REPLACES the Sum, last wins:
+ * cmt_bsync_msg_unmarshal), and `Signatures = append(...)` (:914, :999)
+ * keeps counting across every occurrence. So two Messages concatenated,
+ * each under the cap, count as their SUM — the case upstream's "splitting
+ * signatures across duplicate Block fields" test pins. A signature entry's
+ * own payload is never read (`NoSig.Unmarshal` accepts anything,
+ * nosig.go:14). Only fields 3 / 1 / 2 / 4 / 4 must be wire type 2 (:591,
+ * :677, :713, :799, :885, :970); everything else is skipped (`skipStub`,
+ * :1025-1102 — the same walk as `pb_skip`). No allocation.
+ *
+ * @param out_is_block_response true when a field 3 was seen (the stub's
+ *        `BlockResponse != nil`, reactor.go:293).
+ * @param out_commit_sigs `len(BlockResponse.Block.LastCommit.Signatures)`,
+ *        saturating at SIZE_MAX (reactor.go:330-332).
+ * @param out_ext_sigs `len(BlockResponse.ExtCommit.ExtendedSignatures)`,
+ *        saturating (reactor.go:333-335).
+ * @return CMT_OK; CMT_REJECT for bytes the stub decoder refuses (the
+ *         filter's "malformed blocksync message", reactor.go:290-292);
+ *         CMT_FAULT on NULL.
+ */
+int cmt_bsync_msg_sig_count(const uint8_t *in, size_t len,
+                            bool *out_is_block_response,
+                            size_t *out_commit_sigs, size_t *out_ext_sigs);
 
 /**
  * msgs.go:21-56 — `ValidateMsg(pb)`.

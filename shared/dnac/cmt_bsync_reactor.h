@@ -1,15 +1,44 @@
 /**
  * @file shared/dnac/cmt_bsync_reactor.h
- * @brief cometbft @709fd12b `blocksync/reactor.go` ported to C — the block
- *        sync reactor on channel 0x40: it serves stored blocks to peers,
- *        and while this node is behind it fetches blocks, verifies each
- *        with the next block's LastCommit, stores and applies it, then
- *        hands the resulting state to the consensus reactor.
+ * @brief cometbft `blocksync/reactor.go` (pin v0.38.26, see "REFERENCE
+ *        PIN" below) ported to C — the block sync reactor on channel 0x40:
+ *        it serves stored blocks to peers, and while this node is behind it
+ *        fetches blocks, verifies each with the next block's LastCommit
+ *        (EVERY signature), stores and applies it, then hands the
+ *        resulting state to the consensus reactor.
  *
- * Governing records: docs/plans/decisions/2026-09-29-blocksync-before-testnet.md
+ * ── REFERENCE PIN ──────────────────────────────────────────────────────
+ * cometbft v0.38.26 since 2026-09-30 (decision
+ * docs/plans/decisions/2026-09-30-cometbft-pin-v0.38.26.md). Cites marked
+ * `v0.38.26` are read from that tree; every other `:NNN` still names the
+ * @709fd12b reactor.go (renumbering pending). The v0.38.26 changes ported
+ * here, all security fixes upstream made after the old pin:
+ *   · FULL commit verification of the second block's LastCommit —
+ *     `VerifyCommit`, not `VerifyCommitLight` (v0.38.26 reactor.go:580-585;
+ *     upstream #5711/#5753) — so the commit this node SAVES as the block's
+ *     seen commit (:621-625) has had every non-absent signature checked,
+ *     and the switch to consensus can no longer halt on it (red-team R1-1);
+ *   · `VerifyCommitExtended` of the first block's extended commit when
+ *     vote extensions are enabled (:587-595; #5629) — BS-12 below;
+ *   · the vote-extension presence rule checked FIRST, then the commit, then
+ *     ValidateBlock (:568-613), every refusal through
+ *     `handleValidationFailure` (:655-677);
+ *   · `FilterMsgBytes` + `validateMaxVotes` (:279-346; #5860, #5959): a
+ *     BlockResponse is checked BEFORE it is decoded — refused when this
+ *     node never ran block sync, when no request is outstanding to that
+ *     peer, or when it carries more than MaxVotesCount signatures; after
+ *     the switch to consensus only the signature cap applies, so an honest
+ *     peer answering our last requests late is not disconnected;
+ *   · `handlePeerResponse` (:256-277) as its own function.
+ *
+ * Governing records: docs/plans/decisions/2026-09-30-cometbft-pin-v0.38.26.md,
+ * docs/plans/decisions/2026-09-29-blocksync-before-testnet.md
  * (operator 2026-09-29: follow the reference — MaxMsgSize = MaxBlockSizeBytes
  * + 5, VerifyCommitLight ported, wait_sync = blockSync per node.go:375; D-23's
- * "no-blocksync deviation" is removed by this port),
+ * "no-blocksync deviation" is removed by this port; its later section
+ * "red-team tur 1 sonrası sertleştirme" (operator "a") orders the second
+ * block's LastCommit FULLY verified — which v0.38.26's own VerifyCommit
+ * now does, so block sync no longer calls VerifyCommitLight),
  * docs/plans/2026-09-29-blocksync-port-design.md (D1: blocks are applied
  * through the SAME executor consensus uses; D2: validation reads no clock;
  * G1-G4), docs/plans/decisions/2026-09-25-consensus-clock-scope-correction.md.
@@ -25,13 +54,18 @@
  *     request on a NoBlockResponse. RECEIVE KEEPS SERVING AFTER THE SWITCH
  *     to consensus: the reference never unregisters the channel, so a
  *     node that has switched still answers other nodes' block requests.
+ *   · `FilterMsgBytes` (v0.38.26 :279-322) runs on every message first
+ *     (cmt_bsync_reactor_filter_msg_bytes), after the channel's
+ *     RecvMessageCapacity, exactly where p2p/peer.go:408-413 calls it.
  *   · `poolRoutine` (:318-572), only when `block_sync` (:134-145):
  *     every 10 ms (and immediately again after every processed block,
- *     :480) peek the two lowest blocks, verify the first with the second's
- *     LastCommit (`VerifyCommitLight`, :496-497), validate it (:501), check
- *     the extended-commit rule (:503-514), SAVE then APPLY it (:534-549);
- *     every 10 s ask all peers for their status (:325, :371-373); every
- *     1 s check whether to switch to consensus (:382-438).
+ *     :480) peek the two lowest blocks, check the extended-commit presence
+ *     rule (v0.38.26 :568-578), verify the first with the second's
+ *     LastCommit (`VerifyCommit`, every signature, v0.38.26 :580-585) and,
+ *     when extensions are on, its extended commit (:587-595), validate it
+ *     (:597-613), SAVE then APPLY it (:615-634); every 10 s ask all peers
+ *     for their status (:325, :371-373); every 1 s check whether to switch
+ *     to consensus (:382-438).
  *
  * ── GOROUTINES → A TICK (the cmt_memr / cmt_conr pattern) ──────────────
  * `cmt_bsync_reactor_tick` runs the poolRoutine's select and its helper
@@ -56,8 +90,8 @@
  * :592-602, :792, :850, :892) and once per `cmt_bsync_reactor_receive`
  * that reaches the pool (pool.go:345-348 decrPending's monitor/timer,
  * :387/:464 the ban check). Every read schedules or rate-limits THIS
- * node's own requests. `VerifyCommitLight`, ValidateBlock and the apply
- * never see a time. reactor.go:339/:558/:561 (the blocks/s log rate) is
+ * node's own requests. `VerifyCommit`, `VerifyCommitExtended`,
+ * ValidateBlock, the apply and FilterMsgBytes never see a time. reactor.go:339/:558/:561 (the blocks/s log rate) is
  * log-only and NOT ported — the cmt_cs.c:1920-1921 precedent for
  * state.go:1064.
  *
@@ -94,15 +128,44 @@
  *         way instead of being blamed on the peer.
  *   BS-9  SwitchToBlockSync (:148-164, the state-sync hand-off) and the
  *         metrics (:319-320, :554) are not ported: this port has no state
- *         sync and no metrics (port map YOK).
+ *         sync and no metrics (port map YOK). v0.38.26 turned `blockSync`
+ *         into an `atomic.Bool` (reactor.go:64) because SwitchToBlockSync
+ *         and FilterMsgBytes run on other goroutines; here one event loop
+ *         owns the reactor, so it stays a plain bool.
+ *   BS-11 v0.38.26 validates every block after the first with
+ *         `ValidateBlockSkipLastCommit` (reactor.go:597-608, state/
+ *         execution.go:206-212), skipping the re-verification of
+ *         first.LastCommit because the previous iteration verified it as
+ *         second.LastCommit. This port has no such host row (the executor,
+ *         `nodus_cmt_host_validate_block`, is another package's): EVERY
+ *         block goes through the full `validate_block`, which verifies
+ *         block.LastCommit with VerifyCommit against the state's
+ *         LastValidators and LastBlockID (nodus_witness_cmt_host.c
+ *         :1026-1050). Same verdict on every input the reference accepts,
+ *         and STRICTER where the held block at the new height is not the
+ *         one whose LastCommit was verified (it was redone from another
+ *         peer after the pop): one more commit verification per block.
+ *   BS-12 PLACEMENT: `VerifyCommitExtended` belongs to types
+ *         (v0.38.26 types/validator_set.go:717-757, a ValidatorSet
+ *         method). The types layer (cmt_validator_set.c) has no port of it
+ *         and is outside this package; it is written here as a static
+ *         function from the types layer's existing API
+ *         (`cmt_extended_commit_ensure_extensions`,
+ *         `cmt_extended_commit_to_commit`, `cmt_verify_commit`,
+ *         `cmt_validator_set_get_by_index`,
+ *         `cmt_extended_commit_get_extended_vote`,
+ *         `cmt_vote_verify_extension`), line for line. It moves to
+ *         cmt_validator_set.c when that file's owner ports it.
  *
  * ── DETERMINISM ────────────────────────────────────────────────────────
  * The chain a node ends with is fixed by the commits, not by the path: a
- * block is stored only after `VerifyCommitLight` accepted more than two
- * thirds of the committed set's power for exactly its BlockID (hash + part
- * set header), and it is applied through the executor consensus itself
- * uses (`apply_verified_block`, design D1). Peer choice, timing and order
- * of arrival change only WHEN a node gets there.
+ * block is stored only after `VerifyCommit` accepted more than two thirds
+ * of the committed set's power for exactly its BlockID (hash + part set
+ * header) AND verified every other non-absent signature of that commit,
+ * and it is applied through the executor consensus itself uses
+ * (`apply_verified_block`, design D1). Peer choice, timing and order of
+ * arrival change only WHEN a node gets there; the filter decides only
+ * which PEER is dropped, never which block is accepted.
  *
  * Reference @709fd12b: blocksync/reactor.go 580 lines, node/node.go:366-413,
  * node/setup.go:219-225 & :296, consensus/reactor.go:107-141 & :182-210
@@ -160,8 +223,21 @@ typedef enum {
     CMT_BSYNC_STOP_INVALID_BLOCK   = 4,  /* :265-270 BlockFromProto           */
     CMT_BSYNC_STOP_INVALID_EXT     = 5,  /* :274-281 ExtendedCommitFromProto  */
     CMT_BSYNC_STOP_POOL_ERROR      = 6,  /* :365-369 errorsCh (+ the pool's err) */
-    CMT_BSYNC_STOP_VALIDATION      = 7   /* :516-531 ErrReactorValidation     */
+    CMT_BSYNC_STOP_VALIDATION      = 7,  /* v0.38.26 :655-677 ErrReactorValidation */
+    CMT_BSYNC_STOP_FILTER          = 8   /* v0.38.26 :299-319 FilterMsgBytes
+                                          * (p2p/peer.go:408-413)             */
 } cmt_bsync_stop_reason_t;
+
+/** Why `cmt_bsync_reactor_filter_msg_bytes` refused (the reference's
+ *  error strings, v0.38.26 reactor.go:279-346). */
+typedef enum {
+    CMT_BSYNC_FILTER_OK                  = 0,
+    CMT_BSYNC_FILTER_MALFORMED           = 1, /* :290-292 stub.Unmarshal failed  */
+    CMT_BSYNC_FILTER_NOT_ACTIVE          = 2, /* :300-302 "blocksync not active" */
+    CMT_BSYNC_FILTER_UNSOLICITED         = 3, /* :312-314 no request to the peer */
+    CMT_BSYNC_FILTER_TOO_MANY_COMMIT_SIGS = 4, /* :338-340                        */
+    CMT_BSYNC_FILTER_TOO_MANY_EXT_SIGS   = 5  /* :341-343                        */
+} cmt_bsync_filter_err_t;
 
 /** reactor.go:177-188 — the channel descriptor this port carries. */
 typedef struct {
@@ -334,9 +410,36 @@ void cmt_bsync_reactor_remove_peer(cmt_bsync_reactor_t *bcR,
                                    const char *peer_id);
 
 /**
+ * cometbft@v0.38.26 blocksync/reactor.go:279-322 — `FilterMsgBytes(chID,
+ * src, msgBytes)` for channel 0x40 (the `chID != BlocksyncChannel` branch,
+ * :283, belongs to the switch here: only 0x40 bytes reach this reactor),
+ * with `validateMaxVotes` (:324-346). In the reference's order:
+ *   · empty bytes → accepted (:283-285, "will fail unmarshalling");
+ *   · the SigCount stub does not decode → MALFORMED (:289-292);
+ *   · not a BlockResponse → accepted (:293-297);
+ *   · this reactor was built without block sync → NOT_ACTIVE (:300-302);
+ *   · the pool has stopped (switched to consensus) → ONLY the signature
+ *     cap (:307-309): "the peers are honest and must not be disconnected
+ *     for answering our own requests";
+ *   · no requester names the peer → UNSOLICITED (:312-314);
+ *   · more than MaxVotesCount commit / extended signatures →
+ *     TOO_MANY_COMMIT_SIGS / TOO_MANY_EXT_SIGS (:317-319, :338-343).
+ * Reads no clock; changes nothing.
+ * @param why may be NULL; receives the reason (FILTER_OK on CMT_OK).
+ * @return CMT_OK (let it through); CMT_REJECT (drop it and stop the
+ *         peer, p2p/peer.go:410-412); CMT_FAULT on NULL.
+ */
+int cmt_bsync_reactor_filter_msg_bytes(const cmt_bsync_reactor_t *bcR,
+                                       const char *peer_id,
+                                       const uint8_t *bytes, size_t len,
+                                       cmt_bsync_filter_err_t *why);
+
+/**
  * reactor.go:251-305 — `Receive(e)`, preceded by the channel's
- * RecvMessageCapacity (:184) and the p2p decode (p2p/peer.go:407-422):
- * an oversize, undecodable or invalid message stops the peer.
+ * RecvMessageCapacity (:184), FilterMsgBytes (above; a refusal stops the
+ * peer — MALFORMED as UNDECODABLE, every other as FILTER) and the p2p
+ * decode (p2p/peer.go:407-422): an oversize, filtered, undecodable or
+ * invalid message stops the peer.
  * @return CMT_OK when handled (including every outcome the reference only
  *         logs); CMT_REJECT when the peer was stopped for error;
  *         CMT_FAULT on NULL or a node-local failure.
