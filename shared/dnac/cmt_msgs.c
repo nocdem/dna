@@ -4,7 +4,10 @@
  *        the contract, the substitutions and the taşınmadı list.
  *
  * Every function carries the `// cometbft@709fd12b <file>:<from>-<to>`
- * line of the Go function it ports.
+ * line of the Go function it ports. RE-PIN (decisions/2026-09-30-
+ * cometbft-pin-v0.38.26.md): the three `BitArray.ValidateBasic` calls
+ * v0.38.26 adds to consensus/reactor.go (ASA-2025-003) are ported and
+ * cited `cometbft@v0.38.26 …` at their sites; bare `:NNN` stay 709fd12b.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -416,8 +419,39 @@ int cmt_new_round_step_msg_validate_basic(const cmt_new_round_step_msg_t *m)
     return CMT_OK;                                               /* :1556 */
 }
 
+/**
+ * cometbft@v0.38.26 libs/bits/bit_array.go:507-521 — `(bA *BitArray)
+ * ValidateBasic()` with `numElements`, as the three v0.38.26
+ * ValidateBasic bodies below call it (ASA-2025-003). `has == false` is the
+ * reference's nil array (:508-510). The expected count is the reference's
+ * signed `(bits + 63) / 64` (C and Go both truncate toward zero), not
+ * `cmt_bits_num_elems`, which clamps a negative width to 0.
+ *
+ * The same agreement is already enforced at DECODE by
+ * `bits_from_proto_value` above, so a message that came off the wire
+ * cannot fail here; this is the reference's placement, which also covers
+ * a message built in memory (and is what reactor_test.go's
+ * Elems=nil / Bits=500 rows exercise). LOCATION: the method belongs to
+ * libs/bits (cmt_bits.c), which this package does not own; it is a
+ * file-local helper here.
+ */
+static int msg_bits_validate_basic(bool has, const cmt_bit_array_t *ba)
+{
+    int64_t expected_elems;
+
+    if (!has) {
+        return CMT_OK;                                           /* :508-510 */
+    }
+    expected_elems = ((int64_t)ba->bits + 63) / 64;              /* :512, :520 */
+    if (expected_elems < 0 || (uint64_t)expected_elems != (uint64_t)ba->n_elems) {
+        return CMT_REJECT;   /* :513-514 "mismatch between specified number
+                              *  of bits %d, and number of elements %d" */
+    }
+    return CMT_OK;                                               /* :516 */
+}
+
 /* cometbft@709fd12b consensus/reactor.go:1596-1618 —
- * NewValidBlockMessage.ValidateBasic() */
+ * NewValidBlockMessage.ValidateBasic(); v0.38.26 :1605-1630 */
 int cmt_new_valid_block_msg_validate_basic(const cmt_new_valid_block_msg_t *m)
 {
     int size;
@@ -433,6 +467,10 @@ int cmt_new_valid_block_msg_validate_basic(const cmt_new_valid_block_msg_t *m)
     }
     if (cmt_psh_validate_basic(&m->block_part_set_header) != CMT_OK) { /* :1603 */
         return CMT_REJECT;                     /* "wrong BlockPartSetHeader" */
+    }
+    /* cometbft@v0.38.26 consensus/reactor.go:1615-1617 */
+    if (msg_bits_validate_basic(m->has_block_parts, &m->block_parts) != CMT_OK) {
+        return CMT_REJECT;                     /* "validating BlockParts" */
     }
     /* :1606 — m.BlockParts.Size(): 0 for a nil array (bit_array.go:57-59). */
     size = m->has_block_parts ? cmt_bits_size(&m->block_parts) : 0;
@@ -466,7 +504,7 @@ int cmt_proposal_msg_validate_basic(const cmt_proposal_msg_t *m)
 }
 
 /* cometbft@709fd12b consensus/reactor.go:1653-1667 —
- * ProposalPOLMessage.ValidateBasic() */
+ * ProposalPOLMessage.ValidateBasic(); v0.38.26 :1671-1688 */
 int cmt_proposal_pol_msg_validate_basic(const cmt_proposal_pol_msg_t *m)
 {
     int size;
@@ -479,6 +517,10 @@ int cmt_proposal_pol_msg_validate_basic(const cmt_proposal_pol_msg_t *m)
     }
     if (m->proposal_pol_round < 0) {                             /* :1657 */
         return CMT_REJECT;                    /* "negative ProposalPOLRound" */
+    }
+    /* cometbft@v0.38.26 consensus/reactor.go:1678-1680 */
+    if (msg_bits_validate_basic(m->has_proposal_pol, &m->proposal_pol) != CMT_OK) {
+        return CMT_REJECT;                    /* "validating ProposalPOL" */
     }
     size = m->has_proposal_pol ? cmt_bits_size(&m->proposal_pol) : 0;
     if (size == 0) {                                             /* :1660 */
@@ -583,7 +625,7 @@ int cmt_vote_set_maj23_msg_validate_basic(const cmt_vote_set_maj23_msg_t *m)
 }
 
 /* cometbft@709fd12b consensus/reactor.go:1795-1810 —
- * VoteSetBitsMessage.ValidateBasic() */
+ * VoteSetBitsMessage.ValidateBasic(); v0.38.26 :1816-1834 */
 int cmt_vote_set_bits_msg_validate_basic(const cmt_vote_set_bits_msg_t *m)
 {
     int size;
@@ -604,6 +646,10 @@ int cmt_vote_set_bits_msg_validate_basic(const cmt_vote_set_bits_msg_t *m)
     }
     if (rc != CMT_OK) {
         return CMT_REJECT;                             /* "wrong BlockID" */
+    }
+    /* cometbft@v0.38.26 consensus/reactor.go:1826-1828 */
+    if (msg_bits_validate_basic(m->has_votes, &m->votes) != CMT_OK) {
+        return CMT_REJECT;                             /* "validating Votes" */
     }
     /* :1805 "NOTE: Votes.Size() can be zero if the node does not have any" */
     size = m->has_votes ? cmt_bits_size(&m->votes) : 0;

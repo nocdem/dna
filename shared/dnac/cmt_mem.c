@@ -796,12 +796,13 @@ uint16_t cmt_mem_ids_get_for_peer(const cmt_mem_ids_t *ids, int slot)
                                    : CMT_MEM_UNKNOWN_PEER_ID;      /* :62 */
 }
 
-/* ══ clist_mempool.go:697-801 — the recheck cursor ════════════════════ */
+/* ══ cometbft@v0.38.26 mempool/clist_mempool.go:691-812 — the recheck
+ *    cursor. Every `:NNN` in this section is a v0.38.26 line. ══════════ */
 
-/* :724-726 — done() */
+/* :736-738 — done() */
 static bool recheck_done(const cmt_mem_t *mem)
 {
-    return !mem->recheck.is_rechecking;
+    return mem->recheck.state == CMT_MEM_RECHECK_STATE_IDLE;       /* :737 */
 }
 
 bool cmt_mem_recheck_done(const cmt_mem_t *mem)
@@ -828,94 +829,99 @@ static void recheck_set_end(cmt_mem_t *mem, cmt_clist_elem_t *e)
     cmt_clist_elem_unref(old);
 }
 
-/* :712-720 — init(first, last) */
+/* :724-732 — init(first, last) */
 static int recheck_init(cmt_mem_t *mem, cmt_clist_elem_t *first,
                         cmt_clist_elem_t *last)
 {
     if (!recheck_done(mem)) {
-        /* :714 panic("Having more than one rechecking process at a time
+        /* :726 panic("Having more than one rechecking process at a time
          * is not possible.") — CMT_FAULT: an ordering defect inside
          * this node. */
         return CMT_FAULT;
     }
-    recheck_set_cursor(mem, first);                                /* :716 */
-    recheck_set_end(mem, last);                                    /* :717 */
-    mem->recheck.num_pending_txs = 0;                              /* :718 */
-    mem->recheck.is_rechecking   = true;                           /* :719 */
+    recheck_set_cursor(mem, first);                                /* :728 */
+    recheck_set_end(mem, last);                                    /* :729 */
+    mem->recheck.num_pending_txs = 0;                              /* :730 */
+    mem->recheck.state = CMT_MEM_RECHECK_STATE_ACTIVE;             /* :731 */
     return CMT_OK;
 }
 
-/* :729-733 — setDone() */
+/* :741-744 — setDone() */
 static void recheck_set_done(cmt_mem_t *mem)
 {
-    recheck_set_cursor(mem, NULL);                                 /* :730 */
+    recheck_set_cursor(mem, NULL);                                 /* :742 */
     recheck_set_end(mem, NULL);   /* C-only release; see cmt_mem.h */
-    mem->recheck.recheck_full  = false;                            /* :731 */
-    mem->recheck.is_rechecking = false;                            /* :732 */
+    mem->recheck.state = CMT_MEM_RECHECK_STATE_IDLE;               /* :743 */
 }
 
-/* :736-738 — setNextEntry() */
+/* :747-749 — setNextEntry() */
 static void recheck_set_next_entry(cmt_mem_t *mem)
 {
     recheck_set_cursor(mem, cmt_clist_elem_next(mem->recheck.cursor));
 }
 
-/* :742-756 — tryFinish() */
+/* :753-767 — tryFinish() */
 static bool recheck_try_finish(cmt_mem_t *mem)
 {
-    if (mem->recheck.cursor == mem->recheck.end) {                 /* :743 */
-        recheck_set_done(mem);                                     /* :745 */
+    if (mem->recheck.cursor == mem->recheck.end) {                 /* :754 */
+        recheck_set_done(mem);                                     /* :756 */
     }
-    if (recheck_done(mem)) {                                       /* :747 */
-        /* :749-752 — the doneCh send: nobody waits, nothing to send. */
-        return true;                                               /* :753 */
+    if (recheck_done(mem)) {                                       /* :758 */
+        /* :760-763 — the doneCh send: nobody waits, nothing to send. */
+        return true;                                               /* :764 */
     }
-    return false;                                                  /* :755 */
+    return false;                                                  /* :766 */
 }
 
-/* :765-782 — findNextEntryMatching(tx). A NULL cursor while not done is
- * the reference's nil dereference at :768 → CMT_FAULT; unreachable with
+/* :776-793 — findNextEntryMatching(tx). A NULL cursor while not done is
+ * the reference's nil dereference at :779 → CMT_FAULT; unreachable with
  * the synchronous client, which only ever answers the cursor's own tx. */
 static int recheck_find_next_entry_matching(cmt_mem_t *mem,
                                             const uint8_t *tx, size_t tx_len,
                                             bool *found)
 {
-    *found = false;                                                /* :766 */
-    for (; !recheck_done(mem); recheck_set_next_entry(mem)) {     /* :767 */
+    *found = false;                                                /* :777 */
+    for (; !recheck_done(mem); recheck_set_next_entry(mem)) {     /* :778 */
         const cmt_mem_tx_t *expected;
 
         if (mem->recheck.cursor == NULL) {
             return CMT_FAULT;
         }
         expected = (const cmt_mem_tx_t *)
-                   cmt_clist_elem_value(mem->recheck.cursor);      /* :768 */
+                   cmt_clist_elem_value(mem->recheck.cursor);      /* :779 */
         if (expected != NULL && expected->tx_len == tx_len &&
-            (tx_len == 0 || memcmp(tx, expected->tx, tx_len) == 0)) { /* :769 */
-            *found = true;                                         /* :771 */
-            mem->recheck.num_pending_txs--;                        /* :772 */
-            break;                                                 /* :773 */
+            (tx_len == 0 || memcmp(tx, expected->tx, tx_len) == 0)) { /* :780 */
+            *found = true;                                         /* :782 */
+            mem->recheck.num_pending_txs--;                        /* :783 */
+            break;                                                 /* :784 */
         }
     }
-    if (!recheck_try_finish(mem)) {                                /* :777 */
-        recheck_set_next_entry(mem);                               /* :779 */
+    if (!recheck_try_finish(mem)) {                                /* :788 */
+        recheck_set_next_entry(mem);                               /* :790 */
     }
-    return CMT_OK;                                                 /* :781 */
+    return CMT_OK;                                                 /* :792 */
 }
 
-/* :791-795 — setRecheckFull() */
+/* :804-806 — setRecheckFull() (#5837): `CompareAndSwap(active, full)`.
+ * With one thread the CAS is a compare-then-set with nothing between the
+ * two; it returns true iff the state changed. Single-threaded this gives
+ * the same answers as the 709fd12b Swap form it replaces (a call while
+ * idle changes nothing; a second call while full changes nothing) — the
+ * v0.38.26 fix closes a race between Lock() and setDone() that one event
+ * loop cannot have. */
 static bool recheck_set_recheck_full(cmt_mem_t *mem)
 {
-    bool rechecking   = !recheck_done(mem);                        /* :792 */
-    bool recheck_full = mem->recheck.recheck_full;                 /* :793 Swap */
-
-    mem->recheck.recheck_full = rechecking;
-    return rechecking != recheck_full;                             /* :794 */
+    if (mem->recheck.state != CMT_MEM_RECHECK_STATE_ACTIVE) {      /* :805 */
+        return false;
+    }
+    mem->recheck.state = CMT_MEM_RECHECK_STATE_FULL;               /* :805 */
+    return true;
 }
 
-/* :799-801 — consideredFull() */
+/* :810-812 — consideredFull() */
 static bool recheck_considered_full(const cmt_mem_t *mem)
 {
-    return mem->recheck.recheck_full;
+    return mem->recheck.state == CMT_MEM_RECHECK_STATE_FULL;       /* :811 */
 }
 
 bool cmt_mem_recheck_considered_full(const cmt_mem_t *mem)

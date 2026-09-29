@@ -62,7 +62,10 @@
  *     NEVER READ (D-20 rev 3: the mempool reads no clock).
  *   · `Lock`/`Unlock` (:154-164) keep `setRecheckFull` (:155) and lose
  *     the mutex; `updateMtx.RLock` at :228, :188, :525, :566 is dropped;
- *     the `atomic` fields (:27-31, :701-703) are plain fields.
+ *     the `atomic` fields (:27-31, :701-703; since the v0.38.26 re-pin
+ *     the recheck's `numPendingTxs` and `state`, v0.38.26 :714-715) are
+ *     plain fields, and `setRecheckFull`'s CompareAndSwap (v0.38.26
+ *     :804-806) is a compare-then-set.
  *   · `TxsWaitChan` (:211-213) and `TxsAvailable`'s channel (:32, :506)
  *     are replaced: the reactor polls `cmt_mem_txs_front`, and the
  *     TxsAvailable signal is a CALLBACK the host registers with
@@ -155,6 +158,14 @@
  * D-25 rev 3 (atlas-dec-f8319da0758745dbe615150ed939c34a),
  * INVARIANT (atlas-dec-7495d3372e004b24b4f6cc7bff5caf07).
  *
+ * RE-PIN to cometbft v0.38.26 (decisions/2026-09-30-cometbft-pin-
+ * v0.38.26.md): the one clist_mempool.go change (#5837, the recheck
+ * state enum) is ported; the recheck section (`cmt_mem_recheck_t`,
+ * cmt_mem.c "the recheck cursor") cites v0.38.26 lines, everything else
+ * in this module still cites 709fd12b (identical code, same lines up to
+ * :690). Local copy: /home/nocdem/refs/cometbft-v0.38.26/mempool/
+ * clist_mempool.go 812 lines 87c360cf4ff176893d0925ec7214203ab7f5f9bffd2a0376b343a1996ec5e458.
+ *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
  */
@@ -207,7 +218,7 @@ typedef struct {
     int     cache_size;                          /* :758 */
     bool    keep_invalid_txs_in_cache;           /* :762 */
     int     max_tx_bytes;                        /* :765 */
-    int     max_batch_bytes;                     /* :769 — "XXX: Unused" in the reference too */
+    int     max_batch_bytes;                     /* :769 — "XXX: Unused" for sending, in the reference too; read since v0.38.26 by the receive filter (mempool/reactor.go:145) */
     int     experimental_max_gossip_connections_to_persistent_peers;      /* :782 */
     int     experimental_max_gossip_connections_to_non_persistent_peers;  /* :783 */
 } cmt_mempool_config_t;
@@ -676,21 +687,37 @@ int cmt_mem_ids_reclaim(cmt_mem_ids_t *ids, int slot);
  *  zero value — when the slot holds none (or is out of range / NULL). */
 uint16_t cmt_mem_ids_get_for_peer(const cmt_mem_ids_t *ids, int slot);
 
-/* ══ clist_mempool.go:697-704 — the recheck cursor ════════════════════ */
+/* ══ cometbft@v0.38.26 mempool/clist_mempool.go:691-716 — the recheck
+ *    cursor ═══════════════════════════════════════════════════════════ */
 
 /**
- * `type recheck struct`, minus `doneCh` (:700, header). `cursor` and
+ * cometbft@v0.38.26 clist_mempool.go:693-703 — `recheckStateEnum` (#5837).
+ * Valid transitions (:695-698): idle→active (init), active→full
+ * (setRecheckFull), active→idle and full→idle (setDone); full→active is
+ * not a transition — once a block arrives during rechecking the state
+ * stays full until rechecking completes.
+ */
+typedef enum {
+    CMT_MEM_RECHECK_STATE_IDLE   = 0,    /* :700 not rechecking */
+    CMT_MEM_RECHECK_STATE_ACTIVE = 1,    /* :701 rechecking in progress */
+    CMT_MEM_RECHECK_STATE_FULL   = 2     /* :702 a block arrived while rechecking */
+} cmt_mem_recheck_state_t;
+
+/**
+ * `type recheck struct` (v0.38.26 :710-716), minus `doneCh` (:713,
+ * header). The two `atomic.Bool`s of 709fd12b (:702-703 there,
+ * `isRechecking`, `recheckFull`) are ONE state (:715) since v0.38.26;
+ * `atomic` is a plain field here (one thread, header). `cursor` and
  * `end` hold cursor references on their elements (cmt_clist.h) while
  * rechecking; `set_done` releases both and clears `end` as well as
- * `cursor` — the reference leaves `end` stale (:730 clears only the
+ * `cursor` — the reference leaves `end` stale (:742 clears only the
  * cursor), which is unobservable through the public surface.
  */
 typedef struct {
-    cmt_clist_elem_t *cursor;            /* :698 */
-    cmt_clist_elem_t *end;               /* :699 */
-    int32_t           num_pending_txs;   /* :701 */
-    bool              is_rechecking;     /* :702 */
-    bool              recheck_full;      /* :703 */
+    cmt_clist_elem_t       *cursor;            /* :711 */
+    cmt_clist_elem_t       *end;               /* :712 */
+    int32_t                 num_pending_txs;   /* :714 */
+    cmt_mem_recheck_state_t state;             /* :715 */
 } cmt_mem_recheck_t;
 
 /* ══ clist_mempool.go:26-58 — CListMempool ════════════════════════════ */
@@ -905,11 +932,13 @@ int cmt_mem_update(cmt_mem_t *mem, int64_t height,
                    const cmt_mem_pre_check_t *pre_check,
                    const cmt_mem_post_check_t *post_check);
 
-/** clist_mempool.go:724-726 — `(rc *recheck) done()`: no recheck in
- *  progress. Exposed because clist_mempool_test.go asserts it. */
+/** cometbft@v0.38.26 clist_mempool.go:736-738 — `(rc *recheck) done()`:
+ *  no recheck in progress (state idle). Exposed because
+ *  clist_mempool_test.go asserts it. */
 bool cmt_mem_recheck_done(const cmt_mem_t *mem);
 
-/** clist_mempool.go:799-801 — `consideredFull()`. */
+/** cometbft@v0.38.26 clist_mempool.go:810-812 — `consideredFull()`:
+ *  state full. */
 bool cmt_mem_recheck_considered_full(const cmt_mem_t *mem);
 
 #ifdef __cplusplus

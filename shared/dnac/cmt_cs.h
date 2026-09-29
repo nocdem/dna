@@ -1303,10 +1303,11 @@ int cmt_cs_sign_add_vote(cmt_cs_t *cs, int32_t msg_type,
  *  `updatePrivValidatorPubKey`. */
 int cmt_cs_update_priv_validator_pub_key(cmt_cs_t *cs);
 
-/** cometbft@709fd12b consensus/state.go:2493-2515 —
- *  `checkDoubleSigningRisk`.
+/** cometbft@v0.38.26 consensus/state.go:2486-2508 —
+ *  `checkDoubleSigningRisk` (#5668: checks exactly
+ *  `min(double_sign_check_height, height-1)` heights below `height`).
  *  @return CMT_OK; CMT_REJECT for the reference's
- *          ErrSignatureFoundInPastBlocks (:2507). */
+ *          ErrSignatureFoundInPastBlocks (:2500). */
 int cmt_cs_check_double_signing_risk(cmt_cs_t *cs, int64_t height);
 
 /** cometbft@709fd12b consensus/state.go:2600-2617 — `CompareHRS()`.

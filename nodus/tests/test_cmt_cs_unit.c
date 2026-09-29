@@ -67,7 +67,13 @@
  *   · (W1.7) a refusal out of the node's OWN validator set at :1073-1074
  *     is CMT_FAULT and not CMT_REJECT — every one of them is a Go panic
  *     and the set is node-local state (R3-AUD-16);
- *   · `CompareHRS` (:2600-2617) orders by height, then round, then step;
+ *   · (v0.38.26 re-pin) `checkDoubleSigningRisk` (cometbft@v0.38.26
+ *     state.go:2486-2508, #5668) loads exactly min(depth, height-1) seen
+ *     commits below the height and refuses on this node's own COMMIT
+ *     signature — the five rows of v0.38.26 state_test.go
+ *     `TestDoubleSigning`. The one scenario that sets
+ *     `has_priv_validator`; it calls the check directly and signs
+ *     nothing, so HOW IT CAN LIE (1) still holds for everything else;
  *   · each of the SEVEN `enter*` entry guards drops what the reference
  *     drops and lets through what the reference lets through, and each is
  *     exercised on the side where a copy-paste between them would be
@@ -1600,6 +1606,153 @@ static int t_vote_time(void)
     return 0;
 }
 
+/* ══ 8b. checkDoubleSigningRisk — cometbft@v0.38.26 state.go:2486-2508 ═
+ *
+ * PORTED FROM cometbft@v0.38.26 consensus/state_test.go `TestDoubleSigning`
+ * (#5668), all five rows. The reference's mock BlockStore
+ * (`mockBS.On("LoadSeenCommit", h)` + AssertExpectations /
+ * AssertNotCalled) is the recording `bs_load_seen_commit` row below: it
+ * logs every height asked for, and each row asserts that log EXACTLY —
+ * which heights, in which order, and none beyond.
+ *
+ * WHAT IT PROVES: with `double_sign_check_height` = D, the check at height
+ * H loads exactly min(D, H-1) seen commits, H-1 downwards, never height
+ * 0, and refuses (ErrSignatureFoundInPastBlocks → CMT_REJECT) when one of
+ * them carries a COMMIT signature from this node's own address; D = 0
+ * loads nothing.
+ *
+ * RED before the port (709fd12b clamped to H and looped `i < D`):
+ * "depth 1" loaded nothing and returned OK where CMT_REJECT is expected;
+ * "depth 2 finds height 8" loaded only 9 and returned OK; "depth 2, no
+ * signature" loaded only 9 where 9 and 8 are expected.
+ *
+ * HOW IT CAN LIE: the node's key is set on `cs` directly (no signer is
+ * wired, as everywhere in this file); that `cmt_cs_start` calls the check
+ * at the right height (cmt_cs.c, state.go:393 in 709fd12b numbering) is
+ * not exercised here.
+ */
+
+#define DS_LOG_MAX 16
+
+static int64_t          g_ds_log[DS_LOG_MAX];
+static size_t           g_ds_log_n;
+static int64_t          g_ds_have[2];      /* heights that have a commit  */
+static bool             g_ds_local[2];     /* …signed by this node?       */
+static size_t           g_ds_have_n;
+static uint8_t          g_ds_addr[CMT_ADDRESS_SIZE];
+static cmt_commit_sig_t g_ds_sig;
+
+static int h_ds_seen_commit(void *c, int64_t h, cmt_commit_t *o, bool *f)
+{
+    size_t k;
+
+    (void)c;
+    *f = false;
+    if (g_ds_log_n < DS_LOG_MAX) {
+        g_ds_log[g_ds_log_n] = h;
+    }
+    g_ds_log_n++;
+    for (k = 0; k < g_ds_have_n; k++) {
+        if (g_ds_have[k] != h) {
+            continue;
+        }
+        /* state_test.go `makeCommitWithValidator`: one COMMIT signature,
+         * by the local address or by that address with its last byte
+         * flipped (`otherAddr[len-1] ^= 0x01`). */
+        memset(&g_ds_sig, 0, sizeof(g_ds_sig));
+        g_ds_sig.block_id_flag = (int32_t)CMT_BLOCK_ID_FLAG_COMMIT;
+        memcpy(g_ds_sig.validator_address, g_ds_addr, sizeof(g_ds_addr));
+        g_ds_sig.validator_address_len = sizeof(g_ds_addr);
+        if (!g_ds_local[k]) {
+            g_ds_sig.validator_address[sizeof(g_ds_addr) - 1u] ^= 0x01u;
+        }
+        o->height         = h;
+        o->signatures     = &g_ds_sig;
+        o->signatures_cap = 1u;
+        o->signatures_len = 1u;
+        *f = true;
+        return CMT_OK;
+    }
+    return CMT_OK;
+}
+
+static int t_double_signing(void)
+{
+    static const struct {
+        const char *name;
+        int64_t     depth;         /* double_sign_check_height */
+        int64_t     height;
+        size_t      have_n;
+        int64_t     have[2];
+        bool        local[2];
+        int         want_rc;
+        size_t      want_log_n;
+        int64_t     want_log[2];
+    } rows[] = {
+        { "height-one-checks-one-previous-block", 1, 10,
+          1, { 9, 0 }, { true, false },  CMT_REJECT, 1, { 9, 0 } },
+        { "height-zero-disabled",                 0, 10,
+          0, { 0, 0 }, { false, false }, CMT_OK,     0, { 0, 0 } },
+        { "height-two-checks-two-blocks",         2, 10,
+          2, { 9, 8 }, { false, true },  CMT_REJECT, 2, { 9, 8 } },
+        { "height-two-no-signature-found",        2, 10,
+          2, { 9, 8 }, { false, false }, CMT_OK,     2, { 9, 8 } },
+        { "small-chain-height",                  10,  1,
+          0, { 0, 0 }, { false, false }, CMT_OK,     0, { 0, 0 } }
+    };
+    size_t r;
+
+    for (r = 0; r < sizeof(rows) / sizeof(rows[0]); r++) {
+        size_t k;
+        int    rc;
+
+        CHECK(fresh_cs() == 0, "construct"); OK();
+        /* newStateForDoubleSignTest: a private validator and its key. */
+        g_cs->has_priv_validator = true;
+        memset(&g_cs->priv_validator_pub_key, 0,
+               sizeof(g_cs->priv_validator_pub_key));
+        g_cs->priv_validator_pub_key.present = true;
+        memcpy(g_cs->priv_validator_pub_key.key, g_pk[0],
+               QGP_DSA87_PUBLICKEYBYTES);
+        g_cs->priv_validator_pub_key_present = true;
+        CHECK(cmt_pubkey_address(g_pk[0], g_ds_addr) == CMT_OK,
+              "the node's address"); OK();
+        g_cs->host.bs_load_seen_commit = h_ds_seen_commit;
+        g_config.double_sign_check_height = rows[r].depth;
+
+        g_ds_log_n  = 0;
+        g_ds_have_n = rows[r].have_n;
+        for (k = 0; k < rows[r].have_n; k++) {
+            g_ds_have[k]  = rows[r].have[k];
+            g_ds_local[k] = rows[r].local[k];
+        }
+
+        rc = cmt_cs_check_double_signing_risk(g_cs, rows[r].height);
+        if (rc != rows[r].want_rc) {
+            fprintf(stderr, "row %s: rc %d, want %d\n", rows[r].name, rc,
+                    rows[r].want_rc);
+        }
+        CHECK(rc == rows[r].want_rc, rows[r].name); OK();
+        if (g_ds_log_n != rows[r].want_log_n) {
+            fprintf(stderr, "row %s: %zu LoadSeenCommit calls, want %zu\n",
+                    rows[r].name, g_ds_log_n, rows[r].want_log_n);
+        }
+        CHECK(g_ds_log_n == rows[r].want_log_n,
+              "LoadSeenCommit called for exactly the expected heights");
+        OK();
+        for (k = 0; k < rows[r].want_log_n; k++) {
+            CHECK(g_ds_log[k] == rows[r].want_log[k],
+                  "…in order, height-1 downwards"); OK();
+        }
+
+        g_config.double_sign_check_height = 0;
+        g_cs->has_priv_validator            = false;
+        g_cs->priv_validator_pub_key_present = false;
+        cmt_cs_free(g_cs);
+    }
+    return 0;
+}
+
 /* ══ 9. the END_HEIGHT rule — replay.go:100-137 ═══════════════════════ */
 
 static int t_replay_end_height_rule(void)
@@ -1797,6 +1950,7 @@ int main(void)
     if (rc == 0 && t_part_set_slots() != 0)          { rc = 1; }
     if (rc == 0 && t_proposer_wiring() != 0)         { rc = 1; }
     if (rc == 0 && t_vote_time() != 0)               { rc = 1; }
+    if (rc == 0 && t_double_signing() != 0)          { rc = 1; }
     if (rc == 0 && t_replay_end_height_rule() != 0)  { rc = 1; }
     if (rc == 0 && t_replay_validate_basic_gate() != 0) { rc = 1; }
 

@@ -1760,7 +1760,12 @@ int cmt_cs_handle_msg(cmt_cs_t *cs, const cmt_msg_info_t *mi)
                 return CMT_FAULT;                              /* :909-911 */
             }
         }
-        /* :912-914 — statsMsgQueue feeds the reactor's statistics only. */
+        /* :912-914 — statsMsgQueue feeds the reactor's statistics only.
+         * cometbft@v0.38.26 consensus/state.go:903-906 no longer sends
+         * here; :943-947 makes ONE send after the switch, with cs.mtx
+         * released around it (#5813: a full queue blocked GetRoundState).
+         * NOT APPLICABLE here: statsMsgQueue is not ported (cmt_conr.h
+         * "peerStatsRoutine"), and one thread holds no mutex to release. */
         if (err != CMT_OK && mi->msg.u.block_part.round != cs->rs.round) {
             /* :916-924 — a block part from a round we have left is not an
              * error at all. */
@@ -1782,7 +1787,8 @@ int cmt_cs_handle_msg(cmt_cs_t *cs, const cmt_msg_info_t *mi)
         if (err == CMT_FAULT) {
             return CMT_FAULT;                                      /* :929 */
         }
-        /* :930-932 — statsMsgQueue, not ported. */
+        /* :930-932 — statsMsgQueue, not ported (v0.38.26 moved the send
+         * to state.go:943-947 — see the BlockPart case). */
         break;
 
     default:                                                       /* :949 */
@@ -3720,7 +3726,9 @@ static int cs_add_vote_check_extension(cmt_cs_t *cs, const cmt_vote_t *vote,
     if (!ext_enabled) {                                          /* :2216 */
         /* :2223-2225 — extensions are off, so a vote carrying one is
          * malformed. PEER-REACHABLE → CMT_REJECT (the reference returns
-         * an error here, it does not panic). */
+         * an error here, it does not panic). cometbft@v0.38.26
+         * consensus/state.go:2211-2219 folds the test into the `else if`
+         * — the same rule; this early return already has that shape. */
         if (vote->extension.len > 0u || vote->extension_signature_len > 0u) {
             return CMT_REJECT;
         }
@@ -4303,8 +4311,15 @@ int cmt_cs_update_priv_validator_pub_key(cmt_cs_t *cs)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/state.go:2493-2515 —
- * checkDoubleSigningRisk() */
+/* cometbft@v0.38.26 consensus/state.go:2486-2508 —
+ * checkDoubleSigningRisk() (#5668). The 709fd12b body (:2493-2515)
+ * clamped the depth to `height` and looped `i < depth`, so it checked
+ * one height FEWER than `double_sign_check_height` asked for (a depth of
+ * 1 checked nothing). v0.38.26 clamps to `height - 1` and loops
+ * `i <= depth`: exactly `depth` heights, `height-1` down to
+ * `height-depth`, and never height 0 — at height 1 nothing is loaded.
+ * Node-local startup check (cmt_cs_start); no block, vote or state reads
+ * it. Every line below cites the v0.38.26 numbering. */
 int cmt_cs_check_double_signing_risk(cmt_cs_t *cs, int64_t height)
 {
     cmt_commit_t *last_commit;
@@ -4318,52 +4333,52 @@ int cmt_cs_check_double_signing_risk(cmt_cs_t *cs, int64_t height)
     }
     if (!(cs->has_priv_validator && cs->priv_validator_pub_key_present &&
           cs->config->double_sign_check_height > 0 && height > 0)) {
-        return CMT_OK;                                           /* :2494 */
+        return CMT_OK;                                           /* :2487 */
     }
-    rc = cs_priv_validator_address(cs, val_addr);                /* :2495 */
+    rc = cs_priv_validator_address(cs, val_addr);                /* :2488 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
-    check_height = cs->config->double_sign_check_height;         /* :2496 */
-    if (check_height > height) {                                 /* :2497 */
-        check_height = height;                                   /* :2498 */
+    check_height = cs->config->double_sign_check_height;         /* :2489 */
+    if (check_height >= height) {                                /* :2490 */
+        check_height = height - 1;                               /* :2491 */
     }
 
     last_commit = (cmt_commit_t *)calloc(1u, sizeof(*last_commit));
     if (last_commit == NULL) {
         return CMT_FAULT;
     }
-    for (i = 1; i < check_height; i++) {                         /* :2501 */
+    for (i = 1; i <= check_height; i++) {                        /* :2494 */
         bool   found = false;
         size_t s;
 
         memset(last_commit, 0, sizeof(*last_commit));
         rc = cs->host.bs_load_seen_commit(cs->host_ctx, height - i,
-                                          last_commit, &found);  /* :2502 */
+                                          last_commit, &found);  /* :2495 */
         if (rc != CMT_OK) {
             free(last_commit);
             return CMT_FAULT;
         }
-        if (!found) {                                            /* :2503 */
+        if (!found) {                                            /* :2496 */
             continue;
         }
-        for (s = 0u; s < last_commit->signatures_len; s++) {     /* :2504 */
+        for (s = 0u; s < last_commit->signatures_len; s++) {     /* :2497 */
             const cmt_commit_sig_t *sig = &last_commit->signatures[s];
 
             if (sig->block_id_flag == CMT_BLOCK_ID_FLAG_COMMIT &&
                 sig->validator_address_len == sizeof(val_addr) &&
                 memcmp(sig->validator_address, val_addr,
-                       sizeof(val_addr)) == 0) {                 /* :2505 */
+                       sizeof(val_addr)) == 0) {                 /* :2498 */
                 QGP_LOG_ERROR(LOG_TAG,
                               "found signature from the same key at "
-                              "height %lld", (long long)(height - i));
+                              "height %lld", (long long)(height - i)); /* :2499 */
                 free(last_commit);
-                return CMT_REJECT;      /* :2507 ErrSignatureFoundInPastBlocks */
+                return CMT_REJECT;      /* :2500 ErrSignatureFoundInPastBlocks */
             }
         }
     }
     free(last_commit);
-    return CMT_OK;                                               /* :2514 */
+    return CMT_OK;                                               /* :2507 */
 }
 
 /* cometbft@709fd12b consensus/state.go:2600-2617 — CompareHRS(), a free

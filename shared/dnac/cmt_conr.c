@@ -2,7 +2,9 @@
  * @file shared/dnac/cmt_conr.c
  * @brief cometbft @709fd12b `consensus/reactor.go` ported to C. See
  *        cmt_conr.h for the module contract, the threads → ticks
- *        substitution and the deviations R3-A-1/2/3.
+ *        substitution and the deviations R3-A-1/2/3. The v0.38.26 hunks
+ *        are cited in full (`cometbft@v0.38.26 …` / `v0.38.26 :NNN`);
+ *        a bare `:NNN` is a 709fd12b line (cmt_conr.h "RE-PIN").
  *
  * Every function names the reference range it ports. Every dropped lock,
  * every `time.Sleep` turned into a deadline and every `false` from a send
@@ -101,6 +103,35 @@ static void conr_sleep(cmt_conr_peer_slot_t *slot, cmt_conr_routine_t routine,
     }
     slot->not_before_ns[routine] = deadline;
     slot->asleep[routine]        = true;
+}
+
+/**
+ * cometbft@v0.38.26 types/proposal.go:82-96 — `(p *Proposal)
+ * ValidateBlockSize(maxBlockSizeBytes)`, reached through
+ * consensus/reactor.go:1650-1654 (`ProposalMessage.ValidateBlockSize`).
+ * LABELLED DEVIATION — LOCATION ONLY: the method belongs to types/
+ * (cmt_proposal.c), which this re-pin package does not own; the body is
+ * the reference's line for line. The same bound is applied a second time
+ * by the state machine at state.go:1925-1932 (cmt_cs.c,
+ * "ErrProposalTooManyParts"), exactly as in the reference.
+ * @return CMT_OK, or CMT_REJECT for "proposal has too many parts".
+ */
+static int conr_proposal_validate_block_size(const cmt_proposal_t *p,
+                                             int64_t max_block_size_bytes)
+{
+    int64_t total_parts;
+    int64_t max_parts;
+
+    if (max_block_size_bytes == -1) {                            /* :87 */
+        max_block_size_bytes = (int64_t)CMT_MAX_BLOCK_SIZE_BYTES; /* :88 */
+    }
+    total_parts = (int64_t)p->block_id.part_set_header.total;    /* :90 */
+    max_parts   = (max_block_size_bytes - 1) /
+                  (int64_t)CMT_BLOCK_PART_SIZE_BYTES + 1;        /* :91 */
+    if (total_parts > max_parts) {                               /* :92 */
+        return CMT_REJECT;                                       /* :93 */
+    }
+    return CMT_OK;                                               /* :95 */
 }
 
 /** Reset the send-side message scratch to one kind. */
@@ -936,21 +967,51 @@ int cmt_conr_receive(cmt_conr_t *conR, int peer_idx, uint8_t channel_id,
             return CMT_OK;                                       /* :319 */
         }
         switch (msg->kind) {
-        case CMT_PB_CONS_MSG_PROPOSAL:                           /* :322 */
-            rc = cmt_ps_set_has_proposal(ps, &msg->u.proposal.proposal); /* :323 */
+        case CMT_PB_CONS_MSG_PROPOSAL: {                         /* :322 */
+            /* cometbft@v0.38.26 consensus/reactor.go:323-325 — the
+             * conS.mtx.RLock is dropped (one thread); MaxBytes is read
+             * live from the state machine's state. */
+            int64_t max_bytes = cs->state.consensus_params.block.max_bytes;
+
+            /* cometbft@v0.38.26 consensus/reactor.go:326-330 (#5324) —
+             * a proposal whose PartSetHeader.Total exceeds what MaxBytes
+             * allows is refused BEFORE it touches the peer state or the
+             * state machine's queue. PEER-REACHABLE → the reference's
+             * StopPeerForError(ErrProposalTooManyParts), here the host row
+             * with its own reason code; Receive returns (:329). */
+            if (conr_proposal_validate_block_size(&msg->u.proposal.proposal,
+                                                  max_bytes) != CMT_OK) {
+                QGP_LOG_ERROR(LOG_TAG, "Rejecting oversized proposal from "
+                              "peer %d at height %lld (parts %u)", peer_idx,
+                              (long long)msg->u.proposal.proposal.height,
+                              (unsigned)msg->u.proposal.proposal.block_id
+                                  .part_set_header.total); /* v0.38.26 :327 */
+                if (conR->host.stop_peer_for_error == NULL) {
+                    return CMT_FAULT;
+                }
+                conR->host.stop_peer_for_error(conR->host_ctx, peer_idx,
+                        (int)CMT_CONR_STOP_PROPOSAL_TOO_MANY_PARTS); /* v0.38.26 :328 */
+                return CMT_OK;                            /* v0.38.26 :329 */
+            }
+
+            rc = cmt_ps_set_has_proposal(ps, &msg->u.proposal.proposal); /* :323, v0.38.26 :332 */
             if (rc == CMT_FAULT) {
                 return CMT_FAULT;
             }
             /* A CMT_REJECT here is `bits.NewBitArray(Total)` refusing a
              * Total above the derived bound (cmt_bits.h:21-32) where Go
-             * would allocate it; the peer state keeps the flag and header
-             * :1108/:1115 set before that line and no array, and the
-             * state machine refuses the same proposal one step later
-             * (state.go:1935-1936, cmt_cs.c "ErrProposalTooManyParts"). */
+             * would allocate it. Since the v0.38.26 gate above, a Total
+             * that reaches this line is at most (MaxBytes-1)/65536+1, so
+             * the refusal is reachable only if MaxBytes allows more parts
+             * than the bit array's capacity; if reached, the peer state is
+             * left untouched (cmt_ps.c, R3-AUD-21) and the state machine
+             * refuses the same proposal at state.go:1925-1932 (v0.38.26
+             * numbering; cmt_cs.c "ErrProposalTooManyParts"). */
             rc = cmt_cs_set_proposal_input(cs, &msg->u.proposal.proposal,
                                            ps->peer.id,
-                                           (size_t)CMT_PB_PEER_ID_MAX); /* :324 */
+                                           (size_t)CMT_PB_PEER_ID_MAX); /* :324, v0.38.26 :333 */
             return rc;   /* CMT_REJECT = the peer queue is full, R3-A-2 */
+        }
         case CMT_PB_CONS_MSG_PROPOSAL_POL:                       /* :325 */
             rc = cmt_ps_apply_proposal_pol_message(ps, &msg->u.proposal_pol); /* :326 */
             return (rc == CMT_FAULT) ? CMT_FAULT : CMT_OK;
@@ -1579,11 +1640,14 @@ static int conr_gossip_votes_pass(cmt_conr_t *conR, cmt_conr_peer_slot_t *slot,
         if (rc != CMT_OK) {
             return CMT_FAULT;
         }
-        /* :743 `rs.Height >= prs.Height+2`, written without the addition
-         * so it cannot overflow (prs.height > 0 here; Go's own expression
-         * wraps only for prs.Height ≥ INT64_MAX-1). */
-        if (store_base > 0 && prs.height != 0 && rs.height - 2 >= prs.height &&
-            prs.height >= store_base) {                          /* :743 */
+        /* cometbft@v0.38.26 consensus/reactor.go:752 — the 709fd12b form
+         * (:743 `prs.Height != 0 && rs.Height >= prs.Height+2`) became
+         * `prs.Height > 0 && prs.Height <= rs.Height-2`: no addition on
+         * the peer's height, a strict sign test. Same set of heights here
+         * (prs.height >= store_base > 0 already excluded ≤ 0); rs.height
+         * is ≥ 1, so `rs.height - 2` cannot overflow. */
+        if (store_base > 0 && prs.height > 0 && prs.height <= rs.height - 2 &&
+            prs.height >= store_base) {                /* v0.38.26 :752 */
             /* :744-752 — "Load the block's extended commit for prs.Height,
              * which contains precommit signatures for prs.Height."
              * :748-752 the conS.mtx.RLock — dropped. */

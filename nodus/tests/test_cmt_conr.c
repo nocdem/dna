@@ -19,7 +19,16 @@
  * ── WHAT IT PROVES ─────────────────────────────────────────────────────
  *   · THE TEN ValidateBasic METHODS refuse exactly the rows the reference
  *     refuses (reactor_test.go:792-1100, :1131-1165), including the
- *     ValidateHeight gate against a non-1 initial height.
+ *     ValidateHeight gate against a non-1 initial height — and, since the
+ *     v0.38.26 re-pin (decisions/2026-09-30-cometbft-pin-v0.38.26.md),
+ *     the six v0.38.26 rows (reactor_test.go:888-895, :932-939,
+ *     :1096-1103) where a bit array's Bits and Elems disagree
+ *     (ASA-2025-003), plus one port-only row that isolates that check
+ *     for NewValidBlock.
+ *   · (v0.38.26) A PROPOSAL WITH MORE PARTS THAN Block.MaxBytes ALLOWS
+ *     STOPS ITS PEER IN Receive, BEFORE the PeerState is touched, and one
+ *     AT the bound passes (consensus/reactor.go:322-330, #5324; no Go
+ *     test row — port-only).
  *   · RECEIVE BEFORE AddPeer IS FINE AND RECEIVE BEFORE InitPeer IS A
  *     FAULT (:248-305) — the port's reading of the reference's panic at
  *     reactor.go:255 as NODE-LOCAL.
@@ -2104,7 +2113,7 @@ static int s_new_valid_block_validate_basic(void)
     cmt_new_valid_block_msg_t m;
     size_t                    i;
 
-    for (i = 0u; i < 6u; i++) {
+    for (i = 0u; i < 9u; i++) {
         int rc;
 
         memset(&m, 0, sizeof(m));
@@ -2134,7 +2143,6 @@ static int s_new_valid_block_validate_basic(void)
             memset(&m.block_parts, 0, sizeof(m.block_parts));
             break;                                /* "empty blockParts" */
         case 5:
-        default:
             /* :885 — 1602 bits (see above). */
             memset(&m.block_parts, 0, sizeof(m.block_parts));
             R_HCHECK(cmt_bits_new(&m.block_parts,
@@ -2142,6 +2150,32 @@ static int s_new_valid_block_validate_basic(void)
                      "1602 bits fit the module's capacity");
             break;                                /* "size 1602 not equal to
                                                    *  BlockPartSetHeader.Total 1" */
+        case 6:
+            /* cometbft@v0.38.26 consensus/reactor_test.go:888-891
+             * (ASA-2025-003) — `msg.BlockParts.Elems = nil`: one bit, no
+             * word. Every OTHER check passes this row (size 1 = Total 1),
+             * so only the v0.38.26 BitArray.ValidateBasic call
+             * (reactor.go:1615-1617) refuses it: RED before the port. */
+            m.block_parts.n_elems = 0u;           /* "mismatch between specified
+                                                   *  number of bits 1, and
+                                                   *  number of elements 0" */
+            break;
+        case 7:
+            /* v0.38.26 reactor_test.go:892-895 — `msg.BlockParts.Bits =
+             * 500` with its one word. Here the :1609 size check (500 ≠ 1)
+             * would refuse it too; row 8 isolates the new check. */
+            m.block_parts.bits = 500;             /* "mismatch between specified
+                                                   *  number of bits 500, and
+                                                   *  number of elements 1" */
+            break;
+        case 8:
+        default:
+            /* NO REFERENCE ROW — row 7 with Total = 500, so that the size
+             * check agrees and ONLY the v0.38.26 Bits/Elems agreement can
+             * refuse it (RED before the port). */
+            m.block_parts.bits            = 500;
+            m.block_part_set_header.total = 500;
+            break;
         }
         rc = cmt_new_valid_block_msg_validate_basic(&m);         /* :903 */
         if (i == 0u) {
@@ -2179,7 +2213,7 @@ static int s_proposal_pol_validate_basic(void)
     size_t                 n = 0u;
     size_t                 i;
 
-    for (i = 0u; i < 5u; i++) {
+    for (i = 0u; i < 7u; i++) {
         int rc;
 
         memset(&m, 0, sizeof(m));
@@ -2201,7 +2235,6 @@ static int s_proposal_pol_validate_basic(void)
             memset(&m.proposal_pol, 0, sizeof(m.proposal_pol));
             break;                                /* "empty ProposalPOL bit array" */
         case 4:
-        default:
             /* :921 — NewBitArray(MaxVotesCount + 1), hand-built. */
             memset(&m.proposal_pol, 0, sizeof(m.proposal_pol));
             m.proposal_pol.bits    = (int)CMT_MAX_VOTES_COUNT + 1;
@@ -2211,6 +2244,21 @@ static int s_proposal_pol_validate_basic(void)
             break;                                /* "proposalPOL bit array is
                                                    *  too big: 10001, max:
                                                    *  10000" */
+        case 5:
+            /* cometbft@v0.38.26 consensus/reactor_test.go:932-935
+             * (ASA-2025-003) — `msg.ProposalPOL.Elems = nil`. Size 1 is
+             * neither empty nor too big, so only the v0.38.26
+             * BitArray.ValidateBasic call (reactor.go:1678-1680) refuses
+             * it: RED before the port. */
+            m.proposal_pol.n_elems = 0u;
+            break;
+        case 6:
+        default:
+            /* v0.38.26 reactor_test.go:936-939 — `msg.ProposalPOL.Bits =
+             * 500` with one word (8 expected). 500 ≤ 10000, so again only
+             * the new check refuses it: RED before the port. */
+            m.proposal_pol.bits = 500;
+            break;
         }
         rc = cmt_proposal_pol_msg_validate_basic(&m);            /* :936 */
         if (i == 0u) {
@@ -2417,7 +2465,7 @@ static int s_vote_set_bits_validate_basic(void)
     cmt_bit_array_t         wide;
     size_t                  i;
 
-    for (i = 0u; i < 4u; i++) {
+    for (i = 0u; i < 6u; i++) {
         int rc;
 
         memset(&m, 0, sizeof(m));
@@ -2437,9 +2485,22 @@ static int s_vote_set_bits_validate_basic(void)
             m.type = 0x03;                        /* "invalid Type" */
             break;
         case 3:
-        default:
             r_invalid_block_id(&m.block_id);      /* "wrong BlockID: wrong
                                                    *  PartSetHeader: wrong Hash:" */
+            break;
+        case 4:
+            /* cometbft@v0.38.26 consensus/reactor_test.go:1096-1099
+             * (ASA-2025-003) — `msg.Votes.Elems = nil`; nothing else
+             * refuses a 1-bit array, so only the v0.38.26
+             * BitArray.ValidateBasic call (reactor.go:1826-1828) does:
+             * RED before the port. */
+            m.votes.n_elems = 0u;
+            break;
+        case 5:
+        default:
+            /* v0.38.26 reactor_test.go:1100-1103 — `msg.Votes.Bits = 500`
+             * with one word; 500 ≤ MaxVotesCount, so RED before the port. */
+            m.votes.bits = 500;
             break;
         }
         rc = cmt_vote_set_bits_msg_validate_basic(&m);           /* :1094 */
@@ -2790,6 +2851,126 @@ static int s_set_has_proposal_applies_nothing_on_refusal(void)
 
     free(p);
     free(ps);
+    return 0;
+}
+
+/**
+ * NO REFERENCE TEST — cometbft v0.38.26 ships the gate (#5324,
+ * consensus/reactor.go:322-330) without a reactor test; this is the
+ * port's own.
+ *
+ * WHAT IT PROVES: that a Proposal whose PartSetHeader.Total exceeds
+ * `(Block.MaxBytes - 1) / BlockPartSizeBytes + 1` (types/proposal.go:
+ * 86-96, MaxBytes read from the state machine's own consensus params) is
+ * refused IN THE REACTOR — the peer is stopped with
+ * CMT_CONR_STOP_PROPOSAL_TOO_MANY_PARTS and the PeerState is NOT touched
+ * (SetHasProposal at :332 is not reached) — and that a Total exactly AT
+ * the bound is let through: the peer is not stopped and SetHasProposal
+ * applies (the Proposal flag and header are set).
+ *
+ * RED before the port: there was no gate before `cmt_ps_set_has_proposal`
+ * (cmt_conr.c, the PROPOSAL case), so the oversized Total — which is far
+ * below the bit array's capacity at the default MaxBytes and passes
+ * ValidateBasic — was applied to the PeerState (`prs.proposal` true) and
+ * queued, `stop_calls` stayed 0, and the first two assertions after the
+ * oversized receive failed.
+ *
+ * HOW IT CAN LIE: it sends hand-built bytes on the DataChannel of a
+ * started node, so it exercises Receive only; that the state machine
+ * would ALSO refuse the proposal (state.go:1925-1932) is not asserted.
+ */
+static int s_receive_rejects_oversized_proposal(void)
+{
+    r_net_t        *net = r_net_new(1u, 1u, true);
+    uint8_t         mock_id[CMT_PB_PEER_ID_MAX];
+    cmt_msg_t      *msg;
+    cmt_proposal_t *p;
+    cmt_ps_t       *ps;
+    int64_t         max_bytes;
+    int64_t         max_parts;
+    size_t          len = 0u;
+    int             rc;
+
+    R_CHECK(net != NULL, "network");
+    R_STEP(r_start_consensus_net(net, 1u));
+    memset(mock_id, 0x6C, sizeof(mock_id));
+    R_CHECK(cmt_conr_init_peer(&net->nodes[0].conR, 1, mock_id) == CMT_OK,
+            "InitPeer(mock peer)");
+    ps = &net->nodes[0].conR.peers[1].ps;
+    /* The peer is at the proposal's height and round, so SetHasProposal
+     * (:1100 in 709fd12b numbering) would apply rather than return early
+     * — the assertion that it did NOT apply is then meaningful. */
+    ps->prs.height = 1;
+    ps->prs.round  = 0;
+
+    /* The bound, from the params the reactor reads (v0.38.26 :324). */
+    max_bytes = net->nodes[0].conR.cs->state.consensus_params.block.max_bytes;
+    if (max_bytes == -1) {
+        max_bytes = (int64_t)CMT_MAX_BLOCK_SIZE_BYTES;
+    }
+    max_parts = (max_bytes - 1) / (int64_t)CMT_BLOCK_PART_SIZE_BYTES + 1;
+    R_CHECK(max_parts >= 1 && max_parts + 1 <= (int64_t)UINT32_MAX,
+            "the bound fits a PartSetHeader.Total");
+
+    msg = net->msg_scratch;
+    memset(msg, 0, sizeof(*msg));
+    msg->kind = CMT_PB_CONS_MSG_PROPOSAL;
+    p = &msg->u.proposal.proposal;
+    p->type      = (int32_t)CMT_PB_MSG_TYPE_PROPOSAL;
+    p->height    = 1;
+    p->round     = 0;
+    p->pol_round = -1;
+    memset(p->block_id.hash, 0xA1, (size_t)CMT_TMHASH_SIZE);
+    p->block_id.hash_len = (size_t)CMT_TMHASH_SIZE;
+    memset(p->block_id.part_set_header.hash, 0xB2, (size_t)CMT_TMHASH_SIZE);
+    p->block_id.part_set_header.hash_len = (size_t)CMT_TMHASH_SIZE;
+    p->block_id.part_set_header.total    = (uint32_t)(max_parts + 1);
+    p->timestamp.seconds = 1700000000;
+    memset(p->signature, 0x11, 16u);
+    p->signature_len = 16u;
+    R_CHECK(cmt_proposal_validate_basic(p) == CMT_OK,
+            "the oversized proposal passes ValidateBasic — only the size "
+            "gate can refuse it");
+
+    R_STEP(r_marshal(net, msg, &len));
+    rc = cmt_conr_receive(&net->nodes[0].conR, 1, CMT_CONR_DATA_CHANNEL,
+                          net->buf_scratch, len);
+    R_CHECK(rc == CMT_OK, "Receive returns normally (v0.38.26 :329)");
+    R_CHECK(net->nodes[0].stop_calls == 1, "the peer is stopped");
+    R_CHECK(net->nodes[0].last_stop_reason ==
+                (int)CMT_CONR_STOP_PROPOSAL_TOO_MANY_PARTS,
+            "for ErrProposalTooManyParts (v0.38.26 :328)");
+    R_CHECK(!ps->prs.proposal, "SetHasProposal was not reached");
+    R_CHECK(ps->prs.proposal_block_part_set_header.total == 0u,
+            "the peer's proposal header is untouched");
+
+    /* Exactly AT the bound: accepted by the gate. */
+    memset(msg, 0, sizeof(*msg));
+    msg->kind = CMT_PB_CONS_MSG_PROPOSAL;
+    p = &msg->u.proposal.proposal;
+    p->type      = (int32_t)CMT_PB_MSG_TYPE_PROPOSAL;
+    p->height    = 1;
+    p->round     = 0;
+    p->pol_round = -1;
+    memset(p->block_id.hash, 0xA1, (size_t)CMT_TMHASH_SIZE);
+    p->block_id.hash_len = (size_t)CMT_TMHASH_SIZE;
+    memset(p->block_id.part_set_header.hash, 0xB2, (size_t)CMT_TMHASH_SIZE);
+    p->block_id.part_set_header.hash_len = (size_t)CMT_TMHASH_SIZE;
+    p->block_id.part_set_header.total    = (uint32_t)max_parts;
+    p->timestamp.seconds = 1700000000;
+    memset(p->signature, 0x11, 16u);
+    p->signature_len = 16u;
+    R_STEP(r_marshal(net, msg, &len));
+    rc = cmt_conr_receive(&net->nodes[0].conR, 1, CMT_CONR_DATA_CHANNEL,
+                          net->buf_scratch, len);
+    R_CHECK(rc == CMT_OK, "Receive of a proposal at the bound");
+    R_CHECK(net->nodes[0].stop_calls == 1, "no second stop");
+    R_CHECK(ps->prs.proposal, "SetHasProposal applied (Proposal flag)");
+    R_CHECK(ps->prs.proposal_block_part_set_header.total ==
+                (uint32_t)max_parts,
+            "SetHasProposal applied (the header)");
+
+    r_net_free(net);
     return 0;
 }
 
@@ -3275,6 +3456,8 @@ int main(void)
           s_recv_arena_resets_every_receive },
         { "set_has_proposal_applies_nothing_on_refusal",
           s_set_has_proposal_applies_nothing_on_refusal },
+        { "receive_rejects_oversized_proposal",
+          s_receive_rejects_oversized_proposal },
         { "start_after_stop_is_refused", s_start_after_stop_is_refused },
         { "switch_to_consensus_vote_extensions",
           s_switch_to_consensus_vote_extensions },

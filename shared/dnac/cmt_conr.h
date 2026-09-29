@@ -228,6 +228,9 @@
  *   Go `error` returns at :237-241, :243-247, :264-268 and :284-287 are
  *   the reference's four `StopPeerForError` sites: the host row is
  *   called with a reason code and Receive returns as the reference does.
+ *   v0.38.26 adds a fifth, the oversized-proposal gate
+ *   (cometbft@v0.38.26 consensus/reactor.go:326-330,
+ *   CMT_CONR_STOP_PROPOSAL_TOO_MANY_PARTS).
  *
  * ── DETERMINISM ────────────────────────────────────────────────────────
  * THE CLOCK is the host's `now` row, THE SAME CALLBACK as
@@ -315,6 +318,22 @@
  * pin record rev 16 (atlas-dec-483ec17cbb352ef0ec2267ccd953339c; rev 11
  * when R3-A was written).
  *
+ * ── RE-PIN TO cometbft v0.38.26 (decisions/2026-09-30-cometbft-pin-v0.38.26.md)
+ * The 709fd12b..v0.38.26 changes to consensus/reactor.go are ported and
+ * cite `cometbft@v0.38.26 consensus/reactor.go:<line>` in full at their
+ * sites: the oversized-proposal gate in Receive (:323-330, #5324), the
+ * catch-up condition (:752), and the three `BitArray.ValidateBasic` calls
+ * (:1615-1617, :1678-1680, :1826-1828, ASA-2025-003 — those live in
+ * cmt_msgs.c with the other ValidateBasic bodies). A BARE `:NNN` in this
+ * module is still a 709fd12b line; the v0.38.26 file is the same code
+ * shifted by +9 after :320 (the gate), then further by each later
+ * insertion (+3 per ValidateBasic call, +6 for the ProposalMessage
+ * ValidateBlockSize method at :1650-1654). Local copy used:
+ *   /home/nocdem/refs/cometbft-v0.38.26/consensus/reactor.go 1841 lines
+ *     8001066f922198a75be28ccd5b0fa069fe0e9644b0196284102e3332b79e6ff0
+ *   types/proposal.go 177 lines (read for :82-96 ValidateBlockSize)
+ *     8c6e73fa3e5b00824a6b311b05d997c4d0e8039ec34d114421faa6c8418a85eb
+ *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
  */
@@ -399,7 +418,11 @@ typedef enum {
     /** reactor.go:264-268 — `ValidateHeight` refused a NewRoundStep. */
     CMT_CONR_STOP_VALIDATE_HEIGHT = 3,
     /** reactor.go:283-287 — `SetPeerMaj23` refused the peer's claim. */
-    CMT_CONR_STOP_PEER_MAJ23      = 4
+    CMT_CONR_STOP_PEER_MAJ23      = 4,
+    /** cometbft@v0.38.26 consensus/reactor.go:323-330 — a Proposal whose
+     *  PartSetHeader.Total exceeds what `Block.MaxBytes` allows
+     *  (`ErrProposalTooManyParts`, state.go:40; #5324). */
+    CMT_CONR_STOP_PROPOSAL_TOO_MANY_PARTS = 5
 } cmt_conr_stop_reason_t;
 
 /**
