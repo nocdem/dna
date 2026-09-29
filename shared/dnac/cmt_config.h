@@ -2,9 +2,12 @@
  * @file shared/dnac/cmt_config.h
  * @brief cometbft @709fd12b `config/config.go`'s ConsensusConfig in C.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R2-B of the cometbft → C consensus port. Nothing in the running
- * chain reads anything here yet; additive only.
+ * ═══ ACTIVATION: LIVE ═══════════════════════════════════════════════════
+ * Wave R2-B of the cometbft → C consensus port. Read by the running node:
+ * nodus_witness_cmt_node.c builds the node's config from
+ * `cmt_config_default`, refuses it through `cmt_config_validate_basic`,
+ * and hands it to the state machine (cmt_cs.h) and the block executor's
+ * tolerance.
  * ════════════════════════════════════════════════════════════════════════
  *
  * The timeouts the consensus state machine waits on, and the five helpers
@@ -18,14 +21,19 @@
  * the three path fields), `DefaultConsensusConfig` (:1017-1034),
  * `WaitForTxs` (:1054-1057), `Propose` (:1059-1064), `Prevote`
  * (:1066-1071), `Precommit` (:1073-1078) and `Commit` (:1080-1084).
+ * PORTED FROM cometbft v0.38.26 (decision
+ * docs/plans/decisions/2026-09-30-cometbft-pin-v0.38.26.md and its clock
+ * addendum in 2026-09-25-consensus-clock-scope-correction.md, "Ek — pin
+ * v0.38.26"): the `BlockTimeTolerance` field (v0.38.26 config.go:1029-1030),
+ * its 60 s default (:1050) and `ConsensusConfig.ValidateBasic`
+ * (:1117-1157), which the node runs on the values it built. Every other
+ * `:NNN` in this file is still a 709fd12b line.
  *
  * taşınmadı, with the reason:
  *   · `RootDir`, `WalPath`, `walFile` (:980-982), `WalFile` (:1086-1092)
  *     and `SetWalFile` (:1094-1097) — a file path and the accessors for
  *     it. This port's WAL is SQLite rows written by the host (D-15), so
  *     there is no wal file and nothing to root.
- *   · `ValidateBasic` (:1099-…) — the bounds check the TOML loader runs.
- *     Configuration arrives here from the host, not from a config file.
  *   · `TestConsensusConfig` (:1036-1052) — the reference's own test
  *     fixture. The R2 tests run on `cmt_config_default`'s values, which is
  *     the honest thing to state: they exercise the arithmetic at the
@@ -54,6 +62,10 @@
  * Reference @709fd12b: config/config.go, 1283 lines, SHA-256
  * f0c2f601d49e1a56b36e8d557387e96ee53ecc3616ecb79749b0f71c0f218c21;
  * only :965-1100 was opened.
+ * Reference v0.38.26 (the tolerance field, its default, ValidateBasic):
+ * config/config.go, 1304 lines, SHA-256
+ * 761c747fa0c41cbfd48aa840adad77d3559a64a6a4197b000f2cecb0be70d4f2;
+ * :1029-1030, :1034-1052 and :1117-1157 opened.
  * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * D-4 (atlas-dec-d5ddcba654eb48d861c03a0ecd170718),
  * clock POLICY (atlas-dec-4ac0423068085c100fdfa3e264ca16bc).
@@ -100,6 +112,13 @@ typedef struct {
     int64_t peer_gossip_sleep_duration;     /* :1010 */
     int64_t peer_query_maj23_sleep_duration;/* :1011 */
     int64_t double_sign_check_height;       /* :1013 */
+    /** cometbft@v0.38.26 config/config.go:1029-1030 `BlockTimeTolerance`:
+     *  the largest amount a block's time may lead this node's wall clock
+     *  by (state/validation.go:124-129). NOT a scheduling value like the
+     *  rest: it decides whether THIS node accepts a block, so a node whose
+     *  clock trails the chain by more than it cannot process new blocks.
+     *  The effect is local to that node (the decision addendum above). */
+    int64_t block_time_tolerance;
 } cmt_config_t;
 
 /**
@@ -125,7 +144,40 @@ static inline int cmt_config_default(cmt_config_t *out)
     out->peer_gossip_sleep_duration      =  100 * CMT_MILLISECOND; /* :1030 */
     out->peer_query_maj23_sleep_duration = 2000 * CMT_MILLISECOND; /* :1031 */
     out->double_sign_check_height        = (int64_t)0;             /* :1032 */
+    out->block_time_tolerance            = 60 * CMT_SECOND; /* v0.38.26 :1050 */
     return CMT_OK;
+}
+
+/**
+ * cometbft@v0.38.26 config/config.go:1117-1157 —
+ * `(cfg *ConsensusConfig) ValidateBasic()`, check for check, in the
+ * reference's order. The reference returns a distinct error string per
+ * check; here the refused field is not reported, only the class.
+ * @return CMT_OK; CMT_REJECT when a check fails (the configuration is
+ *         refused); CMT_FAULT on NULL.
+ */
+static inline int cmt_config_validate_basic(const cmt_config_t *cfg)
+{
+    if (cfg == NULL) {
+        return CMT_FAULT;
+    }
+    if (cfg->timeout_propose < 0 ||                             /* :1120 */
+        cfg->timeout_propose_delta < 0 ||                       /* :1123 */
+        cfg->timeout_prevote < 0 ||                             /* :1126 */
+        cfg->timeout_prevote_delta < 0 ||                       /* :1129 */
+        cfg->timeout_precommit < 0 ||                           /* :1132 */
+        cfg->timeout_precommit_delta < 0 ||                     /* :1135 */
+        cfg->timeout_commit < 0 ||                              /* :1138 */
+        cfg->create_empty_blocks_interval < 0 ||                /* :1141 */
+        cfg->peer_gossip_sleep_duration < 0 ||                  /* :1144 */
+        cfg->peer_query_maj23_sleep_duration < 0 ||             /* :1147 */
+        cfg->double_sign_check_height < 0) {                    /* :1150 */
+        return CMT_REJECT;
+    }
+    if (cfg->block_time_tolerance <= 0) {                       /* :1153-1155 */
+        return CMT_REJECT;
+    }
+    return CMT_OK;                                              /* :1156 */
 }
 
 /** cometbft@709fd12b config/config.go:1054-1057 —

@@ -31,6 +31,8 @@
  *                                                (the REACTOR is W3's)
  *   node.go:381      createEvidenceReactor     → the empty evidence pool
  *   node.go:386-395  NewBlockExecutor          → nodus_cmt_blockexec_init
+ *                    (v0.38.26 :393 the tolerance option
+ *                    → nodus_cmt_blockexec_set_block_time_tolerance)
  *   node.go:397-403  offlineStateSyncHeight    → the store
  *   node.go:410-413  createConsensusReactor    → cmt_cs_init (the REACTOR
  *                                                is W3's)

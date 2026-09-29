@@ -100,6 +100,16 @@
  *    TestValidateBlockCommit assert, with a C `testApp` and mock
  *    mempool/evidence pool reproducing helpers_test.go's and the
  *    mockery mocks' answers.
+ *  · cometbft@v0.38.26's wall-clock block time tolerance
+ *    (validation.go:124-129; TestValidateBlockTime's two tolerance
+ *    subtests, validation_test.go:444-477): with the executor's
+ *    tolerance set, a VALID block whose time equals `now + tol` is
+ *    REJECT and 1 ms inside it is OK, on ValidateBlock,
+ *    ValidateBlockSkipLastCommit and ApplyBlock (execution.go:215, :246);
+ *    a failing clock is FAULT; with tolerance 0 the clock is not read at
+ *    all; ApplyVerifiedBlock (:229-234) reads no clock.
+ *    TestConsensusConfig_ValidateBasic (config_test.go:158-200) row for
+ *    row, incl. the 60 s default and the zero/negative tolerance refusal.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  *  Compile flags: the nodus build's own (`CMT_SOFTWARE_VERSION` from
@@ -161,6 +171,12 @@
  *     MECHANISM (a stepped-and-unreset SELECT statement pins a read
  *     snapshot that another connection's commit makes stale for every
  *     main-connection write), not behaviour under contention.
+ *  9. The tolerance cases drive the executor's `now` row with the frozen
+ *     fixture clock; they prove the comparison and where it is applied,
+ *     not that the production row (`witness_cmt_now`, CLOCK_REALTIME) is
+ *     the one the node binds — that wiring is nodus_witness_cmt_node.c's
+ *     and is read, not exercised, here. The reference's typed error text
+ *     ("too far in the future") is asserted as REJECT only.
  *  NOT PORTED — BLOCKED BY:
  *   · TestFinalizeBlockRecoveryUsingLegacyABCIResponses
  *     (state/store_test.go:309) — no legacy format in this chain (D-23).
@@ -393,10 +409,18 @@ static int digest_matches(const uint8_t *buf, size_t len, const char *hex)
 /* ══ clock (frozen; advanced by the tests that need order) ═══════════ */
 
 static cmt_time_t g_now = { 1700000000LL, 0 };
+/* The block-time-tolerance cases (t_val_block_time_tolerance) count the
+ * reads and make the clock fail; every other case leaves both alone. */
+static bool     g_now_fault = false;
+static unsigned g_now_reads = 0;
 
 static int t_now(void *ctx, cmt_time_t *out)
 {
     (void)ctx;
+    g_now_reads++;
+    if (g_now_fault) {
+        return CMT_FAULT;
+    }
     *out = g_now;
     return CMT_OK;
 }
@@ -6718,6 +6742,252 @@ static int t_val_validate_block_commit(void)
     return 0;
 }
 
+/* ══ cometbft@v0.38.26 — the wall-clock block time tolerance ═════════════
+ * state/validation.go:124-129, state/execution.go:59-63/:215/:221-223/
+ * :229-234/:246, config/config.go:1050/:1153-1155. The clock is the
+ * fixture's `t_now`: every probe sets `g_now`, runs ONE call, and puts
+ * `g_now` / `g_now_fault` back BEFORE its result is checked, so a failing
+ * CHECK cannot leave a moved or broken clock to the cases after it. */
+
+/* `t - d` for d >= 0, with the nanosecond borrow. */
+static cmt_time_t tol_time_sub(cmt_time_t t, int64_t d)
+{
+    int64_t nanos = (int64_t)t.nanos - d % CMT_SECOND;
+
+    t.seconds -= d / CMT_SECOND;
+    if (nanos < 0) {
+        nanos     += (int64_t)CMT_TIME_NANOS_PER_SECOND;
+        t.seconds -= 1;
+    }
+    t.nanos = (int32_t)nanos;
+    return t;
+}
+
+enum { TOL_VALIDATE, TOL_VALIDATE_SKIP, TOL_APPLY, TOL_APPLY_VERIFIED };
+
+/* One call of `path` with the clock at `now` (or failing, `fault`);
+ * `*reads` receives how many times the clock was read by it. */
+static int tol_probe(t_exec_t *x, cmt_state_t *state, cmt_block_t *b,
+                     const cmt_block_id_t *bid, int path, cmt_time_t now,
+                     bool fault, unsigned *reads)
+{
+    cmt_time_t saved = g_now;
+    unsigned   r0    = g_now_reads;
+    int        rc    = CMT_FAULT;
+
+    g_now       = now;
+    g_now_fault = fault;
+    switch (path) {
+    case TOL_VALIDATE:
+        rc = nodus_cmt_host_validate_block(x->be, state, b);
+        break;
+    case TOL_VALIDATE_SKIP:
+        rc = nodus_cmt_host_validate_block_skip_last_commit(x->be, state, b);
+        break;
+    case TOL_APPLY:
+        rc = nodus_cmt_blockexec_apply_block(x->be, bid, b, state);
+        break;
+    case TOL_APPLY_VERIFIED:
+        rc = nodus_cmt_host_apply_verified_block(x->be, bid, b, state);
+        break;
+    default:
+        break;
+    }
+    *reads      = g_now_reads - r0;
+    g_now_fault = false;
+    g_now       = saved;
+    return rc;
+}
+
+/* validation_test.go:444-477 "block time exceeds wall clock tolerance" /
+ * "tolerance not set still allows valid blocks", plus the boundary the
+ * two do not pin, driven through every path the reference applies the
+ * option on (ValidateBlock, ValidateBlockSkipLastCommit, ApplyBlock) and
+ * the one it does not (ApplyVerifiedBlock).
+ *
+ * The block under test is VALID — its time is the median of its
+ * LastCommit — so every REJECT below comes from :124-129 alone, which
+ * runs before the median check (:131-148). Without the port each REJECT
+ * case returns CMT_OK and each FAULT case returns CMT_OK. */
+static int t_val_block_time_tolerance(void)
+{
+    const int64_t tol = 30 * CMT_SECOND;     /* validation_test.go:452 */
+    t_env_t  e;
+    t_exec_t x;
+    cmt_block_t *b;
+    cmt_commit_t *last_commit;
+    cmt_commit_sig_t *csigs;
+    cmt_extended_commit_sig_t *esigs;
+    cmt_extended_commit_t lec;
+    cmt_block_id_t bid;
+    cmt_time_t bt, at_edge, inside, far_behind;
+    unsigned reads;
+    int64_t height;
+    int rc;
+
+    CHECK(env_make_state(&e, 1, 1) == 0, "makeState(1,1)");
+    CHECK(exec_init(&x, &e) == 0, "executor");
+    b = (cmt_block_t *)calloc(1, sizeof(*b));
+    last_commit = (cmt_commit_t *)calloc(1, sizeof(*last_commit));
+    csigs = (cmt_commit_sig_t *)calloc(CMT_VALSET_MAX, sizeof(*csigs));
+    esigs = (cmt_extended_commit_sig_t *)calloc(CMT_VALSET_MAX, sizeof(*esigs));
+    CHECK(b && last_commit && csigs && esigs, "alloc");
+
+    /* NewBlockExecutor without the option: the tolerance is zero. */
+    CHECK(x.be->block_time_tolerance == 0, "no tolerance after init");
+
+    /* validation_test.go:404-411 — heights 1 and 2 committed. */
+    for (height = 1; height < 3; height++) {
+        cmt_validator_t proposer;
+        cmt_validator_set_t vals;
+        cmt_validator_t *vstor = (cmt_validator_t *)calloc(CMT_VALSET_MAX, sizeof(cmt_validator_t));
+
+        CHECK(vstor != NULL, "alloc");
+        rc = (cmt_validator_set_init(&vals, vstor, CMT_VALSET_MAX) == CMT_OK &&
+              cmt_validator_set_copy(&e.state->validators, &vals) == CMT_OK &&
+              cmt_validator_set_get_proposer(&vals, &proposer) == CMT_OK) ? 0 : -1;
+        free(vstor);
+        CHECK(rc == 0, "proposer");
+        CHECK(make_and_commit_good_block(&e, &x, e.state, height, last_commit, proposer.address,
+                                         b, esigs, &lec) == 0, "good block");
+        CHECK(cmt_extended_commit_to_commit(&lec, csigs, CMT_VALSET_MAX, last_commit) == CMT_OK,
+              "lastCommit = ToCommit()");
+    }
+    /* :454-455 — the valid block at height 3. */
+    CHECK(env_make_block(&e, e.state, 3, last_commit, b) == 0, "makeBlock(3)");
+    CHECK(block_id_of(&e, b, &bid) == 0, "blockID");
+    bt         = b->header.time;
+    at_edge    = tol_time_sub(bt, tol);                    /* bt == now + tol     */
+    inside     = tol_time_sub(bt, tol - CMT_MILLISECOND);  /* bt == now + tol - 1ms */
+    far_behind = tol_time_sub(bt, 1000LL * 3600LL * CMT_SECOND); /* :457 now + 1000h */
+
+    /* :463-477 — no tolerance: a valid block passes whatever the clock
+     * says, and :124's `tol > 0 &&` means the clock is NOT READ (a
+     * failing clock would otherwise turn this into CMT_FAULT). */
+    rc = tol_probe(&x, e.state, b, &bid, TOL_VALIDATE, far_behind, true, &reads);
+    CHECK(rc == CMT_OK && reads == 0, "tolerance 0: valid, clock not read");
+    rc = tol_probe(&x, e.state, b, &bid, TOL_VALIDATE_SKIP, far_behind, true, &reads);
+    CHECK(rc == CMT_OK && reads == 0, "tolerance 0 (skip-last-commit): clock not read");
+
+    /* execution.go:59-63 BlockExecutorWithBlockTimeTolerance(30s). */
+    CHECK(nodus_cmt_blockexec_set_block_time_tolerance(x.be, tol) == CMT_OK, "set tolerance");
+    CHECK(nodus_cmt_blockexec_set_block_time_tolerance(NULL, tol) == CMT_FAULT, "NULL ctx");
+
+    /* :444-461 — block time 1000 h ahead of the clock: refused. */
+    rc = tol_probe(&x, e.state, b, &bid, TOL_VALIDATE, far_behind, false, &reads);
+    CHECK(rc == CMT_REJECT && reads == 1, "1000h ahead: too far in the future (REJECT)");
+
+    /* :124 `!block.Time.Before(now + tol)` — EQUAL is refused, 1 ms
+     * inside is accepted, on both validation entries (:215 appends the
+     * option to ValidateBlockSkipLastCommit's too). */
+    rc = tol_probe(&x, e.state, b, &bid, TOL_VALIDATE, at_edge, false, &reads);
+    CHECK(rc == CMT_REJECT && reads == 1, "block time == now + tol: REJECT");
+    rc = tol_probe(&x, e.state, b, &bid, TOL_VALIDATE, inside, false, &reads);
+    CHECK(rc == CMT_OK && reads == 1, "block time == now + tol - 1ms: OK");
+    rc = tol_probe(&x, e.state, b, &bid, TOL_VALIDATE_SKIP, at_edge, false, &reads);
+    CHECK(rc == CMT_REJECT, "skip-last-commit, now + tol: REJECT");
+    rc = tol_probe(&x, e.state, b, &bid, TOL_VALIDATE_SKIP, inside, false, &reads);
+    CHECK(rc == CMT_OK, "skip-last-commit, now + tol - 1ms: OK");
+
+    /* A clock that cannot be read is this node's fault, not the block's. */
+    rc = tol_probe(&x, e.state, b, &bid, TOL_VALIDATE, inside, true, &reads);
+    CHECK(rc == CMT_FAULT, "clock failure: FAULT");
+    rc = tol_probe(&x, e.state, b, &bid, TOL_VALIDATE_SKIP, inside, true, &reads);
+    CHECK(rc == CMT_FAULT, "clock failure (skip-last-commit): FAULT");
+
+    /* :246 — ApplyBlock carries the option: refused at the edge (the state
+     * is not advanced), a clock failure is FAULT, accepted 1 ms inside. */
+    rc = tol_probe(&x, e.state, b, &bid, TOL_APPLY, at_edge, false, &reads);
+    CHECK(rc == CMT_REJECT && e.state->last_block_height == 2,
+          "ApplyBlock, now + tol: REJECT, state untouched");
+    rc = tol_probe(&x, e.state, b, &bid, TOL_APPLY, inside, true, &reads);
+    CHECK(rc == CMT_FAULT && e.state->last_block_height == 2,
+          "ApplyBlock, clock failure: FAULT, state untouched");
+    rc = tol_probe(&x, e.state, b, &bid, TOL_APPLY, inside, false, &reads);
+    CHECK(rc == CMT_OK && reads == 1 && e.state->last_block_height == 3,
+          "ApplyBlock, now + tol - 1ms: applied");
+
+    /* :229-234 — ApplyVerifiedBlock calls no validateBlock: the block at
+     * height 4, 1000 h ahead of a FAILING clock, applies without a read. */
+    {
+        cmt_time_t ts = g_now;
+
+        ts.seconds += 3;
+        CHECK(make_valid_commit(&e, 3, &bid, &e.state->validators, ts, esigs, CMT_VALSET_MAX,
+                                &lec) == 0, "commit for 3");
+        CHECK(cmt_extended_commit_to_commit(&lec, csigs, CMT_VALSET_MAX, last_commit) == CMT_OK,
+              "lastCommit(3)");
+    }
+    CHECK(env_make_block(&e, e.state, 4, last_commit, b) == 0, "makeBlock(4)");
+    CHECK(block_id_of(&e, b, &bid) == 0, "blockID(4)");
+    rc = tol_probe(&x, e.state, b, &bid, TOL_APPLY_VERIFIED,
+                   tol_time_sub(b->header.time, 1000LL * 3600LL * CMT_SECOND), true, &reads);
+    CHECK(rc == CMT_OK && reads == 0 && e.state->last_block_height == 4,
+          "ApplyVerifiedBlock: no tolerance check, clock not read");
+
+    free(b); free(last_commit); free(csigs); free(esigs);
+    exec_free(&x);
+    env_free(&e);
+    return 0;
+}
+
+/* cometbft@v0.38.26 config/config_test.go:158-200
+ * TestConsensusConfig_ValidateBasic, every row (:164-185), over
+ * `cmt_config_default` (config.go:1034-1052, the tolerance's 60 s at
+ * :1050). */
+static int t_config_validate_basic(void)
+{
+    static const struct { const char *name; size_t off; int64_t v; bool err; } rows[] = {
+#define CFG_ROW(n, f, v, e) { n, offsetof(cmt_config_t, f), v, e }
+        CFG_ROW("TimeoutPropose",                timeout_propose,                 CMT_SECOND, false),
+        CFG_ROW("TimeoutPropose negative",       timeout_propose,                 -1, true),
+        CFG_ROW("TimeoutProposeDelta",           timeout_propose_delta,           CMT_SECOND, false),
+        CFG_ROW("TimeoutProposeDelta negative",  timeout_propose_delta,           -1, true),
+        CFG_ROW("TimeoutPrevote",                timeout_prevote,                 CMT_SECOND, false),
+        CFG_ROW("TimeoutPrevote negative",       timeout_prevote,                 -1, true),
+        CFG_ROW("TimeoutPrevoteDelta",           timeout_prevote_delta,           CMT_SECOND, false),
+        CFG_ROW("TimeoutPrevoteDelta negative",  timeout_prevote_delta,           -1, true),
+        CFG_ROW("TimeoutPrecommit",              timeout_precommit,               CMT_SECOND, false),
+        CFG_ROW("TimeoutPrecommit negative",     timeout_precommit,               -1, true),
+        CFG_ROW("TimeoutPrecommitDelta",         timeout_precommit_delta,         CMT_SECOND, false),
+        CFG_ROW("TimeoutPrecommitDelta negative", timeout_precommit_delta,        -1, true),
+        CFG_ROW("TimeoutCommit",                 timeout_commit,                  CMT_SECOND, false),
+        CFG_ROW("TimeoutCommit negative",        timeout_commit,                  -1, true),
+        CFG_ROW("PeerGossipSleepDuration",       peer_gossip_sleep_duration,      CMT_SECOND, false),
+        CFG_ROW("PeerGossipSleepDuration negative", peer_gossip_sleep_duration,   -1, true),
+        CFG_ROW("PeerQueryMaj23SleepDuration",   peer_query_maj23_sleep_duration, CMT_SECOND, false),
+        CFG_ROW("PeerQueryMaj23SleepDuration negative", peer_query_maj23_sleep_duration, -1, true),
+        CFG_ROW("DoubleSignCheckHeight negative", double_sign_check_height,       -1, true),
+        CFG_ROW("BlockTimeTolerance",            block_time_tolerance,            CMT_SECOND, false),
+        CFG_ROW("BlockTimeTolerance zero",       block_time_tolerance,            0, true),
+        CFG_ROW("BlockTimeTolerance negative",   block_time_tolerance,            -1, true),
+#undef CFG_ROW
+    };
+    cmt_config_t c;
+    size_t i;
+
+    /* Every field a row names is an int64_t (cmt_config.h); a bool field
+     * must not be added through this table. */
+    CHECK(cmt_config_default(&c) == CMT_OK, "DefaultConsensusConfig");
+    CHECK(c.block_time_tolerance == 60 * CMT_SECOND, "BlockTimeTolerance default 60s (:1050)");
+    CHECK(cmt_config_validate_basic(&c) == CMT_OK, "the default validates");
+    CHECK(cmt_config_validate_basic(NULL) == CMT_FAULT, "NULL");
+    for (i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        int64_t *field;
+        int rc;
+
+        CHECK(cmt_config_default(&c) == CMT_OK, "DefaultConsensusConfig");
+        field  = (int64_t *)((uint8_t *)&c + rows[i].off);
+        *field = rows[i].v;
+        rc = cmt_config_validate_basic(&c);
+        if ((rc == CMT_REJECT) != rows[i].err || (rc != CMT_OK && rc != CMT_REJECT)) {
+            fprintf(stderr, "  row %s: rc %d\n", rows[i].name, rc);
+        }
+        CHECK(rows[i].err ? rc == CMT_REJECT : rc == CMT_OK, rows[i].name);
+    }
+    return 0;
+}
+
 /* ══════════════════════════════════════════════════════════════════════
  * the host object itself: the table and the timer
  * ══════════════════════════════════════════════════════════════════════ */
@@ -6868,7 +7138,9 @@ int main(void)
         { "exec_create_proposal_absent_vote_extensions", t_exec_create_proposal_absent_vote_extensions },
         { "val_validate_block_header",             t_val_validate_block_header },
         { "val_validate_block_commit",             t_val_validate_block_commit },
-        { "host_table_and_timer",                  t_host_table_and_timer },
+        { "val_block_time_tolerance",              t_val_block_time_tolerance },
+        { "config_validate_basic",                 t_config_validate_basic },
+        { "host_table_and_timer",                 t_host_table_and_timer },
     };
     size_t i, failed = 0, ncases = sizeof(cases) / sizeof(cases[0]);
 

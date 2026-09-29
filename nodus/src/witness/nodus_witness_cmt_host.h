@@ -111,9 +111,16 @@
  * (D-25 rev 3) is the only bound it knows.
  *
  * ── DETERMINISM ────────────────────────────────────────────────────────
- * The clock is `now` and is read by this module at exactly ONE site of
- * its own: `timer_arm` (`now + duration`, ticker.go:126). Every other
- * read is `cmt_cs`'s through the forwarded row. No randomness, no
+ * The clock is `now` and is read by this module at exactly TWO sites of
+ * its own: `timer_arm` (`now + duration`, ticker.go:126) and the block
+ * time tolerance in `nodus_cmt_validate_block` (cometbft@v0.38.26
+ * state/validation.go:124-129 — "block time < wall clock + tolerance",
+ * read ONLY when the executor's tolerance is > 0; the handshaker's
+ * executor has none, consensus/replay.go:531). That second read decides
+ * whether THIS node accepts a block; it never derives state, and a
+ * refusal is local to the node whose clock trails (decision addendum
+ * "Ek — pin v0.38.26" in 2026-09-25-consensus-clock-scope-correction.md).
+ * Every other read is `cmt_cs`'s through the forwarded row. No randomness, no
  * unordered iteration (validator index order, transaction order,
  * evidence order — all the reference's).
  *
@@ -126,9 +133,10 @@
  *   state/validation.go  170 lines
  *     c868b1b0b70aaf4d78c7201e320079dd237943f60907b683bcd306c463b8a1d5
  *   state/execution.go (v0.38.26 :202-227)
- * at their own declarations. The v0.38.26 wall-clock block-time tolerance
- * (validation.go:124-129, execution.go:47-63/:221-223) is NOT ported —
- * see `nodus_cmt_block_validation_options_t`.
+ * at their own declarations, and so does the v0.38.26 wall-clock
+ * block-time tolerance (validation.go:17, :124-129; execution.go:47-48,
+ * :59-63, :215, :221-223, :246), SHA-256 of execution.go
+ *     a928de838673694e1114199d8a51b47259d8f98cb7a88fdd25fdba75f941ab69.
  *   state/services.go, state/tx_filter.go, mempool/mempool.go,
  *   mempool/nop_mempool.go, proxy/app_conn.go, abci/types/application.go,
  *   proto/tendermint/abci/types.proto, types/protobuf.go — pin table of
@@ -493,6 +501,13 @@ typedef struct {
 
     nodus_cmt_host_limits_t limits;
 
+    /** cometbft@v0.38.26 state/execution.go:47-48 `blockTimeTolerance`,
+     *  nanoseconds. 0 after `nodus_cmt_blockexec_init` — the reference's
+     *  executor built without the option (consensus/replay.go:531) — and
+     *  then no clock is read; set with
+     *  `nodus_cmt_blockexec_set_block_time_tolerance`. */
+    int64_t block_time_tolerance;
+
     /* ticker.go as one pending deadline */
     bool    timer_armed;
     int64_t timer_deadline_ns;
@@ -574,6 +589,20 @@ int nodus_cmt_blockexec_init(nodus_cmt_blockexec_t *ctx,
 
 /** Frees the scratch; the collaborators stay the caller's. */
 void nodus_cmt_blockexec_release(nodus_cmt_blockexec_t *ctx);
+
+/**
+ * cometbft@v0.38.26 state/execution.go:59-63
+ * `BlockExecutorWithBlockTimeTolerance(d)` — the option node.go:393 passes
+ * to NewBlockExecutor, applied after `nodus_cmt_blockexec_init` (whose
+ * signature is unchanged). `tolerance_ns` is stored as given, as the
+ * reference's option stores it; a value <= 0 disables the check
+ * (validation.go:124 `tol > 0`), and the node refuses such a
+ * configuration before it gets here (config.go:1153-1155,
+ * `cmt_config_validate_basic`).
+ * @return CMT_OK, CMT_FAULT on a NULL `ctx`.
+ */
+int nodus_cmt_blockexec_set_block_time_tolerance(nodus_cmt_blockexec_t *ctx,
+                                                 int64_t tolerance_ns);
 
 /**
  * ORCHESTRATOR delta 7, item A — bind (or unbind) the WAL AFTER
@@ -660,17 +689,23 @@ bool nodus_cmt_host_next_deadline(const nodus_cmt_blockexec_t *ctx,
 /* ── exposed for the tests ─────────────────────────────────────────── */
 
 /** cometbft@v0.38.26 state/validation.go:16-19 `blockValidationOptions`.
- *  The reference's `blockTimeTolerance` (:17) is NOT a field here: its
- *  check (:124-129) reads the wall clock inside block validation, which
- *  docs/plans/decisions/2026-09-25-consensus-clock-scope-correction.md
- *  forbids; it waits on an operator decision. */
+ *  `block_time_tolerance` (:17) is filled only by the executor's own
+ *  wrappers (`withBlockTimeTolerance`, execution.go:221-223, appended at
+ *  :215 and :246); its check (:124-129) is the one clock read in block
+ *  validation, admitted by the addendum "Ek — pin v0.38.26" of
+ *  docs/plans/decisions/2026-09-25-consensus-clock-scope-correction.md. */
 typedef struct {
-    bool skip_last_commit_verification;                /* :18 */
+    int64_t block_time_tolerance;                      /* :17, ns */
+    bool    skip_last_commit_verification;             /* :18 */
 } nodus_cmt_block_validation_options_t;
 
 /** cometbft@v0.38.26 state/validation.go:21-170
  *  `validateBlock(state, block, opts...)`. `opts` may be NULL (no
- *  options). */
+ *  options: tolerance 0, the clock is not read).
+ *  @return CMT_OK; CMT_REJECT for a block the reference refuses —
+ *          including a block time not before `now + tolerance` (:124-129);
+ *          CMT_FAULT for this node's own failure, including a failing
+ *          clock read. */
 int nodus_cmt_validate_block(nodus_cmt_blockexec_t *ctx,
                              const cmt_state_t *state, cmt_block_t *block,
                              const nodus_cmt_block_validation_options_t *opts);

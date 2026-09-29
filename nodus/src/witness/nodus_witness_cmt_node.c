@@ -432,10 +432,17 @@ static int hs_assert_app_hash_from_state(const uint8_t *app_hash, size_t len,
  *
  * THE CLOCK IS NOT NULL, and it is not read either. `blockexec_init`
  * refuses a NULL `now` outright (host.c:381), so one must be passed; the
- * only two readers of `ctx->now` in the whole host are `host_now`
- * (host.c:2020-2027) and `host_timer_arm` (:2032-2050), which are the
- * `cmt_cs` seam's clock and ticker rows — neither is reachable from
- * `ExecCommitBlock` or `ApplyBlock`, the only entries a replay uses. The
+ * three readers of `ctx->now` in the whole host are `host_now` and
+ * `host_timer_arm`, the `cmt_cs` seam's clock and ticker rows — neither
+ * reachable from `ExecCommitBlock` or `ApplyBlock`, the only entries a
+ * replay uses — and the block time tolerance in
+ * `nodus_cmt_validate_block` (cometbft@v0.38.26 state/validation.go:
+ * 124-129), which `ApplyBlock` does reach but which reads the clock only
+ * when the executor's tolerance is > 0. This executor never gets one:
+ * cometbft@v0.38.26 consensus/replay.go:531 builds the Handshaker's
+ * executor WITHOUT `BlockExecutorWithBlockTimeTolerance`, so its
+ * tolerance is the zero value, and so is this one's
+ * (`nodus_cmt_blockexec_init` zeroes it; nothing here sets it). The
  * handshake therefore reads no clock, exactly as the reference's does.
  */
 static int hs_exec_open(nodus_cmt_handshaker_t *h, nodus_cmt_app_t *app,
@@ -1759,6 +1766,16 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
      * hedef epoch ~ 60 dk -> düğüm ayarı 4 saniye; operatör)"): 5000 -> 4000. */
     n->config.timeout_commit               = 4000 * CMT_MILLISECOND;
     n->config.create_empty_blocks_interval = 60000 * CMT_MILLISECOND;
+    /* cometbft@v0.38.26 config/config.go:1117-1157 — the checks the
+     * reference's config loader runs, on the values just built. The
+     * tolerance keeps the reference's 60 s default (:1050); :1153-1155
+     * refuses a zero or negative one. Refusal stops the node here, before
+     * anything is opened. */
+    if (cmt_config_validate_basic(&n->config) != CMT_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "the consensus configuration is "
+                      "invalid (ConsensusConfig.ValidateBasic)");
+        goto fail;
+    }
 
     /* node.go:305's second product — `stateStore.LoadFromDBOrGenesisDoc`
      * (setup.go:581, state/store.go:136-151). */
@@ -2060,6 +2077,13 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
         goto fail;
     }
     n->be_ready = true;
+    /* cometbft@v0.38.26 node/node.go:393 —
+     * `sm.BlockExecutorWithBlockTimeTolerance(config.Consensus.BlockTimeTolerance)`
+     * (state/execution.go:59-63). */
+    if (nodus_cmt_blockexec_set_block_time_tolerance(
+            n->be, n->config.block_time_tolerance) != CMT_OK) {
+        goto fail;
+    }
     if (nodus_cmt_host_build(&n->host, n->be) != CMT_OK) {
         goto fail;
     }

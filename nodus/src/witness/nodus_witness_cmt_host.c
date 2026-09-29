@@ -350,6 +350,18 @@ int nodus_cmt_blockexec_set_wal(nodus_cmt_blockexec_t *ctx,
     return CMT_OK;
 }
 
+/* cometbft@v0.38.26 state/execution.go:59-63
+ * BlockExecutorWithBlockTimeTolerance — stored as given (:61). */
+int nodus_cmt_blockexec_set_block_time_tolerance(nodus_cmt_blockexec_t *ctx,
+                                                 int64_t tolerance_ns)
+{
+    if (!ctx) {
+        return CMT_FAULT;
+    }
+    ctx->block_time_tolerance = tolerance_ns;                        /* :61 */
+    return CMT_OK;
+}
+
 static int slot_alloc(nodus_cmt_slot_storage_t *s,
                       const nodus_cmt_host_limits_t *lim)
 {
@@ -938,12 +950,30 @@ static bool time_equal(cmt_time_t a, cmt_time_t b)
     return a.seconds == b.seconds && a.nanos == b.nanos;
 }
 
+/* Go `t.Add(d)` for a valid `t` and d >= 0: the nanosecond carry of
+ * cmt_config_commit (cmt_config.h). The sum cannot overflow: `t.seconds`
+ * is within the Timestamp range (<= 253402300800) and d / 1e9 is below
+ * 9.3e9. */
+static cmt_time_t time_add_nonneg(cmt_time_t t, int64_t d)
+{
+    int64_t nanos = (int64_t)t.nanos + d % CMT_SECOND;
+
+    t.seconds += d / CMT_SECOND;
+    if (nanos >= (int64_t)CMT_TIME_NANOS_PER_SECOND) {
+        nanos     -= (int64_t)CMT_TIME_NANOS_PER_SECOND;
+        t.seconds += 1;
+    }
+    t.nanos = (int32_t)nanos;
+    return t;
+}
+
 int nodus_cmt_validate_block(nodus_cmt_blockexec_t *ctx,
                              const cmt_state_t *state, cmt_block_t *block,
                              const nodus_cmt_block_validation_options_t *opts)
 {
     uint8_t hash[CMT_TMHASH_SIZE];
     bool    skip_last_commit;
+    int64_t tol;
     int     rc;
 
     if (!ctx || !state || !block) {
@@ -952,6 +982,7 @@ int nodus_cmt_validate_block(nodus_cmt_blockexec_t *ctx,
     /* :21-25 — `opts ...func(*blockValidationOptions)` folded into one
      * struct; NULL is "no options", the zero value of :22. */
     skip_last_commit = (opts != NULL) && opts->skip_last_commit_verification;
+    tol = (opts != NULL) ? opts->block_time_tolerance : 0;
 
     /* :27-29 */
     rc = cmt_block_validate_basic(block, CMT_BLOCK_PROTOCOL);
@@ -1081,15 +1112,39 @@ int nodus_cmt_validate_block(nodus_cmt_blockexec_t *ctx,
     }
     /* :123-162 block Time.
      *
-     * NOT PORTED — :124-129, the v0.38.26 wall-clock tolerance
-     * (`block.Time` must be before `time.Now() + blockTimeTolerance`;
-     * config.go:1050 defaults the tolerance to 60 s and node.go:393 wires
-     * it in). It is a clock read inside block validation, which the
-     * recorded clock scope forbids
-     * (docs/plans/decisions/2026-09-25-consensus-clock-scope-correction.md:
-     * "No validation, state derivation or threshold reads a clock").
-     * Held for an operator decision; nothing of it — option field,
-     * setter, check — exists in this port. */
+     * cometbft@v0.38.26 state/validation.go:124-129 — the wall-clock
+     * tolerance: with `tol > 0`, a block whose time is NOT before
+     * `now + tol` is refused. Ported by the operator's decision
+     * (addendum "Ek — pin v0.38.26" of
+     * docs/plans/decisions/2026-09-25-consensus-clock-scope-correction.md):
+     * the one clock read in block validation. `tol > 0` is tested FIRST,
+     * as :124's `&&` does, so a zero tolerance (the handshaker's executor,
+     * consensus/replay.go:531; a NULL `opts`) reads no clock at all.
+     * The clock is the executor's `now` row — the host's wall clock,
+     * Go's `time.Now()`. Deviation, labelled: the reference calls
+     * `time.Now()` a second time for the error message (:127); this reads
+     * it once. A failing or invalid clock is this node's fault
+     * (CMT_FAULT); a block too far ahead is the reference's error, a
+     * verdict about the block (CMT_REJECT). */
+    if (tol > 0) {                                                   /* :124 */
+        cmt_time_t now;
+
+        if (!ctx->now || ctx->now(ctx->now_ctx, &now) != CMT_OK ||
+            cmt_time_validate(now) != CMT_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "the wall clock could not be read "
+                          "for the block time tolerance");
+            return CMT_FAULT;
+        }
+        if (!time_after(time_add_nonneg(now, tol), block->header.time)) {
+            QGP_LOG_ERROR(LOG_TAG, "block time %" PRId64 ".%09d is too far "
+                          "in the future (wall clock %" PRId64 ".%09d + "
+                          "tolerance %" PRId64 " ns)",
+                          block->header.time.seconds,
+                          (int)block->header.time.nanos, now.seconds,
+                          (int)now.nanos, tol);                      /* :125-128 */
+            return CMT_REJECT;
+        }
+    }
     if (block->header.height > state->initial_height) {              /* :131 */
         cmt_time_t median;
 
@@ -1146,18 +1201,27 @@ int nodus_cmt_validate_block(nodus_cmt_blockexec_t *ctx,
 }
 
 /* cometbft@v0.38.26 state/execution.go:214-219 —
- * validateBlockAndCheckEvidence(). `withBlockTimeTolerance` (:215, :221-223)
- * is NOT appended: see the NOT PORTED note in nodus_cmt_validate_block. */
+ * validateBlockAndCheckEvidence(). :215 appends `withBlockTimeTolerance`
+ * (:221-223, `opts.blockTimeTolerance = blockExec.blockTimeTolerance`)
+ * after the caller's options, so it applies to ValidateBlock AND to
+ * ValidateBlockSkipLastCommit: here the caller's options are copied and
+ * the executor's tolerance written over them. */
 static int validate_block_and_check_evidence(
     nodus_cmt_blockexec_t *ctx, const cmt_state_t *state, cmt_block_t *block,
     const nodus_cmt_block_validation_options_t *opts)
 {
+    nodus_cmt_block_validation_options_t vopts;
     int rc;
 
     if (!ctx || !state || !block) {
         return CMT_FAULT;
     }
-    rc = nodus_cmt_validate_block(ctx, state, block, opts);          /* :215 */
+    memset(&vopts, 0, sizeof(vopts));
+    if (opts) {
+        vopts = *opts;
+    }
+    vopts.block_time_tolerance = ctx->block_time_tolerance;          /* :222 */
+    rc = nodus_cmt_validate_block(ctx, state, block, &vopts);        /* :215 */
     if (rc != CMT_OK) {
         return rc;
     }
@@ -1735,24 +1799,31 @@ int nodus_cmt_host_apply_verified_block(void *vctx, const cmt_block_id_t *block_
     return apply_block(ctx, block_id, block, in_out_state);          /* :202 */
 }
 
-/* :211-220 ApplyBlock */
+/* cometbft@v0.38.26 state/execution.go:242-251 ApplyBlock (709fd12b
+ * :211-220) */
 int nodus_cmt_blockexec_apply_block(nodus_cmt_blockexec_t *ctx,
                                     const cmt_block_id_t *block_id,
                                     cmt_block_t *block,
                                     cmt_state_t *in_out_state)
 {
+    nodus_cmt_block_validation_options_t vopts;
     int rc;
 
     if (!ctx || !block_id || !block || !in_out_state) {
         return CMT_FAULT;
     }
-    /* cometbft@v0.38.26 execution.go:246 passes `withBlockTimeTolerance`
-     * here; not ported (see nodus_cmt_validate_block), so no options. */
-    rc = nodus_cmt_validate_block(ctx, in_out_state, block, NULL);   /* :215 */
+    /* cometbft@v0.38.26 state/execution.go:246 — `validateBlock(state,
+     * block, blockExec.withBlockTimeTolerance)`: the tolerance is the only
+     * option (:221-223). `ApplyVerifiedBlock` (:229-234) calls no
+     * validateBlock and so reads no clock — nodus_cmt_host_apply_verified_
+     * block above is unchanged. */
+    memset(&vopts, 0, sizeof(vopts));
+    vopts.block_time_tolerance = ctx->block_time_tolerance;          /* :222 */
+    rc = nodus_cmt_validate_block(ctx, in_out_state, block, &vopts); /* :246 */
     if (rc != CMT_OK) {
-        return rc == CMT_FAULT ? CMT_FAULT : CMT_REJECT;             /* :216 */
+        return rc == CMT_FAULT ? CMT_FAULT : CMT_REJECT;             /* :247 */
     }
-    return apply_block(ctx, block_id, block, in_out_state);          /* :219 */
+    return apply_block(ctx, block_id, block, in_out_state);          /* :250 */
 }
 
 /* :731-771 ExecCommitBlock */
