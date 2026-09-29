@@ -31,10 +31,18 @@
  *         the witness's switch but NOT in the consensus reactor's peer
  *         set — the host admits peers only once both reactors run
  *         (R-P2P-47);
- *     (c) the tick that crosses genesis_time starts both reactors
- *         (`cs_started`) and, in that SAME tick, admits the connected
- *         peer (nodus_witness_p2p_lane_live);
- *     (d) a further tick leaves it admitted;
+ *     (c) the tick that crosses genesis_time starts both reactors and the
+ *         block sync reactor and, in that SAME tick, admits the connected
+ *         peer (nodus_witness_p2p_lane_live). Since the blocksync port
+ *         (decision 2026-09-29-blocksync-before-testnet.md) the consensus
+ *         reactor WAITS for block sync — blockSync = !onlyValidatorIsUs is
+ *         true with 7 validators (node.go:375) — so cmt_cs_start is NOT
+ *         reached (`cs_started` false, reactor.go:83-88);
+ *     (d) ~2 s of further ticks (past the 1 s switch ticker) leave the
+ *         peer admitted and the node STILL in block sync: the peer is a
+ *         bare p2p host with no 0x40 reactor, so the pool has no peer and
+ *         IsCaughtUp is false (pool.go:209-212), and 1/7 of the power is
+ *         below localNodeBlocksTheChain's 1/3 (reactor.go:307-314);
  *     (e) the peer's host going away removes it from the reactor again.
  *  2. t_checktx_funded_and_forged — a REAL claim against the genesis
  *     allocation, through the LIVE node's own mempool (`n->mem`), is
@@ -350,6 +358,7 @@ static int t_genesis_wait_and_peer_admission(void) {
     nodus_cmt_node_t *n;
     cmt_conr_t *conr;
     cmt_memr_t *memr;
+    cmt_bsync_reactor_t *bs;
     static nodus_identity_t id1;
     nodus_p2p_config_t pcfg;
     nodus_witness_p2p_params_t prm;
@@ -430,15 +439,44 @@ static int t_genesis_wait_and_peer_admission(void) {
         usleep(TICK_SLEEP_US);
     }
     CHECK(L.w->cmt_live, "(c) the tick started the lane at genesis_time");
-    CHECK(conr->running && memr->running && n->cs_started,
-          "(c) both reactors run and cmt_cs_start was reached");
+    /* Blocksync port (decision 2026-09-29-blocksync-before-testnet.md):
+     * with 7 genesis validators blockSync = !onlyValidatorIsUs is TRUE
+     * (node.go:375), so the lane starts the reactors but the consensus
+     * reactor WAITS for block sync — cmt_cs_start is NOT reached here; it
+     * is reached at SwitchToConsensus (consensus/reactor.go:107-141). */
+    bs = nodus_witness_p2p_bsync(L.w->p2p);
+    CHECK(conr->running && memr->running,
+          "(c) both reactors run at genesis_time");
+    CHECK(bs != NULL && cmt_bsync_reactor_is_syncing(bs),
+          "(c) the block sync reactor runs its pool routine (blockSync)");
+    CHECK(cmt_conr_wait_sync(conr) && !n->cs_started,
+          "(c) the consensus reactor waits for block sync: cmt_cs_start "
+          "not reached (reactor.go:83-88)");
     CHECK(conr_in_set_count(conr) == 1,
           "(c) the connected peer was admitted in that same tick");
 
-    /* (d) */
-    nodus_witness_tick(L.w);
-    nodus_witness_p2p_poll(P1, 1);
+    /* (d) — past the 1 s switch ticker (blocksync/reactor.go:331) the node
+     * is STILL in block sync: the peer runs no block sync reactor (a bare
+     * p2p host), so the pool has no 0x40 peer and IsCaughtUp is false
+     * (pool.go:209-212), and one validator of seven holds < 1/3 of the
+     * power (localNodeBlocksTheChain, reactor.go:307-314). Bounded by
+     * tick count, not a wall-clock verdict: the assertion is that nothing
+     * switches, whatever the elapsed time. */
+    for (i = 0; i < 100; i++) {                    /* 100 × 20 ms ≥ 2 s */
+        CHECK(L.w->running, "node halted while in block sync");
+        nodus_witness_tick(L.w);
+        nodus_witness_p2p_poll(P1, 1);
+        usleep(TICK_SLEEP_US);
+    }
     CHECK(conr_in_set_count(conr) == 1, "(d) still admitted");
+    CHECK(cmt_bsync_pool_is_running(cmt_bsync_reactor_pool(bs)) &&
+          cmt_bsync_reactor_pool(bs)->n_peers == 0,
+          "(d) the block sync pool has no peer (the peer has no 0x40 "
+          "reactor)");
+    CHECK(cmt_bsync_reactor_is_syncing(bs) && !cmt_bsync_reactor_switched(bs) &&
+          cmt_conr_wait_sync(conr) && !n->cs_started,
+          "(d) with no block sync peer the node stays in block sync and "
+          "never starts consensus");
 
     /* (e) the peer goes away */
     nodus_witness_p2p_free(P1);

@@ -181,6 +181,15 @@ SCENARIOS_ONLY=0
 #     the genesis document). MUST run BEFORE test_cmt_rule_n_retire.sh:
 #     it asserts all SEVEN committee validators are paid, and that
 #     scenario permanently retires node 7.
+#   test_cmt_blocksync.sh (blocksync port, decision 2026-09-29-blocksync-
+#     before-testnet.md) — stops node 4 while the fleet moves a DISTANCE
+#     in blocks (capped at epoch/2 − 2, so node 4 misses Rule N's bar in
+#     at most ONE epoch and is never retired), restarts it and asserts it
+#     catches up by BLOCK SYNC, then 7/7. AFTER test_v2_rewards.sh (a
+#     missed epoch could cost node 4 an accrual row that scenario asserts)
+#     and BEFORE test_cmt_rule_n_retire.sh (once node 7 is retired,
+#     stopping node 4 could leave the set without a quorum). Uses the
+#     CLI-SPEND pump (node 3's leaf) when ready — no other leaf.
 #   test_cmt_rule_n_retire.sh (round 2, tokenomics-v3 P1 §A/D-3/D-11) —
 #     SKIPS (99) at the shipped epoch length (needs THREE boundaries'
 #     worth of idle-only wall time, its own header explains why three,
@@ -208,6 +217,7 @@ test_cmt_env_flood.sh
 test_cmt_token_create.sh
 test_v2_epoch_boundary.sh
 test_v2_rewards.sh
+test_cmt_blocksync.sh
 test_cmt_rule_n_retire.sh
 test_p2p_seam_faults.sh
 "

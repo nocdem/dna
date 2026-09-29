@@ -901,6 +901,37 @@ int cmt_validator_set_verify_commit(cmt_validator_set_t *vals,
                                     const cmt_pb_commit_t *commit,
                                     cmt_vs_error_t *err);
 
+/**
+ * cometbft@709fd12b types/validator_set.go:708-712 —
+ * `(vals *ValidatorSet) VerifyCommitLight()`: the method form of
+ * `types.VerifyCommitLight` and nothing more (:711). Ported with the
+ * blocksync reactor (blocksync/reactor.go:496 is its caller), under the
+ * operator's 2026-09-29 answer in
+ * docs/plans/decisions/2026-09-29-blocksync-before-testnet.md. Same
+ * parameter spelling rule as `cmt_validator_set_verify_commit`; the
+ * implementation delegates to `cmt_verify_commit_light`.
+ * @return CMT_OK, CMT_REJECT, CMT_FAULT.
+ */
+int cmt_validator_set_verify_commit_light(cmt_validator_set_t *vals,
+                                          const uint8_t *chain_id,
+                                          size_t chain_id_len,
+                                          const cmt_pb_block_id_t *block_id,
+                                          int64_t height,
+                                          const cmt_pb_commit_t *commit,
+                                          cmt_vs_error_t *err);
+
+/**
+ * cometbft@709fd12b types/validator_set.go:714-720 —
+ * `(vals *ValidatorSet) VerifyCommitLightAllSignatures()`: the method
+ * form of `types.VerifyCommitLightAllSignatures` (:719); delegates to
+ * `cmt_verify_commit_light_all_signatures`.
+ * @return CMT_OK, CMT_REJECT, CMT_FAULT.
+ */
+int cmt_validator_set_verify_commit_light_all_signatures(
+        cmt_validator_set_t *vals, const uint8_t *chain_id,
+        size_t chain_id_len, const cmt_pb_block_id_t *block_id,
+        int64_t height, const cmt_pb_commit_t *commit, cmt_vs_error_t *err);
+
 /* ── the codec side (KODEK rows) ────────────────────────────────────── */
 
 /**
@@ -972,15 +1003,18 @@ int cmt_validator_set_from_existing_validators(cmt_validator_set_t *vals,
  *       existed. R1-C listed it here as stage D; it is no longer a hole.
  *   · :708-720 `VerifyCommitLight`,
  *              `VerifyCommitLightAllSignatures`
+ *                                     — PORTED with the blocksync reactor
+ *       (2026-09-29) as `cmt_validator_set_verify_commit_light` /
+ *       `_light_all_signatures` above; their caller
+ *       blocksync/reactor.go:496 is now built. No longer a hole.
  *   · :725-742 `VerifyCommitLightTrusting`,
  *              `VerifyCommitLightTrustingAllSignatures`
  *                                     — YOK by the port map's scope rule
- *       (REV 3 ~892, REV 3.1 ~950): the four wrap the light-client family
- *       of types/validation.go (:61-192), whose only callers are `light/`,
- *       the evidence pool and `blocksync/`. Our block sync takes the full
- *       `VerifyCommit` path. The Trusting pair additionally needs
- *       `cmtmath.Fraction` and a trust level, which nothing in scope
- *       supplies.
+ *       (REV 3 ~892, REV 3.1 ~950): the pair wraps the Trusting half of
+ *       the light-client family of types/validation.go (:125-192), whose
+ *       only callers are `light/` and the evidence pool. It additionally
+ *       needs `cmtmath.Fraction` and a trust level, which nothing in
+ *       scope supplies.
  *   · :807-809 `ErrNotEnoughVotingPowerSigned.Error` — display only; the
  *       VALUE it formats is `cmt_vs_error_t` above.
  *   · :816-841 `String` / `StringIndented` — display only.

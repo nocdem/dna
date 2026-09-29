@@ -903,6 +903,11 @@ typedef struct {
     uint8_t pk[NODUS_PK_BYTES];
 } p2p_bonded_t;
 
+/** The largest StatusResponse `bs_receive` keeps before the lane is live:
+ *  its canonical form is at most tag + len + two (tag + 10-byte varint)
+ *  fields = 24 bytes (cmt_bsync_msgs.c, types.pb.go:565-581, :704-718). */
+#define NODUS_P2P_BS_STATUS_MAX 32
+
 /** One index of the consensus seam (file header). */
 typedef struct {
     cmt_p2p_peer_t *peer;          /* NULL = free                          */
@@ -910,6 +915,13 @@ typedef struct {
     bool conr_added, memr_added;   /* the reactor's AddPeer ran            */
     bool cons_removed, mem_removed;/* the shim's RemovePeer ran            */
     int  pending_stop;             /* deferred StopPeerForError reason     */
+    /* DEVIATION (bs_receive): the latest 0x40 StatusResponse this peer
+     * sent before the lane was live, re-marshalled; replayed into the
+     * block sync reactor at nodus_witness_p2p_lane_live. */
+    bool    bs_status_held;
+    char    bs_status_id[CMT_P2P_ID_CAP];
+    uint8_t bs_status[NODUS_P2P_BS_STATUS_MAX];
+    size_t  bs_status_len;
 } p2p_lane_slot_t;
 
 /* The 0x70 serving side's per-requester gate (red-team H2 / R6 F5): one
@@ -934,6 +946,7 @@ typedef struct {
 #define NODUS_P2P_STOP_MEMR         410   /* mempool/reactor.go:172        */
 #define NODUS_P2P_STOP_DECODE_0X70  420   /* peer.go:410-421               */
 #define NODUS_P2P_STOP_DECODE_0X71  421
+#define NODUS_P2P_STOP_BSYNC_BASE   430   /* + cmt_bsync_stop_reason_t     */
 
 struct nodus_witness_p2p {
     nodus_witness_t            *w;
@@ -959,6 +972,7 @@ struct nodus_witness_p2p {
 
     cmt_p2p_ch_desc_t           cons_desc[CMT_CONR_NUM_CHANNELS];
     cmt_p2p_ch_desc_t           mem_desc[1];
+    cmt_p2p_ch_desc_t           bs_desc[1];
     cmt_p2p_ch_desc_t           gb_desc[1];
     cmt_p2p_ch_desc_t           cc_desc[1];
 
@@ -1024,6 +1038,7 @@ struct nodus_witness_p2p {
     cmt_pb_arena_t              part_arena;
     cmt_conr_t                 *conr;
     cmt_memr_t                 *memr;
+    cmt_bsync_reactor_t        *bsync;       /* 0x40, borrowed (header)  */
     bool                        lane_live;
     p2p_lane_slot_t             slots[CMT_CONR_MAX_PEERS];
     bool                        any_pending_stop;
@@ -2277,6 +2292,166 @@ static void mem_receive(void *ctx, cmt_p2p_peer_t *src, uint8_t ch_id,
     process_pending_stops(p);
 }
 
+/* BLOCKSYNC shim reactor (channel 0x40, cmt_bsync_reactor_get_channels;
+ * header "THE BLOCK SYNC SEAM"). No InitPeer: blocksync/reactor.go
+ * embeds BaseReactor's no-op InitPeer. */
+static const cmt_p2p_ch_desc_t *bs_channels(void *ctx, int *n)
+{
+    *n = 1;
+    return ((nodus_witness_p2p_t *)ctx)->bs_desc;
+}
+
+/* reactor.go:190-203 AddPeer — only once the lane is live (R-P2P-47);
+ * lane_live runs it for the peers connected before. */
+static void bs_add_peer(void *ctx, cmt_p2p_peer_t *peer)
+{
+    nodus_witness_p2p_t *p = (nodus_witness_p2p_t *)ctx;
+
+    if (p->lane_live && p->bsync != NULL) {
+        if (cmt_bsync_reactor_add_peer(p->bsync, cmt_p2p_peer_id(peer)) != CMT_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "blocksync AddPeer(%s): CMT_FAULT",
+                          cmt_p2p_peer_id(peer));
+        }
+    }
+}
+
+/* reactor.go:205-208 RemovePeer — the pool forgets the ID. */
+static void bs_remove_peer(void *ctx, cmt_p2p_peer_t *peer, int reason)
+{
+    nodus_witness_p2p_t *p = (nodus_witness_p2p_t *)ctx;
+    int i = lane_find(p, peer);
+
+    (void)reason;
+    if (i >= 0) {
+        p->slots[i].bs_status_held = false;     /* a held status dies here */
+    }
+    if (p->bsync != NULL) {
+        cmt_bsync_reactor_remove_peer(p->bsync, cmt_p2p_peer_id(peer));
+    }
+}
+
+/* ⚠ DEVIATION (no reference counterpart — the reference has no pre-live
+ * window: p2p/switch.go:234-246 starts every reactor BEFORE it accepts a
+ * peer, so a peer's AddPeer StatusResponse, reactor.go:190-203, always
+ * reaches a running reactor). Here R-P2P-47 keeps the reactors away
+ * from peers until nodus_witness_p2p_lane_live, and dropping that one
+ * message made the pool learn the peer's height only at its 10 s status
+ * broadcast (reactor.go:325, :371-373) — every node's switch to
+ * consensus late by up to one interval. So while the lane is not live a
+ * 0x40 StatusResponse is KEPT — only the LATEST one per peer (its lane
+ * slot, keyed by the peer's p2p ID), canonical re-marshal, at most
+ * NODUS_P2P_BS_STATUS_MAX bytes — and replayed into the reactor right
+ * after it runs (lane_live). It is discarded when the peer is removed or
+ * the lane unbound. Every other 0x40 message is still DROPPED before the
+ * lane is live, undecodable bytes included, and the sender is never
+ * stopped for anything received then (a pre-genesis joiner has no chain
+ * to answer from). A peer holding no lane index keeps nothing. */
+static void bs_hold_status(nodus_witness_p2p_t *p, cmt_p2p_peer_t *src,
+                           const uint8_t *msg, size_t len)
+{
+    cmt_bsync_msg_t m;
+    int i = lane_find(p, src);
+    size_t n = 0;
+
+    if (i < 0) {
+        return;
+    }
+    cmt_bsync_msg_init(&m);
+    if (cmt_bsync_msg_unmarshal(msg, len, &m) != CMT_OK ||
+        m.kind != CMT_BSYNC_MSG_STATUS_RESPONSE) {
+        cmt_bsync_msg_release(&m);
+        return;
+    }
+    if (cmt_bsync_msg_marshal(&m, p->slots[i].bs_status,
+                              sizeof(p->slots[i].bs_status), &n) == CMT_OK) {
+        p->slots[i].bs_status_len = n;
+        snprintf(p->slots[i].bs_status_id, CMT_P2P_ID_CAP, "%s",
+                 cmt_p2p_peer_id(src));
+        p->slots[i].bs_status_held = true;       /* the latest replaces */
+    }
+    cmt_bsync_msg_release(&m);
+}
+
+/* Replay the held StatusResponse of index `i` into the running block sync
+ * reactor (the DEVIATION above), once; the entry is discarded either way. */
+static void bs_replay_status(nodus_witness_p2p_t *p, int i)
+{
+    const char *id;
+
+    if (!p->slots[i].bs_status_held) {
+        return;
+    }
+    p->slots[i].bs_status_held = false;
+    id = cmt_p2p_peer_id(p->slots[i].peer);
+    if (p->bsync == NULL || strcmp(id, p->slots[i].bs_status_id) != 0) {
+        return;
+    }
+    if (cmt_bsync_reactor_receive(p->bsync, id, p->slots[i].bs_status,
+                                  p->slots[i].bs_status_len) == CMT_FAULT) {
+        QGP_LOG_ERROR(LOG_TAG, "blocksync receive (held status): CMT_FAULT "
+                      "(peer %s)", id);
+    }
+}
+
+bool nodus_witness_p2p_bsync_status_held(const nodus_witness_p2p_t *p,
+                                         const char *peer_id,
+                                         int64_t *out_height)
+{
+    int i;
+
+    if (p == NULL || peer_id == NULL) {
+        return false;
+    }
+    for (i = 0; i < CMT_CONR_MAX_PEERS; i++) {
+        if (p->slots[i].peer != NULL && p->slots[i].bs_status_held &&
+            strcmp(p->slots[i].bs_status_id, peer_id) == 0) {
+            if (out_height != NULL) {
+                cmt_bsync_msg_t m;
+
+                cmt_bsync_msg_init(&m);
+                *out_height = cmt_bsync_msg_unmarshal(p->slots[i].bs_status,
+                                                      p->slots[i].bs_status_len,
+                                                      &m) == CMT_OK ? m.height : -1;
+                cmt_bsync_msg_release(&m);
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+/* reactor.go:251-305 Receive. Before the lane is live — a pinned-genesis
+ * joiner has no chain, a node before genesis time has no running
+ * reactors — the message is DROPPED and the sender is NOT stopped
+ * (R-P2P-47): an honest peer asks every node it meets. The one exception
+ * is a StatusResponse, held for the replay (DEVIATION, bs_hold_status). */
+static void bs_receive(void *ctx, cmt_p2p_peer_t *src, uint8_t ch_id,
+                       const uint8_t *msg, size_t len)
+{
+    nodus_witness_p2p_t *p = (nodus_witness_p2p_t *)ctx;
+    int rc;
+
+    (void)ch_id;
+    if (!p->lane_live) {
+        bs_hold_status(p, src, msg, len);
+        QGP_LOG_DEBUG(LOG_TAG, "blocksync message from %s before the reactor "
+                      "runs — dropped, a StatusResponse held (R-P2P-47)",
+                      cmt_p2p_peer_id(src));
+        return;
+    }
+    if (p->bsync == NULL) {
+        QGP_LOG_DEBUG(LOG_TAG, "blocksync message from %s with no block sync "
+                      "reactor — dropped", cmt_p2p_peer_id(src));
+        return;
+    }
+    rc = cmt_bsync_reactor_receive(p->bsync, cmt_p2p_peer_id(src), msg, len);
+    if (rc == CMT_FAULT) {
+        QGP_LOG_ERROR(LOG_TAG, "blocksync receive: CMT_FAULT (peer %s)",
+                      cmt_p2p_peer_id(src));
+    }
+    process_pending_stops(p);
+}
+
 /* 0x70 — the genesis bundle (the former verbs 24/25). */
 static const cmt_p2p_ch_desc_t *gb_channels(void *ctx, int *n)
 {
@@ -2608,6 +2783,93 @@ static int lane_bs_ext_commit(void *ctx, int64_t height, cmt_extended_commit_t *
                                                    out_found);
 }
 
+/* ── the block sync reactor's p2p rows (cmt_bsync_host_t, `ctx`) ───── */
+
+/* reactor.go:216, :242, :289, :358 — `Switch.Peers().Get(id)` then
+ * `TrySend` on 0x40; a peer not connected is `false`. */
+static bool bs_try_send(void *ctx, const char *peer_id, const uint8_t *msg,
+                        size_t len)
+{
+    nodus_witness_p2p_t *p = (nodus_witness_p2p_t *)ctx;
+    cmt_p2p_peer_t *peer = cmt_p2p_peer_set_get(cmt_p2p_switch_peers(&p->sw),
+                                                peer_id);
+
+    return peer != NULL &&
+           cmt_p2p_peer_try_send(peer, CMT_BSYNC_CHANNEL, msg, len);
+}
+
+/* reactor.go:192-198 — `peer.Send` (≡ TrySend, R-P2P-19). */
+static bool bs_send(void *ctx, const char *peer_id, const uint8_t *msg,
+                    size_t len)
+{
+    nodus_witness_p2p_t *p = (nodus_witness_p2p_t *)ctx;
+    cmt_p2p_peer_t *peer = cmt_p2p_peer_set_get(cmt_p2p_switch_peers(&p->sw),
+                                                peer_id);
+
+    return peer != NULL && cmt_p2p_peer_send(peer, CMT_BSYNC_CHANNEL, msg, len);
+}
+
+/* reactor.go:576-579 — `Switch.Broadcast` on 0x40. */
+static void bs_broadcast(void *ctx, const uint8_t *msg, size_t len)
+{
+    nodus_witness_p2p_t *p = (nodus_witness_p2p_t *)ctx;
+
+    (void)cmt_p2p_switch_broadcast(&p->sw, CMT_BSYNC_CHANNEL, msg, len);
+}
+
+/* switch.go:335-358 StopPeerForError, DEFERRED like the other lane rows:
+ * the peer by ID (a peer no longer connected is skipped — reactor.go:
+ * 366-367, :518-519, :525-526), then its index. A connected peer with no
+ * index cannot be deferred — logged (header). */
+static void bs_stop_peer(void *ctx, const char *peer_id, int reason)
+{
+    nodus_witness_p2p_t *p = (nodus_witness_p2p_t *)ctx;
+    cmt_p2p_peer_t *peer = cmt_p2p_peer_set_get(cmt_p2p_switch_peers(&p->sw),
+                                                peer_id);
+    int i;
+
+    if (peer == NULL) {
+        return;
+    }
+    i = lane_find(p, peer);
+    if (i < 0) {
+        QGP_LOG_WARN(LOG_TAG, "blocksync asked to stop %s (reason %d) but the "
+                     "peer holds no index — not stopped", peer_id, reason);
+        return;
+    }
+    p->slots[i].pending_stop = NODUS_P2P_STOP_BSYNC_BASE + reason;
+    p->any_pending_stop = true;
+}
+
+int nodus_witness_p2p_bsync_host_fill(nodus_witness_p2p_t *p,
+                                      cmt_bsync_host_t *out)
+{
+    if (p == NULL || out == NULL || !p->lane_prepared) {
+        return CMT_FAULT;
+    }
+    out->ctx                 = p;
+    out->try_send            = bs_try_send;
+    out->send                = bs_send;
+    out->broadcast           = bs_broadcast;
+    out->stop_peer_for_error = bs_stop_peer;
+    out->now                 = p->lane_now;       /* the consensus clock */
+    out->now_ctx             = p->lane_now_ctx;
+    return CMT_OK;
+}
+
+void nodus_witness_p2p_bsync_bind(nodus_witness_p2p_t *p,
+                                  cmt_bsync_reactor_t *bsync)
+{
+    if (p != NULL) {
+        p->bsync = bsync;
+    }
+}
+
+cmt_bsync_reactor_t *nodus_witness_p2p_bsync(const nodus_witness_p2p_t *p)
+{
+    return p != NULL ? p->bsync : NULL;
+}
+
 /* mempool/reactor.go:180-182, :212-230 — the consensus reactor's
  * PeerState is the peer's one PeerStateKey value. */
 static int64_t lane_peer_height(void *ctx, int idx, bool *out_known)
@@ -2721,7 +2983,9 @@ int nodus_witness_p2p_lane_live(nodus_witness_p2p_t *p)
     }
     p->lane_live = true;
     /* R-P2P-47: every connected peer, index order, the reference's
-     * addPeer order (switch.go:829-831 then :858-860). */
+     * addPeer order (switch.go:829-831 then :858-860). The block sync
+     * reactor has no InitPeer; its AddPeer (our StatusResponse,
+     * reactor.go:190-203) comes after the other two's. */
     for (i = 0; i < CMT_CONR_MAX_PEERS; i++) {
         if (p->slots[i].peer == NULL) {
             continue;
@@ -2730,13 +2994,25 @@ int nodus_witness_p2p_lane_live(nodus_witness_p2p_t *p)
         lane_memr_init(p, i);
         lane_conr_add(p, i);
         lane_memr_add(p, i);
+        if (p->bsync != NULL &&
+            cmt_bsync_reactor_add_peer(p->bsync,
+                                       cmt_p2p_peer_id(p->slots[i].peer)) != CMT_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "blocksync AddPeer(%s): CMT_FAULT",
+                          cmt_p2p_peer_id(p->slots[i].peer));
+        }
+        /* The StatusResponse this peer sent before the lane was live
+         * (DEVIATION, bs_hold_status) — after AddPeer, as the reference's
+         * running reactor would have received it. The caller has STARTED
+         * the block sync reactor before this call (nodus_witness.c). */
+        bs_replay_status(p, i);
     }
+    process_pending_stops(p);   /* a replayed status may be invalid (:253-257) */
     return CMT_OK;
 }
 
 int nodus_witness_p2p_lane_tick(nodus_witness_p2p_t *p, int64_t *next_deadline_ns)
 {
-    int64_t d_conr = INT64_MAX, d_memr = INT64_MAX;
+    int64_t d_conr = INT64_MAX, d_memr = INT64_MAX, d_bsync = INT64_MAX;
     bool memr_has = false;
 
     if (next_deadline_ns != NULL) {
@@ -2751,9 +3027,17 @@ int nodus_witness_p2p_lane_tick(nodus_witness_p2p_t *p, int64_t *next_deadline_n
     if (cmt_memr_tick(p->memr, &d_memr, &memr_has) == CMT_FAULT) {
         return CMT_FAULT;
     }
+    /* The block sync reactor's poolRoutine (cmt_bsync_reactor.h); after
+     * the switch to consensus it returns at once with no deadline. */
+    if (p->bsync != NULL &&
+        cmt_bsync_reactor_tick(p->bsync, &d_bsync) == CMT_FAULT) {
+        return CMT_FAULT;
+    }
     process_pending_stops(p);
     if (next_deadline_ns != NULL) {
-        *next_deadline_ns = (memr_has && d_memr < d_conr) ? d_memr : d_conr;
+        int64_t d = (memr_has && d_memr < d_conr) ? d_memr : d_conr;
+
+        *next_deadline_ns = d_bsync < d ? d_bsync : d;
     }
     return CMT_OK;
 }
@@ -2775,11 +3059,13 @@ void nodus_witness_p2p_lane_unbind(nodus_witness_p2p_t *p)
         p->slots[i].conr_init = p->slots[i].conr_added = false;
         p->slots[i].memr_init = p->slots[i].memr_added = false;
         p->slots[i].pending_stop = 0;
+        p->slots[i].bs_status_held = false;      /* bs_hold_status */
     }
     p->any_pending_stop = false;
     p->lane_live = false;
     p->conr = NULL;
     p->memr = NULL;
+    p->bsync = NULL;      /* its owner frees it (nodus_witness_close) */
 }
 
 /* ── construction (node.go:285-422 / setup.go:349-491, the p2p half) ── */
@@ -2818,6 +3104,19 @@ static void fill_descs(nodus_witness_p2p_t *p)
     p->mem_desc[0].send_queue_capacity = 0;       /* FillDefaults (:762-774) */
     p->mem_desc[0].recv_buffer_capacity = 0;
     p->mem_desc[0].recv_message_capacity = (int)md.recv_message_capacity;
+    /* blocksync/reactor.go:177-188 GetChannels — 0x40, priority 5, send
+     * queue 1000, receive buffer 50 × 4096, MaxMsgSize (msgs.go:16-18,
+     * the operator's "follow the reference" answer). */
+    {
+        cmt_bsync_channel_desc_t bd;
+
+        cmt_bsync_reactor_get_channels(&bd);
+        p->bs_desc[0].id = bd.id;
+        p->bs_desc[0].priority = bd.priority;
+        p->bs_desc[0].send_queue_capacity = bd.send_queue_capacity;
+        p->bs_desc[0].recv_buffer_capacity = bd.recv_buffer_capacity;
+        p->bs_desc[0].recv_message_capacity = (int)bd.recv_message_capacity;
+    }
     /* R-P2P-5: the two nodus channels (constants and their rationale:
      * nodus_witness_p2p.h). ⚠ NOT GROUNDED — no reference channel. */
     p->gb_desc[0].id = NODUS_P2P_CH_GBUNDLE;
@@ -2961,9 +3260,10 @@ nodus_witness_p2p_t *nodus_witness_p2p_new(struct nodus_witness *w,
     }
 
     /* node.go:928-975 makeNodeInfo. Channels in the reference's list order
-     * (consensus, mempool; PEX last, :953-955) with the two nodus channels
-     * before PEX. */
+     * (blocksync, consensus, mempool, :949-955; PEX last) with the two
+     * nodus channels before PEX. */
     fill_descs(p);
+    chans[n_chans++] = p->bs_desc[0].id;
     for (i = 0; i < CMT_CONR_NUM_CHANNELS; i++) {
         chans[n_chans++] = p->cons_desc[i].id;
     }
@@ -3059,6 +3359,8 @@ nodus_witness_p2p_t *nodus_witness_p2p_new(struct nodus_witness *w,
                     cons_remove_peer, cons_receive) != CMT_OK ||
         add_reactor(p, "MEMPOOL", mem_channels, mem_init_peer, mem_add_peer,
                     mem_remove_peer, mem_receive) != CMT_OK ||
+        add_reactor(p, "BLOCKSYNC", bs_channels, noop_peer, bs_add_peer,
+                    bs_remove_peer, bs_receive) != CMT_OK ||
         add_reactor(p, "GBUNDLE", gb_channels, noop_peer, noop_peer, noop_remove,
                     gb_receive) != CMT_OK ||
         add_reactor(p, "CCAPPR", cc_channels, noop_peer, noop_peer, noop_remove,

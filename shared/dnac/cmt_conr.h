@@ -566,7 +566,10 @@ typedef struct {
  *        this reactor's `host.now` must also be.
  * @param wait_sync the reference's `waitSync` (:56, :59): true when the
  *        node is block-syncing and `SwitchToConsensus` will start the
- *        state machine later.
+ *        state machine later. The live caller (nodus_witness.c) passes
+ *        node.go:375's `blockSync` = !onlyValidatorIsUs; the block sync
+ *        reactor (cmt_bsync_reactor.c) calls
+ *        `cmt_conr_switch_to_consensus` when it has caught up.
  * @param recv_arena BORROWED; the lifetime rule is in the file header.
  * @return CMT_OK; CMT_FAULT on NULL or allocation failure.
  */

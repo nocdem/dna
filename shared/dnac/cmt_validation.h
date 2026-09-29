@@ -32,21 +32,29 @@
  * function that returns false with the citation, and the batch routine is
  * NOT ported: see the taşınmadı list.
  *
- * ── THE LIGHT-CLIENT FAMILY IS OUT OF SCOPE ────────────────────────────
- * `VerifyCommitLight*` (:61-115) and `VerifyCommitLightTrusting*`
- * (:125-192) are YOK by the port map's REV 3/3.1 scope rule (map ~892,
- * ~950): their callers are `light/`, the evidence pool and `blocksync/`
- * (`blocksync/reactor.go:496`), three packages this port does not build.
- * Our block sync takes the FULL `VerifyCommit` path instead. The wrappers
- * in `validator_set.go:708-742` are YOK for the same reason.
+ * ── THE LIGHT FAMILY: `VerifyCommitLight` IS PORTED, Trusting IS NOT ──
+ * `VerifyCommitLight` / `VerifyCommitLightAllSignatures` /
+ * `verifyCommitLightInternal` (:61-115) are PORTED (blocksync port,
+ * 2026-09-29): their caller `blocksync/reactor.go:496` is now built
+ * (cmt_bsync_reactor.c), and the operator's answer in
+ * docs/plans/decisions/2026-09-29-blocksync-before-testnet.md is "follow
+ * the reference — port VerifyCommitLight". Block sync verifies the first
+ * block with the SECOND block's LastCommit through
+ * `cmt_verify_commit_light`, exactly as the reference does — it no longer
+ * takes the full `VerifyCommit` path. The wrappers at
+ * `validator_set.go:708-720` are ported with them
+ * (cmt_validator_set.h). `VerifyCommitLightTrusting*` (:125-192) stay YOK
+ * by the port map's REV 3/3.1 scope rule (map ~892, ~950): their callers
+ * are `light/` and the evidence pool, which this port does not build.
  *
- * `verifyCommitSingle` nevertheless keeps BOTH of its lookup branches and
- * both of its predicate parameters, because they are that function's
- * parameters and dropping them would be a different function. Only
- * `look_up_by_index = true` and CMT_SIG_POLICY_COMMIT are reachable from
- * `cmt_verify_commit` (:51-52); the address branch is reachable only from
- * the Trusting family, and it is ported — with its double-vote check —
- * so that the row is complete and testable.
+ * `verifyCommitSingle` keeps BOTH of its lookup branches and both of its
+ * predicate parameters, because they are that function's parameters and
+ * dropping them would be a different function. `look_up_by_index = true`
+ * is reachable from `cmt_verify_commit` (:51-52, CMT_SIG_POLICY_COMMIT)
+ * and from `cmt_verify_commit_light*` (:113-114, CMT_SIG_POLICY_LIGHT);
+ * the address branch is reachable only from the Trusting family, and it
+ * is ported — with its double-vote check — so that the row is complete
+ * and testable.
  *
  * ── Substitutions, and nothing else ────────────────────────────────────
  *  · signature ML-DSA-87 via `qgp_dsa87_verify`, exactly as `cmt_vote_verify`
@@ -91,15 +99,15 @@
  * same commit and the same set reach the same verdict.
  *
  * ── taşınmadı (not ported), with the reason ────────────────────────────
- *   · :61-115  `VerifyCommitLight`, `VerifyCommitLightAllSignatures`,
- *              `verifyCommitLightInternal`
  *   · :125-192 `VerifyCommitLightTrusting`,
  *              `VerifyCommitLightTrustingAllSignatures`,
  *              `verifyCommitLightTrustingInternal`
  *                                  — YOK, scope rule (light client /
- *       evidence pool / blocksync); see above. `verifyCommitLightTrusting`
+ *       evidence pool); see above. `verifyCommitLightTrusting`
  *       additionally needs `cmtmath.Fraction` and a trust level, which no
  *       in-scope caller supplies.
+ *   (:61-115, the `VerifyCommitLight` trio, were on this list until the
+ *   blocksync port; they are ported below.)
  *   · :196-204 `ValidateHash`       — ALREADY PORTED as `cmt_validate_hash`
  *       (cmt_part_set.h:128). Not duplicated; see above.
  *   · :214-318 `verifyCommitBatch`  — taşınmadı: ULAŞILMAZ. There is no
@@ -172,10 +180,12 @@ typedef enum {
      * validation.go:101, :104 — the light family's pair.
      *   ignore: `BlockIDFlag != BlockIDFlagCommit`  (:101)
      *   count : always true                         (:104)
-     * NO IN-SCOPE CALLER: every function that passes it is YOK by the
-     * scope rule (see the file header). It is defined because it is
-     * `verifyCommitSingle`'s other parameter value and because a reader
-     * comparing this file with the reference must be able to see it.
+     * Passed by `cmt_verify_commit_light` and
+     * `cmt_verify_commit_light_all_signatures` (:109, :113-114), whose
+     * live caller is block sync (blocksync/reactor.go:496,
+     * cmt_bsync_reactor.c). A NIL entry is therefore IGNORED here — not
+     * verified — which is the light path's difference from
+     * CMT_SIG_POLICY_COMMIT.
      */
     CMT_SIG_POLICY_LIGHT = 1
 } cmt_commit_sig_policy_t;
@@ -296,6 +306,53 @@ int cmt_verify_commit(const uint8_t *chain_id, size_t chain_id_len,
                       int64_t height,
                       const cmt_commit_t *commit,
                       cmt_vs_error_t *err);
+
+/**
+ * cometbft@709fd12b types/validation.go:57-69 — `VerifyCommitLight()`.
+ *
+ * "Verifies +2/3 of the set had signed the given commit. This method is
+ * primarily used by the light client and does NOT check all the
+ * signatures." (:57-60). It is `verifyCommitLightInternal(..., false)`
+ * (:68): the SAME basic checks as `VerifyCommit` (:93-95 →
+ * verifyBasicValsAndCommit), the same threshold `total * 2 / 3` compared
+ * strictly (:98, :397), but
+ *   · only entries FOR THE BLOCK are looked at — ABSENT and NIL are both
+ *     ignored without being verified (:101), and every looked-at entry
+ *     counts (:104);
+ *   · the loop RETURNS as soon as the tally exceeds the threshold
+ *     (countAllSignatures false, :392-394), so a bad signature AFTER that
+ *     point is not seen. That is the reference's light semantics, and the
+ *     one block sync uses (blocksync/reactor.go:496). Two nodes given the
+ *     same commit and set reach the same verdict, because entries are
+ *     visited in validator-index order (:344) and the exit point is a
+ *     function of that order only.
+ *
+ * @param vals NOT const: TotalVotingPower writes the set's cache.
+ * @param err may be NULL; see `cmt_verify_commit_single`.
+ * @return CMT_OK, CMT_REJECT, CMT_FAULT.
+ */
+int cmt_verify_commit_light(const uint8_t *chain_id, size_t chain_id_len,
+                            cmt_validator_set_t *vals,
+                            const cmt_block_id_t *block_id,
+                            int64_t height,
+                            const cmt_commit_t *commit,
+                            cmt_vs_error_t *err);
+
+/**
+ * cometbft@709fd12b types/validation.go:71-82 —
+ * `VerifyCommitLightAllSignatures()`: `verifyCommitLightInternal(...,
+ * true)` (:81) — the light ignore/count pair of `cmt_verify_commit_light`
+ * with EVERY commit-flagged signature verified before the tally is
+ * compared.
+ * @return CMT_OK, CMT_REJECT, CMT_FAULT.
+ */
+int cmt_verify_commit_light_all_signatures(const uint8_t *chain_id,
+                                           size_t chain_id_len,
+                                           cmt_validator_set_t *vals,
+                                           const cmt_block_id_t *block_id,
+                                           int64_t height,
+                                           const cmt_commit_t *commit,
+                                           cmt_vs_error_t *err);
 
 #ifdef __cplusplus
 }

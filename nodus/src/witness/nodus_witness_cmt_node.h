@@ -49,8 +49,11 @@
  *   · the consensus REACTOR, the blocksync reactor, state sync, p2p and
  *     the TICK (node.go:405-408 the blocksync reactor, the reactor half
  *     of :410-413, :423-470 the switch and state sync, and OnStart
- *     :518-585) — W3. The seam where W3 registers its listener is named
- *     at `nodus_cmt_node_init`'s tail.
+ *     :518-585) — W3; the blocksync reactor since the 2026-09-29 port is
+ *     shared/dnac/cmt_bsync_reactor.c, built and wired by
+ *     nodus_witness.c (`nodus_witness_cmt_live_init`) over THIS node's
+ *     store and block executor. The seam where W3 registers its listener
+ *     is named at `nodus_cmt_node_init`'s tail.
  *   · `raw_sign` — the ML-DSA-87 signature over a vote's sign bytes is
  *     R3-C2's binding (W1 recorded it). It is an OPTIONAL field of
  *     `nodus_cmt_node_opts_t` here: a caller that supplies one gets a
@@ -539,11 +542,17 @@ typedef struct {
      *  actual start happens only inside `cmt_conr_start(conr)`, which the
      *  caller (nodus_witness_init) builds and owns because the reactor's
      *  host table lives on the 4004 p2p host (nodus_witness_p2p.h,
-     *  P2P-PORT F5), not on this struct. The caller sets `n->cs_started = true` itself, directly,
-     *  right after `cmt_conr_start` returns CMT_OK — this field is
+     *  P2P-PORT F5), not on this struct. The caller sets
+     *  `n->cs_started = true` itself, directly, EXACTLY when `cmt_cs_start`
+     *  has run: right after `cmt_conr_start` returns CMT_OK when the
+     *  reactor is not waiting for block sync (`!cmt_conr_wait_sync`), and
+     *  otherwise when `cmt_conr_switch_to_consensus` returns CMT_OK (the
+     *  block sync reactor's switch row, nodus_witness.c) — this field is
      *  public exactly so it can. `nodus_cmt_node_release`'s cleanup order
      *  depends on it being accurate: an unset `cs_started` on a node
-     *  whose reactor DID start would skip `cmt_cs_stop` on release. */
+     *  whose state machine DID start would skip `cmt_cs_stop` on release,
+     *  and a set one on a node still block-syncing would stop a state
+     *  machine that never started. */
     bool                 cs_started;
     int64_t              offline_state_sync_height;
 
@@ -610,8 +619,11 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
  * all inside `cmt_cs_start`, shared/dnac/cmt_cs.h:966-982) is reached
  * only through `cmt_conr_start(conr)` (consensus/reactor.go:74-91,
  * `OnStart`), which this port's `cmt_conr_start` calls when
- * `!conr->wait_sync` — always true under D-23 rev 7 item 18's
- * no-blocksync deviation. The caller (nodus_witness_init) builds and
+ * `!conr->wait_sync` — i.e. when node.go:375's `blockSync` is false (this
+ * node is the only validator); otherwise through
+ * `cmt_conr_switch_to_consensus` once the block sync reactor has caught
+ * up (decision 2026-09-29-blocksync-before-testnet.md removed D-23 rev 7
+ * item 18's no-blocksync deviation). The caller (nodus_witness_init) builds and
  * starts `cmt_conr_t` AFTER this function returns, because the reactor's
  * host table belongs to the 4004 p2p host (nodus_witness_p2p.h, P2P-PORT
  * F5), which this module does not depend on. See `nodus_cmt_node_start`'s own comment

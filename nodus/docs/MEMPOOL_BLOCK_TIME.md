@@ -248,8 +248,17 @@ empty-block cadence (`test_cmt_empty_blocks.sh`).
   16-item cap delta 1 shipped as an interim fix.
 - `PrepareProposal`'s drop loop is O(`prep_bound`²) in the worst case on a
   pool full of budget-exceeding envelopes (register R3-W3-C2a-11).
-- No blocksync: a node far behind catches up only through the consensus
-  reactor's stored-part gossip (D-23 rev 7 (18)) — W4-B.
+- Block sync (W4-B) is PORTED since 2026-09-29 (decision
+  `2026-09-29-blocksync-before-testnet.md`; `shared/dnac/cmt_bsync_*`, channel
+  0x40): a node that is not the only validator starts with the consensus
+  reactor waiting (`wait_sync` = node.go:375's `blockSync`), fetches and
+  verifies the missing blocks (`VerifyCommitLight` with the next block's
+  LastCommit), applies them through the same executor, then switches to
+  consensus. It does not change block time or the mempool; it only decides
+  WHEN a restarted or joining node starts proposing and voting. D-23 rev 7
+  (18)'s "no blocksync" deviation is gone. Its harness scenario
+  (`test_cmt_blocksync.sh`, a 20-block gap by default) covers a modest gap
+  only; a thousands-of-blocks catch-up is not measured.
 - The per-domain leg count RISK register R3-W3-C2a-19 flagged ("one
   envelope with many legs on one domain is not covered by the item
   cap") is CLOSED, not open: `dna_env_decode`/`dna_env_encode`
