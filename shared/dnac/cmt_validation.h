@@ -110,7 +110,9 @@
  *   blocksync port; they are ported below.)
  *   · :196-204 `ValidateHash`       — ALREADY PORTED as `cmt_validate_hash`
  *       (cmt_part_set.h:128). Not duplicated; see above.
- *   · :214-318 `verifyCommitBatch`  — taşınmadı: ULAŞILMAZ. There is no
+ *   · :214-318 `verifyCommitBatch`  — taşınmadı: ULAŞILMAZ (v0.38.26
+ *       :215-323, which adds the Tachyon address check at :250-253 — not
+ *       ported with it, for the same reason). There is no
  *       ML-DSA-87 batch verifier (crypto/crypto.go:44-54; crypto/batch;
  *       port map ~954), so `shouldBatchVerify` is false for every key here
  *       and this routine has no reachable caller. Writing it would mean
@@ -236,14 +238,24 @@ int cmt_verify_basic_vals_and_commit(const cmt_validator_set_t *vals,
                                      const cmt_block_id_t *block_id);
 
 /**
- * cometbft@709fd12b types/validation.go:327-402 — `verifyCommitSingle()`.
+ * cometbft@v0.38.26 types/validation.go:332-411 — `verifyCommitSingle()`.
+ * (The `:NNN` citations in THIS comment are v0.38.26 lines.)
  *
  * The signature-checking loop itself. Exposed rather than kept private
  * because it is the function the reference exposes to its own callers
  * through six wrappers, and because its `look_up_by_index = false` branch
  * is otherwise untestable.
  *
- * CONTRACT (the reference's own, :326): both the commit and the validator
+ * CSA-2026-001 "Tachyon" (v0.38.21, :362-365): on the index path the
+ * CommitSig's `validator_address` must EQUAL the address of the validator
+ * at that index, or the commit is refused (CMT_REJECT). The address is not
+ * inside CanonicalVote, so before this check a commit could pair validator
+ * i's valid signature with validator j's address, and MedianTime — which
+ * looks signers up by ADDRESS — weighted i's vote stamp with j's power.
+ * The same check at :250-253 inside `verifyCommitBatch` is not ported, for
+ * the reason in the taşınmadı list (the batch path is unreachable).
+ *
+ * CONTRACT (the reference's own, :331): both the commit and the validator
  * set must already have passed ValidateBasic. This function does not
  * re-check the set.
  *
@@ -254,13 +266,14 @@ int cmt_verify_basic_vals_and_commit(const cmt_validator_set_t *vals,
  * @param voting_power_needed the threshold, already computed by the caller
  *        (the reference computes it in each wrapper, :36 / :98 / :173).
  * @param count_all_signatures when false, the loop returns as soon as the
- *        tally EXCEEDS the threshold (:392-394). `cmt_verify_commit`
+ *        tally EXCEEDS the threshold (:401-403). `cmt_verify_commit`
  *        passes true; see "EVERY SIGNATURE IS CHECKED" in the header.
  * @param look_up_by_index true takes the validator at the signature's own
- *        index (:356); false looks it up BY ADDRESS (:358), skips a
- *        signature belonging to nobody in the set (:362-364) and refuses a
- *        validator who appears twice (:368-372). Only true is reachable
- *        from `cmt_verify_commit`.
+ *        index (:361) and requires the addresses to match (:362-365);
+ *        false looks it up BY ADDRESS (:367), skips a signature belonging
+ *        to nobody in the set (:371-373) and refuses a validator who
+ *        appears twice (:377-381). Only true is reachable from
+ *        `cmt_verify_commit` and the `VerifyCommitLight` pair.
  * @param err may be NULL. On CMT_REJECT it receives
  *        `ErrNotEnoughVotingPowerSigned` with `got`/`needed` when that is
  *        the reason, and `CMT_VS_ERR_NONE` for every other rejection — so

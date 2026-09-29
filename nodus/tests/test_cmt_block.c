@@ -18,7 +18,10 @@
  *     every field is at its widest — built here and MEASURED, exactly as
  *     the reference's own types/block_test.go:402-437 measures its 626;
  *   · CMT_MAX_COMMIT_SIG_BYTES (4685) and CMT_MAX_COMMIT_OVERHEAD_BYTES
- *     (159) are likewise measured, not copied;
+ *     (159) are likewise measured, not copied; and MaxCommitBytes' 3-byte
+ *     per-entry frame (cometbft@v0.38.26 block.go:615, 2 at 709fd12b) is
+ *     exactly what a widest one-entry Commit costs — with 2 that measured
+ *     comparison fails by one byte;
  *   · Commit.Hash of the EMPTY height-1 commit is H(""), not a run of
  *     zero bytes (D-19 rev 6 item 4), and Commit.Hash over
  *     {Absent, Commit, Nil} is the oracle's root — so the certificate
@@ -346,11 +349,37 @@ static int test_constants(void)
     CHECK(cmt_max_commit_bytes(0, &v) == CMT_OK &&
           v == CMT_MAX_COMMIT_OVERHEAD_BYTES,
           "MaxCommitBytes(0) is the overhead alone"); OK();
+    /* cometbft@v0.38.26 types/block.go:615: the per-entry frame is 3
+     * (tag + two-byte length varint), 2 at 709fd12b. */
     CHECK(cmt_max_commit_bytes(4, &v) == CMT_OK &&
           v == CMT_MAX_COMMIT_OVERHEAD_BYTES +
-               4 * (CMT_MAX_COMMIT_SIG_BYTES + 2),
+               4 * (CMT_MAX_COMMIT_SIG_BYTES + 3),
           "MaxCommitBytes(4) adds four entries plus their field frames");
     OK();
+    /* …and 3 is what a real Commit costs per entry: one widest CommitSig
+     * inside a Commit is its own bytes plus exactly a 3-byte frame. */
+    {
+        cmt_commit_t     c1;
+        cmt_commit_sig_t one;
+        size_t           n1;
+
+        cmt_pb_commit_init(&c1);
+        c1.height = INT64_MAX;
+        c1.round  = INT32_MAX;
+        memset(c1.block_id.hash, 0x61, 64);
+        c1.block_id.hash_len = 64;
+        c1.block_id.part_set_header.total = UINT32_MAX;
+        memset(c1.block_id.part_set_header.hash, 0x62, 64);
+        c1.block_id.part_set_header.hash_len = 64;
+        one = cs;
+        c1.signatures     = &one;
+        c1.signatures_cap = 1u;
+        c1.signatures_len = 1u;
+        CHECK(cmt_pb_commit_marshal(&c1, buf, sizeof(buf), &n1) == CMT_OK,
+              "marshal a one-signature Commit"); OK();
+        CHECK(cmt_max_commit_bytes(1, &v) == CMT_OK && (int64_t)n1 == v,
+              "MaxCommitBytes(1) is exactly a widest one-entry Commit"); OK();
+    }
     CHECK(cmt_max_commit_bytes(-1, &v) == CMT_REJECT,
           "a negative count refuses"); OK();
     CHECK(cmt_max_commit_bytes(INT64_MAX, &v) == CMT_REJECT,

@@ -114,6 +114,27 @@ int cmt_new_proposal(int64_t height, int32_t round, int32_t pol_round,
 int cmt_proposal_validate_basic(const cmt_proposal_t *p);
 
 /**
+ * cometbft@v0.38.26 types/proposal.go:82-96 —
+ * `(p *Proposal) ValidateBlockSize(maxBlockSizeBytes)` (#5324).
+ *
+ * A proposal announces its block's size as a part COUNT
+ * (BlockID.PartSetHeader.Total). This refuses one that announces more
+ * parts than `max_block_size_bytes` can fill:
+ * `maxParts = (max - 1) / BlockPartSizeBytes + 1`, and -1 stands for
+ * MaxBlockSizeBytes (:87-89). A 1600-part proposal passes at -1; a
+ * MaxUint32-part one fails at any bound.
+ *
+ * Its reference caller is the consensus reactor, BEFORE the proposal is
+ * queued (consensus/reactor.go:326, with the state's
+ * ConsensusParams.Block.MaxBytes) — that call site is the consensus
+ * reactor's port (cmt_conr.c), not this file.
+ * @return CMT_OK; CMT_REJECT for too many parts (peer input); CMT_FAULT
+ *         on NULL.
+ */
+int cmt_proposal_validate_block_size(const cmt_proposal_t *p,
+                                     int64_t max_block_size_bytes);
+
+/**
  * cometbft@709fd12b types/proposal.go:102-118 — `ProposalSignBytes()`.
  * CanonicalizeProposal, then MarshalDelimited. THESE ARE THE BYTES A
  * PROPOSER SIGNS.

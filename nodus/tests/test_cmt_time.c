@@ -27,7 +27,11 @@
  *     that stops a faulty validator dragging block time into the future;
  *   · when nothing is selected — no entries, all nil, or weights that
  *     never reach the median — the answer is Go's ZERO time, not 1970;
- *   · UnixNano, the sort key, wraps exactly as Go's int64 arithmetic does.
+ *   · UnixNano wraps exactly as Go's int64 arithmetic does — and is NOT
+ *     the median's sort key any more: cometbft v0.38.26
+ *     types/time/time.go:45 sorts on Time.Before, so a valid year-9999
+ *     stamp sorts AFTER a present-day one (t_weighted_median_before; at
+ *     709fd12b the wrapped UnixNano put it first and the median chose it).
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * A default build. No compile flags, no environment variables, no network,
@@ -48,13 +52,12 @@
  *     file uses FIXED instants instead, because the port reads no clock;
  *     the WEIGHTS and the relative ORDER — the only things the median
  *     depends on — are the reference's unchanged.
- *  3. THE SORT IS NOT THE REFERENCE'S. Go uses the unstable `sort.Slice`;
- *     this port uses a stable insertion sort. The two agree on every input
- *     where equal sort keys imply equal times, which is every time inside
- *     the UnixNano range. Outside it they can differ, and this file does
- *     NOT test that region — it tests that the wrap itself is reproduced.
- *     Keeping vote timestamps inside the non-wrapping range is a later
- *     wave's obligation and is not covered here.
+ *  3. THE SORT ALGORITHM IS NOT THE REFERENCE'S. Go uses the unstable
+ *     `sort.Slice`; this port uses a stable insertion sort. Since v0.38.26
+ *     the key is the instant itself (Time.Before), so equal keys mean
+ *     equal times and the two agree on every valid input. This file
+ *     checks the far end of the range with ONE case (year 9999 against a
+ *     present-day stamp); it does not sweep the range.
  *  4. Nothing here proves that the HOST feeds MedianTime the right commit,
  *     or compares the result to a header. That is wave R1-C / R2 work.
  *
@@ -416,6 +419,56 @@ static int test_weighted_median_edges(void)
     return 0;
 }
 
+/* ── WeightedMedian sorts by Time.Before (cometbft@v0.38.26 :45) ─────
+ *
+ * A year-9999 stamp is a VALID Timestamp whose UnixNano wraps negative
+ * (test_unix_nano asserts the wrap). Two equal weights, 10 each, total
+ * 20, median 10: the walk answers whichever entry sorts FIRST.
+ *   · v0.38.26, Time.Before: 2023 < 9999, so the answer is 2023.
+ *   · 709fd12b, UnixNano: the wrapped 9999 key is negative, sorts first,
+ *     and the answer was 9999 — this case is RED against that comparator.
+ * The inputs are given in both orders, so the answer cannot come from
+ * arrival order. */
+static int test_weighted_median_before(void)
+{
+    cmt_time_t now = mk(1700000000LL, 0);
+    cmt_time_t far = mk(CMT_TIME_MAX_SECONDS - 1, 0);
+    cmt_time_t out;
+    cmt_weighted_time_t w[2];
+    const cmt_weighted_time_t *m[2];
+
+    CHECK(cmt_time_unix_nano(far) < cmt_time_unix_nano(now),
+          "precondition: by UnixNano the far stamp sorts first");
+    CHECK(cmt_new_weighted_time(now, 10, &w[0]) == CMT_OK, "now");
+    CHECK(cmt_new_weighted_time(far, 10, &w[1]) == CMT_OK, "far");
+
+    m[0] = &w[1];
+    m[1] = &w[0];
+    CHECK(cmt_weighted_median(m, 2, 20, &out) == CMT_OK, "median far-first");
+    CHECK(time_eq(out, now),
+          "Time.Before puts year 9999 after 2023, so the median is 2023");
+    CHECK(m[0] == &w[0] && m[1] == &w[1],
+          "and the array comes back in instant order");
+
+    m[0] = &w[0];
+    m[1] = &w[1];
+    CHECK(cmt_weighted_median(m, 2, 20, &out) == CMT_OK, "median now-first");
+    CHECK(time_eq(out, now), "the same answer from the other order");
+
+    /* Same second, nanoseconds decide (Time.Before is not second-grained). */
+    CHECK(cmt_new_weighted_time(mk(1700000000LL, 999999999), 10, &w[0]) ==
+          CMT_OK, "late ns");
+    CHECK(cmt_new_weighted_time(mk(1700000000LL, 1), 10, &w[1]) == CMT_OK,
+          "early ns");
+    m[0] = &w[0];
+    m[1] = &w[1];
+    CHECK(cmt_weighted_median(m, 2, 20, &out) == CMT_OK, "ns median");
+    CHECK(time_eq(out, mk(1700000000LL, 1)),
+          "within one second the earlier nanosecond sorts first");
+    OK();
+    return 0;
+}
+
 int main(void)
 {
     if (test_zero_and_range() != 0)           { return 1; }
@@ -423,6 +476,7 @@ int main(void)
     if (test_unix_nano() != 0)                { return 1; }
     if (test_weighted_median_reference() != 0){ return 1; }
     if (test_weighted_median_edges() != 0)    { return 1; }
+    if (test_weighted_median_before() != 0)   { return 1; }
 
     printf("test_cmt_time: OK (%d groups)\n", g_checks);
     return 0;

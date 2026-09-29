@@ -38,7 +38,10 @@ static int cmt_bits_ones_count64(uint64_t v)
     return c;
 }
 
-/* cometbft@709fd12b libs/bits/bit_array.go:31, :44, :124 — (bits+63)/64 */
+/* cometbft@v0.38.26 libs/bits/bit_array.go:519-521 — numElements(), the
+ * (bits+63)/64 that 709fd12b wrote inline at :31, :44, :124. For
+ * bits <= 0 Go's integer division gives 0 for every bits > -63; this port
+ * returns 0 for all of them, and no ported path passes bits <= -63. */
 size_t cmt_bits_num_elems(int bits)
 {
     if (bits <= 0) {
@@ -123,7 +126,8 @@ int cmt_bits_get_index(const cmt_bit_array_t *ba, int i)
            ? 1 : 0;                                  /* :78 */
 }
 
-/* cometbft@709fd12b libs/bits/bit_array.go:83-90 SetIndex(), :92-102 setIndex() */
+/* cometbft@v0.38.26 libs/bits/bit_array.go:83-90 SetIndex(), :92-102
+ * setIndex() */
 int cmt_bits_set_index(cmt_bit_array_t *ba, int i, bool v)
 {
     size_t   w;
@@ -135,12 +139,15 @@ int cmt_bits_set_index(cmt_bit_array_t *ba, int i, bool v)
     if (i < 0) {
         return CMT_FAULT;
     }
-    if (i >= ba->bits) {
-        return 0;                                    /* :93-95 */
-    }
     w = (size_t)i / 64u;
-    if (w >= ba->n_elems) {
-        return CMT_FAULT;
+    /* :93-95 — ASA-2025-003 (v0.38.19): `i >= bA.Bits || i/64 >=
+     * len(bA.Elems)` answers false. The second half is new: an array
+     * whose Elems are shorter than its Bits (a malformed wire array) now
+     * refuses the write instead of panicking on the index. Up to 709fd12b
+     * this port returned CMT_FAULT for that shape; it now returns the
+     * reference's false. */
+    if (i >= ba->bits || w >= ba->n_elems) {
+        return 0;
     }
     bit = (uint64_t)1 << (unsigned)((size_t)i % 64u);
     if (v) {
@@ -365,22 +372,33 @@ int cmt_bits_is_full(const cmt_bit_array_t *ba)
 
 /* ── population ─────────────────────────────────────────────────────── */
 
-/* cometbft@709fd12b libs/bits/bit_array.go:284-299 — getNumTrueIndices() */
+/* cometbft@v0.38.26 libs/bits/bit_array.go:284-304 — getNumTrueIndices() */
 int cmt_bits_get_num_true_indices(const cmt_bit_array_t *ba)
 {
     size_t i;
     int    count = 0;
     long   num_final_bits;
 
-    if (ba == NULL || ba->n_elems == 0 || ba->n_elems > CMT_BITS_MAX_ELEMS) {
+    /* :285-288 — ASA-2025-003 (v0.38.19): a zero-size array, an array
+     * with no words, or one whose word count does not match its size
+     * counts ZERO ("size and elements must be valid to do this calc").
+     * A nil array reaches the same line in Go through `bA.Size() == 0`.
+     * Up to 709fd12b the reference panicked on those shapes and this port
+     * returned CMT_FAULT; it now returns the reference's 0. The capacity
+     * guard is this port's own and cannot fire once the count matches. */
+    if (ba == NULL || cmt_bits_size(ba) == 0 || ba->n_elems == 0 ||
+        ba->n_elems != cmt_bits_num_elems(cmt_bits_size(ba))) {
+        return 0;
+    }
+    if (ba->n_elems > CMT_BITS_MAX_ELEMS) {
         return CMT_FAULT;
     }
-    for (i = 0; i + 1 < ba->n_elems; i++) {          /* :287-290 */
+    for (i = 0; i + 1 < ba->n_elems; i++) {          /* :292-295 */
         count += cmt_bits_ones_count64(ba->elems[i]);
     }
-    /* :292 numFinalBits := Bits - (numElems-1)*64 */
+    /* :297 numFinalBits := Bits - (numElems-1)*64 */
     num_final_bits = (long)ba->bits - (long)((ba->n_elems - 1) * 64u);
-    for (long j = 0; j < num_final_bits && j < 64; j++) {   /* :293-297 */
+    for (long j = 0; j < num_final_bits && j < 64; j++) {   /* :298-302 */
         if ((ba->elems[ba->n_elems - 1] & ((uint64_t)1 << (unsigned)j)) != 0) {
             count++;
         }
@@ -525,4 +543,20 @@ int cmt_bits_update(cmt_bit_array_t *ba, const cmt_bit_array_t *o)
         memcpy(ba->elems, o->elems, n * sizeof(uint64_t));
     }
     return CMT_OK;
+}
+
+/* cometbft@v0.38.26 libs/bits/bit_array.go:504-517 — ValidateBasic().
+ * New in v0.38.19 (ASA-2025-003). */
+int cmt_bits_validate_basic(const cmt_bit_array_t *ba)
+{
+    if (ba == NULL) {
+        return CMT_OK;                               /* :508-510 */
+    }
+    /* :512-515 — the word count must be exactly numElements(Size()). A
+     * BitArray arrives from a PEER (VoteSetBits, NewValidBlock), so the
+     * mismatch is a property of the input: REJECT. */
+    if (ba->n_elems != cmt_bits_num_elems(cmt_bits_size(ba))) {
+        return CMT_REJECT;
+    }
+    return CMT_OK;                                   /* :516 */
 }

@@ -28,6 +28,11 @@
  *   · the `lookUpByIndex == false` branch, which only the out-of-scope
  *     Trusting family reaches, SKIPS a signature belonging to nobody
  *     (:362-364) and REFUSES a validator who signed twice (:368-372);
+ *   · CSA-2026-001 "Tachyon" (cometbft@v0.38.26 validation.go:362-365):
+ *     on the index path a CommitSig that keeps its own valid signature
+ *     but names ANOTHER validator's address is refused — without the check
+ *     t_tachyon's commit verifies and moves MedianTime by 1000 s with 30%
+ *     of the power (project-authored case; upstream ships none);
  *   · `shouldBatchVerify` is false, so the batch path is never taken;
  *   · `ValidatorSet.VerifyCommit` (validator_set.go:698-702) answers
  *     identically to `types.VerifyCommit` — it is the same call.
@@ -80,6 +85,7 @@
 
 #include "dnac/cmt_validation.h"
 #include "dnac/cmt_validator_set.h"
+#include "dnac/cmt_state.h"      /* cmt_state_median_time — t_tachyon */
 #include "dnac/cmt_block.h"
 #include "dnac/cmt_vote.h"
 #include "dnac/cmt_pb.h"
@@ -573,27 +579,24 @@ static int t_by_address(void)
     CHECK(err.code == CMT_VS_ERR_NONE,
           "as a double vote, not as insufficient power"); OK();
 
-    /* ⚠ AND THE INDEX BRANCH ACCEPTS THE VERY SAME COMMIT.
+    /* ⚠ AND SINCE cometbft v0.38.21 THE INDEX BRANCH REFUSES IT TOO.
      *
-     * That is not a bug, and it is the reason the address branch needs a
-     * double-vote check of its own. `CanonicalVote`
-     * (proto/tendermint/types/canonical.proto:30-37) has SIX fields —
-     * type, height, round, block_id, timestamp, chain_id — and
-     * ValidatorAddress is NOT among them. So a CommitSig's address is not
-     * inside the bytes anybody signed: duplicating it changes nothing that
-     * is verified, and the index branch, which never reads the address,
-     * cannot notice. CommitSig.ValidateBasic checks only its LENGTH
-     * (block.go:675-680).
-     *
-     * The consequence worth stating: under `VerifyCommit` — the only path
-     * this chain takes — a commit's addresses are decorative, and the
-     * binding between a signature and a validator is the INDEX alone. */
+     * `CanonicalVote` (proto/tendermint/types/canonical.proto:30-37) has
+     * SIX fields — type, height, round, block_id, timestamp, chain_id —
+     * and ValidatorAddress is NOT among them, so the address is not inside
+     * the bytes anybody signed. Up to 709fd12b the index branch never read
+     * it, and this very commit was ACCEPTED. CSA-2026-001 "Tachyon"
+     * (cometbft@v0.38.26 types/validation.go:362-365) makes the index
+     * branch compare it with the address of the validator at that index;
+     * entry 1 now names validator 0, so it is refused before its
+     * signature is even looked at. */
     CHECK(cmt_verify_commit_single(g_chain, sizeof(g_chain), &g_vs,
                                    &g_commit, 66, CMT_SIG_POLICY_COMMIT,
-                                   true, true, &err) == CMT_OK,
-          "by index the same commit is ACCEPTED: the address is not in "
-          "the signed bytes, which is why only the address branch checks "
-          "for a double vote"); OK();
+                                   true, true, &err) == CMT_REJECT,
+          "by index the same commit is REFUSED: the address must match "
+          "the validator at the index (Tachyon)"); OK();
+    CHECK(err.code == CMT_VS_ERR_NONE,
+          "as an address mismatch, not as insufficient power"); OK();
 
     /* CMT_SIG_POLICY_LIGHT: ignore everything that is not COMMIT, and
      * count everything that survives. With all four COMMIT the two
@@ -613,6 +616,290 @@ static int t_by_address(void)
                                    true, true, NULL) == CMT_OK,
           "LIGHT policy ignores it entirely — which is why VerifyCommit "
           "does not use that policy"); OK();
+    return 0;
+}
+
+/* ══ 5b. CSA-2026-001 "Tachyon": the address must match the index ═════
+ *
+ * PROJECT-AUTHORED, not an upstream vector: the v0.38.21..v0.38.26 test
+ * diff carries no case for this check (types/validation_test.go changed
+ * only in formatting). It pins cometbft@v0.38.26
+ * types/validation.go:362-365 by constructing the attack the advisory
+ * describes, with REAL signatures:
+ *   · validators 40 and 30 stamp T; validators 20 and 10 (30 of 100, less
+ *     than a third) stamp T+1000 s. Honestly the weighted median is T.
+ *   · the two minority entries keep their OWN valid signatures but name
+ *     the 40-power validator's ADDRESS. CanonicalVote does not contain the
+ *     address, so every signature still verifies.
+ *   · MedianTime (state/state.go:282) looks signers up by address, so it
+ *     now weighs each minority stamp at 40 and the median jumps to T+1000.
+ * Without the check (709fd12b) `cmt_verify_commit` ACCEPTED this commit;
+ * with it VerifyCommit and VerifyCommitLightAllSignatures refuse it.
+ * VerifyCommitLight exits at 2/3 before the forged entries and accepts
+ * it, as the reference's does; a second arrangement puts the forgery
+ * before the 2/3 point and shows the light path refusing it there. */
+static int t_tachyon(void)
+{
+    const int64_t base = 1700000000;
+    size_t        idx[4] = { 0, 0, 0, 0 };   /* by power: 40, 30, 20, 10 */
+    cmt_time_t    median;
+    size_t        i;
+
+    for (i = 0; i < NVALS; i++) {
+        switch (g_vs.validators[i].voting_power) {
+        case 40: idx[0] = i; break;
+        case 30: idx[1] = i; break;
+        case 20: idx[2] = i; break;
+        default: idx[3] = i; break;
+        }
+    }
+
+    cmt_pb_commit_init(&g_commit);
+    g_commit.height     = HEIGHT;
+    g_commit.round      = ROUND;
+    make_block_id(&g_commit.block_id, 0x11);
+    g_commit.signatures     = g_sigs;
+    g_commit.signatures_cap = NVALS + 1;
+    g_commit.signatures_len = NVALS;
+    for (i = 0; i < NVALS; i++) {
+        set_entry(i, (int32_t)CMT_BLOCK_ID_FLAG_COMMIT);
+        g_sigs[i].timestamp.seconds = base;
+    }
+    g_sigs[idx[2]].timestamp.seconds = base + 1000;
+    g_sigs[idx[3]].timestamp.seconds = base + 1000;
+    for (i = 0; i < NVALS; i++) {
+        if (sign_entry(i, g_chain, sizeof(g_chain)) != 0) return 1;
+    }
+
+    CHECK(cmt_verify_commit(g_chain, sizeof(g_chain), &g_vs,
+                            &g_commit.block_id, HEIGHT, &g_commit,
+                            NULL) == CMT_OK,
+          "the honest commit verifies"); OK();
+    CHECK(cmt_state_median_time(&g_commit, &g_vs, &median) == CMT_OK &&
+          median.seconds == base && median.nanos == 0,
+          "and its weighted median is T"); OK();
+
+    /* The forgery: the minority keeps its signatures, borrows an address. */
+    memcpy(g_sigs[idx[2]].validator_address,
+           g_vs.validators[idx[0]].address, 32);
+    memcpy(g_sigs[idx[3]].validator_address,
+           g_vs.validators[idx[0]].address, 32);
+
+    CHECK(cmt_state_median_time(&g_commit, &g_vs, &median) == CMT_OK &&
+          median.seconds == base + 1000,
+          "MedianTime alone would move to T+1000 — the damage the check "
+          "prevents"); OK();
+    CHECK(cmt_verify_commit(g_chain, sizeof(g_chain), &g_vs,
+                            &g_commit.block_id, HEIGHT, &g_commit,
+                            NULL) == CMT_REJECT,
+          "VerifyCommit refuses the borrowed address (validation.go:362)");
+    OK();
+    /* ⚠ VerifyCommitLight ACCEPTS this commit, in the reference too. It
+     * stops as soon as the tally exceeds 2/3 (countAllSignatures false,
+     * cometbft@v0.38.26 validation.go:401-403). The set is ordered by
+     * power descending, so the 40 and 30 entries come first, 70 > 66,
+     * and the loop returns before it ever reaches the two borrowed
+     * addresses at the 20 and 10 indices. That early exit is exactly why
+     * v0.38.22 made block sync run the FULL check as well (#5663). */
+    CHECK(idx[0] < idx[2] && idx[1] < idx[2] && idx[0] < idx[3] &&
+          idx[1] < idx[3],
+          "precondition: the two honest heavy entries precede the forged "
+          "ones"); OK();
+    CHECK(cmt_verify_commit_light(g_chain, sizeof(g_chain), &g_vs,
+                                  &g_commit.block_id, HEIGHT, &g_commit,
+                                  NULL) == CMT_OK,
+          "VerifyCommitLight exits at 2/3 before the forged entries");
+    OK();
+    CHECK(cmt_verify_commit_light_all_signatures(
+              g_chain, sizeof(g_chain), &g_vs, &g_commit.block_id, HEIGHT,
+              &g_commit, NULL) == CMT_REJECT,
+          "VerifyCommitLightAllSignatures visits them and refuses"); OK();
+
+    /* The light path IS covered when the borrowed address sits BEFORE the
+     * 2/3 point: the 30-power entry names the 40's address. After the 40
+     * the tally is 40 <= 66, so the light loop reaches index idx[1] and
+     * the Tachyon check (:362-365) refuses it. */
+    memcpy(g_sigs[idx[2]].validator_address,
+           g_vs.validators[idx[2]].address, 32);
+    memcpy(g_sigs[idx[3]].validator_address,
+           g_vs.validators[idx[3]].address, 32);
+    memcpy(g_sigs[idx[1]].validator_address,
+           g_vs.validators[idx[0]].address, 32);
+    CHECK(cmt_verify_commit_light(g_chain, sizeof(g_chain), &g_vs,
+                                  &g_commit.block_id, HEIGHT, &g_commit,
+                                  NULL) == CMT_REJECT,
+          "VerifyCommitLight refuses a borrowed address it reaches"); OK();
+    memcpy(g_sigs[idx[1]].validator_address,
+           g_vs.validators[idx[1]].address, 32);
+
+    /* Only the address was wrong: restoring it restores the verdict. */
+    memcpy(g_sigs[idx[2]].validator_address,
+           g_vs.validators[idx[2]].address, 32);
+    memcpy(g_sigs[idx[3]].validator_address,
+           g_vs.validators[idx[3]].address, 32);
+    CHECK(cmt_verify_commit(g_chain, sizeof(g_chain), &g_vs,
+                            &g_commit.block_id, HEIGHT, &g_commit,
+                            NULL) == CMT_OK,
+          "restored addresses verify again"); OK();
+
+    /* An ABSENT entry carries no address and is ignored before the check
+     * (:350-352), so it can never trip it. */
+    set_entry(idx[3], (int32_t)CMT_BLOCK_ID_FLAG_ABSENT);
+    CHECK(cmt_verify_commit(g_chain, sizeof(g_chain), &g_vs,
+                            &g_commit.block_id, HEIGHT, &g_commit,
+                            NULL) == CMT_OK,
+          "an absent entry is not address-checked"); OK();
+    return 0;
+}
+
+/* ══ 5c. VerifyCommitExtended — cometbft@v0.38.26
+ *       types/validator_set_test.go:1649-1740 TestVerifyCommitExtended
+ *
+ * The four upstream cases, on this file's real ML-DSA-87 keys:
+ *   · "happy path": every entry COMMIT with a signed extension → OK;
+ *   · "invalid signature": entry 1's extension signature replaced → the
+ *     commit is refused (upstream: "invalid vote extension signature
+ *     (val #1)");
+ *   · "nil extended commit": an error upstream; FAULT here (R1B-10 — a
+ *     NULL pointer cannot come off the wire in C);
+ *   · "allows absent and nil votes": one NIL and one ABSENT entry, neither
+ *     carrying extension data, pass (VerifyExtension's early return,
+ *     v0.38.26 vote.go:268-270).
+ * The function is new in v0.38.22, so there is no 709fd12b behaviour to
+ * be RED against; these cases pin the port against upstream's own. */
+static cmt_extended_commit_sig_t g_esigs[NVALS];
+static cmt_commit_sig_t          g_tosigs[NVALS];
+static uint8_t                   g_ext_scratch[256];
+
+/* Turn g_commit into an extended commit whose COMMIT entries carry the
+ * extension "ext-<i>" signed by the validator at index i. */
+static int make_ext_commit(cmt_extended_commit_t *ec, uint8_t ext[][8])
+{
+    size_t i;
+
+    memset(ec, 0, sizeof(*ec));
+    ec->height                  = g_commit.height;
+    ec->round                   = g_commit.round;
+    ec->block_id                = g_commit.block_id;
+    ec->extended_signatures     = g_esigs;
+    ec->extended_signatures_cap = NVALS;
+    ec->extended_signatures_len = NVALS;
+    for (i = 0; i < NVALS; i++) {
+        cmt_vote_t vote;
+        size_t     sb_len;
+        size_t     siglen;
+
+        memset(&g_esigs[i], 0, sizeof(g_esigs[i]));
+        g_esigs[i].commit_sig = g_sigs[i];
+        if (g_sigs[i].block_id_flag != (int32_t)CMT_BLOCK_ID_FLAG_COMMIT) {
+            continue;          /* absent / nil: no extension data at all */
+        }
+        memcpy(ext[i], "ext-", 4);
+        ext[i][4] = (uint8_t)('0' + i);
+        g_esigs[i].extension.data = ext[i];
+        g_esigs[i].extension.len  = 5u;
+        if (cmt_extended_commit_get_extended_vote(ec, (int32_t)i, &vote) !=
+                CMT_OK ||
+            cmt_vote_extension_sign_bytes(g_chain, sizeof(g_chain), &vote,
+                                          g_ext_scratch,
+                                          sizeof(g_ext_scratch),
+                                          &sb_len) != CMT_OK ||
+            qgp_dsa87_sign(g_esigs[i].extension_signature, &siglen,
+                           g_ext_scratch, sb_len,
+                           g_sk[g_key_of_index[i]]) != 0) {
+            fprintf(stderr, "extension %zu could not be signed\n", i);
+            return 1;
+        }
+        g_esigs[i].extension_signature_len = siglen;
+    }
+    return 0;
+}
+
+static int t_verify_commit_extended(void)
+{
+    cmt_extended_commit_t ec;
+    uint8_t               ext[NVALS][8];
+    size_t                idx_of_10 = 0;
+    size_t                idx_of_20 = 0;
+    size_t                i;
+
+    for (i = 0; i < NVALS; i++) {
+        if (g_vs.validators[i].voting_power == 10) idx_of_10 = i;
+        if (g_vs.validators[i].voting_power == 20) idx_of_20 = i;
+    }
+
+    /* "happy path" */
+    if (make_good_commit() != 0) return 1;
+    if (make_ext_commit(&ec, ext) != 0) return 1;
+    CHECK(cmt_validator_set_verify_commit_extended(
+              &g_vs, g_chain, sizeof(g_chain), &g_commit.block_id, HEIGHT,
+              &ec, g_tosigs, NVALS, g_ext_scratch,
+              sizeof(g_ext_scratch)) == CMT_OK,
+          "a fully signed extended commit verifies"); OK();
+
+    /* "invalid signature" — entry 1's extension signature is garbage. */
+    g_esigs[1].extension_signature[0] =
+        (uint8_t)(g_esigs[1].extension_signature[0] ^ 0x01u);
+    CHECK(cmt_validator_set_verify_commit_extended(
+              &g_vs, g_chain, sizeof(g_chain), &g_commit.block_id, HEIGHT,
+              &ec, g_tosigs, NVALS, g_ext_scratch,
+              sizeof(g_ext_scratch)) == CMT_REJECT,
+          "a bad extension signature is refused"); OK();
+    g_esigs[1].extension_signature[0] =
+        (uint8_t)(g_esigs[1].extension_signature[0] ^ 0x01u);
+
+    /* EnsureExtensions(true) runs first: a COMMIT entry with no
+     * extension signature is refused before anything is verified. */
+    {
+        size_t saved = g_esigs[2].extension_signature_len;
+
+        g_esigs[2].extension_signature_len = 0u;
+        CHECK(cmt_validator_set_verify_commit_extended(
+                  &g_vs, g_chain, sizeof(g_chain), &g_commit.block_id,
+                  HEIGHT, &ec, g_tosigs, NVALS, g_ext_scratch,
+                  sizeof(g_ext_scratch)) == CMT_REJECT,
+              "a COMMIT entry without an extension signature is refused");
+        OK();
+        g_esigs[2].extension_signature_len = saved;
+    }
+
+    /* The regular commit is verified too: a bad PRECOMMIT signature. */
+    g_esigs[0].commit_sig.signature[0] =
+        (uint8_t)(g_esigs[0].commit_sig.signature[0] ^ 0x01u);
+    CHECK(cmt_validator_set_verify_commit_extended(
+              &g_vs, g_chain, sizeof(g_chain), &g_commit.block_id, HEIGHT,
+              &ec, g_tosigs, NVALS, g_ext_scratch,
+              sizeof(g_ext_scratch)) == CMT_REJECT,
+          "a bad commit signature is refused by the VerifyCommit step");
+    OK();
+    g_esigs[0].commit_sig.signature[0] =
+        (uint8_t)(g_esigs[0].commit_sig.signature[0] ^ 0x01u);
+
+    /* "nil extended commit" */
+    CHECK(cmt_validator_set_verify_commit_extended(
+              &g_vs, g_chain, sizeof(g_chain), &g_commit.block_id, HEIGHT,
+              NULL, g_tosigs, NVALS, g_ext_scratch,
+              sizeof(g_ext_scratch)) == CMT_FAULT,
+          "a NULL extended commit is a FAULT (R1B-10)"); OK();
+
+    /* "allows absent and nil votes in extended commit": the 20-power
+     * validator votes NIL, the 10-power one is ABSENT; 70 of 100 still
+     * exceeds 66. Neither carries extension data. */
+    if (make_good_commit() != 0) return 1;
+    set_entry(idx_of_20, (int32_t)CMT_BLOCK_ID_FLAG_NIL);
+    if (sign_entry(idx_of_20, g_chain, sizeof(g_chain)) != 0) return 1;
+    set_entry(idx_of_10, (int32_t)CMT_BLOCK_ID_FLAG_ABSENT);
+    if (make_ext_commit(&ec, ext) != 0) return 1;
+    CHECK(g_esigs[idx_of_20].extension.len == 0u &&
+          g_esigs[idx_of_20].extension_signature_len == 0u &&
+          g_esigs[idx_of_10].extension.len == 0u &&
+          g_esigs[idx_of_10].extension_signature_len == 0u,
+          "the nil and absent entries carry no extension data"); OK();
+    CHECK(cmt_validator_set_verify_commit_extended(
+              &g_vs, g_chain, sizeof(g_chain), &g_commit.block_id, HEIGHT,
+              &ec, g_tosigs, NVALS, g_ext_scratch,
+              sizeof(g_ext_scratch)) == CMT_OK,
+          "absent and nil entries pass"); OK();
     return 0;
 }
 
@@ -680,6 +967,8 @@ int main(void)
     if (t_absent_and_nil() != 0) goto out;
     if (t_check_all_signatures() != 0) goto out;
     if (t_by_address() != 0) goto out;
+    if (t_tachyon() != 0) goto out;
+    if (t_verify_commit_extended() != 0) goto out;
     if (t_guards() != 0) goto out;
 
     printf("test_cmt_validation: %d checks OK\n", g_checks);

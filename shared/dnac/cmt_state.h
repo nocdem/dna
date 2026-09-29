@@ -16,6 +16,11 @@
  *   · `MakeBlock` (:234-263)     — the only path that builds a block;
  *   · `MedianTime` (:269-286)    — BFT-time's block time (D-20, D-19 rev 6
  *                                  item 9);
+ * (these two are ported at cometbft@v0.38.26 — :234-267 and :273-292
+ * there; see their own comments below. The rest of this file still
+ * cites @709fd12b: its state.go lines are the same in v0.38.26 up to
+ * :239, and every line from the old :286 on sits 6 lower in v0.38.26 —
+ * `MakeGenesisState` is :323-361 there.)
  *   · `MakeGenesisState` (:317-355) — where a chain begins.
  * `Copy` (:83-106) and `IsEmpty` (:129-131) come with them.
  *
@@ -300,60 +305,70 @@ bool cmt_state_is_empty(const cmt_state_t *state);
 int cmt_state_copy(const cmt_state_t *src, cmt_state_t *dst);
 
 /**
- * cometbft@709fd12b state/state.go:269-286 — `MedianTime()`.
+ * cometbft@v0.38.26 state/state.go:273-292 — `MedianTime()`.
+ * (The `:NNN` in this comment are v0.38.26 lines.)
  *
  * THE BLOCK TIME OF BFT-TIME (D-20; D-19 rev 6 item 9). The weighted
  * median of the previous commit's vote timestamps, weighted by each
  * signer's VOTING POWER — see the file header on D-20's differing wording.
  *
  * The walk, line by line. An array of `len(commit.Signatures)` entries is
- * built (:270) and left with HOLES: an ABSENT entry is skipped (:274-276)
- * and so is a signer the set does not contain (:277-279 — the reference's
- * own comment says the nil test is there because a test panicked without
- * it, "not needed normally"). Only the signers that were FOUND add to the
- * total (:280). `cmt_weighted_median` (cmt_time.h:191) then does the rest,
- * and it takes exactly such a NULL-holed pointer array.
+ * built (:274) and left with HOLES: an ABSENT entry is skipped (:278-280).
+ * A non-absent signer the set does not contain is an ERROR (:283-286,
+ * "commit validator not found in validator set") — the CSA-2026-001
+ * ("Tachyon", v0.38.21) change; up to 709fd12b it was skipped silently.
+ * Every found signer adds to the total (:287). `cmt_weighted_median`
+ * (cmt_time.h) then does the rest, and it takes exactly such a NULL-holed
+ * pointer array.
  *
- * ⚠ THE LOOKUP IS BY ADDRESS (:277 `validators.GetByAddress`), not by
- * index — unlike `verifyCommitSingle`'s main path. A commit entry whose
- * address is not in the set contributes nothing at all, silently.
+ * ⚠ THE LOOKUP IS BY ADDRESS (:281 `validators.GetByAddress`), not by
+ * index — unlike `verifyCommitSingle`'s main path, which since v0.38.21
+ * also requires each entry's address to match its index
+ * (types/validation.go:362-365). MedianTime does not repeat that check;
+ * `validateBlock` runs VerifyCommit on the LastCommit BEFORE it computes
+ * the median, which is what binds the two.
  *
  * ⚠ REORDERING: `cmt_weighted_median` sorts its pointer array in place,
  * exactly as the reference's `sort.Slice` (time/time.go:38) reorders the
- * fresh slice built at :270. Both arrays are local here, so no caller sees
+ * fresh slice built at :274. Both arrays are local here, so no caller sees
  * it.
  *
- * If nothing is selected — an empty commit, all-absent entries, no signer
- * in the set — the result is Go's ZERO TIME, i.e. CMT_TIME_ZERO and NOT
- * the Unix epoch (time/time.go:35 never assigns `res`).
+ * If nothing is selected — an empty commit or all-absent entries — the
+ * result is Go's ZERO TIME, i.e. CMT_TIME_ZERO and NOT the Unix epoch
+ * (time/time.go:35 never assigns `res`).
  *
  * @param vals NOT const: `GetByAddress` is declared on a const set, but
  *        the type's caches make a const state awkward; the set is not
  *        modified.
- * @return CMT_OK; CMT_REJECT if the commit carries more than
- *         CMT_VALSET_MAX signatures (a capacity rule of this port, added
- *         so the arrays need no allocation — the reference sizes them
- *         dynamically); CMT_FAULT on NULL.
+ * @return CMT_OK; CMT_REJECT for a non-absent signer the set does not
+ *         contain (:283-286 — the commit is peer input, a block's
+ *         LastCommit), or if the commit carries more than CMT_VALSET_MAX
+ *         signatures (a capacity rule of this port, added so the arrays
+ *         need no allocation — the reference sizes them dynamically);
+ *         CMT_FAULT on NULL.
  */
 int cmt_state_median_time(const cmt_commit_t *commit,
                           const cmt_validator_set_t *vals,
                           cmt_time_t *out);
 
 /**
- * cometbft@709fd12b state/state.go:234-263 — `(state State) MakeBlock()`.
+ * cometbft@v0.38.26 state/state.go:234-267 — `(state State) MakeBlock()`.
+ * (The `:NNN` in this comment are v0.38.26 lines.)
  *
  * THE ONLY PATH THAT BUILDS A BLOCK. Three steps, the reference's:
  *  1. `types.MakeBlock(height, txs, lastCommit, evidence)` (:243) —
  *     `cmt_make_block` (cmt_block.h:771), which ends in fillHeader;
- *  2. the TIMESTAMP (:246-251): at `state.InitialHeight` it is
- *     `state.LastBlockTime`, which for a genesis state IS the genesis time
- *     (:343); at every other height it is `MedianTime(lastCommit,
- *     state.LastValidators)`;
- *  3. `block.Populate(...)` (:254-260) with the two set hashes, the
+ *  2. the TIMESTAMP (:246-255): at `state.InitialHeight` it is
+ *     `state.LastBlockTime`, which for a genesis state IS the genesis time;
+ *     at every other height it is `MedianTime(lastCommit,
+ *     state.LastValidators)`, whose error is RETURNED (:251-253, the
+ *     v0.38.21 signature change `(*Block, error)`) — here the rc of
+ *     `cmt_state_median_time` is passed through unchanged;
+ *  3. `block.Populate(...)` (:258-264) with the two set hashes, the
  *     consensus params hash, AppHash, LastResultsHash and the proposer.
  *
  * ⚠ A NULL `last_commit` at a height other than InitialHeight is CMT_FAULT:
- * the reference would nil-dereference inside MedianTime (:270
+ * the reference would nil-dereference inside MedianTime (:274
  * `commit.Signatures`). Step 1 accepts a NULL LastCommit — `MakeBlock`
  * does — so the refusal is specifically about step 2 needing one.
  *

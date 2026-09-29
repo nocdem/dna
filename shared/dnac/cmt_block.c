@@ -447,10 +447,15 @@ int cmt_header_from_proto(const cmt_pb_header_t *ph, uint64_t block_protocol,
 
 /* ══ CommitSig ════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b types/block.go:608-612 — MaxCommitBytes() */
+/* cometbft@v0.38.26 types/block.go:613-618 — MaxCommitBytes().
+ * The repeated-field frame per entry is 3 bytes (:615,
+ * `protoRepeatedFieldLenOverhead`) where 709fd12b:610 had 2: one tag byte
+ * plus a LENGTH VARINT of two bytes, which every entry wider than 127
+ * bytes needs — and a DNA CommitSig is 4685 bytes, so the old 2 was one
+ * byte short per validator here as well. */
 int cmt_max_commit_bytes(int64_t val_count, int64_t *out)
 {
-    const int64_t per = CMT_MAX_COMMIT_SIG_BYTES + 2;    /* :610 overhead */
+    const int64_t per = CMT_MAX_COMMIT_SIG_BYTES + 3;    /* :615 overhead */
 
     if (out == NULL) {
         return CMT_FAULT;

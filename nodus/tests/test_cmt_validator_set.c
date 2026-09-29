@@ -824,13 +824,113 @@ static int t_total_voting_power(void)
     CHECK(cmt_validator_set_total_voting_power(&vs, &tvp) != CMT_REJECT,
           "and it is NOT a verdict");
 
-    /* validator_set_test.go:460-472 — three MaxInt64 members. */
+    /* validator_set_test.go:460-472 — three MaxInt64 members. Since
+     * cometbft@v0.38.26 updateTotalVotingPower RETURNS the overflow
+     * (validator_set.go:314-326) instead of panicking, so the function
+     * itself answers with the value, CMT_REJECT, and each caller maps it;
+     * TotalVotingPower, which still panics (:344-345), keeps FAULT above. */
     vs.total_voting_power = 0;
     for (i = 0; i < 3; i++) {
         g_store[i].voting_power = INT64_MAX;
     }
-    CHECK(cmt_validator_set_update_total_voting_power(&vs) == CMT_FAULT,
-          "three MaxInt64 members overflow the total");
+    CHECK(cmt_validator_set_update_total_voting_power(&vs) == CMT_REJECT,
+          "three MaxInt64 members overflow the total — returned, not a "
+          "panic");
+    return 0;
+}
+
+/* ══ 10b. TotalVotingPowerSafe — cometbft@v0.38.26
+ *       validator_set_test.go:1795-1931 TestValidatorSet_TotalVotingPowerSafe
+ *
+ * The upstream table, row for row, on members built by hand ("Create
+ * validator set without using NewValidatorSet to avoid panic on
+ * overflow", :1907). Keys are irrelevant to the sum, so the bare 20-byte
+ * members of this file stand in for NewValidator(GenPrivKey()). Upstream's
+ * "empty" and "nil" rows are one row here: a C set has no nil slice
+ * distinct from an empty one.
+ * Every overflow row is RED at 709fd12b, where the function did not exist
+ * and the recomputation was a panic (FAULT here). */
+static int t_total_voting_power_safe(void)
+{
+    static const struct {
+        const char *name;
+        size_t      n;
+        int64_t     p[4];
+        int64_t     expect;
+        bool        err;
+    } tc[] = {
+        { "happy path - normal validators", 3, { 100, 200, 300 }, 600,
+          false },
+        { "zero state - empty validator set", 0, { 0 }, 0, false },
+        { "single validator", 1, { 1000 }, 1000, false },
+        { "boundary - exactly at MaxTotalVotingPower", 1,
+          { CMT_MAX_TOTAL_VOTING_POWER }, CMT_MAX_TOTAL_VOTING_POWER, false },
+        { "boundary - sum equals MaxTotalVotingPower", 2,
+          { CMT_MAX_TOTAL_VOTING_POWER - 100, 100 },
+          CMT_MAX_TOTAL_VOTING_POWER, false },
+        { "overflow - exceeds MaxTotalVotingPower", 2,
+          { CMT_MAX_TOTAL_VOTING_POWER / 2 + 1,
+            CMT_MAX_TOTAL_VOTING_POWER / 2 + 1 }, 0, true },
+        { "overflow - multiple validators exceeding MaxTotalVotingPower", 2,
+          { CMT_MAX_TOTAL_VOTING_POWER, 1 }, 0, true },
+        { "overflow - three large validators", 3,
+          { INT64_MAX / 2, INT64_MAX / 2, 100 }, 0, true },
+        { "validators with zero voting power", 3, { 100, 0, 200 }, 300,
+          false },
+    };
+    cmt_validator_set_t vs;
+    int64_t             tvp;
+    size_t              i;
+    size_t              j;
+    int                 rc;
+
+    for (i = 0; i < sizeof(tc) / sizeof(tc[0]); i++) {
+        CHECK(cmt_validator_set_init(&vs, g_store, CMT_VALSET_MAX) == CMT_OK,
+              "i");
+        for (j = 0; j < tc[i].n; j++) {
+            make_bare20(&g_store[j], (uint8_t)(j + 1), tc[i].p[j]);
+        }
+        vs.validators_len = tc[i].n;
+        tvp = 0;
+        rc = cmt_validator_set_total_voting_power_safe(&vs, &tvp);
+        if (tc[i].err) {
+            if (rc != CMT_REJECT) {
+                fprintf(stderr, "  case: %s\n", tc[i].name);
+            }
+            CHECK(rc == CMT_REJECT, "an overflow is RETURNED as REJECT");
+            CHECK(tvp == 0, "and no power is reported");
+        } else {
+            if (rc != CMT_OK || tvp != tc[i].expect) {
+                fprintf(stderr, "  case: %s\n", tc[i].name);
+            }
+            CHECK(rc == CMT_OK && tvp == tc[i].expect,
+                  "the sum of the members' powers");
+        }
+    }
+
+    /* "large number of validators - within limit": 100 × 1000. */
+    CHECK(cmt_validator_set_init(&vs, g_store, CMT_VALSET_MAX) == CMT_OK,
+          "i");
+    for (j = 0; j < 100; j++) {
+        make_bare20(&g_store[j], (uint8_t)(j + 1), 1000);
+    }
+    vs.validators_len = 100;
+    CHECK(cmt_validator_set_total_voting_power_safe(&vs, &tvp) == CMT_OK &&
+          tvp == 100000, "one hundred validators of 1000");
+
+    /* The Safe and the panicking form share one recomputation; on the
+     * overflow they differ ONLY in class. */
+    CHECK(cmt_validator_set_init(&vs, g_store, CMT_VALSET_MAX) == CMT_OK,
+          "i");
+    make_bare20(&g_store[0], 1, CMT_MAX_TOTAL_VOTING_POWER);
+    make_bare20(&g_store[1], 2, 1);
+    vs.validators_len = 2;
+    CHECK(cmt_validator_set_total_voting_power_safe(&vs, &tvp) == CMT_REJECT,
+          "Safe: REJECT");
+    CHECK(cmt_validator_set_total_voting_power(&vs, &tvp) == CMT_FAULT,
+          "TotalVotingPower: FAULT (the reference still panics)");
+    CHECK(cmt_validator_set_total_voting_power_safe(NULL, &tvp) == CMT_FAULT,
+          "NULL set");
     return 0;
 }
 
@@ -923,6 +1023,29 @@ static int t_set_validate_and_proto(void)
     CHECK(cmt_validator_set_from_proto(NULL, &back) == CMT_REJECT,
           "a nil proto is refused");
 
+    /* cometbft@v0.38.26 validator_set_test.go:476-493
+     * TestValidatorSetFromProtoReturnsErrorOnOverflow: members whose
+     * powers overflow MaxTotalVotingPower are an ERROR from FromProto
+     * ("exceeds maximum"), because :994 recomputes the total with
+     * TotalVotingPowerSafe. RED at 709fd12b, where the recomputation
+     * panicked — CMT_FAULT here, a node-local verdict on a peer's bytes.
+     * Upstream uses one key twice at MaxInt64; the overflow is reached
+     * here with this set's three distinct keys, two of them at MaxInt64,
+     * so nothing before the sum can refuse it first. */
+    {
+        int64_t p0 = pb.validators[0].voting_power;
+        int64_t p1 = pb.validators[1].voting_power;
+
+        pb.validators[0].voting_power = INT64_MAX;
+        pb.validators[1].voting_power = INT64_MAX;
+        CHECK(cmt_validator_set_from_proto(&pb, &back) == CMT_REJECT,
+              "FromProto returns the overflow as REJECT, not a panic");
+        pb.validators[0].voting_power = p0;
+        pb.validators[1].voting_power = p1;
+        CHECK(cmt_validator_set_from_proto(&pb, &back) == CMT_OK,
+              "restored powers decode again");
+    }
+
     /* ValidatorSetFromExistingValidators keeps powers and priorities and
      * only re-sorts (:947-966). */
     {
@@ -941,6 +1064,21 @@ static int t_set_validate_and_proto(void)
         CHECK(cmt_validator_set_from_existing_validators(&ex, seed, 3)
                   == CMT_REJECT, "a member failing ValidateBasic is refused");
         seed[1].address[0] ^= 0x01;
+
+        /* cometbft@v0.38.26 validator_set.go:1021-1023: an overflowing
+         * total is RETURNED (a panic inside 709fd12b:963 — FAULT). */
+        {
+            int64_t p0 = seed[0].voting_power;
+            int64_t p1 = seed[1].voting_power;
+
+            seed[0].voting_power = CMT_MAX_TOTAL_VOTING_POWER;
+            seed[1].voting_power = 1;
+            CHECK(cmt_validator_set_from_existing_validators(&ex, seed, 3)
+                      == CMT_REJECT,
+                  "an overflowing total is refused as REJECT");
+            seed[0].voting_power = p0;
+            seed[1].voting_power = p1;
+        }
     }
 
     free(pb_slots);
@@ -994,6 +1132,7 @@ int main(void)
     if (rc == 0) { rc = t_get_proposer_is_stored();  }
     if (rc == 0) { rc = t_change_set();              }
     if (rc == 0) { rc = t_total_voting_power();      }
+    if (rc == 0) { rc = t_total_voting_power_safe(); }
     if (rc == 0) { rc = t_set_validate_and_proto();  }
     if (rc == 0) { rc = t_capacity();                }
 
