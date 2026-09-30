@@ -103,7 +103,7 @@ export function isDelivered(message, ackTs) {
 }
 
 // The WHOLE pending set of own messages to one contact (the blob replaces
-// today's previous one, core.outboxSend): outgoing, not yet covered by the
+// today's previous one, core.outboxPublish): outgoing, not yet covered by the
 // contact's ACK, sent within the 7-day life of an outbox value (the outbox
 // PUT is EPHEMERAL, 7 days: design §1.4 R5), in local order; at most the
 // core's 1000. Like the app's writer (design §1.4 R5: messages.c:624-636
@@ -123,24 +123,6 @@ export function pendingOutbox(messages, fp, nowSeconds, ackTs) {
     .map(m => ({ seq: m.seq, ts: m.ts, text: m.text }));
   // Beyond the limit only the newest are kept.
   return list.length > OUTBOX_MAX ? list.slice(list.length - OUTBOX_MAX) : list;
-}
-
-// The core's server list (core.js header: format 'nodus-connect-servers' v1)
-// built from the wallet's own NODUS network settings
-// (src/nodus/send-module.js NODUS_SEND_NETWORK). In C the pins are one set
-// and the endpoints one list, used independently (nc_servers.c: every pin is
-// added to the set, every host/port to the endpoint list; nc_wasm.c:282-286
-// hands both to nodus_client as pinned_server_fps / servers). Attaching
-// endpoint i to pin i below is therefore only a carrier for the address — it
-// does NOT claim that endpoint i is that validator.
-export function connectServers(network) {
-  if (!network || !Array.isArray(network.pins) || !Array.isArray(network.endpoints) || network.endpoints.length > network.pins.length) throw new Error('Invalid network settings.');
-  return {
-    format: 'nodus-connect-servers', version: 1,
-    entries: network.pins.map((pin, i) => network.endpoints[i]
-      ? { kind: 'validator-checkpoint', pin, host: network.endpoints[i].host, port: network.endpoints[i].port }
-      : { kind: 'validator-checkpoint', pin })
-  };
 }
 
 // Local order = local sequence (receive/send order on this device), never the

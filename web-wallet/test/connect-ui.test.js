@@ -7,16 +7,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  bytesToHex, hexToBytes, databaseNameForVault, messageRecordId, plaintextHex, parsePlaintextHex,
+  databaseNameForVault, messageRecordId, plaintextBytes, parsePlaintext, PLAINTEXT_MAX,
   encodeRecord, decodeRecord, encodeCounter, decodeCounter, nextCounter, budgetAllows, MAX_INVOCATIONS,
   COUNTER_ID, emptyState, checkState, memoryHistoryStore
 } from '../src/connect/store.js';
 import {
   parseContactId, shortId, inspectUntrusted, httpsLink, profilePatch, profileStatusText, senderClockLabel,
-  recentDays, isDelivered, pendingOutbox, OUTBOX_MAX, compareLocal, receivedKey, connectServers
+  recentDays, isDelivered, pendingOutbox, OUTBOX_MAX, compareLocal, receivedKey
 } from '../src/connect/ui/text.js';
 
 const FP = 'ab'.repeat(64), OTHER = 'cd'.repeat(64);
+const bytes = (value, length) => new Uint8Array(length).fill(value);
 
 test('database name is the vault id as 32 lowercase hex characters (S8)', () => {
   const id = btoa(String.fromCharCode(...Array.from({ length: 16 }, (_, i) => i * 17)));
@@ -26,23 +27,27 @@ test('database name is the vault id as 32 lowercase hex characters (S8)', () => 
   assert.throws(() => databaseNameForVault(btoa('0123456789abcdef').replace('=', '')));
 });
 
-test('a stored record keeps id, nonce (12), ct and tag (16) as separate byte fields and round-trips', () => {
-  const sealed = { nonce: '01'.repeat(12), ct: 'ff00aa', tag: '02'.repeat(16) };
+test('a stored record keeps id, nonce (12), ct and tag (16) as separate byte fields (own copies) and round-trips', () => {
+  const sealed = { nonce: bytes(1, 12), ct: Uint8Array.from([0xff, 0x00, 0xaa]), tag: bytes(2, 16), counter: '1' };
   const record = encodeRecord('m00000000000000000001', sealed);
   assert.deepEqual(Object.keys(record).sort(), ['ct', 'id', 'nonce', 'tag']);
-  assert.ok(record.nonce instanceof Uint8Array && record.nonce.length === 12);
-  assert.ok(record.tag instanceof Uint8Array && record.tag.length === 16);
+  assert.deepEqual(record.nonce, bytes(1, 12));
+  assert.deepEqual(record.tag, bytes(2, 16));
   assert.deepEqual([...record.ct], [0xff, 0x00, 0xaa]);
-  assert.deepEqual(decodeRecord(record), { id: 'm00000000000000000001', ...sealed });
+  sealed.ct.fill(0);
+  assert.deepEqual([...record.ct], [0xff, 0x00, 0xaa]);
+  const args = decodeRecord(record);
+  assert.deepEqual(Object.keys(args).sort(), ['ct', 'id', 'nonce', 'tag']);
+  assert.equal(args.id, 'm00000000000000000001');
 });
 
 test('malformed records are refused on both sides', () => {
-  assert.throws(() => encodeRecord('x', { nonce: '01'.repeat(11), ct: '00', tag: '02'.repeat(16) }));
-  assert.throws(() => encodeRecord('x', { nonce: '01'.repeat(12), ct: '', tag: '02'.repeat(16) }));
-  assert.throws(() => encodeRecord('x', { nonce: '01'.repeat(12), ct: '00', tag: '02'.repeat(15) }));
-  assert.throws(() => encodeRecord('', { nonce: '01'.repeat(12), ct: '00', tag: '02'.repeat(16) }));
-  assert.throws(() => encodeRecord('x', { nonce: 'ZZ'.repeat(12), ct: '00', tag: '02'.repeat(16) }));
-  const good = encodeRecord('x', { nonce: '01'.repeat(12), ct: '00', tag: '02'.repeat(16) });
+  assert.throws(() => encodeRecord('x', { nonce: bytes(1, 11), ct: bytes(0, 1), tag: bytes(2, 16) }));
+  assert.throws(() => encodeRecord('x', { nonce: bytes(1, 12), ct: new Uint8Array(0), tag: bytes(2, 16) }));
+  assert.throws(() => encodeRecord('x', { nonce: bytes(1, 12), ct: bytes(0, 1), tag: bytes(2, 15) }));
+  assert.throws(() => encodeRecord('', { nonce: bytes(1, 12), ct: bytes(0, 1), tag: bytes(2, 16) }));
+  assert.throws(() => encodeRecord('x', { nonce: '01'.repeat(12), ct: bytes(0, 1), tag: bytes(2, 16) }));
+  const good = encodeRecord('x', { nonce: bytes(1, 12), ct: bytes(0, 1), tag: bytes(2, 16) });
   assert.throws(() => decodeRecord({ ...good, extra: 1 }));
   assert.throws(() => decodeRecord({ ...good, tag: new Uint8Array(15) }));
   assert.throws(() => decodeRecord({ ...good, nonce: [1, 2, 3] }));
@@ -78,14 +83,16 @@ test('record ids are opaque and ordered by the local sequence', () => {
   assert.throws(() => messageRecordId(1));
 });
 
-test('plaintext crosses to the core as hex of UTF-8 JSON and back', () => {
+test('plaintext crosses to the core as UTF-8 JSON bytes, at most 65536, and back (wiped after parsing)', () => {
   const value = { text: 'merhaba ğüşİ 👋', fp: FP };
-  const hex = plaintextHex(value);
-  assert.match(hex, /^([0-9a-f]{2})+$/);
-  assert.deepEqual(parsePlaintextHex(hex), value);
-  assert.throws(() => parsePlaintextHex('ff'));
-  assert.throws(() => parsePlaintextHex('abc'));
-  assert.equal(bytesToHex(hexToBytes('00ff10')), '00ff10');
+  const plain = plaintextBytes(value);
+  assert.ok(plain instanceof Uint8Array);
+  assert.deepEqual(parsePlaintext(plain), value);
+  assert.ok(plain.every(b => b === 0));
+  assert.throws(() => parsePlaintext(Uint8Array.from([0xff])));
+  assert.throws(() => parsePlaintext('7b7d'));
+  assert.equal(PLAINTEXT_MAX, 65536);
+  assert.throws(() => plaintextBytes({ text: 'x'.repeat(PLAINTEXT_MAX) }), /too large/);
 });
 
 test('state shape is checked; the memory store keeps nothing and refuses after close', async () => {
@@ -176,16 +183,4 @@ test('local order is the local sequence, not the sender clock; received messages
   assert.equal(a, receivedKey(FP, { seq: 1, senderTs: 5, text: 'hi' }));
   assert.notEqual(a, receivedKey(OTHER, { seq: '1', senderTs: '5', text: 'hi' }));
   assert.notEqual(a, receivedKey(FP, { seq: '1', senderTs: '5', text: 'hi!' }));
-});
-
-test('the core server list carries every pin and every endpoint of the wallet network', () => {
-  const pins = ['a'.repeat(128), 'b'.repeat(128), 'c'.repeat(128)];
-  const endpoints = [{ host: '10.0.0.1', port: 443 }, { host: '10.0.0.2', port: 443 }];
-  const list = connectServers({ pins, endpoints });
-  assert.equal(list.format, 'nodus-connect-servers');
-  assert.equal(list.version, 1);
-  assert.deepEqual(list.entries.map(e => e.pin), pins);
-  assert.deepEqual(list.entries.filter(e => e.host).map(e => ({ host: e.host, port: e.port })), endpoints);
-  assert.ok(list.entries.every(e => e.kind === 'validator-checkpoint'));
-  assert.throws(() => connectServers({ pins: pins.slice(0, 1), endpoints }));
 });

@@ -24,13 +24,14 @@
 // 'meta' (the counter record). Record ids are opaque on purpose: who you talk
 // to is inside the ciphertext, not in an id or the AAD.
 //
-// Core calls used (expected from package NC-4b, bytes = lowercase hex and
-// u64 = decimal string, the convention of src/connect/core.js):
-//   core.historyKey(vaultIdHex)
+// Core calls used (src/connect/core.js, NC-4b):
+//   core.historyKey(vaultIdHex)             32 lowercase hex
 //   core.historyEncrypt({ store, id, plaintext, counter }) -> { nonce, ct, tag, counter }
-//     store = the object-store name (nc_history.h: the AAD's "store"),
-//     counter in = invocations so far, counter out = in + 1
-//   core.historyDecrypt({ store, id, nonce, ct, tag }) -> { plaintext }
+//     store = the object-store name (nc_history.h: the AAD's "store");
+//     plaintext: Uint8Array (UTF-8 JSON here), 1..65536 bytes
+//     (nc_wasm.c NC_HIST_PT_MAX); counter: decimal string in, the new value
+//     out (checked here to be exactly in + 1); nonce / ct / tag: Uint8Array
+//   core.historyDecrypt({ store, id, nonce, ct, tag }) -> { plaintext: Uint8Array }
 
 // Every failure of this file is a StorageError whose message is plain words
 // meant for the user (§1.7: onerror/onabort are shown, not hidden behind a
@@ -47,18 +48,13 @@ export const STATE_ID = 'state', COUNTER_ID = 'counter';
 export const NONCE_LEN = 12, TAG_LEN = 16;
 // SP 800-38D §8.3: at most 2^32 random-nonce invocations per key.
 export const MAX_INVOCATIONS = 2n ** 32n;
+// The core seals at most this many plaintext bytes per record (nc_wasm.c NC_HIST_PT_MAX).
+export const PLAINTEXT_MAX = 65536;
 const U64 = /^(0|[1-9]\d{0,19})$/;
-const HEX = /^([0-9a-f]{2})*$/;
 
-export function bytesToHex(bytes) {
+function bytesToHex(bytes) {
   let out = '';
   for (const b of bytes) out += b.toString(16).padStart(2, '0');
-  return out;
-}
-export function hexToBytes(hex) {
-  if (typeof hex !== 'string' || !HEX.test(hex)) throw new StorageError('Invalid stored message data.');
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(2 * i, 2 * i + 2), 16);
   return out;
 }
 
@@ -75,30 +71,33 @@ export function messageRecordId(seq) {
   return 'm' + seq.padStart(20, '0');
 }
 
-// A value -> the plaintext bytes handed to the core (hex of UTF-8 JSON), and back.
-export function plaintextHex(value) { return bytesToHex(new TextEncoder().encode(JSON.stringify(value))); }
-export function parsePlaintextHex(hex) {
-  const bytes = hexToBytes(hex);
+// A value -> the plaintext bytes handed to the core (UTF-8 JSON), and back.
+export function plaintextBytes(value) {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  if (bytes.length === 0 || bytes.length > PLAINTEXT_MAX) throw new StorageError('This is too large to save on this device.');
+  return bytes;
+}
+export function parsePlaintext(bytes) {
+  if (!(bytes instanceof Uint8Array)) throw new StorageError('A stored message could not be read.');
   try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
   catch { throw new StorageError('A stored message could not be read.'); }
   finally { bytes.fill(0); }
 }
 
-// Core result -> the stored record: four separate fields (Ek 2).
+const bytesOf = (value, length) => value instanceof Uint8Array && (length === undefined ? value.length > 0 : value.length === length);
+
+// Core result -> the stored record: four separate fields (Ek 2), each its own copy.
 export function encodeRecord(id, sealed) {
-  if (typeof id !== 'string' || id.length === 0 || !sealed) throw new StorageError('Invalid message record.');
-  const nonce = hexToBytes(sealed.nonce), ct = hexToBytes(sealed.ct), tag = hexToBytes(sealed.tag);
-  if (nonce.length !== NONCE_LEN || tag.length !== TAG_LEN || ct.length === 0) throw new StorageError('Invalid message record.');
-  return { id, nonce, ct, tag };
+  if (typeof id !== 'string' || id.length === 0 || !sealed ||
+      !bytesOf(sealed.nonce, NONCE_LEN) || !bytesOf(sealed.tag, TAG_LEN) || !bytesOf(sealed.ct)) throw new StorageError('Invalid message record.');
+  return { id, nonce: sealed.nonce.slice(), ct: sealed.ct.slice(), tag: sealed.tag.slice() };
 }
 // Stored record -> the core's decrypt arguments; refuses anything malformed.
 export function decodeRecord(record) {
   if (!record || typeof record.id !== 'string' || record.id.length === 0 ||
-      !(record.nonce instanceof Uint8Array) || record.nonce.length !== NONCE_LEN ||
-      !(record.tag instanceof Uint8Array) || record.tag.length !== TAG_LEN ||
-      !(record.ct instanceof Uint8Array) || record.ct.length === 0 ||
+      !bytesOf(record.nonce, NONCE_LEN) || !bytesOf(record.tag, TAG_LEN) || !bytesOf(record.ct) ||
       Object.keys(record).sort().join() !== 'ct,id,nonce,tag') throw new StorageError('A stored message record is damaged.');
-  return { id: record.id, nonce: bytesToHex(record.nonce), ct: bytesToHex(record.ct), tag: bytesToHex(record.tag) };
+  return { id: record.id, nonce: record.nonce, ct: record.ct, tag: record.tag };
 }
 
 // The one counter record per vault: a decimal string.
@@ -195,7 +194,7 @@ export async function openHistoryStore({ core, vaultId }) {
     const open = async (store, record) => {
       const args = decodeRecord(record);
       const { plaintext } = await sealing(() => core.historyDecrypt({ store, ...args }), 'A stored message could not be opened. It may be damaged or from a different wallet.');
-      return parsePlaintextHex(plaintext);
+      return parsePlaintext(plaintext);
     };
     state = raw.state === undefined ? emptyState() : checkState(await open(STORE_STATE, raw.state));
     messages = [];
@@ -219,12 +218,16 @@ export async function openHistoryStore({ core, vaultId }) {
         { store: STORE_STATE, id: STATE_ID, value: checkState(nextState) }
       ];
       if (!budgetAllows(counter, entries.length)) throw new StorageError('This device has stored the maximum number of messages for this wallet. Nothing more can be saved here.');
+      // Every plaintext is built (and size-checked) before the first seal.
+      const plains = entries.map(entry => plaintextBytes(entry.value));
       const puts = [];
-      for (const entry of entries) {
-        const sealed = await sealing(() => core.historyEncrypt({ store: entry.store, id: entry.id, plaintext: plaintextHex(entry.value), counter: counter.toString() }), 'Message history could not be saved: the message could not be sealed.');
-        counter = nextCounter(counter, sealed.counter);
-        puts.push({ store: entry.store, record: encodeRecord(entry.id, sealed) });
-      }
+      try {
+        for (const [i, entry] of entries.entries()) {
+          const sealed = await sealing(() => core.historyEncrypt({ store: entry.store, id: entry.id, plaintext: plains[i], counter: counter.toString() }), 'Message history could not be saved: the message could not be sealed.');
+          counter = nextCounter(counter, sealed.counter);
+          puts.push({ store: entry.store, record: encodeRecord(entry.id, sealed) });
+        }
+      } finally { for (const bytes of plains) bytes.fill(0); }
       puts.push({ store: STORE_META, record: encodeCounter(counter) });
       if (closed) throw new StorageError('Message history is closed.');
       await writeAll(db, puts);

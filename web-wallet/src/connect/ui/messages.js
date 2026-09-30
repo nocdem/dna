@@ -7,12 +7,21 @@
 // generated in this session are "fresh"; S8: history store = vault id) and
 // 2026-09-30-connect-history-at-rest.md rev 2 (src/connect/store.js).
 //
+// One page = one module = one session (NC-4b): the page creates the wallet's
+// own NODUS client (src/nodus/client.js createNodusClient with
+// src/nodus/send-module.js nodusSendModuleFactory — the module that also
+// carries the Messages exports), unlocks it with the signing seed and the
+// locally derived address exactly as src/app.js startNodusSend does, and
+// builds the Messages core on it (src/connect/core.js createNodusConnectCore
+// ({ nodus })). The client keeps the session alive itself (its tick).
+//
 // Lifecycle (§1.8): the page opens only while this tab holds the wallet's
 // single-tab Web Lock `nodus.wallet.session` (src/app.js pattern); 10 minutes
-// without input, a manual Lock, `pagehide`, or a change of the saved wallet
-// locks it. Lock order: timers stop -> core.lock() (its own order: queue
-// stops, cancel, WebSocket closed, module memory zeroed, instance released)
-// -> history store closed -> in-page data dropped -> THEN the Web Lock is
+// without input, a manual Lock, `pagehide`, a change of the saved wallet, or
+// the client leaving 'ready' locks it. Lock order: timers stop ->
+// core.lock() (Messages keys wiped, nc_lock) -> client.lock() (queue stops,
+// cancel, WebSocket closed, module memory zeroed, instance released) ->
+// history store closed -> in-page data dropped -> THEN the Web Lock is
 // released.
 //
 // Network calls: each is awaited before the next one is queued (design §6.4
@@ -22,12 +31,14 @@
 import { Mnemonic, randomBytes } from 'ethers';
 import { VAULT_KEY, decryptVault } from '../../vault.js';
 import { normalizePhrase, validateNodusPhrase } from '../../recovery.js';
-import { NODUS_SEND_NETWORK } from '../../nodus/send-module.js';
-import { createNodusConnectCore, NODUS_CONNECT_TICK_MS, acceptanceMayAutoApprove } from '../core.js';
+import { nodusSendModuleFactory } from '../../nodus/send-module.js';
+import { createNodusClient } from '../../nodus/client.js';
+import { deriveNodusAddress, nodusSigningSeed } from '../../nodus/derive.js';
+import { createNodusConnectCore, acceptanceMayAutoApprove } from '../core.js';
 import { openHistoryStore, memoryHistoryStore, StorageError } from '../store.js';
 import {
   parseContactId, shortId, profilePatch, profileStatusText, contactListStatusText, senderClockLabel,
-  recentDays, isDelivered, pendingOutbox, compareLocal, receivedKey, connectServers
+  recentDays, isDelivered, pendingOutbox, compareLocal, receivedKey
 } from './text.js';
 import { el, untrusted, button, website } from './dom.js';
 
@@ -38,8 +49,8 @@ const HEX128 = /^[0-9a-f]{128}$/;
 const SCREENS = ['nc-start', 'nc-unlock-form', 'nc-words-form', 'nc-create-form', 'nc-closed', 'nc-open'];
 
 // ── session state (all dropped by lock) ────────────────────────────────
-let core, store, state, messages = [], ownFp, ownProfile, fresh = false, vaultId = null;
-let generation = 0, sessionRelease, tickTimer, syncTimer, idleTimer, idleDeadline = 0, syncing = false;
+let nodus, core, store, state, messages = [], ownFp, ownProfile, fresh = false, vaultId = null;
+let generation = 0, sessionRelease, syncTimer, idleTimer, idleDeadline = 0, syncing = false;
 let requests = [], selectedFp, newPhraseText, eraseArmed = false, profileTaken = false;
 const profiles = new Map();              // fp -> verified profile, this session
 const received = new Set();              // receivedKey of every stored incoming message
@@ -47,12 +58,6 @@ const unpublished = new Set();           // contacts whose pending set must be (
 const saltChecked = new Set();           // contacts whose salt was reconciled this session
 const ackedThisSession = new Set();      // contacts ACKed at least once this session
 const dropped = new Map();               // fp -> messages that did not verify, this session
-
-// ── core calls: the NC-4b names first, today's core.js names second ───
-// (expects-from-NC-4b list in the NC-4c report).
-const outboxPublish = (...a) => (core.outboxPublish || core.outboxSend)(...a);
-const outboxFetchDay = (...a) => (core.outboxFetchDay || core.outboxGet)(...a);
-const ackPublish = (...a) => (core.ackPublish || core.ackSend)(...a);
 
 function status(text) { $('nc-status').textContent = text; }
 function show(id) { for (const screen of SCREENS) $(screen).hidden = screen !== id; }
@@ -79,10 +84,11 @@ function releaseSession() { const release = sessionRelease; sessionRelease = und
 // ── lock ───────────────────────────────────────────────────────────────
 function lock(reason = 'Messages locked.') {
   generation++;
-  clearInterval(tickTimer); clearInterval(syncTimer); clearTimeout(idleTimer);
-  tickTimer = syncTimer = idleTimer = undefined; idleDeadline = 0; syncing = false;
-  const c = core; core = undefined;
+  clearInterval(syncTimer); clearTimeout(idleTimer);
+  syncTimer = idleTimer = undefined; idleDeadline = 0; syncing = false;
+  const c = core, client = nodus; core = undefined; nodus = undefined;
   try { c?.lock(); } catch { /* the rest of the lock must still run */ }
+  try { client?.lock(); } catch { /* same */ }
   try { store?.close(); } catch { /* same */ }
   store = undefined; state = undefined; messages = []; ownFp = undefined; ownProfile = undefined;
   fresh = false; vaultId = null; requests = []; selectedFp = undefined; newPhraseText = undefined;
@@ -119,21 +125,34 @@ class Closed extends Error {}
 async function open(getPhrase, { persistent, isFresh }) {
   const gen = ++generation;
   status('Opening Messages…');
-  let words;
+  let words, seed;
   try {
+    if (!nodusSendModuleFactory) throw new Closed('Messages is not available in this build.');
     if (!await acquireSession()) { status('Your wallet is open in another tab. Lock it there, then try again.'); return; }
     if (gen !== generation) return;
     const { phrase, id } = await getPhrase();
     if (gen !== generation) return;
-    const created = await createNodusConnectCore({ servers: connectServers(NODUS_SEND_NETWORK), loadGlue: () => import('../../nodus/send.js') });
-    if (gen !== generation) { created.lock(); return; }
+    // The address is derived locally first; the module must derive the same
+    // one (client.unlock refuses otherwise), as in src/app.js.
+    const address = await deriveNodusAddress(phrase);
+    if (gen !== generation) return;
+    const client = createNodusClient({
+      factory: nodusSendModuleFactory,
+      // Once Messages is open, a session that leaves 'ready' (error, or
+      // locked from inside) ends it; before that, open()'s catch reports.
+      onState: next => { if (client === nodus && ownFp && next !== 'ready') lock('The connection to the network was lost. Unlock again to continue.'); }
+    });
+    nodus = client;
+    seed = nodusSigningSeed(phrase);
+    await client.unlock({ seed, fingerprint: address });
+    if (gen !== generation) return;
+    const created = createNodusConnectCore({ nodus: client });
     core = created;
     words = new TextEncoder().encode(phrase);
     const unlocked = await created.unlock({ words, fresh: isFresh });
     if (gen !== generation) return;
     ownFp = unlocked.fingerprint; fresh = unlocked.fresh === true; vaultId = persistent ? id : null;
     $('nc-lock').hidden = false;
-    tickTimer = setInterval(() => { core?.tick().catch(() => {}); }, NODUS_CONNECT_TICK_MS);
     activity();
     await finishOpen(gen);
   } catch (error) {
@@ -143,7 +162,7 @@ async function open(getPhrase, { persistent, isFresh }) {
     // closed with a retry that re-reads without asking for the words again.
     if (!ownFp) { lock(error instanceof Closed || /password|phrase|words/i.test(error.message) ? error.message : 'Messages could not connect right now. Try again in a minute.'); return; }
     closed(explain(error, 'Messages could not connect to the network right now. Try again in a minute.'));
-  } finally { words?.fill(0); }
+  } finally { words?.fill(0); seed?.fill(0); }
 }
 
 // Our own plain-words errors (Closed, a storage failure) are shown as they
@@ -169,9 +188,9 @@ async function finishOpen(gen) {
 
   if (!store) {
     status('Loading your messages…');
-    // A saved wallet keeps its history (S8). Until the module offers the
-    // history calls, a saved wallet is treated like an unsaved one.
-    const opened = vaultId && typeof core.historyKey === 'function' ? await openHistoryStore({ core, vaultId }) : memoryHistoryStore();
+    // A saved wallet keeps its history (S8); typed words and a new account
+    // keep nothing.
+    const opened = vaultId ? await openHistoryStore({ core, vaultId }) : memoryHistoryStore();
     if (gen !== generation) { opened.close(); return; }
     store = opened;
     state = structuredClone(store.state);
@@ -327,7 +346,7 @@ async function syncContact(contact, gen) {
 
   const arrived = []; let fetched = 0, lost = 0;
   for (const day of recentDays(core.dayToday())) {
-    const result = await outboxFetchDay(fp, salt, day);
+    const result = await core.outboxFetchDay(fp, salt, day);
     if (gen !== generation) return;
     lost += Number(result.dropped || 0);
     for (const m of result.messages || []) {
@@ -350,7 +369,7 @@ async function syncContact(contact, gen) {
   // resolved on the transaction's oncomplete). An unsaved wallet keeps
   // nothing, so it never ACKs: the sender keeps the messages for next time.
   if (store.persistent && fetched && (arrived.length || !ackedThisSession.has(fp))) {
-    await ackPublish(fp, salt);
+    await core.ackPublish(fp, salt);
     if (gen === generation) ackedThisSession.add(fp);
   }
 }
@@ -359,7 +378,7 @@ async function publishOutbox(contact, gen) {
   const set = pendingOutbox(messages, contact.fp, nowSeconds(), state.acks[contact.fp]);
   if (!set.length) { unpublished.delete(contact.fp); return; }
   if (!contact.salt || !await ensureProfile(contact.fp) || gen !== generation) return;
-  await outboxPublish(contact.fp, contact.salt, set);
+  await core.outboxPublish(contact.fp, contact.salt, set);
   if (gen === generation) unpublished.delete(contact.fp);
 }
 
