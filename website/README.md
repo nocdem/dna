@@ -81,6 +81,22 @@ files outside that allowlist. This server is for local previews.
   Each image represents its own product, and links work without JavaScript.
 - `connect.html`, `wallet.html`, `identity.html`, `chain.html`, `scan.html`:
   individual product pages; Connect also hosts features and downloads.
+- `connect-soon.html`: the Nodus Connect coming-soon page (first to the web,
+  inside the Nodus web wallet; same 24-word recovery phrase; DNA Connect apps no
+  longer distributed), with a button to the web wallet. Reached from the
+  Products menu.
+- Header: the top navigation is grouped into four menus — Products (Web wallet
+  at `https://wallet.nodusnetwork.io/`, Nodus Connect "soon" → `connect-soon.html`,
+  All products → `ecosystem.html`), Network (`network.html`, `tokenomics.html`,
+  Scan), About (`manifesto.html`, `roadmap.html`) and Developers (`docs.html`,
+  Wiki). Each menu is a button with `aria-expanded`; it opens on hover with a
+  desktop mouse, on click/tap and with Enter/Space, and closes with Escape, on
+  an outside click or when focus leaves it. In the mobile menu the groups expand
+  inline. Without JavaScript the desktop menus open on hover and keyboard focus.
+  The header button is "Open Wallet" → the web wallet (hidden at 1100 px and
+  below, where the Products menu carries the same link). Every footer also has
+  a Web wallet link. All 15 pages carry the same header; only the current
+  page's link (`aria-current`) and group (`current-section`) differ.
 - `network.html`: Storage, Bandwidth, Compute, and shared architecture.
 - `manifesto.html`: privacy, identity ownership, and why Nodus is being built,
   followed by the Team section.
@@ -94,8 +110,8 @@ files outside that allowlist. This server is for local previews.
   and year (or month ranges), followed by undated future plans.
 - `docs.html`: developer reference, security scope, source and contribution links.
 - `styles.css`: responsive design and locally served Inter fonts.
-- `app.js`: English/Turkish switching, mobile navigation, FAQ,
-  and roadmap filters.
+- `app.js`: English/Turkish switching, mobile navigation, header menu groups,
+  FAQ, and roadmap filters.
 - `network.js`: a procedural mesh sculpture with metallic lighting, rendered
   with Canvas 2D.
 - `visuals.js`: one-time scroll reveals, pointer lighting/depth, reading progress,
@@ -171,12 +187,15 @@ npm run check
 
 This checks JavaScript syntax only. Browser verification additionally covers:
 
-1. All 14 marketing pages at 320, 390, 768, 1024, and 1440 pixels, in both
+1. All 15 marketing pages at 320, 390, 768, 1024, and 1440 pixels, in both
    languages: no page overflow, missing assets, or browser errors.
 2. Product cards navigate to dedicated pages; browser Back returns to the
    directory. Every local page/fragment target resolves. Direct page loads work
    without JavaScript, and old homepage bookmarks reach the replacement pages.
 3. Mobile navigation: opening, following a link, and closing with Escape.
+   Header menu groups: mouse hover, click/tap, Enter, Escape (closes the open
+   group first, then the mobile menu) and outside click; inline expansion in
+   the mobile menu.
 4. Language switches, reloads, and navigation between pages retain the selection across all pages.
 5. FAQ answers open and close, and reduced motion keeps the sculpture static.
 6. The server returns 404 for files outside the public allowlist and 405 for
@@ -352,3 +371,17 @@ footer. Registered in `public-files.mjs`, `sitemap.xml` and the
 language-carrying page list in `app.js`. The main site now has 14 marketing
 pages. Also corrected the stale "devnet" line under Content and naming.
 Browser validation has not been run for this change.
+
+2026-09-30: At the operator's request ("group the links at the top, put the
+wallet link there, and a coming-soon page for Connect") the eight flat header
+links became four menu groups (Products, Network, About, Developers), the
+header button now opens the web wallet, every footer gained a Web wallet link,
+and `connect-soon.html` was added in English and Turkish. Its copy reuses the
+existing `soon.*` strings; it makes no new product claims. Registered in
+`public-files.mjs`, `sitemap.xml` and the language-carrying page list in
+`app.js`. The main site now has 15 marketing pages; `connect.html` is unchanged
+apart from the header and footer. A targeted headless-Chromium check ran on the
+local preview: all 15 pages in Turkish (four groups, no browser errors),
+hover/click/Enter/Escape/outside-click at 1440 px, the inline mobile menu at
+390 px, and no horizontal overflow at 390, 1101, 1150, 1280 and 1440 px. The
+full five-width × two-language matrix above was not re-run.
