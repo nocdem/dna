@@ -2404,14 +2404,19 @@ int nodus_client_dnac_spend(nodus_client_t *client,
         return NODUS_ERR_PROTOCOL_ERROR;
     }
 
+    /* status 0 is APPROVED and result_out is zeroed above, so a reply
+     * without a readable "status" must not read as acceptance. */
+    bool has_status = false;
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
 
         if (key.tstr.len == 6 && memcmp(key.tstr.ptr, "status", 6) == 0) {
             cbor_item_t v = cbor_decode_next(&dec);
-            if (v.type == CBOR_ITEM_UINT)
+            if (v.type == CBOR_ITEM_UINT) {
                 result_out->status = (nodus_dnac_status_t)v.uint_val;
+                has_status = true;
+            }
         } else if (key.tstr.len == 3 && memcmp(key.tstr.ptr, "wid", 3) == 0) {
             cbor_item_t v = cbor_decode_next(&dec);
             if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_T3_WITNESS_ID_LEN)
@@ -2449,6 +2454,7 @@ int nodus_client_dnac_spend(nodus_client_t *client,
     }
 
     free_pending(client, req);
+    if (!has_status) return NODUS_ERR_PROTOCOL_ERROR;
     return 0;
 }
 
