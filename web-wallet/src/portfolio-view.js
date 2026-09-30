@@ -1,5 +1,5 @@
 import { CHAINS } from './config.js';
-import { ASSETS, chainBalances, readPrices, portfolioSnapshot, groupAssets, usdText } from './portfolio.js';
+import { ASSETS, chainBalances, readPrices, portfolioSnapshot, groupAssets, usdText, displayAmount } from './portfolio.js';
 
 const names = { ETH: 'Ethereum', BNB: 'BNB', SOL: 'Solana', TRX: 'TRON', USDT: 'Tether', USDC: 'USD Coin', DAI: 'Dai', USDD: 'USDD', CPUNK: 'CPUNK' };
 // Asset symbol -> its own icon file. Keyed by symbol, not guessed from it, so an
@@ -85,7 +85,9 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
       const home = networks[group.rows[0].chain];
       name.append(el('strong', '', group.symbol), el('small', '', `${names[group.symbol] ?? group.symbol} · ${group.rows.length === 1 ? home.name : `${group.rows.length} networks`}`));
       const value = el('span', 'asset-value');
-      value.append(el('strong', '', text(group.balance === null ? '—' : `${group.balance}${group.partialBalance ? ' known' : ''}`)),
+      const groupAmount = el('strong', '', text(group.balance === null ? '—' : `${displayAmount(group.balance)}${group.partialBalance ? ' known' : ''}`));
+      if (group.balance !== null && !hidden) groupAmount.title = `${group.balance} ${group.symbol}`;
+      value.append(groupAmount,
         el('small', '', text(`${usdText(group.usd, group.positive)}${group.partialValue && group.usd !== null ? ' known' : ''}`)));
       summary.append(icon(group.symbol, home), name, value, el('span', 'asset-chevron', '⌄')); detail.append(summary);
       for (const row of group.rows) {
@@ -102,7 +104,9 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
         entry.onclick = event => { if (!event.target.closest('button')) selectAsset(row.chain, row.symbol, 'select'); };
         const value = el('span', 'holding-value');
         const state = row.state === 'unsupported' ? 'Balance not shown yet' : row.state === 'loading' ? 'Reading…' : row.state === 'stale' ? 'Balance out of date' : row.state === 'idle' ? 'Not read' : 'Balance unavailable';
-        value.append(el('strong', '', text(row.balance === null ? state : `${row.balance} ${row.symbol}`)),
+        const rowAmount = el('strong', '', text(row.balance === null ? state : `${displayAmount(row.balance)} ${row.symbol}`));
+        if (row.balance !== null && !hidden) rowAmount.title = `${row.balance} ${row.symbol}`;
+        value.append(rowAmount,
           el('small', '', text(row.priceMissing ? 'Price unavailable' : usdText(row.usd, row.positive))));
         const actions = el('span', 'holding-actions');
         for (const action of networks[row.chain].receiveOnly ? ['Receive'] : ['Send', 'Receive']) {

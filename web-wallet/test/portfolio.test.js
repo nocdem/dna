@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ASSETS, CPUNK_ASSET, PRICE_URL, BALANCE_MAX_AGE, PRICE_MAX_AGE, balanceUnits, chainBalances, parsePrices, readPrices, portfolioSnapshot, groupAssets, usdText } from '../src/portfolio.js';
+import { ASSETS, CPUNK_ASSET, PRICE_URL, BALANCE_MAX_AGE, PRICE_MAX_AGE, balanceUnits, chainBalances, parsePrices, readPrices, portfolioSnapshot, groupAssets, usdText, displayAmount } from '../src/portfolio.js';
 import { IXIOS_NETWORK, IXIOS_ASSET } from '../src/ixios/network.js';
 import { NODUS_NETWORK, NODUS_ASSET } from '../src/nodus/network.js';
 const now = 1789918200000;
@@ -157,4 +157,16 @@ test('price requests contain only pinned asset identifiers and honor cancellatio
   }});assert.equal(called,true);
   const controller=new AbortController();controller.abort();
   await assert.rejects(readPrices({signal:controller.signal,fetcher:()=>{throw new Error('Must not fetch');}}),/cancelled/);
+});
+
+test('balance display: thousands separators, at most 6 decimals truncated (never rounded up), dust shown as <0.000001', () => {
+  assert.equal(displayAmount('20123456.123456789012345678'), '20,123,456.123456');
+  assert.equal(displayAmount('0.999999999999999999'), '0.999999');          // truncated, not rounded to 1
+  assert.equal(displayAmount('0.000000000000000028'), '<0.000001');         // the "28 ETH" dust case
+  assert.equal(displayAmount('1.5'), '1.5');
+  assert.equal(displayAmount('1.500000'), '1.5');
+  assert.equal(displayAmount('0.0'), '0');
+  assert.equal(displayAmount('50000000.0'), '50,000,000');
+  assert.equal(displayAmount('1234'), '1,234');
+  assert.equal(displayAmount('not a number'), 'not a number');
 });

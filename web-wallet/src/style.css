@@ -341,7 +341,7 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 .asset-name strong { font-size: 13px; font-weight: 500; color: var(--text); }
 .asset-name small { font-size: 10px; line-height: 1.6; color: var(--muted); }
 .asset-value { display: flex; flex-direction: column; gap: 5px; text-align: right; margin-left: auto; min-width: 0; max-width: 50%; }
-.asset-value strong { color: var(--text); font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.asset-value strong { color: var(--text); font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .asset-value small { font-size: 11px; color: #b9c7ad; }
 .asset-chevron { color: #718262; margin-left: 4px; flex-shrink: 0; }
 .asset-group[open] .asset-chevron { transform: rotate(180deg); }
@@ -359,7 +359,7 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 .holding-select span { float: none; overflow-wrap: anywhere; }
 .chain-holding.selected .holding-select { color: var(--lime); }
 .holding-value { text-align: right; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-.holding-value strong { color: var(--text); font-size: 11px; font-weight: 400; overflow-wrap: anywhere; }
+.holding-value strong { color: var(--text); font-size: 11px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .holding-value small { font-size: 10px; }
 .holding-actions { grid-column: 1 / -1; display: flex; justify-content: end; gap: 8px; }
 .holding-actions button { margin: 0; font-size: 10px; padding: 6px 12px; }

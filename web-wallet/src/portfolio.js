@@ -113,6 +113,23 @@ export function groupAssets(rows, filter = 'all') {
     return rank(a.symbol) - rank(b.symbol);
   });
 }
+// Display form of a decimal balance string (formatUnits output, e.g.
+// "20123456.123456789012345678"): thousands separators and at most 6
+// fractional digits, TRUNCATED (never rounded up — the wallet must not show
+// more than is held), trailing zeros removed; a positive amount below 0.000001
+// reads "<0.000001". Display only: the exact string stays the value used for
+// sending and review, and is shown on hover (title). Operator 2026-09-30:
+// 18-decimal balances (CPUNK, ETH) wrapped mid-number and looked like a
+// separate label ("… 28 ETH").
+export const DISPLAY_DECIMALS = 6;
+export function displayAmount(value) {
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(String(value));
+  if (!match) return String(value);
+  const whole = match[1].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const fraction = (match[2] ?? '').slice(0, DISPLAY_DECIMALS).replace(/0+$/, '');
+  if (!fraction && /^0+$/.test(match[1]) && /[1-9]/.test(match[2] ?? '')) return `<0.${'0'.repeat(DISPLAY_DECIMALS - 1)}1`;
+  return fraction ? `${whole}.${fraction}` : whole;
+}
 export function usdText(units, positive = false) {
   if (units === null) return '—';
   if (units < USD_SCALE / 100n && (units > 0n || positive)) return '<$0.01';
