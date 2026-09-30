@@ -96,6 +96,27 @@ typedef struct {
     nodus_on_ch_post_fn         on_ch_post;
     nodus_on_state_change_fn    on_state_change;
     void                       *callback_data;
+
+    /* Server key pin (optional). Fingerprints (SHA3-512 of the server's
+     * Dilithium5 public key — nodus_fingerprint(), the same 64-byte value
+     * as a node id) of the servers this client accepts.
+     *
+     * NULL / 0 (what a zeroed config gives): no pin — the handshake behaves
+     * exactly as before this field existed.
+     *
+     * Set (count > 0): the connection FAILS CLOSED unless the server's
+     * AUTH_OK carries a Kyber pubkey + server pubkey + kpk_sig, the
+     * signature verifies, fingerprint(server pubkey) is in this list, and
+     * the AUTH_OK also carries an ML-KEM-1024 pubkey whose mpk_sig
+     * verifies — a pinned session is ML-KEM-1024 only (operator
+     * 2026-09-29). With a pin set there is no unsigned-kpk ("legacy
+     * server"), cached-key, Kyber round-3 or unencrypted session.
+     *
+     * The array is owned by the caller and must outlive the client (it is
+     * not copied; same rule as nodus_tcp_t.ws_origins). count > 0 with a
+     * NULL pointer, or count < 0, makes nodus_client_init() fail. */
+    const nodus_key_t          *pinned_server_fps;
+    int                         pinned_server_fp_count;
 } nodus_client_config_t;
 
 /* ── Concurrent request slot ────────────────────────────────────── */
@@ -168,10 +189,10 @@ typedef struct nodus_client {
 
     /* Reconnect backoff state */
     int                    backoff_ms;
-    uint64_t               reconnect_at; /* Unix ms when to reconnect */
+    uint64_t               reconnect_at; /* Monotonic ms (nodus_time_mono_ms) when to reconnect */
 
     /* Keepalive ping (prevents server idle sweep) */
-    uint64_t               last_ping_ms; /* Unix ms of last ping sent */
+    uint64_t               last_ping_ms; /* Monotonic ms (nodus_time_mono_ms) of last ping sent */
 
     /* Active subscriptions (for re-subscribe on reconnect) */
     nodus_key_t            listen_keys[NODUS_CLIENT_MAX_LISTENS];
@@ -216,7 +237,10 @@ typedef struct nodus_client {
     uint8_t                   cached_server_mlkem_pk[1568];
     bool                      has_cached_server_mlkem;
 
-    /* Cached server Dilithium5 pubkey (TOFU — set on first auth_ok with sig) */
+    /* Cached server Dilithium5 pubkey (TOFU — set on every auth_ok whose
+     * kpk_sig verified; not cleared by an unsigned one). With a server-key
+     * pin set, a connection only succeeds through that path, so after a
+     * successful pinned connect it is the current server's key. */
     nodus_pubkey_t             server_dil_pk;
     bool                       has_server_dil_pk;
 
@@ -249,6 +273,21 @@ int nodus_client_connect(nodus_client_t *client);
  * @return Number of events processed, or -1 on error
  */
 int nodus_client_poll(nodus_client_t *client, int timeout_ms);
+
+/**
+ * Periodic housekeeping for a client WITHOUT a read thread (the browser
+ * build, where nodus_client_connect starts none): sends the 60 s keepalive
+ * ping when due, then nodus_client_poll(client, 0) — which delivers pending
+ * input and, when the connection dropped with auto_reconnect set, runs the
+ * reconnect. Call it at least every few seconds (the server closes an
+ * authenticated connection idle for 180 s). With a read thread running it
+ * does nothing (the thread already does both).
+ * In the browser build a reconnect waits for its handshake by yielding to
+ * the event loop, so this must be called as an async (Asyncify/JSPI) export.
+ *
+ * @return nodus_client_poll's result, 0 with a read thread, -1 on bad args
+ */
+int nodus_client_tick(nodus_client_t *client);
 
 /**
  * Check if client is connected and authenticated.
@@ -578,7 +617,7 @@ typedef struct {
     pthread_mutex_t         send_mutex;
 
     /* Reconnect state */
-    uint64_t                reconnect_at;     /* Timestamp (ms) for next reconnect attempt */
+    uint64_t                reconnect_at;     /* Monotonic ms (nodus_time_mono_ms) of next reconnect attempt */
     uint32_t                backoff_ms;       /* Current backoff interval */
 
     /* Internal read thread */

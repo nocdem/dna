@@ -433,6 +433,16 @@ uint64_t nodus_time_now(void);
 /** Current unix timestamp (milliseconds). */
 uint64_t nodus_time_now_ms(void);
 
+/**
+ * Monotonic milliseconds (CLOCK_MONOTONIC; Windows GetTickCount64).
+ * For measuring intervals and deadlines only — the zero point is arbitrary,
+ * so a value is compared only with another nodus_time_mono_ms() value,
+ * never with a unix timestamp. A wall-clock step does not move it.
+ * Used by the client SDK's own waits and timeouts (nodus_client.c); it
+ * never enters consensus, a block, a vote or stored data.
+ */
+uint64_t nodus_time_mono_ms(void);
+
 /** Close all connections and free resources. */
 void nodus_tcp_close(nodus_tcp_t *tcp);
 

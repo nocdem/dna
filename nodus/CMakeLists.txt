@@ -1011,6 +1011,16 @@ add_executable(test_client tests/test_client.c)
 target_link_libraries(test_client nodus dsa nodus pthread)
 add_test(NAME test_client COMMAND test_client)
 
+# Client server-key pin (nodus_client_config_t.pinned_server_fps; web wallet
+# NODUS send design package (c1)): a pinned client refuses every weak
+# handshake path (no kpk / cached key / unsigned kpk / bad or missing
+# mpk_sig / key not in the list) and an unpinned one behaves as before;
+# client timeouts run on the monotonic clock. Real server on 15400-15404
+# (test-unique), fake server on 127.0.0.1:0.
+add_executable(test_client_pin tests/test_client_pin.c)
+target_link_libraries(test_client_pin nodus dsa kem nodus pthread)
+add_test(NAME test_client_pin COMMAND test_client_pin)
+
 # O15C-D — request/result correlation: a response never reaches the
 # wrong request, and a reply to an abandoned request is not captured.
 # This is what makes the late "unknown txn" warning an attribution gap
@@ -1063,7 +1073,7 @@ add_test(NAME test_tcp_read_budget COMMAND test_tcp_read_budget)
 # 2026-07-21 parallel-safety: every server-spawning test now uses a FULLY
 # explicit, test-unique port set (test_server 140xx, test_circuit_live
 # 150xx, test_client 151xx, test_server_init_fail_closes 152xx,
-# test_ws_server 153xx,
+# test_ws_server 153xx, test_client_pin 154xx,
 # test_circuit_cross_live 16xxx/17xxx) — an unset peer/witness port made
 # nodus_server_init bind the production defaults 4002/4004, which collided
 # under `ctest -j`. No shared ports remain, so no RESOURCE_LOCK is needed.

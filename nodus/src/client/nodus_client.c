@@ -28,6 +28,9 @@
   #include <unistd.h>
   #include <sys/socket.h>
 #endif
+#ifdef __EMSCRIPTEN__
+  #include <emscripten.h>
+#endif
 
 #include "crypto/utils/qgp_log.h"
 
@@ -70,14 +73,48 @@ static int  try_reconnect(nodus_client_t *client);
 static void sleep_ms(int ms) {
 #ifdef _WIN32
     Sleep(ms);
+#elif defined(__EMSCRIPTEN__)
+    /* Browser: give control back to the event loop (nanosleep would spin
+     * the only thread and SOCKFS would never deliver a byte). */
+    emscripten_sleep((unsigned int)ms);
 #else
     struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
     nanosleep(&ts, NULL);
 #endif
 }
 
+#ifdef __EMSCRIPTEN__
+/* Browser build (design 2026-09-25 rev 2 §0a.3 (c1)): there is no read
+ * thread, and nodus_tcp_poll never waits (nodus_tcp.c, __EMSCRIPTEN__
+ * poll loop). Every thread-less poll loop in this file calls this after
+ * each poll so the browser can run its event loop — SOCKFS delivers
+ * received bytes only when control returns to it (spike S0: a loop without
+ * the yield receives 0 bytes). Needs ASYNCIFY or JSPI at link time. */
+#define CLIENT_WASM_YIELD_MS 10
+static void client_yield(void) {
+    emscripten_sleep(CLIENT_WASM_YIELD_MS);
+}
+#endif
+
+/* Keepalive ping every 60 s so the server's idle sweep (180 s for an
+ * authenticated client) never closes a live session. Caller holds
+ * poll_mutex. Run by the read thread, or by nodus_client_tick where there
+ * is no read thread (browser build). */
+static void keepalive_if_due(nodus_client_t *client) {
+    if (client->state != NODUS_CLIENT_READY) return;
+    uint64_t now = now_ms();
+    if (now - client->last_ping_ms < 60000) return;
+    client->last_ping_ms = now;
+    uint8_t ping_buf[128];
+    size_t ping_len = 0;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    if (nodus_t2_ping(txn, client->token, ping_buf, sizeof(ping_buf), &ping_len) == 0)
+        send_request(client, ping_buf, ping_len);
+}
+
 /* ── Internal read thread ──────────────────────────────────────── */
 
+#ifndef __EMSCRIPTEN__   /* the browser build has no read thread */
 static void *read_thread_fn(void *arg) {
     nodus_client_t *client = (nodus_client_t *)arg;
     QGP_LOG_INFO(LOG_TAG, "Read thread started");
@@ -112,18 +149,7 @@ static void *read_thread_fn(void *arg) {
         int rc = nodus_tcp_poll(tcp, 100);
 
         /* Keepalive ping every 60s to prevent server idle sweep */
-        if (client->state == NODUS_CLIENT_READY) {
-            uint64_t now = now_ms();
-            if (now - client->last_ping_ms >= 60000) {
-                client->last_ping_ms = now;
-                uint8_t ping_buf[128];
-                size_t ping_len = 0;
-                uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
-                if (nodus_t2_ping(txn, client->token, ping_buf, sizeof(ping_buf), &ping_len) == 0) {
-                    send_request(client, ping_buf, ping_len);
-                }
-            }
-        }
+        keepalive_if_due(client);
 
         pthread_mutex_unlock(&client->poll_mutex);
 
@@ -136,8 +162,16 @@ static void *read_thread_fn(void *arg) {
     QGP_LOG_INFO(LOG_TAG, "Read thread stopped");
     return NULL;
 }
+#endif /* !__EMSCRIPTEN__ */
 
 static void start_read_thread(nodus_client_t *client) {
+#ifdef __EMSCRIPTEN__
+    /* Browser build: one thread (decision 2026-09-25-web-wallet-nodus-
+     * send-transport.md "Çalışma modeli"). Requests poll directly in
+     * wait_response; the page drives keepalive + reconnect through
+     * nodus_client_tick. */
+    (void)client;
+#else
     if (atomic_load(&client->read_thread_running)) return;
     atomic_store(&client->read_thread_stop, false);
     if (pthread_create(&client->read_thread, NULL, read_thread_fn, client) == 0) {
@@ -146,6 +180,7 @@ static void start_read_thread(nodus_client_t *client) {
     } else {
         QGP_LOG_ERROR(LOG_TAG, "Failed to create read thread");
     }
+#endif
 }
 
 static void stop_read_thread(nodus_client_t *client) {
@@ -158,8 +193,24 @@ static void stop_read_thread(nodus_client_t *client) {
 
 /* ── Helpers ────────────────────────────────────────────────────── */
 
+/* Monotonic milliseconds: every client wait, timeout, backoff and keepalive
+ * interval is measured with this, so a wall-clock step cannot stretch or cut
+ * one short. Never compare it with a unix timestamp (nodus_time_now*). */
 static uint64_t now_ms(void) {
-    return nodus_time_now() * 1000ULL;
+    return nodus_time_mono_ms();
+}
+
+/* Milliseconds from `start` (a now_ms() value) until now. */
+static uint64_t elapsed_since(uint64_t start) {
+    uint64_t now = now_ms();
+    return now > start ? now - start : 0;
+}
+
+/* true when at least `limit_ms` have passed since `start`. A limit <= 0 has
+ * always passed (it must never turn into a huge unsigned wait). */
+static bool deadline_passed(uint64_t start, int limit_ms) {
+    if (limit_ms <= 0) return true;
+    return elapsed_since(start) >= (uint64_t)limit_ms;
 }
 
 static void set_state(nodus_client_t *client, nodus_client_state_t new_state) {
@@ -282,9 +333,12 @@ static void free_pending(nodus_client_t *client, nodus_pending_t *p) {
 }
 
 static bool wait_response(nodus_client_t *client, nodus_pending_t *req, int timeout_ms) {
-    int elapsed = 0;
+    /* The limit is measured on the monotonic clock, not by counting loop
+     * turns: nodus_tcp_poll returns early whenever an event arrives, so a
+     * turn is not 50 ms (RT1 L3 F8). */
+    uint64_t start = now_ms();
 
-    while (!atomic_load(&req->ready) && elapsed < timeout_ms) {
+    while (!atomic_load(&req->ready) && !deadline_passed(start, timeout_ms)) {
         if (!client->conn && client->state != NODUS_CLIENT_RECONNECTING)
             return false;
 
@@ -292,14 +346,17 @@ static bool wait_response(nodus_client_t *client, nodus_pending_t *req, int time
             !pthread_equal(pthread_self(), client->read_thread)) {
             /* Read thread handles TCP — just wait for ready flag */
             sleep_ms(10);
-            elapsed += 10;
         } else {
             /* We ARE the read thread (reconnect path), or no thread — poll directly */
             nodus_tcp_t *tcp = (nodus_tcp_t *)client->tcp;
             if (tcp) nodus_tcp_poll(tcp, 50);
-            elapsed += 50;
+            else sleep_ms(10);
+#ifdef __EMSCRIPTEN__
+            if (tcp) client_yield();
+#endif
         }
     }
+    int elapsed = (int)elapsed_since(start);
     /* O15C-D — terminal reason for the pending entry, so a later
      * "unknown txn" warning is attributable to the request that gave up
      * rather than left unexplained. One line per abandoned request. */
@@ -629,8 +686,11 @@ static void client_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
                  conn && conn->ip[0] ? conn->ip : "?",
                  conn ? conn->port : 0,
                  sock_err,
+                 /* last_activity is the transport's unix-seconds stamp
+                  * (nodus_time_now), so this stays on the wall clock —
+                  * now_ms() is monotonic and not comparable with it. */
                  (conn && conn->last_activity > 0)
-                     ? (unsigned long)(now_ms() - conn->last_activity * 1000)
+                     ? (unsigned long)(nodus_time_now_ms() - conn->last_activity * 1000)
                      : 0UL);
     client->conn = NULL;
 
@@ -658,6 +718,15 @@ int nodus_client_init(nodus_client_t *client,
     if (!client || !config || !identity) return -1;
     if (config->server_count <= 0 || config->server_count > NODUS_CLIENT_MAX_SERVERS)
         return -1;
+    /* Server key pin: a count without a list, or a negative count, is a
+     * broken pin — refuse it rather than silently run unpinned. */
+    if (config->pinned_server_fp_count < 0 ||
+        (config->pinned_server_fp_count > 0 && !config->pinned_server_fps)) {
+        QGP_LOG_ERROR(LOG_TAG, "init: invalid server pin list (count=%d, list=%s)",
+                      config->pinned_server_fp_count,
+                      config->pinned_server_fps ? "set" : "NULL");
+        return -1;
+    }
 
     memset(client, 0, sizeof(*client));
     client->config = *config;
@@ -749,14 +818,17 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
      * Note: nodus_tcp_poll() may free conn via on_disconnect callback
      * (which sets client->conn = NULL), so check client->conn after
      * each poll iteration to avoid use-after-free on the local ptr. */
-    int elapsed = 0;
+    uint64_t start = now_ms();
     while (client->conn && conn->state == NODUS_CONN_CONNECTING &&
-           elapsed < client->config.connect_timeout_ms) {
+           !deadline_passed(start, client->config.connect_timeout_ms)) {
         nodus_tcp_poll(tcp, 50);
-        elapsed += 50;
+#ifdef __EMSCRIPTEN__
+        client_yield();
+#endif
         conn = (nodus_tcp_conn_t *)client->conn;  /* re-read (may be NULL) */
         if (!conn) break;
     }
+    int elapsed = (int)elapsed_since(start);
 
     if (!client->conn || conn == NULL || conn->state != NODUS_CONN_CONNECTED) {
         QGP_LOG_ERROR(LOG_TAG, "TCP connect to %s:%d failed after %dms (state=%d)",
@@ -792,6 +864,58 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
     /* Re-subscribe after reconnect */
     resubscribe_all(client);
     return 0;
+}
+
+/* Server key pin (config.pinned_server_fps) — the AUTH_OK checks that run
+ * BEFORE the channel-key handling in do_auth, only when a pin is set.
+ * Returns 0 when the AUTH_OK may proceed, -1 to refuse the connection.
+ *
+ * Every weak path of the unpinned handshake is closed here or right after:
+ *   - no kpk: unpinned, either an UNENCRYPTED session (has_kpk false) or
+ *     the cached-key reconnect branch — the live server signed nothing
+ *     this round, so there is no key to hold against the pin → refused;
+ *   - kpk without spk/kpk_sig ("legacy server") → refused here;
+ *   - fingerprint(spk) not in the pin list → refused here;
+ *   - kpk_sig invalid → refused by do_auth (as without a pin);
+ *   - no mpk, or mpk without mpk_sig → refused here; mpk_sig invalid →
+ *     refused by do_auth instead of the Kyber round-3 fallback.
+ * A pinned client therefore speaks ML-KEM-1024 ONLY (operator 2026-09-29,
+ * browser wallet "5 evet"; decision 2026-09-25-web-wallet-nodus-send-
+ * transport.md addendum): nothing signs the ABSENCE of mpk, so an on-path
+ * party could otherwise strip mpk + mpk_sig and force Kyber round-3. The
+ * unpinned client keeps the round-3 fallback (decision 2026-09-23-kem-
+ * mlkem-migration.md K1 rev 2). */
+static int pin_check_auth_ok(const nodus_client_t *client,
+                              const nodus_tier2_msg_t *resp) {
+    if (!resp->has_kyber_pk) {
+        QGP_LOG_ERROR(LOG_TAG, "Auth: pinned client — server sent no channel key "
+                      "(no unencrypted or cached-key session under a pin)");
+        return -1;
+    }
+    if (!resp->has_kpk_sig || !resp->has_server_pk) {
+        QGP_LOG_ERROR(LOG_TAG, "Auth: pinned client — server key or kpk_sig missing "
+                      "(unsigned channel key refused)");
+        return -1;
+    }
+    if (!resp->has_mlkem_pk || !resp->has_mpk_sig) {
+        QGP_LOG_ERROR(LOG_TAG, "Auth: pinned client — no signed ML-KEM key "
+                      "(ML-KEM-1024 only, no Kyber round-3 session)");
+        return -1;
+    }
+
+    nodus_key_t fp;
+    if (nodus_fingerprint(&resp->server_pk, &fp) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Auth: pinned client — server fingerprint failed");
+        return -1;
+    }
+    for (int i = 0; i < client->config.pinned_server_fp_count; i++) {
+        if (nodus_key_cmp(&fp, &client->config.pinned_server_fps[i]) == 0)
+            return 0;
+    }
+    QGP_LOG_ERROR(LOG_TAG, "Auth: pinned client — server key %02x%02x%02x%02x... "
+                  "is not in the pin list", fp.bytes[0], fp.bytes[1],
+                  fp.bytes[2], fp.bytes[3]);
+    return -1;
 }
 
 static int do_auth(nodus_client_t *client) {
@@ -866,6 +990,17 @@ static int do_auth(nodus_client_t *client) {
         return -1;
     }
 
+    /* Pinned: every AUTH_OK that passes here reaches the kpk_sig branch
+     * below, which sets server_dil_pk to THIS session's key. Unpinned: the
+     * field keeps its previous (TOFU) semantics — messenger reads it
+     * (nodus_init.c state callback) and its behaviour must not change. */
+    const bool pinned = client->config.pinned_server_fp_count > 0;
+    if (pinned && pin_check_auth_ok(client, resp) != 0) {
+        free_pending(client, req);
+        free(buf);
+        return -1;
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Auth: success");
     memcpy(client->token, resp->token, NODUS_SESSION_TOKEN_LEN);
 
@@ -915,6 +1050,15 @@ static int do_auth(nodus_client_t *client) {
                     memcpy(server_mlkem_pk, resp->mlkem_pk, NODUS_MLKEM_PK_BYTES);
                     has_mpk = true;
                     QGP_LOG_INFO(LOG_TAG, "Auth: server ML-KEM PK signature verified ✓");
+                } else if (pinned) {
+                    /* Pinned client: a bad mpk_sig is a failed handshake,
+                     * not a reason to drop to Kyber round-3. */
+                    QGP_LOG_ERROR(LOG_TAG,
+                                  "Auth: server ML-KEM PK signature INVALID — "
+                                  "pinned client refuses the Kyber fallback");
+                    free_pending(client, req);
+                    free(buf);
+                    return -1;
                 } else {
                     QGP_LOG_WARN(LOG_TAG,
                                  "Auth: server ML-KEM PK signature INVALID — "
@@ -940,10 +1084,12 @@ static int do_auth(nodus_client_t *client) {
                 client->has_cached_server_mlkem = false;
             }
         } else {
+            /* Unpinned only — pin_check_auth_ok refused this AUTH_OK. */
             QGP_LOG_WARN(LOG_TAG, "Auth: server did not sign Kyber PK (legacy server)");
         }
     } else if (client->has_cached_server_kyber) {
-        /* Reconnect: server didn't send kpk (old proto?) but we have cache */
+        /* Unpinned only — pin_check_auth_ok refuses an AUTH_OK without kpk.
+         * Reconnect: server didn't send kpk (old proto?) but we have cache */
         memcpy(server_kyber_pk, client->cached_server_kyber_pk, NODUS_KYBER_PK_BYTES);
         has_kpk = true;
         QGP_LOG_INFO(LOG_TAG, "Auth: using cached server Kyber pubkey");
@@ -956,6 +1102,8 @@ static int do_auth(nodus_client_t *client) {
 
     free_pending(client, req);
 
+    /* has_kpk false = the session stays UNENCRYPTED. Unpinned only: with a
+     * pin set, pin_check_auth_ok guaranteed a signed kpk above. */
     if (has_kpk) {
         uint8_t alg = has_mpk ? 1 : 0;
         QGP_LOG_INFO(LOG_TAG, "Auth: server supports channel encryption, initiating %s handshake",
@@ -1125,7 +1273,13 @@ int nodus_client_poll(nodus_client_t *client, int timeout_ms) {
         try_reconnect(client);
         if (client->state != NODUS_CLIENT_READY) {
             nodus_tcp_t *tcp = (nodus_tcp_t *)client->tcp;
-            int rc = nodus_tcp_poll(tcp, timeout_ms < 100 ? timeout_ms : 100);
+            int wait_ms = timeout_ms < 100 ? timeout_ms : 100;
+            int rc = nodus_tcp_poll(tcp, wait_ms);
+#ifdef __EMSCRIPTEN__
+            /* nodus_tcp_poll does not wait in the browser build — the wait
+             * the caller asked for is a yield to the event loop. */
+            if (wait_ms > 0) emscripten_sleep((unsigned int)wait_ms);
+#endif
             pthread_mutex_unlock(&client->poll_mutex);
             return rc;
         }
@@ -1138,8 +1292,32 @@ int nodus_client_poll(nodus_client_t *client, int timeout_ms) {
 
     nodus_tcp_t *tcp = (nodus_tcp_t *)client->tcp;
     int rc = nodus_tcp_poll(tcp, timeout_ms);
+#ifdef __EMSCRIPTEN__
+    if (timeout_ms > 0) emscripten_sleep((unsigned int)timeout_ms);   /* see above */
+#endif
     pthread_mutex_unlock(&client->poll_mutex);
     return rc;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int nodus_client_tick(nodus_client_t *client) {
+    if (!client || !client->tcp) return -1;
+
+    /* A read thread already sends the keepalive and runs reconnect. */
+    if (atomic_load(&client->read_thread_running))
+        return 0;
+
+    pthread_mutex_lock(&client->poll_mutex);
+    keepalive_if_due(client);
+    pthread_mutex_unlock(&client->poll_mutex);
+
+    /* timeout 0: no wait of its own. A due reconnect still runs the full
+     * connect + handshake, which yields (client_yield) while it waits — so
+     * in the browser build this export must be called the async way
+     * (Asyncify/JSPI), like every other export that can reach the network. */
+    return nodus_client_poll(client, 0);
 }
 
 bool nodus_client_is_ready(const nodus_client_t *client) {
@@ -5580,9 +5758,10 @@ static int ch_conn_send(nodus_ch_conn_t *ch, const uint8_t *payload, size_t len)
 }
 
 static bool ch_conn_wait_response(nodus_ch_conn_t *ch, nodus_ch_pending_t *req, int timeout_ms) {
-    int elapsed = 0;
+    /* Monotonic deadline, not a count of loop turns (see wait_response). */
+    uint64_t start = now_ms();
 
-    while (!atomic_load(&req->ready) && elapsed < timeout_ms) {
+    while (!atomic_load(&req->ready) && !deadline_passed(start, timeout_ms)) {
         if (!ch->conn)
             return false;
 
@@ -5590,12 +5769,11 @@ static bool ch_conn_wait_response(nodus_ch_conn_t *ch, nodus_ch_pending_t *req, 
             !pthread_equal(pthread_self(), ch->read_thread)) {
             /* Read thread handles TCP — just wait for ready flag */
             sleep_ms(10);
-            elapsed += 10;
         } else {
             /* We ARE the read thread (auth path), or no thread — poll directly */
             nodus_tcp_t *tcp = (nodus_tcp_t *)ch->tcp;
             if (tcp) nodus_tcp_poll(tcp, 50);
-            elapsed += 50;
+            else sleep_ms(10);
         }
     }
     return atomic_load(&req->ready);
@@ -5743,11 +5921,10 @@ static int ch_conn_try_reconnect(nodus_ch_conn_t *ch) {
     ch->conn = conn;
 
     /* Wait for TCP connection */
-    int elapsed = 0;
+    uint64_t start = now_ms();
     while (ch->conn && conn->state == NODUS_CONN_CONNECTING &&
-           elapsed < CH_CONN_CONNECT_TIMEOUT) {
+           !deadline_passed(start, CH_CONN_CONNECT_TIMEOUT)) {
         nodus_tcp_poll(tcp, 50);
-        elapsed += 50;
         conn = (nodus_tcp_conn_t *)ch->conn;
         if (!conn) break;
     }
@@ -5983,14 +6160,14 @@ int nodus_channel_connect(nodus_ch_conn_t *ch) {
     ch->conn = conn;
 
     /* Wait for TCP connection to establish */
-    int elapsed = 0;
+    uint64_t start = now_ms();
     while (ch->conn && conn->state == NODUS_CONN_CONNECTING &&
-           elapsed < CH_CONN_CONNECT_TIMEOUT) {
+           !deadline_passed(start, CH_CONN_CONNECT_TIMEOUT)) {
         nodus_tcp_poll(tcp, 50);
-        elapsed += 50;
         conn = (nodus_tcp_conn_t *)ch->conn;
         if (!conn) break;
     }
+    int elapsed = (int)elapsed_since(start);
 
     if (!ch->conn || conn == NULL || conn->state != NODUS_CONN_CONNECTED) {
         QGP_LOG_ERROR(LOG_TAG_CH, "TCP connect to %s:%d failed after %dms",

@@ -152,6 +152,7 @@ nodus/
 │   ├── test_channel_protocol.c  # Channel protocol message tests
 │   ├── test_tcp.c               # TCP transport tests
 │   ├── test_client.c          # Client SDK tests
+│   ├── test_client_pin.c      # Client server-key pin (fail-closed matrix, ML-KEM only) + monotonic timeouts
 │   ├── test_server.c          # Server integration tests
 │   │   (test_tm_core / test_tm_proposer / test_tm_sim / test_tm_vote / test_tm_commit /
 │   │    test_tm_wal were deleted in R2 with the T1 core and T3 wave-1 modules they tested)
@@ -455,7 +456,10 @@ Client                              Server
 ```
 The `kpk_sig` binds the Kyber public key to this auth session via the challenge nonce,
 preventing MITM key substitution. Client MUST verify this signature before encapsulating.
-Legacy servers (proto < v0.10.10) omit `spk` and `kpk_sig` — client logs a warning.
+Legacy servers (proto < v0.10.10) omit `spk` and `kpk_sig` — an unpinned client logs a
+warning and uses the unsigned `kpk`; a client with a server-key pin
+(`nodus_client_config_t.pinned_server_fps`, "Server key pin" in the Client SDK section)
+refuses the connection.
 
 **KEY_INIT** (`"q": "key_init"`):
 ```
@@ -494,7 +498,10 @@ wire version bump:
   1. **Client auth** (`nodus_client.c` `do_auth()`): uses `mpk`/`mpk_sig` from
      AUTH_OK only if both are present AND `nodus_verify_mlkem_bind()` succeeds
      against the server's already-kpk_sig-trusted `spk`; else Kyber, exactly as
-     before this migration.
+     before this migration. Exception: a client with a server-key pin
+     ("Server key pin" in the Client SDK section) is ML-KEM-1024 only — it
+     refuses an AUTH_OK with no `mpk`, an `mpk` without `mpk_sig`, or an
+     `mpk_sig` that does not verify, instead of falling back.
   2. **Server auth** (`nodus_auth.c` `nodus_auth_handle_auth()`): includes
      `mpk`/`mpk_sig` in AUTH_OK only when `identity.has_mlkem`; `kpk`/`kpk_sig` are
      unconditional and unchanged either way.
@@ -1406,6 +1413,94 @@ disconnection:
 2. Uses exponential backoff: 1s → 2s → 4s → … → 30s max
 3. On successful reconnect, automatically re-subscribes all active LISTEN keys and
    channel subscriptions
+
+### Timeouts and the clock
+
+Every client-side wait — `wait_response` (request/auth timeouts), the TCP connect
+wait in `do_connect_one`, the channel-connection waits, the reconnect backoff
+(`reconnect_at`) and the 60 s keepalive (`last_ping_ms`) — is measured on the
+monotonic clock `nodus_time_mono_ms()` (`transport/nodus_tcp.h`; `CLOCK_MONOTONIC`,
+Windows `GetTickCount64`) as a deadline from the start of the wait. A loop turn is
+not counted as a fixed 50 ms (`nodus_tcp_poll` returns early on any event), and a
+wall-clock step cannot stretch or cut a wait. `nodus_time_now()` /
+`nodus_time_now_ms()` stay REALTIME for their callers (timestamps, server code); a
+monotonic value is never compared with them (the disconnect log's idle time, which
+reads the transport's unix-seconds `last_activity`, uses `nodus_time_now_ms()`). This
+is the client's own scheduling only — nothing it measures enters consensus, a block,
+a vote or stored data.
+
+### Server key pin
+
+`nodus_client_config_t` has an optional pin list:
+
+```c
+const nodus_key_t *pinned_server_fps;     /* caller-owned, must outlive the client */
+int                pinned_server_fp_count;
+```
+
+Each entry is a server fingerprint — SHA3-512 of its Dilithium5 public key
+(`nodus_fingerprint()`, the same value as a node id). The AUTH_OK carries the full
+key (`spk`); the client fingerprints it and looks it up, so the pin list stays
+64 bytes per server.
+
+- **NULL / 0 (a zeroed config): no pin — the handshake is unchanged.** Every existing
+  caller (messenger `nodus_init.c`, dnac `client.c`, explorer `exp_chain.c`,
+  nodus-cli, nodus-circ, the tests) zeroes its config.
+- `count > 0` with a NULL list, or `count < 0`: `nodus_client_init()` fails.
+- With a pin set, `do_auth()` fails closed on every weak path (`pin_check_auth_ok()`
+  plus the `mpk_sig` branch):
+
+| AUTH_OK shape | Unpinned (unchanged) | Pinned |
+|---|---|---|
+| no `kpk` | session stays unencrypted | refused |
+| no `kpk`, client holds a cached Kyber key | encrypts to the cached key | refused |
+| `kpk` without `spk`/`kpk_sig` | warns "legacy server", uses it | refused |
+| `kpk_sig` does not verify | refused | refused |
+| fingerprint(`spk`) not in the list | — (no list) | refused |
+| `mpk` without `mpk_sig` | Kyber round-3 | refused |
+| `mpk_sig` does not verify | Kyber round-3 | refused |
+| no `mpk` at all, signed `kpk`, pinned key | Kyber round-3 | refused |
+| signed `kpk` + valid `mpk_sig`, pinned key | ML-KEM-1024 | ML-KEM-1024 |
+
+A pinned session is **ML-KEM-1024 only** (operator 2026-09-29, browser wallet):
+`kpk_sig` covers `kpk ‖ nonce` and `mpk_sig` covers `mpk ‖ nonce`, but nothing signs
+the ABSENCE of `mpk` — an on-path party could strip `mpk`/`mpk_sig` and force
+Kyber round-3. The unpinned client keeps that fallback (KEM decision K1 rev 2).
+
+The pin is checked AFTER the client has signed the server's challenge with its own
+key (the tier-2 AUTH order is unchanged); a refused server has seen that signature.
+Changing the order is a protocol change for every client (web wallet NODUS send
+design §5 item 14).
+
+After a successful pinned connect `client->server_dil_pk` / `has_server_dil_pk` hold
+the current server's key (a pinned connect only succeeds through the verified-`kpk_sig`
+path that sets them). Unpinned, the field keeps its TOFU behaviour (not cleared by an
+unsigned AUTH_OK) — messenger's `nodus_init.c` state callback reads it. Test:
+`tests/test_client_pin.c`. Design: `docs/plans/2026-09-25-web-wallet-nodus-send-design.md`
+rev 2 package (c1).
+
+### Browser build (`__EMSCRIPTEN__`)
+
+The same client and transport sources compile for the browser wallet with emcc
+(compile check: `web-wallet/scripts/check-nodus-client-wasm.sh`, no link yet):
+
+- **Transport** (`nodus_tcp.c`): a third event loop next to epoll (Linux/Android) and
+  select (Windows). `nodus_tcp_poll` walks the pool with `poll(…, 0)`: a CONNECTING
+  socket completes on POLLOUT/POLLERR/POLLHUP through `handle_connect_complete`
+  (`SO_ERROR`), a connected one flushes `wbuf` on POLLOUT and reads on
+  POLLIN/POLLHUP/POLLERR, with the same deferred-close and read-budget rules. It never
+  waits: the page has one thread. Everything that exists only in the epoll build —
+  listen, accept, the WebSocket server entry — is under `NODUS_TCP_EPOLL` and not
+  compiled; `nodus_tcp_listen` / `nodus_tcp_ws_listen` return -1 there as on Windows.
+- **Client** (`nodus_client.c`): no read thread (`start_read_thread` is a no-op);
+  `wait_response` and `do_connect_one` poll directly and call `emscripten_sleep(10)`
+  after each poll, and `nodus_client_poll(timeout > 0)` yields for the timeout — the
+  browser delivers SOCKFS bytes only when control returns to its event loop. `sleep_ms`
+  is `emscripten_sleep`. Linking therefore needs ASYNCIFY or JSPI.
+- **`nodus_client_tick(client)`** (all builds): the keepalive ping when due (60 s;
+  the server closes an authenticated connection idle 180 s) + `nodus_client_poll(client, 0)`,
+  which also runs a due reconnect. The page calls it on a timer; with a read thread it
+  is a no-op. A reconnect inside it yields, so in the browser it is an async export.
 
 ### Callbacks
 

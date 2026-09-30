@@ -39,7 +39,11 @@
   #define IS_PEER_GONE(e) ((e) == WSAECONNRESET || (e) == WSAECONNABORTED || \
                            (e) == WSAESHUTDOWN  || (e) == WSAENOTCONN)
 #else
-  #include <sys/epoll.h>
+  #ifndef __EMSCRIPTEN__
+    #include <sys/epoll.h>
+  #else
+    #include <poll.h>     /* browser build: poll() over the pool, no epoll */
+  #endif
   #include <sys/socket.h>
   #include <netinet/in.h>
   #include <netinet/tcp.h>
@@ -95,6 +99,17 @@
 #include <time.h>
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
+/* Three event-loop builds of this file:
+ *   Linux/Android  epoll, server + client (listen, accept, WebSocket entry)
+ *   _WIN32         select() over the pool, client only
+ *   __EMSCRIPTEN__ poll() over the pool, client only (browser wallet,
+ *                  sockets are Emscripten SOCKFS over a WebSocket). No
+ *                  listen / accept / WebSocket-server code is compiled.
+ * NODUS_TCP_EPOLL marks everything that exists only in the first build. */
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+  #define NODUS_TCP_EPOLL 1
+#endif
 
 #define MAX_EVENTS 64
 
@@ -159,10 +174,12 @@ static void set_nodelay(int fd) {
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *)&yes, sizeof(yes));
 }
 
+#ifdef NODUS_TCP_EPOLL   /* only the listeners use it */
 static void set_reuseaddr(int fd) {
     int yes = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof(yes));
 }
+#endif
 
 /* ── Connection management ───────────────────────────────────────── */
 
@@ -210,7 +227,7 @@ static nodus_tcp_conn_t *conn_alloc(nodus_tcp_t *tcp) {
  * pointer only — never dereferences it — so it is safe on any pointer an
  * event batch still carries. Linear in NODUS_TCP_MAX_CONNS; called once per
  * connection event. (The Windows select loop walks the pool itself.) */
-#ifndef _WIN32
+#ifndef _WIN32   /* epoll and the browser poll() loop */
 static bool conn_in_pool(const nodus_tcp_t *tcp, const nodus_tcp_conn_t *conn) {
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++)
         if (tcp->pool[i] == conn) return true;
@@ -303,7 +320,7 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     if (!conn || conn->close_pending) return;
 
     if (conn->fd >= 0) {
-#ifndef _WIN32
+#ifdef NODUS_TCP_EPOLL
         epoll_ctl(tcp->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
 #endif
         close(conn->fd);
@@ -471,7 +488,7 @@ static int buf_ensure(uint8_t **buf, size_t *cap, size_t needed) {
  * masked, RFC 6455 §5.1); on a plain connection the layout is unchanged. */
 static size_t conn_wire_size(const nodus_tcp_conn_t *conn, size_t send_len) {
     size_t n = NODUS_FRAME_HEADER_SIZE + send_len;
-#ifndef _WIN32
+#ifdef NODUS_TCP_EPOLL
     if (conn->is_ws)
         n += nodus_ws_frame_header_len(n);
 #else
@@ -484,7 +501,7 @@ static size_t conn_wire_encode(const nodus_tcp_conn_t *conn,
                                uint8_t *dst, size_t cap,
                                const uint8_t *payload, size_t send_len) {
     size_t hdr = 0;
-#ifndef _WIN32
+#ifdef NODUS_TCP_EPOLL
     if (conn->is_ws) {
         hdr = nodus_ws_frame_header(NODUS_WS_OP_BINARY,
                                     NODUS_FRAME_HEADER_SIZE + send_len, dst, cap);
@@ -504,7 +521,7 @@ static bool conn_ws_not_open(const nodus_tcp_conn_t *conn) {
     return conn->is_ws && !conn->ws_open;
 }
 
-#ifndef _WIN32
+#ifdef NODUS_TCP_EPOLL
 static void epoll_add(int epoll_fd, int fd, uint32_t events, void *ptr) {
     struct epoll_event ev = { .events = events, .data.ptr = ptr };
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev);
@@ -713,7 +730,7 @@ typedef enum {
     READ_CLOSED        /* conn is closed — do no further work on it          */
 } read_rc_t;
 
-#ifndef _WIN32
+#ifdef NODUS_TCP_EPOLL
 static read_rc_t read_ws(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
 #endif
 
@@ -806,7 +823,7 @@ static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     conn->read_frames_left = NODUS_TCP_READ_BUDGET_FRAMES;
 
     read_rc_t rc;
-#ifndef _WIN32
+#ifdef NODUS_TCP_EPOLL
     if (conn->is_ws)
         rc = read_ws(tcp, conn);
     else
@@ -929,7 +946,7 @@ static void handle_write(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         }
     }
 
-#ifndef _WIN32
+#ifdef NODUS_TCP_EPOLL
     if (conn->wlen == 0 && conn->pending_head == NULL) {
         uint32_t ev = EPOLLIN | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET);
         epoll_mod(tcp->epoll_fd, conn->fd, ev, conn);
@@ -937,7 +954,7 @@ static void handle_write(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 #endif
 }
 
-#ifndef _WIN32
+#ifdef NODUS_TCP_EPOLL
 static void handle_read_fwd(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
 #endif
 
@@ -959,7 +976,7 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     set_keepalive(conn->fd);
     set_nodelay(conn->fd);
 
-#ifndef _WIN32
+#ifdef NODUS_TCP_EPOLL
     /* Switch to read mode */
     uint32_t et = tcp->level_triggered ? 0 : EPOLLET;
     uint32_t events = EPOLLIN | EPOLLRDHUP | et;
@@ -975,7 +992,7 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     if (conn->close_pending)
         return;
 
-#ifndef _WIN32
+#ifdef NODUS_TCP_EPOLL
     /* on_connect callback may have queued data (e.g. hello for auth).
      * Re-check wbuf and ensure EPOLLOUT is set so it gets flushed. */
     if (conn->wlen > conn->wpos) {
@@ -991,7 +1008,7 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 #endif
 }
 
-#ifndef _WIN32
+#ifdef NODUS_TCP_EPOLL
 
 #define NODUS_MAX_CONNS_PER_IP  20   /* CRIT-5: Per-IP connection limit */
 
@@ -1392,7 +1409,7 @@ static void handle_accept_ws(nodus_tcp_t *tcp) {
 
     handle_read_fwd(tcp, conn);
 }
-#endif /* !_WIN32 */
+#endif /* NODUS_TCP_EPOLL */
 
 /* ── Public API ──────────────────────────────────────────────────── */
 
@@ -1421,6 +1438,21 @@ uint64_t nodus_time_now_ms(void) {
 #endif
 }
 
+uint64_t nodus_time_mono_ms(void) {
+#ifdef _WIN32
+    /* Milliseconds since boot; never goes back, not moved by clock changes. */
+    return (uint64_t)GetTickCount64();
+#else
+    struct timespec ts;
+    /* CLOCK_MONOTONIC: an interval measured with it is not moved by a
+     * wall-clock step (NTP correction, manual change). Its zero point is
+     * arbitrary, so it is only ever compared with another value of itself —
+     * never with a nodus_time_now()/nodus_time_now_ms() timestamp. */
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
+#endif
+}
+
 int nodus_tcp_init(nodus_tcp_t *tcp, int shared_epoll_fd) {
     if (!tcp) return -1;
     memset(tcp, 0, sizeof(*tcp));
@@ -1438,6 +1470,11 @@ int nodus_tcp_init(nodus_tcp_t *tcp, int shared_epoll_fd) {
     tcp->poll_fd = -1;
     tcp->owns_epoll = false;
     (void)shared_epoll_fd;
+#elif defined(__EMSCRIPTEN__)
+    /* No epoll: nodus_tcp_poll walks the pool with poll(). */
+    tcp->epoll_fd = -1;
+    tcp->owns_epoll = false;
+    (void)shared_epoll_fd;
 #else
     if (shared_epoll_fd >= 0) {
         tcp->epoll_fd = shared_epoll_fd;
@@ -1452,9 +1489,9 @@ int nodus_tcp_init(nodus_tcp_t *tcp, int shared_epoll_fd) {
 }
 
 int nodus_tcp_listen(nodus_tcp_t *tcp, const char *bind_ip, uint16_t port) {
-#ifdef _WIN32
+#ifndef NODUS_TCP_EPOLL
     (void)tcp; (void)bind_ip; (void)port;
-    return -1;  /* Server is Linux-only */
+    return -1;  /* Server is Linux-only (not Windows, not the browser) */
 #else
     if (!tcp) return -1;
 
@@ -1502,9 +1539,9 @@ int nodus_tcp_listen(nodus_tcp_t *tcp, const char *bind_ip, uint16_t port) {
 
 int nodus_tcp_ws_listen(nodus_tcp_t *tcp, uint16_t port,
                         const nodus_ws_origins_t *origins) {
-#ifdef _WIN32
+#ifndef NODUS_TCP_EPOLL
     (void)tcp; (void)port; (void)origins;
-    return -1;  /* Server is Linux-only */
+    return -1;  /* Server is Linux-only (not Windows, not the browser) */
 #else
     if (!tcp || !origins || origins->count <= 0 || tcp->ws_listen_fd >= 0)
         return -1;
@@ -1619,7 +1656,7 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
         conn->last_activity = conn->connected_at;
         set_keepalive(fd);
         set_nodelay(fd);
-#ifndef _WIN32
+#ifdef NODUS_TCP_EPOLL
         epoll_add(tcp->epoll_fd, fd, EPOLLIN | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET), conn);
 #endif
         if (tcp->on_connect) {
@@ -1638,7 +1675,7 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
         }
     } else if (IS_EINPROGRESS(get_socket_error())) {
         /* Connecting — wait for writable */
-#ifndef _WIN32
+#ifdef NODUS_TCP_EPOLL
         epoll_add(tcp->epoll_fd, fd, EPOLLOUT | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET), conn);
 #endif
     } else {
@@ -1866,7 +1903,7 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
                     pending_push_tail(conn, encoded, frame_size) == 0) {
                     conn->send_ok_count++;
                     conn->send_bytes_total += send_len;
-#ifndef _WIN32
+#ifdef NODUS_TCP_EPOLL
                     /* Make sure EPOLLOUT is armed so drain kicks in. */
                     nodus_tcp_t *tcp = conn->tcp_parent;
                     if (tcp && tcp->epoll_fd >= 0 && conn->fd >= 0) {
@@ -2048,6 +2085,116 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
     return events;
 }
 
+#elif defined(__EMSCRIPTEN__)
+
+/* Browser build (web wallet, design 2026-09-25 rev 2 §0a.3 (c1)): poll()
+ * over the pool, level-triggered, client connections only (no listen
+ * socket exists in this build). Same per-connection work as the select()
+ * loop above: a CONNECTING socket completes on POLLOUT/POLLERR/POLLHUP via
+ * handle_connect_complete (SO_ERROR), a connected one flushes wbuf on
+ * POLLOUT and reads on POLLIN/POLLHUP/POLLERR (the read reports EOF or the
+ * error and tears the connection down exactly once).
+ *
+ * poll() is always called with timeout 0 and timeout_ms is not slept here:
+ * the browser has one thread, a blocking wait would freeze the page, and
+ * Emscripten's poll() does not wait anyway (spike 2026-09-25 S0). The WAIT
+ * belongs to the caller, which yields to the browser event loop between
+ * calls (emscripten_sleep in nodus_client.c) — without that yield SOCKFS
+ * never delivers bytes. */
+int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
+    if (!tcp) return -1;
+    (void)timeout_ms;
+
+    int live = 0;
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++)
+        if (tcp->pool[i] && tcp->pool[i]->fd >= 0) live++;
+    if (live == 0)
+        return 0;   /* the pending-read list holds only pool members */
+
+    /* Heap, not stack: the Asyncify stack is small, and a callback may
+     * call nodus_tcp_poll again (nested), so no static buffer either. */
+    struct pollfd *pfd = calloc((size_t)live, sizeof(*pfd));
+    nodus_tcp_conn_t **pconn = calloc((size_t)live, sizeof(*pconn));
+    if (!pfd || !pconn) {
+        free(pfd);
+        free(pconn);
+        return -1;
+    }
+
+    int k = 0;
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS && k < live; i++) {
+        nodus_tcp_conn_t *c = tcp->pool[i];
+        if (!c || c->fd < 0) continue;
+        pfd[k].fd = c->fd;
+        if (c->state == NODUS_CONN_CONNECTING)
+            pfd[k].events = POLLOUT;
+        else
+            pfd[k].events = (short)(POLLIN | (c->wlen > c->wpos ? POLLOUT : 0));
+        pconn[k] = c;
+        k++;
+    }
+
+    int n = poll(pfd, (nfds_t)k, 0);
+    if (n < 0) {
+        if (errno != EINTR) {
+            free(pfd);
+            free(pconn);
+            return -1;
+        }
+        /* interrupted: no socket events, still service the pending reads */
+        for (int j = 0; j < k; j++) pfd[j].revents = 0;
+        n = 0;
+    }
+    if (n == 0 && !tcp->read_head) {
+        free(pfd);
+        free(pconn);
+        return 0;
+    }
+
+    /* Deferred close: nothing closed during this batch is freed before it
+     * ends, so a pconn[] pointer can be compared against the pool safely. */
+    tcp->poll_depth++;
+    uint64_t saved_gen = poll_gen_enter(tcp);
+
+    int events = 0;
+    for (int j = 0; j < k; j++) {
+        short re = pfd[j].revents;
+        nodus_tcp_conn_t *c = pconn[j];
+        if (re == 0) continue;
+        if (!conn_in_pool(tcp, c)) continue;   /* closed earlier in this batch */
+
+        if (c->state == NODUS_CONN_CONNECTING) {
+            if (re & (POLLOUT | POLLERR | POLLHUP)) {
+                handle_connect_complete(tcp, c);
+                events++;
+            }
+            continue;
+        }
+
+        if (re & POLLOUT) {
+            handle_write(tcp, c);
+            events++;
+            if (!conn_in_pool(tcp, c)) continue;   /* closed on write error */
+        }
+
+        if (re & (POLLIN | POLLHUP | POLLERR)) {
+            handle_read(tcp, c);
+            events++;
+        }
+    }
+
+    events += read_pending_service(tcp);
+    poll_gen_leave(tcp, saved_gen);
+
+    tcp->poll_depth--;
+    if (tcp->poll_depth == 0)
+        conn_release_deferred(tcp);
+
+    free(pfd);
+    free(pconn);
+    return events;
+}
+
 #else /* Linux/Android: epoll */
 
 int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
@@ -2154,7 +2301,7 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
     return n + served;
 }
 
-#endif /* _WIN32 */
+#endif /* _WIN32 / __EMSCRIPTEN__ / epoll */
 
 /* ── Shared public API ───────────────────────────────────────────── */
 
@@ -2245,7 +2392,7 @@ void nodus_tcp_close(nodus_tcp_t *tcp) {
         conn_release_deferred(tcp);
 
     if (tcp->listen_fd >= 0) {
-#ifndef _WIN32
+#ifdef NODUS_TCP_EPOLL
         epoll_ctl(tcp->epoll_fd, EPOLL_CTL_DEL, tcp->listen_fd, NULL);
 #endif
         close(tcp->listen_fd);
@@ -2253,14 +2400,14 @@ void nodus_tcp_close(nodus_tcp_t *tcp) {
     }
 
     if (tcp->ws_listen_fd >= 0) {
-#ifndef _WIN32
+#ifdef NODUS_TCP_EPOLL
         epoll_ctl(tcp->epoll_fd, EPOLL_CTL_DEL, tcp->ws_listen_fd, NULL);
 #endif
         close(tcp->ws_listen_fd);
         tcp->ws_listen_fd = -1;
     }
 
-#ifndef _WIN32
+#ifdef NODUS_TCP_EPOLL
     if (tcp->owns_epoll && tcp->epoll_fd >= 0) {
         close(tcp->epoll_fd);
         tcp->epoll_fd = -1;
