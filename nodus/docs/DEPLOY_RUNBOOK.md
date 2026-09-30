@@ -523,24 +523,53 @@ string, empty, containing a space or control character, over 255 bytes, more tha
 8 entries) refuses the start. A `ws_port` equal to `tcp_port`, `peer_port`,
 `witness_port` or `ch_port` refuses the start.
 
-**2. Caddy** — reverse proxy only. Minimal Caddyfile shape:
+**2. Caddy** — reverse proxy only. **Proven on EU-5, 2026-09-30** (Debian 13, Caddy
+2.11.2 from `trixie-backports`; the `trixie` main package is 2.6.2 — not tried).
+Caddy's default for a bare IP is a self-signed certificate
+(caddyserver.com/docs/automatic-https: publicly-trusted certificates apply to
+names that "are not an IP address"); a Let's Encrypt IP certificate needs the
+`shortlived` ACME profile explicitly. `/etc/caddy/Caddyfile`:
 
 ```
+{
+	default_sni <node public IP>
+}
+
 https://<node public IP> {
-    reverse_proxy 127.0.0.1:4005
+	tls {
+		issuer acme {
+			profile shortlived
+			disable_http_challenge
+		}
+	}
+	reverse_proxy 127.0.0.1:4005
 }
 ```
 
-This relies on Caddy's `reverse_proxy` passing the WebSocket Upgrade through and
-setting `X-Forwarded-For` — NOT verified in this change (no Caddy on the build
-machine); step 3's remote check (`ws: upgrade ok … ip=<remote IP>`) is what proves
-it on a host. nodus takes the LAST value of that header as the client's address
-(only because the connection comes from 127.0.0.1). Do NOT put another
-proxy in front of Caddy without re-reading this: the last value must be the one
-Caddy wrote. The certificate for a bare IP (Let's Encrypt `shortlived` IP
-certificate, per the decision) depends on the installed Caddy version's ACME
-settings — UNVERIFIED in this change; confirm the `tls` block against that
-version's documentation before the first rollout.
+- `default_sni`: a client connecting to an IP sends no SNI.
+- `disable_http_challenge`: port 80 stays closed; Let's Encrypt validated the IP
+  over 443 with `tls-alpn-01` (observed: http-01 timed out behind ufw, tls-alpn-01
+  succeeded). Only 443/tcp must be open (`ufw allow 443/tcp`).
+- **Try against staging first** (`dir https://acme-staging-v02.api.letsencrypt.org/directory`
+  inside `issuer acme`) — Let's Encrypt limits identical certificates to five per
+  seven days. When switching to production, delete the staging certificate
+  (`/var/lib/caddy/.local/share/caddy/certificates/acme-staging-v02.api.letsencrypt.org-directory`)
+  and `systemctl restart caddy`; a reload alone kept serving the staging one.
+- Result: issuer `Let's Encrypt YE2`, SAN `IP Address:<ip>`, valid ~6 days; Caddy renews.
+
+nodus takes the LAST `X-Forwarded-For` value as the client's address (only because
+the connection comes from 127.0.0.1); Caddy's `reverse_proxy` sets it — observed on
+EU-5: `ws: upgrade ok slot=1 ip=<the testing machine's public IP>`. Do NOT put
+another proxy in front of Caddy without re-reading this: the last value must be the
+one Caddy wrote.
+
+⚠ **Browser side (open):** the remote check below passes over HTTP/1.1
+(`curl --http1.1`). A plain `curl` negotiates HTTP/2 and gets 400 (`Upgrade:
+websocket missing` — Upgrade headers do not exist in HTTP/2). Whether browsers use
+HTTP/1.1 or RFC 8441 WebSocket-over-HTTP/2 against Caddy, and whether that reaches
+nodus, is NOT yet verified: the first browser test was blocked by the wallet site's
+own CSP (`connect-src 'self' https:` sent as an nginx header on
+wallet.nodusnetwork.io, not only the page meta tag) — `wss:` must be added there too.
 
 **3. Verify on the node** (after restart):
 
@@ -559,8 +588,8 @@ curl -si -N --max-time 3 http://127.0.0.1:4005/ \
 
 Same request with `Origin: https://example.com` must answer `403`; without the
 `X-Forwarded-For` line it must answer `400`. From another machine, the same request
-against `https://<node IP>/` (without the `X-Forwarded-For` line — Caddy adds it)
-must answer `101`, and the nodus log must show `ws: upgrade ok slot=… ip=<that
+against `https://<node IP>/` with `curl --http1.1` (without the `X-Forwarded-For`
+line — Caddy adds it) must answer `101` (EU-5, 2026-09-30: 101, correct accept key), and the nodus log must show `ws: upgrade ok slot=… ip=<that
 machine's public IP>`. If it instead shows `ws: upgrade refused … X-Forwarded-For
 missing or malformed`, the header is not reaching nodus — stop and fix the proxy
 (nodus refuses a loopback connection without it rather than count every browser
