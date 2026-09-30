@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_conr.h
- * @brief cometbft @709fd12b `consensus/reactor.go` ported to C — the
+ * @brief cometbft @v0.38.26 `consensus/reactor.go` ported to C — the
  *        consensus REACTOR: what the state machine says to its peers and
  *        what it hears from them.
  *
@@ -14,28 +14,28 @@
  *
  * The receiver in the reference is `conR`, so every function is
  * `cmt_conr_*`: `(conR *Reactor) Receive` → `cmt_conr_receive`. The
- * PeerState half of reactor.go (:1017-1482) is cmt_ps.h.
+ * PeerState half of reactor.go (:1026-1491) is cmt_ps.h.
  *
  * ── WHAT THE REACTOR DOES ──────────────────────────────────────────────
  * Three things, all of them per peer and none of them consensus:
  *   1. It BROADCASTS what the state machine just did — a new round step,
  *      a valid block, a vote it holds — when the state machine's event
- *      switch fires (:411-433, :440-497).
+ *      switch fires (:420-442, :449-506).
  *   2. It GOSSIPS to each peer what that peer still lacks, judged from
  *      the peer's own announcements: block parts, the proposal, the POL,
  *      votes of the current height, the last commit, and — for a peer
- *      more than one height behind — a stored commit (:539-945).
+ *      more than one height behind — a stored commit (:548-954).
  *   3. It RECEIVES a peer's messages, validates them, updates its picture
  *      of that peer, and hands proposals, block parts and votes to the
- *      state machine's peer queue (:231-391).
+ *      state machine's peer queue (:231-400).
  * Nothing here decides a vote or a block. Two nodes with different gossip
  * choices still decide the same blocks.
  *
  * ── THREADS → TICKS (the one structural substitution) ──────────────────
  * The reference runs, per peer, three goroutines forever
- * (`gossipDataRoutine` :539, `gossipVotesRoutine` :698,
- * `queryMaj23Routine` :848), one round-state snapshot goroutine
- * (`updateRoundStateRoutine` :519) and receives on the p2p thread. Here
+ * (`gossipDataRoutine` :548, `gossipVotesRoutine` :707,
+ * `queryMaj23Routine` :857), one round-state snapshot goroutine
+ * (`updateRoundStateRoutine` :528) and receives on the p2p thread. Here
  * (umbrella rev 4 item 7) there is ONE thread, driven by the host's tick:
  *
  *   `cmt_conr_tick` runs, for every peer slot `AddPeer` started, in SLOT
@@ -47,13 +47,13 @@
  *     · a `time.Sleep(d)` records `not_before = now + d` for THAT routine
  *       of THAT peer and returns — the routine resumes on the first tick
  *       at or after `not_before`. Every one of reactor.go's fourteen
- *       Sleep sites maps to such a record: :585, :600, :641, :655, :660,
- *       :668, :690, :695, :783 (PeerGossipSleepDuration) and :872, :892,
- *       :913, :936, :941 (PeerQueryMaj23SleepDuration), the two config
+ *       Sleep sites maps to such a record: :594, :609, :650, :664, :669,
+ *       :677, :699, :704, :792 (PeerGossipSleepDuration) and :881, :901,
+ *       :922, :945, :950 (PeerQueryMaj23SleepDuration), the two config
  *       fields of D-4 (cmt_config.h:98-99; never a literal);
  *     · a `false` from `send`/`try_send` does exactly what the reference
- *       does with false at that site (e.g. :560-570: the part is NOT
- *       marked as sent; :1160: the vote is not marked) and then ENDS that
+ *       does with false at that site (e.g. :569-579: the part is NOT
+ *       marked as sent; :1169: the vote is not marked) and then ENDS that
  *       routine's pass for this tick, so a full queue cannot spin the
  *       loop — see DEVIATION R3-A-1.
  *   `*out_next_deadline_ns` is the earliest `not_before` across every
@@ -66,23 +66,23 @@
  *   channel's send queue is full and only then returns false; `TrySend`
  *   (:264-268) returns false at once. Both host rows here return false at
  *   once, and the wait becomes "the next tick". Also under R3-A-1: the two
- *   bare `continue`s at :758 and :763 (a stored commit the store cannot
+ *   bare `continue`s at :767 and :772 (a stored commit the store cannot
  *   load — the reference busy-loops until it can) end the pass, because
- *   within one tick nothing can change the answer; and :580-591 with a
+ *   within one tick nothing can change the answer; and :589-600 with a
  *   BlockMeta whose PartSetHeader.Total is 0 (`bits.NewBitArray(0)` is
  *   nil, so `ProposalBlockParts` stays nil and the reference loops
  *   forever) ends the pass. Each such site says so.
  *
- *   `updateRoundStateRoutine` (:519-531) snapshots the round state every
- *   100 µs into `conR.rs` and `getRoundState` (:533-537) reads the
+ *   `updateRoundStateRoutine` (:528-540) snapshots the round state every
+ *   100 µs into `conR.rs` and `getRoundState` (:542-546) reads the
  *   snapshot. Single-threaded, there is nothing to snapshot:
  *   `cmt_conr_get_round_state` reads `cmt_cs_get_round_state` live at
  *   every use, which is the reference's value at most 100 µs fresher.
  *
- *   `conR.mtx` (:44), `conR.conS.mtx` (:112, :261, :276, :343, :365, :749)
+ *   `conR.mtx` (:44), `conR.conS.mtx` (:112, :261, :276, :352, :374, :758)
  *   and every `ps.mtx` are dropped; each site carries a one-line note.
  *
- *   `IsRunning()` (:192, :214, :232, :523, :545, :707, :852, :949) is the
+ *   `IsRunning()` (:192, :214, :232, :532, :554, :716, :861, :958) is the
  *   `running` flag, set by `cmt_conr_start` BEFORE its body and cleared
  *   by `cmt_conr_stop` BEFORE its body, which is libs/service/service.go
  *   `BaseService.Start` (:131 sets `started`, :144 calls OnStart, :147
@@ -99,18 +99,18 @@
  *   any Start is ErrNotStarted and does NOT take the latch (:169-175),
  *   Stop twice is ErrAlreadyStopped (:185-190) — each CMT_REJECT, nothing
  *   changed (register R3-AUD-23).
- *   `peer.IsRunning()` (:545, :707, :852) is the host's per-peer
+ *   `peer.IsRunning()` (:554, :716, :861) is the host's per-peer
  *   "connected" state, which this module learns through
  *   `cmt_conr_remove_peer`: the host calls it when the connection closes,
  *   the slot is freed and its routines stop — the reference's `RemovePeer`
  *   (:213-223) is a no-op precisely because its goroutines watch
  *   `peer.IsRunning()` themselves.
  *
- *   `Broadcast` (p2p/switch.go:274-296): one goroutine per peer of
+ *   `Broadcast` (p2p/switch.go:275-297): one goroutine per peer of
  *   `sw.peers.List()`, order unspecified; the success channel it returns
- *   is discarded by all three reactor callers (:442, :457, :471). Here:
- *   every slot in the switch's peer SET — added at switch.go:846 after
- *   `InitPeer` (:830) and before `AddPeer` (:859), removed at :381 — in
+ *   is discarded by all three reactor callers (:451, :466, :480). Here:
+ *   every slot in the switch's peer SET — added at switch.go:847 after
+ *   `InitPeer` (:831) and before `AddPeer` (:860), removed at :382 — in
  *   index order, `send`, nothing returned. A slot that is in the set but
  *   not yet started gets the send and the host answers false for a peer
  *   that is not running (peer.go:271-272), as the reference does.
@@ -204,12 +204,12 @@
  * again (:243). R2's `cmt_msg_from_proto` stops before that line
  * (cmt_msgs.h:28-35); `cmt_msg_validate_basic` IS that line, called by
  * `cmt_conr_receive` right after the decode, and its nine per-message
- * bodies are :1536, :1596, :1634, :1653, :1684, :1710, :1730, :1762 and
- * :1795. They LIVE IN cmt_msgs.{h,c}, not here, because the WAL replay
+ * bodies are :1545, :1605, :1646, :1671, :1705, :1731, :1751, :1783 and
+ * :1816. They LIVE IN cmt_msgs.{h,c}, not here, because the WAL replay
  * path (cmt_cs.c, replay.go:147 → wal.go:410 → msgs.go:232-234) runs the
  * same gate and the consensus core must not depend on the reactor
  * (atlas-dec-b02c8de1f52854b20dbfd64f6c987b34, item 4).
- * `NewRoundStepMessage.ValidateHeight` (:1560) is the tenth and stays
+ * `NewRoundStepMessage.ValidateHeight` (:1569) is the tenth and stays
  * here, run by `Receive` at :264 against the chain's initial height.
  *
  * ── THE PANIC RULE (umbrella rev 4) ────────────────────────────────────
@@ -218,10 +218,10 @@
  *     InitPeer; the reference's own test (reactor_test.go:278-305)
  *     expects the panic.
  *   · :198 "peer %v has no state" in AddPeer — same class, CMT_FAULT.
- *   · :297 and :377 "Bad VoteSetBitsMessage field Type. Forgot to add a
+ *   · :297 and :386 "Bad VoteSetBitsMessage field Type. Forgot to add a
  *     check in ValidateBasic?" — unreachable once the gate has run
- *     (:1769, :1799 refuse the type); NODE-LOCAL → CMT_FAULT.
- *   · :557 `part.ToProto()` failing on a part of OUR OWN part set whose
+ *     (:1790, :1820 refuse the type); NODE-LOCAL → CMT_FAULT.
+ *   · :566 `part.ToProto()` failing on a part of OUR OWN part set whose
  *     bit says it is held — NODE-LOCAL → CMT_FAULT.
  *   · :132-140 `conR.conS.Start()` failing inside SwitchToConsensus —
  *     NODE-LOCAL → CMT_FAULT (the reference dumps both objects and dies).
@@ -237,10 +237,10 @@
  * docs/plans/decisions/2026-09-30-monotonic-waits.md):
  *   · the WALL clock is the host's `now` row, THE SAME CALLBACK as
  *     `cs->host.now` (D-20 rev 3; the host passes one function into both
- *     tables), read at exactly the reference's two stamp sites: :504
+ *     tables), read at exactly the reference's two stamp sites: :513
  *     (`time.Since(rs.StartTime)` in `makeRoundStepMessage` — StartTime
  *     is a `cmttime.Now()` with no monotonic part, so this is a wall
- *     difference) and :1379 (`cmttime.Now()` in
+ *     difference) and :1388 (`cmttime.Now()` in
  *     `ApplyNewRoundStepMessage`, read in `Receive` and handed to cmt_ps
  *     as a value);
  *   · the WAIT clock is the host's `mono` row (CLOCK_MONOTONIC), read —
@@ -248,7 +248,7 @@
  *     `time.Sleep` sites are deadlines here and a deadline needs an
  *     instant; a Go `time.Sleep` is a monotonic wait.
  * No other clock read.
- * THE ONLY RANDOMNESS is `PickRandom` (:553, :649, :1188) through
+ * THE ONLY RANDOMNESS is `PickRandom` (:562, :658, :1197) through
  * `cmt_bits_pick_random`, the recorded substitution — gossip choice
  * only. Iteration is by slot index and by validator/part index; no map,
  * no unordered collection. `Broadcast`'s goroutine order and Go's
@@ -267,29 +267,29 @@
  *     which do what :74-105 do minus BaseService. `peerStatsRoutine`'s
  *     start at :78 and `updateRoundStateRoutine`'s at :81 have nothing to
  *     start (see below and "THREADS → TICKS").
- *   · `SetEventBus` (:394-397) — the event bus is not ported.
- *   · `String` (:990-993), `StringIndented` (:996-1008), and the
- *     `String`s of :1041, :1484, :1489, :1577, :1621, :1639, :1670,
- *     :1698, :1715, :1747, :1779, :1813 — display.
- *   · `SetLogger` (:1063-1066), `MarshalJSON` (:1079-1085) — cmt_ps.h.
- *   · `init` (:1511-1521) — JSON type registration.
- *   · `peerStatsRoutine` (:947-985) — p2p peer scoring
+ *   · `SetEventBus` (:403-406) — the event bus is not ported.
+ *   · `String` (:999-1002), `StringIndented` (:1005-1017), and the
+ *     `String`s of :1050, :1493, :1498, :1586, :1633, :1657, :1691,
+ *     :1719, :1736, :1768, :1800, :1837 — display.
+ *   · `SetLogger` (:1072-1075), `MarshalJSON` (:1088-1094) — cmt_ps.h.
+ *   · `init` (:1520-1530) — JSON type registration.
+ *   · `peerStatsRoutine` (:956-994) — p2p peer scoring
  *     (`MarkPeerAsGood`); its feed `cs.statsMsgQueue` (state.go:913,
- *     :931) is not in cmt_cs (cmt_cs.c:1571, :1593). Consequence: `RecordVote` /
+ *     :931 — 709fd12b; at v0.38.26: one send after the switch, :944-946) is not in cmt_cs (cmt_cs.c:1571, :1593). Consequence: `RecordVote` /
  *     `RecordBlockPart` (cmt_ps.h) have no caller.
- *   · `ReactorMetrics` (:1011-1013) and the `Metrics` field (:49, :61,
- *     :329) — metrics; `NopMetrics` is what the reference installs, and
+ *   · `ReactorMetrics` (:1020-1022) and the `Metrics` field (:49, :61,
+ *     :338) — metrics; `NopMetrics` is what the reference installs, and
  *     an option that installs nothing has no shape to keep.
  *   · `RemovePeer` (:213-223) IS ported, as the no-op it is — see
  *     `cmt_conr_remove_peer`, which quotes it.
  *
- * Reference @709fd12b (SHA-256 verified before use):
- *   consensus/reactor.go                1817 lines
- *     b7b4fdd346d99d32b713e82f8dcc95a0ac1b1c3a4b25d7d8c3283fc33dd33427
- *   consensus/reactor_test.go           1165 lines
- *     012e907d3f5e785b9fe2d50365e72831c6a85bc75d1cab0ad9e0c9c69b1790db
- *   consensus/state.go                  2653 lines
- *     f9517e9f45f4f9afefebf869eb4674bf0135d5edda00de67eab2e1695c945090
+ * Reference @v0.38.26 (SHA-256 verified before use):
+ *   consensus/reactor.go                1841 lines
+ *     8001066f922198a75be28ccd5b0fa069fe0e9644b0196284102e3332b79e6ff0
+ *   consensus/reactor_test.go           1189 lines
+ *     3c18a944a14abf78dce066430084f79fad86c8157b089753720a2fdb724d9d7c
+ *   consensus/state.go                  2646 lines
+ *     ac2f65f60cdcfe971aba9c34322b03c031460382ec361e8d18023876d1a3e772
  *     (read for the five event sites and SwitchToConsensus's callees)
  *   consensus/types/peer_round_state.go   68 lines
  *     b5bd1eb78629c8f868ee69bae888285217387237497635da69c80d1c02308408
@@ -298,19 +298,19 @@
  *     (read for :232-234, the ValidateBasic gate)
  *   libs/events/events.go                247 lines
  *     400e4b8a781dee7926200ce306fb7fcbf3c7ff4bd87cd90a5fa7a30e0eb9b4e0
- *   p2p/peer.go                          443 lines
- *     35f3415786016bcbbc156d7999d9686a4f21b85682cfd6378192b135c7260758
- *   p2p/switch.go                        865 lines
- *     5c6a08f26131b80cd8bdcf7bc2c673cc2d173e1a460e08a791db400070aa6fdf
- *     (read for :274-296 Broadcast, :335-388 StopPeerForError and
- *      stopAndRemovePeer, :813-865 addPeer)
- *   p2p/base_reactor.go                   67 lines
- *     49d72906c1590f35b2f44982e078127c53bed7ec3f92176b844d015157cfadce
+ *   p2p/peer.go                          451 lines
+ *     de9d3744d2aa1bca3edc43eafdba326ddf34a24c1c6813c0298a71ffb6009ff2
+ *   p2p/switch.go                        866 lines
+ *     3c285b36faef93aa5687934e2f4448febd65c5f7688118c7b89d1ad22caedd78
+ *     (read for :275-297 Broadcast, :336-389 StopPeerForError and
+ *      stopAndRemovePeer, :814-866 addPeer)
+ *   p2p/base_reactor.go                   75 lines
+ *     6b37180625104b9299da50639ee2a8e4634f36935f9489f34259fc39bf6fdc9e
  *   p2p/key.go                           120 lines
  *     db7c7cda77c95229b29e17bcf32e6bc44049510e200ff0e0b842c0761c7ce0bf
- *   config/config.go                    1283 lines
- *     f0c2f601d49e1a56b36e8d557387e96ee53ecc3616ecb79749b0f71c0f218c21
- *     (read for :1017-1035, the two sleep durations)
+ *   config/config.go                    1304 lines
+ *     761c747fa0c41cbfd48aa840adad77d3559a64a6a4197b000f2cecb0be70d4f2
+ *     (read for :1034-1053, the two sleep durations)
  *   libs/service/service.go              241 lines
  *     f12c172b48f03e95c3a69c2d71174c56e563d9e09ce6cc8d014560f407166a27
  *     (read for :130-158 Start, :167-190 Stop, :224-226 IsRunning —
@@ -331,9 +331,9 @@
  * sites: the oversized-proposal gate in Receive (:323-330, #5324), the
  * catch-up condition (:752), and the three `BitArray.ValidateBasic` calls
  * (:1615-1617, :1678-1680, :1826-1828, ASA-2025-003 — those live in
- * cmt_msgs.c with the other ValidateBasic bodies). A BARE `:NNN` in this
- * module is still a 709fd12b line; the v0.38.26 file is the same code
- * shifted by +9 after :320 (the gate), then further by each later
+ * cmt_msgs.c with the other ValidateBasic bodies). Every BARE `:NNN` in
+ * this module is a v0.38.26 line as well (renumbered from 709fd12b, whose
+ * lines sit 9 lower after :320 (the gate), then lower again by each later
  * insertion (+3 per ValidateBasic call, +6 for the ProposalMessage
  * ValidateBlockSize method at :1650-1654). Local copy used:
  *   /home/nocdem/refs/cometbft-v0.38.26/consensus/reactor.go 1841 lines
@@ -378,8 +378,8 @@ extern "C" {
  *  cmt_vote_set.h:174-175 forbids including nodus/ here). */
 #define CMT_CONR_MAX_PEERS CMT_PEER_MAX
 
-/** cometbft@709fd12b consensus/reactor.go:32-33 — the two "good peer"
- *  thresholds. Their only consumer is `peerStatsRoutine` (:970, :974),
+/** cometbft@v0.38.26 consensus/reactor.go:32-33 — the two "good peer"
+ *  thresholds. Their only consumer is `peerStatsRoutine` (:979, :983),
  *  which is YOK; kept so the constants of :24-34 are all accounted for. */
 #define CMT_CONR_BLOCKS_TO_CONTRIBUTE_TO_BECOME_GOOD_PEER 10000
 #define CMT_CONR_VOTES_TO_CONTRIBUTE_TO_BECOME_GOOD_PEER  10000
@@ -402,7 +402,7 @@ typedef struct {
 #define CMT_CONR_NUM_CHANNELS 4
 
 /**
- * cometbft@709fd12b consensus/reactor.go:144-180 — `GetChannels()`.
+ * cometbft@v0.38.26 consensus/reactor.go:144-180 — `GetChannels()`.
  * The four descriptors in the reference's order: State (0x20, priority 6,
  * queue 100), Data (0x21, 10, 100, recv buffer 50*4096), Vote (0x22, 7,
  * 100, recv buffer 100*100), VoteSetBits (0x23, 1, 2, recv buffer 1024);
@@ -459,51 +459,51 @@ typedef struct {
 
     /* ── p2p.Switch (p2p/switch.go) ────────────────────────────────── */
 
-    /** p2p/switch.go:335-358 — `StopPeerForError(peer, reason)`, reached
+    /** p2p/switch.go:336-359 — `StopPeerForError(peer, reason)`, reached
      *  from reactor.go:239, :245, :266, :285. The host disconnects the
-     *  peer (:341 `stopAndRemovePeer`, whose :372-374 calls every
+     *  peer (:342 `stopAndRemovePeer`, whose :373-375 calls every
      *  reactor's `RemovePeer` — the host therefore calls
      *  `cmt_conr_remove_peer` for this slot, before or after returning);
-     *  reconnection (:343-357 `reconnectToPeer`) is the host's peer
+     *  reconnection (:344-358 `reconnectToPeer`) is the host's peer
      *  manager's, as it is the switch's in the reference. */
     void (*stop_peer_for_error)(void *ctx, int peer_idx, int reason_code);
 
     /* ── sm.BlockStore (state/services.go) ─────────────────────────── */
 
-    /** reactor.go:575, :654, :742, :925 — `blockStore.Base()`. The same
+    /** reactor.go:584, :663, :751, :934 — `blockStore.Base()`. The same
      *  shape as cmt_cs.h's `bs_height` row (rc + out), so one host
      *  function can serve both tables. */
     int (*bs_base)(void *ctx, int64_t *out);
 
-    /** reactor.go:584, :654, :924 — `blockStore.Height()`. The same row as
+    /** reactor.go:593, :663, :933 — `blockStore.Height()`. The same row as
      *  cmt_cs.h:422's; the host passes the same function. */
     int (*bs_height)(void *ctx, int64_t *out);
 
-    /** reactor.go:581-587 and :651-663 — `blockStore.LoadBlockMeta(h)`,
-     *  of which the ported code reads ONLY `blockMeta.BlockID` (:587,
-     *  :657) and of that only the PartSetHeader — so the row hands back
+    /** reactor.go:590-596 and :660-672 — `blockStore.LoadBlockMeta(h)`,
+     *  of which the ported code reads ONLY `blockMeta.BlockID` (:596,
+     *  :666) and of that only the PartSetHeader — so the row hands back
      *  the BlockID. (cmt_cs.h:438-444's `bs_load_block_meta` hands back
-     *  the HEADER for state.go:1131's `AppHash` read; two projections of
+     *  the HEADER for state.go:1126's `AppHash` read; two projections of
      *  one BlockMeta, each named for what its reader takes.)
-     *  @param out_found false is the reference's nil (:582, :652). */
+     *  @param out_found false is the reference's nil (:591, :661). */
     int (*bs_load_block_meta_block_id)(void *ctx, int64_t height,
                                        cmt_block_id_t *out, bool *out_found);
 
-    /** reactor.go:664 — `blockStore.LoadBlockPart(height, index)`.
+    /** reactor.go:673 — `blockStore.LoadBlockPart(height, index)`.
      *  @param out the host fills it, including pointing `bytes` at
      *         storage the host owns; that storage must stay valid until
      *         the next call of this same row (it is marshalled and sent
      *         before the row is called again).
-     *  @param out_found false is the reference's nil (:665). */
+     *  @param out_found false is the reference's nil (:674). */
     int (*bs_load_block_part)(void *ctx, int64_t height, int index,
                               cmt_part_t *out, bool *out_found);
 
-    /** reactor.go:756 — `blockStore.LoadBlockCommit(height)`. The same
+    /** reactor.go:765 — `blockStore.LoadBlockCommit(height)`. The same
      *  row and storage contract as cmt_cs.h:421-427's. */
     int (*bs_load_block_commit)(void *ctx, int64_t height,
                                 cmt_commit_t *out, bool *out_found);
 
-    /** reactor.go:754 — `blockStore.LoadBlockExtendedCommit(height)`.
+    /** reactor.go:763 — `blockStore.LoadBlockExtendedCommit(height)`.
      *  The same row and storage contract as cmt_cs.h:432-436's. */
     int (*bs_load_block_extended_commit)(void *ctx, int64_t height,
                                          cmt_extended_commit_t *out,
@@ -511,7 +511,7 @@ typedef struct {
 
     /* ── the clocks (file header, "DETERMINISM") ───────────────────── */
 
-    /** WALL: reactor.go:504 (`time.Since(rs.StartTime)`) and :1379
+    /** WALL: reactor.go:513 (`time.Since(rs.StartTime)`) and :1388
      *  (`cmttime.Now()`) only. THE SAME CALLBACK as `cs->host.now`; the
      *  host passes it through. */
     cmt_now_fn now;
@@ -528,15 +528,15 @@ typedef struct {
 /** The three per-peer routines, in the reference's start order
  *  (reactor.go:201-203). Indexes `not_before_ns`. */
 typedef enum {
-    CMT_CONR_ROUTINE_DATA  = 0,   /* :539 gossipDataRoutine  */
-    CMT_CONR_ROUTINE_VOTES = 1,   /* :698 gossipVotesRoutine */
-    CMT_CONR_ROUTINE_MAJ23 = 2,   /* :848 queryMaj23Routine  */
+    CMT_CONR_ROUTINE_DATA  = 0,   /* :548 gossipDataRoutine  */
+    CMT_CONR_ROUTINE_VOTES = 1,   /* :707 gossipVotesRoutine */
+    CMT_CONR_ROUTINE_MAJ23 = 2,   /* :857 queryMaj23Routine  */
     CMT_CONR_NUM_ROUTINES  = 3
 } cmt_conr_routine_t;
 
 typedef struct {
     /** In the switch's peer set: `InitPeer` ran and `RemovePeer` did not
-     *  (switch.go:846 / :381). `Broadcast` reaches it. */
+     *  (switch.go:847 / :382). `Broadcast` reaches it. */
     bool      in_set;
     /** `AddPeer` ran (:191-210): the three routines are live. */
     bool      started;
@@ -546,21 +546,21 @@ typedef struct {
      *  `asleep[r]`. */
     int64_t   not_before_ns[CMT_CONR_NUM_ROUTINES];
     bool      asleep[CMT_CONR_NUM_ROUTINES];
-    /** reactor.go:702 — gossipVotesRoutine's `sleeping` log throttle.
+    /** reactor.go:711 — gossipVotesRoutine's `sleeping` log throttle.
      *  Carried so the loop reads like the reference; the logs it
      *  throttles are not ported, so it changes nothing observable. */
     int       sleeping;
     /** Where `queryMaj23Routine` resumes after a mid-iteration sleep
-     *  (:872, :892, :913, :936 each sleep and then CONTINUE to the next
-     *  block; only :941 ends the iteration): 0..3 = the block of
-     *  :857/:878/:898/:922 to run next, 4 = the :941 sleep. */
+     *  (:881, :901, :922, :945 each sleep and then CONTINUE to the next
+     *  block; only :950 ends the iteration): 0..3 = the block of
+     *  :866/:887/:907/:931 to run next, 4 = the :950 sleep. */
     int       maj23_pc;
 } cmt_conr_peer_slot_t;
 
 /* ══ the reactor (reactor.go:39-50) ═══════════════════════════════════ */
 
 /**
- * cometbft@709fd12b consensus/reactor.go:39-50 — `type Reactor struct`.
+ * cometbft@v0.38.26 consensus/reactor.go:39-50 — `type Reactor struct`.
  * `BaseReactor` (:40) is the `running` flag; `mtx` (:44) is dropped;
  * `eventBus` (:46) is not ported; `rs` (:47) is read live; `Metrics`
  * (:49) is YOK.
@@ -588,14 +588,14 @@ typedef struct {
     cmt_ps_scratch_t           scratch;         /* send side              */
     cmt_pb_cons_message_t     *recv_pb;         /* :236 MsgFromProto's in */
     cmt_msg_t                 *recv_msg;        /* :236 MsgFromProto's out*/
-    cmt_extended_commit_sig_t *ecsigs;          /* :760 WrappedExtendedCommit */
+    cmt_extended_commit_sig_t *ecsigs;          /* :769 WrappedExtendedCommit */
     size_t                     ecsigs_cap;
 } cmt_conr_t;
 
 /* ══ construction (reactor.go:54-70) ══════════════════════════════════ */
 
 /**
- * cometbft@709fd12b consensus/reactor.go:56-70 — `NewReactor()`.
+ * cometbft@v0.38.26 consensus/reactor.go:56-70 — `NewReactor()`.
  * `rs: consensusState.GetRoundState()` (:60) has no counterpart (live
  * reads); `NopMetrics` (:61) and the options loop (:65-67) are YOK.
  *
@@ -607,7 +607,7 @@ typedef struct {
  * @param wait_sync the reference's `waitSync` (:56, :59): true when the
  *        node is block-syncing and `SwitchToConsensus` will start the
  *        state machine later. The live caller (nodus_witness.c) passes
- *        node.go:375's `blockSync` = !onlyValidatorIsUs; the block sync
+ *        node.go:373's `blockSync` = !onlyValidatorIsUs; the block sync
  *        reactor (cmt_bsync_reactor.c) calls
  *        `cmt_conr_switch_to_consensus` when it has caught up.
  * @param recv_arena BORROWED; the lifetime rule is in the file header.
@@ -628,7 +628,7 @@ void cmt_conr_free(cmt_conr_t *conR);
 /**
  * C only — what `OnStart` (reactor.go:74-91) does, reached through
  * `BaseService.Start` (service.go:130-158): the `running` flag first
- * (:131), then `subscribeToBroadcastEvents` (:80 → :411-433, which is
+ * (:131), then `subscribeToBroadcastEvents` (:80 → :420-442, which is
  * `cmt_cs_add_listener`), then — unless `wait_sync` — `conR.conS.Start()`
  * (:83-88, `cmt_cs_start`). `peerStatsRoutine` (:78) is YOK and
  * `updateRoundStateRoutine` (:81) has nothing to start.
@@ -650,7 +650,7 @@ int cmt_conr_start(cmt_conr_t *conR);
 /**
  * C only — what `OnStop` (reactor.go:95-103) does, reached through
  * `BaseService.Stop` (service.go:167-190): the flag first (:168), then
- * `unsubscribeFromBroadcastEvents` (:96 → :435-438,
+ * `unsubscribeFromBroadcastEvents` (:96 → :444-447,
  * `cmt_cs_remove_listener`) and `conR.conS.Stop()` (:97, `cmt_cs_stop`;
  * the reference only logs its error). `conR.conS.Wait()` (:100-102)
  * waits for the receive goroutine, which does not exist here.
@@ -661,7 +661,7 @@ int cmt_conr_start(cmt_conr_t *conR);
 int cmt_conr_stop(cmt_conr_t *conR);
 
 /**
- * cometbft@709fd12b consensus/reactor.go:107-141 — `SwitchToConsensus()`.
+ * cometbft@v0.38.26 consensus/reactor.go:107-141 — `SwitchToConsensus()`.
  * "It resets the state, turns off block_sync, and starts the consensus
  * state-machine." :112-113's lock is dropped; :115-117 →
  * `cmt_cs_reconstruct_last_commit`; :121 → `cmt_cs_update_to_state`;
@@ -682,16 +682,16 @@ int cmt_conr_stop(cmt_conr_t *conR);
 int cmt_conr_switch_to_consensus(cmt_conr_t *conR, const cmt_state_t *state,
                                  bool skip_wal);
 
-/** cometbft@709fd12b consensus/reactor.go:400-404 — `WaitSync()`. */
+/** cometbft@v0.38.26 consensus/reactor.go:409-413 — `WaitSync()`. */
 bool cmt_conr_wait_sync(const cmt_conr_t *conR);
 
 /* ══ peers (reactor.go:182-223) ═══════════════════════════════════════ */
 
 /**
- * cometbft@709fd12b consensus/reactor.go:183-187 — `InitPeer()`. Creates
+ * cometbft@v0.38.26 consensus/reactor.go:183-187 — `InitPeer()`. Creates
  * the PeerState (:184 `NewPeerState`) and attaches it to the peer (:185
  * `peer.Set(types.PeerStateKey, …)`): here, fills slot `peer_idx` and
- * puts it in the peer set (switch.go:846).
+ * puts it in the peer set (switch.go:847).
  * @param id the peer's 32-byte witness id (substitution 9).
  * @return CMT_OK; CMT_REJECT for an index outside [0, CMT_CONR_MAX_PEERS)
  *         or a slot already in the set; CMT_FAULT on NULL.
@@ -700,7 +700,7 @@ int cmt_conr_init_peer(cmt_conr_t *conR, int peer_idx,
                        const uint8_t id[CMT_PB_PEER_ID_MAX]);
 
 /**
- * cometbft@709fd12b consensus/reactor.go:191-210 — `AddPeer()`. A no-op
+ * cometbft@v0.38.26 consensus/reactor.go:191-210 — `AddPeer()`. A no-op
  * when not running (:192-194); starts the three routines (:201-203 —
  * here, marks the slot `started` so `cmt_conr_tick` runs them) and,
  * unless `wait_sync`, sends our NewRoundStep to the peer (:207-209).
@@ -711,7 +711,7 @@ int cmt_conr_init_peer(cmt_conr_t *conR, int peer_idx,
 int cmt_conr_add_peer(cmt_conr_t *conR, int peer_idx);
 
 /**
- * cometbft@709fd12b consensus/reactor.go:213-223 — `RemovePeer()`, which
+ * cometbft@v0.38.26 consensus/reactor.go:213-223 — `RemovePeer()`, which
  * "is a noop":
  *
  *     if !conR.IsRunning() { return }
@@ -723,24 +723,24 @@ int cmt_conr_add_peer(cmt_conr_t *conR, int peer_idx);
  *     // ps.Disconnect()
  *
  * PLUS the C-only consequence of the host's disconnect: the switch's
- * `sw.peers.Remove(peer)` (switch.go:381) takes the peer out of the set,
+ * `sw.peers.Remove(peer)` (switch.go:382) takes the peer out of the set,
  * and `peer.IsRunning()` turns false for the three goroutines
- * (:545, :707, :852). Here that is one act: the slot leaves the set,
+ * (:554, :716, :861). Here that is one act: the slot leaves the set,
  * stops, and is cleared. Called by the host whenever a connection closes
- * (the switch calls it from `stopAndRemovePeer` :373-375, for an error
+ * (the switch calls it from `stopAndRemovePeer` :374-376, for an error
  * or otherwise). NOT gated on `running`: the reference's gate at :214
  * protects a body that does nothing, while the slot must be freed
  * regardless — stated deviation, see the wave report (R3-A-3).
  * @return CMT_OK (including for a slot not in the set — the switch's
- *         Remove of an unknown peer is a logged no-op :381-386);
+ *         Remove of an unknown peer is a logged no-op :382-387);
  *         CMT_REJECT for an index outside the table; CMT_FAULT on NULL.
  */
 int cmt_conr_remove_peer(cmt_conr_t *conR, int peer_idx);
 
-/* ══ receive (reactor.go:225-391) ═════════════════════════════════════ */
+/* ══ receive (reactor.go:225-400) ═════════════════════════════════════ */
 
 /**
- * cometbft@709fd12b consensus/reactor.go:231-391 — `Receive()`, from the
+ * cometbft@v0.38.26 consensus/reactor.go:231-400 — `Receive()`, from the
  * BYTES of one envelope. "NOTE: We process these messages even when
  * we're block_syncing. Messages affect either a peer state or the
  * consensus state."
@@ -751,11 +751,11 @@ int cmt_conr_remove_peer(cmt_conr_t *conR, int peer_idx);
  * `stop_peer_for_error(DECODE)` (:239); `cmt_msg_validate_basic` (:243)
  * → on failure `stop_peer_for_error(VALIDATE_BASIC)` (:245); the peer's
  * state (:252-255 — a slot not in the set is the panic, CMT_FAULT); then
- * the channel switch (:257-390) with the message-type switch inside each,
+ * the channel switch (:257-399) with the message-type switch inside each,
  * exactly as written, including "Ignoring message received during sync"
  * for the Data, Vote and VoteSetBits channels while `wait_sync` (:317,
- * :336, :358) and the "Unknown message type" log-and-drop defaults
- * (:313, :332, :354, :385, :389 — "don't punish (leave room for soft
+ * :345, :367) and the "Unknown message type" log-and-drop defaults
+ * (:313, :341, :363, :394, :398 — "don't punish (leave room for soft
  * upgrades)").
  *
  * @param channel_id one of the four CMT_CONR_*_CHANNEL ids.
@@ -769,9 +769,9 @@ int cmt_conr_remove_peer(cmt_conr_t *conR, int peer_idx);
  *           `cmt_cs_set_proposal_input` /
  *           `cmt_cs_add_proposal_block_part_input` returned CMT_REJECT,
  *           cmt_cs.h:74-81). The reference's reactor goroutine BLOCKS at
- *           :324, :330 and :350 until the queue drains; a single thread
+ *           :333, :339 and :359 until the queue drains; a single thread
  *           cannot, so the message is NOT queued, the peer state was
- *           already updated as at :323/:328/:346-348, no peer is
+ *           already updated as at :332/:337/:355-357, no peer is
  *           disconnected, and the host decides (backpressure, or drop —
  *           R2's open question, cmt_cs.h:80-81). The reference's own
  *           blocking is a third behaviour neither answer reproduces.
@@ -786,8 +786,8 @@ int cmt_conr_receive(cmt_conr_t *conR, int peer_idx, uint8_t channel_id,
 
 /**
  * C only. For every slot `AddPeer` started, in index order, run
- * `gossipDataRoutine` (:539-644), `gossipVotesRoutine` (:698-786) and
- * `queryMaj23Routine` (:848-945) — in that order (:201-203) — each as far
+ * `gossipDataRoutine` (:548-653), `gossipVotesRoutine` (:707-795) and
+ * `queryMaj23Routine` (:857-954) — in that order (:201-203) — each as far
  * as the reference would go before a `time.Sleep` or a false from a send,
  * skipping a routine whose `not_before` has not arrived. Reads the WAIT
  * clock ONCE (the host's `mono`, CLOCK_MONOTONIC).
@@ -802,14 +802,14 @@ int cmt_conr_receive(cmt_conr_t *conR, int peer_idx, uint8_t channel_id,
 int cmt_conr_tick(cmt_conr_t *conR, int64_t *out_next_deadline_ns);
 
 /**
- * cometbft@709fd12b consensus/reactor.go:533-537 — `getRoundState()`, the
- * snapshot `updateRoundStateRoutine` (:519-531) refreshes every 100 µs.
+ * cometbft@v0.38.26 consensus/reactor.go:542-546 — `getRoundState()`, the
+ * snapshot `updateRoundStateRoutine` (:528-540) refreshes every 100 µs.
  * Single-threaded, this reads `cmt_cs_get_round_state` LIVE: exact where
  * the reference's is at most 100 µs stale.
  */
 int cmt_conr_get_round_state(const cmt_conr_t *conR, cmt_round_state_t *out);
 
-/* ══ ValidateHeight (reactor.go:1560-1574) ═══════════════════════════ */
+/* ══ ValidateHeight (reactor.go:1569-1583) ═══════════════════════════ */
 
 /* `cmt_msg_validate_basic` and the nine per-message ValidateBasic bodies
  * used to be declared here. They are in cmt_msgs.{h,c} now (reached
@@ -820,7 +820,7 @@ int cmt_conr_get_round_state(const cmt_conr_t *conR, cmt_round_state_t *out);
  * them changed; `cmt_conr_receive` still calls `cmt_msg_validate_basic`
  * at :243. ValidateHeight stays: it is `Receive`'s alone (:264). */
 
-/** cometbft@709fd12b consensus/reactor.go:1560-1574 —
+/** cometbft@v0.38.26 consensus/reactor.go:1569-1583 —
  *  `NewRoundStepMessage.ValidateHeight(initialHeight)`: Height below the
  *  initial height; LastCommitRound not -1 AT the initial height; a
  *  negative LastCommitRound ABOVE it. */

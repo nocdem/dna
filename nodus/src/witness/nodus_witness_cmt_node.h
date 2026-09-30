@@ -1,7 +1,7 @@
 /**
  * @file nodus/src/witness/nodus_witness_cmt_node.h
- * @brief THE STARTUP TABLE — cometbft @709fd12b's node construction and
- *        start over the Ledger V2 engine: `node/node.go:285-422`
+ * @brief THE STARTUP TABLE — cometbft @v0.38.26's node construction and
+ *        start over the Ledger V2 engine: `node/node.go:283-421`
  *        (NewNodeWithContext), `node/setup.go:551-611` (the genesis
  *        document under "genesisDoc"), `consensus/replay.go:201-565`
  *        (the Handshaker) with `consensus/replay_stubs.go:60-79` (the
@@ -16,27 +16,27 @@
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── WHAT IS HERE, IN THE REFERENCE'S ORDER ─────────────────────────────
- * `nodus_cmt_node_init` walks node.go:296-418 step for step:
+ * `nodus_cmt_node_init` walks node.go:294-417 step for step:
  *
- *   node.go:296-303  initDBs + NewStore        → nodus_cmt_store_init
- *   node.go:305      LoadStateFromDBOrGenesis… → setup.go:556-587, below
- *   node.go:313      createAndStartProxyApp…   → the C1a application
- *   node.go:318-331  EventBus + IndexerService → NOT PORTED (no consumer)
- *   node.go:333-347  privValidator             → the C1b privval file,
+ *   node.go:294-301  initDBs + NewStore        → nodus_cmt_store_init
+ *   node.go:303      LoadStateFromDBOrGenesis… → setup.go:556-587, below
+ *   node.go:311      createAndStartProxyApp…   → the C1a application
+ *   node.go:316-329  EventBus + IndexerService → NOT PORTED (no consumer)
+ *   node.go:331-345  privValidator             → the C1b privval file,
  *                    built with `LoadOrGenFilePV` as the reference's own
  *                    caller builds it (setup.go:71, file.go:237-245)
- *   node.go:356-362  doHandshake               → the Handshaker, below
- *   node.go:364-370  stateStore.Load()         → the state is re-read
- *   node.go:379      createMempoolAnd…Reactor  → the Flood mempool
+ *   node.go:354-360  doHandshake               → the Handshaker, below
+ *   node.go:362-368  stateStore.Load()         → the state is re-read
+ *   node.go:377      createMempoolAnd…Reactor  → the Flood mempool
  *                                                (the REACTOR is W3's)
- *   node.go:381      createEvidenceReactor     → the empty evidence pool
- *   node.go:386-395  NewBlockExecutor          → nodus_cmt_blockexec_init
- *                    (v0.38.26 :393 the tolerance option
+ *   node.go:379      createEvidenceReactor     → the empty evidence pool
+ *   node.go:384-394  NewBlockExecutor          → nodus_cmt_blockexec_init
+ *                    (:393 the tolerance option
  *                    → nodus_cmt_blockexec_set_block_time_tolerance)
- *   node.go:397-403  offlineStateSyncHeight    → the store
- *   node.go:410-413  createConsensusReactor    → cmt_cs_init (the REACTOR
+ *   node.go:396-402  offlineStateSyncHeight    → the store
+ *   node.go:409-412  createConsensusReactor    → cmt_cs_init (the REACTOR
  *                                                is W3's)
- *   node.go:415-418  SetOfflineStateSyncHeight(0)
+ *   node.go:414-417  SetOfflineStateSyncHeight(0)
  *
  * and `nodus_cmt_node_start` walks state.go:318-405:
  *
@@ -49,9 +49,9 @@
  *
  * ── WHAT IS NOT HERE, AND WHOSE IT IS ──────────────────────────────────
  *   · the consensus REACTOR, the blocksync reactor, state sync, p2p and
- *     the TICK (node.go:405-408 the blocksync reactor, the reactor half
- *     of :410-413, :423-470 the switch and state sync, and OnStart
- *     :518-585) — W3; the blocksync reactor since the 2026-09-29 port is
+ *     the TICK (node.go:404-407 the blocksync reactor, the reactor half
+ *     of :409-412, :422-469 the switch and state sync, and OnStart
+ *     :517-584) — W3; the blocksync reactor since the 2026-09-29 port is
  *     shared/dnac/cmt_bsync_reactor.c, built and wired by
  *     nodus_witness.c (`nodus_witness_cmt_live_init`) over THIS node's
  *     store and block executor. The seam where W3 registers its listener
@@ -69,7 +69,7 @@
  *     loads. Because there is no key file, `LoadOrGenFilePV`'s
  *     existence test moves onto the state file: DEVIATION R3-C1c-5, on
  *     `nodus_cmt_node_opts_t.privval_state_path`.
- *   · the EventBus and the indexer (node.go:318-331) — they exist in the
+ *   · the EventBus and the indexer (node.go:316-329) — they exist in the
  *     reference so that a replayed block's transactions get indexed; this
  *     port has no indexer and no RPC to serve one, so the Handshaker's
  *     `SetEventBus` (replay.go:232-234) has no counterpart and every
@@ -84,7 +84,7 @@
  *   2. the WAL is opened in `nodus_cmt_node_start`, OUTSIDE any ledger
  *      transaction (nodus_witness_cmt_wal.h's §B.4 caller contract). The
  *      Handshaker's applies have all committed by then, which is the
- *      reference's own order (node.go:360 precedes state.go:319).
+ *      reference's own order (node.go:358 precedes state.go:319).
  *
  * ── DETERMINISM ────────────────────────────────────────────────────────
  * Startup is not a consensus path, but two of its products are consensus
@@ -105,8 +105,8 @@
  * genesis document is never completed from the clock — the loader refuses
  * a zero genesis time before that branch can be reached (D-18 rev 2).
  *
- * Reference @709fd12b (pin rev 19, atlas-dec-483ec17cbb352ef0ec2267ccd953339c):
- *   node/node.go:285-422          NORMATIVE, the startup order
+ * Reference @v0.38.26 (709fd12b: pin rev 19, atlas-dec-483ec17cbb352ef0ec2267ccd953339c):
+ *   node/node.go:283-421          NORMATIVE, the startup order
  *   node/setup.go:551-611         NORMATIVE, genesisDocKey and the loader
  *   node/setup.go:173-190,        the three helpers the order above names
  *                :228-265, :307-340
@@ -224,7 +224,7 @@ int nodus_cmt_node_app_info(nodus_witness_t *w, nodus_cmt_app_info_t *out);
  * rev 5 (5), nodus_witness_cmt_host.c:1392-1396, unconditional). A mock
  * that returned without committing would leave the replay's transaction
  * open, and `nodus_cmt_ss_save` would then join it instead of being the
- * separate autocommit statement execution.go:302 requires — the exact
+ * separate autocommit statement execution.go:333 requires — the exact
  * crash window this branch exists to heal would be re-created.
  *
  * So the mock's `commit` issues the SQL `COMMIT` and nothing else. The
@@ -318,7 +318,7 @@ typedef struct {
 
     /** :203 `initialState`. The reference holds a COPY of the node's
      *  state and mutates it at :269-271; the node reloads from the store
-     *  afterwards (node.go:364-370), so the copy is never read back.
+     *  afterwards (node.go:362-368), so the copy is never read back.
      *  Owned here, with its own storage, for the same reason. */
     cmt_state_t          *initial_state;
     cmt_state_storage_t  *initial_storage;
@@ -491,7 +491,7 @@ typedef struct {
 } nodus_cmt_node_opts_t;
 
 /**
- * Everything `node.go:285-422` builds, in the order it builds it.
+ * Everything `node.go:283-421` builds, in the order it builds it.
  *
  * ⚠ NEVER A STACK OBJECT — the application context alone is ~85 KB, the
  * three `cmt_state_storage_t` are ~1 MB each and the genesis config is
@@ -500,41 +500,41 @@ typedef struct {
 typedef struct {
     nodus_witness_t *w;                     /* BORROWED, the ledger      */
 
-    /* node.go:296-303 */
+    /* node.go:294-301 */
     nodus_cmt_store_t store;
     bool              store_ready;
 
-    /* node.go:305 / setup.go:556-587 — the genesis document */
+    /* node.go:303 / setup.go:556-587 — the genesis document */
     nodus_v2_gen_config_t   *gen_cfg;       /* the DECODED stored doc    */
     nodus_v2_gen_alloc_t    *gen_allocs;    /* its allocation list       */
     cmt_genesis_doc_t        doc;           /* the port's document       */
     cmt_genesis_validator_t *gvals;         /* doc.validators' storage   */
 
-    /* node.go:305's second product — the State */
+    /* node.go:303's second product — the State */
     cmt_state_storage_t *state_storage;
     cmt_state_t         *state;
 
-    /* node.go:313 — the application */
+    /* node.go:311 — the application */
     nodus_cmt_app_ledger_t *app_ctx;
     nodus_cmt_app_t         app_if;
     cmt_mem_app_t           app_mem_if;
 
-    /* node.go:333-347 — the privval */
+    /* node.go:331-345 — the privval */
     nodus_cmt_privval_t pv_file;            /* the FILE side (C1b)       */
     bool                pv_file_open;
     cmt_file_pv_t      *pv;                 /* privval/file.go:157-160   */
 
-    /* node.go:379 — the Flood mempool (the REACTOR is W3's) */
+    /* node.go:377 — the Flood mempool (the REACTOR is W3's) */
     cmt_mempool_config_t     mem_config;
     cmt_mem_t               *mem;
     bool                     mem_ready;
     nodus_cmt_node_mempool_t mem_ctx;
     nodus_cmt_mempool_if_t   mem_if;
 
-    /* node.go:381 — the evidence pool stand-in (state/services.go:57-68) */
+    /* node.go:379 — the evidence pool stand-in (state/services.go:57-68) */
     nodus_cmt_evpool_if_t ev_if;
 
-    /* node.go:386-395 — the BlockExecutor and the host table */
+    /* node.go:384-394 — the BlockExecutor and the host table */
     nodus_cmt_wal_t         wal;
     bool                    wal_open;
     cmt_cs_slots_t         *slots;
@@ -549,7 +549,7 @@ typedef struct {
     bool                    be_ready;
     cmt_cs_host_t           host;
 
-    /* node.go:410-418 — the consensus state */
+    /* node.go:409-417 — the consensus state */
     cmt_config_t         config;
     cmt_state_storage_t *cs_storage;
     cmt_state_storage_t *cs_scratch_storage;
@@ -587,7 +587,7 @@ typedef struct {
 } nodus_cmt_node_t;
 
 /**
- * `NewNodeWithContext` (node/node.go:285-422) over the ledger `w`.
+ * `NewNodeWithContext` (node/node.go:283-421) over the ledger `w`.
  *
  * `w` must be an OPEN Ledger V2 successor chain at schema S16 (the live
  * rung as of tokenomics-v3 P2; S15 dropped the two retired attendance
@@ -641,7 +641,7 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
  * all inside `cmt_cs_start`, shared/dnac/cmt_cs.h:966-982) is reached
  * only through `cmt_conr_start(conr)` (consensus/reactor.go:74-91,
  * `OnStart`), which this port's `cmt_conr_start` calls when
- * `!conr->wait_sync` — i.e. when node.go:375's `blockSync` is false (this
+ * `!conr->wait_sync` — i.e. when node.go:373's `blockSync` is false (this
  * node is the only validator); otherwise through
  * `cmt_conr_switch_to_consensus` once the block sync reactor has caught
  * up (decision 2026-09-29-blocksync-before-testnet.md removed D-23 rev 7

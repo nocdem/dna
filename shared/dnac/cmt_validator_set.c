@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_validator_set.c
- * @brief cometbft @709fd12b types/validator.go + types/validator_set.go in
+ * @brief cometbft @v0.38.26 types/validator.go + types/validator_set.go in
  *        C — see cmt_validator_set.h.
  *
  * NOTHING HERE READS A CLOCK, DRAWS RANDOMNESS OR ITERATES A MAP. Every
@@ -19,7 +19,7 @@
  */
 
 #include "dnac/cmt_validator_set.h"
-#include "dnac/cmt_validation.h"  /* cmt_verify_commit — validator_set.go:701.
+#include "dnac/cmt_validation.h"  /* cmt_verify_commit — validator_set.go:714.
                                    * Included from the .c and NOT from
                                    * cmt_validator_set.h, because
                                    * cmt_validation.h includes THAT header. */
@@ -268,76 +268,76 @@ static bool addr_eq(const uint8_t *a, size_t alen,
 
 /* ══ errors ═══════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b types/validator_set.go:796-798 */
+/* cometbft@v0.38.26 types/validator_set.go:851-853 */
 bool cmt_is_err_not_enough_voting_power_signed(const cmt_vs_error_t *e)
 {
     return e != NULL && e->code == CMT_VS_ERR_NOT_ENOUGH_VOTING_POWER_SIGNED;
 }
 
-/* ══ int64 helpers — validator_set.go:993-1053 ════════════════════════ */
+/* ══ int64 helpers — validator_set.go:1053-1113 ════════════════════════ */
 
-/* :993-1000 safeAdd() */
+/* :1053-1060 safeAdd() */
 bool cmt_vs_safe_add(int64_t a, int64_t b, int64_t *out)
 {
-    if (b > 0 && a > INT64_MAX - b) {          /* :994-995 */
+    if (b > 0 && a > INT64_MAX - b) {          /* :1054-1055 */
         *out = -1;
         return true;
     }
-    if (b < 0 && a < INT64_MIN - b) {          /* :996-997 */
+    if (b < 0 && a < INT64_MIN - b) {          /* :1056-1057 */
         *out = -1;
         return true;
     }
-    *out = a + b;                              /* :999, cannot overflow now */
+    *out = a + b;                              /* :1059, cannot overflow now */
     return false;
 }
 
-/* :1002-1009 safeSub() */
+/* :1062-1069 safeSub() */
 bool cmt_vs_safe_sub(int64_t a, int64_t b, int64_t *out)
 {
-    if (b > 0 && a < INT64_MIN + b) {          /* :1003-1004 */
+    if (b > 0 && a < INT64_MIN + b) {          /* :1063-1064 */
         *out = -1;
         return true;
     }
-    if (b < 0 && a > INT64_MAX + b) {          /* :1005-1006 */
+    if (b < 0 && a > INT64_MAX + b) {          /* :1065-1066 */
         *out = -1;
         return true;
     }
-    *out = a - b;                              /* :1008 */
+    *out = a - b;                              /* :1068 */
     return false;
 }
 
-/* :1011-1020 safeAddClip() */
+/* :1071-1080 safeAddClip() */
 int64_t cmt_vs_safe_add_clip(int64_t a, int64_t b)
 {
     int64_t c;
 
-    if (cmt_vs_safe_add(a, b, &c)) {           /* :1012-1013 */
-        return (b < 0) ? INT64_MIN : INT64_MAX; /* :1014-1017 */
+    if (cmt_vs_safe_add(a, b, &c)) {           /* :1072-1073 */
+        return (b < 0) ? INT64_MIN : INT64_MAX; /* :1074-1077 */
     }
-    return c;                                  /* :1019 */
+    return c;                                  /* :1079 */
 }
 
-/* :1022-1031 safeSubClip() */
+/* :1082-1091 safeSubClip() */
 int64_t cmt_vs_safe_sub_clip(int64_t a, int64_t b)
 {
     int64_t c;
 
-    if (cmt_vs_safe_sub(a, b, &c)) {           /* :1023-1024 */
-        return (b > 0) ? INT64_MIN : INT64_MAX; /* :1025-1028 */
+    if (cmt_vs_safe_sub(a, b, &c)) {           /* :1083-1084 */
+        return (b > 0) ? INT64_MIN : INT64_MAX; /* :1085-1088 */
     }
-    return c;                                  /* :1030 */
+    return c;                                  /* :1090 */
 }
 
-/* :1033-1053 safeMul() */
+/* :1093-1113 safeMul() */
 bool cmt_vs_safe_mul(int64_t a, int64_t b, int64_t *out)
 {
     int64_t abs_a, abs_b, limit;
 
-    if (a == 0 || b == 0) {                    /* :1034-1036 */
+    if (a == 0 || b == 0) {                    /* :1094-1096 */
         *out = 0;
         return false;
     }
-    /* :1038-1041 / :1043-1046. NOTE reference quirk: for MinInt64 the Go
+    /* :1098-1101 / :1103-1106. NOTE reference quirk: for MinInt64 the Go
      * negation WRAPS back to MinInt64, so `absOf*` stays negative. go_neg
      * reproduces that exactly rather than "fixing" it. */
     abs_b = (b < 0) ? go_neg(b) : b;
@@ -349,11 +349,11 @@ bool cmt_vs_safe_mul(int64_t a, int64_t b, int64_t *out)
          * has no silent failure path. */
         return true;
     }
-    if (abs_a > limit) {                       /* :1048-1050 */
+    if (abs_a > limit) {                       /* :1108-1110 */
         *out = 0;
         return true;
     }
-    *out = go_mul(a, b);                       /* :1052 */
+    *out = go_mul(a, b);                       /* :1112 */
     return false;
 }
 
@@ -539,23 +539,23 @@ int cmt_validator_from_proto(const cmt_pb_validator_t *vp,
 
 /* ── sort orders ────────────────────────────────────────────────────── */
 
-/* validator_set.go:851-856 — ValidatorsByVotingPower.Less() */
+/* validator_set.go:906-911 — ValidatorsByVotingPower.Less() */
 bool cmt_validators_by_voting_power_less(const cmt_validator_t *a,
                                          const cmt_validator_t *b)
 {
-    if (a->voting_power == b->voting_power) {             /* :852 */
+    if (a->voting_power == b->voting_power) {             /* :907 */
         return addr_cmp(a->address, a->address_len,
-                        b->address, b->address_len) == -1; /* :853 */
+                        b->address, b->address_len) == -1; /* :908 */
     }
-    return a->voting_power > b->voting_power;             /* :855 */
+    return a->voting_power > b->voting_power;             /* :910 */
 }
 
-/* validator_set.go:868-870 — ValidatorsByAddress.Less() */
+/* validator_set.go:923-925 — ValidatorsByAddress.Less() */
 bool cmt_validators_by_address_less(const cmt_validator_t *a,
                                     const cmt_validator_t *b)
 {
     return addr_cmp(a->address, a->address_len,
-                    b->address, b->address_len) == -1;    /* :869 */
+                    b->address, b->address_len) == -1;    /* :924 */
 }
 
 /* One deterministic insertion sort, shared by both orders. n is at most
@@ -595,7 +595,7 @@ void cmt_validators_sort_by_address(cmt_validator_t **v, size_t n)
 /**
  * `sort.Sort(ValidatorsByVotingPower(...))` applied DIRECTLY to an array
  * of validators rather than to an array of pointers, for the two call
- * sites that own their storage (:674, :964). It is the same permutation;
+ * sites that own their storage (:687, :1024). It is the same permutation;
  * doing it in place avoids a 340 KB staging array (128 validators, each
  * carrying a 2592-byte key) that has no business on a stack.
  */
@@ -632,7 +632,7 @@ int cmt_validator_set_init(cmt_validator_set_t *vals,
      * all_keys_have_same_type false are Go's `new(ValidatorSet)` zero
      * value — the one NewValidatorSet overrides at :78-80 and the one
      * ValidatorSetFromProto and ValidatorSetFromExistingValidators start
-     * from before recomputing the flag at :924 / :961. */
+     * from before recomputing the flag at :979 / :1019. */
     return CMT_OK;
 }
 
@@ -1083,7 +1083,7 @@ int cmt_validator_set_get_by_index(const cmt_validator_set_t *vals,
     return CMT_OK;
 }
 
-/* :351-359 findProposer() */
+/* :362-370 findProposer() */
 int cmt_validator_set_find_proposer(const cmt_validator_set_t *vals,
                                     const cmt_validator_t **out)
 {
@@ -1097,9 +1097,9 @@ int cmt_validator_set_find_proposer(const cmt_validator_set_t *vals,
     if (vals->validators_len == 0) {
         return CMT_REJECT;
     }
-    for (i = 0; i < vals->validators_len; i++) {          /* :353-357 */
+    for (i = 0; i < vals->validators_len; i++) {          /* :364-368 */
         const cmt_validator_t *val = &vals->validators[i];
-        /* :354 — NOTE reference quirk: a validator whose address equals
+        /* :365 — NOTE reference quirk: a validator whose address equals
          * the current best's is SKIPPED. On a set with unique addresses
          * that can only be the current best itself. Kept as-is. */
         if (proposer == NULL ||
@@ -1112,11 +1112,11 @@ int cmt_validator_set_find_proposer(const cmt_validator_set_t *vals,
             }
         }
     }
-    *out = proposer;                                      /* :358 */
+    *out = proposer;                                      /* :369 */
     return CMT_OK;
 }
 
-/* :341-349 GetProposer() */
+/* :352-360 GetProposer() */
 int cmt_validator_set_get_proposer(cmt_validator_set_t *vals,
                                    cmt_validator_t *out)
 {
@@ -1125,10 +1125,10 @@ int cmt_validator_set_get_proposer(cmt_validator_set_t *vals,
     if (vals == NULL) {
         return CMT_FAULT;
     }
-    if (vals->validators_len == 0) {                      /* :342-344 */
+    if (vals->validators_len == 0) {                      /* :353-355 */
         return CMT_REJECT;
     }
-    if (!vals->has_proposer) {                            /* :345-347 */
+    if (!vals->has_proposer) {                            /* :356-358 */
         const cmt_validator_t *p = NULL;
         rc = cmt_validator_set_find_proposer(vals, &p);
         if (rc != CMT_OK) {
@@ -1138,12 +1138,12 @@ int cmt_validator_set_get_proposer(cmt_validator_set_t *vals,
         vals->has_proposer = true;
     }
     if (out != NULL) {
-        *out = vals->proposer;                            /* :348 a Copy() */
+        *out = vals->proposer;                            /* :359 a Copy() */
     }
     return CMT_OK;
 }
 
-/* :748-760 findPreviousProposer() */
+/* :803-815 findPreviousProposer() */
 int cmt_validator_set_find_previous_proposer(const cmt_validator_set_t *vals,
                                              const cmt_validator_t **out)
 {
@@ -1157,11 +1157,11 @@ int cmt_validator_set_find_previous_proposer(const cmt_validator_set_t *vals,
     if (vals->validators_len == 0) {
         return CMT_REJECT;   /* the reference would return nil */
     }
-    for (i = 0; i < vals->validators_len; i++) {          /* :750-758 */
+    for (i = 0; i < vals->validators_len; i++) {          /* :805-813 */
         const cmt_validator_t *val = &vals->validators[i];
         const cmt_validator_t *w   = NULL;
 
-        if (prev == NULL) {                               /* :751-754 */
+        if (prev == NULL) {                               /* :806-809 */
             prev = val;
             continue;
         }
@@ -1169,15 +1169,15 @@ int cmt_validator_set_find_previous_proposer(const cmt_validator_set_t *vals,
         if (rc != CMT_OK) {
             return rc;
         }
-        if (w == prev) {                                  /* :755-757 keep the LOSER */
+        if (w == prev) {                                  /* :810-812 keep the LOSER */
             prev = val;
         }
     }
-    *out = prev;                                          /* :759 */
+    *out = prev;                                          /* :814 */
     return CMT_OK;
 }
 
-/* :762-784 checkAllKeysHaveSameType() */
+/* :817-839 checkAllKeysHaveSameType() */
 int cmt_validator_set_check_all_keys_have_same_type(cmt_validator_set_t *vals)
 {
     bool   have_first = false;   /* the reference's `firstKeyType != ""` */
@@ -1186,42 +1186,42 @@ int cmt_validator_set_check_all_keys_have_same_type(cmt_validator_set_t *vals)
     if (vals == NULL) {
         return CMT_FAULT;
     }
-    if (vals->validators_len == 0) {                      /* :763-766 */
+    if (vals->validators_len == 0) {                      /* :818-821 */
         vals->all_keys_have_same_type = true;
         return CMT_OK;
     }
-    for (i = 0; i < vals->validators_len; i++) {          /* :769-781 */
+    for (i = 0; i < vals->validators_len; i++) {          /* :824-836 */
         const cmt_pb_public_key_t *pk = &vals->validators[i].pub_key;
 
-        if (!have_first) {                                /* :770 */
+        if (!have_first) {                                /* :825 */
             if (!pk->present) {
-                continue;                                 /* :771-774 */
+                continue;                                 /* :826-829 */
             }
-            have_first = true;                            /* :775 */
+            have_first = true;                            /* :830 */
         }
-        /* :777 `val.PubKey.Type()`. NOTE reference quirk: with
+        /* :832 `val.PubKey.Type()`. NOTE reference quirk: with
          * firstKeyType already set, a keyless member dereferences a nil
          * interface and PANICS. Reproduced as a REJECT — see the header. */
         if (!pk->present) {
             return CMT_REJECT;
         }
-        /* :777-780 "the types differ" is unreachable in this port: K-2
+        /* :832-835 "the types differ" is unreachable in this port: K-2
          * gives it exactly one key type, so all_keys_have_same_type is
          * never written false here. Stated, not hidden. */
     }
-    vals->all_keys_have_same_type = true;                 /* :783 */
+    vals->all_keys_have_same_type = true;                 /* :838 */
     return CMT_OK;
 }
 
-/* :788-790 AllKeysHaveSameType() */
+/* :843-845 AllKeysHaveSameType() */
 bool cmt_validator_set_all_keys_have_same_type(const cmt_validator_set_t *vals)
 {
     return vals != NULL && vals->all_keys_have_same_type;
 }
 
-/* :698-702 (vals *ValidatorSet) VerifyCommit() — the method form of
+/* :711-715 (vals *ValidatorSet) VerifyCommit() — the method form of
  * types.VerifyCommit and nothing more; the reference's whole body is the
- * one delegation at :701. */
+ * one delegation at :714. */
 int cmt_validator_set_verify_commit(cmt_validator_set_t *vals,
                                     const uint8_t *chain_id,
                                     size_t chain_id_len,
@@ -1231,7 +1231,7 @@ int cmt_validator_set_verify_commit(cmt_validator_set_t *vals,
                                     cmt_vs_error_t *err)
 {
     return cmt_verify_commit(chain_id, chain_id_len, vals, block_id,
-                             height, commit, err);                /* :701 */
+                             height, commit, err);                /* :714 */
 }
 
 /* cometbft@v0.38.26 types/validator_set.go:717-757 —
@@ -1343,8 +1343,8 @@ int cmt_validator_set_verify_commit_extended(
     return rc;                                                   /* :757 */
 }
 
-/* :708-712 (vals *ValidatorSet) VerifyCommitLight() — the whole body is
- * the one delegation at :711. */
+/* :763-767 (vals *ValidatorSet) VerifyCommitLight() — the whole body is
+ * the one delegation at :766. */
 int cmt_validator_set_verify_commit_light(cmt_validator_set_t *vals,
                                           const uint8_t *chain_id,
                                           size_t chain_id_len,
@@ -1354,11 +1354,11 @@ int cmt_validator_set_verify_commit_light(cmt_validator_set_t *vals,
                                           cmt_vs_error_t *err)
 {
     return cmt_verify_commit_light(chain_id, chain_id_len, vals, block_id,
-                                   height, commit, err);          /* :711 */
+                                   height, commit, err);          /* :766 */
 }
 
-/* :716-720 (vals *ValidatorSet) VerifyCommitLightAllSignatures() — the
- * one delegation at :719. */
+/* :771-775 (vals *ValidatorSet) VerifyCommitLightAllSignatures() — the
+ * one delegation at :774. */
 int cmt_validator_set_verify_commit_light_all_signatures(
         cmt_validator_set_t *vals, const uint8_t *chain_id,
         size_t chain_id_len, const cmt_pb_block_id_t *block_id,
@@ -1366,7 +1366,7 @@ int cmt_validator_set_verify_commit_light_all_signatures(
 {
     return cmt_verify_commit_light_all_signatures(chain_id, chain_id_len,
                                                   vals, block_id, height,
-                                                  commit, err);    /* :719 */
+                                                  commit, err);    /* :774 */
 }
 
 /* :91-113 ValidateBasic() */
@@ -1403,7 +1403,7 @@ int cmt_validator_set_validate_basic(const cmt_validator_set_t *vals)
     return CMT_REJECT;                                    /* :112 ErrProposerNotInVals */
 }
 
-/* :365-371 Hash() */
+/* :376-382 Hash() */
 int cmt_validator_set_hash(const cmt_validator_set_t *vals,
                            uint8_t *scratch, size_t scratch_cap,
                            cmt_merkle_item_t *items, size_t items_cap,
@@ -1418,7 +1418,7 @@ int cmt_validator_set_hash(const cmt_validator_set_t *vals,
     if (vals->validators_len > items_cap) {
         return CMT_REJECT;
     }
-    for (i = 0; i < vals->validators_len; i++) {          /* :366-369 */
+    for (i = 0; i < vals->validators_len; i++) {          /* :377-380 */
         size_t len = 0;
         if (off > scratch_cap) {
             return CMT_REJECT;
@@ -1432,13 +1432,13 @@ int cmt_validator_set_hash(const cmt_validator_set_t *vals,
         items[i].len  = len;
         off += len;
     }
-    /* :370 — an empty set hashes the empty tree, H(""). */
+    /* :381 — an empty set hashes the empty tree, H(""). */
     return cmt_merkle_hash_from_byte_slices(items, vals->validators_len, out);
 }
 
 /* ── change-set machinery ───────────────────────────────────────────── */
 
-/* :408-442 processChanges() */
+/* :419-453 processChanges() */
 int cmt_validator_set_process_changes(const cmt_validator_t *orig_changes,
                                       size_t n,
                                       cmt_valset_scratch_t *scratch,
@@ -1460,47 +1460,47 @@ int cmt_validator_set_process_changes(const cmt_validator_t *orig_changes,
         return CMT_REJECT;   /* capacity — see "Capacity" in the header */
     }
     rc = cmt_validator_list_copy(orig_changes, n, scratch->changes,
-                                 CMT_VALSET_MAX_CHANGES);   /* :410 */
+                                 CMT_VALSET_MAX_CHANGES);   /* :421 */
     if (rc != CMT_OK) {
         return rc;
     }
     for (i = 0; i < n; i++) {
         scratch->sorted[i] = &scratch->changes[i];
     }
-    cmt_validators_sort_by_address(scratch->sorted, n);      /* :411 */
+    cmt_validators_sort_by_address(scratch->sorted, n);      /* :422 */
 
-    for (i = 0; i < n; i++) {                                /* :418-439 */
+    for (i = 0; i < n; i++) {                                /* :429-450 */
         cmt_validator_t *u = scratch->sorted[i];
 
-        /* :419-422. NOTE reference quirk: `prevAddr` starts as a NIL
+        /* :430-433. NOTE reference quirk: `prevAddr` starts as a NIL
          * slice, and `bytes.Equal(x, nil)` is true when x is empty — so a
          * FIRST change carrying a zero-length address is reported as a
          * duplicate. Reproduced exactly. */
         if (addr_eq(u->address, u->address_len, prev_addr, prev_len)) {
             return CMT_REJECT;
         }
-        if (u->voting_power < 0) {                           /* :425-427 */
+        if (u->voting_power < 0) {                           /* :436-438 */
             return CMT_REJECT;
         }
-        if (u->voting_power > CMT_MAX_TOTAL_VOTING_POWER) {  /* :428-431 */
+        if (u->voting_power > CMT_MAX_TOTAL_VOTING_POWER) {  /* :439-442 */
             return CMT_REJECT;
         }
-        if (u->voting_power == 0) {                          /* :432-433 */
+        if (u->voting_power == 0) {                          /* :443-444 */
             scratch->removals[n_rm++] = u;
-        } else {                                             /* :434-435 */
+        } else {                                             /* :445-446 */
             scratch->updates[n_up++] = u;
         }
-        prev_addr = u->address;                              /* :438 */
+        prev_addr = u->address;                              /* :449 */
         prev_len  = u->address_len;
     }
     *out_updates      = scratch->updates;
     *out_updates_len  = n_up;
     *out_removals     = scratch->removals;
     *out_removals_len = n_rm;
-    return CMT_OK;                                           /* :441 */
+    return CMT_OK;                                           /* :452 */
 }
 
-/* :467-473 — the `delta` closure verifyUpdates sorts and sums by. */
+/* :478-484 — the `delta` closure verifyUpdates sorts and sums by. */
 static int64_t update_delta(const cmt_validator_t *update,
                             const cmt_validator_set_t *vals)
 {
@@ -1510,24 +1510,24 @@ static int64_t update_delta(const cmt_validator_t *update,
         if (addr_eq(vals->validators[i].address,
                     vals->validators[i].address_len,
                     update->address, update->address_len)) {
-            /* :470 — Go int64 subtraction, which wraps. */
+            /* :481 — Go int64 subtraction, which wraps. */
             return go_sub(update->voting_power,
                           vals->validators[i].voting_power);
         }
     }
-    return update->voting_power;                             /* :472 */
+    return update->voting_power;                             /* :483 */
 }
 
-/* :462-488 verifyUpdates() */
+/* :473-499 verifyUpdates() */
 int cmt_validator_set_verify_updates(cmt_validator_t *const *updates,
                                      size_t updates_len,
                                      cmt_validator_set_t *vals,
                                      int64_t removed_power,
                                      int64_t *out_tvp)
 {
-    /* :475 — `updatesCopy` exists so the CALLER's list is not reordered,
+    /* :486 — `updatesCopy` exists so the CALLER's list is not reordered,
      * and that matters: the list MUST stay in the ADDRESS order
-     * processChanges produced, because applyUpdates (:534-537, :543-557)
+     * processChanges produced, because applyUpdates (:545-548, :554-568)
      * merges it against the address-sorted membership and depends on that
      * order. Sorting the caller's array in place would feed a
      * delta-ordered list into a two-sorted-list merge, which duplicates
@@ -1535,7 +1535,7 @@ int cmt_validator_set_verify_updates(cmt_validator_t *const *updates,
      *
      * The copy this port sorts holds the DELTAS ALONE, not the pointers.
      * The loop below reads nothing from an update except its delta
-     * (:481-486), so ordering the deltas produces exactly the reference's
+     * (:492-497), so ordering the deltas produces exactly the reference's
      * sequence of partial sums; carrying the pointers along would be a
      * second array nothing ever reads. */
     int64_t deltas[CMT_VALSET_MAX_CHANGES];
@@ -1550,14 +1550,14 @@ int cmt_validator_set_verify_updates(cmt_validator_t *const *updates,
         return CMT_REJECT;
     }
     /* The reference's closure recomputes `delta` on every comparison
-     * (:467-473); it is a pure function of the update and of `vals`, and
+     * (:478-484); it is a pure function of the update and of `vals`, and
      * `vals` does not change during the sort, so computing each one once
      * is the same function evaluated fewer times. It also turns an
      * O(n^2 * m) scan over 32-byte addresses into O(n * m). */
     for (i = 0; i < updates_len; i++) {
         deltas[i] = update_delta(updates[i], vals);
     }
-    /* :476-478 — sort the deltas ascending. An insertion sort; equal
+    /* :487-489 — sort the deltas ascending. An insertion sort; equal
      * deltas keep their relative order where the reference's sort.Slice
      * would not, and that does not matter (see the header). */
     for (i = 1; i < updates_len; i++) {
@@ -1569,22 +1569,22 @@ int cmt_validator_set_verify_updates(cmt_validator_t *const *updates,
         }
         deltas[j] = kd;
     }
-    rc = cmt_validator_set_total_voting_power(vals, &tvp);   /* :480 */
+    rc = cmt_validator_set_total_voting_power(vals, &tvp);   /* :491 */
     if (rc != CMT_OK) {
         return rc;
     }
     tvp_after_removals = go_sub(tvp, removed_power);
-    for (i = 0; i < updates_len; i++) {                      /* :481-486 */
+    for (i = 0; i < updates_len; i++) {                      /* :492-497 */
         tvp_after_removals = go_add(tvp_after_removals, deltas[i]);
         if (tvp_after_removals > CMT_MAX_TOTAL_VOTING_POWER) {
-            return CMT_REJECT;   /* :484 ErrTotalVotingPowerOverflow */
+            return CMT_REJECT;   /* :495 ErrTotalVotingPowerOverflow */
         }
     }
-    *out_tvp = go_add(tvp_after_removals, removed_power);    /* :487 */
+    *out_tvp = go_add(tvp_after_removals, removed_power);    /* :498 */
     return CMT_OK;
 }
 
-/* :490-498 numNewValidators() */
+/* :501-509 numNewValidators() */
 size_t cmt_validator_set_num_new_validators(cmt_validator_t *const *updates,
                                             size_t updates_len,
                                             const cmt_validator_set_t *vals)
@@ -1594,16 +1594,16 @@ size_t cmt_validator_set_num_new_validators(cmt_validator_t *const *updates,
     if (updates == NULL || vals == NULL) {
         return 0;
     }
-    for (i = 0; i < updates_len; i++) {                      /* :492-496 */
+    for (i = 0; i < updates_len; i++) {                      /* :503-507 */
         if (!cmt_validator_set_has_address(vals, updates[i]->address,
                                            updates[i]->address_len)) {
             count++;
         }
     }
-    return count;                                            /* :497 */
+    return count;                                            /* :508 */
 }
 
-/* :512-530 computeNewPriorities() */
+/* :523-541 computeNewPriorities() */
 int cmt_validator_set_compute_new_priorities(cmt_validator_t **updates,
                                              size_t updates_len,
                                              const cmt_validator_set_t *vals,
@@ -1614,32 +1614,32 @@ int cmt_validator_set_compute_new_priorities(cmt_validator_t **updates,
     if (vals == NULL || (updates == NULL && updates_len)) {
         return CMT_FAULT;
     }
-    for (i = 0; i < updates_len; i++) {                      /* :513-529 */
+    for (i = 0; i < updates_len; i++) {                      /* :524-540 */
         cmt_validator_t *u = updates[i];
         int32_t          idx = -1;
         cmt_validator_t  found;
         int              rc;
 
         rc = cmt_validator_set_get_by_address(vals, u->address, u->address_len,
-                                              &idx, &found);   /* :515 */
+                                              &idx, &found);   /* :526 */
         if (rc != CMT_OK) {
             return rc;
         }
         if (idx < 0) {
-            /* :525 — the entry penalty, -1.125 * P computed as
+            /* :536 — the entry penalty, -1.125 * P computed as
              * -(P + (P >> 3)). Go arithmetic: the shift is arithmetic and
              * both the add and the negation wrap. */
             u->proposer_priority =
                 go_neg(go_add(updated_total_voting_power,
                               go_shr(updated_total_voting_power, 3)));
         } else {
-            u->proposer_priority = found.proposer_priority;   /* :527 */
+            u->proposer_priority = found.proposer_priority;   /* :538 */
         }
     }
     return CMT_OK;
 }
 
-/* :536-571 applyUpdates() */
+/* :547-582 applyUpdates() */
 int cmt_validator_set_apply_updates(cmt_validator_t **existing,
                                     size_t existing_len,
                                     cmt_validator_t **updates,
@@ -1654,43 +1654,43 @@ int cmt_validator_set_apply_updates(cmt_validator_t **existing,
         (existing == NULL && existing_len) || (updates == NULL && updates_len)) {
         return CMT_FAULT;
     }
-    cmt_validators_sort_by_address(existing, existing_len);   /* :538 */
+    cmt_validators_sort_by_address(existing, existing_len);   /* :549 */
 
-    while (e < existing_len && u < updates_len) {             /* :543-557 */
+    while (e < existing_len && u < updates_len) {             /* :554-568 */
         if (i >= merged_cap) {
             return CMT_REJECT;
         }
         if (addr_cmp(existing[e]->address, existing[e]->address_len,
                      updates[u]->address, updates[u]->address_len) < 0) {
-            merged[i] = existing[e];                          /* :544-546 */
+            merged[i] = existing[e];                          /* :555-557 */
             e++;
         } else {
-            merged[i] = updates[u];                           /* :549 */
+            merged[i] = updates[u];                           /* :560 */
             if (addr_eq(existing[e]->address, existing[e]->address_len,
                         updates[u]->address, updates[u]->address_len)) {
-                e++;                                          /* :550-553 */
+                e++;                                          /* :561-564 */
             }
-            u++;                                              /* :554 */
+            u++;                                              /* :565 */
         }
-        i++;                                                  /* :556 */
+        i++;                                                  /* :567 */
     }
-    for (j = e; j < existing_len; j++) {                      /* :560-563 */
+    for (j = e; j < existing_len; j++) {                      /* :571-574 */
         if (i >= merged_cap) {
             return CMT_REJECT;
         }
         merged[i++] = existing[j];
     }
-    for (j = u; j < updates_len; j++) {                       /* :565-568 */
+    for (j = u; j < updates_len; j++) {                       /* :576-579 */
         if (i >= merged_cap) {
             return CMT_REJECT;
         }
         merged[i++] = updates[j];
     }
-    *out_len = i;                                             /* :570 */
+    *out_len = i;                                             /* :581 */
     return CMT_OK;
 }
 
-/* :575-589 verifyRemovals() */
+/* :586-600 verifyRemovals() */
 int cmt_validator_set_verify_removals(cmt_validator_t *const *deletes,
                                       size_t deletes_len,
                                       const cmt_validator_set_t *vals,
@@ -1703,7 +1703,7 @@ int cmt_validator_set_verify_removals(cmt_validator_t *const *deletes,
         (deletes == NULL && deletes_len)) {
         return CMT_FAULT;
     }
-    for (i = 0; i < deletes_len; i++) {                       /* :577-584 */
+    for (i = 0; i < deletes_len; i++) {                       /* :588-595 */
         int32_t         idx = -1;
         cmt_validator_t found;
         int             rc = cmt_validator_set_get_by_address(
@@ -1713,20 +1713,20 @@ int cmt_validator_set_verify_removals(cmt_validator_t *const *deletes,
             return rc;
         }
         if (idx < 0) {
-            return CMT_REJECT;                                /* :580-582 */
+            return CMT_REJECT;                                /* :591-593 */
         }
-        removed = go_add(removed, found.voting_power);        /* :583 */
+        removed = go_add(removed, found.voting_power);        /* :594 */
     }
-    /* :585-587 panic("more deletes than validators"). Reached only AFTER
+    /* :596-598 panic("more deletes than validators"). Reached only AFTER
      * the loop in the reference, so the order of the two verdicts is kept. */
     if (deletes_len > vals->validators_len) {
         return CMT_REJECT;
     }
-    *out_power = removed;                                     /* :588 */
+    *out_power = removed;                                     /* :599 */
     return CMT_OK;
 }
 
-/* :594-618 applyRemovals() */
+/* :605-629 applyRemovals() */
 int cmt_validator_set_apply_removals(cmt_validator_t **merged,
                                      size_t merged_len,
                                      cmt_validator_t *const *deletes,
@@ -1740,32 +1740,32 @@ int cmt_validator_set_apply_removals(cmt_validator_t **merged,
         return CMT_FAULT;
     }
     if (deletes_len > merged_len) {
-        /* :597 `make([]*Validator, len(existing)-len(deletes))` would be a
+        /* :608 `make([]*Validator, len(existing)-len(deletes))` would be a
          * negative length and panic. */
         return CMT_REJECT;
     }
-    while (d < deletes_len) {                                 /* :601-609 */
+    while (d < deletes_len) {                                 /* :612-620 */
         if (e >= merged_len) {
-            /* :602 indexes existing[0] on an exhausted slice — a Go index
+            /* :613 indexes existing[0] on an exhausted slice — a Go index
              * panic, made an explicit check (INVARIANT 7495d337). */
             return CMT_REJECT;
         }
         if (addr_eq(merged[e]->address, merged[e]->address_len,
                     deletes[d]->address, deletes[d]->address_len)) {
-            d++;                                              /* :602-603 */
+            d++;                                              /* :613-614 */
         } else {
-            merged[i++] = merged[e];                          /* :604-607 */
+            merged[i++] = merged[e];                          /* :615-618 */
         }
-        e++;                                                  /* :608 */
+        e++;                                                  /* :619 */
     }
-    for (j = e; j < merged_len; j++) {                        /* :612-615 */
+    for (j = e; j < merged_len; j++) {                        /* :623-626 */
         merged[i++] = merged[j];
     }
-    *out_len = i;                                             /* :617 */
+    *out_len = i;                                             /* :628 */
     return CMT_OK;
 }
 
-/* :624-677 updateWithChangeSet() */
+/* :635-690 updateWithChangeSet() */
 int cmt_validator_set_update_with_change_set_ex(cmt_validator_set_t *vals,
                                                 const cmt_validator_t *changes,
                                                 size_t changes_len,
@@ -1781,37 +1781,37 @@ int cmt_validator_set_update_with_change_set_ex(cmt_validator_set_t *vals,
     if (vals == NULL || scratch == NULL) {
         return CMT_FAULT;
     }
-    if (changes_len == 0) {                                   /* :625-627 */
+    if (changes_len == 0) {                                   /* :636-638 */
         return CMT_OK;
     }
     rc = cmt_validator_set_process_changes(changes, changes_len, scratch,
                                            &updates, &updates_len,
-                                           &removals, &removals_len); /* :630 */
+                                           &removals, &removals_len); /* :641 */
     if (rc != CMT_OK) {
         return rc;
     }
-    if (!allow_deletes && removals_len != 0) {                /* :635-637 */
+    if (!allow_deletes && removals_len != 0) {                /* :646-648 */
         return CMT_REJECT;
     }
     num_new = cmt_validator_set_num_new_validators(updates, updates_len, vals);
-    if (num_new == 0 && vals->validators_len == removals_len) { /* :640-642 */
+    if (num_new == 0 && vals->validators_len == removals_len) { /* :651-653 */
         return CMT_REJECT;
     }
     rc = cmt_validator_set_verify_removals(removals, removals_len, vals,
-                                           &removed_power);   /* :646 */
+                                           &removed_power);   /* :657 */
     if (rc != CMT_OK) {
         return rc;
     }
     rc = cmt_validator_set_verify_updates(updates, updates_len, vals,
                                           removed_power,
-                                          &tvp_before_removals); /* :653 */
+                                          &tvp_before_removals); /* :664 */
     if (rc != CMT_OK) {
         return rc;
     }
     /* ⚠ THE ONE ADDED RULE — a capacity bound, not a consensus rule. It is
      * placed after verifyUpdates so the reference's own error precedence
      * is untouched, and before any mutation so the "set is not changed on
-     * error" contract (:690-691) holds. Every update either replaces a
+     * error" contract (:703-704) holds. Every update either replaces a
      * member or is new, and verifyRemovals has proved every removal is a
      * member, so this is the exact resulting size. */
     new_size = vals->validators_len + num_new - removals_len;
@@ -1819,7 +1819,7 @@ int cmt_validator_set_update_with_change_set_ex(cmt_validator_set_t *vals,
         return CMT_REJECT;
     }
     rc = cmt_validator_set_compute_new_priorities(updates, updates_len, vals,
-                                                  tvp_before_removals); /* :659 */
+                                                  tvp_before_removals); /* :670 */
     if (rc != CMT_OK) {
         return rc;
     }
@@ -1831,13 +1831,13 @@ int cmt_validator_set_update_with_change_set_ex(cmt_validator_set_t *vals,
                                          updates, updates_len,
                                          scratch->merged,
                                          CMT_VALSET_MAX + CMT_VALSET_MAX_CHANGES,
-                                         &merged_len);        /* :662 */
+                                         &merged_len);        /* :673 */
     if (rc != CMT_OK) {
         return rc;
     }
     rc = cmt_validator_set_apply_removals(scratch->merged, merged_len,
                                           removals, removals_len,
-                                          &final_len);        /* :663 */
+                                          &final_len);        /* :674 */
     if (rc != CMT_OK) {
         return rc;
     }
@@ -1847,7 +1847,7 @@ int cmt_validator_set_update_with_change_set_ex(cmt_validator_set_t *vals,
          * broken before this call. */
         return CMT_REJECT;
     }
-    /* `vals.Validators = merged[:i]` (:570, :617). A C write-back cannot
+    /* `vals.Validators = merged[:i]` (:581, :628). A C write-back cannot
      * be done in place: `merged` is a permutation whose sources live in
      * the destination array. Stage first, then copy. */
     for (i = 0; i < final_len; i++) {
@@ -1857,7 +1857,7 @@ int cmt_validator_set_update_with_change_set_ex(cmt_validator_set_t *vals,
            final_len * sizeof(*vals->validators));
     vals->validators_len = final_len;
 
-    rc = cmt_validator_set_check_all_keys_have_same_type(vals); /* :666 */
+    rc = cmt_validator_set_check_all_keys_have_same_type(vals); /* :677 */
     if (rc != CMT_OK) {
         return rc;
     }
@@ -1873,7 +1873,7 @@ int cmt_validator_set_update_with_change_set_ex(cmt_validator_set_t *vals,
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
-    rc = cmt_validator_set_total_voting_power(vals, &tvp);     /* :671 */
+    rc = cmt_validator_set_total_voting_power(vals, &tvp);     /* :684 */
     if (rc != CMT_OK) {
         return rc;
     }
@@ -1882,16 +1882,16 @@ int cmt_validator_set_update_with_change_set_ex(cmt_validator_set_t *vals,
     if (rc != CMT_OK) {
         return rc;
     }
-    rc = cmt_validator_set_shift_by_avg_proposer_priority(vals); /* :672 */
+    rc = cmt_validator_set_shift_by_avg_proposer_priority(vals); /* :685 */
     if (rc != CMT_OK) {
         return rc;
     }
-    /* :674 sort.Sort(ValidatorsByVotingPower(vals.Validators)) */
+    /* :687 sort.Sort(ValidatorsByVotingPower(vals.Validators)) */
     sort_structs_by_voting_power(vals->validators, vals->validators_len);
-    return CMT_OK;                                            /* :676 */
+    return CMT_OK;                                            /* :689 */
 }
 
-/* :692-694 UpdateWithChangeSet() */
+/* :705-707 UpdateWithChangeSet() */
 int cmt_validator_set_update_with_change_set(cmt_validator_set_t *vals,
                                              const cmt_validator_t *changes,
                                              size_t changes_len,
@@ -1929,7 +1929,7 @@ int cmt_validator_set_new(cmt_validator_set_t *vals,
 
 /* ── codec side ─────────────────────────────────────────────────────── */
 
-/* :877-904 ToProto() */
+/* :932-959 ToProto() */
 int cmt_validator_set_to_proto(const cmt_validator_set_t *vals,
                                cmt_pb_validator_set_t *out)
 {
@@ -1944,35 +1944,35 @@ int cmt_validator_set_to_proto(const cmt_validator_set_t *vals,
      * else, so it is safe to run first on both paths. */
     cmt_pb_validator_set_init(out);
     if (cmt_validator_set_is_nil_or_empty(vals)) {
-        /* :878-880 — an EMPTY message, not an error. */
+        /* :933-935 — an EMPTY message, not an error. */
         return CMT_OK;
     }
     if (vals->validators_len > out->validators_cap || out->validators == NULL) {
         return CMT_REJECT;
     }
-    for (i = 0; i < vals->validators_len; i++) {              /* :884-890 */
+    for (i = 0; i < vals->validators_len; i++) {              /* :939-945 */
         rc = cmt_validator_to_proto(&vals->validators[i], &out->validators[i]);
         if (rc != CMT_OK) {
             return rc;
         }
     }
-    out->validators_len = vals->validators_len;               /* :891 */
+    out->validators_len = vals->validators_len;               /* :946 */
 
     if (!vals->has_proposer) {
-        /* :893-896 — Proposer.ToProto() on a nil proposer is an error. */
+        /* :948-951 — Proposer.ToProto() on a nil proposer is an error. */
         return CMT_REJECT;
     }
     rc = cmt_validator_to_proto(&vals->proposer, &out->proposer);
     if (rc != CMT_OK) {
         return rc;
     }
-    out->has_proposer = true;                                 /* :897 */
-    /* :899-901 — the cached total must NOT reach the bytes. */
+    out->has_proposer = true;                                 /* :952 */
+    /* :954-956 — the cached total must NOT reach the bytes. */
     out->total_voting_power = 0;
     return CMT_OK;
 }
 
-/* :909-941 ValidatorSetFromProto() */
+/* :964-999 ValidatorSetFromProto() */
 int cmt_validator_set_from_proto(const cmt_pb_validator_set_t *vp,
                                  cmt_validator_set_t *vals)
 {
@@ -1983,43 +1983,43 @@ int cmt_validator_set_from_proto(const cmt_pb_validator_set_t *vp,
     if (vals == NULL) {
         return CMT_FAULT;
     }
-    if (vp == NULL) {                                         /* :910-912 */
+    if (vp == NULL) {                                         /* :965-967 */
         return CMT_REJECT;
     }
     if (vp->validators_len > vals->validators_cap) {
         return CMT_REJECT;
     }
-    /* :913 `vals := new(ValidatorSet)` — a FRESH zero value, so the cached
-     * total must be cleared or :938's recomputation would not happen. */
+    /* :968 `vals := new(ValidatorSet)` — a FRESH zero value, so the cached
+     * total must be cleared or :993-996's recomputation would not happen. */
     vals->validators_len          = 0;
     vals->has_proposer            = false;
     vals->total_voting_power      = 0;
     vals->all_keys_have_same_type = false;
 
-    for (i = 0; i < vp->validators_len; i++) {                /* :915-922 */
+    for (i = 0; i < vp->validators_len; i++) {                /* :970-977 */
         rc = cmt_validator_from_proto(&vp->validators[i], &vals->validators[i]);
         if (rc != CMT_OK) {
             return rc;
         }
     }
-    vals->validators_len = vp->validators_len;                /* :923 */
-    rc = cmt_validator_set_check_all_keys_have_same_type(vals); /* :924 */
+    vals->validators_len = vp->validators_len;                /* :978 */
+    rc = cmt_validator_set_check_all_keys_have_same_type(vals); /* :979 */
     if (rc != CMT_OK) {
         return rc;
     }
 
     if (!vp->has_proposer) {
-        /* :926 vp.GetProposer() is nil and ValidatorFromProto rejects it
+        /* :981 vp.GetProposer() is nil and ValidatorFromProto rejects it
          * (validator.go:160-162). */
         return CMT_REJECT;
     }
-    rc = cmt_validator_from_proto(&vp->proposer, &vals->proposer); /* :926-929 */
+    rc = cmt_validator_from_proto(&vp->proposer, &vals->proposer); /* :981-984 */
     if (rc != CMT_OK) {
         return rc;
     }
-    vals->has_proposer = true;                                /* :931 */
+    vals->has_proposer = true;                                /* :986 */
 
-    /* :933-938 — the peer's total is NEVER trusted; it is recomputed.
+    /* :988-996 — the peer's total is NEVER trusted; it is recomputed.
      * cometbft@v0.38.26 validator_set.go:993-996 recomputes it with
      * TotalVotingPowerSafe, so members whose powers sum above
      * MaxTotalVotingPower are REFUSED (CMT_REJECT — the powers come off
@@ -2028,10 +2028,10 @@ int cmt_validator_set_from_proto(const cmt_pb_validator_set_t *vp,
     if (rc != CMT_OK) {
         return rc;
     }
-    return cmt_validator_set_validate_basic(vals);            /* :940 */
+    return cmt_validator_set_validate_basic(vals);            /* :998 */
 }
 
-/* :947-966 ValidatorSetFromExistingValidators() */
+/* :1005-1026 ValidatorSetFromExistingValidators() */
 int cmt_validator_set_from_existing_validators(cmt_validator_set_t *vals,
                                                const cmt_validator_t *valz,
                                                size_t n)
@@ -2043,7 +2043,7 @@ int cmt_validator_set_from_existing_validators(cmt_validator_set_t *vals,
     if (vals == NULL) {
         return CMT_FAULT;
     }
-    if (n == 0) {                                             /* :948-950 */
+    if (n == 0) {                                             /* :1006-1008 */
         return CMT_REJECT;
     }
     if (valz == NULL) {
@@ -2052,24 +2052,24 @@ int cmt_validator_set_from_existing_validators(cmt_validator_set_t *vals,
     if (n > vals->validators_cap || n > CMT_VALSET_MAX) {
         return CMT_REJECT;
     }
-    for (i = 0; i < n; i++) {                                 /* :951-956 */
+    for (i = 0; i < n; i++) {                                 /* :1009-1014 */
         rc = cmt_validator_validate_basic(&valz[i]);
         if (rc != CMT_OK) {
             return rc;
         }
     }
-    memcpy(vals->validators, valz, n * sizeof(*valz));        /* :958-960 */
+    memcpy(vals->validators, valz, n * sizeof(*valz));        /* :1016-1018 */
     vals->validators_len          = n;
     vals->has_proposer            = false;
     vals->total_voting_power      = 0;
     vals->all_keys_have_same_type = false;
 
-    rc = cmt_validator_set_check_all_keys_have_same_type(vals); /* :961 */
+    rc = cmt_validator_set_check_all_keys_have_same_type(vals); /* :1019 */
     if (rc != CMT_OK) {
         return rc;
     }
 
-    rc = cmt_validator_set_find_previous_proposer(vals, &prev); /* :962 */
+    rc = cmt_validator_set_find_previous_proposer(vals, &prev); /* :1020 */
     if (rc != CMT_OK) {
         return rc;
     }
@@ -2078,11 +2078,11 @@ int cmt_validator_set_from_existing_validators(cmt_validator_set_t *vals,
 
     /* cometbft@v0.38.26 validator_set.go:1021-1023 — the overflow is
      * RETURNED (it was a panic inside 709fd12b:963): CMT_REJECT. */
-    rc = cmt_validator_set_update_total_voting_power(vals);   /* :963 */
+    rc = cmt_validator_set_update_total_voting_power(vals);   /* :1021 */
     if (rc != CMT_OK) {
         return rc;
     }
-    /* :964 sort.Sort(ValidatorsByVotingPower(...)) */
+    /* :1024 sort.Sort(ValidatorsByVotingPower(...)) */
     sort_structs_by_voting_power(vals->validators, n);
-    return CMT_OK;                                            /* :965 */
+    return CMT_OK;                                            /* :1025 */
 }

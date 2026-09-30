@@ -1,6 +1,6 @@
 /**
  * @file nodus/src/witness/nodus_witness_cmt_store.h
- * @brief cometbft @709fd12b `store/store.go` (BlockStore) and
+ * @brief cometbft @v0.38.26 `store/store.go` (BlockStore) and
  *        `state/store.go` (dbStore) over the two SQLite key/value tables
  *        of schema S14 (`cmt_blockstore`, `cmt_state`), plus
  *        `types/block_meta.go` and the block decode step the BlockStore
@@ -79,24 +79,24 @@
  *
  * ── DETERMINISM ────────────────────────────────────────────────────────
  * No clock: `PruneBlocks` compares the STATE's LastBlockTime to the
- * header's time (store.go:387 through evidence/verify.go:295-303), both
+ * header's time (store.go:387 through evidence/verify.go:309-317), both
  * on-chain values. No unordered iteration: every loop is over heights or
  * list order.
  *
- * Reference @709fd12b (SHA-256 verified before use):
- *   store/store.go       765 lines
+ * Reference @v0.38.26 (SHA-256 verified before use):
+ *   store/store.go       766 lines
  *   state/store.go       827 lines
  *   types/block_meta.go   86 lines
- *   evidence/verify.go   303 lines (:295-303 IsEvidenceExpired;
- *     6025cb953abb6fbe955b2c22fed82472f630c98102771c3eba0e8b074508875e —
- *     the R3-B report called this unpinned; it is PINNED, rev 12)
+ *   evidence/verify.go   317 lines (:309-317 IsEvidenceExpired;
+ *     df8595a75edb9f1e56cda5a543170fdb88ccd3eda4396f1e0747e8acf86d4fa6 —
+ *     the R3-B report called this unpinned; pinned at 709fd12b by rev 12)
  *   libs/math/safemath.go 65 lines (:36-43;
  *     be592544331912400aecaee1ccdc8834afdf8508857d32d475e3f6bfaf3b33d2 —
  *     the report called this unpinned; it is PINNED, rev 3)
  *   libs/math/math.go     31 lines (:3-8; genuinely unpinned when opened,
  *     90148a8e991c5060237ca6fb78440ce2585ca071844e36273c7a53fc601babcf,
  *     pinned by rev 16)
- *   config/config.go    1283 lines (:1154 DiscardABCIResponses default)
+ *   config/config.go    1304 lines (:1175 DiscardABCIResponses default)
  * Governing records: D-17 rev 6 (atlas-dec-9d96e2ec31ad4840cf258df21732b67f,
  * APPROVED 2026-09-14), D-23 rev 4
  * (atlas-dec-cb08dde681aa3c4ab1d1f1b33cdb68e1, APPROVED 2026-09-14),
@@ -173,7 +173,7 @@ int nodus_cmt_block_meta_from_proto(nodus_cmt_block_meta_t *bm,
 
 /**
  * Storage for `proto.Unmarshal(buf, pbb)` + `types.BlockFromProto(pbb)`
- * (store.go:143-164; consensus/state.go:2005-2019). Two sets: the decoder
+ * (store.go:143-164; consensus/state.go:2000-2014). Two sets: the decoder
  * fills a proto VIEW and `cmt_block_from_proto` copies out of it into
  * the domain block; the txs array and the arena are SHARED (DataFromProto
  * is the identity, cmt_block.h:690-696). All caller-owned, all heap.
@@ -193,7 +193,7 @@ typedef struct {
 } nodus_cmt_block_decode_t;
 
 /**
- * store.go:154-164 / consensus/state.go:2011-2018: `cmt_pb_block_unmarshal` into
+ * store.go:154-164 / consensus/state.go:2006-2013:`cmt_pb_block_unmarshal` into
  * the view, then `cmt_block_from_proto` (which ends in ValidateBasic)
  * into `out`. `out->data.txs` and `out->last_commit` point into `st`.
  * @return CMT_OK; CMT_REJECT for bytes that do not decode or a block
@@ -212,7 +212,7 @@ typedef struct {
     int64_t height;
 
     /* state/store.go:98 `StoreOptions.DiscardABCIResponses`
-     * (config/config.go:1154 default false) */
+     * (config/config.go:1175 default false) */
     bool discard_abci_responses;
 
     /* prepared statements, both tables */
@@ -243,9 +243,9 @@ typedef struct {
 } nodus_cmt_store_t;
 
 /**
- * `NewBlockStore(db)` (store.go:67-76: `LoadBlockStoreState`, :692-715,
+ * `NewBlockStore(db)` (store.go:67-76: `LoadBlockStoreState`, :693-716,
  * with its `Height > 0 && Base == 0 → Base = 1` compatibility rule
- * :711-713) and `NewStore(db, options)` (state/store.go:112-114) on the
+ * :712-714) and `NewStore(db, options)` (state/store.go:112-114) on the
  * same borrowed connection. Tables must exist (schema S14; a chain
  * opened by this build is at S16, the live rung as of tokenomics-v3 P2
  * — neither S15 nor S16 touches these tables: S15 changed `validators`
@@ -359,15 +359,15 @@ int nodus_cmt_bs_save_seen_commit(nodus_cmt_store_t *s, int64_t height,
                                   const cmt_commit_t *seen_commit,
                                   uint8_t *scratch, size_t scratch_cap);
 
-/** :730-765 DeleteLatestBlock. */
+/** :731-766 DeleteLatestBlock. */
 int nodus_cmt_bs_delete_latest_block(nodus_cmt_store_t *s);
 
-/** :692-715 LoadBlockStoreState (exposed for the tests). */
+/** :693-716 LoadBlockStoreState (exposed for the tests). */
 int nodus_cmt_bs_load_block_store_state(nodus_cmt_store_t *s,
                                         cmt_pb_block_store_state_t *out);
 
-/** :662-664 SaveBlockStoreState — a lone `SetSync`, at :683 inside
- *  `saveBlockStoreStateBatchInternal` (:672-688) (exposed for the
+/** :663-665 SaveBlockStoreState — a lone `SetSync`, at :684 inside
+ *  `saveBlockStoreStateBatchInternal` (:673-689) (exposed for the
  *  tests; the reference marks it deprecated and keeps it). */
 int nodus_cmt_bs_save_block_store_state(nodus_cmt_store_t *s,
                                         const cmt_pb_block_store_state_t *bss);
@@ -439,7 +439,7 @@ int nodus_cmt_ss_load_last_finalize_block_response(
  *  @return CMT_OK; CMT_FAULT on NULL, the bound, or a SQLite failure
  *          (:525, :541); an encode failure returns the codec's own code
  *          (cmt_pb_store.h). The host treats every non-OK as the
- *          execution.go:260 error → CMT_FAULT. */
+ *          execution.go:291 error → CMT_FAULT. */
 int nodus_cmt_ss_save_finalize_block_response(
         nodus_cmt_store_t *s, int64_t height,
         const cmt_pb_response_finalize_block_t *resp);
@@ -476,7 +476,7 @@ int nodus_cmt_ss_get_offline_state_sync_height(nodus_cmt_store_t *s,
 
 /* ── exposed for the tests ─────────────────────────────────────────── */
 
-/** evidence/verify.go:295-303 — `IsEvidenceExpired`. `time_now.Sub(
+/** evidence/verify.go:309-317 — `IsEvidenceExpired`. `time_now.Sub(
  *  time_ev)` saturates like Go's — Go stdlib `time.Time.Sub`, not
  *  pinned, behaviour stated, not verified. */
 bool nodus_cmt_is_evidence_expired(int64_t height_now, cmt_time_t time_now,

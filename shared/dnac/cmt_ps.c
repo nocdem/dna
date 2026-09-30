@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_ps.c
- * @brief cometbft @709fd12b `consensus/reactor.go:1017-1482` (`PeerState`)
+ * @brief cometbft @v0.38.26 `consensus/reactor.go:1026-1491` (`PeerState`)
  *        ported to C. See cmt_ps.h for the module contract.
  *
  * Every function names the reference range it ports; every dropped lock
@@ -14,7 +14,7 @@
 
 #include <string.h>
 
-#include "cmt_cs.h"                  /* cmt_compare_hrs (state.go:2600) */
+#include "cmt_cs.h"                  /* cmt_compare_hrs (state.go:2593) */
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "CMT_PS"
@@ -87,7 +87,7 @@ static int ps_bits_new(cmt_ps_t *ps, int bits, cmt_bit_array_t **out)
 }
 
 /**
- * A message's `*bits.BitArray` becoming a PRS pointer (:1430, :1447): Go
+ * A message's `*bits.BitArray` becoming a PRS pointer (:1439, :1456): Go
  * stores the pointer to the decoded message's array; here the message
  * dies with its caller, so the value is copied into a slot. `has` false
  * is the nil pointer. `*out` MUST be a PRS field already set to NULL.
@@ -121,7 +121,7 @@ static int ps_bits_copy_in(cmt_ps_t *ps, bool has, const cmt_bit_array_t *src,
  * VoteSetReader — the seven methods over the two arms
  * ══════════════════════════════════════════════════════════════════════ */
 
-/** vote_set.go:138-144 `Size()` / block.go:1177-1184 `Size()`. */
+/** vote_set.go:138-144 `Size()` / block.go:1183-1190 `Size()`. */
 static int reader_size(const cmt_vote_set_reader_t *r)
 {
     if (r->ec != NULL) {
@@ -130,7 +130,7 @@ static int reader_size(const cmt_vote_set_reader_t *r)
     return cmt_vote_set_size(r->vs);           /* NULL → 0, :140-142 */
 }
 
-/** vote_set.go:114-120 / block.go:1169-1171 `GetHeight()`. */
+/** vote_set.go:114-120 / block.go:1175-1177 `GetHeight()`. */
 static int64_t reader_height(const cmt_vote_set_reader_t *r)
 {
     if (r->ec != NULL) {
@@ -139,7 +139,7 @@ static int64_t reader_height(const cmt_vote_set_reader_t *r)
     return cmt_vote_set_get_height(r->vs);
 }
 
-/** vote_set.go:122-128 / block.go:1173-1175 `GetRound()`. */
+/** vote_set.go:122-128 / block.go:1179-1181 `GetRound()`. */
 static int32_t reader_round(const cmt_vote_set_reader_t *r)
 {
     if (r->ec != NULL) {
@@ -148,7 +148,7 @@ static int32_t reader_round(const cmt_vote_set_reader_t *r)
     return cmt_vote_set_get_round(r->vs);
 }
 
-/** vote_set.go:130-136 / block.go:1164-1167 `Type()`. */
+/** vote_set.go:130-136 / block.go:1170-1173 `Type()`. */
 static int32_t reader_type(const cmt_vote_set_reader_t *r)
 {
     if (r->ec != NULL) {
@@ -157,7 +157,7 @@ static int32_t reader_type(const cmt_vote_set_reader_t *r)
     return (int32_t)cmt_vote_set_type(r->vs);
 }
 
-/** vote_set.go:439-450 / block.go:1208-1212 `IsCommit()`. */
+/** vote_set.go:439-450 / block.go:1214-1218 `IsCommit()`. */
 static bool reader_is_commit(const cmt_vote_set_reader_t *r)
 {
     if (r->ec != NULL) {
@@ -166,7 +166,7 @@ static bool reader_is_commit(const cmt_vote_set_reader_t *r)
     return cmt_vote_set_is_commit(r->vs);
 }
 
-/** vote_set.go:369-377 / block.go:1186-1199 `BitArray()`. `*out_ba` is
+/** vote_set.go:369-377 / block.go:1192-1205 `BitArray()`. `*out_ba` is
  *  NULL for the reference's nil result. */
 static int reader_bit_array(const cmt_vote_set_reader_t *r,
                             cmt_bit_array_t *storage, cmt_bit_array_t **out_ba)
@@ -189,7 +189,7 @@ static int reader_bit_array(const cmt_vote_set_reader_t *r,
     return CMT_OK;
 }
 
-/** vote_set.go:392-401 / block.go:1201-1206 `GetByIndex()`, copied out.
+/** vote_set.go:392-401 / block.go:1207-1212 `GetByIndex()`, copied out.
  *  `*out_present` false is the reference's nil vote. */
 static int reader_get_by_index(const cmt_vote_set_reader_t *r, int32_t index,
                                cmt_vote_t *out, bool *out_present)
@@ -220,55 +220,55 @@ static int reader_get_by_index(const cmt_vote_set_reader_t *r, int32_t index,
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * reactor.go:1046-1093 — construction and accessors
+ * reactor.go:1055-1102 — construction and accessors
  * ══════════════════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b consensus/reactor.go:1047-1059 — NewPeerState() */
+/* cometbft@v0.38.26 consensus/reactor.go:1056-1068 — NewPeerState() */
 int cmt_ps_init(cmt_ps_t *ps, const cmt_ps_peer_t *peer)
 {
     if (ps == NULL || peer == NULL || peer->scratch == NULL) {
         return CMT_FAULT;
     }
     memset(ps, 0, sizeof(*ps));
-    ps->peer                     = *peer;                        /* :1049 */
-    /* :1051-1056 — the PeerRoundState literal: four -1s, the rest zero.
+    ps->peer                     = *peer;                        /* :1058 */
+    /* :1060-1065 — the PeerRoundState literal: four -1s, the rest zero.
      * Go's zero time.Time is CMT_TIME_ZERO, not {0,0}. */
     ps->prs.start_time           = CMT_TIME_ZERO;
-    ps->prs.round                = -1;                           /* :1052 */
-    ps->prs.proposal_pol_round   = -1;                           /* :1053 */
-    ps->prs.last_commit_round    = -1;                           /* :1054 */
-    ps->prs.catchup_commit_round = -1;                           /* :1055 */
-    /* :1057 — &peerStateStats{}: zero, already. */
+    ps->prs.round                = -1;                           /* :1061 */
+    ps->prs.proposal_pol_round   = -1;                           /* :1062 */
+    ps->prs.last_commit_round    = -1;                           /* :1063 */
+    ps->prs.catchup_commit_round = -1;                           /* :1064 */
+    /* :1066 — &peerStateStats{}: zero, already. */
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1070-1076 — GetRoundState() */
+/* cometbft@v0.38.26 consensus/reactor.go:1079-1085 — GetRoundState() */
 void cmt_ps_get_round_state(const cmt_ps_t *ps, cmt_prs_t *out)
 {
     if (ps == NULL || out == NULL) {
         return;
     }
-    *out = ps->prs;                                              /* :1074 */
+    *out = ps->prs;                                              /* :1083 */
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1089-1093 — GetHeight() */
+/* cometbft@v0.38.26 consensus/reactor.go:1098-1102 — GetHeight() */
 int64_t cmt_ps_get_height(const cmt_ps_t *ps)
 {
     if (ps == NULL) {
         return 0;
     }
-    return ps->prs.height;                                       /* :1092 */
+    return ps->prs.height;                                       /* :1101 */
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * reactor.go:1095-1144 — what the peer has
+ * reactor.go:1104-1153 — what the peer has
  * ══════════════════════════════════════════════════════════════════════ */
 
 /**
- * cometbft@709fd12b consensus/reactor.go:1096-1119 — SetHasProposal()
+ * cometbft@v0.38.26 consensus/reactor.go:1105-1128 — SetHasProposal()
  *
  * ORDER DEVIATION, and it is the point of it: the reference assigns
- * `Proposal = true` (:1108), the header (:1115) and the bit array (:1116)
+ * `Proposal = true` (:1117), the header (:1124) and the bit array (:1125)
  * in that order, because `bits.NewBitArray` cannot fail — it allocates
  * whatever `Total` asks. `ps_bits_new` CAN refuse (a `Total` above the bit
  * array's capacity, or a pool with no free slot), and doing it in the
@@ -290,52 +290,52 @@ int cmt_ps_set_has_proposal(cmt_ps_t *ps, const cmt_proposal_t *proposal)
         return CMT_FAULT;
     }
     if (ps->prs.height != proposal->height ||
-        ps->prs.round != proposal->round) {                      /* :1100 */
+        ps->prs.round != proposal->round) {                      /* :1109 */
         return CMT_OK;
     }
-    if (ps->prs.proposal) {                                      /* :1104 */
+    if (ps->prs.proposal) {                                      /* :1113 */
         return CMT_OK;
     }
 
-    /* :1110-1113 — set by NewValidBlockMessage already: the flag is the
+    /* :1119-1122 — set by NewValidBlockMessage already: the flag is the
      * only thing this call has left to do. */
     if (ps->prs.proposal_block_parts != NULL) {
-        ps->prs.proposal = true;                                 /* :1108 */
+        ps->prs.proposal = true;                                 /* :1117 */
         return CMT_OK;
     }
 
     parts = NULL;
     rc = ps_bits_new(ps, (int)proposal->block_id.part_set_header.total,
-                     &parts);                                    /* :1116 */
+                     &parts);                                    /* :1125 */
     if (rc != CMT_OK) {
         /* Apply NOTHING. The peer state is exactly what it was. */
         return rc;
     }
-    ps->prs.proposal = true;                                     /* :1108 */
+    ps->prs.proposal = true;                                     /* :1117 */
     ps->prs.proposal_block_part_set_header =
-            proposal->block_id.part_set_header;                  /* :1115 */
-    ps->prs.proposal_block_parts = parts;                        /* :1116 */
-    ps->prs.proposal_pol_round   = proposal->pol_round;          /* :1117 */
-    ps->prs.proposal_pol         = NULL; /* :1118 nil until POL received */
+            proposal->block_id.part_set_header;                  /* :1124 */
+    ps->prs.proposal_block_parts = parts;                        /* :1125 */
+    ps->prs.proposal_pol_round   = proposal->pol_round;          /* :1126 */
+    ps->prs.proposal_pol         = NULL; /* :1127 nil until POL received */
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1122-1132 — InitProposalBlockParts() */
+/* cometbft@v0.38.26 consensus/reactor.go:1131-1141 — InitProposalBlockParts() */
 int cmt_ps_init_proposal_block_parts(cmt_ps_t *ps,
                                      const cmt_part_set_header_t *psh)
 {
     if (ps == NULL || psh == NULL) {
         return CMT_FAULT;
     }
-    if (ps->prs.proposal_block_parts != NULL) {                  /* :1126 */
+    if (ps->prs.proposal_block_parts != NULL) {                  /* :1135 */
         return CMT_OK;
     }
-    ps->prs.proposal_block_part_set_header = *psh;               /* :1130 */
+    ps->prs.proposal_block_part_set_header = *psh;               /* :1139 */
     return ps_bits_new(ps, (int)psh->total,
-                       &ps->prs.proposal_block_parts);           /* :1131 */
+                       &ps->prs.proposal_block_parts);           /* :1140 */
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1135-1144 — SetHasProposalBlockPart() */
+/* cometbft@v0.38.26 consensus/reactor.go:1144-1153 — SetHasProposalBlockPart() */
 int cmt_ps_set_has_proposal_block_part(cmt_ps_t *ps, int64_t height,
                                        int32_t round, int index)
 {
@@ -344,103 +344,103 @@ int cmt_ps_set_has_proposal_block_part(cmt_ps_t *ps, int64_t height,
     if (ps == NULL) {
         return CMT_FAULT;
     }
-    if (ps->prs.height != height || ps->prs.round != round) {    /* :1139 */
+    if (ps->prs.height != height || ps->prs.round != round) {    /* :1148 */
         return CMT_OK;
     }
-    /* :1143 — SetIndex on a nil array is a no-op (bit_array.go:84-86). */
+    /* :1152 — SetIndex on a nil array is a no-op (bit_array.go:84-86). */
     rc = cmt_bits_set_index(ps->prs.proposal_block_parts, index, true);
     return (rc < 0) ? rc : CMT_OK;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * reactor.go:1146-1299 — picking votes and the bit arrays behind them
+ * reactor.go:1155-1308 — picking votes and the bit arrays behind them
  * ══════════════════════════════════════════════════════════════════════ */
 
 /**
- * cometbft@709fd12b consensus/reactor.go:1194-1238 — getVoteBitArray().
+ * cometbft@v0.38.26 consensus/reactor.go:1203-1247 — getVoteBitArray().
  * The pointer into the pool the reference returns, or NULL for its nil.
  */
 static cmt_bit_array_t *ps_get_vote_bit_array(cmt_ps_t *ps, int64_t height,
                                               int32_t round, int32_t vote_type)
 {
-    if (!cmt_is_vote_type_valid(vote_type)) {                    /* :1195 */
+    if (!cmt_is_vote_type_valid(vote_type)) {                    /* :1204 */
         return NULL;
     }
-    if (ps->prs.height == height) {                              /* :1199 */
-        if (ps->prs.round == round) {                            /* :1200 */
+    if (ps->prs.height == height) {                              /* :1208 */
+        if (ps->prs.round == round) {                            /* :1209 */
             switch (vote_type) {
             case (int32_t)CMT_PB_MSG_TYPE_PREVOTE:
-                return ps->prs.prevotes;                         /* :1203 */
+                return ps->prs.prevotes;                         /* :1212 */
             case (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT:
-                return ps->prs.precommits;                       /* :1205 */
+                return ps->prs.precommits;                       /* :1214 */
             default:
                 break;
             }
         }
-        if (ps->prs.catchup_commit_round == round) {             /* :1208 */
+        if (ps->prs.catchup_commit_round == round) {             /* :1217 */
             switch (vote_type) {
             case (int32_t)CMT_PB_MSG_TYPE_PREVOTE:
-                return NULL;                                     /* :1211 */
+                return NULL;                                     /* :1220 */
             case (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT:
-                return ps->prs.catchup_commit;                   /* :1213 */
+                return ps->prs.catchup_commit;                   /* :1222 */
             default:
                 break;
             }
         }
-        if (ps->prs.proposal_pol_round == round) {               /* :1216 */
+        if (ps->prs.proposal_pol_round == round) {               /* :1225 */
             switch (vote_type) {
             case (int32_t)CMT_PB_MSG_TYPE_PREVOTE:
-                return ps->prs.proposal_pol;                     /* :1219 */
+                return ps->prs.proposal_pol;                     /* :1228 */
             case (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT:
-                return NULL;                                     /* :1221 */
-            default:
-                break;
-            }
-        }
-        return NULL;                                             /* :1224 */
-    }
-    if (ps->prs.height == height + 1) {                          /* :1226 */
-        if (ps->prs.last_commit_round == round) {                /* :1227 */
-            switch (vote_type) {
-            case (int32_t)CMT_PB_MSG_TYPE_PREVOTE:
                 return NULL;                                     /* :1230 */
-            case (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT:
-                return ps->prs.last_commit;                      /* :1232 */
             default:
                 break;
             }
         }
-        return NULL;                                             /* :1235 */
+        return NULL;                                             /* :1233 */
     }
-    return NULL;                                                 /* :1237 */
+    if (ps->prs.height == height + 1) {                          /* :1235 */
+        if (ps->prs.last_commit_round == round) {                /* :1236 */
+            switch (vote_type) {
+            case (int32_t)CMT_PB_MSG_TYPE_PREVOTE:
+                return NULL;                                     /* :1239 */
+            case (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT:
+                return ps->prs.last_commit;                      /* :1241 */
+            default:
+                break;
+            }
+        }
+        return NULL;                                             /* :1244 */
+    }
+    return NULL;                                                 /* :1246 */
 }
 
 /**
- * cometbft@709fd12b consensus/reactor.go:1241-1267 —
+ * cometbft@v0.38.26 consensus/reactor.go:1250-1276 —
  * ensureCatchupCommitRound(). "'round': A round for which we have a +2/3
- * commit." The commented-out conflict panic of :1245-1257 is the
+ * commit." The commented-out conflict panic of :1254-1266 is the
  * reference's own dead code and is not carried.
  */
 static int ps_ensure_catchup_commit_round(cmt_ps_t *ps, int64_t height,
                                           int32_t round, int num_validators)
 {
-    if (ps->prs.height != height) {                              /* :1242 */
+    if (ps->prs.height != height) {                              /* :1251 */
         return CMT_OK;
     }
-    if (ps->prs.catchup_commit_round == round) {                 /* :1258 */
+    if (ps->prs.catchup_commit_round == round) {                 /* :1267 */
         return CMT_OK;                                    /* nothing to do */
     }
-    ps->prs.catchup_commit_round = round;                        /* :1261 */
-    if (round == ps->prs.round) {                                /* :1262 */
-        ps->prs.catchup_commit = ps->prs.precommits;             /* :1263 */
+    ps->prs.catchup_commit_round = round;                        /* :1270 */
+    if (round == ps->prs.round) {                                /* :1271 */
+        ps->prs.catchup_commit = ps->prs.precommits;             /* :1272 */
         return CMT_OK;
     }
     ps->prs.catchup_commit = NULL;
-    return ps_bits_new(ps, num_validators, &ps->prs.catchup_commit); /* :1265 */
+    return ps_bits_new(ps, num_validators, &ps->prs.catchup_commit); /* :1274 */
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1273-1277 EnsureVoteBitArrays()
- * and :1279-1299 ensureVoteBitArrays() — one function. */
+/* cometbft@v0.38.26 consensus/reactor.go:1282-1286 EnsureVoteBitArrays()
+ * and :1288-1308 ensureVoteBitArrays() — one function. */
 int cmt_ps_ensure_vote_bit_arrays(cmt_ps_t *ps, int64_t height,
                                   int num_validators)
 {
@@ -449,26 +449,26 @@ int cmt_ps_ensure_vote_bit_arrays(cmt_ps_t *ps, int64_t height,
     if (ps == NULL) {
         return CMT_FAULT;
     }
-    if (ps->prs.height == height) {                              /* :1281 */
-        if (ps->prs.prevotes == NULL) {                          /* :1282 */
+    if (ps->prs.height == height) {                              /* :1290 */
+        if (ps->prs.prevotes == NULL) {                          /* :1291 */
             rc = ps_bits_new(ps, num_validators, &ps->prs.prevotes);
             if (rc != CMT_OK) {
                 return rc;
             }
         }
-        if (ps->prs.precommits == NULL) {                        /* :1285 */
+        if (ps->prs.precommits == NULL) {                        /* :1294 */
             rc = ps_bits_new(ps, num_validators, &ps->prs.precommits);
             if (rc != CMT_OK) {
                 return rc;
             }
         }
-        if (ps->prs.catchup_commit == NULL) {                    /* :1288 */
+        if (ps->prs.catchup_commit == NULL) {                    /* :1297 */
             rc = ps_bits_new(ps, num_validators, &ps->prs.catchup_commit);
             if (rc != CMT_OK) {
                 return rc;
             }
         }
-        if (ps->prs.proposal_pol == NULL) {                      /* :1291 */
+        if (ps->prs.proposal_pol == NULL) {                      /* :1300 */
             rc = ps_bits_new(ps, num_validators, &ps->prs.proposal_pol);
             if (rc != CMT_OK) {
                 return rc;
@@ -476,15 +476,15 @@ int cmt_ps_ensure_vote_bit_arrays(cmt_ps_t *ps, int64_t height,
         }
         return CMT_OK;
     }
-    if (ps->prs.height == height + 1) {                          /* :1294 */
-        if (ps->prs.last_commit == NULL) {                       /* :1295 */
+    if (ps->prs.height == height + 1) {                          /* :1303 */
+        if (ps->prs.last_commit == NULL) {                       /* :1304 */
             return ps_bits_new(ps, num_validators, &ps->prs.last_commit);
         }
     }
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1168-1192 — PickVoteToSend() */
+/* cometbft@v0.38.26 consensus/reactor.go:1177-1201 — PickVoteToSend() */
 int cmt_ps_pick_vote_to_send(cmt_ps_t *ps, const cmt_vote_set_reader_t *votes,
                              cmt_vote_t *out_vote, bool *out_ok)
 {
@@ -504,31 +504,31 @@ int cmt_ps_pick_vote_to_send(cmt_ps_t *ps, const cmt_vote_set_reader_t *votes,
         return CMT_FAULT;
     }
     *out_ok = false;
-    if (reader_size(votes) == 0) {                               /* :1172 */
+    if (reader_size(votes) == 0) {                               /* :1181 */
         return CMT_OK;
     }
-    height     = reader_height(votes);                           /* :1176 */
+    height     = reader_height(votes);                           /* :1185 */
     round      = reader_round(votes);
     votes_type = reader_type(votes);
     size       = reader_size(votes);
 
-    /* :1178-1182 — "Lazily set data using 'votes'." */
-    if (reader_is_commit(votes)) {                               /* :1179 */
+    /* :1187-1191 — "Lazily set data using 'votes'." */
+    if (reader_is_commit(votes)) {                               /* :1188 */
         rc = ps_ensure_catchup_commit_round(ps, height, round, size);
         if (rc != CMT_OK) {
             return rc;
         }
     }
-    rc = cmt_ps_ensure_vote_bit_arrays(ps, height, size);        /* :1182 */
+    rc = cmt_ps_ensure_vote_bit_arrays(ps, height, size);        /* :1191 */
     if (rc != CMT_OK) {
         return rc;
     }
 
-    ps_votes = ps_get_vote_bit_array(ps, height, round, votes_type); /* :1184 */
-    if (ps_votes == NULL) {                                      /* :1185 */
+    ps_votes = ps_get_vote_bit_array(ps, height, round, votes_type); /* :1193 */
+    if (ps_votes == NULL) {                                      /* :1194 */
         return CMT_OK;                          /* Not something worth sending */
     }
-    /* :1188 — votes.BitArray().Sub(psVotes).PickRandom() */
+    /* :1197 — votes.BitArray().Sub(psVotes).PickRandom() */
     rc = reader_bit_array(votes, &votes_ba_storage, &votes_ba);
     if (rc != CMT_OK) {
         return rc;
@@ -543,12 +543,12 @@ int cmt_ps_pick_vote_to_send(cmt_ps_t *ps, const cmt_vote_set_reader_t *votes,
     index = 0;
     rc = cmt_bits_pick_random(&sub, &index);
     if (rc == CMT_REJECT) {
-        return CMT_OK;                                    /* :1188 !ok */
+        return CMT_OK;                                    /* :1197 !ok */
     }
     if (rc != CMT_OK) {
         return rc;
     }
-    rc = reader_get_by_index(votes, (int32_t)index, out_vote, &present); /* :1189 */
+    rc = reader_get_by_index(votes, (int32_t)index, out_vote, &present); /* :1198 */
     if (rc != CMT_OK) {
         return rc;
     }
@@ -596,7 +596,7 @@ int cmt_ps_peer_send(cmt_ps_t *ps, bool use_try_send, uint8_t channel_id,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1148-1163 — PickSendVote() */
+/* cometbft@v0.38.26 consensus/reactor.go:1157-1172 — PickSendVote() */
 int cmt_ps_pick_send_vote(cmt_ps_t *ps, const cmt_vote_set_reader_t *votes,
                           bool *out_sent)
 {
@@ -612,18 +612,18 @@ int cmt_ps_pick_send_vote(cmt_ps_t *ps, const cmt_vote_set_reader_t *votes,
     *out_sent = false;
     msg = ps->peer.scratch->msg;
     memset(msg, 0, sizeof(*msg));
-    msg->kind            = CMT_PB_CONS_MSG_VOTE;                 /* :1153 */
+    msg->kind            = CMT_PB_CONS_MSG_VOTE;                 /* :1162 */
     msg->u.vote.has_vote = true;
     cmt_pb_vote_init(&msg->u.vote.vote);
     ok = false;
-    rc = cmt_ps_pick_vote_to_send(ps, votes, &msg->u.vote.vote, &ok); /* :1149 */
+    rc = cmt_ps_pick_vote_to_send(ps, votes, &msg->u.vote.vote, &ok); /* :1158 */
     if (rc != CMT_OK) {
         return rc;
     }
     if (!ok) {
-        return CMT_OK;                                           /* :1162 */
+        return CMT_OK;                                           /* :1171 */
     }
-    /* :1151-1156 — peer.Send on the VoteChannel; :1154 vote.ToProto() is
+    /* :1160-1165 — peer.Send on the VoteChannel; :1163 vote.ToProto() is
      * the identity on this representation (cmt_vote.h:170-172). */
     sent = false;
     rc = cmt_ps_peer_send(ps, false, CMT_CONR_VOTE_CHANNEL, msg, &sent);
@@ -631,93 +631,93 @@ int cmt_ps_pick_send_vote(cmt_ps_t *ps, const cmt_vote_set_reader_t *votes,
         return rc;
     }
     if (sent) {
-        rc = cmt_ps_set_has_vote(ps, &msg->u.vote.vote);         /* :1157 */
+        rc = cmt_ps_set_has_vote(ps, &msg->u.vote.vote);         /* :1166 */
         if (rc != CMT_OK) {
             return rc;
         }
-        *out_sent = true;                                        /* :1158 */
+        *out_sent = true;                                        /* :1167 */
     }
-    return CMT_OK;                                               /* :1160 */
+    return CMT_OK;                                               /* :1169 */
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * reactor.go:1301-1337 — statistics (ported; no caller in this port)
+ * reactor.go:1310-1346 — statistics (ported; no caller in this port)
  * ══════════════════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b consensus/reactor.go:1303-1310 — RecordVote() */
+/* cometbft@v0.38.26 consensus/reactor.go:1312-1319 — RecordVote() */
 int cmt_ps_record_vote(cmt_ps_t *ps)
 {
     if (ps == NULL) {
         return 0;
     }
-    ps->stats.votes++;                                           /* :1307 */
-    return ps->stats.votes;                                      /* :1309 */
+    ps->stats.votes++;                                           /* :1316 */
+    return ps->stats.votes;                                      /* :1318 */
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1314-1319 — VotesSent() */
+/* cometbft@v0.38.26 consensus/reactor.go:1323-1328 — VotesSent() */
 int cmt_ps_votes_sent(const cmt_ps_t *ps)
 {
     if (ps == NULL) {
         return 0;
     }
-    return ps->stats.votes;                                      /* :1318 */
+    return ps->stats.votes;                                      /* :1327 */
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1323-1329 — RecordBlockPart() */
+/* cometbft@v0.38.26 consensus/reactor.go:1332-1338 — RecordBlockPart() */
 int cmt_ps_record_block_part(cmt_ps_t *ps)
 {
     if (ps == NULL) {
         return 0;
     }
-    ps->stats.block_parts++;                                     /* :1327 */
-    return ps->stats.block_parts;                                /* :1328 */
+    ps->stats.block_parts++;                                     /* :1336 */
+    return ps->stats.block_parts;                                /* :1337 */
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1332-1337 — BlockPartsSent() */
+/* cometbft@v0.38.26 consensus/reactor.go:1341-1346 — BlockPartsSent() */
 int cmt_ps_block_parts_sent(const cmt_ps_t *ps)
 {
     if (ps == NULL) {
         return 0;
     }
-    return ps->stats.block_parts;                                /* :1336 */
+    return ps->stats.block_parts;                                /* :1345 */
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * reactor.go:1339-1360 — marking votes
+ * reactor.go:1348-1369 — marking votes
  * ══════════════════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b consensus/reactor.go:1347-1360 — setHasVote().
- * :1348-1353 is a log line, not ported. */
+/* cometbft@v0.38.26 consensus/reactor.go:1356-1369 — setHasVote().
+ * :1357-1362 is a log line, not ported. */
 static int ps_set_has_vote_fields(cmt_ps_t *ps, int64_t height, int32_t round,
                                   int32_t vote_type, int32_t index)
 {
     cmt_bit_array_t *ps_votes;
     int              rc;
 
-    /* :1355 "NOTE: some may be nil BitArrays -> no side effects." */
-    ps_votes = ps_get_vote_bit_array(ps, height, round, vote_type); /* :1356 */
+    /* :1364 "NOTE: some may be nil BitArrays -> no side effects." */
+    ps_votes = ps_get_vote_bit_array(ps, height, round, vote_type); /* :1365 */
     if (ps_votes == NULL) {
         return CMT_OK;
     }
-    rc = cmt_bits_set_index(ps_votes, (int)index, true);         /* :1358 */
+    rc = cmt_bits_set_index(ps_votes, (int)index, true);         /* :1367 */
     return (rc < 0) ? rc : CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1340-1345 — SetHasVote() */
+/* cometbft@v0.38.26 consensus/reactor.go:1349-1354 — SetHasVote() */
 int cmt_ps_set_has_vote(cmt_ps_t *ps, const cmt_vote_t *vote)
 {
     if (ps == NULL || vote == NULL) {
         return CMT_FAULT;
     }
     return ps_set_has_vote_fields(ps, vote->height, vote->round, vote->type,
-                                  vote->validator_index);        /* :1344 */
+                                  vote->validator_index);        /* :1353 */
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * reactor.go:1362-1481 — applying the peer's messages
+ * reactor.go:1371-1490 — applying the peer's messages
  * ══════════════════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b consensus/reactor.go:1363-1414 — ApplyNewRoundStepMessage() */
+/* cometbft@v0.38.26 consensus/reactor.go:1372-1423 — ApplyNewRoundStepMessage() */
 int cmt_ps_apply_new_round_step_message(cmt_ps_t *ps,
                                         const cmt_new_round_step_msg_t *msg,
                                         cmt_time_t now)
@@ -732,20 +732,20 @@ int cmt_ps_apply_new_round_step_message(cmt_ps_t *ps,
     if (ps == NULL || msg == NULL) {
         return CMT_FAULT;
     }
-    /* :1367-1370 — ignore duplicates or decreases. */
+    /* :1376-1379 — ignore duplicates or decreases. */
     if (cmt_compare_hrs(msg->height, msg->round, msg->step,
                         ps->prs.height, ps->prs.round, ps->prs.step) <= 0) {
         return CMT_OK;
     }
 
-    /* :1372-1377 — just remember these values. */
+    /* :1381-1386 — just remember these values. */
     ps_height               = ps->prs.height;
     ps_round                = ps->prs.round;
     ps_catchup_commit_round = ps->prs.catchup_commit_round;
     ps_catchup_commit       = ps->prs.catchup_commit;
     last_precommits         = ps->prs.precommits;
 
-    /* :1379 — cmttime.Now().Add(-SecondsSinceStartTime seconds). `now` is
+    /* :1388 — cmttime.Now().Add(-SecondsSinceStartTime seconds). `now` is
      * the caller's clock read; the seconds are moved with a guard against
      * signed overflow (the peer chooses the number). See cmt_ps.h. */
     start_time = now;
@@ -762,97 +762,97 @@ int cmt_ps_apply_new_round_step_message(cmt_ps_t *ps,
             start_time.seconds = INT64_MAX;
         }
     }
-    ps->prs.height     = msg->height;                            /* :1380 */
-    ps->prs.round      = msg->round;                             /* :1381 */
-    ps->prs.step       = msg->step;                              /* :1382 */
-    ps->prs.start_time = start_time;                             /* :1383 */
-    if (ps_height != msg->height || ps_round != msg->round) {    /* :1384 */
-        ps->prs.proposal = false;                                /* :1385 */
+    ps->prs.height     = msg->height;                            /* :1389 */
+    ps->prs.round      = msg->round;                             /* :1390 */
+    ps->prs.step       = msg->step;                              /* :1391 */
+    ps->prs.start_time = start_time;                             /* :1392 */
+    if (ps_height != msg->height || ps_round != msg->round) {    /* :1393 */
+        ps->prs.proposal = false;                                /* :1394 */
         memset(&ps->prs.proposal_block_part_set_header, 0,
-               sizeof(ps->prs.proposal_block_part_set_header)); /* :1386 */
-        ps->prs.proposal_block_parts = NULL;                     /* :1387 */
-        ps->prs.proposal_pol_round   = -1;                       /* :1388 */
-        ps->prs.proposal_pol         = NULL;                     /* :1389 */
-        /* :1390 "We'll update the BitArray capacity later." */
-        ps->prs.prevotes   = NULL;                               /* :1391 */
-        ps->prs.precommits = NULL;                               /* :1392 */
+               sizeof(ps->prs.proposal_block_part_set_header)); /* :1395 */
+        ps->prs.proposal_block_parts = NULL;                     /* :1396 */
+        ps->prs.proposal_pol_round   = -1;                       /* :1397 */
+        ps->prs.proposal_pol         = NULL;                     /* :1398 */
+        /* :1399 "We'll update the BitArray capacity later." */
+        ps->prs.prevotes   = NULL;                               /* :1400 */
+        ps->prs.precommits = NULL;                               /* :1401 */
     }
     if (ps_height == msg->height && ps_round != msg->round &&
-        msg->round == ps_catchup_commit_round) {                 /* :1394 */
-        /* :1395-1398 — peer caught up to CatchupCommitRound; preserve
+        msg->round == ps_catchup_commit_round) {                 /* :1403 */
+        /* :1404-1407 — peer caught up to CatchupCommitRound; preserve
          * psCatchupCommit. */
-        ps->prs.precommits = ps_catchup_commit;                  /* :1399 */
+        ps->prs.precommits = ps_catchup_commit;                  /* :1408 */
     }
-    if (ps_height != msg->height) {                              /* :1401 */
-        /* :1402 — shift Precommits to LastCommit. */
+    if (ps_height != msg->height) {                              /* :1410 */
+        /* :1411 — shift Precommits to LastCommit. */
         if (ps_height + 1 == msg->height &&
-            ps_round == msg->last_commit_round) {                /* :1403 */
-            ps->prs.last_commit_round = msg->last_commit_round;  /* :1404 */
-            ps->prs.last_commit       = last_precommits;         /* :1405 */
+            ps_round == msg->last_commit_round) {                /* :1412 */
+            ps->prs.last_commit_round = msg->last_commit_round;  /* :1413 */
+            ps->prs.last_commit       = last_precommits;         /* :1414 */
         } else {
-            ps->prs.last_commit_round = msg->last_commit_round;  /* :1407 */
-            ps->prs.last_commit       = NULL;                    /* :1408 */
+            ps->prs.last_commit_round = msg->last_commit_round;  /* :1416 */
+            ps->prs.last_commit       = NULL;                    /* :1417 */
         }
-        /* :1410 "We'll update the BitArray capacity later." */
-        ps->prs.catchup_commit_round = -1;                       /* :1411 */
-        ps->prs.catchup_commit       = NULL;                     /* :1412 */
+        /* :1419 "We'll update the BitArray capacity later." */
+        ps->prs.catchup_commit_round = -1;                       /* :1420 */
+        ps->prs.catchup_commit       = NULL;                     /* :1421 */
     }
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1417-1431 — ApplyNewValidBlockMessage() */
+/* cometbft@v0.38.26 consensus/reactor.go:1426-1440 — ApplyNewValidBlockMessage() */
 int cmt_ps_apply_new_valid_block_message(cmt_ps_t *ps,
                                          const cmt_new_valid_block_msg_t *msg)
 {
     if (ps == NULL || msg == NULL) {
         return CMT_FAULT;
     }
-    if (ps->prs.height != msg->height) {                         /* :1421 */
+    if (ps->prs.height != msg->height) {                         /* :1430 */
         return CMT_OK;
     }
-    if (ps->prs.round != msg->round && !msg->is_commit) {        /* :1425 */
+    if (ps->prs.round != msg->round && !msg->is_commit) {        /* :1434 */
         return CMT_OK;
     }
     ps->prs.proposal_block_part_set_header =
-            msg->block_part_set_header;                          /* :1429 */
+            msg->block_part_set_header;                          /* :1438 */
     ps->prs.proposal_block_parts = NULL;
     return ps_bits_copy_in(ps, msg->has_block_parts, &msg->block_parts,
-                           &ps->prs.proposal_block_parts);       /* :1430 */
+                           &ps->prs.proposal_block_parts);       /* :1439 */
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1434-1448 — ApplyProposalPOLMessage() */
+/* cometbft@v0.38.26 consensus/reactor.go:1443-1457 — ApplyProposalPOLMessage() */
 int cmt_ps_apply_proposal_pol_message(cmt_ps_t *ps,
                                       const cmt_proposal_pol_msg_t *msg)
 {
     if (ps == NULL || msg == NULL) {
         return CMT_FAULT;
     }
-    if (ps->prs.height != msg->height) {                         /* :1438 */
+    if (ps->prs.height != msg->height) {                         /* :1447 */
         return CMT_OK;
     }
-    if (ps->prs.proposal_pol_round != msg->proposal_pol_round) { /* :1441 */
+    if (ps->prs.proposal_pol_round != msg->proposal_pol_round) { /* :1450 */
         return CMT_OK;
     }
-    /* :1445-1447 — the reference's TODO says merge; it replaces. */
+    /* :1454-1456 — the reference's TODO says merge; it replaces. */
     ps->prs.proposal_pol = NULL;
     return ps_bits_copy_in(ps, msg->has_proposal_pol, &msg->proposal_pol,
-                           &ps->prs.proposal_pol);               /* :1447 */
+                           &ps->prs.proposal_pol);               /* :1456 */
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1451-1460 — ApplyHasVoteMessage() */
+/* cometbft@v0.38.26 consensus/reactor.go:1460-1469 — ApplyHasVoteMessage() */
 int cmt_ps_apply_has_vote_message(cmt_ps_t *ps, const cmt_has_vote_msg_t *msg)
 {
     if (ps == NULL || msg == NULL) {
         return CMT_FAULT;
     }
-    if (ps->prs.height != msg->height) {                         /* :1455 */
+    if (ps->prs.height != msg->height) {                         /* :1464 */
         return CMT_OK;
     }
     return ps_set_has_vote_fields(ps, msg->height, msg->round, msg->type,
-                                  msg->index);                   /* :1459 */
+                                  msg->index);                   /* :1468 */
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1467-1481 — ApplyVoteSetBitsMessage() */
+/* cometbft@v0.38.26 consensus/reactor.go:1476-1490 — ApplyVoteSetBitsMessage() */
 int cmt_ps_apply_vote_set_bits_message(cmt_ps_t *ps,
                                        const cmt_vote_set_bits_msg_t *msg,
                                        const cmt_bit_array_t *our_votes)
@@ -866,15 +866,15 @@ int cmt_ps_apply_vote_set_bits_message(cmt_ps_t *ps,
     if (ps == NULL || msg == NULL) {
         return CMT_FAULT;
     }
-    votes = ps_get_vote_bit_array(ps, msg->height, msg->round, msg->type); /* :1471 */
-    if (votes == NULL) {                                         /* :1472 */
+    votes = ps_get_vote_bit_array(ps, msg->height, msg->round, msg->type); /* :1480 */
+    if (votes == NULL) {                                         /* :1481 */
         return CMT_OK;
     }
     msg_votes = msg->has_votes ? &msg->votes : NULL;             /* nil ptr */
-    if (our_votes == NULL) {                                     /* :1473 */
-        return cmt_bits_update(votes, msg_votes);                /* :1474 */
+    if (our_votes == NULL) {                                     /* :1482 */
+        return cmt_bits_update(votes, msg_votes);                /* :1483 */
     }
-    /* :1476-1478 — votes.Sub(ourVotes).Or(msg.Votes), then Update. */
+    /* :1485-1487 — votes.Sub(ourVotes).Or(msg.Votes), then Update. */
     rc = cmt_bits_sub(votes, our_votes, &other_votes);
     if (rc == CMT_BITS_NIL) {
         /* votes is non-NULL here, so Sub is nil only through the NULL
@@ -890,5 +890,5 @@ int cmt_ps_apply_vote_set_bits_message(cmt_ps_t *ps,
     if (rc != CMT_OK) {
         return rc;
     }
-    return cmt_bits_update(votes, &has_votes);                   /* :1478 */
+    return cmt_bits_update(votes, &has_votes);                   /* :1487 */
 }

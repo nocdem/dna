@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_validator_set.h
- * @brief cometbft @709fd12b `types/validator.go` + `types/validator_set.go`
+ * @brief cometbft @v0.38.26 `types/validator.go` + `types/validator_set.go`
  *        ported to C — the validator, the set, and proposer selection.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -14,7 +14,7 @@
  * The one behavioural difference between them was deliberate and is the
  * deviation register's row J4: the T1 code REFUSED any priority outside
  * ±2^40 where the reference CLIPS to the int64 ends (safeAddClip /
- * safeSubClip, validator_set.go:1011-1031) and bounds the TOTAL VOTING
+ * safeSubClip, validator_set.go:1071-1091) and bounds the TOTAL VOTING
  * POWER instead (MaxTotalVotingPower = MaxInt64/8, :27). The operator's
  * ruling of 2026-09-09 is "Comet'e dön: kırpma + MaxTotalVotingPower";
  * this module clips and does not repeat J4.
@@ -25,8 +25,8 @@
  * (D-19 rev 6 item 5, atlas-dec-d106407a31d7d16d49d51990b75c36c6): the
  * leaves are SimpleValidator{PubKey, VotingPower} marshals
  * (validator.go:118-134) and the set order is ValidatorsByVotingPower —
- * power DESCENDING, address ASCENDING (validator_set.go:851-856,
- * :674/:964). The same set carries the proposer-priority state machine
+ * power DESCENDING, address ASCENDING (validator_set.go:906-911,
+ * :687/:1024). The same set carries the proposer-priority state machine
  * that elects a proposer every round.
  *
  * ── Substitutions (umbrella rev 3, atlas-dec-d5e766defde138eb6dd02e5b81e735a8) ─
@@ -118,11 +118,11 @@
  * A change set may legitimately be larger than the resulting set (up to
  * 128 removals plus 128 additions), so CMT_VALSET_MAX_CHANGES is 256.
  *
- * Reference @709fd12b (SHA-256 of each file verified before use):
+ * Reference @v0.38.26 (SHA-256 of each file verified before use):
  *   types/validator.go      194 lines
  *     fe21832f8b1edd6e1f5adc151276efe092c5cf36c750ac2925b3332c097da7aa
- *   types/validator_set.go 1053 lines
- *     6c3a663aaf84fbee94735731eaba27d1a8e5269dd6e316e0b175595e32902221
+ *   types/validator_set.go 1113 lines
+ *     c2b47e6097647281c4fe2b33687116559608fb26ff1f65bfde6d7076af59735e
  * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * K-1 rev 2 (atlas-dec-3ba8153088b0d60c63083028023b61be),
  * K-2 (atlas-dec-7fde65722d68b32eca08be61fbcb47ac),
@@ -152,13 +152,13 @@ extern "C" {
 
 /* ── constants ──────────────────────────────────────────────────────── */
 
-/** cometbft@709fd12b types/validator_set.go:27 — `MaxTotalVotingPower`,
+/** cometbft@v0.38.26 types/validator_set.go:27 — `MaxTotalVotingPower`,
  *  `math.MaxInt64 / 8`. The ceiling on the SUM of the voting powers; it is
  *  what keeps incrementProposerPriority from clipping and keeps
  *  `(diff + diffMax - 1)` from overflowing (:20-26). */
 #define CMT_MAX_TOTAL_VOTING_POWER (INT64_MAX / 8)
 
-/** cometbft@709fd12b types/validator_set.go:32 —
+/** cometbft@v0.38.26 types/validator_set.go:32 —
  *  `PriorityWindowSizeFactor`. Multiplied by the total voting power it
  *  gives the maximum allowed distance between two priorities. */
 #define CMT_PRIORITY_WINDOW_SIZE_FACTOR 2
@@ -188,7 +188,7 @@ extern "C" {
 /* ── the validator ──────────────────────────────────────────────────── */
 
 /**
- * cometbft@709fd12b types/validator.go:18-24 — `type Validator struct`.
+ * cometbft@v0.38.26 types/validator.go:18-24 — `type Validator struct`.
  *
  * `address_len` exists because the reference's Address is a `[]byte` whose
  * length `ValidateBasic` compares with `bytes.Equal` (:50): a validator
@@ -212,7 +212,7 @@ typedef struct {
 /* ── the set ────────────────────────────────────────────────────────── */
 
 /**
- * cometbft@709fd12b types/validator_set.go:56-65 — `type ValidatorSet`.
+ * cometbft@v0.38.26 types/validator_set.go:56-65 — `type ValidatorSet`.
  *
  * `validators` is CALLER-OWNED storage: `validators_cap` slots of which
  * `validators_len` are used. This module never allocates a set's storage
@@ -225,18 +225,18 @@ typedef struct {
  * so `Copy()` (:264-271) copies the pointer and a copy's Proposer aliases
  * the ORIGINAL's validator object — mutating the original's priorities is
  * visible through the copy, and after `applyUpdates` replaces the slice
- * (:570) the pointer may reference a validator no longer in the set. That
+ * (:581) the pointer may reference a validator no longer in the set. That
  * aliasing is a hazard of Go's representation rather than a designed
  * behaviour, and reproducing it in C with caller-owned storage would mean
  * a pointer that outlives what it points at. So the proposer is a SNAPSHOT
- * taken where the reference assigns the pointer (:152, :346, :931, :962).
+ * taken where the reference assigns the pointer (:152, :357, :986, :1020).
  * Everywhere the reference reassigns it before reading it again — which is
  * every path in the production flow, `IncrementProposerPriority` at
- * `state/execution.go:617` following every set change — the two agree
+ * `state/execution.go:648` following every set change — the two agree
  * exactly. Recorded as a deviation.
  *
  * `total_voting_power` is the reference's lazily recomputed cache
- * (:62, :332-337): a stored 0 means "not computed yet", so a set whose
+ * (:62, :341-348): a stored 0 means "not computed yet", so a set whose
  * real total is 0 recomputes on every call. Do not write it directly.
  */
 typedef struct {
@@ -262,23 +262,23 @@ typedef struct {
  * supply five of the seven and silently get a short buffer.
  */
 typedef struct {
-    /** The deep copy `processChanges` makes (:410) so that `origChanges`
-     *  is not modified and `computeNewPriorities` (:512-530) has something
+    /** The deep copy `processChanges` makes (:421) so that `origChanges`
+     *  is not modified and `computeNewPriorities` (:523-541) has something
      *  it may mutate. */
     cmt_validator_t  changes[CMT_VALSET_MAX_CHANGES];
-    /** Pointers into `changes`, sorted by address (:411). */
+    /** Pointers into `changes`, sorted by address (:422). */
     cmt_validator_t *sorted[CMT_VALSET_MAX_CHANGES];
-    /** The split of `sorted` into updates (:435) and removals (:433). */
+    /** The split of `sorted` into updates (:446) and removals (:444). */
     cmt_validator_t *updates[CMT_VALSET_MAX_CHANGES];
     cmt_validator_t *removals[CMT_VALSET_MAX_CHANGES];
-    /** Pointers into the SET's own storage, sorted by address (:538) —
+    /** Pointers into the SET's own storage, sorted by address (:549) —
      *  the reference's `existing`, which IS `vals.Validators`. */
     cmt_validator_t *existing[CMT_VALSET_MAX];
-    /** `applyUpdates`' merge target (:540) and `applyRemovals`' (:597).
+    /** `applyUpdates`' merge target (:551) and `applyRemovals`' (:608).
      *  Big enough for `len(existing) + len(updates)` before the removals
      *  shrink it back. */
     cmt_validator_t *merged[CMT_VALSET_MAX + CMT_VALSET_MAX_CHANGES];
-    /** The staging area for `vals.Validators = merged[:i]` (:570, :617).
+    /** The staging area for `vals.Validators = merged[:i]` (:581, :628).
      *  A C write-back cannot be done in place, because `merged` is a
      *  permutation whose sources live in the destination array. */
     cmt_validator_t  final[CMT_VALSET_MAX];
@@ -287,16 +287,16 @@ typedef struct {
 /* ── errors the reference carries as values ─────────────────────────── */
 
 #define CMT_VS_ERR_NONE                            0
-/** cometbft@709fd12b types/validator_set.go:800-805 —
+/** cometbft@v0.38.26 types/validator_set.go:855-860 —
  *  `ErrNotEnoughVotingPowerSigned`. */
 #define CMT_VS_ERR_NOT_ENOUGH_VOTING_POWER_SIGNED  1
 
 /**
- * The reference's `ErrNotEnoughVotingPowerSigned` value (:802-805). The
+ * The reference's `ErrNotEnoughVotingPowerSigned` value (:857-860). The
  * 0/-1/-2 return contract cannot carry a payload, so the two numbers the
  * error carries live here.
  *
- * Its producer is the VerifyCommit family (validator_set.go:698-742).
+ * Its producer is the VerifyCommit family (validator_set.go:711-797).
  * R1-C ported this value while that family was still stage D and recorded
  * it as having zero consumers; since wave R1-D it HAS one —
  * `cmt_verify_commit` / `cmt_verify_commit_single` (cmt_validation.h) fill
@@ -305,38 +305,38 @@ typedef struct {
  */
 typedef struct {
     int     code;     /* CMT_VS_ERR_*   */
-    int64_t got;      /* :803           */
-    int64_t needed;   /* :804           */
+    int64_t got;      /* :858           */
+    int64_t needed;   /* :859           */
 } cmt_vs_error_t;
 
-/** cometbft@709fd12b types/validator_set.go:796-798 —
+/** cometbft@v0.38.26 types/validator_set.go:851-853 —
  *  `IsErrNotEnoughVotingPowerSigned()`. The `errors.As` type test becomes
  *  a code test. */
 bool cmt_is_err_not_enough_voting_power_signed(const cmt_vs_error_t *e);
 
-/* ══ int64 arithmetic — validator_set.go:993-1053 ═════════════════════
+/* ══ int64 arithmetic — validator_set.go:1053-1113 ═════════════════════
  * Exposed so the tests can pin the clipping ends directly. Every one is
  * evaluated so that no C signed overflow occurs while the reference's
  * PREDICATE is computed unchanged. */
 
-/** :993-1000 `safeAdd()`. On overflow the reference returns (-1, true) and
+/** :1053-1060 `safeAdd()`. On overflow the reference returns (-1, true) and
  *  this writes that same -1 sentinel, which only safeAddClip reads.
  *  @return true on overflow. `out` must not be NULL. */
 bool cmt_vs_safe_add(int64_t a, int64_t b, int64_t *out);
 
-/** :1002-1009 `safeSub()`. Same -1 sentinel on overflow. */
+/** :1062-1069 `safeSub()`. Same -1 sentinel on overflow. */
 bool cmt_vs_safe_sub(int64_t a, int64_t b, int64_t *out);
 
-/** :1011-1020 `safeAddClip()` — MinInt64 when b < 0, else MaxInt64. */
+/** :1071-1080 `safeAddClip()` — MinInt64 when b < 0, else MaxInt64. */
 int64_t cmt_vs_safe_add_clip(int64_t a, int64_t b);
 
-/** :1022-1031 `safeSubClip()` — MinInt64 when b > 0, else MaxInt64. */
+/** :1082-1091 `safeSubClip()` — MinInt64 when b > 0, else MaxInt64. */
 int64_t cmt_vs_safe_sub_clip(int64_t a, int64_t b);
 
-/** :1033-1053 `safeMul()`.
+/** :1093-1113 `safeMul()`.
  *  NOTE reference quirk: for b == MinInt64 the reference's `absOfB = -b`
  *  wraps back to MinInt64 (Go wraps on overflow), so `absOfB` stays
- *  NEGATIVE and the comparison at :1048 is made against a negative
+ *  NEGATIVE and the comparison at :1108 is made against a negative
  *  divisor. Reproduced exactly, including the wrap.
  *  @return true on overflow. */
 bool cmt_vs_safe_mul(int64_t a, int64_t b, int64_t *out);
@@ -344,7 +344,7 @@ bool cmt_vs_safe_mul(int64_t a, int64_t b, int64_t *out);
 /* ══ validator.go ═════════════════════════════════════════════════════ */
 
 /**
- * cometbft@709fd12b types/validator.go:29 — `pubKey.Address()`, resolved
+ * cometbft@v0.38.26 types/validator.go:29 — `pubKey.Address()`, resolved
  * for this tree: SHA3-512(key)[0..31]. See "THE ADDRESS IS A PURE
  * FUNCTION OF THE PUBLIC KEY" in the file header for the citation this is
  * taken from and for why it is recomputed here rather than called.
@@ -360,7 +360,7 @@ bool cmt_vs_safe_mul(int64_t a, int64_t b, int64_t *out);
 int cmt_pub_key_address(const cmt_pb_public_key_t *pk,
                         uint8_t out[CMT_PB_ADDRESS_MAX]);
 
-/** cometbft@709fd12b types/validator.go:27-35 — `NewValidator()`. Derives
+/** cometbft@v0.38.26 types/validator.go:27-35 — `NewValidator()`. Derives
  *  the address from the key and sets ProposerPriority to 0 (:32).
  *  @return CMT_OK, CMT_REJECT if the key is absent, CMT_FAULT on NULL or a
  *          hash backend failure. */
@@ -368,7 +368,7 @@ int cmt_validator_new(const cmt_pb_public_key_t *pub_key,
                       int64_t voting_power, cmt_validator_t *out);
 
 /**
- * cometbft@709fd12b types/validator.go:37-55 — `ValidateBasic()`.
+ * cometbft@v0.38.26 types/validator.go:37-55 — `ValidateBasic()`.
  * NULL validator (:38-40), absent public key (:41-43), negative voting
  * power (:45-47) and an address that is not the one derived from the key
  * (:49-52) all REJECT. The last check is what makes the address
@@ -377,12 +377,12 @@ int cmt_validator_new(const cmt_pb_public_key_t *pub_key,
  */
 int cmt_validator_validate_basic(const cmt_validator_t *v);
 
-/** cometbft@709fd12b types/validator.go:59-62 — `Copy()`. The reference
+/** cometbft@v0.38.26 types/validator.go:59-62 — `Copy()`. The reference
  *  panics on a nil receiver (:58); here that is CMT_FAULT. */
 int cmt_validator_copy(const cmt_validator_t *v, cmt_validator_t *out);
 
 /**
- * cometbft@709fd12b types/validator.go:65-85 —
+ * cometbft@v0.38.26 types/validator.go:65-85 —
  * `CompareProposerPriority()`. Higher priority wins; on a tie the LOWER
  * address wins (`bytes.Compare` < 0, :75-80). A NULL `v` returns `other`,
  * exactly as the reference's nil receiver does (:66-68) — that is what
@@ -401,7 +401,7 @@ int cmt_validator_compare_proposer_priority(const cmt_validator_t *v,
                                             const cmt_validator_t **out);
 
 /**
- * cometbft@709fd12b types/validator.go:118-134 — `Bytes()`.
+ * cometbft@v0.38.26 types/validator.go:118-134 — `Bytes()`.
  * The marshalled SimpleValidator{PubKey, VotingPower} — THE LEAF whose
  * Merkle root is ValidatorsHash (D-19 rev 6 item 5). It excludes the
  * address (redundant with the key) and the proposer priority (changes
@@ -415,17 +415,17 @@ int cmt_validator_compare_proposer_priority(const cmt_validator_t *v,
 int cmt_validator_bytes(const cmt_validator_t *v, uint8_t *out, size_t cap,
                         size_t *out_len);
 
-/** cometbft@709fd12b types/validator.go:137-155 — `ToProto()`.
+/** cometbft@v0.38.26 types/validator.go:137-155 — `ToProto()`.
  *  @return CMT_OK, CMT_REJECT on a NULL validator (:138-140) or an absent
  *          key (:142-145), CMT_FAULT on NULL out. */
 int cmt_validator_to_proto(const cmt_validator_t *v, cmt_pb_validator_t *out);
 
 /**
- * cometbft@709fd12b types/validator.go:159-175 — `ValidatorFromProto()`.
+ * cometbft@v0.38.26 types/validator.go:159-175 — `ValidatorFromProto()`.
  * ⚠ THE ADDRESS IS COPIED FROM THE WIRE, NOT RE-DERIVED (:169) — the
  * hidden KODEK rule the port map records. Whether it AGREES with the key
  * is `ValidateBasic`'s question, and every path that matters asks it
- * (`ValidatorSetFromProto` ends in `vals.ValidateBasic()`, :940).
+ * (`ValidatorSetFromProto` ends in `vals.ValidateBasic()`, :998).
  * @return CMT_OK, CMT_REJECT on an absent key (:164-167), CMT_FAULT.
  */
 int cmt_validator_from_proto(const cmt_pb_validator_t *vp,
@@ -433,23 +433,23 @@ int cmt_validator_from_proto(const cmt_pb_validator_t *vp,
 
 /* ── the two sort orders ────────────────────────────────────────────── */
 
-/** cometbft@709fd12b types/validator_set.go:851-856 —
+/** cometbft@v0.38.26 types/validator_set.go:906-911 —
  *  `ValidatorsByVotingPower.Less()`. Power DESCENDING; equal power breaks
  *  on the ASCENDING address. */
 bool cmt_validators_by_voting_power_less(const cmt_validator_t *a,
                                          const cmt_validator_t *b);
 
-/** cometbft@709fd12b types/validator_set.go:868-870 —
+/** cometbft@v0.38.26 types/validator_set.go:923-925 —
  *  `ValidatorsByAddress.Less()`. Address ASCENDING. */
 bool cmt_validators_by_address_less(const cmt_validator_t *a,
                                     const cmt_validator_t *b);
 
-/** `sort.Sort(ValidatorsByVotingPower(...))` (:674, :964) over an array of
+/** `sort.Sort(ValidatorsByVotingPower(...))` (:687, :1024) over an array of
  *  POINTERS, which is what a Go `[]*Validator` is. Deterministic; see
  *  "Determinism" in the file header. */
 void cmt_validators_sort_by_voting_power(cmt_validator_t **v, size_t n);
 
-/** `sort.Sort(ValidatorsByAddress(...))` (:411, :538). Deterministic. */
+/** `sort.Sort(ValidatorsByAddress(...))` (:422, :549). Deterministic. */
 void cmt_validators_sort_by_address(cmt_validator_t **v, size_t n);
 
 /* ══ validator_set.go ═════════════════════════════════════════════════ */
@@ -465,7 +465,7 @@ int cmt_validator_set_init(cmt_validator_set_t *vals,
                            cmt_validator_t *storage, size_t cap);
 
 /**
- * cometbft@709fd12b types/validator_set.go:77-89 — `NewValidatorSet()`.
+ * cometbft@v0.38.26 types/validator_set.go:77-89 — `NewValidatorSet()`.
  * `updateWithChangeSet(valz, false)` — so a zero-power entry is refused
  * here, unlike `UpdateWithChangeSet` — followed by
  * `IncrementProposerPriority(1)` when the list is non-empty (:85-87).
@@ -478,18 +478,18 @@ int cmt_validator_set_new(cmt_validator_set_t *vals,
                           cmt_valset_scratch_t *scratch);
 
 /**
- * cometbft@709fd12b types/validator_set.go:91-113 — `ValidateBasic()`.
+ * cometbft@v0.38.26 types/validator_set.go:91-113 — `ValidateBasic()`.
  * An empty set (:92-94), an invalid member (:96-100), an invalid proposer
  * (:102-104) and a proposer that is not a member (:106-112, the reference's
  * ErrProposerNotInVals) all REJECT.
  */
 int cmt_validator_set_validate_basic(const cmt_validator_set_t *vals);
 
-/** cometbft@709fd12b types/validator_set.go:116-118 — `IsNilOrEmpty()`. */
+/** cometbft@v0.38.26 types/validator_set.go:116-118 — `IsNilOrEmpty()`. */
 bool cmt_validator_set_is_nil_or_empty(const cmt_validator_set_t *vals);
 
 /**
- * cometbft@709fd12b types/validator_set.go:122-126 —
+ * cometbft@v0.38.26 types/validator_set.go:122-126 —
  * `CopyIncrementProposerPriority()`. Copies into `dst` (whose storage the
  * caller supplies and which must already be initialised) and increments
  * there, leaving `src` untouched.
@@ -499,7 +499,7 @@ int cmt_validator_set_copy_increment_proposer_priority(
         int32_t times);
 
 /**
- * cometbft@709fd12b types/validator_set.go:131-153 —
+ * cometbft@v0.38.26 types/validator_set.go:131-153 —
  * `IncrementProposerPriority()`. Rescales into the window
  * `PriorityWindowSizeFactor * TotalVotingPower` (:142-143), centres
  * (:144), elects `times` times (:148-150) and stores the LAST winner as
@@ -511,7 +511,7 @@ int cmt_validator_set_increment_proposer_priority(cmt_validator_set_t *vals,
                                                   int32_t times);
 
 /**
- * cometbft@709fd12b types/validator_set.go:158-179 —
+ * cometbft@v0.38.26 types/validator_set.go:158-179 —
  * `RescalePriorities()`.
  *
  * NOTE reference quirk, ported as-is: `diffMax <= 0` returns without doing
@@ -532,7 +532,7 @@ int cmt_validator_set_rescale_priorities(cmt_validator_set_t *vals,
                                          int64_t diff_max);
 
 /**
- * cometbft@709fd12b types/validator_set.go:181-193 —
+ * cometbft@v0.38.26 types/validator_set.go:181-193 —
  * `incrementProposerPriority()` (the unexported one). Adds each voting
  * power with safeAddClip (:184), elects the highest priority (:188) and
  * pushes the winner back by the total with safeSubClip (:190).
@@ -543,7 +543,7 @@ int cmt_validator_set_increment_proposer_priority_once(
         cmt_validator_set_t *vals, const cmt_validator_t **out_proposer);
 
 /**
- * cometbft@709fd12b types/validator_set.go:196-209 —
+ * cometbft@v0.38.26 types/validator_set.go:196-209 —
  * `computeAvgProposerPriority()`.
  *
  * The reference sums into a `math/big` integer and divides with
@@ -556,7 +556,7 @@ int cmt_validator_set_increment_proposer_priority_once(
  * 128 bits is not decoration: with n validators each holding a priority in
  * int64 range the sum reaches n * 2^63, which for n = 2 already leaves
  * int64 — the reference's own test cases 3 and 4
- * (validator_set_test.go:495-506: two validators at MaxInt64 average to
+ * (validator_set_test.go:516-527: two validators at MaxInt64 average to
  * MaxInt64, two at MinInt64 average to MinInt64) are exactly the cases an
  * int64 accumulator gets wrong.
  *
@@ -572,7 +572,7 @@ int cmt_validator_set_compute_avg_proposer_priority(
         const cmt_validator_set_t *vals, int64_t *out);
 
 /**
- * cometbft@709fd12b types/validator_set.go:212-231 —
+ * cometbft@v0.38.26 types/validator_set.go:212-231 —
  * `computeMaxMinPriorityDiff()`. `max - min` in Go int64 arithmetic, which
  * WRAPS (reproduced in unsigned arithmetic here), then the reference's
  * `-1 * diff` when the result came out negative (:227-229) — which also
@@ -582,7 +582,7 @@ int cmt_validator_set_compute_avg_proposer_priority(
 int cmt_validator_set_compute_max_min_priority_diff(
         const cmt_validator_set_t *vals, int64_t *out);
 
-/** cometbft@709fd12b types/validator_set.go:233-239 —
+/** cometbft@v0.38.26 types/validator_set.go:233-239 —
  *  `getValWithMostPriority()`. Folds CompareProposerPriority from a nil
  *  seed over the list, so the FIRST element wins by default.
  *  @return CMT_OK, CMT_REJECT on an empty set (the reference returns nil)
@@ -590,20 +590,20 @@ int cmt_validator_set_compute_max_min_priority_diff(
 int cmt_validator_set_get_val_with_most_priority(
         const cmt_validator_set_t *vals, const cmt_validator_t **out);
 
-/** cometbft@709fd12b types/validator_set.go:241-249 —
+/** cometbft@v0.38.26 types/validator_set.go:241-249 —
  *  `shiftByAvgProposerPriority()`. Subtracts the average from every
  *  priority with safeSubClip. Panics on an empty set (:242-244) → REJECT. */
 int cmt_validator_set_shift_by_avg_proposer_priority(
         cmt_validator_set_t *vals);
 
-/** cometbft@709fd12b types/validator_set.go:252-261 —
+/** cometbft@v0.38.26 types/validator_set.go:252-261 —
  *  `validatorListCopy()`. A nil list copies to nothing (:253-255).
  *  @return CMT_OK, CMT_REJECT if `n` exceeds `cap`, CMT_FAULT on NULL. */
 int cmt_validator_list_copy(const cmt_validator_t *src, size_t n,
                             cmt_validator_t *dst, size_t cap);
 
 /**
- * cometbft@709fd12b types/validator_set.go:264-271 — `Copy()`.
+ * cometbft@v0.38.26 types/validator_set.go:264-271 — `Copy()`.
  * Copies the list, the cached total and the key-type flag, and SNAPSHOTS
  * the proposer — see the struct comment for why that last one is a value
  * here and a shared pointer in the reference.
@@ -613,15 +613,15 @@ int cmt_validator_list_copy(const cmt_validator_t *src, size_t n,
 int cmt_validator_set_copy(const cmt_validator_set_t *src,
                            cmt_validator_set_t *dst);
 
-/** cometbft@709fd12b types/validator_set.go:275-282 — `HasAddress()`. */
+/** cometbft@v0.38.26 types/validator_set.go:275-282 — `HasAddress()`. */
 bool cmt_validator_set_has_address(const cmt_validator_set_t *vals,
                                    const uint8_t *address, size_t address_len);
 
 /**
- * cometbft@709fd12b types/validator_set.go:286-293 — `GetByAddress()`.
+ * cometbft@v0.38.26 types/validator_set.go:286-293 — `GetByAddress()`.
  * PORT, not YOK: the port map's automatic pass marked it YOK and the
- * REV 3 override corrects it — validation.go:250/:358, evidence.go:59/:263/
- * :288, validator_set.go:468/:515/:579 and state.go:2383 all call it.
+ * REV 3 override corrects it — validation.go:255/:367, evidence.go:59/:263/
+ * :288, validator_set.go:479/:526/:590 and state.go:2376 all call it.
  * @param out_index receives the index, or -1 when absent (:292); may be
  *        NULL. @param out receives a COPY (:289); may be NULL.
  * @return CMT_OK whether or not it was found — "absent" is -1 in
@@ -635,7 +635,7 @@ int cmt_validator_set_get_by_address(const cmt_validator_set_t *vals,
                                      cmt_validator_t *out);
 
 /**
- * cometbft@709fd12b types/validator_set.go:299-305 — `GetByIndex()`.
+ * cometbft@v0.38.26 types/validator_set.go:299-305 — `GetByIndex()`.
  * An index below zero or at/above the length returns "nothing" (:300-302);
  * that is CMT_REJECT here, because unlike GetByAddress the reference has
  * no in-band sentinel for it.
@@ -644,7 +644,7 @@ int cmt_validator_set_get_by_address(const cmt_validator_set_t *vals,
 int cmt_validator_set_get_by_index(const cmt_validator_set_t *vals,
                                    int32_t index, cmt_validator_t *out);
 
-/** cometbft@709fd12b types/validator_set.go:308-310 — `Size()`. */
+/** cometbft@v0.38.26 types/validator_set.go:308-310 — `Size()`. */
 size_t cmt_validator_set_size(const cmt_validator_set_t *vals);
 
 /**
@@ -673,20 +673,20 @@ int cmt_validator_set_total_voting_power(cmt_validator_set_t *vals,
                                          int64_t *out);
 
 /**
- * cometbft@709fd12b types/validator_set.go:341-349 — `GetProposer()`.
- * Fills the proposer from `findProposer` when it is unset (:345-347) and
- * returns a COPY (:348). NOT const, for that reason.
- * @return CMT_OK, CMT_REJECT on an empty set (:342-344, the reference
+ * cometbft@v0.38.26 types/validator_set.go:352-360 — `GetProposer()`.
+ * Fills the proposer from `findProposer` when it is unset (:356-358) and
+ * returns a COPY (:359). NOT const, for that reason.
+ * @return CMT_OK, CMT_REJECT on an empty set (:353-355, the reference
  *         returns nil), CMT_FAULT on NULL.
  */
 int cmt_validator_set_get_proposer(cmt_validator_set_t *vals,
                                    cmt_validator_t *out);
 
 /**
- * cometbft@709fd12b types/validator_set.go:351-359 — `findProposer()`.
+ * cometbft@v0.38.26 types/validator_set.go:362-370 — `findProposer()`.
  *
  * NOTE reference quirk, ported as-is: the loop SKIPS any validator whose
- * address equals the current best's (:354). With the set's unique-address
+ * address equals the current best's (:365). With the set's unique-address
  * invariant that can only skip the current best itself, which
  * CompareProposerPriority would have returned anyway — so the guard is a
  * no-op on any valid set. It is kept because a set that reached here with
@@ -696,14 +696,14 @@ int cmt_validator_set_find_proposer(const cmt_validator_set_t *vals,
                                     const cmt_validator_t **out);
 
 /**
- * cometbft@709fd12b types/validator_set.go:365-371 — `Hash()`.
+ * cometbft@v0.38.26 types/validator_set.go:376-382 — `Hash()`.
  * The Merkle root over `Bytes()` leaves — ValidatorsHash and
  * NextValidatorsHash (D-19 rev 6 item 5). An EMPTY set hashes to the empty
  * tree's root H("") (crypto/merkle/tree.go:16-18 via hash.go:16-18).
  *
  * ⚠ The ORDER IS THE SET'S OWN. This function does not sort; the set is
- * kept in ValidatorsByVotingPower order by `updateWithChangeSet` (:674)
- * and by `ValidatorSetFromExistingValidators` (:964). Hashing a set that
+ * kept in ValidatorsByVotingPower order by `updateWithChangeSet` (:687)
+ * and by `ValidatorSetFromExistingValidators` (:1024). Hashing a set that
  * was assembled by hand in another order produces another root, and that
  * is the reference's behaviour too.
  *
@@ -721,11 +721,11 @@ int cmt_validator_set_hash(const cmt_validator_set_t *vals,
 /* ── the change-set machinery ───────────────────────────────────────── */
 
 /**
- * cometbft@709fd12b types/validator_set.go:408-442 — `processChanges()`.
- * Deep-copies (:410), sorts by address (:411) and splits into updates and
- * removals, refusing a duplicate address (:419-422), a negative voting
- * power (:425-427) and a power above MaxTotalVotingPower (:428-431). A
- * power of exactly zero is a REMOVAL (:432-433).
+ * cometbft@v0.38.26 types/validator_set.go:419-453 — `processChanges()`.
+ * Deep-copies (:421), sorts by address (:422) and splits into updates and
+ * removals, refusing a duplicate address (:430-433), a negative voting
+ * power (:436-438) and a power above MaxTotalVotingPower (:439-442). A
+ * power of exactly zero is a REMOVAL (:443-444).
  *
  * The reference's sort is unstable, and duplicates are exactly what this
  * function looks for — but it only tests ADJACENT equality, and any
@@ -744,25 +744,25 @@ int cmt_validator_set_process_changes(const cmt_validator_t *orig_changes,
                                       size_t *out_removals_len);
 
 /**
- * cometbft@709fd12b types/validator_set.go:462-488 — `verifyUpdates()`.
+ * cometbft@v0.38.26 types/validator_set.go:473-499 — `verifyUpdates()`.
  * Sorts the updates by their DELTA against the current set and walks them
  * ascending, so the running total passes through its smallest values
  * first; a running total above MaxTotalVotingPower is
- * ErrTotalVotingPowerOverflow (:483-485).
+ * ErrTotalVotingPowerOverflow (:494-496).
  *
- * The reference's `sort.Slice` (:476) is unstable, and two updates can
+ * The reference's `sort.Slice` (:487) is unstable, and two updates can
  * share a delta. It does not matter: within a group of equal deltas every
  * permutation produces the same partial sums, because every member
  * contributes the same value. Deterministic.
  *
  * ⚠ `updates` IS NOT REORDERED, and must not be. The reference sorts
- * `updatesCopy` (:475) rather than `updates` because the caller's list has
+ * `updatesCopy` (:486) rather than `updates` because the caller's list has
  * to stay in the ADDRESS order `processChanges` produced: `applyUpdates`
- * documents that order as its precondition (:534-537) and merges the two
- * address-sorted lists in one pass (:543-557). A delta-ordered list fed to
+ * documents that order as its precondition (:545-548) and merges the two
+ * address-sorted lists in one pass (:554-568). A delta-ordered list fed to
  * that merge duplicates and drops entries. This port therefore takes
  * `updates` as read-only and sorts a local copy of the DELTAS, which is
- * all the overflow walk (:481-486) reads.
+ * all the overflow walk (:492-497) reads.
  *
  * @return CMT_OK, CMT_REJECT on overflow, CMT_FAULT.
  */
@@ -772,17 +772,17 @@ int cmt_validator_set_verify_updates(cmt_validator_t *const *updates,
                                      int64_t removed_power,
                                      int64_t *out_tvp);
 
-/** cometbft@709fd12b types/validator_set.go:490-498 —
+/** cometbft@v0.38.26 types/validator_set.go:501-509 —
  *  `numNewValidators()`. How many updates are not already in the set. */
 size_t cmt_validator_set_num_new_validators(cmt_validator_t *const *updates,
                                             size_t updates_len,
                                             const cmt_validator_set_t *vals);
 
 /**
- * cometbft@709fd12b types/validator_set.go:512-530 —
+ * cometbft@v0.38.26 types/validator_set.go:523-541 —
  * `computeNewPriorities()`. An update that is already in the set keeps its
- * priority (:527); a NEW validator starts at
- * `-(tvp + (tvp >> 3))` — the -1.125 * P entry penalty (:518-525) that
+ * priority (:538); a NEW validator starts at
+ * `-(tvp + (tvp >> 3))` — the -1.125 * P entry penalty (:529-536) that
  * stops a validator un-bonding and re-bonding to clear a negative
  * priority. Mutates the update entries.
  */
@@ -792,9 +792,9 @@ int cmt_validator_set_compute_new_priorities(cmt_validator_t **updates,
                                              int64_t updated_total_voting_power);
 
 /**
- * cometbft@709fd12b types/validator_set.go:536-571 — `applyUpdates()`.
- * Sorts the existing members by address (:538) and merges the two sorted
- * lists, the update winning on an equal address (:547-555).
+ * cometbft@v0.38.26 types/validator_set.go:547-582 — `applyUpdates()`.
+ * Sorts the existing members by address (:549) and merges the two sorted
+ * lists, the update winning on an equal address (:558-566).
  * @param existing/merged pointer arrays from `scratch`.
  */
 int cmt_validator_set_apply_updates(cmt_validator_t **existing,
@@ -806,9 +806,9 @@ int cmt_validator_set_apply_updates(cmt_validator_t **existing,
                                     size_t *out_len);
 
 /**
- * cometbft@709fd12b types/validator_set.go:575-589 — `verifyRemovals()`.
- * Every entry to remove must be in the set (:580-582); the reference also
- * panics when there are more deletes than validators (:585-587) — REJECT.
+ * cometbft@v0.38.26 types/validator_set.go:586-600 — `verifyRemovals()`.
+ * Every entry to remove must be in the set (:591-593); the reference also
+ * panics when there are more deletes than validators (:596-598) — REJECT.
  * @param out_power receives the voting power being removed.
  */
 int cmt_validator_set_verify_removals(cmt_validator_t *const *deletes,
@@ -817,9 +817,9 @@ int cmt_validator_set_verify_removals(cmt_validator_t *const *deletes,
                                       int64_t *out_power);
 
 /**
- * cometbft@709fd12b types/validator_set.go:594-618 — `applyRemovals()`.
+ * cometbft@v0.38.26 types/validator_set.go:605-629 — `applyRemovals()`.
  * Expects both lists sorted by address, which `applyUpdates` guarantees
- * (:593). Where Go would index an exhausted `existing` (:602) this port
+ * (:604). Where Go would index an exhausted `existing` (:613) this port
  * checks explicitly and REJECTS (INVARIANT 7495d337).
  */
 int cmt_validator_set_apply_removals(cmt_validator_t **merged,
@@ -829,14 +829,14 @@ int cmt_validator_set_apply_removals(cmt_validator_t **merged,
                                      size_t *out_len);
 
 /**
- * cometbft@709fd12b types/validator_set.go:624-677 —
+ * cometbft@v0.38.26 types/validator_set.go:635-690 —
  * `updateWithChangeSet()`. The whole pipeline: process, refuse deletes
- * when they are not allowed (:635-637), refuse an empty result (:640-642),
+ * when they are not allowed (:646-648), refuse an empty result (:651-653),
  * verify removals then updates, compute the new priorities, apply, check
  * the key types, recompute the total, rescale, centre, and finally sort
- * into ValidatorsByVotingPower order (:674).
+ * into ValidatorsByVotingPower order (:687).
  *
- * An EMPTY change list returns success having done nothing (:625-627) —
+ * An EMPTY change list returns success having done nothing (:636-638) —
  * no rescale, no centring, no sort.
  *
  * ⚠ ONE ADDED RULE, and it is a capacity rule: the resulting set may not
@@ -844,7 +844,7 @@ int cmt_validator_set_apply_removals(cmt_validator_t **merged,
  * `len(validators) + numNewValidators - len(deletes)`, and placed AFTER
  * `verifyUpdates` so that the reference's own error precedence is
  * unchanged. On any rejection the set is left exactly as it was, which is
- * the reference's contract at :690-691.
+ * the reference's contract at :703-704.
  */
 int cmt_validator_set_update_with_change_set_ex(cmt_validator_set_t *vals,
                                                 const cmt_validator_t *changes,
@@ -852,7 +852,7 @@ int cmt_validator_set_update_with_change_set_ex(cmt_validator_set_t *vals,
                                                 bool allow_deletes,
                                                 cmt_valset_scratch_t *scratch);
 
-/** cometbft@709fd12b types/validator_set.go:692-694 —
+/** cometbft@v0.38.26 types/validator_set.go:705-707 —
  *  `UpdateWithChangeSet()`. `updateWithChangeSet(changes, true)`. */
 int cmt_validator_set_update_with_change_set(cmt_validator_set_t *vals,
                                              const cmt_validator_t *changes,
@@ -860,9 +860,9 @@ int cmt_validator_set_update_with_change_set(cmt_validator_set_t *vals,
                                              cmt_valset_scratch_t *scratch);
 
 /**
- * cometbft@709fd12b types/validator_set.go:748-760 —
+ * cometbft@v0.38.26 types/validator_set.go:803-815 —
  * `findPreviousProposer()`. The INVERSE fold of getValWithMostPriority: it
- * keeps the LOSER of every comparison (:755-757), so it finds the lowest
+ * keeps the LOSER of every comparison (:810-812), so it finds the lowest
  * priority — the validator that would have been pushed back last.
  * @return CMT_OK, CMT_REJECT on an empty set or two identical validators.
  */
@@ -870,21 +870,21 @@ int cmt_validator_set_find_previous_proposer(const cmt_validator_set_t *vals,
                                              const cmt_validator_t **out);
 
 /**
- * cometbft@709fd12b types/validator_set.go:762-784 —
- * `checkAllKeysHaveSameType()`. An empty set is true (:763-766); otherwise
+ * cometbft@v0.38.26 types/validator_set.go:817-839 —
+ * `checkAllKeysHaveSameType()`. An empty set is true (:818-821); otherwise
  * every key's type must match the first one's.
  *
  * This port has exactly ONE key type — ML-DSA-87, PublicKey branch 9
- * (K-2) — so the "types differ" branch at :777-780 is unreachable and this
+ * (K-2) — so the "types differ" branch at :832-835 is unreachable and this
  * port NEVER writes false. That is stated rather than hidden.
  *
  * ⚠ NOTE reference quirk, and it is the reason this returns a code where
- * the reference returns nothing: the bootstrap at :770-776 tolerates a
+ * the reference returns nothing: the bootstrap at :825-831 tolerates a
  * member with NO key by CONTINUING past it, but only while `firstKeyType`
- * is still empty. Once a key HAS been seen, :777 evaluates
+ * is still empty. Once a key HAS been seen, :832 evaluates
  * `val.PubKey.Type()` unconditionally, so a LATER keyless member
  * dereferences a nil interface and PANICS. That path is reachable — the
- * changes `updateWithChangeSet` passes here (:666) are not required to
+ * changes `updateWithChangeSet` passes here (:677) are not required to
  * carry keys — so it is reproduced as CMT_REJECT rather than quietly
  * skipped.
  *
@@ -892,17 +892,17 @@ int cmt_validator_set_find_previous_proposer(const cmt_validator_set_t *vals,
  */
 int cmt_validator_set_check_all_keys_have_same_type(cmt_validator_set_t *vals);
 
-/** cometbft@709fd12b types/validator_set.go:788-790 —
+/** cometbft@v0.38.26 types/validator_set.go:843-845 —
  *  `AllKeysHaveSameType()`. Reads the cached flag. */
 bool cmt_validator_set_all_keys_have_same_type(const cmt_validator_set_t *vals);
 
 /**
- * cometbft@709fd12b types/validator_set.go:698-702 —
+ * cometbft@v0.38.26 types/validator_set.go:711-715 —
  * `(vals *ValidatorSet) VerifyCommit()`.
  *
  * The method form of `types.VerifyCommit`, and nothing more: the
  * reference's whole body is `return VerifyCommit(chainID, vals, blockID,
- * height, commit)` (:701). Ported in wave R1-D, once cmt_validation
+ * height, commit)` (:714). Ported in wave R1-D, once cmt_validation
  * existed; wave R1-C listed it as stage D.
  *
  * The parameters are spelled `cmt_pb_commit_t` and `cmt_pb_block_id_t`
@@ -956,10 +956,10 @@ int cmt_validator_set_verify_commit_extended(
         int64_t height, const cmt_pb_extended_commit_t *ext_commit);
 
 /**
- * cometbft@709fd12b types/validator_set.go:708-712 —
+ * cometbft@v0.38.26 types/validator_set.go:763-767 —
  * `(vals *ValidatorSet) VerifyCommitLight()`: the method form of
- * `types.VerifyCommitLight` and nothing more (:711). Ported with the
- * blocksync reactor (blocksync/reactor.go:496 is its caller), under the
+ * `types.VerifyCommitLight` and nothing more (:766). Ported with the
+ * blocksync reactor (blocksync/reactor.go:496 is its caller — 709fd12b; at v0.38.26: blocksync calls VerifyCommit / VerifyCommitExtended instead, reactor.go:581, :591), under the
  * operator's 2026-09-29 answer in
  * docs/plans/decisions/2026-09-29-blocksync-before-testnet.md. Same
  * parameter spelling rule as `cmt_validator_set_verify_commit`; the
@@ -975,9 +975,9 @@ int cmt_validator_set_verify_commit_light(cmt_validator_set_t *vals,
                                           cmt_vs_error_t *err);
 
 /**
- * cometbft@709fd12b types/validator_set.go:714-720 —
+ * cometbft@v0.38.26 types/validator_set.go:769-775 —
  * `(vals *ValidatorSet) VerifyCommitLightAllSignatures()`: the method
- * form of `types.VerifyCommitLightAllSignatures` (:719); delegates to
+ * form of `types.VerifyCommitLightAllSignatures` (:774); delegates to
  * `cmt_verify_commit_light_all_signatures`.
  * @return CMT_OK, CMT_REJECT, CMT_FAULT.
  */
@@ -989,13 +989,13 @@ int cmt_validator_set_verify_commit_light_all_signatures(
 /* ── the codec side (KODEK rows) ────────────────────────────────────── */
 
 /**
- * cometbft@709fd12b types/validator_set.go:877-904 — `ToProto()`.
+ * cometbft@v0.38.26 types/validator_set.go:932-959 — `ToProto()`.
  *
  * ⚠ TWO HIDDEN RULES the port map lists, both reproduced:
  *  · an empty or nil set produces an EMPTY message, not an error
- *    (:878-880: "validator set should never be nil");
- *  · `TotalVotingPower` is ZEROED (:901) — the reference's own comment at
- *    :899-900 says the proto bytes are sometimes used as a hash, so the
+ *    (:933-935: "validator set should never be nil");
+ *  · `TotalVotingPower` is ZEROED (:956) — the reference's own comment at
+ *    :954-955 says the proto bytes are sometimes used as a hash, so the
  *    cached value must not leak into them.
  *
  * @param out->validators must point at caller storage of at least
@@ -1005,35 +1005,35 @@ int cmt_validator_set_to_proto(const cmt_validator_set_t *vals,
                                cmt_pb_validator_set_t *out);
 
 /**
- * cometbft@709fd12b types/validator_set.go:909-941 —
+ * cometbft@v0.38.26 types/validator_set.go:964-999 —
  * `ValidatorSetFromProto()`.
  *
  * ⚠ THREE HIDDEN RULES, all reproduced:
- *  · the key types are re-checked (:924) — this port has one key type, so
+ *  · the key types are re-checked (:979) — this port has one key type, so
  *    the check is trivially satisfied, but it is made;
- *  · `TotalVotingPower()` is RECOMPUTED (:938) and the wire value is never
- *    trusted — the reference's comment at :933-935 is explicit that a peer
+ *  · `TotalVotingPower()` is RECOMPUTED (:938 — 709fd12b; at v0.38.26: `TotalVotingPowerSafe`, :993-996) and the wire value is never
+ *    trusted — the reference's comment at :988-990 is explicit that a peer
  *    could otherwise inject a wrong total. Since cometbft@v0.38.26
  *    (:993-996) the recomputation is `TotalVotingPowerSafe`, so members
  *    whose powers overflow MaxTotalVotingPower are REFUSED (CMT_REJECT)
  *    where 709fd12b panicked;
- *  · the result ends in `ValidateBasic()` (:940), so a set whose addresses
+ *  · the result ends in `ValidateBasic()` (:998), so a set whose addresses
  *    do not match their keys, or whose proposer is not a member, is
  *    refused at the decode boundary.
  *
- * A nil proto is an error (:910-912).
+ * A nil proto is an error (:965-967).
  */
 int cmt_validator_set_from_proto(const cmt_pb_validator_set_t *vp,
                                  cmt_validator_set_t *vals);
 
 /**
- * cometbft@709fd12b types/validator_set.go:947-966 —
+ * cometbft@v0.38.26 types/validator_set.go:1005-1026 —
  * `ValidatorSetFromExistingValidators()`. Rebuilds the exact set from an
  * array WITHOUT touching priorities or powers: every member must pass
- * ValidateBasic (:951-956), the proposer is `findPreviousProposer` (:962),
- * the total is recomputed (:963) and the list is sorted into
- * ValidatorsByVotingPower order (:964).
- * An empty list is an error (:948-950). A total above MaxTotalVotingPower
+ * ValidateBasic (:1009-1014), the proposer is `findPreviousProposer` (:1020),
+ * the total is recomputed (:963 — 709fd12b; at v0.38.26: the overflow is returned, :1021-1023) and the list is sorted into
+ * ValidatorsByVotingPower order (:1024).
+ * An empty list is an error (:1006-1008). A total above MaxTotalVotingPower
  * is RETURNED as CMT_REJECT (cometbft@v0.38.26 :1021-1023; a panic at
  * 709fd12b).
  */
@@ -1050,36 +1050,36 @@ int cmt_validator_set_from_existing_validators(cmt_validator_set_t *vals,
  *                                       NewMockPV, which this port has no
  *                                       counterpart for.
  *  validator_set.go
- *   · :376-388 `ProposerPriorityHash` — YOK by the REV 3 override: its
- *       only caller is light/detector.go:210-211, and the light client is
+ *   · :387-399 `ProposerPriorityHash` — YOK by the REV 3 override: its
+ *       only caller is light/detector.go:211-212, and the light client is
  *       out of scope. The reference's own bug stays recorded and NOT
- *       ported: :384 writes every varint at offset 0 of `buf`, so :387
+ *       ported: :395 writes every varint at offset 0 of `buf`, so :398
  *       hashes the last varint followed by zero padding.
- *   · :391-398 `Iterate`              — YOK by the REV 3 override; its
+ *   · :402-409 `Iterate`              — YOK by the REV 3 override; its
  *       only use is StringIndented.
- *   · :698-702 `VerifyCommit`         — PORTED in wave R1-D as
+ *   · :711-715 `VerifyCommit`         — PORTED in wave R1-D as
  *       `cmt_validator_set_verify_commit` above, once cmt_validation
  *       existed. R1-C listed it here as stage D; it is no longer a hole.
- *   · :708-720 `VerifyCommitLight`,
+ *   · :763-775 `VerifyCommitLight`,
  *              `VerifyCommitLightAllSignatures`
  *                                     — PORTED with the blocksync reactor
  *       (2026-09-29) as `cmt_validator_set_verify_commit_light` /
  *       `_light_all_signatures` above; their caller
- *       blocksync/reactor.go:496 is now built. No longer a hole.
- *   · :725-742 `VerifyCommitLightTrusting`,
+ *       blocksync/reactor.go:496 is now built. No longer a hole. (709fd12b; at v0.38.26 blocksync calls VerifyCommit / VerifyCommitExtended instead, reactor.go:581, :591.)
+ *   · :780-797 `VerifyCommitLightTrusting`,
  *              `VerifyCommitLightTrustingAllSignatures`
  *                                     — YOK by the port map's scope rule
  *       (REV 3 ~892, REV 3.1 ~950): the pair wraps the Trusting half of
- *       the light-client family of types/validation.go (:125-192), whose
+ *       the light-client family of types/validation.go (:126-193), whose
  *       only callers are `light/` and the evidence pool. It additionally
  *       needs `cmtmath.Fraction` and a trust level, which nothing in
  *       scope supplies.
- *   · :807-809 `ErrNotEnoughVotingPowerSigned.Error` — display only; the
+ *   · :862-864 `ErrNotEnoughVotingPowerSigned.Error` — display only; the
  *       VALUE it formats is `cmt_vs_error_t` above.
- *   · :816-841 `String` / `StringIndented` — display only.
- *   · :974-989 `RandValidatorSet`     — a test helper.
- *  Neither file's `sort.Interface` Len/Swap methods (:849, :858, :866,
- *  :872) have their own C counterpart: they are the mechanics of
+ *   · :871-896 `String` / `StringIndented` — display only.
+ *   · :1034-1049 `RandValidatorSet`     — a test helper.
+ *  Neither file's `sort.Interface` Len/Swap methods (:904, :913, :921,
+ *  :927) have their own C counterpart: they are the mechanics of
  *  `sort.Sort`, and they live inside the two sort functions above.
  */
 

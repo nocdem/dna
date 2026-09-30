@@ -1,10 +1,10 @@
 /**
  * @file shared/dnac/cmt_conr.c
- * @brief cometbft @709fd12b `consensus/reactor.go` ported to C. See
+ * @brief cometbft @v0.38.26 `consensus/reactor.go` ported to C. See
  *        cmt_conr.h for the module contract, the threads → ticks
  *        substitution and the deviations R3-A-1/2/3. The v0.38.26 hunks
  *        are cited in full (`cometbft@v0.38.26 …` / `v0.38.26 :NNN`);
- *        a bare `:NNN` is a 709fd12b line (cmt_conr.h "RE-PIN").
+ *        every bare `:NNN` is a v0.38.26 line too (cmt_conr.h "RE-PIN").
  *
  * Every function names the reference range it ports. Every dropped lock,
  * every `time.Sleep` turned into a deadline and every `false` from a send
@@ -26,7 +26,7 @@
 
 #define LOG_TAG "CMT_CONR"
 
-/* Go's `time.Second` in nanoseconds — the unit of :504 and :1379. */
+/* Go's `time.Second` in nanoseconds — the unit of :513 and :1388. */
 #define CONR_SECOND_NS ((int64_t)1000000000)
 
 /* reactor.go:30 `maxMsgSize` is named twice in this tree — cmt_wal.h:95
@@ -39,7 +39,7 @@ _Static_assert((int)CMT_CONR_MAX_MSG_SIZE == (int)CMT_MAX_MSG_SIZE,
  * reactor.go:143-180 — GetChannels
  * ══════════════════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b consensus/reactor.go:146-179 — the four descriptors. */
+/* cometbft@v0.38.26 consensus/reactor.go:146-179 — the four descriptors. */
 static const cmt_conr_channel_desc_t conr_channels[CMT_CONR_NUM_CHANNELS] = {
     /* :147-153 */
     { CMT_CONR_STATE_CHANNEL,         6, 100, 0,         CMT_CONR_MAX_MSG_SIZE },
@@ -53,7 +53,7 @@ static const cmt_conr_channel_desc_t conr_channels[CMT_CONR_NUM_CHANNELS] = {
     { CMT_CONR_VOTE_SET_BITS_CHANNEL, 1,   2, 1024,      CMT_CONR_MAX_MSG_SIZE }
 };
 
-/* cometbft@709fd12b consensus/reactor.go:144-180 — GetChannels() */
+/* cometbft@v0.38.26 consensus/reactor.go:144-180 — GetChannels() */
 const cmt_conr_channel_desc_t *cmt_conr_get_channels(size_t *out_n)
 {
     if (out_n != NULL) {
@@ -75,7 +75,7 @@ static cmt_conr_peer_slot_t *conr_slot(cmt_conr_t *conR, int peer_idx)
     return &conR->peers[peer_idx];
 }
 
-/** The host's WALL clock — the two stamp sites :504 and :1379 only
+/** The host's WALL clock — the two stamp sites :513 and :1388 only
  *  (cmt_conr.h "DETERMINISM"). */
 static int conr_now(const cmt_conr_t *conR, cmt_time_t *out)
 {
@@ -129,12 +129,12 @@ static cmt_msg_t *conr_msg_begin(cmt_conr_t *conR, cmt_msg_kind_t kind)
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * reactor.go:499-517 — the NewRoundStep message
+ * reactor.go:508-526 — the NewRoundStep message
  * ══════════════════════════════════════════════════════════════════════ */
 
 /**
- * cometbft@709fd12b consensus/reactor.go:499-508 — makeRoundStepMessage().
- * :504 `int64(time.Since(rs.StartTime).Seconds())` — `now` is the host
+ * cometbft@v0.38.26 consensus/reactor.go:508-517 — makeRoundStepMessage().
+ * :513 `int64(time.Since(rs.StartTime).Seconds())` — `now` is the host
  * clock (the reference's `time.Now()` inside `time.Since`); the
  * difference is formed exactly, in whole seconds, truncated toward zero,
  * which is what `int64(float64)` yields for every difference below 2^52
@@ -152,7 +152,7 @@ static int conr_make_round_step_message(cmt_conr_t *conR,
     int32_t    r;
     int        rc;
 
-    rc = conr_now(conR, &now);                                    /* :504 */
+    rc = conr_now(conR, &now);                                    /* :513 */
     if (rc != CMT_OK) {
         return rc;
     }
@@ -171,17 +171,17 @@ static int conr_make_round_step_message(cmt_conr_t *conR,
         q = INT64_MIN / CONR_SECOND_NS;
     }
     memset(out, 0, sizeof(*out));
-    out->height                   = rs->height;                   /* :501 */
-    out->round                    = rs->round;                    /* :502 */
-    out->step                     = rs->step;                     /* :503 */
-    out->seconds_since_start_time = q;                            /* :504 */
-    /* :505 — rs.LastCommit.GetRound(): -1 for a nil set
+    out->height                   = rs->height;                   /* :510 */
+    out->round                    = rs->round;                    /* :511 */
+    out->step                     = rs->step;                     /* :512 */
+    out->seconds_since_start_time = q;                            /* :513 */
+    /* :514 — rs.LastCommit.GetRound(): -1 for a nil set
      * (types/vote_set.go:124-126), which cmt_vote_set_get_round gives. */
     out->last_commit_round        = cmt_vote_set_get_round(rs->last_commit);
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/reactor.go:510-517 — sendNewRoundStepMessage() */
+/* cometbft@v0.38.26 consensus/reactor.go:519-526 — sendNewRoundStepMessage() */
 static int conr_send_new_round_step_message(cmt_conr_t *conR,
                                             cmt_conr_peer_slot_t *slot)
 {
@@ -190,30 +190,30 @@ static int conr_send_new_round_step_message(cmt_conr_t *conR,
     bool              sent;
     int               rc;
 
-    rc = cmt_conr_get_round_state(conR, &rs);                     /* :511 */
+    rc = cmt_conr_get_round_state(conR, &rs);                     /* :520 */
     if (rc != CMT_OK) {
         return rc;
     }
     msg = conr_msg_begin(conR, CMT_PB_CONS_MSG_NEW_ROUND_STEP);
-    rc = conr_make_round_step_message(conR, &rs, &msg->u.new_round_step); /* :512 */
+    rc = conr_make_round_step_message(conR, &rs, &msg->u.new_round_step); /* :521 */
     if (rc != CMT_OK) {
         return rc;
     }
     sent = false;
-    /* :513-516 — peer.Send on the StateChannel; the result is unused. */
+    /* :522-525 — peer.Send on the StateChannel; the result is unused. */
     return cmt_ps_peer_send(&slot->ps, false, CMT_CONR_STATE_CHANNEL, msg,
                             &sent);
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * reactor.go:408-497 — the event subscriptions and the three broadcasts
+ * reactor.go:417-506 — the event subscriptions and the three broadcasts
  * ══════════════════════════════════════════════════════════════════════ */
 
 /**
- * p2p/switch.go:274-296 — `Broadcast(e)`: `sw.peers.List()` (:277) in
- * SLOT INDEX ORDER (the reference's order is unspecified, :273), one
- * `Send` each (:285). The success channel (:280, :295) is discarded by
- * every caller in reactor.go (:442, :457, :471), so nothing is returned;
+ * p2p/switch.go:275-297 — `Broadcast(e)`: `sw.peers.List()` (:278) in
+ * SLOT INDEX ORDER (the reference's order is unspecified, :274), one
+ * `Send` each (:286). The success channel (:281, :296) is discarded by
+ * every caller in reactor.go (:451, :466, :480), so nothing is returned;
  * a per-peer false is the reference's false. Only a NODE-LOCAL fault of
  * our own message (cmt_ps_peer_send) is reported.
  */
@@ -231,7 +231,7 @@ static int conr_broadcast(cmt_conr_t *conR, uint8_t channel_id,
             continue;
         }
         sent = false;
-        rc = cmt_ps_peer_send(&slot->ps, false, channel_id, msg, &sent); /* :285 */
+        rc = cmt_ps_peer_send(&slot->ps, false, channel_id, msg, &sent); /* :286 */
         if (rc != CMT_OK) {
             return rc;
         }
@@ -239,9 +239,9 @@ static int conr_broadcast(cmt_conr_t *conR, uint8_t channel_id,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/reactor.go:440-446 —
+/* cometbft@v0.38.26 consensus/reactor.go:449-455 —
  * broadcastNewRoundStepMessage(), reached from the listener of
- * :412-416. Runs INSIDE the state machine (cmt_cs.h, cmt_cs_listener_t):
+ * :421-425. Runs INSIDE the state machine (cmt_cs.h, cmt_cs_listener_t):
  * it reads `rs` and sends; it never calls back into `cs`. */
 static void conr_on_new_round_step(void *ctx, const cmt_round_state_t *rs)
 {
@@ -253,9 +253,9 @@ static void conr_on_new_round_step(void *ctx, const cmt_round_state_t *rs)
         return;
     }
     msg = conr_msg_begin(conR, CMT_PB_CONS_MSG_NEW_ROUND_STEP);
-    rc = conr_make_round_step_message(conR, rs, &msg->u.new_round_step); /* :441 */
+    rc = conr_make_round_step_message(conR, rs, &msg->u.new_round_step); /* :450 */
     if (rc == CMT_OK) {
-        rc = conr_broadcast(conR, CMT_CONR_STATE_CHANNEL, msg);   /* :442-445 */
+        rc = conr_broadcast(conR, CMT_CONR_STATE_CHANNEL, msg);   /* :451-454 */
     }
     if (rc != CMT_OK) {
         /* The listener returns nothing (events.go:204); a fault in a
@@ -265,8 +265,8 @@ static void conr_on_new_round_step(void *ctx, const cmt_round_state_t *rs)
     }
 }
 
-/* cometbft@709fd12b consensus/reactor.go:448-461 —
- * broadcastNewValidBlockMessage(), from the listener of :419-423. */
+/* cometbft@v0.38.26 consensus/reactor.go:457-470 —
+ * broadcastNewValidBlockMessage(), from the listener of :428-432. */
 static void conr_on_valid_block(void *ctx, const cmt_round_state_t *rs)
 {
     cmt_conr_t                *conR = (cmt_conr_t *)ctx;
@@ -279,14 +279,14 @@ static void conr_on_valid_block(void *ctx, const cmt_round_state_t *rs)
     }
     msg = conr_msg_begin(conR, CMT_PB_CONS_MSG_NEW_VALID_BLOCK);
     m   = &msg->u.new_valid_block;
-    /* :449 psh := rs.ProposalBlockParts.Header() — the zero header for a
+    /* :458 psh := rs.ProposalBlockParts.Header() — the zero header for a
      * nil part set (part_set.go:237-239). */
     rc = cmt_part_set_header(rs->proposal_block_parts, &m->block_part_set_header);
     if (rc == CMT_OK) {
-        m->height = rs->height;                                   /* :451 */
-        m->round  = rs->round;                                    /* :452 */
-        /* :454 rs.ProposalBlockParts.BitArray().ToProto() — nil for an
-         * empty set (bit_array.go:476-478), which is `has_block_parts`
+        m->height = rs->height;                                   /* :460 */
+        m->round  = rs->round;                                    /* :461 */
+        /* :463 rs.ProposalBlockParts.BitArray().ToProto() — nil for an
+         * empty set (bit_array.go:481-483), which is `has_block_parts`
          * false and an omitted field 4 (cmt_pb.h:777-779). */
         rc = cmt_part_set_bit_array(rs->proposal_block_parts, &m->block_parts);
         if (rc == CMT_BITS_NIL) {
@@ -297,18 +297,18 @@ static void conr_on_valid_block(void *ctx, const cmt_round_state_t *rs)
         }
     }
     if (rc == CMT_OK) {
-        m->is_commit = (rs->step == CMT_ROUND_STEP_COMMIT);       /* :455 */
-        rc = conr_broadcast(conR, CMT_CONR_STATE_CHANNEL, msg);   /* :457-460 */
+        m->is_commit = (rs->step == CMT_ROUND_STEP_COMMIT);       /* :464 */
+        rc = conr_broadcast(conR, CMT_CONR_STATE_CHANNEL, msg);   /* :466-469 */
     }
     if (rc != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "broadcastNewValidBlockMessage failed (%d)", rc);
     }
 }
 
-/* cometbft@709fd12b consensus/reactor.go:464-497 —
- * broadcastHasVoteMessage(), from the listener of :426-430.
+/* cometbft@v0.38.26 consensus/reactor.go:473-506 —
+ * broadcastHasVoteMessage(), from the listener of :435-439.
  * "Broadcasts HasVoteMessage to peers that care." The LIVE code
- * broadcasts (:471-474); :475-496 is the reference's own commented-out
+ * broadcasts (:480-483); :484-505 is the reference's own commented-out
  * peer-by-peer branch, left exactly as it leaves it:
  *
  *     // TODO: Make this broadcast more selective.
@@ -344,44 +344,44 @@ static void conr_on_vote(void *ctx, const cmt_vote_t *vote)
     }
     msg = conr_msg_begin(conR, CMT_PB_CONS_MSG_HAS_VOTE);
     m   = &msg->u.has_vote;
-    m->height = vote->height;                                     /* :466 */
-    m->round  = vote->round;                                      /* :467 */
-    m->type   = vote->type;                                       /* :468 */
-    m->index  = vote->validator_index;                            /* :469 */
-    rc = conr_broadcast(conR, CMT_CONR_STATE_CHANNEL, msg);       /* :471-474 */
+    m->height = vote->height;                                     /* :475 */
+    m->round  = vote->round;                                      /* :476 */
+    m->type   = vote->type;                                       /* :477 */
+    m->index  = vote->validator_index;                            /* :478 */
+    rc = conr_broadcast(conR, CMT_CONR_STATE_CHANNEL, msg);       /* :480-483 */
     if (rc != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "broadcastHasVoteMessage failed (%d)", rc);
     }
 }
 
-/* cometbft@709fd12b consensus/reactor.go:411-433 —
+/* cometbft@v0.38.26 consensus/reactor.go:420-442 —
  * subscribeToBroadcastEvents(): the three listeners of "consensus-reactor"
- * (:412), one call here because cmt_cs_add_listener takes all three. The
- * :417/:424/:431 error logs are the AddListenerForEvent errors of a
+ * (:421), one call here because cmt_cs_add_listener takes all three. The
+ * :426/:433/:440 error logs are the AddListenerForEvent errors of a
  * removed listener id (events.go:225-227), which cannot occur here. */
 static int conr_subscribe_to_broadcast_events(cmt_conr_t *conR)
 {
     cmt_cs_listener_t l;
 
     memset(&l, 0, sizeof(l));
-    l.on_new_round_step = conr_on_new_round_step;                 /* :413-416 */
-    l.on_valid_block    = conr_on_valid_block;                    /* :420-423 */
-    l.on_vote           = conr_on_vote;                           /* :427-430 */
+    l.on_new_round_step = conr_on_new_round_step;                 /* :422-425 */
+    l.on_valid_block    = conr_on_valid_block;                    /* :429-432 */
+    l.on_vote           = conr_on_vote;                           /* :436-439 */
     return cmt_cs_add_listener(conR->cs, &l, conR);
 }
 
-/* cometbft@709fd12b consensus/reactor.go:435-438 —
+/* cometbft@v0.38.26 consensus/reactor.go:444-447 —
  * unsubscribeFromBroadcastEvents() */
 static void conr_unsubscribe_from_broadcast_events(cmt_conr_t *conR)
 {
-    cmt_cs_remove_listener(conR->cs);                             /* :437 */
+    cmt_cs_remove_listener(conR->cs);                             /* :446 */
 }
 
 /* ══════════════════════════════════════════════════════════════════════
  * reactor.go:54-141 — construction and lifecycle
  * ══════════════════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b consensus/reactor.go:56-70 — NewReactor() */
+/* cometbft@v0.38.26 consensus/reactor.go:56-70 — NewReactor() */
 int cmt_conr_init(cmt_conr_t *conR, cmt_cs_t *cs, bool wait_sync,
                   const cmt_conr_host_t *host, void *host_ctx,
                   cmt_pb_arena_t *recv_arena)
@@ -440,7 +440,7 @@ void cmt_conr_free(cmt_conr_t *conR)
     memset(conR, 0, sizeof(*conR));
 }
 
-/* cometbft@709fd12b consensus/reactor.go:74-91 — OnStart(), through
+/* cometbft@v0.38.26 consensus/reactor.go:74-91 — OnStart(), through
  * service.go:130-158 Start(). */
 int cmt_conr_start(cmt_conr_t *conR)
 {
@@ -489,7 +489,7 @@ int cmt_conr_start(cmt_conr_t *conR)
     return CMT_OK;                                               /* :90 */
 }
 
-/* cometbft@709fd12b consensus/reactor.go:95-103 — OnStop(), through
+/* cometbft@v0.38.26 consensus/reactor.go:95-103 — OnStop(), through
  * service.go:167-190 Stop(). */
 int cmt_conr_stop(cmt_conr_t *conR)
 {
@@ -527,7 +527,7 @@ int cmt_conr_stop(cmt_conr_t *conR)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/reactor.go:107-141 — SwitchToConsensus() */
+/* cometbft@v0.38.26 consensus/reactor.go:107-141 — SwitchToConsensus() */
 int cmt_conr_switch_to_consensus(cmt_conr_t *conR, const cmt_state_t *state,
                                  bool skip_wal)
 {
@@ -573,18 +573,18 @@ int cmt_conr_switch_to_consensus(cmt_conr_t *conR, const cmt_state_t *state,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/reactor.go:400-404 — WaitSync().
- * :401-402 conR.mtx.RLock — dropped. */
+/* cometbft@v0.38.26 consensus/reactor.go:409-413 — WaitSync().
+ * :410-411 conR.mtx.RLock — dropped. */
 bool cmt_conr_wait_sync(const cmt_conr_t *conR)
 {
-    return conR != NULL && conR->wait_sync;                      /* :403 */
+    return conR != NULL && conR->wait_sync;                      /* :412 */
 }
 
 /* ══════════════════════════════════════════════════════════════════════
  * reactor.go:182-223 — peers
  * ══════════════════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b consensus/reactor.go:183-187 — InitPeer() */
+/* cometbft@v0.38.26 consensus/reactor.go:183-187 — InitPeer() */
 int cmt_conr_init_peer(cmt_conr_t *conR, int peer_idx,
                        const uint8_t id[CMT_PB_PEER_ID_MAX])
 {
@@ -601,7 +601,7 @@ int cmt_conr_init_peer(cmt_conr_t *conR, int peer_idx,
     }
     if (slot->in_set) {
         /* The switch never InitPeers a peer already in its set
-         * (switch.go:845 "we already checked peers.Has()"); refusing keeps
+         * (switch.go:846 "we already checked peers.Has()"); refusing keeps
          * a live slot's state from being wiped by a host wiring error. */
         return CMT_REJECT;
     }
@@ -618,11 +618,11 @@ int cmt_conr_init_peer(cmt_conr_t *conR, int peer_idx,
         return rc;
     }
     slot->in_set = true;                  /* :185 peer.Set(PeerStateKey, …) and
-                                           * switch.go:846 sw.peers.Add(p) */
+                                           * switch.go:847 sw.peers.Add(p) */
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/reactor.go:191-210 — AddPeer() */
+/* cometbft@v0.38.26 consensus/reactor.go:191-210 — AddPeer() */
 int cmt_conr_add_peer(cmt_conr_t *conR, int peer_idx)
 {
     cmt_conr_peer_slot_t *slot;
@@ -648,7 +648,7 @@ int cmt_conr_add_peer(cmt_conr_t *conR, int peer_idx)
      * cmt_conr_tick's passes; `started` makes the tick run them. */
     slot->started = true;
     memset(slot->asleep, 0, sizeof(slot->asleep));
-    slot->sleeping = 0;                                          /* :702 */
+    slot->sleeping = 0;                                          /* :711 */
     slot->maj23_pc = 0;
 
     /* :205-209 — "Send our state to peer. If we're block_syncing,
@@ -659,8 +659,8 @@ int cmt_conr_add_peer(cmt_conr_t *conR, int peer_idx)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/reactor.go:213-223 — RemovePeer(), the
- * no-op quoted in cmt_conr.h, plus switch.go:381 sw.peers.Remove(peer):
+/* cometbft@v0.38.26 consensus/reactor.go:213-223 — RemovePeer(), the
+ * no-op quoted in cmt_conr.h, plus switch.go:382 sw.peers.Remove(peer):
  * the slot leaves the set and its routines stop (DEVIATION R3-A-3: not
  * gated on `running`, see the header). */
 int cmt_conr_remove_peer(cmt_conr_t *conR, int peer_idx)
@@ -675,15 +675,15 @@ int cmt_conr_remove_peer(cmt_conr_t *conR, int peer_idx)
         return CMT_REJECT;
     }
     if (!slot->in_set) {
-        return CMT_OK;                          /* switch.go:381-386 */
+        return CMT_OK;                          /* switch.go:382-387 */
     }
     /* :217-222 — the reference's TODO body does nothing to the state. */
-    memset(slot, 0, sizeof(*slot));             /* peers.Remove :381 */
+    memset(slot, 0, sizeof(*slot));             /* peers.Remove :382 */
     return CMT_OK;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * reactor.go:225-391 — Receive
+ * reactor.go:225-400 — Receive
  * ══════════════════════════════════════════════════════════════════════ */
 
 /** The 32-byte peer id of a slot as the vote sets want it. */
@@ -695,7 +695,7 @@ static cmt_peer_id_t conr_peer_id_of(const cmt_conr_peer_slot_t *slot)
     return p;
 }
 
-/** :288-298 and :369-378 — `ourVotes`: the bit array of our votes for the
+/** :288-298 and :378-387 — `ourVotes`: the bit array of our votes for the
  *  BlockID a peer named, from the prevotes or precommits of `round`.
  *  `*out` is NULL for the reference's nil (an untracked round or block). */
 static int conr_our_votes(cmt_cs_t *cs, int32_t round, int32_t vote_type,
@@ -708,15 +708,15 @@ static int conr_our_votes(cmt_cs_t *cs, int32_t round, int32_t vote_type,
     *out = NULL;
     switch (vote_type) {
     case (int32_t)CMT_PB_MSG_TYPE_PREVOTE:
-        vs = cmt_hvs_prevotes(cs->rs.votes, round);          /* :293, :373 */
+        vs = cmt_hvs_prevotes(cs->rs.votes, round);          /* :293, :382 */
         break;
     case (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT:
-        vs = cmt_hvs_precommits(cs->rs.votes, round);        /* :295, :375 */
+        vs = cmt_hvs_precommits(cs->rs.votes, round);        /* :295, :384 */
         break;
     default:
-        /* :297 / :377 — panic("Bad VoteSetBitsMessage field Type. Forgot
+        /* :297 / :386 — panic("Bad VoteSetBitsMessage field Type. Forgot
          * to add a check in ValidateBasic?"). Unreachable once
-         * cmt_msg_validate_basic has run (:1769, :1799); NODE-LOCAL →
+         * cmt_msg_validate_basic has run (:1790, :1820); NODE-LOCAL →
          * CMT_FAULT. */
         QGP_LOG_ERROR(LOG_TAG, "Bad VoteSetBitsMessage field Type. Forgot to "
                                "add a check in ValidateBasic?");
@@ -739,7 +739,7 @@ static int conr_our_votes(cmt_cs_t *cs, int32_t round, int32_t vote_type,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/reactor.go:231-391 — Receive() */
+/* cometbft@v0.38.26 consensus/reactor.go:231-400 — Receive() */
 int cmt_conr_receive(cmt_conr_t *conR, int peer_idx, uint8_t channel_id,
                      const uint8_t *bytes, size_t len)
 {
@@ -865,7 +865,7 @@ int cmt_conr_receive(cmt_conr_t *conR, int peer_idx, uint8_t channel_id,
                         (int)CMT_CONR_STOP_VALIDATE_HEIGHT);     /* :266 */
                 return CMT_OK;                                   /* :267 */
             }
-            /* :1379 — cmttime.Now(), read HERE and handed to cmt_ps. */
+            /* :1388 — cmttime.Now(), read HERE and handed to cmt_ps. */
             rc = conr_now(conR, &now);
             if (rc != CMT_OK) {
                 return rc;
@@ -924,7 +924,7 @@ int cmt_conr_receive(cmt_conr_t *conR, int peer_idx, uint8_t channel_id,
             }
             /* :299-307 — the reply; :305-307 `if votes := ourVotes.ToProto();
              * votes != nil` — nil for a nil array or one with no words
-             * (bit_array.go:476-478), which leaves the zero BitArray in
+             * (bit_array.go:481-483), which leaves the zero BitArray in
              * field 5 (always emitted, cmt_pb.h:839-840). */
             reply_msg = conr_msg_begin(conR, CMT_PB_CONS_MSG_VOTE_SET_BITS);
             reply     = &reply_msg->u.vote_set_bits;
@@ -983,7 +983,7 @@ int cmt_conr_receive(cmt_conr_t *conR, int peer_idx, uint8_t channel_id,
                 return CMT_OK;                            /* v0.38.26 :329 */
             }
 
-            rc = cmt_ps_set_has_proposal(ps, &msg->u.proposal.proposal); /* :323, v0.38.26 :332 */
+            rc = cmt_ps_set_has_proposal(ps, &msg->u.proposal.proposal); /* :332 */
             if (rc == CMT_FAULT) {
                 return CMT_FAULT;
             }
@@ -998,15 +998,15 @@ int cmt_conr_receive(cmt_conr_t *conR, int peer_idx, uint8_t channel_id,
              * numbering; cmt_cs.c "ErrProposalTooManyParts"). */
             rc = cmt_cs_set_proposal_input(cs, &msg->u.proposal.proposal,
                                            ps->peer.id,
-                                           (size_t)CMT_PB_PEER_ID_MAX); /* :324, v0.38.26 :333 */
+                                           (size_t)CMT_PB_PEER_ID_MAX); /* :333 */
             return rc;   /* CMT_REJECT = the peer queue is full, R3-A-2 */
         }
-        case CMT_PB_CONS_MSG_PROPOSAL_POL:                       /* :325 */
-            rc = cmt_ps_apply_proposal_pol_message(ps, &msg->u.proposal_pol); /* :326 */
+        case CMT_PB_CONS_MSG_PROPOSAL_POL:                       /* :334 */
+            rc = cmt_ps_apply_proposal_pol_message(ps, &msg->u.proposal_pol); /* :335 */
             return (rc == CMT_FAULT) ? CMT_FAULT : CMT_OK;
-        case CMT_PB_CONS_MSG_BLOCK_PART: {                       /* :327 */
+        case CMT_PB_CONS_MSG_BLOCK_PART: {                       /* :336 */
             const cmt_block_part_msg_t *m = &msg->u.block_part;
-            /* :328 `int(msg.Part.Index)` — a uint32 widened to Go's 64-bit
+            /* :337 `int(msg.Part.Index)` — a uint32 widened to Go's 64-bit
              * int stays positive and, past the array's width, is a no-op
              * (bit_array.go:93-95). C's `int` is 32-bit: an index above
              * INT_MAX is held at INT_MAX, which is past any width too,
@@ -1017,30 +1017,30 @@ int cmt_conr_receive(cmt_conr_t *conR, int peer_idx, uint8_t channel_id,
                         ? INT_MAX : (int)m->part.index;
 
             rc = cmt_ps_set_has_proposal_block_part(ps, m->height, m->round,
-                                                    index);      /* :328 */
+                                                    index);      /* :337 */
             if (rc == CMT_FAULT) {
                 return CMT_FAULT;
             }
-            /* :329 — conR.Metrics.BlockParts, YOK. */
+            /* :338 — conR.Metrics.BlockParts, YOK. */
             rc = cmt_cs_add_proposal_block_part_input(cs, m->height, m->round,
                                                       &m->part, ps->peer.id,
-                                                      (size_t)CMT_PB_PEER_ID_MAX); /* :330 */
+                                                      (size_t)CMT_PB_PEER_ID_MAX); /* :339 */
             return rc;   /* CMT_REJECT = the peer queue is full, R3-A-2 */
         }
-        default:                                                 /* :331 */
+        default:                                                 /* :340 */
             QGP_LOG_ERROR(LOG_TAG, "Unknown message type %d on DataChannel",
-                          (int)msg->kind);                       /* :332 */
+                          (int)msg->kind);                       /* :341 */
             return CMT_OK;
         }
 
-    case CMT_CONR_VOTE_CHANNEL:                                  /* :335 */
-        if (cmt_conr_wait_sync(conR)) {                          /* :336 */
-            QGP_LOG_INFO(LOG_TAG, "Ignoring message received during sync"); /* :337 */
-            return CMT_OK;                                       /* :338 */
+    case CMT_CONR_VOTE_CHANNEL:                                  /* :344 */
+        if (cmt_conr_wait_sync(conR)) {                          /* :345 */
+            QGP_LOG_INFO(LOG_TAG, "Ignoring message received during sync"); /* :346 */
+            return CMT_OK;                                       /* :347 */
         }
         switch (msg->kind) {
-        case CMT_PB_CONS_MSG_VOTE: {                             /* :341 */
-            /* :342-345 — cs.mtx.RLock dropped; the three values read live.
+        case CMT_PB_CONS_MSG_VOTE: {                             /* :350 */
+            /* :351-354 — cs.mtx.RLock dropped; the three values read live.
              * `cs.Validators.Size()` on a nil set would panic in Go;
              * `rs.validators` is set by updateToState before any peer can
              * be added, and a NULL here answers 0 rather than crashing. */
@@ -1049,84 +1049,84 @@ int cmt_conr_receive(cmt_conr_t *conR, int peer_idx, uint8_t channel_id,
                     ? (int)cmt_validator_set_size(cs->rs.validators) : 0;
             int     last_commit_size = cmt_vote_set_size(cs->rs.last_commit);
 
-            rc = cmt_ps_ensure_vote_bit_arrays(ps, height, val_size); /* :346 */
+            rc = cmt_ps_ensure_vote_bit_arrays(ps, height, val_size); /* :355 */
             if (rc == CMT_FAULT) {
                 return CMT_FAULT;
             }
-            rc = cmt_ps_ensure_vote_bit_arrays(ps, height - 1, last_commit_size); /* :347 */
+            rc = cmt_ps_ensure_vote_bit_arrays(ps, height - 1, last_commit_size); /* :356 */
             if (rc == CMT_FAULT) {
                 return CMT_FAULT;
             }
-            rc = cmt_ps_set_has_vote(ps, &msg->u.vote.vote);     /* :348 */
+            rc = cmt_ps_set_has_vote(ps, &msg->u.vote.vote);     /* :357 */
             if (rc == CMT_FAULT) {
                 return CMT_FAULT;
             }
             rc = cmt_cs_add_vote(cs, &msg->u.vote.vote, ps->peer.id,
-                                 (size_t)CMT_PB_PEER_ID_MAX);   /* :350 */
+                                 (size_t)CMT_PB_PEER_ID_MAX);   /* :359 */
             return rc;   /* CMT_REJECT = the peer queue is full, R3-A-2 */
         }
-        default:                                                 /* :352 */
-            /* :353 "don't punish (leave room for soft upgrades)" */
+        default:                                                 /* :361 */
+            /* :362 "don't punish (leave room for soft upgrades)" */
             QGP_LOG_ERROR(LOG_TAG, "Unknown message type %d on VoteChannel",
-                          (int)msg->kind);                       /* :354 */
+                          (int)msg->kind);                       /* :363 */
             return CMT_OK;
         }
 
-    case CMT_CONR_VOTE_SET_BITS_CHANNEL:                         /* :357 */
-        if (cmt_conr_wait_sync(conR)) {                          /* :358 */
-            QGP_LOG_INFO(LOG_TAG, "Ignoring message received during sync"); /* :359 */
-            return CMT_OK;                                       /* :360 */
+    case CMT_CONR_VOTE_SET_BITS_CHANNEL:                         /* :366 */
+        if (cmt_conr_wait_sync(conR)) {                          /* :367 */
+            QGP_LOG_INFO(LOG_TAG, "Ignoring message received during sync"); /* :368 */
+            return CMT_OK;                                       /* :369 */
         }
         switch (msg->kind) {
-        case CMT_PB_CONS_MSG_VOTE_SET_BITS: {                    /* :363 */
+        case CMT_PB_CONS_MSG_VOTE_SET_BITS: {                    /* :372 */
             const cmt_vote_set_bits_msg_t *m = &msg->u.vote_set_bits;
-            /* :364-367 — cs.mtx dropped. */
+            /* :373-376 — cs.mtx dropped. */
             int64_t                        height = cs->rs.height;
 
-            if (height == m->height) {                           /* :369 */
+            if (height == m->height) {                           /* :378 */
                 our_votes = NULL;
                 rc = conr_our_votes(cs, m->round, m->type, &m->block_id,
-                                    &our_votes_storage, &our_votes); /* :370-378 */
+                                    &our_votes_storage, &our_votes); /* :379-387 */
                 if (rc != CMT_OK) {
                     return rc;
                 }
-                rc = cmt_ps_apply_vote_set_bits_message(ps, m, our_votes); /* :379 */
+                rc = cmt_ps_apply_vote_set_bits_message(ps, m, our_votes); /* :388 */
             } else {
-                rc = cmt_ps_apply_vote_set_bits_message(ps, m, NULL); /* :381 */
+                rc = cmt_ps_apply_vote_set_bits_message(ps, m, NULL); /* :390 */
             }
             return (rc == CMT_FAULT) ? CMT_FAULT : CMT_OK;
         }
-        default:                                                 /* :383 */
-            /* :384 "don't punish (leave room for soft upgrades)" */
+        default:                                                 /* :392 */
+            /* :393 "don't punish (leave room for soft upgrades)" */
             QGP_LOG_ERROR(LOG_TAG, "Unknown message type %d on "
-                                   "VoteSetBitsChannel", (int)msg->kind); /* :385 */
+                                   "VoteSetBitsChannel", (int)msg->kind); /* :394 */
             return CMT_OK;
         }
 
-    default:                                                     /* :388 */
-        QGP_LOG_ERROR(LOG_TAG, "Unknown chId %02X", (unsigned)channel_id); /* :389 */
+    default:                                                     /* :397 */
+        QGP_LOG_ERROR(LOG_TAG, "Unknown chId %02X", (unsigned)channel_id); /* :398 */
         return CMT_OK;
     }
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * reactor.go:519-537 — the round state
+ * reactor.go:528-546 — the round state
  * ══════════════════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b consensus/reactor.go:519-531 updateRoundStateRoutine()
- * and :533-537 getRoundState(): the 100 µs snapshot and its reader,
- * collapsed into a live read (cmt_conr.h). :527-529 and :534-535 are the
+/* cometbft@v0.38.26 consensus/reactor.go:528-540 updateRoundStateRoutine()
+ * and :542-546 getRoundState(): the 100 µs snapshot and its reader,
+ * collapsed into a live read (cmt_conr.h). :536-538 and :543-544 are the
  * conR.mtx, dropped. */
 int cmt_conr_get_round_state(const cmt_conr_t *conR, cmt_round_state_t *out)
 {
     if (conR == NULL || out == NULL) {
         return CMT_FAULT;
     }
-    return cmt_cs_get_round_state(conR->cs, out);                /* :526 */
+    return cmt_cs_get_round_state(conR->cs, out);                /* :535 */
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * reactor.go:539-696 — gossipDataRoutine and gossipDataForCatchup
+ * reactor.go:548-705 — gossipDataRoutine and gossipDataForCatchup
  * ══════════════════════════════════════════════════════════════════════ */
 
 /** What a routine pass reports back to the tick. */
@@ -1136,9 +1136,9 @@ typedef enum {
 } conr_pass_t;
 
 /**
- * cometbft@709fd12b consensus/reactor.go:646-696 — gossipDataForCatchup().
- * Every path either sends a part (and returns to :593's `continue`) or
- * sleeps; :673-677's `part.ToProto()` error cannot occur here because a
+ * cometbft@v0.38.26 consensus/reactor.go:655-705 — gossipDataForCatchup().
+ * Every path either sends a part (and returns to :602's `continue`) or
+ * sleeps; :682-686's `part.ToProto()` error cannot occur here because a
  * part the host row returned IS the proto shape (cmt_part_set.h:134).
  */
 static int conr_gossip_data_for_catchup(cmt_conr_t *conR,
@@ -1157,10 +1157,10 @@ static int conr_gossip_data_for_catchup(cmt_conr_t *conR,
     bool                 sent;
     int                  rc;
 
-    (void)rs;   /* :653-654 reads rs.Height for a log line only */
+    (void)rs;   /* :662-663 reads rs.Height for a log line only */
     *out_pass = CONR_PASS_END;
 
-    /* :649 — prs.ProposalBlockParts.Not().PickRandom() */
+    /* :658 — prs.ProposalBlockParts.Not().PickRandom() */
     rc = cmt_bits_not(prs->proposal_block_parts, &not_ba);
     if (rc == CMT_BITS_NIL) {
         rc = CMT_REJECT;                          /* nil.PickRandom() false */
@@ -1169,76 +1169,76 @@ static int conr_gossip_data_for_catchup(cmt_conr_t *conR,
         rc = cmt_bits_pick_random(&not_ba, &index);
     }
     if (rc == CMT_REJECT) {
-        /* :694-695 — "No parts to send in catch-up, sleeping" */
-        conr_sleep(slot, CMT_CONR_ROUTINE_DATA, now_ns, sleep_d);  /* :695 */
+        /* :703-704 — "No parts to send in catch-up, sleeping" */
+        conr_sleep(slot, CMT_CONR_ROUTINE_DATA, now_ns, sleep_d);  /* :704 */
         return CMT_OK;
     }
     if (rc != CMT_OK) {
         return rc;
     }
 
-    /* :650-662 — "Ensure that the peer's PartSetHeader is correct" */
+    /* :659-671 — "Ensure that the peer's PartSetHeader is correct" */
     found = false;
     rc = conR->host.bs_load_block_meta_block_id(conR->host_ctx, prs->height,
-                                                &block_id, &found); /* :651 */
+                                                &block_id, &found); /* :660 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
-    if (!found) {                                                /* :652 */
+    if (!found) {                                                /* :661 */
         QGP_LOG_ERROR(LOG_TAG, "Failed to load block meta (catchup, height "
-                               "%lld)", (long long)prs->height); /* :653 */
-        conr_sleep(slot, CMT_CONR_ROUTINE_DATA, now_ns, sleep_d);  /* :655 */
-        return CMT_OK;                                           /* :656 */
+                               "%lld)", (long long)prs->height); /* :662 */
+        conr_sleep(slot, CMT_CONR_ROUTINE_DATA, now_ns, sleep_d);  /* :664 */
+        return CMT_OK;                                           /* :665 */
     }
     if (!cmt_psh_equals(&block_id.part_set_header,
-                        &prs->proposal_block_part_set_header)) { /* :657 */
+                        &prs->proposal_block_part_set_header)) { /* :666 */
         QGP_LOG_INFO(LOG_TAG, "Peer ProposalBlockPartSetHeader mismatch, "
-                              "sleeping");                       /* :658 */
-        conr_sleep(slot, CMT_CONR_ROUTINE_DATA, now_ns, sleep_d);  /* :660 */
-        return CMT_OK;                                           /* :661 */
+                              "sleeping");                       /* :667 */
+        conr_sleep(slot, CMT_CONR_ROUTINE_DATA, now_ns, sleep_d);  /* :669 */
+        return CMT_OK;                                           /* :670 */
     }
-    /* :663-670 — "Load the part" */
+    /* :672-679 — "Load the part" */
     memset(&part, 0, sizeof(part));
     found = false;
     rc = conR->host.bs_load_block_part(conR->host_ctx, prs->height, index,
-                                       &part, &found);           /* :664 */
+                                       &part, &found);           /* :673 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
-    if (!found) {                                                /* :665 */
+    if (!found) {                                                /* :674 */
         QGP_LOG_ERROR(LOG_TAG, "Could not load part %d (height %lld)", index,
-                      (long long)prs->height);                   /* :666 */
-        conr_sleep(slot, CMT_CONR_ROUTINE_DATA, now_ns, sleep_d);  /* :668 */
-        return CMT_OK;                                           /* :669 */
+                      (long long)prs->height);                   /* :675 */
+        conr_sleep(slot, CMT_CONR_ROUTINE_DATA, now_ns, sleep_d);  /* :677 */
+        return CMT_OK;                                           /* :678 */
     }
-    /* :671-691 — "Send the part" */
+    /* :680-700 — "Send the part" */
     msg = conr_msg_begin(conR, CMT_PB_CONS_MSG_BLOCK_PART);
-    msg->u.block_part.height = prs->height;   /* :681 "Not our height, so it doesn't matter." */
-    msg->u.block_part.round  = prs->round;    /* :682 */
-    msg->u.block_part.part   = part;          /* :683 */
+    msg->u.block_part.height = prs->height;   /* :690 "Not our height, so it doesn't matter." */
+    msg->u.block_part.round  = prs->round;    /* :691 */
+    msg->u.block_part.part   = part;          /* :692 */
     sent = false;
-    rc = cmt_ps_peer_send(&slot->ps, false, CMT_CONR_DATA_CHANNEL, msg, &sent); /* :678 */
+    rc = cmt_ps_peer_send(&slot->ps, false, CMT_CONR_DATA_CHANNEL, msg, &sent); /* :687 */
     if (rc != CMT_OK) {
         return rc;
     }
     if (sent) {
         rc = cmt_ps_set_has_proposal_block_part(&slot->ps, prs->height,
-                                                prs->round, index); /* :686 */
+                                                prs->round, index); /* :695 */
         if (rc == CMT_FAULT) {
             return rc;
         }
-        *out_pass = CONR_PASS_CONTINUE;                          /* :692 → :593 */
+        *out_pass = CONR_PASS_CONTINUE;                          /* :701 → :602 */
         return CMT_OK;
     }
-    /* :687-691 — "Sending block part for catchup failed" — "sleep to
+    /* :696-700 — "Sending block part for catchup failed" — "sleep to
      * avoid retrying too fast" */
-    conr_sleep(slot, CMT_CONR_ROUTINE_DATA, now_ns, sleep_d);      /* :690 */
-    return CMT_OK;                                               /* :692 */
+    conr_sleep(slot, CMT_CONR_ROUTINE_DATA, now_ns, sleep_d);      /* :699 */
+    return CMT_OK;                                               /* :701 */
 }
 
 /**
- * cometbft@709fd12b consensus/reactor.go:539-644 — gossipDataRoutine(),
- * one pass (cmt_conr.h "THREADS → TICKS"). :540 is the logger.
+ * cometbft@v0.38.26 consensus/reactor.go:548-653 — gossipDataRoutine(),
+ * one pass (cmt_conr.h "THREADS → TICKS"). :549 is the logger.
  */
 static int conr_gossip_data_pass(cmt_conr_t *conR, cmt_conr_peer_slot_t *slot,
                                  int64_t now_ns)
@@ -1258,21 +1258,21 @@ static int conr_gossip_data_pass(cmt_conr_t *conR, cmt_conr_peer_slot_t *slot,
     conr_pass_t       pass;
     int               rc;
 
-    for (;;) {                                        /* :542 OUTER_LOOP */
-        /* :544-547 — "Manage disconnects from self or peer." */
-        if (!slot->started || !conR->running) {                  /* :545 */
+    for (;;) {                                        /* :551 OUTER_LOOP */
+        /* :553-556 — "Manage disconnects from self or peer." */
+        if (!slot->started || !conR->running) {                  /* :554 */
             return CMT_OK;
         }
-        rc = cmt_conr_get_round_state(conR, &rs);                /* :548 */
+        rc = cmt_conr_get_round_state(conR, &rs);                /* :557 */
         if (rc != CMT_OK) {
             return rc;
         }
-        cmt_ps_get_round_state(&slot->ps, &prs);                 /* :549 */
+        cmt_ps_get_round_state(&slot->ps, &prs);                 /* :558 */
 
-        /* :551-572 — "Send proposal Block parts?" */
+        /* :560-581 — "Send proposal Block parts?" */
         if (cmt_part_set_has_header(rs.proposal_block_parts,
-                                    &prs.proposal_block_part_set_header)) { /* :552 */
-            /* :553 — rs.ProposalBlockParts.BitArray().Sub(
+                                    &prs.proposal_block_part_set_header)) { /* :561 */
+            /* :562 — rs.ProposalBlockParts.BitArray().Sub(
              *            prs.ProposalBlockParts.Copy()).PickRandom() */
             ba = NULL;
             rc = cmt_part_set_bit_array(rs.proposal_block_parts, &ba_storage);
@@ -1298,10 +1298,10 @@ static int conr_gossip_data_pass(cmt_conr_t *conR, cmt_conr_peer_slot_t *slot,
             if (rc == CMT_OK) {                                  /* ok */
                 const cmt_part_t *part =
                         cmt_part_set_get_part(rs.proposal_block_parts,
-                                              (size_t)index);    /* :554 */
+                                              (size_t)index);    /* :563 */
 
                 if (part == NULL) {
-                    /* :555-557 — part.ToProto() on a nil part is an error
+                    /* :564-566 — part.ToProto() on a nil part is an error
                      * the reference PANICS on. NODE-LOCAL → CMT_FAULT: our
                      * own part set's bit says the part is held and the
                      * slot is empty. */
@@ -1310,24 +1310,24 @@ static int conr_gossip_data_pass(cmt_conr_t *conR, cmt_conr_peer_slot_t *slot,
                     return CMT_FAULT;
                 }
                 msg = conr_msg_begin(conR, CMT_PB_CONS_MSG_BLOCK_PART);
-                msg->u.block_part.height = rs.height;  /* :563 "This tells peer that this part applies to us." */
-                msg->u.block_part.round  = rs.round;   /* :564 */
-                msg->u.block_part.part   = *part;      /* :565 */
+                msg->u.block_part.height = rs.height;  /* :572 "This tells peer that this part applies to us." */
+                msg->u.block_part.round  = rs.round;   /* :573 */
+                msg->u.block_part.part   = *part;      /* :574 */
                 sent = false;
                 rc = cmt_ps_peer_send(&slot->ps, false, CMT_CONR_DATA_CHANNEL,
-                                      msg, &sent);               /* :560 */
+                                      msg, &sent);               /* :569 */
                 if (rc != CMT_OK) {
                     return rc;
                 }
-                if (sent) {                                      /* :567 */
+                if (sent) {                                      /* :576 */
                     rc = cmt_ps_set_has_proposal_block_part(&slot->ps,
-                            prs.height, prs.round, index);       /* :568 */
+                            prs.height, prs.round, index);       /* :577 */
                     if (rc == CMT_FAULT) {
                         return rc;
                     }
-                    continue;                                    /* :570 */
+                    continue;                                    /* :579 */
                 }
-                /* Send false: not marked (:568 skipped); the reference
+                /* Send false: not marked (:577 skipped); the reference
                  * `continue`s and retries — here the pass ENDS (R3-A-1). */
                 return CMT_OK;
             }
@@ -1337,34 +1337,34 @@ static int conr_gossip_data_pass(cmt_conr_t *conR, cmt_conr_peer_slot_t *slot,
             /* !ok — fall through to the next check, as the reference. */
         }
 
-        /* :574-594 — "If the peer is on a previous height that we have,
+        /* :583-603 — "If the peer is on a previous height that we have,
          * help catch up." */
         store_base = 0;
-        rc = conR->host.bs_base(conR->host_ctx, &store_base);    /* :575 */
+        rc = conR->host.bs_base(conR->host_ctx, &store_base);    /* :584 */
         if (rc != CMT_OK) {
             return CMT_FAULT;
         }
         if (store_base > 0 && 0 < prs.height && prs.height < rs.height &&
-            prs.height >= store_base) {                          /* :576 */
-            /* :579-591 — "if we never received the commit message from
+            prs.height >= store_base) {                          /* :585 */
+            /* :588-600 — "if we never received the commit message from
              * the peer, the block parts wont be initialized" */
-            if (prs.proposal_block_parts == NULL) {              /* :580 */
+            if (prs.proposal_block_parts == NULL) {              /* :589 */
                 cmt_block_id_t block_id;
                 bool           found = false;
 
                 rc = conR->host.bs_load_block_meta_block_id(conR->host_ctx,
-                        prs.height, &block_id, &found);          /* :581 */
+                        prs.height, &block_id, &found);          /* :590 */
                 if (rc != CMT_OK) {
                     return CMT_FAULT;
                 }
-                if (!found) {                                    /* :582 */
+                if (!found) {                                    /* :591 */
                     QGP_LOG_ERROR(LOG_TAG, "Failed to load block meta (height "
-                                           "%lld)", (long long)prs.height); /* :583 */
-                    conr_sleep(slot, CMT_CONR_ROUTINE_DATA, now_ns, sleep_d); /* :585 */
+                                           "%lld)", (long long)prs.height); /* :592 */
+                    conr_sleep(slot, CMT_CONR_ROUTINE_DATA, now_ns, sleep_d); /* :594 */
                     return CMT_OK;
                 }
                 rc = cmt_ps_init_proposal_block_parts(&slot->ps,
-                        &block_id.part_set_header);              /* :587 */
+                        &block_id.part_set_header);              /* :596 */
                 if (rc == CMT_FAULT) {
                     return rc;
                 }
@@ -1379,69 +1379,69 @@ static int conr_gossip_data_pass(cmt_conr_t *conR, cmt_conr_peer_slot_t *slot,
                                   (long long)prs.height);
                     return CMT_OK;
                 }
-                /* :589 "continue the loop since prs is a copy and not
+                /* :598 "continue the loop since prs is a copy and not
                  * effected by this initialization" */
-                continue;                                        /* :590 */
+                continue;                                        /* :599 */
             }
             pass = CONR_PASS_END;
             rc = conr_gossip_data_for_catchup(conR, slot, &rs, &prs, now_ns,
-                                              &pass);            /* :592 */
+                                              &pass);            /* :601 */
             if (rc != CMT_OK) {
                 return rc;
             }
             if (pass == CONR_PASS_CONTINUE) {
-                continue;                                        /* :593 */
+                continue;                                        /* :602 */
             }
             return CMT_OK;                          /* it slept (R3-A-1) */
         }
 
-        /* :596-602 — "If height and round don't match, sleep." */
-        if (rs.height != prs.height || rs.round != prs.round) {  /* :597 */
-            conr_sleep(slot, CMT_CONR_ROUTINE_DATA, now_ns, sleep_d); /* :600 */
-            return CMT_OK;                                       /* :601 */
+        /* :605-611 — "If height and round don't match, sleep." */
+        if (rs.height != prs.height || rs.round != prs.round) {  /* :606 */
+            conr_sleep(slot, CMT_CONR_ROUTINE_DATA, now_ns, sleep_d); /* :609 */
+            return CMT_OK;                                       /* :610 */
         }
 
-        /* :604-607 — "By here, height and round match. Proposal block
+        /* :613-616 — "By here, height and round match. Proposal block
          * parts were already matched and sent if any were wanted. (These
          * can match on hash so the round doesn't matter) Now consider
          * sending other things, like the Proposal itself." */
 
-        /* :609-638 — "Send Proposal && ProposalPOL BitArray?" */
-        if (rs.proposal != NULL && !prs.proposal) {              /* :610 */
+        /* :618-647 — "Send Proposal && ProposalPOL BitArray?" */
+        if (rs.proposal != NULL && !prs.proposal) {              /* :619 */
             bool proposal_sent;
 
-            /* :611-621 — "Proposal: share the proposal metadata with peer." */
+            /* :620-630 — "Proposal: share the proposal metadata with peer." */
             msg = conr_msg_begin(conR, CMT_PB_CONS_MSG_PROPOSAL);
-            msg->u.proposal.proposal = *rs.proposal;             /* :616 */
+            msg->u.proposal.proposal = *rs.proposal;             /* :625 */
             sent = false;
             rc = cmt_ps_peer_send(&slot->ps, false, CMT_CONR_DATA_CHANNEL,
-                                  msg, &sent);                   /* :614 */
+                                  msg, &sent);                   /* :623 */
             if (rc != CMT_OK) {
                 return rc;
             }
             proposal_sent = sent;
             if (sent) {
-                /* :618 "NOTE[ZM]: A peer might have received different
+                /* :627 "NOTE[ZM]: A peer might have received different
                  * proposal msg so this Proposal msg will be rejected!" */
-                rc = cmt_ps_set_has_proposal(&slot->ps, rs.proposal); /* :619 */
+                rc = cmt_ps_set_has_proposal(&slot->ps, rs.proposal); /* :628 */
                 if (rc == CMT_FAULT) {
                     return rc;
                 }
             }
-            /* :622-636 — "ProposalPOL: lets peer know which POL votes we
+            /* :631-645 — "ProposalPOL: lets peer know which POL votes we
              * have so far. Peer must receive ProposalMessage first.
              * rs.Proposal was validated, so rs.Proposal.POLRound <=
              * rs.Round, so we definitely have
              * rs.Votes.Prevotes(rs.Proposal.POLRound)." */
-            if (0 <= rs.proposal->pol_round) {                   /* :626 */
+            if (0 <= rs.proposal->pol_round) {                   /* :635 */
                 cmt_vote_set_t *pol_prevotes =
-                        cmt_hvs_prevotes(rs.votes, rs.proposal->pol_round); /* :633 */
+                        cmt_hvs_prevotes(rs.votes, rs.proposal->pol_round); /* :642 */
 
                 msg = conr_msg_begin(conR, CMT_PB_CONS_MSG_PROPOSAL_POL);
-                msg->u.proposal_pol.height             = rs.height; /* :631 */
+                msg->u.proposal_pol.height             = rs.height; /* :640 */
                 msg->u.proposal_pol.proposal_pol_round =
-                        rs.proposal->pol_round;                  /* :632 */
-                /* :633 — `*rs.Votes.Prevotes(POLRound).BitArray().ToProto()`;
+                        rs.proposal->pol_round;                  /* :641 */
+                /* :642 — `*rs.Votes.Prevotes(POLRound).BitArray().ToProto()`;
                  * a nil array is the nil dereference cmt_msgs.h:274-281
                  * classes NODE-LOCAL, reported by cmt_ps_peer_send. */
                 rc = cmt_vote_set_bit_array(pol_prevotes,
@@ -1452,7 +1452,7 @@ static int conr_gossip_data_pass(cmt_conr_t *conR, cmt_conr_peer_slot_t *slot,
                 }
                 sent = false;
                 rc = cmt_ps_peer_send(&slot->ps, false, CMT_CONR_DATA_CHANNEL,
-                                      msg, &sent);   /* :628, result unused */
+                                      msg, &sent);   /* :637, result unused */
                 if (rc != CMT_OK) {
                     return rc;
                 }
@@ -1462,17 +1462,17 @@ static int conr_gossip_data_pass(cmt_conr_t *conR, cmt_conr_peer_slot_t *slot,
                  * here the pass ENDS (R3-A-1). */
                 return CMT_OK;
             }
-            continue;                                            /* :637 */
+            continue;                                            /* :646 */
         }
 
-        /* :640-642 — "Nothing to do. Sleep." */
-        conr_sleep(slot, CMT_CONR_ROUTINE_DATA, now_ns, sleep_d);  /* :641 */
-        return CMT_OK;                                           /* :642 */
+        /* :649-651 — "Nothing to do. Sleep." */
+        conr_sleep(slot, CMT_CONR_ROUTINE_DATA, now_ns, sleep_d);  /* :650 */
+        return CMT_OK;                                           /* :651 */
     }
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * reactor.go:698-844 — gossipVotesRoutine and gossipVotesForHeight
+ * reactor.go:707-853 — gossipVotesRoutine and gossipVotesForHeight
  * ══════════════════════════════════════════════════════════════════════ */
 
 /** One `ps.PickSendVote(votes)` with the reference's "sent → true". */
@@ -1485,8 +1485,8 @@ static int conr_pick_send(cmt_conr_peer_slot_t *slot, cmt_vote_set_t *vs,
 }
 
 /**
- * cometbft@709fd12b consensus/reactor.go:788-844 — gossipVotesForHeight().
- * `*out_sent` is the reference's return value. :789 is the logger.
+ * cometbft@v0.38.26 consensus/reactor.go:797-853 — gossipVotesForHeight().
+ * `*out_sent` is the reference's return value. :798 is the logger.
  */
 static int conr_gossip_votes_for_height(cmt_conr_peer_slot_t *slot,
                                         const cmt_round_state_t *rs,
@@ -1496,67 +1496,67 @@ static int conr_gossip_votes_for_height(cmt_conr_peer_slot_t *slot,
     int             rc;
 
     *out_sent = false;
-    /* :794-800 — "If there are lastCommits to send..." */
-    if (prs->step == CMT_ROUND_STEP_NEW_HEIGHT) {                /* :795 */
-        rc = conr_pick_send(slot, rs->last_commit, out_sent);    /* :796 */
+    /* :803-809 — "If there are lastCommits to send..." */
+    if (prs->step == CMT_ROUND_STEP_NEW_HEIGHT) {                /* :804 */
+        rc = conr_pick_send(slot, rs->last_commit, out_sent);    /* :805 */
         if (rc != CMT_OK || *out_sent) {
-            return rc;                                           /* :798 */
+            return rc;                                           /* :807 */
         }
     }
-    /* :801-810 — "If there are POL prevotes to send..." */
+    /* :810-819 — "If there are POL prevotes to send..." */
     if (prs->step <= CMT_ROUND_STEP_PROPOSE && prs->round != -1 &&
-        prs->round <= rs->round && prs->proposal_pol_round != -1) { /* :802 */
-        pol_prevotes = cmt_hvs_prevotes(rs->votes, prs->proposal_pol_round); /* :803 */
+        prs->round <= rs->round && prs->proposal_pol_round != -1) { /* :811 */
+        pol_prevotes = cmt_hvs_prevotes(rs->votes, prs->proposal_pol_round); /* :812 */
         if (pol_prevotes != NULL) {
-            rc = conr_pick_send(slot, pol_prevotes, out_sent);   /* :804 */
+            rc = conr_pick_send(slot, pol_prevotes, out_sent);   /* :813 */
             if (rc != CMT_OK || *out_sent) {
-                return rc;                                       /* :807 */
+                return rc;                                       /* :816 */
             }
         }
     }
-    /* :811-817 — "If there are prevotes to send..." */
+    /* :820-826 — "If there are prevotes to send..." */
     if (prs->step <= CMT_ROUND_STEP_PREVOTE_WAIT && prs->round != -1 &&
-        prs->round <= rs->round) {                               /* :812 */
+        prs->round <= rs->round) {                               /* :821 */
         rc = conr_pick_send(slot, cmt_hvs_prevotes(rs->votes, prs->round),
-                            out_sent);                           /* :813 */
+                            out_sent);                           /* :822 */
         if (rc != CMT_OK || *out_sent) {
-            return rc;                                           /* :815 */
+            return rc;                                           /* :824 */
         }
     }
-    /* :818-824 — "If there are precommits to send..." */
+    /* :827-833 — "If there are precommits to send..." */
     if (prs->step <= CMT_ROUND_STEP_PRECOMMIT_WAIT && prs->round != -1 &&
-        prs->round <= rs->round) {                               /* :819 */
+        prs->round <= rs->round) {                               /* :828 */
         rc = conr_pick_send(slot, cmt_hvs_precommits(rs->votes, prs->round),
-                            out_sent);                           /* :820 */
+                            out_sent);                           /* :829 */
         if (rc != CMT_OK || *out_sent) {
-            return rc;                                           /* :822 */
+            return rc;                                           /* :831 */
         }
     }
-    /* :825-831 — "If there are prevotes to send...Needed because of
+    /* :834-840 — "If there are prevotes to send...Needed because of
      * validBlock mechanism" */
-    if (prs->round != -1 && prs->round <= rs->round) {           /* :826 */
+    if (prs->round != -1 && prs->round <= rs->round) {           /* :835 */
         rc = conr_pick_send(slot, cmt_hvs_prevotes(rs->votes, prs->round),
-                            out_sent);                           /* :827 */
+                            out_sent);                           /* :836 */
         if (rc != CMT_OK || *out_sent) {
-            return rc;                                           /* :829 */
+            return rc;                                           /* :838 */
         }
     }
-    /* :832-841 — "If there are POLPrevotes to send..." */
-    if (prs->proposal_pol_round != -1) {                         /* :833 */
-        pol_prevotes = cmt_hvs_prevotes(rs->votes, prs->proposal_pol_round); /* :834 */
+    /* :841-850 — "If there are POLPrevotes to send..." */
+    if (prs->proposal_pol_round != -1) {                         /* :842 */
+        pol_prevotes = cmt_hvs_prevotes(rs->votes, prs->proposal_pol_round); /* :843 */
         if (pol_prevotes != NULL) {
-            rc = conr_pick_send(slot, pol_prevotes, out_sent);   /* :835 */
+            rc = conr_pick_send(slot, pol_prevotes, out_sent);   /* :844 */
             if (rc != CMT_OK || *out_sent) {
-                return rc;                                       /* :838 */
+                return rc;                                       /* :847 */
             }
         }
     }
-    return CMT_OK;                                               /* :843 */
+    return CMT_OK;                                               /* :852 */
 }
 
 /**
- * cometbft@709fd12b consensus/reactor.go:698-786 — gossipVotesRoutine(),
- * one pass. :699 is the logger; :701-702 the `sleeping` log throttle,
+ * cometbft@v0.38.26 consensus/reactor.go:707-795 — gossipVotesRoutine(),
+ * one pass. :708 is the logger; :710-711 the `sleeping` log throttle,
  * carried in the slot.
  */
 static int conr_gossip_votes_pass(cmt_conr_t *conR, cmt_conr_peer_slot_t *slot,
@@ -1574,46 +1574,33 @@ static int conr_gossip_votes_pass(cmt_conr_t *conR, cmt_conr_peer_slot_t *slot,
     bool                  ve_enabled;
     int                   rc;
 
-    for (;;) {                                        /* :704 OUTER_LOOP */
-        /* :706-709 — "Manage disconnects from self or peer." */
-        if (!slot->started || !conR->running) {                  /* :707 */
+    for (;;) {                                        /* :713 OUTER_LOOP */
+        /* :715-718 — "Manage disconnects from self or peer." */
+        if (!slot->started || !conR->running) {                  /* :716 */
             return CMT_OK;
         }
-        rc = cmt_conr_get_round_state(conR, &rs);                /* :710 */
+        rc = cmt_conr_get_round_state(conR, &rs);                /* :719 */
         if (rc != CMT_OK) {
             return rc;
         }
-        cmt_ps_get_round_state(&slot->ps, &prs);                 /* :711 */
+        cmt_ps_get_round_state(&slot->ps, &prs);                 /* :720 */
 
-        switch (slot->sleeping) {                                /* :713 */
-        case 1:                                    /* :714 First sleep   */
-            slot->sleeping = 2;                                  /* :715 */
+        switch (slot->sleeping) {                                /* :722 */
+        case 1:                                    /* :723 First sleep   */
+            slot->sleeping = 2;                                  /* :724 */
             break;
-        case 2:                                    /* :716 No more sleep */
-            slot->sleeping = 0;                                  /* :717 */
+        case 2:                                    /* :725 No more sleep */
+            slot->sleeping = 0;                                  /* :726 */
             break;
         default:
             break;
         }
 
-        /* :723-729 — "If height matches, then send LastCommit, Prevotes,
+        /* :732-738 — "If height matches, then send LastCommit, Prevotes,
          * Precommits." */
-        if (rs.height == prs.height) {                           /* :724 */
+        if (rs.height == prs.height) {                           /* :733 */
             sent = false;
-            rc = conr_gossip_votes_for_height(slot, &rs, &prs, &sent); /* :726 */
-            if (rc != CMT_OK) {
-                return rc;
-            }
-            if (sent) {
-                continue;                                        /* :727 */
-            }
-        }
-
-        /* :731-738 — "Special catchup logic. If peer is lagging by height
-         * 1, send LastCommit." */
-        if (prs.height != 0 && rs.height == prs.height + 1) {    /* :733 */
-            sent = false;
-            rc = conr_pick_send(slot, rs.last_commit, &sent);    /* :734 */
+            rc = conr_gossip_votes_for_height(slot, &rs, &prs, &sent); /* :735 */
             if (rc != CMT_OK) {
                 return rc;
             }
@@ -1622,10 +1609,23 @@ static int conr_gossip_votes_pass(cmt_conr_t *conR, cmt_conr_peer_slot_t *slot,
             }
         }
 
-        /* :740-769 — "Catchup logic. If peer is lagging by more than 1,
+        /* :740-747 — "Special catchup logic. If peer is lagging by height
+         * 1, send LastCommit." */
+        if (prs.height != 0 && rs.height == prs.height + 1) {    /* :742 */
+            sent = false;
+            rc = conr_pick_send(slot, rs.last_commit, &sent);    /* :743 */
+            if (rc != CMT_OK) {
+                return rc;
+            }
+            if (sent) {
+                continue;                                        /* :745 */
+            }
+        }
+
+        /* :749-778 — "Catchup logic. If peer is lagging by more than 1,
          * send Commit." */
         store_base = 0;
-        rc = conR->host.bs_base(conR->host_ctx, &store_base);    /* :742 */
+        rc = conR->host.bs_base(conR->host_ctx, &store_base);    /* :751 */
         if (rc != CMT_OK) {
             return CMT_FAULT;
         }
@@ -1637,82 +1637,82 @@ static int conr_gossip_votes_pass(cmt_conr_t *conR, cmt_conr_peer_slot_t *slot,
          * is ≥ 1, so `rs.height - 2` cannot overflow. */
         if (store_base > 0 && prs.height > 0 && prs.height <= rs.height - 2 &&
             prs.height >= store_base) {                /* v0.38.26 :752 */
-            /* :744-752 — "Load the block's extended commit for prs.Height,
+            /* :753-761 — "Load the block's extended commit for prs.Height,
              * which contains precommit signatures for prs.Height."
-             * :748-752 the conS.mtx.RLock — dropped. */
+             * :757-761 the conS.mtx.RLock — dropped. */
             ve_enabled = false;
             rc = cmt_abci_params_vote_extensions_enabled(
                     conR->cs->state.consensus_params.abci, prs.height,
-                    &ve_enabled);                                /* :751 */
+                    &ve_enabled);                                /* :760 */
             if (rc != CMT_OK) {
-                return CMT_FAULT;   /* h < 1 is impossible here (:743) */
+                return CMT_FAULT;   /* h < 1 is impossible here (:752) */
             }
             found = false;
             memset(&ec, 0, sizeof(ec));
-            if (ve_enabled) {                                    /* :753 */
+            if (ve_enabled) {                                    /* :762 */
                 rc = conR->host.bs_load_block_extended_commit(conR->host_ctx,
-                        prs.height, &ec, &found);                /* :754 */
+                        prs.height, &ec, &found);                /* :763 */
                 if (rc != CMT_OK) {
                     return CMT_FAULT;
                 }
             } else {
                 memset(&commit, 0, sizeof(commit));
                 rc = conR->host.bs_load_block_commit(conR->host_ctx, prs.height,
-                                                     &commit, &found); /* :756 */
+                                                     &commit, &found); /* :765 */
                 if (rc != CMT_OK) {
                     return CMT_FAULT;
                 }
-                if (!found) {                                    /* :757 */
-                    /* :758 — `continue`: the reference busy-loops until the
+                if (!found) {                                    /* :766 */
+                    /* :767 — `continue`: the reference busy-loops until the
                      * store answers; within one tick it cannot, so the
                      * pass ENDS (R3-A-1). */
                     return CMT_OK;
                 }
                 rc = cmt_commit_wrapped_extended_commit(&commit, conR->ecsigs,
-                                                        conR->ecsigs_cap, &ec); /* :760 */
+                                                        conR->ecsigs_cap, &ec); /* :769 */
                 if (rc != CMT_OK) {
                     /* Our own store's commit does not wrap: NODE-LOCAL. */
                     QGP_LOG_ERROR(LOG_TAG, "WrappedExtendedCommit failed (%d)", rc);
                     return CMT_FAULT;
                 }
             }
-            if (!found) {                                        /* :762 */
-                return CMT_OK;                          /* :763, as :758 */
+            if (!found) {                                        /* :771 */
+                return CMT_OK;                          /* :772, as :767 */
             }
             reader = cmt_extended_commit_reader_of(&ec);
             sent   = false;
-            rc = cmt_ps_pick_send_vote(&slot->ps, &reader, &sent); /* :765 */
+            rc = cmt_ps_pick_send_vote(&slot->ps, &reader, &sent); /* :774 */
             if (rc != CMT_OK) {
                 return rc;
             }
             if (sent) {
-                continue;                                        /* :767 */
+                continue;                                        /* :776 */
             }
         }
 
-        switch (slot->sleeping) {                                /* :771 */
+        switch (slot->sleeping) {                                /* :780 */
         case 0:
-            /* :773-777 — "We sent nothing. Sleep..." (a debug log) */
-            slot->sleeping = 1;                                  /* :774 */
+            /* :782-786 — "We sent nothing. Sleep..." (a debug log) */
+            slot->sleeping = 1;                                  /* :783 */
             break;
         case 2:
-            /* :779 — "Continued sleep..." */
-            slot->sleeping = 1;                                  /* :780 */
+            /* :788 — "Continued sleep..." */
+            slot->sleeping = 1;                                  /* :789 */
             break;
         default:
             break;
         }
 
-        conr_sleep(slot, CMT_CONR_ROUTINE_VOTES, now_ns, sleep_d); /* :783 */
-        return CMT_OK;                                           /* :784 */
+        conr_sleep(slot, CMT_CONR_ROUTINE_VOTES, now_ns, sleep_d); /* :792 */
+        return CMT_OK;                                           /* :793 */
     }
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * reactor.go:846-945 — queryMaj23Routine
+ * reactor.go:855-954 — queryMaj23Routine
  * ══════════════════════════════════════════════════════════════════════ */
 
-/** :863-871, :883-891, :904-912, :927-935 — one VoteSetMaj23 by TrySend
+/** :872-880, :892-900, :913-921, :936-944 — one VoteSetMaj23 by TrySend
  *  on the StateChannel; the result is unused by the reference. */
 static int conr_try_send_maj23(cmt_conr_t *conR, cmt_conr_peer_slot_t *slot,
                                int64_t height, int32_t round, int32_t type,
@@ -1730,7 +1730,7 @@ static int conr_try_send_maj23(cmt_conr_t *conR, cmt_conr_peer_slot_t *slot,
 }
 
 /**
- * cometbft@709fd12b consensus/reactor.go:848-945 — queryMaj23Routine(),
+ * cometbft@v0.38.26 consensus/reactor.go:857-954 — queryMaj23Routine(),
  * one pass. "NOTE: `queryMaj23Routine` has a simple crude design since it
  * only comes into play for liveness when there's a signature DDoS attack
  * happening." Four blocks, each sleeping AFTER its send and then falling
@@ -1747,129 +1747,129 @@ static int conr_query_maj23_pass(cmt_conr_t *conR, cmt_conr_peer_slot_t *slot,
     bool              ok;
     int               rc;
 
-    /* :851-854 — "Manage disconnects from self or peer." */
-    if (!slot->started || !conR->running) {                      /* :852 */
+    /* :860-863 — "Manage disconnects from self or peer." */
+    if (!slot->started || !conR->running) {                      /* :861 */
         return CMT_OK;
     }
     switch (slot->maj23_pc) {
     case 0:
-        /* :856-875 — "Maybe send Height/Round/Prevotes" */
-        rc = cmt_conr_get_round_state(conR, &rs);                /* :858 */
+        /* :865-884 — "Maybe send Height/Round/Prevotes" */
+        rc = cmt_conr_get_round_state(conR, &rs);                /* :867 */
         if (rc != CMT_OK) {
             return rc;
         }
-        cmt_ps_get_round_state(&slot->ps, &prs);                 /* :859 */
-        if (rs.height == prs.height) {                           /* :860 */
+        cmt_ps_get_round_state(&slot->ps, &prs);                 /* :868 */
+        if (rs.height == prs.height) {                           /* :869 */
             ok = false;
             rc = cmt_vote_set_two_thirds_majority(
-                    cmt_hvs_prevotes(rs.votes, prs.round), &maj23, &ok); /* :861 */
+                    cmt_hvs_prevotes(rs.votes, prs.round), &maj23, &ok); /* :870 */
             if (rc != CMT_OK) {
                 return rc;
             }
             if (ok) {
                 rc = conr_try_send_maj23(conR, slot, prs.height, prs.round,
-                        (int32_t)CMT_PB_MSG_TYPE_PREVOTE, &maj23); /* :863-871 */
+                        (int32_t)CMT_PB_MSG_TYPE_PREVOTE, &maj23); /* :872-880 */
                 if (rc != CMT_OK) {
                     return rc;
                 }
                 slot->maj23_pc = 1;
-                conr_sleep(slot, CMT_CONR_ROUTINE_MAJ23, now_ns, sleep_d); /* :872 */
+                conr_sleep(slot, CMT_CONR_ROUTINE_MAJ23, now_ns, sleep_d); /* :881 */
                 return CMT_OK;
             }
         }
         slot->maj23_pc = 1;
         /* fall through */
     case 1:
-        /* :877-895 — "Maybe send Height/Round/Precommits" */
-        rc = cmt_conr_get_round_state(conR, &rs);                /* :879 */
+        /* :886-904 — "Maybe send Height/Round/Precommits" */
+        rc = cmt_conr_get_round_state(conR, &rs);                /* :888 */
         if (rc != CMT_OK) {
             return rc;
         }
-        cmt_ps_get_round_state(&slot->ps, &prs);                 /* :880 */
-        if (rs.height == prs.height) {                           /* :881 */
+        cmt_ps_get_round_state(&slot->ps, &prs);                 /* :889 */
+        if (rs.height == prs.height) {                           /* :890 */
             ok = false;
             rc = cmt_vote_set_two_thirds_majority(
-                    cmt_hvs_precommits(rs.votes, prs.round), &maj23, &ok); /* :882 */
+                    cmt_hvs_precommits(rs.votes, prs.round), &maj23, &ok); /* :891 */
             if (rc != CMT_OK) {
                 return rc;
             }
             if (ok) {
                 rc = conr_try_send_maj23(conR, slot, prs.height, prs.round,
-                        (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT, &maj23); /* :883-891 */
+                        (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT, &maj23); /* :892-900 */
                 if (rc != CMT_OK) {
                     return rc;
                 }
                 slot->maj23_pc = 2;
-                conr_sleep(slot, CMT_CONR_ROUTINE_MAJ23, now_ns, sleep_d); /* :892 */
+                conr_sleep(slot, CMT_CONR_ROUTINE_MAJ23, now_ns, sleep_d); /* :901 */
                 return CMT_OK;
             }
         }
         slot->maj23_pc = 2;
         /* fall through */
     case 2:
-        /* :897-916 — "Maybe send Height/Round/ProposalPOL" */
-        rc = cmt_conr_get_round_state(conR, &rs);                /* :899 */
+        /* :906-925 — "Maybe send Height/Round/ProposalPOL" */
+        rc = cmt_conr_get_round_state(conR, &rs);                /* :908 */
         if (rc != CMT_OK) {
             return rc;
         }
-        cmt_ps_get_round_state(&slot->ps, &prs);                 /* :900 */
-        if (rs.height == prs.height && prs.proposal_pol_round >= 0) { /* :901 */
+        cmt_ps_get_round_state(&slot->ps, &prs);                 /* :909 */
+        if (rs.height == prs.height && prs.proposal_pol_round >= 0) { /* :910 */
             ok = false;
             rc = cmt_vote_set_two_thirds_majority(
                     cmt_hvs_prevotes(rs.votes, prs.proposal_pol_round),
-                    &maj23, &ok);                                /* :902 */
+                    &maj23, &ok);                                /* :911 */
             if (rc != CMT_OK) {
                 return rc;
             }
             if (ok) {
                 rc = conr_try_send_maj23(conR, slot, prs.height,
                         prs.proposal_pol_round,
-                        (int32_t)CMT_PB_MSG_TYPE_PREVOTE, &maj23); /* :904-912 */
+                        (int32_t)CMT_PB_MSG_TYPE_PREVOTE, &maj23); /* :913-921 */
                 if (rc != CMT_OK) {
                     return rc;
                 }
                 slot->maj23_pc = 3;
-                conr_sleep(slot, CMT_CONR_ROUTINE_MAJ23, now_ns, sleep_d); /* :913 */
+                conr_sleep(slot, CMT_CONR_ROUTINE_MAJ23, now_ns, sleep_d); /* :922 */
                 return CMT_OK;
             }
         }
         slot->maj23_pc = 3;
         /* fall through */
     case 3: {
-        /* :918-919 — "Little point sending LastCommitRound/LastCommit,
+        /* :927-928 — "Little point sending LastCommitRound/LastCommit,
          * These are fleeting and non-blocking."
-         * :921-939 — "Maybe send Height/CatchupCommitRound/CatchupCommit." */
+         * :930-948 — "Maybe send Height/CatchupCommitRound/CatchupCommit." */
         int64_t store_height = 0;
         int64_t store_base   = 0;
 
-        cmt_ps_get_round_state(&slot->ps, &prs);                 /* :923 */
-        rc = conR->host.bs_height(conR->host_ctx, &store_height); /* :924 */
+        cmt_ps_get_round_state(&slot->ps, &prs);                 /* :932 */
+        rc = conR->host.bs_height(conR->host_ctx, &store_height); /* :933 */
         if (rc != CMT_OK) {
             return CMT_FAULT;
         }
-        rc = conR->host.bs_base(conR->host_ctx, &store_base);    /* :925 */
+        rc = conR->host.bs_base(conR->host_ctx, &store_base);    /* :934 */
         if (rc != CMT_OK) {
             return CMT_FAULT;
         }
         if (prs.catchup_commit_round != -1 && prs.height > 0 &&
-            prs.height <= store_height && prs.height >= store_base) { /* :924-925 */
+            prs.height <= store_height && prs.height >= store_base) { /* :933-934 */
             cmt_commit_t commit;
             bool         found = false;
 
             memset(&commit, 0, sizeof(commit));
-            rc = cmt_cs_load_commit(conR->cs, prs.height, &commit, &found); /* :926 */
+            rc = cmt_cs_load_commit(conR->cs, prs.height, &commit, &found); /* :935 */
             if (rc != CMT_OK) {
                 return CMT_FAULT;
             }
             if (found) {
                 rc = conr_try_send_maj23(conR, slot, prs.height, commit.round,
                         (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT,
-                        &commit.block_id);                       /* :927-935 */
+                        &commit.block_id);                       /* :936-944 */
                 if (rc != CMT_OK) {
                     return rc;
                 }
                 slot->maj23_pc = 4;
-                conr_sleep(slot, CMT_CONR_ROUTINE_MAJ23, now_ns, sleep_d); /* :936 */
+                conr_sleep(slot, CMT_CONR_ROUTINE_MAJ23, now_ns, sleep_d); /* :945 */
                 return CMT_OK;
             }
         }
@@ -1878,8 +1878,8 @@ static int conr_query_maj23_pass(cmt_conr_t *conR, cmt_conr_peer_slot_t *slot,
     /* fall through */
     case 4:
     default:
-        slot->maj23_pc = 0;                                      /* :943 */
-        conr_sleep(slot, CMT_CONR_ROUTINE_MAJ23, now_ns, sleep_d); /* :941 */
+        slot->maj23_pc = 0;                                      /* :952 */
+        conr_sleep(slot, CMT_CONR_ROUTINE_MAJ23, now_ns, sleep_d); /* :950 */
         return CMT_OK;
     }
 }
@@ -1903,7 +1903,7 @@ int cmt_conr_tick(cmt_conr_t *conR, int64_t *out_next_deadline_ns)
         *out_next_deadline_ns = INT64_MAX;
     }
     if (!conR->running) {
-        return CMT_OK;              /* every routine returns (:545, :707, :852) */
+        return CMT_OK;              /* every routine returns (:554, :716, :861) */
     }
     rc = conr_mono(conR, &now_ns);                      /* once per tick */
     if (rc != CMT_OK) {
@@ -1958,10 +1958,10 @@ int cmt_conr_tick(cmt_conr_t *conR, int64_t *out_next_deadline_ns)
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * reactor.go:1560-1574 — ValidateHeight
+ * reactor.go:1569-1583 — ValidateHeight
  *
  * `cmt_msg_validate_basic` and the nine per-message ValidateBasic bodies
- * of msgs.go:232-234 / reactor.go:1536-1810 were here through wave R3 W1.
+ * of msgs.go:232-234 / reactor.go:1545-1834 were here through wave R3 W1.
  * They are in cmt_msgs.c now, bodies and citations unchanged
  * (atlas-dec-b02c8de1f52854b20dbfd64f6c987b34, item 4): the WAL REPLAY
  * path in cmt_cs.c has to run the same gate, and the consensus core must
@@ -1971,7 +1971,7 @@ int cmt_conr_tick(cmt_conr_t *conR, int64_t *out_next_deadline_ns)
  * ValidateHeight is NOT one of them: it is `Receive`'s alone (:264).
  * ══════════════════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b consensus/reactor.go:1560-1574 —
+/* cometbft@v0.38.26 consensus/reactor.go:1569-1583 —
  * NewRoundStepMessage.ValidateHeight() */
 int cmt_new_round_step_msg_validate_height(const cmt_new_round_step_msg_t *m,
                                            int64_t initial_height)
@@ -1979,17 +1979,17 @@ int cmt_new_round_step_msg_validate_height(const cmt_new_round_step_msg_t *m,
     if (m == NULL) {
         return CMT_FAULT;
     }
-    if (m->height < initial_height) {                            /* :1561 */
+    if (m->height < initial_height) {                            /* :1570 */
         return CMT_REJECT;      /* "invalid Height (lower than initial height)" */
     }
-    if (m->height == initial_height && m->last_commit_round != -1) { /* :1565 */
+    if (m->height == initial_height && m->last_commit_round != -1) { /* :1574 */
         return CMT_REJECT;      /* "invalid LastCommitRound (must be -1 for
                                  *  initial height)" */
     }
-    if (m->height > initial_height && m->last_commit_round < 0) { /* :1569 */
+    if (m->height > initial_height && m->last_commit_round < 0) { /* :1578 */
         return CMT_REJECT;      /* "LastCommitRound can only be negative for
                                  *  initial height" */
     }
-    return CMT_OK;                                               /* :1573 */
+    return CMT_OK;                                               /* :1582 */
 }
 

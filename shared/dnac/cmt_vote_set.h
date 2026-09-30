@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_vote_set.h
- * @brief cometbft @709fd12b `types/vote_set.go` ported to C, plus the three
+ * @brief cometbft @v0.38.26 `types/vote_set.go` ported to C, plus the three
  *        `types/block.go` functions that build a VoteSet.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -17,9 +17,9 @@
  * and is the derivation CMT_VOTE_SET_MAX_BLOCKS below reproduces.
  *
  * ── WHY block.go's ToVoteSet FAMILY LIVES HERE ─────────────────────────
- * `Commit.ToVoteSet` (block.go:1101-1117), `ExtendedCommit.
- * ToExtendedVoteSet` (:1075-1079) and `ExtendedCommit.addSigsToVoteSet`
- * (:1082-1096) are members of package `types` in the reference, where a
+ * `Commit.ToVoteSet` (block.go:1107-1123), `ExtendedCommit.
+ * ToExtendedVoteSet` (:1081-1085) and `ExtendedCommit.addSigsToVoteSet`
+ * (:1088-1102) are members of package `types` in the reference, where a
  * Commit and a VoteSet are in the same package and may refer to each
  * other freely. In C they cannot: cmt_block.h would have to include this
  * header for `cmt_vote_set_t`, and this header already includes
@@ -29,7 +29,7 @@
  * They are therefore defined in cmt_vote_set.{h,c}, with their block.go
  * citations intact.
  *
- * `ExtendedCommit.ToCommit` (block.go:1130-1143) is NOT here: R1 already
+ * `ExtendedCommit.ToCommit` (block.go:1136-1149) is NOT here: R1 already
  * ported it as `cmt_extended_commit_to_commit` (cmt_block.h:601-605). It
  * needs no VoteSet, so it never had the cycle problem.
  *
@@ -68,7 +68,7 @@
  * 7. BOUNDS. Every count that a peer can influence is checked explicitly
  *    (INVARIANT atlas-dec-7495d3372e004b24b4f6cc7bff5caf07).
  * 8. ERRORS. The reference returns typed errors its caller discriminates
- *    (consensus/state.go:2069-2118). `cmt_vote_set_err_t` below carries
+ *    (consensus/state.go:2064-2113). `cmt_vote_set_err_t` below carries
  *    one value per distinct error the reference can return from this
  *    module — see the enum's own comments for the one place where R1's
  *    verify API collapses three of them into one.
@@ -111,14 +111,14 @@
  *   · The `cmtsync.Mutex` of :69 — single-threaded port (umbrella rev 3
  *     item 4). Every `mtx.Lock()`/`defer Unlock()` pair is dropped.
  *
- * Reference @709fd12b (SHA-256 verified before use):
+ * Reference @v0.38.26 (SHA-256 verified before use):
  *   types/vote_set.go      724 lines 548a256c311755a4a2d83696c90030f144952c64c0e3a459ac86baf844c56880
- *   types/block.go        1555 lines 2094420e26fa23d4b6a592a06e7953025541973694bd96ff9c8e5d9911162109
- *   types/vote.go          454 lines dd978df4530187c34902fad06ba1f7065896ece92b68d07d3a9bfc55ddb82e0f
- *   libs/bits/bit_array.go 497 lines de70791bae05efc5c2e059f56c6582b7cbe700531dfb73c0e53077cfaa297d49
- *   types/validator_set.go 1053 lines 6c3a663aaf84fbee94735731eaba27d1a8e5269dd6e316e0b175595e32902221
- *   consensus/state.go    2653 lines f9517e9f45f4f9afefebf869eb4674bf0135d5edda00de67eab2e1695c945090
- *     (read-only, for the caller's error discrimination at :2069-2118 and
+ *   types/block.go        1561 lines 33ba0d2c8040449e96dca739708106e6044101af3ad6ba33945ea1949c0e0889
+ *   types/vote.go          458 lines ef9fc496c0dbebecb810b0c1a117fa7651e6602bb348cde3a2dfe56e1af183f3
+ *   libs/bits/bit_array.go 521 lines a0ae167455e93aa046884a2ba298e767da95f20bfcbb9fb738579a4d7af8e31b
+ *   types/validator_set.go 1113 lines c2b47e6097647281c4fe2b33687116559608fb26ff1f65bfde6d7076af59735e
+ *   consensus/state.go    2646 lines ac2f65f60cdcfe971aba9c34322b03c031460382ec361e8d18023876d1a3e772
+ *     (read-only, for the caller's error discrimination at :2064-2113 and
  *      the two ToVoteSet call sites at :610-624 and :626-643)
  * Governing records: umbrella rev 5 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * INVARIANT (atlas-dec-7495d3372e004b24b4f6cc7bff5caf07),
@@ -150,7 +150,7 @@ extern "C" {
 
 /* ══ constants ════════════════════════════════════════════════════════ */
 
-/** cometbft@709fd12b types/vote_set.go:14-19 — `MaxVotesCount`.
+/** cometbft@v0.38.26 types/vote_set.go:14-19 — `MaxVotesCount`.
  *  The reference's DoS ceiling on the number of votes in a set, used by
  *  `ValidateBasic` funcs elsewhere. Carried unchanged; this port's own
  *  ceiling is the tighter CMT_VALSET_MAX. */
@@ -209,7 +209,7 @@ _Static_assert((int)CMT_PEER_MAX == 128,
 /* ══ peer identity ════════════════════════════════════════════════════ */
 
 /**
- * cometbft@709fd12b types/vote_set.go:25 — `type P2PID string`, itself a
+ * cometbft@v0.38.26 types/vote_set.go:25 — `type P2PID string`, itself a
  * copy of `p2p.ID` (p2p/key.go:16, a hex-encoded 20-byte node id in the
  * reference).
  *
@@ -251,17 +251,17 @@ bool cmt_peer_id_equals(const cmt_peer_id_t *a, const cmt_peer_id_t *b);
  * and from cmt_hvs. `CMT_VOTE_SET_ERR_NONE` is the reference's `nil`.
  *
  * WHY AN ENUM AND NOT A RETURN CODE ALONE: the reference's caller
- * discriminates. `consensus/state.go:2069-2118 tryAddVote` branches on
- *   · `*types.ErrVoteConflictingVotes` (:2077) → report to the evidence
+ * discriminates. `consensus/state.go:2064-2113 tryAddVote` branches on
+ *   · `*types.ErrVoteConflictingVotes` (:2072) → report to the evidence
  *     pool, and it needs BOTH votes;
- *   · `types.ErrVoteNonDeterministicSignature` (:2102) → log, DO NOT
+ *   · `types.ErrVoteNonDeterministicSignature` (:2097) → log, DO NOT
  *     punish the peer;
- *   · `types.ErrInvalidVoteExtension` (:2104) → log, do not punish. Note
+ *   · `types.ErrInvalidVoteExtension` (:2099) → log, do not punish. Note
  *     that this one is NOT reachable from here: the only place the
- *     pinned tree raises it is `state/execution.go:373`, and
- *     `VerifyVoteAndExtension` (vote.go:242-259) never returns it. It has
+ *     pinned tree raises it is `state/execution.go:404`, and
+ *     `VerifyVoteAndExtension` (vote.go:246-263) never returns it. It has
  *     no enum value for that reason.
- *   · anything else (:2106-2113) → `ErrAddingVote`, punish the peer.
+ *   · anything else (:2101-2108) → `ErrAddingVote`, punish the peer.
  * A single CMT_REJECT would erase that distinction and with it the
  * evidence path.
  */
@@ -294,13 +294,13 @@ typedef enum {
      * verify. The reference wraps THREE distinct errors into these two
      * unnamed `fmt.Errorf`s: `ErrVoteInvalidValidatorAddress` and
      * `ErrVoteInvalidSignature` from `verifyAndReturnProto`
-     * (vote.go:219-228), and the unnamed "expected vote extension
-     * signature" of vote.go:249-251. R1's `cmt_vote_verify` and
+     * (vote.go:223-232), and the unnamed "expected vote extension
+     * signature" of vote.go:253-255. R1's `cmt_vote_verify` and
      * `cmt_vote_verify_vote_and_extension` return CMT_REJECT for all
      * three (cmt_vote.h:251-258, :269-272), so this port cannot separate
      * them either — and neither does the reference's own caller, which
      * sends every one of them down the `ErrAddingVote` branch
-     * (state.go:2106-2113). Nothing the caller acts on is lost.
+     * (state.go:2101-2108). Nothing the caller acts on is lost.
      */
     CMT_VOTE_SET_ERR_VERIFY_FAILED,
 
@@ -341,7 +341,7 @@ typedef enum {
 /* ══ blockVotes (vote_set.go:675-711) ═════════════════════════════════ */
 
 /**
- * cometbft@709fd12b types/vote_set.go:681-686 — `type blockVotes struct`.
+ * cometbft@v0.38.26 types/vote_set.go:681-686 — `type blockVotes struct`.
  *
  * `votes` holds BORROWED pointers into the vote objects the enclosing
  * vote set owns, exactly as the Go slice holds the same `*Vote` values
@@ -372,7 +372,7 @@ typedef struct {
 } cmt_peer_maj23_entry_t;
 
 /**
- * cometbft@709fd12b types/vote_set.go:61-76 — `type VoteSet struct`.
+ * cometbft@v0.38.26 types/vote_set.go:61-76 — `type VoteSet struct`.
  *
  * The struct is visible so that cmt_hvs.c and the tests can read it, as
  * R1 made `cmt_validator_set_t` visible; it is CONSTRUCTED ONLY by
@@ -383,7 +383,7 @@ typedef struct {
  * function here takes a non-const `cmt_vote_set_t *` — several of them
  * (`HasTwoThirdsAny` :458, `HasAll` :467, `addVerifiedVote` :306) reach
  * `valSet.TotalVotingPower()`, which WRITES the reference's lazily
- * recomputed cache (validator_set.go:332-337, R1
+ * recomputed cache (validator_set.go:341-348, R1
  * cmt_validator_set_total_voting_power).
  */
 typedef struct {
@@ -413,7 +413,7 @@ typedef struct {
 /* ── constructors ───────────────────────────────────────────────────── */
 
 /**
- * cometbft@709fd12b types/vote_set.go:78-98 — `NewVoteSet()`.
+ * cometbft@v0.38.26 types/vote_set.go:78-98 — `NewVoteSet()`.
  *
  * @param chain_id 32 raw bytes at most (umbrella rev 3; R1 decision
  *        atlas-dec-9285f4a5…). A longer id is CMT_REJECT.
@@ -433,7 +433,7 @@ int cmt_vote_set_new(const uint8_t *chain_id, size_t chain_id_len,
                      int64_t height, int32_t round, int32_t signed_msg_type,
                      cmt_validator_set_t *val_set, cmt_vote_set_t **out);
 
-/** cometbft@709fd12b types/vote_set.go:100-108 — `NewExtendedVoteSet()`.
+/** cometbft@v0.38.26 types/vote_set.go:100-108 — `NewExtendedVoteSet()`.
  *  NewVoteSet with `extensionsEnabled = true`, which makes every added
  *  vote's EXTENSION signature be checked too (:217-220). */
 int cmt_new_extended_vote_set(const uint8_t *chain_id, size_t chain_id_len,
@@ -449,31 +449,31 @@ void cmt_vote_set_free(cmt_vote_set_t *vs);
 
 /* ── accessors (vote_set.go:110-144) ────────────────────────────────── */
 
-/** cometbft@709fd12b types/vote_set.go:110-112 — `ChainID()`.
+/** cometbft@v0.38.26 types/vote_set.go:110-112 — `ChainID()`.
  *  @param out_len receives the length; may be NULL. */
 const uint8_t *cmt_vote_set_chain_id(const cmt_vote_set_t *vs,
                                      size_t *out_len);
 
-/** cometbft@709fd12b types/vote_set.go:114-120 — `GetHeight()`.
+/** cometbft@v0.38.26 types/vote_set.go:114-120 — `GetHeight()`.
  *  A NULL set answers 0 (:116-118). */
 int64_t cmt_vote_set_get_height(const cmt_vote_set_t *vs);
 
-/** cometbft@709fd12b types/vote_set.go:122-128 — `GetRound()`.
+/** cometbft@v0.38.26 types/vote_set.go:122-128 — `GetRound()`.
  *  A NULL set answers -1 (:124-126). */
 int32_t cmt_vote_set_get_round(const cmt_vote_set_t *vs);
 
-/** cometbft@709fd12b types/vote_set.go:130-136 — `Type()`.
+/** cometbft@v0.38.26 types/vote_set.go:130-136 — `Type()`.
  *  A NULL set answers 0x00 (:132-134). */
 uint8_t cmt_vote_set_type(const cmt_vote_set_t *vs);
 
-/** cometbft@709fd12b types/vote_set.go:138-144 — `Size()`.
+/** cometbft@v0.38.26 types/vote_set.go:138-144 — `Size()`.
  *  A NULL set answers 0 (:140-142); otherwise `valSet.Size()`. */
 int cmt_vote_set_size(const cmt_vote_set_t *vs);
 
 /* ── adding votes (vote_set.go:146-332) ─────────────────────────────── */
 
 /**
- * cometbft@709fd12b types/vote_set.go:146-165 — `AddVote()`, which is
+ * cometbft@v0.38.26 types/vote_set.go:146-165 — `AddVote()`, which is
  * `addVote` (:167-242) under the dropped mutex.
  *
  * ⚠ THE TWO OUTPUTS ARE INDEPENDENT, exactly as the reference's
@@ -508,7 +508,7 @@ int cmt_vote_set_add_vote(cmt_vote_set_t *vs, const cmt_vote_t *vote,
                           cmt_vote_t *out_conflicting);
 
 /**
- * cometbft@709fd12b types/vote_set.go:329-367 — `SetPeerMaj23()`.
+ * cometbft@v0.38.26 types/vote_set.go:329-367 — `SetPeerMaj23()`.
  * A peer claiming +2/3 for a block makes the set TRACK that block, which
  * is the only way a conflicting vote is ever stored (:285-288).
  * @param out_err may be NULL.
@@ -524,13 +524,13 @@ int cmt_vote_set_set_peer_maj23(cmt_vote_set_t *vs, cmt_peer_id_t peer,
 
 /* ── reading the set (vote_set.go:369-482) ──────────────────────────── */
 
-/** cometbft@709fd12b types/vote_set.go:369-377 — `BitArray()`. A COPY.
+/** cometbft@v0.38.26 types/vote_set.go:369-377 — `BitArray()`. A COPY.
  *  @return CMT_OK, CMT_BITS_NIL for a NULL set (:371-373) — positive, and
  *          `*out` is left zeroed, which behaves as the reference's nil
  *          BitArray does. CMT_FAULT on a NULL `out`. */
 int cmt_vote_set_bit_array(cmt_vote_set_t *vs, cmt_bit_array_t *out);
 
-/** cometbft@709fd12b types/vote_set.go:379-390 — `BitArrayByBlockID()`.
+/** cometbft@v0.38.26 types/vote_set.go:379-390 — `BitArrayByBlockID()`.
  *  @return CMT_OK, CMT_BITS_NIL for a NULL set (:380-382) or a block this
  *          set does not track (:389), CMT_REJECT if the BlockID's key does
  *          not fit, CMT_FAULT on NULL. */
@@ -539,7 +539,7 @@ int cmt_vote_set_bit_array_by_block_id(cmt_vote_set_t *vs,
                                        cmt_bit_array_t *out);
 
 /**
- * cometbft@709fd12b types/vote_set.go:392-401 — `GetByIndex()`.
+ * cometbft@v0.38.26 types/vote_set.go:392-401 — `GetByIndex()`.
  * The "canonical" vote of that validator when it has conflicting ones.
  * @param out receives a BORROWED pointer, NULL where the reference
  *        returns nil (no vote from that validator, or a NULL set
@@ -554,7 +554,7 @@ int cmt_vote_set_get_by_index(cmt_vote_set_t *vs, int32_t val_index,
                               const cmt_vote_t **out);
 
 /**
- * cometbft@709fd12b types/vote_set.go:403-415 — `List()`.
+ * cometbft@v0.38.26 types/vote_set.go:403-415 — `List()`.
  * A copy of every vote the set holds, in validator-index order, with the
  * gaps skipped — so `*out_len` is the number of validators that voted,
  * not the size of the set.
@@ -567,7 +567,7 @@ int cmt_vote_set_list(cmt_vote_set_t *vs, cmt_vote_t *out, size_t cap,
                       size_t *out_len);
 
 /**
- * cometbft@709fd12b types/vote_set.go:417-428 — `GetByAddress()`.
+ * cometbft@v0.38.26 types/vote_set.go:417-428 — `GetByAddress()`.
  * @param out receives a BORROWED pointer, NULL where the validator has
  *        not voted.
  * @return CMT_OK; CMT_REJECT where the reference panics at :425 because
@@ -575,8 +575,8 @@ int cmt_vote_set_list(cmt_vote_set_t *vs, cmt_vote_t *out, size_t cap,
  *         address is a CALLER ARGUMENT rather than internal state, and
  *         the pinned tree contains no non-test caller of
  *         `VoteSet.GetByAddress` (every non-test `.GetByAddress(` site —
- *         e.g. state/state.go:277, consensus/state.go:1876,
- *         types/validation.go:250 — is on a ValidatorSet; verifier A
+ *         e.g. state/state.go:281, consensus/state.go:1871,
+ *         types/validation.go:255 — is on a ValidatorSet; verifier A
  *         counted 20+, all of that kind), so there is no internal
  *         contract to declare violated — refusing is the honest answer.
  *         CMT_FAULT on a NULL `out` or set.
@@ -584,28 +584,28 @@ int cmt_vote_set_list(cmt_vote_set_t *vs, cmt_vote_t *out, size_t cap,
 int cmt_vote_set_get_by_address(cmt_vote_set_t *vs, const uint8_t *address,
                                 size_t address_len, const cmt_vote_t **out);
 
-/** cometbft@709fd12b types/vote_set.go:430-437 — `HasTwoThirdsMajority()`.
+/** cometbft@v0.38.26 types/vote_set.go:430-437 — `HasTwoThirdsMajority()`.
  *  A NULL set answers false (:431-433). */
 bool cmt_vote_set_has_two_thirds_majority(const cmt_vote_set_t *vs);
 
-/** cometbft@709fd12b types/vote_set.go:439-450 — `IsCommit()`.
+/** cometbft@v0.38.26 types/vote_set.go:439-450 — `IsCommit()`.
  *  A precommit set with a majority; a prevote set is never a commit
  *  (:444-446). */
 bool cmt_vote_set_is_commit(const cmt_vote_set_t *vs);
 
-/** cometbft@709fd12b types/vote_set.go:452-459 — `HasTwoThirdsAny()`.
+/** cometbft@v0.38.26 types/vote_set.go:452-459 — `HasTwoThirdsAny()`.
  *  `sum > TotalVotingPower*2/3`, whatever the votes were for.
  *  @param out receives the answer; false for a NULL set (:453-455).
  *  @return CMT_OK, CMT_FAULT on a NULL `out` or a failing power sum. */
 int cmt_vote_set_has_two_thirds_any(cmt_vote_set_t *vs, bool *out);
 
-/** cometbft@709fd12b types/vote_set.go:461-468 — `HasAll()`.
+/** cometbft@v0.38.26 types/vote_set.go:461-468 — `HasAll()`.
  *  `sum == TotalVotingPower`.
  *  @return CMT_OK, CMT_FAULT on a NULL `out` or a failing power sum. */
 int cmt_vote_set_has_all(cmt_vote_set_t *vs, bool *out);
 
 /**
- * cometbft@709fd12b types/vote_set.go:470-482 — `TwoThirdsMajority()`.
+ * cometbft@v0.38.26 types/vote_set.go:470-482 — `TwoThirdsMajority()`.
  * @param out_block_id receives `*maj23` when there is one, and the ZERO
  *        BlockID otherwise (:474, :481) — the reference writes
  *        `BlockID{}`, so `out_block_id` is always written.
@@ -619,12 +619,12 @@ int cmt_vote_set_two_thirds_majority(const cmt_vote_set_t *vs,
 /* ── making a commit (vote_set.go:627-671) ──────────────────────────── */
 
 /**
- * cometbft@709fd12b types/vote_set.go:630-671 — `MakeExtendedCommit()`.
+ * cometbft@v0.38.26 types/vote_set.go:630-671 — `MakeExtendedCommit()`.
  *
  * One ExtendedCommitSig per VALIDATOR INDEX, in index order (:649-658) —
  * that order is what makes a commit's hash deterministic (D-19 rev 6
  * item 4). A validator that did not vote gives an ABSENT entry through
- * `cmt_vote_extended_commit_sig(NULL, …)` (vote.go:129-131), and one
+ * `cmt_vote_extended_commit_sig(NULL, …)` (vote.go:133-135), and one
  * whose vote was for a DIFFERENT block is replaced by an ABSENT entry
  * (:653-655).
  *
@@ -646,15 +646,15 @@ int cmt_vote_set_make_extended_commit(cmt_vote_set_t *vs,
                                       size_t sigs_cap,
                                       cmt_extended_commit_t *out);
 
-/* ── rebuilding a vote set from a commit (block.go:1071-1117) ───────── */
+/* ── rebuilding a vote set from a commit (block.go:1077-1123) ───────── */
 
 /**
- * cometbft@709fd12b types/block.go:1098-1117 — `(commit *Commit)
+ * cometbft@v0.38.26 types/block.go:1104-1123 — `(commit *Commit)
  * ToVoteSet()`. Lives here, not in cmt_block.h; see the file header.
  *
  * The inverse of MakeExtendedCommit: every non-ABSENT entry becomes a
- * precommit that is validated (:1108) and added (:1111). The reference
- * PANICS if either step fails (:1109, :1113) — this is called on a commit
+ * precommit that is validated (:1114) and added (:1117). The reference
+ * PANICS if either step fails (:1115, :1119) — this is called on a commit
  * the node already stored and already verified (state.go:626-643
  * `votesFromSeenCommit`), so a failure means the local store disagrees
  * with itself. That is CMT_FAULT, not a verdict on a message.
@@ -672,12 +672,12 @@ int cmt_commit_to_vote_set(const cmt_commit_t *commit,
                            cmt_validator_set_t *vals, cmt_vote_set_t **out);
 
 /**
- * cometbft@709fd12b types/block.go:1071-1079 — `(ec *ExtendedCommit)
- * ToExtendedVoteSet()`, with `addSigsToVoteSet` (:1081-1096) inlined as a
+ * cometbft@v0.38.26 types/block.go:1077-1085 — `(ec *ExtendedCommit)
+ * ToExtendedVoteSet()`, with `addSigsToVoteSet` (:1087-1102) inlined as a
  * file-local static. Lives here; see the file header.
  *
  * The same shape as `cmt_commit_to_vote_set` over an EXTENDED commit, so
- * every added vote's extension signature is verified too (:1076 builds an
+ * every added vote's extension signature is verified too (:1082 builds an
  * extended set). Called by `state.go:610-624 votesFromExtendedCommit`.
  * @return as `cmt_commit_to_vote_set`.
  */

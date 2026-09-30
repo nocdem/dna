@@ -1,6 +1,6 @@
 /**
  * @file nodus/src/witness/nodus_witness_cmt_host.h
- * @brief cometbft @709fd12b `state/execution.go` (BlockExecutor) and
+ * @brief cometbft @v0.38.26 `state/execution.go` (BlockExecutor) and
  *        `state/validation.go`, literal, as the HOST behind
  *        `cmt_cs_host_t` — every one of its 27 rows — with the ABCI
  *        application, mempool and evidence-pool interface tables the
@@ -28,9 +28,9 @@
  * privval, the clock, the block slots and the vote-extension arena.
  *
  * ── THE 27 ROWS OF cmt_cs_host_t (cmt_cs.h, `cmt_cs_host_t`) ──────────
- *   6 BlockExecutor  create_proposal_block :101, process_proposal :162,
- *                    validate_block :190, apply_verified_block :199,
- *                    extend_vote :325, verify_vote_extension :356
+ *   6 BlockExecutor  create_proposal_block :110, process_proposal :174,
+ *                    validate_block :202, apply_verified_block :230,
+ *                    extend_vote :356, verify_vote_extension :387
  *   7 BlockStore     bs_height, bs_load_block_commit,
  *                    bs_load_block_extended_commit, bs_load_block_meta
  *                    (the HEADER), bs_load_seen_commit, bs_save_block,
@@ -43,7 +43,7 @@
  *   1 WAL repair     wal_repair (state.go:352-385) → nodus_cmt_wal_repair
  *                    — added with decision 2026-09-26-cmt-wal-file-
  *                    group.md item 4b
- *   1 decode_block   state.go:2005-2019 → nodus_cmt_block_decode into the
+ *   1 decode_block   state.go:2000-2014 → nodus_cmt_block_decode into the
  *                    slot's storage
  *   1 now            the WALL clock, forwarded
  *   2 timer          timer_arm, timer_disarm — one pending deadline, on
@@ -52,30 +52,30 @@
  * the repair row makes it 27.
  *
  * ── PORT ROWS OF execution.go, and where each is ────────────────────────
- *   NewBlockExecutor :58 → nodus_cmt_blockexec_init; Store :85 →
- *   `->store`; CreateProposalBlock :101; ProcessProposal :162;
- *   ValidateBlock :190; ApplyVerifiedBlock :199; ApplyBlock :211 →
- *   nodus_cmt_blockexec_apply_block; applyBlock :222; ExtendVote :325;
- *   VerifyVoteExtension :356; Commit :387; buildLastCommitInfoFromStore
- *   :432; BuildLastCommitInfo :450; buildExtendedCommitInfoFromStore
- *   :495; BuildExtendedCommitInfo :512; validateValidatorUpdates :567;
- *   updateState :593; ExecCommitBlock :731 → nodus_cmt_exec_commit_block
- *   (the Handshaker that calls it is R3-C1's); pruneBlocks :773.
- *   validation.go validateBlock :15-150 → validate_block's body.
- *   YOK: BlockExecutorWithMetrics :50, SetEventBus :91, fireEvents
- *   :670-723 (events), every `blockExec.metrics` and `logger` line.
+ *   NewBlockExecutor :67 → nodus_cmt_blockexec_init; Store :94 →
+ *   `->store`; CreateProposalBlock :110; ProcessProposal :174;
+ *   ValidateBlock :202; ApplyVerifiedBlock :230; ApplyBlock :242 →
+ *   nodus_cmt_blockexec_apply_block; applyBlock :253; ExtendVote :356;
+ *   VerifyVoteExtension :387; Commit :418; buildLastCommitInfoFromStore
+ *   :463; BuildLastCommitInfo :481; buildExtendedCommitInfoFromStore
+ *   :526; BuildExtendedCommitInfo :543; validateValidatorUpdates :598;
+ *   updateState :624; ExecCommitBlock :762 → nodus_cmt_exec_commit_block
+ *   (the Handshaker that calls it is R3-C1's); pruneBlocks :804.
+ *   validation.go validateBlock :21-170 → validate_block's body.
+ *   YOK: BlockExecutorWithMetrics :53, SetEventBus :100, fireEvents
+ *   :701-754 (events), every `blockExec.metrics` and `logger` line.
  *
  * ── PORTED HERE FROM OTHER FILES (no cmt_ home exists) ──────────────────
- *   types/evidence.go:81-92 `DuplicateVoteEvidence.ABCI` and :483-489
+ *   types/evidence.go:81-92 `DuplicateVoteEvidence.ABCI` and :486-492
  *   `EvidenceList.ToABCI` (cmt_evidence.h left them as "ABCI application
  *   layer"); types/tx.go:107-116 `Txs.Validate` and :188-192
  *   `ComputeProtoSizeForTxs`; types/protobuf.go:43-48 `TM2PB.Validator`
- *   and :103-113 `PB2TM.ValidatorUpdates`; crypto/encoding/codec.go:42-63
+ *   and :103-113 `PB2TM.ValidatorUpdates`; crypto/encoding/codec.go:50-77
  *   `PubKeyFromProto`'s nil-oneof refusal; state/tx_filter.go:10-26
  *   `TxPreCheck`/`TxPostCheck`. QUESTION in the report: a better home.
  *
  * ── THE CLOSURE PROBLEM, STATED ONCE ───────────────────────────────────
- * `mempool.Update` (execution.go:418-424) receives two CLOSURES,
+ * `mempool.Update` (execution.go:449-455) receives two CLOSURES,
  * `TxPreCheck(state)` and `TxPostCheck(state)` (tx_filter.go), each
  * capturing one number: `PreCheckMaxBytes(maxDataBytes)` and
  * `PostCheckMaxGas(maxGas)` (mempool.go:114-145). Here the closures are
@@ -96,7 +96,7 @@
  *   · `apply_verified_block` builds the new state in a host-owned
  *     scratch and copies it into `in_out_state` ONLY on success: the
  *     reference returns `state, err` with the input state unchanged on
- *     every error path (:236, :250, :260, :277, :282, :286, :291, :303).
+ *     every error path (:267, :281, :291, :308, :313, :317, :322, :334).
  *   · `validate_block` takes `const cmt_state_t *` while `VerifyCommit`
  *     writes the set's total-power cache (cmt_validation.h:288-290): the
  *     host copies `last_validators` into its own set and verifies on the
@@ -131,19 +131,19 @@
  * unordered iteration (validator index order, transaction order,
  * evidence order — all the reference's).
  *
- * Reference @709fd12b (SHA-256 verified before use):
- *   state/execution.go   789 lines
- *   state/validation.go  150 lines
- * Partly moved to cometbft v0.38.26 (decision
- * 2026-09-30-cometbft-pin-v0.38.26): validateBlock with its options
- * struct, ValidateBlock and ValidateBlockSkipLastCommit cite
+ * Reference @v0.38.26 (SHA-256 verified before use):
+ *   state/execution.go   820 lines
+ *     a928de838673694e1114199d8a51b47259d8f98cb7a88fdd25fdba75f941ab69
  *   state/validation.go  170 lines
  *     c868b1b0b70aaf4d78c7201e320079dd237943f60907b683bcd306c463b8a1d5
- *   state/execution.go (v0.38.26 :202-227)
- * at their own declarations, and so does the v0.38.26 wall-clock
- * block-time tolerance (validation.go:17, :124-129; execution.go:47-48,
- * :59-63, :215, :221-223, :246), SHA-256 of execution.go
- *     a928de838673694e1114199d8a51b47259d8f98cb7a88fdd25fdba75f941ab69.
+ * (decision 2026-09-30-cometbft-pin-v0.38.26). validateBlock with its
+ * options struct, ValidateBlock and ValidateBlockSkipLastCommit
+ * (execution.go:202-227) and the wall-clock block-time tolerance
+ * (validation.go:17, :124-129; execution.go:47-48, :59-63, :215,
+ * :221-223, :246) were ported at v0.38.26; every other row was ported
+ * at 709fd12b (execution.go 789 lines, validation.go 150 lines) and its
+ * citation moved to v0.38.26 after checking the line against the
+ * v0.38.26 file. Also referenced:
  *   state/services.go, state/tx_filter.go, mempool/mempool.go,
  *   mempool/nop_mempool.go, proxy/app_conn.go, abci/types/application.go,
  *   proto/tendermint/abci/types.proto, types/protobuf.go — pin table of
@@ -573,9 +573,9 @@ typedef struct {
      * discipline as the apply engine's `V2AP_FAIL_*`
      * (nodus_witness_v2_apply.h:319-469): a field the tests set, never a
      * production caller. When true, `applyBlock` returns CMT_FAULT in the
-     * ONE window between `Commit` returning (execution.go:290 — the
+     * ONE window between `Commit` returning (execution.go:321 — the
      * ledger transaction is COMMITTED) and `store.Save(state)`
-     * (:302 — the state is not). That is the Handshaker's "we ran Commit
+     * (:333 — the state is not). That is the Handshaker's "we ran Commit
      * but didn't save the state" branch (consensus/replay.go:437-453),
      * and it is not reachable through `CMT_FAIL_POINT()` because that
      * needs a build option and an environment variable
@@ -585,7 +585,7 @@ typedef struct {
 } nodus_cmt_blockexec_t;
 
 /**
- * execution.go:58-83 `NewBlockExecutor(stateStore, logger, proxyApp,
+ * execution.go:67-92 `NewBlockExecutor(stateStore, logger, proxyApp,
  * mempool, evpool, blockStore, options...)` — the six stored fields plus
  * the forwarded rows; allocates every scratch buffer. `now` is the wall
  * clock, `mono` the timer's monotonic clock (both required).
@@ -671,15 +671,15 @@ int nodus_cmt_host_extend_vote(void *ctx, const cmt_vote_t *vote,
                                cmt_pb_bytes_t *out_ext);
 int nodus_cmt_host_verify_vote_extension(void *ctx, const cmt_vote_t *vote);
 
-/** execution.go:211-220 `ApplyBlock`: validateBlock, then applyBlock.
- *  @return CMT_OK; CMT_REJECT for `ErrInvalidBlock` (:216); the
+/** execution.go:242-251 `ApplyBlock`: validateBlock, then applyBlock.
+ *  @return CMT_OK; CMT_REJECT for `ErrInvalidBlock` (:247); the
  *  applyBlock failures as in `apply_verified_block`. */
 int nodus_cmt_blockexec_apply_block(nodus_cmt_blockexec_t *ctx,
                                     const cmt_block_id_t *block_id,
                                     cmt_block_t *block,
                                     cmt_state_t *in_out_state);
 
-/** execution.go:731-771 `ExecCommitBlock`: FinalizeBlock + Commit without
+/** execution.go:762-802 `ExecCommitBlock`: FinalizeBlock + Commit without
  *  touching the state; `out_app_hash` is the response's. The Handshaker
  *  that calls it (consensus/replay.go) is R3-C1's. */
 int nodus_cmt_exec_commit_block(nodus_cmt_blockexec_t *ctx, cmt_block_t *block,
@@ -687,7 +687,7 @@ int nodus_cmt_exec_commit_block(nodus_cmt_blockexec_t *ctx, cmt_block_t *block,
                                 uint8_t out_app_hash[CMT_PB_HASH_MAX],
                                 size_t *out_app_hash_len);
 
-/** execution.go:773-789 `pruneBlocks`. */
+/** execution.go:804-820 `pruneBlocks`. */
 int nodus_cmt_blockexec_prune_blocks(nodus_cmt_blockexec_t *ctx,
                                      int64_t retain_height,
                                      const cmt_state_t *state,
@@ -732,7 +732,7 @@ int nodus_cmt_validate_block(nodus_cmt_blockexec_t *ctx,
                              const cmt_state_t *state, cmt_block_t *block,
                              const nodus_cmt_block_validation_options_t *opts);
 
-/** execution.go:567-591 `validateValidatorUpdates`. */
+/** execution.go:598-622 `validateValidatorUpdates`. */
 int nodus_cmt_validate_validator_updates(const cmt_pb_validator_update_t *updates,
                                          size_t n,
                                          const cmt_validator_params_t *params);
@@ -742,7 +742,7 @@ int nodus_cmt_pb2tm_validator_updates(const cmt_pb_validator_update_t *updates,
                                       size_t n, cmt_validator_t *out,
                                       size_t out_cap);
 
-/** execution.go:593-664 `updateState` into `ctx->state_scratch`. */
+/** execution.go:624-695 `updateState` into `ctx->state_scratch`. */
 int nodus_cmt_update_state(nodus_cmt_blockexec_t *ctx, const cmt_state_t *state,
                            const cmt_block_id_t *block_id,
                            const cmt_header_t *header,
@@ -750,14 +750,14 @@ int nodus_cmt_update_state(nodus_cmt_blockexec_t *ctx, const cmt_state_t *state,
                            const cmt_validator_t *validator_updates,
                            size_t n_updates);
 
-/** execution.go:450-483 `BuildLastCommitInfo` into `ctx->votes`. */
+/** execution.go:481-514 `BuildLastCommitInfo` into `ctx->votes`. */
 int nodus_cmt_build_last_commit_info(nodus_cmt_blockexec_t *ctx,
                                      const cmt_block_t *block,
                                      const cmt_validator_set_t *last_val_set,
                                      int64_t initial_height,
                                      nodus_abci_commit_info_t *out);
 
-/** execution.go:512-565 `BuildExtendedCommitInfo` into `ctx->ext_votes`. */
+/** execution.go:543-596 `BuildExtendedCommitInfo` into `ctx->ext_votes`. */
 int nodus_cmt_build_extended_commit_info(nodus_cmt_blockexec_t *ctx,
                                          const cmt_extended_commit_t *ec,
                                          const cmt_validator_set_t *val_set,
@@ -765,7 +765,7 @@ int nodus_cmt_build_extended_commit_info(nodus_cmt_blockexec_t *ctx,
                                          cmt_abci_params_t ap,
                                          nodus_abci_extended_commit_info_t *out);
 
-/** types/evidence.go:483-489 `EvidenceList.ToABCI` into `ctx->misbehavior`. */
+/** types/evidence.go:486-492 `EvidenceList.ToABCI` into `ctx->misbehavior`. */
 int nodus_cmt_evidence_to_abci(nodus_cmt_blockexec_t *ctx,
                                const cmt_evidence_data_t *ev,
                                const nodus_abci_misbehavior_t **out,
