@@ -66,6 +66,9 @@
     return wrap;
   }
   const position = item => typeof item.position === 'string' ? item.position : '—';
+  // A block with no items is a heartbeat: the chain commits one while idle
+  // (create_empty_blocks_interval) — shown as such instead of "0" (operator 2026-10-01).
+  const itemCount = n => Number(n) === 0 ? el('span', 'Heartbeat', 'badge') : n;
   // The index API does not percent-decode: a height, a hex id or a "height:index" position is
   // sent as it is (all of [0-9a-f:], legal in a path and a query); anything else is encoded.
   const apiValue = value => /^[0-9a-f:]+$/.test(String(value)) ? String(value) : encodeURIComponent(value);
@@ -171,7 +174,7 @@
       const data = await api('/blocks?before=' + (snapshotTip - (target - 1) * 25 + 1) + '&limit=25');
       if (current !== blockRequest) return;
       if (!Array.isArray(data.blocks)) throw new Error(t('Unexpected block response.', 'Beklenmeyen blok yanıtı.'));
-      body.replaceChildren(...data.blocks.map(b => row([link('block.html?h=' + encodeURIComponent(b.height), b.height), hash(b.block_id, b.block_id ? 'block.html?h=' + encodeURIComponent(b.block_id) : null), time(b.time), b.n_items])));
+      body.replaceChildren(...data.blocks.map(b => row([link('block.html?h=' + encodeURIComponent(b.height), b.height), hash(b.block_id, b.block_id ? 'block.html?h=' + encodeURIComponent(b.block_id) : null), time(b.time), itemCount(b.n_items)])));
       if (!data.blocks.length) messageRow(body, t('No blocks on this page.', 'Bu sayfada blok yok.'), 4);
       pageNumber = target;
       $('pg-total').textContent = lastPage; $('pg-input').value = pageNumber;
@@ -196,7 +199,7 @@
     content.replaceChildren(fields([
       [t('Height','Yükseklik'), b.height], [t('Block ID','Blok kimliği'), hash(b.block_id)], [t('Previous block','Önceki blok'), previous],
       [t('Timestamp','Zaman damgası'), time(b.time)], [t('Proposer','Öneren'), hash(b.proposer)], [t('State root','Durum kökü'), hash(b.global_root)],
-      [t('Applied transactions','Uygulanan işlemler'), b.applied_count], [t('Items in block','Bloktaki kayıtlar'), b.n_items]
+      [t('Applied transactions','Uygulanan işlemler'), b.applied_count], [t('Items in block','Bloktaki kayıtlar'), itemCount(b.n_items)]
     ]), el('h2', t('Transactions','İşlemler')), table([t('Position','Konum'),t('Type','Tür'),t('Fee','Ücret'),t('Wire ID','Kablo kimliği')], data.items.map(itemRow), t('No transactions in this block.','Bu blokta işlem yok.'), 'block-items-tbody'));
     nextCursor = Number.isSafeInteger(data.next_from) ? data.next_from : null;
     content.append(...moreButton(() => loadMore('/block/' + apiValue(identifier) + '?from=', 'block-items-tbody', 'items', itemRow, d => Number.isSafeInteger(d.next_from) ? d.next_from : null)));
