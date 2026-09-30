@@ -12,6 +12,7 @@ export const files = new Map([
   ['/manifesto.html', ['manifesto.html', 'text/html; charset=utf-8']],
   ['/roadmap.html', ['roadmap.html', 'text/html; charset=utf-8']],
   ['/connect.html', ['connect.html', 'text/html; charset=utf-8']],
+  ['/connect-soon.html', ['connect-soon.html', 'text/html; charset=utf-8']],
   ['/wallet.html', ['wallet.html', 'text/html; charset=utf-8']],
   ['/identity.html', ['identity.html', 'text/html; charset=utf-8']],
   ['/chain.html', ['chain.html', 'text/html; charset=utf-8']],

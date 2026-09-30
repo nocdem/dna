@@ -609,10 +609,18 @@ const turkish = {
   "privacy.s10.title": "10. Bu Politikadaki Değişiklikler",
   "privacy.s10.p1": "Bu gizlilik politikasını zaman zaman güncelleyebiliriz. Değişiklikler bu sayfada güncellenmiş bir “Son Güncelleme” tarihiyle yansıtılacaktır. Değişikliklerden sonra Nodus Connect’i kullanmaya devam etmeniz, revize edilmiş politikayı kabul ettiğiniz anlamına gelir.",
   "privacy.s11.title": "11. İletişim",
-  "privacy.s11.p1": "Bu gizlilik politikası veya Nodus Connect’in veri uygulamaları hakkında sorularınız varsa:"
+  "privacy.s11.p1": "Bu gizlilik politikası veya Nodus Connect’in veri uygulamaları hakkında sorularınız varsa:",
+  "nav.about": "Hakkında",
+  "nav.wallet": "Web cüzdanı",
+  "nav.soon": "yakında",
+  "nav.resourceNetwork": "Kaynak ağı",
+  "nav.openWallet": "Cüzdanı aç",
+  "soonPage.crumb": "Yakında",
+  "soonPage.openWallet": "Bu arada cüzdanı aç",
+  "soonPage.about": "Nodus Connect hakkında"
 };
 
-const sitePages = new Set(["/","/index.html","/ecosystem.html","/network.html","/manifesto.html","/roadmap.html","/docs.html","/connect.html","/wallet.html","/identity.html","/chain.html","/scan.html","/terms.html","/privacy.html","/tokenomics.html"]);
+const sitePages = new Set(["/","/index.html","/ecosystem.html","/network.html","/manifesto.html","/roadmap.html","/docs.html","/connect.html","/connect-soon.html","/wallet.html","/identity.html","/chain.html","/scan.html","/terms.html","/privacy.html","/tokenomics.html"]);
 
 // Keep bookmarks shared from the earlier homepage working after the split.
 const legacyPages={
@@ -635,6 +643,9 @@ const english = new Map(translatedElements.map(element=>[element,element.innerHT
 const languageToggle = document.querySelector('.language-toggle');
 const menuToggle = document.querySelector('.menu-toggle');
 const navigation = document.querySelector('#main-nav');
+// Header link groups are disclosure buttons; aria-expanded is their only open state.
+const navGroups = [...document.querySelectorAll('.nav-group')];
+const desktopNav = window.matchMedia('(min-width:1101px)');
 const motionButton = document.querySelector('.motion-toggle');
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 let language = 'en';
@@ -649,7 +660,16 @@ function updateMotionLabel() {
   motionButton.firstElementChild.textContent=off?'▷':'Ⅱ';
 }
 
+function setGroup(group,open) {
+  group.querySelector('.nav-group-toggle').setAttribute('aria-expanded',String(open));
+}
+
+function closeGroups(except) {
+  navGroups.forEach(group=>{if(group!==except)setGroup(group,false);});
+}
+
 function setMenu(open) {
+  if (!open) closeGroups();
   if (!menuToggle || !navigation) return;
   menuToggle.setAttribute('aria-expanded',String(open));
   menuToggle.setAttribute('aria-label',language==='tr'?(open?'Menüyü kapat':'Menüyü aç'):(open?'Close menu':'Open menu'));
@@ -702,9 +722,33 @@ setLanguage(initialLanguage);
 languageToggle.addEventListener('click',()=>setLanguage(language==='en'?'tr':'en'));
 menuToggle?.addEventListener('click',()=>setMenu(menuToggle.getAttribute('aria-expanded')!=='true'));
 navigation?.addEventListener('click',event=>{if(event.target.closest('a'))setMenu(false);});
-document.addEventListener('keydown',event=>{if(event.key==='Escape' && menuToggle?.getAttribute('aria-expanded')==='true'){setMenu(false);menuToggle.focus();}});
-document.addEventListener('click',event=>{if(!event.target.closest('.site-header'))setMenu(false);});
-window.matchMedia('(min-width:1101px)').addEventListener('change',()=>setMenu(false));
+document.addEventListener('keydown',event=>{
+  if(event.key!=='Escape')return;
+  const openGroup=navGroups.find(group=>group.querySelector('.nav-group-toggle').getAttribute('aria-expanded')==='true');
+  if(openGroup){setGroup(openGroup,false);openGroup.querySelector('.nav-group-toggle').focus();return;}
+  if(menuToggle?.getAttribute('aria-expanded')==='true'){setMenu(false);menuToggle.focus();}
+});
+document.addEventListener('click',event=>{
+  if(!event.target.closest('.site-header'))setMenu(false);
+  else if(!event.target.closest('.main-nav'))closeGroups();
+});
+desktopNav.addEventListener('change',()=>setMenu(false));
+
+// Without this class, CSS opens the groups on hover and focus so the links work without JavaScript.
+navigation?.classList.add('nav-ready');
+navGroups.forEach(group=>{
+  const toggle=group.querySelector('.nav-group-toggle');
+  // A desktop mouse opens the group on hover, so its click never closes it; keyboard and touch toggle.
+  const hoverMode=event=>event.pointerType==='mouse' && desktopNav.matches;
+  toggle.addEventListener('click',event=>{
+    const open=hoverMode(event) || toggle.getAttribute('aria-expanded')!=='true';
+    closeGroups(group);
+    setGroup(group,open);
+  });
+  group.addEventListener('pointerenter',event=>{if(hoverMode(event)){closeGroups(group);setGroup(group,true);}});
+  group.addEventListener('pointerleave',event=>{if(hoverMode(event))setGroup(group,false);});
+  group.addEventListener('focusout',event=>{if(event.relatedTarget && !group.contains(event.relatedTarget))setGroup(group,false);});
+});
 
 document.querySelectorAll('.faq-list details').forEach(detail=>detail.addEventListener('toggle',()=>{
   if(detail.open)document.querySelectorAll('.faq-list details').forEach(other=>{if(other!==detail)other.open=false;});
