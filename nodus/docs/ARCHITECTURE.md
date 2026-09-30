@@ -4049,13 +4049,18 @@ It removes D-23 rev 7 item 18's "no-blocksync deviation".
 | `nodus_witness_p2p.{h,c}` | `node/node.go:949-955`, `p2p/switch.go` | the third shim on 0x40 (listed first in NodeInfo, as the reference does); R-P2P-47: a message before the lane is live — a pinned joiner with no chain, a node before genesis time — is DROPPED, the sender is not stopped, EXCEPT a StatusResponse: ⚠ DEVIATION (the reference has no pre-live window — switch.go:234-246 starts reactors before accepting peers) the latest one per peer (lane slot, keyed by p2p ID, ≤ 32-byte canonical copy) is held and replayed into the started reactor at `lane_live`, so the pool knows the peers' heights at once instead of at the 10 s status broadcast; discarded on peer removal and unbind; the reactor's StopPeerForError is deferred through the peer's index |
 | `nodus_witness.c` | `node/node.go:373-413`, `setup.go:219-225`, `:296` | `blockSync = !onlyValidatorIsUs` → `cmt_conr_init(wait_sync = blockSync)` and the reactor over a copy of the node's state; started with the other two (MEMPOOL, BLOCKSYNC, CONSENSUS); while the consensus reactor waits for sync the tick does NOT step the state machine or fire its timer (the reference starts `receiveRoutine` only in `cs.Start()`); `cs_started` becomes true only when `cmt_cs_start` actually ran (at `cmt_conr_start` without sync, at the switch otherwise) |
 
-Clock: the host clock (`witness_cmt_now`, the consensus one) is read by the reactor
-at start (pool.go:114, the three tickers of reactor.go:322-331), once per tick (the
-tick form of the goroutines' sleeps and timers) and once per Receive that reaches the
-pool (ban check, receive-rate Monitor, peer timeout); only this node's request
-scheduling depends on it — VerifyCommitLight, ValidateBlock and the apply read no time
-(decision `2026-09-25-consensus-clock-scope-correction.md`; its enumeration is
-extended by the ORCHESTRATOR). Mixed-version clusters: a node without the port lists
+Clocks (decision `2026-09-30-monotonic-waits.md`, nodus 0.22.2): the reactor reads
+TWO host clocks. The MONOTONIC one (`witness_cmt_mono`, `cmt_mono_fn`) at start
+(pool.go:114, the three tickers of reactor.go:322-331) and once per tick (the tick form
+of the goroutines' sleeps and timers, peer timeout, retry, request pacing); the WALL
+one (`witness_cmt_now`) for the 60 s ban (pool.go:494/:500 `cmttime.Now`) and the
+receive-rate Monitor (libs/flowrate/util.go:18-22), as the reference does. Only this
+node's request scheduling depends on either; VerifyCommit and the apply read no time,
+ValidateBlock reads the wall clock for the 60 s block-time tolerance only (decision
+`2026-09-25-consensus-clock-scope-correction.md`, "Ek — pin v0.38.26"). The same split
+holds node-wide: the consensus timer, the consensus/mempool reactor sleeps, the WAL
+flush/group deadlines and the server poll wait are MONOTONIC; every stamp (votes,
+proposals, commit time, WAL records, privval) stays on the wall clock. Mixed-version clusters: a node without the port lists
 no 0x40 and is never sent to on it (peer.go:309-325); the FIRST upgraded node waits in
 block sync until a second 0x40 peer exists (pool.go:208-212 — IsCaughtUp needs a
 peer), so a rolling upgrade takes two nodes back to back (decision record). Tests:
