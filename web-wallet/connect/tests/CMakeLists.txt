@@ -15,11 +15,14 @@
 # Tests (what each proves is in its file header):
 #   test_nc_classify     R0 classifier matrix + server list + salt choice (pure)
 #   test_nc_wire         request / acceptance / cancel bytes vs the codec's
-#                        own verify; outbox blob decrypt + authorship; alg
-#                        selection; key derivation (pure, no network)
+#                        own verify and signing preimage; outbox blob decrypt
+#                        + authorship; alg selection; salt packet v1;
+#                        contact-list blob read as the app's fetch does; ACK
+#                        value; key derivation (pure, no network)
 #   test_nc_fault_matrix R0 against a fake node over real tier-2: timeout,
 #                        empty, bad signature, wrong owner, undecodable — no
-#                        PUT on UNREADABLE; Q1 create gate; KEY_OWNED = taken
+#                        PUT on UNREADABLE; Q1 create gate; KEY_OWNED = taken;
+#                        the same gates for the contact list and the salt
 #   test_nc_history      NC-4a at-rest history crypto: NIST HMAC-SHA3-256
 #                        KAT, root = app SQLCipher derivation, HKDF key,
 #                        AES-GCM records, AAD framing, invocation budget
@@ -47,7 +50,9 @@ set(NC_SOURCES
   ${CONNECT_DIR}/nc_salt.c
   ${CONNECT_DIR}/nc_outbox.c
   ${CONNECT_DIR}/nc_history.c
+  ${CONNECT_DIR}/nc_contactlist.c
   ${ROOT}/messenger/codec/contact_request_codec.c
+  ${ROOT}/messenger/codec/contactlist_codec.c
   ${ROOT}/messenger/codec/dm_outbox_codec.c
   ${ROOT}/messenger/codec/offline_queue_codec.c
   ${ROOT}/messenger/codec/salt_agreement_codec.c

@@ -9,6 +9,7 @@
  */
 
 #include "dht_contact_request.h"
+#include "codec/contact_request_codec.h"
 #include "nodus_ops.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
@@ -35,7 +36,9 @@
  * dht_serialize_contact_request / dht_deserialize_contact_request /
  * dht_verify_contact_request (the contact-request codec) moved verbatim to
  * codec/contact_request_codec.c; declarations unchanged in
- * dht_contact_request.h. */
+ * dht_contact_request.h. NC-1b: the signing preimage the send path built
+ * inline is dht_contact_request_signing_preimage there
+ * (codec/contact_request_codec.h). */
 
 /**
  * Send a contact request to recipient
@@ -96,66 +99,13 @@ int dht_send_contact_request(
         request.message[0] = '\0';
     }
 
-    /* Build data to sign (everything except signature) */
-    size_t signed_data_len =
-        sizeof(uint32_t) +                    /* magic */
-        1 +                                   /* version */
-        sizeof(uint64_t) +                    /* timestamp */
-        sizeof(uint64_t) +                    /* expiry */
-        129 +                                 /* sender_fingerprint */
-        64 +                                  /* sender_name */
-        DHT_DILITHIUM5_PUBKEY_SIZE +          /* sender_dilithium_pubkey */
-        256 +                                 /* message */
-        (request.has_dht_salt ? DHT_CONTACT_SALT_SIZE_CR : 0); /* v2: salt */
-
-    uint8_t *signed_data = (uint8_t *)malloc(signed_data_len);
-    if (!signed_data) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate signed data buffer\n");
+    /* Build data to sign (everything except signature) — NC-1b:
+     * dht_contact_request_signing_preimage (codec/contact_request_codec.c),
+     * the same builder dht_verify_contact_request checks against. */
+    uint8_t *signed_data = NULL;
+    size_t signed_data_len = 0;
+    if (dht_contact_request_signing_preimage(&request, &signed_data, &signed_data_len) != 0) {
         return -1;
-    }
-
-    uint8_t *ptr = signed_data;
-
-    /* Build signed data */
-    uint32_t magic_network = htonl(request.magic);
-    memcpy(ptr, &magic_network, sizeof(uint32_t));
-    ptr += sizeof(uint32_t);
-
-    *ptr++ = request.version;
-
-    uint32_t ts_high = htonl((uint32_t)(request.timestamp >> 32));
-    uint32_t ts_low = htonl((uint32_t)(request.timestamp & 0xFFFFFFFF));
-    memcpy(ptr, &ts_high, sizeof(uint32_t));
-    ptr += sizeof(uint32_t);
-    memcpy(ptr, &ts_low, sizeof(uint32_t));
-    ptr += sizeof(uint32_t);
-
-    uint32_t exp_high = htonl((uint32_t)(request.expiry >> 32));
-    uint32_t exp_low = htonl((uint32_t)(request.expiry & 0xFFFFFFFF));
-    memcpy(ptr, &exp_high, sizeof(uint32_t));
-    ptr += sizeof(uint32_t);
-    memcpy(ptr, &exp_low, sizeof(uint32_t));
-    ptr += sizeof(uint32_t);
-
-    memset(ptr, 0, 129);
-    strncpy((char *)ptr, request.sender_fingerprint, 128);
-    ptr += 129;
-
-    memset(ptr, 0, 64);
-    strncpy((char *)ptr, request.sender_name, 63);
-    ptr += 64;
-
-    memcpy(ptr, request.sender_dilithium_pubkey, DHT_DILITHIUM5_PUBKEY_SIZE);
-    ptr += DHT_DILITHIUM5_PUBKEY_SIZE;
-
-    memset(ptr, 0, 256);
-    strncpy((char *)ptr, request.message, 255);
-    ptr += 256;
-
-    /* v2: include salt in signed data */
-    if (request.has_dht_salt) {
-        memcpy(ptr, request.dht_salt, DHT_CONTACT_SALT_SIZE_CR);
-        ptr += DHT_CONTACT_SALT_SIZE_CR;
     }
 
     /* Sign with Dilithium5 */

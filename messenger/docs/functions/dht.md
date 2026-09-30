@@ -98,7 +98,8 @@ Simple per-contact ACK timestamps for delivery confirmation. When recipient sync
 | Function | Description |
 |----------|-------------|
 | `int dht_generate_ack_key(const char*, const char*, const uint8_t *salt, uint8_t*)` | Generate ACK DHT key (salt REQUIRED, returns -1 if NULL — v0.9.196+). Defined in `codec/offline_queue_codec.c` (NC-1, §14) |
-| `int dht_publish_ack(const char*, const char*, const uint8_t *salt)` | Publish ACK timestamp (salt-aware) |
+| `int dht_publish_ack(const char*, const char*, const uint8_t *salt)` | Publish ACK timestamp (salt-aware). The 8-byte value is `dht_ack_value_encode` (NC-1b, §14) |
+| `void dht_ack_value_encode(uint64_t, uint8_t[8])` / `uint64_t dht_ack_value_decode(const uint8_t[8])` | ACK value = unix time, 8 bytes big-endian (NC-1b; declared in `codec/offline_queue_codec.h`, §14). The listener checks the 8-byte length itself |
 | `size_t dht_listen_ack(const char*, const char*, const uint8_t *salt, dht_ack_callback_t, void*)` | Listen for ACK updates (salt-aware) |
 | `void dht_cancel_ack_listener(dht_context_t*, size_t)` | Cancel ACK listener |
 
@@ -131,7 +132,8 @@ Simple per-contact ACK timestamps for delivery confirmation. When recipient sync
 | `void dht_generate_requests_inbox_key(const char*, uint8_t*)` | Generate requests inbox key. Defined in `codec/contact_request_codec.c` together with `dht_verify_contact_request`, `dht_serialize_contact_request`, `dht_deserialize_contact_request`, `dht_fingerprint_to_value_id` (NC-1, §14) |
 | `int dht_send_contact_request(..., const uint8_t *dht_salt)` | Send contact request (v2 with salt) |
 | `int dht_fetch_contact_requests(dht_context_t*, const char*, dht_contact_request_t**, size_t*)` | Fetch pending requests |
-| `int dht_verify_contact_request(const dht_contact_request_t*)` | Verify request signature |
+| `int dht_verify_contact_request(const dht_contact_request_t*)` | Verify request signature (over `dht_contact_request_signing_preimage`) |
+| `int dht_contact_request_signing_preimage(const dht_contact_request_t*, uint8_t **out, size_t *len_out)` | **NC-1b.** The exact bytes the request signature covers; the ONE builder both `dht_send_contact_request` (sign) and `dht_verify_contact_request` (verify) call. Declared in `codec/contact_request_codec.h` (§14) |
 | `int dht_cancel_contact_request(dht_context_t*, const char*, const char*)` | Cancel sent request |
 | `int dht_serialize_contact_request(const dht_contact_request_t*, uint8_t**, size_t*)` | Serialize request |
 | `int dht_deserialize_contact_request(const uint8_t*, size_t, dht_contact_request_t*)` | Deserialize request |
@@ -184,6 +186,7 @@ Files removed:
 | `int dht_contactlist_publish(const char*, const char**, size_t, const uint8_t**, ...)` | Publish encrypted contact list (v2 with salts) |
 | `int dht_contactlist_fetch(const char*, char***, size_t*, uint8_t***, ...)` | Fetch and decrypt contact list (v2 returns salts). v0.11.12+: blobs past the embedded 7-day expiry are accepted (logged only) — DHT storage is permanent, expiry must not block seed restore |
 | `char* dht_contactlist_serialize_to_json(...)` / `int dht_contactlist_deserialize_from_json(...)` | **NC-1:** the contact-list JSON codec (formerly `static serialize_to_json` / `deserialize_from_json` in this file), now in `codec/contactlist_codec.{c,h}` — see §14 |
+| `int dht_contactlist_blob_encode(...)` / `int dht_contactlist_blob_parse(...)` | **NC-1b:** the `CLST` blob build (publish "Step 4") and header parse (fetch "Step 3"), formerly inline here, now in `codec/contactlist_codec.{c,h}` — see §14 |
 | `void dht_contactlist_free_contacts(char**, size_t)` | Free contacts array |
 | `void dht_contactlist_free_salts(uint8_t**, size_t)` | Free salts array from fetch |
 | `void dht_contactlist_free(dht_contactlist_t*)` | Free contact list structure |
@@ -420,7 +423,7 @@ since KEM Faz 1, ML-KEM-1024 (v2, all-or-nothing gate) — Dilithium5 signed.
 | Function | Description |
 |----------|-------------|
 | `int salt_agreement_make_key(const char *fp_a, const char *fp_b, char *key_out, size_t key_out_size)` | Compute deterministic DHT key for contact pair. `SHA3-512(min(fp)+":"+max(fp)+":salt_agreement")`. Output: 128-char hex. Defined in `codec/salt_agreement_codec.c`, with the four packet-parse helpers `salt_agreement_fp_hex_to_bin` / `_packet_data_size_for_version` / `_packet_decrypt_salt` / `_packet_verify_signature` (NC-1, §14) |
-| `int salt_agreement_publish(const char *my_fp, const char *contact_fp, const uint8_t salt[32], const uint8_t *my_kyber_pub, const uint8_t *contact_kyber_pub, const uint8_t *my_dilithium_priv)` | Publish salt dual-encrypted for both parties (v1 only). **Signature UNCHANGED (KEM Faz 1)** — thin wrapper: `salt_agreement_publish_internal(..., NULL, NULL, ...)`. Returns 0 on success. |
+| `int salt_agreement_publish(const char *my_fp, const char *contact_fp, const uint8_t salt[32], const uint8_t *my_kyber_pub, const uint8_t *contact_kyber_pub, const uint8_t *my_dilithium_priv)` | Publish salt dual-encrypted for both parties (v1 only). **Signature UNCHANGED (KEM Faz 1)** — thin wrapper: `salt_agreement_publish_internal(..., NULL, NULL, ...)`, which builds the packet with `salt_agreement_build_packet` (NC-1b, §14) and PUTs it. Returns 0 on success. |
 | `int salt_agreement_publish_v2(const char *my_fp, const char *contact_fp, const uint8_t salt[32], const uint8_t *my_kyber_pub, const uint8_t *contact_kyber_pub, const uint8_t *my_mlkem_pub, const uint8_t *contact_mlkem_pub, const uint8_t *my_dilithium_priv)` | **NEW (KEM Faz 1).** Publishes packet v2 (per-entry `alg` byte, ML-KEM-1024 for both parties) ONLY when BOTH `my_mlkem_pub` and `contact_mlkem_pub` are non-NULL; otherwise falls back to the unchanged v1 packet |
 | `int salt_agreement_fetch(const char *my_fp, const char *contact_fp, const uint8_t *my_kyber_priv, const uint8_t *my_sign_pub, const uint8_t *contact_sign_pub, uint8_t salt_out[32])` | Fetch authenticated salt from DHT. **Signature UNCHANGED (KEM Faz 1)** — thin wrapper: `salt_agreement_fetch_internal(..., NULL, ...)`; can verify/read v2 values but not decrypt an alg=ML-KEM entry without the key. Returns 0 on success, -1 on error, -2 if not found. |
 | `int salt_agreement_fetch_v2(const char *my_fp, const char *contact_fp, const uint8_t *my_kyber_priv, const uint8_t *my_mlkem_priv, const uint8_t *my_sign_pub, const uint8_t *contact_sign_pub, uint8_t salt_out[32])` | **NEW (KEM Faz 1).** Accepts both v1 and v2 values; `my_mlkem_priv` (nullable) decrypts a v2 entry whose alg is ML-KEM-1024 |
@@ -468,6 +471,22 @@ prefix (bodies unchanged) — marked **RENAMED** below.
 | `int dht_deserialize_contact_request(const uint8_t*, size_t, dht_contact_request_t*)` | `codec/contact_request_codec.c` | `dht/shared/dht_contact_request.h` | `dht/shared/dht_contact_request.c` |
 | `int dht_verify_contact_request(const dht_contact_request_t*)` | `codec/contact_request_codec.c` | `dht/shared/dht_contact_request.h` | `dht/shared/dht_contact_request.c` |
 
+**NC-1b — the four sequences NC-1 left inline in I/O functions**, moved the
+same way (operator decision 2026-09-30 Q2 = a; package NC-1b). Each is a new
+function; the moved statements are unchanged, only parameter plumbing is new
+(listed in the comment above each function). The I/O functions call them and
+behave exactly as before (before/after vectors in
+`tests/test_codec_extract_vectors.c`, `vec_nc1b_*`).
+
+| Function | Defined in | Declared in | Moved from |
+|----------|-----------|-------------|------------|
+| `void dht_ack_value_encode(uint64_t timestamp, uint8_t value[8])` | `codec/offline_queue_codec.c` | `codec/offline_queue_codec.h` (new) | inline in `dht_publish_ack`, `dht/shared/dht_offline_queue.c` |
+| `uint64_t dht_ack_value_decode(const uint8_t value[8])` | `codec/offline_queue_codec.c` | `codec/offline_queue_codec.h` | inline in `static ack_listen_callback`, `dht_offline_queue.c` (the 8-byte length check stays there) |
+| `int dht_contactlist_blob_encode(uint64_t timestamp, uint64_t expiry, const uint8_t *encrypted_data, size_t encrypted_len, const uint8_t *signature, size_t sig_len, uint8_t **blob_out, size_t *blob_size_out)` | `codec/contactlist_codec.c` | `codec/contactlist_codec.h` | inline "Step 4" of `dht_contactlist_publish`, `dht/client/dht_contactlist.c`. The caller keeps ownership of `encrypted_data` |
+| `int dht_contactlist_blob_parse(const uint8_t *blob, size_t blob_size, uint64_t *timestamp_out, uint64_t *expiry_out, const uint8_t **encrypted_out, uint32_t *encrypted_len_out)` | `codec/contactlist_codec.c` | `codec/contactlist_codec.h` | inline "Step 3" of `dht_contactlist_fetch`. `*encrypted_out` points into `blob`; timestamp/expiry outputs nullable; the embedded expiry is only logged (reads `time(NULL)` for that log line) |
+| `int salt_agreement_build_packet(const char *my_fp, const char *contact_fp, const uint8_t salt[32], const uint8_t *my_kyber_pub, const uint8_t *contact_kyber_pub, const uint8_t *my_mlkem_pub, const uint8_t *contact_mlkem_pub, const uint8_t *my_dilithium_priv, uint8_t packet[PACKET_TOTAL_SIZE_V2], size_t *total_size_out)` | `codec/salt_agreement_codec.c` | `codec/salt_agreement_codec.h` | inline in `static salt_agreement_publish_internal`, `dht/shared/dht_salt_agreement.c` (the DHT key is still computed by the caller first). v2 only when both ML-KEM keys are non-NULL; randomized (KEM + ML-DSA) |
+| `int dht_contact_request_signing_preimage(const dht_contact_request_t *request, uint8_t **out, size_t *len_out)` | `codec/contact_request_codec.c` | `codec/contact_request_codec.h` (new) | built inline TWICE: in `dht_verify_contact_request` (codec) and in `dht_send_contact_request` (`dht/shared/dht_contact_request.c`). The function carries the verify's salt condition `version >= 2`; the send path used `has_dht_salt`, which it sets exactly when it sets version 2 — equal for every request it builds |
+
 **Macros moved:** `FP_BIN_SIZE`, `PACKET_VERSION_SIZE`, `PACKET_ENTRY_SIZE[_V2]`,
 `PACKET_DATA_SIZE[_V2]`, `PACKET_TOTAL_SIZE[_V2]` → `codec/salt_agreement_codec.h`;
 `DHT_OFFLINE_MAX_MESSAGES_PER_OUTBOX` (1000) → `codec/offline_queue_codec.c`.
@@ -477,11 +496,11 @@ prefix (bodies unchanged) — marked **RENAMED** below.
 big-endian (contact requests); `nodus_identity_value_id` = first 8 bytes of
 node_id little-endian (every other record). Not merged into one helper.
 
-**NOT moved (still inline in an I/O function, no separate function exists):**
-the salt-agreement packet BUILD (`salt_agreement_publish_internal`), the
-contact-list `CLST` blob build/parse (`dht_contactlist_publish` /
-`dht_contactlist_fetch`), and the 8-byte big-endian ACK value encode/decode
-(`dht_publish_ack` / `ack_listen_callback`).
+**Compiled with:** the NC-1b functions live in codec files that every build
+compiling the matching I/O file already compiles (`dht_lib`, the fuzz targets,
+`tests/fuzz/build_wasm32.sh`); `test_len_wrap_32` compiles
+`dht_contactlist.c` alone and resolves `dht_contactlist_blob_*` from
+`libdna.so`. No build file changed.
 
 ---
 
@@ -518,14 +537,19 @@ defined in `nodus/src/client/nodus_client.c`; `nodus_client_get` /
 | `const char *nc_why_str(nc_why_t)` / `const char *nc_outcome_str(nc_outcome_t)` | names |
 | `void nc_profile_read(const nc_ctx_t*, const char *fp, nc_read_t*, dna_unified_identity_t**, nc_peer_t*)` | R1 read + the app's record checks |
 | `int nc_profile_publish(const nc_ctx_t*, const char *patch_json, nc_profile_result_t*)` | R1 update / Q1-gated create, EXCLUSIVE |
-| `int nc_request_build(const nc_keys_t*, const char *recipient_fp, const char *message, const uint8_t *salt, uint8_t **out, size_t *out_len)` | R2 request bytes, checked with the codec's verify |
+| `int nc_request_build(const nc_keys_t*, const char *recipient_fp, const char *message, const uint8_t *salt, uint8_t **out, size_t *out_len)` | R2 request bytes, signed over `dht_contact_request_signing_preimage` (NC-1b), checked with the codec's verify |
 | `int nc_request_send(...)` / `int nc_request_accept(...)` / `int nc_request_cancel(...)` | R2 PUTs (send, the app's ACCEPT, cancel) |
 | `int nc_requests_fetch(const nc_ctx_t*, nc_requests_t*)` / `void nc_requests_clear(nc_requests_t*)` | R2 inbox |
-| `int nc_salt_read(const nc_ctx_t*, const nc_peer_t*, nc_salt_read_t*)` / `void nc_salt_read_clear(nc_salt_read_t*)` | R3 read (no publish) |
+| `int nc_salt_read(const nc_ctx_t*, const nc_peer_t*, nc_salt_read_t*)` / `void nc_salt_read_clear(nc_salt_read_t*)` | R3 read |
 | `nc_salt_choice_t nc_salt_choose(const uint8_t *local, const uint8_t *dht, uint8_t chosen[32], bool *republish_wanted)` | R3 reconcile rule, pure |
+| `int nc_salt_build(const nc_keys_t*, const nc_peer_t*, const uint8_t salt[32], uint8_t **out, size_t *out_len)` | R3 packet v1 via `salt_agreement_build_packet` (NC-1b), read back with the codec before it is returned |
+| `int nc_salt_sync(const nc_ctx_t*, const nc_peer_t*, const uint8_t *local_or_null, nc_salt_sync_t*)` / `void nc_salt_sync_clear(nc_salt_sync_t*)` | R3 read + reconcile + gated publish: UNREADABLE / FOUND-without-usable-salt / EMPTY-for-a-restored-identity → WAIT, no write |
+| `void nc_contactlist_read(const nc_ctx_t*, nc_contactlist_t*)` / `void nc_contactlist_clear(nc_contactlist_t*)` | R4 read: R0 (owner = own fp) + `dht_contactlist_blob_parse` + self-Seal decode + authorship + JSON parse; any record failure = UNREADABLE(bad_record) |
+| `int nc_contactlist_build(const nc_keys_t*, const nc_contact_t*, size_t, uint64_t timestamp, uint8_t **out, size_t *out_len)` | R4 value as `dht_contactlist_publish` builds it (JSON, ML-DSA-87, self-Seal round-3, `dht_contactlist_blob_encode`), read back before it is returned |
+| `int nc_contactlist_add(const nc_ctx_t*, const nc_contact_t *add, size_t n_add, nc_list_result_t*)` | R4 merge-only add into the list read in the same call; EXCLUSIVE, ttl 0, own value_id; UNREADABLE / EMPTY-for-a-restored-identity → WAIT |
 | `int nc_outbox_build(...)` / `int nc_outbox_publish(...)` | R5 day blob (2-recipient Seal, alg all-or-nothing) + PUT |
 | `int nc_outbox_fetch_day(const nc_ctx_t*, const nc_peer_t*, const uint8_t salt[32], uint64_t day, nc_inbox_t*)` / `void nc_inbox_clear(nc_inbox_t*)` | R5 one bucket + authorship gate |
-| `int nc_ack_publish(const nc_ctx_t*, const char *peer_fp, const uint8_t salt[32])` / `void nc_ack_read(..., nc_read_t*, uint64_t *ack_ts)` | R5 ACK |
+| `int nc_ack_publish(const nc_ctx_t*, const char *peer_fp, const uint8_t salt[32])` / `void nc_ack_read(..., nc_read_t*, uint64_t *ack_ts)` | R5 ACK (value via `dht_ack_value_encode` / `_decode`, NC-1b) |
 | `int nc_servers_parse(const char *json, nc_servers_t*, char *why, size_t why_len)` | embedded server list (`nodus-connect-servers` v1, `kind`-tagged entries) |
 
 The WebAssembly exports (`nc_unlock`, `nc_profile_get`, `nc_outbox_send`, …)

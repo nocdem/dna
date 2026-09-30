@@ -10,8 +10,8 @@
  * export generic names (fp_hex_to_bin, packet_*). Bodies are unchanged.
  *
  * salt_agreement_make_key is declared in dht_salt_agreement.h (unchanged).
- * The packet BUILD is still inline in salt_agreement_publish_internal
- * (dht_salt_agreement.c) — not a separate function, not moved.
+ * NC-1b: the packet BUILD, formerly inline in salt_agreement_publish_internal
+ * (dht_salt_agreement.c), moved here as salt_agreement_build_packet.
  */
 
 #ifndef DNA_CODEC_SALT_AGREEMENT_CODEC_H
@@ -74,6 +74,29 @@ int salt_agreement_packet_verify_signature(
     size_t data_size,
     const uint8_t *sign_pub_a,
     const uint8_t *sign_pub_b
+);
+
+/**
+ * Build the signed salt-agreement packet (NC-1b, moved out of
+ * salt_agreement_publish_internal): version (BE), then the lower and the
+ * higher fingerprint (strcmp order) each followed by [alg byte, v2 only] and
+ * the KEM-wrapped salt for that party, then the ML-DSA-87 signature over
+ * the data part. v2 (ML-KEM-1024 for both) ONLY when both my_mlkem_pub and
+ * contact_mlkem_pub are non-NULL, else v1 (round-3 Kyber) — all-or-nothing.
+ * `packet` is zeroed and filled; *total_size_out = data part + signature.
+ * The KEM wrap and the signature are randomized. 0 / -1.
+ */
+int salt_agreement_build_packet(
+    const char *my_fp,
+    const char *contact_fp,
+    const uint8_t salt[SALT_AGREEMENT_SIZE],
+    const uint8_t *my_kyber_pub,
+    const uint8_t *contact_kyber_pub,
+    const uint8_t *my_mlkem_pub,
+    const uint8_t *contact_mlkem_pub,
+    const uint8_t *my_dilithium_priv,
+    uint8_t packet[PACKET_TOTAL_SIZE_V2],
+    size_t *total_size_out
 );
 
 #ifdef __cplusplus

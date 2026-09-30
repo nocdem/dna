@@ -50,6 +50,19 @@
 //     needs profileGet(fp) first (keys come from the verified profile)
 //   core.saltPick(localHex | null, dhtHex | null) -> { choice, salt,
 //     republish_wanted }   synchronous, the native reconcile rule
+//   core.saltReconcile(fp, localHex | null) -> { status, outcome, why,
+//     choice, salt, putRc }   read + reconcile + gated publish (packet v1,
+//     the app's builder): status 'nothing_to_write' | 'published' |
+//     'wait' (nothing written; keep the local salt, retry later) | 'failed'.
+//     Store `salt` unless status is 'wait'. Needs profileGet(fp) first.
+//   core.contactsGet() -> { outcome, why, invalid, timestamp,
+//     contacts: [{ fp, salt | null }] }   the own list; 'empty' is NOT proof
+//     of absence
+//   core.contactsAdd([{ fp, salt? }]) -> { status, outcome, why, created,
+//     countBefore, countAfter, saltKept, putRc }   MERGE ONLY into the list
+//     read in the same call: status 'published' | 'unchanged' | 'wait'
+//     (unreadable, or empty for a restored identity — Q1) | 'taken'
+//     (terminal) | 'failed' | 'refused'.
 //   core.dayToday() -> '<unix day>'             synchronous
 //   core.outboxSend(fp, saltHex, [{ seq, ts, text }]) -> { day, alg, count }
 //     the WHOLE pending set for that contact for today (the blob replaces
@@ -63,12 +76,13 @@
 //   core.lock()                synchronous; see the lock order above
 //
 // Queue slots (design §6.4 F7): every async call is ONE bounded network
-// step in C (one GET, one GET_ALL or one PUT) — except profileUpdate, a
-// read then a write (at most two request timeouts; the write must not be
-// split from the read it is based on, F4). A caller that syncs many
-// contacts / days must await each step before enqueueing the next, so a
-// wallet operation enqueued meanwhile runs between two steps and waits at
-// most the step in flight (one request timeout; two for profileUpdate).
+// step in C (one GET, one GET_ALL or one PUT) — except the gated writes
+// profileUpdate, saltReconcile and contactsAdd: a read then at most one
+// write (at most two request timeouts; the write must not be split from
+// the read it is based on, F4). A caller that syncs many contacts / days
+// must await each step before enqueueing the next, so a wallet operation
+// enqueued meanwhile runs between two steps and waits at most the step in
+// flight (one request timeout; two for a gated write).
 
 const HEX128 = /^[0-9a-f]{128}$/, HEX64 = /^[0-9a-f]{64}$/, U64 = /^(0|[1-9]\d{0,19})$/;
 export const NODUS_CONNECT_TICK_MS = 60000;
@@ -199,6 +213,23 @@ export async function createNodusConnectCore({ servers, loadGlue } = {}) {
     requestAccept: op(async (who, saltHex = null) => { check(await call('nc_request_approve', ['string', 'string'], [fp(who), salt(saltHex, { optional: true })])); return {}; }),
     requestCancel: op(async who => { check(await call('nc_request_withdraw', ['string'], [fp(who)])); return {}; }),
     saltGet: op(async who => { check(await call('nc_salt_get', ['string'], [fp(who)])); return result(); }),
+    saltReconcile: op(async (who, localHex = null) => {
+      check(await call('nc_salt_reconcile', ['string', 'string'], [fp(who), salt(localHex, { optional: true })]));
+      const r = result();
+      return { status: r.status, outcome: r.outcome, why: r.why, choice: r.choice, salt: r.salt, putRc: r.put_rc };
+    }),
+    contactsGet: op(async () => { check(await call('nc_contacts_get')); return result(); }),
+    contactsAdd: op(async entries => {
+      if (!Array.isArray(entries) || entries.length === 0 || entries.length > 4096) throw new Error('Invalid contact list.');
+      const list = entries.map(e => {
+        if (!e) throw new Error('Invalid contact list.');
+        return { fp: fp(e.fp), salt: salt(e.salt, { optional: true }) || null };
+      });
+      check(await call('nc_contacts_add', ['string'], [JSON.stringify(list)]));
+      const r = result();
+      return { status: r.status, outcome: r.outcome, why: r.why, created: r.created,
+        countBefore: r.count_before, countAfter: r.count_after, saltKept: r.salt_kept, putRc: r.put_rc };
+    }),
     saltPick(localHex = null, dhtHex = null) {
       if (stopped) throw lockedError();
       check(num('nc_salt_pick', ['string', 'string'], [salt(localHex, { optional: true }), salt(dhtHex, { optional: true })]));

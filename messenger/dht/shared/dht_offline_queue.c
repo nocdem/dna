@@ -1,4 +1,5 @@
 #include "dht_offline_queue.h"
+#include "codec/offline_queue_codec.h"
 #include "dht_dm_outbox.h"  /* Daily bucket messaging (v0.4.81+) */
 #include "nodus_ops.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -112,8 +113,9 @@ int dht_queue_message(
 
 /* NC-1: make_ack_base_key (static) and dht_generate_ack_key (the ACK key
  * derivation, "<recipient>:ack:<sender>:<salt hex>" -> SHA3-512) moved
- * verbatim to codec/offline_queue_codec.c. The 8-byte big-endian ACK VALUE
- * is still built inline in dht_publish_ack below (not a separate function). */
+ * verbatim to codec/offline_queue_codec.c. NC-1b: the 8-byte big-endian ACK
+ * VALUE encode/decode moved there too (dht_ack_value_encode /
+ * dht_ack_value_decode, codec/offline_queue_codec.h). */
 
 /**
  * Publish ACK after fetching messages (blocking)
@@ -145,16 +147,10 @@ int dht_publish_ack(const char *my_fp,
     // Get current timestamp
     uint64_t timestamp = (uint64_t)time(NULL);
 
-    // Serialize timestamp to 8 bytes big-endian
+    // Serialize timestamp to 8 bytes big-endian (NC-1b: dht_ack_value_encode,
+    // codec/offline_queue_codec.c)
     uint8_t value[8];
-    value[0] = (uint8_t)(timestamp >> 56);
-    value[1] = (uint8_t)(timestamp >> 48);
-    value[2] = (uint8_t)(timestamp >> 40);
-    value[3] = (uint8_t)(timestamp >> 32);
-    value[4] = (uint8_t)(timestamp >> 24);
-    value[5] = (uint8_t)(timestamp >> 16);
-    value[6] = (uint8_t)(timestamp >> 8);
-    value[7] = (uint8_t)(timestamp);
+    dht_ack_value_encode(timestamp, value);
 
     // Publish ACK via nodus (synchronous - blocks until server responds)
     int result = nodus_ops_put(key, 64,
@@ -227,14 +223,7 @@ static bool ack_listen_callback(
         return true;  // Keep listening
     }
 
-    uint64_t ack_ts = ((uint64_t)value[0] << 56) |
-                      ((uint64_t)value[1] << 48) |
-                      ((uint64_t)value[2] << 40) |
-                      ((uint64_t)value[3] << 32) |
-                      ((uint64_t)value[4] << 24) |
-                      ((uint64_t)value[5] << 16) |
-                      ((uint64_t)value[6] << 8) |
-                      ((uint64_t)value[7]);
+    uint64_t ack_ts = dht_ack_value_decode(value);  /* NC-1b: codec/offline_queue_codec.c */
 
     QGP_LOG_INFO(LOG_TAG, "[ACK-LISTEN] Received: %.20s... -> %.20s... ts=%lu\n",
            ctx->recipient, ctx->sender, (unsigned long)ack_ts);

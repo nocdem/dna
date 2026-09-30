@@ -22,22 +22,18 @@
  * (one session per identity, design §1.1) is package NC-4.
  *
  * WHAT IS COMPILED VERBATIM (no copy of any wire format lives here):
- *   messenger/codec/ (all units) contact request codec + verify, offline
- *                                blob, outbox key, ACK key, 2-recipient Seal,
- *                                KEM-wrap, salt-packet parse helpers
- *   messenger/dna_api.c          Seal decode, authorship check
+ *   messenger/codec/ (all units) contact request codec + verify + signing
+ *                                preimage, offline blob, outbox key, ACK key
+ *                                + ACK value, 2-recipient Seal, KEM-wrap,
+ *                                salt-packet build + parse helpers,
+ *                                contact-list JSON + CLST blob
+ *   messenger/dna_api.c          Seal encode/decode, authorship check
  *   messenger/dht/client/dna_profile.c  Anchor (profile) JSON codec
  *   nodus value / client / tier-2, shared/crypto
- * Byte layouts reproduced here, each with its citation and the reason no
- * callable function exists: the ACK value (8-byte BE unix time,
- * messenger/dht/shared/dht_offline_queue.c dht_publish_ack) and the contact
- * request signing preimage (taken as a prefix of the codec's own
- * serialisation and proven per call by the codec's verify — nc_requests.c).
- *
- * NOT HERE (blocked, see the NC-2 report): the contact list (R4) — its CLST
- * blob build and parse are inline in dht_contactlist.c, not extracted by
- * NC-1; the salt-agreement PUBLISH (R3) — its packet build is inline in
- * dht_salt_agreement.c. Neither is re-derived by hand (design §1.3).
+ * No byte layout is reproduced here: the four sequences NC-1 left inline in
+ * the app's I/O functions (ACK value, contact-request signing preimage,
+ * salt packet build, CLST blob build/parse) were moved into
+ * messenger/codec/ by NC-1b, and the app calls the same functions.
  */
 
 #ifndef NC_CORE_H
@@ -346,7 +342,7 @@ void nc_requests_clear(nc_requests_t *r);
 /** get_all of the own inbox; PARTIAL by nature (F5). */
 int  nc_requests_fetch(const nc_ctx_t *ctx, nc_requests_t *out);
 
-/* ── R3: per-contact salt agreement (read + reconcile only) ────────── */
+/* ── R3: per-contact salt agreement (read, reconcile, gated publish) ── */
 
 typedef struct {
     nc_read_all_t read;          /* counters; values freed                  */
@@ -374,14 +370,148 @@ typedef enum {
     NC_SALT_NONE         = 2    /* neither                                  */
 } nc_salt_choice_t;
 
-/** The native reconcile rule (salt_agreement_verify :380-468) without its
+/** The native reconcile rule (salt_agreement_verify) without its
  *  publishes: both present and different -> the salt whose SHA3-512 is
  *  lower wins, local on a tie. PURE. `republish_wanted` is set where the
- *  native path would publish (the web cannot: packet build not extracted). */
+ *  native path would publish (mismatch, or local only); nc_salt_sync does
+ *  the publish under the fail-closed rules. */
 nc_salt_choice_t nc_salt_choose(const uint8_t *local_or_null,
                                 const uint8_t *dht_or_null,
                                 uint8_t chosen[NC_SALT_LEN],
                                 bool *republish_wanted);
+
+/**
+ * The packet the app publishes for (this identity, peer, salt):
+ * salt_agreement_build_packet, v1 (round-3 Kyber for both parties, NULL
+ * ML-KEM keys as salt_agreement_publish passes), signed with this
+ * identity's ML-DSA-87 key. Before it is returned the bytes are read back
+ * with the codec's own parse: announced data size, signature under this
+ * identity, this party's entry unwraps to `salt`. *out malloc'd.
+ */
+int nc_salt_build(const nc_keys_t *keys, const nc_peer_t *peer,
+                  const uint8_t salt[NC_SALT_LEN],
+                  uint8_t **out, size_t *out_len);
+
+typedef enum {
+    NC_SALT_SYNC_NOTHING_TO_WRITE = 0, /* read decided, no publish wanted     */
+    NC_SALT_SYNC_PUBLISHED        = 1, /* the winner was published           */
+    NC_SALT_SYNC_WAIT             = 2, /* UNREADABLE; FOUND without a usable
+                                        * salt; or EMPTY for a restored
+                                        * identity (Q1): nothing written      */
+    NC_SALT_SYNC_FAILED           = 3  /* the PUT failed (put_rc)            */
+} nc_salt_sync_status_t;
+
+typedef struct {
+    nc_salt_sync_status_t status;
+    nc_salt_read_t        read;        /* the read that decided (values freed) */
+    nc_salt_choice_t      choice;      /* NONE when status is WAIT            */
+    uint8_t               chosen[NC_SALT_LEN]; /* the salt to keep locally    */
+    int                   put_rc;
+} nc_salt_sync_t;
+
+void nc_salt_sync_clear(nc_salt_sync_t *s);
+
+/**
+ * R3 with its write: nc_salt_read in the same call, then
+ *   UNREADABLE, or FOUND without a usable salt        -> WAIT, no write;
+ *   nc_salt_choose(local, dht) wants no publish        -> NOTHING_TO_WRITE;
+ *   publish wanted with a DHT salt (mismatch)          -> publish the winner;
+ *   publish wanted, EMPTY (local only): ctx->fresh     -> publish local,
+ *                                       restored       -> WAIT (Q1).
+ * Publish = nc_salt_build + PUT EPHEMERAL, SALT_AGREEMENT_TTL, value_id =
+ * nodus_identity_value_id (salt_agreement_publish_internal ->
+ * nodus_ops_put_str, key string hashed once). `local_or_null` all-zero
+ * counts as unset (salt_agreement_verify). The caller stores `chosen`
+ * unless the status is WAIT. Read + write in one call (design §6.4 F4).
+ */
+int nc_salt_sync(const nc_ctx_t *ctx, const nc_peer_t *peer,
+                 const uint8_t *local_or_null, nc_salt_sync_t *res);
+
+/* ── R4: own contact list ("<fp>:contactlist") ─────────────────────── */
+
+typedef struct {
+    char    fp[NC_FP_HEX_LEN + 1];
+    bool    has_salt;
+    uint8_t salt[NC_SALT_LEN];
+} nc_contact_t;
+
+typedef struct {
+    nc_read_t     read;        /* value freed                               */
+    nc_contact_t *items;       /* FOUND only, in stored order               */
+    size_t        count;
+    size_t        invalid;     /* stored entries that are not a 128-char
+                                * lowercase-hex fingerprint (not in items)  */
+    uint64_t      timestamp;   /* the list's JSON timestamp                 */
+} nc_contactlist_t;
+
+void nc_contactlist_clear(nc_contactlist_t *l);
+
+/**
+ * Read the own list: R0 on SHA3-512("<fp>:contactlist") (string hashed
+ * once, nodus_ops_get_str; dht_contactlist.c make_base_key) with owner =
+ * own fp, then what dht_contactlist_fetch does: dht_contactlist_blob_parse,
+ * dna_decrypt_message_raw with the own round-3 key, sender fingerprint 64
+ * bytes + dna_verify_seal_authorship under the own ML-DSA key,
+ * dht_contactlist_deserialize_from_json. A value that passes R0 but fails
+ * any of these is UNREADABLE(BAD_RECORD).
+ */
+void nc_contactlist_read(const nc_ctx_t *ctx, nc_contactlist_t *out);
+
+/**
+ * The value the app publishes for `items` (dht_contactlist_publish):
+ * dht_contactlist_serialize_to_json(own fp, ...), ML-DSA-87 over the JSON,
+ * dna_encrypt_message_raw to the own round-3 key (self-seal, Seal
+ * timestamp = `timestamp`), dht_contactlist_blob_encode with expiry =
+ * timestamp + DHT_CONTACTLIST_DEFAULT_TTL (the app passes ttl 0). The bytes
+ * are decoded back with the read path before they are returned. *out
+ * malloc'd.
+ */
+int nc_contactlist_build(const nc_keys_t *keys, const nc_contact_t *items,
+                         size_t count, uint64_t timestamp,
+                         uint8_t **out, size_t *out_len);
+
+typedef enum {
+    NC_LIST_PUBLISHED = 0,  /* PUT accepted                                  */
+    NC_LIST_UNCHANGED = 1,  /* FOUND list already holds every entry: no PUT  */
+    NC_LIST_WAIT      = 2,  /* UNREADABLE, or EMPTY for a restored identity */
+    NC_LIST_TAKEN     = 3,  /* NODUS_ERR_KEY_OWNED: the key is owned by
+                             * someone else; terminal                       */
+    NC_LIST_FAILED    = 4,  /* the PUT failed; the next attempt re-reads     */
+    NC_LIST_REFUSED   = 5   /* bad input, or the stored list has entries this
+                             * core would not carry over (invalid > 0):
+                             * nothing written                              */
+} nc_list_status_t;
+
+typedef struct {
+    nc_list_status_t status;
+    nc_outcome_t     read_outcome;
+    nc_why_t         read_why;
+    int              put_rc;
+    bool             created;         /* first list (Q1 path)               */
+    size_t           count_before;    /* entries in the list read           */
+    size_t           count_after;     /* entries written (>= count_before)  */
+    size_t           salt_kept;       /* entries present on both sides with
+                                       * different salts: the stored salt
+                                       * was kept                           */
+} nc_list_result_t;
+
+/**
+ * Add contacts to the own list — MERGE ONLY, never fewer entries (design
+ * R4; messenger/BUGS.md:38). The list read in the SAME call is the base:
+ *   FOUND   -> stored entries in stored order, then each new fingerprint
+ *              appended in `add` order; for a fingerprint already stored,
+ *              a missing salt is filled from `add`, a present salt is kept
+ *              (a different one counts in salt_kept);
+ *   EMPTY   -> ctx->fresh: `add` becomes the first list (created = true);
+ *              restored identity: WAIT (Q1);
+ *   UNREADABLE -> WAIT.
+ * Nothing new -> UNCHANGED (no PUT). PUT EXCLUSIVE, ttl 0, value_id =
+ * nodus_identity_value_id (dht_contactlist_publish ->
+ * nodus_ops_put_str_exclusive). Every `add` fingerprint must be 128
+ * lowercase hex, no duplicates within `add`; n_add >= 1.
+ */
+int nc_contactlist_add(const nc_ctx_t *ctx, const nc_contact_t *add,
+                       size_t n_add, nc_list_result_t *res);
 
 /* ── R5: 1:1 outbox (daily bucket) and ACK ─────────────────────────── */
 
@@ -444,14 +574,15 @@ int nc_outbox_fetch_day(const nc_ctx_t *ctx, const nc_peer_t *peer,
 
 /** ACK that this identity has STORED `peer`'s messages (G11: the caller
  *  calls this only after its store transaction completed). Key =
- *  SHA3-512(dht_generate_ack_key(me, peer, salt)), value = unix time 8 bytes
- *  BE, EPHEMERAL, ttl DHT_ACK_TTL, value_id 1 (dht_offline_queue.c
- *  dht_publish_ack :129-173 — value layout reproduced, not extracted). */
+ *  SHA3-512(dht_generate_ack_key(me, peer, salt)), value =
+ *  dht_ack_value_encode(unix time) (8 bytes BE), EPHEMERAL, ttl DHT_ACK_TTL,
+ *  value_id 1 (dht_offline_queue.c dht_publish_ack). */
 int nc_ack_publish(const nc_ctx_t *ctx, const char *peer_fp,
                    const uint8_t salt[NC_SALT_LEN]);
 
 /** Read `peer`'s ACK for messages this identity sent (owner = peer, value
- *  exactly 8 bytes, dht_offline_queue.c ack_listen_callback :195-247). On
+ *  exactly 8 bytes, dht_ack_value_decode — dht_offline_queue.c
+ *  ack_listen_callback). On
  *  FOUND *ack_ts is the peer's unix time: messages with timestamp <= it
  *  were delivered. */
 void nc_ack_read(const nc_ctx_t *ctx, const char *peer_fp,

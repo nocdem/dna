@@ -2,7 +2,7 @@
  * (design rev 5 §1.4 R5, §5 G10 / G11).
  *
  * Wire bytes: messenger/codec/seal_multi_codec.c (2-recipient Seal),
- * messenger/codec/offline_queue_codec.c (day blob, ACK key),
+ * messenger/codec/offline_queue_codec.c (day blob, ACK key, ACK value),
  * messenger/codec/dm_outbox_codec.c (bucket key), messenger/dna_api.c
  * (Seal decode, authorship) — all compiled verbatim.
  *
@@ -13,6 +13,7 @@
 #include "nc_core.h"
 
 #include "codec/seal_multi_codec.h"
+#include "codec/offline_queue_codec.h"
 #include "dht/shared/dht_dm_outbox.h"
 #include "dht/shared/dht_offline_queue.h"
 #include "dna_api.h"
@@ -234,12 +235,11 @@ int nc_ack_publish(const nc_ctx_t *ctx, const char *peer_fp,
     if (nc_fp_parse(peer_fp, &chk) != 0) return NC_ERR_ARG;
     /* I am the recipient (ACK owner), the peer the sender (:136-138). */
     if (ack_key(ctx->keys->fp, peer_fp, salt, &key) != 0) return NC_ERR_ARG;
-    /* The value: unix time, 8 bytes big-endian (dht_offline_queue.c
-     * :145-157). Reproduced, not extracted: dht_publish_ack builds it
-     * inline. */
+    /* The value: unix time, 8 bytes big-endian — dht_ack_value_encode, the
+     * function dht_publish_ack calls (NC-1b). */
     uint64_t t = (uint64_t)time(NULL);
     uint8_t value[8];
-    for (int i = 0; i < 8; i++) value[i] = (uint8_t)(t >> (56 - 8 * i));
+    dht_ack_value_encode(t, value);
     return nc_put(ctx, &key, value, sizeof(value), NODUS_VALUE_EPHEMERAL,
                   DHT_ACK_TTL, 1 /* value_id 1, :160-163 */);
 }
@@ -266,8 +266,8 @@ void nc_ack_read(const nc_ctx_t *ctx, const char *peer_fp,
         raw->why = NC_WHY_BAD_RECORD;
         return;
     }
-    uint64_t t = 0;
-    for (int i = 0; i < 8; i++) t = (t << 8) | v->data[i];
+    /* dht_ack_value_decode — what the app's ACK listener calls (NC-1b). */
+    uint64_t t = dht_ack_value_decode(v->data);
     if (ack_ts) *ack_ts = t;
     nc_read_clear(raw);
 }

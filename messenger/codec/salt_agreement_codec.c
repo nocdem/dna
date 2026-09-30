@@ -6,6 +6,9 @@
  * changes are `static` dropped and the `salt_agreement_` name prefix on the
  * four former helpers (see salt_agreement_codec.h). No network I/O, no
  * database.
+ *
+ * NC-1b: the packet build moved here from salt_agreement_publish_internal
+ * as salt_agreement_build_packet (plumbing listed at the function).
  */
 
 #include "codec/salt_agreement_codec.h"
@@ -198,5 +201,134 @@ int salt_agreement_make_key(
     }
     key_out[128] = '\0';
 
+    return 0;
+}
+
+/* ============================================================================
+ * PACKET BUILD (NC-1b)
+ * ============================================================================ */
+
+/**
+ * Moved from salt_agreement_publish_internal (dht_salt_agreement.c).
+ * Plumbing added around the unchanged statements: the argument check (the
+ * caller keeps its own identical one, plus packet / total_size_out); the
+ * packet buffer is the caller's, so `memset(packet, 0, sizeof(packet))`
+ * became `memset(packet, 0, PACKET_TOTAL_SIZE_V2)` (sizeof of an array
+ * parameter is the pointer size); the size goes out through
+ * total_size_out. The DHT key is computed by the caller BEFORE this call
+ * (same failure order as before).
+ */
+int salt_agreement_build_packet(
+    const char *my_fp,
+    const char *contact_fp,
+    const uint8_t salt[SALT_AGREEMENT_SIZE],
+    const uint8_t *my_kyber_pub,
+    const uint8_t *contact_kyber_pub,
+    const uint8_t *my_mlkem_pub,
+    const uint8_t *contact_mlkem_pub,
+    const uint8_t *my_dilithium_priv,
+    uint8_t packet[PACKET_TOTAL_SIZE_V2],
+    size_t *total_size_out
+) {
+    if (!my_fp || !contact_fp || !salt || !my_kyber_pub ||
+        !contact_kyber_pub || !my_dilithium_priv || !packet || !total_size_out) {
+        return -1;
+    }
+
+    bool use_v2 = (my_mlkem_pub != NULL && contact_mlkem_pub != NULL);
+
+    /* Sort fingerprints to determine packet order */
+    const char *lower_fp, *higher_fp;
+    const uint8_t *lower_kyber, *higher_kyber;
+    const uint8_t *lower_mlkem, *higher_mlkem;
+    if (strcmp(my_fp, contact_fp) <= 0) {
+        lower_fp = my_fp;
+        higher_fp = contact_fp;
+        lower_kyber = my_kyber_pub;
+        higher_kyber = contact_kyber_pub;
+        lower_mlkem = my_mlkem_pub;
+        higher_mlkem = contact_mlkem_pub;
+    } else {
+        lower_fp = contact_fp;
+        higher_fp = my_fp;
+        lower_kyber = contact_kyber_pub;
+        higher_kyber = my_kyber_pub;
+        lower_mlkem = contact_mlkem_pub;
+        higher_mlkem = my_mlkem_pub;
+    }
+
+    /* Build packet — the caller's buffer is sized for the larger (v2)
+     * layout; only the first `data_size` (+ signature) bytes are ever
+     * used/published. */
+    memset(packet, 0, PACKET_TOTAL_SIZE_V2);
+    size_t offset = 0;
+
+    /* Version (network byte order) */
+    uint16_t version = htons(use_v2 ? SALT_AGREEMENT_VERSION_V2 : SALT_AGREEMENT_VERSION);
+    memcpy(packet + offset, &version, 2);
+    offset += 2;
+
+    /* Entry 1: lower fingerprint + [alg byte, v2 only] + encrypted salt */
+    uint8_t fp_bin[FP_BIN_SIZE];
+    if (salt_agreement_fp_hex_to_bin(lower_fp, fp_bin) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid lower fingerprint");
+        return -1;
+    }
+    memcpy(packet + offset, fp_bin, FP_BIN_SIZE);
+    offset += FP_BIN_SIZE;
+
+    if (use_v2) {
+        packet[offset] = SALT_AGREEMENT_ALG_MLKEM1024;
+        offset += 1;
+        if (gek_encrypt_alg(SALT_AGREEMENT_ALG_MLKEM1024, salt, lower_mlkem, packet + offset) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to encrypt salt for lower party (v2)");
+            return -1;
+        }
+    } else {
+        if (gek_encrypt(salt, lower_kyber, packet + offset) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to encrypt salt for lower party");
+            return -1;
+        }
+    }
+    offset += GEK_ENC_TOTAL_SIZE;
+
+    /* Entry 2: higher fingerprint + [alg byte, v2 only] + encrypted salt */
+    if (salt_agreement_fp_hex_to_bin(higher_fp, fp_bin) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid higher fingerprint");
+        return -1;
+    }
+    memcpy(packet + offset, fp_bin, FP_BIN_SIZE);
+    offset += FP_BIN_SIZE;
+
+    if (use_v2) {
+        packet[offset] = SALT_AGREEMENT_ALG_MLKEM1024;
+        offset += 1;
+        if (gek_encrypt_alg(SALT_AGREEMENT_ALG_MLKEM1024, salt, higher_mlkem, packet + offset) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to encrypt salt for higher party (v2)");
+            return -1;
+        }
+    } else {
+        if (gek_encrypt(salt, higher_kyber, packet + offset) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to encrypt salt for higher party");
+            return -1;
+        }
+    }
+    offset += GEK_ENC_TOTAL_SIZE;
+
+    size_t data_size = offset;  /* == PACKET_DATA_SIZE or PACKET_DATA_SIZE_V2 */
+
+    /* Sign the data portion with Dilithium5 — same mechanism for v1 and v2,
+     * only the length of what's signed changed. */
+    size_t sig_len = 0;
+    if (qgp_dsa87_sign(packet + offset, &sig_len,
+                        packet, data_size,
+                        my_dilithium_priv) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign agreement packet");
+        return -1;
+    }
+
+    size_t total_size = data_size + sig_len;
+
+    *total_size_out = total_size;
     return 0;
 }

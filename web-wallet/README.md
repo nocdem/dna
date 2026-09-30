@@ -1110,11 +1110,18 @@ here is loaded by the wallet; the Messages UI and the shared module are NC-4.
   profile read + update (EXCLUSIVE, "address taken" on `KEY_OWNED`; a record is
   created only for words generated in this session), contact requests (send,
   the app's ACCEPT round trip, cancel, fetch), per-contact salt read + the
-  native reconcile choice, the 1:1 daily outbox (send whole-day blob, fetch one
-  day with the authorship gate) and delivery ACKs, and the embedded server
-  list (`nodus-connect-servers` v1, entries carry a `kind`). Wire bytes come
-  from `messenger/codec/`, `messenger/dna_api.c` and
-  `messenger/dht/client/dna_profile.c`, compiled verbatim.
+  native reconcile choice + the gated publish (NC-1b: packet v1, the app's own
+  builder), the own contact list (NC-1b, R4: read, and merge-only add — never
+  fewer entries; the first list only for words generated in this session),
+  the 1:1 daily outbox (send whole-day blob, fetch one day with the
+  authorship gate) and delivery ACKs, and the embedded server list
+  (`nodus-connect-servers` v1, entries carry a `kind`). Wire bytes come from
+  `messenger/codec/`, `messenger/dna_api.c` and
+  `messenger/dht/client/dna_profile.c`, compiled verbatim — no byte layout is
+  reproduced in the core (NC-1b moved the last four inline sequences — ACK
+  value, contact-request signing preimage, salt packet build, contact-list
+  `CLST` blob — into `messenger/codec/`, and the app calls the same
+  functions).
 - `connect/nc_wasm.c` + `scripts/build-connect-wasm.sh` (`npm run
   build:connect-core`) — a standalone WebAssembly build (Emscripten 6.0.10,
   Asyncify, `-Werror`, json-c 0.17 + OpenSSL 3.0.15 for wasm32) written to
@@ -1125,12 +1132,13 @@ here is loaded by the wallet; the Messages UI and the shared module are NC-4.
   requestId)` on every result, lock order (queue stops → cancel → lock →
   memory zeroed → instance released). API listed at the top of the file.
 - `connect/tests/` — native tests (CMake, same compile set): classifier
-  matrix, wire bytes vs the codecs' own verify, R0 fault matrix against a fake
-  node (timeout, empty, bad signature, wrong owner, undecodable → no PUT).
+  matrix, wire bytes vs the codecs' own verify (requests signed over the
+  codec's preimage, salt packet v1, contact-list blob read the way the app's
+  fetch does), R0 fault matrix against a fake node (timeout, empty, bad
+  signature, wrong owner, undecodable → no PUT) including the contact-list
+  and salt write gates.
 
-Not in NC-2: the contact list (its `CLST` blob build/parse is inline in
-`dht_contactlist.c`) and the salt-agreement publish (packet build inline in
-`dht_salt_agreement.c`) — not extracted by NC-1, not re-derived here; at-rest
-storage (Q4, NC-4). The json-c version of the frozen app build is not
+Not in NC-2/NC-1b: removing a contact from the list (add is merge-only);
+at-rest storage (Q4, NC-4). The json-c version of the frozen app build is not
 established (host 0.16, wasm 0.17); the profile signature is over json-c's
 output, so this is checked before release (NC-3).
