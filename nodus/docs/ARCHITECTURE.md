@@ -122,7 +122,8 @@ nodus/
 │   │   ├── nodus_client.c     # Client SDK (connect, auth, DHT, channels, DNAC)
 │   │   ├── nodus_singleton.c  # Thread-safe global client instance
 │   │   ├── nodus_republish.c  # Migration republish helper
-│   │   └── nodus_v2_spend.c   # Shared version-3 CORE SPEND builder (plan + build, no I/O)
+│   │   ├── nodus_v2_spend.c   # Shared version-3 CORE SPEND builder (plan + build, no I/O)
+│   │   └── nodus_v2_stake.c/h # Shared STAKE / DELEGATE / UNDELEGATE envelope builder (no I/O)
 │   └── witness/               # DNAC BFT witness module (embedded)
 │       ├── nodus_witness.c          # Witness init, DB schema, lifecycle
 │       ├── nodus_witness_db.c/h     # SQLite ops (nullifiers, ledger, UTXOs, TXs, blocks)
@@ -157,6 +158,7 @@ nodus/
 │   ├── test_client.c          # Client SDK tests
 │   ├── test_client_pin.c      # Client server-key pin (fail-closed matrix, ML-KEM only) + monotonic timeouts
 │   ├── test_v2_spend_build.c  # Shared SPEND builder vs the CheckTx dry run (package c2)
+│   ├── test_v2_stake_build.c  # Shared STAKE / DELEGATE / UNDELEGATE builder vs the CheckTx dry run
 │   ├── test_ruleset_pins.c    # Generated pins header == the runtime table (byte-compare)
 │   ├── test_server.c          # Server integration tests
 │   │   (test_tm_core / test_tm_proposer / test_tm_sim / test_tm_vote / test_tm_commit /
@@ -1434,6 +1436,42 @@ Tests: `test_ruleset_pins` (R1 byte-compare, R2 digest rebuild, R3 lookup) and
 `test_v2_spend_build` (pins == table; a pins-built envelope admitted by the CheckTx dry run on a
 seeded chain with the production runtime; read-back == request; the nodus-cli layout restated;
 the gas-price fixed point; refusals).
+
+### Shared staking envelope builder (`src/client/nodus_v2_stake.h`)
+
+`src/client/nodus_v2_stake.c` builds the two-leg staking envelopes — leg0 SYSTEM record
+(STAKE op 1, call 2666 B; DELEGATE op 2 and UNDELEGATE op 4, call 5192 B — `rtn_stake_parse`,
+`rtn_deleg_parse`), leg1 CORE SYSFUND (op 7, a SPEND transfer section) — each leg kind-1 signed
+by the one `--keys` identity. It is the body of `nodus-cli v2-envelope stake|delegate`
+(`cmd_v2_stake`) moved out unchanged in behaviour, plus `undelegate`, which had no client
+builder before. Inputs only (the listed coins with token and unlock height, the tip + expiry,
+gas price, `chain_id32`, the SYSTEM and CORE ruleset tuples, the key); no network, no clock and
+no randomness — the one change output is seeded `SHA3-512(selected nullifiers)[0..31]` as the
+CLI did.
+
+- `nodus_v2_stake_build` — fee = max(floor, 400 000 × gas_price); coins filtered (zero, non-native,
+  `unlock_block > tip` skipped), ascending by nullifier, taken until they cover lock + fee (lock =
+  bond / amount; **0 for UNDELEGATE**, whose funding leg pays the fee only — `rtn_sys_call_flow`
+  derives release = amount and the chain creates the principal coin LOCKED for
+  `DNAC_UNDELEGATE_LOCK_EPOCHS` epochs, `rtn_sysfund_exec`); fixed declarations 8/16384 (leg0),
+  40/16384 (leg1), 400 000 units; two-pass signature; read-back (`nodus_v2_stake_decode`) refused
+  if it differs from the request.
+- Refuses what the call bytes alone decide: bond != `DNAC_SELF_STAKE_AMOUNT`, commission >
+  `DNAC_COMMISSION_BPS_MAX`, a DELEGATE/UNDELEGATE amount outside 1..total supply, tip 0, an
+  expiry outside `(tip, tip + NODUS_CMT_APP_MAX_EXPIRY_AHEAD]`. Row-dependent rules (bonded target,
+  100-NODUS minimum for a new row, delegator cap, undelegate amount <= the row, a partial
+  withdrawal leaving 0 or >= the minimum) stay with the chain at CheckTx.
+- **Ruleset identity.** The caller passes both tuples; nodus-cli fills them from the compiled
+  table. The generated pins header does not carry the SYSTEM ruleset tuple, so the browser module
+  cannot use this builder until it does.
+
+CLI: `nodus-cli v2-envelope undelegate --keys <dir> --validator <hex5184 pubkey> --amount <raw>
+(--dry-run | --submit ip:port)`.
+
+Test: `test_v2_stake_build` (STAKE, DELEGATE and — after the DELEGATE is applied in a block — an
+UNDELEGATE admitted by the CheckTx dry run on a seeded chain with the production runtime;
+read-back == request; the pre-move nodus-cli layout restated; twin builds identical outside the two
+auth blobs; the gas-price fee; refusals).
 
 ### Connection States
 

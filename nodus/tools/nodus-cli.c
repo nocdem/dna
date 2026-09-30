@@ -77,6 +77,7 @@
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_fingerprint.h"      /* O15F T6: fp raw<->hex      */
 #include "nodus/nodus_v2_spend.h"              /* the shared SPEND builder   */
+#include "client/nodus_v2_stake.h"             /* the shared stake builder   */
 #endif
 
 /* CHECKTX-P1 round 3 — the expiry every envelope this CLI builds carries:
@@ -2994,7 +2995,21 @@ static int t6_hex_exact(const char *hex, uint8_t *out, size_t n) {
  * DELEGATE rule (a bonded target, the 100-NODUS minimum for a new row,
  * the per-validator delegator cap) is the chain's, decided at CheckTx —
  * the builder checks only what the call bytes alone decide
- * (1 <= amount <= total supply, rtn_delegate_exec's scalar rule). */
+ * (1 <= amount <= total supply, rtn_delegate_exec's scalar rule).
+ *
+ * `v2-envelope undelegate` is the DELEGATE layout under runtime_op 4
+ * (DNA_SYSRULE_UNDELEGATE, rtn_deleg_parse): the --keys identity withdraws
+ * --amount of its delegation to --validator. Its funding leg pays the FEE
+ * ONLY (rtn_sys_call_flow: lock 0, release = amount); the principal comes
+ * back as a coin the chain creates in the same block, LOCKED for
+ * DNAC_UNDELEGATE_LOCK_EPOCHS epochs (rtn_sysfund_exec). The row checks
+ * (it exists, amount <= its amount, a partial withdrawal leaves 0 or >=
+ * DNAC_MIN_DELEGATION) are the chain's (rtn_undelegate_exec).
+ *
+ * The envelope itself is built by the shared, I/O-free builder
+ * (nodus/src/client/nodus_v2_stake.c, nodus_v2_stake_build) — the body
+ * this function had before the move; this function does the I/O and the
+ * printing. */
 static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                         int argc, char **argv, int cmd_start) {
     const char *keys_csv = NULL, *dest_fp_hex = NULL;
@@ -3003,10 +3018,17 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     uint64_t bond = 0;
     uint32_t commission = 0;
     int dry_run = 0, have_bond = 0, have_comm = 0, bad_arg = 0;
-    /* "stake" or "delegate" — the word after "v2-envelope" (main's
-     * dispatch routes only those two here) */
-    const int is_deleg = !strcmp(argv[cmd_start + 1], "delegate");
-    const char *verb = is_deleg ? "delegate" : "stake";
+    /* "stake", "delegate" or "undelegate" — the word after "v2-envelope"
+     * (main's dispatch routes only those three here). DELEGATE and
+     * UNDELEGATE share the call layout and so the arguments. */
+    const int is_undeleg = !strcmp(argv[cmd_start + 1], "undelegate");
+    const int is_deleg = is_undeleg ||
+                         !strcmp(argv[cmd_start + 1], "delegate");
+    const char *verb = is_undeleg ? "undelegate"
+                     : is_deleg   ? "delegate" : "stake";
+    const nodus_v2_stake_op_t op = is_undeleg ? NODUS_V2_STAKE_OP_UNDELEGATE
+                                 : is_deleg   ? NODUS_V2_STAKE_OP_DELEGATE
+                                              : NODUS_V2_STAKE_OP_STAKE;
 
     for (int i = cmd_start + 2; i < argc; i++) {   /* skip the verb word */
         const char *a = argv[i];
@@ -3033,6 +3055,9 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             "--commission <bps> --dest-fp <hex128>\n"
             "       (--dry-run | --submit ip:port)\n"
             "       v2-envelope delegate --keys <keydir> --validator "
+            "<hex5184 pubkey> --amount <raw>\n"
+            "       (--dry-run | --submit ip:port)\n"
+            "       v2-envelope undelegate --keys <keydir> --validator "
             "<hex5184 pubkey> --amount <raw>\n"
             "       (--dry-run | --submit ip:port)\n"
             "  Everything (chain id, coins, tip, gas price) is read from "
@@ -3087,10 +3112,9 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     int rc = 1;
     nodus_identity_t *keys = NULL;
     int n_keys = 0;
-    uint8_t *auth0 = NULL, *auth1 = NULL, *env_bytes = NULL;
-    dna_env_preflight_t *pf = NULL;
-    uint8_t *scall = NULL, *fcall = NULL;
-    nodus_v2_coin_t *coins = NULL;
+    nodus_v2_stake_coin_t *coins = NULL;
+    nodus_v2_stake_built_t built;
+    memset(&built, 0, sizeof(built));
     nodus_dnac_utxo_result_t utxos;
     memset(&utxos, 0, sizeof(utxos));
     int utxos_valid = 0;
@@ -3099,10 +3123,6 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     nodus_client_t client;
     int connected = 0;
     memset(&client, 0, sizeof(client));
-    /* the envelope's declared unit ceiling (fixed; right-sizing it like
-     * the spend builder is separate work, decision 2026-09-25-gas-price.md
-     * detail 2) — also what the gas-price fee is computed from */
-    const uint64_t stake_units = 400000;
 
     keys = calloc(4, sizeof(*keys));
     if (!keys) return 1;
@@ -3169,14 +3189,13 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
         }
     }
 
-    uint64_t fee = DNAC_MIN_FEE_RAW > NODUS_W_BASE_TX_FEE
-                 ? DNAC_MIN_FEE_RAW : NODUS_W_BASE_TX_FEE;
-
     /* HF-1 — the gas price (decision 2026-09-25-gas-price.md "HF-1 O4":
      * the CLI price source is dnac_fee_info's gas_price), read on this
-     * session: pay max(floor, stake_units × gas_price). An older server
-     * sends no gas_price key → 0 → the flat floor, exactly as before
-     * HF-1. A failed query is not "price 0": refuse. */
+     * session; the builder pays max(floor, NODUS_V2_STAKE_UNITS ×
+     * gas_price). An older server sends no gas_price key → 0 → the flat
+     * floor, exactly as before HF-1. A failed query is not "price 0":
+     * refuse. */
+    uint64_t gas_price = 0;
     {
         nodus_dnac_fee_info_t fi;
         memset(&fi, 0, sizeof(fi));
@@ -3186,17 +3205,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                     "price is unknown, refusing to size a fee\n", frc);
             goto done;
         }
-        if (fi.gas_price != 0) {
-            if (stake_units > UINT64_MAX / fi.gas_price) {
-                fprintf(stderr, "units %llu x gas price %llu overflows "
-                        "u64 — no fee can pay it\n",
-                        (unsigned long long)stake_units,
-                        (unsigned long long)fi.gas_price);
-                goto done;
-            }
-            uint64_t required = stake_units * fi.gas_price;
-            if (required > fee) fee = required;
-        }
+        gas_price = fi.gas_price;
     }
 
     /* The staker's CORE coins and the committed tip (dnac_utxo answers
@@ -3228,189 +3237,129 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                 "cap, so coins beyond it are invisible to this selection\n",
                 (int)NODUS_DNAC_MAX_UTXO_RESULTS);
 
-    uint64_t need = bond;
-    if (need > UINT64_MAX - fee) { fprintf(stderr, "bond+fee overflow\n"); goto done; }
-    need += fee;
-
-    /* Select native, unlocked funding inputs owned by the staker,
-     * ascending by nullifier (canonical — the order the database-backed
-     * builder's SELECT used), until the sum covers bond + fee. */
-    uint8_t nulls[NODUS_V2_SPEND_MAX_IN][64];
-    int n_in = 0;
-    uint64_t sum_in = 0;
-    {
-        static const uint8_t native_tok[64] = {0};
-        int n_coins = 0;
-        coins = calloc((size_t)(utxos.count > 0 ? utxos.count : 1),
-                       sizeof(*coins));
-        if (!coins) goto done;
-        for (int i = 0; i < utxos.count; i++) {
-            const nodus_dnac_utxo_entry_t *e = &utxos.entries[i];
-            if (e->amount == 0) continue;
-            if (memcmp(e->token_id, native_tok, 64) != 0) continue; /* non-native */
-            if (e->unlock_block > tip) continue;                    /* locked     */
-            memcpy(coins[n_coins].nul, e->nullifier, 64);
-            coins[n_coins].amount = e->amount;
-            n_coins++;
-        }
-        qsort(coins, (size_t)n_coins, sizeof(*coins), nodus_v2_nul_cmp);
-        for (int i = 0; i < n_coins && sum_in < need &&
-                        n_in < (int)NODUS_V2_SPEND_MAX_IN; i++) {
-            if (sum_in > UINT64_MAX - coins[i].amount) {
-                fprintf(stderr, "the funding input sum overflows u64\n");
-                goto done;
-            }
-            memcpy(nulls[n_in], coins[i].nul, 64);
-            sum_in += coins[i].amount;
-            n_in++;
-        }
-    }
-    if (n_in < 1 || sum_in < need) {
-        fprintf(stderr, "insufficient native funding: have %llu, need %llu "
-                "(%s %llu + fee %llu) over %d input(s)\n",
-                (unsigned long long)sum_in, (unsigned long long)need,
-                is_deleg ? "amount" : "bond",
-                (unsigned long long)bond, (unsigned long long)fee, n_in);
-        goto done;
-    }
-    uint64_t change = sum_in - need;
-
-    uint32_t scall_len;
-    if (!is_deleg) {
-        /* leg0 STAKE call (2666): staker_pk ‖ commission u16 ‖ bond u64 ‖
-         * dest_fp[64 RAW]. */
-        scall = calloc(1, 2666);
-        if (!scall) goto done;
-        memcpy(scall, keys[0].pk.bytes, DNAC_PUBKEY_SIZE);
-        scall[2592] = (uint8_t)(commission >> 8);
-        scall[2593] = (uint8_t)commission;
-        for (int i = 0; i < 8; i++) scall[2594 + i] = (uint8_t)(bond >> (56 - 8 * i));
-        memcpy(scall + 2602, dest_fp, 64);
-        scall_len = 2666;
-    } else {
-        /* leg0 DELEGATE call (5192): delegator_pk (the --keys identity)
-         * ‖ validator_pk ‖ amount u64 — `bond` holds --amount, the value
-         * the SYSFUND leg locks (rtn_deleg_parse). */
-        scall = calloc(1, 2u * DNAC_PUBKEY_SIZE + 8u);
-        if (!scall) goto done;
-        memcpy(scall, keys[0].pk.bytes, DNAC_PUBKEY_SIZE);
-        memcpy(scall + DNAC_PUBKEY_SIZE, validator_pk, DNAC_PUBKEY_SIZE);
-        for (int i = 0; i < 8; i++)
-            scall[2 * DNAC_PUBKEY_SIZE + i] = (uint8_t)(bond >> (56 - 8 * i));
-        scall_len = 2u * DNAC_PUBKEY_SIZE + 8u;
+    /* The listed coins, as the builder takes them; it applies the filter
+     * (zero amount, non-native, unlock_block > tip) and the selection. */
+    coins = calloc((size_t)(utxos.count > 0 ? utxos.count : 1),
+                   sizeof(*coins));
+    if (!coins) goto done;
+    for (int i = 0; i < utxos.count; i++) {
+        const nodus_dnac_utxo_entry_t *e = &utxos.entries[i];
+        memcpy(coins[i].nul, e->nullifier, 64);
+        coins[i].amount = e->amount;
+        memcpy(coins[i].token, e->token_id, 64);
+        coins[i].unlock_block = e->unlock_block;
     }
 
-    /* leg1 SYSFUND call = SPEND transfer section: in_count ‖ nullifiers
-     * (ascending — the SELECT already returns them so) ‖ out_count ‖
-     * change output (staker fp ‖ change ‖ native token ‖ seed). */
-    size_t fcap = 2 + (size_t)NODUS_V2_SPEND_MAX_IN * 64 + NODUS_V2_SPEND_OUT_LEN;
-    fcall = calloc(1, fcap);
-    if (!fcall) goto done;
-    size_t off = 0;
-    fcall[off++] = (uint8_t)n_in;
-    for (int i = 0; i < n_in; i++) { memcpy(fcall + off, nulls[i], 64); off += 64; }
-    uint8_t out_count = change > 0 ? 1 : 0;
-    fcall[off++] = out_count;
-    if (out_count) {
-        /* deterministic change seed = SHA3-512(input nullifiers)[0..31] —
-         * unique per input set, so the derived output id never collides. */
-        uint8_t seed_full[64];
-        if (qgp_sha3_512((const uint8_t *)nulls, (size_t)n_in * 64,
-                         seed_full) != 0) goto done;
-        nodus_v2_xfer_out_put(fcall + off, staker_fp, change, NULL /* native */,
-                        seed_full);
-        off += NODUS_V2_SPEND_OUT_LEN;
-    }
-    uint32_t fcall_len = (uint32_t)off;
+    nodus_v2_stake_ruleset_t rs;
+    memset(&rs, 0, sizeof(rs));
+    rs.sys_ruleset_version  = sys_rt->ruleset_version;
+    memcpy(rs.sys_ruleset_hash, sys_rt->ruleset_hash, 64);
+    rs.core_ruleset_version = core_rt->ruleset_version;
+    memcpy(rs.core_ruleset_hash, core_rt->ruleset_hash, 64);
 
-    /* ── two-leg envelope, two-pass auth (cmd_v2_envelope pattern) ─── */
-    uint32_t alen0 = 1u + 1u * NODUS_RT_AUTH_SIGNER_LEN;  /* kind-1, 1 sig */
-    uint32_t alen1 = 1u + 1u * NODUS_RT_AUTH_SIGNER_LEN;
-    auth0 = calloc(1, alen0);
-    auth1 = calloc(1, alen1);
-    pf    = calloc(1, sizeof(*pf));
-    if (!auth0 || !auth1 || !pf) goto done;
-
-    dna_env_leg_in_t legs[2];
-    memset(legs, 0, sizeof(legs));
-    legs[0].hdr.domain_id            = DNA_DOMAIN_SYSTEM;
-    legs[0].hdr.runtime_op           = is_deleg ? DNA_SYSRULE_DELEGATE
-                                                : DNA_SYSRULE_STAKE;
-    legs[0].hdr.ruleset_version      = sys_rt->ruleset_version;
-    legs[0].hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
-    legs[0].hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
-    legs[0].hdr.call_len             = scall_len;
-    legs[0].hdr.auth_len             = alen0;
-    legs[0].hdr.res_max_effects      = 8;
-    legs[0].hdr.res_max_effect_bytes = 16384;
-    legs[0].call_data = scall;
-    legs[0].auth_data = auth0;
-    legs[1].hdr.domain_id            = DNA_DOMAIN_CORE;
-    legs[1].hdr.runtime_op           = DNA_CORERULE_SYSFUND;
-    legs[1].hdr.ruleset_version      = core_rt->ruleset_version;
-    legs[1].hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
-    legs[1].hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
-    legs[1].hdr.call_len             = fcall_len;
-    legs[1].hdr.auth_len             = alen1;
-    legs[1].hdr.res_max_effects      = 40;
-    legs[1].hdr.res_max_effect_bytes = 16384;
-    legs[1].call_data = fcall;
-    legs[1].auth_data = auth1;
-
-    dna_env_in_t env_in;
-    memset(&env_in, 0, sizeof(env_in));
+    nodus_v2_stake_req_t sreq;
+    memset(&sreq, 0, sizeof(sreq));
+    sreq.rs             = &rs;
+    sreq.op             = op;
+    sreq.chain32        = chain32;
+    sreq.tip            = tip;
     /* the mempool lifetime rule (decision 2026-09-25-mempool-policy.md 1):
      * expiry within (tip, tip + NODUS_CMT_APP_MAX_EXPIRY_AHEAD], with the
      * gossip margin (CLI_ENV_EXPIRY_AHEAD). `tip` is the node's own
      * committed tip from the dnac_utxo reply; a 0 tip was refused above. */
-    env_in.expiry_height       = tip + CLI_ENV_EXPIRY_AHEAD;
-    env_in.fee_amount          = fee;
-    env_in.res_max_total_units = stake_units;
-    env_in.leg_count           = 2;
-    env_in.legs                = legs;
-
-    dna_env_leg_ctx_t lctx[2];
-    memset(lctx, 0, sizeof(lctx));
-    lctx[0].domain_id       = DNA_DOMAIN_SYSTEM;
-    lctx[0].ruleset_version = sys_rt->ruleset_version;
-    memcpy(lctx[0].ruleset_hash, sys_rt->ruleset_hash, 64);
-    lctx[1].domain_id       = DNA_DOMAIN_CORE;
-    lctx[1].ruleset_version = core_rt->ruleset_version;
-    memcpy(lctx[1].ruleset_hash, core_rt->ruleset_hash, 64);
+    sreq.expiry_height  = tip + CLI_ENV_EXPIRY_AHEAD;
+    sreq.pk             = keys[0].pk.bytes;
+    sreq.sk             = keys[0].sk.bytes;
+    sreq.amount         = bond;
+    sreq.commission_bps = commission;
+    sreq.dest_fp        = is_deleg ? NULL : dest_fp;
+    sreq.validator_pk   = is_deleg ? validator_pk : NULL;
+    sreq.gas_price      = gas_price;
+    sreq.coins          = coins;
+    sreq.n_coins        = utxos.count;
 
     /* Sign each leg's auth_digest with the staker sk (kind-1: count=1 ‖
-     * pubkey ‖ sig). One key covers BOTH legs: it is the STAKE identity
-     * AND the owner of the funding inputs. The two-pass build itself is
-     * the shared nodus_v2_env_sign_one_key (nodus_v2_spend.h — also
-     * `v2-envelope spend`), called through cli_sign_one_key. */
-    uint8_t *auths[2] = { auth0, auth1 };
-    size_t env_len = 0;
-    if (cli_sign_one_key(&env_in, auths, lctx, chain32, tip, &keys[0],
-                            &env_bytes, &env_len, pf) != 0)
-        goto done;
+     * pubkey ‖ sig). One key covers BOTH legs: it is the record identity
+     * AND the owner of the funding inputs. */
+    {
+        nodus_v2_stake_err_t se;
+        memset(&se, 0, sizeof(se));
+        int brc = nodus_v2_stake_build(&sreq, &built, &se);
+        if (brc == NODUS_V2_SPEND_ERR_INSUFFICIENT && is_undeleg) {
+            /* UNDELEGATE's funding leg pays the fee only */
+            fprintf(stderr, "insufficient native funding for the fee: have "
+                    "%llu, need %llu over %d input(s)\n",
+                    (unsigned long long)se.sum_in,
+                    (unsigned long long)se.need, se.n_in);
+            goto done;
+        }
+        if (brc == NODUS_V2_SPEND_ERR_INSUFFICIENT) {
+            fprintf(stderr, "insufficient native funding: have %llu, need "
+                    "%llu (%s %llu + fee %llu) over %d input(s)\n",
+                    (unsigned long long)se.sum_in,
+                    (unsigned long long)se.need,
+                    is_deleg ? "amount" : "bond",
+                    (unsigned long long)bond,
+                    (unsigned long long)se.fee, se.n_in);
+            goto done;
+        }
+        if (brc == NODUS_V2_SPEND_ERR_GAS_OVERFLOW) {
+            fprintf(stderr, "units %llu x gas price %llu overflows u64 — "
+                    "no fee can pay it\n", (unsigned long long)se.units,
+                    (unsigned long long)se.gas_price);
+            goto done;
+        }
+        if (brc != NODUS_V2_SPEND_OK) {
+            const char *why =
+                brc == NODUS_V2_SPEND_ERR_OVERFLOW   ? "bond+fee overflow"
+              : brc == NODUS_V2_SPEND_ERR_INPUT_SUM  ? "the funding input sum "
+                                                       "overflows u64"
+              : brc == NODUS_V2_SPEND_ERR_PREFLIGHT1 ? "pass-1 preflight failed"
+              : brc == NODUS_V2_SPEND_ERR_SIGN       ? "signature failed"
+              : brc == NODUS_V2_SPEND_ERR_PREFLIGHT2 ? "pass-2 preflight "
+                                                       "(self-check) failed"
+              : brc == NODUS_V2_SPEND_ERR_DECODE     ? "the built envelope did "
+                                                       "not read back as "
+                                                       "requested"
+              : brc == NODUS_V2_SPEND_ERR_EXPIRY     ? "expiry outside the "
+                                                       "mempool window"
+              : brc == NODUS_V2_STAKE_ERR_BOND       ? "the bond is not the "
+                                                       "self-bond"
+              : brc == NODUS_V2_STAKE_ERR_COMMISSION ? "commission above the "
+                                                       "maximum"
+              : brc == NODUS_V2_STAKE_ERR_AMOUNT     ? "amount out of range"
+                                                     : "build failed";
+            if (brc == NODUS_V2_SPEND_ERR_SIGN)
+                fprintf(stderr, "leg %d %s\n", se.leg, why);
+            else
+                fprintf(stderr, "%s (rc=%d)\n", why, brc);
+            goto done;
+        }
+    }
 
     /* Printed on BOTH paths (P2P-PORT F6): the submitted envelope's own
      * intent_id is what a caller waits for — a dry run's may differ (its
      * expiry is tip-relative, see this function's header). */
     printf("v2-envelope %s: %zu bytes, inputs=%d sum_in=%llu "
-           "%s=%llu fee=%llu change=%llu tip=%llu\n", verb, env_len, n_in,
-           (unsigned long long)sum_in, is_deleg ? "amount" : "bond",
-           (unsigned long long)bond, (unsigned long long)fee,
-           (unsigned long long)change, (unsigned long long)tip);
+           "%s=%llu fee=%llu change=%llu tip=%llu\n", verb, built.env_len,
+           built.n_in, (unsigned long long)built.sum_in,
+           is_deleg ? "amount" : "bond",
+           (unsigned long long)bond, (unsigned long long)built.fee,
+           (unsigned long long)built.change, (unsigned long long)tip);
     printf("  wire_id=");
-    for (int b = 0; b < 64; b++) printf("%02x", pf->wire_id[b]);
+    for (int b = 0; b < 64; b++) printf("%02x", built.wire_id[b]);
     printf("\n  intent_id=");
-    for (int b = 0; b < 64; b++) printf("%02x", pf->intent_id[b]);
+    for (int b = 0; b < 64; b++) printf("%02x", built.intent_id[b]);
     printf("\n");
     fflush(stdout);
     if (dry_run) {
         printf("  PREFLIGHT SELF-CHECK: OK (2 legs SYSTEM %s + CORE "
                "SYSFUND) — not submitted (--dry-run)\n",
-               is_deleg ? "DELEGATE" : "STAKE");
+               is_undeleg ? "UNDELEGATE" : is_deleg ? "DELEGATE" : "STAKE");
     } else {
         /* on the session the gas price and the coins were read from */
-        if (t6_submit_on(&client, &keys[0], pf->wire_id, env_bytes,
-                         (uint32_t)env_len) != 0)
+        if (t6_submit_on(&client, &keys[0], built.wire_id, built.env,
+                         (uint32_t)built.env_len) != 0)
             goto done;
     }
     rc = 0;
@@ -3419,12 +3368,7 @@ done:
     if (utxos_valid) nodus_client_free_utxo_result(&utxos);
     if (connected) nodus_client_close(&client);
     free(coins);
-    free(scall);
-    free(fcall);
-    free(auth0);
-    free(auth1);
-    free(env_bytes);
-    free(pf);
+    nodus_v2_stake_built_free(&built);
     if (keys) {
         for (int i = 0; i < 4; i++) nodus_identity_clear(&keys[i]);
         free(keys);
@@ -5673,6 +5617,10 @@ static void usage(const char *prog) {
     fprintf(stderr, "  v2-envelope delegate --keys <dir> --validator <hex5184 pubkey>\n");
     fprintf(stderr, "           --amount <raw> (--dry-run | --submit ip:port)\n");
     fprintf(stderr, "                                   two-leg DELEGATE (own key = self-delegation)\n");
+    fprintf(stderr, "  v2-envelope undelegate --keys <dir> --validator <hex5184 pubkey>\n");
+    fprintf(stderr, "           --amount <raw> (--dry-run | --submit ip:port)\n");
+    fprintf(stderr, "                                   two-leg UNDELEGATE (returned coin locked %d epochs)\n",
+            (int)DNAC_UNDELEGATE_LOCK_EPOCHS);
     fprintf(stderr, "  v2-envelope spend --keys <dir> --to <fp128hex> --amount <raw|all>\n");
     fprintf(stderr, "           [--fee <raw>] [--token <hex128>] [--count <N|all>]\n");
     fprintf(stderr, "           [--shard <I>/<M>]\n");
@@ -5840,7 +5788,8 @@ int main(int argc, char **argv) {
         int rc;
         if (optind + 1 < argc &&
             (strcmp(argv[optind + 1], "stake") == 0 ||
-             strcmp(argv[optind + 1], "delegate") == 0))
+             strcmp(argv[optind + 1], "delegate") == 0 ||
+             strcmp(argv[optind + 1], "undelegate") == 0))
             rc = cmd_v2_stake(server_ip, server_port, argc, argv, optind);
         else if (optind + 1 < argc && strcmp(argv[optind + 1], "spend") == 0)
             rc = cmd_v2_spend(server_ip, server_port, argc, argv, optind);

@@ -391,10 +391,12 @@ test('claim: record durable before submit, recognised as a claim after storage, 
   const past = await checkNodusActivity(restored, { client });
   assert.equal(past.status, 'expired'); assert.match(past.note, /never paid out twice/); assert.doesNotMatch(past.note, /coins are free/);
   // A refused claim is reported after its record exists.
-  claim.accepted = false; claim.message = 'The Nodus network refused this claim (code 7). It may already have been claimed.';
+  // The module's code-7 wording (0.1.27): a refusal and an unreadable answer
+  // share code 7, so the message names both and asserts neither.
+  claim.accepted = false; claim.message = 'The Nodus node refused this claim, or its answer could not be read (code 7). If the allocation was claimed before, it is already claimed: check the balance before trying again.';
   const refused = await prepareClaim({ client, from: FINGERPRINT });
   let recorded = false;
-  await assert.rejects(refused.confirm(async () => { recorded = true; }), /did not accept this claim\. The Nodus network refused/);
+  await assert.rejects(refused.confirm(async () => { recorded = true; }), /did not accept this claim\. The Nodus node refused this claim, or its answer could not be read \(code 7\)/);
   assert.equal(recorded, true);
   client.lock();
   await assert.rejects(prepareClaim({ client, from: FINGERPRINT }), /not connected/);

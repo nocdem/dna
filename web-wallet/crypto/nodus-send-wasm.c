@@ -1314,6 +1314,15 @@ int nsw_submit(void) {
                                  g_built.env_len, &approved);
         if (src < 0)
             rc = -1;
+        else if (src == NODUS_ERR_PROTOCOL_ERROR)
+            /* code 7 is BOTH the server's CheckTx refusal (handle_dnac_spend
+             * answers it as an error reply with this code) AND the client's
+             * "the reply could not be read / carried no status"
+             * (nodus_client_dnac_spend) — the client does not tell them
+             * apart, so the message names both. Outcome unchanged. */
+            rc = nsw_fail("The Nodus node refused this transfer, or its "
+                          "answer could not be read (code %d). Check the "
+                          "activity before sending again.", src);
         else if (src != 0)
             rc = nsw_fail("The Nodus node did not answer the submission "
                           "(rc=%d).", src);
@@ -1446,9 +1455,23 @@ int nsw_claim_submit(void) {
             rc = -1;
         else if (src == NODUS_ERR_TIMEOUT || src > NODUS_ERR_CIRCUIT_CLOSED)
             rc = nsw_fail("The Nodus node did not answer the claim (rc=%d).", src);
-        else if (src != 0 || !approved) {
-            nsw_fail("The Nodus network refused this claim (code %d). It may "
-                     "already have been claimed.", src);
+        else if (src == NODUS_ERR_PROTOCOL_ERROR) {
+            /* code 7 is BOTH the server's CheckTx refusal (an already-claimed
+             * allocation included) AND the client's "the reply could not be
+             * read / carried no status" (nodus_client_dnac_spend) — the
+             * client does not tell them apart, so the message names both
+             * instead of asserting a refusal. Outcome unchanged. */
+            nsw_fail("The Nodus node refused this claim, or its answer could "
+                     "not be read (code %d). If the allocation was claimed "
+                     "before, it is already claimed: check the balance "
+                     "before trying again.", src);
+            rc = 1;
+        } else if (src != 0) {
+            nsw_fail("The Nodus node could not accept this claim (code %d).",
+                     src);
+            rc = 1;
+        } else if (!approved) {
+            nsw_fail("The Nodus network refused this claim.");
             rc = 1;
         } else
             rc = 0;
