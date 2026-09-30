@@ -26,7 +26,7 @@ out="${NODUS_SEND_VECTOR_BIN:-/tmp/nodus-send-native-vector}"
   crypto/nodus-send-native-vector.c crypto/nodus-send-wasm.c \
   $root/nodus/src/client/nodus_v2_spend.c \
   $root/nodus/src/nodus_log_shim.c \
-  $root/shared/dnac/{env_wire,env_preflight,res_meter,effect_wire}.c \
+  $root/shared/dnac/{env_wire,env_preflight,res_meter,effect_wire,manifest_wire,ledger_roots_v2}.c \
   $root/shared/crypto/hash/qgp_sha3.c \
   $root/shared/crypto/utils/{qgp_fingerprint,qgp_random}.c \
   $root/shared/crypto/sign/qgp_dilithium.c \

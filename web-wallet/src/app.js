@@ -39,6 +39,9 @@ let cellframeDerivation, cellframeReader, nodusDerivation;
 // The NODUS send module's client for the open wallet (src/nodus/client.js);
 // only ever set when nodusSendModuleFactory is not null.
 let nodusClient;
+// Bumped whenever the claim offer must be re-read or withdrawn; a status read
+// started under an older value is dropped (refreshClaim).
+let claimCheck = 0;
 // Set only inside the VITE_ENABLE_IXIOS blocks below; undefined/no-ops in a
 // disabled build (so no Ixios string literal is needed outside those blocks).
 let doShowIxiosAddress, stopIxiosAddress = () => {}, ixiosChain, ixiosReader;
@@ -126,12 +129,17 @@ function renderActivity(save = true) {
   if (save) void persistActivity().catch(error => { $('vault-status').textContent = error.message; });
   $('activity').replaceChildren(...visibleActivity().map(row => {
     const div = document.createElement('div');
-    div.textContent = `${row.amount} ${row.symbol} → ${row.to} · ${row.status} · ${row.readError || row.note} `;
+    // A claim of this wallet's allocation (src/adapters/nodus.js isClaimRow)
+    // pays the wallet itself.
+    const claim = adapters.nodus.isClaimRow(row);
+    div.textContent = claim
+      ? `Allocation claim · ${row.amount} ${row.symbol} → your address · ${row.status} · ${row.readError || row.note} `
+      : `${row.amount} ${row.symbol} → ${row.to} · ${row.status} · ${row.readError || row.note} `;
     // NODUS has no explorer link in the first delivery (design §1.4).
     if (CHAINS[row.chain]) {
       const link = document.createElement('a');
       link.href = CHAINS[row.chain].explorer + encodeURIComponent(row.hash); link.textContent = 'View transaction'; link.target = '_blank'; link.rel = 'noopener noreferrer'; div.append(link);
-    } else div.append(`Transfer ID ${row.hash}`);
+    } else div.append(`${claim ? 'Claim ID' : 'Transfer ID'} ${row.hash}`);
     // A NODUS send always resolves: included, or 'expired' once the chain passes
     // its expiry block. Its coins stay held until then (src/adapters/nodus.js
     // lockedInputs), so it is never marked abandoned by hand.
@@ -149,8 +157,20 @@ function renderActivity(save = true) {
     return div;
   }));
 }
-// NODUS rows are checked through the send module (block scan for the intent_id).
-const checkRow = (row, options) => row.chain === NODUS_ASSET.chain ? adapters.nodus.checkNodusActivity(row, { ...options, client: nodusClient }) : checkActivity(row, options);
+// NODUS rows are checked through the send module (block scan for the
+// intent_id; for a claim, for the coin it creates). A claim that reaches a
+// final state re-reads the NODUS balance and the claim offer once the
+// tracker has stored that state on the row (it does so after this returns).
+const checkRow = async (row, options) => {
+  if (row.chain !== NODUS_ASSET.chain) return checkActivity(row, options);
+  const update = await adapters.nodus.checkNodusActivity(row, { ...options, client: nodusClient });
+  if (adapters.nodus.isClaimRow(row) && terminal(update.status) && !terminal(row.status)) setTimeout(() => {
+    if (!wallet || !nodusClient) return;
+    void refreshClaim();
+    if (update.status === 'confirmed') portfolio.setAddress(NODUS_ASSET.chain, wallet.addresses.nodus);
+  }, 0);
+  return update;
+};
 function trackActivity() { stopTracking(); renderActivity(); if (wallet) stopTracking = watchActivity(visibleActivity, renderActivity, { check: checkRow }); }
 const endpoints = Object.fromEntries(Object.entries(CHAINS).map(([key, chain]) => [key, chain.endpoint]));
 // Receive-only networks outside CHAINS, in display order (network selector,
@@ -199,18 +219,27 @@ const message = text => { $('wallet-status').textContent = text; };
 for (const { network, asset } of leadingNetworks) $('chain').add(new Option(network.name, asset.chain));
 for (const [key, chain] of Object.entries(CHAINS)) $('chain').add(new Option(chain.name, key));
 for (const { network, asset } of extraNetworks) $('chain').add(new Option(network.name, asset.chain));
+// The portfolio scope line. Its NODUS sentence follows the actual state: the
+// balance is read only while the send module is ready (setNodusReady), and
+// even then it is a testnet balance, never priced into the total. The default
+// (no CPUNK, no Ixios) is index.html's own text.
+const NODUS_SCOPE = {
+  false: 'NODUS is shown, but its balance is not shown yet.',
+  true: 'The NODUS balance is shown (Nodus testnet), but it does not count toward the estimated total.'
+};
+let portfolioScope = nodus => `Supported assets on Ethereum, BNB Smart Chain, Solana and TRON. ${nodus} Only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total. CPUNK is not included.`;
 if (CPUNK_ENABLED) {
-  // The default HTML text (kept for a disabled build, where it stays true
-  // unedited) says CPUNK is "not included"; with the module enabled its
-  // balance IS shown here, just never priced into the total. NODUS is listed
-  // in every build, but has no balance to show yet.
-  $('portfolio-scope').textContent = 'Supported assets on Ethereum, BNB Smart Chain, Solana, TRON and Cellframe. NODUS is shown, but its balance is not shown yet. The CPUNK balance is shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.';
+  // With the CPUNK module enabled its balance IS shown here, just never
+  // priced into the total.
+  portfolioScope = nodus => `Supported assets on Ethereum, BNB Smart Chain, Solana, TRON and Cellframe. ${nodus} The CPUNK balance is shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.`;
 }
 if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
-  $('portfolio-scope').textContent = CPUNK_ENABLED
-    ? 'Supported assets on Ethereum, BNB Smart Chain, Solana, TRON, Cellframe and Ixios. NODUS is shown, but its balance is not shown yet. CPUNK and IXIOS balances are shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.'
-    : 'Supported assets on Ethereum, BNB Smart Chain, Solana, TRON and Ixios. NODUS is shown, but its balance is not shown yet. The IXIOS balance is shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total. CPUNK is not included.';
+  portfolioScope = CPUNK_ENABLED
+    ? nodus => `Supported assets on Ethereum, BNB Smart Chain, Solana, TRON, Cellframe and Ixios. ${nodus} CPUNK and IXIOS balances are shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.`
+    : nodus => `Supported assets on Ethereum, BNB Smart Chain, Solana, TRON and Ixios. ${nodus} The IXIOS balance is shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total. CPUNK is not included.`;
 }
+function showPortfolioScope(nodusReady) { $('portfolio-scope').textContent = portfolioScope(NODUS_SCOPE[nodusReady === true]); }
+showPortfolioScope(false);
 function expireIdle() {
   if (idleDeadline && Date.now() >= idleDeadline) { lock(); return true; }
   return false;
@@ -235,7 +264,9 @@ function setNodusReady(ready, { reselect = true } = {}) {
   if (receiveOnlyNetworks[NODUS_ASSET.chain] === network) return;
   receiveOnlyNetworks[NODUS_ASSET.chain] = network;
   if (!ready && wallet) wallet.nodusClient = undefined;
+  if (!ready) { claimCheck++; portfolio.setAction(NODUS_ASSET.chain, undefined); }
   portfolio.setNetwork(NODUS_ASSET.chain, network);
+  showPortfolioScope(ready);
   if (reselect && wallet && $('chain').value === NODUS_ASSET.chain) selectChain();
 }
 // Lock order lives in the client (src/nodus/client.js lock): stop the queue ->
@@ -262,9 +293,63 @@ async function startNodusSend(source, address) {
     source.nodusClient = client;
     setNodusReady(true);
     portfolio.setAddress(NODUS_ASSET.chain, address);
+    void refreshClaim();
   } catch {
     if (client === nodusClient) $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase. Nodus balance and sending are unavailable right now; lock and reopen your wallet to retry.';
   } finally { seed?.fill(0); }
+}
+// "1234567.5" -> "1,234,567.5" (display only).
+function groupDigits(text) { const [whole, fraction] = text.split('.'); return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (fraction ? `.${fraction}` : ''); }
+// GENESIS CLAIM (0.1.26): offers "Claim your allocation" under the NODUS
+// asset while the connected module reports an allocation for this wallet
+// that is claimable now (src/adapters/nodus.js claimStatus) and no claim of
+// it is still unresolved in Activity. Any failure withdraws the offer.
+async function refreshClaim() {
+  const client = nodusClient, source = wallet, check = ++claimCheck;
+  portfolio.setAction(NODUS_ASSET.chain, undefined);
+  if (!client || !source || source.locked || !client.claimable) return;
+  try {
+    const status = await adapters.nodus.claimStatus({ client, from: source.addresses.nodus });
+    if (check !== claimCheck || client !== nodusClient || source !== wallet || source.locked) return;
+    const unresolved = history.some(row => row.address === source.addresses.nodus && adapters.nodus.isClaimRow(row) && !terminal(row.status));
+    if (!status.claimable || unresolved) return;
+    const amount = groupDigits(status.amountText.replace(/ NODUS$/, ''));
+    portfolio.setAction(NODUS_ASSET.chain, {
+      label: `Claim your allocation (${amount} NODUS)`,
+      note: `An allocation of ${amount} NODUS is waiting for this wallet. Claiming it adds it to your NODUS balance.`,
+      run: () => void startClaim()
+    });
+  } catch { /* no offer: the claim state could not be read */ }
+}
+// Opens the review dialog for a transfer-shaped object (a send, or a claim
+// from src/adapters/nodus.js prepareClaim) with its own entries.
+function showReview(transfer, entries, title) {
+  pending = transfer; $('review-details').replaceChildren();
+  $('review-title').textContent = title;
+  $('review-notice').textContent = `${networkFor(transfer.chain).stage || 'Mainnet'} transaction. ${transfer.kind === 'claim' ? 'Claiming' : 'Sending'} cannot be undone.`;
+  for (const [key, value] of entries) {
+    const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = key; dd.textContent = value;
+    if (key === 'Address check') dd.className = 'notice';
+    $('review-details').append(dt, dd);
+  }
+  $('confirm-send').textContent = transfer.kind === 'claim' ? 'Confirm & claim' : 'Confirm & send';
+  $('confirm-send').disabled = true; $('review-error').textContent = ''; $('review-dialog').showModal();
+  clearTimeout(confirmEnableTimer); confirmEnableTimer = setTimeout(() => { $('confirm-send').disabled = false; }, 600);
+}
+async function startClaim() {
+  if (busy || !wallet) return;
+  // Activity lists the selected network's records: show NODUS, where the
+  // claim will be tracked. (selectChain closes any open review first.)
+  if ($('chain').value !== NODUS_ASSET.chain) { $('chain').value = NODUS_ASSET.chain; selectChain(); }
+  busy = true; const current = revision, client = nodusClient;
+  message('Preparing your claim…');
+  try {
+    const transfer = await adapters.nodus.prepareClaim({ client, from: wallet.addresses.nodus });
+    if (current !== revision || !wallet || client !== nodusClient) { transfer.cancel(); return; }
+    showReview(transfer, [...transfer.review, ['Review expires', new Date(transfer.expiresAt).toLocaleTimeString()]], 'Review claim');
+    message('Review the claim before confirming.');
+  } catch (error) { if (current === revision) message(error.message); }
+  finally { busy = false; }
 }
 function lock() {
   stopNodusSend({ reselect: false });
@@ -450,6 +535,8 @@ function showIxiosAddress() { void doShowIxiosAddress?.(); }
 function selectChain() {
   revision++; closeReview(); const chain = $('chain').value; const c = networkFor(chain);
   for (const label of document.querySelectorAll('.selected-network-name')) label.textContent = c.name;
+  // "Mainnet" for every network but Nodus, whose `stage` is 'Testnet'.
+  for (const label of document.querySelectorAll('.selected-network-stage')) label.textContent = c.stage || 'Mainnet';
   const address = wallet.addresses[chain];
   setReceiveAddress(address || '');
   portfolio.setSelected(chain);
@@ -538,7 +625,6 @@ $('send-form').onsubmit = async event => {
     const nodusLocked = chain === NODUS_ASSET.chain ? adapters.nodus.lockedInputs(history.filter(row => row.address === wallet.addresses.nodus)) : undefined;
     const transfer = await prepareTransfer({ wallet, chain, symbol: $('asset').value, to: $('recipient').value, amount: $('amount').value, endpoint: endpoints[chain], nodusLocked });
     if (current !== revision || !wallet) { transfer.cancel(); return; }
-    pending = transfer; $('review-details').replaceChildren();
     let entries;
     if (transfer.review) {
       // NODUS: every value was decoded from the signed envelope (G1), not the form.
@@ -552,13 +638,7 @@ $('send-form').onsubmit = async event => {
       details['Review expires'] = new Date(transfer.expiresAt).toLocaleTimeString();
       entries = Object.entries(details);
     }
-    for (const [key, value] of entries) {
-      const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = key; dd.textContent = value;
-      if (key === 'Address check') dd.className = 'notice';
-      $('review-details').append(dt, dd);
-    }
-    $('confirm-send').disabled = true; $('review-error').textContent = ''; $('review-dialog').showModal(); message('Review every transfer detail before confirming.');
-    clearTimeout(confirmEnableTimer); confirmEnableTimer = setTimeout(() => { $('confirm-send').disabled = false; }, 600);
+    showReview(transfer, entries, 'Review transfer'); message('Review every transfer detail before confirming.');
   } catch (error) { if (current === revision) message(error.message); }
   finally { busy = false; $('review-button').disabled = false; }
 };
@@ -576,15 +656,21 @@ $('confirm-send').onclick = async () => {
     });
     if (record) { record.note = 'Broadcast submitted; awaiting confirmation.'; if (current === revision) trackActivity(); }
     closeReview();
+    // A submitted claim withdraws the offer while its record is unresolved.
+    if (transfer.kind === 'claim') void refreshClaim();
     if (current !== revision) return;
-    message('Broadcast submitted; confirmation is pending. ');
     $('recipient').value = ''; $('amount').value = '';
+    if (transfer.kind === 'claim') { message(`Claim submitted; confirmation is pending. Claim ID ${hash}. Its status is tracked in Activity.`); return; }
+    message('Broadcast submitted; confirmation is pending. ');
     if (CHAINS[transfer.chain]) { const link = document.createElement('a'); link.href = CHAINS[transfer.chain].explorer + encodeURIComponent(hash); link.textContent = `View transaction ${hash}`; link.target = '_blank'; link.rel = 'noopener noreferrer'; $('wallet-status').append(link); }
     else $('wallet-status').append(`Transfer ID ${hash}. Its status is tracked in Activity.`);
   } catch (error) {
     if (record) { record.status = 'unknown'; record.note = 'Broadcast outcome uncertain. Tracking the signed transaction; do not resend automatically.'; if (current === revision) trackActivity(); }
     closeReview();
-    const uncertain = transfer.chain === NODUS_ASSET.chain
+    if (transfer.kind === 'claim') void refreshClaim();
+    const uncertain = transfer.kind === 'claim'
+      ? 'The outcome is tracked in Activity. An allocation is never paid out twice.'
+      : transfer.chain === NODUS_ASSET.chain
       ? 'The outcome is tracked in Activity; its coins stay held until it is included or its expiry block passes.'
       : 'A broadcast failure can have an uncertain outcome. Check your address on the chain explorer before creating another transfer.';
     if (current === revision) message(record ? `${error.message} ${uncertain}` : error.message);

@@ -345,6 +345,9 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 .asset-value small { font-size: 11px; color: #b9c7ad; }
 .asset-chevron { color: #718262; margin-left: 4px; flex-shrink: 0; }
 .asset-group[open] .asset-chevron { transform: rotate(180deg); }
+/* A network's extra action under its asset group (NODUS allocation claim). */
+.portfolio-assets .asset-action { margin: -2px 0 12px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.asset-action p { margin: 0; flex: 1 1 220px; }
 .chain-holding { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 12px; padding: 16px; border-top: 1px solid #d5f99814; }
 .holding-network { display: flex; align-items: center; gap: 8px; font-size: 11px; color: #c9d2c0; }
 .holding-network .coin-icon { width: 22px; height: 22px; }

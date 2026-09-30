@@ -71,7 +71,14 @@ mode="${1:-release}"
 #     -> wait_response(76) -> emscripten_sleep  = 380 bytes
 # counting EVERY param and local of each frame (an upper bound of what is
 # saved). 16384 is ~43x that, so inlining changes in later edits stay far
-# inside it. The default ASYNCIFY_IGNORE_INDIRECT=0 is kept: Asyncify still
+# inside it. The genesis-claim exports of 0.1.26 (nsw_claim_status /
+# _build / _submit) add chains of the same shape (export -> nsw_session_ok
+# / nsw_check_chain / nodus_client_dnac_* -> wait_response); their frames
+# were NOT re-measured from a --profiling-funcs disassembly for this
+# release. They keep every large object on the heap or in static storage
+# (dna_claim_t, the claim bytes, the supply buckets are small), so the
+# bound above is expected to hold — expected, not measured.
+# The default ASYNCIFY_IGNORE_INDIRECT=0 is kept: Asyncify still
 # instruments every function with an indirect call (OpenSSL's provider
 # tables, the builder's rand callback), which costs size, not correctness.
 ASYNCIFY_STACK=16384
@@ -124,6 +131,10 @@ sources=(
   $root/shared/dnac/env_preflight.c
   $root/shared/dnac/res_meter.c
   $root/shared/dnac/effect_wire.c
+  # the genesis claim codec (nodus-cli v2-claim's) and the tagged empty
+  # roots it references
+  $root/shared/dnac/manifest_wire.c
+  $root/shared/dnac/ledger_roots_v2.c
   # shared crypto (qgp_platform_<os>.c is NOT linked: nodus-send-wasm.c
   # defines qgp_platform_random and qgp_secure_memzero)
   $root/shared/crypto/hash/qgp_sha3.c
@@ -167,6 +178,14 @@ exports_common=(
   nsw_fingerprint nsw_chain_hex nsw_bal_total nsw_bal_spendable
   nsw_list_tip nsw_list_truncated nsw_list_count nsw_list_nul
   nsw_list_amount nsw_scan_tip nsw_scan_height nsw_scan_found
+  # genesis claim (0.1.26)
+  nsw_claim_reset nsw_claim_set_manifest nsw_claim_add_leaf nsw_claim_seal
+  nsw_claim_offline_build nsw_claim_status nsw_claim_build nsw_claim_submit
+  nsw_claim_found nsw_claim_window nsw_claim_claimed nsw_claim_amount
+  nsw_claim_tip nsw_claim_start nsw_claim_end nsw_claim_output
+  nsw_claim_built_bytes nsw_claim_built_len nsw_claim_built_id
+  nsw_claim_built_nullifier nsw_claim_built_output nsw_claim_built_recipient
+  nsw_claim_built_chain nsw_claim_built_amount nsw_claim_built_leaf
 )
 exports_test=(nsw_test_random_buf nsw_test_random_load)
 

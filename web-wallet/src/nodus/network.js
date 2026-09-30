@@ -12,8 +12,11 @@
 // is no `endpoint` and no `rpcOptions`, and
 // `balanceUnavailable` keeps the portfolio from ever reading a balance for it —
 // its row shows "Balance not shown yet", never an amount, a zero or a read error.
+// `stage`: the label shown next to the network name where the other networks
+// show "Mainnet" (src/app.js selectChain) — the send module is pinned to the
+// Nodus testnet (src/nodus/send-module.js NODUS_SEND_NETWORK).
 export const NODUS_NETWORK = {
-  name: 'Nodus', symbol: 'NODUS', decimals: 8, icon: 'nodus.svg', tokens: [], receiveOnly: true, balanceUnavailable: true,
+  name: 'Nodus', symbol: 'NODUS', decimals: 8, icon: 'nodus.svg', tokens: [], receiveOnly: true, balanceUnavailable: true, stage: 'Testnet',
   // Shown under the hidden send fields when Nodus is the selected network.
   sendNote: 'Sending NODUS is not available in this release.',
 };

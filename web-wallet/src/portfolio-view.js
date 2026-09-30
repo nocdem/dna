@@ -52,6 +52,10 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   // `selected`: the network chosen in the Send / Receive panel, set by the app
   // through setSelected(). It is UI state, not wallet state, so clear() keeps it.
   let addresses, endpoints, balances = {}, quotes = {}, filter = 'all', hidden = false, session = 0, timer, priceJob, selected;
+  // One extra action per network, shown under that network's asset group
+  // (today only NODUS: "Claim your allocation", src/app.js refreshClaim).
+  // `{ label, note, run }`; cleared by clear() and setAction(chain, undefined).
+  let rowActions = {};
   const jobs = new Map();
   const text = value => hidden ? '••••' : value;
   function render() {
@@ -74,8 +78,8 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     for (const button of $('portfolio-filters').querySelectorAll('button')) button.setAttribute('aria-pressed', String(button.dataset.chain === filter));
     const opened = new Set([...$('balances').querySelectorAll('details[open]')].map(d => d.dataset.symbol));
     const focused = document.activeElement, focusedGroup = focused?.closest('.asset-group')?.dataset.symbol;
-    const focusedAction = focused?.getAttribute('aria-label');
-    $('balances').replaceChildren(...groupAssets(snap.rows, filter).map(group => {
+    const focusedAction = focused?.getAttribute('aria-label'), focusedRowAction = focused?.dataset?.rowAction;
+    $('balances').replaceChildren(...groupAssets(snap.rows, filter).flatMap(group => {
       const detail = el('details', 'asset-group'); detail.dataset.symbol = group.symbol; detail.open = opened.has(group.symbol);
       const summary = el('summary', 'asset-summary'), name = el('span', 'asset-name');
       const home = networks[group.rows[0].chain];
@@ -108,9 +112,19 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
         }
         entry.append(identity, value, actions); detail.append(entry);
       }
-      return detail;
+      // The network's extra action sits right under its asset group, outside
+      // the collapsible rows so it is visible without expanding them.
+      const chains = [...new Set(group.rows.map(row => row.chain))].filter(chain => rowActions[chain]);
+      return [detail, ...chains.map(chain => {
+        const block = el('div', 'asset-action notice'), action = rowActions[chain];
+        const button = el('button', 'small', action.label); button.type = 'button'; button.dataset.rowAction = chain;
+        button.onclick = () => action.run();
+        block.append(el('p', '', action.note), button);
+        return block;
+      })];
     }));
     // Reading another network or expiring a quote must not interrupt keyboard navigation.
+    if (focusedRowAction) $('balances').querySelector(`button[data-row-action="${CSS.escape(focusedRowAction)}"]`)?.focus({ preventScroll: true });
     if (focusedGroup) {
       const group = [...$('balances').children].find(node => node.dataset.symbol === focusedGroup);
       const control = focused?.matches('summary') ? group?.querySelector('summary')
@@ -149,7 +163,7 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   }
   function clear() {
     session++; for (const job of jobs.values()) job.abort(); jobs.clear(); priceJob?.abort(); priceJob = undefined;
-    clearInterval(timer); addresses = undefined; endpoints = undefined; balances = {}; quotes = {}; filter = 'all'; hidden = false;
+    clearInterval(timer); addresses = undefined; endpoints = undefined; balances = {}; quotes = {}; filter = 'all'; hidden = false; rowActions = {};
     $('portfolio-updated').textContent = ''; render();
   }
   function open(publicAddresses, publicEndpoints, { automatic = true } = {}) {
@@ -159,8 +173,9 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   function changeEndpoint(chain, endpoint) {
     if (!endpoints) return;
     // Cancel the old endpoint's reads so they cannot overwrite the new state.
-    const savedAddresses = addresses, savedEndpoints = { ...endpoints, [chain]: endpoint };
+    const savedAddresses = addresses, savedEndpoints = { ...endpoints, [chain]: endpoint }, savedActions = rowActions;
     open(savedAddresses, savedEndpoints, { automatic: false });
+    rowActions = savedActions; render();
     $('portfolio-status').textContent = 'Network endpoint changed. Refresh all to read balances again.';
   }
   // Reports a late-arriving address (Cellframe, Ixios), or its failure (falsy
@@ -198,6 +213,15 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
       if (current) control?.setAttribute('aria-current', 'true'); else control?.removeAttribute('aria-current');
     }
   }
+  // Shows (`{ label, note, run }`) or removes (undefined) the extra action
+  // under `chain`'s asset group. Only an open portfolio shows one.
+  function setAction(chain, action) {
+    if (!Object.hasOwn(networks, chain)) return;
+    if (action && addresses && typeof action.label === 'string' && typeof action.note === 'string' && typeof action.run === 'function') rowActions[chain] = action;
+    else if (!rowActions[chain]) return;
+    else delete rowActions[chain];
+    render();
+  }
   $('portfolio-refresh').onclick = refresh;
   $('refresh').onclick = refresh;
   $('portfolio-hide').onclick = () => { hidden = !hidden; render(); };
@@ -206,5 +230,5 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     button.onclick = () => { filter = chain; render(); }; return button;
   }));
   render();
-  return { open, clear, refresh, changeEndpoint, setAddress, setSelected, setNetwork };
+  return { open, clear, refresh, changeEndpoint, setAddress, setSelected, setNetwork, setAction };
 }

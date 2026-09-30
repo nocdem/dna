@@ -26,6 +26,9 @@
  * `v2-envelope spend` (nodus/tools/nodus-cli.c cmd_v2_spend) for one native
  * spend: fee floor max(DNAC_MIN_FEE_RAW, NODUS_W_BASE_TX_FEE), not fixed,
  * largest-first selection, count 1, no shard, expiry tip + 90.
+ * The GENESIS CLAIM (nsw_claim_*, 0.1.26) is nodus-cli's `v2-claim`
+ * (cmd_v2_claim) for this wallet's one allocation, over the shared claim
+ * codec shared/dnac/manifest_wire.c — see the section of that name.
  *
  * THREE BUILDS of this one file (web-wallet/scripts/build-nodus-send-wasm.sh,
  * build-nodus-send-native-vector.sh):
@@ -79,6 +82,7 @@
 #include "nodus/nodus_types.h"              /* NODUS_CMT_APP_MAX_EXPIRY_AHEAD,
                                              * NODUS_W_BASE_TX_FEE           */
 #include "dnac/dnac.h"                      /* DNAC_MIN_FEE_RAW              */
+#include "dnac/manifest_wire.h"             /* genesis claim codec           */
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
 #include "crypto/utils/qgp_fingerprint.h"
@@ -573,6 +577,356 @@ int nsw_offline_build(const char *chain_hex, const char *tip_dec,
     return rc;
 }
 
+/* ═══ GENESIS CLAIM ══════════════════════════════════════════════════════
+ *
+ * The claim of a genesis allocation, built the way nodus-cli `v2-claim`
+ * builds it (nodus/tools/nodus-cli.c cmd_v2_claim, :2529-2849) with the
+ * shared codec shared/dnac/manifest_wire.{h,c}:
+ *   dna_gman_hash, dna_dist_leaf_hash, leaf selection by dest_binding
+ *   (:2717), dna_dist_proof_build (:2732), dna_claim_preimage + ML-DSA-87
+ *   (:2742-2747), dna_claim_encode (:2754), tx hash = SHA3-512(bytes)
+ *   (:2759), dna_claim_nullifier (:2763).
+ *
+ * WHERE THE DATA COMES FROM: no node RPC serves a manifest, a leaf list or
+ * a proof, so the manifest bytes, their hash and the leaf list are part of
+ * the wallet build (src/nodus/send-module.js NODUS_CLAIM_DATA — the same
+ * trust root as the pinned chain id). Nothing of it is trusted here: the
+ * manifest must decode strictly and re-hash to the embedded hash, and the
+ * leaves must rebuild the manifest's committed snapshot root (the check
+ * cmd_v2_claim makes before any proof, :2650-2670). A mismatch refuses
+ * every claim operation; sending is unaffected.
+ *
+ * ONE LEAF PER KEY: a key bound by more than one leaf is refused (the CLI
+ * loops over every match, :2716; the wallet has no per-leaf spent state to
+ * choose between them — see nsw_claim_status). */
+
+#define NSW_CLAIM_MAX_LEAVES   256u
+#define NSW_CLAIM_MANIFEST_MAX 8192u        /* > the largest valid v1 manifest
+                                             * (64 domains: ~4.8 KB)        */
+
+static struct {
+    int             fixed;                  /* unlock ran: data is final    */
+    int             has_manifest, sealed;
+    dna_gman_t      m;
+    uint8_t         hash[DNA_V2_ROOT_LEN];
+    size_t          n;
+    dna_dist_leaf_t leaves[NSW_CLAIM_MAX_LEAVES];
+    uint8_t         leaf_hash[NSW_CLAIM_MAX_LEAVES][DNA_V2_ROOT_LEN];
+} g_cd;
+
+/* Lowercase hex of 1..cap bytes, any even length. */
+static int nsw_parse_hex_var(const char *s, uint8_t *out, size_t cap,
+                             size_t *len_out) {
+    if (!s) return -1;
+    size_t n = strnlen(s, 2 * cap + 1);
+    if (n == 0 || n % 2 != 0 || n > 2 * cap) return -1;
+    if (nsw_parse_hex(s, out, n / 2) != 0) return -1;
+    *len_out = n / 2;
+    return 0;
+}
+
+int nsw_claim_reset(void) {
+    if (g_cd.fixed) return nsw_fail("The claim data is fixed once the wallet connects.");
+    memset(&g_cd, 0, sizeof(g_cd));
+    return 0;
+}
+
+/* The embedded manifest: strict decode (exact length, full validation —
+ * dna_gman_decode), a distribution section in DNA-native auth, the native
+ * coin as its target (CORE domain, 64 zero bytes: the only asset the v1
+ * CORE runtime accepts, manifest_wire.h:113-117), at most
+ * NSW_CLAIM_MAX_LEAVES leaves, and dna_gman_hash equal to the embedded
+ * hash. */
+int nsw_claim_set_manifest(const char *manifest_hex, const char *hash_hex) {
+    if (g_cd.fixed) return nsw_fail("The claim data is fixed once the wallet connects.");
+    g_cd.has_manifest = g_cd.sealed = 0;
+    g_cd.n = 0;
+    static uint8_t buf[NSW_CLAIM_MANIFEST_MAX];
+    static const uint8_t zero64[64] = {0};
+    uint8_t want[DNA_V2_ROOT_LEN], got[DNA_V2_ROOT_LEN];
+    size_t len = 0;
+    if (nsw_parse_hex_var(manifest_hex, buf, sizeof(buf), &len) != 0 ||
+        nsw_parse_hex(hash_hex, want, sizeof(want)) != 0)
+        return nsw_fail("Invalid claim data in this wallet build.");
+    if (dna_gman_decode(buf, len, &g_cd.m) != 0)
+        return nsw_fail("The claim data in this wallet build does not decode.");
+    if (dna_gman_hash(&g_cd.m, got) != 0 || memcmp(got, want, sizeof(got)) != 0)
+        return nsw_fail("The claim data in this wallet build does not match "
+                        "its pinned hash.");
+    if (g_cd.m.dist_present != 1 ||
+        g_cd.m.auth_mode != DNA_CLAIMAUTH_DNA_NATIVE ||
+        g_cd.m.target_domain_id != DNA_DOMAIN_CORE ||
+        g_cd.m.target_asset_len != 64 ||
+        memcmp(g_cd.m.target_asset_ref, zero64, 64) != 0 ||
+        g_cd.m.leaf_count < 1 || g_cd.m.leaf_count > NSW_CLAIM_MAX_LEAVES)
+        return nsw_fail("The claim data in this wallet build is not a NODUS "
+                        "allocation list this wallet can claim from.");
+    memcpy(g_cd.hash, got, sizeof(g_cd.hash));
+    g_cd.has_manifest = 1;
+    return 0;
+}
+
+/* One allocation, as the genesis config lists it (nodus-cli.c
+ * claim_derive_config_leaves :2497-2511): source id, destination binding
+ * (SHA3-512 of the owner's ML-DSA-87 public key), raw amount >= 1. */
+int nsw_claim_add_leaf(const char *source_id_hex, const char *dest_hex,
+                       const char *amount_dec) {
+    if (g_cd.fixed) return nsw_fail("The claim data is fixed once the wallet connects.");
+    if (!g_cd.has_manifest || g_cd.sealed)
+        return nsw_fail("Invalid claim data in this wallet build.");
+    if (g_cd.n >= g_cd.m.leaf_count)
+        return nsw_fail("The claim data lists more allocations than its manifest.");
+    dna_dist_leaf_t L;
+    memset(&L, 0, sizeof(L));
+    size_t sl = 0;
+    L.leaf_version = DNA_DIST_VERSION;
+    if (nsw_parse_hex_var(source_id_hex, L.source_id, DNA_DIST_SRCID_MAX, &sl) != 0 ||
+        nsw_parse_hex(dest_hex, L.dest_binding, sizeof(L.dest_binding)) != 0 ||
+        nsw_parse_u64(amount_dec, &L.source_amount) != 0 || L.source_amount < 1)
+        return nsw_fail("Invalid allocation in the claim data.");
+    L.source_id_len = (uint16_t)sl;
+    g_cd.leaves[g_cd.n++] = L;
+    return 0;
+}
+
+static int nsw_leaf_qcmp(const void *a, const void *b) {
+    return dna_dist_leaf_cmp((const dna_dist_leaf_t *)a,
+                             (const dna_dist_leaf_t *)b);
+}
+
+/* Canonical order (source_id ASC, duplicates refused — nodus-cli.c
+ * :2513-2521), the leaf count, the committed snapshot root (:2650-2670) and
+ * the converted total (dna_dist_check_totals) must all match the manifest. */
+int nsw_claim_seal(void) {
+    if (g_cd.fixed) return nsw_fail("The claim data is fixed once the wallet connects.");
+    if (!g_cd.has_manifest || g_cd.sealed || g_cd.n != g_cd.m.leaf_count)
+        return nsw_fail("The claim data does not list every allocation of its manifest.");
+    qsort(g_cd.leaves, g_cd.n, sizeof(g_cd.leaves[0]), nsw_leaf_qcmp);
+    for (size_t i = 1; i < g_cd.n; i++)
+        if (dna_dist_leaf_cmp(&g_cd.leaves[i - 1], &g_cd.leaves[i]) >= 0)
+            return nsw_fail("The claim data lists an allocation twice.");
+    uint8_t root[DNA_V2_ROOT_LEN];
+    if (dna_dist_snapshot_root(g_cd.leaves, g_cd.n, root) != 0 ||
+        memcmp(root, g_cd.m.snapshot_root, sizeof(root)) != 0)
+        return nsw_fail("The claim data does not rebuild its manifest's "
+                        "committed allocation root.");
+    if (dna_dist_check_totals(g_cd.leaves, g_cd.n, g_cd.m.conv_numerator,
+                              g_cd.m.conv_denominator, g_cd.m.rounding_mode,
+                              g_cd.m.total_claimable) != 0)
+        return nsw_fail("The claim data's amounts do not add up to its "
+                        "manifest's total.");
+    for (size_t i = 0; i < g_cd.n; i++)
+        if (dna_dist_leaf_hash(&g_cd.leaves[i], g_cd.leaf_hash[i]) != 0)
+            return nsw_fail("The claim data could not be hashed.");
+    g_cd.sealed = 1;
+    return 0;
+}
+
+/* The leaf bound to `binding`: 1 = found (*idx), 0 = none, -1 = refused
+ * (data not sealed, or more than one leaf). */
+static int nsw_claim_find(const uint8_t binding[64], size_t *idx) {
+    if (!g_cd.sealed) return nsw_fail("Claiming is not available in this wallet build.");
+    int matches = 0;
+    for (size_t i = 0; i < g_cd.n; i++)
+        if (memcmp(g_cd.leaves[i].dest_binding, binding, 64) == 0) {
+            if (matches++ == 0) *idx = i;
+        }
+    if (matches > 1)
+        return nsw_fail("This wallet holds more than one allocation; the web "
+                        "wallet claims one only. Use nodus-cli v2-claim.");
+    return matches;
+}
+
+/* The committed-context identity of leaf `idx` on `chain32`: its nullifier
+ * (dna_claim_nullifier, as cmd_v2_claim :2763 and admission step 9), the
+ * coin a claim of it creates (dna_claim_utxo_id — the id dnac_v3_block
+ * reports for an applied claim, nodus_witness_handlers.c:3304-3308), and
+ * the converted amount (dna_dist_converted, admission step 6). */
+static int nsw_claim_ids(size_t idx, const uint8_t chain32[DNA_CHAIN_ID_LEN],
+                         uint8_t nul[64], uint8_t out_id[64], uint64_t *amount) {
+    if (dna_claim_nullifier(chain32, g_cd.hash, g_cd.m.target_domain_id,
+                            g_cd.m.target_asset_ref, g_cd.m.target_asset_len,
+                            g_cd.leaf_hash[idx], nul) != 0 ||
+        dna_claim_utxo_id(nul, out_id) != 0 ||
+        dna_dist_converted(g_cd.leaves[idx].source_amount,
+                           g_cd.m.conv_numerator, g_cd.m.conv_denominator,
+                           g_cd.m.rounding_mode, amount) != 0)
+        return nsw_fail("The claim identity could not be computed.");
+    return 0;
+}
+
+/* The last claim built, and what was read back from its bytes. */
+static struct {
+    uint8_t *bytes;
+    size_t   len;
+    uint8_t  tx_hash[64];
+    char     tx_hex[129], nul_hex[129], out_hex[129], recipient[129],
+             chain_hex[65], amount[NSW_U64_DEC], leaf[NSW_U64_DEC];
+} g_cb;
+
+static void nsw_claim_built_clear(void) {
+    if (g_cb.bytes) free(g_cb.bytes);       /* public bytes: no wipe needed */
+    memset(&g_cb, 0, sizeof(g_cb));
+}
+
+const uint8_t *nsw_claim_built_bytes(void)  { return g_cb.bytes; }
+int nsw_claim_built_len(void)               { return (int)g_cb.len; }
+const char *nsw_claim_built_id(void)        { return g_cb.tx_hex; }
+const char *nsw_claim_built_nullifier(void) { return g_cb.nul_hex; }
+const char *nsw_claim_built_output(void)    { return g_cb.out_hex; }
+const char *nsw_claim_built_recipient(void) { return g_cb.recipient; }
+const char *nsw_claim_built_chain(void)     { return g_cb.chain_hex; }
+const char *nsw_claim_built_amount(void)    { return g_cb.amount; }
+const char *nsw_claim_built_leaf(void)      { return g_cb.leaf; }
+
+/*
+ * Build + sign + read back the claim of this key's leaf on `chain32`
+ * (cmd_v2_claim :2720-2766, one leaf). The hedged ML-DSA-87 signature
+ * draws its rnd from qgp_platform_random. The read-back decodes the bytes
+ * (dna_claim_decode, strict) and re-runs, locally, the admission checks
+ * that need no chain state (nodus_witness_v2_claims.c claim_admit steps
+ * 1, 5, 7): every field equals the request, the key hashes to the leaf's
+ * destination, the proof reaches the committed root, the signature
+ * verifies. Only then is anything kept for review.
+ */
+static int nsw_claim_core(const uint8_t *pk, const uint8_t *sk,
+                          const uint8_t chain32[DNA_CHAIN_ID_LEN]) {
+    nsw_claim_built_clear();
+    uint8_t own[64];
+    size_t idx = 0;
+    if (qgp_sha3_512(pk, NSW_PK_LEN, own) != 0)
+        return nsw_fail("The claim could not be built (hash).");
+    int found = nsw_claim_find(own, &idx);
+    if (found < 0) return -1;
+    if (found == 0) return nsw_fail("This wallet has no allocation to claim.");
+
+    uint8_t nul[64], out_id[64];
+    uint64_t amount = 0;
+    if (nsw_claim_ids(idx, chain32, nul, out_id, &amount) != 0) return -1;
+
+    dna_claim_t *c = calloc(1, sizeof(*c)), *d = calloc(1, sizeof(*d));
+    uint8_t *bytes = malloc(DNA_CLAIM_MAX_WIRE);
+    int rc = -1;
+    if (!c || !d || !bytes) { rc = nsw_fail("Out of memory."); goto done; }
+
+    const dna_dist_leaf_t *L = &g_cd.leaves[idx];
+    c->claim_version = DNA_CLAIM_VERSION;
+    memcpy(c->chain_id, chain32, DNA_CHAIN_ID_LEN);
+    memcpy(c->manifest_hash, g_cd.hash, 64);
+    c->leaf_index    = (uint64_t)idx;
+    c->source_id_len = L->source_id_len;
+    memcpy(c->source_id, L->source_id, L->source_id_len);
+    c->source_amount = L->source_amount;
+    memcpy(c->dest_binding, L->dest_binding, 64);
+    c->auth_mode     = g_cd.m.auth_mode;
+    memcpy(c->pubkey, pk, DNA_CLAIM_PUBKEY_LEN);
+    if (dna_dist_proof_build((const uint8_t (*)[64])g_cd.leaf_hash, g_cd.n,
+                             (uint64_t)idx, c->siblings, &c->n_siblings) != 0) {
+        rc = nsw_fail("The claim proof could not be built.");
+        goto done;
+    }
+    uint8_t pre[DNA_CLAIM_PREIMAGE_MAX];
+    size_t pre_len = 0, sl = 0, blen = 0;
+    if (dna_claim_preimage(c, pre, &pre_len) != 0) {
+        rc = nsw_fail("The claim could not be built (preimage).");
+        goto done;
+    }
+    if (qgp_dsa87_sign(c->signature, &sl, pre, pre_len, sk) != 0 ||
+        sl != DNA_CLAIM_SIG_LEN) {
+        rc = nsw_fail("Signing the claim failed.");
+        goto done;
+    }
+    if (dna_claim_encode(c, bytes, DNA_CLAIM_MAX_WIRE, &blen) != 0) {
+        rc = nsw_fail("The claim could not be encoded.");
+        goto done;
+    }
+
+    /* ── read back from the bytes ── */
+    uint8_t pk_hash[64], lh[64], dpre[DNA_CLAIM_PREIMAGE_MAX];
+    size_t dpre_len = 0;
+    dna_dist_leaf_t dl;
+    memset(&dl, 0, sizeof(dl));
+    int ok = dna_claim_decode(bytes, blen, d) == 0 &&
+             d->claim_version == DNA_CLAIM_VERSION &&
+             memcmp(d->chain_id, chain32, DNA_CHAIN_ID_LEN) == 0 &&
+             memcmp(d->manifest_hash, g_cd.hash, 64) == 0 &&
+             d->leaf_index == (uint64_t)idx &&
+             d->source_id_len == L->source_id_len &&
+             memcmp(d->source_id, L->source_id, L->source_id_len) == 0 &&
+             d->source_amount == L->source_amount &&
+             memcmp(d->dest_binding, own, 64) == 0 &&
+             d->auth_mode == g_cd.m.auth_mode &&
+             memcmp(d->pubkey, pk, DNA_CLAIM_PUBKEY_LEN) == 0 &&
+             qgp_sha3_512(d->pubkey, DNA_CLAIM_PUBKEY_LEN, pk_hash) == 0 &&
+             memcmp(pk_hash, d->dest_binding, 64) == 0;
+    if (ok) {
+        dl.leaf_version  = DNA_DIST_VERSION;
+        dl.source_id_len = d->source_id_len;
+        memcpy(dl.source_id, d->source_id, d->source_id_len);
+        dl.source_amount = d->source_amount;
+        memcpy(dl.dest_binding, d->dest_binding, 64);
+        ok = dna_dist_leaf_hash(&dl, lh) == 0 &&
+             memcmp(lh, g_cd.leaf_hash[idx], 64) == 0 &&
+             dna_dist_proof_verify(g_cd.m.snapshot_root, lh, d->leaf_index,
+                                   g_cd.m.leaf_count,
+                                   (const uint8_t (*)[64])d->siblings,
+                                   d->n_siblings) == 0 &&
+             dna_claim_preimage(d, dpre, &dpre_len) == 0 &&
+             qgp_dsa87_verify(d->signature, DNA_CLAIM_SIG_LEN, dpre, dpre_len,
+                              d->pubkey) == 0;
+    }
+    if (!ok) {
+        rc = nsw_fail("The built claim does not check out; nothing was "
+                      "signed for sending.");
+        goto done;
+    }
+    if (qgp_sha3_512(bytes, blen, g_cb.tx_hash) != 0) {
+        rc = nsw_fail("The claim could not be built (hash).");
+        goto done;
+    }
+    g_cb.bytes = bytes;                      /* ownership moves here */
+    g_cb.len   = blen;
+    bytes = NULL;
+    nsw_fmt_hex(g_cb.tx_hash, 64, g_cb.tx_hex);
+    nsw_fmt_hex(nul, 64, g_cb.nul_hex);
+    nsw_fmt_hex(out_id, 64, g_cb.out_hex);
+    nsw_fmt_hex(d->dest_binding, 64, g_cb.recipient);
+    nsw_fmt_hex(d->chain_id, DNA_CHAIN_ID_LEN, g_cb.chain_hex);
+    nsw_fmt_u64(amount, g_cb.amount);
+    nsw_fmt_u64(d->leaf_index, g_cb.leaf);
+    rc = 0;
+done:
+    free(bytes);
+    free(c);
+    free(d);
+    return rc;
+}
+
+/* OFFLINE claim build: the identity from the seed in nsw_seed_buf (wiped
+ * here), the chain id as a node would report it, the claim data loaded and
+ * sealed above. For parity: the native vector and every wasm build run
+ * this function (the signature rnd comes from qgp_platform_random — fixed
+ * bytes in a TEST build, the CSPRNG in the shipped one). */
+int nsw_claim_offline_build(const char *chain_hex) {
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    if (nsw_parse_hex(chain_hex, chain32, sizeof(chain32)) != 0) {
+        nsw_wipe(g_seed, sizeof(g_seed));
+        return nsw_fail("Invalid offline claim input.");
+    }
+    uint8_t *pk = malloc(NSW_PK_LEN), *sk = malloc(NSW_SK_LEN);
+    int rc;
+    if (!pk || !sk)
+        rc = nsw_fail("Out of memory.");
+    else if (qgp_dsa87_keypair_derand(pk, sk, g_seed) != 0)
+        rc = nsw_fail("Key derivation failed.");
+    else
+        rc = nsw_claim_core(pk, sk, chain32);
+    nsw_wipe(g_seed, sizeof(g_seed));
+    if (sk) { nsw_wipe(sk, NSW_SK_LEN); free(sk); }
+    free(pk);
+    return rc;
+}
+
 #ifndef NODUS_SEND_OFFLINE_ONLY
 /* ═══ the networked module (browser) ════════════════════════════════════ */
 
@@ -745,6 +1099,7 @@ int nsw_unlock(void) {
         return nsw_end(nsw_fail("This Nodus connection was already used."));
     }
     g_used = 1;
+    g_cd.fixed = 1;                         /* the claim data is final too  */
     if (!g_net.has_chain || g_net.n_servers < 1 || g_net.n_pins < 1) {
         nsw_wipe(g_seed, sizeof(g_seed));
         return nsw_end(nsw_fail("Nodus network settings are missing."));
@@ -912,49 +1267,201 @@ uint8_t *nsw_req_env_alloc(int len) {
     return g_req_env;
 }
 
+/* nodus-cli's t6_submit_on (nodus-cli.c:2323-2354) for claim bytes OR
+ * envelope bytes: the transaction is keyed by `tx_hash` (the envelope's
+ * wire_id; SHA3-512 of a claim's bytes), which is signed with nodus_sign.
+ * The server routes claim bytes to the claim lane itself, with no wire
+ * flag (nodus-cli.c:2280-2284; handle_dnac_spend hands the bytes to the
+ * mempool CheckTx, nodus_witness_handlers.c:2303-2373).
+ * @return the client's rc (0 = an answer; `*approved` says which), or -1
+ *         with nsw_error set when the submission could not be signed. */
+static int nsw_dnac_spend(const uint8_t tx_hash[64], const uint8_t *bytes,
+                          size_t len, int *approved) {
+    nodus_pubkey_t spk;
+    nodus_sig_t ssig;
+    *approved = 0;
+    memcpy(spk.bytes, g_id.pk.bytes, NODUS_PK_BYTES);
+    if (nodus_sign(&ssig, tx_hash, 64, &g_id.sk) != 0)
+        return nsw_fail("Signing the submission failed.");
+    nodus_dnac_spend_result_t sres;
+    memset(&sres, 0, sizeof(sres));
+    int src = nodus_client_dnac_spend(&g_client, tx_hash, bytes,
+                                      (uint32_t)len, &spk, &ssig, 0, &sres);
+    if (src < 0)                             /* not sent: session / memory */
+        return nsw_fail("The submission could not be sent to the Nodus node.");
+    if (src == 0) *approved = sres.status == NODUS_DNAC_APPROVED;
+    return src;
+}
+
+static void nsw_req_env_free(void) {
+    if (g_req_env) { nsw_wipe(g_req_env, g_req_env_len); free(g_req_env); }
+    g_req_env = NULL;
+    g_req_env_len = 0;
+}
+
 /* 0 = accepted by the node's mempool CheckTx, 1 = refused (message in
- * nsw_error), -1 = no answer (transport / RPC fault). The submission is
- * nodus-cli's t6_submit_on: tx_hash = wire_id, signed with nodus_sign. */
+ * nsw_error), -1 = no answer (transport / RPC fault). */
 int nsw_submit(void) {
     if (nsw_begin() != 0) return -1;
-    int rc;
+    int rc, approved = 0;
     if (!g_req_env || !g_built.env || g_req_env_len != g_built.env_len ||
         memcmp(g_req_env, g_built.env, g_built.env_len) != 0) {
         rc = nsw_fail("Only the transfer shown for review can be sent.");
     } else if (nsw_session_ok() != 0) {
         rc = -1;
     } else {
-        nodus_pubkey_t spk;
-        nodus_sig_t ssig;
-        memcpy(spk.bytes, g_id.pk.bytes, NODUS_PK_BYTES);
-        if (nodus_sign(&ssig, g_built.wire_id, 64, &g_id.sk) != 0) {
-            rc = nsw_fail("Signing the submission failed.");
-        } else {
-            nodus_dnac_spend_result_t sres;
-            memset(&sres, 0, sizeof(sres));
-            int src = nodus_client_dnac_spend(&g_client, g_built.wire_id,
-                                              g_built.env,
-                                              (uint32_t)g_built.env_len,
-                                              &spk, &ssig, 0, &sres);
-            if (src != 0)
-                rc = nsw_fail("The Nodus node did not answer the submission "
-                              "(rc=%d).", src);
-            else if (sres.status != NODUS_DNAC_APPROVED) {
-                nsw_fail("The Nodus network refused this transfer "
-                         "(status %d).", (int)sres.status);
-                rc = 1;
-            } else
-                rc = 0;
-        }
+        int src = nsw_dnac_spend(g_built.wire_id, g_built.env,
+                                 g_built.env_len, &approved);
+        if (src < 0)
+            rc = -1;
+        else if (src != 0)
+            rc = nsw_fail("The Nodus node did not answer the submission "
+                          "(rc=%d).", src);
+        else if (!approved) {
+            nsw_fail("The Nodus network refused this transfer.");
+            rc = 1;
+        } else
+            rc = 0;
     }
-    if (g_req_env) { nsw_wipe(g_req_env, g_req_env_len); free(g_req_env); }
-    g_req_env = NULL;
-    g_req_env_len = 0;
+    nsw_req_env_free();
+    return nsw_end(rc);
+}
+
+/* ── genesis claim: status, build, submit ── */
+
+static struct {
+    int  found;                              /* a leaf binds this wallet    */
+    int  window;                             /* 0 open, 1 not yet, 2 closed */
+    int  claimed;                            /* 0 no evidence, 1 claimed,
+                                              * 2 unknown                   */
+    char amount[NSW_U64_DEC], tip[NSW_U64_DEC], start[NSW_U64_DEC],
+         end[NSW_U64_DEC], out_hex[129];
+} g_cs;
+
+int nsw_claim_found(void)            { return g_cs.found; }
+int nsw_claim_window(void)           { return g_cs.window; }
+int nsw_claim_claimed(void)          { return g_cs.claimed; }
+const char *nsw_claim_amount(void)   { return g_cs.amount; }
+const char *nsw_claim_tip(void)      { return g_cs.tip; }
+const char *nsw_claim_start(void)    { return g_cs.start; }
+const char *nsw_claim_end(void)      { return g_cs.end; }
+const char *nsw_claim_output(void)   { return g_cs.out_hex; }
+
+/* The node's committed tip, and the claim window for the next block
+ * (admission step 4 reads the candidate height; nodus-cli passes tip + 1,
+ * nodus-cli.c:2779/:2815): 0 open, 1 not yet open, 2 closed. */
+static int nsw_claim_tip_window(uint64_t *tip, int *window) {
+    bool has = false;
+    int rc = nodus_client_dnac_supply_tip(&g_client, &has, tip);
+    if (rc != 0 || !has || *tip == 0 || *tip == UINT64_MAX)
+        return nsw_fail("The current Nodus block height is unknown (rc=%d).", rc);
+    const uint64_t next = *tip + 1;
+    *window = next < g_cd.m.claim_start_height ? 1
+            : next > g_cd.m.claim_end_height   ? 2 : 0;
+    return 0;
+}
+
+/*
+ * Is there an allocation for this wallet, how much, and is it claimable?
+ * "Claimed" is an INFERENCE from dnac_supply's "unclaimed" bucket (Σ
+ * v2_dist_state.remaining of the native distributions,
+ * nodus_witness_v2_claims.c:441-478): while this leaf is unclaimed its
+ * manifest's remaining is >= the leaf's amount (a claim subtracts exactly
+ * that, :785-814), so unclaimed < amount PROVES it was claimed — and only
+ * the holder of this key can claim it (admission step 7). unclaimed >=
+ * amount proves nothing (other leaves / manifests share the sum): "no
+ * evidence", the node's admission decides. An older node without the
+ * bucket keys: unknown. The dnac_nullifier RPC is NOT used: it reads the
+ * legacy `nullifiers` table (nodus_witness_db.c:52-74), never
+ * v2_claims_spent.
+ */
+int nsw_claim_status(void) {
+    if (nsw_begin() != 0) return -1;
+    memset(&g_cs, 0, sizeof(g_cs));
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    size_t idx = 0;
+    /* node_id = SHA3-512(pk) (nodus_identity.c:206-207) — the address the
+     * wallet shows, checked equal at unlock (src/nodus/client.js) */
+    int found = nsw_claim_find(g_id.node_id.bytes, &idx);
+    if (found < 0) return nsw_end(-1);
+    if (found == 0) return nsw_end(0);
+    uint8_t nul[64], out_id[64];
+    uint64_t amount = 0, tip = 0;
+    int window = 0;
+    if (nsw_claim_ids(idx, g_net.chain, nul, out_id, &amount) != 0 ||
+        nsw_claim_tip_window(&tip, &window) != 0)
+        return nsw_end(-1);
+    if (g_cancel) return nsw_end(-1);
+    nodus_dnac_supply_buckets_t b;
+    memset(&b, 0, sizeof(b));
+    int rc = nodus_client_dnac_supply_buckets(&g_client, &b);
+    if (rc != 0)
+        return nsw_end(nsw_fail("The allocation state could not be read (rc=%d).", rc));
+    g_cs.found   = 1;
+    g_cs.window  = window;
+    g_cs.claimed = !b.has ? 2 : b.unclaimed < amount ? 1 : 0;
+    nsw_fmt_u64(amount, g_cs.amount);
+    nsw_fmt_u64(tip, g_cs.tip);
+    nsw_fmt_u64(g_cd.m.claim_start_height, g_cs.start);
+    nsw_fmt_u64(g_cd.m.claim_end_height, g_cs.end);
+    nsw_fmt_hex(out_id, 64, g_cs.out_hex);
+    return nsw_end(0);
+}
+
+/* Build + sign the claim of this wallet's allocation for review. The chain
+ * id is re-read on this session and the window re-checked first. */
+int nsw_claim_build(void) {
+    if (nsw_begin() != 0) return -1;
+    nsw_claim_built_clear();
+    if (nsw_session_ok() != 0 || nsw_check_chain() != 0) return nsw_end(-1);
+    uint64_t tip = 0;
+    int window = 0;
+    if (nsw_claim_tip_window(&tip, &window) != 0) return nsw_end(-1);
+    if (window == 1)
+        return nsw_end(nsw_fail("Claiming has not opened yet (from block %llu).",
+                                (unsigned long long)g_cd.m.claim_start_height));
+    if (window == 2)
+        return nsw_end(nsw_fail("The claim period ended at block %llu.",
+                                (unsigned long long)g_cd.m.claim_end_height));
+    if (g_cancel) return nsw_end(-1);
+    return nsw_end(nsw_claim_core(g_id.pk.bytes, g_id.sk.bytes, g_net.chain));
+}
+
+/* 0 = accepted by the mempool CheckTx, 1 = the node answered with a
+ * refusal (an error reply: handle_dnac_spend answers every CheckTx refusal
+ * — an already-claimed allocation included — as an error, and
+ * nodus_client_dnac_spend returns its code, nodus_client.c:2396), -1 = no
+ * answer. Only the claim built last may be submitted, byte for byte. */
+int nsw_claim_submit(void) {
+    if (nsw_begin() != 0) return -1;
+    int rc, approved = 0;
+    if (!g_req_env || !g_cb.bytes || g_req_env_len != g_cb.len ||
+        memcmp(g_req_env, g_cb.bytes, g_cb.len) != 0) {
+        rc = nsw_fail("Only the claim shown for review can be sent.");
+    } else if (nsw_session_ok() != 0) {
+        rc = -1;
+    } else {
+        int src = nsw_dnac_spend(g_cb.tx_hash, g_cb.bytes, g_cb.len, &approved);
+        if (src < 0)
+            rc = -1;
+        else if (src == NODUS_ERR_TIMEOUT || src > NODUS_ERR_CIRCUIT_CLOSED)
+            rc = nsw_fail("The Nodus node did not answer the claim (rc=%d).", src);
+        else if (src != 0 || !approved) {
+            nsw_fail("The Nodus network refused this claim (code %d). It may "
+                     "already have been claimed.", src);
+            rc = 1;
+        } else
+            rc = 0;
+    }
+    nsw_req_env_free();
     return nsw_end(rc);
 }
 
 /* ── scanConfirm: dnac_v3_block, fromHeight .. min(tip, toHeight) ──
- * Committed blocks are final (one block per height, no reorg in the
+ * `intent_hex` names what to look for: an applied envelope with that
+ * intent_id, or an applied claim that created the coin with that id (a
+ * claim's tracking id, nsw_claim_output). Both ids are SHA3-512 outputs
+ * under different domain tags. Committed blocks are final (one block per height, no reorg in the
  * cometbft port), so a height read once without the intent never needs
  * reading again: a small memo keeps, per intent, the first height not yet
  * read in this session. A NOT_FOUND (or any error) at a height <= the tip
@@ -1016,6 +1523,14 @@ int nsw_scan(const char *intent_hex, const char *from_dec, const char *to_dec) {
                     it->has_intent_id && it->code == 0 &&
                     memcmp(it->intent_id, intent, 64) == 0)
                     found = 1;
+                /* an applied claim: its coin id is dna_claim_utxo_id of the
+                 * claim's nullifier (nodus_witness_handlers.c:3304-3308) —
+                 * the same for every signature variant, unlike its hash */
+                if (it->kind == NODUS_DNAC_V3_KIND_CLAIM && it->code == 0 &&
+                    it->has_effects)
+                    for (uint8_t k = 0; k < it->n_created && k < NODUS_DNAC_V3_ITEM_MAX_OUT; k++)
+                        if (memcmp(it->created[k].id, intent, 64) == 0)
+                            found = 1;
             }
             int more = !bad && !found && page.has_next;
             uint32_t nidx = page.next_index;
@@ -1081,9 +1596,8 @@ void nsw_lock(void) {
     nsw_wipe(&g_id, sizeof(g_id));
     nsw_wipe(g_seed, sizeof(g_seed));
     nsw_built_clear();
-    if (g_req_env) { nsw_wipe(g_req_env, g_req_env_len); free(g_req_env); }
-    g_req_env = NULL;
-    g_req_env_len = 0;
+    nsw_claim_built_clear();
+    nsw_req_env_free();
     nsw_req_reset();
     memset(&g_list, 0, sizeof(g_list));
     g_unlocked = 0;

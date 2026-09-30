@@ -9,7 +9,7 @@ import { NODUS_NETWORK, nodusNetworkFor } from '../src/nodus/network.js';
 import { prepareTransfer } from '../src/wallet.js';
 import { recordActivity } from '../src/activity.js';
 import { serializeActivity, parseActivity, activityKeyFor } from '../src/activity-storage.js';
-import { expiryHeightFor, lockedInputs, resendInputs, balances, checkNodusActivity, nodusRecipient, nodusAmountUnits, NODUS_EXPIRY_AHEAD } from '../src/adapters/nodus.js';
+import { expiryHeightFor, lockedInputs, resendInputs, balances, checkNodusActivity, nodusRecipient, nodusAmountUnits, NODUS_EXPIRY_AHEAD, claimStatus, prepareClaim, isClaimRow } from '../src/adapters/nodus.js';
 import { createMockNodusModule, FINGERPRINT, RECIPIENT, CHAIN_ID, INTENT_ID, coin } from './nodus-mock-module.js';
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -263,4 +263,139 @@ test('balance: spendable shown, a read failure is an error never a zero', async 
   await assert.rejects(balances('nodus', FINGERPRINT, undefined, { client }), /invalid balance/);
   client.lock();
   await assert.rejects(balances('nodus', FINGERPRINT, undefined, { client }), /not ready/);
+});
+
+// ── genesis claim (0.1.26) ─────────────────────────────────────────────
+// The shared mock (test/nodus-mock-module.js) has no claim operations; these
+// tests add them to its module object before unlock, with canned answers.
+// They prove the wallet-side rules only (validation, fail-closed refusals,
+// record-before-submit, tracking) — nothing about the C claim builder.
+const OUTPUT_ID = '7'.repeat(128), CLAIM_ID = '6'.repeat(128), NULLIFIER = '5'.repeat(128);
+async function claimClient({ withClaim = true } = {}) {
+  const mock = createMockNodusModule();
+  const claim = {
+    status: { found: true, amount: '5000000000000000', tip: '1000', startHeight: '0', endHeight: '18446744073709551615', window: 'open', claimed: 'no-evidence', outputId: OUTPUT_ID },
+    tamper: null, accepted: true, message: undefined, submitted: null
+  };
+  if (withClaim) Object.assign(mock.module, {
+    claimStatus: () => { mock.log.push('claimStatus'); return Promise.resolve(claim.status); },
+    claimBuild: () => {
+      mock.log.push('claimBuild');
+      const decoded = { recipient: FINGERPRINT, amount: claim.status.amount, chainId: CHAIN_ID, nullifier: NULLIFIER, outputId: OUTPUT_ID, leafIndex: '0' };
+      return Promise.resolve({ bytes: Uint8Array.of(9, 8, 7), claimId: CLAIM_ID, decoded: { ...decoded, ...(claim.tamper || {}) } });
+    },
+    claimSubmit: ({ bytes }) => { mock.log.push('claimSubmit'); claim.submitted = bytes; return Promise.resolve({ accepted: claim.accepted, message: claim.message }); }
+  });
+  const client = createNodusClient({ factory: mock.factory, setInterval: () => 1, clearInterval: () => {} });
+  await client.unlock({ seed: new Uint8Array(32).fill(5), fingerprint: FINGERPRINT });
+  return { mock, client, claim };
+}
+
+test('claim: a module without the claim operations still connects; every claim call is "not available"', async () => {
+  const { client } = await claimClient({ withClaim: false });
+  assert.equal(client.state, 'ready'); assert.equal(client.claimable, false);
+  await assert.rejects(client.claimStatus(), /not available/);
+  await assert.rejects(claimStatus({ client, from: FINGERPRINT }), /not available/);
+  await assert.rejects(prepareClaim({ client, from: FINGERPRINT }), /not available/);
+  client.lock();
+});
+
+test('claim status: parsed strictly; claimable only when found, open and not proven claimed', async () => {
+  const { client, claim } = await claimClient();
+  assert.equal(client.claimable, true);
+  const status = await claimStatus({ client, from: FINGERPRINT });
+  assert.equal(status.claimable, true); assert.equal(status.amount, 5000000000000000n); assert.equal(status.amountText, '50000000 NODUS');
+  await assert.rejects(claimStatus({ client, from: 'ef'.repeat(64) }), /does not match/);
+  for (const [change, claimable] of [[{ claimed: 'yes' }, false], [{ claimed: 'unknown' }, true], [{ window: 'not-open' }, false], [{ window: 'closed' }, false]]) {
+    claim.status = { ...claim.status, claimed: 'no-evidence', window: 'open', ...change };
+    assert.equal((await claimStatus({ client, from: FINGERPRINT })).claimable, claimable, JSON.stringify(change));
+  }
+  claim.status = { found: false };
+  assert.deepEqual(await claimStatus({ client, from: FINGERPRINT }), { found: false, claimable: false, amountText: undefined });
+  for (const bad of [{ found: true, amount: '0', tip: '1', startHeight: '0', endHeight: '1', window: 'open', claimed: 'yes', outputId: OUTPUT_ID },
+    { found: true, amount: '1', tip: '1', startHeight: '5', endHeight: '1', window: 'open', claimed: 'yes', outputId: OUTPUT_ID },
+    { found: true, amount: '1', tip: '1', startHeight: '0', endHeight: '1', window: 'later', claimed: 'yes', outputId: OUTPUT_ID },
+    { found: true, amount: '1', tip: '1', startHeight: '0', endHeight: '1', window: 'open', claimed: 'maybe', outputId: OUTPUT_ID },
+    { found: true, amount: '1', tip: '1', startHeight: '0', endHeight: '1', window: 'open', claimed: 'yes', outputId: 'x' }, null, {}]) {
+    claim.status = bad;
+    await assert.rejects(claimStatus({ client, from: FINGERPRINT }), /invalid/, JSON.stringify(bad));
+  }
+  client.lock();
+});
+
+test('claim: review from the decoded claim; any mismatch or a closed / claimed allocation builds or shows nothing', async () => {
+  const { mock, client, claim } = await claimClient();
+  const transfer = await prepareClaim({ client, from: FINGERPRINT });
+  const review = Object.fromEntries(transfer.review);
+  assert.equal(transfer.kind, 'claim'); assert.equal(transfer.to, FINGERPRINT); assert.equal(transfer.amount, '50000000'); assert.equal(transfer.symbol, 'NODUS');
+  assert.equal(review.Amount, '50000000 NODUS'); assert.match(review['Paid to'], new RegExp(`^${FINGERPRINT}`)); assert.equal(review['Chain ID'], CHAIN_ID);
+  assert.match(review.Note, /only once/);
+  transfer.cancel();
+  await assert.rejects(transfer.confirm(async () => {}), /already closed/);
+  for (const [tamper, pattern] of [
+    [{ recipient: 'ef'.repeat(64) }, /does not match your allocation/], [{ amount: '4999999999999999' }, /does not match your allocation/],
+    [{ chainId: 'd'.repeat(64) }, /does not match your allocation/], [{ outputId: '8'.repeat(128) }, /does not match your allocation/],
+    [{ nullifier: 'zz' }, /invalid claim/], [{ amount: '-1' }, /invalid claim amount/]
+  ]) {
+    claim.tamper = tamper;
+    await assert.rejects(prepareClaim({ client, from: FINGERPRINT }), pattern, JSON.stringify(tamper));
+  }
+  claim.tamper = null;
+  const builds = mock.log.filter(entry => entry === 'claimBuild').length;
+  for (const [change, pattern] of [[{ claimed: 'yes' }, /already been claimed/], [{ window: 'not-open', startHeight: '5000' }, /opens at block 5000/], [{ window: 'closed', endHeight: '900' }, /ended at block 900/]]) {
+    claim.status = { ...claim.status, claimed: 'no-evidence', window: 'open', startHeight: '0', endHeight: '18446744073709551615', ...change };
+    await assert.rejects(prepareClaim({ client, from: FINGERPRINT }), pattern);
+  }
+  claim.status = { found: false };
+  await assert.rejects(prepareClaim({ client, from: FINGERPRINT }), /no allocation/);
+  assert.equal(mock.log.filter(entry => entry === 'claimBuild').length, builds, 'nothing built for a refused claim');
+  assert.ok(!mock.log.includes('claimSubmit'), 'nothing submitted');
+  client.lock();
+});
+
+test('claim: record durable before submit, recognised as a claim after storage, locks no coin, tracked to confirmed', async () => {
+  const { mock, client, claim } = await claimClient();
+  const transfer = await prepareClaim({ client, from: FINGERPRINT });
+  let record;
+  const hash = await transfer.confirm(async details => {
+    assert.ok(!mock.log.includes('claimSubmit'), 'record written before the claim leaves');
+    record = recordActivity(transfer, details);
+  });
+  assert.equal(hash, OUTPUT_ID); assert.deepEqual(claim.submitted, Uint8Array.of(9, 8, 7));
+  assert.equal(record.hash, OUTPUT_ID); assert.deepEqual(record.inputs, [OUTPUT_ID]);
+  assert.equal(record.fromHeight, '1001'); assert.equal(record.expiryHeight, '1090');
+  assert.equal(isClaimRow(record), true);
+  assert.deepEqual([...lockedInputs([record])], [], 'a claim record holds no coin');
+  assert.throws(() => resendInputs(record), /Not a Nodus send/);
+  // The marker survives the encrypted activity store (which keeps only
+  // hash / expiryHeight / fromHeight / inputs of a NODUS row).
+  const phrase = 'abandon '.repeat(23) + 'art', id = btoa(String.fromCharCode(...new Uint8Array(16).fill(4)));
+  const key = await activityKeyFor(phrase, id);
+  const [restored] = await parseActivity(await serializeActivity(id, [record], key), id, { nodus: FINGERPRINT }, key);
+  assert.equal(isClaimRow(restored), true);
+  // A send record is not a claim.
+  assert.equal(isClaimRow({ chain: 'nodus', hash: INTENT_ID, inputs: [coin(2, '1').nullifier] }), false);
+  // Tracking: found by the created coin id -> confirmed.
+  mock.state.scan = { tip: '1005', found: true, height: '1003' };
+  const found = await checkNodusActivity(restored, { client });
+  assert.equal(found.status, 'confirmed'); assert.match(found.note, /claimed in block 1003/);
+  assert.deepEqual(mock.state.lastScan, { intentId: OUTPUT_ID, fromHeight: '1001', toHeight: '1090' });
+  // Within the scan window and not found: pending (a claim never "expires").
+  mock.state.scan = { tip: '1090', found: false };
+  assert.equal((await checkNodusActivity(restored, { client })).status, 'pending');
+  // Past the window: the claim state decides.
+  mock.state.scan = { tip: '1091', found: false };
+  claim.status = { ...claim.status, claimed: 'yes' };
+  assert.equal((await checkNodusActivity(restored, { client })).status, 'confirmed');
+  claim.status = { ...claim.status, claimed: 'no-evidence' };
+  const past = await checkNodusActivity(restored, { client });
+  assert.equal(past.status, 'expired'); assert.match(past.note, /never paid out twice/); assert.doesNotMatch(past.note, /coins are free/);
+  // A refused claim is reported after its record exists.
+  claim.accepted = false; claim.message = 'The Nodus network refused this claim (code 7). It may already have been claimed.';
+  const refused = await prepareClaim({ client, from: FINGERPRINT });
+  let recorded = false;
+  await assert.rejects(refused.confirm(async () => { recorded = true; }), /did not accept this claim\. The Nodus network refused/);
+  assert.equal(recorded, true);
+  client.lock();
+  await assert.rejects(prepareClaim({ client, from: FINGERPRINT }), /not connected/);
 });

@@ -28,6 +28,33 @@
  *     the CLI can be given the same coin list, tip and output seeds (its
  *     output seeds are drawn from the CSPRNG — nodus-cli.c cli_rand).
  *
+ * GENESIS CLAIM (0.1.26) — two more modes, chosen by the FIRST argument:
+ *
+ *   nodus-send-native-vector claim-manifest --base <manifest hex>
+ *     --seed <64hex> --self-leaf <srcid hex>:<amount>
+ *     [--leaf <srcid hex>:<128hex dest>:<amount> ...]
+ *   Makes a SYNTHETIC manifest for the claim parity: the base manifest
+ *   (e.g. the testnet's) decoded with the shared codec, its snapshot_root,
+ *   leaf_count and total_claimable replaced by those of the given leaves
+ *   (the --self-leaf's destination = SHA3-512 of the --seed's ML-DSA-87
+ *   public key), re-encoded (dna_gman_encode). Output: manifest=,
+ *   manifest_hash=, then one `leaf=<srcid>:<dest>:<amount>` per leaf in
+ *   canonical order. No chain ever committed it; it only gives the parity
+ *   a tree this seed can claim from.
+ *
+ *   nodus-send-native-vector claim --seed <64hex> --chain <64hex>
+ *     --manifest <hex> --manifest-hash <128hex>
+ *     --leaf <srcid hex>:<128hex dest>:<amount> [--leaf ...]
+ *     --sign-random <hex, the bytes qgp_platform_random returns in order>
+ *   Loads the claim data (nsw_claim_set_manifest / _add_leaf / _seal) and
+ *   builds the claim with nsw_claim_offline_build — the function every
+ *   wasm build runs. Output, in this order: claim (the bytes), claim_id
+ *   (SHA3-512 of the bytes), nullifier, output_id, recipient, amount,
+ *   chain_id, leaf_index.
+ *   Compared like the spend: TEST wasm == native line for line; shipped
+ *   wasm equal on nullifier, output_id, recipient, amount, chain_id,
+ *   leaf_index, different claim / claim_id (hedged signature).
+ *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
  */
@@ -35,6 +62,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "dnac/manifest_wire.h"
+#include "crypto/hash/qgp_sha3.h"
+#include "crypto/sign/qgp_dilithium.h"
 
 /* nodus-send-wasm.c entry points this program calls (that file has no
  * header: see its include block). */
@@ -61,6 +92,21 @@ const char *nsw_built_change(void);
 const char *nsw_built_expiry(void);
 int nsw_built_n_in(void);
 const char *nsw_built_in(int i);
+int nsw_claim_reset(void);
+int nsw_claim_set_manifest(const char *manifest_hex, const char *hash_hex);
+int nsw_claim_add_leaf(const char *source_id_hex, const char *dest_hex,
+                       const char *amount_dec);
+int nsw_claim_seal(void);
+int nsw_claim_offline_build(const char *chain_hex);
+const uint8_t *nsw_claim_built_bytes(void);
+int nsw_claim_built_len(void);
+const char *nsw_claim_built_id(void);
+const char *nsw_claim_built_nullifier(void);
+const char *nsw_claim_built_output(void);
+const char *nsw_claim_built_recipient(void);
+const char *nsw_claim_built_chain(void);
+const char *nsw_claim_built_amount(void);
+const char *nsw_claim_built_leaf(void);
 
 /* This program's only output channels are its stdout lines and one stderr
  * line on failure (the build's QGP_LOG_* calls go through
@@ -97,7 +143,210 @@ static int unhex(const char *s, uint8_t *out, size_t cap, size_t *len_out) {
     return 0;
 }
 
+static int hex_line(const char *key, const uint8_t *bytes, size_t n) {
+    static const char digits[] = "0123456789abcdef";
+    char *hex = malloc(n * 2 + 1);
+    if (!hex) return fail("out of memory");
+    for (size_t i = 0; i < n; i++) {
+        hex[2 * i]     = digits[bytes[i] >> 4];
+        hex[2 * i + 1] = digits[bytes[i] & 15];
+    }
+    hex[2 * n] = '\0';
+    line(key, hex);
+    free(hex);
+    return 0;
+}
+
+/* Splits "<a>:<b>[:<c>]" into exactly `want` parts, in `scratch`. */
+static int split(const char *v, char *scratch, size_t cap, char **parts, int want) {
+    size_t n = strlen(v);
+    if (n + 1 > cap) return -1;
+    memcpy(scratch, v, n + 1);
+    int got = 0;
+    char *p = scratch;
+    while (got < want) {
+        parts[got++] = p;
+        char *colon = strchr(p, ':');
+        if (!colon) break;
+        *colon = '\0';
+        p = colon + 1;
+    }
+    return got == want && !strchr(parts[want - 1], ':') ? 0 : -1;
+}
+
+static int parse_dec(const char *s, uint64_t *out) {
+    size_t n = strlen(s);
+    if (n == 0 || n > 20 || (n > 1 && s[0] == '0')) return -1;
+    uint64_t v = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (s[i] < '0' || s[i] > '9') return -1;
+        uint64_t d = (uint64_t)(s[i] - '0');
+        if (v > (UINT64_MAX - d) / 10u) return -1;
+        v = v * 10u + d;
+    }
+    *out = v;
+    return 0;
+}
+
+static int leaf_qcmp(const void *a, const void *b) {
+    return dna_dist_leaf_cmp((const dna_dist_leaf_t *)a, (const dna_dist_leaf_t *)b);
+}
+
+#define VEC_MAX_LEAVES 256
+#define VEC_MANIFEST_MAX 8192
+
+static int main_claim_manifest(int argc, char **argv) {
+    const char *base = NULL, *seed = NULL, *self_leaf = NULL;
+    const char *others[VEC_MAX_LEAVES];
+    int n_others = 0;
+    for (int i = 2; i < argc; i += 2) {
+        const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
+        if (!v) return fail("every option takes a value");
+        if      (!strcmp(a, "--base"))      base = v;
+        else if (!strcmp(a, "--seed"))      seed = v;
+        else if (!strcmp(a, "--self-leaf")) self_leaf = v;
+        else if (!strcmp(a, "--leaf")) {
+            if (n_others >= VEC_MAX_LEAVES - 1) return fail("too many --leaf");
+            others[n_others++] = v;
+        } else return fail("unknown option (see the usage in nodus-send-native-vector.c)");
+    }
+    if (!base || !seed || !self_leaf)
+        return fail("claim-manifest needs --base --seed --self-leaf");
+
+    static uint8_t buf[VEC_MANIFEST_MAX];
+    static dna_gman_t m;
+    static dna_dist_leaf_t leaves[VEC_MAX_LEAVES];
+    uint8_t seed32[32];
+    size_t n = 0;
+    if (unhex(base, buf, sizeof(buf), &n) != 0 || dna_gman_decode(buf, n, &m) != 0 ||
+        m.dist_present != 1)
+        return fail("--base is not a manifest with a distribution section");
+    if (unhex(seed, seed32, 32, &n) != 0 || n != 32)
+        return fail("--seed is 32 bytes of lowercase hex");
+    uint8_t *pk = malloc(QGP_DSA87_PUBLICKEYBYTES), *sk = malloc(QGP_DSA87_SECRETKEYBYTES);
+    uint8_t self_dest[64];
+    int krc = !pk || !sk || qgp_dsa87_keypair_derand(pk, sk, seed32) != 0 ||
+              qgp_sha3_512(pk, QGP_DSA87_PUBLICKEYBYTES, self_dest) != 0;
+    free(pk);
+    free(sk);
+    if (krc) return fail("key derivation failed");
+
+    size_t count = 0;
+    for (int i = -1; i < n_others; i++) {
+        char scratch[512], *parts[3];
+        dna_dist_leaf_t *L = &leaves[count];
+        memset(L, 0, sizeof(*L));
+        L->leaf_version = DNA_DIST_VERSION;
+        const char *amount;
+        size_t sl = 0, dl = 0;
+        if (i < 0) {
+            if (split(self_leaf, scratch, sizeof(scratch), parts, 2) != 0)
+                return fail("--self-leaf is <srcid hex>:<amount>");
+            memcpy(L->dest_binding, self_dest, 64);
+            amount = parts[1];
+        } else {
+            if (split(others[i], scratch, sizeof(scratch), parts, 3) != 0 ||
+                unhex(parts[1], L->dest_binding, 64, &dl) != 0 || dl != 64)
+                return fail("--leaf is <srcid hex>:<128hex dest>:<amount>");
+            amount = parts[2];
+        }
+        if (unhex(parts[0], L->source_id, DNA_DIST_SRCID_MAX, &sl) != 0 || sl == 0 ||
+            parse_dec(amount, &L->source_amount) != 0 || L->source_amount == 0)
+            return fail("invalid leaf source id or amount");
+        L->source_id_len = (uint16_t)sl;
+        count++;
+    }
+    qsort(leaves, count, sizeof(leaves[0]), leaf_qcmp);
+    uint64_t total = 0;
+    for (size_t i = 0; i < count; i++) {
+        uint64_t conv = 0;
+        if ((i > 0 && dna_dist_leaf_cmp(&leaves[i - 1], &leaves[i]) >= 0) ||
+            dna_dist_converted(leaves[i].source_amount, m.conv_numerator,
+                               m.conv_denominator, m.rounding_mode, &conv) != 0 ||
+            conv > UINT64_MAX - total)
+            return fail("duplicate leaf or amount out of range");
+        total += conv;
+    }
+    if (dna_dist_snapshot_root(leaves, count, m.snapshot_root) != 0)
+        return fail("snapshot root failed");
+    m.leaf_count = count;
+    m.total_claimable = total;
+    uint8_t hash[64];
+    size_t len = dna_gman_encoded_len(&m), written = 0;
+    if (len == 0 || len > sizeof(buf) ||
+        dna_gman_encode(&m, buf, sizeof(buf), &written) != 0 || written != len ||
+        dna_gman_hash(&m, hash) != 0)
+        return fail("the synthetic manifest does not encode");
+    if (hex_line("manifest", buf, len) || hex_line("manifest_hash", hash, 64)) return 1;
+    for (size_t i = 0; i < count; i++) {
+        char src[2 * DNA_DIST_SRCID_MAX + 1], dest[129], amt[21], out[2 * DNA_DIST_SRCID_MAX + 1 + 129 + 21 + 2];
+        static const char digits[] = "0123456789abcdef";
+        for (size_t k = 0; k < leaves[i].source_id_len; k++) {
+            src[2 * k] = digits[leaves[i].source_id[k] >> 4];
+            src[2 * k + 1] = digits[leaves[i].source_id[k] & 15];
+        }
+        src[2 * leaves[i].source_id_len] = '\0';
+        for (size_t k = 0; k < 64; k++) {
+            dest[2 * k] = digits[leaves[i].dest_binding[k] >> 4];
+            dest[2 * k + 1] = digits[leaves[i].dest_binding[k] & 15];
+        }
+        dest[128] = '\0';
+        snprintf(amt, sizeof(amt), "%llu", (unsigned long long)leaves[i].source_amount);
+        snprintf(out, sizeof(out), "%s:%s:%s", src, dest, amt);
+        line("leaf", out);
+    }
+    return 0;
+}
+
+static int main_claim(int argc, char **argv) {
+    const char *seed = NULL, *chain = NULL, *manifest = NULL, *mhash = NULL,
+               *sign_random = NULL;
+    if (nsw_claim_reset() != 0) return fail(nsw_error());
+    int have_manifest = 0;
+    for (int i = 2; i < argc; i += 2) {
+        const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
+        if (!v) return fail("every option takes a value");
+        if      (!strcmp(a, "--seed"))          seed = v;
+        else if (!strcmp(a, "--chain"))         chain = v;
+        else if (!strcmp(a, "--manifest"))      manifest = v;
+        else if (!strcmp(a, "--manifest-hash")) mhash = v;
+        else if (!strcmp(a, "--sign-random"))   sign_random = v;
+        else if (!strcmp(a, "--leaf")) {
+            char scratch[512], *parts[3];
+            if (!have_manifest) {
+                if (!manifest || !mhash) return fail("give --manifest and --manifest-hash before --leaf");
+                if (nsw_claim_set_manifest(manifest, mhash) != 0) return fail(nsw_error());
+                have_manifest = 1;
+            }
+            if (split(v, scratch, sizeof(scratch), parts, 3) != 0)
+                return fail("--leaf is <srcid hex>:<128hex dest>:<amount>");
+            if (nsw_claim_add_leaf(parts[0], parts[1], parts[2]) != 0) return fail(nsw_error());
+        } else return fail("unknown option (see the usage in nodus-send-native-vector.c)");
+    }
+    if (!seed || !chain || !have_manifest || !sign_random)
+        return fail("claim needs --seed --chain --manifest --manifest-hash --leaf --sign-random");
+    if (nsw_claim_seal() != 0) return fail(nsw_error());
+    size_t n = 0;
+    if (unhex(seed, nsw_seed_buf(), 32, &n) != 0 || n != 32)
+        return fail("--seed is 32 bytes of lowercase hex");
+    if (unhex(sign_random, nsw_test_random_buf(), 4096, &n) != 0 ||
+        nsw_test_random_load((int)n) != 0)
+        return fail("--sign-random is at most 4096 bytes of lowercase hex");
+    if (nsw_claim_offline_build(chain) != 0) return fail(nsw_error());
+    if (hex_line("claim", nsw_claim_built_bytes(), (size_t)nsw_claim_built_len())) return 1;
+    line("claim_id", nsw_claim_built_id());
+    line("nullifier", nsw_claim_built_nullifier());
+    line("output_id", nsw_claim_built_output());
+    line("recipient", nsw_claim_built_recipient());
+    line("amount", nsw_claim_built_amount());
+    line("chain_id", nsw_claim_built_chain());
+    line("leaf_index", nsw_claim_built_leaf());
+    return 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "claim-manifest")) return main_claim_manifest(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "claim")) return main_claim(argc, argv);
     const char *seed = NULL, *chain = NULL, *tip = NULL, *gas = NULL,
                *to = NULL, *amount = NULL, *expiry = NULL,
                *out_seeds = NULL, *sign_random = NULL;

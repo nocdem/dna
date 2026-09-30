@@ -59,12 +59,23 @@ function parseTip(value) {
   return rawUnits(value, 'block height');
 }
 function isNodusRow(row) { return row?.chain === NODUS_ASSET.chain; }
+// A genesis-claim Activity record (0.1.26): `hash` is the coin the claim
+// creates (its output id — the same for every signature variant) and
+// `inputs` is [that same id]. That pair is the marker: after a reload
+// src/activity-storage.js keeps only hash / expiryHeight / fromHeight /
+// inputs of a NODUS row, and a send never lists its own intent id as one of
+// its inputs.
+export function isClaimRow(row) {
+  return isNodusRow(row) && Array.isArray(row.inputs) && row.inputs.length === 1 && row.inputs[0] === row.hash;
+}
 // Coins of every NODUS send that is not known to have stayed out of the chain.
 // Only a scan result sets 'expired' (tip past expiry_height and the intent not
 // found); 'confirmed' coins are spent; every other state keeps them locked.
+// A claim record holds no coin of this wallet (its "input" is the coin it
+// creates), so it locks nothing.
 export function lockedInputs(rows) {
   const locked = new Set();
-  for (const row of rows) if (isNodusRow(row) && row.status !== 'expired') for (const input of row.inputs || []) locked.add(input);
+  for (const row of rows) if (isNodusRow(row) && !isClaimRow(row) && row.status !== 'expired') for (const input of row.inputs || []) locked.add(input);
   return locked;
 }
 // Which coins a resend of `row` may use (session-expiry note item 3):
@@ -73,7 +84,7 @@ export function lockedInputs(rows) {
 // - anything else: exactly the same coins, so the two envelopes conflict and
 //   at most one of them can ever be applied.
 export function resendInputs(row) {
-  if (!isNodusRow(row)) throw new Error('Not a Nodus send.');
+  if (!isNodusRow(row) || isClaimRow(row)) throw new Error('Not a Nodus send.');
   if (row.status === 'confirmed') throw new Error('This transfer is already in the chain. Do not send it again.');
   if (row.status === 'expired') return null;
   return [...row.inputs];
@@ -183,9 +194,16 @@ export async function prepare({ client, from, to, amount, locked = new Set(), in
 // Activity tracker check for a pending NODUS send (src/activity.js
 // watchActivity `check`): scans blocks fromHeight..expiryHeight for its
 // intent_id. The answer comes from ONE node (design §3 A3, §5 item 16).
+//
+// A claim record (isClaimRow) is scanned the same way: the module also
+// matches an applied claim that created the coin `row.hash`. A claim has no
+// expiry block — the record's expiryHeight only bounds this scan — so past
+// it the answer comes from claimStatus(): claimed (proven) -> confirmed,
+// otherwise 'expired' with a note that says what that means for a claim.
 export async function checkNodusActivity(row, { signal, client } = {}) {
   if (!isNodusRow(row) || !HEX128.test(row.hash)) throw new Error('Invalid activity record.');
   if (!client || client.state !== 'ready') throw new Error('Nodus connection is not ready.');
+  const claim = isClaimRow(row);
   const fromHeight = rawUnits(row.fromHeight, 'block height'), expiryHeight = rawUnits(row.expiryHeight, 'block height');
   const result = await client.scanConfirm({ intentId: row.hash, fromHeight: row.fromHeight, toHeight: row.expiryHeight }, { signal });
   if (!result || typeof result.found !== 'boolean') throw new Error('The Nodus module returned an invalid status.');
@@ -193,8 +211,87 @@ export async function checkNodusActivity(row, { signal, client } = {}) {
   if (result.found) {
     const height = rawUnits(result.height, 'block height');
     if (height < fromHeight || height > expiryHeight) throw new Error('The Nodus module returned an invalid status.');
-    return { status: 'confirmed', note: `Included in block ${height} (reported by one Nodus node).` };
+    return { status: 'confirmed', note: claim ? `Allocation claimed in block ${height} (reported by one Nodus node).` : `Included in block ${height} (reported by one Nodus node).` };
+  }
+  if (claim) {
+    if (tip <= expiryHeight) return { status: 'pending', note: `Waiting for the claim to be included (checking up to block ${expiryHeight}).` };
+    const status = parseClaimStatus(await client.claimStatus({ signal }));
+    if (status.found && status.claimed === 'yes') return { status: 'confirmed', note: 'Your allocation has been claimed (reported by one Nodus node).' };
+    return { status: 'expired', note: `Not seen in blocks ${fromHeight} to ${expiryHeight}. If your allocation is still offered for claiming, you can claim it again; an allocation is never paid out twice.` };
   }
   if (tip > expiryHeight) return { status: 'expired', note: `Not included before block ${expiryHeight}; it can no longer be included and its coins are free again.` };
   return { status: 'pending', note: `Waiting for inclusion; valid until block ${expiryHeight}.` };
+}
+
+// ── Genesis claim (0.1.26) ────────────────────────────────────────────────
+// The module side is nodus-cli `v2-claim` (crypto/nodus-send-wasm.c "GENESIS
+// CLAIM"); this side validates what crosses the boundary and applies the
+// same fail-closed rules as prepare().
+const CLAIM_WINDOWS = ['open', 'not-open', 'closed'], CLAIM_STATES = ['yes', 'no-evidence', 'unknown'];
+export function parseClaimStatus(result) {
+  const invalid = () => new Error('The Nodus module returned an invalid claim status.');
+  if (!result || typeof result.found !== 'boolean') throw invalid();
+  if (!result.found) return { found: false };
+  const amount = rawUnits(result.amount, 'claim amount'), tip = rawUnits(result.tip, 'block height');
+  const startHeight = rawUnits(result.startHeight, 'block height'), endHeight = rawUnits(result.endHeight, 'block height');
+  if (amount === 0n || tip === 0n || startHeight > endHeight || !CLAIM_WINDOWS.includes(result.window) || !CLAIM_STATES.includes(result.claimed) || typeof result.outputId !== 'string' || !HEX128.test(result.outputId)) throw invalid();
+  return { found: true, amount, tip, startHeight, endHeight, window: result.window, claimed: result.claimed, outputId: result.outputId };
+}
+function claimReady(client, from) {
+  if (!client || client.state !== 'ready') throw new Error('Nodus is not connected right now.');
+  if (from !== client.fingerprint) throw new Error('Nodus address does not match the connected identity.');
+}
+// Whether the open wallet has an allocation it can claim now. Resolves the
+// parsed status plus `claimable` (found, window open, not proven claimed).
+export async function claimStatus({ client, from, signal } = {}) {
+  claimReady(client, from);
+  const status = parseClaimStatus(await client.claimStatus({ signal }));
+  return { ...status, claimable: status.found && status.window === 'open' && status.claimed !== 'yes', amountText: status.found ? nodusText(status.amount) : undefined };
+}
+// Builds and signs the claim for review, in the shape src/app.js's review
+// dialog and recordActivity() consume (the wallet.js reviewed() contract:
+// cancel(), confirm(onBroadcast) usable once, refused after expiresAt).
+export async function prepareClaim({ client, from } = {}) {
+  claimReady(client, from);
+  const status = parseClaimStatus(await client.claimStatus());
+  if (!status.found) throw new Error('This wallet has no allocation to claim.');
+  if (status.claimed === 'yes') throw new Error('Your allocation has already been claimed.');
+  if (status.window === 'not-open') throw new Error(`Claiming opens at block ${status.startHeight}.`);
+  if (status.window === 'closed') throw new Error(`The claim period ended at block ${status.endHeight}.`);
+  const built = await client.claimBuild(), d = built?.decoded;
+  if (!built || !(built.bytes instanceof Uint8Array) || built.bytes.length === 0 || typeof built.claimId !== 'string' || !HEX128.test(built.claimId) || !d) throw new Error('The Nodus module returned an invalid claim.');
+  if (typeof d.recipient !== 'string' || !HEX128.test(d.recipient) || typeof d.chainId !== 'string' || !HEX64.test(d.chainId) || typeof d.nullifier !== 'string' || !HEX128.test(d.nullifier) || typeof d.outputId !== 'string' || !HEX128.test(d.outputId)) throw new Error('The Nodus module returned an invalid claim.');
+  const amount = rawUnits(d.amount, 'claim amount');
+  rawUnits(d.leafIndex, 'allocation index');
+  // The signed claim must pay exactly this wallet's allocation to this
+  // wallet, on the connected chain, or nothing is shown.
+  if (d.recipient !== from || amount !== status.amount || d.chainId !== client.chainId || d.outputId !== status.outputId) throw new Error('The signed claim does not match your allocation. Nothing was sent.');
+  const fromHeight = status.tip + 1n, scanTo = status.tip + NODUS_EXPIRY_AHEAD;
+  const review = [
+    ['Network', 'Nodus testnet'],
+    ['Action', 'Claim your allocation'],
+    ['Amount', nodusText(amount)],
+    ['Paid to', `${d.recipient} (your own address)`],
+    ['Network fee', 'None'],
+    ['Chain ID', d.chainId],
+    ['Note', 'An allocation can be claimed only once. After it is included, the amount becomes part of your NODUS balance.']
+  ];
+  let used = false;
+  const expiresAt = Date.now() + 60000;
+  return {
+    kind: 'claim', chain: NODUS_ASSET.chain, from, to: d.recipient, symbol: NODUS_ASSET.symbol, amount: formatUnits(amount, DECIMALS),
+    endpoint: undefined, fee: 'None', expiresAt, review, intentId: d.outputId,
+    cancel() { used = true; },
+    async confirm(onBroadcast) {
+      if (used) throw new Error('This review is already closed.');
+      used = true; // an ambiguous submission is never retried automatically
+      if (Date.now() >= expiresAt) throw new Error('Review expired. Prepare the claim again.');
+      // The record is durable before the claim leaves the browser (same rule
+      // as a send). inputs = [hash] marks it as a claim (isClaimRow).
+      await onBroadcast({ hash: d.outputId, expiryHeight: scanTo.toString(), fromHeight: fromHeight.toString(), inputs: [d.outputId] });
+      const result = await client.claimSubmit({ bytes: built.bytes });
+      if (!result || result.accepted !== true) throw new Error(`The Nodus network did not accept this claim.${typeof result?.message === 'string' && result.message ? ` ${result.message}` : ''}`);
+      return d.outputId;
+    }
+  };
 }

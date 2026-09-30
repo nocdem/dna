@@ -56,6 +56,62 @@ export const NODUS_SEND_NETWORK = {
   ],
 };
 
+// GENESIS CLAIM DATA (0.1.26) — the allocation list the chain was born
+// with, so the wallet can claim this wallet's allocation (nodus-cli
+// `v2-claim` in the browser, crypto/nodus-send-wasm.c "GENESIS CLAIM"). No
+// node RPC serves a manifest, a leaf list or a proof, so they belong to the
+// wallet build next to the pinned chain id. The module trusts none of it:
+// the manifest must decode strictly and re-hash to `manifestHash`, and the
+// leaves must rebuild the snapshot root the manifest commits; otherwise
+// claiming is refused (sending is unaffected).
+//
+//   {
+//     manifest:     lowercase hex — the genesis manifest's canonical bytes
+//                   (shared/dnac/manifest_wire.h "GenesisManifest v1")
+//     manifestHash: 128 lowercase hex — dna_gman_hash of those bytes
+//     leaves:       [{ sourceId: 2..256 lowercase hex (1..128 bytes),
+//                      destBinding: 128 lowercase hex (SHA3-512 of the
+//                      owner's ML-DSA-87 public key = its Nodus address),
+//                      amount: raw decimal >= 1 }], 1..256
+//                   (nodus-send-wasm.c NSW_CLAIM_MAX_LEAVES)
+//   }
+//
+// Testnet values: the manifest bytes as stored in v2_manifests (read on two
+// nodes, identical), its hash as the node stores it, and the single leaf of
+// the genesis config the chain was born from — the Founder allocation,
+// 50,000,000 NODUS (5,000,000,000,000,000 raw).
+export const NODUS_CLAIM_MAX_LEAVES = 256;   // crypto/nodus-send-wasm.c NSW_CLAIM_MAX_LEAVES
+const NODUS_CLAIM_MANIFEST_MAX = 8192;       // crypto/nodus-send-wasm.c NSW_CLAIM_MANIFEST_MAX
+export const NODUS_CLAIM_DATA = {
+  manifest: '00000001016345785d8a0000000200000000464bc4ea942d2a4de370068ad2759ecc8d9942345b6c21dc630bf986984c24a331055cdb8ca592acabcccad7ceff8b20cda772a0422c9240028e585f64a570d300000001382404d80cc70a0c8087e999e33f4640b218a2b3d4120b4bc6828d55dd7aafcb31826de220bd2ece2dfdca81d4e61891d1bd8469423db0f058d1c8ce4b2e4b6c010000000100000001004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e4e44532e47454e455349532e76310040de43bdfad6600bf5304afe6d6da4b55d20008704ecff4e32ccca43da78b8e7ca14164ad9f8a1a34d5f52ad193de0a49960e27148a53a5e0dd45a6363840c5a915e46f68b7108271d2f6b4d432ba4c9ab1098028068c1350e65480cd3453eb415fac7f92305d3af9a561e540421c6b6b3d99bad293f4c87a51f6e0c8fe9147a7d0000000000000001000000000000000100000000000000010100000000000000000011c37937e080000000000000000000ffffffffffffffff010101',
+  manifestHash: '1807f972ba232b6822a0a2a622376a208b5730f10ad5099eb079d469713a17c2589b52fc069b6a67003de06ed78d027f17200377bb6136944594fe1ca431b4b8',
+  leaves: [
+    { // Founder
+      sourceId: '0'.repeat(127) + '1',
+      destBinding: '7a145ade5e99b16fbf04f23e590928a6cd21d1d38c39a8719924ec381b9d1b2123d999b4a7c6f459fe631f1595ae50a49c67918a870829b972eb2d95287ed2fd',
+      amount: '5000000000000000',
+    },
+  ],
+};
+
+// A checked, frozen copy of claim data; throws on anything outside the
+// shape documented above (the cryptographic checks are the module's).
+export function validateNodusClaimData(data) {
+  const bad = what => new Error(`Nodus claim data: ${what}.`);
+  if (!data || typeof data !== 'object') throw bad('missing');
+  const { manifest, manifestHash, leaves } = data;
+  if (typeof manifest !== 'string' || !/^([0-9a-f]{2})+$/.test(manifest) || manifest.length > 2 * NODUS_CLAIM_MANIFEST_MAX) throw bad('manifest must be lowercase hex');
+  if (typeof manifestHash !== 'string' || !HEX128.test(manifestHash)) throw bad('manifestHash must be 128 lowercase hex characters');
+  if (!Array.isArray(leaves) || leaves.length < 1 || leaves.length > NODUS_CLAIM_MAX_LEAVES) throw bad(`1 to ${NODUS_CLAIM_MAX_LEAVES} leaves are required`);
+  const list = leaves.map(leaf => {
+    if (!leaf || typeof leaf.sourceId !== 'string' || !/^([0-9a-f]{2}){1,128}$/.test(leaf.sourceId) ||
+        typeof leaf.destBinding !== 'string' || !HEX128.test(leaf.destBinding) ||
+        typeof leaf.amount !== 'string' || !RAW.test(leaf.amount) || leaf.amount === '0' || BigInt(leaf.amount) >= 2n ** 64n) throw bad('a leaf is not { sourceId, destBinding, amount }');
+    return Object.freeze({ sourceId: leaf.sourceId, destBinding: leaf.destBinding, amount: leaf.amount });
+  });
+  return Object.freeze({ manifest, manifestHash, leaves: Object.freeze(list) });
+}
+
 // A checked, frozen copy of a network settings object; throws on anything
 // outside the shape documented above.
 export function validateNodusSendNetwork(network) {
@@ -84,8 +140,12 @@ function raw(value, what) {
 // Instantiates the module and returns the object ./client.js expects.
 // `loadGlue` exists for tests (a node build of the same C, see
 // test/nodus-send-wasm.test.js); the wallet always uses ./send.js.
-export async function createNodusSendModule(network, { loadGlue = () => import('./send.js') } = {}) {
+export async function createNodusSendModule(network, { claim = null, loadGlue = () => import('./send.js') } = {}) {
   const net = validateNodusSendNetwork(network);
+  // Claim data refused by the shape check or by the module leaves claiming
+  // off (claimError) and changes nothing else.
+  let claimData = null, claimError = claim ? null : 'Claiming is not available in this wallet build.';
+  if (claim) { try { claimData = validateNodusClaimData(claim); } catch (error) { claimError = error.message; } }
   const { default: createNodusSendWasm } = await loadGlue();
   // SOCKFS opens `${scheme}://<ip>:<port>/` with subprotocol "binary" (the
   // nodus WS entry echoes it, nodus_ws.c). Emscripten reads Module.websocket
@@ -102,6 +162,16 @@ export async function createNodusSendModule(network, { loadGlue = () => import('
   check(num('nsw_net_set_chain', ['string'], [net.chainId]));
   for (const endpoint of net.endpoints) check(num('nsw_net_add_endpoint', ['string', 'number'], [endpoint.host, endpoint.port]));
   for (const pin of net.pins) check(num('nsw_net_add_pin', ['string'], [pin]));
+  if (claimData) {
+    try {
+      check(num('nsw_claim_reset'));
+      check(num('nsw_claim_set_manifest', ['string', 'string'], [claimData.manifest, claimData.manifestHash]));
+      for (const leaf of claimData.leaves) check(num('nsw_claim_add_leaf', ['string', 'string', 'string'], [leaf.sourceId, leaf.destBinding, leaf.amount]));
+      check(num('nsw_claim_seal'));
+    } catch (error) { claimError = error.message; }
+  }
+  const claimReady = () => { if (claimError) throw new Error(claimError); };
+  const WINDOW = ['open', 'not-open', 'closed'], CLAIMED = ['no-evidence', 'yes', 'unknown'];
 
   return {
     async unlock({ seed } = {}) {
@@ -167,6 +237,50 @@ export async function createNodusSendModule(network, { loadGlue = () => import('
     async tick() {
       check(await call('nsw_tick'));
     },
+    // GENESIS CLAIM. claimStatus() -> { found: false } or { found: true,
+    // amount (raw), tip, startHeight, endHeight, window: 'open' | 'not-open'
+    // | 'closed' (for the next block), claimed: 'yes' (proven: the node's
+    // unclaimed total is below this allocation) | 'no-evidence' | 'unknown'
+    // (older node), outputId: the coin id a claim of it creates — its
+    // tracking id }. See nodus-send-wasm.c nsw_claim_status.
+    async claimStatus() {
+      claimReady();
+      check(await call('nsw_claim_status'));
+      if (num('nsw_claim_found') !== 1) return { found: false };
+      return {
+        found: true, amount: str('nsw_claim_amount'), tip: str('nsw_claim_tip'), startHeight: str('nsw_claim_start'),
+        endHeight: str('nsw_claim_end'), window: WINDOW[num('nsw_claim_window')], claimed: CLAIMED[num('nsw_claim_claimed')],
+        outputId: str('nsw_claim_output')
+      };
+    },
+    // claimBuild() -> { bytes: Uint8Array, claimId: SHA3-512 of the bytes,
+    // decoded: { recipient, amount, chainId, nullifier, outputId, leafIndex } }
+    // — `decoded` is read back FROM THE SIGNED BYTES by the C side.
+    async claimBuild() {
+      claimReady();
+      check(await call('nsw_claim_build'));
+      const at = num('nsw_claim_built_bytes'), length = num('nsw_claim_built_len');
+      return {
+        bytes: M.HEAPU8.slice(at, at + length), claimId: str('nsw_claim_built_id'),
+        decoded: {
+          recipient: str('nsw_claim_built_recipient'), amount: str('nsw_claim_built_amount'), chainId: str('nsw_claim_built_chain'),
+          nullifier: str('nsw_claim_built_nullifier'), outputId: str('nsw_claim_built_output'), leafIndex: str('nsw_claim_built_leaf')
+        }
+      };
+    },
+    // claimSubmit({ bytes }) -> { accepted: boolean, message?: string }; only
+    // the bytes of the last claimBuild() are sent (compared in C).
+    async claimSubmit({ bytes } = {}) {
+      claimReady();
+      if (!(bytes instanceof Uint8Array) || bytes.length === 0) throw new Error('Invalid claim.');
+      const at = num('nsw_req_env_alloc', ['number'], [bytes.length]);
+      if (!at) throw new Error('Out of memory.');
+      M.HEAPU8.set(bytes, at);
+      const rc = await call('nsw_claim_submit');
+      if (rc === 0) return { accepted: true };
+      if (rc === 1) return { accepted: false, message: str('nsw_error') };
+      throw failure();
+    },
     // Synchronous: none of these reaches emscripten_sleep (nodus-send-wasm.c
     // nsw_cancel / nsw_lock), so they are safe while another export waits.
     cancel() { M.ccall('nsw_cancel', null, [], []); },
@@ -182,4 +296,4 @@ export async function createNodusSendModule(network, { loadGlue = () => import('
 
 // Registration point read by src/app.js: null while the network settings
 // above are null (NODUS stays receive-only, src/nodus/network.js).
-export const nodusSendModuleFactory = NODUS_SEND_NETWORK ? () => createNodusSendModule(NODUS_SEND_NETWORK) : null;
+export const nodusSendModuleFactory = NODUS_SEND_NETWORK ? () => createNodusSendModule(NODUS_SEND_NETWORK, { claim: NODUS_CLAIM_DATA }) : null;

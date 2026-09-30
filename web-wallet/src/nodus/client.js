@@ -44,6 +44,14 @@
 //                                false` must mean every block from fromHeight
 //                                to min(tip, toHeight) was read and none holds
 //                                it (a partial read rejects instead).
+//                                The same scan also finds an applied genesis
+//                                claim whose created coin has this id (a
+//                                claim's tracking id is that coin id).
+//     claimStatus() / claimBuild() / claimSubmit({ bytes })
+//                                OPTIONAL (0.1.26, genesis claim — shapes in
+//                                src/nodus/send-module.js). A module without
+//                                all three still unlocks; this client then
+//                                answers every claim call "not available".
 //     tick()                     Keepalive ping (the thread-less stand-in for
 //                                nodus_client.c's 60 s read-thread ping; the
 //                                server drops an idle session at 180 s).
@@ -71,11 +79,12 @@ const HEX128 = /^[0-9a-f]{128}$/, HEX64 = /^[0-9a-f]{64}$/;
 export const NODUS_TICK_MS = 60000;
 const ASYNC_OPS = ['unlock', 'balance', 'list', 'buildAndSign', 'submit', 'scanConfirm', 'tick'];
 const SYNC_OPS = ['cancel', 'lock', 'release'];
+const CLAIM_OPS = ['claimStatus', 'claimBuild', 'claimSubmit'];
 const lockedError = () => new Error('Wallet is locked.');
 
 export function createNodusClient({ factory, onState, setInterval: every = globalThis.setInterval, clearInterval: stopEvery = globalThis.clearInterval } = {}) {
   if (typeof factory !== 'function') throw new Error('The Nodus send module is not available.');
-  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId;
+  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false;
   // ONE operation queue: Asyncify keeps a single global currData, so a second
   // export entered while the first is suspended corrupts the first. `tail`
   // settles only when the module call itself has returned, never merely when
@@ -148,6 +157,7 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
         module = loaded; throw new Error('The Nodus send module does not match this wallet version.');
       }
       module = loaded;
+      claimable = CLAIM_OPS.every(name => typeof loaded[name] === 'function');
       const info = await enqueue('unlock', { seed });
       if (!info || typeof info.fingerprint !== 'string' || !HEX128.test(info.fingerprint) || typeof info.chainId !== 'string' || !HEX64.test(info.chainId)) throw new Error('The Nodus send module returned an invalid identity.');
       // The module derives the identity from the seed on its own; it must be
@@ -163,16 +173,22 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
     } finally { seed.fill(0); }
   }
   const call = op => (args, options) => { try { ready(); } catch (error) { return Promise.reject(error); } return enqueue(op, args, options); };
+  const claimCall = op => (args, options) => claimable ? call(op)(args, options) : Promise.reject(new Error('Claiming is not available in this wallet version.'));
   return {
     get state() { return state; },
     get fingerprint() { return fingerprint; },
     get chainId() { return chainId; },
+    // Whether the loaded module offers the genesis claim (CLAIM_OPS).
+    get claimable() { return claimable && state === 'ready'; },
     unlock,
     balance: (options) => call('balance')(undefined, options),
     list: (options) => call('list')(undefined, options),
     buildAndSign: call('buildAndSign'),
     submit: call('submit'),
     scanConfirm: call('scanConfirm'),
+    claimStatus: (options) => claimCall('claimStatus')(undefined, options),
+    claimBuild: (options) => claimCall('claimBuild')(undefined, options),
+    claimSubmit: claimCall('claimSubmit'),
     lock
   };
 }
