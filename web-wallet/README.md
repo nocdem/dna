@@ -1123,15 +1123,11 @@ here is loaded by the wallet; the Messages UI and the shared module are NC-4.
   value, contact-request signing preimage, salt packet build, contact-list
   `CLST` blob — into `messenger/codec/`, and the app calls the same
   functions).
-- `connect/nc_wasm.c` + `scripts/build-connect-wasm.sh` (`npm run
-  build:connect-core`) — a standalone WebAssembly build (Emscripten 6.0.10,
-  Asyncify, `-Werror`, json-c 0.17 + OpenSSL 3.0.15 for wasm32) written to
-  `/tmp/nodus-connect-wasm`, never under `src/`. **Test artifact:** it opens
-  its own tier-2 session; shipped beside `send.wasm` the two sessions of one
-  identity would evict each other.
-- `src/connect/core.js` — JS glue: one operation queue, `(generation,
-  requestId)` on every result, lock order (queue stops → cancel → lock →
-  memory zeroed → instance released). API listed at the top of the file.
+- `connect/nc_wasm.c` — the JSON exports. Since NC-4b (below) they are
+  linked into `send.wasm`; the standalone test build of NC-2 is retired.
+- `src/connect/core.js` — JS glue: `(generation, requestId)` on every
+  result; since NC-4b it runs in the wallet's queue (below). API listed at
+  the top of the file.
 - `connect/tests/` — native tests (CMake, same compile set): classifier
   matrix, wire bytes vs the codecs' own verify (requests signed over the
   codec's preimage, salt packet v1, contact-list blob read the way the app's
@@ -1143,3 +1139,103 @@ Not in NC-2/NC-1b: removing a contact from the list (add is merge-only);
 at-rest storage (Q4, NC-4). The json-c version of the frozen app build is not
 established (host 0.16, wasm 0.17); the profile signature is over json-c's
 output, so this is checked before release (NC-3).
+
+## Nodus Connect Messages preview — NC-4c (unreleased, separate build)
+
+The Messages page under `/preview/` (design `docs/plans/2026-09-24-web-connect-design.md`
+rev 5 §1.7-§1.10, package NC-4; decisions `2026-09-30-nodus-connect-thin-core.md`
+incl. Ek / Ek 2 and `2026-09-30-connect-history-at-rest.md` rev 2). First stage
+only: contact list, send / accept / decline / withdraw contact requests, 1:1
+text messages, editing the own profile (about, location, https website; no
+name, no avatar). No groups, media or calls. The live `/` build is unchanged.
+
+- Build: `npm run build:preview` (`vite.preview.config.js`, root `preview/`,
+  base `/preview/`, output `dist-preview/`, its own `THIRD-PARTY-LICENSES.txt`);
+  `npm run preview:preview` serves it locally. `publicDir` is off and the page
+  uses the system font stack and a `data:` icon, so it requests nothing outside
+  `/preview/` except the node WebSockets. Response headers (CSP header,
+  `frame-ancestors 'none'`) are the deploy package's job.
+- `preview/index.html` + `src/connect/ui/` — `main.js` (entry; freezes ethers'
+  RNG/KDF as `src/main.js` does), `messages.js` (screens, sync, lifecycle),
+  `dom.js` (every text through `textContent`; someone else's text in a `<bdi>`
+  with an "unusual characters" marker), `text.js` (pure helpers), `style.css`.
+- Opening: unlock the saved wallet (same vault, same password), type the 24
+  words, or create a new account (words shown, typed back). Only the new-account
+  words count as "fresh" (decision Q1): a restored identity never creates a
+  record, and if its own profile cannot be read Messages stays closed with a
+  retry. The page takes the wallet's single-tab lock `nodus.wallet.session`;
+  it locks after 10 minutes without input, on Lock, on `pagehide`, and when the
+  saved wallet changes in another tab.
+- `src/connect/store.js` — history in IndexedDB, database named by the vault id
+  (32 lowercase hex), stores `messages` / `state` / `meta`; every record is
+  `{ id, nonce, ct, tag }` (bytes kept separately, sealed by the core's
+  `historyEncrypt`), one decimal-string counter record per vault, refused at
+  2^32. Record ids are opaque (`m` + local sequence, `state`), so contacts and
+  salts are only inside the ciphertext. All bytes are ready before a
+  transaction opens; the transaction only puts; `oncomplete` resolves and
+  `onerror` / `onabort` are shown. A typed-words or new account keeps nothing
+  (memory only) and never sends delivery confirmations — a confirmation is sent
+  only after the messages are stored (G11). "Delete message history on this
+  device" takes the `nodus.wallet.storage` lock.
+- Messages: sent as the whole pending set (undelivered, last 7 days); received
+  for yesterday / today / tomorrow, de-duplicated, ordered by the local receive
+  sequence, the sender's time labelled "sender's clock". Requests are labelled
+  "Not a contact"; claimed names are shown only as "says their name is …".
+- Tests: `test/connect-ui.test.js` (record / counter encoding, UI helpers; no
+  IndexedDB — `fake-indexeddb` is not a dependency).
+
+One page = one module = one session (NC-4b): the page derives the Nodus
+address locally (`src/nodus/derive.js`), creates and unlocks the wallet's own
+NODUS client (`src/nodus/client.js` with `nodusSendModuleFactory`, the same
+`send.wasm` that carries the Messages exports), and builds the Messages core
+on it (`createNodusConnectCore({ nodus })`). Lock: Messages core, then the
+client, then the store, then the single-tab lock. Delivery times (`ack_ts`)
+are unix seconds (`connect/nc_outbox.c` `nc_ack_publish`: `time(NULL)`).
+History records are sealed as UTF-8 JSON of at most 65536 bytes
+(`nc_wasm.c` `NC_HIST_PT_MAX`).
+
+## Nodus Connect in the wallet's one module — NC-4b (unreleased, no UI)
+
+Design rev 5 §1.1: one WebAssembly module, one tier-2 session per unlocked
+wallet. A second module would open a second session of the same identity,
+and a node closes the other one (`nodus_auth.c:95-116`), so Messages and
+NODUS send would knock each other off.
+
+- `scripts/build-nodus-send-wasm.sh` links the thin core (`connect/nc_*.c`
+  incl. `nc_history.c` and `nc_contactlist.c`, the `messenger/codec/` units,
+  `messenger/dna_api.c`, `messenger/dht/client/dna_profile.c`, BIP39,
+  `qgp_aes`) and json-c 0.17 (wasm) into `src/nodus/send.wasm`, in the
+  release AND parity builds (the parity test compares their bytes).
+  `scripts/build-connect-wasm.sh` / `npm run build:connect-core` now run
+  that script (and so write `src/nodus/send.*`).
+- Session and bracket: `crypto/nodus-send-wasm.c` "Messages host" hands the
+  Messages exports its client, its op bracket (one export of the module at a
+  time), its identity and its cancel flag (`nc_core.h` "Host"). No Messages
+  export creates a client or opens a connection.
+- Keys: `nc_unlock` (after the wallet's `nsw_unlock`) takes the words once,
+  derives the Messages KEM keys (`nc_keys_from_words`: Kyber round-3 from the
+  encryption seed, ML-KEM-1024 from the master seed — the signing seed the
+  send module holds cannot give them) and refuses unless the derived ML-DSA
+  public key is the session's. `nc_keys_t` keeps its own copy of the ML-DSA
+  key (the library signs with it). The wallet's lock (`nsw_lock`) wipes every
+  Messages secret (`nc_session_wipe`); `nc_lock` closes Messages alone.
+- History key (decision `2026-09-30-connect-history-at-rest.md` rev 2):
+  `nc_hist_key` derives K from the session's ML-DSA secret key and the
+  vault id; K never leaves module memory. `nc_hist_encrypt` /
+  `nc_hist_decrypt` return / take nonce, ciphertext and tag separately and
+  the invocation counter as a decimal string (refused at 2^32). A record's
+  plaintext is capped at 64 KiB (its hex crosses `ccall` on the 1 MiB C
+  stack).
+- JS: `src/nodus/send-module.js` offers `connect(run)` (queued) and
+  `connectSync(run)` (never suspends), limited to `nc_*` names;
+  `src/nodus/client.js` runs `connect` in its ONE queue (optional ops, like
+  claim and staking). `src/connect/core.js` takes the wallet's unlocked
+  client (`createNodusConnectCore({ nodus })`) and never loads or
+  instantiates a module; API at the top of that file.
+- Asyncify: there is no explicit function list; `ASYNCIFY=1` instruments
+  every function that can reach `emscripten_sleep`. The waiting `nc_*`
+  exports are called with `ccall { async: true }`. The 16 KiB unwind bound
+  is measured for the send chains only; for the Messages chains it is
+  expected to hold, not measured.
+
+Not verified: nothing here has been run in a browser or against a node.
