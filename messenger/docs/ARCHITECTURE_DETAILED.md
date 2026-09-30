@@ -130,6 +130,18 @@ DNA Connect is a post-quantum end-to-end encrypted messenger with integrated cry
 │   ├── gsk.c                 # Group Symmetric Key
 │   └── gsk_packet.c          # GEK packet builder
 │
+├── codec/                    # NC-1: pure codec units (no network I/O, no DB),
+│   │                         #   moved verbatim out of the I/O files so the
+│   │                         #   native lib and the web thin core compile the
+│   │                         #   same source (Web Connect design rev 5 §1.3)
+│   ├── seal_multi_codec.c/h      # 2-recipient Seal encoder (from messenger/messages.c) — in libdna
+│   ├── gek_wrap_codec.c          # KEM-wrap of a 32-byte secret (from messenger/gek.c) — in libdna
+│   ├── offline_queue_codec.c     # offline-message blob + ACK key (from dht/shared/dht_offline_queue.c) — in dht_lib
+│   ├── dm_outbox_codec.c         # DM outbox day-bucket key (from dht/shared/dht_dm_outbox.c) — in dht_lib
+│   ├── salt_agreement_codec.c/h  # salt-agreement key + packet parse helpers (from dht/shared/dht_salt_agreement.c) — in dht_lib
+│   ├── contactlist_codec.c/h     # contact-list JSON codec (from dht/client/dht_contactlist.c) — in dht_lib
+│   └── contact_request_codec.c   # contact-request codec (from dht/shared/dht_contact_request.c) — in dht_lib
+│
 ├── database/                 # SQLite/SQLCipher persistence
 │   ├── addressbook_db.c/h    # Address book entries
 │   ├── cache_manager.c/h     # Unified cache lifecycle
@@ -459,7 +471,7 @@ log_tags=DHT,P2P,MESSENGER
 | `DHT` | dht_singleton.c | DHT init, bootstrap, connectivity |
 | `DHT_PROFILE` | dht_profile.c | Profile DHT operations |
 | `DHT_CHUNK` | dht_chunked.c | Chunked storage layer |
-| `DHT_OFFLINE` | dht_offline_queue.c | Offline message queue |
+| `DHT_OFFLINE` | dht_offline_queue.c, codec/offline_queue_codec.c | Offline message queue (blob codec + ACK key in the codec unit) |
 | `KEYSERVER` | keyserver_*.c | Identity/name lookups |
 | `DNA_ENGINE` | dna_engine.c | Main API layer |
 | `DNA-JNI` | dna_jni.c | Android JNI bridge |

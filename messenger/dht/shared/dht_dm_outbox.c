@@ -217,53 +217,9 @@ static void dm_cache_store(const char *base_key, dht_offline_message_t *messages
  * Key Generation
  *============================================================================*/
 
-uint64_t dht_dm_outbox_get_day_bucket(void) {
-    return (uint64_t)time(NULL) / DNA_DM_OUTBOX_SECONDS_PER_DAY;
-}
-
-int dht_dm_outbox_make_key(
-    const char *sender_fp,
-    const char *recipient_fp,
-    uint64_t day_bucket,
-    const uint8_t *salt,
-    char *key_out,
-    size_t key_out_size
-) {
-    if (!sender_fp || !recipient_fp || !key_out || key_out_size < 300) {
-        return -1;
-    }
-
-    /* CORE-04: salt is required. The legacy unsalted fallback branch was
-     * removed in phase 6 plan 05. A NULL salt now returns -1 so that any
-     * caller that forgets to thread the per-contact salt through fails
-     * loudly instead of publishing a deterministic, metadata-leaking key. */
-    if (!salt) {
-        QGP_LOG_ERROR(LOG_TAG,
-            "dht_dm_outbox_make_key: salt is required (NULL passed) "
-            "- refusing to produce unsalted key");
-        return -1;
-    }
-
-    /* Use current day if day_bucket is 0 */
-    if (day_bucket == 0) {
-        day_bucket = dht_dm_outbox_get_day_bucket();
-    }
-
-    /* Salted key format: sender_fp:outbox:recipient_fp:day_bucket:SALT_HEX */
-    char salt_hex[65];
-    for (int i = 0; i < 32; i++) {
-        snprintf(salt_hex + (i * 2), 3, "%02x", salt[i]);
-    }
-    salt_hex[64] = '\0';
-
-    int written = snprintf(key_out, key_out_size, "%s:outbox:%s:%lu:%s",
-                           sender_fp, recipient_fp, (unsigned long)day_bucket, salt_hex);
-    if (written < 0 || (size_t)written >= key_out_size) {
-        return -1;
-    }
-
-    return 0;
-}
+/* NC-1: dht_dm_outbox_get_day_bucket / dht_dm_outbox_make_key moved
+ * verbatim to codec/dm_outbox_codec.c; declarations unchanged in
+ * dht_dm_outbox.h. */
 
 /*============================================================================
  * Send API
