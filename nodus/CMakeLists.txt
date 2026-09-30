@@ -141,6 +141,12 @@ set(NODUS_SOURCES
     src/client/nodus_client.c
     src/client/nodus_singleton.c
     src/client/nodus_republish.c
+    # Web wallet package (c2): the shared version-3 CORE SPEND builder —
+    # plan + build, no I/O; nodus-cli `v2-envelope spend` and the browser
+    # module compile the same file (design 2026-09-25-web-wallet-nodus-
+    # send-design.md §0a.3). Reads the ruleset identity from the caller or
+    # from the generated include/nodus/nodus_ruleset_pins.h.
+    src/client/nodus_v2_spend.c
     # nodus_cc_client.c (the CLI's short-lived 4004 p2p peer) is DELETED:
     # governance approvals are collected by the proposer's own node
     # (decision docs/plans/decisions/2026-09-26-cc-approval-via-own-node.md,
@@ -2084,6 +2090,13 @@ register_witness_test(test_v2_chain_id_cache)
 # Decision docs/plans/decisions/2026-09-25-gas-price.md.
 register_witness_test(test_v2_gas_price)
 
+# Web wallet package (c2) — the shared CORE SPEND builder
+# (src/client/nodus_v2_spend.c): the pins ruleset == the compiled table,
+# a pins-built envelope admitted by the CheckTx dry run on a seeded
+# version-3 chain (production runtime), read-back == request, the
+# nodus-cli layout restated, the gas-price fixed point, refusals.
+register_witness_test(test_v2_spend_build)
+
 # test_cc_client (nodus_client_cc_appr_send's guard paths) is DELETED with
 # the client it tested (decision docs/plans/decisions/2026-09-26-cc-
 # approval-via-own-node.md (7)). Its successor is test_cc_collect: the
@@ -2314,6 +2327,29 @@ target_include_directories(nodus-cli PRIVATE
 target_compile_definitions(nodus-cli PRIVATE
     NODUS_CLI_HAS_DNAC=1
     DNAC_TX_BUILDER_ONLY=1)
+
+# Yol 2 (decision 2026-09-25-web-wallet-nodus-send-transport.md, addendum
+# 2026-09-29): the browser wallet reads the CORE ruleset identity and the
+# SYSTEM metering policy from a header GENERATED from this node's compiled
+# runtime table. `regen_ruleset_pins` rewrites the checked-in header (run
+# it after any ruleset / policy change); test_ruleset_pins fails whenever
+# the checked-in file differs from a fresh generation by one byte.
+add_executable(gen_ruleset_pins tools/gen_ruleset_pins.c)
+target_link_libraries(gen_ruleset_pins nodus dsa nodus)
+target_compile_options(gen_ruleset_pins PRIVATE -Wall -Wextra)
+add_custom_target(regen_ruleset_pins
+    COMMAND gen_ruleset_pins ${CMAKE_CURRENT_SOURCE_DIR}/include/nodus/nodus_ruleset_pins.h
+    DEPENDS gen_ruleset_pins
+    COMMENT "Regenerating include/nodus/nodus_ruleset_pins.h from the runtime table"
+    VERBATIM)
+
+add_executable(test_ruleset_pins tests/test_ruleset_pins.c tools/gen_ruleset_pins.c)
+target_link_libraries(test_ruleset_pins nodus dsa nodus)
+target_compile_options(test_ruleset_pins PRIVATE -Wall -Wextra)
+target_compile_definitions(test_ruleset_pins PRIVATE
+    GEN_RULESET_PINS_NO_MAIN=1
+    NODUS_RULESET_PINS_HEADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/include/nodus/nodus_ruleset_pins.h")
+add_test(NAME test_ruleset_pins COMMAND test_ruleset_pins)
 
 add_executable(nodus-circ tools/nodus-circ.c)
 target_link_libraries(nodus-circ nodus dsa nodus)

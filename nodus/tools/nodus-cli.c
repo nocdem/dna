@@ -76,6 +76,7 @@
 #include "nodus_v2_gen_config.h"               /* O16A: v2-claim --config    */
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_fingerprint.h"      /* O15F T6: fp raw<->hex      */
+#include "nodus/nodus_v2_spend.h"              /* the shared SPEND builder   */
 #endif
 
 /* CHECKTX-P1 round 3 — the expiry every envelope this CLI builds carries:
@@ -2892,115 +2893,53 @@ done:
  * chain id, dna_env_encode, dna_env_preflight self-check and the
  * dnac_spend lane — the `v2-envelope spend` sources.
  */
-/* SYSFUND / SPEND transfer-section wire widths (nodus_witness_rt_native.c:
- * RTN_SPEND_MAX_IN=15, RTN_SPEND_OUT_LEN=232 = fp128 + amount8 + token64 +
- * seed32; the codec lives behind libnodus so the widths are restated here
- * with their source citation, not #included). */
-#define T6_SPEND_MAX_IN   15u
-#define T6_SPEND_OUT_LEN  232u
+/* The transfer-section widths, the coin type, the output-record writer
+ * and the one-key two-pass signature (nodus_v2_env_sign_one_key) live in
+ * the shared SPEND builder (nodus/include/nodus/nodus_v2_spend.h — web
+ * wallet package (c2)); `v2-envelope stake`, `spend`, `token-create` and
+ * `spend --msig` call it from there. */
 
-/* One listed coin, as the networked builders (`v2-envelope stake`,
- * `v2-envelope spend`) select from a dnac_utxo reply. `nul` MUST stay the
- * first member: t6_nul_cmp orders both a bare 64-byte nullifier array and
- * a t6_coin_t array by it. */
-typedef struct {
-    uint8_t  nul[64];
-    uint64_t amount;
-    uint8_t  kind;      /* 0 native · 1 the requested token · 2 any other */
-    uint8_t  used;
-} t6_coin_t;
-
-/* Ascending by the first 64 bytes (a nullifier). */
-static int t6_nul_cmp(const void *a, const void *b) {
-    return memcmp(a, b, 64);
-}
-
-/* Write ONE transfer-section output record (T6_SPEND_OUT_LEN = 232 bytes):
- *   [0..127]   owner fingerprint, 128 lowercase-hex chars (NOT raw — the
- *              chain checks rtn_hex_lower_ok, nodus_witness_rt_native.c:
- *              1121)
- *   [128..135] amount u64 BE (>= 1, rt_native.c:1122)
- *   [136..199] token id, 64 bytes (NULL = all-zero = native)
- *   [200..231] seed, 32 bytes — output id = SHA3-512(owner_hex ‖ seed)
- *              (rtn_out_ids, rt_native.c:1427-1431)
- * Shared by `v2-envelope stake` (the SYSFUND change output) and
- * `v2-envelope spend`. */
-static void t6_xfer_out_put(uint8_t *rec, const char *owner_hex128,
-                            uint64_t amount, const uint8_t *token64,
-                            const uint8_t seed32[32]) {
-    memcpy(rec, owner_hex128, 128);
-    for (int i = 0; i < 8; i++)
-        rec[128 + i] = (uint8_t)(amount >> (56 - 8 * i));
-    if (token64) memcpy(rec + 136, token64, 64);
-    else         memset(rec + 136, 0, 64);
-    memcpy(rec + 200, seed32, 32);
-}
-
-/* The two-pass build for an envelope EVERY leg of which is authorised by
- * the SAME single kind-1 signer (auth_data = count u8 = 1 ‖ pubkey ‖ sig
- * over that leg's ENGINE-derived auth_digest): encode with each leg's
- * auth blob zero-filled at its FINAL length (auth_len is committed, so
- * the digest cannot depend on the signature bytes), preflight at the
- * candidate height tip+1 to derive every auth_digest, sign, re-encode
- * (same lengths ⇒ same digests) and re-preflight as a self-check.
- *
- * `auths[L]` is leg L's caller-owned auth buffer — the SAME pointer the
- * caller set as legs[L].auth_data — of exactly
- * 1 + NODUS_RT_AUTH_SIGNER_LEN bytes. On success *env_out is a heap
- * buffer (caller frees) of *env_len_out bytes and `pf` holds the pass-2
- * commitments (wire_id, intent_id, ...). Shared by `v2-envelope stake`
- * (two legs) and `v2-envelope spend` (one leg). @return 0 / -1. */
-static int t6_env_sign_one_key(const dna_env_in_t *env_in,
-                               uint8_t *const *auths,
-                               const dna_env_leg_ctx_t *lctx,
-                               const uint8_t chain32[DNA_CHAIN_ID_LEN],
-                               uint64_t tip, const nodus_identity_t *key,
-                               uint8_t **env_out, size_t *env_len_out,
-                               dna_env_preflight_t *pf) {
-    *env_out = NULL;
-    *env_len_out = 0;
-    size_t env_len = 0;
-    if (dna_env_encoded_size(env_in->legs, env_in->leg_count, &env_len) != 0)
-        return -1;
-    uint8_t *env_bytes = malloc(env_len);
-    if (!env_bytes) return -1;
-
-    size_t used = 0;
-    if (dna_env_encode(env_in, env_bytes, env_len, &used) != 0 ||
-        used != env_len) goto fail;
-    if (dna_env_preflight(env_bytes, env_len, chain32, tip + 1, lctx,
-                          env_in->leg_count, pf) != DNA_ENV_PF_OK) {
+/* The one-key two-pass signature (nodus_v2_env_sign_one_key) against the
+ * --keys identity, printing the reason of a refusal as the builders did
+ * before the move. @return 0 / -1. */
+static int cli_sign_one_key(const dna_env_in_t *env_in, uint8_t *const *auths,
+                            const dna_env_leg_ctx_t *lctx,
+                            const uint8_t chain32[DNA_CHAIN_ID_LEN],
+                            uint64_t tip, const nodus_identity_t *key,
+                            uint8_t **env_out, size_t *env_len_out,
+                            dna_env_preflight_t *pf) {
+    nodus_v2_spend_err_t e;
+    memset(&e, 0, sizeof(e));
+    int rc = nodus_v2_env_sign_one_key(env_in, auths, lctx, chain32, tip,
+                                       key->pk.bytes, key->sk.bytes, env_out,
+                                       env_len_out, pf, &e);
+    if (rc == NODUS_V2_SPEND_ERR_PREFLIGHT1)
         fprintf(stderr, "pass-1 preflight failed\n");
-        goto fail;
-    }
-
-    for (uint16_t L = 0; L < env_in->leg_count; L++) {
-        uint8_t *ab = auths[L];
-        ab[0] = 1;
-        memcpy(ab + 1, key->pk.bytes, DNAC_PUBKEY_SIZE);
-        size_t sl = 0;
-        if (qgp_dsa87_sign(ab + 1 + DNAC_PUBKEY_SIZE, &sl, pf->auth_digest[L],
-                           64, key->sk.bytes) != 0 ||
-            sl != DNAC_SIGNATURE_SIZE) {
-            fprintf(stderr, "leg %d signature failed\n", (int)L);
-            goto fail;
-        }
-    }
-
-    if (dna_env_encode(env_in, env_bytes, env_len, &used) != 0 ||
-        used != env_len) goto fail;
-    if (dna_env_preflight(env_bytes, env_len, chain32, tip + 1, lctx,
-                          env_in->leg_count, pf) != DNA_ENV_PF_OK) {
+    else if (rc == NODUS_V2_SPEND_ERR_SIGN)
+        fprintf(stderr, "leg %d signature failed\n", e.leg);
+    else if (rc == NODUS_V2_SPEND_ERR_PREFLIGHT2)
         fprintf(stderr, "pass-2 preflight (self-check) failed\n");
-        goto fail;
-    }
-    *env_out = env_bytes;
-    *env_len_out = env_len;
-    return 0;
+    return rc == NODUS_V2_SPEND_OK ? 0 : -1;
+}
 
-fail:
-    free(env_bytes);
-    return -1;
+/* The shared builder's randomness source for this CLI: the platform
+ * CSPRNG (nodus_random), exactly the source the builders drew output
+ * seeds from before the move. */
+static int cli_rand(void *ctx, uint8_t *buf, size_t len) {
+    (void)ctx;
+    return nodus_random(buf, len);
+}
+
+/* The CORE ruleset identity + the BLOCK metering policy for the shared
+ * builder, from the compiled table (cli_builtin_runtime) — this binary's
+ * source for every networked envelope. */
+static void cli_ruleset_id(const nodus_domain_runtime_t *core_rt,
+                           const nodus_domain_runtime_t *sys_rt,
+                           nodus_v2_ruleset_id_t *out) {
+    memset(out, 0, sizeof(*out));
+    out->core_ruleset_version = core_rt->ruleset_version;
+    memcpy(out->core_ruleset_hash, core_rt->ruleset_hash, 64);
+    out->meter_policy = sys_rt->meter_policy;
 }
 
 /* Decode exactly `n` bytes from 2n LOWERCASE hex characters (the form
@@ -3151,7 +3090,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     uint8_t *auth0 = NULL, *auth1 = NULL, *env_bytes = NULL;
     dna_env_preflight_t *pf = NULL;
     uint8_t *scall = NULL, *fcall = NULL;
-    t6_coin_t *coins = NULL;
+    nodus_v2_coin_t *coins = NULL;
     nodus_dnac_utxo_result_t utxos;
     memset(&utxos, 0, sizeof(utxos));
     int utxos_valid = 0;
@@ -3296,7 +3235,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     /* Select native, unlocked funding inputs owned by the staker,
      * ascending by nullifier (canonical — the order the database-backed
      * builder's SELECT used), until the sum covers bond + fee. */
-    uint8_t nulls[T6_SPEND_MAX_IN][64];
+    uint8_t nulls[NODUS_V2_SPEND_MAX_IN][64];
     int n_in = 0;
     uint64_t sum_in = 0;
     {
@@ -3314,9 +3253,9 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             coins[n_coins].amount = e->amount;
             n_coins++;
         }
-        qsort(coins, (size_t)n_coins, sizeof(*coins), t6_nul_cmp);
+        qsort(coins, (size_t)n_coins, sizeof(*coins), nodus_v2_nul_cmp);
         for (int i = 0; i < n_coins && sum_in < need &&
-                        n_in < (int)T6_SPEND_MAX_IN; i++) {
+                        n_in < (int)NODUS_V2_SPEND_MAX_IN; i++) {
             if (sum_in > UINT64_MAX - coins[i].amount) {
                 fprintf(stderr, "the funding input sum overflows u64\n");
                 goto done;
@@ -3364,7 +3303,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     /* leg1 SYSFUND call = SPEND transfer section: in_count ‖ nullifiers
      * (ascending — the SELECT already returns them so) ‖ out_count ‖
      * change output (staker fp ‖ change ‖ native token ‖ seed). */
-    size_t fcap = 2 + (size_t)T6_SPEND_MAX_IN * 64 + T6_SPEND_OUT_LEN;
+    size_t fcap = 2 + (size_t)NODUS_V2_SPEND_MAX_IN * 64 + NODUS_V2_SPEND_OUT_LEN;
     fcall = calloc(1, fcap);
     if (!fcall) goto done;
     size_t off = 0;
@@ -3378,9 +3317,9 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
         uint8_t seed_full[64];
         if (qgp_sha3_512((const uint8_t *)nulls, (size_t)n_in * 64,
                          seed_full) != 0) goto done;
-        t6_xfer_out_put(fcall + off, staker_fp, change, NULL /* native */,
+        nodus_v2_xfer_out_put(fcall + off, staker_fp, change, NULL /* native */,
                         seed_full);
-        off += T6_SPEND_OUT_LEN;
+        off += NODUS_V2_SPEND_OUT_LEN;
     }
     uint32_t fcall_len = (uint32_t)off;
 
@@ -3442,10 +3381,11 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     /* Sign each leg's auth_digest with the staker sk (kind-1: count=1 ‖
      * pubkey ‖ sig). One key covers BOTH legs: it is the STAKE identity
      * AND the owner of the funding inputs. The two-pass build itself is
-     * the shared t6_env_sign_one_key (also `v2-envelope spend`). */
+     * the shared nodus_v2_env_sign_one_key (nodus_v2_spend.h — also
+     * `v2-envelope spend`), called through cli_sign_one_key. */
     uint8_t *auths[2] = { auth0, auth1 };
     size_t env_len = 0;
-    if (t6_env_sign_one_key(&env_in, auths, lctx, chain32, tip, &keys[0],
+    if (cli_sign_one_key(&env_in, auths, lctx, chain32, tip, &keys[0],
                             &env_bytes, &env_len, pf) != 0)
         goto done;
 
@@ -3579,12 +3519,12 @@ done:
  *
  * Resource fields: res_max_effects / res_max_effect_bytes are the EXACT
  * effect count and canonical result length THIS envelope's SPEND leg
- * emits (t6_spend_effect_decl — derived from rtn_xfer_exec and the
+ * emits (nodus_v2_spend_effect_decl — derived from rtn_xfer_exec and the
  * effect_wire.h layout, pinned by test_v2_native.c
  * test_spend_effect_decl), not the old flat 40 / 16 384 sized for the
  * 15-input maximum (16 384 of a 1-in/1-out spend's 23 946 units).
  * res_max_total_units is RIGHT-SIZED per envelope from that declaration
- * (t6_spend_ceiling), NOT a round number: PrepareProposal's capacity
+ * (nodus_v2_spend_ceiling), NOT a round number: PrepareProposal's capacity
  * seam reserves EVERY envelope's full ceiling against ONE block budget
  * at once, without finalizing in between (nodus_witness_cmt_app.c
  * app_seam_check → nodus_witness_v2_produce.c :269 →
@@ -3595,204 +3535,13 @@ done:
  * (ARITHMETIC, all weights 1) → at most 255 per block; a round 200 000
  * (the test precedent) would admit ten spends per block, 400 000 (the
  * stake builder) five.
+ *
+ * The plan and the build themselves are the shared SPEND builder
+ * (nodus/src/client/nodus_v2_spend.c, web wallet package (c2)):
+ * nodus_v2_spend_plan (selection + the gas-price fixed point) and
+ * nodus_v2_spend_build (call, leg, units, two-pass signature, read-back).
+ * This command reads the network, prints, and submits.
  */
-#define T6_SPEND_MAX_OUTS  3u   /* recipient + token change + native change */
-
-typedef struct {
-    int      idx[T6_SPEND_MAX_IN];   /* into the sorted coin array        */
-    int      n_in;
-    uint64_t native_in, token_in;
-    uint64_t native_change, token_change;
-} t6_spend_plan_t;
-
-/* Largest amount first; equal amounts by nullifier ascending — a TOTAL
- * order (nullifiers are distinct rows), so the selection is a pure
- * function of the listing whatever order the server returned it in. */
-static int t6_coin_cmp(const void *a, const void *b) {
-    const t6_coin_t *x = (const t6_coin_t *)a;
-    const t6_coin_t *y = (const t6_coin_t *)b;
-    if (x->amount != y->amount) return x->amount > y->amount ? -1 : 1;
-    return memcmp(x->nul, y->nul, 64);
-}
-
-/* Append unused coins of `kind`, largest first, to plan->idx until their
- * sum reaches `need`. @return 0 covered · -1 not enough coins of this
- * kind · -2 would need more than T6_SPEND_MAX_IN inputs in total · -3
- * the input sum overflows u64 (the chain's checked add rejects that,
- * rt_native.c:1378-1395). */
-static int t6_spend_pick(const t6_coin_t *coins, int n_coins, uint8_t kind,
-                         uint64_t need, t6_spend_plan_t *plan,
-                         uint64_t *sum_out) {
-    uint64_t sum = 0;
-    for (int i = 0; i < n_coins && sum < need; i++) {
-        if (coins[i].used || coins[i].kind != kind) continue;
-        if (plan->n_in >= (int)T6_SPEND_MAX_IN) return -2;
-        if (sum > UINT64_MAX - coins[i].amount) return -3;
-        plan->idx[plan->n_in++] = i;
-        sum += coins[i].amount;
-    }
-    *sum_out = sum;
-    return sum >= need ? 0 : -1;
-}
-
-/* The EXACT per-leg effect declaration (res_max_effects,
- * res_max_effect_bytes) of ONE CORE SPEND leg with n_in inputs and
- * n_out outputs — what the chain's SPEND executor emits and what the
- * meter charges, not a ceiling guess:
- *
- * EFFECTS (rtn_xfer_exec, nodus_witness_rt_native.c:1639-1771; the
- * result is built at :1727-1767; SPEND = burn_amount 0, is_burn false):
- *   - n_out CREATEs, one per output (:1734-1741): key 64 (the output
- *     nullifier), value RTN_UTXO_REC_LEN = 284 (:1010; set by
- *     rtn_utxo_create_eff :1563-1564; exported as
- *     NODUS_RT_CORE_UTXO_REC_LEN, nodus_witness_runtime.h:661);
- *   - exactly ONE reward-pool SET (:1752-1757, rtn_supply_add_eff
- *     :1598-1599): key 1 (the selector), value 8 (the counter). It is
- *     emitted UNCONDITIONALLY for a SPEND — there is no fee == 0 branch,
- *     and a fee below DNAC_MIN_FEE_RAW / NODUS_W_BASE_TX_FEE is refused
- *     before it (:1698-1700), so fee > 0 is not a term here;
- *   - n_in DELETEs, one per input (:1758-1764, rtn_utxo_delete_eff
- *     :1617-1618): key 64 (the input nullifier), value 0.
- *   The burned-counter SET (:1746-1751) is BURN-only.
- *
- * BYTES = the canonical encoded result length — res_meter.h "effect
- * bytes" (:114-119) is the full effect_wire encoding, and
- * dna_meter_charge_effects recomputes it as head + count × record +
- * Σ key_len + Σ value_len (res_meter.c:459-467). effect_wire.h layout:
- * DNA_EFFECT_FIXED_HEAD 23, DNA_EFFECT_RECORD_LEN 84 per effect, then
- * every key and value blob with no padding. So:
- *   effects = n_in + n_out + 1
- *   bytes   = 23 + 84·effects + n_out·(64 + 284) + (1 + 8) + n_in·64
- *           = 116 + 148·n_in + 432·n_out
- * e.g. 1-in/1-out: 3 effects, 696 bytes. Every term is a fixed-size
- * field, so the bound is EXACT, never short. The charge gate rejects
- * only actual > declared (res_meter.c:473-476): exact equality passes,
- * an under-declaration fails the transaction at charge time (after
- * CheckTx admitted it). test_v2_native.c
- * test_spend_effect_decl restates this formula independently and pins
- * it against the real runtime (hook-level equality, block-level: the
- * exact declaration commits, one effect or one byte short rejects). */
-static void t6_spend_effect_decl(uint32_t n_in, uint32_t n_out,
-                                 uint32_t *effects_out,
-                                 uint32_t *bytes_out) {
-    const uint32_t effects = n_in + n_out + 1u;
-    *effects_out = effects;
-    *bytes_out = (uint32_t)DNA_EFFECT_FIXED_HEAD +
-                 (uint32_t)DNA_EFFECT_RECORD_LEN * effects +
-                 n_out * (64u + NODUS_RT_CORE_UTXO_REC_LEN) +
-                 (1u + 8u) +
-                 n_in * 64u;
-}
-/* The largest shape this builder can emit (15 inputs, 3 outputs) stays
- * inside the metering plan's declaration caps (res_meter.h :78-80:
- * res_max_effects <= DNA_EFFECT_MAX_COUNT, res_max_effect_bytes <=
- * DNA_EFFECT_MAX_TOTAL_LEN). */
-_Static_assert(T6_SPEND_MAX_IN + T6_SPEND_MAX_OUTS + 1u <=
-                   (unsigned)DNA_EFFECT_MAX_COUNT,
-               "SPEND effect count exceeds the effect codec cap");
-_Static_assert((unsigned)DNA_EFFECT_FIXED_HEAD +
-                   (unsigned)DNA_EFFECT_RECORD_LEN *
-                       (T6_SPEND_MAX_IN + T6_SPEND_MAX_OUTS + 1u) +
-                   T6_SPEND_MAX_OUTS * (64u + NODUS_RT_CORE_UTXO_REC_LEN) +
-                   (1u + 8u) + T6_SPEND_MAX_IN * 64u <=
-                   DNA_EFFECT_MAX_TOTAL_LEN,
-               "SPEND result length exceeds the effect codec cap");
-
-/* The smallest res_max_total_units the chain will accept for THIS
- * envelope AND never exhaust while executing it:
- *   ceiling = static_units(envelope) + n_reads × w_read
- * static_units is computed by the metering module itself
- * (dna_meter_plan_build, shared/dnac/res_meter.c — w_base + Σ w_op +
- * w_callbyte·call_len + w_authbyte·auth_len + w_effect·res_max_effects +
- * w_effectbyte·res_max_effect_bytes) under the BLOCK policy, which is the
- * SYSTEM runtime's compiled meter_policy (nodus_witness_v2_apply.c:589
- * `ctx->policy = sys->rt->meter_policy`), so no weight is restated here.
- * Execution charges the fixed part (≤ static), the actual effect count
- * and bytes (≤ the declared per-leg ceilings — res_meter.h "Declared
- * per-leg ceilings gate it"), and ONE w_read per mediated read
- * (nodus_witness_v2_apply.c:1377, charged against the SAME global
- * ceiling — res_meter.c meter_charge "consumed never crosses the
- * reserved ceiling"); a SPEND makes in_count + 1 reads
- * (nodus_witness_rt_native.c:1322). The read term is added explicitly
- * rather than trusting the effect-byte slack to absorb it.
- * env_in->res_max_total_units is overwritten (provisionally, then by the
- * caller with the result). @return 0 / -1. */
-static int t6_spend_ceiling(dna_env_in_t *env_in,
-                            const dna_meter_policy_t *pol, uint32_t n_reads,
-                            uint64_t *ceiling_out) {
-    size_t len = 0, used = 0;
-    if (!pol || dna_env_encoded_size(env_in->legs, env_in->leg_count,
-                                     &len) != 0)
-        return -1;
-    uint8_t *buf = malloc(len);
-    dna_meter_plan_t *plan = calloc(1, sizeof(*plan));
-    dna_env_view_t *view = calloc(1, sizeof(*view));
-    int rc = -1;
-    /* provisional: plan_build only checks static_total <= this value */
-    env_in->res_max_total_units = UINT64_MAX;
-    if (buf && plan && view &&
-        dna_env_encode(env_in, buf, len, &used) == 0 && used == len &&
-        dna_env_decode(buf, len, view) == 0 &&
-        dna_meter_plan_build(pol, view, plan) == DNA_METER_OK &&
-        (plan->w_read == 0 || n_reads <= UINT64_MAX / plan->w_read) &&
-        plan->static_total <= UINT64_MAX - (uint64_t)n_reads * plan->w_read) {
-        *ceiling_out = plan->static_total + (uint64_t)n_reads * plan->w_read;
-        rc = 0;
-    }
-    free(view);
-    free(plan);
-    free(buf);
-    return rc;
-}
-
-/* HF-1 — the res_max_total_units a CORE SPEND envelope of THIS SHAPE
- * (n_in inputs, n_out outputs) will declare, computed BEFORE its coins
- * are fixed, so the gas-price fee can be known while planning.
- *
- * The ceiling t6_spend_ceiling derives is a function of the envelope's
- * LENGTHS and DECLARATIONS only — call_len = 2 + 64·n_in + 232·n_out,
- * auth_len, the leg's exact effect declaration (t6_spend_effect_decl)
- * and the fixed-width header fields (expiry, fee and units are u64s
- * whatever their value) — never of the nullifier, owner, amount or seed
- * bytes. So a zero-filled call of the same shape prices exactly what the
- * real build below prices; the build re-derives its own units and checks
- * them against the planned fee anyway. @return 0 / -1. */
-static int t6_spend_units_for_shape(const nodus_domain_runtime_t *core_rt,
-                                    const dna_meter_policy_t *pol,
-                                    uint32_t alen, int n_in, int n_out,
-                                    uint64_t *units_out) {
-    size_t call_len = 2 + (size_t)n_in * 64 + (size_t)n_out * T6_SPEND_OUT_LEN;
-    uint8_t *call = calloc(1, call_len);
-    uint8_t *auth = calloc(1, alen);
-    int rc = -1;
-    if (call && auth) {
-        call[0] = (uint8_t)n_in;
-        call[1 + (size_t)n_in * 64] = (uint8_t)n_out;
-        dna_env_leg_in_t leg;
-        memset(&leg, 0, sizeof(leg));
-        leg.hdr.domain_id       = DNA_DOMAIN_CORE;
-        leg.hdr.runtime_op      = DNA_CORERULE_SPEND;
-        leg.hdr.ruleset_version = core_rt->ruleset_version;
-        leg.hdr.access_mode     = DNA_ENV_ACCESS_INVOKE;
-        leg.hdr.auth_kind       = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
-        leg.hdr.call_len        = (uint32_t)call_len;
-        leg.hdr.auth_len        = alen;
-        t6_spend_effect_decl((uint32_t)n_in, (uint32_t)n_out,
-                             &leg.hdr.res_max_effects,
-                             &leg.hdr.res_max_effect_bytes);
-        leg.call_data = call;
-        leg.auth_data = auth;
-        dna_env_in_t env_in;
-        memset(&env_in, 0, sizeof(env_in));
-        env_in.leg_count = 1;
-        env_in.legs      = &leg;
-        rc = t6_spend_ceiling(&env_in, pol, (uint32_t)n_in + 1u, units_out);
-    }
-    free(auth);
-    free(call);
-    return rc;
-}
-
 static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
                              int argc, char **argv, int cmd_start);
 
@@ -3955,10 +3704,10 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
 
     int rc = 1;
     nodus_identity_t *keys = NULL;
-    t6_coin_t *coins = NULL;
-    t6_spend_plan_t *plans = NULL;
-    dna_env_preflight_t *pf = NULL;
-    uint8_t *call = NULL, *auth = NULL, *env_bytes = NULL;
+    nodus_v2_coin_t *coins = NULL;
+    nodus_v2_spend_plan_t *plans = NULL;
+    nodus_v2_spend_built_t built;
+    memset(&built, 0, sizeof(built));
     nodus_dnac_utxo_result_t utxos;
     memset(&utxos, 0, sizeof(utxos));
     int utxos_valid = 0, connected = 0;
@@ -3972,15 +3721,14 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
         goto done;
     }
 
-    /* Sender fingerprint (128 lowercase hex): the utxo_set owner form,
-     * the dnac_utxo query key and every change output's owner. */
+    /* Sender fingerprint (128 lowercase hex): the utxo_set owner form and
+     * the dnac_utxo query key (the builder derives the same value for
+     * every change output's owner from the same public key). */
     uint8_t sender_raw[64];
     char sender_fp[QGP_FP_HEX_BUFFER];
     if (qgp_sha3_512(keys[0].pk.bytes, DNAC_PUBKEY_SIZE, sender_raw) != 0)
         goto done;
     qgp_fp_raw_to_hex(sender_raw, sender_fp);
-    char to_fp[QGP_FP_HEX_BUFFER];
-    qgp_fp_raw_to_hex(to_raw, to_fp);          /* canonical lowercase copy */
 
     const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE);
     const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM);
@@ -3989,6 +3737,8 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
                 "found in the compiled production table\n");
         goto done;
     }
+    nodus_v2_ruleset_id_t rs;
+    cli_ruleset_id(core_rt, sys_rt, &rs);
 
     /* ── ONE session, authenticated as the sender ──────────────────── */
     char sip[64];
@@ -4082,7 +3832,7 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
             if (key % shard_m != shard_i) { n_other_shard++; continue; }
         }
         if (e->unlock_block > tip) { n_locked++; continue; }
-        t6_coin_t *c = &coins[n_coins++];
+        nodus_v2_coin_t *c = &coins[n_coins++];
         memcpy(c->nul, e->nullifier, 64);
         c->amount = e->amount;
         if (memcmp(e->token_id, native_tok, 64) == 0) c->kind = 0;
@@ -4090,51 +3840,35 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
         else c->kind = 2;
         c->used = 0;
     }
-    qsort(coins, (size_t)n_coins, sizeof(*coins), t6_coin_cmp);
-
-    const uint32_t alen = 1u + NODUS_RT_AUTH_SIGNER_LEN;   /* kind-1, 1 sig */
 
     /* ── plan EVERY envelope before submitting ANY — and, under HF-1,
-     * find the fee the plan needs ──────────────────────────────────────
-     * The chain requires fee >= max(floor, units × gas_price) for a
-     * non-SYSTEM envelope (nodus_witness_v2_apply.c env_gas_price_check).
-     * `units` depends on the envelope's SHAPE (inputs, outputs), the
-     * shape on the coin selection, and the selection on the fee — so the
-     * fee is found by a bounded fixed-point: plan at the current fee,
-     * price the largest shape the batch uses, and if that needs more,
-     * raise the fee to it and plan again from scratch. One fee for the
-     * whole batch (the largest shape's), exactly as before HF-1 one fee
-     * served every spend.
-     *
-     * gas_price 0 (the rule is off, or an older server): the loop runs
-     * ONCE and never prices anything — the plans, the fee and every
-     * envelope are byte-identical to the pre-HF-1 builder.
-     * An explicit --fee is never raised: below what the plan needs, it
-     * is refused here with the numbers, before anything is submitted. */
-    for (int pass = 0; ; pass++) {
-        uint64_t native_need = fee;
-        if (is_native) {
-            if (amount > UINT64_MAX - fee) {
-                fprintf(stderr, "amount + fee overflows u64\n");
-                goto done;
-            }
-            native_need = amount + fee;
-        }
-        for (int i = 0; i < n_coins; i++) coins[i].used = 0;
-        free(plans);
-        plans = NULL;
-        /* (the pass body below — the --count all resolution and the
-         * plan loop — keeps its pre-HF-1 indentation so the diff shows
-         * only what changed; it ends at "the plan's fee covers it") */
-
-    /* --amount all: an eligible coin is native and can pay the fee with
-     * at least 1 raw left for the output (a zero-value output is a
-     * deterministic reject). --count all = every eligible coin. */
-    if (count_all) {
-        long n_elig = 0;
-        for (int i = 0; i < n_coins; i++)
-            if (coins[i].kind == 0 && coins[i].amount > fee) n_elig++;
-        if (n_elig == 0) {
+     * find the fee the plan needs (nodus_v2_spend_plan: largest first,
+     * ties by nullifier; the bounded gas-price fixed point, one fee for
+     * the whole batch; gas_price 0 = one pass, nothing priced). An
+     * explicit --fee is never raised: below what the plan needs, it is
+     * refused here with the numbers, before anything is submitted. */
+    {
+        nodus_v2_spend_plan_req_t preq;
+        memset(&preq, 0, sizeof(preq));
+        preq.rs         = &rs;
+        preq.order      = NODUS_V2_SPEND_ORDER_LARGEST_FIRST;
+        preq.is_native  = is_native;
+        preq.amount     = amount;
+        preq.amount_all = amount_all;
+        preq.fee        = fee;
+        preq.fee_fixed  = have_fee;
+        preq.gas_price  = gas_price;
+        preq.count      = count;
+        preq.count_all  = count_all;
+        nodus_v2_spend_err_t pe;
+        long pcount = 0;
+        int prc = nodus_v2_spend_plan(&preq, coins, n_coins, &plans, &pcount,
+                                      &fee, &pe);
+        if (pcount > 0) count = pcount;
+        switch (prc) {
+        case NODUS_V2_SPEND_OK:
+            break;
+        case NODUS_V2_SPEND_NONE_ELIGIBLE:
             printf("v2-envelope spend: 0 eligible coin(s) (shard %lu/%lu: "
                    "%d listed in shard, %d locked, %d in other shards; "
                    "listing %d row(s), tip %llu) — nothing to submit\n",
@@ -4142,280 +3876,154 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
                    utxos.count, (unsigned long long)tip);
             rc = 0;
             goto done;
-        }
-        count = n_elig;
-    }
-
-    plans = calloc((size_t)count, sizeof(*plans));
-    if (!plans) goto done;
-    for (long k = 0; k < count; k++) {
-        t6_spend_plan_t *p = &plans[k];
-        int prc = 0;
-        if (amount_all) {
-            /* largest unused eligible coin first (t6_coin_cmp order) */
-            int pick = -1;
-            for (int i = 0; i < n_coins; i++)
-                if (!coins[i].used && coins[i].kind == 0 &&
-                    coins[i].amount > fee) { pick = i; break; }
-            if (pick < 0) {
-                fprintf(stderr, "insufficient coins for spend %ld/%ld "
-                        "(--amount all): each spend needs its own native "
-                        "coin above the fee %llu raw; %d spendable coin(s) "
-                        "listed in shard %lu/%lu, %d locked, %d in other "
-                        "shards — nothing was submitted\n", k + 1, count,
-                        (unsigned long long)fee, n_coins, shard_i, shard_m,
-                        n_locked, n_other_shard);
-                goto done;
-            }
-            p->idx[p->n_in++] = pick;
-            p->native_in      = coins[pick].amount;
-            p->native_change  = 0;
-            coins[pick].used  = 1;
-            continue;
-        }
-        if (!is_native) {
-            prc = t6_spend_pick(coins, n_coins, 1, amount, p, &p->token_in);
-            if (prc == 0) p->token_change = p->token_in - amount;
-        }
-        if (prc == 0) {
-            prc = t6_spend_pick(coins, n_coins, 0, native_need, p,
-                                &p->native_in);
-            if (prc == 0) p->native_change = p->native_in - native_need;
-        }
-        if (prc != 0) {
-            if (prc == -2)
-                fprintf(stderr, "spend %ld/%ld needs more than %u inputs "
-                        "(the chain's RTN_SPEND_MAX_IN) — consolidate "
-                        "coins first or send less\n", k + 1, count,
-                        (unsigned)T6_SPEND_MAX_IN);
-            else if (prc == -3)
-                fprintf(stderr, "spend %ld/%ld: the selected input sum "
-                        "overflows u64\n", k + 1, count);
-            else
-                fprintf(stderr, "insufficient funds for spend %ld/%ld: need "
-                        "amount %llu raw (%s) + fee %llu raw (native); %d "
-                        "spendable coin(s) listed, %d locked (unlock_block "
-                        "> tip %llu), %d outside shard %lu/%lu — nothing "
-                        "was submitted\n",
-                        k + 1, count, (unsigned long long)amount,
-                        is_native ? "native" : "--token",
-                        (unsigned long long)fee, n_coins, n_locked,
-                        (unsigned long long)tip, n_other_shard,
-                        shard_i, shard_m);
+        case NODUS_V2_SPEND_ERR_OVERFLOW:
+            fprintf(stderr, "amount + fee overflows u64\n");
             goto done;
-        }
-        for (int j = 0; j < p->n_in; j++) coins[p->idx[j]].used = 1;
-    }
-
-        if (gas_price == 0) break;          /* rule off: one pass, as before */
-
-        /* price the LARGEST shape this batch uses */
-        uint64_t max_units = 0;
-        for (long k = 0; k < count; k++) {
-            const t6_spend_plan_t *p = &plans[k];
-            int n_out = 1 + ((!is_native && p->token_change > 0) ? 1 : 0) +
-                        (p->native_change > 0 ? 1 : 0);
-            uint64_t u = 0;
-            if (t6_spend_units_for_shape(core_rt, sys_rt->meter_policy, alen,
-                                         p->n_in, n_out, &u) != 0) {
-                fprintf(stderr, "could not size res_max_total_units for a "
-                        "%d-in/%d-out spend (the metering plan refused "
-                        "it)\n", p->n_in, n_out);
-                goto done;
-            }
-            if (u > max_units) max_units = u;
-        }
-        uint64_t required = 0;
-        if (max_units > UINT64_MAX / gas_price) {
+        case NODUS_V2_SPEND_ERR_NO_COIN_ALL:
+            fprintf(stderr, "insufficient coins for spend %ld/%ld "
+                    "(--amount all): each spend needs its own native "
+                    "coin above the fee %llu raw; %d spendable coin(s) "
+                    "listed in shard %lu/%lu, %d locked, %d in other "
+                    "shards — nothing was submitted\n", pe.k + 1, count,
+                    (unsigned long long)pe.fee, n_coins, shard_i, shard_m,
+                    n_locked, n_other_shard);
+            goto done;
+        case NODUS_V2_SPEND_ERR_MAX_INPUTS:
+            fprintf(stderr, "spend %ld/%ld needs more than %u inputs "
+                    "(the chain's RTN_SPEND_MAX_IN) — consolidate "
+                    "coins first or send less\n", pe.k + 1, count,
+                    (unsigned)NODUS_V2_SPEND_MAX_IN);
+            goto done;
+        case NODUS_V2_SPEND_ERR_INPUT_SUM:
+            fprintf(stderr, "spend %ld/%ld: the selected input sum "
+                    "overflows u64\n", pe.k + 1, count);
+            goto done;
+        case NODUS_V2_SPEND_ERR_INSUFFICIENT:
+            fprintf(stderr, "insufficient funds for spend %ld/%ld: need "
+                    "amount %llu raw (%s) + fee %llu raw (native); %d "
+                    "spendable coin(s) listed, %d locked (unlock_block "
+                    "> tip %llu), %d outside shard %lu/%lu — nothing "
+                    "was submitted\n",
+                    pe.k + 1, count, (unsigned long long)amount,
+                    is_native ? "native" : "--token",
+                    (unsigned long long)pe.fee, n_coins, n_locked,
+                    (unsigned long long)tip, n_other_shard,
+                    shard_i, shard_m);
+            goto done;
+        case NODUS_V2_SPEND_ERR_METER:
+            fprintf(stderr, "could not size res_max_total_units for a "
+                    "%d-in/%d-out spend (the metering plan refused "
+                    "it)\n", pe.n_in, pe.n_out);
+            goto done;
+        case NODUS_V2_SPEND_ERR_GAS_OVERFLOW:
             fprintf(stderr, "units %llu x gas price %llu overflows u64 — no "
-                    "fee can pay it\n", (unsigned long long)max_units,
+                    "fee can pay it\n", (unsigned long long)pe.units,
                     (unsigned long long)gas_price);
             goto done;
-        }
-        required = max_units * gas_price;
-        if (required <= fee) break;         /* the plan's fee covers it  */
-        if (have_fee) {
+        case NODUS_V2_SPEND_ERR_FEE_BELOW_GAS:
             fprintf(stderr, "--fee %llu is below the chain's gas-price "
                     "requirement: %llu units x gas price %llu = %llu raw "
                     "(the largest spend of this batch) — nothing was "
-                    "submitted\n", (unsigned long long)fee,
-                    (unsigned long long)max_units,
+                    "submitted\n", (unsigned long long)pe.fee,
+                    (unsigned long long)pe.units,
                     (unsigned long long)gas_price,
-                    (unsigned long long)required);
+                    (unsigned long long)pe.required);
             goto done;
-        }
-        if (pass >= 7) {
+        case NODUS_V2_SPEND_ERR_FEE_UNSETTLED:
             fprintf(stderr, "the gas-price fee did not settle after %d "
                     "planning passes (last: fee %llu, required %llu) — "
-                    "nothing was submitted\n", pass + 1,
-                    (unsigned long long)fee, (unsigned long long)required);
+                    "nothing was submitted\n", pe.pass + 1,
+                    (unsigned long long)pe.fee,
+                    (unsigned long long)pe.required);
+            goto done;
+        default:
+            fprintf(stderr, "spend planning failed (rc=%d)\n", prc);
             goto done;
         }
-        fee = required;                     /* re-plan at the higher fee */
     }
 
     /* ── build, self-check and (unless --dry-run) submit each ────────── */
-    call = malloc(2 + (size_t)T6_SPEND_MAX_IN * 64 +
-                  (size_t)T6_SPEND_MAX_OUTS * T6_SPEND_OUT_LEN);
-    auth = calloc(1, alen);
-    pf   = calloc(1, sizeof(*pf));
-    if (!call || !auth || !pf) goto done;
-
-    dna_env_leg_ctx_t lctx;
-    memset(&lctx, 0, sizeof(lctx));
-    lctx.domain_id       = DNA_DOMAIN_CORE;
-    lctx.ruleset_version = core_rt->ruleset_version;
-    memcpy(lctx.ruleset_hash, core_rt->ruleset_hash, 64);
-
     for (long k = 0; k < count; k++) {
-        const t6_spend_plan_t *p = &plans[k];
-
-        /* inputs: strictly ascending nullifiers on the wire (:1115-1118) */
-        uint8_t nulls[T6_SPEND_MAX_IN][64];
-        for (int j = 0; j < p->n_in; j++)
-            memcpy(nulls[j], coins[p->idx[j]].nul, 64);
-        qsort(nulls, (size_t)p->n_in, 64, t6_nul_cmp);
-
-        size_t off = 0;
-        call[off++] = (uint8_t)p->n_in;
-        for (int j = 0; j < p->n_in; j++) { memcpy(call + off, nulls[j], 64); off += 64; }
-
-        /* outputs: recipient first, then the change the plan leaves */
-        const char *o_owner[T6_SPEND_MAX_OUTS];
-        uint64_t     o_amt[T6_SPEND_MAX_OUTS];
-        const uint8_t *o_tok[T6_SPEND_MAX_OUTS];
-        int n_out = 0;
-        /* --amount all: this plan's ONE coin minus the fee (> 0 — the
-         * planner only picks coins above the fee) */
-        const uint64_t send_amt = amount_all ? p->native_in - fee : amount;
-        o_owner[n_out] = to_fp; o_amt[n_out] = send_amt;
-        o_tok[n_out] = is_native ? NULL : token; n_out++;
-        if (!is_native && p->token_change > 0) {
-            o_owner[n_out] = sender_fp; o_amt[n_out] = p->token_change;
-            o_tok[n_out] = token; n_out++;
-        }
-        if (p->native_change > 0) {
-            o_owner[n_out] = sender_fp; o_amt[n_out] = p->native_change;
-            o_tok[n_out] = NULL; n_out++;
-        }
-        call[off++] = (uint8_t)n_out;
-        uint8_t out_id[T6_SPEND_MAX_OUTS][64];
-        for (int o = 0; o < n_out; o++) {
-            /* --shard: re-draw the seed until the output id (= the new
-             * coin's nullifier) lands in THIS shard — expected shard_m
-             * draws; the bound only turns a broken RNG into an error. */
-            const unsigned long max_draws = 64ul * shard_m + 64ul;
-            unsigned long draws = 0;
-            for (;;) {
-                uint8_t seed[32];
-                if (nodus_random(seed, sizeof(seed)) != 0) {
-                    fprintf(stderr, "random seed generation failed\n");
-                    goto done;
-                }
-                t6_xfer_out_put(call + off, o_owner[o], o_amt[o], o_tok[o],
-                                seed);
-                /* the output id the chain will derive (rtn_out_ids
-                 * :1427-1431) — printed so a caller can find the row */
-                uint8_t pre[160];
-                memcpy(pre, call + off, 128);
-                memcpy(pre + 128, seed, 32);
-                if (qgp_sha3_512(pre, sizeof(pre), out_id[o]) != 0) goto done;
-                if (shard_m <= 1) break;
-                uint64_t key = 0;
-                for (int b = 0; b < 8; b++) key = (key << 8) | out_id[o][b];
-                if (key % shard_m == shard_i) break;
-                if (++draws >= max_draws) {
-                    fprintf(stderr, "no output seed landed in shard %lu/%lu "
-                            "after %lu draws — the random source is "
-                            "broken\n", shard_i, shard_m, draws);
-                    goto done;
-                }
-            }
-            off += T6_SPEND_OUT_LEN;
-        }
-        const uint32_t call_len = (uint32_t)off;
-
-        dna_env_leg_in_t leg;
-        memset(&leg, 0, sizeof(leg));
-        leg.hdr.domain_id            = DNA_DOMAIN_CORE;
-        leg.hdr.runtime_op           = DNA_CORERULE_SPEND;
-        leg.hdr.ruleset_version      = core_rt->ruleset_version;
-        leg.hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
-        leg.hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
-        leg.hdr.call_len             = call_len;
-        leg.hdr.auth_len             = alen;
-        /* the EXACT effects this leg emits (t6_spend_effect_decl) — the
-         * units right-sized below price exactly this declaration */
-        t6_spend_effect_decl((uint32_t)p->n_in, (uint32_t)n_out,
-                             &leg.hdr.res_max_effects,
-                             &leg.hdr.res_max_effect_bytes);
-        leg.call_data = call;
-        memset(auth, 0, alen);               /* pass 1 needs a zero blob */
-        leg.auth_data = auth;
-
-        dna_env_in_t env_in;
-        memset(&env_in, 0, sizeof(env_in));
+        const nodus_v2_spend_plan_t *p = &plans[k];
+        nodus_v2_spend_build_req_t breq;
+        memset(&breq, 0, sizeof(breq));
+        breq.rs            = &rs;
+        breq.chain32       = chain32;
+        breq.tip           = tip;
         /* the mempool lifetime rule (decision 2026-09-25-mempool-policy.md
          * 1): expiry within (tip, tip + NODUS_CMT_APP_MAX_EXPIRY_AHEAD],
          * with the gossip margin (CLI_ENV_EXPIRY_AHEAD); a 0 tip was
          * refused above */
-        env_in.expiry_height       = tip + CLI_ENV_EXPIRY_AHEAD;
-        env_in.fee_amount          = fee;
-        env_in.leg_count           = 1;
-        env_in.legs                = &leg;
+        breq.expiry_height = tip + CLI_ENV_EXPIRY_AHEAD;
+        breq.pk            = keys[0].pk.bytes;
+        breq.sk            = keys[0].sk.bytes;
+        breq.to_fp         = to_raw;
+        breq.token         = is_native ? NULL : token;
+        breq.amount        = amount;
+        breq.amount_all    = amount_all;
+        breq.fee           = fee;
+        breq.gas_price     = gas_price;
+        breq.coins         = coins;
+        breq.plan          = p;
+        breq.rand          = cli_rand;
+        breq.rand_ctx      = NULL;
+        breq.shard_m       = shard_m;
+        breq.shard_i       = shard_i;
 
-        uint64_t units = 0;                  /* reads: in_count + 1      */
-        if (t6_spend_ceiling(&env_in, sys_rt->meter_policy,
-                             (uint32_t)p->n_in + 1u, &units) != 0) {
-            fprintf(stderr, "could not size res_max_total_units (the "
-                    "metering plan refused the envelope)\n");
+        nodus_v2_spend_built_free(&built);
+        nodus_v2_spend_err_t be;
+        int brc = nodus_v2_spend_build(&breq, &built, &be);
+        if (brc != NODUS_V2_SPEND_OK) {
+            if (brc == NODUS_V2_SPEND_ERR_RANDOM)
+                fprintf(stderr, "random seed generation failed\n");
+            else if (brc == NODUS_V2_SPEND_ERR_SHARD_DRAWS)
+                fprintf(stderr, "no output seed landed in shard %lu/%lu "
+                        "after %lu draws — the random source is "
+                        "broken\n", shard_i, shard_m, be.draws);
+            else if (brc == NODUS_V2_SPEND_ERR_METER)
+                fprintf(stderr, "could not size res_max_total_units (the "
+                        "metering plan refused the envelope)\n");
+            else if (brc == NODUS_V2_SPEND_ERR_UNITS_OVER_FEE)
+                fprintf(stderr, "spend %ld/%ld: %llu units x gas price %llu "
+                        "exceeds the planned fee %llu — not submitted\n",
+                        k + 1, count, (unsigned long long)be.units,
+                        (unsigned long long)gas_price,
+                        (unsigned long long)fee);
+            else if (brc == NODUS_V2_SPEND_ERR_PREFLIGHT1)
+                fprintf(stderr, "pass-1 preflight failed\n");
+            else if (brc == NODUS_V2_SPEND_ERR_SIGN)
+                fprintf(stderr, "leg %d signature failed\n", be.leg);
+            else if (brc == NODUS_V2_SPEND_ERR_PREFLIGHT2)
+                fprintf(stderr, "pass-2 preflight (self-check) failed\n");
+            else
+                fprintf(stderr, "spend %ld/%ld: build failed (rc=%d)\n",
+                        k + 1, count, brc);
             goto done;
         }
-        env_in.res_max_total_units = units;
-        /* HF-1 self-check: the planner priced this shape already
-         * (t6_spend_units_for_shape); an envelope whose own units need
-         * more than the fee would be refused by every node (code 9) —
-         * stop instead of submitting it. Never true while gas_price 0. */
-        if (gas_price != 0 &&
-            (units > UINT64_MAX / gas_price || units * gas_price > fee)) {
-            fprintf(stderr, "spend %ld/%ld: %llu units x gas price %llu "
-                    "exceeds the planned fee %llu — not submitted\n",
-                    k + 1, count, (unsigned long long)units,
-                    (unsigned long long)gas_price, (unsigned long long)fee);
-            goto done;
-        }
-
-        uint8_t *auths[1] = { auth };
-        size_t env_len = 0;
-        free(env_bytes);
-        env_bytes = NULL;
-        if (t6_env_sign_one_key(&env_in, auths, &lctx, chain32, tip,
-                                &keys[0], &env_bytes, &env_len, pf) != 0)
-            goto done;
+        const nodus_v2_spend_decoded_t *d = &built.dec;
 
         printf("v2-envelope spend %ld/%ld: %zu bytes, inputs=%d "
                "native_in=%llu token_in=%llu amount=%llu fee=%llu "
                "native_change=%llu token_change=%llu effects=%u "
                "effect_bytes=%u units=%llu tip=%llu\n",
-               k + 1, count, env_len, p->n_in,
+               k + 1, count, built.env_len, p->n_in,
                (unsigned long long)p->native_in,
                (unsigned long long)p->token_in,
-               (unsigned long long)send_amt, (unsigned long long)fee,
+               (unsigned long long)d->out_amount[0], (unsigned long long)fee,
                (unsigned long long)p->native_change,
                (unsigned long long)p->token_change,
-               (unsigned)leg.hdr.res_max_effects,
-               (unsigned)leg.hdr.res_max_effect_bytes,
-               (unsigned long long)units, (unsigned long long)tip);
+               (unsigned)d->effects, (unsigned)d->effect_bytes,
+               (unsigned long long)d->units, (unsigned long long)tip);
         printf("  wire_id=");
-        for (int b = 0; b < 64; b++) printf("%02x", pf->wire_id[b]);
+        for (int b = 0; b < 64; b++) printf("%02x", built.wire_id[b]);
         printf("\n  intent_id=");
-        for (int b = 0; b < 64; b++) printf("%02x", pf->intent_id[b]);
+        for (int b = 0; b < 64; b++) printf("%02x", built.intent_id[b]);
         printf("\n");
-        for (int o = 0; o < n_out; o++) {
+        for (int o = 0; o < d->n_out; o++) {
             printf("  out[%d] id=", o);
-            for (int b = 0; b < 64; b++) printf("%02x", out_id[o][b]);
-            printf(" owner=%.16s... amount=%llu\n", o_owner[o],
-                   (unsigned long long)o_amt[o]);
+            for (int b = 0; b < 64; b++) printf("%02x", d->out_id[o][b]);
+            printf(" owner=%.16s... amount=%llu\n", d->out_owner[o],
+                   (unsigned long long)d->out_amount[o]);
         }
         fflush(stdout);
 
@@ -4424,8 +4032,8 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
                    "submitted (--dry-run)\n");
             continue;
         }
-        if (t6_submit_on(&client, &keys[0], pf->wire_id, env_bytes,
-                         (uint32_t)env_len) != 0) {
+        if (t6_submit_on(&client, &keys[0], built.wire_id, built.env,
+                         (uint32_t)built.env_len) != 0) {
             fprintf(stderr, "spend %ld/%ld was not accepted; %ld earlier "
                     "spend(s) of this batch were\n", k + 1, count, k);
             goto done;
@@ -4435,10 +4043,7 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
     rc = 0;
 
 done:
-    free(env_bytes);
-    free(call);
-    free(auth);
-    free(pf);
+    nodus_v2_spend_built_free(&built);
     free(plans);
     free(coins);
     if (utxos_valid) nodus_client_free_utxo_result(&utxos);
@@ -4497,15 +4102,16 @@ done:
  * Everything else is `v2-envelope spend`'s flow on ONE session
  * authenticated as the creator: chain id (dnac_supply chain_id32), gas
  * price (dnac_fee_info), coins + tip (dnac_utxo, unlocked native coins
- * only, largest first, ties by nullifier — t6_coin_cmp / t6_spend_pick),
- * the CORE ruleset from the compiled table, the two-pass signature
- * (t6_env_sign_one_key) and submission (t6_submit_on). Output seeds are
+ * only, largest first, ties by nullifier — nodus_v2_spend_sort_coins /
+ * nodus_v2_spend_pick), the CORE ruleset from the compiled table, the
+ * two-pass signature (nodus_v2_env_sign_one_key via cli_sign_one_key) and
+ * submission (t6_submit_on). Output seeds are
  * 32 fresh random bytes (nodus_random, the spend precedent); a default
  * token id is 64 fresh random bytes from the same source.
  *
  * Resource fields: the leg declares the EXACT effects rtn_tc_exec emits
  * (t6_tc_effect_decl) and res_max_total_units is right-sized from that
- * declaration by the metering module itself (t6_spend_ceiling, with the
+ * declaration by the metering module itself (nodus_v2_spend_ceiling, with the
  * TOKEN_CREATE read count in + 2) — the same rule as the SPEND builder,
  * never a round number: PrepareProposal reserves every envelope's whole
  * ceiling against one block budget, and under the gas-price rule
@@ -4519,7 +4125,8 @@ done:
 #define T6_TC_DEC_MAX     18u   /* RTN_TC_DECIMALS_MAX, rt_native.c:379      */
 /* The registry record the op-4 CREATE carries: RTN_TOKEN_REC_LEN = 188
  * (rt_native.c:1080; file-local there, so restated with its citation —
- * the T6_SPEND_MAX_IN / T6_SPEND_OUT_LEN precedent above). */
+ * the NODUS_V2_SPEND_MAX_IN / NODUS_V2_SPEND_OUT_LEN precedent in
+ * nodus_v2_spend.h). */
 #define T6_TOKEN_REC_LEN  188u
 
 /* The EXACT per-leg effect declaration of ONE CORE TOKEN_CREATE leg with
@@ -4532,7 +4139,7 @@ done:
  *   - ONE reward-pool SET (:1922-1927): key 1, value 8;
  *   - n_in DELETEs (:1929-1934): key 64, value 0.
  * Bytes = the canonical encoded result length, the same effect_wire.h
- * layout t6_spend_effect_decl documents (23-byte head, 84 bytes per
+ * layout nodus_v2_spend_effect_decl documents (23-byte head, 84 bytes per
  * record, then every key and value blob):
  *   effects = n_in + n_out + 2
  *   bytes   = 23 + 84·effects + n_out·(64 + 284) + (64 + 188) + (1 + 8)
@@ -4563,7 +4170,7 @@ _Static_assert((unsigned)DNA_EFFECT_FIXED_HEAD +
                    (64u + T6_TOKEN_REC_LEN) + (1u + 8u) +
                    T6_TC_MAX_IN * 64u <= DNA_EFFECT_MAX_TOTAL_LEN,
                "TOKEN_CREATE result length exceeds the effect codec cap");
-_Static_assert(T6_TC_MAX_IN <= T6_SPEND_MAX_IN,
+_Static_assert(T6_TC_MAX_IN <= NODUS_V2_SPEND_MAX_IN,
                "the TOKEN_CREATE plan reuses the SPEND plan's input array");
 
 /* The registry text rule (rtn_tc_text_ok, rt_native.c:1199-1204):
@@ -4724,7 +4331,7 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
 
     int rc = 1;
     nodus_identity_t *keys = NULL;
-    t6_coin_t *coins = NULL;
+    nodus_v2_coin_t *coins = NULL;
     uint8_t *call = NULL, *auth = NULL, *env_bytes = NULL;
     dna_env_preflight_t *pf = NULL;
     nodus_dnac_utxo_result_t utxos;
@@ -4865,18 +4472,20 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
         if (e->amount == 0) continue;
         if (memcmp(e->token_id, native_tok, 64) != 0) continue; /* native only */
         if (e->unlock_block > tip) { n_locked++; continue; }
-        t6_coin_t *c = &coins[n_coins++];
+        nodus_v2_coin_t *c = &coins[n_coins++];
         memcpy(c->nul, e->nullifier, 64);
         c->amount = e->amount;
         c->kind   = 0;
         c->used   = 0;
     }
-    qsort(coins, (size_t)n_coins, sizeof(*coins), t6_coin_cmp);
+    if (nodus_v2_spend_sort_coins(coins, n_coins,
+                                  NODUS_V2_SPEND_ORDER_LARGEST_FIRST) != 0)
+        goto done;
 
     const uint32_t alen = 1u + NODUS_RT_AUTH_SIGNER_LEN;   /* kind-1, 1 sig */
     const size_t fixed_len = 64 + 1 + name_len + 1 + sym_len + 1;
     call = malloc(fixed_len + 2 + (size_t)T6_TC_MAX_IN * 64 +
-                  (size_t)T6_TC_MAX_OUTS * T6_SPEND_OUT_LEN);
+                  (size_t)T6_TC_MAX_OUTS * NODUS_V2_SPEND_OUT_LEN);
     auth = calloc(1, alen);
     pf   = calloc(1, sizeof(*pf));
     if (!call || !auth || !pf) goto done;
@@ -4895,7 +4504,7 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
      * more raise the fee and re-plan from scratch — the spend builder's
      * loop. gas_price 0: one pass, the fee is the creation fee. An
      * explicit --fee is never raised. */
-    t6_spend_plan_t plan;
+    nodus_v2_spend_plan_t plan;
     dna_env_leg_in_t leg;
     dna_env_in_t env_in;
     uint64_t units = 0, native_change = 0;
@@ -4904,7 +4513,7 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
     for (int pass = 0; ; pass++) {
         memset(&plan, 0, sizeof(plan));
         for (int i = 0; i < n_coins; i++) coins[i].used = 0;
-        int prc = t6_spend_pick(coins, n_coins, 0, fee, &plan,
+        int prc = nodus_v2_spend_pick(coins, n_coins, 0, fee, &plan,
                                 &plan.native_in);
         if (prc == 0 && plan.n_in > (int)T6_TC_MAX_IN) prc = -2;
         if (prc != 0) {
@@ -4927,10 +4536,10 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
         native_change = plan.native_in - fee;
 
         /* inputs: strictly ascending nullifiers on the wire (:1139-1142) */
-        uint8_t nulls[T6_SPEND_MAX_IN][64];
+        uint8_t nulls[NODUS_V2_SPEND_MAX_IN][64];
         for (int j = 0; j < plan.n_in; j++)
             memcpy(nulls[j], coins[plan.idx[j]].nul, 64);
-        qsort(nulls, (size_t)plan.n_in, 64, t6_nul_cmp);
+        qsort(nulls, (size_t)plan.n_in, 64, nodus_v2_nul_cmp);
 
         size_t off = 0;
         memcpy(call + off, token, 64);                 off += 64;
@@ -4962,13 +4571,13 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
                 fprintf(stderr, "random seed generation failed\n");
                 goto done;
             }
-            t6_xfer_out_put(call + off, o_owner[o], o_amt[o], o_tok[o], seed);
+            nodus_v2_xfer_out_put(call + off, o_owner[o], o_amt[o], o_tok[o], seed);
             /* the output id the chain derives (rtn_out_ids :1467-1476) */
             uint8_t pre[160];
             memcpy(pre, call + off, 128);
             memcpy(pre + 128, seed, 32);
             if (qgp_sha3_512(pre, sizeof(pre), out_id[o]) != 0) goto done;
-            off += T6_SPEND_OUT_LEN;
+            off += NODUS_V2_SPEND_OUT_LEN;
         }
         /* two random seeds colliding into one output id is a
          * deterministic chain reject (rtn_out_ids :1486-1488) — refuse */
@@ -5002,7 +4611,7 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
         env_in.legs          = &leg;
 
         /* reads: in_count + the pool + the registry (read plan :1387) */
-        if (t6_spend_ceiling(&env_in, sys_rt->meter_policy,
+        if (nodus_v2_spend_ceiling(&env_in, sys_rt->meter_policy,
                              (uint32_t)plan.n_in + 2u, &units) != 0) {
             fprintf(stderr, "could not size res_max_total_units (the "
                     "metering plan refused the envelope)\n");
@@ -5040,7 +4649,7 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
 
     uint8_t *auths[1] = { auth };
     size_t env_len = 0;
-    if (t6_env_sign_one_key(&env_in, auths, &lctx, chain32, tip, &keys[0],
+    if (cli_sign_one_key(&env_in, auths, &lctx, chain32, tip, &keys[0],
                             &env_bytes, &env_len, pf) != 0)
         goto done;
 
@@ -5403,7 +5012,7 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
                              int argc, char **argv, int cmd_start) {
     const char *desc_path = NULL, *keys_csv = NULL, *to_hex = NULL;
     const char *export_path = NULL, *submit = NULL;
-    const char *in_arg[T6_SPEND_MAX_IN];
+    const char *in_arg[NODUS_V2_SPEND_MAX_IN];
     int n_in = 0, bad = 0, have_fee = 0;
     uint64_t amount = 0, fee = 0;
     long k_signers = 0;
@@ -5421,7 +5030,7 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
         } else if (!strcmp(a, "--signers") && i + 1 < argc)
             k_signers = strtol(argv[++i], NULL, 10);
         else if (!strcmp(a, "--in") && i + 1 < argc) {
-            if (n_in >= (int)T6_SPEND_MAX_IN) { bad = 1; break; }
+            if (n_in >= (int)NODUS_V2_SPEND_MAX_IN) { bad = 1; break; }
             in_arg[n_in++] = argv[++i];
         } else { bad = 1; break; }
     }
@@ -5441,7 +5050,7 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
             "  signs nothing. K (default M) is FINAL: combine needs exactly K "
             "signatures.\n"
             "  Change goes back to the multisig address.\n",
-            (unsigned)T6_SPEND_MAX_IN);
+            (unsigned)NODUS_V2_SPEND_MAX_IN);
         return 1;
     }
 
@@ -5481,7 +5090,7 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
     qgp_fp_raw_to_hex(to_raw, to_fp);
 
     /* inputs: nullifier:amount, strictly ascending for the wire */
-    t6_coin_t ins[T6_SPEND_MAX_IN];
+    nodus_v2_coin_t ins[NODUS_V2_SPEND_MAX_IN];
     uint64_t sum_in = 0;
     for (int i = 0; i < n_in; i++) {
         const char *c = strchr(in_arg[i], ':');
@@ -5504,7 +5113,7 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
         }
         sum_in += ins[i].amount;
     }
-    qsort(ins, (size_t)n_in, sizeof(ins[0]), t6_nul_cmp);
+    qsort(ins, (size_t)n_in, sizeof(ins[0]), nodus_v2_nul_cmp);
     for (int i = 1; i < n_in; i++)
         if (memcmp(ins[i - 1].nul, ins[i].nul, 64) == 0) {
             fprintf(stderr, "duplicate --in nullifier\n");
@@ -5584,7 +5193,7 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
     const uint32_t tail_len = 1u + 2u + (uint32_t)dlen;
     const uint32_t alen = 1u + (uint32_t)k_signers * NODUS_RT_AUTH_SIGNER_LEN +
                           tail_len;
-    call = malloc(2 + (size_t)T6_SPEND_MAX_IN * 64 + 2u * T6_SPEND_OUT_LEN);
+    call = malloc(2 + (size_t)NODUS_V2_SPEND_MAX_IN * 64 + 2u * NODUS_V2_SPEND_OUT_LEN);
     auth = calloc(1, alen);
     pf   = calloc(1, sizeof(*pf));
     if (!call || !auth || !pf) goto done;
@@ -5617,9 +5226,9 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
         for (int o = 0; o < n_out; o++) {
             uint8_t seed[32];
             if (nodus_random(seed, sizeof(seed)) != 0) goto done;
-            t6_xfer_out_put(call + off, o == 0 ? to_fp : addr_hex,
+            nodus_v2_xfer_out_put(call + off, o == 0 ? to_fp : addr_hex,
                             o == 0 ? amount : change, NULL, seed);
-            off += T6_SPEND_OUT_LEN;
+            off += NODUS_V2_SPEND_OUT_LEN;
         }
         memset(&leg, 0, sizeof(leg));
         leg.hdr.domain_id       = DNA_DOMAIN_CORE;
@@ -5629,7 +5238,7 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
         leg.hdr.auth_kind       = NODUS_RT_AUTHKIND_DSA87_MSIG_V1;
         leg.hdr.call_len        = (uint32_t)off;
         leg.hdr.auth_len        = alen;
-        t6_spend_effect_decl((uint32_t)n_in, (uint32_t)n_out,
+        nodus_v2_spend_effect_decl((uint32_t)n_in, (uint32_t)n_out,
                              &leg.hdr.res_max_effects,
                              &leg.hdr.res_max_effect_bytes);
         leg.call_data = call;
@@ -5639,7 +5248,7 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
         env_in.fee_amount    = fee;
         env_in.leg_count     = 1;
         env_in.legs          = &leg;
-        if (t6_spend_ceiling(&env_in, sys_rt->meter_policy,
+        if (nodus_v2_spend_ceiling(&env_in, sys_rt->meter_policy,
                              (uint32_t)n_in + 1u, &units) != 0) {
             fprintf(stderr, "could not size res_max_total_units\n");
             goto done;
@@ -5769,13 +5378,13 @@ static int cmd_msig_sign(int argc, char **argv, int cmd_start) {
         if (dna_msig_address(desc, dl, addr) != 0) goto done;
         qgp_fp_raw_to_hex(addr, ah);
         /* The SPEND call is nin u8 ‖ nin × nullifier[64] ‖ nout u8 ‖
-         * nout × T6_SPEND_OUT_LEN (the build above, and the chain's
+         * nout × NODUS_V2_SPEND_OUT_LEN (the build above, and the chain's
          * rtn_spend_parse). Nothing is read before its length is proved
          * against the leg's own call_len: a short or inconsistent call
          * is REFUSED, never displayed. */
         const uint8_t *c = v.buf + v.call_off[0];
         const size_t clen = v.leg[0].call_len;
-        if (clen < 2 || c[0] < 1 || c[0] > T6_SPEND_MAX_IN ||
+        if (clen < 2 || c[0] < 1 || c[0] > NODUS_V2_SPEND_MAX_IN ||
             clen < 2 + (size_t)c[0] * 64) {
             fprintf(stderr, "REFUSED: the exported CORE SPEND call is "
                     "malformed (length %zu)\n", clen);
@@ -5785,7 +5394,7 @@ static int cmd_msig_sign(int argc, char **argv, int cmd_start) {
         uint8_t nout = c[1 + (size_t)nin * 64];
         const uint8_t *outs = c + 1 + (size_t)nin * 64 + 1;
         if (nout < 1 ||
-            clen != 2 + (size_t)nin * 64 + (size_t)nout * T6_SPEND_OUT_LEN) {
+            clen != 2 + (size_t)nin * 64 + (size_t)nout * NODUS_V2_SPEND_OUT_LEN) {
             fprintf(stderr, "REFUSED: the exported CORE SPEND call length "
                     "%zu does not match its %u input(s) and %u output(s)\n",
                     clen, (unsigned)nin, (unsigned)nout);
@@ -5801,7 +5410,7 @@ static int cmd_msig_sign(int argc, char **argv, int cmd_start) {
             printf("  in[%u]  nullifier %s\n", (unsigned)i, nh);
         }
         for (uint8_t o = 0; o < nout; o++) {
-            const uint8_t *r = outs + (size_t)o * T6_SPEND_OUT_LEN;
+            const uint8_t *r = outs + (size_t)o * NODUS_V2_SPEND_OUT_LEN;
             uint64_t amt = 0;
             for (int b = 0; b < 8; b++) amt = (amt << 8) | r[128 + b];
             char th[129];

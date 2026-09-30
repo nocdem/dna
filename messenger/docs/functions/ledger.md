@@ -156,3 +156,47 @@ One height-activated switch, chain_config param 7. No row = both rules as before
 | `static int committee_snapshot_for_height(nodus_witness_t *w, uint64_t height, nodus_rt_committee_t *view, uint8_t **out_pubkeys, uint8_t (**out_fps)[64], uint64_t **out_powers, char *reason, size_t reason_size)` | **CHANGED (internal signature):** + `out_powers` (heap, caller frees; filled before the member array is freed). |
 | phase 9 of `nodus_witness_v2_apply_block` | **CHANGED (behaviour):** with param 7 active at the block's height a touched domain whose root is unchanged writes its DomainUpdate with `pre_root == post_root` instead of a block VERDICT. |
 | `nodus-cli chain-config propose --param HF2_ACTIVE --value 1 --effective <H>`; `v2-envelope chain-config` (`nodus/tools/nodus-cli.c`) | **CHANGED (CLI).** `HF2_ACTIVE` / `hf2_active` in the param name table. The offline builder reads param 7 at tip + 1 from its database and, when active, picks approver keys in the given order until their power exceeds 2/3 of the committee's. The online `propose` keeps the seat rule for its own early abort (no RPC reports param 7) and prints a note. `witness` prints the seat quorum AND the committee's total voting power with the `> total*2/3` threshold. |
+
+---
+
+## 10. Web wallet package (c2) — the shared CORE SPEND builder (`nodus/include/nodus/nodus_v2_spend.h`, `nodus/src/client/nodus_v2_spend.c`)
+
+Design `docs/plans/2026-09-25-web-wallet-nodus-send-design.md` §0a.3 (c2) / §1.3; decision
+`docs/plans/decisions/2026-09-25-web-wallet-nodus-send-transport.md` ("İşlem kurucu" + addendum
+2026-09-29 "Yol 2"). Moved out of `nodus/tools/nodus-cli.c` (the `t6_*` helpers and the plan/build
+loops of `cmd_v2_spend`); behaviour unchanged. Compiled into `libnodus` (so also into `libdna.so`
+via the messenger build) and, standalone, for the browser module. No I/O, no clock, no global RNG:
+output seeds come from the caller's `nodus_v2_rand_fn`. (`qgp_dsa87_sign` is hedged — two builds
+differ in signature bytes and `wire_id`, never in `intent_id` or any byte outside the auth blob.)
+
+| Item | Description |
+|------|-------------|
+| `NODUS_V2_SPEND_MAX_IN` (15), `NODUS_V2_SPEND_OUT_LEN` (232), `NODUS_V2_SPEND_MAX_OUTS` (3) | **NEW (moved).** Were `T6_SPEND_MAX_IN` / `T6_SPEND_OUT_LEN` / `T6_SPEND_MAX_OUTS` in nodus-cli. |
+| `nodus_v2_spend_rc_t` | **NEW.** 0 OK, 1 `NONE_ELIGIBLE` (plan, count_all), negative refusals `-1 ARG` … `-23 DUP_OUTPUT` (header). |
+| `nodus_v2_spend_order_t` | **NEW.** Only `NODUS_V2_SPEND_ORDER_LARGEST_FIRST` (0) — largest amount first, ties by nullifier. Smallest-first is ÖNERİ (`2026-09-25-spend-inputs-64-smallest-first.md` item 1) and refused. |
+| `nodus_v2_coin_t { nul[64]; amount; kind; used; }`, `nodus_v2_spend_plan_t { idx[15]; n_in; native_in, token_in, native_change, token_change; }` | **NEW (moved).** Were `t6_coin_t` / `t6_spend_plan_t`. `nul` stays the first member. |
+| `nodus_v2_ruleset_id_t { core_ruleset_version; core_ruleset_hash[64]; const dna_meter_policy_t *meter_policy; }` | **NEW.** The CORE ruleset identity + the BLOCK (SYSTEM) metering policy a SPEND is built and priced against. |
+| `typedef int (*nodus_v2_rand_fn)(void *ctx, uint8_t *buf, size_t len)` | **NEW.** Caller randomness (0 = OK). |
+| `nodus_v2_spend_err_t { k; fee; units; required; pass; n_in, n_out; leg; draws; }` | **NEW.** The numbers a refusal carries, for the caller's message. |
+| `int nodus_v2_nul_cmp(const void *a, const void *b)` | **NEW (moved, was `t6_nul_cmp`).** memcmp of the first 64 bytes. |
+| `int nodus_v2_spend_sort_coins(nodus_v2_coin_t *coins, int n_coins, nodus_v2_spend_order_t order)` | **NEW (was `qsort(…, t6_coin_cmp)`).** 0 / `ERR_ARG` (unknown order). |
+| `int nodus_v2_spend_pick(const nodus_v2_coin_t *coins, int n_coins, uint8_t kind, uint64_t need, nodus_v2_spend_plan_t *plan, uint64_t *sum_out)` | **NEW (moved, was `t6_spend_pick`).** 0 / -1 short / -2 > 15 inputs / -3 sum overflow. |
+| `void nodus_v2_xfer_out_put(uint8_t *rec, const char *owner_hex128, uint64_t amount, const uint8_t *token64, const uint8_t seed32[32])` | **NEW (moved, was `t6_xfer_out_put`).** One 232-byte output record. |
+| `void nodus_v2_spend_effect_decl(uint32_t n_in, uint32_t n_out, uint32_t *effects_out, uint32_t *bytes_out)` | **NEW (moved, was `t6_spend_effect_decl`).** effects = n_in + n_out + 1; bytes = 116 + 148·n_in + 432·n_out. |
+| `int nodus_v2_spend_ceiling(dna_env_in_t *env_in, const dna_meter_policy_t *pol, uint32_t n_reads, uint64_t *ceiling_out)` | **NEW (moved, was `t6_spend_ceiling`).** static_units + n_reads × w_read. 0 / -1. |
+| `int nodus_v2_spend_units_for_shape(uint32_t core_ruleset_version, const dna_meter_policy_t *pol, uint32_t alen, int n_in, int n_out, uint64_t *units_out)` | **NEW (moved, was `t6_spend_units_for_shape(core_rt, …)`).** First parameter is now the ruleset version, not the runtime; refuses n_in ∉ 1..15, n_out ∉ 1..3. |
+| `int nodus_v2_env_sign_one_key(const dna_env_in_t *env_in, uint8_t *const *auths, const dna_env_leg_ctx_t *lctx, const uint8_t chain32[32], uint64_t tip, const uint8_t *pk, const uint8_t *sk, uint8_t **env_out, size_t *env_len_out, dna_env_preflight_t *pf, nodus_v2_spend_err_t *err)` | **NEW (moved, was `t6_env_sign_one_key(…, const nodus_identity_t *key, …)`).** Takes pk/sk bytes; prints nothing — returns `ERR_PREFLIGHT1` / `ERR_SIGN` (`err->leg`) / `ERR_PREFLIGHT2` / `ERR_ENCODE` / `ERR_ALLOC`. |
+| `int nodus_v2_ruleset_from_pins(nodus_v2_ruleset_id_t *out, dna_meter_policy_t *policy_storage)` | **NEW.** Fills the CORE tuple from `nodus_ruleset_pins.h` and rebuilds the SYSTEM meter policy into `policy_storage`; `ERR_PINS` unless its `dna_meter_policy_digest` equals the pinned digest (the WASM start-up self-check). |
+| `int nodus_v2_spend_plan(const nodus_v2_spend_plan_req_t *req, nodus_v2_coin_t *coins, int n_coins, nodus_v2_spend_plan_t **plans_out, long *count_out, uint64_t *fee_out, nodus_v2_spend_err_t *err)` | **NEW (the plan loop of `cmd_v2_spend`).** Sorts `coins` in place, plans `count` disjoint spends, bounded gas-price fixed point (≤ 8 passes, one fee per batch; `fee_fixed` never raised). `*plans_out` heap. |
+| `int nodus_v2_spend_build(const nodus_v2_spend_build_req_t *req, nodus_v2_spend_built_t *out, nodus_v2_spend_err_t *err)`, `void nodus_v2_spend_built_free(nodus_v2_spend_built_t *b)` | **NEW (the build loop of `cmd_v2_spend`).** One envelope from one plan: call, leg, units, gas check, two-pass signature, then read-back and refusal if it differs from the request. Refuses tip 0 and expiry ∉ (tip, tip + 100]. Optional output-id shard (`shard_m`, `shard_i`). |
+| `int nodus_v2_spend_decode(const uint8_t *env, size_t env_len, nodus_v2_spend_decoded_t *out)` | **NEW.** Self-consistent decode of a one-leg CORE SPEND this module builds: inputs, outputs (owner, amount, token, id), fee, expiry, units, declaration. |
+| `static int cli_sign_one_key(...)`, `static int cli_rand(void *ctx, uint8_t *buf, size_t len)`, `static void cli_ruleset_id(const nodus_domain_runtime_t *core_rt, const nodus_domain_runtime_t *sys_rt, nodus_v2_ruleset_id_t *out)` (`nodus/tools/nodus-cli.c`) | **NEW (internal).** The CLI's wrappers: prints the sign refusal as before; `nodus_random` as the seed source; the compiled-table ruleset. |
+
+## 11. Generated ruleset pins (`nodus/include/nodus/nodus_ruleset_pins.h`, `nodus/tools/gen_ruleset_pins.c`)
+
+Decision `2026-09-25-web-wallet-nodus-send-transport.md` addendum 2026-09-29 "Yol 2".
+
+| Item | Description |
+|------|-------------|
+| `NODUS_PIN_CORE_*`, `NODUS_PIN_SYS_METER_*` macros | **NEW (GENERATED — never edit).** CORE domain/kind/abi/ruleset_version/ruleset_hash and the SYSTEM meter policy fields, op list, weights and digest, read from `nodus_runtime_builtin_table()`. Regenerate: `cmake --build <nodus build> --target regen_ruleset_pins`. |
+| `int nodus_ruleset_pins_render(char **out, size_t *out_len)` (`nodus/tools/gen_ruleset_pins.c`) | **NEW (tool).** Renders the header text (heap, caller frees); -1 if the runtime selfcheck fails or the SYSTEM policy does not match its committed digest. `test_ruleset_pins` byte-compares it with the checked-in file. |
