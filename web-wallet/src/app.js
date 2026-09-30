@@ -127,25 +127,37 @@ function persistActivity({ required = false } = {}) {
 }
 function renderActivity(save = true) {
   if (save) void persistActivity().catch(error => { $('vault-status').textContent = error.message; });
+  // A row is laid out like a portfolio holding row (src/portfolio-view.js):
+  // amount and what it did on the left, status and when on the right, the
+  // network's note below, then the transaction link and any row action.
+  const el = (tag, className, text) => { const node = document.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node; };
   $('activity').replaceChildren(...visibleActivity().map(row => {
-    const div = document.createElement('div');
+    const div = el('div', 'activity-row');
     // A claim of this wallet's allocation (src/adapters/nodus.js isClaimRow)
     // pays the wallet itself.
     const claim = adapters.nodus.isClaimRow(row);
     // A staking row (0.1.29) carries its action in `kind` in this tab only
     // (src/activity.js recordActivity); reloaded, it reads as a transfer.
-    const state = `${row.status} · ${row.readError || row.note} `;
-    div.textContent = claim
-      ? `Allocation claim · ${row.amount} ${row.symbol} → your address · ${state}`
-      : row.kind === 'delegate' ? `Delegation · ${row.amount} ${row.symbol} → validator ${row.to} · ${state}`
-      : row.kind === 'undelegate' ? `Undelegation · ${row.amount} ${row.symbol} back from validator ${row.to} (returned locked) · ${state}`
-      : row.kind === 'stake' ? `Validator bond · ${row.amount} ${row.symbol} · ${state}`
-      : `${row.amount} ${row.symbol} → ${row.to} · ${state}`;
+    const what = claim ? ['Allocation claim', '→ your address']
+      : row.kind === 'delegate' ? ['Delegation', `→ validator ${row.to}`]
+      : row.kind === 'undelegate' ? ['Undelegation', `back from validator ${row.to} (returned locked)`]
+      : row.kind === 'stake' ? ['Validator bond']
+      : [`→ ${row.to}`];
+    const main = el('span', 'activity-main');
+    main.append(el('strong', '', `${row.amount} ${row.symbol}`), el('small', '', what.join(' · ')));
+    const side = el('span', 'activity-side'), badge = el('span', 'status-badge', row.status);
+    badge.dataset.status = row.status;
+    const when = el('time', '', new Date(row.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }));
+    when.dateTime = row.createdAt;
+    const where = el('small', '', `${networkFor(row.chain)?.name ?? row.chain} · `); where.append(when);
+    side.append(badge, where);
+    const footer = el('div', 'activity-footer');
+    div.append(main, side, el('p', 'activity-note', row.readError || row.note), footer);
     // NODUS has no explorer link in the first delivery (design §1.4).
     if (CHAINS[row.chain]) {
       const link = document.createElement('a');
-      link.href = CHAINS[row.chain].explorer + encodeURIComponent(row.hash); link.textContent = 'View transaction'; link.target = '_blank'; link.rel = 'noopener noreferrer'; div.append(link);
-    } else div.append(`${claim ? 'Claim ID' : row.kind ? 'Transaction ID' : 'Transfer ID'} ${row.hash}`);
+      link.href = CHAINS[row.chain].explorer + encodeURIComponent(row.hash); link.textContent = 'View transaction'; link.target = '_blank'; link.rel = 'noopener noreferrer'; footer.append(link);
+    } else footer.append(el('span', 'activity-id', `${claim ? 'Claim ID' : row.kind ? 'Transaction ID' : 'Transfer ID'} ${row.hash}`));
     // A NODUS send always resolves: included, or 'expired' once the chain passes
     // its expiry block. Its coins stay held until then (src/adapters/nodus.js
     // lockedInputs), so it is never marked abandoned by hand.
@@ -158,7 +170,7 @@ function renderActivity(save = true) {
           renderActivity();
         } else { row._abandonArmed = true; renderActivity(false); }
       };
-      div.append(' ', abandon);
+      footer.append(abandon);
     }
     return div;
   }));
@@ -389,35 +401,48 @@ async function refreshStaking() {
 function renderStaking(view) {
   const { rules } = view;
   const minText = nodusAmountText(rules.minDelegation);
+  // Rows are laid out like portfolio holding rows (src/portfolio-view.js):
+  // identity and figures on the left, status on the right, the row's action
+  // right-aligned below.
+  const el = (tag, className, text) => { const node = document.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node; };
   $('validator-list').replaceChildren(...(view.validators.length ? view.validators.map(v => {
-    const row = document.createElement('div');
-    row.textContent = `${adapters.nodus.shortKey(v.fingerprint)} · ${v.statusText} · own stake ${nodusAmountText(v.selfStake)} NODUS · delegated ${nodusAmountText(v.delegated)} NODUS · commission ${(v.commissionBps / 100).toFixed(2).replace(/\.?0+$/, '')}% `;
+    const row = el('div', 'stake-row');
+    const name = el('span', 'stake-main');
+    name.append(el('strong', '', adapters.nodus.shortKey(v.fingerprint)),
+      el('small', '', `own stake ${nodusAmountText(v.selfStake)} NODUS · delegated ${nodusAmountText(v.delegated)} NODUS · commission ${(v.commissionBps / 100).toFixed(2).replace(/\.?0+$/, '')}%`));
+    const badge = el('span', 'status-badge', v.statusText); badge.dataset.status = v.status;
+    row.append(name, badge);
     row.title = v.fingerprint;
     if (v.acceptsDelegation) {
       const pick = document.createElement('button'); pick.type = 'button'; pick.className = 'secondary small'; pick.textContent = 'Delegate';
       pick.setAttribute('aria-label', `Delegate to validator ${adapters.nodus.shortKey(v.fingerprint)}`);
       pick.onclick = () => { $('delegate-validator').value = v.fingerprint; $('delegate-amount').focus(); };
-      row.append(pick);
+      const actions = el('span', 'stake-actions'); actions.append(pick); row.append(actions);
     }
     return row;
-  }) : [Object.assign(document.createElement('p'), { textContent: 'No validators listed.' })]));
+  }) : [el('p', 'stake-empty', 'No validators listed.')]));
   const open = view.validators.filter(v => v.acceptsDelegation);
   $('delegate-validator').replaceChildren(...open.map(v => new Option(`${adapters.nodus.shortKey(v.fingerprint)} · ${v.statusText} · commission ${(v.commissionBps / 100).toFixed(2).replace(/\.?0+$/, '')}%`, v.fingerprint)));
   $('delegate-review').disabled = open.length === 0;
   $('delegate-hint').textContent = `A new delegation to a validator is at least ${minText} NODUS; adding to one you already have can be any amount. A network fee is paid on top.`;
   $('delegation-list').replaceChildren(...(view.delegations.length ? view.delegations.map(d => {
-    const row = document.createElement('div');
-    row.textContent = `${nodusAmountText(d.amount)} NODUS with ${adapters.nodus.shortKey(d.validator)}${d.validatorInfo ? ` (${d.validatorInfo.statusText})` : ''} `;
+    const row = el('div', 'stake-row');
+    const name = el('span', 'stake-main');
+    name.append(el('strong', '', `${nodusAmountText(d.amount)} NODUS`), el('small', '', `with ${adapters.nodus.shortKey(d.validator)}`));
+    row.append(name);
+    if (d.validatorInfo) { const badge = el('span', 'status-badge', d.validatorInfo.statusText); badge.dataset.status = d.validatorInfo.status; row.append(badge); }
     row.title = d.validator;
+    const actions = el('span', 'stake-actions');
     if (d.canUndelegate) {
       const amount = document.createElement('input'); amount.inputMode = 'decimal'; amount.autocomplete = 'off'; amount.spellcheck = false;
       amount.value = formatUnits(d.amount, NODUS_ASSET.decimals); amount.setAttribute('aria-label', `Amount to undelegate from ${adapters.nodus.shortKey(d.validator)}`);
       const undo = document.createElement('button'); undo.type = 'button'; undo.className = 'secondary small'; undo.textContent = 'Review undelegation';
       undo.onclick = () => void startStake('undelegate', { validator: d.validator, amount: amount.value });
-      row.append(amount, ' ', undo);
-    } else row.append('(this validator is not in the list above, so it cannot be undelegated from here)');
+      actions.append(amount, undo);
+    } else actions.append(el('small', 'stake-note', '(this validator is not in the list above, so it cannot be undelegated from here)'));
+    row.append(actions);
     return row;
-  }) : [Object.assign(document.createElement('p'), { textContent: 'You have no delegations.' })]));
+  }) : [el('p', 'stake-empty', 'You have no delegations.')]));
   $('undelegate-note').textContent = `Undelegating returns the NODUS to your address as a separate coin that stays locked for ${view.lockText} after the validator set next changes. Until then it cannot be sent or delegated again. Withdraw everything, or leave at least ${minText} NODUS delegated. The network fee is paid from your spendable NODUS.`;
   const bond = nodusAmountText(rules.selfStake), maxRate = `${(Number(rules.commissionMaxBps) / 100).toFixed(2).replace(/\.?0+$/, '')}%`;
   $('become-fields').hidden = !!view.ownValidator;

@@ -280,9 +280,42 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 .activity-panel .hint { max-width: 740px; }
 .activity-empty { text-align: center; padding: 24px 12px; margin: 0; border: 1px dashed #d5f99826; border-radius: 8px; font-size: 12px; }
 #activity:not(:empty) + .activity-empty { display: none; }
-#activity { padding-top: 0; }
-#activity > div { padding: 16px; border-radius: 7px; background: #11150f70; }
-#activity > div + div { margin-top: 10px; }
+/* Activity and Earn lists: one bordered group of rows, the same card and row
+   style as the portfolio's asset groups and holding rows. */
+.activity-list, .stake-list { font-size: 13px; line-height: 1.6; color: var(--text); overflow-wrap: anywhere; border: 1px solid #d5f9981c; border-radius: 10px; background: #11170f; overflow: hidden; }
+.activity-list:empty, .stake-list:empty { display: none; }
+.activity-row, .stake-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; padding: 16px; }
+.activity-row + .activity-row, .stake-row + .stake-row { border-top: 1px solid #d5f99814; }
+.activity-main, .stake-main { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.activity-main strong, .stake-main strong { font-size: 13px; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; }
+.activity-main small, .stake-main small { font-size: 10px; line-height: 1.6; color: var(--muted); }
+.activity-side { display: flex; flex-direction: column; align-items: end; gap: 5px; text-align: right; }
+.activity-side small { font-size: 10px; color: #b9c7ad; }
+.activity-note { grid-column: 1 / -1; margin: 0; font-size: 11px; line-height: 1.6; }
+.activity-footer, .stake-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-content: end; gap: 8px 12px; }
+.activity-footer:empty { display: none; }
+.activity-footer a { margin-right: auto; font-size: 11px; text-underline-offset: 3px; }
+.activity-id { margin-right: auto; min-width: 0; font-size: 10px; color: var(--muted); }
+.activity-footer button, .stake-actions button { margin: 0; font-size: 10px; padding: 6px 12px; }
+/* Status of a send or a validator: a pill like the network filters. */
+.status-badge { justify-self: end; padding: 3px 9px; border: 1px solid #46523b; border-radius: 20px; font-size: 10px; line-height: 1.5; color: #bcc9b0; white-space: nowrap; }
+.status-badge[data-status="confirmed"], .status-badge[data-status="active"] { color: var(--lime); border-color: #d5f99840; background: #d5f99806; }
+.status-badge[data-status="failed"], .status-badge[data-status="expired"], .status-badge[data-status="replaced"], .status-badge[data-status="abandoned"] { color: #f2c896; border-color: #f2c89640; }
+.stake-actions input { flex: 1 1 120px; width: auto; min-width: 0; max-width: 220px; padding: 7px 10px; font-size: 12px; }
+.stake-note { flex: 1; font-size: 10px; line-height: 1.6; color: var(--muted); }
+.stake-empty { text-align: center; padding: 24px 12px; margin: 0; border: 1px dashed #d5f99826; border-radius: 8px; font-size: 12px; }
+.stake-list:has(> .stake-empty) { border: 0; background: none; }
+/* Earn panel blocks: separated like the Send block of the Send / Receive panel. */
+.stake-panel { display: flex; flex-direction: column; }
+.stake-panel > .hint { margin-bottom: 0; }
+#stake-status:empty { margin: 0; }
+.stake-block { margin: 24px 0 0; padding-top: 20px; border-top: 1px solid var(--line); scroll-margin-top: 24px; }
+.stake-block h4 { font-size: 12px; font-weight: 500; margin: 0 0 12px; color: var(--text); }
+#delegate-form label:first-child { margin-top: 0; }
+#delegate-form > button { margin-top: 24px; }
+#undelegate-note { margin-bottom: 0; }
+details.stake-block > summary { color: var(--text); }
+#become-fields > button { width: 100%; margin-top: 20px; }
 .device-panel .panel-heading { margin-bottom: 10px; }
 .storage-state { color: #c6d7b4; font-size: 12px; margin: 0 0 20px; }
 .device-panel > details { border-top: 1px solid var(--line); padding-top: 18px; }
@@ -306,6 +339,11 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
   .transfer-buttons button { flex: 1; min-width: 0; padding: 13px 10px; }
   .panel-heading h3 { font-size: 17px; }
   .activity-panel .panel-heading > a { flex-basis: 100%; margin: 4px 0 0; }
+  .activity-row, .stake-row { padding: 14px 12px; }
+  .activity-row { grid-template-columns: minmax(0, 1fr); }
+  .activity-side { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; text-align: left; }
+  .stake-actions input { flex-basis: 100%; max-width: none; font-size: 16px; }
+  .stake-actions button { flex: 1; }
   .receive-panel .address-row { flex-wrap: wrap; }
   .receive-panel .address-row code { flex-basis: 100%; line-height: 1.6; }
   .receive-panel .address-row button { width: 100%; }
