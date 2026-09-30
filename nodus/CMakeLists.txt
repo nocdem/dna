@@ -2505,3 +2505,39 @@ add_test(NAME test_supply_invariant COMMAND test_supply_invariant)
 # See nodus/docs/plans/2026-04-24-perf-harness-design.md.
 # Run with: ctest -L bench
 add_subdirectory(tests/bench)
+
+# ── Fuzz targets (libFuzzer, opt-in, default OFF) ────────────────────
+# Web Connect package NC-5: the tier-2 reply decode, the CBOR decoder and
+# the signed-value decode a browser client runs on bytes a node sends.
+# Needs clang and its OWN build directory — the whole `nodus` library is
+# compiled with -fsanitize=fuzzer-no-link,address so libFuzzer sees
+# coverage inside the decoders, not only in the harness:
+#   mkdir build-fuzz && cd build-fuzz
+#   CC=clang cmake -DNODUS_FUZZ=ON .. && make fuzz_t2_decode fuzz_cbor fuzz_value fuzz_seed_gen
+# Nothing here is registered with ctest. Usage, seeds, the wasm32 build and
+# what these targets cannot find: tests/fuzz/README.md.
+option(NODUS_FUZZ "Build libFuzzer fuzz targets (requires clang)" OFF)
+if(NODUS_FUZZ)
+    if(NOT CMAKE_C_COMPILER_ID STREQUAL "Clang")
+        message(FATAL_ERROR "NODUS_FUZZ requires clang: CC=clang cmake -DNODUS_FUZZ=ON ..")
+    endif()
+    set(NODUS_FUZZ_FLAGS -fsanitize=fuzzer-no-link,address -fno-omit-frame-pointer -g -O1)
+    target_compile_options(nodus PRIVATE ${NODUS_FUZZ_FLAGS})
+
+    foreach(_fuzz_target fuzz_t2_decode fuzz_cbor fuzz_value)
+        add_executable(${_fuzz_target} tests/fuzz/${_fuzz_target}.c)
+        target_compile_options(${_fuzz_target} PRIVATE
+            -fsanitize=fuzzer,address -fno-omit-frame-pointer -g -O1 -Wall -Wextra)
+        target_link_options(${_fuzz_target} PRIVATE -fsanitize=fuzzer,address)
+        target_link_libraries(${_fuzz_target} nodus dsa nodus)
+    endforeach()
+
+    # Seed generator: an ordinary program (ASan only, no libFuzzer main)
+    add_executable(fuzz_seed_gen tests/fuzz/fuzz_seed_gen.c)
+    target_compile_options(fuzz_seed_gen PRIVATE
+        -fsanitize=address -fno-omit-frame-pointer -g -O1 -Wall -Wextra)
+    target_link_options(fuzz_seed_gen PRIVATE -fsanitize=address)
+    target_link_libraries(fuzz_seed_gen nodus dsa nodus)
+
+    message(STATUS "NODUS_FUZZ=ON: fuzz_t2_decode fuzz_cbor fuzz_value fuzz_seed_gen")
+endif()
