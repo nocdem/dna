@@ -861,3 +861,112 @@ Decision: `docs/plans/decisions/2026-09-25-web-wallet-solana-kit.md` (operator,
   (the variant with the same chunk set): app chunk 1,417,995 → 1,256,428 bytes,
   all JavaScript chunks 1,477,466 → 1,315,743 bytes. The default build's app
   chunk is 1,254,356 bytes.
+
+## NODUS send skeleton — wallet side only, inert until the module exists (unreleased)
+
+Design: `docs/plans/2026-09-25-web-wallet-nodus-send-design.md` (package (d),
+§1.4, §1.5); decisions `2026-09-25-web-wallet-nodus-send-transport.md`,
+`2026-09-23-web-wallet-mldsa-hedged-signing.md` (its İSTİSNA 1/2),
+`2026-09-23-web-wallet-single-tab.md`; binding note
+`docs/plans/2026-09-26-note-to-web-wallet-session-expiry.md`. This is
+everything on the wallet side that can be built and tested before the browser
+module (package (c3): nodus tier-2 client + SPEND builder compiled C→WASM)
+exists. **Nothing about NODUS changes on the live site with this code**: the
+module's registration point `src/nodus/send-module.js` exports `null`, and with
+`null` no client is created, NODUS stays receive-only with "Balance not shown
+yet", and the "Sending NODUS is not available in this release." note stays
+(everything in "NODUS in the asset list (0.1.21)" above still holds).
+
+What is in place:
+
+- **CSP** (`index.html`): `connect-src 'self' https: wss:` — `https:` does not
+  cover `wss:`, so without this the page could never open the module's
+  WebSocket. The generic `wss:` scheme (any host) is the design's open
+  question §5 item 15 (narrow it to the build's validator IPs or not); today it
+  permits a connection nothing in the page makes.
+- **Module loader** (`src/nodus/client.js`). The JS contract (c3)'s glue must
+  implement is written at the top of that file: asynchronous `unlock`,
+  `balance`, `list`, `buildAndSign`, `submit`, `scanConfirm`, `tick`;
+  synchronous `cancel`, `lock`, `release`; `memory`. Amounts and heights cross
+  the boundary as decimal integer strings of raw units (1 NODUS = 10^8) and are
+  `BigInt` in JS. Rules it enforces:
+  - **One operation queue.** Asyncify has a single global `currData`, so a
+    second export entered while the first is suspended would corrupt it. Every
+    call waits until the previous module call has actually returned; a caller
+    that aborts before its call started leaves the queue; keepalives never pile
+    up (at most one queued).
+  - **Lock order:** stop the queue (queued and in-flight callers get "Wallet is
+    locked.") → `cancel()` (C cancel flag) → `lock()` (WebSocket closed) → the
+    whole linear memory zeroed (`derive.js` pattern) → `release()` (must make any
+    pending Asyncify wake-up a no-op). Each step runs even if an earlier one
+    throws. Locking while the module is still loading wipes and drops it.
+  - **Identity check:** `unlock` gets the signing seed (`nodusSigningSeed` in
+    `src/nodus/derive.js`, now shared with the address derivation, unchanged
+    bytes); the JS copy is zeroed afterwards. The fingerprint the module reports
+    must equal the address this wallet derived, and the chain id must be 32
+    bytes of hex, or the module is wiped and never becomes ready.
+  - **Keepalive:** a `tick()` through the queue every 60 s (the server closes
+    an idle tier-2 session at 180 s); a failed tick takes the client out of
+    `ready`.
+- **NODUS adapter** (`src/adapters/nodus.js`, `adapters.nodus` in
+  `src/wallet.js`):
+  - Recipient: a 128-hex fingerprint (upper case accepted, shown lower case).
+    There is no checksum, so the review shows all 128 characters with a
+    compare-every-character note. Amount: 8 decimals, `BigInt`, at most
+    2^64 − 1 raw units.
+  - Balance: the **spendable** native balance from `balance()` (the contract
+    also carries `total`; `spendable > total` is rejected). Any failure is
+    "Balance unavailable", never 0. Unpriced, outside the USD total.
+  - Building: `balance()` then `list()`. Tip 0 or missing → **no send** ("The
+    current Nodus block height is unknown"); otherwise `expiry_height = tip + 90`
+    (`nodus-cli.c` `CLI_ENV_EXPIRY_AHEAD` = 100 − 10). An empty coin list with a
+    positive spendable balance is reported as "coin list could not be read",
+    never "insufficient". Coins held by pending sends are removed from the
+    candidate list given to the builder.
+  - **Review = the signed envelope (G1).** Recipient, amount, fee, change,
+    expiry block and chain id on the review screen come from the module's
+    decoding of the envelope it signed; if recipient, amount, expiry or chain id
+    differ from the request, or an input is not a candidate coin, nothing is
+    shown or sent. The review also says the fee may be charged even if the
+    transfer fails.
+  - **Pending send:** the activity record (encrypted activity, like the other
+    networks) stores the intent_id (as the record's transaction ID), the
+    expiry block, the first block to scan, and the input nullifiers; it is
+    written before the envelope leaves the browser. Status comes from
+    `scanConfirm` (blocks first-to-expiry for the intent_id): included →
+    `confirmed`; chain past the expiry block and not found → `expired`;
+    otherwise `pending`. The answer comes from one node (design §5 item 16).
+    NODUS rows have no explorer link and no "Mark as abandoned" button.
+  - **Resend rule** (note item 3): a send's coins stay locked in every status
+    except `expired` (which only a scan sets); a resend before that must use the
+    same coins (`resendInputs`), so at most one of the two can ever be applied.
+- **Portfolio**: `createPortfolio` gained `setNetwork(chain, network)` so NODUS
+  can switch between the receive-only and sendable definitions
+  (`nodusNetworkFor` in `src/nodus/network.js`) without a reload.
+
+Tests: `test/nodus-send.test.js` against the TEST-ONLY mock module
+`test/nodus-mock-module.js` — no-module gating, unlock identity check and seed
+wipe, 60 s tick, queue serialization (the mock flags any overlapping call),
+exact lock order with the memory zero at `release()`, expiry and tip-0 refusal,
+input rules, review-from-envelope with seven tamper cases, the pending record
+written before submit and surviving the encrypted activity round trip, the
+resend/lock rule, the scan mapping and the balance rules. **How these can lie:**
+the mock returns canned data and echoes the request as its "decoded" envelope;
+they prove the wallet-side discipline only — not the (c3) module, its envelope
+decoding, the chain, or the browser wiring in `src/app.js` (no browser test
+covers a ready module, because none exists).
+
+Still missing before anyone can send NODUS from the web wallet:
+
+- Package (c3) — the module itself (and its (b)/(c1)/(c2) prerequisites) and
+  the registration of its factory in `src/nodus/send-module.js`.
+- Package (f) — WebSocket entry (Caddy + IP certificate) on the nodes; server
+  discovery from the roster and the pinned validator key list.
+- `test/browser-nodus.js` for the sendable mode, and a localhost end-to-end
+  send (design §0a.3 step 6).
+- Pending sends of a **temporary** (unsaved) wallet live only in the tab: after
+  lock, their coins are no longer known to be held, so a different-coin send
+  before the first one's expiry block can pay twice. Saved wallets keep them in
+  the encrypted activity.
+- A resend button (the rule and `resendInputs` exist; no UI calls them), the
+  portfolio scope text for a readable NODUS balance, and the version bump.

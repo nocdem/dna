@@ -8,7 +8,8 @@
 // locally from the recovery phrase (src/nodus/derive.js, via app.js
 // showNodusAddress()).
 //
-// No balance source exists yet: there is no `endpoint` and no `rpcOptions`, and
+// No balance source exists yet (unless a send module is ready, below): there
+// is no `endpoint` and no `rpcOptions`, and
 // `balanceUnavailable` keeps the portfolio from ever reading a balance for it —
 // its row shows "Balance not shown yet", never an amount, a zero or a read error.
 export const NODUS_NETWORK = {
@@ -16,6 +17,13 @@ export const NODUS_NETWORK = {
   // Shown under the hidden send fields when Nodus is the selected network.
   sendNote: 'Sending NODUS is not available in this release.',
 };
+// The NODUS send skeleton (src/nodus/client.js, src/adapters/nodus.js) swaps in
+// the sendable variant ONLY while a loaded send module reports 'ready' for the
+// open wallet; any other state — above all "no module" (src/nodus/send-module.js
+// holds null until package (c3) lands) — keeps NODUS_NETWORK above unchanged.
+// Still no endpoint and no rpcOptions: the module reaches the chain itself.
+const NODUS_SEND_NETWORK = { ...NODUS_NETWORK, receiveOnly: false, balanceUnavailable: false, sendNote: undefined };
+export function nodusNetworkFor(ready) { return ready === true ? NODUS_SEND_NETWORK : NODUS_NETWORK; }
 // Unpriced like CPUNK_ASSET and IXIOS_ASSET: no priceId, so it never enters
 // PRICE_URL and never counts toward the USD total or its completeness.
 export const NODUS_ASSET = { chain: 'nodus', symbol: 'NODUS', decimals: 8, key: 'nodus:NODUS' };

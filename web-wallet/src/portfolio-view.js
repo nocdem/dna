@@ -40,9 +40,15 @@ function networkIcon(c) { return c.icon ? iconImg(c.icon) : icon(c.symbol); }
 export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [], extraNetworks = [] }) {
   const entries = (list) => Object.fromEntries(list.map(({ network, asset }) => [asset.chain, network]));
   const networks = { ...entries(leadingNetworks), ...CHAINS, ...entries(extraNetworks) };
-  const flagged = ({ network, asset }) => network.balanceUnavailable ? { ...asset, balanceUnavailable: true } : asset;
-  const assets = [...leadingNetworks.map(flagged), ...ASSETS, ...extraNetworks.map(flagged)];
-  const chains = Object.keys(networks).filter(chain => !networks[chain].balanceUnavailable);
+  const baseAssets = [...leadingNetworks.map(({ asset }) => asset), ...ASSETS, ...extraNetworks.map(({ asset }) => asset)];
+  let assets, chains;
+  // Re-derived when setNetwork() swaps a network (NODUS while its send module
+  // is ready, src/nodus/network.js nodusNetworkFor).
+  function flag() {
+    assets = baseAssets.map(asset => networks[asset.chain].balanceUnavailable ? { ...asset, balanceUnavailable: true } : asset);
+    chains = Object.keys(networks).filter(chain => !networks[chain].balanceUnavailable);
+  }
+  flag();
   // `selected`: the network chosen in the Send / Receive panel, set by the app
   // through setSelected(). It is UI state, not wallet state, so clear() keeps it.
   let addresses, endpoints, balances = {}, quotes = {}, filter = 'all', hidden = false, session = 0, timer, priceJob, selected;
@@ -121,10 +127,10 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     render();
     try {
       const rows = await readBalances(chain, addresses[chain], endpoints[chain], { signal: controller.signal });
-      if (session === current) Object.assign(balances, chainBalances(chain, rows, Date.now(), assets));
+      if (session === current && !controller.signal.aborted) Object.assign(balances, chainBalances(chain, rows, Date.now(), assets));
     } catch {
-      if (session === current) for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error' };
-    } finally { if (session === current) { jobs.delete(chain); render(); } }
+      if (session === current && !controller.signal.aborted) for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error' };
+    } finally { if (session === current) { if (jobs.get(chain) === controller) jobs.delete(chain); render(); } }
   }
   async function refresh() {
     if (!addresses || jobs.size || priceJob) return;
@@ -169,6 +175,19 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     if (!address) { for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error' }; render(); return; }
     void readChainBalances(chain, session);
   }
+  // Replaces one listed network's definition (same chain key, same asset) —
+  // today only NODUS, between receive-only and send-module-ready
+  // (src/app.js setNodusReady). A network that stops having a balance source
+  // has its read cancelled and its rows dropped; one that gains a source is
+  // read as soon as setAddress() reports its address.
+  function setNetwork(chain, network) {
+    if (!Object.hasOwn(networks, chain) || networks[chain] === network) return;
+    networks[chain] = network; flag();
+    jobs.get(chain)?.abort(); jobs.delete(chain);
+    for (const asset of baseAssets.filter(a => a.chain === chain)) delete balances[asset.key];
+    if (addresses && network.balanceUnavailable) delete addresses[chain];
+    render();
+  }
   // Marks the selected network's rows in place (no re-render, so no focus change);
   // render() applies the same marks to rows it builds later.
   function setSelected(chain) {
@@ -187,5 +206,5 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     button.onclick = () => { filter = chain; render(); }; return button;
   }));
   render();
-  return { open, clear, refresh, changeEndpoint, setAddress, setSelected };
+  return { open, clear, refresh, changeEndpoint, setAddress, setSelected, setNetwork };
 }

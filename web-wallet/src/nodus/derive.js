@@ -5,6 +5,20 @@ import { validateNodusPhrase } from '../recovery.js';
 
 // Same derivation as shared/crypto/key/bip39/seed_derivation.c and
 // messenger/messenger/keygen.c. The qgp-signing-v1 bytes are compatibility data.
+// The 32-byte ML-DSA-87 signing seed = SHAKE256(BIP39 seed ‖ "qgp-signing-v1").
+// Also the input of the NODUS send module's unlock (src/nodus/client.js). The
+// caller owns the returned buffer and must wipe it.
+export function nodusSigningSeed(phrase) {
+  const normalized = validateNodusPhrase(phrase);
+  let master, input;
+  try {
+    master = getBytes(Mnemonic.fromPhrase(normalized).computeSeed());
+    const context = new TextEncoder().encode('qgp-signing-v1');
+    input = new Uint8Array(master.length + context.length);
+    input.set(master); input.set(context, master.length);
+    return shake256(input, { dkLen: 32 });
+  } finally { master?.fill(0); input?.fill(0); }
+}
 export async function deriveNodusAddress(phrase, { wasmBytes, signal } = {}) {
   signal?.throwIfAborted();
   const normalized = validateNodusPhrase(phrase);
@@ -16,24 +30,20 @@ export async function deriveNodusAddress(phrase, { wasmBytes, signal } = {}) {
     if (!response.ok) throw new Error('Nodus address module could not load. Reload to retry.');
     binary = await response.arrayBuffer();
   }
-  let instance, master, input, signingSeed;
+  let instance, signingSeed;
   try {
     signal?.throwIfAborted();
     ({ instance } = await WebAssembly.instantiate(binary, {}));
     signal?.throwIfAborted();
     instance.exports._initialize?.();
-    master = getBytes(Mnemonic.fromPhrase(normalized).computeSeed());
-    const context = new TextEncoder().encode('qgp-signing-v1');
-    input = new Uint8Array(master.length + context.length);
-    input.set(master); input.set(context, master.length);
-    signingSeed = shake256(input, { dkLen: 32 });
+    signingSeed = nodusSigningSeed(normalized);
     const memory = new Uint8Array(instance.exports.memory.buffer);
     memory.set(signingSeed, instance.exports.nodus_input());
     if (instance.exports.nodus_derive() !== 0) throw new Error('Nodus address derivation failed.');
     const offset = instance.exports.nodus_output();
     return bytesToHex(sha3_512(memory.subarray(offset, offset + 2592)));
   } finally {
-    master?.fill(0); input?.fill(0); signingSeed?.fill(0);
+    signingSeed?.fill(0);
     // Includes key-generation stack temporaries; every call owns a fresh instance.
     if (instance) new Uint8Array(instance.exports.memory.buffer).fill(0);
   }

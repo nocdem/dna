@@ -1,12 +1,31 @@
 import { CHAINS } from './config.js';
 import { rpc, request, endpointUrl } from './core.js';
 export const terminal = status => ['confirmed', 'failed', 'expired', 'replaced', 'abandoned'].includes(status);
+// NODUS (src/nodus/network.js NODUS_ASSET.chain): the record's `hash` is the
+// envelope's 64-byte intent_id (128 hex) — stable across the hedged signature,
+// unlike wire_id (design §2 D7).
+const NODUS_CHAIN = 'nodus', HEX128 = /^[0-9a-f]{128}$/, HEIGHT = /^[1-9]\d{0,19}$/;
 export function validHash(chain, hash) {
-  return typeof hash === 'string' && (chain === 'solana' ? /^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(hash) : chain === 'tron' ? /^[0-9a-f]{64}$/i.test(hash) : /^0x[0-9a-f]{64}$/i.test(hash));
+  return typeof hash === 'string' && (chain === NODUS_CHAIN ? HEX128.test(hash) : chain === 'solana' ? /^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(hash) : chain === 'tron' ? /^[0-9a-f]{64}$/i.test(hash) : /^0x[0-9a-f]{64}$/i.test(hash));
+}
+// A NODUS pending send keeps what the resend rule needs
+// (docs/plans/2026-09-26-note-to-web-wallet-session-expiry.md item 3):
+// expiryHeight, the first block scanned for it (fromHeight = tip + 1 at build),
+// and its input nullifiers (1..15, nodus/tools/nodus-cli.c:2778 T6_SPEND_MAX_IN).
+export function validNodusPending({ expiryHeight, fromHeight, inputs }) {
+  return typeof expiryHeight === 'string' && HEIGHT.test(expiryHeight) && BigInt(expiryHeight) < 2n ** 64n
+    && typeof fromHeight === 'string' && HEIGHT.test(fromHeight) && BigInt(fromHeight) <= BigInt(expiryHeight)
+    && Array.isArray(inputs) && inputs.length >= 1 && inputs.length <= 15 && new Set(inputs).size === inputs.length
+    && inputs.every(input => typeof input === 'string' && HEX128.test(input));
 }
 export function recordActivity(transfer, details) {
   if (!validHash(transfer.chain, details.hash)) throw new Error('Invalid transaction identifier.');
-  return { chain: transfer.chain, address: transfer.from, to: transfer.to, symbol: transfer.symbol, amount: transfer.amount, endpoint: transfer.endpoint, hash: details.hash, lastValidBlockHeight: details.lastValidBlockHeight, expiration: details.expiration, nonce: details.nonce, createdAt: new Date().toISOString(), status: 'pending', note: 'Broadcast outcome pending.' };
+  const record = { chain: transfer.chain, address: transfer.from, to: transfer.to, symbol: transfer.symbol, amount: transfer.amount, endpoint: transfer.endpoint, hash: details.hash, lastValidBlockHeight: details.lastValidBlockHeight, expiration: details.expiration, nonce: details.nonce, createdAt: new Date().toISOString(), status: 'pending', note: 'Broadcast outcome pending.' };
+  if (transfer.chain === NODUS_CHAIN) {
+    if (!validNodusPending(details)) throw new Error('Invalid pending transfer record.');
+    Object.assign(record, { expiryHeight: details.expiryHeight, fromHeight: details.fromHeight, inputs: [...details.inputs] });
+  }
+  return record;
 }
 export async function checkActivity(row, { signal, call = rpc, post = request } = {}) {
   const c = CHAINS[row.chain], endpoint = row.endpoint;
