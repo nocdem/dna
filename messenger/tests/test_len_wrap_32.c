@@ -20,14 +20,24 @@
  *
  *   seal_encrypted_size_wrap   encrypted_size = 2^32 - (offset + 28): the old
  *                              sum is 0 and passes; offset then wraps behind
- *                              the buffer and the tag memcpy / signature parse
- *                              read out of bounds (ASan heap-buffer-overflow —
- *                              the reproduced wasm32 crash was a READ of 4627
- *                              bytes in qgp_signature_deserialize). Without
- *                              ASan: the rc == DNA_ERROR_DECRYPT assertion.
+ *                              the buffer (16 bytes before it) and the tag
+ *                              memcpy reads out of bounds — ASan (Debug)
+ *                              reports a heap-buffer-overflow there. Without
+ *                              ASan the rc assertion likely still passes (the
+ *                              signature parse then sees "PQ" as type/size and
+ *                              returns DECRYPT), so only ASan catches this
+ *                              case. (The reproduced wasm32 crash, READ 4627
+ *                              in qgp_signature_deserialize, came from a
+ *                              different fuzz input.)
  *   seal_signature_size_wrap   signature_size = 2^32 - offset + 1: the old
  *                              sum is 1 and passes; qgp_signature_deserialize
- *                              is handed a ~4 GB length (out-of-bounds read).
+ *                              bounds itself by the signature's OWN embedded
+ *                              size, so no out-of-bounds read — decryption
+ *                              then succeeds and returns DNA_OK: the
+ *                              rc == DNA_ERROR_DECRYPT assertion fails
+ *                              deterministically on old 32-bit code.
+ *                              (qgp_signature.c:152-187, read by the agent
+ *                              after committing; wording fixed at O7.)
  *   contactlist_len_wrap       encrypted_len = 2^32 - 16: the old sum is 13
  *                              and passes; offset wraps back to 9 (inside the
  *                              timestamp), sig_len is read from bytes the
@@ -168,7 +178,7 @@ static int test_seal(dna_context_t *ctx,
     memcpy(m + SEAL_ENC_SIZE_OFF, &v, 4);
     CHECK(seal_decode(ctx, m, seal_len, kyber_priv, &all_null) == DNA_ERROR_DECRYPT
           && all_null,
-          "seal_encrypted_size_wrap (32-bit old code: out-of-bounds read)");
+          "seal_encrypted_size_wrap (32-bit old code: tag read out of bounds, ASan)");
 
     /* signature_size so that offset + signature_size == 2^32 + 1 */
     memcpy(m, seal, seal_len);
@@ -176,7 +186,7 @@ static int test_seal(dna_context_t *ctx,
     memcpy(m + SEAL_SIG_SIZE_OFF, &v, 4);
     CHECK(seal_decode(ctx, m, seal_len, kyber_priv, &all_null) == DNA_ERROR_DECRYPT
           && all_null,
-          "seal_signature_size_wrap (32-bit old code: ~4 GB signature parse)");
+          "seal_signature_size_wrap (32-bit old code: accepted, returns DNA_OK)");
 
     free(m);
     free(seal);

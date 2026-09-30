@@ -295,7 +295,14 @@ int dht_deserialize_contact_request(
         request_out->has_dht_salt = false;
     }
 
-    /* Read signature_len (network order) */
+    /* Read signature_len (network order). The v2 salt above can use up the
+     * bytes the initial minimum-size check reserved for this field, so check
+     * the 2 bytes are there (2026-09-30: a v2 request of length min+30/31
+     * read 1-2 bytes past the buffer here, on every word size). */
+    if ((size_t)(end - ptr) < sizeof(uint16_t)) {
+        QGP_LOG_ERROR(LOG_TAG, "Truncated signature length in request\n");
+        return -1;
+    }
     uint16_t sig_len_network;
     memcpy(&sig_len_network, ptr, sizeof(uint16_t));
     request_out->signature_len = ntohs(sig_len_network);
