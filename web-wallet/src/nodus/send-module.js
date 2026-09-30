@@ -37,14 +37,24 @@ const MAX_COINS = 100;                       // nodus_types.h NODUS_DNAC_MAX_UTX
 
 // Nodus testnet (chain born 2026-09-30, the final pre-testnet genesis). The
 // chain id was read from the live genesis document; each pin is the node's
-// identity/nodus.fp, re-derived as SHA3-512(nodus.pk) on every node. Only
-// EU-5 runs the WebSocket entry today (Caddy TLS on 443 with an IP
-// certificate -> ws_port 4005, nodus/docs/DEPLOY_RUNBOOK.md §2.4); every
-// validator key is pinned so the other nodes can be added as endpoints later.
+// identity/nodus.fp, re-derived as SHA3-512(nodus.pk) on every node. Six
+// nodes run the WebSocket entry (Caddy TLS on 443 with an IP certificate ->
+// ws_port 4005, nodus/docs/DEPLOY_RUNBOOK.md §2.4); all seven validator keys
+// are pinned.
 export const NODUS_SEND_NETWORK = {
   chainId: 'a48d1a785500a1cdecd739ecd53ef0e95b1dc4a7a300f49176a7fa25ae176114',
   scheme: 'wss',
-  endpoints: [{ host: '164.68.116.180', port: 443 }],   // EU-5
+  // Tried in order (nodus_client). Each runs Caddy TLS on 443 -> the node's
+  // WebSocket entry (runbook §2.4). EU-6 has none: its 443 serves the
+  // websites and this wallet (nginx).
+  endpoints: [
+    { host: '164.68.116.180', port: 443 },   // EU-5
+    { host: '154.38.182.161', port: 443 },   // US-1
+    { host: '161.97.85.25', port: 443 },     // EU-1
+    { host: '156.67.24.125', port: 443 },    // EU-2
+    { host: '156.67.25.251', port: 443 },    // EU-3
+    { host: '164.68.105.227', port: 443 },   // EU-4
+  ],
   pins: [
     '03499d1fae35f9e9aaf60a1c3f18d8c7d1ffa49f2c65bd4b6a531bdf8ef92c21c90bf5e64f29fb0b9f689ac20e7dc9df418784c788ffc43c735c9b38253038e0', // US-1
     'fd429639366cbc41d98db7603d51166ed5542d2d161cf69ff1ab6dbe80176197dca892177f95cdb4757073531588bf63c7d3b91f6f016e0035272068de74b35c', // EU-1

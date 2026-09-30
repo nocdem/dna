@@ -69,11 +69,11 @@ test('the shipped send.wasm exports the module entry points and no test-only one
   assert.match(glue, /export default createNodusSendWasm/);
 });
 
-test('the shipped network settings are the testnet: valid shape, wss only, EU-5 endpoint, 7 validator pins', () => {
+test('the shipped network settings are the testnet: valid shape, wss only, six endpoints (EU-5 first), 7 validator pins', () => {
   const net = validateNodusSendNetwork(NODUS_SEND_NETWORK);
   assert.equal(net.chainId, 'a48d1a785500a1cdecd739ecd53ef0e95b1dc4a7a300f49176a7fa25ae176114');
   assert.equal(net.scheme, 'wss');
-  assert.deepEqual(net.endpoints, [{ host: '164.68.116.180', port: 443 }]);
+  assert.deepEqual(net.endpoints.map(e => `${e.host}:${e.port}`), ['164.68.116.180:443', '154.38.182.161:443', '161.97.85.25:443', '156.67.24.125:443', '156.67.25.251:443', '164.68.105.227:443']);
   assert.equal(net.pins.length, 7);
   assert.equal(typeof nodusSendModuleFactory, 'function');
 });
