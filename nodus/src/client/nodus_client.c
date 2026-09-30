@@ -5087,6 +5087,101 @@ int nodus_client_dnac_supply_tip(nodus_client_t *client, bool *has_out,
     return 0;
 }
 
+/* ── dnac_supply buckets (decision 2026-09-30-scan-supply-buckets.md;
+ * wire: nodus.h) — on the v3d_* readers above (END/ERROR, duplicate-key
+ * and truncation discipline). */
+
+int nodus_dnac_supply_buckets_decode(const uint8_t *raw, size_t raw_len,
+                                     nodus_dnac_supply_buckets_t *out)
+{
+    cbor_decoder_t dec;
+    size_t         mc;
+    v3d_keys_t     ks;
+    cbor_item_t    k;
+    bool           have_cur = false, have_rp = false, have_tr = false,
+                   have_un = false;
+
+    if (!raw || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    memset(&ks, 0, sizeof(ks));
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0) return -1;
+    if (mc > V3D_MAX_KEYS || mc > v3d_left(&dec) / 2) return -1;
+
+    for (size_t i = 0; i < mc; i++) {
+        if (v3d_key(&dec, &ks, &k) != 0) goto bad;
+        if (KEY_EQ(k, "current")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->current_supply) != 0)
+                goto bad;
+            have_cur = true;
+        } else if (KEY_EQ(k, "reward_pool")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->reward_pool) != 0) goto bad;
+            have_rp = true;
+        } else if (KEY_EQ(k, "treasury")) {
+            cbor_item_t a;
+            if (v3d_next(&dec, &a) != 0 || a.type != CBOR_ITEM_ARRAY ||
+                a.count != NODUS_DNAC_TREASURY_POOLS)
+                goto bad;
+            for (size_t j = 0; j < NODUS_DNAC_TREASURY_POOLS; j++)
+                if (v3d_u64(&dec, UINT64_MAX, &out->treasury[j]) != 0)
+                    goto bad;
+            have_tr = true;
+        } else if (KEY_EQ(k, "unclaimed")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->unclaimed) != 0) goto bad;
+            have_un = true;
+        } else if (v3d_skip(&dec, 0) != 0) {
+            goto bad;
+        }
+    }
+    if (dec.error || !have_cur) goto bad;
+    /* all three or none: a reply with some of them is no node's */
+    if (have_rp != have_tr || have_rp != have_un) goto bad;
+    if (!have_rp) {
+        memset(out, 0, sizeof(*out));
+        return 0;                              /* an older node */
+    }
+    out->has = true;
+    return 0;
+
+bad:
+    memset(out, 0, sizeof(*out));
+    return -1;
+}
+
+int nodus_client_dnac_supply_buckets(nodus_client_t *client,
+                                     nodus_dnac_supply_buckets_t *out)
+{
+    if (!nodus_client_is_ready(client) || !out)
+        return -1;
+    memset(out, 0, sizeof(*out));
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    /* SAME request as nodus_client_dnac_supply — the additive keys ride
+     * the existing dnac_supply reply (nodus_witness_handlers.c
+     * handle_dnac_supply); nodus_client_dnac_chain_id32's pattern. */
+    enc_dnac_query(&enc, txn, client->token, "dnac_supply", 0);
+
+    size_t len = cbor_encoder_len(&enc);
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+
+    int drc = nodus_dnac_supply_buckets_decode(req->raw_response,
+                                               req->raw_response_len, out);
+    free_pending(client, req);
+    return drc == 0 ? 0 : NODUS_ERR_PROTOCOL_ERROR;
+}
+
 /* ── dnac_balance (scan-v3; wire: nodus.h) ────────────────────────────
  * Hostile-reply decoder on the v3d_* readers above (the same END/ERROR,
  * container-count, duplicate-key and truncation discipline). */

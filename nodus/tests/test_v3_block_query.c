@@ -58,6 +58,25 @@
  *    missing "tk", descending or repeated token ids, s > a, c == 0, a
  *    missing "s", an array head that over-claims, and MAX + 1 tokens are
  *    REFUSED; MAX tokens and an empty list decode.
+ *  t_supply_view — the dnac_supply buckets (decision
+ *    2026-09-30-scan-supply-buckets.md; nodus_witness_supply_view_get)
+ *    over the same REAL chain: at genesis and at tip 1 every bucket
+ *    (reward_pool, treasury pool 1..9, unclaimed, current) equals an
+ *    independent SQL reading of its table, and
+ *    current − reward_pool − Σ treasury − unclaimed equals the coins that
+ *    exist (utxo + self stake + delegation + accrual); the REAL claim
+ *    moves exactly its leaf from "unclaimed" to circulating with current
+ *    unchanged; two reads agree. Crafted rows then pin: pool 3 lands in
+ *    treasury[2]; a missing pool row reads 0; another asset's
+ *    distribution is excluded, a native one counted; a negative or
+ *    non-INTEGER balance, a pool id 10, a negative remaining, a negative
+ *    reward_pool and an OPEN transaction on the connection each fail the
+ *    read (-1, never a value); no supply row = has_supply 0.
+ *  t_supply_decoder_hostile — a hand-built VALID dnac_supply reply decodes
+ *    its buckets; a reply with none of the three keys decodes as an older
+ *    node (has false); truncation at every length, two of three keys,
+ *    buckets without "current", a duplicate key, a non-uint or negative
+ *    value, 8 or 10 pools and an over-claiming array head are REFUSED.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build. Environment: none. SQLite
@@ -90,6 +109,13 @@
  *     native coin comes from the real pipeline. The independent sum reads
  *     the same utxo_set table — it cross-checks the aggregation, not the
  *     table's contents.
+ *  6. dnac_supply buckets: the handler's encoder (handle_dnac_supply —
+ *     static, it only sends) is NOT driven; the reader it encodes from
+ *     and the client decoder are, separately. The single-connection /
+ *     single-thread argument for "one reading moment" is not provable in
+ *     a unit test; only the open-transaction refusal is. The fixture's
+ *     reward_pool and treasury are 0 at genesis (cfg_make_v3_real), so
+ *     the non-zero readings come from crafted UPDATEs, not a genesis.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -1923,6 +1949,331 @@ static int t_balance_decoder_hostile(void)
     return 0;
 }
 
+/* ══ dnac_supply buckets (decision 2026-09-30-scan-supply-buckets.md) ══ */
+
+/* One integer out of a one-row SELECT, read here, not through any
+ * production accessor. A negative or non-INTEGER value is a failure. */
+static int sv_u64(nodus_witness_t *w, const char *sql, uint64_t *out)
+{
+    sqlite3_stmt *st = NULL;
+    int           rc = -1;
+
+    if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    if (sqlite3_step(st) == SQLITE_ROW &&
+        sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
+        sqlite3_column_int64(st, 0) >= 0) {
+        *out = (uint64_t)sqlite3_column_int64(st, 0);
+        rc = 0;
+    }
+    sqlite3_finalize(st);
+    return rc;
+}
+
+static int sv_exec(nodus_witness_t *w, const char *sql)
+{
+    return sqlite3_exec(w->db, sql, NULL, NULL, NULL) == SQLITE_OK ? 0 : -1;
+}
+
+/* circulating by the decision's formula, from ONE view; -1 on underflow */
+static int sv_circ(const nodus_witness_supply_view_t *v, uint64_t *out)
+{
+    uint64_t c = v->supply.current_supply;
+
+    if (v->supply.reward_pool > c) return -1;
+    c -= v->supply.reward_pool;
+    for (size_t i = 0; i < NODUS_WITNESS_SUPPLY_TREASURY_POOLS; i++) {
+        if (v->treasury[i] > c) return -1;
+        c -= v->treasury[i];
+    }
+    if (v->unclaimed > c) return -1;
+    c -= v->unclaimed;
+    *out = c;
+    return 0;
+}
+
+/* The same figure read the OTHER way: every coin that exists outside the
+ * buckets — utxo_set (this fixture holds native CORE coins only), bonded
+ * self stake, delegations and reward accrual. The CORE conservation
+ * invariant (nodus_rt_core_invariant) says the two readings agree. */
+static int sv_circ_indep(nodus_witness_t *w, uint64_t *out)
+{
+    uint64_t u = 0, s = 0, d = 0, a = 0;
+
+    if (sv_u64(w, "SELECT COALESCE(SUM(amount), 0) FROM utxo_set", &u) != 0 ||
+        sv_u64(w, "SELECT COALESCE(SUM(self_stake), 0) FROM validators",
+               &s) != 0 ||
+        sv_u64(w, "SELECT COALESCE(SUM(total_delegated), 0) FROM validators",
+               &d) != 0 ||
+        sv_u64(w, "SELECT COALESCE(SUM(amount), 0) FROM v2_reward_accrual",
+               &a) != 0)
+        return -1;
+    *out = u + s + d + a;
+    return 0;
+}
+
+/* Every bucket of `v` against an independent SQL reading of its table. */
+static int sv_match_tables(nodus_witness_t *w,
+                           const nodus_witness_supply_view_t *v)
+{
+    uint64_t n = 0;
+    char     sql[160];
+
+    if (sv_u64(w, "SELECT reward_pool FROM supply_tracking WHERE id = 1",
+               &n) != 0 || n != v->supply.reward_pool)
+        return -1;
+    if (sv_u64(w, "SELECT current_supply FROM supply_tracking WHERE id = 1",
+               &n) != 0 || n != v->supply.current_supply)
+        return -1;
+    for (unsigned i = 0; i < NODUS_WITNESS_SUPPLY_TREASURY_POOLS; i++) {
+        snprintf(sql, sizeof(sql),
+                 "SELECT COALESCE((SELECT balance FROM v2_treasury "
+                 "WHERE pool_id = %u), 0)", i + 1);
+        if (sv_u64(w, sql, &n) != 0 || n != v->treasury[i]) return -1;
+    }
+    if (sv_u64(w, "SELECT COALESCE(SUM(remaining), 0) FROM v2_dist_state",
+               &n) != 0 || n != v->unclaimed)
+        return -1;
+    return 0;
+}
+
+static int t_supply_view(void)
+{
+    gfx_t    g;
+    exec_t   x;
+    uint8_t  cbytes[DNA_CLAIM_MAX_WIRE];
+    size_t   clen = 0;
+    uint64_t tip = 0, circ0 = 0, circ1 = 0, indep = 0, cur0 = 0;
+    nodus_witness_supply_view_t v, v2;
+
+    CHECK(gfx_open(&g, "sup") == 0, "version-3 fixture");
+    CHECK(exec_init(&x, &g) == 0, "blockexec + real application");
+
+    /* ── genesis: every bucket = its table; the two readings agree ──── */
+    CHECK(nodus_witness_supply_view_get(g.w, &v) == 0 && v.has_supply == 1,
+          "the genesis chain answers a view with its supply row");
+    CHECK(nodus_witness_v2_tip_height(g.w, &tip) == 0 && v.tip == tip,
+          "tip = nodus_witness_v2_tip_height");
+    CHECK(sv_match_tables(g.w, &v) == 0,
+          "reward_pool / current / treasury[1..9] / unclaimed = the tables");
+    CHECK(v.unclaimed == TREASURY_RAW,
+          "the whole allocation is unclaimed at genesis (the native "
+          "CORE filter keeps the fixture's one distribution)");
+    CHECK(sv_circ(&v, &circ0) == 0, "no bucket exceeds current");
+    CHECK(sv_circ_indep(g.w, &indep) == 0 && indep == circ0,
+          "current - reward_pool - treasury - unclaimed = the coins that "
+          "exist (utxo + stake + delegation + accrual)");
+    cur0 = v.supply.current_supply;
+
+    /* ── height 1: the REAL claim moves the leaf out of "unclaimed" ── */
+    CHECK(build_claim(&g, cbytes, sizeof(cbytes), &clen) == 0, "claim");
+    x.txs[0].data = cbytes; x.txs[0].len = clen;
+    CHECK(commit_height(&x, 1, 1) == 0, "height 1 commits");
+    CHECK(nodus_witness_supply_view_get(g.w, &v) == 0 && v.has_supply == 1 &&
+          v.tip == 1, "the view at tip 1");
+    CHECK(sv_match_tables(g.w, &v) == 0, "the buckets = the tables at tip 1");
+    CHECK(v.unclaimed == 0, "the one-leaf distribution is fully claimed");
+    CHECK(v.supply.current_supply == cur0, "a claim does not change current");
+    CHECK(sv_circ(&v, &circ1) == 0 && circ1 == circ0 + TREASURY_RAW,
+          "circulating rises by exactly the claimed amount");
+    CHECK(sv_circ_indep(g.w, &indep) == 0 && indep == circ1,
+          "and the two readings still agree");
+
+    /* ── Determinism: two reads of the same state, the same figures ── */
+    CHECK(nodus_witness_supply_view_get(g.w, &v2) == 0, "a second read");
+    CHECK(v2.has_supply == v.has_supply && v2.tip == v.tip &&
+          v2.supply.current_supply == v.supply.current_supply &&
+          v2.supply.reward_pool == v.supply.reward_pool &&
+          memcmp(v2.treasury, v.treasury, sizeof(v.treasury)) == 0 &&
+          v2.unclaimed == v.unclaimed, "identical figures");
+
+    /* ── crafted rows: what the reader reads (not the chain's state) ── */
+    CHECK(sv_exec(g.w, "UPDATE v2_treasury SET balance = 777 "
+                       "WHERE pool_id = 3") == 0 &&
+          sv_exec(g.w, "UPDATE supply_tracking SET reward_pool = 55 "
+                       "WHERE id = 1") == 0, "crafted pool 3 / reserve");
+    CHECK(nodus_witness_supply_view_get(g.w, &v) == 0 &&
+          v.treasury[2] == 777 && v.supply.reward_pool == 55,
+          "pool 3 is treasury[2]; reward_pool is the row's");
+    CHECK(sv_exec(g.w, "DELETE FROM v2_treasury WHERE pool_id = 9") == 0 &&
+          nodus_witness_supply_view_get(g.w, &v) == 0 && v.treasury[8] == 0,
+          "a pool with no row reads 0");
+    CHECK(sv_exec(g.w, "INSERT INTO v2_dist_state (manifest_hash, "
+                       "target_domain_id, target_asset_ref, remaining) "
+                       "VALUES (zeroblob(63) || x'01', 1, "
+                       "x'" /* 64 × 0x07 */
+                       "0707070707070707070707070707070707070707070707070707"
+                       "0707070707070707070707070707070707070707070707070707"
+                       "070707070707070707070707', 5)") == 0,
+          "a distribution of ANOTHER asset");
+    CHECK(nodus_witness_supply_view_get(g.w, &v) == 0 && v.unclaimed == 0,
+          "another asset's unclaimed value is not NODUS: excluded");
+    CHECK(sv_exec(g.w, "INSERT INTO v2_dist_state (manifest_hash, "
+                       "target_domain_id, target_asset_ref, remaining) "
+                       "VALUES (zeroblob(63) || x'02', 1, zeroblob(64), "
+                       "11)") == 0, "a native distribution");
+    CHECK(nodus_witness_supply_view_get(g.w, &v) == 0 && v.unclaimed == 11,
+          "the native one is counted");
+
+    /* ── fail-closed: a fault is never a value ────────────────────── */
+    CHECK(sv_exec(g.w, "UPDATE v2_treasury SET balance = -1 "
+                       "WHERE pool_id = 3") == 0 &&
+          nodus_witness_supply_view_get(g.w, &v) == -1,
+          "a negative treasury balance");
+    CHECK(sv_exec(g.w, "UPDATE v2_treasury SET balance = 'x' "
+                       "WHERE pool_id = 3") == 0 &&
+          nodus_witness_supply_view_get(g.w, &v) == -1,
+          "a non-INTEGER treasury balance");
+    CHECK(sv_exec(g.w, "UPDATE v2_treasury SET balance = 777 "
+                       "WHERE pool_id = 3") == 0 &&
+          sv_exec(g.w, "INSERT INTO v2_treasury (pool_id, balance) "
+                       "VALUES (10, 1)") == 0 &&
+          nodus_witness_supply_view_get(g.w, &v) == -1,
+          "a pool id outside 1..9");
+    CHECK(sv_exec(g.w, "DELETE FROM v2_treasury WHERE pool_id = 10") == 0 &&
+          nodus_witness_supply_view_get(g.w, &v) == 0,
+          "control: repaired, it answers again");
+    CHECK(sv_exec(g.w, "UPDATE v2_dist_state SET remaining = -1 "
+                       "WHERE manifest_hash = zeroblob(63) || x'02'") == 0 &&
+          nodus_witness_supply_view_get(g.w, &v) == -1,
+          "a negative native remaining");
+    CHECK(sv_exec(g.w, "UPDATE v2_dist_state SET remaining = 11 "
+                       "WHERE manifest_hash = zeroblob(63) || x'02'") == 0 &&
+          sv_exec(g.w, "UPDATE supply_tracking SET reward_pool = -1 "
+                       "WHERE id = 1") == 0 &&
+          nodus_witness_supply_view_get(g.w, &v) == -1,
+          "a negative reward_pool");
+    CHECK(sv_exec(g.w, "UPDATE supply_tracking SET reward_pool = 55 "
+                       "WHERE id = 1") == 0 &&
+          sv_exec(g.w, "BEGIN") == 0 &&
+          nodus_witness_supply_view_get(g.w, &v) == -1,
+          "an open ledger transaction: committed state only");
+    CHECK(sv_exec(g.w, "ROLLBACK") == 0 &&
+          nodus_witness_supply_view_get(g.w, &v) == 0,
+          "control: closed, it answers again");
+
+    /* ── no supply row (pre-genesis shape): a view without buckets ── */
+    CHECK(sv_exec(g.w, "DELETE FROM supply_tracking") == 0 &&
+          nodus_witness_supply_view_get(g.w, &v) == 0 &&
+          v.has_supply == 0 && v.supply.reward_pool == 0 &&
+          v.supply.current_supply == 0,
+          "has_supply 0 and a zeroed supply — the handler omits the keys");
+
+    exec_free(&x);
+    gfx_close(&g);
+    return 0;
+}
+
+/* A hand-built dnac_supply reply. */
+typedef struct {
+    int      no_cur;         /* no "current"                             */
+    int      no_rp;          /* no "reward_pool"                         */
+    int      no_tr;          /* no "treasury"                            */
+    int      no_un;          /* no "unclaimed"                           */
+    int      dup_rp;         /* "reward_pool" twice                      */
+    uint32_t tr_head;        /* the treasury array head (may lie)        */
+    uint32_t tr_n;           /* treasury elements written                */
+    int      tr_bstr;        /* treasury[4] is a byte string             */
+    int      un_neg;         /* "unclaimed" is a negative integer        */
+} sup_hostile_t;
+
+static size_t build_sup_reply(const sup_hostile_t *hs, uint8_t *buf,
+                              size_t cap)
+{
+    cbor_encoder_t e;
+    uint8_t        cid[32];
+    size_t         keys = 2 + (hs->no_cur ? 0 : 1) + (hs->no_rp ? 0 : 1) +
+                          (hs->dup_rp ? 1 : 0) + (hs->no_tr ? 0 : 1) +
+                          (hs->no_un ? 0 : 1);
+
+    memset(cid, 0x5C, sizeof(cid));
+    cbor_encoder_init(&e, buf, cap);
+    cbor_encode_map(&e, 4);
+    cbor_encode_cstr(&e, "t"); cbor_encode_uint(&e, 1);
+    cbor_encode_cstr(&e, "y"); cbor_encode_cstr(&e, "r");
+    cbor_encode_cstr(&e, "q"); cbor_encode_cstr(&e, "dnac_supply");
+    cbor_encode_cstr(&e, "r");
+    cbor_encode_map(&e, keys);
+    cbor_encode_cstr(&e, "genesis"); cbor_encode_uint(&e, 1000);
+    if (!hs->no_cur) {
+        cbor_encode_cstr(&e, "current"); cbor_encode_uint(&e, 1000);
+    }
+    cbor_encode_cstr(&e, "chain_id32"); cbor_encode_bstr(&e, cid, 32);
+    if (!hs->no_rp) {
+        cbor_encode_cstr(&e, "reward_pool"); cbor_encode_uint(&e, 200);
+    }
+    if (hs->dup_rp) {
+        cbor_encode_cstr(&e, "reward_pool"); cbor_encode_uint(&e, 200);
+    }
+    if (!hs->no_tr) {
+        cbor_encode_cstr(&e, "treasury");
+        cbor_encode_array(&e, hs->tr_head);
+        for (uint32_t j = 0; j < hs->tr_n; j++) {
+            if (hs->tr_bstr && j == 4) cbor_encode_bstr(&e, cid, 8);
+            else cbor_encode_uint(&e, 10u * (j + 1));
+        }
+    }
+    if (!hs->no_un) {
+        cbor_encode_cstr(&e, "unclaimed");
+        if (hs->un_neg) cbor_encode_int(&e, -3);
+        else cbor_encode_uint(&e, 50);
+    }
+    return cbor_encoder_len(&e);
+}
+
+static int t_supply_decoder_hostile(void)
+{
+    static uint8_t buf[4096];
+    nodus_dnac_supply_buckets_t b;
+    sup_hostile_t hs;
+    size_t len;
+
+#define SUP_REFUSED(msg) do {                                               \
+        len = build_sup_reply(&hs, buf, sizeof(buf));                       \
+        CHECK(len > 0 && nodus_dnac_supply_buckets_decode(buf, len, &b)     \
+                  == -1 && !b.has && b.reward_pool == 0, (msg));            \
+    } while (0)
+
+    /* the CONTROL */
+    memset(&hs, 0, sizeof(hs));
+    hs.tr_head = hs.tr_n = NODUS_DNAC_TREASURY_POOLS;
+    len = build_sup_reply(&hs, buf, sizeof(buf));
+    CHECK(len > 0 && nodus_dnac_supply_buckets_decode(buf, len, &b) == 0 &&
+          b.has && b.current_supply == 1000 && b.reward_pool == 200 &&
+          b.treasury[0] == 10 && b.treasury[8] == 90 && b.unclaimed == 50,
+          "the well-formed reply decodes, pool 1 first");
+
+    /* truncated at every length */
+    for (size_t cut = 1; cut < len; cut++)
+        CHECK(nodus_dnac_supply_buckets_decode(buf, len - cut, &b) == -1 &&
+              !b.has, "a truncated reply is refused");
+
+    /* an older node: none of the three — valid, has = false */
+    hs.no_rp = hs.no_tr = hs.no_un = 1;
+    len = build_sup_reply(&hs, buf, sizeof(buf));
+    CHECK(len > 0 && nodus_dnac_supply_buckets_decode(buf, len, &b) == 0 &&
+          !b.has && b.current_supply == 0,
+          "no bucket keys = an older node, not an error");
+    hs.no_rp = hs.no_tr = hs.no_un = 0;
+
+    hs.no_rp = 1;  SUP_REFUSED("two of three: no reward_pool"); hs.no_rp = 0;
+    hs.no_tr = 1;  SUP_REFUSED("two of three: no treasury");    hs.no_tr = 0;
+    hs.no_un = 1;  SUP_REFUSED("two of three: no unclaimed");   hs.no_un = 0;
+    hs.no_cur = 1; SUP_REFUSED("buckets without current");      hs.no_cur = 0;
+    hs.dup_rp = 1; SUP_REFUSED("a duplicate key");              hs.dup_rp = 0;
+    hs.tr_bstr = 1; SUP_REFUSED("a non-uint pool balance");     hs.tr_bstr = 0;
+    hs.un_neg = 1; SUP_REFUSED("a negative unclaimed");         hs.un_neg = 0;
+    hs.tr_head = hs.tr_n = NODUS_DNAC_TREASURY_POOLS - 1;
+    SUP_REFUSED("eight pools");
+    hs.tr_head = hs.tr_n = NODUS_DNAC_TREASURY_POOLS + 1;
+    SUP_REFUSED("ten pools");
+    hs.tr_head = NODUS_DNAC_TREASURY_POOLS + 1;
+    hs.tr_n = NODUS_DNAC_TREASURY_POOLS;
+    SUP_REFUSED("an array head that claims more pools than follow");
+#undef SUP_REFUSED
+    return 0;
+}
+
 int main(void)
 {
     static const struct {
@@ -1933,6 +2284,8 @@ int main(void)
         { "decoder_hostile",  t_decoder_hostile },
         { "balance",          t_balance },
         { "balance_decoder",  t_balance_decoder_hostile },
+        { "supply_view",      t_supply_view },
+        { "supply_decoder",   t_supply_decoder_hostile },
     };
     size_t i, failed = 0, ncases = sizeof(cases) / sizeof(cases[0]);
 

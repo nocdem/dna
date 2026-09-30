@@ -340,6 +340,38 @@ static void route_stats(exp_db_t *db, exp_json_t *j, int *status) {
     if (have_supply_burned) exp_json_u64_str(j, supply_burned); else exp_json_raw(j, "null");
     exp_json_raw(j, ",\"supply_genesis\":");
     if (have_supply_genesis) exp_json_u64_str(j, supply_genesis); else exp_json_raw(j, "null");
+
+    /* Supply buckets (decision 2026-09-30-scan-supply-buckets.md): one
+     * meta blob, so the four figures and the "current" they are
+     * subtracted from are one reply's. Absent / malformed / an older node
+     * (has false) -> every bucket null; circulating is null also when a
+     * subtraction would go below zero — never a wrapped number. */
+    uint8_t blob[EXP_SUPPLY_BUCKETS_BLOB_LEN];
+    size_t blob_len = 0;
+    nodus_dnac_supply_buckets_t bk;
+    int have_buckets =
+        exp_db_get_meta_blob(db, EXP_META_SUPPLY_BUCKETS, blob, sizeof(blob), &blob_len) == 0 &&
+        exp_supply_buckets_unpack(blob, blob_len, &bk) == 0 && bk.has;
+    uint64_t circulating = 0;
+    int have_circulating = have_buckets && exp_supply_circulating(&bk, &circulating) == 0;
+
+    exp_json_raw(j, ",\"reward_pool\":");
+    if (have_buckets) exp_json_u64_str(j, bk.reward_pool); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"treasury\":");
+    if (have_buckets) {
+        exp_json_raw(j, "[");
+        for (int i = 0; i < NODUS_DNAC_TREASURY_POOLS; i++) {
+            if (i) exp_json_raw(j, ",");
+            exp_json_u64_str(j, bk.treasury[i]);
+        }
+        exp_json_raw(j, "]");
+    } else {
+        exp_json_raw(j, "null");
+    }
+    exp_json_raw(j, ",\"unclaimed\":");
+    if (have_buckets) exp_json_u64_str(j, bk.unclaimed); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"circulating\":");
+    if (have_circulating) exp_json_u64_str(j, circulating); else exp_json_raw(j, "null");
     exp_json_raw(j, "}");
 
     *status = 200;

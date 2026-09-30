@@ -178,6 +178,7 @@ typedef struct {
     uint64_t fail_height;   /* 0 = never fail */
     uint32_t fail_from;     /* the page (by first index) that fails */
     int      page_calls;
+    nodus_dnac_supply_buckets_t buckets;  /* has == false: an older node */
 } fake_src_t;
 
 static int fake_tip(void *ctx, exp_chain_tip_t *out) {
@@ -186,7 +187,26 @@ static int fake_tip(void *ctx, exp_chain_tip_t *out) {
     memcpy(out->chain_id32, f->chain_id32, 32);
     out->tip = f->tip;
     out->supply_current = 123;
+    out->buckets = f->buckets;
     return 0;
+}
+
+/* The genesis-day buckets of the live chain (decision
+ * 2026-09-30-scan-supply-buckets.md; genesis.conf): 1 000 000 000 NODUS
+ * total, 200M reward reserve, service pools 1-4 = 100M / 100M / 50M /
+ * 50M, pools 5-9 = 0 (genesis outputs), 50M unclaimed — circulating
+ * 450M. Raw units = NODUS × 10^8. */
+#define NODUS_RAW(n) ((uint64_t)(n) * 100000000ULL)
+static void genesis_day_buckets(nodus_dnac_supply_buckets_t *b) {
+    memset(b, 0, sizeof(*b));
+    b->has = true;
+    b->current_supply = NODUS_RAW(1000000000);
+    b->reward_pool = NODUS_RAW(200000000);
+    b->treasury[0] = NODUS_RAW(100000000);
+    b->treasury[1] = NODUS_RAW(100000000);
+    b->treasury[2] = NODUS_RAW(50000000);
+    b->treasury[3] = NODUS_RAW(50000000);
+    b->unclaimed = NODUS_RAW(50000000);
 }
 
 static int fake_page(void *ctx, uint64_t h, uint32_t from, nodus_dnac_v3_block_result_t *out) {
@@ -616,6 +636,109 @@ static void test_sync_tick_height_bound(void) {
     if (exp_db_get_meta_u64(db, "tip_height", &tip) != 0 || tip != f.tip ||
         exp_db_get_meta_u64(db, "supply_current", &supply) != 0 || supply != 123) {
         FAIL("tip/supply meta not stored");
+        exp_db_close(db);
+        return;
+    }
+    exp_db_close(db);
+    PASS();
+}
+
+/* Supply buckets, pure half: the meta blob round-trips, circulating is the
+ * decision's formula (genesis day = 450 000 000 NODUS), and every path
+ * that would wrap below zero is refused rather than answered. */
+static void test_supply_buckets_pure(void) {
+    TEST("supply buckets: blob round trip + circulating + underflow");
+
+    nodus_dnac_supply_buckets_t b, u;
+    uint8_t blob[EXP_SUPPLY_BUCKETS_BLOB_LEN];
+    uint64_t circ = 0;
+
+    genesis_day_buckets(&b);
+    exp_supply_buckets_pack(&b, blob);
+    if (blob[0] != 1 || exp_supply_buckets_unpack(blob, sizeof(blob), &u) != 0 || !u.has ||
+        u.current_supply != b.current_supply || u.reward_pool != b.reward_pool ||
+        memcmp(u.treasury, b.treasury, sizeof(b.treasury)) != 0 || u.unclaimed != b.unclaimed) {
+        FAIL("round trip");
+        return;
+    }
+    if (exp_supply_circulating(&u, &circ) != 0 || circ != NODUS_RAW(450000000)) {
+        FAIL("genesis day must be 450 000 000 NODUS circulating");
+        return;
+    }
+
+    /* exactly zero left is an answer, one raw unit more is not */
+    u.current_supply = NODUS_RAW(550000000);
+    if (exp_supply_circulating(&u, &circ) != 0 || circ != 0) { FAIL("zero circulating"); return; }
+    u.current_supply -= 1;
+    circ = 7;
+    if (exp_supply_circulating(&u, &circ) != -1 || circ != 7) { FAIL("unclaimed underflow must refuse"); return; }
+    genesis_day_buckets(&u);
+    u.reward_pool = u.current_supply + 1;
+    if (exp_supply_circulating(&u, &circ) != -1) { FAIL("reward_pool underflow must refuse"); return; }
+    genesis_day_buckets(&u);
+    u.treasury[8] = UINT64_MAX;
+    if (exp_supply_circulating(&u, &circ) != -1) { FAIL("treasury underflow must refuse"); return; }
+
+    /* an older node: has 0 packs to an all-zero blob and has no circulating */
+    memset(&b, 0, sizeof(b));
+    b.reward_pool = 99;                        /* ignored when has is false */
+    exp_supply_buckets_pack(&b, blob);
+    for (size_t i = 0; i < sizeof(blob); i++) {
+        if (blob[i] != 0) { FAIL("has-false blob must be all zero"); return; }
+    }
+    if (exp_supply_buckets_unpack(blob, sizeof(blob), &u) != 0 || u.has ||
+        exp_supply_circulating(&u, &circ) != -1) {
+        FAIL("has-false blob must unpack to no buckets");
+        return;
+    }
+
+    /* a malformed blob is refused */
+    if (exp_supply_buckets_unpack(blob, sizeof(blob) - 1, &u) != -1 || u.has) { FAIL("short blob"); return; }
+    blob[0] = 2;
+    if (exp_supply_buckets_unpack(blob, sizeof(blob), &u) != -1 || u.has) { FAIL("flag 2"); return; }
+    PASS();
+}
+
+/* Supply buckets, sync half: an accepted observation stores its buckets
+ * as the one blob, and a later observation WITHOUT buckets (an older
+ * node) replaces them — the previous server's figures never linger. */
+static void test_sync_stores_buckets(void) {
+    TEST("tick: buckets stored as one blob; an older node clears them");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+
+    fake_src_t f;
+    memset(&f, 0, sizeof(f));
+    fill(f.chain_id32, 32, 0x42);
+    f.tip = 1;
+    f.n_items = 0;
+    f.page_size = 1;
+    genesis_day_buckets(&f.buckets);
+    exp_sync_source_t src;
+    fake_source(&src, &f);
+
+    exp_reset_fsm_t fsm;
+    memset(&fsm, 0, sizeof(fsm));
+    uint8_t blob[EXP_SUPPLY_BUCKETS_BLOB_LEN];
+    size_t len = 0;
+    nodus_dnac_supply_buckets_t u;
+    if (exp_sync_tick(&src, &db, ":memory:", &fsm, NULL) != 0 ||
+        exp_db_get_meta_blob(db, EXP_META_SUPPLY_BUCKETS, blob, sizeof(blob), &len) != 0 ||
+        exp_supply_buckets_unpack(blob, len, &u) != 0 || !u.has ||
+        u.reward_pool != f.buckets.reward_pool || u.treasury[3] != f.buckets.treasury[3] ||
+        u.unclaimed != f.buckets.unclaimed || u.current_supply != f.buckets.current_supply) {
+        FAIL("buckets not stored");
+        exp_db_close(db);
+        return;
+    }
+
+    memset(&f.buckets, 0, sizeof(f.buckets));
+    f.tip = 2;
+    if (exp_sync_tick(&src, &db, ":memory:", &fsm, NULL) != 0 ||
+        exp_db_get_meta_blob(db, EXP_META_SUPPLY_BUCKETS, blob, sizeof(blob), &len) != 0 ||
+        exp_supply_buckets_unpack(blob, len, &u) != 0 || u.has) {
+        FAIL("an older node's observation must replace the buckets");
         exp_db_close(db);
         return;
     }
@@ -1089,7 +1212,9 @@ static void test_route_stats_and_blocks(void) {
     exp_db_set_meta_u64(db, "tip_height", 151);
 
     static const char *const stats_needles[] = { "\"indexed_height\":150", "\"tip_height\":151",
-                                                 "\"chain_id\":null", NULL };
+                                                 "\"chain_id\":null", "\"reward_pool\":null",
+                                                 "\"treasury\":null", "\"unclaimed\":null",
+                                                 "\"circulating\":null", NULL };
     if (route_expect(db, "/api/stats", 200, stats_needles) != 0) { FAIL("stats"); exp_db_close(db); return; }
 
     exp_http_ctx_t ctx = {0};
@@ -1104,6 +1229,50 @@ static void test_route_stats_and_blocks(void) {
                 strstr(body.buf, "\"applied_count\":0,\"n_items\":0}");
     exp_json_freebuf(&body);
     if (n != 100 || !shape) { FAIL("blocks clamp/shape"); exp_db_close(db); return; }
+
+    exp_db_close(db);
+    PASS();
+}
+
+/* /api/stats supply buckets: the stored blob is served as strings, pool
+ * 1..9 in order, with circulating computed from the blob alone; an
+ * underflowing blob keeps its buckets but answers circulating null; an
+ * older node's blob answers every bucket null. */
+static void test_route_stats_buckets(void) {
+    TEST("route: /api/stats supply buckets + circulating (null on underflow)");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+
+    nodus_dnac_supply_buckets_t b;
+    uint8_t blob[EXP_SUPPLY_BUCKETS_BLOB_LEN];
+    genesis_day_buckets(&b);
+    exp_supply_buckets_pack(&b, blob);
+    exp_db_set_meta_blob(db, EXP_META_SUPPLY_BUCKETS, blob, sizeof(blob));
+    exp_db_set_meta_u64(db, "supply_genesis", NODUS_RAW(1000000000));
+
+    static const char *const genesis_day[] = {
+        "\"supply_genesis\":\"100000000000000000\"",
+        "\"reward_pool\":\"20000000000000000\"",
+        "\"treasury\":[\"10000000000000000\",\"10000000000000000\",\"5000000000000000\","
+        "\"5000000000000000\",\"0\",\"0\",\"0\",\"0\",\"0\"]",
+        "\"unclaimed\":\"5000000000000000\"",
+        "\"circulating\":\"45000000000000000\"", NULL };
+    if (route_expect(db, "/api/stats", 200, genesis_day) != 0) { FAIL("genesis-day stats"); exp_db_close(db); return; }
+
+    b.reward_pool = b.current_supply + 1;
+    exp_supply_buckets_pack(&b, blob);
+    exp_db_set_meta_blob(db, EXP_META_SUPPLY_BUCKETS, blob, sizeof(blob));
+    static const char *const underflow[] = { "\"reward_pool\":\"100000000000000001\"",
+                                             "\"circulating\":null", NULL };
+    if (route_expect(db, "/api/stats", 200, underflow) != 0) { FAIL("underflow must be null"); exp_db_close(db); return; }
+
+    memset(&b, 0, sizeof(b));
+    exp_supply_buckets_pack(&b, blob);
+    exp_db_set_meta_blob(db, EXP_META_SUPPLY_BUCKETS, blob, sizeof(blob));
+    static const char *const older[] = { "\"reward_pool\":null", "\"treasury\":null",
+                                         "\"unclaimed\":null", "\"circulating\":null", NULL };
+    if (route_expect(db, "/api/stats", 200, older) != 0) { FAIL("older node must be null"); exp_db_close(db); return; }
 
     exp_db_close(db);
     PASS();
@@ -1399,6 +1568,8 @@ int main(void) {
     test_sync_collect_concatenates_pages();
     test_sync_partial_height_keeps_watermark();
     test_sync_tick_height_bound();
+    test_supply_buckets_pure();
+    test_sync_stores_buckets();
     test_sync_fsm_keys_on_chain_id32();
     test_chain_config_load();
     test_chain_config_load_rejects_malformed();
@@ -1415,6 +1586,7 @@ int main(void) {
     test_json_str_escaping();
     test_json_hex_emit();
     test_route_stats_and_blocks();
+    test_route_stats_buckets();
     test_route_block_tx_address();
     test_route_search();
     test_route_errors();

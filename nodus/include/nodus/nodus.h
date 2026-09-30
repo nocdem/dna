@@ -1220,6 +1220,63 @@ void nodus_client_free_v3_block_result(nodus_dnac_v3_block_result_t *result);
 int nodus_client_dnac_supply_tip(nodus_client_t *client, bool *has_out,
                                  uint64_t *tip_out);
 
+/* ── dnac_supply buckets (decision
+ * docs/plans/decisions/2026-09-30-scan-supply-buckets.md) ─────────────
+ *
+ * The version-3 dnac_supply reply carries three ADDITIVE keys beside
+ * "chain_id32" / "tip" (nodus_witness_handlers.c handle_dnac_supply):
+ *   "reward_pool": uint             supply_tracking.reward_pool — the
+ *                                   validator reward reserve left
+ *   "treasury":    [uint × 9]       v2_treasury.balance, pool 1..9 in
+ *                                   order (NODUS_DNAC_TREASURY_POOLS)
+ *   "unclaimed":   uint             Σ v2_dist_state.remaining of the
+ *                                   distributions targeting the native
+ *                                   coin — genesis allocation not yet
+ *                                   claimed
+ * The node reads them and "current" at ONE reading moment
+ * (nodus_witness_supply_view_get), so
+ *   circulating = current − reward_pool − Σ treasury − unclaimed
+ * is computed from one reply. A legacy node, and a successor node with
+ * no supply row yet, sends none of the three. */
+
+#define NODUS_DNAC_TREASURY_POOLS 9
+
+typedef struct {
+    bool     has;             /* false: the reply carried none of the three
+                               * bucket keys (an older node) — every
+                               * field below is 0 and means nothing */
+    uint64_t current_supply;  /* "current" of the SAME reply */
+    uint64_t reward_pool;
+    uint64_t treasury[NODUS_DNAC_TREASURY_POOLS];   /* [0] = pool 1 */
+    uint64_t unclaimed;
+} nodus_dnac_supply_buckets_t;
+
+/**
+ * Decode a dnac_supply reply's buckets — the decoder
+ * nodus_client_dnac_supply_buckets uses, exported for tests. STRICT (the
+ * reply is a server's, possibly hostile): a duplicate key, a truncated
+ * message, a non-uint value, a "treasury" array that is not exactly
+ * NODUS_DNAC_TREASURY_POOLS uints, "current" missing, or SOME but not
+ * all of the three bucket keys are refused. None of the three = a valid
+ * older reply (`has` false). Unknown keys are skipped.
+ * @return 0; -1 malformed (`out` zeroed).
+ */
+int nodus_dnac_supply_buckets_decode(const uint8_t *raw, size_t raw_len,
+                                     nodus_dnac_supply_buckets_t *out);
+
+/**
+ * Read the supply buckets through the dnac_supply RPC (the
+ * nodus_client_dnac_supply_tip pattern: the same request, additive keys,
+ * nodus_dnac_supply_result_t is not grown). `out->has` false = an older
+ * node that sends no buckets.
+ * @return 0 (`out->has` meaningful either way); NODUS_ERR_PROTOCOL_ERROR
+ *         on a malformed reply; an error code on transport/RPC failure
+ *         (the node answers an error, never zeros, when it cannot read
+ *         its own state).
+ */
+int nodus_client_dnac_supply_buckets(nodus_client_t *client,
+                                     nodus_dnac_supply_buckets_t *out);
+
 /* ── dnac_balance — one owner's TRANSPARENT balance, per token (scan-v3) ─
  * (decision docs/plans/decisions/2026-09-28-scan-v3-query.md item 3a)
  *

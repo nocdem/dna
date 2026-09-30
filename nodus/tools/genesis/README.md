@@ -107,7 +107,7 @@ The document is `config_version = 5`.
 |---|---|---|
 | 1 Storage | 100 000 000 | treasury row |
 | 2 Compute | 100 000 000 | treasury row |
-| 3 VPN / Bandwidth | 50 000 000 | treasury row |
+| 3 Bandwidth | 50 000 000 | treasury row |
 | 4 Future services | 50 000 000 | treasury row |
 | 5 Security / bug bounty | 50 000 000 | genesis output index 0 |
 | 6 Liquidity / market making | 150 000 000 | genesis output index 1 |

@@ -127,12 +127,24 @@
     $('api-status').textContent = known ? (behind ? t('Index catching up', 'İndeks güncelleniyor') : t('Index matches the last reported tip', 'İndeks son bildirilen blokla eşleşiyor')) : t('Index connected · synchronization status unknown', 'İndekse bağlandı · eşitleme durumu bilinmiyor');
     if (!$('stats-cards')) return;
     $('stat-height').textContent = indexed ?? '—';
-    $('stat-supply').textContent = money(stats.supply_current);
+    // Supply buckets (explorer /api/stats; decision 2026-09-30-scan-supply-buckets.md): the
+    // total is supply_genesis (fixed), circulating is the explorer's own figure. treasury is
+    // pool 1..9; Scan shows the four service pools. A null (older node) renders "—".
+    $('stat-total').textContent = money(stats.supply_genesis);
+    $('stat-circulating').textContent = money(stats.circulating);
+    const pools = Array.isArray(stats.treasury) && stats.treasury.length === 9 ? stats.treasury : [];
+    $('bucket-reward').textContent = money(stats.reward_pool);
+    $('bucket-storage').textContent = money(pools[0]);
+    $('bucket-compute').textContent = money(pools[1]);
+    $('bucket-bandwidth').textContent = money(pools[2]);
+    $('bucket-future').textContent = money(pools[3]);
+    $('bucket-unclaimed').textContent = money(stats.unclaimed);
   }
   function statsUnavailable() {
     $('api-status').textContent = t('Index unavailable', 'İndekse erişilemiyor');
     $('staleness-banner').classList.add('hidden');
-    for (const id of ['height', 'supply']) if ($('stat-' + id)) $('stat-' + id).textContent = '—';
+    for (const id of ['height', 'total', 'circulating']) if ($('stat-' + id)) $('stat-' + id).textContent = '—';
+    for (const id of ['reward', 'storage', 'compute', 'bandwidth', 'future', 'unclaimed']) if ($('bucket-' + id)) $('bucket-' + id).textContent = '—';
   }
   async function loadBlocks(requested, fresh = false, providedStats) {
     const current = ++blockRequest, body = $('blocks-tbody');

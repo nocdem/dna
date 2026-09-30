@@ -1696,7 +1696,7 @@ Tier 3 uses the same CBOR wire format as T1/T2 but with DNAC-specific method nam
 |--------|-----------|-------------|
 | `dnac_spend` | Client→Witness | Submit spend TX for BFT consensus |
 | `dnac_nullifier` | Client→Witness | Check if nullifier is spent |
-| `dnac_supply` | Client→Witness | Query supply state |
+| `dnac_supply` | Client→Witness | Query supply state (version 3 adds `chain_id32`, `tip` and the supply buckets `reward_pool` / `treasury` / `unclaimed` — see "Supply buckets for Nodus Scan") |
 | `dnac_utxo` | Client→Witness | Query UTXOs by owner |
 | `dnac_utxo_proof` | Client→Witness | Query UTXO existence proof |
 | `dnac_ledger` | Client→Witness | Query ledger entry by hash |
@@ -3189,6 +3189,46 @@ version-3 lane never writes (`ledger_entries` has no writer).
 - Tests: `test_v3_block_query` (real chain: header/codes/effects/paging/balance,
   hostile client replies), `explorer/tests/test_explorer.c` (schema, page loop,
   partial-height watermark, reset check, routes).
+
+### Supply buckets for Nodus Scan (`dnac_supply` additive keys)
+
+**Record:** decision `docs/plans/decisions/2026-09-30-scan-supply-buckets.md`
+(operator, 2026-09-30). Scan shows the fixed total supply, where the rest of it
+sits, and a circulating figure.
+
+- **Wire (ADDITIVE, version-3 arm only, and only when the `supply_tracking` row
+  exists):** `"reward_pool"` (uint — the validator reward reserve left),
+  `"treasury"` (array of exactly 9 uints — `v2_treasury.balance` of pool 1..9 in
+  order; pools 5-9 hold 0 on the live chain, they are Foundation-multisig genesis
+  outputs), `"unclaimed"` (uint — Σ `v2_dist_state.remaining` of the distributions
+  targeting the native coin: `nodus_witness_v2_unclaimed_total(CORE, native)`, the
+  term the CORE conservation invariant sums). An older client skips the keys; a
+  legacy node and a successor node without a supply row send none of them.
+  Worst-case reply 329 of the handler's 512-byte buffer.
+- **One reading moment:** `nodus_witness_supply_view_get` (`nodus_witness_db.c`)
+  reads the supply row, the tip, the nine pools and the unclaimed total in one call
+  on the witness's single sqlite connection, used from one thread — no commit can
+  land between the reads. An open ledger transaction on that connection is refused
+  (the `dnac_v3_block` rule). No `BEGIN` is issued: a read transaction left open by
+  a fault would make the host's next `BEGIN IMMEDIATE` fail.
+- **Fail-closed:** any read fault (including a malformed treasury row or a negative
+  `reward_pool`) answers `NODUS_ERR_INTERNAL_ERROR` "supply state unreadable" on the
+  version-3 arm — never zeros. (Before this change a supply-row fault on that arm
+  answered zeros; the legacy arm is unchanged.)
+- **Circulating** = `current − reward_pool − Σ treasury − unclaimed`, computed by the
+  explorer from ONE reply (staked coins and the Foundation's coins count).
+  Genesis day on the live chain: 1 000 000 000 − 200 000 000 − 300 000 000 −
+  50 000 000 = 450 000 000 NODUS.
+- **Client:** `nodus_client_dnac_supply_buckets` + the strict
+  `nodus_dnac_supply_buckets_decode` (`nodus.h`); `nodus_dnac_supply_result_t` is
+  not grown.
+- Read-only: no write, no consensus path, no `state_root` input — not a hard fork;
+  nodes update one by one, node before explorer.
+- Tests: `test_v3_block_query` `supply_view` (every bucket against its table on a
+  real chain, the conservation cross-check, the claim moving its leaf into
+  circulation, fail-closed rows) and `supply_decoder` (hostile replies);
+  `explorer/tests/test_explorer.c` (blob round trip, 450M genesis day, underflow →
+  null, older node → null).
 
 ### Chain-config accepts only parameters the consensus reads (0.20.3)
 

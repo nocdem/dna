@@ -400,6 +400,64 @@ int  nodus_witness_supply_init(nodus_witness_t *w, uint64_t total_supply,
  */
 int  nodus_witness_supply_get(nodus_witness_t *w,
                                 nodus_witness_supply_t *out);
+
+/* ── Supply buckets (scan, decision 2026-09-30-scan-supply-buckets.md) ─ */
+
+/* The fixed treasury pool set 1..9 (nodus_witness_roots_v2.h
+ * NODUS_TREASURY_POOL_COUNT; a _Static_assert in nodus_witness_db.c keeps
+ * the two equal). */
+#define NODUS_WITNESS_SUPPLY_TREASURY_POOLS 9u
+
+typedef struct {
+    int      has_supply;      /* 1: the supply_tracking row is present;
+                               * 0: genuinely absent (pre-genesis) —
+                               * `supply` is then all zero and carries no
+                               * reward_pool */
+    nodus_witness_supply_t supply;
+    uint64_t tip;             /* nodus_witness_v2_tip_height */
+    uint64_t treasury[NODUS_WITNESS_SUPPLY_TREASURY_POOLS];
+                              /* v2_treasury.balance, pool 1..9 in order;
+                               * a pool with no row reads 0 */
+    uint64_t unclaimed;       /* Σ v2_dist_state.remaining of the
+                               * distributions targeting the CORE
+                               * domain's native asset —
+                               * nodus_witness_v2_unclaimed_total, the
+                               * term the CORE conservation invariant
+                               * sums (nodus_witness_v2_claims.c
+                               * nodus_rt_core_invariant) */
+} nodus_witness_supply_view_t;
+
+/**
+ * One read of everything the version-3 dnac_supply reply reports: the
+ * supply_tracking row (reward_pool included), the committed tip, the
+ * nine treasury balances and the unclaimed distribution total.
+ *
+ * SUCCESSOR CHAINS ONLY (w->v2_successor): the tip and the two bucket
+ * reads are version-3 tables.
+ *
+ * ONE READING MOMENT. The witness has one sqlite connection (w->db),
+ * used from one thread (the p2p worker threads run handshake / signature
+ * jobs only), so no commit can interleave between the reads of one call.
+ * What could make two of the figures disagree is a ledger transaction
+ * left OPEN on that connection (the host's FinalizeBlock..Commit
+ * bracket): the reads would then see an uncommitted block. That state is
+ * refused (-1), the same check nodus_witness_v3_block_build makes. No
+ * BEGIN is issued here: a read transaction left open by a fault path
+ * would make the host's next BEGIN IMMEDIATE fail and stop the node.
+ *
+ * Fail-closed: a DB fault is never a value. A malformed treasury row
+ * (pool_id outside 1..9, a negative balance, a non-INTEGER column, more
+ * than nine rows) and a negative reward_pool fail the read.
+ *
+ * Read-only. No consensus caller: this feeds a client RPC answer, never
+ * state_root, a block or a vote.
+ *
+ * @return  0  *out populated (has_supply tells the pre-genesis case)
+ *         -1  NULL argument, an open ledger transaction, or any read
+ *             fault; *out is unspecified
+ */
+int  nodus_witness_supply_view_get(nodus_witness_t *w,
+                                   nodus_witness_supply_view_t *out);
 /* tokenomics-v3 P2 — nodus_witness_supply_add_burned and
  * nodus_witness_supply_add_minted are DELETED: their only production
  * callers were the per-block mint and the burning epoch settlement

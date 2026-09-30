@@ -273,11 +273,17 @@ int exp_sync_tick(const exp_sync_source_t *src, exp_db_t **db_ptr, const char *d
      * interleave with /api/stats and read the other thread's row. */
     exp_db_t *db = *db_ptr;
     uint64_t last = 0;
+    /* The buckets as ONE blob, written on every observation — an older
+     * node's "none" replaces the previous server's figures (exp_chain.h). */
+    uint8_t buckets[EXP_SUPPLY_BUCKETS_BLOB_LEN];
+    exp_supply_buckets_pack(&tip.buckets, buckets);
     if (db_lock) pthread_rwlock_wrlock(db_lock);
     if (exp_db_set_meta_u64(db, "tip_height", tip.tip) != 0 ||
         exp_db_set_meta_u64(db, "supply_current", tip.supply_current) != 0 ||
         exp_db_set_meta_u64(db, "supply_burned", tip.supply_burned) != 0 ||
-        exp_db_set_meta_u64(db, "supply_genesis", tip.supply_genesis) != 0) {
+        exp_db_set_meta_u64(db, "supply_genesis", tip.supply_genesis) != 0 ||
+        exp_db_set_meta_blob(db, EXP_META_SUPPLY_BUCKETS, buckets,
+                             sizeof(buckets)) != 0) {
         QGP_LOG_WARN(LOG_TAG, "failed to persist tip/supply meta (display only)");
     }
     if (exp_db_get_meta_u64(db, "last_indexed_height", &last) != 0) last = 0;

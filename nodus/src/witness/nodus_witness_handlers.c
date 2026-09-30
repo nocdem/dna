@@ -318,27 +318,54 @@ static void handle_dnac_ledger(nodus_witness_t *w,
  *                 hand.),
  *                 "tip":N (scan-v3, ADDITIVE, successor only: the
  *                 committed version-3 height MAX(v2_blocks.global_height)
- *                 — the explorer's sync bound)}
+ *                 — the explorer's sync bound),
+ *                 "reward_pool":N, "treasury":[N × 9], "unclaimed":N
+ *                 (decision 2026-09-30-scan-supply-buckets.md, ADDITIVE,
+ *                 successor only and only when the supply row exists:
+ *                 the validator reward reserve left, v2_treasury.balance
+ *                 of pool 1..9 in order, and the native coin's unclaimed
+ *                 distribution total — wire and meaning in nodus.h
+ *                 beside nodus_client_dnac_supply_buckets)}
+ *
+ * Reply size, successor arm, worst case (every uint 9 bytes, txn_id 5):
+ * envelope 29 + genesis 17 + burned 16 + current 17 + last_seq 18 +
+ * chain_id 43 + chain_id32 45 + tip 13 + reward_pool 21 + treasury 91 +
+ * unclaimed 19 = 329 bytes of the 512-byte buffer.
  * ════════════════════════════════════════════════════════════════════ */
+
+_Static_assert(NODUS_WITNESS_SUPPLY_TREASURY_POOLS == NODUS_DNAC_TREASURY_POOLS,
+               "the dnac_supply treasury array is the public pool count");
 
 static void handle_dnac_supply(nodus_witness_t *w,
                                  struct nodus_tcp_conn *conn,
                                  uint32_t txn_id) {
     nodus_witness_supply_t supply;
-    int rc = nodus_witness_supply_get(w, &supply);
-    /* scan-v3 (decision 2026-09-28-scan-v3-query.md (2)) — "tip", the
-     * committed version-3 height (MAX(v2_blocks.global_height)), rides
-     * the successor arm beside chain_id32: ADDITIVE, an older client
-     * skips the unknown key. Read on the fail-closed accessor — a fault
-     * answers an error, never a tip of 0 (a 0 would tell the explorer
-     * the chain has no blocks). */
-    uint64_t tip = 0;
-    if (w->v2_successor && nodus_witness_v2_tip_height(w, &tip) != 0) {
-        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                    "chain height unreadable");
-        return;
+    nodus_witness_supply_view_t view;
+    int rc;
+
+    memset(&view, 0, sizeof(view));
+    if (w->v2_successor) {
+        /* scan-v3 "tip" (decision 2026-09-28-scan-v3-query.md (2)) and
+         * the supply buckets (decision 2026-09-30-scan-supply-buckets.md)
+         * are read with the supply row at ONE reading moment
+         * (nodus_witness_supply_view_get), so `current` and the buckets
+         * can be subtracted from each other. A fault answers an error,
+         * never zeros: a 0 tip would tell the explorer the chain has no
+         * blocks, a 0 bucket would inflate the circulating figure. */
+        if (nodus_witness_supply_view_get(w, &view) != 0) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "supply state unreadable");
+            return;
+        }
+        supply = view.supply;
+        rc = view.has_supply ? 0 : 1;
+    } else {
+        rc = nodus_witness_supply_get(w, &supply);
     }
-    size_t rcount = w->v2_successor ? 7 : 5;
+    /* No supply row (pre-genesis): there is no reward_pool to report, so
+     * the bucket keys are left out rather than sent as zeros. */
+    bool buckets = w->v2_successor && rc == 0;
+    size_t rcount = w->v2_successor ? (buckets ? 10 : 7) : 5;
 
     uint8_t buf[512];
     cbor_encoder_t enc;
@@ -373,7 +400,17 @@ static void handle_dnac_supply(nodus_witness_t *w,
         cbor_encode_cstr(&enc, "chain_id32");
         cbor_encode_bstr(&enc, w->v2_chain32, 32);
         cbor_encode_cstr(&enc, "tip");
-        cbor_encode_uint(&enc, tip);
+        cbor_encode_uint(&enc, view.tip);
+    }
+    if (buckets) {
+        cbor_encode_cstr(&enc, "reward_pool");
+        cbor_encode_uint(&enc, view.supply.reward_pool);
+        cbor_encode_cstr(&enc, "treasury");
+        cbor_encode_array(&enc, NODUS_WITNESS_SUPPLY_TREASURY_POOLS);
+        for (size_t i = 0; i < NODUS_WITNESS_SUPPLY_TREASURY_POOLS; i++)
+            cbor_encode_uint(&enc, view.treasury[i]);
+        cbor_encode_cstr(&enc, "unclaimed");
+        cbor_encode_uint(&enc, view.unclaimed);
     }
 
     size_t rlen = cbor_encoder_len(&enc);

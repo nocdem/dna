@@ -56,8 +56,14 @@ only the supported read endpoints. The browser makes same-origin requests.
 
 Scan displays API failure separately from an empty chain or unknown values.
 Amounts use integer formatting; non-native token amounts remain raw base units
-because the API does not supply their decimals. Supply is labelled as current
-devnet supply, not market circulation. The footer describes the indexer's trust
+because the API does not supply their decimals. The home page shows three
+cards — Indexed height, Total supply (fixed) (`supply_genesis`) and
+Circulating supply (`circulating`) — and a "Where the supply is" table:
+Validator rewards remaining (`reward_pool`), Storage, Compute, Bandwidth,
+Future services (`treasury` pools 1-4) and Unclaimed genesis allocation
+(`unclaimed`) — decision `2026-09-30-scan-supply-buckets`; circulating
+includes staked coins and the Foundation's coins. A `null` field (an older
+node) shows "—". The footer describes the indexer's trust
 in witness responses. A successful HTTP request does not prove a chain is active;
 block timestamps and the reported index position remain visible.
 

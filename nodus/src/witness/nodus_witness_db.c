@@ -18,6 +18,9 @@
 #include "dnac/transaction.h"          /* DNAC_TX_HEADER_SIZE (v0.17.1) */
 #include "dnac/ledger_ids.h"           /* DNA_DOMAIN_CORE (P2P-PORT F6) */
 #include "dnac/res_meter.h"            /* dna_ck_add_u64 (scan-v3 balance) */
+#include "witness/nodus_witness_roots_v2.h"   /* NODUS_TREASURY_POOL_* (supply view) */
+#include "witness/nodus_witness_v2_produce.h" /* nodus_witness_v2_tip_height (supply view) */
+#include "witness/nodus_witness_v2_claims.h"  /* nodus_witness_v2_unclaimed_total (supply view) */
 #include <string.h>
 #include <time.h>
 #include <stdio.h>
@@ -1186,6 +1189,97 @@ int nodus_witness_supply_get(nodus_witness_t *w,
     out->reward_pool    = (uint64_t)sqlite3_column_int64(stmt, 5);
 
     sqlite3_finalize(stmt);
+    return 0;
+}
+
+/* ── Supply buckets (scan, decision 2026-09-30-scan-supply-buckets.md) ─
+ * Contract on the declaration in nodus_witness_db.h. */
+
+_Static_assert(NODUS_WITNESS_SUPPLY_TREASURY_POOLS == NODUS_TREASURY_POOL_COUNT,
+               "the supply view carries exactly the treasury pool set");
+
+/* v2_treasury, pool 1..9 into out[0..8]. The row checks are
+ * treasury_scan's (nodus_witness_roots_v2.c) — the loader the treasury
+ * root and the conservation invariant read through — so a row the root
+ * would refuse is refused here too: a non-INTEGER column, pool_id outside
+ * [MIN, MAX], a negative balance. The pool_id is the primary key, so one
+ * row per pool; a pool with no row reads 0. */
+static int supply_view_treasury(nodus_witness_t *w,
+                                uint64_t out[NODUS_WITNESS_SUPPLY_TREASURY_POOLS]) {
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT pool_id, balance FROM v2_treasury ORDER BY pool_id ASC",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "supply_view: treasury prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    memset(out, 0, NODUS_WITNESS_SUPPLY_TREASURY_POOLS * sizeof(uint64_t));
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        if (sqlite3_column_type(stmt, 0) != SQLITE_INTEGER ||
+            sqlite3_column_type(stmt, 1) != SQLITE_INTEGER) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "supply_view: treasury row has a "
+                          "non-INTEGER column");
+            sqlite3_finalize(stmt);
+            return -1;
+        }
+        sqlite3_int64 id = sqlite3_column_int64(stmt, 0);
+        sqlite3_int64 b  = sqlite3_column_int64(stmt, 1);
+        if (id < (sqlite3_int64)NODUS_TREASURY_POOL_MIN ||
+            id > (sqlite3_int64)NODUS_TREASURY_POOL_MAX || b < 0) {
+            QGP_LOG_ERROR(LOG_TAG, "supply_view: treasury row malformed "
+                          "(pool_id %lld, balance %lld)",
+                          (long long)id, (long long)b);
+            sqlite3_finalize(stmt);
+            return -1;
+        }
+        out[id - (sqlite3_int64)NODUS_TREASURY_POOL_MIN] = (uint64_t)b;
+    }
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "supply_view: treasury scan aborted "
+                      "(rc=%d)", rc);
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_supply_view_get(nodus_witness_t *w,
+                                  nodus_witness_supply_view_t *out) {
+    if (!w || !w->db || !out) return -1;
+
+    /* Committed state only: an open ledger transaction on this (single)
+     * connection would let these reads see a block that is not committed
+     * yet (nodus_witness_v3_block_build makes the same check). */
+    if (sqlite3_get_autocommit(w->db) == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "supply_view: a ledger transaction is "
+                      "in progress");
+        return -1;
+    }
+
+    memset(out, 0, sizeof(*out));
+    int src = nodus_witness_supply_get(w, &out->supply);
+    if (src < 0) return -1;
+    if (src == 1) memset(&out->supply, 0, sizeof(out->supply));
+    out->has_supply = (src == 0);
+
+    if (nodus_witness_v2_tip_height(w, &out->tip) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "supply_view: chain height unreadable");
+        return -1;
+    }
+    if (supply_view_treasury(w, out->treasury) != 0) return -1;
+
+    /* The CORE runtime's native asset (64 zero bytes) — the same term
+     * nodus_rt_core_invariant sums, so the buckets and `current` obey
+     * the one conservation equation. */
+    static const uint8_t native_token[64] = {0};
+    if (nodus_witness_v2_unclaimed_total(w, DNA_DOMAIN_CORE, native_token,
+                                         64, &out->unclaimed) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "supply_view: unclaimed distribution "
+                      "total unreadable");
+        return -1;
+    }
     return 0;
 }
 

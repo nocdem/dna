@@ -117,23 +117,61 @@ int exp_chain_current_server(const exp_chain_t *c);
 
 /* One observation of the server's chain: the 32-byte version-3 chain id
  * (dnac_supply "chain_id32" — the F4 reset FSM's key), the committed tip
- * height (dnac_supply "tip", MAX(v2_blocks.global_height)) and the supply
- * figures (display only). */
+ * height (dnac_supply "tip", MAX(v2_blocks.global_height)), the supply
+ * figures and the supply buckets (display only — decision
+ * docs/plans/decisions/2026-09-30-scan-supply-buckets.md). */
 typedef struct {
     uint8_t  chain_id32[32];
     uint64_t tip;
     uint64_t supply_genesis;
     uint64_t supply_burned;
     uint64_t supply_current;
+    /* reward_pool / treasury[9] / unclaimed and the "current" of THEIR OWN
+     * reply (nodus_client_dnac_supply_buckets) — circulating is computed
+     * from this struct alone, never mixed with supply_current above (a
+     * different round trip). buckets.has == false: an older node. */
+    nodus_dnac_supply_buckets_t buckets;
 } exp_chain_tip_t;
 
-/* Three dnac_supply round trips on ONE connection (nodus_client_dnac_supply
- * for the figures, _chain_id32, _supply_tip — the SDK reads the additive
- * keys through separate accessors); a failure of any of them rotates and
- * redoes all three on the next server, so one observation never mixes two
- * servers. A reply without "chain_id32" or "tip" (a node not on the
- * version-3 chain) is a failure — a missing tip is never read as 0. */
+/* Four dnac_supply round trips on ONE connection (nodus_client_dnac_supply
+ * for the figures, _chain_id32, _supply_tip, _supply_buckets — the SDK
+ * reads the additive keys through separate accessors); a failure of any
+ * of them rotates and redoes all four on the next server, so one
+ * observation never mixes two servers. A reply without "chain_id32" or
+ * "tip" (a node not on the version-3 chain) is a failure — a missing tip
+ * is never read as 0. A reply without the bucket keys (an older node) is
+ * NOT a failure: buckets.has is false and Scan shows the buckets as
+ * unknown. */
 int exp_chain_tip(exp_chain_t *c, exp_chain_tip_t *out);
+
+/* ── Supply buckets: meta blob + circulating (pure, no I/O) ──────────
+ *
+ * The buckets are stored in db meta as ONE blob (key
+ * EXP_META_SUPPLY_BUCKETS), written on every accepted observation, so
+ * /api/stats never shows one server's buckets beside another server's
+ * figures and an older node's "no buckets" replaces the last known ones
+ * (meta has no delete). Layout, EXP_SUPPLY_BUCKETS_BLOB_LEN bytes:
+ *   [0]      has (0 or 1)
+ *   [1..]    12 × u64 little-endian: current, reward_pool,
+ *            treasury[0..8] (pool 1..9), unclaimed
+ * has == 0 stores every u64 as 0. */
+#define EXP_META_SUPPLY_BUCKETS     "supply_buckets"
+#define EXP_SUPPLY_BUCKETS_BLOB_LEN (1 + 8 * (3 + NODUS_DNAC_TREASURY_POOLS))
+
+void exp_supply_buckets_pack(const nodus_dnac_supply_buckets_t *b,
+                             uint8_t out[EXP_SUPPLY_BUCKETS_BLOB_LEN]);
+
+/* @return 0 (*out filled); -1 a wrong length or a flag byte other than
+ *         0 / 1 (*out zeroed, has false). */
+int exp_supply_buckets_unpack(const uint8_t *buf, size_t len,
+                              nodus_dnac_supply_buckets_t *out);
+
+/* circulating = current − reward_pool − Σ treasury − unclaimed (decision
+ * 2026-09-30-scan-supply-buckets.md: staked and Foundation coins count).
+ * @return 0 (*out set); -1 when b->has is false or a subtraction would
+ *         go below zero (never a wrapped number; *out untouched). */
+int exp_supply_circulating(const nodus_dnac_supply_buckets_t *b,
+                           uint64_t *out);
 
 /* One dnac_v3_block page (the node's maximum page budget). Free `out` with
  * nodus_client_free_v3_block_result. Walking a whole block is

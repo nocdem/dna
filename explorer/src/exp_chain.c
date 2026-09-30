@@ -242,6 +242,12 @@ static int tip_once(exp_chain_t *c, exp_chain_tip_t *out) {
     rc = nodus_client_dnac_supply_tip(c->nc, &has_tip, &out->tip);
     if (rc != 0) return rc;
 
+    /* the buckets (decision 2026-09-30-scan-supply-buckets.md): an older
+     * node answers without them (buckets.has false) — not a failure; a
+     * node that cannot read them answers an error, which is one */
+    rc = nodus_client_dnac_supply_buckets(c->nc, &out->buckets);
+    if (rc != 0) return rc;
+
     if (!has_cid || !has_tip) {
         QGP_LOG_ERROR(LOG_TAG, "%s:%u answers no chain_id32/tip — not a version-3 node",
                       c->servers[c->current].host, (unsigned)c->servers[c->current].port);
@@ -305,6 +311,65 @@ int exp_chain_balance(exp_chain_t *c, const char *owner_hex,
                      (unsigned)c->servers[c->current].port, rc);
     }
     return rc != 0 ? rc : -1;
+}
+
+/* ── Supply buckets: meta blob + circulating ────────────────────────── */
+
+static void put_u64_le(uint8_t *p, uint64_t v) {
+    for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (8 * i));
+}
+
+static uint64_t get_u64_le(const uint8_t *p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) v |= (uint64_t)p[i] << (8 * i);
+    return v;
+}
+
+void exp_supply_buckets_pack(const nodus_dnac_supply_buckets_t *b,
+                             uint8_t out[EXP_SUPPLY_BUCKETS_BLOB_LEN]) {
+    memset(out, 0, EXP_SUPPLY_BUCKETS_BLOB_LEN);
+    if (!b || !b->has) return;                 /* has 0, every u64 0 */
+    uint8_t *p = out;
+    *p++ = 1;
+    put_u64_le(p, b->current_supply); p += 8;
+    put_u64_le(p, b->reward_pool);    p += 8;
+    for (int i = 0; i < NODUS_DNAC_TREASURY_POOLS; i++) {
+        put_u64_le(p, b->treasury[i]); p += 8;
+    }
+    put_u64_le(p, b->unclaimed);
+}
+
+int exp_supply_buckets_unpack(const uint8_t *buf, size_t len,
+                              nodus_dnac_supply_buckets_t *out) {
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    if (!buf || len != EXP_SUPPLY_BUCKETS_BLOB_LEN || buf[0] > 1) return -1;
+    if (buf[0] == 0) return 0;
+    const uint8_t *p = buf + 1;
+    out->current_supply = get_u64_le(p); p += 8;
+    out->reward_pool    = get_u64_le(p); p += 8;
+    for (int i = 0; i < NODUS_DNAC_TREASURY_POOLS; i++) {
+        out->treasury[i] = get_u64_le(p); p += 8;
+    }
+    out->unclaimed = get_u64_le(p);
+    out->has = true;
+    return 0;
+}
+
+int exp_supply_circulating(const nodus_dnac_supply_buckets_t *b,
+                           uint64_t *out) {
+    if (!b || !out || !b->has) return -1;
+    uint64_t c = b->current_supply;
+    if (b->reward_pool > c) return -1;
+    c -= b->reward_pool;
+    for (int i = 0; i < NODUS_DNAC_TREASURY_POOLS; i++) {
+        if (b->treasury[i] > c) return -1;
+        c -= b->treasury[i];
+    }
+    if (b->unclaimed > c) return -1;
+    c -= b->unclaimed;
+    *out = c;
+    return 0;
 }
 
 /* ── F4 chain-reset FSM ─────────────────────────────────────────────── */

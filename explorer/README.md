@@ -29,10 +29,12 @@ first, then the explorer.
   (generated at open, never persisted), rotates across the configured
   witness server list on failure. Three queries:
   `exp_chain_tip` (one observation: `dnac_supply` figures + the 32-byte
-  `chain_id32` + the committed `tip` height — three round trips on one
-  connection, all redone on the next server if any fails; a node that
-  answers no `chain_id32`/`tip` is not a version-3 node and is a failure,
-  never a tip of 0), `exp_chain_v3_page` (one `dnac_v3_block` page) and
+  `chain_id32` + the committed `tip` height + the supply buckets — four
+  round trips on one connection, all redone on the next server if any
+  fails; a node that answers no `chain_id32`/`tip` is not a version-3 node
+  and is a failure, never a tip of 0; a node that answers no buckets is an
+  older node and is NOT a failure — the buckets show as `null`),
+  `exp_chain_v3_page` (one `dnac_v3_block` page) and
   `exp_chain_balance` (one address's `dnac_balance`, trying every server).
   Also hosts the F4 chain-reset FSM (`exp_reset_fsm_feed`) that gates
   destructive index wipes behind multi-witness, multi-poll confirmation.
@@ -99,7 +101,7 @@ half a height.
 | `items` | `(height, idx)` | `kind` (1 envelope, 2 claim, 0 empty), `code` (0 applied, else refused), `wire_id`, `intent_id`, `fee`, `op`, `has_effects`, `burned` — NULL where the node sent no value |
 | `item_io` | `(height, idx, dir, pos)` | `dir` 0 consumed / 1 created, `coin_id`, `address`, `token`, `amount`, `unlock_block` |
 | `item_records` | `(height, idx)` | the SYSTEM record an applied item wrote: `kind`, `validator`, `delegator`, `dest`, `amount`, `commission_bps`, `param_id`, `new_value`, `effective` |
-| `meta` | `key` | `schema_version` (2), `last_indexed_height`, `chain_id32`, `tip_height`, `supply_current`/`_burned`/`_genesis` |
+| `meta` | `key` | `schema_version` (2), `last_indexed_height`, `chain_id32`, `tip_height`, `supply_current`/`_burned`/`_genesis`, `supply_buckets` (one 97-byte blob: a has-flag byte, then 12 little-endian u64 — `current`, `reward_pool`, `treasury` pool 1..9, `unclaimed` — all from ONE `dnac_supply` reply; rewritten on every accepted observation, has = 0 for an older node; `exp_chain.h`) |
 
 Records are a typed table, not a JSON column: the address history looks
 items up by a record's validator/delegator/destination fingerprint (an
@@ -214,7 +216,7 @@ addressed by its **position** `"<height>:<index>"`; send the `:` as it is
 
 | Endpoint | Description |
 |---|---|
-| `/api/stats` | `{indexed_height, tip_height, chain_id, supply_current, supply_burned, supply_genesis}` — any field not yet known is `null`. `chain_id` is the 32-byte `chain_id32`. |
+| `/api/stats` | `{indexed_height, tip_height, chain_id, supply_current, supply_burned, supply_genesis, reward_pool, treasury, unclaimed, circulating}` — any field not yet known is `null`. `chain_id` is the 32-byte `chain_id32`. `supply_genesis` is the fixed total supply. The supply buckets (decision `2026-09-30-scan-supply-buckets`): `reward_pool` (validator reward reserve left), `treasury` (array of 9 decimal strings, pool 1..9 in order: 1 Storage, 2 Compute, 3 Bandwidth, 4 Future services; 5-9 hold 0 on the live chain), `unclaimed` (genesis allocation not yet claimed) and `circulating` = `current − reward_pool − Σ treasury − unclaimed`, computed here from the SAME stored reply as the buckets (staked and Foundation coins count as circulating). All four are `null` when the node sends no buckets (an older node); `circulating` alone is `null` when a subtraction would go below zero — never a wrapped number. |
 | `/api/blocks?before=<height>&limit=<n>` | `{blocks:[{height, block_id, time, proposer, applied_count, n_items}]}`, newest first (`limit` 1-100, default 25). |
 | `/api/block/<height\|block_id>?from=<index>&limit=<n>` | `{block:{…, prev_id, global_root}, items:[item], next_from}` — one page of the block's items, index-ascending from `from` (default 0; `limit` default and max 100); `next_from` is the next page's first index, `null` on the last page. |
 | `/api/tx/<wire_id\|intent_id\|height:index>` | `{tx:{item…, record}, inputs:[{coin_id, address, token_id, amount}], outputs:[{coin_id, address, token_id, amount, unlock_block}]}`. An input's `address`/`token_id`/`amount` are `null` when the coin's creating item is not in the index. A refused envelope has no ids — its position is its only address. |
@@ -239,6 +241,9 @@ on an internal query failure.
 1. **Nodes first:** the explorer needs Nodus with the scan-v3 query
    (`dnac_v3_block`, `dnac_supply` `chain_id32`/`tip`). Against an older
    node every tick fails ("not a version-3 node") and nothing is indexed.
+   The supply buckets need Nodus with the `dnac_supply` bucket keys
+   (`reward_pool`/`treasury`/`unclaimed`); against a node without them
+   indexing continues and `/api/stats` answers the buckets as `null`.
 2. **Backend (web server):**
    ```bash
    ssh <web-host> 'git -C /opt/dna pull && make -C /opt/dna/messenger/build -j$(nproc) && systemctl restart dna-explorerd'
