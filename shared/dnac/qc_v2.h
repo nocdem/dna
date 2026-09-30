@@ -17,10 +17,10 @@
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── TAG ────────────────────────────────────────────────────────────────
- *   "DNA.CERT.v2"  (16 bytes, zero-padded)
+ *   "NDS.CERT.v2"  (16 bytes, zero-padded)
  *
  * ── Signed preimage (EXACTLY 216 bytes) ────────────────────────────────
- *     tag                 (16)   "DNA.CERT.v2" zero-padded
+ *     tag                 (16)   "NDS.CERT.v2" zero-padded
  *     block_id            (64)   the block hash being certified
  *     voter_id            (32)   THIS cert's signer
  *     height              ( 8)   u64 BE

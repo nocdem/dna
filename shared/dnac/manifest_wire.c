@@ -18,16 +18,16 @@
 /* All tags are EXACTLY 16 bytes, zero-padded ASCII. */
 #define TAG_LEN 16
 
-static const uint8_t TAG_GMAN[TAG_LEN]    = "DNA.GMAN.v1\0\0\0\0";
-static const uint8_t TAG_MANLEAF[TAG_LEN] = "DNA.MANLEAF.v1\0";
-static const uint8_t TAG_MANNODE[TAG_LEN] = "DNA.MANNODE.v1\0";
-static const uint8_t TAG_DSLEAF[TAG_LEN]  = "DNA.DSLEAF.v1\0\0";
-static const uint8_t TAG_DSNODE[TAG_LEN]  = "DNA.DSNODE.v1\0\0";
-static const uint8_t TAG_CLAIM[TAG_LEN]   = "DNA.CLAIM.v1\0\0\0";
-static const uint8_t TAG_CLNUL[TAG_LEN]   = "DNA.CLNUL.v1\0\0\0";
-static const uint8_t TAG_CLLEAF[TAG_LEN]  = "DNA.CLLEAF.v1\0\0";
-static const uint8_t TAG_CLNODE[TAG_LEN]  = "DNA.CLNODE.v1\0\0";
-static const uint8_t TAG_CLUTXO[TAG_LEN]  = "DNA.CLUTXO.v1\0\0";
+static const uint8_t TAG_GMAN[TAG_LEN]    = "NDS.GMAN.v1\0\0\0\0";
+static const uint8_t TAG_MANLEAF[TAG_LEN] = "NDS.MANLEAF.v1\0";
+static const uint8_t TAG_MANNODE[TAG_LEN] = "NDS.MANNODE.v1\0";
+static const uint8_t TAG_DSLEAF[TAG_LEN]  = "NDS.DSLEAF.v1\0\0";
+static const uint8_t TAG_DSNODE[TAG_LEN]  = "NDS.DSNODE.v1\0\0";
+static const uint8_t TAG_CLAIM[TAG_LEN]   = "NDS.CLAIM.v1\0\0\0";
+static const uint8_t TAG_CLNUL[TAG_LEN]   = "NDS.CLNUL.v1\0\0\0";
+static const uint8_t TAG_CLLEAF[TAG_LEN]  = "NDS.CLLEAF.v1\0\0";
+static const uint8_t TAG_CLNODE[TAG_LEN]  = "NDS.CLNODE.v1\0\0";
+static const uint8_t TAG_CLUTXO[TAG_LEN]  = "NDS.CLUTXO.v1\0\0";
 
 static void put_be16(uint16_t v, uint8_t out[2]) {
     out[0] = (uint8_t)(v >> 8); out[1] = (uint8_t)v;

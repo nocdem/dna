@@ -258,7 +258,7 @@ typedef struct {
 int dna_meter_op_set(dna_meter_policy_t *p, uint32_t runtime_op, uint64_t w);
 
 /**
- * Seal the policy: seal = SHA3-512( "DNA.METPOL.v1"(16, zero-padded)
+ * Seal the policy: seal = SHA3-512( "NDS.METPOL.v1"(16, zero-padded)
  *   ‖ policy_version u32 BE ‖ w_base ‖ w_callbyte ‖ w_authbyte
  *   ‖ w_effect ‖ w_effectbyte ‖ w_read ‖ w_write
  *   ‖ max_block_env_bytes (u64 BE each — v2 appends the byte bound HERE,
@@ -267,7 +267,7 @@ int dna_meter_op_set(dna_meter_policy_t *p, uint32_t runtime_op, uint64_t w);
  * Preimage is exactly 16 + 4 + 8*8 + 256*8 + 4*8 = 2164 bytes, built in
  * a stack buffer. Rejects (-1): NULL p, policy_version not accepted,
  * max_block_env_bytes == 0 (an unbounded-block policy must not even
- * seal). The tag deliberately stays "DNA.METPOL.v1": the version FIELD
+ * seal). The tag deliberately stays "NDS.METPOL.v1": the version FIELD
  * inside the preimage is the discriminator, and no v1 preimage was ever
  * committed anywhere (Ledger V2 inactive).
  * HONEST LABEL: local integrity checksum only — never wire-serialized,
@@ -283,7 +283,7 @@ int dna_meter_policy_check(const dna_meter_policy_t *p);
  * when it binds itself to one exact metering policy (Ledger V2: the
  * RulesetDescriptor's meter_policy_digest field, domain_wire.h):
  *
- *   digest = SHA3-512( "DNA.METPOLID.v1"(16, zero-padded)
+ *   digest = SHA3-512( "NDS.METPOLID.v1"(16, zero-padded)
  *     ‖ policy_version u32 BE ‖ w_base ‖ w_callbyte ‖ w_authbyte
  *     ‖ w_effect ‖ w_effectbyte ‖ w_read ‖ w_write
  *     ‖ max_block_env_bytes (u64 BE each — the v2 field, same position

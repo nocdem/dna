@@ -47,9 +47,9 @@ static const bundle_table_t BUNDLE_TABLES[] = {
      *
      * Root-layout round (K2, 2026-09-25): `epoch_state` is no longer
      * carried — the table is dropped from the schema — so the bundle is
-     * FIVE tables and its magic moved to "DNA.GBUNDLE.v4"
+     * FIVE tables and its magic moved to "NDS.GBUNDLE.v4"
      * (nodus_witness_v2_bundle.h). W-A appends `v2_treasury` below: SIX
-     * tables, "DNA.GBUNDLE.v5". */
+     * tables, "NDS.GBUNDLE.v5". */
     { "validators",            "pubkey_hash ASC" },
     { "delegations",           "delegator_hash ASC, validator_hash ASC" },
     { "chain_config_history",  "param_id ASC, effective_block ASC" },
@@ -71,7 +71,7 @@ static const bundle_table_t BUNDLE_TABLES[] = {
      * of the SYSTEM payload root the manifest commits — a joiner never
      * runs the derivation, so without this table its genesis could not
      * reproduce the pin. `pool_id` IS the primary key (nodus_witness.c
-     * v2_treasury). SIX tables; magic "DNA.GBUNDLE.v5". */
+     * v2_treasury). SIX tables; magic "NDS.GBUNDLE.v5". */
     { "v2_treasury",           "pool_id ASC" },
 };
 #define BUNDLE_N_TABLES (sizeof(BUNDLE_TABLES) / sizeof(BUNDLE_TABLES[0]))

@@ -48,13 +48,13 @@
  *   - every failure path returns -1 and produces NO partial result.
  *
  * ── TAG TABLE (each exactly 16 bytes, zero-padded) ────────────────────
- *   "DNA.DOMMAN.v1"   manifest hash              (locked by the S4 charter)
- *   "DNA.RULESET.v1"  ruleset descriptor digest  (S4 JUDGMENT tag)
- *   "DNA.DRLEAF.v1"   registry record leaf       (S4 JUDGMENT tag)
- *   "DNA.DRNODE.v1"   registry Merkle inner node (S4 JUDGMENT tag)
- *   "DNA.DOMRDY.v1"   readiness signal preimage  (S4 JUDGMENT tag)
- *   "DNA.DOMPROP.v1"  proposal digest            (S4 JUDGMENT tag)
- *   "DNA.E.DOMREG.v1" EMPTY registry root        (frozen since S2 —
+ *   "NDS.DOMMAN.v1"   manifest hash              (locked by the S4 charter)
+ *   "NDS.RULESET.v1"  ruleset descriptor digest  (S4 JUDGMENT tag)
+ *   "NDS.DRLEAF.v1"   registry record leaf       (S4 JUDGMENT tag)
+ *   "NDS.DRNODE.v1"   registry Merkle inner node (S4 JUDGMENT tag)
+ *   "NDS.DOMRDY.v1"   readiness signal preimage  (S4 JUDGMENT tag)
+ *   "NDS.DOMPROP.v1"  proposal digest            (S4 JUDGMENT tag)
+ *   "NDS.E.DOMREG.v1" EMPTY registry root        (frozen since S2 —
  *                     ledger_roots_v2.h; dna_v2_empty_root(DNA_V2_EMPTY_DOMREG))
  *
  * ── DomainManifest v1 canonical layout (199 + tx_type_count bytes) ────
@@ -76,14 +76,14 @@
  *            activation_epoch    u64 BE   (epoch START height; 0 = genesis)
  *            readiness_policy    u32 BE   (1 = STAGED_V1, the locked S4
  *                                          staged activation policy)
- *   manifest_hash = SHA3-512("DNA.DOMMAN.v1" ‖ the canonical bytes)
+ *   manifest_hash = SHA3-512("NDS.DOMMAN.v1" ‖ the canonical bytes)
  *
  * ── RulesetDescriptor v1 canonical layout (52 + 4·rules + types bytes) ─
  *   descriptor_version u32 BE (= 1) ‖ domain_id u32 BE ‖ name[32]
  *   ‖ runtime_abi u32 BE ‖ ruleset_version u32 BE
  *   ‖ rule_count u16 BE ‖ rule_ids[count] u32 BE STRICTLY ascending
  *   ‖ tx_type_count u16 BE ‖ tx_types[count] u8 STRICTLY ascending
- *   ruleset_hash = SHA3-512("DNA.RULESET.v1" ‖ the canonical bytes)
+ *   ruleset_hash = SHA3-512("NDS.RULESET.v1" ‖ the canonical bytes)
  *
  * ── DomainRegistryRecord v1 canonical layout (223 bytes, fixed) ────────
  *   off   0  record_version               u32 BE (= 1)
@@ -97,7 +97,7 @@
  *   off 203  scheduled_activation_epoch   u64 BE (0 = none)
  *   off 211  readiness_deadline_epoch     u64 BE (0 = none)
  *   off 219  postpone_count               u32 BE
- *   leaf = SHA3-512("DNA.DRLEAF.v1" ‖ the 223 canonical bytes)
+ *   leaf = SHA3-512("NDS.DRLEAF.v1" ‖ the 223 canonical bytes)
  *
  *   Status-coherence rules (validated by encode AND decode, fail-closed):
  *     REGISTERED: pending_present == 0; scheduling fields == 0 (a proposal
@@ -112,7 +112,7 @@
  *
  * ── ReadinessSignal v1 ────────────────────────────────────────────────
  *   Signed preimage (EXACTLY 233 bytes):
- *     tag                (16)  "DNA.DOMRDY.v1" zero-padded
+ *     tag                (16)  "NDS.DOMRDY.v1" zero-padded
  *     msg_version        ( 4)  u32 BE (= 1)
  *     chain_id           (32)
  *     voter_id           (32)  SHA3-512(pubkey)[0..31] — the S3 identity
@@ -134,7 +134,7 @@
  *   only, like every other tag here.
  *
  * ── Proposal digest ───────────────────────────────────────────────────
- *   SHA3-512("DNA.DOMPROP.v1" ‖ chain_id[32] ‖ domain_id(4 BE)
+ *   SHA3-512("NDS.DOMPROP.v1" ‖ chain_id[32] ‖ domain_id(4 BE)
  *            ‖ target_manifest_hash[64] ‖ proposal_nonce(8 BE)
  *            ‖ proposed_at_epoch(8 BE))
  *   A modified or re-issued proposal carries a new nonce/epoch, so its
@@ -145,7 +145,7 @@
  *   leaves  = record leaf hashes, STRICTLY ascending domain_id;
  *   the FIRST record MUST be DNA_DOMAIN_SYSTEM (a non-empty registry
  *   without SYSTEM is malformed state, same rule as domains_root);
- *   inner   = SHA3-512("DNA.DRNODE.v1" ‖ left[64] ‖ right[64]);
+ *   inner   = SHA3-512("NDS.DRNODE.v1" ‖ left[64] ‖ right[64]);
  *   odd node PROMOTED unchanged (never duplicated); n == 1 → the leaf;
  *   n == 0 → dna_v2_empty_root(DNA_V2_EMPTY_DOMREG) — byte-identical to
  *   the S2 placeholder, so every pre-registry chain's system_state_root
@@ -247,7 +247,7 @@ int dna_domman_encode(const dna_domain_manifest_t *m,
 int dna_domman_decode(const uint8_t *src, size_t len,
                       dna_domain_manifest_t *out);
 
-/** manifest_hash = SHA3-512("DNA.DOMMAN.v1" ‖ canonical bytes).
+/** manifest_hash = SHA3-512("NDS.DOMMAN.v1" ‖ canonical bytes).
  *  Rejects an invalid manifest. @return 0 / -1. */
 int dna_domman_hash(const dna_domain_manifest_t *m,
                     uint8_t out[DNA_DOM_HASH_LEN]);
@@ -297,7 +297,7 @@ typedef struct {
                                                 * ALL-ZERO = none declared */
 } dna_ruleset_desc_t;
 
-/** ruleset_hash = SHA3-512("DNA.RULESET.v1" ‖ canonical descriptor bytes,
+/** ruleset_hash = SHA3-512("NDS.RULESET.v1" ‖ canonical descriptor bytes,
  *  v2 layout: version(4) ‖ domain_id(4) ‖ name(32) ‖ abi(4) ‖
  *  ruleset_version(4) ‖ rule_count(2) ‖ rule_ids ‖ tx_type_count(2) ‖
  *  tx_types ‖ meter_policy_digest(64)). The 16-byte tag names the object
@@ -340,7 +340,7 @@ int dna_domreg_record_encode(const dna_domreg_record_t *r,
 int dna_domreg_record_decode(const uint8_t *src, size_t len,
                              dna_domreg_record_t *out);
 
-/** leaf = SHA3-512("DNA.DRLEAF.v1" ‖ 223 canonical bytes). 0 / -1. */
+/** leaf = SHA3-512("NDS.DRLEAF.v1" ‖ 223 canonical bytes). 0 / -1. */
 int dna_domreg_record_leaf(const dna_domreg_record_t *r,
                            uint8_t out[DNA_V2_ROOT_LEN]);
 
@@ -356,7 +356,7 @@ int dna_domreg_root(const dna_domreg_record_t *records, size_t n,
  * 4. Proposal digest + ReadinessSignal v1
  * ════════════════════════════════════════════════════════════════════ */
 
-/** SHA3-512("DNA.DOMPROP.v1" ‖ chain_id ‖ domain_id ‖ target_manifest_hash
+/** SHA3-512("NDS.DOMPROP.v1" ‖ chain_id ‖ domain_id ‖ target_manifest_hash
  *  ‖ proposal_nonce ‖ proposed_at_epoch). @return 0 / -1 (NULL args). */
 int dna_domprop_digest(const uint8_t chain_id[DNA_CHAIN_ID_LEN],
                        uint32_t domain_id,
@@ -404,11 +404,11 @@ int dna_domrdy_decode(const uint8_t *src, size_t len,
 
 /*
  * ── S5 TAG TABLE (16 bytes, zero-padded; all JUDGMENT, versioned) ─────
- *   "DNA.DUPD.v1"      DomainUpdate hash
- *   "DNA.DUNODE.v1"    domain_updates_root inner node
- *   "DNA.E.DUPD.v1"    EMPTY domain_updates_root (block touching nothing)
- *   "DNA.DTXB.v1"      per-domain ordered tx-batch commitment
- *   "DNA.E.DUPDPRV.v1" genesis previous-update linkage (16 chars exact)
+ *   "NDS.DUPD.v1"      DomainUpdate hash
+ *   "NDS.DUNODE.v1"    domain_updates_root inner node
+ *   "NDS.E.DUPD.v1"    EMPTY domain_updates_root (block touching nothing)
+ *   "NDS.DTXB.v1"      per-domain ordered tx-batch commitment
+ *   "NDS.E.DUPDPRV.v1" genesis previous-update linkage (16 chars exact)
  *
  * ── DomainUpdate v1 canonical layout (368 bytes, fixed, BE) ───────────
  *   off   0  update_version    u32 (= 1)
@@ -418,17 +418,17 @@ int dna_domrdy_decode(const uint8_t *src, size_t len,
  *   off  24  global_height     u64
  *   off  32  pre_root[64]
  *   off  96  post_root[64]
- *   off 160  tx_batch_root[64]      ("DNA.DTXB.v1" commitment below)
+ *   off 160  tx_batch_root[64]      ("NDS.DTXB.v1" commitment below)
  *   off 224  ruleset_version   u32
  *   off 228  ruleset_hash[64]
  *   off 292  res_tx_count      u32
  *   off 296  res_verify_cost   u64
  *   off 304  prev_update_hash[64]   (genesis: dna_dupd_prev_genesis)
  *   total 368
- *   update_hash = SHA3-512("DNA.DUPD.v1" ‖ the 368 canonical bytes)
+ *   update_hash = SHA3-512("NDS.DUPD.v1" ‖ the 368 canonical bytes)
  *
  * ── tx-batch commitment ───────────────────────────────────────────────
- *   SHA3-512("DNA.DTXB.v1" ‖ count u32 BE ‖ tx_id[64] × count) — the
+ *   SHA3-512("NDS.DTXB.v1" ‖ count u32 BE ‖ tx_id[64] × count) — the
  *   domain-LOCAL order (deterministic: the block's canonical order
  *   restricted to this domain). count 0 is legal (a mandatory
  *   deterministic transition with no carrying tx).
@@ -436,8 +436,8 @@ int dna_domrdy_decode(const uint8_t *src, size_t len,
  * ── domain_updates_root ───────────────────────────────────────────────
  *   Leaves = update hashes of the TOUCHED domains only, STRICTLY
  *   ascending domain_id (duplicates/order violations reject); inner =
- *   SHA3-512("DNA.DUNODE.v1" ‖ L ‖ R), odd node PROMOTED; n == 1 → the
- *   leaf; n == 0 → SHA3-512 of the "DNA.E.DUPD.v1" tag alone.
+ *   SHA3-512("NDS.DUNODE.v1" ‖ L ‖ R), odd node PROMOTED; n == 1 → the
+ *   leaf; n == 0 → SHA3-512 of the "NDS.E.DUPD.v1" tag alone.
  *
  * ── touched-domain list (v2_tx_index canonical form) ──────────────────
  *   count u16 BE ‖ domain_id u32 BE × count, STRICTLY ascending;
@@ -477,14 +477,14 @@ int dna_dupd_encode(const dna_domain_update_t *u,
 int dna_dupd_decode(const uint8_t *src, size_t len,
                     dna_domain_update_t *out);
 
-/** update_hash = SHA3-512("DNA.DUPD.v1" ‖ canonical bytes). 0 / -1. */
+/** update_hash = SHA3-512("NDS.DUPD.v1" ‖ canonical bytes). 0 / -1. */
 int dna_dupd_hash(const dna_domain_update_t *u,
                   uint8_t out[DNA_V2_ROOT_LEN]);
 
-/** Genesis previous-update linkage: SHA3-512("DNA.E.DUPDPRV.v1"). */
+/** Genesis previous-update linkage: SHA3-512("NDS.E.DUPDPRV.v1"). */
 int dna_dupd_prev_genesis(uint8_t out[DNA_V2_ROOT_LEN]);
 
-/** SHA3-512("DNA.DTXB.v1" ‖ count u32 BE ‖ tx_ids). tx_ids may be NULL
+/** SHA3-512("NDS.DTXB.v1" ‖ count u32 BE ‖ tx_ids). tx_ids may be NULL
  *  iff n == 0. @return 0 / -1. */
 int dna_v2_tx_batch_root(const uint8_t (*tx_ids)[DNA_V2_ROOT_LEN],
                          uint32_t n, uint8_t out[DNA_V2_ROOT_LEN]);

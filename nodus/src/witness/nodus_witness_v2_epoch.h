@@ -313,7 +313,7 @@
  * not a claim that the seam is closed.
  *
  * ── GRAD_ID: the canonical per-record graduation identity ───────────
- *   grad_id = SHA3-512( "DNA.EPGRAD.v1" zero-padded to exactly 16 bytes
+ *   grad_id = SHA3-512( "NDS.EPGRAD.v1" zero-padded to exactly 16 bytes
  *                     ‖ chain_id[32]
  *                     ‖ u32be(DNA_DOMAIN_CORE)
  *                     ‖ u64be(global_height)
@@ -323,7 +323,7 @@
  * nodus/include/nodus/nodus_types.h:189; documented at
  * nodus_witness_validator.h:31-37; the same shape rt_native.c's
  * rtn_tag_key computes). The 16-byte-tag hashing idiom is the repo's
- * (shared/dnac/pool_wire.c:21-35). The tag string "DNA.EPGRAD.v1" was
+ * (shared/dnac/pool_wire.c:21-35). The tag string "NDS.EPGRAD.v1" was
  * collision-scanned repo-wide before adoption: no other consumer.
  *
  * WHY THIS SUPERSEDES THE LEGACY DERIVATION. The legacy lane derives
@@ -411,7 +411,7 @@ extern "C" {
 int nodus_witness_v2_epoch_val_rec_ok(const dnac_validator_record_t *v);
 
 /** The 16-byte graduation-identity tag (zero-padded, exactly 16 B). */
-#define NODUS_V2_EPGRAD_TAG      "DNA.EPGRAD.v1"
+#define NODUS_V2_EPGRAD_TAG      "NDS.EPGRAD.v1"
 #define NODUS_V2_EPGRAD_TAG_LEN  16u
 
 /** The graduation release UTXO's legacy-mirrored slot (bft.c:2506-2507).

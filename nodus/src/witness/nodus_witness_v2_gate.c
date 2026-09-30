@@ -39,14 +39,14 @@ const char *nodus_witness_v2_gate_state_name(nodus_v2_gate_state_t s) {
  * height from which Ledger V2 became active, so the gate could not open.
  * O15C added a build-gated arm that read one — either the LEGACY chain's
  * committed activation record, or a successor chain's genesis manifest
- * carrying the terminal-legacy source binding "DNA.LEGACY.TERM.v1".
+ * carrying the terminal-legacy source binding "NDS.LEGACY.TERM.v1".
  * Both are deleted. There is no V1→V2 transition left to authorize,
  * because a V2 chain is now BORN V2 (nodus_witness_v2_gen.c).
  *
  * So authority is no longer a permission slip for a transition. It is
  * the chain's OWN GENESIS IDENTITY: a pure-V2 chain commits, at height
  * 0, a genesis manifest whose distribution is present and whose
- * source_tag is NODUS_V2_GEN_SOURCE_TAG ("DNA.GENESIS.v1",
+ * source_tag is NODUS_V2_GEN_SOURCE_TAG ("NDS.GENESIS.v1",
  * nodus_witness_v2_gen.h:184-185). That manifest's hash IS the chain id
  * (nodus_witness_v2_chain_id), so this predicate reads the most
  * committed bytes the database holds.

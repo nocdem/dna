@@ -19,10 +19,10 @@
  * validator ‖ delegation ‖ epoch_state ‖ chain_config via combine_v3),
  * and D3 was its epoch_state leaf loader. All three are DELETED — no
  * block header carried that root. D2 is re-pinned here on the roots the
- * chain DOES commit: nodus_witness_system_root_v2 ("DNA.SYS.v4" since
+ * chain DOES commit: nodus_witness_system_root_v2 ("NDS.SYS.v4" since
  * W-A — validator, delegation, chain_config and treasury legs among
  * others) and
- * nodus_witness_core_root_v2 ("DNA.CORE.v2" — the utxo and supply legs
+ * nodus_witness_core_root_v2 ("NDS.CORE.v2" — the utxo and supply legs
  * among others). D3 has no successor subject: the supply counters now
  * reach the root only through supply_root, whose fail-closed read is
  * the "supply" case below. The healthy-composition pin that stood here

@@ -607,7 +607,7 @@ static int commit_height(exec_t *x, int64_t h, size_t n)
 /* Bytes that classify as an ENVELOPE (the family marker) and do not
  * decode — the DECODE class (test_cmt_app.c POISON). */
 static const uint8_t POISON[20] = {
-    'D','N','A','.','E','N','V','W','I','R','E','.','v','1', 0, 0,
+    'N','D','S','.','E','N','V','W','I','R','E','.','v','1', 0, 0,
     0xFF, 0xFF, 0xFF, 0xFF
 };
 
@@ -1137,7 +1137,7 @@ static int t_block_query(void)
     CHECK(nodus_witness_v2_claim_nullifier(g.w, cbytes, clen, claim_nul)
               == 0, "the claim's nullifier (the apply's own derivation)");
     CHECK(dna_claim_utxo_id(claim_nul, claim_coin) == 0,
-          "the native coin id \"DNA.CLUTXO.v1\"");
+          "the native coin id \"NDS.CLUTXO.v1\"");
     CHECK(qgp_sha3_512(cbytes, clen, claim_wire) == 0, "claim hash");
     x.txs[0].data = cbytes; x.txs[0].len = clen;
     x.txs[1].data = POISON; x.txs[1].len = sizeof(POISON);

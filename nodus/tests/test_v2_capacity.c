@@ -17,7 +17,7 @@
  *      land under the ceiling with 2^19 too small (so 2^20 is the
  *      smallest containing power of two, not a round guess).
  *   3. WIRE-FAMILY CLASSIFICATION — a V2 envelope self-identifies in
- *      its FIRST 16 bytes ("DNA.ENVWIRE.v1" at offset 0), BEFORE any
+ *      its FIRST 16 bytes ("NDS.ENVWIRE.v1" at offset 0), BEFORE any
  *      length-driven allocation; a legacy V3 transaction begins with
  *      its version byte and can never alias the family marker. Both
  *      decoders reject the other family's bytes outright, and the
@@ -158,7 +158,7 @@ int main(void) {
          * the legacy bound is rejected on length alone */
         uint8_t small_env[64];
         memset(small_env, 0, sizeof(small_env));
-        memcpy(small_env, "DNA.ENVWIRE.v1\0", 16);
+        memcpy(small_env, "NDS.ENVWIRE.v1\0", 16);
         dnac_txw3_header_t h;
         const uint8_t *body = NULL;
         uint32_t blen = 0;

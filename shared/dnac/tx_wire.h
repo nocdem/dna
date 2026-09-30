@@ -488,8 +488,8 @@ int dnac_txw3_shielded_check_header(const dnac_txw3_header_t *hdr,
  * Following the S2 tagged-empty convention (pool_wire.h), an empty set is
  * SHA3-512 of its 16-byte zero-padded tag ALONE — never an all-zero
  * digest, which no tag can produce:
- *   "DNA.E.TLEG.v1"   empty transparent-leg commitment
- *   "DNA.E.CTC.v1"    empty ciphertext commitment
+ *   "NDS.E.TLEG.v1"   empty transparent-leg commitment
+ *   "NDS.E.CTC.v1"    empty ciphertext commitment
  * ════════════════════════════════════════════════════════════════════ */
 
 #define DNAC_SIGHASH_V5_TAG_LEN 16
@@ -528,11 +528,11 @@ int dnac_sighash_v5(const dna_exec_context_t *ctx, uint8_t sect_version,
                     const uint8_t ct_commit[DNAC_TXW_HASH_LEN],
                     uint8_t out_sighash[DNAC_TXW_HASH_LEN]);
 
-/** Empty transparent-leg commitment = SHA3-512("DNA.E.TLEG.v1" tag
+/** Empty transparent-leg commitment = SHA3-512("NDS.E.TLEG.v1" tag
  *  alone, 16 bytes). @return 0 / -1. */
 int dnac_tleg_commit_empty(uint8_t out[DNAC_TXW_HASH_LEN]);
 
-/** Empty ciphertext commitment = SHA3-512("DNA.E.CTC.v1" tag alone,
+/** Empty ciphertext commitment = SHA3-512("NDS.E.CTC.v1" tag alone,
  *  16 bytes). @return 0 / -1. */
 int dnac_ct_commit_empty(uint8_t out[DNAC_TXW_HASH_LEN]);
 
@@ -692,11 +692,11 @@ int dnac_txw3_tleg_decode(const uint8_t *body, size_t body_len,
  * POPULATED transparent-leg commitment — the value that fills the frozen
  * sighash_v5 slot at preimage offset 453 when a transaction carries a
  * transparent leg. (An ABSENT leg uses dnac_tleg_commit_empty and its own
- * "DNA.E.TLEG.v1" tag: two distinct domains, so an empty leg and a
+ * "NDS.E.TLEG.v1" tag: two distinct domains, so an empty leg and a
  * populated-but-empty-looking one can never collide.)
  *
  * ── Preimage (exact bytes) ────────────────────────────────────────────
- *   "DNA.TLEG.v1" + 5×0x00                        (16)
+ *   "NDS.TLEG.v1" + 5×0x00                        (16)
  *   ‖ num_tin u8  ‖ nullifier[64] × num_tin       (ascending, as on wire)
  *   ‖ num_tout u8 ‖ (fp[129] ‖ amount u64 BE ‖ seed[32]) × num_tout
  *   ‖ num_signers u8 ‖ pubkey[2592] × num_signers

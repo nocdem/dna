@@ -20,62 +20,62 @@
 /* All tags are EXACTLY 16 bytes, zero-padded ASCII. */
 #define TAG_LEN 16
 
-/* tokenomics-v3 P1 (D-4, S-2): "DNA.SYS.v1" -> "DNA.SYS.v2" — the 8th
+/* tokenomics-v3 P1 (D-4, S-2): "NDS.SYS.v1" -> "NDS.SYS.v2" — the 8th
  * leg (attendance_root). Root-layout round (K2, 2026-09-25):
- * "DNA.SYS.v2" -> "DNA.SYS.v3" — the epoch_state leg is removed (7
- * legs). Final pre-testnet wipe (W-A): "DNA.SYS.v3" -> "DNA.SYS.v4" —
+ * "NDS.SYS.v2" -> "NDS.SYS.v3" — the epoch_state leg is removed (7
+ * legs). Final pre-testnet wipe (W-A): "NDS.SYS.v3" -> "NDS.SYS.v4" —
  * treasury_root appended as the 8th and last leg. A changed preimage is
  * never hashed under the OLD tag. */
-static const uint8_t TAG_SYS[TAG_LEN]     = "DNA.SYS.v4\0\0\0\0\0";
-/* tokenomics-v3 P2 (P2-8): "DNA.CORE.v1" -> "DNA.CORE.v2" — the 7th leg
- * (accrual_root) changes the composition; "DNA.SUPPLY.v1" ->
- * "DNA.SUPPLY.v2" — the leaf gained reward_pool. A changed preimage is
+static const uint8_t TAG_SYS[TAG_LEN]     = "NDS.SYS.v4\0\0\0\0\0";
+/* tokenomics-v3 P2 (P2-8): "NDS.CORE.v1" -> "NDS.CORE.v2" — the 7th leg
+ * (accrual_root) changes the composition; "NDS.SUPPLY.v1" ->
+ * "NDS.SUPPLY.v2" — the leaf gained reward_pool. A changed preimage is
  * never hashed under the OLD tag. */
-static const uint8_t TAG_CORE[TAG_LEN]    = "DNA.CORE.v2\0\0\0\0";
-static const uint8_t TAG_GLOBAL[TAG_LEN]  = "DNA.GLOBAL.v1\0\0";
-static const uint8_t TAG_SUPPLY[TAG_LEN]  = "DNA.SUPPLY.v2\0\0";
-static const uint8_t TAG_TOKLEAF[TAG_LEN] = "DNA.TOKLEAF.v1\0";
-static const uint8_t TAG_TOKNODE[TAG_LEN] = "DNA.TOKNODE.v1\0";
-/* Root-layout round (K2): TAG_EPOCH "DNA.EPOCH.v2" and TAG_EPNODE
- * "DNA.EPNODE.v2" DELETED with the epoch_state leg — retired, never
+static const uint8_t TAG_CORE[TAG_LEN]    = "NDS.CORE.v2\0\0\0\0";
+static const uint8_t TAG_GLOBAL[TAG_LEN]  = "NDS.GLOBAL.v1\0\0";
+static const uint8_t TAG_SUPPLY[TAG_LEN]  = "NDS.SUPPLY.v2\0\0";
+static const uint8_t TAG_TOKLEAF[TAG_LEN] = "NDS.TOKLEAF.v1\0";
+static const uint8_t TAG_TOKNODE[TAG_LEN] = "NDS.TOKNODE.v1\0";
+/* Root-layout round (K2): TAG_EPOCH "NDS.EPOCH.v2" and TAG_EPNODE
+ * "NDS.EPNODE.v2" DELETED with the epoch_state leg — retired, never
  * reused (ledger_roots_v2.h TAG TABLE). */
-static const uint8_t TAG_DOMHEAD[TAG_LEN] = "DNA.DOMHEAD.v1\0";
-static const uint8_t TAG_DOMNODE[TAG_LEN] = "DNA.DOMNODE.v1\0";
-static const uint8_t TAG_VSLEAF[TAG_LEN]  = "DNA.VSLEAF.v1\0\0";
-static const uint8_t TAG_VSNODE[TAG_LEN]  = "DNA.VSNODE.v1\0\0";
-/* tokenomics-v3 P1 (D-4, S-2) — collision-scanned against every DNA.*
+static const uint8_t TAG_DOMHEAD[TAG_LEN] = "NDS.DOMHEAD.v1\0";
+static const uint8_t TAG_DOMNODE[TAG_LEN] = "NDS.DOMNODE.v1\0";
+static const uint8_t TAG_VSLEAF[TAG_LEN]  = "NDS.VSLEAF.v1\0\0";
+static const uint8_t TAG_VSNODE[TAG_LEN]  = "NDS.VSNODE.v1\0\0";
+/* tokenomics-v3 P1 (D-4, S-2) — collision-scanned against every NDS.*
  * tag in the tree before adoption (see the ledger_roots_v2.h "TAG TABLE"
  * comment and the P1 executor report's grep). */
-static const uint8_t TAG_ATTEP[TAG_LEN]   = "DNA.ATTEP.v1\0\0\0";
-static const uint8_t TAG_ATLEAF[TAG_LEN]  = "DNA.ATLEAF.v1\0\0";
-static const uint8_t TAG_ATNODE[TAG_LEN]  = "DNA.ATNODE.v1\0\0";
-/* tokenomics-v3 P2 (P2-8) — collision-scanned against every DNA.* tag in
- * the tree before adoption (grep "DNA\.AC", "DNA\.E\.ACC": no other
+static const uint8_t TAG_ATTEP[TAG_LEN]   = "NDS.ATTEP.v1\0\0\0";
+static const uint8_t TAG_ATLEAF[TAG_LEN]  = "NDS.ATLEAF.v1\0\0";
+static const uint8_t TAG_ATNODE[TAG_LEN]  = "NDS.ATNODE.v1\0\0";
+/* tokenomics-v3 P2 (P2-8) — collision-scanned against every NDS.* tag in
+ * the tree before adoption (grep "NDS\.AC", "NDS\.E\.ACC": no other
  * consumer). SELF-CONSISTENT, not externally referenced — the P1 ATTEP
  * precedent (ledger_roots_v2_attendance_oracle.py PROVENANCE). */
-static const uint8_t TAG_ACLEAF[TAG_LEN]  = "DNA.ACLEAF.v1\0\0";
-static const uint8_t TAG_ACNODE[TAG_LEN]  = "DNA.ACNODE.v1\0\0";
+static const uint8_t TAG_ACLEAF[TAG_LEN]  = "NDS.ACLEAF.v1\0\0";
+static const uint8_t TAG_ACNODE[TAG_LEN]  = "NDS.ACNODE.v1\0\0";
 /* Final pre-testnet wipe, W-A (decision
  * 2026-09-28-treasury-pools-and-exact-self-stake.md answer 12, operator
- * "1 ok") — collision-scanned against every DNA.* tag in the tree before
- * adoption (git grep "DNA\.TR", "DNA\.E\.TREAS", "TRLEAF", "TRNODE": no
+ * "1 ok") — collision-scanned against every NDS.* tag in the tree before
+ * adoption (git grep "NDS\.TR", "NDS\.E\.TREAS", "TRLEAF", "TRNODE": no
  * prior use). SELF-CONSISTENT, not externally referenced — proven by an
  * independent oracle KAT, the ACLEAF precedent above. */
-static const uint8_t TAG_TRLEAF[TAG_LEN]  = "DNA.TRLEAF.v1\0\0";
-static const uint8_t TAG_TRNODE[TAG_LEN]  = "DNA.TRNODE.v1\0\0";
+static const uint8_t TAG_TRLEAF[TAG_LEN]  = "NDS.TRLEAF.v1\0\0";
+static const uint8_t TAG_TRNODE[TAG_LEN]  = "NDS.TRNODE.v1\0\0";
 
 static const uint8_t TAG_EMPTY[DNA_V2_EMPTY__COUNT][TAG_LEN] = {
-    "DNA.E.VSET.v1\0\0",   /* DNA_V2_EMPTY_VSET     */
-    "DNA.E.DOMREG.v1",     /* DNA_V2_EMPTY_DOMREG   */
-    "DNA.E.MANIF.v1\0",    /* DNA_V2_EMPTY_MANIFEST */
-    "DNA.E.POOLS.v1\0",    /* DNA_V2_EMPTY_POOLS    */
-    "DNA.E.CLAIMS.v1",     /* DNA_V2_EMPTY_CLAIMS   */
-    "DNA.E.NAMES.v1\0",    /* DNA_V2_EMPTY_NAMES    */
-    "DNA.E.TOKENS.v1",     /* DNA_V2_EMPTY_TOKENS   */
-    /* "DNA.E.EPOCH.v2" — DELETED, root-layout round K2 */
-    "DNA.E.ATTND.v1\0",   /* DNA_V2_EMPTY_ATTENDANCE (P1) */
-    "DNA.E.ACCRU.v1\0",    /* DNA_V2_EMPTY_ACCRUAL (P2)    */
-    "DNA.E.TREAS.v1\0",    /* DNA_V2_EMPTY_TREASURY (W-A)  */
+    "NDS.E.VSET.v1\0\0",   /* DNA_V2_EMPTY_VSET     */
+    "NDS.E.DOMREG.v1",     /* DNA_V2_EMPTY_DOMREG   */
+    "NDS.E.MANIF.v1\0",    /* DNA_V2_EMPTY_MANIFEST */
+    "NDS.E.POOLS.v1\0",    /* DNA_V2_EMPTY_POOLS    */
+    "NDS.E.CLAIMS.v1",     /* DNA_V2_EMPTY_CLAIMS   */
+    "NDS.E.NAMES.v1\0",    /* DNA_V2_EMPTY_NAMES    */
+    "NDS.E.TOKENS.v1",     /* DNA_V2_EMPTY_TOKENS   */
+    /* "NDS.E.EPOCH.v2" — DELETED, root-layout round K2 */
+    "NDS.E.ATTND.v1\0",   /* DNA_V2_EMPTY_ATTENDANCE (P1) */
+    "NDS.E.ACCRU.v1\0",    /* DNA_V2_EMPTY_ACCRUAL (P2)    */
+    "NDS.E.TREAS.v1\0",    /* DNA_V2_EMPTY_TREASURY (W-A)  */
 };
 
 static void put_be32(uint32_t v, uint8_t out[4]) {
@@ -434,7 +434,7 @@ int dna_v2_system_root(const uint8_t validator_root[64],
         return -1;
     uint8_t pre[TAG_LEN + 8 * DNA_V2_ROOT_LEN];
     memcpy(pre, TAG_SYS, TAG_LEN);
-    /* W-A: treasury_root is the 8th and LAST leg ("DNA.SYS.v4"). */
+    /* W-A: treasury_root is the 8th and LAST leg ("NDS.SYS.v4"). */
     const uint8_t *parts[8] = {
         validator_root, delegation_root, chain_config_root,
         validator_set_root, domain_registry_root, manifest_root,
@@ -480,11 +480,11 @@ int dna_v2_global_root(const uint8_t domains_root[64],
 
 /* ── SYSTEM payload root (S5 genesis cycle break) ───────────────────── */
 
-/* Root-layout round (K2): "DNA.SYSPAYL.v1" (5 legs) -> "DNA.SYSPAYL.v2"
+/* Root-layout round (K2): "NDS.SYSPAYL.v1" (5 legs) -> "NDS.SYSPAYL.v2"
  * (4 legs, the epoch_state leg removed). Final pre-testnet wipe (W-A):
- * "DNA.SYSPAYL.v2" -> "DNA.SYSPAYL.v3" (5 legs, treasury_root appended
+ * "NDS.SYSPAYL.v2" -> "NDS.SYSPAYL.v3" (5 legs, treasury_root appended
  * LAST — the treasury is seeded at genesis). */
-static const uint8_t TAG_SYSPAYL[TAG_LEN] = "DNA.SYSPAYL.v3\0";
+static const uint8_t TAG_SYSPAYL[TAG_LEN] = "NDS.SYSPAYL.v3\0";
 
 int dna_v2_system_payload_root(const uint8_t validator_root[64],
                                const uint8_t delegation_root[64],

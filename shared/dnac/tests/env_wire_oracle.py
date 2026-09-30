@@ -13,11 +13,11 @@ import hashlib
 import struct
 
 # ── constants (spec) ────────────────────────────────────────────────────
-WIRE_FAMILY   = b"DNA.ENVWIRE.v1".ljust(16, b"\0")
-TAG_CALL      = b"DNA.ENVCALL.v1".ljust(16, b"\0")
-TAG_AUTHCTX   = b"DNA.ENVCTX.v1".ljust(16, b"\0")
-TAG_AUTH      = b"DNA.ENVAUTH.v1".ljust(16, b"\0")
-TAG_TXID      = b"DNA.ENVTXID.v1".ljust(16, b"\0")
+WIRE_FAMILY   = b"NDS.ENVWIRE.v1".ljust(16, b"\0")
+TAG_CALL      = b"NDS.ENVCALL.v1".ljust(16, b"\0")
+TAG_AUTHCTX   = b"NDS.ENVCTX.v1".ljust(16, b"\0")
+TAG_AUTH      = b"NDS.ENVAUTH.v1".ljust(16, b"\0")
+TAG_TXID      = b"NDS.ENVTXID.v1".ljust(16, b"\0")
 
 ENV_VERSION      = 1
 FIXED_HEAD       = 43
@@ -189,7 +189,7 @@ def main():
     # re-parses the wire bytes rather than re-declaring the fields, so the
     # pinned bytes and the pinned digests cannot drift apart.
     wire = bytes.fromhex(
-        "444e412e454e56574952452e7631000001000000000011223300000000000003"
+        "4e44532e454e56574952452e7631000001000000000011223300000000000003"
         "e8000000000000c3500002000000010000000700000003020100000008000000"
         "0500000010000004000000002a00000000000000010102000000000000000300"
         "000000000000000001020304050607a0a1a2a3a4b0b1b2")

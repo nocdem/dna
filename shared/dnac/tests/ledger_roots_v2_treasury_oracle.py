@@ -3,10 +3,10 @@
 Independent vector oracle for the TREASURY leg of the SYSTEM state root
 (decision 2026-09-28-treasury-pools-and-exact-self-stake.md, item 12,
 operator "1 ok", 2026-09-29): the per-pool treasury leaf
-("DNA.TRLEAF.v1"), the treasury Merkle tree (inner "DNA.TRNODE.v1",
-empty "DNA.E.TREAS.v1"), and the two SYSTEM compositions that gain the
-treasury_root as their LAST leg: system_state_root ("DNA.SYS.v4", 8 legs)
-and system_payload_root ("DNA.SYSPAYL.v3", 5 legs).
+("NDS.TRLEAF.v1"), the treasury Merkle tree (inner "NDS.TRNODE.v1",
+empty "NDS.E.TREAS.v1"), and the two SYSTEM compositions that gain the
+treasury_root as their LAST leg: system_state_root ("NDS.SYS.v4", 8 legs)
+and system_payload_root ("NDS.SYSPAYL.v3", 5 legs).
 
 ── PROVENANCE — HONEST LABEL ────────────────────────────────────────────
 This is a SELF-CONSISTENCY oracle, not an external audit: the format is
@@ -26,16 +26,16 @@ ledger_roots_v2_accrual_oracle.py (P2) and
 ledger_roots_v2_attendance_oracle.py (P1).
 
 ── WHAT IS PINNED ────────────────────────────────────────────────────────
-  treasury leaf  = SHA3-512("DNA.TRLEAF.v1" (16B zero-padded) ||
+  treasury leaf  = SHA3-512("NDS.TRLEAF.v1" (16B zero-padded) ||
                             pool_id(4 BE) || balance(8 BE))
-  treasury inner = SHA3-512("DNA.TRNODE.v1" || left[64] || right[64])
-  treasury empty = SHA3-512("DNA.E.TREAS.v1")   (the 16-byte padded tag
+  treasury inner = SHA3-512("NDS.TRNODE.v1" || left[64] || right[64])
+  treasury empty = SHA3-512("NDS.E.TREAS.v1")   (the 16-byte padded tag
                    alone — the same rule as every other tagged empty root)
-  system_state_root   = SHA3-512("DNA.SYS.v4" || 8 legs of 64 bytes:
+  system_state_root   = SHA3-512("NDS.SYS.v4" || 8 legs of 64 bytes:
                         validator, delegation, chain_config,
                         validator_set, domain_registry, manifest,
                         attendance, treasury)
-  system_payload_root = SHA3-512("DNA.SYSPAYL.v3" || 5 legs of 64 bytes:
+  system_payload_root = SHA3-512("NDS.SYSPAYL.v3" || 5 legs of 64 bytes:
                         validator, delegation, chain_config,
                         validator_set, treasury)
 The Merkle rule is the header's own: leaves in STRICTLY ascending pool_id
@@ -47,8 +47,8 @@ n == 1 -> the leaf, n == 0 -> the tagged empty root.
  2. `fill(seed)` is test_roots_v2.c's own fixture convention, reproduced
     byte-for-byte; a bug shared between the C fixture and this generator
     would agree with itself.
- 3. The two control legs (the LIVE "DNA.SYS.v3" 7-leg and
-    "DNA.SYSPAYL.v2" 4-leg vectors pinned in nodus/tests/test_roots_v2.c
+ 3. The two control legs (the LIVE "NDS.SYS.v3" 7-leg and
+    "NDS.SYSPAYL.v2" 4-leg vectors pinned in nodus/tests/test_roots_v2.c
     before this change) are run FIRST; if either fails, nothing this
     script prints below them may be used. No treasury vector existed
     before, so the leaf / tree / empty root have NO control of their own
@@ -91,14 +91,14 @@ def be64(v: int) -> bytes:
 
 
 # Live (pre-change) composition tags — control legs only.
-TAG_SYS_V3 = tag("DNA.SYS.v3")
-TAG_SYSPAYL_V2 = tag("DNA.SYSPAYL.v2")
+TAG_SYS_V3 = tag("NDS.SYS.v3")
+TAG_SYSPAYL_V2 = tag("NDS.SYSPAYL.v2")
 # New tags (decision item 12).
-TAG_SYS_V4 = tag("DNA.SYS.v4")
-TAG_SYSPAYL_V3 = tag("DNA.SYSPAYL.v3")
-TAG_TRLEAF = tag("DNA.TRLEAF.v1")
-TAG_TRNODE = tag("DNA.TRNODE.v1")
-TAG_E_TREAS = tag("DNA.E.TREAS.v1")
+TAG_SYS_V4 = tag("NDS.SYS.v4")
+TAG_SYSPAYL_V3 = tag("NDS.SYSPAYL.v3")
+TAG_TRLEAF = tag("NDS.TRLEAF.v1")
+TAG_TRNODE = tag("NDS.TRNODE.v1")
+TAG_E_TREAS = tag("NDS.E.TREAS.v1")
 
 
 def treasury_leaf(pool_id: int, balance: int) -> bytes:
@@ -207,19 +207,23 @@ def main():
     # (KAT_SYSTEM_7LEG_V3 legs fill(0x90..0x96); KAT_SYSPAYL_V2 legs
     # fill(0xA0..0xA3)). The method must reproduce them before anything
     # new is trusted.
+    # Re-pinned 2026-09-30 (tag prefix rebrand "DNA" → "NDS", decision
+    # 2026-09-30-tag-rebrand-nds.md): the old-prefix values 841abb1a…56fd and
+    # 0bf7a1b8…dd4b were reproduced first; these are the NDS-prefix values
+    # emitted by ledger_roots_v2_attendance_oracle.py.
     KAT_SYSTEM_7LEG_V3 = (
-        "841abb1a867749ac68b688469513bbbc447962a8bbead05663d14d97744fda86"
-        "aaad6bc67230578050f743a7fc3b7e94176bb0074c7ee7f1b247b74fb9a356fd"
+        "da7eafdcbb49176f7260cb05387e7bda1f7f2c483b18327b73f9f6f796b3a603"
+        "7709d4e6e90e7d962aff0f1070e431acbb2a1009081b942afafd6b39379b1f97"
     )
     KAT_SYSPAYL_V2 = (
-        "0bf7a1b805467d9c580faec171895abb0c63e3e1e9be83aa9ebfc263307c7ce1"
-        "23d685e607d9d5aa9c4b21b44cdad92c62de6d00f779a27b56b2b655432cdd4b"
+        "2690da56226ae1995c2128a7e651857f6c96fa5f9562edea1783a7c3e5cff5db"
+        "4bd674d85cd615b4886fc37f3c9cd90b5f522c42d7a9934fadae32310a105f19"
     )
     assert system_root_v3([fill(0x90 + i) for i in range(7)]).hex() == \
-        KAT_SYSTEM_7LEG_V3, "live 7-leg DNA.SYS.v3 vector not reproduced"
+        KAT_SYSTEM_7LEG_V3, "live 7-leg NDS.SYS.v3 vector not reproduced"
     assert system_payload_root_v2([fill(0xA0 + i) for i in range(4)]).hex() == \
-        KAT_SYSPAYL_V2, "live 4-leg DNA.SYSPAYL.v2 vector not reproduced"
-    print("[self-check] live DNA.SYS.v3 (7-leg) and DNA.SYSPAYL.v2 (4-leg) "
+        KAT_SYSPAYL_V2, "live 4-leg NDS.SYSPAYL.v2 vector not reproduced"
+    print("[self-check] live NDS.SYS.v3 (7-leg) and NDS.SYSPAYL.v2 (4-leg) "
           "vectors reproduced")
     print()
 
@@ -231,7 +235,7 @@ def main():
     print()
 
     empty = treasury_root([])
-    print("EMPTY_TREASURY    =", empty.hex(), "  (SHA3-512 of 'DNA.E.TREAS.v1' padded to 16 B)")
+    print("EMPTY_TREASURY    =", empty.hex(), "  (SHA3-512 of 'NDS.E.TREAS.v1' padded to 16 B)")
 
     leaf_8_0 = treasury_leaf(8, 0)
     assert treasury_root([(8, 0)]) == leaf_8_0, "n==1 root must be the leaf"
@@ -268,18 +272,18 @@ def main():
     pay3 = system_payload_root_v3(pay_legs, r9)
     assert sys4 != system_root_v3(sys_legs), "treasury leg must change SYS"
     print("KAT_SYS_V4_8LEG   =", sys4.hex(),
-          "  (DNA.SYS.v4, legs leg[0..6] = validator..attendance, treasury = KAT_TR_ROOT_9)")
+          "  (NDS.SYS.v4, legs leg[0..6] = validator..attendance, treasury = KAT_TR_ROOT_9)")
     print("KAT_SYSPAYL_V3    =", pay3.hex(),
-          "  (DNA.SYSPAYL.v3, legs leg[0..3] = validator..vset, treasury = KAT_TR_ROOT_9)")
+          "  (NDS.SYSPAYL.v3, legs leg[0..3] = validator..vset, treasury = KAT_TR_ROOT_9)")
 
     # Same compositions over test_roots_v2.c's own fill() fixture, for a
     # C test that keeps its existing leg convention.
     sys4_f = system_root_v4([fill(0x90 + i) for i in range(7)], fill(0x97))
     pay3_f = system_payload_root_v3([fill(0xA0 + i) for i in range(4)], fill(0xA4))
     print("KAT_SYS_V4_FILL   =", sys4_f.hex(),
-          "  (DNA.SYS.v4, legs fill(0x90..0x96), treasury fill(0x97))")
+          "  (NDS.SYS.v4, legs fill(0x90..0x96), treasury fill(0x97))")
     print("KAT_SYSPAYL_V3_FILL =", pay3_f.hex(),
-          "  (DNA.SYSPAYL.v3, legs fill(0xA0..0xA3), treasury fill(0xA4))")
+          "  (NDS.SYSPAYL.v3, legs fill(0xA0..0xA3), treasury fill(0xA4))")
 
 
 if __name__ == "__main__":

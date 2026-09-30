@@ -385,7 +385,7 @@ void nodus_chain_config_log_stats(nodus_witness_t *w);
  * preflight seam (never a private decoder), applies the SAME rules the
  * op's exec applies at the local tip, rate-limits per proposer, resolves
  * the governing committee, finds this node's own seat, computes the
- * "DNA.CCAPPR.v1" approval digest itself from the seam-derived leg
+ * "NDS.CCAPPR.v1" approval digest itself from the seam-derived leg
  * auth_digest, signs it, and replies with a w_cc_appr_rsp carrying
  * (seat, signature, resolved-set hash, epoch) — or a refusal with a
  * reason. It never signs a digest it did not compute. CHAIN BINDING

@@ -652,7 +652,7 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
         int present = v2ep_utxo_present(w, nul);
         if (present != 0) {
             /* present == 1: the SHA3 input domains of the CORE spend
-             * derivation, the O11 SYSFUND release and DNA.EPGRAD.v1 are
+             * derivation, the O11 SYSFUND release and NDS.EPGRAD.v1 are
              * disjoint, so this cannot arise from ordinary operation —
              * only local corruption. present == -2: probe fault. */
             QGP_LOG_ERROR(LOG_TAG,

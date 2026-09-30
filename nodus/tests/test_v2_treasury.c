@@ -566,7 +566,7 @@ static int test_boundary_genesis_seat_alone(void) {
  * PROVES: (a) the coin identity function against the independent oracle
  * (pinned from multisig_oracle.py, ONAY 2 source_commit form);
  * (b) a derived chain holds EXACTLY the five outputs — count and Σ — each
- * with nullifier = tx_hash = SHA3-512("DNA.GENOUT.v1" ‖ source_commit ‖
+ * with nullifier = tx_hash = SHA3-512("NDS.GENOUT.v1" ‖ source_commit ‖
  * i) for its DOCUMENT index i, owner = the multisig address (128 hex),
  * the document's amount, output_index 0, block_height 0, unlock 0,
  * domain CORE, native token; (c) the claimable distribution EXCLUDES
@@ -580,13 +580,16 @@ static int test_boundary_genesis_seat_alone(void) {
  * same written layout; the multisig owner here is a synthetic address
  * (spending it is test_v2_native §MSIG's subject). */
 /* PINNED 2026-09-29 from shared/dnac/tests/multisig_oracle.py genout_nullifier
- * (source_commit form, ONAY 2), evaluated at source_commit = 64 x 0x11. */
+ * (source_commit form, ONAY 2), evaluated at source_commit = 64 x 0x11.
+ * Re-derived 2026-09-30 for the NDS. tag rename (decision
+ * 2026-09-30-tag-rebrand-nds.md): re-derived independently in Python by
+ * the orchestrator (control legs reproduced the old DNA. values). */
 static const char *KAT_GENOUT_SC11_0 =
-    "217b314f566e50459e2f2f382d8d91c30e78e1b4a60dc657a9e1e02b9eaf299fe16ec1f40e0669b544e0df98baedcde4fbd27d2103c710cea35ff80c23206396";
+    "9aa4b235a1ce5da4374bf43b9390d400e8181923960126dd49c5bc95d8cb6620c6d1d66f604514fca05e6f0ae3ffac56936ff8f634424a9023f0493b014c6269";
 static const char *KAT_GENOUT_SC11_1 =
-    "084d87014063fb3b9109b11c2dfe5b460d71423363024cb6cc1683575e5d8f652b4867948a198ec040f405e49ff6b3c06a8765222cec52c195cf1bb7e5ec873d";
+    "1dcb5cde33c3cc9b0b76dd34b3547130e8958af13ed94d89a13be9e172d582ad82933dfe9cd86a9a956d0f24ddbc23aaec1296ff7b0468d01ee85a13bc1d053e";
 static const char *KAT_GENOUT_SC11_2 =
-    "a78e018db93e15841880456af7a6036a35e8616626267a653d9ea9fad400c966fca34b10f9a897db672a10cbd258b8e91d64850a4cafcd0e990513602cde239a";
+    "f81f53061459d568762c7c44f21f2494ce8c048b41918765a57daf7a436e6719a029678d3ef8417076c09fa0d7f9fe03fd1dcc68c052b90197442f67b241d3b3";
 
 /* cfg_with_treasury + the decision's move: pools 5-9 become genesis
  * outputs 0-4 (same amounts, document order = pool order) owned by

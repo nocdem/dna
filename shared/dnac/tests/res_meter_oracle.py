@@ -5,7 +5,7 @@ KAT pinned by test_res_meter.c.
 Written from the res_meter.h specification only; shares no code with the
 C implementation. The seal preimage is:
 
-    tag(16, "DNA.METPOL.v1" zero-padded)
+    tag(16, "NDS.METPOL.v1" zero-padded)
     || policy_version u32 BE
     || w_base || w_callbyte || w_authbyte || w_effect || w_effectbyte
     || w_read || w_write
@@ -51,15 +51,15 @@ def policy_hash(tag_str, version, w_base, w_callbyte, w_authbyte,
 
 
 def seal(*args):
-    """The LOCAL integrity checksum ("DNA.METPOL.v1")."""
-    return policy_hash("DNA.METPOL.v1", *args)
+    """The LOCAL integrity checksum ("NDS.METPOL.v1")."""
+    return policy_hash("NDS.METPOL.v1", *args)
 
 
 def identity(*args):
-    """The CONSENSUS identity digest ("DNA.METPOLID.v1", execution
+    """The CONSENSUS identity digest ("NDS.METPOLID.v1", execution
     season): same canonical fields, DIFFERENT tag, seal field excluded
     by construction (it is not part of the serialization)."""
-    return policy_hash("DNA.METPOLID.v1", *args)
+    return policy_hash("NDS.METPOLID.v1", *args)
 
 
 def main():

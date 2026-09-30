@@ -14,7 +14,7 @@
  * the rate-limit record after it); the assembled
  * envelope is then handed to `nodus_witness_v2_env_dry_run` — the per-item
  * dry run CheckTx calls — and it accepts. A second, INDEPENDENT
- * recomputation of the "DNA.CCSET.v1" set hash and the "DNA.CCAPPR.v1"
+ * recomputation of the "NDS.CCSET.v1" set hash and the "NDS.CCAPPR.v1"
  * approval digest (this file's own preimage bytes, not
  * `nodus_rt_committee_set_hash`/`nodus_rt_cc_approval_digest`) is checked
  * against a seat's signature with `qgp_dsa87_verify`, so the test is
@@ -519,14 +519,14 @@ static int t_happy_path_all_seats(void) {
         p[1] = (uint8_t)cmn;
     }
 
-    /* independent set_hash recomputation: "DNA.CCSET.v1"(16) ‖ count
+    /* independent set_hash recomputation: "NDS.CCSET.v1"(16) ‖ count
      * u16 BE ‖ count x fp[64], fps in RESOLUTION order. */
     uint8_t indep_set_hash[64];
     {
         uint8_t pre[16 + 2 + 128 * 64];
         size_t off = 0;
         static const uint8_t tag[16] = {
-            'D','N','A','.','C','C','S','E','T','.','v','1', 0,0,0,0 };
+            'N','D','S','.','C','C','S','E','T','.','v','1', 0,0,0,0 };
         memcpy(pre, tag, 16); off += 16;
         pre[off++] = (uint8_t)((uint32_t)cmn >> 8);
         pre[off++] = (uint8_t)cmn;
@@ -580,14 +580,14 @@ static int t_happy_path_all_seats(void) {
               "set_hash matches independent recomputation");
 
         /* independent approval-digest recomputation against the LAYOUT:
-         * "DNA.CCAPPR.v1"(16) ‖ leg_auth_digest(64) ‖ set_hash(64) ‖
+         * "NDS.CCAPPR.v1"(16) ‖ leg_auth_digest(64) ‖ set_hash(64) ‖
          * epoch u64 BE ‖ seat u16 BE = 154 bytes. */
         uint8_t adg[64];
         {
             uint8_t pre[16 + 64 + 64 + 8 + 2];
             size_t off = 0;
             static const uint8_t tag[16] = {
-                'D','N','A','.','C','C','A','P','P','R','.','v','1', 0,0,0 };
+                'N','D','S','.','C','C','A','P','P','R','.','v','1', 0,0,0 };
             memcpy(pre, tag, 16); off += 16;
             memcpy(pre + off, pf1.auth_digest[0], 64); off += 64;
             memcpy(pre + off, rsp.set_hash, 64); off += 64;

@@ -205,7 +205,7 @@ echo "[ok] tip advanced: $tip_before -> $tip_after (liveness only — not proof 
 # :795-847) writes the claim's own nullifier into the `tx_hash` COLUMN
 # (:841, `sqlite3_bind_blob(st, 5, claim->nullifier, 64, ...)`) — the
 # `nullifier` COLUMN instead holds `dna_claim_utxo_id(nullifier)`, a HASH
-# of it (:809, `SHA3-512("DNA.CLUTXO.v1\0\0" || nullifier)`,
+# of it (:809, `SHA3-512("NDS.CLUTXO.v1\0\0" || nullifier)`,
 # shared/dnac/manifest_wire.c:650-657), which this scenario never
 # computes and cannot reproduce without re-deriving that tag. The
 # assertion is therefore keyed on `tx_hash`, not `nullifier`. Presence is

@@ -255,7 +255,7 @@ dnac_shielded_verify_status_t dnac_shielded_verify_statement(
      * (vctx->tleg_commit), not derived here. This entry used to call
      * dnac_tleg_commit_empty() unconditionally, which silently restricted the
      * statement to transactions with NO transparent leg: an honest SHIELD or
-     * UNSHIELD, whose leg digest is a real DNA.TLEG.v1 commitment, could never
+     * UNSHIELD, whose leg digest is a real NDS.TLEG.v1 commitment, could never
      * bind. The caller (the per-type native verifier) is the only layer that
      * knows the shape, so it supplies the digest: the tagged-empty form for
      * type 11, the real leg commitment for 12/13. A caller that supplies

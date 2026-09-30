@@ -7,7 +7,7 @@
  * adopts it in place ONLY when the derivation matches the local pin — a
  * 32-byte chain id (R3 W3, D-24 rev 4 (1)). There is ONE derivation
  * engine, nodus_witness_v2_bundle_apply, and ONE bundle shape it
- * accepts: version-5 (magic "DNA.GBUNDLE.v5\0\0", W-A — six tables incl.
+ * accepts: version-5 (magic "NDS.GBUNDLE.v5\0\0", W-A — six tables incl.
  * v2_treasury). Any other magic, including the retired v1, v3 and v4
  * ones, is refused by the magic check itself
  * (nodus_witness_v2_bundle.c nodus_witness_v2_bundle_apply) before any

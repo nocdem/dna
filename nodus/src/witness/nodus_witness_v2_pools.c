@@ -802,7 +802,7 @@ static int pool_startup_verify_one(nodus_witness_t *w, uint32_t dom,
                                    uint32_t pool, uint64_t nul_count,
                                    const uint8_t nul_root[64],
                                    uint64_t note_count) {
-    /* ── nullifier log: full ordered DNA.PNUL.v1 chain replay ──────── */
+    /* ── nullifier log: full ordered NDS.PNUL.v1 chain replay ──────── */
     uint8_t acc[DNA_POOL_ROOT_LEN];
     if (dna_pool_nul_empty_root(acc) != 0) return -1;
 

@@ -129,7 +129,7 @@ typedef struct {
  * NOT a chain transaction type: the dnac_tx_type_t space is untouched
  * (14 stays UNASSIGNED), no wire walker or verify lane keys on it, and
  * the AUTHORITY for classification is always the envelope's 16-byte
- * wire-family marker at offset 0 ("DNA.ENVWIRE.v1", env_wire.h) — this
+ * wire-family marker at offset 0 ("NDS.ENVWIRE.v1", env_wire.h) — this
  * value only labels an entry whose bytes already carried that marker.
  * Deliberately far outside the chain type space so a collision with a
  * future chain type is impossible to miss. */
@@ -141,7 +141,7 @@ typedef struct {
  * claim has NO live wire type (the dnac_tx_type_t space and types 11-14
  * are untouched), no wire walker keys on it, and the classification
  * AUTHORITY is byte-driven — an entry whose bytes do NOT begin with the
- * envelope wire-family marker ("DNA.ENVWIRE.v1", env_wire.c:25-27) on a
+ * envelope wire-family marker ("NDS.ENVWIRE.v1", env_wire.c:25-27) on a
  * successor is a claim; strict dna_claim_decode + admission decide
  * validity. Deliberately adjacent to 200 and far outside the chain type
  * space so a collision is impossible to miss. */
@@ -467,7 +467,7 @@ typedef struct nodus_witness {
      *
      * `v2_successor` is derived at every database open from COMMITTED
      * state only (the height-0 successor genesis manifest carrying the
-     * "DNA.LEGACY.TERM.v1" source binding — the same committed authority
+     * "NDS.LEGACY.TERM.v1" source binding — the same committed authority
      * the activation gate reads); no env var, flag, config or peer input
      * can set it. While true, this chain's producer/verify/commit paths
      * run the Ledger V2 engine and the LEGACY lanes (genesis, spend
@@ -514,7 +514,7 @@ typedef struct nodus_witness {
      * gate accepted it is no longer caught per call — only at the next
      * open, where the gate re-reads it canonical-strict.
      *
-     * R3 W4 — v2_certpool (the bounded per-height DNA.CERT.v2 collection
+     * R3 W4 — v2_certpool (the bounded per-height NDS.CERT.v2 collection
      * that assembled the closed lane's QC) is DELETED with it: its only
      * producers (nodus_witness_v2_qc_try_attach, _cert_note,
      * _produce_commit) are gone. */

@@ -23,14 +23,14 @@
  *   - any missing/unreadable component fails the whole computation (-1).
  *
  * ── TAG TABLE (each exactly 16 bytes, zero-padded) ────────────────────
- *   "DNA.POOLCFG.v1"   pool configuration hash
- *   "DNA.POOLLEAF.v1"  pool state leaf
- *   "DNA.POOLNODE.v1"  pools Merkle inner node
- *   "DNA.PNUL.v1"      nullifier-set accumulator step
- *   "DNA.E.PNUL.v1"    EMPTY nullifier-set root
- *   "DNA.PHIST.v1"     root-history accumulator step
- *   "DNA.E.PHIST.v1"   EMPTY root-history commitment
- *   (the EMPTY pools_root is the frozen S2 "DNA.E.POOLS.v1" —
+ *   "NDS.POOLCFG.v1"   pool configuration hash
+ *   "NDS.POOLLEAF.v1"  pool state leaf
+ *   "NDS.POOLNODE.v1"  pools Merkle inner node
+ *   "NDS.PNUL.v1"      nullifier-set accumulator step
+ *   "NDS.E.PNUL.v1"    EMPTY nullifier-set root
+ *   "NDS.PHIST.v1"     root-history accumulator step
+ *   "NDS.E.PHIST.v1"   EMPTY root-history commitment
+ *   (the EMPTY pools_root is the frozen S2 "NDS.E.POOLS.v1" —
  *    dna_v2_empty_root(DNA_V2_EMPTY_POOLS), ledger_roots_v2.h)
  *
  * ── Note-root representation ──────────────────────────────────────────
@@ -44,14 +44,14 @@
  * values and never recomputes the inner Poseidon2 hash.
  *
  * ── Exact preimages ───────────────────────────────────────────────────
- *   config_hash = SHA3-512("DNA.POOLCFG.v1" ‖ domain_id(4 BE)
+ *   config_hash = SHA3-512("NDS.POOLCFG.v1" ‖ domain_id(4 BE)
  *       ‖ pool_id(4 BE) ‖ config_version(4 BE) ‖ tree_depth(1)
  *       ‖ history_limit(4 BE) ‖ asset_ref_len(2 BE) ‖ asset_ref)
  *       — hashed preimage INCLUDING the 16-byte tag =
  *         16+4+4+4+1+4+2 = 35 fixed bytes + asset_ref_len bytes
  *         (DNA_POOL_CFG_PREIMAGE_FIXED_LEN); the initial 64-byte
  *         asset reference yields 99 bytes total
- *   pool leaf   = SHA3-512("DNA.POOLLEAF.v1" ‖ domain_id(4 BE)
+ *   pool leaf   = SHA3-512("NDS.POOLLEAF.v1" ‖ domain_id(4 BE)
  *       ‖ pool_id(4 BE) ‖ config_hash[64] ‖ note_root[32]
  *       ‖ note_count(8 BE) ‖ nul_root[64] ‖ nul_count(8 BE)
  *       ‖ balance(8 BE) ‖ hist_commit[64] ‖ hist_count(8 BE)
@@ -60,13 +60,13 @@
  *         = 272 bytes; the COMPLETE hashed preimage INCLUDING the
  *         16-byte tag = 288 bytes (DNA_POOL_LEAF_PREIMAGE_LEN;
  *         compile-time-asserted and runtime-checked in pool_wire.c)
- *   pools inner = SHA3-512("DNA.POOLNODE.v1" ‖ left[64] ‖ right[64])
- *   nul step    = SHA3-512("DNA.PNUL.v1" ‖ prev_root[64]
+ *   pools inner = SHA3-512("NDS.POOLNODE.v1" ‖ left[64] ‖ right[64])
+ *   nul step    = SHA3-512("NDS.PNUL.v1" ‖ prev_root[64]
  *       ‖ position(8 BE) ‖ nullifier[32])
- *   empty nul   = SHA3-512("DNA.E.PNUL.v1" tag alone)
- *   hist step   = SHA3-512("DNA.PHIST.v1" ‖ prev[64] ‖ seq(8 BE)
+ *   empty nul   = SHA3-512("NDS.E.PNUL.v1" tag alone)
+ *   hist step   = SHA3-512("NDS.PHIST.v1" ‖ prev[64] ‖ seq(8 BE)
  *       ‖ note_root[32])
- *   empty hist  = SHA3-512("DNA.E.PHIST.v1" tag alone)
+ *   empty hist  = SHA3-512("NDS.E.PHIST.v1" tag alone)
  *
  * The nullifier-set commitment is an INCREMENTAL sequential accumulator:
  * O(1) per insertion, chained over the canonical insertion order
@@ -79,7 +79,7 @@
  * Same rules as every S2 tree (ledger_roots_v2.h): leaves are the
  * already-tagged pool leaf hashes in STRICTLY ascending pool_id order
  * (equal or descending neighbours reject); inner nodes use
- * "DNA.POOLNODE.v1"; an unpaired odd node is PROMOTED unchanged;
+ * "NDS.POOLNODE.v1"; an unpaired odd node is PROMOTED unchanged;
  * n == 1 → the single leaf; n == 0 → the frozen S2 tagged-empty
  * pools_root (DNA_V2_EMPTY_POOLS) so a runtime with zero pools is
  * byte-identical to every pre-S7 chain.
@@ -200,10 +200,10 @@ int dna_pools_root(uint32_t domain_id, const dna_pool_leaf_t *leaves,
 
 /* ── Nullifier-set accumulator ──────────────────────────────────────── */
 
-/** Empty nullifier-set root = SHA3-512("DNA.E.PNUL.v1"). @return 0/-1. */
+/** Empty nullifier-set root = SHA3-512("NDS.E.PNUL.v1"). @return 0/-1. */
 int dna_pool_nul_empty_root(uint8_t out[DNA_POOL_ROOT_LEN]);
 
-/** One accumulator step: out = SHA3-512("DNA.PNUL.v1" ‖ prev ‖
+/** One accumulator step: out = SHA3-512("NDS.PNUL.v1" ‖ prev ‖
  *  position(8 BE) ‖ nullifier[32]). The nullifier MUST be canonical
  *  (dna_pool_lanes_canonical) — a non-canonical value rejects.
  *  `out` may alias `prev`. @return 0 / -1. */
@@ -214,10 +214,10 @@ int dna_pool_nul_step(const uint8_t prev[DNA_POOL_ROOT_LEN],
 
 /* ── Finalized-root-history commitment ──────────────────────────────── */
 
-/** Empty history commitment = SHA3-512("DNA.E.PHIST.v1"). @return 0/-1. */
+/** Empty history commitment = SHA3-512("NDS.E.PHIST.v1"). @return 0/-1. */
 int dna_pool_hist_empty(uint8_t out[DNA_POOL_ROOT_LEN]);
 
-/** One history step: out = SHA3-512("DNA.PHIST.v1" ‖ prev ‖ seq(8 BE) ‖
+/** One history step: out = SHA3-512("NDS.PHIST.v1" ‖ prev ‖ seq(8 BE) ‖
  *  note_root[32]). The root MUST be canonical. `out` may alias `prev`.
  *  @return 0 / -1. */
 int dna_pool_hist_step(const uint8_t prev[DNA_POOL_ROOT_LEN],

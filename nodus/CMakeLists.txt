@@ -547,7 +547,7 @@ if(NOT WIN32)
         # 2026-09-22-nodus-tokenomics-v3-operator.md §3 S-4). The
         # epoch_state TABLE and its SYSTEM-root leg went in the separate
         # root-layout round (decisions/2026-09-25-root-layout-round.md K2:
-        # "DNA.SYS.v3", "DNA.SYSPAYL.v2", "DNA.GBUNDLE.v4").
+        # "NDS.SYS.v3", "NDS.SYSPAYL.v2", "NDS.GBUNDLE.v4").
         # The emission HEADER (nodus_witness_emission.h) stays: it carries
         # the two committed unit constants, nothing that mints.
         src/witness/nodus_witness_committee.c

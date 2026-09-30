@@ -65,16 +65,18 @@ static int g_checks = 0;
 #define OK() do { g_checks++; } while (0)
 
 /* ── Pinned python3-oracle literals ─────────────────────────────────── */
-/* Snapshot hashes of fixtures A (epoch 720, 2 entries) and B (1440, 1). */
+/* Snapshot hashes of fixtures A (epoch 720, 2 entries) and B (1440, 1).
+ * ROOT_1..3 re-derived 2026-09-30 for the NDS. tag rename (decision
+ * 2026-09-30-tag-rebrand-nds.md). */
 static const char *ROOT_1 =   /* {720:A}                                */
-    "cd702985b5432034945617a93c7d2ef84808966660f6fefb978e1fcb0df832e2"
-    "dabca6324d640a25d945332887815cfcab6c699e51a27454bc67eaf96c02bb85";
+    "c6377f7816a815c4744602913dfa8522be661d4b56c085908d5bc4a70bfad519"
+    "ae1409bce2703ebf877b3ee23ecbf4dca71790ef7bcccd7c1ea85ba5ea6cf3f9";
 static const char *ROOT_2 =   /* {720:A, 1440:B}                        */
-    "d2b8febe16786470b901119424f33305397a21a28fb2b318ad43dd46e504feb0"
-    "f0d177a27059c787dc34783599b95c3e464b0b58e91583475d7cbebf9d70e7f9";
+    "85bcb8a42ccc7de85875507f3bd9c60230c3a58d283d3df8c6a4015c197571af"
+    "f3389bf868d13e110867a43baedc6806d3d97453e662703f17ca667f2d583a4c";
 static const char *ROOT_3 =   /* {720:A, 1440:B, 2160:third}            */
-    "a431ae020cc30fc376a7c77185c43ef87cbdb4139006ccb110564880b8f58529"
-    "495450b77c0633f2e6e1b16984af49fc4711c45f4dcb5442736e4f93c031aa00";
+    "37d24842fe59edfaefee115382fae2d190b6c19355b51e3ba7ac7094f602a2d4"
+    "f2cc837efad55d7be0081152fbd6d9d547b58bc0e5202e6e874606687827f9a8";
 /* SHA3-512("kat-third-snapshot") — an OPAQUE 64-byte hash, deliberately
  * NOT a dna_vset_hash of anything. See the note at insert_raw_row. */
 static const char *THIRD_HASH =
@@ -204,7 +206,7 @@ static void fx_close(fixture_t *fx) {
  * Write a row with DIRECT SQL, bypassing nodus_witness_vset_insert.
  *
  * WHY THIS EXISTS: _insert re-derives the hash with dna_vset_hash_bytes,
- * which is TAG-PREFIXED (SHA3-512("DNA.VSET.v1" ‖ blob)), so it can only
+ * which is TAG-PREFIXED (SHA3-512("NDS.VSET.v1" ‖ blob)), so it can only
  * ever store a row whose hash is a real snapshot commitment. The third
  * root-KAT row is deliberately an OPAQUE hash over an undecodable blob —
  * exactly the case that proves nodus_witness_vset_root reads stored

@@ -6,7 +6,7 @@
  * ═══ SCOPE ══════════════════════════════════════════════════════════════
  * Runs ONLY on a chain whose handle carries `w->v2_successor` — a fact
  * derived at database open from COMMITTED state (the height-0 successor
- * genesis manifest with the "DNA.LEGACY.TERM.v1" source binding; the same
+ * genesis manifest with the "NDS.LEGACY.TERM.v1" source binding; the same
  * committed authority the activation gate reads). On every other chain the
  * legacy lane is byte-identically untouched, and on non-activation builds
  * the successor cannot exist at all (deriving one is compile-gated).
@@ -20,14 +20,14 @@
  * its own, and it opens no transaction.
  *
  * ═══ QC FORMATION — R3 W4: DELETED with the closed consensus lane ═══════
- * This module used to also assemble the shipped post-commit DNA.CERT.v2
+ * This module used to also assemble the shipped post-commit NDS.CERT.v2
  * QC (nodus_witness_v2_cert_note / _qc_try_attach, pooled in
  * `w->v2_certpool`): the legacy PBFT round voted BEFORE execution, so a
  * QC certificate — which binds the engine-derived BlockID and therefore
  * can only be signed AFTER execution — was assembled from per-node
  * COMMIT-broadcast certificates once a committed height had them. A
  * version-3 chain has no PBFT round and no COMMIT broadcast to ride, and
- * this build assembles no replacement DNA.CERT.v2 QC for it — grep
+ * this build assembles no replacement NDS.CERT.v2 QC for it — grep
  * confirms nodus_witness_cmt_app.c has no QC handling of its own.
  * `w->v2_certpool` and every function that read or wrote it are deleted;
  * see nodus_witness_v2_produce.c's own deletion notes at the same names.
@@ -93,7 +93,7 @@ int nodus_witness_v2_tip_height(nodus_witness_t *w, uint64_t *height_out);
 
 /**
  * Transport-local classification of a successor mempool entry from its
- * LEADING bytes: an entry beginning with the 16-byte "DNA.ENVWIRE.v1"
+ * LEADING bytes: an entry beginning with the 16-byte "NDS.ENVWIRE.v1"
  * family marker (env_wire.c:25-27) is a Ledger V2 ENVELOPE
  * (NODUS_W_TX_V2_ENVELOPE); anything else on a successor is a CLAIM
  * (NODUS_W_TX_V2_CLAIM) — strict dna_claim_decode + admission decide its

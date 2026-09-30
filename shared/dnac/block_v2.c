@@ -15,10 +15,10 @@
 
 #include "crypto/hash/qgp_sha3.h"
 
-/* 16-byte zero-padded tag: "DNA.BLOCK.v3" (12) + 4 zeros incl. impl. NUL.
- * DISTINCT from the retired "DNA.BLOCK.v2" tag — cross-version domain
- * separation, verified repo-wide against every other DNA.* tag. */
-static const uint8_t TAG_BLOCK[16] = "DNA.BLOCK.v3\0\0\0";
+/* 16-byte zero-padded tag: "NDS.BLOCK.v3" (12) + 4 zeros incl. impl. NUL.
+ * DISTINCT from the retired "NDS.BLOCK.v2" tag — cross-version domain
+ * separation, verified repo-wide against every other NDS.* tag. */
+static const uint8_t TAG_BLOCK[16] = "NDS.BLOCK.v3\0\0\0";
 
 _Static_assert(DNA_BH2_ENC_SIZE ==
                1 + 32 + 8 + 8 + 64 + 64 + 64 + 64 + 64 + 4 + 32 + 8,

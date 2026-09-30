@@ -55,12 +55,14 @@ static int hex_eq(const uint8_t h[64], const char *hex, const char *what) {
 }
 
 /* ── Pinned python3-oracle literals ─────────────────────────────────── */
+/* Re-derived 2026-09-30 for the NDS. tag rename (decision
+ * 2026-09-30-tag-rebrand-nds.md). */
 static const char *KAT_SNAP_A =
-    "475894349123cc8ab4eced0b47a5f55e97a18ab618c082623d21983d619b470c"
-    "a8bde24fe1cec7d038ef19a14ef59729eefacf2371083d19865afbf3375969fd";
+    "6b3d7392000589c3f523399d92ddcaa9872f6b56f23687c459cc3e9908606812"
+    "f5c465d221fdbfe825110b073c935bf0eec998eead2cafd343d3a1051fea517b";
 static const char *KAT_SNAP_B =
-    "c00730cce1dc2489a01acdbe226886d7edfd76ea676570dcd157819abd96a463"
-    "b1e2d3cc36c526af97493c546615ea307e67f53fb122124c4f2204d5e1e31ca4";
+    "b8f40b99735f0cea3dfe4c3a50a6d365ca74c6ef3066cbc3b4926d43ab65053d"
+    "7b275ff64039842df05a9ee99dd73f05c58a42a62ec96364007895aa2e69de10";
 
 #define SNAP_A_LEN 5362u
 #define SNAP_B_LEN 2720u

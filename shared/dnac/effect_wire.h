@@ -34,14 +34,14 @@
  *     one backend-fault caveat).
  *
  * ── TAG TABLE (each exactly 16 bytes, zero-padded ASCII) ───────────────
- *   "DNA.EFFRES.v1"   wire family marker — literally the first 16 bytes of
+ *   "NDS.EFFRES.v1"   wire family marker — literally the first 16 bytes of
  *                     every encoded result
- *   "DNA.EFFVAL.v1"   value hash (dna_effect_value_hash); the ONE hash this
+ *   "NDS.EFFVAL.v1"   value hash (dna_effect_value_hash); the ONE hash this
  *                     module defines
  *
  * ── Canonical wire layout ──────────────────────────────────────────────
  * Fixed head (DNA_EFFECT_FIXED_HEAD = 23 bytes)
- *   off  0  wire_family[16]   "DNA.EFFRES.v1" zero-padded
+ *   off  0  wire_family[16]   "NDS.EFFRES.v1" zero-padded
  *   off 16  result_version u8  (= DNA_EFFECT_RESULT_VERSION; any other
  *                               value is REJECTED, never tolerated)
  *   off 17  effect_count  u16 BE  0 .. DNA_EFFECT_MAX_COUNT inclusive.
@@ -362,7 +362,7 @@ int dna_effect_result_decode(const uint8_t *src, size_t src_len,
  * The value hash of one effect value — the ONE hash this module defines.
  *
  *   dna_effect_value_hash(value, value_len) =
- *       SHA3-512( "DNA.EFFVAL.v1"(16) ‖ value_len(4, BE) ‖ value(value_len) )
+ *       SHA3-512( "NDS.EFFVAL.v1"(16) ‖ value_len(4, BE) ‖ value(value_len) )
  *
  * The preimage is exactly 20 + value_len bytes and is built in a STACK
  * buffer; value_len is capped at DNA_EFFECT_MAX_VALUE_LEN, so the buffer

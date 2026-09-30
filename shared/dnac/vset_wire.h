@@ -14,7 +14,7 @@
  * commit certificate and the five-input state_root. The five-input root
  * is DELETED (root-layout round K3, 2026-09-25); the snapshot hash now
  * reaches the chain's state root through validator_set_root, a leg of
- * the SYSTEM root ("DNA.SYS.v3", shared/dnac/ledger_roots_v2.h).
+ * the SYSTEM root ("NDS.SYS.v3", shared/dnac/ledger_roots_v2.h).
  *
  * Conventions (identical discipline to shared/dnac/ledger_roots_v2.h):
  *   - SHA3-512 everywhere (qgp_sha3_512);
@@ -25,7 +25,7 @@
  *   - every failure path returns -1 and produces NO partial result.
  *
  * ── TAG ────────────────────────────────────────────────────────────────
- *   "DNA.VSET.v1"  (16 bytes, zero-padded) — snapshot hash domain.
+ *   "NDS.VSET.v1"  (16 bytes, zero-padded) — snapshot hash domain.
  *
  * ── Canonical wire layout ──────────────────────────────────────────────
  *   header (DNA_VSET_HDR_LEN = 78 bytes)
@@ -40,7 +40,7 @@
  *     self_bond          u64 BE      (8)
  *     commission_bps     u16 BE      (2)
  *
- *   snapshot_hash = SHA3-512("DNA.VSET.v1" ‖ the canonical bytes above)
+ *   snapshot_hash = SHA3-512("NDS.VSET.v1" ‖ the canonical bytes above)
  *
  * ── `epoch` SEMANTICS ──────────────────────────────────────────────────
  * `epoch` is the EPOCH START HEIGHT — the project's canonical epoch key,
@@ -195,12 +195,12 @@ int dna_vset_decode(const uint8_t *src, size_t len,
 
 /* ── Hashing ────────────────────────────────────────────────────────── */
 
-/** snapshot_hash = SHA3-512("DNA.VSET.v1" ‖ canonical bytes). @return 0/-1. */
+/** snapshot_hash = SHA3-512("NDS.VSET.v1" ‖ canonical bytes). @return 0/-1. */
 int dna_vset_hash(const dna_vset_snapshot_t *snap,
                   uint8_t out[DNA_VSET_HASH_LEN]);
 
 /**
- * Bytes-level variant: SHA3-512("DNA.VSET.v1" ‖ buf[0..len)). Used to
+ * Bytes-level variant: SHA3-512("NDS.VSET.v1" ‖ buf[0..len)). Used to
  * re-derive the hash of a STORED blob without decoding it — the integrity
  * check on the persistence path. Rejects len > DNA_VSET_MAX_ENC_LEN.
  * @return 0 / -1.

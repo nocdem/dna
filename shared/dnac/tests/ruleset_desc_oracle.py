@@ -12,7 +12,7 @@ Written from the WRITTEN CONTRACTS only, not from the C encoders:
 
   ruleset_hash  — shared/dnac/domain_wire.h, RulesetDescriptor v2
                   (dna_ruleset_desc_hash doc comment):
-      SHA3-512( "DNA.RULESET.v1"(16, zero-padded)
+      SHA3-512( "NDS.RULESET.v1"(16, zero-padded)
                 ‖ descriptor_version u32 BE (= 2)
                 ‖ domain_id u32 BE ‖ name[32] (ASCII, zero-padded)
                 ‖ runtime_abi u32 BE ‖ ruleset_version u32 BE
@@ -21,7 +21,7 @@ Written from the WRITTEN CONTRACTS only, not from the C encoders:
                 ‖ meter_policy_digest[64] (ALL-ZERO = none declared) )
 
   meter_policy_digest — shared/dnac/res_meter.h, dna_meter_policy_digest:
-      SHA3-512( "DNA.METPOLID.v1"(16, zero-padded)
+      SHA3-512( "NDS.METPOLID.v1"(16, zero-padded)
                 ‖ policy_version u32 BE
                 ‖ w_base ‖ w_callbyte ‖ w_authbyte ‖ w_effect
                 ‖ w_effectbyte ‖ w_read ‖ w_write
@@ -133,7 +133,7 @@ def meter_policy_identity(version, w_base, w_callbyte, w_authbyte,
     present = [0, 0, 0, 0]
     for op in present_ops:
         present[op // 64] |= 1 << (op % 64)
-    pre = tag16("DNA.METPOLID.v1") + be32(version)
+    pre = tag16("NDS.METPOLID.v1") + be32(version)
     for w in (w_base, w_callbyte, w_authbyte, w_effect, w_effectbyte,
               w_read, w_write, max_block_env_bytes):
         pre += be64(w)
@@ -175,7 +175,7 @@ def ruleset_hash(domain_id, name, runtime_abi, ruleset_version,
             raise ValueError("tx_types not strictly ascending")
     if len(policy_digest) != 64:
         raise ValueError("policy digest must be 64 bytes")
-    pre = tag16("DNA.RULESET.v1")
+    pre = tag16("NDS.RULESET.v1")
     pre += be32(RULESET_DESC_VERSION)
     pre += be32(domain_id)
     pre += name32(name)
@@ -220,18 +220,23 @@ def core_hash(version: int) -> bytes:
 # nodus/tests/test_domain_runtime.c:80-93    KAT_RS_CORE
 #   (= nodus_witness_runtime.c:177-195 CORE_RULESET_HASH, version 3)
 
+# Re-pinned 2026-09-30 (tag prefix rebrand "DNA" → "NDS", decision
+# 2026-09-30-tag-rebrand-nds.md): this file first reproduced the four
+# old-prefix pins (meter policy 8d038f1e…f5cc, SYSTEM v4 4fe76fed…7736,
+# SYSTEM v5 0efc48bf…f350, CORE v3 ed4b1bcd…4437); the values below are
+# its own outputs under NDS.METPOLID.v1 / NDS.RULESET.v1.
 PIN_METPOL_SYSTEM = (
-    "8d038f1ec608be547bf98afe2df0532b4a94a7a042a9d9d86b7a0fb1ab51edaf"
-    "bc4364dc3891c36bfbc443322f2a3b0b44c82316bd7842fd7ffbec2d19f1f5cc")
+    "8f1f9cb2a532bb287fc0d5a1d63da2cab5c4861a53e391c3f5b4b7dbdd36498b"
+    "d8ca8b14501d6954fd5ac06a5e3c12bdf4af0571f331d4f5299daf2668746f32")
 PIN_RS_SYSTEM_V4 = (
-    "4fe76fed43ef372594713e97f6fff4684dba3d378ca23201fed6314b8147e1ce"
-    "571a4fecd8170bfad55cb686162ebb1df462a4f244bcf9c23887eb7d147a7736")
+    "93766f1225ab81a0c0fcf6d1cdb22bad74b9eff2ae1f78c5724dbfbc8b9f2e85"
+    "04afd469c2968eb00c4fac6a7eafb53166d5bf3a5c3c819c6a15f7dd97d75605")
 PIN_RS_SYSTEM_V5 = (
-    "0efc48bf13b8dad53f41b4e7623cabed262d94b3bdae2a1a07f7e0c9394c9f6c"
-    "f4c5096f9853d9f2b7ae8d0845eaacdbf6d859df34c5b3dad1896c16b3f9f350")
+    "701d78764f38810dddc24cb8633d94650c23b8275b0100255a3b9e42c636e566"
+    "f0329a39d0ee1315987a6496cf7a3b82c607996f07889d3c1b11983dfeb12d7e")
 PIN_RS_CORE_V3 = (
-    "ed4b1bcdf0e8f78f0b64985e42d41d5181edd5d48594bceb73bf5efb6ada0838"
-    "8d6fb6ba0492f8bdca212a5dda8779e74513c5210bc4baa2f70bf38cb2634437")
+    "08a204d66357b75bd2ec0d45310e77503cc3eed053f7249b246671cf7c9b3631"
+    "1d51fac2e406b158a2a77afd0065833003171b576963a7963bb1c7c526a115dc")
 
 
 def control_leg() -> bool:

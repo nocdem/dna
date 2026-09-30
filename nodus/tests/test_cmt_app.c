@@ -1027,7 +1027,7 @@ static int build_cc_env(nodus_witness_t *w, const uint8_t chain32[32],
 /* Bytes that classify as an ENVELOPE (the family marker is present) and
  * do not decode — the DECODE class of nodus_v2_tx_code_t. */
 static const uint8_t POISON[20] = {
-    'D','N','A','.','E','N','V','W','I','R','E','.','v','1', 0, 0,
+    'N','D','S','.','E','N','V','W','I','R','E','.','v','1', 0, 0,
     0xFF, 0xFF, 0xFF, 0xFF
 };
 
@@ -3968,7 +3968,7 @@ static int t_prepare_proposal_item_cap(void)
  * this scale — so this case proves the REFUSAL genuinely, at the REAL
  * bound, a different way: `nodus_witness_v2_classify_entry`
  * (nodus_witness_v2_produce.c:75-80) classifies an entry as an
- * ENVELOPE from a 16-byte WIRE-FAMILY-MARKER PREFIX ALONE ("DNA.
+ * ENVELOPE from a 16-byte WIRE-FAMILY-MARKER PREFIX ALONE ("NDS.
  * ENVWIRE.v1\0\0") — no seam, no decode, no admission, no signature —
  * and ProcessProposal's per-class COUNT check runs on exactly that
  * classification, BEFORE the per-item seam is ever reached (this
@@ -4029,7 +4029,7 @@ static int t_process_proposal_item_cap(void)
     bufs = calloc(N, sizeof(*bufs));
     CHECK(txs && bufs, "alloc");
     for (i = 0; i < N; i++) {
-        memcpy(bufs[i], "DNA.ENVWIRE.v1", 14);
+        memcpy(bufs[i], "NDS.ENVWIRE.v1", 14);
         bufs[i][14] = 0;
         bufs[i][15] = 0;
         txs[i].data = bufs[i];

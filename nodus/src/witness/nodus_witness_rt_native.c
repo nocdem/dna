@@ -466,17 +466,17 @@ _Static_assert(DNAC_CFG_MAX_TOKEN_CREATE_FEE == NODUS_W_TOKEN_CREATE_FEE,
 
 /* ── Capacity-season tags (each EXACTLY 16 bytes, zero-padded ASCII —
  *    the env_wire.c discipline; collision-scanned against the full
- *    "DNA.*" namespace, 64 tags at introduction time). ──────────────── */
+ *    "NDS.*" namespace, 64 tags at introduction time). ──────────────── */
 
-/** "DNA.CCSET.v1" (12 chars) + 4 zero bytes — resolved-committee-set
+/** "NDS.CCSET.v1" (12 chars) + 4 zero bytes — resolved-committee-set
  *  hash. */
 static const uint8_t TAG_CCSET[16] = {
-    'D','N','A','.','C','C','S','E','T','.','v','1', 0, 0, 0, 0
+    'N','D','S','.','C','C','S','E','T','.','v','1', 0, 0, 0, 0
 };
-/** "DNA.CCAPPR.v1" (13 chars) + 3 zero bytes — committee approval
+/** "NDS.CCAPPR.v1" (13 chars) + 3 zero bytes — committee approval
  *  digest. */
 static const uint8_t TAG_CCAPPR[16] = {
-    'D','N','A','.','C','C','A','P','P','R','.','v','1', 0, 0, 0
+    'N','D','S','.','C','C','A','P','P','R','.','v','1', 0, 0, 0
 };
 
 int nodus_rt_committee_set_hash(const uint8_t (*fps)[64], uint32_t count,
