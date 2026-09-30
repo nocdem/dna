@@ -41,7 +41,8 @@ The chain is implemented in three layers of the monorepo:
   proposal is accepted only for a parameter the RUNNING consensus reads
   — the one list is `dnac_cfg_param_read_by_consensus`
   (`dnac/include/dnac/dnac.h`), consumed by both the witness's scalar
-  rules and this library's mirror: today ids 4 and 5. Id 2
+  rules and this library's mirror: ids 4 and 5 at 0.20.3 (4, 5, 6 and 7
+  today — below). Id 2
   (`BLOCK_INTERVAL_SEC`) is refused — the Comet lane's block pace is a
   compile-time node setting and never reads it — but it is NOT retired:
   the number and its [1, 15] definition stay, and a consensus that reads
@@ -53,7 +54,19 @@ The chain is implemented in three layers of the monorepo:
   = 1 000 000] raw per declared gas unit, 0 = rule off) — the witness
   refuses an envelope with a non-SYSTEM leg that pays less than
   `max(units × price, floor)` from the row's effective height; the
-  mirror in `verify.c` applies the same range), GENESIS
+  mirror in `verify.c` applies the same range. Id 6
+  `TOKEN_CREATE_FEE_RAW` (final pre-testnet wipe W-C) is on the read list
+  too. **HF-2 (2026-09-30, design
+  `docs/plans/2026-09-30-gov-weight-netzero-design.md` rev 2):** id 7
+  `HF2_ACTIVE` (`DNAC_CFG_HF2_ACTIVE`, value EXACTLY
+  `DNAC_CFG_HF2_ACTIVE_ON` = 1 — a one-way switch, 0 and every other
+  value refused by both the witness's scalar rules and the `verify.c`
+  mirror; ERGONOMIC grace). From the row's effective height the witness
+  weighs a CHAIN_CONFIG approval by VOTING POWER (approving power > 2/3
+  of the governing committee's, power = stake / 10^8) instead of by seat
+  count, and a block whose touched domain's root nets to zero is applied
+  instead of halting every node; no row = both rules as before. The
+  read list is therefore ids 4, 5, 6 and 7), GENESIS
 - **Explicit committed fee** on the wire (v2 header) with a min-fee
   gate. **Since tokenomics-v3 P2 every fee goes to the chain's REWARD
   POOL** (`supply_tracking.reward_pool`) — it is neither burned nor paid

@@ -17,7 +17,10 @@
  *   1. SYSTEM  / DNA_SYSRULE_CHAIN_CONFIG (runtime_op 6, legacy tx 10):
  *      the committee-voted consensus-parameter change. The SOURCE
  *      authority is preserved: quorum = dna_bft_quorum(committee at the
- *      signing height H-1), votes are ML-DSA-87 signatures over the ONE
+ *      signing height H-1) — and from the HF-2 height (chain_config
+ *      param 7) approving voting power > 2/3 of that committee's power
+ *      instead (nodus_rt_system_exec) — votes are ML-DSA-87 signatures
+ *      over the ONE
  *      shipped proposal digest (nodus_chain_config_compute_digest),
  *      scalar rules / grace tiers come from the SAME exported helpers
  *      the legacy apply consumes (nodus_chain_config_scalar_rules /
@@ -27,7 +30,8 @@
  *      (tokenomics-v3 P2, P2-4 — RETIRED, refused by the scalar rules).
  *      Since 0.20.3 the scalar rules also refuse every id the running
  *      consensus does not read (dnac.h dnac_cfg_param_read_by_consensus:
- *      4, 5 and — final pre-testnet wipe W-C — 6), so an id-2 (BLOCK_INTERVAL_SEC) leg is an item refusal
+ *      4, 5, — final pre-testnet wipe W-C — 6 and — HF-2 — 7), so an
+ *      id-2 (BLOCK_INTERVAL_SEC) leg is an item refusal
  *      here, in block apply — no chain_config_history row is written.
  *
  *   2. DNA_CORE / DNA_CORERULE_SPEND (runtime_op 1, legacy tx 1): the
@@ -675,9 +679,12 @@ int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
         const nodus_rt_committee_t *cm = ctx->committee;
         if (!cm) { memset(out, 0, sizeof(*out)); return -2; }
         if (cm->count == 0 || cm->count > DNA_MAX_ACTIVE_VALIDATORS ||
-            !cm->pubkeys) {
+            !cm->pubkeys || !cm->powers) {
             /* a chain with no committee cannot carry committee
-             * evidence — deterministic reject, never a fault */
+             * evidence — deterministic reject, never a fault. (`count`
+             * is tested FIRST, so an empty committee refuses for the
+             * same reason it always did; a non-empty view without its
+             * power array — HF-2 — refuses the same way.) */
             memset(out, 0, sizeof(*out));
             return -1;
         }
@@ -706,6 +713,26 @@ int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
             (uint64_t)alen != total) {
             memset(out, 0, sizeof(*out));
             return -1;                   /* truncated / trailing bytes   */
+        }
+        /* HF-2 (GW-1): the committee's whole voting power, summed in
+         * seat order with checked u64 adds. Computed whether or not HF-2
+         * is active; only the SYSTEM exec decides whether to read it, so
+         * NOTHING here may change this hook's answer — with HF-2 off the
+         * verdict must be the pre-HF-2 verdict for every input. An
+         * overflow therefore does not reject: it leaves BOTH sums 0
+         * ("unweighable"), which the exec refuses under HF-2 exactly as
+         * it refuses a zero-power committee (committee_power > 0 is
+         * required). The view is committed state, so every node computes
+         * the same sums. An overflow cannot happen on an honest chain:
+         * every power is floor(total_stake / 10^8) and the stakes are
+         * bounded by the supply (the CORE conservation equation,
+         * nodus_rt_core_invariant). */
+        uint64_t committee_power = 0, approved_power = 0;
+        int      power_ok = 1;
+        for (uint32_t s = 0; s < cm->count && power_ok; s++) {
+            if (dna_ck_add_u64(committee_power, cm->powers[s],
+                               &committee_power) != 0)
+                power_ok = 0;
         }
         int32_t prev_idx = -1;
         for (uint32_t v = 0; v < ac; v++) {
@@ -739,9 +766,19 @@ int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
                 memset(out, 0, sizeof(*out));
                 return -1;               /* invalid approval: reject     */
             }
+            /* a VERIFIED, distinct seat's power (strictly increasing
+             * seats above) — a subset of the committee sum, so this add
+             * cannot overflow when that one did not; checked all the
+             * same, with the same "unweighable" answer */
+            if (power_ok &&
+                dna_ck_add_u64(approved_power, cm->powers[idx],
+                               &approved_power) != 0)
+                power_ok = 0;
         }
         out->n_approvals = (uint16_t)ac;
         out->committee_n = (uint16_t)cm->count;
+        out->approved_power = power_ok ? approved_power : 0;
+        out->committee_power = power_ok ? committee_power : 0;
         return 0;
     }
 
@@ -4356,18 +4393,49 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
     if (rtn_cc_parse(env, leg_index, &c) != 0) return -1;
     if (!ctx->auth || ctx->auth->n_signers < 1) return -1;   /* verified
                                           * submitter authorization      */
-    /* ── committee quorum — the SOURCE authority, from the ENGINE
+    /* ── committee approval — the SOURCE authority, from the ENGINE
      * verdict (capacity season): the auth boundary verified every
      * approval signature against the engine-resolved governing snapshot
-     * (kind 2), counted the DISTINCT seats into n_approvals and
-     * recorded the resolved committee size. No envelope byte, no
-     * runtime and no caller supplies either number. A kind-1 leg
-     * arrives here with n_approvals == 0 and fails exactly like an
-     * under-quorum vote set. Exact quorum passes; quorum-1 fails. */
+     * (kind 2), counted the DISTINCT seats into n_approvals, recorded the
+     * resolved committee size and — HF-2 — summed the approving seats'
+     * and the whole committee's voting power. No envelope byte, no
+     * runtime and no caller supplies any of these numbers. A kind-1 leg
+     * arrives with every one of them 0 and fails under either rule, like
+     * an under-quorum approval set.
+     *
+     * WHICH RULE is the engine's committed fact ctx->hf2_active (chain
+     * config param 7 at this height):
+     *   - off (below the HF-2 height, and on every chain without the
+     *     row): SEATS — n_approvals >= dna_bft_quorum(committee_n)
+     *     (shared/dnac/ledger_ids.h). Exact quorum passes, quorum-1
+     *     fails. Unchanged from before HF-2.
+     *   - on: VOTING POWER, the block-commit unit and integer form
+     *     (decision 2026-09-30-governance-stake-weight-and-power-cap.md
+     *     item 1): committee_power > 0 AND approved_power >
+     *     committee_power * 2 / 3 — cometbft's `tallied > needed` with
+     *     needed = total * 2 / 3 (shared/dnac/cmt_validation.c, the
+     *     VerifyCommit port's `needed` line; reference
+     *     types/validation.go:37). The reference may double its total
+     *     unchecked because it caps the total at MaxInt64/8
+     *     (shared/dnac/cmt_vote_set.c, the quorum line's comment); this
+     *     total has no such cap, so the doubling is a checked multiply
+     *     and an overflow refuses. A
+     *     committee whose power is 0 (or whose sum was unweighable — the
+     *     auth hook's overflow answer) can approve nothing. The seat
+     *     count no longer decides; n_approvals stays only the framing
+     *     bound the auth hook already enforced. */
     if (ctx->auth->committee_n < 1) return -1;
-    if ((uint32_t)ctx->auth->n_approvals <
-        dna_bft_quorum((uint32_t)ctx->auth->committee_n))
+    if (ctx->hf2_active) {
+        uint64_t twice = 0;
+        if (ctx->auth->committee_power == 0) return -1;
+        if (dna_ck_mul_u64(ctx->auth->committee_power, 2, &twice) != 0)
+            return -1;
+        if (!(ctx->auth->approved_power > twice / 3))
+            return -1;                   /* HF-2 GW-1 power quorum       */
+    } else if ((uint32_t)ctx->auth->n_approvals <
+               dna_bft_quorum((uint32_t)ctx->auth->committee_n)) {
         return -1;                       /* Rule CC-F quorum             */
+    }
     if (env->fee_amount != 0) return -1;      /* header block: no SYSTEM
                                           * fee sink exists this season  */
 

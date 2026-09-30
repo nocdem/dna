@@ -413,7 +413,7 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *   - signer_count == 1
  *   - chain_config_fields.param_id ∈ {1..DNAC_CFG_PARAM_MAX_ID}
  *   - dnac_cfg_param_read_by_consensus(param_id) (0.20.3) — the running
- *     consensus reads the parameter; today {4, 5, 6}
+ *     consensus reads the parameter; today {4, 5, 6, 7}
  *   - chain_config_fields.new_value in per-param range (§5.2):
  *       MAX_TXS_PER_BLOCK      : RETIRED (R3 W4-C delta 2, operator
  *                                "kaldır" 2026-09-18;
@@ -439,6 +439,8 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *       TOKEN_CREATE_FEE_RAW   : [DNAC_CFG_MIN_TOKEN_CREATE_FEE=10^8,
  *                                 DNAC_CFG_MAX_TOKEN_CREATE_FEE=10^15]
  *                                (final pre-testnet wipe W-C)
+ *       HF2_ACTIVE             : exactly DNAC_CFG_HF2_ACTIVE_ON = 1 (HF-2;
+ *                                a one-way switch)
  *   - signed_at_block > 0              (CC-AUDIT-008)
  *   - valid_before_block > effective_block_height
  *   - valid_before_block > signed_at_block
@@ -523,6 +525,19 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
                 return DNAC_ERROR_INVALID_PARAM;
             }
             break;
+        case DNAC_CFG_HF2_ACTIVE:
+            /* HF-2 (design 2026-09-30-gov-weight-netzero-design.md rev
+             * 2), mirroring nodus_witness_chain_config.c's scalar_rules:
+             * EXACTLY 1 — a one-way switch, there is no "off" vote. */
+            if (cc->new_value != DNAC_CFG_HF2_ACTIVE_ON) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "CHAIN_CONFIG: HF2_ACTIVE=%llu, only %llu is "
+                              "a legal value",
+                              (unsigned long long)cc->new_value,
+                              (unsigned long long)DNAC_CFG_HF2_ACTIVE_ON);
+                return DNAC_ERROR_INVALID_PARAM;
+            }
+            break;
         default:
             return DNAC_ERROR_INVALID_PARAM;  /* Unreachable given bound check above */
     }
@@ -571,10 +586,14 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
     }
 
     /* Committee-sig count within the SHAPE window (5..128). This is a cheap
-     * structural bound, NOT the quorum decision: the binding rule is
-     * dna_bft_quorum(committee_count) evaluated witness-side against the
-     * committee governing the signing height. At the DNA chain's 7 seats
-     * that quorum is 5, so the observable client behaviour is unchanged. */
+     * structural bound of this legacy type-10 wire shape, NOT the approval
+     * decision. The binding rule is witness-side, in the version-3 SYSTEM
+     * CHAIN_CONFIG exec over the committee governing the executing height
+     * (nodus_witness_rt_native.c nodus_rt_system_exec): seats,
+     * dna_bft_quorum(committee_count), below the HF-2 height, and approving
+     * voting power > 2/3 of the committee's power from it
+     * (DNAC_CFG_HF2_ACTIVE). The version-3 approval carrier (auth_kind 2)
+     * has no minimum count; this bound applies to this wire shape only. */
     if (cc->committee_sig_count < DNAC_CHAIN_CONFIG_MIN_SIGS ||
         cc->committee_sig_count > DNAC_CHAIN_CONFIG_MAX_SIGS) {
         QGP_LOG_ERROR(LOG_TAG,

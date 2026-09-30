@@ -26,6 +26,8 @@
 #include "protocol/nodus_cbor.h"
 #include "dnac/cmt_p2p_netaddr.h"           /* P2P-PORT F6: whoami's P2P ID */
 #include "dnac/ledger_ids.h"                /* dna_bft_quorum (witness)    */
+#include "witness/nodus_witness_emission.h" /* HF-2: DNAC_DECIMAL_UNIT, the
+                                             * voting-power unit          */
 
 #include <errno.h>
 #include <stdio.h>
@@ -349,10 +351,35 @@ static int cmd_witness(const char *server_ip, uint16_t server_port) {
     }
     printf("─────────────────────────────────\n");
     printf("Committee size:  %d\n", c->count);
-    if (c->count > 0)
-        printf("Quorum (seats):  %u  (dna_bft_quorum; the chain weighs "
-               "votes by power)\n",
+    if (c->count > 0) {
+        /* Two rules, stated as what they decide (HF-2, design docs/plans/
+         * 2026-09-30-gov-weight-netzero-design.md rev 2):
+         *   - block commit: more than 2/3 of VOTING POWER, always
+         *     (shared/dnac/cmt_vote_set.c);
+         *   - governance (chain-config) approval: SEATS,
+         *     dna_bft_quorum(n), below the HF-2 height, and the same power
+         *     rule as block commit from it (nodus_rt_system_exec).
+         * Power = floor(stake / 10^8), the engine's derivation. This RPC
+         * does not say whether HF-2 is active, so both are printed. */
+        uint64_t total_power = 0;
+        int      power_ok = 1;
+        for (int i = 0; i < c->count; i++) {
+            uint64_t p = c->entries[i].total_stake / DNAC_DECIMAL_UNIT;
+            if (p > UINT64_MAX - total_power) { power_ok = 0; break; }
+            total_power += p;
+        }
+        printf("Quorum (seats):  %u  (dna_bft_quorum — governance approval "
+               "below the HF-2 height)\n",
                (unsigned)dna_bft_quorum((uint32_t)c->count));
+        if (power_ok && total_power <= UINT64_MAX / 2)
+            printf("Voting power:    %llu  (block commit, and governance "
+                   "approval from the HF-2 height, need > %llu)\n",
+                   (unsigned long long)total_power,
+                   (unsigned long long)(total_power * 2 / 3));
+        else
+            printf("Voting power:    overflows u64 (the chain refuses "
+                   "every power-weighted approval)\n");
+    }
     rc = 0;
 
 done:
@@ -1013,6 +1040,10 @@ static int cc_param_name_to_id(const char *name, uint8_t *out_id) {
          * fee-governance.md) — param id 6 */
         { "TOKEN_CREATE_FEE_RAW", DNAC_CFG_TOKEN_CREATE_FEE_RAW },
         { "token_create_fee_raw", DNAC_CFG_TOKEN_CREATE_FEE_RAW },
+        /* HF-2 (design docs/plans/2026-09-30-gov-weight-netzero-design.md
+         * rev 2) — param id 7, value exactly 1 */
+        { "HF2_ACTIVE",           DNAC_CFG_HF2_ACTIVE },
+        { "hf2_active",           DNAC_CFG_HF2_ACTIVE },
     };
     for (size_t i = 0; i < sizeof(map)/sizeof(map[0]); i++) {
         if (strcmp(name, map[i].n) == 0) { *out_id = map[i].id; return 0; }
@@ -1238,20 +1269,24 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             "(raw per declared gas unit; 0 = rule off)\n"
             "  TOKEN_CREATE_FEE_RAW   [%llu, %llu]   "
             "(raw fee of one token creation)\n"
+            "  HF2_ACTIVE             exactly %llu   "
+            "(HF-2 switch: power-weighted approvals + net-zero blocks "
+            "from --effective on; one-way)\n"
             "BLOCK_INTERVAL_SEC is not read by the running consensus "
             "and is refused.\n",
             (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
             (unsigned long long)DNAC_CFG_MAX_TARGET_ACTIVE,
             (unsigned long long)DNAC_CFG_MAX_GAS_PRICE,
             (unsigned long long)DNAC_CFG_MIN_TOKEN_CREATE_FEE,
-            (unsigned long long)DNAC_CFG_MAX_TOKEN_CREATE_FEE);
+            (unsigned long long)DNAC_CFG_MAX_TOKEN_CREATE_FEE,
+            (unsigned long long)DNAC_CFG_HF2_ACTIVE_ON);
         return 1;
     }
     uint8_t param_id = 0;
     if (cc_param_name_to_id(param_name, &param_id) != 0) {
         fprintf(stderr, "Unknown param name: %s - accepted: "
                 "TARGET_ACTIVE_COUNT | GAS_PRICE_RAW_PER_UNIT | "
-                "TOKEN_CREATE_FEE_RAW "
+                "TOKEN_CREATE_FEE_RAW | HF2_ACTIVE "
                 "(the parameters the running consensus reads)\n",
                 param_name);
         return 1;
@@ -1345,6 +1380,16 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
     }
     uint64_t tip = committee->block_height - 1;
     int      N   = committee->count;
+    /* ⚠ HF-2 (design docs/plans/2026-09-30-gov-weight-netzero-design.md
+     * rev 2): from the HF-2 height the chain weighs approvals by VOTING
+     * POWER, not seats (nodus_rt_system_exec). This command talks to a
+     * node over RPC only, and no RPC reports chain_config param 7
+     * (dnac_fee_info carries params 5 and 6 only), so it cannot tell
+     * which rule governs tip+1 and keeps the SEAT rule for its own
+     * early abort and round-2 decision. The chain's verdict is
+     * authoritative either way; the offline `v2-envelope chain-config`
+     * builder reads param 7 from its database and follows it. OPEN:
+     * reported, not invented (no new RPC in the HF-2 package). */
     uint32_t quorum = dna_bft_quorum((uint32_t)N);
     if (N < 1 || (uint32_t)N < quorum) {
         fprintf(stderr, "committee size %d cannot reach its own quorum "
@@ -1478,6 +1523,9 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
     if (accepted < 0) goto done;
     printf("\nRound 1: %d/%d approved (need >= %u for quorum).\n",
            accepted, N, quorum);
+    printf("Note: seat rule. From the HF-2 height the chain weighs approvals "
+           "by voting power (> 2/3); this command cannot read whether HF-2 "
+           "is active and does not apply that rule itself.\n");
 
     if (accepted < (int)quorum) {
         fprintf(stderr, "Quorum not reached. Aborting without submitting.\n");
@@ -1986,7 +2034,80 @@ static int cmd_v2_envelope(const char *server_ip, uint16_t server_port,
     }
     uint64_t appr_epoch = nodus_v2_epoch_for_height(tip);
     uint32_t quorum = dna_bft_quorum((uint32_t)cm_count);
-    if ((uint32_t)(n_keys - 0) < quorum) {
+
+    /* HF-2 (design docs/plans/2026-09-30-gov-weight-netzero-design.md
+     * rev 2): which approval rule governs inclusion height H = tip+1 is
+     * the committed chain_config param 7 at H — read here through the
+     * SAME accessor the engine reads it with (nodus_chain_config_get_u64
+     * over this read-only view; a fault or an impossible value refuses,
+     * never guesses). Off: the first `quorum` keys approve (seat count,
+     * as before). On: the keys approve IN THE ORDER GIVEN until their
+     * seats' voting power exceeds 2/3 of the committee's power — the
+     * engine's rule (nodus_rt_system_exec), power = floor(total_stake /
+     * DNAC_DECIMAL_UNIT) as the engine derives it. */
+    uint64_t hf2_raw = 0;
+    if (nodus_chain_config_get_u64(wr, (uint8_t)DNAC_CFG_HF2_ACTIVE,
+                                   tip + 1, 0ULL, &hf2_raw) < 0 ||
+        (hf2_raw != 0ULL && hf2_raw != DNAC_CFG_HF2_ACTIVE_ON)) {
+        fprintf(stderr, "chain_config HF2_ACTIVE at height %llu is "
+                        "unreadable in this database — refusing to pick an "
+                        "approval rule\n", (unsigned long long)(tip + 1));
+        goto done;
+    }
+    int hf2_on = (hf2_raw == DNAC_CFG_HF2_ACTIVE_ON);
+    uint32_t n_appr = quorum;
+    if (hf2_on) {
+        uint64_t total_power = 0, approved = 0, twice = 0;
+        int ovf = 0;
+        for (int s = 0; s < cm_count; s++) {
+            uint64_t p = committee[s].total_stake / DNAC_DECIMAL_UNIT;
+            if (p > UINT64_MAX - total_power) { ovf = 1; break; }
+            total_power += p;
+        }
+        if (ovf || total_power == 0 || total_power > UINT64_MAX / 2) {
+            fprintf(stderr, "HF-2 is active at height %llu and the committee's "
+                            "voting power is %s — the chain refuses every "
+                            "approval set\n",
+                    (unsigned long long)(tip + 1),
+                    total_power == 0 && !ovf ? "0" : "not weighable");
+            goto done;
+        }
+        twice = total_power * 2;
+        n_appr = 0;
+        for (int k = 0; k < n_keys && approved <= twice / 3; k++) {
+            int seat = -1;
+            for (int s = 0; s < cm_count; s++) {
+                if (memcmp(committee[s].pubkey, keys[k].pk.bytes,
+                           DNAC_PUBKEY_SIZE) == 0) { seat = s; break; }
+            }
+            if (seat < 0) {
+                fprintf(stderr, "key %d is not a committee member\n", k);
+                goto done;
+            }
+            uint64_t p = committee[seat].total_stake / DNAC_DECIMAL_UNIT;
+            if (p > UINT64_MAX - approved) {
+                fprintf(stderr, "approver power sum overflows (a key "
+                                "given twice?)\n");
+                goto done;
+            }
+            approved += p;
+            n_appr++;
+        }
+        if (!(approved > twice / 3)) {
+            fprintf(stderr, "HF-2 is active: the %d approver keys given hold "
+                            "voting power %llu of %llu, need > %llu\n",
+                    n_keys, (unsigned long long)approved,
+                    (unsigned long long)total_power,
+                    (unsigned long long)(twice / 3));
+            goto done;
+        }
+        printf("HF-2 active at height %llu: %u approver(s) hold voting "
+               "power %llu of %llu (> %llu)\n",
+               (unsigned long long)(tip + 1), (unsigned)n_appr,
+               (unsigned long long)approved,
+               (unsigned long long)total_power,
+               (unsigned long long)(twice / 3));
+    } else if ((uint32_t)(n_keys - 0) < quorum) {
         fprintf(stderr, "need >= %u approver keys (committee %d), got %d\n",
                 (unsigned)quorum, cm_count, n_keys);
         goto done;
@@ -2009,8 +2130,8 @@ static int cmd_v2_envelope(const char *server_ip, uint16_t server_port,
     if (effective == 0)    effective    = tip + 100000;
     if (valid_before == 0) valid_before = effective + 100000;
 
-    /* auth blob: submitter(1 signer) ‖ approval_count u16 ‖ q × (seat ‖ sig) */
-    uint32_t n_appr = quorum;
+    /* auth blob: submitter(1 signer) ‖ approval_count u16 ‖ n_appr ×
+     * (seat ‖ sig) — n_appr chosen above by the rule in force at tip+1 */
     pf = calloc(1, sizeof(*pf));
     if (!pf) goto done;
 
@@ -5932,7 +6053,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "  stake [--commission BPS] [--bond RAW = exactly 10M NODUS]   Bond this node identity as validator (S3)\n");
     fprintf(stderr, "                              [--nonce <N>]  (committee operator only)\n");
     fprintf(stderr, "                  NAME: TARGET_ACTIVE_COUNT | GAS_PRICE_RAW_PER_UNIT |\n");
-    fprintf(stderr, "                        TOKEN_CREATE_FEE_RAW\n");
+    fprintf(stderr, "                        TOKEN_CREATE_FEE_RAW | HF2_ACTIVE\n");
     fprintf(stderr, "                        (the parameters the running consensus reads)\n");
     fprintf(stderr, "                  run without --value for per-param ranges\n");
     fprintf(stderr, "  v2-claim --legacy-db <t.db> --db <s.db> --keys <dir>\n");

@@ -113,12 +113,14 @@ int main(void) {
      * case checks accepts a valid value. */
     build_valid_chain_config(&tx, 0, 5);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 7 (W-C) */
+    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 8 (HF-2) */
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
     build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
 
-    /* 5b. The read list itself: exactly {4, 5, 6} of the governed id
+    /* 5b. The read list itself: exactly {4, 5, 6, 7} of the governed id
+     * space are read by the running consensus (id 7 = HF2_ACTIVE, read by
+     * the engine's env_hf2_active, 2026-09-30). Before HF-2: exactly {4, 5, 6} of the governed id
      * space are read by the running consensus. Id 6
      * (TOKEN_CREATE_FEE_RAW) joined with its consensus reader in the
      * final pre-testnet wipe W-C: the engine reads the committed row into
@@ -131,7 +133,8 @@ int main(void) {
     for (unsigned id = 0; id <= 255u; id++) {
         const bool want = (id == DNAC_CFG_TARGET_ACTIVE_COUNT ||
                            id == DNAC_CFG_GAS_PRICE_RAW_PER_UNIT ||
-                           id == DNAC_CFG_TOKEN_CREATE_FEE_RAW);
+                           id == DNAC_CFG_TOKEN_CREATE_FEE_RAW ||
+                           id == DNAC_CFG_HF2_ACTIVE);
         CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id) == want);
     }
 

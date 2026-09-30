@@ -178,7 +178,8 @@ extern "C" {
  *   moved here from nodus_witness_v2_env.h in delta 2 — 3 075 since
  *   general multisig grew the auth verdict (3 209 before), DERIVED
  *   from a MEMORY budget: `NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES` 64 MiB /
- *   `NODUS_V2_APPLY_ENV_COST_BYTES` 21 824 B (20 908 B before); NOT the chain-config hard
+ *   `NODUS_V2_APPLY_ENV_COST_BYTES` 21 824 B (20 908 B before; HF-2 froze the bound at
+ *   3 075 and raised the budget to 65 MiB for its 21 856 B cost); NOT the chain-config hard
  *   cap delta 1 briefly tied it to — `MAX_TXS_PER_BLOCK` (id 1) and its
  *   `DNAC_CFG_MAX_TXS_HARD_CAP` are RETIRED/deleted as of delta 2/3)
  *   bounds envelopes; `min(claim_bound, NODUS_V2_APPLY_MAX_

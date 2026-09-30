@@ -312,6 +312,13 @@ typedef struct {
     uint8_t  set_hash[64];         /* "NDS.CCSET.v1" resolved-set hash   */
     const uint8_t *pubkeys;        /* count × 2592, contiguous           */
     const uint8_t (*fps)[64];      /* count × SHA3-512(pubkey)           */
+    /* HF-2 (GW-1): count × the member's VOTING POWER, in seat order —
+     * floor(total_stake / DNAC_DECIMAL_UNIT), the SAME derivation the
+     * block-commit validator set uses (nodus_witness_cmt_app.c, the
+     * FinalizeBlock validator-update loop). Filled for every non-empty
+     * view; the auth hook sums it into the verdict whether or not HF-2
+     * is active, and the SYSTEM exec reads the sums only when it is. */
+    const uint64_t *powers;
 } nodus_rt_committee_t;
 
 /** The engine-owned verdict of ONE leg's verified authorization. Only
@@ -334,6 +341,16 @@ typedef struct {
     uint8_t  msig_satisfied[NODUS_RT_MSIG_MAX_DESC];  /* 1 = >= M of its
                                           * keys are verified signers    */
     uint8_t  msig_addr[NODUS_RT_MSIG_MAX_DESC][64];   /* SHA3-512(desc)  */
+    /* HF-2 (GW-1), kind 2 only — checked u64 sums over the committee
+     * view's `powers`: the VERIFIED approving seats, and every seat (both
+     * 0 when the sum is unweighable). 0 for kinds 1 and 3. Never hashed,
+     * stored or put on a wire — the SYSTEM CHAIN_CONFIG exec's approval
+     * rule reads them from HF-2 on. Placed LAST: the members above end at
+     * 1 423 B, already padded to 1 424 = 8-aligned, so the two u64s grow
+     * the struct by exactly 16 B (sizeof 1 440 — pinned in
+     * nodus_witness_v2_apply.h, whose per-envelope scratch cost reads it). */
+    uint64_t approved_power;
+    uint64_t committee_power;
 } nodus_rt_auth_verdict_t;
 
 /** The engine-owned execution context for one leg. Every pointer is a
@@ -376,7 +393,8 @@ typedef struct {
      * view (type doc above). Non-NULL exactly while the AUTH hook of a
      * leg whose auth_kind needs it runs (kind 2); NULL everywhere else —
      * read_plan/exec consume committee FACTS only through the verdict
-     * (n_approvals / committee_n), never the raw snapshot. */
+     * (n_approvals / committee_n, and since HF-2 approved_power /
+     * committee_power), never the raw snapshot. */
     const nodus_rt_committee_t *committee;
     /* Final pre-testnet wipe W-C (decision 2026-09-28-token-create-fee-
      * governance.md): the COMMITTED chain_config param 6
@@ -389,6 +407,15 @@ typedef struct {
      * (auth stage and read_plan/exec); the CORE TOKEN_CREATE exec is its
      * one consumer (rtn_tc_exec: fee >= this). A hook never chooses it. */
     uint64_t       token_create_fee;
+    /* HF-2 (design docs/plans/2026-09-30-gov-weight-netzero-design.md
+     * rev 2): 1 when the COMMITTED chain_config param 7 (HF2_ACTIVE) is
+     * active at `global_height`, else 0. Read by the ENGINE with the same
+     * discipline as token_create_fee (nodus_witness_v2_apply.c
+     * env_hf2_active: a read fault is a node FAULT, never a default) and
+     * filled on every ctx it builds. One consumer: the SYSTEM
+     * CHAIN_CONFIG exec, which weighs approvals by voting power while it
+     * is 1 and by seat count while it is 0. A hook never chooses it. */
+    uint8_t        hf2_active;
 } nodus_rt_exec_ctx_t;
 
 /**

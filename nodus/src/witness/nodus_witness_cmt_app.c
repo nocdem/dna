@@ -856,8 +856,9 @@ static int app_check_envelope(nodus_cmt_app_ledger_t *ctx,
     }
 
     dry = (nodus_v2_env_dry_run_t *)calloc(1, sizeof(*dry));   /* ~100 KB:
-                                     * 64 verdicts × 1 424 B since general
-                                     * multisig (~70 KB before) */
+                                     * 64 verdicts × 1 440 B since HF-2
+                                     * (1 424 B general multisig, ~70 KB
+                                     * before) */
     if (!dry) {
         return CMT_FAULT;
     }
@@ -1373,9 +1374,10 @@ static int app_prep_quota_ix(const app_prep_units_t *u, uint32_t domain_id)
  *  - R3 W4 package C — the PER-CLASS caps, now that the engine's own
  *    scratch is heap and sized per-block (nodus_witness_v2_apply.c):
  *    envelopes ≤ min(`env_bound`, `NODUS_V2_ENV_BATCH_MAX`) (delta 2
- *    on: a derived MEMORY ceiling, 64 MiB scratch budget / 21 824 B per
- *    envelope = 3 075 since general multisig grew the auth verdict
- *    (20 908 B / 3 209 before) — NOT the chain-config hard cap of 10 delta 1
+ *    on: a MEMORY ceiling, 3 075 since general multisig grew the auth
+ *    verdict (64 MiB / 21 824 B; 20 908 B / 3 209 before); FROZEN at 3 075
+ *    by HF-2 because consensus reads it — the budget grew to 65 MiB for
+ *    the 21 856 B cost instead) — NOT the chain-config hard cap of 10 delta 1
  *    briefly tied it to; MAX_TXS_PER_BLOCK is RETIRED, apply.h; the
  *    min() because this chain's own byte-derived env_bound can only be
  *    SMALLER on a genesis document with an unusually small block) and

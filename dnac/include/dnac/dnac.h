@@ -545,7 +545,38 @@ typedef enum {
                                           *   FEE, DNAC_CFG_MAX_TOKEN_
                                           *   CREATE_FEE]; grace class
                                           *   ERGONOMIC. */
-    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_TOKEN_CREATE_FEE_RAW
+    DNAC_CFG_HF2_ACTIVE            = 7,  /**< HF-2 (design docs/plans/
+                                          *   2026-09-30-gov-weight-
+                                          *   netzero-design.md rev 2;
+                                          *   decision docs/plans/
+                                          *   decisions/2026-09-30-
+                                          *   governance-stake-weight-
+                                          *   and-power-cap.md item 1):
+                                          *   the one-way switch of the
+                                          *   second height-activated
+                                          *   hard fork. From the row's
+                                          *   effective_block on, (GW-1)
+                                          *   a CHAIN_CONFIG approval is
+                                          *   weighed by VOTING POWER
+                                          *   (> 2/3 of the governing
+                                          *   committee's power, the
+                                          *   block-commit unit and
+                                          *   integer form) instead of
+                                          *   by seat count, and (GW-2)
+                                          *   a touched domain whose
+                                          *   root a block leaves
+                                          *   unchanged writes a
+                                          *   DomainUpdate with
+                                          *   pre_root == post_root
+                                          *   instead of failing the
+                                          *   block. No row = the rule
+                                          *   is OFF (byte-identical to
+                                          *   0.23.1). Value domain
+                                          *   EXACTLY
+                                          *   DNAC_CFG_HF2_ACTIVE_ON (1)
+                                          *   — there is no "off" vote;
+                                          *   grace class ERGONOMIC. */
+    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_HF2_ACTIVE
 } dnac_chain_config_param_id_t;
 
 /** The chain-config parameters the RUNNING consensus reads — the one list
@@ -565,7 +596,11 @@ typedef enum {
  *      nodus_witness_v2_apply.c env_token_create_fee (the engine reads
  *      it into nodus_rt_exec_ctx_t.token_create_fee; the CORE
  *      TOKEN_CREATE exec rtn_tc_exec enforces fee >= it),
- *      nodus_witness_handlers.c (the fee quote).
+ *      nodus_witness_handlers.c (the fee quote);
+ *    - HF2_ACTIVE (7, HF-2): nodus_witness_v2_apply.c env_hf2_active
+ *      (the engine reads it into nodus_rt_exec_ctx_t.hf2_active — the
+ *      SYSTEM CHAIN_CONFIG exec's approval rule — and itself for
+ *      phase 9's unchanged-root rule).
  *  No other governed id has a reader: 1 and 3 are RETIRED (above), and 2
  *  (BLOCK_INTERVAL_SEC) is not read on this lane.
  *
@@ -582,7 +617,8 @@ typedef enum {
 static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
     return param_id == (uint8_t)DNAC_CFG_TARGET_ACTIVE_COUNT ||
            param_id == (uint8_t)DNAC_CFG_GAS_PRICE_RAW_PER_UNIT ||
-           param_id == (uint8_t)DNAC_CFG_TOKEN_CREATE_FEE_RAW;
+           param_id == (uint8_t)DNAC_CFG_TOKEN_CREATE_FEE_RAW ||
+           param_id == (uint8_t)DNAC_CFG_HF2_ACTIVE;
 }
 
 /** Value range bounds — consensus-critical (client + witness reject out-of-range).
@@ -668,6 +704,17 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
 #define DNAC_CFG_MIN_TOKEN_CREATE_FEE       100000000ULL
 #define DNAC_CFG_MAX_TOKEN_CREATE_FEE       1000000000000000ULL
 
+/** HF2_ACTIVE value domain (HF-2, param_id 7): EXACTLY 1.
+ *
+ *  A one-way switch (design docs/plans/2026-09-30-gov-weight-netzero-
+ *  design.md "rev 2 kararı"): the committee votes it 1 at a future height
+ *  H under the rule of the day, and from H on the new rules hold. 0 and
+ *  every other value are refused by the scalar rules on both sides
+ *  (nodus_witness_chain_config.c, dnac/src/transaction/verify.c), so no
+ *  vote can switch HF-2 off again; a later vote for 1 at a higher height
+ *  changes nothing. */
+#define DNAC_CFG_HF2_ACTIVE_ON              1ULL
+
 /** chain_config_tx vote-count SHAPE bounds — NOT the quorum rule.
  *
  *  MAX is the wire/struct slot cap: no proposal can carry more votes than
@@ -676,10 +723,13 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  in this release and dna_bft_quorum(7) == 5, so a sub-5 proposal can never
  *  reach quorum at any legal set size.
  *
- *  The BINDING threshold is witness-side: dna_bft_quorum(committee_count)
- *  over the committee governing the signing height
- *  (nodus_witness_chain_config.c::nodus_chain_config_apply). At N=7 that is
- *  exactly 5 — the live chain's behaviour is unchanged. */
+ *  The BINDING threshold is witness-side, in the version-3 SYSTEM
+ *  CHAIN_CONFIG exec (nodus_witness_rt_native.c nodus_rt_system_exec) over
+ *  the committee governing the executing height: dna_bft_quorum(
+ *  committee_count) seats while HF-2 is off, and — from the HF-2 height
+ *  (DNAC_CFG_HF2_ACTIVE) — approving voting power > 2/3 of the committee's
+ *  power. These two macros bound only this legacy type-10 wire shape; the
+ *  version-3 approval carrier (auth_kind 2) has no minimum count. */
 #define DNAC_CHAIN_CONFIG_MIN_SIGS          5
 #define DNAC_CHAIN_CONFIG_MAX_SIGS          DNAC_MAX_ACTIVE_VALIDATORS
 

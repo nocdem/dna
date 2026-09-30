@@ -80,13 +80,14 @@
 #define CC_MAX_SIGS                 CC_MAX_ACTIVE
 #define CC_PURPOSE_TAG_LEN          16
 #define CC_TX_TYPE                  10    /* DNAC_TX_CHAIN_CONFIG */
-#define CC_PARAM_MAX_ID             6
+#define CC_PARAM_MAX_ID             7
 #define CC_PARAM_MAX_TXS            1
 #define CC_PARAM_BLOCK_INTERVAL     2
 #define CC_PARAM_INFLATION_START    3
 #define CC_PARAM_TARGET_ACTIVE      4     /* S3 — DNAC_CFG_TARGET_ACTIVE_COUNT */
 #define CC_PARAM_GAS_PRICE          5     /* HF-1 — DNAC_CFG_GAS_PRICE_RAW_PER_UNIT */
 #define CC_PARAM_TOKEN_CREATE_FEE   6     /* W-C — DNAC_CFG_TOKEN_CREATE_FEE_RAW */
+#define CC_PARAM_HF2_ACTIVE         7     /* HF-2 — DNAC_CFG_HF2_ACTIVE */
 /* Number of per-param cache rows dimensions: param ids are 1..CC_PARAM_MAX_ID
  * and index 0 is unused, so the arrays are CC_PARAM_MAX_ID + 1 wide. */
 #define CC_PARAM_SLOTS              (CC_PARAM_MAX_ID + 1)
@@ -110,6 +111,9 @@
  * 2026-09-28-final-wipe-package-design.md §1 W-C): [1 NODUS, 10M NODUS]. */
 #define CC_MIN_TOKEN_CREATE_FEE     100000000ULL
 #define CC_MAX_TOKEN_CREATE_FEE     1000000000000000ULL
+/* HF-2 HF2_ACTIVE value domain (design 2026-09-30-gov-weight-netzero-
+ * design.md rev 2): exactly 1 — a one-way switch, no "off" vote. */
+#define CC_HF2_ACTIVE_ON            1ULL
 
 static const uint8_t CC_PURPOSE_TAG[CC_PURPOSE_TAG_LEN] = {
     'D','N','A','C','_','C','C','_','v','1',0,0,0,0,0,0
@@ -153,6 +157,10 @@ _Static_assert(CC_MIN_TOKEN_CREATE_FEE == DNAC_CFG_MIN_TOKEN_CREATE_FEE,
                "TOKEN_CREATE_FEE_RAW floor drift vs dnac");
 _Static_assert(CC_MAX_TOKEN_CREATE_FEE == DNAC_CFG_MAX_TOKEN_CREATE_FEE,
                "TOKEN_CREATE_FEE_RAW ceiling drift vs dnac");
+_Static_assert(CC_PARAM_HF2_ACTIVE == DNAC_CFG_HF2_ACTIVE,
+               "CC_PARAM_HF2_ACTIVE drift vs dnac param id");
+_Static_assert(CC_HF2_ACTIVE_ON == DNAC_CFG_HF2_ACTIVE_ON,
+               "HF2_ACTIVE value drift vs dnac");
 /* nodus_chain_config.h keeps this as a bare literal so it stays free of
  * shared/ includes — pin it here, the one TU that sees both. */
 _Static_assert(NODUS_CC_RATE_LIMIT_MAX_PROPOSERS == CC_MAX_ACTIVE,
@@ -691,6 +699,12 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
             if (new_value < CC_MIN_TOKEN_CREATE_FEE ||
                 new_value > CC_MAX_TOKEN_CREATE_FEE) return -1;
             break;
+        case CC_PARAM_HF2_ACTIVE:
+            /* HF-2: EXACTLY 1. A one-way switch — 0 would be an "off"
+             * vote, which the design does not have (rev 2: H is voted
+             * once, the old rules hold below H, the new ones from H). */
+            if (new_value != CC_HF2_ACTIVE_ON) return -1;
+            break;
         default:
             return -1;
     }
@@ -758,6 +772,11 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
             /* W-C — ERGONOMIC by decision (2026-09-28-token-create-fee-
              * governance.md, operator "Tamam yap": "bekleme ERGONOMIC
              * 720 blok"). Named explicitly as well. */
+        case CC_PARAM_HF2_ACTIVE:
+            /* HF-2 — ERGONOMIC, the HF-1 class (dispatch of the HF-2
+             * package; the activation procedure is DEPLOY_RUNBOOK §2.2:
+             * the whole fleet is on the new binary BEFORE the vote, so
+             * the grace only has to cover the vote-to-H window). */
         default:
             return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
     }
