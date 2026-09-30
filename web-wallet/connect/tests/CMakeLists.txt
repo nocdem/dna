@@ -144,3 +144,9 @@ add_executable(test_nc_history test_nc_history.c
 target_link_libraries(test_nc_history nc_core)
 target_compile_options(test_nc_history PRIVATE -Wall -Wextra -Wno-unused-parameter -Werror)
 add_test(NAME test_nc_history COMMAND test_nc_history)
+
+# NC-3a: live READ-ONLY probe against a real node (not a ctest: it needs a
+# words file and a live server; see its file header).
+add_executable(nc_live_read ${CONNECT_DIR}/tools/nc_live_read.c)
+target_link_libraries(nc_live_read nc_core)
+target_compile_options(nc_live_read PRIVATE -Wall -Wextra -Wno-unused-parameter -Werror)
