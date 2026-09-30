@@ -563,13 +563,20 @@ EU-5: `ws: upgrade ok slot=1 ip=<the testing machine's public IP>`. Do NOT put
 another proxy in front of Caddy without re-reading this: the last value must be the
 one Caddy wrote.
 
-⚠ **Browser side (open):** the remote check below passes over HTTP/1.1
-(`curl --http1.1`). A plain `curl` negotiates HTTP/2 and gets 400 (`Upgrade:
-websocket missing` — Upgrade headers do not exist in HTTP/2). Whether browsers use
-HTTP/1.1 or RFC 8441 WebSocket-over-HTTP/2 against Caddy, and whether that reaches
-nodus, is NOT yet verified: the first browser test was blocked by the wallet site's
-own CSP (`connect-src 'self' https:` sent as an nginx header on
-wallet.nodusnetwork.io, not only the page meta tag) — `wss:` must be added there too.
+**Browser side — proven 2026-09-30 (web wallet 0.1.25+).** Headless Chromium 131 on
+the live wallet opened `wss://164.68.116.180/`, the pinned tier-2 session came up
+(server key verified, ML-KEM-1024 channel) and the NODUS balance was read. A plain
+`curl` negotiates HTTP/2 and gets 400 (`Upgrade: websocket missing`); use
+`curl --http1.1` for the remote check. The wallet server's nginx CSP header must
+list every entry: `connect-src 'self' https: wss://<ip> …` (the page meta tag alone
+is not enough — both policies apply).
+
+**Where it runs (2026-09-30):** EU-5, US-1, EU-1, EU-2, EU-3, EU-4 — Caddy 2.11.2 from
+`trixie-backports`, `ws_port` 4005, each with its own Let's Encrypt IP certificate
+(the five later nodes went to production ACME directly; each IP is its own
+certificate, so the identical-certificate limit is not shared). `nodus.conf` backup:
+`/etc/nodus.conf.bak-pre-ws`. **EU-6 has no entry:** its 443 is nginx (websites and
+the wallet); an entry there needs an nginx stream/location design, not Caddy.
 
 **3. Verify on the node** (after restart):
 
