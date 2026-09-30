@@ -1142,3 +1142,52 @@ Not in NC-2/NC-1b: removing a contact from the list (add is merge-only);
 at-rest storage (Q4, NC-4). The json-c version of the frozen app build is not
 established (host 0.16, wasm 0.17); the profile signature is over json-c's
 output, so this is checked before release (NC-3).
+
+## Nodus Connect Messages preview — NC-4c (unreleased, separate build)
+
+The Messages page under `/preview/` (design `docs/plans/2026-09-24-web-connect-design.md`
+rev 5 §1.7-§1.10, package NC-4; decisions `2026-09-30-nodus-connect-thin-core.md`
+incl. Ek / Ek 2 and `2026-09-30-connect-history-at-rest.md` rev 2). First stage
+only: contact list, send / accept / decline / withdraw contact requests, 1:1
+text messages, editing the own profile (about, location, https website; no
+name, no avatar). No groups, media or calls. The live `/` build is unchanged.
+
+- Build: `npm run build:preview` (`vite.preview.config.js`, root `preview/`,
+  base `/preview/`, output `dist-preview/`, its own `THIRD-PARTY-LICENSES.txt`);
+  `npm run preview:preview` serves it locally. `publicDir` is off and the page
+  uses the system font stack and a `data:` icon, so it requests nothing outside
+  `/preview/` except the node WebSockets. Response headers (CSP header,
+  `frame-ancestors 'none'`) are the deploy package's job.
+- `preview/index.html` + `src/connect/ui/` — `main.js` (entry; freezes ethers'
+  RNG/KDF as `src/main.js` does), `messages.js` (screens, sync, lifecycle),
+  `dom.js` (every text through `textContent`; someone else's text in a `<bdi>`
+  with an "unusual characters" marker), `text.js` (pure helpers), `style.css`.
+- Opening: unlock the saved wallet (same vault, same password), type the 24
+  words, or create a new account (words shown, typed back). Only the new-account
+  words count as "fresh" (decision Q1): a restored identity never creates a
+  record, and if its own profile cannot be read Messages stays closed with a
+  retry. The page takes the wallet's single-tab lock `nodus.wallet.session`;
+  it locks after 10 minutes without input, on Lock, on `pagehide`, and when the
+  saved wallet changes in another tab.
+- `src/connect/store.js` — history in IndexedDB, database named by the vault id
+  (32 lowercase hex), stores `messages` / `state` / `meta`; every record is
+  `{ id, nonce, ct, tag }` (bytes kept separately, sealed by the core's
+  `historyEncrypt`), one decimal-string counter record per vault, refused at
+  2^32. Record ids are opaque (`m` + local sequence, `state`), so contacts and
+  salts are only inside the ciphertext. All bytes are ready before a
+  transaction opens; the transaction only puts; `oncomplete` resolves and
+  `onerror` / `onabort` are shown. A typed-words or new account keeps nothing
+  (memory only) and never sends delivery confirmations — a confirmation is sent
+  only after the messages are stored (G11). "Delete message history on this
+  device" takes the `nodus.wallet.storage` lock.
+- Messages: sent as the whole pending set (undelivered, last 7 days); received
+  for yesterday / today / tomorrow, de-duplicated, ordered by the local receive
+  sequence, the sender's time labelled "sender's clock". Requests are labelled
+  "Not a contact"; claimed names are shown only as "says their name is …".
+- Tests: `test/connect-ui.test.js` (record / counter encoding, UI helpers; no
+  IndexedDB — `fake-indexeddb` is not a dependency).
+
+Depends on package NC-4b for the module: `src/nodus/send.js` must export the
+connect calls (today it does not, so the page loads but cannot connect), plus
+`historyKey` / `historyEncrypt` / `historyDecrypt` in `src/connect/core.js`
+(until then a saved wallet opens without persistent history).

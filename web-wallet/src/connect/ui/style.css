@@ -1,0 +1,50 @@
+/* Nodus Connect — Messages preview (/preview/, package NC-4c). The wallet's
+   colours; the system font stack, so the page loads nothing outside /preview/. */
+:root {
+  --bg: #11150f; --panel: #1a2016; --text: #f1f3e9; --muted: #a3a89a; --line: #33372e; --lime: #d5f998; --dark: #141b0e;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+  color: var(--text); background: var(--bg); color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); }
+a { color: var(--lime); overflow-wrap: anywhere; }
+[hidden] { display: none !important; }
+.nc-wrap { width: min(1100px, calc(100% - 32px)); margin-inline: auto; }
+.nc-header { border-bottom: 1px solid var(--line); padding: 14px 0; }
+.nc-header-inner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.nc-brand { font-weight: 700; font-size: 1.3rem; }
+.nc-product { color: var(--muted); }
+.nc-pill { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: .8rem; color: var(--muted); }
+#nc-lock { margin-left: auto; }
+.nc-card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px; margin: 16px 0; }
+.nc-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 16px; }
+@media (max-width: 800px) { .nc-grid { grid-template-columns: 1fr; } }
+h1, h2, h3 { margin: 0 0 12px; }
+h3 { margin-top: 20px; font-size: 1rem; }
+label { display: block; margin: 12px 0 4px; color: var(--muted); font-size: .9rem; }
+input, textarea { width: 100%; background: var(--dark); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: inherit; }
+button { background: var(--lime); color: var(--dark); border: 0; border-radius: 8px; padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer; margin-top: 10px; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.nc-secondary { background: transparent; color: var(--text); border: 1px solid var(--line); }
+.nc-link { background: none; color: var(--lime); padding: 0; margin: 0; font-weight: 600; }
+.nc-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.nc-hint { color: var(--muted); font-size: .9rem; }
+.nc-warning { border: 1px solid #e0b25a; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+.nc-warning h2 { font-size: 1.05rem; }
+.nc-id { font-family: ui-monospace, monospace; font-size: .8rem; overflow-wrap: anywhere; user-select: all; }
+.nc-words { columns: 3; font-family: ui-monospace, monospace; }
+.nc-tabs { display: flex; gap: 8px; margin-top: 16px; }
+.nc-tabs button[aria-pressed='false'] { background: transparent; color: var(--text); border: 1px solid var(--line); }
+.nc-list { list-style: none; padding: 0; margin: 0; }
+.nc-list li { padding: 8px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.nc-selected { background: #d5f99814; }
+.nc-label { border: 1px solid #e0b25a; color: #e0b25a; border-radius: 6px; padding: 0 6px; font-size: .8rem; }
+.nc-note { margin: 6px 0 0; }
+.nc-unusual { color: #e0b25a; font-size: .8rem; }
+.nc-messages { list-style: none; padding: 0; margin: 0 0 12px; max-height: 60vh; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.nc-messages li { max-width: 80%; }
+.nc-out { align-self: flex-end; }
+.nc-in { align-self: flex-start; }
+.nc-bubble { background: var(--dark); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.nc-out .nc-bubble { border-color: #d5f99855; }
+.nc-meta { color: var(--muted); font-size: .75rem; margin-top: 2px; }

@@ -1,0 +1,261 @@
+// Nodus Connect — the Messages history kept in this browser (package NC-4c).
+//
+// Governing records:
+//   docs/plans/decisions/2026-09-30-nodus-connect-thin-core.md
+//     S8: the IndexedDB database is named by the wallet vault's random 16-byte
+//         id (src/vault.js encryptVault); an unsaved wallet has no id and
+//         therefore NO persistent history (memoryHistoryStore below).
+//     Ek 2 "Geçmiş kayıt düzeni": every record keeps its fields separate —
+//         id, nonce (12 B), ciphertext, tag (16 B); ONE counter record per
+//         vault (the SP 800-38D §8.3 2^32 budget, nc_history_encrypt counter).
+//   docs/plans/decisions/2026-09-30-connect-history-at-rest.md rev 2: the key
+//     and the AES-256-GCM sealing live in the core (C, nc_history.c); this file
+//     never sees the key and never stores a plaintext.
+//   docs/plans/2026-09-24-web-connect-design.md rev 5 §1.7: all bytes are
+//     ready before a transaction opens; the transaction body only calls
+//     put/delete; completion is oncomplete, and onerror/onabort are surfaced;
+//     a failed load keeps Messages closed and writes nothing; deleting the
+//     history from this device takes the storage Web Lock.
+//
+// Naming: database = the vault id as 32 lowercase hex characters (the same 16
+// bytes as the vault's base64 `id`). Object stores: 'messages' (one record per
+// message, id 'm' + 20-digit local sequence), 'state' (one record, id 'state':
+// contacts, salts, pending requests, ACK times, the next local sequence),
+// 'meta' (the counter record). Record ids are opaque on purpose: who you talk
+// to is inside the ciphertext, not in an id or the AAD.
+//
+// Core calls used (expected from package NC-4b, bytes = lowercase hex and
+// u64 = decimal string, the convention of src/connect/core.js):
+//   core.historyKey(vaultIdHex)
+//   core.historyEncrypt({ store, id, plaintext, counter }) -> { nonce, ct, tag, counter }
+//     store = the object-store name (nc_history.h: the AAD's "store"),
+//     counter in = invocations so far, counter out = in + 1
+//   core.historyDecrypt({ store, id, nonce, ct, tag }) -> { plaintext }
+
+// Every failure of this file is a StorageError whose message is plain words
+// meant for the user (§1.7: onerror/onabort are shown, not hidden behind a
+// network message). A failed core seal/open is reported the same way; the
+// core's own error text is not shown.
+export class StorageError extends Error {}
+const sealing = async (run, what) => {
+  try { return await run(); }
+  catch (error) { throw error instanceof StorageError ? error : new StorageError(what); }
+};
+
+export const STORE_MESSAGES = 'messages', STORE_STATE = 'state', STORE_META = 'meta';
+export const STATE_ID = 'state', COUNTER_ID = 'counter';
+export const NONCE_LEN = 12, TAG_LEN = 16;
+// SP 800-38D §8.3: at most 2^32 random-nonce invocations per key.
+export const MAX_INVOCATIONS = 2n ** 32n;
+const U64 = /^(0|[1-9]\d{0,19})$/;
+const HEX = /^([0-9a-f]{2})*$/;
+
+export function bytesToHex(bytes) {
+  let out = '';
+  for (const b of bytes) out += b.toString(16).padStart(2, '0');
+  return out;
+}
+export function hexToBytes(hex) {
+  if (typeof hex !== 'string' || !HEX.test(hex)) throw new StorageError('Invalid stored message data.');
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(2 * i, 2 * i + 2), 16);
+  return out;
+}
+
+// The vault's base64 id (16 bytes) -> the database name.
+export function databaseNameForVault(vaultId) {
+  if (typeof vaultId !== 'string' || !/^[A-Za-z0-9+/]{22}==$/.test(vaultId)) throw new StorageError('Invalid saved wallet id.');
+  const bytes = Uint8Array.from(atob(vaultId), c => c.charCodeAt(0));
+  if (bytes.length !== 16) throw new StorageError('Invalid saved wallet id.');
+  return bytesToHex(bytes);
+}
+
+export function messageRecordId(seq) {
+  if (typeof seq !== 'string' || !U64.test(seq)) throw new StorageError('Invalid message number.');
+  return 'm' + seq.padStart(20, '0');
+}
+
+// A value -> the plaintext bytes handed to the core (hex of UTF-8 JSON), and back.
+export function plaintextHex(value) { return bytesToHex(new TextEncoder().encode(JSON.stringify(value))); }
+export function parsePlaintextHex(hex) {
+  const bytes = hexToBytes(hex);
+  try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+  catch { throw new StorageError('A stored message could not be read.'); }
+  finally { bytes.fill(0); }
+}
+
+// Core result -> the stored record: four separate fields (Ek 2).
+export function encodeRecord(id, sealed) {
+  if (typeof id !== 'string' || id.length === 0 || !sealed) throw new StorageError('Invalid message record.');
+  const nonce = hexToBytes(sealed.nonce), ct = hexToBytes(sealed.ct), tag = hexToBytes(sealed.tag);
+  if (nonce.length !== NONCE_LEN || tag.length !== TAG_LEN || ct.length === 0) throw new StorageError('Invalid message record.');
+  return { id, nonce, ct, tag };
+}
+// Stored record -> the core's decrypt arguments; refuses anything malformed.
+export function decodeRecord(record) {
+  if (!record || typeof record.id !== 'string' || record.id.length === 0 ||
+      !(record.nonce instanceof Uint8Array) || record.nonce.length !== NONCE_LEN ||
+      !(record.tag instanceof Uint8Array) || record.tag.length !== TAG_LEN ||
+      !(record.ct instanceof Uint8Array) || record.ct.length === 0 ||
+      Object.keys(record).sort().join() !== 'ct,id,nonce,tag') throw new StorageError('A stored message record is damaged.');
+  return { id: record.id, nonce: bytesToHex(record.nonce), ct: bytesToHex(record.ct), tag: bytesToHex(record.tag) };
+}
+
+// The one counter record per vault: a decimal string.
+export function encodeCounter(count) {
+  if (typeof count !== 'bigint' || count < 0n || count > MAX_INVOCATIONS) throw new StorageError('Invalid counter.');
+  return { id: COUNTER_ID, value: count.toString() };
+}
+export function decodeCounter(record) {
+  if (record === undefined) return 0n;
+  if (!record || record.id !== COUNTER_ID || typeof record.value !== 'string' || !U64.test(record.value) ||
+      Object.keys(record).sort().join() !== 'id,value') throw new StorageError('The stored message counter is damaged.');
+  const count = BigInt(record.value);
+  if (count > MAX_INVOCATIONS) throw new StorageError('The stored message counter is damaged.');
+  return count;
+}
+
+// The next counter the core returned must be exactly one more.
+export function nextCounter(current, returned) {
+  if (typeof returned !== 'string' || !U64.test(returned) || BigInt(returned) !== current + 1n) throw new StorageError('Message history could not be saved (counter mismatch).');
+  return current + 1n;
+}
+
+// Whether `count` more encryptions fit the budget.
+export function budgetAllows(current, count) { return current + BigInt(count) <= MAX_INVOCATIONS; }
+
+// The local state kept in the 'state' record, with defaults.
+export function emptyState() {
+  return { version: 1, nextSeq: '1', contacts: [], outgoing: [], declined: [], acks: {} };
+}
+export function checkState(value) {
+  if (!value || value.version !== 1 || !U64.test(String(value.nextSeq)) || !Array.isArray(value.contacts) ||
+      !Array.isArray(value.outgoing) || !Array.isArray(value.declined) || !value.acks || typeof value.acks !== 'object') throw new StorageError('The stored contact list is damaged.');
+  return value;
+}
+
+const txError = (tx, what) => new StorageError(`${what}: ${tx.error?.message || tx.error?.name || 'the browser refused the change'}.`);
+
+// Opens (creating on first use) the database.
+function openDatabase(name) {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') { reject(new StorageError('This browser cannot keep message history.')); return; }
+    const request = indexedDB.open(name, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      for (const store of [STORE_MESSAGES, STORE_STATE, STORE_META]) if (!db.objectStoreNames.contains(store)) db.createObjectStore(store, { keyPath: 'id' });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(new StorageError(`Message history could not be opened: ${request.error?.message || 'unknown error'}.`));
+    request.onblocked = () => reject(new StorageError('Message history is in use by another tab. Close it and try again.'));
+  });
+}
+
+// One read-only pass over the three stores; decryption happens after it.
+function readAll(db) {
+  return new Promise((resolve, reject) => {
+    let tx;
+    try { tx = db.transaction([STORE_MESSAGES, STORE_STATE, STORE_META], 'readonly'); }
+    catch (error) { reject(new StorageError(`Message history could not be read: ${error.message}.`)); return; }
+    const out = {};
+    tx.objectStore(STORE_MESSAGES).getAll().onsuccess = event => { out.messages = event.target.result; };
+    tx.objectStore(STORE_STATE).get(STATE_ID).onsuccess = event => { out.state = event.target.result; };
+    tx.objectStore(STORE_META).get(COUNTER_ID).onsuccess = event => { out.counter = event.target.result; };
+    tx.oncomplete = () => resolve(out);
+    tx.onerror = () => reject(txError(tx, 'Message history could not be read'));
+    tx.onabort = () => reject(txError(tx, 'Message history could not be read'));
+  });
+}
+
+// `puts`: [{ store, record }] — every byte already prepared; the body only puts.
+function writeAll(db, puts) {
+  return new Promise((resolve, reject) => {
+    let tx;
+    try { tx = db.transaction([STORE_MESSAGES, STORE_STATE, STORE_META], 'readwrite'); }
+    catch (error) { reject(new StorageError(`Message history could not be saved: ${error.message}.`)); return; }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(txError(tx, 'Message history could not be saved'));
+    tx.onabort = () => reject(txError(tx, 'Message history could not be saved'));
+    for (const { store, record } of puts) tx.objectStore(store).put(record);
+  });
+}
+
+// The persistent store of a saved wallet. Resolves once the whole history
+// has been read and decrypted; rejects (Messages stays closed) on any error.
+// Returns { persistent: true, state, messages, save(state, newMessages), close(), erase() }.
+export async function openHistoryStore({ core, vaultId }) {
+  const name = databaseNameForVault(vaultId);
+  await sealing(() => core.historyKey(name), 'The key for your message history could not be prepared.');
+  const db = await openDatabase(name);
+  db.onversionchange = () => db.close();
+  let counter, state, messages;
+  try {
+    const raw = await readAll(db);
+    counter = decodeCounter(raw.counter);
+    const open = async (store, record) => {
+      const args = decodeRecord(record);
+      const { plaintext } = await sealing(() => core.historyDecrypt({ store, ...args }), 'A stored message could not be opened. It may be damaged or from a different wallet.');
+      return parsePlaintextHex(plaintext);
+    };
+    state = raw.state === undefined ? emptyState() : checkState(await open(STORE_STATE, raw.state));
+    messages = [];
+    for (const record of raw.messages || []) {
+      const message = await open(STORE_MESSAGES, record);
+      if (!message || messageRecordId(String(message.seq)) !== record.id) throw new StorageError('A stored message record is damaged.');
+      messages.push(message);
+    }
+  } catch (error) { db.close(); throw error; }
+
+  let queue = Promise.resolve(), closed = false;
+  // Writes are serialised so the counter only ever grows. A transaction that
+  // fails after encryption leaves the in-memory counter advanced (the
+  // encryptions happened; counting them keeps the 2^32 budget conservative);
+  // the next successful write stores it.
+  function save(nextState, newMessages = []) {
+    const run = async () => {
+      if (closed) throw new StorageError('Message history is closed.');
+      const entries = [
+        ...newMessages.map(m => ({ store: STORE_MESSAGES, id: messageRecordId(String(m.seq)), value: m })),
+        { store: STORE_STATE, id: STATE_ID, value: checkState(nextState) }
+      ];
+      if (!budgetAllows(counter, entries.length)) throw new StorageError('This device has stored the maximum number of messages for this wallet. Nothing more can be saved here.');
+      const puts = [];
+      for (const entry of entries) {
+        const sealed = await sealing(() => core.historyEncrypt({ store: entry.store, id: entry.id, plaintext: plaintextHex(entry.value), counter: counter.toString() }), 'Message history could not be saved: the message could not be sealed.');
+        counter = nextCounter(counter, sealed.counter);
+        puts.push({ store: entry.store, record: encodeRecord(entry.id, sealed) });
+      }
+      puts.push({ store: STORE_META, record: encodeCounter(counter) });
+      if (closed) throw new StorageError('Message history is closed.');
+      await writeAll(db, puts);
+    };
+    const result = queue.then(run, run);
+    queue = result.catch(() => {});
+    return result;
+  }
+  function close() { closed = true; db.close(); }
+  // Delete-from-this-device under the wallet's storage Web Lock (§1.7).
+  async function erase() {
+    close();
+    if (!navigator.locks) throw new StorageError('This browser cannot safely delete saved data.');
+    await navigator.locks.request('nodus.wallet.storage', () => new Promise((resolve, reject) => {
+      const request = indexedDB.deleteDatabase(name);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(new StorageError('Message history could not be deleted.'));
+      request.onblocked = () => reject(new StorageError('Message history is in use by another tab. Close it and try again.'));
+    }));
+  }
+  return { persistent: true, state, messages, save, close, erase };
+}
+
+// An unsaved wallet (words typed in, or a new account): nothing is written
+// anywhere; everything is gone when Messages locks (S8).
+export function memoryHistoryStore() {
+  let closed = false;
+  return {
+    persistent: false, state: emptyState(), messages: [],
+    async save(nextState) { if (closed) throw new StorageError('Message history is closed.'); checkState(nextState); },
+    close() { closed = true; },
+    async erase() { closed = true; }
+  };
+}
