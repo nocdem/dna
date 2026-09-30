@@ -18,6 +18,7 @@ export const files = new Map([
   ['/scan.html', ['scan.html', 'text/html; charset=utf-8']],
   ['/terms.html', ['terms.html', 'text/html; charset=utf-8']],
   ['/privacy.html', ['privacy.html', 'text/html; charset=utf-8']],
+  ['/tokenomics.html', ['tokenomics.html', 'text/html; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/network.js', ['network.js', 'text/javascript; charset=utf-8']],

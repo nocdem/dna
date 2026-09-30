@@ -63,7 +63,8 @@ Validator rewards remaining (`reward_pool`), Storage, Compute, Bandwidth,
 Future services (`treasury` pools 1-4) and Unclaimed genesis allocation
 (`unclaimed`) — decision `2026-09-30-scan-supply-buckets`; circulating
 includes staked coins and the Foundation's coins. A `null` field (an older
-node) shows "—". The footer describes the indexer's trust
+node) shows "—". Below the table a link leads to the main site's
+`tokenomics.html` for how the supply is allocated. The footer describes the indexer's trust
 in witness responses. A successful HTTP request does not prove a chain is active;
 block timestamps and the reported index position remain visible.
 
@@ -83,6 +84,10 @@ files outside that allowlist. This server is for local previews.
 - `network.html`: Storage, Bandwidth, Compute, and shared architecture.
 - `manifesto.html`: privacy, identity ownership, and why Nodus is being built,
   followed by the Team section.
+- `tokenomics.html`: the fixed NODUS supply, its eleven allocations, how the
+  testnet genesis holds them, validator rewards, and the circulating-supply
+  definition; current figures are linked on Scan. Linked from the top
+  navigation and every footer.
 - `terms.html`, `privacy.html`: the app's Terms of Service and Privacy Policy,
   linked from every footer, not from the top navigation.
 - `roadmap.html`: implementation history and status filters, displayed by month
@@ -120,8 +125,9 @@ API responses `no-store`.
 ## Content and naming
 
 The user confirmed **Nodus / NODUS**, to take effect with the testnet transition.
-The chain is currently **devnet**, using DNAC. This explicit user correction
-takes precedence over stale Testnet labels elsewhere in the repository.
+The chain has been a **testnet** since 30 September 2026 (it was devnet until
+then, and the site's labels were changed from devnet to testnet the same day);
+some code and tools still use the DNAC name.
 The website presents the proposed Nodus product family without renaming the
 native binaries, protocol identifiers, source directories, or existing releases.
 
@@ -137,7 +143,13 @@ The manifesto carries the CPUNK belief “Privacy is a human right” into the n
 Nodus identity. Storage exists as application infrastructure; capacity trading,
 Bandwidth services and the Compute market are planned. Tokenomics content was
 removed from the public sites on 15 September at the user’s request. The earlier
-allocation record remains internal history in CONTENT_SOURCES.md.
+allocation record remains internal history in CONTENT_SOURCES.md. On 30 September
+the operator asked for a new tokenomics page; `tokenomics.html` was written fresh,
+not restored. Every number on it comes from the operator's tokenomics decision
+(2026-09-22), the testnet genesis configuration and the Scan supply-buckets
+decision (2026-09-30); reward mechanics are stated only where that decision and
+the current chain code agree. The page says plainly that the chain is a testnet
+and makes no price, value, return or mainnet statement.
 
 The page makes no live usage, price, throughput, mainnet, or launch-date claims.
 The product graphics are illustrations. Product pages distinguish existing
@@ -159,7 +171,7 @@ npm run check
 
 This checks JavaScript syntax only. Browser verification additionally covers:
 
-1. All 13 marketing pages at 320, 390, 768, 1024, and 1440 pixels, in both
+1. All 14 marketing pages at 320, 390, 768, 1024, and 1440 pixels, in both
    languages: no page overflow, missing assets, or browser errors.
 2. Product cards navigate to dedicated pages; browser Back returns to the
    directory. Every local page/fragment target resolves. Direct page loads work
@@ -170,8 +182,10 @@ This checks JavaScript syntax only. Browser verification additionally covers:
 6. The server returns 404 for files outside the public allowlist and 405 for
    unsupported methods; successful asset responses include the correct types.
 7. Roadmap filters show the selected status, retain it when changing language,
-   and distinguish month/year history from undated future services. The removed
-   tokenomics page returns 404 and has no published links, content or search entries.
+   and distinguish month/year history from undated future services. The
+   tokenomics page (re-added 30 September) is reachable from the navigation,
+   every footer and the Scan supply details, and its allocation table sums to
+   1,000,000,000 NODUS / 100%.
 8. Artwork loads with correct MIME types; the directory contains six distinct
    pictures matched to the six products. Pointer depth resets on
    leave, scroll reveals remain keyboard accessible, and reduced motion disables
@@ -323,3 +337,18 @@ has 13 marketing pages. Not yet published: publication waits until the
 `legal@nodusnetwork.io` mailbox exists. Browser validation has not been run for
 this change. Porting details are in CONTENT_SOURCES.md.
 Operator follow-up the same day: the privacy policy now states that connected nodes can see IP addresses and connection timing, that channels are currently disabled, and that iOS Keychain applies only to the planned iOS version; the second Team entry is Ios “bios” Santelli.
+
+2026-09-30: Added a new `tokenomics.html` at the operator's request, written
+fresh (the 15 September page was not restored), in English and Turkish. It
+shows the fixed 1,000,000,000 NODUS supply and its eleven allocations from the
+operator's tokenomics decision of 22 September, how the testnet genesis holds
+them (reward reserve, four keyless service pools, Foundation 2-of-3 multisig
+coins, seven genesis validator stakes, the Founder's claimable allocation),
+the validator reward mechanics on which that decision and the current chain
+code agree, and the circulating-supply definition from the Scan supply-buckets
+decision. Current figures are linked to Scan; Scan's supply details link back
+to the page. Tokenomics sits after Network in the top navigation and every
+footer. Registered in `public-files.mjs`, `sitemap.xml` and the
+language-carrying page list in `app.js`. The main site now has 14 marketing
+pages. Also corrected the stale "devnet" line under Content and naming.
+Browser validation has not been run for this change.
