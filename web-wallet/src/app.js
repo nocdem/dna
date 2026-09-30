@@ -1,13 +1,16 @@
 import { getAddress } from 'ethers';
 import { VAULT_KEY, ACTIVITY_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
 import { serializeActivity, parseActivity, activityKeyFor } from './activity-storage.js';
-import { recordActivity, watchActivity, terminal } from './activity.js';
+import { recordActivity, watchActivity, checkActivity, terminal } from './activity.js';
 import { CHAINS, CELLFRAME } from './config.js';
 import { CPUNK_ASSET } from './portfolio.js';
 // Pure data, referenced only inside `if (import.meta.env.VITE_ENABLE_IXIOS === 'true')`
 // blocks below, so a disabled build tree-shakes the whole module away.
 import { IXIOS_NETWORK, IXIOS_ASSET } from './ixios/network.js';
-import { NODUS_NETWORK, NODUS_ASSET } from './nodus/network.js';
+import { NODUS_NETWORK, NODUS_ASSET, nodusNetworkFor } from './nodus/network.js';
+// null until package (c3) ships the module; see src/nodus/send-module.js.
+import { nodusSendModuleFactory } from './nodus/send-module.js';
+import { createNodusClient } from './nodus/client.js';
 import { deriveWallet, disposeWallet, newPhrase, normalizePhrase } from './keys.js';
 import { adapters, prepareTransfer } from './wallet.js';
 import { endpointUrl } from './core.js';
@@ -33,6 +36,9 @@ const CPUNK_ENABLED = import.meta.env.VITE_ENABLE_CPUNK !== 'false';
 let wallet, pending, generatedPhrase, phraseStep, revision = 0, busy = false, lockTimer, idleDeadline = 0, confirmEnableTimer;
 const DEFAULT_PHRASE_ENTRY_HELP = '24 words, in order. Paste your full phrase into any box to fill all 24. Start typing for local word suggestions; choose with the arrow keys and Enter, or tap a word.';
 let cellframeDerivation, cellframeReader, nodusDerivation;
+// The NODUS send module's client for the open wallet (src/nodus/client.js);
+// only ever set when nodusSendModuleFactory is not null.
+let nodusClient;
 // Set only inside the VITE_ENABLE_IXIOS blocks below; undefined/no-ops in a
 // disabled build (so no Ixios string literal is needed outside those blocks).
 let doShowIxiosAddress, stopIxiosAddress = () => {}, ixiosChain, ixiosReader;
@@ -119,10 +125,17 @@ function persistActivity({ required = false } = {}) {
 function renderActivity(save = true) {
   if (save) void persistActivity().catch(error => { $('vault-status').textContent = error.message; });
   $('activity').replaceChildren(...visibleActivity().map(row => {
-    const div = document.createElement('div'), link = document.createElement('a');
+    const div = document.createElement('div');
     div.textContent = `${row.amount} ${row.symbol} → ${row.to} · ${row.status} · ${row.readError || row.note} `;
-    link.href = CHAINS[row.chain].explorer + encodeURIComponent(row.hash); link.textContent = 'View transaction'; link.target = '_blank'; link.rel = 'noopener noreferrer'; div.append(link);
-    if (!terminal(row.status)) {
+    // NODUS has no explorer link in the first delivery (design §1.4).
+    if (CHAINS[row.chain]) {
+      const link = document.createElement('a');
+      link.href = CHAINS[row.chain].explorer + encodeURIComponent(row.hash); link.textContent = 'View transaction'; link.target = '_blank'; link.rel = 'noopener noreferrer'; div.append(link);
+    } else div.append(`Transfer ID ${row.hash}`);
+    // A NODUS send always resolves: included, or 'expired' once the chain passes
+    // its expiry block. Its coins stay held until then (src/adapters/nodus.js
+    // lockedInputs), so it is never marked abandoned by hand.
+    if (!terminal(row.status) && row.chain !== NODUS_ASSET.chain) {
       const abandon = document.createElement('button'); abandon.type = 'button'; abandon.className = 'secondary small';
       abandon.textContent = row._abandonArmed ? 'Confirm abandon' : 'Mark as abandoned';
       abandon.onclick = () => {
@@ -136,7 +149,9 @@ function renderActivity(save = true) {
     return div;
   }));
 }
-function trackActivity() { stopTracking(); renderActivity(); if (wallet) stopTracking = watchActivity(visibleActivity, renderActivity); }
+// NODUS rows are checked through the send module (block scan for the intent_id).
+const checkRow = (row, options) => row.chain === NODUS_ASSET.chain ? adapters.nodus.checkNodusActivity(row, { ...options, client: nodusClient }) : checkActivity(row, options);
+function trackActivity() { stopTracking(); renderActivity(); if (wallet) stopTracking = watchActivity(visibleActivity, renderActivity, { check: checkRow }); }
 const endpoints = Object.fromEntries(Object.entries(CHAINS).map(([key, chain]) => [key, chain.endpoint]));
 // Receive-only networks outside CHAINS, in display order (network selector,
 // portfolio filters, badges and asset rows). None can be sent to: src/wallet.js
@@ -151,6 +166,8 @@ if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
   ixiosChain = IXIOS_ASSET.chain;
   endpoints[ixiosChain] = IXIOS_NETWORK.endpoint; extraNetworks.push({ network: IXIOS_NETWORK, asset: IXIOS_ASSET });
 }
+// The NODUS entry is swapped for its sendable variant only while a send module
+// is ready (setNodusReady below); without a module it stays receive-only.
 const receiveOnlyNetworks = Object.fromEntries([...leadingNetworks, ...extraNetworks].map(({ network, asset }) => [asset.chain, network]));
 function networkFor(chain) { return CHAINS[chain] || receiveOnlyNetworks[chain]; }
 const portfolio = createPortfolio({
@@ -158,9 +175,12 @@ const portfolio = createPortfolio({
   // their address derivation, before either ever reports an address to the
   // portfolio, so each is ready by the time its branch runs. In a disabled
   // Ixios build ixiosChain is undefined and never matches.
+  // NODUS is read only while its send module is ready (it is not in the
+  // portfolio's read list otherwise), through that module's client.
   readBalances: (chain, address, endpoint, options) => chain === 'cellframe'
     ? cellframeReader(address, endpoint, options)
     : chain === ixiosChain ? ixiosReader(address, endpoint, options)
+    : chain === NODUS_ASSET.chain ? adapters.nodus.balances(chain, address, endpoint, { ...options, client: nodusClient })
     : adapters[chain].balances(chain, address, endpoint, options),
   // action 'send' / 'receive' (the row's buttons) also moves focus to that block
   // of the Send / Receive panel; 'select' (a click on the row itself) only
@@ -208,7 +228,46 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) expi
 window.addEventListener('focus', expireIdle);
 function closeReview() { clearTimeout(confirmEnableTimer); pending?.cancel(); pending = undefined; $('review-dialog').close(); $('review-details').replaceChildren(); $('review-error').textContent = ''; }
 $('review-dialog').addEventListener('keydown', event => { if (event.key === 'Enter' && $('confirm-send').disabled) event.preventDefault(); });
+// NODUS leaves receive-only mode only while `ready` (a module client that
+// finished unlock for the open wallet); any other state restores it.
+function setNodusReady(ready, { reselect = true } = {}) {
+  const network = nodusNetworkFor(ready);
+  if (receiveOnlyNetworks[NODUS_ASSET.chain] === network) return;
+  receiveOnlyNetworks[NODUS_ASSET.chain] = network;
+  if (!ready && wallet) wallet.nodusClient = undefined;
+  portfolio.setNetwork(NODUS_ASSET.chain, network);
+  if (reselect && wallet && $('chain').value === NODUS_ASSET.chain) selectChain();
+}
+// Lock order lives in the client (src/nodus/client.js lock): stop the queue ->
+// C cancel flag -> close the WebSocket -> zero module memory -> release.
+function stopNodusSend(options) {
+  const client = nodusClient; nodusClient = undefined;
+  client?.lock();
+  setNodusReady(false, options);
+}
+// Started once the Nodus address is derived, so the module's own identity can
+// be checked against it (client.unlock). Never runs while no module exists.
+async function startNodusSend(source, address) {
+  stopNodusSend();
+  const client = createNodusClient({ factory: nodusSendModuleFactory, onState: state => { if (client === nodusClient && state !== 'ready') setNodusReady(false); } });
+  nodusClient = client;
+  const current = () => client === nodusClient && source === wallet && !source.locked;
+  let seed;
+  try {
+    const { nodusSigningSeed } = await import('./nodus/derive.js');
+    if (!current()) { client.lock(); return; }
+    seed = nodusSigningSeed(source.recoveryPhrase);
+    await client.unlock({ seed, fingerprint: address });
+    if (!current()) { client.lock(); return; }
+    source.nodusClient = client;
+    setNodusReady(true);
+    portfolio.setAddress(NODUS_ASSET.chain, address);
+  } catch {
+    if (client === nodusClient) $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase. Nodus balance and sending are unavailable right now; lock and reopen your wallet to retry.';
+  } finally { seed?.fill(0); }
+}
 function lock() {
+  stopNodusSend({ reselect: false });
   portfolio.clear();
   phraseFields.clear();
   nodusDerivation?.abort(); nodusDerivation = undefined;
@@ -286,6 +345,7 @@ async function showNodusAddress() {
     source.addresses.nodus = address;
     if ($('chain').value === NODUS_ASSET.chain) setReceiveAddress(address);
     $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
+    if (nodusSendModuleFactory) void startNodusSend(source, address);
   } catch {
     if (current()) $('nodus-address-status').textContent = 'Nodus address unavailable. Lock and reopen your wallet to retry.';
   }
@@ -472,16 +532,27 @@ $('send-form').onsubmit = async event => {
   busy = true; $('review-button').disabled = true; const current = revision;
   message('Preparing transfer and network fee…');
   try {
-    const transfer = await prepareTransfer({ wallet, chain: $('chain').value, symbol: $('asset').value, to: $('recipient').value, amount: $('amount').value, endpoint: endpoints[$('chain').value] });
+    const chain = $('chain').value;
+    // NODUS: coins of this wallet's unresolved NODUS sends are not offered to
+    // the builder (G7; src/adapters/nodus.js lockedInputs).
+    const nodusLocked = chain === NODUS_ASSET.chain ? adapters.nodus.lockedInputs(history.filter(row => row.address === wallet.addresses.nodus)) : undefined;
+    const transfer = await prepareTransfer({ wallet, chain, symbol: $('asset').value, to: $('recipient').value, amount: $('amount').value, endpoint: endpoints[chain], nodusLocked });
     if (current !== revision || !wallet) { transfer.cancel(); return; }
     pending = transfer; $('review-details').replaceChildren();
-    const isEvm = transfer.chain === 'ethereum' || transfer.chain === 'bsc';
-    const details = { Network: `${CHAINS[transfer.chain].name} mainnet`, From: transfer.from, To: isEvm ? getAddress(transfer.to) : transfer.to };
-    if (isEvm && /^0x[0-9a-f]{40}$/.test(transfer.to)) details['Address check'] = 'No checksum in what you typed — compare the form above with your source character by character.';
-    Object.assign(details, { Asset: transfer.symbol, Amount: transfer.amount, 'Network fee': transfer.fee });
-    if (isEvm) details['Transaction number (nonce)'] = transfer.nonce;
-    details['Review expires'] = new Date(transfer.expiresAt).toLocaleTimeString();
-    for (const [key, value] of Object.entries(details)) {
+    let entries;
+    if (transfer.review) {
+      // NODUS: every value was decoded from the signed envelope (G1), not the form.
+      entries = [...transfer.review, ['Review expires', new Date(transfer.expiresAt).toLocaleTimeString()]];
+    } else {
+      const isEvm = transfer.chain === 'ethereum' || transfer.chain === 'bsc';
+      const details = { Network: `${CHAINS[transfer.chain].name} mainnet`, From: transfer.from, To: isEvm ? getAddress(transfer.to) : transfer.to };
+      if (isEvm && /^0x[0-9a-f]{40}$/.test(transfer.to)) details['Address check'] = 'No checksum in what you typed — compare the form above with your source character by character.';
+      Object.assign(details, { Asset: transfer.symbol, Amount: transfer.amount, 'Network fee': transfer.fee });
+      if (isEvm) details['Transaction number (nonce)'] = transfer.nonce;
+      details['Review expires'] = new Date(transfer.expiresAt).toLocaleTimeString();
+      entries = Object.entries(details);
+    }
+    for (const [key, value] of entries) {
       const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = key; dd.textContent = value;
       if (key === 'Address check') dd.className = 'notice';
       $('review-details').append(dt, dd);
@@ -508,11 +579,15 @@ $('confirm-send').onclick = async () => {
     if (current !== revision) return;
     message('Broadcast submitted; confirmation is pending. ');
     $('recipient').value = ''; $('amount').value = '';
-    const link = document.createElement('a'); link.href = CHAINS[transfer.chain].explorer + encodeURIComponent(hash); link.textContent = `View transaction ${hash}`; link.target = '_blank'; link.rel = 'noopener noreferrer'; $('wallet-status').append(link);
+    if (CHAINS[transfer.chain]) { const link = document.createElement('a'); link.href = CHAINS[transfer.chain].explorer + encodeURIComponent(hash); link.textContent = `View transaction ${hash}`; link.target = '_blank'; link.rel = 'noopener noreferrer'; $('wallet-status').append(link); }
+    else $('wallet-status').append(`Transfer ID ${hash}. Its status is tracked in Activity.`);
   } catch (error) {
     if (record) { record.status = 'unknown'; record.note = 'Broadcast outcome uncertain. Tracking the signed transaction; do not resend automatically.'; if (current === revision) trackActivity(); }
     closeReview();
-    if (current === revision) message(record ? `${error.message} A broadcast failure can have an uncertain outcome. Check your address on the chain explorer before creating another transfer.` : error.message);
+    const uncertain = transfer.chain === NODUS_ASSET.chain
+      ? 'The outcome is tracked in Activity; its coins stay held until it is included or its expiry block passes.'
+      : 'A broadcast failure can have an uncertain outcome. Check your address on the chain explorer before creating another transfer.';
+    if (current === revision) message(record ? `${error.message} ${uncertain}` : error.message);
   } finally { busy = false; $('cancel-send').disabled = false; }
 };
 function updateVaultUI() {
