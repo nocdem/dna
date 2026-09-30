@@ -291,6 +291,8 @@
   $('search-input').addEventListener('input',()=>{searchRequest++;$('search-results').replaceChildren();});
   $('refresh-data').addEventListener('click',refresh);
   if(page==='index'){
+    // Circulating supply "Details": shows / hides the bucket table below the cards.
+    $('supply-details-toggle').addEventListener('click',event=>{const open=$('supply-details').hidden;$('supply-details').hidden=!open;event.currentTarget.setAttribute('aria-expanded',String(open));});
     $('pg-first').addEventListener('click',()=>loadBlocks(1,true));$('pg-prev').addEventListener('click',()=>loadBlocks(pageNumber-1));$('pg-next').addEventListener('click',()=>loadBlocks(pageNumber+1));$('pg-last').addEventListener('click',()=>loadBlocks(lastPage));
     $('pg-input').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();if(/^\d+$/.test(event.target.value))loadBlocks(Number(event.target.value));}});
     setInterval(()=>{if(!document.hidden && pageNumber===1)refresh();},30000);
