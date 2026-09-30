@@ -7,16 +7,16 @@
  * dht_fingerprint_to_value_id).
  *
  * THE SIGNING PREIMAGE. dht_send_contact_request builds it inline
- * (dht_contact_request.c:96-180) and dht_verify_contact_request rebuilds it
- * inline (contact_request_codec.c:365-417); NC-1 extracted no function that
+ * (dht_contact_request.c:99-159) and dht_verify_contact_request rebuilds it
+ * inline (contact_request_codec.c:377-437); NC-1 extracted no function that
  * returns it. It is NOT re-written here. dht_serialize_contact_request
- * (contact_request_codec.c:135-181) writes the same fields in the same
+ * (contact_request_codec.c:136-183) writes the same fields in the same
  * order with the same padding, followed by a 2-byte signature length and
  * the signature; with signature_len 0 its output is the preimage followed
  * by two zero bytes. nc_request_build signs that prefix and then runs the
  * codec's own deserialize + verify on the final bytes — the exact check the
  * frozen app applies on receipt (dht_fetch_contact_requests,
- * dht_contact_request.c:300-312). If the prefix were ever not the preimage,
+ * dht_contact_request.c:298-308). If the prefix were ever not the preimage,
  * the verify fails and nothing is published.
  *
  * Copyright (c) 2026 nocdem
@@ -35,7 +35,7 @@
 #define LOG_TAG "NC_REQUEST"
 
 /* F6: requests use the codec's value_id (first 16 hex chars of the SENDER
- * fingerprint, big-endian, contact_request_codec.c:58-83) — deliberately not
+ * fingerprint, big-endian, contact_request_codec.c:58-86) — deliberately not
  * nodus_identity_value_id (first 8 bytes of node_id, little-endian). */
 static uint64_t request_value_id(const char *sender_fp) {
     return dht_fingerprint_to_value_id(sender_fp);
@@ -43,7 +43,7 @@ static uint64_t request_value_id(const char *sender_fp) {
 
 /* SHA3-512(SHA3-512("<fp>:requests")): dht_generate_requests_inbox_key
  * hashes the string, nodus_ops_put / nodus_ops_get_all hash those 64 bytes
- * again (nodus_ops.c:116-126, :240-252). */
+ * again (nodus_ops.c:116-126, :241-256). */
 static void inbox_key(const char *fp, nodus_key_t *key) {
     uint8_t inbox[64];
     dht_generate_requests_inbox_key(fp, inbox);
@@ -67,7 +67,7 @@ int nc_request_build(const nc_keys_t *keys, const char *recipient_fp,
     int rc = NC_ERR_INTERNAL;
     if (!req || !chk) goto done;
 
-    /* The fields of dht_send_contact_request (dht_contact_request.c:63-98). */
+    /* The fields of dht_send_contact_request (dht_contact_request.c:62-97). */
     req->magic = DHT_CONTACT_REQUEST_MAGIC;
     req->timestamp = (uint64_t)time(NULL);
     req->expiry = req->timestamp + DHT_CONTACT_REQUEST_DEFAULT_TTL;
@@ -155,7 +155,7 @@ int nc_request_cancel(const nc_ctx_t *ctx, const char *recipient_fp) {
     if (nc_fp_parse(recipient_fp, &chk) != 0) return NC_ERR_ARG;
     nodus_key_t key;
     inbox_key(recipient_fp, &key);
-    const uint8_t empty_data[1] = { 0 };       /* dht_contact_request.c:376 */
+    const uint8_t empty_data[1] = { 0 };       /* dht_contact_request.c:375 */
     return nc_put(ctx, &key, empty_data, sizeof(empty_data),
                   NODUS_VALUE_EPHEMERAL, 1, request_value_id(ctx->keys->fp));
 }

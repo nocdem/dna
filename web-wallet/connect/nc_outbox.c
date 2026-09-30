@@ -47,7 +47,7 @@ int nc_outbox_build(const nc_keys_t *keys, const nc_peer_t *peer,
     *blob_len = 0;
     if (n == 0 || n > NC_OUTBOX_MAX_MESSAGES) return NC_ERR_ARG;
 
-    /* All-or-nothing algorithm (messages.c:411-449): this identity always
+    /* All-or-nothing algorithm (messages.c:411-446): this identity always
      * has an ML-KEM key; ML-KEM is used only if the peer's record has one. */
     uint8_t alg = peer->has_mlkem ? (uint8_t)QGP_KEY_TYPE_MLKEM1024
                                   : (uint8_t)QGP_KEY_TYPE_KEM1024;
@@ -83,7 +83,7 @@ int nc_outbox_build(const nc_keys_t *keys, const nc_peer_t *peer,
                                               strlen(msgs[i].text), pubkeys, 2,
                                               &sign_key, msgs[i].timestamp,
                                               alg, &ct, &ct_len) != 0) {
-            /* native skips a message it cannot seal (messages.c:477-480);
+            /* native skips a message it cannot seal (messages.c:475-478);
              * the web refuses the whole blob instead, so the caller never
              * believes a message went out that did not. */
             goto done;
@@ -111,7 +111,7 @@ int nc_outbox_publish(const nc_ctx_t *ctx, const nc_peer_t *peer,
                       const uint8_t salt[NC_SALT_LEN], uint64_t day,
                       const nc_outmsg_t *msgs, size_t n, uint8_t *alg_out) {
     if (!ctx || !ctx->keys || !peer || !salt) return NC_ERR_ARG;
-    /* CORE-04: no salt, no send (messages.c:505-515) — `salt` is required
+    /* CORE-04: no salt, no send (messages.c:517-529) — `salt` is required
      * by the signature above; dht_dm_outbox_make_key refuses NULL too. */
     nodus_key_t key;
     if (outbox_key(ctx->keys->fp, peer->fp, day, salt, &key) != 0)
@@ -190,7 +190,7 @@ int nc_outbox_fetch_day(const nc_ctx_t *ctx, const nc_peer_t *peer,
                                              &claimed_len, &sig, &sig_len,
                                              &ts) == DNA_OK &&
                  pt && pt_len > 0;
-        /* Authorship gate (messenger_transport.c:651-716): the claimed
+        /* Authorship gate (messenger_transport.c:645-716): the claimed
          * sender must be the peer whose outbox this is, and the signature
          * must verify under the peer's verified ML-DSA key. */
         ok = ok && claimed && claimed_len == 64 && sig && sig_len > 0 &&

@@ -90,7 +90,7 @@ int nc_salt_read(const nc_ctx_t *ctx, const nc_peer_t *peer,
     if (n_valid == 0) { memset(valid, 0, sizeof(valid)); return NC_OK; }
 
     /* Identical salts collapse; distinct salts: lowest SHA3-512 wins
-     * (dht_salt_agreement.c :295-340, design §4 D5). */
+     * (dht_salt_agreement.c :299-342, design §4 D5). */
     size_t winner = 0;
     uint8_t winner_hash[64];
     qgp_sha3_512(valid[0], NC_SALT_LEN, winner_hash);

@@ -63,10 +63,12 @@
 //   core.lock()                synchronous; see the lock order above
 //
 // Queue slots (design §6.4 F7): every async call is ONE bounded network
-// step in C (one GET, one GET_ALL or one PUT). A caller that syncs many
+// step in C (one GET, one GET_ALL or one PUT) — except profileUpdate, a
+// read then a write (at most two request timeouts; the write must not be
+// split from the read it is based on, F4). A caller that syncs many
 // contacts / days must await each step before enqueueing the next, so a
 // wallet operation enqueued meanwhile runs between two steps and waits at
-// most one request timeout.
+// most the step in flight (one request timeout; two for profileUpdate).
 
 const HEX128 = /^[0-9a-f]{128}$/, HEX64 = /^[0-9a-f]{64}$/, U64 = /^(0|[1-9]\d{0,19})$/;
 export const NODUS_CONNECT_TICK_MS = 60000;

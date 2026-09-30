@@ -63,7 +63,8 @@ extern "C" {
 
 /* The literal the frozen app sends as the message of a reciprocal request
  * and auto-approves on (messenger/src/api/engine/dna_engine_contacts.c
- * CONTACT_ACCEPTED_MSG, :27; approve path :743-751; auto-approve :556-583). */
+ * CONTACT_ACCEPTED_MSG, :27; approve path :690-751, the send :743-751;
+ * auto-approve :555-581). */
 #define NC_CONTACT_ACCEPTED_MSG "Contact request accepted"
 
 /* ── Identity (design §1.5) ─────────────────────────────────────────── */
@@ -193,8 +194,8 @@ void nc_read_all(const nc_ctx_t *ctx, const nodus_key_t *key,
 
 /**
  * One signed PUT under the own identity (the nodus_ops.c do_put shape,
- * :74-110): nodus_value_create + nodus_value_sign + nodus_client_put_ex,
- * seq = unix seconds (nodus_ops.c:91-93). The seq exists only because the
+ * :75-112): nodus_value_create + nodus_value_sign + nodus_client_put_ex,
+ * seq = unix seconds (nodus_ops.c:93). The seq exists only because the
  * frozen app writes the same slots with the same rule; nothing in this core
  * assumes a node keeps the higher seq (design §6.4 F4: the entry node stores
  * a client PUT with INSERT OR REPLACE). Returns 0, the node's NODUS_ERR_*,
@@ -208,7 +209,7 @@ int nc_put(const nc_ctx_t *ctx, const nodus_key_t *key,
 
 /** SHA3-512 of a key STRING — what nodus_ops_*_str do (nodus_ops.c:69-71). */
 void nc_key_str(const char *s, nodus_key_t *out);
-/** SHA3-512 of raw key BYTES — what nodus_ops_put/get do (nodus_ops.c:63-65).
+/** SHA3-512 of raw key BYTES — what nodus_ops_put/get do (nodus_ops.c:64-66).
  *  Used on the already-hashed request-inbox and ACK keys (double hash). */
 void nc_key_bytes(const uint8_t *b, size_t n, nodus_key_t *out);
 
@@ -268,12 +269,12 @@ typedef struct {
  * name_* fields, wallets.alvin and display_name (design §1.4 R1: the native
  * update wipes alvin, messenger/BUGS.md:36 — not carried).
  *   FOUND -> copy, apply patch, attach own mlkem_pubkey (outside the signed
- *            part, keyserver_profiles.c:95-121), timestamp, version++, sign
+ *            part, keyserver_profiles.c:121-124), timestamp, version++, sign
  *            dna_identity_to_json_unsigned, PUT dna_identity_to_json
  *            EXCLUSIVE, ttl 0, value_id = nodus_identity_value_id
  *            (operator decision 2026-09-30 "bu şekilde yapalım").
  *   EMPTY and ctx->fresh -> the first-time record of keyserver_profiles.c
- *            :41-72 without a name, then as above (created = true).
+ *            :43-75 without a name, then as above (created = true).
  *   EMPTY and !fresh, or UNREADABLE -> NC_PROFILE_WAIT, nothing written.
  *   PUT -> NODUS_ERR_KEY_OWNED -> NC_PROFILE_TAKEN.
  */
@@ -284,13 +285,13 @@ int nc_profile_publish(const nc_ctx_t *ctx, const char *patch_json,
 
 /**
  * Build one signed contact request for `recipient_fp` exactly as
- * dht_send_contact_request (dht_contact_request.c:43-213) does: magic DNAR,
+ * dht_send_contact_request (dht_contact_request.c:43-229) does: magic DNAR,
  * v2 when `salt` != NULL (v1 otherwise), timestamp = now, expiry = now +
  * DHT_CONTACT_REQUEST_DEFAULT_TTL, sender_name empty (the web registers no
  * name), message (<= 255 bytes, NULL = empty), ML-DSA-87 over the signing
  * preimage. The serialised bytes are checked with the codec's own
  * dht_deserialize_contact_request + dht_verify_contact_request (what the
- * frozen app runs on receipt, dht_contact_request.c:302-312) before they are
+ * frozen app runs on receipt, dht_contact_request.c:298-308) before they are
  * returned; a request that would not verify is never returned.
  */
 int nc_request_build(const nc_keys_t *keys, const char *recipient_fp,
@@ -299,21 +300,21 @@ int nc_request_build(const nc_keys_t *keys, const char *recipient_fp,
 
 /** Build + PUT to SHA3-512(SHA3-512("<recipient>:requests")), EPHEMERAL,
  *  ttl 604800, value_id = dht_fingerprint_to_value_id(own fp)
- *  (dht_contact_request.c:195-205; nodus_ops_put double hash). */
+ *  (dht_contact_request.c:203-218; nodus_ops_put double hash). */
 int nc_request_send(const nc_ctx_t *ctx, const char *recipient_fp,
                     const char *message, const uint8_t *salt);
 
 /** ACCEPT (design §6.4 F3): the reciprocal request the frozen app sends on
  *  approve — message NC_CONTACT_ACCEPTED_MSG, the requester's salt echoed
  *  (NULL when the request carried none -> v1), dna_engine_contacts.c
- *  :712-751. */
+ *  :690-751. */
 int nc_request_accept(const nc_ctx_t *ctx, const char *requester_fp,
                       const uint8_t *salt_or_null);
 
 /** CANCEL own request in `recipient_fp`'s inbox: 1 byte {0}, ttl 1,
  *  EPHEMERAL, same key and value_id (dht_cancel_contact_request,
- *  dht_contact_request.c:354-395; the app calls it after an auto-approve,
- *  dna_engine_contacts.c:577-581). */
+ *  dht_contact_request.c:354-393; the app calls it after an auto-approve,
+ *  dna_engine_contacts.c:580). */
 int nc_request_cancel(const nc_ctx_t *ctx, const char *recipient_fp);
 
 typedef struct {
@@ -395,11 +396,11 @@ typedef struct {
 
 /**
  * The whole day blob for one recipient, as messenger_flush_recipient_outbox
- * (messages.c:334-560) builds it: each message re-sealed with the
+ * (messages.c:334-570) builds it: each message re-sealed with the
  * 2-recipient Seal (sender entry first, recipient second) and its original
  * timestamp; algorithm all-or-nothing — ML-KEM-1024 only when BOTH this
  * identity and the peer's record carry an ML-KEM key, else round-3 Kyber
- * (:411-449); seq = local id, expiry = timestamp + DNA_DM_OUTBOX_TTL;
+ * (:411-446); seq = local id, expiry = timestamp + DNA_DM_OUTBOX_TTL;
  * dht_serialize_messages. `alg_out` (nullable) = 2 or 3.
  */
 int nc_outbox_build(const nc_keys_t *keys, const nc_peer_t *peer,
@@ -407,7 +408,7 @@ int nc_outbox_build(const nc_keys_t *keys, const nc_peer_t *peer,
                     uint8_t **blob, size_t *blob_len, uint8_t *alg_out);
 
 /** Build + PUT under SHA3-512(dht_dm_outbox_make_key(me, peer, day, salt))
- *  EPHEMERAL, ttl DNA_DM_OUTBOX_TTL, own value_id (messages.c:519-535).
+ *  EPHEMERAL, ttl DNA_DM_OUTBOX_TTL, own value_id (messages.c:540-544).
  *  `day` = dht_dm_outbox_get_day_bucket() at the caller. */
 int nc_outbox_publish(const nc_ctx_t *ctx, const nc_peer_t *peer,
                       const uint8_t salt[NC_SALT_LEN], uint64_t day,
@@ -431,9 +432,9 @@ void nc_inbox_clear(nc_inbox_t *in);
 
 /**
  * ONE day bucket of `peer`'s outbox to this identity (dht_dm_outbox_sync_day
- * :414-473 without the blob cache): strict GET, owner = peer, codec
+ * :414-474 without the blob cache): strict GET, owner = peer, codec
  * deserialize, then per message dna_decrypt_message_raw_alg (own round-3 +
- * ML-KEM secret) and the authorship gate of messenger_transport.c:651-716:
+ * ML-KEM secret) and the authorship gate of messenger_transport.c:645-716:
  * the Seal's claimed sender must be the peer and dna_verify_seal_authorship
  * must pass under the peer's verified ML-DSA key; anything else is dropped.
  */

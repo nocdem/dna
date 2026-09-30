@@ -16,7 +16,9 @@
  *   - each async export does ONE bounded network step (one GET, one GET_ALL
  *     or one PUT, each bounded by the client's request timeout) so the JS
  *     queue can put a wallet operation between two sync steps (design §6.4
- *     F7). No export loops over contacts or days.
+ *     F7). The one exception is nc_profile_update: a read then a write
+ *     (at most two request timeouts) — the PUT must not be split from the
+ *     read it is based on (§6.4 F4). No export loops over contacts or days.
  *   - results are one JSON object (json-c), read with nc_result(); u64
  *     values cross as decimal strings, bytes as lowercase hex.
  *
@@ -70,7 +72,7 @@ int qgp_platform_random(uint8_t *buf, size_t len) {
     return 0;
 }
 
-/* dna_context_new (messenger/dna_api.c:132-149) refuses to build a context
+/* dna_context_new (messenger/dna_api.c:132-150) refuses to build a context
  * without a home directory; it only records "<home>/.qgp" and the Seal code
  * this module calls never reads it. qgp_platform_linux.c is not linked (its
  * qgp_platform_random would replace the one above), so the linux body is
@@ -424,7 +426,7 @@ int nc_request_new(const char *fp, const char *message) {
     if (nc_begin() != 0) return -1;
     if (session_ok() != 0) return nc_end(-1);
     /* A fresh per-contact salt, as the app does at send
-     * (dna_engine_contacts.c:345-350). */
+     * (dna_engine_contacts.c:349-356). */
     uint8_t salt[NC_SALT_LEN];
     if (qgp_platform_random(salt, sizeof(salt)) != 0)
         return nc_end(fail("No randomness available."));

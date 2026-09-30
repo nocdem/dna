@@ -29,7 +29,7 @@
 
 static void profile_key(const char *fp, nodus_key_t *key) {
     char s[NC_FP_HEX_LEN + 16];
-    snprintf(s, sizeof(s), "%s:profile", fp);   /* keyserver_profiles.c:190 */
+    snprintf(s, sizeof(s), "%s:profile", fp);   /* keyserver_profiles.c:193 */
     nc_key_str(s, key);
 }
 
@@ -207,7 +207,7 @@ int nc_profile_publish(const nc_ctx_t *ctx, const char *patch_json,
     nc_profile_read(ctx, keys->fp, &res->read, &id, NULL);
 
     if (res->read.outcome == NC_EMPTY && ctx->fresh) {
-        /* First-time record, keyserver_profiles.c:41-72 without a name. */
+        /* First-time record, keyserver_profiles.c:43-75 without a name. */
         id = dna_identity_create();
         if (!id) { json_object_put(patch); return NC_ERR_INTERNAL; }
         memcpy(id->fingerprint, keys->fp, NC_FP_HEX_LEN);
@@ -225,13 +225,13 @@ int nc_profile_publish(const nc_ctx_t *ctx, const char *patch_json,
     nc_read_clear(&res->read);
 
     /* mlkem_pubkey sits outside the signed part (dna_profile.c
-     * identity_to_json_internal; keyserver_profiles.c:95-121). */
+     * identity_to_json_internal; keyserver_profiles.c:121-124). */
     memcpy(id->mlkem_pubkey, keys->mlkem_pk, sizeof(id->mlkem_pubkey));
     id->has_mlkem_pubkey = true;
     patch_apply(patch, id, true);
     json_object_put(patch);
 
-    /* keyserver_profiles.c:156-179 */
+    /* keyserver_profiles.c:156-184 */
     id->timestamp = (uint64_t)time(NULL);
     id->version++;
     int rc = NC_ERR_INTERNAL;
