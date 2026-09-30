@@ -1,10 +1,10 @@
 /**
  * @file shared/dnac/cmt_part_set.c
- * @brief cometbft @709fd12b `types/part_set.go` ported to C — see
+ * @brief cometbft @v0.38.26 `types/part_set.go` ported to C — see
  *        cmt_part_set.h for the contract, the substitutions and the
  *        taşınmadı list.
  *
- * Every function below carries the `// cometbft@709fd12b <file>:<from>-<to>`
+ * Every function below carries the `// cometbft@v0.38.26 <file>:<from>-<to>`
  * line of the Go function it ports.
  *
  * Copyright (c) 2026 nocdem
@@ -18,7 +18,7 @@
 
 /* ══ validation.go ════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b types/validation.go:196-204 — ValidateHash() */
+/* cometbft@v0.38.26 types/validation.go:197-205 — ValidateHash() */
 int cmt_validate_hash(const uint8_t *h, size_t len)
 {
     (void)h;
@@ -30,7 +30,7 @@ int cmt_validate_hash(const uint8_t *h, size_t len)
 
 /* ══ Part ═════════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b types/part_set.go:45-60 — (part *Part) ValidateBasic() */
+/* cometbft@v0.38.26 types/part_set.go:45-60 — (part *Part) ValidateBasic() */
 int cmt_part_validate_basic(const cmt_part_t *part)
 {
     if (part == NULL) {
@@ -55,7 +55,7 @@ int cmt_part_validate_basic(const cmt_part_t *part)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/part_set.go:83-95 — (part *Part) ToProto().
+/* cometbft@v0.38.26 types/part_set.go:83-95 — (part *Part) ToProto().
  * The identity on this representation; see cmt_part_set.h. */
 int cmt_part_to_proto(const cmt_part_t *part, cmt_pb_part_t *out)
 {
@@ -66,7 +66,7 @@ int cmt_part_to_proto(const cmt_part_t *part, cmt_pb_part_t *out)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/part_set.go:97-112 — PartFromProto().
+/* cometbft@v0.38.26 types/part_set.go:97-112 — PartFromProto().
  * The reference's `merkle.ProofFromProto` (:103) is a decode FOLLOWED BY
  * Proof.ValidateBasic (crypto/merkle/proof.go:160); on an already-decoded
  * struct the decode is the identity, so what survives is the check. Then
@@ -85,7 +85,7 @@ int cmt_part_from_proto(const cmt_pb_part_t *pb, cmt_part_t *out)
 
 /* ══ PartSetHeader ════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b types/part_set.go:129-131 — IsZero() */
+/* cometbft@v0.38.26 types/part_set.go:129-131 — IsZero() */
 bool cmt_psh_is_zero(const cmt_part_set_header_t *psh)
 {
     if (psh == NULL) {
@@ -94,7 +94,7 @@ bool cmt_psh_is_zero(const cmt_part_set_header_t *psh)
     return psh->total == 0u && psh->hash_len == 0u;
 }
 
-/* cometbft@709fd12b types/part_set.go:133-135 — Equals() */
+/* cometbft@v0.38.26 types/part_set.go:133-135 — Equals() */
 bool cmt_psh_equals(const cmt_part_set_header_t *psh,
                     const cmt_part_set_header_t *other)
 {
@@ -110,7 +110,7 @@ bool cmt_psh_equals(const cmt_part_set_header_t *psh,
     return memcmp(psh->hash, other->hash, psh->hash_len) == 0;
 }
 
-/* cometbft@709fd12b types/part_set.go:138-144 — ValidateBasic() */
+/* cometbft@v0.38.26 types/part_set.go:138-144 — ValidateBasic() */
 int cmt_psh_validate_basic(const cmt_part_set_header_t *psh)
 {
     if (psh == NULL) {
@@ -121,7 +121,7 @@ int cmt_psh_validate_basic(const cmt_part_set_header_t *psh)
     return cmt_validate_hash(psh->hash, psh->hash_len);
 }
 
-/* cometbft@709fd12b types/part_set.go:147-156 — (psh *PartSetHeader) ToProto() */
+/* cometbft@v0.38.26 types/part_set.go:147-156 — (psh *PartSetHeader) ToProto() */
 int cmt_psh_to_proto(const cmt_part_set_header_t *psh,
                      cmt_pb_part_set_header_t *out)
 {
@@ -136,7 +136,7 @@ int cmt_psh_to_proto(const cmt_part_set_header_t *psh,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/part_set.go:159-168 — PartSetHeaderFromProto().
+/* cometbft@v0.38.26 types/part_set.go:159-168 — PartSetHeaderFromProto().
  * The reference's "nil PartSetHeader" error (:160-162) cannot arise from a
  * decoded message in this port — cmt_pb always produces a struct — so a
  * NULL here is a programming fault, not wire data. */
@@ -150,7 +150,7 @@ int cmt_psh_from_proto(const cmt_pb_part_set_header_t *ppsh,
     return cmt_psh_validate_basic(out);          /* :167                 */
 }
 
-/* cometbft@709fd12b types/part_set.go:172-174 — ProtoPartSetHeaderIsZero() */
+/* cometbft@v0.38.26 types/part_set.go:172-174 — ProtoPartSetHeaderIsZero() */
 bool cmt_proto_part_set_header_is_zero(const cmt_pb_part_set_header_t *ppsh)
 {
     if (ppsh == NULL) {
@@ -161,7 +161,7 @@ bool cmt_proto_part_set_header_is_zero(const cmt_pb_part_set_header_t *ppsh)
 
 /* ══ PartSet ══════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b types/part_set.go:194-222 — NewPartSetFromData() */
+/* cometbft@v0.38.26 types/part_set.go:194-222 — NewPartSetFromData() */
 int cmt_new_part_set_from_data(const uint8_t *data, size_t data_len,
                                uint32_t part_size,
                                cmt_part_t *parts, size_t parts_cap,
@@ -188,7 +188,7 @@ int cmt_new_part_set_from_data(const uint8_t *data, size_t data_len,
     total64 = ((uint64_t)data_len + (uint64_t)part_size - 1u) /
               (uint64_t)part_size;
     if (total64 > (uint64_t)CMT_PART_SET_MAX_PARTS) {
-        return CMT_REJECT;                       /* params.go:22 bound   */
+        return CMT_REJECT;                       /* params.go:23 bound   */
     }
     total = (size_t)total64;
     if (total != 0 && (parts == NULL || total > parts_cap)) {
@@ -260,7 +260,7 @@ int cmt_new_part_set_from_data(const uint8_t *data, size_t data_len,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/part_set.go:225-234 — NewPartSetFromHeader() */
+/* cometbft@v0.38.26 types/part_set.go:225-234 — NewPartSetFromHeader() */
 int cmt_new_part_set_from_header(const cmt_part_set_header_t *header,
                                  cmt_part_t *parts, size_t parts_cap,
                                  cmt_part_set_t *out)
@@ -324,7 +324,7 @@ int cmt_part_set_bind_payload_store(cmt_part_set_t *ps, uint8_t *payload_buf,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/part_set.go:236-244 — Header() */
+/* cometbft@v0.38.26 types/part_set.go:236-244 — Header() */
 int cmt_part_set_header(const cmt_part_set_t *ps, cmt_part_set_header_t *out)
 {
     if (out == NULL) {
@@ -342,7 +342,7 @@ int cmt_part_set_header(const cmt_part_set_t *ps, cmt_part_set_header_t *out)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/part_set.go:246-251 — HasHeader() */
+/* cometbft@v0.38.26 types/part_set.go:246-251 — HasHeader() */
 bool cmt_part_set_has_header(const cmt_part_set_t *ps,
                              const cmt_part_set_header_t *header)
 {
@@ -357,7 +357,7 @@ bool cmt_part_set_has_header(const cmt_part_set_t *ps,
     return cmt_psh_equals(&own, header);         /* :250                 */
 }
 
-/* cometbft@709fd12b types/part_set.go:253-257 — BitArray() */
+/* cometbft@v0.38.26 types/part_set.go:253-257 — BitArray() */
 int cmt_part_set_bit_array(const cmt_part_set_t *ps, cmt_bit_array_t *out)
 {
     if (ps == NULL || out == NULL) {
@@ -372,7 +372,7 @@ int cmt_part_set_bit_array(const cmt_part_set_t *ps, cmt_bit_array_t *out)
     return cmt_bits_copy(&ps->parts_bit_array, out);  /* :256            */
 }
 
-/* cometbft@709fd12b types/part_set.go:259-264 — Hash() */
+/* cometbft@v0.38.26 types/part_set.go:259-264 — Hash() */
 int cmt_part_set_hash(const cmt_part_set_t *ps, uint8_t out[CMT_TMHASH_SIZE])
 {
     if (out == NULL) {
@@ -391,7 +391,7 @@ int cmt_part_set_hash(const cmt_part_set_t *ps, uint8_t out[CMT_TMHASH_SIZE])
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/part_set.go:266-271 — HashesTo() */
+/* cometbft@v0.38.26 types/part_set.go:266-271 — HashesTo() */
 bool cmt_part_set_hashes_to(const cmt_part_set_t *ps,
                             const uint8_t *hash, size_t hash_len)
 {
@@ -410,25 +410,25 @@ bool cmt_part_set_hashes_to(const cmt_part_set_t *ps,
     return memcmp(ps->hash, hash, hash_len) == 0;    /* :270             */
 }
 
-/* cometbft@709fd12b types/part_set.go:273-278 — Count() */
+/* cometbft@v0.38.26 types/part_set.go:273-278 — Count() */
 uint32_t cmt_part_set_count(const cmt_part_set_t *ps)
 {
     return ps == NULL ? 0u : ps->count;
 }
 
-/* cometbft@709fd12b types/part_set.go:280-285 — ByteSize() */
+/* cometbft@v0.38.26 types/part_set.go:280-285 — ByteSize() */
 int64_t cmt_part_set_byte_size(const cmt_part_set_t *ps)
 {
     return ps == NULL ? 0 : ps->byte_size;
 }
 
-/* cometbft@709fd12b types/part_set.go:287-292 — Total() */
+/* cometbft@v0.38.26 types/part_set.go:287-292 — Total() */
 uint32_t cmt_part_set_total(const cmt_part_set_t *ps)
 {
     return ps == NULL ? 0u : ps->total;
 }
 
-/* cometbft@709fd12b types/part_set.go:295-331 — AddPart() */
+/* cometbft@v0.38.26 types/part_set.go:295-331 — AddPart() */
 int cmt_part_set_add_part(cmt_part_set_t *ps, const cmt_part_t *part,
                           bool *added)
 {
@@ -517,7 +517,7 @@ int cmt_part_set_add_part(cmt_part_set_t *ps, const cmt_part_t *part,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/part_set.go:333-337 — GetPart() */
+/* cometbft@v0.38.26 types/part_set.go:333-337 — GetPart() */
 const cmt_part_t *cmt_part_set_get_part(const cmt_part_set_t *ps,
                                         size_t index)
 {
@@ -534,7 +534,7 @@ const cmt_part_t *cmt_part_set_get_part(const cmt_part_set_t *ps,
     return &ps->parts[index];                    /* :336                 */
 }
 
-/* cometbft@709fd12b types/part_set.go:339-341 — IsComplete() */
+/* cometbft@v0.38.26 types/part_set.go:339-341 — IsComplete() */
 bool cmt_part_set_is_complete(const cmt_part_set_t *ps)
 {
     if (ps == NULL) {
@@ -543,7 +543,7 @@ bool cmt_part_set_is_complete(const cmt_part_set_t *ps)
     return ps->count == ps->total;               /* :340                 */
 }
 
-/* cometbft@709fd12b types/part_set.go:356-362 — NewPartSetReader() */
+/* cometbft@v0.38.26 types/part_set.go:356-362 — NewPartSetReader() */
 int cmt_new_part_set_reader(const cmt_part_t *parts, size_t n,
                             cmt_part_set_reader_t *out)
 {
@@ -560,7 +560,7 @@ int cmt_new_part_set_reader(const cmt_part_t *parts, size_t n,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/part_set.go:343-348 — GetReader() */
+/* cometbft@v0.38.26 types/part_set.go:343-348 — GetReader() */
 int cmt_part_set_get_reader(const cmt_part_set_t *ps,
                             cmt_part_set_reader_t *out)
 {
@@ -573,7 +573,7 @@ int cmt_part_set_get_reader(const cmt_part_set_t *ps,
     return cmt_new_part_set_reader(ps->parts, (size_t)ps->total, out);
 }
 
-/* cometbft@709fd12b types/part_set.go:364-383 — (psr *PartSetReader) Read().
+/* cometbft@v0.38.26 types/part_set.go:364-383 — (psr *PartSetReader) Read().
  * The reference's recursion, written as a loop; see cmt_part_set.h for the
  * one stated difference (when the end is announced). */
 int cmt_part_set_reader_read(cmt_part_set_reader_t *psr, uint8_t *p,

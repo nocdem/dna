@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_p2p_netaddr.h
- * @brief cometbft @709fd12b `p2p/netaddress.go`, `p2p/key.go` (the ID)
+ * @brief cometbft @v0.38.26 `p2p/netaddress.go`, `p2p/key.go` (the ID)
  *        and `p2p/errors.go` ported to C — peer addresses `id@ip:port`.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -22,7 +22,7 @@
  *
  * `validateID` (netaddress.go:407-419) accepts upper- AND lowercase hex
  * (`hex.DecodeString`), but IDs are compared as STRINGS everywhere
- * (switch.go:318, :785, transport.go:433, :465): an uppercase ID in a
+ * (switch.go:319, :786, transport.go:433, :465): an uppercase ID in a
  * config validates and never matches the lowercase ID a connection
  * yields. Kept as the reference has it.
  *
@@ -45,7 +45,7 @@
  *            socket-free, so a host that is not an IP literal is refused
  *            with CMT_P2P_ERR_NETADDR_LOOKUP — the very error
  *            `DialPeersAsync` / `AddPersistentPeers` already skip
- *            (switch.go:487, :590). Consequence: `persistent_peers` and a
+ *            (switch.go:488, :591). Consequence: `persistent_peers` and a
  *            NodeInfo `listen_addr` must be IP literals.
  *   `NewNetAddress` panics on an invalid ID (:55-57) and on a non-TCP
  *   address (:44-53): here CMT_FAULT (R-P2P-21's rule for panics).

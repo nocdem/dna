@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_memr.c
- * @brief cometbft @709fd12b `mempool/reactor.go` in C — see the header
+ * @brief cometbft @v0.38.26 `mempool/reactor.go` in C — see the header
  *        for the goroutine → tick statement that shapes `cmt_memr_tick`.
  *
  * Copyright (c) 2026 nocdem
@@ -23,20 +23,20 @@ static bool slot_ok(int slot)
     return slot >= 0 && slot < (int)CMT_MEM_MAX_PEERS;
 }
 
-/* The semaphore a peer's routine goes through (:94-102). */
+/* The semaphore a peer's routine goes through (:96-104). */
 static cmt_memr_semaphore_t choose_semaphore(const cmt_memr_t *memR,
                                              const cmt_memr_peer_t *p)
 {
-    if (p->is_unconditional) {                                     /* :95 */
+    if (p->is_unconditional) {                                     /* :97 */
         return CMT_MEMR_SEM_NONE;
     }
     if (p->is_persistent &&
         memR->config->experimental_max_gossip_connections_to_persistent_peers > 0) {
-        return CMT_MEMR_SEM_PERSISTENT;                            /* :98-99 */
+        return CMT_MEMR_SEM_PERSISTENT;                            /* :100-101 */
     }
     if (!p->is_persistent &&
         memR->config->experimental_max_gossip_connections_to_non_persistent_peers > 0) {
-        return CMT_MEMR_SEM_NON_PERSISTENT;                        /* :100-101 */
+        return CMT_MEMR_SEM_NON_PERSISTENT;                        /* :102-103 */
     }
     return CMT_MEMR_SEM_NONE;
 }
@@ -92,7 +92,7 @@ static bool semaphore_try_acquire(cmt_memr_t *memR, cmt_memr_semaphore_t s)
     }
 }
 
-/* semaphore.Release(1) (:119; semaphore.go:122-131 `s.cur -= n`). The
+/* semaphore.Release(1) (:121; semaphore.go:122-131 `s.cur -= n`). The
  * library's `notifyWaiters` (:129, :133-160) runs here on the NEXT TICK:
  * the WAITING loop of cmt_memr_tick is that call, over the waiter list
  * in slot order. Nothing is granted at release time — which is why a
@@ -125,8 +125,8 @@ static void peer_set_next(cmt_memr_peer_t *p, cmt_clist_elem_t *e)
     cmt_clist_elem_unref(old);
 }
 
-/* The routine returns (:192, :205-207, :254-256): cursor released,
- * semaphore given back (the deferred Release of :119). */
+/* The routine returns (:202, :215-217, :259-261): cursor released,
+ * semaphore given back (the deferred Release of :121). */
 static void routine_end(cmt_memr_t *memR, cmt_memr_peer_t *p)
 {
     if (p->state == CMT_MEMR_ROUTINE_RUNNING) {
@@ -140,18 +140,18 @@ static void routine_end(cmt_memr_t *memR, cmt_memr_peer_t *p)
     p->not_before_ns = 0;
 }
 
-/* :186 — the routine's first line: the peer's mempool id. */
+/* :196 — the routine's first line: the peer's mempool id. */
 static void routine_start(cmt_memr_t *memR, int slot, cmt_memr_peer_t *p)
 {
-    p->peer_id       = cmt_mem_ids_get_for_peer(&memR->ids, slot);  /* :186 */
+    p->peer_id       = cmt_mem_ids_get_for_peer(&memR->ids, slot);  /* :196 */
     p->state         = CMT_MEMR_ROUTINE_RUNNING;
     p->waiting_next  = false;
     p->sleeping      = false;
     p->not_before_ns = 0;
-    peer_set_next(p, NULL);                                        /* :187 */
+    peer_set_next(p, NULL);                                        /* :197 */
 }
 
-/* ══ construction (:36-47) ════════════════════════════════════════════ */
+/* ══ construction (:38-49) ════════════════════════════════════════════ */
 
 int cmt_memr_init(cmt_memr_t *memR, const cmt_mempool_config_t *config,
                   cmt_mem_t *mempool, const cmt_memr_host_t *host)
@@ -165,16 +165,16 @@ int cmt_memr_init(cmt_memr_t *memR, const cmt_mempool_config_t *config,
         return CMT_FAULT;
     }
     memset(memR, 0, sizeof(*memR));
-    memR->config  = config;                                        /* :38 */
-    memR->mempool = mempool;                                       /* :39 */
+    memR->config  = config;                                        /* :40 */
+    memR->mempool = mempool;                                       /* :41 */
     memR->host    = host;
-    if (cmt_mem_ids_init(&memR->ids) != CMT_OK) {                  /* :40 */
+    if (cmt_mem_ids_init(&memR->ids) != CMT_OK) {                  /* :42 */
         return CMT_FAULT;
     }
-    /* :43-44 — the two semaphores' capacities are read from the config
+    /* :45-46 — the two semaphores' capacities are read from the config
      * at every acquire; the held counts start at zero. */
 
-    /* The decode / send storage of the header, sized from :71-89. */
+    /* The decode / send storage of the header, sized from :73-91. */
     if (cmt_memr_get_channels(memR, &d) != CMT_OK) {
         return CMT_FAULT;
     }
@@ -196,7 +196,7 @@ int cmt_memr_init(cmt_memr_t *memR, const cmt_mempool_config_t *config,
     memR->arena.buf  = memR->arena_buf;
     memR->arena.cap  = memR->recv_message_capacity + 1u;
     memR->arena.used = 0;
-    return CMT_OK;                                                 /* :46 */
+    return CMT_OK;                                                 /* :48 */
 }
 
 void cmt_memr_free(cmt_memr_t *memR)
@@ -215,26 +215,26 @@ void cmt_memr_free(cmt_memr_t *memR)
     memset(memR, 0, sizeof(*memR));
 }
 
-/* :50-53 — InitPeer(peer) */
+/* :52-55 — InitPeer(peer) */
 int cmt_memr_init_peer(cmt_memr_t *memR, int peer_slot)
 {
     if (memR == NULL) {
         return CMT_FAULT;
     }
-    return cmt_mem_ids_reserve_for_peer(&memR->ids, peer_slot);    /* :51 */
+    return cmt_mem_ids_reserve_for_peer(&memR->ids, peer_slot);    /* :53 */
 }
 
-/* :62-67 — OnStart() */
+/* :64-69 — OnStart() */
 int cmt_memr_start(cmt_memr_t *memR)
 {
     if (memR == NULL) {
         return CMT_FAULT;
     }
     memR->running = true;
-    if (!memR->config->broadcast) {                                /* :63 */
-        QGP_LOG_INFO(LOG_TAG, "Tx broadcasting is disabled");      /* :64 */
+    if (!memR->config->broadcast) {                                /* :65 */
+        QGP_LOG_INFO(LOG_TAG, "Tx broadcasting is disabled");      /* :66 */
     }
-    return CMT_OK;                                                 /* :66 */
+    return CMT_OK;                                                 /* :68 */
 }
 
 int cmt_memr_stop(cmt_memr_t *memR)
@@ -245,13 +245,13 @@ int cmt_memr_stop(cmt_memr_t *memR)
         return CMT_FAULT;
     }
     memR->running = false;
-    for (i = 0; i < CMT_MEM_MAX_PEERS; i++) {                     /* :206-207, :255-256 */
+    for (i = 0; i < CMT_MEM_MAX_PEERS; i++) {                     /* :216-217, :260-261 */
         routine_end(memR, &memR->peers[i]);
     }
     return CMT_OK;
 }
 
-/* :71-89 — GetChannels() */
+/* :73-91 — GetChannels() */
 int cmt_memr_get_channels(const cmt_memr_t *memR,
                           cmt_memr_channel_descriptor_t *out)
 {
@@ -261,10 +261,10 @@ int cmt_memr_get_channels(const cmt_memr_t *memR,
     if (memR == NULL || out == NULL || memR->config == NULL) {
         return CMT_FAULT;
     }
-    /* :72 — make([]byte, MaxTxBytes): only the LENGTH matters to Size(). */
+    /* :74 — make([]byte, MaxTxBytes): only the LENGTH matters to Size(). */
     largest.data = NULL;
     largest.len  = (size_t)memR->config->max_tx_bytes;
-    /* :73-77 — Message{Sum: &Message_Txs{Txs: &Txs{Txs: [largestTx]}}}.
+    /* :75-79 — Message{Sum: &Message_Txs{Txs: &Txs{Txs: [largestTx]}}}.
      * The slot fields are set BEFORE `_init`, which preserves exactly
      * those two and zeroes the rest (cmt_pb.c:1901-1914). */
     batch.txs.txs     = &largest;
@@ -273,15 +273,15 @@ int cmt_memr_get_channels(const cmt_memr_t *memR,
     batch.sum         = CMT_PB_MEMPOOL_MSG_TXS;
     batch.txs.txs_len = 1;
 
-    out->id                    = (uint8_t)CMT_MEM_CHANNEL;         /* :81 */
-    out->priority              = 5;                                /* :82 */
-    out->recv_message_capacity = cmt_pb_mempool_message_size(&batch); /* :83 */
+    out->id                    = (uint8_t)CMT_MEM_CHANNEL;         /* :83 */
+    out->priority              = 5;                                /* :84 */
+    out->recv_message_capacity = cmt_pb_mempool_message_size(&batch); /* :85 */
     return CMT_OK;
 }
 
-/* ══ peers (:91-136) ══════════════════════════════════════════════════ */
+/* ══ peers (:93-138) ══════════════════════════════════════════════════ */
 
-/* :91-130 — AddPeer(peer) */
+/* :93-132 — AddPeer(peer) */
 int cmt_memr_add_peer(cmt_memr_t *memR, int peer_slot, bool is_persistent,
                       bool is_unconditional)
 {
@@ -305,13 +305,13 @@ int cmt_memr_add_peer(cmt_memr_t *memR, int peer_slot, bool is_persistent,
     p->is_persistent    = is_persistent;
     p->is_unconditional = is_unconditional;
 
-    if (!memR->config->broadcast) {                                /* :92 */
+    if (!memR->config->broadcast) {                                /* :94 */
         return CMT_OK;
     }
-    /* :93-128 — the goroutine: choose the semaphore, acquire or wait,
+    /* :95-130 — the goroutine: choose the semaphore, acquire or wait,
      * then broadcastTxRoutine. */
-    p->semaphore = choose_semaphore(memR, p);                      /* :94-102 */
-    /* :104-121 — `peerSemaphore.Acquire(ctxTimeout, 1)` (:111), which is
+    p->semaphore = choose_semaphore(memR, p);                      /* :96-104 */
+    /* :106-123 — `peerSemaphore.Acquire(ctxTimeout, 1)` (:113), which is
      * golang.org/x/sync v0.11.0 semaphore.go:38-107: the caller takes a
      * slot AT ONCE only if capacity is free AND `s.waiters.Len() == 0`
      * (:52); otherwise it is appended to the BACK of the waiter list
@@ -321,22 +321,22 @@ int cmt_memr_add_peer(cmt_memr_t *memR, int peer_slot, bool is_persistent,
      * waiter list is the set of WAITING slots and the tick serves it in
      * ascending slot order (R3-M-6); the newcomer joins it. The
      * `for peer.IsRunning()` loop with the 30 s timeout and `continue`
-     * (:105-116) has NO counterpart: in Go it only stops a peer that
+     * (:107-118) has NO counterpart: in Go it only stops a peer that
      * disconnected before acquiring from blocking forever, and here
      * `cmt_memr_remove_peer` clears the WAITING state structurally —
      * DEVIATION, labelled in the header. `&&` keeps the acquire from
      * running (it counts) when a waiter exists. */
     if (p->semaphore == CMT_MEMR_SEM_NONE ||
         (!semaphore_has_waiters(memR, p->semaphore) &&              /* semaphore.go:52 */
-         semaphore_try_acquire(memR, p->semaphore))) {             /* :111 */
-        routine_start(memR, peer_slot, p);                         /* :127 */
+         semaphore_try_acquire(memR, p->semaphore))) {             /* :113 */
+        routine_start(memR, peer_slot, p);                         /* :129 */
     } else {
-        p->state = CMT_MEMR_ROUTINE_WAITING;                       /* :105-121, semaphore.go:69-71 */
+        p->state = CMT_MEMR_ROUTINE_WAITING;                       /* :107-123, semaphore.go:69-71 */
     }
     return CMT_OK;
 }
 
-/* :133-136 — RemovePeer(peer, _) */
+/* :135-138 — RemovePeer(peer, _) */
 int cmt_memr_remove_peer(cmt_memr_t *memR, int peer_slot)
 {
     cmt_memr_peer_t *p;
@@ -348,12 +348,12 @@ int cmt_memr_remove_peer(cmt_memr_t *memR, int peer_slot)
     if (!slot_ok(peer_slot)) {
         return CMT_REJECT;
     }
-    rc = cmt_mem_ids_reclaim(&memR->ids, peer_slot);               /* :134 */
+    rc = cmt_mem_ids_reclaim(&memR->ids, peer_slot);               /* :136 */
     if (rc != CMT_OK) {
         return rc;
     }
     p = &memR->peers[peer_slot];
-    routine_end(memR, p);                                          /* :135 */
+    routine_end(memR, p);                                          /* :137 */
     p->present = false;
     return CMT_OK;
 }
@@ -379,7 +379,7 @@ int cmt_memr_filter_msg_bytes(const cmt_memr_t *memR, uint8_t channel_id,
                                            out_err);               /* :145 */
 }
 
-/* ══ receive (:140-177) ═══════════════════════════════════════════════ */
+/* ══ receive (:150-187) ═══════════════════════════════════════════════ */
 
 int cmt_memr_receive(cmt_memr_t *memR, int peer_slot,
                      const uint8_t *bytes, size_t len,
@@ -403,7 +403,7 @@ int cmt_memr_receive(cmt_memr_t *memR, int peer_slot,
     }
 
     /* The transport's RecvMessageCapacity (header), then p2p/peer.go
-     * :407-412 (unmarshal) and :417-422 (Unwrap): a failure stops the
+     * :415-420 (unmarshal) and :425-430 (Unwrap): a failure stops the
      * peer for error. */
     if (len > memR->recv_message_capacity) {
         QGP_LOG_ERROR(LOG_TAG, "mempool message of %zu bytes exceeds the"
@@ -442,71 +442,71 @@ int cmt_memr_receive(cmt_memr_t *memR, int peer_slot,
     if (cmt_pb_mempool_message_unmarshal(bytes, len, &msg,
                                          &memR->arena) != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "unmarshaling mempool message from peer %d"
-                      " failed; stopping peer", peer_slot);        /* peer.go:411 */
+                      " failed; stopping peer", peer_slot);        /* peer.go:419 */
         memR->host->stop_peer_for_error(memR->host->ctx, peer_slot);
         return CMT_REJECT;
     }
     if (cmt_pb_mempool_message_unwrap(&msg, &txs) != CMT_OK) {
-        /* peer.go:420 "unwrapping message", and reactor.go:170-173's
+        /* peer.go:428 "unwrapping message", and reactor.go:180-183's
          * default branch: the same host row either way. */
         QGP_LOG_ERROR(LOG_TAG, "unknown message type from peer %d;"
-                      " stopping peer", peer_slot);                /* :171 */
-        memR->host->stop_peer_for_error(memR->host->ctx, peer_slot); /* :172 */
+                      " stopping peer", peer_slot);                /* :181 */
+        memR->host->stop_peer_for_error(memR->host->ctx, peer_slot); /* :182 */
         return CMT_REJECT;
     }
 
-    /* :141 debug log; :143 — the Txs branch. The empty-Txs test below is
+    /* :151 debug log; :153 — the Txs branch. The empty-Txs test below is
      * kept as the reference keeps it (v0.38.26 :155-158), and it is
      * reachable from the wire: the filter above refuses a message with no
      * entry in ANY of its Txs submessages, but the decode keeps only the
      * LAST one (oneof, types.pb.go:447-451), so a non-empty Txs followed
      * by an empty one arrives here — in the reference too (header
      * "RECEIVE"). One ERROR line, no other effect. */
-    if (txs->txs_len == 0) {                                       /* :145 */
+    if (txs->txs_len == 0) {                                       /* :155 */
         QGP_LOG_ERROR(LOG_TAG, "received empty txs from peer %d",
-                      peer_slot);                                  /* :146 */
-        return CMT_OK;                                             /* :147 */
+                      peer_slot);                                  /* :156 */
+        return CMT_OK;                                             /* :157 */
     }
-    info.sender_id         = cmt_mem_ids_get_for_peer(&memR->ids, peer_slot); /* :149 */
-    info.sender_p2p_id     = peer_p2p_id;                          /* :150-152 */
+    info.sender_id         = cmt_mem_ids_get_for_peer(&memR->ids, peer_slot); /* :159 */
+    info.sender_p2p_id     = peer_p2p_id;                          /* :160-162 */
     info.sender_p2p_id_len = (peer_p2p_id == NULL) ? 0 : peer_p2p_id_len;
 
-    for (k = 0; k < txs->txs_len; k++) {                           /* :155 */
+    for (k = 0; k < txs->txs_len; k++) {                           /* :165 */
         cmt_mem_error_t err;
         int             rc;
 
         rc = cmt_mem_check_tx(memR->mempool, txs->txs[k].data,
-                              txs->txs[k].len, &info, NULL, &err); /* :157 */
+                              txs->txs[k].len, &info, NULL, &err); /* :167 */
         if (rc == CMT_FAULT) {
             return CMT_FAULT;
         }
-        if (rc == CMT_REJECT) {                                    /* :158 */
+        if (rc == CMT_REJECT) {                                    /* :168 */
             switch (err.kind) {
-            case CMT_MEM_ERR_TX_IN_CACHE:                          /* :160 */
+            case CMT_MEM_ERR_TX_IN_CACHE:                          /* :170 */
                 QGP_LOG_DEBUG(LOG_TAG, "Tx already exists in cache (len %zu)",
-                              txs->txs[k].len);                    /* :161 */
+                              txs->txs[k].len);                    /* :171 */
                 break;
-            case CMT_MEM_ERR_MEMPOOL_IS_FULL:                      /* :162 */
+            case CMT_MEM_ERR_MEMPOOL_IS_FULL:                      /* :172 */
                 QGP_LOG_DEBUG(LOG_TAG, "mempool is full: number of txs %lld"
                               " (max: %lld), total txs bytes %lld (max:"
                               " %lld)", (long long)err.num_txs,
                               (long long)err.max_txs,
                               (long long)err.txs_bytes,
-                              (long long)err.max_txs_bytes);       /* :164 */
+                              (long long)err.max_txs_bytes);       /* :174 */
                 break;
-            default:                                               /* :165 */
+            default:                                               /* :175 */
                 QGP_LOG_INFO(LOG_TAG, "Could not check tx (len %zu, err"
                              " kind %d)", txs->txs[k].len,
-                             (int)err.kind);                       /* :166 */
+                             (int)err.kind);                       /* :176 */
                 break;
             }
         }
     }
-    /* :176 — "broadcasting happens from go routines per peer" */
+    /* :186 — "broadcasting happens from go routines per peer" */
     return CMT_OK;
 }
 
-/* ══ broadcastTxRoutine (:185-259) as a tick ══════════════════════════ */
+/* ══ broadcastTxRoutine (:195-264) as a tick ══════════════════════════ */
 
 /* One peer's pass. `now_ns` is the clock read once per tick. Returns
  * CMT_OK; CMT_FAULT on a NULL host row. */
@@ -515,27 +515,27 @@ static int routine_pass(cmt_memr_t *memR, int slot, cmt_memr_peer_t *p,
 {
     const cmt_memr_host_t *host = memR->host;
 
-    for (;;) {                                                     /* :189 */
+    for (;;) {                                                     /* :199 */
         bool                known;
         int64_t             peer_h;
         const cmt_mem_tx_t *mem_tx;
 
-        /* :190-193 — reactor or peer stopped: the routine returns. */
+        /* :200-203 — reactor or peer stopped: the routine returns. */
         if (!memR->running || !p->present) {
             routine_end(memR, p);
             return CMT_OK;
         }
 
-        /* Parked in the select of :249-257: resume there. Ready →
-         * advance (:252) and go round to :189; not ready → still
+        /* Parked in the select of :254-262: resume there. Ready →
+         * advance (:257) and go round to :199; not ready → still
          * parked, the pass ends. The element the routine sits on has
          * already been sent (or skipped) and is not looked at again. */
         if (p->waiting_next) {
-            if (!cmt_clist_elem_next_wait_ready(p->next)) {        /* :250 */
+            if (!cmt_clist_elem_next_wait_ready(p->next)) {        /* :255 */
                 return CMT_OK;
             }
             p->waiting_next = false;
-            peer_set_next(p, cmt_clist_elem_next(p->next));        /* :252 */
+            peer_set_next(p, cmt_clist_elem_next(p->next));        /* :257 */
             continue;
         }
 
@@ -551,38 +551,38 @@ static int routine_pass(cmt_memr_t *memR, int slot, cmt_memr_peer_t *p,
             p->sleeping = false;
         }
 
-        /* :195-209 — no cursor: wait for a tx, start from the front. */
+        /* :205-219 — no cursor: wait for a tx, start from the front. */
         if (p->next == NULL) {
-            cmt_clist_elem_t *front = cmt_mem_txs_front(memR->mempool); /* :201 */
+            cmt_clist_elem_t *front = cmt_mem_txs_front(memR->mempool); /* :211 */
 
             if (front == NULL) {
-                return CMT_OK;   /* :200 — TxsWaitChan: next tick re-reads */
+                return CMT_OK;   /* :210 — TxsWaitChan: next tick re-reads */
             }
             peer_set_next(p, front);
         }
 
-        /* :211-221 — the peer must have a state. */
+        /* :221-231 — the peer must have a state. */
         known  = false;
-        peer_h = host->peer_height(host->ctx, slot, &known);       /* :212 */
-        if (!known) {                                              /* :213 */
-            p->sleeping      = true;                               /* :219 */
+        peer_h = host->peer_height(host->ctx, slot, &known);       /* :222 */
+        if (!known) {                                              /* :223 */
+            p->sleeping      = true;                               /* :229 */
             p->not_before_ns = now_ns + CMT_MEMR_PEER_CATCHUP_SLEEP_NS;
-            continue;                                              /* :220 */
+            continue;                                              /* :230 */
         }
 
-        /* :223-233 — a peer more than one block behind waits. */
-        mem_tx = (const cmt_mem_tx_t *)cmt_clist_elem_value(p->next); /* :229 */
+        /* :233-238 — a peer more than one block behind waits. */
+        mem_tx = (const cmt_mem_tx_t *)cmt_clist_elem_value(p->next); /* :234 */
         if (mem_tx == NULL) {
             return CMT_FAULT;
         }
-        if (peer_h < cmt_mem_tx_height(mem_tx) - 1) {              /* :230 */
-            p->sleeping      = true;                               /* :231 */
+        if (peer_h < cmt_mem_tx_height(mem_tx) - 1) {              /* :235 */
+            p->sleeping      = true;                               /* :236 */
             p->not_before_ns = now_ns + CMT_MEMR_PEER_CATCHUP_SLEEP_NS;
-            continue;                                              /* :232 */
+            continue;                                              /* :237 */
         }
 
-        /* :235-247 — one tx per message; not back to its sender. */
-        if (!cmt_mem_tx_is_sender(mem_tx, p->peer_id)) {           /* :238 */
+        /* :240-252 — one tx per message; not back to its sender. */
+        if (!cmt_mem_tx_is_sender(mem_tx, p->peer_id)) {           /* :243 */
             cmt_pb_bytes_t           one;
             cmt_pb_mempool_message_t env;
             size_t                   n = 0;
@@ -593,31 +593,31 @@ static int routine_pass(cmt_memr_t *memR, int slot, cmt_memr_peer_t *p,
             env.txs.txs     = &one;        /* slots first: `_init` keeps them */
             env.txs.txs_cap = 1;
             cmt_pb_mempool_message_init(&env);
-            env.sum         = CMT_PB_MEMPOOL_MSG_TXS;               /* :239-242, peer.go:277-279 Wrap */
+            env.sum         = CMT_PB_MEMPOOL_MSG_TXS;               /* :244-247, peer.go:277-279 Wrap */
             env.txs.txs_len = 1;
             if (cmt_pb_mempool_message_marshal(&env, memR->tx_buf,
                                                memR->tx_buf_cap,
                                                &n) == CMT_OK) {    /* peer.go:280 */
                 success = host->send(host->ctx, slot,
                                      (uint8_t)CMT_MEM_CHANNEL,
-                                     memR->tx_buf, n);             /* :239, peer.go:285 */
+                                     memR->tx_buf, n);             /* :244, peer.go:285 */
             } else {
                 QGP_LOG_ERROR(LOG_TAG, "marshaling message to send");  /* peer.go:282 */
             }
-            if (!success) {                                        /* :243 */
-                p->sleeping      = true;                           /* :244 */
+            if (!success) {                                        /* :248 */
+                p->sleeping      = true;                           /* :249 */
                 p->not_before_ns = now_ns + CMT_MEMR_PEER_CATCHUP_SLEEP_NS;
-                continue;                                          /* :245 */
+                continue;                                          /* :250 */
             }
         }
 
-        /* :249-257 — wait for the next element: park in the select when
+        /* :254-262 — wait for the next element: park in the select when
          * it is not there yet; otherwise advance and go round. */
-        if (!cmt_clist_elem_next_wait_ready(p->next)) {            /* :250 */
+        if (!cmt_clist_elem_next_wait_ready(p->next)) {            /* :255 */
             p->waiting_next = true;
             return CMT_OK;   /* the pass ends; next tick resumes here */
         }
-        peer_set_next(p, cmt_clist_elem_next(p->next));            /* :252 */
+        peer_set_next(p, cmt_clist_elem_next(p->next));            /* :257 */
     }
 }
 
@@ -655,7 +655,7 @@ int cmt_memr_tick(cmt_memr_t *memR, int64_t *out_next_deadline_ns,
         if (!p->present) {
             continue;
         }
-        /* :104-121 — a routine blocked on the semaphore. This loop IS
+        /* :106-123 — a routine blocked on the semaphore. This loop IS
          * the library's `notifyWaiters` (semaphore.go:133-160), run at
          * the tick instead of at Release: the waiter list is the set of
          * WAITING slots, walked from the front — ascending slot order,
@@ -663,14 +663,14 @@ int cmt_memr_tick(cmt_memr_t *memR, int64_t *out_next_deadline_ns,
          * with unit weights, the first waiter that finds no capacity
          * means none after it can either (the `break` of :153). */
         if (p->state == CMT_MEMR_ROUTINE_WAITING) {
-            if (!memR->running) {                                  /* :105 peer.IsRunning, and the reactor's quit */
+            if (!memR->running) {                                  /* :107 peer.IsRunning, and the reactor's quit */
                 routine_end(memR, p);
                 continue;
             }
-            if (!semaphore_try_acquire(memR, p->semaphore)) {      /* :111; semaphore.go:141 */
-                continue;                                          /* :114-116 */
+            if (!semaphore_try_acquire(memR, p->semaphore)) {      /* :113; semaphore.go:141 */
+                continue;                                          /* :116-118 */
             }
-            routine_start(memR, (int)i, p);                        /* :120, :127; semaphore.go:156-158 */
+            routine_start(memR, (int)i, p);                        /* :122, :129; semaphore.go:156-158 */
         }
         if (p->state != CMT_MEMR_ROUTINE_RUNNING) {
             continue;

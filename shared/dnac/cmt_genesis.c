@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_genesis.c
- * @brief cometbft @709fd12b types/genesis.go in C — see cmt_genesis.h.
+ * @brief cometbft @v0.38.26 types/genesis.go in C — see cmt_genesis.h.
  *
  * The ONLY clock read in this file is the one the reference has at
  * genesis.go:102, and it goes through the caller's cmt_now_fn. Nothing
@@ -61,7 +61,7 @@ int cmt_genesis_doc_validator_hash(const cmt_genesis_doc_t *gen_doc,
      * set is BUILT FROM and the set's own storage, which the reference
      * gets for free because Go's slice header and the []*Validator are
      * separate objects. It is safe here because processChanges DEEP
-     * COPIES its input into the scratch (validator_set.go:410) before
+     * COPIES its input into the scratch (validator_set.go:421) before
      * anything writes to the set, so every source value is already
      * elsewhere by the time the write-back happens. */
     rc = cmt_validator_set_init(&vset, vals_storage, vals_cap);

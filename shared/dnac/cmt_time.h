@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_time.h
- * @brief cometbft @709fd12b `types/time/time.go` ported to C — BFT-time.
+ * @brief cometbft @v0.38.26 `types/time/time.go` ported to C — BFT-time.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
  * Wave R1-A of the cometbft → C consensus port. Additive only. NOTHING IN
@@ -21,7 +21,7 @@
  * `time.Time` is 0001-01-01, i.e. seconds = -62135596800, which marshals
  * to the eleven bytes 08 80 92 b8 c3 98 fe ff ff ff 01. Anywhere the
  * reference leaves a time.Time at its zero value — an Absent CommitSig
- * (types/block.go:616-620), a vote that carries no time, the fallback of
+ * (types/block.go:622-626), a vote that carries no time, the fallback of
  * WeightedMedian below — the correct C value is CMT_TIME_ZERO, never a
  * memset. Getting this wrong changes bytes that are inside BlockID and
  * therefore inside every signature.
@@ -43,15 +43,15 @@
  * commit's timestamps (BFT-time, D-20), so its ordering is fully specified
  * below — see cmt_weighted_median's note on the reference's unstable sort.
  *
- * Reference @709fd12b: types/time/time.go, 58 lines,
- * a7c231ae400d7e2520c2d721bc6162dcd57a1f815df86752db996c6f74a88a2e.
+ * Reference @v0.38.26: types/time/time.go, 58 lines,
+ * 96b30a90fccf88db6c54cb7da5db0a6497cfdd5de8013d6aff0774f789d2393b.
  * (`libs/time/time.go`, named in the port map's rev-1 pin table, does not
  * exist in this tree; types/time/time.go is the file.)
- * Moved to cometbft v0.38.26 (decision 2026-09-30-cometbft-pin-v0.38.26):
- * types/time/time.go, 58 lines,
- * 96b30a90fccf88db6c54cb7da5db0a6497cfdd5de8013d6aff0774f789d2393b — one
- * line differs, :45 (the sort key; see cmt_weighted_median). Citations
- * that still say @709fd12b name lines that are identical in both.
+ * Moved from 709fd12b (decision 2026-09-30-cometbft-pin-v0.38.26), where
+ * types/time/time.go was 58 lines,
+ * a7c231ae400d7e2520c2d721bc6162dcd57a1f815df86752db996c6f74a88a2e — one
+ * line differs, :45 (the sort key; see cmt_weighted_median). Every
+ * citation below names v0.38.26 lines.
  * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * clock POLICY (atlas-dec-4ac0423068085c100fdfa3e264ca16bc),
  * K-1 rev 2 (atlas-dec-3ba8153088b0d60c63083028023b61be).
@@ -104,7 +104,7 @@ typedef struct {
  * The pinned tree tests a `time.Time` for zero in exactly TWO places
  * (`grep -n '\.IsZero()' types/ state/`, every other hit is a BlockID or a
  * PartSetHeader, a different type):
- *   · types/block.go:668     `CommitSig.ValidateBasic` — an ABSENT entry
+ *   · types/block.go:674     `CommitSig.ValidateBasic` — an ABSENT entry
  *                            must carry the zero time.
  *   · types/genesis.go:101   `GenesisDoc.ValidateAndComplete` — a zero
  *                            genesis time is completed from the clock.
@@ -117,7 +117,7 @@ typedef struct {
 bool cmt_time_is_zero(cmt_time_t t);
 
 /**
- * cometbft@709fd12b types/time/time.go:9-11 — `Now()`, HOST.
+ * cometbft@v0.38.26 types/time/time.go:9-11 — `Now()`, HOST.
  *
  * The type only. A host that supplies this MUST return a canonical UTC
  * time, i.e. what `Canonical(time.Now())` produces. It is not called
@@ -130,7 +130,7 @@ bool cmt_time_is_zero(cmt_time_t t);
 typedef int (*cmt_now_fn)(void *ctx, cmt_time_t *out);
 
 /**
- * cometbft@709fd12b types/time/time.go:16-18 — `Canonical()`.
+ * cometbft@v0.38.26 types/time/time.go:16-18 — `Canonical()`.
  *
  * The reference computes `t.Round(0).UTC()`: `Round(0)` strips the
  * monotonic clock reading and `.UTC()` sets the location to UTC. NEITHER
@@ -170,14 +170,14 @@ int cmt_time_validate(cmt_time_t t);
  */
 int64_t cmt_time_unix_nano(cmt_time_t t);
 
-/** cometbft@709fd12b types/time/time.go:21-24 — `type WeightedTime`. */
+/** cometbft@v0.38.26 types/time/time.go:21-24 — `type WeightedTime`. */
 typedef struct {
     cmt_time_t time;      /* time.go:22 */
     int64_t    weight;    /* time.go:23 */
 } cmt_weighted_time_t;
 
 /**
- * cometbft@709fd12b types/time/time.go:27-32 — `NewWeightedTime()`.
+ * cometbft@v0.38.26 types/time/time.go:27-32 — `NewWeightedTime()`.
  * A plain field-for-field constructor; it validates nothing, exactly as
  * the reference does not.
  * @return CMT_OK, CMT_FAULT on NULL.

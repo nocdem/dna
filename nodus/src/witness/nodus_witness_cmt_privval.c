@@ -1,6 +1,6 @@
 /**
  * @file nodus_witness_cmt_privval.c
- * @brief cometbft @709fd12b privval/file.go's FILE side for the last-sign
+ * @brief cometbft @v0.38.26 privval/file.go's FILE side for the last-sign
  *        state. Contract: nodus_witness_cmt_privval.h.
  */
 

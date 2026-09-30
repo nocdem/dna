@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_ticker.h
- * @brief cometbft @709fd12b `consensus/ticker.go` in C — the timeout
+ * @brief cometbft @v0.38.26 `consensus/ticker.go` in C — the timeout
  *        ticker's DECISION, without its goroutine.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -59,7 +59,7 @@
  * The state machine's decisions are identical on every node given the same
  * sequence of calls.
  *
- * Reference @709fd12b: consensus/ticker.go, 143 lines, SHA-256
+ * Reference @v0.38.26: consensus/ticker.go, 143 lines, SHA-256
  * f08d7195f0a6ba820243d0e6aed9499f1cc334984a665d5d0bd6da394de1b26c.
  * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * clock POLICY (atlas-dec-4ac0423068085c100fdfa3e264ca16bc).
@@ -82,7 +82,7 @@ extern "C" {
 #endif
 
 /**
- * cometbft@709fd12b consensus/ticker.go:31-38 —
+ * cometbft@v0.38.26 consensus/ticker.go:31-38 —
  * `type timeoutTicker struct`, minus everything that is a channel, a
  * goroutine or a logger.
  *
@@ -109,7 +109,7 @@ typedef struct {
 } cmt_ticker_action_t;
 
 /**
- * cometbft@709fd12b consensus/ticker.go:41-53 — `NewTimeoutTicker()`.
+ * cometbft@v0.38.26 consensus/ticker.go:41-53 — `NewTimeoutTicker()`.
  *
  * The reference creates a timer, marks it active (:46) and then calls
  * `stopTimer()` (:51) precisely so nothing fires before the first
@@ -121,7 +121,7 @@ typedef struct {
 int cmt_ticker_init(cmt_ticker_t *t);
 
 /**
- * cometbft@709fd12b consensus/ticker.go:83-92 —
+ * cometbft@v0.38.26 consensus/ticker.go:83-92 —
  * `(t *timeoutTicker) stopTimer()`.
  *
  * `if !t.timerActive { return }` (:84-86), then stop and drain (:88-90),
@@ -135,7 +135,7 @@ int cmt_ticker_init(cmt_ticker_t *t);
 int cmt_ticker_stop_timer(cmt_ticker_t *t, bool *out_cancel);
 
 /**
- * cometbft@709fd12b consensus/ticker.go:76-81 `ScheduleTimeout()` and the
+ * cometbft@v0.38.26 consensus/ticker.go:76-81 `ScheduleTimeout()` and the
  * tick branch of `timeoutRoutine()`, :104-129.
  *
  * The reference's `ScheduleTimeout` only pushes onto `tickChan`; the
@@ -159,7 +159,7 @@ int cmt_ticker_schedule_timeout(cmt_ticker_t *t,
                                 cmt_ticker_action_t *out_action);
 
 /**
- * cometbft@709fd12b consensus/ticker.go:130-137 — the timer branch of
+ * cometbft@v0.38.26 consensus/ticker.go:130-137 — the timer branch of
  * `timeoutRoutine()`. The host calls this when its timer expires.
  *
  * `t.timerActive = false` (:131) and the pending `ti` is handed to the
@@ -175,7 +175,7 @@ int cmt_ticker_schedule_timeout(cmt_ticker_t *t,
 int cmt_ticker_fire(cmt_ticker_t *t, cmt_timeout_info_t *out_ti);
 
 /**
- * cometbft@709fd12b consensus/ticker.go:138-140 — the quit branch of
+ * cometbft@v0.38.26 consensus/ticker.go:138-140 — the quit branch of
  * `timeoutRoutine()`: `stopTimer()` and return.
  *
  * @param out_cancel as `cmt_ticker_stop_timer`.

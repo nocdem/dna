@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_genesis.h
- * @brief cometbft @709fd12b `types/genesis.go` ported to C — the genesis
+ * @brief cometbft @v0.38.26 `types/genesis.go` ported to C — the genesis
  *        document's validation and its validator hash.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -48,7 +48,7 @@
  * same as the reference, and the reason two documents listing the same
  * validators in different orders hash alike.
  *
- * Reference @709fd12b (SHA-256 verified before use):
+ * Reference @v0.38.26 (SHA-256 verified before use):
  *   types/genesis.go 137 lines
  *     3f3bd9169368cbd0757a1d6cd88f279569dfa652ca059bb503072b17c16065f4
  * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
@@ -78,7 +78,7 @@ extern "C" {
 #endif
 
 /**
- * cometbft@709fd12b types/genesis.go:20 — `MaxChainIDLen = 50`.
+ * cometbft@v0.38.26 types/genesis.go:20 — `MaxChainIDLen = 50`.
  *
  * NOTE: this port's chain id is 32 RAW BYTES (CMT_PB_CHAINID_MAX, the
  * derived V2 chain id), so `chain_id_len` can never exceed 32 and the
@@ -93,7 +93,7 @@ extern "C" {
 #define CMT_GENESIS_NAME_MAX 64
 
 /**
- * cometbft@709fd12b types/genesis.go:30-35 — `GenesisValidator`.
+ * cometbft@v0.38.26 types/genesis.go:30-35 — `GenesisValidator`.
  *
  * `address_len` is 0 for the reference's EMPTY address, which
  * ValidateAndComplete FILLS IN from the key (:96-98) rather than
@@ -109,7 +109,7 @@ typedef struct {
 } cmt_genesis_validator_t;
 
 /**
- * cometbft@709fd12b types/genesis.go:38-46 — `GenesisDoc`.
+ * cometbft@v0.38.26 types/genesis.go:38-46 — `GenesisDoc`.
  *
  * `validators` is CALLER-OWNED storage. `AppState` (:45,
  * `json.RawMessage`) has no counterpart: it is opaque application bytes
@@ -138,7 +138,7 @@ typedef struct {
  * header still resolves the name for its callers. */
 
 /**
- * cometbft@709fd12b types/genesis.go:58-65 — `ValidatorHash()`.
+ * cometbft@v0.38.26 types/genesis.go:58-65 — `ValidatorHash()`.
  *
  * Builds a `Validator` per genesis entry with `NewValidator(v.PubKey,
  * v.Power)` (:61) — so the ADDRESS IS DERIVED FROM THE KEY here, and the
@@ -171,7 +171,7 @@ int cmt_genesis_doc_validator_hash(const cmt_genesis_doc_t *gen_doc,
                                    uint8_t out[CMT_TMHASH_SIZE]);
 
 /**
- * cometbft@709fd12b types/genesis.go:69-106 — `ValidateAndComplete()`.
+ * cometbft@v0.38.26 types/genesis.go:69-106 — `ValidateAndComplete()`.
  * MUTATES the document: it fills in the defaults the reference fills in.
  *
  * In the reference's own order: a non-empty chain id (:70-72); a chain id

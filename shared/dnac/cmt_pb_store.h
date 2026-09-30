@@ -1,8 +1,8 @@
 /**
  * @file shared/dnac/cmt_pb_store.h
- * @brief cometbft @709fd12b — the proto3 codecs of the STORED values:
+ * @brief cometbft @v0.38.26 — the proto3 codecs of the STORED values:
  *        what `store/store.go` and `state/store.go` marshal into their
- *        `dbm.DB`, plus the `Block` wire DECODER `state.go:2005-2019`
+ *        `dbm.DB`, plus the `Block` wire DECODER `state.go:2000-2014`
  *        needs and cmt_pb.h deliberately left out.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -15,7 +15,7 @@
  * cmt_pb.h carries the messages consensus HASHES and SIGNS. The stores
  * write nine more, and the reference marshals them with the same
  * generated gogoproto encoders (`bs.Marshal()` in `mustEncode`,
- * store.go:718-728; `proto.Marshal` throughout state/store.go). Every
+ * store.go:719-729; `proto.Marshal` throughout state/store.go). Every
  * rule of K-1 rev 2 applies unchanged: scalars are omitted when zero,
  * `(gogoproto.nullable) = false` embedded messages are ALWAYS written,
  * pointer embedded messages only when set, fields ascend by number,
@@ -62,7 +62,7 @@
  *
  * ── WHERE THE C-SIDE TYPES ARE ─────────────────────────────────────────
  *   State            ↔ cmt_state_t             state.go:145-232
- *   ConsensusParams  ↔ cmt_consensus_params_t  params.go:325-370
+ *   ConsensusParams  ↔ cmt_consensus_params_t  params.go:328-373
  *   Version          ↔ cmt_state_version_t     (identity + a copy)
  *   ValidatorSet     ↔ cmt_validator_set_t     cmt_validator_set.h (exists)
  *   BlockMeta        ↔ itself: `cmt_header_t` IS `cmt_pb_header_t` and
@@ -87,7 +87,7 @@
  * arena and pools are the caller's), no unordered iteration: repeated
  * fields keep their list order.
  *
- * Reference @709fd12b (SHA-256 verified before use):
+ * Reference @v0.38.26 (SHA-256 verified before use):
  *   proto/tendermint/state/types.proto  100 lines
  *   proto/tendermint/state/types.pb.go  2732 lines
  *     (9434e985d5641147170fe7d121ab6bc88c4d55cc5e0380dac1efede6a65d4fc7 —
@@ -280,7 +280,7 @@ typedef struct {
 /** abci/types.pb.go:7199-7235 — ValidatorUpdate. `pub_key` (1) is
  *  `nullable=false` and ALWAYS written — a key whose `present` is false
  *  goes out as the empty message `0a 00`, which `PubKeyFromProto`
- *  (crypto/encoding/codec.go:42-63) then refuses as a nil oneof. */
+ *  (crypto/encoding/codec.go:50-77) then refuses as a nil oneof. */
 typedef struct {
     cmt_pb_public_key_t pub_key;   /* 1 ALWAYS */
     int64_t             power;     /* 2 */
@@ -296,7 +296,7 @@ typedef struct {
  *   5 app_hash                bytes, omitted when empty
  * `app_hash` is a fixed CMT_PB_HASH_MAX array with a length: this chain's
  * app hash is a SHA3-512 or empty, and `cmt_state_t.app_hash` receives it
- * unchanged (execution.go:741).
+ * unchanged (execution.go:772).
  */
 typedef struct {
     cmt_pb_event_t                 *events;                    /* 1 */
@@ -396,18 +396,18 @@ int    cmt_pb_store_consensus_params_marshal(const cmt_pb_consensus_params_t *m,
                                              size_t *out_len);
 int    cmt_pb_store_consensus_params_unmarshal(const uint8_t *in, size_t len,
                                                cmt_pb_consensus_params_t *m);
-/** types/params.go:325-346 — `(params *ConsensusParams) ToProto()`. All
+/** types/params.go:328-349 — `(params *ConsensusParams) ToProto()`. All
  *  five sub-messages are SET (has_* true). */
 int    cmt_pb_store_consensus_params_from_c(const cmt_consensus_params_t *p,
                                             cmt_pb_consensus_params_t *out);
 /**
- * types/params.go:348-370 — `ConsensusParamsFromProto()`.
+ * types/params.go:351-373 — `ConsensusParamsFromProto()`.
  * The reference dereferences Block, Evidence, Validator and Version
- * WITHOUT a nil check (:349-365) and checks only Abci (:366). Go's nil
+ * WITHOUT a nil check (:352-368) and checks only Abci (:369). Go's nil
  * dereference is a panic; per the APPROVED INVARIANT
  * (atlas-dec-7495d3372e004b24b4f6cc7bff5caf07) and cmt_params.h:288-296
  * that is an explicit refusal here: a message missing any of the four
- * is CMT_REJECT. An absent Abci leaves the height 0 (:366-368).
+ * is CMT_REJECT. An absent Abci leaves the height 0 (:369-371).
  */
 int    cmt_pb_store_consensus_params_to_c(const cmt_pb_consensus_params_t *m,
                                           cmt_consensus_params_t *out);
@@ -513,7 +513,7 @@ int    cmt_pb_store_abci_responses_info_unmarshal(
 
 /**
  * block.pb.go:222-380 — `Block.Unmarshal`, the middle step of
- * state.go:2005-2019 (`proto.Unmarshal(bz, pbb)`) that cmt_pb.h:1043-1046
+ * state.go:2000-2014 (`proto.Unmarshal(bz, pbb)`) that cmt_pb.h:1043-1046
  * leaves out. The result is a `cmt_block_t`-SHAPED proto view — the same
  * shape `cmt_block_from_proto` (cmt_block.h:897) takes as `bp`, because
  * header, data and commit are typedef-identical to their cmt_pb structs.

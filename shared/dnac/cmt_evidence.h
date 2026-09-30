@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_evidence.h
- * @brief cometbft @709fd12b `types/evidence.go` ported to C — the
+ * @brief cometbft @v0.38.26 `types/evidence.go` ported to C — the
  *        duplicate-vote evidence domain and the evidence list.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -12,7 +12,7 @@
  * ── ONE BRANCH, AND THE REASON ─────────────────────────────────────────
  * The reference's `Evidence` is an interface with two implementations. Only
  * `DuplicateVoteEvidence` (evidence.go:35-43) is in scope.
- * `LightClientAttackEvidence` (:204-442) is YOK by the port map's scope
+ * `LightClientAttackEvidence` (:204-445) is YOK by the port map's scope
  * rule (REV 3, "Kapsam kuralı"): its callers are `light/`, the evidence
  * pool and `blocksync/`, three packages this port does not build. R1-A's
  * wire wrapper already refuses branch 2 rather than skipping it
@@ -46,7 +46,7 @@
  *
  * ── Substitutions, and nothing else ────────────────────────────────────
  *  · hash SHA3-512 / 64 bytes (cmt_tmhash.h) at :107 — a FLAT hash of the
- *    bare marshal, NOT a Merkle root. `EvidenceList.Hash` (:450-461) is
+ *    bare marshal, NOT a Merkle root. `EvidenceList.Hash` (:453-464) is
  *    the Merkle root; the two are different functions and this module has
  *    both.
  *  · a Go panic becomes CMT_REJECT; a NULL pointer where the reference
@@ -62,7 +62,7 @@
  * read, no randomness is drawn, no map is iterated, no floating point is
  * used. `cmt_evidence_list_hash` hashes the items in the order the caller
  * supplied — which for a block is the order they sit in the block — and
- * that is the reference's behaviour at :454-459. Two nodes holding the
+ * that is the reference's behaviour at :457-462. Two nodes holding the
  * same list produce the same root, byte for byte.
  *
  * ── taşınmadı (not ported), with the reason ────────────────────────────
@@ -71,25 +71,25 @@
  *     of scope. It is the constructor that ORDERS a conflicting pair and
  *     reads TotalVotingPower from a validator set; if a later wave brings
  *     the evidence pool into scope, this is the row to port then.
- *   · :81-92  `DuplicateVoteEvidence.ABCI`, :483-489 `EvidenceList.ToABCI`
+ *   · :81-92  `DuplicateVoteEvidence.ABCI`, :486-492 `EvidenceList.ToABCI`
  *     — the ABCI application layer, which this chain does not have.
- *   · :116-118 `String`, :463-469 `EvidenceList.String` — display only.
- *   · :204-442 the whole `LightClientAttackEvidence` family, and the
- *     `:535-536` branch of `EvidenceFromProto` that decodes it — scope
+ *   · :116-118 `String`, :466-472 `EvidenceList.String` — display only.
+ *   · :204-445 the whole `LightClientAttackEvidence` family, and the
+ *     `:538-539` branch of `EvidenceFromProto` that decodes it — scope
  *     rule (light client); see "ONE BRANCH" above.
- *   · :542-545 `init` — registers the two types with cmtjson; this port has
+ *   · :545-548 `init` — registers the two types with cmtjson; this port has
  *     no JSON layer.
- *   · :550-563 `ErrInvalidEvidence` / `NewErrInvalidEvidence` — YOK by the
+ *   · :553-566 `ErrInvalidEvidence` / `NewErrInvalidEvidence` — YOK by the
  *     REV 3.1 override (map ~950), same evidence-pool reason. It is a
  *     wrapper carrying an Evidence and a cause, and nothing in scope
  *     constructs one.
- *   · :586-637 `NewMockDuplicateVoteEvidence*`, `makeMockVote`,
+ *   · :589-640 `NewMockDuplicateVoteEvidence*`, `makeMockVote`,
  *     `randBlockID` — test helpers; `randBlockID` additionally draws
  *     randomness, which no ported body may do.
  *
- * Reference @709fd12b (SHA-256 verified before use):
- *   types/evidence.go 637 lines
- *     5a41f27f0de4a63412f7e8a64f288b81d8fa52502102ad5b111214211c091fde
+ * Reference @v0.38.26 (SHA-256 verified before use):
+ *   types/evidence.go 640 lines
+ *     bbdf366ff13c1f6a03db070f741784741cdf77dc152f3e6857c70b6b7f77115f
  * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * K-1 rev 2 (atlas-dec-3ba8153088b0d60c63083028023b61be),
  * K-2 (atlas-dec-7fde65722d68b32eca08be61fbcb47ac),
@@ -118,7 +118,7 @@
 extern "C" {
 #endif
 
-/** cometbft@709fd12b types/evidence.go:35-43 —
+/** cometbft@v0.38.26 types/evidence.go:35-43 —
  *  `type DuplicateVoteEvidence struct`. Field-identical to
  *  cmt_pb_duplicate_vote_evidence_t; see the header. */
 typedef cmt_pb_duplicate_vote_evidence_t cmt_duplicate_vote_evidence_t;
@@ -138,7 +138,7 @@ typedef cmt_pb_duplicate_vote_evidence_t cmt_duplicate_vote_evidence_t;
 size_t cmt_dve_upper_bound(const cmt_duplicate_vote_evidence_t *d);
 
 /**
- * cometbft@709fd12b types/evidence.go:95-103 —
+ * cometbft@v0.38.26 types/evidence.go:95-103 —
  * `(dve *DuplicateVoteEvidence) Bytes()`.
  *
  * `ToProto()` followed by `Marshal()` — of the BARE message, not of the
@@ -153,13 +153,13 @@ int cmt_dve_bytes(const cmt_duplicate_vote_evidence_t *dve,
                   uint8_t *out, size_t cap, size_t *out_len);
 
 /**
- * cometbft@709fd12b types/evidence.go:106-108 —
+ * cometbft@v0.38.26 types/evidence.go:106-108 —
  * `(dve *DuplicateVoteEvidence) Hash()`.
  *
  * ⚠ `tmhash.Sum(dve.Bytes())` — a FLAT hash of the bare marshal. This is
  * NOT a Merkle root, and it is not what goes into the header: the header's
  * EvidenceHash is `cmt_evidence_list_hash` below, the Merkle root over
- * these same bare marshals as leaves. `Has` (:472-479) is what compares
+ * these same bare marshals as leaves. `Has` (:475-482) is what compares
  * these flat hashes.
  *
  * Allocates one transient buffer of `cmt_dve_upper_bound(dve)` bytes and
@@ -171,7 +171,7 @@ int cmt_dve_hash(const cmt_duplicate_vote_evidence_t *dve,
                  uint8_t out[CMT_TMHASH_SIZE]);
 
 /**
- * cometbft@709fd12b types/evidence.go:111-113 —
+ * cometbft@v0.38.26 types/evidence.go:111-113 —
  * `(dve *DuplicateVoteEvidence) Height()`. `dve.VoteA.Height`.
  * @return CMT_OK; CMT_FAULT on NULL, or when VoteA is absent — the
  *         reference would nil-dereference there and this port refuses to
@@ -180,13 +180,13 @@ int cmt_dve_hash(const cmt_duplicate_vote_evidence_t *dve,
  */
 int cmt_dve_height(const cmt_duplicate_vote_evidence_t *dve, int64_t *out);
 
-/** cometbft@709fd12b types/evidence.go:121-123 —
+/** cometbft@v0.38.26 types/evidence.go:121-123 —
  *  `(dve *DuplicateVoteEvidence) Time()`. The evidence's own Timestamp,
  *  NOT either vote's. @return CMT_OK, CMT_FAULT on NULL. */
 int cmt_dve_time(const cmt_duplicate_vote_evidence_t *dve, cmt_time_t *out);
 
 /**
- * cometbft@709fd12b types/evidence.go:126-145 —
+ * cometbft@v0.38.26 types/evidence.go:126-145 —
  * `(dve *DuplicateVoteEvidence) ValidateBasic()`.
  *
  * Four checks in the reference's order: both votes present (:131-133),
@@ -212,14 +212,14 @@ int cmt_dve_time(const cmt_duplicate_vote_evidence_t *dve, cmt_time_t *out);
  */
 int cmt_dve_validate_basic(const cmt_duplicate_vote_evidence_t *dve);
 
-/** cometbft@709fd12b types/evidence.go:148-159 —
+/** cometbft@v0.38.26 types/evidence.go:148-159 —
  *  `(dve *DuplicateVoteEvidence) ToProto()`. The identity; see the header.
  *  @return CMT_OK, CMT_FAULT on NULL. */
 int cmt_dve_to_proto(const cmt_duplicate_vote_evidence_t *dve,
                      cmt_pb_duplicate_vote_evidence_t *out);
 
 /**
- * cometbft@709fd12b types/evidence.go:162-200 —
+ * cometbft@v0.38.26 types/evidence.go:162-200 —
  * `DuplicateVoteEvidenceFromProto()`.
  *
  * Each PRESENT vote goes through `VoteFromProto` (:170, :182) — which
@@ -236,51 +236,51 @@ int cmt_dve_to_proto(const cmt_duplicate_vote_evidence_t *dve,
 int cmt_dve_from_proto(const cmt_pb_duplicate_vote_evidence_t *pb,
                        cmt_duplicate_vote_evidence_t *out);
 
-/* ── the Evidence wrapper (evidence.go:495-540) ─────────────────────── */
+/* ── the Evidence wrapper (evidence.go:498-543) ─────────────────────── */
 
 /**
- * cometbft@709fd12b types/evidence.go:495-523 — `EvidenceToProto()`,
- * restricted to its DuplicateVoteEvidence branch (:501-507).
- * The `LightClientAttackEvidence` branch (:509-518) and the `default`
- * "not recognized" arm (:520-521) are unreachable in C: the parameter has
+ * cometbft@v0.38.26 types/evidence.go:498-526 — `EvidenceToProto()`,
+ * restricted to its DuplicateVoteEvidence branch (:504-510).
+ * The `LightClientAttackEvidence` branch (:512-521) and the `default`
+ * "not recognized" arm (:523-524) are unreachable in C: the parameter has
  * one type. @return CMT_OK, CMT_FAULT on NULL.
  */
 int cmt_evidence_to_proto(const cmt_duplicate_vote_evidence_t *dve,
                           cmt_pb_evidence_t *out);
 
 /**
- * cometbft@709fd12b types/evidence.go:527-540 — `EvidenceFromProto()`,
- * DuplicateVoteEvidence branch only (:533-534).
+ * cometbft@v0.38.26 types/evidence.go:530-543 — `EvidenceFromProto()`,
+ * DuplicateVoteEvidence branch only (:536-537).
  *
  * The reference switches on which oneof arm is set; here an item whose
  * `has_duplicate_vote_evidence` is false IS the reference's "evidence is
- * not recognized" (:537-538) — either no arm was set or the decoder met
+ * not recognized" (:540-541) — either no arm was set or the decoder met
  * branch 2, which cmt_pb refuses outright.
  *
  * @return CMT_OK; CMT_REJECT for an unrecognised branch or an item that
- *         fails `cmt_dve_from_proto`; CMT_FAULT on NULL (:528-530 is an
+ *         fails `cmt_dve_from_proto`; CMT_FAULT on NULL (:531-533 is an
  *         error in the reference; R1B-10).
  */
 int cmt_evidence_from_proto(const cmt_pb_evidence_t *ev,
                             cmt_duplicate_vote_evidence_t *out);
 
-/* ── EvidenceList (evidence.go:446-479) ─────────────────────────────── */
+/* ── EvidenceList (evidence.go:449-482) ─────────────────────────────── */
 
 /**
- * cometbft@709fd12b types/evidence.go:450-461 — `(evl EvidenceList) Hash()`.
+ * cometbft@v0.38.26 types/evidence.go:453-464 — `(evl EvidenceList) Hash()`.
  *
- * THE HEADER'S EvidenceHash (D-19 rev 6 item 8; block.go:1383 →
- * evidence.go:460). The Merkle root over each item's `Bytes()` — the BARE
+ * THE HEADER'S EvidenceHash (D-19 rev 6 item 8; block.go:1389 →
+ * evidence.go:463). The Merkle root over each item's `Bytes()` — the BARE
  * DuplicateVoteEvidence marshal — in the order given. An EMPTY list is the
  * empty tree's root H(""), not a run of zero bytes.
  *
  * `cmt_evidence_data_hash` (cmt_block.h:710), which is
- * `EvidenceData.Hash` (block.go:1380-1386), DELEGATES to this function:
+ * `EvidenceData.Hash` (block.go:1386-1392), DELEGATES to this function:
  * the reference's `EvidenceData.Hash` body is one call to
  * `EvidenceList.Hash`, and this file is that row's home. One
  * implementation, one set of bytes.
  *
- * The reference's own TODO at :456-457 ("we should change this to the
+ * The reference's own TODO at :459-460 ("we should change this to the
  * hash") is NOT acted on — the leaf is the marshal, as the pinned code
  * has it.
  *
@@ -293,7 +293,7 @@ int cmt_evidence_list_hash(const cmt_pb_evidence_t *items, size_t n,
                            uint8_t out[CMT_TMHASH_SIZE]);
 
 /**
- * cometbft@709fd12b types/evidence.go:472-479 — `(evl EvidenceList) Has()`.
+ * cometbft@v0.38.26 types/evidence.go:475-482 — `(evl EvidenceList) Has()`.
  * Compares `Hash()` — the FLAT per-item hash of :106-108 — of the needle
  * against each item's. It is a linear scan, as the reference's is.
  * @param out receives the answer; the return code reports only whether the
@@ -306,11 +306,11 @@ int cmt_evidence_list_has(const cmt_pb_evidence_t *items, size_t n,
 /* ── errors the reference carries as values ─────────────────────────── */
 
 #define CMT_EV_ERR_NONE      0
-/** cometbft@709fd12b types/evidence.go:566-569 — `ErrEvidenceOverflow`. */
+/** cometbft@v0.38.26 types/evidence.go:569-572 — `ErrEvidenceOverflow`. */
 #define CMT_EV_ERR_OVERFLOW  1
 
 /**
- * The reference's `ErrEvidenceOverflow` value (:566-574). The 0/-1/-2
+ * The reference's `ErrEvidenceOverflow` value (:569-577). The 0/-1/-2
  * return contract cannot carry a payload, so the two numbers the error
  * carries live here — the same shape `cmt_vs_error_t`
  * (cmt_validator_set.h:289-293) uses for `ErrNotEnoughVotingPowerSigned`,
@@ -318,16 +318,16 @@ int cmt_evidence_list_has(const cmt_pb_evidence_t *items, size_t n,
  *
  * ZERO CONSUMERS in this wave: the reference's only producer is the
  * evidence pool's `MaxBytes` check, which is out of scope. Ported because
- * the port map marks :572 PORT and because the VALUE — max and got — is
+ * the port map marks :575 PORT and because the VALUE — max and got — is
  * what a caller would need.
  */
 typedef struct {
     int     code;   /* CMT_EV_ERR_*        */
-    int64_t max;    /* evidence.go:567     */
-    int64_t got;    /* evidence.go:568     */
+    int64_t max;    /* evidence.go:570     */
+    int64_t got;    /* evidence.go:571     */
 } cmt_ev_error_t;
 
-/** cometbft@709fd12b types/evidence.go:572-574 —
+/** cometbft@v0.38.26 types/evidence.go:575-577 —
  *  `NewErrEvidenceOverflow(max, got)`. A plain constructor, as the
  *  reference's is; it does not check that `got > max`.
  *  @return CMT_OK, CMT_FAULT on NULL. */

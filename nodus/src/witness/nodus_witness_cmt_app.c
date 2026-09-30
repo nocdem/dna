@@ -2,7 +2,7 @@
  * @file nodus/src/witness/nodus_witness_cmt_app.c
  * @brief The application table of nodus_witness_cmt_app.h.
  *
- * Every function carries the cometbft @709fd12b site it implements and,
+ * Every function carries the cometbft @v0.38.26 site it implements and,
  * where it reads the ledger, the ledger function it reuses. Nothing here
  * re-implements a ledger rule: the admission check, the contextual
  * ruleset table, the batch preflight and the capacity seam are the
@@ -1216,7 +1216,7 @@ done:
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * PrepareProposal — state/execution.go:129-153, D-4 rev 3 (3)
+ * PrepareProposal — state/execution.go:141-165, D-4 rev 3 (3)
  * ═══════════════════════════════════════════════════════════════════════ */
 
 /** Is this envelope a chain_config transaction?
@@ -1400,7 +1400,7 @@ static int app_prep_quota_ix(const app_prep_units_t *u, uint32_t domain_id)
  * add transactions... If the Application considers that `tx` should not
  * be proposed in this block ... then it should not include it in
  * `PrepareProposalResponse.txs`" (spec/abci/abci++_methods.md:347-351,
- * cometbft @709fd12b). Every kept entry keeps its sort order.
+ * cometbft @v0.38.26). Every kept entry keeps its sort order.
  *
  * CHECKTX-P1 round 2 (red-team HIGH "the hog", decision 2026-09-25-
  * mempool-policy.md 2: "sığmayan işlem atlanır, arkasındaki sığanlar
@@ -1982,7 +1982,7 @@ done:
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * ProcessProposal — state/execution.go:162-188
+ * ProcessProposal — state/execution.go:174-200
  * ═══════════════════════════════════════════════════════════════════════ */
 
 int nodus_cmt_app_process_proposal(
@@ -2015,13 +2015,13 @@ int nodus_cmt_app_process_proposal(
      * trips this: PrepareProposal (above) never returns more than
      * `NODUS_V2_APPLY_MAX_OPS` items, so this is coherent with it in the
      * sense abci++_methods.md requires ("PrepareProposal-ProcessProposal
-     * coherence", consensus/state.go:1372-1381) — the liveness warning
+     * coherence", consensus/state.go:1367-1376) — the liveness warning
      * at spec/abci/abci++_methods.md:463-464 ("applications SHOULD
      * always ACCEPT unless they really know the liveness implications
      * of REJECT") does not apply to a REJECT an honest round never
      * reaches. `ProcessProposalResponse.status == REJECT` is exactly
      * what turns into a nil prevote (abci++_methods.md:456-457, 488-490;
-     * `defaultDoPrevote`, consensus/state.go:1382-1396 — `!isAppValid`
+     * `defaultDoPrevote`, consensus/state.go:1377-1391 — `!isAppValid`
      * signs a nil vote instead of the proposal's block). */
     if (req->txs_len > NODUS_V2_APPLY_MAX_OPS) {
         QGP_LOG_WARN(LOG_TAG, "ProcessProposal: %zu transactions exceed "
@@ -2160,7 +2160,7 @@ int nodus_cmt_app_verify_vote_extension(
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * FinalizeBlock — state/execution.go:224-258's callee: the ledger's
+ * FinalizeBlock — state/execution.go:255-289's callee: the ledger's
  * cometbft apply lane (D-23 rev 5 (6))
  * ═══════════════════════════════════════════════════════════════════════ */
 
@@ -2370,7 +2370,7 @@ int nodus_cmt_app_finalize_block(void *vctx,
            req->hash_len > 64 ? 64 : req->hash_len);
     /* `v2_blocks.vset_hash` receives the request's NEXT-validators hash
      * — the only validator hash `RequestFinalizeBlock` carries
-     * (execution.go:226). D-17 rev 7 (6) calls the column "the block's
+     * (execution.go:257). D-17 rev 7 (6) calls the column "the block's
      * ValidatorsHash"; the two coincide only while validator updates are
      * empty. REGISTER ROW R3-C1a-10, stated in full at
      * nodus_v2_block_cmt_t.validators_hash. */
@@ -2387,7 +2387,7 @@ int nodus_cmt_app_finalize_block(void *vctx,
      * two per-request LOCAL arrays (freed at `done:` below, never
      * ctx-owned: nodus_witness_v2_apply_block consumes them
      * synchronously, before this function returns). `votes_len == 0`
-     * (the initial height, execution.go:451-455) leaves both NULL/0 —
+     * (the initial height, execution.go:482-486) leaves both NULL/0 —
      * the legal empty case nodus_witness_v2_attendance_credit already
      * documents. */
     if (req->decided_last_commit.votes_len > 0) {
@@ -2749,7 +2749,7 @@ int nodus_cmt_app_commit(void *vctx, nodus_abci_response_commit_t *resp)
     pend_clear(ctx);
     acache_sweep(ctx);
     /* `retain_height` 0: this application asks for no pruning in W2, so
-     * `pruneBlocks` (execution.go:309-316) is not entered. */
+     * `pruneBlocks` (execution.go:340-347) is not entered. */
     resp->retain_height = 0;
     return CMT_OK;
 }

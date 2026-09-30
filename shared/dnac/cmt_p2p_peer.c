@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_p2p_peer.c
- * @brief cometbft @709fd12b `p2p/peer.go`, `p2p/peer_set.go`,
+ * @brief cometbft @v0.38.26 `p2p/peer.go`, `p2p/peer_set.go`,
  *        `p2p/conn_set.go` in C, plus the connection's byte buffers.
  *
  * Contract and deviations: cmt_p2p_peer.h. Functions in the reference's
@@ -310,7 +310,7 @@ static int64_t peer_now(void *ctx)
     return p->now_fn(p->now_ctx);
 }
 
-/* peer.go:400-430 onReceive. The reactor lookup and the message decode
+/* peer.go:400-438 onReceive. The reactor lookup and the message decode
  * are the switch's / the reactor's (file header). */
 static void peer_on_receive(void *ctx, uint8_t ch_id, const uint8_t *msg,
                             size_t len)
@@ -322,7 +322,7 @@ static void peer_on_receive(void *ctx, uint8_t ch_id, const uint8_t *msg,
     }
 }
 
-/* peer.go:432-434 onError → onPeerError(p, r). */
+/* peer.go:440-442 onError → onPeerError(p, r). */
 static void peer_on_error(void *ctx, int reason)
 {
     cmt_p2p_peer_t *p = (cmt_p2p_peer_t *)ctx;
@@ -333,7 +333,7 @@ static void peer_on_error(void *ctx, int reason)
 }
 
 /* transport.go:500-539 wrapPeer + peer.go:134-170 newPeer +
- * :390-443 createMConnection. */
+ * :390-451 createMConnection. */
 cmt_p2p_peer_t *cmt_p2p_peer_new(cmt_p2p_conn_t *conn,
                                  cmt_p2p_node_info_t *node_info,
                                  const cmt_p2p_peer_config_t *cfg,

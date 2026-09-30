@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_p2p_addrbook.h
- * @brief cometbft @709fd12b `p2p/pex/addrbook.go`, `known_address.go`,
+ * @brief cometbft @v0.38.26 `p2p/pex/addrbook.go`, `known_address.go`,
  *        `params.go`, `errors.go` (the address-book half) and `file.go`
  *        ported to C — the address book, plus the signed ADDR record of
  *        R-P2P-4.
@@ -326,7 +326,7 @@ typedef struct {
 } cmt_p2p_ab_host_t;
 
 typedef struct {
-    /** config.go:561 `addr_book_strict` (NewAddrBook routabilityStrict). */
+    /** config.go:569 `addr_book_strict` (NewAddrBook routabilityStrict). */
     bool    routability_strict;
     /** The version-3 chain id every record must carry. */
     uint8_t chain_id[CMT_P2P_ADDR_REC_CHAIN_LEN];

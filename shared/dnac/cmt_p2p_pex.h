@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_p2p_pex.h
- * @brief cometbft @709fd12b `p2p/pex/pex_reactor.go` (+ the PEX messages
+ * @brief cometbft @v0.38.26 `p2p/pex/pex_reactor.go` (+ the PEX messages
  *        of `proto/tendermint/p2p/pex.proto`) ported to C — the PEX
  *        reactor on channel 0x00, plus the signed ADDR records of
  *        R-P2P-4.
@@ -106,7 +106,7 @@
  * — ported literally (CMT_P2P_ERR_SWITCH_AUTH_FAILURE, which this port's
  * transport does not produce either), so every failed dial is a
  * MarkAttempt. A failed Unmarshal / Unwrap of a message stops the peer
- * (peer.go:410-421 panics into onPeerError).
+ * (peer.go:418-429 panics into onPeerError).
  *
  * ── DETERMINISM ────────────────────────────────────────────────────────
  * Node-local transport (design §6 D1). Randomness is the host's (D4):
@@ -196,7 +196,7 @@ extern "C" {
 
 /* ══ StopPeerForError reasons (the reference's error values) ══════════ */
 
-#define CMT_P2P_PEX_ERR_DECODE           300  /* peer.go:410-421 Unmarshal / Unwrap */
+#define CMT_P2P_PEX_ERR_DECODE           300  /* peer.go:418-429 Unmarshal / Unwrap */
 #define CMT_P2P_PEX_ERR_REQUEST_TOO_SOON 301  /* :324-331                            */
 #define CMT_P2P_PEX_ERR_BAD_ADDRS        302  /* :282-287 NetAddressesFromProto      */
 #define CMT_P2P_PEX_ERR_UNSOLICITED      303  /* errors.go:89 ErrUnsolicitedList     */
@@ -241,7 +241,7 @@ typedef struct {
 typedef struct {
     const char *const *seeds;               /* config.go `seeds`            */
     int     n_seeds;
-    int64_t persistent_peers_max_dial_period_ns;   /* config.go:573, 0 = off */
+    int64_t persistent_peers_max_dial_period_ns;   /* config.go:581, 0 = off */
     int64_t ensure_peers_period_ns;         /* 0 = the default (:34)        */
 } cmt_p2p_pex_config_t;
 

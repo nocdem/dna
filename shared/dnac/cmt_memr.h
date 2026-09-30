@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_memr.h
- * @brief cometbft @709fd12b `mempool/reactor.go` ported to C — the Flood
+ * @brief cometbft @v0.38.26 `mempool/reactor.go` ported to C — the Flood
  *        gossip of the mempool, receiver `memR`.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -15,16 +15,16 @@
  * message, to every connected peer that did not send it, in mempool
  * order; every `Txs` message a peer sends is fed transaction by
  * transaction into `cmt_mem_check_tx`. Batching is DISABLED in the
- * reference (:235-236, tendermint#5796): one transaction per `Txs` on
- * send; receive accepts any number, as the reference does (:155-169).
+ * reference (:240-241, tendermint#5796): one transaction per `Txs` on
+ * send; receive accepts any number, as the reference does (:165-179).
  *
  * ── GOROUTINES → A TICK (umbrella rev 4, substitution item 7) ──────────
- * The reference runs one `broadcastTxRoutine` (:185-259) per peer, a
+ * The reference runs one `broadcastTxRoutine` (:195-264) per peer, a
  * goroutine that walks the mempool's CList from `TxsFront()` and blocks
- * at five places: the empty list (:200), the three `time.Sleep(100 ms)`
- * sites (:219, :231, :244), the `NextWaitChan` at the tail (:250), and
+ * at five places: the empty list (:210), the three `time.Sleep(100 ms)`
+ * sites (:229, :236, :249), the `NextWaitChan` at the tail (:255), and
  * — inside `peer.Send` (p2p/peer.go:260-262) — the MConnection's send
- * queue. Here every peer has a CURSOR (`next`, :187) and `cmt_memr_tick`
+ * queue. Here every peer has a CURSOR (`next`, :197) and `cmt_memr_tick`
  * runs each peer's routine, in ascending slot order, from where it left
  * off until it would block; the blocking points become:
  *   · empty list                 → the pass ends; next tick re-reads Front
@@ -32,7 +32,7 @@
  *                                  that element (`waiting_next`); the
  *                                  next tick re-reads `cmt_clist_elem_
  *                                  next_wait_ready` and, when ready,
- *                                  resumes at :252 (advance), never at
+ *                                  resumes at :257 (advance), never at
  *                                  the loop top — the goroutine does not
  *                                  re-send the element it is parked on
  *   · the three sleeps           → DEVIATION R3-M-1: a per-peer
@@ -47,28 +47,28 @@
  *                                  the reference's `false` after the
  *                                  MConnection timeout (peer.go:258-259)
  *                                  and this false take the same branch
- *                                  (:243-246): sleep, and RETRY THE SAME
+ *                                  (:248-251): sleep, and RETRY THE SAME
  *                                  TRANSACTION — the cursor does not move.
- * `peer.Quit()` / `memR.Quit()` (:204-207, :253-256) end a routine; here
+ * `peer.Quit()` / `memR.Quit()` (:214-217, :258-261) end a routine; here
  * `cmt_memr_remove_peer` and `cmt_memr_stop` end it. A routine that has
  * ended is not restarted by a later start, exactly as a returned
  * goroutine is not.
  *
- * ── THE EXPERIMENTAL GOSSIP LIMITS (:28-32, :43-44, :92-129) ───────────
+ * ── THE EXPERIMENTAL GOSSIP LIMITS (:30-34, :45-46, :94-131) ───────────
  * `semaphore.Weighted` of capacity `ExperimentalMaxGossipConnectionsTo
- * {Persistent,NonPersistent}Peers` (0 = unlimited, config.go:778-779);
- * an unconditional peer skips it (:94-95). The semaphore is
+ * {Persistent,NonPersistent}Peers` (0 = unlimited, config.go:786-787);
+ * an unconditional peer skips it (:96-97). The semaphore is
  * golang.org/x/sync v0.11.0 semaphore/semaphore.go (pinned, rev 17; its
  * line numbers as corrected in rev 18), and the port keeps its rules by
  * line:
- *   · `Acquire` (:111 here; semaphore.go:38-107) takes a slot AT ONCE
+ *   · `Acquire` (:113 here; semaphore.go:38-107) takes a slot AT ONCE
  *     only if capacity is free AND `s.waiters.Len() == 0` (:52);
  *     otherwise the caller joins the BACK of the waiter list (:69-71).
  *     → `cmt_memr_add_peer`: a newcomer starts its routine only when a
  *     slot is free AND no present peer is WAITING on the same semaphore;
  *     otherwise it is WAITING. A peer added between a release and the
  *     next tick therefore does NOT overtake a peer already waiting.
- *   · `Release` (:119 here; semaphore.go:122-131) → `notifyWaiters`
+ *   · `Release` (:121 here; semaphore.go:122-131) → `notifyWaiters`
  *     (:133-160) serves the waiter list from the FRONT, each waiter on
  *     capacity alone (:141, :156), stopping at the first that does not
  *     fit (:153). → the WAITING loop of `cmt_memr_tick` is that call,
@@ -78,7 +78,7 @@
  *     test pins (reactor_test.go:267-305, and this port's own
  *     newcomer case in test_cmt_memr.c) is stated there.
  *   · The `for peer.IsRunning()` loop around `Acquire` with its 30 s
- *     context timeout and `continue` (:105-116) has NO COUNTERPART —
+ *     context timeout and `continue` (:107-118) has NO COUNTERPART —
  *     DEVIATION, labelled: in Go the timeout exists only so a peer that
  *     disconnected before acquiring does not block its goroutine
  *     forever (it re-checks IsRunning and re-acquires; semaphore.go:75-92
@@ -89,15 +89,15 @@
  * WAITING states; nothing else of the library is reproduced.
  *
  * ── RECEIVE: what the p2p layer did before `Receive` ───────────────────
- * The reference's `Receive` (:140-177) is handed an already DECODED and
- * UNWRAPPED message: p2p/peer.go:400-430 unmarshals the channel's
- * `Message` (:407-412) and calls `Unwrap` (:417-422); an error at either
+ * The reference's `Receive` (:150-187) is handed an already DECODED and
+ * UNWRAPPED message: p2p/peer.go:400-438 unmarshals the channel's
+ * `Message` (:415-420) and calls `Unwrap` (:425-430); an error at either
  * step panics into the connection's recover, which stops the peer for
  * error. Here `cmt_memr_receive` takes the raw bytes and does both steps,
  * so a payload that does not decode, or a `Message` with no `sum`
  * (message.go:42-43), calls the host's `stop_peer_for_error` and returns
  * CMT_REJECT — which is also what `Receive`'s own `default` branch
- * (:170-173) does for a message that is not a `Txs`. Since the v0.38.26
+ * (:180-183) does for a message that is not a `Txs`. Since the v0.38.26
  * re-pin (decisions/2026-09-30-cometbft-pin-v0.38.26.md) the step BEFORE
  * the unmarshal is ported too: p2p/peer.go:408-413 hands the raw bytes to
  * the reactor's `FilterMsgBytes` (v0.38.26 reactor.go:140-146 →
@@ -114,7 +114,7 @@
  * whose earlier `Txs` carries an entry and whose last `Txs` is empty
  * passes the filter and reaches the branch. Its effect is one ERROR log
  * line and nothing else, on every node alike. The descriptor's
- * `RecvMessageCapacity` (:83) is enforced by the reference's transport
+ * `RecvMessageCapacity` (:85) is enforced by the reference's transport
  * (p2p/conn, deliberately unpinned — pin record rev 15); it is enforced
  * HERE at the reactor boundary, so the decoder never sees more bytes than
  * the descriptor allows, and a longer payload also stops the peer.
@@ -126,7 +126,7 @@
  * array of `RecvMessageCapacity / 2 + 1` entries (an element is at least
  * `0a 00`, two bytes, so no message within the capacity can carry more),
  * and a SEND buffer of `RecvMessageCapacity` bytes for the one-tx
- * `Message` of :239-242. At the default `MaxTxBytes` (1 MiB) that is
+ * `Message` of :244-247. At the default `MaxTxBytes` (1 MiB) that is
  * 1 048 584 + 16 × 524 293 + 1 048 584 ≈ 10.4 MB per reactor, allocated
  * once.
  *
@@ -144,20 +144,20 @@
  * gossip order affects only which peer learns a transaction first.
  *
  * ── taşınmadı (not ported), with the reason ────────────────────────────
- *   · `SetLogger` (:56-59)                    — QGP_LOG (port map YOK)
- *   · `TxsMessage` / `String` (:261-269)      — a log type (YOK)
- *   · `p2p.BaseReactor` embedding (:23, :42)  — the service scaffold; its
+ *   · `SetLogger` (:58-61)                    — QGP_LOG (port map YOK)
+ *   · `TxsMessage` / `String` (:266-274)      — a log type (YOK)
+ *   · `p2p.BaseReactor` embedding (:25, :44)  — the service scaffold; its
  *     `IsRunning` is the `running` flag, its Quit the stop
- *   · `metrics.ActiveOutboundConnections` (:125-126) — metrics (YOK)
+ *   · `metrics.ActiveOutboundConnections` (:127-128) — metrics (YOK)
  *
- * Reference @709fd12b (SHA-256 verified before use; pin record rev 12 →
+ * Reference @v0.38.26 (SHA-256 verified before use; pin record rev 12 →
  * rev 15, atlas-dec-483ec17cbb352ef0ec2267ccd953339c):
- *   mempool/reactor.go   269 lines  c8908583…
+ *   mempool/reactor.go   274 lines  f5644ce6…
  *   mempool/mempool.go   149 lines  1fab7e19… (:13-22)
- *   p2p/peer.go          443 lines  35f34157… (:258-295 Send, :400-430 onReceive)
- * The library reactor.go:93-121 limits gossip with (pin record rev 17,
+ *   p2p/peer.go          451 lines  de9d3744… (:258-295 Send, :400-438 onReceive)
+ * The library reactor.go:95-123 limits gossip with (pin record rev 17,
  * PROPOSED 2026-09-14 at the operator's direction, line numbers
- * corrected in rev 18; cometbft go.mod:44, go.sum:437; local copy
+ * corrected in rev 18; cometbft go.mod:45, go.sum:437; local copy
  * .claude/ref/golang.org-x-sync-v0.11.0/):
  *   golang.org/x/sync v0.11.0 semaphore/semaphore.go
  *                        160 lines  c3673708… (:52, :69-71, :111-119, :122-160)
@@ -190,40 +190,40 @@ extern "C" {
 #define CMT_MEMR_PEER_CATCHUP_SLEEP_NS \
     ((int64_t)CMT_MEM_PEER_CATCHUP_SLEEP_INTERVAL_MS * (int64_t)1000000)
 
-/** reactor.go:79-86 — the channel descriptor's fields this port carries
+/** reactor.go:81-88 — the channel descriptor's fields this port carries
  *  (`MessageType` is the codec, cmt_pb_mempool). */
 typedef struct {
-    uint8_t id;                       /* :81 MempoolChannel 0x30 */
-    int     priority;                 /* :82 5 */
-    size_t  recv_message_capacity;    /* :83 Message{Txs{[MaxTxBytes]}}.Size() */
+    uint8_t id;                       /* :83 MempoolChannel 0x30 */
+    int     priority;                 /* :84 5 */
+    size_t  recv_message_capacity;    /* :85 Message{Txs{[MaxTxBytes]}}.Size() */
 } cmt_memr_channel_descriptor_t;
 
 /** The state of one peer's `broadcastTxRoutine`. */
 typedef enum {
     CMT_MEMR_ROUTINE_NONE    = 0,   /* no routine: not started, or ended */
-    CMT_MEMR_ROUTINE_WAITING = 1,   /* :104-121 blocked on the semaphore   */
-    CMT_MEMR_ROUTINE_RUNNING = 2    /* :185-259 walking the list           */
+    CMT_MEMR_ROUTINE_WAITING = 1,   /* :106-123 blocked on the semaphore   */
+    CMT_MEMR_ROUTINE_RUNNING = 2    /* :195-264 walking the list           */
 } cmt_memr_routine_state_t;
 
-/** Which semaphore (:31-32) a peer's routine holds or waits on. */
+/** Which semaphore (:33-34) a peer's routine holds or waits on. */
 typedef enum {
     CMT_MEMR_SEM_NONE           = 0,
-    CMT_MEMR_SEM_PERSISTENT     = 1,   /* :99  */
-    CMT_MEMR_SEM_NON_PERSISTENT = 2    /* :101 */
+    CMT_MEMR_SEM_PERSISTENT     = 1,   /* :101 */
+    CMT_MEMR_SEM_NON_PERSISTENT = 2    /* :103 */
 } cmt_memr_semaphore_t;
 
 /** One peer slot. Private; the accessors below are for the host and the
  *  tests. */
 typedef struct {
-    bool                     present;          /* peer.IsRunning() (:191)  */
-    bool                     is_persistent;    /* peer.IsPersistent() (:98) */
-    bool                     is_unconditional; /* IsPeerUnconditional (:95) */
+    bool                     present;          /* peer.IsRunning() (:201)  */
+    bool                     is_persistent;    /* peer.IsPersistent() (:100) */
+    bool                     is_unconditional; /* IsPeerUnconditional (:97) */
     cmt_memr_routine_state_t state;
     cmt_memr_semaphore_t     semaphore;        /* held (RUNNING) or wanted (WAITING) */
-    uint16_t                 peer_id;          /* :186, read when the routine starts */
-    cmt_clist_elem_t        *next;             /* :187 — holds a cursor reference */
-    /** The routine is parked in the `select` of :249-257, waiting for
-     *  `next`'s NextWaitChan. It resumes at :252 — advancing — and NOT
+    uint16_t                 peer_id;          /* :196, read when the routine starts */
+    cmt_clist_elem_t        *next;             /* :197 — holds a cursor reference */
+    /** The routine is parked in the `select` of :254-262, waiting for
+     *  `next`'s NextWaitChan. It resumes at :257 — advancing — and NOT
      *  at the loop top, so the element it sits on is not sent twice. */
     bool                     waiting_next;
     bool                     sleeping;         /* R3-M-1 */
@@ -247,35 +247,35 @@ typedef struct {
     bool (*send)(void *ctx, int peer_slot, uint8_t channel_id,
                  const uint8_t *msg, size_t msg_len);
 
-    /** `Switch.StopPeerForError` (reactor.go:172; p2p/peer.go:410-421
+    /** `Switch.StopPeerForError` (reactor.go:182; p2p/peer.go:418-429
      *  through the connection's recover). The host disconnects the
      *  peer; it will call `cmt_memr_remove_peer` for it as the switch
      *  calls `RemovePeer`. */
     void (*stop_peer_for_error)(void *ctx, int peer_slot);
 
     /** `peer.Get(types.PeerStateKey).(PeerState).GetHeight()`
-     *  (reactor.go:180-182, :212-230). `*out_known` false is the
-     *  "peer does not have a state yet" branch (:213-221) — the
+     *  (reactor.go:190-192, :222-235). `*out_known` false is the
+     *  "peer does not have a state yet" branch (:223-231) — the
      *  consensus reactor has not set the state — and the height is then
      *  ignored. R3-C2 wires this to the consensus peer state. */
     int64_t (*peer_height)(void *ctx, int peer_slot, bool *out_known);
 
     /** THE ONLY CLOCK IN THIS MODULE: the three `time.Sleep` sites
-     *  (:219, :231, :244) under R3-M-1. Read at most once per tick. */
+     *  (:229, :236, :249) under R3-M-1. Read at most once per tick. */
     cmt_now_fn now;
 } cmt_memr_host_t;
 
 /**
- * reactor.go:22-33 — `type Reactor struct`, plus the per-slot routine
+ * reactor.go:24-35 — `type Reactor struct`, plus the per-slot routine
  * state and the decode storage of the header. Private; use the
  * functions.
  */
 typedef struct {
-    const cmt_mempool_config_t *config;     /* :24, borrowed */
-    cmt_mem_t                  *mempool;    /* :25, borrowed */
-    cmt_mem_ids_t               ids;        /* :26 */
-    int active_persistent_peers;            /* :31 — held count */
-    int active_non_persistent_peers;        /* :32 — held count */
+    const cmt_mempool_config_t *config;     /* :26, borrowed */
+    cmt_mem_t                  *mempool;    /* :27, borrowed */
+    cmt_mem_ids_t               ids;        /* :28 */
+    int active_persistent_peers;            /* :33 — held count */
+    int active_non_persistent_peers;        /* :34 — held count */
     const cmt_memr_host_t      *host;       /* borrowed */
     bool                        running;    /* BaseReactor.IsRunning() */
     cmt_memr_peer_t             peers[CMT_MEM_MAX_PEERS];
@@ -291,8 +291,8 @@ typedef struct {
 } cmt_memr_t;
 
 /**
- * reactor.go:36-47 — `NewReactor(config, mempool)`: the ids (:40), the
- * two semaphore capacities from the config (:43-44). `config`,
+ * reactor.go:38-49 — `NewReactor(config, mempool)`: the ids (:42), the
+ * two semaphore capacities from the config (:45-46). `config`,
  * `mempool` and `host` are BORROWED and must outlive the reactor. The
  * decode storage of the header is allocated here, sized from the
  * descriptor's `RecvMessageCapacity`.
@@ -306,35 +306,35 @@ int cmt_memr_init(cmt_memr_t *memR, const cmt_mempool_config_t *config,
  *  storage. NULL is a no-op. */
 void cmt_memr_free(cmt_memr_t *memR);
 
-/** reactor.go:50-53 — `InitPeer(peer)`: `ids.ReserveForPeer` (:51).
+/** reactor.go:52-55 — `InitPeer(peer)`: `ids.ReserveForPeer` (:53).
  *  @return the reserve's result. */
 int cmt_memr_init_peer(cmt_memr_t *memR, int peer_slot);
 
-/** reactor.go:62-67 — `OnStart()`: the reactor is running; "Tx
- *  broadcasting is disabled" is logged when `!config.Broadcast` (:63-65).
+/** reactor.go:64-69 — `OnStart()`: the reactor is running; "Tx
+ *  broadcasting is disabled" is logged when `!config.Broadcast` (:65-67).
  *  @return CMT_OK (the reference's nil), CMT_FAULT on NULL. */
 int cmt_memr_start(cmt_memr_t *memR);
 
 /** C-only — the reference's `Stop()` is `BaseService`'s: `memR.Quit()`
- *  closes and every routine returns (:191-193, :206-207, :255-256).
+ *  closes and every routine returns (:201-203, :216-217, :260-261).
  *  Every cursor is released, every held semaphore slot given back.
  *  @return CMT_OK, CMT_FAULT on NULL. */
 int cmt_memr_stop(cmt_memr_t *memR);
 
-/** reactor.go:71-89 — `GetChannels()`: id 0x30, priority 5, and the
- *  exact size of a `Message{Txs{[one tx of MaxTxBytes]}}` (:72-77, :83)
+/** reactor.go:73-91 — `GetChannels()`: id 0x30, priority 5, and the
+ *  exact size of a `Message{Txs{[one tx of MaxTxBytes]}}` (:74-79, :85)
  *  computed by the ported `Size()` functions.
  *  @return CMT_OK, CMT_FAULT on NULL. */
 int cmt_memr_get_channels(const cmt_memr_t *memR,
                           cmt_memr_channel_descriptor_t *out);
 
 /**
- * reactor.go:91-130 — `AddPeer(peer)`. When `config.Broadcast`: an
- * unconditional peer starts its routine at once (:94-95); otherwise the
- * semaphore for its persistence class is chosen (:96-102), acquired if
+ * reactor.go:93-132 — `AddPeer(peer)`. When `config.Broadcast`: an
+ * unconditional peer starts its routine at once (:96-97); otherwise the
+ * semaphore for its persistence class is chosen (:98-104), acquired if
  * a slot is free AND no present peer is WAITING on it (semaphore.go:52 —
- * the header's first rule), or WAITED on (:104-122), and the routine
- * starts (:127). `is_persistent` and `is_unconditional` are the switch's
+ * the header's first rule), or WAITED on (:106-124), and the routine
+ * starts (:129). `is_persistent` and `is_unconditional` are the switch's
  * knowledge of the peer (p2p), supplied by the host.
  * @return CMT_OK; CMT_REJECT for a slot out of range; CMT_FAULT on NULL
  *         or a slot that is already present (host contract, header).
@@ -342,24 +342,24 @@ int cmt_memr_get_channels(const cmt_memr_t *memR,
 int cmt_memr_add_peer(cmt_memr_t *memR, int peer_slot, bool is_persistent,
                       bool is_unconditional);
 
-/** reactor.go:133-136 — `RemovePeer(peer, reason)`: `ids.Reclaim`
- *  (:134); the routine "checks if peer is gone and returns" (:135) —
+/** reactor.go:135-138 — `RemovePeer(peer, reason)`: `ids.Reclaim`
+ *  (:136); the routine "checks if peer is gone and returns" (:137) —
  *  here it ends now, releasing its cursor and its semaphore slot (the
- *  deferred Release of :119).
+ *  deferred Release of :121).
  *  @return CMT_OK; CMT_REJECT for a slot out of range; CMT_FAULT on NULL.
  *  A slot that is not present is a no-op (the reference's RemovePeer
  *  for an unknown peer reclaims nothing). */
 int cmt_memr_remove_peer(cmt_memr_t *memR, int peer_slot);
 
 /**
- * reactor.go:140-177 — `Receive(envelope)`, preceded by the p2p decode
- * of the header. `peer_p2p_id`/`_len` is `e.Src.ID()` (:150-152), used
+ * reactor.go:150-187 — `Receive(envelope)`, preceded by the p2p decode
+ * of the header. `peer_p2p_id`/`_len` is `e.Src.ID()` (:160-162), used
  * only for the log line; may be NULL/0. The slot need not be present:
- * an unreserved slot's sender id is 0 (:149, ids.go:62).
+ * an unreserved slot's sender id is 0 (:159, ids.go:62).
  *
  * @return CMT_OK when the message was a `Txs` (empty or not) and every
  *         transaction was offered to the mempool — a refused transaction
- *         is logged (:158-168), never returned; CMT_REJECT when the bytes
+ *         is logged (:168-178), never returned; CMT_REJECT when the bytes
  *         did not decode, exceeded the capacity, or were not a `Txs`
  *         (the peer has been stopped for error); CMT_FAULT on NULL or a
  *         FAULT from `cmt_mem_check_tx`.
@@ -384,9 +384,9 @@ int cmt_memr_filter_msg_bytes(const cmt_memr_t *memR, uint8_t channel_id,
                               cmt_pb_mempool_filter_err_t *out_err);
 
 /**
- * reactor.go:185-259 — every peer's `broadcastTxRoutine`, one pass each
+ * reactor.go:195-264 — every peer's `broadcastTxRoutine`, one pass each
  * in ascending slot order, as the header describes. Waiting routines
- * (:104-121) are served first, in slot order, on capacity alone — the
+ * (:106-123) are served first, in slot order, on capacity alone — the
  * library's `notifyWaiters` (semaphore.go:133-160) run at the tick.
  *
  * @param out_next_deadline_ns the earliest `not_before` among sleeping

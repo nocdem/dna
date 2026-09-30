@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_p2p_nodeinfo.c
- * @brief cometbft @709fd12b `p2p/node_info.go` + the DefaultNodeInfo codec
+ * @brief cometbft @v0.38.26 `p2p/node_info.go` + the DefaultNodeInfo codec
  *        of proto/tendermint/p2p/types.pb.go, in C.
  *
  * Contract: cmt_p2p_nodeinfo.h. Functions in the reference's order; each
@@ -109,7 +109,7 @@ void cmt_p2p_network_from_chain_id(const uint8_t chain_id[32],
     out[64] = '\0';
 }
 
-/* ══ node.go:928-975 makeNodeInfo ═════════════════════════════════════ */
+/* ══ node.go:927-974 makeNodeInfo ═════════════════════════════════════ */
 
 int cmt_p2p_node_info_make(cmt_p2p_node_info_t *ni,
                            const cmt_p2p_node_info_params_t *p)
@@ -122,25 +122,25 @@ int cmt_p2p_node_info_make(cmt_p2p_node_info_t *ni,
         return CMT_FAULT;
     }
     cmt_p2p_node_info_init(ni);
-    ni->protocol_version.p2p = CMT_P2P_PROTOCOL_VERSION;   /* :940 */
-    ni->protocol_version.block = p->block_version;         /* :941 */
-    ni->protocol_version.app = p->app_version;             /* :942 */
+    ni->protocol_version.p2p = CMT_P2P_PROTOCOL_VERSION;   /* :939 */
+    ni->protocol_version.block = p->block_version;         /* :940 */
+    ni->protocol_version.app = p->app_version;             /* :941 */
     cmt_p2p_network_from_chain_id(p->chain_id, network);
-    rc |= cmt_p2p_node_info_set_str(ni, CMT_P2P_NI_ID, p->node_id);          /* :944 */
-    rc |= cmt_p2p_node_info_set_str(ni, CMT_P2P_NI_NETWORK, network);        /* :945 */
-    rc |= cmt_p2p_node_info_set_str(ni, CMT_P2P_NI_VERSION, p->version);     /* :946 */
+    rc |= cmt_p2p_node_info_set_str(ni, CMT_P2P_NI_ID, p->node_id);          /* :943 */
+    rc |= cmt_p2p_node_info_set_str(ni, CMT_P2P_NI_NETWORK, network);        /* :944 */
+    rc |= cmt_p2p_node_info_set_str(ni, CMT_P2P_NI_VERSION, p->version);     /* :945 */
     rc |= cmt_p2p_node_info_set(ni, CMT_P2P_NI_CHANNELS, p->channels,
-                                p->n_channels);                             /* :947-952 */
-    rc |= cmt_p2p_node_info_set_str(ni, CMT_P2P_NI_MONIKER, p->moniker);     /* :953 */
-    rc |= cmt_p2p_node_info_set_str(ni, CMT_P2P_NI_TX_INDEX, p->tx_index);   /* :955 */
+                                p->n_channels);                             /* :946-951 */
+    rc |= cmt_p2p_node_info_set_str(ni, CMT_P2P_NI_MONIKER, p->moniker);     /* :952 */
+    rc |= cmt_p2p_node_info_set_str(ni, CMT_P2P_NI_TX_INDEX, p->tx_index);   /* :954 */
     rc |= cmt_p2p_node_info_set_str(ni, CMT_P2P_NI_RPC_ADDRESS,
-                                    p->rpc_address);                        /* :956 */
+                                    p->rpc_address);                        /* :955 */
     rc |= cmt_p2p_node_info_set_str(ni, CMT_P2P_NI_LISTEN_ADDR,
-                                    p->listen_addr);                        /* :964-971 */
+                                    p->listen_addr);                        /* :963-970 */
     if (rc != CMT_OK) {
         return CMT_REJECT;
     }
-    return cmt_p2p_node_info_validate(ni);                 /* :973 */
+    return cmt_p2p_node_info_validate(ni);                 /* :972 */
 }
 
 /* ══ node_info.go ═════════════════════════════════════════════════════ */

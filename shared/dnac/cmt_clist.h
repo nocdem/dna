@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_clist.h
- * @brief cometbft @709fd12b `libs/clist/clist.go` ported to C — the
+ * @brief cometbft @v0.38.26 `libs/clist/clist.go` ported to C — the
  *        linked list the Flood mempool keeps its transactions in.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -20,7 +20,7 @@
  *      A reader parked on an element that is then removed steps off it
  *      with `Next()` onto whatever followed it — the mempool's own
  *      `removeAllTxs` (:113-116) and `recheckTxs` (:658) loops, and every
- *      reactor cursor (reactor.go:250-252), depend on this.
+ *      reactor cursor (reactor.go:255-257), depend on this.
  *   2. REMOVED ELEMENTS ARE NEVER RE-LINKED (:7). `DetachNext`/
  *      `DetachPrev` refuse to run on a live element (:140, :150) and
  *      `Remove` refuses an element that is not where the list thinks it
@@ -76,7 +76,7 @@
  * `Value` (:54) is `void *` here and is OWNED BY THE ELEMENT: the list
  * takes a `free_value` callback at init and calls it once, when the
  * element is freed — never at `Remove`, because a removed element's
- * value is still read by readers parked on it (reactor.go:229, :241 read
+ * value is still read by readers parked on it (reactor.go:234, :246 read
  * a removed element's mempoolTx and SEND it).
  *
  * ── Panics ─────────────────────────────────────────────────────────────
@@ -97,7 +97,7 @@
  * No clock, no randomness, no hashing; order is insertion order and
  * nothing else. Allocation failure is CMT_FAULT.
  *
- * Reference @709fd12b (SHA-256 verified before use; pin record rev 12 →
+ * Reference @v0.38.26 (SHA-256 verified before use; pin record rev 12 →
  * rev 15, atlas-dec-483ec17cbb352ef0ec2267ccd953339c):
  *   libs/clist/clist.go 407 lines f5206294…
  * Governing records: umbrella rev 4 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
@@ -193,7 +193,7 @@ void *cmt_clist_elem_value(const cmt_clist_elem_t *e);
  * removed`), which is also exactly when `NextWaitChan()` is readable —
  * the channel is closed when a next is set (:172-175) or when the element
  * is removed while it has no next (:207-210). The reactor's cursor
- * (reactor.go:249-257) polls this instead of blocking.
+ * (reactor.go:254-262) polls this instead of blocking.
  */
 bool cmt_clist_elem_next_wait_ready(const cmt_clist_elem_t *e);
 

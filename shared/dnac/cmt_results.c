@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_results.c
- * @brief cometbft @709fd12b types/results.go in C — see cmt_results.h.
+ * @brief cometbft @v0.38.26 types/results.go in C — see cmt_results.h.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT

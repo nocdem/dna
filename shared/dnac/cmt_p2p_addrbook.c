@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_p2p_addrbook.c
- * @brief cometbft @709fd12b `p2p/pex/addrbook.go`, `known_address.go`,
+ * @brief cometbft @v0.38.26 `p2p/pex/addrbook.go`, `known_address.go`,
  *        `file.go` in C, plus the signed ADDR record (R-P2P-4).
  *
  * Contract, the record bytes and the deviations: cmt_p2p_addrbook.h.

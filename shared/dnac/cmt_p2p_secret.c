@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_p2p_secret.c
- * @brief cometbft @709fd12b `p2p/conn/secret_connection.go` ported to C.
+ * @brief cometbft @v0.38.26 `p2p/conn/secret_connection.go` ported to C.
  *        See cmt_p2p_secret.h for the module contract, the blocking-call →
  *        state-machine substitution and the deviations R-P2P-1/8/9/10.
  *

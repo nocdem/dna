@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_pb_mempool.h
- * @brief cometbft @709fd12b `proto/tendermint/mempool` — the two wire
+ * @brief cometbft @v0.38.26 `proto/tendermint/mempool` — the two wire
  *        messages of the Flood mempool, in C under K-1 rev 2.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -49,14 +49,14 @@
  * `Txs.Size()` (:261-274), `Message.Size()` (:276-286) and
  * `Message_Txs.Size()` (:288-299) are ported as functions and are EXACT,
  * not upper bounds: the generated encoder sizes its buffer with them and
- * fills it completely. `RecvMessageCapacity` (mempool/reactor.go:71-89)
+ * fills it completely. `RecvMessageCapacity` (mempool/reactor.go:73-91)
  * is computed with them, never by hand.
  *
  * ── DETERMINISM ────────────────────────────────────────────────────────
  * Pure functions of the struct / of the input buffer; no map, no clock,
  * no randomness, no floating point.
  *
- * Reference @709fd12b (SHA-256 verified before use; pin record rev 12 →
+ * Reference @v0.38.26 (SHA-256 verified before use; pin record rev 12 →
  * rev 15, atlas-dec-483ec17cbb352ef0ec2267ccd953339c):
  *   proto/tendermint/mempool/types.proto    14 lines  47977b93…
  *   proto/tendermint/mempool/types.pb.go   557 lines  0975d433…
@@ -131,7 +131,7 @@ typedef struct {
  *  `cmt_pb_data_init` contract (cmt_pb.c:1901-1914). */
 void cmt_pb_mempool_txs_init(cmt_pb_mempool_txs_t *m);
 
-/** cometbft@709fd12b proto/tendermint/mempool/types.pb.go:180-195 —
+/** cometbft@v0.38.26 proto/tendermint/mempool/types.pb.go:180-195 —
  *  `Txs.MarshalToSizedBuffer`: one `0a ‖ len ‖ bytes` per element, every
  *  element written, empty ones included. Byte-identical to
  *  `cmt_pb_data_marshal` (types.pb.go:1552-1560) and produced by it.
@@ -140,7 +140,7 @@ void cmt_pb_mempool_txs_init(cmt_pb_mempool_txs_t *m);
 int cmt_pb_mempool_txs_marshal(const cmt_pb_mempool_txs_t *m, uint8_t *out,
                                size_t cap, size_t *out_len);
 
-/** cometbft@709fd12b proto/tendermint/mempool/types.pb.go:307-388 —
+/** cometbft@v0.38.26 proto/tendermint/mempool/types.pb.go:307-388 —
  *  `Txs.Unmarshal`. Each element is COPIED into `arena` (:365-366
  *  allocates a fresh slice per element); an element beyond `txs_cap`
  *  or beyond the arena is REFUSED (INVARIANT 7495d337).
@@ -149,7 +149,7 @@ int cmt_pb_mempool_txs_unmarshal(const uint8_t *in, size_t len,
                                  cmt_pb_mempool_txs_t *m,
                                  cmt_pb_arena_t *arena);
 
-/** cometbft@709fd12b proto/tendermint/mempool/types.pb.go:261-274 —
+/** cometbft@v0.38.26 proto/tendermint/mempool/types.pb.go:261-274 —
  *  `Txs.Size()`: Σ (1 + len + sovTypes(len)) over the elements; 0 for
  *  NULL (:262-264). Reads only the LENGTHS, never the bytes, so a
  *  descriptor may be sized with `{NULL, n}` elements. */
@@ -161,7 +161,7 @@ size_t cmt_pb_mempool_txs_size(const cmt_pb_mempool_txs_t *m);
  *  preserved as `cmt_pb_mempool_txs_init` preserves it. */
 void cmt_pb_mempool_message_init(cmt_pb_mempool_message_t *m);
 
-/** cometbft@709fd12b proto/tendermint/mempool/types.pb.go:212-227 —
+/** cometbft@v0.38.26 proto/tendermint/mempool/types.pb.go:212-227 —
  *  `Message.MarshalToSizedBuffer` (nil Sum writes nothing) and :234-249
  *  `Message_Txs.MarshalToSizedBuffer` (`0a ‖ len ‖ Txs body`). Written
  *  FORWARDS here — tag, then the exact `Txs.Size()`, then the body
@@ -174,7 +174,7 @@ int cmt_pb_mempool_message_marshal(const cmt_pb_mempool_message_t *m,
                                    uint8_t *out, size_t cap,
                                    size_t *out_len);
 
-/** cometbft@709fd12b proto/tendermint/mempool/types.pb.go:389-473 —
+/** cometbft@v0.38.26 proto/tendermint/mempool/types.pb.go:389-473 —
  *  `Message.Unmarshal`. Field 1 → a FRESH Txs decoded from the delimited
  *  body (:447-451); any other field skipped by wire type (:453-466). A
  *  nil `sum` after decoding is NOT refused here (the generated decoder
@@ -184,14 +184,14 @@ int cmt_pb_mempool_message_unmarshal(const uint8_t *in, size_t len,
                                      cmt_pb_mempool_message_t *m,
                                      cmt_pb_arena_t *arena);
 
-/** cometbft@709fd12b proto/tendermint/mempool/types.pb.go:276-286 —
+/** cometbft@v0.38.26 proto/tendermint/mempool/types.pb.go:276-286 —
  *  `Message.Size()`, with :288-299 `Message_Txs.Size()` folded in:
  *  0 for a nil Sum, else 1 + l + sovTypes(l) where l = Txs.Size(). */
 size_t cmt_pb_mempool_message_size(const cmt_pb_mempool_message_t *m);
 
 /* ── message.go — the p2p Wrapper / Unwrapper pair ──────────────────── */
 
-/** cometbft@709fd12b proto/tendermint/mempool/message.go:29-33 —
+/** cometbft@v0.38.26 proto/tendermint/mempool/message.go:29-33 —
  *  `(*Txs) Wrap()`: a Message whose Sum is this Txs. A SHALLOW copy —
  *  `out->txs` shares `m`'s slot storage, exactly as the Go wrapper shares
  *  the pointer.
@@ -199,10 +199,10 @@ size_t cmt_pb_mempool_message_size(const cmt_pb_mempool_message_t *m);
 int cmt_pb_mempool_txs_wrap(const cmt_pb_mempool_txs_t *m,
                             cmt_pb_mempool_message_t *out);
 
-/** cometbft@709fd12b proto/tendermint/mempool/message.go:37-45 —
+/** cometbft@v0.38.26 proto/tendermint/mempool/message.go:37-45 —
  *  `(*Message) Unwrap()`: the Txs branch, or the error "unknown message"
  *  for anything else (:42-43) — CMT_REJECT here. The p2p layer calls this
- *  on every received Message (p2p/peer.go:417-421) and a refused one
+ *  on every received Message (p2p/peer.go:425-429) and a refused one
  *  stops the peer; the reactor port does the same.
  *  @param out receives a pointer INTO `m`; valid while `m` is.
  *  @return CMT_OK, CMT_REJECT, CMT_FAULT on NULL. */

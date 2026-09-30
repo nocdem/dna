@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_p2p_pex.c
- * @brief cometbft @709fd12b `p2p/pex/pex_reactor.go` in C — the PEX
+ * @brief cometbft @v0.38.26 `p2p/pex/pex_reactor.go` in C — the PEX
  *        reactor as one event-loop pass, plus the PEX message codec.
  *
  * Contract, the goroutine → loop mapping, the NOT GROUNDED wire additions
@@ -1089,7 +1089,7 @@ static void receive_push(cmt_p2p_pex_t *r, cmt_p2p_peer_t *src,
 
     if (rec == NULL || cmt_p2p_addr_rec_parse(rec, len, &pr) != CMT_OK) {
         /* F4 OPEN item C9-4, closed in F5: an undecodable message stops
-         * the peer — peer.go:410-421 (Unmarshal / Unwrap panic into
+         * the peer — peer.go:418-429 (Unmarshal / Unwrap panic into
          * onPeerError → StopPeerForError), the same as every other
          * message this reactor cannot decode. */
         QGP_LOG_WARN(LOG_TAG, "malformed pushed record from %s", cmt_p2p_peer_id(src));
@@ -1133,7 +1133,7 @@ static void pex_receive(void *ctx, cmt_p2p_peer_t *src, uint8_t ch_id,
 
     (void)ch_id;
     rc = msg_unmarshal(msg, len, &m);
-    if (rc != CMT_OK || m.kind == 0) {                     /* peer.go:410-421 */
+    if (rc != CMT_OK || m.kind == 0) {                     /* peer.go:418-429 */
         QGP_LOG_WARN(LOG_TAG, "undecodable PEX message from %s", cmt_p2p_peer_id(src));
         msg_free(&m);
         cmt_p2p_switch_stop_peer_for_error(r->sw, src, CMT_P2P_PEX_ERR_DECODE);

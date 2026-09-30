@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_proposal.c
- * @brief cometbft @709fd12b `types/proposal.go` ported to C — see
+ * @brief cometbft @v0.38.26 `types/proposal.go` ported to C — see
  *        cmt_proposal.h for the contract and the taşınmadı list.
  *
  * Copyright (c) 2026 nocdem
@@ -12,7 +12,7 @@
 
 #include <string.h>
 
-/* cometbft@709fd12b types/proposal.go:35-46 — NewProposal().
+/* cometbft@v0.38.26 types/proposal.go:35-46 — NewProposal().
  * `now` replaces the reference's cmttime.Now() at :44; see cmt_proposal.h. */
 int cmt_new_proposal(int64_t height, int32_t round, int32_t pol_round,
                      const cmt_block_id_t *block_id, cmt_time_t now,
@@ -32,7 +32,7 @@ int cmt_new_proposal(int64_t height, int32_t round, int32_t pol_round,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/proposal.go:48-80 — (p *Proposal) ValidateBasic() */
+/* cometbft@v0.38.26 types/proposal.go:48-80 — (p *Proposal) ValidateBasic() */
 int cmt_proposal_validate_basic(const cmt_proposal_t *p)
 {
     if (p == NULL) {
@@ -99,8 +99,8 @@ int cmt_proposal_validate_block_size(const cmt_proposal_t *p,
     return CMT_OK;                                               /* :95 */
 }
 
-/* cometbft@709fd12b types/proposal.go:102-118 — ProposalSignBytes().
- * CanonicalizeProposal (:111) then MarshalDelimited (:112). */
+/* cometbft@v0.38.26 types/proposal.go:118-134 — ProposalSignBytes().
+ * CanonicalizeProposal (:127) then MarshalDelimited (:128). */
 int cmt_proposal_sign_bytes(const uint8_t *chain_id, size_t chain_id_len,
                             const cmt_pb_proposal_t *p,
                             uint8_t *out, size_t cap, size_t *out_len)
@@ -120,39 +120,39 @@ int cmt_proposal_sign_bytes(const uint8_t *chain_id, size_t chain_id_len,
     rc = cmt_pb_canonical_proposal_marshal(&cp, body, sizeof(body),
                                            &body_len);
     if (rc != CMT_OK) {
-        return rc;                                   /* :113-115 panics  */
+        return rc;                                   /* :129-131 panics  */
     }
     return cmt_pb_marshal_delimited(body, body_len, out, cap, out_len);
 }
 
-/* cometbft@709fd12b types/proposal.go:120-136 — (p *Proposal) ToProto() */
+/* cometbft@v0.38.26 types/proposal.go:136-152 — (p *Proposal) ToProto() */
 int cmt_proposal_to_proto(const cmt_proposal_t *p, cmt_pb_proposal_t *out)
 {
     if (out == NULL) {
         return CMT_FAULT;
     }
     if (p == NULL) {
-        cmt_pb_proposal_init(out);                   /* :122-124 empty   */
+        cmt_pb_proposal_init(out);                   /* :138-140 empty   */
         return CMT_OK;
     }
     *out = *p;
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/proposal.go:138-161 — ProposalFromProto() */
+/* cometbft@v0.38.26 types/proposal.go:154-177 — ProposalFromProto() */
 int cmt_proposal_from_proto(const cmt_pb_proposal_t *pp, cmt_proposal_t *out)
 {
     cmt_block_id_t bid;
     int            rc;
 
     if (pp == NULL || out == NULL) {
-        return CMT_FAULT;                            /* :141-143         */
+        return CMT_FAULT;                            /* :157-159         */
     }
-    rc = cmt_block_id_from_proto(&pp->block_id, &bid);           /* :147 */
+    rc = cmt_block_id_from_proto(&pp->block_id, &bid);           /* :163 */
     if (rc != CMT_OK) {
         return rc;
     }
-    *out = *pp;                                                  /* :152-158 */
+    *out = *pp;                                                  /* :168-174 */
     out->block_id = bid;
-    return cmt_proposal_validate_basic(out);                     /* :160 */
+    return cmt_proposal_validate_basic(out);                     /* :176 */
 }

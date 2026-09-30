@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_canonical.h
- * @brief cometbft @709fd12b `types/canonical.go` ported to C — the shapes
+ * @brief cometbft @v0.38.26 `types/canonical.go` ported to C — the shapes
  *        that get SIGNED.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -37,7 +37,7 @@
  *     re-labels it YOK for that reason.
  *   · `TimeFormat` (:13) — the format string CanonicalTime uses.
  *
- * Reference @709fd12b: types/canonical.go, 86 lines,
+ * Reference @v0.38.26: types/canonical.go, 86 lines,
  * 868e059415a616344f955c4539f9e0e30f38d24341e531563b8e38283f1edc33.
  * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * K-1 rev 2 (atlas-dec-3ba8153088b0d60c63083028023b61be),
@@ -62,7 +62,7 @@ extern "C" {
 #endif
 
 /**
- * cometbft@709fd12b types/canonical.go:18-34 — `CanonicalizeBlockID()`.
+ * cometbft@v0.38.26 types/canonical.go:18-34 — `CanonicalizeBlockID()`.
  *
  * The reference returns a POINTER, and returns nil for a zero BlockID
  * (:24-25); that nil is why a nil vote's sign bytes carry NO block id
@@ -81,7 +81,7 @@ extern "C" {
 int cmt_canonicalize_block_id(const cmt_pb_block_id_t *bid, bool *has,
                               cmt_pb_canonical_block_id_t *out);
 
-/** cometbft@709fd12b types/canonical.go:37-39 —
+/** cometbft@v0.38.26 types/canonical.go:37-39 —
  *  `CanonicalizePartSetHeader()`. A Go type conversion between two
  *  identically shaped messages, i.e. the identity here.
  *  @return CMT_OK, CMT_FAULT on NULL. */
@@ -89,7 +89,7 @@ int cmt_canonicalize_part_set_header(const cmt_pb_part_set_header_t *psh,
                                      cmt_pb_canonical_part_set_header_t *out);
 
 /**
- * cometbft@709fd12b types/canonical.go:42-52 — `CanonicalizeProposal()`.
+ * cometbft@v0.38.26 types/canonical.go:42-52 — `CanonicalizeProposal()`.
  * Type is forced to PROPOSAL (:44); Height and Round are re-typed to
  * sfixed64 (:45-46) and POLRound widens from int32 to INT64 (:47), which
  * is why CanonicalProposal's field 4 is an int64 varint while Proposal's
@@ -101,7 +101,7 @@ int cmt_canonicalize_proposal(const uint8_t *chain_id, size_t chain_id_len,
                               cmt_pb_canonical_proposal_t *out);
 
 /**
- * cometbft@709fd12b types/canonical.go:57-66 — `CanonicalizeVote()`.
+ * cometbft@v0.38.26 types/canonical.go:57-66 — `CanonicalizeVote()`.
  * Keeps the vote's OWN type (:59 — unlike the proposal's, which is
  * forced), drops ValidatorAddress, ValidatorIndex and everything about
  * extensions (:54-56), and adds the chain id.
@@ -112,7 +112,7 @@ int cmt_canonicalize_vote(const uint8_t *chain_id, size_t chain_id_len,
                           cmt_pb_canonical_vote_t *out);
 
 /**
- * cometbft@709fd12b types/canonical.go:71-78 —
+ * cometbft@v0.38.26 types/canonical.go:71-78 —
  * `CanonicalizeVoteExtension()`. Four fields and NO timestamp and NO type:
  * an extension signature covers the extension, the height, the round and
  * the chain id, and nothing else.

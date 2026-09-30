@@ -3,7 +3,7 @@
  * @brief The APPLICATION behind cometbft's `AppConnConsensus`
  *        (proxy/app_conn.go:18-27) and `AppConnMempool`
  *        (proxy/app_conn.go:29-36), implemented over the Ledger V2
- *        engine — cometbft @709fd12b `abci/types/application.go:11-34`
+ *        engine — cometbft @v0.38.26 `abci/types/application.go:11-34`
  *        method set, D-23 rev 5.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -54,12 +54,12 @@
  * stable total order and write nothing. No randomness, no hash-map
  * iteration, no wall-clock branch.
  *
- * Reference @709fd12b (read for the rules cited at each site):
+ * Reference @v0.38.26 (read for the rules cited at each site):
  *   proxy/app_conn.go        the two connection interfaces
  *   abci/types/application.go the method set and BaseApplication's
  *                            defaults
  *   consensus/replay.go:318-373  the InitChain call
- *   state/execution.go:101-323   the caller of every row here
+ *   state/execution.go:110-354   the caller of every row here
  * Governing records: D-23 rev 5 (atlas-dec-cb08dde681aa3c4ab1d1f1b33cdb68e1,
  * APPROVED; rev 6 PROPOSED records the lane as built), D-17 rev 7
  * (atlas-dec-9d96e2ec31ad4840cf258df21732b67f, APPROVED; rev 9 PROPOSED),
@@ -123,7 +123,7 @@ extern "C" {
  * not a crash) before anything is allocated for it:
  *
  *   PREP_BOUND — `nodus_cmt_app_ledger_t.prep_bound`, from
- *   `cmt_mempool_config_default()`'s own `.size` (5 000, config.go:796,
+ *   `cmt_mempool_config_default()`'s own `.size` (5 000, config.go:804,
  *   D-4 rev 3): the largest batch PrepareProposal can EVER be handed
  *   (`ReapMaxBytesMaxGas` walks at most `mem.txs.Len()`, itself capped at
  *   `size` — mempool/clist_mempool.go:536). `req->txs_len > prep_bound`
@@ -448,12 +448,12 @@ int nodus_cmt_app_init_chain(void *ctx,
                              const nodus_abci_request_init_chain_t *req,
                              nodus_abci_response_init_chain_t *resp);
 
-/** state/execution.go:129-153's callee — D-4 rev 3 (3)'s two rules. */
+/** state/execution.go:141-165's callee — D-4 rev 3 (3)'s two rules. */
 int nodus_cmt_app_prepare_proposal(
         void *ctx, const nodus_abci_request_prepare_proposal_t *req,
         nodus_abci_response_prepare_proposal_t *resp);
 
-/** state/execution.go:162-188's callee — the ledger's whole-block check. */
+/** state/execution.go:174-200's callee — the ledger's whole-block check. */
 int nodus_cmt_app_process_proposal(
         void *ctx, const nodus_abci_request_process_proposal_t *req,
         nodus_abci_response_process_proposal_t *resp);
@@ -471,7 +471,7 @@ int nodus_cmt_app_verify_vote_extension(
         nodus_abci_response_verify_vote_extension_t *resp);
 
 /**
- * state/execution.go:224-258's callee: the ledger's Comet apply lane.
+ * state/execution.go:255-289's callee: the ledger's Comet apply lane.
  * Returns one `ExecTxResult` per item in block order; a failing item is
  * a nonzero code and does NOT fail the block. CMT_FAULT means the ledger
  * could not APPLY a decided block — the host rolls back and stops.

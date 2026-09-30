@@ -1,6 +1,6 @@
 /**
  * @file nodus/src/witness/nodus_witness_cmt_privval.h
- * @brief cometbft @709fd12b `privval/file.go`'s FILE side for the
+ * @brief cometbft @v0.38.26 `privval/file.go`'s FILE side for the
  *        last-sign state — `FilePVLastSignState.Save` (:135-147) over
  *        `libs/tempfile.WriteFileAtomic` (:76-129), the state half of
  *        `loadFilePV` (:198-233), and the `libs/json` shape of the file.

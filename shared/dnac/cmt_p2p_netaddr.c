@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_p2p_netaddr.c
- * @brief cometbft @709fd12b `p2p/netaddress.go` + `p2p/key.go` (ID) +
+ * @brief cometbft @v0.38.26 `p2p/netaddress.go` + `p2p/key.go` (ID) +
  *        `p2p/errors.go` in C, with the Go standard library pieces they
  *        stand on (net.ParseIP / IP.String / SplitHostPort / JoinHostPort /
  *        IPNet.Contains, strconv.ParseUint, encoding/hex).

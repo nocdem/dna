@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_pb.h
- * @brief cometbft @709fd12b's proto3 wire encoding, reproduced in C (K-1).
+ * @brief cometbft @v0.38.26's proto3 wire encoding, reproduced in C (K-1).
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
  * Wave R1-A of the cometbft → C consensus port. No consensus path calls
@@ -75,7 +75,7 @@
  * here, because the generated Unmarshal does not apply them either. The
  * two exceptions, both because the reference itself checks at that point:
  *   · PublicKey branch 9 must be exactly 2592 bytes (K-2; the size rule
- *     follows crypto/encoding/codec.go:42-63, which refuses a wrong key
+ *     follows crypto/encoding/codec.go:50-77, which refuses a wrong key
  *     size on decode);
  *   · cmt_proof_from_proto ends in cmt_proof_validate_basic
  *     (crypto/merkle/proof.go:160).
@@ -89,10 +89,10 @@
  * ── ENUM VALUES ARE NOT VALIDATED ──────────────────────────────────────
  * proto3 enums are open and the generated decoders store whatever varint
  * arrives; so does this one. Rejecting an unknown SignedMsgType or
- * BlockIDFlag is ValidateBasic's job in a later wave (types/vote.go:278,
- * types/block.go:654), not the codec's.
+ * BlockIDFlag is ValidateBasic's job in a later wave (types/vote.go:282,
+ * types/block.go:660), not the codec's.
  *
- * Reference @709fd12b — .proto (field numbers/types) and .pb.go (which
+ * Reference @v0.38.26 — .proto (field numbers/types) and .pb.go (which
  * fields are written), SHA-256 of every one verified before use; the full
  * table is in tasks/comet-port-map.md "K-1" and "Pin tablosu eki (rev 4)".
  * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
@@ -134,7 +134,7 @@ extern "C" {
 
 /* ── enums, from the pinned .proto ──────────────────────────────────── */
 
-/** cometbft@709fd12b proto/tendermint/types/types.proto:17-23. */
+/** cometbft@v0.38.26 proto/tendermint/types/types.proto:17-23. */
 typedef enum {
     CMT_PB_MSG_TYPE_UNKNOWN   = 0,
     CMT_PB_MSG_TYPE_PREVOTE   = 1,
@@ -142,7 +142,7 @@ typedef enum {
     CMT_PB_MSG_TYPE_PROPOSAL  = 32
 } cmt_pb_signed_msg_type_t;
 
-/** cometbft@709fd12b proto/tendermint/types/validator.proto:14-17. */
+/** cometbft@v0.38.26 proto/tendermint/types/validator.proto:14-17. */
 typedef enum {
     CMT_PB_BLOCK_ID_FLAG_UNKNOWN = 0,
     CMT_PB_BLOCK_ID_FLAG_ABSENT  = 1,
@@ -207,7 +207,7 @@ typedef struct {
     cmt_proof_t    proof;      /* field 3, ALWAYS (cmt_merkle.h) */
 } cmt_pb_part_t;
 
-/** crypto/keys.proto:9-17 — `PublicKey`, with the ML-DSA-87 branch at
+/** crypto/keys.proto:9-18 — `PublicKey`, with the ML-DSA-87 branch at
  *  field 9 (K-2). `present` is false for the reference's nil oneof. */
 typedef struct {
     bool    present;
@@ -245,7 +245,7 @@ typedef struct {
 } cmt_pb_validator_set_t;
 
 /** params.proto:75-78 — `HashedParams`. H(marshal) is ConsensusHash
- *  (types/params.go:272-290). */
+ *  (types/params.go:275-293). */
 typedef struct {
     int64_t block_max_bytes;   /* field 1 */
     int64_t block_max_gas;     /* field 2 */
@@ -388,7 +388,7 @@ typedef struct {
  *
  * Note that this wrapper is used for the EvidenceList on the block wire,
  * NOT for hashing: `DuplicateVoteEvidence.Bytes()` (evidence.go:95-101)
- * and `EvidenceList.Hash()` (:450-461) both marshal the BARE
+ * and `EvidenceList.Hash()` (:453-464) both marshal the BARE
  * DuplicateVoteEvidence. Two different byte strings; do not confuse them.
  */
 typedef struct {
@@ -438,10 +438,10 @@ int cmt_pb_put_uvarint(uint8_t *out, size_t cap, size_t *off, uint64_t v);
 int cmt_pb_get_uvarint(const uint8_t *in, size_t len, size_t *off,
                        uint64_t *v);
 
-/** uvarint(len) ‖ message — cometbft@709fd12b libs/protoio/writer.go:96-103
+/** uvarint(len) ‖ message — cometbft@v0.38.26 libs/protoio/writer.go:96-103
  *  `MarshalDelimited()` and :78-86. This is the outer frame of every
- *  sign-bytes preimage (VoteSignBytes types/vote.go:148-156,
- *  ProposalSignBytes types/proposal.go:110-118), which waves R1-B / R1-C
+ *  sign-bytes preimage (VoteSignBytes types/vote.go:152-160,
+ *  ProposalSignBytes types/proposal.go:126-134), which waves R1-B / R1-C
  *  build on top of cmt_pb_canonical_vote_marshal / _proposal_marshal.
  *  @return CMT_OK, CMT_REJECT if it does not fit in `cap`. */
 int cmt_pb_marshal_delimited(const uint8_t *msg, size_t msg_len,
@@ -450,7 +450,7 @@ int cmt_pb_marshal_delimited(const uint8_t *msg, size_t msg_len,
 /* ── header-leaf helpers (K-1 rev 2 rule d) ─────────────────────────── */
 
 /**
- * cometbft@709fd12b types/encoding_helper.go:11-47 — `cdcEncode()`, the
+ * cometbft@v0.38.26 types/encoding_helper.go:11-47 — `cdcEncode()`, the
  * function that turns a header field into a Merkle LEAF.
  *
  * A leaf is the BARE marshal of a gogotypes wrapper — `Int64Value`,
@@ -555,28 +555,28 @@ int  cmt_pb_proof_marshal(const cmt_proof_t *m, uint8_t *out, size_t cap,
                           size_t *out_len);
 int  cmt_pb_proof_unmarshal(const uint8_t *in, size_t len, cmt_proof_t *m);
 
-/** cometbft@709fd12b crypto/merkle/proof.go:134-146 — `ToProto()`.
+/** cometbft@v0.38.26 crypto/merkle/proof.go:134-146 — `ToProto()`.
  *  A field-for-field copy; the identity on cmt_proof_t. Present so the
  *  reference row has a C counterpart and so call sites read alike. */
 int cmt_proof_to_proto(const cmt_proof_t *sp, cmt_proof_t *out);
 
-/** cometbft@709fd12b crypto/merkle/proof.go:148-161 — `ProofFromProto()`.
+/** cometbft@v0.38.26 crypto/merkle/proof.go:148-161 — `ProofFromProto()`.
  *  Decodes and then runs cmt_proof_validate_basic, which is the `return
  *  sp, sp.ValidateBasic()` of :160. */
 int cmt_proof_from_proto(const uint8_t *in, size_t len, cmt_proof_t *out);
 
-/** cometbft@709fd12b libs/bits/bit_array.go:475-484 — `ToProto()`.
+/** cometbft@v0.38.26 libs/bits/bit_array.go:480-489 — `ToProto()`.
  *  Returns CMT_BITS_NIL for the reference's nil result (a NULL array or
- *  one with no words, :476-478). */
+ *  one with no words, :481-483). */
 int cmt_bits_to_proto(const cmt_bit_array_t *ba, uint8_t *out, size_t cap,
                       size_t *out_len);
 
 /**
- * cometbft@709fd12b libs/bits/bit_array.go:487-497 — `FromProto()`.
+ * cometbft@v0.38.26 libs/bits/bit_array.go:492-502 — `FromProto()`.
  *
  * NOTE reference gap, closed here by the APPROVED INVARIANT: the reference
  * takes `Bits` straight off the wire and copies `Elems` without ever
- * checking that `len(Elems)` equals `(Bits+63)/64` (:493-496). A later
+ * checking that `len(Elems)` equals `(Bits+63)/64` (:498-501). A later
  * index derived from `Bits` then panics in Go — and would read out of
  * bounds in a literal C translation. This decoder REQUIRES
  * `n_elems == (bits+63)/64` and `bits >= 0`, and refuses anything else.
@@ -602,7 +602,7 @@ int cmt_bits_from_proto(const uint8_t *in, size_t len, cmt_bit_array_t *ba);
  *
  * The same four fields as CommitSig plus the vote extension and its
  * signature. `commit_sig` is a MEMBER rather than four repeated fields
- * because the Go type EMBEDS CommitSig (types/block.go:722-726), so
+ * because the Go type EMBEDS CommitSig (types/block.go:728-732), so
  * `ecs.ValidatorAddress` there is `ecs->commit_sig.validator_address`
  * here; the wire field numbers 1-4 are unchanged by the embedding
  * (types.pb.go:1832-1879 writes them through the same code).
@@ -1052,14 +1052,14 @@ typedef struct {
     const cmt_pb_commit_t *last_commit;   /* 4 POINTER */
 } cmt_pb_block_t;
 
-/** cometbft@709fd12b proto/tendermint/types/evidence.pb.go:581-601 —
+/** cometbft@v0.38.26 proto/tendermint/types/evidence.pb.go:581-601 —
  *  `EvidenceList.MarshalToSizedBuffer`.
  *  @return CMT_OK, CMT_REJECT if it does not fit or an element will not
  *          encode, CMT_FAULT on NULL. */
 int cmt_pb_evidence_list_marshal(const cmt_pb_evidence_list_t *m,
                                  uint8_t *out, size_t cap, size_t *out_len);
 
-/** cometbft@709fd12b proto/tendermint/types/block.pb.go:136-184 —
+/** cometbft@v0.38.26 proto/tendermint/types/block.pb.go:136-184 —
  *  `Block.MarshalToSizedBuffer`. */
 int cmt_pb_block_marshal(const cmt_pb_block_t *m, uint8_t *out, size_t cap,
                          size_t *out_len);

@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_mem.h
- * @brief cometbft @709fd12b's Flood mempool — `mempool/clist_mempool.go`,
+ * @brief cometbft @v0.38.26's Flood mempool — `mempool/clist_mempool.go`,
  *        `cache.go`, `ids.go`, `mempoolTx.go`, `tx.go`, `errors.go`,
  *        `mempool.go` and the mempool section of `config/config.go` —
  *        ported to C as ONE synchronous module.
@@ -32,7 +32,7 @@
  * `resCbFirstTime` (:401-474). Rechecking (:647-689) sends every request
  * (:658-671), flushes (:674) and WAITS for the responses or a timeout
  * (:678-683), tracking the in-flight responses with the `recheck` cursor
- * (:697-801). Its own comment at :662-663 describes the other client:
+ * (:710-812). Its own comment at :662-663 describes the other client:
  * "If we're using a sync client, the resCbRecheck callback will be
  * called right after receiving the response."
  *
@@ -52,20 +52,20 @@
  *     finished; discard late recheck response" guard, then
  *     `resCbRecheck`). The `recheck` cursor struct is ported literally
  *     and driven in the order the reference drives it; its `doneCh`
- *     (:700, :749-752, :785-787) is gone because nothing waits on it.
+ *     (:713, :760-763, :796-798) is gone because nothing waits on it.
  *     The `select` of :678-683 collapses: after the loop, nothing
  *     asynchronous can ever complete the recheck, so the timeout branch
  *     (:679-681, `setDone` and the error log) is taken immediately when
  *     the recheck is not already done — which, with every answer
- *     processed in line, it always is. `RecheckTimeout` (config.go:739)
+ *     processed in line, it always is. `RecheckTimeout` (config.go:747)
  *     therefore stays a field of the config, set by the default, and is
  *     NEVER READ (D-20 rev 3: the mempool reads no clock).
  *   · `Lock`/`Unlock` (:154-164) keep `setRecheckFull` (:155) and lose
  *     the mutex; `updateMtx.RLock` at :228, :188, :525, :566 is dropped;
- *     the `atomic` fields (:27-31, :701-703; since the v0.38.26 re-pin
- *     the recheck's `numPendingTxs` and `state`, v0.38.26 :714-715) are
- *     plain fields, and `setRecheckFull`'s CompareAndSwap (v0.38.26
- *     :804-806) is a compare-then-set.
+ *     the `atomic` fields (:27-31, :714-715 — since the v0.38.26 re-pin
+ *     the recheck's `numPendingTxs` and `state`) are
+ *     plain fields, and `setRecheckFull`'s CompareAndSwap
+ *     (:804-806) is a compare-then-set.
  *   · `TxsWaitChan` (:211-213) and `TxsAvailable`'s channel (:32, :506)
  *     are replaced: the reactor polls `cmt_mem_txs_front`, and the
  *     TxsAvailable signal is a CALLBACK the host registers with
@@ -80,11 +80,11 @@
  *     stay as rows of the application table.
  *
  * ── THE MEMPOOL WAL IS OFF ─────────────────────────────────────────────
- * D-4 rev 3: `WalPath ""` (config.go:793) — the reference's default. This
- * file at @709fd12b carries no WAL branch in `CheckTx` (:223-278 has
+ * D-4 rev 3: `WalPath ""` (config.go:801) — the reference's default. This
+ * file at @v0.38.26 carries no WAL branch in `CheckTx` (:223-278 has
  * none; the dispatch's ":277-280 wal nil branch" does not exist in the
  * pinned bytes, and nothing is ported for it). `WalPath`, `RootDir`,
- * `WalDir` and `WalEnabled` (config.go:723, :750, :813-820) are not
+ * `WalDir` and `WalEnabled` (config.go:731, :758, :821-828) are not
  * fields here.
  *
  * ── SUBSTITUTIONS (umbrella rev 4 table) ───────────────────────────────
@@ -115,7 +115,7 @@
  *   · :336  "rechecking has not finished"   — ordering inside this node
  *   · :512  "notified txs available but mempool is empty!"
  *   · :669  (re-)CheckTx request failed
- *   · :714  "more than one rechecking process at a time"
+ *   · :726  "more than one rechecking process at a time"
  *   · ids.go:32 "maximum active IDs"        — reachable only through
  *     re-reserving without reclaiming (see cmt_mem_ids_reserve_for_peer)
  *   · Go's implicit index panic at :603 (`txResults[i]` shorter than
@@ -125,10 +125,10 @@
  *     can. A hash-backend failure — or the cache's own bookkeeping
  *     giving out — is this node's, not the sender's: CMT_FAULT out of
  *     `cmt_mem_check_tx` and `cmt_mem_update`, NEVER `ErrTxInCache`
- *     (which is a REJECT the reactor merely logs, reactor.go:160-161).
+ *     (which is a REJECT the reactor merely logs, reactor.go:170-171).
  * Go `error` returns (errors.go) → CMT_REJECT with the kind and its
  * fields in `cmt_mem_error_t`, because the reactor switches on the kind
- * (reactor.go:159-167) and the RPC renders it.
+ * (reactor.go:169-177) and the RPC renders it.
  *
  * ── DETERMINISM ────────────────────────────────────────────────────────
  * No clock. No randomness. The two hash maps of the reference — `txsMap`
@@ -139,14 +139,14 @@
  * order. Two nodes fed the same calls in the same order hold the same
  * pool.
  *
- * Reference @709fd12b (SHA-256 verified before use; pin record rev 12 →
+ * Reference @v0.38.26 (SHA-256 verified before use; pin record rev 12 →
  * rev 15, atlas-dec-483ec17cbb352ef0ec2267ccd953339c):
- *   mempool/mempool.go        149  1fab7e19…    mempool/clist_mempool.go 801  284ebb49…
+ *   mempool/mempool.go        149  1fab7e19…    mempool/clist_mempool.go 812  87c360cf…
  *   mempool/cache.go          120  aac20c69…    mempool/ids.go            71  eff4c115…
  *   mempool/tx.go              17  32f0416a…    mempool/mempoolTx.go      34  9a055237…
  *   mempool/errors.go          89  ecfbfc51…    mempool/doc.go            23  8ac76674…
  *   mempool/nop_mempool.go    107  45e556b0… (read to keep the interface identical)
- *   config/config.go         1283  f0c2f601… (:43-44, :702-850)
+ *   config/config.go         1304  761c747f… (:43-44, :710-858)
  *   types/tx.go               192  186fd682… (:15-35, :186-192)
  *   state/tx_filter.go         26  be0d7434…
  *   proto/tendermint/abci/types.proto 494 b0b78373… (:94-102, :262-277)
@@ -160,11 +160,11 @@
  *
  * RE-PIN to cometbft v0.38.26 (decisions/2026-09-30-cometbft-pin-
  * v0.38.26.md): the one clist_mempool.go change (#5837, the recheck
- * state enum) is ported; the recheck section (`cmt_mem_recheck_t`,
- * cmt_mem.c "the recheck cursor") cites v0.38.26 lines, everything else
- * in this module still cites 709fd12b (identical code, same lines up to
+ * state enum) is ported; every `:NNN` in this module is a v0.38.26 line
+ * (clist_mempool.go is identical to 709fd12b's, same lines, up to
  * :690). Local copy: /home/nocdem/refs/cometbft-v0.38.26/mempool/
  * clist_mempool.go 812 lines 87c360cf4ff176893d0925ec7214203ab7f5f9bffd2a0376b343a1996ec5e458.
+ *
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -187,11 +187,11 @@
 extern "C" {
 #endif
 
-/* ══ config/config.go:702-850 — MempoolConfig ═════════════════════════ */
+/* ══ config/config.go:710-858 — MempoolConfig ═════════════════════════ */
 
 /** config.go:43-44 — `MempoolTypeFlood = "flood"`, `MempoolTypeNop =
  *  "nop"`; the empty string is the backwards-compatible value
- *  `ValidateBasic` also accepts (:827). The Go field is a string; here
+ *  `ValidateBasic` also accepts (:835). The Go field is a string; here
  *  an enum whose zero value is that empty string. Only FLOOD is
  *  implemented in this tree (D-4 rev 3); NOP exists so ValidateBasic can
  *  be ported check for check. */
@@ -202,37 +202,37 @@ typedef enum {
 } cmt_mempool_type_t;
 
 /**
- * config.go:710-784 — `type MempoolConfig`, field for field, minus the
- * two path fields (`RootDir` :723, `WalPath` :750 — the mempool WAL is
+ * config.go:718-792 — `type MempoolConfig`, field for field, minus the
+ * two path fields (`RootDir` :731, `WalPath` :758 — the mempool WAL is
  * off, see the header). Go's `int` is 64 bits on this project's targets;
  * the `int` fields here are C `int`, which holds every default and every
  * value the port sizes with.
  */
 typedef struct {
-    cmt_mempool_type_t type;                     /* :719 */
-    bool    recheck;                             /* :729 */
-    int64_t recheck_timeout;                     /* :739 — nanoseconds; NEVER READ (header) */
-    bool    broadcast;                           /* :745 */
-    int     size;                                /* :752 */
-    int64_t max_txs_bytes;                       /* :756 */
-    int     cache_size;                          /* :758 */
-    bool    keep_invalid_txs_in_cache;           /* :762 */
-    int     max_tx_bytes;                        /* :765 */
-    int     max_batch_bytes;                     /* :769 — "XXX: Unused" for sending, in the reference too; read since v0.38.26 by the receive filter (mempool/reactor.go:145) */
-    int     experimental_max_gossip_connections_to_persistent_peers;      /* :782 */
-    int     experimental_max_gossip_connections_to_non_persistent_peers;  /* :783 */
+    cmt_mempool_type_t type;                     /* :727 */
+    bool    recheck;                             /* :737 */
+    int64_t recheck_timeout;                     /* :747 — nanoseconds; NEVER READ (header) */
+    bool    broadcast;                           /* :753 */
+    int     size;                                /* :760 */
+    int64_t max_txs_bytes;                       /* :764 */
+    int     cache_size;                          /* :766 */
+    bool    keep_invalid_txs_in_cache;           /* :770 */
+    int     max_tx_bytes;                        /* :773 */
+    int     max_batch_bytes;                     /* :777 — "XXX: Unused" for sending, in the reference too; read since v0.38.26 by the receive filter (mempool/reactor.go:145) */
+    int     experimental_max_gossip_connections_to_persistent_peers;      /* :790 */
+    int     experimental_max_gossip_connections_to_non_persistent_peers;  /* :791 */
 } cmt_mempool_config_t;
 
-/** config.go:786-803 — `DefaultMempoolConfig()`, every value at its
+/** config.go:794-811 — `DefaultMempoolConfig()`, every value at its
  *  cited line. `max_batch_bytes` is not set there and is 0.
  *  @return CMT_OK, CMT_FAULT on NULL. */
 int cmt_mempool_config_default(cmt_mempool_config_t *out);
 
-/** config.go:824-850 — `(*MempoolConfig) ValidateBasic()`: the type
- *  must be flood, nop or empty (:825-830); `Size`, `MaxTxsBytes`,
+/** config.go:832-858 — `(*MempoolConfig) ValidateBasic()`: the type
+ *  must be flood, nop or empty (:833-838); `Size`, `MaxTxsBytes`,
  *  `CacheSize`, `MaxTxBytes` and the two experimental bounds must not be
- *  negative (:831-848). `TestMempoolConfig` (:806-810), `WalDir`
- *  (:813-815) and `WalEnabled` (:818-820) are not ported.
+ *  negative (:839-856). `TestMempoolConfig` (:814-818), `WalDir`
+ *  (:821-823) and `WalEnabled` (:826-828) are not ported.
  *  @return CMT_OK, CMT_REJECT (the reference's error), CMT_FAULT on NULL. */
 int cmt_mempool_config_validate_basic(const cmt_mempool_config_t *cfg);
 
@@ -438,7 +438,7 @@ typedef enum {
 /**
  * The error value: the kind plus the fields the typed errors carry, so a
  * caller can render the reference's messages (:26, :40-46, :55, :72,
- * :84) or branch on the kind as the reactor does (reactor.go:159-167).
+ * :84) or branch on the kind as the reactor does (reactor.go:169-177).
  * `Unwrap` (:58-60, :75-77, :87-89) is `wrapped`: the code the wrapped
  * callback returned.
  */
@@ -472,7 +472,7 @@ bool cmt_mem_is_pre_check_error(const cmt_mem_error_t *e);
 typedef struct {
     uint16_t       sender_id;          /* :13 — the mempool id, 0 = unknown */
     const uint8_t *sender_p2p_id;      /* :16 — the witness id, logging only */
-    size_t         sender_p2p_id_len;  /* 0 when there is none (:150-152 of reactor.go) */
+    size_t         sender_p2p_id_len;  /* 0 when there is none (:160-162 of reactor.go) */
 } cmt_mem_tx_info_t;
 
 /* ══ mempool/mempoolTx.go:11-19 — mempoolTx ═══════════════════════════ */
@@ -813,7 +813,7 @@ int cmt_mem_flush_app_conn(cmt_mem_t *mem, cmt_mem_error_t *out_err);
 int cmt_mem_flush(cmt_mem_t *mem);
 
 /** clist_mempool.go:202-204 — `TxsFront()`: the reactor's starting
- *  cursor (reactor.go:201). `TxsWaitChan` (:211-213) is not ported — the
+ *  cursor (reactor.go:211). `TxsWaitChan` (:211-213) is not ported — the
  *  reactor polls this instead. */
 cmt_clist_elem_t *cmt_mem_txs_front(const cmt_mem_t *mem);
 
@@ -841,7 +841,7 @@ cmt_clist_elem_t *cmt_mem_txs_front(const cmt_mem_t *mem);
  *
  * @param info the sender (tx.go); required.
  * @param out_res the `cb` of :225 — the RPC's external callback; may be
- *        NULL (the reactor passes nil at reactor.go:157).
+ *        NULL (the reactor passes nil at reactor.go:167).
  * @param out_err receives the error kind on CMT_REJECT; may be NULL.
  * @return CMT_OK, CMT_REJECT, CMT_FAULT (NULL; the panics at :273 and
  *         :336; allocation; `notifyTxsAvailable`'s :512; a cache

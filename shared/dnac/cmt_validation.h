@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_validation.h
- * @brief cometbft @709fd12b `types/validation.go` ported to C — verifying
+ * @brief cometbft @v0.38.26 `types/validation.go` ported to C — verifying
  *        that more than 2/3 of a validator set signed a commit.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -16,25 +16,25 @@
  * the previous set's voting power is not a continuation of anything.
  *
  * ── EVERY SIGNATURE IS CHECKED, AND THAT IS DELIBERATE ─────────────────
- * `VerifyCommit` passes `countAllSignatures = true` (validation.go:52), so
+ * `VerifyCommit` passes `countAllSignatures = true` (validation.go:53), so
  * it does NOT stop at the first 2/3 it reaches. The reference's own
- * comment (:22-26) gives the reason: an application's incentive logic sees
+ * comment (:23-27) gives the reason: an application's incentive logic sees
  * WHICH validators signed, so a commit that includes a bad signature after
  * the threshold must still be refused. A port that exited early would
  * accept commits the reference rejects — the exact shape of a chain split.
  *
  * ── BATCH VERIFICATION IS UNREACHABLE HERE ─────────────────────────────
- * `shouldBatchVerify` (:14-18) requires `batch.SupportsBatchVerifier` for
+ * `shouldBatchVerify` (:15-19) requires `batch.SupportsBatchVerifier` for
  * the proposer's key type (crypto/crypto.go:44-54, crypto/batch). There is
  * no ML-DSA-87 batch verifier — the port map records this at ~954 — so the
  * predicate is FALSE for every key this chain has, and `verifyCommitBatch`
- * (:214-318) has no reachable call site. The predicate is ported as a
+ * (:215-323) has no reachable call site. The predicate is ported as a
  * function that returns false with the citation, and the batch routine is
  * NOT ported: see the taşınmadı list.
  *
  * ── THE LIGHT FAMILY: `VerifyCommitLight` IS PORTED, Trusting IS NOT ──
  * `VerifyCommitLight` / `VerifyCommitLightAllSignatures` /
- * `verifyCommitLightInternal` (:61-115) are PORTED (blocksync port,
+ * `verifyCommitLightInternal` (:62-116) are PORTED (blocksync port,
  * 2026-09-29), for their then caller `blocksync/reactor.go:496` @709fd12b
  * and the operator's answer in
  * docs/plans/decisions/2026-09-29-blocksync-before-testnet.md ("follow
@@ -44,25 +44,25 @@
  * (v0.38.26 reactor.go:580-585, "Fully verify second.LastCommit";
  * cmt_bsync_reactor.c process_first), so the light pair has NO
  * production caller today — only its tests. The wrappers at
- * `validator_set.go:708-720` are ported with them
- * (cmt_validator_set.h). `VerifyCommitLightTrusting*` (:125-192) stay YOK
+ * `validator_set.go:763-775` are ported with them
+ * (cmt_validator_set.h). `VerifyCommitLightTrusting*` (:126-193) stay YOK
  * by the port map's REV 3/3.1 scope rule (map ~892, ~950): their callers
  * are `light/` and the evidence pool, which this port does not build.
  *
  * `verifyCommitSingle` keeps BOTH of its lookup branches and both of its
  * predicate parameters, because they are that function's parameters and
  * dropping them would be a different function. `look_up_by_index = true`
- * is reachable from `cmt_verify_commit` (:51-52, CMT_SIG_POLICY_COMMIT)
- * and from `cmt_verify_commit_light*` (:113-114, CMT_SIG_POLICY_LIGHT);
+ * is reachable from `cmt_verify_commit` (:52-53, CMT_SIG_POLICY_COMMIT)
+ * and from `cmt_verify_commit_light*` (:114-115, CMT_SIG_POLICY_LIGHT);
  * the address branch is reachable only from the Trusting family, and it
  * is ported — with its double-vote check — so that the row is complete
  * and testable.
  *
  * ── Substitutions, and nothing else ────────────────────────────────────
  *  · signature ML-DSA-87 via `qgp_dsa87_verify`, exactly as `cmt_vote_verify`
- *    (cmt_vote.c) does it, in place of `val.PubKey.VerifySignature` (:381);
- *  · `tmhash.Size` 32 → CMT_TMHASH_SIZE 64 at :197 — but that row,
- *    `ValidateHash` (:196-204), is ALREADY PORTED, as `cmt_validate_hash`
+ *    (cmt_vote.c) does it, in place of `val.PubKey.VerifySignature` (:390);
+ *  · `tmhash.Size` 32 → CMT_TMHASH_SIZE 64 at :198 — but that row,
+ *    `ValidateHash` (:197-205), is ALREADY PORTED, as `cmt_validate_hash`
  *    (cmt_part_set.h:128). It is NOT duplicated here; it lives there
  *    because `part_set.go:140` calls it and putting it in cmt_block.h
  *    would have made two headers include each other.
@@ -77,16 +77,16 @@
  * ── WHICH ERROR TYPES ARE COLLAPSED INTO CMT_REJECT ────────────────────
  * The reference distinguishes them by Go type; this port distinguishes
  * only "the input is bad". The full list, so nothing is hidden:
- *   · `ErrInvalidCommitSignatures{Expected, Actual}` (:414;
+ *   · `ErrInvalidCommitSignatures{Expected, Actual}` (:423;
  *     types/errors.go:12-15, :30-35) — set size ≠ signature count;
- *   · `ErrInvalidCommitHeight{Expected, Actual}` (:419;
+ *   · `ErrInvalidCommitHeight{Expected, Actual}` (:428;
  *     types/errors.go:5-9, :20-25) — wrong height;
- *   · the unnamed `fmt.Errorf` at :422-423 — wrong BlockID;
- *   · the unnamed `fmt.Errorf`s at :350 (a CommitSig that fails
- *     ValidateBasic), :370 (a double vote in the address branch), :376 (a
- *     validator with a nil PubKey) and :382 (a wrong signature).
- * ONLY `ErrNotEnoughVotingPowerSigned{Got, Needed}` (:398;
- * validator_set.go:800-805) survives as a value, because its two numbers
+ *   · the unnamed `fmt.Errorf` at :431-432 — wrong BlockID;
+ *   · the unnamed `fmt.Errorf`s at :355 (a CommitSig that fails
+ *     ValidateBasic), :379 (a double vote in the address branch), :385 (a
+ *     validator with a nil PubKey) and :391 (a wrong signature).
+ * ONLY `ErrNotEnoughVotingPowerSigned{Got, Needed}` (:407;
+ * validator_set.go:855-860) survives as a value, because its two numbers
  * are the answer to "how far short was it" and no return code can carry
  * them. It reaches the caller through the optional `err` out-parameter.
  *
@@ -101,19 +101,19 @@
  * same commit and the same set reach the same verdict.
  *
  * ── taşınmadı (not ported), with the reason ────────────────────────────
- *   · :125-192 `VerifyCommitLightTrusting`,
+ *   · :126-193 `VerifyCommitLightTrusting`,
  *              `VerifyCommitLightTrustingAllSignatures`,
  *              `verifyCommitLightTrustingInternal`
  *                                  — YOK, scope rule (light client /
  *       evidence pool); see above. `verifyCommitLightTrusting`
  *       additionally needs `cmtmath.Fraction` and a trust level, which no
  *       in-scope caller supplies.
- *   (:61-115, the `VerifyCommitLight` trio, were on this list until the
+ *   (:62-116, the `VerifyCommitLight` trio, were on this list until the
  *   blocksync port; they are ported below.)
- *   · :196-204 `ValidateHash`       — ALREADY PORTED as `cmt_validate_hash`
+ *   · :197-205 `ValidateHash`       — ALREADY PORTED as `cmt_validate_hash`
  *       (cmt_part_set.h:128). Not duplicated; see above.
- *   · :214-318 `verifyCommitBatch`  — taşınmadı: ULAŞILMAZ (v0.38.26
- *       :215-323, which adds the Tachyon address check at :250-253 — not
+ *   · :215-323 `verifyCommitBatch`  — taşınmadı: ULAŞILMAZ (v0.38.21
+ *       added the Tachyon address check at :250-253 to it — not
  *       ported with it, for the same reason). There is no
  *       ML-DSA-87 batch verifier (crypto/crypto.go:44-54; crypto/batch;
  *       port map ~954), so `shouldBatchVerify` is false for every key here
@@ -121,14 +121,14 @@
  *       inventing a batch API the crypto layer does not have — the
  *       definition of kafadan. `cmt_should_batch_verify` below records the
  *       predicate and its answer.
- *   · :12 `batchVerifyThreshold`    — a constant used only by the batch
+ *   · :13 `batchVerifyThreshold`    — a constant used only by the batch
  *       routine and by `shouldBatchVerify`'s first conjunct; the predicate
  *       below is false on the SECOND conjunct regardless, so the constant
  *       has no behavioural role here. Cited, not defined.
  *
- * Reference @709fd12b (SHA-256 verified before use):
- *   types/validation.go 427 lines
- *     29ea9aa38bf65dcb68c27fcc0c6c4229e0a0f55814ce52c45c49cc06c7c14a7a
+ * Reference @v0.38.26 (SHA-256 verified before use):
+ *   types/validation.go 436 lines
+ *     195fdda35aebc7ba584a7312e321373859866369d56bd67c676ceff78c70d67d
  *   types/errors.go      41 lines
  *     017c05d95f906d3dc0ceddb51e29618136ea66085ef36f41493fc64b26cfe50c
  *   crypto/crypto.go     54 lines
@@ -162,7 +162,7 @@ extern "C" {
  * The reference's two closure PAIRS, as one enumerated policy.
  *
  * `verifyCommitSingle` takes `ignoreSig` and `countSig` as function values
- * (:332-333). Every call site in the pinned tree passes one of exactly two
+ * (:337-338). Every call site in the pinned tree passes one of exactly two
  * pairs, so they are enumerated here rather than made function pointers:
  * an enum keeps the call direct (no indirect call in a consensus path) and
  * makes the two policies readable side by side. The SEMANTICS are the
@@ -170,9 +170,9 @@ extern "C" {
  */
 typedef enum {
     /**
-     * validation.go:39, :42 — `VerifyCommit`'s pair.
-     *   ignore: `BlockIDFlag == BlockIDFlagAbsent`  (:39)
-     *   count : `BlockIDFlag == BlockIDFlagCommit`  (:42)
+     * validation.go:40, :43 — `VerifyCommit`'s pair.
+     *   ignore: `BlockIDFlag == BlockIDFlagAbsent`  (:40)
+     *   count : `BlockIDFlag == BlockIDFlagCommit`  (:43)
      * So an ABSENT entry is skipped entirely; a NIL entry IS VERIFIED but
      * does NOT count toward the tally; only a COMMIT entry counts. That
      * middle case is the one worth remembering: a validator who signed for
@@ -181,11 +181,11 @@ typedef enum {
      */
     CMT_SIG_POLICY_COMMIT = 0,
     /**
-     * validation.go:101, :104 — the light family's pair.
-     *   ignore: `BlockIDFlag != BlockIDFlagCommit`  (:101)
-     *   count : always true                         (:104)
+     * validation.go:102, :105 — the light family's pair.
+     *   ignore: `BlockIDFlag != BlockIDFlagCommit`  (:102)
+     *   count : always true                         (:105)
      * Passed by `cmt_verify_commit_light` and
-     * `cmt_verify_commit_light_all_signatures` (:109, :113-114), which have
+     * `cmt_verify_commit_light_all_signatures` (:110, :114-115), which have
      * NO production caller since the v0.38.26 pin: block sync, their
      * caller @709fd12b (reactor.go:496), now calls the full
      * `cmt_verify_commit` (v0.38.26 reactor.go:580-585). A NIL entry is
@@ -196,18 +196,18 @@ typedef enum {
 } cmt_commit_sig_policy_t;
 
 /**
- * cometbft@709fd12b types/validation.go:14-18 — `shouldBatchVerify()`.
+ * cometbft@v0.38.26 types/validation.go:15-19 — `shouldBatchVerify()`.
  *
  * ALWAYS FALSE IN THIS PORT, and not because of a shortcut. The second
  * conjunct is `batch.SupportsBatchVerifier(vals.GetProposer().PubKey)`,
  * and the batch package has no ML-DSA-87 implementation to support
  * (crypto/crypto.go:44-54 defines the `BatchVerifier` interface; the port
  * map records the absence at ~954). The first conjunct
- * (`len(commit.Signatures) >= batchVerifyThreshold`, :15) and the third
- * (`vals.AllKeysHaveSameType()`, :17) are therefore never decisive.
+ * (`len(commit.Signatures) >= batchVerifyThreshold`, :16) and the third
+ * (`vals.AllKeysHaveSameType()`, :18) are therefore never decisive.
  *
  * It is ported as a real function rather than deleted so that
- * `cmt_verify_commit` can make the reference's branch (:45-48) visible and
+ * `cmt_verify_commit` can make the reference's branch (:46-49) visible and
  * so that a future key type with a batch verifier changes ONE function.
  *
  * @return false, always.
@@ -216,13 +216,13 @@ bool cmt_should_batch_verify(const cmt_validator_set_t *vals,
                              const cmt_commit_t *commit);
 
 /**
- * cometbft@709fd12b types/validation.go:404-427 —
+ * cometbft@v0.38.26 types/validation.go:413-436 —
  * `verifyBasicValsAndCommit()`.
  *
- * Four checks in the reference's order: a non-NULL set (:405-407), a
- * non-NULL commit (:409-411), `vals.Size() == len(commit.Signatures)`
- * (:413-415), `height == commit.Height` (:418-420) and
- * `blockID.Equals(commit.BlockID)` (:421-424).
+ * Four checks in the reference's order: a non-NULL set (:414-416), a
+ * non-NULL commit (:418-420), `vals.Size() == len(commit.Signatures)`
+ * (:422-424), `height == commit.Height` (:427-429) and
+ * `blockID.Equals(commit.BlockID)` (:430-433).
  *
  * NOTE on the two NULL cases: the reference returns an ERROR for them, not
  * a panic — so a literal reading would make them CMT_REJECT. They are
@@ -267,7 +267,7 @@ int cmt_verify_basic_vals_and_commit(const cmt_validator_set_t *vals,
  *        proposer/total cache makes a const set awkward at every call
  *        site; the set is not modified.
  * @param voting_power_needed the threshold, already computed by the caller
- *        (the reference computes it in each wrapper, :36 / :98 / :173).
+ *        (the reference computes it in each wrapper, :37 / :99 / :174).
  * @param count_all_signatures when false, the loop returns as soon as the
  *        tally EXCEEDS the threshold (:401-403). `cmt_verify_commit`
  *        passes true; see "EVERY SIGNATURE IS CHECKED" in the header.
@@ -293,26 +293,26 @@ int cmt_verify_commit_single(const uint8_t *chain_id, size_t chain_id_len,
                              cmt_vs_error_t *err);
 
 /**
- * cometbft@709fd12b types/validation.go:27-53 — `VerifyCommit()`.
+ * cometbft@v0.38.26 types/validation.go:28-54 — `VerifyCommit()`.
  *
  * "Verifies +2/3 of the set had signed the given commit." The threshold is
- * `vals.TotalVotingPower() * 2 / 3` (:36) and the comparison is STRICTLY
- * GREATER (`got <= needed` rejects, :397) — so it is more than two thirds,
+ * `vals.TotalVotingPower() * 2 / 3` (:37) and the comparison is STRICTLY
+ * GREATER (`got <= needed` rejects, :406) — so it is more than two thirds,
  * not at least two thirds. With a total of 100 the threshold is 66 and 67
  * is required; with a total of 3 the threshold is 2 and 3 is required.
  *
- * The reference's own note at :34-35 about the multiplication: the total
+ * The reference's own note at :35-36 about the multiplication: the total
  * is capped at `MaxTotalVotingPower = MaxInt64 / 8`
  * (validator_set.go:27), so `total * 2` cannot overflow. That is not
  * assumed here — `cmt_validator_set_total_voting_power` reaches
  * `updateTotalVotingPower`, which refuses a total above the cap
- * (validator_set.go:319-324, CMT_FAULT per deviation register R1C-4), so
+ * (validator_set.go:319-321, CMT_FAULT per deviation register R1C-4), so
  * on any path that returns CMT_OK the bound HOLDS and the doubling is
  * provably safe.
  *
  * @param vals NOT const: `TotalVotingPower()` writes the set's lazily
  *        recomputed cache, exactly as the reference's does
- *        (validator_set.go:332-337).
+ *        (validator_set.go:341-348).
  * @param err may be NULL; see `cmt_verify_commit_single`.
  * @return CMT_OK, CMT_REJECT, CMT_FAULT.
  */
@@ -324,25 +324,25 @@ int cmt_verify_commit(const uint8_t *chain_id, size_t chain_id_len,
                       cmt_vs_error_t *err);
 
 /**
- * cometbft@709fd12b types/validation.go:57-69 — `VerifyCommitLight()`.
+ * cometbft@v0.38.26 types/validation.go:58-70 — `VerifyCommitLight()`.
  *
  * "Verifies +2/3 of the set had signed the given commit. This method is
  * primarily used by the light client and does NOT check all the
- * signatures." (:57-60). It is `verifyCommitLightInternal(..., false)`
- * (:68): the SAME basic checks as `VerifyCommit` (:93-95 →
+ * signatures." (:58-61). It is `verifyCommitLightInternal(..., false)`
+ * (:69): the SAME basic checks as `VerifyCommit` (:94-96 →
  * verifyBasicValsAndCommit), the same threshold `total * 2 / 3` compared
- * strictly (:98, :397), but
+ * strictly (:99, :406), but
  *   · only entries FOR THE BLOCK are looked at — ABSENT and NIL are both
- *     ignored without being verified (:101), and every looked-at entry
- *     counts (:104);
+ *     ignored without being verified (:102), and every looked-at entry
+ *     counts (:105);
  *   · the loop RETURNS as soon as the tally exceeds the threshold
- *     (countAllSignatures false, :392-394), so a bad signature AFTER that
+ *     (countAllSignatures false, :401-403), so a bad signature AFTER that
  *     point is not seen. That is the reference's light semantics — the
  *     one block sync used @709fd12b (blocksync/reactor.go:496); since the
  *     v0.38.26 pin block sync uses the full `cmt_verify_commit` and this
  *     function has no production caller. Two nodes given the
  *     same commit and set reach the same verdict, because entries are
- *     visited in validator-index order (:344) and the exit point is a
+ *     visited in validator-index order (:349) and the exit point is a
  *     function of that order only.
  *
  * @param vals NOT const: TotalVotingPower writes the set's cache.
@@ -357,9 +357,9 @@ int cmt_verify_commit_light(const uint8_t *chain_id, size_t chain_id_len,
                             cmt_vs_error_t *err);
 
 /**
- * cometbft@709fd12b types/validation.go:71-82 —
+ * cometbft@v0.38.26 types/validation.go:72-83 —
  * `VerifyCommitLightAllSignatures()`: `verifyCommitLightInternal(...,
- * true)` (:81) — the light ignore/count pair of `cmt_verify_commit_light`
+ * true)` (:82) — the light ignore/count pair of `cmt_verify_commit_light`
  * with EVERY commit-flagged signature verified before the tally is
  * compared.
  * @return CMT_OK, CMT_REJECT, CMT_FAULT.

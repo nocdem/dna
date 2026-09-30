@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_results.h
- * @brief cometbft @709fd12b `types/results.go` ported to C — the ABCI
+ * @brief cometbft @v0.38.26 `types/results.go` ported to C — the ABCI
  *        result list whose Merkle root is LastResultsHash.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -12,7 +12,7 @@
  * `LastResultsHash` — the Merkle root over the marshalled deterministic
  * `ExecTxResult`s of the PREVIOUS block (D-19 rev 6 item 7,
  * atlas-dec-d106407a31d7d16d49d51990b75c36c6; the reference's own site is
- * state/execution.go:658). The first block's is H(""), the empty tree's
+ * state/execution.go:689). The first block's is H(""), the empty tree's
  * root, because the list is empty there (consensus/replay.go:368 via
  * crypto/merkle/tree.go:16-18).
  *
@@ -47,7 +47,7 @@
  * and is recorded in the port map as such; it is ported because the rule
  * is the reference in everything, and the test exercises it.
  *
- * Reference @709fd12b (SHA-256 verified before use):
+ * Reference @v0.38.26 (SHA-256 verified before use):
  *   types/results.go 54 lines
  *     74de33a8e62eb9755258363b621d5b2137d834ead605b2acb97f004cbd35f830
  * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
@@ -73,7 +73,7 @@ extern "C" {
 #endif
 
 /**
- * cometbft@709fd12b types/results.go:9 — `type ABCIResults`.
+ * cometbft@v0.38.26 types/results.go:9 — `type ABCIResults`.
  * Caller-owned storage: `results_cap` slots of which `results_len` are
  * used. The reference's slice is `[]*abci.ExecTxResult`; a nil element
  * would make `toByteSlices` dereference nil and panic, which in C is
@@ -86,7 +86,7 @@ typedef struct {
 } cmt_abci_results_t;
 
 /**
- * cometbft@709fd12b types/results.go:47-54 —
+ * cometbft@v0.38.26 types/results.go:47-54 —
  * `deterministicExecTxResult()`. Keeps {Code, Data, GasWanted, GasUsed}.
  *
  * ⚠ THE IDENTITY IN THIS PORT, and deliberately so: the four fields the
@@ -102,7 +102,7 @@ int cmt_deterministic_exec_tx_result(const cmt_pb_exec_tx_result_t *response,
                                      cmt_pb_exec_tx_result_t *out);
 
 /**
- * cometbft@709fd12b types/results.go:13-19 — `NewResults()`.
+ * cometbft@v0.38.26 types/results.go:13-19 — `NewResults()`.
  * Maps `deterministicExecTxResult` over the responses into `out`, whose
  * storage the caller supplies.
  * @return CMT_OK, CMT_REJECT if `n` exceeds `out->results_cap`,
@@ -112,7 +112,7 @@ int cmt_new_results(const cmt_pb_exec_tx_result_t *responses, size_t n,
                     cmt_abci_results_t *out);
 
 /**
- * cometbft@709fd12b types/results.go:32-43 — `toByteSlices()`.
+ * cometbft@v0.38.26 types/results.go:32-43 — `toByteSlices()`.
  * Marshals every result into `scratch`, back to back, and fills `items`
  * with a descriptor per leaf. The reference panics on a marshal failure
  * (:37-39); here that is the return code.
@@ -131,7 +131,7 @@ int cmt_abci_results_to_byte_slices(const cmt_abci_results_t *a,
                                     size_t items_cap);
 
 /**
- * cometbft@709fd12b types/results.go:22-24 — `Hash()`.
+ * cometbft@v0.38.26 types/results.go:22-24 — `Hash()`.
  * The Merkle root over the marshalled results — LastResultsHash. An empty
  * list gives H(""), the empty tree's root.
  * @return CMT_OK, CMT_REJECT, CMT_FAULT.
@@ -142,7 +142,7 @@ int cmt_abci_results_hash(const cmt_abci_results_t *a,
                           uint8_t out[CMT_TMHASH_SIZE]);
 
 /**
- * cometbft@709fd12b types/results.go:27-30 — `ProveResult()`.
+ * cometbft@v0.38.26 types/results.go:27-30 — `ProveResult()`.
  * The inclusion proof of result `i`.
  *
  * The reference indexes `proofs[i]` with no bounds check (:29) — a Go

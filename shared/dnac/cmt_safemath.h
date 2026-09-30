@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_safemath.h
- * @brief cometbft @709fd12b `libs/math/safemath.go` ported to C.
+ * @brief cometbft @v0.38.26 `libs/math/safemath.go` ported to C.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
  * Wave R1-A of the cometbft → C consensus port. Additive only.
@@ -33,7 +33,7 @@
  * is outside the 33 ported files. Both are ported anyway ("the reference
  * in everything") and are recorded as dead C until a later wave calls them.
  *
- * Reference @709fd12b: libs/math/safemath.go, 65 lines,
+ * Reference @v0.38.26: libs/math/safemath.go, 65 lines,
  * be592544331912400aecaee1ccdc8834afdf8508857d32d475e3f6bfaf3b33d2.
  * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * INVARIANT (atlas-dec-7495d3372e004b24b4f6cc7bff5caf07).
@@ -53,25 +53,25 @@
 extern "C" {
 #endif
 
-/** cometbft@709fd12b libs/math/safemath.go:14-21 — `SafeAddInt32()`.
+/** cometbft@v0.38.26 libs/math/safemath.go:14-21 — `SafeAddInt32()`.
  *  The reference PANICS with ErrOverflowInt32 (:16, :18).
  *  @return CMT_OK, CMT_REJECT on overflow, CMT_FAULT if out is NULL. */
 int cmt_safe_add_int32(int32_t a, int32_t b, int32_t *out);
 
-/** cometbft@709fd12b libs/math/safemath.go:25-32 — `SafeSubInt32()`.
+/** cometbft@v0.38.26 libs/math/safemath.go:25-32 — `SafeSubInt32()`.
  *  The reference PANICS with ErrOverflowInt32 (:27, :29). */
 int cmt_safe_sub_int32(int32_t a, int32_t b, int32_t *out);
 
-/** cometbft@709fd12b libs/math/safemath.go:36-43 — `SafeConvertInt32()`.
+/** cometbft@v0.38.26 libs/math/safemath.go:36-43 — `SafeConvertInt32()`.
  *  The reference PANICS with ErrOverflowInt32 (:38, :40). */
 int cmt_safe_convert_int32(int64_t a, int32_t *out);
 
-/** cometbft@709fd12b libs/math/safemath.go:47-54 — `SafeConvertUint8()`.
+/** cometbft@v0.38.26 libs/math/safemath.go:47-54 — `SafeConvertUint8()`.
  *  The reference RETURNS ErrOverflowUint8 (:49, :51). Note the asymmetric
  *  bounds it uses: `a > MaxUint8` and `a < 0` — not `a < MinUint8`. */
 int cmt_safe_convert_uint8(int64_t a, uint8_t *out);
 
-/** cometbft@709fd12b libs/math/safemath.go:58-65 — `SafeConvertInt8()`.
+/** cometbft@v0.38.26 libs/math/safemath.go:58-65 — `SafeConvertInt8()`.
  *  The reference RETURNS ErrOverflowInt8 (:60, :62). */
 int cmt_safe_convert_int8(int64_t a, int8_t *out);
 

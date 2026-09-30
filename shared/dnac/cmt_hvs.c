@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_hvs.c
- * @brief cometbft @709fd12b `consensus/types/height_vote_set.go` ported
+ * @brief cometbft @v0.38.26 `consensus/types/height_vote_set.go` ported
  *        to C. See cmt_hvs.h.
  *
  * Copyright (c) 2026 nocdem
@@ -71,7 +71,7 @@ static void rvs_clear(cmt_hvs_t *hvs)
 
 /* ══ addRound / getVoteSet (height_vote_set.go:113-129, :185-198) ═════ */
 
-/* cometbft@709fd12b consensus/types/height_vote_set.go:113-129 —
+/* cometbft@v0.38.26 consensus/types/height_vote_set.go:113-129 —
  * addRound(). The map INSERTION of :125-128 is folded in, because in C
  * the key lives in the entry.
  * @return CMT_OK; CMT_FAULT at the :115-116 panic ("addRound() for an
@@ -119,7 +119,7 @@ static int add_round(cmt_hvs_t *hvs, int32_t round)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/types/height_vote_set.go:185-198 —
+/* cometbft@v0.38.26 consensus/types/height_vote_set.go:185-198 —
  * getVoteSet().
  * @param out receives the set, or NULL when the round is not tracked
  *        (:187-189) — the reference's nil, not an error.
@@ -192,7 +192,7 @@ static int hvs_new(const uint8_t *chain_id, size_t chain_id_len,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/types/height_vote_set.go:53-60 —
+/* cometbft@v0.38.26 consensus/types/height_vote_set.go:53-60 —
  * NewHeightVoteSet() */
 int cmt_new_height_vote_set(const uint8_t *chain_id, size_t chain_id_len,
                             int64_t height, cmt_validator_set_t *val_set,
@@ -201,7 +201,7 @@ int cmt_new_height_vote_set(const uint8_t *chain_id, size_t chain_id_len,
     return hvs_new(chain_id, chain_id_len, height, val_set, false, out);
 }
 
-/* cometbft@709fd12b consensus/types/height_vote_set.go:62-69 —
+/* cometbft@v0.38.26 consensus/types/height_vote_set.go:62-69 —
  * NewExtendedHeightVoteSet() */
 int cmt_new_extended_height_vote_set(const uint8_t *chain_id,
                                      size_t chain_id_len, int64_t height,
@@ -223,7 +223,7 @@ void cmt_hvs_free(cmt_hvs_t *hvs)
     free(hvs);
 }
 
-/* cometbft@709fd12b consensus/types/height_vote_set.go:71-82 — Reset() */
+/* cometbft@v0.38.26 consensus/types/height_vote_set.go:71-82 — Reset() */
 int cmt_hvs_reset(cmt_hvs_t *hvs, int64_t height,
                   cmt_validator_set_t *val_set)
 {
@@ -249,7 +249,7 @@ int cmt_hvs_reset(cmt_hvs_t *hvs, int64_t height,
 
 /* ══ accessors (height_vote_set.go:84-111) ════════════════════════════ */
 
-/* cometbft@709fd12b consensus/types/height_vote_set.go:84-88 — Height() */
+/* cometbft@v0.38.26 consensus/types/height_vote_set.go:84-88 — Height() */
 int64_t cmt_hvs_height(const cmt_hvs_t *hvs)
 {
     if (hvs == NULL) {
@@ -258,7 +258,7 @@ int64_t cmt_hvs_height(const cmt_hvs_t *hvs)
     return hvs->height;                                          /* :87 */
 }
 
-/* cometbft@709fd12b consensus/types/height_vote_set.go:90-94 — Round() */
+/* cometbft@v0.38.26 consensus/types/height_vote_set.go:90-94 — Round() */
 int32_t cmt_hvs_round(const cmt_hvs_t *hvs)
 {
     if (hvs == NULL) {
@@ -267,7 +267,7 @@ int32_t cmt_hvs_round(const cmt_hvs_t *hvs)
     return hvs->round;                                           /* :93 */
 }
 
-/* cometbft@709fd12b consensus/types/height_vote_set.go:96-111 — SetRound() */
+/* cometbft@v0.38.26 consensus/types/height_vote_set.go:96-111 — SetRound() */
 int cmt_hvs_set_round(cmt_hvs_t *hvs, int32_t round)
 {
     int32_t new_round;
@@ -310,7 +310,7 @@ int cmt_hvs_set_round(cmt_hvs_t *hvs, int32_t round)
 
 /* ══ adding votes (height_vote_set.go:131-156) ════════════════════════ */
 
-/* cometbft@709fd12b consensus/types/height_vote_set.go:131-156 — AddVote() */
+/* cometbft@v0.38.26 consensus/types/height_vote_set.go:131-156 — AddVote() */
 int cmt_hvs_add_vote(cmt_hvs_t *hvs, const cmt_vote_t *vote,
                      cmt_peer_id_t peer, bool ext_enabled,
                      bool *out_added, cmt_vote_set_err_t *out_err,
@@ -393,7 +393,7 @@ int cmt_hvs_add_vote(cmt_hvs_t *hvs, const cmt_vote_t *vote,
 
 /* ══ reading (height_vote_set.go:158-222) ═════════════════════════════ */
 
-/* cometbft@709fd12b consensus/types/height_vote_set.go:158-162 — Prevotes() */
+/* cometbft@v0.38.26 consensus/types/height_vote_set.go:158-162 — Prevotes() */
 cmt_vote_set_t *cmt_hvs_prevotes(cmt_hvs_t *hvs, int32_t round)
 {
     cmt_vote_set_t *vset = NULL;
@@ -405,7 +405,7 @@ cmt_vote_set_t *cmt_hvs_prevotes(cmt_hvs_t *hvs, int32_t round)
     return vset;                                                 /* :161 */
 }
 
-/* cometbft@709fd12b consensus/types/height_vote_set.go:164-168 —
+/* cometbft@v0.38.26 consensus/types/height_vote_set.go:164-168 —
  * Precommits() */
 cmt_vote_set_t *cmt_hvs_precommits(cmt_hvs_t *hvs, int32_t round)
 {
@@ -418,7 +418,7 @@ cmt_vote_set_t *cmt_hvs_precommits(cmt_hvs_t *hvs, int32_t round)
     return vset;                                                 /* :167 */
 }
 
-/* cometbft@709fd12b consensus/types/height_vote_set.go:170-183 — POLInfo() */
+/* cometbft@v0.38.26 consensus/types/height_vote_set.go:170-183 — POLInfo() */
 int cmt_hvs_pol_info(cmt_hvs_t *hvs, int32_t *out_pol_round,
                      cmt_block_id_t *out_block_id)
 {
@@ -448,7 +448,7 @@ int cmt_hvs_pol_info(cmt_hvs_t *hvs, int32_t *out_pol_round,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/types/height_vote_set.go:200-219 —
+/* cometbft@v0.38.26 consensus/types/height_vote_set.go:200-219 —
  * SetPeerMaj23() */
 int cmt_hvs_set_peer_maj23(cmt_hvs_t *hvs, int32_t round, int32_t vote_type,
                            cmt_peer_id_t peer, const cmt_block_id_t *block_id,

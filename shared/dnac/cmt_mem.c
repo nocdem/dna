@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_mem.c
- * @brief cometbft @709fd12b's Flood mempool in C — see the header for the
+ * @brief cometbft @v0.38.26's Flood mempool in C — see the header for the
  *        synchronous-client statement that shapes every function below.
  *
  * Layout follows the reference files: config, errors, tx.go, mempoolTx,
@@ -22,60 +22,60 @@
 
 /* ══ config/config.go ═════════════════════════════════════════════════ */
 
-/* config.go:786-803 — DefaultMempoolConfig() */
+/* config.go:794-811 — DefaultMempoolConfig() */
 int cmt_mempool_config_default(cmt_mempool_config_t *out)
 {
     if (out == NULL) {
         return CMT_FAULT;
     }
     memset(out, 0, sizeof(*out));
-    out->type            = CMT_MEMPOOL_TYPE_FLOOD;               /* :789 */
-    out->recheck         = true;                                 /* :790 */
-    out->recheck_timeout = (int64_t)1000 * (int64_t)1000000;     /* :791 1000 ms */
-    out->broadcast       = true;                                 /* :792 */
-    /* :793 WalPath "" — no field (header) */
-    out->size            = 5000;                                 /* :796 */
-    out->max_txs_bytes   = (int64_t)1024 * 1024 * 1024;          /* :797 1 GB */
-    out->cache_size      = 10000;                                /* :798 */
-    out->max_tx_bytes    = 1024 * 1024;                          /* :799 1 MB */
-    out->experimental_max_gossip_connections_to_non_persistent_peers = 0; /* :800 */
-    out->experimental_max_gossip_connections_to_persistent_peers     = 0; /* :801 */
+    out->type            = CMT_MEMPOOL_TYPE_FLOOD;               /* :797 */
+    out->recheck         = true;                                 /* :798 */
+    out->recheck_timeout = (int64_t)1000 * (int64_t)1000000;     /* :799 1000 ms */
+    out->broadcast       = true;                                 /* :800 */
+    /* :801 WalPath "" — no field (header) */
+    out->size            = 5000;                                 /* :804 */
+    out->max_txs_bytes   = (int64_t)1024 * 1024 * 1024;          /* :805 1 GB */
+    out->cache_size      = 10000;                                /* :806 */
+    out->max_tx_bytes    = 1024 * 1024;                          /* :807 1 MB */
+    out->experimental_max_gossip_connections_to_non_persistent_peers = 0; /* :808 */
+    out->experimental_max_gossip_connections_to_persistent_peers     = 0; /* :809 */
     return CMT_OK;
 }
 
-/* config.go:824-850 — (*MempoolConfig) ValidateBasic() */
+/* config.go:832-858 — (*MempoolConfig) ValidateBasic() */
 int cmt_mempool_config_validate_basic(const cmt_mempool_config_t *cfg)
 {
     if (cfg == NULL) {
         return CMT_FAULT;
     }
-    switch (cfg->type) {                                         /* :825 */
-    case CMT_MEMPOOL_TYPE_FLOOD:                                 /* :826 */
+    switch (cfg->type) {                                         /* :833 */
+    case CMT_MEMPOOL_TYPE_FLOOD:                                 /* :834 */
     case CMT_MEMPOOL_TYPE_NOP:
-    case CMT_MEMPOOL_TYPE_EMPTY:                                 /* :827 */
+    case CMT_MEMPOOL_TYPE_EMPTY:                                 /* :835 */
         break;
     default:
-        return CMT_REJECT;                                       /* :829 */
+        return CMT_REJECT;                                       /* :837 */
     }
-    if (cfg->size < 0) {                                         /* :831-833 */
+    if (cfg->size < 0) {                                         /* :839-841 */
         return CMT_REJECT;
     }
-    if (cfg->max_txs_bytes < 0) {                                /* :834-836 */
+    if (cfg->max_txs_bytes < 0) {                                /* :842-844 */
         return CMT_REJECT;
     }
-    if (cfg->cache_size < 0) {                                   /* :837-839 */
+    if (cfg->cache_size < 0) {                                   /* :845-847 */
         return CMT_REJECT;
     }
-    if (cfg->max_tx_bytes < 0) {                                 /* :840-842 */
+    if (cfg->max_tx_bytes < 0) {                                 /* :848-850 */
         return CMT_REJECT;
     }
     if (cfg->experimental_max_gossip_connections_to_persistent_peers < 0) {
-        return CMT_REJECT;                                       /* :843-845 */
+        return CMT_REJECT;                                       /* :851-853 */
     }
     if (cfg->experimental_max_gossip_connections_to_non_persistent_peers < 0) {
-        return CMT_REJECT;                                       /* :846-848 */
+        return CMT_REJECT;                                       /* :854-856 */
     }
-    return CMT_OK;                                               /* :849 */
+    return CMT_OK;                                               /* :857 */
 }
 
 /* ══ types/tx.go ══════════════════════════════════════════════════════ */
@@ -1436,7 +1436,7 @@ int cmt_mem_check_tx(cmt_mem_t *mem, const uint8_t *tx, size_t tx_len,
          * fail. A hash-backend or cache bookkeeping failure is this
          * node's, not the sender's — CMT_FAULT (node-local, umbrella
          * rev 5), NEVER ErrTxInCache: that is a REJECT the reactor only
-         * logs (reactor.go:160-161) and would hide a broken node. */
+         * logs (reactor.go:170-171) and would hide a broken node. */
         return CMT_FAULT;
     }
     if (!added) {                                                  /* :257 `!mem.cache.Push(tx)` */

@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_bsync_msgs.c
- * @brief cometbft @709fd12b blocksync messages in C — see
+ * @brief cometbft @v0.38.26 blocksync messages in C — see
  *        cmt_bsync_msgs.h for the wire rules and the merge rule.
  *
  * NOTHING HERE READS A CLOCK, DRAWS RANDOMNESS OR ITERATES A MAP.

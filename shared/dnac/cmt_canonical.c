@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_canonical.c
- * @brief cometbft @709fd12b `types/canonical.go` ported to C — see
+ * @brief cometbft @v0.38.26 `types/canonical.go` ported to C — see
  *        cmt_canonical.h for the contract and the taşınmadı list.
  *
  * Copyright (c) 2026 nocdem
@@ -28,7 +28,7 @@ static int set_chain_id(uint8_t *dst, size_t *dst_len,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/canonical.go:18-34 — CanonicalizeBlockID() */
+/* cometbft@v0.38.26 types/canonical.go:18-34 — CanonicalizeBlockID() */
 int cmt_canonicalize_block_id(const cmt_pb_block_id_t *bid, bool *has,
                               cmt_pb_canonical_block_id_t *out)
 {
@@ -61,7 +61,7 @@ int cmt_canonicalize_block_id(const cmt_pb_block_id_t *bid, bool *has,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/canonical.go:37-39 — CanonicalizePartSetHeader().
+/* cometbft@v0.38.26 types/canonical.go:37-39 — CanonicalizePartSetHeader().
  * A Go type conversion between identically shaped messages. */
 int cmt_canonicalize_part_set_header(const cmt_pb_part_set_header_t *psh,
                                      cmt_pb_canonical_part_set_header_t *out)
@@ -73,7 +73,7 @@ int cmt_canonicalize_part_set_header(const cmt_pb_part_set_header_t *psh,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/canonical.go:42-52 — CanonicalizeProposal() */
+/* cometbft@v0.38.26 types/canonical.go:42-52 — CanonicalizeProposal() */
 int cmt_canonicalize_proposal(const uint8_t *chain_id, size_t chain_id_len,
                               const cmt_pb_proposal_t *p,
                               cmt_pb_canonical_proposal_t *out)
@@ -98,7 +98,7 @@ int cmt_canonicalize_proposal(const uint8_t *chain_id, size_t chain_id_len,
                         chain_id, chain_id_len);                 /* :50  */
 }
 
-/* cometbft@709fd12b types/canonical.go:57-66 — CanonicalizeVote() */
+/* cometbft@v0.38.26 types/canonical.go:57-66 — CanonicalizeVote() */
 int cmt_canonicalize_vote(const uint8_t *chain_id, size_t chain_id_len,
                           const cmt_pb_vote_t *vote,
                           cmt_pb_canonical_vote_t *out)
@@ -122,7 +122,7 @@ int cmt_canonicalize_vote(const uint8_t *chain_id, size_t chain_id_len,
                         chain_id, chain_id_len);                 /* :64  */
 }
 
-/* cometbft@709fd12b types/canonical.go:71-78 — CanonicalizeVoteExtension().
+/* cometbft@v0.38.26 types/canonical.go:71-78 — CanonicalizeVoteExtension().
  * No timestamp and no type; the extension bytes are shared, not copied. */
 int cmt_canonicalize_vote_extension(const uint8_t *chain_id,
                                     size_t chain_id_len,
