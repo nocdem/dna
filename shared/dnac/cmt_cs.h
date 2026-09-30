@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_cs.h
- * @brief cometbft @709fd12b `consensus/state.go` ported to C — the
+ * @brief cometbft @v0.38.26 `consensus/state.go` ported to C — the
  *        consensus state machine itself.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -49,7 +49,7 @@
  * WHY (deviation register row R2C-12): through wave R2 the poll began at
  * source 0 on every call. A peer that kept the peer queue non-empty then
  * starved this node's OWN internal queue — its proposal, its block parts
- * and its votes (:1244, :1248, :2472) — and its timeouts, indefinitely.
+ * and its votes (:1239, :1243, :2465) — and its timeouts, indefinitely.
  * The reference's random select starves nothing; the fixed order did.
  *
  * `cmt_cs_step` handles AT MOST ONE of them per call, because one
@@ -58,7 +58,7 @@
  * the timer.
  *
  * ⚠ NO RECURSION INTO `handle_msg`. This node's own proposal, block parts
- * and votes go onto the internal queue (:1244, :1248, :2472) and are
+ * and votes go onto the internal queue (:1239, :1243, :2465) and are
  * handled on a LATER `cmt_cs_step`, after the WriteSync at :839. Calling
  * `cmt_cs_handle_msg` from inside an `enter_*` function is exactly the
  * re-entrancy the queue exists to prevent, and this module never does it.
@@ -85,7 +85,7 @@
  * pointer in `cmt_cs_host_t`, each row carrying the Go call site. Three
  * rows are NOT in the wave's dispatch table and are named here as
  * additions, with the reason:
- *   · `decode_block` — :2005-2019 is `io.ReadAll` + `proto.Unmarshal` +
+ *   · `decode_block` — :2000-2014 is `io.ReadAll` + `proto.Unmarshal` +
  *     `types.BlockFromProto`. cmt_pb.h:1043 states there is deliberately
  *     no `cmt_pb_block_unmarshal` in this tree, so the wire decoder does
  *     not exist to be called; the host supplies it and owns the storage
@@ -102,14 +102,14 @@
  * map, and no consensus decision reads them. `evsw.FireEvent` WAS in that
  * list through R2; wave R3-A ported its five sites as the three callbacks
  * of `cmt_cs_listener_t` below, because the reactor's broadcasts are what
- * those events drive (reactor.go:411-433).
+ * those events drive (reactor.go:420-442).
  *
  * ── OWNERSHIP, AND THE THREE WAYS IT CAN GO WRONG ──────────────────────
  *
  * (1) BLOCK AND PART-SET SLOTS. Go aliases three block pointers freely —
- *     `LockedBlock = ProposalBlock` (:1531-1532), `ProposalBlock =
- *     LockedBlock` (:1631-1632), `ValidBlock = ProposalBlock` (:2046-2047,
- *     :2285-2286) — and the GC keeps whatever is still named. Here the
+ *     `LockedBlock = ProposalBlock` (:1526-1527), `ProposalBlock =
+ *     LockedBlock` (:1626-1627), `ValidBlock = ProposalBlock` (:2041-2042,
+ *     :2278-2279) — and the GC keeps whatever is still named. Here the
  *     storage is the HOST's `cmt_cs_slots_t`: THREE block slots and THREE
  *     part-set slots, because at most three names exist (proposal, locked,
  *     valid) and therefore at most three distinct objects are alive.
@@ -117,7 +117,7 @@
  *     `cs` enforces it by clearing the name first and then taking a slot
  *     no name refers to; if none is free that is CMT_FAULT, because the
  *     derivation above says it cannot happen.
- *     Blocks and part sets are allocated INDEPENDENTLY: :2298-2300
+ *     Blocks and part sets are allocated INDEPENDENTLY: :2291-2293
  *     replaces `ProposalBlockParts` while `ValidBlockParts` still aliases
  *     the old one and `ProposalBlock` is untouched.
  *
@@ -128,7 +128,7 @@
  *     set. THE HOST SUPPLIES `ext_arena` — now TWO arenas, `ext_arena[2]`,
  *     alternating by HEIGHT PARITY (PACKAGE W4-X, register R3-W3-C2e-4,
  *     closing the reset gap C2e opened). The host writes extension bytes
- *     into arena[vote's height & 1] from `extend_vote` (:2400,
+ *     into arena[vote's height & 1] from `extend_vote` (:2393,
  *     `nodus_cmt_host_extend_vote`, nodus_witness_cmt_host.c) for this
  *     node's OWN votes; `cmt_cs_try_add_vote` copies a PEER's vote's
  *     extension into arena[vote's height & 1] too (register R3-A-5),
@@ -137,7 +137,7 @@
  *     reused scratch, neither of which outlives the call (see that
  *     function's own comment). BOTH writers pick by the VOTE's OWN
  *     height, never `cs->rs.height`: `cmt_cs_try_add_vote` copies before
- *     `cs_add_vote` branches on height (:2137's LastCommit path, a
+ *     `cs_add_vote` branches on height (:2132's LastCommit path, a
  *     height-H vote arriving while the machine is at H+1), so picking by
  *     `cs->rs.height` there would put an H-vote's bytes in the arena that
  *     H+2's entry resets — freeing them while H's LastCommit still needs
@@ -151,7 +151,7 @@
  *     in the CURRENT height's arena AND the PREVIOUS height's — kept
  *     alive one extra height because `create_proposal_block` for height
  *     H+1 reads height H's LastCommit (`last_ext_commit`,
- *     `cs_create_proposal_block`, :1279-1313) — and since H and H+1
+ *     `cs_create_proposal_block`, :1274-1308) — and since H and H+1
  *     always differ in parity, those two heights are ALWAYS in different
  *     arenas. `cmt_cs_update_to_state` (state.go:647-774's port) resets
  *     `ext_arena[N & 1]` immediately after moving the machine to height
@@ -168,12 +168,12 @@
  *     event loop goes on — because that check runs on a PEER's bytes
  *     before any signature is verified and before the extensions-
  *     disabled refusal, and the reference has no such bound at all
- *     (`Vote.ValidateBasic`, types/vote.go:318-350, never bounds
+ *     (`Vote.ValidateBasic`, types/vote.go:322-354, never bounds
  *     `len(Extension)`), so the umbrella's rule (rev 4) puts it in the
  *     REJECT class; the node's OWN extension not fitting at
  *     `nodus_cmt_host_extend_vote` stays CMT_FAULT (node-local). NOT
  *     inert today: `VoteExtensionsEnableHeight` is unset on this chain,
- *     so every non-empty extension is refused anyway (:2223-2225) — but
+ *     so every non-empty extension is refused anyway (:2211-2219) — but
  *     that refusal comes AFTER the copy, so a peer could still reach the
  *     capacity check with a 65 KiB extension, and before ORC-2 that
  *     stopped the node. Sizing the arena for a whole committee's honest
@@ -187,7 +187,7 @@
  *     register-x-writer.md`): this two-arena scheme is a HOST-side memory
  *     policy the reference does not have at all. Go's `ExtendedCommit`
  *     and `Vote.Extension` are garbage-collected byte slices
- *     (state.go:1279-1313, :610-624's `votesFromExtendedCommit`); the
+ *     (state.go:1274-1308, :610-624's `votesFromExtendedCommit`); the
  *     collector frees an old commit's extension bytes whenever nothing
  *     references them, with no arena, no parity and no reset call
  *     anywhere in the reference to port. The parity scheme exists only
@@ -209,23 +209,23 @@
  * module walks is an array in validator-index order or a queue in arrival
  * order. THE CLOCK IS READ THROUGH `host.now` AND NOWHERE ELSE, at exactly
  * SIX sites, each of which the reference has:
- *   state.go:558, :728, :1033, :1614, :2417 — the five `cmttime.Now()`
+ *   state.go:558, :728, :1028, :1609, :2410 — the five `cmttime.Now()`
  *   calls in the ported bodies; and
- *   types/proposal.go:44, reached from state.go:1238 — `NewProposal`
+ *   types/proposal.go:44, reached from state.go:1233 — `NewProposal`
  *   stamps the proposal. The reference reads the clock INSIDE
  *   NewProposal; this tree's `cmt_new_proposal` takes the instant as an
  *   argument (cmt_proposal.h:98-101) so that every clock read sits at a
  *   call site, which is why the read appears here rather than there. It
  *   is the same instant the reference stamps, and it is a site the
  *   dispatch's own five-item list did not enumerate.
- * (:1064 is a log line the port does not carry; wal.go:189's record stamp
+ * (:1059 is a log line the port does not carry; wal.go:189's record stamp
  * is the HOST's, taken from the same callback.)
  * `host.now` is the WALL clock (canonical UTC, `cmttime.Now()`), and it is
  * the only clock this module reads. The TIMER is the host's and is NOT
  * armed on this clock: `timer_arm` receives a DURATION — some computed
  * here from two wall instants (cometbft@v0.38.26 state.go:558
  * `StartTime.Sub(cmttime.Now())`, :1028 the remaining commit wait — the
- * port's body cites it at :1033, the old pin's line), exactly as the
+ * port's body cites the same line), exactly as the
  * reference hands such a
  * duration to a Go runtime timer (ticker.go:126) — and the host arms its
  * deadline on CLOCK_MONOTONIC (decision docs/plans/decisions/
@@ -239,7 +239,7 @@
  * ── THE ValidateBasic GATE: THE REACTOR'S, AND THE REPLAY'S ────────────
  * In the reference a peer's message becomes a `msgInfo` only after
  * `MsgFromProto` has run `pb.ValidateBasic()` (msgs.go:232-234), which is
- * where a vote with a non-positive height (types/vote.go:283-285), an
+ * where a vote with a non-positive height (types/vote.go:287-289), an
  * invalid type or an out-of-range index is refused. `cmt_msg_from_proto`
  * STOPS BEFORE THAT CALL (cmt_msgs.h); the gate is
  * `cmt_msg_validate_basic` (cmt_msgs.h — it lives BESIDE the conversion,
@@ -259,7 +259,7 @@
  *     a record to repair. Register R3-AUD-5.
  * Through R2 nothing ran it and every message field was a raw peer
  * number; two guards added then are KEPT (a test or a future caller may
- * feed this module directly): the `vote.Height+1` of :2137 is formed as
+ * feed this module directly): the `vote.Height+1` of :2132 is formed as
  * `cs.Height - 1` so a height of INT64_MAX cannot overflow, and a peer id
  * that is neither empty nor 32 bytes is refused at the message boundary.
  * Anything else assumed about a peer's numbers is stated at its site.
@@ -278,8 +278,8 @@
  * event-loop sentence — see "ONE THREAD, ONE ROTATING POLL" above.
  *
  * ── FAIL POINTS ────────────────────────────────────────────────────────
- * The six `fail.Fail()` calls at :852, :1727, :1744, :1767, :1787 and
- * :1795 are `CMT_FAIL_POINT()`, compiled only under QGP_FAULT_INJECT
+ * The six `fail.Fail()` calls at :852, :1722, :1739, :1762, :1782 and
+ * :1790 are `CMT_FAIL_POINT()`, compiled only under QGP_FAULT_INJECT
  * (nodus/CMakeLists.txt refuses that option in a Release build — the
  * `option(QGP_FAULT_INJECT …)` block, which moves as the file grows, so
  * it is named rather than pinned to a line).
@@ -291,17 +291,17 @@
  * ── taşınmadı (not ported), with the reason ────────────────────────────
  * The full Go → C closure table is in this wave's report; the entries a
  * reader of this header needs are:
- *   · `recordMetrics` (:1812-1899), `emitPrecommitTimeoutMetrics`
- *     (:2519-2547), `calculatePrecommitMessageDelayMetrics` (:2549-2570),
- *     `calculatePrevoteMessageDelayMetrics` (:2572-2596) — metrics only.
+ *   · `recordMetrics` (:1807-1894), `emitPrecommitTimeoutMetrics`
+ *     (:2512-2540), `calculatePrecommitMessageDelayMetrics` (:2542-2563),
+ *     `calculatePrevoteMessageDelayMetrics` (:2565-2589) — metrics only.
  *     `recordMetrics` contains ONE non-metric check, the panic at
- *     :1831-1834 (commit size against validator-set length). It is NOT
+ *     :1826-1829 (commit size against validator-set length). It is NOT
  *     ported, and NOTHING IS LOST BY THAT: the same property is enforced
  *     one call earlier, by `ValidateBlock` → `VerifyCommit`, which refuses
  *     a commit whose signature count differs from the validator set's size
- *     (types/validation.go:413-415, ported at cmt_validation.c:112-114).
- *     `finalizeCommit` runs that check at :1713 before it would ever reach
- *     :1832. Raised as a question by this wave and answered by the
+ *     (types/validation.go:422-424, ported at cmt_validation.c:112-114).
+ *     `finalizeCommit` runs that check at :1708 before it would ever reach
+ *     :1827. Raised as a question by this wave and answered by the
  *     ORCHESTRATOR at O6 by opening both sites.
  *   · `String` (:234-237), `GetRoundStateJSON` (:263-267),
  *     `GetRoundStateSimpleJSON` (:270-274) — display and RPC.
@@ -314,7 +314,7 @@
  *     through an interface for its tests; the ticker is a value here
  *     (cmt_ticker.h) and there is nothing to swap.
  *   · `OpenWAL` (:452-467), `loadWalFile` (:420-429) and `repairWalFile`
- *     (:2621-2653) — the WAL file itself is the host's
+ *     (:2614-2646) — the WAL file itself is the host's
  *     (nodus_witness_cmt_wal.h); they are the host row `wal_repair`.
  *     The retry LOOP inside OnStart (:338-386) IS ported, in
  *     `cmt_cs_start` (decision 2026-09-26-cmt-wal-file-group.md 4b).
@@ -328,9 +328,9 @@
  *     are named above; the only one whose value the port carries is
  *     `offline_state_sync_height`, which is a parameter of cmt_cs_init.
  *
- * Reference @709fd12b (SHA-256 verified before use):
- *   consensus/state.go               2653 lines
- *     f9517e9f45f4f9afefebf869eb4674bf0135d5edda00de67eab2e1695c945090
+ * Reference @v0.38.26 (SHA-256 verified before use):
+ *   consensus/state.go               2646 lines
+ *     ac2f65f60cdcfe971aba9c34322b03c031460382ec361e8d18023876d1a3e772
  *   consensus/replay.go               565 lines
  *     5609c4d4174a536389cb2814bac09557a66e3299292141b54c635e31425284fe
  *     (only :39-167, readReplayMessage and catchupReplay)
@@ -344,20 +344,20 @@
  *     d6793961c6f113acad7fa153cf2d912224191350f547860812d623e9ca13964c
  *   types/vote_set.go                 724 lines
  *     548a256c311755a4a2d83696c90030f144952c64c0e3a459ac86baf844c56880
- *   types/block.go                   1555 lines
- *     2094420e26fa23d4b6a592a06e7953025541973694bd96ff9c8e5d9911162109
- *   types/vote.go                     454 lines
- *     dd978df4530187c34902fad06ba1f7065896ece92b68d07d3a9bfc55ddb82e0f
- *   types/proposal.go                 161 lines
- *     0b56660bee6071267b75c9dabe148036cb96c814f640f4e4323baa59af44eba0
- *   types/validator_set.go           1053 lines
- *     6c3a663aaf84fbee94735731eaba27d1a8e5269dd6e316e0b175595e32902221
- *   config/config.go                 1283 lines
- *     f0c2f601d49e1a56b36e8d557387e96ee53ecc3616ecb79749b0f71c0f218c21
- *   state/execution.go                789 lines
- *     d12730b67e48c4863963c929067905d475543fcd135b99eaa909c502ebecae55
- *   state/state.go                    355 lines
- *     02dc0f209451d28202e1cc25c901af29eb48ca6e83ec5b8a69d88be10b1472fc
+ *   types/block.go                   1561 lines
+ *     33ba0d2c8040449e96dca739708106e6044101af3ad6ba33945ea1949c0e0889
+ *   types/vote.go                     458 lines
+ *     ef9fc496c0dbebecb810b0c1a117fa7651e6602bb348cde3a2dfe56e1af183f3
+ *   types/proposal.go                 177 lines
+ *     8c6e73fa3e5b00824a6b311b05d997c4d0e8039ec34d114421faa6c8418a85eb
+ *   types/validator_set.go           1113 lines
+ *     c2b47e6097647281c4fe2b33687116559608fb26ff1f65bfde6d7076af59735e
+ *   config/config.go                 1304 lines
+ *     761c747fa0c41cbfd48aa840adad77d3559a64a6a4197b000f2cecb0be70d4f2
+ *   state/execution.go                820 lines
+ *     a928de838673694e1114199d8a51b47259d8f98cb7a88fdd25fdba75f941ab69
+ *   state/state.go                    361 lines
+ *     38e6ca9be265c9e55bfffcaf40e04cd1368e00563af7dc2c321e95613ae6940f
  *   libs/fail/fail.go                  47 lines
  *     c47b87d25a4232d825f4283d7bfe0dc2a81aaceb977e4ab8ea4dda42ac8a32a9
  *
@@ -404,22 +404,22 @@ extern "C" {
 
 /* ══ constants ════════════════════════════════════════════════════════ */
 
-/** cometbft@709fd12b consensus/state.go:45 — `var msgQueueSize = 1000`.
+/** cometbft@v0.38.26 consensus/state.go:45 — `var msgQueueSize = 1000`.
  *  The capacity of BOTH queues (:168, :169). */
 #define CMT_CS_MSG_QUEUE_SIZE 1000
 
-/** cometbft@709fd12b consensus/ticker.go:11 — `tickTockBufferSize = 10`,
+/** cometbft@v0.38.26 consensus/ticker.go:11 — `tickTockBufferSize = 10`,
  *  the depth of the `tockChan` the ticker delivers expiries on (:48).
  *  The reference's timer goroutine sends each expiry from a goroutine of
  *  its own (:137) so the routine never blocks, which means up to ten
  *  undelivered tocks can be in flight; the stale ones are dropped by
- *  handleTimeout's height/round/step test (state.go:970). An ELEVENTH is
+ *  handleTimeout's height/round/step test (state.go:965). An ELEVENTH is
  *  CMT_FAULT here — the internal-queue rule, since the reference's
  *  eleventh send would block a goroutine rather than be lost. */
 #define CMT_CS_TOCK_QUEUE_SIZE 10
 
-/** Go's `time.Millisecond` in nanoseconds — the `timeIota` of :2420 and
- *  the "+1ms" of :1032. cmt_config.h defines the same value as
+/** Go's `time.Millisecond` in nanoseconds — the `timeIota` of :2413 and
+ *  the "+1ms" of :1027. cmt_config.h defines the same value as
  *  CMT_MILLISECOND; this name is the reference's, at the two sites that
  *  use it as a time increment rather than as a timeout unit. */
 #define CMT_CS_TIME_IOTA_NS ((int64_t)1000000)
@@ -433,7 +433,7 @@ extern "C" {
 
 #ifdef QGP_FAULT_INJECT
 /**
- * cometbft@709fd12b libs/fail/fail.go:28-39 — `fail.Fail()`.
+ * cometbft@v0.38.26 libs/fail/fail.go:28-39 — `fail.Fail()`.
  *
  * Reads `FAIL_TEST_INDEX` (:10, the reference's own variable name). Unset
  * or unparseable is −1 (:12-14, :17-20) and the call does nothing —
@@ -472,7 +472,7 @@ void cmt_cs_fail_point(void);
  *
  * A node that is not a validator supplies the three privValidator rows
  * anyway and calls `cmt_cs_set_priv_validator(cs, false)` — that is the
- * reference's `cs.privValidator == nil` (:1170, :1280, :2445), a state of
+ * reference's `cs.privValidator == nil` (:1165, :1275, :2438), a state of
  * the STATE machine rather than of the table.
  *
  * ⚠ A callback MUST NOT re-enter `cs`. The reference's callees are in
@@ -482,14 +482,14 @@ void cmt_cs_fail_point(void);
 typedef struct {
     /* ── sm.BlockExecutor (state/execution.go) ─────────────────────── */
 
-    /** state.go:1308 — `blockExec.CreateProposalBlock(ctx, height, state,
+    /** state.go:1303 — `blockExec.CreateProposalBlock(ctx, height, state,
      *  lastExtCommit, proposerAddr)`. Writes into the block slot `out`,
      *  which `cs` has already taken and which no name points at yet; the
      *  host owns whatever storage the block's `data.txs`, evidence and
      *  `last_commit` point into and must keep it alive as long as the
      *  slot is named.
-     *  @return CMT_OK; anything else is the reference's error at :1309,
-     *          which :1310 turns into a panic — see the site. */
+     *  @return CMT_OK; anything else is the reference's error at :1304,
+     *          which :1305 turns into a panic — see the site. */
     int (*create_proposal_block)(void *ctx, int64_t height,
                                  const cmt_state_t *state,
                                  const cmt_extended_commit_t *last_ext_commit,
@@ -497,29 +497,29 @@ typedef struct {
                                  size_t proposer_addr_len,
                                  cmt_block_t *out);
 
-    /** state.go:1382 — `blockExec.ProcessProposal(block, state)`.
+    /** state.go:1377 — `blockExec.ProcessProposal(block, state)`.
      *  @param out_accept the reference's `isAppValid`.
-     *  @return CMT_OK; anything else is the error :1383-1387 panics on. */
+     *  @return CMT_OK; anything else is the error :1378-1382 panics on. */
     int (*process_proposal)(void *ctx, cmt_block_t *block,
                             const cmt_state_t *state, bool *out_accept);
 
-    /** state.go:1363, :1526, :1713 — `blockExec.ValidateBlock(state,
+    /** state.go:1358, :1521, :1708 — `blockExec.ValidateBlock(state,
      *  block)`. CMT_OK accepts; any other value is the reference's error.
      *  The three call sites treat that error very differently — see each
      *  one. */
     int (*validate_block)(void *ctx, const cmt_state_t *state,
                           cmt_block_t *block);
 
-    /** state.go:1775 — `blockExec.ApplyVerifiedBlock(stateCopy, blockID,
+    /** state.go:1770 — `blockExec.ApplyVerifiedBlock(stateCopy, blockID,
      *  block)`. `in_out_state` arrives as the reference's `stateCopy`
-     *  (:1770) and the host OVERWRITES it with the state the reference
-     *  returns at :1775.
-     *  @return CMT_OK; anything else is the error :1783-1785 panics on. */
+     *  (:1765) and the host OVERWRITES it with the state the reference
+     *  returns at :1770.
+     *  @return CMT_OK; anything else is the error :1778-1780 panics on. */
     int (*apply_verified_block)(void *ctx, const cmt_block_id_t *block_id,
                                 cmt_block_t *block,
                                 cmt_state_t *in_out_state);
 
-    /** state.go:2400 — `blockExec.ExtendVote(ctx, vote, block, state)`.
+    /** state.go:2393 — `blockExec.ExtendVote(ctx, vote, block, state)`.
      *  The bytes MUST live in the per-height extension arena (see
      *  "OWNERSHIP" (2)); `cmt_vote_copy` shares them into every vote set
      *  the vote is added to.
@@ -527,13 +527,13 @@ typedef struct {
     int (*extend_vote)(void *ctx, const cmt_vote_t *vote, cmt_block_t *block,
                        const cmt_state_t *state, cmt_pb_bytes_t *out_ext);
 
-    /** state.go:2210 — `blockExec.VerifyVoteExtension(ctx, vote)`.
-     *  CMT_OK accepts; anything else is the error :2212-2214 returns. */
+    /** state.go:2205 — `blockExec.VerifyVoteExtension(ctx, vote)`.
+     *  CMT_OK accepts; anything else is the error :2207-2209 returns. */
     int (*verify_vote_extension)(void *ctx, const cmt_vote_t *vote);
 
     /* ── sm.BlockStore (state/services.go) ─────────────────────────── */
 
-    /** state.go:309, :1730 — `blockStore.Height()`. */
+    /** state.go:309, :1725 — `blockStore.Height()`. */
     int (*bs_height)(void *ctx, int64_t *out);
 
     /** state.go:313, :629 — `blockStore.LoadBlockCommit(height)`.
@@ -550,26 +550,26 @@ typedef struct {
                                          cmt_extended_commit_t *out,
                                          bool *out_found);
 
-    /** state.go:1124 — `blockStore.LoadBlockMeta(height)`. The ported code
-     *  reads exactly one field of the BlockMeta, `Header.AppHash` (:1131),
-     *  so the row hands back the HEADER. (:1886, the other Go call site,
+    /** state.go:1119 — `blockStore.LoadBlockMeta(height)`. The ported code
+     *  reads exactly one field of the BlockMeta, `Header.AppHash` (:1126),
+     *  so the row hands back the HEADER. (:1881, the other Go call site,
      *  is inside `recordMetrics`, which is not ported.)
-     *  @param out_found false is the reference's nil (:1125). */
+     *  @param out_found false is the reference's nil (:1120). */
     int (*bs_load_block_meta)(void *ctx, int64_t height,
                               cmt_header_t *out, bool *out_found);
 
-    /** state.go:310, :627, :2502 — `blockStore.LoadSeenCommit(height)`.
+    /** state.go:310, :627, :2495 — `blockStore.LoadSeenCommit(height)`.
      *  Same storage contract as `bs_load_block_commit`. */
     int (*bs_load_seen_commit)(void *ctx, int64_t height,
                                cmt_commit_t *out, bool *out_found);
 
-    /** state.go:1737 — `blockStore.SaveBlock(block, blockParts,
+    /** state.go:1732 — `blockStore.SaveBlock(block, blockParts,
      *  seenExtendedCommit.ToCommit())`. */
     int (*bs_save_block)(void *ctx, cmt_block_t *block,
                          const cmt_part_set_t *parts,
                          const cmt_commit_t *seen_commit);
 
-    /** state.go:1735 — `blockStore.SaveBlockWithExtendedCommit(block,
+    /** state.go:1730 — `blockStore.SaveBlockWithExtendedCommit(block,
      *  blockParts, seenExtendedCommit)`. */
     int (*bs_save_block_with_extended_commit)(
             void *ctx, cmt_block_t *block, const cmt_part_set_t *parts,
@@ -577,7 +577,7 @@ typedef struct {
 
     /* ── evidencePool (state.go:71-74) ─────────────────────────────── */
 
-    /** state.go:2094 — `evpool.ReportConflictingVotes(voteA, voteB)`.
+    /** state.go:2089 — `evpool.ReportConflictingVotes(voteA, voteB)`.
      *  The reference's method returns nothing; a non-CMT_OK here is
      *  treated as a local failure at the site. */
     int (*report_conflicting_votes)(void *ctx, const cmt_vote_t *vote_a,
@@ -585,22 +585,22 @@ typedef struct {
 
     /* ── types.PrivValidator ───────────────────────────────────────── */
 
-    /** The signer `types.SignAndCheckVote` drives, reached from :2408.
+    /** The signer `types.SignAndCheckVote` drives, reached from :2401.
      *  `cmt_vote.h:337-351` explains why the shape is the reference's
      *  interface and not a raw byte signer. */
     cmt_sign_vote_fn sign_vote;
 
-    /** state.go:1240 — `privValidator.SignProposal(chainID, p)`. The host
+    /** state.go:1235 — `privValidator.SignProposal(chainID, p)`. The host
      *  computes the sign bytes with `cmt_proposal_sign_bytes`, signs, and
      *  writes the signature into `p->signature` / `p->signature_len`.
-     *  @return CMT_OK; anything else is the reference's error, which :1252
+     *  @return CMT_OK; anything else is the reference's error, which :1247
      *          only logs. */
     int (*sign_proposal)(void *ctx, const uint8_t *chain_id,
                          size_t chain_id_len, cmt_proposal_t *p);
 
-    /** state.go:2484 — `privValidator.GetPubKey()`.
-     *  @return CMT_OK; anything else is the reference's error at :2485,
-     *          which leaves the memoized key UNCHANGED (:2486-2489 are
+    /** state.go:2477 — `privValidator.GetPubKey()`.
+     *  @return CMT_OK; anything else is the reference's error at :2478,
+     *          which leaves the memoized key UNCHANGED (:2479-2482 are
      *          not reached). */
     int (*get_pub_key)(void *ctx, cmt_pb_public_key_t *out);
 
@@ -614,12 +614,12 @@ typedef struct {
      *  wal.go:34 says it is for debugging). */
     int (*wal_write)(void *ctx, const cmt_wal_message_t *msg);
 
-    /** state.go:839 (own message) and :1760 (EndHeight) —
+    /** state.go:839 (own message) and :1755 (EndHeight) —
      *  `wal.WriteSync(...)`. A failure at EITHER site is a panic in the
-     *  reference (:841-844, :1761-1764) and CMT_FAULT here. */
+     *  reference (:841-844, :1756-1759) and CMT_FAULT here. */
     int (*wal_write_sync)(void *ctx, const cmt_wal_message_t *msg);
 
-    /** state.go:1232 (before publishing our own proposal) and :2374
+    /** state.go:1227 (before publishing our own proposal) and :2367
      *  (before signing a vote) — `wal.FlushAndSync()`. Every row written
      *  before this point must be durable before the signature exists. */
     int (*wal_flush_and_sync)(void *ctx);
@@ -656,7 +656,7 @@ typedef struct {
     /** state.go:352-385 — the WAL repair `OnStart` runs when the catch-up
      *  replay failed with a DataCorruptionError: `cs.wal.Stop()`
      *  (:359-361), copy the WAL file to `<file>.CORRUPTED` (:365-369),
-     *  `repairWalFile` (:374-377, :2621-2653: re-encode every record up
+     *  `repairWalFile` (:374-377, :2614-2646: re-encode every record up
      *  to the first decode error into a fresh file), `loadWalFile()`
      *  (:382-384). ONE row because every step is the host's (the WAL is
      *  the host's) and the reference returns at the first failing one.
@@ -669,7 +669,7 @@ typedef struct {
 
     /* ── the block wire decoder — ADDED; see the header ────────────── */
 
-    /** state.go:2005-2019 — `io.ReadAll(GetReader())`,
+    /** state.go:2000-2014 — `io.ReadAll(GetReader())`,
      *  `proto.Unmarshal(bz, pbb)` and `types.BlockFromProto(pbb)` as one
      *  row, because this tree has no `cmt_pb_block_unmarshal`
      *  (cmt_pb.h:1043) for the middle step.
@@ -677,7 +677,7 @@ typedef struct {
      *         storage its `data.txs`, evidence and `last_commit` point at
      *         and must keep it alive while the slot is named.
      *  @return CMT_OK; CMT_REJECT for bytes that do not decode or a block
-     *          that fails ValidateBasic — :2007/:2013/:2018 all return the
+     *          that fails ValidateBasic — :2002/:2008/:2013 all return the
      *          error to `addProposalBlockPart`'s caller. */
     int (*decode_block)(void *ctx, const uint8_t *bytes, size_t len,
                         cmt_block_t *out);
@@ -685,7 +685,7 @@ typedef struct {
     /* ── the clock and the timer ───────────────────────────────────── */
 
     /** THE ONLY CLOCK IN THIS MODULE — the WALL clock. Reached at :558,
-     *  :728, :1033, :1614 and :2417 and nowhere else. */
+     *  :728, :1028, :1609 and :2410 and nowhere else. */
     cmt_now_fn now;
 
     /** `ticker.timer.Reset(ti.Duration)` (ticker.go:126). The duration is
@@ -716,17 +716,17 @@ typedef struct {
  * chooses free indices, and never allocates or frees anything here.
  *
  * `payload[i]` is the buffer the assembled parts of slot `i` are read back
- * into before `decode_block` on the receiver's path (:2005). Its capacity
+ * into before `decode_block` on the receiver's path (:2000). Its capacity
  * must cover `ConsensusParams.Block.MaxBytes`.
  *
  * ── WHY THE PROPOSER HAS ITS OWN BUFFER, AND WHAT THE HOST OWES IT ─────
  * `marshal_*` is NOT one of the three slots, and that is deliberate. On
- * the proposer's path :1223 marshals the block and splits it into parts
+ * the proposer's path :1218 marshals the block and splits it into parts
  * whose payloads POINT INTO that marshalled copy (cmt_part_set.h's
- * payload note), and :1246-1249 then queues those parts as messages. A
+ * payload note), and :1241-1244 then queues those parts as messages. A
  * queued `cmt_part_t` carries only a POINTER to its bytes, so the bytes
  * must outlive the queue entry. If the proposer had marshalled into one
- * of the three slots, `defaultSetProposal` (:1945) — which runs on the
+ * of the three slots, `defaultSetProposal` (:1940) — which runs on the
  * very next step, from the proposal this node just queued — could take
  * that same slot, because no name points at it, and overwrite the bytes
  * its own queued parts still refer to.
@@ -770,7 +770,7 @@ typedef struct {
     uint8_t        *part_bytes[CMT_CS_BLOCK_SLOTS];
     size_t          part_bytes_cap[CMT_CS_BLOCK_SLOTS];
 
-    /** The proposer's own marshal target (:1223) — see above. */
+    /** The proposer's own marshal target (:1218) — see above. */
     uint8_t        *marshal_scratch;
     size_t          marshal_scratch_cap;
     cmt_part_t     *marshal_parts;
@@ -781,7 +781,7 @@ typedef struct {
 /* ══ the event switch (state.go:113 `evsw`, libs/events/events.go) ════ */
 
 /**
- * cometbft@709fd12b consensus/reactor.go:411-433 — the three callbacks
+ * cometbft@v0.38.26 consensus/reactor.go:420-442 — the three callbacks
  * the reactor registers on `cs.evsw` with `AddListenerForEvent`
  * (libs/events/events.go:77-99), one listener id "consensus-reactor".
  *
@@ -805,11 +805,11 @@ typedef struct {
  */
 typedef struct {
     /** state.go:772 (`EventNewRoundStep`, inside `newStep`) —
-     *  reactor.go:412-416. */
+     *  reactor.go:421-425. */
     void (*on_new_round_step)(void *ctx, const cmt_round_state_t *rs);
-    /** state.go:1653 and :2302 (`EventValidBlock`) — reactor.go:419-423. */
+    /** state.go:1648 and :2295 (`EventValidBlock`) — reactor.go:428-432. */
     void (*on_valid_block)(void *ctx, const cmt_round_state_t *rs);
-    /** state.go:2158 and :2248 (`EventVote`) — reactor.go:426-430. */
+    /** state.go:2153 and :2241 (`EventVote`) — reactor.go:435-439. */
     void (*on_vote)(void *ctx, const cmt_vote_t *vote);
 } cmt_cs_listener_t;
 
@@ -835,7 +835,7 @@ typedef enum {
 /* ══ the state ════════════════════════════════════════════════════════ */
 
 /**
- * cometbft@709fd12b consensus/state.go:80-148 — `type State struct`.
+ * cometbft@v0.38.26 consensus/state.go:80-148 — `type State struct`.
  *
  * The embedded `cstypes.RoundState` (:102) is the `rs` field here; the
  * reference reads it as `cs.Height`, this port as `cs->rs.height`.
@@ -851,7 +851,7 @@ struct cmt_cs_s {
 
     const cmt_config_t *config;              /* :84  */
     /** :85 — `privValidator types.PrivValidator`. A POINTER in Go, whose
-     *  nil is a state the reference tests at :1170, :1280 and :2445; here
+     *  nil is a state the reference tests at :1165, :1275 and :2438; here
      *  the presence flag, set by `cmt_cs_set_priv_validator`. */
     bool                has_priv_validator;
     cmt_round_state_t   rs;                  /* :102 embedded */
@@ -905,7 +905,7 @@ struct cmt_cs_s {
      *  FIFO ring of CMT_CS_TOCK_QUEUE_SIZE — the reference's `tockChan`,
      *  which is `tickTockBufferSize` = 10 deep (ticker.go:11, :48).
      *  `cmt_cs_step` serves ONE per call through source 3, in the order
-     *  they arrived; `handleTimeout`'s :970 test drops the stale ones.
+     *  they arrived; `handleTimeout`'s :965 test drops the stale ones.
      *  Through wave R3 W1 this was a single slot and a second undelivered
      *  tock was CMT_FAULT, which a node could reach with no byzantine
      *  input at all (deviation register R3-AUD-8). */
@@ -935,12 +935,12 @@ struct cmt_cs_s {
     /** The standalone set of CMT_CS_LC_OWNED, so it can be freed. */
     cmt_vote_set_t     *last_commit_owned;
 
-    /** Storage for `state` and for the `stateCopy` of :1770. Both are
+    /** Storage for `state` and for the `stateCopy` of :1765. Both are
      *  the caller's; `cmt_state_t` needs one `cmt_state_storage_t` each
      *  (cmt_state.h:229). */
     cmt_state_t         state_scratch;
 
-    /** The two buffers the `validators.Copy()` of :1073 alternates
+    /** The two buffers the `validators.Copy()` of :1068 alternates
      *  between, so a copy never has its own source as its destination.
      *  `rs.validators` points at `&state.validators` or at one of these.
      *  Their storage is allocated by `cmt_cs_init` and freed by
@@ -957,14 +957,14 @@ struct cmt_cs_s {
      * can outlive the other. Here `cmt_state_t` is a value and the copy
      * into `cs->state` produces a second object, so a vote set borrowing
      * the caller's state would be left pointing at storage that
-     * `finalizeCommit` reuses at :1770. This is that borrow's own copy; it
+     * `finalizeCommit` reuses at :1765. This is that borrow's own copy; it
      * lives exactly as long as `last_commit_owned`. */
     cmt_validator_set_t last_commit_vals;
     cmt_validator_t    *last_commit_vals_storage;
 
     /** C-only. Storage for the proposal `rs.proposal` names.
      *
-     * :1940 stores the caller's `*types.Proposal` POINTER, and in Go that
+     * :1935 stores the caller's `*types.Proposal` POINTER, and in Go that
      * object is on the heap and outlives the `msgInfo` that carried it.
      * Here the message is a queue element this module frees the moment
      * `handleMsg` returns, so the proposal is COPIED into this field and
@@ -994,7 +994,7 @@ struct cmt_cs_s {
 /* ══ construction (state.go:154-208) ══════════════════════════════════ */
 
 /**
- * cometbft@709fd12b consensus/state.go:154-208 — `NewState()`.
+ * cometbft@v0.38.26 consensus/state.go:154-208 — `NewState()`.
  *
  * `config`, `host`, `slots` and the storages are BORROWED and must outlive
  * the state machine. The reference's `options ...StateOption` are two
@@ -1014,7 +1014,7 @@ struct cmt_cs_s {
  *
  * @param state_storage storage for `cs->state`; must not be shared with
  *        `scratch_storage`.
- * @param scratch_storage storage for the `stateCopy` of :1770. The
+ * @param scratch_storage storage for the `stateCopy` of :1765. The
  *        incoming `state` is copied here first, so that `cs->state` is
  *        still EMPTY when `updateToState` runs its :655-685 checks — the
  *        reference's `cs.state` is the OLD state at that point and a
@@ -1045,10 +1045,10 @@ void cmt_cs_free(cmt_cs_t *cs);
 /* ══ the event switch (state.go:113, libs/events/events.go) ═══════════ */
 
 /**
- * cometbft@709fd12b libs/events/events.go:77-99 — `AddListenerForEvent`,
+ * cometbft@v0.38.26 libs/events/events.go:77-99 — `AddListenerForEvent`,
  * for the one listener id the reference ever registers here,
- * "consensus-reactor" (reactor.go:412), and its three events (:413,
- * :420, :427) at once.
+ * "consensus-reactor" (reactor.go:421), and its three events (:422,
+ * :429, :436) at once.
  *
  * A second call REPLACES the callbacks, which is what :175-178
  * (`cell.listeners[listenerID] = cb`, a map write) does for the same id.
@@ -1059,39 +1059,39 @@ void cmt_cs_free(cmt_cs_t *cs);
  */
 int cmt_cs_add_listener(cmt_cs_t *cs, const cmt_cs_listener_t *l, void *ctx);
 
-/** cometbft@709fd12b libs/events/events.go:101-119 — `RemoveListener`,
- *  reached from reactor.go:435-438. After it no site fires. NULL is a
+/** cometbft@v0.38.26 libs/events/events.go:101-119 — `RemoveListener`,
+ *  reached from reactor.go:444-447. After it no site fires. NULL is a
  *  no-op. */
 void cmt_cs_remove_listener(cmt_cs_t *cs);
 
 /* ══ accessors (state.go:240-314) ═════════════════════════════════════ */
 
-/** cometbft@709fd12b consensus/state.go:240-244 — `GetState()`. A COPY,
+/** cometbft@v0.38.26 consensus/state.go:240-244 — `GetState()`. A COPY,
  *  as the reference's `cs.state.Copy()` is.
  *  @param out must already carry its own `cmt_state_storage_t`. */
 int cmt_cs_get_state(const cmt_cs_t *cs, cmt_state_t *out);
 
-/** cometbft@709fd12b consensus/state.go:248-252 — `GetLastHeight()`. */
+/** cometbft@v0.38.26 consensus/state.go:248-252 — `GetLastHeight()`. */
 int64_t cmt_cs_get_last_height(const cmt_cs_t *cs);
 
-/** cometbft@709fd12b consensus/state.go:255-260 — `GetRoundState()`.
+/** cometbft@v0.38.26 consensus/state.go:255-260 — `GetRoundState()`.
  *  The reference returns a SHALLOW copy; so does this, which means every
  *  pointer in it still refers to storage `cs` owns. */
 int cmt_cs_get_round_state(const cmt_cs_t *cs, cmt_round_state_t *out);
 
-/** cometbft@709fd12b consensus/state.go:277-281 — `GetValidators()`.
+/** cometbft@v0.38.26 consensus/state.go:277-281 — `GetValidators()`.
  *  @param out_height receives `state.LastBlockHeight`.
  *  @param out receives a COPY of the current validator set; it must
  *         already be `cmt_validator_set_init`ialised with storage. */
 int cmt_cs_get_validators(const cmt_cs_t *cs, int64_t *out_height,
                           cmt_validator_set_t *out);
 
-/** cometbft@709fd12b consensus/state.go:285-294 — `SetPrivValidator()`.
+/** cometbft@v0.38.26 consensus/state.go:285-294 — `SetPrivValidator()`.
  *  Sets the presence flag and immediately refreshes the memoized public
  *  key (:291); a failure there is only logged, as at :292. */
 int cmt_cs_set_priv_validator(cmt_cs_t *cs, bool present);
 
-/** cometbft@709fd12b consensus/state.go:305-314 — `LoadCommit()`.
+/** cometbft@v0.38.26 consensus/state.go:305-314 — `LoadCommit()`.
  *  @param out_found false is the reference's nil. */
 int cmt_cs_load_commit(cmt_cs_t *cs, int64_t height, cmt_commit_t *out,
                        bool *out_found);
@@ -1099,7 +1099,7 @@ int cmt_cs_load_commit(cmt_cs_t *cs, int64_t height, cmt_commit_t *out,
 /* ══ lifecycle (state.go:318-441) ═════════════════════════════════════ */
 
 /**
- * cometbft@709fd12b consensus/state.go:318-405 — `OnStart()`, minus the
+ * cometbft@v0.38.26 consensus/state.go:318-405 — `OnStart()`, minus the
  * WAL open (:319-325, the host's).
  *
  * PORTED: the catch-up replay and its repair loop when `do_wal_catchup`
@@ -1125,7 +1125,7 @@ int cmt_cs_load_commit(cmt_cs_t *cs, int64_t height, cmt_commit_t *out,
  */
 int cmt_cs_start(cmt_cs_t *cs);
 
-/** cometbft@709fd12b consensus/state.go:432-441 — `OnStop()`. Stops the
+/** cometbft@v0.38.26 consensus/state.go:432-441 — `OnStop()`. Stops the
  *  ticker (:437) and applies its action to the host's timer. The event
  *  switch of :433 is not ported. */
 int cmt_cs_stop(cmt_cs_t *cs);
@@ -1133,7 +1133,7 @@ int cmt_cs_stop(cmt_cs_t *cs);
 /* ══ inputs (state.go:477-532) ════════════════════════════════════════ */
 
 /**
- * cometbft@709fd12b consensus/state.go:477-486 — `AddVote()`.
+ * cometbft@v0.38.26 consensus/state.go:477-486 — `AddVote()`.
  *
  * The reference chooses the queue by `peerID == ""` (:478): an empty id is
  * internal. Here the empty id is `cmt_peer_id_self()` (cmt_vote_set.h:233)
@@ -1147,18 +1147,18 @@ int cmt_cs_stop(cmt_cs_t *cs);
 int cmt_cs_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
                     const uint8_t *peer_id, size_t peer_id_len);
 
-/** cometbft@709fd12b consensus/state.go:489-498 — `SetProposal()`. */
+/** cometbft@v0.38.26 consensus/state.go:489-498 — `SetProposal()`. */
 int cmt_cs_set_proposal_input(cmt_cs_t *cs, const cmt_proposal_t *proposal,
                               const uint8_t *peer_id, size_t peer_id_len);
 
-/** cometbft@709fd12b consensus/state.go:501-510 — `AddProposalBlockPart()`. */
+/** cometbft@v0.38.26 consensus/state.go:501-510 — `AddProposalBlockPart()`. */
 int cmt_cs_add_proposal_block_part_input(cmt_cs_t *cs, int64_t height,
                                          int32_t round,
                                          const cmt_part_t *part,
                                          const uint8_t *peer_id,
                                          size_t peer_id_len);
 
-/** cometbft@709fd12b consensus/state.go:513-532 — `SetProposalAndBlock()`.
+/** cometbft@v0.38.26 consensus/state.go:513-532 — `SetProposalAndBlock()`.
  *  The proposal, then every part of `parts` in index order (:524-529).
  *  The `block` parameter of :515 is unused in the reference too — its own
  *  TODO at :519 says so — and is not taken here. */
@@ -1180,7 +1180,7 @@ void cmt_cs_quit(cmt_cs_t *cs);
  * (ticker.go:137) onto a channel `tickTockBufferSize` = 10 deep (:11, :48).
  * Up to CMT_CS_TOCK_QUEUE_SIZE tocks may therefore be undelivered at once,
  * and they are served in arrival order; a stale one is dropped by
- * `handleTimeout`'s height/round/step test (state.go:970), not here.
+ * `handleTimeout`'s height/round/step test (state.go:965), not here.
  *
  * @return CMT_OK; CMT_FAULT when NO TIMER WAS ARMED — the HOST fired a
  *         timer this module did not ask for, which `stopTimer`'s drain of
@@ -1195,7 +1195,7 @@ int cmt_cs_on_timer_expired(cmt_cs_t *cs);
 /* ══ the event loop (state.go:784-872) ════════════════════════════════ */
 
 /**
- * cometbft@709fd12b consensus/state.go:784-872 — `receiveRoutine`, one
+ * cometbft@v0.38.26 consensus/state.go:784-872 — `receiveRoutine`, one
  * iteration.
  *
  * Handles AT MOST ONE event: the four sources are polled from the rotating
@@ -1208,7 +1208,7 @@ int cmt_cs_on_timer_expired(cmt_cs_t *cs);
  * @param out_worked false means every source was empty; the caller waits.
  *        May be NULL.
  * @return CMT_OK; CMT_REJECT is never returned (the reference's `handleMsg`
- *         swallows every message error into a log line at :954-963);
+ *         swallows every message error into a log line at :949-958);
  *         CMT_FAULT on NULL, a WriteSync failure (:841-844), an internal
  *         queue overflow, or any node-local invariant below.
  */
@@ -1218,82 +1218,82 @@ int cmt_cs_step(cmt_cs_t *cs, bool *out_worked);
  *  message, a tock or a quit. C only; Go blocks in `select` instead. */
 bool cmt_cs_has_work(const cmt_cs_t *cs);
 
-/* ══ the transitions (state.go:875-2066) ══════════════════════════════ */
+/* ══ the transitions (state.go:875-2061) ══════════════════════════════ */
 /* Public because wave T's scenario suite drives them directly, exactly as
  * consensus/state_test.go does. Every one takes `cs` where the reference
  * has a receiver. */
 
-/** cometbft@709fd12b consensus/state.go:875-964 — `handleMsg`. */
+/** cometbft@v0.38.26 consensus/state.go:875-959 — `handleMsg`. */
 int cmt_cs_handle_msg(cmt_cs_t *cs, const cmt_msg_info_t *mi);
 
-/** cometbft@709fd12b consensus/state.go:966-1014 — `handleTimeout`.
+/** cometbft@v0.38.26 consensus/state.go:961-1009 — `handleTimeout`.
  *  @param rs the round state as it was when the tock was taken off the
  *         queue (:823, :865), NOT the live one. */
 int cmt_cs_handle_timeout(cmt_cs_t *cs, const cmt_timeout_info_t *ti,
                           const cmt_round_state_t *rs);
 
-/** cometbft@709fd12b consensus/state.go:1016-1039 — `handleTxsAvailable`. */
+/** cometbft@v0.38.26 consensus/state.go:1011-1034 — `handleTxsAvailable`. */
 int cmt_cs_handle_txs_available(cmt_cs_t *cs);
 
-/** cometbft@709fd12b consensus/state.go:1053-1115 — `enterNewRound`. */
+/** cometbft@v0.38.26 consensus/state.go:1048-1110 — `enterNewRound`. */
 int cmt_cs_enter_new_round(cmt_cs_t *cs, int64_t height, int32_t round);
 
-/** cometbft@709fd12b consensus/state.go:1119-1132 — `needProofBlock`. */
+/** cometbft@v0.38.26 consensus/state.go:1114-1127 — `needProofBlock`. */
 int cmt_cs_need_proof_block(cmt_cs_t *cs, int64_t height, bool *out);
 
-/** cometbft@709fd12b consensus/state.go:1140-1198 — `enterPropose`. */
+/** cometbft@v0.38.26 consensus/state.go:1135-1193 — `enterPropose`. */
 int cmt_cs_enter_propose(cmt_cs_t *cs, int64_t height, int32_t round);
 
-/** cometbft@709fd12b consensus/state.go:1204-1255 — `defaultDecideProposal`. */
+/** cometbft@v0.38.26 consensus/state.go:1199-1250 — `defaultDecideProposal`. */
 int cmt_cs_default_decide_proposal(cmt_cs_t *cs, int64_t height,
                                    int32_t round);
 
-/** cometbft@709fd12b consensus/state.go:1259-1270 — `isProposalComplete`. */
+/** cometbft@v0.38.26 consensus/state.go:1254-1265 — `isProposalComplete`. */
 int cmt_cs_is_proposal_complete(cmt_cs_t *cs, bool *out);
 
-/** cometbft@709fd12b consensus/state.go:1319-1343 — `enterPrevote`. */
+/** cometbft@v0.38.26 consensus/state.go:1314-1338 — `enterPrevote`. */
 int cmt_cs_enter_prevote(cmt_cs_t *cs, int64_t height, int32_t round);
 
-/** cometbft@709fd12b consensus/state.go:1345-1403 — `defaultDoPrevote`. */
+/** cometbft@v0.38.26 consensus/state.go:1340-1398 — `defaultDoPrevote`. */
 int cmt_cs_default_do_prevote(cmt_cs_t *cs, int64_t height, int32_t round);
 
-/** cometbft@709fd12b consensus/state.go:1406-1434 — `enterPrevoteWait`. */
+/** cometbft@v0.38.26 consensus/state.go:1401-1429 — `enterPrevoteWait`. */
 int cmt_cs_enter_prevote_wait(cmt_cs_t *cs, int64_t height, int32_t round);
 
-/** cometbft@709fd12b consensus/state.go:1442-1561 — `enterPrecommit`. */
+/** cometbft@v0.38.26 consensus/state.go:1437-1556 — `enterPrecommit`. */
 int cmt_cs_enter_precommit(cmt_cs_t *cs, int64_t height, int32_t round);
 
-/** cometbft@709fd12b consensus/state.go:1564-1593 — `enterPrecommitWait`. */
+/** cometbft@v0.38.26 consensus/state.go:1559-1588 — `enterPrecommitWait`. */
 int cmt_cs_enter_precommit_wait(cmt_cs_t *cs, int64_t height, int32_t round);
 
-/** cometbft@709fd12b consensus/state.go:1596-1656 — `enterCommit`. */
+/** cometbft@v0.38.26 consensus/state.go:1591-1651 — `enterCommit`. */
 int cmt_cs_enter_commit(cmt_cs_t *cs, int64_t height, int32_t commit_round);
 
-/** cometbft@709fd12b consensus/state.go:1659-1684 — `tryFinalizeCommit`. */
+/** cometbft@v0.38.26 consensus/state.go:1654-1679 — `tryFinalizeCommit`. */
 int cmt_cs_try_finalize_commit(cmt_cs_t *cs, int64_t height);
 
-/** cometbft@709fd12b consensus/state.go:1687-1810 — `finalizeCommit`. */
+/** cometbft@v0.38.26 consensus/state.go:1682-1805 — `finalizeCommit`. */
 int cmt_cs_finalize_commit(cmt_cs_t *cs, int64_t height);
 
-/** cometbft@709fd12b consensus/state.go:1903-1950 — `defaultSetProposal`. */
+/** cometbft@v0.38.26 consensus/state.go:1898-1945 — `defaultSetProposal`. */
 int cmt_cs_default_set_proposal(cmt_cs_t *cs, const cmt_proposal_t *proposal);
 
-/** cometbft@709fd12b consensus/state.go:1955-2031 — `addProposalBlockPart`.
+/** cometbft@v0.38.26 consensus/state.go:1950-2026 — `addProposalBlockPart`.
  *  @param out_added the reference's `added`; may be NULL. */
 int cmt_cs_add_proposal_block_part(cmt_cs_t *cs,
                                    const cmt_block_part_msg_t *msg,
                                    const cmt_peer_id_t *peer,
                                    bool *out_added);
 
-/** cometbft@709fd12b consensus/state.go:2033-2066 — `handleCompleteProposal`. */
+/** cometbft@v0.38.26 consensus/state.go:2028-2061 — `handleCompleteProposal`. */
 int cmt_cs_handle_complete_proposal(cmt_cs_t *cs, int64_t block_height);
 
-/** cometbft@709fd12b consensus/state.go:2069-2118 — `tryAddVote`.
+/** cometbft@v0.38.26 consensus/state.go:2064-2113 — `tryAddVote`.
  *
- *  `addVote` (:2120-2363) is NOT exported. In the reference it is a
+ *  `addVote` (:2115-2356) is NOT exported. In the reference it is a
  *  private method with exactly one caller, this one, and the only safe
  *  way to add a vote IS through this one: it is where a conflicting vote
- *  reaches the evidence pool (:2094). Wave C exported a wrapper around it
+ *  reaches the evidence pool (:2089). Wave C exported a wrapper around it
  *  "for wave T"; wave T never called it, and verifier BYZ found that the
  *  wrapper passed no conflict sink, so an equivocation entering through it
  *  would have been swallowed. Removed as dead code that bypassed the
@@ -1301,20 +1301,20 @@ int cmt_cs_handle_complete_proposal(cmt_cs_t *cs, int64_t block_height);
 int cmt_cs_try_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
                         const cmt_peer_id_t *peer, bool *out_added);
 
-/** cometbft@709fd12b consensus/state.go:2416-2435 — `voteTime()`.
+/** cometbft@v0.38.26 consensus/state.go:2409-2428 — `voteTime()`.
  *  `now`, raised to `LockedBlock.Time + 1ms` or `ProposalBlock.Time + 1ms`
  *  when either of those is later. THE ONLY CLOCK READ IN A VOTE'S LIFE
  *  besides the signer's. */
 int cmt_cs_vote_time(cmt_cs_t *cs, cmt_time_t *out);
 
-/** cometbft@709fd12b consensus/state.go:2439-2474 — `signAddVote`.
+/** cometbft@v0.38.26 consensus/state.go:2432-2467 — `signAddVote`.
  *  Signs and pushes onto the internal queue; it never transitions. */
 int cmt_cs_sign_add_vote(cmt_cs_t *cs, int32_t msg_type,
                          const uint8_t *hash, size_t hash_len,
                          const cmt_part_set_header_t *header,
                          cmt_block_t *block);
 
-/** cometbft@709fd12b consensus/state.go:2479-2490 —
+/** cometbft@v0.38.26 consensus/state.go:2472-2483 —
  *  `updatePrivValidatorPubKey`. */
 int cmt_cs_update_priv_validator_pub_key(cmt_cs_t *cs);
 
@@ -1325,8 +1325,8 @@ int cmt_cs_update_priv_validator_pub_key(cmt_cs_t *cs);
  *          ErrSignatureFoundInPastBlocks (:2500). */
 int cmt_cs_check_double_signing_risk(cmt_cs_t *cs, int64_t height);
 
-/** cometbft@709fd12b consensus/state.go:2600-2617 — `CompareHRS()`.
- *  −1, 0 or 1. Its consumer is the reactor (reactor.go:1368), wave R3.
+/** cometbft@v0.38.26 consensus/state.go:2593-2610 — `CompareHRS()`.
+ *  −1, 0 or 1. Its consumer is the reactor (reactor.go:1377), wave R3.
  *  A free function in Go, so no `cs` in the name (the map's naming rule;
  *  it shipped as `cmt_cs_compare_hrs` and was renamed at the R2 close). */
 int cmt_compare_hrs(int64_t h1, int32_t r1, cmt_round_step_t s1,
@@ -1334,11 +1334,11 @@ int cmt_compare_hrs(int64_t h1, int32_t r1, cmt_round_step_t s1,
 
 /* ══ internal transitions the loop uses, exposed for wave T ═══════════ */
 
-/** cometbft@709fd12b consensus/state.go:647-756 — `updateToState`. */
+/** cometbft@v0.38.26 consensus/state.go:647-756 — `updateToState`. */
 int cmt_cs_update_to_state(cmt_cs_t *cs, const cmt_state_t *state);
 
 /**
- * cometbft@709fd12b consensus/state.go:597-608 — `reconstructLastCommit`.
+ * cometbft@v0.38.26 consensus/state.go:597-608 — `reconstructLastCommit`.
  *
  * Exposed in wave R3-A for the reactor's `SwitchToConsensus`
  * (reactor.go:116), whose call is the ONLY one outside this module; the
@@ -1352,17 +1352,17 @@ int cmt_cs_update_to_state(cmt_cs_t *cs, const cmt_state_t *state);
  */
 int cmt_cs_reconstruct_last_commit(cmt_cs_t *cs, const cmt_state_t *state);
 
-/** cometbft@709fd12b consensus/state.go:556-560 — `scheduleRound0`. */
+/** cometbft@v0.38.26 consensus/state.go:556-560 — `scheduleRound0`. */
 int cmt_cs_schedule_round0(cmt_cs_t *cs, const cmt_round_state_t *rs);
 
-/** cometbft@709fd12b consensus/state.go:563-565 — `scheduleTimeout`. */
+/** cometbft@v0.38.26 consensus/state.go:563-565 — `scheduleTimeout`. */
 int cmt_cs_schedule_timeout(cmt_cs_t *cs, int64_t duration_ns, int64_t height,
                             int32_t round, cmt_round_step_t step);
 
 /* ══ replay (replay.go:39-167) ════════════════════════════════════════ */
 
 /**
- * cometbft@709fd12b consensus/replay.go:39-90 — `readReplayMessage`.
+ * cometbft@v0.38.26 consensus/replay.go:39-90 — `readReplayMessage`.
  *
  * One WAL record applied as if it had arrived in the event loop. An
  * END_HEIGHT record is skipped (:41-43); a round-state record is COMPARED
@@ -1379,7 +1379,7 @@ int cmt_cs_read_replay_message(cmt_cs_t *cs,
                                const cmt_timed_wal_message_t *msg);
 
 /**
- * cometbft@709fd12b consensus/replay.go:94-167 — `catchupReplay`.
+ * cometbft@v0.38.26 consensus/replay.go:94-167 — `catchupReplay`.
  *
  * THE END_HEIGHT RULE, which is the whole sanity check: a record for
  * `cs_height` must NOT exist (:106-117) and one for `cs_height − 1` MUST

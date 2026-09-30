@@ -1,6 +1,6 @@
 /**
  * @file nodus/src/witness/nodus_witness_p2p.c
- * @brief The nodus host of the ported cometbft @709fd12b p2p layer on the
+ * @brief The nodus host of the ported cometbft @v0.38.26 p2p layer on the
  *        witness port 4004. Contract, governing records and the
  *        deviations: nodus_witness_p2p.h.
  *
@@ -63,11 +63,11 @@ void nodus_p2p_config_default(nodus_p2p_config_t *c)
         return;
     }
     memset(c, 0, sizeof(*c));
-    c->pex = true;                                          /* config.go:625 */
-    c->addr_book_strict = true;                             /* config.go:621 */
-    c->allow_duplicate_ip = false;                          /* config.go:630 */
-    c->max_num_inbound_peers = CMT_P2P_DEFAULT_MAX_NUM_INBOUND_PEERS;   /* :622 */
-    c->max_num_outbound_peers = CMT_P2P_DEFAULT_MAX_NUM_OUTBOUND_PEERS; /* :623 */
+    c->pex = true;                                          /* config.go:633 */
+    c->addr_book_strict = true;                             /* config.go:629 */
+    c->allow_duplicate_ip = false;                          /* config.go:638 */
+    c->max_num_inbound_peers = CMT_P2P_DEFAULT_MAX_NUM_INBOUND_PEERS;   /* :630 */
+    c->max_num_outbound_peers = CMT_P2P_DEFAULT_MAX_NUM_OUTBOUND_PEERS; /* :631 */
     c->flush_throttle_timeout_ms =
         CMT_P2P_CONFIG_DEFAULT_FLUSH_THROTTLE_NS / CMT_P2P_MCONN_NS_PER_MS;
     c->max_packet_msg_payload_size = CMT_P2P_CONFIG_DEFAULT_MAX_PACKET_MSG_PAYLOAD_SIZE;
@@ -586,7 +586,7 @@ static void io_write(nodus_p2p_io_t *io, int slot)
  * The most socket bytes ONE io_read call takes: about one sample of the
  * recv Monitor at the configured rate — recv_rate × the Monitor's 100 ms
  * sample (flowrate.go:51; 512 000 B at the default 5 120 000 B/s,
- * config.go:584), never less than one rbuf. "About": this counts sealed
+ * config.go:592), never less than one rbuf. "About": this counts sealed
  * wire bytes (1044 per 1024 plaintext), the Monitor counts packet bytes,
  * so the cap sits ~2 % below one sample's plaintext quota.
  * ⚠ NOT GROUNDED — the reference has no such cap: its recvRoutine is its
@@ -874,7 +874,7 @@ enum { WQ_OUTBOUND = 0, WQ_INBOUND = 1, WQ_ADDR = 2, WQ_N = 3 };
 /** Depth of each queue. ⚠ NOT GROUNDED — a size (the reference runs one
  *  goroutine per connection, transport.go:304-309, with no queue).
  *  Rationale: a full reconnect of the default inbound limit (40, config.go
- *  :622) queues at once; past the depth a handshake is closed (§2R4 P3),
+ *  :630) queues at once; past the depth a handshake is closed (§2R4 P3),
  *  never blocked. The INBOUND queue is never shallower than the live
  *  listener limit (inbound_depth — bonded peers raise the limit at run
  *  time, red-team R6 F4). */
@@ -943,8 +943,8 @@ typedef struct {
 
 /* StopPeerForError reasons this host passes (logged by the switch). */
 #define NODUS_P2P_STOP_CONR_BASE    400   /* + cmt_conr_stop_reason_t      */
-#define NODUS_P2P_STOP_MEMR         410   /* mempool/reactor.go:172        */
-#define NODUS_P2P_STOP_DECODE_0X70  420   /* peer.go:410-421               */
+#define NODUS_P2P_STOP_MEMR         410   /* mempool/reactor.go:182        */
+#define NODUS_P2P_STOP_DECODE_0X70  420   /* peer.go:418-429               */
 #define NODUS_P2P_STOP_DECODE_0X71  421
 #define NODUS_P2P_STOP_BSYNC_BASE   430   /* + cmt_bsync_stop_reason_t     */
 
@@ -1554,7 +1554,7 @@ static size_t peer_q_room(const nodus_witness_p2p_t *p)
 
 /*
  * The transport's `may_receive` row — the consensus reactor's blocking
- * `peerMsgQueue <-` (consensus/reactor.go:324, :330, :350) in the
+ * `peerMsgQueue <-` (consensus/reactor.go:333, :339, :359) in the
  * single-loop form: ROOM FOR ONE MESSAGE. The reference blocks each
  * message on its own slot; here the question is asked before EVERY
  * message a peer connection delivers (cmt_p2p_peer_pump →
@@ -2037,7 +2037,7 @@ static void lane_slot_release(nodus_witness_p2p_t *p, int i)
 }
 
 /* Take index `i` out of both reactors and free it — a peer the switch
- * dropped without a RemovePeer (switch.go:811-865: an addPeer that fails
+ * dropped without a RemovePeer (switch.go:812-866: an addPeer that fails
  * after InitPeer calls no RemovePeer, in the reference too). */
 static void lane_slot_clear(nodus_witness_p2p_t *p, int i)
 {
@@ -2102,7 +2102,7 @@ static void lane_conr_init(nodus_witness_p2p_t *p, int i)
     if (p->conr == NULL || p->slots[i].conr_init || !peer_wid(p->slots[i].peer, id)) {
         return;
     }
-    rc = cmt_conr_init_peer(p->conr, i, id);              /* switch.go:829-831 */
+    rc = cmt_conr_init_peer(p->conr, i, id);              /* switch.go:830-832 */
     if (rc == CMT_OK) {
         p->slots[i].conr_init = true;
     }
@@ -2130,7 +2130,7 @@ static void lane_conr_add(nodus_witness_p2p_t *p, int i)
     if (p->conr == NULL || !p->slots[i].conr_init || p->slots[i].conr_added) {
         return;
     }
-    rc = cmt_conr_add_peer(p->conr, i);                   /* switch.go:858-860 */
+    rc = cmt_conr_add_peer(p->conr, i);                   /* switch.go:859-861 */
     if (rc == CMT_OK) {
         p->slots[i].conr_added = true;
     }
@@ -2250,7 +2250,7 @@ static void cons_receive(void *ctx, cmt_p2p_peer_t *src, uint8_t ch_id,
     } else if (rc == CMT_REJECT) {
         /* The state machine's peer queue was full (R3-A-2) and the
          * message is DROPPED after its PeerState effects — the reference
-         * blocks instead (consensus/reactor.go:324, :330, :350). Should be
+         * blocks instead (consensus/reactor.go:333, :339, :359). Should be
          * unreachable: every message is delivered only after h_may_receive
          * found room for ONE, and one message enqueues at most one entry
          * (h_may_receive's invariant). A line here means that invariant
@@ -2306,7 +2306,7 @@ static void mem_remove_peer(void *ctx, cmt_p2p_peer_t *peer, int reason)
         return;
     }
     if (p->slots[i].memr_init && p->memr != NULL) {
-        lane_fault_note(p, cmt_memr_remove_peer(p->memr, i),   /* mempool/reactor.go:133-136 */
+        lane_fault_note(p, cmt_memr_remove_peer(p->memr, i),   /* mempool/reactor.go:135-138 */
                         "memr RemovePeer", cmt_p2p_peer_id(peer), i);
     }
     p->slots[i].memr_init = false;
@@ -2350,7 +2350,7 @@ static const cmt_p2p_ch_desc_t *bs_channels(void *ctx, int *n)
     return ((nodus_witness_p2p_t *)ctx)->bs_desc;
 }
 
-/* reactor.go:190-203 AddPeer — only once the lane is live (R-P2P-47);
+/* reactor.go:195-208 AddPeer — only once the lane is live (R-P2P-47);
  * lane_live runs it for the peers connected before. */
 static void bs_add_peer(void *ctx, cmt_p2p_peer_t *peer)
 {
@@ -2364,7 +2364,7 @@ static void bs_add_peer(void *ctx, cmt_p2p_peer_t *peer)
     }
 }
 
-/* reactor.go:205-208 RemovePeer — the pool forgets the ID. */
+/* reactor.go:210-213 RemovePeer — the pool forgets the ID. */
 static void bs_remove_peer(void *ctx, cmt_p2p_peer_t *peer, int reason)
 {
     nodus_witness_p2p_t *p = (nodus_witness_p2p_t *)ctx;
@@ -2380,12 +2380,12 @@ static void bs_remove_peer(void *ctx, cmt_p2p_peer_t *peer, int reason)
 }
 
 /* ⚠ DEVIATION (no reference counterpart — the reference has no pre-live
- * window: p2p/switch.go:234-246 starts every reactor BEFORE it accepts a
- * peer, so a peer's AddPeer StatusResponse, reactor.go:190-203, always
+ * window: p2p/switch.go:235-247 starts every reactor BEFORE it accepts a
+ * peer, so a peer's AddPeer StatusResponse, reactor.go:195-208, always
  * reaches a running reactor). Here R-P2P-47 keeps the reactors away
  * from peers until nodus_witness_p2p_lane_live, and dropping that one
  * message made the pool learn the peer's height only at its 10 s status
- * broadcast (reactor.go:325, :371-373) — every node's switch to
+ * broadcast (reactor.go:401, :447-449) — every node's switch to
  * consensus late by up to one interval. So while the lane is not live a
  * 0x40 StatusResponse is KEPT — only the LATEST one per peer (its lane
  * slot, keyed by the peer's p2p ID), canonical re-marshal, at most
@@ -2470,7 +2470,7 @@ bool nodus_witness_p2p_bsync_status_held(const nodus_witness_p2p_t *p,
     return false;
 }
 
-/* reactor.go:251-305 Receive. Before the lane is live — a pinned-genesis
+/* reactor.go:348-381 Receive. Before the lane is live — a pinned-genesis
  * joiner has no chain, a node before genesis time has no running
  * reactors — the message is DROPPED and the sender is NOT stopped
  * (R-P2P-47): an honest peer asks every node it meets. The one exception
@@ -2725,7 +2725,7 @@ static bool lane_send(void *ctx, int idx, uint8_t ch, const uint8_t *bytes,
     return cmt_p2p_peer_send(p->slots[idx].peer, ch, bytes, len);
 }
 
-/* switch.go:335-358 StopPeerForError — DEFERRED until the reactor call
+/* switch.go:336-359 StopPeerForError — DEFERRED until the reactor call
  * that raised it returns (file header). */
 static void lane_conr_stop(void *ctx, int idx, int reason_code)
 {
@@ -2789,7 +2789,7 @@ static int lane_bs_height(void *ctx, int64_t *out)
     return CMT_OK;
 }
 
-/* reactor.go:581-587 / :651-663 — the BlockID projection of LoadBlockMeta. */
+/* reactor.go:590-596 / :660-672 — the BlockID projection of LoadBlockMeta. */
 static int lane_bs_meta_block_id(void *ctx, int64_t height, cmt_block_id_t *out,
                                  bool *out_found)
 {
@@ -2808,7 +2808,7 @@ static int lane_bs_meta_block_id(void *ctx, int64_t height, cmt_block_id_t *out,
     return rc;
 }
 
-/* reactor.go:664 LoadBlockPart — `bytes` points into part_arena, valid
+/* reactor.go:673 LoadBlockPart — `bytes` points into part_arena, valid
  * until the next call of this row (cmt_conr.h:462-469). */
 static int lane_bs_part(void *ctx, int64_t height, int index, cmt_part_t *out,
                         bool *out_found)
@@ -2821,7 +2821,7 @@ static int lane_bs_part(void *ctx, int64_t height, int index, cmt_part_t *out,
                                         out, out_found);
 }
 
-/* reactor.go:756 LoadBlockCommit. */
+/* reactor.go:765 LoadBlockCommit. */
 static int lane_bs_commit(void *ctx, int64_t height, cmt_commit_t *out,
                           bool *out_found)
 {
@@ -2832,7 +2832,7 @@ static int lane_bs_commit(void *ctx, int64_t height, cmt_commit_t *out,
                                           (size_t)CMT_VALSET_MAX, out, out_found);
 }
 
-/* reactor.go:754 LoadBlockExtendedCommit. */
+/* reactor.go:763 LoadBlockExtendedCommit. */
 static int lane_bs_ext_commit(void *ctx, int64_t height, cmt_extended_commit_t *out,
                               bool *out_found)
 {
@@ -2848,7 +2848,7 @@ static int lane_bs_ext_commit(void *ctx, int64_t height, cmt_extended_commit_t *
 
 /* ── the block sync reactor's p2p rows (cmt_bsync_host_t, `ctx`) ───── */
 
-/* reactor.go:216, :242, :289, :358 — `Switch.Peers().Get(id)` then
+/* reactor.go:221, :247, :365, :434 — `Switch.Peers().Get(id)` then
  * `TrySend` on 0x40; a peer not connected is `false`. */
 static bool bs_try_send(void *ctx, const char *peer_id, const uint8_t *msg,
                         size_t len)
@@ -2861,7 +2861,7 @@ static bool bs_try_send(void *ctx, const char *peer_id, const uint8_t *msg,
            cmt_p2p_peer_try_send(peer, CMT_BSYNC_CHANNEL, msg, len);
 }
 
-/* reactor.go:192-198 — `peer.Send` (≡ TrySend, R-P2P-19). */
+/* reactor.go:197-203 — `peer.Send` (≡ TrySend, R-P2P-19). */
 static bool bs_send(void *ctx, const char *peer_id, const uint8_t *msg,
                     size_t len)
 {
@@ -2872,7 +2872,7 @@ static bool bs_send(void *ctx, const char *peer_id, const uint8_t *msg,
     return peer != NULL && cmt_p2p_peer_send(peer, CMT_BSYNC_CHANNEL, msg, len);
 }
 
-/* reactor.go:576-579 — `Switch.Broadcast` on 0x40. */
+/* reactor.go:681-684 — `Switch.Broadcast` on 0x40. */
 static void bs_broadcast(void *ctx, const uint8_t *msg, size_t len)
 {
     nodus_witness_p2p_t *p = (nodus_witness_p2p_t *)ctx;
@@ -2880,9 +2880,9 @@ static void bs_broadcast(void *ctx, const uint8_t *msg, size_t len)
     (void)cmt_p2p_switch_broadcast(&p->sw, CMT_BSYNC_CHANNEL, msg, len);
 }
 
-/* switch.go:335-358 StopPeerForError, DEFERRED like the other lane rows:
+/* switch.go:336-359 StopPeerForError, DEFERRED like the other lane rows:
  * the peer by ID (a peer no longer connected is skipped — reactor.go:
- * 366-367, :518-519, :525-526), then its index. A connected peer with no
+ * 442-443, :661, :672), then its index. A connected peer with no
  * index cannot be deferred — logged (header). */
 static void bs_stop_peer(void *ctx, const char *peer_id, int reason)
 {
@@ -2935,7 +2935,7 @@ cmt_bsync_reactor_t *nodus_witness_p2p_bsync(const nodus_witness_p2p_t *p)
     return p != NULL ? p->bsync : NULL;
 }
 
-/* mempool/reactor.go:180-182, :212-230 — the consensus reactor's
+/* mempool/reactor.go:190-192, :222-235 — the consensus reactor's
  * PeerState is the peer's one PeerStateKey value. */
 static int64_t lane_peer_height(void *ctx, int idx, bool *out_known)
 {
@@ -3053,9 +3053,9 @@ int nodus_witness_p2p_lane_live(nodus_witness_p2p_t *p)
     }
     p->lane_live = true;
     /* R-P2P-47: every connected peer, index order, the reference's
-     * addPeer order (switch.go:829-831 then :858-860). The block sync
+     * addPeer order (switch.go:830-832 then :859-861). The block sync
      * reactor has no InitPeer; its AddPeer (our StatusResponse,
-     * reactor.go:190-203) comes after the other two's. */
+     * reactor.go:195-208) comes after the other two's. */
     for (i = 0; i < CMT_CONR_MAX_PEERS; i++) {
         if (p->slots[i].peer == NULL) {
             continue;
@@ -3077,7 +3077,7 @@ int nodus_witness_p2p_lane_live(nodus_witness_p2p_t *p)
          * the block sync reactor before this call (nodus_witness.c). */
         bs_replay_status(p, i);
     }
-    process_pending_stops(p);   /* a replayed status may be invalid (:253-257) */
+    process_pending_stops(p);   /* a replayed status may be invalid (:350-354) */
     /* A reactor fault during the admission above (lane_fault_note). */
     return p->lane_fault ? CMT_FAULT : CMT_OK;
 }
@@ -3150,7 +3150,7 @@ void nodus_witness_p2p_lane_unbind(nodus_witness_p2p_t *p)
     p->bsync = NULL;      /* its owner frees it (nodus_witness_close) */
 }
 
-/* ── construction (node.go:285-422 / setup.go:349-491, the p2p half) ── */
+/* ── construction (node.go:283-421 / setup.go:349-491, the p2p half) ── */
 
 static void fill_descs(nodus_witness_p2p_t *p)
 {
@@ -3167,7 +3167,7 @@ static void fill_descs(nodus_witness_p2p_t *p)
         p->cons_desc[i].recv_buffer_capacity = cd[i].recv_buffer_capacity;
         p->cons_desc[i].recv_message_capacity = cd[i].recv_message_capacity;
     }
-    /* mempool/reactor.go:71-89 GetChannels over the node's mempool config
+    /* mempool/reactor.go:73-91 GetChannels over the node's mempool config
      * — cometbft's defaults, the one nodus_cmt_node_init builds the
      * mempool with (nodus_witness_cmt_node.c, cmt_mempool_config_default).
      * Only `config` is read (cmt_memr.c GetChannels). */
@@ -3186,7 +3186,7 @@ static void fill_descs(nodus_witness_p2p_t *p)
     p->mem_desc[0].send_queue_capacity = 0;       /* FillDefaults (:762-774) */
     p->mem_desc[0].recv_buffer_capacity = 0;
     p->mem_desc[0].recv_message_capacity = (int)md.recv_message_capacity;
-    /* blocksync/reactor.go:177-188 GetChannels — 0x40, priority 5, send
+    /* blocksync/reactor.go:182-193 GetChannels — 0x40, priority 5, send
      * queue 1000, receive buffer 50 × 4096, MaxMsgSize (msgs.go:16-18,
      * the operator's "follow the reference" answer). */
     {
@@ -3341,8 +3341,8 @@ nodus_witness_p2p_t *nodus_witness_p2p_new(struct nodus_witness *w,
         }
     }
 
-    /* node.go:928-975 makeNodeInfo. Channels in the reference's list order
-     * (blocksync, consensus, mempool, :949-955; PEX last) with the two
+    /* node.go:927-974 makeNodeInfo. Channels in the reference's list order
+     * (blocksync, consensus, mempool, :948-954; PEX last) with the two
      * nodus channels before PEX. */
     fill_descs(p);
     chans[n_chans++] = p->bs_desc[0].id;
@@ -3401,7 +3401,7 @@ nodus_witness_p2p_t *nodus_witness_p2p_new(struct nodus_witness *w,
     tc.sc_host.verify = nodus_p2p_sc_verify;
     tc.chain_id = p->chain_id;
     tc.node_info = p->ni;
-    cmt_p2p_mconn_p2p_default_config(&tc.mconn);           /* switch.go:36 */
+    cmt_p2p_mconn_p2p_default_config(&tc.mconn);           /* switch.go:37 */
     tc.mconn.flush_throttle_ns = p->cfg.flush_throttle_timeout_ms * CMT_P2P_MCONN_NS_PER_MS;
     tc.mconn.max_packet_msg_payload_size = p->cfg.max_packet_msg_payload_size;
     tc.mconn.send_rate = p->cfg.send_rate;
@@ -3552,9 +3552,9 @@ nodus_witness_p2p_t *nodus_witness_p2p_new(struct nodus_witness *w,
         }
     }
 
-    /* node.go:548-580 OnStart: the switch (and with it PEX, which starts
+    /* node.go:547-579 OnStart: the switch (and with it PEX, which starts
      * the book — loadFromFile, R-P2P-38), then our record (the book's
-     * own-seq is known now), then the persistent peers (:563-564). */
+     * own-seq is known now), then the persistent peers (:562-563). */
     if (cmt_p2p_switch_start(&p->sw) != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "switch start failed (address book file "
                       "unreadable?)");
@@ -3648,7 +3648,7 @@ void nodus_witness_p2p_free(nodus_witness_p2p_t *p)
  * refused (operator: log,
  * do not refuse). A joiner (no chain yet) has its own diagnosis
  * (nodus_witness_v2_join.c join_diag). The reference dials whatever
- * persistent_peers holds (node.go:563-567) and says nothing when it is
+ * persistent_peers holds (node.go:562-566) and says nothing when it is
  * empty; no counterpart for this warning — an operator aid, not
  * consensus (monotonic clock, D3).
  */

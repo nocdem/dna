@@ -1,13 +1,13 @@
 /**
  * @file shared/dnac/cmt_msgs.c
- * @brief cometbft @709fd12b `consensus/msgs.go` in C — see cmt_msgs.h for
+ * @brief cometbft @v0.38.26 `consensus/msgs.go` in C — see cmt_msgs.h for
  *        the contract, the substitutions and the taşınmadı list.
  *
- * Every function carries the `// cometbft@709fd12b <file>:<from>-<to>`
+ * Every function carries the `// cometbft@v0.38.26 <file>:<from>-<to>`
  * line of the Go function it ports. RE-PIN (decisions/2026-09-30-
  * cometbft-pin-v0.38.26.md): the three `BitArray.ValidateBasic` calls
  * v0.38.26 adds to consensus/reactor.go (ASA-2025-003) are ported and
- * cited `cometbft@v0.38.26 …` at their sites; bare `:NNN` stay 709fd12b.
+ * cited at their sites; every bare `:NNN` is a v0.38.26 line as well.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -15,15 +15,15 @@
 
 #include "dnac/cmt_msgs.h"
 #include "dnac/cmt_safemath.h"    /* SafeConvertUint8 — msgs.go:129        */
-#include "dnac/cmt_round_state.h" /* cmt_round_step_is_valid — :1543       */
-#include "dnac/cmt_params.h"      /* CMT_MAX_BLOCK_PARTS_COUNT — :1614     */
-#include "dnac/cmt_vote_set.h"    /* CMT_MAX_VOTES_COUNT — :1663, :1806    */
+#include "dnac/cmt_round_state.h" /* cmt_round_step_is_valid — :1552       */
+#include "dnac/cmt_params.h"      /* CMT_MAX_BLOCK_PARTS_COUNT — :1626     */
+#include "dnac/cmt_vote_set.h"    /* CMT_MAX_VOTES_COUNT — :1684, :1830    */
 
 #include <string.h>
 
 /* ══ BitArray at the MESSAGE level ════════════════════════════════════
- * `(bA *BitArray) ToProto()` (libs/bits/bit_array.go:475-484) returns a
- * *cmtprotobits.BitArray, and `FromProto` (:487-497) reads one. Wave R1-A
+ * `(bA *BitArray) ToProto()` (libs/bits/bit_array.go:480-489) returns a
+ * *cmtprotobits.BitArray, and `FromProto` (:492-502) reads one. Wave R1-A
  * ported both with the generated codec FOLDED IN, so `cmt_bits_to_proto`
  * produces BYTES and `cmt_bits_from_proto` consumes them (cmt_pb.h). Here
  * the value is needed as a MESSAGE, because msgs.go stores it in a struct
@@ -33,16 +33,16 @@
  * ══════════════════════════════════════════════════════════════════════ */
 
 /**
- * The nil test of `ToProto` (bit_array.go:476-478): a NULL array, or one
+ * The nil test of `ToProto` (bit_array.go:481-483): a NULL array, or one
  * with no words, converts to nil.
  */
 static bool bits_to_proto_is_nil(bool has, const cmt_bit_array_t *ba)
 {
-    return !has || ba->n_elems == 0u;                  /* :476-478 */
+    return !has || ba->n_elems == 0u;                  /* :481-483 */
 }
 
 /**
- * The value half of `FromProto` (bit_array.go:487-497) plus the length
+ * The value half of `FromProto` (bit_array.go:492-502) plus the length
  * agreement the reference omits and the APPROVED INVARIANT requires —
  * exactly the check `cmt_bits_from_proto` makes after decoding
  * (cmt_pb.h's note on it).
@@ -56,13 +56,13 @@ static int bits_from_proto_value(const cmt_bit_array_t *in,
     if (in->n_elems != cmt_bits_num_elems(in->bits)) {
         return CMT_REJECT;
     }
-    *out = *in;                                        /* :493-496 */
+    *out = *in;                                        /* :498-501 */
     return CMT_OK;
 }
 
 /* ══ MsgToProto ═══════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b consensus/msgs.go:21-118 — MsgToProto() */
+/* cometbft@v0.38.26 consensus/msgs.go:21-118 — MsgToProto() */
 int cmt_msg_to_proto(const cmt_msg_t *msg, cmt_pb_cons_message_t *out)
 {
     int rc;
@@ -130,7 +130,7 @@ int cmt_msg_to_proto(const cmt_msg_t *msg, cmt_pb_cons_message_t *out)
          * is a nil-pointer panic in the reference. CMT_FAULT: a
          * ProposalPOL is built from THIS node's own vote set, so an empty
          * one is a local inconsistency and not a peer's message. (The
-         * reference's ValidateBasic refuses it as well, reactor.go:1660.) */
+         * reference's ValidateBasic refuses it as well, reactor.go:1681.) */
         if (bits_to_proto_is_nil(m->has_proposal_pol, &m->proposal_pol)) {
             return CMT_FAULT;
         }
@@ -157,7 +157,7 @@ int cmt_msg_to_proto(const cmt_msg_t *msg, cmt_pb_cons_message_t *out)
 
         cmt_pb_cons_vote_init(&out->u.vote);
         /* :74 — Vote.ToProto() returns nil for a nil receiver
-         * (types/vote.go:374-376) and :76 stores it in a POINTER field. */
+         * (types/vote.go:378-380) and :76 stores it in a POINTER field. */
         out->u.vote.has_vote = m->has_vote;
         if (m->has_vote) {
             rc = cmt_vote_to_proto(&m->vote, &out->u.vote.vote);
@@ -220,7 +220,7 @@ int cmt_msg_to_proto(const cmt_msg_t *msg, cmt_pb_cons_message_t *out)
 
 /* ══ MsgFromProto ═════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b consensus/msgs.go:121-237 — MsgFromProto().
+/* cometbft@v0.38.26 consensus/msgs.go:121-237 — MsgFromProto().
  *
  * ⚠ The reference's last act is `pb.ValidateBasic()` at :232-234. This
  * port stops before it; see cmt_msgs.h. */
@@ -266,7 +266,7 @@ int cmt_msg_from_proto(const cmt_pb_cons_message_t *p, cmt_msg_t *out)
         }
         /* :147-148 — a FRESH BitArray is filled from the wire value.
          * `FromProto` on a nil argument leaves it empty
-         * (bit_array.go:488-490), which is the absent-field case; the
+         * (bit_array.go:493-495), which is the absent-field case; the
          * resulting message is non-nil either way (:154), so
          * has_block_parts is always true here, exactly as the reference's
          * `pbBits := new(bits.BitArray)` is never nil. */
@@ -383,7 +383,7 @@ int cmt_msg_from_proto(const cmt_pb_cons_message_t *p, cmt_msg_t *out)
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * msgs.go:232-234 and reactor.go:1536-1810 — ValidateBasic
+ * msgs.go:232-234 and reactor.go:1545-1834 — ValidateBasic
  *
  * MOVED HERE from cmt_conr.c by wave R3 W1.7, bodies and citations
  * unchanged (atlas-dec-b02c8de1f52854b20dbfd64f6c987b34, item 4). They
@@ -393,31 +393,31 @@ int cmt_msg_from_proto(const cmt_pb_cons_message_t *p, cmt_msg_t *out)
  * them without the core depending on the reactor.
  * ══════════════════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b consensus/reactor.go:1536-1557 —
+/* cometbft@v0.38.26 consensus/reactor.go:1545-1566 —
  * NewRoundStepMessage.ValidateBasic() */
 int cmt_new_round_step_msg_validate_basic(const cmt_new_round_step_msg_t *m)
 {
     if (m == NULL) {
         return CMT_FAULT;
     }
-    if (m->height < 0) {                                         /* :1537 */
+    if (m->height < 0) {                                         /* :1546 */
         return CMT_REJECT;                             /* "negative Height" */
     }
-    if (m->round < 0) {                                          /* :1540 */
+    if (m->round < 0) {                                          /* :1549 */
         return CMT_REJECT;                             /* "negative Round" */
     }
-    if (!cmt_round_step_is_valid(m->step)) {                     /* :1543 */
+    if (!cmt_round_step_is_valid(m->step)) {                     /* :1552 */
         return CMT_REJECT;                             /* "invalid Step" */
     }
-    /* :1547 "NOTE: SecondsSinceStartTime may be negative" */
-    /* :1549-1551 "LastCommitRound will be -1 for the initial height, but
+    /* :1556 "NOTE: SecondsSinceStartTime may be negative" */
+    /* :1558-1560 "LastCommitRound will be -1 for the initial height, but
      * we don't know what height this is since it can be specified in
      * genesis. The reactor will have to validate this via
      * ValidateHeight()." */
-    if (m->last_commit_round < -1) {                             /* :1552 */
+    if (m->last_commit_round < -1) {                             /* :1561 */
         return CMT_REJECT;       /* "invalid LastCommitRound (cannot be < -1)" */
     }
-    return CMT_OK;                                               /* :1556 */
+    return CMT_OK;                                               /* :1565 */
 }
 
 /* The three v0.38.26 ValidateBasic bodies below call
@@ -430,8 +430,8 @@ int cmt_new_round_step_msg_validate_basic(const cmt_new_round_step_msg_t *m)
  * placement, which also covers a message built in memory (and is what
  * reactor_test.go's Elems=nil / Bits=500 rows exercise). */
 
-/* cometbft@709fd12b consensus/reactor.go:1596-1618 —
- * NewValidBlockMessage.ValidateBasic(); v0.38.26 :1605-1630 */
+/* cometbft@v0.38.26 consensus/reactor.go:1605-1630 —
+ * NewValidBlockMessage.ValidateBasic() */
 int cmt_new_valid_block_msg_validate_basic(const cmt_new_valid_block_msg_t *m)
 {
     int size;
@@ -439,13 +439,13 @@ int cmt_new_valid_block_msg_validate_basic(const cmt_new_valid_block_msg_t *m)
     if (m == NULL) {
         return CMT_FAULT;
     }
-    if (m->height < 0) {                                         /* :1597 */
+    if (m->height < 0) {                                         /* :1606 */
         return CMT_REJECT;                             /* "negative Height" */
     }
-    if (m->round < 0) {                                          /* :1600 */
+    if (m->round < 0) {                                          /* :1609 */
         return CMT_REJECT;                             /* "negative Round" */
     }
-    if (cmt_psh_validate_basic(&m->block_part_set_header) != CMT_OK) { /* :1603 */
+    if (cmt_psh_validate_basic(&m->block_part_set_header) != CMT_OK) { /* :1612 */
         return CMT_REJECT;                     /* "wrong BlockPartSetHeader" */
     }
     /* cometbft@v0.38.26 consensus/reactor.go:1615-1617 */
@@ -453,25 +453,25 @@ int cmt_new_valid_block_msg_validate_basic(const cmt_new_valid_block_msg_t *m)
                                                    : NULL) != CMT_OK) {
         return CMT_REJECT;                     /* "validating BlockParts" */
     }
-    /* :1606 — m.BlockParts.Size(): 0 for a nil array (bit_array.go:57-59). */
+    /* :1618 — m.BlockParts.Size(): 0 for a nil array (bit_array.go:57-59). */
     size = m->has_block_parts ? cmt_bits_size(&m->block_parts) : 0;
-    if (size == 0) {                                             /* :1606 */
+    if (size == 0) {                                             /* :1618 */
         return CMT_REJECT;                             /* "empty blockParts" */
     }
-    if ((int64_t)size != (int64_t)m->block_part_set_header.total) { /* :1609 */
+    if ((int64_t)size != (int64_t)m->block_part_set_header.total) { /* :1621 */
         return CMT_REJECT;   /* "blockParts bit array size %d not equal to
                               *  BlockPartSetHeader.Total %d" */
     }
-    /* :1614 — MaxBlockPartsCount, the PART-SET bound. It is BELOW the bit
+    /* :1626 — MaxBlockPartsCount, the PART-SET bound. It is BELOW the bit
      * array's own capacity (MaxVotesCount, cmt_bits.h), so this gate is
      * the one that refuses a 1602-part claim, not the decoder. */
-    if (size > (int)CMT_MAX_BLOCK_PARTS_COUNT) {                 /* :1614 */
+    if (size > (int)CMT_MAX_BLOCK_PARTS_COUNT) {                 /* :1626 */
         return CMT_REJECT;                /* "blockParts bit array is too big" */
     }
-    return CMT_OK;                                               /* :1617 */
+    return CMT_OK;                                               /* :1629 */
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1634-1636 —
+/* cometbft@v0.38.26 consensus/reactor.go:1646-1648 —
  * ProposalMessage.ValidateBasic() */
 int cmt_proposal_msg_validate_basic(const cmt_proposal_msg_t *m)
 {
@@ -480,12 +480,12 @@ int cmt_proposal_msg_validate_basic(const cmt_proposal_msg_t *m)
     if (m == NULL) {
         return CMT_FAULT;
     }
-    rc = cmt_proposal_validate_basic(&m->proposal);              /* :1635 */
+    rc = cmt_proposal_validate_basic(&m->proposal);              /* :1647 */
     return (rc == CMT_OK) ? CMT_OK : ((rc == CMT_FAULT) ? CMT_FAULT : CMT_REJECT);
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1653-1667 —
- * ProposalPOLMessage.ValidateBasic(); v0.38.26 :1671-1688 */
+/* cometbft@v0.38.26 consensus/reactor.go:1671-1688 —
+ * ProposalPOLMessage.ValidateBasic() */
 int cmt_proposal_pol_msg_validate_basic(const cmt_proposal_pol_msg_t *m)
 {
     int size;
@@ -493,10 +493,10 @@ int cmt_proposal_pol_msg_validate_basic(const cmt_proposal_pol_msg_t *m)
     if (m == NULL) {
         return CMT_FAULT;
     }
-    if (m->height < 0) {                                         /* :1654 */
+    if (m->height < 0) {                                         /* :1672 */
         return CMT_REJECT;                             /* "negative Height" */
     }
-    if (m->proposal_pol_round < 0) {                             /* :1657 */
+    if (m->proposal_pol_round < 0) {                             /* :1675 */
         return CMT_REJECT;                    /* "negative ProposalPOLRound" */
     }
     /* cometbft@v0.38.26 consensus/reactor.go:1678-1680 */
@@ -505,16 +505,16 @@ int cmt_proposal_pol_msg_validate_basic(const cmt_proposal_pol_msg_t *m)
         return CMT_REJECT;                    /* "validating ProposalPOL" */
     }
     size = m->has_proposal_pol ? cmt_bits_size(&m->proposal_pol) : 0;
-    if (size == 0) {                                             /* :1660 */
+    if (size == 0) {                                             /* :1681 */
         return CMT_REJECT;                   /* "empty ProposalPOL bit array" */
     }
-    if (size > (int)CMT_MAX_VOTES_COUNT) {                       /* :1663 */
+    if (size > (int)CMT_MAX_VOTES_COUNT) {                       /* :1684 */
         return CMT_REJECT;               /* "proposalPOL bit array is too big" */
     }
-    return CMT_OK;                                               /* :1666 */
+    return CMT_OK;                                               /* :1687 */
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1684-1695 —
+/* cometbft@v0.38.26 consensus/reactor.go:1705-1716 —
  * BlockPartMessage.ValidateBasic() */
 int cmt_block_part_msg_validate_basic(const cmt_block_part_msg_t *m)
 {
@@ -523,20 +523,20 @@ int cmt_block_part_msg_validate_basic(const cmt_block_part_msg_t *m)
     if (m == NULL) {
         return CMT_FAULT;
     }
-    if (m->height < 0) {                                         /* :1685 */
+    if (m->height < 0) {                                         /* :1706 */
         return CMT_REJECT;                             /* "negative Height" */
     }
-    if (m->round < 0) {                                          /* :1688 */
+    if (m->round < 0) {                                          /* :1709 */
         return CMT_REJECT;                             /* "negative Round" */
     }
-    rc = cmt_part_validate_basic(&m->part);                      /* :1691 */
+    rc = cmt_part_validate_basic(&m->part);                      /* :1712 */
     if (rc == CMT_FAULT) {
         return CMT_FAULT;
     }
     return (rc == CMT_OK) ? CMT_OK : CMT_REJECT;       /* "wrong Part" */
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1710-1712 —
+/* cometbft@v0.38.26 consensus/reactor.go:1731-1733 —
  * VoteMessage.ValidateBasic() */
 int cmt_vote_msg_validate_basic(const cmt_vote_msg_t *m)
 {
@@ -546,42 +546,42 @@ int cmt_vote_msg_validate_basic(const cmt_vote_msg_t *m)
         return CMT_FAULT;
     }
     if (!m->has_vote) {
-        /* :1711 `m.Vote.ValidateBasic()` on a nil Vote dereferences it at
-         * types/vote.go:278 and panics; a wire message without field 1
+        /* :1732 `m.Vote.ValidateBasic()` on a nil Vote dereferences it at
+         * types/vote.go:282 and panics; a wire message without field 1
          * reaches here (cmt_msgs.h, the VoteMessage struct).
          * PEER-REACHABLE → CMT_REJECT. */
         return CMT_REJECT;
     }
-    rc = cmt_vote_validate_basic(&m->vote);                      /* :1711 */
+    rc = cmt_vote_validate_basic(&m->vote);                      /* :1732 */
     if (rc == CMT_FAULT) {
         return CMT_FAULT;
     }
     return (rc == CMT_OK) ? CMT_OK : CMT_REJECT;
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1730-1744 —
+/* cometbft@v0.38.26 consensus/reactor.go:1751-1765 —
  * HasVoteMessage.ValidateBasic() */
 int cmt_has_vote_msg_validate_basic(const cmt_has_vote_msg_t *m)
 {
     if (m == NULL) {
         return CMT_FAULT;
     }
-    if (m->height < 0) {                                         /* :1731 */
+    if (m->height < 0) {                                         /* :1752 */
         return CMT_REJECT;                             /* "negative Height" */
     }
-    if (m->round < 0) {                                          /* :1734 */
+    if (m->round < 0) {                                          /* :1755 */
         return CMT_REJECT;                             /* "negative Round" */
     }
-    if (!cmt_is_vote_type_valid(m->type)) {                      /* :1737 */
+    if (!cmt_is_vote_type_valid(m->type)) {                      /* :1758 */
         return CMT_REJECT;                             /* "invalid Type" */
     }
-    if (m->index < 0) {                                          /* :1740 */
+    if (m->index < 0) {                                          /* :1761 */
         return CMT_REJECT;                             /* "negative Index" */
     }
-    return CMT_OK;                                               /* :1743 */
+    return CMT_OK;                                               /* :1764 */
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1762-1776 —
+/* cometbft@v0.38.26 consensus/reactor.go:1783-1797 —
  * VoteSetMaj23Message.ValidateBasic() */
 int cmt_vote_set_maj23_msg_validate_basic(const cmt_vote_set_maj23_msg_t *m)
 {
@@ -590,24 +590,24 @@ int cmt_vote_set_maj23_msg_validate_basic(const cmt_vote_set_maj23_msg_t *m)
     if (m == NULL) {
         return CMT_FAULT;
     }
-    if (m->height < 0) {                                         /* :1763 */
+    if (m->height < 0) {                                         /* :1784 */
         return CMT_REJECT;                             /* "negative Height" */
     }
-    if (m->round < 0) {                                          /* :1766 */
+    if (m->round < 0) {                                          /* :1787 */
         return CMT_REJECT;                             /* "negative Round" */
     }
-    if (!cmt_is_vote_type_valid(m->type)) {                      /* :1769 */
+    if (!cmt_is_vote_type_valid(m->type)) {                      /* :1790 */
         return CMT_REJECT;                             /* "invalid Type" */
     }
-    rc = cmt_block_id_validate_basic(&m->block_id);              /* :1772 */
+    rc = cmt_block_id_validate_basic(&m->block_id);              /* :1793 */
     if (rc == CMT_FAULT) {
         return CMT_FAULT;
     }
     return (rc == CMT_OK) ? CMT_OK : CMT_REJECT;       /* "wrong BlockID" */
 }
 
-/* cometbft@709fd12b consensus/reactor.go:1795-1810 —
- * VoteSetBitsMessage.ValidateBasic(); v0.38.26 :1816-1834 */
+/* cometbft@v0.38.26 consensus/reactor.go:1816-1834 —
+ * VoteSetBitsMessage.ValidateBasic() */
 int cmt_vote_set_bits_msg_validate_basic(const cmt_vote_set_bits_msg_t *m)
 {
     int size;
@@ -616,13 +616,13 @@ int cmt_vote_set_bits_msg_validate_basic(const cmt_vote_set_bits_msg_t *m)
     if (m == NULL) {
         return CMT_FAULT;
     }
-    if (m->height < 0) {                                         /* :1796 */
+    if (m->height < 0) {                                         /* :1817 */
         return CMT_REJECT;                             /* "negative Height" */
     }
-    if (!cmt_is_vote_type_valid(m->type)) {                      /* :1799 */
+    if (!cmt_is_vote_type_valid(m->type)) {                      /* :1820 */
         return CMT_REJECT;                             /* "invalid Type" */
     }
-    rc = cmt_block_id_validate_basic(&m->block_id);              /* :1802 */
+    rc = cmt_block_id_validate_basic(&m->block_id);              /* :1823 */
     if (rc == CMT_FAULT) {
         return CMT_FAULT;
     }
@@ -633,16 +633,16 @@ int cmt_vote_set_bits_msg_validate_basic(const cmt_vote_set_bits_msg_t *m)
     if (cmt_bits_validate_basic(m->has_votes ? &m->votes : NULL) != CMT_OK) {
         return CMT_REJECT;                             /* "validating Votes" */
     }
-    /* :1805 "NOTE: Votes.Size() can be zero if the node does not have any" */
+    /* :1829 "NOTE: Votes.Size() can be zero if the node does not have any" */
     size = m->has_votes ? cmt_bits_size(&m->votes) : 0;
-    if (size > (int)CMT_MAX_VOTES_COUNT) {                       /* :1806 */
+    if (size > (int)CMT_MAX_VOTES_COUNT) {                       /* :1830 */
         return CMT_REJECT;                  /* "votes bit array is too big" */
     }
-    return CMT_OK;                                               /* :1809 */
+    return CMT_OK;                                               /* :1833 */
 }
 
-/* cometbft@709fd12b consensus/msgs.go:232-234 — `pb.ValidateBasic()` over
- * the nine Message implementations (reactor.go:1507-1509). */
+/* cometbft@v0.38.26 consensus/msgs.go:232-234 — `pb.ValidateBasic()` over
+ * the nine Message implementations (reactor.go:1516-1518). */
 int cmt_msg_validate_basic(const cmt_msg_t *msg)
 {
     if (msg == NULL) {

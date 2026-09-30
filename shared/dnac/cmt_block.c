@@ -1,10 +1,10 @@
 /**
  * @file shared/dnac/cmt_block.c
- * @brief cometbft @709fd12b `types/block.go` ported to C — see cmt_block.h
+ * @brief cometbft @v0.38.26 `types/block.go` ported to C — see cmt_block.h
  *        for the contract, the substitutions, the re-derived constants and
  *        the taşınmadı / stage-D lists.
  *
- * Every function below carries the `// cometbft@709fd12b <file>:<from>-<to>`
+ * Every function below carries the `// cometbft@v0.38.26 <file>:<from>-<to>`
  * line of the Go function it ports.
  *
  * Copyright (c) 2026 nocdem
@@ -12,9 +12,9 @@
  */
 
 #include "dnac/cmt_block.h"
-#include "dnac/cmt_vote.h"     /* cmt_vote_sign_bytes (block.go:897)      */
-#include "dnac/cmt_evidence.h" /* the evidence domain: block.go:94, :1448,
-                                * and EvidenceList.Hash at :1383. Included
+#include "dnac/cmt_vote.h"     /* cmt_vote_sign_bytes (block.go:903)      */
+#include "dnac/cmt_evidence.h" /* the evidence domain: block.go:94, :1454,
+                                * and EvidenceList.Hash at :1389. Included
                                 * from the .c and NOT from cmt_block.h, so
                                 * that cmt_evidence.h may keep including
                                 * cmt_block.h for BlockID.Key(). */
@@ -37,7 +37,7 @@
  * ═════════════════════════════════════════════════════════════════════ */
 
 /** Fill the wire view of an EvidenceData. `cmt_evidence_data_t.evidence`
- *  is already an array of `cmt_pb_evidence_t` (types/block.go:1420-1438 —
+ *  is already an array of `cmt_pb_evidence_t` (types/block.go:1426-1444 —
  *  ToProto is the identity), so this is a two-field copy. */
 static void evidence_list_view(const cmt_evidence_data_t *ed,
                                cmt_pb_evidence_list_t *out)
@@ -60,7 +60,7 @@ static void evidence_list_view(const cmt_evidence_data_t *ed,
 
 /* ══ BlockID ══════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b types/block.go:1468-1472 — (blockID BlockID) Equals() */
+/* cometbft@v0.38.26 types/block.go:1474-1478 — (blockID BlockID) Equals() */
 bool cmt_block_id_equals(const cmt_block_id_t *a, const cmt_block_id_t *b)
 {
     if (a == NULL || b == NULL) {
@@ -75,7 +75,7 @@ bool cmt_block_id_equals(const cmt_block_id_t *a, const cmt_block_id_t *b)
     return cmt_psh_equals(&a->part_set_header, &b->part_set_header);
 }
 
-/* cometbft@709fd12b types/block.go:1474-1483 — (blockID BlockID) Key() */
+/* cometbft@v0.38.26 types/block.go:1480-1489 — (blockID BlockID) Key() */
 int cmt_block_id_key(const cmt_block_id_t *bid, uint8_t *out, size_t cap,
                      size_t *out_len)
 {
@@ -87,9 +87,9 @@ int cmt_block_id_key(const cmt_block_id_t *bid, uint8_t *out, size_t cap,
         return CMT_FAULT;
     }
     rc = cmt_pb_part_set_header_marshal(&bid->part_set_header, psh,
-                                        sizeof(psh), &psh_len);   /* :1477 */
+                                        sizeof(psh), &psh_len);   /* :1483 */
     if (rc != CMT_OK) {
-        return rc;                                 /* :1478-1480 panic   */
+        return rc;                                 /* :1484-1486 panic   */
     }
     if (cap < bid->hash_len + psh_len) {
         return CMT_REJECT;
@@ -97,25 +97,25 @@ int cmt_block_id_key(const cmt_block_id_t *bid, uint8_t *out, size_t cap,
     if (bid->hash_len != 0u) {
         memcpy(out, bid->hash, bid->hash_len);
     }
-    memcpy(out + bid->hash_len, psh, psh_len);      /* :1482 concatenate  */
+    memcpy(out + bid->hash_len, psh, psh_len);      /* :1488 concatenate  */
     *out_len = bid->hash_len + psh_len;
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:1485-1495 — (blockID BlockID) ValidateBasic() */
+/* cometbft@v0.38.26 types/block.go:1491-1501 — (blockID BlockID) ValidateBasic() */
 int cmt_block_id_validate_basic(const cmt_block_id_t *bid)
 {
     if (bid == NULL) {
         return CMT_FAULT;
     }
-    /* :1487-1490 — the hash MAY be empty; a Proposal's POL BlockID is. */
+    /* :1493-1496 — the hash MAY be empty; a Proposal's POL BlockID is. */
     if (cmt_validate_hash(bid->hash, bid->hash_len) != CMT_OK) {
         return CMT_REJECT;
     }
-    return cmt_psh_validate_basic(&bid->part_set_header);        /* :1491 */
+    return cmt_psh_validate_basic(&bid->part_set_header);        /* :1497 */
 }
 
-/* cometbft@709fd12b types/block.go:1497-1501 — (blockID BlockID) IsZero() */
+/* cometbft@v0.38.26 types/block.go:1503-1507 — (blockID BlockID) IsZero() */
 bool cmt_block_id_is_zero(const cmt_block_id_t *bid)
 {
     if (bid == NULL) {
@@ -124,7 +124,7 @@ bool cmt_block_id_is_zero(const cmt_block_id_t *bid)
     return bid->hash_len == 0u && cmt_psh_is_zero(&bid->part_set_header);
 }
 
-/* cometbft@709fd12b types/block.go:1503-1508 — (blockID BlockID) IsComplete() */
+/* cometbft@v0.38.26 types/block.go:1509-1514 — (blockID BlockID) IsComplete() */
 bool cmt_block_id_is_complete(const cmt_block_id_t *bid)
 {
     if (bid == NULL) {
@@ -135,30 +135,30 @@ bool cmt_block_id_is_complete(const cmt_block_id_t *bid)
            bid->part_set_header.hash_len == (size_t)CMT_TMHASH_SIZE;
 }
 
-/* cometbft@709fd12b types/block.go:1520-1530 — (blockID *BlockID) ToProto() */
+/* cometbft@v0.38.26 types/block.go:1526-1536 — (blockID *BlockID) ToProto() */
 int cmt_block_id_to_proto(const cmt_block_id_t *bid, cmt_pb_block_id_t *out)
 {
     if (out == NULL) {
         return CMT_FAULT;
     }
     if (bid == NULL) {
-        cmt_pb_block_id_init(out);                   /* :1522-1524       */
+        cmt_pb_block_id_init(out);                   /* :1528-1530       */
         return CMT_OK;
     }
     *out = *bid;
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:1532-1549 — BlockIDFromProto() */
+/* cometbft@v0.38.26 types/block.go:1538-1555 — BlockIDFromProto() */
 int cmt_block_id_from_proto(const cmt_pb_block_id_t *bp, cmt_block_id_t *out)
 {
     int rc;
 
     if (bp == NULL || out == NULL) {
-        return CMT_FAULT;                            /* :1535-1537       */
+        return CMT_FAULT;                            /* :1541-1543       */
     }
     rc = cmt_psh_from_proto(&bp->part_set_header,
-                            &out->part_set_header);  /* :1540            */
+                            &out->part_set_header);  /* :1546            */
     if (rc != CMT_OK) {
         return rc;
     }
@@ -166,13 +166,13 @@ int cmt_block_id_from_proto(const cmt_pb_block_id_t *bp, cmt_block_id_t *out)
         return CMT_REJECT;
     }
     if (bp->hash_len != 0u) {
-        memcpy(out->hash, bp->hash, bp->hash_len);   /* :1546            */
+        memcpy(out->hash, bp->hash, bp->hash_len);   /* :1552            */
     }
     out->hash_len = bp->hash_len;
-    return cmt_block_id_validate_basic(out);         /* :1548            */
+    return cmt_block_id_validate_basic(out);         /* :1554            */
 }
 
-/* cometbft@709fd12b types/block.go:1551-1555 — ProtoBlockIDIsNil() */
+/* cometbft@v0.38.26 types/block.go:1557-1561 — ProtoBlockIDIsNil() */
 bool cmt_proto_block_id_is_nil(const cmt_pb_block_id_t *bp)
 {
     if (bp == NULL) {
@@ -201,7 +201,7 @@ static int hdr_set(uint8_t *dst, size_t cap, size_t *dst_len,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:360-377 — (h *Header) Populate() */
+/* cometbft@v0.38.26 types/block.go:360-377 — (h *Header) Populate() */
 int cmt_header_populate(cmt_header_t *h,
                         const cmt_pb_consensus_t *version,
                         const uint8_t *chain_id, size_t chain_id_len,
@@ -262,7 +262,7 @@ int cmt_header_populate(cmt_header_t *h,
                    proposer_address, proposer_address_len);      /* :376 */
 }
 
-/* cometbft@709fd12b types/block.go:383-437 — (h Header) ValidateBasic() */
+/* cometbft@v0.38.26 types/block.go:383-437 — (h Header) ValidateBasic() */
 int cmt_header_validate_basic(const cmt_header_t *h, uint64_t block_protocol)
 {
     if (h == NULL) {
@@ -318,7 +318,7 @@ int cmt_header_validate_basic(const cmt_header_t *h, uint64_t block_protocol)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:445-480 — (h *Header) Hash().
+/* cometbft@v0.38.26 types/block.go:445-480 — (h *Header) Hash().
  * The fourteen leaves of :464-479, in that order. */
 int cmt_header_hash(const cmt_header_t *h, uint8_t out[CMT_TMHASH_SIZE])
 {
@@ -409,7 +409,7 @@ int cmt_header_hash(const cmt_header_t *h, uint8_t out[CMT_TMHASH_SIZE])
     return cmt_merkle_hash_from_byte_slices(items, CMT_HEADER_LEAVES, out);
 }
 
-/* cometbft@709fd12b types/block.go:521-543 — (h *Header) ToProto() */
+/* cometbft@v0.38.26 types/block.go:521-543 — (h *Header) ToProto() */
 int cmt_header_to_proto(const cmt_header_t *h, cmt_pb_header_t *out)
 {
     if (out == NULL) {
@@ -423,7 +423,7 @@ int cmt_header_to_proto(const cmt_header_t *h, cmt_pb_header_t *out)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:546-576 — HeaderFromProto() */
+/* cometbft@v0.38.26 types/block.go:546-576 — HeaderFromProto() */
 int cmt_header_from_proto(const cmt_pb_header_t *ph, uint64_t block_protocol,
                           cmt_header_t *out)
 {
@@ -471,17 +471,17 @@ int cmt_max_commit_bytes(int64_t val_count, int64_t *out)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:614-620 — NewCommitSigAbsent() */
+/* cometbft@v0.38.26 types/block.go:620-626 — NewCommitSigAbsent() */
 void cmt_new_commit_sig_absent(cmt_commit_sig_t *out)
 {
     if (out == NULL) {
         return;
     }
     cmt_pb_commit_sig_init(out);      /* timestamp = Go's zero time      */
-    out->block_id_flag = (int32_t)CMT_BLOCK_ID_FLAG_ABSENT;      /* :618 */
+    out->block_id_flag = (int32_t)CMT_BLOCK_ID_FLAG_ABSENT;      /* :624 */
 }
 
-/* cometbft@709fd12b types/block.go:636-651 — (cs CommitSig) BlockID() */
+/* cometbft@v0.38.26 types/block.go:642-657 — (cs CommitSig) BlockID() */
 int cmt_commit_sig_block_id(const cmt_commit_sig_t *cs,
                             const cmt_block_id_t *commit_block_id,
                             cmt_block_id_t *out)
@@ -491,29 +491,29 @@ int cmt_commit_sig_block_id(const cmt_commit_sig_t *cs,
     }
     switch (cs->block_id_flag) {
     case (int32_t)CMT_BLOCK_ID_FLAG_ABSENT:
-        cmt_pb_block_id_init(out);                              /* :642 */
+        cmt_pb_block_id_init(out);                              /* :648 */
         return CMT_OK;
     case (int32_t)CMT_BLOCK_ID_FLAG_COMMIT:
         if (commit_block_id == NULL) {
             return CMT_FAULT;
         }
-        *out = *commit_block_id;                                /* :644 */
+        *out = *commit_block_id;                                /* :650 */
         return CMT_OK;
     case (int32_t)CMT_BLOCK_ID_FLAG_NIL:
-        cmt_pb_block_id_init(out);                              /* :646 */
+        cmt_pb_block_id_init(out);                              /* :652 */
         return CMT_OK;
     default:
-        return CMT_REJECT;                        /* :647-649 panics     */
+        return CMT_REJECT;                        /* :653-655 panics     */
     }
 }
 
-/* cometbft@709fd12b types/block.go:653-691 — (cs CommitSig) ValidateBasic() */
+/* cometbft@v0.38.26 types/block.go:659-697 — (cs CommitSig) ValidateBasic() */
 int cmt_commit_sig_validate_basic(const cmt_commit_sig_t *cs)
 {
     if (cs == NULL) {
         return CMT_FAULT;
     }
-    switch (cs->block_id_flag) {                               /* :655-661 */
+    switch (cs->block_id_flag) {                               /* :661-667 */
     case (int32_t)CMT_BLOCK_ID_FLAG_ABSENT:
     case (int32_t)CMT_BLOCK_ID_FLAG_COMMIT:
     case (int32_t)CMT_BLOCK_ID_FLAG_NIL:
@@ -523,66 +523,66 @@ int cmt_commit_sig_validate_basic(const cmt_commit_sig_t *cs)
     }
     if (cs->block_id_flag == (int32_t)CMT_BLOCK_ID_FLAG_ABSENT) {
         if (cs->validator_address_len != 0u) {
-            return CMT_REJECT;                                 /* :665-667 */
+            return CMT_REJECT;                                 /* :671-673 */
         }
         if (!cmt_time_is_zero(cs->timestamp)) {
-            return CMT_REJECT;                                 /* :668-670 */
+            return CMT_REJECT;                                 /* :674-676 */
         }
         if (cs->signature_len != 0u) {
-            return CMT_REJECT;                                 /* :671-673 */
+            return CMT_REJECT;                                 /* :677-679 */
         }
         return CMT_OK;
     }
-    /* :674-688 — every non-Absent entry. */
+    /* :680-694 — every non-Absent entry. */
     if (cs->validator_address_len != (size_t)CMT_ADDRESS_SIZE) {
-        return CMT_REJECT;                                     /* :675-680 */
+        return CMT_REJECT;                                     /* :681-686 */
     }
-    /* :681 — "Timestamp validation is subtle and handled elsewhere." */
+    /* :687 — "Timestamp validation is subtle and handled elsewhere." */
     if (cs->signature_len == 0u) {
-        return CMT_REJECT;                                     /* :682-684 */
+        return CMT_REJECT;                                     /* :688-690 */
     }
     if (cs->signature_len > (size_t)CMT_MAX_SIGNATURE_SIZE) {
-        return CMT_REJECT;                                     /* :685-687 */
+        return CMT_REJECT;                                     /* :691-693 */
     }
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:693-705 — (cs *CommitSig) ToProto() */
+/* cometbft@v0.38.26 types/block.go:699-711 — (cs *CommitSig) ToProto() */
 int cmt_commit_sig_to_proto(const cmt_commit_sig_t *cs,
                             cmt_pb_commit_sig_t *out)
 {
     if (cs == NULL || out == NULL) {
-        return CMT_FAULT;                            /* :695-697 nil     */
+        return CMT_FAULT;                            /* :701-703 nil     */
     }
     *out = *cs;
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:707-716 — (cs *CommitSig) FromProto().
- * :715's ValidateBasic is where the Absent rule reaches the wire. */
+/* cometbft@v0.38.26 types/block.go:713-722 — (cs *CommitSig) FromProto().
+ * :721's ValidateBasic is where the Absent rule reaches the wire. */
 int cmt_commit_sig_from_proto(const cmt_pb_commit_sig_t *csp,
                               cmt_commit_sig_t *out)
 {
     if (csp == NULL || out == NULL) {
         return CMT_FAULT;
     }
-    *out = *csp;                                     /* :710-713         */
-    return cmt_commit_sig_validate_basic(out);       /* :715             */
+    *out = *csp;                                     /* :716-719         */
+    return cmt_commit_sig_validate_basic(out);       /* :721             */
 }
 
 /* ══ ExtendedCommitSig ════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b types/block.go:728-732 — NewExtendedCommitSigAbsent() */
+/* cometbft@v0.38.26 types/block.go:734-738 — NewExtendedCommitSigAbsent() */
 void cmt_new_extended_commit_sig_absent(cmt_extended_commit_sig_t *out)
 {
     if (out == NULL) {
         return;
     }
     cmt_pb_extended_commit_sig_init(out);
-    cmt_new_commit_sig_absent(&out->commit_sig);                /* :731 */
+    cmt_new_commit_sig_absent(&out->commit_sig);                /* :737 */
 }
 
-/* cometbft@709fd12b types/block.go:747-767 —
+/* cometbft@v0.38.26 types/block.go:753-773 —
  * (ecs ExtendedCommitSig) ValidateBasic() */
 int cmt_ecs_validate_basic(const cmt_extended_commit_sig_t *ecs)
 {
@@ -591,28 +591,28 @@ int cmt_ecs_validate_basic(const cmt_extended_commit_sig_t *ecs)
     if (ecs == NULL) {
         return CMT_FAULT;
     }
-    rc = cmt_commit_sig_validate_basic(&ecs->commit_sig);      /* :749-751 */
+    rc = cmt_commit_sig_validate_basic(&ecs->commit_sig);      /* :755-757 */
     if (rc != CMT_OK) {
         return rc;
     }
     if (ecs->commit_sig.block_id_flag ==
-        (int32_t)CMT_BLOCK_ID_FLAG_COMMIT) {                   /* :753     */
+        (int32_t)CMT_BLOCK_ID_FLAG_COMMIT) {                   /* :759     */
         if (ecs->extension.len > CMT_MAX_VOTE_EXTENSION_SIZE) {
-            return CMT_REJECT;                                 /* :754-756 */
+            return CMT_REJECT;                                 /* :760-762 */
         }
         if (ecs->extension_signature_len >
             (size_t)CMT_MAX_SIGNATURE_SIZE) {
-            return CMT_REJECT;                                 /* :757-759 */
+            return CMT_REJECT;                                 /* :763-765 */
         }
-        return CMT_OK;                                         /* :760     */
+        return CMT_OK;                                         /* :766     */
     }
     if (ecs->extension_signature_len == 0u && ecs->extension.len != 0u) {
-        return CMT_REJECT;                                     /* :763-765 */
+        return CMT_REJECT;                                     /* :769-771 */
     }
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:769-806 —
+/* cometbft@v0.38.26 types/block.go:775-812 —
  * (ecs ExtendedCommitSig) EnsureExtension() */
 int cmt_ecs_ensure_extension(const cmt_extended_commit_sig_t *ecs,
                              bool ext_enabled)
@@ -624,52 +624,52 @@ int cmt_ecs_ensure_extension(const cmt_extended_commit_sig_t *ecs,
     }
     is_commit = ecs->commit_sig.block_id_flag ==
                 (int32_t)CMT_BLOCK_ID_FLAG_COMMIT;
-    if (ext_enabled) {                                         /* :772     */
+    if (ext_enabled) {                                         /* :778     */
         if (is_commit && ecs->extension_signature_len == 0u) {
-            return CMT_REJECT;                                 /* :773-778 */
-        }
-        if (!is_commit && ecs->extension.len != 0u) {
             return CMT_REJECT;                                 /* :779-784 */
         }
-        if (!is_commit && ecs->extension_signature_len != 0u) {
+        if (!is_commit && ecs->extension.len != 0u) {
             return CMT_REJECT;                                 /* :785-790 */
+        }
+        if (!is_commit && ecs->extension_signature_len != 0u) {
+            return CMT_REJECT;                                 /* :791-796 */
         }
         return CMT_OK;
     }
     if (ecs->extension.len != 0u) {
-        return CMT_REJECT;                                     /* :792-797 */
+        return CMT_REJECT;                                     /* :798-803 */
     }
     if (ecs->extension_signature_len != 0u) {
-        return CMT_REJECT;                                     /* :798-803 */
+        return CMT_REJECT;                                     /* :804-809 */
     }
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:808-822 — (ecs *ExtendedCommitSig) ToProto() */
+/* cometbft@v0.38.26 types/block.go:814-828 — (ecs *ExtendedCommitSig) ToProto() */
 int cmt_ecs_to_proto(const cmt_extended_commit_sig_t *ecs,
                      cmt_pb_extended_commit_sig_t *out)
 {
     if (ecs == NULL || out == NULL) {
-        return CMT_FAULT;                            /* :810-812 nil     */
+        return CMT_FAULT;                            /* :816-818 nil     */
     }
     *out = *ecs;
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:824-836 — (ecs *ExtendedCommitSig) FromProto() */
+/* cometbft@v0.38.26 types/block.go:830-842 — (ecs *ExtendedCommitSig) FromProto() */
 int cmt_ecs_from_proto(const cmt_pb_extended_commit_sig_t *ecsp,
                        cmt_extended_commit_sig_t *out)
 {
     if (ecsp == NULL || out == NULL) {
         return CMT_FAULT;
     }
-    *out = *ecsp;                                    /* :828-833         */
-    return cmt_ecs_validate_basic(out);              /* :835             */
+    *out = *ecsp;                                    /* :834-839         */
+    return cmt_ecs_validate_basic(out);              /* :841             */
 }
 
 /* ══ Commit ═══════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b types/block.go:858-865 — (commit *Commit) Clone() */
+/* cometbft@v0.38.26 types/block.go:864-871 — (commit *Commit) Clone() */
 int cmt_commit_clone(const cmt_commit_t *commit, cmt_commit_sig_t *sigs,
                      size_t sigs_cap, cmt_commit_t *out)
 {
@@ -683,15 +683,15 @@ int cmt_commit_clone(const cmt_commit_t *commit, cmt_commit_sig_t *sigs,
         return CMT_REJECT;
     }
     for (i = 0; i < commit->signatures_len; i++) {
-        sigs[i] = commit->signatures[i];             /* :860-861         */
+        sigs[i] = commit->signatures[i];             /* :866-867         */
     }
-    *out = *commit;                                  /* :862             */
-    out->signatures     = sigs;                      /* :863             */
+    *out = *commit;                                  /* :868             */
+    out->signatures     = sigs;                      /* :869             */
     out->signatures_cap = sigs_cap;
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:867-884 — (commit *Commit) GetVote() */
+/* cometbft@v0.38.26 types/block.go:873-890 — (commit *Commit) GetVote() */
 int cmt_commit_get_vote(const cmt_commit_t *commit, int32_t val_idx,
                         cmt_pb_vote_t *out)
 {
@@ -702,13 +702,13 @@ int cmt_commit_get_vote(const cmt_commit_t *commit, int32_t val_idx,
     if (commit == NULL || out == NULL) {
         return CMT_FAULT;
     }
-    /* :871 "Panics if valIdx >= commit.Size()" — and a negative index
+    /* :877 "Panics if valIdx >= commit.Size()" — and a negative index
      * would be a negative subscript in Go (INVARIANT 7495d337). */
     if (val_idx < 0 || (size_t)val_idx >= commit->signatures_len ||
         commit->signatures == NULL) {
         return CMT_REJECT;
     }
-    cs = &commit->signatures[val_idx];               /* :873             */
+    cs = &commit->signatures[val_idx];               /* :879             */
     /* INVARIANT 7495d337: the entry's own length fields drive the copies
      * below, and a struct a caller filled by hand could carry a length
      * wider than its array. Go's slice copy could not. */
@@ -716,28 +716,28 @@ int cmt_commit_get_vote(const cmt_commit_t *commit, int32_t val_idx,
         cs->signature_len > (size_t)CMT_PB_SIG_MAX) {
         return CMT_REJECT;
     }
-    rc = cmt_commit_sig_block_id(cs, &commit->block_id, &bid);  /* :878  */
+    rc = cmt_commit_sig_block_id(cs, &commit->block_id, &bid);  /* :884  */
     if (rc != CMT_OK) {
         return rc;
     }
     cmt_pb_vote_init(out);
-    out->type      = (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT;        /* :875  */
-    out->height    = commit->height;                            /* :876  */
-    out->round     = commit->round;                             /* :877  */
-    out->block_id  = bid;                                       /* :878  */
-    out->timestamp = cs->timestamp;                             /* :879  */
+    out->type      = (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT;        /* :881  */
+    out->height    = commit->height;                            /* :882  */
+    out->round     = commit->round;                             /* :883  */
+    out->block_id  = bid;                                       /* :884  */
+    out->timestamp = cs->timestamp;                             /* :885  */
     memcpy(out->validator_address, cs->validator_address,
-           cs->validator_address_len);                          /* :880  */
+           cs->validator_address_len);                          /* :886  */
     out->validator_address_len = cs->validator_address_len;
-    out->validator_index       = val_idx;                       /* :881  */
-    memcpy(out->signature, cs->signature, cs->signature_len);   /* :882  */
+    out->validator_index       = val_idx;                       /* :887  */
+    memcpy(out->signature, cs->signature, cs->signature_len);   /* :888  */
     out->signature_len         = cs->signature_len;
-    /* :869-870 — a Commit carries no extension, so fields 9 and 10 stay
+    /* :875-876 — a Commit carries no extension, so fields 9 and 10 stay
      * at the zero value cmt_pb_vote_init gave them. */
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:886-898 — (commit *Commit) VoteSignBytes() */
+/* cometbft@v0.38.26 types/block.go:892-904 — (commit *Commit) VoteSignBytes() */
 int cmt_commit_vote_sign_bytes(const cmt_commit_t *commit,
                                const uint8_t *chain_id, size_t chain_id_len,
                                int32_t val_idx,
@@ -746,21 +746,21 @@ int cmt_commit_vote_sign_bytes(const cmt_commit_t *commit,
     cmt_pb_vote_t v;
     int           rc;
 
-    rc = cmt_commit_get_vote(commit, val_idx, &v);              /* :896  */
+    rc = cmt_commit_get_vote(commit, val_idx, &v);              /* :902  */
     if (rc != CMT_OK) {
         return rc;
     }
     return cmt_vote_sign_bytes(chain_id, chain_id_len, &v, out, cap,
-                               out_len);                        /* :897  */
+                               out_len);                        /* :903  */
 }
 
-/* cometbft@709fd12b types/block.go:900-906 — (commit *Commit) Size() */
+/* cometbft@v0.38.26 types/block.go:906-912 — (commit *Commit) Size() */
 size_t cmt_commit_size(const cmt_commit_t *commit)
 {
     return commit == NULL ? 0u : commit->signatures_len;
 }
 
-/* cometbft@709fd12b types/block.go:908-933 — (commit *Commit) ValidateBasic() */
+/* cometbft@v0.38.26 types/block.go:914-939 — (commit *Commit) ValidateBasic() */
 int cmt_commit_validate_basic(const cmt_commit_t *commit)
 {
     size_t i;
@@ -769,22 +769,22 @@ int cmt_commit_validate_basic(const cmt_commit_t *commit)
         return CMT_FAULT;
     }
     if (commit->height < 0) {
-        return CMT_REJECT;                                     /* :911-913 */
+        return CMT_REJECT;                                     /* :917-919 */
     }
     if (commit->round < 0) {
-        return CMT_REJECT;                                     /* :914-916 */
+        return CMT_REJECT;                                     /* :920-922 */
     }
-    if (commit->height >= 1) {                                 /* :918     */
+    if (commit->height >= 1) {                                 /* :924     */
         if (cmt_block_id_is_zero(&commit->block_id)) {
-            return CMT_REJECT;                                 /* :919-921 */
+            return CMT_REJECT;                                 /* :925-927 */
         }
         if (commit->signatures_len == 0u) {
-            return CMT_REJECT;                                 /* :923-925 */
+            return CMT_REJECT;                                 /* :929-931 */
         }
         if (commit->signatures == NULL) {
             return CMT_FAULT;
         }
-        for (i = 0; i < commit->signatures_len; i++) {         /* :926-930 */
+        for (i = 0; i < commit->signatures_len; i++) {         /* :932-936 */
             if (cmt_commit_sig_validate_basic(&commit->signatures[i])
                 != CMT_OK) {
                 return CMT_REJECT;
@@ -794,7 +794,7 @@ int cmt_commit_validate_basic(const cmt_commit_t *commit)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:935-954 — (commit *Commit) Hash().
+/* cometbft@v0.38.26 types/block.go:941-960 — (commit *Commit) Hash().
  * The Merkle root over the MARSHALLED CommitSig entries, in list order.
  * The height-1 commit is empty-but-not-nil and hashes to H(""). */
 int cmt_commit_hash(const cmt_commit_t *commit, uint8_t out[CMT_TMHASH_SIZE])
@@ -809,7 +809,7 @@ int cmt_commit_hash(const cmt_commit_t *commit, uint8_t out[CMT_TMHASH_SIZE])
         return CMT_FAULT;
     }
     if (commit == NULL) {
-        return CMT_HASH_NIL;                                   /* :937-939 */
+        return CMT_HASH_NIL;                                   /* :943-945 */
     }
     n = commit->signatures_len;
     if (n != 0u) {
@@ -824,7 +824,7 @@ int cmt_commit_hash(const cmt_commit_t *commit, uint8_t out[CMT_TMHASH_SIZE])
             return CMT_FAULT;
         }
     }
-    for (i = 0; i < n; i++) {                                  /* :941-950 */
+    for (i = 0; i < n; i++) {                                  /* :947-956 */
         uint8_t *slot = buf + i * (size_t)CMT_MAX_COMMIT_SIG_BYTES;
         size_t   len;
 
@@ -834,18 +834,18 @@ int cmt_commit_hash(const cmt_commit_t *commit, uint8_t out[CMT_TMHASH_SIZE])
         if (rc != CMT_OK) {
             free(buf);
             free(items);
-            return rc;                             /* :945-947 panics     */
+            return rc;                             /* :951-953 panics     */
         }
         items[i].data = slot;
         items[i].len  = len;
     }
-    rc = cmt_merkle_hash_from_byte_slices(items, n, out);       /* :951    */
+    rc = cmt_merkle_hash_from_byte_slices(items, n, out);       /* :957    */
     free(buf);
     free(items);
     return rc;
 }
 
-/* cometbft@709fd12b types/block.go:956-974 — WrappedExtendedCommit() */
+/* cometbft@v0.38.26 types/block.go:962-980 — WrappedExtendedCommit() */
 int cmt_commit_wrapped_extended_commit(const cmt_commit_t *commit,
                                        cmt_extended_commit_sig_t *sigs,
                                        size_t sigs_cap,
@@ -860,7 +860,7 @@ int cmt_commit_wrapped_extended_commit(const cmt_commit_t *commit,
         (commit->signatures_len != 0u && sigs == NULL)) {
         return CMT_REJECT;
     }
-    for (i = 0; i < commit->signatures_len; i++) {             /* :962-967 */
+    for (i = 0; i < commit->signatures_len; i++) {             /* :968-973 */
         cmt_pb_extended_commit_sig_init(&sigs[i]);
         sigs[i].commit_sig = commit->signatures[i];
     }
@@ -870,26 +870,26 @@ int cmt_commit_wrapped_extended_commit(const cmt_commit_t *commit,
      * ExtendedCommit holds no time, so a zero fill is its complete zero
      * value. Same reasoning at the three other sites in this file. */
     memset(out, 0, sizeof(*out));
-    out->height                  = commit->height;             /* :969    */
-    out->round                   = commit->round;              /* :970    */
-    out->block_id                = commit->block_id;           /* :971    */
-    out->extended_signatures     = sigs;                       /* :972    */
+    out->height                  = commit->height;             /* :975    */
+    out->round                   = commit->round;              /* :976    */
+    out->block_id                = commit->block_id;           /* :977    */
+    out->extended_signatures     = sigs;                       /* :978    */
     out->extended_signatures_cap = sigs_cap;
     out->extended_signatures_len = commit->signatures_len;
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:1000-1018 — (commit *Commit) ToProto() */
+/* cometbft@v0.38.26 types/block.go:1006-1024 — (commit *Commit) ToProto() */
 int cmt_commit_to_proto(const cmt_commit_t *commit, cmt_pb_commit_t *out)
 {
     if (commit == NULL || out == NULL) {
-        return CMT_FAULT;                            /* :1002-1004 nil   */
+        return CMT_FAULT;                            /* :1008-1010 nil   */
     }
     *out = *commit;
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:1020-1047 — CommitFromProto() */
+/* cometbft@v0.38.26 types/block.go:1026-1053 — CommitFromProto() */
 int cmt_commit_from_proto(const cmt_pb_commit_t *cp, cmt_commit_sig_t *sigs,
                           size_t sigs_cap, cmt_commit_t *out)
 {
@@ -898,36 +898,36 @@ int cmt_commit_from_proto(const cmt_pb_commit_t *cp, cmt_commit_sig_t *sigs,
     int            rc;
 
     if (cp == NULL || out == NULL) {
-        return CMT_FAULT;                            /* :1023-1025       */
+        return CMT_FAULT;                            /* :1029-1031       */
     }
     if (cp->signatures_len > sigs_cap ||
         (cp->signatures_len != 0u && (sigs == NULL ||
                                       cp->signatures == NULL))) {
         return CMT_REJECT;
     }
-    rc = cmt_block_id_from_proto(&cp->block_id, &bi);           /* :1029  */
+    rc = cmt_block_id_from_proto(&cp->block_id, &bi);           /* :1035  */
     if (rc != CMT_OK) {
         return rc;
     }
-    for (i = 0; i < cp->signatures_len; i++) {                  /* :1034-1039 */
+    for (i = 0; i < cp->signatures_len; i++) {                  /* :1040-1045 */
         rc = cmt_commit_sig_from_proto(&cp->signatures[i], &sigs[i]);
         if (rc != CMT_OK) {
             return rc;
         }
     }
     memset(out, 0, sizeof(*out));      /* see WrappedExtendedCommit above */
-    out->signatures     = sigs;                                 /* :1040  */
+    out->signatures     = sigs;                                 /* :1046  */
     out->signatures_cap = sigs_cap;
     out->signatures_len = cp->signatures_len;
-    out->height         = cp->height;                           /* :1042  */
-    out->round          = cp->round;                            /* :1043  */
-    out->block_id       = bi;                                   /* :1044  */
-    return cmt_commit_validate_basic(out);                      /* :1046  */
+    out->height         = cp->height;                           /* :1048  */
+    out->round          = cp->round;                            /* :1049  */
+    out->block_id       = bi;                                   /* :1050  */
+    return cmt_commit_validate_basic(out);                      /* :1052  */
 }
 
 /* ══ ExtendedCommit ═══════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b types/block.go:1062-1069 — (ec *ExtendedCommit) Clone() */
+/* cometbft@v0.38.26 types/block.go:1068-1075 — (ec *ExtendedCommit) Clone() */
 int cmt_extended_commit_clone(const cmt_extended_commit_t *ec,
                               cmt_extended_commit_sig_t *sigs,
                               size_t sigs_cap, cmt_extended_commit_t *out)
@@ -942,15 +942,15 @@ int cmt_extended_commit_clone(const cmt_extended_commit_t *ec,
         return CMT_REJECT;
     }
     for (i = 0; i < ec->extended_signatures_len; i++) {
-        sigs[i] = ec->extended_signatures[i];                   /* :1064-1065 */
+        sigs[i] = ec->extended_signatures[i];                   /* :1070-1071 */
     }
-    *out = *ec;                                                 /* :1066  */
-    out->extended_signatures     = sigs;                        /* :1067  */
+    *out = *ec;                                                 /* :1072  */
+    out->extended_signatures     = sigs;                        /* :1073  */
     out->extended_signatures_cap = sigs_cap;
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:1121-1128 —
+/* cometbft@v0.38.26 types/block.go:1127-1134 —
  * (ec *ExtendedCommit) EnsureExtensions() */
 int cmt_extended_commit_ensure_extensions(const cmt_extended_commit_t *ec,
                                           bool ext_enabled)
@@ -968,17 +968,17 @@ int cmt_extended_commit_ensure_extensions(const cmt_extended_commit_t *ec,
         ec->extended_signatures == NULL) {
         return CMT_FAULT;
     }
-    for (i = 0; i < ec->extended_signatures_len; i++) {         /* :1122  */
+    for (i = 0; i < ec->extended_signatures_len; i++) {         /* :1128  */
         rc = cmt_ecs_ensure_extension(&ec->extended_signatures[i],
-                                      ext_enabled);             /* :1123  */
+                                      ext_enabled);             /* :1129  */
         if (rc != CMT_OK) {
-            return rc;                                          /* :1124-1126 */
+            return rc;                                          /* :1130-1132 */
         }
     }
-    return CMT_OK;                                              /* :1127  */
+    return CMT_OK;                                              /* :1133  */
 }
 
-/* cometbft@709fd12b types/block.go:1130-1143 — (ec *ExtendedCommit) ToCommit() */
+/* cometbft@v0.38.26 types/block.go:1136-1149 — (ec *ExtendedCommit) ToCommit() */
 int cmt_extended_commit_to_commit(const cmt_extended_commit_t *ec,
                                   cmt_commit_sig_t *sigs, size_t sigs_cap,
                                   cmt_commit_t *out)
@@ -993,20 +993,20 @@ int cmt_extended_commit_to_commit(const cmt_extended_commit_t *ec,
          (sigs == NULL || ec->extended_signatures == NULL))) {
         return CMT_REJECT;
     }
-    for (i = 0; i < ec->extended_signatures_len; i++) {         /* :1133-1136 */
+    for (i = 0; i < ec->extended_signatures_len; i++) {         /* :1139-1142 */
         sigs[i] = ec->extended_signatures[i].commit_sig;
     }
     memset(out, 0, sizeof(*out));      /* see WrappedExtendedCommit above */
-    out->height         = ec->height;                           /* :1138  */
-    out->round          = ec->round;                            /* :1139  */
-    out->block_id       = ec->block_id;                         /* :1140  */
-    out->signatures     = sigs;                                 /* :1141  */
+    out->height         = ec->height;                           /* :1144  */
+    out->round          = ec->round;                            /* :1145  */
+    out->block_id       = ec->block_id;                         /* :1146  */
+    out->signatures     = sigs;                                 /* :1147  */
     out->signatures_cap = sigs_cap;
     out->signatures_len = ec->extended_signatures_len;
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:1145-1162 — GetExtendedVote() */
+/* cometbft@v0.38.26 types/block.go:1151-1168 — GetExtendedVote() */
 int cmt_extended_commit_get_extended_vote(const cmt_extended_commit_t *ec,
                                           int32_t val_index,
                                           cmt_pb_vote_t *out)
@@ -1018,12 +1018,12 @@ int cmt_extended_commit_get_extended_vote(const cmt_extended_commit_t *ec,
     if (ec == NULL || out == NULL) {
         return CMT_FAULT;
     }
-    /* :1147 "It panics if valIndex is out of range." */
+    /* :1153 "It panics if valIndex is out of range." */
     if (val_index < 0 || (size_t)val_index >= ec->extended_signatures_len ||
         ec->extended_signatures == NULL) {
         return CMT_REJECT;
     }
-    ecs = &ec->extended_signatures[val_index];                  /* :1149  */
+    ecs = &ec->extended_signatures[val_index];                  /* :1155  */
     /* INVARIANT 7495d337 — see cmt_commit_get_vote. */
     if (ecs->commit_sig.validator_address_len >
             (size_t)CMT_PB_ADDRESS_MAX ||
@@ -1032,66 +1032,66 @@ int cmt_extended_commit_get_extended_vote(const cmt_extended_commit_t *ec,
         return CMT_REJECT;
     }
     rc = cmt_commit_sig_block_id(&ecs->commit_sig, &ec->block_id, &bid);
-    if (rc != CMT_OK) {                                         /* :1154  */
+    if (rc != CMT_OK) {                                         /* :1160  */
         return rc;
     }
     cmt_pb_vote_init(out);
-    out->type      = (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT;        /* :1151  */
-    out->height    = ec->height;                                /* :1152  */
-    out->round     = ec->round;                                 /* :1153  */
-    out->block_id  = bid;                                       /* :1154  */
-    out->timestamp = ecs->commit_sig.timestamp;                 /* :1155  */
+    out->type      = (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT;        /* :1157  */
+    out->height    = ec->height;                                /* :1158  */
+    out->round     = ec->round;                                 /* :1159  */
+    out->block_id  = bid;                                       /* :1160  */
+    out->timestamp = ecs->commit_sig.timestamp;                 /* :1161  */
     memcpy(out->validator_address, ecs->commit_sig.validator_address,
-           ecs->commit_sig.validator_address_len);              /* :1156  */
+           ecs->commit_sig.validator_address_len);              /* :1162  */
     out->validator_address_len = ecs->commit_sig.validator_address_len;
-    out->validator_index       = val_index;                     /* :1157  */
+    out->validator_index       = val_index;                     /* :1163  */
     memcpy(out->signature, ecs->commit_sig.signature,
-           ecs->commit_sig.signature_len);                      /* :1158  */
+           ecs->commit_sig.signature_len);                      /* :1164  */
     out->signature_len         = ecs->commit_sig.signature_len;
-    out->extension             = ecs->extension;                /* :1159  */
+    out->extension             = ecs->extension;                /* :1165  */
     memcpy(out->extension_signature, ecs->extension_signature,
-           ecs->extension_signature_len);                       /* :1160  */
+           ecs->extension_signature_len);                       /* :1166  */
     out->extension_signature_len = ecs->extension_signature_len;
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:1164-1167 — (ec *ExtendedCommit) Type() */
+/* cometbft@v0.38.26 types/block.go:1170-1173 — (ec *ExtendedCommit) Type() */
 uint8_t cmt_extended_commit_type(const cmt_extended_commit_t *ec)
 {
     (void)ec;
     return (uint8_t)CMT_PB_MSG_TYPE_PRECOMMIT;
 }
 
-/* cometbft@709fd12b types/block.go:1169-1171 — GetHeight() */
+/* cometbft@v0.38.26 types/block.go:1175-1177 — GetHeight() */
 int64_t cmt_extended_commit_get_height(const cmt_extended_commit_t *ec)
 {
     return ec == NULL ? 0 : ec->height;
 }
 
-/* cometbft@709fd12b types/block.go:1173-1175 — GetRound() */
+/* cometbft@v0.38.26 types/block.go:1179-1181 — GetRound() */
 int32_t cmt_extended_commit_get_round(const cmt_extended_commit_t *ec)
 {
     return ec == NULL ? 0 : ec->round;
 }
 
-/* cometbft@709fd12b types/block.go:1177-1184 — (ec *ExtendedCommit) Size() */
+/* cometbft@v0.38.26 types/block.go:1183-1190 — (ec *ExtendedCommit) Size() */
 size_t cmt_extended_commit_size(const cmt_extended_commit_t *ec)
 {
     return ec == NULL ? 0u : ec->extended_signatures_len;
 }
 
-/* The `initialBitFn` closure of block.go:1191-1195. */
+/* The `initialBitFn` closure of block.go:1197-1201. */
 static bool ec_bit_fn(int i, void *ctx)
 {
     const cmt_extended_commit_t *ec = (const cmt_extended_commit_t *)ctx;
 
-    /* NOTE reference TODO (:1192-1193): the BlockID is deliberately NOT
+    /* NOTE reference TODO (:1198-1199): the BlockID is deliberately NOT
      * consulted, so a conflicting vote sets its bit too. Ported as-is. */
     return ec->extended_signatures[i].commit_sig.block_id_flag !=
            (int32_t)CMT_BLOCK_ID_FLAG_ABSENT;
 }
 
-/* cometbft@709fd12b types/block.go:1186-1199 — (ec *ExtendedCommit) BitArray() */
+/* cometbft@v0.38.26 types/block.go:1192-1205 — (ec *ExtendedCommit) BitArray() */
 int cmt_extended_commit_bit_array(const cmt_extended_commit_t *ec,
                                   cmt_bit_array_t *out)
 {
@@ -1106,23 +1106,23 @@ int cmt_extended_commit_bit_array(const cmt_extended_commit_t *ec,
         return CMT_REJECT;                   /* the derived bit bound     */
     }
     return cmt_bits_new_from_fn(out, (int)ec->extended_signatures_len,
-                                ec_bit_fn, (void *)ec);         /* :1196 */
+                                ec_bit_fn, (void *)ec);         /* :1202 */
 }
 
-/* cometbft@709fd12b types/block.go:1201-1206 — GetByIndex() */
+/* cometbft@v0.38.26 types/block.go:1207-1212 — GetByIndex() */
 int cmt_extended_commit_get_by_index(const cmt_extended_commit_t *ec,
                                      int32_t val_idx, cmt_pb_vote_t *out)
 {
     return cmt_extended_commit_get_extended_vote(ec, val_idx, out);
 }
 
-/* cometbft@709fd12b types/block.go:1208-1212 — IsCommit() */
+/* cometbft@v0.38.26 types/block.go:1214-1218 — IsCommit() */
 bool cmt_extended_commit_is_commit(const cmt_extended_commit_t *ec)
 {
     return ec != NULL && ec->extended_signatures_len != 0u;
 }
 
-/* cometbft@709fd12b types/block.go:1214-1239 — (ec *ExtendedCommit) ValidateBasic() */
+/* cometbft@v0.38.26 types/block.go:1220-1245 — (ec *ExtendedCommit) ValidateBasic() */
 int cmt_extended_commit_validate_basic(const cmt_extended_commit_t *ec)
 {
     size_t i;
@@ -1131,22 +1131,22 @@ int cmt_extended_commit_validate_basic(const cmt_extended_commit_t *ec)
         return CMT_FAULT;
     }
     if (ec->height < 0) {
-        return CMT_REJECT;                                     /* :1217-1219 */
+        return CMT_REJECT;                                     /* :1223-1225 */
     }
     if (ec->round < 0) {
-        return CMT_REJECT;                                     /* :1220-1222 */
+        return CMT_REJECT;                                     /* :1226-1228 */
     }
-    if (ec->height >= 1) {                                     /* :1224     */
+    if (ec->height >= 1) {                                     /* :1230     */
         if (cmt_block_id_is_zero(&ec->block_id)) {
-            return CMT_REJECT;                                 /* :1225-1227 */
+            return CMT_REJECT;                                 /* :1231-1233 */
         }
         if (ec->extended_signatures_len == 0u) {
-            return CMT_REJECT;                                 /* :1229-1231 */
+            return CMT_REJECT;                                 /* :1235-1237 */
         }
         if (ec->extended_signatures == NULL) {
             return CMT_FAULT;
         }
-        for (i = 0; i < ec->extended_signatures_len; i++) {    /* :1232-1236 */
+        for (i = 0; i < ec->extended_signatures_len; i++) {    /* :1238-1242 */
             if (cmt_ecs_validate_basic(&ec->extended_signatures[i])
                 != CMT_OK) {
                 return CMT_REJECT;
@@ -1156,18 +1156,18 @@ int cmt_extended_commit_validate_basic(const cmt_extended_commit_t *ec)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:1241-1259 — (ec *ExtendedCommit) ToProto() */
+/* cometbft@v0.38.26 types/block.go:1247-1265 — (ec *ExtendedCommit) ToProto() */
 int cmt_extended_commit_to_proto(const cmt_extended_commit_t *ec,
                                  cmt_pb_extended_commit_t *out)
 {
     if (ec == NULL || out == NULL) {
-        return CMT_FAULT;                            /* :1243-1245 nil   */
+        return CMT_FAULT;                            /* :1249-1251 nil   */
     }
     *out = *ec;
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:1261-1287 — ExtendedCommitFromProto() */
+/* cometbft@v0.38.26 types/block.go:1267-1293 — ExtendedCommitFromProto() */
 int cmt_extended_commit_from_proto(const cmt_pb_extended_commit_t *ecp,
                                    cmt_extended_commit_sig_t *sigs,
                                    size_t sigs_cap,
@@ -1178,43 +1178,43 @@ int cmt_extended_commit_from_proto(const cmt_pb_extended_commit_t *ecp,
     int            rc;
 
     if (ecp == NULL || out == NULL) {
-        return CMT_FAULT;                            /* :1264-1266       */
+        return CMT_FAULT;                            /* :1270-1272       */
     }
     if (ecp->extended_signatures_len > sigs_cap ||
         (ecp->extended_signatures_len != 0u &&
          (sigs == NULL || ecp->extended_signatures == NULL))) {
         return CMT_REJECT;
     }
-    rc = cmt_block_id_from_proto(&ecp->block_id, &bi);          /* :1270  */
+    rc = cmt_block_id_from_proto(&ecp->block_id, &bi);          /* :1276  */
     if (rc != CMT_OK) {
         return rc;
     }
-    for (i = 0; i < ecp->extended_signatures_len; i++) {        /* :1275-1280 */
+    for (i = 0; i < ecp->extended_signatures_len; i++) {        /* :1281-1286 */
         rc = cmt_ecs_from_proto(&ecp->extended_signatures[i], &sigs[i]);
         if (rc != CMT_OK) {
             return rc;
         }
     }
     memset(out, 0, sizeof(*out));      /* see WrappedExtendedCommit above */
-    out->extended_signatures     = sigs;                        /* :1281  */
+    out->extended_signatures     = sigs;                        /* :1287  */
     out->extended_signatures_cap = sigs_cap;
     out->extended_signatures_len = ecp->extended_signatures_len;
-    out->height                  = ecp->height;                 /* :1282  */
-    out->round                   = ecp->round;                  /* :1283  */
-    out->block_id                = bi;                          /* :1284  */
-    return cmt_extended_commit_validate_basic(out);             /* :1286  */
+    out->height                  = ecp->height;                 /* :1288  */
+    out->round                   = ecp->round;                  /* :1289  */
+    out->block_id                = bi;                          /* :1290  */
+    return cmt_extended_commit_validate_basic(out);             /* :1292  */
 }
 
 /* ══ Data and transactions ════════════════════════════════════════════ */
 
-/* cometbft@709fd12b types/tx.go:28-31 — (tx Tx) Hash() */
+/* cometbft@v0.38.26 types/tx.go:28-31 — (tx Tx) Hash() */
 int cmt_tx_hash(const uint8_t *tx, size_t tx_len,
                 uint8_t out[CMT_TMHASH_SIZE])
 {
     return cmt_tmhash_sum(tx, tx_len, out);
 }
 
-/* cometbft@709fd12b types/block.go:1302-1311 — (data *Data) Hash(), via
+/* cometbft@v0.38.26 types/block.go:1308-1317 — (data *Data) Hash(), via
  * types/tx.go:45-50 Txs.Hash and :63-69 hashList. */
 int cmt_data_hash(const cmt_data_t *data, uint8_t out[CMT_TMHASH_SIZE])
 {
@@ -1227,7 +1227,7 @@ int cmt_data_hash(const cmt_data_t *data, uint8_t out[CMT_TMHASH_SIZE])
     if (out == NULL) {
         return CMT_FAULT;
     }
-    n = (data == NULL) ? 0u : data->txs_len;         /* :1304-1306 nil   */
+    n = (data == NULL) ? 0u : data->txs_len;         /* :1310-1312 nil   */
     if (n != 0u) {
         if (data->txs == NULL) {
             return CMT_FAULT;
@@ -1258,7 +1258,7 @@ int cmt_data_hash(const cmt_data_t *data, uint8_t out[CMT_TMHASH_SIZE])
     return rc;
 }
 
-/* cometbft@709fd12b types/block.go:1333-1346 — (data *Data) ToProto() */
+/* cometbft@v0.38.26 types/block.go:1339-1352 — (data *Data) ToProto() */
 int cmt_data_to_proto(const cmt_data_t *data, cmt_pb_data_t *out)
 {
     if (data == NULL || out == NULL) {
@@ -1268,13 +1268,13 @@ int cmt_data_to_proto(const cmt_data_t *data, cmt_pb_data_t *out)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:1348-1367 — DataFromProto().
- * NOTE reference behaviour (:1363): an empty input yields an EMPTY-BUT-
+/* cometbft@v0.38.26 types/block.go:1354-1373 — DataFromProto().
+ * NOTE reference behaviour (:1369): an empty input yields an EMPTY-BUT-
  * NOT-NIL Txs. Both are {NULL, 0} here and both hash to H(""). */
 int cmt_data_from_proto(const cmt_pb_data_t *dp, cmt_data_t *out)
 {
     if (dp == NULL || out == NULL) {
-        return CMT_FAULT;                            /* :1351-1353       */
+        return CMT_FAULT;                            /* :1357-1359       */
     }
     *out = *dp;
     return CMT_OK;                                   /* no ValidateBasic */
@@ -1282,10 +1282,10 @@ int cmt_data_from_proto(const cmt_pb_data_t *dp, cmt_data_t *out)
 
 /* ══ EvidenceData ═════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b types/block.go:1380-1386 — (data *EvidenceData) Hash().
+/* cometbft@v0.38.26 types/block.go:1386-1392 — (data *EvidenceData) Hash().
  *
  * The reference's body is `data.Evidence.Hash()` — one call to
- * EvidenceList.Hash (types/evidence.go:450-461). Wave R1-D put that row in
+ * EvidenceList.Hash (types/evidence.go:453-464). Wave R1-D put that row in
  * its Go file's own home, cmt_evidence.c, so this function is now the one
  * call the reference makes. THE BYTES ARE UNCHANGED: R1-B computed the
  * Merkle root over each item's bare DuplicateVoteEvidence marshal here, and
@@ -1293,7 +1293,7 @@ int cmt_data_from_proto(const cmt_pb_data_t *dp, cmt_data_t *out)
  * vectors pinned in test_cmt_block.c are the second reading of that.
  *
  * A NULL `data` hashes the empty list, i.e. H("") — the reference's nil
- * EvidenceData at :1382-1384. */
+ * EvidenceData at :1388-1390. */
 int cmt_evidence_data_hash(const cmt_evidence_data_t *data,
                            uint8_t out[CMT_TMHASH_SIZE])
 {
@@ -1306,8 +1306,8 @@ int cmt_evidence_data_hash(const cmt_evidence_data_t *data,
     return cmt_evidence_list_hash(data->evidence, data->evidence_len, out);
 }
 
-/* cometbft@709fd12b types/block.go:1388-1398 — (data *EvidenceData) ByteSize().
- * The size of the WRAPPED EvidenceList (:1395), not of the bare items. */
+/* cometbft@v0.38.26 types/block.go:1394-1404 — (data *EvidenceData) ByteSize().
+ * The size of the WRAPPED EvidenceList (:1401), not of the bare items. */
 int cmt_evidence_data_byte_size(cmt_evidence_data_t *data, int64_t *out)
 {
     cmt_pb_evidence_list_t view;
@@ -1320,10 +1320,10 @@ int cmt_evidence_data_byte_size(cmt_evidence_data_t *data, int64_t *out)
     if (data == NULL || out == NULL) {
         return CMT_FAULT;
     }
-    /* :1390 — recomputed while the cache reads 0, which for a genuinely
+    /* :1396 — recomputed while the cache reads 0, which for a genuinely
      * empty list means "every call". Harmless; ported as-is. */
     if (data->byte_size != 0 || data->evidence_len == 0u) {
-        *out = data->byte_size;                                /* :1397  */
+        *out = data->byte_size;                                /* :1403  */
         return CMT_OK;
     }
     if (data->evidence == NULL) {
@@ -1345,14 +1345,14 @@ int cmt_evidence_data_byte_size(cmt_evidence_data_t *data, int64_t *out)
     rc = cmt_pb_evidence_list_marshal(&view, buf, bound, &len);
     free(buf);
     if (rc != CMT_OK) {
-        return rc;                                   /* :1392-1394 panics */
+        return rc;                                   /* :1398-1400 panics */
     }
-    data->byte_size = (int64_t)len;                  /* :1395             */
+    data->byte_size = (int64_t)len;                  /* :1401             */
     *out            = data->byte_size;
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:1420-1438 — (data *EvidenceData) ToProto().
+/* cometbft@v0.38.26 types/block.go:1426-1444 — (data *EvidenceData) ToProto().
  * The identity: each item already IS the wire wrapper. */
 int cmt_evidence_data_to_proto(const cmt_evidence_data_t *data,
                                cmt_pb_evidence_t *out, size_t out_cap,
@@ -1361,23 +1361,23 @@ int cmt_evidence_data_to_proto(const cmt_evidence_data_t *data,
     size_t i;
 
     if (data == NULL || out_len == NULL) {
-        return CMT_FAULT;                            /* :1422-1424       */
+        return CMT_FAULT;                            /* :1428-1430       */
     }
     if (data->evidence_len > out_cap ||
         (data->evidence_len != 0u && (out == NULL ||
                                       data->evidence == NULL))) {
         return CMT_REJECT;
     }
-    for (i = 0; i < data->evidence_len; i++) {       /* :1428-1434       */
+    for (i = 0; i < data->evidence_len; i++) {       /* :1434-1440       */
         out[i] = data->evidence[i];
     }
     *out_len = data->evidence_len;
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:1440-1458 — (data *EvidenceData) FromProto().
+/* cometbft@v0.38.26 types/block.go:1446-1464 — (data *EvidenceData) FromProto().
  *
- * The per-item EvidenceFromProto of :1448 is PERFORMED since wave R1-D;
+ * The per-item EvidenceFromProto of :1454 is PERFORMED since wave R1-D;
  * it was the second of R1-B's two named stage-D holes. */
 int cmt_evidence_data_from_proto(const cmt_pb_evidence_t *items, size_t n,
                                  cmt_pb_evidence_t *storage, size_t cap,
@@ -1389,19 +1389,19 @@ int cmt_evidence_data_from_proto(const cmt_pb_evidence_t *items, size_t n,
     int                 rc;
 
     if (out == NULL || (items == NULL && n != 0u)) {
-        return CMT_FAULT;                            /* :1442-1444       */
+        return CMT_FAULT;                            /* :1448-1450       */
     }
     if (n > cap || (n != 0u && storage == NULL)) {
         return CMT_REJECT;
     }
-    for (i = 0; i < n; i++) {                        /* :1446-1453       */
+    for (i = 0; i < n; i++) {                        /* :1452-1459       */
         cmt_duplicate_vote_evidence_t ev;
 
-        /* :1448 — `EvidenceFromProto(&pb.Evidence[i])`, which ends in
+        /* :1454 — `EvidenceFromProto(&pb.Evidence[i])`, which ends in
          * evidence.go:199 ValidateBasic. An invalid item makes the whole
-         * FromProto fail (:1449-1451).
+         * FromProto fail (:1455-1457).
          *
-         * The reference then stores the DECODED domain object (:1452);
+         * The reference then stores the DECODED domain object (:1458);
          * this stores the wire item, because `cmt_evidence_data_t` holds
          * wire items (cmt_block.h:677-690, wave R1-B's one non-alias
          * type). The two carry the same bytes: the domain type IS the wire
@@ -1417,8 +1417,8 @@ int cmt_evidence_data_from_proto(const cmt_pb_evidence_t *items, size_t n,
     memset(&tmp, 0, sizeof(tmp));
     tmp.evidence     = storage;
     tmp.evidence_cap = cap;
-    tmp.evidence_len = n;                            /* :1454            */
-    rc = cmt_evidence_data_byte_size(&tmp, &size);   /* :1455            */
+    tmp.evidence_len = n;                            /* :1460            */
+    rc = cmt_evidence_data_byte_size(&tmp, &size);   /* :1461            */
     if (rc != CMT_OK) {
         return rc;
     }
@@ -1428,7 +1428,7 @@ int cmt_evidence_data_from_proto(const cmt_pb_evidence_t *items, size_t n,
 
 /* ══ Block ════════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b types/test_util.go:106-123 — MakeBlock().
+/* cometbft@v0.38.26 types/test_util.go:106-123 — MakeBlock().
  * The production block constructor; see cmt_block.h. */
 int cmt_make_block(int64_t height,
                    uint64_t version_block, uint64_t version_app,
@@ -1455,7 +1455,7 @@ int cmt_make_block(int64_t height,
     return cmt_block_fill_header(out);                         /* :121    */
 }
 
-/* cometbft@709fd12b types/block.go:109-120 — (b *Block) fillHeader().
+/* cometbft@v0.38.26 types/block.go:109-120 — (b *Block) fillHeader().
  * NOTE reference quirk (:111, :114, :117): the guards are `== nil`, not
  * `len(...) == 0`; C cannot tell the two apart. See cmt_block.h. */
 int cmt_block_fill_header(cmt_block_t *b)
@@ -1492,7 +1492,7 @@ int cmt_block_fill_header(cmt_block_t *b)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:53-107 — (b *Block) ValidateBasic().
+/* cometbft@v0.38.26 types/block.go:53-107 — (b *Block) ValidateBasic().
  * The per-evidence loop of :92-97 is PERFORMED since wave R1-D; it was the
  * first of R1-B's two named stage-D holes. */
 int cmt_block_validate_basic(const cmt_block_t *b, uint64_t block_protocol)
@@ -1534,7 +1534,7 @@ int cmt_block_validate_basic(const cmt_block_t *b, uint64_t block_protocol)
      *
      * Each item is materialised through the FromProto path, which is where
      * the reference's ValidateBasic for this branch lives: EvidenceFromProto
-     * -> DuplicateVoteEvidenceFromProto -> ValidateBasic (evidence.go:534,
+     * -> DuplicateVoteEvidenceFromProto -> ValidateBasic (evidence.go:537,
      * :199). The reference's Block holds ALREADY-VALIDATED domain objects
      * and :94 validates them a second time; this port holds wire items
      * (cmt_block.h:677-690), so the decode is how it reaches the same
@@ -1563,7 +1563,7 @@ int cmt_block_validate_basic(const cmt_block_t *b, uint64_t block_protocol)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:122-141 — (b *Block) Hash() */
+/* cometbft@v0.38.26 types/block.go:122-141 — (b *Block) Hash() */
 int cmt_block_hash(cmt_block_t *b, uint8_t out[CMT_TMHASH_SIZE])
 {
     int rc;
@@ -1584,7 +1584,7 @@ int cmt_block_hash(cmt_block_t *b, uint8_t out[CMT_TMHASH_SIZE])
     return cmt_header_hash(&b->header, out);                   /* :138     */
 }
 
-/* cometbft@709fd12b types/block.go:164-174 — (b *Block) HashesTo() */
+/* cometbft@v0.38.26 types/block.go:164-174 — (b *Block) HashesTo() */
 bool cmt_block_hashes_to(cmt_block_t *b, const uint8_t *hash, size_t hash_len)
 {
     uint8_t h[CMT_TMHASH_SIZE];
@@ -1604,7 +1604,7 @@ bool cmt_block_hashes_to(cmt_block_t *b, const uint8_t *hash, size_t hash_len)
     return memcmp(h, hash, CMT_TMHASH_SIZE) == 0;              /* :173     */
 }
 
-/* cometbft@709fd12b types/block.go:225-244 `(b *Block) ToProto()` followed
+/* cometbft@v0.38.26 types/block.go:225-244 `(b *Block) ToProto()` followed
  * by proto.Marshal — the outer frame is block.pb.go:136-184. */
 int cmt_block_marshal(const cmt_block_t *b, uint8_t *out, size_t cap,
                       size_t *out_len)
@@ -1627,7 +1627,7 @@ int cmt_block_marshal(const cmt_block_t *b, uint8_t *out, size_t cap,
     return cmt_pb_block_marshal(&pb, out, cap, out_len);
 }
 
-/* cometbft@709fd12b types/block.go:176-184 — (b *Block) Size() */
+/* cometbft@v0.38.26 types/block.go:176-184 — (b *Block) Size() */
 size_t cmt_block_size(const cmt_block_t *b, uint8_t *scratch,
                       size_t scratch_cap)
 {
@@ -1639,7 +1639,7 @@ size_t cmt_block_size(const cmt_block_t *b, uint8_t *scratch,
     return len;                                                /* :183     */
 }
 
-/* cometbft@709fd12b types/block.go:143-162 — (b *Block) MakePartSet() */
+/* cometbft@v0.38.26 types/block.go:143-162 — (b *Block) MakePartSet() */
 int cmt_block_make_part_set(const cmt_block_t *b, uint32_t part_size,
                             uint8_t *scratch, size_t scratch_cap,
                             cmt_part_t *parts, size_t parts_cap,
@@ -1659,7 +1659,7 @@ int cmt_block_make_part_set(const cmt_block_t *b, uint32_t part_size,
                                       parts_cap, out);         /* :161     */
 }
 
-/* cometbft@709fd12b types/block.go:246-277 — BlockFromProto() */
+/* cometbft@v0.38.26 types/block.go:246-277 — BlockFromProto() */
 int cmt_block_from_proto(const cmt_block_t *bp, uint64_t block_protocol,
                          cmt_commit_sig_t *sigs, size_t sigs_cap,
                          cmt_pb_evidence_t *ev_storage, size_t ev_cap,
@@ -1702,7 +1702,7 @@ int cmt_block_from_proto(const cmt_block_t *bp, uint64_t block_protocol,
     return cmt_block_validate_basic(out, block_protocol);      /* :276     */
 }
 
-/* cometbft@709fd12b types/block.go:281-300 — MaxDataBytes().
+/* cometbft@v0.38.26 types/block.go:281-300 — MaxDataBytes().
  * The reference panics on a negative result (:291-297); this REFUSES. */
 int cmt_max_data_bytes(int64_t max_bytes, int64_t evidence_bytes,
                        int64_t vals_count, int64_t *out)
@@ -1749,7 +1749,7 @@ int cmt_max_data_bytes(int64_t max_bytes, int64_t evidence_bytes,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:302-321 — MaxDataBytesNoEvidence() */
+/* cometbft@v0.38.26 types/block.go:302-321 — MaxDataBytesNoEvidence() */
 int cmt_max_data_bytes_no_evidence(int64_t max_bytes, int64_t vals_count,
                                    int64_t *out)
 {

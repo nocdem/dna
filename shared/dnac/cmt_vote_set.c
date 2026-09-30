@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_vote_set.c
- * @brief cometbft @709fd12b `types/vote_set.go` ported to C, plus the
+ * @brief cometbft @v0.38.26 `types/vote_set.go` ported to C, plus the
  *        `types/block.go` ToVoteSet family. See cmt_vote_set.h.
  *
  * Copyright (c) 2026 nocdem
@@ -95,7 +95,7 @@ static cmt_block_votes_t *votes_by_block_find(cmt_vote_set_t *vs,
 
 /* ══ blockVotes (vote_set.go:675-711) ═════════════════════════════════ */
 
-/* cometbft@709fd12b types/vote_set.go:688-695 — newBlockVotes().
+/* cometbft@v0.38.26 types/vote_set.go:688-695 — newBlockVotes().
  *
  * The map INSERTION of :300 and :363 is folded in, because in C the key
  * lives in the entry: the reference writes
@@ -148,7 +148,7 @@ static int new_block_votes(cmt_vote_set_t *vs, bool peer_maj23,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/vote_set.go:697-704 —
+/* cometbft@v0.38.26 types/vote_set.go:697-704 —
  * (vs *blockVotes) addVerifiedVote().
  *
  * `already_owned` is C plumbing, not a reference parameter: when the
@@ -183,7 +183,7 @@ static int block_votes_add_verified_vote(cmt_vote_set_t *vs,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/vote_set.go:706-711 —
+/* cometbft@v0.38.26 types/vote_set.go:706-711 —
  * (vs *blockVotes) getByIndex(). A NULL `bv` is the reference's nil
  * receiver (:707-709), which a Go map read for an absent key produces. */
 static cmt_vote_t *block_votes_get_by_index(cmt_block_votes_t *bv,
@@ -197,7 +197,7 @@ static cmt_vote_t *block_votes_get_by_index(cmt_block_votes_t *bv,
 
 /* ══ constructors (vote_set.go:78-108) ════════════════════════════════ */
 
-/* cometbft@709fd12b types/vote_set.go:78-98 — NewVoteSet() */
+/* cometbft@v0.38.26 types/vote_set.go:78-98 — NewVoteSet() */
 int cmt_vote_set_new(const uint8_t *chain_id, size_t chain_id_len,
                      int64_t height, int32_t round, int32_t signed_msg_type,
                      cmt_validator_set_t *val_set, cmt_vote_set_t **out)
@@ -270,7 +270,7 @@ int cmt_vote_set_new(const uint8_t *chain_id, size_t chain_id_len,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/vote_set.go:100-108 — NewExtendedVoteSet() */
+/* cometbft@v0.38.26 types/vote_set.go:100-108 — NewExtendedVoteSet() */
 int cmt_new_extended_vote_set(const uint8_t *chain_id, size_t chain_id_len,
                               int64_t height, int32_t round,
                               int32_t signed_msg_type,
@@ -313,7 +313,7 @@ void cmt_vote_set_free(cmt_vote_set_t *vs)
 
 /* ══ accessors (vote_set.go:110-144) ══════════════════════════════════ */
 
-/* cometbft@709fd12b types/vote_set.go:110-112 — ChainID() */
+/* cometbft@v0.38.26 types/vote_set.go:110-112 — ChainID() */
 const uint8_t *cmt_vote_set_chain_id(const cmt_vote_set_t *vs,
                                      size_t *out_len)
 {
@@ -329,7 +329,7 @@ const uint8_t *cmt_vote_set_chain_id(const cmt_vote_set_t *vs,
     return vs->chain_id;                                         /* :111 */
 }
 
-/* cometbft@709fd12b types/vote_set.go:114-120 — GetHeight() */
+/* cometbft@v0.38.26 types/vote_set.go:114-120 — GetHeight() */
 int64_t cmt_vote_set_get_height(const cmt_vote_set_t *vs)
 {
     if (vs == NULL) {
@@ -338,7 +338,7 @@ int64_t cmt_vote_set_get_height(const cmt_vote_set_t *vs)
     return vs->height;                                           /* :119 */
 }
 
-/* cometbft@709fd12b types/vote_set.go:122-128 — GetRound() */
+/* cometbft@v0.38.26 types/vote_set.go:122-128 — GetRound() */
 int32_t cmt_vote_set_get_round(const cmt_vote_set_t *vs)
 {
     if (vs == NULL) {
@@ -347,7 +347,7 @@ int32_t cmt_vote_set_get_round(const cmt_vote_set_t *vs)
     return vs->round;                                            /* :127 */
 }
 
-/* cometbft@709fd12b types/vote_set.go:130-136 — Type() */
+/* cometbft@v0.38.26 types/vote_set.go:130-136 — Type() */
 uint8_t cmt_vote_set_type(const cmt_vote_set_t *vs)
 {
     if (vs == NULL) {
@@ -356,7 +356,7 @@ uint8_t cmt_vote_set_type(const cmt_vote_set_t *vs)
     return (uint8_t)vs->signed_msg_type;                         /* :135 */
 }
 
-/* cometbft@709fd12b types/vote_set.go:138-144 — Size() */
+/* cometbft@v0.38.26 types/vote_set.go:138-144 — Size() */
 int cmt_vote_set_size(const cmt_vote_set_t *vs)
 {
     if (vs == NULL) {
@@ -371,7 +371,7 @@ int cmt_vote_set_size(const cmt_vote_set_t *vs)
 
 /* ══ adding votes (vote_set.go:146-332) ═══════════════════════════════ */
 
-/* cometbft@709fd12b types/vote_set.go:244-253 — getVote() */
+/* cometbft@v0.38.26 types/vote_set.go:244-253 — getVote() */
 static cmt_vote_t *get_vote(cmt_vote_set_t *vs, int32_t val_index,
                             const uint8_t *key, size_t key_len)
 {
@@ -396,7 +396,7 @@ static cmt_vote_t *get_vote(cmt_vote_set_t *vs, int32_t val_index,
 }
 
 /*
- * cometbft@709fd12b types/vote_set.go:255-327 — addVerifiedVote().
+ * cometbft@v0.38.26 types/vote_set.go:255-327 — addVerifiedVote().
  *
  * @param out_conflicting receives a BORROWED pointer to the reference's
  *        `conflicting` return value, or NULL.
@@ -504,7 +504,7 @@ static int add_verified_vote(cmt_vote_set_t *vs, const cmt_vote_t *vote,
     }
     /* :306 — plain int64. The reference uses no checked arithmetic here,
      * and R1's cmt_validator_set_update_total_voting_power already caps
-     * the total at MaxInt64/8 (validator_set.go:319-324), so `total * 2`
+     * the total at MaxInt64/8 (validator_set.go:319-321), so `total * 2`
      * cannot overflow. */
     quorum = total * 2 / 3 + 1;
 
@@ -536,7 +536,7 @@ static int add_verified_vote(cmt_vote_set_t *vs, const cmt_vote_t *vote,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/vote_set.go:167-242 — addVote() */
+/* cometbft@v0.38.26 types/vote_set.go:167-242 — addVote() */
 static int add_vote(cmt_vote_set_t *vs, const cmt_vote_t *vote,
                     bool *out_added, cmt_vote_set_err_t *out_err,
                     cmt_vote_t *out_conflicting)
@@ -692,7 +692,7 @@ static int add_vote(cmt_vote_set_t *vs, const cmt_vote_t *vote,
     return CMT_OK;                                               /* :241 */
 }
 
-/* cometbft@709fd12b types/vote_set.go:146-165 — AddVote() */
+/* cometbft@v0.38.26 types/vote_set.go:146-165 — AddVote() */
 int cmt_vote_set_add_vote(cmt_vote_set_t *vs, const cmt_vote_t *vote,
                           bool *out_added, cmt_vote_set_err_t *out_err,
                           cmt_vote_t *out_conflicting)
@@ -714,7 +714,7 @@ int cmt_vote_set_add_vote(cmt_vote_set_t *vs, const cmt_vote_t *vote,
     return rc;
 }
 
-/* cometbft@709fd12b types/vote_set.go:329-367 — SetPeerMaj23() */
+/* cometbft@v0.38.26 types/vote_set.go:329-367 — SetPeerMaj23() */
 int cmt_vote_set_set_peer_maj23(cmt_vote_set_t *vs, cmt_peer_id_t peer,
                                 const cmt_block_id_t *block_id,
                                 cmt_vote_set_err_t *out_err)
@@ -799,7 +799,7 @@ int cmt_vote_set_set_peer_maj23(cmt_vote_set_t *vs, cmt_peer_id_t peer,
 
 /* ══ reading the set (vote_set.go:369-482) ════════════════════════════ */
 
-/* cometbft@709fd12b types/vote_set.go:369-377 — BitArray() */
+/* cometbft@v0.38.26 types/vote_set.go:369-377 — BitArray() */
 int cmt_vote_set_bit_array(cmt_vote_set_t *vs, cmt_bit_array_t *out)
 {
     if (out == NULL) {
@@ -812,7 +812,7 @@ int cmt_vote_set_bit_array(cmt_vote_set_t *vs, cmt_bit_array_t *out)
     return cmt_bits_copy(&vs->votes_bit_array, out);             /* :376 */
 }
 
-/* cometbft@709fd12b types/vote_set.go:379-390 — BitArrayByBlockID() */
+/* cometbft@v0.38.26 types/vote_set.go:379-390 — BitArrayByBlockID() */
 int cmt_vote_set_bit_array_by_block_id(cmt_vote_set_t *vs,
                                        const cmt_block_id_t *block_id,
                                        cmt_bit_array_t *out)
@@ -840,7 +840,7 @@ int cmt_vote_set_bit_array_by_block_id(cmt_vote_set_t *vs,
     return CMT_BITS_NIL;                                         /* :389 */
 }
 
-/* cometbft@709fd12b types/vote_set.go:392-401 — GetByIndex() */
+/* cometbft@v0.38.26 types/vote_set.go:392-401 — GetByIndex() */
 int cmt_vote_set_get_by_index(cmt_vote_set_t *vs, int32_t val_index,
                               const cmt_vote_t **out)
 {
@@ -861,7 +861,7 @@ int cmt_vote_set_get_by_index(cmt_vote_set_t *vs, int32_t val_index,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/vote_set.go:403-415 — List() */
+/* cometbft@v0.38.26 types/vote_set.go:403-415 — List() */
 int cmt_vote_set_list(cmt_vote_set_t *vs, cmt_vote_t *out, size_t cap,
                       size_t *out_len)
 {
@@ -894,7 +894,7 @@ int cmt_vote_set_list(cmt_vote_set_t *vs, cmt_vote_t *out, size_t cap,
     return CMT_OK;                                               /* :414 */
 }
 
-/* cometbft@709fd12b types/vote_set.go:417-428 — GetByAddress() */
+/* cometbft@v0.38.26 types/vote_set.go:417-428 — GetByAddress() */
 int cmt_vote_set_get_by_address(cmt_vote_set_t *vs, const uint8_t *address,
                                 size_t address_len, const cmt_vote_t **out)
 {
@@ -928,7 +928,7 @@ int cmt_vote_set_get_by_address(cmt_vote_set_t *vs, const uint8_t *address,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/vote_set.go:430-437 — HasTwoThirdsMajority() */
+/* cometbft@v0.38.26 types/vote_set.go:430-437 — HasTwoThirdsMajority() */
 bool cmt_vote_set_has_two_thirds_majority(const cmt_vote_set_t *vs)
 {
     if (vs == NULL) {
@@ -937,7 +937,7 @@ bool cmt_vote_set_has_two_thirds_majority(const cmt_vote_set_t *vs)
     return vs->has_maj23;                                        /* :436 */
 }
 
-/* cometbft@709fd12b types/vote_set.go:439-450 — IsCommit() */
+/* cometbft@v0.38.26 types/vote_set.go:439-450 — IsCommit() */
 bool cmt_vote_set_is_commit(const cmt_vote_set_t *vs)
 {
     if (vs == NULL) {
@@ -949,7 +949,7 @@ bool cmt_vote_set_is_commit(const cmt_vote_set_t *vs)
     return vs->has_maj23;                                        /* :449 */
 }
 
-/* cometbft@709fd12b types/vote_set.go:452-459 — HasTwoThirdsAny() */
+/* cometbft@v0.38.26 types/vote_set.go:452-459 — HasTwoThirdsAny() */
 int cmt_vote_set_has_two_thirds_any(cmt_vote_set_t *vs, bool *out)
 {
     int64_t total;
@@ -968,7 +968,7 @@ int cmt_vote_set_has_two_thirds_any(cmt_vote_set_t *vs, bool *out)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/vote_set.go:461-468 — HasAll() */
+/* cometbft@v0.38.26 types/vote_set.go:461-468 — HasAll() */
 int cmt_vote_set_has_all(cmt_vote_set_t *vs, bool *out)
 {
     int64_t total;
@@ -987,7 +987,7 @@ int cmt_vote_set_has_all(cmt_vote_set_t *vs, bool *out)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/vote_set.go:470-482 — TwoThirdsMajority() */
+/* cometbft@v0.38.26 types/vote_set.go:470-482 — TwoThirdsMajority() */
 int cmt_vote_set_two_thirds_majority(const cmt_vote_set_t *vs,
                                      cmt_block_id_t *out_block_id,
                                      bool *out_ok)
@@ -1009,7 +1009,7 @@ int cmt_vote_set_two_thirds_majority(const cmt_vote_set_t *vs,
 
 /* ══ making a commit (vote_set.go:627-671) ════════════════════════════ */
 
-/* cometbft@709fd12b types/vote_set.go:630-671 — MakeExtendedCommit() */
+/* cometbft@v0.38.26 types/vote_set.go:630-671 — MakeExtendedCommit() */
 int cmt_vote_set_make_extended_commit(cmt_vote_set_t *vs,
                                       cmt_abci_params_t ap,
                                       cmt_extended_commit_sig_t *sigs,
@@ -1043,7 +1043,7 @@ int cmt_vote_set_make_extended_commit(cmt_vote_set_t *vs,
         }
         /* :653 — `sig.BlockIDFlag == BlockIDFlagCommit && !v.BlockID...`.
          * Go's && short-circuits, and so does C's: a nil vote yields an
-         * ABSENT entry (vote.go:129-131), so `vs->votes[i]` is never
+         * ABSENT entry (vote.go:133-135), so `vs->votes[i]` is never
          * dereferenced when it is NULL. */
         if (sigs[i].commit_sig.block_id_flag ==
                 (int32_t)CMT_PB_BLOCK_ID_FLAG_COMMIT &&
@@ -1069,7 +1069,7 @@ int cmt_vote_set_make_extended_commit(cmt_vote_set_t *vs,
 
     /* :666 — ap.VoteExtensionsEnabled(ec.Height). The set's height can
      * never be 0 (cmt_vote_set_new refuses it), so the reference's
-     * `h < 1` panic (params.go:76-78) is unreachable. */
+     * `h < 1` panic (params.go:79-81) is unreachable. */
     if (cmt_abci_params_vote_extensions_enabled(ap, out->height,
                                                 &ext_enabled) != CMT_OK) {
         return CMT_FAULT;
@@ -1082,9 +1082,9 @@ int cmt_vote_set_make_extended_commit(cmt_vote_set_t *vs,
     return CMT_OK;                                               /* :670 */
 }
 
-/* ══ rebuilding a vote set from a commit (block.go:1071-1117) ═════════ */
+/* ══ rebuilding a vote set from a commit (block.go:1077-1123) ═════════ */
 
-/* cometbft@709fd12b types/block.go:1081-1096 —
+/* cometbft@v0.38.26 types/block.go:1087-1102 —
  * (ec *ExtendedCommit) addSigsToVoteSet(). File-local, as in the
  * reference. Every panic here is a disagreement between the local store
  * and itself (state.go:610-624), so all of them are CMT_FAULT. */
@@ -1099,30 +1099,30 @@ static int add_sigs_to_vote_set(const cmt_extended_commit_t *ec,
     if (vote == NULL) {
         return CMT_FAULT;
     }
-    for (idx = 0; idx < ec->extended_signatures_len; idx++) {    /* :1083 */
+    for (idx = 0; idx < ec->extended_signatures_len; idx++) {    /* :1089 */
         bool               added = false;
         cmt_vote_set_err_t err   = CMT_VOTE_SET_ERR_NONE;
 
         if (ec->extended_signatures[idx].commit_sig.block_id_flag ==
             (int32_t)CMT_PB_BLOCK_ID_FLAG_ABSENT) {
-            continue;                                            /* :1084-1086 */
+            continue;                                            /* :1090-1092 */
         }
-        if (idx > (size_t)INT32_MAX) {          /* INVARIANT: :1087's int32() */
+        if (idx > (size_t)INT32_MAX) {          /* INVARIANT: :1093's int32() */
             rc = CMT_FAULT;
             break;
         }
         rc = cmt_extended_commit_get_extended_vote(ec, (int32_t)idx, vote);
-        if (rc != CMT_OK) {                                      /* :1087 */
+        if (rc != CMT_OK) {                                      /* :1093 */
             rc = CMT_FAULT;
             break;
         }
-        if (cmt_vote_validate_basic(vote) != CMT_OK) {           /* :1088 */
-            rc = CMT_FAULT;                                      /* :1089 */
+        if (cmt_vote_validate_basic(vote) != CMT_OK) {           /* :1094 */
+            rc = CMT_FAULT;                                      /* :1095 */
             break;
         }
-        rc = cmt_vote_set_add_vote(vs, vote, &added, &err, NULL); /* :1091 */
-        if (!added || rc != CMT_OK) {                            /* :1092 */
-            rc = CMT_FAULT;                                      /* :1093 */
+        rc = cmt_vote_set_add_vote(vs, vote, &added, &err, NULL); /* :1097 */
+        if (!added || rc != CMT_OK) {                            /* :1098 */
+            rc = CMT_FAULT;                                      /* :1099 */
             break;
         }
     }
@@ -1130,7 +1130,7 @@ static int add_sigs_to_vote_set(const cmt_extended_commit_t *ec,
     return rc;
 }
 
-/* cometbft@709fd12b types/block.go:1071-1079 —
+/* cometbft@v0.38.26 types/block.go:1077-1085 —
  * (ec *ExtendedCommit) ToExtendedVoteSet() */
 int cmt_extended_commit_to_extended_vote_set(const cmt_extended_commit_t *ec,
                                              const uint8_t *chain_id,
@@ -1148,20 +1148,20 @@ int cmt_extended_commit_to_extended_vote_set(const cmt_extended_commit_t *ec,
     rc = cmt_new_extended_vote_set(chain_id, chain_id_len, ec->height,
                                    ec->round,
                                    (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT,
-                                   vals, &vs);                   /* :1076 */
+                                   vals, &vs);                   /* :1082 */
     if (rc != CMT_OK) {
         return rc;
     }
-    rc = add_sigs_to_vote_set(ec, vs);                           /* :1077 */
+    rc = add_sigs_to_vote_set(ec, vs);                           /* :1083 */
     if (rc != CMT_OK) {
         cmt_vote_set_free(vs);
         return rc;
     }
-    *out = vs;                                                   /* :1078 */
+    *out = vs;                                                   /* :1084 */
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/block.go:1098-1117 — (commit *Commit) ToVoteSet() */
+/* cometbft@v0.38.26 types/block.go:1104-1123 — (commit *Commit) ToVoteSet() */
 int cmt_commit_to_vote_set(const cmt_commit_t *commit,
                            const uint8_t *chain_id, size_t chain_id_len,
                            cmt_validator_set_t *vals, cmt_vote_set_t **out)
@@ -1178,7 +1178,7 @@ int cmt_commit_to_vote_set(const cmt_commit_t *commit,
     rc = cmt_vote_set_new(chain_id, chain_id_len, commit->height,
                           commit->round,
                           (int32_t)CMT_PB_MSG_TYPE_PRECOMMIT, vals, &vs);
-    if (rc != CMT_OK) {                                          /* :1102 */
+    if (rc != CMT_OK) {                                          /* :1108 */
         return rc;
     }
     vote = (cmt_vote_t *)malloc(sizeof(*vote));   /* ~9.5 KB, never stack */
@@ -1186,30 +1186,30 @@ int cmt_commit_to_vote_set(const cmt_commit_t *commit,
         cmt_vote_set_free(vs);
         return CMT_FAULT;
     }
-    for (idx = 0; idx < commit->signatures_len; idx++) {         /* :1103 */
+    for (idx = 0; idx < commit->signatures_len; idx++) {         /* :1109 */
         bool               added = false;
         cmt_vote_set_err_t err   = CMT_VOTE_SET_ERR_NONE;
 
         if (commit->signatures[idx].block_id_flag ==
             (int32_t)CMT_PB_BLOCK_ID_FLAG_ABSENT) {
-            continue;                                            /* :1104-1106 */
+            continue;                                            /* :1110-1112 */
         }
-        if (idx > (size_t)INT32_MAX) {          /* INVARIANT: :1107's int32() */
+        if (idx > (size_t)INT32_MAX) {          /* INVARIANT: :1113's int32() */
             rc = CMT_FAULT;
             break;
         }
-        rc = cmt_commit_get_vote(commit, (int32_t)idx, vote);    /* :1107 */
+        rc = cmt_commit_get_vote(commit, (int32_t)idx, vote);    /* :1113 */
         if (rc != CMT_OK) {
             rc = CMT_FAULT;
             break;
         }
-        if (cmt_vote_validate_basic(vote) != CMT_OK) {           /* :1108 */
-            rc = CMT_FAULT;                                      /* :1109 */
+        if (cmt_vote_validate_basic(vote) != CMT_OK) {           /* :1114 */
+            rc = CMT_FAULT;                                      /* :1115 */
             break;
         }
-        rc = cmt_vote_set_add_vote(vs, vote, &added, &err, NULL); /* :1111 */
-        if (!added || rc != CMT_OK) {                            /* :1112 */
-            rc = CMT_FAULT;                                      /* :1113 */
+        rc = cmt_vote_set_add_vote(vs, vote, &added, &err, NULL); /* :1117 */
+        if (!added || rc != CMT_OK) {                            /* :1118 */
+            rc = CMT_FAULT;                                      /* :1119 */
             break;
         }
     }
@@ -1218,6 +1218,6 @@ int cmt_commit_to_vote_set(const cmt_commit_t *commit,
         cmt_vote_set_free(vs);
         return rc;
     }
-    *out = vs;                                                   /* :1116 */
+    *out = vs;                                                   /* :1122 */
     return CMT_OK;
 }

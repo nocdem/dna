@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_cs.c
- * @brief cometbft @709fd12b `consensus/state.go` ported to C.
+ * @brief cometbft @v0.38.26 `consensus/state.go` ported to C.
  *
  * The design, the ownership rules, the panic rule and the reference pins
  * are in cmt_cs.h. Every function below carries the Go function and line
@@ -13,8 +13,8 @@
 
 #include "dnac/cmt_cs.h"
 
-/* The state machine calls SafeSubInt32 (state.go:1074) and SafeAddInt32
- * (:1097) directly; cmt_cs.h does not pull them in because no type in its
+/* The state machine calls SafeSubInt32 (state.go:1069) and SafeAddInt32
+ * (:1092) directly; cmt_cs.h does not pull them in because no type in its
  * interface needs them. */
 #include "dnac/cmt_safemath.h"
 
@@ -128,7 +128,7 @@ static cmt_time_t cs_time_add_ns(cmt_time_t t, int64_t ns)
 }
 
 /**
- * Go `a.Sub(b)` as a nanosecond count — state.go:558 and :1033.
+ * Go `a.Sub(b)` as a nanosecond count — state.go:558 and :1028.
  *
  * ⚠ STATED LIMIT, not a guess. Go's `time.Time.Sub` is in the Go standard
  * library, which is NOT in the pinned tarball, so its behaviour at the
@@ -205,10 +205,10 @@ static const cmt_pb_bytes_t *cs_q_payload_of(const cmt_msg_info_t *mi)
 {
     switch (mi->msg.kind) {
     case CMT_PB_CONS_MSG_BLOCK_PART:
-        return &mi->msg.u.block_part.part.bytes;             /* :1680     */
+        return &mi->msg.u.block_part.part.bytes;             /* :1675     */
     case CMT_PB_CONS_MSG_VOTE:
         if (!mi->msg.u.vote.has_vote) {
-            return NULL;                    /* :1706 — nil vote, nothing  */
+            return NULL;                    /* :1701 — nil vote, nothing  */
         }
         return &mi->msg.u.vote.vote.extension;                /* field 9  */
     default:
@@ -355,8 +355,8 @@ static int cs_take_part_slot(cmt_cs_t *cs, size_t *out_idx)
 }
 
 /**
- * `types.NewPartSetFromHeader(header)` (state.go:1553, :1647, :1945,
- * :2299) into a free slot. The caller clears the name first; this sets it.
+ * `types.NewPartSetFromHeader(header)` (state.go:1548, :1642, :1940,
+ * :2292) into a free slot. The caller clears the name first; this sets it.
  */
 static int cs_new_part_set_from_header(cmt_cs_t *cs,
                                        const cmt_part_set_header_t *header,
@@ -434,8 +434,8 @@ static void cs_part_set_bound_refused(const char *site,
 }
 
 /**
- * The reference's transitions return NOTHING (state.go:1053, :1140,
- * :1319, :1442, :1596 …), so a CMT_REJECT out of one of them is a refusal
+ * The reference's transitions return NOTHING (state.go:1048, :1135,
+ * :1314, :1437, :1591 …), so a CMT_REJECT out of one of them is a refusal
  * this port invented — today only `cs_part_set_bound_refused`'s. The
  * caller carries on exactly as the reference does, but the refusal is NOT
  * SWALLOWED: the FAULT-only filters used to drop it without a word.
@@ -463,11 +463,11 @@ static int cs_part_slot_index(const cmt_cs_t *cs, const cmt_part_set_t *ps,
     return CMT_FAULT;   /* NODE-LOCAL: a part set that is not in the slots */
 }
 
-/* ── the validator-set copy of state.go:1073 ────────────────────────── */
+/* ── the validator-set copy of state.go:1068 ────────────────────────── */
 
 /**
  * `validators = validators.Copy(); validators.IncrementProposerPriority(n)`
- * (state.go:1073-1074), which is `CopyIncrementProposerPriority`
+ * (state.go:1068-1069), which is `CopyIncrementProposerPriority`
  * (validator_set.go:122-126).
  *
  * The destination alternates between two buffers so that a copy is never
@@ -619,7 +619,7 @@ static int cs_wal_write_timeout(cmt_cs_t *cs, const cmt_timeout_info_t *ti)
     return CMT_OK;
 }
 
-/** wal.WriteSync of an `EndHeightMessage` (state.go:1759-1765). */
+/** wal.WriteSync of an `EndHeightMessage` (state.go:1754-1760). */
 static int cs_wal_write_end_height(cmt_cs_t *cs, int64_t height)
 {
     cmt_wal_message_t *m;
@@ -630,11 +630,11 @@ static int cs_wal_write_end_height(cmt_cs_t *cs, int64_t height)
         return CMT_FAULT;
     }
     m->kind                = CMT_PB_WAL_END_HEIGHT;
-    m->u.end_height.height = height;                              /* :1759 */
+    m->u.end_height.height = height;                              /* :1754 */
     rc = cs->host.wal_write_sync(cs->host_ctx, m);
     free(m);
     if (rc != CMT_OK) {
-        /* :1761-1764 — panic. NODE-LOCAL → CMT_FAULT. */
+        /* :1756-1759 — panic. NODE-LOCAL → CMT_FAULT. */
         QGP_LOG_ERROR(LOG_TAG,
                       "failed to write EndHeight msg to consensus WAL; "
                       "check your file system and restart the node");
@@ -645,8 +645,8 @@ static int cs_wal_write_end_height(cmt_cs_t *cs, int64_t height)
 
 /* ── the memoized public key's address (crypto.PubKey.Address) ──────── */
 
-/** `cs.privValidatorPubKey.Address()` — :1184, :1306, :2382, :2456,
- *  :2495. `cmt_pubkey_address` is the tree's one truncation
+/** `cs.privValidatorPubKey.Address()` — :1179, :1301, :2375, :2449,
+ *  :2488. `cmt_pubkey_address` is the tree's one truncation
  *  (cmt_tmhash.h:52). */
 static int cs_priv_validator_address(const cmt_cs_t *cs,
                                      uint8_t out[CMT_ADDRESS_SIZE])
@@ -661,7 +661,7 @@ static int cs_priv_validator_address(const cmt_cs_t *cs,
  * state.go:240-314 — accessors
  * ══════════════════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b consensus/state.go:240-244 — GetState() */
+/* cometbft@v0.38.26 consensus/state.go:240-244 — GetState() */
 int cmt_cs_get_state(const cmt_cs_t *cs, cmt_state_t *out)
 {
     if (cs == NULL || out == NULL) {
@@ -670,7 +670,7 @@ int cmt_cs_get_state(const cmt_cs_t *cs, cmt_state_t *out)
     return cmt_state_copy(&cs->state, out);                        /* :243 */
 }
 
-/* cometbft@709fd12b consensus/state.go:248-252 — GetLastHeight() */
+/* cometbft@v0.38.26 consensus/state.go:248-252 — GetLastHeight() */
 int64_t cmt_cs_get_last_height(const cmt_cs_t *cs)
 {
     if (cs == NULL) {
@@ -679,7 +679,7 @@ int64_t cmt_cs_get_last_height(const cmt_cs_t *cs)
     return cs->rs.height - 1;                                      /* :251 */
 }
 
-/* cometbft@709fd12b consensus/state.go:255-260 — GetRoundState() */
+/* cometbft@v0.38.26 consensus/state.go:255-260 — GetRoundState() */
 int cmt_cs_get_round_state(const cmt_cs_t *cs, cmt_round_state_t *out)
 {
     if (cs == NULL || out == NULL) {
@@ -689,7 +689,7 @@ int cmt_cs_get_round_state(const cmt_cs_t *cs, cmt_round_state_t *out)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/state.go:277-281 — GetValidators() */
+/* cometbft@v0.38.26 consensus/state.go:277-281 — GetValidators() */
 int cmt_cs_get_validators(const cmt_cs_t *cs, int64_t *out_height,
                           cmt_validator_set_t *out)
 {
@@ -702,7 +702,7 @@ int cmt_cs_get_validators(const cmt_cs_t *cs, int64_t *out_height,
     return cmt_validator_set_copy(&cs->state.validators, out);     /* :280 */
 }
 
-/* cometbft@709fd12b consensus/state.go:285-294 — SetPrivValidator() */
+/* cometbft@v0.38.26 consensus/state.go:285-294 — SetPrivValidator() */
 int cmt_cs_set_priv_validator(cmt_cs_t *cs, bool present)
 {
     if (cs == NULL) {
@@ -715,7 +715,7 @@ int cmt_cs_set_priv_validator(cmt_cs_t *cs, bool present)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/state.go:305-314 — LoadCommit() */
+/* cometbft@v0.38.26 consensus/state.go:305-314 — LoadCommit() */
 int cmt_cs_load_commit(cmt_cs_t *cs, int64_t height, cmt_commit_t *out,
                        bool *out_found)
 {
@@ -761,7 +761,7 @@ static int cs_input(cmt_cs_t *cs, const cmt_msg_info_t *mi)
     return cs_q_push(cs->peer_q, &cs->peer_q_head, &cs->peer_q_len, mi);
 }
 
-/* cometbft@709fd12b consensus/state.go:477-486 — AddVote() */
+/* cometbft@v0.38.26 consensus/state.go:477-486 — AddVote() */
 int cmt_cs_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
                     const uint8_t *peer_id, size_t peer_id_len)
 {
@@ -791,7 +791,7 @@ int cmt_cs_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
     return rc;                       /* :485 — the reference returns false */
 }
 
-/* cometbft@709fd12b consensus/state.go:489-498 — SetProposal() */
+/* cometbft@v0.38.26 consensus/state.go:489-498 — SetProposal() */
 int cmt_cs_set_proposal_input(cmt_cs_t *cs, const cmt_proposal_t *proposal,
                               const uint8_t *peer_id, size_t peer_id_len)
 {
@@ -820,7 +820,7 @@ int cmt_cs_set_proposal_input(cmt_cs_t *cs, const cmt_proposal_t *proposal,
     return rc;
 }
 
-/* cometbft@709fd12b consensus/state.go:501-510 — AddProposalBlockPart() */
+/* cometbft@v0.38.26 consensus/state.go:501-510 — AddProposalBlockPart() */
 int cmt_cs_add_proposal_block_part_input(cmt_cs_t *cs, int64_t height,
                                          int32_t round,
                                          const cmt_part_t *part,
@@ -854,7 +854,7 @@ int cmt_cs_add_proposal_block_part_input(cmt_cs_t *cs, int64_t height,
     return rc;
 }
 
-/* cometbft@709fd12b consensus/state.go:513-532 — SetProposalAndBlock() */
+/* cometbft@v0.38.26 consensus/state.go:513-532 — SetProposalAndBlock() */
 int cmt_cs_set_proposal_and_block(cmt_cs_t *cs, const cmt_proposal_t *proposal,
                                   const cmt_part_set_t *parts,
                                   const uint8_t *peer_id, size_t peer_id_len)
@@ -910,14 +910,14 @@ void cmt_cs_quit(cmt_cs_t *cs)
  * state.go:537-579 — the small internal setters
  * ══════════════════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b consensus/state.go:537-540 — updateHeight().
+/* cometbft@v0.38.26 consensus/state.go:537-540 — updateHeight().
  * :538 is a metric and is not ported. */
 static void cs_update_height(cmt_cs_t *cs, int64_t height)
 {
     cs->rs.height = height;                                        /* :539 */
 }
 
-/* cometbft@709fd12b consensus/state.go:542-553 — updateRoundStep().
+/* cometbft@v0.38.26 consensus/state.go:542-553 — updateRoundStep().
  * :543-550 is the metrics block, entirely `cs.metrics.*`, and is not
  * ported; the two assignments at :551-552 are the whole behaviour. */
 static void cs_update_round_step(cmt_cs_t *cs, int32_t round,
@@ -927,7 +927,7 @@ static void cs_update_round_step(cmt_cs_t *cs, int32_t round,
     cs->rs.step  = step;                                           /* :552 */
 }
 
-/* cometbft@709fd12b consensus/state.go:556-560 — scheduleRound0() */
+/* cometbft@v0.38.26 consensus/state.go:556-560 — scheduleRound0() */
 int cmt_cs_schedule_round0(cmt_cs_t *cs, const cmt_round_state_t *rs)
 {
     cmt_time_t now;
@@ -946,7 +946,7 @@ int cmt_cs_schedule_round0(cmt_cs_t *cs, const cmt_round_state_t *rs)
                                    CMT_ROUND_STEP_NEW_HEIGHT);     /* :559 */
 }
 
-/* cometbft@709fd12b consensus/state.go:563-565 — scheduleTimeout() */
+/* cometbft@v0.38.26 consensus/state.go:563-565 — scheduleTimeout() */
 int cmt_cs_schedule_timeout(cmt_cs_t *cs, int64_t duration_ns, int64_t height,
                             int32_t round, cmt_round_step_t step)
 {
@@ -969,7 +969,7 @@ int cmt_cs_schedule_timeout(cmt_cs_t *cs, int64_t duration_ns, int64_t height,
     return cs_apply_ticker_action(cs, &action);
 }
 
-/* cometbft@709fd12b consensus/state.go:568-579 — sendInternalMessage().
+/* cometbft@v0.38.26 consensus/state.go:568-579 — sendInternalMessage().
  *
  * The reference's `default` branch (:571-578) spawns a goroutine, and its
  * own comment at :572-575 says that lets our votes be processed out of
@@ -1025,9 +1025,9 @@ static void cs_release_last_commit(cmt_cs_t *cs)
  * height's validators.
  *
  * That is not academic: after the rollover the reference still adds late
- * precommits to LastCommit (:2144 `LastCommit.AddVote`, which reaches
+ * precommits to LastCommit (:2139 `LastCommit.AddVote`, which reaches
  * `valSet.GetByIndex` for the public key and the power) and still asks it
- * `HasAll` (:2161, which sums `TotalVotingPower`). At an epoch boundary,
+ * `HasAll` (:2156, which sums `TotalVotingPower`). At an epoch boundary,
  * where the validator set actually changes, those would be answered
  * against the wrong set — two nodes disagreeing on a late vote is a
  * chain-split class defect, not a leak.
@@ -1076,7 +1076,7 @@ static int cs_bind_last_commit_vals(cmt_cs_t *cs, const cmt_state_t *state)
                                   &cs->last_commit_vals);
 }
 
-/* cometbft@709fd12b consensus/state.go:610-624 — votesFromExtendedCommit() */
+/* cometbft@v0.38.26 consensus/state.go:610-624 — votesFromExtendedCommit() */
 static int cs_votes_from_extended_commit(cmt_cs_t *cs,
                                          const cmt_state_t *state,
                                          cmt_vote_set_t **out)
@@ -1118,7 +1118,7 @@ static int cs_votes_from_extended_commit(cmt_cs_t *cs,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/state.go:626-643 — votesFromSeenCommit() */
+/* cometbft@v0.38.26 consensus/state.go:626-643 — votesFromSeenCommit() */
 static int cs_votes_from_seen_commit(cmt_cs_t *cs, const cmt_state_t *state,
                                      cmt_vote_set_t **out)
 {
@@ -1164,7 +1164,7 @@ static int cs_votes_from_seen_commit(cmt_cs_t *cs, const cmt_state_t *state,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/state.go:585-591 — reconstructSeenCommit() */
+/* cometbft@v0.38.26 consensus/state.go:585-591 — reconstructSeenCommit() */
 static int cs_reconstruct_seen_commit(cmt_cs_t *cs, const cmt_state_t *state)
 {
     cmt_vote_set_t *votes;
@@ -1186,7 +1186,7 @@ static int cs_reconstruct_seen_commit(cmt_cs_t *cs, const cmt_state_t *state)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/state.go:597-608 — reconstructLastCommit() */
+/* cometbft@v0.38.26 consensus/state.go:597-608 — reconstructLastCommit() */
 static int cs_reconstruct_last_commit(cmt_cs_t *cs, const cmt_state_t *state)
 {
     cmt_vote_set_t *votes;
@@ -1217,7 +1217,7 @@ static int cs_reconstruct_last_commit(cmt_cs_t *cs, const cmt_state_t *state)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/state.go:597-608 — reconstructLastCommit(),
+/* cometbft@v0.38.26 consensus/state.go:597-608 — reconstructLastCommit(),
  * the public entry the reactor's SwitchToConsensus uses (reactor.go:116).
  * A one-line wrapper (R3-A); see cmt_cs.h. */
 int cmt_cs_reconstruct_last_commit(cmt_cs_t *cs, const cmt_state_t *state)
@@ -1257,7 +1257,7 @@ static cmt_pb_arena_t *cs_ext_arena_for(cmt_cs_t *cs, int64_t height)
  * state.go:647-774 — updateToState and newStep
  * ══════════════════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b consensus/state.go:758-774 — newStep().
+/* cometbft@v0.38.26 consensus/state.go:758-774 — newStep().
  * :768-770 is the event bus, not ported. :772 is the event switch, fired
  * through the listener (R3-A); :767's `cs.eventBus != nil` guard is "no
  * listener installed" here (cmt_cs.h, cmt_cs_listener_t). */
@@ -1291,7 +1291,7 @@ int cmt_cs_update_to_state(cmt_cs_t *cs, const cmt_state_t *state)
     }
     if (state == &cs->state) {
         /* NODE-LOCAL: the reference's `state` is always a COPY the caller
-         * made (:1770), never `cs.state` itself, and the copy into
+         * made (:1765), never `cs.state` itself, and the copy into
          * `cs->state` below would otherwise read its own destination. */
         QGP_LOG_ERROR(LOG_TAG, "updateToState() called with cs->state itself");
         return CMT_FAULT;
@@ -1706,7 +1706,7 @@ int cmt_cs_step(cmt_cs_t *cs, bool *out_worked)
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * state.go:875-1039 — handleMsg, handleTimeout, handleTxsAvailable
+ * state.go:875-1034 — handleMsg, handleTimeout, handleTxsAvailable
  * ══════════════════════════════════════════════════════════════════════ */
 
 int cmt_cs_handle_msg(cmt_cs_t *cs, const cmt_msg_info_t *mi)
@@ -1726,7 +1726,7 @@ int cmt_cs_handle_msg(cmt_cs_t *cs, const cmt_msg_info_t *mi)
         }
         /* An unattributable peer id. The reference's `handleMsg` returns
          * NOTHING — every message error it meets ends in the log line at
-         * :955-962 — so a refusal here is logged the same way rather than
+         * :950-957 — so a refusal here is logged the same way rather than
          * propagated out of the event loop. */
         QGP_LOG_ERROR(LOG_TAG, "failed to process message: peer id is "
                                "neither empty nor 32 bytes");
@@ -1749,7 +1749,7 @@ int cmt_cs_handle_msg(cmt_cs_t *cs, const cmt_msg_info_t *mi)
         if (err == CMT_FAULT) {
             return CMT_FAULT;
         }
-        /* :906-908 — the reference drops and retakes the mutex here so
+        /* :901-903 — the reference drops and retakes the mutex here so
          * that the reactor can read the round state. One thread has
          * nothing to yield to, and the reference's own comment says the
          * purpose is reactor visibility, not ordering. */
@@ -1757,26 +1757,26 @@ int cmt_cs_handle_msg(cmt_cs_t *cs, const cmt_msg_info_t *mi)
             rc = cmt_cs_handle_complete_proposal(cs,
                                                  mi->msg.u.block_part.height);
             if (rc == CMT_FAULT) {
-                return CMT_FAULT;                              /* :909-911 */
+                return CMT_FAULT;                              /* :904-906 */
             }
         }
-        /* :912-914 — statsMsgQueue feeds the reactor's statistics only.
-         * cometbft@v0.38.26 consensus/state.go:903-906 no longer sends
-         * here; :943-947 makes ONE send after the switch, with cs.mtx
-         * released around it (#5813: a full queue blocked GetRoundState).
-         * NOT APPLICABLE here: statsMsgQueue is not ported (cmt_conr.h
-         * "peerStatsRoutine"), and one thread holds no mutex to release. */
+        /* :912-914 (709fd12b; at v0.38.26: gone — :943-947 makes ONE
+         * statsMsgQueue send after the switch, with cs.mtx released around
+         * it, #5813: a full queue blocked GetRoundState). statsMsgQueue
+         * feeds the reactor's statistics only and is NOT ported here
+         * (cmt_conr.h "peerStatsRoutine"); one thread holds no mutex to
+         * release. */
         if (err != CMT_OK && mi->msg.u.block_part.round != cs->rs.round) {
-            /* :916-924 — a block part from a round we have left is not an
+            /* :908-916 — a block part from a round we have left is not an
              * error at all. */
-            err = CMT_OK;                                          /* :923 */
+            err = CMT_OK;                                          /* :915 */
         }
         break;
 
-    case CMT_PB_CONS_MSG_VOTE:                                     /* :926 */
+    case CMT_PB_CONS_MSG_VOTE:                                     /* :918 */
         if (!mi->msg.u.vote.has_vote) {
-            /* Go carries a `*types.Vote` here and :929 passes it straight
-             * to tryAddVote, which dereferences it at :2121. A nil is a
+            /* Go carries a `*types.Vote` here and :921 passes it straight
+             * to tryAddVote, which dereferences it at :2116. A nil is a
              * panic there. PEER-REACHABLE → CMT_REJECT: msgs.go:187 can
              * produce a VoteMessage from a wire message with no vote
              * field, so a peer's bytes reach it. */
@@ -1785,19 +1785,19 @@ int cmt_cs_handle_msg(cmt_cs_t *cs, const cmt_msg_info_t *mi)
         }
         err = cmt_cs_try_add_vote(cs, &mi->msg.u.vote.vote, &peer, &added);
         if (err == CMT_FAULT) {
-            return CMT_FAULT;                                      /* :929 */
+            return CMT_FAULT;                                      /* :921 */
         }
-        /* :930-932 — statsMsgQueue, not ported (v0.38.26 moved the send
-         * to state.go:943-947 — see the BlockPart case). */
+        /* :930-932 (709fd12b; at v0.38.26: gone — the one send is at
+         * :943-947, see the BlockPart case). statsMsgQueue is not ported. */
         break;
 
-    default:                                                       /* :949 */
+    default:                                                       /* :938 */
         QGP_LOG_ERROR(LOG_TAG, "unknown msg type %d", (int)mi->msg.kind);
-        return CMT_OK;                                             /* :951 */
+        return CMT_OK;                                             /* :940 */
     }
 
-    if (err != CMT_OK) {                                           /* :954 */
-        /* :955-962 — the reference LOGS every message error and returns
+    if (err != CMT_OK) {                                           /* :949 */
+        /* :950-957 — the reference LOGS every message error and returns
          * normally; nothing propagates out of handleMsg. */
         QGP_LOG_ERROR(LOG_TAG,
                       "failed to process message: height %lld round %d "
@@ -1816,40 +1816,40 @@ int cmt_cs_handle_timeout(cmt_cs_t *cs, const cmt_timeout_info_t *ti,
     if (cs == NULL || ti == NULL || rs == NULL) {
         return CMT_FAULT;
     }
-    /* :970 — the acceptance rule. A timeout for another height, an older
+    /* :965 — the acceptance rule. A timeout for another height, an older
      * round, or an earlier step of the same round is dropped. */
     if (ti->height != rs->height || ti->round < rs->round ||
         (ti->round == rs->round && ti->step < rs->step)) {
-        return CMT_OK;                                         /* :971-972 */
+        return CMT_OK;                                         /* :966-967 */
     }
 
-    switch (ti->step) {                                            /* :979 */
-    case CMT_ROUND_STEP_NEW_HEIGHT:                                /* :980 */
-        return cmt_cs_enter_new_round(cs, ti->height, 0);           /* :983 */
+    switch (ti->step) {                                            /* :974 */
+    case CMT_ROUND_STEP_NEW_HEIGHT:                                /* :975 */
+        return cmt_cs_enter_new_round(cs, ti->height, 0);           /* :978 */
 
-    case CMT_ROUND_STEP_NEW_ROUND:                                 /* :985 */
-        return cmt_cs_enter_propose(cs, ti->height, ti->round);     /* :986 */
+    case CMT_ROUND_STEP_NEW_ROUND:                                 /* :980 */
+        return cmt_cs_enter_propose(cs, ti->height, ti->round);     /* :981 */
 
-    case CMT_ROUND_STEP_PROPOSE:                                   /* :988 */
-        /* :989-991 — PublishEventTimeoutPropose, not ported. */
-        return cmt_cs_enter_prevote(cs, ti->height, ti->round);      /* :993 */
+    case CMT_ROUND_STEP_PROPOSE:                                   /* :983 */
+        /* :984-986 — PublishEventTimeoutPropose, not ported. */
+        return cmt_cs_enter_prevote(cs, ti->height, ti->round);      /* :988 */
 
-    case CMT_ROUND_STEP_PREVOTE_WAIT:                              /* :995 */
-        /* :996-998 — PublishEventTimeoutWait, not ported. */
-        return cmt_cs_enter_precommit(cs, ti->height, ti->round);   /* :1000 */
+    case CMT_ROUND_STEP_PREVOTE_WAIT:                              /* :990 */
+        /* :991-993 — PublishEventTimeoutWait, not ported. */
+        return cmt_cs_enter_precommit(cs, ti->height, ti->round);   /* :995 */
 
-    case CMT_ROUND_STEP_PRECOMMIT_WAIT:                           /* :1002 */
-        /* :1003-1005 — PublishEventTimeoutWait; :1007
+    case CMT_ROUND_STEP_PRECOMMIT_WAIT:                           /* :997 */
+        /* :998-1000 — PublishEventTimeoutWait; :1002
          * emitPrecommitTimeoutMetrics — neither is ported. */
-        rc = cmt_cs_enter_precommit(cs, ti->height, ti->round);    /* :1008 */
+        rc = cmt_cs_enter_precommit(cs, ti->height, ti->round);    /* :1003 */
         if (rc == CMT_FAULT) {
             return rc;
         }
         cs_note_transition_refusal("enterPrecommit", rc);
-        return cmt_cs_enter_new_round(cs, ti->height, ti->round + 1);/* :1009 */
+        return cmt_cs_enter_new_round(cs, ti->height, ti->round + 1);/* :1004 */
 
-    default:                                                      /* :1011 */
-        /* :1012 — panic("invalid timeout step"). NODE-LOCAL → CMT_FAULT:
+    default:                                                      /* :1006 */
+        /* :1007 — panic("invalid timeout step"). NODE-LOCAL → CMT_FAULT:
          * every timeout in the queue was put there by this module's own
          * scheduleTimeout with a literal step, and the ticker only ever
          * hands back what it was given (ticker.go:125, :137). */
@@ -1864,39 +1864,39 @@ int cmt_cs_handle_txs_available(cmt_cs_t *cs)
     if (cs == NULL) {
         return CMT_FAULT;
     }
-    if (cs->rs.round != 0) {                                      /* :1021 */
-        return CMT_OK;                                            /* :1022 */
+    if (cs->rs.round != 0) {                                      /* :1016 */
+        return CMT_OK;                                            /* :1017 */
     }
 
-    switch (cs->rs.step) {                                        /* :1025 */
-    case CMT_ROUND_STEP_NEW_HEIGHT: {                             /* :1026 */
+    switch (cs->rs.step) {                                        /* :1020 */
+    case CMT_ROUND_STEP_NEW_HEIGHT: {                             /* :1021 */
         bool       need;
         cmt_time_t now;
         int64_t    timeout_commit;
         int        rc;
 
         need = false;
-        rc = cmt_cs_need_proof_block(cs, cs->rs.height, &need);    /* :1027 */
+        rc = cmt_cs_need_proof_block(cs, cs->rs.height, &need);    /* :1022 */
         if (rc != CMT_OK) {
             return rc;
         }
         if (need) {
-            return CMT_OK;               /* :1028-1030 — enterNewRound will */
+            return CMT_OK;               /* :1023-1025 — enterNewRound will */
         }
-        rc = cs->host.now(cs->host_ctx, &now); /* :1033 — CLOCK SITE 3/5   */
+        rc = cs->host.now(cs->host_ctx, &now); /* :1028 — CLOCK SITE 3/5   */
         if (rc != CMT_OK) {
             return CMT_FAULT;
         }
-        /* :1032-1033 — "+1ms to ensure RoundStepNewRound timeout always
+        /* :1027-1028 — "+1ms to ensure RoundStepNewRound timeout always
          * happens after RoundStepNewHeight". */
         timeout_commit = cs_time_sub_ns(cs->rs.start_time, now) +
                          CMT_CS_TIME_IOTA_NS;
         return cmt_cs_schedule_timeout(cs, timeout_commit, cs->rs.height, 0,
-                                       CMT_ROUND_STEP_NEW_ROUND); /* :1034 */
+                                       CMT_ROUND_STEP_NEW_ROUND); /* :1029 */
     }
 
-    case CMT_ROUND_STEP_NEW_ROUND:                                /* :1036 */
-        return cmt_cs_enter_propose(cs, cs->rs.height, 0);        /* :1037 */
+    case CMT_ROUND_STEP_NEW_ROUND:                                /* :1031 */
+        return cmt_cs_enter_propose(cs, cs->rs.height, 0);        /* :1032 */
 
     default:
         return CMT_OK;      /* the reference's switch has no other case   */
@@ -1904,7 +1904,7 @@ int cmt_cs_handle_txs_available(cmt_cs_t *cs)
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * state.go:1053-1132 — enterNewRound, needProofBlock
+ * state.go:1048-1127 — enterNewRound, needProofBlock
  * ══════════════════════════════════════════════════════════════════════ */
 
 int cmt_cs_enter_new_round(cmt_cs_t *cs, int64_t height, int32_t round)
@@ -1921,13 +1921,13 @@ int cmt_cs_enter_new_round(cmt_cs_t *cs, int64_t height, int32_t round)
     }
     if (cs->rs.height != height || round < cs->rs.round ||
         (cs->rs.round == round && cs->rs.step != CMT_ROUND_STEP_NEW_HEIGHT)) {
-        return CMT_OK;                                       /* :1056-1062 */
+        return CMT_OK;                                       /* :1051-1057 */
     }
-    /* :1064-1066 is a log line about StartTime being in the future; it
+    /* :1059-1061 is a log line about StartTime being in the future; it
      * reads the clock only to print it (cmt_cs.h's clock note). */
 
-    if (cs->rs.round < round) {                                   /* :1072 */
-        rc = cmt_safe_sub_int32(round, cs->rs.round, &times);     /* :1074 */
+    if (cs->rs.round < round) {                                   /* :1067 */
+        rc = cmt_safe_sub_int32(round, cs->rs.round, &times);     /* :1069 */
         if (rc != CMT_OK) {
             /* SafeSubInt32 panics on overflow (safemath.go:25-32).
              * NODE-LOCAL → CMT_FAULT: both rounds are this module's own
@@ -1935,9 +1935,9 @@ int cmt_cs_enter_new_round(cmt_cs_t *cs, int64_t height, int32_t round)
             QGP_LOG_ERROR(LOG_TAG, "round arithmetic overflowed");
             return CMT_FAULT;
         }
-        rc = cs_copy_increment_validators(cs, times);        /* :1073-1074 */
+        rc = cs_copy_increment_validators(cs, times);        /* :1068-1069 */
         if (rc != CMT_OK) {
-            /* :1073-1074 `cs.Validators.CopyIncrementProposerPriority` —
+            /* :1068-1069 `cs.Validators.CopyIncrementProposerPriority` —
              * every refusal reachable inside it is a Go PANIC on an empty
              * or impossible set (types/validator_set.go:81-83, :132-134,
              * :135-137, :159-161, :197, :207-208, :213-215, :242-244),
@@ -1955,56 +1955,56 @@ int cmt_cs_enter_new_round(cmt_cs_t *cs, int64_t height, int32_t round)
         }
     }
 
-    /* :1080-1081 — the round step first, then the validators. The copy
+    /* :1075-1076 — the round step first, then the validators. The copy
      * above has already installed them into rs.validators, which is what
-     * :1081 does; the order of the two assignments is not observable
+     * :1076 does; the order of the two assignments is not observable
      * because nothing between them reads either. */
-    cs_update_round_step(cs, round, CMT_ROUND_STEP_NEW_ROUND);    /* :1080 */
+    cs_update_round_step(cs, round, CMT_ROUND_STEP_NEW_ROUND);    /* :1075 */
 
-    rc = cmt_validator_set_get_proposer(cs->rs.validators, &proposer);/* :1084 */
+    rc = cmt_validator_set_get_proposer(cs->rs.validators, &proposer);/* :1079 */
     if (rc != CMT_OK) {
         /* GetProposer REJECTs on an empty set, where the reference returns
-         * nil and :1084 nil-dereferences. NODE-LOCAL → CMT_FAULT: the
+         * nil and :1079 nil-dereferences. NODE-LOCAL → CMT_FAULT: the
          * validator set is this node's own state. */
         QGP_LOG_ERROR(LOG_TAG, "no proposer for height %lld round %d",
                       (long long)height, (int)round);
         return CMT_FAULT;
     }
-    if (round != 0) {                                             /* :1085 */
-        cs->rs.proposal             = NULL;                       /* :1087 */
-        cs->rs.proposal_block       = NULL;                       /* :1088 */
-        cs->rs.proposal_block_parts = NULL;                       /* :1089 */
+    if (round != 0) {                                             /* :1080 */
+        cs->rs.proposal             = NULL;                       /* :1082 */
+        cs->rs.proposal_block       = NULL;                       /* :1083 */
+        cs->rs.proposal_block_parts = NULL;                       /* :1084 */
     }
 
-    rc = cmt_safe_add_int32(round, 1, &next_round);               /* :1097 */
+    rc = cmt_safe_add_int32(round, 1, &next_round);               /* :1092 */
     if (rc != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "round+1 overflowed");   /* NODE-LOCAL     */
         return CMT_FAULT;
     }
-    /* :1097 — also track round+1 so a round-skip has somewhere to land. */
+    /* :1092 — also track round+1 so a round-skip has somewhere to land. */
     rc = cmt_hvs_set_round(cs->rs.votes, next_round);
     if (rc != CMT_OK) {
         return rc;
     }
-    cs->rs.triggered_timeout_precommit = false;                   /* :1098 */
-    /* :1100-1102 — PublishEventNewRound, not ported. */
+    cs->rs.triggered_timeout_precommit = false;                   /* :1093 */
+    /* :1095-1097 — PublishEventNewRound, not ported. */
 
     need_proof = false;
-    rc = cmt_cs_need_proof_block(cs, height, &need_proof);        /* :1106 */
+    rc = cmt_cs_need_proof_block(cs, height, &need_proof);        /* :1101 */
     if (rc != CMT_OK) {
         return rc;
     }
     wait_for_txs = cmt_config_wait_for_txs(cs->config) && round == 0 &&
-                   !need_proof;                                   /* :1106 */
-    if (wait_for_txs) {                                           /* :1107 */
-        if (cs->config->create_empty_blocks_interval > 0) {       /* :1108 */
+                   !need_proof;                                   /* :1101 */
+    if (wait_for_txs) {                                           /* :1102 */
+        if (cs->config->create_empty_blocks_interval > 0) {       /* :1103 */
             return cmt_cs_schedule_timeout(
                     cs, cs->config->create_empty_blocks_interval, height,
-                    round, CMT_ROUND_STEP_NEW_ROUND);        /* :1109-1110 */
+                    round, CMT_ROUND_STEP_NEW_ROUND);        /* :1104-1105 */
         }
         return CMT_OK;
     }
-    return cmt_cs_enter_propose(cs, height, round);               /* :1113 */
+    return cmt_cs_enter_propose(cs, height, round);               /* :1108 */
 }
 
 int cmt_cs_need_proof_block(cmt_cs_t *cs, int64_t height, bool *out)
@@ -2017,8 +2017,8 @@ int cmt_cs_need_proof_block(cmt_cs_t *cs, int64_t height, bool *out)
         return CMT_FAULT;
     }
     *out = false;
-    if (height == cs->state.initial_height) {                     /* :1120 */
-        *out = true;                                              /* :1121 */
+    if (height == cs->state.initial_height) {                     /* :1115 */
+        *out = true;                                              /* :1116 */
         return CMT_OK;
     }
     /* Heap: a cmt_header_t carries fourteen fields, several of them
@@ -2029,18 +2029,18 @@ int cmt_cs_need_proof_block(cmt_cs_t *cs, int64_t height, bool *out)
     }
     found = false;
     rc = cs->host.bs_load_block_meta(cs->host_ctx, height - 1, meta, &found);
-    if (rc != CMT_OK) {                                           /* :1124 */
+    if (rc != CMT_OK) {                                           /* :1119 */
         free(meta);
         return CMT_FAULT;
     }
     if (!found) {
-        /* :1125-1129 — "short-circuited needProofBlock", the reference's
+        /* :1120-1124 — "short-circuited needProofBlock", the reference's
          * own workaround for cometbft issue 370. */
         free(meta);
-        *out = true;                                              /* :1128 */
+        *out = true;                                              /* :1123 */
         return CMT_OK;
     }
-    /* :1131 — !bytes.Equal(cs.state.AppHash, lastBlockMeta.Header.AppHash) */
+    /* :1126 — !bytes.Equal(cs.state.AppHash, lastBlockMeta.Header.AppHash) */
     *out = !(cs->state.app_hash_len == meta->app_hash_len &&
              memcmp(cs->state.app_hash, meta->app_hash,
                     cs->state.app_hash_len) == 0);
@@ -2049,33 +2049,33 @@ int cmt_cs_need_proof_block(cmt_cs_t *cs, int64_t height, bool *out)
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * state.go:1140-1313 — enterPropose and the proposal it makes
+ * state.go:1135-1308 — enterPropose and the proposal it makes
  * ══════════════════════════════════════════════════════════════════════ */
 
-/** The `defer` of :1153-1164, which runs on EVERY return from
+/** The `defer` of :1148-1159, which runs on EVERY return from
  *  enterPropose. Written out because C has no defer. */
 static int cs_enter_propose_done(cmt_cs_t *cs, int64_t height, int32_t round)
 {
     bool complete;
     int  rc;
 
-    cs_update_round_step(cs, round, CMT_ROUND_STEP_PROPOSE);      /* :1155 */
-    rc = cs_new_step(cs);                                         /* :1156 */
+    cs_update_round_step(cs, round, CMT_ROUND_STEP_PROPOSE);      /* :1150 */
+    rc = cs_new_step(cs);                                         /* :1151 */
     if (rc != CMT_OK) {
         return rc;
     }
     complete = false;
-    rc = cmt_cs_is_proposal_complete(cs, &complete);              /* :1161 */
+    rc = cmt_cs_is_proposal_complete(cs, &complete);              /* :1156 */
     if (rc != CMT_OK) {
         return rc;
     }
     if (complete) {
-        return cmt_cs_enter_prevote(cs, height, cs->rs.round);    /* :1162 */
+        return cmt_cs_enter_prevote(cs, height, cs->rs.round);    /* :1157 */
     }
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/state.go:1200-1202 — isProposer() */
+/* cometbft@v0.38.26 consensus/state.go:1195-1197 — isProposer() */
 static bool cs_is_proposer(cmt_cs_t *cs, const uint8_t *address,
                            size_t address_len)
 {
@@ -2086,7 +2086,7 @@ static bool cs_is_proposer(cmt_cs_t *cs, const uint8_t *address,
         return false;
     }
     return proposer.address_len == address_len &&
-           memcmp(proposer.address, address, address_len) == 0;   /* :1201 */
+           memcmp(proposer.address, address, address_len) == 0;   /* :1196 */
 }
 
 int cmt_cs_enter_propose(cmt_cs_t *cs, int64_t height, int32_t round)
@@ -2099,34 +2099,34 @@ int cmt_cs_enter_propose(cmt_cs_t *cs, int64_t height, int32_t round)
     }
     if (cs->rs.height != height || round < cs->rs.round ||
         (cs->rs.round == round && CMT_ROUND_STEP_PROPOSE <= cs->rs.step)) {
-        return CMT_OK;                                       /* :1143-1149 */
+        return CMT_OK;                                       /* :1138-1144 */
     }
 
-    /* :1167 — if the proposal does not arrive in time, prevote anyway. */
+    /* :1162 — if the proposal does not arrive in time, prevote anyway. */
     rc = cmt_cs_schedule_timeout(cs, cmt_config_propose(cs->config, round),
                                  height, round, CMT_ROUND_STEP_PROPOSE);
     if (rc != CMT_OK) {
         return rc;
     }
 
-    if (!cs->has_priv_validator) {                                /* :1170 */
-        return cs_enter_propose_done(cs, height, round);          /* :1172 */
+    if (!cs->has_priv_validator) {                                /* :1165 */
+        return cs_enter_propose_done(cs, height, round);          /* :1167 */
     }
-    if (!cs->priv_validator_pub_key_present) {                    /* :1177 */
+    if (!cs->priv_validator_pub_key_present) {                    /* :1172 */
         QGP_LOG_ERROR(LOG_TAG, "propose step; empty priv validator "
-                               "public key");                     /* :1180 */
-        return cs_enter_propose_done(cs, height, round);          /* :1181 */
+                               "public key");                     /* :1175 */
+        return cs_enter_propose_done(cs, height, round);          /* :1176 */
     }
-    rc = cs_priv_validator_address(cs, address);                  /* :1184 */
+    rc = cs_priv_validator_address(cs, address);                  /* :1179 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
     if (!cmt_validator_set_has_address(cs->rs.validators, address,
-                                       sizeof(address))) {        /* :1187 */
-        return cs_enter_propose_done(cs, height, round);          /* :1189 */
+                                       sizeof(address))) {        /* :1182 */
+        return cs_enter_propose_done(cs, height, round);          /* :1184 */
     }
-    if (cs_is_proposer(cs, address, sizeof(address))) {           /* :1192 */
-        rc = cs->decide_proposal(cs, height, round);              /* :1194 */
+    if (cs_is_proposer(cs, address, sizeof(address))) {           /* :1187 */
+        rc = cs->decide_proposal(cs, height, round);              /* :1189 */
         if (rc == CMT_FAULT) {
             return rc;
         }
@@ -2134,7 +2134,7 @@ int cmt_cs_enter_propose(cmt_cs_t *cs, int64_t height, int32_t round)
     return cs_enter_propose_done(cs, height, round);
 }
 
-/* cometbft@709fd12b consensus/state.go:1279-1313 — createProposalBlock() */
+/* cometbft@v0.38.26 consensus/state.go:1274-1308 — createProposalBlock() */
 static int cs_create_proposal_block(cmt_cs_t *cs, cmt_block_t **out)
 {
     cmt_extended_commit_t     *last_ext_commit;
@@ -2145,7 +2145,7 @@ static int cs_create_proposal_block(cmt_cs_t *cs, cmt_block_t **out)
     int                        rc;
 
     if (!cs->has_priv_validator) {
-        return CMT_REJECT;                                   /* :1280-1282 */
+        return CMT_REJECT;                                   /* :1275-1277 */
     }
 
     n_sigs = (size_t)cmt_vote_set_size(cs->rs.last_commit);
@@ -2162,8 +2162,8 @@ static int cs_create_proposal_block(cmt_cs_t *cs, cmt_block_t **out)
         return CMT_FAULT;
     }
 
-    if (cs->rs.height == cs->state.initial_height) {              /* :1287 */
-        /* :1290 — `&types.ExtendedCommit{}`: empty, but not nil. */
+    if (cs->rs.height == cs->state.initial_height) {              /* :1282 */
+        /* :1285 — `&types.ExtendedCommit{}`: empty, but not nil. */
         last_ext_commit->extended_signatures     = sigs;
         last_ext_commit->extended_signatures_cap = n_sigs;
         last_ext_commit->extended_signatures_len = 0u;
@@ -2171,7 +2171,7 @@ static int cs_create_proposal_block(cmt_cs_t *cs, cmt_block_t **out)
         rc = cmt_vote_set_make_extended_commit(cs->rs.last_commit,
                                                cs->state.consensus_params.abci,
                                                sigs, n_sigs,
-                                               last_ext_commit);  /* :1294 */
+                                               last_ext_commit);  /* :1289 */
         if (rc != CMT_OK) {
             free(last_ext_commit);
             free(sigs);
@@ -2180,15 +2180,15 @@ static int cs_create_proposal_block(cmt_cs_t *cs, cmt_block_t **out)
     } else {
         free(last_ext_commit);
         free(sigs);
-        return CMT_REJECT;                                   /* :1296-1297 */
+        return CMT_REJECT;                                   /* :1291-1292 */
     }
 
-    if (!cs->priv_validator_pub_key_present) {                    /* :1300 */
+    if (!cs->priv_validator_pub_key_present) {                    /* :1295 */
         free(last_ext_commit);
         free(sigs);
-        return CMT_REJECT;                                   /* :1303      */
+        return CMT_REJECT;                                   /* :1298      */
     }
-    rc = cs_priv_validator_address(cs, proposer_addr);            /* :1306 */
+    rc = cs_priv_validator_address(cs, proposer_addr);            /* :1301 */
     if (rc != CMT_OK) {
         free(last_ext_commit);
         free(sigs);
@@ -2205,11 +2205,11 @@ static int cs_create_proposal_block(cmt_cs_t *cs, cmt_block_t **out)
     rc = cs->host.create_proposal_block(cs->host_ctx, cs->rs.height,
                                         &cs->state, last_ext_commit,
                                         proposer_addr, sizeof(proposer_addr),
-                                        slot);                    /* :1308 */
+                                        slot);                    /* :1303 */
     free(last_ext_commit);
     free(sigs);
     if (rc != CMT_OK) {
-        /* :1309-1311 — the reference PANICS on this error. NODE-LOCAL →
+        /* :1304-1306 — the reference PANICS on this error. NODE-LOCAL →
          * CMT_FAULT: the block executor is this node's own application
          * and no peer input reaches it here. */
         QGP_LOG_ERROR(LOG_TAG, "CreateProposalBlock failed: rc %d", rc);
@@ -2238,29 +2238,29 @@ int cmt_cs_default_decide_proposal(cmt_cs_t *cs, int64_t height, int32_t round)
     block       = NULL;
     block_parts = NULL;
 
-    if (cs->rs.valid_block != NULL) {                             /* :1209 */
-        block       = cs->rs.valid_block;                         /* :1211 */
+    if (cs->rs.valid_block != NULL) {                             /* :1204 */
+        block       = cs->rs.valid_block;                         /* :1206 */
         block_parts = cs->rs.valid_block_parts;
     } else {
-        rc = cs_create_proposal_block(cs, &block);                /* :1215 */
+        rc = cs_create_proposal_block(cs, &block);                /* :1210 */
         if (rc == CMT_FAULT) {
             return rc;
         }
         if (rc != CMT_OK) {
-            /* :1216-1218 — the reference logs and returns. */
+            /* :1211-1213 — the reference logs and returns. */
             QGP_LOG_ERROR(LOG_TAG, "unable to create proposal block");
             return CMT_OK;
         }
         if (block == NULL) {
-            /* :1219-1221 — panic("createProposalBlock should not provide a
+            /* :1214-1216 — panic("createProposalBlock should not provide a
              * nil block without errors"). NODE-LOCAL → CMT_FAULT. */
             QGP_LOG_ERROR(LOG_TAG, "createProposalBlock gave a nil block "
                                    "without an error");
             return CMT_FAULT;
         }
-        /* :1222 is a metric. :1223 — MakePartSet into the PROPOSER'S OWN
+        /* :1217 is a metric. :1218 — MakePartSet into the PROPOSER'S OWN
          * buffer, never into one of the three slots: the parts queued at
-         * :1246-1249 point into it and `defaultSetProposal` would
+         * :1241-1244 point into it and `defaultSetProposal` would
          * otherwise be free to take that slot on the very next step. The
          * reasoning and the host's obligation are in cmt_cs.h. */
         if (cs->slots->marshal_parts == NULL ||
@@ -2277,23 +2277,23 @@ int cmt_cs_default_decide_proposal(cmt_cs_t *cs, int64_t height, int32_t round)
                                      cs->slots->marshal_parts_cap,
                                      &cs->slots->marshal_part_set);
         if (rc != CMT_OK) {
-            /* :1224-1227 — the reference logs and returns. */
+            /* :1219-1222 — the reference logs and returns. */
             QGP_LOG_ERROR(LOG_TAG, "unable to create proposal block part set");
             return CMT_OK;
         }
         block_parts = &cs->slots->marshal_part_set;
     }
 
-    /* :1232 — flush the WAL, or the privValidator may refuse to sign. */
+    /* :1227 — flush the WAL, or the privValidator may refuse to sign. */
     if (cs->host.wal_flush_and_sync(cs->host_ctx) != CMT_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "failed flushing WAL to disk");    /* :1233 */
+        QGP_LOG_ERROR(LOG_TAG, "failed flushing WAL to disk");    /* :1228 */
     }
 
-    rc = cmt_block_hash(block, block_hash);                       /* :1237 */
+    rc = cmt_block_hash(block, block_hash);                       /* :1232 */
     if (rc != CMT_OK) {
         return CMT_FAULT;         /* NODE-LOCAL: our own block will not hash */
     }
-    rc = cmt_part_set_header(block_parts, &psh);                  /* :1237 */
+    rc = cmt_part_set_header(block_parts, &psh);                  /* :1232 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
@@ -2322,7 +2322,7 @@ int cmt_cs_default_decide_proposal(cmt_cs_t *cs, int64_t height, int32_t round)
             return CMT_FAULT;
         }
         rc = cmt_new_proposal(height, round, cs->rs.valid_round,
-                              &prop_block_id, now, proposal);     /* :1238 */
+                              &prop_block_id, now, proposal);     /* :1233 */
     }
     if (rc != CMT_OK) {
         free(proposal);
@@ -2331,9 +2331,9 @@ int cmt_cs_default_decide_proposal(cmt_cs_t *cs, int64_t height, int32_t round)
     }
 
     rc = cs->host.sign_proposal(cs->host_ctx, cs->state.chain_id,
-                                cs->state.chain_id_len, proposal);/* :1240 */
+                                cs->state.chain_id_len, proposal);/* :1235 */
     if (rc != CMT_OK) {
-        /* :1252-1254 — a signing failure is logged (unless replaying) and
+        /* :1247-1249 — a signing failure is logged (unless replaying) and
          * nothing is sent. */
         if (!cs->replay_mode) {
             QGP_LOG_ERROR(LOG_TAG, "propose step; failed signing proposal: "
@@ -2345,7 +2345,7 @@ int cmt_cs_default_decide_proposal(cmt_cs_t *cs, int64_t height, int32_t round)
         return CMT_OK;
     }
 
-    /* :1244 — our own proposal goes onto the internal queue like any
+    /* :1239 — our own proposal goes onto the internal queue like any
      * other message and is handled on a LATER step. */
     mi->msg.kind                = CMT_PB_CONS_MSG_PROPOSAL;
     mi->msg.u.proposal.proposal = *proposal;
@@ -2357,20 +2357,20 @@ int cmt_cs_default_decide_proposal(cmt_cs_t *cs, int64_t height, int32_t round)
         return rc;
     }
 
-    total = cmt_part_set_total(block_parts);                      /* :1246 */
+    total = cmt_part_set_total(block_parts);                      /* :1241 */
     for (i = 0u; i < total; i++) {
         const cmt_part_t *part = cmt_part_set_get_part(block_parts, i);
 
         if (part == NULL) {
-            /* Go indexes its own freshly built part set at :1247 and a
-             * nil there is a panic at :1248. NODE-LOCAL → CMT_FAULT. */
+            /* Go indexes its own freshly built part set at :1242 and a
+             * nil there is a panic at :1243. NODE-LOCAL → CMT_FAULT. */
             free(proposal);
             free(mi);
             return CMT_FAULT;
         }
         memset(mi, 0, sizeof(*mi));
         mi->msg.kind                = CMT_PB_CONS_MSG_BLOCK_PART;
-        mi->msg.u.block_part.height = cs->rs.height;              /* :1248 */
+        mi->msg.u.block_part.height = cs->rs.height;              /* :1243 */
         mi->msg.u.block_part.round  = cs->rs.round;
         mi->msg.u.block_part.part   = *part;
         cs_msg_set_peer(mi, NULL);
@@ -2395,19 +2395,19 @@ int cmt_cs_is_proposal_complete(cmt_cs_t *cs, bool *out)
     }
     *out = false;
     if (cs->rs.proposal == NULL || cs->rs.proposal_block == NULL) {
-        return CMT_OK;                                       /* :1260-1262 */
+        return CMT_OK;                                       /* :1255-1257 */
     }
-    if (cs->rs.proposal->pol_round < 0) {                         /* :1265 */
-        *out = true;                                              /* :1266 */
+    if (cs->rs.proposal->pol_round < 0) {                         /* :1260 */
+        *out = true;                                              /* :1261 */
         return CMT_OK;
     }
     prevotes = cmt_hvs_prevotes(cs->rs.votes, cs->rs.proposal->pol_round);
-    *out = cmt_vote_set_has_two_thirds_majority(prevotes);        /* :1269 */
+    *out = cmt_vote_set_has_two_thirds_majority(prevotes);        /* :1264 */
     return CMT_OK;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * state.go:1319-1434 — enterPrevote, defaultDoPrevote, enterPrevoteWait
+ * state.go:1314-1429 — enterPrevote, defaultDoPrevote, enterPrevoteWait
  * ══════════════════════════════════════════════════════════════════════ */
 
 int cmt_cs_enter_prevote(cmt_cs_t *cs, int64_t height, int32_t round)
@@ -2419,15 +2419,15 @@ int cmt_cs_enter_prevote(cmt_cs_t *cs, int64_t height, int32_t round)
     }
     if (cs->rs.height != height || round < cs->rs.round ||
         (cs->rs.round == round && CMT_ROUND_STEP_PREVOTE <= cs->rs.step)) {
-        return CMT_OK;                                       /* :1322-1328 */
+        return CMT_OK;                                       /* :1317-1323 */
     }
-    rc = cs->do_prevote(cs, height, round);                       /* :1339 */
+    rc = cs->do_prevote(cs, height, round);                       /* :1334 */
     if (rc == CMT_FAULT) {
         return rc;
     }
-    /* The defer of :1330-1334, which runs after doPrevote. */
-    cs_update_round_step(cs, round, CMT_ROUND_STEP_PREVOTE);      /* :1332 */
-    return cs_new_step(cs);                                       /* :1333 */
+    /* The defer of :1325-1329, which runs after doPrevote. */
+    cs_update_round_step(cs, round, CMT_ROUND_STEP_PREVOTE);      /* :1327 */
+    return cs_new_step(cs);                                       /* :1328 */
 }
 
 int cmt_cs_default_do_prevote(cmt_cs_t *cs, int64_t height, int32_t round)
@@ -2443,8 +2443,8 @@ int cmt_cs_default_do_prevote(cmt_cs_t *cs, int64_t height, int32_t round)
     (void)height;
     (void)round;
 
-    if (cs->rs.locked_block != NULL) {                            /* :1349 */
-        rc = cmt_block_hash(cs->rs.locked_block, hash);           /* :1351 */
+    if (cs->rs.locked_block != NULL) {                            /* :1344 */
+        rc = cmt_block_hash(cs->rs.locked_block, hash);           /* :1346 */
         if (rc != CMT_OK) {
             return CMT_FAULT;      /* NODE-LOCAL: our own locked block     */
         }
@@ -2453,18 +2453,18 @@ int cmt_cs_default_do_prevote(cmt_cs_t *cs, int64_t height, int32_t round)
             return CMT_FAULT;
         }
         return cmt_cs_sign_add_vote(cs, CMT_PB_MSG_TYPE_PREVOTE, hash,
-                                    sizeof(hash), &psh, NULL);    /* :1351 */
+                                    sizeof(hash), &psh, NULL);    /* :1346 */
     }
 
     memset(&psh, 0, sizeof(psh));   /* the reference's PartSetHeader{}     */
 
-    if (cs->rs.proposal_block == NULL) {                          /* :1356 */
+    if (cs->rs.proposal_block == NULL) {                          /* :1351 */
         return cmt_cs_sign_add_vote(cs, CMT_PB_MSG_TYPE_PREVOTE, NULL, 0u,
-                                    &psh, NULL);                  /* :1358 */
+                                    &psh, NULL);                  /* :1353 */
     }
 
     rc = cs->host.validate_block(cs->host_ctx, &cs->state,
-                                 cs->rs.proposal_block);          /* :1363 */
+                                 cs->rs.proposal_block);          /* :1358 */
     if (rc == CMT_FAULT) {
         /* NODE-LOCAL (W1.7): the validation could not be carried out on
          * THIS node — a clock read for the block-time tolerance
@@ -2478,20 +2478,20 @@ int cmt_cs_default_do_prevote(cmt_cs_t *cs, int64_t height, int32_t round)
         return CMT_FAULT;
     }
     if (rc != CMT_OK) {
-        /* :1364-1370 — an invalid proposal block (CMT_REJECT) is a
+        /* :1359-1365 — an invalid proposal block (CMT_REJECT) is a
          * PREVOTE FOR NIL, not an error. This is the one ValidateBlock
          * site of the three that simply votes nil. */
         QGP_LOG_ERROR(LOG_TAG, "prevote step: consensus deems this block "
                                "invalid; prevoting nil");
         return cmt_cs_sign_add_vote(cs, CMT_PB_MSG_TYPE_PREVOTE, NULL, 0u,
-                                    &psh, NULL);                  /* :1368 */
+                                    &psh, NULL);                  /* :1363 */
     }
 
     accept = false;
     rc = cs->host.process_proposal(cs->host_ctx, cs->rs.proposal_block,
-                                   &cs->state, &accept);          /* :1382 */
+                                   &cs->state, &accept);          /* :1377 */
     if (rc != CMT_OK) {
-        /* :1383-1387 — panic("state machine returned an error when calling
+        /* :1378-1382 — panic("state machine returned an error when calling
          * ProcessProposal"). NODE-LOCAL → CMT_FAULT: the error is the
          * local application's, not the proposal's; a REJECTED proposal is
          * `accept == false` below and is a different thing entirely. */
@@ -2499,15 +2499,15 @@ int cmt_cs_default_do_prevote(cmt_cs_t *cs, int64_t height, int32_t round)
                                "calling ProcessProposal");
         return CMT_FAULT;
     }
-    /* :1388 is a metric. */
-    if (!accept) {                                                /* :1391 */
+    /* :1383 is a metric. */
+    if (!accept) {                                                /* :1386 */
         QGP_LOG_ERROR(LOG_TAG, "prevote step: state machine rejected a "
                                "proposed block; prevoting nil");
         return cmt_cs_sign_add_vote(cs, CMT_PB_MSG_TYPE_PREVOTE, NULL, 0u,
-                                    &psh, NULL);                  /* :1394 */
+                                    &psh, NULL);                  /* :1389 */
     }
 
-    rc = cmt_block_hash(cs->rs.proposal_block, hash);             /* :1402 */
+    rc = cmt_block_hash(cs->rs.proposal_block, hash);             /* :1397 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
@@ -2516,7 +2516,7 @@ int cmt_cs_default_do_prevote(cmt_cs_t *cs, int64_t height, int32_t round)
         return CMT_FAULT;
     }
     return cmt_cs_sign_add_vote(cs, CMT_PB_MSG_TYPE_PREVOTE, hash,
-                                sizeof(hash), &psh, NULL);        /* :1402 */
+                                sizeof(hash), &psh, NULL);        /* :1397 */
 }
 
 int cmt_cs_enter_prevote_wait(cmt_cs_t *cs, int64_t height, int32_t round)
@@ -2530,18 +2530,18 @@ int cmt_cs_enter_prevote_wait(cmt_cs_t *cs, int64_t height, int32_t round)
     if (cs->rs.height != height || round < cs->rs.round ||
         (cs->rs.round == round &&
          CMT_ROUND_STEP_PREVOTE_WAIT <= cs->rs.step)) {
-        return CMT_OK;                                       /* :1409-1415 */
+        return CMT_OK;                                       /* :1404-1410 */
     }
     has_any = false;
     rc = cmt_vote_set_has_two_thirds_any(cmt_hvs_prevotes(cs->rs.votes, round),
-                                         &has_any);               /* :1417 */
+                                         &has_any);               /* :1412 */
     if (rc != CMT_OK) {
         return rc;
     }
     if (!has_any) {
-        /* :1418-1421 — panic. NODE-LOCAL → CMT_FAULT: every caller of
+        /* :1413-1416 — panic. NODE-LOCAL → CMT_FAULT: every caller of
          * enterPrevoteWait has just established +2/3-any on this very set
-         * (:2319-2320), so reaching here means this module contradicted
+         * (:2312-2313), so reaching here means this module contradicted
          * itself. */
         QGP_LOG_ERROR(LOG_TAG,
                       "entering prevote wait step (%lld/%d), but prevotes "
@@ -2549,27 +2549,27 @@ int cmt_cs_enter_prevote_wait(cmt_cs_t *cs, int64_t height, int32_t round)
                       (long long)height, (int)round);
         return CMT_FAULT;
     }
-    /* :1433 — wait for more prevotes, then enterPrecommit. */
+    /* :1428 — wait for more prevotes, then enterPrecommit. */
     rc = cmt_cs_schedule_timeout(cs, cmt_config_prevote(cs->config, round),
                                  height, round,
                                  CMT_ROUND_STEP_PREVOTE_WAIT);
     if (rc != CMT_OK) {
         return rc;
     }
-    /* The defer of :1426-1430. */
-    cs_update_round_step(cs, round, CMT_ROUND_STEP_PREVOTE_WAIT); /* :1428 */
-    return cs_new_step(cs);                                       /* :1429 */
+    /* The defer of :1421-1425. */
+    cs_update_round_step(cs, round, CMT_ROUND_STEP_PREVOTE_WAIT); /* :1423 */
+    return cs_new_step(cs);                                       /* :1424 */
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * state.go:1442-1593 — enterPrecommit, enterPrecommitWait
+ * state.go:1437-1588 — enterPrecommit, enterPrecommitWait
  * ══════════════════════════════════════════════════════════════════════ */
 
-/** The `defer` of :1455-1459. */
+/** The `defer` of :1450-1454. */
 static int cs_enter_precommit_done(cmt_cs_t *cs, int32_t round)
 {
-    cs_update_round_step(cs, round, CMT_ROUND_STEP_PRECOMMIT);   /* :1457 */
-    return cs_new_step(cs);                                      /* :1458 */
+    cs_update_round_step(cs, round, CMT_ROUND_STEP_PRECOMMIT);   /* :1452 */
+    return cs_new_step(cs);                                      /* :1453 */
 }
 
 int cmt_cs_enter_precommit(cmt_cs_t *cs, int64_t height, int32_t round)
@@ -2586,29 +2586,29 @@ int cmt_cs_enter_precommit(cmt_cs_t *cs, int64_t height, int32_t round)
     }
     if (cs->rs.height != height || round < cs->rs.round ||
         (cs->rs.round == round && CMT_ROUND_STEP_PRECOMMIT <= cs->rs.step)) {
-        return CMT_OK;                                      /* :1445-1451 */
+        return CMT_OK;                                      /* :1440-1446 */
     }
     memset(&psh_nil, 0, sizeof(psh_nil));   /* types.PartSetHeader{}      */
 
     ok = false;
     rc = cmt_vote_set_two_thirds_majority(
-            cmt_hvs_prevotes(cs->rs.votes, round), &block_id, &ok); /* :1462 */
+            cmt_hvs_prevotes(cs->rs.votes, round), &block_id, &ok); /* :1457 */
     if (rc != CMT_OK) {
         return rc;
     }
 
-    if (!ok) {                                                   /* :1465 */
-        /* :1466-1470 are two log lines. :1472 — no polka, precommit nil. */
+    if (!ok) {                                                   /* :1460 */
+        /* :1461-1465 are two log lines. :1467 — no polka, precommit nil. */
         rc = cmt_cs_sign_add_vote(cs, CMT_PB_MSG_TYPE_PRECOMMIT, NULL, 0u,
                                   &psh_nil, NULL);
         if (rc == CMT_FAULT) {
             return rc;
         }
-        return cs_enter_precommit_done(cs, round);               /* :1473 */
+        return cs_enter_precommit_done(cs, round);               /* :1468 */
     }
-    /* :1477-1479 — PublishEventPolka, not ported. */
+    /* :1472-1474 — PublishEventPolka, not ported. */
 
-    /* :1482 — `polRound, _ := cs.Votes.POLInfo()`. Go discards the second
+    /* :1477 — `polRound, _ := cs.Votes.POLInfo()`. Go discards the second
      * return; `cmt_hvs_pol_info` does NOT accept NULL for it (cmt_hvs.h:
      * "Always written", and its loop uses the buffer as working storage),
      * so the discard is spelled with a real one. */
@@ -2617,9 +2617,9 @@ int cmt_cs_enter_precommit(cmt_cs_t *cs, int64_t height, int32_t round)
         return rc;
     }
     if (pol_round < round) {
-        /* :1484 — panic("this POLRound should be %v but got %v").
+        /* :1479 — panic("this POLRound should be %v but got %v").
          * NODE-LOCAL → CMT_FAULT: TwoThirdsMajority on THIS round's
-         * prevotes just said yes at :1462, so POLInfo — which walks the
+         * prevotes just said yes at :1457, so POLInfo — which walks the
          * same height vote set downward from the current round
          * (height_vote_set.go:170-183) — cannot answer with a lower round
          * unless the two disagree with each other. */
@@ -2628,44 +2628,44 @@ int cmt_cs_enter_precommit(cmt_cs_t *cs, int64_t height, int32_t round)
         return CMT_FAULT;
     }
 
-    if (block_id.hash_len == 0u) {                              /* :1488 */
+    if (block_id.hash_len == 0u) {                              /* :1483 */
         /* +2/3 prevoted nil: unlock and precommit nil. */
-        if (cs->rs.locked_block != NULL) {                      /* :1489 */
-            cs->rs.locked_round       = -1;                     /* :1493 */
-            cs->rs.locked_block       = NULL;                   /* :1494 */
-            cs->rs.locked_block_parts = NULL;                   /* :1495 */
-            /* :1497-1499 — PublishEventUnlock, not ported. */
+        if (cs->rs.locked_block != NULL) {                      /* :1484 */
+            cs->rs.locked_round       = -1;                     /* :1488 */
+            cs->rs.locked_block       = NULL;                   /* :1489 */
+            cs->rs.locked_block_parts = NULL;                   /* :1490 */
+            /* :1492-1494 — PublishEventUnlock, not ported. */
         }
         rc = cmt_cs_sign_add_vote(cs, CMT_PB_MSG_TYPE_PRECOMMIT, NULL, 0u,
-                                  &psh_nil, NULL);              /* :1502 */
+                                  &psh_nil, NULL);              /* :1497 */
         if (rc == CMT_FAULT) {
             return rc;
         }
-        return cs_enter_precommit_done(cs, round);              /* :1503 */
+        return cs_enter_precommit_done(cs, round);              /* :1498 */
     }
 
     /* At this point +2/3 prevoted for a particular block. */
 
     if (cmt_block_hashes_to(cs->rs.locked_block, block_id.hash,
-                            block_id.hash_len)) {               /* :1509 */
-        cs->rs.locked_round = round;                            /* :1511 */
-        /* :1513-1515 — PublishEventRelock, not ported. */
+                            block_id.hash_len)) {               /* :1504 */
+        cs->rs.locked_round = round;                            /* :1506 */
+        /* :1508-1510 — PublishEventRelock, not ported. */
         rc = cmt_cs_sign_add_vote(cs, CMT_PB_MSG_TYPE_PRECOMMIT,
                                   block_id.hash, block_id.hash_len,
                                   &block_id.part_set_header,
-                                  cs->rs.locked_block);         /* :1517 */
+                                  cs->rs.locked_block);         /* :1512 */
         if (rc == CMT_FAULT) {
             return rc;
         }
-        return cs_enter_precommit_done(cs, round);              /* :1518 */
+        return cs_enter_precommit_done(cs, round);              /* :1513 */
     }
 
     if (cmt_block_hashes_to(cs->rs.proposal_block, block_id.hash,
-                            block_id.hash_len)) {               /* :1522 */
+                            block_id.hash_len)) {               /* :1517 */
         rc = cs->host.validate_block(cs->host_ctx, &cs->state,
-                                     cs->rs.proposal_block);    /* :1526 */
+                                     cs->rs.proposal_block);    /* :1521 */
         if (rc != CMT_OK) {
-            /* :1527 — panic("precommit step; +2/3 prevoted for an invalid
+            /* :1522 — panic("precommit step; +2/3 prevoted for an invalid
              * block"). CLASS: CMT_FAULT, and it is ARGUABLE — a byzantine
              * two thirds of the validator set can drive the node here with
              * a block this node itself considers invalid, so a peer's
@@ -2684,49 +2684,49 @@ int cmt_cs_enter_precommit(cmt_cs_t *cs, int64_t height, int32_t round)
                                    "invalid block");
             return CMT_FAULT;
         }
-        /* :1530-1532 — LOCK. Two names now point at one block and one part
+        /* :1525-1527 — LOCK. Two names now point at one block and one part
          * set, exactly as Go's two assignments alias one object. */
-        cs->rs.locked_round       = round;                      /* :1530 */
-        cs->rs.locked_block       = cs->rs.proposal_block;      /* :1531 */
-        cs->rs.locked_block_parts = cs->rs.proposal_block_parts;/* :1532 */
-        /* :1534-1536 — PublishEventLock, not ported. */
+        cs->rs.locked_round       = round;                      /* :1525 */
+        cs->rs.locked_block       = cs->rs.proposal_block;      /* :1526 */
+        cs->rs.locked_block_parts = cs->rs.proposal_block_parts;/* :1527 */
+        /* :1529-1531 — PublishEventLock, not ported. */
         rc = cmt_cs_sign_add_vote(cs, CMT_PB_MSG_TYPE_PRECOMMIT,
                                   block_id.hash, block_id.hash_len,
                                   &block_id.part_set_header,
-                                  cs->rs.proposal_block);       /* :1538 */
+                                  cs->rs.proposal_block);       /* :1533 */
         if (rc == CMT_FAULT) {
             return rc;
         }
-        return cs_enter_precommit_done(cs, round);              /* :1539 */
+        return cs_enter_precommit_done(cs, round);              /* :1534 */
     }
 
-    /* :1542-1544 — a polka for a block we do not have: unlock, arrange to
+    /* :1537-1539 — a polka for a block we do not have: unlock, arrange to
      * fetch it, precommit nil. */
-    cs->rs.locked_round       = -1;                             /* :1547 */
-    cs->rs.locked_block       = NULL;                           /* :1548 */
-    cs->rs.locked_block_parts = NULL;                           /* :1549 */
+    cs->rs.locked_round       = -1;                             /* :1542 */
+    cs->rs.locked_block       = NULL;                           /* :1543 */
+    cs->rs.locked_block_parts = NULL;                           /* :1544 */
 
     if (!cmt_part_set_has_header(cs->rs.proposal_block_parts,
-                                 &block_id.part_set_header)) {  /* :1551 */
-        cs->rs.proposal_block       = NULL;                     /* :1552 */
+                                 &block_id.part_set_header)) {  /* :1546 */
+        cs->rs.proposal_block       = NULL;                     /* :1547 */
         cs->rs.proposal_block_parts = NULL;   /* clear the name first     */
         rc = cs_new_part_set_from_header(cs, &block_id.part_set_header,
                                          &cs->rs.proposal_block_parts);
-        if (rc == CMT_FAULT) {                                  /* :1553 */
+        if (rc == CMT_FAULT) {                                  /* :1548 */
             return rc;
         }
         if (rc != CMT_OK) {
             /* The bound refused it. Both names stay NULL and the step
-             * runs to its end — the nil precommit of :1560 below is
+             * runs to its end — the nil precommit of :1555 below is
              * exactly what the reference signs here. */
             cs_part_set_bound_refused("enterPrecommit",
                                       &block_id.part_set_header);
             cs->rs.proposal_block_parts = NULL;
         }
     }
-    /* :1556-1558 — PublishEventUnlock, not ported. */
+    /* :1551-1553 — PublishEventUnlock, not ported. */
     rc = cmt_cs_sign_add_vote(cs, CMT_PB_MSG_TYPE_PRECOMMIT, NULL, 0u,
-                              &psh_nil, NULL);                  /* :1560 */
+                              &psh_nil, NULL);                  /* :1555 */
     if (rc == CMT_FAULT) {
         return rc;
     }
@@ -2743,17 +2743,17 @@ int cmt_cs_enter_precommit_wait(cmt_cs_t *cs, int64_t height, int32_t round)
     }
     if (cs->rs.height != height || round < cs->rs.round ||
         (cs->rs.round == round && cs->rs.triggered_timeout_precommit)) {
-        return CMT_OK;                                      /* :1567-1574 */
+        return CMT_OK;                                      /* :1562-1569 */
     }
     has_any = false;
     rc = cmt_vote_set_has_two_thirds_any(
-            cmt_hvs_precommits(cs->rs.votes, round), &has_any);  /* :1576 */
+            cmt_hvs_precommits(cs->rs.votes, round), &has_any);  /* :1571 */
     if (rc != CMT_OK) {
         return rc;
     }
     if (!has_any) {
-        /* :1577-1580 — panic. NODE-LOCAL → CMT_FAULT, for the same reason
-         * as :1418: every caller (:2351, :2355) has just established
+        /* :1572-1575 — panic. NODE-LOCAL → CMT_FAULT, for the same reason
+         * as :1413: every caller (:2344, :2348) has just established
          * +2/3-any on this same precommit set. */
         QGP_LOG_ERROR(LOG_TAG,
                       "entering precommit wait step (%lld/%d), but "
@@ -2761,43 +2761,43 @@ int cmt_cs_enter_precommit_wait(cmt_cs_t *cs, int64_t height, int32_t round)
                       (long long)height, (int)round);
         return CMT_FAULT;
     }
-    /* :1592 — wait for more precommits, then enterNewRound. */
+    /* :1587 — wait for more precommits, then enterNewRound. */
     rc = cmt_cs_schedule_timeout(cs, cmt_config_precommit(cs->config, round),
                                  height, round,
                                  CMT_ROUND_STEP_PRECOMMIT_WAIT);
     if (rc != CMT_OK) {
         return rc;
     }
-    /* The defer of :1585-1589. Note it does NOT call updateRoundStep. */
-    cs->rs.triggered_timeout_precommit = true;                  /* :1587 */
-    return cs_new_step(cs);                                     /* :1588 */
+    /* The defer of :1580-1584. Note it does NOT call updateRoundStep. */
+    cs->rs.triggered_timeout_precommit = true;                  /* :1582 */
+    return cs_new_step(cs);                                     /* :1583 */
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * state.go:1596-1810 — enterCommit, tryFinalizeCommit, finalizeCommit
+ * state.go:1591-1805 — enterCommit, tryFinalizeCommit, finalizeCommit
  * ══════════════════════════════════════════════════════════════════════ */
 
-/** The `defer` of :1609-1619, which ends in tryFinalizeCommit. */
+/** The `defer` of :1604-1614, which ends in tryFinalizeCommit. */
 static int cs_enter_commit_done(cmt_cs_t *cs, int64_t height,
                                 int32_t commit_round)
 {
     cmt_time_t now;
     int        rc;
 
-    /* :1611-1612 — cs.Round is deliberately unchanged; commitRound names
+    /* :1606-1607 — cs.Round is deliberately unchanged; commitRound names
      * the precommit set that carried the decision. */
-    cs_update_round_step(cs, cs->rs.round, CMT_ROUND_STEP_COMMIT);/* :1612 */
-    cs->rs.commit_round = commit_round;                          /* :1613 */
-    rc = cs->host.now(cs->host_ctx, &now);   /* :1614 — CLOCK SITE 4/5    */
+    cs_update_round_step(cs, cs->rs.round, CMT_ROUND_STEP_COMMIT);/* :1607 */
+    cs->rs.commit_round = commit_round;                          /* :1608 */
+    rc = cs->host.now(cs->host_ctx, &now);   /* :1609 — CLOCK SITE 4/5    */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
-    cs->rs.commit_time = now;                                    /* :1614 */
-    rc = cs_new_step(cs);                                        /* :1615 */
+    cs->rs.commit_time = now;                                    /* :1609 */
+    rc = cs_new_step(cs);                                        /* :1610 */
     if (rc != CMT_OK) {
         return rc;
     }
-    return cmt_cs_try_finalize_commit(cs, height);               /* :1618 */
+    return cmt_cs_try_finalize_commit(cs, height);               /* :1613 */
 }
 
 int cmt_cs_enter_commit(cmt_cs_t *cs, int64_t height, int32_t commit_round)
@@ -2810,57 +2810,57 @@ int cmt_cs_enter_commit(cmt_cs_t *cs, int64_t height, int32_t commit_round)
         return CMT_FAULT;
     }
     if (cs->rs.height != height || CMT_ROUND_STEP_COMMIT <= cs->rs.step) {
-        return CMT_OK;                                      /* :1599-1605 */
+        return CMT_OK;                                      /* :1594-1600 */
     }
 
     ok = false;
     rc = cmt_vote_set_two_thirds_majority(
             cmt_hvs_precommits(cs->rs.votes, commit_round), &block_id, &ok);
-    if (rc != CMT_OK) {                                          /* :1621 */
+    if (rc != CMT_OK) {                                          /* :1616 */
         return rc;
     }
     if (!ok) {
-        /* :1623 — panic("RunActionCommit() expects +2/3 precommits").
-         * NODE-LOCAL → CMT_FAULT: the only caller (:2346) enters here
+        /* :1618 — panic("RunActionCommit() expects +2/3 precommits").
+         * NODE-LOCAL → CMT_FAULT: the only caller (:2339) enters here
          * having just read the same majority off the same set. */
         QGP_LOG_ERROR(LOG_TAG, "enterCommit expects +2/3 precommits");
         return CMT_FAULT;
     }
 
-    /* :1626-1633 — the Locked* names no longer matter; if they name the
+    /* :1621-1628 — the Locked* names no longer matter; if they name the
      * committed block, move them onto ProposalBlock. This is the alias at
-     * :1631-1632: two names, one slot. */
+     * :1626-1627: two names, one slot. */
     if (cmt_block_hashes_to(cs->rs.locked_block, block_id.hash,
-                            block_id.hash_len)) {                /* :1629 */
-        cs->rs.proposal_block       = cs->rs.locked_block;       /* :1631 */
-        cs->rs.proposal_block_parts = cs->rs.locked_block_parts; /* :1632 */
+                            block_id.hash_len)) {                /* :1624 */
+        cs->rs.proposal_block       = cs->rs.locked_block;       /* :1626 */
+        cs->rs.proposal_block_parts = cs->rs.locked_block_parts; /* :1627 */
     }
 
     if (!cmt_block_hashes_to(cs->rs.proposal_block, block_id.hash,
-                             block_id.hash_len)) {               /* :1636 */
+                             block_id.hash_len)) {               /* :1631 */
         if (!cmt_part_set_has_header(cs->rs.proposal_block_parts,
-                                     &block_id.part_set_header)) {/* :1637 */
-            cs->rs.proposal_block       = NULL;                  /* :1646 */
+                                     &block_id.part_set_header)) {/* :1632 */
+            cs->rs.proposal_block       = NULL;                  /* :1641 */
             cs->rs.proposal_block_parts = NULL;   /* clear before taking  */
             rc = cs_new_part_set_from_header(cs, &block_id.part_set_header,
                                              &cs->rs.proposal_block_parts);
-            if (rc == CMT_FAULT) {                               /* :1647 */
+            if (rc == CMT_FAULT) {                               /* :1642 */
                 return rc;
             }
             if (rc != CMT_OK) {
                 /* The bound refused it. Both names stay NULL and the
                  * `defer` below still runs: step Commit, commit_round
-                 * set, tryFinalizeCommit — which will decline at :1672
+                 * set, tryFinalizeCommit — which will decline at :1667
                  * because we have no block, exactly as it declines for a
                  * commit whose block has not arrived. */
                 cs_part_set_bound_refused("enterCommit",
                                           &block_id.part_set_header);
                 cs->rs.proposal_block_parts = NULL;
             }
-            /* :1649-1651 — PublishEventValidBlock, not ported. */
+            /* :1644-1646 — PublishEventValidBlock, not ported. */
             if (cs->listener.on_valid_block != NULL) {
                 cs->listener.on_valid_block(cs->listener_ctx,
-                                            &cs->rs);            /* :1653 */
+                                            &cs->rs);            /* :1648 */
             }
         }
     }
@@ -2877,8 +2877,8 @@ int cmt_cs_try_finalize_commit(cmt_cs_t *cs, int64_t height)
         return CMT_FAULT;
     }
     if (cs->rs.height != height) {
-        /* :1663 — panic("tryFinalizeCommit() cs.Height vs height").
-         * NODE-LOCAL → CMT_FAULT: both callers (:1618, :2064) pass a
+        /* :1658 — panic("tryFinalizeCommit() cs.Height vs height").
+         * NODE-LOCAL → CMT_FAULT: both callers (:1613, :2059) pass a
          * height they read out of this same state machine. */
         QGP_LOG_ERROR(LOG_TAG, "tryFinalizeCommit() cs.Height %lld vs "
                                "height %lld",
@@ -2889,21 +2889,21 @@ int cmt_cs_try_finalize_commit(cmt_cs_t *cs, int64_t height)
     ok = false;
     rc = cmt_vote_set_two_thirds_majority(
             cmt_hvs_precommits(cs->rs.votes, cs->rs.commit_round),
-            &block_id, &ok);                                     /* :1666 */
+            &block_id, &ok);                                     /* :1661 */
     if (rc != CMT_OK) {
         return rc;
     }
-    if (!ok || block_id.hash_len == 0u) {                        /* :1667 */
+    if (!ok || block_id.hash_len == 0u) {                        /* :1662 */
         QGP_LOG_ERROR(LOG_TAG, "failed attempt to finalize commit; there "
                                "was no +2/3 majority or +2/3 was for nil");
-        return CMT_OK;                                           /* :1669 */
+        return CMT_OK;                                           /* :1664 */
     }
     if (!cmt_block_hashes_to(cs->rs.proposal_block, block_id.hash,
-                             block_id.hash_len)) {               /* :1672 */
-        /* :1675-1680 — we do not have the block yet; wait for it. */
+                             block_id.hash_len)) {               /* :1667 */
+        /* :1670-1675 — we do not have the block yet; wait for it. */
         return CMT_OK;
     }
-    return cmt_cs_finalize_commit(cs, height);                   /* :1683 */
+    return cmt_cs_finalize_commit(cs, height);                   /* :1678 */
 }
 
 int cmt_cs_finalize_commit(cmt_cs_t *cs, int64_t height)
@@ -2928,29 +2928,29 @@ int cmt_cs_finalize_commit(cmt_cs_t *cs, int64_t height)
         return CMT_FAULT;
     }
     if (cs->rs.height != height || cs->rs.step != CMT_ROUND_STEP_COMMIT) {
-        return CMT_OK;                                      /* :1690-1696 */
+        return CMT_OK;                                      /* :1685-1691 */
     }
-    /* :1698 — calculatePrevoteMessageDelayMetrics, not ported. */
+    /* :1693 — calculatePrevoteMessageDelayMetrics, not ported. */
 
     ok = false;
     rc = cmt_vote_set_two_thirds_majority(
             cmt_hvs_precommits(cs->rs.votes, cs->rs.commit_round),
-            &block_id, &ok);                                     /* :1700 */
+            &block_id, &ok);                                     /* :1695 */
     if (rc != CMT_OK) {
         return rc;
     }
-    block       = cs->rs.proposal_block;                         /* :1701 */
+    block       = cs->rs.proposal_block;                         /* :1696 */
     block_parts = cs->rs.proposal_block_parts;
 
     if (!ok) {
-        /* :1704 — panic. NODE-LOCAL → CMT_FAULT: tryFinalizeCommit read
-         * the same majority off the same set two calls ago (:1666). */
+        /* :1699 — panic. NODE-LOCAL → CMT_FAULT: tryFinalizeCommit read
+         * the same majority off the same set two calls ago (:1661). */
         QGP_LOG_ERROR(LOG_TAG, "cannot finalize commit; commit does not "
                                "have 2/3 majority");
         return CMT_FAULT;
     }
     if (!cmt_part_set_has_header(block_parts, &block_id.part_set_header)) {
-        /* :1707 — panic("expected ProposalBlockParts header to be commit
+        /* :1702 — panic("expected ProposalBlockParts header to be commit
          * header"). CMT_FAULT, IDENTICAL TO THE REFERENCE, and classed
          * with R2C-3 ("the node may stop"), not as node-local.
          *
@@ -2964,11 +2964,11 @@ int cmt_cs_finalize_commit(cmt_cs_t *cs, int64_t height)
          * (the header hashes FIELDS, the part set hashes BYTES, and the
          * proto3 decoder accepts either field order — cmt_pb_store.c
          * :2234-2237). The unlocked honest nodes prevote (H, psh2); this
-         * node relocks at :1509-1518, which sets LockedRound but does NOT
+         * node relocks at :1504-1513, which sets LockedRound but does NOT
          * refresh LockedBlockParts, so it still holds psh1's parts and
          * precommits (H, psh2). On +2/3, enterCommit ALIASES those psh1
-         * parts onto ProposalBlockParts (:1629-1632) and its :1636 test
-         * is false, so :1637-1647 never replaces them — and this line
+         * parts onto ProposalBlockParts (:1624-1627) and its :1631 test
+         * is false, so :1632-1642 never replaces them — and this line
          * fires. One byzantine proposer plus one node locked alone is
          * enough; the others commit and this node stops. The reference
          * halts here for the same input, which is why the class is the
@@ -2978,29 +2978,29 @@ int cmt_cs_finalize_commit(cmt_cs_t *cs, int64_t height)
         return CMT_FAULT;
     }
     if (!cmt_block_hashes_to(block, block_id.hash, block_id.hash_len)) {
-        /* :1710 — panic. NODE-LOCAL → CMT_FAULT: tryFinalizeCommit
-         * checked exactly this at :1672 before calling. */
+        /* :1705 — panic. NODE-LOCAL → CMT_FAULT: tryFinalizeCommit
+         * checked exactly this at :1667 before calling. */
         QGP_LOG_ERROR(LOG_TAG, "cannot finalize commit; proposal block does "
                                "not hash to commit hash");
         return CMT_FAULT;
     }
 
-    rc = cs->host.validate_block(cs->host_ctx, &cs->state, block);/* :1713 */
+    rc = cs->host.validate_block(cs->host_ctx, &cs->state, block);/* :1708 */
     if (rc != CMT_OK) {
-        /* :1714 — panic("+2/3 committed an invalid block"). CLASS:
-         * CMT_FAULT, ARGUABLE for the same reason as :1527 — a byzantine
+        /* :1709 — panic("+2/3 committed an invalid block"). CLASS:
+         * CMT_FAULT, ARGUABLE for the same reason as :1522 — a byzantine
          * +2/3 is peer input that reaches it. The reference halts because
          * the alternative is applying a block this node judges invalid.
-         * Settled with the operator on 2026-09-10 together with :1527: the
+         * Settled with the operator on 2026-09-10 together with :1522: the
          * node may stop. FAULT stands. */
         QGP_LOG_ERROR(LOG_TAG, "+2/3 committed an invalid block");
         return CMT_FAULT;
     }
-    /* :1717 — calculatePrecommitMessageDelayMetrics, not ported. */
+    /* :1712 — calculatePrecommitMessageDelayMetrics, not ported. */
 
-    CMT_FAIL_POINT();                                            /* :1727 */
+    CMT_FAIL_POINT();                                            /* :1722 */
 
-    rc = cs->host.bs_height(cs->host_ctx, &store_height);        /* :1730 */
+    rc = cs->host.bs_height(cs->host_ctx, &store_height);        /* :1725 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
@@ -3015,7 +3015,7 @@ int cmt_cs_finalize_commit(cmt_cs_t *cs, int64_t height)
     plain_commit    = NULL;
     plain_sigs      = NULL;
 
-    if (store_height < block->header.height) {                   /* :1730 */
+    if (store_height < block->header.height) {                   /* :1725 */
         seen_ext_commit = (cmt_extended_commit_t *)calloc(
                 1u, sizeof(*seen_ext_commit));
         sigs = (cmt_extended_commit_sig_t *)calloc(
@@ -3028,7 +3028,7 @@ int cmt_cs_finalize_commit(cmt_cs_t *cs, int64_t height)
         rc = cmt_vote_set_make_extended_commit(
                 cmt_hvs_precommits(cs->rs.votes, cs->rs.commit_round),
                 cs->state.consensus_params.abci, sigs, n_sigs,
-                seen_ext_commit);                                /* :1733 */
+                seen_ext_commit);                                /* :1728 */
         if (rc != CMT_OK) {
             free(seen_ext_commit);
             free(sigs);
@@ -3037,7 +3037,7 @@ int cmt_cs_finalize_commit(cmt_cs_t *cs, int64_t height)
         ext_enabled = false;
         rc = cmt_abci_params_vote_extensions_enabled(
                 cs->state.consensus_params.abci, block->header.height,
-                &ext_enabled);                                   /* :1734 */
+                &ext_enabled);                                   /* :1729 */
         if (rc != CMT_OK) {
             free(seen_ext_commit);
             free(sigs);
@@ -3046,7 +3046,7 @@ int cmt_cs_finalize_commit(cmt_cs_t *cs, int64_t height)
         if (ext_enabled) {
             rc = cs->host.bs_save_block_with_extended_commit(
                     cs->host_ctx, block, block_parts, seen_ext_commit);
-        } else {                                                 /* :1735 */
+        } else {                                                 /* :1730 */
             plain_commit = (cmt_commit_t *)calloc(1u, sizeof(*plain_commit));
             plain_sigs   = (cmt_commit_sig_t *)calloc(
                     n_sigs == 0u ? 1u : n_sigs, sizeof(*plain_sigs));
@@ -3058,10 +3058,10 @@ int cmt_cs_finalize_commit(cmt_cs_t *cs, int64_t height)
                 return CMT_FAULT;
             }
             rc = cmt_extended_commit_to_commit(seen_ext_commit, plain_sigs,
-                                               n_sigs, plain_commit);/* :1737 */
+                                               n_sigs, plain_commit);/* :1732 */
             if (rc == CMT_OK) {
                 rc = cs->host.bs_save_block(cs->host_ctx, block, block_parts,
-                                            plain_commit);       /* :1737 */
+                                            plain_commit);       /* :1732 */
             }
         }
         free(seen_ext_commit);
@@ -3077,29 +3077,29 @@ int cmt_cs_finalize_commit(cmt_cs_t *cs, int64_t height)
             return CMT_FAULT;
         }
     }
-    /* :1739-1742 — already stored; this is the replay path. */
+    /* :1734-1737 — already stored; this is the replay path. */
 
-    CMT_FAIL_POINT();                                            /* :1744 */
+    CMT_FAIL_POINT();                                            /* :1739 */
 
-    /* :1746-1765 — EndHeight, and the reference's long comment on why it
+    /* :1741-1760 — EndHeight, and the reference's long comment on why it
      * comes AFTER the block is stored. */
-    rc = cs_wal_write_end_height(cs, height);                    /* :1760 */
+    rc = cs_wal_write_end_height(cs, height);                    /* :1755 */
     if (rc != CMT_OK) {
         return rc;
     }
 
-    CMT_FAIL_POINT();                                            /* :1767 */
+    CMT_FAIL_POINT();                                            /* :1762 */
 
-    rc = cmt_state_copy(&cs->state, &cs->state_scratch);         /* :1770 */
+    rc = cmt_state_copy(&cs->state, &cs->state_scratch);         /* :1765 */
     if (rc != CMT_OK) {
         return rc;
     }
 
-    rc = cmt_block_hash(block, block_hash);                      /* :1778 */
+    rc = cmt_block_hash(block, block_hash);                      /* :1773 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
-    rc = cmt_part_set_header(block_parts, &psh);                 /* :1779 */
+    rc = cmt_part_set_header(block_parts, &psh);                 /* :1774 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
@@ -3109,36 +3109,36 @@ int cmt_cs_finalize_commit(cmt_cs_t *cs, int64_t height)
     apply_block_id.part_set_header = psh;
 
     rc = cs->host.apply_verified_block(cs->host_ctx, &apply_block_id, block,
-                                       &cs->state_scratch);      /* :1775 */
+                                       &cs->state_scratch);      /* :1770 */
     if (rc != CMT_OK) {
-        /* :1783-1785 — panic("failed to apply block"). NODE-LOCAL →
-         * CMT_FAULT: the block was validated at :1713 and the failure is
+        /* :1778-1780 — panic("failed to apply block"). NODE-LOCAL →
+         * CMT_FAULT: the block was validated at :1708 and the failure is
          * the local application's. */
         QGP_LOG_ERROR(LOG_TAG, "failed to apply block at height %lld",
                       (long long)height);
         return CMT_FAULT;
     }
 
-    CMT_FAIL_POINT();                                            /* :1787 */
+    CMT_FAIL_POINT();                                            /* :1782 */
 
-    /* :1790 — recordMetrics, not ported (see cmt_cs.h). */
+    /* :1785 — recordMetrics, not ported (see cmt_cs.h). */
 
-    rc = cmt_cs_update_to_state(cs, &cs->state_scratch);         /* :1793 */
+    rc = cmt_cs_update_to_state(cs, &cs->state_scratch);         /* :1788 */
     if (rc != CMT_OK) {
         return rc;
     }
 
-    CMT_FAIL_POINT();                                            /* :1795 */
+    CMT_FAIL_POINT();                                            /* :1790 */
 
-    if (cmt_cs_update_priv_validator_pub_key(cs) != CMT_OK) {    /* :1798 */
+    if (cmt_cs_update_priv_validator_pub_key(cs) != CMT_OK) {    /* :1793 */
         QGP_LOG_ERROR(LOG_TAG, "failed to get private validator pubkey");
     }
-    /* :1802-1804 — cs.StartTime is already set; schedule round 0. */
-    return cmt_cs_schedule_round0(cs, &cs->rs);                  /* :1804 */
+    /* :1797-1799 — cs.StartTime is already set; schedule round 0. */
+    return cmt_cs_schedule_round0(cs, &cs->rs);                  /* :1799 */
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * state.go:1903-2066 — the proposal and its block parts
+ * state.go:1898-2061 — the proposal and its block parts
  * ══════════════════════════════════════════════════════════════════════ */
 
 int cmt_cs_default_set_proposal(cmt_cs_t *cs, const cmt_proposal_t *proposal)
@@ -3153,25 +3153,25 @@ int cmt_cs_default_set_proposal(cmt_cs_t *cs, const cmt_proposal_t *proposal)
     if (cs == NULL || proposal == NULL) {
         return CMT_FAULT;
     }
-    if (cs->rs.proposal != NULL) {                               /* :1906 */
-        return CMT_OK;                                           /* :1907 */
+    if (cs->rs.proposal != NULL) {                               /* :1901 */
+        return CMT_OK;                                           /* :1902 */
     }
     if (proposal->height != cs->rs.height ||
-        proposal->round != cs->rs.round) {                       /* :1911 */
-        return CMT_OK;                                           /* :1912 */
+        proposal->round != cs->rs.round) {                       /* :1906 */
+        return CMT_OK;                                           /* :1907 */
     }
     if (proposal->pol_round < -1 ||
         (proposal->pol_round >= 0 &&
-         proposal->pol_round >= proposal->round)) {              /* :1916 */
-        return CMT_REJECT;               /* :1918 ErrInvalidProposalPOLRound */
+         proposal->pol_round >= proposal->round)) {              /* :1911 */
+        return CMT_REJECT;               /* :1913 ErrInvalidProposalPOLRound */
     }
 
-    /* :1921 `p := proposal.ToProto()` is the identity here: this tree's
-     * cmt_proposal_t IS cmt_pb_proposal_t (cmt_proposal.h:78), so :1939's
+    /* :1916 `p := proposal.ToProto()` is the identity here: this tree's
+     * cmt_proposal_t IS cmt_pb_proposal_t (cmt_proposal.h:78), so :1934's
      * `proposal.Signature = p.Signature` is a no-op round trip. */
-    rc = cmt_validator_set_get_proposer(cs->rs.validators, &proposer);/* :1923 */
+    rc = cmt_validator_set_get_proposer(cs->rs.validators, &proposer);/* :1918 */
     if (rc != CMT_OK) {
-        /* GetProposer REJECTs an empty set where :1923 nil-dereferences.
+        /* GetProposer REJECTs an empty set where :1918 nil-dereferences.
          * NODE-LOCAL → CMT_FAULT: the validator set is our own state. */
         return CMT_FAULT;
     }
@@ -3186,7 +3186,7 @@ int cmt_cs_default_set_proposal(cmt_cs_t *cs, const cmt_proposal_t *proposal)
     rc = cmt_proposal_sign_bytes(cs->state.chain_id, cs->state.chain_id_len,
                                  proposal, sign_bytes,
                                  (size_t)CMT_PROPOSAL_SIGN_BYTES_MAX,
-                                 &sb_len);                       /* :1925 */
+                                 &sb_len);                       /* :1920 */
     if (rc != CMT_OK) {
         free(sign_bytes);
         return rc;
@@ -3197,39 +3197,39 @@ int cmt_cs_default_set_proposal(cmt_cs_t *cs, const cmt_proposal_t *proposal)
     if (proposal->signature_len == 0u ||
         proposal->signature_len > (size_t)CMT_PB_SIG_MAX) {
         free(sign_bytes);
-        return CMT_REJECT;              /* :1927 ErrInvalidProposalSignature */
+        return CMT_REJECT;              /* :1922 ErrInvalidProposalSignature */
     }
     if (qgp_dsa87_verify(proposal->signature, proposal->signature_len,
                          sign_bytes, sb_len,
-                         proposer.pub_key.key) != 0) {           /* :1924 */
+                         proposer.pub_key.key) != 0) {           /* :1919 */
         free(sign_bytes);
-        return CMT_REJECT;              /* :1927 ErrInvalidProposalSignature */
+        return CMT_REJECT;              /* :1922 ErrInvalidProposalSignature */
     }
     free(sign_bytes);
 
-    max_bytes = cs->state.consensus_params.block.max_bytes;      /* :1931 */
-    if (max_bytes == -1) {                                       /* :1932 */
-        max_bytes = (int64_t)CMT_MAX_BLOCK_SIZE_BYTES;           /* :1933 */
+    max_bytes = cs->state.consensus_params.block.max_bytes;      /* :1926 */
+    if (max_bytes == -1) {                                       /* :1927 */
+        max_bytes = (int64_t)CMT_MAX_BLOCK_SIZE_BYTES;           /* :1928 */
     }
-    /* :1935 — (maxBytes-1)/BlockPartSizeBytes + 1 */
+    /* :1930 — (maxBytes-1)/BlockPartSizeBytes + 1 */
     max_parts = (max_bytes - 1) / (int64_t)CMT_BLOCK_PART_SIZE_BYTES + 1;
     if ((int64_t)proposal->block_id.part_set_header.total > max_parts) {
-        return CMT_REJECT;                  /* :1936 ErrProposalTooManyParts */
+        return CMT_REJECT;                  /* :1931 ErrProposalTooManyParts */
     }
 
-    /* :1939-1940 — `proposal.Signature = p.Signature; cs.Proposal =
+    /* :1934-1935 — `proposal.Signature = p.Signature; cs.Proposal =
      * proposal`. The first is the identity here (see above); the second
      * stores a POINTER in Go to an object the garbage collector keeps.
      * The message this proposal arrived in is freed as soon as handleMsg
      * returns, so it is COPIED into storage `cs` owns and the round state
      * names that (cmt_cs.h, `proposal_storage`). */
     cs->proposal_storage = *proposal;
-    cs->rs.proposal      = &cs->proposal_storage;                /* :1940 */
-    if (cs->rs.proposal_block_parts == NULL) {                   /* :1944 */
+    cs->rs.proposal      = &cs->proposal_storage;                /* :1935 */
+    if (cs->rs.proposal_block_parts == NULL) {                   /* :1939 */
         rc = cs_new_part_set_from_header(cs,
                                          &proposal->block_id.part_set_header,
                                          &cs->rs.proposal_block_parts);
-        if (rc != CMT_OK) {                                      /* :1945 */
+        if (rc != CMT_OK) {                                      /* :1940 */
             if (rc != CMT_FAULT) {
                 /* The bound refused the header. This site is the only one
                  * of the four that can answer the sender: a proposal is a
@@ -3272,40 +3272,40 @@ int cmt_cs_add_proposal_block_part(cmt_cs_t *cs,
         *out_added = false;
     }
 
-    if (cs->rs.height != msg->height) {                          /* :1959 */
-        return CMT_OK;                                           /* :1962 */
+    if (cs->rs.height != msg->height) {                          /* :1954 */
+        return CMT_OK;                                           /* :1957 */
     }
-    if (cs->rs.proposal_block_parts == NULL) {                   /* :1966 */
-        /* :1968-1969 — a part from a round we have left; not a bad peer. */
-        return CMT_OK;                                           /* :1977 */
+    if (cs->rs.proposal_block_parts == NULL) {                   /* :1961 */
+        /* :1963-1964 — a part from a round we have left; not a bad peer. */
+        return CMT_OK;                                           /* :1972 */
     }
 
     rc = cmt_part_set_add_part(cs->rs.proposal_block_parts, &msg->part,
-                               &added);                          /* :1980 */
+                               &added);                          /* :1975 */
     if (out_added != NULL) {
         *out_added = added;
     }
     if (rc != CMT_OK) {
-        return rc;                                           /* :1981-1986 */
+        return rc;                                           /* :1976-1981 */
     }
     if (!added) {
-        /* :1989-1993 — a duplicate part; a metric and nothing else. */
+        /* :1984-1988 — a duplicate part; a metric and nothing else. */
         return CMT_OK;
     }
 
-    max_bytes = cs->state.consensus_params.block.max_bytes;      /* :1995 */
-    if (max_bytes == -1) {                                       /* :1996 */
-        max_bytes = (int64_t)CMT_MAX_BLOCK_SIZE_BYTES;           /* :1997 */
+    max_bytes = cs->state.consensus_params.block.max_bytes;      /* :1990 */
+    if (max_bytes == -1) {                                       /* :1991 */
+        max_bytes = (int64_t)CMT_MAX_BLOCK_SIZE_BYTES;           /* :1992 */
     }
     if (cmt_part_set_byte_size(cs->rs.proposal_block_parts) > max_bytes) {
-        return CMT_REJECT;                                   /* :1999-2003 */
+        return CMT_REJECT;                                   /* :1994-1998 */
     }
 
-    if (!cmt_part_set_is_complete(cs->rs.proposal_block_parts)) {/* :2004 */
+    if (!cmt_part_set_is_complete(cs->rs.proposal_block_parts)) {/* :1999 */
         return CMT_OK;
     }
 
-    /* :2005-2019 — the complete block. Go reads the parts out, unmarshals
+    /* :2000-2014 — the complete block. Go reads the parts out, unmarshals
      * the proto and runs BlockFromProto; this tree has no wire decoder for
      * a Block (cmt_pb.h:1043), so the three steps are the host's
      * `decode_block` row (cmt_cs.h). */
@@ -3324,7 +3324,7 @@ int cmt_cs_add_proposal_block_part(cmt_cs_t *cs,
     }
     rc = cmt_part_set_get_reader(cs->rs.proposal_block_parts, &reader);
     if (rc != CMT_OK) {
-        return rc;                                           /* :2005    */
+        return rc;                                           /* :2000    */
     }
     total_read = 0u;
     for (;;) {
@@ -3333,7 +3333,7 @@ int cmt_cs_add_proposal_block_part(cmt_cs_t *cs,
 
         if (total_read == buf_cap) {
             /* The host's buffer is FULL. That is not yet a refusal:
-             * :1999-2003 refuses a block whose ByteSize is `> maxBytes`,
+             * :1994-1998 refuses a block whose ByteSize is `> maxBytes`,
              * so a block of EXACTLY maxBytes is accepted, and a host that
              * sizes the buffer at MaxBytes (cmt_cs.h) must accept the same
              * one. Probe ONE byte past the end to tell the two apart —
@@ -3350,14 +3350,14 @@ int cmt_cs_add_proposal_block_part(cmt_cs_t *cs,
                 break;                      /* ended on the boundary */
             }
             if (rc != CMT_OK) {
-                return rc;                                   /* :2006-2008 */
+                return rc;                                   /* :2001-2003 */
             }
             if (n == 0u) {
                 break;
             }
             /* There really is more block than the host sized for.
              * PEER-REACHABLE → CMT_REJECT: the parts came from the wire,
-             * and :1999-2003 refuses the same excess one layer up. */
+             * and :1994-1998 refuses the same excess one layer up. */
             return CMT_REJECT;
         }
         rc = cmt_part_set_reader_read(&reader, buf + total_read,
@@ -3367,7 +3367,7 @@ int cmt_cs_add_proposal_block_part(cmt_cs_t *cs,
             break;
         }
         if (rc != CMT_OK) {
-            return rc;                                       /* :2006-2008 */
+            return rc;                                       /* :2001-2003 */
         }
         if (n == 0u) {
             break;
@@ -3385,12 +3385,12 @@ int cmt_cs_add_proposal_block_part(cmt_cs_t *cs,
     }
     rc = cs->host.decode_block(cs->host_ctx, buf, total_read, slot);
     if (rc != CMT_OK) {
-        /* :2011-2019 — proto.Unmarshal and BlockFromProto both return
+        /* :2006-2014 — proto.Unmarshal and BlockFromProto both return
          * their error to the caller; neither panics. PEER-REACHABLE. */
         return rc;
     }
-    cs->rs.proposal_block = slot;                                /* :2021 */
-    /* :2026-2028 — PublishEventCompleteProposal, not ported. */
+    cs->rs.proposal_block = slot;                                /* :2016 */
+    /* :2021-2023 — PublishEventCompleteProposal, not ported. */
     return CMT_OK;
 }
 
@@ -3405,53 +3405,53 @@ int cmt_cs_handle_complete_proposal(cmt_cs_t *cs, int64_t block_height)
     if (cs == NULL) {
         return CMT_FAULT;
     }
-    prevotes       = cmt_hvs_prevotes(cs->rs.votes, cs->rs.round);/* :2035 */
+    prevotes       = cmt_hvs_prevotes(cs->rs.votes, cs->rs.round);/* :2030 */
     has_two_thirds = false;
     rc = cmt_vote_set_two_thirds_majority(prevotes, &block_id,
-                                          &has_two_thirds);       /* :2036 */
+                                          &has_two_thirds);       /* :2031 */
     if (rc != CMT_OK) {
         return rc;
     }
     if (has_two_thirds && !cmt_block_id_is_zero(&block_id) &&
-        cs->rs.valid_round < cs->rs.round) {                      /* :2037 */
+        cs->rs.valid_round < cs->rs.round) {                      /* :2032 */
         if (cmt_block_hashes_to(cs->rs.proposal_block, block_id.hash,
-                                block_id.hash_len)) {             /* :2038 */
-            /* :2045-2047 — Valid* takes the proposal's block and parts;
+                                block_id.hash_len)) {             /* :2033 */
+            /* :2040-2042 — Valid* takes the proposal's block and parts;
              * two names, one slot, exactly as Go aliases the objects. */
-            cs->rs.valid_round       = cs->rs.round;              /* :2045 */
-            cs->rs.valid_block       = cs->rs.proposal_block;     /* :2046 */
-            cs->rs.valid_block_parts = cs->rs.proposal_block_parts;/* :2047 */
+            cs->rs.valid_round       = cs->rs.round;              /* :2040 */
+            cs->rs.valid_block       = cs->rs.proposal_block;     /* :2041 */
+            cs->rs.valid_block_parts = cs->rs.proposal_block_parts;/* :2042 */
         }
-        /* :2049-2053 — the reference's TODO on accountability. */
+        /* :2044-2048 — the reference's TODO on accountability. */
     }
 
-    if (cs->rs.step <= CMT_ROUND_STEP_PROPOSE) {                  /* :2056 */
+    if (cs->rs.step <= CMT_ROUND_STEP_PROPOSE) {                  /* :2051 */
         complete = false;
-        rc = cmt_cs_is_proposal_complete(cs, &complete);          /* :2056 */
+        rc = cmt_cs_is_proposal_complete(cs, &complete);          /* :2051 */
         if (rc != CMT_OK) {
             return rc;
         }
         if (complete) {
-            rc = cmt_cs_enter_prevote(cs, block_height, cs->rs.round);/* :2058 */
+            rc = cmt_cs_enter_prevote(cs, block_height, cs->rs.round);/* :2053 */
             if (rc == CMT_FAULT) {
                 return rc;
             }
             cs_note_transition_refusal("enterPrevote", rc);
-            if (has_two_thirds) {                                 /* :2059 */
+            if (has_two_thirds) {                                 /* :2054 */
                 return cmt_cs_enter_precommit(cs, block_height,
-                                              cs->rs.round);      /* :2060 */
+                                              cs->rs.round);      /* :2055 */
             }
             return CMT_OK;
         }
     }
-    if (cs->rs.step == CMT_ROUND_STEP_COMMIT) {                   /* :2062 */
-        return cmt_cs_try_finalize_commit(cs, block_height);      /* :2064 */
+    if (cs->rs.step == CMT_ROUND_STEP_COMMIT) {                   /* :2057 */
+        return cmt_cs_try_finalize_commit(cs, block_height);      /* :2059 */
     }
     return CMT_OK;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * state.go:2069-2363 — tryAddVote and addVote
+ * state.go:2064-2356 — tryAddVote and addVote
  * ══════════════════════════════════════════════════════════════════════ */
 
 /** The conflicting-vote pair `addVote` produced, if any. `addVote` reports
@@ -3501,7 +3501,7 @@ int cmt_cs_try_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
      *
      * PACKAGE W4-X (register R3-W3-C2e-4): the arena is picked by
      * `vote->height`, NEVER `cs->rs.height`. This copy runs BEFORE
-     * `cs_add_vote` (below) branches on height (:2137's `vote->height ==
+     * `cs_add_vote` (below) branches on height (:2132's `vote->height ==
      * cs->rs.height - 1` — the LastCommit path), so a height-H vote
      * arriving while the machine is already at H+1 must still land in
      * arena[H&1] here, not arena[(H+1)&1]: picking by `cs->rs.height`
@@ -3525,13 +3525,13 @@ int cmt_cs_try_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
             /* CAPACITY — a refusal the PORT invented: the reference
              * heap-allocates every vote's extension and bounds it only
              * by the reactor's message size (`Vote.ValidateBasic`,
-             * types/vote.go:318-350, bounds `ExtensionSignature` at
+             * types/vote.go:322-354, bounds `ExtensionSignature` at
              * MaxSignatureSize and never `len(Extension)`). The check
              * runs on every queued vote — a peer's, or this node's own
              * re-entering through the internal queue (:4239-4243; the
              * host's `extend_vote` bounds the OWN extension itself and
              * keeps its FAULT) — BEFORE signature verification,
-             * before the extensions-disabled refusal (:2223-2225,
+             * before the extensions-disabled refusal (:2211-2219,
              * below) and before the height discard — so on the
              * umbrella's rule (rev 4) it is PEER-REACHABLE → CMT_REJECT.
              * Before ORCHESTRATOR correction W4-X ORC-2 (the independent
@@ -3542,7 +3542,7 @@ int cmt_cs_try_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
              * same way; sizing the arena for that is the obligation of
              * the season that sets VoteExtensionsEnableHeight (today
              * unset, so every non-empty extension is refused at
-             * :2223-2225 anyway). */
+             * :2211-2219 anyway). */
             QGP_LOG_ERROR(LOG_TAG,
                           "vote extension of %zu bytes does not fit the "
                           "height-%lld arena (%zu of %zu used); refusing "
@@ -3566,7 +3566,7 @@ int cmt_cs_try_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
         return CMT_FAULT;
     }
     added = false;
-    rc = cs_add_vote(cs, vote, peer, &added, conflict);           /* :2070 */
+    rc = cs_add_vote(cs, vote, peer, &added, conflict);           /* :2065 */
     if (out_added != NULL) {
         *out_added = added;
     }
@@ -3576,11 +3576,11 @@ int cmt_cs_try_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
         return CMT_FAULT;
     }
 
-    /* :2072 `if err != nil` — tested FIRST, and REGARDLESS of `added`.
+    /* :2067 `if err != nil` — tested FIRST, and REGARDLESS of `added`.
      * vote_set.go:326 returns `(true, conflicting)` on the peer-maj23
      * path: when a peer has claimed +2/3 for the block the conflicting
-     * vote names, the vote IS added, the transition at :2250-2359 IS run,
-     * and the conflict IS STILL reported to the evidence pool at :2094.
+     * vote names, the vote IS added, the transition at :2243-2352 IS run,
+     * and the conflict IS STILL reported to the evidence pool at :2089.
      * The first version of this function returned on `rc == CMT_OK`
      * before looking at the conflict, and so dropped the evidence report
      * on exactly that path — an equivocating validator whose second vote
@@ -3588,12 +3588,12 @@ int cmt_cs_try_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
      * multi-node byzantine partition test (nodus/tests/
      * test_cmt_byzantine.c), not by reading. The `added` half of Go's
      * `(added, err)` is already in `*out_added`; the `err` half is the
-     * CMT_REJECT below, which the caller logs exactly as :954-962 does. */
-    if (conflict->present) {                                     /* :2077 */
-        if (!cs->priv_validator_pub_key_present) {               /* :2078 */
+     * CMT_REJECT below, which the caller logs exactly as :949-957 does. */
+    if (conflict->present) {                                     /* :2072 */
+        if (!cs->priv_validator_pub_key_present) {               /* :2073 */
             free(conflict);
             free(ext_vote);
-            return CMT_REJECT;                       /* :2079 errPubKeyIsNotSet */
+            return CMT_REJECT;                       /* :2074 errPubKeyIsNotSet */
         }
         if (cs_priv_validator_address(cs, my_addr) != CMT_OK) {
             free(conflict);
@@ -3602,8 +3602,8 @@ int cmt_cs_try_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
         }
         if (vote->validator_address_len == sizeof(my_addr) &&
             memcmp(vote->validator_address, my_addr,
-                   sizeof(my_addr)) == 0) {                      /* :2082 */
-            /* :2083-2090 — a conflicting vote from OURSELVES. The
+                   sizeof(my_addr)) == 0) {                      /* :2077 */
+            /* :2078-2085 — a conflicting vote from OURSELVES. The
              * reference logs "did you unsafe_reset a validator?" and
              * returns the error; it does NOT report itself to the
              * evidence pool. */
@@ -3612,11 +3612,11 @@ int cmt_cs_try_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
                           (long long)vote->height, (int)vote->round);
             free(conflict);
             free(ext_vote);
-            return CMT_REJECT;                                   /* :2090 */
+            return CMT_REJECT;                                   /* :2085 */
         }
         rc = cs->host.report_conflicting_votes(cs->host_ctx,
                                                &conflict->vote_a,
-                                               &conflict->vote_b);/* :2094 */
+                                               &conflict->vote_b);/* :2089 */
         free(conflict);
         free(ext_vote);
         if (rc != CMT_OK) {
@@ -3627,28 +3627,28 @@ int cmt_cs_try_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
             QGP_LOG_ERROR(LOG_TAG, "evidence pool refused conflicting votes");
             return CMT_FAULT;
         }
-        return CMT_REJECT;                                       /* :2101 */
+        return CMT_REJECT;                                       /* :2096 */
     }
     free(conflict);
     free(ext_vote);
     if (rc == CMT_OK) {
-        return CMT_OK;                                           /* :2117 */
+        return CMT_OK;                                           /* :2112 */
     }
-    /* :2102-2114 — every other error is swallowed into a log line and
-     * either nil (:2103, :2105) or ErrAddingVote (:2113). Both leave the
+    /* :2097-2109 — every other error is swallowed into a log line and
+     * either nil (:2098, :2100) or ErrAddingVote (:2108). Both leave the
      * caller in the same place; this port reports the refusal. */
     return CMT_REJECT;
 }
 
 /**
- * The precommit-for-the-previous-height branch, :2137-2168.
+ * The precommit-for-the-previous-height branch, :2132-2163.
  *
  * `conflict` is the SAME sink the same-height branch fills at the bottom
  * of `cs_add_vote`, and it is filled here the same way. The reference
  * gives this branch no special treatment: `cs.LastCommit.AddVote(vote)`
- * (:2144) returns the same `(added, err)` pair, the branch returns it
- * (:2150, :2167), and `tryAddVote` runs the WHOLE of :2072-2094 on it —
- * including `evpool.ReportConflictingVotes` at :2094. Through wave R3 W1
+ * (:2139) returns the same `(added, err)` pair, the branch returns it
+ * (:2145, :2162), and `tryAddVote` runs the WHOLE of :2067-2089 on it —
+ * including `evpool.ReportConflictingVotes` at :2089. Through wave R3 W1
  * this parameter did not exist and the error died in a local, so an
  * equivocation on the PREVIOUS height was never reported to the evidence
  * pool (deviation register R3-AUD-1).
@@ -3662,13 +3662,13 @@ static int cs_add_vote_last_commit(cmt_cs_t *cs, const cmt_vote_t *vote,
     bool               has_all;
     int                rc;
 
-    if (cs->rs.step != CMT_ROUND_STEP_NEW_HEIGHT) {              /* :2138 */
-        /* :2140-2141 — a late precommit for the prior height. */
+    if (cs->rs.step != CMT_ROUND_STEP_NEW_HEIGHT) {              /* :2133 */
+        /* :2135-2136 — a late precommit for the prior height. */
         return CMT_OK;
     }
     if (cs->rs.last_commit == NULL) {
         /* types/vote_set.go:158-160 — `AddVote()` on a nil VoteSet
-         * PANICS, and :2144 calls it without a nil check.
+         * PANICS, and :2139 calls it without a nil check.
          * PEER-REACHABLE → CMT_REJECT: at the initial height LastCommit
          * is nil (:692), and a peer precommit whose height is
          * `cs.Height - 1` reaches this line while the step is still
@@ -3678,7 +3678,7 @@ static int cs_add_vote_last_commit(cmt_cs_t *cs, const cmt_vote_t *vote,
          * equivalent of the reference's crash. */
         return CMT_REJECT;
     }
-    /* Heap: a conflicting vote is ~9.5 KB (the same reason as :2229's). */
+    /* Heap: a conflicting vote is ~9.5 KB (the same reason as :2222's). */
     conflicting = (cmt_vote_t *)calloc(1u, sizeof(*conflicting));
     if (conflicting == NULL) {
         return CMT_FAULT;
@@ -3687,7 +3687,7 @@ static int cs_add_vote_last_commit(cmt_cs_t *cs, const cmt_vote_t *vote,
     err   = CMT_VOTE_SET_ERR_NONE;
     rc = cmt_vote_set_add_vote(cs->rs.last_commit, vote, &added, &err,
                                conflicting);
-    *out_added = added;                                          /* :2144 */
+    *out_added = added;                                          /* :2139 */
     if (err == CMT_VOTE_SET_ERR_CONFLICTING_VOTES && conflict != NULL) {
         /* vote_set.go:236 — NewConflictingVoteError(conflicting, vote):
          * VoteA is the one already in the set, VoteB the caller's. Filled
@@ -3700,31 +3700,31 @@ static int cs_add_vote_last_commit(cmt_cs_t *cs, const cmt_vote_t *vote,
     }
     free(conflicting);
     if (!added) {
-        /* :2145-2151 — not added; a duplicate when there is no error. */
+        /* :2140-2146 — not added; a duplicate when there is no error. */
         return rc;
     }
     if (rc == CMT_FAULT) {
         return rc;
     }
-    /* :2154-2156 — PublishEventVote, not ported. */
+    /* :2149-2151 — PublishEventVote, not ported. */
     if (cs->listener.on_vote != NULL) {
-        cs->listener.on_vote(cs->listener_ctx, vote);            /* :2158 */
+        cs->listener.on_vote(cs->listener_ctx, vote);            /* :2153 */
     }
 
-    if (cs->config->skip_timeout_commit) {                       /* :2161 */
+    if (cs->config->skip_timeout_commit) {                       /* :2156 */
         has_all = false;
         if (cmt_vote_set_has_all(cs->rs.last_commit, &has_all) != CMT_OK) {
             return CMT_FAULT;
         }
         if (has_all) {
-            /* :2164 — every vote is in; go straight to the new round. */
+            /* :2159 — every vote is in; go straight to the new round. */
             return cmt_cs_enter_new_round(cs, cs->rs.height, 0);
         }
     }
-    return rc;                                                   /* :2167 */
+    return rc;                                                   /* :2162 */
 }
 
-/** The vote-extension checks of :2177-2226. */
+/** The vote-extension checks of :2172-2219. */
 static int cs_add_vote_check_extension(cmt_cs_t *cs, const cmt_vote_t *vote,
                                        bool ext_enabled)
 {
@@ -3735,12 +3735,12 @@ static int cs_add_vote_check_extension(cmt_cs_t *cs, const cmt_vote_t *vote,
     bool            is_mine;
     int             rc;
 
-    if (!ext_enabled) {                                          /* :2216 */
-        /* :2223-2225 — extensions are off, so a vote carrying one is
+    if (!ext_enabled) {                                          /* :2211 */
+        /* :2211-2219 — extensions are off, so a vote carrying one is
          * malformed. PEER-REACHABLE → CMT_REJECT (the reference returns
-         * an error here, it does not panic). cometbft@v0.38.26
-         * consensus/state.go:2211-2219 folds the test into the `else if`
-         * — the same rule; this early return already has that shape. */
+         * an error here, it does not panic). The reference tests it in
+         * the `else if` of :2211; this early return has the same
+         * shape. */
         if (vote->extension.len > 0u || vote->extension_signature_len > 0u) {
             return CMT_REJECT;
         }
@@ -3748,24 +3748,24 @@ static int cs_add_vote_check_extension(cmt_cs_t *cs, const cmt_vote_t *vote,
     }
 
     is_mine = false;
-    if (cs->priv_validator_pub_key_present) {                    /* :2185 */
+    if (cs->priv_validator_pub_key_present) {                    /* :2180 */
         if (cs_priv_validator_address(cs, my_addr) != CMT_OK) {
             return CMT_FAULT;
         }
         is_mine = vote->validator_address_len == sizeof(my_addr) &&
                   memcmp(vote->validator_address, my_addr,
-                         sizeof(my_addr)) == 0;                  /* :2191 */
+                         sizeof(my_addr)) == 0;                  /* :2186 */
     }
-    /* :2190-2191 — only a NON-NIL PRECOMMIT from SOMEONE ELSE is checked. */
+    /* :2185-2186 — only a NON-NIL PRECOMMIT from SOMEONE ELSE is checked. */
     if (vote->type != CMT_PB_MSG_TYPE_PRECOMMIT ||
         cmt_block_id_is_zero(&vote->block_id) || is_mine) {
         return CMT_OK;
     }
 
     rc = cmt_validator_set_get_by_index(&cs->state.validators,
-                                        vote->validator_index, &val);/* :2197 */
+                                        vote->validator_index, &val);/* :2192 */
     if (rc != CMT_OK) {
-        /* :2198-2205 — "Peer sent us vote with invalid ValidatorIndex".
+        /* :2193-2200 — "Peer sent us vote with invalid ValidatorIndex".
          * PEER-REACHABLE → CMT_REJECT, which is what the reference does
          * (ErrInvalidVote), and its own TODO says to disconnect. */
         return CMT_REJECT;
@@ -3783,20 +3783,20 @@ static int cs_add_vote_check_extension(cmt_cs_t *cs, const cmt_vote_t *vote,
     }
     rc = cmt_vote_verify_extension(cs->state.chain_id, cs->state.chain_id_len,
                                    vote, val.pub_key.key, scratch,
-                                   scratch_cap);                 /* :2206 */
+                                   scratch_cap);                 /* :2201 */
     free(scratch);
     if (rc != CMT_OK) {
-        return rc;                                               /* :2207 */
+        return rc;                                               /* :2202 */
     }
-    rc = cs->host.verify_vote_extension(cs->host_ctx, vote);     /* :2210 */
-    /* :2211 is a metric. */
+    rc = cs->host.verify_vote_extension(cs->host_ctx, vote);     /* :2205 */
+    /* :2206 is a metric. */
     if (rc != CMT_OK) {
-        return CMT_REJECT;                                       /* :2213 */
+        return CMT_REJECT;                                       /* :2208 */
     }
     return CMT_OK;
 }
 
-/** The prevote arm of the switch at :2250-2328. */
+/** The prevote arm of the switch at :2243-2321. */
 static int cs_add_vote_prevote(cmt_cs_t *cs, const cmt_vote_t *vote,
                                int64_t height)
 {
@@ -3807,51 +3807,51 @@ static int cs_add_vote_prevote(cmt_cs_t *cs, const cmt_vote_t *vote,
     bool            complete;
     int             rc;
 
-    prevotes = cmt_hvs_prevotes(cs->rs.votes, vote->round);      /* :2252 */
+    prevotes = cmt_hvs_prevotes(cs->rs.votes, vote->round);      /* :2245 */
 
     ok = false;
-    rc = cmt_vote_set_two_thirds_majority(prevotes, &block_id, &ok);/* :2256 */
+    rc = cmt_vote_set_two_thirds_majority(prevotes, &block_id, &ok);/* :2249 */
     if (rc != CMT_OK) {
         return rc;
     }
     if (ok) {
-        /* :2263-2266 — unlock if `LockedRound < vote.Round <= cs.Round`
+        /* :2256-2259 — unlock if `LockedRound < vote.Round <= cs.Round`
          * and the polka is for a different block. */
         if (cs->rs.locked_block != NULL &&
             cs->rs.locked_round < vote->round &&
             vote->round <= cs->rs.round &&
             !cmt_block_hashes_to(cs->rs.locked_block, block_id.hash,
                                  block_id.hash_len)) {
-            cs->rs.locked_round       = -1;                      /* :2270 */
-            cs->rs.locked_block       = NULL;                    /* :2271 */
-            cs->rs.locked_block_parts = NULL;                    /* :2272 */
-            /* :2274-2276 — PublishEventUnlock, not ported. */
+            cs->rs.locked_round       = -1;                      /* :2263 */
+            cs->rs.locked_block       = NULL;                    /* :2264 */
+            cs->rs.locked_block_parts = NULL;                    /* :2265 */
+            /* :2267-2269 — PublishEventUnlock, not ported. */
         }
 
         if (block_id.hash_len != 0u && cs->rs.valid_round < vote->round &&
-            vote->round == cs->rs.round) {                       /* :2281 */
+            vote->round == cs->rs.round) {                       /* :2274 */
             if (cmt_block_hashes_to(cs->rs.proposal_block, block_id.hash,
-                                    block_id.hash_len)) {        /* :2282 */
-                /* :2284-2286 — Valid* takes the proposal's block and parts. */
-                cs->rs.valid_round       = vote->round;          /* :2284 */
-                cs->rs.valid_block       = cs->rs.proposal_block;/* :2285 */
-                cs->rs.valid_block_parts = cs->rs.proposal_block_parts;/* :2286 */
+                                    block_id.hash_len)) {        /* :2275 */
+                /* :2277-2279 — Valid* takes the proposal's block and parts. */
+                cs->rs.valid_round       = vote->round;          /* :2277 */
+                cs->rs.valid_block       = cs->rs.proposal_block;/* :2278 */
+                cs->rs.valid_block_parts = cs->rs.proposal_block_parts;/* :2279 */
             } else {
-                /* :2288-2295 — a valid block we do not have. */
-                cs->rs.proposal_block = NULL;                    /* :2295 */
+                /* :2281-2288 — a valid block we do not have. */
+                cs->rs.proposal_block = NULL;                    /* :2288 */
             }
             if (!cmt_part_set_has_header(cs->rs.proposal_block_parts,
                                          &block_id.part_set_header)) {
                 cs->rs.proposal_block_parts = NULL;   /* clear, then take */
                 rc = cs_new_part_set_from_header(
                         cs, &block_id.part_set_header,
-                        &cs->rs.proposal_block_parts);           /* :2299 */
+                        &cs->rs.proposal_block_parts);           /* :2292 */
                 if (rc == CMT_FAULT) {
                     return rc;
                 }
                 if (rc != CMT_OK) {
                     /* The bound refused it. Both names stay NULL and the
-                     * arm runs on to the :2310-2328 transitions, which is
+                     * arm runs on to the :2303-2321 transitions, which is
                      * where this node's round actually moves. */
                     cs_part_set_bound_refused("addVote/prevote",
                                               &block_id.part_set_header);
@@ -3860,56 +3860,56 @@ static int cs_add_vote_prevote(cmt_cs_t *cs, const cmt_vote_t *vote,
             }
             if (cs->listener.on_valid_block != NULL) {
                 cs->listener.on_valid_block(cs->listener_ctx,
-                                            &cs->rs);            /* :2302 */
+                                            &cs->rs);            /* :2295 */
             }
-            /* :2303-2305 — PublishEventValidBlock, not ported. */
+            /* :2296-2298 — PublishEventValidBlock, not ported. */
         }
     }
 
-    /* :2310-2328 — the three-way switch on where the prevote sits. */
+    /* :2303-2321 — the three-way switch on where the prevote sits. */
     has_any = false;
     rc = cmt_vote_set_has_two_thirds_any(prevotes, &has_any);
     if (rc != CMT_OK) {
         return rc;
     }
-    if (cs->rs.round < vote->round && has_any) {                 /* :2311 */
-        return cmt_cs_enter_new_round(cs, height, vote->round);  /* :2313 */
+    if (cs->rs.round < vote->round && has_any) {                 /* :2304 */
+        return cmt_cs_enter_new_round(cs, height, vote->round);  /* :2306 */
     }
     if (cs->rs.round == vote->round &&
-        CMT_ROUND_STEP_PREVOTE <= cs->rs.step) {                 /* :2315 */
+        CMT_ROUND_STEP_PREVOTE <= cs->rs.step) {                 /* :2308 */
         ok = false;
         rc = cmt_vote_set_two_thirds_majority(prevotes, &block_id, &ok);
-        if (rc != CMT_OK) {                                      /* :2316 */
+        if (rc != CMT_OK) {                                      /* :2309 */
             return rc;
         }
         complete = false;
-        rc = cmt_cs_is_proposal_complete(cs, &complete);         /* :2317 */
+        rc = cmt_cs_is_proposal_complete(cs, &complete);         /* :2310 */
         if (rc != CMT_OK) {
             return rc;
         }
         if (ok && (complete || block_id.hash_len == 0u)) {
-            return cmt_cs_enter_precommit(cs, height, vote->round);/* :2318 */
+            return cmt_cs_enter_precommit(cs, height, vote->round);/* :2311 */
         }
-        if (has_any) {                                           /* :2319 */
-            return cmt_cs_enter_prevote_wait(cs, height, vote->round);/* :2320 */
+        if (has_any) {                                           /* :2312 */
+            return cmt_cs_enter_prevote_wait(cs, height, vote->round);/* :2313 */
         }
         return CMT_OK;
     }
     if (cs->rs.proposal != NULL && 0 <= cs->rs.proposal->pol_round &&
-        cs->rs.proposal->pol_round == vote->round) {             /* :2323 */
+        cs->rs.proposal->pol_round == vote->round) {             /* :2316 */
         complete = false;
-        rc = cmt_cs_is_proposal_complete(cs, &complete);         /* :2325 */
+        rc = cmt_cs_is_proposal_complete(cs, &complete);         /* :2318 */
         if (rc != CMT_OK) {
             return rc;
         }
         if (complete) {
-            return cmt_cs_enter_prevote(cs, height, cs->rs.round);/* :2326 */
+            return cmt_cs_enter_prevote(cs, height, cs->rs.round);/* :2319 */
         }
     }
     return CMT_OK;
 }
 
-/** The precommit arm of the switch at :2330-2356. */
+/** The precommit arm of the switch at :2323-2349. */
 static int cs_add_vote_precommit(cmt_cs_t *cs, const cmt_vote_t *vote,
                                  int64_t height)
 {
@@ -3920,58 +3920,58 @@ static int cs_add_vote_precommit(cmt_cs_t *cs, const cmt_vote_t *vote,
     bool            has_all;
     int             rc;
 
-    precommits = cmt_hvs_precommits(cs->rs.votes, vote->round);  /* :2331 */
+    precommits = cmt_hvs_precommits(cs->rs.votes, vote->round);  /* :2324 */
 
     ok = false;
-    rc = cmt_vote_set_two_thirds_majority(precommits, &block_id, &ok);/* :2339 */
+    rc = cmt_vote_set_two_thirds_majority(precommits, &block_id, &ok);/* :2332 */
     if (rc != CMT_OK) {
         return rc;
     }
-    if (ok) {                                                    /* :2340 */
-        /* :2342-2343 — the majority may be from a HIGHER round, so catch
+    if (ok) {                                                    /* :2333 */
+        /* :2335-2336 — the majority may be from a HIGHER round, so catch
          * up to it before precommitting. */
-        rc = cmt_cs_enter_new_round(cs, height, vote->round);    /* :2342 */
+        rc = cmt_cs_enter_new_round(cs, height, vote->round);    /* :2335 */
         if (rc == CMT_FAULT) {
             return rc;
         }
         cs_note_transition_refusal("enterNewRound", rc);
-        rc = cmt_cs_enter_precommit(cs, height, vote->round);    /* :2343 */
+        rc = cmt_cs_enter_precommit(cs, height, vote->round);    /* :2336 */
         if (rc == CMT_FAULT) {
             return rc;
         }
         cs_note_transition_refusal("enterPrecommit", rc);
-        if (block_id.hash_len != 0u) {                           /* :2345 */
-            rc = cmt_cs_enter_commit(cs, height, vote->round);   /* :2346 */
+        if (block_id.hash_len != 0u) {                           /* :2338 */
+            rc = cmt_cs_enter_commit(cs, height, vote->round);   /* :2339 */
             if (rc == CMT_FAULT) {
                 return rc;
             }
             cs_note_transition_refusal("enterCommit", rc);
-            if (cs->config->skip_timeout_commit) {               /* :2347 */
+            if (cs->config->skip_timeout_commit) {               /* :2340 */
                 has_all = false;
                 if (cmt_vote_set_has_all(precommits, &has_all) != CMT_OK) {
                     return CMT_FAULT;
                 }
                 if (has_all) {
-                    return cmt_cs_enter_new_round(cs, cs->rs.height, 0);/* :2348 */
+                    return cmt_cs_enter_new_round(cs, cs->rs.height, 0);/* :2341 */
                 }
             }
             return CMT_OK;
         }
-        return cmt_cs_enter_precommit_wait(cs, height, vote->round);/* :2351 */
+        return cmt_cs_enter_precommit_wait(cs, height, vote->round);/* :2344 */
     }
 
     has_any = false;
-    rc = cmt_vote_set_has_two_thirds_any(precommits, &has_any);  /* :2353 */
+    rc = cmt_vote_set_has_two_thirds_any(precommits, &has_any);  /* :2346 */
     if (rc != CMT_OK) {
         return rc;
     }
-    if (cs->rs.round <= vote->round && has_any) {                /* :2353 */
-        rc = cmt_cs_enter_new_round(cs, height, vote->round);    /* :2354 */
+    if (cs->rs.round <= vote->round && has_any) {                /* :2346 */
+        rc = cmt_cs_enter_new_round(cs, height, vote->round);    /* :2347 */
         if (rc == CMT_FAULT) {
             return rc;
         }
         cs_note_transition_refusal("enterNewRound", rc);
-        return cmt_cs_enter_precommit_wait(cs, height, vote->round);/* :2355 */
+        return cmt_cs_enter_precommit_wait(cs, height, vote->round);/* :2348 */
     }
     return CMT_OK;
 }
@@ -3988,13 +3988,13 @@ static int cs_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
     int                rc;
 
     *out_added = false;
-    /* :2131-2133 is MarkLateVote, a metric. */
+    /* :2126-2128 is MarkLateVote, a metric. */
 
-    /* :2137 — `vote.Height+1 == cs.Height`. FORMED THE OTHER WAY ROUND ON
+    /* :2132 — `vote.Height+1 == cs.Height`. FORMED THE OTHER WAY ROUND ON
      * PURPOSE. `vote->height` is a PEER'S number and nothing on the path to
      * here bounds it: this port stops before the reference's ValidateBasic
      * (cmt_msgs.h:28-35, deferred to R3), which is where `Height <= 0` is
-     * refused (types/vote.go:283-285). Go's `vote.Height+1` at INT64_MAX
+     * refused (types/vote.go:287-289). Go's `vote.Height+1` at INT64_MAX
      * merely WRAPS and the comparison is false; in C that addition is
      * UNDEFINED. Subtracting from our OWN height cannot overflow —
      * `cs->rs.height` is set only by `updateToState` from
@@ -4004,26 +4004,26 @@ static int cs_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
      * itself answers without wrapping. INVARIANT
      * atlas-dec-7495d3372e004b24b4f6cc7bff5caf07. */
     if (cs->rs.height > 0 && vote->height == cs->rs.height - 1 &&
-        vote->type == CMT_PB_MSG_TYPE_PRECOMMIT) {               /* :2137 */
+        vote->type == CMT_PB_MSG_TYPE_PRECOMMIT) {               /* :2132 */
         return cs_add_vote_last_commit(cs, vote, out_added, conflict);
     }
-    if (vote->height != cs->rs.height) {                         /* :2172 */
-        /* :2173-2174 — a height mismatch is ignored, not an error. */
+    if (vote->height != cs->rs.height) {                         /* :2167 */
+        /* :2168-2169 — a height mismatch is ignored, not an error. */
         return CMT_OK;
     }
 
     ext_enabled = false;
     rc = cmt_abci_params_vote_extensions_enabled(
             cs->state.consensus_params.abci, vote->height, &ext_enabled);
-    if (rc != CMT_OK) {                                          /* :2178 */
+    if (rc != CMT_OK) {                                          /* :2173 */
         return rc;
     }
-    rc = cs_add_vote_check_extension(cs, vote, ext_enabled);/* :2179-2226 */
+    rc = cs_add_vote_check_extension(cs, vote, ext_enabled);/* :2174-2219 */
     if (rc != CMT_OK) {
         return rc;
     }
 
-    height = cs->rs.height;                                      /* :2228 */
+    height = cs->rs.height;                                      /* :2221 */
 
     /* Heap: a conflicting vote is ~9.5 KB. */
     conflicting = (cmt_vote_t *)calloc(1u, sizeof(*conflicting));
@@ -4033,7 +4033,7 @@ static int cs_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
     added = false;
     err   = CMT_VOTE_SET_ERR_NONE;
     rc = cmt_hvs_add_vote(cs->rs.votes, vote, *peer, ext_enabled, &added,
-                          &err, conflicting);                    /* :2229 */
+                          &err, conflicting);                    /* :2222 */
     *out_added = added;
     if (err == CMT_VOTE_SET_ERR_CONFLICTING_VOTES && conflict != NULL) {
         /* vote_set.go:236 — NewConflictingVoteError(conflicting, vote):
@@ -4047,27 +4047,27 @@ static int cs_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
         return rc;
     }
     if (!added) {
-        /* :2230-2238 — either a duplicate (no error) or a refusal. */
+        /* :2223-2231 — either a duplicate (no error) or a refusal. */
         return rc;
     }
-    /* :2239-2243 is MarkVoteReceived, a metric; :2245-2247 the event bus.
-     * :2248 is the event switch, fired through the listener (R3-A). */
+    /* :2232-2236 is MarkVoteReceived, a metric; :2238-2240 the event bus.
+     * :2241 is the event switch, fired through the listener (R3-A). */
     if (cs->listener.on_vote != NULL) {
-        cs->listener.on_vote(cs->listener_ctx, vote);            /* :2248 */
+        cs->listener.on_vote(cs->listener_ctx, vote);            /* :2241 */
     }
 
-    switch (vote->type) {                                        /* :2250 */
+    switch (vote->type) {                                        /* :2243 */
     case CMT_PB_MSG_TYPE_PREVOTE:
-        return cs_add_vote_prevote(cs, vote, height);       /* :2251-2328 */
+        return cs_add_vote_prevote(cs, vote, height);       /* :2244-2321 */
     case CMT_PB_MSG_TYPE_PRECOMMIT:
-        return cs_add_vote_precommit(cs, vote, height);     /* :2330-2356 */
+        return cs_add_vote_precommit(cs, vote, height);     /* :2323-2349 */
     default:
-        /* :2359 — panic("unexpected vote type"). NODE-LOCAL → CMT_FAULT,
+        /* :2352 — panic("unexpected vote type"). NODE-LOCAL → CMT_FAULT,
          * and the reason is a filter one layer up rather than a claim
          * about this function: HeightVoteSet.AddVote drops a vote whose
          * type is neither prevote nor precommit with a naked `return`
          * (height_vote_set.go:139-141), so `added` is false for it and
-         * :2230 has already returned. Reaching this line means our own
+         * :2223 has already returned. Reaching this line means our own
          * vote set reported that it stored a vote it cannot have
          * stored. */
         QGP_LOG_ERROR(LOG_TAG, "unexpected vote type %d", (int)vote->type);
@@ -4076,7 +4076,7 @@ static int cs_add_vote(cmt_cs_t *cs, const cmt_vote_t *vote,
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * state.go:2366-2474 — signing a vote
+ * state.go:2359-2467 — signing a vote
  * ══════════════════════════════════════════════════════════════════════ */
 
 int cmt_cs_vote_time(cmt_cs_t *cs, cmt_time_t *out)
@@ -4088,32 +4088,32 @@ int cmt_cs_vote_time(cmt_cs_t *cs, cmt_time_t *out)
     if (cs == NULL || out == NULL) {
         return CMT_FAULT;
     }
-    rc = cs->host.now(cs->host_ctx, &now);      /* :2417 — CLOCK SITE 5/5 */
+    rc = cs->host.now(cs->host_ctx, &now);      /* :2410 — CLOCK SITE 5/5 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
-    min_vote_time = now;                                         /* :2418 */
+    min_vote_time = now;                                         /* :2411 */
 
-    /* :2420 — `const timeIota = time.Millisecond`, the minimum increment
-     * between blocks. :2421-2422 carries the reference's own TODO. */
-    if (cs->rs.locked_block != NULL) {                           /* :2423 */
+    /* :2413 — `const timeIota = time.Millisecond`, the minimum increment
+     * between blocks. :2414-2415 carries the reference's own TODO. */
+    if (cs->rs.locked_block != NULL) {                           /* :2416 */
         min_vote_time = cs_time_add_ns(cs->rs.locked_block->header.time,
-                                       CMT_CS_TIME_IOTA_NS);     /* :2426 */
-    } else if (cs->rs.proposal_block != NULL) {                  /* :2427 */
+                                       CMT_CS_TIME_IOTA_NS);     /* :2419 */
+    } else if (cs->rs.proposal_block != NULL) {                  /* :2420 */
         min_vote_time = cs_time_add_ns(cs->rs.proposal_block->header.time,
-                                       CMT_CS_TIME_IOTA_NS);     /* :2428 */
+                                       CMT_CS_TIME_IOTA_NS);     /* :2421 */
     }
 
-    if (cs_time_after(now, min_vote_time)) {                     /* :2431 */
-        *out = now;                                              /* :2432 */
+    if (cs_time_after(now, min_vote_time)) {                     /* :2424 */
+        *out = now;                                              /* :2425 */
         return CMT_OK;
     }
-    *out = min_vote_time;                                        /* :2434 */
+    *out = min_vote_time;                                        /* :2427 */
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/state.go:2366-2414 — signVote().
- * CONTRACT (:2365): the caller has checked that a priv validator exists. */
+/* cometbft@v0.38.26 consensus/state.go:2359-2407 — signVote().
+ * CONTRACT (:2358): the caller has checked that a priv validator exists. */
 static int cs_sign_vote(cmt_cs_t *cs, int32_t msg_type, const uint8_t *hash,
                         size_t hash_len, const cmt_part_set_header_t *header,
                         cmt_block_t *block, cmt_vote_t *out, bool *recoverable)
@@ -4123,38 +4123,38 @@ static int cs_sign_vote(cmt_cs_t *cs, int32_t msg_type, const uint8_t *hash,
     bool     ext_enabled;
     int      rc;
 
-    /* :2374 — flush the WAL, or we may not recompute the same vote and the
+    /* :2367 — flush the WAL, or we may not recompute the same vote and the
      * privValidator will refuse to sign. */
     rc = cs->host.wal_flush_and_sync(cs->host_ctx);
     if (rc != CMT_OK) {
-        return CMT_REJECT;                                       /* :2375 */
+        return CMT_REJECT;                                       /* :2368 */
     }
-    if (!cs->priv_validator_pub_key_present) {                   /* :2378 */
-        return CMT_REJECT;                       /* :2379 errPubKeyIsNotSet */
+    if (!cs->priv_validator_pub_key_present) {                   /* :2371 */
+        return CMT_REJECT;                       /* :2372 errPubKeyIsNotSet */
     }
-    rc = cs_priv_validator_address(cs, addr);                    /* :2382 */
+    rc = cs_priv_validator_address(cs, addr);                    /* :2375 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
     val_idx = -1;
     rc = cmt_validator_set_get_by_address(cs->rs.validators, addr,
                                           sizeof(addr), &val_idx, NULL);
-    if (rc != CMT_OK) {                                          /* :2383 */
+    if (rc != CMT_OK) {                                          /* :2376 */
         return CMT_FAULT;   /* NODE-LOCAL: our own validator set          */
     }
 
-    memset(out, 0, sizeof(*out));                            /* :2385-2393 */
-    memcpy(out->validator_address, addr, sizeof(addr));          /* :2386 */
+    memset(out, 0, sizeof(*out));                            /* :2378-2386 */
+    memcpy(out->validator_address, addr, sizeof(addr));          /* :2379 */
     out->validator_address_len = sizeof(addr);
-    out->validator_index       = val_idx;                        /* :2387 */
-    out->height                = cs->rs.height;                  /* :2388 */
-    out->round                 = cs->rs.round;                   /* :2389 */
-    rc = cmt_cs_vote_time(cs, &out->timestamp);                  /* :2390 */
+    out->validator_index       = val_idx;                        /* :2380 */
+    out->height                = cs->rs.height;                  /* :2381 */
+    out->round                 = cs->rs.round;                   /* :2382 */
+    rc = cmt_cs_vote_time(cs, &out->timestamp);                  /* :2383 */
     if (rc != CMT_OK) {
         return rc;
     }
-    out->type = msg_type;                                        /* :2391 */
-    if (hash != NULL && hash_len > 0u) {                         /* :2392 */
+    out->type = msg_type;                                        /* :2384 */
+    if (hash != NULL && hash_len > 0u) {                         /* :2385 */
         if (hash_len > sizeof(out->block_id.hash)) {
             return CMT_FAULT;   /* NODE-LOCAL: our own block's hash       */
         }
@@ -4168,19 +4168,19 @@ static int cs_sign_vote(cmt_cs_t *cs, int32_t msg_type, const uint8_t *hash,
     ext_enabled = false;
     rc = cmt_abci_params_vote_extensions_enabled(
             cs->state.consensus_params.abci, out->height, &ext_enabled);
-    if (rc != CMT_OK) {                                          /* :2395 */
+    if (rc != CMT_OK) {                                          /* :2388 */
         return rc;
     }
     if (msg_type == CMT_PB_MSG_TYPE_PRECOMMIT &&
-        !cmt_block_id_is_zero(&out->block_id)) {                 /* :2396 */
-        if (ext_enabled) {                                       /* :2399 */
-            /* :2400 — the extension bytes come from the host and MUST live
+        !cmt_block_id_is_zero(&out->block_id)) {                 /* :2389 */
+        if (ext_enabled) {                                       /* :2392 */
+            /* :2393 — the extension bytes come from the host and MUST live
              * in the per-height arena; cmt_vote_copy shares them into
              * every vote set this vote is added to (cmt_cs.h). */
             rc = cs->host.extend_vote(cs->host_ctx, out, block, &cs->state,
                                       &out->extension);
             if (rc != CMT_OK) {
-                return CMT_REJECT;                               /* :2402 */
+                return CMT_REJECT;                               /* :2395 */
             }
         }
     }
@@ -4189,17 +4189,17 @@ static int cs_sign_vote(cmt_cs_t *cs, int32_t msg_type, const uint8_t *hash,
                                  cs->state.chain_id, cs->state.chain_id_len,
                                  ext_enabled &&
                                  (msg_type == CMT_PB_MSG_TYPE_PRECOMMIT),
-                                 recoverable);                   /* :2408 */
+                                 recoverable);                   /* :2401 */
     if (rc != CMT_OK && !(*recoverable)) {
-        /* :2409-2411 — panic("non-recoverable error when signing vote").
+        /* :2402-2404 — panic("non-recoverable error when signing vote").
          * NODE-LOCAL → CMT_FAULT: SignAndCheckVote's non-recoverable cases
-         * (vote.go:428, :437, :445) are all "the signer returned a vote
+         * (vote.go:432, :441, :449) are all "the signer returned a vote
          * that does not match the one we handed it", which is this node's
          * own signer contradicting itself. */
         QGP_LOG_ERROR(LOG_TAG, "non-recoverable error when signing vote");
         return CMT_FAULT;
     }
-    return rc;                                                   /* :2413 */
+    return rc;                                                   /* :2406 */
 }
 
 int cmt_cs_sign_add_vote(cmt_cs_t *cs, int32_t msg_type,
@@ -4218,20 +4218,20 @@ int cmt_cs_sign_add_vote(cmt_cs_t *cs, int32_t msg_type,
     if (cs == NULL) {
         return CMT_FAULT;
     }
-    if (!cs->has_priv_validator) {                               /* :2445 */
-        return CMT_OK;                                           /* :2446 */
+    if (!cs->has_priv_validator) {                               /* :2438 */
+        return CMT_OK;                                           /* :2439 */
     }
-    if (!cs->priv_validator_pub_key_present) {                   /* :2449 */
-        QGP_LOG_ERROR(LOG_TAG, "signAddVote: pubkey is not set");/* :2451 */
-        return CMT_OK;                                           /* :2452 */
+    if (!cs->priv_validator_pub_key_present) {                   /* :2442 */
+        QGP_LOG_ERROR(LOG_TAG, "signAddVote: pubkey is not set");/* :2444 */
+        return CMT_OK;                                           /* :2445 */
     }
-    rc = cs_priv_validator_address(cs, addr);                    /* :2456 */
+    rc = cs_priv_validator_address(cs, addr);                    /* :2449 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
     if (!cmt_validator_set_has_address(cs->rs.validators, addr,
-                                       sizeof(addr))) {          /* :2456 */
-        return CMT_OK;                                           /* :2457 */
+                                       sizeof(addr))) {          /* :2449 */
+        return CMT_OK;                                           /* :2450 */
     }
 
     /* Heap: a vote carries two 4627-byte signatures, and this sits inside
@@ -4245,14 +4245,14 @@ int cmt_cs_sign_add_vote(cmt_cs_t *cs, int32_t msg_type,
     }
     recoverable = false;
     rc = cs_sign_vote(cs, msg_type, hash, hash_len, header, block, vote,
-                      &recoverable);                             /* :2461 */
+                      &recoverable);                             /* :2454 */
     if (rc == CMT_FAULT) {
         free(vote);
         free(mi);
         return CMT_FAULT;
     }
     if (rc != CMT_OK) {
-        /* :2462-2465 — a signing failure is logged and nothing is sent. */
+        /* :2455-2458 — a signing failure is logged and nothing is sent. */
         QGP_LOG_ERROR(LOG_TAG, "failed signing vote: height %lld round %d",
                       (long long)cs->rs.height, (int)cs->rs.round);
         free(vote);
@@ -4260,21 +4260,21 @@ int cmt_cs_sign_add_vote(cmt_cs_t *cs, int32_t msg_type,
         return CMT_OK;
     }
 
-    has_ext     = vote->extension_signature_len > 0u;            /* :2466 */
+    has_ext     = vote->extension_signature_len > 0u;            /* :2459 */
     ext_enabled = false;
     rc = cmt_abci_params_vote_extensions_enabled(
             cs->state.consensus_params.abci, vote->height, &ext_enabled);
-    if (rc != CMT_OK) {                                          /* :2467 */
+    if (rc != CMT_OK) {                                          /* :2460 */
         free(vote);
         free(mi);
         return rc;
     }
     if (vote->type == CMT_PB_MSG_TYPE_PRECOMMIT &&
         !cmt_block_id_is_zero(&vote->block_id) &&
-        has_ext != ext_enabled) {                                /* :2468 */
-        /* :2469-2470 — panic. NODE-LOCAL → CMT_FAULT: the vote was built
+        has_ext != ext_enabled) {                                /* :2461 */
+        /* :2462-2463 — panic. NODE-LOCAL → CMT_FAULT: the vote was built
          * and signed by this node a dozen lines ago, and the extension's
-         * presence was decided from the same `ext_enabled` at :2399. */
+         * presence was decided from the same `ext_enabled` at :2392. */
         QGP_LOG_ERROR(LOG_TAG,
                       "vote extension absence/presence does not match "
                       "extensions enabled %d != %d, height %lld",
@@ -4285,7 +4285,7 @@ int cmt_cs_sign_add_vote(cmt_cs_t *cs, int32_t msg_type,
         return CMT_FAULT;
     }
 
-    /* :2472 — our own vote goes onto the internal queue. It is handled on
+    /* :2465 — our own vote goes onto the internal queue. It is handled on
      * a LATER step, after the WriteSync at :839; this function never
      * transitions. */
     mi->msg.kind            = CMT_PB_CONS_MSG_VOTE;
@@ -4298,7 +4298,7 @@ int cmt_cs_sign_add_vote(cmt_cs_t *cs, int32_t msg_type,
     return rc;
 }
 
-/* cometbft@709fd12b consensus/state.go:2479-2490 —
+/* cometbft@v0.38.26 consensus/state.go:2472-2483 —
  * updatePrivValidatorPubKey() */
 int cmt_cs_update_priv_validator_pub_key(cmt_cs_t *cs)
 {
@@ -4308,17 +4308,17 @@ int cmt_cs_update_priv_validator_pub_key(cmt_cs_t *cs)
     if (cs == NULL) {
         return CMT_FAULT;
     }
-    if (!cs->has_priv_validator) {                               /* :2480 */
-        return CMT_OK;                                           /* :2481 */
+    if (!cs->has_priv_validator) {                               /* :2473 */
+        return CMT_OK;                                           /* :2474 */
     }
     memset(&pk, 0, sizeof(pk));
-    rc = cs->host.get_pub_key(cs->host_ctx, &pk);                /* :2484 */
+    rc = cs->host.get_pub_key(cs->host_ctx, &pk);                /* :2477 */
     if (rc != CMT_OK) {
-        /* :2485-2487 — the error is returned and the memo is LEFT
-         * UNCHANGED; :2488 is not reached. */
+        /* :2478-2480 — the error is returned and the memo is LEFT
+         * UNCHANGED; :2481 is not reached. */
         return rc;
     }
-    cs->priv_validator_pub_key         = pk;                     /* :2488 */
+    cs->priv_validator_pub_key         = pk;                     /* :2481 */
     cs->priv_validator_pub_key_present = pk.present;
     return CMT_OK;
 }
@@ -4393,30 +4393,30 @@ int cmt_cs_check_double_signing_risk(cmt_cs_t *cs, int64_t height)
     return CMT_OK;                                               /* :2507 */
 }
 
-/* cometbft@709fd12b consensus/state.go:2600-2617 — CompareHRS(), a free
+/* cometbft@v0.38.26 consensus/state.go:2593-2610 — CompareHRS(), a free
  * function: no receiver, so no `cs` in the C name. */
 int cmt_compare_hrs(int64_t h1, int32_t r1, cmt_round_step_t s1,
                     int64_t h2, int32_t r2, cmt_round_step_t s2)
 {
     if (h1 < h2) {
-        return -1;                                               /* :2602 */
+        return -1;                                               /* :2595 */
     }
     if (h1 > h2) {
-        return 1;                                                /* :2604 */
+        return 1;                                                /* :2597 */
     }
     if (r1 < r2) {
-        return -1;                                               /* :2607 */
+        return -1;                                               /* :2600 */
     }
     if (r1 > r2) {
-        return 1;                                                /* :2609 */
+        return 1;                                                /* :2602 */
     }
     if (s1 < s2) {
-        return -1;                                               /* :2612 */
+        return -1;                                               /* :2605 */
     }
     if (s1 > s2) {
-        return 1;                                                /* :2614 */
+        return 1;                                                /* :2607 */
     }
-    return 0;                                                    /* :2616 */
+    return 0;                                                    /* :2609 */
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -4782,8 +4782,8 @@ void cmt_cs_free(cmt_cs_t *cs)
  * libs/events/events.go — the event switch, reduced to one listener (R3-A)
  * ══════════════════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b libs/events/events.go:77-99 — AddListenerForEvent(),
- * three events for the id "consensus-reactor" (reactor.go:411-433). */
+/* cometbft@v0.38.26 libs/events/events.go:77-99 — AddListenerForEvent(),
+ * three events for the id "consensus-reactor" (reactor.go:420-442). */
 int cmt_cs_add_listener(cmt_cs_t *cs, const cmt_cs_listener_t *l, void *ctx)
 {
     if (cs == NULL || l == NULL) {
@@ -4794,8 +4794,8 @@ int cmt_cs_add_listener(cmt_cs_t *cs, const cmt_cs_listener_t *l, void *ctx)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b libs/events/events.go:101-119 — RemoveListener(),
- * reached from reactor.go:435-438. */
+/* cometbft@v0.38.26 libs/events/events.go:101-119 — RemoveListener(),
+ * reached from reactor.go:444-447. */
 void cmt_cs_remove_listener(cmt_cs_t *cs)
 {
     if (cs == NULL) {

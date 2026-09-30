@@ -3,10 +3,10 @@
  * @brief THE STARTUP TABLE — see nodus_witness_cmt_node.h for what is
  *        here, what is not, whose the missing halves are, and the
  *        governing records. Every function below carries the
- *        `cometbft@709fd12b <file>:<lines>` it was ported from.
+ *        `cometbft@v0.38.26 <file>:<lines>` it was ported from.
  *
  * ⚠ LINE NUMBERS. Every citation in this file is the line range as it
- * reads in the extracted pinned tarball @709fd12b (pin rev 19). Where a
+ * reads in cometbft v0.38.26 (moved from 709fd12b, pin rev 19). Where a
  * dispatch prose quoted a slightly different range for the same function
  * the FILE was taken as the authority.
  *
@@ -536,7 +536,7 @@ static int hs_replay_block(nodus_cmt_handshaker_t *h, cmt_state_t *state,
         goto done;
     }
     /* :535 — ApplyBlock, which VALIDATES the block first
-     * (execution.go:215) and then applies it inside the host's ledger
+     * (execution.go:246) and then applies it inside the host's ledger
      * transaction. A REJECT here means this node's own stored block does
      * not validate against its own stored state: node-local, CMT_FAULT.
      * :536-538's error return makes NewNode fail either way. */
@@ -650,18 +650,18 @@ done:
     return rc;
 }
 
-/** types/params.go:325-346 — `(params *ConsensusParams) ToProto()`. All
+/** types/params.go:328-349 — `(params *ConsensusParams) ToProto()`. All
  *  five sub-messages are non-nil in the reference's literal, so all five
  *  `has_*` flags are true. */
 static void hs_params_to_proto(const cmt_consensus_params_t *in,
                                cmt_pb_consensus_params_t *out)
 {
     memset(out, 0, sizeof(*out));
-    out->has_block    = true;  out->block    = in->block;      /* :327-330 */
-    out->has_evidence = true;  out->evidence = in->evidence;   /* :331-335 */
-    out->has_validator = true; out->validator = in->validator; /* :336-338 */
-    out->has_version  = true;  out->version  = in->version;    /* :339-341 */
-    out->has_abci     = true;  out->abci     = in->abci;       /* :342-344 */
+    out->has_block    = true;  out->block    = in->block;      /* :330-333 */
+    out->has_evidence = true;  out->evidence = in->evidence;   /* :334-338 */
+    out->has_validator = true; out->validator = in->validator; /* :339-341 */
+    out->has_version  = true;  out->version  = in->version;    /* :342-344 */
+    out->has_abci     = true;  out->abci     = in->abci;       /* :345-347 */
 }
 
 /**
@@ -1408,7 +1408,7 @@ static int node_load_genesis_doc(nodus_cmt_node_t *n,
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * The node — node/node.go:285-422
+ * The node — node/node.go:283-421
  * ═══════════════════════════════════════════════════════════════════════ */
 
 void nodus_cmt_node_release(nodus_cmt_node_t *n)
@@ -1626,7 +1626,7 @@ static int node_slots_alloc(nodus_cmt_node_t *n)
  * nodus_cmt_node_init has returned. A NULL `n->cs` at fire time is
  * therefore unreachable in production; logged, not dereferenced, if it
  * ever is. No consensus value moves (clist_mempool.go:510-521 ->
- * state.go:1033). */
+ * state.go:1028). */
 static void node_txs_available_cb(void *ctx)
 {
     nodus_cmt_node_t *n = (nodus_cmt_node_t *)ctx;
@@ -1663,8 +1663,8 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
     n->mono     = opts->mono;
     n->mono_ctx = opts->mono_ctx;
 
-    /* ── 1. node.go:296-303 — initDBs + NewStore ──────────────────────
-     * `DiscardABCIResponses` is false, config/config.go:1154's default
+    /* ── 1. node.go:294-301 — initDBs + NewStore ──────────────────────
+     * `DiscardABCIResponses` is false, config/config.go:1175's default
      * — and it MUST be: the Handshaker's "ran Commit, didn't save the
      * state" branch replays through the stored response. */
     if (nodus_cmt_store_init(&n->store, w->db, /*discard=*/false) != CMT_OK) {
@@ -1673,7 +1673,7 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
     }
     n->store_ready = true;
 
-    /* ── 2. node.go:305 — LoadStateFromDBOrGenesisDocProvider ────────── */
+    /* ── 2. node.go:303 — LoadStateFromDBOrGenesisDocProvider ────────── */
     n->gen_cfg = (nodus_v2_gen_config_t *)calloc(1, sizeof(*n->gen_cfg));
     if (!n->gen_cfg) {
         goto fail;
@@ -1753,12 +1753,12 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
     /* ── THE CONSENSUS CONFIG ─────────────────────────────────────────
      * Built here rather than at `createConsensusReactor` because the
      * reference's `config` is a PARAMETER of NewNodeWithContext
-     * (node.go:286) and is read before then — `WaitForTxs()` at
+     * (node.go:284) and is read before then — `WaitForTxs()` at
      * setup.go:252 decides whether the mempool signals, which happens
      * earlier than :395. It is a pure function of compile-time values,
      * so building it early changes nothing.
      *
-     * `cmt_config_default` is config/config.go:1017-1034 verbatim; the
+     * `cmt_config_default` is config/config.go:1034-1052 verbatim; the
      * project overrides exactly the two values D-4 rev 3 (4) names —
      * both cometbft NODE settings, both compile-time constants of this
      * build (changed only by a build plus a stop-all deploy). The old
@@ -1783,7 +1783,7 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
         goto fail;
     }
 
-    /* node.go:305's second product — `stateStore.LoadFromDBOrGenesisDoc`
+    /* node.go:303's second product — `stateStore.LoadFromDBOrGenesisDoc`
      * (setup.go:581, state/store.go:136-151). */
     n->state_storage = (cmt_state_storage_t *)
         calloc(1, sizeof(cmt_state_storage_t));
@@ -1815,8 +1815,8 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
         goto fail;
     }
 
-    /* ── 3. node.go:313 — createAndStartProxyAppConns ─────────────────
-     * The EventBus and the indexer of :317-329 are NOT PORTED: this
+    /* ── 3. node.go:311 — createAndStartProxyAppConns ─────────────────
+     * The EventBus and the indexer of :315-327 are NOT PORTED: this
      * build has no indexer and no RPC to serve one, so there is nothing
      * for them to feed (file header). */
     n->app_ctx = (nodus_cmt_app_ledger_t *)calloc(1, sizeof(*n->app_ctx));
@@ -1841,7 +1841,7 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
         goto fail;
     }
 
-    /* ── 4. node.go:333-347 — the private validator ───────────────────
+    /* ── 4. node.go:331-345 — the private validator ───────────────────
      * FilePVKey (privval/file.go:47-53) is not ported: this chain never
      * writes a private key to disk (PQ POLICY). What IS loaded is the
      * LAST-SIGN STATE, which is what stops a double sign across a
@@ -1914,12 +1914,12 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
     n->pv->save_ctx            = &n->pv_file;
     n->pv->now                 = n->now;                 /* :441, :461  */
     n->pv->now_ctx             = n->now_ctx;
-    /* node.go:343-347 `privValidator.GetPubKey()` — this node's own
+    /* node.go:341-345 `privValidator.GetPubKey()` — this node's own
      * identity key, which is what the address is derived from
      * (types/validator.go:29). The server identity is the one the ledger
      * seams already sign with. */
     if (!w->server) {
-        /* node.go:343-345 returns an error on `can't get pubkey`, so a
+        /* node.go:341-343 returns an error on `can't get pubkey`, so a
          * node with no identity to sign with does NOT come up. Leaving
          * `pub_key` zero and continuing would hand `cmt_cs` an all-zero
          * validator address that matches no member of the set: it would
@@ -1945,7 +1945,7 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
     free(lss);
     lss = NULL;
 
-    /* ── 5. node.go:356-362 — doHandshake (setup.go:173-190) ──────────
+    /* ── 5. node.go:354-360 — doHandshake (setup.go:173-190) ──────────
      * Every ledger apply the handshake performs COMMITS before it
      * returns; nothing below it opens a transaction. */
     hs = (nodus_cmt_handshaker_t *)calloc(1, sizeof(*hs));
@@ -1969,16 +1969,16 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
     free(hs);
     hs = NULL;
 
-    /* ── 6. node.go:364-370 — reload the state ────────────────────────
+    /* ── 6. node.go:362-368 — reload the state ────────────────────────
      * "It will have the Version.Consensus.App set by the Handshake, and
      * may have other modifications as well (ie. depending on what
      * happened during block replay)." */
     if (nodus_cmt_ss_load(&n->store, n->state) != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "cannot load state");
-        goto fail;                                       /* node.go:368-370 */
+        goto fail;                                       /* node.go:366-368 */
     }
 
-    /* ── 7a. node.go:379 — createMempoolAndMempoolReactor ─────────────
+    /* ── 7a. node.go:377 — createMempoolAndMempoolReactor ─────────────
      * The Flood mempool (setup.go:237-257) on cometbft's defaults
      * (D-4 rev 3 (1)). The REACTOR (:248-251) is W3's and is NOT built:
      * a mempool with no reactor accepts transactions from this node and
@@ -2027,7 +2027,7 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
     /* setup.go:252-254 — `if config.Consensus.WaitForTxs() {
      * mp.EnableTxsAvailable() }`. Under this chain's settings
      * (CreateEmptyBlocks true, CreateEmptyBlocksInterval 60 000 ms) the
-     * predicate is TRUE (config.go:1054-1057), so the signal is enabled.
+     * predicate is TRUE (config.go:1072-1075), so the signal is enabled.
      * tokenomics-v3 P1 (D-5): the CONSUMER is now real —
      * `node_txs_available_cb` above calls `cmt_cs_notify_txs_available`,
      * matching the reference's channel read by the consensus state's
@@ -2039,14 +2039,14 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
         }
     }
 
-    /* ── 7b. node.go:381 — createEvidenceReactor ──────────────────────
+    /* ── 7b. node.go:379 — createEvidenceReactor ──────────────────────
      * The evidence pool and its reactor are not ported; the BlockExecutor
      * gets `sm.EmptyEvidencePool{}` (state/services.go:57-68), W1's
      * binding, so a block carries no evidence and none is checked. The
      * evidence lane is W3's. */
     n->ev_if = nodus_cmt_empty_evpool;
 
-    /* ── 7c. node.go:386-395 — NewBlockExecutor + the host table ──────
+    /* ── 7c. node.go:384-394 — NewBlockExecutor + the host table ──────
      * DELTA 7, ITEM A CORRECTION: the WAL is bound with NULL here, NOT
      * `&n->wal` — mirroring the reference's `cs.wal = nilWAL{}` at
      * CONSTRUCTION (state.go:174), not the unopened `n->wal` object this
@@ -2098,11 +2098,11 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
         goto fail;
     }
 
-    /* ── 8. node.go:397-403 — offlineStateSyncHeight ──────────────────
+    /* ── 8. node.go:396-402 — offlineStateSyncHeight ──────────────────
      * The reference reads it only when the block store is empty and
-     * tolerates exactly one error, the string "value empty" (node.go:400
+     * tolerates exactly one error, the string "value empty" (node.go:399
      * — verified against the reference; the OLD comment here cited
-     * :388, which is wrong) — ANY other error PANICS (:401), including a
+     * :388, which is wrong) — ANY other error PANICS (:400), including a
      * negative stored height.
      *
      * R3-C1c-2 CLOSED (delta 1): `nodus_cmt_ss_get_offline_state_sync_
@@ -2130,7 +2130,7 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
         }
     }
 
-    /* ── 9. node.go:410-413 — createConsensusReactor → NewState ───────
+    /* ── 9. node.go:409-412 — createConsensusReactor → NewState ───────
      * The REACTOR (setup.go:334-338) is W3's; `cmt_cs_init` is
      * consensus/state.go:154-208 and is all that is built here. The
      * config it is given was built above, with its two project
@@ -2165,7 +2165,7 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
         goto fail;
     }
 
-    /* ── 10. node.go:415-418 — SetOfflineStateSyncHeight(0) ───────────
+    /* ── 10. node.go:414-417 — SetOfflineStateSyncHeight(0) ───────────
      * The reference PANICS on failure; node-local, CMT_FAULT. */
     if (nodus_cmt_ss_set_offline_state_sync_height(&n->store, 0) != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "failed to reset the offline state sync "
@@ -2174,12 +2174,12 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
     }
 
     /* ── THE W3 SEAM ──────────────────────────────────────────────────
-     * node.go:405-408 builds the blocksync reactor, :410-413 the
-     * consensus reactor (its NewState half is ported above), :423-470
-     * the state-sync reactor and the p2p switch; OnStart (node.go:518-585)
+     * node.go:404-407 builds the blocksync reactor, :409-412 the
+     * consensus reactor (its NewState half is ported above), :422-469
+     * the state-sync reactor and the p2p switch; OnStart (node.go:517-584)
      * starts them. W3
      * registers the consensus reactor's three callbacks here with
-     * `cmt_cs_add_listener(n->cs, &listener, ctx)` (reactor.go:411-433,
+     * `cmt_cs_add_listener(n->cs, &listener, ctx)` (reactor.go:420-442,
      * cmt_cs.h:912-928) and drives `cmt_cs_step` from the tick. Nothing
      * else in this file changes when it does. */
 
@@ -2210,11 +2210,11 @@ int nodus_cmt_node_start(nodus_cmt_node_t *n)
      * The reference opens its FILE WAL inside `OnStart`
      * (state.go:319-325 → :420-461 `OpenWAL(cs.config.WalFile())`);
      * so does this, at the reference's default location under the data
-     * dir: config.go:1019 `filepath.Join(DefaultDataDir, "cs.wal",
+     * dir: config.go:1036 `filepath.Join(DefaultDataDir, "cs.wal",
      * "wal")`, the witness's data_path being that data dir
      * (decision 2026-09-26-cmt-wal-file-group.md item 1). It is opened
      * HERE, and not in `nodus_cmt_node_init`, because the reference's
-     * order is node.go:360 (the Handshaker) before state.go:319. An empty
+     * order is node.go:358 (the Handshaker) before state.go:319. An empty
      * data_path is refused: it would put the WAL at `/cs.wal/wal`. */
     {
         char walfile[NODUS_CMT_AUTOFILE_PATH_MAX];
@@ -2285,13 +2285,13 @@ int nodus_cmt_node_start(nodus_cmt_node_t *n)
      * (consensus/reactor.go:74-91), which this port's `cmt_conr_start`
      * ports verbatim: it calls `cmt_cs_start(conR->cs)` itself, exactly
      * once, when `!conR->wait_sync` (cmt_conr.c:464-470). `wait_sync` is
-     * node.go:375's `blockSync` since the blocksync port (decision
+     * node.go:373's `blockSync` since the blocksync port (decision
      * 2026-09-29-blocksync-before-testnet.md, which removed D-23 rev 7
      * item 18's "always false" deviation): a node that is not the only
      * validator starts with `wait_sync` true, and `cmt_cs_start` is then
      * reached later through `cmt_conr_switch_to_consensus`
      * (consensus/reactor.go:107-141), called by the block sync reactor
-     * once it has caught up (blocksync/reactor.go:424-432).
+     * once it has caught up (blocksync/reactor.go:500-508).
      *
      * `nodus_cmt_node_t` does not own a `cmt_conr_t`: the reactor's host
      * table (`cmt_conr_host_t`) belongs to the 4004 p2p host

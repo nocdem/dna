@@ -1,13 +1,13 @@
 /**
  * @file nodus_witness_cmt_host.c
- * @brief cometbft @709fd12b state/execution.go + state/validation.go as
+ * @brief cometbft @v0.38.26 state/execution.go + state/validation.go as
  *        the host behind cmt_cs_host_t. Contract and every file:line:
  *        nodus_witness_cmt_host.h.
  *
  * validateBlock, validateBlockAndCheckEvidence, ValidateBlock,
  * ValidateBlockSkipLastCommit and the MakeBlock error path are ported at
  * cometbft@v0.38.26 (decision 2026-09-30-cometbft-pin-v0.38.26) and say so
- * at each site; every other `:NNN` here is still a 709fd12b line.
+ * at each site; every other `:NNN` here is a v0.38.26 line too.
  */
 
 #include "witness/nodus_witness_cmt_host.h"
@@ -180,14 +180,14 @@ static int tm2pb_validator(const cmt_validator_t *val, nodus_abci_validator_t *o
     return CMT_OK;
 }
 
-/* crypto/encoding/codec.go:42-63 PubKeyFromProto — the ML-DSA-87 branch
- * (K-2) is `present`; the nil oneof is the default case's error (:61). */
+/* crypto/encoding/codec.go:50-77 PubKeyFromProto — the ML-DSA-87 branch
+ * (K-2) is `present`; the nil oneof is the default case's error (:75). */
 static int pub_key_from_proto(const cmt_pb_public_key_t *k)
 {
     return k->present ? CMT_OK : CMT_REJECT;
 }
 
-/* execution.go:567-591 validateValidatorUpdates */
+/* execution.go:598-622 validateValidatorUpdates */
 int nodus_cmt_validate_validator_updates(const cmt_pb_validator_update_t *updates,
                                          size_t n,
                                          const cmt_validator_params_t *params)
@@ -200,14 +200,14 @@ int nodus_cmt_validate_validator_updates(const cmt_pb_validator_update_t *update
     for (i = 0; i < n; i++) {
         const cmt_pb_validator_update_t *u = &updates[i];
 
-        if (u->power < 0) {                                          /* :570-571 */
+        if (u->power < 0) {                                          /* :601-602 */
             QGP_LOG_ERROR(LOG_TAG, "voting power can't be negative %" PRId64,
                           u->power);
             return CMT_REJECT;
-        } else if (u->power == 0) {                                  /* :572-575 */
+        } else if (u->power == 0) {                                  /* :603-606 */
             continue;
         }
-        if (pub_key_from_proto(&u->pub_key) != CMT_OK) {             /* :578-581 */
+        if (pub_key_from_proto(&u->pub_key) != CMT_OK) {             /* :609-612 */
             QGP_LOG_ERROR(LOG_TAG, "%s", "fromproto: key type <nil> is not "
                           "supported");
             return CMT_REJECT;
@@ -215,7 +215,7 @@ int nodus_cmt_validate_validator_updates(const cmt_pb_validator_update_t *update
         if (!cmt_is_valid_pubkey_type(params, CMT_PUBKEY_TYPE_MLDSA87_NAME)) {
             QGP_LOG_ERROR(LOG_TAG, "validator is using pubkey %s, which is "
                           "unsupported for consensus",
-                          CMT_PUBKEY_TYPE_MLDSA87_NAME);              /* :583-586 */
+                          CMT_PUBKEY_TYPE_MLDSA87_NAME);              /* :614-617 */
             return CMT_REJECT;
         }
     }
@@ -247,7 +247,7 @@ int nodus_cmt_pb2tm_validator_updates(const cmt_pb_validator_update_t *updates,
     return CMT_OK;
 }
 
-/* types/evidence.go:483-489 EvidenceList.ToABCI, each item through
+/* types/evidence.go:486-492 EvidenceList.ToABCI, each item through
  * DuplicateVoteEvidence.ABCI (:81-92). */
 int nodus_cmt_evidence_to_abci(nodus_cmt_blockexec_t *ctx,
                                const cmt_evidence_data_t *ev,
@@ -513,10 +513,10 @@ static nodus_cmt_slot_storage_t *slot_of(nodus_cmt_blockexec_t *ctx,
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * CommitInfo / ExtendedCommitInfo builders (execution.go:432-565)
+ * CommitInfo / ExtendedCommitInfo builders (execution.go:463-596)
  * ═══════════════════════════════════════════════════════════════════════ */
 
-/* :450-483 BuildLastCommitInfo */
+/* :481-514 BuildLastCommitInfo */
 int nodus_cmt_build_last_commit_info(nodus_cmt_blockexec_t *ctx,
                                      const cmt_block_t *block,
                                      const cmt_validator_set_t *last_val_set,
@@ -529,18 +529,18 @@ int nodus_cmt_build_last_commit_info(nodus_cmt_blockexec_t *ctx,
         return CMT_FAULT;
     }
     memset(out, 0, sizeof(*out));
-    if (block->header.height == initial_height) {                    /* :451-455 */
+    if (block->header.height == initial_height) {                    /* :482-486 */
         return CMT_OK;
     }
-    commit_size = cmt_commit_size(block->last_commit);               /* :458 */
-    val_set_len = last_val_set->validators_len;                      /* :459 */
-    if (commit_size != val_set_len) {                                /* :464-469 */
+    commit_size = cmt_commit_size(block->last_commit);               /* :489 */
+    val_set_len = last_val_set->validators_len;                      /* :490 */
+    if (commit_size != val_set_len) {                                /* :495-500 */
         QGP_LOG_ERROR(LOG_TAG, "commit size (%zu) doesn't match validator set "
                       "length (%zu) at height %" PRId64, commit_size,
                       val_set_len, block->header.height);
         return CMT_FAULT;                 /* panic */
     }
-    for (i = 0; i < val_set_len; i++) {                              /* :472-478 */
+    for (i = 0; i < val_set_len; i++) {                              /* :503-509 */
         const cmt_commit_sig_t *sig = &block->last_commit->signatures[i];
 
         if (tm2pb_validator(&last_val_set->validators[i],
@@ -549,14 +549,14 @@ int nodus_cmt_build_last_commit_info(nodus_cmt_blockexec_t *ctx,
         }
         ctx->votes[i].block_id_flag = sig->block_id_flag;
     }
-    out->round = block->last_commit->round;                          /* :481 */
+    out->round = block->last_commit->round;                          /* :512 */
     out->votes = val_set_len ? ctx->votes : NULL;
     out->votes_len = val_set_len;
     return CMT_OK;
 }
 
-/* :432-448 buildLastCommitInfoFromStore — LoadValidators(height-1) into
- * ctx->vals_a; a load error is the panic at :445. */
+/* :463-479 buildLastCommitInfoFromStore — LoadValidators(height-1) into
+ * ctx->vals_a; a load error is the panic at :476. */
 static int build_last_commit_info_from_store(nodus_cmt_blockexec_t *ctx,
                                              const cmt_block_t *block,
                                              int64_t initial_height,
@@ -565,7 +565,7 @@ static int build_last_commit_info_from_store(nodus_cmt_blockexec_t *ctx,
     cmt_validator_set_t last_val_set;
 
     memset(out, 0, sizeof(*out));
-    if (block->header.height == initial_height) {                    /* :433-437 */
+    if (block->header.height == initial_height) {                    /* :464-468 */
         return CMT_OK;
     }
     if (cmt_validator_set_init(&last_val_set, ctx->vals_a, CMT_VALSET_MAX)
@@ -573,16 +573,16 @@ static int build_last_commit_info_from_store(nodus_cmt_blockexec_t *ctx,
         return CMT_FAULT;
     }
     if (nodus_cmt_ss_load_validators(ctx->store, block->header.height - 1,
-                                     &last_val_set) != CMT_OK) {     /* :439 */
+                                     &last_val_set) != CMT_OK) {     /* :470 */
         QGP_LOG_ERROR(LOG_TAG, "failed to load validator set at height %" PRId64,
                       block->header.height - 1);
-        return CMT_FAULT;                                            /* :441 panic */
+        return CMT_FAULT;                                            /* :472 panic */
     }
     return nodus_cmt_build_last_commit_info(ctx, block, &last_val_set,
-                                            initial_height, out);    /* :444 */
+                                            initial_height, out);    /* :475 */
 }
 
-/* :512-565 BuildExtendedCommitInfo */
+/* :543-596 BuildExtendedCommitInfo */
 int nodus_cmt_build_extended_commit_info(nodus_cmt_blockexec_t *ctx,
                                          const cmt_extended_commit_t *ec,
                                          const cmt_validator_set_t *val_set,
@@ -597,22 +597,22 @@ int nodus_cmt_build_extended_commit_info(nodus_cmt_blockexec_t *ctx,
         return CMT_FAULT;
     }
     memset(out, 0, sizeof(*out));
-    if (ec->height < initial_height) {                               /* :513-516 */
+    if (ec->height < initial_height) {                               /* :544-547 */
         return CMT_OK;
     }
-    ec_size = cmt_extended_commit_size(ec);                          /* :519 */
-    val_set_len = val_set->validators_len;                           /* :520 */
-    if (ec_size != val_set_len) {                                    /* :525-530 */
+    ec_size = cmt_extended_commit_size(ec);                          /* :550 */
+    val_set_len = val_set->validators_len;                           /* :551 */
+    if (ec_size != val_set_len) {                                    /* :556-561 */
         QGP_LOG_ERROR(LOG_TAG, "extended commit size (%zu) does not match "
                       "validator set length (%zu) at height %" PRId64,
                       ec_size, val_set_len, ec->height);
         return CMT_FAULT;                 /* panic */
     }
     if (cmt_abci_params_vote_extensions_enabled(ap, ec->height, &enabled)
-        != CMT_OK) {                                                 /* :551 */
+        != CMT_OK) {                                                 /* :582 */
         return CMT_FAULT;
     }
-    for (i = 0; i < val_set_len; i++) {                              /* :533-561 */
+    for (i = 0; i < val_set_len; i++) {                              /* :564-592 */
         const cmt_extended_commit_sig_t *ecs = &ec->extended_signatures[i];
         const cmt_validator_t *val = &val_set->validators[i];
         nodus_abci_extended_vote_info_t *v = &ctx->ext_votes[i];
@@ -620,34 +620,34 @@ int nodus_cmt_build_extended_commit_info(nodus_cmt_blockexec_t *ctx,
         if (ecs->commit_sig.block_id_flag != CMT_PB_BLOCK_ID_FLAG_ABSENT &&
             (ecs->commit_sig.validator_address_len != val->address_len ||
              memcmp(ecs->commit_sig.validator_address, val->address,
-                    val->address_len) != 0)) {                       /* :538-542 */
+                    val->address_len) != 0)) {                       /* :569-573 */
             QGP_LOG_ERROR(LOG_TAG, "validator address of extended commit "
                           "signature in position %zu does not match the "
                           "corresponding validator's at height %" PRId64,
                           i, ec->height);
             return CMT_FAULT;             /* panic */
         }
-        if (cmt_ecs_ensure_extension(ecs, enabled) != CMT_OK) {      /* :551-553 */
+        if (cmt_ecs_ensure_extension(ecs, enabled) != CMT_OK) {      /* :582-584 */
             QGP_LOG_ERROR(LOG_TAG, "commit at height %" PRId64 " has problems "
                           "with vote extension data", ec->height);
             return CMT_FAULT;             /* panic */
         }
         memset(v, 0, sizeof(*v));
-        if (tm2pb_validator(val, &v->validator) != CMT_OK) {         /* :556 */
+        if (tm2pb_validator(val, &v->validator) != CMT_OK) {         /* :587 */
             return CMT_FAULT;
         }
-        v->block_id_flag = ecs->commit_sig.block_id_flag;            /* :557 */
-        v->vote_extension = ecs->extension;                          /* :558 */
-        v->extension_signature.data = ecs->extension_signature;      /* :559 */
+        v->block_id_flag = ecs->commit_sig.block_id_flag;            /* :588 */
+        v->vote_extension = ecs->extension;                          /* :589 */
+        v->extension_signature.data = ecs->extension_signature;      /* :590 */
         v->extension_signature.len = ecs->extension_signature_len;
     }
-    out->round = ec->round;                                          /* :563 */
+    out->round = ec->round;                                          /* :594 */
     out->votes = val_set_len ? ctx->ext_votes : NULL;
     out->votes_len = val_set_len;
     return CMT_OK;
 }
 
-/* :495-510 buildExtendedCommitInfoFromStore */
+/* :526-541 buildExtendedCommitInfoFromStore */
 static int build_extended_commit_info_from_store(nodus_cmt_blockexec_t *ctx,
                                                  const cmt_extended_commit_t *ec,
                                                  int64_t initial_height,
@@ -657,20 +657,20 @@ static int build_extended_commit_info_from_store(nodus_cmt_blockexec_t *ctx,
     cmt_validator_set_t val_set;
 
     memset(out, 0, sizeof(*out));
-    if (ec->height < initial_height) {                               /* :496-499 */
+    if (ec->height < initial_height) {                               /* :527-530 */
         return CMT_OK;
     }
     if (cmt_validator_set_init(&val_set, ctx->vals_a, CMT_VALSET_MAX) != CMT_OK) {
         return CMT_FAULT;
     }
     if (nodus_cmt_ss_load_validators(ctx->store, ec->height, &val_set)
-        != CMT_OK) {                                                 /* :501 */
+        != CMT_OK) {                                                 /* :532 */
         QGP_LOG_ERROR(LOG_TAG, "failed to load validator set at height %" PRId64
                       ", initial height %" PRId64, ec->height, initial_height);
-        return CMT_FAULT;                                            /* :503 panic */
+        return CMT_FAULT;                                            /* :534 panic */
     }
     return nodus_cmt_build_extended_commit_info(ctx, ec, &val_set,
-                                                initial_height, ap, out); /* :506 */
+                                                initial_height, ap, out); /* :537 */
 }
 
 /* The block fields every request carries (hash / height / time /
@@ -693,7 +693,7 @@ static int block_hash_of(cmt_block_t *block, uint8_t out[CMT_PB_HASH_MAX],
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * CreateProposalBlock — execution.go:101-160
+ * CreateProposalBlock — execution.go:110-172
  * ═══════════════════════════════════════════════════════════════════════ */
 
 int nodus_cmt_host_create_proposal_block(void *vctx, int64_t height,
@@ -723,14 +723,14 @@ int nodus_cmt_host_create_proposal_block(void *vctx, int64_t height,
         return CMT_FAULT;
     }
 
-    max_bytes = state->consensus_params.block.max_bytes;             /* :109 */
-    empty_max_bytes = (max_bytes == -1);                             /* :110 */
+    max_bytes = state->consensus_params.block.max_bytes;             /* :118 */
+    empty_max_bytes = (max_bytes == -1);                             /* :119 */
     if (empty_max_bytes) {
-        max_bytes = (int64_t)CMT_MAX_BLOCK_SIZE_BYTES;               /* :112 */
+        max_bytes = (int64_t)CMT_MAX_BLOCK_SIZE_BYTES;               /* :121 */
     }
-    max_gas = state->consensus_params.block.max_gas;                 /* :115 */
+    max_gas = state->consensus_params.block.max_gas;                 /* :124 */
 
-    /* :117 evpool.PendingEvidence(MaxBytes) → the slot's evidence array */
+    /* :126 evpool.PendingEvidence(MaxBytes) → the slot's evidence array */
     rc = ctx->evpool->pending_evidence(ctx->evpool->ctx,
                                        state->consensus_params.evidence.max_bytes,
                                        slot->dec.evidence, slot->dec.evidence_cap,
@@ -742,20 +742,20 @@ int nodus_cmt_host_create_proposal_block(void *vctx, int64_t height,
     evidence.evidence = slot->dec.evidence;
     evidence.evidence_cap = slot->dec.evidence_cap;
     evidence.evidence_len = n_ev;
-    evidence.byte_size = 0;               /* the lazy cache, unset (:1390) */
+    evidence.byte_size = 0;               /* the lazy cache, unset (block.go:1396) */
 
-    /* :120 types.MaxDataBytes — the reference PANICS on a negative result */
+    /* :129 types.MaxDataBytes — the reference PANICS on a negative result */
     if (cmt_max_data_bytes(max_bytes, ev_size,
                            (int64_t)state->validators.validators_len,
                            &max_data_bytes) != CMT_OK) {
         return CMT_FAULT;
     }
-    max_reap_bytes = max_data_bytes;                                 /* :121 */
+    max_reap_bytes = max_data_bytes;                                 /* :130 */
     if (empty_max_bytes) {
-        max_reap_bytes = -1;                                         /* :123 */
+        max_reap_bytes = -1;                                         /* :132 */
     }
 
-    /* :126 mempool.ReapMaxBytesMaxGas → copied into reap_arena */
+    /* :135 mempool.ReapMaxBytesMaxGas → copied into reap_arena */
     rc = ctx->mempool->reap_max_bytes_max_gas(ctx->mempool->ctx, max_reap_bytes,
                                               max_gas, ctx->reap_txs,
                                               ctx->limits.max_txs, &n_txs);
@@ -778,7 +778,7 @@ int nodus_cmt_host_create_proposal_block(void *vctx, int64_t height,
         }
     }
 
-    /* :127 commit := lastExtCommit.ToCommit() → the slot's LastCommit */
+    /* :136 commit := lastExtCommit.ToCommit() → the slot's LastCommit */
     memset(&slot->dec.last_commit, 0, sizeof(slot->dec.last_commit));
     if (cmt_extended_commit_to_commit(last_ext_commit, slot->dec.sigs,
                                       slot->dec.sigs_cap,
@@ -786,7 +786,7 @@ int nodus_cmt_host_create_proposal_block(void *vctx, int64_t height,
         return CMT_FAULT;
     }
 
-    /* :128 the FIRST MakeBlock, on the reaped txs, into tmp_block.
+    /* :137 the FIRST MakeBlock, on the reaped txs, into tmp_block.
      * cometbft@v0.38.26 execution.go:137-140 returns MakeBlock's error
      * (MedianTime over this node's own LastCommit) from
      * CreateProposalBlock, and consensus/state.go:1304-1306 (v0.38.26)
@@ -803,42 +803,42 @@ int nodus_cmt_host_create_proposal_block(void *vctx, int64_t height,
         return CMT_FAULT;
     }
 
-    /* :129-141 RequestPrepareProposal */
+    /* :141-153 RequestPrepareProposal */
     memset(&req, 0, sizeof(req));
-    req.max_tx_bytes = max_data_bytes;                               /* :132 */
-    req.txs = ctx->tmp_block->data.txs;                              /* :133 */
+    req.max_tx_bytes = max_data_bytes;                               /* :144 */
+    req.txs = ctx->tmp_block->data.txs;                              /* :145 */
     req.txs_len = ctx->tmp_block->data.txs_len;
     rc = build_extended_commit_info_from_store(ctx, last_ext_commit,
                                                state->initial_height,
                                                state->consensus_params.abci,
-                                               &req.local_last_commit); /* :134 */
+                                               &req.local_last_commit); /* :146 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
     rc = nodus_cmt_evidence_to_abci(ctx, &ctx->tmp_block->evidence,
-                                    &req.misbehavior, &req.misbehavior_len); /* :135 */
+                                    &req.misbehavior, &req.misbehavior_len); /* :147 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
-    req.height = ctx->tmp_block->header.height;                      /* :136 */
-    req.time = ctx->tmp_block->header.time;                          /* :137 */
+    req.height = ctx->tmp_block->header.height;                      /* :148 */
+    req.time = ctx->tmp_block->header.time;                          /* :149 */
     memcpy(req.next_validators_hash, ctx->tmp_block->header.next_validators_hash,
-           ctx->tmp_block->header.next_validators_hash_len);         /* :138 */
+           ctx->tmp_block->header.next_validators_hash_len);         /* :150 */
     req.next_validators_hash_len = ctx->tmp_block->header.next_validators_hash_len;
     memcpy(req.proposer_address, ctx->tmp_block->header.proposer_address,
-           ctx->tmp_block->header.proposer_address_len);             /* :139 */
+           ctx->tmp_block->header.proposer_address_len);             /* :151 */
     req.proposer_address_len = ctx->tmp_block->header.proposer_address_len;
 
     memset(&resp, 0, sizeof(resp));
-    rc = ctx->app->prepare_proposal(ctx->app->ctx, &req, &resp);    /* :129 */
-    if (rc != CMT_OK) {                                              /* :143-153 */
+    rc = ctx->app->prepare_proposal(ctx->app->ctx, &req, &resp);    /* :141 */
+    if (rc != CMT_OK) {                                              /* :155-165 */
         QGP_LOG_ERROR(LOG_TAG, "PrepareProposal failed (rc %d)", rc);
-        return CMT_FAULT;                 /* state.go:1309-1311 panics */
+        return CMT_FAULT;                 /* state.go:1304-1306 panics */
     }
 
-    /* :155-158 txl := ToTxs(rpp.Txs); txl.Validate(maxDataBytes) */
+    /* :167-170 txl := ToTxs(rpp.Txs); txl.Validate(maxDataBytes) */
     if (nodus_cmt_txs_validate(resp.txs, resp.txs_len, max_data_bytes) != CMT_OK) {
-        return CMT_FAULT;                 /* :157 → state.go:1309-1311 */
+        return CMT_FAULT;                 /* :169 → state.go:1304-1306 */
     }
     if (resp.txs_len > slot->dec.txs_cap) {
         return CMT_FAULT;                 /* capacity */
@@ -864,7 +864,7 @@ int nodus_cmt_host_create_proposal_block(void *vctx, int64_t height,
     data.txs_cap = slot->dec.txs_cap;
     data.txs_len = resp.txs_len;
 
-    /* :159 the SECOND MakeBlock, into the slot */
+    /* :171 the SECOND MakeBlock, into the slot */
     rc = cmt_state_make_block(state, height, &data, &slot->dec.last_commit,
                               &evidence, proposer_addr, proposer_addr_len,
                               ctx->block_scratch, out);
@@ -875,7 +875,7 @@ int nodus_cmt_host_create_proposal_block(void *vctx, int64_t height,
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * ProcessProposal — execution.go:162-188
+ * ProcessProposal — execution.go:174-200
  * ═══════════════════════════════════════════════════════════════════════ */
 
 int nodus_cmt_host_process_proposal(void *vctx, cmt_block_t *block,
@@ -891,43 +891,43 @@ int nodus_cmt_host_process_proposal(void *vctx, cmt_block_t *block,
     }
     *out_accept = false;
     memset(&req, 0, sizeof(req));
-    if (cmt_header_hash(&block->header, req.hash) == CMT_OK) {      /* :167 */
+    if (cmt_header_hash(&block->header, req.hash) == CMT_OK) {      /* :179 */
         req.hash_len = CMT_TMHASH_SIZE;
     }
-    req.height = block->header.height;                               /* :168 */
-    req.time = block->header.time;                                   /* :169 */
-    req.txs = block->data.txs;                                       /* :170 */
+    req.height = block->header.height;                               /* :180 */
+    req.time = block->header.time;                                   /* :181 */
+    req.txs = block->data.txs;                                       /* :182 */
     req.txs_len = block->data.txs_len;
     rc = build_last_commit_info_from_store(ctx, block, state->initial_height,
-                                           &req.proposed_last_commit); /* :171 */
+                                           &req.proposed_last_commit); /* :183 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
     rc = nodus_cmt_evidence_to_abci(ctx, &block->evidence, &req.misbehavior,
-                                    &req.misbehavior_len);          /* :172 */
+                                    &req.misbehavior_len);          /* :184 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
     memcpy(req.proposer_address, block->header.proposer_address,
-           block->header.proposer_address_len);                      /* :173 */
+           block->header.proposer_address_len);                      /* :185 */
     req.proposer_address_len = block->header.proposer_address_len;
     memcpy(req.next_validators_hash, block->header.next_validators_hash,
-           block->header.next_validators_hash_len);                  /* :174 */
+           block->header.next_validators_hash_len);                  /* :186 */
     req.next_validators_hash_len = block->header.next_validators_hash_len;
 
     memset(&resp, 0, sizeof(resp));
-    rc = ctx->app->process_proposal(ctx->app->ctx, &req, &resp);    /* :166 */
+    rc = ctx->app->process_proposal(ctx->app->ctx, &req, &resp);    /* :178 */
     if (rc != CMT_OK) {
-        return CMT_FAULT;                 /* :176-178 → state.go:1383-1387 */
+        return CMT_FAULT;                 /* :188-190 → state.go:1378-1382 */
     }
     if (resp.status == NODUS_ABCI_PROPOSAL_STATUS_UNKNOWN ||
         (resp.status != NODUS_ABCI_PROPOSAL_STATUS_ACCEPT &&
-         resp.status != NODUS_ABCI_PROPOSAL_STATUS_REJECT)) {        /* :180 */
+         resp.status != NODUS_ABCI_PROPOSAL_STATUS_REJECT)) {        /* :192 */
         QGP_LOG_ERROR(LOG_TAG, "ProcessProposal responded with status %d",
                       (int)resp.status);
         return CMT_FAULT;                 /* panic */
     }
-    *out_accept = (resp.status == NODUS_ABCI_PROPOSAL_STATUS_ACCEPT); /* :184 */
+    *out_accept = (resp.status == NODUS_ABCI_PROPOSAL_STATUS_ACCEPT); /* :196 */
     return CMT_OK;
 }
 
@@ -1268,7 +1268,7 @@ int nodus_cmt_host_validate_block_skip_last_commit(void *vctx,
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * updateState — execution.go:593-664
+ * updateState — execution.go:624-695
  * ═══════════════════════════════════════════════════════════════════════ */
 
 int nodus_cmt_update_state(nodus_cmt_blockexec_t *ctx, const cmt_state_t *state,
@@ -1293,7 +1293,7 @@ int nodus_cmt_update_state(nodus_cmt_blockexec_t *ctx, const cmt_state_t *state,
         return CMT_FAULT;
     }
 
-    /* :603 nValSet := state.NextValidators.Copy() */
+    /* :634 nValSet := state.NextValidators.Copy() */
     if (cmt_validator_set_init(&ns->next_validators,
                                ctx->state_storage->next_validators,
                                CMT_VALSET_MAX) != CMT_OK ||
@@ -1301,78 +1301,78 @@ int nodus_cmt_update_state(nodus_cmt_blockexec_t *ctx, const cmt_state_t *state,
             != CMT_OK) {
         return CMT_FAULT;
     }
-    /* :606-614 */
+    /* :637-645 */
     last_height_vals_changed = state->last_height_validators_changed;
     if (n_updates > 0) {
         rc = cmt_validator_set_update_with_change_set(&ns->next_validators,
                                                       validator_updates, n_updates,
-                                                      ctx->valset_scratch); /* :608 */
+                                                      ctx->valset_scratch); /* :639 */
         if (rc != CMT_OK) {
             QGP_LOG_ERROR(LOG_TAG, "changing validator set failed (rc %d)", rc);
-            return CMT_REJECT;                                       /* :610 */
+            return CMT_REJECT;                                       /* :641 */
         }
-        last_height_vals_changed = header->height + 1 + 1;           /* :613 */
+        last_height_vals_changed = header->height + 1 + 1;           /* :644 */
     }
-    /* :617 */
+    /* :648 */
     rc = cmt_validator_set_increment_proposer_priority(&ns->next_validators, 1);
     if (rc != CMT_OK) {
         return CMT_FAULT;                 /* the reference's panic sites */
     }
-    /* :620-637 */
-    next_params = state->consensus_params;                           /* :620 */
+    /* :651-668 */
+    next_params = state->consensus_params;                           /* :651 */
     last_height_params_changed = state->last_height_consensus_params_changed;
     version = state->version;
-    if (resp->has_consensus_param_updates) {                         /* :622 */
+    if (resp->has_consensus_param_updates) {                         /* :653 */
         rc = cmt_consensus_params_update(&state->consensus_params,
                                          &resp->consensus_param_updates,
-                                         &next_params);              /* :624 */
+                                         &next_params);              /* :655 */
         if (rc != CMT_OK) {
             return CMT_FAULT;
         }
-        rc = cmt_consensus_params_validate_basic(&next_params);      /* :625 */
+        rc = cmt_consensus_params_validate_basic(&next_params);      /* :656 */
         if (rc != CMT_OK) {
             QGP_LOG_ERROR(LOG_TAG, "validating new consensus params failed "
                           "(rc %d)", rc);
-            return CMT_REJECT;                                       /* :627 */
+            return CMT_REJECT;                                       /* :658 */
         }
         rc = cmt_consensus_params_validate_update(&state->consensus_params,
                                                   &resp->consensus_param_updates,
-                                                  header->height);   /* :630 */
+                                                  header->height);   /* :661 */
         if (rc != CMT_OK) {
             QGP_LOG_ERROR(LOG_TAG, "updating consensus params failed (rc %d)", rc);
-            return CMT_REJECT;                                       /* :632 */
+            return CMT_REJECT;                                       /* :663 */
         }
-        version.consensus.app = next_params.version.app;             /* :635 */
-        last_height_params_changed = header->height + 1;             /* :638 */
+        version.consensus.app = next_params.version.app;             /* :666 */
+        last_height_params_changed = header->height + 1;             /* :669 */
     }
-    /* :641 nextVersion := state.Version */
+    /* :672 nextVersion := state.Version */
 
-    /* :645-663 the State literal */
-    ns->version = version;                                           /* :646 */
-    memcpy(ns->chain_id, state->chain_id, state->chain_id_len);      /* :647 */
+    /* :676-694 the State literal */
+    ns->version = version;                                           /* :677 */
+    memcpy(ns->chain_id, state->chain_id, state->chain_id_len);      /* :678 */
     ns->chain_id_len = state->chain_id_len;
-    ns->initial_height = state->initial_height;                      /* :648 */
-    ns->last_block_height = header->height;                          /* :649 */
-    ns->last_block_id = *block_id;                                   /* :650 */
-    ns->last_block_time = header->time;                              /* :651 */
-    /* :652 NextValidators: nValSet — already in place */
-    /* :653 Validators: state.NextValidators.Copy() */
+    ns->initial_height = state->initial_height;                      /* :679 */
+    ns->last_block_height = header->height;                          /* :680 */
+    ns->last_block_id = *block_id;                                   /* :681 */
+    ns->last_block_time = header->time;                              /* :682 */
+    /* :683 NextValidators: nValSet — already in place */
+    /* :684 Validators: state.NextValidators.Copy() */
     if (cmt_validator_set_init(&ns->validators, ctx->state_storage->validators,
                                CMT_VALSET_MAX) != CMT_OK ||
         cmt_validator_set_copy(&state->next_validators, &ns->validators) != CMT_OK) {
         return CMT_FAULT;
     }
-    /* :654 LastValidators: state.Validators.Copy() */
+    /* :685 LastValidators: state.Validators.Copy() */
     if (cmt_validator_set_init(&ns->last_validators,
                                ctx->state_storage->last_validators,
                                CMT_VALSET_MAX) != CMT_OK ||
         cmt_validator_set_copy(&state->validators, &ns->last_validators) != CMT_OK) {
         return CMT_FAULT;
     }
-    ns->last_height_validators_changed = last_height_vals_changed;   /* :655 */
-    ns->consensus_params = next_params;                              /* :656 */
-    ns->last_height_consensus_params_changed = last_height_params_changed; /* :657 */
-    /* :658 LastResultsHash: TxResultsHash(abciResponse.TxResults)
+    ns->last_height_validators_changed = last_height_vals_changed;   /* :686 */
+    ns->consensus_params = next_params;                              /* :687 */
+    ns->last_height_consensus_params_changed = last_height_params_changed; /* :688 */
+    /* :689 LastResultsHash: TxResultsHash(abciResponse.TxResults)
      *
      * ORCHESTRATOR delta 3, item B — PER-APPLY, not bind-time: refuse a
      * count above `limits.max_txs` (the node's own configured ceiling,
@@ -1421,7 +1421,7 @@ int nodus_cmt_update_state(nodus_cmt_blockexec_t *ctx, const cmt_state_t *state,
              * both sides), that init zeroed the source struct out from
              * under itself: every field the function then "copied" read
              * back as 0. The state's LastResultsHash
-             * (state/execution.go:658 `LastResultsHash:
+             * (state/execution.go:689 `LastResultsHash:
              * TxResultsHash(abciResponse.TxResults)`, state/store.go
              * :411-413 `TxResultsHash` = types/results.go NewResults +
              * Hash) was therefore the hash
@@ -1472,12 +1472,12 @@ int nodus_cmt_update_state(nodus_cmt_blockexec_t *ctx, const cmt_state_t *state,
         }
     }
     ns->last_results_hash_len = CMT_TMHASH_SIZE;
-    ns->app_hash_len = 0;                                            /* :659 nil */
+    ns->app_hash_len = 0;                                            /* :690 nil */
     return CMT_OK;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * Commit — execution.go:387-430
+ * Commit — execution.go:418-461
  * ═══════════════════════════════════════════════════════════════════════ */
 
 static int blockexec_commit(nodus_cmt_blockexec_t *ctx, const cmt_state_t *state,
@@ -1490,24 +1490,24 @@ static int blockexec_commit(nodus_cmt_blockexec_t *ctx, const cmt_state_t *state
     nodus_cmt_post_check_t post;
     int rc;
 
-    ctx->mempool->lock(ctx->mempool->ctx);                           /* :392 */
-    rc = ctx->mempool->flush_app_conn(ctx->mempool->ctx);            /* :397 */
+    ctx->mempool->lock(ctx->mempool->ctx);                           /* :423 */
+    rc = ctx->mempool->flush_app_conn(ctx->mempool->ctx);            /* :428 */
     if (rc != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "client error during mempool.FlushAppConn (rc %d)",
                       rc);
-        ctx->mempool->unlock(ctx->mempool->ctx);                     /* :393 defer */
-        return CMT_REJECT;                                           /* :400 */
+        ctx->mempool->unlock(ctx->mempool->ctx);                     /* :424 defer */
+        return CMT_REJECT;                                           /* :431 */
     }
     memset(&res, 0, sizeof(res));
-    rc = ctx->app->commit(ctx->app->ctx, &res);                      /* :404 */
+    rc = ctx->app->commit(ctx->app->ctx, &res);                      /* :435 */
     if (rc != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "client error during proxyAppConn.CommitSync "
                       "(rc %d)", rc);
         ctx->mempool->unlock(ctx->mempool->ctx);
-        return CMT_REJECT;                                           /* :407 */
+        return CMT_REJECT;                                           /* :438 */
     }
-    /* :418-425 mempool.Update(height, txs, results, TxPreCheck(state),
-     * TxPostCheck(state)) — `state` is the UPDATED state (:284, :289). */
+    /* :449-456 mempool.Update(height, txs, results, TxPreCheck(state),
+     * TxPostCheck(state)) — `state` is the UPDATED state (:315, :320). */
     if (nodus_cmt_tx_pre_check(state, &pre) != CMT_OK) {
         ctx->mempool->unlock(ctx->mempool->ctx);
         return CMT_FAULT;
@@ -1516,13 +1516,13 @@ static int blockexec_commit(nodus_cmt_blockexec_t *ctx, const cmt_state_t *state
     rc = ctx->mempool->update(ctx->mempool->ctx, block->header.height,
                               block->data.txs, block->data.txs_len,
                               resp->tx_results, resp->tx_results_len, pre, post);
-    ctx->mempool->unlock(ctx->mempool->ctx);                         /* :393 defer */
-    *out_retain_height = res.retain_height;                          /* :427 */
+    ctx->mempool->unlock(ctx->mempool->ctx);                         /* :424 defer */
+    *out_retain_height = res.retain_height;                          /* :458 */
     return rc == CMT_OK ? CMT_OK : CMT_REJECT;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * pruneBlocks — execution.go:773-789
+ * pruneBlocks — execution.go:804-820
  * ═══════════════════════════════════════════════════════════════════════ */
 
 int nodus_cmt_blockexec_prune_blocks(nodus_cmt_blockexec_t *ctx,
@@ -1538,32 +1538,32 @@ int nodus_cmt_blockexec_prune_blocks(nodus_cmt_blockexec_t *ctx,
         return CMT_FAULT;
     }
     *out_pruned = 0;
-    base = nodus_cmt_bs_base(ctx->store);                            /* :774 */
-    if (retain_height <= base) {                                     /* :775-777 */
+    base = nodus_cmt_bs_base(ctx->store);                            /* :805 */
+    if (retain_height <= base) {                                     /* :806-808 */
         return CMT_OK;
     }
     rc = nodus_cmt_bs_prune_blocks(ctx->store, retain_height, state,
-                                   &amount_pruned, &pruned_header_height); /* :779 */
+                                   &amount_pruned, &pruned_header_height); /* :810 */
     if (rc != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "failed to prune block store (rc %d)", rc);
-        return rc;                                                   /* :781 */
+        return rc;                                                   /* :812 */
     }
     rc = nodus_cmt_ss_prune_states(ctx->store, base, retain_height,
                                    pruned_header_height, ctx->vals_a,
-                                   CMT_VALSET_MAX, ctx->valset_scratch); /* :784 */
+                                   CMT_VALSET_MAX, ctx->valset_scratch); /* :815 */
     if (rc != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "failed to prune state store (rc %d)", rc);
-        return rc;                                                   /* :786 */
+        return rc;                                                   /* :817 */
     }
-    *out_pruned = amount_pruned;                                     /* :788 */
+    *out_pruned = amount_pruned;                                     /* :819 */
     return CMT_OK;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * applyBlock — execution.go:222-323
+ * applyBlock — execution.go:253-354
  * ═══════════════════════════════════════════════════════════════════════ */
 
-/* The RequestFinalizeBlock of :224-233 and :740-749 (ExecCommitBlock),
+/* The RequestFinalizeBlock of :255-264 and :771-780 (ExecCommitBlock),
  * one builder. */
 static int build_finalize_request(nodus_cmt_blockexec_t *ctx, cmt_block_t *block,
                                   int64_t initial_height,
@@ -1572,28 +1572,28 @@ static int build_finalize_request(nodus_cmt_blockexec_t *ctx, cmt_block_t *block
     int rc;
 
     memset(req, 0, sizeof(*req));
-    if (block_hash_of(block, req->hash, &req->hash_len) != CMT_OK) { /* :225 */
+    if (block_hash_of(block, req->hash, &req->hash_len) != CMT_OK) { /* :256 */
         return CMT_FAULT;
     }
     memcpy(req->next_validators_hash, block->header.next_validators_hash,
-           block->header.next_validators_hash_len);                  /* :226 */
+           block->header.next_validators_hash_len);                  /* :257 */
     req->next_validators_hash_len = block->header.next_validators_hash_len;
     memcpy(req->proposer_address, block->header.proposer_address,
-           block->header.proposer_address_len);                      /* :227 */
+           block->header.proposer_address_len);                      /* :258 */
     req->proposer_address_len = block->header.proposer_address_len;
-    req->height = block->header.height;                              /* :228 */
-    req->time = block->header.time;                                  /* :229 */
+    req->height = block->header.height;                              /* :259 */
+    req->time = block->header.time;                                  /* :260 */
     rc = build_last_commit_info_from_store(ctx, block, initial_height,
-                                           &req->decided_last_commit); /* :230 */
+                                           &req->decided_last_commit); /* :261 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
     rc = nodus_cmt_evidence_to_abci(ctx, &block->evidence, &req->misbehavior,
-                                    &req->misbehavior_len);          /* :231 */
+                                    &req->misbehavior_len);          /* :262 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
-    req->txs = block->data.txs;                                      /* :232 */
+    req->txs = block->data.txs;                                      /* :263 */
     req->txs_len = block->data.txs_len;
     return CMT_OK;
 }
@@ -1603,7 +1603,7 @@ static int build_finalize_request(nodus_cmt_blockexec_t *ctx, cmt_block_t *block
  * `applyBlock` opens ONE SQLite transaction on the MAIN ledger connection
  * BEFORE `app.finalize_block` and `app.commit` closes it. Inside it the
  * application's ledger writes, `SaveFinalizeBlockResponse`'s
- * `abciResponsesKey:<h>` row (:259) and whatever `updateState` (:284)
+ * `abciResponsesKey:<h>` row (:290) and whatever `updateState` (:315)
  * persists are ONE atomic unit, so no crash can leave the reference's
  * Handshaker a combination it does not handle: before the COMMIT is
  * "we haven't run Commit" (consensus/replay.go:428-436) and after it,
@@ -1682,65 +1682,65 @@ static int apply_block(nodus_cmt_blockexec_t *ctx, const cmt_block_id_t *block_i
         free(resp);
         return CMT_FAULT;
     }
-    /* BEGIN IMMEDIATE — before :224, so everything below joins it. */
+    /* BEGIN IMMEDIATE — before :255, so everything below joins it. */
     if (ledger_txn_begin(ctx) != CMT_OK) {
         free(resp);
         return CMT_FAULT;
     }
-    rc = ctx->app->finalize_block(ctx->app->ctx, &req, resp);       /* :224 */
-    if (rc != CMT_OK) {                                              /* :236-239 */
+    rc = ctx->app->finalize_block(ctx->app->ctx, &req, resp);       /* :255 */
+    if (rc != CMT_OK) {                                              /* :267-270 */
         QGP_LOG_ERROR(LOG_TAG, "error in proxyAppConn.FinalizeBlock (rc %d)", rc);
-        goto fail;                        /* state.go:1783-1785 panics */
+        goto fail;                        /* state.go:1778-1780 panics */
     }
-    /* :249-251 */
+    /* :280-282 */
     if (block->data.txs_len != resp->tx_results_len) {
         QGP_LOG_ERROR(LOG_TAG, "expected tx results length to match size of "
                       "transactions in block. Expected %zu, got %zu",
                       block->data.txs_len, resp->tx_results_len);
         goto fail;
     }
-    CMT_FAIL_POINT();                                                /* :256 */
-    /* :259 SaveFinalizeBlockResponse — joins the transaction */
+    CMT_FAIL_POINT();                                                /* :287 */
+    /* :290 SaveFinalizeBlockResponse — joins the transaction */
     rc = nodus_cmt_ss_save_finalize_block_response(ctx->store,
                                                    block->header.height, resp);
     if (rc != CMT_OK) {
-        goto fail;                                                   /* :260 */
+        goto fail;                                                   /* :291 */
     }
-    CMT_FAIL_POINT();                                                /* :263 */
-    /* :266-269 validateValidatorUpdates */
+    CMT_FAIL_POINT();                                                /* :294 */
+    /* :297-300 validateValidatorUpdates */
     rc = nodus_cmt_validate_validator_updates(
         resp->validator_updates, resp->validator_updates_len,
         &in_out_state->consensus_params.validator);
     if (rc != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "error in validator updates (rc %d)", rc);
-        goto fail;                                                   /* :268 */
+        goto fail;                                                   /* :299 */
     }
-    /* :271-274 PB2TM.ValidatorUpdates */
+    /* :302-305 PB2TM.ValidatorUpdates */
     rc = nodus_cmt_pb2tm_validator_updates(resp->validator_updates,
                                            resp->validator_updates_len,
                                            ctx->changes, CMT_VALSET_MAX_CHANGES);
     if (rc != CMT_OK) {
-        goto fail;                                                   /* :273 */
+        goto fail;                                                   /* :304 */
     }
-    /* :284-287 updateState */
+    /* :315-318 updateState */
     rc = nodus_cmt_update_state(ctx, in_out_state, block_id, &block->header, resp,
                                 ctx->changes, resp->validator_updates_len);
     if (rc != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "commit failed for application (rc %d)", rc);
-        goto fail;                                                   /* :286 */
+        goto fail;                                                   /* :317 */
     }
-    /* :290-293 Commit — `app.commit` IS the COMMIT of the transaction
+    /* :321-324 Commit — `app.commit` IS the COMMIT of the transaction
      * opened above (D-23 rev 5 (5)). */
     rc = blockexec_commit(ctx, &ctx->state_scratch, block, resp, &retain_height);
     if (rc != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "commit failed for application (rc %d)", rc);
-        goto fail;                                                   /* :292 */
+        goto fail;                                                   /* :323 */
     }
-    /* :296 evpool.Update */
+    /* :327 evpool.Update */
     (void)ctx->evpool->update(ctx->evpool->ctx, &ctx->state_scratch,
                               block->evidence.evidence, block->evidence.evidence_len);
-    CMT_FAIL_POINT();                                                /* :298 */
-    /* :301 state.AppHash = abciResponse.AppHash */
+    CMT_FAIL_POINT();                                                /* :329 */
+    /* :332 state.AppHash = abciResponse.AppHash */
     memcpy(ctx->state_scratch.app_hash, resp->app_hash, resp->app_hash_len);
     ctx->state_scratch.app_hash_len = resp->app_hash_len;
     /* TEST-ONLY: the "ran Commit, didn't save the state" window
@@ -1752,14 +1752,14 @@ static int apply_block(nodus_cmt_blockexec_t *ctx, const cmt_block_id_t *block_i
                      "store.Save(state)");
         goto fail;
     }
-    /* :302-304 store.Save — its own autocommit statement, AFTER the
+    /* :333-335 store.Save — its own autocommit statement, AFTER the
      * COMMIT (D-23 rev 5 (5)). */
     rc = nodus_cmt_ss_save(ctx->store, &ctx->state_scratch);
     if (rc != CMT_OK) {
-        goto fail;                                                   /* :303 */
+        goto fail;                                                   /* :334 */
     }
-    CMT_FAIL_POINT();                                                /* :306 */
-    /* :309-316 pruneBlocks — errors only logged */
+    CMT_FAIL_POINT();                                                /* :337 */
+    /* :340-347 pruneBlocks — errors only logged */
     if (retain_height > 0) {
         uint64_t pruned = 0;
 
@@ -1773,14 +1773,14 @@ static int apply_block(nodus_cmt_blockexec_t *ctx, const cmt_block_id_t *block_i
                           PRId64, pruned, retain_height);
         }
     }
-    /* :320 fireEvents — YOK */
+    /* :351 fireEvents — YOK */
     free(resp);
-    /* :322 return state, nil — the reference's value; here the copy. */
+    /* :353 return state, nil — the reference's value; here the copy. */
     return cmt_state_copy(&ctx->state_scratch, in_out_state) == CMT_OK
                ? CMT_OK : CMT_FAULT;
 
 fail:
-    /* Every failure of the reference's `applyBlock` is state.go:1783-1785's
+    /* Every failure of the reference's `applyBlock` is state.go:1778-1780's
      * panic class — the node stops — so the class is CMT_FAULT at every
      * one of these exits, exactly as before the bracket existed. The
      * rollback is conditional, so an exit AFTER `app.commit` (which
@@ -1790,7 +1790,7 @@ fail:
     return CMT_FAULT;
 }
 
-/* :199-203 ApplyVerifiedBlock */
+/* :230-234 ApplyVerifiedBlock */
 int nodus_cmt_host_apply_verified_block(void *vctx, const cmt_block_id_t *block_id,
                                         cmt_block_t *block,
                                         cmt_state_t *in_out_state)
@@ -1800,11 +1800,11 @@ int nodus_cmt_host_apply_verified_block(void *vctx, const cmt_block_id_t *block_
     if (!ctx || !block_id || !block || !in_out_state) {
         return CMT_FAULT;
     }
-    return apply_block(ctx, block_id, block, in_out_state);          /* :202 */
+    return apply_block(ctx, block_id, block, in_out_state);          /* :233 */
 }
 
-/* cometbft@v0.38.26 state/execution.go:242-251 ApplyBlock (709fd12b
- * :211-220) */
+/* cometbft@v0.38.26 state/execution.go:242-251 —
+ * ApplyBlock() */
 int nodus_cmt_blockexec_apply_block(nodus_cmt_blockexec_t *ctx,
                                     const cmt_block_id_t *block_id,
                                     cmt_block_t *block,
@@ -1830,7 +1830,7 @@ int nodus_cmt_blockexec_apply_block(nodus_cmt_blockexec_t *ctx,
     return apply_block(ctx, block_id, block, in_out_state);          /* :250 */
 }
 
-/* :731-771 ExecCommitBlock */
+/* :762-802 ExecCommitBlock */
 int nodus_cmt_exec_commit_block(nodus_cmt_blockexec_t *ctx, cmt_block_t *block,
                                 int64_t initial_height,
                                 uint8_t out_app_hash[CMT_PB_HASH_MAX],
@@ -1848,7 +1848,7 @@ int nodus_cmt_exec_commit_block(nodus_cmt_blockexec_t *ctx, cmt_block_t *block,
     if (!resp) {
         return CMT_FAULT;
     }
-    rc = build_finalize_request(ctx, block, initial_height, &req);   /* :738-749 */
+    rc = build_finalize_request(ctx, block, initial_height, &req);   /* :769-780 */
     if (rc != CMT_OK) {
         free(resp);
         return CMT_FAULT;
@@ -1856,7 +1856,7 @@ int nodus_cmt_exec_commit_block(nodus_cmt_blockexec_t *ctx, cmt_block_t *block,
     /* The SAME bracket as `applyBlock` (D-23 rev 5 (5)): the Handshaker's
      * replay applies blocks through this function, so a block it replays
      * must become durable in ONE transaction too — `app.commit` is its
-     * COMMIT. No state is saved here (:731-771 touches no state store). */
+     * COMMIT. No state is saved here (:762-802 touches no state store). */
     if (ledger_txn_begin(ctx) != CMT_OK) {
         free(resp);
         return CMT_FAULT;
@@ -1865,15 +1865,15 @@ int nodus_cmt_exec_commit_block(nodus_cmt_blockexec_t *ctx, cmt_block_t *block,
      * narrow EVERY non-OK answer to CMT_REJECT, so an application's
      * CMT_FAULT — this node failing to apply — was reported as "the
      * block is bad". The class is passed through; only a genuine REJECT
-     * stays the reference's `:750-753` / `:756-758` / `:764-767` error. */
-    rc = ctx->app->finalize_block(ctx->app->ctx, &req, resp);       /* :740 */
-    if (rc != CMT_OK) {                                              /* :750-753 */
+     * stays the reference's `:781-784` / `:787-789` / `:795-798` error. */
+    rc = ctx->app->finalize_block(ctx->app->ctx, &req, resp);       /* :771 */
+    if (rc != CMT_OK) {                                              /* :781-784 */
         QGP_LOG_ERROR(LOG_TAG, "error in proxyAppConn.FinalizeBlock (rc %d)", rc);
         ledger_txn_rollback(ctx);
         free(resp);
         return rc == CMT_FAULT ? CMT_FAULT : CMT_REJECT;
     }
-    if (block->data.txs_len != resp->tx_results_len) {               /* :756-758 */
+    if (block->data.txs_len != resp->tx_results_len) {               /* :787-789 */
         QGP_LOG_ERROR(LOG_TAG, "expected tx results length to match size of "
                       "transactions in block. Expected %zu, got %zu",
                       block->data.txs_len, resp->tx_results_len);
@@ -1882,22 +1882,22 @@ int nodus_cmt_exec_commit_block(nodus_cmt_blockexec_t *ctx, cmt_block_t *block,
         return CMT_REJECT;
     }
     memset(&cres, 0, sizeof(cres));
-    rc = ctx->app->commit(ctx->app->ctx, &cres);                     /* :763 */
-    if (rc != CMT_OK) {                                              /* :764-767 */
+    rc = ctx->app->commit(ctx->app->ctx, &cres);                     /* :794 */
+    if (rc != CMT_OK) {                                              /* :795-798 */
         QGP_LOG_ERROR(LOG_TAG, "client error during proxyAppConn.Commit (rc %d)",
                       rc);
         ledger_txn_rollback(ctx);
         free(resp);
         return rc == CMT_FAULT ? CMT_FAULT : CMT_REJECT;
     }
-    memcpy(out_app_hash, resp->app_hash, resp->app_hash_len);        /* :770 */
+    memcpy(out_app_hash, resp->app_hash, resp->app_hash_len);        /* :801 */
     *out_app_hash_len = resp->app_hash_len;
     free(resp);
     return CMT_OK;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * ExtendVote / VerifyVoteExtension — execution.go:325-385
+ * ExtendVote / VerifyVoteExtension — execution.go:356-416
  * ═══════════════════════════════════════════════════════════════════════ */
 
 int nodus_cmt_host_extend_vote(void *vctx, const cmt_vote_t *vote,
@@ -1916,44 +1916,44 @@ int nodus_cmt_host_extend_vote(void *vctx, const cmt_vote_t *vote,
     if (!cmt_block_hashes_to(block, vote->block_id.hash, vote->block_id.hash_len)) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "vote's hash does not match the block it "
                       "is referring to");
-        return CMT_FAULT;                                            /* :331-333 panic */
+        return CMT_FAULT;                                            /* :362-364 panic */
     }
-    if (vote->height != block->header.height) {                      /* :334-336 */
+    if (vote->height != block->header.height) {                      /* :365-367 */
         QGP_LOG_ERROR(LOG_TAG, "vote's and block's heights do not match %" PRId64
                       "!=%" PRId64, block->header.height, vote->height);
         return CMT_FAULT;                 /* panic */
     }
     memset(&req, 0, sizeof(req));
-    memcpy(req.hash, vote->block_id.hash, vote->block_id.hash_len);  /* :339 */
+    memcpy(req.hash, vote->block_id.hash, vote->block_id.hash_len);  /* :370 */
     req.hash_len = vote->block_id.hash_len;
-    req.height = vote->height;                                       /* :340 */
-    req.time = block->header.time;                                   /* :341 */
-    req.txs = block->data.txs;                                       /* :342 */
+    req.height = vote->height;                                       /* :371 */
+    req.time = block->header.time;                                   /* :372 */
+    req.txs = block->data.txs;                                       /* :373 */
     req.txs_len = block->data.txs_len;
     rc = build_last_commit_info_from_store(ctx, block, state->initial_height,
-                                           &req.proposed_last_commit); /* :343 */
+                                           &req.proposed_last_commit); /* :374 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
     rc = nodus_cmt_evidence_to_abci(ctx, &block->evidence, &req.misbehavior,
-                                    &req.misbehavior_len);          /* :344 */
+                                    &req.misbehavior_len);          /* :375 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
     memcpy(req.next_validators_hash, block->header.next_validators_hash,
-           block->header.next_validators_hash_len);                  /* :345 */
+           block->header.next_validators_hash_len);                  /* :376 */
     req.next_validators_hash_len = block->header.next_validators_hash_len;
     memcpy(req.proposer_address, block->header.proposer_address,
-           block->header.proposer_address_len);                      /* :346 */
+           block->header.proposer_address_len);                      /* :377 */
     req.proposer_address_len = block->header.proposer_address_len;
 
     memset(&resp, 0, sizeof(resp));
-    rc = ctx->app->extend_vote(ctx->app->ctx, &req, &resp);         /* :349 */
+    rc = ctx->app->extend_vote(ctx->app->ctx, &req, &resp);         /* :380 */
     if (rc != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "ExtendVote call failed (rc %d)", rc);
-        return CMT_FAULT;                                            /* :351 panic */
+        return CMT_FAULT;                                            /* :382 panic */
     }
-    /* :353 — the bytes into the per-height-parity extension arena
+    /* :384 — the bytes into the per-height-parity extension arena
      * (cmt_cs.h OWNERSHIP (2)); an empty extension is the reference's
      * nil. PACKAGE W4-X (register R3-W3-C2e-4): picked by THIS vote's
      * own height (already proven == block->header.height above), never
@@ -1989,28 +1989,28 @@ int nodus_cmt_host_verify_vote_extension(void *vctx, const cmt_vote_t *vote)
         return CMT_FAULT;
     }
     memset(&req, 0, sizeof(req));
-    memcpy(req.hash, vote->block_id.hash, vote->block_id.hash_len);  /* :358 */
+    memcpy(req.hash, vote->block_id.hash, vote->block_id.hash_len);  /* :389 */
     req.hash_len = vote->block_id.hash_len;
     memcpy(req.validator_address, vote->validator_address,
-           vote->validator_address_len);                             /* :359 */
+           vote->validator_address_len);                             /* :390 */
     req.validator_address_len = vote->validator_address_len;
-    req.height = vote->height;                                       /* :360 */
-    req.vote_extension = vote->extension;                            /* :361 */
+    req.height = vote->height;                                       /* :391 */
+    req.vote_extension = vote->extension;                            /* :392 */
 
     memset(&resp, 0, sizeof(resp));
-    rc = ctx->app->verify_vote_extension(ctx->app->ctx, &req, &resp); /* :364 */
+    rc = ctx->app->verify_vote_extension(ctx->app->ctx, &req, &resp); /* :395 */
     if (rc != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "VerifyVoteExtension call failed (rc %d)", rc);
-        return CMT_FAULT;                                            /* :366 panic */
+        return CMT_FAULT;                                            /* :397 panic */
     }
     if (resp.status == NODUS_ABCI_VERIFY_STATUS_UNKNOWN ||
         (resp.status != NODUS_ABCI_VERIFY_STATUS_ACCEPT &&
-         resp.status != NODUS_ABCI_VERIFY_STATUS_REJECT)) {          /* :368 */
+         resp.status != NODUS_ABCI_VERIFY_STATUS_REJECT)) {          /* :399 */
         QGP_LOG_ERROR(LOG_TAG, "VerifyVoteExtension responded with status %d",
                       (int)resp.status);
         return CMT_FAULT;                 /* panic */
     }
-    if (resp.status != NODUS_ABCI_VERIFY_STATUS_ACCEPT) {            /* :372 */
+    if (resp.status != NODUS_ABCI_VERIFY_STATUS_ACCEPT) {            /* :403 */
         return CMT_REJECT;                /* types.ErrInvalidVoteExtension */
     }
     return CMT_OK;
@@ -2294,7 +2294,7 @@ static int host_wal_repair(void *vctx)
     return nodus_cmt_wal_repair(ctx->wal);
 }
 
-/* ── decode_block (state.go:2005-2019) ─────────────────────────────── */
+/* ── decode_block (state.go:2000-2014) ─────────────────────────────── */
 
 static int host_decode_block(void *vctx, const uint8_t *bytes, size_t len,
                              cmt_block_t *out)
@@ -2317,7 +2317,7 @@ static int host_decode_block(void *vctx, const uint8_t *bytes, size_t len,
      * pointer, nodus_witness_cmt_store.h:195-201) would have been
      * reported as a peer's bad bytes. The class is passed through: a
      * REJECT stays the reference's "these bytes do not decode / fail
-     * ValidateBasic" (state.go:2007/:2013/:2018), a FAULT stays this
+     * ValidateBasic" (state.go:2002/:2008/:2013), a FAULT stays this
      * node's. The evpool half of the same register row
      * (`check_evidence` in `nodus_cmt_host_validate_block`) is passed
      * through the same way — see that function. */

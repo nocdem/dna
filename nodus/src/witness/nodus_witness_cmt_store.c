@@ -1,14 +1,14 @@
 /**
  * @file nodus_witness_cmt_store.c
- * @brief cometbft @709fd12b store/store.go + state/store.go over SQLite.
+ * @brief cometbft @v0.38.26 store/store.go + state/store.go over SQLite.
  *        Contract and every file:line: nodus_witness_cmt_store.h.
  *
  * RE-PIN to v0.38.26 (decisions/2026-09-30-cometbft-pin-v0.38.26.md):
  * store/store.go changed in two places only — IsEmpty's predicate
  * rewritten (:98, same set; cited at `nodus_cmt_bs_is_empty`) and
- * SaveBlockStoreState's doc comment (:661-662, one line longer). Bare
- * `:NNN` citations here stay 709fd12b numbers; for store.go lines after
- * :658 the v0.38.26 number is one higher. state/store.go is unchanged
+ * SaveBlockStoreState's doc comment (:661-662, one line longer). Every
+ * bare `:NNN` citation here is a v0.38.26 line (store.go lines after
+ * :658 moved up by one). state/store.go is unchanged
  * between the two pins.
  */
 
@@ -410,7 +410,7 @@ static int64_t time_sub_saturating(cmt_time_t t, cmt_time_t u)
     return d + dn;
 }
 
-/* evidence/verify.go:295-303 */
+/* evidence/verify.go:309-317 */
 bool nodus_cmt_is_evidence_expired(int64_t height_now, cmt_time_t time_now,
                                    int64_t height_ev, cmt_time_t time_ev,
                                    const cmt_evidence_params_t *params)
@@ -603,19 +603,19 @@ int nodus_cmt_bs_load_block_store_state(nodus_cmt_store_t *s,
     if (!s || !out) {
         return CMT_FAULT;
     }
-    rc = nodus_cmt_store_get(s, false, KEY_BLOCK_STORE, &v, &n);     /* :693 */
+    rc = nodus_cmt_store_get(s, false, KEY_BLOCK_STORE, &v, &n);     /* :694 */
     if (rc != CMT_OK) {
         return CMT_FAULT;
     }
-    if (n == 0) {                                                    /* :698-703 */
+    if (n == 0) {                                                    /* :699-704 */
         cmt_pb_store_block_store_state_init(out);
         return CMT_OK;
     }
     if (cmt_pb_store_block_store_state_unmarshal(v, n, out) != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "Could not unmarshal blockStore bytes");
-        return CMT_FAULT;                                            /* :707 */
+        return CMT_FAULT;                                            /* :708 */
     }
-    if (out->height > 0 && out->base == 0) {                         /* :711-713 */
+    if (out->height > 0 && out->base == 0) {                         /* :712-714 */
         out->base = 1;
     }
     return CMT_OK;
@@ -1053,10 +1053,10 @@ static int save_state_and_write_db(nodus_cmt_store_t *s, const char *err_msg)
     bss.height = s->height;
     if (cmt_pb_store_block_store_state_marshal(&bss, s->buf, s->buf_cap, &n)
         != CMT_OK) {
-        return CMT_FAULT;                                            /* :675 */
+        return CMT_FAULT;                                            /* :676 */
     }
     if (nodus_cmt_store_set(s, false, KEY_BLOCK_STORE, s->buf, n) != CMT_OK) {
-        return CMT_FAULT;                                            /* :686 */
+        return CMT_FAULT;                                            /* :687 */
     }
     if (batch_write(s) != CMT_OK) {                                  /* :608 */
         QGP_LOG_ERROR(LOG_TAG, "error writing batch to DB \"%s\": "
@@ -1079,7 +1079,7 @@ int nodus_cmt_bs_save_block_store_state(nodus_cmt_store_t *s,
         != CMT_OK) {
         return CMT_FAULT;
     }
-    return nodus_cmt_store_set(s, false, KEY_BLOCK_STORE, s->buf, n); /* :683 */
+    return nodus_cmt_store_set(s, false, KEY_BLOCK_STORE, s->buf, n); /* :684 */
 }
 
 /* :584-598 saveBlockPart — inside the one transaction either branch of
@@ -1453,16 +1453,16 @@ int nodus_cmt_bs_delete_latest_block(nodus_cmt_store_t *s)
     if (!s) {
         return CMT_FAULT;
     }
-    target = s->height;                                              /* :732 */
+    target = s->height;                                              /* :733 */
     meta = (nodus_cmt_block_meta_t *)malloc(sizeof(*meta));
     if (!meta) {
         return CMT_FAULT;
     }
-    if (batch_begin(s) != CMT_OK) {                                  /* :735 */
+    if (batch_begin(s) != CMT_OK) {                                  /* :736 */
         free(meta);
         return CMT_FAULT;
     }
-    rc = nodus_cmt_bs_load_block_meta(s, target, meta, &found);      /* :740 */
+    rc = nodus_cmt_bs_load_block_meta(s, target, meta, &found);      /* :741 */
     if (rc != CMT_OK) {
         batch_abort(s);
         free(meta);
@@ -1472,22 +1472,22 @@ int nodus_cmt_bs_delete_latest_block(nodus_cmt_store_t *s)
         uint32_t p, total = meta->block_id.part_set_header.total;
 
         key_block_hash(meta->block_id.hash, meta->block_id.hash_len, key);
-        rc = nodus_cmt_store_delete(s, false, key);                  /* :741 */
-        for (p = 0; rc == CMT_OK && p < total; p++) {                /* :744-748 */
+        rc = nodus_cmt_store_delete(s, false, key);                  /* :742 */
+        for (p = 0; rc == CMT_OK && p < total; p++) {                /* :745-749 */
             key_block_part(target, (int)p, key);
             rc = nodus_cmt_store_delete(s, false, key);
         }
     }
     free(meta);
-    if (rc == CMT_OK) {                                              /* :750 */
+    if (rc == CMT_OK) {                                              /* :751 */
         key_block_commit(target, key);
         rc = nodus_cmt_store_delete(s, false, key);
     }
-    if (rc == CMT_OK) {                                              /* :753 */
+    if (rc == CMT_OK) {                                              /* :754 */
         key_seen_commit(target, key);
         rc = nodus_cmt_store_delete(s, false, key);
     }
-    if (rc == CMT_OK) {                                              /* :757 */
+    if (rc == CMT_OK) {                                              /* :758 */
         key_block_meta(target, key);
         rc = nodus_cmt_store_delete(s, false, key);
     }
@@ -1495,8 +1495,8 @@ int nodus_cmt_bs_delete_latest_block(nodus_cmt_store_t *s)
         batch_abort(s);
         return CMT_FAULT;
     }
-    s->height = target - 1;                                          /* :763 */
-    rc = save_state_and_write_db(s, "failed to delete the latest block"); /* :764 */
+    s->height = target - 1;                                          /* :764 */
+    rc = save_state_and_write_db(s, "failed to delete the latest block"); /* :765 */
     if (rc != CMT_OK) {
         batch_abort(s);
         return CMT_FAULT;
@@ -2233,7 +2233,7 @@ int nodus_cmt_ss_save_finalize_block_response(
      * slice. `s->buf` is `cmt_pb_store_state_upper_bound(CMT_VALSET_MAX)`
      * bytes (nodus_cmt_store_init) and the response is THIS NODE'S OWN
      * PRODUCT — the engine's ExecTxResults and validator updates out of
-     * FinalizeBlock (execution.go:259), never a peer's bytes — so a
+     * FinalizeBlock (execution.go:290), never a peer's bytes — so a
      * response wider than the bound is a NODE-LOCAL invariant broken
      * (the bound or the engine), not something a peer sent: CMT_FAULT
      * (umbrella rev 5 panic rule), not REJECT. */

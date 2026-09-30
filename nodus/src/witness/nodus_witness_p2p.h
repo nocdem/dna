@@ -1,6 +1,6 @@
 /**
  * @file nodus/src/witness/nodus_witness_p2p.h
- * @brief The nodus HOST of the ported cometbft @709fd12b p2p layer
+ * @brief The nodus HOST of the ported cometbft @v0.38.26 p2p layer
  *        (shared/dnac/cmt_p2p_*) — the witness port 4004's ONLY
  *        transport (fleet P2P-PORT phase F5).
  *
@@ -53,7 +53,7 @@
  *     ML-DSA-87), the KEM key nodus.mlkem_{pk,sk}. Our NodeInfo: network =
  *     the 32-byte version-3 chain id in hex (a joiner that has not adopted
  *     yet puts its genesis pin there — the same 32 bytes), P2P version 8,
- *     channels 0x40 (first, as node/node.go:949-955 lists
+ *     channels 0x40 (first, as node/node.go:948-954 lists
  *     BlocksyncChannel first), 0x20-0x23, 0x30, 0x70, 0x71 and 0x00 when
  *     PEX is on, a non-empty moniker, an IP-literal listen address. A peer
  *     of an older build does not list 0x40; nothing is ever sent to it on
@@ -79,14 +79,14 @@
  *     BLOCKSYNC: the consensus shim's InitPeer assigns the peer's index,
  *     so it must run first. The reference registers MEMPOOL, BLOCKSYNC,
  *     CONSENSUS (setup.go:432-435) but runs InitPeer / AddPeer by ranging
- *     over a map (p2p/switch.go:76, :829-831, :858-860), in no fixed
+ *     over a map (p2p/switch.go:77, :830-832, :859-861), in no fixed
  *     order — this fixed order is one it can take. It decides only which
  *     reactor's AddPeer message a new peer receives first.
  *
  * ── THE BLOCK SYNC SEAM ────────────────────────────────────────────────
  * cmt_bsync names a peer by its p2p ID (`cmt_p2p_peer_id`), never by an
  * index: its pool bans an identity, and a ban must outlive the
- * connection (blocksync/pool.go:464). The shim follows R-P2P-47 like the
+ * connection (blocksync/pool.go:494). The shim follows R-P2P-47 like the
  * other two: before `nodus_witness_p2p_lane_live` (no chain yet — a
  * pinned-genesis joiner — or genesis time not reached) a 0x40 message is
  * DROPPED, never answered and never a reason to stop the peer — EXCEPT a
@@ -96,12 +96,12 @@
  * peer (its lane slot, keyed by the p2p ID, one small canonical copy) is
  * held and replayed into the reactor at `lane_live`, so the pool knows
  * the peer's height at once instead of at its 10 s status broadcast
- * (reactor.go:325); discarded on peer removal and unbind. At `lane_live`
+ * (blocksync/reactor.go:401); discarded on peer removal and unbind. At `lane_live`
  * every connected peer gets the reactor's AddPeer (our StatusResponse,
- * reactor.go:190-203) after the consensus and mempool reactors' own, then
+ * blocksync/reactor.go:195-208) after the consensus and mempool reactors' own, then
  * its held StatusResponse; the caller starts the block sync reactor
  * BEFORE `lane_live`. After the switch to consensus the reactor stays bound
- * and keeps SERVING (reactor.go:251-305 has no "switched" branch).
+ * and keeps SERVING (reactor.go:251-305 has no "switched" branch; 709fd12b; at v0.38.26: Receive :348-381 still has none — the new FilterMsgBytes :281-322 does, for a BlockResponse only).
  * Its StopPeerForError is deferred like the others (the peer is found by
  * ID, then by its index); a peer that holds no index (all
  * CMT_CONR_MAX_PEERS in use) cannot be deferred and is only logged.
@@ -124,7 +124,7 @@
  * index but the two reactors are not told (there is none yet, or it is not
  * running); `nodus_witness_p2p_lane_live` then runs, for every connected
  * peer in index order, the reference's addPeer order — every reactor's
- * InitPeer, then every reactor's AddPeer (switch.go:829-831, :858-860).
+ * InitPeer, then every reactor's AddPeer (switch.go:830-832, :859-861).
  * A consensus / mempool message from a peer the reactors do not know yet
  * is dropped. The reference has no such state: a node starts with its
  * genesis document and its reactors already built.
@@ -191,7 +191,7 @@ struct nodus_witness;
  *  plus one slot of slack. */
 #define NODUS_P2P_CCAPPR_SEND_QUEUE    2
 
-/* ══ config (reference config.go:554-631 names; nodus.json keys) ══════ */
+/* ══ config (reference config.go:562-639 names; nodus.json keys) ══════ */
 
 #define NODUS_P2P_MAX_PEER_LIST   64
 
@@ -202,36 +202,36 @@ struct nodus_witness;
  * transport does not read its own config key — noted per field.
  */
 typedef struct {
-    /** config.go:572 `persistent_peers` — "id@ip:port", IP literals only
-     *  (R-P2P-24). Dialed on every start (node.go:563-564) and redialed
-     *  on loss (switch.go:343-357). */
+    /** config.go:580 `persistent_peers` — "id@ip:port", IP literals only
+     *  (R-P2P-24). Dialed on every start (node.go:562-563) and redialed
+     *  on loss (switch.go:344-358). */
     char     persistent_peers[NODUS_P2P_MAX_PEER_LIST][CMT_P2P_NETADDR_STR_MAX];
     int      n_persistent_peers;
-    /** config.go:586 `unconditional_peer_ids` (the bonded set is added at
+    /** config.go:594 `unconditional_peer_ids` (the bonded set is added at
      *  run time, R-P2P-7). */
     char     unconditional_peer_ids[NODUS_P2P_MAX_PEER_LIST][CMT_P2P_ID_CAP];
     int      n_unconditional_peer_ids;
-    /** config.go:595 `private_peer_ids` — never gossiped. */
+    /** config.go:603 `private_peer_ids` — never gossiped. */
     char     private_peer_ids[NODUS_P2P_MAX_PEER_LIST][CMT_P2P_ID_CAP];
     int      n_private_peer_ids;
-    /** config.go:589 `pex` (default true). */
+    /** config.go:597 `pex` (default true). */
     bool     pex;
-    /** config.go:561 `addr_book_strict` (default true; false admits
+    /** config.go:569 `addr_book_strict` (default true; false admits
      *  private / loopback addresses — the localhost harness). */
     bool     addr_book_strict;
-    /** config.go:601 `allow_duplicate_ip` (default false; test only). */
+    /** config.go:609 `allow_duplicate_ip` (default false; test only). */
     bool     allow_duplicate_ip;
-    /** config.go:564 / :567 (defaults 40 / 10). */
+    /** config.go:572 / :575 (defaults 40 / 10). */
     int      max_num_inbound_peers;
     int      max_num_outbound_peers;
-    /** config.go:577 `flush_throttle_timeout` (default 100 ms). */
+    /** config.go:585 `flush_throttle_timeout` (default 100 ms). */
     int64_t  flush_throttle_timeout_ms;
-    /** config.go:580 `max_packet_msg_payload_size` (default 1024). */
+    /** config.go:588 `max_packet_msg_payload_size` (default 1024). */
     int      max_packet_msg_payload_size;
-    /** config.go:583 / :584 `send_rate` / `recv_rate` (default 5 120 000 B/s). */
+    /** config.go:591 / :592 `send_rate` / `recv_rate` (default 5 120 000 B/s). */
     int64_t  send_rate;
     int64_t  recv_rate;
-    /** config.go:605 `handshake_timeout` / :606 `dial_timeout`. NOT read by
+    /** config.go:613 `handshake_timeout` / :614 `dial_timeout`. NOT read by
      *  the reference's transport (it uses its own 3 s and 1 s constants,
      *  transport.go:20/:22 — design §5 "Correction"); here 0 = those
      *  constants (the default), a positive value overrides them. */
@@ -267,7 +267,7 @@ int nodus_p2p_config_add_private(nodus_p2p_config_t *c, const char *id);
  * there. No reference counterpart: the bound exists only because the
  * goroutine does not.
  * ⚠ NOT GROUNDED as a number: the default inbound limit
- * (CMT_P2P_DEFAULT_MAX_NUM_INBOUND_PEERS, config.go:622) — a full
+ * (CMT_P2P_DEFAULT_MAX_NUM_INBOUND_PEERS, config.go:630) — a full
  * reconnect of the default inbound set is still taken in one pass. The
  * listener stays in the epoll set with EPOLLIN (level-triggered), so a
  * backlog left behind wakes the next wait at once and the next pass
@@ -366,9 +366,9 @@ typedef struct {
 
 /**
  * Build the host for `w` (the chain, the bonded set, the 0x70 / 0x71
- * handlers) and start it: node/node.go:285-422's p2p half — transport,
+ * handlers) and start it: node/node.go:283-421's p2p half — transport,
  * switch, the reactors, the address book (loaded, R-P2P-38), PEX; then
- * OnStart (node.go:548-580): switch start, persistent peers dialed.
+ * OnStart (node.go:547-579): switch start, persistent peers dialed.
  * @return the host, or NULL (logged) — then nothing is left running.
  */
 nodus_witness_p2p_t *nodus_witness_p2p_new(struct nodus_witness *w,
