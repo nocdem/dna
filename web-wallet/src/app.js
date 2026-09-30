@@ -319,7 +319,16 @@ async function refreshClaim() {
       note: `An allocation of ${amount} NODUS is waiting for this wallet. Claiming it adds it to your NODUS balance.`,
       run: () => void startClaim()
     });
-  } catch { /* no offer: the claim state could not be read */ }
+  } catch (error) {
+    // Not silent (operator 2026-09-30 could not see the offer and had no way
+    // to tell why): say the check failed and let it be retried.
+    if (check !== claimCheck || client !== nodusClient || source !== wallet || source.locked) return;
+    portfolio.setAction(NODUS_ASSET.chain, {
+      label: 'Check for a NODUS allocation again',
+      note: `Could not check whether an allocation is waiting for this wallet: ${error?.message || 'unknown error'}`,
+      run: () => void refreshClaim()
+    });
+  }
 }
 // Opens the review dialog for a transfer-shaped object (a send, or a claim
 // from src/adapters/nodus.js prepareClaim) with its own entries.
