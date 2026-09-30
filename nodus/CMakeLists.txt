@@ -1042,6 +1042,14 @@ add_executable(test_client_spend_status tests/test_client_spend_status.c)
 target_link_libraries(test_client_spend_status nodus dsa kem nodus pthread)
 add_test(NAME test_client_spend_status COMMAND test_client_spend_status)
 
+# Strict GET / GET_ALL (Nodus Connect web design rev 5 §6.4 F1): a value
+# the node sent that does not decode is NODUS_ERR_PROTOCOL_ERROR / counted
+# as undecodable, never "not found"; the lenient calls are unchanged. Real
+# client vs a fake server on 127.0.0.1:0 (test_client_pin.c's fake pattern).
+add_executable(test_client_strict_get tests/test_client_strict_get.c)
+target_link_libraries(test_client_strict_get nodus dsa kem nodus pthread)
+add_test(NAME test_client_strict_get COMMAND test_client_strict_get)
+
 # O15C-D — request/result correlation: a response never reaches the
 # wrong request, and a reply to an abandoned request is not captured.
 # This is what makes the late "unknown txn" warning an attribution gap
