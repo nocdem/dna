@@ -839,17 +839,17 @@ static int t_join_refuses_mismatch(void) {
      * once, at genesis, and no committee vote may move it.
      * MUTANT KILLED: widening the allowlist to admit these ids. */
     CHECK(nodus_chain_config_scalar_rules(
-              (uint8_t)NODUS_CC_ECON_BLOCKS_PER_YEAR, 100, 1, 100, 50) != 0 &&
+              (uint8_t)NODUS_CC_ECON_BLOCKS_PER_YEAR, 100, 1, 100, 50, 1) != 0 &&
           nodus_chain_config_scalar_rules(
-              (uint8_t)NODUS_CC_ECON_DECIMAL_UNIT, 100, 1, 100, 50) != 0 &&
+              (uint8_t)NODUS_CC_ECON_DECIMAL_UNIT, 100, 1, 100, 50, 1) != 0 &&
           nodus_chain_config_scalar_rules(
-              (uint8_t)NODUS_CC_ECON_EPOCH_LENGTH, 100, 1, 100, 50) != 0,
+              (uint8_t)NODUS_CC_ECON_EPOCH_LENGTH, 100, 1, 100, 50, 1) != 0,
           "no CHAIN_CONFIG tx can ever write the reserved econ band");
     /* ...while a governable parameter (TARGET_ACTIVE_COUNT, id 4) still
      * passes its own rules, so the assertion above is about the BAND and
      * not about the checker rejecting everything it is handed. */
     CHECK(nodus_chain_config_scalar_rules(
-              (uint8_t)DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 1, 200, 50) == 0,
+              (uint8_t)DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 1, 200, 50, 1) == 0,
           "and a governable parameter is still votable");
     /* tokenomics-v3 P2 (P2-4): the INFLATION START (id 3) is RETIRED —
      * refused for every value, exactly as id 1 is, and its grace is the
@@ -857,9 +857,9 @@ static int t_join_refuses_mismatch(void) {
      * 100 passed these very rules.
      * MUTANT KILLED: restoring a range check for id 3 in scalar_rules. */
     CHECK(nodus_chain_config_scalar_rules(
-              (uint8_t)DNAC_CFG_INFLATION_START_BLOCK, 100, 1, 200, 50) != 0 &&
+              (uint8_t)DNAC_CFG_INFLATION_START_BLOCK, 100, 1, 200, 50, 1) != 0 &&
           nodus_chain_config_scalar_rules(
-              (uint8_t)DNAC_CFG_INFLATION_START_BLOCK, 0, 1, 200, 50) != 0,
+              (uint8_t)DNAC_CFG_INFLATION_START_BLOCK, 0, 1, 200, 50, 1) != 0,
           "the retired inflation start is refused at any value");
     CHECK(nodus_chain_config_grace_for_param(
               (uint8_t)DNAC_CFG_INFLATION_START_BLOCK) == UINT64_MAX,
@@ -872,11 +872,11 @@ static int t_join_refuses_mismatch(void) {
      * MUTANT KILLED: restoring id 2 on dnac_cfg_param_read_by_consensus
      * or its range check in scalar_rules. */
     CHECK(nodus_chain_config_scalar_rules(
-              (uint8_t)DNAC_CFG_BLOCK_INTERVAL_SEC, 1, 1, 200, 50) != 0 &&
+              (uint8_t)DNAC_CFG_BLOCK_INTERVAL_SEC, 1, 1, 200, 50, 1) != 0 &&
           nodus_chain_config_scalar_rules(
-              (uint8_t)DNAC_CFG_BLOCK_INTERVAL_SEC, 5, 1, 200, 50) != 0 &&
+              (uint8_t)DNAC_CFG_BLOCK_INTERVAL_SEC, 5, 1, 200, 50, 1) != 0 &&
           nodus_chain_config_scalar_rules(
-              (uint8_t)DNAC_CFG_BLOCK_INTERVAL_SEC, 15, 1, 200, 50) != 0,
+              (uint8_t)DNAC_CFG_BLOCK_INTERVAL_SEC, 15, 1, 200, 50, 1) != 0,
           "the unread block interval is refused at any value");
     CHECK(nodus_chain_config_grace_for_param(
               (uint8_t)DNAC_CFG_BLOCK_INTERVAL_SEC) == UINT64_MAX,
@@ -884,7 +884,7 @@ static int t_join_refuses_mismatch(void) {
     /* ...and the read list's two members still pass their own rules
      * (same window shape), so the refusal above is about id 2. */
     CHECK(nodus_chain_config_scalar_rules(
-              (uint8_t)DNAC_CFG_GAS_PRICE_RAW_PER_UNIT, 5, 1, 200, 50) == 0,
+              (uint8_t)DNAC_CFG_GAS_PRICE_RAW_PER_UNIT, 5, 1, 200, 50, 1) == 0,
           "the gas price (read) is still votable");
 
     close_chain(w);

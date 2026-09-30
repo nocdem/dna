@@ -646,7 +646,8 @@ static int parse_cc_fields(const uint8_t *tx_data, uint32_t tx_len, size_t off,
 int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
                                     uint64_t signed_at_block,
                                     uint64_t valid_before_block,
-                                    uint64_t effective_block_height) {
+                                    uint64_t effective_block_height,
+                                    uint64_t proposal_nonce) {
     if (param_id < 1 || param_id > CC_PARAM_MAX_ID) return -1;
     /* 0.20.3 (decision file 2026-09-23-height-activated-upgrades-before-
      * testnet.md item 1): a proposal for a parameter the RUNNING consensus
@@ -697,6 +698,23 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
     if (signed_at_block == 0) return -1;
     if (valid_before_block <= effective_block_height) return -1;
     if (valid_before_block <= signed_at_block) return -1;
+    /* The int64 bound (decision 2026-09-30-chain-config-int64-bounds.md,
+     * red-team CC-1/CC-2): chain_config_history stores these columns as
+     * SQLite int64. The V2 writer (nodus_witness_rt_native.c, the
+     * chain_config_history INSERT) casts each u64 to sqlite3_int64, so a
+     * value >= 2^63 is stored NEGATIVE; the reader (rtn_sys_cc_fetch's
+     * `pn >= 0` / the effective_block key) then treats the row as
+     * corrupt and fails closed as a NODE fault — every validator at
+     * once, on a value any committee seat could have proposed. A value
+     * above INT64_MAX is therefore refused HERE, as a deterministic
+     * verdict every node reaches from the same bytes. With the window
+     * rule above, valid_before <= INT64_MAX also bounds signed_at and
+     * effective to < INT64_MAX; each is still tested on its own so the
+     * rule does not depend on the order of these lines. */
+    if (proposal_nonce         > (uint64_t)INT64_MAX) return -1;
+    if (signed_at_block        > (uint64_t)INT64_MAX) return -1;
+    if (valid_before_block     > (uint64_t)INT64_MAX) return -1;
+    if (effective_block_height > (uint64_t)INT64_MAX) return -1;
     return 0;
 }
 
@@ -751,7 +769,8 @@ static int verify_cc_local_rules(const dnac_cc_wire_ext_t *cc) {
     if (nodus_chain_config_scalar_rules(cc->param_id, cc->new_value,
                                         cc->signed_at_block,
                                         cc->valid_before_block,
-                                        cc->effective_block_height) != 0)
+                                        cc->effective_block_height,
+                                        cc->proposal_nonce) != 0)
         return -1;
     /* SHAPE window only. The quorum decision lives in
      * nodus_chain_config_apply, which needs the committee snapshot this
@@ -999,7 +1018,7 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
      * signs an approval for them. */
     if (nodus_chain_config_scalar_rules(c.param_id, c.new_value,
                                         c.signed_at, c.valid_before,
-                                        c.effective) != 0) {
+                                        c.effective, c.nonce) != 0) {
         snprintf(reason, reason_size, "scalar rules rejected");
         return -1;
     }

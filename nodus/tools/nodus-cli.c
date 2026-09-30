@@ -1258,6 +1258,10 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
     }
     if (!has_nonce) {
         nodus_random((uint8_t *)&proposal_nonce, sizeof(proposal_nonce));
+        /* 63 bits: the chain refuses a nonce above INT64_MAX (decision
+         * 2026-09-30-chain-config-int64-bounds.md), so a full 64-bit draw
+         * would fail the step-9 pre-check below half of the time. */
+        proposal_nonce &= (uint64_t)INT64_MAX;
     }
     uint8_t chain_id_arg[32];
     bool have_chain_id_arg = false;
@@ -1431,7 +1435,8 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
      * hook) apply, checked here first so a doomed proposal never wastes
      * a network round trip. */
     if (nodus_chain_config_scalar_rules(param_id, new_value, signed_at,
-                                        valid_before, effective_block) != 0) {
+                                        valid_before, effective_block,
+                                        proposal_nonce) != 0) {
         fprintf(stderr, "scalar rules reject this (param, value, "
                         "effective) combination\n");
         goto done;

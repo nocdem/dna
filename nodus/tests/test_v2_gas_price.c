@@ -58,6 +58,11 @@
  *     cache stays COLD and get_u64 answers
  *     the 65th (the DB fallback), before and after a forced re-warm
  *     (nodus/BUGS.md "chain_config cache keeps only the OLDEST 64 rows").
+ *  5. t_scalar_int64_bounds — nodus_chain_config_scalar_rules refuses a
+ *     proposal_nonce, signed_at, valid_before or effective above
+ *     INT64_MAX and admits the tightest constructible value at or below
+ *     it (decision 2026-09-30-chain-config-int64-bounds.md). False if any
+ *     of the four bounds were missing or off by one.
  *
  * A NOTE ON CASE 4's rows: they are written directly into
  * chain_config_history; no block is applied after them.
@@ -398,16 +403,16 @@ static int t_scalar_rule_matrix(void)
 {
     /* signed_at 1, valid_before 1000 > effective 500 > signed_at: the
      * window shape is legal, so only the (param, value) half decides. */
-    CHECK(nodus_chain_config_scalar_rules(GP_PARAM, 0, 1, 1000, 500) == 0,
+    CHECK(nodus_chain_config_scalar_rules(GP_PARAM, 0, 1, 1000, 500, 1) == 0,
           "value 0 is LEGAL (switches the rule off again)");
-    CHECK(nodus_chain_config_scalar_rules(GP_PARAM, 1, 1, 1000, 500) == 0,
+    CHECK(nodus_chain_config_scalar_rules(GP_PARAM, 1, 1, 1000, 500, 1) == 0,
           "value 1 is legal");
     CHECK(nodus_chain_config_scalar_rules(GP_PARAM, DNAC_CFG_MAX_GAS_PRICE,
-                                          1, 1000, 500) == 0,
+                                          1, 1000, 500, 1) == 0,
           "value MAX (1 000 000) is legal");
     CHECK(nodus_chain_config_scalar_rules(GP_PARAM,
                                           DNAC_CFG_MAX_GAS_PRICE + 1,
-                                          1, 1000, 500) != 0,
+                                          1, 1000, 500, 1) != 0,
           "value MAX + 1 is refused");
     CHECK(DNAC_CFG_MAX_GAS_PRICE == 1000000ULL,
           "the ceiling is the O4-approved 1 000 000 raw/unit");
@@ -415,13 +420,82 @@ static int t_scalar_rule_matrix(void)
               (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS,
           "grace class ERGONOMIC (decision detail 3)");
     CHECK(nodus_chain_config_scalar_rules(
-              (uint8_t)(DNAC_CFG_PARAM_MAX_ID + 1), 0, 1, 1000, 500) != 0,
+              (uint8_t)(DNAC_CFG_PARAM_MAX_ID + 1), 0, 1, 1000, 500, 1) != 0,
           "the id after the last one stays refused");
     /* W-C appended id 6 (TOKEN_CREATE_FEE_RAW) after id 5. */
     CHECK(DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_TOKEN_CREATE_FEE_RAW &&
               DNAC_CFG_GAS_PRICE_RAW_PER_UNIT + 1 ==
                   DNAC_CFG_TOKEN_CREATE_FEE_RAW,
           "id 5 is followed by W-C's id 6, the allowlist's last id");
+    return 0;
+}
+
+/* ══ 5. the int64 bound ══════════════════════════════════════════════ */
+
+/* Decision 2026-09-30-chain-config-int64-bounds.md (red-team CC-1/CC-2):
+ * proposal_nonce, signed_at, valid_before and effective are each
+ * <= INT64_MAX. Every REFUSED case below passes every rule that existed
+ * at b32cac47 (param 5 value 0 is legal; signed_at != 0; valid_before >
+ * effective; valid_before > signed_at) — so each is RED on that tree,
+ * where scalar_rules returned 0 for it, and the int64 bound is the ONLY
+ * thing refusing it now.
+ *
+ * WHAT CANNOT BE CONSTRUCTED: "signed_at = INT64_MAX accepted" and
+ * "effective = INT64_MAX accepted" — the window rule needs valid_before
+ * > signed_at and valid_before > effective, so either at INT64_MAX forces
+ * valid_before > INT64_MAX, which the bound refuses. Their tightest
+ * accepted value is INT64_MAX - 1 (with valid_before = INT64_MAX). For
+ * the same reason a refused signed_at / effective above INT64_MAX is
+ * always ALSO a refused valid_before (UINT64_MAX here); only the nonce
+ * and valid_before can be the sole field out of bounds. */
+static int t_scalar_int64_bounds(void)
+{
+    const uint64_t I63 = (uint64_t)INT64_MAX;
+    const uint64_t P63 = (uint64_t)INT64_MAX + 1;   /* 2^63 */
+
+    /* proposal_nonce — the sole field out of bounds */
+    CHECK(nodus_chain_config_scalar_rules(GP_PARAM, 0, 1, 1000, 500,
+                                          I63) == 0,
+          "nonce INT64_MAX is accepted");
+    CHECK(nodus_chain_config_scalar_rules(GP_PARAM, 0, 1, 1000, 500,
+                                          P63) != 0,
+          "nonce INT64_MAX + 1 (2^63) is refused");
+    CHECK(nodus_chain_config_scalar_rules(GP_PARAM, 0, 1, 1000, 500,
+                                          UINT64_MAX) != 0,
+          "nonce UINT64_MAX is refused");
+
+    /* valid_before — the sole field out of bounds */
+    CHECK(nodus_chain_config_scalar_rules(GP_PARAM, 0, 1, I63, 500,
+                                          1) == 0,
+          "valid_before INT64_MAX is accepted");
+    CHECK(nodus_chain_config_scalar_rules(GP_PARAM, 0, 1, P63, 500,
+                                          1) != 0,
+          "valid_before 2^63 is refused");
+    CHECK(nodus_chain_config_scalar_rules(GP_PARAM, 0, 1, UINT64_MAX, 500,
+                                          1) != 0,
+          "valid_before UINT64_MAX is refused");
+
+    /* signed_at — tightest accepted INT64_MAX - 1 (header note) */
+    CHECK(nodus_chain_config_scalar_rules(GP_PARAM, 0, I63 - 1, I63, 500,
+                                          1) == 0,
+          "signed_at INT64_MAX - 1 (valid_before INT64_MAX) is accepted");
+    CHECK(nodus_chain_config_scalar_rules(GP_PARAM, 0, P63, UINT64_MAX, 500,
+                                          1) != 0,
+          "signed_at 2^63 is refused");
+    CHECK(nodus_chain_config_scalar_rules(GP_PARAM, 0, UINT64_MAX - 1,
+                                          UINT64_MAX, 500, 1) != 0,
+          "signed_at UINT64_MAX - 1 is refused");
+
+    /* effective — tightest accepted INT64_MAX - 1 (header note) */
+    CHECK(nodus_chain_config_scalar_rules(GP_PARAM, 0, 1, I63, I63 - 1,
+                                          1) == 0,
+          "effective INT64_MAX - 1 (valid_before INT64_MAX) is accepted");
+    CHECK(nodus_chain_config_scalar_rules(GP_PARAM, 0, 1, UINT64_MAX, P63,
+                                          1) != 0,
+          "effective 2^63 is refused");
+    CHECK(nodus_chain_config_scalar_rules(GP_PARAM, 0, 1, UINT64_MAX,
+                                          UINT64_MAX - 1, 1) != 0,
+          "effective UINT64_MAX - 1 is refused");
     return 0;
 }
 
@@ -766,6 +840,7 @@ int main(void)
         { "price_rule",         t_price_rule },
         { "rule_off_is_inert",  t_rule_off_is_inert },
         { "cache_capacity",     t_cache_capacity },
+        { "scalar_int64_bounds", t_scalar_int64_bounds },
     };
     size_t failed = 0, ncases = sizeof(cases) / sizeof(cases[0]);
 

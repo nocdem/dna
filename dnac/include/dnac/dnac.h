@@ -1190,7 +1190,9 @@ int dnac_validator_update(dnac_context_t *ctx,
  * @param new_value        Per-param range-checked in dnac_tx_verify_chain_config_rules
  * @param effective_block  Block height at which override activates
  *                         (witness enforces >= commit + grace tier)
- * @param proposal_nonce   Preimage entropy (any 64-bit random value)
+ * @param proposal_nonce   Preimage entropy (a random value <= INT64_MAX;
+ *                         larger is refused — decision
+ *                         2026-09-30-chain-config-int64-bounds.md)
  * @param signed_at_block  Sign-time anchor (committee members signed
  *                         against this height)
  * @param valid_before     Freshness expiry (witness rejects if

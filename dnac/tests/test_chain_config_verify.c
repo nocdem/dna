@@ -57,7 +57,7 @@ static void build_valid_chain_config(dnac_transaction_t *tx,
     cc->param_id               = param_id;
     cc->new_value              = new_value;
     cc->effective_block_height = 5000ULL;
-    cc->proposal_nonce         = 0xDEADBEEFCAFEBABEULL;
+    cc->proposal_nonce         = 0x5EADBEEFCAFEBABEULL;  /* <= INT64_MAX */
     cc->signed_at_block        = 4800ULL;
     cc->valid_before_block     = 5100ULL;
     cc->committee_sig_count    = 5;

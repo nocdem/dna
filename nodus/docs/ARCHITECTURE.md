@@ -3216,6 +3216,20 @@ the legacy `verify_cc_local_rules`, and the nodus-cli pre-check.
 lists cannot drift. `nodus-cli chain-config propose` names only the read
 parameters and prints them in its usage.
 
+**The int64 bound (decision `2026-09-30-chain-config-int64-bounds.md`).**
+The same rule refuses a proposal whose `proposal_nonce`, `signed_at`,
+`valid_before` or `effective` is above `INT64_MAX` (the function gained a
+`proposal_nonce` parameter; every caller above passes it, and the client
+mirror refuses the same four cases). Reason: `chain_config_history` stores
+these as SQLite int64 — the writer (`nodus_rt_system_*` CREATE) casts, so a
+value ≥ 2^63 was stored NEGATIVE, and the reader `rtn_sys_cc_fetch` fails
+closed on a negative column as a NODE fault (-2 → CMT_FAULT). One
+committee seat could therefore commit such a row and then, with a second
+proposal for the same `(param, effective)`, stop every validator at
+FinalizeBlock (red-team 2026-09-30 CC-1); a negative `effective` also made
+the warm cache and the DB fallback disagree (CC-2). The bound makes both a
+verdict. `nodus-cli chain-config propose` draws its random nonce as 63 bits.
+
 **History is history.** The predicate judges NEW proposals only.
 `nodus_chain_config_get_u64`, the chain-config merkle root and the joiner
 bundle never consult it — an id-2 row committed before 0.20.3 is still

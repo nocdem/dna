@@ -4382,7 +4382,7 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
      * is refused before the one effect below, so no history row. */
     if (nodus_chain_config_scalar_rules(c.param_id, c.new_value,
                                         c.signed_at, c.valid_before,
-                                        c.effective) != 0)
+                                        c.effective, c.nonce) != 0)
         return -1;
     /* O15F D2 — V2-lane TARGET_ACTIVE_COUNT range narrowing [7..32]
      * (tokenomics-v3 P3-7: the ceiling moved 30 -> 32; decision file §3

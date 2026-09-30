@@ -1672,6 +1672,58 @@ static int test_system_cc(void) {
           "no row is written for a parameter the consensus does not read");
     OK();
 
+    /* The int64 bound (decision 2026-09-30-chain-config-int64-bounds.md,
+     * red-team CC-1/CC-2) IN BLOCK APPLY. Both envelopes are the positive
+     * case's shape below (quorum 5 of 7, param 4, value 9) with ONE field
+     * pushed to 2^63, and both must be a deterministic item VERDICT —
+     * item_refused requires the block itself to apply (engine rc 0), the
+     * item to carry a nonzero code and the ledger to stay byte-identical,
+     * so a node FAULT (-2) fails it just as a commit does.
+     * RED at b32cac47: scalar_rules had no upper bound, so each envelope
+     * COMMITTED, writing a chain_config_history row whose proposal_nonce
+     * (first case) or effective_block (second case) the sqlite3_int64
+     * cast stored NEGATIVE — the row the reader refuses as corrupt.
+     * Placed BEFORE the positive case so the (4, 20000) row it writes
+     * cannot make the first COUNT below lie. The COUNTs are belt and
+     * braces only: item_refused rolls its block back either way, so the
+     * RED is carried by item_refused (an APPLIED item fails it), not by
+     * the COUNTs.
+     * KILLED BY: dropping the nonce or the effective bound in
+     * nodus_chain_config_scalar_rules. */
+    CHECK(cc_env(&fx, &e, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 20000,
+                 (uint64_t)INT64_MAX + 1, 1, 30000, voters5, 5, 0,
+                 NULL, NULL) == 0, "build");
+    {
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(item_refused(fx.w, &b) == 0,
+              "a nonce of 2^63 must be refused as a verdict in block apply");
+        OK();
+    }
+    CHECK(q1(fx.w, "SELECT COUNT(*) FROM chain_config_history WHERE "
+                   "param_id=4 AND effective_block=20000") == 0,
+          "no row is written for a nonce above INT64_MAX");
+    OK();
+    /* effective 2^63 needs valid_before above it (the window rule), so
+     * valid_before is UINT64_MAX — both past the bound; the grace floor
+     * (H + SAFETY) and freshness (H <= valid_before) both pass, so at
+     * b32cac47 nothing else refused it. */
+    CHECK(cc_env(&fx, &e, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 9,
+                 (uint64_t)INT64_MAX + 1, 0x46, 1, UINT64_MAX, voters5, 5,
+                 0, NULL, NULL) == 0, "build");
+    {
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(item_refused(fx.w, &b) == 0,
+              "an effective height of 2^63 must be refused as a verdict "
+              "in block apply");
+        OK();
+    }
+    CHECK(q1(fx.w, "SELECT COUNT(*) FROM chain_config_history WHERE "
+                   "param_id=4 AND effective_block < 0") == 0,
+          "no negative effective_block row is written");
+    OK();
+
     /* POSITIVE: quorum (5 of 7) commits; scheduled activation holds.
      * R3 W4-C delta 3 moved this off the retired param 1 to id 2; 0.20.3
      * moved it again to TARGET_ACTIVE_COUNT (id 4, a parameter the

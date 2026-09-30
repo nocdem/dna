@@ -511,6 +511,13 @@ int  nodus_witness_p2p_lane_live(nodus_witness_p2p_t *p);
  *  reactors' deadlines (INT64_MAX = none). */
 int  nodus_witness_p2p_lane_tick(nodus_witness_p2p_t *p,
                                  int64_t *next_deadline_ns);
+/** The sticky lane fault (above) is set: a reactor call made from a p2p
+ *  callback returned CMT_FAULT. Read by witness_cmt_tick BEFORE its
+ *  state-machine drain, so a fault raised inside this poll's callbacks is
+ *  not followed by one more drain that could sign and broadcast
+ *  (decision 2026-09-30-chain-config-int64-bounds.md, "Ek"). NULL reads
+ *  as not faulted. */
+bool nodus_witness_p2p_lane_faulted(const nodus_witness_p2p_t *p);
 /** Detach the reactors (before they are freed): every peer leaves them;
  *  the block sync reactor is unbound too (not freed — its owner frees
  *  it). */

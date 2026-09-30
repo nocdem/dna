@@ -10,6 +10,7 @@
 #include "dnac/nodus.h"
 #include "dnac/dnac.h"
 #include "dnac/safe_math.h"
+#include <stdint.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdbool.h>
@@ -441,6 +442,10 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *   - signed_at_block > 0              (CC-AUDIT-008)
  *   - valid_before_block > effective_block_height
  *   - valid_before_block > signed_at_block
+ *   - proposal_nonce, signed_at_block, valid_before_block and
+ *     effective_block_height each <= INT64_MAX (decision
+ *     2026-09-30-chain-config-int64-bounds.md; the witness stores them
+ *     as SQLite int64 — mirrors nodus_chain_config_scalar_rules)
  *   - committee_sig_count ∈ [DNAC_CHAIN_CONFIG_MIN_SIGS,
  *                            DNAC_CHAIN_CONFIG_MAX_SIGS] = [5, 128]
  *     (SHAPE only — the quorum rule is witness-side, see the notes on
@@ -543,6 +548,25 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
                       "CHAIN_CONFIG: valid_before=%llu <= signed_at=%llu",
                       (unsigned long long)cc->valid_before_block,
                       (unsigned long long)cc->signed_at_block);
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    /* The int64 bound (decision 2026-09-30-chain-config-int64-bounds.md),
+     * mirroring nodus_chain_config_scalar_rules: the witness stores these
+     * four as SQLite int64, so a value above INT64_MAX is refused there as
+     * a verdict — refused here first, so the client never submits it. */
+    if (cc->proposal_nonce         > (uint64_t)INT64_MAX ||
+        cc->signed_at_block        > (uint64_t)INT64_MAX ||
+        cc->valid_before_block     > (uint64_t)INT64_MAX ||
+        cc->effective_block_height > (uint64_t)INT64_MAX) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "CHAIN_CONFIG: nonce=%llu signed_at=%llu "
+                      "valid_before=%llu effective=%llu — each must be "
+                      "<= INT64_MAX",
+                      (unsigned long long)cc->proposal_nonce,
+                      (unsigned long long)cc->signed_at_block,
+                      (unsigned long long)cc->valid_before_block,
+                      (unsigned long long)cc->effective_block_height);
         return DNAC_ERROR_INVALID_PARAM;
     }
 

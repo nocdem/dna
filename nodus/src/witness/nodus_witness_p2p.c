@@ -3098,6 +3098,11 @@ int nodus_witness_p2p_lane_tick(nodus_witness_p2p_t *p, int64_t *next_deadline_n
     return CMT_OK;
 }
 
+bool nodus_witness_p2p_lane_faulted(const nodus_witness_p2p_t *p)
+{
+    return p != NULL && p->lane_fault;
+}
+
 void nodus_witness_p2p_lane_unbind(nodus_witness_p2p_t *p)
 {
     int i;

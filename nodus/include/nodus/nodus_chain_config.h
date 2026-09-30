@@ -283,7 +283,10 @@ int nodus_chain_config_apply(nodus_witness_t *w,
 /**
  * The SCALAR half of the CHAIN_CONFIG local rules: param allowlist,
  * per-param value bounds, and the signing/validity window shape
- * (signed_at != 0; valid_before > effective; valid_before > signed_at).
+ * (signed_at != 0; valid_before > effective; valid_before > signed_at),
+ * and the int64 bound: proposal_nonce, signed_at, valid_before and
+ * effective are each <= INT64_MAX (decision 2026-09-30-chain-config-
+ * int64-bounds.md — chain_config_history stores them as SQLite int64).
  * Since 0.20.3 the allowlist is the RUNNING consensus's read list —
  * dnac.h dnac_cfg_param_read_by_consensus (4, 5 and 6), shared with the
  * client mirror dnac_tx_verify_chain_config_rules — so a proposal for an
@@ -298,7 +301,8 @@ int nodus_chain_config_apply(nodus_witness_t *w,
 int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
                                     uint64_t signed_at_block,
                                     uint64_t valid_before_block,
-                                    uint64_t effective_block_height);
+                                    uint64_t effective_block_height,
+                                    uint64_t proposal_nonce);
 
 /**
  * Per-param grace minimum in blocks (Q4 Option B tiers): the earliest

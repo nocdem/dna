@@ -2214,6 +2214,20 @@ static int64_t witness_cmt_tick(nodus_witness_t *witness) {
                 LOG_TAG);
     }
 
+    /* The sticky lane fault, read BEFORE (b): a reactor CMT_FAULT raised
+     * inside this poll's p2p callbacks (nodus_witness_p2p_lane_tick's
+     * "THE STICKY LANE FAULT") is node-local by the W1.7 rule, and (c)
+     * would stop on it — but only after (b) had drained the state machine
+     * once more, a drain that can sign and broadcast. Stopping here makes
+     * the fault the last thing this node does (decision 2026-09-30-chain-
+     * config-int64-bounds.md, "Ek"). */
+    if (nodus_witness_p2p_lane_faulted(witness->p2p)) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "CMT_FAULT raised in a p2p callback — "
+                      "consensus participation stops");
+        witness->running = false;
+        return INT64_MAX;
+    }
+
     /* (b) drain the state machine. Bounded: D-23 rev 7 (19)'s own
      * arithmetic is ~337 parts for one maximal block (cmt_conr.h's
      * arena note, 22 020 096 / 65 536), so this many steps comfortably
