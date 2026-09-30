@@ -219,7 +219,7 @@ const portfolio = createPortfolio({
     if (!wallet) return;
     $('chain').value = chain; selectChain(); $('asset').value = symbol;
     if (action === 'select') { if (matchMedia(SINGLE_COLUMN_DASHBOARD).matches) $('send-form').scrollIntoView({ block: 'start' }); return; }
-    $(action === 'send' ? 'quick-send' : 'quick-receive').click();
+    $(action === 'send' ? 'quick-send' : action === 'earn' ? 'quick-earn' : 'quick-receive').click();
   },
   leadingNetworks,
   extraNetworks
@@ -349,8 +349,15 @@ const STAKE_KINDS = ['delegate', 'undelegate', 'stake'];
 const ACTION_WORD = { claim: 'Claiming', delegate: 'Delegating', undelegate: 'Undelegating', stake: 'Bonding' };
 const CONFIRM_TEXT = { claim: 'Confirm & claim', delegate: 'Confirm & delegate', undelegate: 'Confirm & undelegate', stake: 'Confirm & bond' };
 const nodusAmountText = units => groupDigits(formatUnits(units, NODUS_ASSET.decimals));
+// Earn (0.1.31): the staking panel is reached from an "Earn" button beside
+// Send / Receive, a navigation link and the NODUS portfolio row. All three
+// exist only while the panel does.
+function setEarnAvailable(available) {
+  $('quick-earn').hidden = !available; $('nav-earn').hidden = !available;
+  portfolio.setEarn(NODUS_ASSET.chain, available);
+}
 function hideStaking() {
-  stakeCheck++; stakeView = undefined;
+  stakeCheck++; stakeView = undefined; setEarnAvailable(false);
   $('stake-panel').hidden = true; $('validator-list').replaceChildren(); $('delegation-list').replaceChildren();
   $('delegate-validator').replaceChildren(); $('stake-status').textContent = ''; $('delegate-hint').textContent = ''; $('undelegate-note').textContent = ''; $('become-note').textContent = '';
 }
@@ -358,7 +365,7 @@ async function refreshStaking() {
   const client = nodusClient, source = wallet, check = ++stakeCheck;
   if (!client || !source || source.locked || !client.stakeable) { hideStaking(); return; }
   const current = () => check === stakeCheck && client === nodusClient && source === wallet && !source.locked;
-  $('stake-panel').hidden = false; $('stake-status').textContent = 'Reading validators and your delegations…';
+  $('stake-panel').hidden = false; setEarnAvailable(true); $('stake-status').textContent = 'Reading validators and your delegations…';
   try {
     const view = await adapters.nodus.stakingOverview({ client, from: source.addresses.nodus });
     if (!current()) return;
@@ -685,6 +692,14 @@ $('quick-send').onclick = () => {
 $('quick-receive').onclick = () => {
   $('receive-title').focus({ preventScroll: true });
   $('receive-panel').scrollIntoView({ block: 'start' });
+};
+// Earn opens the NODUS staking panel; the Send / Receive panel switches to
+// NODUS too, so Activity shows where a delegation will be tracked.
+$('quick-earn').onclick = () => {
+  if ($('stake-panel').hidden) return;
+  if ($('chain').value !== NODUS_ASSET.chain) { $('chain').value = NODUS_ASSET.chain; selectChain(); }
+  $('stake-title').focus({ preventScroll: true });
+  $('stake-panel').scrollIntoView({ block: 'start' });
 };
 $('lock').onclick = lock;
 $('copy-address').onclick = async () => {

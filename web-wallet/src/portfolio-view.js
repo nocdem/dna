@@ -56,6 +56,9 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   // (today only NODUS: "Claim your allocation", src/app.js refreshClaim).
   // `{ label, note, run }`; cleared by clear() and setAction(chain, undefined).
   let rowActions = {};
+  // Networks whose rows also offer "Earn" (today only NODUS, while the app's
+  // staking panel is shown: src/app.js setEarnAvailable). Cleared by clear().
+  let earn = {};
   const jobs = new Map();
   const text = value => hidden ? '••••' : value;
   function render() {
@@ -109,7 +112,7 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
         value.append(rowAmount,
           el('small', '', text(row.priceMissing ? 'Price unavailable' : usdText(row.usd, row.positive))));
         const actions = el('span', 'holding-actions');
-        for (const action of networks[row.chain].receiveOnly ? ['Receive'] : ['Send', 'Receive']) {
+        for (const action of [...(networks[row.chain].receiveOnly ? ['Receive'] : ['Send', 'Receive']), ...(earn[row.chain] ? ['Earn'] : [])]) {
           const button = el('button', 'secondary small', action); button.type = 'button';
           button.setAttribute('aria-label', `${action} ${row.symbol} on ${networks[row.chain].name}`);
           button.onclick = () => selectAsset(row.chain, row.symbol, action.toLowerCase()); actions.append(button);
@@ -167,7 +170,7 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   }
   function clear() {
     session++; for (const job of jobs.values()) job.abort(); jobs.clear(); priceJob?.abort(); priceJob = undefined;
-    clearInterval(timer); addresses = undefined; endpoints = undefined; balances = {}; quotes = {}; filter = 'all'; hidden = false; rowActions = {};
+    clearInterval(timer); addresses = undefined; endpoints = undefined; balances = {}; quotes = {}; filter = 'all'; hidden = false; rowActions = {}; earn = {};
     $('portfolio-updated').textContent = ''; render();
   }
   function open(publicAddresses, publicEndpoints, { automatic = true } = {}) {
@@ -226,6 +229,12 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     else delete rowActions[chain];
     render();
   }
+  // Adds (true) or removes (false) the "Earn" button on `chain`'s rows.
+  function setEarn(chain, available) {
+    if (!Object.hasOwn(networks, chain) || !!earn[chain] === !!available) return;
+    if (available) earn[chain] = true; else delete earn[chain];
+    render();
+  }
   $('portfolio-refresh').onclick = refresh;
   $('refresh').onclick = refresh;
   $('portfolio-hide').onclick = () => { hidden = !hidden; render(); };
@@ -234,5 +243,5 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     button.onclick = () => { filter = chain; render(); }; return button;
   }));
   render();
-  return { open, clear, refresh, changeEndpoint, setAddress, setSelected, setNetwork, setAction };
+  return { open, clear, refresh, changeEndpoint, setAddress, setSelected, setNetwork, setAction, setEarn };
 }
