@@ -482,3 +482,52 @@ the salt-agreement packet BUILD (`salt_agreement_publish_internal`), the
 contact-list `CLST` blob build/parse (`dht_contactlist_publish` /
 `dht_contactlist_fetch`), and the 8-byte big-endian ACK value encode/decode
 (`dht_publish_ack` / `ack_listen_callback`).
+
+---
+
+## 15. Nodus Connect thin core (`web-wallet/connect/`, NC-2) + strict nodus reads
+
+**Not part of libdna.** The web thin core (Web Connect design rev 5 §1.4,
+package NC-2) is a separate C library under `web-wallet/connect/`, compiled to
+WebAssembly by `web-wallet/scripts/build-connect-wasm.sh` and natively by
+`web-wallet/connect/tests/CMakeLists.txt`. It calls the §14 codec units,
+`dna_api.c` and `dht/client/dna_profile.c` as-is. Full contracts: the header
+`web-wallet/connect/nc_core.h`.
+
+**Nodus client additions** (`nodus/src/client/nodus_client_strict.h`,
+defined in `nodus/src/client/nodus_client.c`; `nodus_client_get` /
+`nodus_client_get_all` unchanged):
+
+| Function | Description |
+|----------|-------------|
+| `int nodus_client_reply_value_shape(const uint8_t *raw, size_t raw_len, nodus_reply_value_shape_t *out)` | Pure walk of a raw tier-2 reply: does `"r"` carry `"val"` / `"vals"`, how many items. 0 / -1 |
+| `int nodus_client_get_strict(nodus_client_t*, const nodus_key_t*, nodus_value_t **val_out)` | GET; a `"val"` that did not decode → `NODUS_ERR_PROTOCOL_ERROR`, never `NODUS_ERR_NOT_FOUND` (design §6.4 F1) |
+| `int nodus_client_get_all_strict(nodus_client_t*, const nodus_key_t*, nodus_value_t ***vals_out, size_t *count_out, size_t *undecodable_out)` | GET_ALL; decoded values + the count of items that did not decode |
+
+**Thin core library** (`web-wallet/connect/nc_core.h`):
+
+| Function | Description |
+|----------|-------------|
+| `int nc_keys_from_words(const char *words, nc_keys_t *out)` / `void nc_keys_wipe(nc_keys_t*)` | Words → ML-DSA-87 identity, round-3 Kyber, ML-KEM-1024 (the app's derivation) |
+| `void nc_classify_one(int rc, nodus_value_t*, const nodus_key_t *key, const nodus_key_t *expect_owner, nc_read_t*)` | R0, pure: FOUND / EMPTY / UNREADABLE(why) |
+| `void nc_read_one(const nc_ctx_t*, const nodus_key_t*, const nodus_key_t *expect_owner, nc_read_t*)` / `void nc_read_clear(nc_read_t*)` | strict GET + classify |
+| `void nc_classify_all(int rc, nodus_value_t **vals, size_t count, size_t undecodable, const nodus_key_t *key, const nodus_key_t *owners, size_t n_owners, nc_read_all_t*)` | R0 for GET_ALL, pure; FOUND is always partial |
+| `void nc_read_all(const nc_ctx_t*, const nodus_key_t*, const nodus_key_t *owners, size_t n_owners, nc_read_all_t*)` / `void nc_read_all_clear(nc_read_all_t*)` | strict GET_ALL + classify |
+| `int nc_put(const nc_ctx_t*, const nodus_key_t*, const uint8_t*, size_t, nodus_value_type_t, uint32_t ttl, uint64_t value_id)` | one signed PUT (the `nodus_ops.c do_put` shape) |
+| `void nc_key_str(const char*, nodus_key_t*)` / `void nc_key_bytes(const uint8_t*, size_t, nodus_key_t*)` / `int nc_fp_parse(const char*, nodus_key_t*)` | DHT key hashing (string / bytes), fingerprint parse |
+| `const char *nc_why_str(nc_why_t)` / `const char *nc_outcome_str(nc_outcome_t)` | names |
+| `void nc_profile_read(const nc_ctx_t*, const char *fp, nc_read_t*, dna_unified_identity_t**, nc_peer_t*)` | R1 read + the app's record checks |
+| `int nc_profile_publish(const nc_ctx_t*, const char *patch_json, nc_profile_result_t*)` | R1 update / Q1-gated create, EXCLUSIVE |
+| `int nc_request_build(const nc_keys_t*, const char *recipient_fp, const char *message, const uint8_t *salt, uint8_t **out, size_t *out_len)` | R2 request bytes, checked with the codec's verify |
+| `int nc_request_send(...)` / `int nc_request_accept(...)` / `int nc_request_cancel(...)` | R2 PUTs (send, the app's ACCEPT, cancel) |
+| `int nc_requests_fetch(const nc_ctx_t*, nc_requests_t*)` / `void nc_requests_clear(nc_requests_t*)` | R2 inbox |
+| `int nc_salt_read(const nc_ctx_t*, const nc_peer_t*, nc_salt_read_t*)` / `void nc_salt_read_clear(nc_salt_read_t*)` | R3 read (no publish) |
+| `nc_salt_choice_t nc_salt_choose(const uint8_t *local, const uint8_t *dht, uint8_t chosen[32], bool *republish_wanted)` | R3 reconcile rule, pure |
+| `int nc_outbox_build(...)` / `int nc_outbox_publish(...)` | R5 day blob (2-recipient Seal, alg all-or-nothing) + PUT |
+| `int nc_outbox_fetch_day(const nc_ctx_t*, const nc_peer_t*, const uint8_t salt[32], uint64_t day, nc_inbox_t*)` / `void nc_inbox_clear(nc_inbox_t*)` | R5 one bucket + authorship gate |
+| `int nc_ack_publish(const nc_ctx_t*, const char *peer_fp, const uint8_t salt[32])` / `void nc_ack_read(..., nc_read_t*, uint64_t *ack_ts)` | R5 ACK |
+| `int nc_servers_parse(const char *json, nc_servers_t*, char *why, size_t why_len)` | embedded server list (`nodus-connect-servers` v1, `kind`-tagged entries) |
+
+The WebAssembly exports (`nc_unlock`, `nc_profile_get`, `nc_outbox_send`, …)
+are listed in `build-connect-wasm.sh` and documented in `web-wallet/connect/nc_wasm.c`
+and `web-wallet/src/connect/core.js`.

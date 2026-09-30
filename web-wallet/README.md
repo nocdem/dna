@@ -1097,3 +1097,39 @@ packages only; `send.wasm` carries OpenSSL 3.0.15 (Apache-2.0) and the
 Emscripten runtime/libc, which need their own entry before the module is
 released. The Asyncify single-thread spike (design §1.3) ran on Emscripten
 4.0.16; this module is built with 6.0.10 and has not been run in a browser.
+
+## Nodus Connect thin core — NC-2 (unreleased, no UI, not wired)
+
+Messaging core for the web (design `docs/plans/2026-09-24-web-connect-design.md`
+rev 5, package NC-2; decision `2026-09-30-nodus-connect-thin-core.md`). Nothing
+here is loaded by the wallet; the Messages UI and the shared module are NC-4.
+
+- `connect/` — C library (`nc_core.h` documents every rule): the three-outcome
+  read (found / empty / unreadable; "unreadable" never leads to a write), own
+  profile read + update (EXCLUSIVE, "address taken" on `KEY_OWNED`; a record is
+  created only for words generated in this session), contact requests (send,
+  the app's ACCEPT round trip, cancel, fetch), per-contact salt read + the
+  native reconcile choice, the 1:1 daily outbox (send whole-day blob, fetch one
+  day with the authorship gate) and delivery ACKs, and the embedded server
+  list (`nodus-connect-servers` v1, entries carry a `kind`). Wire bytes come
+  from `messenger/codec/`, `messenger/dna_api.c` and
+  `messenger/dht/client/dna_profile.c`, compiled verbatim.
+- `connect/nc_wasm.c` + `scripts/build-connect-wasm.sh` (`npm run
+  build:connect-core`) — a standalone WebAssembly build (Emscripten 6.0.10,
+  Asyncify, `-Werror`, json-c 0.17 + OpenSSL 3.0.15 for wasm32) written to
+  `/tmp/nodus-connect-wasm`, never under `src/`. **Test artifact:** it opens
+  its own tier-2 session; shipped beside `send.wasm` the two sessions of one
+  identity would evict each other.
+- `src/connect/core.js` — JS glue: one operation queue, `(generation,
+  requestId)` on every result, lock order (queue stops → cancel → lock →
+  memory zeroed → instance released). API listed at the top of the file.
+- `connect/tests/` — native tests (CMake, same compile set): classifier
+  matrix, wire bytes vs the codecs' own verify, R0 fault matrix against a fake
+  node (timeout, empty, bad signature, wrong owner, undecodable → no PUT).
+
+Not in NC-2: the contact list (its `CLST` blob build/parse is inline in
+`dht_contactlist.c`) and the salt-agreement publish (packet build inline in
+`dht_salt_agreement.c`) — not extracted by NC-1, not re-derived here; at-rest
+storage (Q4, NC-4). The json-c version of the frozen app build is not
+established (host 0.16, wasm 0.17); the profile signature is over json-c's
+output, so this is checked before release (NC-3).
