@@ -390,16 +390,22 @@ int dht_followlist_fetch(
         return -1;
     }
 
-    /* Step 5: Verify sender key matches (self-encryption check) */
-    if (sender_pubkey_len_out == DILITHIUM_PUBKEY_SIZE) {
-        if (memcmp(sender_pubkey_out, dilithium_pubkey, DILITHIUM_PUBKEY_SIZE) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Sender public key mismatch (not self-encrypted)");
-            free(decrypted_data);
-            free(sender_pubkey_out);
-            if (signature_out) free(signature_out);
-            free(blob);
-            return -1;
-        }
+    /* Step 5: Verify authorship (self-sealed record).
+     * dna_decrypt_message_raw() returns the sender's 64-byte FINGERPRINT and
+     * does NOT verify the signature (dna_api.c). The record must be sealed by
+     * the user's own key: SHA3-512(dilithium_pubkey) == sender fingerprint AND
+     * the Dilithium5 signature over the plaintext verifies under dilithium_pubkey. */
+    if (sender_pubkey_len_out != 64 || !signature_out || signature_out_len == 0 ||
+        dna_verify_seal_authorship(decrypted_data, decrypted_len,
+                                   signature_out, signature_out_len,
+                                   dilithium_pubkey, DILITHIUM_PUBKEY_SIZE,
+                                   sender_pubkey_out, NULL) != DNA_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Follow list authorship check failed (not sealed by own key)");
+        free(decrypted_data);
+        free(sender_pubkey_out);
+        if (signature_out) free(signature_out);
+        free(blob);
+        return -1;
     }
 
     free(sender_pubkey_out);

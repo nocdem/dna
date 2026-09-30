@@ -1074,6 +1074,14 @@ while (srv->running) {
 }
 ```
 
+> The sketch above is simplified and partly historical (the channel server is compiled out; the real loop is `nodus_server_run`). Read budgets as of 2026-09-30 (P2 hardening, branch `p2-dht-fix`):
+> - **TCP:** each `nodus_tcp_poll` waits 50 ms, or 0 ms when either TCP transport or the UDP socket still has queued input (`nodus_tcp_read_pending`, `nodus_udp_read_pending`).
+> - **UDP 4000:** the socket is not in any epoll the loop waits on; `nodus_udp_poll` runs once per iteration and reads at most `NODUS_UDP_POLL_BUDGET` (64) datagrams. When it stops at the budget it sets `budget_hit`, so the next iteration does not block its TCP polls — the cap bounds one call's work without a throughput ceiling.
+> - **Unauthenticated client connections** (4001 / WebSocket) are closed by `idle_timeout_sweep` either after 15 s idle or 30 s after `connected_at` (`IDLE_ABSOLUTE_UNAUTH`), whichever comes first; the sweep runs every 30 s.
+> - **Media `m_put`** refuses a chunk index ≥ the request's chunk count, a non-first chunk with no stored metadata or with an index ≥ the STORED chunk count, and `ttl == 0` (media rate limit intentionally not added — operator 2026-09-30). The `m_sv` replication receive path does not apply these checks yet.
+> - **get_all / get_batch** answer an explicit error frame when the reply cannot be encoded (previously no reply, and the client waited for its timeout).
+> - **Value decode** refuses a value whose unsigned `created_at + ttl` would overflow (it would otherwise wrap to `expires_at == 0`, "never expires").
+
 ### Session Management
 
 Each TCP 4001 connection is assigned a **session** (`nodus_session_t`) with:

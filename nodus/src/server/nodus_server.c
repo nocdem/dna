@@ -2259,6 +2259,10 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
         if (nodus_t2_result_multi(msg->txn_id, vals, count,
                                    resp_buf, sizeof(resp_buf), &len) == 0) {
             nodus_tcp_send(sess->conn, resp_buf, len);
+        } else {
+            nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
+                            "get_all encode failed", resp_buf, sizeof(resp_buf), &len);
+            nodus_tcp_send(sess->conn, resp_buf, len);
         }
         for (size_t i = 0; i < count; i++) nodus_value_free(vals[i]);
         free(vals);
@@ -2290,8 +2294,13 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
         if (rc == 0 && count > 0) {
             size_t len = 0;
             if (nodus_t2_result_multi(msg->txn_id, vals, count,
-                                       resp_buf, sizeof(resp_buf), &len) == 0)
+                                       resp_buf, sizeof(resp_buf), &len) == 0) {
                 nodus_tcp_send(sess->conn, resp_buf, len);
+            } else {
+                nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
+                                "get_all encode failed", resp_buf, sizeof(resp_buf), &len);
+                nodus_tcp_send(sess->conn, resp_buf, len);
+            }
             for (size_t i = 0; i < count; i++) nodus_value_free(vals[i]);
             free(vals);
         } else {
@@ -2458,8 +2467,13 @@ static void bf_send_result(nodus_server_t *srv, dht_bf_batch_t *b) {
                         bfkh, b->counts_per_key[0]);
                 if (nodus_t2_result_multi(b->txn_id, b->vals_per_key[0],
                                            b->counts_per_key[0],
-                                           buf, buf_cap, &len) == 0)
+                                           buf, buf_cap, &len) == 0) {
                     nodus_tcp_send(sess->conn, buf, len);
+                } else {
+                    nodus_t2_error(b->txn_id, NODUS_ERR_INTERNAL_ERROR,
+                                    "get_all encode failed", buf, buf_cap, &len);
+                    nodus_tcp_send(sess->conn, buf, len);
+                }
             } else {
                 fprintf(stderr, "GET_ALL: key=%s... forward_result EMPTY\n", bfkh);
                 nodus_t2_result_empty(b->txn_id, buf, buf_cap, &len);
@@ -2468,8 +2482,13 @@ static void bf_send_result(nodus_server_t *srv, dht_bf_batch_t *b) {
         } else {
             if (nodus_t2_result_get_batch(b->txn_id, b->keys, b->key_count,
                                            b->vals_per_key, b->counts_per_key,
-                                           buf, buf_cap, &len) == 0)
+                                           buf, buf_cap, &len) == 0) {
                 nodus_tcp_send(sess->conn, buf, len);
+            } else {
+                nodus_t2_error(b->txn_id, NODUS_ERR_INTERNAL_ERROR,
+                                "batch encode failed", buf, buf_cap, &len);
+                nodus_tcp_send(sess->conn, buf, len);
+            }
         }
         free(buf);
     }
@@ -4026,6 +4045,8 @@ static void eviction_sweep(nodus_server_t *srv) {
 #define IDLE_SWEEP_INTERVAL   30   /* seconds between sweeps */
 #define IDLE_TIMEOUT_AUTH    180   /* seconds for authenticated connections (client pings every 60s) */
 #define IDLE_TIMEOUT_UNAUTH   15   /* seconds for unauthenticated connections */
+#define IDLE_ABSOLUTE_UNAUTH  30   /* absolute bound from connected_at while unauthenticated:
+                                    * a slow trickle resets last_activity but not this */
 
 static void idle_timeout_sweep(nodus_server_t *srv) {
     uint64_t now = nodus_time_now();
@@ -4040,7 +4061,9 @@ static void idle_timeout_sweep(nodus_server_t *srv) {
         uint64_t idle = now - c->last_activity;
         bool authed = srv->sessions[c->slot].authenticated;
         uint64_t timeout = authed ? IDLE_TIMEOUT_AUTH : IDLE_TIMEOUT_UNAUTH;
-        if (idle > timeout) {
+        bool abs_expired = !authed &&
+                           now - c->connected_at > IDLE_ABSOLUTE_UNAUTH;
+        if (idle > timeout || abs_expired) {
             char fp_hex[33] = {0};
             if (authed)
                 for (int j = 0; j < 16; j++)
@@ -4608,8 +4631,16 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     if (buf) {
                         size_t rlen = 0;
                         if (nodus_t2_result_get_batch(msg.txn_id, msg.batch_keys, n,
-                                                       vals, counts, buf, buf_cap, &rlen) == 0)
+                                                       vals, counts, buf, buf_cap, &rlen) == 0) {
                             nodus_tcp_send(sess->conn, buf, rlen);
+                        } else {
+                            /* The forwarding peer's BF reader ignores a frame
+                             * without batch results and completes the forward
+                             * instead of waiting for its timeout. */
+                            nodus_t2_error(msg.txn_id, NODUS_ERR_INTERNAL_ERROR,
+                                            "batch encode failed", buf, buf_cap, &rlen);
+                            nodus_tcp_send(sess->conn, buf, rlen);
+                        }
                         free(buf);
                     }
 
@@ -6606,9 +6637,13 @@ int nodus_server_run(nodus_server_t *srv) {
          * pending-read list, neither poll may block — nodus_tcp_poll waits
          * 0 ms only for its OWN list, so the sibling's 50 ms wait would
          * delay that input. Re-evaluated before each call: the first poll
-         * can fill or empty a list. */
+         * can fill or empty a list. The UDP socket is not in either epoll:
+         * when the last nodus_udp_poll() stopped at its read budget,
+         * neither poll may block either, or queued datagrams would wait
+         * up to 2 x 50 ms per budget. */
         int poll_ms = (nodus_tcp_read_pending(&srv->tcp) ||
-                       nodus_tcp_read_pending(&srv->inter_tcp)) ? 0 : 50;
+                       nodus_tcp_read_pending(&srv->inter_tcp) ||
+                       nodus_udp_read_pending(&srv->udp)) ? 0 : 50;
 
         /* Poll client TCP events (plain port and, when enabled, the
          * WebSocket entry — same transport) */
@@ -6621,7 +6656,8 @@ int nodus_server_run(nodus_server_t *srv) {
 
         /* Poll inter-node TCP events */
         poll_ms = (nodus_tcp_read_pending(&srv->tcp) ||
-                   nodus_tcp_read_pending(&srv->inter_tcp)) ? 0 : 50;
+                   nodus_tcp_read_pending(&srv->inter_tcp) ||
+                   nodus_udp_read_pending(&srv->udp)) ? 0 : 50;
         nodus_tcp_poll(&srv->inter_tcp, poll_ms);
 
         /* The witness port 4004 (the p2p host) is polled inside

@@ -572,19 +572,25 @@ int dht_addressbook_fetch(
     memcpy(json_str, decrypted_data, decrypted_len);
     json_str[decrypted_len] = '\0';
 
-    // Step 5: Verify sender's public key matches (self-verification)
-    if (dilithium_pubkey && sender_pubkey_len_out == DHT_ADDRESSBOOK_DILITHIUM_PUBKEY_SIZE) {
-        if (memcmp(sender_pubkey_out, dilithium_pubkey, DHT_ADDRESSBOOK_DILITHIUM_PUBKEY_SIZE) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Sender public key mismatch (not self-encrypted)\n");
-            free(json_str);
-            free(decrypted_data);
-            free(sender_pubkey_out);
-            if (signature_out) free(signature_out);
-            free(blob);
-            return -1;
-        }
-        QGP_LOG_INFO(LOG_TAG, "Sender public key verified (self-encrypted)\n");
+    // Step 5: Verify authorship (self-sealed record).
+    // dna_decrypt_message_raw() returns the sender's 64-byte FINGERPRINT and does
+    // NOT verify the signature (dna_api.c). The record must be sealed by the
+    // user's own key: SHA3-512(dilithium_pubkey) == sender fingerprint AND the
+    // Dilithium5 signature over the plaintext verifies under dilithium_pubkey.
+    if (sender_pubkey_len_out != 64 || !signature_out || signature_out_len == 0 ||
+        dna_verify_seal_authorship(decrypted_data, decrypted_len,
+                                   signature_out, signature_out_len,
+                                   dilithium_pubkey, DHT_ADDRESSBOOK_DILITHIUM_PUBKEY_SIZE,
+                                   sender_pubkey_out, NULL) != DNA_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Address book authorship check failed (not sealed by own key)\n");
+        free(json_str);
+        free(decrypted_data);
+        free(sender_pubkey_out);
+        if (signature_out) free(signature_out);
+        free(blob);
+        return -1;
     }
+    QGP_LOG_INFO(LOG_TAG, "Address book authorship verified (sealed by own key)\n");
 
     free(decrypted_data);
     free(sender_pubkey_out);

@@ -111,21 +111,37 @@ int nodus_udp_send(nodus_udp_t *udp, const uint8_t *payload, size_t len,
     return (sent == (ssize_t)frame_len) ? 0 : -1;
 }
 
+/* Max datagrams read per nodus_udp_poll() call. The server does not wait
+ * on this socket in any epoll: the main loop calls nodus_udp_poll() once
+ * per iteration, so datagrams left in the kernel queue are read by the
+ * next iteration's call. When a call stops at the budget it sets
+ * udp->budget_hit, and nodus_udp_read_pending() tells the main loop not
+ * to block its TCP polls before that next call — the cap only stops one
+ * UDP flood from monopolizing the single event loop, it is not a
+ * throughput ceiling. Counts every datagram read, including malformed
+ * ones that are skipped. */
+#define NODUS_UDP_POLL_BUDGET 64
+
 int nodus_udp_poll(nodus_udp_t *udp) {
     if (!udp || udp->fd < 0) return -1;
 
     int processed = 0;
     uint8_t buf[UDP_BUFSIZE];
 
-    for (;;) {
+    /* Stays true only if the loop runs the whole budget without the
+     * socket reporting empty (or an error) */
+    udp->budget_hit = true;
+
+    for (int received = 0; received < NODUS_UDP_POLL_BUDGET; received++) {
         struct sockaddr_in from;
         socklen_t from_len = sizeof(from);
 
         ssize_t n = recvfrom(udp->fd, buf, sizeof(buf), 0,
                               (struct sockaddr *)&from, &from_len);
         if (n <= 0) {
-            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
-                break;
+            /* EAGAIN/EWOULDBLOCK (queue drained) or an error: nothing
+             * known to be left, so the caller may block */
+            udp->budget_hit = false;
             break;
         }
 
@@ -147,6 +163,10 @@ int nodus_udp_poll(nodus_udp_t *udp) {
     }
 
     return processed;
+}
+
+bool nodus_udp_read_pending(const nodus_udp_t *udp) {
+    return udp && udp->fd >= 0 && udp->budget_hit;
 }
 
 void nodus_udp_close(nodus_udp_t *udp) {
