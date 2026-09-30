@@ -6,7 +6,15 @@
  * are `static` dropped and the `dht_contactlist_` name prefix on
  * serialize_to_json / deserialize_from_json (see contactlist_codec.h);
  * hex_to_bytes stays static here (its only caller moved with it).
- * No network I/O, no database.
+ *
+ * NC-1b: the CLST blob build (dht_contactlist_publish "Step 4") and the
+ * blob header parse (dht_contactlist_fetch "Step 3") moved here as
+ * dht_contactlist_blob_encode / dht_contactlist_blob_parse; statement
+ * sequences unchanged, plumbing listed at each function. The htonll/ntohll
+ * macros and the platform block are copied from dht_contactlist.c, which
+ * still needs its own copy (dht_contactlist_get_timestamp).
+ * No network I/O, no database. blob_parse reads time(NULL) for one
+ * informational log line only; no output depends on it.
  */
 
 #include "codec/contactlist_codec.h"
@@ -14,10 +22,28 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <json-c/json.h>
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "DHT_CONTACTS"
+
+#ifdef _WIN32
+#include <winsock2.h>
+#ifdef _MSC_VER
+#pragma comment(lib, "ws2_32.lib")
+#endif
+#else
+#include <arpa/inet.h>
+#endif
+
+// Network byte order functions (may not be available on all systems)
+#ifndef htonll
+#define htonll(x) ((1==htonl(1)) ? (x) : ((uint64_t)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))
+#endif
+#ifndef ntohll
+#define ntohll(x) ((1==ntohl(1)) ? (x) : ((uint64_t)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
+#endif
 
 /**
  * Serialize contact list to JSON string (v2: contacts as objects with salt)
@@ -218,5 +244,181 @@ int dht_contactlist_deserialize_from_json(const char *json_str, char ***contacts
     *contacts_out = contacts;
     if (salts_out) *salts_out = salts;
     json_object_put(root);
+    return 0;
+}
+
+/**
+ * Build the CLST blob (dht_contactlist_publish "Step 4", moved by NC-1b).
+ *
+ * Plumbing added around the unchanged statements: the argument check; the
+ * malloc-failure path returns -1 without `free(encrypted_data)` (the caller
+ * still owns encrypted_data and frees it on every path, as before); the
+ * blob is handed out through blob_out / blob_size_out.
+ */
+int dht_contactlist_blob_encode(uint64_t timestamp, uint64_t expiry,
+                                const uint8_t *encrypted_data, size_t encrypted_len,
+                                const uint8_t *signature, size_t sig_len,
+                                uint8_t **blob_out, size_t *blob_size_out)
+{
+    if (!blob_out || !blob_size_out ||
+        (!encrypted_data && encrypted_len > 0) || (!signature && sig_len > 0)) {
+        return -1;
+    }
+
+    // Step 4: Build binary blob
+    // Format: [magic][version][timestamp][expiry][json_len][encrypted_json][sig_len][signature]
+    size_t blob_size = 4 + 1 + 8 + 8 + 4 + encrypted_len + 4 + sig_len;
+    uint8_t *blob = malloc(blob_size);
+    if (!blob) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate blob\n");
+        return -1;
+    }
+
+    size_t offset = 0;
+
+    // Magic
+    uint32_t magic = htonl(DHT_CONTACTLIST_MAGIC);
+    memcpy(blob + offset, &magic, 4);
+    offset += 4;
+
+    // Version
+    blob[offset++] = DHT_CONTACTLIST_VERSION;
+
+    // Timestamp (network byte order)
+    uint64_t ts_net = htonll(timestamp);
+    memcpy(blob + offset, &ts_net, 8);
+    offset += 8;
+
+    // Expiry (network byte order)
+    uint64_t exp_net = htonll(expiry);
+    memcpy(blob + offset, &exp_net, 8);
+    offset += 8;
+
+    // Encrypted JSON length
+    uint32_t json_len_net = htonl((uint32_t)encrypted_len);
+    memcpy(blob + offset, &json_len_net, 4);
+    offset += 4;
+
+    // Encrypted JSON data
+    memcpy(blob + offset, encrypted_data, encrypted_len);
+    offset += encrypted_len;
+
+    // Signature length
+    uint32_t sig_len_net = htonl((uint32_t)sig_len);
+    memcpy(blob + offset, &sig_len_net, 4);
+    offset += 4;
+
+    // Signature
+    memcpy(blob + offset, signature, sig_len);
+
+    *blob_out = blob;
+    *blob_size_out = blob_size;
+    return 0;
+}
+
+/**
+ * Parse the CLST blob header (dht_contactlist_fetch "Step 3", moved by
+ * NC-1b).
+ *
+ * Plumbing added around the unchanged statements: the argument check; every
+ * `free(blob); return -1;` became `return -1;` (the caller owns and frees
+ * the blob); `encrypted_data` is `const` (the blob is const here); the
+ * results go out through the pointers at the end (timestamp_out /
+ * expiry_out may be NULL). *encrypted_out points INTO `blob`.
+ */
+int dht_contactlist_blob_parse(const uint8_t *blob, size_t blob_size,
+                               uint64_t *timestamp_out, uint64_t *expiry_out,
+                               const uint8_t **encrypted_out,
+                               uint32_t *encrypted_len_out)
+{
+    if (!blob || !encrypted_out || !encrypted_len_out) {
+        return -1;
+    }
+
+    // Step 3: Parse blob header
+    if (blob_size < 4 + 1 + 8 + 8 + 4 + 4) {
+        QGP_LOG_ERROR(LOG_TAG, "Blob too small\n");
+        return -1;
+    }
+
+    size_t offset = 0;
+
+    // Magic
+    uint32_t magic;
+    memcpy(&magic, blob + offset, 4);
+    magic = ntohl(magic);
+    offset += 4;
+
+    if (magic != DHT_CONTACTLIST_MAGIC) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid magic: 0x%08X\n", magic);
+        return -1;
+    }
+
+    // Version (accept v1 and v2)
+    uint8_t version = blob[offset++];
+    if (version < 1 || version > DHT_CONTACTLIST_VERSION) {
+        QGP_LOG_ERROR(LOG_TAG, "Unsupported version: %d\n", version);
+        return -1;
+    }
+
+    // Timestamp
+    uint64_t timestamp;
+    memcpy(&timestamp, blob + offset, 8);
+    timestamp = ntohll(timestamp);
+    offset += 8;
+
+    // Expiry
+    uint64_t expiry;
+    memcpy(&expiry, blob + offset, 8);
+    expiry = ntohll(expiry);
+    offset += 8;
+
+    // Embedded expiry is informational only: DHT storage is permanent
+    // (EXCLUSIVE, ttl=0), so a stale expiry must not block seed-phrase restore.
+    uint64_t now = (uint64_t)time(NULL);
+    if (expiry < now) {
+        QGP_LOG_INFO(LOG_TAG, "Contact list past embedded expiry (expiry=%lu, now=%lu), accepting anyway\n",
+                     (unsigned long)expiry, (unsigned long)now);
+    }
+
+    // Encrypted JSON length
+    uint32_t encrypted_len;
+    memcpy(&encrypted_len, blob + offset, 4);
+    encrypted_len = ntohl(encrypted_len);
+    offset += 4;
+
+    // Remaining-length form: "offset + encrypted_len + 4 > blob_size" wraps
+    // with a 32-bit size_t (wasm32) for a large wire encrypted_len and passes
+    // (BUGS.md, NC-5 fuzz, 2026-09-30). offset (25) + 4 <= blob_size (>= 29,
+    // checked above), so the subtraction cannot underflow.
+    if (encrypted_len > blob_size - offset - 4) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid encrypted length\n");
+        return -1;
+    }
+
+    const uint8_t *encrypted_data = blob + offset;
+    offset += encrypted_len;
+
+    // Signature length
+    uint32_t sig_len;
+    memcpy(&sig_len, blob + offset, 4);
+    sig_len = ntohl(sig_len);
+    offset += 4;
+
+    // offset <= blob_size (encrypted_len check above)
+    if (sig_len != blob_size - offset) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid signature length\n");
+        return -1;
+    }
+
+    // Note: signature at (blob + offset) is validated during decryption
+
+    QGP_LOG_INFO(LOG_TAG, "Parsed header: timestamp=%lu, expiry=%lu, encrypted_len=%u, sig_len=%u\n",
+           (unsigned long)timestamp, (unsigned long)expiry, encrypted_len, sig_len);
+
+    if (timestamp_out) *timestamp_out = timestamp;
+    if (expiry_out) *expiry_out = expiry;
+    *encrypted_out = encrypted_data;
+    *encrypted_len_out = encrypted_len;
     return 0;
 }

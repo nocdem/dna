@@ -7,8 +7,13 @@
  * DHT puts/gets and ACK listeners) so the native library and the web thin
  * core compile the same code. Declarations stay in dht_offline_queue.h.
  * No network I/O, no database.
+ *
+ * NC-1b: the 8-byte big-endian ACK value encode/decode (formerly inline in
+ * dht_publish_ack / ack_listen_callback) — declared in
+ * codec/offline_queue_codec.h.
  */
 
+#include "codec/offline_queue_codec.h"
 #include "dht/shared/dht_offline_queue.h"
 #include "crypto/hash/qgp_sha3.h"
 #include <string.h>
@@ -403,4 +408,38 @@ int dht_generate_ack_key(const char *recipient, const char *sender,
     }
     qgp_sha3_512((const uint8_t*)base_key, strlen(base_key), key_out);
     return 0;
+}
+
+/**
+ * ACK value encode (NC-1b, moved from dht_publish_ack). Plumbing added:
+ * `timestamp` and `value` are parameters (were locals of dht_publish_ack).
+ */
+void dht_ack_value_encode(uint64_t timestamp, uint8_t value[8]) {
+    // Serialize timestamp to 8 bytes big-endian
+    value[0] = (uint8_t)(timestamp >> 56);
+    value[1] = (uint8_t)(timestamp >> 48);
+    value[2] = (uint8_t)(timestamp >> 40);
+    value[3] = (uint8_t)(timestamp >> 32);
+    value[4] = (uint8_t)(timestamp >> 24);
+    value[5] = (uint8_t)(timestamp >> 16);
+    value[6] = (uint8_t)(timestamp >> 8);
+    value[7] = (uint8_t)(timestamp);
+}
+
+/**
+ * ACK value decode (NC-1b, moved from ack_listen_callback in
+ * dht_offline_queue.c). Plumbing added: `value` is a parameter and the
+ * result is returned (was the callback's local ack_ts). The 8-byte length
+ * check stays with the caller.
+ */
+uint64_t dht_ack_value_decode(const uint8_t value[8]) {
+    uint64_t ack_ts = ((uint64_t)value[0] << 56) |
+                      ((uint64_t)value[1] << 48) |
+                      ((uint64_t)value[2] << 40) |
+                      ((uint64_t)value[3] << 32) |
+                      ((uint64_t)value[4] << 24) |
+                      ((uint64_t)value[5] << 16) |
+                      ((uint64_t)value[6] << 8) |
+                      ((uint64_t)value[7]);
+    return ack_ts;
 }

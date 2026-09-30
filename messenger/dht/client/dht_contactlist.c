@@ -63,7 +63,10 @@ static int make_base_key(const char *identity, char *key_out, size_t key_out_siz
 
 /* NC-1: serialize_to_json / hex_to_bytes / deserialize_from_json (the
  * contact-list JSON codec) moved verbatim to codec/contactlist_codec.c as
- * dht_contactlist_serialize_to_json / dht_contactlist_deserialize_from_json. */
+ * dht_contactlist_serialize_to_json / dht_contactlist_deserialize_from_json.
+ * NC-1b: the CLST blob build (publish "Step 4") and header parse (fetch
+ * "Step 3") moved the same way, as dht_contactlist_blob_encode /
+ * dht_contactlist_blob_parse. */
 
 // ============================================================================
 // PUBLIC API IMPLEMENTATION
@@ -172,52 +175,15 @@ int dht_contactlist_publish(
 
     QGP_LOG_INFO(LOG_TAG, "Encrypted length: %zu bytes\n", encrypted_len);
 
-    // Step 4: Build binary blob
-    // Format: [magic][version][timestamp][expiry][json_len][encrypted_json][sig_len][signature]
-    size_t blob_size = 4 + 1 + 8 + 8 + 4 + encrypted_len + 4 + sig_len;
-    uint8_t *blob = malloc(blob_size);
-    if (!blob) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate blob\n");
+    // Step 4: Build binary blob (NC-1b: dht_contactlist_blob_encode,
+    // codec/contactlist_codec.c)
+    uint8_t *blob = NULL;
+    size_t blob_size = 0;
+    if (dht_contactlist_blob_encode(timestamp, expiry, encrypted_data, encrypted_len,
+                                    signature, sig_len, &blob, &blob_size) != 0) {
         free(encrypted_data);
         return -1;
     }
-
-    size_t offset = 0;
-
-    // Magic
-    uint32_t magic = htonl(DHT_CONTACTLIST_MAGIC);
-    memcpy(blob + offset, &magic, 4);
-    offset += 4;
-
-    // Version
-    blob[offset++] = DHT_CONTACTLIST_VERSION;
-
-    // Timestamp (network byte order)
-    uint64_t ts_net = htonll(timestamp);
-    memcpy(blob + offset, &ts_net, 8);
-    offset += 8;
-
-    // Expiry (network byte order)
-    uint64_t exp_net = htonll(expiry);
-    memcpy(blob + offset, &exp_net, 8);
-    offset += 8;
-
-    // Encrypted JSON length
-    uint32_t json_len_net = htonl((uint32_t)encrypted_len);
-    memcpy(blob + offset, &json_len_net, 4);
-    offset += 4;
-
-    // Encrypted JSON data
-    memcpy(blob + offset, encrypted_data, encrypted_len);
-    offset += encrypted_len;
-
-    // Signature length
-    uint32_t sig_len_net = htonl((uint32_t)sig_len);
-    memcpy(blob + offset, &sig_len_net, 4);
-    offset += 4;
-
-    // Signature
-    memcpy(blob + offset, signature, sig_len);
 
     free(encrypted_data);
 
@@ -281,91 +247,15 @@ int dht_contactlist_fetch(
 
     QGP_LOG_INFO(LOG_TAG, "Retrieved blob: %zu bytes\n", blob_size);
 
-    // Step 3: Parse blob header
-    if (blob_size < 4 + 1 + 8 + 8 + 4 + 4) {
-        QGP_LOG_ERROR(LOG_TAG, "Blob too small\n");
+    // Step 3: Parse blob header (NC-1b: dht_contactlist_blob_parse,
+    // codec/contactlist_codec.c)
+    const uint8_t *encrypted_data = NULL;
+    uint32_t encrypted_len = 0;
+    if (dht_contactlist_blob_parse(blob, blob_size, NULL, NULL,
+                                   &encrypted_data, &encrypted_len) != 0) {
         free(blob);
         return -1;
     }
-
-    size_t offset = 0;
-
-    // Magic
-    uint32_t magic;
-    memcpy(&magic, blob + offset, 4);
-    magic = ntohl(magic);
-    offset += 4;
-
-    if (magic != DHT_CONTACTLIST_MAGIC) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid magic: 0x%08X\n", magic);
-        free(blob);
-        return -1;
-    }
-
-    // Version (accept v1 and v2)
-    uint8_t version = blob[offset++];
-    if (version < 1 || version > DHT_CONTACTLIST_VERSION) {
-        QGP_LOG_ERROR(LOG_TAG, "Unsupported version: %d\n", version);
-        free(blob);
-        return -1;
-    }
-
-    // Timestamp
-    uint64_t timestamp;
-    memcpy(&timestamp, blob + offset, 8);
-    timestamp = ntohll(timestamp);
-    offset += 8;
-
-    // Expiry
-    uint64_t expiry;
-    memcpy(&expiry, blob + offset, 8);
-    expiry = ntohll(expiry);
-    offset += 8;
-
-    // Embedded expiry is informational only: DHT storage is permanent
-    // (EXCLUSIVE, ttl=0), so a stale expiry must not block seed-phrase restore.
-    uint64_t now = (uint64_t)time(NULL);
-    if (expiry < now) {
-        QGP_LOG_INFO(LOG_TAG, "Contact list past embedded expiry (expiry=%lu, now=%lu), accepting anyway\n",
-                     (unsigned long)expiry, (unsigned long)now);
-    }
-
-    // Encrypted JSON length
-    uint32_t encrypted_len;
-    memcpy(&encrypted_len, blob + offset, 4);
-    encrypted_len = ntohl(encrypted_len);
-    offset += 4;
-
-    // Remaining-length form: "offset + encrypted_len + 4 > blob_size" wraps
-    // with a 32-bit size_t (wasm32) for a large wire encrypted_len and passes
-    // (BUGS.md, NC-5 fuzz, 2026-09-30). offset (25) + 4 <= blob_size (>= 29,
-    // checked above), so the subtraction cannot underflow.
-    if (encrypted_len > blob_size - offset - 4) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid encrypted length\n");
-        free(blob);
-        return -1;
-    }
-
-    uint8_t *encrypted_data = blob + offset;
-    offset += encrypted_len;
-
-    // Signature length
-    uint32_t sig_len;
-    memcpy(&sig_len, blob + offset, 4);
-    sig_len = ntohl(sig_len);
-    offset += 4;
-
-    // offset <= blob_size (encrypted_len check above)
-    if (sig_len != blob_size - offset) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid signature length\n");
-        free(blob);
-        return -1;
-    }
-
-    // Note: signature at (blob + offset) is validated during decryption
-
-    QGP_LOG_INFO(LOG_TAG, "Parsed header: timestamp=%lu, expiry=%lu, encrypted_len=%u, sig_len=%u\n",
-           (unsigned long)timestamp, (unsigned long)expiry, encrypted_len, sig_len);
 
     // Step 4: Decrypt JSON
     dna_context_t *dna_ctx = dna_context_new();

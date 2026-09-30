@@ -34,7 +34,9 @@
 /* NC-1: the packet layout macros (FP_BIN_SIZE, PACKET_*), the four packet
  * helpers (now salt_agreement_fp_hex_to_bin / _packet_data_size_for_version /
  * _packet_decrypt_salt / _packet_verify_signature) and salt_agreement_make_key
- * moved verbatim to codec/salt_agreement_codec.{h,c}. */
+ * moved verbatim to codec/salt_agreement_codec.{h,c}. NC-1b: the packet
+ * build of salt_agreement_publish_internal moved there too
+ * (salt_agreement_build_packet). */
 
 /* ============================================================================
  * PUBLISH
@@ -70,97 +72,19 @@ static int salt_agreement_publish_internal(
         return -1;
     }
 
-    /* Sort fingerprints to determine packet order */
-    const char *lower_fp, *higher_fp;
-    const uint8_t *lower_kyber, *higher_kyber;
-    const uint8_t *lower_mlkem, *higher_mlkem;
-    if (strcmp(my_fp, contact_fp) <= 0) {
-        lower_fp = my_fp;
-        higher_fp = contact_fp;
-        lower_kyber = my_kyber_pub;
-        higher_kyber = contact_kyber_pub;
-        lower_mlkem = my_mlkem_pub;
-        higher_mlkem = contact_mlkem_pub;
-    } else {
-        lower_fp = contact_fp;
-        higher_fp = my_fp;
-        lower_kyber = contact_kyber_pub;
-        higher_kyber = my_kyber_pub;
-        lower_mlkem = contact_mlkem_pub;
-        higher_mlkem = my_mlkem_pub;
-    }
-
     /* Build packet — stack buffer sized for the larger (v2) layout; only
-     * the first `data_size` (+ signature) bytes are ever used/published. */
+     * the first `data_size` (+ signature) bytes are ever used/published.
+     * NC-1b: the build is salt_agreement_build_packet
+     * (codec/salt_agreement_codec.c). */
     uint8_t packet[PACKET_TOTAL_SIZE_V2];
-    memset(packet, 0, sizeof(packet));
-    size_t offset = 0;
-
-    /* Version (network byte order) */
-    uint16_t version = htons(use_v2 ? SALT_AGREEMENT_VERSION_V2 : SALT_AGREEMENT_VERSION);
-    memcpy(packet + offset, &version, 2);
-    offset += 2;
-
-    /* Entry 1: lower fingerprint + [alg byte, v2 only] + encrypted salt */
-    uint8_t fp_bin[FP_BIN_SIZE];
-    if (salt_agreement_fp_hex_to_bin(lower_fp, fp_bin) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid lower fingerprint");
+    size_t total_size = 0;
+    if (salt_agreement_build_packet(my_fp, contact_fp, salt,
+                                    my_kyber_pub, contact_kyber_pub,
+                                    my_mlkem_pub, contact_mlkem_pub,
+                                    my_dilithium_priv,
+                                    packet, &total_size) != 0) {
         return -1;
     }
-    memcpy(packet + offset, fp_bin, FP_BIN_SIZE);
-    offset += FP_BIN_SIZE;
-
-    if (use_v2) {
-        packet[offset] = SALT_AGREEMENT_ALG_MLKEM1024;
-        offset += 1;
-        if (gek_encrypt_alg(SALT_AGREEMENT_ALG_MLKEM1024, salt, lower_mlkem, packet + offset) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to encrypt salt for lower party (v2)");
-            return -1;
-        }
-    } else {
-        if (gek_encrypt(salt, lower_kyber, packet + offset) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to encrypt salt for lower party");
-            return -1;
-        }
-    }
-    offset += GEK_ENC_TOTAL_SIZE;
-
-    /* Entry 2: higher fingerprint + [alg byte, v2 only] + encrypted salt */
-    if (salt_agreement_fp_hex_to_bin(higher_fp, fp_bin) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid higher fingerprint");
-        return -1;
-    }
-    memcpy(packet + offset, fp_bin, FP_BIN_SIZE);
-    offset += FP_BIN_SIZE;
-
-    if (use_v2) {
-        packet[offset] = SALT_AGREEMENT_ALG_MLKEM1024;
-        offset += 1;
-        if (gek_encrypt_alg(SALT_AGREEMENT_ALG_MLKEM1024, salt, higher_mlkem, packet + offset) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to encrypt salt for higher party (v2)");
-            return -1;
-        }
-    } else {
-        if (gek_encrypt(salt, higher_kyber, packet + offset) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to encrypt salt for higher party");
-            return -1;
-        }
-    }
-    offset += GEK_ENC_TOTAL_SIZE;
-
-    size_t data_size = offset;  /* == PACKET_DATA_SIZE or PACKET_DATA_SIZE_V2 */
-
-    /* Sign the data portion with Dilithium5 — same mechanism for v1 and v2,
-     * only the length of what's signed changed. */
-    size_t sig_len = 0;
-    if (qgp_dsa87_sign(packet + offset, &sig_len,
-                        packet, data_size,
-                        my_dilithium_priv) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to sign agreement packet");
-        return -1;
-    }
-
-    size_t total_size = data_size + sig_len;
 
     /* Publish to DHT */
     int rc = nodus_ops_put_str(dht_key, packet, total_size,

@@ -104,8 +104,10 @@ sources=(
   connect/nc_requests.c
   connect/nc_salt.c
   connect/nc_outbox.c
-  # message codecs, verbatim (NC-1)
+  connect/nc_contactlist.c
+  # message codecs, verbatim (NC-1, NC-1b)
   $root/messenger/codec/contact_request_codec.c
+  $root/messenger/codec/contactlist_codec.c
   $root/messenger/codec/dm_outbox_codec.c
   $root/messenger/codec/offline_queue_codec.c
   $root/messenger/codec/salt_agreement_codec.c
@@ -166,7 +168,8 @@ exports=(
   nc_error nc_result nc_net_load nc_words_alloc nc_unlock nc_tick
   nc_profile_get nc_profile_update
   nc_requests_get nc_request_new nc_request_approve nc_request_withdraw
-  nc_salt_get nc_salt_pick
+  nc_salt_get nc_salt_pick nc_salt_reconcile
+  nc_contacts_get nc_contacts_add
   nc_day_today nc_outbox_send nc_outbox_get nc_ack_send nc_ack_get
   nc_cancel nc_lock
 )

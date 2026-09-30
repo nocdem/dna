@@ -16,7 +16,8 @@
  *   - each async export does ONE bounded network step (one GET, one GET_ALL
  *     or one PUT, each bounded by the client's request timeout) so the JS
  *     queue can put a wallet operation between two sync steps (design §6.4
- *     F7). The one exception is nc_profile_update: a read then a write
+ *     F7). The exceptions are the three gated writes — nc_profile_update,
+ *     nc_salt_reconcile, nc_contacts_add: a read then at most one write
  *     (at most two request timeouts) — the PUT must not be split from the
  *     read it is based on (§6.4 F4). No export loops over contacts or days.
  *   - results are one JSON object (json-c), read with nc_result(); u64
@@ -499,6 +500,111 @@ int nc_salt_pick(const char *local_hex, const char *dht_hex) {
     json_object_object_add(o, "republish_wanted", json_object_new_boolean(republish));
     nc_wipe(l, sizeof(l)); nc_wipe(d, sizeof(d)); nc_wipe(c, sizeof(c));
     return set_result(o);
+}
+
+/* Read + reconcile + (gated) publish; local_hex "" = no local salt. The
+ * page stores "salt" unless status is "wait". */
+int nc_salt_reconcile(const char *fp, const char *local_hex) {
+    if (nc_begin() != 0) return -1;
+    if (session_ok() != 0) return nc_end(-1);
+    const nc_peer_t *peer = peer_need(fp);
+    if (!peer) return nc_end(-1);
+    uint8_t l[NC_SALT_LEN];
+    const uint8_t *lp = NULL;
+    if (local_hex && local_hex[0]) {
+        if (parse_salt(local_hex, l) != 0) return nc_end(fail("Invalid salt."));
+        lp = l;
+    }
+    nc_salt_sync_t s;
+    int rc = nc_salt_sync(&g_ctx, peer, lp, &s);
+    nc_wipe(l, sizeof(l));
+    if (rc != NC_OK) { nc_salt_sync_clear(&s); return nc_end(fail("Salt could not be reconciled (%d).", rc)); }
+    static const char *const ST[] = { "nothing_to_write", "published", "wait", "failed" };
+    static const char *const CH[] = { "keep_local", "take_dht", "none" };
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "status", json_object_new_string(ST[s.status]));
+    add_read(o, s.read.read.outcome, s.read.read.why);
+    json_object_object_add(o, "choice", json_object_new_string(CH[s.choice]));
+    json_object_object_add(o, "salt", (s.status == NC_SALT_SYNC_WAIT || s.choice == NC_SALT_NONE)
+                                          ? NULL : jhex(s.chosen, NC_SALT_LEN));
+    json_object_object_add(o, "put_rc", json_object_new_int(s.put_rc));
+    nc_salt_sync_clear(&s);
+    return nc_end(set_result(o));
+}
+
+/* ── R4 ─────────────────────────────────────────────────────────────── */
+
+int nc_contacts_get(void) {
+    if (nc_begin() != 0) return -1;
+    if (session_ok() != 0) return nc_end(-1);
+    nc_contactlist_t l;
+    nc_contactlist_read(&g_ctx, &l);
+    json_object *o = json_object_new_object();
+    add_read(o, l.read.outcome, l.read.why);
+    json_object_object_add(o, "invalid", jstr_u64(l.invalid));
+    json_object_object_add(o, "timestamp", jstr_u64(l.timestamp));
+    json_object *a = json_object_new_array();
+    for (size_t i = 0; i < l.count; i++) {
+        json_object *e = json_object_new_object();
+        json_object_object_add(e, "fp", json_object_new_string(l.items[i].fp));
+        json_object_object_add(e, "salt", l.items[i].has_salt ? jhex(l.items[i].salt, NC_SALT_LEN) : NULL);
+        json_object_array_add(a, e);
+    }
+    json_object_object_add(o, "contacts", a);
+    nc_contactlist_clear(&l);
+    return nc_end(set_result(o));
+}
+
+/* add_json: [{"fp":"<128 hex>","salt":"<64 hex>"|null}, ...] — merged into
+ * the list read in the same call (merge only). */
+int nc_contacts_add(const char *add_json) {
+    if (nc_begin() != 0) return -1;
+    if (session_ok() != 0) return nc_end(-1);
+    json_object *arr = add_json ? json_tokener_parse(add_json) : NULL;
+    size_t n = arr && json_object_is_type(arr, json_type_array) ? json_object_array_length(arr) : 0;
+    if (n == 0 || n > 4096) {
+        if (arr) json_object_put(arr);
+        return nc_end(fail("Invalid contact list."));
+    }
+    nc_contact_t *c = calloc(n, sizeof(*c));
+    if (!c) { json_object_put(arr); return nc_end(fail("Out of memory.")); }
+    for (size_t i = 0; i < n; i++) {
+        json_object *e = json_object_array_get_idx(arr, i), *jf, *js;
+        const char *fp = (e && json_object_object_get_ex(e, "fp", &jf) &&
+                          json_object_is_type(jf, json_type_string))
+                             ? json_object_get_string(jf) : NULL;
+        nodus_key_t chk;
+        if (!fp || nc_fp_parse(fp, &chk) != 0) {
+            nc_wipe(c, n * sizeof(*c)); free(c); json_object_put(arr);
+            return nc_end(fail("Invalid contact list."));
+        }
+        memcpy(c[i].fp, fp, NC_FP_HEX_LEN);
+        if (json_object_object_get_ex(e, "salt", &js) && js &&
+            !json_object_is_type(js, json_type_null)) {
+            if (!json_object_is_type(js, json_type_string) ||
+                parse_salt(json_object_get_string(js), c[i].salt) != 0) {
+                nc_wipe(c, n * sizeof(*c)); free(c); json_object_put(arr);
+                return nc_end(fail("Invalid salt."));
+            }
+            c[i].has_salt = true;
+        }
+    }
+    json_object_put(arr);
+    nc_list_result_t r;
+    int rc = nc_contactlist_add(&g_ctx, c, n, &r);
+    nc_wipe(c, n * sizeof(*c));
+    free(c);
+    if (rc != NC_OK) return nc_end(fail("Contact list update did not run (%d).", rc));
+    static const char *const ST[] = { "published", "unchanged", "wait", "taken", "failed", "refused" };
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "status", json_object_new_string(ST[r.status]));
+    add_read(o, r.read_outcome, r.read_why);
+    json_object_object_add(o, "created", json_object_new_boolean(r.created));
+    json_object_object_add(o, "count_before", jstr_u64(r.count_before));
+    json_object_object_add(o, "count_after", jstr_u64(r.count_after));
+    json_object_object_add(o, "salt_kept", jstr_u64(r.salt_kept));
+    json_object_object_add(o, "put_rc", json_object_new_int(r.put_rc));
+    return nc_end(set_result(o));
 }
 
 /* ── R5 ─────────────────────────────────────────────────────────────── */

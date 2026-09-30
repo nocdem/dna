@@ -27,6 +27,25 @@
  *   W5  the PUT answered NODUS_ERR_KEY_OWNED -> status "taken" (terminal)
  *   Q1  get_all of the request inbox whose only item does not decode ->
  *       UNREADABLE, never EMPTY
+ *   L1  contact-list add after timeout / bad signature / undecodable: wait,
+ *       zero PUTs (even for a fresh identity)
+ *   L2  contact-list add, EMPTY, restored identity: wait, zero PUTs (Q1)
+ *   L3  EMPTY, fresh: one PUT, EXCLUSIVE, ttl 0, own value_id; the bytes,
+ *       served back, read as the own list (CLST blob, self-Seal, authorship)
+ *   L4  FOUND: merge only — the stored entry keeps its position and salt
+ *       (a different salt for it is counted, not written), the new entry
+ *       is appended
+ *   L5  FOUND already holding every entry: unchanged, zero PUTs
+ *   L6  a list sealed by another identity under the own DHT owner:
+ *       UNREADABLE(bad_record), zero PUTs
+ *   L7  first list answered NODUS_ERR_KEY_OWNED -> taken
+ *   S1  salt sync after a timeout: wait, zero PUTs
+ *   S2  salt sync, EMPTY + a local salt, restored identity: wait, zero PUTs
+ *   S3  salt sync, EMPTY and no local salt: nothing to write
+ *   S4  salt sync, EMPTY + a local salt, fresh identity: one EPHEMERAL PUT,
+ *       ttl SALT_AGREEMENT_TTL, own value_id, a v1 packet (PACKET_TOTAL_SIZE)
+ *       whose signature verifies under the own key and whose peer entry the
+ *       peer's round-3 key unwraps to the local salt
  *
  * What it requires: the native build of web-wallet/connect/tests; no
  * environment. Ports: the fake listens on 127.0.0.1:0 (kernel-chosen).
@@ -39,10 +58,15 @@
  *     undecodable value; the fake does, so F3/F5 prove the client-side
  *     classification only.
  *   - "Zero PUTs" is counted at the fake: a PUT the client failed to send
- *     would also count zero — W3/W4 show the same code path does send.
+ *     would also count zero — W3/W4, L3/L4 and S4 show the same code paths
+ *     do send.
+ *   - L3/L4 read the PUT back with the same C that wrote it: they prove the
+ *     core agrees with the codecs it compiles, not that the frozen app reads
+ *     the list (NC-3's job against real app records).
  */
 
 #include "nc_core.h"
+#include "codec/salt_agreement_codec.h"
 #include "transport/nodus_tcp.h"
 #include "protocol/nodus_tier2.h"
 #include "protocol/nodus_cbor.h"
@@ -70,7 +94,8 @@ static const char *WORDS =
 
 typedef enum {
     M_TIMEOUT = 0, M_EMPTY, M_GOOD, M_BAD_SIG, M_WRONG_OWNER, M_UNDECODABLE,
-    M_VALS_JUNK
+    M_VALS_JUNK,
+    M_PAYLOAD      /* g_fake.serve as an own EXCLUSIVE value ("val") */
 } mode_t_;
 
 typedef struct {
@@ -87,6 +112,10 @@ typedef struct {
     uint32_t         put_ttl;
     uint64_t         put_vid;
     char            *put_data;
+    size_t           put_len;
+    /* M_PAYLOAD: the bytes served (set while the fake is idle) */
+    uint8_t         *serve;
+    size_t           serve_len;
 } fake_t;
 
 #define FAKE_BUF (1024 * 1024)
@@ -124,10 +153,20 @@ static char *profile_json(void) {
 
 static int value_bytes(const nodus_key_t *key, const nodus_identity_t *owner,
                        int corrupt, uint8_t **out, size_t *out_len) {
-    char *json = profile_json();
-    if (!json) return -1;
+    char *json = NULL;
+    const uint8_t *data;
+    size_t data_len;
+    if (atomic_load(&g_fake.mode) == M_PAYLOAD) {
+        data = g_fake.serve;
+        data_len = g_fake.serve_len;
+    } else {
+        json = profile_json();
+        if (!json) return -1;
+        data = (const uint8_t *)json;
+        data_len = strlen(json);
+    }
     nodus_value_t *v = NULL;
-    int rc = nodus_value_create(key, (const uint8_t *)json, strlen(json),
+    int rc = nodus_value_create(key, data, data_len,
                                 NODUS_VALUE_EXCLUSIVE, 0,
                                 nodus_identity_value_id(owner), 1,
                                 &owner->pk, &v);
@@ -158,6 +197,7 @@ static void send_get_reply(nodus_tcp_conn_t *conn, uint32_t txn,
         cbor_encode_map(&enc, 0);
         break;
     case M_GOOD:
+    case M_PAYLOAD:
     case M_BAD_SIG:
     case M_WRONG_OWNER:
         if (value_bytes(key, mode == M_WRONG_OWNER ? g_stranger : &g_keys->id,
@@ -212,9 +252,11 @@ static void on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         g_fake.put_vid = msg.vid;
         free(g_fake.put_data);
         g_fake.put_data = malloc(msg.data_len + 1);
+        g_fake.put_len = 0;
         if (g_fake.put_data) {
             memcpy(g_fake.put_data, msg.data, msg.data_len);
             g_fake.put_data[msg.data_len] = '\0';
+            g_fake.put_len = msg.data_len;
         }
         pthread_mutex_unlock(&g_fake.mu);
         int err = atomic_load(&g_fake.put_reply);
@@ -250,6 +292,7 @@ static void fake_stop(void) {
     free(g_fake.tcp);
     free(g_fake.buf);
     free(g_fake.put_data);
+    free(g_fake.serve);
     pthread_mutex_destroy(&g_fake.mu);
 }
 
@@ -300,11 +343,192 @@ static int put_record_ok(const char *bio, uint32_t version) {
     return ok;
 }
 
+/* ── R4 / R3 gated writes ─────────────────────────────────────────────── */
+
+static const char *WORDS_PEER =
+    "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo "
+    "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo vote";
+static nc_keys_t *g_peer_keys;
+
+static void serve_payload(const uint8_t *b, size_t n) {
+    free(g_fake.serve);
+    g_fake.serve = malloc(n ? n : 1);
+    if (g_fake.serve) memcpy(g_fake.serve, b, n);
+    g_fake.serve_len = g_fake.serve ? n : 0;
+    atomic_store(&g_fake.mode, M_PAYLOAD);
+}
+
+static void contact(nc_contact_t *c, const char *fp, uint8_t salt_byte) {
+    memset(c, 0, sizeof(*c));
+    memcpy(c->fp, fp, NC_FP_HEX_LEN);
+    if (salt_byte) { c->has_salt = true; memset(c->salt, salt_byte, NC_SALT_LEN); }
+}
+
+static void list_gate_case(nc_ctx_t *ctx, int mode, bool fresh, const char *name) {
+    atomic_store(&g_fake.mode, mode);
+    atomic_store(&g_fake.puts, 0);
+    ctx->fresh = fresh;
+    nc_contact_t add;
+    contact(&add, g_peer_keys->fp, 0x11);
+    nc_list_result_t r;
+    int rc = nc_contactlist_add(ctx, &add, 1, &r);
+    CHECK(rc == NC_OK && r.status == NC_LIST_WAIT && atomic_load(&g_fake.puts) == 0, name);
+}
+
+/* The last PUT as an EXCLUSIVE own contact list: serve it back and read it. */
+static size_t put_list_readback(nc_ctx_t *ctx, nc_contactlist_t *out) {
+    pthread_mutex_lock(&g_fake.mu);
+    int ok = g_fake.put_type == NODUS_VALUE_EXCLUSIVE && g_fake.put_ttl == 0 &&
+             g_fake.put_vid == nodus_identity_value_id(&g_keys->id) && g_fake.put_data;
+    uint8_t *copy = ok ? malloc(g_fake.put_len) : NULL;
+    size_t len = g_fake.put_len;
+    if (copy) memcpy(copy, g_fake.put_data, len);
+    pthread_mutex_unlock(&g_fake.mu);
+    memset(out, 0, sizeof(*out));
+    if (!copy) return (size_t)-1;
+    serve_payload(copy, len);
+    free(copy);
+    nc_contactlist_read(ctx, out);
+    return out->read.outcome == NC_FOUND ? out->count : (size_t)-1;
+}
+
+static void test_contactlist_gate(nc_ctx_t *ctx) {
+    list_gate_case(ctx, M_TIMEOUT, true, "L1a list add, timeout: wait, zero PUTs (even fresh)");
+    list_gate_case(ctx, M_BAD_SIG, true, "L1b list add, bad signature: wait, zero PUTs");
+    list_gate_case(ctx, M_UNDECODABLE, true, "L1c list add, undecodable: wait, zero PUTs");
+    list_gate_case(ctx, M_EMPTY, false, "L2 list add, EMPTY for a restored identity: wait, zero PUTs (Q1)");
+
+    /* L3: EMPTY + fresh -> the first list, one EXCLUSIVE PUT that reads back. */
+    atomic_store(&g_fake.mode, M_EMPTY);
+    atomic_store(&g_fake.puts, 0);
+    atomic_store(&g_fake.put_reply, 0);
+    ctx->fresh = true;
+    nc_contact_t first;
+    contact(&first, g_peer_keys->fp, 0x11);
+    nc_list_result_t r;
+    int rc = nc_contactlist_add(ctx, &first, 1, &r);
+    nc_contactlist_t back;
+    size_t n = (rc == NC_OK && r.status == NC_LIST_PUBLISHED && r.created &&
+                atomic_load(&g_fake.puts) == 1) ? put_list_readback(ctx, &back) : (size_t)-1;
+    CHECK(n == 1 && strcmp(back.items[0].fp, g_peer_keys->fp) == 0 && back.items[0].has_salt &&
+          back.items[0].salt[0] == 0x11,
+          "L3 EMPTY, fresh: one EXCLUSIVE own-value_id PUT; the list reads back (CLST, self-Seal, authorship)");
+    nc_contactlist_clear(&back);
+
+    /* L4: FOUND (the list above is served) + a new contact -> merge: the
+     * stored entry first and unchanged, the new one appended. */
+    ctx->fresh = false;
+    atomic_store(&g_fake.puts, 0);
+    nc_contact_t more[2];
+    contact(&more[0], g_peer_keys->fp, 0x22);          /* same fp, other salt */
+    contact(&more[1], g_stranger->fingerprint, 0);     /* new, no salt */
+    rc = nc_contactlist_add(ctx, more, 2, &r);
+    n = (rc == NC_OK && r.status == NC_LIST_PUBLISHED && !r.created && r.count_before == 1 &&
+         r.count_after == 2 && r.salt_kept == 1 && atomic_load(&g_fake.puts) == 1)
+            ? put_list_readback(ctx, &back) : (size_t)-1;
+    CHECK(n == 2 && strcmp(back.items[0].fp, g_peer_keys->fp) == 0 &&
+          back.items[0].salt[0] == 0x11 &&
+          strcmp(back.items[1].fp, g_stranger->fingerprint) == 0 && !back.items[1].has_salt,
+          "L4 FOUND: merge only — stored entry and its salt kept, new entry appended");
+    nc_contactlist_clear(&back);
+
+    /* L5: nothing new -> no PUT. */
+    atomic_store(&g_fake.puts, 0);
+    rc = nc_contactlist_add(ctx, more, 2, &r);
+    CHECK(rc == NC_OK && r.status == NC_LIST_UNCHANGED && atomic_load(&g_fake.puts) == 0,
+          "L5 FOUND with every entry already stored: unchanged, zero PUTs");
+
+    /* L6: a list sealed by another identity, served under the own DHT
+     * owner -> the Seal/authorship check fails -> wait, zero PUTs. */
+    uint8_t *alien = NULL;
+    size_t alien_len = 0;
+    nc_contact_t one;
+    contact(&one, g_keys->fp, 0);
+    rc = nc_contactlist_build(g_peer_keys, &one, 1, 1700000000ULL, &alien, &alien_len);
+    if (rc == NC_OK) serve_payload(alien, alien_len);
+    free(alien);
+    atomic_store(&g_fake.puts, 0);
+    nc_contact_t add;
+    contact(&add, g_peer_keys->fp, 0);
+    rc = nc_contactlist_add(ctx, &add, 1, &r);
+    CHECK(rc == NC_OK && r.status == NC_LIST_WAIT && r.read_outcome == NC_UNREADABLE &&
+          r.read_why == NC_WHY_BAD_RECORD && atomic_load(&g_fake.puts) == 0,
+          "L6 list not sealed by the own key: UNREADABLE(bad_record), zero PUTs");
+
+    /* L7: KEY_OWNED on the first list -> taken. */
+    atomic_store(&g_fake.mode, M_EMPTY);
+    atomic_store(&g_fake.puts, 0);
+    atomic_store(&g_fake.put_reply, NODUS_ERR_KEY_OWNED);
+    ctx->fresh = true;
+    rc = nc_contactlist_add(ctx, &first, 1, &r);
+    CHECK(rc == NC_OK && r.status == NC_LIST_TAKEN && atomic_load(&g_fake.puts) == 1,
+          "L7 KEY_OWNED -> taken (one attempt)");
+    atomic_store(&g_fake.put_reply, 0);
+    ctx->fresh = false;
+}
+
+static void test_salt_gate(nc_ctx_t *ctx) {
+    nc_peer_t peer;
+    memset(&peer, 0, sizeof(peer));
+    memcpy(peer.fp, g_peer_keys->fp, NC_FP_HEX_LEN);
+    memcpy(peer.dsa_pk, g_peer_keys->id.pk.bytes, sizeof(peer.dsa_pk));
+    memcpy(peer.kyber_pk, g_peer_keys->kyber_pk, sizeof(peer.kyber_pk));
+    uint8_t local[NC_SALT_LEN];
+    memset(local, 0x5c, sizeof(local));
+    nc_salt_sync_t s;
+
+    atomic_store(&g_fake.mode, M_TIMEOUT);
+    atomic_store(&g_fake.puts, 0);
+    ctx->fresh = true;
+    int rc = nc_salt_sync(ctx, &peer, local, &s);
+    CHECK(rc == NC_OK && s.status == NC_SALT_SYNC_WAIT && atomic_load(&g_fake.puts) == 0,
+          "S1 salt sync, timeout: wait, zero PUTs (even fresh)");
+    nc_salt_sync_clear(&s);
+
+    atomic_store(&g_fake.mode, M_EMPTY);
+    atomic_store(&g_fake.puts, 0);
+    ctx->fresh = false;
+    rc = nc_salt_sync(ctx, &peer, local, &s);
+    CHECK(rc == NC_OK && s.status == NC_SALT_SYNC_WAIT && atomic_load(&g_fake.puts) == 0,
+          "S2 salt sync, EMPTY + local salt, restored identity: wait, zero PUTs (Q1)");
+    nc_salt_sync_clear(&s);
+
+    atomic_store(&g_fake.puts, 0);
+    rc = nc_salt_sync(ctx, &peer, NULL, &s);
+    CHECK(rc == NC_OK && s.status == NC_SALT_SYNC_NOTHING_TO_WRITE && s.choice == NC_SALT_NONE &&
+          atomic_load(&g_fake.puts) == 0,
+          "S3 salt sync, EMPTY and no local salt: nothing to write");
+    nc_salt_sync_clear(&s);
+
+    atomic_store(&g_fake.puts, 0);
+    ctx->fresh = true;
+    rc = nc_salt_sync(ctx, &peer, local, &s);
+    int ok = rc == NC_OK && s.status == NC_SALT_SYNC_PUBLISHED && atomic_load(&g_fake.puts) == 1 &&
+             memcmp(s.chosen, local, NC_SALT_LEN) == 0;
+    pthread_mutex_lock(&g_fake.mu);
+    ok = ok && g_fake.put_type == NODUS_VALUE_EPHEMERAL && g_fake.put_ttl == SALT_AGREEMENT_TTL &&
+         g_fake.put_vid == nodus_identity_value_id(&g_keys->id) &&
+         g_fake.put_len == PACKET_TOTAL_SIZE;
+    uint8_t peer_bin[FP_BIN_SIZE], got[NC_SALT_LEN];
+    ok = ok && salt_agreement_fp_hex_to_bin(g_peer_keys->fp, peer_bin) == 0 &&
+         salt_agreement_packet_verify_signature((const uint8_t *)g_fake.put_data, g_fake.put_len,
+                                                PACKET_DATA_SIZE, g_keys->id.pk.bytes, NULL) == 0 &&
+         salt_agreement_packet_decrypt_salt((const uint8_t *)g_fake.put_data, g_fake.put_len,
+                                            peer_bin, g_peer_keys->kyber_sk, NULL, got) == 0 &&
+         memcmp(got, local, NC_SALT_LEN) == 0;
+    pthread_mutex_unlock(&g_fake.mu);
+    CHECK(ok, "S4 salt sync, EMPTY + local salt, fresh: one EPHEMERAL v1 PUT the peer decrypts");
+    nc_salt_sync_clear(&s);
+    ctx->fresh = false;
+}
+
 int main(void) {
     printf("=== Nodus Connect: R0 fault matrix (fake node, real client) ===\n");
     g_keys = calloc(1, sizeof(*g_keys));
+    g_peer_keys = calloc(1, sizeof(*g_peer_keys));
     g_stranger = calloc(1, sizeof(*g_stranger));
-    if (!g_keys || !g_stranger || nc_keys_from_words(WORDS, g_keys) != 0 ||
+    if (!g_keys || !g_peer_keys || !g_stranger || nc_keys_from_words(WORDS, g_keys) != 0 ||
+        nc_keys_from_words(WORDS_PEER, g_peer_keys) != 0 ||
         nodus_identity_generate(g_stranger) != 0) {
         printf("FATAL: identities\n");
         return 1;
@@ -382,11 +606,15 @@ int main(void) {
               "Q1 request inbox with only an undecodable item -> UNREADABLE");
         nc_requests_clear(&rq);
     }
+    test_contactlist_gate(&ctx);
+    test_salt_gate(&ctx);
 
     nodus_client_close(c);
     free(c);
     fake_stop();
     nc_keys_wipe(g_keys);
+    nc_keys_wipe(g_peer_keys);
+    free(g_peer_keys);
     nodus_identity_clear(g_stranger);
     free(g_keys);
     free(g_stranger);

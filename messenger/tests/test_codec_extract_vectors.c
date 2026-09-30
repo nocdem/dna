@@ -23,6 +23,15 @@
  *    ML-KEM keys from qgp_mlkem1024_keypair_derand with fixed coins; the
  *    round-3 Kyber keys are random (the tree has no derand for them), which
  *    changes no printed value.
+ *
+ * NC-1b adds vectors for the four sequences moved out of I/O functions in a
+ * second step (vec_nc1b_*): the ACK value encode/decode, the contact-list
+ * CLST blob encode/parse, the salt-agreement packet build, and the
+ * contact-request signing preimage. Same rules: the blob, the ACK value and
+ * the preimage are deterministic and printed byte for byte; the salt
+ * packet's KEM wraps and signature are randomized, so only its version,
+ * fingerprint order, alg bytes, size, and what the parse helpers return are
+ * printed; for signatures only the preimage and the verify result are.
  */
 
 #include <stdio.h>
@@ -45,6 +54,8 @@
 #include "codec/seal_multi_codec.h"
 #include "codec/salt_agreement_codec.h"
 #include "codec/contactlist_codec.h"
+#include "codec/contact_request_codec.h"
+#include "codec/offline_queue_codec.h"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -629,6 +640,287 @@ out:
     free(req); free(back); free(sk);
 }
 
+/* ============================================================================
+ * NC-1b: offline_queue_codec — dht_ack_value_encode / dht_ack_value_decode
+ * ============================================================================ */
+static void vec_nc1b_ack_value(void) {
+    const uint64_t ts[5] = { 0ULL, 1ULL, 1727700000ULL, 0x0102030405060708ULL, UINT64_MAX };
+    for (int i = 0; i < 5; i++) {
+        uint8_t v[8];
+        memset(v, 0xEE, sizeof(v));
+        dht_ack_value_encode(ts[i], v);
+        char name[64];
+        snprintf(name, sizeof(name), "nc1b.ack.encode%d", i);
+        print_hex(name, v, sizeof(v));
+        uint64_t back = dht_ack_value_decode(v);
+        printf("nc1b.ack.decode%d=%llu\n", i, (unsigned long long)back);
+        CHECK(back == ts[i], "ACK value round-trip");
+    }
+    const uint8_t fixed[8] = { 0x80, 0x00, 0x00, 0x00, 0x66, 0xFA, 0x0B, 0x20 };
+    printf("nc1b.ack.decode.fixed=%llu\n", (unsigned long long)dht_ack_value_decode(fixed));
+}
+
+/* ============================================================================
+ * NC-1b: contactlist_codec — dht_contactlist_blob_encode / _blob_parse
+ * ============================================================================ */
+static void print_blob_parse(const char *label, const uint8_t *blob, size_t len) {
+    uint64_t ts = 0, exp = 0;
+    const uint8_t *enc = NULL;
+    uint32_t enc_len = 0;
+    int rc = dht_contactlist_blob_parse(blob, len, &ts, &exp, &enc, &enc_len);
+    if (rc == 0) {
+        printf("nc1b.clst.parse.%s.rc=%d ts=%llu exp=%llu enc_off=%lld enc_len=%u\n", label, rc,
+               (unsigned long long)ts, (unsigned long long)exp,
+               (long long)(enc - blob), enc_len);
+    } else {
+        printf("nc1b.clst.parse.%s.rc=%d\n", label, rc);
+    }
+}
+
+static void vec_nc1b_contactlist_blob(void) {
+    uint8_t enc[97], sig[64];
+    fill_pattern(enc, sizeof(enc), 0x21);
+    fill_pattern(sig, sizeof(sig), 0x9D);
+    const uint64_t ts = 1727700456ULL, exp = 1727700456ULL + 604800ULL;
+
+    uint8_t *blob = NULL;
+    size_t len = 0;
+    int rc = dht_contactlist_blob_encode(ts, exp, enc, sizeof(enc), sig, sizeof(sig), &blob, &len);
+    printf("nc1b.clst.encode.rc=%d len=%zu\n", rc, len);
+    CHECK(rc == 0 && len == 4 + 1 + 8 + 8 + 4 + sizeof(enc) + 4 + sizeof(sig), "CLST encode");
+    if (rc != 0) return;
+    print_hex("nc1b.clst.encode", blob, len);
+
+    uint64_t pts = 0, pexp = 0;
+    const uint8_t *penc = NULL;
+    uint32_t penc_len = 0;
+    rc = dht_contactlist_blob_parse(blob, len, &pts, &pexp, &penc, &penc_len);
+    CHECK(rc == 0 && pts == ts && pexp == exp && penc_len == sizeof(enc) &&
+          memcmp(penc, enc, sizeof(enc)) == 0, "CLST parse round-trip");
+    print_blob_parse("valid", blob, len);
+
+    /* Header variants: one field broken at a time. */
+    uint8_t *m = malloc(len + 1);
+    if (!m) { CHECK(0, "CLST vector allocation"); free(blob); return; }
+    print_blob_parse("short_by_one", blob, len - 1);
+    memcpy(m, blob, len); m[len] = 0x00;
+    print_blob_parse("long_by_one", m, len + 1);
+    memcpy(m, blob, len); m[0] ^= 0x01;
+    print_blob_parse("bad_magic", m, len);
+    memcpy(m, blob, len); m[4] = 0;
+    print_blob_parse("version0", m, len);
+    memcpy(m, blob, len); m[4] = 1;
+    print_blob_parse("version1", m, len);
+    memcpy(m, blob, len); m[4] = 3;
+    print_blob_parse("version3", m, len);
+    memcpy(m, blob, len); m[21] = 0xFF; m[22] = 0xFF; m[23] = 0xFF; m[24] = 0xF0;
+    print_blob_parse("enc_len_huge", m, len);
+    memcpy(m, blob, len); m[24] ^= 0x01;
+    print_blob_parse("enc_len_off_by_one", m, len);
+    print_blob_parse("below_minimum", blob, 28);
+    free(m);
+    free(blob);
+
+    /* Empty sealed part and empty signature: the smallest valid blob; the
+     * largest expiry the publisher can write (timestamp + a uint32 TTL). */
+    blob = NULL;
+    len = 0;
+    rc = dht_contactlist_blob_encode(1, 1ULL + 0xFFFFFFFFULL, enc, 0, sig, 0, &blob, &len);
+    printf("nc1b.clst.encode.empty.rc=%d len=%zu\n", rc, len);
+    if (rc == 0) {
+        print_hex("nc1b.clst.encode.empty", blob, len);
+        print_blob_parse("empty", blob, len);
+        free(blob);
+    }
+}
+
+/* ============================================================================
+ * NC-1b: salt_agreement_codec — salt_agreement_build_packet
+ * ============================================================================ */
+static void vec_nc1b_salt_packet(void) {
+    uint8_t *a_sign_pk = malloc(QGP_DSA87_PUBLICKEYBYTES), *a_sign_sk = malloc(QGP_DSA87_SECRETKEYBYTES);
+    uint8_t *b_sign_pk = malloc(QGP_DSA87_PUBLICKEYBYTES), *b_sign_sk = malloc(QGP_DSA87_SECRETKEYBYTES);
+    uint8_t *a_kyb_pk = malloc(1568), *a_kyb_sk = malloc(3168);
+    uint8_t *b_kyb_pk = malloc(1568), *b_kyb_sk = malloc(3168);
+    uint8_t *a_ml_pk = malloc(1568), *a_ml_sk = malloc(3168);
+    uint8_t *b_ml_pk = malloc(1568), *b_ml_sk = malloc(3168);
+    uint8_t *packet = malloc(PACKET_TOTAL_SIZE_V2);
+    if (!a_sign_pk || !a_sign_sk || !b_sign_pk || !b_sign_sk || !a_kyb_pk || !a_kyb_sk ||
+        !b_kyb_pk || !b_kyb_sk || !a_ml_pk || !a_ml_sk || !b_ml_pk || !b_ml_sk || !packet) {
+        CHECK(0, "nc1b salt vector allocation");
+        goto out;
+    }
+    dsa_keypair(0x44, a_sign_pk, a_sign_sk);
+    dsa_keypair(0x45, b_sign_pk, b_sign_sk);
+    CHECK(qgp_kem1024_keypair(a_kyb_pk, a_kyb_sk) == 0, "kyber keypair A");
+    CHECK(qgp_kem1024_keypair(b_kyb_pk, b_kyb_sk) == 0, "kyber keypair B");
+    mlkem_keypair(0x63, a_ml_pk, a_ml_sk);
+    mlkem_keypair(0x64, b_ml_pk, b_ml_sk);
+
+    uint8_t salt[32], got[32], a_bin[FP_BIN_SIZE], b_bin[FP_BIN_SIZE];
+    fill_pattern(salt, sizeof(salt), 0x6B);
+    salt_agreement_fp_hex_to_bin(FP_ALICE, a_bin);
+    salt_agreement_fp_hex_to_bin(FP_BOB, b_bin);
+
+    /* pass 0/1: alice publishes (v1, v2); pass 2/3: bob publishes (v1, v2).
+     * FP_ALICE < FP_BOB, so alice's entry is first in all four. */
+    for (int pass = 0; pass < 4; pass++) {
+        bool v2 = (pass & 1) != 0;
+        bool me_alice = pass < 2;
+        const char *my_fp = me_alice ? FP_ALICE : FP_BOB;
+        const char *peer_fp = me_alice ? FP_BOB : FP_ALICE;
+        const uint8_t *my_kyb = me_alice ? a_kyb_pk : b_kyb_pk;
+        const uint8_t *peer_kyb = me_alice ? b_kyb_pk : a_kyb_pk;
+        const uint8_t *my_ml = v2 ? (me_alice ? a_ml_pk : b_ml_pk) : NULL;
+        const uint8_t *peer_ml = v2 ? (me_alice ? b_ml_pk : a_ml_pk) : NULL;
+        const uint8_t *signer_sk = me_alice ? a_sign_sk : b_sign_sk;
+        const uint8_t *signer_pk = me_alice ? a_sign_pk : b_sign_pk;
+
+        memset(packet, 0xCC, PACKET_TOTAL_SIZE_V2);
+        size_t total = 0;
+        int rc = salt_agreement_build_packet(my_fp, peer_fp, salt, my_kyb, peer_kyb,
+                                             my_ml, peer_ml, signer_sk, packet, &total);
+        printf("nc1b.salt.pass%d.rc=%d total=%zu\n", pass, rc, total);
+        CHECK(rc == 0, "salt_agreement_build_packet");
+        if (rc != 0) continue;
+        char name[64];
+        snprintf(name, sizeof(name), "nc1b.salt.pass%d.version", pass);
+        print_hex(name, packet, PACKET_VERSION_SIZE);
+        size_t e1 = PACKET_VERSION_SIZE;
+        size_t e2 = e1 + (v2 ? PACKET_ENTRY_SIZE_V2 : PACKET_ENTRY_SIZE);
+        snprintf(name, sizeof(name), "nc1b.salt.pass%d.entry1_fp", pass);
+        print_hex(name, packet + e1, FP_BIN_SIZE);
+        snprintf(name, sizeof(name), "nc1b.salt.pass%d.entry2_fp", pass);
+        print_hex(name, packet + e2, FP_BIN_SIZE);
+        if (v2) {
+            printf("nc1b.salt.pass%d.alg=%u,%u\n", pass,
+                   (unsigned)packet[e1 + FP_BIN_SIZE], (unsigned)packet[e2 + FP_BIN_SIZE]);
+        }
+        uint16_t ver_be;
+        memcpy(&ver_be, packet, 2);
+        size_t dsize = salt_agreement_packet_data_size_for_version(ntohs(ver_be));
+        printf("nc1b.salt.pass%d.data_size=%zu\n", pass, dsize);
+        CHECK(dsize != 0 && total == dsize + QGP_DSA87_SIGNATURE_BYTES, "salt packet size");
+        printf("nc1b.salt.pass%d.verify.signer=%d\n", pass,
+               salt_agreement_packet_verify_signature(packet, total, dsize, signer_pk, NULL));
+        printf("nc1b.salt.pass%d.verify.other_party_only=%d\n", pass,
+               salt_agreement_packet_verify_signature(packet, total, dsize,
+                                                      me_alice ? b_sign_pk : a_sign_pk, NULL));
+        memset(got, 0, sizeof(got));
+        rc = salt_agreement_packet_decrypt_salt(packet, total, a_bin, a_kyb_sk, a_ml_sk, got);
+        printf("nc1b.salt.pass%d.decrypt.alice.rc=%d\n", pass, rc);
+        CHECK(rc == 0 && memcmp(got, salt, 32) == 0, "nc1b salt decrypt alice");
+        memset(got, 0, sizeof(got));
+        rc = salt_agreement_packet_decrypt_salt(packet, total, b_bin, b_kyb_sk, b_ml_sk, got);
+        printf("nc1b.salt.pass%d.decrypt.bob.rc=%d\n", pass, rc);
+        CHECK(rc == 0 && memcmp(got, salt, 32) == 0, "nc1b salt decrypt bob");
+        if (rc == 0) {
+            snprintf(name, sizeof(name), "nc1b.salt.pass%d.decrypt.bob", pass);
+            print_hex(name, got, 32);
+        }
+    }
+
+    /* Refused inputs: a short fingerprint (either side). */
+    size_t total = 0;
+    printf("nc1b.salt.short_my_fp.rc=%d\n",
+           salt_agreement_build_packet("abc", FP_BOB, salt, a_kyb_pk, b_kyb_pk,
+                                       NULL, NULL, a_sign_sk, packet, &total));
+    printf("nc1b.salt.short_peer_fp.rc=%d\n",
+           salt_agreement_build_packet(FP_ALICE, "abc", salt, a_kyb_pk, b_kyb_pk,
+                                       NULL, NULL, a_sign_sk, packet, &total));
+
+out:
+    free(a_sign_pk); free(a_sign_sk); free(b_sign_pk); free(b_sign_sk);
+    free(a_kyb_pk); free(a_kyb_sk); free(b_kyb_pk); free(b_kyb_sk);
+    free(a_ml_pk); free(a_ml_sk); free(b_ml_pk); free(b_ml_sk);
+    free(packet);
+}
+
+/* ============================================================================
+ * NC-1b: contact_request_codec — dht_contact_request_signing_preimage
+ * ============================================================================ */
+static void vec_nc1b_request_preimage(void) {
+    dht_contact_request_t *req = calloc(1, sizeof(*req));
+    uint8_t *sk = malloc(QGP_DSA87_SECRETKEYBYTES);
+    if (!req || !sk) {
+        CHECK(0, "nc1b request vector allocation");
+        goto out;
+    }
+
+    /* The shape dht_send_contact_request builds: expiry = timestamp + TTL,
+     * version 2 iff a salt is given, fingerprint = SHA3-512(pubkey). */
+    for (int v = 1; v <= 2; v++) {
+        memset(req, 0, sizeof(*req));
+        req->magic = DHT_CONTACT_REQUEST_MAGIC;
+        req->version = (uint8_t)v;
+        req->timestamp = 1727700789ULL;
+        req->expiry = req->timestamp + DHT_CONTACT_REQUEST_DEFAULT_TTL;
+        dsa_keypair(0x53, req->sender_dilithium_pubkey, sk);
+        fp_hex_of_pubkey(req->sender_dilithium_pubkey, req->sender_fingerprint);
+        snprintf(req->sender_name, sizeof(req->sender_name), "%s", "alice");
+        snprintf(req->message, sizeof(req->message), "%s", "Hey, add me!");
+        if (v == 2) {
+            fill_pattern(req->dht_salt, DHT_CONTACT_SALT_SIZE_CR, 0xD2);
+            req->has_dht_salt = true;
+        }
+
+        uint8_t *pre = NULL;
+        size_t pre_len = 0;
+        int rc = dht_contact_request_signing_preimage(req, &pre, &pre_len);
+        printf("nc1b.request.v%d.preimage.rc=%d len=%zu\n", v, rc, pre_len);
+        CHECK(rc == 0, "signing preimage");
+        if (rc != 0) continue;
+        char name[64];
+        snprintf(name, sizeof(name), "nc1b.request.v%d.preimage", v);
+        print_hex(name, pre, pre_len);
+
+        /* The preimage is the serialisation with signature_len 0, minus
+         * its 2-byte length field. */
+        uint8_t *ser = NULL;
+        size_t ser_len = 0;
+        req->signature_len = 0;
+        rc = dht_serialize_contact_request(req, &ser, &ser_len);
+        CHECK(rc == 0 && ser_len == pre_len + 2 && memcmp(ser, pre, pre_len) == 0,
+              "preimage == serialize prefix");
+        free(ser);
+        free(pre);
+    }
+
+    /* Sign the preimage, verify with the codec (expiry far in the future:
+     * dht_verify_contact_request reads time(NULL)). */
+    memset(req, 0, sizeof(*req));
+    req->magic = DHT_CONTACT_REQUEST_MAGIC;
+    req->version = DHT_CONTACT_REQUEST_VERSION_SALT;
+    req->timestamp = 1727700789ULL;
+    req->expiry = UINT64_MAX;
+    dsa_keypair(0x54, req->sender_dilithium_pubkey, sk);
+    fp_hex_of_pubkey(req->sender_dilithium_pubkey, req->sender_fingerprint);
+    memset(req->message, 'm', sizeof(req->message) - 1);   /* 255 chars, the maximum */
+    req->message[sizeof(req->message) - 1] = '\0';
+    fill_pattern(req->dht_salt, DHT_CONTACT_SALT_SIZE_CR, 0x0F);
+    req->has_dht_salt = true;
+
+    uint8_t *pre = NULL;
+    size_t pre_len = 0;
+    int rc = dht_contact_request_signing_preimage(req, &pre, &pre_len);
+    printf("nc1b.request.signed.preimage.rc=%d len=%zu\n", rc, pre_len);
+    if (rc == 0) {
+        print_hex("nc1b.request.signed.preimage", pre, pre_len);
+        size_t sig_len = DHT_DILITHIUM5_SIG_MAX_SIZE;
+        CHECK(qgp_dsa87_sign(req->signature, &sig_len, pre, pre_len, sk) == 0, "sign preimage");
+        req->signature_len = sig_len;
+        free(pre);
+        printf("nc1b.request.signed.verify.rc=%d\n", dht_verify_contact_request(req));
+        CHECK(dht_verify_contact_request(req) == 0, "verify over preimage");
+        req->dht_salt[31] ^= 0x01;
+        printf("nc1b.request.signed.verify.salt_changed.rc=%d\n", dht_verify_contact_request(req));
+    }
+
+out:
+    free(req);
+    free(sk);
+}
+
 int main(void) {
     printf("# NC-1 codec extraction vectors\n");
     vec_offline_queue();
@@ -638,6 +930,10 @@ int main(void) {
     vec_seal_multi();
     vec_contactlist();
     vec_contact_request();
+    vec_nc1b_ack_value();
+    vec_nc1b_contactlist_blob();
+    vec_nc1b_salt_packet();
+    vec_nc1b_request_preimage();
     printf("# failures=%d\n", g_failures);
     return g_failures == 0 ? 0 : 1;
 }

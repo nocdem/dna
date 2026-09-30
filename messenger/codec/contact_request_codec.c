@@ -13,8 +13,13 @@
  * big-endian) is a DIFFERENT derivation from nodus_identity_value_id (first
  * 8 bytes of node_id, little-endian); the two are deliberately not merged
  * (design §6.4 F6).
+ *
+ * NC-1b: dht_contact_request_signing_preimage (declared in
+ * codec/contact_request_codec.h) — the signed bytes, built inline twice
+ * before (send path and verify), now one function both call.
  */
 
+#include "codec/contact_request_codec.h"
 #include "dht/shared/dht_contact_request.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
@@ -327,50 +332,22 @@ int dht_deserialize_contact_request(
 }
 
 /**
- * Verify a contact request signature
+ * The bytes a contact request signature covers (NC-1b). The statement
+ * sequence is the one dht_verify_contact_request built inline (below, until
+ * NC-1b); dht_send_contact_request built the same sequence inline too.
+ *
+ * Plumbing added: the argument check; the buffer and its length go out
+ * through out / len_out. The salt condition is the verify's
+ * `request->version >= DHT_CONTACT_REQUEST_VERSION_SALT`; the send path
+ * used `request.has_dht_salt`, which it sets true exactly when it sets
+ * version = DHT_CONTACT_REQUEST_VERSION_SALT and false exactly when it sets
+ * version = DHT_CONTACT_REQUEST_VERSION (dht_contact_request.c), so for
+ * every request the send path builds the two conditions agree.
  */
-int dht_verify_contact_request(const dht_contact_request_t *request) {
-    if (!request) {
-        QGP_LOG_ERROR(LOG_TAG, "NULL request\n");
-        return -1;
-    }
-
-    /* Check magic */
-    if (request->magic != DHT_CONTACT_REQUEST_MAGIC) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid magic: 0x%08X\n", request->magic);
-        return -1;
-    }
-
-    /* Check version (accept v1 and v2) */
-    if (request->version < DHT_CONTACT_REQUEST_VERSION ||
-        request->version > DHT_CONTACT_REQUEST_VERSION_SALT) {
-        QGP_LOG_ERROR(LOG_TAG, "Unsupported version: %u\n", request->version);
-        return -1;
-    }
-
-    /* Check expiry */
-    uint64_t now = (uint64_t)time(NULL);
-    if (request->expiry < now) {
-        QGP_LOG_WARN(LOG_TAG, "Request expired (expiry=%llu, now=%llu)\n",
-                (unsigned long long)request->expiry, (unsigned long long)now);
-        return -1;
-    }
-
-    /* Verify fingerprint matches SHA3-512(pubkey) */
-    uint8_t computed_fingerprint[64];
-    qgp_sha3_512(request->sender_dilithium_pubkey, DHT_DILITHIUM5_PUBKEY_SIZE, computed_fingerprint);
-
-    /* Convert to hex string for comparison */
-    char computed_hex[129];
-    for (int i = 0; i < 64; i++) {
-        snprintf(computed_hex + (i * 2), 3, "%02x", computed_fingerprint[i]);
-    }
-    computed_hex[128] = '\0';
-
-    if (strcmp(computed_hex, request->sender_fingerprint) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Fingerprint mismatch!\n");
-        QGP_LOG_ERROR(LOG_TAG, "  Claimed: %s\n", request->sender_fingerprint);
-        QGP_LOG_ERROR(LOG_TAG, "  Computed: %s\n", computed_hex);
+int dht_contact_request_signing_preimage(const dht_contact_request_t *request,
+                                         uint8_t **out, size_t *len_out)
+{
+    if (!request || !out || !len_out) {
         return -1;
     }
 
@@ -434,6 +411,68 @@ int dht_verify_contact_request(const dht_contact_request_t *request) {
     if (request->version >= DHT_CONTACT_REQUEST_VERSION_SALT) {
         memcpy(ptr, request->dht_salt, DHT_CONTACT_SALT_SIZE_CR);
         ptr += DHT_CONTACT_SALT_SIZE_CR;
+    }
+
+    *out = signed_data;
+    *len_out = signed_data_len;
+    return 0;
+}
+
+/**
+ * Verify a contact request signature
+ */
+int dht_verify_contact_request(const dht_contact_request_t *request) {
+    if (!request) {
+        QGP_LOG_ERROR(LOG_TAG, "NULL request\n");
+        return -1;
+    }
+
+    /* Check magic */
+    if (request->magic != DHT_CONTACT_REQUEST_MAGIC) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid magic: 0x%08X\n", request->magic);
+        return -1;
+    }
+
+    /* Check version (accept v1 and v2) */
+    if (request->version < DHT_CONTACT_REQUEST_VERSION ||
+        request->version > DHT_CONTACT_REQUEST_VERSION_SALT) {
+        QGP_LOG_ERROR(LOG_TAG, "Unsupported version: %u\n", request->version);
+        return -1;
+    }
+
+    /* Check expiry */
+    uint64_t now = (uint64_t)time(NULL);
+    if (request->expiry < now) {
+        QGP_LOG_WARN(LOG_TAG, "Request expired (expiry=%llu, now=%llu)\n",
+                (unsigned long long)request->expiry, (unsigned long long)now);
+        return -1;
+    }
+
+    /* Verify fingerprint matches SHA3-512(pubkey) */
+    uint8_t computed_fingerprint[64];
+    qgp_sha3_512(request->sender_dilithium_pubkey, DHT_DILITHIUM5_PUBKEY_SIZE, computed_fingerprint);
+
+    /* Convert to hex string for comparison */
+    char computed_hex[129];
+    for (int i = 0; i < 64; i++) {
+        snprintf(computed_hex + (i * 2), 3, "%02x", computed_fingerprint[i]);
+    }
+    computed_hex[128] = '\0';
+
+    if (strcmp(computed_hex, request->sender_fingerprint) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Fingerprint mismatch!\n");
+        QGP_LOG_ERROR(LOG_TAG, "  Claimed: %s\n", request->sender_fingerprint);
+        QGP_LOG_ERROR(LOG_TAG, "  Computed: %s\n", computed_hex);
+        return -1;
+    }
+
+    /* Build the data that was signed (everything except signature) —
+     * NC-1b: dht_contact_request_signing_preimage, the same builder the
+     * send path signs. */
+    uint8_t *signed_data = NULL;
+    size_t signed_data_len = 0;
+    if (dht_contact_request_signing_preimage(request, &signed_data, &signed_data_len) != 0) {
+        return -1;
     }
 
     /* Verify Dilithium5 signature */

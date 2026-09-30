@@ -4,20 +4,16 @@
  * Wire bytes: messenger/codec/contact_request_codec.c compiled verbatim
  * (dht_serialize_contact_request, dht_deserialize_contact_request,
  * dht_verify_contact_request, dht_generate_requests_inbox_key,
- * dht_fingerprint_to_value_id).
+ * dht_fingerprint_to_value_id, dht_contact_request_signing_preimage).
  *
- * THE SIGNING PREIMAGE. dht_send_contact_request builds it inline
- * (dht_contact_request.c:99-159) and dht_verify_contact_request rebuilds it
- * inline (contact_request_codec.c:377-437); NC-1 extracted no function that
- * returns it. It is NOT re-written here. dht_serialize_contact_request
- * (contact_request_codec.c:136-183) writes the same fields in the same
- * order with the same padding, followed by a 2-byte signature length and
- * the signature; with signature_len 0 its output is the preimage followed
- * by two zero bytes. nc_request_build signs that prefix and then runs the
- * codec's own deserialize + verify on the final bytes — the exact check the
- * frozen app applies on receipt (dht_fetch_contact_requests,
- * dht_contact_request.c:298-308). If the prefix were ever not the preimage,
- * the verify fails and nothing is published.
+ * THE SIGNING PREIMAGE (NC-1b). The app's send path and the codec's verify
+ * both call dht_contact_request_signing_preimage
+ * (messenger/codec/contact_request_codec.h); nc_request_build signs the
+ * bytes that function returns — the app's own preimage, not a
+ * reconstruction. It then still runs the codec's deserialize + verify on
+ * the final bytes, the check the frozen app applies on receipt
+ * (dht_fetch_contact_requests); a request that does not pass it is never
+ * returned.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -26,6 +22,7 @@
 #include "nc_core.h"
 
 #include "dht/shared/dht_contact_request.h"
+#include "codec/contact_request_codec.h"
 #include "crypto/utils/qgp_log.h"
 
 #include <stdlib.h>
@@ -85,14 +82,12 @@ int nc_request_build(const nc_keys_t *keys, const char *recipient_fp,
            DHT_DILITHIUM5_PUBKEY_SIZE);
     if (message) memcpy(req->message, message, strlen(message));
 
-    /* Preimage = serialisation with an empty signature, minus its 2-byte
-     * signature length (see the file header). */
-    req->signature_len = 0;
-    if (dht_serialize_contact_request(req, &pre, &pre_len) != 0 ||
-        pre_len < 2)
+    /* The app's signing preimage (dht_send_contact_request signs exactly
+     * these bytes, dht_verify_contact_request checks them). */
+    if (dht_contact_request_signing_preimage(req, &pre, &pre_len) != 0)
         goto done;
     size_t sig_len = DHT_DILITHIUM5_SIG_MAX_SIZE;
-    if (qgp_dsa87_sign(req->signature, &sig_len, pre, pre_len - 2,
+    if (qgp_dsa87_sign(req->signature, &sig_len, pre, pre_len,
                        keys->id.sk.bytes) != 0)
         goto done;
     req->signature_len = sig_len;
