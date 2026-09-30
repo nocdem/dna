@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_p2p_mconn.c
- * @brief cometbft @709fd12b `p2p/conn/connection.go` in C (+ the Packet
+ * @brief cometbft @v0.38.26 `p2p/conn/connection.go` in C (+ the Packet
  *        codec of proto/tendermint/p2p/conn.pb.go and
  *        libs/timer/throttle_timer.go inline).
  *
@@ -305,7 +305,7 @@ void cmt_p2p_mconn_default_config(cmt_p2p_mconn_config_t *cfg)
     cfg->pong_timeout_ns = CMT_P2P_MCONN_DEFAULT_PONG_TIMEOUT_NS;
 }
 
-/* p2p/switch.go:36-45 MConnConfig(DefaultP2PConfig()) — config.go:625-628. */
+/* p2p/switch.go:37-46 MConnConfig(DefaultP2PConfig()) — config.go:633-636. */
 void cmt_p2p_mconn_p2p_default_config(cmt_p2p_mconn_config_t *cfg)
 {
     if (cfg == NULL) {

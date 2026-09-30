@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_pb.c
- * @brief cometbft @709fd12b's proto3 wire encoding in C — see cmt_pb.h.
+ * @brief cometbft @v0.38.26's proto3 wire encoding in C — see cmt_pb.h.
  *
  * ── How the encoder is shaped, and why ─────────────────────────────────
  * The generated `MarshalToSizedBuffer` writes a message BACKWARDS from the
@@ -42,7 +42,7 @@
 
 #include <string.h>
 
-/* cometbft@709fd12b types.pb.go:2520-2522 — sovTypes(),
+/* cometbft@v0.38.26 types.pb.go:2520-2522 — sovTypes(),
  * (bits.Len64(x|1) + 6) / 7 */
 size_t cmt_pb_uvarint_size(uint64_t v)
 {
@@ -79,7 +79,7 @@ static void wf_sfixed64(pb_w_t *w, uint32_t field, int64_t v)
     w_tag(w, field, 1);
 }
 
-/* cometbft@709fd12b types.pb.go:2145-2155 — encodeVarintTypes(), written
+/* cometbft@v0.38.26 types.pb.go:2145-2155 — encodeVarintTypes(), written
  * forwards here because this entry point has no backward cursor. */
 int cmt_pb_put_uvarint(uint8_t *out, size_t cap, size_t *off, uint64_t v)
 {
@@ -102,7 +102,7 @@ int cmt_pb_put_uvarint(uint8_t *out, size_t cap, size_t *off, uint64_t v)
 
 /* ══ reader (forward, mirroring the generated Unmarshal) ══════════════ */
 
-/* cometbft@709fd12b types.pb.go:3395-3406 — the generated varint reader
+/* cometbft@v0.38.26 types.pb.go:3395-3406 — the generated varint reader
  * that opens every Unmarshal tag loop: `shift >= 64` is ErrIntOverflow
  * and running past the end is io.ErrUnexpectedEOF. */
 int cmt_pb_get_uvarint(const uint8_t *in, size_t len, size_t *off,
@@ -153,7 +153,7 @@ static int r_fixed64(const uint8_t *in, size_t len, size_t *off, uint64_t *v)
 
 /* ══ MarshalDelimited ═════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b libs/protoio/writer.go:96-103, :78-86 */
+/* cometbft@v0.38.26 libs/protoio/writer.go:96-103, :78-86 */
 int cmt_pb_marshal_delimited(const uint8_t *msg, size_t msg_len,
                              uint8_t *out, size_t cap, size_t *out_len)
 {
@@ -216,7 +216,7 @@ int cmt_pb_timestamp_marshal(const cmt_time_t *m, uint8_t *out, size_t cap,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b gogoproto timestamp.pb.go:373-461 —
+/* cometbft@v0.38.26 gogoproto timestamp.pb.go:373-461 —
  * Timestamp.Unmarshal, then TimestampFromProto (timestamp.go:88-98) →
  * validateTimestamp, which it returns at :97. */
 static int ts_merge(const uint8_t *in, size_t len, cmt_time_t *m)
@@ -282,7 +282,7 @@ int cmt_pb_timestamp_unmarshal(const uint8_t *in, size_t len, cmt_time_t *m)
 
 /* ══ wrappers / cdcEncode (K-1 rev 2 rule d) ══════════════════════════ */
 
-/* cometbft@709fd12b gogoproto wrappers.pb.go:1331-1346 Int64Value,
+/* cometbft@v0.38.26 gogoproto wrappers.pb.go:1331-1346 Int64Value,
  * :1496-1513 StringValue, :1530-1547 BytesValue — each a single field 1,
  * omit-zero. cmt_pb_cdc_encode_string and _bytes below are the two
  * length-delimited branches of this same comment, via cdc_encode_ld. */
@@ -372,7 +372,7 @@ int cmt_pb_consensus_marshal(const cmt_pb_consensus_t *m, uint8_t *out,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b version/types.pb.go:405-492 — Consensus.Unmarshal */
+/* cometbft@v0.38.26 version/types.pb.go:405-492 — Consensus.Unmarshal */
 static int consensus_merge(const uint8_t *in, size_t len,
                            cmt_pb_consensus_t *m)
 {
@@ -428,7 +428,7 @@ void cmt_pb_part_set_header_init(cmt_pb_part_set_header_t *m)
     }
 }
 
-/* cometbft@709fd12b types.pb.go:1301-1319 —
+/* cometbft@v0.38.26 types.pb.go:1301-1319 —
  * PartSetHeader.MarshalToSizedBuffer; canonical.pb.go's
  * CanonicalPartSetHeader is byte-identical ({uint32 total = 1,
  * bytes hash = 2}). */
@@ -455,7 +455,7 @@ int cmt_pb_part_set_header_marshal(const cmt_pb_part_set_header_t *m,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b types.pb.go:2526-2628 PartSetHeader.Unmarshal;
+/* cometbft@v0.38.26 types.pb.go:2526-2628 PartSetHeader.Unmarshal;
  * canonical.pb.go:938-1040 CanonicalPartSetHeader.Unmarshal is the same
  * two fields and shares this function. */
 static int psh_merge(const uint8_t *in, size_t len,
@@ -572,7 +572,7 @@ int cmt_pb_block_id_marshal(const cmt_pb_block_id_t *m, uint8_t *out,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b types.pb.go:2765-2881 BlockID.Unmarshal;
+/* cometbft@v0.38.26 types.pb.go:2765-2881 BlockID.Unmarshal;
  * canonical.pb.go:821-937 CanonicalBlockID.Unmarshal is the same two
  * fields and shares this function. */
 static int block_id_merge(const uint8_t *in, size_t len,
@@ -702,7 +702,7 @@ int cmt_pb_proof_marshal(const cmt_proof_t *m, uint8_t *out, size_t cap,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b crypto/proof.pb.go:685-838 — Proof.Unmarshal */
+/* cometbft@v0.38.26 crypto/proof.pb.go:685-838 — Proof.Unmarshal */
 static int proof_merge(const uint8_t *in, size_t len, cmt_proof_t *m)
 {
     size_t i = 0;
@@ -845,7 +845,7 @@ int cmt_pb_part_marshal(const cmt_pb_part_t *m, uint8_t *out, size_t cap,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b types.pb.go:2629-2764 — Part.Unmarshal */
+/* cometbft@v0.38.26 types.pb.go:2629-2764 — Part.Unmarshal */
 static int part_merge(const uint8_t *in, size_t len, cmt_pb_part_t *m,
                       cmt_pb_arena_t *a)
 {
@@ -924,7 +924,7 @@ void cmt_pb_public_key_init(cmt_pb_public_key_t *m)
     }
 }
 
-/* keys.pb.go:354-386 writes the chosen branch's own tag. Branch 9,
+/* keys.pb.go:426-458 writes the chosen branch's own tag. Branch 9,
  * wire type 2, tag byte 0x4a (K-2). */
 static int public_key_wr(pb_w_t *w, const cmt_pb_public_key_t *m)
 {
@@ -948,7 +948,7 @@ int cmt_pb_public_key_marshal(const cmt_pb_public_key_t *m, uint8_t *out,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b crypto/keys.pb.go:457-572 — PublicKey.Unmarshal.
+/* cometbft@v0.38.26 crypto/keys.pb.go:557-705 — PublicKey.Unmarshal.
  * DEVIATION: the generated decoder skips an unknown branch; this one
  * REFUSES every field but 9, per K-2 (ML-DSA-87 is the only branch). */
 static int public_key_merge(const uint8_t *in, size_t len,
@@ -978,7 +978,7 @@ static int public_key_merge(const uint8_t *in, size_t len,
         if (r_ld(in, len, &i, &p, &n) != CMT_OK) {
             return CMT_REJECT;
         }
-        /* The size rule of crypto/encoding/codec.go:42-63, with the
+        /* The size rule of crypto/encoding/codec.go:50-77, with the
          * ML-DSA-87 length. */
         if (n != CMT_PB_PUBKEY_LEN) {
             return CMT_REJECT;
@@ -1035,7 +1035,7 @@ int cmt_pb_simple_validator_marshal(const cmt_pb_simple_validator_t *m,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b validator.pb.go:798-902 — SimpleValidator.Unmarshal */
+/* cometbft@v0.38.26 validator.pb.go:798-902 — SimpleValidator.Unmarshal */
 static int simple_validator_merge(const uint8_t *in, size_t len,
                                   cmt_pb_simple_validator_t *m)
 {
@@ -1129,7 +1129,7 @@ int cmt_pb_validator_marshal(const cmt_pb_validator_t *m, uint8_t *out,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b validator.pb.go:643-797 — Validator.Unmarshal */
+/* cometbft@v0.38.26 validator.pb.go:643-797 — Validator.Unmarshal */
 static int validator_merge(const uint8_t *in, size_t len,
                            cmt_pb_validator_t *m)
 {
@@ -1264,7 +1264,7 @@ int cmt_pb_validator_set_marshal(const cmt_pb_validator_set_t *m,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b validator.pb.go:504-642 — ValidatorSet.Unmarshal */
+/* cometbft@v0.38.26 validator.pb.go:504-642 — ValidatorSet.Unmarshal */
 static int validator_set_merge(const uint8_t *in, size_t len,
                                cmt_pb_validator_set_t *m)
 {
@@ -1377,7 +1377,7 @@ int cmt_pb_hashed_params_marshal(const cmt_pb_hashed_params_t *m,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b params.pb.go:1779-1866 — HashedParams.Unmarshal */
+/* cometbft@v0.38.26 params.pb.go:1779-1866 — HashedParams.Unmarshal */
 static int hashed_params_merge(const uint8_t *in, size_t len,
                                cmt_pb_hashed_params_t *m)
 {
@@ -1490,7 +1490,7 @@ int cmt_pb_header_marshal(const cmt_pb_header_t *m, uint8_t *out, size_t cap,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b types.pb.go:2882-3387 — Header.Unmarshal */
+/* cometbft@v0.38.26 types.pb.go:2882-3387 — Header.Unmarshal */
 static int header_merge(const uint8_t *in, size_t len, cmt_pb_header_t *m)
 {
     size_t i = 0;
@@ -1663,7 +1663,7 @@ int cmt_pb_data_marshal(const cmt_pb_data_t *m, uint8_t *out, size_t cap,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b types.pb.go:3388-3469 — Data.Unmarshal */
+/* cometbft@v0.38.26 types.pb.go:3388-3469 — Data.Unmarshal */
 static int data_merge(const uint8_t *in, size_t len, cmt_pb_data_t *m,
                       cmt_pb_arena_t *a)
 {
@@ -1777,7 +1777,7 @@ int cmt_pb_vote_marshal(const cmt_pb_vote_t *m, uint8_t *out, size_t cap,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b types.pb.go:3470-3797 — Vote.Unmarshal */
+/* cometbft@v0.38.26 types.pb.go:3470-3797 — Vote.Unmarshal */
 static int vote_merge(const uint8_t *in, size_t len, cmt_pb_vote_t *m,
                       cmt_pb_arena_t *a)
 {
@@ -1952,7 +1952,7 @@ int cmt_pb_commit_sig_marshal(const cmt_pb_commit_sig_t *m, uint8_t *out,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b types.pb.go:3953-4122 — CommitSig.Unmarshal */
+/* cometbft@v0.38.26 types.pb.go:3953-4122 — CommitSig.Unmarshal */
 static int commit_sig_merge(const uint8_t *in, size_t len,
                             cmt_pb_commit_sig_t *m)
 {
@@ -2092,7 +2092,7 @@ int cmt_pb_commit_marshal(const cmt_pb_commit_t *m, uint8_t *out, size_t cap,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b types.pb.go:3798-3952 — Commit.Unmarshal */
+/* cometbft@v0.38.26 types.pb.go:3798-3952 — Commit.Unmarshal */
 static int commit_merge(const uint8_t *in, size_t len, cmt_pb_commit_t *m)
 {
     size_t i = 0;
@@ -2223,7 +2223,7 @@ int cmt_pb_proposal_marshal(const cmt_pb_proposal_t *m, uint8_t *out,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b types.pb.go:4516-4741 — Proposal.Unmarshal */
+/* cometbft@v0.38.26 types.pb.go:4516-4741 — Proposal.Unmarshal */
 static int proposal_merge(const uint8_t *in, size_t len,
                           cmt_pb_proposal_t *m)
 {
@@ -2369,7 +2369,7 @@ int cmt_pb_canonical_vote_marshal(const cmt_pb_canonical_vote_t *m,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b canonical.pb.go:1250-1439 — CanonicalVote.Unmarshal */
+/* cometbft@v0.38.26 canonical.pb.go:1250-1439 — CanonicalVote.Unmarshal */
 static int canonical_vote_merge(const uint8_t *in, size_t len,
                                 cmt_pb_canonical_vote_t *m)
 {
@@ -2524,7 +2524,7 @@ int cmt_pb_canonical_proposal_marshal(const cmt_pb_canonical_proposal_t *m,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b canonical.pb.go:1041-1249 —
+/* cometbft@v0.38.26 canonical.pb.go:1041-1249 —
  * CanonicalProposal.Unmarshal */
 static int canonical_proposal_merge(const uint8_t *in, size_t len,
                                     cmt_pb_canonical_proposal_t *m)
@@ -2644,7 +2644,7 @@ void cmt_pb_canonical_vote_extension_init(
     }
 }
 
-/* cometbft@709fd12b canonical.pb.go:657-689 (canonical.proto:41-46).
+/* cometbft@v0.38.26 canonical.pb.go:657-689 (canonical.proto:41-46).
  * No ALWAYS field; every field omit-zero, height and round SFIXED64. */
 static int canonical_vote_extension_wr(
     pb_w_t *w, const cmt_pb_canonical_vote_extension_t *m)
@@ -2673,7 +2673,7 @@ int cmt_pb_canonical_vote_extension_marshal(
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b canonical.pb.go:1440-1575 —
+/* cometbft@v0.38.26 canonical.pb.go:1440-1575 —
  * CanonicalVoteExtension.Unmarshal. Small enough that the tag loop lives
  * in the public entry point; there is no separate _merge. */
 int cmt_pb_canonical_vote_extension_unmarshal(
@@ -2808,7 +2808,7 @@ int cmt_pb_duplicate_vote_evidence_marshal(
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b evidence.pb.go:843-1035 —
+/* cometbft@v0.38.26 evidence.pb.go:843-1035 —
  * DuplicateVoteEvidence.Unmarshal */
 static int dve_merge(const uint8_t *in, size_t len,
                      cmt_pb_duplicate_vote_evidence_t *m, cmt_pb_arena_t *a)
@@ -2932,7 +2932,7 @@ int cmt_pb_evidence_marshal(const cmt_pb_evidence_t *m, uint8_t *out,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b evidence.pb.go:723-842 — Evidence.Unmarshal (the
+/* cometbft@v0.38.26 evidence.pb.go:723-842 — Evidence.Unmarshal (the
  * oneof wrapper). No separate _merge: the tag loop is here. */
 int cmt_pb_evidence_unmarshal(const uint8_t *in, size_t len,
                               cmt_pb_evidence_t *m, cmt_pb_arena_t *arena)
@@ -3000,7 +3000,7 @@ int cmt_pb_exec_tx_result_marshal(const cmt_pb_exec_tx_result_t *m,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b abci/types/types.pb.go:15272-15542 —
+/* cometbft@v0.38.26 abci/types/types.pb.go:15272-15542 —
  * ExecTxResult.Unmarshal, restricted to fields 1/2/5/6. No separate
  * _merge.
  *
@@ -3088,7 +3088,7 @@ int cmt_pb_exec_tx_result_unmarshal(const uint8_t *in, size_t len,
 
 /* ══ libs.bits.BitArray ═══════════════════════════════════════════════ */
 
-/* cometbft@709fd12b libs/bits/bit_array.go:475-484 — ToProto(), with the
+/* cometbft@v0.38.26 libs/bits/bit_array.go:480-489 — ToProto(), with the
  * marshal of libs/bits/types.pb.go:113-140 folded in: `elems` is PACKED
  * (:118-135), one tag 0x12 with a total length. */
 int cmt_bits_to_proto(const cmt_bit_array_t *ba, uint8_t *out, size_t cap,
@@ -3122,7 +3122,7 @@ int cmt_bits_to_proto(const cmt_bit_array_t *ba, uint8_t *out, size_t cap,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b libs/bits/bit_array.go:487-497 — FromProto(), with
+/* cometbft@v0.38.26 libs/bits/bit_array.go:492-502 — FromProto(), with
  * libs/bits/types.pb.go:180-324 BitArray.Unmarshal folded in (a repeated
  * uint64 is accepted both PACKED and unpacked, exactly as the generated
  * decoder does), plus the length agreement the reference omits — see
@@ -3238,7 +3238,7 @@ void cmt_pb_extended_commit_sig_init(cmt_pb_extended_commit_sig_t *m)
     cmt_pb_commit_sig_init(&m->commit_sig);
 }
 
-/* cometbft@709fd12b types.pb.go:1832-1879 —
+/* cometbft@v0.38.26 types.pb.go:1832-1879 —
  * ExtendedCommitSig.MarshalToSizedBuffer.
  *
  * Fields 6 and 5 are singular `bytes` and follow rule (a) (omit when
@@ -3273,7 +3273,7 @@ int cmt_pb_extended_commit_sig_marshal(const cmt_pb_extended_commit_sig_t *m,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b types.pb.go:4278-4515 — ExtendedCommitSig.Unmarshal.
+/* cometbft@v0.38.26 types.pb.go:4278-4515 — ExtendedCommitSig.Unmarshal.
  *
  * The generated decoder is its OWN full tag loop, not a delegation to
  * CommitSig.Unmarshal, so this one is too: cases 1-4 repeat the CommitSig
@@ -3405,7 +3405,7 @@ void cmt_pb_extended_commit_init(cmt_pb_extended_commit_t *m)
     m->extended_signatures_cap = cap;
 }
 
-/* cometbft@709fd12b types.pb.go:1775-1815 —
+/* cometbft@v0.38.26 types.pb.go:1775-1815 —
  * ExtendedCommit.MarshalToSizedBuffer. block_id (field 3) is ALWAYS
  * emitted (:1794-1803, no guard); every element of field 4 carries its
  * own tag (:1780-1792). */
@@ -3448,7 +3448,7 @@ int cmt_pb_extended_commit_marshal(const cmt_pb_extended_commit_t *m,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b types.pb.go:4123-4277 — ExtendedCommit.Unmarshal */
+/* cometbft@v0.38.26 types.pb.go:4123-4277 — ExtendedCommit.Unmarshal */
 static int ec_merge(const uint8_t *in, size_t len,
                     cmt_pb_extended_commit_t *m, cmt_pb_arena_t *arena)
 {
@@ -3546,7 +3546,7 @@ int cmt_pb_extended_commit_unmarshal(const uint8_t *in, size_t len,
 
 /* ══ google.protobuf.Duration ═════════════════════════════════════════ */
 
-/* cometbft@709fd12b gogoproto v1.7.0 types/duration.go:54-69 —
+/* cometbft@v0.38.26 gogoproto v1.7.0 types/duration.go:54-69 —
  * validateDuration(). The nil check of :55-57 is the NULL argument. */
 int cmt_pb_duration_validate(const cmt_pb_duration_t *d)
 {
@@ -3569,7 +3569,7 @@ int cmt_pb_duration_validate(const cmt_pb_duration_t *d)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b gogoproto v1.7.0 types/duration.go:92-99 —
+/* cometbft@v0.38.26 gogoproto v1.7.0 types/duration.go:92-99 —
  * DurationProto(). Go's `/` and `%` on int64 truncate toward zero, as C99's
  * do, so a negative nanosecond count yields a negative seconds AND a
  * negative nanos — which is exactly the sign agreement validateDuration
@@ -3589,7 +3589,7 @@ int cmt_pb_duration_proto(int64_t d_ns, cmt_pb_duration_t *out)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b gogoproto v1.7.0 types/duration.go:74-89 —
+/* cometbft@v0.38.26 gogoproto v1.7.0 types/duration.go:74-89 —
  * DurationFromProto(). */
 int cmt_pb_duration_from_proto(const cmt_pb_duration_t *p, int64_t *out_ns)
 {
@@ -3632,7 +3632,7 @@ void cmt_pb_duration_init(cmt_pb_duration_t *m)
     }
 }
 
-/* cometbft@709fd12b gogoproto v1.7.0 types/duration.pb.go:287-307 —
+/* cometbft@v0.38.26 gogoproto v1.7.0 types/duration.pb.go:287-307 —
  * Duration.MarshalToSizedBuffer. Both fields omit-zero; a negative `nanos`
  * is the 10-byte varint of K-1 rev 2 rule (g), because the generated code
  * widens through `uint64(m.Nanos)` on an int32 that Go sign-extends. */
@@ -3655,7 +3655,7 @@ int cmt_pb_duration_marshal(const cmt_pb_duration_t *m, uint8_t *out,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b gogoproto v1.7.0 types/duration.pb.go:344-432 —
+/* cometbft@v0.38.26 gogoproto v1.7.0 types/duration.pb.go:344-432 —
  * Duration.Unmarshal. `nanos` is an int32 the generated loop accumulates
  * with shifts that Go defines to zero past the width; the truncation is
  * written out here because C leaves it undefined. */
@@ -3709,7 +3709,7 @@ int cmt_pb_duration_unmarshal(const uint8_t *in, size_t len,
     return duration_merge(in, len, m);
 }
 
-/* cometbft@709fd12b gogoproto v1.7.0 types/duration_gogo.go:72-75 —
+/* cometbft@v0.38.26 gogoproto v1.7.0 types/duration_gogo.go:72-75 —
  * SizeOfStdDuration(): DurationProto, then Duration.Size()
  * (duration.pb.go:320-336). */
 size_t cmt_pb_std_duration_size(int64_t d_ns)
@@ -3727,7 +3727,7 @@ size_t cmt_pb_std_duration_size(int64_t d_ns)
     return n;
 }
 
-/* cometbft@709fd12b gogoproto v1.7.0 types/duration_gogo.go:84-87 —
+/* cometbft@v0.38.26 gogoproto v1.7.0 types/duration_gogo.go:84-87 —
  * StdDurationMarshalTo(). No validation here: the reference has none,
  * because DurationProto of an int64 nanosecond count is always in range. */
 int cmt_pb_std_duration_marshal(int64_t d_ns, uint8_t *out, size_t cap,
@@ -3746,7 +3746,7 @@ int cmt_pb_std_duration_marshal(int64_t d_ns, uint8_t *out, size_t cap,
     return cmt_pb_duration_marshal(&d, out, cap, out_len);   /* :86 */
 }
 
-/* cometbft@709fd12b gogoproto v1.7.0 types/duration_gogo.go:89-99 —
+/* cometbft@v0.38.26 gogoproto v1.7.0 types/duration_gogo.go:89-99 —
  * StdDurationUnmarshal(): Unmarshal, then DurationFromProto, which
  * validates. */
 int cmt_pb_std_duration_unmarshal(const uint8_t *in, size_t len,
@@ -3766,7 +3766,7 @@ int cmt_pb_std_duration_unmarshal(const uint8_t *in, size_t len,
 }
 
 /* ══ libs.bits.BitArray as an EMBEDDED field ══════════════════════════
- * cmt_bits_to_proto (above) is bit_array.go:475-484 ToProto(), a top-level
+ * cmt_bits_to_proto (above) is bit_array.go:480-489 ToProto(), a top-level
  * entry point that returns CMT_BITS_NIL for the reference's nil result.
  * Three messages of consensus/types.proto EMBED a BitArray, so the same
  * body is needed inside the backward writer. It is written here rather
@@ -3777,7 +3777,7 @@ int cmt_pb_std_duration_unmarshal(const uint8_t *in, size_t len,
  * compares cmt_bits_to_proto's output against the body of a ProposalPOL's
  * field 3 built from the same array.
  *
- * cometbft@709fd12b proto/tendermint/libs/bits/types.pb.go:113-142 —
+ * cometbft@v0.38.26 proto/tendermint/libs/bits/types.pb.go:113-142 —
  * BitArray.MarshalToSizedBuffer: `elems` PACKED under one tag and written
  * only when the slice is non-empty (:118-135), then `bits` omit-zero
  * (:136-140). */
@@ -3817,7 +3817,7 @@ void cmt_pb_event_data_round_state_init(cmt_pb_event_data_round_state_t *m)
     }
 }
 
-/* cometbft@709fd12b proto/tendermint/types/events.pb.go:123-146 —
+/* cometbft@v0.38.26 proto/tendermint/types/events.pb.go:123-146 —
  * EventDataRoundState.MarshalToSizedBuffer. */
 static void edrs_wr(pb_w_t *w, const cmt_pb_event_data_round_state_t *m)
 {
@@ -3843,7 +3843,7 @@ int cmt_pb_event_data_round_state_marshal(
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b proto/tendermint/types/events.pb.go:184-292 —
+/* cometbft@v0.38.26 proto/tendermint/types/events.pb.go:184-292 —
  * EventDataRoundState.Unmarshal. */
 static int edrs_merge(const uint8_t *in, size_t len,
                       cmt_pb_event_data_round_state_t *m)
@@ -3918,7 +3918,7 @@ void cmt_pb_new_round_step_init(cmt_pb_new_round_step_t *m)
     }
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:876-907 */
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:876-907 */
 static void nrs_wr(pb_w_t *w, const cmt_pb_new_round_step_t *m)
 {
     wf_varint(w, 5, (uint64_t)(int64_t)m->last_commit_round);/* :881-885 */
@@ -3941,7 +3941,7 @@ int cmt_pb_new_round_step_marshal(const cmt_pb_new_round_step_t *m,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:1805-1949 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:1805-1949 —
  * NewRoundStep.Unmarshal. */
 static int nrs_merge(const uint8_t *in, size_t len,
                      cmt_pb_new_round_step_t *m)
@@ -4000,7 +4000,7 @@ void cmt_pb_new_valid_block_init(cmt_pb_new_valid_block_t *m)
     }
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:924-972 */
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:924-972 */
 static int nvb_wr(pb_w_t *w, const cmt_pb_new_valid_block_t *m)
 {
     size_t before;
@@ -4046,7 +4046,7 @@ int cmt_pb_new_valid_block_marshal(const cmt_pb_new_valid_block_t *m,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:1950-2126 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:1950-2126 —
  * NewValidBlock.Unmarshal.
  *
  * NOTE deviation, field 4: the generated decoder MERGES a repeated
@@ -4155,7 +4155,7 @@ void cmt_pb_cons_proposal_init(cmt_pb_cons_proposal_t *m)
     }
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:989-1005 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:989-1005 —
  * field 1 is (nullable) = false and written with no `if`. */
 static int cons_proposal_wr(pb_w_t *w, const cmt_pb_cons_proposal_t *m)
 {
@@ -4186,7 +4186,7 @@ int cmt_pb_cons_proposal_marshal(const cmt_pb_cons_proposal_t *m,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:2127-2209 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:2127-2209 —
  * Proposal.Unmarshal. Field 1 is non-repeated and MERGED. */
 static int cons_proposal_merge(const uint8_t *in, size_t len,
                                cmt_pb_cons_proposal_t *m)
@@ -4242,7 +4242,7 @@ void cmt_pb_proposal_pol_init(cmt_pb_proposal_pol_t *m)
     }
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:1022-1048 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:1022-1048 —
  * field 3 is (nullable) = false, so an EMPTY bit array is `1a 00`. */
 static int ppol_wr(pb_w_t *w, const cmt_pb_proposal_pol_t *m)
 {
@@ -4274,7 +4274,7 @@ int cmt_pb_proposal_pol_marshal(const cmt_pb_proposal_pol_t *m, uint8_t *out,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:2210-2330 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:2210-2330 —
  * ProposalPOL.Unmarshal. Field 3's merge-vs-replace note is nvb_merge's:
  * Go merges repeated occurrences (Elems appended) and can end with a
  * VALID array where this decoder keeps the last occurrence and may
@@ -4352,7 +4352,7 @@ void cmt_pb_block_part_init(cmt_pb_block_part_t *m)
     }
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:1065-1091 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:1065-1091 —
  * field 3 is (nullable) = false and written with no `if`. */
 static int block_part_wr(pb_w_t *w, const cmt_pb_block_part_t *m)
 {
@@ -4383,7 +4383,7 @@ int cmt_pb_block_part_marshal(const cmt_pb_block_part_t *m, uint8_t *out,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:2331-2451 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:2331-2451 —
  * BlockPart.Unmarshal. */
 static int block_part_merge(const uint8_t *in, size_t len,
                             cmt_pb_block_part_t *m, cmt_pb_arena_t *a)
@@ -4458,7 +4458,7 @@ void cmt_pb_cons_vote_init(cmt_pb_cons_vote_t *m)
     }
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:1108-1126 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:1108-1126 —
  * field 1 is a POINTER, omitted when nil. */
 static int cons_vote_wr(pb_w_t *w, const cmt_pb_cons_vote_t *m)
 {
@@ -4494,7 +4494,7 @@ int cmt_pb_cons_vote_marshal(const cmt_pb_cons_vote_t *m, uint8_t *out,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:2452-2537 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:2452-2537 —
  * Vote.Unmarshal. Field 1 is non-repeated and MERGED (:2513-2518). */
 static int cons_vote_merge(const uint8_t *in, size_t len,
                            cmt_pb_cons_vote_t *m, cmt_pb_arena_t *a)
@@ -4551,7 +4551,7 @@ void cmt_pb_has_vote_init(cmt_pb_has_vote_t *m)
     }
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:1143-1169 */
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:1143-1169 */
 static void has_vote_wr(pb_w_t *w, const cmt_pb_has_vote_t *m)
 {
     wf_varint(w, 4, (uint64_t)(int64_t)m->index);            /* :1148-1152 */
@@ -4573,7 +4573,7 @@ int cmt_pb_has_vote_marshal(const cmt_pb_has_vote_t *m, uint8_t *out,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:2538-2663 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:2538-2663 —
  * HasVote.Unmarshal. */
 static int has_vote_merge(const uint8_t *in, size_t len,
                           cmt_pb_has_vote_t *m)
@@ -4632,7 +4632,7 @@ void cmt_pb_vote_set_maj23_init(cmt_pb_vote_set_maj23_t *m)
     }
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:1186-1217 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:1186-1217 —
  * field 4 is (nullable) = false and written with no `if`. */
 static void vsm23_wr(pb_w_t *w, const cmt_pb_vote_set_maj23_t *m)
 {
@@ -4663,7 +4663,7 @@ int cmt_pb_vote_set_maj23_marshal(const cmt_pb_vote_set_maj23_t *m,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:2664-2803 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:2664-2803 —
  * VoteSetMaj23.Unmarshal. */
 static int vsm23_merge(const uint8_t *in, size_t len,
                        cmt_pb_vote_set_maj23_t *m)
@@ -4741,7 +4741,7 @@ void cmt_pb_vote_set_bits_init(cmt_pb_vote_set_bits_t *m)
     }
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:1234-1275 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:1234-1275 —
  * fields 4 AND 5 are (nullable) = false and written with no `if`. */
 static int vsb_wr(pb_w_t *w, const cmt_pb_vote_set_bits_t *m)
 {
@@ -4782,7 +4782,7 @@ int cmt_pb_vote_set_bits_marshal(const cmt_pb_vote_set_bits_t *m,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:2804-2976 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:2804-2976 —
  * VoteSetBits.Unmarshal. Field 5's merge-vs-replace note is nvb_merge's:
  * Go merges repeated occurrences (Elems appended) and can end with a
  * VALID array where this decoder keeps the last occurrence and may
@@ -4913,7 +4913,7 @@ static void cons_message_init_branch(cmt_pb_cons_message_t *m)
     }
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:1292-1307
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:1292-1307
  * Message.MarshalToSizedBuffer (a nil Sum writes NOTHING) and :1314-1502,
  * the nine branch MarshalToSizedBuffers, each `tag ‖ len ‖ body`. */
 static int cons_message_wr(pb_w_t *w, const cmt_pb_cons_message_t *m)
@@ -5042,7 +5042,7 @@ int cmt_pb_cons_message_marshal(const cmt_pb_cons_message_t *m, uint8_t *out,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/types.pb.go:2977-3424 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/types.pb.go:2977-3424 —
  * Message.Unmarshal. Every branch REPLACES Sum with a freshly allocated
  * message, so a repeated oneof field is last-one-wins and never merged. */
 static int cons_message_merge(const uint8_t *in, size_t len,
@@ -5133,7 +5133,7 @@ void cmt_pb_msg_info_init(cmt_pb_msg_info_t *m)
     }
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:427-450 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/wal.pb.go:427-450 —
  * field 1 is (nullable) = false and written with no `if`, field 2 is
  * omit-empty. */
 static int msg_info_wr(pb_w_t *w, const cmt_pb_msg_info_t *m)
@@ -5175,7 +5175,7 @@ int cmt_pb_msg_info_marshal(const cmt_pb_msg_info_t *m, uint8_t *out,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:824-938 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/wal.pb.go:824-938 —
  * MsgInfo.Unmarshal. Field 1 is non-repeated and MERGED. */
 static int msg_info_merge(const uint8_t *in, size_t len,
                           cmt_pb_msg_info_t *m, cmt_pb_arena_t *a)
@@ -5251,7 +5251,7 @@ void cmt_pb_timeout_info_init(cmt_pb_timeout_info_t *m)
     }
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:467-496 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/wal.pb.go:467-496 —
  * field 1 is stdduration and (nullable) = false: StdDurationMarshalTo is
  * called with NO `if`, so a zero duration is `0a 00`. */
 static int timeout_info_wr(pb_w_t *w, const cmt_pb_timeout_info_t *m)
@@ -5288,7 +5288,7 @@ int cmt_pb_timeout_info_marshal(const cmt_pb_timeout_info_t *m, uint8_t *out,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:939-1078 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/wal.pb.go:939-1078 —
  * TimeoutInfo.Unmarshal; field 1 goes through StdDurationUnmarshal
  * (:997), which validates. */
 static int timeout_info_merge(const uint8_t *in, size_t len,
@@ -5367,7 +5367,7 @@ void cmt_pb_end_height_init(cmt_pb_end_height_t *m)
     }
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:513-524 */
+/* cometbft@v0.38.26 proto/tendermint/consensus/wal.pb.go:513-524 */
 static void end_height_wr(pb_w_t *w, const cmt_pb_end_height_t *m)
 {
     wf_varint(w, 1, (uint64_t)m->height);                    /* :518-522 */
@@ -5386,7 +5386,7 @@ int cmt_pb_end_height_marshal(const cmt_pb_end_height_t *m, uint8_t *out,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:1079-1147 */
+/* cometbft@v0.38.26 proto/tendermint/consensus/wal.pb.go:1079-1147 */
 static int end_height_merge(const uint8_t *in, size_t len,
                             cmt_pb_end_height_t *m)
 {
@@ -5460,7 +5460,7 @@ static void wal_message_init_branch(cmt_pb_wal_message_t *m)
     }
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:541-556
+/* cometbft@v0.38.26 proto/tendermint/consensus/wal.pb.go:541-556
  * WALMessage.MarshalToSizedBuffer (a nil Sum writes NOTHING) and
  * :563-641, the four branch writers, each `tag ‖ len ‖ body`. An
  * EndHeight{0} branch is therefore `22 00`, not an omission — which is
@@ -5519,7 +5519,7 @@ int cmt_pb_wal_message_marshal(const cmt_pb_wal_message_t *m, uint8_t *out,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:1148-1337 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/wal.pb.go:1148-1337 —
  * WALMessage.Unmarshal; every branch REPLACES Sum with a fresh message. */
 static int wal_message_merge(const uint8_t *in, size_t len,
                              cmt_pb_wal_message_t *m, cmt_pb_arena_t *a)
@@ -5596,7 +5596,7 @@ void cmt_pb_timed_wal_message_init(cmt_pb_timed_wal_message_t *m)
     cmt_pb_wal_message_init(&m->msg);
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:657-683 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/wal.pb.go:657-683 —
  * field 1 is stdtime and (nullable) = false (ALWAYS, so Go's zero time is
  * eleven bytes), field 2 is a POINTER. */
 static int twm_wr(pb_w_t *w, const cmt_pb_timed_wal_message_t *m)
@@ -5643,7 +5643,7 @@ int cmt_pb_timed_wal_message_marshal(const cmt_pb_timed_wal_message_t *m,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b proto/tendermint/consensus/wal.pb.go:1338-1467 —
+/* cometbft@v0.38.26 proto/tendermint/consensus/wal.pb.go:1338-1467 —
  * TimedWALMessage.Unmarshal; field 1 goes through StdTimeUnmarshal
  * (:1396), which validates the range. */
 static int twm_merge(const uint8_t *in, size_t len,
@@ -5709,7 +5709,7 @@ int cmt_pb_timed_wal_message_unmarshal(const uint8_t *in, size_t len,
 
 /* ══ types.EvidenceList and types.Block — relocated (R1B-6) ═══════════ */
 
-/* cometbft@709fd12b proto/tendermint/types/evidence.pb.go:375-396
+/* cometbft@v0.38.26 proto/tendermint/types/evidence.pb.go:375-396
  * Evidence.MarshalToSizedBuffer and :397-412
  * Evidence_DuplicateVoteEvidence.MarshalToSizedBuffer — the oneof and its
  * branch-1 writer. The same body cmt_pb_evidence_marshal writes; needed
@@ -5728,7 +5728,7 @@ static int evidence_wr(pb_w_t *w, const cmt_pb_evidence_t *m)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b proto/tendermint/types/evidence.pb.go:581-601 —
+/* cometbft@v0.38.26 proto/tendermint/types/evidence.pb.go:581-601 —
  * EvidenceList.MarshalToSizedBuffer. Backwards, so the loop runs from the
  * LAST element down (:587), exactly as the generated code does. */
 static int evidence_list_wr(pb_w_t *w, const cmt_pb_evidence_list_t *m)
@@ -5774,7 +5774,7 @@ int cmt_pb_evidence_list_marshal(const cmt_pb_evidence_list_t *m,
     return w_finish(&w, out_len);
 }
 
-/* cometbft@709fd12b proto/tendermint/types/block.pb.go:136-184 —
+/* cometbft@v0.38.26 proto/tendermint/types/block.pb.go:136-184 —
  * Block.MarshalToSizedBuffer. Fields 1, 2, 3 ALWAYS; field 4 POINTER. */
 static int block_wr(pb_w_t *w, const cmt_pb_block_t *m)
 {

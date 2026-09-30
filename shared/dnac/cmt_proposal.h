@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_proposal.h
- * @brief cometbft @709fd12b `types/proposal.go` ported to C.
+ * @brief cometbft @v0.38.26 `types/proposal.go` ported to C.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
  * Wave R1-B of the cometbft → C consensus port. Additive only; nothing in
@@ -19,7 +19,7 @@
  * `cmt_pb_proposal_t` — seven fields, same order, same types, including
  * POLRound as an int32 — so the domain type is a typedef of the wire type
  * and `_to_proto` is the identity. `ProposalFromProto` is the identity
- * plus BlockIDFromProto and ValidateBasic (:160).
+ * plus BlockIDFromProto and ValidateBasic (:176).
  *
  * ⚠ POLRound is int32 HERE and int64 in CanonicalProposal
  * (canonical.proto field 4); cmt_canonical widens it. The two encodings
@@ -33,20 +33,20 @@
  *    every clock read in a ported body goes through the host's single
  *    `now()` callback, so here the current time is a PARAMETER the host
  *    has already obtained. NOTHING IN THIS FILE READS A CLOCK.
- * 3. panic → error return (:113-115); caller-provided sign-bytes buffer.
+ * 3. panic → error return (:129-131); caller-provided sign-bytes buffer.
  *
  * ── Determinism ────────────────────────────────────────────────────────
  * Every function here is a pure function of its arguments, the timestamp
  * included, because it arrives as a value.
  *
  * ── taşınmadı (not ported), with the reason ────────────────────────────
- *   · `(p *Proposal) String` (:92-100) — display only.
+ *   · `(p *Proposal) String` (:108-116) — display only.
  *   · `ErrInvalidBlockPartSignature` / `ErrInvalidBlockPartHash` (:14-17)
  *     — two package-level error values with no consumer in this file; the
  *     port has no error objects.
  *
- * Reference @709fd12b: types/proposal.go, 161 lines,
- * 0b56660bee6071267b75c9dabe148036cb96c814f640f4e4323baa59af44eba0.
+ * Reference @v0.38.26: types/proposal.go, 177 lines,
+ * 8c6e73fa3e5b00824a6b311b05d997c4d0e8039ec34d114421faa6c8418a85eb.
  * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * D-19 rev 6 (atlas-dec-d106407a31d7d16d49d51990b75c36c6),
  * K-1 rev 2 (atlas-dec-3ba8153088b0d60c63083028023b61be),
@@ -73,7 +73,7 @@
 extern "C" {
 #endif
 
-/** cometbft@709fd12b types/proposal.go:25-33 — `type Proposal struct`.
+/** cometbft@v0.38.26 types/proposal.go:25-33 — `type Proposal struct`.
  *  Field-identical to cmt_pb_proposal_t; see the header. */
 typedef cmt_pb_proposal_t cmt_proposal_t;
 
@@ -87,7 +87,7 @@ typedef cmt_pb_proposal_t cmt_proposal_t;
 #define CMT_PROPOSAL_SIGN_BYTES_MAX 256
 
 /**
- * cometbft@709fd12b types/proposal.go:35-46 — `NewProposal()`.
+ * cometbft@v0.38.26 types/proposal.go:35-46 — `NewProposal()`.
  *
  * `pol_round` is -1 when there is no proof-of-lock round (:36).
  * The Type is forced to PROPOSAL (:39) and the Signature is left empty —
@@ -105,7 +105,7 @@ int cmt_new_proposal(int64_t height, int32_t round, int32_t pol_round,
                      cmt_proposal_t *out);
 
 /**
- * cometbft@709fd12b types/proposal.go:48-80 — `(p *Proposal) ValidateBasic()`.
+ * cometbft@v0.38.26 types/proposal.go:48-80 — `(p *Proposal) ValidateBasic()`.
  * Seven checks in the reference's order. Note :66-68: the BlockID must be
  * COMPLETE, not merely valid — a proposal for nothing is not a proposal.
  * The timestamp is deliberately not checked (:70).
@@ -135,7 +135,7 @@ int cmt_proposal_validate_block_size(const cmt_proposal_t *p,
                                      int64_t max_block_size_bytes);
 
 /**
- * cometbft@709fd12b types/proposal.go:102-118 — `ProposalSignBytes()`.
+ * cometbft@v0.38.26 types/proposal.go:118-134 — `ProposalSignBytes()`.
  * CanonicalizeProposal, then MarshalDelimited. THESE ARE THE BYTES A
  * PROPOSER SIGNS.
  *
@@ -145,19 +145,19 @@ int cmt_proposal_validate_block_size(const cmt_proposal_t *p,
  *
  * @param cap at least CMT_PROPOSAL_SIGN_BYTES_MAX.
  * @return CMT_OK; CMT_REJECT where the reference panics on a marshal
- *         failure (:113-115) or if it does not fit; CMT_FAULT on NULL.
+ *         failure (:129-131) or if it does not fit; CMT_FAULT on NULL.
  */
 int cmt_proposal_sign_bytes(const uint8_t *chain_id, size_t chain_id_len,
                             const cmt_pb_proposal_t *p,
                             uint8_t *out, size_t cap, size_t *out_len);
 
-/** cometbft@709fd12b types/proposal.go:120-136 — `(p *Proposal) ToProto()`.
- *  The identity; a NULL receiver yields the EMPTY proposal (:122-124) —
+/** cometbft@v0.38.26 types/proposal.go:136-152 — `(p *Proposal) ToProto()`.
+ *  The identity; a NULL receiver yields the EMPTY proposal (:138-140) —
  *  note that is an empty message, not the nil that Vote.ToProto returns. */
 int cmt_proposal_to_proto(const cmt_proposal_t *p, cmt_pb_proposal_t *out);
 
-/** cometbft@709fd12b types/proposal.go:138-161 — `ProposalFromProto()`.
- *  BlockIDFromProto (:147) and then ValidateBasic (:160). */
+/** cometbft@v0.38.26 types/proposal.go:154-177 — `ProposalFromProto()`.
+ *  BlockIDFromProto (:163) and then ValidateBasic (:176). */
 int cmt_proposal_from_proto(const cmt_pb_proposal_t *pp,
                             cmt_proposal_t *out);
 

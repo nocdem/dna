@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_ticker.c
- * @brief cometbft @709fd12b `consensus/ticker.go` in C — see cmt_ticker.h
+ * @brief cometbft @v0.38.26 `consensus/ticker.go` in C — see cmt_ticker.h
  *        for the contract, the host's obligations and the taşınmadı list.
  *
  * Copyright (c) 2026 nocdem
@@ -11,7 +11,7 @@
 
 #include <string.h>
 
-/* cometbft@709fd12b consensus/ticker.go:41-53 — NewTimeoutTicker().
+/* cometbft@v0.38.26 consensus/ticker.go:41-53 — NewTimeoutTicker().
  * :43 creates the timer, :46 marks it active, :51 stops it again — so the
  * ticker begins NOT ARMED with a zero `ti`. */
 int cmt_ticker_init(cmt_ticker_t *t)
@@ -24,7 +24,7 @@ int cmt_ticker_init(cmt_ticker_t *t)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/ticker.go:83-92 —
+/* cometbft@v0.38.26 consensus/ticker.go:83-92 —
  * (t *timeoutTicker) stopTimer() */
 int cmt_ticker_stop_timer(cmt_ticker_t *t, bool *out_cancel)
 {
@@ -42,7 +42,7 @@ int cmt_ticker_stop_timer(cmt_ticker_t *t, bool *out_cancel)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/ticker.go:76-81 ScheduleTimeout() together
+/* cometbft@v0.38.26 consensus/ticker.go:76-81 ScheduleTimeout() together
  * with the tick branch of timeoutRoutine(), :104-129. */
 int cmt_ticker_schedule_timeout(cmt_ticker_t *t,
                                 const cmt_timeout_info_t *ti,
@@ -88,7 +88,7 @@ int cmt_ticker_schedule_timeout(cmt_ticker_t *t,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/ticker.go:130-137 — the timer branch. */
+/* cometbft@v0.38.26 consensus/ticker.go:130-137 — the timer branch. */
 int cmt_ticker_fire(cmt_ticker_t *t, cmt_timeout_info_t *out_ti)
 {
     if (t == NULL || out_ti == NULL) {
@@ -106,7 +106,7 @@ int cmt_ticker_fire(cmt_ticker_t *t, cmt_timeout_info_t *out_ti)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/ticker.go:138-140 — the quit branch. */
+/* cometbft@v0.38.26 consensus/ticker.go:138-140 — the quit branch. */
 int cmt_ticker_stop(cmt_ticker_t *t, bool *out_cancel)
 {
     if (t == NULL || out_cancel == NULL) {

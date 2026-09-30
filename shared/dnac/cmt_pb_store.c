@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_pb_store.c
- * @brief cometbft @709fd12b — proto3 codecs of the STORED values and the
+ * @brief cometbft @v0.38.26 — proto3 codecs of the STORED values and the
  *        Block wire decoder. Contract and every file:line: cmt_pb_store.h.
  *
  * Copyright (c) 2026 nocdem
@@ -772,7 +772,7 @@ int cmt_pb_store_consensus_params_unmarshal(const uint8_t *in, size_t len,
     return consensus_params_merge(in, len, m);
 }
 
-/* types/params.go:325-346 — ToProto: every sub-message set. */
+/* types/params.go:328-349 — ToProto: every sub-message set. */
 int cmt_pb_store_consensus_params_from_c(const cmt_consensus_params_t *p,
                                          cmt_pb_consensus_params_t *out)
 {
@@ -780,16 +780,16 @@ int cmt_pb_store_consensus_params_from_c(const cmt_consensus_params_t *p,
         return CMT_FAULT;
     }
     cmt_pb_store_consensus_params_init(out);
-    out->has_block     = true;  out->block     = p->block;      /* :327-330 */
-    out->has_evidence  = true;  out->evidence  = p->evidence;   /* :331-335 */
-    out->has_validator = true;  out->validator = p->validator;  /* :336-338 */
-    out->has_version   = true;  out->version   = p->version;    /* :339-341 */
-    out->has_abci      = true;  out->abci      = p->abci;       /* :342-344 */
+    out->has_block     = true;  out->block     = p->block;      /* :330-333 */
+    out->has_evidence  = true;  out->evidence  = p->evidence;   /* :334-338 */
+    out->has_validator = true;  out->validator = p->validator;  /* :339-341 */
+    out->has_version   = true;  out->version   = p->version;    /* :342-344 */
+    out->has_abci      = true;  out->abci      = p->abci;       /* :345-347 */
     return CMT_OK;
 }
 
-/* types/params.go:348-370 — ConsensusParamsFromProto. The four
- * unchecked dereferences (:349-365) are explicit refusals here. */
+/* types/params.go:351-373 — ConsensusParamsFromProto. The four
+ * unchecked dereferences (:352-368) are explicit refusals here. */
 int cmt_pb_store_consensus_params_to_c(const cmt_pb_consensus_params_t *m,
                                        cmt_consensus_params_t *out)
 {
@@ -801,11 +801,11 @@ int cmt_pb_store_consensus_params_to_c(const cmt_pb_consensus_params_t *m,
         return CMT_REJECT;                /* the reference's nil panic */
     }
     memset(out, 0, sizeof(*out));
-    out->block     = m->block;            /* :350-353 */
-    out->evidence  = m->evidence;         /* :354-358 */
-    out->validator = m->validator;        /* :359-361 */
-    out->version   = m->version;          /* :362-364 */
-    if (m->has_abci) {                    /* :366-368 */
+    out->block     = m->block;            /* :353-356 */
+    out->evidence  = m->evidence;         /* :357-361 */
+    out->validator = m->validator;        /* :362-364 */
+    out->version   = m->version;          /* :365-367 */
+    if (m->has_abci) {                    /* :369-371 */
         out->abci.vote_extensions_enable_height =
             m->abci.vote_extensions_enable_height;
     }

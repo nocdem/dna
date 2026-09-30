@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_p2p_transport.c
- * @brief cometbft @709fd12b `p2p/transport.go` in C — the
+ * @brief cometbft @v0.38.26 `p2p/transport.go` in C — the
  *        MultiplexTransport as per-connection state machines on one event
  *        loop.
  *
@@ -594,7 +594,7 @@ int cmt_p2p_transport_init(cmt_p2p_transport_t *t,
     }
     memcpy(t->node_info, cfg->node_info, sizeof(*t->node_info));
     t->cfg.node_info = t->node_info;
-    /* node.go:973 Validate; our NodeInfo must carry OUR ID (:944). */
+    /* node.go:972 Validate; our NodeInfo must carry OUR ID (:943). */
     nid = cmt_p2p_node_info_get(t->node_info, CMT_P2P_NI_ID, &nid_len);
     if (cmt_p2p_node_info_validate(t->node_info) != CMT_P2P_ERR_NONE ||
         nid_len != strlen(t->id) || memcmp(nid, t->id, nid_len) != 0) {

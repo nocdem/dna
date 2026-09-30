@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_p2p_protoio.h
- * @brief cometbft @709fd12b `libs/protoio/reader.go` ported to C — the
+ * @brief cometbft @v0.38.26 `libs/protoio/reader.go` ported to C — the
  *        uvarint-delimited message READER the MConnection receives its
  *        packets with, as a byte-fed parser.
  *

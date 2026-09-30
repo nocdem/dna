@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_flowrate.h
- * @brief cometbft @709fd12b `libs/flowrate/flowrate.go` + `util.go` ported
+ * @brief cometbft @v0.38.26 `libs/flowrate/flowrate.go` + `util.go` ported
  *        to C — the transfer-rate Monitor the MConnection throttles its
  *        send and receive routines with.
  *
@@ -139,7 +139,7 @@ void cmt_flowrate_init(cmt_flowrate_t *m, int64_t sample_rate_ns,
 int cmt_flowrate_update(cmt_flowrate_t *m, int n, int64_t now_ns);
 
 /** flowrate.go:77-82 `SetREMA` — the reference's own "hack"; its one
- *  consumer is blocksync/pool.go:594. */
+ *  consumer is blocksync/pool.go:624. */
 void cmt_flowrate_set_rema(cmt_flowrate_t *m, double r_ema);
 
 /** flowrate.go:93-103 `Done()` — returns the total bytes transferred. */

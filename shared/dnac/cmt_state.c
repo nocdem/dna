@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_state.c
- * @brief cometbft @709fd12b `state/state.go` in C — see cmt_state.h for
+ * @brief cometbft @v0.38.26 `state/state.go` in C — see cmt_state.h for
  *        the contract, the storage rules and the taşınmadı list.
  *
  * THE ONLY CLOCK IN THIS FILE is the one the reference has at
@@ -59,7 +59,7 @@ int cmt_state_init(cmt_state_t *state, cmt_state_storage_t *storage)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b state/state.go:129-131 — (state State) IsEmpty() */
+/* cometbft@v0.38.26 state/state.go:129-131 — (state State) IsEmpty() */
 bool cmt_state_is_empty(const cmt_state_t *state)
 {
     if (state == NULL) {
@@ -76,7 +76,7 @@ static int bind_set(cmt_validator_set_t *vs, cmt_validator_t *storage)
 
 /* ══ Copy ═════════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b state/state.go:83-106 — (state State) Copy() */
+/* cometbft@v0.38.26 state/state.go:83-106 — (state State) Copy() */
 int cmt_state_copy(const cmt_state_t *src, cmt_state_t *dst)
 {
     cmt_state_storage_t *storage;
@@ -323,7 +323,7 @@ int cmt_state_make_block(const cmt_state_t *state,
 
 /* ══ MakeGenesisState ═════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b state/state.go:317-355 — MakeGenesisState() */
+/* cometbft@v0.38.26 state/state.go:323-361 — MakeGenesisState() */
 int cmt_state_make_genesis(cmt_genesis_doc_t *gen_doc,
                            cmt_now_fn now, void *now_ctx,
                            cmt_valset_scratch_t *scratch,
@@ -347,7 +347,7 @@ int cmt_state_make_genesis(cmt_genesis_doc_t *gen_doc,
     }
     storage = out->storage;
 
-    /* :318-321 — and the ONLY clock in this file, which this chain never
+    /* :324-327 — and the ONLY clock in this file, which this chain never
      * reaches (D-18 rev 2 makes genesis_time mandatory). */
     rc = cmt_genesis_doc_validate_and_complete(gen_doc, now, now_ctx);
     if (rc != CMT_OK) {
@@ -371,10 +371,10 @@ int cmt_state_make_genesis(cmt_genesis_doc_t *gen_doc,
     }
 
     if (gen_doc->validators == NULL) {
-        /* :324-326 — `genDoc.Validators == nil`: two EMPTY BUT NOT NIL
+        /* :330-332 — `genDoc.Validators == nil`: two EMPTY BUT NOT NIL
          * sets. A NULL list pointer IS the reference's nil slice; a
          * non-NULL list of length zero is the reference's EMPTY slice and
-         * takes the other branch below, where :333 panics and this port
+         * takes the other branch below, where :339 panics and this port
          * REJECTs (Delta D-1; see cmt_state.h). */
         rc = cmt_validator_set_new(&out->validators, NULL, 0u, scratch);
         if (rc != CMT_OK) {
@@ -386,29 +386,29 @@ int cmt_state_make_genesis(cmt_genesis_doc_t *gen_doc,
             return rc;
         }
     } else {
-        /* :328-331 — one Validator per entry, its ADDRESS DERIVED FROM THE
+        /* :334-337 — one Validator per entry, its ADDRESS DERIVED FROM THE
          * KEY by NewValidator; the document's Address field is not read. */
         for (i = 0; i < gen_doc->validators_len; i++) {
             rc = cmt_validator_new(&gen_doc->validators[i].pub_key,
                                    gen_doc->validators[i].power,
-                                   &storage->validators[i]);     /* :330 */
+                                   &storage->validators[i]);     /* :336 */
             if (rc != CMT_OK) {
                 return rc;
             }
         }
-        /* :332 — NewValidatorSet, which sorts and increments once.
+        /* :338 — NewValidatorSet, which sorts and increments once.
          *
          * NOTE the deliberate aliasing, the same one cmt_genesis.c relies
          * on: `storage->validators` is both the list the set is BUILT FROM
          * and the set's own storage. It is safe because processChanges
-         * DEEP COPIES its input into the scratch (validator_set.go:410)
+         * DEEP COPIES its input into the scratch (validator_set.go:421)
          * before anything writes back. */
         rc = cmt_validator_set_new(&out->validators, storage->validators,
                                    gen_doc->validators_len, scratch);
         if (rc != CMT_OK) {
             return rc;
         }
-        /* :333 — the NEXT set is the same validators after ONE increment,
+        /* :339 — the NEXT set is the same validators after ONE increment,
          * so the proposer for the block after genesis is already elected.
          * With an EMPTY (non-nil) list the reference PANICS here —
          * IncrementProposerPriority refuses an empty set
@@ -422,14 +422,14 @@ int cmt_state_make_genesis(cmt_genesis_doc_t *gen_doc,
             return rc;
         }
     }
-    /* :347 — LastValidators is an EMPTY set, not a nil one: at height 0
+    /* :353 — LastValidators is an EMPTY set, not a nil one: at height 0
      * there is no previous commit to validate. */
     rc = cmt_validator_set_new(&out->last_validators, NULL, 0u, scratch);
     if (rc != CMT_OK) {
         return rc;
     }
 
-    /* :337 — InitStateVersion (:30-36): the block protocol, App 0, and the
+    /* :343 — InitStateVersion (:30-36): the block protocol, App 0, and the
      * software string. See CMT_SOFTWARE_VERSION in cmt_state.h — it is
      * store-only, and since 2026-09-10 it is this node's own Nodus version,
      * supplied by the build rather than compiled in as the reference's
@@ -440,17 +440,17 @@ int cmt_state_make_genesis(cmt_genesis_doc_t *gen_doc,
     memcpy(out->version.software, CMT_SOFTWARE_VERSION,
            sizeof(CMT_SOFTWARE_VERSION) - 1u);                    /* :35  */
 
-    memcpy(out->chain_id, gen_doc->chain_id, sizeof(out->chain_id));/* :338 */
+    memcpy(out->chain_id, gen_doc->chain_id, sizeof(out->chain_id));/* :344 */
     out->chain_id_len   = gen_doc->chain_id_len;
-    out->initial_height = gen_doc->initial_height;                /* :339 */
+    out->initial_height = gen_doc->initial_height;                /* :345 */
 
-    out->last_block_height = 0;                                   /* :341 */
-    cmt_pb_block_id_init(&out->last_block_id);                    /* :342 */
-    out->last_block_time = gen_doc->genesis_time;                 /* :343 */
+    out->last_block_height = 0;                                   /* :347 */
+    cmt_pb_block_id_init(&out->last_block_id);                    /* :348 */
+    out->last_block_time = gen_doc->genesis_time;                 /* :349 */
 
-    out->last_height_validators_changed = gen_doc->initial_height;/* :348 */
+    out->last_height_validators_changed = gen_doc->initial_height;/* :354 */
 
-    /* :350 — `*genDoc.ConsensusParams`, which ValidateAndComplete has
+    /* :356 — `*genDoc.ConsensusParams`, which ValidateAndComplete has
      * made non-nil (genesis.go:83-87). If it somehow is not, that is a
      * broken invariant of this process, not a property of the document. */
     if (!gen_doc->has_consensus_params) {
@@ -458,7 +458,7 @@ int cmt_state_make_genesis(cmt_genesis_doc_t *gen_doc,
     }
     out->consensus_params = gen_doc->consensus_params;
     out->last_height_consensus_params_changed =
-        gen_doc->initial_height;                                  /* :351 */
+        gen_doc->initial_height;                                  /* :357 */
 
     memset(out->app_hash, 0, sizeof(out->app_hash));
     if (gen_doc->app_hash_len > sizeof(out->app_hash)) {
@@ -467,10 +467,10 @@ int cmt_state_make_genesis(cmt_genesis_doc_t *gen_doc,
     if (gen_doc->app_hash_len != 0u) {
         memcpy(out->app_hash, gen_doc->app_hash, gen_doc->app_hash_len);
     }
-    out->app_hash_len = gen_doc->app_hash_len;                    /* :353 */
+    out->app_hash_len = gen_doc->app_hash_len;                    /* :359 */
 
     /* The reference leaves LastResultsHash at its zero value here — it is
-     * not in the struct literal at :336-354 — and consensus/replay.go:368
+     * not in the struct literal at :342-360 — and consensus/replay.go:368
      * is where the first block's H("") comes from. Left EMPTY, not
      * invented. */
     memset(out->last_results_hash, 0, sizeof(out->last_results_hash));

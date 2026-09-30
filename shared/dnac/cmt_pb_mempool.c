@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_pb_mempool.c
- * @brief cometbft @709fd12b `proto/tendermint/mempool` in C — see the
+ * @brief cometbft @v0.38.26 `proto/tendermint/mempool` in C — see the
  *        header.
  *
  * Built on cmt_pb's PUBLIC surface only: `cmt_pb_data_*` for the Txs body
@@ -39,7 +39,7 @@ void cmt_pb_mempool_txs_init(cmt_pb_mempool_txs_t *m)
     cmt_pb_data_init(m);
 }
 
-/* cometbft@709fd12b proto/tendermint/mempool/types.pb.go:180-195 —
+/* cometbft@v0.38.26 proto/tendermint/mempool/types.pb.go:180-195 —
  * Txs.MarshalToSizedBuffer. The same generated loop as Data's
  * (types.pb.go:1552-1560); cmt_pb_data_marshal writes it. */
 int cmt_pb_mempool_txs_marshal(const cmt_pb_mempool_txs_t *m, uint8_t *out,
@@ -48,7 +48,7 @@ int cmt_pb_mempool_txs_marshal(const cmt_pb_mempool_txs_t *m, uint8_t *out,
     return cmt_pb_data_marshal(m, out, cap, out_len);
 }
 
-/* cometbft@709fd12b proto/tendermint/mempool/types.pb.go:307-388 —
+/* cometbft@v0.38.26 proto/tendermint/mempool/types.pb.go:307-388 —
  * Txs.Unmarshal. The same generated tag loop as Data's
  * (types.pb.go:3388-3469); cmt_pb_data_unmarshal runs it. */
 int cmt_pb_mempool_txs_unmarshal(const uint8_t *in, size_t len,
@@ -58,7 +58,7 @@ int cmt_pb_mempool_txs_unmarshal(const uint8_t *in, size_t len,
     return cmt_pb_data_unmarshal(in, len, m, arena);
 }
 
-/* cometbft@709fd12b proto/tendermint/mempool/types.pb.go:261-274 —
+/* cometbft@v0.38.26 proto/tendermint/mempool/types.pb.go:261-274 —
  * Txs.Size(). */
 size_t cmt_pb_mempool_txs_size(const cmt_pb_mempool_txs_t *m)
 {
@@ -90,7 +90,7 @@ void cmt_pb_mempool_message_init(cmt_pb_mempool_message_t *m)
     cmt_pb_mempool_txs_init(&m->txs);
 }
 
-/* cometbft@709fd12b proto/tendermint/mempool/types.pb.go:276-286 —
+/* cometbft@v0.38.26 proto/tendermint/mempool/types.pb.go:276-286 —
  * Message.Size(), with :288-299 Message_Txs.Size() folded in. */
 size_t cmt_pb_mempool_message_size(const cmt_pb_mempool_message_t *m)
 {
@@ -106,7 +106,7 @@ size_t cmt_pb_mempool_message_size(const cmt_pb_mempool_message_t *m)
     return 1u + l + cmt_pb_uvarint_size((uint64_t)l);         /* :296 */
 }
 
-/* cometbft@709fd12b proto/tendermint/mempool/types.pb.go:212-227 —
+/* cometbft@v0.38.26 proto/tendermint/mempool/types.pb.go:212-227 —
  * Message.MarshalToSizedBuffer, and :234-249 Message_Txs.MarshalToSizedBuffer.
  *
  * Forward form: `0a`, uvarint(Txs.Size()), then the Txs body. The
@@ -158,7 +158,7 @@ int cmt_pb_mempool_message_marshal(const cmt_pb_mempool_message_t *m,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b proto/tendermint/mempool/types.pb.go:389-473 —
+/* cometbft@v0.38.26 proto/tendermint/mempool/types.pb.go:389-473 —
  * Message.Unmarshal. */
 static int mem_message_merge(const uint8_t *in, size_t len,
                              cmt_pb_mempool_message_t *m, cmt_pb_arena_t *a)
@@ -217,7 +217,7 @@ int cmt_pb_mempool_message_unmarshal(const uint8_t *in, size_t len,
 
 /* ══ message.go ═══════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b proto/tendermint/mempool/message.go:29-33 — Wrap() */
+/* cometbft@v0.38.26 proto/tendermint/mempool/message.go:29-33 — Wrap() */
 int cmt_pb_mempool_txs_wrap(const cmt_pb_mempool_txs_t *m,
                             cmt_pb_mempool_message_t *out)
 {
@@ -229,7 +229,7 @@ int cmt_pb_mempool_txs_wrap(const cmt_pb_mempool_txs_t *m,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b proto/tendermint/mempool/message.go:37-45 — Unwrap() */
+/* cometbft@v0.38.26 proto/tendermint/mempool/message.go:37-45 — Unwrap() */
 int cmt_pb_mempool_message_unwrap(const cmt_pb_mempool_message_t *m,
                                   const cmt_pb_mempool_txs_t **out)
 {

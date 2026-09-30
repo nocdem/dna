@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_p2p_nodeinfo.h
- * @brief cometbft @709fd12b `p2p/node_info.go` ported to C — the
+ * @brief cometbft @v0.38.26 `p2p/node_info.go` ported to C — the
  *        `DefaultNodeInfo` two peers exchange inside the secret connection
  *        (transport.go:541-581), its `Validate`, its `CompatibleWith`, and
  *        the `tendermint.p2p.DefaultNodeInfo` protobuf codec.
@@ -36,13 +36,13 @@
  *     (node_info.go:185-193 compares Block and Network only). A peer on
  *     another P2P version is refused one layer lower, by the secret
  *     connection's HELLO check (cmt_p2p_secret.h rows 1-2, N9).
- *   · protocol_version.block / .app — the host's (node.go:938-942 passes
+ *   · protocol_version.block / .app — the host's (node.go:937-941 passes
  *     `state.Version.Consensus`; CMT_BLOCK_PROTOCOL = 11, cmt_block.h:210).
  *   · network — the 32-byte version-3 chain id as 64 lowercase hex digits
  *     (`cmt_p2p_network_from_chain_id`); a joiner that has no chain yet
  *     puts its genesis pin there — the same 32 bytes. p2p-port design §2.
  *   · version, moniker, listen_addr, channels, other — the host's
- *     (node.go:936-975); F5 fills them. `listen_addr` must be an IP
+ *     (node.go:935-974); F5 fills them. `listen_addr` must be an IP
  *     literal (R-P2P-24, cmt_p2p_netaddr.h).
  *
  * ── STORAGE ────────────────────────────────────────────────────────────
@@ -144,7 +144,7 @@ void cmt_p2p_network_from_chain_id(const uint8_t chain_id[32],
                                    char out[CMT_P2P_NETWORK_CAP]);
 
 /**
- * The values `makeNodeInfo` (node.go:928-975) assembles, from the host.
+ * The values `makeNodeInfo` (node.go:927-974) assembles, from the host.
  * Every string NUL-terminated; `channels` is the byte list.
  */
 typedef struct {
@@ -162,8 +162,8 @@ typedef struct {
 } cmt_p2p_node_info_params_t;
 
 /**
- * node.go:928-975 `makeNodeInfo` minus the reactor lists (the host passes
- * the channels): fills `ni` and runs `Validate` (:973-974).
+ * node.go:927-974 `makeNodeInfo` minus the reactor lists (the host passes
+ * the channels): fills `ni` and runs `Validate` (:972-973).
  * @return CMT_P2P_ERR_NONE; CMT_P2P_ERR_REJECTED_NODE_INFO_INVALID when
  *         Validate refuses; CMT_REJECT when it does not fit the arena;
  *         CMT_FAULT on NULL.

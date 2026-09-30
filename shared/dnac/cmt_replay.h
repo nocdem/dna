@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_replay.h
- * @brief cometbft @709fd12b `consensus/replay.go`'s HANDSHAKE DECISION in
+ * @brief cometbft @v0.38.26 `consensus/replay.go`'s HANDSHAKE DECISION in
  *        C — which of the reference's twelve branches a node is in.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -52,7 +52,7 @@
  * A pure function of five integers, evaluated in the reference's order.
  * No clock, no allocation, no I/O.
  *
- * Reference @709fd12b: consensus/replay.go, 565 lines, SHA-256
+ * Reference @v0.38.26: consensus/replay.go, 565 lines, SHA-256
  * 5609c4d4174a536389cb2814bac09557a66e3299292141b54c635e31425284fe.
  * Governing records: umbrella rev 5 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * D-15 rev 6 (atlas-dec-c0bfc5344204b9282ceaaa5e06042350, APPROVED).
@@ -141,7 +141,7 @@ typedef enum {
 } cmt_replay_action_t;
 
 /**
- * The pure decision of cometbft@709fd12b consensus/replay.go:375-459.
+ * The pure decision of cometbft@v0.38.26 consensus/replay.go:375-459.
  *
  * ⚠ FIVE INTEGERS, NOT FOUR. The edge-case switch reads `state.InitialHeight`
  * at :381 as well as the three heights and the store's base, so the
@@ -169,7 +169,7 @@ int cmt_replay_handshake_classify(int64_t store_height, int64_t store_base,
                                   cmt_replay_action_t *out_action);
 
 /**
- * cometbft@709fd12b consensus/replay.go:545-553 —
+ * cometbft@v0.38.26 consensus/replay.go:545-553 —
  * `assertAppHashEqualsOneFromBlock()`.
  *
  * @param app_hash the application's hash and its length (64 bytes under
@@ -183,7 +183,7 @@ int cmt_replay_assert_app_hash_equals_one_from_block(
         const cmt_block_t *block);
 
 /**
- * cometbft@709fd12b consensus/replay.go:555-565 —
+ * cometbft@v0.38.26 consensus/replay.go:555-565 —
  * `assertAppHashEqualsOneFromState()`. The reference's panic text is the
  * one that ends "Did you reset CometBFT without resetting your
  * application's data?".

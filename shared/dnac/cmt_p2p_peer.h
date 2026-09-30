@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_p2p_peer.h
- * @brief cometbft @709fd12b `p2p/peer.go`, `p2p/peer_set.go` and
+ * @brief cometbft @v0.38.26 `p2p/peer.go`, `p2p/peer_set.go` and
  *        `p2p/conn_set.go` ported to C — the raw connection (`peerConn`),
  *        the peer (MConnection + NodeInfo + flags), the peer set and the
  *        connection set.
@@ -46,7 +46,7 @@
  *   · `peer.send` (peer.go:270-295) marshals a proto.Message; here the
  *     reactor hands BYTES (the consensus port's rule, cmt_conr.h R3-A-1:
  *     "the reactor has ALREADY marshalled the message"), and `onReceive`
- *     (:400-430) hands bytes to the reactor — the Wrapper/Unwrapper and
+ *     (:400-438) hands bytes to the reactor — the Wrapper/Unwrapper and
  *     msgTypeByChID step is the reactor's. The reference's panic on an
  *     unknown channel (:403-405, caught by `_recover` → onPeerError) is a
  *     direct `on_peer_error` here.
@@ -247,7 +247,7 @@ typedef struct cmt_p2p_peer cmt_p2p_peer_t;
 /**
  * transport.go:45-57 `peerConfig` — what the switch hands the transport
  * for `wrapPeer`. `on_receive` is the switch's reactorsByCh dispatch
- * (peer.go:400-430); `on_peer_error` its StopPeerForError (:432-434).
+ * (peer.go:400-438); `on_peer_error` its StopPeerForError (:440-442).
  */
 typedef struct {
     void *ctx;
@@ -303,7 +303,7 @@ struct cmt_p2p_peer {
 
 /**
  * transport.go:500-539 `wrapPeer` + peer.go:134-170 `newPeer` +
- * :390-443 `createMConnection`. Takes ownership of `conn` and of
+ * :390-451 `createMConnection`. Takes ownership of `conn` and of
  * `node_info` (heap). The persistent flag (transport.go:507-517): an
  * outbound peer asks `is_persistent(socket address)`, an inbound peer
  * `is_persistent(NodeInfo.NetAddress())` (false if that does not parse).
@@ -402,7 +402,7 @@ typedef struct {
  * `recv_near_full` / `queue_mark` rows; NULL = receive without limit).
  * The reference's recvRoutine hands each message to `onReceive` and
  * BLOCKS there while a reactor's queue is full (connection.go:676-678 →
- * consensus/reactor.go:324, :330, :350 `peerMsgQueue <-`); the Go runtime
+ * consensus/reactor.go:333, :339, :359 `peerMsgQueue <-`); the Go runtime
  * then gives each freed slot to the blocked senders in FIFO order. The
  * single-loop form (decision 2026-09-27-p2p-fix-2.md (4)):
  *   · `may_receive` is asked before EVERY message (cmt_p2p_mconn_recv_n

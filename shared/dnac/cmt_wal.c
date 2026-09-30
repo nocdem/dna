@@ -1,9 +1,9 @@
 /**
  * @file shared/dnac/cmt_wal.c
- * @brief cometbft @709fd12b's WAL record codec in C — see cmt_wal.h for
+ * @brief cometbft @v0.38.26's WAL record codec in C — see cmt_wal.h for
  *        the contract and the taşınmadı list.
  *
- * Every function carries the `// cometbft@709fd12b <file>:<from>-<to>`
+ * Every function carries the `// cometbft@v0.38.26 <file>:<from>-<to>`
  * line of the Go function it ports.
  *
  * Copyright (c) 2026 nocdem
@@ -16,7 +16,7 @@
 #include <stdlib.h>              /* the two codec temporaries are heap    */
 #include <string.h>
 
-/* cometbft@709fd12b consensus/msgs.go:240-295 — WALToProto() */
+/* cometbft@v0.38.26 consensus/msgs.go:240-295 — WALToProto() */
 int cmt_wal_to_proto(const cmt_wal_message_t *msg, cmt_pb_wal_message_t *out)
 {
     int rc;
@@ -87,7 +87,7 @@ int cmt_wal_to_proto(const cmt_wal_message_t *msg, cmt_pb_wal_message_t *out)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/msgs.go:298-347 — WALFromProto() */
+/* cometbft@v0.38.26 consensus/msgs.go:298-347 — WALFromProto() */
 int cmt_wal_from_proto(const cmt_pb_wal_message_t *msg,
                        cmt_wal_message_t *out)
 {
@@ -162,7 +162,7 @@ int cmt_wal_from_proto(const cmt_pb_wal_message_t *msg,
     return CMT_OK;
 }
 
-/* The message half of cometbft@709fd12b consensus/wal.go:301-314 —
+/* The message half of cometbft@v0.38.26 consensus/wal.go:301-314 —
  * WALEncoder.Encode, up to and including proto.Marshal. The crc32c and
  * length frame of :316-326 is the file container's; see cmt_wal.h. */
 int cmt_timed_wal_message_encode(const cmt_timed_wal_message_t *v,
@@ -204,7 +204,7 @@ int cmt_timed_wal_message_encode(const cmt_timed_wal_message_t *v,
     return rc;
 }
 
-/* The message half of cometbft@709fd12b consensus/wal.go:404-419 —
+/* The message half of cometbft@v0.38.26 consensus/wal.go:404-419 —
  * WALDecoder.Decode, from proto.Unmarshal onward. */
 int cmt_timed_wal_message_decode(const uint8_t *in, size_t len,
                                  cmt_timed_wal_message_t *out,

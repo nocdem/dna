@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_p2p_protoio.c
- * @brief cometbft @709fd12b `libs/protoio/reader.go` — the delimited
+ * @brief cometbft @v0.38.26 `libs/protoio/reader.go` — the delimited
  *        reader, byte-fed. Contract and grounding in cmt_p2p_protoio.h.
  *
  * Copyright (c) 2026 nocdem

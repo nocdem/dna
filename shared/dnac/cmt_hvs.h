@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_hvs.h
- * @brief cometbft @709fd12b `consensus/types/height_vote_set.go` ported
+ * @brief cometbft @v0.38.26 `consensus/types/height_vote_set.go` ported
  *        to C.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -49,7 +49,7 @@
  * 5. ERRORS. One channel, `cmt_vote_set_err_t`, shared with cmt_vote_set:
  *    a vote that reaches `AddVote` either fails here (an unwanted round)
  *    or is forwarded to a VoteSet and fails there, and the caller
- *    (consensus/state.go:2069-2118) discriminates on one error value.
+ *    (consensus/state.go:2064-2113) discriminates on one error value.
  * 6. PANICS. Each site says which it became and why, at the site.
  *
  * ── Determinism ────────────────────────────────────────────────────────
@@ -69,7 +69,7 @@
  *     CMT_VOTE_SET_ERR_GOT_VOTE_FROM_UNWANTED_ROUND.
  *   · The `sync.Mutex` of :47 — single-threaded port (umbrella rev 3).
  *
- * Reference @709fd12b (SHA-256 verified before use):
+ * Reference @v0.38.26 (SHA-256 verified before use):
  *   consensus/types/height_vote_set.go  286 lines
  *     d6793961c6f113acad7fa153cf2d912224191350f547860812d623e9ca13964c
  *   libs/math/safemath.go                65 lines
@@ -101,7 +101,7 @@ extern "C" {
 
 /* ══ RoundVoteSet (height_vote_set.go:16-19) ══════════════════════════ */
 
-/** cometbft@709fd12b consensus/types/height_vote_set.go:16-19 —
+/** cometbft@v0.38.26 consensus/types/height_vote_set.go:16-19 —
  *  `type RoundVoteSet struct`. Both are OWNED by the HeightVoteSet. */
 typedef struct {
     cmt_vote_set_t *prevotes;     /* :17 */
@@ -127,7 +127,7 @@ typedef struct {
 /* ══ HeightVoteSet (height_vote_set.go:41-222) ════════════════════════ */
 
 /**
- * cometbft@709fd12b consensus/types/height_vote_set.go:41-51 —
+ * cometbft@v0.38.26 consensus/types/height_vote_set.go:41-51 —
  * `type HeightVoteSet struct`.
  *
  * Visible for cmt_round_state.h and the tests, as `cmt_vote_set_t` is;
@@ -151,7 +151,7 @@ typedef struct {
 /* ── constructors ───────────────────────────────────────────────────── */
 
 /**
- * cometbft@709fd12b consensus/types/height_vote_set.go:53-60 —
+ * cometbft@v0.38.26 consensus/types/height_vote_set.go:53-60 —
  * `NewHeightVoteSet()`. Extensions OFF (:56).
  * @param val_set BORROWED; must outlive the height vote set.
  * @param out receives the new object; free it with `cmt_hvs_free`.
@@ -163,7 +163,7 @@ int cmt_new_height_vote_set(const uint8_t *chain_id, size_t chain_id_len,
                             int64_t height, cmt_validator_set_t *val_set,
                             cmt_hvs_t **out);
 
-/** cometbft@709fd12b consensus/types/height_vote_set.go:62-69 —
+/** cometbft@v0.38.26 consensus/types/height_vote_set.go:62-69 —
  *  `NewExtendedHeightVoteSet()`. Extensions ON (:65), so every precommit
  *  added to it has its extension signature checked (:120-122). */
 int cmt_new_extended_height_vote_set(const uint8_t *chain_id,
@@ -176,7 +176,7 @@ int cmt_new_extended_height_vote_set(const uint8_t *chain_id,
 void cmt_hvs_free(cmt_hvs_t *hvs);
 
 /**
- * cometbft@709fd12b consensus/types/height_vote_set.go:71-82 — `Reset()`.
+ * cometbft@v0.38.26 consensus/types/height_vote_set.go:71-82 — `Reset()`.
  * Drops every round of the previous height and starts again at round 0.
  * In Go the old maps are simply dropped and the GC reclaims them; here
  * every vote set of every round is freed first.
@@ -187,17 +187,17 @@ int cmt_hvs_reset(cmt_hvs_t *hvs, int64_t height,
 
 /* ── accessors ──────────────────────────────────────────────────────── */
 
-/** cometbft@709fd12b consensus/types/height_vote_set.go:84-88 —
+/** cometbft@v0.38.26 consensus/types/height_vote_set.go:84-88 —
  *  `Height()`. A NULL receiver would panic in Go; here it answers 0. */
 int64_t cmt_hvs_height(const cmt_hvs_t *hvs);
 
-/** cometbft@709fd12b consensus/types/height_vote_set.go:90-94 —
+/** cometbft@v0.38.26 consensus/types/height_vote_set.go:90-94 —
  *  `Round()`. A NULL receiver answers -1, matching
  *  `VoteSet.GetRound`'s nil answer (vote_set.go:125). */
 int32_t cmt_hvs_round(const cmt_hvs_t *hvs);
 
 /**
- * cometbft@709fd12b consensus/types/height_vote_set.go:96-111 —
+ * cometbft@v0.38.26 consensus/types/height_vote_set.go:96-111 —
  * `SetRound()`. Creates the RoundVoteSets up to `round`.
  *
  * ⚠ ROUND -1. On the first call of a height, `hvs->round` is 0 and the
@@ -218,7 +218,7 @@ int cmt_hvs_set_round(cmt_hvs_t *hvs, int32_t round);
 /* ── adding votes ───────────────────────────────────────────────────── */
 
 /**
- * cometbft@709fd12b consensus/types/height_vote_set.go:131-156 —
+ * cometbft@v0.38.26 consensus/types/height_vote_set.go:131-156 —
  * `AddVote()`.
  *
  * @param peer the sender; `cmt_peer_id_self()` for our own vote, which is
@@ -244,17 +244,17 @@ int cmt_hvs_add_vote(cmt_hvs_t *hvs, const cmt_vote_t *vote,
 
 /* ── reading ────────────────────────────────────────────────────────── */
 
-/** cometbft@709fd12b consensus/types/height_vote_set.go:158-162 —
+/** cometbft@v0.38.26 consensus/types/height_vote_set.go:158-162 —
  *  `Prevotes()`. NULL when that round is not tracked (:187-189). The
  *  pointer is BORROWED and dies with the height vote set. */
 cmt_vote_set_t *cmt_hvs_prevotes(cmt_hvs_t *hvs, int32_t round);
 
-/** cometbft@709fd12b consensus/types/height_vote_set.go:164-168 —
+/** cometbft@v0.38.26 consensus/types/height_vote_set.go:164-168 —
  *  `Precommits()`. NULL when that round is not tracked. */
 cmt_vote_set_t *cmt_hvs_precommits(cmt_hvs_t *hvs, int32_t round);
 
 /**
- * cometbft@709fd12b consensus/types/height_vote_set.go:170-183 —
+ * cometbft@v0.38.26 consensus/types/height_vote_set.go:170-183 —
  * `POLInfo()`. The LAST round with a +2/3 prevote majority, walking
  * DOWNWARD from the current round (:175).
  * @param out_pol_round receives the round, or -1 when there is none
@@ -267,7 +267,7 @@ int cmt_hvs_pol_info(cmt_hvs_t *hvs, int32_t *out_pol_round,
                      cmt_block_id_t *out_block_id);
 
 /**
- * cometbft@709fd12b consensus/types/height_vote_set.go:200-219 —
+ * cometbft@v0.38.26 consensus/types/height_vote_set.go:200-219 —
  * `SetPeerMaj23()`.
  * @return CMT_OK — including the "something we don't know about yet"
  *           case of an untracked round (:215-217), which is not an error;

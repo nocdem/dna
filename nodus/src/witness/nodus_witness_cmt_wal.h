@@ -1,6 +1,6 @@
 /**
  * @file nodus/src/witness/nodus_witness_cmt_wal.h
- * @brief cometbft @709fd12b `consensus/wal.go` — `BaseWAL` (:76-218),
+ * @brief cometbft @v0.38.26 `consensus/wal.go` — `BaseWAL` (:76-218),
  *        `SearchForEndHeight` (:231-284), `WALEncoder` (:289-330) and
  *        `WALDecoder` (:356-420) — over the file group of
  *        `libs/autofile` (nodus_witness_cmt_autofile.h).
@@ -20,7 +20,7 @@
  * TimedWALMessage codec, `P`). This module is the LOG.
  *
  * ── ON DISK ────────────────────────────────────────────────────────────
- * Head `<data_path>/cs.wal/wal` (config.go:1019 `filepath.Join(
+ * Head `<data_path>/cs.wal/wal` (config.go:1036 `filepath.Join(
  * DefaultDataDir, "cs.wal", "wal")` — the witness's data_path is the
  * reference's data dir: the priv-validator state file sits beside it,
  * nodus_witness.c's `<data_path>/priv_validator_state.json`), rotated
@@ -43,9 +43,9 @@
  *            group's 40 KiB head buffer. NO fsync. Bytes reach the file
  *            when the buffer fills (bufio), at a FlushAndSync, at a
  *            rotation, or at close.
- *   `WriteSync` (:201-217; state.go:839, :1760) — `Write`, then
+ *   `WriteSync` (:201-217; state.go:839, :1755) — `Write`, then
  *            `FlushAndSync`: durable before it returns.
- *   `FlushAndSync` (:155-159 → group.go:227-237; state.go:1232, :2374,
+ *   `FlushAndSync` (:155-159 → group.go:227-237; state.go:1227, :2367,
  *            and the 2 s ticker) — flush the head buffer, then fsync the
  *            head file. Always both; there is no "nothing pending"
  *            shortcut in the reference and there is none here.
@@ -135,20 +135,20 @@
  * with every record behind it and no backup — again the same records
  * repair would drop, only without the `.CORRUPTED` copy.
  *
- * ── REPAIR (state.go:352-385, `repairWalFile` :2621-2653) ─────────────
+ * ── REPAIR (state.go:352-385, `repairWalFile` :2614-2646) ─────────────
  * `nodus_cmt_wal_repair` is the host's half of the reference's retry
  * loop: stop the WAL, copy the HEAD file to `<wal>.CORRUPTED`
  * (state.go:366, `cmtos.CopyFile` libs/os/os.go:88-112), re-encode every
  * record of that copy up to the first decode error into a fresh head
  * (os.Create — truncated), and reload the WAL (`loadWalFile` → `OpenWAL`
  * → `NewWAL` + `Start`, state.go:420-429, :452-467). Only the head is touched:
- * `cs.config.WalFile()` is the head path (config.go:1087-1092, default
- * `data/cs.wal/wal` at :1019), and rotated `wal.NNN` files are left as
+ * `cs.config.WalFile()` is the head path (config.go:1105-1110, default
+ * `data/cs.wal/wal` at :1036), and rotated `wal.NNN` files are left as
  * they are — a corruption in one of them survives the repair, and the
  * retried replay then refuses to start, as the reference's does.
  *
  * HARDENING (decision 2026-09-27-p2p-fix-2.md 1(b), no reference
- * counterpart; departs from state.go:2628 `os.Create(dst)`, which
+ * counterpart; departs from state.go:2621 `os.Create(dst)`, which
  * truncates the head before re-encoding into it): the `.CORRUPTED` copy
  * is fsynced and its directory fsynced BEFORE anything is rewritten; the
  * kept records go to `<dir>/NODUS_CMT_WAL_REPAIR_TMP_NAME` (a stale one
@@ -168,7 +168,7 @@
  *
  * ── ERRORS ─────────────────────────────────────────────────────────────
  * The reference returns errors from Write/WriteSync/FlushAndSync and its
- * callers panic at the WriteSync sites (state.go:841-844, :1761-1764);
+ * callers panic at the WriteSync sites (state.go:841-844, :1756-1759);
  * the port keeps each function's CMT_OK / CMT_REJECT / CMT_FAULT
  * contract below. Go's bufio error is STICKY (bufio.go:636-638, :691-
  * 693): after one failed write to the head file every later
@@ -180,7 +180,7 @@
  * never reads it, cmt_wal.h) and to arm the two tickers at start. The
  * record order is the append order, a total order.
  *
- * Reference @709fd12b (SHA-256 verified before use):
+ * Reference @v0.38.26 (SHA-256 verified before use):
  *   consensus/wal.go     434 lines
  *                        f6bd6d512bbda08f31231d535b97df3c9c6feb3ddaf01a2054e2f0cf994f2a2d
  *   consensus/replay.go  :20 (crc32c table), :94-167 (catchupReplay)
@@ -304,13 +304,13 @@ void nodus_cmt_wal_close(nodus_cmt_wal_t *w);
  *  write fails. */
 int nodus_cmt_wal_write(void *ctx, const cmt_wal_message_t *msg);
 
-/** state.go:839 / :1760 — `wal.WriteSync(msg)` (wal.go:201-217):
+/** state.go:839 / :1755 — `wal.WriteSync(msg)` (wal.go:201-217):
  *  `Write`, then `FlushAndSync`; durable when CMT_OK returns.
  *  @return CMT_OK; CMT_FAULT for any failure — the reference panics at
- *  both call sites (state.go:841-844, :1761-1764). */
+ *  both call sites (state.go:841-844, :1756-1759). */
 int nodus_cmt_wal_write_sync(void *ctx, const cmt_wal_message_t *msg);
 
-/** state.go:1232 / :2374 — `wal.FlushAndSync()` (wal.go:157-159 →
+/** state.go:1227 / :2367 — `wal.FlushAndSync()` (wal.go:157-159 →
  *  group.go:227-237): flush the head buffer and fsync the head file.
  *  @return CMT_OK, CMT_FAULT. */
 int nodus_cmt_wal_flush_and_sync(void *ctx);
@@ -338,7 +338,7 @@ int nodus_cmt_wal_read_next(void *ctx, cmt_timed_wal_message_t *out,
  *  WAL: `wal.Stop()` (:359-361 — a WAL that was never started is the
  *  reference's ErrNotStarted, CMT_FAULT), `CopyFile(walFile,
  *  walFile+".CORRUPTED")` (:366-369; HARDENING: fsynced with its
- *  directory), `repairWalFile(corrupted, walFile)` (:374-377, :2621-2653;
+ *  directory), `repairWalFile(corrupted, walFile)` (:374-377, :2614-2646;
  *  HARDENING 1(b): temp file + fsync + rename + directory fsync, never an
  *  empty head), `loadWalFile()` (:382-384) — reopened and
  *  started into the SAME handle, so a host that holds `w` keeps a valid

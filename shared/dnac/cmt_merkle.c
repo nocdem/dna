@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_merkle.c
- * @brief cometbft @709fd12b `crypto/merkle` ported to C — see cmt_merkle.h.
+ * @brief cometbft @v0.38.26 `crypto/merkle` ported to C — see cmt_merkle.h.
  *
  * Every function below carries the reference line range it is a port of.
  * The only substitution is the digest (SHA3-512, 64 bytes) and Go's panics
@@ -21,13 +21,13 @@ static const uint8_t CMT_INNER_PREFIX = 0x01;   /* hash.go:12 */
 
 /* ── hash.go ────────────────────────────────────────────────────────── */
 
-/* cometbft@709fd12b crypto/merkle/hash.go:16-18 — emptyHash() */
+/* cometbft@v0.38.26 crypto/merkle/hash.go:16-18 — emptyHash() */
 int cmt_merkle_empty_hash(uint8_t out[CMT_TMHASH_SIZE])
 {
     return cmt_tmhash_sum(NULL, 0, out);
 }
 
-/* cometbft@709fd12b crypto/merkle/hash.go:21-23 leafHash(), :26-31 leafHashOpt() */
+/* cometbft@v0.38.26 crypto/merkle/hash.go:21-23 leafHash(), :26-31 leafHashOpt() */
 int cmt_merkle_leaf_hash(const uint8_t *leaf, size_t len,
                          uint8_t out[CMT_TMHASH_SIZE])
 {
@@ -40,7 +40,7 @@ int cmt_merkle_leaf_hash(const uint8_t *leaf, size_t len,
     return cmt_tmhash_sum_many(parts, 2, out);
 }
 
-/* cometbft@709fd12b crypto/merkle/hash.go:34-36 innerHash(), :38-44 innerHashOpt() */
+/* cometbft@v0.38.26 crypto/merkle/hash.go:34-36 innerHash(), :38-44 innerHashOpt() */
 int cmt_merkle_inner_hash(const uint8_t left[CMT_TMHASH_SIZE],
                           const uint8_t right[CMT_TMHASH_SIZE],
                           uint8_t out[CMT_TMHASH_SIZE])
@@ -61,7 +61,7 @@ int cmt_merkle_inner_hash(const uint8_t left[CMT_TMHASH_SIZE],
 
 /* ── tree.go ────────────────────────────────────────────────────────── */
 
-/* cometbft@709fd12b crypto/merkle/tree.go:101-112 — getSplitPoint().
+/* cometbft@v0.38.26 crypto/merkle/tree.go:101-112 — getSplitPoint().
  *
  * Go reads the bit length with math/bits.Len; written out here because C
  * has no portable equivalent. `k = 1 << (bitlen - 1)` is the highest power
@@ -90,7 +90,7 @@ int64_t cmt_merkle_get_split_point(int64_t length)
     return k;
 }
 
-/* cometbft@709fd12b crypto/merkle/tree.go:15-27 — hashFromByteSlices().
+/* cometbft@v0.38.26 crypto/merkle/tree.go:15-27 — hashFromByteSlices().
  * tree.go:11-13 HashFromByteSlices() is the same call with the hasher
  * supplied, which a one-shot digest does not need. */
 int cmt_merkle_hash_from_byte_slices(const cmt_merkle_item_t *items,
@@ -128,7 +128,7 @@ int cmt_merkle_hash_from_byte_slices(const cmt_merkle_item_t *items,
     return cmt_merkle_inner_hash(left, right, out);  /* tree.go:25 */
 }
 
-/* cometbft@709fd12b crypto/merkle/tree.go:68-98 —
+/* cometbft@v0.38.26 crypto/merkle/tree.go:68-98 —
  * HashFromByteSlicesIterative(). Zero consumers; see the header. */
 int cmt_merkle_hash_from_byte_slices_iterative(const cmt_merkle_item_t *items,
                                                size_t n,
@@ -204,7 +204,7 @@ static cmt_proof_node_t *cmt_arena_take(cmt_merkle_trails_t *t)
     return &t->arena[t->arena_used++];
 }
 
-/* cometbft@709fd12b crypto/merkle/proof.go:232-252 — the recursion of
+/* cometbft@v0.38.26 crypto/merkle/proof.go:232-252 — the recursion of
  * trailsFromByteSlices(). `slots` is the segment of the trails array that
  * belongs to this subtree, so the reference's `append(lefts, rights...)`
  * (:250) becomes writing left into slots[0..k-1] and right into
@@ -329,7 +329,7 @@ void cmt_merkle_trails_free(cmt_merkle_trails_t *t)
     memset(t, 0, sizeof(*t));
 }
 
-/* cometbft@709fd12b crypto/merkle/proof.go:213-228 — FlattenAunts().
+/* cometbft@v0.38.26 crypto/merkle/proof.go:213-228 — FlattenAunts().
  *
  * NOTE reference quirk: the `default: break` at :222-223 breaks out of the
  * Go `switch`, not out of the `for` — so a node with neither sibling (only
@@ -369,7 +369,7 @@ int cmt_proof_node_flatten_aunts(const cmt_proof_node_t *spn,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b crypto/merkle/proof.go:35-48 — ProofsFromByteSlices() */
+/* cometbft@v0.38.26 crypto/merkle/proof.go:35-48 — ProofsFromByteSlices() */
 int cmt_merkle_proofs_from_byte_slices(const cmt_merkle_item_t *items,
                                        size_t n,
                                        uint8_t root[CMT_TMHASH_SIZE],
@@ -423,7 +423,7 @@ int cmt_merkle_proofs_from_byte_slices(const cmt_merkle_item_t *items,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b crypto/merkle/proof.go:52-74 — (sp *Proof) Verify() */
+/* cometbft@v0.38.26 crypto/merkle/proof.go:52-74 — (sp *Proof) Verify() */
 int cmt_proof_verify(const cmt_proof_t *sp,
                      const uint8_t root_hash[CMT_TMHASH_SIZE],
                      const uint8_t *leaf, size_t leaf_len)
@@ -462,7 +462,7 @@ int cmt_proof_verify(const cmt_proof_t *sp,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b crypto/merkle/proof.go:77-83 ComputeRootHash(),
+/* cometbft@v0.38.26 crypto/merkle/proof.go:77-83 ComputeRootHash(),
  * :86-93 computeRootHash() — one function once the panic is a return. */
 int cmt_proof_compute_root_hash(const cmt_proof_t *sp,
                                 uint8_t out[CMT_TMHASH_SIZE])
@@ -474,7 +474,7 @@ int cmt_proof_compute_root_hash(const cmt_proof_t *sp,
                                        sp->aunts, sp->aunts_len, out);
 }
 
-/* cometbft@709fd12b crypto/merkle/proof.go:113-132 — ValidateBasic() */
+/* cometbft@v0.38.26 crypto/merkle/proof.go:113-132 — ValidateBasic() */
 int cmt_proof_validate_basic(const cmt_proof_t *sp)
 {
     size_t i;
@@ -502,7 +502,7 @@ int cmt_proof_validate_basic(const cmt_proof_t *sp)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b crypto/merkle/proof.go:166-197 — computeHashFromAunts() */
+/* cometbft@v0.38.26 crypto/merkle/proof.go:166-197 — computeHashFromAunts() */
 int cmt_compute_hash_from_aunts(int64_t index, int64_t total,
                                 const uint8_t leaf_hash[CMT_TMHASH_SIZE],
                                 const uint8_t (*inner_hashes)[CMT_TMHASH_SIZE],

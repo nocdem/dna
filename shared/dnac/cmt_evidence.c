@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_evidence.c
- * @brief cometbft @709fd12b `types/evidence.go` in C — see cmt_evidence.h
+ * @brief cometbft @v0.38.26 `types/evidence.go` in C — see cmt_evidence.h
  *        for the contract, the substitutions and the taşınmadı list.
  *
  * NOTHING HERE READS A CLOCK, DRAWS RANDOMNESS OR ITERATES A MAP. The only
@@ -21,7 +21,7 @@
  *
  * REPRODUCED from cmt_block.c:116-144, where the same two helpers are
  * file-static and are still needed there by `cmt_evidence_data_byte_size`
- * (block.go:1388-1398), which bounds the WRAPPED list rather than a bare
+ * (block.go:1394-1404), which bounds the WRAPPED list rather than a bare
  * item. Keeping one copy would mean either exporting a block-private
  * helper or moving ByteSize, neither of which is this wave's scope; the
  * duplication is recorded in the wave report with a recommendation to
@@ -74,7 +74,7 @@ size_t cmt_dve_upper_bound(const cmt_duplicate_vote_evidence_t *d)
  * length comparison — the same construction
  * `cmt_validator_compare_proposer_priority` uses for `bytes.Compare`
  * (cmt_validator_set.h:370-372). A BlockID key CAN differ in length: the
- * hash half may be empty (block.go:1487, a POL BlockID has none).
+ * hash half may be empty (block.go:1493, a POL BlockID has none).
  *
  * @return <0, 0 or >0 like the reference's.
  * ══════════════════════════════════════════════════════════════════════ */
@@ -101,7 +101,7 @@ static int key_compare(const uint8_t *a, size_t alen,
 
 /* ══ DuplicateVoteEvidence ════════════════════════════════════════════ */
 
-/* cometbft@709fd12b types/evidence.go:95-103 —
+/* cometbft@v0.38.26 types/evidence.go:95-103 —
  * (dve *DuplicateVoteEvidence) Bytes(). ToProto then Marshal, of the BARE
  * message; see cmt_evidence.h. */
 int cmt_dve_bytes(const cmt_duplicate_vote_evidence_t *dve,
@@ -121,7 +121,7 @@ int cmt_dve_bytes(const cmt_duplicate_vote_evidence_t *dve,
     return cmt_pb_duplicate_vote_evidence_marshal(&pbe, out, cap, out_len);
 }
 
-/* cometbft@709fd12b types/evidence.go:106-108 —
+/* cometbft@v0.38.26 types/evidence.go:106-108 —
  * (dve *DuplicateVoteEvidence) Hash() = tmhash.Sum(dve.Bytes()).
  * FLAT, not Merkle. */
 int cmt_dve_hash(const cmt_duplicate_vote_evidence_t *dve,
@@ -148,7 +148,7 @@ int cmt_dve_hash(const cmt_duplicate_vote_evidence_t *dve,
     return rc;
 }
 
-/* cometbft@709fd12b types/evidence.go:111-113 —
+/* cometbft@v0.38.26 types/evidence.go:111-113 —
  * (dve *DuplicateVoteEvidence) Height() = dve.VoteA.Height. */
 int cmt_dve_height(const cmt_duplicate_vote_evidence_t *dve, int64_t *out)
 {
@@ -164,7 +164,7 @@ int cmt_dve_height(const cmt_duplicate_vote_evidence_t *dve, int64_t *out)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/evidence.go:121-123 —
+/* cometbft@v0.38.26 types/evidence.go:121-123 —
  * (dve *DuplicateVoteEvidence) Time(). The EVIDENCE's Timestamp. */
 int cmt_dve_time(const cmt_duplicate_vote_evidence_t *dve, cmt_time_t *out)
 {
@@ -175,7 +175,7 @@ int cmt_dve_time(const cmt_duplicate_vote_evidence_t *dve, cmt_time_t *out)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/evidence.go:126-145 —
+/* cometbft@v0.38.26 types/evidence.go:126-145 —
  * (dve *DuplicateVoteEvidence) ValidateBasic() */
 int cmt_dve_validate_basic(const cmt_duplicate_vote_evidence_t *dve)
 {
@@ -216,7 +216,7 @@ int cmt_dve_validate_basic(const cmt_duplicate_vote_evidence_t *dve)
     return CMT_OK;                                                /* :144 */
 }
 
-/* cometbft@709fd12b types/evidence.go:148-159 —
+/* cometbft@v0.38.26 types/evidence.go:148-159 —
  * (dve *DuplicateVoteEvidence) ToProto(). The identity. */
 int cmt_dve_to_proto(const cmt_duplicate_vote_evidence_t *dve,
                      cmt_pb_duplicate_vote_evidence_t *out)
@@ -228,7 +228,7 @@ int cmt_dve_to_proto(const cmt_duplicate_vote_evidence_t *dve,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/evidence.go:162-200 —
+/* cometbft@v0.38.26 types/evidence.go:162-200 —
  * DuplicateVoteEvidenceFromProto() */
 int cmt_dve_from_proto(const cmt_pb_duplicate_vote_evidence_t *pb,
                        cmt_duplicate_vote_evidence_t *out)
@@ -279,45 +279,45 @@ int cmt_dve_from_proto(const cmt_pb_duplicate_vote_evidence_t *pb,
 
 /* ══ the Evidence wrapper ═════════════════════════════════════════════ */
 
-/* cometbft@709fd12b types/evidence.go:495-523 — EvidenceToProto(),
- * DuplicateVoteEvidence branch (:501-507). */
+/* cometbft@v0.38.26 types/evidence.go:498-526 — EvidenceToProto(),
+ * DuplicateVoteEvidence branch (:504-510). */
 int cmt_evidence_to_proto(const cmt_duplicate_vote_evidence_t *dve,
                           cmt_pb_evidence_t *out)
 {
     int rc;
 
     if (dve == NULL || out == NULL) {
-        return CMT_FAULT;               /* :496-498 is an error; R1B-10 */
+        return CMT_FAULT;               /* :499-501 is an error; R1B-10 */
     }
     memset(out, 0, sizeof(*out));
-    rc = cmt_dve_to_proto(dve, &out->duplicate_vote_evidence);   /* :502 */
+    rc = cmt_dve_to_proto(dve, &out->duplicate_vote_evidence);   /* :505 */
     if (rc != CMT_OK) {
         return rc;
     }
-    out->has_duplicate_vote_evidence = true;                  /* :503-507 */
+    out->has_duplicate_vote_evidence = true;                  /* :506-510 */
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/evidence.go:527-540 — EvidenceFromProto(),
- * DuplicateVoteEvidence branch (:533-534). */
+/* cometbft@v0.38.26 types/evidence.go:530-543 — EvidenceFromProto(),
+ * DuplicateVoteEvidence branch (:536-537). */
 int cmt_evidence_from_proto(const cmt_pb_evidence_t *ev,
                             cmt_duplicate_vote_evidence_t *out)
 {
     if (ev == NULL || out == NULL) {
-        return CMT_FAULT;               /* :528-530 is an error; R1B-10 */
+        return CMT_FAULT;               /* :531-533 is an error; R1B-10 */
     }
     if (!ev->has_duplicate_vote_evidence) {
-        /* :537-538 "evidence is not recognized" — either no oneof arm was
+        /* :540-541 "evidence is not recognized" — either no oneof arm was
          * set, or the decoder met branch 2, which cmt_pb refuses outright
          * (cmt_pb.h:379-397). */
         return CMT_REJECT;
     }
-    return cmt_dve_from_proto(&ev->duplicate_vote_evidence, out);/* :534 */
+    return cmt_dve_from_proto(&ev->duplicate_vote_evidence, out);/* :537 */
 }
 
 /* ══ EvidenceList ═════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b types/evidence.go:450-461 — (evl EvidenceList) Hash().
+/* cometbft@v0.38.26 types/evidence.go:453-464 — (evl EvidenceList) Hash().
  * The Merkle root over each item's BARE marshal. THE HEADER'S EvidenceHash
  * (D-19 rev 6 item 8). */
 int cmt_evidence_list_hash(const cmt_pb_evidence_t *items, size_t n,
@@ -335,7 +335,7 @@ int cmt_evidence_list_hash(const cmt_pb_evidence_t *items, size_t n,
         if (items == NULL) {
             return CMT_FAULT;
         }
-        /* :454 — the reference's `make([][]byte, len(evl))`. Transient,
+        /* :457 — the reference's `make([][]byte, len(evl))`. Transient,
          * freed on every path below (R1B-11). */
         leaves = (cmt_merkle_item_t *)calloc(n, sizeof(*leaves));
         bufs   = (uint8_t **)calloc(n, sizeof(*bufs));
@@ -345,7 +345,7 @@ int cmt_evidence_list_hash(const cmt_pb_evidence_t *items, size_t n,
             return CMT_FAULT;
         }
     }
-    for (i = 0; i < n; i++) {                                 /* :455-459 */
+    for (i = 0; i < n; i++) {                                 /* :458-462 */
         const cmt_pb_evidence_t *ev = &items[i];
         size_t                   bound;
         size_t                   len;
@@ -360,8 +360,8 @@ int cmt_evidence_list_hash(const cmt_pb_evidence_t *items, size_t n,
             rc = CMT_FAULT;
             break;
         }
-        /* :458 — the leaf is `Bytes()`, the BARE message. The reference's
-         * own TODO at :456-457 is deliberately not acted on. */
+        /* :461 — the leaf is `Bytes()`, the BARE message. The reference's
+         * own TODO at :459-460 is deliberately not acted on. */
         rc = cmt_dve_bytes(&ev->duplicate_vote_evidence, bufs[i], bound,
                            &len);
         if (rc != CMT_OK) {
@@ -371,7 +371,7 @@ int cmt_evidence_list_hash(const cmt_pb_evidence_t *items, size_t n,
         leaves[i].len  = len;
     }
     if (rc == CMT_OK) {
-        rc = cmt_merkle_hash_from_byte_slices(leaves, n, out);    /* :460 */
+        rc = cmt_merkle_hash_from_byte_slices(leaves, n, out);    /* :463 */
     }
     for (i = 0; i < n; i++) {
         free(bufs != NULL ? bufs[i] : NULL);
@@ -381,7 +381,7 @@ int cmt_evidence_list_hash(const cmt_pb_evidence_t *items, size_t n,
     return rc;
 }
 
-/* cometbft@709fd12b types/evidence.go:472-479 — (evl EvidenceList) Has() */
+/* cometbft@v0.38.26 types/evidence.go:475-482 — (evl EvidenceList) Has() */
 int cmt_evidence_list_has(const cmt_pb_evidence_t *items, size_t n,
                           const cmt_pb_evidence_t *ev, bool *out)
 {
@@ -397,29 +397,29 @@ int cmt_evidence_list_has(const cmt_pb_evidence_t *items, size_t n,
     if (!ev->has_duplicate_vote_evidence) {
         return CMT_REJECT;
     }
-    rc = cmt_dve_hash(&ev->duplicate_vote_evidence, needle);      /* :474 */
+    rc = cmt_dve_hash(&ev->duplicate_vote_evidence, needle);      /* :477 */
     if (rc != CMT_OK) {
         return rc;
     }
-    for (i = 0; i < n; i++) {                                  /* :473-478 */
+    for (i = 0; i < n; i++) {                                  /* :476-481 */
         if (!items[i].has_duplicate_vote_evidence) {
             return CMT_REJECT;
         }
-        rc = cmt_dve_hash(&items[i].duplicate_vote_evidence, hay);/* :474 */
+        rc = cmt_dve_hash(&items[i].duplicate_vote_evidence, hay);/* :477 */
         if (rc != CMT_OK) {
             return rc;
         }
         if (memcmp(needle, hay, (size_t)CMT_TMHASH_SIZE) == 0) {
-            *out = true;                                         /* :475 */
+            *out = true;                                         /* :478 */
             return CMT_OK;
         }
     }
-    return CMT_OK;                                               /* :478 */
+    return CMT_OK;                                               /* :481 */
 }
 
 /* ══ errors ═══════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b types/evidence.go:572-574 — NewErrEvidenceOverflow().
+/* cometbft@v0.38.26 types/evidence.go:575-577 — NewErrEvidenceOverflow().
  * A plain constructor; it does NOT check that got > max, exactly as the
  * reference does not. */
 int cmt_new_err_evidence_overflow(int64_t max, int64_t got,
@@ -429,7 +429,7 @@ int cmt_new_err_evidence_overflow(int64_t max, int64_t got,
         return CMT_FAULT;
     }
     out->code = CMT_EV_ERR_OVERFLOW;
-    out->max  = max;                                             /* :573 */
-    out->got  = got;                                             /* :573 */
+    out->max  = max;                                             /* :576 */
+    out->got  = got;                                             /* :576 */
     return CMT_OK;
 }

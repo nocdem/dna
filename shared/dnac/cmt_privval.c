@@ -1,10 +1,10 @@
 /**
  * @file shared/dnac/cmt_privval.c
- * @brief cometbft @709fd12b `privval/file.go`'s signing logic in C — see
+ * @brief cometbft @v0.38.26 `privval/file.go`'s signing logic in C — see
  *        cmt_privval.h for the contract, the host boundary and the
  *        taşınmadı list.
  *
- * Every function carries the `// cometbft@709fd12b <file>:<from>-<to>`
+ * Every function carries the `// cometbft@v0.38.26 <file>:<from>-<to>`
  * line of the Go function it ports.
  *
  * Copyright (c) 2026 nocdem
@@ -17,7 +17,7 @@
 #include <string.h>
 
 /* ══ protoio.UnmarshalDelimited ═══════════════════════════════════════
- * cometbft@709fd12b libs/protoio/reader.go:104-107 `UnmarshalDelimited`,
+ * cometbft@v0.38.26 libs/protoio/reader.go:104-107 `UnmarshalDelimited`,
  * which is `NewDelimitedReader(bytes.NewReader(data), len(data)).ReadMsg`
  * — the ReadMsg of :67-95.
  *
@@ -56,7 +56,7 @@ static int read_delimited(const uint8_t *data, size_t len,
 
 /* ══ voteToStep ═══════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b privval/file.go:33-42 — voteToStep() */
+/* cometbft@v0.38.26 privval/file.go:33-42 — voteToStep() */
 int cmt_vote_to_step(const cmt_pb_vote_t *vote, int8_t *out)
 {
     if (vote == NULL || out == NULL) {
@@ -73,10 +73,10 @@ int cmt_vote_to_step(const cmt_pb_vote_t *vote, int8_t *out)
     /* :39-41 the reference PANICS. CMT_FAULT under the panic rule
      * (atlas-dec-d5e766defde138eb6dd02e5b81e735a8 rev 4): the vote handed
      * to a signer is never a peer's — the state machine builds it itself
-     * (consensus/state.go:2385-2392) and every one of the ten call sites
+     * (consensus/state.go:2378-2385) and every one of the ten call sites
      * of `signAddVote` passes a literal PrevoteType or PrecommitType
-     * (state.go:1351, 1358, 1368, 1394, 1402, 1472, 1502, 1517, 1538,
-     * 1560). A third type here is this node's own invariant broken, so it
+     * (state.go:1346, 1353, 1363, 1389, 1397, 1467, 1497, 1512, 1533,
+     * 1555). A third type here is this node's own invariant broken, so it
      * is node-local and fail-stop, not a message to refuse. The remote
      * signer (privval/signer_requestHandler.go:56), the only caller that
      * could carry a foreign vote, is outside this port by pin rev 6. */
@@ -85,7 +85,7 @@ int cmt_vote_to_step(const cmt_pb_vote_t *vote, int8_t *out)
 
 /* ══ FilePVLastSignState ══════════════════════════════════════════════ */
 
-/* cometbft@709fd12b privval/file.go:85-91 —
+/* cometbft@v0.38.26 privval/file.go:85-91 —
  * (lss *FilePVLastSignState) reset() */
 int cmt_lss_reset(cmt_lss_t *lss)
 {
@@ -104,7 +104,7 @@ int cmt_lss_reset(cmt_lss_t *lss)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b privval/file.go:100-132 —
+/* cometbft@v0.38.26 privval/file.go:100-132 —
  * (lss *FilePVLastSignState) CheckHRS() */
 int cmt_lss_check_hrs(const cmt_lss_t *lss, int64_t height, int32_t round,
                       int8_t step, bool *out_same_hrs)
@@ -145,7 +145,7 @@ int cmt_lss_check_hrs(const cmt_lss_t *lss, int64_t height, int32_t round,
 
 /* ══ FilePV ═══════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b privval/file.go:256-258 — (pv *FilePV) GetPubKey() */
+/* cometbft@v0.38.26 privval/file.go:256-258 — (pv *FilePV) GetPubKey() */
 int cmt_pv_get_pub_key(const cmt_file_pv_t *pv,
                        uint8_t out[CMT_PB_PUBKEY_LEN])
 {
@@ -156,7 +156,7 @@ int cmt_pv_get_pub_key(const cmt_file_pv_t *pv,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b privval/file.go:413-422 — (pv *FilePV) saveSigned() */
+/* cometbft@v0.38.26 privval/file.go:413-422 — (pv *FilePV) saveSigned() */
 int cmt_pv_save_signed(cmt_file_pv_t *pv, int64_t height, int32_t round,
                        int8_t step, const uint8_t *sign_bytes,
                        size_t sign_bytes_len, const uint8_t *sig,
@@ -281,7 +281,7 @@ static bool canonical_proposal_equal(const cmt_pb_canonical_proposal_t *a,
     return true;
 }
 
-/* cometbft@709fd12b privval/file.go:430-446 —
+/* cometbft@v0.38.26 privval/file.go:430-446 —
  * checkVotesOnlyDifferByTimestamp() */
 int cmt_check_votes_only_differ_by_timestamp(const uint8_t *last_sign_bytes,
                                              size_t last_len,
@@ -330,7 +330,7 @@ int cmt_check_votes_only_differ_by_timestamp(const uint8_t *last_sign_bytes,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b privval/file.go:450-466 —
+/* cometbft@v0.38.26 privval/file.go:450-466 —
  * checkProposalsOnlyDifferByTimestamp() */
 int cmt_check_proposals_only_differ_by_timestamp(
         const uint8_t *last_sign_bytes, size_t last_len,
@@ -372,7 +372,7 @@ int cmt_check_proposals_only_differ_by_timestamp(
 
 /* ══ signVote ═════════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b privval/file.go:308-368 — (pv *FilePV) signVote().
+/* cometbft@v0.38.26 privval/file.go:308-368 — (pv *FilePV) signVote().
  *
  * NOTE on :311: the reference takes a VALUE copy of the last-sign state
  * (`lss := pv.LastSignState`). A pointer is used here because nothing
@@ -530,7 +530,7 @@ int cmt_pv_sign_vote(cmt_file_pv_t *pv, const uint8_t *chain_id,
 
 /* ══ signProposal ═════════════════════════════════════════════════════ */
 
-/* cometbft@709fd12b privval/file.go:373-410 —
+/* cometbft@v0.38.26 privval/file.go:373-410 —
  * (pv *FilePV) signProposal() */
 int cmt_pv_sign_proposal(cmt_file_pv_t *pv, const uint8_t *chain_id,
                          size_t chain_id_len, cmt_pb_proposal_t *proposal)
@@ -625,7 +625,7 @@ int cmt_pv_sign_proposal(cmt_file_pv_t *pv, const uint8_t *chain_id,
 
 /* ══ the PrivValidator interface methods ══════════════════════════════ */
 
-/* cometbft@709fd12b privval/file.go:262-267 — (pv *FilePV) SignVote().
+/* cometbft@v0.38.26 privval/file.go:262-267 — (pv *FilePV) SignVote().
  * The reference only wraps the error text; there is nothing else to do. */
 int cmt_pv_sign_vote_iface(cmt_file_pv_t *pv, const uint8_t *chain_id,
                            size_t chain_id_len, cmt_pb_vote_t *vote)
@@ -633,7 +633,7 @@ int cmt_pv_sign_vote_iface(cmt_file_pv_t *pv, const uint8_t *chain_id,
     return cmt_pv_sign_vote(pv, chain_id, chain_id_len, vote);  /* :263 */
 }
 
-/* cometbft@709fd12b privval/file.go:271-276 —
+/* cometbft@v0.38.26 privval/file.go:271-276 —
  * (pv *FilePV) SignProposal() */
 int cmt_pv_sign_proposal_iface(cmt_file_pv_t *pv, const uint8_t *chain_id,
                                size_t chain_id_len,

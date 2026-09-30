@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_p2p_transport.h
- * @brief cometbft @709fd12b `p2p/transport.go` ported to C — the
+ * @brief cometbft @v0.38.26 `p2p/transport.go` ported to C — the
  *        MultiplexTransport: bounded inbound acceptance, the connection
  *        filters, the upgrade (secret connection + NodeInfo exchange +
  *        compatibility) and dialing.
@@ -234,7 +234,7 @@ typedef struct {
     /** Is there room for ONE more received message? The single-loop form
      *  of a reactor's Receive BLOCKING on a full queue — the consensus
      *  reactor's `conR.conS.peerMsgQueue <- msgInfo{…}` (consensus/
-     *  reactor.go:324, :330, :350) stalls the recvRoutine, which stops
+     *  reactor.go:333, :339, :359) stalls the recvRoutine, which stops
      *  reading the socket (TCP backpressure, never a drop). Asked before
      *  EVERY message a peer connection delivers (cmt_p2p_peer_pump's
      *  receive gate); while it answers false the pump runs only its SEND
@@ -269,7 +269,7 @@ typedef struct {
     cmt_p2p_sc_host_t sc_host;       /* sign / verify, purpose 0x0A          */
     const uint8_t *chain_id;         /* 32 bytes — N9 and the NodeInfo       */
     const cmt_p2p_node_info_t *node_info;   /* ours (copied)                 */
-    cmt_p2p_mconn_config_t mconn;    /* MConnConfig(p2p config), switch.go:36 */
+    cmt_p2p_mconn_config_t mconn;    /* MConnConfig(p2p config), switch.go:37 */
     /* LimitListener (setup.go:404-406): max_num_inbound_peers + the
      * configured unconditional IDs (+ bonded_count at run time). */
     int  max_num_inbound_peers;
@@ -327,7 +327,7 @@ typedef struct {
 
 /**
  * transport.go:169-186 `NewMultiplexTransport` + the options
- * setup.go:352-409 applies. Validates our NodeInfo (node.go:973) and
+ * setup.go:352-409 applies. Validates our NodeInfo (node.go:972) and
  * derives our ID from `dsa_pk` (key.go:36-38).
  * @return CMT_OK; CMT_FAULT — NULL, a missing host row, our NodeInfo
  *         invalid, its ID not ours, or out of memory.

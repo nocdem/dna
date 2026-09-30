@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_flowrate.c
- * @brief cometbft @709fd12b `libs/flowrate/flowrate.go` + `util.go` in C.
+ * @brief cometbft @v0.38.26 `libs/flowrate/flowrate.go` + `util.go` in C.
  *
  * Functions in the reference's order; each names its Go lines. Contract,
  * deviations (R-P2P-15 clock, R-P2P-16 blocking) and the determinism note

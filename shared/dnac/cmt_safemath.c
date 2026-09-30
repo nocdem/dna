@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_safemath.c
- * @brief cometbft @709fd12b `libs/math/safemath.go` in C — see cmt_safemath.h.
+ * @brief cometbft @v0.38.26 `libs/math/safemath.go` in C — see cmt_safemath.h.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -8,7 +8,7 @@
 
 #include "dnac/cmt_safemath.h"
 
-/* cometbft@709fd12b libs/math/safemath.go:14-21 — SafeAddInt32() */
+/* cometbft@v0.38.26 libs/math/safemath.go:14-21 — SafeAddInt32() */
 int cmt_safe_add_int32(int32_t a, int32_t b, int32_t *out)
 {
     int64_t wa = (int64_t)a;
@@ -27,7 +27,7 @@ int cmt_safe_add_int32(int32_t a, int32_t b, int32_t *out)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b libs/math/safemath.go:25-32 — SafeSubInt32() */
+/* cometbft@v0.38.26 libs/math/safemath.go:25-32 — SafeSubInt32() */
 int cmt_safe_sub_int32(int32_t a, int32_t b, int32_t *out)
 {
     int64_t wa = (int64_t)a;
@@ -46,7 +46,7 @@ int cmt_safe_sub_int32(int32_t a, int32_t b, int32_t *out)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b libs/math/safemath.go:36-43 — SafeConvertInt32() */
+/* cometbft@v0.38.26 libs/math/safemath.go:36-43 — SafeConvertInt32() */
 int cmt_safe_convert_int32(int64_t a, int32_t *out)
 {
     if (out == NULL) {
@@ -62,7 +62,7 @@ int cmt_safe_convert_int32(int64_t a, int32_t *out)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b libs/math/safemath.go:47-54 — SafeConvertUint8() */
+/* cometbft@v0.38.26 libs/math/safemath.go:47-54 — SafeConvertUint8() */
 int cmt_safe_convert_uint8(int64_t a, uint8_t *out)
 {
     if (out == NULL) {
@@ -78,7 +78,7 @@ int cmt_safe_convert_uint8(int64_t a, uint8_t *out)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b libs/math/safemath.go:58-65 — SafeConvertInt8() */
+/* cometbft@v0.38.26 libs/math/safemath.go:58-65 — SafeConvertInt8() */
 int cmt_safe_convert_int8(int64_t a, int8_t *out)
 {
     if (out == NULL) {

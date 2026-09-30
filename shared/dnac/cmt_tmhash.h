@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_tmhash.h
- * @brief cometbft @709fd12b `crypto/tmhash` ported to the DNA hash.
+ * @brief cometbft @v0.38.26 `crypto/tmhash` ported to the DNA hash.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
  * Wave R1-A of the cometbft → C consensus port. Nothing in the running
@@ -53,7 +53,7 @@
  * truncation lives HERE, once, as `cmt_address_hash`, and those two remain
  * as typed wrappers that delegate to it.
  *
- * Reference @709fd12b: crypto/tmhash/hash.go (77 lines, SHA-256
+ * Reference @v0.38.26: crypto/tmhash/hash.go (77 lines, SHA-256
  * 100a1604856e0d1154e242540c7a460e2d576a387ad4af8f62ba46a1f1fbac68),
  * crypto/crypto.go (54 lines, SHA-256
  * 60a32ee2c8f9a1090968ff9fcd3410f0099d21da8c7625b1b03f23d2647a1ceb).
@@ -78,13 +78,13 @@
 extern "C" {
 #endif
 
-/** cometbft@709fd12b crypto/tmhash/hash.go:9 — `Size = sha256.Size`.
+/** cometbft@v0.38.26 crypto/tmhash/hash.go:9 — `Size = sha256.Size`.
  *  Here: the SHA3-512 digest length. Every hash, Merkle node and BlockID
  *  in the port is this wide. */
 #define CMT_TMHASH_SIZE 64
 
 /**
- * cometbft@709fd12b crypto/tmhash/hash.go:39 — `TruncatedSize = 20`.
+ * cometbft@v0.38.26 crypto/tmhash/hash.go:39 — `TruncatedSize = 20`.
  * Here 32, the DNA witness-id width, per the APPROVED substitution table
  * (umbrella rev 3, atlas-dec-d5e766defde138eb6dd02e5b81e735a8, item 4:
  * "32-byte validator identity as the address"). `crypto.AddressSize` is
@@ -123,7 +123,7 @@ typedef struct {
 #define CMT_TMHASH_STACK_SCRATCH 256
 
 /**
- * cometbft@709fd12b crypto/tmhash/hash.go:19-22 — `Sum(bz)`.
+ * cometbft@v0.38.26 crypto/tmhash/hash.go:19-22 — `Sum(bz)`.
  * @return CMT_OK, or CMT_FAULT if the hash backend fails.
  */
 static inline int cmt_tmhash_sum(const uint8_t *bz, size_t len,
@@ -148,7 +148,7 @@ static inline int cmt_tmhash_sum(const uint8_t *bz, size_t len,
 }
 
 /**
- * cometbft@709fd12b crypto/tmhash/hash.go:27-34 — `SumMany(data, rest...)`.
+ * cometbft@v0.38.26 crypto/tmhash/hash.go:27-34 — `SumMany(data, rest...)`.
  * Hashes the parts as if they were one joined slice. The reference streams
  * them into an incremental hasher; with a one-shot backend they are joined
  * first, which produces the same digest by definition of the sponge.
@@ -201,7 +201,7 @@ static inline int cmt_tmhash_sum_many(const cmt_tmhash_part_t *parts,
 }
 
 /**
- * cometbft@709fd12b crypto/tmhash/hash.go:73-77 — `SumTruncated(bz)`.
+ * cometbft@v0.38.26 crypto/tmhash/hash.go:73-77 — `SumTruncated(bz)`.
  * "Returns the first TruncatedSize bytes of the hash of bz." The reference
  * hashes with SHA-256 and keeps 20; this hashes with SHA3-512 and keeps 32
  * (the one substitution, above). The truncation is a plain prefix — the
@@ -229,7 +229,7 @@ static inline int cmt_tmhash_sum_truncated(
 }
 
 /**
- * cometbft@709fd12b crypto/crypto.go:18-20 — `AddressHash(bz)`.
+ * cometbft@v0.38.26 crypto/crypto.go:18-20 — `AddressHash(bz)`.
  *
  * THE ONE PLACE IN THIS PORT WHERE A PUBLIC KEY BECOMES AN ADDRESS. The
  * reference's body is exactly `Address(tmhash.SumTruncated(bz))`, so this

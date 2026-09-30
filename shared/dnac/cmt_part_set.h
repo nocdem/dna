@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_part_set.h
- * @brief cometbft @709fd12b `types/part_set.go` ported to C.
+ * @brief cometbft @v0.38.26 `types/part_set.go` ported to C.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
  * Wave R1-B of the cometbft → C consensus port. Nothing in the running
@@ -12,7 +12,7 @@
  * A PartSet is how a block travels: the marshalled block is cut into
  * 65 536-byte parts, each carrying its Merkle inclusion proof against the
  * PartSet's root. That root and the part count ARE the PartSetHeader, and
- * the PartSetHeader is half of a BlockID (types/block.go:1463-1466) — so
+ * the PartSetHeader is half of a BlockID (types/block.go:1469-1472) — so
  * it is inside every vote's sign bytes. Chunking is APPROVED and
  * un-parked (atlas-dec-6d35670369b69df4439cb720036fa2d7 rev 2).
  *
@@ -68,11 +68,11 @@
  *   · `PartSet.MarshalJSON` (:397-412) — the port has no JSON surface for
  *     consensus objects (same reason as cmt_bits.h's).
  *
- * Reference @709fd12b (SHA-256 verified against tasks/comet-port-map.md
- * before use):
+ * Reference @v0.38.26 (SHA-256 of /home/nocdem/refs/cometbft-v0.38.26,
+ * verified before use):
  *   types/part_set.go   412 lines 10101396b373475d18f81235a829c6d55341d2146ac2a667e851f650f5f44379
- *   types/params.go     370 lines 1766c8ec54f5932ce43c77f48a8358237b16428f3bddd69f2998e32a0c2e7746
- *   types/validation.go 427 lines 29ea9aa38bf65dcb68c27fcc0c6c4229e0a0f55814ce52c45c49cc06c7c14a7a
+ *   types/params.go     373 lines 91eb26952c7daf48d88c14de3b5e1d2a9008f67be1808512a4a121794902e0ee
+ *   types/validation.go 436 lines 195fdda35aebc7ba584a7312e321373859866369d56bd67c676ceff78c70d67d
  *   crypto/merkle/proof.go 252 lines ddffde7a097d6a8d0ad3af25f559494065e535c8b7fa10aed66ed534ba07c907
  * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * D-19 rev 6 (atlas-dec-d106407a31d7d16d49d51990b75c36c6),
@@ -99,12 +99,12 @@
 extern "C" {
 #endif
 
-/** cometbft@709fd12b types/params.go:19 — `BlockPartSizeBytes` = 65536.
+/** cometbft@v0.38.26 types/params.go:20 — `BlockPartSizeBytes` = 65536.
  *  Restated from cmt_bits.h's copy so this module's reader sees it named
  *  as part_set.go names it; the two are the same macro value. */
 #define CMT_BLOCK_PART_SIZE_BYTES CMT_BITS_BLOCK_PART_SIZE_BYTES
 
-/** cometbft@709fd12b types/params.go:22 — `MaxBlockPartsCount` = 1601.
+/** cometbft@v0.38.26 types/params.go:23 — `MaxBlockPartsCount` = 1601.
  *  The widest part set this port will build or accept; a `total` above it
  *  is REFUSED (INVARIANT 7495d337), never truncated. It is BELOW cmt_bits.h's
  *  CMT_BITS_MAX_BITS (MaxVotesCount since W1.7), so a parts array fits. */
@@ -116,7 +116,7 @@ extern "C" {
 #define CMT_PART_SET_EOF 1
 
 /**
- * cometbft@709fd12b types/validation.go:196-204 — `ValidateHash()`.
+ * cometbft@v0.38.26 types/validation.go:197-205 — `ValidateHash()`.
  *
  * THE ONLY validation.go ROW WAVE R1-B CARRIES. The rest of that file is
  * the VerifyCommit family, which needs a ValidatorSet and belongs to a
@@ -134,12 +134,12 @@ int cmt_validate_hash(const uint8_t *h, size_t len);
 
 /* ── Part (part_set.go:38-112) ──────────────────────────────────────── */
 
-/** cometbft@709fd12b types/part_set.go:38-42 — `type Part struct`.
+/** cometbft@v0.38.26 types/part_set.go:38-42 — `type Part struct`.
  *  Field-identical to cmt_pb_part_t {index, bytes, proof}; see the header. */
 typedef cmt_pb_part_t cmt_part_t;
 
 /**
- * cometbft@709fd12b types/part_set.go:45-60 — `(part *Part) ValidateBasic()`.
+ * cometbft@v0.38.26 types/part_set.go:45-60 — `(part *Part) ValidateBasic()`.
  *
  * Four checks, in the reference's order: the payload is at most one part
  * (:46-48, ErrPartTooBig); every part but the LAST carries exactly one
@@ -153,7 +153,7 @@ typedef cmt_pb_part_t cmt_part_t;
 int cmt_part_validate_basic(const cmt_part_t *part);
 
 /**
- * cometbft@709fd12b types/part_set.go:83-95 — `(part *Part) ToProto()`.
+ * cometbft@v0.38.26 types/part_set.go:83-95 — `(part *Part) ToProto()`.
  * The identity on this representation (the Go body copies Index, Bytes and
  * `Proof.ToProto()`, which crypto/merkle/proof.go:134-146 makes a
  * field-for-field copy). Present so the reference row has a C counterpart
@@ -163,7 +163,7 @@ int cmt_part_validate_basic(const cmt_part_t *part);
 int cmt_part_to_proto(const cmt_part_t *part, cmt_pb_part_t *out);
 
 /**
- * cometbft@709fd12b types/part_set.go:97-112 — `PartFromProto()`.
+ * cometbft@v0.38.26 types/part_set.go:97-112 — `PartFromProto()`.
  * Copies the three fields and ends in ValidateBasic (:111), as every
  * FromProto in the reference does.
  * @return CMT_OK, CMT_REJECT if the proof or the part is invalid,
@@ -173,38 +173,38 @@ int cmt_part_from_proto(const cmt_pb_part_t *pb, cmt_part_t *out);
 
 /* ── PartSetHeader (part_set.go:116-174) ────────────────────────────── */
 
-/** cometbft@709fd12b types/part_set.go:116-119 —
+/** cometbft@v0.38.26 types/part_set.go:116-119 —
  *  `type PartSetHeader struct`. Field-identical to
  *  cmt_pb_part_set_header_t {total, hash}; see the header. */
 typedef cmt_pb_part_set_header_t cmt_part_set_header_t;
 
-/** cometbft@709fd12b types/part_set.go:129-131 — `IsZero()`.
+/** cometbft@v0.38.26 types/part_set.go:129-131 — `IsZero()`.
  *  A NULL header answers true: it is the zero value. */
 bool cmt_psh_is_zero(const cmt_part_set_header_t *psh);
 
-/** cometbft@709fd12b types/part_set.go:133-135 — `Equals()`. */
+/** cometbft@v0.38.26 types/part_set.go:133-135 — `Equals()`. */
 bool cmt_psh_equals(const cmt_part_set_header_t *psh,
                     const cmt_part_set_header_t *other);
 
-/** cometbft@709fd12b types/part_set.go:138-144 — `ValidateBasic()`.
+/** cometbft@v0.38.26 types/part_set.go:138-144 — `ValidateBasic()`.
  *  The hash may be EMPTY (the POL BlockID of a Proposal carries none) but
  *  must otherwise be one digest wide.
  *  @return CMT_OK, CMT_REJECT, CMT_FAULT on NULL. */
 int cmt_psh_validate_basic(const cmt_part_set_header_t *psh);
 
-/** cometbft@709fd12b types/part_set.go:147-156 — `ToProto()`. The identity;
+/** cometbft@v0.38.26 types/part_set.go:147-156 — `ToProto()`. The identity;
  *  a NULL receiver yields the zero header (:148-150). */
 int cmt_psh_to_proto(const cmt_part_set_header_t *psh,
                      cmt_pb_part_set_header_t *out);
 
-/** cometbft@709fd12b types/part_set.go:159-168 — `PartSetHeaderFromProto()`.
+/** cometbft@v0.38.26 types/part_set.go:159-168 — `PartSetHeaderFromProto()`.
  *  Identity then ValidateBasic (:167). */
 int cmt_psh_from_proto(const cmt_pb_part_set_header_t *ppsh,
                        cmt_part_set_header_t *out);
 
-/** cometbft@709fd12b types/part_set.go:172-174 —
+/** cometbft@v0.38.26 types/part_set.go:172-174 —
  *  `ProtoPartSetHeaderIsZero()`. The same predicate on the WIRE struct;
- *  block.go:1553-1555 calls it. On this representation it is the same
+ *  block.go:1559-1561 calls it. On this representation it is the same
  *  function as cmt_psh_is_zero, kept separate so both reference rows have
  *  a C counterpart and so ported call sites read like the reference. */
 bool cmt_proto_part_set_header_is_zero(const cmt_pb_part_set_header_t *ppsh);
@@ -212,7 +212,7 @@ bool cmt_proto_part_set_header_is_zero(const cmt_pb_part_set_header_t *ppsh);
 /* ── PartSet (part_set.go:178-386) ──────────────────────────────────── */
 
 /**
- * cometbft@709fd12b types/part_set.go:178-189 — `type PartSet struct`.
+ * cometbft@v0.38.26 types/part_set.go:178-189 — `type PartSet struct`.
  * The `cmtsync.Mutex` of :182 is dropped (single-threaded port).
  *
  * `parts` is the caller's array of `total` slots. The reference's
@@ -272,7 +272,7 @@ int cmt_part_set_bind_payload_store(cmt_part_set_t *ps, uint8_t *payload_buf,
                                     size_t payload_cap, uint32_t part_size);
 
 /**
- * cometbft@709fd12b types/part_set.go:194-222 — `NewPartSetFromData()`.
+ * cometbft@v0.38.26 types/part_set.go:194-222 — `NewPartSetFromData()`.
  *
  * Splits `data` into ceil(len/part_size) parts, computes the Merkle root
  * over the part payloads and stores each part's inclusion proof (:210-213
@@ -296,7 +296,7 @@ int cmt_new_part_set_from_data(const uint8_t *data, size_t data_len,
                                cmt_part_set_t *out);
 
 /**
- * cometbft@709fd12b types/part_set.go:225-234 — `NewPartSetFromHeader()`.
+ * cometbft@v0.38.26 types/part_set.go:225-234 — `NewPartSetFromHeader()`.
  * An empty part set ready to be filled by AddPart.
  * @return CMT_OK; CMT_REJECT if header->total exceeds
  *         CMT_PART_SET_MAX_PARTS or `parts_cap`; CMT_FAULT on NULL.
@@ -305,24 +305,24 @@ int cmt_new_part_set_from_header(const cmt_part_set_header_t *header,
                                  cmt_part_t *parts, size_t parts_cap,
                                  cmt_part_set_t *out);
 
-/** cometbft@709fd12b types/part_set.go:236-244 — `Header()`.
+/** cometbft@v0.38.26 types/part_set.go:236-244 — `Header()`.
  *  A NULL part set yields the zero header (:237-239).
  *  @return CMT_OK, CMT_FAULT if `out` is NULL. */
 int cmt_part_set_header(const cmt_part_set_t *ps, cmt_part_set_header_t *out);
 
-/** cometbft@709fd12b types/part_set.go:246-251 — `HasHeader()`.
+/** cometbft@v0.38.26 types/part_set.go:246-251 — `HasHeader()`.
  *  A NULL part set answers false (:247-249). */
 bool cmt_part_set_has_header(const cmt_part_set_t *ps,
                              const cmt_part_set_header_t *header);
 
-/** cometbft@709fd12b types/part_set.go:253-257 — `BitArray()`. A COPY, as
+/** cometbft@v0.38.26 types/part_set.go:253-257 — `BitArray()`. A COPY, as
  *  the reference returns one.
  *  @return CMT_OK, CMT_BITS_NIL when the reference's BitArray is nil (an
  *          empty part set), CMT_FAULT on NULL. */
 int cmt_part_set_bit_array(const cmt_part_set_t *ps, cmt_bit_array_t *out);
 
 /**
- * cometbft@709fd12b types/part_set.go:259-264 — `Hash()`.
+ * cometbft@v0.38.26 types/part_set.go:259-264 — `Hash()`.
  * A NULL part set answers `merkle.HashFromByteSlices(nil)` = H("")
  * (:260-262). A part set whose hash is not one digest wide is a shape a
  * wire PartSetHeader could carry; it is reported as CMT_REJECT here
@@ -332,22 +332,22 @@ int cmt_part_set_bit_array(const cmt_part_set_t *ps, cmt_bit_array_t *out);
  */
 int cmt_part_set_hash(const cmt_part_set_t *ps, uint8_t out[CMT_TMHASH_SIZE]);
 
-/** cometbft@709fd12b types/part_set.go:266-271 — `HashesTo()`.
+/** cometbft@v0.38.26 types/part_set.go:266-271 — `HashesTo()`.
  *  A NULL part set answers false (:267-269). */
 bool cmt_part_set_hashes_to(const cmt_part_set_t *ps,
                             const uint8_t *hash, size_t hash_len);
 
-/** cometbft@709fd12b types/part_set.go:273-278 — `Count()`. NULL → 0. */
+/** cometbft@v0.38.26 types/part_set.go:273-278 — `Count()`. NULL → 0. */
 uint32_t cmt_part_set_count(const cmt_part_set_t *ps);
 
-/** cometbft@709fd12b types/part_set.go:280-285 — `ByteSize()`. NULL → 0. */
+/** cometbft@v0.38.26 types/part_set.go:280-285 — `ByteSize()`. NULL → 0. */
 int64_t cmt_part_set_byte_size(const cmt_part_set_t *ps);
 
-/** cometbft@709fd12b types/part_set.go:287-292 — `Total()`. NULL → 0. */
+/** cometbft@v0.38.26 types/part_set.go:287-292 — `Total()`. NULL → 0. */
 uint32_t cmt_part_set_total(const cmt_part_set_t *ps);
 
 /**
- * cometbft@709fd12b types/part_set.go:295-331 — `AddPart()`.
+ * cometbft@v0.38.26 types/part_set.go:295-331 — `AddPart()`.
  *
  * CONTRACT, as the reference's (:294): the part has already passed
  * ValidateBasic.
@@ -370,7 +370,7 @@ int cmt_part_set_add_part(cmt_part_set_t *ps, const cmt_part_t *part,
                           bool *added);
 
 /**
- * cometbft@709fd12b types/part_set.go:333-337 — `GetPart()`.
+ * cometbft@v0.38.26 types/part_set.go:333-337 — `GetPart()`.
  * @return the part, or NULL when there is none at `index` — which covers
  *         both the reference's nil slot and its out-of-range panic
  *         (`ps.parts[index]`, :336). The two are distinguishable by the
@@ -379,13 +379,13 @@ int cmt_part_set_add_part(cmt_part_set_t *ps, const cmt_part_t *part,
 const cmt_part_t *cmt_part_set_get_part(const cmt_part_set_t *ps,
                                         size_t index);
 
-/** cometbft@709fd12b types/part_set.go:339-341 — `IsComplete()`.
+/** cometbft@v0.38.26 types/part_set.go:339-341 — `IsComplete()`.
  *  A NULL part set answers false; the reference has no nil check there
  *  and would panic on `ps.count`. */
 bool cmt_part_set_is_complete(const cmt_part_set_t *ps);
 
 /**
- * cometbft@709fd12b types/part_set.go:350-354 — `type PartSetReader struct`.
+ * cometbft@v0.38.26 types/part_set.go:350-354 — `type PartSetReader struct`.
  * `off` replaces the reference's `*bytes.Reader`: the reader IS a cursor
  * over a part's payload, and a cursor is what a bytes.Reader is.
  */
@@ -396,20 +396,20 @@ typedef struct {
     size_t            off;     /* the position inside parts[i].bytes */
 } cmt_part_set_reader_t;
 
-/** cometbft@709fd12b types/part_set.go:356-362 — `NewPartSetReader()`.
+/** cometbft@v0.38.26 types/part_set.go:356-362 — `NewPartSetReader()`.
  *  @return CMT_OK; CMT_REJECT when `n` is 0 — the reference indexes
  *          `parts[0]` at :360 and panics; CMT_FAULT on NULL. */
 int cmt_new_part_set_reader(const cmt_part_t *parts, size_t n,
                             cmt_part_set_reader_t *out);
 
-/** cometbft@709fd12b types/part_set.go:343-348 — `GetReader()`.
+/** cometbft@v0.38.26 types/part_set.go:343-348 — `GetReader()`.
  *  @return CMT_OK; CMT_REJECT on an incomplete part set — the reference
  *          panics there (:344-346); CMT_FAULT on NULL. */
 int cmt_part_set_get_reader(const cmt_part_set_t *ps,
                             cmt_part_set_reader_t *out);
 
 /**
- * cometbft@709fd12b types/part_set.go:364-383 — `(psr *PartSetReader) Read()`.
+ * cometbft@v0.38.26 types/part_set.go:364-383 — `(psr *PartSetReader) Read()`.
  *
  * Delivers the concatenation of the parts' payloads, crossing part
  * boundaries within one call exactly as the reference's recursion does

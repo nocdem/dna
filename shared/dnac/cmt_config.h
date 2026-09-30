@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_config.h
- * @brief cometbft @709fd12b `config/config.go`'s ConsensusConfig in C.
+ * @brief cometbft @v0.38.26 `config/config.go`'s ConsensusConfig in C.
  *
  * ═══ ACTIVATION: LIVE ═══════════════════════════════════════════════════
  * Wave R2-B of the cometbft → C consensus port. Read by the running node:
@@ -17,24 +17,24 @@
  * unit conversion anywhere.
  *
  * ── WHAT IS PORTED, AND WHAT IS NOT ────────────────────────────────────
- * PORTED: the fields the consensus core reads (config.go:979-1014, minus
- * the three path fields), `DefaultConsensusConfig` (:1017-1034),
- * `WaitForTxs` (:1054-1057), `Propose` (:1059-1064), `Prevote`
- * (:1066-1071), `Precommit` (:1073-1078) and `Commit` (:1080-1084).
+ * PORTED: the fields the consensus core reads (config.go:993-1031, minus
+ * the three path fields), `DefaultConsensusConfig` (:1034-1052),
+ * `WaitForTxs` (:1072-1075), `Propose` (:1077-1082), `Prevote`
+ * (:1084-1089), `Precommit` (:1091-1096) and `Commit` (:1098-1102).
  * PORTED FROM cometbft v0.38.26 (decision
  * docs/plans/decisions/2026-09-30-cometbft-pin-v0.38.26.md and its clock
  * addendum in 2026-09-25-consensus-clock-scope-correction.md, "Ek — pin
  * v0.38.26"): the `BlockTimeTolerance` field (v0.38.26 config.go:1029-1030),
  * its 60 s default (:1050) and `ConsensusConfig.ValidateBasic`
- * (:1117-1157), which the node runs on the values it built. Every other
- * `:NNN` in this file is still a 709fd12b line.
+ * (:1117-1157), which the node runs on the values it built. Every
+ * `:NNN` in this file is a v0.38.26 line.
  *
  * taşınmadı, with the reason:
- *   · `RootDir`, `WalPath`, `walFile` (:980-982), `WalFile` (:1086-1092)
- *     and `SetWalFile` (:1094-1097) — a file path and the accessors for
+ *   · `RootDir`, `WalPath`, `walFile` (:994-996), `WalFile` (:1104-1110)
+ *     and `SetWalFile` (:1112-1115) — a file path and the accessors for
  *     it. This port's WAL is SQLite rows written by the host (D-15), so
  *     there is no wal file and nothing to root.
- *   · `TestConsensusConfig` (:1036-1052) — the reference's own test
+ *   · `TestConsensusConfig` (:1054-1070) — the reference's own test
  *     fixture. The R2 tests run on `cmt_config_default`'s values, which is
  *     the honest thing to state: they exercise the arithmetic at the
  *     REFERENCE DEFAULTS and prove nothing about any other setting.
@@ -59,13 +59,13 @@
  * wait differently. The one value that IS shared — the block interval —
  * comes from the chain config at R3, not from this file.
  *
- * Reference @709fd12b: config/config.go, 1283 lines, SHA-256
- * f0c2f601d49e1a56b36e8d557387e96ee53ecc3616ecb79749b0f71c0f218c21;
- * only :965-1100 was opened.
- * Reference v0.38.26 (the tolerance field, its default, ValidateBasic):
- * config/config.go, 1304 lines, SHA-256
+ * Reference @v0.38.26: config/config.go, 1304 lines, SHA-256
  * 761c747fa0c41cbfd48aa840adad77d3559a64a6a4197b000f2cecb0be70d4f2;
- * :1029-1030, :1034-1052 and :1117-1157 opened.
+ * :979-1118 and :1117-1157 opened.
+ * (At 709fd12b the file was 1283 lines, SHA-256
+ * f0c2f601d49e1a56b36e8d557387e96ee53ecc3616ecb79749b0f71c0f218c21, and
+ * its :965-1100 is the v0.38.26 :979-1118 above.)
+ *
  * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * D-4 (atlas-dec-d5ddcba654eb48d861c03a0ecd170718),
  * clock POLICY (atlas-dec-4ac0423068085c100fdfa3e264ca16bc).
@@ -93,25 +93,25 @@ extern "C" {
 #define CMT_SECOND      ((int64_t)1000000000)
 
 /**
- * cometbft@709fd12b config/config.go:979-1014 — `type ConsensusConfig`.
+ * cometbft@v0.38.26 config/config.go:993-1031 — `type ConsensusConfig`.
  *
- * The path fields of :980-982 are not here (see the header). Every
+ * The path fields of :994-996 are not here (see the header). Every
  * `time.Duration` is a nanosecond count.
  */
 typedef struct {
-    int64_t timeout_propose;                /* :985  */
-    int64_t timeout_propose_delta;          /* :987  */
-    int64_t timeout_prevote;                /* :989  */
-    int64_t timeout_prevote_delta;          /* :991  */
-    int64_t timeout_precommit;              /* :993  */
-    int64_t timeout_precommit_delta;        /* :995  */
-    int64_t timeout_commit;                 /* :1000 */
-    bool    skip_timeout_commit;            /* :1003 */
-    bool    create_empty_blocks;            /* :1006 */
-    int64_t create_empty_blocks_interval;   /* :1007 */
-    int64_t peer_gossip_sleep_duration;     /* :1010 */
-    int64_t peer_query_maj23_sleep_duration;/* :1011 */
-    int64_t double_sign_check_height;       /* :1013 */
+    int64_t timeout_propose;                /* :999  */
+    int64_t timeout_propose_delta;          /* :1001 */
+    int64_t timeout_prevote;                /* :1003 */
+    int64_t timeout_prevote_delta;          /* :1005 */
+    int64_t timeout_precommit;              /* :1007 */
+    int64_t timeout_precommit_delta;        /* :1009 */
+    int64_t timeout_commit;                 /* :1014 */
+    bool    skip_timeout_commit;            /* :1017 */
+    bool    create_empty_blocks;            /* :1020 */
+    int64_t create_empty_blocks_interval;   /* :1021 */
+    int64_t peer_gossip_sleep_duration;     /* :1024 */
+    int64_t peer_query_maj23_sleep_duration;/* :1025 */
+    int64_t double_sign_check_height;       /* :1027 */
     /** cometbft@v0.38.26 config/config.go:1029-1030 `BlockTimeTolerance`:
      *  the largest amount a block's time may lead this node's wall clock
      *  by (state/validation.go:124-129). NOT a scheduling value like the
@@ -122,7 +122,7 @@ typedef struct {
 } cmt_config_t;
 
 /**
- * cometbft@709fd12b config/config.go:1017-1034 —
+ * cometbft@v0.38.26 config/config.go:1034-1052 —
  * `DefaultConsensusConfig()`. Every value is the one at the cited line.
  * @return CMT_OK, CMT_FAULT on NULL.
  */
@@ -131,19 +131,19 @@ static inline int cmt_config_default(cmt_config_t *out)
     if (out == NULL) {
         return CMT_FAULT;
     }
-    out->timeout_propose                 = 3000 * CMT_MILLISECOND; /* :1020 */
-    out->timeout_propose_delta           =  500 * CMT_MILLISECOND; /* :1021 */
-    out->timeout_prevote                 = 1000 * CMT_MILLISECOND; /* :1022 */
-    out->timeout_prevote_delta           =  500 * CMT_MILLISECOND; /* :1023 */
-    out->timeout_precommit               = 1000 * CMT_MILLISECOND; /* :1024 */
-    out->timeout_precommit_delta         =  500 * CMT_MILLISECOND; /* :1025 */
-    out->timeout_commit                  = 1000 * CMT_MILLISECOND; /* :1026 */
-    out->skip_timeout_commit             = false;                  /* :1027 */
-    out->create_empty_blocks             = true;                   /* :1028 */
-    out->create_empty_blocks_interval    = 0 * CMT_SECOND;         /* :1029 */
-    out->peer_gossip_sleep_duration      =  100 * CMT_MILLISECOND; /* :1030 */
-    out->peer_query_maj23_sleep_duration = 2000 * CMT_MILLISECOND; /* :1031 */
-    out->double_sign_check_height        = (int64_t)0;             /* :1032 */
+    out->timeout_propose                 = 3000 * CMT_MILLISECOND; /* :1037 */
+    out->timeout_propose_delta           =  500 * CMT_MILLISECOND; /* :1038 */
+    out->timeout_prevote                 = 1000 * CMT_MILLISECOND; /* :1039 */
+    out->timeout_prevote_delta           =  500 * CMT_MILLISECOND; /* :1040 */
+    out->timeout_precommit               = 1000 * CMT_MILLISECOND; /* :1041 */
+    out->timeout_precommit_delta         =  500 * CMT_MILLISECOND; /* :1042 */
+    out->timeout_commit                  = 1000 * CMT_MILLISECOND; /* :1043 */
+    out->skip_timeout_commit             = false;                  /* :1044 */
+    out->create_empty_blocks             = true;                   /* :1045 */
+    out->create_empty_blocks_interval    = 0 * CMT_SECOND;         /* :1046 */
+    out->peer_gossip_sleep_duration      =  100 * CMT_MILLISECOND; /* :1047 */
+    out->peer_query_maj23_sleep_duration = 2000 * CMT_MILLISECOND; /* :1048 */
+    out->double_sign_check_height        = (int64_t)0;             /* :1049 */
     out->block_time_tolerance            = 60 * CMT_SECOND; /* v0.38.26 :1050 */
     return CMT_OK;
 }
@@ -180,7 +180,7 @@ static inline int cmt_config_validate_basic(const cmt_config_t *cfg)
     return CMT_OK;                                              /* :1156 */
 }
 
-/** cometbft@709fd12b config/config.go:1054-1057 —
+/** cometbft@v0.38.26 config/config.go:1072-1075 —
  *  `(cfg *ConsensusConfig) WaitForTxs()`. */
 static inline bool cmt_config_wait_for_txs(const cmt_config_t *cfg)
 {
@@ -188,11 +188,11 @@ static inline bool cmt_config_wait_for_txs(const cmt_config_t *cfg)
         return false;
     }
     return !cfg->create_empty_blocks ||
-           cfg->create_empty_blocks_interval > 0;              /* :1056 */
+           cfg->create_empty_blocks_interval > 0;              /* :1074 */
 }
 
 /**
- * cometbft@709fd12b config/config.go:1059-1064 —
+ * cometbft@v0.38.26 config/config.go:1077-1082 —
  * `(cfg *ConsensusConfig) Propose(round)`.
  *
  * `timeout + delta*round`, in nanoseconds. Go's int64 arithmetic WRAPS on
@@ -211,10 +211,10 @@ static inline int64_t cmt_config_propose(const cmt_config_t *cfg,
     }
     acc = (uint64_t)cfg->timeout_propose_delta * (uint64_t)(int64_t)round;
     acc += (uint64_t)cfg->timeout_propose;
-    return (int64_t)acc;                                       /* :1061-1063 */
+    return (int64_t)acc;                                       /* :1079-1081 */
 }
 
-/** cometbft@709fd12b config/config.go:1066-1071 —
+/** cometbft@v0.38.26 config/config.go:1084-1089 —
  *  `(cfg *ConsensusConfig) Prevote(round)`. */
 static inline int64_t cmt_config_prevote(const cmt_config_t *cfg,
                                          int32_t round)
@@ -226,10 +226,10 @@ static inline int64_t cmt_config_prevote(const cmt_config_t *cfg,
     }
     acc = (uint64_t)cfg->timeout_prevote_delta * (uint64_t)(int64_t)round;
     acc += (uint64_t)cfg->timeout_prevote;
-    return (int64_t)acc;                                       /* :1068-1070 */
+    return (int64_t)acc;                                       /* :1086-1088 */
 }
 
-/** cometbft@709fd12b config/config.go:1073-1078 —
+/** cometbft@v0.38.26 config/config.go:1091-1096 —
  *  `(cfg *ConsensusConfig) Precommit(round)`. */
 static inline int64_t cmt_config_precommit(const cmt_config_t *cfg,
                                            int32_t round)
@@ -241,11 +241,11 @@ static inline int64_t cmt_config_precommit(const cmt_config_t *cfg,
     }
     acc = (uint64_t)cfg->timeout_precommit_delta * (uint64_t)(int64_t)round;
     acc += (uint64_t)cfg->timeout_precommit;
-    return (int64_t)acc;                                       /* :1075-1077 */
+    return (int64_t)acc;                                       /* :1093-1095 */
 }
 
 /**
- * cometbft@709fd12b config/config.go:1080-1084 —
+ * cometbft@v0.38.26 config/config.go:1098-1102 —
  * `(cfg *ConsensusConfig) Commit(t)`. `t.Add(cfg.TimeoutCommit)`.
  *
  * Go's `Time.Add` carries nanoseconds into seconds; the same normalisation

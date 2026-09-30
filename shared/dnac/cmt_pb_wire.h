@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_pb_wire.h
- * @brief cometbft @709fd12b proto3 wire primitives — the ONE definition,
+ * @brief cometbft @v0.38.26 proto3 wire primitives — the ONE definition,
  *        shared by every `cmt_pb*` codec translation unit.
  *
  * ═══ INTERNAL ═══════════════════════════════════════════════════════════

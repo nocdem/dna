@@ -1,6 +1,6 @@
 /**
  * @file nodus_witness_cmt_wal.c
- * @brief cometbft @709fd12b consensus/wal.go over the libs/autofile file
+ * @brief cometbft @v0.38.26 consensus/wal.go over the libs/autofile file
  *        group. Contract and citations: nodus_witness_cmt_wal.h.
  */
 
@@ -748,7 +748,7 @@ int nodus_cmt_wal_read_next(void *ctx, cmt_timed_wal_message_t *out,
     }
 }
 
-/* ══ repair (state.go:352-385, :2621-2653) ═════════════════════════════ */
+/* ══ repair (state.go:352-385, :2614-2646) ═════════════════════════════ */
 
 /* One whole buffer onto `fd`, retrying EINTR and short writes — Go's
  * File.Write (internal/poll/fd_unix.go:374-399, go1.21.5). */
@@ -832,7 +832,7 @@ done:
     return rc;
 }
 
-/* state.go:2619-2653 `repairWalFile(src, dst)` — "decodes messages from
+/* state.go:2612-2646 `repairWalFile(src, dst)` — "decodes messages from
  * src (until the decoder errors) and writes them to dst".
  *
  * The decoder is a WAL handle opened on `src` itself: its group's head is

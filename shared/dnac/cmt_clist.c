@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_clist.c
- * @brief cometbft @709fd12b `libs/clist/clist.go` in C — see the header.
+ * @brief cometbft @v0.38.26 `libs/clist/clist.go` in C — see the header.
  *
  * Every function names the Go line it ports. The reference-count helpers
  * (`elem_retain`, `elem_release`) are the C-only device the header

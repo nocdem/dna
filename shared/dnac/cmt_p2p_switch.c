@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_p2p_switch.c
- * @brief cometbft @709fd12b `p2p/switch.go` in C — the Switch as one
+ * @brief cometbft @v0.38.26 `p2p/switch.go` in C — the Switch as one
  *        event-loop pass.
  *
  * Contract, the goroutine → loop mapping and the deviations:
@@ -72,7 +72,7 @@ static void free_graveyard(cmt_p2p_switch_t *sw)
     }
 }
 
-/* switch.go:565-568 randomSleep — the delay, not the sleep. */
+/* switch.go:566-569 randomSleep — the delay, not the sleep. */
 static int64_t random_sleep_ns(cmt_p2p_switch_t *sw, int64_t interval_ns)
 {
     int64_t r = sw->host.rand_int63n(sw->host.ctx,
@@ -84,7 +84,7 @@ static int64_t random_sleep_ns(cmt_p2p_switch_t *sw, int64_t interval_ns)
     return r * 1000LL * 1000LL + interval_ns;
 }
 
-/* ══ setup (switch.go:110-228) ════════════════════════════════════════ */
+/* ══ setup (switch.go:111-229) ════════════════════════════════════════ */
 
 void cmt_p2p_switch_default_config(cmt_p2p_switch_config_t *cfg)
 {
@@ -96,7 +96,7 @@ void cmt_p2p_switch_default_config(cmt_p2p_switch_config_t *cfg)
     cfg->allow_duplicate_ip = false;
 }
 
-/* switch.go:111-144 */
+/* switch.go:112-145 */
 int cmt_p2p_switch_init(cmt_p2p_switch_t *sw, const cmt_p2p_switch_config_t *cfg,
                         cmt_p2p_transport_t *transport,
                         const cmt_p2p_switch_host_t *host)
@@ -141,7 +141,7 @@ void cmt_p2p_switch_free(cmt_p2p_switch_t *sw)
     memset(sw, 0, sizeof(*sw));
 }
 
-/* switch.go:166-180 AddReactor */
+/* switch.go:167-181 AddReactor */
 int cmt_p2p_switch_add_reactor(cmt_p2p_switch_t *sw,
                                const cmt_p2p_reactor_t *reactor)
 {
@@ -157,7 +157,7 @@ int cmt_p2p_switch_add_reactor(cmt_p2p_switch_t *sw,
     if (n < 0 || (n > 0 && d == NULL)) {
         return CMT_FAULT;
     }
-    for (i = 0; i < n; i++) {                              /* :169-172 */
+    for (i = 0; i < n; i++) {                              /* :170-173 */
         int j;
 
         if (sw->reactor_by_ch[d[i].id] >= 0) {
@@ -173,13 +173,13 @@ int cmt_p2p_switch_add_reactor(cmt_p2p_switch_t *sw,
     idx = sw->n_reactors++;
     sw->reactors[idx] = *reactor;
     for (i = 0; i < n; i++) {
-        sw->ch_descs[sw->n_ch_descs++] = d[i];              /* :173 */
-        sw->reactor_by_ch[d[i].id] = (int8_t)idx;           /* :174 */
+        sw->ch_descs[sw->n_ch_descs++] = d[i];              /* :174 */
+        sw->reactor_by_ch[d[i].id] = (int8_t)idx;           /* :175 */
     }
-    return CMT_OK;                                          /* :177-179 */
+    return CMT_OK;                                          /* :178-180 */
 }
 
-/* switch.go:184-198 RemoveReactor */
+/* switch.go:185-199 RemoveReactor */
 void cmt_p2p_switch_remove_reactor(cmt_p2p_switch_t *sw, const char *name)
 {
     int idx, i, c;
@@ -196,7 +196,7 @@ void cmt_p2p_switch_remove_reactor(cmt_p2p_switch_t *sw, const char *name)
     if (idx == sw->n_reactors) {
         return;
     }
-    for (i = 0; i < sw->n_ch_descs;) {                     /* :185-195 */
+    for (i = 0; i < sw->n_ch_descs;) {                     /* :186-196 */
         if (sw->reactor_by_ch[sw->ch_descs[i].id] == idx) {
             sw->reactor_by_ch[sw->ch_descs[i].id] = -1;
             memmove(&sw->ch_descs[i], &sw->ch_descs[i + 1],
@@ -233,7 +233,7 @@ const cmt_p2p_ch_desc_t *cmt_p2p_switch_ch_descs(const cmt_p2p_switch_t *sw,
     return sw != NULL ? sw->ch_descs : NULL;
 }
 
-/* ══ service (switch.go:234-263) ══════════════════════════════════════ */
+/* ══ service (switch.go:235-264) ══════════════════════════════════════ */
 
 int cmt_p2p_switch_start(cmt_p2p_switch_t *sw)
 {
@@ -245,7 +245,7 @@ int cmt_p2p_switch_start(cmt_p2p_switch_t *sw)
     if (sw->started || sw->stopped) {
         return CMT_REJECT;
     }
-    for (i = 0; i < sw->n_reactors; i++) {                 /* :236-241 */
+    for (i = 0; i < sw->n_reactors; i++) {                 /* :237-242 */
         if (sw->reactors[i].start != NULL &&
             sw->reactors[i].start(sw->reactors[i].ctx) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "failed to start reactor %s",
@@ -253,7 +253,7 @@ int cmt_p2p_switch_start(cmt_p2p_switch_t *sw)
             return CMT_REJECT;
         }
     }
-    sw->started = true;                                    /* :244 acceptRoutine */
+    sw->started = true;                                    /* :245 acceptRoutine */
     return CMT_OK;
 }
 
@@ -265,10 +265,10 @@ void cmt_p2p_switch_stop(cmt_p2p_switch_t *sw)
         return;
     }
     sw->stopped = true;
-    while (sw->peers.n > 0) {                              /* :252-254 */
+    while (sw->peers.n > 0) {                              /* :253-255 */
         stop_and_remove_peer(sw, sw->peers.list[0], 0);
     }
-    for (i = 0; i < sw->n_reactors; i++) {                 /* :258-262 */
+    for (i = 0; i < sw->n_reactors; i++) {                 /* :259-263 */
         if (sw->reactors[i].stop != NULL) {
             sw->reactors[i].stop(sw->reactors[i].ctx);
         }
@@ -280,9 +280,9 @@ bool cmt_p2p_switch_is_running(const cmt_p2p_switch_t *sw)
     return sw != NULL && sw->started && !sw->stopped;
 }
 
-/* ══ peers (switch.go:268-460) ════════════════════════════════════════ */
+/* ══ peers (switch.go:269-461) ════════════════════════════════════════ */
 
-/* switch.go:274-296 Broadcast (R-P2P-30) */
+/* switch.go:275-297 Broadcast (R-P2P-30) */
 int cmt_p2p_switch_broadcast(cmt_p2p_switch_t *sw, uint8_t ch_id,
                              const uint8_t *msg, size_t len)
 {
@@ -299,7 +299,7 @@ int cmt_p2p_switch_broadcast(cmt_p2p_switch_t *sw, uint8_t ch_id,
     return ok;
 }
 
-/* switch.go:300-315 NumPeers */
+/* switch.go:301-316 NumPeers */
 void cmt_p2p_switch_num_peers(cmt_p2p_switch_t *sw, int *outbound,
                               int *inbound, int *dialing)
 {
@@ -326,11 +326,11 @@ void cmt_p2p_switch_num_peers(cmt_p2p_switch_t *sw, int *outbound,
         *inbound = in;
     }
     if (dialing != NULL) {
-        *dialing = sw != NULL ? sw->n_dialing : 0;          /* :313 */
+        *dialing = sw != NULL ? sw->n_dialing : 0;          /* :314 */
     }
 }
 
-/* switch.go:317-320 (+ R-P2P-7) */
+/* switch.go:318-321 (+ R-P2P-7) */
 bool cmt_p2p_switch_is_peer_unconditional(const cmt_p2p_switch_t *sw,
                                           const char *id)
 {
@@ -357,18 +357,18 @@ const cmt_p2p_peer_set_t *cmt_p2p_switch_peers(const cmt_p2p_switch_t *sw)
     return sw != NULL ? &sw->peers : NULL;
 }
 
-/* switch.go:335-358 StopPeerForError */
+/* switch.go:336-359 StopPeerForError */
 void cmt_p2p_switch_stop_peer_for_error(cmt_p2p_switch_t *sw,
                                         cmt_p2p_peer_t *p, int reason)
 {
     cmt_p2p_netaddr_t addr;
 
     if (sw == NULL || p == NULL || !cmt_p2p_peer_is_running(p)) {
-        return;                                            /* :336-338 */
+        return;                                            /* :337-339 */
     }
     QGP_LOG_WARN(LOG_TAG, "Stopping peer %s for error %d", p->id, reason);
-    stop_and_remove_peer(sw, p, reason != 0 ? reason : -1);  /* :341 */
-    if (p->persistent) {                                   /* :343-357 */
+    stop_and_remove_peer(sw, p, reason != 0 ? reason : -1);  /* :342 */
+    if (p->persistent) {                                   /* :344-358 */
         if (p->outbound) {
             addr = p->socket_addr;
         } else if (cmt_p2p_node_info_net_address(p->node_info, &addr) !=
@@ -381,7 +381,7 @@ void cmt_p2p_switch_stop_peer_for_error(cmt_p2p_switch_t *sw,
     }
 }
 
-/* switch.go:362-365 StopPeerGracefully */
+/* switch.go:363-366 StopPeerGracefully */
 void cmt_p2p_switch_stop_peer_gracefully(cmt_p2p_switch_t *sw,
                                          cmt_p2p_peer_t *p)
 {
@@ -392,24 +392,24 @@ void cmt_p2p_switch_stop_peer_gracefully(cmt_p2p_switch_t *sw,
     stop_and_remove_peer(sw, p, 0);
 }
 
-/* switch.go:367-388 stopAndRemovePeer */
+/* switch.go:368-389 stopAndRemovePeer */
 static void stop_and_remove_peer(cmt_p2p_switch_t *sw, cmt_p2p_peer_t *p,
                                  int reason)
 {
     int i;
 
-    cmt_p2p_transport_cleanup(sw->transport, p);           /* :368 */
-    cmt_p2p_peer_stop(p);                                  /* :369-371 */
-    for (i = 0; i < sw->n_reactors; i++) {                 /* :373-375 */
+    cmt_p2p_transport_cleanup(sw->transport, p);           /* :369 */
+    cmt_p2p_peer_stop(p);                                  /* :370-372 */
+    for (i = 0; i < sw->n_reactors; i++) {                 /* :374-376 */
         sw->reactors[i].remove_peer(sw->reactors[i].ctx, p, reason);
     }
-    if (!cmt_p2p_peer_set_remove(&sw->peers, p)) {         /* :381-387 */
+    if (!cmt_p2p_peer_set_remove(&sw->peers, p)) {         /* :382-388 */
         QGP_LOG_DEBUG(LOG_TAG, "error on peer removal %s", p->id);
     }
     bury(sw, p);
 }
 
-/* ══ reconnectToPeer (switch.go:399-447) as a timed record ════════════ */
+/* ══ reconnectToPeer (switch.go:400-448) as a timed record ════════════ */
 
 static int reconnect_index(const cmt_p2p_switch_t *sw, const char *id)
 {
@@ -430,7 +430,7 @@ static void reconnect_delete(cmt_p2p_switch_t *sw, int i)
     sw->n_reconnecting--;
 }
 
-/* :399-407 — `go reconnectToPeer(addr)`; the first dial is immediate. */
+/* :400-408 — `go reconnectToPeer(addr)`; the first dial is immediate. */
 static void reconnect_to_peer(cmt_p2p_switch_t *sw,
                               const cmt_p2p_netaddr_t *addr)
 {
@@ -438,7 +438,7 @@ static void reconnect_to_peer(cmt_p2p_switch_t *sw,
     void *na;
 
     if (reconnect_index(sw, addr->id) >= 0) {
-        return;                                            /* :400-402 */
+        return;                                            /* :401-403 */
     }
     na = grow(sw->reconnecting, &sw->cap_reconnecting, sw->n_reconnecting,
               sizeof(*sw->reconnecting));
@@ -446,17 +446,17 @@ static void reconnect_to_peer(cmt_p2p_switch_t *sw,
         return;
     }
     sw->reconnecting = (cmt_p2p_sw_reconnect_t *)na;
-    r = &sw->reconnecting[sw->n_reconnecting++];           /* :403 */
+    r = &sw->reconnecting[sw->n_reconnecting++];           /* :404 */
     memset(r, 0, sizeof(*r));
     r->addr = *addr;
     r->phase = 0;
     r->i = 0;
-    r->start = sw_now(sw);                                 /* :406 */
+    r->start = sw_now(sw);                                 /* :407 */
     r->next_at = r->start;
     QGP_LOG_INFO(LOG_TAG, "Reconnecting to peer %s", addr->id);
 }
 
-/* The outcome of one reconnect dial (:414-424, :438-444). */
+/* The outcome of one reconnect dial (:415-425, :439-445). */
 static void reconnect_result(cmt_p2p_switch_t *sw, const char *id, int err)
 {
     int i = reconnect_index(sw, id);
@@ -469,22 +469,22 @@ static void reconnect_result(cmt_p2p_switch_t *sw, const char *id, int err)
     r->awaiting = false;
     if (err == CMT_P2P_ERR_NONE ||
         err == CMT_P2P_ERR_CURRENTLY_DIALING_OR_EXISTING) {
-        reconnect_delete(sw, i);                           /* :415-419, :439-443 */
+        reconnect_delete(sw, i);                           /* :416-420, :440-444 */
         return;
     }
     QGP_LOG_INFO(LOG_TAG, "Error reconnecting to peer %s (%s). Trying again",
                  id, cmt_p2p_err_str(err));
     if (r->phase == 0) {
         r->i++;
-        r->next_at = sw_now(sw) + random_sleep_ns(sw, CMT_P2P_RECONNECT_INTERVAL_NS); /* :423 */
+        r->next_at = sw_now(sw) + random_sleep_ns(sw, CMT_P2P_RECONNECT_INTERVAL_NS); /* :424 */
     } else {
         r->i++;
         if (r->i > CMT_P2P_RECONNECT_BACKOFF_ATTEMPTS) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to reconnect to peer %s. Giving up", id);
-            reconnect_delete(sw, i);                       /* :446 */
+            reconnect_delete(sw, i);                       /* :447 */
             return;
         }
-        if (!cmt_p2p_switch_is_running(sw)) {              /* :430-432, before the sleep */
+        if (!cmt_p2p_switch_is_running(sw)) {              /* :431-433, before the sleep */
             reconnect_delete(sw, i);
             return;
         }
@@ -492,7 +492,7 @@ static void reconnect_result(cmt_p2p_switch_t *sw, const char *id, int err)
             int64_t secs = 1;
             int k;
 
-            for (k = 0; k < r->i; k++) {                   /* :435 math.Pow(3, i) */
+            for (k = 0; k < r->i; k++) {                   /* :436 math.Pow(3, i) */
                 secs *= CMT_P2P_RECONNECT_BACKOFF_BASE_SECONDS;
             }
             r->next_at = sw_now(sw) + random_sleep_ns(sw, secs * CMT_P2P_NS_PER_SEC);
@@ -515,17 +515,17 @@ static void reconnect_timers(cmt_p2p_switch_t *sw)
             i++;
             continue;
         }
-        /* :410-412 — the fixed-interval loop checks before each dial; the
-         * transition below is backoff attempt 1's check (:430-432), made
+        /* :411-413 — the fixed-interval loop checks before each dial; the
+         * transition below is backoff attempt 1's check (:431-433), made
          * BEFORE its sleep. A backoff record firing here has already
          * passed its check before the sleep (reconnect_result), so it
-         * dials without another one, as :435-438 does. */
+         * dials without another one, as :436-439 does. */
         if (r->phase == 0 && !cmt_p2p_switch_is_running(sw)) {
             reconnect_delete(sw, i);
             continue;
         }
         if (r->phase == 0 && r->i >= CMT_P2P_RECONNECT_ATTEMPTS) {
-            /* :427-429 into the backoff loop; its first sleep (:435-436)
+            /* :428-430 into the backoff loop; its first sleep (:436-437)
              * comes before its first dial. */
             int64_t secs = CMT_P2P_RECONNECT_BACKOFF_BASE_SECONDS;
 
@@ -540,7 +540,7 @@ static void reconnect_timers(cmt_p2p_switch_t *sw)
         memcpy(id, r->addr.id, sizeof(id));
         addr = r->addr;
         r->awaiting = true;
-        err = cmt_p2p_switch_dial_peer_with_address(sw, &addr);  /* :414, :438 */
+        err = cmt_p2p_switch_dial_peer_with_address(sw, &addr);  /* :415, :439 */
         if (err != CMT_P2P_ERR_NONE) {
             reconnect_result(sw, id, err);
         }
@@ -553,7 +553,7 @@ static void reconnect_timers(cmt_p2p_switch_t *sw)
     }
 }
 
-/* switch.go:456-460 */
+/* switch.go:457-461 */
 void cmt_p2p_switch_mark_peer_as_good(cmt_p2p_switch_t *sw,
                                       const cmt_p2p_peer_t *p)
 {
@@ -565,10 +565,10 @@ void cmt_p2p_switch_mark_peer_as_good(cmt_p2p_switch_t *sw,
     }
 }
 
-/* ══ dialing (switch.go:474-633) ══════════════════════════════════════ */
+/* ══ dialing (switch.go:475-634) ══════════════════════════════════════ */
 
 /* NewNetAddressStrings (netaddress.go:116-128) + the "first error that is
- * not ErrNetAddressLookup" rule (switch.go:481-491, :584-594). */
+ * not ErrNetAddressLookup" rule (switch.go:482-492, :585-595). */
 static int parse_addrs(const char *const *strs, int n, cmt_p2p_netaddr_t **out,
                        int *n_out)
 {
@@ -610,7 +610,7 @@ static int parse_addrs(const char *const *strs, int n, cmt_p2p_netaddr_t **out,
     return CMT_P2P_ERR_NONE;
 }
 
-/* switch.go:479-494 DialPeersAsync + :496-547 dialPeersAsync */
+/* switch.go:480-495 DialPeersAsync + :497-548 dialPeersAsync */
 int cmt_p2p_switch_dial_peers_async(cmt_p2p_switch_t *sw,
                                     const char *const *peers, int n)
 {
@@ -632,7 +632,7 @@ int cmt_p2p_switch_dial_peers_async(cmt_p2p_switch_t *sw,
         return CMT_P2P_ERR_NONE;
     }
     our = cmt_p2p_transport_net_address(sw->transport);
-    /* :503-520 the AddrBook */
+    /* :504-521 the AddrBook */
     if (sw->addr_book != NULL) {
         for (i = 0; i < n_addrs; i++) {
             if (!cmt_p2p_netaddr_same(&addrs[i], our) &&
@@ -645,7 +645,7 @@ int cmt_p2p_switch_dial_peers_async(cmt_p2p_switch_t *sw,
             sw->addr_book->save(sw->addr_book->ctx);
         }
     }
-    /* :523 perm := sw.rng.Perm(len(netAddrs)) — Go math/rand Perm
+    /* :524 perm := sw.rng.Perm(len(netAddrs)) — Go math/rand Perm
      * (rand.go:229-242) over the host's rand. */
     perm = (int *)calloc((size_t)n_addrs, sizeof(int));
     if (perm == NULL) {
@@ -662,11 +662,11 @@ int cmt_p2p_switch_dial_peers_async(cmt_p2p_switch_t *sw,
         perm[j] = i;
     }
     now = sw_now(sw);
-    for (i = 0; i < n_addrs; i++) {                        /* :524-546 */
+    for (i = 0; i < n_addrs; i++) {                        /* :525-547 */
         const cmt_p2p_netaddr_t *a = &addrs[perm[i]];
         void *na;
 
-        if (cmt_p2p_netaddr_same(a, our)) {                /* :529-532 */
+        if (cmt_p2p_netaddr_same(a, our)) {                /* :530-533 */
             QGP_LOG_DEBUG(LOG_TAG, "Ignore attempt to connect to ourselves");
             continue;
         }
@@ -677,7 +677,7 @@ int cmt_p2p_switch_dial_peers_async(cmt_p2p_switch_t *sw,
         }
         sw->async_dials = (cmt_p2p_sw_async_dial_t *)na;
         sw->async_dials[sw->n_async].addr = *a;
-        sw->async_dials[sw->n_async].at = now + random_sleep_ns(sw, 0);  /* :534 */
+        sw->async_dials[sw->n_async].at = now + random_sleep_ns(sw, 0);  /* :535 */
         sw->n_async++;
     }
     free(perm);
@@ -702,7 +702,7 @@ static void async_dial_timers(cmt_p2p_switch_t *sw)
         memmove(&sw->async_dials[i], &sw->async_dials[i + 1],
                 (size_t)(sw->n_async - i - 1) * sizeof(sw->async_dials[0]));
         sw->n_async--;
-        err = cmt_p2p_switch_dial_peer_with_address(sw, &a);   /* :536 */
+        err = cmt_p2p_switch_dial_peer_with_address(sw, &a);   /* :537 */
         if (err != CMT_P2P_ERR_NONE) {
             QGP_LOG_DEBUG(LOG_TAG, "Error dialing peer %s: %s", a.id,
                           cmt_p2p_err_str(err));
@@ -734,12 +734,12 @@ static void dialing_delete(cmt_p2p_switch_t *sw, const char *id)
     sw->n_dialing--;
 }
 
-/* switch.go:751-780 — addOutboundPeerWithConfig after `transport.Dial`
- * returned; :559 `defer sw.dialing.Delete` runs here. */
+/* switch.go:752-781 — addOutboundPeerWithConfig after `transport.Dial`
+ * returned; :560 `defer sw.dialing.Delete` runs here. */
 static int dial_finish(cmt_p2p_switch_t *sw, const cmt_p2p_netaddr_t *addr,
                        cmt_p2p_conn_t *conn, int err);
 
-/* The peer config every wrap uses (:637-645, :742-750). */
+/* The peer config every wrap uses (:638-646, :743-751). */
 static void sw_on_peer_error(void *ctx, cmt_p2p_peer_t *p, int reason);
 static void sw_on_receive(void *ctx, cmt_p2p_peer_t *p, uint8_t ch_id,
                           const uint8_t *msg, size_t len);
@@ -759,7 +759,7 @@ static cmt_p2p_peer_config_t peer_config(cmt_p2p_switch_t *sw)
     return pc;
 }
 
-/* switch.go:553-562 DialPeerWithAddress (started) */
+/* switch.go:554-563 DialPeerWithAddress (started) */
 int cmt_p2p_switch_dial_peer_with_address(cmt_p2p_switch_t *sw,
                                           const cmt_p2p_netaddr_t *addr)
 {
@@ -770,16 +770,16 @@ int cmt_p2p_switch_dial_peer_with_address(cmt_p2p_switch_t *sw,
         return CMT_FAULT;
     }
     if (cmt_p2p_switch_is_dialing_or_existing_address(sw, addr)) {
-        return CMT_P2P_ERR_CURRENTLY_DIALING_OR_EXISTING;  /* :554-556 */
+        return CMT_P2P_ERR_CURRENTLY_DIALING_OR_EXISTING;  /* :555-557 */
     }
     na = grow(sw->dialing, &sw->cap_dialing, sw->n_dialing, sizeof(*sw->dialing));
     if (na == NULL) {
         return CMT_FAULT;
     }
     sw->dialing = (cmt_p2p_netaddr_t *)na;
-    sw->dialing[sw->n_dialing++] = *addr;                  /* :558 */
+    sw->dialing[sw->n_dialing++] = *addr;                  /* :559 */
     QGP_LOG_DEBUG(LOG_TAG, "Dialing peer %s", addr->id);
-    rc = cmt_p2p_transport_dial(sw->transport, addr);      /* :742 */
+    rc = cmt_p2p_transport_dial(sw->transport, addr);      /* :743 */
     if (rc != CMT_P2P_ERR_NONE) {
         return dial_finish(sw, addr, NULL, rc);
     }
@@ -819,10 +819,10 @@ static int dial_outcome(cmt_p2p_switch_t *sw, const cmt_p2p_netaddr_t *addr,
     cmt_p2p_peer_t *p;
     int rc;
 
-    dialing_delete(sw, addr->id);                          /* :559 */
-    if (conn == NULL) {                                    /* :751-770 */
+    dialing_delete(sw, addr->id);                          /* :560 */
+    if (conn == NULL) {                                    /* :752-771 */
         if (err == CMT_P2P_ERR_REJECTED_SELF) {
-            if (sw->addr_book != NULL) {                   /* :756-757 */
+            if (sw->addr_book != NULL) {                   /* :757-758 */
                 if (sw->addr_book->remove_address != NULL) {
                     sw->addr_book->remove_address(sw->addr_book->ctx, addr);
                 }
@@ -830,9 +830,9 @@ static int dial_outcome(cmt_p2p_switch_t *sw, const cmt_p2p_netaddr_t *addr,
                     sw->addr_book->add_our_address(sw->addr_book->ctx, addr);
                 }
             }
-            return err;                                    /* :759 */
+            return err;                                    /* :760 */
         }
-        if (cmt_p2p_switch_is_peer_persistent(sw, addr)) { /* :765-767 */
+        if (cmt_p2p_switch_is_peer_persistent(sw, addr)) { /* :766-768 */
             reconnect_to_peer(sw, addr);
         }
         return err;
@@ -842,11 +842,11 @@ static int dial_outcome(cmt_p2p_switch_t *sw, const cmt_p2p_netaddr_t *addr,
     if (p == NULL) {
         return CMT_FAULT;
     }
-    rc = add_peer(sw, p);                                  /* :772 */
+    rc = add_peer(sw, p);                                  /* :773 */
     if (rc != CMT_P2P_ERR_NONE) {
-        cmt_p2p_transport_cleanup(sw->transport, p);       /* :773 */
+        cmt_p2p_transport_cleanup(sw->transport, p);       /* :774 */
         if (cmt_p2p_peer_is_running(p)) {
-            cmt_p2p_peer_stop(p);                          /* :774-776 */
+            cmt_p2p_peer_stop(p);                          /* :775-777 */
         }
         bury(sw, p);
         return rc;
@@ -854,7 +854,7 @@ static int dial_outcome(cmt_p2p_switch_t *sw, const cmt_p2p_netaddr_t *addr,
     return CMT_P2P_ERR_NONE;
 }
 
-/* switch.go:572-576 */
+/* switch.go:573-577 */
 bool cmt_p2p_switch_is_dialing_or_existing_address(const cmt_p2p_switch_t *sw,
                                                    const cmt_p2p_netaddr_t *addr)
 {
@@ -867,7 +867,7 @@ bool cmt_p2p_switch_is_dialing_or_existing_address(const cmt_p2p_switch_t *sw,
             cmt_p2p_peer_set_has_ip(&sw->peers, &addr->ip));
 }
 
-/* switch.go:581-597 */
+/* switch.go:582-598 */
 int cmt_p2p_switch_add_persistent_peers(cmt_p2p_switch_t *sw,
                                         const char *const *addrs, int n)
 {
@@ -882,7 +882,7 @@ int cmt_p2p_switch_add_persistent_peers(cmt_p2p_switch_t *sw,
         return rc;
     }
     free(sw->persistent);
-    sw->persistent = arr;                                  /* :595 */
+    sw->persistent = arr;                                  /* :596 */
     sw->n_persistent = k;
     return CMT_P2P_ERR_NONE;
 }
@@ -901,7 +901,7 @@ static int add_ids(cmt_p2p_sw_id_t **list, int *n, const char *const *ids,
         }
         len = strlen(ids[i]);
         if (cmt_p2p_validate_id(ids[i], len) != CMT_P2P_ERR_NONE) {
-            return CMT_P2P_ERR_NETADDR_INVALID;            /* :602-605 / :614-617 */
+            return CMT_P2P_ERR_NETADDR_INVALID;            /* :603-606 / :615-618 */
         }
         if (!keep_prefix) {
             continue;
@@ -917,7 +917,7 @@ static int add_ids(cmt_p2p_sw_id_t **list, int *n, const char *const *ids,
     return CMT_P2P_ERR_NONE;
 }
 
-/* switch.go:599-609 — IDs before a bad one stay added (:601-607). */
+/* switch.go:600-610 — IDs before a bad one stay added (:602-608). */
 int cmt_p2p_switch_add_unconditional_peer_ids(cmt_p2p_switch_t *sw,
                                               const char *const *ids, int n)
 {
@@ -927,7 +927,7 @@ int cmt_p2p_switch_add_unconditional_peer_ids(cmt_p2p_switch_t *sw,
     return add_ids(&sw->unconditional, &sw->n_unconditional, ids, n, true);
 }
 
-/* switch.go:611-624 — all validated first, then handed over (:612-621). */
+/* switch.go:612-625 — all validated first, then handed over (:613-622). */
 int cmt_p2p_switch_add_private_peer_ids(cmt_p2p_switch_t *sw,
                                         const char *const *ids, int n)
 {
@@ -945,7 +945,7 @@ int cmt_p2p_switch_add_private_peer_ids(cmt_p2p_switch_t *sw,
         return rc;
     }
     if (sw->addr_book != NULL && sw->addr_book->add_private_ids != NULL) {
-        sw->addr_book->add_private_ids(sw->addr_book->ctx, ids, n);   /* :621 */
+        sw->addr_book->add_private_ids(sw->addr_book->ctx, ids, n);   /* :622 */
     }
     return CMT_P2P_ERR_NONE;
 }
@@ -966,7 +966,7 @@ bool cmt_p2p_switch_is_private_peer_id(const cmt_p2p_switch_t *sw,
     return false;
 }
 
-/* switch.go:626-633 */
+/* switch.go:627-634 */
 bool cmt_p2p_switch_is_peer_persistent(const cmt_p2p_switch_t *sw,
                                        const cmt_p2p_netaddr_t *na)
 {
@@ -996,7 +996,7 @@ static void sw_on_peer_error(void *ctx, cmt_p2p_peer_t *p, int reason)
     cmt_p2p_switch_stop_peer_for_error((cmt_p2p_switch_t *)ctx, p, reason);
 }
 
-/* peer.go:400-430 — reactorsByCh[chID]; nil → panic → onPeerError. */
+/* peer.go:400-438 — reactorsByCh[chID]; nil → panic → onPeerError. */
 static void sw_on_receive(void *ctx, cmt_p2p_peer_t *p, uint8_t ch_id,
                           const uint8_t *msg, size_t len)
 {
@@ -1015,18 +1015,18 @@ static bool sw_is_persistent(void *ctx, const cmt_p2p_netaddr_t *na)
     return cmt_p2p_switch_is_peer_persistent((const cmt_p2p_switch_t *)ctx, na);
 }
 
-/* ══ acceptRoutine / addPeer (switch.go:635-865) ══════════════════════ */
+/* ══ acceptRoutine / addPeer (switch.go:636-866) ══════════════════════ */
 
-/* switch.go:635-723 — one accepted connection (or accept error). */
+/* switch.go:636-724 — one accepted connection (or accept error). */
 static void accept_one(cmt_p2p_switch_t *sw, const cmt_p2p_transport_result_t *r)
 {
     cmt_p2p_peer_config_t pc;
     cmt_p2p_peer_t *p;
     int rc;
 
-    if (r->conn == NULL) {                                 /* :646-691 */
+    if (r->conn == NULL) {                                 /* :647-692 */
         if (r->err == CMT_P2P_ERR_REJECTED_SELF && sw->addr_book != NULL) {
-            if (sw->addr_book->remove_address != NULL) {   /* :652-654 */
+            if (sw->addr_book->remove_address != NULL) {   /* :653-655 */
                 sw->addr_book->remove_address(sw->addr_book->ctx, &r->addr);
             }
             if (sw->addr_book->add_our_address != NULL) {
@@ -1042,7 +1042,7 @@ static void accept_one(cmt_p2p_switch_t *sw, const cmt_p2p_transport_result_t *r
     if (p == NULL) {
         return;
     }
-    if (!cmt_p2p_switch_is_peer_unconditional(sw, p->id)) {   /* :693-709 */
+    if (!cmt_p2p_switch_is_peer_unconditional(sw, p->id)) {   /* :694-710 */
         int in = 0;
 
         cmt_p2p_switch_num_peers(sw, NULL, &in, NULL);
@@ -1050,16 +1050,16 @@ static void accept_one(cmt_p2p_switch_t *sw, const cmt_p2p_transport_result_t *r
             QGP_LOG_INFO(LOG_TAG, "Ignoring inbound connection: already have "
                          "enough inbound peers (have %d, max %d)", in,
                          sw->cfg.max_num_inbound_peers);
-            cmt_p2p_transport_cleanup(sw->transport, p);   /* :704 */
+            cmt_p2p_transport_cleanup(sw->transport, p);   /* :705 */
             bury(sw, p);
             return;
         }
     }
-    rc = add_peer(sw, p);                                  /* :711 */
+    rc = add_peer(sw, p);                                  /* :712 */
     if (rc != CMT_P2P_ERR_NONE) {
-        cmt_p2p_transport_cleanup(sw->transport, p);       /* :712 */
+        cmt_p2p_transport_cleanup(sw->transport, p);       /* :713 */
         if (cmt_p2p_peer_is_running(p)) {
-            cmt_p2p_peer_stop(p);                          /* :713-715 */
+            cmt_p2p_peer_stop(p);                          /* :714-716 */
         }
         bury(sw, p);
         QGP_LOG_INFO(LOG_TAG, "Ignoring inbound connection: error while adding "
@@ -1067,7 +1067,7 @@ static void accept_one(cmt_p2p_switch_t *sw, const cmt_p2p_transport_result_t *r
     }
 }
 
-/* switch.go:783-809 filterPeer (+ R-P2P-23). */
+/* switch.go:784-810 filterPeer (+ R-P2P-23). */
 static int filter_peer(cmt_p2p_switch_t *sw, cmt_p2p_peer_t *p)
 {
     cmt_p2p_peer_t *q = cmt_p2p_peer_set_get(&sw->peers, p->id);
@@ -1087,36 +1087,36 @@ static int filter_peer(cmt_p2p_switch_t *sw, cmt_p2p_peer_t *p)
             return CMT_P2P_ERR_NONE;
         }
     }
-    return CMT_P2P_ERR_REJECTED_DUPLICATE;                 /* :785-787 */
+    return CMT_P2P_ERR_REJECTED_DUPLICATE;                 /* :786-788 */
 }
 
-/* switch.go:813-865 addPeer */
+/* switch.go:814-866 addPeer */
 static int add_peer(cmt_p2p_switch_t *sw, cmt_p2p_peer_t *p)
 {
     int i, rc;
 
-    rc = filter_peer(sw, p);                               /* :814-816 */
+    rc = filter_peer(sw, p);                               /* :815-817 */
     if (rc != CMT_P2P_ERR_NONE) {
         return rc;
     }
-    if (!cmt_p2p_switch_is_running(sw)) {                  /* :822-826, R-P2P-29 */
+    if (!cmt_p2p_switch_is_running(sw)) {                  /* :823-827, R-P2P-29 */
         QGP_LOG_ERROR(LOG_TAG, "Won't start a peer - switch is not running");
         return CMT_P2P_ERR_NOT_RUNNING;
     }
-    for (i = 0; i < sw->n_reactors; i++) {                 /* :829-831 */
+    for (i = 0; i < sw->n_reactors; i++) {                 /* :830-832 */
         if (sw->reactors[i].init_peer != NULL) {
             sw->reactors[i].init_peer(sw->reactors[i].ctx, p);
         }
     }
-    if (cmt_p2p_peer_start(p) != CMT_OK) {                 /* :836-841 */
+    if (cmt_p2p_peer_start(p) != CMT_OK) {                 /* :837-842 */
         QGP_LOG_ERROR(LOG_TAG, "Error starting peer %s", p->id);
         return CMT_P2P_ERR_NOT_RUNNING;
     }
-    rc = cmt_p2p_peer_set_add(&sw->peers, p);              /* :846-854 */
+    rc = cmt_p2p_peer_set_add(&sw->peers, p);              /* :847-855 */
     if (rc != CMT_P2P_ERR_NONE) {
         return rc;
     }
-    for (i = 0; i < sw->n_reactors; i++) {                 /* :858-860 */
+    for (i = 0; i < sw->n_reactors; i++) {                 /* :859-861 */
         sw->reactors[i].add_peer(sw->reactors[i].ctx, p);
     }
     QGP_LOG_DEBUG(LOG_TAG, "Added peer %s", p->id);

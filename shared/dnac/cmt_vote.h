@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_vote.h
- * @brief cometbft @709fd12b `types/vote.go` ported to C.
+ * @brief cometbft @v0.38.26 `types/vote.go` ported to C.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
  * Wave R1-B of the cometbft → C consensus port. Additive only; nothing in
@@ -22,9 +22,9 @@
  * R1-A did for `cmt_proof_t`. `VoteFromProto` is the identity plus the
  * BlockID conversion.
  *
- * NOTE reference asymmetry (vote.go:77-80 versus :82): the comment says
+ * NOTE reference asymmetry (vote.go:77-80 versus :86): the comment says
  * "No validation is performed on the resulting vote", but the very first
- * statement calls `BlockIDFromProto`, which DOES validate (block.go:1548).
+ * statement calls `BlockIDFromProto`, which DOES validate (block.go:1554).
  * So a VoteFromProto with a malformed BlockID fails while one with a
  * malformed signature succeeds. Ported as-is; the map records the same
  * asymmetry in its REV 3 table.
@@ -35,18 +35,18 @@
  *    reference's `pubKey.VerifySignature`. It takes the SIGN BYTES —
  *    the output of cmt_vote_sign_bytes, i.e. cmt_pb_marshal_delimited over
  *    the CanonicalVote — as the message.
- * 2. `crypto.AddressSize` 20 → 32 at vote.go:303-305;
- *    `MaxSignatureSize` 64 → 4627 at :316 and :339.
+ * 2. `crypto.AddressSize` 20 → 32 at vote.go:307-309;
+ *    `MaxSignatureSize` 64 → 4627 at :320 and :343.
  * 3. `pubKey.Address()` — see cmt_pubkey_address below; it is the
  *    reference's own construction under the approved substitutions and is
  *    the function this tree already uses.
  * 4. panic → error return; caller-provided buffers for the sign bytes.
- * 5. `PrivValidator.SignVote` (:418) is HOST, reached through the
+ * 5. `PrivValidator.SignVote` (:422) is HOST, reached through the
  *    `cmt_sign_vote_fn` callback declared below.
  *
  * ── Determinism ────────────────────────────────────────────────────────
  * Pure functions of their arguments — except `cmt_sign_and_check_vote`,
- * which calls the host's signer and, at :451, ADOPTS THE TIMESTAMP THE
+ * which calls the host's signer and, at :455, ADOPTS THE TIMESTAMP THE
  * SIGNER RETURNED. That is the reference's single clock-touching path for
  * a vote and the only one the APPROVED clock POLICY
  * (atlas-dec-4ac0423068085c100fdfa3e264ca16bc) permits. No function in
@@ -54,23 +54,23 @@
  *
  * ── taşınmadı (not ported), with the reason ────────────────────────────
  *   · `ErrVoteConflictingVotes.Error` (:39-41),
- *     `ErrVoteExtensionInvalid.Error` (:55-57), `Vote.String` (:190-217) —
+ *     `ErrVoteExtensionInvalid.Error` (:55-57), `Vote.String` (:194-221) —
  *     display only.
  *   · The nine package-level `errors.New` values (:22-32) — the port has
  *     no error objects; each check names its reference error in a comment
  *     and returns CMT_REJECT.
  *
- * Reference @709fd12b (SHA-256 verified against tasks/comet-port-map.md
- * before use):
- *   types/vote.go             454 lines dd978df4530187c34902fad06ba1f7065896ece92b68d07d3a9bfc55ddb82e0f
+ * Reference @v0.38.26 (SHA-256 of /home/nocdem/refs/cometbft-v0.38.26,
+ * verified before use):
+ *   types/vote.go             458 lines ef9fc496c0dbebecb810b0c1a117fa7651e6602bb348cde3a2dfe56e1af183f3
  *   types/signed_msg_type.go   28 lines 17cc106f41d16e8f17f6152ddd73df607b02957557df4356c8f74b9750cd3a52
- *   types/signable.go          23 lines cd1dfb0b42c1b1e12e6b2f489fec2eb476d7c75c6aa395247f22e3be025011bd
+ *   types/signable.go          24 lines ec3376f8d8ef05e32f7e4ab3da36bd82b990db38833433d3645d5c4254fcedb0
  *   crypto/crypto.go           54 lines 60a32ee2c8f9a1090968ff9fcd3410f0099d21da8c7625b1b03f23d2647a1ceb
  *   crypto/ed25519/ed25519.go 228 lines d426c56a6ebc2ad3da5c83a1d0cc8d28c44fece62e4cc308d6e0d2d5f536b92b
  *     ⚠ crypto/ed25519/ed25519.go is NOT in the map's pin table; its
  *       SHA-256 was computed here. It is opened for ONE line range
  *       (:156-161, `Address()`), which is the concrete implementation of
- *       the `crypto.PubKey.Address()` interface method vote.go:220 calls.
+ *       the `crypto.PubKey.Address()` interface method vote.go:224 calls.
  * Governing records: umbrella rev 3 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * D-19 rev 6 (atlas-dec-d106407a31d7d16d49d51990b75c36c6),
  * K-1 rev 2 (atlas-dec-3ba8153088b0d60c63083028023b61be),
@@ -99,7 +99,7 @@
 extern "C" {
 #endif
 
-/** cometbft@709fd12b types/vote.go:64-75 — `type Vote struct`.
+/** cometbft@v0.38.26 types/vote.go:64-75 — `type Vote struct`.
  *  Field-identical to cmt_pb_vote_t; see the header. */
 typedef cmt_pb_vote_t cmt_vote_t;
 
@@ -112,14 +112,14 @@ typedef cmt_pb_vote_t cmt_vote_t;
  */
 #define CMT_VOTE_SIGN_BYTES_MAX 256
 
-/** cometbft@709fd12b types/signed_msg_type.go:6-13 — `IsVoteTypeValid()`.
+/** cometbft@v0.38.26 types/signed_msg_type.go:6-13 — `IsVoteTypeValid()`.
  *  Only PREVOTE and PRECOMMIT; PROPOSAL and UNKNOWN are not vote types. */
 bool cmt_is_vote_type_valid(int32_t t);
 
 /**
- * cometbft@709fd12b crypto/ed25519/ed25519.go:156-161 —
+ * cometbft@v0.38.26 crypto/ed25519/ed25519.go:156-161 —
  * `(pubKey PubKey) Address()`, the concrete implementation of the
- * `crypto.PubKey.Address()` that vote.go:220 compares against a vote's
+ * `crypto.PubKey.Address()` that vote.go:224 compares against a vote's
  * ValidatorAddress. The reference computes `tmhash.SumTruncated(pubKey)`:
  * the first `crypto.AddressSize` bytes of the key's hash
  * (crypto/tmhash/hash.go:74-77; crypto/crypto.go:8-11).
@@ -147,7 +147,7 @@ bool cmt_is_vote_type_valid(int32_t t);
 int cmt_pubkey_address(const uint8_t pubkey[CMT_PB_PUBKEY_LEN],
                        uint8_t out[CMT_ADDRESS_SIZE]);
 
-/** cometbft@709fd12b types/vote.go:34-37 — `type ErrVoteConflictingVotes`.
+/** cometbft@v0.38.26 types/vote.go:34-37 — `type ErrVoteConflictingVotes`.
  *  The two votes only; the reference's `Error()` string (:39-41) is not
  *  ported. The votes are REFERENCED, not copied, as the Go struct's
  *  pointers are. */
@@ -156,7 +156,7 @@ typedef struct {
     const cmt_vote_t *vote_b;   /* vote.go:36 */
 } cmt_err_vote_conflicting_votes_t;
 
-/** cometbft@709fd12b types/vote.go:43-48 — `NewConflictingVoteError()`.
+/** cometbft@v0.38.26 types/vote.go:43-48 — `NewConflictingVoteError()`.
  *  @return CMT_OK, CMT_FAULT on NULL. */
 int cmt_new_conflicting_vote_error(const cmt_vote_t *vote1,
                                    const cmt_vote_t *vote2,
@@ -170,16 +170,16 @@ int cmt_new_conflicting_vote_error(const cmt_vote_t *vote1,
  *          CMT_FAULT for a NULL `out`. */
 int cmt_vote_from_proto(const cmt_pb_vote_t *pv, cmt_vote_t *out);
 
-/** cometbft@709fd12b types/vote.go:371-390 — `(vote *Vote) ToProto()`.
- *  The identity; a NULL receiver is the reference's nil (:374-376). */
+/** cometbft@v0.38.26 types/vote.go:375-394 — `(vote *Vote) ToProto()`.
+ *  The identity; a NULL receiver is the reference's nil (:378-380). */
 int cmt_vote_to_proto(const cmt_vote_t *vote, cmt_pb_vote_t *out);
 
 /**
- * cometbft@709fd12b types/vote.go:392-406 — `VotesToProto()`.
+ * cometbft@v0.38.26 types/vote.go:396-410 — `VotesToProto()`.
  * ToProto over a list of POINTERS, and a NULL element is DROPPED rather
- * than emitted (:400-403 — the reference's own comment says protobuf
+ * than emitted (:404-407 — the reference's own comment says protobuf
  * crashes on a nil element of a repeated field). `*out_len` is therefore
- * at most `n`. A NULL `votes` is the reference's nil slice (:393-395) and
+ * at most `n`. A NULL `votes` is the reference's nil slice (:397-399) and
  * yields `*out_len == 0`.
  *
  * NOTE: the pinned tree contains NO caller of this function — grep
@@ -196,34 +196,34 @@ int cmt_votes_to_proto(const cmt_vote_t *const *votes, size_t n,
                        cmt_pb_vote_t *out, size_t cap, size_t *out_len);
 
 /**
- * cometbft@709fd12b types/vote.go:101-123 — `(vote *Vote) CommitSig()`.
+ * cometbft@v0.38.26 types/vote.go:105-127 — `(vote *Vote) CommitSig()`.
  * A complete BlockID gives a COMMIT entry, a zero one a NIL entry, and a
- * NULL vote an ABSENT entry (:103-105).
+ * NULL vote an ABSENT entry (:107-109).
  * @return CMT_OK; CMT_REJECT for a half-filled BlockID, where the
- *         reference panics (:113-115); CMT_FAULT on NULL `out`.
+ *         reference panics (:117-119); CMT_FAULT on NULL `out`.
  */
 int cmt_vote_commit_sig(const cmt_vote_t *vote, cmt_commit_sig_t *out);
 
-/** cometbft@709fd12b types/vote.go:125-138 —
+/** cometbft@v0.38.26 types/vote.go:129-142 —
  *  `(vote *Vote) ExtendedCommitSig()`. CommitSig plus the two extension
- *  fields; a NULL vote gives an ABSENT entry (:129-131). */
+ *  fields; a NULL vote gives an ABSENT entry (:133-135). */
 int cmt_vote_extended_commit_sig(const cmt_vote_t *vote,
                                  cmt_extended_commit_sig_t *out);
 
 /**
- * cometbft@709fd12b types/vote.go:140-156 — `VoteSignBytes()`.
+ * cometbft@v0.38.26 types/vote.go:144-160 — `VoteSignBytes()`.
  * CanonicalizeVote, then MarshalDelimited (uvarint length ‖ message).
  * THESE ARE THE BYTES A VALIDATOR SIGNS.
  * @param cap at least CMT_VOTE_SIGN_BYTES_MAX.
  * @return CMT_OK; CMT_REJECT where the reference panics on a marshal
- *         failure (:151-153) or if it does not fit; CMT_FAULT on NULL.
+ *         failure (:155-157) or if it does not fit; CMT_FAULT on NULL.
  */
 int cmt_vote_sign_bytes(const uint8_t *chain_id, size_t chain_id_len,
                         const cmt_pb_vote_t *vote,
                         uint8_t *out, size_t cap, size_t *out_len);
 
 /**
- * cometbft@709fd12b types/vote.go:158-171 — `VoteExtensionSignBytes()`.
+ * cometbft@v0.38.26 types/vote.go:162-175 — `VoteExtensionSignBytes()`.
  * The same shape over a CanonicalVoteExtension. The extension is
  * application data of unbounded length, so there is no fixed maximum:
  * `cap` must be at least 64 + 11 + the extension's length. A transient
@@ -237,20 +237,20 @@ int cmt_vote_extension_sign_bytes(const uint8_t *chain_id,
                                   const cmt_pb_vote_t *vote,
                                   uint8_t *out, size_t cap, size_t *out_len);
 
-/** cometbft@709fd12b types/vote.go:173-176 — `(vote *Vote) Copy()`.
+/** cometbft@v0.38.26 types/vote.go:177-180 — `(vote *Vote) Copy()`.
  *  A struct copy, as the reference's is: the extension DESCRIPTOR is
  *  copied and its bytes are SHARED, exactly as Go's `[]byte` header is
  *  copied and its backing array shared. */
 int cmt_vote_copy(const cmt_vote_t *vote, cmt_vote_t *out);
 
 /**
- * cometbft@709fd12b types/vote.go:219-236 — `verifyAndReturnProto()` and
+ * cometbft@v0.38.26 types/vote.go:223-240 — `verifyAndReturnProto()` and
  * `(vote *Vote) Verify()`, which are one function once the returned proto
  * is the vote itself.
  *
  * Two checks in the reference's order: the public key's address equals the
- * vote's ValidatorAddress (:220-222), then the signature verifies over the
- * vote's sign bytes (:224-226).
+ * vote's ValidatorAddress (:224-226), then the signature verifies over the
+ * vote's sign bytes (:228-230).
  * @return CMT_OK; CMT_REJECT for a wrong address
  *         (ErrVoteInvalidValidatorAddress) or a bad signature
  *         (ErrVoteInvalidSignature); CMT_FAULT on NULL, a backend
@@ -264,9 +264,9 @@ int cmt_vote_verify(const uint8_t *chain_id, size_t chain_id_len,
                     const uint8_t pubkey[CMT_PB_PUBKEY_LEN]);
 
 /**
- * cometbft@709fd12b types/vote.go:238-259 — `VerifyVoteAndExtension()`.
- * Verify, then — for a NON-NIL PRECOMMIT ONLY (:248) — the extension
- * signature must be present (:249-251) and must verify (:253-256).
+ * cometbft@v0.38.26 types/vote.go:242-263 — `VerifyVoteAndExtension()`.
+ * Verify, then — for a NON-NIL PRECOMMIT ONLY (:252) — the extension
+ * signature must be present (:253-255) and must verify (:257-260).
  * @param scratch a buffer for the extension sign bytes;
  *        `scratch_cap` must cover 64 + 11 + the extension's length.
  * @return CMT_OK, CMT_REJECT, CMT_FAULT on NULL, a backend failure, or an
@@ -280,9 +280,9 @@ int cmt_vote_verify_vote_and_extension(const uint8_t *chain_id,
                                        uint8_t *scratch, size_t scratch_cap);
 
 /**
- * cometbft@709fd12b types/vote.go:261-273 — `VerifyExtension()`.
+ * cometbft@v0.38.26 types/vote.go:265-277 — `VerifyExtension()`.
  * The extension signature ALONE. A prevote or a nil precommit is accepted
- * without any check at all (:264-266) — that early return is the
+ * without any check at all (:268-270) — that early return is the
  * reference's, and it means this function proves NOTHING about a nil vote.
  * @return CMT_OK, CMT_REJECT, CMT_FAULT on NULL, a backend failure, or an
  *         `extension_signature_len` larger than the array it names
@@ -294,32 +294,32 @@ int cmt_vote_verify_extension(const uint8_t *chain_id, size_t chain_id_len,
                               uint8_t *scratch, size_t scratch_cap);
 
 /**
- * cometbft@709fd12b types/vote.go:275-353 — `(vote *Vote) ValidateBasic()`.
+ * cometbft@v0.38.26 types/vote.go:279-357 — `(vote *Vote) ValidateBasic()`.
  * Eleven checks in the reference's order, ending in the two extension
  * rules: a vote that is not a non-nil precommit may carry NEITHER an
- * extension NOR an extension signature (:323-333), and one that is may
+ * extension NOR an extension signature (:327-337), and one that is may
  * carry an extension signature of at most CMT_MAX_SIGNATURE_SIZE and may
- * not carry an extension without one (:335-350).
+ * not carry an extension without one (:339-354).
  * @return CMT_OK, CMT_REJECT, CMT_FAULT on NULL.
  */
 int cmt_vote_validate_basic(const cmt_vote_t *vote);
 
-/** cometbft@709fd12b types/vote.go:355-369 — `(vote *Vote) EnsureExtension()`.
+/** cometbft@v0.38.26 types/vote.go:359-373 — `(vote *Vote) EnsureExtension()`.
  *  A non-nil precommit MUST carry an extension signature; anything else
  *  passes.
  *  @return CMT_OK, CMT_REJECT (ErrVoteExtensionAbsent), CMT_FAULT. */
 int cmt_vote_ensure_extension(const cmt_vote_t *vote);
 
 /**
- * cometbft@709fd12b types/priv_validator.go — `PrivValidator.SignVote`, the
- * host call vote.go:418 makes. HOST, not ported.
+ * cometbft@v0.38.26 types/priv_validator.go — `PrivValidator.SignVote`, the
+ * host call vote.go:422 makes. HOST, not ported.
  *
  * SHAPE. The dispatch for this wave suggested a plain byte-signer
  * `(ctx, sign_bytes, len, sig)`. That shape CANNOT express this call
  * site: `SignAndCheckVote` reads back THREE things the signer writes into
- * the vote — `v.Signature` (:423), `v.ExtensionSignature` (:432, :448)
- * and `v.Timestamp` (:451, the rule the dispatch names as PORT). A byte
- * signer leaves :451 a no-op and gives the extension signature no path at
+ * the vote — `v.Signature` (:427), `v.ExtensionSignature` (:436, :452)
+ * and `v.Timestamp` (:455, the rule the dispatch names as PORT). A byte
+ * signer leaves :455 a no-op and gives the extension signature no path at
  * all. This typedef therefore mirrors the reference's interface instead,
  * and the departure is recorded in the wave's report.
  *
@@ -336,7 +336,7 @@ typedef int (*cmt_sign_vote_fn)(void *ctx, const uint8_t *chain_id,
                                 size_t chain_id_len, cmt_pb_vote_t *v);
 
 /**
- * cometbft@709fd12b types/vote.go:408-454 — `SignAndCheckVote()`.
+ * cometbft@v0.38.26 types/vote.go:412-458 — `SignAndCheckVote()`.
  *
  * Signs `vote` through the host callback and then checks that what came
  * back makes sense. The reference's two-value return is split: `*out`
@@ -344,9 +344,9 @@ typedef int (*cmt_sign_vote_fn)(void *ctx, const uint8_t *chain_id,
  * carries its error.
  *
  * @param recoverable receives the reference's first return value: true for
- *        a signer failure (:419-422 — "failing to sign a vote has always
+ *        a signer failure (:423-426 — "failing to sign a vote has always
  *        been a recoverable error"), false for every malformed-vote case
- *        (:428, :437, :445), and TRUE on success (:453 `return true, nil`)
+ *        (:432, :441, :449), and TRUE on success (:457 `return true, nil`)
  *        — the reference's literal value, meaningless without an error.
  * @return CMT_OK, CMT_REJECT (see `*recoverable`), CMT_FAULT on NULL, or
  *         whatever the signer returned when the signer failed.

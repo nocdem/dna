@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_replay.c
- * @brief cometbft @709fd12b `consensus/replay.go`'s handshake decision in
+ * @brief cometbft @v0.38.26 `consensus/replay.go`'s handshake decision in
  *        C — see cmt_replay.h for the contract, the panic→FAULT reasoning
  *        and what is deliberately elsewhere.
  *
@@ -13,7 +13,7 @@
 #include <string.h>
 
 /*
- * cometbft@709fd12b consensus/replay.go:375-459 — the two switches of
+ * cometbft@v0.38.26 consensus/replay.go:375-459 — the two switches of
  * `ReplayBlocksWithContext`, with the I/O of each branch left to the host.
  *
  * ── ONE C-SPECIFIC DIFFERENCE IN HOW A COMPARISON IS FORMED ────────────
@@ -124,7 +124,7 @@ int cmt_replay_handshake_classify(int64_t store_height, int64_t store_base,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/replay.go:545-553 —
+/* cometbft@v0.38.26 consensus/replay.go:545-553 —
  * assertAppHashEqualsOneFromBlock() */
 int cmt_replay_assert_app_hash_equals_one_from_block(
         const uint8_t *app_hash, size_t app_hash_len,
@@ -145,7 +145,7 @@ int cmt_replay_assert_app_hash_equals_one_from_block(
     return CMT_OK;
 }
 
-/* cometbft@709fd12b consensus/replay.go:555-565 —
+/* cometbft@v0.38.26 consensus/replay.go:555-565 —
  * assertAppHashEqualsOneFromState() */
 int cmt_replay_assert_app_hash_equals_one_from_state(
         const uint8_t *app_hash, size_t app_hash_len,

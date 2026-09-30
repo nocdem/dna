@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_round_state.h
- * @brief cometbft @709fd12b `consensus/types/round_state.go` ported to C.
+ * @brief cometbft @v0.38.26 `consensus/types/round_state.go` ported to C.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
  * Wave R2-A of the cometbft → C consensus port. Additive only; nothing in
@@ -76,7 +76,7 @@
  *   · `String` (:182-185), `StringIndented` (:187-218), `StringShort`
  *     (:220-224) — display only.
  *
- * Reference @709fd12b (SHA-256 verified before use):
+ * Reference @v0.38.26 (SHA-256 verified before use):
  *   consensus/types/round_state.go  224 lines
  *     44404a9f7c8125449edc3756c50c5f7575a9de45db6fb2b568ead80ac3e8c354
  *   types/events.go                 188 lines
@@ -114,12 +114,12 @@ extern "C" {
 
 /* ══ RoundStepType (round_state.go:12-60) ═════════════════════════════ */
 
-/** cometbft@709fd12b consensus/types/round_state.go:15-16 —
+/** cometbft@v0.38.26 consensus/types/round_state.go:15-16 —
  *  `type RoundStepType uint8`, with the reference's own note: "These must
  *  be numeric, ordered." */
 typedef uint8_t cmt_round_step_t;
 
-/** cometbft@709fd12b consensus/types/round_state.go:18-31 — the eight
+/** cometbft@v0.38.26 consensus/types/round_state.go:18-31 — the eight
  *  steps, with the reference's comments. */
 enum {
     /** :20 Wait til CommitTime + timeoutCommit */
@@ -142,7 +142,7 @@ enum {
      * :30 NOTE: Update IsValid method if you change this! */
 };
 
-/** cometbft@709fd12b consensus/types/round_state.go:33-36 — `IsValid()`.
+/** cometbft@v0.38.26 consensus/types/round_state.go:33-36 — `IsValid()`.
  *  The reference writes `uint8(rs) >= 0x01 && uint8(rs) <= 0x08`; the
  *  `>= 0x01` half is not vacuous only because the type is unsigned in
  *  both languages, so 0 is the one value it excludes from below. */
@@ -152,7 +152,7 @@ static inline bool cmt_round_step_is_valid(cmt_round_step_t rs)
 }
 
 /**
- * cometbft@709fd12b consensus/types/round_state.go:38-60 — `String()`.
+ * cometbft@v0.38.26 consensus/types/round_state.go:38-60 — `String()`.
  *
  * PORTED, and the eight strings are byte-for-byte the reference's:
  * `EventDataRoundState.Step` is this string, it goes into the WAL, and
@@ -189,7 +189,7 @@ static inline const char *cmt_round_step_string(cmt_round_step_t rs)
 /* ══ RoundState (round_state.go:62-103) ═══════════════════════════════ */
 
 /**
- * cometbft@709fd12b consensus/types/round_state.go:64-103 —
+ * cometbft@v0.38.26 consensus/types/round_state.go:64-103 —
  * `type RoundState struct`. Every field carries its reference line.
  *
  * The eleven pointer fields are BORROWED: see "BLOCK AND PART-SET
@@ -268,7 +268,7 @@ static inline void cmt_round_state_init(cmt_round_state_t *rs)
 }
 
 /**
- * cometbft@709fd12b consensus/types/round_state.go:173-180 —
+ * cometbft@v0.38.26 consensus/types/round_state.go:173-180 —
  * `(rs *RoundState) RoundStateEvent()`.
  *
  * The reference returns a `types.EventDataRoundState` (events.go:93-97).

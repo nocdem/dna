@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_p2p_secret.h
- * @brief cometbft @709fd12b `p2p/conn/secret_connection.go` ported to C —
+ * @brief cometbft @v0.38.26 `p2p/conn/secret_connection.go` ported to C —
  *        the authenticated, encrypted connection every 4004 peer link runs
  *        inside.
  *

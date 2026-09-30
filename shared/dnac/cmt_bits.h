@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_bits.h
- * @brief cometbft @709fd12b `libs/bits.BitArray` ported to C.
+ * @brief cometbft @v0.38.26 `libs/bits.BitArray` ported to C.
  *
  * ═══ ACTIVATION: LIVE ═══════════════════════════════════════════════════
  * Wave R1-A of the cometbft → C consensus port. Live: the vote sets and
@@ -28,8 +28,8 @@
  *    functions enforce on the two bit arrays that travel as a message
  *    field of their own —
  *        MaxVotesCount = 10000                        (types/vote_set.go:18)
- *    refused above by ProposalPOLMessage.ValidateBasic (reactor.go:1663)
- *    and VoteSetBitsMessage.ValidateBasic (:1806) — so
+ *    refused above by ProposalPOLMessage.ValidateBasic (reactor.go:1684)
+ *    and VoteSetBitsMessage.ValidateBasic (:1830) — so
  *    CMT_BITS_MAX_BITS = 10000 and CMT_BITS_MAX_ELEMS = 157.
  *
  *    THE CAPACITY IS NOT A CONSENSUS RULE, and the two narrower arrays
@@ -37,9 +37,9 @@
  *      · a PART-SET bit array is one bit per block part, and
  *          MaxBlockPartsCount = MaxBlockSizeBytes / BlockPartSizeBytes + 1
  *                             = 104857600 / 65536 + 1
- *                             = 1601                 (types/params.go:16, :19, :22)
+ *                             = 1601                 (types/params.go:17, :20, :23)
  *        which CMT_PART_SET_MAX_PARTS (cmt_part_set.h) and
- *        NewValidBlockMessage.ValidateBasic (reactor.go:1614,
+ *        NewValidBlockMessage.ValidateBasic (reactor.go:1626,
  *        cmt_conr.c) enforce, unchanged by this capacity;
  *      · a VOTE bit array is one bit per validator, bounded by
  *        DNA_MAX_ACTIVE_VALIDATORS = 128 (shared/dnac/ledger_ids.h:103)
@@ -50,7 +50,7 @@
  *    Through wave R3 W1 this capacity was MaxBlockPartsCount (1601, 26
  *    words), which cut a reference peer's LEGAL 1602..10000-bit
  *    ProposalPOL or VoteSetBits off at the decoder and left the two
- *    10000 gates of reactor.go:1663/:1806 dead (deviation register
+ *    10000 gates of reactor.go:1684/:1830 dead (deviation register
  *    R3-AUD-19). Raised to MaxVotesCount by atlas-dec-b02c8de1f52854b20-
  *    dbfd64f6c987b34; the measured cost is ~1 KB per array.
  *
@@ -67,30 +67,30 @@
  * Every function here is a pure function of its arguments EXCEPT
  * cmt_bits_pick_random, which draws randomness. That function is
  * GOSSIP-ONLY: its single reference consumer is PeerState.PickVoteToSend
- * (consensus/reactor.go:1188), which chooses WHICH vote to send to a peer
+ * (consensus/reactor.go:1197), which chooses WHICH vote to send to a peer
  * next. It decides no state transition, enters no hash and is never part
  * of a vote, a block or a state root. Nothing else in this file consults a
  * clock, a map, or any global.
  *
  * ── taşınmadı (not ported), with the reason ────────────────────────────
- *   · `String` (:342-344), `StringIndented` (:348-355), `stringIndented`
- *     (:357-381) — display only.
- *   · `MarshalJSON` (:414-432), `UnmarshalJSON` (:438-472) — the reference
+ *   · `String` (:347-349), `StringIndented` (:353-360), `stringIndented`
+ *     (:362-386) — display only.
+ *   · `MarshalJSON` (:419-437), `UnmarshalJSON` (:443-477) — the reference
  *     persists a BitArray as JSON for its RPC; this port has no JSON and
  *     no RPC surface for consensus objects.
- *   · `ToProto` (:475-484) and `FromProto` (:487-497) — the codec's, in
+ *   · `ToProto` (:480-489) and `FromProto` (:492-502) — the codec's, in
  *     cmt_pb.{h,c} as cmt_bits_to_proto / cmt_bits_from_proto.
  *
- * Reference @709fd12b: libs/bits/bit_array.go, 497 lines,
- * de70791bae05efc5c2e059f56c6582b7cbe700531dfb73c0e53077cfaa297d49.
- * Moved to cometbft v0.38.26 (decision 2026-09-30-cometbft-pin-v0.38.26):
- * libs/bits/bit_array.go, 521 lines,
- * a0ae167455e93aa046884a2ba298e767da95f20bfcbb9fb738579a4d7af8e31b —
+ * Reference @v0.38.26: libs/bits/bit_array.go, 521 lines,
+ * a0ae167455e93aa046884a2ba298e767da95f20bfcbb9fb738579a4d7af8e31b.
+ * Moved from 709fd12b (decision 2026-09-30-cometbft-pin-v0.38.26), where
+ * the file was 497 lines,
+ * de70791bae05efc5c2e059f56c6582b7cbe700531dfb73c0e53077cfaa297d49 —
  * ASA-2025-003 (v0.38.19): `numElements` (:519-521), setIndex's word
  * guard (:93), getNumTrueIndices' shape guard (:285-288) and
- * `ValidateBasic` (:504-517). Lines up to :283 are unchanged, so the
- * @709fd12b citations below :283 still name the same lines; from the old
- * :284 on, v0.38.26 is 5 lines lower up to the old :497.
+ * `ValidateBasic` (:504-517). Every `:NNN` below is a v0.38.26 line;
+ * lines up to :284 are the same as 709fd12b's, and from the old :285 on
+ * v0.38.26 is 5 lines lower up to the old :497.
  * Governing records: umbrella rev 5 (atlas-dec-d5e766defde138eb6dd02e5b81e735a8),
  * INVARIANT (atlas-dec-7495d3372e004b24b4f6cc7bff5caf07),
  * chunking rev 2 (atlas-dec-6d35670369b69df4439cb720036fa2d7 — the part
@@ -117,17 +117,17 @@ extern "C" {
 
 /* ── Derived capacity (see the header comment for the derivation) ──── */
 
-/** cometbft@709fd12b types/params.go:16 — `MaxBlockSizeBytes`. */
+/** cometbft@v0.38.26 types/params.go:17 — `MaxBlockSizeBytes`. */
 #define CMT_BITS_MAX_BLOCK_SIZE_BYTES  104857600
-/** cometbft@709fd12b types/params.go:19 — `BlockPartSizeBytes`. */
+/** cometbft@v0.38.26 types/params.go:20 — `BlockPartSizeBytes`. */
 #define CMT_BITS_BLOCK_PART_SIZE_BYTES 65536
-/** cometbft@709fd12b types/params.go:22 — `MaxBlockPartsCount` = 1601.
+/** cometbft@v0.38.26 types/params.go:23 — `MaxBlockPartsCount` = 1601.
  *  The PART-SET bound (cmt_part_set.h's CMT_PART_SET_MAX_PARTS and
- *  reactor.go:1614), NOT this module's capacity — see the header. */
+ *  reactor.go:1626), NOT this module's capacity — see the header. */
 #define CMT_BITS_MAX_BLOCK_PARTS_COUNT \
     ((CMT_BITS_MAX_BLOCK_SIZE_BYTES / CMT_BITS_BLOCK_PART_SIZE_BYTES) + 1)
 
-/** cometbft@709fd12b types/vote_set.go:18 — `MaxVotesCount`. Restated
+/** cometbft@v0.38.26 types/vote_set.go:18 — `MaxVotesCount`. Restated
  *  here, and only here, because cmt_vote_set.h names the same value
  *  (CMT_MAX_VOTES_COUNT, :157) and including it would be a cycle: that
  *  header reaches this one through cmt_bits.h. The two are checked
@@ -147,7 +147,7 @@ extern "C" {
 #define CMT_BITS_NIL 1
 
 /**
- * cometbft@709fd12b libs/bits/bit_array.go:17-21 — `type BitArray struct`.
+ * cometbft@v0.38.26 libs/bits/bit_array.go:17-21 — `type BitArray struct`.
  * The `sync.Mutex` of :18 is dropped (single-threaded port).
  * `n_elems` is the reference's `len(Elems)`; it is ALWAYS
  * (bits + 63) / 64 for any array this module builds, and is validated
@@ -166,23 +166,23 @@ size_t cmt_bits_num_elems(int bits);
 
 /* ── constructors ───────────────────────────────────────────────────── */
 
-/** cometbft@709fd12b libs/bits/bit_array.go:25-33 — `NewBitArray()`.
+/** cometbft@v0.38.26 libs/bits/bit_array.go:25-33 — `NewBitArray()`.
  *  @return CMT_OK; CMT_BITS_NIL when bits <= 0 (the reference's nil,
  *          :26-28); CMT_REJECT when bits > CMT_BITS_MAX_BITS. */
 int cmt_bits_new(cmt_bit_array_t *ba, int bits);
 
-/** cometbft@709fd12b libs/bits/bit_array.go:38-53 — `NewBitArrayFromFn()`.
+/** cometbft@v0.38.26 libs/bits/bit_array.go:38-53 — `NewBitArrayFromFn()`.
  *  `fn` is called for i in [0, bits) in ascending order. */
 int cmt_bits_new_from_fn(cmt_bit_array_t *ba, int bits,
                          bool (*fn)(int i, void *ctx), void *ctx);
 
 /* ── accessors ──────────────────────────────────────────────────────── */
 
-/** cometbft@709fd12b libs/bits/bit_array.go:56-61 — `Size()`.
+/** cometbft@v0.38.26 libs/bits/bit_array.go:56-61 — `Size()`.
  *  A NULL array is the reference's nil and answers 0 (:57-59). */
 int cmt_bits_size(const cmt_bit_array_t *ba);
 
-/** cometbft@709fd12b libs/bits/bit_array.go:65-72 `GetIndex()` and
+/** cometbft@v0.38.26 libs/bits/bit_array.go:65-72 `GetIndex()` and
  *  :74-79 `getIndex()`.
  *  @return 1 set, 0 clear (NULL array :66-68, or i >= bits :75-77),
  *          CMT_FAULT for i < 0 — where Go would index with a negative
@@ -199,11 +199,11 @@ int cmt_bits_set_index(cmt_bit_array_t *ba, int i, bool v);
 
 /* ── combinators ────────────────────────────────────────────────────── */
 
-/** cometbft@709fd12b libs/bits/bit_array.go:105-112 `Copy()` and
+/** cometbft@v0.38.26 libs/bits/bit_array.go:105-112 `Copy()` and
  *  :114-121 `copy()`. @return CMT_OK, or CMT_BITS_NIL for a NULL input. */
 int cmt_bits_copy(const cmt_bit_array_t *ba, cmt_bit_array_t *out);
 
-/** cometbft@709fd12b libs/bits/bit_array.go:123-130 — `copyBits()`.
+/** cometbft@v0.38.26 libs/bits/bit_array.go:123-130 — `copyBits()`.
  *  Copies min(len(src.elems), (bits+63)/64) words into an array of the
  *  requested width; the reference does NOT clear bits above `bits` that
  *  survive inside the last copied word. */
@@ -211,7 +211,7 @@ int cmt_bits_copy_bits(const cmt_bit_array_t *ba, int bits,
                        cmt_bit_array_t *out);
 
 /**
- * cometbft@709fd12b libs/bits/bit_array.go:135-155 — `Or()`.
+ * cometbft@v0.38.26 libs/bits/bit_array.go:135-155 — `Or()`.
  * Result width is max(bits); the smaller operand is right-padded with 0.
  *
  * NOTE reference quirk (:147-151): the result is a copy of `ba` widened to
@@ -223,32 +223,32 @@ int cmt_bits_copy_bits(const cmt_bit_array_t *ba, int bits,
 int cmt_bits_or(const cmt_bit_array_t *ba, const cmt_bit_array_t *o,
                 cmt_bit_array_t *out);
 
-/** cometbft@709fd12b libs/bits/bit_array.go:160-171 `And()` and :173-179
+/** cometbft@v0.38.26 libs/bits/bit_array.go:160-171 `And()` and :173-179
  *  `and()`. Result width is min(bits); nil in, nil out (:161-163). */
 int cmt_bits_and(const cmt_bit_array_t *ba, const cmt_bit_array_t *o,
                  cmt_bit_array_t *out);
 
-/** cometbft@709fd12b libs/bits/bit_array.go:182-189 `Not()` and :191-197
+/** cometbft@v0.38.26 libs/bits/bit_array.go:182-189 `Not()` and :191-197
  *  `not()`. Complements ALL 64 bits of every word, including the padding
  *  above `bits` in the last word — that is the reference's behaviour and
  *  is what makes cmt_bits_get_num_true_indices and
  *  cmt_bits_get_nth_true_index disagree about the padding (see those). */
 int cmt_bits_not(const cmt_bit_array_t *ba, cmt_bit_array_t *out);
 
-/** cometbft@709fd12b libs/bits/bit_array.go:203-224 — `Sub()`.
+/** cometbft@v0.38.26 libs/bits/bit_array.go:203-224 — `Sub()`.
  *  Carry-less subtraction, a AND NOT b. Result width is always ba's. */
 int cmt_bits_sub(const cmt_bit_array_t *ba, const cmt_bit_array_t *o,
                  cmt_bit_array_t *out);
 
 /* ── predicates ─────────────────────────────────────────────────────── */
 
-/** cometbft@709fd12b libs/bits/bit_array.go:227-239 — `IsEmpty()`.
+/** cometbft@v0.38.26 libs/bits/bit_array.go:227-239 — `IsEmpty()`.
  *  NULL is the reference's nil and answers true (:228-230).
  *  @return 1 true, 0 false. */
 int cmt_bits_is_empty(const cmt_bit_array_t *ba);
 
 /**
- * cometbft@709fd12b libs/bits/bit_array.go:242-260 — `IsFull()`.
+ * cometbft@v0.38.26 libs/bits/bit_array.go:242-260 — `IsFull()`.
  * NULL is the reference's nil and answers true (:243-245).
  *
  * Two things the reference leaves implicit are explicit here:
@@ -280,10 +280,10 @@ int cmt_bits_is_full(const cmt_bit_array_t *ba);
 int cmt_bits_get_num_true_indices(const cmt_bit_array_t *ba);
 
 /**
- * cometbft@709fd12b libs/bits/bit_array.go:304-334 —
+ * cometbft@v0.38.26 libs/bits/bit_array.go:309-339 —
  * `getNthTrueIndex()`. n is 0-based.
  *
- * NOTE reference quirk (:317): the inner scan runs j over all 64 bits of a
+ * NOTE reference quirk (:322): the inner scan runs j over all 64 bits of a
  * word, INCLUDING the last word's padding, while getNumTrueIndices above
  * excludes that padding. The two therefore count differently on an array
  * whose padding bits are set (only Not() can do that). It is safe in the
@@ -291,18 +291,18 @@ int cmt_bits_get_num_true_indices(const cmt_bit_array_t *ba);
  * below the SMALLER count, and the padding bits are the highest indices;
  * so the n-th set bit is always a real one. Ported as-is.
  *
- * NOTE reference quirk (:315): the branch test is `count+setBits >= n`
+ * NOTE reference quirk (:320): the branch test is `count+setBits >= n`
  * where `> n` would be the exact condition. It is harmless: on the
  * boundary the inner loop finds no match and leaves `count` at exactly
  * the value the `else` branch would have set. Ported as-is.
  *
- * @return the index, or -1 when there is no n-th set bit (:333) or the
+ * @return the index, or -1 when there is no n-th set bit (:338) or the
  *         array is NULL / zero-word.
  */
 int cmt_bits_get_nth_true_index(const cmt_bit_array_t *ba, int n);
 
 /**
- * cometbft@709fd12b libs/bits/bit_array.go:265-282 — `PickRandom()`.
+ * cometbft@v0.38.26 libs/bits/bit_array.go:265-282 — `PickRandom()`.
  *
  * SUBSTITUTION: the reference draws with `cmtrand.Intn` (:276), a global
  * math/rand PRNG seeded from the OS at process start
@@ -310,7 +310,7 @@ int cmt_bits_get_nth_true_index(const cmt_bit_array_t *ba, int n);
  * `qgp_randombytes` (shared/crypto/utils/qgp_random.h:24) with rejection
  * sampling, which gives the same UNIFORM distribution over the set bits
  * but a different SEQUENCE. That is sound here and only here: the value
- * chooses which vote to gossip next (consensus/reactor.go:1188) and never
+ * chooses which vote to gossip next (consensus/reactor.go:1197) and never
  * reaches a hash, a vote, a block or a state root. It must not be reused
  * for anything a second node has to agree with.
  *
@@ -324,12 +324,12 @@ int cmt_bits_pick_random(const cmt_bit_array_t *ba, int *out_index);
 /* ── bytes / update ─────────────────────────────────────────────────── */
 
 /**
- * cometbft@709fd12b libs/bits/bit_array.go:384-396 — `Bytes()`.
+ * cometbft@v0.38.26 libs/bits/bit_array.go:389-401 — `Bytes()`.
  * (bits + 7) / 8 bytes, each word written little-endian, the last word
  * truncated to whatever room is left. The reference does NOT mask the
  * padding bits inside the final byte, so a Not() result reports them.
  *
- * NOTE reference quirk: `Bytes()` has no nil check (:385 locks the mutex
+ * NOTE reference quirk: `Bytes()` has no nil check (:390 locks the mutex
  * of a nil receiver) and panics on a nil BitArray. Here a NULL array
  * returns CMT_FAULT.
  *
@@ -340,7 +340,7 @@ int cmt_bits_bytes(const cmt_bit_array_t *ba, uint8_t *out, size_t cap,
                    size_t *out_len);
 
 /**
- * cometbft@709fd12b libs/bits/bit_array.go:400-410 — `Update()`.
+ * cometbft@v0.38.26 libs/bits/bit_array.go:405-415 — `Update()`.
  * Copies min(len) words from `o` into `ba`.
  *
  * NOTE reference quirk: it copies WORDS only — `ba.Bits` is left alone, so
@@ -348,7 +348,7 @@ int cmt_bits_bytes(const cmt_bit_array_t *ba, uint8_t *out, size_t cap,
  * array's contents. Ported as-is.
  *
  * @return CMT_OK, including when either side is NULL (the reference
- *         returns without doing anything, :401-403).
+ *         returns without doing anything, :406-408).
  */
 int cmt_bits_update(cmt_bit_array_t *ba, const cmt_bit_array_t *o);
 

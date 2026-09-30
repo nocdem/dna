@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_state.h
- * @brief cometbft @709fd12b `state/state.go` ported to C — the committed
+ * @brief cometbft @v0.38.26 `state/state.go` ported to C — the committed
  *        state, the block constructor and BFT-time's median.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -13,15 +13,15 @@
  * `State` is "a short description of the latest committed block" (:40-46):
  * everything needed to validate the NEXT one. Three of its functions
  * matter to consensus and are here:
- *   · `MakeBlock` (:234-263)     — the only path that builds a block;
- *   · `MedianTime` (:269-286)    — BFT-time's block time (D-20, D-19 rev 6
+ *   · `MakeBlock` (:234-267)     — the only path that builds a block;
+ *   · `MedianTime` (:273-292)    — BFT-time's block time (D-20, D-19 rev 6
  *                                  item 9);
- * (these two are ported at cometbft@v0.38.26 — :234-267 and :273-292
- * there; see their own comments below. The rest of this file still
- * cites @709fd12b: its state.go lines are the same in v0.38.26 up to
- * :239, and every line from the old :286 on sits 6 lower in v0.38.26 —
- * `MakeGenesisState` is :323-361 there.)
- *   · `MakeGenesisState` (:317-355) — where a chain begins.
+ * (these two changed at v0.38.21, CSA-2026-001; see their own comments
+ * below. Every line number in this file is cometbft@v0.38.26: its
+ * state.go lines are the same as 709fd12b's up to :239, and every line
+ * from the old :286 on sits 6 lower in v0.38.26 — at 709fd12b
+ * `MakeGenesisState` was :317-355.)
+ *   · `MakeGenesisState` (:323-361) — where a chain begins.
  * `Copy` (:83-106) and `IsEmpty` (:129-131) come with them.
  *
  * ── THE ONE CLOCK, AND IT IS NOT READ HERE ─────────────────────────────
@@ -32,7 +32,7 @@
  * reads no clock either; it takes the median.
  *
  * The single clock-touching path in this file is `MakeGenesisState`, and
- * only indirectly: it calls `ValidateAndComplete` (:318), whose zero-time
+ * only indirectly: it calls `ValidateAndComplete` (:324), whose zero-time
  * branch (types/genesis.go:101-103) consults `cmttime.Now()`. That reaches
  * the host through the `cmt_now_fn` callback this module THREADS THROUGH
  * and never calls itself. D-18 rev 2 makes `genesis_time` mandatory on
@@ -42,12 +42,12 @@
  * ⚠ A NOTE ON D-20's WORDING, because the two texts differ. D-20 rev 2
  * clause (5) describes the median as "the reference's WeightedMedian walk
  * with WEIGHT 1 over the non-ABSENT entries". The reference weights each
- * entry by its validator's VOTING POWER (state.go:280-281,
+ * entry by its validator's VOTING POWER (state.go:287-288,
  * `NewWeightedTime(commitSig.Timestamp, validator.VotingPower)`). This
  * port follows the REFERENCE, because D-19 rev 6 — approved later, on
  * 2026-09-09 — says "everything about blocks, headers, identities and
  * commits follows the pinned reference exactly" and its item (9) names
- * `state/state.go:269` as the definition. D-20's phrasing described a
+ * `state/state.go:269` (709fd12b; at v0.38.26: :273) as the definition. D-20's phrasing described a
  * mapping onto the older byte layout that D-19 rev 6 withdrew. The
  * difference is reported in the wave report; it is not resolved here.
  *
@@ -75,18 +75,18 @@
  *     which cmt_pb does not implement (it is on K-1's list but outside
  *     wave R1's scope). They persist and compare a state; nothing in
  *     consensus hashes one.
- *   · :295-301 `MakeGenesisStateFromFile`, :304-314 `MakeGenesisDocFromFile`
+ *   · :301-307 `MakeGenesisStateFromFile`, :310-320 `MakeGenesisDocFromFile`
  *     — HOST: `os.ReadFile` plus JSON. What they wrap,
  *     `MakeGenesisState`, is here.
  *   · :20-22 `stateKey` — a database key; R2 store.
  *
- * Reference @709fd12b (SHA-256 verified before use):
- *   state/state.go       355 lines
- *     02dc0f209451d28202e1cc25c901af29eb48ca6e83ec5b8a69d88be10b1472fc
+ * Reference @v0.38.26 (SHA-256 verified before use):
+ *   state/state.go       361 lines
+ *     38e6ca9be265c9e55bfffcaf40e04cd1368e00563af7dc2c321e95613ae6940f
  *   types/test_util.go   123 lines
  *     32333c3ef6fb373706e8d7d6b87723c08d9c5b35d0b23094eb42178a8ae8caf2
  *   version/version.go    21 lines
- *     76dd0813d4e0b20117f72569c72c8f1e802d1af3266f204485fd9ace989faf79
+ *     8b56396aa5291e1e02cef2790b583321a60b59ccc8e713548bc97d23aa6d9079
  *     ⚠ version/version.go is NOT in the map's pin table (pin rev 5 is
  *       pending); wave R1-B opened it for the same constant and reported
  *       it as an unpinned dependency. Reported again here.
@@ -122,12 +122,12 @@ extern "C" {
 #endif
 
 /**
- * cometbft@709fd12b version/version.go:6 — `TMCoreSemVer`, the string
+ * cometbft@v0.38.26 version/version.go:6 — `TMCoreSemVer`, the string
  * `InitStateVersion.Software` is set from (state.go:35).
  *
  * ANSWERED (operator, 2026-09-10 — R2 O4 question 4; recorded as
  * atlas-dec-157739c22040e385e1096932fc7d3a63): a DNA node writes ITS OWN
- * Nodus version here, not the reference's "0.38.19". A node reporting
+ * Nodus version here, not the reference's "0.38.19" (709fd12b; "0.38.26" at v0.38.26). A node reporting
  * another project's version in its own database helps nobody.
  *
  * The check that made the answer safe to give, which stands and is not
@@ -165,7 +165,7 @@ extern "C" {
 _Static_assert(sizeof(CMT_SOFTWARE_VERSION) <= (size_t)CMT_STATE_SOFTWARE_MAX,
                "CMT_SOFTWARE_VERSION does not fit in cmt_state_version_t.software");
 
-/** cometbft@709fd12b proto/tendermint/state/types.proto — `Version`, the
+/** cometbft@v0.38.26 proto/tendermint/state/types.proto — `Version`, the
  *  shape `InitStateVersion` (state.go:30-36) fills. */
 typedef struct {
     cmt_pb_consensus_t consensus;                 /* state.go:31-34 */
@@ -191,7 +191,7 @@ typedef struct {
 } cmt_state_storage_t;
 
 /**
- * cometbft@709fd12b state/state.go:47-80 — `type State struct`.
+ * cometbft@v0.38.26 state/state.go:47-80 — `type State struct`.
  *
  * Field for field, in the reference's order. Two representation notes:
  *
@@ -262,7 +262,7 @@ typedef struct {
 int cmt_state_init(cmt_state_t *state, cmt_state_storage_t *storage);
 
 /**
- * cometbft@709fd12b state/state.go:129-131 — `(state State) IsEmpty()`.
+ * cometbft@v0.38.26 state/state.go:129-131 — `(state State) IsEmpty()`.
  *
  * The reference is `state.Validators == nil`, with its own comment "XXX
  * can't compare to Empty". Here it is `state->validators.validators ==
@@ -271,7 +271,7 @@ int cmt_state_init(cmt_state_t *state, cmt_state_storage_t *storage);
  *
  * The distinction it preserves is real and easy to lose: a state built by
  * `MakeGenesisState` from a document with NO validators has a set that is
- * EMPTY BUT NOT NIL (state.go:325 `NewValidatorSet(nil)`), so it is NOT
+ * EMPTY BUT NOT NIL (state.go:331 `NewValidatorSet(nil)`), so it is NOT
  * empty by this test, while a zeroed state is. Binding the storage at init
  * would have made the two indistinguishable.
  *
@@ -281,7 +281,7 @@ int cmt_state_init(cmt_state_t *state, cmt_state_storage_t *storage);
 bool cmt_state_is_empty(const cmt_state_t *state);
 
 /**
- * cometbft@709fd12b state/state.go:83-106 — `(state State) Copy()`.
+ * cometbft@v0.38.26 state/state.go:83-106 — `(state State) Copy()`.
  *
  * A deep copy: the three sets go through `cmt_validator_set_copy` into
  * `dst`'s OWN storage, and every scalar is assigned.
@@ -390,25 +390,25 @@ int cmt_state_make_block(const cmt_state_t *state,
                          cmt_block_t *out);
 
 /**
- * cometbft@709fd12b state/state.go:317-355 — `MakeGenesisState()`.
+ * cometbft@v0.38.26 state/state.go:323-361 — `MakeGenesisState()`.
  *
- * Where a chain begins. `genDoc.ValidateAndComplete()` first (:318), then
+ * Where a chain begins. `genDoc.ValidateAndComplete()` first (:324), then
  * the sets, then every field of the initial State.
  *
  * ⚠ THE ADDRESSES ARE DERIVED, NOT READ. Each validator is built with
- * `NewValidator(val.PubKey, val.Power)` (:330), which derives the address
+ * `NewValidator(val.PubKey, val.Power)` (:336), which derives the address
  * from the key; the document's own `Address` field is never copied in.
  * `ValidateAndComplete` has already checked that a document that GAVE an
  * address gave the right one (genesis.go:93-95) and filled one in where it
  * did not (:96-98).
  *
  * ⚠ `Validators` and `NextValidators` DIFFER: the next set is the same
- * validators after `CopyIncrementProposerPriority(1)` (:333), so the
+ * validators after `CopyIncrementProposerPriority(1)` (:339), so the
  * proposer for the block after genesis is already elected.
  *
- * NOTE reference behaviour at :324, `genDoc.Validators == nil`. In Go a
- * NIL slice takes the two-empty-sets branch (:325-326) while an EMPTY but
- * non-nil slice takes the other one — and that one PANICS: :333 calls
+ * NOTE reference behaviour at :330, `genDoc.Validators == nil`. In Go a
+ * NIL slice takes the two-empty-sets branch (:331-332) while an EMPTY but
+ * non-nil slice takes the other one — and that one PANICS: :339 calls
  * `CopyIncrementProposerPriority(1)` unguarded, and
  * `IncrementProposerPriority` panics on an empty set
  * (validator_set.go:132-134). This representation CAN tell the two apart,

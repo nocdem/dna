@@ -1,6 +1,6 @@
 /**
  * @file nodus/src/witness/nodus_witness_cmt_autofile.h
- * @brief cometbft @709fd12b `libs/autofile` — `AutoFile` (autofile.go)
+ * @brief cometbft @v0.38.26 `libs/autofile` — `AutoFile` (autofile.go)
  *        and `Group` + `GroupReader` (group.go) — only what
  *        `consensus/wal.go` uses, in C, for the consensus WAL
  *        (nodus_witness_cmt_wal.h).
@@ -76,7 +76,7 @@
  * readdir() order, but computes only a sum, a min and a max, which do
  * not depend on the order.
  *
- * Reference @709fd12b (SHA-256 verified before use):
+ * Reference @v0.38.26 (SHA-256 verified before use):
  *   libs/autofile/autofile.go  194 lines
  *                   e87460d9a185c97e81f33915177c6cbe68ab20c9d6cbb0d97101630e14d18809
  *   libs/autofile/group.go     540 lines

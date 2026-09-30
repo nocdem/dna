@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_wal.h
- * @brief cometbft @709fd12b `consensus/wal.go`'s RECORD TYPES and the
+ * @brief cometbft @v0.38.26 `consensus/wal.go`'s RECORD TYPES and the
  *        WAL codec of `consensus/msgs.go:240-347`, in C.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -58,7 +58,7 @@
  * Pure functions of their arguments. No clock, no allocation, no global
  * state. The `kind` values are fixed by the .proto.
  *
- * Reference @709fd12b (SHA-256 verified before use):
+ * Reference @v0.38.26 (SHA-256 verified before use):
  *   consensus/wal.go   434 lines
  *                      f6bd6d512bbda08f31231d535b97df3c9c6feb3ddaf01a2054e2f0cf994f2a2d
  *   consensus/msgs.go  347 lines (:239-347)
@@ -92,16 +92,16 @@
 extern "C" {
 #endif
 
-/** cometbft@709fd12b consensus/reactor.go:30 — `maxMsgSize`, 1 MiB. */
+/** cometbft@v0.38.26 consensus/reactor.go:30 — `maxMsgSize`, 1 MiB. */
 #define CMT_MAX_MSG_SIZE 1048576
 
-/** cometbft@709fd12b consensus/wal.go:25 — `maxMsgSizeBytes`,
+/** cometbft@v0.38.26 consensus/wal.go:25 — `maxMsgSizeBytes`,
  *  "time.Time + max consensus msg size". The bound on ONE record's bytes;
  *  the check itself is the file container's (see the header). */
 #define CMT_WAL_MAX_MSG_SIZE_BYTES (CMT_MAX_MSG_SIZE + 24)
 
 /**
- * cometbft@709fd12b types/events.go:93-97 —
+ * cometbft@v0.38.26 types/events.go:93-97 —
  * `type EventDataRoundState struct` {Height int64, Round int32,
  * Step string}.
  *
@@ -112,14 +112,14 @@ extern "C" {
  */
 typedef cmt_pb_event_data_round_state_t cmt_event_data_round_state_t;
 
-/** cometbft@709fd12b consensus/wal.go:42-44 —
+/** cometbft@v0.38.26 consensus/wal.go:42-44 —
  *  `type EndHeightMessage struct`. */
 typedef struct {
     int64_t height;   /* wal.go:43 */
 } cmt_end_height_msg_t;
 
 /**
- * cometbft@709fd12b consensus/wal.go:46 — `type WALMessage interface{}`,
+ * cometbft@v0.38.26 consensus/wal.go:46 — `type WALMessage interface{}`,
  * as a tagged union of the FOUR kinds the oneof admits.
  *
  * THE TAG IS THE ONEOF FIELD NUMBER, 1-4 (consensus/wal.proto:33-40).
@@ -143,7 +143,7 @@ typedef struct {
 } cmt_wal_message_t;
 
 /**
- * cometbft@709fd12b consensus/wal.go:35-38 —
+ * cometbft@v0.38.26 consensus/wal.go:35-38 —
  * `type TimedWALMessage struct`.
  *
  * `time` is Go's `time.Time`: use CMT_TIME_ZERO for its zero value, never
@@ -158,7 +158,7 @@ typedef struct {
 /* ══ msgs.go — the WAL codec ══════════════════════════════════════════ */
 
 /**
- * cometbft@709fd12b consensus/msgs.go:240-295 — `WALToProto()`.
+ * cometbft@v0.38.26 consensus/msgs.go:240-295 — `WALToProto()`.
  *
  * The four cases in the reference's order. The MsgInfo case (:254-270)
  * runs `MsgToProto` and then the p2p `Wrap()` of
@@ -175,7 +175,7 @@ int cmt_wal_to_proto(const cmt_wal_message_t *msg,
                      cmt_pb_wal_message_t *out);
 
 /**
- * cometbft@709fd12b consensus/msgs.go:298-347 — `WALFromProto()`.
+ * cometbft@v0.38.26 consensus/msgs.go:298-347 — `WALFromProto()`.
  *
  * The four cases in the reference's order: the round-state event
  * (:305-310), MsgInfo through `Unwrap()` (message.go:78-109) and
@@ -197,7 +197,7 @@ int cmt_wal_from_proto(const cmt_pb_wal_message_t *msg,
                        cmt_wal_message_t *out);
 
 /**
- * The MESSAGE half of `WALEncoder.Encode` (cometbft@709fd12b
+ * The MESSAGE half of `WALEncoder.Encode` (cometbft@v0.38.26
  * consensus/wal.go:301-314): `WALToProto` (:302), the TimedWALMessage
  * built around it (:306-309) and `proto.Marshal` (:311).
  *
@@ -223,7 +223,7 @@ int cmt_timed_wal_message_encode(const cmt_timed_wal_message_t *v,
                                  uint8_t *out, size_t cap, size_t *out_len);
 
 /**
- * The MESSAGE half of `WALDecoder.Decode` (cometbft@709fd12b
+ * The MESSAGE half of `WALDecoder.Decode` (cometbft@v0.38.26
  * consensus/wal.go:404-419): `proto.Unmarshal` into a TimedWALMessage
  * (:404-408) and `WALFromProto` on its `Msg` (:410-413), then the pair
  * `{Time, Msg}` of :414-417.

@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_p2p_mconn.h
- * @brief cometbft @709fd12b `p2p/conn/connection.go` ported to C — the
+ * @brief cometbft @v0.38.26 `p2p/conn/connection.go` ported to C — the
  *        MConnection: several prioritized channels multiplexed over one
  *        SecretConnection, with packet split / reassembly, ping / pong,
  *        a throttled flush and send / receive rate limits.
@@ -86,7 +86,7 @@
  *   R-P2P-21  `NewMConnectionWithConfig`'s panics (:180-182, :794-796,
  *             and `make(chan, <0)`) are CMT_FAULT from init; so is a
  *             `max_packet_msg_payload_size` < 1 (the reference refuses
- *             only < 0, config.go:669-671, and at 0 `nextPacketMsg`
+ *             only < 0, config.go:677-679, and at 0 `nextPacketMsg`
  *             (:862-876) would emit empty non-EOF packets forever).
  * NOT ported: `SetLogger` / `String` (:218-223, :326-328), `_recover`
  * (:339-344 — no panics in C), `TestFuzz` / `TestFuzzConfig` (:141-142,
@@ -177,8 +177,8 @@ extern "C" {
 #define CMT_P2P_MCONN_DEFAULT_PING_INTERVAL_NS (60000LL * CMT_P2P_MCONN_NS_PER_MS) /* :46 */
 #define CMT_P2P_MCONN_DEFAULT_PONG_TIMEOUT_NS  (45000LL * CMT_P2P_MCONN_NS_PER_MS) /* :47 */
 
-/** config/config.go:625-628 — DefaultP2PConfig's values that
- *  p2p/switch.go:36-45 `MConnConfig` writes over DefaultMConnConfig: the
+/** config/config.go:633-636 — DefaultP2PConfig's values that
+ *  p2p/switch.go:37-46 `MConnConfig` writes over DefaultMConnConfig: the
  *  configuration a node actually runs with. */
 #define CMT_P2P_CONFIG_DEFAULT_FLUSH_THROTTLE_NS (100LL * CMT_P2P_MCONN_NS_PER_MS)
 #define CMT_P2P_CONFIG_DEFAULT_MAX_PACKET_MSG_PAYLOAD_SIZE 1024
@@ -251,8 +251,8 @@ typedef struct {
 /** connection.go:146-155 `DefaultMConnConfig()` — 512000 B/s. */
 void cmt_p2p_mconn_default_config(cmt_p2p_mconn_config_t *cfg);
 
-/** p2p/switch.go:36-45 `MConnConfig(DefaultP2PConfig())` — the flush,
- *  rates and payload of config/config.go:625-628 (100 ms, 5 120 000 B/s,
+/** p2p/switch.go:37-46 `MConnConfig(DefaultP2PConfig())` — the flush,
+ *  rates and payload of config/config.go:633-636 (100 ms, 5 120 000 B/s,
  *  1024) over DefaultMConnConfig's ping 60 s / pong 45 s. THE default a
  *  node runs with. */
 void cmt_p2p_mconn_p2p_default_config(cmt_p2p_mconn_config_t *cfg);
@@ -523,7 +523,7 @@ int cmt_p2p_mconn_recv(cmt_p2p_mconn_t *mc, const uint8_t *in, size_t len,
  *
  * WHY: the reference's `onReceive` (connection.go:676-678) runs on the
  * recvRoutine goroutine and BLOCKS it when a reactor's queue is full
- * (consensus/reactor.go:324, :330, :350 `peerMsgQueue <-`) — every
+ * (consensus/reactor.go:333, :339, :359 `peerMsgQueue <-`) — every
  * message waits for its own slot, and the Go runtime hands freed slots to
  * the blocked senders in FIFO order. One event loop cannot block inside
  * `on_receive`, so the caller asks "is there room for ONE message?"

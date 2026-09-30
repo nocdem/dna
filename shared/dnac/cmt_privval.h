@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_privval.h
- * @brief cometbft @709fd12b `privval/file.go`'s SIGNING LOGIC in C — the
+ * @brief cometbft @v0.38.26 `privval/file.go`'s SIGNING LOGIC in C — the
  *        double-sign guard, without the two JSON files.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
@@ -65,7 +65,7 @@
  * makes them so; nothing here assumes they are. The reuse rules compare
  * SIGN BYTES, never signatures.
  *
- * Reference @709fd12b (SHA-256 verified before use):
+ * Reference @v0.38.26 (SHA-256 verified before use):
  *   privval/file.go       466 lines
  *                         e685aed7ac222738f8f623fe2d5e8a7132aeefad3e4cdc909cd1168e6012db98
  *   libs/protoio/reader.go 107 lines — PINNED at pin rev 7; opened for
@@ -101,7 +101,7 @@ extern "C" {
 
 /* ── the four steps ─────────────────────────────────────────────────── */
 
-/** cometbft@709fd12b privval/file.go:26 — `stepNone`. */
+/** cometbft@v0.38.26 privval/file.go:26 — `stepNone`. */
 #define CMT_STEP_NONE      ((int8_t)0)
 /** privval/file.go:27 — `stepPropose`. */
 #define CMT_STEP_PROPOSE   ((int8_t)1)
@@ -124,13 +124,13 @@ _Static_assert((int)CMT_PV_SIGN_BYTES_MAX >=
                "last-sign-state buffer must hold a proposal's sign bytes");
 
 /**
- * cometbft@709fd12b privval/file.go:33-42 — `voteToStep()`.
+ * cometbft@v0.38.26 privval/file.go:33-42 — `voteToStep()`.
  *
  * The reference PANICS on any type that is neither a prevote nor a
  * precommit (:40). CMT_FAULT here, under the panic rule
  * (atlas-dec-d5e766defde138eb6dd02e5b81e735a8 rev 4): the vote a signer
  * is given is built by this node's own state machine
- * (consensus/state.go:2385-2392), and all ten callers of `signAddVote`
+ * (consensus/state.go:2378-2385), and all ten callers of `signAddVote`
  * pass a literal vote type, so a third type is a broken node-local
  * invariant and never a peer's message. The one caller that could carry a
  * foreign vote — the remote signer, privval/signer_requestHandler.go:56 —
@@ -143,7 +143,7 @@ int cmt_vote_to_step(const cmt_pb_vote_t *vote, int8_t *out);
 /* ── the mutable state ──────────────────────────────────────────────── */
 
 /**
- * cometbft@709fd12b privval/file.go:75-83 —
+ * cometbft@v0.38.26 privval/file.go:75-83 —
  * `type FilePVLastSignState struct`, minus its `filePath`.
  *
  * `has_signature` and `has_sign_bytes` are Go's nil-versus-set slices, and
@@ -163,13 +163,13 @@ typedef struct {
     size_t  sign_bytes_len;
 } cmt_lss_t;
 
-/** cometbft@709fd12b privval/file.go:85-91 —
+/** cometbft@v0.38.26 privval/file.go:85-91 —
  *  `(lss *FilePVLastSignState) reset()`.
  *  @return CMT_OK, CMT_FAULT on NULL. */
 int cmt_lss_reset(cmt_lss_t *lss);
 
 /**
- * cometbft@709fd12b privval/file.go:100-132 —
+ * cometbft@v0.38.26 privval/file.go:100-132 —
  * `(lss *FilePVLastSignState) CheckHRS()`.
  *
  * Refuses a regression in height (:102-104), round (:107-109) or step
@@ -191,7 +191,7 @@ int cmt_lss_check_hrs(const cmt_lss_t *lss, int64_t height, int32_t round,
 /* ── host callbacks ─────────────────────────────────────────────────── */
 
 /**
- * `pv.Key.PrivKey.Sign(signBytes)` — cometbft@709fd12b privval/file.go:328,
+ * `pv.Key.PrivKey.Sign(signBytes)` — cometbft@v0.38.26 privval/file.go:328,
  * :359 and :403.
  *
  * @param sign_bytes the exact bytes to sign; `len` at most
@@ -209,7 +209,7 @@ typedef int (*cmt_pv_raw_sign_fn)(void *ctx, const uint8_t *sign_bytes,
                                   size_t *sig_len);
 
 /**
- * `pv.LastSignState.Save()` — cometbft@709fd12b privval/file.go:421,
+ * `pv.LastSignState.Save()` — cometbft@v0.38.26 privval/file.go:421,
  * reached from `saveSigned`.
  *
  * MUST BE DURABLE BEFORE IT RETURNS — see the file header.
@@ -220,7 +220,7 @@ typedef int (*cmt_pv_raw_sign_fn)(void *ctx, const uint8_t *sign_bytes,
 typedef int (*cmt_pv_save_lss_fn)(void *ctx, const cmt_lss_t *lss);
 
 /**
- * cometbft@709fd12b privval/file.go:157-160 — `type FilePV struct`, with
+ * cometbft@v0.38.26 privval/file.go:157-160 — `type FilePV struct`, with
  * `FilePVKey` (:47-53) flattened into it and the private key replaced by
  * the signing callback.
  */
@@ -238,7 +238,7 @@ typedef struct {
 } cmt_file_pv_t;
 
 /**
- * cometbft@709fd12b privval/file.go:256-258 —
+ * cometbft@v0.38.26 privval/file.go:256-258 —
  * `(pv *FilePV) GetPubKey()`. The stored key; the reference's error return
  * has no C counterpart because there is nothing here that can fail.
  * @return CMT_OK, CMT_FAULT on NULL.
@@ -249,7 +249,7 @@ int cmt_pv_get_pub_key(const cmt_file_pv_t *pv,
 /* ── signing ────────────────────────────────────────────────────────── */
 
 /**
- * cometbft@709fd12b privval/file.go:308-368 —
+ * cometbft@v0.38.26 privval/file.go:308-368 —
  * `(pv *FilePV) signVote()`.
  *
  * The walk, line by line: `voteToStep` (:309); `CheckHRS` (:313-316);
@@ -276,7 +276,7 @@ int cmt_pv_sign_vote(cmt_file_pv_t *pv, const uint8_t *chain_id,
                      size_t chain_id_len, cmt_pb_vote_t *vote);
 
 /**
- * cometbft@709fd12b privval/file.go:373-410 —
+ * cometbft@v0.38.26 privval/file.go:373-410 —
  * `(pv *FilePV) signProposal()`. The same shape as `cmt_pv_sign_vote`
  * with `stepPropose` (:374) and no extension.
  * @return as `cmt_pv_sign_vote`.
@@ -284,21 +284,21 @@ int cmt_pv_sign_vote(cmt_file_pv_t *pv, const uint8_t *chain_id,
 int cmt_pv_sign_proposal(cmt_file_pv_t *pv, const uint8_t *chain_id,
                          size_t chain_id_len, cmt_pb_proposal_t *proposal);
 
-/** cometbft@709fd12b privval/file.go:262-267 —
+/** cometbft@v0.38.26 privval/file.go:262-267 —
  *  `(pv *FilePV) SignVote()`, the PrivValidator method: signVote, and its
  *  error wrapped. The wrapping has no C counterpart, so this is the
  *  interface entry point and nothing more. */
 int cmt_pv_sign_vote_iface(cmt_file_pv_t *pv, const uint8_t *chain_id,
                            size_t chain_id_len, cmt_pb_vote_t *vote);
 
-/** cometbft@709fd12b privval/file.go:271-276 —
+/** cometbft@v0.38.26 privval/file.go:271-276 —
  *  `(pv *FilePV) SignProposal()`. */
 int cmt_pv_sign_proposal_iface(cmt_file_pv_t *pv, const uint8_t *chain_id,
                                size_t chain_id_len,
                                cmt_pb_proposal_t *proposal);
 
 /**
- * cometbft@709fd12b privval/file.go:413-422 —
+ * cometbft@v0.38.26 privval/file.go:413-422 —
  * `(pv *FilePV) saveSigned()`.
  *
  * Records height, round, step, signature and sign bytes (:416-420) and
@@ -315,7 +315,7 @@ int cmt_pv_save_signed(cmt_file_pv_t *pv, int64_t height, int32_t round,
                        size_t sig_len);
 
 /**
- * cometbft@709fd12b privval/file.go:430-446 —
+ * cometbft@v0.38.26 privval/file.go:430-446 —
  * `checkVotesOnlyDifferByTimestamp()`.
  *
  * Decodes both sign-byte strings as CanonicalVote, reads the OLD
@@ -343,7 +343,7 @@ int cmt_check_votes_only_differ_by_timestamp(const uint8_t *last_sign_bytes,
                                              cmt_time_t *out_ts,
                                              bool *out_ok);
 
-/** cometbft@709fd12b privval/file.go:450-466 —
+/** cometbft@v0.38.26 privval/file.go:450-466 —
  *  `checkProposalsOnlyDifferByTimestamp()`. The same over
  *  CanonicalProposal; the panics of :453 and :456 are CMT_FAULT for the
  *  same reason. */

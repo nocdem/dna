@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_bsync_msgs.h
- * @brief cometbft @709fd12b `blocksync/msgs.go` + `blocksync/errors.go` +
+ * @brief cometbft @v0.38.26 `blocksync/msgs.go` + `blocksync/errors.go` +
  *        `proto/tendermint/blocksync/types.proto` (its generated
  *        `types.pb.go` codec) ported to C — the five messages of the
  *        block sync channel 0x40 — plus, from cometbft@v0.38.26 (the pin
@@ -8,7 +8,7 @@
  *        the SigCount stub of `stub.proto` / `stub.pb.go` / `nosig.go`
  *        (`cmt_bsync_msg_sig_count`). msgs.go, errors.go and types.pb.go
  *        are unchanged between the two pins for what is ported here;
- *        their cites below are the @709fd12b lines.
+ *        every cite below is a v0.38.26 line.
  *
  * Governing records: docs/plans/decisions/2026-09-29-blocksync-before-testnet.md
  * (operator, "Referanstan gidelim": MaxMsgSize = MaxBlockSizeBytes + 5,
@@ -51,7 +51,7 @@
  *     (`cmt_pb_block_unmarshal` + `cmt_block_from_proto`,
  *     `cmt_pb_extended_commit_unmarshal` + `cmt_extended_commit_from_proto`),
  *     where the reference decodes them inside `Message.Unmarshal`. Either
- *     way a malformed Block stops the peer (p2p/peer.go:407-412 for the
+ *     way a malformed Block stops the peer (p2p/peer.go:415-420 for the
  *     reference; reactor.go:265-270 here) and nothing else happens first:
  *     `ValidateMsg` returns nil for a BlockResponse (msgs.go:32-35).
  *   · unknown fields are skipped (:1477-1489); wire type 4 and a field
@@ -60,7 +60,7 @@
  * ── MaxMsgSize (msgs.go:12-19) ─────────────────────────────────────────
  * `types.MaxBlockSizeBytes + BlockResponseMessagePrefixSize (4) +
  * BlockResponseMessageFieldKeySize (1)` = 104 857 605 bytes, the channel's
- * `RecvMessageCapacity` (reactor.go:184). The operator chose the
+ * `RecvMessageCapacity` (reactor.go:189). The operator chose the
  * reference's value over the chain's Block.MaxBytes (decision record,
  * "Mesaj sınırı referansla aynı").
  *
@@ -77,9 +77,9 @@
  *   · types.pb.go's `String` / `Descriptor` / `XXX_*` / getters — Go
  *     reflection scaffolding.
  *
- * Reference @709fd12b: blocksync/msgs.go 56 lines, blocksync/errors.go 53
+ * Reference @v0.38.26: blocksync/msgs.go 56 lines, blocksync/errors.go 53
  * lines, proto/tendermint/blocksync/types.proto 43 lines, types.pb.go 1581
- * lines (/tmp/r2-a-ref/cometbft-709fd12b4b18cf1442d43c5d34009392c7d674ed).
+ * lines (/home/nocdem/refs/cometbft-v0.38.26; the same bytes as 709fd12b).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -98,7 +98,7 @@
 extern "C" {
 #endif
 
-/** blocksync/reactor.go:20 — `BlocksyncChannel`. */
+/** blocksync/reactor.go:22 — `BlocksyncChannel`. */
 #define CMT_BSYNC_CHANNEL 0x40
 
 /** msgs.go:14 — `BlockResponseMessagePrefixSize`. */
@@ -252,7 +252,7 @@ int cmt_bsync_msg_sig_count(const uint8_t *in, size_t len,
  *     ErrInvalidHeight (:44-46); base > height → ErrInvalidHeight (:47-49);
  *   · StatusRequest: nil (:50-51);
  *   · NONE (the nil Sum): ErrNilMessage (:23-25) — the reference reaches
- *     that only for a nil message, and p2p/peer.go:417-422's Unwrap of an
+ *     that only for a nil message, and p2p/peer.go:425-430's Unwrap of an
  *     empty Message stops the peer before ValidateMsg runs; both are "stop
  *     the peer", so the kind is reported here as NIL.
  * @param err may be NULL; receives the kind.

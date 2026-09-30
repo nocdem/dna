@@ -1,6 +1,6 @@
 /**
  * @file nodus_witness_cmt_autofile.c
- * @brief cometbft @709fd12b `libs/autofile` (AutoFile, Group,
+ * @brief cometbft @v0.38.26 `libs/autofile` (AutoFile, Group,
  *        GroupReader) — only what consensus/wal.go uses. Contract and
  *        citations: nodus_witness_cmt_autofile.h.
  */

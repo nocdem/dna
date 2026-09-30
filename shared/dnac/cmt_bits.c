@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_bits.c
- * @brief cometbft @709fd12b `libs/bits.BitArray` ported to C — see cmt_bits.h.
+ * @brief cometbft @v0.38.26 `libs/bits.BitArray` ported to C — see cmt_bits.h.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -56,7 +56,7 @@ size_t cmt_bits_num_elems(int bits)
 
 /* ── constructors ───────────────────────────────────────────────────── */
 
-/* cometbft@709fd12b libs/bits/bit_array.go:25-33 — NewBitArray() */
+/* cometbft@v0.38.26 libs/bits/bit_array.go:25-33 — NewBitArray() */
 int cmt_bits_new(cmt_bit_array_t *ba, int bits)
 {
     if (ba == NULL) {
@@ -74,7 +74,7 @@ int cmt_bits_new(cmt_bit_array_t *ba, int bits)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b libs/bits/bit_array.go:38-53 — NewBitArrayFromFn() */
+/* cometbft@v0.38.26 libs/bits/bit_array.go:38-53 — NewBitArrayFromFn() */
 int cmt_bits_new_from_fn(cmt_bit_array_t *ba, int bits,
                          bool (*fn)(int i, void *ctx), void *ctx)
 {
@@ -99,7 +99,7 @@ int cmt_bits_new_from_fn(cmt_bit_array_t *ba, int bits,
 
 /* ── accessors ──────────────────────────────────────────────────────── */
 
-/* cometbft@709fd12b libs/bits/bit_array.go:56-61 — Size() */
+/* cometbft@v0.38.26 libs/bits/bit_array.go:56-61 — Size() */
 int cmt_bits_size(const cmt_bit_array_t *ba)
 {
     if (ba == NULL) {
@@ -108,7 +108,7 @@ int cmt_bits_size(const cmt_bit_array_t *ba)
     return ba->bits;
 }
 
-/* cometbft@709fd12b libs/bits/bit_array.go:65-72 GetIndex(), :74-79 getIndex() */
+/* cometbft@v0.38.26 libs/bits/bit_array.go:65-72 GetIndex(), :74-79 getIndex() */
 int cmt_bits_get_index(const cmt_bit_array_t *ba, int i)
 {
     size_t w;
@@ -164,7 +164,7 @@ int cmt_bits_set_index(cmt_bit_array_t *ba, int i, bool v)
 
 /* ── combinators ────────────────────────────────────────────────────── */
 
-/* cometbft@709fd12b libs/bits/bit_array.go:105-112 Copy(), :114-121 copy() */
+/* cometbft@v0.38.26 libs/bits/bit_array.go:105-112 Copy(), :114-121 copy() */
 int cmt_bits_copy(const cmt_bit_array_t *ba, cmt_bit_array_t *out)
 {
     if (out == NULL) {
@@ -183,7 +183,7 @@ int cmt_bits_copy(const cmt_bit_array_t *ba, cmt_bit_array_t *out)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b libs/bits/bit_array.go:123-130 — copyBits() */
+/* cometbft@v0.38.26 libs/bits/bit_array.go:123-130 — copyBits() */
 int cmt_bits_copy_bits(const cmt_bit_array_t *ba, int bits,
                        cmt_bit_array_t *out)
 {
@@ -211,7 +211,7 @@ int cmt_bits_copy_bits(const cmt_bit_array_t *ba, int bits,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b libs/bits/bit_array.go:135-155 — Or() */
+/* cometbft@v0.38.26 libs/bits/bit_array.go:135-155 — Or() */
 int cmt_bits_or(const cmt_bit_array_t *ba, const cmt_bit_array_t *o,
                 cmt_bit_array_t *out)
 {
@@ -248,7 +248,7 @@ int cmt_bits_or(const cmt_bit_array_t *ba, const cmt_bit_array_t *o,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b libs/bits/bit_array.go:160-171 And(), :173-179 and() */
+/* cometbft@v0.38.26 libs/bits/bit_array.go:160-171 And(), :173-179 and() */
 int cmt_bits_and(const cmt_bit_array_t *ba, const cmt_bit_array_t *o,
                  cmt_bit_array_t *out)
 {
@@ -279,7 +279,7 @@ int cmt_bits_and(const cmt_bit_array_t *ba, const cmt_bit_array_t *o,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b libs/bits/bit_array.go:182-189 Not(), :191-197 not() */
+/* cometbft@v0.38.26 libs/bits/bit_array.go:182-189 Not(), :191-197 not() */
 int cmt_bits_not(const cmt_bit_array_t *ba, cmt_bit_array_t *out)
 {
     size_t i;
@@ -303,7 +303,7 @@ int cmt_bits_not(const cmt_bit_array_t *ba, cmt_bit_array_t *out)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b libs/bits/bit_array.go:203-224 — Sub() */
+/* cometbft@v0.38.26 libs/bits/bit_array.go:203-224 — Sub() */
 int cmt_bits_sub(const cmt_bit_array_t *ba, const cmt_bit_array_t *o,
                  cmt_bit_array_t *out)
 {
@@ -331,7 +331,7 @@ int cmt_bits_sub(const cmt_bit_array_t *ba, const cmt_bit_array_t *o,
 
 /* ── predicates ─────────────────────────────────────────────────────── */
 
-/* cometbft@709fd12b libs/bits/bit_array.go:227-239 — IsEmpty() */
+/* cometbft@v0.38.26 libs/bits/bit_array.go:227-239 — IsEmpty() */
 int cmt_bits_is_empty(const cmt_bit_array_t *ba)
 {
     size_t i;
@@ -347,7 +347,7 @@ int cmt_bits_is_empty(const cmt_bit_array_t *ba)
     return 1;
 }
 
-/* cometbft@709fd12b libs/bits/bit_array.go:242-260 — IsFull() */
+/* cometbft@v0.38.26 libs/bits/bit_array.go:242-260 — IsFull() */
 int cmt_bits_is_full(const cmt_bit_array_t *ba)
 {
     size_t   i;
@@ -410,7 +410,7 @@ int cmt_bits_get_num_true_indices(const cmt_bit_array_t *ba)
     return count;
 }
 
-/* cometbft@709fd12b libs/bits/bit_array.go:304-334 — getNthTrueIndex() */
+/* cometbft@v0.38.26 libs/bits/bit_array.go:309-339 — getNthTrueIndex() */
 int cmt_bits_get_nth_true_index(const cmt_bit_array_t *ba, int n)
 {
     size_t i;
@@ -419,28 +419,28 @@ int cmt_bits_get_nth_true_index(const cmt_bit_array_t *ba, int n)
     if (ba == NULL || ba->n_elems == 0 || ba->n_elems > CMT_BITS_MAX_ELEMS) {
         return -1;
     }
-    for (i = 0; i < ba->n_elems; i++) {              /* :309 */
-        int set_bits = cmt_bits_ones_count64(ba->elems[i]);   /* :311 */
+    for (i = 0; i < ba->n_elems; i++) {              /* :314 */
+        int set_bits = cmt_bits_ones_count64(ba->elems[i]);   /* :316 */
 
-        /* NOTE reference quirk (:315): `>=` where `>` is the exact test.
+        /* NOTE reference quirk (:320): `>=` where `>` is the exact test.
          * Harmless — see the header. */
         if (count + set_bits >= n) {
-            for (int j = 0; j < 64; j++) {           /* :317-325 */
+            for (int j = 0; j < 64; j++) {           /* :322-330 */
                 if ((ba->elems[i] & ((uint64_t)1 << (unsigned)j)) != 0) {
                     if (count == n) {
-                        return (int)(i * 64u) + j;   /* :321 */
+                        return (int)(i * 64u) + j;   /* :326 */
                     }
                     count++;
                 }
             }
         } else {
-            count += set_bits;                       /* :328 */
+            count += set_bits;                       /* :333 */
         }
     }
-    return -1;                                       /* :333 */
+    return -1;                                       /* :338 */
 }
 
-/* cometbft@709fd12b libs/bits/bit_array.go:265-282 — PickRandom().
+/* cometbft@v0.38.26 libs/bits/bit_array.go:265-282 — PickRandom().
  * cmtrand.Intn (libs/rand/random.go:280-285) is replaced by
  * qgp_randombytes with rejection sampling; see the header. */
 int cmt_bits_pick_random(const cmt_bit_array_t *ba, int *out_index)
@@ -492,7 +492,7 @@ int cmt_bits_pick_random(const cmt_bit_array_t *ba, int *out_index)
 
 /* ── bytes / update ─────────────────────────────────────────────────── */
 
-/* cometbft@709fd12b libs/bits/bit_array.go:384-396 — Bytes() */
+/* cometbft@v0.38.26 libs/bits/bit_array.go:389-401 — Bytes() */
 int cmt_bits_bytes(const cmt_bit_array_t *ba, uint8_t *out, size_t cap,
                    size_t *out_len)
 {
@@ -505,7 +505,7 @@ int cmt_bits_bytes(const cmt_bit_array_t *ba, uint8_t *out, size_t cap,
     if (ba->bits < 0 || ba->n_elems > CMT_BITS_MAX_ELEMS) {
         return CMT_FAULT;
     }
-    num_bytes = ((size_t)ba->bits + 7u) / 8u;        /* :388 */
+    num_bytes = ((size_t)ba->bits + 7u) / 8u;        /* :393 */
     *out_len = num_bytes;
     if (num_bytes == 0) {
         return CMT_OK;
@@ -514,7 +514,7 @@ int cmt_bits_bytes(const cmt_bit_array_t *ba, uint8_t *out, size_t cap,
         return CMT_REJECT;
     }
     memset(out, 0, num_bytes);
-    for (i = 0; i < ba->n_elems; i++) {              /* :390-394 */
+    for (i = 0; i < ba->n_elems; i++) {              /* :395-399 */
         uint64_t v = ba->elems[i];
         size_t   base = i * 8u;
         size_t   k;
@@ -529,18 +529,18 @@ int cmt_bits_bytes(const cmt_bit_array_t *ba, uint8_t *out, size_t cap,
     return CMT_OK;
 }
 
-/* cometbft@709fd12b libs/bits/bit_array.go:400-410 — Update() */
+/* cometbft@v0.38.26 libs/bits/bit_array.go:405-415 — Update() */
 int cmt_bits_update(cmt_bit_array_t *ba, const cmt_bit_array_t *o)
 {
     size_t n;
 
     if (ba == NULL || o == NULL) {
-        return CMT_OK;                               /* :401-403 no-op */
+        return CMT_OK;                               /* :406-408 no-op */
     }
     if (ba->n_elems > CMT_BITS_MAX_ELEMS || o->n_elems > CMT_BITS_MAX_ELEMS) {
         return CMT_FAULT;
     }
-    /* :407 copy(bA.Elems, o.Elems) moves min(len, len) words and, NOTE
+    /* :412 copy(bA.Elems, o.Elems) moves min(len, len) words and, NOTE
      * reference quirk, leaves bA.Bits untouched. */
     n = (ba->n_elems < o->n_elems) ? ba->n_elems : o->n_elems;
     if (n != 0) {

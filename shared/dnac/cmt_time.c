@@ -1,6 +1,6 @@
 /**
  * @file shared/dnac/cmt_time.c
- * @brief cometbft @709fd12b `types/time/time.go` in C — see cmt_time.h.
+ * @brief cometbft @v0.38.26 `types/time/time.go` in C — see cmt_time.h.
  *
  * NOTHING HERE READS A CLOCK. `Now()` is HOST; this file declares only its
  * type (in the header) and never calls it.
@@ -15,7 +15,7 @@
 #include <string.h>
 
 /* Go `time.Time.IsZero()` — year one, NOT the Unix epoch. Call sites in
- * the pinned tree: types/block.go:668, types/genesis.go:101. Moved here
+ * the pinned tree: types/block.go:674, types/genesis.go:101. Moved here
  * from cmt_genesis.c by wave R1-D; the body is unchanged. */
 bool cmt_time_is_zero(cmt_time_t t)
 {
@@ -37,7 +37,7 @@ int cmt_time_validate(cmt_time_t t)
     return CMT_OK;
 }
 
-/* cometbft@709fd12b types/time/time.go:16-18 — Canonical().
+/* cometbft@v0.38.26 types/time/time.go:16-18 — Canonical().
  * The identity on this representation; see the header for why. */
 int cmt_time_canonical(cmt_time_t t, cmt_time_t *out)
 {
@@ -72,7 +72,7 @@ int64_t cmt_time_unix_nano(cmt_time_t t)
     return (int64_t)ns;
 }
 
-/* cometbft@709fd12b types/time/time.go:27-32 — NewWeightedTime() */
+/* cometbft@v0.38.26 types/time/time.go:27-32 — NewWeightedTime() */
 int cmt_new_weighted_time(cmt_time_t t, int64_t weight,
                           cmt_weighted_time_t *out)
 {
