@@ -217,6 +217,7 @@ const portfolio = createPortfolio({
   // panel below the asset list: SINGLE_COLUMN_DASHBOARD) scrolls it into view.
   selectAsset(chain, symbol, action) {
     if (!wallet) return;
+    if (action !== 'earn') showEarn(false);
     $('chain').value = chain; selectChain(); $('asset').value = symbol;
     if (action === 'select') { if (matchMedia(SINGLE_COLUMN_DASHBOARD).matches) $('send-form').scrollIntoView({ block: 'start' }); return; }
     $(action === 'send' ? 'quick-send' : action === 'earn' ? 'quick-earn' : 'quick-receive').click();
@@ -356,16 +357,25 @@ function setEarnAvailable(available) {
   $('quick-earn').hidden = !available; $('nav-earn').hidden = !available;
   portfolio.setEarn(NODUS_ASSET.chain, available);
 }
+// The right-hand column shows EITHER the Send / Receive panel OR the Earn
+// (staking) panel (operator, 2026-10-01): Earn swaps Send / Receive out,
+// Send or Receive swaps it back. Earn mode needs staking to be available.
+let earnMode = false;
+function showEarn(on) {
+  earnMode = !!on && !$('quick-earn').hidden;
+  $('send-form').hidden = earnMode; $('stake-panel').hidden = !earnMode;
+  $('quick-earn').setAttribute('aria-pressed', String(earnMode));
+}
 function hideStaking() {
   stakeCheck++; stakeView = undefined; setEarnAvailable(false);
-  $('stake-panel').hidden = true; $('validator-list').replaceChildren(); $('delegation-list').replaceChildren();
+  showEarn(false); $('validator-list').replaceChildren(); $('delegation-list').replaceChildren();
   $('delegate-validator').replaceChildren(); $('stake-status').textContent = ''; $('delegate-hint').textContent = ''; $('undelegate-note').textContent = ''; $('become-note').textContent = '';
 }
 async function refreshStaking() {
   const client = nodusClient, source = wallet, check = ++stakeCheck;
   if (!client || !source || source.locked || !client.stakeable) { hideStaking(); return; }
   const current = () => check === stakeCheck && client === nodusClient && source === wallet && !source.locked;
-  $('stake-panel').hidden = false; setEarnAvailable(true); $('stake-status').textContent = 'Reading validators and your delegations…';
+  setEarnAvailable(true); $('stake-status').textContent = 'Reading validators and your delegations…';
   try {
     const view = await adapters.nodus.stakingOverview({ client, from: source.addresses.nodus });
     if (!current()) return;
@@ -686,21 +696,27 @@ $('chain').onchange = selectChain;
 // Both shortcuts lead to the same Send / Receive panel: receive block on top,
 // send block below it.
 $('quick-send').onclick = () => {
+  showEarn(false);
   $('send-block-title').focus({ preventScroll: true });
   $('send-block').scrollIntoView({ block: 'start' });
 };
 $('quick-receive').onclick = () => {
+  showEarn(false);
   $('receive-title').focus({ preventScroll: true });
   $('receive-panel').scrollIntoView({ block: 'start' });
 };
-// Earn opens the NODUS staking panel; the Send / Receive panel switches to
-// NODUS too, so Activity shows where a delegation will be tracked.
+// Earn replaces the Send / Receive panel with the NODUS staking panel; the
+// selected network moves to NODUS so Activity shows where a delegation is
+// tracked.
 $('quick-earn').onclick = () => {
-  if ($('stake-panel').hidden) return;
+  if ($('quick-earn').hidden) return;
   if ($('chain').value !== NODUS_ASSET.chain) { $('chain').value = NODUS_ASSET.chain; selectChain(); }
+  showEarn(true);
   $('stake-title').focus({ preventScroll: true });
   $('stake-panel').scrollIntoView({ block: 'start' });
 };
+$('nav-earn').onclick = event => { event.preventDefault(); $('quick-earn').click(); };
+document.querySelector('.wallet-navigation a[href="#send-form"]').onclick = () => showEarn(false);
 $('lock').onclick = lock;
 $('copy-address').onclick = async () => {
   // Nodus/Cellframe/Ixios addresses are absent until their local derivation settles.
