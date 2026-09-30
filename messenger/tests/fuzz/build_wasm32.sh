@@ -14,15 +14,18 @@
 # Targets and what they compile (the parser sources unchanged):
 #   fuzz_seal_decode      dna_api.c + shared crypto
 #   fuzz_message_decrypt  dna_api.c + shared crypto
-#   fuzz_offline_queue    dht_offline_queue.c
-#   fuzz_contact_request  dht_contact_request.c
-#   fuzz_contactlist      dht_contactlist.c + dna_api.c, RAW MODE ONLY
+#   fuzz_offline_queue    dht_offline_queue.c + codec/offline_queue_codec.c
+#   fuzz_contact_request  dht_contact_request.c + codec/contact_request_codec.c
+#   fuzz_contactlist      dht_contactlist.c + codec/contactlist_codec.c + dna_api.c,
+#                         RAW MODE ONLY
 #                         (-DFUZZ_CONTACTLIST_RAW_ONLY): json-c has no wasm32
 #                         build in this tree, so fuzz_wasm_abort_stubs.c
 #                         supplies the json-c symbols as abort() — the header
 #                         / length / Seal path is covered, the JSON parser is
 #                         not (it sits behind the authorship check, which a
 #                         raw input cannot pass).
+#   NC-1 moved the parsers of the last three into messenger/codec/; the I/O
+#   files call them there, so each target compiles its codec unit too.
 # Not built for wasm32 (gap, see messenger/docs/FUZZING.md):
 #   fuzz_anchor_json (json-c), fuzz_salt_packet (gek.c pulls the group
 #   database; available once NC-1 extracts the KEM-wrap codec),
@@ -156,8 +159,10 @@ build() {
 
 build fuzz_seal_decode "$here/fuzz_seal_decode.c" "$here/fuzz_keys.c" "$messenger/dna_api.c"
 build fuzz_message_decrypt "$here/fuzz_message_decrypt.c" "$here/fuzz_common.c" "$messenger/dna_api.c"
-build fuzz_offline_queue "$here/fuzz_offline_queue.c" "$messenger/dht/shared/dht_offline_queue.c"
-build fuzz_contact_request "$here/fuzz_contact_request.c" "$messenger/dht/shared/dht_contact_request.c"
+build fuzz_offline_queue "$here/fuzz_offline_queue.c" "$messenger/dht/shared/dht_offline_queue.c" \
+  "$messenger/codec/offline_queue_codec.c"
+build fuzz_contact_request "$here/fuzz_contact_request.c" "$messenger/dht/shared/dht_contact_request.c" \
+  "$messenger/codec/contact_request_codec.c"
 build fuzz_contactlist -DFUZZ_CONTACTLIST_RAW_ONLY "$here/fuzz_contactlist.c" "$here/fuzz_keys.c" \
-  "$messenger/dht/client/dht_contactlist.c" "$messenger/dna_api.c"
+  "$messenger/dht/client/dht_contactlist.c" "$messenger/codec/contactlist_codec.c" "$messenger/dna_api.c"
 echo "build_wasm32: outputs in $OUT_DIR"

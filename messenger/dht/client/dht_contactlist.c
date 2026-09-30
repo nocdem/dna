@@ -336,7 +336,11 @@ int dht_contactlist_fetch(
     encrypted_len = ntohl(encrypted_len);
     offset += 4;
 
-    if (offset + encrypted_len + 4 > blob_size) {
+    // Remaining-length form: "offset + encrypted_len + 4 > blob_size" wraps
+    // with a 32-bit size_t (wasm32) for a large wire encrypted_len and passes
+    // (BUGS.md, NC-5 fuzz, 2026-09-30). offset (25) + 4 <= blob_size (>= 29,
+    // checked above), so the subtraction cannot underflow.
+    if (encrypted_len > blob_size - offset - 4) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid encrypted length\n");
         free(blob);
         return -1;
@@ -351,7 +355,8 @@ int dht_contactlist_fetch(
     sig_len = ntohl(sig_len);
     offset += 4;
 
-    if (offset + sig_len != blob_size) {
+    // offset <= blob_size (encrypted_len check above)
+    if (sig_len != blob_size - offset) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid signature length\n");
         free(blob);
         return -1;

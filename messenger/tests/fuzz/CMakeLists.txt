@@ -19,6 +19,10 @@
 # how fuzz_dht_stub.c replaces the nodus_ops I/O for the parsers that live
 # inside DHT I/O files (dht_contactlist.c, dht_salt_agreement.c).
 #
+# NC-1 moved the parsers those I/O files call into messenger/codec/; each
+# target compiles the codec unit as well, so the parser code is instrumented
+# here instead of being resolved (uninstrumented) from libdna.so.
+#
 # Nothing here is registered with ctest; fuzzers are run by hand.
 # =============================================================================
 
@@ -106,22 +110,26 @@ add_fuzz_target(fuzz_contactlist
     ${FUZZ_DIR}/fuzz_keys.c
     ${FUZZ_DIR}/fuzz_dht_stub.c
     ${DNA_ROOT}/dht/client/dht_contactlist.c
+    ${DNA_ROOT}/codec/contactlist_codec.c
     ${DNA_ROOT}/dna_api.c)
 
 add_fuzz_target(fuzz_salt_packet
     ${FUZZ_DIR}/fuzz_salt_packet.c
     ${FUZZ_DIR}/fuzz_keys.c
     ${FUZZ_DIR}/fuzz_dht_stub.c
-    ${DNA_ROOT}/dht/shared/dht_salt_agreement.c)
+    ${DNA_ROOT}/dht/shared/dht_salt_agreement.c
+    ${DNA_ROOT}/codec/salt_agreement_codec.c)
 
 # ── The original five harnesses, now with their parser instrumented ──────────
 add_fuzz_target(fuzz_offline_queue
     ${FUZZ_DIR}/fuzz_offline_queue.c
-    ${DNA_ROOT}/dht/shared/dht_offline_queue.c)
+    ${DNA_ROOT}/dht/shared/dht_offline_queue.c
+    ${DNA_ROOT}/codec/offline_queue_codec.c)
 
 add_fuzz_target(fuzz_contact_request
     ${FUZZ_DIR}/fuzz_contact_request.c
-    ${DNA_ROOT}/dht/shared/dht_contact_request.c)
+    ${DNA_ROOT}/dht/shared/dht_contact_request.c
+    ${DNA_ROOT}/codec/contact_request_codec.c)
 
 add_fuzz_target(fuzz_message_decrypt
     ${FUZZ_DIR}/fuzz_message_decrypt.c
@@ -141,7 +149,9 @@ add_executable(fuzz_seed_gen
     ${FUZZ_DIR}/fuzz_keys.c
     ${FUZZ_DIR}/fuzz_dht_stub.c
     ${DNA_ROOT}/dht/client/dht_contactlist.c
-    ${DNA_ROOT}/dht/shared/dht_salt_agreement.c)
+    ${DNA_ROOT}/codec/contactlist_codec.c
+    ${DNA_ROOT}/dht/shared/dht_salt_agreement.c
+    ${DNA_ROOT}/codec/salt_agreement_codec.c)
 target_compile_options(fuzz_seed_gen PRIVATE
     -fsanitize=address -fno-omit-frame-pointer -g -O1 ${FUZZ_WARN})
 target_link_options(fuzz_seed_gen PRIVATE -fsanitize=address)

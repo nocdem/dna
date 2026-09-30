@@ -298,7 +298,10 @@ int dht_deserialize_messages(
         uint16_t sender_len = ntohs(sender_len_network);
         ptr += sizeof(uint16_t);
 
-        if (ptr + sender_len > end) goto truncated;
+        // Wire lengths are compared with the bytes remaining, never as
+        // "ptr + len > end" (pointer overflow on a 32-bit address space).
+        // Every read above is bounds-checked first, so ptr <= end holds.
+        if (sender_len > (size_t)(end - ptr)) goto truncated;
         msg->sender = (char*)malloc(sender_len + 1);
         if (!msg->sender) goto error;
         memcpy(msg->sender, ptr, sender_len);
@@ -312,7 +315,7 @@ int dht_deserialize_messages(
         uint16_t recipient_len = ntohs(recipient_len_network);
         ptr += sizeof(uint16_t);
 
-        if (ptr + recipient_len > end) goto truncated;
+        if (recipient_len > (size_t)(end - ptr)) goto truncated;
         msg->recipient = (char*)malloc(recipient_len + 1);
         if (!msg->recipient) goto error;
         memcpy(msg->recipient, ptr, recipient_len);
@@ -333,7 +336,7 @@ int dht_deserialize_messages(
             goto error;
         }
 
-        if (ptr + msg->ciphertext_len > end) goto truncated;
+        if (msg->ciphertext_len > (size_t)(end - ptr)) goto truncated;
         msg->ciphertext = (uint8_t*)malloc(msg->ciphertext_len);
         if (!msg->ciphertext) goto error;
         memcpy(msg->ciphertext, ptr, msg->ciphertext_len);

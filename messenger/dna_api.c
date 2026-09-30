@@ -540,8 +540,13 @@ dna_error_t dna_decrypt_message_raw_alg(
     size_t signature_size = header.signature_size;
 
     // Read recipient entries
+    // Length checks below are written as "field > bytes remaining" with
+    // offset <= ciphertext_len established first, never as "offset + field >
+    // ciphertext_len": the wire fields are uint32_t and with a 32-bit size_t
+    // (wasm32) that sum wraps and passes (BUGS.md, NC-5 fuzz, 2026-09-30).
+    // offset == sizeof(header) <= ciphertext_len here (checked above).
     size_t entries_size = sizeof(dna_recipient_entry_t) * recipient_count;
-    if (offset + entries_size > ciphertext_len) {
+    if (entries_size > ciphertext_len - offset) {
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
@@ -595,9 +600,12 @@ dna_error_t dna_decrypt_message_raw_alg(
     }
 
     // Read nonce, encrypted data, tag
-    if (offset + 12 + encrypted_size + 16 > ciphertext_len) {
-        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: truncated message (need %zu, have %zu)",
-                     offset + 12 + encrypted_size + 16, ciphertext_len);
+    // offset <= ciphertext_len (entries check above), so the subtractions
+    // cannot underflow.
+    if (ciphertext_len - offset < 12 + 16 ||
+        encrypted_size > ciphertext_len - offset - (12 + 16)) {
+        QGP_LOG_WARN(LOG_TAG, "Decrypt failed: truncated message (enc_size=%zu, have %zu after offset %zu)",
+                     encrypted_size, ciphertext_len - offset, offset);
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
@@ -614,7 +622,8 @@ dna_error_t dna_decrypt_message_raw_alg(
     offset += 16;
 
     // Parse signature (v0.07: type(1) + sig_size(2) + sig_bytes)
-    if (signature_size > 0 && offset + signature_size <= ciphertext_len) {
+    // offset <= ciphertext_len (nonce/data/tag check above).
+    if (signature_size > 0 && signature_size <= ciphertext_len - offset) {
         if (qgp_signature_deserialize(ciphertext + offset, signature_size,
                                        &signature) != 0) {
             QGP_LOG_WARN(LOG_TAG, "Decrypt failed: signature deserialization failed (sig_size=%zu)", signature_size);
@@ -1147,8 +1156,12 @@ dna_error_t dna_decrypt_message_gek(
     offset += 12;
 
     // === PARSE ENCRYPTED PAYLOAD + TAG ===
+    // Remaining-length form (a uint32_t wire field added to offset wraps with
+    // a 32-bit size_t; see dna_decrypt_message_raw_alg). offset (65) <=
+    // ciphertext_len (>= 84, checked above).
     size_t encrypted_payload_len = header.encrypted_size;
-    if (offset + encrypted_payload_len + 16 > ciphertext_len) {
+    if (ciphertext_len - offset < 16 ||
+        encrypted_payload_len > ciphertext_len - offset - 16) {
         return DNA_ERROR_DECRYPT;
     }
 
@@ -1159,7 +1172,7 @@ dna_error_t dna_decrypt_message_gek(
     offset += 16;
 
     // === PARSE SIGNATURE ===
-    if (offset + 3 > ciphertext_len) {
+    if (ciphertext_len - offset < 3) {
         return DNA_ERROR_DECRYPT;
     }
 
@@ -1173,7 +1186,7 @@ dna_error_t dna_decrypt_message_gek(
     size_t sig_size = ntohs(sig_size_16);
     offset += 2;
 
-    if (offset + sig_size > ciphertext_len) {
+    if (sig_size > ciphertext_len - offset) {
         return DNA_ERROR_DECRYPT;
     }
 

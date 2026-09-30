@@ -500,6 +500,27 @@ target_link_libraries(test_mnemonic_password_repair ${TEST_LIBS})
 add_test(NAME test_mnemonic_password_repair COMMAND test_mnemonic_password_repair)
 
 # =============================================================================
+# Test: 32-bit length-wrap regression (NC-5 fuzz findings, 2026-09-30)
+# =============================================================================
+# Seal decode (dna_api.c) and contact-list blob parse (dht_contactlist.c) with
+# declared lengths that wrap a 32-bit size_t; must be rejected. On 64-bit the
+# old code passes too (it pins unchanged accept/reject); the header of the
+# test names what fails under -m32 / wasm32. dht_contactlist.c is compiled in
+# with the fuzz nodus_ops stub so fetch/publish run against memory, no DHT.
+pkg_check_modules(JSONC REQUIRED json-c)
+add_executable(test_len_wrap_32
+    test_len_wrap_32.c
+    ${DNA_ROOT}/dht/client/dht_contactlist.c
+    ${CMAKE_SOURCE_DIR}/fuzz/fuzz_dht_stub.c)
+target_include_directories(test_len_wrap_32 PRIVATE
+    ${CMAKE_SOURCE_DIR}/fuzz
+    ${DNA_ROOT}/dht
+    ${DNA_ROOT}/dht/shared
+    ${JSONC_INCLUDE_DIRS})
+target_link_libraries(test_len_wrap_32 ${TEST_LIBS} ${JSONC_LIBRARIES})
+add_test(NAME test_len_wrap_32 COMMAND test_len_wrap_32)
+
+# =============================================================================
 # CTest integration
 # =============================================================================
 enable_testing()
