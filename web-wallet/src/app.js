@@ -401,7 +401,7 @@ function renderStaking(view) {
     } else row.append('(this validator is not in the list above, so it cannot be undelegated from here)');
     return row;
   }) : [Object.assign(document.createElement('p'), { textContent: 'You have no delegations.' })]));
-  $('undelegate-note').textContent = `Undelegating returns the NODUS to your address as a separate coin that stays locked for ${view.lockText} after the validator set next changes. Until then it keeps earning, but it cannot be sent or delegated again. Withdraw everything, or leave at least ${minText} NODUS delegated. The network fee is paid from your spendable NODUS.`;
+  $('undelegate-note').textContent = `Undelegating returns the NODUS to your address as a separate coin that stays locked for ${view.lockText} after the validator set next changes. Until then it cannot be sent or delegated again. Withdraw everything, or leave at least ${minText} NODUS delegated. The network fee is paid from your spendable NODUS.`;
   const bond = nodusAmountText(rules.selfStake), maxRate = `${(Number(rules.commissionMaxBps) / 100).toFixed(2).replace(/\.?0+$/, '')}%`;
   $('become-fields').hidden = !!view.ownValidator;
   $('become-note').textContent = view.ownValidator

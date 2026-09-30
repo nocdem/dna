@@ -375,7 +375,7 @@ export async function prepareStake({ client, from, kind, validator, amount, comm
   } else if (kind === 'undelegate') {
     review.push(['Action', 'Undelegate NODUS'], ['Validator', d.validator], ['Amount returned to you', nodusText(d.amount)],
       ['Network fee', `${nodusText(d.fee)} (paid from your spendable NODUS)`], ['Change back to you', nodusText(d.change)],
-      ['Lock', `The returned NODUS arrives as a separate coin at your address. It stays locked for ${view.lockText} after the validator set next changes; until then it keeps earning and cannot be sent or delegated again.`]);
+      ['Lock', `The returned NODUS arrives as a separate coin at your address. It stays locked for ${view.lockText} after the validator set next changes; until then it cannot be sent or delegated again.`]);
   } else {
     review.push(['Action', 'Become a validator'], ['Bond', nodusText(d.amount)], ['Commission', RATE(Number(d.commissionBps))],
       ['Bond returns to', `${from} (your own address)`], ['Network fee', nodusText(d.fee)], ['Change back to you', nodusText(d.change)],
