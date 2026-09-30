@@ -958,8 +958,8 @@ covers a ready module, because none exists).
 
 Still missing before anyone can send NODUS from the web wallet:
 
-- Package (c3) — the module itself (and its (b)/(c1)/(c2) prerequisites) and
-  the registration of its factory in `src/nodus/send-module.js`.
+- The network settings of the module (next section): chain id, validator key
+  pins, WebSocket endpoints.
 - Package (f) — WebSocket entry (Caddy + IP certificate) on the nodes; server
   discovery from the roster and the pinned validator key list.
 - `test/browser-nodus.js` for the sendable mode, and a localhost end-to-end
@@ -970,3 +970,113 @@ Still missing before anyone can send NODUS from the web wallet:
   the encrypted activity.
 - A resend button (the rule and `resendInputs` exist; no UI calls them), the
   portfolio scope text for a readable NODUS balance, and the version bump.
+
+## NODUS send module — C→WASM, built, not enabled (unreleased)
+
+Design: `docs/plans/2026-09-25-web-wallet-nodus-send-design.md` package (c3)
+(§0a.3, §1.3–§1.5, §2 test plan item 2). Decisions:
+`2026-09-25-web-wallet-nodus-send-transport.md` (same C builder as nodus-cli,
+session open until lock, one thread, generated ruleset pins "Yol 2", pinned
+client ML-KEM-1024 only), `2026-09-23-web-wallet-mldsa-hedged-signing.md`
+İSTİSNA 1/2, `2026-09-25-mempool-policy.md`, `2026-09-25-gas-price.md`.
+
+Files: `crypto/nodus-send-wasm.c` (entry points), `scripts/build-nodus-send-wasm.sh`
+→ `src/nodus/send.wasm` + `src/nodus/send.js` (Emscripten glue, generated),
+`src/nodus/send-module.js` (the `src/nodus/client.js` contract on top of the
+glue), `crypto/nodus-send-native-vector.c` + `scripts/build-nodus-send-native-vector.sh`
+(parity vector), `test/nodus-send-wasm.test.js`.
+
+**Not enabled:** `NODUS_SEND_NETWORK` in `src/nodus/send-module.js` is `null`,
+so `nodusSendModuleFactory` is `null` and nothing on the live site changes. It
+takes the testnet chain id (64 hex), the accepted validators' key fingerprints
+(128 hex each, SHA3-512 of the ML-DSA-87 public key) and their WebSocket
+endpoints (IPv4 + port; `wss`, or `ws` only for `127.0.0.1`). None of these is
+in this tree; they come from the operator once the nodes' WebSocket entries
+are open (package (f)).
+
+What the module does (every chain rule is the shared C code, not this wallet):
+
+- **unlock** — ML-DSA-87 identity from the 32-byte signing seed
+  (`nodus_identity_from_seed`; the module's copy of the seed is wiped), the
+  generated ruleset pins rebuilt and checked against their digest, a tier-2
+  session to the first endpoint that passes the server-key pin (fail-closed,
+  ML-KEM-1024 only — `nodus_client_config_t.pinned_server_fps`), and the
+  node's chain id (`dnac_supply` `chain_id32`) compared with the configured
+  one. Another chain = no session.
+- **balance** — `dnac_balance` for the wallet's own fingerprint, native token
+  row only; a read error is an error, never 0.
+- **list** — `dnac_utxo`: native, non-zero, `unlock_block <= tip` coins (the
+  nodus-cli filter); the tip is passed through (the wallet refuses 0); a row of
+  another owner or a repeated coin rejects the whole answer.
+- **buildAndSign** — only coins of the last listing; `expiryHeight` must be
+  exactly listing tip + 90; the chain id is re-read on the session;
+  `gas_price` from `dnac_fee_info` (a failed read refuses); then nodus-cli's
+  request for one native spend (fee floor `max(DNAC_MIN_FEE_RAW,
+  NODUS_W_BASE_TX_FEE)`, largest-first, no shard) through
+  `nodus_v2_spend_plan` / `nodus_v2_spend_build`. The review fields come from
+  the builder's read-back of the envelope bytes and are checked again here:
+  output 0 = recipient/amount/native, every other output = the sender (their
+  sum = change), inputs from the candidates, inputs = amount + fee + change.
+  The chain id is not a field of the envelope; it is the one the preflight bound
+  into the envelope's ids (self-consistent, design §1.4).
+- **submit** — only the envelope built last, byte for byte; `dnac_spend` with
+  `wire_id` signed as nodus-cli does (`t6_submit_on`). The answer is mempool
+  CheckTx only.
+- **scanConfirm** — `dnac_v3_block` pages from `fromHeight` to min(tip,
+  `toHeight`) (span ≤ 100) for an applied envelope with the intent_id; any
+  unread height is an error, not "not found". Heights already read fully are
+  remembered per intent for the session (committed blocks are final).
+- **tick** — `nodus_client_tick` (60 s keepalive and the pinned reconnect);
+  operations refuse while reconnecting and re-check the chain id after a
+  reconnect to another server.
+- **cancel / lock** — synchronous: a terminal flag; the socket is closed
+  (`nodus_client_force_disconnect` if an operation is suspended, else
+  `nodus_client_close`); identity, seed, built envelope and listing wiped.
+  **release** aborts the instance (Emscripten `ABORT`) so no suspended wait
+  resumes.
+
+Randomness: one function, `qgp_platform_random` in `crypto/nodus-send-wasm.c`,
+serves every draw (`nodus_random`, `qgp_randombytes` → hedged ML-DSA `rnd`,
+ML-KEM coins, output seeds). In the shipped build it is `getentropy()`, which
+Emscripten 6.0.10 routes to `crypto.getRandomValues` (musl
+`src/misc/getentropy.c` → `__wasi_random_get` → `libwasi.js` `random_get`).
+`-DNODUS_SEND_TEST_FIXED_RANDOM` replaces it with caller-loaded bytes; it
+exists only in the native vector and the `parity` wasm builds, and cannot be
+compiled together with `-DNODUS_SEND_RELEASE` (`#error`).
+
+Build (Emscripten **6.0.10** exactly — the version the linked OpenSSL
+3.0.15 `libcrypto.a` is built with; the script refuses any other):
+
+```bash
+scripts/build-openssl-wasm.sh              # once: ~/wasm-deps/openssl-3.0.15-wasm
+scripts/build-nodus-send-wasm.sh           # -> src/nodus/send.wasm + send.js
+scripts/build-nodus-send-native-vector.sh  # -> /tmp/nodus-send-native-vector
+NODUS_SEND_PARITY_OUT=/tmp/nodus-send-parity scripts/build-nodus-send-wasm.sh parity
+NODUS_SEND_PARITY_OUT=/tmp/nodus-send-parity NODUS_SEND_VECTOR_BIN=/tmp/nodus-send-native-vector \
+  node --test test/nodus-send-wasm.test.js
+```
+
+`ASYNCIFY_STACK_SIZE` is 16384: a static bound (not a run-time measurement)
+from the disassembly of the same link with names kept — the heaviest chain
+from an export to `emscripten_sleep` is 380 bytes counting every local; the
+derivation is in the build script.
+
+Tests (`test/nodus-send-wasm.test.js`): always — the shipped `send.wasm` has
+every entry point and no test-only one, draws randomness through WASI
+`random_get`, the factory stays `null` without network settings, and the
+settings validator's accept/refuse matrix. With the parity builds — the TEST
+wasm and the native vector produce the same envelope byte for byte, and the
+shipped-flags wasm (hedged signature) the same intent_id with a different
+wire_id. **How these can lie:** the parity inputs are synthetic (made-up coins
+and chain id), so they prove the builds agree with each other, not that a node
+accepts the envelope; the hedged-signature test loads the shipped `send.wasm`
+bytes (checked equal to the parity build's `send-node.wasm`) through node glue,
+not the shipped web glue; without the two environment variables the parity
+tests are skipped, and a skip is not a pass. Nothing here opens a session: unlock / balance / list / submit / scan /
+tick are exercised only by a localhost harness run (design §0a.3 step 6).
+
+Known gaps: the third-party notice (`dist/THIRD-PARTY-LICENSES.txt`) lists npm
+packages only; `send.wasm` carries OpenSSL 3.0.15 (Apache-2.0) and the
+Emscripten runtime/libc, which need their own entry before the module is
+released. The Asyncify single-thread spike (design §1.3) ran on Emscripten
+4.0.16; this module is built with 6.0.10 and has not been run in a browser.

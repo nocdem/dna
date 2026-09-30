@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+# The NODUS send module: C -> WebAssembly (web wallet package (c3); design
+# docs/plans/2026-09-25-web-wallet-nodus-send-design.md rev 2 §0a.3 "(c3)",
+# §1.3). One module = the nodus tier-2 client (package (c1), browser
+# branches), the shared SPEND builder nodus-cli uses (package (c2),
+# nodus/src/client/nodus_v2_spend.c + the generated
+# nodus/include/nodus/nodus_ruleset_pins.h) and crypto/nodus-send-wasm.c,
+# the entry points src/nodus/send-module.js calls.
+#
+# Usage:
+#   build-nodus-send-wasm.sh            the SHIPPED module (-DNODUS_SEND_RELEASE)
+#                                       -> src/nodus/send.js + src/nodus/send.wasm
+#   build-nodus-send-wasm.sh parity     two node-environment builds for the
+#                                       parity test (test/nodus-send-wasm.test.js),
+#                                       -> $NODUS_SEND_PARITY_OUT
+#                                          (default /tmp/nodus-send-parity):
+#                                       send-node.mjs       release C flags
+#                                       send-test-node.mjs  -DNODUS_SEND_TEST_FIXED_RANDOM
+#                                       Never written under src/.
+# The TEST define cannot reach the shipped module: this script passes it only
+# in `parity` mode and only into that directory, and nodus-send-wasm.c
+# refuses to compile it together with NODUS_SEND_RELEASE (#error).
+#
+# Toolchain: Emscripten 6.0.10 exactly (checked below). It is the version
+# the linked OpenSSL archive is built with (scripts/build-openssl-wasm.sh
+# EMCC_REQUIRED_VERSION) — one toolchain for every object in the link. The
+# Asyncify spike of design §1.3 ran on 4.0.16; its result is not re-measured
+# on 6.0.10 by this script (building only, nothing is run).
+#   EMSDK (default ~/emsdk) or EMCC_BIN (default $EMSDK/upstream/emscripten/emcc)
+#   OPENSSL_WASM_PREFIX (default ~/wasm-deps/openssl-3.0.15-wasm; built by
+#     scripts/build-openssl-wasm.sh): include/ and lib/libcrypto.a
+#   SQLITE3_H (default /usr/include/sqlite3.h): declarations-only header
+#     nodus/include/nodus/nodus.h pulls in through the media/channel store
+#     headers (the same trick as scripts/check-nodus-client-wasm.sh); no
+#     sqlite code is compiled or linked.
+#
+# Link settings, and why:
+#   ASYNCIFY=1            one thread; every client wait yields through
+#                         emscripten_sleep (nodus_client.c client_yield)
+#                         — decision 2026-09-25-web-wallet-nodus-send-transport.md
+#                         "Çalışma modeli"
+#   ASYNCIFY_STACK_SIZE   see ASYNCIFY_STACK below
+#   STACK_SIZE 1 MiB      the C stack: ML-DSA-87 signing peaks near 121 KB
+#                         (scripts/build-mldsa87-sign-wasm.sh), keypair
+#                         derivation ~97 KB, plus the client/builder frames
+#   WEBSOCKET_URL wss://  SOCKFS connect() opens wss://<ip>:<port>/ unless the
+#                         page passes Module.websocket.url (send-module.js
+#                         does, from its network settings)
+#   ENVIRONMENT web       the shipped glue has no node branch
+#   MODULARIZE/EXPORT_ES6 an ES module factory; Vite resolves send.wasm next
+#                         to it
+set -euo pipefail
+cd "$(dirname "$0")/.."            # web-wallet/
+root=..
+
+EMCC_REQUIRED_VERSION="6.0.10"
+EMSDK="${EMSDK:-$HOME/emsdk}"
+EMCC_BIN="${EMCC_BIN:-$EMSDK/upstream/emscripten/emcc}"
+OPENSSL_WASM_PREFIX="${OPENSSL_WASM_PREFIX:-$HOME/wasm-deps/openssl-3.0.15-wasm}"
+SQLITE3_H="${SQLITE3_H:-/usr/include/sqlite3.h}"
+mode="${1:-release}"
+
+# Asyncify's unwind buffer (ASYNCIFY_STACK_SIZE). At an emscripten_sleep
+# Asyncify saves, for every frame on the stack between the export and the
+# sleep, that frame's locals plus a 4-byte call index. STATIC bound for this
+# module, from the disassembly of the same link with --profiling-funcs
+# (emsdk 6.0.10, -O2, 2026-09-30; not measured at run time — nothing is
+# run): only 12 functions reach emscripten_sleep through direct calls, no
+# indirect-call (table) target is among them, and the heaviest chain is
+#   nsw_scan(244 B) -> nsw_session_ok(16) -> nsw_check_chain(44)
+#     -> wait_response(76) -> emscripten_sleep  = 380 bytes
+# counting EVERY param and local of each frame (an upper bound of what is
+# saved). 16384 is ~43x that, so inlining changes in later edits stay far
+# inside it. The default ASYNCIFY_IGNORE_INDIRECT=0 is kept: Asyncify still
+# instruments every function with an indirect call (OpenSSL's provider
+# tables, the builder's rand callback), which costs size, not correctness.
+ASYNCIFY_STACK=16384
+
+case "$mode" in
+  release|parity) ;;
+  *) echo "build-nodus-send-wasm: unknown mode '$mode' (release | parity)" >&2; exit 2 ;;
+esac
+if [ ! -x "$EMCC_BIN" ]; then
+  echo "build-nodus-send-wasm: $EMCC_BIN not found (set EMSDK or EMCC_BIN)" >&2
+  exit 2
+fi
+emcc_line="$("$EMCC_BIN" --version | head -1)"
+echo "$emcc_line"
+case "$emcc_line" in
+  *" ${EMCC_REQUIRED_VERSION} "*) ;;
+  *) echo "build-nodus-send-wasm: emcc ${EMCC_REQUIRED_VERSION} required (pinned toolchain), found: $emcc_line" >&2
+     exit 2 ;;
+esac
+if [ ! -f "$OPENSSL_WASM_PREFIX/lib/libcrypto.a" ] || [ ! -f "$OPENSSL_WASM_PREFIX/include/openssl/evp.h" ]; then
+  echo "build-nodus-send-wasm: OpenSSL wasm build missing under $OPENSSL_WASM_PREFIX (run scripts/build-openssl-wasm.sh)" >&2
+  exit 2
+fi
+if [ ! -f "$SQLITE3_H" ]; then
+  echo "build-nodus-send-wasm: $SQLITE3_H not found (set SQLITE3_H)" >&2
+  exit 2
+fi
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+mkdir -p "$work/inc"
+cp "$SQLITE3_H" "$work/inc/sqlite3.h"
+
+sources=(
+  crypto/nodus-send-wasm.c
+  # nodus client (package (c1) compile set, scripts/check-nodus-client-wasm.sh)
+  $root/nodus/src/client/nodus_client.c
+  $root/nodus/src/transport/nodus_tcp.c
+  $root/nodus/src/protocol/nodus_tier2.c
+  $root/nodus/src/protocol/nodus_cbor.c
+  $root/nodus/src/protocol/nodus_wire.c
+  $root/nodus/src/core/nodus_value.c
+  $root/nodus/src/crypto/nodus_sign.c
+  $root/nodus/src/crypto/nodus_identity.c
+  $root/nodus/src/crypto/nodus_channel_crypto.c
+  $root/nodus/src/nodus_log_shim.c
+  # the shared SPEND builder (package (c2)) and the envelope codecs
+  $root/nodus/src/client/nodus_v2_spend.c
+  $root/shared/dnac/env_wire.c
+  $root/shared/dnac/env_preflight.c
+  $root/shared/dnac/res_meter.c
+  $root/shared/dnac/effect_wire.c
+  # shared crypto (qgp_platform_<os>.c is NOT linked: nodus-send-wasm.c
+  # defines qgp_platform_random and qgp_secure_memzero)
+  $root/shared/crypto/hash/qgp_sha3.c
+  $root/shared/crypto/hash/hkdf_sha3.c
+  $root/shared/crypto/utils/qgp_random.c
+  $root/shared/crypto/utils/qgp_fingerprint.c
+  $root/shared/crypto/sign/qgp_dilithium.c
+  $root/shared/crypto/sign/dsa/sign.c
+  $root/shared/crypto/sign/dsa/packing.c
+  $root/shared/crypto/sign/dsa/polyvec.c
+  $root/shared/crypto/sign/dsa/poly.c
+  $root/shared/crypto/sign/dsa/ntt.c
+  $root/shared/crypto/sign/dsa/rounding.c
+  $root/shared/crypto/sign/dsa/reduce.c
+  $root/shared/crypto/sign/dsa/fips202.c
+  $root/shared/crypto/sign/dsa/symmetric-shake.c
+  $root/shared/crypto/enc/qgp_kyber.c
+  $root/shared/crypto/enc/kyber_r3_legacy.c
+  $root/shared/crypto/enc/qgp_mlkem.c
+  $root/shared/crypto/enc/kem/cbd.c
+  $root/shared/crypto/enc/kem/fips202.c
+  $root/shared/crypto/enc/kem/indcpa.c
+  $root/shared/crypto/enc/kem/kem.c
+  $root/shared/crypto/enc/kem/ntt.c
+  $root/shared/crypto/enc/kem/poly.c
+  $root/shared/crypto/enc/kem/polyvec.c
+  $root/shared/crypto/enc/kem/reduce.c
+  $root/shared/crypto/enc/kem/symmetric-shake.c
+  $root/shared/crypto/enc/kem/verify.c
+)
+
+exports_common=(
+  nsw_error nsw_seed_buf nsw_req_reset nsw_req_add_coin
+  nsw_out_seed_buf nsw_out_seed_load nsw_offline_build
+  nsw_built_env nsw_built_env_len nsw_built_intent nsw_built_wire
+  nsw_built_chain nsw_built_recipient nsw_built_amount nsw_built_fee
+  nsw_built_change nsw_built_expiry nsw_built_n_in nsw_built_in
+  nsw_net_reset nsw_net_set_chain nsw_net_add_endpoint nsw_net_add_pin
+  nsw_unlock nsw_balance nsw_list nsw_build_and_sign nsw_req_env_alloc
+  nsw_submit nsw_scan nsw_tick nsw_cancel nsw_lock
+  nsw_fingerprint nsw_chain_hex nsw_bal_total nsw_bal_spendable
+  nsw_list_tip nsw_list_truncated nsw_list_count nsw_list_nul
+  nsw_list_amount nsw_scan_tip nsw_scan_height nsw_scan_found
+)
+exports_test=(nsw_test_random_buf nsw_test_random_load)
+
+join_exports() {
+  local out="" name
+  for name in "$@"; do out="${out:+$out,}\"_$name\""; done
+  printf '[%s]' "$out"
+}
+
+# build <define> <environment> <output .js/.mjs> <exports...>
+build() {
+  local define="$1" env="$2" output="$3"; shift 3
+  local objdir="$work/obj-${define}-${env}"
+  mkdir -p "$objdir"
+  local objects=() src obj
+  for src in "${sources[@]}"; do
+    obj="$objdir/$(echo "$src" | tr '/.' '__').o"
+    local extra=()
+    # shared/crypto/utils/qgp_fingerprint.c:15 sizes a 16-char digit table
+    # without its NUL on purpose (indexed, never used as a string); the
+    # clang of emsdk 6.0.10 warns about that form. Silenced for that one
+    # file only — shared/ is outside this package.
+    case "$src" in */qgp_fingerprint.c) extra=(-Wno-unterminated-string-initialization) ;; esac
+    "$EMCC_BIN" -c -O2 -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Werror \
+      "${extra[@]}" -D"$define" \
+      -I$root/nodus/include -I$root/nodus/src -I$root/shared -I$root/dnac/include \
+      -I"$work/inc" -I"$OPENSSL_WASM_PREFIX/include" \
+      "$src" -o "$obj"
+    objects+=("$obj")
+  done
+  "$EMCC_BIN" -O2 -Werror "${objects[@]}" "$OPENSSL_WASM_PREFIX/lib/libcrypto.a" \
+    --no-entry \
+    -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createNodusSendWasm \
+    -sENVIRONMENT="$env" \
+    -sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=$ASYNCIFY_STACK \
+    -sSTACK_SIZE=1048576 -sINITIAL_MEMORY=67108864 \
+    -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=268435456 \
+    -sWEBSOCKET_URL=wss:// -sWEBSOCKET_SUBPROTOCOL=binary \
+    -sEXPORTED_FUNCTIONS="$(join_exports "$@")" \
+    -sEXPORTED_RUNTIME_METHODS='["ccall","UTF8ToString","HEAPU8","abort"]' \
+    -o "$output"
+}
+
+if [ "$mode" = release ]; then
+  mkdir -p src/nodus
+  build NODUS_SEND_RELEASE web src/nodus/send.js "${exports_common[@]}"
+  chmod 644 src/nodus/send.js src/nodus/send.wasm
+  sha256sum src/nodus/send.wasm src/nodus/send.js
+  ls -l src/nodus/send.wasm src/nodus/send.js
+else
+  out="${NODUS_SEND_PARITY_OUT:-/tmp/nodus-send-parity}"
+  case "$(cd "$out" 2>/dev/null && pwd -P || echo "$out")" in
+    "$(pwd -P)"/*) echo "build-nodus-send-wasm: parity output must be outside web-wallet/ ($out)" >&2; exit 2 ;;
+  esac
+  mkdir -p "$out"
+  build NODUS_SEND_RELEASE node "$out/send-node.mjs" "${exports_common[@]}"
+  build NODUS_SEND_TEST_FIXED_RANDOM node "$out/send-test-node.mjs" "${exports_common[@]}" "${exports_test[@]}"
+  ls -l "$out"
+fi

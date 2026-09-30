@@ -13,7 +13,8 @@
     "cpunk:verify": "node scripts/verify-cpunk.js",
     "verify:networks": "node scripts/verify-networks.js",
     "test:portfolio": "node test/browser-portfolio.js",
-    "test:ixios": "node test/browser-ixios.js"
+    "test:ixios": "node test/browser-ixios.js",
+    "build:nodus-send": "bash scripts/build-nodus-send-wasm.sh"
   },
   "dependencies": {
     "@noble/curves": "1.9.7",
