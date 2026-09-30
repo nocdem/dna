@@ -55,6 +55,13 @@
 //     validators() / delegations() / stakeBuild({ ... }) + stakingRules
 //                                OPTIONAL (0.1.29, staking — shapes in
 //                                src/nodus/send-module.js), same rule.
+//     connect(run) / connectSync(run)
+//                                OPTIONAL (NC-4b, Messages — shapes in
+//                                src/nodus/send-module.js), same rule. The
+//                                Messages exports live in THIS module and use
+//                                its session: connect() is queued like every
+//                                other operation; connectSync() never
+//                                suspends.
 //     tick()                     Keepalive ping (the thread-less stand-in for
 //                                nodus_client.c's 60 s read-thread ping; the
 //                                server drops an idle session at 180 s).
@@ -88,6 +95,13 @@ const CLAIM_OPS = ['claimStatus', 'claimBuild', 'claimSubmit'];
 // answers every staking call "not available". Staking envelopes are
 // submitted with submit().
 const STAKE_OPS = ['validators', 'delegations', 'stakeBuild'];
+// OPTIONAL (NC-4b, Messages — shapes in src/nodus/send-module.js):
+// connect(run) is an asynchronous operation of THIS queue (the Messages
+// exports share the module, its one session and its one Asyncify state);
+// connectSync(run) never reaches emscripten_sleep. A module without both
+// still unlocks; this client then answers "Messages is not available".
+// src/connect/core.js is the only caller.
+const CONNECT_OPS = ['connect', 'connectSync'];
 const RAW_RULE = /^[1-9]\d{0,19}$/;
 function validRules(rules) {
   return !!rules && ['minDelegation', 'selfStake', 'commissionMaxBps', 'undelegateLockEpochs', 'epochLength'].every(key => typeof rules[key] === 'string' && RAW_RULE.test(rules[key]) && BigInt(rules[key]) < 2n ** 64n);
@@ -96,7 +110,7 @@ const lockedError = () => new Error('Wallet is locked.');
 
 export function createNodusClient({ factory, onState, setInterval: every = globalThis.setInterval, clearInterval: stopEvery = globalThis.clearInterval } = {}) {
   if (typeof factory !== 'function') throw new Error('The Nodus send module is not available.');
-  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules;
+  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, connectable = false;
   // ONE operation queue: Asyncify keeps a single global currData, so a second
   // export entered while the first is suspended corrupts the first. `tail`
   // settles only when the module call itself has returned, never merely when
@@ -172,6 +186,7 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
       claimable = CLAIM_OPS.every(name => typeof loaded[name] === 'function');
       stakeable = STAKE_OPS.every(name => typeof loaded[name] === 'function') && validRules(loaded.stakingRules);
       stakingRules = stakeable ? Object.freeze({ ...loaded.stakingRules }) : undefined;
+      connectable = CONNECT_OPS.every(name => typeof loaded[name] === 'function');
       const info = await enqueue('unlock', { seed });
       if (!info || typeof info.fingerprint !== 'string' || !HEX128.test(info.fingerprint) || typeof info.chainId !== 'string' || !HEX64.test(info.chainId)) throw new Error('The Nodus send module returned an invalid identity.');
       // The module derives the identity from the seed on its own; it must be
@@ -189,6 +204,7 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
   const call = op => (args, options) => { try { ready(); } catch (error) { return Promise.reject(error); } return enqueue(op, args, options); };
   const claimCall = op => (args, options) => claimable ? call(op)(args, options) : Promise.reject(new Error('Claiming is not available in this wallet version.'));
   const stakeCall = op => (args, options) => stakeable ? call(op)(args, options) : Promise.reject(new Error('Staking is not available in this wallet version.'));
+  const noMessages = () => new Error('Messages is not available in this wallet version.');
   return {
     get state() { return state; },
     get fingerprint() { return fingerprint; },
@@ -211,6 +227,23 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
     validators: (options) => stakeCall('validators')(undefined, options),
     delegations: (options) => stakeCall('delegations')(undefined, options),
     stakeBuild: stakeCall('stakeBuild'),
+    // Messages (NC-4b): whether the loaded module carries the Nodus Connect
+    // exports; connect(run) runs `run` in this queue on the module's
+    // session; connectSync(run) runs it now (non-waiting exports only; also
+    // outside 'ready', so Messages can wipe its keys (nc_lock) while the
+    // wallet's connection is in 'error').
+    get connectable() { return connectable && state === 'ready'; },
+    connect: (run, options) => {
+      if (!connectable) return Promise.reject(noMessages());
+      if (typeof run !== 'function') return Promise.reject(new Error('Invalid Messages operation.'));
+      return call('connect')(run, options);
+    },
+    connectSync(run) {
+      if (stopped || !module) throw lockedError();
+      if (!connectable) throw noMessages();
+      if (typeof run !== 'function') throw new Error('Invalid Messages operation.');
+      return module.connectSync(run);
+    },
     lock
   };
 }

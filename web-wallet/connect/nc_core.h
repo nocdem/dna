@@ -17,9 +17,10 @@
  *
  * THIS IS A LIBRARY. It owns no session and no global state: every call
  * takes an nc_ctx_t the caller fills (the tier-2 client, the identity keys,
- * the cancel flag). web-wallet/connect/nc_wasm.c is the standalone module
- * entry that owns one; linking this library into the wallet's shared module
- * (one session per identity, design §1.1) is package NC-4.
+ * the cancel flag). web-wallet/connect/nc_wasm.c is the browser entry; it is
+ * linked into the wallet's shared module and takes that module's session
+ * (one session per identity, design §1.1; package NC-4b — see "Host" at the
+ * end of this header).
  *
  * WHAT IS COMPILED VERBATIM (no copy of any wire format lives here):
  *   messenger/codec/ (all units) contact request codec + verify + signing
@@ -622,6 +623,32 @@ typedef struct {
  */
 int nc_servers_parse(const char *json, nc_servers_t *out,
                      char *why, size_t why_len);
+
+/* ── Host of the browser entry (package NC-4b) ─────────────────────────
+ *
+ * nc_wasm.c (the JSON exports) owns no session. It is linked into the
+ * wallet's ONE module (scripts/build-nodus-send-wasm.sh), whose file
+ * crypto/nodus-send-wasm.c owns the tier-2 session, the op bracket and the
+ * cancel flag, and implements the functions below — one session per
+ * identity (design §1.1, nodus_auth.c:95-116), one bracket for every async
+ * export of the module, one cancel flag for every wait. Not used natively.
+ */
+
+/** Enter the module's op bracket: 0, or -1 with the reason in
+ *  nc_host_error() (locked, cancelled, another export running). */
+int nc_host_begin(void);
+/** Leave it: 0, or 1 when lock / cancel ran meanwhile. */
+int nc_host_end(void);
+const char *nc_host_error(void);
+/** The session's client when the wallet's unlock succeeded, else NULL. */
+nodus_client_t *nc_host_client(void);
+/** The session identity (ML-DSA-87) when unlocked, else NULL. */
+const nodus_identity_t *nc_host_identity(void);
+/** The module's cancel flag (set by its cancel and lock). */
+volatile const int *nc_host_cancel(void);
+/** Provided by nc_wasm.c; the host's lock calls it: wipes every Messages
+ *  secret and cache (keys, peer keys, history key, last result). */
+void nc_session_wipe(void);
 
 #ifdef __cplusplus
 }

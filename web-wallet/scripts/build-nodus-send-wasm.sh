@@ -5,7 +5,13 @@
 # branches), the shared SPEND builder nodus-cli uses (package (c2),
 # nodus/src/client/nodus_v2_spend.c + the generated
 # nodus/include/nodus/nodus_ruleset_pins.h) and crypto/nodus-send-wasm.c,
-# the entry points src/nodus/send-module.js calls.
+# the entry points src/nodus/send-module.js calls. Since NC-4b the SAME
+# module also carries the Nodus Connect thin core (web-wallet/connect/, JSON
+# exports connect/nc_wasm.c) on the one session of this module — the
+# wallet's one module of design docs/plans/2026-09-24-web-connect-design.md
+# rev 5 §1.1 (two sessions of one identity evict each other on a node,
+# nodus_auth.c:95-116). src/connect/core.js drives it through the wallet's
+# queue (src/nodus/client.js).
 #
 # Usage:
 #   build-nodus-send-wasm.sh            the SHIPPED module (-DNODUS_SEND_RELEASE)
@@ -57,6 +63,11 @@ EMCC_REQUIRED_VERSION="6.0.10"
 EMSDK="${EMSDK:-$HOME/emsdk}"
 EMCC_BIN="${EMCC_BIN:-$EMSDK/upstream/emscripten/emcc}"
 OPENSSL_WASM_PREFIX="${OPENSSL_WASM_PREFIX:-$HOME/wasm-deps/openssl-3.0.15-wasm}"
+# Messages (NC-4b): the Anchor record codec and the nc_* results are json-c
+# (scripts/build-jsonc-wasm.sh). The Anchor signature is over json-c's
+# re-serialisation: the json-c version the frozen app was built with is NOT
+# established (printed below for the record; README "Nodus Connect").
+JSONC_WASM_PREFIX="${JSONC_WASM_PREFIX:-$HOME/wasm-deps/json-c-0.17-wasm}"
 SQLITE3_H="${SQLITE3_H:-/usr/include/sqlite3.h}"
 mode="${1:-release}"
 
@@ -85,6 +96,17 @@ mode="${1:-release}"
 # static, and the builder's large structs are heap-allocated in
 # nsw_stake_core, which runs only after the last wait. Also expected, not
 # re-measured.
+# The Messages exports of NC-4b (nc_*) have the shape export -> nc_* library
+# -> nodus_client_get_strict / get_all / put_ex -> wait_response ->
+# emscripten_sleep; their records, identities and value lists are on the
+# heap or in static storage. Their frames were NOT measured from a
+# --profiling-funcs disassembly: expected to hold, not measured.
+# There is no ASYNCIFY_ONLY / ASYNCIFY_ADD list: with ASYNCIFY=1 Binaryen
+# instruments every function that can reach emscripten_sleep (directly or,
+# with the default ASYNCIFY_IGNORE_INDIRECT=0, through an indirect call),
+# so a new export that waits is covered by the link itself; what the JS
+# side must do is call it with ccall { async: true } (send-module.js,
+# src/connect/core.js).
 # The default ASYNCIFY_IGNORE_INDIRECT=0 is kept: Asyncify still
 # instruments every function with an indirect call (OpenSSL's provider
 # tables, the builder's rand callback), which costs size, not correctness.
@@ -109,10 +131,16 @@ if [ ! -f "$OPENSSL_WASM_PREFIX/lib/libcrypto.a" ] || [ ! -f "$OPENSSL_WASM_PREF
   echo "build-nodus-send-wasm: OpenSSL wasm build missing under $OPENSSL_WASM_PREFIX (run scripts/build-openssl-wasm.sh)" >&2
   exit 2
 fi
+if [ ! -f "$JSONC_WASM_PREFIX/lib/libjson-c.a" ] || [ ! -f "$JSONC_WASM_PREFIX/include/json-c/json.h" ]; then
+  echo "build-nodus-send-wasm: json-c wasm build missing under $JSONC_WASM_PREFIX (run scripts/build-jsonc-wasm.sh)" >&2
+  exit 2
+fi
 if [ ! -f "$SQLITE3_H" ]; then
   echo "build-nodus-send-wasm: $SQLITE3_H not found (set SQLITE3_H)" >&2
   exit 2
 fi
+echo "json-c (wasm): $(sed -n 's/^Version: //p' "$JSONC_WASM_PREFIX/lib/pkgconfig/json-c.pc" 2>/dev/null || echo unknown)"
+echo "json-c (host, informational): $(pkg-config --modversion json-c 2>/dev/null || echo unknown)"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -121,6 +149,37 @@ cp "$SQLITE3_H" "$work/inc/sqlite3.h"
 
 sources=(
   crypto/nodus-send-wasm.c
+  # Messages (NC-4b): the Nodus Connect thin core and its JSON exports, on
+  # this module's session (nodus-send-wasm.c "Messages host"). Same set as
+  # connect/tests/CMakeLists.txt NC_SOURCES, minus the platform file.
+  connect/nc_wasm.c
+  connect/nc_keys.c
+  connect/nc_read.c
+  connect/nc_servers.c
+  connect/nc_profile.c
+  connect/nc_requests.c
+  connect/nc_salt.c
+  connect/nc_outbox.c
+  connect/nc_history.c
+  connect/nc_contactlist.c
+  # message codecs, verbatim (NC-1, NC-1b)
+  $root/messenger/codec/contact_request_codec.c
+  $root/messenger/codec/contactlist_codec.c
+  $root/messenger/codec/dm_outbox_codec.c
+  $root/messenger/codec/offline_queue_codec.c
+  $root/messenger/codec/salt_agreement_codec.c
+  $root/messenger/codec/seal_multi_codec.c
+  $root/messenger/codec/gek_wrap_codec.c
+  # Seal decode / authorship, Anchor record codec (compiled as-is)
+  $root/messenger/dna_api.c
+  $root/messenger/dht/client/dna_profile.c
+  # BIP39 words -> the Messages KEM keys (nc_keys_from_words)
+  $root/shared/crypto/key/bip39/bip39.c
+  $root/shared/crypto/key/bip39/bip39_pbkdf2.c
+  $root/shared/crypto/key/bip39/seed_derivation.c
+  $root/shared/crypto/sign/qgp_signature.c
+  $root/shared/crypto/enc/qgp_aes.c
+  $root/shared/crypto/enc/aes_keywrap.c
   # nodus client (package (c1) compile set, scripts/check-nodus-client-wasm.sh)
   $root/nodus/src/client/nodus_client.c
   $root/nodus/src/transport/nodus_tcp.c
@@ -204,6 +263,20 @@ exports_common=(
   nsw_val_delegated nsw_val_commission nsw_val_status
   nsw_delegations nsw_del_count nsw_del_fp nsw_del_amount nsw_del_block
   nsw_stake_build
+  # Messages (NC-4b, connect/nc_wasm.c), all run through the wallet's one
+  # queue by src/connect/core.js. The ones that wait on the network (every
+  # one below except nc_error, nc_result, nc_words_alloc, nc_salt_pick,
+  # nc_day_today, nc_lock and the three nc_hist_*, and except nc_unlock,
+  # which only derives keys) are called with ccall { async: true };
+  # nc_unlock is too (harmless for a call that does not suspend).
+  nc_error nc_result nc_words_alloc nc_unlock
+  nc_profile_get nc_profile_update
+  nc_requests_get nc_request_new nc_request_approve nc_request_withdraw
+  nc_salt_get nc_salt_pick nc_salt_reconcile
+  nc_contacts_get nc_contacts_add
+  nc_day_today nc_outbox_send nc_outbox_get nc_ack_send nc_ack_get
+  nc_hist_key nc_hist_encrypt nc_hist_decrypt
+  nc_lock
 )
 exports_test=(nsw_test_random_buf nsw_test_random_load)
 
@@ -231,10 +304,13 @@ build() {
       "${extra[@]}" -D"$define" \
       -I$root/nodus/include -I$root/nodus/src -I$root/shared -I$root/dnac/include \
       -I"$work/inc" -I"$OPENSSL_WASM_PREFIX/include" \
+      -I$root/messenger -I$root/messenger/include -Iconnect \
+      -I"$JSONC_WASM_PREFIX/include" \
       "$src" -o "$obj"
     objects+=("$obj")
   done
-  "$EMCC_BIN" -O2 -Werror "${objects[@]}" "$OPENSSL_WASM_PREFIX/lib/libcrypto.a" \
+  "$EMCC_BIN" -O2 -Werror "${objects[@]}" \
+    "$JSONC_WASM_PREFIX/lib/libjson-c.a" "$OPENSSL_WASM_PREFIX/lib/libcrypto.a" \
     --no-entry \
     -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createNodusSendWasm \
     -sENVIRONMENT="$env" \
