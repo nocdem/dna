@@ -19,6 +19,7 @@
 #include "crypto/enc/qgp_mlkem.h"
 #include "crypto/nodus_identity.h"
 #include "core/nodus_value.h"
+#include "client/nodus_client_strict.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -67,6 +68,8 @@ static bool wait_response(nodus_client_t *client, nodus_pending_t *req, int time
 static int  send_request(nodus_client_t *client, const uint8_t *payload, size_t len);
 static int  resubscribe_all(nodus_client_t *client);
 static int  try_reconnect(nodus_client_t *client);
+static int  find_response_map(const uint8_t *raw, size_t raw_len,
+                              cbor_decoder_t *dec, size_t *map_count);
 
 /* ── Cross-platform millisecond sleep ──────────────────────────── */
 
@@ -1469,9 +1472,13 @@ int nodus_client_put(nodus_client_t *client,
                                 type, ttl, vid, seq, sig, 0);
 }
 
-int nodus_client_get(nodus_client_t *client,
-                      const nodus_key_t *key,
-                      nodus_value_t **val_out) {
+/* Shared by nodus_client_get and nodus_client_get_strict. `strict` only
+ * changes the answer when no value decoded: the lenient path returns
+ * NODUS_ERR_NOT_FOUND as it always has; the strict path first checks, in the
+ * raw reply the pending slot kept (client_on_frame), whether the node sent a
+ * "val" at all (nodus_client_strict.h). */
+static int client_get_impl(nodus_client_t *client, const nodus_key_t *key,
+                           nodus_value_t **val_out, bool strict) {
     if (!nodus_client_is_ready(client) || !val_out) return -1;
     *val_out = NULL;
 
@@ -1495,20 +1502,48 @@ int nodus_client_get(nodus_client_t *client,
         *val_out = resp->value;
         resp->value = NULL;
     } else {
+        int rc = NODUS_ERR_NOT_FOUND;
+        if (strict) {
+            nodus_reply_value_shape_t shape;
+            if (!req->raw_response ||
+                nodus_client_reply_value_shape(req->raw_response,
+                                               req->raw_response_len,
+                                               &shape) != 0 ||
+                shape.has_val) {
+                QGP_LOG_WARN(LOG_TAG, "GET: the node sent a value that did "
+                             "not decode (or the reply was not kept) — "
+                             "reported as a protocol error, not as absent");
+                rc = NODUS_ERR_PROTOCOL_ERROR;
+            }
+        }
         free_pending(client, req);
-        return NODUS_ERR_NOT_FOUND;
+        return rc;
     }
     free_pending(client, req);
     return 0;
 }
 
-int nodus_client_get_all(nodus_client_t *client,
-                          const nodus_key_t *key,
-                          nodus_value_t ***vals_out,
-                          size_t *count_out) {
+int nodus_client_get(nodus_client_t *client,
+                      const nodus_key_t *key,
+                      nodus_value_t **val_out) {
+    return client_get_impl(client, key, val_out, false);
+}
+
+int nodus_client_get_strict(nodus_client_t *client,
+                            const nodus_key_t *key,
+                            nodus_value_t **val_out) {
+    return client_get_impl(client, key, val_out, true);
+}
+
+/* Shared by nodus_client_get_all and nodus_client_get_all_strict.
+ * `undecodable_out` NULL = the lenient path (unchanged behaviour). */
+static int client_get_all_impl(nodus_client_t *client, const nodus_key_t *key,
+                               nodus_value_t ***vals_out, size_t *count_out,
+                               size_t *undecodable_out) {
     if (!nodus_client_is_ready(client) || !vals_out || !count_out) return -1;
     *vals_out = NULL;
     *count_out = 0;
+    if (undecodable_out) *undecodable_out = 0;
 
     uint8_t *buf = malloc(CLIENT_BUF_SIZE);
     if (!buf) return -1;
@@ -1526,6 +1561,22 @@ int nodus_client_get_all(nodus_client_t *client,
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
     if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
+    if (undecodable_out) {
+        /* Everything the node put in "vals" that is not among the decoded
+         * values: non-bstr items, refused values, items past the cap. */
+        nodus_reply_value_shape_t shape;
+        if (!req->raw_response ||
+            nodus_client_reply_value_shape(req->raw_response,
+                                           req->raw_response_len,
+                                           &shape) != 0) {
+            free_pending(client, req);
+            return NODUS_ERR_PROTOCOL_ERROR;
+        }
+        size_t decoded = resp->values ? resp->value_count : 0;
+        *undecodable_out = shape.vals_total > decoded
+                               ? shape.vals_total - decoded : 0;
+    }
+
     if (resp->values && resp->value_count > 0) {
         /* Transfer ownership */
         *vals_out = resp->values;
@@ -1535,6 +1586,23 @@ int nodus_client_get_all(nodus_client_t *client,
     }
     free_pending(client, req);
     return 0;
+}
+
+int nodus_client_get_all(nodus_client_t *client,
+                          const nodus_key_t *key,
+                          nodus_value_t ***vals_out,
+                          size_t *count_out) {
+    return client_get_all_impl(client, key, vals_out, count_out, NULL);
+}
+
+int nodus_client_get_all_strict(nodus_client_t *client,
+                                const nodus_key_t *key,
+                                nodus_value_t ***vals_out,
+                                size_t *count_out,
+                                size_t *undecodable_out) {
+    if (!undecodable_out) return -1;
+    return client_get_all_impl(client, key, vals_out, count_out,
+                               undecodable_out);
 }
 
 /* ── Batch DHT Operations ──────────────────────────────────────── */
@@ -2337,6 +2405,62 @@ static int find_response_map(const uint8_t *raw, size_t raw_len,
         cbor_decode_skip(dec);
     }
     return -1;
+}
+
+int nodus_client_reply_value_shape(const uint8_t *raw, size_t raw_len,
+                                   nodus_reply_value_shape_t *out) {
+    if (!raw || !out) return -1;
+    memset(out, 0, sizeof(*out));
+
+    cbor_decoder_t top_dec;
+    cbor_decoder_init(&top_dec, raw, raw_len);
+    if (cbor_decode_peek(&top_dec) != CBOR_ITEM_MAP) return -1;
+
+    cbor_decoder_t dec;
+    size_t n = 0;
+    if (find_response_map(raw, raw_len, &dec, &n) != 0)
+        return 0;                           /* a map without "r": no result */
+    out->has_r = true;
+
+    for (size_t i = 0; i < n; i++) {
+        cbor_item_t k = cbor_decode_next(&dec);
+        if (k.type == CBOR_ITEM_ERROR || k.type == CBOR_ITEM_END) return -1;
+        if (k.type == CBOR_ITEM_TSTR && k.tstr.len == 3 &&
+            memcmp(k.tstr.ptr, "val", 3) == 0) {
+            out->has_val = true;
+            cbor_item_type_t t = cbor_decode_peek(&dec);
+            if (t == CBOR_ITEM_BSTR) {
+                out->val_is_bstr = true;
+                cbor_decode_next(&dec);
+            } else if (t == CBOR_ITEM_ERROR || t == CBOR_ITEM_END) {
+                return -1;
+            } else {
+                cbor_decode_skip(&dec);
+            }
+        } else if (k.type == CBOR_ITEM_TSTR && k.tstr.len == 4 &&
+                   memcmp(k.tstr.ptr, "vals", 4) == 0) {
+            if (cbor_decode_peek(&dec) != CBOR_ITEM_ARRAY) {
+                cbor_decode_skip(&dec);
+                continue;
+            }
+            cbor_item_t arr = cbor_decode_next(&dec);
+            out->has_vals = true;
+            out->vals_total = arr.count;
+            for (size_t j = 0; j < arr.count; j++) {
+                cbor_item_type_t t = cbor_decode_peek(&dec);
+                if (t == CBOR_ITEM_ERROR || t == CBOR_ITEM_END) return -1;
+                if (t == CBOR_ITEM_BSTR) {
+                    out->vals_bstr++;
+                    cbor_decode_next(&dec);
+                } else {
+                    cbor_decode_skip(&dec);
+                }
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+    return 0;
 }
 
 /** Helper: encode DNAC query header + token + args map start */
