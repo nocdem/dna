@@ -10,7 +10,8 @@ Fuzz testing (fuzzing) automatically generates random/malformed inputs to find c
 
 - **Clang compiler** (libFuzzer is LLVM-specific, GCC not supported)
 - Main project must be built first (`messenger/build/libdna.so`)
-- wasm32 build only: Emscripten 6.0.10 (`~/emsdk`), the OpenSSL wasm archive, node
+- wasm32 build only: Emscripten 6.0.10 (`~/emsdk`), the OpenSSL and json-c wasm
+  archives (see "wasm32 build" below), node
 - Standard build dependencies (cmake, make)
 
 ## Building Fuzz Targets
@@ -148,15 +149,37 @@ are 32 bits: a length check such as `offset + len > buf_len` with a 32-bit
 `len` read from the input can wrap there and not on x86-64.
 
 ```bash
+bash web-wallet/scripts/build-openssl-wasm.sh     # -> ~/wasm-deps/openssl-3.0.15-wasm (once)
+bash web-wallet/scripts/build-jsonc-wasm.sh       # -> ~/wasm-deps/json-c-0.17-wasm (once)
 bash messenger/tests/fuzz/build_wasm32.sh         # -> messenger/tests/fuzz/build-wasm32/
 node messenger/tests/fuzz/build-wasm32/fuzz_seal_decode.js messenger/tests/fuzz/corpus/seal_decode/
 node messenger/tests/fuzz/build-wasm32/fuzz_contactlist.js -mutate=20000 -seed=1 messenger/tests/fuzz/corpus/contactlist/
+node messenger/tests/fuzz/build-wasm32/fuzz_anchor_json.js messenger/tests/fuzz/corpus/anchor_json/
 node messenger/tests/fuzz/build-wasm32/fuzz_seal_decode.js crash-<hash>   # native finding at 32 bits
 ```
 
 Emscripten 6.0.10 (pinned; the OpenSSL wasm archive
 `~/wasm-deps/openssl-3.0.15-wasm` from `web-wallet/scripts/build-openssl-wasm.sh`
-is built with it), `-fsanitize=address`, node with `NODERAWFS`. Emscripten
+and the json-c wasm archive `~/wasm-deps/json-c-0.17-wasm` from
+`web-wallet/scripts/build-jsonc-wasm.sh` are built with it), `-fsanitize=address`
+on the harness and messenger/shared sources (OpenSSL and json-c are linked
+uninstrumented, as natively), node with `NODERAWFS`.
+
+**json-c is pinned to the frozen app's version.** `build-jsonc-wasm.sh` builds
+tag `json-c-0.17-20230812` — the tag the app's Android build
+(`scripts/build-android-docker.sh:218-219`) and Windows build
+(`setup-windows-build.sh:454-459`) fetch — from the same GitHub tag archive,
+pinned by SHA-256, as a static `libjson-c.a` with the Android script's options
+(`BUILD_SHARED_LIBS=OFF`, `BUILD_STATIC_LIBS=ON`) plus the Windows script's
+`BUILD_APPS=OFF`, `BUILD_TESTING=OFF`. The web Connect design (§1.2) requires the
+web core to use the same json-c version as the app, because the Anchor record
+signature is over json-c's re-serialisation. The Linux desktop build links the
+build host's json-c instead (`cmake/Dependencies.cmake`: CMake config, then
+pkg-config; on this machine Debian 12's `libjson-c-dev` 0.16-2), so the pin
+matches the Android and Windows app, not necessarily Linux. `build_wasm32.sh` compiles against the wasm archive's
+headers (its generated `json_config.h`), never the host `/usr/include/json-c`.
+
+Emscripten
 has no libFuzzer, so each harness is linked with
 `nodus/tests/fuzz/fuzz_driver.c`: it replays every file (directories sorted by
 name) and, with `-mutate=N -seed=S`, runs N deterministic mutations per input
@@ -171,15 +194,15 @@ arithmetic.
 | `fuzz_message_decrypt` | yes | |
 | `fuzz_offline_queue` | yes | |
 | `fuzz_contact_request` | yes | |
-| `fuzz_contactlist` | yes, **raw mode only** (`-DFUZZ_CONTACTLIST_RAW_ONLY`) | no wasm32 json-c here; the JSON parser is not exercised |
-| `fuzz_anchor_json` | **no** | needs json-c for wasm32 (design §1.2: must be the frozen app's json-c version — not pinned yet) |
+| `fuzz_contactlist` | yes | both modes; sealed mode reaches the JSON parser through the real wasm32 json-c 0.17 |
+| `fuzz_anchor_json` | yes | real wasm32 json-c 0.17 |
 | `fuzz_salt_packet` | **no** | `gek.c` pulls the group database; possible once NC-1 extracts the KEM-wrap codec |
 
 Link-only pieces (test code): `nodus/tests/fuzz/fuzz_wasm_platform.c`
 (deterministic `qgp_platform_random`, `qgp_secure_memzero`,
 `qgp_platform_home_dir`), `nodus/tests/fuzz/fuzz_wasm_log.c` (QGP log back
-end), `tests/fuzz/fuzz_wasm_abort_stubs.c` (keyring, DHT I/O and json-c
-symbols the parsers never call, each defined as `abort()` with its real
+end), `tests/fuzz/fuzz_wasm_abort_stubs.c` (keyring and DHT I/O symbols the
+parsers never call, each defined as `abort()` with its real
 prototype — reaching one is a harness bug, never a silent fake result).
 
 A native `-m32` build is not provided: this machine has no `libc6-dev-i386`,

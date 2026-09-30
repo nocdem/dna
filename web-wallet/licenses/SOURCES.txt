@@ -37,3 +37,15 @@ musl-COPYRIGHT.txt
 Emscripten-LICENSE.txt
   source:  ~/emsdk/upstream/emscripten/LICENSE (emsdk 6.0.10)
   sha256:  620a78084fc7ca97c0b5dea9abf891f3ffcadfdbf305276f099c9c4e12fc1d86
+
+json-c 0.17 (tag json-c-0.17-20230812, the frozen app's json-c), built for
+wasm32 by scripts/build-jsonc-wasm.sh. NOT part of src/nodus/send.wasm; it is
+linked today only by the messenger wasm32 fuzz build
+(messenger/tests/fuzz/build_wasm32.sh) and is the json-c the web Connect core
+will link. Byte-for-byte copy (cp, verified with cmp):
+
+json-c-0.17-COPYING.txt
+  source:  ~/wasm-deps/src/json-c-json-c-0.17-20230812/COPYING
+           (json-c-0.17-20230812.tar.gz, GitHub tag archive,
+           sha256 024d302a3aadcbf9f78735320a6d5aedf8b77876c8ac8bbb95081ca55054c7eb)
+  sha256:  74c1e6ca5eba76b54d0ad00d4815c8315c1b3bc45ff99de61d103dc92486284c

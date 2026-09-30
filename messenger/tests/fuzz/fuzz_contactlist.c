@@ -34,10 +34,6 @@
  *
  * Throughput note: sealed mode signs (ML-DSA-87) and encapsulates (Kyber r3)
  * once per input, so it runs far slower than raw mode.
- *
- * FUZZ_CONTACTLIST_RAW_ONLY (set by build_wasm32.sh): json-c has no wasm32
- * build here, so that build has no real publisher (the template) and no JSON
- * parser. The mode byte is then ignored and every input runs in raw mode.
  */
 
 #include <stdint.h>
@@ -59,8 +55,6 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 
 static fuzz_identity_t *s_self;
 static int              s_ready;
-
-#ifndef FUZZ_CONTACTLIST_RAW_ONLY
 static dna_context_t   *s_ctx;
 static uint8_t         *s_template;       /* real publisher output */
 static size_t           s_template_len;
@@ -116,7 +110,6 @@ static void init_template(void) {
     s_template_tail = tail;
     fuzz_dht_stub_reset();
 }
-#endif /* !FUZZ_CONTACTLIST_RAW_ONLY */
 
 static void init_once(void) {
     if (s_ready) {
@@ -127,9 +120,7 @@ static void init_once(void) {
     if (!s_self || fuzz_identity_derive(s_self, FUZZ_ID_SELF) != 0) {
         abort();
     }
-#ifndef FUZZ_CONTACTLIST_RAW_ONLY
     init_template();
-#endif
     s_ready = 1;
 }
 
@@ -153,10 +144,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     const uint8_t *body = data + 1;
     size_t body_len = size - 1;
 
-#ifndef FUZZ_CONTACTLIST_RAW_ONLY
-    if ((data[0] & 1) == 0)
-#endif
-    {
+    if ((data[0] & 1) == 0) {
         const uint8_t *vals[1] = { body };
         size_t lens[1] = { body_len };
         fuzz_dht_stub_load(vals, lens, 1);
@@ -165,7 +153,6 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         return 0;
     }
 
-#ifndef FUZZ_CONTACTLIST_RAW_ONLY
     /* sealed: seal the fuzzed JSON exactly as the publisher does */
     uint8_t *seal = NULL;
     size_t seal_len = 0;
@@ -195,5 +182,4 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     fetch_and_free();
     fuzz_dht_stub_reset();
     return 0;
-#endif
 }

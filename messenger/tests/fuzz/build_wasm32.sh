@@ -17,19 +17,22 @@
 #   fuzz_offline_queue    dht_offline_queue.c + codec/offline_queue_codec.c
 #   fuzz_contact_request  dht_contact_request.c + codec/contact_request_codec.c
 #   fuzz_contactlist      dht_contactlist.c + codec/contactlist_codec.c + dna_api.c,
-#                         RAW MODE ONLY
-#                         (-DFUZZ_CONTACTLIST_RAW_ONLY): json-c has no wasm32
-#                         build in this tree, so fuzz_wasm_abort_stubs.c
-#                         supplies the json-c symbols as abort() — the header
-#                         / length / Seal path is covered, the JSON parser is
-#                         not (it sits behind the authorship check, which a
-#                         raw input cannot pass).
-#   NC-1 moved the parsers of the last three into messenger/codec/; the I/O
-#   files call them there, so each target compiles its codec unit too.
+#                         both modes (raw blob, and sealed JSON reaching the
+#                         JSON parser), with the real wasm32 json-c
+#   fuzz_anchor_json      dht/client/dna_profile.c, with the real wasm32 json-c
+#   NC-1 moved the parsers of offline_queue / contact_request / contactlist
+#   into messenger/codec/; the I/O files call them there, so each of those
+#   targets compiles its codec unit too.
 # Not built for wasm32 (gap, see messenger/docs/FUZZING.md):
-#   fuzz_anchor_json (json-c), fuzz_salt_packet (gek.c pulls the group
-#   database; available once NC-1 extracts the KEM-wrap codec),
-#   fuzz_profile_json / fuzz_base58 (not on the web core's input path).
+#   fuzz_salt_packet (gek.c pulls the group database; available once NC-1
+#   extracts the KEM-wrap codec), fuzz_profile_json / fuzz_base58 (not on
+#   the web core's input path).
+#
+# json-c: the wasm32 archive from web-wallet/scripts/build-jsonc-wasm.sh,
+# tag json-c-0.17-20230812 — the tag the frozen app's Android and Windows
+# builds fetch (web Connect design §1.2: same json-c version as the frozen
+# app). Its headers (with the wasm32-generated json_config.h) are the ones
+# compiled against; the host /usr/include/json-c is not used.
 #
 # fuzz_dht_stub.c (the nodus_ops read/write test doubles) is linked into
 # every target. I/O and keyring functions the compiled files reference but
@@ -41,11 +44,12 @@
 #   EMCC_BIN             default ~/emsdk/upstream/emscripten/emcc
 #   OPENSSL_WASM_PREFIX  default ~/wasm-deps/openssl-3.0.15-wasm
 #                        (web-wallet/scripts/build-openssl-wasm.sh builds it)
+#   JSONC_WASM_PREFIX    default ~/wasm-deps/json-c-0.17-wasm
+#                        (web-wallet/scripts/build-jsonc-wasm.sh builds it)
 #   SQLITE3_H            default /usr/include/sqlite3.h (declarations only)
-#   JSONC_INCLUDE        default /usr/include (json-c/json.h, declarations only)
 #   OUT_DIR              default <messenger>/tests/fuzz/build-wasm32
 #
-# Toolchain pin: Emscripten 6.0.10 (same as the OpenSSL archive).
+# Toolchain pin: Emscripten 6.0.10 (same as the OpenSSL and json-c archives).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -56,8 +60,8 @@ nodus_fuzz="$root/nodus/tests/fuzz"
 EMCC_REQUIRED_VERSION="6.0.10"
 EMCC_BIN="${EMCC_BIN:-$HOME/emsdk/upstream/emscripten/emcc}"
 OPENSSL_WASM_PREFIX="${OPENSSL_WASM_PREFIX:-$HOME/wasm-deps/openssl-3.0.15-wasm}"
+JSONC_WASM_PREFIX="${JSONC_WASM_PREFIX:-$HOME/wasm-deps/json-c-0.17-wasm}"
 SQLITE3_H="${SQLITE3_H:-/usr/include/sqlite3.h}"
-JSONC_INCLUDE="${JSONC_INCLUDE:-/usr/include}"
 OUT_DIR="${OUT_DIR:-$here/build-wasm32}"
 
 if [ ! -x "$EMCC_BIN" ]; then
@@ -75,24 +79,22 @@ if [ ! -f "$OPENSSL_WASM_PREFIX/lib/libcrypto.a" ] || [ ! -f "$OPENSSL_WASM_PREF
   echo "build_wasm32: OpenSSL wasm build missing under $OPENSSL_WASM_PREFIX (run web-wallet/scripts/build-openssl-wasm.sh)" >&2
   exit 2
 fi
-if [ ! -f "$SQLITE3_H" ]; then
-  echo "build_wasm32: $SQLITE3_H not found (set SQLITE3_H)" >&2
+if [ ! -f "$JSONC_WASM_PREFIX/lib/libjson-c.a" ] || [ ! -f "$JSONC_WASM_PREFIX/include/json-c/json.h" ]; then
+  echo "build_wasm32: json-c wasm build missing under $JSONC_WASM_PREFIX (run web-wallet/scripts/build-jsonc-wasm.sh)" >&2
   exit 2
 fi
-if [ ! -f "$JSONC_INCLUDE/json-c/json.h" ]; then
-  echo "build_wasm32: $JSONC_INCLUDE/json-c/json.h not found (set JSONC_INCLUDE)" >&2
+if [ ! -f "$SQLITE3_H" ]; then
+  echo "build_wasm32: $SQLITE3_H not found (set SQLITE3_H)" >&2
   exit 2
 fi
 
 mkdir -p "$OUT_DIR"
 
-# Declaration-only headers the compiled sources include transitively
-# (nodus media storage -> sqlite3.h; dht_contactlist.c -> json-c). No sqlite
-# or json-c code is compiled or linked.
+# Declaration-only header the compiled sources include transitively
+# (nodus media storage -> sqlite3.h). No sqlite code is compiled or linked.
 inc="$(mktemp -d)"
 trap 'rm -rf "$inc"' EXIT
 cp "$SQLITE3_H" "$inc/sqlite3.h"
-cp -r "$JSONC_INCLUDE/json-c" "$inc/json-c"
 
 crypto_sources=(
   "$root/shared/crypto/hash/qgp_sha3.c"
@@ -141,13 +143,14 @@ cflags=(
   -I"$root/shared" -I"$root/shared/crypto"
   -I"$root/shared/crypto/sign/dsa" -I"$root/shared/crypto/enc/kem"
   -I"$root/dnac/include"
-  -I"$OPENSSL_WASM_PREFIX/include" -I"$inc"
+  -I"$OPENSSL_WASM_PREFIX/include" -I"$JSONC_WASM_PREFIX/include" -I"$inc"
 )
 ldflags=(
   -fsanitize=address
   -sENVIRONMENT=node -sNODERAWFS=1 -sALLOW_MEMORY_GROWTH=1
   -sSTACK_SIZE=1048576 -sEXIT_RUNTIME=1
   "$OPENSSL_WASM_PREFIX/lib/libcrypto.a"
+  "$JSONC_WASM_PREFIX/lib/libjson-c.a"
 )
 
 build() {
@@ -163,6 +166,7 @@ build fuzz_offline_queue "$here/fuzz_offline_queue.c" "$messenger/dht/shared/dht
   "$messenger/codec/offline_queue_codec.c"
 build fuzz_contact_request "$here/fuzz_contact_request.c" "$messenger/dht/shared/dht_contact_request.c" \
   "$messenger/codec/contact_request_codec.c"
-build fuzz_contactlist -DFUZZ_CONTACTLIST_RAW_ONLY "$here/fuzz_contactlist.c" "$here/fuzz_keys.c" \
+build fuzz_contactlist "$here/fuzz_contactlist.c" "$here/fuzz_keys.c" \
   "$messenger/dht/client/dht_contactlist.c" "$messenger/codec/contactlist_codec.c" "$messenger/dna_api.c"
+build fuzz_anchor_json "$here/fuzz_anchor_json.c" "$messenger/dht/client/dna_profile.c"
 echo "build_wasm32: outputs in $OUT_DIR"
