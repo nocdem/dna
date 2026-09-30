@@ -1027,6 +1027,14 @@ add_executable(test_client_pin tests/test_client_pin.c)
 target_link_libraries(test_client_pin nodus dsa kem nodus pthread)
 add_test(NAME test_client_pin COMMAND test_client_pin)
 
+# nodus_client_dnac_spend (680f9475): a success reply without a uint
+# "status" is NODUS_ERR_PROTOCOL_ERROR, never status 0 = APPROVED; an
+# error reply returns its code. Real client vs a fake server on
+# 127.0.0.1:0 (test_client_pin.c's fake pattern).
+add_executable(test_client_spend_status tests/test_client_spend_status.c)
+target_link_libraries(test_client_spend_status nodus dsa kem nodus pthread)
+add_test(NAME test_client_spend_status COMMAND test_client_spend_status)
+
 # O15C-D — request/result correlation: a response never reaches the
 # wrong request, and a reply to an abandoned request is not captured.
 # This is what makes the late "unknown txn" warning an attribution gap

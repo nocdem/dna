@@ -156,6 +156,7 @@ nodus/
 │   ├── test_tcp.c               # TCP transport tests
 │   ├── test_client.c          # Client SDK tests
 │   ├── test_client_pin.c      # Client server-key pin (fail-closed matrix, ML-KEM only) + monotonic timeouts
+│   ├── test_client_spend_status.c # dnac_spend reply without a uint "status" -> PROTOCOL_ERROR, never APPROVED
 │   ├── test_v2_spend_build.c  # Shared SPEND builder vs the CheckTx dry run (package c2)
 │   ├── test_ruleset_pins.c    # Generated pins header == the runtime table (byte-compare)
 │   ├── test_server.c          # Server integration tests
