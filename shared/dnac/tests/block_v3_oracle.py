@@ -50,8 +50,8 @@ def be(v: int, width: int) -> bytes:
     return v.to_bytes(width, "big")
 
 
-TAG_BLOCK_V2 = tag16("DNA.BLOCK.v2")
-TAG_BLOCK_V3 = tag16("DNA.BLOCK.v3")
+TAG_BLOCK_V2 = tag16("NDS.BLOCK.v2")
+TAG_BLOCK_V3 = tag16("NDS.BLOCK.v3")
 
 # ── canonical encoders (from the spec byte tables) ────────────────────
 
@@ -116,10 +116,10 @@ def genesis_id_v3(h: dict, manifest: bytes) -> bytes:
 
 
 # ── the empty domain_updates_root (domain_wire.h:436-440) ─────────────
-# n == 0 yields SHA3-512 of the "DNA.E.DUPD.v1" tag ALONE.  A block that
+# n == 0 yields SHA3-512 of the "NDS.E.DUPD.v1" tag ALONE.  A block that
 # touches nothing must be distinguishable from a missing/malformed body,
 # so this value is pinned too.
-EMPTY_DUPD_ROOT = sha3_512(tag16("DNA.E.DUPD.v1"))
+EMPTY_DUPD_ROOT = sha3_512(tag16("NDS.E.DUPD.v1"))
 
 # ── fixtures (mirror of test_block_v2.c base_header/genesis block) ────
 
@@ -151,22 +151,28 @@ def base_v3() -> dict:
 MANIFEST = b"DNA-TEST-MANIFEST-v1" + fill(44, 0x33)
 
 # ── stage 1: CONTROL LEGS — the shipped v2 pins ───────────────────────
+#
+# Re-pinned 2026-09-30 (tag prefix rebrand "DNA" → "NDS", decision
+# 2026-09-30-tag-rebrand-nds.md): this file first reproduced the old-prefix
+# values (KAT_BLOCK_ID d7beb71c…50be, KAT_GENESIS_ID d4485cd6…7e47,
+# KAT_GENESIS_ID_MUT e902ef05…c6d5), then emitted the NDS-prefix values below.
+# KAT_ENC_SHA hashes an untagged encoding and did not move.
 
 SHIPPED_V2 = {
     "KAT_ENC_SHA":
         "6b57e520049189934aea09aded30538f1d87f59a39a4e94ab3be2313d4985793"
         "14451a5bf3da3807764bb7dddefc09c14b41dceb710486992001f4b51ac9ef3b",
     "KAT_BLOCK_ID":
-        "d7beb71ce44dc5b4676cf5f247e5210f2199a089cd10111303c20fe581c2f1da"
-        "437997018d2936183900b82e85b71aa2d0ae013fb2fe953e0dbdc49ec98150be",
+        "d7f2327d4eb4fa2c0799e1a178a694606d9e15bdd6370780fce3e4012d2ac6f7"
+        "08feaf02016fdb1f8369a53fdda8e76f15216d82f7fd2e9391b983be3d7f38a4",
     "KAT_GENESIS_ID":
-        "d4485cd6f0b044ad760742ca124f9633ae32c38aaf7257c8c860432c1f03ea38"
-        "4bfec62599589bb593af1c2a1786f481637a3f79d5b627e87dae59a15ea17e47",
+        "df12439f045fb8b8adfdef5631904c7f413e4dc777b0f4e955b39fe544b6d013"
+        "c7c897db934d4852cc50ad23f8a166a587fd9fab3082079a92bd6180ec52545a",
     "KAT_GENESIS_CHAIN":
-        "d4485cd6f0b044ad760742ca124f9633ae32c38aaf7257c8c860432c1f03ea38",
+        "df12439f045fb8b8adfdef5631904c7f413e4dc777b0f4e955b39fe544b6d013",
     "KAT_GENESIS_ID_MUT":
-        "e902ef055f75ecbf083b0bf0c1c143bbf252d09db203e650a824374df6c23da7"
-        "1716fa1bd3c1e20fe83cae136955b47c69c6ace0dd488cfd0b1177a17000c6d5",
+        "894b8503e6e289320f196c34e1f5965d2f92ef5c7ea20e28c979d1543bf9a2a9"
+        "2467da170d2498e0202d9c07d19beb2775289c30981d98d2178f636f90037c38",
 }
 
 

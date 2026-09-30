@@ -2,9 +2,9 @@
 """
 Independent vector oracle for tokenomics-v3 P2's changes to the CORE
 state root (shared/dnac/ledger_roots_v2.{h,c}): the reward-pool field of
-the supply leaf ("DNA.SUPPLY.v2"), the reward-accrual leg
+the supply leaf ("NDS.SUPPLY.v2"), the reward-accrual leg
 (dna_v2_accrual_leaf_hash / dna_v2_accrual_root, empty tag
-"DNA.E.ACCRU.v1") and the 7-leg core_state_root ("DNA.CORE.v2"); and,
+"NDS.E.ACCRU.v1") and the 7-leg core_state_root ("NDS.CORE.v2"); and,
 since the root-layout round (K1, 2026-09-25), the 340-byte UTXO leaf
 that feeds core_state_root's utxo_root leg.
 
@@ -21,13 +21,13 @@ Call it "self-consistent", never "independently audited". Same status as
 ledger_roots_v2_attendance_oracle.py (P1).
 
 ── WHAT IS PINNED ────────────────────────────────────────────────────────
-  supply_root   = SHA3-512("DNA.SUPPLY.v2" (16B zero-padded) ||
+  supply_root   = SHA3-512("NDS.SUPPLY.v2" (16B zero-padded) ||
                            genesis(8 BE) || minted(8 BE) ||
                            burned(8 BE) || reward_pool(8 BE))
-  accrual leaf  = SHA3-512("DNA.ACLEAF.v1" || owner_fp[64] || amount(8 BE))
-  accrual inner = SHA3-512("DNA.ACNODE.v1" || left[64] || right[64])
-  accrual empty = SHA3-512("DNA.E.ACCRU.v1")
-  core_root     = SHA3-512("DNA.CORE.v2" || 7 legs of 64 bytes, in order:
+  accrual leaf  = SHA3-512("NDS.ACLEAF.v1" || owner_fp[64] || amount(8 BE))
+  accrual inner = SHA3-512("NDS.ACNODE.v1" || left[64] || right[64])
+  accrual empty = SHA3-512("NDS.E.ACCRU.v1")
+  core_root     = SHA3-512("NDS.CORE.v2" || 7 legs of 64 bytes, in order:
                   utxo, token, pools, claims, names, supply, accrual)
 The Merkle rule is the file's own: leaves in strictly ascending key
 order, an unpaired node PROMOTED (never duplicated), n == 1 -> the leaf.
@@ -54,8 +54,8 @@ order, an unpaired node PROMOTED (never duplicated), n == 1 -> the leaf.
  2. `fill(seed)` is test_roots_v2.c's own fixture convention, reproduced
     byte-for-byte; a bug shared between the C fixture and this generator
     would agree with itself.
- 3. The two self-checks (the RETIRED "DNA.SUPPLY.v1" and 6-leg
-    "DNA.CORE.v1" vectors already pinned in test_roots_v2.c before P2)
+ 3. The two self-checks (the RETIRED "NDS.SUPPLY.v1" and 6-leg
+    "NDS.CORE.v1" vectors already pinned in test_roots_v2.c before P2)
     are run FIRST; if either fails, nothing this script prints below them
     may be used.
 
@@ -86,13 +86,13 @@ def be64(v: int) -> bytes:
     return struct.pack(">Q", v)
 
 
-TAG_SUPPLY_V1 = tag("DNA.SUPPLY.v1")
-TAG_SUPPLY_V2 = tag("DNA.SUPPLY.v2")
-TAG_CORE_V1 = tag("DNA.CORE.v1")
-TAG_CORE_V2 = tag("DNA.CORE.v2")
-TAG_ACLEAF = tag("DNA.ACLEAF.v1")
-TAG_ACNODE = tag("DNA.ACNODE.v1")
-TAG_E_ACCRU = tag("DNA.E.ACCRU.v1")
+TAG_SUPPLY_V1 = tag("NDS.SUPPLY.v1")
+TAG_SUPPLY_V2 = tag("NDS.SUPPLY.v2")
+TAG_CORE_V1 = tag("NDS.CORE.v1")
+TAG_CORE_V2 = tag("NDS.CORE.v2")
+TAG_ACLEAF = tag("NDS.ACLEAF.v1")
+TAG_ACNODE = tag("NDS.ACNODE.v1")
+TAG_E_ACCRU = tag("NDS.E.ACCRU.v1")
 
 
 def supply_root_v2(genesis: int, minted: int, burned: int, pool: int) -> bytes:
@@ -182,18 +182,22 @@ def main():
     # retired vectors before anything new is trusted.
     old_supply = sha3_512(TAG_SUPPLY_V1 + be64(100000000000000000) +
                           be64(500) + be64(300))
+    # Re-pinned 2026-09-30 (tag prefix rebrand "DNA" → "NDS", decision
+    # 2026-09-30-tag-rebrand-nds.md): the old-prefix values ef949407…91b7
+    # (supply) and ccaae1c6…db3e (6-leg core) were reproduced first; these
+    # are this file's own outputs under the NDS. tags.
     OLD_KAT_SUPPLY = (
-        "ef949407440c0a7adab9f6b0a0999e06074e57a4b2b04f7b1532cf2effb597f2"
-        "e656e3f396f663a1b3d5237d6709165393ec076ddc5f47f35abe0de3b26e91b7"
+        "9469c07c55bcf1160f43b97ef8b950a78521619c1a3c76d3168a0612a3213108"
+        "a7200ce4b62b03ed73d2bb9b0c71f031f96d76ac6a9d4894ca43a61e9117afc5"
     )
     assert old_supply.hex() == OLD_KAT_SUPPLY, "retired supply vector not reproduced"
     old_core = sha3_512(TAG_CORE_V1 + b"".join(fill(0xB0 + i) for i in range(6)))
     OLD_KAT_CORE = (
-        "ccaae1c6ced38cfd93a99f9a15f26c490c15fd343d18f9232116bab6d7ba1f7f"
-        "c918b7a324b071cda8b6a556dbb89226da6082f9efc55aa2667659c2f4f8db3e"
+        "20ab2d669b06c52d2da2e78ceeeed200acf88a416c048d387246e16c24803154"
+        "7ec2d4c3b2bf9e418b5d664e5c4ef158476ae87ae415e507e82875f0b1367c9e"
     )
     assert old_core.hex() == OLD_KAT_CORE, "retired 6-leg core vector not reproduced"
-    print("[self-check] retired DNA.SUPPLY.v1 and 6-leg DNA.CORE.v1 vectors reproduced")
+    print("[self-check] retired NDS.SUPPLY.v1 and 6-leg NDS.CORE.v1 vectors reproduced")
     print()
 
     print("EMPTY_ACCRUAL     =", sha3_512(TAG_E_ACCRU).hex())
@@ -213,7 +217,7 @@ def main():
           "  (+ owner fill(0x33), amount 1 — the promoted odd node)")
     print("KAT_CORE_7LEG     =",
           core_root_v2([fill(0xB0 + i) for i in range(7)]).hex(),
-          "  (DNA.CORE.v2, legs = fill(0xB0..0xB6))")
+          "  (NDS.CORE.v2, legs = fill(0xB0..0xB6))")
 
     # Root-layout round K1 — the UTXO leaf with unlock_block.
     print()

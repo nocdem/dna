@@ -55,8 +55,8 @@ int dna_ck_sub_u64(uint64_t a, uint64_t b, uint64_t *out) {
  * ruleset descriptor commits (res_meter.h dna_meter_policy_digest).
  * Distinct tags so the two values can never be confused for each other
  * even though they serialize the same canonical fields. */
-static const uint8_t METER_POLICY_TAG[16]    = "DNA.METPOL.v1";
-static const uint8_t METER_POLICY_ID_TAG[16] = "DNA.METPOLID.v1";
+static const uint8_t METER_POLICY_TAG[16]    = "NDS.METPOL.v1";
+static const uint8_t METER_POLICY_ID_TAG[16] = "NDS.METPOLID.v1";
 
 /* Seal preimage: tag(16) + version(4) + 7 scalar weights + the v2
  * max_block_env_bytes bound (8*8 = 64) + 256 op weights (2048)

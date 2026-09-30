@@ -16,7 +16,7 @@
  *   resolution from the FROZEN block-start snapshot → deterministic
  *   reservation (res_meter) → mediated reads (adapter `read`, engine-
  *   charged) → native compiled runtime execution (nodus_rt_exec_fn) →
- *   canonical "DNA.EFFRES.v1" typed result → strict decode + adapter
+ *   canonical "NDS.EFFRES.v1" typed result → strict decode + adapter
  *   validation → deterministic charging → storage-adapter application →
  *   domain/global roots → persistence, inside the HOST's transaction.
  *
@@ -973,7 +973,7 @@ typedef struct {
      *             in the header directly, AND their effects move the
      *             state roots.
      *   claims    bound TRANSITIVELY ONLY. A claim's canonical semantic
-     *             identity is its nullifier (DNA.CLNUL.v1 over chain,
+     *             identity is its nullifier (NDS.CLNUL.v1 over chain,
      *             manifest hash, target domain, target asset and leaf —
      *             all committed values), and claims_root is a leg of the
      *             target domain's state root. Claims are not
@@ -1296,7 +1296,7 @@ void nodus_witness_v2_env_dry_run_free(nodus_v2_env_dry_run_t *out);
 /**
  * One claim's canonical NULLIFIER from its wire bytes — the derivation
  * the apply lane runs for that claim (`claim_prescan_one`: shape,
- * committed manifest, distribution leaf hash, "DNA.CLNUL.v1"), exposed
+ * committed manifest, distribution leaf hash, "NDS.CLNUL.v1"), exposed
  * so the mempool can key a pending claim by what makes two claims the
  * SAME claim. Reads committed state, writes nothing.
  * @return 0 with `out_nul` filled; -1 the bytes do not decode or the

@@ -19,7 +19,7 @@
 
 /* Tag is EXACTLY 16 bytes, zero-padded ASCII — same discipline as
  * ledger_roots_v2.c. */
-static const uint8_t TAG_VSET[DNA_VSET_TAG_LEN] = "DNA.VSET.v1\0\0\0\0";
+static const uint8_t TAG_VSET[DNA_VSET_TAG_LEN] = "NDS.VSET.v1\0\0\0\0";
 
 /* Layout arithmetic is pinned, not assumed. */
 _Static_assert(DNA_VSET_HDR_LEN == 8 + 2 + 4 + DNA_VSET_SEED_LEN,

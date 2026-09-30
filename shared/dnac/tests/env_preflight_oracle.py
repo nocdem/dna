@@ -24,13 +24,13 @@ import hashlib
 import struct
 
 # -- constants (spec: env_wire.h:37-44, :46-75) --------------------------
-WIRE_FAMILY = b"DNA.ENVWIRE.v1".ljust(16, b"\0")
-TAG_CALL    = b"DNA.ENVCALL.v1".ljust(16, b"\0")
-TAG_AUTHCTX = b"DNA.ENVCTX.v1".ljust(16, b"\0")
-TAG_AUTH    = b"DNA.ENVAUTH.v1".ljust(16, b"\0")
-TAG_TXID    = b"DNA.ENVTXID.v1".ljust(16, b"\0")
-TAG_ILEG    = b"DNA.ENVILEG.v1".ljust(16, b"\0")     # intent season
-TAG_INTENT  = b"DNA.ENVINTID.v1".ljust(16, b"\0")    # intent season
+WIRE_FAMILY = b"NDS.ENVWIRE.v1".ljust(16, b"\0")
+TAG_CALL    = b"NDS.ENVCALL.v1".ljust(16, b"\0")
+TAG_AUTHCTX = b"NDS.ENVCTX.v1".ljust(16, b"\0")
+TAG_AUTH    = b"NDS.ENVAUTH.v1".ljust(16, b"\0")
+TAG_TXID    = b"NDS.ENVTXID.v1".ljust(16, b"\0")
+TAG_ILEG    = b"NDS.ENVILEG.v1".ljust(16, b"\0")     # intent season
+TAG_INTENT  = b"NDS.ENVINTID.v1".ljust(16, b"\0")    # intent season
 
 ENV_VERSION   = 1
 FIXED_HEAD    = 43
@@ -203,7 +203,7 @@ def season_fixture():
     assert len({chain_id[0], chain_id[15], chain_id[16], chain_id[31]}) == 4
 
     # Non-degenerate ruleset digests: derived, never a repeated byte pattern.
-    rulesets = [sha3(b"DNA.TEST.RULESET." + bytes([i])) for i in range(3)]
+    rulesets = [sha3(b"NDS.TEST.RULESET." + bytes([i])) for i in range(3)]
     assert len(set(rulesets)) == 3
 
     legs = [

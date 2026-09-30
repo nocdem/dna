@@ -68,19 +68,19 @@
  *   - every failure path returns -1 and produces NO partial result.
  *
  * ── TAG TABLE (each exactly 16 bytes, zero-padded; S6 JUDGMENT tags) ──
- *   "DNA.GMAN.v1"     genesis-manifest hash
- *   "DNA.MANLEAF.v1"  manifest_root leaf
- *   "DNA.MANNODE.v1"  manifest_root inner node
- *   "DNA.DSLEAF.v1"   distribution snapshot leaf
- *   "DNA.DSNODE.v1"   distribution snapshot inner node
- *   "DNA.CLAIM.v1"    claim signed preimage
- *   "DNA.CLNUL.v1"    spent-claim nullifier derivation
- *   "DNA.CLLEAF.v1"   claims_root leaf
- *   "DNA.CLNODE.v1"   claims_root inner node
- *   "DNA.CLUTXO.v1"   claim-output UTXO identity derivation
- *   "DNA.E.MANIF.v1"  EMPTY manifest_root (frozen since S2 —
+ *   "NDS.GMAN.v1"     genesis-manifest hash
+ *   "NDS.MANLEAF.v1"  manifest_root leaf
+ *   "NDS.MANNODE.v1"  manifest_root inner node
+ *   "NDS.DSLEAF.v1"   distribution snapshot leaf
+ *   "NDS.DSNODE.v1"   distribution snapshot inner node
+ *   "NDS.CLAIM.v1"    claim signed preimage
+ *   "NDS.CLNUL.v1"    spent-claim nullifier derivation
+ *   "NDS.CLLEAF.v1"   claims_root leaf
+ *   "NDS.CLNODE.v1"   claims_root inner node
+ *   "NDS.CLUTXO.v1"   claim-output UTXO identity derivation
+ *   "NDS.E.MANIF.v1"  EMPTY manifest_root (frozen since S2 —
  *                     dna_v2_empty_root(DNA_V2_EMPTY_MANIFEST))
- *   "DNA.E.CLAIMS.v1" EMPTY claims_root (frozen since S2 —
+ *   "NDS.E.CLAIMS.v1" EMPTY claims_root (frozen since S2 —
  *                     dna_v2_empty_root(DNA_V2_EMPTY_CLAIMS))
  *
  * ── GenesisManifest v1 canonical layout (BE, strict) ──────────────────
@@ -91,7 +91,7 @@
  *                                     entry MUST be DNA_DOMAIN_SYSTEM;
  *                                     strictly ascending domain_id)
  *   off 14  [ domain_id u32 ‖ manifest_hash[64] ] × domain_count
- *            — the DomainManifest v1 hashes ("DNA.DOMMAN.v1",
+ *            — the DomainManifest v1 hashes ("NDS.DOMMAN.v1",
  *              domain_wire.h — layout UNCHANGED by S6) of every initial
  *              domain. Initially exactly SYSTEM and DNA_CORE.
  *   then    dist_present        u8   (0 = no distribution section: NONE
@@ -143,11 +143,11 @@
  *                            transfer / disposition exists in v1: any
  *                            such behavior is a FUTURE versioned mode
  *                            and this build fails closed on it.)
- *   manifest_hash = SHA3-512("DNA.GMAN.v1" ‖ the canonical bytes)
+ *   manifest_hash = SHA3-512("NDS.GMAN.v1" ‖ the canonical bytes)
  *
  * ── manifest_root ─────────────────────────────────────────────────────
- *   leaf  = SHA3-512("DNA.MANLEAF.v1" ‖ manifest_hash[64])
- *   inner = SHA3-512("DNA.MANNODE.v1" ‖ left[64] ‖ right[64])
+ *   leaf  = SHA3-512("NDS.MANLEAF.v1" ‖ manifest_hash[64])
+ *   inner = SHA3-512("NDS.MANNODE.v1" ‖ left[64] ‖ right[64])
  *   leaves strictly ascending by manifest_hash BYTES (the committed
  *   identity — a database sequence number is a LOCAL locator and never
  *   enters a consensus commitment); odd node PROMOTED unchanged;
@@ -156,7 +156,7 @@
  *   chain's system_state_root is unchanged.
  *
  * ── DistributionLeaf v1 ───────────────────────────────────────────────
- *   leaf_hash = SHA3-512("DNA.DSLEAF.v1" ‖ leaf_version u32 (= 1)
+ *   leaf_hash = SHA3-512("NDS.DSLEAF.v1" ‖ leaf_version u32 (= 1)
  *       ‖ source_id_len u16 ‖ source_id (1..DNA_DIST_SRCID_MAX opaque
  *       bytes) ‖ source_amount u64 (>= 1) ‖ dest_binding[64])
  *   dest_binding = SHA3-512(recipient DNA-native Dilithium5 public key)
@@ -176,7 +176,7 @@
  *
  * ── Snapshot tree + inclusion proofs ──────────────────────────────────
  *   leaves  = leaf hashes in canonical source_id order;
- *   inner   = SHA3-512("DNA.DSNODE.v1" ‖ left[64] ‖ right[64]);
+ *   inner   = SHA3-512("NDS.DSNODE.v1" ‖ left[64] ‖ right[64]);
  *   odd node PROMOTED unchanged (never duplicated); n == 1 → the leaf.
  *   A proof is the bottom-up sibling hash sequence; at every level the
  *   verifier derives from (position, width) whether a sibling exists
@@ -211,7 +211,7 @@
  *           signature[4627]     (ML-DSA-87 over the signed preimage)
  *
  *   Signed preimage (variable length, tag-prefixed):
- *     "DNA.CLAIM.v1"(16) ‖ claim_version u32 ‖ chain_id[32]
+ *     "NDS.CLAIM.v1"(16) ‖ claim_version u32 ‖ chain_id[32]
  *     ‖ manifest_hash[64] ‖ leaf_index u64 ‖ source_id_len u16
  *     ‖ source_id ‖ source_amount u64 ‖ dest_binding[64]
  *   (The Merkle proof and the key material are NOT signed: the proof is
@@ -223,11 +223,11 @@
  *
  *   Nullifier (spent-claim key) — derived from the COMMITTED context
  *   only, independent of proof bytes and key material:
- *     SHA3-512("DNA.CLNUL.v1" ‖ chain_id[32] ‖ manifest_hash[64]
+ *     SHA3-512("NDS.CLNUL.v1" ‖ chain_id[32] ‖ manifest_hash[64]
  *              ‖ target_domain_id u32 ‖ target_asset_len u16
  *              ‖ target_asset_ref ‖ leaf_hash[64])
  *   where leaf_hash is the committed DistributionLeaf hash
- *   ("DNA.DSLEAF.v1"). One leaf ⇒ one nullifier ⇒ claimable exactly
+ *   ("NDS.DSLEAF.v1"). One leaf ⇒ one nullifier ⇒ claimable exactly
  *   once per (chain, manifest, target domain, target asset); replay
  *   across chains, manifests, domains or assets changes the nullifier
  *   AND (chain/manifest) invalidates the signature. Nullifiers of
@@ -235,13 +235,13 @@
  *
  *   Claim-output identity (deterministic; the NATIVE CORE runtime uses
  *   it as its UTXO id — other runtimes derive their own output ids):
- *     SHA3-512("DNA.CLUTXO.v1" ‖ nullifier[64])
+ *     SHA3-512("NDS.CLUTXO.v1" ‖ nullifier[64])
  *
  * ── claims_root ───────────────────────────────────────────────────────
- *   leaf  = SHA3-512("DNA.CLLEAF.v1" ‖ nullifier[64] ‖ manifest_hash[64]
+ *   leaf  = SHA3-512("NDS.CLLEAF.v1" ‖ nullifier[64] ‖ manifest_hash[64]
  *                    ‖ target_domain_id u32 ‖ leaf_index u64 ‖ amount u64
  *                    ‖ claimed_height u64)
- *   inner = SHA3-512("DNA.CLNODE.v1" ‖ left[64] ‖ right[64])
+ *   inner = SHA3-512("NDS.CLNODE.v1" ‖ left[64] ‖ right[64])
  *   leaves strictly ascending by nullifier bytes (so the root is
  *   INSERTION-ORDER INDEPENDENT by construction); odd node PROMOTED;
  *   n == 1 → the leaf; n == 0 → dna_v2_empty_root(DNA_V2_EMPTY_CLAIMS) —
@@ -302,7 +302,7 @@ extern "C" {
 
 typedef struct {
     uint32_t domain_id;
-    uint8_t  manifest_hash[DNA_V2_ROOT_LEN];   /* DNA.DOMMAN.v1 hash */
+    uint8_t  manifest_hash[DNA_V2_ROOT_LEN];   /* NDS.DOMMAN.v1 hash */
 } dna_gman_domain_ref_t;
 
 typedef struct {
@@ -351,7 +351,7 @@ int dna_gman_encode(const dna_gman_t *m,
  *  reject), then the full validate rule set applies. @return 0 / -1. */
 int dna_gman_decode(const uint8_t *src, size_t len, dna_gman_t *out);
 
-/** manifest_hash = SHA3-512("DNA.GMAN.v1" ‖ canonical bytes).
+/** manifest_hash = SHA3-512("NDS.GMAN.v1" ‖ canonical bytes).
  *  Rejects an invalid manifest. @return 0 / -1. */
 int dna_gman_hash(const dna_gman_t *m, uint8_t out[DNA_V2_ROOT_LEN]);
 
@@ -491,7 +491,7 @@ int dna_claim_preimage(const dna_claim_t *c,
                        uint8_t out[DNA_CLAIM_PREIMAGE_MAX],
                        size_t *out_len);
 
-/** Nullifier = SHA3-512("DNA.CLNUL.v1" ‖ chain_id ‖ manifest_hash
+/** Nullifier = SHA3-512("NDS.CLNUL.v1" ‖ chain_id ‖ manifest_hash
  *  ‖ target_domain_id u32 ‖ target_asset_len u16 ‖ target_asset_ref
  *  ‖ leaf_hash). All inputs are COMMITTED data (manifest hash, target
  *  domain/asset from the manifest, the snapshot leaf hash) — a local
@@ -505,7 +505,7 @@ int dna_claim_nullifier(const uint8_t chain_id[DNA_CHAIN_ID_LEN],
                         uint8_t out[DNA_V2_ROOT_LEN]);
 
 /** Deterministic claim-output identity:
- *  SHA3-512("DNA.CLUTXO.v1" ‖ nullifier[64]). The NATIVE CORE runtime
+ *  SHA3-512("NDS.CLUTXO.v1" ‖ nullifier[64]). The NATIVE CORE runtime
  *  uses it as its UTXO id; a non-native runtime derives its own output
  *  identity. @return 0 / -1. */
 int dna_claim_utxo_id(const uint8_t nullifier[DNA_V2_ROOT_LEN],
@@ -524,7 +524,7 @@ typedef struct {
     uint64_t claimed_height;
 } dna_claims_entry_t;
 
-/** leaf = SHA3-512("DNA.CLLEAF.v1" ‖ the entry fields, header table). */
+/** leaf = SHA3-512("NDS.CLLEAF.v1" ‖ the entry fields, header table). */
 int dna_claims_leaf_hash(const dna_claims_entry_t *e,
                          uint8_t out[DNA_V2_ROOT_LEN]);
 

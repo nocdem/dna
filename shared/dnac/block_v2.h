@@ -58,16 +58,16 @@
  * ruleset_version/status). The DomainUpdate set — which additionally
  * binds each touched domain's pre_root, tx_batch_root, ruleset identity
  * and consumed resources, and which distinguishes a zero-envelope block
- * (tagged empty root "DNA.E.DUPD.v1") from a missing body — appears in
+ * (tagged empty root "NDS.E.DUPD.v1") from a missing body — appears in
  * no preimage reachable from the header. Binding it here closes that
  * hole, and TRANSITIVELY binds each touched domain's ruleset_version and
  * ruleset_hash (they are fields of the DomainUpdate leaf).
  *
  * ── BlockID V3 (normal block) ─────────────────────────────────────────
- *   SHA3-512( "DNA.BLOCK.v3"+4×00 (16 B)
+ *   SHA3-512( "NDS.BLOCK.v3"+4×00 (16 B)
  *             ‖ encoded header bytes [0,405) )        — 421-byte preimage
  *   i.e. every field above EXCEPT timestamp is bound.
- *   The tag is DISTINCT from "DNA.BLOCK.v2", so a v2 and a v3 header can
+ *   The tag is DISTINCT from "NDS.BLOCK.v2", so a v2 and a v3 header can
  *   never produce the same id even if a caller could construct matching
  *   field bytes; the version byte inside the preimage binds it a second
  *   time. A QC is deliberately NOT part of the id it certifies.

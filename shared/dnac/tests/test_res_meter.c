@@ -65,14 +65,14 @@ static int g_checks = 0;
 
 /* ORACLE: python3 res_meter_oracle.py (independent hashlib.sha3_512). */
 static const char K_SEAL_HEX[] =
-    "92c9cb0ee923a85fce08df55594c131374bd993bb46bd739f5a5219e39545cb4"
-    "61b5e10191482cb55b4171c2eb37c06b797848b1d2902eecb450423b7c037040";
+    "28ed8a4d91cf2689258acb2baf2545893e81c6c8d7604c0d05802ffaf4b7a57c"
+    "028a53e540af022801609414a436540d29a7c4f39f29f43fee12352200c30f4c";
 /* The CONSENSUS identity digest of the same fixture policy
- * ("DNA.METPOLID.v1", execution season — the value a RulesetDescriptor
+ * ("NDS.METPOLID.v1", execution season — the value a RulesetDescriptor
  * commits). Distinct tag ⇒ distinct value from the seal. */
 static const char K_IDENT_HEX[] =
-    "159d3ad24c5c45c50bb71a8cdc0594ab18eb12c69df132439fb1fa51f4ddb196"
-    "425753a84c8d5d969f5379bc11f7db4e3acdd8dd28d08bb8e8fcf1078a3b360a";
+    "53714a7ae3230b4e95824a8b76629d1405fbc64e9395389069fe983cfc266c18"
+    "4130712dcad6a07f83bd6ed391d467f07da84fda31d3c4e5a413d753e00e1f49";
 
 /* THE fixture policy — mirrored in res_meter_oracle.py. w_op[255] is
  * deliberately above 2^32: a truncation anywhere in the policy path

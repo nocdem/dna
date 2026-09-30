@@ -32,7 +32,7 @@
  * bytes, not a crypto-committed structure — no KAFADAN gate applies.
  *
  * ═══ CANONICAL LAYOUT (R3 W3, D-24 rev 4 (2); K2; final wipe W-A) ══════
- *   magic "DNA.GBUNDLE.v5\0\0" (16 B) ‖ manifest_len u32 BE ‖ manifest ‖
+ *   magic "NDS.GBUNDLE.v5\0\0" (16 B) ‖ manifest_len u32 BE ‖ manifest ‖
  *   table_count u32 BE (= 6: validators, delegations,
  *   chain_config_history, supply_tracking, validator_stats,
  *   v2_treasury — in THIS order) ‖ per table:
@@ -48,28 +48,28 @@
  * ═══ ROOT-LAYOUT ROUND (K2, 2026-09-25) — v3 → v4 ═══════════════════════
  * The `epoch_state` table is dropped from the schema, so the bundle
  * carries FIVE tables (was six) and the magic moved to
- * `DNA.GBUNDLE.v4\0\0`. A `DNA.GBUNDLE.v3\0\0` bundle is refused BY ITS
+ * `NDS.GBUNDLE.v4\0\0`. A `NDS.GBUNDLE.v3\0\0` bundle is refused BY ITS
  * MAGIC ("version-3 bundle format, refused"), the same way the v1 magic
  * is below — never read as a v4 frame.
  *
  * ═══ FINAL PRE-TESTNET WIPE, W-A (Fable F1) — v4 → v5 ═══════════════════
  * The keyless treasury pools (`v2_treasury`) are seeded by the genesis
- * DERIVATION and are a leg of the SYSTEM payload root ("DNA.SYSPAYL.v3")
+ * DERIVATION and are a leg of the SYSTEM payload root ("NDS.SYSPAYL.v3")
  * the manifest commits. A joiner never derives, so the bundle must carry
  * them or the joiner's replanted genesis cannot reproduce the pin: the
- * bundle carries SIX tables and the magic moved to `DNA.GBUNDLE.v5\0\0`.
- * A `DNA.GBUNDLE.v4\0\0` bundle is refused BY ITS MAGIC ("version-4
+ * bundle carries SIX tables and the magic moved to `NDS.GBUNDLE.v5\0\0`.
+ * A `NDS.GBUNDLE.v4\0\0` bundle is refused BY ITS MAGIC ("version-4
  * bundle format, refused") — its chain's genesis document is version 3,
  * which this build does not read either.
  *
  * ═══ R3 W3 — THE MAGIC MOVED; THE OLD LANE CANNOT BE BUNDLED ════════════
- * R3 W3 moved the magic to `DNA.GBUNDLE.v3\0\0`. A version-2 chain (no stored
+ * R3 W3 moved the magic to `NDS.GBUNDLE.v3\0\0`. A version-2 chain (no stored
  * genesis DOCUMENT — D-19 rev 6 is v3-only) CANNOT be bundled at all:
  * `nodus_witness_v2_bundle_persist` refuses when there is no document to
  * carry, which is D-17 rev 10 (9)'s closure of the old lane applied here
  * — a chain that cannot serve a correct bundle must not claim to serve
  * one. `nodus_witness_v2_bundle_apply` refuses a bundle carrying the OLD
- * `DNA.GBUNDLE.v1\0\0` magic outright, logging "version-1 bundle format,
+ * `NDS.GBUNDLE.v1\0\0` magic outright, logging "version-1 bundle format,
  * refused", before reading anything past it — an old-binary bundle is
  * refused BY ITS MAGIC, never by a short read further in. There is no
  * version-2 code path left in this file, and the version-2 engine
@@ -114,7 +114,7 @@
 extern "C" {
 #endif
 
-#define NODUS_V2_GBUNDLE_MAGIC   "DNA.GBUNDLE.v5\0\0"
+#define NODUS_V2_GBUNDLE_MAGIC   "NDS.GBUNDLE.v5\0\0"
 #define NODUS_V2_GBUNDLE_MAGIC_LEN 16
 
 /** The RETIRED five-table magic (final pre-testnet wipe, W-A): a v4
@@ -122,20 +122,20 @@ extern "C" {
  * `nodus_witness_v2_bundle_apply` names the refusal ("version-4 bundle
  * format, refused"), exactly like the v3/v1 magics below. Never written
  * by this build. */
-#define NODUS_V2_GBUNDLE_MAGIC_V4_RETIRED "DNA.GBUNDLE.v4\0\0"
+#define NODUS_V2_GBUNDLE_MAGIC_V4_RETIRED "NDS.GBUNDLE.v4\0\0"
 
 /** The RETIRED six-table magic (root-layout round K2, 2026-09-25): a v3
  * bundle carries `epoch_state`, which this build's schema no longer has.
  * Kept only so `nodus_witness_v2_bundle_apply` names the refusal
  * ("version-3 bundle format, refused"), exactly like the v1 magic below.
  * Never written by this build. */
-#define NODUS_V2_GBUNDLE_MAGIC_V3_RETIRED "DNA.GBUNDLE.v3\0\0"
+#define NODUS_V2_GBUNDLE_MAGIC_V3_RETIRED "NDS.GBUNDLE.v3\0\0"
 
 /** The RETIRED version-2 magic, kept only so `nodus_witness_v2_bundle_
  * apply` can name the reason a pre-R3-W3 bundle is refused ("version-1
  * bundle format, refused") instead of failing on a generic short read
  * further into the frame. Never written by this build. */
-#define NODUS_V2_GBUNDLE_MAGIC_V1_RETIRED "DNA.GBUNDLE.v1\0\0"
+#define NODUS_V2_GBUNDLE_MAGIC_V1_RETIRED "NDS.GBUNDLE.v1\0\0"
 
 /**
  * Build the canonical genesis bundle for the committed successor genesis

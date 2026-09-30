@@ -115,7 +115,7 @@ static int test_roundtrip(void) {
 
         /* independent re-derivation: SHA3-512(tag ‖ bytes) by hand */
         uint8_t pre[BUFMAX + 16], h3[64];
-        memcpy(pre, "DNA.GMAN.v1\0\0\0\0", 16);
+        memcpy(pre, "NDS.GMAN.v1\0\0\0\0", 16);
         memcpy(pre + 16, enc, w1);
         CHECK(qgp_sha3_512(pre, 16 + w1, h3) == 0 &&
               memcmp(h1, h3, 64) == 0, "independent hash derivation");

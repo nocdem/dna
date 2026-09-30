@@ -37,7 +37,7 @@
  *
  *     Concretely: a height-0 row in `v2_manifests` whose decoded genesis
  *     manifest has `dist_present == 1` and `source_tag ==
- *     NODUS_V2_GEN_SOURCE_TAG` ("DNA.GENESIS.v1",
+ *     NODUS_V2_GEN_SOURCE_TAG` ("NDS.GENESIS.v1",
  *     nodus_witness_v2_gen.h). That manifest is committed at genesis; its
  *     source_commit is a hash of the genesis document (chain_id and
  *     app_hash zeroed) and the chain id is a hash of the same document
@@ -47,7 +47,7 @@
  *     `NODUS_V2_GATE_NO_AUTHORITY` therefore now means "THIS IS NOT A
  *     PURE-V2 CHAIN", not "this software cannot activate V2". The
  *     historical readings — O15B's structural constant 0, and O15C's
- *     committed activation record / "DNA.LEGACY.TERM.v1" successor
+ *     committed activation record / "NDS.LEGACY.TERM.v1" successor
  *     binding — are both deleted with the ceremony.
  *
  *  2. PREFLIGHT READINESS — `nodus_witness_v2_preflight()` reporting zero

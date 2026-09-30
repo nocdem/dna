@@ -226,7 +226,7 @@ int nodus_witness_v2_pool_apply(nodus_witness_t *w,
  *   chain is replayed here):
  *     rows strictly by position ASC; first position 0; every position
  *     == the next expected value; every nullifier exactly 32 canonical
- *     bytes; every DNA.PNUL.v1 step recomputed in order; processed
+ *     bytes; every NDS.PNUL.v1 step recomputed in order; processed
  *     rows == stored nul_count; recomputed root == stored nul_root;
  *     zero rows ⇒ count 0 AND the canonical empty root.
  *   DERIVED NOTE TABLE (structural shape only — v2_pool_notes stays
@@ -248,7 +248,7 @@ int nodus_witness_v2_pools_startup_check(nodus_witness_t *w);
  * The REAL per-domain pools_root: every v2_pools row of `domain_id`
  * (strictly ascending pool_id), each pool fully load-verified, its
  * history commitment recomputed from the retained window, leaves
- * hashed per pool_wire.h and rooted with "DNA.POOLNODE.v1". An absent
+ * hashed per pool_wire.h and rooted with "NDS.POOLNODE.v1". An absent
  * v2_pools table (pre-S7 database) or a domain with zero pools returns
  * the frozen S2 tagged-empty pools_root byte-identically.
  */

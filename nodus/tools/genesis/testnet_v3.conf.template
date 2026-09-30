@@ -289,7 +289,7 @@ balance = 0
 #
 # config_version 5 (general multisig, decision 2026-09-29-general-
 # multisig.md ONAY 2). Each block is ONE coin written into the ledger at
-# height 0 — its identity is SHA3-512("DNA.GENOUT.v1" ‖ source_commit ‖
+# height 0 — its identity is SHA3-512("NDS.GENOUT.v1" ‖ source_commit ‖
 # index), where index is the block's position in THIS FILE (0-based), so
 # the ORDER below is part of the chain. Counted by Rule P.2; never
 # claimable. `owner` is the Foundation multisig address (128 lowercase

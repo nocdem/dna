@@ -23,7 +23,7 @@ prove the layout sound or the only reasonable one. Call it
 "self-consistent, not externally audited".
 
 ── WHAT IS PINNED ────────────────────────────────────────────────────────
-  descriptor = "DNA.MSIG.v1" (16 B zero-padded) || M u8 || N u8 ||
+  descriptor = "NDS.MSIG.v1" (16 B zero-padded) || M u8 || N u8 ||
                N x pubkey[2592], strictly ascending (bytewise)
                2 <= N <= 7, 1 <= M <= N, no zero key (first 32 bytes zero)
   msig addr  = SHA3-512(descriptor)                       (64 B)
@@ -38,7 +38,7 @@ prove the layout sound or the only reasonable one. Call it
                                 sum of N over the descriptors <= 15
 
   genesis output UTXO (decision "ONAY 2" item 1):
-      nullifier    = SHA3-512("DNA.GENOUT.v1" (16 B zero-padded) ||
+      nullifier    = SHA3-512("NDS.GENOUT.v1" (16 B zero-padded) ||
                               source_commit[64] || index u32 BE)
       tx_hash      = nullifier
       output_index = 0
@@ -113,8 +113,8 @@ def tag(name: str) -> bytes:
     return b + b"\x00" * (TAG_LEN - len(b))
 
 
-TAG_MSIG = tag("DNA.MSIG.v1")
-TAG_GENOUT = tag("DNA.GENOUT.v1")
+TAG_MSIG = tag("NDS.MSIG.v1")
+TAG_GENOUT = tag("NDS.GENOUT.v1")
 
 
 def be16(v: int) -> bytes:

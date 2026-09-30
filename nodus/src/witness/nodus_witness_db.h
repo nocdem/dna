@@ -384,7 +384,7 @@ int  nodus_witness_supply_init(nodus_witness_t *w, uint64_t total_supply,
  * THREE-VALUED (D1, 2026-07-31). Callers MUST distinguish the two
  * non-success codes; a blanket `!= 0` is a fail-open, because the
  * counters this row carries are hashed into supply_root
- * (nodus_witness_supply_root_v2, "DNA.SUPPLY.v2") and therefore into
+ * (nodus_witness_supply_root_v2, "NDS.SUPPLY.v2") and therefore into
  * the chain's state root.
  *
  * @return  0  row present, *out populated

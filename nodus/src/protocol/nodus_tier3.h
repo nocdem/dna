@@ -116,7 +116,7 @@ typedef struct {
 #define NODUS_T3_CC_APPR_RQ_BYTES 64u
 
 /** SYSTEM-governance approval RESPONSE: one committee seat's answer.
- *  ok=true: seat/sig/set_hash/epoch are the signed "DNA.CCAPPR.v1"
+ *  ok=true: seat/sig/set_hash/epoch are the signed "NDS.CCAPPR.v1"
  *  approval (nodus_rt_cc_approval_digest); reason is empty.
  *  ok=false: only reason is meaningful (UTF-8, NUL-terminated).
  *  BOTH forms carry `rq` (key "rq", 64 bytes): the REQUEST IDENTITY —

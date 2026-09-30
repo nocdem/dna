@@ -69,26 +69,28 @@ static int hex_eq(const uint8_t h[64], const char *hex, const char *what) {
  * — the executor that wrote the C did NOT compute these). The inputs of
  * each vector are stated beside it. */
 
-/* Pinned python3-oracle literals (independent sha3_512 implementation). */
+/* Pinned python3-oracle literals (independent sha3_512 implementation).
+ * VSET..TOKENS re-derived 2026-09-30 for the NDS. tag rename (decision
+ * 2026-09-30-tag-rebrand-nds.md). */
 static const char *EMPTY_KAT[DNA_V2_EMPTY__COUNT] = {
-    /* VSET   */ "fd1c65789de6e38765ae77ca7d302e7a7b95400233ef55218139df9f1b4e63487a3d88706303b0a5b8eeec695526d26d04d0267bcce826c995f2b8a5d8f2261b",
-    /* DOMREG */ "107bae9d51c4a1567d25d1e75f1df56e671fac019b6325324407df76429089c0231074520edcbff6bcc01926ba5bcb4d1a905f52ea819be0fb9a9d2c59de74ea",
-    /* MANIF  */ "90d5ec18e9745fae481baf31660bfb0b86150c147fb819ce978af5bdc538d8d1ab591defc2cd65334bc667bebd90c5c8cd55a16ae458adb8a9b05b521a4f9c18",
-    /* POOLS  */ "fbba0c378530aa1214dbe5d8810c28b7487aba1b7cc6a44c291c62369dc1ae222727e09549ef48cc638c7face48758964b436107b661b91db82fcb308f3d8042",
-    /* CLAIMS */ "b34a8d97ef88610cc933751fe9f2a8d61dd60c916f685a5ffc1667ca6c5d4f4abe0fe46a51e40251b859a870f28c6bb342b36cae3c45b525cccbdef051fba6a8",
-    /* NAMES  */ "ef12a4d9657dc6711688a664ea0ac0a9295f8bdc595599121a7b60c7dae9467ec3e80e861e55a3cb99c76dfbf14c596e91fa0fa1b7a67317cbc155ce120db412",
-    /* TOKENS */ "4098bc465307c3a6340c1374d020957372b82d4b670f5e2049b6a3fa13f9ade608eadcc34afe643079b6e4fcd890bab80f1b4582023e80c719bcffcf0ce093f3",
+    /* VSET   */ "298829e65532f5db9e61663a0b4971d2abc6ff809a0547e1c8a7bb8d28fd4045a1516ff1976e0af17cca52e1cea523d65b6cfd4c8545a4b8377b6eb36d91c2c6",
+    /* DOMREG */ "07b4b225f5c073f998fc7bca7c9071142cb9bebfa619af849a2d47e9a5f61bf2b8633cfbd3b83a51daf6940548a8e66bbedb86aa94b0a1001ac378523761ecaf",
+    /* MANIF  */ "84903cae4ac7526b3ba62672bcaf2f21ad0fba9ea54dcea5f369c92f37bd15e78f0e4628ceffa847b59e852036ae0194eb5497340f00922fa57e1848f157c01e",
+    /* POOLS  */ "2e7bba48757975a02fb50108f656b6c4b66f4dd16b591a803b6c88eb0662948d94a6356ed994e7129ed018b0e5da2d72a94ef10a4b1c014ec38e26a9036d38cf",
+    /* CLAIMS */ "4f3c9ef84fb9fc13a6e49af5514f6ac611ce7e4e6d5907f1bdb14fd690a0de184c13adb6926d5acce1f88a746edaa814a8e9dc0a60aa819b1d3c7f328ac440c9",
+    /* NAMES  */ "f80feab8c3c32d66cf24129b45f356d55e1a324ff736ffddb26a45c24a34629ba3533cd9317dd87f526228bcb1f677e541d64c99ef995a11902c485cba2b7267",
+    /* TOKENS */ "c4e2f4b937693ea23920be90fd3b6dc77d60a28e35fea20fed2c549622ab8f8211bbd35ed76af647f348dcfb51b232693a952a0fb401974c15dbe772541ac7b9",
     /* EPOCH2 — DELETED with DNA_V2_EMPTY_EPOCH_V2 (root-layout round K2);
      * ATTND/ACCRU below keep their own values, only their index moved. */
-    /* ATTND  */ "c917bcb22a2eef99ded15a92b70117d32a92996276f395ca3acbc8abfa17bcd66cda39856cc038582cc32f67e49ece48055434718ff5f4a94e95d1f6f60c0001",
-    /* ACCRU  */ "225010d99df0cb442e76fc02469f95922ecf182b07678887e00924bdf4ee3f99bb010b0c983b5e66b92b44e39c9fb74cdbe3b3d20578cfc0d94cc6fd9e6c4ea8",
-    /* TREAS  — W-A: SHA3-512 of the 16 bytes "DNA.E.TREAS.v1\0\0"
+    /* ATTND  */ "9c1b2654f2618917ab25464b588ef093f67d8a32967cb69720ca42fd2295ff01cd52046cfbe7444adabfa9d6fa57f0d00e73a5900a1e1250e32e7e0e8078d35a",
+    /* ACCRU  */ "ee8d1bec1bed648e0a811d863b0674a4c72093bb3b89b9b3fd3a7712ab6303ca53c8d622916329153ce01edab2b75915a5941712df6618c700de2ba8d6adbe29",
+    /* TREAS  — W-A: SHA3-512 of the 16 bytes "NDS.E.TREAS.v1\0\0"
      * (shared/dnac/tests/ledger_roots_v2_treasury_oracle.py EMPTY_TREASURY). */
-    /* TREAS  */ "4eb839d71f0600aaa28f13536ac640f34fab69cd3046a9b4d72fc7ef047f69940f3961d145bf4997d5e7a07e657c1e58720309406d60849b245b8148cb42a2ae",
+    /* TREAS  */ "2308f328a8f37b1b819426a3553163cf05208365f95fe50ffcabb332ab3a951a17c98d30f4f014a888548a268e637ef862f7a14610bc1d745a5d5b57074fbcab",
 };
 /* tokenomics-v3 P2 (P2-8) re-pin: the supply leaf gained reward_pool and
- * the tag "DNA.SUPPLY.v2"; the CORE composition gained a 7th leg
- * (accrual_root) and the tag "DNA.CORE.v2". SELF-CONSISTENT with
+ * the tag "NDS.SUPPLY.v2"; the CORE composition gained a 7th leg
+ * (accrual_root) and the tag "NDS.CORE.v2". SELF-CONSISTENT with
  * shared/dnac/tests/ledger_roots_v2_accrual_oracle.py (same author, same
  * day — see its PROVENANCE; not an external audit), which self-checks
  * against the retired KAT_SUPPLY / 6-leg KAT_CORE values below before
@@ -97,22 +99,25 @@ static const char *EMPTY_KAT[DNA_V2_EMPTY__COUNT] = {
  * script; the ORCHESTRATOR runs the script to confirm.
  * RETIRED (historical notes, not live vectors — a changed preimage is a
  * new tag, never the same tag over different bytes):
- *   KAT_SUPPLY "DNA.SUPPLY.v1" (1e17, 500, 300):
+ *   KAT_SUPPLY "NDS.SUPPLY.v1" (1e17, 500, 300):
  *     ef949407440c0a7adab9f6b0a0999e06074e57a4b2b04f7b1532cf2effb597f2e656e3f396f663a1b3d5237d6709165393ec076ddc5f47f35abe0de3b26e91b7
- *   KAT_CORE 6-leg "DNA.CORE.v1" (fill 0xB0..0xB5):
+ *   KAT_CORE 6-leg "NDS.CORE.v1" (fill 0xB0..0xB5):
  *     ccaae1c6ced38cfd93a99f9a15f26c490c15fd343d18f9232116bab6d7ba1f7fc918b7a324b071cda8b6a556dbb89226da6082f9efc55aa2667659c2f4f8db3e */
-static const char *KAT_SUPPLY_V2    = "0054849ba0b8141bbfd6d42088bb93ec10fdae6024d113f2ca12ee600a08101a418555e0ddeb731abbdbbe42a94e67f522722bdc578a013ad3a3c7f0d89a11bb";
-static const char *KAT_ACC_LEAF     = "ce416c2f0fb6ae548afca3e2b8639d218d58535bfb6cbb8fe3f17e371fc83488a37a3ad7007c37426a40605cdbdd5abf36e7fa4c97332fa8d0777cb68b290fa2";
-static const char *KAT_ACC_ROOT_2   = "3f29e12e3f3d682b270f5ae70e79b47da0a6b282eae3bfe099715a1df7bc8a68eeb5ce99ddbd2817acb7e87a2213b01d5d58ccb0cc21d06a69db4e1460e3c715";
-static const char *KAT_ACC_ROOT_3   = "7cba36466f3e76be1ae037ec90b67067e6c8f397ce1b418a5dcce77cce022fd6ed999c664699d1eff13f12f7b6897fc2c2b0a417f287cda4c574ccdf3b292b51";
-static const char *KAT_TOKEN_LEAF_A = "29c4c9998ab9a29fe1a90bbcb021d743287ef733c03d896b67131d07cee9f9ef54347e2d2d64430814f900e804e298d86c085c051c8159d9e8fe471c5e720d47";
-static const char *KAT_TOKEN_ROOT   = "0b039f37cdf12fb0c30580bdd338246c393d9d434d686e9f21627152bf545efc8c88e4ddcaef74d0ebef915cbed1d293c45559ae84325e56cdd7d0f2e7bbb9d7";
-/* Root-layout round K2: KAT_EPOCH_LEAF1 / KAT_EPOCH_ROOT ("DNA.EPOCH.v2"
- * leaf and "DNA.EPNODE.v2" root) are DELETED with the functions they
+static const char *KAT_SUPPLY_V2    = "39587e84ed0b11260d75fd03795e7cf1fcf5cca543993de4affe72623f60be39f43f3c08db71f78f7336cad8c0312499827b7e4a3d10da93d855870d3e925318";
+static const char *KAT_ACC_LEAF     = "02a96e1e3e5bb419ba1914aa2bdbfb8f62d60b1abfa7a4c46a7d6b6b8d259bdccbb88d4c6d416ec801ade90b550c5f463495f36d79ca2f2b9eab007f35518870";
+static const char *KAT_ACC_ROOT_2   = "5a4cf2307419d4763eab587577e59f2b447da4d868e54cd0f228554cf7da097207b41b0713250b19b44518d74198e5500ff42cc86142fac885df299b54908de1";
+static const char *KAT_ACC_ROOT_3   = "9a47b07d292a5535d9e38d5e480cb65622d95e5c69064bcb8c3d19fa055de8ef58f0b1865d71ff806c7fbd67d71e123e52e0f953bf6288ed8ae65671ac91575b";
+/* KAT_TOKEN_LEAF_A / KAT_TOKEN_ROOT / KAT_DOMHEAD_SYS / KAT_DOMAINS_2/3
+ * re-derived 2026-09-30 for the NDS. tag rename (decision
+ * 2026-09-30-tag-rebrand-nds.md). */
+static const char *KAT_TOKEN_LEAF_A = "c65c9b9a2b331820c33977d655a298a94f82dee58d74a57367381c8d7b96be1829bbff6496a08e1bf0899a175dc8526a0dc417c905efc1e779e1deec5f2cca13";
+static const char *KAT_TOKEN_ROOT   = "2518e6572659f9015bd13ecfc59c0d1e50a7619cd0139afbecaabbfefff81e651ca21f594bd3da43687397b22ca7bece5ba2f57dbedfdf3b440f01e662ea7b24";
+/* Root-layout round K2: KAT_EPOCH_LEAF1 / KAT_EPOCH_ROOT ("NDS.EPOCH.v2"
+ * leaf and "NDS.EPNODE.v2" root) are DELETED with the functions they
  * pinned — retired tags are removed, never re-derived. */
-static const char *KAT_DOMHEAD_SYS = "e675d070c918dedf23fa5d1ebf8d2381345705b316ffb1340e85738b50b6e01d7753a3e0ef456f3ff588fddcd4bba1c35a1edf7274ee46c48d2bd988b645b0b5";
-static const char *KAT_DOMAINS_2    = "bba32c948f2851a85dae113c7b27258d27f4a292ee423faca3a072f5e31634bcd80bb608386d0b664c934db4997539b0c02599c8ee1a5430dea4e5d68430838a";
-static const char *KAT_DOMAINS_3    = "823492dabf1bddd0b76b907d31233e4affeaf5b4f85caaccf55488eb5f6af5ad04d3c7993d38472887915535ec6a6cd608d8688ac8c7d6daa40efd0105c97d4e";
+static const char *KAT_DOMHEAD_SYS = "85462096bb6af9a2f32ac85974e7f6dcae257867c72f6f04f05813ed691be19a9a88cd9104cec55ee91a8bcdd7f76669c12e153406fc35cbe3224a28cbc54687";
+static const char *KAT_DOMAINS_2    = "91ed30c29c901ce538f705b7c32e359d9c08a268b71e9039bf333d0dd09ce97338d892ee840711ef3c997971723322e163b31e5b3492d41a12e65444096ed79c";
+static const char *KAT_DOMAINS_3    = "c071277b3a3490053f21047628aeeedd3f79aae2acd23384e6fe5627dc694203e4413741cdea1e3510619faa900562372e31fab59db357cb9be105cb767981f0";
 /* GENERICITY CORRECTION re-pin (supply ownership): core_state_root is SIX
  * legs (supply appended last, issuance is the DNA_CORE runtime's asset
  * commitment). Re-derived with the SAME independent python3 sha3_512
@@ -121,57 +126,59 @@ static const char *KAT_DOMAINS_3    = "823492dabf1bddd0b76b907d31233e4affeaf5b4f
  * derivation continuity.
  *
  * tokenomics-v3 P1 (D-4, S-2) re-pin: system_state_root gained an 8th leg
- * (attendance_root) and moved from SEVEN legs / tag "DNA.SYS.v1" to EIGHT
- * legs / tag "DNA.SYS.v2" — see KAT_SYSTEM_8LEG below and
+ * (attendance_root) and moved from SEVEN legs / tag "NDS.SYS.v1" to EIGHT
+ * legs / tag "NDS.SYS.v2" — see KAT_SYSTEM_8LEG below and
  * shared/dnac/tests/ledger_roots_v2_attendance_oracle.py, which
  * self-checks against the retired 7-leg value before deriving the new
  * one. */
-/* RETIRED, tokenomics-v3 P1 (D-4, S-2): the 7-leg "DNA.SYS.v1" composition
- * was superseded by the 8-leg "DNA.SYS.v2" — a changed composition is a
+/* RETIRED, tokenomics-v3 P1 (D-4, S-2): the 7-leg "NDS.SYS.v1" composition
+ * was superseded by the 8-leg "NDS.SYS.v2" — a changed composition is a
  * new tag, never the same tag over different bytes, so this value is
  * never re-derived, only removed. Kept here as a one-line historical
  * note, not as a live vector:
  *   5de7c65076b43e882f7cf814971dce313ce35d39573c5bf73f78b420c5611986f5c9bcfe01b0841af5c9ef6ae469ea00b96067c3ddbf888b5d947e40572d6e57
- * RETIRED, root-layout round K2 (2026-09-25): the 8-leg "DNA.SYS.v2"
+ * RETIRED, root-layout round K2 (2026-09-25): the 8-leg "NDS.SYS.v2"
  * vector (legs fill 0x90..0x97, the 3rd = epoch_state_root_v2) is
- * superseded by the 7-leg "DNA.SYS.v3" below. Historical note only:
+ * superseded by the 7-leg "NDS.SYS.v3" below. Historical note only:
  *   KAT_SYSTEM_8LEG ec9fc33017c755d6555a867c02b618b39fec4bea9e9740733561446e064e9b9e578691a670352277e14f021751da58e97b03fda0651ab7510500c3649ba22122
  * Both retired values are re-derived as CONTROL LEGS by
  * shared/dnac/tests/ledger_roots_v2_attendance_oracle.py before it emits
  * the two vectors below (same author, same day — SELF-CONSISTENT, not
- * an external audit; see the script's PROVENANCE). No "DNA.SYSPAYL.v1"
+ * an external audit; see the script's PROVENANCE). No "NDS.SYSPAYL.v1"
  * vector was ever pinned, so KAT_SYSPAYL_V2 has no payload-root control;
  * it rests on the same method the two SYS controls prove.
  *
- * RETIRED, final pre-testnet wipe W-A: the 7-leg "DNA.SYS.v3" and 4-leg
- * "DNA.SYSPAYL.v2" vectors are superseded by the 8-leg "DNA.SYS.v4" and
- * 5-leg "DNA.SYSPAYL.v3" below (treasury_root appended LAST to both).
+ * RETIRED, final pre-testnet wipe W-A: the 7-leg "NDS.SYS.v3" and 4-leg
+ * "NDS.SYSPAYL.v2" vectors are superseded by the 8-leg "NDS.SYS.v4" and
+ * 5-leg "NDS.SYSPAYL.v3" below (treasury_root appended LAST to both).
  * Historical notes only — and the CONTROL LEGS the W-A oracle must
  * reproduce byte-exactly before it emits the new vectors:
- *   KAT_SYSTEM_7LEG_V3 (DNA.SYS.v3, legs fill(0x90..0x96) in the order
+ *   KAT_SYSTEM_7LEG_V3 (NDS.SYS.v3, legs fill(0x90..0x96) in the order
  *     validator, delegation, chain_config, vset, domreg, manifest,
  *     attendance):
- *     841abb1a867749ac68b688469513bbbc447962a8bbead05663d14d97744fda86aaad6bc67230578050f743a7fc3b7e94176bb0074c7ee7f1b247b74fb9a356fd
- *   KAT_SYSPAYL_V2 (DNA.SYSPAYL.v2, legs fill(0xA0..0xA3) in the order
+ *     da7eafdcbb49176f7260cb05387e7bda1f7f2c483b18327b73f9f6f796b3a6037709d4e6e90e7d962aff0f1070e431acbb2a1009081b942afafd6b39379b1f97
+ *   KAT_SYSPAYL_V2 (NDS.SYSPAYL.v2, legs fill(0xA0..0xA3) in the order
  *     validator, delegation, chain_config, vset):
- *     0bf7a1b805467d9c580faec171895abb0c63e3e1e9be83aa9ebfc263307c7ce123d685e607d9d5aa9c4b21b44cdad92c62de6d00f779a27b56b2b655432cdd4b
+ *     2690da56226ae1995c2128a7e651857f6c96fa5f9562edea1783a7c3e5cff5db4bd674d85cd615b4886fc37f3c9cd90b5f522c42d7a9934fadae32310a105f19
  *
  * LIVE (W-A), pinned from shared/dnac/tests/ledger_roots_v2_treasury_oracle.py
  * (written by an agent that did not read the C; it reproduces the two
  * retired control legs above before emitting — SELF-CONSISTENT, not an
  * external audit; KAT_SYS_V4_FILL / KAT_SYSPAYL_V3_FILL there):
- *   KAT_SYSTEM_8LEG_V4: "DNA.SYS.v4\0\0\0\0\0\0" ‖ legs fill(0x90..0x97)
+ *   KAT_SYSTEM_8LEG_V4: "NDS.SYS.v4\0\0\0\0\0\0" ‖ legs fill(0x90..0x97)
  *     in the order validator, delegation, chain_config, vset, domreg,
  *     manifest, attendance, treasury (fill(dst,64,seed): dst[i] =
  *     (uint8_t)(seed + i*7)).
- *   KAT_SYSPAYL_V3: "DNA.SYSPAYL.v3\0\0" ‖ legs fill(0xA0..0xA4) in the
+ *   KAT_SYSPAYL_V3: "NDS.SYSPAYL.v3\0\0" ‖ legs fill(0xA0..0xA4) in the
  *     order validator, delegation, chain_config, vset, treasury. */
-static const char *KAT_SYSTEM_8LEG_V4 = "3d03d9e70e84e9ec2c32ae726602ca5b8260c30d4cdbea7f43a3eb1db74a854c223dada26342228260d58a4ba8e9dd5b6f21babf09814c02c0e30c6ad134bc9b";
-static const char *KAT_SYSPAYL_V3     = "956709f0c64356de847383bc56b6aa351e2a8a20a4b3ff003537b40aa06b1d8fb72776bd6b77d553c3de0b32e9e9425311e62666e30db5f5fbdcd6c9edab095f";
+static const char *KAT_SYSTEM_8LEG_V4 = "e39d21af737bf7b67b12b8e2307ff5ef2091f00391277e5d169cd6cf20a3c2eb5ec105a0359fd63e63b4b511eeeccf5392b0db84369618f7f6f14c6b55e77022";
+static const char *KAT_SYSPAYL_V3     = "fb0c0153511048f5aa7c7ba85e15e0a9ed9cfda47cce16895b330d1ef5c1151d8d51cd66a698a678ac151c6a8c55dc2f1d593732359b13684a0f6e74c2e4d917";
 /* W-A treasury leg — pinned from the same oracle's functions
  * (treasury_leaf / treasury_root) evaluated at the inputs below.
- * leaf = SHA3-512("DNA.TRLEAF.v1\0\0\0" ‖ pool_id u32 BE ‖ balance u64 BE);
- * inner = SHA3-512("DNA.TRNODE.v1\0\0\0" ‖ L ‖ R); odd node PROMOTED.
+ * KAT_TR_LEAF / KAT_TR_ROOT_2/3/9 / KAT_GLOBAL re-derived 2026-09-30 for
+ * the NDS. tag rename (decision 2026-09-30-tag-rebrand-nds.md).
+ * leaf = SHA3-512("NDS.TRLEAF.v1\0\0\0" ‖ pool_id u32 BE ‖ balance u64 BE);
+ * inner = SHA3-512("NDS.TRNODE.v1\0\0\0" ‖ L ‖ R); odd node PROMOTED.
  *   KAT_TR_LEAF    pool_id 1, balance 10000000000000000 (100M × 10^8)
  *   KAT_TR_ROOT_2  pools 1, 2 — balances 10^16, 10^16
  *   KAT_TR_ROOT_3  pools 1, 2, 3 — balances 10^16, 10^16, 5 × 10^15
@@ -180,12 +187,12 @@ static const char *KAT_SYSPAYL_V3     = "956709f0c64356de847383bc56b6aa351e2a8a2
  *                  2 100M, 3 50M, 4 50M, 5 50M, 6 150M, 7 100M, 8 30M,
  *                  9 50M (decision 2026-09-28-treasury-pools-and-exact-
  *                  self-stake.md §Karar 1 + answer 11). */
-static const char *KAT_TR_LEAF        = "4b787f34803bb48e668a83d212a0263b9a64657426703256902b0712197e7bbfbe9e484192e89de5be14a6809c47bf212e3145d9750341b5a07926a0d2b40a15";
-static const char *KAT_TR_ROOT_2      = "27d7b3a39194a74bb125770d39e227c7569accd1e6c989a413fbcfc7c66abf67b78b6c53abf03d6f7cef3033192c4a4b6f545fc5a51e31e473df0dce0f59cb09";
-static const char *KAT_TR_ROOT_3      = "86d1c0ca3a5c464de255b9ee0377a1db29e9305d5a0799eebd1a95e7ec059394d59d61c758ee0698b71ba2536804c79b724bf39e7507cea1c8e00c5e44e953de";
-static const char *KAT_TR_ROOT_9      = "3b818e2db10551e4f6b06a3041fbaa722ef41a1fed1286709fdcbc7625e1d68a9e9232e74c3194771a5aa664ad29b4cf854516748cbbad0e128bb9288863aa33";
-static const char *KAT_CORE_7LEG    = "6316f2646cbe34ef0fc5c5d0487d62a9f72b4e58ccdbf40b5b7c3217210aeecd96d1fff0a313ed25434f0ca0990aa98791e4787ff4546a4d57d948b8f326c765";
-static const char *KAT_GLOBAL       = "0c0d2fce1984bf15c2e5841eeef72a067aefe4cdf8790a713332f09326393f79185dc7277f3d403a6f9d47fbfc68b049ddb117a654f2da59e0e4218e45f7e681";
+static const char *KAT_TR_LEAF        = "61474f4dd0d1c32a29399edfb462a92ea47cf2673d800b849e8a622287afcb5bd79df0a9332c53af02887f0fa1c664bcef474d98d4a06aa0bc2eb4137985751f";
+static const char *KAT_TR_ROOT_2      = "6b3aeced5406eee65e054179df985c605a1676c4a7c2d82943d7bf548d1b0b7745a50a05b81d4210b632cd6501d2d628c9fc017915c33564737a401bddcbe1f8";
+static const char *KAT_TR_ROOT_3      = "10d213a7c2f75b144c7fe58f6090431d52c86c6918fbdc5b2b8da9aa80423e7a68337e13c75c0ae99cdfe278114df2caa55d78233839f08a6c44c026aafc7fbc";
+static const char *KAT_TR_ROOT_9      = "2b2ade2820fa3f031ffc0fc41aa55b0726035fef1478c1b5a4ab92ebbfb9a48eafe4fc8ebe74e68682030d89a138f482867238e6d34f69164c9ebca9166860c9";
+static const char *KAT_CORE_7LEG    = "29786955302c050d38892a7e417e7096c8b34200ac51e62588f1ff0fb647aaa118271fab070a2f5e6a3400cfc8ec2c334dc35adb7a233c2e7fd566818416bbed";
+static const char *KAT_GLOBAL       = "1246524b92b6085010386e1d9e4d9b71d6f665d191ad15ad4b20a054d4f5a909588c6b484314d6613b8d3cf655aed27a08802daaf330fead8ec03243d753ce4d";
 /* ── tokenomics-v3 P1 (D-4, S-2) — attendance leg, SELF-CONSISTENT with
  * shared/dnac/tests/ledger_roots_v2_attendance_oracle.py (same author,
  * same day; see that script's PROVENANCE section — not an external
@@ -193,11 +200,11 @@ static const char *KAT_GLOBAL       = "0c0d2fce1984bf15c2e5841eeef72a067aefe4cdf
  * fill(0x02,32)), signed_count/last_signed_height (100,5000) /
  * (200,6000). */
 static const char *KAT_ATT_DIGEST_2ROW =
-    "44d1f8e3115517ab9022060668e00c197e1256350a2ac3f65c2b0e2f4d41a7e7c1dc5ca281331bf7dedb7733eaa005080cbb727bc2ce4c7e8a3b6575cf6b9dee";
+    "4da702ec2a6e05f78d339e9d1244b64e3a859d37947a47747ce955f46b1fc846d4cfd475b74bc196351a52017ee3117e05081f73410c5157ecb7f3eae5742bda";
 static const char *KAT_ATT_LEAF =
-    "e6d3230258462204cf4a68c4e97f586435d4190bb058d5f3de4a5e963a33df26e9171ba93e81bcce660acb4549c0f2786e873a1ab8c751bc31d66c98d51013fa";
+    "bca44fa6f983094af5062b9d5f8f0b38590e653df58f8e69804f8b9d654ac6a01b6abecf7b39ddf97af49c7d1a125ba5af31da54a0332f2e5e0d1962272d4f69";
 static const char *KAT_ATT_ROOT_2ENTRY =
-    "800f63b49e5a71474b665bfe750a9d68e51b4f39bef796f6438e8e0d14c19b45f947637027af27b5572c0a7313d898d1b7f0ec586edf8e0f2e9ebbd4f79f1576";
+    "deaa9f598b4fce4f2524c12d764e6a897677b75bec66e2225a2da67fefce8518cb7bbb9d12335421b350dfb727ff4bfa9990184230e61fa2e6f94d83ab0c9a28";
 
 /* ── Fixture token leaves (must mirror the oracle) ──────────────────── */
 static void make_tokens(dna_v2_token_leaf_t t[3],
@@ -490,12 +497,12 @@ static int test_shared_layer(void) {
 
     /* Composition KATs + full subroot mutation sweep. SYSTEM = 8 legs
      * (validator/delegation/chain_config/vset/domreg/manifest/attendance/
-     * treasury — "DNA.SYS.v4", W-A appended treasury last; the root-layout
+     * treasury — "NDS.SYS.v4", W-A appended treasury last; the root-layout
      * round K2 had removed the epoch leg); the SYSTEM payload root = 5
      * legs (validator/delegation/chain_config/vset/treasury —
-     * "DNA.SYSPAYL.v3"); CORE = 7 legs
+     * "NDS.SYSPAYL.v3"); CORE = 7 legs
      * (utxo/token/pools/claims/names/SUPPLY/ACCRUAL — native issuance is
-     * CORE's own asset commitment; the accrual leg and "DNA.CORE.v2" are
+     * CORE's own asset commitment; the accrual leg and "NDS.CORE.v2" are
      * tokenomics-v3 P2, P2-8). */
     {
         uint8_t legs[8][64];
@@ -793,11 +800,11 @@ static int test_loaders(void) {
               dna_v2_system_root(v, dl, cc, vs, dr, mf, at, tr,
                                  expect) == 0 &&
               memcmp(h, expect, 64) == 0,
-              "witness SYSTEM root != 8-leg DNA.SYS.v4 composition"); OK();
+              "witness SYSTEM root != 8-leg NDS.SYS.v4 composition"); OK();
         CHECK(nodus_witness_system_payload_root_v2(wa, h) == 0 &&
               dna_v2_system_payload_root(v, dl, cc, vs, tr, expect) == 0 &&
               memcmp(h, expect, 64) == 0,
-              "witness payload root != 5-leg DNA.SYSPAYL.v3 composition");
+              "witness payload root != 5-leg NDS.SYSPAYL.v3 composition");
         OK();
         if (pass == 1) {
             /* The loader reads the rows the shared function hashes. */

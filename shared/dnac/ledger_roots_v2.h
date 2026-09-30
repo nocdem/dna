@@ -27,64 +27,64 @@
  *     no partial or fallback root is ever produced.
  *
  * ── TAG TABLE (each exactly 16 bytes, zero-padded) ────────────────────
- *   composition   "DNA.SYS.v4"      system_state_root (final pre-testnet
+ *   composition   "NDS.SYS.v4"      system_state_root (final pre-testnet
  *                                   wipe, package W-A: the treasury_root
  *                                   leg APPENDED as the 8th leg — a
  *                                   changed preimage is never hashed
- *                                   under the old tag; "DNA.SYS.v3" is
+ *                                   under the old tag; "NDS.SYS.v3" is
  *                                   HISTORY, the 7-leg composition of
- *                                   the root-layout round, "DNA.SYS.v2"
+ *                                   the root-layout round, "NDS.SYS.v2"
  *                                   the 8-leg composition of P1 (with
  *                                   epoch_state, no treasury) and
- *                                   "DNA.SYS.v1" the 7-leg one before
+ *                                   "NDS.SYS.v1" the 7-leg one before
  *                                   it)
- *                 "DNA.CORE.v2"     core_state_root (tokenomics-v3 P2
+ *                 "NDS.CORE.v2"     core_state_root (tokenomics-v3 P2
  *                                   added the accrual_root leg — a
  *                                   changed preimage is never hashed
- *                                   under the old tag; "DNA.CORE.v1" is
+ *                                   under the old tag; "NDS.CORE.v1" is
  *                                   HISTORY, the 6-leg composition
  *                                   before P2)
- *                 "DNA.GLOBAL.v1"   global_state_root
- *   supply        "DNA.SUPPLY.v2"   supply_root (leafless single hash;
- *                                   P2 added reward_pool — "DNA.SUPPLY.v1"
+ *                 "NDS.GLOBAL.v1"   global_state_root
+ *   supply        "NDS.SUPPLY.v2"   supply_root (leafless single hash;
+ *                                   P2 added reward_pool — "NDS.SUPPLY.v1"
  *                                   is HISTORY, the 3-counter preimage)
- *   accrual (P2)  "DNA.ACLEAF.v1"   reward-accrual leaf
- *                 "DNA.ACNODE.v1"   reward-accrual Merkle inner node
- *   tokens        "DNA.TOKLEAF.v1"  token leaf
- *                 "DNA.TOKNODE.v1"  token Merkle inner node
- *   treasury      "DNA.TRLEAF.v1"   treasury-pool leaf (W-A)
- *   (W-A)         "DNA.TRNODE.v1"   treasury-pool Merkle inner node
- *   genesis       "DNA.SYSPAYL.v3"  system_payload_root (W-A: 5 legs,
+ *   accrual (P2)  "NDS.ACLEAF.v1"   reward-accrual leaf
+ *                 "NDS.ACNODE.v1"   reward-accrual Merkle inner node
+ *   tokens        "NDS.TOKLEAF.v1"  token leaf
+ *                 "NDS.TOKNODE.v1"  token Merkle inner node
+ *   treasury      "NDS.TRLEAF.v1"   treasury-pool leaf (W-A)
+ *   (W-A)         "NDS.TRNODE.v1"   treasury-pool Merkle inner node
+ *   genesis       "NDS.SYSPAYL.v3"  system_payload_root (W-A: 5 legs,
  *   payload                         treasury_root APPENDED last;
- *                                   "DNA.SYSPAYL.v2" is HISTORY, the
+ *                                   "NDS.SYSPAYL.v2" is HISTORY, the
  *                                   4-leg form of the root-layout round,
- *                                   "DNA.SYSPAYL.v1" the 5-leg form with
+ *                                   "NDS.SYSPAYL.v1" the 5-leg form with
  *                                   epoch_state before it)
- *   RETIRED       "DNA.EPOCH.v2" / "DNA.EPNODE.v2" / "DNA.E.EPOCH.v2" —
+ *   RETIRED       "NDS.EPOCH.v2" / "NDS.EPNODE.v2" / "NDS.E.EPOCH.v2" —
  *                 the epoch_state leg's leaf / inner node / empty root,
  *                 DELETED with the leg (root-layout round K2). Never
  *                 reused for another preimage.
- *   domains      "DNA.DOMHEAD.v1"  DomainHead hash
- *                 "DNA.DOMNODE.v1"  domains Merkle inner node
- *   vset (S3)     "DNA.VSLEAF.v1"   validator-set snapshot leaf
- *                 "DNA.VSNODE.v1"   validator-set Merkle inner node
- *   attendance    "DNA.ATTEP.v1"    per-epoch attendance digest (P1, S-2)
- *   (P1, S-2)     "DNA.ATLEAF.v1"   attendance leg leaf
- *                 "DNA.ATNODE.v1"   attendance leg Merkle inner node
- *   empty roots   "DNA.E.VSET.v1"   validator_set_root   (EMPTY vset table)
- *                 "DNA.E.DOMREG.v1" domain_registry_root (until S4)
- *                 "DNA.E.MANIF.v1"  manifest_root        (until S6)
- *                 "DNA.E.POOLS.v1"  pools_root           (until S7)
- *                 "DNA.E.CLAIMS.v1" claims_root          (until S6)
- *                 "DNA.E.NAMES.v1"  name_root            (timing open, O-7)
- *                 "DNA.E.TOKENS.v1" token_root of an EMPTY registry
- *                 "DNA.E.ATTND.v1" attendance_root of an EMPTY
+ *   domains      "NDS.DOMHEAD.v1"  DomainHead hash
+ *                 "NDS.DOMNODE.v1"  domains Merkle inner node
+ *   vset (S3)     "NDS.VSLEAF.v1"   validator-set snapshot leaf
+ *                 "NDS.VSNODE.v1"   validator-set Merkle inner node
+ *   attendance    "NDS.ATTEP.v1"    per-epoch attendance digest (P1, S-2)
+ *   (P1, S-2)     "NDS.ATLEAF.v1"   attendance leg leaf
+ *                 "NDS.ATNODE.v1"   attendance leg Merkle inner node
+ *   empty roots   "NDS.E.VSET.v1"   validator_set_root   (EMPTY vset table)
+ *                 "NDS.E.DOMREG.v1" domain_registry_root (until S4)
+ *                 "NDS.E.MANIF.v1"  manifest_root        (until S6)
+ *                 "NDS.E.POOLS.v1"  pools_root           (until S7)
+ *                 "NDS.E.CLAIMS.v1" claims_root          (until S6)
+ *                 "NDS.E.NAMES.v1"  name_root            (timing open, O-7)
+ *                 "NDS.E.TOKENS.v1" token_root of an EMPTY registry
+ *                 "NDS.E.ATTND.v1" attendance_root of an EMPTY
  *                                   v2_attendance_epoch table (P1)
- *                 "DNA.E.ACCRU.v1"  accrual_root of an EMPTY
+ *                 "NDS.E.ACCRU.v1"  accrual_root of an EMPTY
  *                                   v2_reward_accrual table (P2)
- *                 "DNA.E.TREAS.v1"  treasury_root of an EMPTY
+ *                 "NDS.E.TREAS.v1"  treasury_root of an EMPTY
  *                                   v2_treasury table (W-A)
- *   Collision scan (W-A): `git grep -n "DNA\.TR\|DNA\.E\.TREAS\|TRLEAF\|
+ *   Collision scan (W-A): `git grep -n "NDS\.TR\|NDS\.E\.TREAS\|TRLEAF\|
  *   TRNODE"` over the whole tree found NO prior use of the three W-A
  *   tags before adoption. SELF-CONSISTENT, not externally referenced —
  *   the P1 ATTEP / P2 ACLEAF precedent; the proof is an INDEPENDENT
@@ -93,42 +93,42 @@
  *    empty domain list is a hard error, not an empty tree.)
  *
  * ── Composition preimages (exact) ─────────────────────────────────────
- *   system_state_root = SHA3-512("DNA.SYS.v4"  ‖ validator_root[64]
+ *   system_state_root = SHA3-512("NDS.SYS.v4"  ‖ validator_root[64]
  *       ‖ delegation_root[64] ‖ chain_config_root[64]
  *       ‖ validator_set_root[64] ‖ domain_registry_root[64]
  *       ‖ manifest_root[64] ‖ attendance_root[64]
  *       ‖ treasury_root[64])                            — 8 legs
- *     tokenomics-v3 P1 (D-4, S-2) added the attendance leg ("DNA.SYS.v1"
- *     -> "DNA.SYS.v2"); the root-layout round (K2, 2026-09-25) removed
+ *     tokenomics-v3 P1 (D-4, S-2) added the attendance leg ("NDS.SYS.v1"
+ *     -> "NDS.SYS.v2"); the root-layout round (K2, 2026-09-25) removed
  *     the epoch_state leg — its table had no writer left after P2 — and
- *     moved the tag again ("DNA.SYS.v2" -> "DNA.SYS.v3"); the final
+ *     moved the tag again ("NDS.SYS.v2" -> "NDS.SYS.v3"); the final
  *     pre-testnet wipe (package W-A, 2026-09-28/29, decision
  *     2026-09-28-treasury-pools-and-exact-self-stake.md answers 9 + 12)
- *     APPENDS treasury_root as the 8th and LAST leg ("DNA.SYS.v3" ->
- *     "DNA.SYS.v4"): a changed composition is a new tag, never the same
+ *     APPENDS treasury_root as the 8th and LAST leg ("NDS.SYS.v3" ->
+ *     "NDS.SYS.v4"): a changed composition is a new tag, never the same
  *     tag over different bytes. `system_payload_root` below moved with
- *     it ("DNA.SYSPAYL.v3", 5 legs) — the treasury is SEEDED at genesis,
+ *     it ("NDS.SYSPAYL.v3", 5 legs) — the treasury is SEEDED at genesis,
  *     so unlike attendance/domreg/manifest it IS a payload leg.
- *   treasury leaf (W-A) = SHA3-512("DNA.TRLEAF.v1" ‖ pool_id(4 BE)
+ *   treasury leaf (W-A) = SHA3-512("NDS.TRLEAF.v1" ‖ pool_id(4 BE)
  *       ‖ balance(8 BE))  — one per `v2_treasury` row; 16 + 4 + 8 = 28
  *       preimage bytes.
  *   treasury_root (W-A) = tagged Merkle over the treasury leaves,
  *       STRICTLY ascending pool_id (duplicates reject), inner
- *       "DNA.TRNODE.v1", n == 0 -> DNA_V2_EMPTY_TREASURY
- *       (SHA3-512("DNA.E.TREAS.v1" zero-padded to 16 bytes)). The pools
+ *       "NDS.TRNODE.v1", n == 0 -> DNA_V2_EMPTY_TREASURY
+ *       (SHA3-512("NDS.E.TREAS.v1" zero-padded to 16 bytes)). The pools
  *       are keyless and locked (pool ids 1..9 in the tokenomics §1 table
  *       order: 1 Storage, 2 Compute, 3 VPN/Bandwidth, 4 Future services,
  *       5 Security/bug bounty, 6 Liquidity, 7 Ecosystem grants,
  *       8 Foundation, 9 Community airdrop); this function commits
  *       whatever rows it is given and does not itself bound pool_id.
- *   core_state_root   = SHA3-512("DNA.CORE.v2" ‖ utxo_root[64]
+ *   core_state_root   = SHA3-512("NDS.CORE.v2" ‖ utxo_root[64]
  *       ‖ token_root[64] ‖ pools_root[64] ‖ claims_root[64]
  *       ‖ name_root[64] ‖ supply_root[64] ‖ accrual_root[64])
  *     tokenomics-v3 P2 (design §7 P2-8): the 7th leg `accrual_root`
  *     (the per-recipient reward accrual, v2_reward_accrual) and a NEW
- *     composition tag ("DNA.CORE.v1" -> "DNA.CORE.v2").
- *   global_state_root = SHA3-512("DNA.GLOBAL.v1" ‖ domains_root[64])
- *   supply_root       = SHA3-512("DNA.SUPPLY.v2" ‖ genesis_supply_raw(8 BE)
+ *     composition tag ("NDS.CORE.v1" -> "NDS.CORE.v2").
+ *   global_state_root = SHA3-512("NDS.GLOBAL.v1" ‖ domains_root[64])
+ *   supply_root       = SHA3-512("NDS.SUPPLY.v2" ‖ genesis_supply_raw(8 BE)
  *       ‖ total_minted_raw(8 BE) ‖ total_burned_raw(8 BE)
  *       ‖ reward_pool_raw(8 BE))
  *     tokenomics-v3 P2 (design §7 P2-8, "supply yaprağı reward_pool
@@ -136,11 +136,11 @@
  *     native asset exactly like the three before it, so it joins THIS
  *     leaf rather than a leg of its own; the tag moves to "v2" because
  *     the preimage changed.
- *   accrual leaf (P2) = SHA3-512("DNA.ACLEAF.v1" ‖ owner_fp[64]
+ *   accrual leaf (P2) = SHA3-512("NDS.ACLEAF.v1" ‖ owner_fp[64]
  *       ‖ amount(8 BE))   — one per `v2_reward_accrual` row, owner_fp
  *       = the recipient's raw 64-byte SHA3-512(pubkey).
  *   accrual_root (P2) = tagged Merkle over the accrual leaves, STRICTLY
- *       ascending owner_fp (duplicates reject), inner "DNA.ACNODE.v1",
+ *       ascending owner_fp (duplicates reject), inner "NDS.ACNODE.v1",
  *       n == 0 -> DNA_V2_EMPTY_ACCRUAL.
  *
  *   SUPPLY OWNERSHIP (genericity correction, locked): the native DNAC
@@ -151,23 +151,23 @@
  *   root composition, not a framework rule: no generic structure
  *   assumes every domain has a supply leg; a future runtime commits
  *   its own asset state however its state root defines it.
- *   DomainHead hash   = SHA3-512("DNA.DOMHEAD.v1" ‖ domain_id(4 BE)
+ *   DomainHead hash   = SHA3-512("NDS.DOMHEAD.v1" ‖ domain_id(4 BE)
  *       ‖ domain_state_root[64] ‖ domain_height(8 BE)
  *       ‖ last_updated_global_height(8 BE) ‖ ruleset_version(4 BE)
  *       ‖ status(1))                                  — 105-byte payload
- *   token leaf hash   = SHA3-512("DNA.TOKLEAF.v1" ‖ token_id[64]
+ *   token leaf hash   = SHA3-512("NDS.TOKLEAF.v1" ‖ token_id[64]
  *       ‖ decimals(1) ‖ flags(1) ‖ supply(8 BE) ‖ block_height(8 BE)
  *       ‖ name_len(2 BE) ‖ name ‖ symbol_len(2 BE) ‖ symbol
  *       ‖ creator_len(2 BE) ‖ creator_fp)
  *     (tokens.timestamp is EXCLUDED: it is bound from the LOCAL wall clock
  *      at apply time (nodus_witness_db.c token_add time(NULL)) and is
  *      therefore node-divergent — hashing it would fork the root.)
- *   vset leaf (S3)    = SHA3-512("DNA.VSLEAF.v1" ‖ epoch(8 BE)
+ *   vset leaf (S3)    = SHA3-512("NDS.VSLEAF.v1" ‖ epoch(8 BE)
  *       ‖ snapshot_hash[64])       — `epoch` is the EPOCH START HEIGHT and
  *       `snapshot_hash` is dna_vset_hash of the canonical snapshot bytes
  *       (shared/dnac/vset_wire.h). The snapshot BODY is never re-hashed
  *       here: the leaf binds the already-tagged snapshot commitment.
- *   attendance digest (P1, S-2) = SHA3-512("DNA.ATTEP.v1" ‖
+ *   attendance digest (P1, S-2) = SHA3-512("NDS.ATTEP.v1" ‖
  *       epoch_start(8 BE) ‖ n(4 BE) ‖
  *       Σ_{rows ASC by voter_id} (voter_id[32] ‖ signed_count(8 BE) ‖
  *                                 last_signed_height(8 BE)))
@@ -178,7 +178,7 @@
  *     validators). Rows MUST be strictly ascending by voter_id
  *     (duplicates reject). This is a PLAIN hash, not a Merkle tree — one
  *     digest per epoch, stored in `v2_attendance_epoch.digest`.
- *   attendance leaf (P1, S-2)   = SHA3-512("DNA.ATLEAF.v1" ‖
+ *   attendance leaf (P1, S-2)   = SHA3-512("NDS.ATLEAF.v1" ‖
  *       epoch_start(8 BE) ‖ digest[64])   — the leaf of `attendance_root`
  *     below, one per row of `v2_attendance_epoch`.
  *
@@ -221,7 +221,7 @@ typedef enum {
     DNA_V2_EMPTY_CLAIMS,       /* claims_root          (S6)  */
     DNA_V2_EMPTY_NAMES,        /* name_root            (O-7) */
     DNA_V2_EMPTY_TOKENS,       /* empty token registry       */
-    /* root-layout round (K2): DNA_V2_EMPTY_EPOCH_V2 ("DNA.E.EPOCH.v2")
+    /* root-layout round (K2): DNA_V2_EMPTY_EPOCH_V2 ("NDS.E.EPOCH.v2")
      * DELETED with the epoch_state leg. The enum is an index into the
      * tag table only — no value of it is hashed or sent — so the members
      * below shifting down one changes no byte of any root. */
@@ -238,8 +238,8 @@ typedef enum {
 int dna_v2_empty_root(dna_v2_empty_kind_t kind, uint8_t out[DNA_V2_ROOT_LEN]);
 
 /* ── supply_root ────────────────────────────────────────────────────── */
-/** tokenomics-v3 P2: gained `reward_pool_raw` and the tag "DNA.SUPPLY.v2"
- *  (was "DNA.SUPPLY.v1" over the three counters). */
+/** tokenomics-v3 P2: gained `reward_pool_raw` and the tag "NDS.SUPPLY.v2"
+ *  (was "NDS.SUPPLY.v1" over the three counters). */
 int dna_v2_supply_root(uint64_t genesis_supply_raw,
                        uint64_t total_minted_raw,
                        uint64_t total_burned_raw,
@@ -251,7 +251,7 @@ int dna_v2_supply_root(uint64_t genesis_supply_raw,
  * owner has earned at past epoch boundaries and not yet been paid. A leg
  * of core_state_root. */
 
-/** leaf = SHA3-512("DNA.ACLEAF.v1" ‖ owner_fp[64] ‖ amount(8 BE)).
+/** leaf = SHA3-512("NDS.ACLEAF.v1" ‖ owner_fp[64] ‖ amount(8 BE)).
  *  @return 0 / -1. */
 int dna_v2_accrual_leaf_hash(const uint8_t owner_fp[DNA_V2_ROOT_LEN],
                              uint64_t amount,
@@ -260,7 +260,7 @@ int dna_v2_accrual_leaf_hash(const uint8_t owner_fp[DNA_V2_ROOT_LEN],
 /**
  * accrual_root over `v2_reward_accrual` rows, STRICTLY ASCENDING owner_fp
  * (byte-lexicographic; equal or descending neighbours reject — insertion
- * order can never reach the root); inner = SHA3-512("DNA.ACNODE.v1" ‖
+ * order can never reach the root); inner = SHA3-512("NDS.ACNODE.v1" ‖
  * left ‖ right); odd node promoted; n == 1 the single leaf; n == 0 ->
  * DNA_V2_EMPTY_ACCRUAL.
  * @return 0 / -1 (NULL, bad order, allocation or digest failure).
@@ -274,7 +274,7 @@ int dna_v2_accrual_root(const uint8_t (*owner_fps)[DNA_V2_ROOT_LEN],
  * pool id, seeded from the genesis document. A leg of system_state_root
  * (the 8th, last) and of system_payload_root (the 5th, last). */
 
-/** leaf = SHA3-512("DNA.TRLEAF.v1" ‖ pool_id(4 BE) ‖ balance(8 BE)).
+/** leaf = SHA3-512("NDS.TRLEAF.v1" ‖ pool_id(4 BE) ‖ balance(8 BE)).
  *  @return 0 / -1. */
 int dna_v2_treasury_leaf_hash(uint32_t pool_id, uint64_t balance,
                               uint8_t out[DNA_V2_ROOT_LEN]);
@@ -282,7 +282,7 @@ int dna_v2_treasury_leaf_hash(uint32_t pool_id, uint64_t balance,
 /**
  * treasury_root over `v2_treasury` rows, STRICTLY ASCENDING pool_id
  * (equal or descending neighbours reject — insertion order can never
- * reach the root); inner = SHA3-512("DNA.TRNODE.v1" ‖ left ‖ right);
+ * reach the root); inner = SHA3-512("NDS.TRNODE.v1" ‖ left ‖ right);
  * odd node promoted; n == 1 the single leaf; n == 0 ->
  * DNA_V2_EMPTY_TREASURY.
  * @return 0 / -1 (NULL, bad order, allocation or digest failure).
@@ -324,8 +324,8 @@ int dna_v2_token_root(const dna_v2_token_leaf_t *leaves, size_t n,
 /**
  * Merkle root over the per-epoch validator-set snapshot commitments.
  *
- * leaf  = SHA3-512("DNA.VSLEAF.v1" ‖ epoch(8 BE) ‖ snapshot_hash[64])
- * inner = SHA3-512("DNA.VSNODE.v1" ‖ left[64] ‖ right[64])
+ * leaf  = SHA3-512("NDS.VSLEAF.v1" ‖ epoch(8 BE) ‖ snapshot_hash[64])
+ * inner = SHA3-512("NDS.VSNODE.v1" ‖ left[64] ‖ right[64])
  *
  * Same Merkle rules as every other tree here: `epochs` must be STRICTLY
  * ASCENDING (equal or descending neighbours reject — that covers both a
@@ -367,7 +367,7 @@ typedef struct {
 } dna_v2_attendance_row_t;
 
 /**
- * The per-epoch digest: SHA3-512("DNA.ATTEP.v1" ‖ epoch_start(8 BE) ‖
+ * The per-epoch digest: SHA3-512("NDS.ATTEP.v1" ‖ epoch_start(8 BE) ‖
  * n(4 BE) ‖ Σ_{rows ASC} (voter_id[32] ‖ signed_count(8 BE) ‖
  * last_signed_height(8 BE))). `rows` MUST be strictly ascending by
  * voter_id (duplicates reject) — n == 0 is legal (an epoch with no
@@ -378,14 +378,14 @@ int dna_v2_attendance_digest(uint64_t epoch_start,
                              const dna_v2_attendance_row_t *rows, size_t n,
                              uint8_t out[DNA_V2_ROOT_LEN]);
 
-/** leaf = SHA3-512("DNA.ATLEAF.v1" ‖ epoch_start(8 BE) ‖ digest[64]). */
+/** leaf = SHA3-512("NDS.ATLEAF.v1" ‖ epoch_start(8 BE) ‖ digest[64]). */
 int dna_v2_attendance_leaf_hash(uint64_t epoch_start,
                                 const uint8_t digest[DNA_V2_ROOT_LEN],
                                 uint8_t out[DNA_V2_ROOT_LEN]);
 
 /**
  * attendance_root over `v2_attendance_epoch` rows, STRICTLY ASCENDING
- * epoch_start (duplicates reject); inner = SHA3-512("DNA.ATNODE.v1" ‖
+ * epoch_start (duplicates reject); inner = SHA3-512("NDS.ATNODE.v1" ‖
  * left ‖ right); n == 0 -> DNA_V2_EMPTY_ATTENDANCE.
  * @return 0 / -1.
  */
@@ -409,7 +409,7 @@ typedef struct {
 int dna_v2_domain_head_encode(const dna_v2_domain_head_t *head,
                               uint8_t out[DNA_V2_DOMHEAD_ENC_LEN]);
 
-/** SHA3-512("DNA.DOMHEAD.v1" ‖ the 89 encoded bytes). */
+/** SHA3-512("NDS.DOMHEAD.v1" ‖ the 89 encoded bytes). */
 int dna_v2_domain_head_hash(const dna_v2_domain_head_t *head,
                             uint8_t out[DNA_V2_ROOT_LEN]);
 
@@ -418,14 +418,14 @@ int dna_v2_domain_head_hash(const dna_v2_domain_head_t *head,
  * hard-coded to two): strictly ascending domain_id (duplicates reject),
  * heads[0].domain_id MUST be DNA_DOMAIN_SYSTEM (SYSTEM always present).
  * Leaves are the DomainHead hashes; tree per the header's Merkle rules
- * with the "DNA.DOMNODE.v1" inner tag. @return 0 / -1.
+ * with the "NDS.DOMNODE.v1" inner tag. @return 0 / -1.
  */
 int dna_v2_domains_root(const dna_v2_domain_head_t *heads, size_t n,
                         uint8_t out[DNA_V2_ROOT_LEN]);
 
 /* ── Composition ────────────────────────────────────────────────────── */
-/** 8 legs under "DNA.SYS.v4" (W-A: treasury_root appended LAST; was 7
- *  legs under "DNA.SYS.v3", root-layout round K2). */
+/** 8 legs under "NDS.SYS.v4" (W-A: treasury_root appended LAST; was 7
+ *  legs under "NDS.SYS.v3", root-layout round K2). */
 int dna_v2_system_root(const uint8_t validator_root[64],
                        const uint8_t delegation_root[64],
                        const uint8_t chain_config_root[64],
@@ -437,7 +437,7 @@ int dna_v2_system_root(const uint8_t validator_root[64],
                        uint8_t out[DNA_V2_ROOT_LEN]);
 
 /** tokenomics-v3 P2 (P2-8): gained the 7th leg `accrual_root` and a new
- *  composition tag "DNA.CORE.v2" (was "DNA.CORE.v1"). */
+ *  composition tag "NDS.CORE.v2" (was "NDS.CORE.v1"). */
 int dna_v2_core_root(const uint8_t utxo_root[64],
                      const uint8_t token_root[64],
                      const uint8_t pools_root[64],
@@ -452,12 +452,12 @@ int dna_v2_global_root(const uint8_t domains_root[64],
 
 /* ── SYSTEM runtime-owned genesis payload root (Ledger V2 S5) ─────────
  *
- * Tag "DNA.SYSPAYL.v3" (16 bytes, zero-padded — S5 JUDGMENT tag; the
- * root-layout round K2 moved it from "DNA.SYSPAYL.v1" to "v2" because
+ * Tag "NDS.SYSPAYL.v3" (16 bytes, zero-padded — S5 JUDGMENT tag; the
+ * root-layout round K2 moved it from "NDS.SYSPAYL.v1" to "v2" because
  * the epoch_state leg left the preimage; W-A moved it to "v3" because
  * treasury_root joined it).
  *
- *   system_payload_root = SHA3-512("DNA.SYSPAYL.v3" ‖ validator_root
+ *   system_payload_root = SHA3-512("NDS.SYSPAYL.v3" ‖ validator_root
  *       ‖ delegation_root ‖ chain_config_root ‖ validator_set_root
  *       ‖ treasury_root)                                     — 5 legs
  *

@@ -130,7 +130,7 @@
  *
  * The fix: the commitment moved INTO the caller-supplied context
  * (`dnac_shielded_verify_ctx_t.tleg_commit`). This entry computes the digest
- * once — tagged-empty for type 11, the real DNA.TLEG.v1 commitment for 12/13 —
+ * once — tagged-empty for type 11, the real NDS.TLEG.v1 commitment for 12/13 —
  * and hands it over, so ALL THREE types now run the SAME real aggregate
  * verifier. `DNAC_SHIELDED_VERIFY_ERR_PROOF_DEFERRED` is DELETED; its enum
  * value now carries ERR_TIMESTAMP (see below).

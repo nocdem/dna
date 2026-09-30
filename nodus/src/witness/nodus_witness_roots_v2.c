@@ -142,8 +142,8 @@ int nodus_witness_token_root_v2(nodus_witness_t *w, uint8_t out[64]) {
 /* Root-layout round (K2, 2026-09-25): the epoch_state leg
  * (nodus_witness_epoch_root_v2) is DELETED together with the
  * `epoch_state` table — no writer of it remained after tokenomics-v3
- * P2, so the leg was a constant. SYSTEM was 7 legs ("DNA.SYS.v3");
- * W-A appended treasury_root, so it is 8 legs ("DNA.SYS.v4"). */
+ * P2, so the leg was a constant. SYSTEM was 7 legs ("NDS.SYS.v3");
+ * W-A appended treasury_root, so it is 8 legs ("NDS.SYS.v4"). */
 
 /* ── supply_root ────────────────────────────────────────────────────── */
 
@@ -159,7 +159,7 @@ int nodus_witness_supply_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     }
     /* rc == 1: row genuinely absent (pre-genesis) — zeros are the honest
      * values; `sup` is already zeroed. tokenomics-v3 P2 (P2-8): the leaf
-     * commits the reward pool too ("DNA.SUPPLY.v2"). */
+     * commits the reward pool too ("NDS.SUPPLY.v2"). */
     return dna_v2_supply_root(sup.genesis_supply, sup.total_minted,
                               sup.total_burned, sup.reward_pool, out);
 }
@@ -454,7 +454,7 @@ int nodus_witness_system_payload_root_v2(nodus_witness_t *w,
         return -1;
     if (nodus_witness_treasury_root_v2(w, treasury) != 0)
         return -1;
-    /* "DNA.SYSPAYL.v3", 5 legs (W-A: treasury_root appended last). */
+    /* "NDS.SYSPAYL.v3", 5 legs (W-A: treasury_root appended last). */
     return dna_v2_system_payload_root(validator_root, delegation_root,
                                       chain_config_root, vset, treasury,
                                       out);
@@ -470,7 +470,7 @@ int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     if (nodus_witness_merkle_compute_delegation_root(w, delegation_root) != 0)
         return -1;
     /* Root-layout round (K2): the epoch_state leg that sat here is
-     * DELETED; the composition tag moved "DNA.SYS.v2" -> "DNA.SYS.v3". */
+     * DELETED; the composition tag moved "NDS.SYS.v2" -> "NDS.SYS.v3". */
     if (nodus_chain_config_compute_root(w, chain_config_root) != 0)
         return -1;
     /* S3: the real validator-set leg. An EMPTY validator_set_snapshots
@@ -494,12 +494,12 @@ int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     if (nodus_witness_manifest_root_v2(w, manifest) != 0)
         return -1;
     /* tokenomics-v3 P1 (D-4, S-2): the attendance leg (8th under
-     * "DNA.SYS.v2", 7th under "DNA.SYS.v3" since the root-layout round
+     * "NDS.SYS.v2", 7th under "NDS.SYS.v3" since the root-layout round
      * removed the epoch_state leg). An empty
      * `v2_attendance_epoch` (every pre-P1 chain, and every P1 chain
      * before its first epoch boundary) returns the SAME tagged empty
      * root DNA_V2_EMPTY_ATTENDANCE regardless — but the COMPOSITION tag
-     * still changed ("DNA.SYS.v1" -> "DNA.SYS.v2"), so this root is NOT
+     * still changed ("NDS.SYS.v1" -> "NDS.SYS.v2"), so this root is NOT
      * byte-unchanged for a pre-P1 chain the way the vset/domreg/manifest
      * legs were for THEIR predecessors: every state_root changes at this
      * package (devnet wipe + stop-all, decision file §2 "F1-F4, F8, F9,
@@ -507,7 +507,7 @@ int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     if (nodus_witness_attendance_root(w, attendance) != 0)
         return -1;
     /* Final pre-testnet wipe, W-A: the keyless treasury pools, the 8th
-     * and LAST leg under "DNA.SYS.v4". A SYSTEM leg (not CORE) because
+     * and LAST leg under "NDS.SYS.v4". A SYSTEM leg (not CORE) because
      * a future exit rule will be a SYSTEM leg with a CORE sibling
      * (UNDELEGATE precedent — design §7 F2). There is NO writer after
      * genesis in this build: general multisig (decision 2026-09-29-
@@ -554,7 +554,7 @@ int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     if (nodus_witness_supply_root_v2(w, supply) != 0)
         return -1;
     /* tokenomics-v3 P2 (P2-8): the 7th leg — the per-recipient reward
-     * accrual, under the new composition tag "DNA.CORE.v2". An empty
+     * accrual, under the new composition tag "NDS.CORE.v2". An empty
      * table (every chain before its first paying boundary, and right
      * after every payday) is the tagged empty root. */
     if (nodus_witness_accrual_root_v2(w, accrual) != 0)

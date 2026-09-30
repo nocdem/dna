@@ -203,7 +203,7 @@ def i64(v: int) -> bytes:
     return (v & 0xFFFFFFFFFFFFFFFF).to_bytes(8, "big")
 
 
-TAG_GENCFG = tag16("DNA.GENCFG.v1")
+TAG_GENCFG = tag16("NDS.GENCFG.v1")
 
 # ── the compiled constants the fixture uses ───────────────────────────
 # dnac/include/dnac/dnac.h:72, :107, :116, :137, :172, :187 and
@@ -621,9 +621,14 @@ assert E5_OUTPUTS[0][0] > E5_OUTPUTS[1][0]
 # Re-pinned 2026-09-24 (tokenomics-v3 P2: inflation_start_block 1 → 0)
 # AFTER test_v2_gen.c §5 was run against the C encoder with this value
 # and agreed — the rule stated in control_leg() below.
+# Re-pinned 2026-09-30 (tag prefix rebrand "DNA" → "NDS", decision
+# 2026-09-30-tag-rebrand-nds.md): the old-prefix GENCFG value
+# 523e2c97…03bf was reproduced by this file first; this value is this
+# file's own output under NDS.GENCFG.v1. NOT YET confirmed against
+# test_v2_gen.c §5 — the ORCHESTRATOR runs that test before trusting it.
 CONTROL_V2_ENC_SHA = (
-    "523e2c971f1c44f06ad63cf8d0b4b4eb56ae7b98b58f8dc7afa09b97b523893a"
-    "5c408314a06f32e378b4f4f24764bb2763fe6fcdae8a1ccd63e279b09f4103bf"
+    "0cbe6f4e880dc2c6a0de91d5071388c9a42be63a4aac2d44ab76f467a936d50c"
+    "f8a591d9c91044e77f276b9878884de976753de7f98e07cb1d51dc713961b349"
 )
 # The encoding is 37481 bytes: 78 head (16 tag + 4 version + 7 × 8 + 2
 # count) + 7 × 5323 validator + 4 + 1 × 138 allocation.  The C computes
@@ -735,41 +740,41 @@ PINNED_V3 = {
     "A": {
         "len": 56121,
         "enc_sha":
-            "e63e9ff5c6f9d2f13ef3276b8f678221d478211607dcbd66545c9d27f2b93fd6"
-            "244a44c16ec82c9785701bcb392949e4882ea4510fa3560a17b9973e32c8be64",
+            "a5934c09bc5b62b8f592688f12f7518faac0a83132a50a38c079250c10c4f0d6"
+            "21f6414b4d420294d4b93c85b68bf1acd541c01b42c2473dd1057b865ce4502f",
         "chain_id":
-            "e63e9ff5c6f9d2f13ef3276b8f678221d478211607dcbd66545c9d27f2b93fd6",
+            "a5934c09bc5b62b8f592688f12f7518faac0a83132a50a38c079250c10c4f0d6",
         "src_commit":
-            "e63e9ff5c6f9d2f13ef3276b8f678221d478211607dcbd66545c9d27f2b93fd6"
-            "244a44c16ec82c9785701bcb392949e4882ea4510fa3560a17b9973e32c8be64",
+            "a5934c09bc5b62b8f592688f12f7518faac0a83132a50a38c079250c10c4f0d6"
+            "21f6414b4d420294d4b93c85b68bf1acd541c01b42c2473dd1057b865ce4502f",
     },
     "B": {
         "len": 56130,
         "enc_sha":
-            "c9ab02d3d443846aa435d27bb207d4f0c342f6f322833eb57a9455b7d4fa1cab"
-            "95de99861f3d709f097f9a353f8455c37f18a48e36490b412e08614ecfe32b4b",
+            "fa31562ce651e7555b94d9b1fa60e7dbd2975b060d9adf2a52d24d7332818309"
+            "f9e4c9a8376ff6154c19e75fdadc0c5bd5e0e2b5deaade237297eb9fb6e3bffc",
         "chain_id":
-            "f2e3e45cc11822a931cc0bcd4e42a25ea92108f5021e47be70263bf6d03a8940",
+            "d0a9867aba42abb7a4bef0b3f59819ed2bcf4a58a86525d83ed9bf50462be5e0",
         "src_commit":
-            "efa32045899a99de4a846653811ae8316d4ea1e32e95f15059c53bf66853a70f"
-            "bc4d1d68e4d1aad86880dcbc58615b3b5d2a7ec173f8a3c09c047d61d0e0ba8e",
+            "c3c53638cea94b07295c6ebb1b1b0f195d124a55219bf965c182738b5064e40c"
+            "14a0484ab02eebd62c85b60514ae3c57eccfdca202e422887cc8a78eff57bb32",
     },
     "C": {
         "len": 56131,
         "enc_sha":
-            "aacf24c34b20d9fb8bb02209075f6c13e64902d2fdbddebb9b742d7b741bacae"
-            "2be6ab9caa58b40ff1fda9fbf5d81293479ae70361d3ee11dfafd565644d57eb",
+            "b0a098ec311614fcf4b99598dd9b43d223699e1b015e0eaf962d0b14299c95ee"
+            "f4d2f7f1259f25b0341c4e8796990628659c71a5cfbc73afe2718ef104394b92",
         "chain_id":
-            "aacf24c34b20d9fb8bb02209075f6c13e64902d2fdbddebb9b742d7b741bacae",
+            "b0a098ec311614fcf4b99598dd9b43d223699e1b015e0eaf962d0b14299c95ee",
         "src_commit": None,
     },
     "D": {
         "len": 56121,
         "enc_sha":
-            "7925db184e5883ed3b9563ca85d0b518b6ed6e2de00ccaea61def42a2dc5dc43"
-            "8d9eb9675696a6b4ddfe173a0e435937baf228d02a273522a492e06f0d1ef2b2",
+            "b7ceb634f182b7ab19a5f2038f0bccc4848b9388a7920f6bba441ca57b11676f"
+            "1716dc8bbb843886bcda948aa7893401df8368f02c3b24463bc418165ebbba07",
         "chain_id":
-            "8f633f2022d6ae833817b604737a09cb881b3a130dd3cddd7540e723088b6040",
+            "61b3aaa2a823f9c4d64c7390c69a786db39a79c2d800878f0adab9e69b0ccc1b",
         "src_commit": None,
     },
 }
@@ -1194,38 +1199,38 @@ def emit_v5_all(fx: dict) -> None:
 PINNED_V4_WA = {
     "V4_A": {
         "enc_sha":
-            "cc867861cb75f5135e4bb88dda3350a1b712da38abf120855340b448a7380406"
-            "fd445b197c745188c1282f7d34494588a2b8de89c7202e806007be4980925efa",
+            "ac56a97e7f667214901778e0902d12112f6f6254bf5499ddeb70efdab964c1e4"
+            "15cff91f260ff90b012c4b6ae6708e140cc89069e981fe6c4c23f4a4c36a8ac8",
         "chain_id":
-            "cc867861cb75f5135e4bb88dda3350a1b712da38abf120855340b448a7380406",
+            "ac56a97e7f667214901778e0902d12112f6f6254bf5499ddeb70efdab964c1e4",
         "src_commit":
-            "cc867861cb75f5135e4bb88dda3350a1b712da38abf120855340b448a7380406"
-            "fd445b197c745188c1282f7d34494588a2b8de89c7202e806007be4980925efa",
+            "ac56a97e7f667214901778e0902d12112f6f6254bf5499ddeb70efdab964c1e4"
+            "15cff91f260ff90b012c4b6ae6708e140cc89069e981fe6c4c23f4a4c36a8ac8",
     },
     "V4_B": {
         "enc_sha":
-            "83d631380dd291a29d44441f1a661c506c3c279976318fc7cdf82da1d15f540a"
-            "e06847ad941898cff304e440a70376941be05d4e4deb354661e0bb3af9d0b460",
+            "9cbeb91319daf8824edf5beec9edab8b9f351972dbde46b8156649adcfbd9724"
+            "f8301804ba0b3300d055485ad7d6935268ad73ffecf7e62d9be583168890add8",
         "chain_id":
-            "dd4f448e4d0137ce78386cd639d31fbceca7b36e5ba2be22230351eb3dec3cae",
+            "7cf8754ec6d5d6a50861467cda6c9ae099b2aef6a7a17a7e5b7615896c3cdf5e",
         "src_commit":
-            "bcb91c4e5f4d258e591f23949f9af5e0bb0bd753fa3f83ad142e137bf730ab2a"
-            "1c3be07e25047842337984a351548c323682dd66fd7aa792f286da3cb22e28a5",
+            "885dbfea8e85e49b8b1df57a06bac1e7536e4e37bc53bf2604a615437e4906fe"
+            "25d74c3b2c7c6744a4bd5ca89e6c9a4b498052192b49a77ca5a451fd0e9d0041",
     },
     "V4_C": {
         "enc_sha":
-            "0ef525aa070ba5dd5e5a56e3d438fe510831b2beadf724cc2f92a55bf7bb968d"
-            "0f743c0a91c3d0d105fd84a43d8b9700b63401b0019121282835a2e698837709",
+            "dd200e6cadde21220a3742240699b5568b7db364fb7e64d303650304cdc3e5f3"
+            "0f8939ef658321cc35d6075f56a3975e6f0c6e65e116b3571a1e3d7bf8ed14eb",
         "chain_id":
-            "0ef525aa070ba5dd5e5a56e3d438fe510831b2beadf724cc2f92a55bf7bb968d",
+            "dd200e6cadde21220a3742240699b5568b7db364fb7e64d303650304cdc3e5f3",
         "src_commit": None,
     },
     "V4_D": {
         "enc_sha":
-            "f3ebeb9d675afbfced3eb41e93e49ea7201a613108155a9c373c015331790d27"
-            "73b7b70c9d1435bc26648e7e167fd79c7dce21a452f07612150f1cc2652da202",
+            "e1a72f175f15a704f327565f4f836f62882602d6e2521a31e8349d57d647ba79"
+            "51a21f436c787e6afbd87ffda811d39fa097025c224dfa31b34bd77bb97f9ab0",
         "chain_id":
-            "75d47725f9b9dd551d5e1702294ee34e74b152962ff145672cee4daf5d892582",
+            "697cf6c3d4f57e1fcb95c83722aa4f6d938467ab4c4757d6996bc6cf90058ece",
         "src_commit": None,
     },
 }

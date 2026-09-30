@@ -39,7 +39,7 @@
  * Authority is a property of the chain's OWN COMMITTED STATE: the
  * height-0 genesis manifest in `v2_manifests`, decoding with
  * dist_present == 1 and source_tag == NODUS_V2_GEN_SOURCE_TAG
- * ("DNA.GENESIS.v1", nodus_witness_v2_gen.h). Nothing local, nothing
+ * ("NDS.GENESIS.v1", nodus_witness_v2_gen.h). Nothing local, nothing
  * wire-settable, nothing an operator can flip — the same discipline the
  * gate was built with, now with a committed fact behind it.
  *
@@ -461,7 +461,7 @@ static int test_pure_chain_opens(void) {
     /* The production probe and the gate must agree about this database.
      * nodus_witness_v2_gen_is_pure reads the height-0 v2_manifests row's
      * source_tag, which a version-3 derivation writes byte-identically
-     * to a version-2 one (NODUS_V2_GEN_SOURCE_TAG, "DNA.GENESIS.v1" —
+     * to a version-2 one (NODUS_V2_GEN_SOURCE_TAG, "NDS.GENESIS.v1" —
      * nodus_witness_v2_gen.c's manifest construction is the SAME step
      * for both lanes), so this probe's verdict is unaffected by the
      * schema flip. */
@@ -624,10 +624,10 @@ static int test_foreign_tag_no_authority(void) {
     CHECK(m.source_tag_len == NODUS_V2_GEN_SOURCE_TAG_LEN &&
           memcmp(m.source_tag, NODUS_V2_GEN_SOURCE_TAG,
                  NODUS_V2_GEN_SOURCE_TAG_LEN) == 0,
-          "the pristine manifest carries DNA.GENESIS.v1");
+          "the pristine manifest carries NDS.GENESIS.v1");
 
     /* Flip ONLY the tag, then re-encode with the real codec. */
-    static const char FOREIGN[] = "DNA.SOMEONE.ELSE.v1";
+    static const char FOREIGN[] = "NDS.SOMEONE.ELSE.v1";
     m.source_tag_len = (uint16_t)(sizeof(FOREIGN) - 1);
     memset(m.source_tag, 0, sizeof(m.source_tag));
     memcpy(m.source_tag, FOREIGN, sizeof(FOREIGN) - 1);

@@ -7,7 +7,7 @@
 #
 # WHAT IT PROVES
 #   Decision docs/plans/decisions/2026-09-29-general-multisig.md (design
-#   §7 rev 2: address = SHA3-512("DNA.MSIG.v1" ‖ M ‖ N ‖ keys ascending),
+#   §7 rev 2: address = SHA3-512("NDS.MSIG.v1" ‖ M ‖ N ‖ keys ascending),
 #   spend = auth_kind 3), end to end on a REAL seven-node cometbft
 #   cluster, through the offline CLI flow (design F6.1):
 #   (1) `nodus-cli msig address --m 2` over the public keys of nodes 2, 3

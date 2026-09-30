@@ -48,7 +48,7 @@ int nodus_witness_token_root_v2(nodus_witness_t *w, uint8_t out[64]);
 /** supply_root from supply_tracking (three-valued read honored: absent
  *  row = honest pre-genesis zeros; DB error = fail). tokenomics-v3 P2:
  *  the leaf commits genesis/minted/burned AND reward_pool
- *  ("DNA.SUPPLY.v2"). */
+ *  ("NDS.SUPPLY.v2"). */
 int nodus_witness_supply_root_v2(nodus_witness_t *w, uint8_t out[64]);
 
 /** accrual_root (tokenomics-v3 P2, P2-8) over `v2_reward_accrual`
@@ -102,7 +102,7 @@ int nodus_witness_treasury_total(nodus_witness_t *w, uint64_t *out);
  *  empty, and a malformed row fails the whole computation. */
 int nodus_witness_attendance_root(nodus_witness_t *w, uint8_t out[64]);
 
-/** system_state_root per the V2 composition — 8 legs under "DNA.SYS.v4"
+/** system_state_root per the V2 composition — 8 legs under "NDS.SYS.v4"
  *  (root-layout round K2 removed the epoch_state leg; W-A appended
  *  treasury_root as the last leg). The validator-set leg is now
  *  REAL (S3): nodus_witness_vset_root over the validator_set_snapshots
@@ -117,10 +117,10 @@ int nodus_witness_attendance_root(nodus_witness_t *w, uint8_t out[64]);
 int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]);
 
 /** core_state_root per the V2 composition (S6/S7/O-7 legs tagged-empty;
- *  tokenomics-v3 P2: 7 legs incl. accrual_root, tag "DNA.CORE.v2"). */
+ *  tokenomics-v3 P2: 7 legs incl. accrual_root, tag "NDS.CORE.v2"). */
 int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]);
 
-/** S5 — SYSTEM runtime-owned genesis PAYLOAD root ("DNA.SYSPAYL.v3",
+/** S5 — SYSTEM runtime-owned genesis PAYLOAD root ("NDS.SYSPAYL.v3",
  *  W-A): the five runtime legs validator ‖ delegation ‖ chain_config ‖
  *  validator_set ‖ treasury, WITHOUT the container-lifetime legs
  *  domain_registry_root / manifest_root / attendance_root. The

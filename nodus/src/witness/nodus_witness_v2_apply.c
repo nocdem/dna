@@ -2149,7 +2149,7 @@ done:
  * function of
  * the claim's bytes and COMMITTED context — `dna_claim_validate`,
  * `nodus_witness_v2_manifest_load_by_hash`, `dna_dist_leaf_hash` and
- * `dna_claim_nullifier` (the "DNA.CLNUL.v1" preimage over chain,
+ * `dna_claim_nullifier` (the "NDS.CLNUL.v1" preimage over chain,
  * manifest hash, target domain, target asset and leaf) — so moving WHEN
  * it runs cannot change WHAT it answers.
  *

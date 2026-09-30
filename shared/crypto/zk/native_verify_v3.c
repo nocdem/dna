@@ -24,7 +24,7 @@
  * Grounding map (KAFADAN YASAK):
  *   - V3 header / shielded section / transparent leg codec .. shared/dnac/tx_wire.h
  *   - sighash_v5 (581-B preimage, tleg slot @453) ........... dnac_sighash_v5, tx_wire.h §5
- *   - populated leg commitment "DNA.TLEG.v1" ................ dnac_tleg_commit, tx_wire.h §6
+ *   - populated leg commitment "NDS.TLEG.v1" ................ dnac_tleg_commit, tx_wire.h §6
  *   - tagged-empty leg / ct commitments ..................... dnac_tleg_commit_empty /
  *                                                             dnac_ct_commit_empty, tx_wire.h §5
  *   - tx_binding rejection map .............................. conf_txbind_map, conf_txbind.h
@@ -350,8 +350,8 @@ dnac_shielded_verify_status_t dnac_v3_native_verify_stateless(
     }
 
     /* ── Step 8: the two commitments that fill the frozen sighash_v5 slots.
-     *    A populated leg uses the "DNA.TLEG.v1" domain; an absent one uses the
-     *    distinct tagged-empty "DNA.E.TLEG.v1" domain, so an empty leg and a
+     *    A populated leg uses the "NDS.TLEG.v1" domain; an absent one uses the
+     *    distinct tagged-empty "NDS.E.TLEG.v1" domain, so an empty leg and a
      *    populated-but-empty-looking one can never collide (tx_wire.h §6).
      *    ct_commit stays tagged-empty through S9 — encrypted-note delivery is
      *    out of scope, and the slot stays bound so S10 can populate it without
@@ -429,7 +429,7 @@ dnac_shielded_verify_status_t dnac_v3_native_verify_stateless(
      *    form), which restricted it to legless transactions; it now takes the
      *    commitment through dnac_shielded_verify_ctx_t.tleg_commit. So the very
      *    digest computed at step 7 above — tagged-empty for type 11, the real
-     *    DNA.TLEG.v1 commitment for 12/13 — is what the statement entry binds,
+     *    NDS.TLEG.v1 commitment for 12/13 — is what the statement entry binds,
      *    and every type runs the SAME real aggregate verifier: the frozen 45
      *    publics recomputed from the wire, the DZKF v4 decode, the pinned FRI
      *    params and the N-chunk AIR constraint check.

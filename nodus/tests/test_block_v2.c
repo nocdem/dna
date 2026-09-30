@@ -61,25 +61,25 @@ static const char *KAT_ENC_SHA =
     "30dee8495558347b4b0ca920553e80a2643c101b3b4b53efe4300dd806f98c56"
     "f814d62e66c5eafcbc06e3bc9634d1f25dfd29472fe0ad243357c261598062d4";
 static const char *KAT_BLOCK_ID =
-    "1403cb75a0e1d58f54c0987e2ffe5400e42b0bc382c70ce4e82b09e6baa9a2d0"
-    "a077b07ccba8ae5926ff5beb60efbc4d1041258131a841f07d6793ae7dbed17e";
+    "391123be120ee50d376f9ed981136822a88f0046910010c94dcb7fc15fb1da3a"
+    "12fb76c5b2d6c485bfc6d72814a2e6aa3de737f610989055d2ce6c0440a2dd27";
 static const char *KAT_GENESIS_ID =
-    "e68a2623907a0929c3fd8bd246a262481802f4fa76f48e7f226a73101fb2feee"
-    "c4ffc869ad98c91515b3af798414da27297dfb8161289502466a8099ed8ea683";
+    "e75e8c39685d8b034a1edf527963862bb4ec4c9a3709fd77c41ce4ac55bed880"
+    "123260fc488311465cfcf490ace7450836790c5dcecbacfd20d4666e85baeb65";
 static const char *KAT_GENESIS_CHAIN =
-    "e68a2623907a0929c3fd8bd246a262481802f4fa76f48e7f226a73101fb2feee";
+    "e75e8c39685d8b034a1edf527963862bb4ec4c9a3709fd77c41ce4ac55bed880";
 static const char *KAT_GENESIS_ID_MUT =
-    "29675a73b74d6f25b07238e669377b635d4f095224fcfc2d398bb1c24426693e"
-    "ac37bc4b3c0975811f609a82beb75e13a08a9419b1c595f6336e7b1def6a2794";
-/* O13: the tagged EMPTY domain_updates_root ("DNA.E.DUPD.v1"), and the
+    "887595e6c0cf815cd9d8cbda0f15cc1bd91c09f553681220df82bc90c8ea5695"
+    "b49f8dc98b974d24cd4e89e8c0fbbf4983839f7bcc2a46f28d51df373c3f8951";
+/* O13: the tagged EMPTY domain_updates_root ("NDS.E.DUPD.v1"), and the
  * BlockID of an otherwise-identical header carrying it. A zero-envelope
  * block MUST be distinguishable from one that touched domains. */
 static const char *KAT_EMPTY_DUPD_ROOT =
-    "661f403d91d807631ab6bcc82d34116780623aa35479c753fc1d53a722fa58bc"
-    "61939dc88f51e2824ac76c8da4d11edc5beb54a0e3e222e2606320baf68de841";
+    "7aba2b3b0d06b630e176dcb0f14063023ddcb99684260fdd75428358667faaff"
+    "6773660ba1f229533334791b86503a91f4cebc447922d635c32355af852c2ec5";
 static const char *KAT_BLOCK_ID_EMPTY_DUPD =
-    "f49eb47f15b113ea1034ce2fb39d1e5f1ec510712d969ef00f65cccc2410f9e2"
-    "def4284ee4c514d78d66bf281629bcdab4571b2a05d04da33c5e2334e337d43f";
+    "4076e46d926e7c2a3e90108ef674620ad05e30c984abae0c4ed8988d91dac964"
+    "31fcc14d7edad295a153712291f6ce066d0355982646466b06afb0317c91d2cf";
 
 static void base_header(dna_block_header_v2_t *h) {
     memset(h, 0, sizeof(*h));

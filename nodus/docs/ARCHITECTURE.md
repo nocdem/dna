@@ -1765,7 +1765,7 @@ bytes / `cc_appr_rules_chain_config`, which runs EXACTLY `nodus_rt_system_exec`'
 checks at the candidate height); rate-limits per proposer (unchanged, `nodus_cc_rate_limit_
 check`/`_record`, 5000 ms cooldown); resolves the governing committee at `H-1` (`H` = tip+1,
 matching the engine's own `committee_snapshot_for_height` expression); finds its OWN seat by
-direct pubkey comparison; computes the "DNA.CCAPPR.v1" approval digest ITSELF from the
+direct pubkey comparison; computes the "NDS.CCAPPR.v1" approval digest ITSELF from the
 seam-derived leg `auth_digest` (`nodus_rt_cc_approval_digest`, never a digest it did not
 compute); signs (`nodus_chain_config_sign_vote`, reused generically) and replies with
 `(seat, sig, resolved-set hash, epoch)` or a refusal reason. Chain binding, stated precisely
@@ -1820,7 +1820,7 @@ against the decoder with the duplicate branch disabled), `test_witness_protocol_
 (`w_cc_vote_req` / `w_cc_vote_rsp` refused at decode), `test_cc_client` (renamed onto
 `nodus_client_cc_appr_send`), `test_cc_appr` (NEW, 10 cases / 154 checks over a REAL derived
 version-3 chain with 7 REAL ML-DSA-87 keys and a REAL loopback `nodus_tcp_conn_t`: every seat
-asked THROUGH the responder, the `DNA.CCSET.v1` / `DNA.CCAPPR.v1` preimages recomputed
+asked THROUGH the responder, the `NDS.CCSET.v1` / `NDS.CCAPPR.v1` preimages recomputed
 independently and one seat's signature verified over them, the assembled envelope through
 `nodus_witness_v2_env_authorize` (since 0.19.78: the per-item CheckTx dry run
 `nodus_witness_v2_env_dry_run`, which replaced it) AND committed through the Comet apply lane with the
@@ -2145,7 +2145,7 @@ W3 makes the port the running consensus. Three packages landed after P0 and C2b 
 
 **The readiness side (C2c, D-17 rev 10 (8)):** the schema gates accept S14 — `nodus_witness_v2_pools_startup_check` and CORE `state_init` ADD S14 (the pool verification really runs there; before W3 an S14 database fell through `return 0` and was reported green), the preflight accepts S14 only, `nodus_witness_v2_genesis_cmt` narrows to S14 only. The derivation migrates to S14 FIRST (the W2 S12-then-climb order is withdrawn). The preflight's genesis check is rewritten against the stored DOCUMENT: present (`cmt_state` "genesisDoc") → the canonical-strict reader (`nodus_witness_v2_gen_stored_doc`) → its `chain_id` against the handle's 16-byte filename prefix → its `app_hash` against `nodus_witness_v2_committed_global_root` (NEW id 17 `GENESIS_APP_HASH_MISMATCH`, appended; ids 6 and 7 retired, never raised); the required-table list gains the five S14 stores. The whole-database digest is unchanged by a preflight (asserted).
 
-**The genesis bundle v3 and the pin (D-24 rev 4):** magic `DNA.GBUNDLE.v3\0\0`; layout magic ‖ manifest ‖ six base tables ‖ doc_len ‖ the genesis document *(since the root-layout round, 2026-09-25: magic `DNA.GBUNDLE.v4\0\0`, FIVE base tables — `epoch_state` dropped — and a v3 bundle is refused by its magic like v1; see "tokenomics-v3 root-layout round" below; since the final pre-testnet wipe W-A: magic `DNA.GBUNDLE.v5\0\0`, SIX base tables — `v2_treasury` appended — and a v4 bundle is refused by its magic, see "Final pre-testnet wipe, package W-A" below)*; a v1 bundle is refused by its magic; a chain with no stored document cannot be bundled. `bundle_apply` plants the tables, checks the carried document's self-hash against the pin BEFORE any genesis step, migrates the scratch to S14, stores the document, runs vset → domreg → `genesis_cmt`, and ACCEPTS only when the stored `chain_id == pin` AND `app_hash == the root just recomputed` — a tampered table cannot ride an untouched document. Zero trace on rejection is the joiner's scratch discard (`join_adopt`), not `bundle_apply`'s. The pin IS the 32-byte chain id everywhere: `--v2-genesis-pin <64hex>` (a 128-hex value is refused), `nodus_server_config.v2_genesis_pin[32]`, `w->v2_join.pin[32]`, verbs 24/25 `p` (their decoders hard-refuse a non-32-byte `p`); the ceremony prints the same value as `chain-id` and `v2-genesis-pin`, read back from the landed database through the canonical-strict reader. Measured: a seven-validator v3 bundle is 95 942 B → 2 chunks at 49 152.
+**The genesis bundle v3 and the pin (D-24 rev 4):** magic `NDS.GBUNDLE.v3\0\0`; layout magic ‖ manifest ‖ six base tables ‖ doc_len ‖ the genesis document *(since the root-layout round, 2026-09-25: magic `NDS.GBUNDLE.v4\0\0`, FIVE base tables — `epoch_state` dropped — and a v3 bundle is refused by its magic like v1; see "tokenomics-v3 root-layout round" below; since the final pre-testnet wipe W-A: magic `NDS.GBUNDLE.v5\0\0`, SIX base tables — `v2_treasury` appended — and a v4 bundle is refused by its magic, see "Final pre-testnet wipe, package W-A" below)*; a v1 bundle is refused by its magic; a chain with no stored document cannot be bundled. `bundle_apply` plants the tables, checks the carried document's self-hash against the pin BEFORE any genesis step, migrates the scratch to S14, stores the document, runs vset → domreg → `genesis_cmt`, and ACCEPTS only when the stored `chain_id == pin` AND `app_hash == the root just recomputed` — a tampered table cannot ride an untouched document. Zero trace on rejection is the joiner's scratch discard (`join_adopt`), not `bundle_apply`'s. The pin IS the 32-byte chain id everywhere: `--v2-genesis-pin <64hex>` (a 128-hex value is refused), `nodus_server_config.v2_genesis_pin[32]`, `w->v2_join.pin[32]`, verbs 24/25 `p` (their decoders hard-refuse a non-32-byte `p`); the ceremony prints the same value as `chain-id` and `v2-genesis-pin`, read back from the landed database through the canonical-strict reader. Measured: a seven-validator v3 bundle is 95 942 B → 2 chunks at 49 152.
 
 **What stays open, named:** `nodus_rt_core_invariant`'s genesis probe reads the height-0 `v2_blocks` row, so on a version-3 chain the absent-supply-row refusal is skipped (fail-open; `test_v2_gen` L2F1 stays RED; the fix — "a height-0 row OR a stored document" — is outside every W3 whitelist and is an OBLIGATION, D-17 rev 11 (11) — closed by W4-S below, and the height-0 probe itself deleted in tokenomics-v3 P4); `gen_plan_build` accepts only `config_version` 3 since tokenomics-v3 P4 (2026-09-24, nodus 0.19.73), which deleted the version-2 derivation and its encoder (the engine-side `genesis_ex` fixture lane followed in P4's second half — see the P4 update under "Moved, kept, converted" below); four closed-lane unit tests (`test_v2_epoch`, `test_v2_econ_params`, `test_bft_view_change_hardening`, `test_bft_view_boundary`) reopen legacy fixtures the gate now refuses — the operator decides skip-with-reason or conversion; block PRODUCTION is proven by the Genesis Protocol harness's Comet lane (package C2d), not by any unit test — a single process holds one of seven equal votes.
 
@@ -2273,19 +2273,19 @@ per-epoch digest enters `system_state_root` through a NEW leg.
   the cometbft address (`vset_wire.h:121`). Phase 6d-bis declares NO
   domain touched. At the epoch boundary, step 3b hashes EVERY row
   (voter_id ASC, no status join) into ONE digest
-  (`dna_v2_attendance_digest`, tag `"DNA.ATTEP.v1"`,
+  (`dna_v2_attendance_digest`, tag `"NDS.ATTEP.v1"`,
   `shared/dnac/ledger_roots_v2.c`), inserted into
   `v2_attendance_epoch(epoch_start PK, digest)`; step 3c then resets
   `signed_count` to 0 (keeping `last_signed_height`). This digest table
   is the ONLY thing that ever enters a root: `attendance_root`
   (`nodus_witness_attendance_root`, `nodus_witness_roots_v2.c`) is a
   Merkle tree over `v2_attendance_epoch` rows (leaf tag
-  `"DNA.ATLEAF.v1"`, inner `"DNA.ATNODE.v1"`, empty
-  `"DNA.E.ATTND.v1"`) and is the 8th leg of `system_state_root`, whose
-  composition tag changed `"DNA.SYS.v1"` → `"DNA.SYS.v2"` (a changed
+  `"NDS.ATLEAF.v1"`, inner `"NDS.ATNODE.v1"`, empty
+  `"NDS.E.ATTND.v1"`) and is the 8th leg of `system_state_root`, whose
+  composition tag changed `"NDS.SYS.v1"` → `"NDS.SYS.v2"` (a changed
   preimage is never hashed under the old tag). *(Superseded by the
   root-layout round below: the epoch_state leg is gone, attendance is
-  the 7th leg of `"DNA.SYS.v3"`.)* Consequence: an EMPTY
+  the 7th leg of `"NDS.SYS.v3"`.)* Consequence: an EMPTY
   block moves NOTHING in `system_state_root` any more — see the
   Consensus flow pace note below and `MEMPOOL_BLOCK_TIME.md`.
 - **D-3 — Rule N rewritten, no base-leader blame, no tenure gate, duty-set
@@ -2617,10 +2617,10 @@ recipient).
   `V2AP_FAIL_AFTER_DIST_ACCRUED`..`_BALANCE_COPY` (55-59); the retired
   settle stages (9/10, F50-52) are never reused.
 - **P2-8 — roots and schema S16.** The supply leaf commits the pool
-  (`dna_v2_supply_root`, tag `DNA.SUPPLY.v2`); `core_state_root` gains a
+  (`dna_v2_supply_root`, tag `NDS.SUPPLY.v2`); `core_state_root` gains a
   7th leg, `accrual_root` (`dna_v2_accrual_root`: leaves
-  `DNA.ACLEAF.v1 ‖ owner_fp ‖ be64(amount)`, strictly ascending, inner
-  `DNA.ACNODE.v1`, empty `DNA.E.ACCRU.v1`), composed under `DNA.CORE.v2`
+  `NDS.ACLEAF.v1 ‖ owner_fp ‖ be64(amount)`, strictly ascending, inner
+  `NDS.ACNODE.v1`, empty `NDS.E.ACCRU.v1`), composed under `NDS.CORE.v2`
   (`shared/dnac/ledger_roots_v2.c`; DB side
   `nodus_witness_accrual_root_v2`, `nodus_witness_roots_v2.c:260`).
   Schema rung S16 (`nodus_witness_db_migrate_v2s16`,
@@ -2643,7 +2643,7 @@ recipient).
   `test_cc_appr.c`, `test_v2_native.c`. Harness: `test_v2_rewards.sh`
   (short-epoch build + `STAGEF_PAYOUT_INTERVAL_EPOCHS=2`).
 - **Consensus-value change: the supply leaf, `core_state_root`'s
-  composition (6 legs → 7, `DNA.CORE.v1` → `v2`), every fee's
+  composition (6 legs → 7, `NDS.CORE.v1` → `v2`), every fee's
   destination and the genesis document's Rule P.2 all change → devnet
   wipe + stop-all at landing, same class as P0/P1.**
 
@@ -3412,7 +3412,7 @@ entry "Root'a girsin" (2026-09-24) in
 
   The digest is then RFC 6962 leaf-tagged (0x00) inside the utxo tree, as
   before; the tree order (`nullifier ASC`) and the CORE composition
-  (`"DNA.CORE.v2"`) are unchanged — only the leaf's meaning grew. The
+  (`"NDS.CORE.v2"`) are unchanged — only the leaf's meaning grew. The
   signature gained `uint64_t unlock_block` as its LAST parameter.
   `load_utxo_leaves` SELECTs `unlock_block`; a NEGATIVE stored value fails
   the whole load closed (-1, logged) — it is never cast to a huge u64.
@@ -3424,17 +3424,17 @@ entry "Root'a girsin" (2026-09-24) in
   tokenomics-v3 P2, so its leg was a constant. The schema no longer
   creates it (`nodus_witness.c`); `nodus_witness_epoch_root_v2`,
   `dna_v2_epoch_leaf_hash`, `dna_v2_epoch_root` and the tags
-  `"DNA.EPOCH.v2"` / `"DNA.EPNODE.v2"` / `"DNA.E.EPOCH.v2"` are deleted
+  `"NDS.EPOCH.v2"` / `"NDS.EPNODE.v2"` / `"NDS.E.EPOCH.v2"` are deleted
   (retired, never reused). Compositions (`shared/dnac/ledger_roots_v2.{h,c}`):
-  - `system_state_root = SHA3-512("DNA.SYS.v3" ‖ validator ‖ delegation
+  - `system_state_root = SHA3-512("NDS.SYS.v3" ‖ validator ‖ delegation
     ‖ chain_config ‖ validator_set ‖ domain_registry ‖ manifest ‖
-    attendance)` — 7 legs (was 8 under `"DNA.SYS.v2"`).
-  - `system_payload_root = SHA3-512("DNA.SYSPAYL.v2" ‖ validator ‖
+    attendance)` — 7 legs (was 8 under `"NDS.SYS.v2"`).
+  - `system_payload_root = SHA3-512("NDS.SYSPAYL.v2" ‖ validator ‖
     delegation ‖ chain_config ‖ validator_set)` — 4 legs (was 5 under
-    `"DNA.SYSPAYL.v1"`).
+    `"NDS.SYSPAYL.v1"`).
   - The genesis bundle carries FIVE tables (validators, delegations,
     chain_config_history, supply_tracking, validator_stats) under magic
-    `DNA.GBUNDLE.v4\0\0`; a `DNA.GBUNDLE.v3\0\0` bundle is refused BY ITS
+    `NDS.GBUNDLE.v4\0\0`; a `NDS.GBUNDLE.v3\0\0` bundle is refused BY ITS
     MAGIC ("version-3 bundle format, refused"), the same way v1 is.
   - The genesis derivation's "must be empty" list no longer names
     `epoch_state` (the COUNT would fail on the absent table).
@@ -3470,7 +3470,7 @@ entry "Root'a girsin" (2026-09-24) in
   KAT of the 340-byte leaf rebuilt from a hand-written preimage,
   `unlock_block` moving the leaf AND the utxo root, and the
   negative-`unlock_block` fail-close (caller buffer untouched);
-  `test_roots_v2` — `"DNA.SYS.v3"` and `"DNA.SYSPAYL.v2"` KATs plus the
+  `test_roots_v2` — `"NDS.SYS.v3"` and `"NDS.SYSPAYL.v2"` KATs plus the
   witness compositions equal to the shared functions over the loaded legs
   in K2 order; `test_v2_bundle` — the v3 magic refused with the joiner's
   database byte-identical; `test_stake_schema` / `test_v2_gen` — no
@@ -3480,8 +3480,8 @@ entry "Root'a girsin" (2026-09-24) in
   `validators.last_validator_update_block` — a non-supply SYSTEM field
   that moves the SYSTEM root, which the engine requires of a touched
   domain (phase 9). Vectors: `shared/dnac/tests/ledger_roots_v2_attendance_oracle.py`
-  (control legs: the shipped 7-leg `"DNA.SYS.v1"` and 8-leg `"DNA.SYS.v2"`
-  pins; no `"DNA.SYSPAYL.v1"` pin ever existed, so the payload vector has
+  (control legs: the shipped 7-leg `"NDS.SYS.v1"` and 8-leg `"NDS.SYS.v2"`
+  pins; no `"NDS.SYSPAYL.v1"` pin ever existed, so the payload vector has
   no control) and `ledger_roots_v2_accrual_oracle.py` (the UTXO leaf; no
   332-byte leaf pin ever existed). Both are SELF-CONSISTENT (same author,
   same day), not an external audit. `genesis_v3_oracle.py` reproduces
@@ -3511,25 +3511,25 @@ genesis-validator graduation refund.
   stays an ordinary allocation (decision §Karar 3).
 - **Root (answer 12, operator "1 ok").** The accrual leg's exact shape
   (`shared/dnac/ledger_roots_v2.{h,c}`):
-  - leaf = `SHA3-512("DNA.TRLEAF.v1" 16 B ‖ pool_id u32 BE ‖ balance u64 BE)`;
-  - inner = `SHA3-512("DNA.TRNODE.v1" 16 B ‖ left ‖ right)`, pool_id
+  - leaf = `SHA3-512("NDS.TRLEAF.v1" 16 B ‖ pool_id u32 BE ‖ balance u64 BE)`;
+  - inner = `SHA3-512("NDS.TRNODE.v1" 16 B ‖ left ‖ right)`, pool_id
     STRICTLY ascending (duplicates / descending reject), odd node
     promoted, n == 1 → the leaf;
-  - empty → `SHA3-512("DNA.E.TREAS.v1" 16 B)` (`DNA_V2_EMPTY_TREASURY`,
+  - empty → `SHA3-512("NDS.E.TREAS.v1" 16 B)` (`DNA_V2_EMPTY_TREASURY`,
     appended to the empty-root enum);
-  - `system_state_root = SHA3-512("DNA.SYS.v4" ‖ validator ‖ delegation ‖
+  - `system_state_root = SHA3-512("NDS.SYS.v4" ‖ validator ‖ delegation ‖
     chain_config ‖ validator_set ‖ domain_registry ‖ manifest ‖
     attendance ‖ treasury)` — 8 legs, treasury LAST (was 7 under
-    `"DNA.SYS.v3"`);
-  - `system_payload_root = SHA3-512("DNA.SYSPAYL.v3" ‖ validator ‖
+    `"NDS.SYS.v3"`);
+  - `system_payload_root = SHA3-512("NDS.SYSPAYL.v3" ‖ validator ‖
     delegation ‖ chain_config ‖ validator_set ‖ treasury)` — 5 legs (was 4
-    under `"DNA.SYSPAYL.v2"`); the treasury is SEEDED at genesis, so unlike
+    under `"NDS.SYSPAYL.v2"`); the treasury is SEEDED at genesis, so unlike
     attendance/domreg/manifest it is a payload leg.
   The loader `nodus_witness_treasury_root_v2` scans `pool_id ASC`; a
   pool_id outside 1..9, a negative balance, a non-INTEGER column, a scan
   fault or an absent table FAILS the root (no sqlite_master probe — the
   table is in the base schema). Tag collision scan before adoption:
-  `git grep "DNA\.TR\|DNA\.E\.TREAS\|TRLEAF\|TRNODE"` — no prior use. A
+  `git grep "NDS\.TR\|NDS\.E\.TREAS\|TRLEAF\|TRNODE"` — no prior use. A
   SYSTEM leg (not CORE) because a future exit rule will be a SYSTEM leg
   with a CORE sibling (Fable F2, the UNDELEGATE precedent).
 - **Supply equation** (`nodus_rt_core_invariant`,
@@ -3555,9 +3555,9 @@ genesis-validator graduation refund.
   `v2_treasury` empty, inserts the nine rows, asserts exactly nine after,
   and reads the total back through the loader (Fable F4's exact-count
   discipline applied to the new table).
-- **Genesis bundle — `DNA.GBUNDLE.v5\0\0`** (Fable F1): SIX tables —
+- **Genesis bundle — `NDS.GBUNDLE.v5\0\0`** (Fable F1): SIX tables —
   validators, delegations, chain_config_history, supply_tracking,
-  validator_stats, `v2_treasury` (`pool_id ASC`). A `DNA.GBUNDLE.v4\0\0`
+  validator_stats, `v2_treasury` (`pool_id ASC`). A `NDS.GBUNDLE.v4\0\0`
   bundle is refused BY ITS MAGIC ("version-4 bundle format, refused").
 - **Genesis-validator graduation refund** (answers 7, 13) — **WITHDRAWN
   by general multisig** (section below): the helper, the credit primitive,
@@ -3756,7 +3756,7 @@ grace); design `docs/plans/2026-09-28-final-wipe-package-design.md` §1 W-C,
   PLACEHOLDERS — `nodus_witness_runtime_selfcheck` fails by design until
   the independent ruleset oracle fills them. **CORE v4 is not final**:
   the general-multisig package of the same release also changes CORE
-  inside v4. The retired v3 digest `ed4b1bcd…4437` resolves nothing.
+  inside v4. The retired v3 digest `08a204d6…15dc` resolves nothing.
 - **Test chains opt out of the gas rule.** The builder default stays 121
   (the decision's value); the shared fixture `tests/v2_genesis_fixture.h`
   (`v2x_cfg_make`) and the self-built configs of `test_cmt_app` and
@@ -3794,7 +3794,7 @@ exact bytes are this project's own, **self-consistent, not externally
 audited** (independent oracle `shared/dnac/tests/multisig_oracle.py`).
 
 - **Descriptor + address** (`shared/dnac/msig_wire.{c,h}`, pure SHA3, in
-  libnodus): `"DNA.MSIG.v1"` (16 B, zero-padded) ‖ M u8 ‖ N u8 ‖ N ×
+  libnodus): `"NDS.MSIG.v1"` (16 B, zero-padded) ‖ M u8 ‖ N u8 ‖ N ×
   ML-DSA-87 pubkey, keys STRICTLY ascending, 2 ≤ N ≤ 7, 1 ≤ M ≤ N, no
   key whose first 32 bytes are zero (the kind-1 signer rule);
   address = SHA3-512(descriptor), 64 bytes — the UTXO owner field is
@@ -3860,7 +3860,7 @@ audited** (independent oracle `shared/dnac/tests/multisig_oracle.py`).
   all-zero; amount 1..INT64_MAX); `config_version` 4 is RETIRED (builder,
   decoder, verdict and the text parser's new `[genesis_output]` block).
   Each output is a coin from height 0: nullifier = tx_hash =
-  SHA3-512(`"DNA.GENOUT.v1"` ‖ source_commit[64] ‖ index u32 BE),
+  SHA3-512(`"NDS.GENOUT.v1"` ‖ source_commit[64] ‖ index u32 BE),
   output_index 0, block_height 0, unlock 0, domain CORE, native token —
   keyed on `source_commit` (the document with chain_id AND app_hash
   zeroed), which exists BEFORE the genesis apply: document →

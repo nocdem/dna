@@ -13,7 +13,7 @@ Run:  python3 effect_wire_oracle.py
 The emitted C arrays are pinned verbatim in tests/test_effect_wire.c.
 
 ── SPEC (frozen) ────────────────────────────────────────────────────────
-Family tag "DNA.EFFRES.v1" (13 chars, zero-padded to 16).
+Family tag "NDS.EFFRES.v1" (13 chars, zero-padded to 16).
 Fixed head (23 bytes):
   off  0  family[16]
   off 16  result_version  u8  (= 1)
@@ -37,14 +37,14 @@ where keys compare lexicographically (memcmp over the common prefix, then
 shorter < longer). Full triple equality is a duplicate. Additionally the
 LOGICAL key (op_id, key bytes) must be unique across the WHOLE result
 regardless of kind.
-Value hash: SHA3-512("DNA.EFFVAL.v1"(16) || value_len u32 BE || value).
+Value hash: SHA3-512("NDS.EFFVAL.v1"(16) || value_len u32 BE || value).
 """
 import hashlib
 import struct
 
 # ── constants (spec) ────────────────────────────────────────────────────
-FAMILY        = b"DNA.EFFRES.v1".ljust(16, b"\0")
-TAG_VALHASH   = b"DNA.EFFVAL.v1".ljust(16, b"\0")
+FAMILY        = b"NDS.EFFRES.v1".ljust(16, b"\0")
+TAG_VALHASH   = b"NDS.EFFVAL.v1".ljust(16, b"\0")
 
 RESULT_VERSION   = 1
 FIXED_HEAD       = 23

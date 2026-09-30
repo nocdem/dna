@@ -22,33 +22,33 @@
  *    DNAC_TXW_V5_TAG (tx_wire.c:140-142) and vset_wire.c:22. Explicit
  *    character initialisers, so the padding is visible and pinned. ──── */
 
-/** Wire family marker: "DNA.ENVWIRE.v1" (14 chars) + 2 zero bytes. */
+/** Wire family marker: "NDS.ENVWIRE.v1" (14 chars) + 2 zero bytes. */
 static const uint8_t TAG_ENV_FAMILY[DNA_ENV_WIRE_FAMILY_LEN] = {
-    'D','N','A','.','E','N','V','W','I','R','E','.','v','1', 0, 0
+    'N','D','S','.','E','N','V','W','I','R','E','.','v','1', 0, 0
 };
-/** "DNA.ENVCALL.v1" (14 chars) + 2 zero bytes. */
+/** "NDS.ENVCALL.v1" (14 chars) + 2 zero bytes. */
 static const uint8_t TAG_ENV_CALL[DNA_ENV_TAG_LEN] = {
-    'D','N','A','.','E','N','V','C','A','L','L','.','v','1', 0, 0
+    'N','D','S','.','E','N','V','C','A','L','L','.','v','1', 0, 0
 };
-/** "DNA.ENVCTX.v1" (13 chars) + 3 zero bytes. */
+/** "NDS.ENVCTX.v1" (13 chars) + 3 zero bytes. */
 static const uint8_t TAG_ENV_CTX[DNA_ENV_TAG_LEN] = {
-    'D','N','A','.','E','N','V','C','T','X','.','v','1', 0, 0, 0
+    'N','D','S','.','E','N','V','C','T','X','.','v','1', 0, 0, 0
 };
-/** "DNA.ENVAUTH.v1" (14 chars) + 2 zero bytes. */
+/** "NDS.ENVAUTH.v1" (14 chars) + 2 zero bytes. */
 static const uint8_t TAG_ENV_AUTH[DNA_ENV_TAG_LEN] = {
-    'D','N','A','.','E','N','V','A','U','T','H','.','v','1', 0, 0
+    'N','D','S','.','E','N','V','A','U','T','H','.','v','1', 0, 0
 };
-/** "DNA.ENVTXID.v1" (14 chars) + 2 zero bytes. */
+/** "NDS.ENVTXID.v1" (14 chars) + 2 zero bytes. */
 static const uint8_t TAG_ENV_TXID[DNA_ENV_TAG_LEN] = {
-    'D','N','A','.','E','N','V','T','X','I','D','.','v','1', 0, 0
+    'N','D','S','.','E','N','V','T','X','I','D','.','v','1', 0, 0
 };
-/** "DNA.ENVILEG.v1" (14 chars) + 2 zero bytes (intent season). */
+/** "NDS.ENVILEG.v1" (14 chars) + 2 zero bytes (intent season). */
 static const uint8_t TAG_ENV_ILEG[DNA_ENV_TAG_LEN] = {
-    'D','N','A','.','E','N','V','I','L','E','G','.','v','1', 0, 0
+    'N','D','S','.','E','N','V','I','L','E','G','.','v','1', 0, 0
 };
-/** "DNA.ENVINTID.v1" (15 chars) + 1 zero byte (intent season). */
+/** "NDS.ENVINTID.v1" (15 chars) + 1 zero byte (intent season). */
 static const uint8_t TAG_ENV_INTENT[DNA_ENV_TAG_LEN] = {
-    'D','N','A','.','E','N','V','I','N','T','I','D','.','v','1', 0
+    'N','D','S','.','E','N','V','I','N','T','I','D','.','v','1', 0
 };
 
 /* ── Preimage geometry (internal; the header documents the layouts) ─── */

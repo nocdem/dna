@@ -57,40 +57,43 @@ static int hex_eq(const uint8_t h[64], const char *hex, const char *what) {
 }
 
 /* ── Pinned python3-oracle literals (s4_oracle.py) ──────────────────── */
+/* Re-derived 2026-09-30 for the NDS. tag rename (decision
+ * 2026-09-30-tag-rebrand-nds.md). */
 static const char *KAT_MAN_A =
-    "9f470348108dfbc25edb1986c6dd7c038379575c1104ef77daf3bc55b7d9e516"
-    "fc5281e558a7b091ce2f1e31670f32bcdebee5f81d7d80ada4879a79472ab5b7";
+    "0084572db50700b49ac67e0a311fc1197fc20380518179078550f6d3cebb79da"
+    "49caf708e7d348df9615260b0697a59bf7c4df319d088dea2eeb7e9c00f5553e";
 static const char *KAT_MAN_B =
-    "44993d0388a3e775249544b159bde74ada723408b621b689bf823a35e8406f49"
-    "ac1bb7d30fa9d14236e0363fb976b0d649b780fcc4fa5521cedfc7cd22315eb1";
+    "6c863e3e52825c9d6b8e2dee3fec3e49f4c17d63be276782712cdfbd9b0188a6"
+    "ec5aac26da29c0e7fd3559f5c0d84a60403bb21b99fa01b99e6152978d0002c1";
 /* RE-DERIVED for the execution season: RulesetDescriptor v2 appends the
  * committed meter_policy_digest (all-zero in this fixture) and bumps the
  * version field to 2 — the hash moves by construction. Oracle:
- * scratchpad exec_season_oracle.py. */
+ * scratchpad exec_season_oracle.py. Re-derived 2026-09-30 for the NDS.
+ * tag rename (decision 2026-09-30-tag-rebrand-nds.md). */
 static const char *KAT_DESC =
-    "c691708f054d410ef623cbf1555d58d12b96882596c23a4a94598ee17859a708"
-    "d5e55575245168cbecac38601995d610b58ab6f03c21009f40d7980af5e65259";
+    "0f4f3eb74b60e6f27f77824347f7b065aaa2250e3d7a112606a9941ca5c3bec6"
+    "36168bc4b28f2495b25f31af7da86e239e53163c4fffcf3cfe6303499252b409";
 static const char *KAT_LEAF_SYS =
-    "e818427a14fdf97b4d9bea4462ba9847dab5bb841319f7fb9612d79c0b356884"
-    "da09606ca423f2669a54c1b2e26ee8e27e112ed01e4d1f32d7a040f3a06ae3c5";
+    "f6359b1cade898493337c630ec98f30b83f65655f9e57b9de560ff3ae531da51"
+    "e0ed13fd7b561db543f39d23892829de09a67120a94e096d6ae00cde44b38c6a";
 static const char *KAT_LEAF_CORE =
-    "cf75a2d63f0a69a00d7dddd64d767a1f18d46eb47824c0dcc08822c9645bbcee"
-    "75cd454957de96bb3e5ea33252d9b676db3ade03eb6c2ab7d59b06dd5f8522f5";
+    "e43f925d1536f93f4a3414d0d92e9eefa2d296149500052be3a5fdc6945037a4"
+    "5ccdda9537b37a91098c7ede4b9b9752766ed7b42253f42e576af0cd630f2c37";
 static const char *KAT_ROOT2 =
-    "e47790179ebef6396ec4e1283541e425c48177a53a0f96afd3d1b4715647daa1"
-    "4605a61ff3f83a680c3dc3c0f9c9cc67be002d19f62caff662a5649474627131";
+    "1a46586ae86ce437d7f4cad975bec1f6062a10bb0ae21eecfb1937f6fa3061c2"
+    "aafb8a6970ca2e7500b3245310e405a4754d52ea6c9da3d236d483b4087bbb94";
 static const char *KAT_ROOT3 =
-    "b839dcebf31092c37031389fe275cde7792c0f3dc626aaf6a11c86bdb560e830"
-    "d9e6400dd5abb98600f245ea576897f3a39550d66b3fe5e3b500f88862269009";
+    "a35660ab16bc8e9b6501032564e3444ac8bd16721160a4978e40785c3e55549d"
+    "c46c27919ba87d3fa686eeca1e021b61621a0d3acb5b41ad03307b884b1925b3";
 static const char *KAT_EMPTY_DOMREG =
-    "107bae9d51c4a1567d25d1e75f1df56e671fac019b6325324407df76429089c0"
-    "231074520edcbff6bcc01926ba5bcb4d1a905f52ea819be0fb9a9d2c59de74ea";
+    "07b4b225f5c073f998fc7bca7c9071142cb9bebfa619af849a2d47e9a5f61bf2"
+    "b8633cfbd3b83a51daf6940548a8e66bbedb86aa94b0a1001ac378523761ecaf";
 static const char *KAT_PROP =
-    "89cc74e4f8d5a908c96a4f5f21683297a31b6e47397e9fca484a6f2397073d43"
-    "ee0c33271164e4589c25eec0b6b52001ce6375929164bca1bf510404f314f046";
+    "1610ef8a7898555f91e6b552a84114e0e04c717bff1f5a41714209a652b2c2c0"
+    "4825cd47fbdfc604a8c8059680e2800cb0a816d366c3470e43c4d5e8c55f3369";
 static const char *KAT_RDY_PRE =
-    "3b912bf1db7573fb1dca2ceae0d298d81b084bf5a489f2b44b0ff54df3d87831"
-    "6f873ab825a4108fbd8b21e21d4d81584d9fff88e639c16d682592d5ea5de85a";
+    "3d1c5890aae099df45b74ecd81be0c51258f6570c99756b64c779677492c6a6d"
+    "c8050275c52863b6222444c0dc965a0bf1166b8669f0de7520aa320bbbb9845a";
 
 /* Oracle fixtures */
 static void fixture_manifest_a(dna_domain_manifest_t *m) {
@@ -658,23 +661,23 @@ static int test_fuzz(void) {
 
 /* ── 8 (S5): DomainUpdate v1 + updates-root + batch + touched list ──── */
 static const char *KAT_DUPD =
-    "39374e8fe212c79aa83975196df641e75f1cff2fd336ca4c4962844de722a98f"
-    "15c952b3d0c0338d4680cea7a34dbf42453ff016db9f581d821927b049642cf3";
+    "7489f0ddd6bb616367e0f520353af65d13846d67cb611272a91ce17ec7ab94c0"
+    "eb049ad5e0e49c314bdf99b6b92e5cf92376c1dc2c74e4cef8eefe042d93aade";
 static const char *KAT_DUPD_ROOT2 =
-    "1a9121b81c9d2b4aedbd84ab5499e3a1e76471b646c4aac42c81c19a4395a5b6"
-    "ec5920e6351ae72a84b7584cc1dad0c9aa9bb28936e1b440d6d75453b77d925a";
+    "4ad6f7646fb608980ea0d82309d6d96f43b3c9667ba9a660a1884c1a435d5f2a"
+    "098c2790b8624cdf5906bfeecc273fe4f873dbdc84435954602111683ccd0d54";
 static const char *KAT_E_DUPD =
-    "661f403d91d807631ab6bcc82d34116780623aa35479c753fc1d53a722fa58bc"
-    "61939dc88f51e2824ac76c8da4d11edc5beb54a0e3e222e2606320baf68de841";
+    "7aba2b3b0d06b630e176dcb0f14063023ddcb99684260fdd75428358667faaff"
+    "6773660ba1f229533334791b86503a91f4cebc447922d635c32355af852c2ec5";
 static const char *KAT_DUPDPRV =
-    "9a2b387a8f162537e34930735a2b6aff574a50eb2859092638e9ba9b990b6b49"
-    "aa0530becb8ec0d6e1a65ca4e1f7193f8d072f212646c2511167bac08d24b152";
+    "0eb8b1b7d86efcb41c8351e601070cdac5425e34cd9252007a1a6293c1c6ed60"
+    "658103121e3ec4ed5aa36a0b9b7adc0ce12f5f7610cb37096bc18214a3b0e0a9";
 static const char *KAT_TXB0 =
-    "89f16287a04aef5a0fc88da194f4e734ba32931ee7792c5aff90a49e8a3ace7d"
-    "a51ac40f890610eb5faa9b343fa93b119adf8a7ed990f7ade65b009d0bc09066";
+    "4ce5c9f81350b5a374f00b788a0d5e0ee6858b69cad0a1e5592a06b411ef0fc5"
+    "62d6a1a0ec1293bb1432a92adaa7b50b1bc8369a4d2524de6f70b30429747186";
 static const char *KAT_TXB2 =
-    "b8b2e55498259aa1bf3e725e7bfd0bfe98783d6f778775951b04608ccb4e84ab"
-    "e326d4e9b7eb461680e4e81bbbcab27021909a87852fea964da2db07c08995b5";
+    "633c6b83b33d43523818fded08491862d1609035377a645fabb170fec4615cd1"
+    "fad62f431fefc1303e05ecb62a8876dffc6b49d2ceb5519976f6f9731d454f1c";
 
 static void fixture_update_a(dna_domain_update_t *u) {
     memset(u, 0, sizeof(*u));

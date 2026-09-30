@@ -23,7 +23,7 @@
  *   type 12 : ERR_DECODE — S9 CORRECTION PASS: the old SEAM-2 deferral is GONE.
  *             Binding verified, signatures verified, and the transaction now
  *             enters the SAME real aggregate verifier type 11 uses, carrying
- *             its populated DNA.TLEG.v1 commitment. These fixtures ship a STUB
+ *             its populated NDS.TLEG.v1 commitment. These fixtures ship a STUB
  *             proof blob, so the run ends at the DZKF v4 decode — identical to
  *             the type-11 case above. Real-proof ACCEPTS live in the zk-only
  *             gate test_native_verify_v3_proofs (this binary also builds inside

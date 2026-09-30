@@ -61,7 +61,7 @@
 #   equal it. The ACTUAL submit is a SECOND, independent build of the
 #   same envelope, and `wire_id` (== `tx_id`) commits the FULL encoded
 #   envelope INCLUDING its ML-DSA-87 signature bytes
-#   (`tx_id = SHA3-512("DNA.ENVTXID.v1" || auth_context_commit ||
+#   (`tx_id = SHA3-512("NDS.ENVTXID.v1" || auth_context_commit ||
 #   env_len || env_bytes)`, `shared/dnac/env_wire.h:104-105`) —
 #   signatures are RANDOMIZED per signing, so the dry-run's `wire_id` and
 #   the real submission's committed `tx_id` are DIFFERENT VALUES for the

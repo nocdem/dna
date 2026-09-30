@@ -18,18 +18,18 @@
 
 #define TAG_LEN 16
 
-static const uint8_t TAG_DOMMAN[TAG_LEN]  = "DNA.DOMMAN.v1\0\0";
-static const uint8_t TAG_RULESET[TAG_LEN] = "DNA.RULESET.v1\0";
-static const uint8_t TAG_DRLEAF[TAG_LEN]  = "DNA.DRLEAF.v1\0\0";
-static const uint8_t TAG_DRNODE[TAG_LEN]  = "DNA.DRNODE.v1\0\0";
-static const uint8_t TAG_DOMRDY[TAG_LEN]  = "DNA.DOMRDY.v1\0\0";
-static const uint8_t TAG_DOMPROP[TAG_LEN] = "DNA.DOMPROP.v1\0";
+static const uint8_t TAG_DOMMAN[TAG_LEN]  = "NDS.DOMMAN.v1\0\0";
+static const uint8_t TAG_RULESET[TAG_LEN] = "NDS.RULESET.v1\0";
+static const uint8_t TAG_DRLEAF[TAG_LEN]  = "NDS.DRLEAF.v1\0\0";
+static const uint8_t TAG_DRNODE[TAG_LEN]  = "NDS.DRNODE.v1\0\0";
+static const uint8_t TAG_DOMRDY[TAG_LEN]  = "NDS.DOMRDY.v1\0\0";
+static const uint8_t TAG_DOMPROP[TAG_LEN] = "NDS.DOMPROP.v1\0";
 /* S5 tags */
-static const uint8_t TAG_DUPD[TAG_LEN]    = "DNA.DUPD.v1\0\0\0\0";
-static const uint8_t TAG_DUNODE[TAG_LEN]  = "DNA.DUNODE.v1\0\0";
-static const uint8_t TAG_E_DUPD[TAG_LEN]  = "DNA.E.DUPD.v1\0\0";
-static const uint8_t TAG_DTXB[TAG_LEN]    = "DNA.DTXB.v1\0\0\0\0";
-static const uint8_t TAG_E_DUPDPRV[TAG_LEN] = "DNA.E.DUPDPRV.v1";
+static const uint8_t TAG_DUPD[TAG_LEN]    = "NDS.DUPD.v1\0\0\0\0";
+static const uint8_t TAG_DUNODE[TAG_LEN]  = "NDS.DUNODE.v1\0\0";
+static const uint8_t TAG_E_DUPD[TAG_LEN]  = "NDS.E.DUPD.v1\0\0";
+static const uint8_t TAG_DTXB[TAG_LEN]    = "NDS.DTXB.v1\0\0\0\0";
+static const uint8_t TAG_E_DUPDPRV[TAG_LEN] = "NDS.E.DUPDPRV.v1";
 
 static void put_be16(uint16_t v, uint8_t out[2]) {
     out[0] = (uint8_t)(v >> 8); out[1] = (uint8_t)v;

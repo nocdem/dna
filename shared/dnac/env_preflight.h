@@ -141,15 +141,15 @@ typedef struct {
     uint8_t call_commit[DNA_ENV_MAX_LEGS][DNA_ENV_HASH_LEN];
     uint8_t auth_context_commit[DNA_ENV_HASH_LEN];
     uint8_t auth_digest[DNA_ENV_MAX_LEGS][DNA_ENV_HASH_LEN];
-    /** THE authoritative FULL-WIRE transaction identity ("DNA.ENVTXID.v1"
+    /** THE authoritative FULL-WIRE transaction identity ("NDS.ENVTXID.v1"
      *  — commits every canonical envelope byte, authorization evidence
      *  included). Named wire_id so no engine consumer can confuse it with
      *  the witness-independent intent identity below (intent season). */
     uint8_t wire_id[DNA_ENV_HASH_LEN];
-    /** Per-leg canonical semantic projections ("DNA.ENVILEG.v1"). */
+    /** Per-leg canonical semantic projections ("NDS.ENVILEG.v1"). */
     uint8_t intent_leg_commit[DNA_ENV_MAX_LEGS][DNA_ENV_HASH_LEN];
     /** THE canonical AUTHORIZATION-WITNESS-INDEPENDENT intent identity
-     *  ("DNA.ENVINTID.v1" — env_wire.h layout block): identical for every
+     *  ("NDS.ENVINTID.v1" — env_wire.h layout block): identical for every
      *  valid authorization realization of the same requested execution.
      *  Drives semantic deduplication and consensus-state provenance;
      *  NEVER block data or byte availability (that is wire_id's job). */
@@ -205,7 +205,7 @@ _Static_assert(sizeof(dna_env_preflight_t) <= 16384,
  *      enters here in FULL — all 32 bytes, no truncation, no C-string
  *      handling, no host-word comparison; failure -> ERR_HASH.
  *   8. auth_digest[i] for every leg; any failure -> ERR_HASH.
- *   9. wire_id (the frozen tx_id preimage, "DNA.ENVTXID.v1") over
+ *   9. wire_id (the frozen tx_id preimage, "NDS.ENVTXID.v1") over
  *      auth_context_commit + the complete env_bytes; failure -> ERR_HASH.
  *  10. intent_leg_commit[i] for every leg, via dna_env_intent_leg_commit
  *      with that leg's already-derived call_commit; failure -> ERR_HASH.

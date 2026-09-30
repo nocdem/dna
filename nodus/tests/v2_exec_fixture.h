@@ -9,7 +9,7 @@
  *     still resolve them) extended with a deterministic read_plan/exec
  *     pair driven ENTIRELY by the envelope's call_data — the test
  *     writes the mediated-read request list and the exact canonical
- *     "DNA.EFFRES.v1" result bytes into call_data, so any effect shape
+ *     "NDS.EFFRES.v1" result bytes into call_data, so any effect shape
  *     (including malformed ones) is expressible from a test;
  *   - compiled TEST ADAPTERS over the same tables the retired raw-SQL
  *     ops used to mutate (utxo_set / supply_tracking /

@@ -23,13 +23,13 @@
  *    Explicit character initialisers, so the padding is visible and
  *    pinned rather than implied by a string literal's length. ──────── */
 
-/** Wire family marker: "DNA.EFFRES.v1" (13 chars) + 3 zero bytes. */
+/** Wire family marker: "NDS.EFFRES.v1" (13 chars) + 3 zero bytes. */
 static const uint8_t TAG_EFF_FAMILY[DNA_EFFECT_WIRE_FAMILY_LEN] = {
-    'D','N','A','.','E','F','F','R','E','S','.','v','1', 0, 0, 0
+    'N','D','S','.','E','F','F','R','E','S','.','v','1', 0, 0, 0
 };
-/** Value-hash tag: "DNA.EFFVAL.v1" (13 chars) + 3 zero bytes. */
+/** Value-hash tag: "NDS.EFFVAL.v1" (13 chars) + 3 zero bytes. */
 static const uint8_t TAG_EFF_VALUE[DNA_EFFECT_TAG_LEN] = {
-    'D','N','A','.','E','F','F','V','A','L','.','v','1', 0, 0, 0
+    'N','D','S','.','E','F','F','V','A','L','.','v','1', 0, 0, 0
 };
 
 /* ── Preimage geometry (internal; the header documents the layout) ──── */

@@ -1163,7 +1163,7 @@ static int test_shielded_check_header(void) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * S9 §6 — transparent-leg section v1 + DNA.TLEG.v1 commitment
+ * S9 §6 — transparent-leg section v1 + NDS.TLEG.v1 commitment
  *
  * Specification under test: tx_wire.h §6 (layout, canonicality, PREFIX
  * contract, commitment preimage) and its implementation at the END of
@@ -1758,18 +1758,20 @@ static int test_tleg_decode_negatives(void) {
 
 /* ── X. dnac_tleg_commit — KAT, exclusions, sensitivity, domains ─────── */
 
-/* SHA3-512 of the DNA.TLEG.v1 preimage over the KAT fixture, computed
+/* SHA3-512 of the NDS.TLEG.v1 preimage over the KAT fixture, computed
  * INDEPENDENTLY with python3 hashlib.sha3_512 (2844-byte preimage):
- *   "DNA.TLEG.v1" + 5*\x00                                     (16)
+ *   "NDS.TLEG.v1" + 5*\x00                                     (16)
  *   ‖ \x01 ‖ fill(0x11,64)                                     (65)
  *   ‖ \x01 ‖ fill(0x22,129) ‖ 0000000000000539 ‖ fill(0x33,32) (170)
  *   ‖ \x01 ‖ fill(0x44,2592)                                   (2593)
  * where fill(s,n)[i] = (s + 7*i) & 0xFF — the same generator this file's
  * fill() uses. The signer's fill(0x55,4627) SIGNATURE is NOT in the
- * preimage; the digest below is what proves that. */
+ * preimage; the digest below is what proves that.
+ * Re-derived 2026-09-30 for the NDS. tag rename (decision
+ * 2026-09-30-tag-rebrand-nds.md). */
 static const char *TLEG_COMMIT_KAT_HEX =
-    "a5b8f80392fa2acfb5d7c02ef7b2efed081dd91d4a0c8a98dbf273bf72cd51bf"
-    "d522c54f1f52a29b29623187b4761562a02fd8ab84be831f2c06e5237bc1b521";
+    "f6ca1f3549a20cfaec5c2d7afda72860c7c6d28065a9d49627221ec7f3263ab6"
+    "57b397bd64d7dae1ee9ca442b828ab4c505ae1470fffbbd4274b3fa15de5c41a";
 
 static int test_tleg_commit(void) {
     dnac_txw3_tleg_t *t = calloc(1, sizeof(*t));
@@ -1859,7 +1861,7 @@ static int test_tleg_commit(void) {
     CHECK(dnac_tleg_commit(t, h) != 0, "X num_signers 5 hashed"); OK();
 
     /* (X5) EMPTY-TAG DISTINCTNESS: the 0/0/0 populated leg and the absent
-     *      leg are different DOMAINS ("DNA.TLEG.v1" vs "DNA.E.TLEG.v1"), so
+     *      leg are different DOMAINS ("NDS.TLEG.v1" vs "NDS.E.TLEG.v1"), so
      *      a present-but-empty leg can never be mistaken for an absent one. */
     {
         uint8_t empty[64], zero_leg[64];

@@ -355,7 +355,7 @@ static nodus_witness_t *open_chain(const char *dir, char out_path[600]) {
      * which MASKED the whole defect: production's role derivation runs
      * inside create_chain_db above and, before the fix, left the flag
      * FALSE for a pure-V2 chain (the probe matched only the ceremony's
-     * DNA.LEGACY.TERM.v1 tag). Every consumer then took the legacy
+     * NDS.LEGACY.TERM.v1 tag). Every consumer then took the legacy
      * branch — height 0 from the empty `blocks` table, a legacy GENESIS
      * transaction admissible into the V2 database, every V2 lane
      * refusing, and a halt at the first non-bootstrap epoch — while this
@@ -537,7 +537,7 @@ static int test_happy_path(void) {
         CHECK(m.source_tag_len == NODUS_V2_GEN_SOURCE_TAG_LEN &&
                   memcmp(m.source_tag, NODUS_V2_GEN_SOURCE_TAG,
                          NODUS_V2_GEN_SOURCE_TAG_LEN) == 0,
-              "source_tag is DNA.GENESIS.v1 — NOT a legacy terminal tag");
+              "source_tag is NDS.GENESIS.v1 — NOT a legacy terminal tag");
         CHECK(m.source_commit_len == NODUS_V2_GEN_SRCCOMMIT_LEN,
               "source_commit is a 64-byte digest");
         uint8_t expect[NODUS_V2_GEN_SRCCOMMIT_LEN];
@@ -1541,11 +1541,11 @@ static int hex_eq(const uint8_t *b, size_t n, const char *hex) {
  * shared/dnac/tests/genesis_v3_oracle.py stage 5 (written by an agent that
  * did not read this C). RETIRED value (dest pubkey = pubkey ^ 0x5A, the
  * oracle's control leg):
- *   523e2c971f1c44f06ad63cf8d0b4b4eb56ae7b98b58f8dc7afa09b97b523893a
- *   5c408314a06f32e378b4f4f24764bb2763fe6fcdae8a1ccd63e279b09f4103bf */
+ *   0cbe6f4e880dc2c6a0de91d5071388c9a42be63a4aac2d44ab76f467a936d50c
+ *   f8a591d9c91044e77f276b9878884de976753de7f98e07cb1d51dc713961b349 */
 static const char *KAT_V2_ENC_SHA =
-    "7e133584b15a8772be6ee9f4268bd41444103f3a449730cce9a5ec26ecb52520"
-    "40fe7dc606cc415d48fe1963e9410e6c1ec111ffceeb46ba9471f2010c219a7d";
+    "142c5ea8484e20972b62cbb661abf8d4d8f82f3d9762abe67bc09bc6c16b838b"
+    "c2e7d233bda95954e6c667b48dafd4b2dd8bdc0400e5b05e4e8e3de9f9a7fe02";
 
 /* ═══ A-D history (final pre-testnet wipe) ═══════════════════════════════
  * The A-D vectors moved three times in this package, each time re-emitted
@@ -1559,26 +1559,26 @@ static const char *KAT_V2_ENC_SHA =
  *   ONAY 2 — config_version 5, the genesis-output section, zeroed
  *         destination pubkeys (below).
  * RETIRED version-3 values (the oracle's stage-1b control legs):
- *   A enc  e63e9ff5…32c8be64  (chain id / src commit coincide with it)
- *   B enc  c9ab02d3…cfe32b4b  id f2e3e45c…d03a8940  src efa32045…d0e0ba8e
- *   C enc  aacf24c3…644d57eb  (chain id coincides)
- *   D enc  7925db18…0d1ef2b2  id 8f633f20…088b6040
+ *   A enc  a5934c09…5ce4502f  (chain id / src commit coincide with it)
+ *   B enc  fa31562c…b6e3bffc  id d0a9867a…462be5e0  src c3c53638…ff57bb32
+ *   C enc  b0a098ec…04394b92  (chain id coincides)
+ *   D enc  b7ceb634…5ebbba07  id 61b3aaa2…9b0ccc1b
  * RETIRED W-A (config_version 4 without the fee fields) values — the
  * oracle's stage-1c control legs:
- *   A enc cc867861cb75f5135e4bb88dda3350a1b712da38abf120855340b448a7380406
- *         fd445b197c745188c1282f7d34494588a2b8de89c7202e806007be4980925efa
+ *   A enc ac56a97e7f667214901778e0902d12112f6f6254bf5499ddeb70efdab964c1e4
+ *         15cff91f260ff90b012c4b6ae6708e140cc89069e981fe6c4c23f4a4c36a8ac8
  *         (chain id / src commit coincide with it)
- *   B enc 83d631380dd291a29d44441f1a661c506c3c279976318fc7cdf82da1d15f540a
- *         e06847ad941898cff304e440a70376941be05d4e4deb354661e0bb3af9d0b460
- *     id  dd4f448e4d0137ce78386cd639d31fbceca7b36e5ba2be22230351eb3dec3cae
- *     src bcb91c4e5f4d258e591f23949f9af5e0bb0bd753fa3f83ad142e137bf730ab2a
- *         1c3be07e25047842337984a351548c323682dd66fd7aa792f286da3cb22e28a5
- *   C enc 0ef525aa070ba5dd5e5a56e3d438fe510831b2beadf724cc2f92a55bf7bb968d
- *         0f743c0a91c3d0d105fd84a43d8b9700b63401b0019121282835a2e698837709
+ *   B enc 9cbeb91319daf8824edf5beec9edab8b9f351972dbde46b8156649adcfbd9724
+ *         f8301804ba0b3300d055485ad7d6935268ad73ffecf7e62d9be583168890add8
+ *     id  7cf8754ec6d5d6a50861467cda6c9ae099b2aef6a7a17a7e5b7615896c3cdf5e
+ *     src 885dbfea8e85e49b8b1df57a06bac1e7536e4e37bc53bf2604a615437e4906fe
+ *         25d74c3b2c7c6744a4bd5ca89e6c9a4b498052192b49a77ca5a451fd0e9d0041
+ *   C enc dd200e6cadde21220a3742240699b5568b7db364fb7e64d303650304cdc3e5f3
+ *         0f8939ef658321cc35d6075f56a3975e6f0c6e65e116b3571a1e3d7bf8ed14eb
  *         (chain id coincides)
- *   D enc f3ebeb9d675afbfced3eb41e93e49ea7201a613108155a9c373c015331790d27
- *         73b7b70c9d1435bc26648e7e167fd79c7dce21a452f07612150f1cc2652da202
- *     id  75d47725f9b9dd551d5e1702294ee34e74b152962ff145672cee4daf5d892582
+ *   D enc e1a72f175f15a704f327565f4f836f62882602d6e2521a31e8349d57d647ba79
+ *         51a21f436c787e6afbd87ffda811d39fa097025c224dfa31b34bd77bb97f9ab0
+ *     id  697cf6c3d4f57e1fcb95c83722aa4f6d938467ab4c4757d6996bc6cf90058ece
  * ════════════════════════════════════════════════════════════════════════ */
 /* General multisig (ONAY 2) — the current A-D vectors:
  * config_version reads 5, the 4-byte genesis-output count (0 for A-D)
@@ -1586,34 +1586,34 @@ static const char *KAT_V2_ENC_SHA =
  * is all zero. PINNED 2026-09-29 from shared/dnac/tests/genesis_v3_oracle.py
  * stage 5 (V5_A-D; written by an agent that did not read this C). */
 static const char *KAT_A_ENC_SHA =
-    "b68fa0ba29ff9664f869b175395867b563419fff03b9b155a58238c6074e1d02"
-    "7a0556b552d1aacae31befc548cb27c0c5b60c4e0861ad70be33c371226da980";
+    "19e04a18fa53e9fc2db78e815a88ff82edde51b3e480ecd47d0bbd76fd8fb973"
+    "596f78a639039c59dea63e16b7a61e6335e56ec5e1b5c51832c93567441e59bb";
 static const char *KAT_A_CHAIN_ID =
-    "b68fa0ba29ff9664f869b175395867b563419fff03b9b155a58238c6074e1d02";
+    "19e04a18fa53e9fc2db78e815a88ff82edde51b3e480ecd47d0bbd76fd8fb973";
 static const char *KAT_A_SRC_COMMIT =
-    "b68fa0ba29ff9664f869b175395867b563419fff03b9b155a58238c6074e1d02"
-    "7a0556b552d1aacae31befc548cb27c0c5b60c4e0861ad70be33c371226da980";
+    "19e04a18fa53e9fc2db78e815a88ff82edde51b3e480ecd47d0bbd76fd8fb973"
+    "596f78a639039c59dea63e16b7a61e6335e56ec5e1b5c51832c93567441e59bb";
 
 static const char *KAT_B_ENC_SHA =
-    "013414c90976bb1a5eba49c57fb1c10069eec1b6022ebc3050e7c2d8c6fa36a8"
-    "c7afef9dac04aed4e9ac1c1b01c1dc1a0deca4f1a6aa5b8e68312b14f2f0fdde";
+    "0fed9c2a47f1df772e8b656c9857fd43163628010b26f591f39b74d28bce51a5"
+    "cf48f8991eb55a1d3d8281f2000bec411d33e93071b7ca627213833c5512df72";
 static const char *KAT_B_CHAIN_ID =
-    "8bf6dbc0b2ea0c3f87203fd843df50f1116f35e2af01891a14127a7443db30e2";
+    "c4a338ca082da8e3fbdd80eb0f202e1fba8bf23fbd10b23c39cb797b860190c5";
 static const char *KAT_B_SRC_COMMIT =
-    "c9dc177e2e78dd242a79444fa4ee2611cfa65023fba7aa013547e951000aba66"
-    "b4024d57cf0e8054dbccce37e1561a9c62ff0428017aa8554481e698d13c3692";
+    "4267e21c9e78b297b19a5d6055440e151bb1d88b2675658f9ca42deadcf56d8f"
+    "a8606596be9901a31d56c5de2e4aa6d0ccab91f011abb890108367a193f24a63";
 
 static const char *KAT_C_ENC_SHA =
-    "b0a3e51e7d07eb164499872ac824d3ba9e0538b6db4b6b881137b4b5d5f04029"
-    "2ccd0a0a3907cc0b8a5561fcf9cfe9a39f536680d302647d6d21d93f4dda1a53";
+    "306af641e45ae046c996430a09b2b40e3a8cba7696aec5dfeb041452e6afde83"
+    "8dd30fe551c0e98c44f7812d4ca88844086db96c4117e67d94a059d032ecdf3d";
 static const char *KAT_C_CHAIN_ID =
-    "b0a3e51e7d07eb164499872ac824d3ba9e0538b6db4b6b881137b4b5d5f04029";
+    "306af641e45ae046c996430a09b2b40e3a8cba7696aec5dfeb041452e6afde83";
 
 static const char *KAT_D_ENC_SHA =
-    "520397977ad0708e3784898ee88a0387cb97b65cd6e00474808aef7563153f17"
-    "4d71673bc37cf51ba2dd483bfaff4be6840c1a394962f05ac4929e44397c4004";
+    "c7215e04ac1989c158cd64aeebba31b201ef3c9d3040415aa210194dfb0cd557"
+    "92483fbc2090fb9232356beb71da0702aff147d5e59a03cc828a8a5488aea971";
 static const char *KAT_D_CHAIN_ID =
-    "4f67de1bf0f6ce8e9e460ff195cb7fec1f2b05500bfd22dfa034861509d495f6";
+    "f13ef90d5e3c14b1834617f2311f7a392f33435d5ab7571100afcfda3a7be6a9";
 
 /* ── the version-3 fixtures (the oracle's make_v3, transcribed) ─────── */
 

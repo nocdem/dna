@@ -18,14 +18,14 @@ treasury pools — decision
 
 | Function | Description |
 |----------|-------------|
-| `int dna_v2_empty_root(dna_v2_empty_kind_t kind, uint8_t out[64])` | SHA3-512 of the kind's 16-byte tag alone. **W-A:** new kind `DNA_V2_EMPTY_TREASURY` (`"DNA.E.TREAS.v1"`), appended after `DNA_V2_EMPTY_ACCRUAL`. |
-| `int dna_v2_treasury_leaf_hash(uint32_t pool_id, uint64_t balance, uint8_t out[64])` | **NEW (W-A).** `SHA3-512("DNA.TRLEAF.v1" 16 B ‖ pool_id u32 BE ‖ balance u64 BE)`. 0 / -1. |
-| `int dna_v2_treasury_root(const uint32_t *pool_ids, const uint64_t *balances, size_t n, uint8_t out[64])` | **NEW (W-A).** Tagged Merkle over treasury leaves, pool_id STRICTLY ascending (duplicate / descending → -1), inner `"DNA.TRNODE.v1"`, odd node promoted, n==1 → the leaf, n==0 → `DNA_V2_EMPTY_TREASURY`. |
-| `int dna_v2_system_root(const uint8_t validator_root[64], const uint8_t delegation_root[64], const uint8_t chain_config_root[64], const uint8_t validator_set_root[64], const uint8_t domain_registry_root[64], const uint8_t manifest_root[64], const uint8_t attendance_root[64], const uint8_t treasury_root[64], uint8_t out[64])` | **CHANGED (W-A):** 8 legs under `"DNA.SYS.v4"` — `treasury_root` appended as the LAST parameter/leg (was 7 legs, `"DNA.SYS.v3"`). |
-| `int dna_v2_system_payload_root(const uint8_t validator_root[64], const uint8_t delegation_root[64], const uint8_t chain_config_root[64], const uint8_t validator_set_root[64], const uint8_t treasury_root[64], uint8_t out[64])` | **CHANGED (W-A):** 5 legs under `"DNA.SYSPAYL.v3"` — `treasury_root` appended LAST (was 4 legs, `"DNA.SYSPAYL.v2"`). |
-| `int dna_v2_accrual_leaf_hash(const uint8_t owner_fp[64], uint64_t amount, uint8_t out[64])` | Reward-accrual leaf (`"DNA.ACLEAF.v1"`), unchanged. |
-| `int dna_v2_accrual_root(const uint8_t (*owner_fps)[64], const uint64_t *amounts, size_t n, uint8_t out[64])` | Reward-accrual root (`"DNA.ACNODE.v1"`), unchanged. |
-| `int dna_v2_core_root(...)` | 7-leg CORE composition (`"DNA.CORE.v2"`), unchanged. |
+| `int dna_v2_empty_root(dna_v2_empty_kind_t kind, uint8_t out[64])` | SHA3-512 of the kind's 16-byte tag alone. **W-A:** new kind `DNA_V2_EMPTY_TREASURY` (`"NDS.E.TREAS.v1"`), appended after `DNA_V2_EMPTY_ACCRUAL`. |
+| `int dna_v2_treasury_leaf_hash(uint32_t pool_id, uint64_t balance, uint8_t out[64])` | **NEW (W-A).** `SHA3-512("NDS.TRLEAF.v1" 16 B ‖ pool_id u32 BE ‖ balance u64 BE)`. 0 / -1. |
+| `int dna_v2_treasury_root(const uint32_t *pool_ids, const uint64_t *balances, size_t n, uint8_t out[64])` | **NEW (W-A).** Tagged Merkle over treasury leaves, pool_id STRICTLY ascending (duplicate / descending → -1), inner `"NDS.TRNODE.v1"`, odd node promoted, n==1 → the leaf, n==0 → `DNA_V2_EMPTY_TREASURY`. |
+| `int dna_v2_system_root(const uint8_t validator_root[64], const uint8_t delegation_root[64], const uint8_t chain_config_root[64], const uint8_t validator_set_root[64], const uint8_t domain_registry_root[64], const uint8_t manifest_root[64], const uint8_t attendance_root[64], const uint8_t treasury_root[64], uint8_t out[64])` | **CHANGED (W-A):** 8 legs under `"NDS.SYS.v4"` — `treasury_root` appended as the LAST parameter/leg (was 7 legs, `"NDS.SYS.v3"`). |
+| `int dna_v2_system_payload_root(const uint8_t validator_root[64], const uint8_t delegation_root[64], const uint8_t chain_config_root[64], const uint8_t validator_set_root[64], const uint8_t treasury_root[64], uint8_t out[64])` | **CHANGED (W-A):** 5 legs under `"NDS.SYSPAYL.v3"` — `treasury_root` appended LAST (was 4 legs, `"NDS.SYSPAYL.v2"`). |
+| `int dna_v2_accrual_leaf_hash(const uint8_t owner_fp[64], uint64_t amount, uint8_t out[64])` | Reward-accrual leaf (`"NDS.ACLEAF.v1"`), unchanged. |
+| `int dna_v2_accrual_root(const uint8_t (*owner_fps)[64], const uint64_t *amounts, size_t n, uint8_t out[64])` | Reward-accrual root (`"NDS.ACNODE.v1"`), unchanged. |
+| `int dna_v2_core_root(...)` | 7-leg CORE composition (`"NDS.CORE.v2"`), unchanged. |
 
 ---
 
@@ -42,8 +42,8 @@ pool 8 any more.)
 | `int nodus_witness_treasury_total(nodus_witness_t *w, uint64_t *out)` | **NEW (W-A).** Σ `v2_treasury.balance` through the same row checks, checked add — the supply equation's treasury term. |
 | ~~`int nodus_witness_treasury_credit(nodus_witness_t *w, uint32_t pool_id, uint64_t amount)`~~ | **REMOVED (general multisig).** Added by W-A for the refund below, its only caller; deleted with it (no dead code). No block path writes a pool after genesis. |
 | ~~`int nodus_witness_treasury_graduation_refund(nodus_witness_t *w, uint64_t active_since_block, uint64_t self_stake, int *out_to_treasury)`~~ | **REMOVED (general multisig, decision `2026-09-29-general-multisig.md`).** W-A credited a genesis seat's bond into pool 8 with no UTXO; now EVERY graduate releases its bond as a locked UTXO to its `unstake_destination_fp` — for a genesis seat the Foundation multisig address. |
-| `int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64])` | **CHANGED (W-A, behaviour):** composes the treasury leg (8 legs, `"DNA.SYS.v4"`). Signature unchanged. |
-| `int nodus_witness_system_payload_root_v2(nodus_witness_t *w, uint8_t out[64])` | **CHANGED (W-A, behaviour):** composes the treasury leg (5 legs, `"DNA.SYSPAYL.v3"`). Signature unchanged. |
+| `int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64])` | **CHANGED (W-A, behaviour):** composes the treasury leg (8 legs, `"NDS.SYS.v4"`). Signature unchanged. |
+| `int nodus_witness_system_payload_root_v2(nodus_witness_t *w, uint8_t out[64])` | **CHANGED (W-A, behaviour):** composes the treasury leg (5 legs, `"NDS.SYSPAYL.v3"`). Signature unchanged. |
 
 ---
 
@@ -76,8 +76,8 @@ pool 8 any more.)
 
 | Item | Description |
 |------|-------------|
-| `NODUS_V2_GBUNDLE_MAGIC` | **CHANGED (W-A):** `"DNA.GBUNDLE.v5\0\0"`, six tables (… `validator_stats`, `v2_treasury`). |
-| `NODUS_V2_GBUNDLE_MAGIC_V4_RETIRED` | **NEW (W-A).** `"DNA.GBUNDLE.v4\0\0"` — refused by its magic. |
+| `NODUS_V2_GBUNDLE_MAGIC` | **CHANGED (W-A):** `"NDS.GBUNDLE.v5\0\0"`, six tables (… `validator_stats`, `v2_treasury`). |
+| `NODUS_V2_GBUNDLE_MAGIC_V4_RETIRED` | **NEW (W-A).** `"NDS.GBUNDLE.v4\0\0"` — refused by its magic. |
 
 ---
 
@@ -101,7 +101,7 @@ the CORE auth hook and `nodus-cli`); libdna has no caller.
 
 | Item | Description |
 |------|-------------|
-| `int dna_msig_desc_encode(uint8_t m, uint8_t n, const uint8_t *pubkeys, uint8_t *out, size_t out_cap, size_t *out_len)` (`shared/dnac/msig_wire.h`) | **NEW.** Descriptor = `"DNA.MSIG.v1"` (16 B zero-padded) ‖ M u8 ‖ N u8 ‖ N × pubkey[2592]. Refuses 2 > N > 7, M outside [1, N], keys not STRICTLY ascending (never sorts), a key whose first 32 bytes are zero, a short buffer. 0 / -1. |
+| `int dna_msig_desc_encode(uint8_t m, uint8_t n, const uint8_t *pubkeys, uint8_t *out, size_t out_cap, size_t *out_len)` (`shared/dnac/msig_wire.h`) | **NEW.** Descriptor = `"NDS.MSIG.v1"` (16 B zero-padded) ‖ M u8 ‖ N u8 ‖ N × pubkey[2592]. Refuses 2 > N > 7, M outside [1, N], keys not STRICTLY ascending (never sorts), a key whose first 32 bytes are zero, a short buffer. 0 / -1. |
 | `int dna_msig_desc_parse(const uint8_t *d, size_t len, uint8_t *m_out, uint8_t *n_out, const uint8_t **keys_out)` | **NEW.** Strict inverse: tag, bounds, `len == 18 + N × 2592` exactly, order, zero key. 0 / -1. |
 | `int dna_msig_address(const uint8_t *d, size_t len, uint8_t out[64])` | **NEW.** `SHA3-512(descriptor)` after `dna_msig_desc_parse`. 0 / -1 invalid / -2 hash backend. |
 | `NODUS_RT_AUTHKIND_DSA87_MSIG_V1` (3), `NODUS_RT_MSIG_MAX_KEYS` (15), `NODUS_RT_MSIG_MAX_DESC` (7) (`nodus_witness_runtime.h`) | **NEW.** auth_kind 3 = the kind-1 signer section ‖ dcount u8 (1..7) ‖ dcount × (dlen u16 BE ‖ descriptor), descriptors strictly ascending by address, Σ N ≤ 15, exact consumption. CORE's allowlist is {1, 3} (SYSTEM stays {1, 2}); CORE ruleset v4 (ONE bump with W-C). |
@@ -113,7 +113,7 @@ the CORE auth hook and `nodus-cli`); libdna has no caller.
 | `nodus_v2_epoch_result_t.n_grad_utxos`, `nodus_witness_treasury_graduation_refund`, `nodus_witness_treasury_credit` | **REMOVED** — see §2 / §3. |
 | genesis validator destination (`gen_plan_build`, `nodus_witness_v2_gen.c`) | **CHANGED (behaviour):** `unstake_destination_fp` is checked by SHAPE only (the graduation predicate); the rule "fp == SHA3-512(unstake_destination_pubkey)" is REMOVED — a genesis seat pays the Foundation multisig address, which no single key derives. `unstake_destination_pubkey` MUST be all zero on a genesis row (ONAY 2 item 2 — refused otherwise). |
 | `NODUS_V2_GEN_CONFIG_VERSION_V5` (5u), `NODUS_V2_GEN_MAX_GENOUTS` (64), `nodus_v2_gen_output_t { uint8_t owner[64]; uint64_t amount; }`, `nodus_v2_gen_config_t.n_genesis_outputs` / `.genesis_outputs[64]` (`nodus_witness_v2_gen.h`) | **NEW (ONAY 2).** The genesis-output section: `u32 count ‖ count × (owner[64] ‖ amount u64 BE)` after the W-C tail, document order. `NODUS_V2_GEN_CONFIG_VERSION_V4` is RETIRED (every path refuses 4); `_v3_defaults` writes 5. Rule P.2 counts Σ outputs; `total_claimable` excludes them. |
-| `int nodus_witness_v2_gen_output_nullifier(const uint8_t source_commit[64], uint32_t index, uint8_t out[64])` | **NEW (ONAY 2).** `SHA3-512("DNA.GENOUT.v1" 16 B ‖ source_commit ‖ index u32 BE)` (84-byte preimage). 0 / -1. |
+| `int nodus_witness_v2_gen_output_nullifier(const uint8_t source_commit[64], uint32_t index, uint8_t out[64])` | **NEW (ONAY 2).** `SHA3-512("NDS.GENOUT.v1" 16 B ‖ source_commit ‖ index u32 BE)` (84-byte preimage). 0 / -1. |
 | `int nodus_witness_v2_gen_seed_outputs(nodus_witness_t *w, const nodus_v2_gen_config_t *cfg, const uint8_t source_commit[64])` | **NEW (ONAY 2).** The ONE genesis-output writer: refuses a non-empty `utxo_set`, inserts each output (nullifier = tx_hash = the identity above, owner hex, amount, index 0, height 0, unlock 0, domain CORE, native), then requires exactly `n_genesis_outputs` rows summing to Σ outputs. Called by `gen_seed_state` (derivation, before the root) and `nodus_witness_v2_bundle_apply` (joiner, from the carried document). 0 / -1. |
 | `nodus_v2_gen_config_parse_file` (`nodus/tools/nodus_v2_gen_config.c`) | **CHANGED (behaviour, ONAY 2):** `config_version = 5` only; new `[genesis_output]` block (`owner` 128 hex, `amount`), 0..64, file order. Signature unchanged. |
 | `int nodus_witness_v2_bundle_apply(...)` | **CHANGED (behaviour, ONAY 2):** re-derives the genesis outputs from the carried document (after storing it, before the snapshots / registry / genesis apply). Signature unchanged. |

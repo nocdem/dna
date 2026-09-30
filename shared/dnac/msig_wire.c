@@ -14,11 +14,11 @@
 
 #include "crypto/hash/qgp_sha3.h"
 
-/** "DNA.MSIG.v1" (11 chars) + 5 zero bytes — collision-scanned against
- *  the "DNA.*" tag namespace of this tree at introduction (no other tag
+/** "NDS.MSIG.v1" (11 chars) + 5 zero bytes — collision-scanned against
+ *  the "NDS.*" tag namespace of this tree at introduction (no other tag
  *  spells it). */
 static const uint8_t TAG_MSIG[DNA_MSIG_TAG_LEN] = {
-    'D','N','A','.','M','S','I','G','.','v','1', 0, 0, 0, 0, 0
+    'N','D','S','.','M','S','I','G','.','v','1', 0, 0, 0, 0, 0
 };
 
 _Static_assert(DNA_MSIG_MAX_DESC_LEN == 18162u,

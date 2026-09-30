@@ -59,17 +59,17 @@ int nodus_witness_v2_tip_height(nodus_witness_t *w, uint64_t *height_out) {
  * (nodus_witness_v2_qc_try_attach) and cert collection
  * (nodus_witness_v2_cert_note) are DELETED with the closed consensus
  * lane: all five read or wrote `w->v2_certpool`, the bounded per-height
- * DNA.CERT.v2 collection pool, which no longer exists on nodus_witness_t
+ * NDS.CERT.v2 collection pool, which no longer exists on nodus_witness_t
  * (see its own deletion note in nodus_witness.h). QC assembly for a
  * version-3 chain's committed blocks is now the cometbft reactor's own
  * concern — this file no longer participates in it. */
 
 /* ── transport-local classification + claim nullifier (class 201) ───── */
 
-/* Wire family marker: "DNA.ENVWIRE.v1" (14) + 2 zero bytes — pinned at
+/* Wire family marker: "NDS.ENVWIRE.v1" (14) + 2 zero bytes — pinned at
  * env_wire.c:25-27; explicit initialisers, padding visible. */
 static const uint8_t PROD_ENV_FAMILY[DNA_ENV_WIRE_FAMILY_LEN] = {
-    'D','N','A','.','E','N','V','W','I','R','E','.','v','1', 0, 0
+    'N','D','S','.','E','N','V','W','I','R','E','.','v','1', 0, 0
 };
 
 uint8_t nodus_witness_v2_classify_entry(const uint8_t *bytes, uint32_t len) {

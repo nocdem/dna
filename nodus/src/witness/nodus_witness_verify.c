@@ -664,10 +664,10 @@ static int verify_v2_successor_tx(nodus_witness_t *w,
                                   const uint8_t *tx_hash, uint8_t tx_type,
                                   nodus_witness_verify_mode_t mode,
                                   char *reject_reason, size_t reason_size) {
-    /* "DNA.ENVWIRE.v1" (14 chars) + 2 zero bytes — pinned at
+    /* "NDS.ENVWIRE.v1" (14 chars) + 2 zero bytes — pinned at
      * env_wire.c:25-27; explicit initialisers, padding visible. */
     static const uint8_t ENV_FAMILY[DNA_ENV_WIRE_FAMILY_LEN] = {
-        'D','N','A','.','E','N','V','W','I','R','E','.','v','1', 0, 0
+        'N','D','S','.','E','N','V','W','I','R','E','.','v','1', 0, 0
     };
 
     if (!nodus_witness_v2_ingress_is_armed(w)) {

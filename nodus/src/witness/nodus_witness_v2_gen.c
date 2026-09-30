@@ -1334,7 +1334,7 @@ static int gen_seed_state(nodus_witness_t *w2,
      * nine pools are keyless and locked, seeded HERE from the document
      * and nowhere else. Before the ledger genesis runs, so the SYSTEM
      * payload root the manifest commits (nodus_witness_system_payload_
-     * root_v2, "DNA.SYSPAYL.v3") sees them, and before the supply
+     * root_v2, "NDS.SYSPAYL.v3") sees them, and before the supply
      * post-condition, whose equation counts them.
      *
      * The same three-step discipline as the econ band above: the table
@@ -1454,10 +1454,10 @@ static int gen_seed_state(nodus_witness_t *w2,
 
 /* ── General multisig: the genesis outputs (decision ONAY 2) ──────────── */
 
-/** "DNA.GENOUT.v1" (13 chars) + 3 zero bytes — collision-scanned against
- *  the tree's "DNA.*" tags at introduction (no other tag spells it). */
+/** "NDS.GENOUT.v1" (13 chars) + 3 zero bytes — collision-scanned against
+ *  the tree's "NDS.*" tags at introduction (no other tag spells it). */
 static const uint8_t GEN_TAG_GENOUT[16] = {
-    'D','N','A','.','G','E','N','O','U','T','.','v','1', 0, 0, 0
+    'N','D','S','.','G','E','N','O','U','T','.','v','1', 0, 0, 0
 };
 
 int nodus_witness_v2_gen_output_nullifier(

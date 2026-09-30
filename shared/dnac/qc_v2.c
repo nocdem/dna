@@ -18,7 +18,7 @@
 #include "crypto/sign/qgp_dilithium.h"
 
 /* Tag is EXACTLY 16 bytes, zero-padded ASCII. */
-static const uint8_t TAG_CERT_V2[DNA_CERT_V2_TAG_LEN] = "DNA.CERT.v2\0\0\0\0";
+static const uint8_t TAG_CERT_V2[DNA_CERT_V2_TAG_LEN] = "NDS.CERT.v2\0\0\0\0";
 
 /* Preimage arithmetic is pinned, not assumed. */
 _Static_assert(DNA_CERT_V2_PREIMAGE_LEN ==

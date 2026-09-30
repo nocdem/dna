@@ -689,7 +689,7 @@ int nodus_witness_db_migrate_v2s15_ex(nodus_witness_t *w,
  *      build created already has it from WITNESS_DB_SCHEMA and the
  *      every-open v18 leg, nodus_witness_db.c; the rung is not asked to
  *      add what is there). The supply leaf of core_state_root commits it
- *      ("DNA.SUPPLY.v2", shared/dnac/ledger_roots_v2.h).
+ *      ("NDS.SUPPLY.v2", shared/dnac/ledger_roots_v2.h).
  *   2. `v2_reward_accrual(owner_fp BLOB PRIMARY KEY, amount INTEGER NOT
  *      NULL)` is CREATED — the per-recipient accrual, a leg of
  *      core_state_root (accrual_root).

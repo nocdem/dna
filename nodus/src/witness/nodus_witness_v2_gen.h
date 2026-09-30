@@ -22,7 +22,7 @@
  * tokenomics-v3 P4.)
  *
  *   seam step 1  terminal binding       → REPLACED: source_tag is
- *                                         "DNA.GENESIS.v1" and
+ *                                         "NDS.GENESIS.v1" and
  *                                         source_commit is
  *                                         SHA3-512(canonical config).
  *   seam step 2  fail-closed legacy     → REMOVED: there is no legacy
@@ -226,8 +226,8 @@ extern "C" {
 #define NODUS_V2_GEN_MAX_GENOUTS         64u
 
 /** The 16-byte zero-padded tag of the genesis-output coin identity:
- *  "DNA.GENOUT.v1" (13 chars + 3 zero bytes). */
-#define NODUS_V2_GEN_GENOUT_TAG          "DNA.GENOUT.v1"
+ *  "NDS.GENOUT.v1" (13 chars + 3 zero bytes). */
+#define NODUS_V2_GEN_GENOUT_TAG          "NDS.GENOUT.v1"
 
 /**
  * One GENESIS OUTPUT (general multisig, decision ONAY 2): a coin that
@@ -241,7 +241,7 @@ extern "C" {
  *
  * Its coin identity (ONAY 2 — NOT the design §7 chain_id form, which was
  * circular: chain_id hashes app_hash, the root AFTER these rows exist):
- *   nullifier    = SHA3-512("DNA.GENOUT.v1" 16 B ‖ source_commit[64]
+ *   nullifier    = SHA3-512("NDS.GENOUT.v1" 16 B ‖ source_commit[64]
  *                           ‖ index u32 BE)
  *   tx_hash      = nullifier, output_index 0, block_height 0,
  *   unlock_block = 0, domain CORE, token native (all-zero).
@@ -323,7 +323,7 @@ typedef struct {
 
 /**
  * The manifest `source_tag` a pure-V2 genesis carries. Distinct from the
- * seam's DNA.LEGACY.TERM.v1 by construction: the tag is what tells a
+ * seam's NDS.LEGACY.TERM.v1 by construction: the tag is what tells a
  * reader WHICH derivation produced the chain. The codec places no
  * constraint on the value beyond 1..DNA_GMAN_SRCTAG_MAX bytes
  * (shared/dnac/manifest_wire.c:138), so this string is a local
@@ -331,12 +331,12 @@ typedef struct {
  *
  * The length EXCLUDES the C NUL: 14 bytes are committed.
  */
-#define NODUS_V2_GEN_SOURCE_TAG       "DNA.GENESIS.v1"
+#define NODUS_V2_GEN_SOURCE_TAG       "NDS.GENESIS.v1"
 #define NODUS_V2_GEN_SOURCE_TAG_LEN   14u
 
 /** The 16-byte, zero-padded domain tag of the canonical config encoding
  *  (the repo's tagged-preimage idiom, shared/dnac/manifest_wire.c:21-30). */
-#define NODUS_V2_GEN_CFG_TAG          "DNA.GENCFG.v1"
+#define NODUS_V2_GEN_CFG_TAG          "NDS.GENCFG.v1"
 #define NODUS_V2_GEN_CFG_TAG_LEN      16u
 
 /** source_commit is a bare SHA3-512 digest: 64 bytes, and 64 <=
@@ -1047,7 +1047,7 @@ int nodus_witness_v2_gen_stored_chain_id(
 
 /**
  * General multisig (decision ONAY 2) — the genesis-output coin identity:
- *   out = SHA3-512("DNA.GENOUT.v1" 16 B ‖ source_commit[64] ‖ index u32 BE)
+ *   out = SHA3-512("NDS.GENOUT.v1" 16 B ‖ source_commit[64] ‖ index u32 BE)
  * (84-byte preimage). PURE. @return 0 / -1 (NULL, hash backend).
  */
 int nodus_witness_v2_gen_output_nullifier(

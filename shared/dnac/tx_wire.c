@@ -543,8 +543,8 @@ _Static_assert(TXW3_SECT_FRILEN_OFF == 355, "fri_len offset drifted");
 /* S2 tagged-empty commitments — the tag ALONE is hashed (never an
  * all-zero digest, which no tag can produce). Each tag is EXACTLY 16
  * bytes, zero-padded ASCII, same rule as pool_wire.c. */
-static const uint8_t TAG_E_TLEG[DNAC_SIGHASH_V5_TAG_LEN] = "DNA.E.TLEG.v1\0\0";
-static const uint8_t TAG_E_CTC[DNAC_SIGHASH_V5_TAG_LEN]  = "DNA.E.CTC.v1\0\0\0";
+static const uint8_t TAG_E_TLEG[DNAC_SIGHASH_V5_TAG_LEN] = "NDS.E.TLEG.v1\0\0";
+static const uint8_t TAG_E_CTC[DNAC_SIGHASH_V5_TAG_LEN]  = "NDS.E.CTC.v1\0\0\0";
 
 const uint8_t DNAC_SIGHASH_V5_TAG[DNAC_SIGHASH_V5_TAG_LEN] = {
     'D','N','A','C','_','S','I','G','H','A','S','H','_','V','5', 0
@@ -836,9 +836,9 @@ _Static_assert(DNAC_TXW3_TLEG_MAX_LEN + DNAC_TXW3_SHIELDED_FIXED
 
 /* POPULATED transparent-leg tag — EXACTLY 16 bytes, zero-padded ASCII,
  * same rule as TAG_E_TLEG (tx_wire.c:535). The two are DISTINCT domains:
- * "DNA.E.TLEG.v1" commits the ABSENCE of a leg, "DNA.TLEG.v1" commits a
+ * "NDS.E.TLEG.v1" commits the ABSENCE of a leg, "NDS.TLEG.v1" commits a
  * present one, so no leg can ever collide with the empty commitment. */
-static const uint8_t TAG_TLEG[DNAC_SIGHASH_V5_TAG_LEN] = "DNA.TLEG.v1\0\0\0\0";
+static const uint8_t TAG_TLEG[DNAC_SIGHASH_V5_TAG_LEN] = "NDS.TLEG.v1\0\0\0\0";
 
 /**
  * The ONE transparent-leg canonicality rule list — encode, decode and the

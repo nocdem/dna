@@ -15,7 +15,7 @@
  * admission and activation (fail-closed).
  *
  * `ruleset_hash` is the tagged SHA3-512 digest of a checked-in canonical
- * RulesetDescriptor (shared/dnac/domain_wire.h, tag "DNA.RULESET.v1") —
+ * RulesetDescriptor (shared/dnac/domain_wire.h, tag "NDS.RULESET.v1") —
  * pure data, never compiler output, build paths or timestamps, so it is
  * byte-identical across compilers, operating systems and build trees.
  * The pinned digest literals in this table are verified against a fresh
@@ -35,7 +35,7 @@
  * apply hook is REPLACED by the real typed pair below — read_plan (the
  * deterministic mediated-read request phase) and exec (native compiled
  * execution of one preflighted envelope leg, returning ONLY a canonical
- * "DNA.EFFRES.v1" typed-effect result). Both MUST stay NULL in the
+ * "NDS.EFFRES.v1" typed-effect result). Both MUST stay NULL in the
  * compiled production table until the CORE/SYSTEM hook-migration season;
  * nodus_witness_runtime_selfcheck() enforces the shape. A runtime whose
  * exec is NULL cannot execute envelope legs at all — the engine fails
@@ -192,7 +192,7 @@ typedef struct {
  *   with pubkeys STRICTLY ascending (memcmp — duplicates and disorder
  *   reject, so exactly ONE encoding exists per signer set), each
  *   signature an ML-DSA-87 signature over the 64-byte engine-derived
- *   leg auth_digest (env_wire.h "DNA.ENVAUTH.v1": binds chain identity,
+ *   leg auth_digest (env_wire.h "NDS.ENVAUTH.v1": binds chain identity,
  *   expiry, fee, resource ceilings, every leg's domain / runtime_op /
  *   ruleset identity / call bytes through auth_context_commit — so
  *   changing ANY of them invalidates every signature).
@@ -210,7 +210,7 @@ typedef struct {
  *   count, exact framing (checked length arithmetic — truncation and
  *   trailing bytes reject). Each approval signature is ML-DSA-87 over
  *   the engine-derived APPROVAL DIGEST (nodus_witness_rt_native.c
- *   "DNA.CCAPPR.v1": leg auth_digest ‖ resolved-set hash ‖ governing
+ *   "NDS.CCAPPR.v1": leg auth_digest ‖ resolved-set hash ‖ governing
  *   epoch ‖ signer index — so an approval binds everything the
  *   submitter signature binds PLUS the exact governing snapshot and the
  *   signer's own seat). QUORUM IS NOT DECIDED HERE: the hook verifies
@@ -244,7 +244,7 @@ typedef struct {
  *     signature preimage)
  *     ‖ dcount u8 (1 .. NODUS_RT_MSIG_MAX_DESC)
  *     ‖ dcount × ( dlen u16 BE ‖ descriptor[dlen] )
- *   Each descriptor is a shared/dnac/msig_wire.h descriptor ("DNA.MSIG.v1"
+ *   Each descriptor is a shared/dnac/msig_wire.h descriptor ("NDS.MSIG.v1"
  *   ‖ M ‖ N ‖ N × pubkey, 2 <= N <= 7, 1 <= M <= N, keys strictly
  *   ascending, no zero key), dlen EXACTLY 18 + N × 2592; descriptors
  *   STRICTLY ascending by their ADDRESS SHA3-512(descriptor) (duplicates
@@ -309,7 +309,7 @@ typedef struct {
 typedef struct {
     uint32_t count;                /* members; 0 = no committee          */
     uint64_t epoch;                /* nodus_v2_epoch_for_height(H-1)     */
-    uint8_t  set_hash[64];         /* "DNA.CCSET.v1" resolved-set hash   */
+    uint8_t  set_hash[64];         /* "NDS.CCSET.v1" resolved-set hash   */
     const uint8_t *pubkeys;        /* count × 2592, contiguous           */
     const uint8_t (*fps)[64];      /* count × SHA3-512(pubkey)           */
 } nodus_rt_committee_t;
@@ -431,7 +431,7 @@ typedef int (*nodus_rt_read_plan_fn)(const struct nodus_domain_runtime *rt,
 /**
  * Native compiled execution of one preflighted leg. Consumes the
  * borrowed envelope view, the engine context and the bounded mediated
- * read results; produces ONLY canonical "DNA.EFFRES.v1" result bytes in
+ * read results; produces ONLY canonical "NDS.EFFRES.v1" result bytes in
  * the engine's buffer (strictly decoded and validated by the engine
  * before anything is charged or applied). It must not return SQL, a
  * domain id, weights, table names, roots, a transaction identity, or
@@ -551,7 +551,7 @@ typedef struct nodus_domain_runtime {
      * DomainHead is created at ACTIVATION. NULL = the state root itself
      * (the generic case — a runtime whose state root contains no
      * self-referencing container legs). SYSTEM sets it to the
-     * "DNA.SYSPAYL.v3" payload root (the S5 genesis cycle break; W-A
+     * "NDS.SYSPAYL.v3" payload root (the S5 genesis cycle break; W-A
      * appended the treasury leg, nodus_witness_roots_v2.c) — the
      * ONE protocol-special composition, kept inside SYSTEM's runtime
      * entry so the generic engine never branches on a domain id. */
@@ -671,17 +671,17 @@ int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
                            const dna_env_view_t *env, uint16_t leg_index,
                            const nodus_rt_exec_ctx_t *ctx,
                            nodus_rt_auth_verdict_t *out);
-/** "DNA.CCSET.v1" resolved-committee-set hash over the fps in committee
+/** "NDS.CCSET.v1" resolved-committee-set hash over the fps in committee
  *  (stake-ranked) order — the ONE derivation the engine, the auth hook
  *  and every signer share. Preimage: tag(16) ‖ count u16 BE ‖ count ×
  *  SHA3-512(pubkey)[64]. HONEST LABEL: this hashes the RESOLVED
  *  committee (nodus_committee_get_for_block's answer), NOT the persisted
- *  "DNA.VSET.v1" snapshot row — the bootstrap path has no row, and
+ *  "NDS.VSET.v1" snapshot row — the bootstrap path has no row, and
  *  every honest node resolves the same members in the same order, which
  *  is what makes the value consensus-safe. @return 0 / -1. */
 int nodus_rt_committee_set_hash(const uint8_t (*fps)[64], uint32_t count,
                                 uint8_t out[64]);
-/** "DNA.CCAPPR.v1" committee approval digest — what one committee seat
+/** "NDS.CCAPPR.v1" committee approval digest — what one committee seat
  *  signs under auth_kind 2. Preimage (154 B): tag(16) ‖
  *  leg_auth_digest(64) ‖ set_hash(64) ‖ epoch u64 BE ‖ index u16 BE,
  *  with epoch = nodus_v2_epoch_for_height(H-1) for execution height H

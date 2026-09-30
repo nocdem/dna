@@ -54,10 +54,13 @@ static void to_hex(const uint8_t *b, size_t n, char *out) {
 /* ── 1: preimage KAT ────────────────────────────────────────────────── */
 
 static const char *KAT_PRE48 =
-    "444e412e434552542e763200000000001111111111111111111111111111111111111111111111111111111111111111";
+    "4e44532e434552542e763200000000001111111111111111111111111111111111111111111111111111111111111111";
+/* Re-derived 2026-09-30 for the NDS. tag rename (decision
+ * 2026-09-30-tag-rebrand-nds.md): re-derived independently in Python by
+ * the orchestrator (control legs reproduced the old DNA. values). */
 static const char *KAT_PRE_HASH =
-    "34a15fe957df527f7456e483a676183ffa710c20b3536fb952ce110795d10b05"
-    "ce6da939fa8584a9e0d4be07309160363600c6ebaef47d8a9e992027a3380489";
+    "4ff95e40ad836f048be1ebcc542e750b2b2deb555041d9500d15dbe7445d9fb3"
+    "221d4f47dd8152c861df6b5cd4de68c6622fbdd7673464e230328fad40d02f06";
 
 static int test_preimage(void) {
     uint8_t block_id[64], voter[32], chain[32], vsh[64];

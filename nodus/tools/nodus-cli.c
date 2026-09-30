@@ -2024,7 +2024,7 @@ static int cmd_v2_envelope(const char *server_ip, uint16_t server_port,
     }
 
     /* Sign: submitter (keys[0]) over the leg auth digest; each approver
-     * over its 154-byte DNA.CCAPPR.v1 digest, sorted by SEAT. */
+     * over its 154-byte NDS.CCAPPR.v1 digest, sorted by SEAT. */
     {
         uint8_t *p = b.auth;
         p[0] = 1;
@@ -5231,7 +5231,7 @@ static int cmd_msig_address(int argc, char **argv, int cmd_start) {
             "  2..%u raw 2592-byte ML-DSA-87 public keys (an identity's "
             "nodus.pk), 1 <= M <= N.\n"
             "  Prints the M-of-N address (128 hex) the chain derives: "
-            "SHA3-512(\"DNA.MSIG.v1\" ‖ M ‖ N ‖ keys ascending).\n",
+            "SHA3-512(\"NDS.MSIG.v1\" ‖ M ‖ N ‖ keys ascending).\n",
             (unsigned)DNA_MSIG_MAX_N);
         return 1;
     }

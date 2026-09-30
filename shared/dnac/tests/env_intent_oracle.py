@@ -27,12 +27,12 @@ import hashlib
 import struct
 
 # ── constants (season spec) ─────────────────────────────────────────────
-WIRE_FAMILY = b"DNA.ENVWIRE.v1".ljust(16, b"\0")
-TAG_CALL    = b"DNA.ENVCALL.v1".ljust(16, b"\0")
-TAG_AUTHCTX = b"DNA.ENVCTX.v1".ljust(16, b"\0")
-TAG_TXID    = b"DNA.ENVTXID.v1".ljust(16, b"\0")
-TAG_ILEG    = b"DNA.ENVILEG.v1".ljust(16, b"\0")
-TAG_INTENT  = b"DNA.ENVINTID.v1".ljust(16, b"\0")
+WIRE_FAMILY = b"NDS.ENVWIRE.v1".ljust(16, b"\0")
+TAG_CALL    = b"NDS.ENVCALL.v1".ljust(16, b"\0")
+TAG_AUTHCTX = b"NDS.ENVCTX.v1".ljust(16, b"\0")
+TAG_TXID    = b"NDS.ENVTXID.v1".ljust(16, b"\0")
+TAG_ILEG    = b"NDS.ENVILEG.v1".ljust(16, b"\0")
+TAG_INTENT  = b"NDS.ENVINTID.v1".ljust(16, b"\0")
 
 ENV_VERSION = 1
 FIXED_HEAD  = 43
@@ -155,7 +155,7 @@ def c_array(name, data):
 def main():
     # ── the EXACT fixture pinned in tests/test_env_wire.c (unchanged) ───
     wire = bytes.fromhex(
-        "444e412e454e56574952452e7631000001000000000011223300000000000003"
+        "4e44532e454e56574952452e7631000001000000000011223300000000000003"
         "e8000000000000c3500002000000010000000700000003020100000008000000"
         "0500000010000004000000002a00000000000000010102000000000000000300"
         "000000000000000001020304050607a0a1a2a3a4b0b1b2")
@@ -203,10 +203,12 @@ def main():
     # KAT_TX_ID pin (test_env_wire.c:1418, unchanged by this season and
     # committed at parent ae95a01d / HEAD c4f1b563), re-derived here from
     # the wire bytes by this oracle's own code. ─────────────────────────
+    # Re-pinned 2026-09-30 (tag prefix rebrand "DNA" → "NDS", decision
+    # 2026-09-30-tag-rebrand-nds.md): the old-prefix value 0932456c…94c7 was
+    # reproduced first; this is env_wire_oracle.py's NDS-prefix K_TX_ID.
     K_TX_ID_FROZEN = bytes.fromhex(
-        "0932456cd60db567b054b4002a8d6be47671bb78d98f367d"
-        "6bd92f15a3d671ba5470505904373398b6c1df8d97d408d5"
-        "b7d15d39635c01c96fafec4bc61b94c7")
+        "a090534520f4106b64cbf355d744961ec37a139095171f1230889f184b857598"
+        "d65a5ab696ca4b46a191895b9e64119e66524b049730e71485b9e42cc15806c3")
     txid = env.tx_id()
     assert txid == K_TX_ID_FROZEN, \
         "FULL-WIRE identity KAT moved — the season broke the frozen tx_id"

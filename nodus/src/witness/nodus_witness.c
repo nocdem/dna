@@ -236,8 +236,8 @@ static const char *WITNESS_DB_SCHEMA =
      * (push-settlement epoch pool + snapshot) is no longer created. Its
      * last writer died with tokenomics-v3 P2; it was a constant leg of
      * the SYSTEM root, the genesis payload root and the genesis bundle,
-     * and all three drop it (DNA.SYS.v3 / DNA.SYSPAYL.v2 /
-     * DNA.GBUNDLE.v4). A database an older build created keeps the
+     * and all three drop it (NDS.SYS.v3 / NDS.SYSPAYL.v2 /
+     * NDS.GBUNDLE.v4). A database an older build created keeps the
      * (empty) table; nothing reads it — the planned devnet wipe removes
      * it. */
     /* Supply counters. Historically this table was created ONLY by
@@ -910,7 +910,7 @@ static int witness_post_open_gate(nodus_witness_t *witness,
      *   (c) anything else — the S14 stores are absent AND the database
      *       holds committed content that is not version-3 (a nonempty
      *       legacy `blocks` table, or a pre-Comet Ledger V2 chain tagged
-     *       "DNA.GENESIS.v1" at schema < S14) — REFUSED, fail closed.
+     *       "NDS.GENESIS.v1" at schema < S14) — REFUSED, fail closed.
      *       Delta 6, item B: EXACTLY ONE of `cmt_state`/`cmt_blockstore`
      *       existing is ALSO (c), refused explicitly, BEFORE it can ever
      *       fall through to (b)'s pre-genesis branch — the S14 rung
@@ -1002,7 +1002,7 @@ static int witness_post_open_gate(nodus_witness_t *witness,
     }
 
     /* O15J's own probe: a pre-Comet Ledger V2 chain (S1-S13) carries the
-     * "DNA.GENESIS.v1" source tag with no S14 stores yet. A probe FAULT
+     * "NDS.GENESIS.v1" source tag with no S14 stores yet. A probe FAULT
      * (-1) refuses the database exactly as it did before W3. */
     int pure_rc = nodus_witness_v2_gen_is_pure(db_path);
     if (pure_rc < 0) {

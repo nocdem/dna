@@ -254,7 +254,7 @@ static int has_v2_block0(nodus_witness_t *w) {
 
 /* ════════════════════════════════════════════════════════════════════
  * R3 W3 (D-24 rev 4 (2), D-17 rev 10 (9)) — THE VERSION-3 bundle: the
- * genesis DOCUMENT travels after the base tables under the `DNA.
+ * genesis DOCUMENT travels after the base tables under the `NDS.
  * GBUNDLE.v4` magic since the root-layout round (`v3` before it —
  * nodus_witness_v2_bundle.h's layout comment); the
  * version-2 lane cannot be bundled at all any more (bundle_persist
@@ -543,7 +543,7 @@ static int test_v3_bundle(void) {
         }
         /* General multisig (F4.1): the joiner RE-DERIVED the two genesis
          * outputs from the document — exactly two coins, 4 × 10^15 raw,
-         * each identity SHA3-512("DNA.GENOUT.v1" ‖ source_commit ‖ i)
+         * each identity SHA3-512("NDS.GENOUT.v1" ‖ source_commit ‖ i)
          * (the utxo_set digest above already proved byte-identity with
          * the producer; this names WHAT was re-derived). */
         {
@@ -833,7 +833,7 @@ int main(void) {
      * this file proves about the ADOPT/wrong-pin/malformed/foreign-bundle
      * properties lives on the version-3 path (test_v3_bundle, below);
      * this section proves the refusal: persist refuses, no bundle row
-     * exists, and an old-binary (`DNA.GBUNDLE.v1`) bundle is refused by
+     * exists, and an old-binary (`NDS.GBUNDLE.v1`) bundle is refused by
      * its magic with the joiner's whole database left byte-identical.
      *
      * tokenomics-v3 P4: the document-less chain used to be a VERSION-2
@@ -911,21 +911,21 @@ int main(void) {
     }
 
     /* Root-layout round (K2, 2026-09-25): the SIX-table
-     * `DNA.GBUNDLE.v3\0\0` format (it carried `epoch_state`) is RETIRED
+     * `NDS.GBUNDLE.v3\0\0` format (it carried `epoch_state`) is RETIRED
      * the same way — refused BY ITS MAGIC, before anything past it is
      * read, the joiner's database byte-identical. The body after the
      * magic is a plausible v3 prefix (a manifest length and a table
      * count of SIX) so a regression that dropped the magic check and
      * fell through to the table loop would be reading a real-looking
      * frame, not garbage. KILLED BY: accepting NODUS_V2_GBUNDLE_MAGIC_V3_
-     * RETIRED, or leaving NODUS_V2_GBUNDLE_MAGIC at "DNA.GBUNDLE.v3". */
+     * RETIRED, or leaving NODUS_V2_GBUNDLE_MAGIC at "NDS.GBUNDLE.v3". */
     {
-        CHECK(memcmp(NODUS_V2_GBUNDLE_MAGIC, "DNA.GBUNDLE.v5\0\0",
+        CHECK(memcmp(NODUS_V2_GBUNDLE_MAGIC, "NDS.GBUNDLE.v5\0\0",
                      NODUS_V2_GBUNDLE_MAGIC_LEN) == 0,
-              "the current magic is DNA.GBUNDLE.v5 (W-A)"); OK();
-        CHECK(memcmp(NODUS_V2_GBUNDLE_MAGIC_V3_RETIRED, "DNA.GBUNDLE.v3\0\0",
+              "the current magic is NDS.GBUNDLE.v5 (W-A)"); OK();
+        CHECK(memcmp(NODUS_V2_GBUNDLE_MAGIC_V3_RETIRED, "NDS.GBUNDLE.v3\0\0",
                      NODUS_V2_GBUNDLE_MAGIC_LEN) == 0,
-              "the retired magic is DNA.GBUNDLE.v3"); OK();
+              "the retired magic is NDS.GBUNDLE.v3"); OK();
 
         fixture_t j;
         CHECK(fx_open(&j, "v3magic") == 0, "joiner fixture"); OK();
@@ -959,17 +959,17 @@ int main(void) {
     }
 
     /* Final pre-testnet wipe, W-A (Fable F1): the FIVE-table
-     * `DNA.GBUNDLE.v4\0\0` format (no `v2_treasury`; its chain's document
+     * `NDS.GBUNDLE.v4\0\0` format (no `v2_treasury`; its chain's document
      * is version 3) is RETIRED the same way — refused BY ITS MAGIC,
      * before anything past it is read, the joiner's database
      * byte-identical. The body after the magic is a plausible v4 prefix
      * (a manifest length and a table count of FIVE). KILLED BY: accepting
      * NODUS_V2_GBUNDLE_MAGIC_V4_RETIRED, or leaving NODUS_V2_GBUNDLE_MAGIC
-     * at "DNA.GBUNDLE.v4". */
+     * at "NDS.GBUNDLE.v4". */
     {
-        CHECK(memcmp(NODUS_V2_GBUNDLE_MAGIC_V4_RETIRED, "DNA.GBUNDLE.v4\0\0",
+        CHECK(memcmp(NODUS_V2_GBUNDLE_MAGIC_V4_RETIRED, "NDS.GBUNDLE.v4\0\0",
                      NODUS_V2_GBUNDLE_MAGIC_LEN) == 0,
-              "the retired W-A magic is DNA.GBUNDLE.v4"); OK();
+              "the retired W-A magic is NDS.GBUNDLE.v4"); OK();
 
         fixture_t j;
         CHECK(fx_open(&j, "v4magic") == 0, "joiner fixture"); OK();

@@ -21,18 +21,18 @@
 #define TAG_LEN 16
 _Static_assert(TAG_LEN == DNA_POOL_TAG_LEN, "tag width mirror drifted");
 
-static const uint8_t TAG_POOLCFG[TAG_LEN]  = "DNA.POOLCFG.v1\0";
-static const uint8_t TAG_POOLLEAF[TAG_LEN] = "DNA.POOLLEAF.v1";
-static const uint8_t TAG_POOLNODE[TAG_LEN] = "DNA.POOLNODE.v1";
-static const uint8_t TAG_PNUL[TAG_LEN]     = "DNA.PNUL.v1\0\0\0\0";
-static const uint8_t TAG_E_PNUL[TAG_LEN]   = "DNA.E.PNUL.v1\0\0";
-static const uint8_t TAG_PHIST[TAG_LEN]    = "DNA.PHIST.v1\0\0\0";
-static const uint8_t TAG_E_PHIST[TAG_LEN]  = "DNA.E.PHIST.v1\0";
-/* The EMPTY pools_root tag is the frozen S2 "DNA.E.POOLS.v1" — reused
+static const uint8_t TAG_POOLCFG[TAG_LEN]  = "NDS.POOLCFG.v1\0";
+static const uint8_t TAG_POOLLEAF[TAG_LEN] = "NDS.POOLLEAF.v1";
+static const uint8_t TAG_POOLNODE[TAG_LEN] = "NDS.POOLNODE.v1";
+static const uint8_t TAG_PNUL[TAG_LEN]     = "NDS.PNUL.v1\0\0\0\0";
+static const uint8_t TAG_E_PNUL[TAG_LEN]   = "NDS.E.PNUL.v1\0\0";
+static const uint8_t TAG_PHIST[TAG_LEN]    = "NDS.PHIST.v1\0\0\0";
+static const uint8_t TAG_E_PHIST[TAG_LEN]  = "NDS.E.PHIST.v1\0";
+/* The EMPTY pools_root tag is the frozen S2 "NDS.E.POOLS.v1" — reused
  * byte-identically so a zero-pool runtime reproduces every pre-S7 root.
  * Mirrored here (rather than calling dna_v2_empty_root) to keep this
  * translation unit self-contained; test_v2_pools pins the identity. */
-static const uint8_t TAG_E_POOLS[TAG_LEN]  = "DNA.E.POOLS.v1\0";
+static const uint8_t TAG_E_POOLS[TAG_LEN]  = "NDS.E.POOLS.v1\0";
 
 static void put_be16(uint16_t v, uint8_t out[2]) {
     out[0] = (uint8_t)(v >> 8); out[1] = (uint8_t)v;

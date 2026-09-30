@@ -16,7 +16,7 @@
  * layout ("self-consistent, not externally audited").
  *
  * ── THE DESCRIPTOR ───────────────────────────────────────────────────
- *   tag      16   "DNA.MSIG.v1" zero-padded (11 chars + 5 zero bytes)
+ *   tag      16   "NDS.MSIG.v1" zero-padded (11 chars + 5 zero bytes)
  *   M        u8   1 .. N           (signatures required)
  *   N        u8   2 .. 7           (DNA_MSIG_MIN_N .. DNA_MSIG_MAX_N)
  *   N × pubkey[2592]               ML-DSA-87 public keys, STRICTLY

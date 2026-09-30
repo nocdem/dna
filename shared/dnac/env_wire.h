@@ -35,19 +35,19 @@
  *     still 0, so no caller can mistake those bytes for an envelope.)
  *
  * ── TAG TABLE (each exactly 16 bytes, zero-padded ASCII) ───────────────
- *   "DNA.ENVWIRE.v1"  wire family marker — literally the first 16 bytes of
+ *   "NDS.ENVWIRE.v1"  wire family marker — literally the first 16 bytes of
  *                     every encoded envelope, AND the first field of
  *                     AUTHCTX_BYTES (see below)
- *   "DNA.ENVCALL.v1"  per-leg call commitment
- *   "DNA.ENVCTX.v1"   authorization-context commitment
- *   "DNA.ENVAUTH.v1"  per-leg authorization digest (what a signer signs)
- *   "DNA.ENVTXID.v1"  transaction id (FULL-WIRE identity — wire_id)
- *   "DNA.ENVILEG.v1"  per-leg canonical INTENT projection (intent season)
- *   "DNA.ENVINTID.v1" canonical intent id (intent_id)
+ *   "NDS.ENVCALL.v1"  per-leg call commitment
+ *   "NDS.ENVCTX.v1"   authorization-context commitment
+ *   "NDS.ENVAUTH.v1"  per-leg authorization digest (what a signer signs)
+ *   "NDS.ENVTXID.v1"  transaction id (FULL-WIRE identity — wire_id)
+ *   "NDS.ENVILEG.v1"  per-leg canonical INTENT projection (intent season)
+ *   "NDS.ENVINTID.v1" canonical intent id (intent_id)
  *
  * ── Canonical wire layout ──────────────────────────────────────────────
  * Fixed header (DNA_ENV_FIXED_HEAD = 43 bytes)
- *   off  0  wire_family[16]        "DNA.ENVWIRE.v1" zero-padded
+ *   off  0  wire_family[16]        "NDS.ENVWIRE.v1" zero-padded
  *   off 16  envelope_version  u8   (= DNA_ENV_VERSION)
  *   off 17  expiry_height     u64 BE
  *   off 25  fee_amount        u64 BE
@@ -78,7 +78,7 @@
  *
  * ── Commitments (all DERIVED; NEVER serialized into the envelope) ──────
  *   call_commit[i] = SHA3-512(
- *       "DNA.ENVCALL.v1"(16) ‖ domain_id(4) ‖ runtime_op(4)
+ *       "NDS.ENVCALL.v1"(16) ‖ domain_id(4) ‖ runtime_op(4)
  *     ‖ ruleset_version(4) ‖ ruleset_hash(64) ‖ access_mode(1)
  *     ‖ call_len(4) ‖ call_data(call_len) )
  *   `ruleset_hash` is CONTEXTUAL — supplied by the caller from the domain
@@ -95,16 +95,16 @@
  *     ‖ res_max_effects(4) ‖ res_max_effect_bytes(4) ‖ call_commit[i](64)
  *   `chain_id` is CONTEXTUAL (replay separation across chains).
  *
- *   auth_context_commit = SHA3-512( "DNA.ENVCTX.v1"(16) ‖ AUTHCTX_BYTES )
+ *   auth_context_commit = SHA3-512( "NDS.ENVCTX.v1"(16) ‖ AUTHCTX_BYTES )
  *
- *   auth_digest[i] = SHA3-512( "DNA.ENVAUTH.v1"(16)
+ *   auth_digest[i] = SHA3-512( "NDS.ENVAUTH.v1"(16)
  *     ‖ auth_context_commit(64) ‖ leg_index(2) ‖ domain_id(4)
  *     ‖ runtime_op(4) )                      — fixed 90-byte preimage
  *
- *   tx_id = SHA3-512( "DNA.ENVTXID.v1"(16) ‖ auth_context_commit(64)
+ *   tx_id = SHA3-512( "NDS.ENVTXID.v1"(16) ‖ auth_context_commit(64)
  *     ‖ env_len(4) ‖ env_bytes(env_len) )
  *
- *   intent_leg_commit[i] = SHA3-512( "DNA.ENVILEG.v1"(16)
+ *   intent_leg_commit[i] = SHA3-512( "NDS.ENVILEG.v1"(16)
  *     ‖ domain_id(4) ‖ runtime_op(4) ‖ ruleset_version(4)
  *     ‖ access_mode(1) ‖ auth_kind(1) ‖ res_max_effects(4)
  *     ‖ res_max_effect_bytes(4) ‖ call_commit[i](64) )
@@ -118,7 +118,7 @@
  *   is COMMITTED (it selects authorization SEMANTICS); auth_len is the ONE
  *   AUTHCTX leg field EXCLUDED (it is witness cardinality, i.e. evidence).
  *
- *   intent_id = SHA3-512( "DNA.ENVINTID.v1"(16)
+ *   intent_id = SHA3-512( "NDS.ENVINTID.v1"(16)
  *     ‖ wire_family(16) ‖ envelope_version(1) ‖ chain_id(32)
  *     ‖ expiry_height(8) ‖ fee_amount(8) ‖ res_max_total_units(8)
  *     ‖ leg_count(2) ‖ intent_leg_commit[0..n-1](64 each) )
@@ -241,7 +241,7 @@ extern "C" {
  * libdna mirror DNAC_TXW3_MAX_TX_SIZE, shared/dnac/tx_wire.h:211) and no
  * legacy ingress, decode, mempool or verify path widens because this
  * constant grew. An envelope is classified by its leading 16-byte wire
- * family marker ("DNA.ENVWIRE.v1", byte offset 0) BEFORE any
+ * family marker ("NDS.ENVWIRE.v1", byte offset 0) BEFORE any
  * length-driven allocation, so a future V2 carrier can select this bound
  * only after positive classification — a legacy frame can never
  * accidentally be sized against it.
@@ -273,14 +273,14 @@ extern "C" {
  * an envelope still face the strict envelope decode — claiming the
  * marker buys a larger buffer, never acceptance.
  *
- * @return 1 if `bytes` begins with the "DNA.ENVWIRE.v1" family marker.
+ * @return 1 if `bytes` begins with the "NDS.ENVWIRE.v1" family marker.
  */
 static inline int dna_env_wire_is_envelope(const uint8_t *bytes, size_t len)
 {
     /* The marker literal, padding explicit — env_wire.c writes exactly
      * these 16 bytes at offset 0. */
     static const uint8_t fam[DNA_ENV_WIRE_FAMILY_LEN] = {
-        'D','N','A','.','E','N','V','W','I','R','E','.','v','1', 0, 0
+        'N','D','S','.','E','N','V','W','I','R','E','.','v','1', 0, 0
     };
     return (bytes && len >= (size_t)DNA_ENV_WIRE_FAMILY_LEN &&
             memcmp(bytes, fam, (size_t)DNA_ENV_WIRE_FAMILY_LEN) == 0)

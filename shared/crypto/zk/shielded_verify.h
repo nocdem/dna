@@ -282,7 +282,7 @@ typedef struct {
      * This entry used to derive the value itself, unconditionally calling
      * dnac_tleg_commit_empty(). That hard-wired the statement to transactions
      * with NO transparent leg, so an honest SHIELD/UNSHIELD (types 12/13),
-     * whose leg digest is a REAL DNA.TLEG.v1 commitment, could only ever fail
+     * whose leg digest is a REAL NDS.TLEG.v1 commitment, could only ever fail
      * binding. The value is now supplied by the caller, which is the only
      * layer that knows the transaction's shape:
      *   - type 11 supplies the canonical TAGGED-EMPTY digest

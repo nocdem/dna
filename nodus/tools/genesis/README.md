@@ -100,7 +100,7 @@ The document is `config_version = 5`.
   the end of the file make them coins from height 0, owned by the
   Foundation MULTISIG ADDRESS and spent with M of its keys. Their ORDER
   is part of the chain: each coin's identity is
-  SHA3-512(`"DNA.GENOUT.v1"` ‖ source_commit ‖ index), index = the
+  SHA3-512(`"NDS.GENOUT.v1"` ‖ source_commit ‖ index), index = the
   block's 0-based position in the file.
 
 | pool | NODUS | where |
@@ -132,7 +132,7 @@ to its own address as before.
 ## The Foundation multisig address
 
 The chain derives an M-of-N address as SHA3-512 of the descriptor
-`"DNA.MSIG.v1"` (16 bytes, zero-padded) ‖ M ‖ N ‖ the N public keys in
+`"NDS.MSIG.v1"` (16 bytes, zero-padded) ‖ M ‖ N ‖ the N public keys in
 ascending byte order (`shared/dnac/msig_wire.h`; 2 ≤ N ≤ 7, 1 ≤ M ≤ N).
 The initial Foundation set is 2-of-3 (decision). Step by step:
 
