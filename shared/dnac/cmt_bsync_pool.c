@@ -6,7 +6,12 @@
  *        statement, the clock list, the labelled deviations BS-1..BS-4 and
  *        the own fix BS-10 (R1-2).
  *
- * NOTHING HERE READS A CLOCK: every time is the caller's `now_ns`.
+ * NOTHING HERE READS A CLOCK: every time is the caller's — `mono_ns`
+ * (CLOCK_MONOTONIC: sleeps, retries, peer timeouts, startTime) or
+ * `wall_ns` (the wall clock: the ban list and the receive-rate monitors),
+ * split as the reference's reads are (cmt_bsync_pool.h "THE CLOCK";
+ * decision docs/plans/decisions/2026-09-30-monotonic-waits.md). The two
+ * are never compared with each other.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -95,32 +100,35 @@ static int find_peer(const cmt_bsync_pool_t *pool, const char *id)
 
 /* ══ bpPeer (:560-631) ════════════════════════════════════════════════ */
 
-/* :591-595 resetMonitor() */
-static void peer_reset_monitor(cmt_bsync_peer_t *peer, int64_t now_ns)
+/* :591-595 resetMonitor() — the WALL clock (flowrate, header "THE
+ * CLOCK"). */
+static void peer_reset_monitor(cmt_bsync_peer_t *peer, int64_t wall_ns)
 {
     cmt_flowrate_init(&peer->recv_monitor, CMT_BSYNC_MONITOR_SAMPLE_NS,
-                      CMT_BSYNC_MONITOR_WINDOW_NS, now_ns);        /* :592 */
+                      CMT_BSYNC_MONITOR_WINDOW_NS, wall_ns);       /* :592 */
     cmt_flowrate_set_rema(&peer->recv_monitor,
                           (double)CMT_BSYNC_MIN_RECV_RATE *
                               BSYNC_MATH_E);                       /* :593-594 */
     peer->monitor_made = true;
 }
 
-/* :597-603 resetTimeout(): AfterFunc on the first call, Reset after. */
+/* :597-603 resetTimeout(): AfterFunc on the first call, Reset after — a
+ * Go runtime timer, the MONOTONIC clock. */
 static void peer_reset_timeout(const cmt_bsync_pool_t *pool,
-                               cmt_bsync_peer_t *peer, int64_t now_ns)
+                               cmt_bsync_peer_t *peer, int64_t mono_ns)
 {
     peer->timeout_armed = true;
-    peer->timeout_at_ns = now_ns + pool->peer_timeout_ns;
+    peer->timeout_at_ns = mono_ns + pool->peer_timeout_ns;
 }
 
 /* :605-611 incrPending() */
 static void peer_incr_pending(const cmt_bsync_pool_t *pool,
-                              cmt_bsync_peer_t *peer, int64_t now_ns)
+                              cmt_bsync_peer_t *peer, int64_t mono_ns,
+                              int64_t wall_ns)
 {
     if (peer->num_pending == 0) {
-        peer_reset_monitor(peer, now_ns);                          /* :607 */
-        peer_reset_timeout(pool, peer, now_ns);                    /* :608 */
+        peer_reset_monitor(peer, wall_ns);                         /* :607 */
+        peer_reset_timeout(pool, peer, mono_ns);                   /* :608 */
     }
     peer->num_pending++;                                           /* :610 */
 }
@@ -130,7 +138,7 @@ static void peer_incr_pending(const cmt_bsync_pool_t *pool,
  * reference would go to −1 and re-arm it, v0.38.26 pool.go:643-651). */
 static void peer_decr_pending(const cmt_bsync_pool_t *pool,
                               cmt_bsync_peer_t *peer, size_t recv_size,
-                              int64_t now_ns)
+                              int64_t mono_ns, int64_t wall_ns)
 {
     if (peer->num_pending <= 0) {
         return;                                                    /* BS-10 */
@@ -142,9 +150,9 @@ static void peer_decr_pending(const cmt_bsync_pool_t *pool,
         if (peer->monitor_made) {
             int n = recv_size > (size_t)INT_MAX ? INT_MAX : (int)recv_size;
 
-            (void)cmt_flowrate_update(&peer->recv_monitor, n, now_ns); /* :618 */
+            (void)cmt_flowrate_update(&peer->recv_monitor, n, wall_ns); /* :618 */
         }
-        peer_reset_timeout(pool, peer, now_ns);                    /* :619 */
+        peer_reset_timeout(pool, peer, mono_ns);                   /* :619 */
     }
 }
 
@@ -351,30 +359,32 @@ static void remove_peer_locked(cmt_bsync_pool_t *pool, const char *peer_id)
 }
 
 /* :461-465 isPeerBanned() — an ID never banned reads as the zero time,
- * so `time.Since` is huge and the answer is false. */
+ * so `time.Since` is huge and the answer is false. The WALL clock:
+ * cometbft@v0.38.26 :494 is `time.Since` of the :500 `cmttime.Now()`
+ * stamp, which carries no monotonic reading (header, "THE CLOCK"). */
 static bool is_peer_banned_locked(const cmt_bsync_pool_t *pool,
-                                  const char *peer_id, int64_t now_ns)
+                                  const char *peer_id, int64_t wall_ns)
 {
     size_t i;
 
     for (i = 0; i < pool->n_banned; i++) {
         if (id_eq(pool->banned_ids[i], peer_id)) {
-            return now_ns - pool->banned_at_ns[i] < CMT_BSYNC_BAN_NS; /* :464 */
+            return wall_ns - pool->banned_at_ns[i] < CMT_BSYNC_BAN_NS; /* :464 */
         }
     }
     return false;
 }
 
-/* :467-471 banPeer() */
+/* :467-471 banPeer() — stamped with the WALL clock (v0.38.26 :500). */
 static int ban_peer_locked(cmt_bsync_pool_t *pool, const char *peer_id,
-                           int64_t now_ns)
+                           int64_t wall_ns)
 {
     size_t i;
 
     QGP_LOG_DEBUG(LOG_TAG, "Banning peer %s", peer_id);            /* :469 */
     for (i = 0; i < pool->n_banned; i++) {
         if (id_eq(pool->banned_ids[i], peer_id)) {
-            pool->banned_at_ns[i] = now_ns;                        /* :470 */
+            pool->banned_at_ns[i] = wall_ns;                       /* :470 */
             return CMT_OK;
         }
     }
@@ -396,13 +406,14 @@ static int ban_peer_locked(cmt_bsync_pool_t *pool, const char *peer_id,
         pool->cap_banned = ncap;
     }
     id_set(pool->banned_ids[pool->n_banned], peer_id);
-    pool->banned_at_ns[pool->n_banned] = now_ns;                   /* :470 */
+    pool->banned_at_ns[pool->n_banned] = wall_ns;                  /* :470 */
     pool->n_banned++;
     return CMT_OK;
 }
 
-/* :158-191 removeTimedoutPeers() */
-static void remove_timedout_peers(cmt_bsync_pool_t *pool, int64_t now_ns)
+/* :158-191 removeTimedoutPeers() — reads only WALL-clock state: the
+ * receive rate (flowrate) and the ban expiry (header, "THE CLOCK"). */
+static void remove_timedout_peers(cmt_bsync_pool_t *pool, int64_t wall_ns)
 {
     size_t i = 0;
 
@@ -415,7 +426,7 @@ static void remove_timedout_peers(cmt_bsync_pool_t *pool, int64_t now_ns)
             if (peer->monitor_made) {
                 cmt_flowrate_status_t st;
 
-                cmt_flowrate_status(&peer->recv_monitor, now_ns, &st);
+                cmt_flowrate_status(&peer->recv_monitor, wall_ns, &st);
                 cur_rate = st.cur_rate;                            /* :164 */
             }
             /* :165-166 "curRate can be 0 on start" */
@@ -439,7 +450,7 @@ static void remove_timedout_peers(cmt_bsync_pool_t *pool, int64_t now_ns)
 
     i = 0;
     while (i < pool->n_banned) {                                   /* :184-188 */
-        if (!is_peer_banned_locked(pool, pool->banned_ids[i], now_ns)) {
+        if (!is_peer_banned_locked(pool, pool->banned_ids[i], wall_ns)) {
             memmove(&pool->banned_ids[i], &pool->banned_ids[i + 1],
                     (pool->n_banned - i - 1u) * sizeof(pool->banned_ids[0]));
             memmove(&pool->banned_at_ns[i], &pool->banned_at_ns[i + 1],
@@ -457,7 +468,8 @@ static void remove_timedout_peers(cmt_bsync_pool_t *pool, int64_t now_ns)
 static cmt_bsync_peer_t *pick_incr_available_peer(cmt_bsync_pool_t *pool,
                                                   int64_t height,
                                                   const char *exclude,
-                                                  int64_t now_ns)
+                                                  int64_t mono_ns,
+                                                  int64_t wall_ns)
 {
     size_t i = 0;
 
@@ -480,7 +492,7 @@ static cmt_bsync_peer_t *pick_incr_available_peer(cmt_bsync_pool_t *pool,
             i++;
             continue;
         }
-        peer_incr_pending(pool, peer, now_ns);                     /* :493 */
+        peer_incr_pending(pool, peer, mono_ns, wall_ns);           /* :493 */
         return peer;                                               /* :494 */
     }
     return NULL;                                                   /* :497 */
@@ -518,14 +530,16 @@ static int make_next_requester(cmt_bsync_pool_t *pool, int64_t next_height)
 /* :806-826 pickSecondPeerAndSendRequest() */
 static bool rq_pick_second_peer_and_send_request(cmt_bsync_pool_t *pool,
                                                  cmt_bsync_requester_t *r,
-                                                 int64_t now_ns)
+                                                 int64_t mono_ns,
+                                                 int64_t wall_ns)
 {
     cmt_bsync_peer_t *second;
 
     if (r->second_peer_id[0] != '\0') {                            /* :808-811 */
         return false;
     }
-    second = pick_incr_available_peer(pool, r->height, r->peer_id, now_ns); /* :815 */
+    second = pick_incr_available_peer(pool, r->height, r->peer_id,
+                                      mono_ns, wall_ns);           /* :815 */
     if (second != NULL) {
         id_set(r->second_peer_id, second->id);                     /* :818 */
         r->second_delivered = false;                  /* BS-10: a new assignment */
@@ -537,9 +551,10 @@ static bool rq_pick_second_peer_and_send_request(cmt_bsync_pool_t *pool,
 
 /* :838-902 requestRoutine(), as a step run until it would wait (header).
  * BS-1: the ready channels are served in the order gotBlock, redo,
- * newHeight, retryTimer. */
+ * newHeight, retryTimer. Its sleep and retry timer are MONOTONIC
+ * (`mono_ns`); `wall_ns` reaches only a picked peer's rate monitor. */
 static void rq_step(cmt_bsync_pool_t *pool, cmt_bsync_requester_t *r,
-                    int64_t now_ns, int64_t *earliest)
+                    int64_t mono_ns, int64_t wall_ns, int64_t *earliest)
 {
     for (;;) {
         if (!pool->running) {                                      /* :786, :855 */
@@ -550,17 +565,18 @@ static void rq_step(cmt_bsync_pool_t *pool, cmt_bsync_requester_t *r,
             cmt_bsync_peer_t *peer;
             char              second[CMT_P2P_ID_CAP];
 
-            if (now_ns < r->pick_not_before_ns) {                  /* :792 sleep */
+            if (mono_ns < r->pick_not_before_ns) {                 /* :792 sleep */
                 deadline_min(earliest, r->pick_not_before_ns);
                 return;
             }
             id_set(second, r->second_peer_id);                     /* :779-781 */
-            peer = pick_incr_available_peer(pool, r->height, second, now_ns); /* :789 */
+            peer = pick_incr_available_peer(pool, r->height, second,
+                                            mono_ns, wall_ns);     /* :789 */
             if (peer == NULL) {
                 QGP_LOG_DEBUG(LOG_TAG, "No peers currently available; will "
                               "retry shortly (height %lld)",
                               (long long)r->height);               /* :791 */
-                r->pick_not_before_ns = now_ns + CMT_BSYNC_REQUEST_INTERVAL_NS;
+                r->pick_not_before_ns = mono_ns + CMT_BSYNC_REQUEST_INTERVAL_NS;
                 deadline_min(earliest, r->pick_not_before_ns);     /* :792-793 */
                 return;
             }
@@ -570,10 +586,11 @@ static void rq_step(cmt_bsync_pool_t *pool, cmt_bsync_requester_t *r,
 
             /* :845-848 */
             if (r->height - pool->height < CMT_BSYNC_MIN_BLOCKS_FOR_SINGLE_REQUEST) {
-                (void)rq_pick_second_peer_and_send_request(pool, r, now_ns);
+                (void)rq_pick_second_peer_and_send_request(pool, r, mono_ns,
+                                                           wall_ns);
             }
             r->retry_armed = true;                                 /* :850 */
-            r->retry_at_ns = now_ns + CMT_BSYNC_REQUEST_RETRY_NS;
+            r->retry_at_ns = mono_ns + CMT_BSYNC_REQUEST_RETRY_NS;
             r->state = CMT_BSYNC_RQ_WAIT;
         }
 
@@ -605,13 +622,14 @@ static void rq_step(cmt_bsync_pool_t *pool, cmt_bsync_requester_t *r,
             r->new_height_ch = false;
             if (!r->got_block &&
                 r->height - nh < CMT_BSYNC_MIN_BLOCKS_FOR_SINGLE_REQUEST) { /* :883 */
-                if (rq_pick_second_peer_and_send_request(pool, r, now_ns)) {
+                if (rq_pick_second_peer_and_send_request(pool, r, mono_ns,
+                                                         wall_ns)) {
                     r->retry_armed = true;                         /* :889-892 */
-                    r->retry_at_ns = now_ns + CMT_BSYNC_REQUEST_RETRY_NS;
+                    r->retry_at_ns = mono_ns + CMT_BSYNC_REQUEST_RETRY_NS;
                 }
             }
         }
-        if (r->retry_armed && now_ns >= r->retry_at_ns) {          /* :862 */
+        if (r->retry_armed && mono_ns >= r->retry_at_ns) {         /* :862 */
             r->retry_armed = false;          /* a Timer fires once */
             if (!r->got_block) {                                   /* :863 */
                 char p1[CMT_P2P_ID_CAP];
@@ -636,25 +654,26 @@ static void rq_step(cmt_bsync_pool_t *pool, cmt_bsync_requester_t *r,
     }
 }
 
-/* :120-156 makeRequestersRoutine(), one iteration per 2 ms (header). */
-static int make_requesters_step(cmt_bsync_pool_t *pool, int64_t now_ns,
-                                int64_t *earliest)
+/* :120-156 makeRequestersRoutine(), one iteration per 2 ms (header).
+ * Its sleeps are MONOTONIC; removeTimedoutPeers reads WALL-clock state. */
+static int make_requesters_step(cmt_bsync_pool_t *pool, int64_t mono_ns,
+                                int64_t wall_ns, int64_t *earliest)
 {
     bool    max_requesters_created;
     int64_t next_height;
     bool    max_peer_height_reached;
 
     /* :126-132 — the peerConnWait sleep. */
-    if (now_ns - pool->start_time_ns < CMT_BSYNC_PEER_CONN_WAIT_NS) {
+    if (mono_ns - pool->start_time_ns < CMT_BSYNC_PEER_CONN_WAIT_NS) {
         deadline_min(earliest, pool->start_time_ns + CMT_BSYNC_PEER_CONN_WAIT_NS);
         return CMT_OK;
     }
-    if (now_ns < pool->mr_not_before_ns) {
+    if (mono_ns < pool->mr_not_before_ns) {
         deadline_min(earliest, pool->mr_not_before_ns);
         return CMT_OK;
     }
     if (pool->mr_next == CMT_BSYNC_MR_REMOVE_TIMEDOUT) {
-        remove_timedout_peers(pool, now_ns);                       /* :146 */
+        remove_timedout_peers(pool, wall_ns);                      /* :146 */
         pool->mr_next = CMT_BSYNC_MR_EVALUATE;
     }
 
@@ -672,7 +691,7 @@ static int make_requesters_step(cmt_bsync_pool_t *pool, int64_t now_ns,
             return CMT_FAULT;
         }
     }
-    pool->mr_not_before_ns = now_ns + CMT_BSYNC_REQUEST_INTERVAL_NS; /* :145/:148/:153 */
+    pool->mr_not_before_ns = mono_ns + CMT_BSYNC_REQUEST_INTERVAL_NS; /* :145/:148/:153 */
     deadline_min(earliest, pool->mr_not_before_ns);
     return CMT_OK;
 }
@@ -728,7 +747,7 @@ void cmt_bsync_pool_free(cmt_bsync_pool_t *pool)
 }
 
 /* :113-117 OnStart() */
-int cmt_bsync_pool_start(cmt_bsync_pool_t *pool, int64_t now_ns)
+int cmt_bsync_pool_start(cmt_bsync_pool_t *pool, int64_t mono_ns)
 {
     if (pool == NULL) {
         return CMT_FAULT;
@@ -737,7 +756,7 @@ int cmt_bsync_pool_start(cmt_bsync_pool_t *pool, int64_t now_ns)
         return CMT_OK;                            /* ErrAlreadyStarted */
     }
     pool->running          = true;
-    pool->start_time_ns    = now_ns;                               /* :114 */
+    pool->start_time_ns    = mono_ns;                              /* :114 */
     pool->mr_not_before_ns = 0;
     pool->mr_next          = CMT_BSYNC_MR_EVALUATE;
     return CMT_OK;                                /* :115 go makeRequesters */
@@ -757,8 +776,8 @@ bool cmt_bsync_pool_is_running(const cmt_bsync_pool_t *pool)
     return pool != NULL && pool->running;
 }
 
-int cmt_bsync_pool_tick(cmt_bsync_pool_t *pool, int64_t now_ns,
-                        int64_t *out_deadline_ns)
+int cmt_bsync_pool_tick(cmt_bsync_pool_t *pool, int64_t mono_ns,
+                        int64_t wall_ns, int64_t *out_deadline_ns)
 {
     int64_t earliest = INT64_MAX;
     size_t  i;
@@ -773,17 +792,18 @@ int cmt_bsync_pool_tick(cmt_bsync_pool_t *pool, int64_t now_ns,
         return CMT_OK;
     }
     /* makeRequestersRoutine (:120-156) */
-    if (make_requesters_step(pool, now_ns, &earliest) != CMT_OK) {
+    if (make_requesters_step(pool, mono_ns, wall_ns, &earliest) != CMT_OK) {
         return CMT_FAULT;
     }
-    /* every peer's AfterFunc timer (:597-603) → onTimeout (:623-631) */
+    /* every peer's AfterFunc timer (:597-603) → onTimeout (:623-631) —
+     * a Go runtime timer: MONOTONIC */
     for (i = 0; i < pool->n_peers; i++) {
         cmt_bsync_peer_t *peer = pool->peers[i];
 
         if (!peer->timeout_armed) {
             continue;
         }
-        if (now_ns >= peer->timeout_at_ns) {
+        if (mono_ns >= peer->timeout_at_ns) {
             peer->timeout_armed = false;                 /* fired: spent */
             send_error(pool, peer->id, CMT_BSYNC_PEER_ERR_TIMEOUT); /* :627-628 */
             QGP_LOG_ERROR(LOG_TAG, "SendTimeout peer %s: peer did not send "
@@ -797,7 +817,7 @@ int cmt_bsync_pool_tick(cmt_bsync_pool_t *pool, int64_t now_ns,
     }
     /* every requester's requestRoutine (:838-902), in height order */
     for (i = 0; i < pool->n_requesters; i++) {
-        rq_step(pool, pool->requesters[i], now_ns, &earliest);
+        rq_step(pool, pool->requesters[i], mono_ns, wall_ns, &earliest);
     }
     if (out_deadline_ns != NULL) {
         *out_deadline_ns = earliest;
@@ -843,7 +863,7 @@ bool cmt_bsync_pool_has_pending_request_from(const cmt_bsync_pool_t *pool,
 }
 
 /* :202-223 IsCaughtUp() */
-bool cmt_bsync_pool_is_caught_up(const cmt_bsync_pool_t *pool, int64_t now_ns)
+bool cmt_bsync_pool_is_caught_up(const cmt_bsync_pool_t *pool, int64_t mono_ns)
 {
     bool received_block_or_timed_out;
     bool our_chain_is_longest_among_peers;
@@ -856,7 +876,7 @@ bool cmt_bsync_pool_is_caught_up(const cmt_bsync_pool_t *pool, int64_t now_ns)
         return false;
     }
     received_block_or_timed_out = pool->height > 0 ||
-        now_ns - pool->start_time_ns > CMT_BSYNC_CAUGHT_UP_WAIT_NS; /* :219 */
+        mono_ns - pool->start_time_ns > CMT_BSYNC_CAUGHT_UP_WAIT_NS; /* :219 */
     our_chain_is_longest_among_peers = pool->max_peer_height == 0 ||
         pool->height >= pool->max_peer_height - 1;                 /* :220 */
     return received_block_or_timed_out &&
@@ -933,7 +953,7 @@ int cmt_bsync_pool_pop_request(cmt_bsync_pool_t *pool,
 
 /* :269-282 RemovePeerAndRedoAllPeerRequests() */
 int cmt_bsync_pool_remove_peer_and_redo_all_peer_requests(
-        cmt_bsync_pool_t *pool, int64_t height, int64_t now_ns,
+        cmt_bsync_pool_t *pool, int64_t height, int64_t wall_ns,
         char out_peer_id[CMT_P2P_ID_CAP])
 {
     cmt_bsync_requester_t *r;
@@ -954,7 +974,7 @@ int cmt_bsync_pool_remove_peer_and_redo_all_peer_requests(
     }
     id_set(pid, r->got_block_from);                                /* :277 */
     remove_peer_locked(pool, pid);                                 /* :279 */
-    if (ban_peer_locked(pool, pid, now_ns) != CMT_OK) {            /* :280 */
+    if (ban_peer_locked(pool, pid, wall_ns) != CMT_OK) {           /* :280 */
         return CMT_FAULT;
     }
     if (out_peer_id != NULL) {
@@ -965,11 +985,11 @@ int cmt_bsync_pool_remove_peer_and_redo_all_peer_requests(
 
 /* :297-300 RedoRequest() — deprecated alias. */
 int cmt_bsync_pool_redo_request(cmt_bsync_pool_t *pool, int64_t height,
-                                int64_t now_ns,
+                                int64_t wall_ns,
                                 char out_peer_id[CMT_P2P_ID_CAP])
 {
     return cmt_bsync_pool_remove_peer_and_redo_all_peer_requests(
-               pool, height, now_ns, out_peer_id);                 /* :299 */
+               pool, height, wall_ns, out_peer_id);                /* :299 */
 }
 
 /* :284-295 RedoRequestFrom() */
@@ -989,7 +1009,8 @@ void cmt_bsync_pool_redo_request_from(cmt_bsync_pool_t *pool, int64_t height,
 
 /* :302-351 AddBlock() — takes ownership of `b` in every case. */
 int cmt_bsync_pool_add_block(cmt_bsync_pool_t *pool, const char *peer_id,
-                             cmt_bsync_block_t *b, int64_t now_ns)
+                             cmt_bsync_block_t *b, int64_t mono_ns,
+                             int64_t wall_ns)
 {
     cmt_bsync_requester_t *r;
     int64_t                height;
@@ -1062,7 +1083,8 @@ int cmt_bsync_pool_add_block(cmt_bsync_pool_t *pool, const char *peer_id,
     if (first) {
         pidx = find_peer(pool, peer_id);                           /* :345 */
         if (pidx >= 0) {
-            peer_decr_pending(pool, pool->peers[pidx], size, now_ns); /* :347 */
+            peer_decr_pending(pool, pool->peers[pidx], size, mono_ns,
+                              wall_ns);                            /* :347 */
         }
     }
     return CMT_OK;                                                 /* :350 */
@@ -1082,7 +1104,7 @@ int64_t cmt_bsync_pool_max_peer_height(const cmt_bsync_pool_t *pool)
 
 /* :367-402 SetPeerRange() */
 int cmt_bsync_pool_set_peer_range(cmt_bsync_pool_t *pool, const char *peer_id,
-                                  int64_t base, int64_t height, int64_t now_ns)
+                                  int64_t base, int64_t height, int64_t wall_ns)
 {
     int idx;
 
@@ -1099,7 +1121,7 @@ int cmt_bsync_pool_set_peer_range(cmt_bsync_pool_t *pool, const char *peer_id,
         if (find_peer(pool, peer_id) >= 0) {                       /* :391 */
             remove_peer_locked(pool, peer_id);                     /* :392 */
         }
-        return ban_peer_locked(pool, peer_id, now_ns);             /* :394-395 */
+        return ban_peer_locked(pool, peer_id, wall_ns);            /* :394-395 */
     }
     idx = find_peer(pool, peer_id);                                /* :372 */
     if (idx >= 0) {
@@ -1113,14 +1135,14 @@ int cmt_bsync_pool_set_peer_range(cmt_bsync_pool_t *pool, const char *peer_id,
                          (long long)peer->height,
                          (long long)peer->base);                   /* :375-378 */
             remove_peer_locked(pool, peer_id);                     /* :380 */
-            return ban_peer_locked(pool, peer_id, now_ns);         /* :381-382 */
+            return ban_peer_locked(pool, peer_id, wall_ns);        /* :381-382 */
         }
         peer->base   = base;                                       /* :384 */
         peer->height = height;                                     /* :385 */
     } else {
         cmt_bsync_peer_t *peer;
 
-        if (is_peer_banned_locked(pool, peer_id, now_ns)) {        /* :387 */
+        if (is_peer_banned_locked(pool, peer_id, wall_ns)) {       /* :387 */
             QGP_LOG_DEBUG(LOG_TAG, "Ignoring banned peer %s", peer_id); /* :388 */
             return CMT_OK;
         }
@@ -1171,12 +1193,12 @@ void cmt_bsync_pool_remove_peer(cmt_bsync_pool_t *pool, const char *peer_id)
 
 /* :454-459 IsPeerBanned() */
 bool cmt_bsync_pool_is_peer_banned(const cmt_bsync_pool_t *pool,
-                                   const char *peer_id, int64_t now_ns)
+                                   const char *peer_id, int64_t wall_ns)
 {
     if (pool == NULL || !id_ok(peer_id)) {
         return false;
     }
-    return is_peer_banned_locked(pool, peer_id, now_ns);           /* :458 */
+    return is_peer_banned_locked(pool, peer_id, wall_ns);          /* :458 */
 }
 
 const cmt_bsync_peer_t *cmt_bsync_pool_peer(const cmt_bsync_pool_t *pool,

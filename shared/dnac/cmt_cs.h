@@ -220,6 +220,19 @@
  *   dispatch's own five-item list did not enumerate.
  * (:1064 is a log line the port does not carry; wal.go:189's record stamp
  * is the HOST's, taken from the same callback.)
+ * `host.now` is the WALL clock (canonical UTC, `cmttime.Now()`), and it is
+ * the only clock this module reads. The TIMER is the host's and is NOT
+ * armed on this clock: `timer_arm` receives a DURATION — some computed
+ * here from two wall instants (cometbft@v0.38.26 state.go:558
+ * `StartTime.Sub(cmttime.Now())`, :1028 the remaining commit wait — the
+ * port's body cites it at :1033, the old pin's line), exactly as the
+ * reference hands such a
+ * duration to a Go runtime timer (ticker.go:126) — and the host arms its
+ * deadline on CLOCK_MONOTONIC (decision docs/plans/decisions/
+ * 2026-09-30-monotonic-waits.md; nodus_witness_cmt_host.c
+ * `host_timer_arm`). A wall-clock step therefore moves no pending
+ * timeout; it only changes the durations computed from wall instants
+ * after it, as in the reference.
  * Two nodes with different timeouts still decide the same blocks: the
  * durations here are a LOCAL scheduling policy, not consensus state.
  *
@@ -671,13 +684,15 @@ typedef struct {
 
     /* ── the clock and the timer ───────────────────────────────────── */
 
-    /** THE ONLY CLOCK IN THIS MODULE. Reached at :558, :728, :1033, :1614
-     *  and :2417 and nowhere else. */
+    /** THE ONLY CLOCK IN THIS MODULE — the WALL clock. Reached at :558,
+     *  :728, :1033, :1614 and :2417 and nowhere else. */
     cmt_now_fn now;
 
     /** `ticker.timer.Reset(ti.Duration)` (ticker.go:126). The duration is
      *  NANOSECONDS and MAY BE ZERO OR NEGATIVE (ticker.go:16, :124); a
-     *  non-positive duration must fire immediately. */
+     *  non-positive duration must fire immediately. The host arms the
+     *  deadline on its MONOTONIC clock, not on `now` (file header,
+     *  "DETERMINISM"; decision 2026-09-30-monotonic-waits.md). */
     int (*timer_arm)(void *ctx, int64_t duration_ns);
 
     /** `ticker.stopTimer()` (ticker.go:83-92): cancel, and DISCARD an

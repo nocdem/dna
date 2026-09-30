@@ -50,17 +50,38 @@
  *
  * ── THE CLOCK ──────────────────────────────────────────────────────────
  * The pool never reads a clock itself: every function that the reference
- * lets read `time.Now()` takes `now_ns`, the host's clock in unix
- * nanoseconds (the SAME `cmt_now_fn` the consensus state machine uses,
- * read once by the reactor per call). The reads, reference ↔ here:
- *   :114 startTime               → cmt_bsync_pool_start
- *   :128/:130 peerConnWait       → makeRequesters step in the tick
- *   :145/:148/:153/:792 sleeps   → the tick's not_before deadlines
- *   :219 IsCaughtUp's 5 s        → cmt_bsync_pool_is_caught_up
- *   :464 isPeerBanned / :470 banPeer → every function that bans or asks
- *   :592 flow.New (the Monitor)  → incrPending / decrPending
- *   :599/:601 peerTimeout        → incrPending / decrPending
- *   :850/:892 retryTimer         → the requester step
+ * lets read a clock takes the instant from the reactor, which reads its
+ * host once per call. There are TWO clocks, split exactly as the
+ * reference's reads are (decision docs/plans/decisions/
+ * 2026-09-30-monotonic-waits.md):
+ *   · `mono_ns` — CLOCK_MONOTONIC nanoseconds (the host's `cmt_mono_fn`):
+ *     the reference's Go runtime timers, `time.Sleep`, and `time.Since`
+ *     of a `time.Now()` that keeps its monotonic reading;
+ *   · `wall_ns` — unix nanoseconds of the wall clock (the host's
+ *     `cmt_now_fn`, the one the state machine stamps with): the
+ *     reference's `cmttime.Now()` (monotonic part stripped,
+ *     types/time/time.go:9-15) and flowrate's `time.Now().Round(...)`
+ *     (Round strips the monotonic part; libs/flowrate/util.go:18-22 —
+ *     that Round drops it is a Go stdlib fact, outside the pinned tree).
+ * The reads, reference (cometbft@v0.38.26 blocksync/pool.go unless
+ * marked) ↔ here ↔ clock:
+ *   :114 startTime `time.Now()`   → cmt_bsync_pool_start          MONO
+ *   :128/:130 peerConnWait        → makeRequesters step in tick   MONO
+ *   :145/:148/:153/:822 sleeps    → the tick's not_before         MONO
+ *   :232 IsCaughtUp's 5 s         → cmt_bsync_pool_is_caught_up   MONO
+ *   :629 peerTimeout AfterFunc    → incrPending / decrPending     MONO
+ *   :880/:922 retryTimer          → the requester step            MONO
+ *   :494 isPeerBanned `time.Since` of a `cmttime.Now()` stamp,
+ *   :500 banPeer `cmttime.Now()`  → every function that bans/asks WALL
+ *   :622 flow.New + Update/Status (libs/flowrate/util.go:18-22)
+ *                                 → incrPending / decrPending /
+ *                                   removeTimedoutPeers           WALL
+ * `cmt_bsync_pool_tick` and `cmt_bsync_pool_add_block` take BOTH (a
+ * pending-count change resets the monitor — wall — and the peer timeout
+ * — mono; removeTimedoutPeers reads the rate and the ban expiry — wall —
+ * while the tick's peer-timeout check is mono). Every deadline the pool
+ * reports (`cmt_bsync_pool_tick`'s `out_deadline_ns`) is MONO. The two
+ * clocks are never compared with each other.
  * Every one schedules or rate-limits THIS node's requests. Nothing here
  * decides a block's validity, a vote or a stored row: a block is
  * accepted only by the reactor, and only after VerifyCommit (the full
@@ -287,7 +308,7 @@ typedef struct {
     cmt_flowrate_t  recv_monitor;         /* :568 */
     bool            monitor_made;         /* recvMonitor != nil */
     bool            timeout_armed;        /* :570 the AfterFunc timer */
-    int64_t         timeout_at_ns;
+    int64_t         timeout_at_ns;        /* MONO (header, "THE CLOCK") */
 } cmt_bsync_peer_t;
 
 /* ══ bpRequester (pool.go:643-658) ════════════════════════════════════ */
@@ -322,8 +343,8 @@ typedef struct {
     cmt_bsync_rq_state_t state;
     bool                 got_block;                    /* :839 */
     bool                 retry_armed;                  /* :850 retryTimer */
-    int64_t              retry_at_ns;
-    int64_t              pick_not_before_ns;           /* :792 sleep */
+    int64_t              retry_at_ns;                  /* MONO */
+    int64_t              pick_not_before_ns;           /* :792 sleep, MONO */
 } cmt_bsync_requester_t;
 
 /* ══ BlockPool (pool.go:71-91) ════════════════════════════════════════ */
@@ -336,7 +357,7 @@ typedef enum {
 
 typedef struct {
     bool                     running;         /* BaseService              */
-    int64_t                  start_time_ns;   /* :73                      */
+    int64_t                  start_time_ns;   /* :73, MONO                */
     int64_t                  start_height;    /* :74                      */
 
     /* :78-79 requesters, contiguous from `height`: requesters[i] is the
@@ -352,7 +373,7 @@ typedef struct {
     cmt_bsync_peer_t       **sorted_peers;    /* :83, curRate desc        */
     size_t                   n_sorted;
     char                   (*banned_ids)[CMT_P2P_ID_CAP]; /* :82          */
-    int64_t                 *banned_at_ns;
+    int64_t                 *banned_at_ns;    /* WALL (:500 cmttime.Now) */
     size_t                   n_banned, cap_banned;
     int64_t                  max_peer_height; /* :84                      */
 
@@ -362,7 +383,7 @@ typedef struct {
     int64_t                  peer_timeout_ns; /* :57 `peerTimeout` (var)  */
 
     /* makeRequestersRoutine's wait */
-    int64_t                  mr_not_before_ns;
+    int64_t                  mr_not_before_ns;  /* MONO */
     cmt_bsync_mr_next_t      mr_next;
 } cmt_bsync_pool_t;
 
@@ -382,9 +403,10 @@ void cmt_bsync_pool_free(cmt_bsync_pool_t *pool);
  * pool.go:113-117 — `OnStart()`: startTime = now (:114), the routines
  * run from the next tick. A second start while running is ignored
  * (BaseService's ErrAlreadyStarted).
+ * @param mono_ns the MONOTONIC instant (file header, "THE CLOCK").
  * @return CMT_OK; CMT_FAULT on NULL.
  */
-int cmt_bsync_pool_start(cmt_bsync_pool_t *pool, int64_t now_ns);
+int cmt_bsync_pool_start(cmt_bsync_pool_t *pool, int64_t mono_ns);
 
 /** BaseService.Stop: `pool.Quit()` — every routine ends (:121-124,
  *  :855-859). Frees the requesters (deviation BS-3). NULL is a no-op. */
@@ -398,12 +420,16 @@ bool cmt_bsync_pool_is_running(const cmt_bsync_pool_t *pool);
  * would wait (file header): `makeRequestersRoutine` (:120-156), every
  * peer's `onTimeout` timer (:597-603, :623-631), every requester's
  * `requestRoutine` (:838-902) in height order.
- * @param out_deadline_ns the earliest pending deadline (INT64_MAX when
- *        nothing is waiting on time); may be NULL.
+ * @param mono_ns the MONOTONIC instant: every sleep, retry and peer
+ *        timeout (file header, "THE CLOCK").
+ * @param wall_ns the WALL instant: the receive-rate monitors and the ban
+ *        list (file header, "THE CLOCK").
+ * @param out_deadline_ns the earliest pending deadline, MONOTONIC
+ *        (INT64_MAX when nothing is waiting on time); may be NULL.
  * @return CMT_OK; CMT_FAULT on NULL or an allocation failure.
  */
-int cmt_bsync_pool_tick(cmt_bsync_pool_t *pool, int64_t now_ns,
-                        int64_t *out_deadline_ns);
+int cmt_bsync_pool_tick(cmt_bsync_pool_t *pool, int64_t mono_ns,
+                        int64_t wall_ns, int64_t *out_deadline_ns);
 
 /** cometbft@v0.38.26 blocksync/pool.go:202-213 — `HasPendingRequestFrom(
  *  peerID)`: whether any requester names `peer_id` in either slot
@@ -418,8 +444,9 @@ void cmt_bsync_pool_get_status(const cmt_bsync_pool_t *pool, int64_t *height,
 
 /** pool.go:202-223 — `IsCaughtUp()`: at least one peer (:209-212), and
  *  (height > 0 or 5 s since start) and (maxPeerHeight == 0 or
- *  height >= maxPeerHeight − 1) (:219-221). */
-bool cmt_bsync_pool_is_caught_up(const cmt_bsync_pool_t *pool, int64_t now_ns);
+ *  height >= maxPeerHeight − 1) (:219-221). `mono_ns` is the MONOTONIC
+ *  instant (cometbft@v0.38.26 :232 `time.Since(pool.startTime)`). */
+bool cmt_bsync_pool_is_caught_up(const cmt_bsync_pool_t *pool, int64_t mono_ns);
 
 /**
  * pool.go:225-244 — `PeekTwoBlocks()`: the blocks at `height` and
@@ -452,15 +479,18 @@ int cmt_bsync_pool_pop_request(cmt_bsync_pool_t *pool,
  * (CMT_P2P_ID_CAP bytes; "" when the requester had no block — the
  * reference then removes and bans the empty ID). A missing requester is a
  * Go nil dereference (:277) → CMT_FAULT.
+ * @param wall_ns the WALL instant the ban is stamped with (cometbft@
+ *        v0.38.26 :500 `cmttime.Now()`).
  * @return CMT_OK; CMT_FAULT.
  */
 int cmt_bsync_pool_remove_peer_and_redo_all_peer_requests(
-        cmt_bsync_pool_t *pool, int64_t height, int64_t now_ns,
+        cmt_bsync_pool_t *pool, int64_t height, int64_t wall_ns,
         char out_peer_id[CMT_P2P_ID_CAP]);
 
-/** pool.go:297-300 — deprecated `RedoRequest`: the same call. */
+/** pool.go:297-300 — deprecated `RedoRequest`: the same call (WALL
+ *  instant, for the ban). */
 int cmt_bsync_pool_redo_request(cmt_bsync_pool_t *pool, int64_t height,
-                                int64_t now_ns,
+                                int64_t wall_ns,
                                 char out_peer_id[CMT_P2P_ID_CAP]);
 
 /** pool.go:284-295 — `RedoRequestFrom(height, peerID)`: when that height
@@ -478,9 +508,12 @@ void cmt_bsync_pool_redo_request_from(cmt_bsync_pool_t *pool, int64_t height,
  * @return CMT_OK (also for a copy BS-10 drops silently); CMT_REJECT for
  *         each of the reference's error returns (a `send_error` has been
  *         made where the reference makes one); CMT_FAULT on NULL.
+ * `mono_ns` re-arms the peer timeout, `wall_ns` feeds the receive-rate
+ * monitor (decrPending, file header "THE CLOCK").
  */
 int cmt_bsync_pool_add_block(cmt_bsync_pool_t *pool, const char *peer_id,
-                             cmt_bsync_block_t *b, int64_t now_ns);
+                             cmt_bsync_block_t *b, int64_t mono_ns,
+                             int64_t wall_ns);
 
 /** pool.go:353-358 — `Height()`. */
 int64_t cmt_bsync_pool_height(const cmt_bsync_pool_t *pool);
@@ -495,17 +528,20 @@ int64_t cmt_bsync_pool_max_peer_height(const cmt_bsync_pool_t *pool);
  * height is removed and banned (:374-383); an unknown one is ignored while
  * banned (:387-390), otherwise added at the FRONT of the sorted list
  * (:391-396). maxPeerHeight is then recomputed (v0.38.26 :425).
+ * `wall_ns` is the WALL instant of the ban stamp and check (:494/:500).
  * @return CMT_OK; CMT_FAULT on NULL or allocation failure.
  */
 int cmt_bsync_pool_set_peer_range(cmt_bsync_pool_t *pool, const char *peer_id,
-                                  int64_t base, int64_t height, int64_t now_ns);
+                                  int64_t base, int64_t height, int64_t wall_ns);
 
 /** pool.go:404-411 — `RemovePeer(peerID)`; unknown ID is a no-op. */
 void cmt_bsync_pool_remove_peer(cmt_bsync_pool_t *pool, const char *peer_id);
 
-/** pool.go:454-459 — `IsPeerBanned(peerID)`. */
+/** pool.go:454-459 — `IsPeerBanned(peerID)`, against the WALL instant
+ *  `wall_ns` (cometbft@v0.38.26 :494 `time.Since` of the :500
+ *  `cmttime.Now()` stamp — a wall difference). */
 bool cmt_bsync_pool_is_peer_banned(const cmt_bsync_pool_t *pool,
-                                   const char *peer_id, int64_t now_ns);
+                                   const char *peer_id, int64_t wall_ns);
 
 /* ── accessors for the reactor and the tests ───────────────────────── */
 

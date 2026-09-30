@@ -58,8 +58,11 @@
  * Compile flags: none beyond a default build. Environment: none. SQLite
  * >= 3.35.0. Loopback TCP: the witness listens on a port this file finds
  * free (bind 127.0.0.1:0, read it, close) just before init — see HOW IT
- * CAN LIE 2. The WALL clock is real (witness_cmt_now), the reference's
- * own genesis-time read; every wait on it is a bounded tick loop.
+ * CAN LIE 2. Both clocks are real: the WALL clock (witness_cmt_now, the
+ * reference's own genesis-time read and every stamp) and the MONOTONIC
+ * one (witness_cmt_mono, every consensus wait — decision
+ * 2026-09-30-monotonic-waits.md); every wait on them is a bounded tick
+ * loop.
  *
  * ── WHAT IT LEAVES BEHIND ──────────────────────────────────────────────
  * Nothing: one /tmp/test_cmt_live_* directory per case, removed at its

@@ -1513,14 +1513,18 @@ static void witness_setup_identity(nodus_witness_t *witness) {
 /* ── FLEET-TM-R3 W3 package C2a — the cometbft server binding ────────── */
 
 /**
- * The ONE production `cmt_now_fn` on this chain (BFT-time POLICY,
- * atlas-dec-4ac0423068085c100fdfa3e264ca16bc, APPROVED): the reference's
- * `Now()` (types/time/time.go:9-11) is read to stamp a validator's OWN
- * vote/proposal, to evaluate the genesis-time wait / timer deadlines in
- * the tick, by the signer, the reactors and the WAL — and, since the
- * v0.38.26 pin, ONCE in block validation: the executor's `now` row (the
- * same callback, nodus_cmt_node_init) feeds the 60 s block-time
- * tolerance check (state/validation.go:124-129; decision
+ * The ONE production `cmt_now_fn` on this chain — the STAMP clock
+ * (BFT-time POLICY, atlas-dec-4ac0423068085c100fdfa3e264ca16bc, APPROVED):
+ * the reference's `cmttime.Now()` (types/time/time.go:9-15, no monotonic
+ * component) is read to stamp a validator's OWN vote/proposal and the
+ * state machine's round/commit times (cmt_cs.c's six reads, including the
+ * two durations it computes from wall instants), by the signer, by the
+ * consensus reactor's two stamp sites, by the WAL's record stamp, for
+ * the block sync pool's ban list and rate monitor, for the genesis-time
+ * wait in the tick — and, since the v0.38.26 pin, ONCE in block
+ * validation: the executor's `now` row (the same callback,
+ * nodus_cmt_node_init) feeds the 60 s block-time tolerance check
+ * (state/validation.go:124-129; decision
  * 2026-09-25-consensus-clock-scope-correction.md, addendum "Ek — pin
  * v0.38.26"). That check is node-local — a node whose clock lags more
  * than the tolerance refuses near-tip blocks and stops, the chain does
@@ -1528,6 +1532,12 @@ static void witness_setup_identity(nodus_witness_t *witness) {
  * CLOCK_REALTIME, never MONOTONIC: the value this feeds ends up inside a
  * signed vote/proposal preimage and is compared with block times, so it
  * must be wall-clock UTC.
+ *
+ * It is NOT the clock of any WAIT: since decision
+ * 2026-09-30-monotonic-waits.md every deadline that only schedules this
+ * node's own work (the consensus timer, the reactors' sleeps and tickers,
+ * the WAL's two tickers, this loop's poll wait) runs on
+ * `witness_cmt_mono` below.
  */
 static int witness_cmt_now(void *ctx, cmt_time_t *out) {
     (void)ctx;
@@ -1537,6 +1547,32 @@ static int witness_cmt_now(void *ctx, cmt_time_t *out) {
     raw.seconds = (int64_t)ts.tv_sec;
     raw.nanos   = (int32_t)ts.tv_nsec;
     return cmt_time_canonical(raw, out);
+}
+
+/**
+ * The ONE production `cmt_mono_fn` on this chain — the WAIT clock
+ * (decision docs/plans/decisions/2026-09-30-monotonic-waits.md): the
+ * reference's waits are Go runtime timers, `time.Sleep` and `time.Since`
+ * of a monotonic-carrying `time.Now()`, all on Go's monotonic clock; the
+ * port's deadlines for them are armed and checked on CLOCK_MONOTONIC, so
+ * an NTP or operator step of the wall clock neither delays nor hastens a
+ * consensus timeout, a reactor sleep, a WAL ticker or this loop's wait.
+ * Never a stamp: nothing read here is signed, stored or sent.
+ *
+ * A read failure is CMT_FAULT — never the silent 0 that
+ * `nodus_p2p_mono_ns` returns (a 0 would read as "long ago" and fire every
+ * deadline at once); every caller stops this node on it (the W1.7 rule).
+ */
+static int witness_cmt_mono(void *ctx, int64_t *out_ns) {
+    (void)ctx;
+    struct timespec ts;
+    if (!out_ns || clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return CMT_FAULT;
+    if ((int64_t)ts.tv_sec > (INT64_MAX - (int64_t)ts.tv_nsec) /
+                             (int64_t)1000000000) {
+        return CMT_FAULT;       /* not representable in int64 ns */
+    }
+    *out_ns = (int64_t)ts.tv_sec * (int64_t)1000000000 + (int64_t)ts.tv_nsec;
+    return CMT_OK;
 }
 
 /**
@@ -1962,6 +1998,8 @@ int nodus_witness_cmt_live_init(nodus_witness_t *witness) {
         opts.privval_state_path = pvpath;
         opts.now                = witness_cmt_now;
         opts.now_ctx            = NULL;
+        opts.mono               = witness_cmt_mono;
+        opts.mono_ctx           = NULL;
         opts.raw_sign           = witness_cmt_raw_sign;
         opts.sign_ctx           = witness;
         /* genesis_doc_bytes left NULL: the post-open gate already proved
@@ -1978,11 +2016,15 @@ int nodus_witness_cmt_live_init(nodus_witness_t *witness) {
 
     /* The seam's host tables (P2P-PORT F5): the block-store rows read
      * this node's store; `now` is the SAME callback the state machine's
-     * `now` is (cmt_conr.h). Prepared once per p2p host — a second
+     * `now` is (cmt_conr.h) and `mono` the SAME wait clock the node's
+     * timer and WAL tickers run on (decision 2026-09-30-monotonic-
+     * waits.md) — so every deadline witness_cmt_tick folds together is
+     * on one clock. Prepared once per p2p host — a second
      * construction on the same host is refused by the entry guard above
      * (the lane is built at most once per witness lifetime). */
     if (nodus_witness_p2p_lane_prepare(witness->p2p, &node->store,
-                                       witness_cmt_now, NULL) != CMT_OK) {
+                                       witness_cmt_now, NULL,
+                                       witness_cmt_mono, NULL) != CMT_OK) {
         fprintf(stderr, "%s: the p2p host's consensus seam could not be "
                 "prepared\n", LOG_TAG);
         goto fail;
@@ -2096,7 +2138,9 @@ fail:
  * function's `witness->running` check.
  *
  * @return the earliest of the glue's, the timer's and the WAL tickers'
- *         next deadline, in nanoseconds (host clock); INT64_MAX when none
+ *         next deadline, in nanoseconds of the MONOTONIC clock
+ *         (`witness_cmt_mono` — every one of them is armed on it, decision
+ *         2026-09-30-monotonic-waits.md); INT64_MAX when none
  *         is pending
  *         or the lane is not yet live. `nodus_witness_tick` narrows the
  *         4004 p2p host's wait to it (min(50 ms, deadline)); the server's
@@ -2105,8 +2149,9 @@ fail:
  *         the deadline asks.
  *
  * ORCHESTRATOR delta 8, item A — NO UNIT TEST DRIVES THE CLOCK-FAULT
- * BRANCHES (both `n->now(...) != CMT_OK` sites below). `n->now` is
- * wired to the static, production-only `witness_cmt_now` by
+ * BRANCHES (the `n->now(...)` and `n->mono(...) != CMT_OK` sites below).
+ * `n->now` / `n->mono` are wired to the static, production-only
+ * `witness_cmt_now` / `witness_cmt_mono` by
  * `nodus_witness_cmt_live_init`, with no test seam — injecting a fault
  * would need a production hook this file does not add (a forbidden
  * pattern, not merely an omitted one), and `witness_cmt_tick` itself is
@@ -2143,7 +2188,10 @@ static int64_t witness_cmt_tick(nodus_witness_t *witness) {
      * transition. The p2p host admits peers into the two reactors only
      * once both are running (nodus_witness_p2p_lane_live, R-P2P-47), so a
      * message arriving before this point is dropped by the host, never
-     * faulted. */
+     * faulted. The WALL clock, not the monotonic one: genesis time is a
+     * UTC instant in the genesis document (node.go:518-524 compares it
+     * with `cmttime.Now()`; decision 2026-09-30-monotonic-waits.md keeps
+     * it on the wall clock). */
     if (!witness->cmt_live) {
         cmt_time_t now_t;
         if (n->now(n->now_ctx, &now_t) != CMT_OK) {
@@ -2262,15 +2310,18 @@ static int64_t witness_cmt_tick(nodus_witness_t *witness) {
         return INT64_MAX;
     }
 
-    /* (d) — fire the timer if due, then drain again (bounded, as above). */
-    cmt_time_t now_t2;
-    if (n->now(n->now_ctx, &now_t2) != CMT_OK) {
+    /* (d) — fire the timer if due, then drain again (bounded, as above).
+     * `mono_t2` is the WAIT clock the timer was armed on (host_timer_arm,
+     * decision 2026-09-30-monotonic-waits.md); it feeds ONLY the two
+     * deadline checks below — (d) and (d2) — and no stamp. */
+    int64_t mono_t2;
+    if (n->mono(n->mono_ctx, &mono_t2) != CMT_OK) {
         /* delta 8, item A — this used to silently skip the timer check
          * on a clock fault (the `&&` short-circuit read the fault the
          * same as "not due yet"), which is exactly the permanent silent
          * stall the W1.7 rule forbids: logged, and this node stops. */
-        fprintf(stderr, "%s: CMT_FAULT reading the clock for the "
-                "timer-due check — consensus participation stops\n",
+        fprintf(stderr, "%s: CMT_FAULT reading the monotonic clock for "
+                "the timer-due check — consensus participation stops\n",
                 LOG_TAG);
         witness->running = false;
         return INT64_MAX;
@@ -2278,7 +2329,7 @@ static int64_t witness_cmt_tick(nodus_witness_t *witness) {
     /* Finding A (header): no timer while waiting for block sync. Read
      * again here — (c) may just have switched. */
     if (!cmt_conr_wait_sync(conr) &&
-        nodus_cmt_host_timer_due(n->be, cmt_time_unix_nano(now_t2))) {
+        nodus_cmt_host_timer_due(n->be, mono_t2)) {
         if (cmt_cs_on_timer_expired(n->cs) != CMT_OK) {
             fprintf(stderr, "%s: CMT_FAULT firing the consensus timer — "
                     "consensus participation stops\n", LOG_TAG);
@@ -2303,9 +2354,10 @@ static int64_t witness_cmt_tick(nodus_witness_t *witness) {
      * `processFlushTicks` (FlushAndSync every 2 s) and group.go:239-250
      * `processTicks` (checkHeadSizeLimit + checkTotalSizeLimit every
      * 5 s), as deadlines on this loop — the single-loop form of the two
-     * goroutines' waits. The clock is `now_t2`, the reading step (d)
-     * just took through `n->now` — the same callback the WAL stamps its
-     * records with (nodus_cmt_node_start opens the WAL with n->now).
+     * goroutines' waits. The clock is `mono_t2`, the reading step (d)
+     * just took through `n->mono` — the same monotonic callback the WAL
+     * armed both deadlines on (nodus_cmt_node_start opens the WAL with
+     * n->now for its record stamps and n->mono for its tickers).
      *
      * A CMT_FAULT from either stops this node, like every other FAULT in
      * this function. The reference is softer at one of the two sites:
@@ -2317,7 +2369,7 @@ static int64_t witness_cmt_tick(nodus_witness_t *witness) {
      * 309-323) or directory scan (:363-371). The WAL functions log
      * their own error first. */
     if (n->wal_open) {
-        int64_t now_ns = cmt_time_unix_nano(now_t2);
+        int64_t now_ns = mono_t2;
 
         if (nodus_cmt_wal_flush_if_due(&n->wal, now_ns) != CMT_OK) {
             fprintf(stderr, "%s: CMT_FAULT in the consensus WAL's periodic "
@@ -2335,7 +2387,9 @@ static int64_t witness_cmt_tick(nodus_witness_t *witness) {
     }
 
     /* (e) — the earliest of the deadlines: the network's, the consensus
-     * timer's and the WAL's two tickers'. */
+     * timer's and the WAL's two tickers' — all on the monotonic clock
+     * (the lane's reactors, the executor and the WAL were all given
+     * `witness_cmt_mono`), so the minimum compares like with like. */
     int64_t timer_deadline = INT64_MAX;
     int64_t deadline;
     (void)nodus_cmt_host_next_deadline(n->be, &timer_deadline);
@@ -2616,18 +2670,33 @@ void nodus_witness_tick(nodus_witness_t *witness) {
      * witness_cmt_tick returned (INT64_MAX — the doc default — until a
      * version-3 chain's Comet lane has run at least once); the server's
      * other polls (client TCP, inter-node TCP, channel, UDP) are
-     * untouched, exactly as before this change. */
+     * untouched, exactly as before this change.
+     *
+     * The deadline is on the MONOTONIC clock (witness_cmt_tick's return,
+     * decision 2026-09-30-monotonic-waits.md), so the remaining wait is
+     * measured against `witness_cmt_mono` — the same clock; a wall
+     * reading here would make the wait always 0 or always 50 ms. On a
+     * monotonic-clock FAULT the full 50 ms wait is kept and the fault is
+     * LOGGED — not silently absorbed: a deadline other than INT64_MAX means
+     * the lane is live, so the witness_cmt_tick that follows this poll
+     * reads the same clock (in the reactors' ticks at (c), and at (d)),
+     * faults there too, and stops this node (the W1.7 rule) — the wait
+     * is never the thing that hides it. */
     int witness_poll_timeout_ms = 50;
     if (witness->v2_successor &&
         witness->cmt_next_deadline_ns != INT64_MAX) {
-        cmt_time_t now_t;
-        if (witness_cmt_now(NULL, &now_t) == CMT_OK) {
-            int64_t now_ns    = cmt_time_unix_nano(now_t);
+        int64_t now_ns = 0;
+        if (witness_cmt_mono(NULL, &now_ns) == CMT_OK) {
             int64_t remain_ns = witness->cmt_next_deadline_ns - now_ns;
             int64_t remain_ms = remain_ns / 1000000;
             if (remain_ms < 0) remain_ms = 0;
             if (remain_ms < (int64_t)witness_poll_timeout_ms)
                 witness_poll_timeout_ms = (int)remain_ms;
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "CMT_FAULT reading the monotonic "
+                          "clock for the poll wait — waiting the full 50 ms; "
+                          "the consensus tick that follows reads the same "
+                          "clock and stops this node");
         }
     }
 

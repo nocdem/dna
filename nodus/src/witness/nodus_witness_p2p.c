@@ -1029,8 +1029,10 @@ struct nodus_witness_p2p {
     cmt_memr_host_t             memr_host;
     bool                        lane_prepared;
     nodus_cmt_store_t          *store;
-    cmt_now_fn                  lane_now;
+    cmt_now_fn                  lane_now;       /* the wall clock       */
     void                       *lane_now_ctx;
+    cmt_mono_fn                 lane_mono;      /* the wait clock       */
+    void                       *lane_mono_ctx;
     cmt_pb_arena_t              recv_arena;
     cmt_commit_sig_t           *commit_sigs;
     cmt_extended_commit_sig_t  *ext_sigs;
@@ -2757,6 +2759,18 @@ static int lane_now(void *ctx, cmt_time_t *out)
     return p->lane_now(p->lane_now_ctx, out);
 }
 
+/* The reactors' `mono` row (ctx = this host): the lane's WAIT clock,
+ * CLOCK_MONOTONIC (decision 2026-09-30-monotonic-waits.md). */
+static int lane_mono(void *ctx, int64_t *out_ns)
+{
+    nodus_witness_p2p_t *p = (nodus_witness_p2p_t *)ctx;
+
+    if (p->lane_mono == NULL || out_ns == NULL) {
+        return CMT_FAULT;
+    }
+    return p->lane_mono(p->lane_mono_ctx, out_ns);
+}
+
 static int lane_bs_base(void *ctx, int64_t *out)
 {
     nodus_witness_p2p_t *p = (nodus_witness_p2p_t *)ctx;
@@ -2901,8 +2915,10 @@ int nodus_witness_p2p_bsync_host_fill(nodus_witness_p2p_t *p,
     out->send                = bs_send;
     out->broadcast           = bs_broadcast;
     out->stop_peer_for_error = bs_stop_peer;
-    out->now                 = p->lane_now;       /* the consensus clock */
+    out->now                 = p->lane_now;       /* wall: bans, rate    */
     out->now_ctx             = p->lane_now_ctx;
+    out->mono                = p->lane_mono;      /* every wait          */
+    out->mono_ctx            = p->lane_mono_ctx;
     return CMT_OK;
 }
 
@@ -2936,14 +2952,18 @@ static int64_t lane_peer_height(void *ctx, int idx, bool *out_known)
 
 int nodus_witness_p2p_lane_prepare(nodus_witness_p2p_t *p,
                                    nodus_cmt_store_t *store,
-                                   cmt_now_fn now, void *now_ctx)
+                                   cmt_now_fn now, void *now_ctx,
+                                   cmt_mono_fn mono, void *mono_ctx)
 {
-    if (p == NULL || store == NULL || now == NULL || p->lane_prepared) {
+    if (p == NULL || store == NULL || now == NULL || mono == NULL ||
+        p->lane_prepared) {
         return CMT_FAULT;
     }
     p->store = store;
     p->lane_now = now;
     p->lane_now_ctx = now_ctx;
+    p->lane_mono = mono;
+    p->lane_mono_ctx = mono_ctx;
 
     memset(&p->conr_host, 0, sizeof(p->conr_host));
     p->conr_host.send = lane_send;
@@ -2956,13 +2976,14 @@ int nodus_witness_p2p_lane_prepare(nodus_witness_p2p_t *p,
     p->conr_host.bs_load_block_commit = lane_bs_commit;
     p->conr_host.bs_load_block_extended_commit = lane_bs_ext_commit;
     p->conr_host.now = lane_now;
+    p->conr_host.mono = lane_mono;
 
     memset(&p->memr_host, 0, sizeof(p->memr_host));
     p->memr_host.ctx = p;
     p->memr_host.send = lane_send;
     p->memr_host.stop_peer_for_error = lane_memr_stop;
     p->memr_host.peer_height = lane_peer_height;
-    p->memr_host.now = lane_now;
+    p->memr_host.mono = lane_mono;
 
     /* cmt_conr.h "THE RECEIVE ARENA": exactly one message's bound,
      * reset by cmt_conr_receive at the top of every call. */

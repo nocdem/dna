@@ -75,7 +75,8 @@ static cmt_conr_peer_slot_t *conr_slot(cmt_conr_t *conR, int peer_idx)
     return &conR->peers[peer_idx];
 }
 
-/** The host clock — THE clock (cmt_conr.h "DETERMINISM"). */
+/** The host's WALL clock — the two stamp sites :504 and :1379 only
+ *  (cmt_conr.h "DETERMINISM"). */
 static int conr_now(const cmt_conr_t *conR, cmt_time_t *out)
 {
     if (conR->host.now == NULL) {
@@ -83,6 +84,18 @@ static int conr_now(const cmt_conr_t *conR, cmt_time_t *out)
         return CMT_FAULT;
     }
     return conR->host.now(conR->host_ctx, out);
+}
+
+/** The host's WAIT clock (CLOCK_MONOTONIC) — the tick's instant, against
+ *  which every `time.Sleep` deadline is armed and checked (cmt_conr.h
+ *  "DETERMINISM"; decision 2026-09-30-monotonic-waits.md). */
+static int conr_mono(const cmt_conr_t *conR, int64_t *out_ns)
+{
+    if (conR->host.mono == NULL) {
+        QGP_LOG_ERROR(LOG_TAG, "host row `mono` is NULL");
+        return CMT_FAULT;
+    }
+    return conR->host.mono(conR->host_ctx, out_ns);
 }
 
 /** A `time.Sleep(d)` site (cmt_conr.h "THREADS → TICKS"): record the
@@ -374,6 +387,9 @@ int cmt_conr_init(cmt_conr_t *conR, cmt_cs_t *cs, bool wait_sync,
                   cmt_pb_arena_t *recv_arena)
 {
     if (conR == NULL || cs == NULL || host == NULL || recv_arena == NULL) {
+        return CMT_FAULT;
+    }
+    if (host->mono == NULL) {       /* the required wait clock (cmt_conr.h) */
         return CMT_FAULT;
     }
     memset(conR, 0, sizeof(*conR));
@@ -1874,7 +1890,6 @@ static int conr_query_maj23_pass(cmt_conr_t *conR, cmt_conr_peer_slot_t *slot,
 
 int cmt_conr_tick(cmt_conr_t *conR, int64_t *out_next_deadline_ns)
 {
-    cmt_time_t now;
     int64_t    now_ns;
     int64_t    deadline = INT64_MAX;
     size_t     i;
@@ -1890,11 +1905,10 @@ int cmt_conr_tick(cmt_conr_t *conR, int64_t *out_next_deadline_ns)
     if (!conR->running) {
         return CMT_OK;              /* every routine returns (:545, :707, :852) */
     }
-    rc = conr_now(conR, &now);                          /* once per tick */
+    rc = conr_mono(conR, &now_ns);                      /* once per tick */
     if (rc != CMT_OK) {
         return rc;
     }
-    now_ns = cmt_time_unix_nano(now);
 
     for (i = 0u; i < (size_t)CMT_CONR_MAX_PEERS; i++) {
         cmt_conr_peer_slot_t *slot = &conR->peers[i];

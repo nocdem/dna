@@ -60,8 +60,10 @@
  *   for every cmt_* target (cmt_memr.c does not read it). NOTHING ELSE —
  *   a DEFAULT BUILD is enough; `QGP_FAULT_INJECT` does not matter.
  * ENVIRONMENT: none. No variable is read or written.
- * No network, no files, no threads, NO WALL CLOCK — `now` is this file's
- * counter, advanced by 100 ms per round — no randomness.
+ * No network, no files, no threads, NO REAL CLOCK — the reactor's one
+ * clock is its monotonic `mono` row (decision 2026-09-30-monotonic-
+ * waits.md), here `net->mono_ns`, a counter from 7 s advanced by 100 ms
+ * per round — no randomness.
  * CONFIG: `cmt_mempool_config_default()` unless a case sets a field (the
  * reference's `cfg.TestConfig()` differs only in CacheSize, which no
  * case here depends on). The application is the kvstore stand-in of
@@ -324,7 +326,14 @@ struct net {
     node_t    *nodes[NET_MAX_NODES];
     int        n;
     link_t     links[NET_MAX_NODES][NET_MAX_NODES];
-    cmt_time_t now;
+    /** The reactor's only clock: the WAIT clock (CLOCK_MONOTONIC in
+     *  production, decision 2026-09-30-monotonic-waits.md), frozen and
+     *  advanced by `net_advance_ms`. Its base is small (7 s) and far
+     *  from any wall-clock value, so a deadline computed from a wall
+     *  instant could never equal `mono_ns + 100 ms`. */
+    int64_t    mono_ns;
+    /** A reactor-side failure of that clock (the fault case). */
+    bool       mono_fault;
 };
 
 static bool host_send(void *ctx, int peer_slot, uint8_t channel_id,
@@ -399,20 +408,20 @@ static int64_t host_peer_height(void *ctx, int peer_slot, bool *out_known)
     return node->peer_height[peer_slot];
 }
 
-static int host_now(void *ctx, cmt_time_t *out)
+static int host_mono(void *ctx, int64_t *out_ns)
 {
     node_t *node = (node_t *)ctx;
 
-    *out = node->net->now;
+    if (node->net->mono_fault) {
+        return CMT_FAULT;
+    }
+    *out_ns = node->net->mono_ns;
     return CMT_OK;
 }
 
 static void net_advance_ms(net_t *net, int64_t ms)
 {
-    int64_t nanos = (int64_t)net->now.nanos + ms * (int64_t)1000000;
-
-    net->now.seconds += nanos / (int64_t)1000000000;
-    net->now.nanos    = (int32_t)(nanos % (int64_t)1000000000);
+    net->mono_ns += ms * (int64_t)1000000;
 }
 
 /* reactor_test.go:321-340 — makeAndConnectReactors, minus the switches. */
@@ -422,8 +431,7 @@ static int net_make(net_t *net, int n, const cmt_mempool_config_t *cfg)
 
     memset(net, 0, sizeof(*net));
     net->n = n;
-    net->now.seconds = 1700000000;   /* an arbitrary frozen start */
-    net->now.nanos   = 0;
+    net->mono_ns = 7LL * 1000000000LL;   /* a frozen monotonic start */
     for (i = 0; i < n; i++) {
         node_t *node = (node_t *)calloc(1, sizeof(*node));
         size_t  s;
@@ -446,7 +454,7 @@ static int net_make(net_t *net, int n, const cmt_mempool_config_t *cfg)
         node->host.send                = host_send;
         node->host.stop_peer_for_error = host_stop_peer_for_error;
         node->host.peer_height         = host_peer_height;
-        node->host.now                 = host_now;
+        node->host.mono                = host_mono;
         if (cmt_memr_init(&node->memR, &node->cfg, &node->mem, &node->host) != CMT_OK) {
             return 1;                                         /* :330 */
         }
@@ -688,6 +696,11 @@ static int t_get_channels(void)
         cmt_memr_t r;
 
         CHECK(node != NULL, "alloc");
+        /* decision 2026-09-30-monotonic-waits.md: the wait clock is a
+         * REQUIRED row — refused with an otherwise valid config */
+        CHECK(cmt_memr_init(&r, &cfg, &node->mem, &node->host) == CMT_FAULT,
+              "NULL mono (the required wait clock) → FAULT");
+        node->host.mono = host_mono;   /* so the next refusal is MaxTxBytes' own */
         cfg.max_tx_bytes = -1;
         CHECK(cmt_memr_init(&r, &cfg, &node->mem, &node->host) == CMT_FAULT, "negative MaxTxBytes");
         CHECK(cmt_memr_init(NULL, &cfg, &node->mem, &node->host) == CMT_FAULT, "NULL");
@@ -733,8 +746,8 @@ static int t_broadcast_txs_message(void)
             CHECK(cmt_memr_tick(&net->nodes[i]->memR, &dl, &has) == CMT_OK, "tick");
             if (i == 0 && has) {
                 saw_deadline = true;
-                CHECK(dl == cmt_time_unix_nano(net->now) + CMT_MEMR_PEER_CATCHUP_SLEEP_NS,
-                      "the deadline is now + 100 ms (R3-M-1, :244)");
+                CHECK(dl == net->mono_ns + CMT_MEMR_PEER_CATCHUP_SLEEP_NS,
+                      "the deadline is mono + 100 ms (R3-M-1, :244)");
             }
         }
         for (src = 0; src < net->n; src++) {
@@ -1066,7 +1079,7 @@ static int t_routine_stops(void)
         nb->app_if.check_tx = tapp_check_tx; nb->app_if.flush = tapp_flush;
         CHECK(cmt_mem_init(&nb->mem, &nb->cfg, &nb->app_if, 0, NULL, NULL) == CMT_OK, "mem");
         nb->host.ctx = nb; nb->host.send = host_send; nb->host.stop_peer_for_error = host_stop_peer_for_error;
-        nb->host.peer_height = host_peer_height; nb->host.now = host_now;
+        nb->host.peer_height = host_peer_height; nb->host.mono = host_mono;
         nb->net = net;
         CHECK(cmt_memr_init(&nb->memR, &nb->cfg, &nb->mem, &nb->host) == CMT_OK, "memR");
         CHECK(cmt_memr_start(&nb->memR) == CMT_OK, "OnStart logs 'Tx broadcasting is disabled' (:63-65)");
@@ -1204,9 +1217,12 @@ static int t_sleeps(void)
         free(e);
     }
 
-    /* (a) :212-221 — peer state unknown: sleep 100 ms, cursor kept. */
+    /* (a) :212-221 — peer state unknown: sleep 100 ms, cursor kept. The
+     * deadline is on the reactor's WAIT clock (mono, decision
+     * 2026-09-30-monotonic-waits.md): `t0` is the fixture's monotonic
+     * instant, on a base (7 s) no wall-clock reading is near. */
     node->peer_known[0] = false;
-    t0 = cmt_time_unix_nano(net->now);
+    t0 = net->mono_ns;
     CHECK(cmt_memr_tick(&node->memR, &dl, &has) == CMT_OK, "tick");
     CHECK(has && dl == t0 + CMT_MEMR_PEER_CATCHUP_SLEEP_NS, "deadline now + 100 ms (:219)");
     CHECK(node->captured_n == 0, "nothing sent");
@@ -1234,7 +1250,7 @@ static int t_sleeps(void)
     CHECK(add_random_txs(&node->mem, 1, CMT_MEM_UNKNOWN_PEER_ID, &txs) == 0, "a second tx");
     CHECK(expected_msg(txs.v[0].data, txs.v[0].len, exp, sizeof(exp), &exp_len) == CMT_OK, "expected");
     node->link_full_override = true;
-    t0 = cmt_time_unix_nano(net->now);
+    t0 = net->mono_ns;
     CHECK(cmt_memr_tick(&node->memR, &dl, &has) == CMT_OK, "tick");
     CHECK(has && dl == t0 + CMT_MEMR_PEER_CATCHUP_SLEEP_NS, "refused send → deadline (:244)");
     CHECK(node->captured_n == 0, "nothing captured");
@@ -1257,7 +1273,7 @@ static int t_sleeps(void)
     CHECK(cmt_mem_tx_height((const cmt_mem_tx_t *)cmt_clist_elem_value(cmt_clist_back(&node->mem.txs))) == 5,
           "memTx.Height() 5 (:440)");
     node->peer_height[0] = 3;
-    t0 = cmt_time_unix_nano(net->now);
+    t0 = net->mono_ns;
     CHECK(cmt_memr_tick(&node->memR, &dl, &has) == CMT_OK, "tick");
     CHECK(has && dl == t0 + CMT_MEMR_PEER_CATCHUP_SLEEP_NS && node->captured_n == 0,
           "3 < 5 - 1: sleep, no send (:230-231)");
@@ -1273,11 +1289,16 @@ static int t_sleeps(void)
     {
         cmt_memr_host_t broken = node->host;
 
-        broken.now = NULL;
+        broken.mono = NULL;
         node->memR.host = &broken;
-        CHECK(cmt_memr_tick(&node->memR, &dl, &has) == CMT_FAULT, "NULL now → FAULT");
+        CHECK(cmt_memr_tick(&node->memR, &dl, &has) == CMT_FAULT, "NULL mono → FAULT");
         node->memR.host = &node->host;
         CHECK(cmt_memr_tick(NULL, &dl, &has) == CMT_FAULT, "NULL");
+        /* a monotonic clock that fails is a FAULT, never a silent 0
+         * (decision 2026-09-30-monotonic-waits.md) */
+        net->mono_fault = true;
+        CHECK(cmt_memr_tick(&node->memR, &dl, &has) == CMT_FAULT, "mono fault → FAULT");
+        net->mono_fault = false;
     }
     OK();
     txlist_free(&txs);

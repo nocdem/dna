@@ -398,6 +398,7 @@ int nodus_cmt_blockexec_init(nodus_cmt_blockexec_t *ctx,
                              nodus_cmt_wal_t *wal,
                              cmt_file_pv_t *pv,
                              cmt_now_fn now, void *now_ctx,
+                             cmt_mono_fn mono, void *mono_ctx,
                              cmt_cs_slots_t *slots,
                              cmt_pb_arena_t *ext_arena[2],
                              const nodus_cmt_host_limits_t *limits)
@@ -405,7 +406,8 @@ int nodus_cmt_blockexec_init(nodus_cmt_blockexec_t *ctx,
     int k;
     size_t n_changes = CMT_VALSET_MAX_CHANGES;
 
-    if (!ctx || !store || !app || !mempool || !evpool || !now || !limits) {
+    if (!ctx || !store || !app || !mempool || !evpool || !now || !mono ||
+        !limits) {
         return CMT_FAULT;
     }
     memset(ctx, 0, sizeof(*ctx));
@@ -417,6 +419,8 @@ int nodus_cmt_blockexec_init(nodus_cmt_blockexec_t *ctx,
     ctx->pv = pv;
     ctx->now = now;
     ctx->now_ctx = now_ctx;
+    ctx->mono = mono;
+    ctx->mono_ctx = mono_ctx;
     ctx->slots = slots;
     /* PACKAGE W4-X (register R3-W3-C2e-4): a plain NULL means "no arenas
      * at all" (the replay handshaker's throwaway executor, hs_exec_open,
@@ -2324,8 +2328,9 @@ static int host_decode_block(void *vctx, const uint8_t *bytes, size_t len,
     return rc == CMT_FAULT ? CMT_FAULT : CMT_REJECT;
 }
 
-/* ── the clock and the timer ───────────────────────────────────────── */
+/* ── the clocks and the timer (header, "DETERMINISM") ──────────────── */
 
+/* The WALL clock row — every `cmt_cs` stamp. */
 static int host_now(void *vctx, cmt_time_t *out)
 {
     nodus_cmt_blockexec_t *ctx = (nodus_cmt_blockexec_t *)vctx;
@@ -2337,20 +2342,23 @@ static int host_now(void *vctx, cmt_time_t *out)
 }
 
 /* ticker.go:126 `timer.Reset(ti.Duration)` — one pending deadline. A
- * non-positive duration fires on the next tick (ticker.go:16, :124). */
+ * non-positive duration fires on the next tick (ticker.go:16, :124).
+ * A Go runtime timer is MONOTONIC, so the deadline is armed on `mono`,
+ * never on the wall `now` (decision 2026-09-30-monotonic-waits.md): a
+ * wall-clock step cannot delay or hasten a pending timeout. The duration
+ * itself may have been computed from wall instants by the state machine
+ * (cmt_cs.c at state.go:558 / :1028) — that is the reference's split too. */
 static int host_timer_arm(void *vctx, int64_t duration_ns)
 {
     nodus_cmt_blockexec_t *ctx = (nodus_cmt_blockexec_t *)vctx;
-    cmt_time_t now;
     int64_t    now_ns;
 
-    if (!ctx || !ctx->now) {
+    if (!ctx || !ctx->mono) {
         return CMT_FAULT;
     }
-    if (ctx->now(ctx->now_ctx, &now) != CMT_OK) {
+    if (ctx->mono(ctx->mono_ctx, &now_ns) != CMT_OK) {
         return CMT_FAULT;
     }
-    now_ns = cmt_time_unix_nano(now);
     if (duration_ns <= 0) {
         ctx->timer_deadline_ns = now_ns;
     } else if (duration_ns > INT64_MAX - now_ns) {
@@ -2375,9 +2383,9 @@ static int host_timer_disarm(void *vctx)
     return CMT_OK;
 }
 
-bool nodus_cmt_host_timer_due(nodus_cmt_blockexec_t *ctx, int64_t now_ns)
+bool nodus_cmt_host_timer_due(nodus_cmt_blockexec_t *ctx, int64_t mono_ns)
 {
-    if (!ctx || !ctx->timer_armed || now_ns < ctx->timer_deadline_ns) {
+    if (!ctx || !ctx->timer_armed || mono_ns < ctx->timer_deadline_ns) {
         return false;
     }
     ctx->timer_armed = false;             /* the channel receive */

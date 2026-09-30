@@ -45,8 +45,9 @@
  *                    group.md item 4b
  *   1 decode_block   state.go:2005-2019 → nodus_cmt_block_decode into the
  *                    slot's storage
- *   1 now            the ONE clock, forwarded
- *   2 timer          timer_arm, timer_disarm — one pending deadline
+ *   1 now            the WALL clock, forwarded
+ *   2 timer          timer_arm, timer_disarm — one pending deadline, on
+ *                    the executor's MONOTONIC clock (`mono`, not a row)
  * The original dispatch counted 27 when the table had 26 (reported then);
  * the repair row makes it 27.
  *
@@ -111,16 +112,22 @@
  * (D-25 rev 3) is the only bound it knows.
  *
  * ── DETERMINISM ────────────────────────────────────────────────────────
- * The clock is `now` and is read by this module at exactly TWO sites of
- * its own: `timer_arm` (`now + duration`, ticker.go:126) and the block
- * time tolerance in `nodus_cmt_validate_block` (cometbft@v0.38.26
- * state/validation.go:124-129 — "block time < wall clock + tolerance",
- * read ONLY when the executor's tolerance is > 0; the handshaker's
- * executor has none, consensus/replay.go:531). That second read decides
- * whether THIS node accepts a block; it never derives state, and a
- * refusal is local to the node whose clock trails (decision addendum
- * "Ek — pin v0.38.26" in 2026-09-25-consensus-clock-scope-correction.md).
- * Every other read is `cmt_cs`'s through the forwarded row. No randomness, no
+ * TWO clocks (decision docs/plans/decisions/2026-09-30-monotonic-waits.md),
+ * each read by this module at exactly ONE site of its own:
+ *   · `mono` (CLOCK_MONOTONIC) — `timer_arm` (`mono + duration`,
+ *     ticker.go:126: a Go runtime timer is monotonic); the timer's
+ *     deadline, `nodus_cmt_host_timer_due` and
+ *     `nodus_cmt_host_next_deadline` all speak this clock;
+ *   · `now` (the wall clock) — the block time tolerance in
+ *     `nodus_cmt_validate_block` (cometbft@v0.38.26
+ *     state/validation.go:124-129 — "block time < wall clock + tolerance",
+ *     read ONLY when the executor's tolerance is > 0; the handshaker's
+ *     executor has none, consensus/replay.go:531). That read decides
+ *     whether THIS node accepts a block; it never derives state, and a
+ *     refusal is local to the node whose clock trails (decision addendum
+ *     "Ek — pin v0.38.26" in 2026-09-25-consensus-clock-scope-correction.md).
+ * Every other wall read is `cmt_cs`'s through the forwarded `now` row.
+ * The two clocks are never compared with each other. No randomness, no
  * unordered iteration (validator index order, transaction order,
  * evidence order — all the reference's).
  *
@@ -493,8 +500,16 @@ typedef struct {
     /* the other host rows forward to */
     nodus_cmt_wal_t        *wal;
     cmt_file_pv_t          *pv;         /* raw_sign is R3-C2's binding */
+    /** The WALL clock: the `now` row of the table (every `cmt_cs` stamp)
+     *  and the block-time tolerance (state/validation.go:124-129). */
     cmt_now_fn              now;
     void                   *now_ctx;
+    /** The WAIT clock, CLOCK_MONOTONIC: the timer's deadline is armed on
+     *  it (`timer_arm`) and `nodus_cmt_host_timer_due` /
+     *  `nodus_cmt_host_next_deadline` speak it (decision
+     *  2026-09-30-monotonic-waits.md). REQUIRED at init. */
+    cmt_mono_fn             mono;
+    void                   *mono_ctx;
     cmt_cs_slots_t         *slots;      /* the block slots the rows write */
     cmt_pb_arena_t         *ext_arena[2]; /* cmt_cs.h "OWNERSHIP" (2), by
                                              height parity (PACKAGE W4-X) */
@@ -508,7 +523,7 @@ typedef struct {
      *  `nodus_cmt_blockexec_set_block_time_tolerance`. */
     int64_t block_time_tolerance;
 
-    /* ticker.go as one pending deadline */
+    /* ticker.go as one pending deadline, on the `mono` clock */
     bool    timer_armed;
     int64_t timer_deadline_ns;
 
@@ -572,8 +587,10 @@ typedef struct {
 /**
  * execution.go:58-83 `NewBlockExecutor(stateStore, logger, proxyApp,
  * mempool, evpool, blockStore, options...)` — the six stored fields plus
- * the forwarded rows; allocates every scratch buffer.
- * @return CMT_OK, CMT_FAULT (NULL, or an allocation failed).
+ * the forwarded rows; allocates every scratch buffer. `now` is the wall
+ * clock, `mono` the timer's monotonic clock (both required).
+ * @return CMT_OK, CMT_FAULT (NULL — including a NULL `now` or `mono` — or
+ *         an allocation failed).
  */
 int nodus_cmt_blockexec_init(nodus_cmt_blockexec_t *ctx,
                              nodus_cmt_store_t *store,
@@ -583,6 +600,7 @@ int nodus_cmt_blockexec_init(nodus_cmt_blockexec_t *ctx,
                              nodus_cmt_wal_t *wal,
                              cmt_file_pv_t *pv,
                              cmt_now_fn now, void *now_ctx,
+                             cmt_mono_fn mono, void *mono_ctx,
                              cmt_cs_slots_t *slots,
                              cmt_pb_arena_t *ext_arena[2],
                              const nodus_cmt_host_limits_t *limits);
@@ -677,12 +695,16 @@ int nodus_cmt_blockexec_prune_blocks(nodus_cmt_blockexec_t *ctx,
 
 /* ── the timer, C only (the server tick calls these) ───────────────── */
 
-/** true when armed and `now_ns` has reached the deadline; a true return
+/** true when armed and `mono_ns` has reached the deadline; a true return
  *  CONSUMES the expiry (the ticker's channel receive, ticker.go:130-134),
- *  so it is delivered exactly once. */
-bool nodus_cmt_host_timer_due(nodus_cmt_blockexec_t *ctx, int64_t now_ns);
+ *  so it is delivered exactly once. `mono_ns` MUST be a reading of the
+ *  executor's `mono` clock — the clock the deadline was armed on; a wall
+ *  reading here would leave the timer never or always due (decision
+ *  2026-09-30-monotonic-waits.md, the half-migration hazard). */
+bool nodus_cmt_host_timer_due(nodus_cmt_blockexec_t *ctx, int64_t mono_ns);
 
-/** @return true with the deadline when armed. */
+/** @return true with the deadline (on the executor's `mono` clock) when
+ *  armed. */
 bool nodus_cmt_host_next_deadline(const nodus_cmt_blockexec_t *ctx,
                                   int64_t *out_deadline_ns);
 

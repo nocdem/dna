@@ -106,10 +106,13 @@
  *      whole, so its PeerState side effects (SetHasVote, SetHasProposal
  *      …) are applied twice; they are idempotent. No scenario here fills
  *      the 1000-deep queue; the rule is stated, not exercised.
- *  R3. THE CLOCK ADVANCES IN FIXED QUANTA, ONE VALUE FOR ALL NODES. The
+ *  R3. THE CLOCKS ADVANCE IN FIXED QUANTA, ONE VALUE FOR ALL NODES. The
  *      reactor's fourteen `time.Sleep` sites are deadlines against the
- *      host clock (cmt_conr.h), so a frozen clock would put every routine
- *      to sleep forever. Each round advances every node's `tc->now` by
+ *      host's WAIT clock (`mono`, cmt_conr.h; decision
+ *      2026-09-30-monotonic-waits.md), so a frozen clock would put every
+ *      routine to sleep forever. Each round advances every node's
+ *      `tc->now` (the wall clock) AND the shared `net->mono_ns` (on its
+ *      own, disjoint base) by
  *      R_ROUND_NS (5 ms = PeerGossipSleepDuration of the test config, so
  *      one gossip sleep is one round and one maj23 sleep is fifty). Real
  *      nodes have different clocks and different sleep/tick ratios; a
@@ -441,8 +444,14 @@ struct r_net_s {
     r_node_t   nodes[R_MAX_NODES];
     bool       connected[R_MAX_NODES][R_MAX_NODES];
     r_link_t   links[R_MAX_NODES][R_MAX_NODES];
-    /** One clock for every node (R3), unix nanoseconds. */
+    /** One clock for every node (R3), unix nanoseconds — the WALL clock
+     *  (`tc->now`, the state machine's and the reactor's stamp clock). */
     int64_t    clock_ns;
+    /** One WAIT clock for every node (R3): the reactors' `mono` row
+     *  (decision 2026-09-30-monotonic-waits.md), advanced in lockstep
+     *  with `clock_ns` but on a DISJOINT base (7 s against the genesis
+     *  instant), so a sleep armed on one and read on the other fails. */
+    int64_t    mono_ns;
     int64_t    rounds;
     /** Scratch for marshalling a hand-built message. */
     cmt_pb_cons_message_t *pb_scratch;
@@ -1277,6 +1286,18 @@ static int r_now_node(void *ctx, cmt_time_t *out)
     return tc_now(((r_node_t *)ctx)->tc, out);
 }
 
+/** The reactor's WAIT clock (`mono` row, cmt_conr.h "DETERMINISM"): the
+ *  network's shared monotonic counter (R3). */
+static int r_mono_node(void *ctx, int64_t *out_ns)
+{
+    (void)ctx;
+    if (g_r_net == NULL || out_ns == NULL) {
+        return CMT_FAULT;
+    }
+    *out_ns = g_r_net->mono_ns;
+    return CMT_OK;
+}
+
 /* ══ configuration ════════════════════════════════════════════════════ */
 
 /** config.go:1037-1052 — `TestConsensusConfig()` over the defaults
@@ -1498,6 +1519,7 @@ static r_net_t *r_net_new(size_t n, size_t nvals, bool only_once)
         host.bs_load_block_commit          = r_bs_load_block_commit_node;
         host.bs_load_block_extended_commit = r_bs_load_block_extended_commit_node;
         host.now                           = r_now_node;
+        host.mono                          = r_mono_node;
         if (cmt_conr_init(&node->conR, tc->cs, true, &host, node,
                           &node->recv_arena) != CMT_OK) {
             fprintf(stderr, "r_net_new: cmt_conr_init failed\n");
@@ -1521,8 +1543,10 @@ static r_net_t *r_net_new(size_t n, size_t nvals, bool only_once)
             }
         }
     }
-    /* The shared clock starts at the fixture's frozen genesis instant. */
+    /* The shared clock starts at the fixture's frozen genesis instant;
+     * the shared wait clock at 7 s (R3). */
     net->clock_ns = (int64_t)TC_GENESIS_SECONDS * CMT_SECOND;
+    net->mono_ns  = (int64_t)7 * CMT_SECOND;
     return net;
 }
 
@@ -1717,6 +1741,7 @@ static int r_round(r_net_t *net)
     size_t i;
 
     net->clock_ns += R_ROUND_NS;
+    net->mono_ns  += R_ROUND_NS;
     for (i = 0u; i < net->n; i++) {
         tc_t *tc = net->nodes[i].tc;
 
@@ -2682,6 +2707,105 @@ static int s_receive_panics_if_init_peer_hasnt_been_called_yet(void)
 }
 
 /**
+ * NO REFERENCE TEST — decision 2026-09-30-monotonic-waits.md (design G1):
+ * the reactor's `time.Sleep` deadlines (a routine's `not_before_ns`, and
+ * the deadline `cmt_conr_tick` reports) are armed and checked on the
+ * host's MONOTONIC `mono` row, never on the wall `now` row. One node, a
+ * mock peer (as the case above) whose three routines run and sleep; the
+ * wall clock (`tc->now`) is then stepped an hour BACK and an hour
+ * FORWARD with the monotonic clock held: no sleeping routine wakes and no
+ * deadline moves; the monotonic clock reaches the earliest deadline: that
+ * routine runs. Against 21afb561: does not compile (the host table had
+ * no `mono` row); with the row wired but the tick still reading the wall
+ * `now` (the old code), every deadline sits near the genesis instant
+ * (~1.7e18 ns) and none lies in (mono, mono + 250 ms].
+ */
+static int s_sleep_deadline_follows_mono(void)
+{
+    r_net_t              *net = r_net_new(1u, 1u, true);
+    uint8_t               mock_id[CMT_PB_PEER_ID_MAX];
+    cmt_conr_peer_slot_t *slot;
+    tc_t                 *tc;
+    cmt_time_t            wall0;
+    int64_t               mono0;
+    int64_t               dl = 0;
+    int64_t               nb[CMT_CONR_NUM_ROUTINES];
+    bool                  asleep[CMT_CONR_NUM_ROUTINES];
+    const int64_t         max_sleep = (int64_t)250 * CMT_MILLISECOND; /* :1049 */
+    int                   r;
+    int                   n_asleep = 0;
+    bool                  woke = false;
+
+    R_CHECK(net != NULL, "network");
+    R_STEP(r_start_consensus_net(net, 1u));
+    memset(mock_id, 0x5A, sizeof(mock_id));
+    R_CHECK(cmt_conr_init_peer(&net->nodes[0].conR, 1, mock_id) == CMT_OK,
+            "InitPeer(peer)");
+    R_CHECK(cmt_conr_add_peer(&net->nodes[0].conR, 1) == CMT_OK, "AddPeer(peer)");
+    tc    = net->nodes[0].tc;
+    wall0 = tc->now;
+    mono0 = net->mono_ns;
+    R_CHECK(cmt_conr_tick(&net->nodes[0].conR, &dl) == CMT_OK, "tick");
+    slot = &net->nodes[0].conR.peers[1];
+    for (r = 0; r < (int)CMT_CONR_NUM_ROUTINES; r++) {
+        asleep[r] = slot->asleep[r];
+        nb[r]     = slot->not_before_ns[r];
+        if (asleep[r]) {
+            n_asleep++;
+            R_CHECK(nb[r] > mono0 && nb[r] <= mono0 + max_sleep,
+                    "a sleeping routine's deadline is mono + a config sleep");
+        }
+    }
+    R_CHECK(n_asleep > 0, "a peer that answers nothing puts a routine to sleep");
+    R_CHECK(dl > mono0 && dl <= mono0 + max_sleep,
+            "the tick's deadline is on the monotonic clock");
+
+    /* the wall clock steps an hour BACK, then an hour FORWARD; the
+     * monotonic clock holds: nothing that sleeps wakes, no deadline moves */
+    tc->now.seconds = wall0.seconds - 3600;
+    R_CHECK(cmt_conr_tick(&net->nodes[0].conR, &dl) == CMT_OK, "tick, wall −1 h");
+    tc->now.seconds = wall0.seconds + 3600;
+    R_CHECK(cmt_conr_tick(&net->nodes[0].conR, &dl) == CMT_OK, "tick, wall +1 h");
+    for (r = 0; r < (int)CMT_CONR_NUM_ROUTINES; r++) {
+        if (asleep[r]) {
+            R_CHECK(slot->asleep[r] && slot->not_before_ns[r] == nb[r],
+                    "a wall-clock step neither wakes a routine nor moves its deadline");
+        }
+    }
+    /* the monotonic clock reaches the earliest deadline: that routine runs
+     * (it is no longer asleep until that same instant) */
+    tc->now = wall0;
+    dl = INT64_MAX;
+    for (r = 0; r < (int)CMT_CONR_NUM_ROUTINES; r++) {
+        if (asleep[r] && nb[r] < dl) {
+            dl = nb[r];
+        }
+    }
+    net->mono_ns = dl;
+    R_CHECK(cmt_conr_tick(&net->nodes[0].conR, NULL) == CMT_OK, "tick at mono = deadline");
+    for (r = 0; r < (int)CMT_CONR_NUM_ROUTINES; r++) {
+        if (asleep[r] && nb[r] == dl &&
+            !(slot->asleep[r] && slot->not_before_ns[r] == dl)) {
+            woke = true;
+        }
+    }
+    R_CHECK(woke, "the routine due at that monotonic instant ran");
+
+    /* the wait clock is a REQUIRED row */
+    {
+        cmt_conr_host_t h = net->nodes[0].conR.host;
+        cmt_conr_t      c;
+
+        h.mono = NULL;
+        R_CHECK(cmt_conr_init(&c, tc->cs, true, &h, &net->nodes[0],
+                              &net->nodes[0].recv_arena) == CMT_FAULT,
+                "cmt_conr_init refuses a host with no mono row");
+    }
+    r_net_free(net);
+    return 0;
+}
+
+/**
  * PACKAGE C2e (register R3-A-5, CLOSING) — the production defect measured
  * at `/tmp/stagef-20260917T024138Z` (seven nodes, production constants):
  * the chain stopped at height 347 after ≈ 1 hour because `recv_arena` was
@@ -3450,6 +3574,7 @@ int main(void)
         { "vote_message_validate_basic",     s_vote_message_validate_basic },
         { "receive_does_not_panic_if_add_peer_hasnt_been_called_yet",
           s_receive_does_not_panic_if_add_peer_hasnt_been_called_yet },
+        { "sleep_deadline_follows_mono",     s_sleep_deadline_follows_mono },
         { "receive_panics_if_init_peer_hasnt_been_called_yet",
           s_receive_panics_if_init_peer_hasnt_been_called_yet },
         { "recv_arena_resets_every_receive",

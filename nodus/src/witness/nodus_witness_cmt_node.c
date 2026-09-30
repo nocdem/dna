@@ -430,12 +430,13 @@ static int hs_assert_app_hash_from_state(const uint8_t *app_hash, size_t len,
  * invariant that held before this package (no arena reachable here)
  * still holds after it.
  *
- * THE CLOCK IS NOT NULL, and it is not read either. `blockexec_init`
- * refuses a NULL `now` outright (host.c:381), so one must be passed; the
- * three readers of `ctx->now` in the whole host are `host_now` and
- * `host_timer_arm`, the `cmt_cs` seam's clock and ticker rows — neither
- * reachable from `ExecCommitBlock` or `ApplyBlock`, the only entries a
- * replay uses — and the block time tolerance in
+ * THE CLOCKS ARE NOT NULL, and they are not read either. `blockexec_init`
+ * refuses a NULL `now` or `mono` outright, so both must be passed. The
+ * one reader of `ctx->mono` in the whole host is `host_timer_arm`, the
+ * `cmt_cs` seam's ticker row (decision 2026-09-30-monotonic-waits.md);
+ * the readers of `ctx->now` are `host_now`, the seam's clock row —
+ * neither row reachable from `ExecCommitBlock` or `ApplyBlock`, the only
+ * entries a replay uses — and the block time tolerance in
  * `nodus_cmt_validate_block` (cometbft@v0.38.26 state/validation.go:
  * 124-129), which `ApplyBlock` does reach but which reads the clock only
  * when the executor's tolerance is > 0. This executor never gets one:
@@ -457,8 +458,8 @@ static int hs_exec_open(nodus_cmt_handshaker_t *h, nodus_cmt_app_t *app,
     }
     if (nodus_cmt_blockexec_init(be, h->store, app, &h->nop_mempool,
                                  &h->empty_evpool, NULL, NULL,
-                                 h->now, h->now_ctx, NULL, NULL,
-                                 &h->limits) != CMT_OK) {
+                                 h->now, h->now_ctx, h->mono, h->mono_ctx,
+                                 NULL, NULL, &h->limits) != CMT_OK) {
         free(be);
         return CMT_FAULT;
     }
@@ -1012,12 +1013,13 @@ int nodus_cmt_handshaker_init(nodus_cmt_handshaker_t *h,
                               const cmt_genesis_doc_t *gendoc,
                               nodus_witness_t *w,
                               cmt_now_fn now, void *now_ctx,
+                              cmt_mono_fn mono, void *mono_ctx,
                               const nodus_cmt_host_limits_t *limits)
 {
     int rc;
 
-    if (!h || !store || !state || !gendoc || !w || !now || !limits ||
-        limits->max_txs == 0 || limits->tx_arena_cap == 0) {
+    if (!h || !store || !state || !gendoc || !w || !now || !mono ||
+        !limits || limits->max_txs == 0 || limits->tx_arena_cap == 0) {
         return CMT_FAULT;
     }
     memset(h, 0, sizeof(*h));
@@ -1026,6 +1028,8 @@ int nodus_cmt_handshaker_init(nodus_cmt_handshaker_t *h,
     h->w            = w;
     h->now          = now;
     h->now_ctx      = now_ctx;
+    h->mono         = mono;
+    h->mono_ctx     = mono_ctx;
     h->limits       = *limits;
     h->nblocks      = 0;                                        /* :222     */
     h->nop_mempool  = nodus_cmt_nop_mempool;                    /* :531     */
@@ -1648,14 +1652,16 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
     cmt_pb_arena_t         *ext_arena_pair[2];
     int                     rc = CMT_FAULT;
 
-    if (!n || !w || !w->db || !opts || !opts->now ||
+    if (!n || !w || !w->db || !opts || !opts->now || !opts->mono ||
         !opts->privval_state_path || !opts->privval_state_path[0]) {
         return CMT_FAULT;
     }
     memset(n, 0, sizeof(*n));
-    n->w       = w;
-    n->now     = opts->now;
-    n->now_ctx = opts->now_ctx;
+    n->w        = w;
+    n->now      = opts->now;
+    n->now_ctx  = opts->now_ctx;
+    n->mono     = opts->mono;
+    n->mono_ctx = opts->mono_ctx;
 
     /* ── 1. node.go:296-303 — initDBs + NewStore ──────────────────────
      * `DiscardABCIResponses` is false, config/config.go:1154's default
@@ -1797,7 +1803,9 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
      * instead of an invented time — the same argument, and the same
      * argument value, as the two call sites that already exist
      * (nodus_witness_v2_gen.c:2570, test_cmt_app.c:810). The node's own
-     * `n->now` is for the vote stamp and the timeouts, never for this. */
+     * `n->now` is for the vote stamp and the other stamps (its timeouts
+     * run on `n->mono`, decision 2026-09-30-monotonic-waits.md), never
+     * for this. */
     rc = nodus_cmt_ss_load_from_db_or_genesis_doc(&n->store, &n->doc,
                                                   NULL, NULL,
                                                   scratch, n->state);
@@ -1945,7 +1953,8 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
         goto fail;
     }
     if (nodus_cmt_handshaker_init(hs, &n->store, n->state, &n->doc, w,
-                                  n->now, n->now_ctx, &n->limits) != CMT_OK) {
+                                  n->now, n->now_ctx, n->mono, n->mono_ctx,
+                                  &n->limits) != CMT_OK) {
         goto fail;
     }
     if (nodus_cmt_handshaker_handshake(hs, &n->app_if) != CMT_OK) {
@@ -2071,7 +2080,8 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
     ext_arena_pair[1] = &n->ext_arena[1];
     if (nodus_cmt_blockexec_init(n->be, &n->store, &n->app_if, &n->mem_if,
                                  &n->ev_if, NULL, n->pv, n->now,
-                                 n->now_ctx, n->slots, ext_arena_pair,
+                                 n->now_ctx, n->mono, n->mono_ctx,
+                                 n->slots, ext_arena_pair,
                                  &n->limits) != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "the block executor could not be built");
         goto fail;
@@ -2238,8 +2248,8 @@ int nodus_cmt_node_start(nodus_cmt_node_t *n)
                           "refusing to start");
             return CMT_FAULT;
         }
-        if (nodus_cmt_wal_open(&n->wal, walfile, n->now, n->now_ctx)
-            != CMT_OK) {
+        if (nodus_cmt_wal_open(&n->wal, walfile, n->now, n->now_ctx,
+                               n->mono, n->mono_ctx) != CMT_OK) {
             QGP_LOG_ERROR(LOG_TAG, "%s", "the consensus WAL could not be "
                           "opened");
             return CMT_FAULT;

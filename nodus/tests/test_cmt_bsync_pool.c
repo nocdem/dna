@@ -57,8 +57,8 @@
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * COMPILE FLAGS: `CMT_SOFTWARE_VERSION` (every cmt_* target). A DEFAULT
  *   BUILD is enough.
- * ENVIRONMENT: nothing. The clock is a variable in this file; no network,
- *   no files, no randomness. Safe under `ctest -j`.
+ * ENVIRONMENT: nothing. The two clocks are values in this file (T0/M0,
+ *   `MONO()`); no network, no files, no randomness. Safe under `ctest -j`.
  *
  * ── WHAT IT LEAVES BEHIND ──────────────────────────────────────────────
  * Nothing.
@@ -101,7 +101,17 @@ static int g_checks = 0;
 
 #define MS  ((int64_t)1000000)
 #define SEC ((int64_t)1000000000)
+/* TWO clocks (cmt_bsync_pool.h "THE CLOCK"; decision
+ * 2026-09-30-monotonic-waits.md). Every case writes its instants on ONE
+ * timeline based at T0; the WALL reading of an instant is the instant
+ * itself (the ban list, the rate monitors), its MONOTONIC reading is
+ * `MONO(t)`, the same offset from a DISJOINT base M0 (7 s against
+ * ~1.7e9 s). So a function that took a wall value where the reference
+ * reads the monotonic clock — or the reverse — is off by ~54 years and
+ * fails its case. `t_clock_split` moves the two apart on purpose. */
 #define T0  ((int64_t)1700000000 * SEC)
+#define M0  ((int64_t)7 * SEC)
+#define MONO(t) ((t) - T0 + M0)
 
 /* ══ the recording host ═══════════════════════════════════════════════ */
 
@@ -201,7 +211,7 @@ static int run(cmt_bsync_pool_t *pool, int64_t from, int64_t to)
     int64_t t;
 
     for (t = from; t <= to; t += 2 * MS) {
-        if (cmt_bsync_pool_tick(pool, t, NULL) != CMT_OK) {
+        if (cmt_bsync_pool_tick(pool, MONO(t), t, NULL) != CMT_OK) {
             return 1;
         }
     }
@@ -221,23 +231,24 @@ static int t_conn_wait_and_requests(void)
     cmt_bsync_block_t *f, *s, *popped = NULL;
 
     CHECK(pool_new(&pool, 1) == CMT_OK, "init"); OK();
-    CHECK(cmt_bsync_pool_start(&pool, T0) == CMT_OK, "start"); OK();
+    CHECK(cmt_bsync_pool_start(&pool, M0) == CMT_OK, "start"); OK();
     CHECK(cmt_bsync_pool_set_peer_range(&pool, PA, 1, 5, T0) == CMT_OK, "peer A"); OK();
-    CHECK(cmt_bsync_pool_tick(&pool, T0 + 1 * SEC, &dl) == CMT_OK, "tick"); OK();
+    CHECK(cmt_bsync_pool_tick(&pool, MONO(T0 + 1 * SEC), T0 + 1 * SEC, &dl) == CMT_OK,
+          "tick"); OK();
     CHECK(g_nreq == 0, "nothing before peerConnWait (:126-132)"); OK();
-    CHECK(dl == T0 + 3 * SEC, "the deadline is start + 3 s"); OK();
+    CHECK(dl == M0 + 3 * SEC, "the deadline is start + 3 s, monotonic"); OK();
 
     CHECK(run(&pool, T0 + 3 * SEC, T0 + 3 * SEC + 20 * MS) == 0, "run"); OK();
     CHECK(pool.n_requesters == 5, "requesters up to maxPeerHeight (:139)"); OK();
     CHECK(count_req(1, PA) == 1 && count_req(5, PA) == 1,
           "each height asked of A once"); OK();
     CHECK(count_req(6, PA) == 0, "nothing above the peer's height"); OK();
-    CHECK(!cmt_bsync_pool_is_caught_up(&pool, T0 + 4 * SEC),
+    CHECK(!cmt_bsync_pool_is_caught_up(&pool, MONO(T0 + 4 * SEC)),
           "height 1 < 5 − 1: not caught up"); OK();
 
     /* blocks arrive from A, in any order */
-    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(2), T0 + 4 * SEC) == CMT_OK, "add 2"); OK();
-    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), T0 + 4 * SEC) == CMT_OK, "add 1"); OK();
+    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(2), MONO(T0 + 4 * SEC), T0 + 4 * SEC) == CMT_OK, "add 2"); OK();
+    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), MONO(T0 + 4 * SEC), T0 + 4 * SEC) == CMT_OK, "add 1"); OK();
     cmt_bsync_pool_peek_two_blocks(&pool, &f, &s);
     CHECK(f != NULL && s != NULL && f->block.header.height == 1 &&
           s->block.header.height == 2, "peek 1 and 2 (:236-242)"); OK();
@@ -247,16 +258,16 @@ static int t_conn_wait_and_requests(void)
     CHECK(cmt_bsync_pool_height(&pool) == 2, "height advanced (:260)"); OK();
 
     /* a block from an ID that was not asked: WRONG_SENDER naming it */
-    CHECK(cmt_bsync_pool_add_block(&pool, PX, blk(3), T0 + 4 * SEC) == CMT_REJECT,
+    CHECK(cmt_bsync_pool_add_block(&pool, PX, blk(3), MONO(T0 + 4 * SEC), T0 + 4 * SEC) == CMT_REJECT,
           "refused"); OK();
     CHECK(has_err(PX, CMT_BSYNC_PEER_ERR_WRONG_SENDER),
           "the error names the sender's ID (:339-341)"); OK();
     /* a block above the height with no requester: UNEXPECTED */
-    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(9), T0 + 4 * SEC) == CMT_REJECT &&
+    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(9), MONO(T0 + 4 * SEC), T0 + 4 * SEC) == CMT_REJECT &&
           has_err(PA, CMT_BSYNC_PEER_ERR_UNEXPECTED), "unexpected (:328-333)"); OK();
     /* a block below the height: already committed, no error */
     g_nerr = 0;
-    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), T0 + 4 * SEC) == CMT_REJECT &&
+    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), MONO(T0 + 4 * SEC), T0 + 4 * SEC) == CMT_REJECT &&
           g_nerr == 0, "already committed (:335)"); OK();
 
     cmt_bsync_pool_stop(&pool);
@@ -276,7 +287,7 @@ static int t_second_peer_and_redo(void)
     cmt_bsync_block_t *f, *s;
 
     CHECK(pool_new(&pool, 1) == CMT_OK, "init"); OK();
-    CHECK(cmt_bsync_pool_start(&pool, T0) == CMT_OK, "start"); OK();
+    CHECK(cmt_bsync_pool_start(&pool, M0) == CMT_OK, "start"); OK();
     CHECK(cmt_bsync_pool_set_peer_range(&pool, PA, 1, 2, T0) == CMT_OK, "A"); OK();
     CHECK(cmt_bsync_pool_set_peer_range(&pool, PB, 1, 2, T0) == CMT_OK, "B"); OK();
     CHECK(run(&pool, T0 + 3 * SEC, T0 + 3 * SEC + 10 * MS) == 0, "run"); OK();
@@ -285,8 +296,8 @@ static int t_second_peer_and_redo(void)
           "height 1 asked of BOTH peers (:845-848)"); OK();
 
     /* B answers height 1 first; A answers too (not an error, :690). */
-    CHECK(cmt_bsync_pool_add_block(&pool, PB, blk(1), T0 + 4 * SEC) == CMT_OK, "B's 1"); OK();
-    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), T0 + 4 * SEC) == CMT_OK,
+    CHECK(cmt_bsync_pool_add_block(&pool, PB, blk(1), MONO(T0 + 4 * SEC), T0 + 4 * SEC) == CMT_OK, "B's 1"); OK();
+    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), MONO(T0 + 4 * SEC), T0 + 4 * SEC) == CMT_OK,
           "A's 1 is not an error"); OK();
     CHECK(strcmp(cmt_bsync_pool_requester(&pool, 1)->got_block_from, PB) == 0,
           "the first copy is kept (:688-695)"); OK();
@@ -297,14 +308,15 @@ static int t_second_peer_and_redo(void)
     CHECK(strcmp(removed, PB) == 0, "the deliverer's ID (:277)"); OK();
     CHECK(cmt_bsync_pool_peer(&pool, PB) == NULL, "B removed (:279)"); OK();
     CHECK(cmt_bsync_pool_is_peer_banned(&pool, PB, T0 + 5 * SEC), "B banned (:280)"); OK();
-    CHECK(cmt_bsync_pool_tick(&pool, T0 + 5 * SEC, NULL) == CMT_OK, "tick"); OK();
+    CHECK(cmt_bsync_pool_tick(&pool, MONO(T0 + 5 * SEC), T0 + 5 * SEC, NULL) == CMT_OK,
+          "tick"); OK();
     cmt_bsync_pool_peek_two_blocks(&pool, &f, &s);
     CHECK(f == NULL, "B's block is gone (:751-757)"); OK();
     CHECK(cmt_bsync_pool_requester(&pool, 1)->peer_id[0] == '\0' &&
           strcmp(cmt_bsync_pool_requester(&pool, 1)->second_peer_id, PA) == 0,
           "B's slot is cleared, A (the second peer) is kept and waited for "
           "(:759-763, :878)"); OK();
-    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), T0 + 5 * SEC) == CMT_OK,
+    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), MONO(T0 + 5 * SEC), T0 + 5 * SEC) == CMT_OK,
           "A answers"); OK();
     cmt_bsync_pool_peek_two_blocks(&pool, &f, &s);
     CHECK(f != NULL && strcmp(cmt_bsync_pool_requester(&pool, 1)->got_block_from,
@@ -325,12 +337,12 @@ static int t_peer_timeout(void)
     int64_t          t;
 
     CHECK(pool_new(&pool, 1) == CMT_OK, "init"); OK();
-    CHECK(cmt_bsync_pool_start(&pool, T0) == CMT_OK, "start"); OK();
+    CHECK(cmt_bsync_pool_start(&pool, M0) == CMT_OK, "start"); OK();
     CHECK(cmt_bsync_pool_set_peer_range(&pool, PA, 1, 3, T0) == CMT_OK, "A"); OK();
     CHECK(run(&pool, T0 + 3 * SEC, T0 + 3 * SEC + 10 * MS) == 0, "run"); OK();
     CHECK(count_req(1, PA) == 1, "asked"); OK();
     t = T0 + 3 * SEC + 10 * MS + 15 * SEC;
-    CHECK(cmt_bsync_pool_tick(&pool, t, NULL) == CMT_OK, "tick"); OK();
+    CHECK(cmt_bsync_pool_tick(&pool, MONO(t), t, NULL) == CMT_OK, "tick"); OK();
     CHECK(has_err(PA, CMT_BSYNC_PEER_ERR_TIMEOUT),
           "15 s of silence → TIMEOUT for A (:623-631)"); OK();
     CHECK(cmt_bsync_pool_peer(&pool, PA) != NULL &&
@@ -346,15 +358,15 @@ static int t_retry_timer(void)
 
     CHECK(pool_new(&pool, 1) == CMT_OK, "init"); OK();
     pool.peer_timeout_ns = 3600 * SEC;   /* pool.go:57 is a var the tests override */
-    CHECK(cmt_bsync_pool_start(&pool, T0) == CMT_OK, "start"); OK();
+    CHECK(cmt_bsync_pool_start(&pool, M0) == CMT_OK, "start"); OK();
     CHECK(cmt_bsync_pool_set_peer_range(&pool, PA, 1, 1, T0) == CMT_OK, "A"); OK();
     CHECK(run(&pool, T0 + 3 * SEC, T0 + 3 * SEC + 4 * MS) == 0, "run"); OK();
     CHECK(count_req(1, PA) == 1, "asked once"); OK();
     t = T0 + 3 * SEC + 29 * SEC;
-    CHECK(cmt_bsync_pool_tick(&pool, t, NULL) == CMT_OK && count_req(1, PA) == 1,
+    CHECK(cmt_bsync_pool_tick(&pool, MONO(t), t, NULL) == CMT_OK && count_req(1, PA) == 1,
           "not yet at 29 s"); OK();
     t = T0 + 3 * SEC + 31 * SEC;
-    CHECK(cmt_bsync_pool_tick(&pool, t, NULL) == CMT_OK && count_req(1, PA) == 2,
+    CHECK(cmt_bsync_pool_tick(&pool, MONO(t), t, NULL) == CMT_OK && count_req(1, PA) == 2,
           "retryTimer at 30 s asks again (:862-868)"); OK();
     cmt_bsync_pool_free(&pool);
     return 0;
@@ -366,25 +378,25 @@ static int t_lower_height_and_caught_up(void)
     cmt_bsync_block_t *popped = NULL;
 
     CHECK(pool_new(&pool, 1) == CMT_OK, "init"); OK();
-    CHECK(cmt_bsync_pool_start(&pool, T0) == CMT_OK, "start"); OK();
-    CHECK(!cmt_bsync_pool_is_caught_up(&pool, T0 + 10 * SEC),
+    CHECK(cmt_bsync_pool_start(&pool, M0) == CMT_OK, "start"); OK();
+    CHECK(!cmt_bsync_pool_is_caught_up(&pool, MONO(T0 + 10 * SEC)),
           "no peers → not caught up (:209-212)"); OK();
     CHECK(cmt_bsync_pool_set_peer_range(&pool, PA, 1, 2, T0) == CMT_OK, "A at 2"); OK();
-    CHECK(cmt_bsync_pool_is_caught_up(&pool, T0 + 10 * SEC),
+    CHECK(cmt_bsync_pool_is_caught_up(&pool, MONO(T0 + 10 * SEC)),
           "height 1 >= 2 − 1 (:220)"); OK();
     CHECK(cmt_bsync_pool_set_peer_range(&pool, PA, 1, 4, T0) == CMT_OK &&
           cmt_bsync_pool_max_peer_height(&pool) == 4, "A moves up to 4"); OK();
-    CHECK(!cmt_bsync_pool_is_caught_up(&pool, T0 + 10 * SEC), "1 < 3"); OK();
+    CHECK(!cmt_bsync_pool_is_caught_up(&pool, MONO(T0 + 10 * SEC)), "1 < 3"); OK();
     CHECK(run(&pool, T0 + 3 * SEC, T0 + 3 * SEC + 10 * MS) == 0, "run"); OK();
-    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), T0 + 4 * SEC) == CMT_OK &&
-          cmt_bsync_pool_add_block(&pool, PA, blk(2), T0 + 4 * SEC) == CMT_OK &&
-          cmt_bsync_pool_add_block(&pool, PA, blk(3), T0 + 4 * SEC) == CMT_OK,
+    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), MONO(T0 + 4 * SEC), T0 + 4 * SEC) == CMT_OK &&
+          cmt_bsync_pool_add_block(&pool, PA, blk(2), MONO(T0 + 4 * SEC), T0 + 4 * SEC) == CMT_OK &&
+          cmt_bsync_pool_add_block(&pool, PA, blk(3), MONO(T0 + 4 * SEC), T0 + 4 * SEC) == CMT_OK,
           "three blocks"); OK();
     CHECK(cmt_bsync_pool_pop_request(&pool, &popped) == CMT_OK, "pop 1"); OK();
     cmt_bsync_block_free(popped);
     CHECK(cmt_bsync_pool_pop_request(&pool, &popped) == CMT_OK, "pop 2"); OK();
     cmt_bsync_block_free(popped);
-    CHECK(cmt_bsync_pool_is_caught_up(&pool, T0 + 4 * SEC),
+    CHECK(cmt_bsync_pool_is_caught_up(&pool, MONO(T0 + 4 * SEC)),
           "height 3 >= 4 − 1 → caught up"); OK();
 
     /* A reports a LOWER height: removed and banned (:374-383) */
@@ -428,7 +440,7 @@ static int t_duplicate_same_peer(void)
     int64_t                 t1 = T0 + 4 * SEC;
 
     CHECK(pool_new(&pool, 1) == CMT_OK, "init"); OK();
-    CHECK(cmt_bsync_pool_start(&pool, T0) == CMT_OK, "start"); OK();
+    CHECK(cmt_bsync_pool_start(&pool, M0) == CMT_OK, "start"); OK();
     CHECK(cmt_bsync_pool_set_peer_range(&pool, PA, 1, 3, T0) == CMT_OK, "A 1..3"); OK();
     CHECK(run(&pool, T0 + 3 * SEC, T0 + 3 * SEC + 10 * MS) == 0, "run"); OK();
     CHECK(count_req(1, PA) == 1 && count_req(2, PA) == 1 && count_req(3, PA) == 1,
@@ -437,32 +449,37 @@ static int t_duplicate_same_peer(void)
           "A pending 3, pool pending 3"); OK();
 
     /* the first, real delivery */
-    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), t1) == CMT_OK, "blk 1"); OK();
+    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), MONO(t1), t1) == CMT_OK,
+          "blk 1"); OK();
     pa = cmt_bsync_pool_peer(&pool, PA);
     CHECK(pa != NULL && pa->num_pending == 2 && pool_pending(&pool) == 2,
           "one real delivery: both counters −1"); OK();
-    CHECK(pa->timeout_armed && pa->timeout_at_ns == t1 + 15 * SEC,
-          "timeout re-armed at the delivery (:649)"); OK();
+    CHECK(pa->timeout_armed && pa->timeout_at_ns == MONO(t1) + 15 * SEC,
+          "timeout re-armed at the delivery (:649), monotonic"); OK();
 
     /* the same block again at +10 s: nothing changes, nobody is blamed */
     g_nerr = 0;
-    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), t1 + 10 * SEC) == CMT_OK,
+    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), MONO(t1 + 10 * SEC),
+                                   t1 + 10 * SEC) == CMT_OK,
           "copy at +10 s is dropped silently"); OK();
     CHECK(pa->num_pending == 2 && pool_pending(&pool) == 2,
           "copy: counters unchanged (BS-10)"); OK();
-    CHECK(pa->timeout_armed && pa->timeout_at_ns == t1 + 15 * SEC,
+    CHECK(pa->timeout_armed && pa->timeout_at_ns == MONO(t1) + 15 * SEC,
           "copy: the timeout is NOT pushed out"); OK();
     CHECK(g_nerr == 0, "copy: no send_error (an honest slow peer may resend)"); OK();
 
     /* the timeout fires 15 s after the first delivery */
-    CHECK(cmt_bsync_pool_tick(&pool, t1 + 15 * SEC - 1 * MS, NULL) == CMT_OK &&
+    CHECK(cmt_bsync_pool_tick(&pool, MONO(t1 + 15 * SEC - 1 * MS),
+                              t1 + 15 * SEC - 1 * MS, NULL) == CMT_OK &&
           !has_err(PA, CMT_BSYNC_PEER_ERR_TIMEOUT), "not yet at 14.999 s"); OK();
-    CHECK(cmt_bsync_pool_tick(&pool, t1 + 15 * SEC, NULL) == CMT_OK &&
+    CHECK(cmt_bsync_pool_tick(&pool, MONO(t1 + 15 * SEC), t1 + 15 * SEC,
+                              NULL) == CMT_OK &&
           has_err(PA, CMT_BSYNC_PEER_ERR_TIMEOUT),
           "TIMEOUT 15 s after the first real delivery (:653-661)"); OK();
 
     /* a copy after the timeout: still nothing */
-    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), t1 + 20 * SEC) == CMT_OK &&
+    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), MONO(t1 + 20 * SEC),
+                                   t1 + 20 * SEC) == CMT_OK &&
           pa->num_pending == 2 && pool_pending(&pool) == 2 && !pa->timeout_armed,
           "copy at +20 s: counters unchanged, the spent timer not re-armed"); OK();
     cmt_bsync_pool_free(&pool);
@@ -477,7 +494,7 @@ static int t_two_peers_both_deliver(void)
     cmt_bsync_pool_t pool;
 
     CHECK(pool_new(&pool, 1) == CMT_OK, "init"); OK();
-    CHECK(cmt_bsync_pool_start(&pool, T0) == CMT_OK, "start"); OK();
+    CHECK(cmt_bsync_pool_start(&pool, M0) == CMT_OK, "start"); OK();
     CHECK(cmt_bsync_pool_set_peer_range(&pool, PA, 1, 2, T0) == CMT_OK, "A"); OK();
     CHECK(cmt_bsync_pool_set_peer_range(&pool, PB, 1, 2, T0) == CMT_OK, "B"); OK();
     CHECK(run(&pool, T0 + 3 * SEC, T0 + 3 * SEC + 10 * MS) == 0, "run"); OK();
@@ -488,16 +505,16 @@ static int t_two_peers_both_deliver(void)
           pool_pending(&pool) == 2, "A 2, B 2, pool 2"); OK();
 
     g_nerr = 0;
-    CHECK(cmt_bsync_pool_add_block(&pool, PB, blk(1), T0 + 4 * SEC) == CMT_OK,
+    CHECK(cmt_bsync_pool_add_block(&pool, PB, blk(1), MONO(T0 + 4 * SEC), T0 + 4 * SEC) == CMT_OK,
           "B's 1 stored"); OK();
     CHECK(peer_pending(&pool, PB) == 1 && pool_pending(&pool) == 1,
           "B −1, pool −1"); OK();
-    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), T0 + 4 * SEC) == CMT_OK,
+    CHECK(cmt_bsync_pool_add_block(&pool, PA, blk(1), MONO(T0 + 4 * SEC), T0 + 4 * SEC) == CMT_OK,
           "A's 1 is not an error (:720)"); OK();
     CHECK(peer_pending(&pool, PA) == 1 && pool_pending(&pool) == 1,
           "A −1 once; the pool counter NOT again (nothing stored)"); OK();
-    CHECK(cmt_bsync_pool_add_block(&pool, PB, blk(1), T0 + 5 * SEC) == CMT_OK &&
-          cmt_bsync_pool_add_block(&pool, PA, blk(1), T0 + 5 * SEC) == CMT_OK,
+    CHECK(cmt_bsync_pool_add_block(&pool, PB, blk(1), MONO(T0 + 5 * SEC), T0 + 5 * SEC) == CMT_OK &&
+          cmt_bsync_pool_add_block(&pool, PA, blk(1), MONO(T0 + 5 * SEC), T0 + 5 * SEC) == CMT_OK,
           "third and fourth copies accepted as no-ops"); OK();
     CHECK(peer_pending(&pool, PA) == 1 && peer_pending(&pool, PB) == 1 &&
           pool_pending(&pool) == 1, "third copy dropped: nothing changes"); OK();
@@ -555,7 +572,7 @@ static int t_max_peer_height_refreshes_on_pop(void)
           "B is pruned ahead of pool.height and must not contribute yet"); OK();
 
     /* requesters for 10.. so PopRequest has something to pop */
-    CHECK(cmt_bsync_pool_start(&pool, T0) == CMT_OK, "start"); OK();
+    CHECK(cmt_bsync_pool_start(&pool, M0) == CMT_OK, "start"); OK();
     CHECK(run(&pool, T0 + 3 * SEC, T0 + 3 * SEC + 20 * MS) == 0, "run"); OK();
     for (i = 0; i < 4; i++) {
         CHECK(cmt_bsync_pool_pop_request(&pool, &popped) == CMT_OK, "pop"); OK();
@@ -583,7 +600,7 @@ static int t_has_pending_request_from(void)
     CHECK(!cmt_bsync_pool_has_pending_request_from(&pool, PA) &&
           !cmt_bsync_pool_has_pending_request_from(&pool, PB) &&
           !cmt_bsync_pool_has_pending_request_from(&pool, PX), "initial state"); OK();
-    CHECK(cmt_bsync_pool_start(&pool, T0) == CMT_OK, "start"); OK();
+    CHECK(cmt_bsync_pool_start(&pool, M0) == CMT_OK, "start"); OK();
     CHECK(cmt_bsync_pool_set_peer_range(&pool, PA, 1, 2, T0) == CMT_OK, "A 1..2"); OK();
     CHECK(cmt_bsync_pool_set_peer_range(&pool, PB, 1, 2, T0) == CMT_OK, "B 1..2"); OK();
     CHECK(run(&pool, T0 + 3 * SEC, T0 + 3 * SEC + 10 * MS) == 0, "run"); OK();
@@ -612,6 +629,80 @@ static int t_has_pending_request_from(void)
     return 0;
 }
 
+/* Decision 2026-09-30-monotonic-waits.md — the reference's split, held
+ * apart: the peer timeout (pool.go:629 `time.AfterFunc`, a runtime timer)
+ * follows the MONOTONIC clock whatever the wall clock does; the ban
+ * (v0.38.26 :500 stamp `cmttime.Now()`, :494 `time.Since` of it) follows
+ * the WALL clock whatever the monotonic clock does — both directions.
+ * Against 21afb561: does not compile (the pool took ONE `now_ns`); with
+ * two parameters but a reader taking the wrong one — the timeout armed
+ * or checked on the wall value, or the ban on the mono value — a check
+ * here is off by ~54 years (the disjoint bases) and fails. */
+static int t_clock_split(void)
+{
+    cmt_bsync_pool_t        pool;
+    const cmt_bsync_peer_t *pa;
+    int64_t                 at;
+
+    /* ── the peer timeout: monotonic ─────────────────────────────── */
+    CHECK(pool_new(&pool, 1) == CMT_OK, "init"); OK();
+    CHECK(cmt_bsync_pool_start(&pool, M0) == CMT_OK, "start"); OK();
+    CHECK(cmt_bsync_pool_set_peer_range(&pool, PA, 1, 3, T0) == CMT_OK, "A"); OK();
+    CHECK(run(&pool, T0 + 3 * SEC, T0 + 3 * SEC + 10 * MS) == 0, "run"); OK();
+    pa = cmt_bsync_pool_peer(&pool, PA);
+    CHECK(pa != NULL && pa->timeout_armed, "A was asked: its timeout is armed"); OK();
+    at = pa->timeout_at_ns;
+    CHECK(at > M0 + 3 * SEC + 15 * SEC - 1 * MS && at <= M0 + 3 * SEC + 10 * MS + 15 * SEC,
+          "armed at a MONOTONIC instant + 15 s (pool.go:629)"); OK();
+    g_nerr = 0;
+    CHECK(cmt_bsync_pool_tick(&pool, at - 1, T0 + 3600 * SEC, NULL) == CMT_OK &&
+          !has_err(PA, CMT_BSYNC_PEER_ERR_TIMEOUT),
+          "wall +1 h, mono 1 ns short: no TIMEOUT"); OK();
+    CHECK(cmt_bsync_pool_tick(&pool, at - 1, T0 - 3600 * SEC, NULL) == CMT_OK &&
+          !has_err(PA, CMT_BSYNC_PEER_ERR_TIMEOUT),
+          "wall −1 h, mono 1 ns short: no TIMEOUT"); OK();
+    CHECK(cmt_bsync_pool_tick(&pool, at, T0 - 3600 * SEC, NULL) == CMT_OK &&
+          has_err(PA, CMT_BSYNC_PEER_ERR_TIMEOUT),
+          "mono at the deadline: TIMEOUT, with the wall clock an hour behind"); OK();
+    cmt_bsync_pool_free(&pool);
+
+    /* ── the ban: wall ───────────────────────────────────────────── */
+    CHECK(pool_new(&pool, 1) == CMT_OK, "init"); OK();
+    CHECK(cmt_bsync_pool_start(&pool, M0) == CMT_OK, "start"); OK();
+    CHECK(cmt_bsync_pool_set_peer_range(&pool, PX, 500, 100, T0) == CMT_OK &&
+          pool.n_banned == 1, "X banned at wall T0 (v0.38.26 :388-396)"); OK();
+    /* With no peers `maxRequestersCreated` holds (0 >= 0, :136), so the
+     * makeRequesters step alternates: one tick arms removeTimedoutPeers
+     * (:145), the next — 2 ms of MONO later — runs it (:146), which
+     * purges the expired bans (:184-188) against the WALL instant. */
+    CHECK(cmt_bsync_pool_tick(&pool, M0 + 3 * SEC, T0, NULL) == CMT_OK,
+          "arm removeTimedoutPeers"); OK();
+    CHECK(cmt_bsync_pool_tick(&pool, M0 + 3 * SEC + 2 * MS + 3600 * SEC,
+                              T0 + 30 * SEC, NULL) == CMT_OK &&
+          pool.n_banned == 1 && cmt_bsync_pool_is_peer_banned(&pool, PX, T0 + 30 * SEC),
+          "mono +1 h, wall +30 s: the 60 s ban still holds"); OK();
+    CHECK(cmt_bsync_pool_tick(&pool, M0 + 3 * SEC + 4 * MS + 3600 * SEC,
+                              T0 - 3600 * SEC, NULL) == CMT_OK &&
+          cmt_bsync_pool_tick(&pool, M0 + 3 * SEC + 6 * MS + 3600 * SEC,
+                              T0 - 3600 * SEC, NULL) == CMT_OK &&
+          pool.n_banned == 1,
+          "wall stepped an hour BACK: time.Since is negative, still banned"); OK();
+    CHECK(cmt_bsync_pool_set_peer_range(&pool, PX, 1, 5, T0 + 30 * SEC) == CMT_OK &&
+          cmt_bsync_pool_peer(&pool, PX) == NULL,
+          "a StatusResponse at wall +30 s is ignored (:387-390)"); OK();
+    CHECK(cmt_bsync_pool_tick(&pool, M0 + 3 * SEC + 8 * MS + 3600 * SEC,
+                              T0 + 61 * SEC, NULL) == CMT_OK &&
+          cmt_bsync_pool_tick(&pool, M0 + 3 * SEC + 10 * MS + 3600 * SEC,
+                              T0 + 61 * SEC, NULL) == CMT_OK &&
+          pool.n_banned == 0,
+          "wall +61 s: the ban expired and was purged (:184-188)"); OK();
+    CHECK(cmt_bsync_pool_set_peer_range(&pool, PX, 1, 5, T0 + 61 * SEC) == CMT_OK &&
+          cmt_bsync_pool_peer(&pool, PX) != NULL,
+          "and X's StatusResponse is accepted again"); OK();
+    cmt_bsync_pool_free(&pool);
+    return 0;
+}
+
 typedef struct {
     const char *name;
     int (*fn)(void);
@@ -630,6 +721,7 @@ int main(void)
         { "v0.38.26: base > height is banned",               t_bans_base_greater_than_height },
         { "v0.38.26: maxPeerHeight refreshed on pop",        t_max_peer_height_refreshes_on_pop },
         { "v0.38.26: HasPendingRequestFrom",                 t_has_pending_request_from },
+        { "clock split: timeout mono, ban wall",             t_clock_split },
     };
     size_t i;
     size_t failed = 0u;

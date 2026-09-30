@@ -1075,6 +1075,15 @@ static int t_now(void *ctx, cmt_time_t *out)
     return CMT_OK;
 }
 
+/* The executor's REQUIRED wait clock (decision 2026-09-30-monotonic-
+ * waits.md). Nothing here arms the timer; a fixed value on its own base. */
+static int t_mono(void *ctx, int64_t *out_ns)
+{
+    (void)ctx;
+    *out_ns = 7LL * 1000000000LL;
+    return CMT_OK;
+}
+
 /* Defined below; `exec_init` needs the COMPLETED document too, so that
  * the cometbft State it makes carries the same AppHash the derivation
  * stored rather than the config's zeros. */
@@ -1208,8 +1217,8 @@ static int exec_init(exec_t *x, gfx_t *g)
     lim.tx_arena_cap = 2u * 1024u * 1024u;
     lim.max_evidence = 4;
     if (nodus_cmt_blockexec_init(x->be, x->store, &x->app_if, &x->mp_if,
-                                 &x->ev_if, NULL, NULL, t_now, NULL, NULL,
-                                 NULL, &lim) != CMT_OK) {
+                                 &x->ev_if, NULL, NULL, t_now, NULL, t_mono,
+                                 NULL, NULL, NULL, &lim) != CMT_OK) {
         return -1;
     }
     if (cmt_state_init(x->state, x->stor) != CMT_OK ||

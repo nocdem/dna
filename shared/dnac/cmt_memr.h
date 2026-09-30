@@ -40,8 +40,12 @@
  *                                  (PeerCatchupSleepIntervalMS,
  *                                  mempool.go:16); the routine is skipped
  *                                  until the host's clock passes it. The
- *                                  reactor takes `cmt_now_fn` for these
- *                                  three sites and for NOTHING ELSE.
+ *                                  reactor takes `cmt_mono_fn`
+ *                                  (CLOCK_MONOTONIC — a `time.Sleep` is
+ *                                  a monotonic wait; decision
+ *                                  2026-09-30-monotonic-waits.md) for
+ *                                  these three sites and for NOTHING
+ *                                  ELSE.
  *   · `Send` blocking            → the host's `send` row is NON-BLOCKING
  *                                  and returns false when it cannot queue;
  *                                  the reference's `false` after the
@@ -180,7 +184,7 @@
 
 #include "cmt_mem.h"          /* cmt_mem_t, cmt_mem_ids_t, cmt_mempool_config_t */
 #include "cmt_pb_mempool.h"   /* the wire                                        */
-#include "cmt_time.h"         /* cmt_now_fn, cmt_time_unix_nano                  */
+#include "cmt_time.h"         /* cmt_mono_fn                                     */
 
 #ifdef __cplusplus
 extern "C" {
@@ -227,7 +231,7 @@ typedef struct {
      *  at the loop top, so the element it sits on is not sent twice. */
     bool                     waiting_next;
     bool                     sleeping;         /* R3-M-1 */
-    int64_t                  not_before_ns;    /* R3-M-1 */
+    int64_t                  not_before_ns;    /* R3-M-1, host.mono ns */
 } cmt_memr_peer_t;
 
 /**
@@ -261,8 +265,12 @@ typedef struct {
     int64_t (*peer_height)(void *ctx, int peer_slot, bool *out_known);
 
     /** THE ONLY CLOCK IN THIS MODULE: the three `time.Sleep` sites
-     *  (:229, :236, :249) under R3-M-1. Read at most once per tick. */
-    cmt_now_fn now;
+     *  (:229, :236, :249) under R3-M-1. Read at most once per tick.
+     *  CLOCK_MONOTONIC (`cmt_mono_fn`, decision 2026-09-30-monotonic-
+     *  waits.md): a `time.Sleep` is a monotonic wait, and this reactor
+     *  stamps nothing, so it has no wall-clock row at all. REQUIRED —
+     *  `cmt_memr_init` refuses NULL. */
+    cmt_mono_fn mono;
 } cmt_memr_host_t;
 
 /**
@@ -296,8 +304,9 @@ typedef struct {
  * `mempool` and `host` are BORROWED and must outlive the reactor. The
  * decode storage of the header is allocated here, sized from the
  * descriptor's `RecvMessageCapacity`.
- * @return CMT_OK; CMT_FAULT on NULL, a negative `max_tx_bytes`, or
- *         allocation failure.
+ * @return CMT_OK; CMT_FAULT on NULL, a NULL `host->mono` (the required
+ *         wait clock, decision 2026-09-30-monotonic-waits.md), a negative
+ *         `max_tx_bytes`, or allocation failure.
  */
 int cmt_memr_init(cmt_memr_t *memR, const cmt_mempool_config_t *config,
                   cmt_mem_t *mempool, const cmt_memr_host_t *host);

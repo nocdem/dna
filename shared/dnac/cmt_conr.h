@@ -233,14 +233,21 @@
  *   CMT_CONR_STOP_PROPOSAL_TOO_MANY_PARTS).
  *
  * ── DETERMINISM ────────────────────────────────────────────────────────
- * THE CLOCK is the host's `now` row, THE SAME CALLBACK as
- * `cs->host.now` (D-20 rev 3; the host passes one function into both
- * tables), read at exactly the reference's sites: :504
- * (`time.Since(rs.StartTime)` in `makeRoundStepMessage`), :1379
- * (`cmttime.Now()` in `ApplyNewRoundStepMessage`, read in `Receive` and
- * handed to cmt_ps as a value), and — C only, stated — once per
- * `cmt_conr_tick`, because the fourteen `time.Sleep` sites are
- * deadlines here and a deadline needs an instant. No other clock read.
+ * TWO CLOCKS, split by what the reference's read is (decision
+ * docs/plans/decisions/2026-09-30-monotonic-waits.md):
+ *   · the WALL clock is the host's `now` row, THE SAME CALLBACK as
+ *     `cs->host.now` (D-20 rev 3; the host passes one function into both
+ *     tables), read at exactly the reference's two stamp sites: :504
+ *     (`time.Since(rs.StartTime)` in `makeRoundStepMessage` — StartTime
+ *     is a `cmttime.Now()` with no monotonic part, so this is a wall
+ *     difference) and :1379 (`cmttime.Now()` in
+ *     `ApplyNewRoundStepMessage`, read in `Receive` and handed to cmt_ps
+ *     as a value);
+ *   · the WAIT clock is the host's `mono` row (CLOCK_MONOTONIC), read —
+ *     C only, stated — once per `cmt_conr_tick`, because the fourteen
+ *     `time.Sleep` sites are deadlines here and a deadline needs an
+ *     instant; a Go `time.Sleep` is a monotonic wait.
+ * No other clock read.
  * THE ONLY RANDOMNESS is `PickRandom` (:553, :649, :1188) through
  * `cmt_bits_pick_random`, the recorded substitution — gossip choice
  * only. Iteration is by slot index and by validator/part index; no map,
@@ -502,12 +509,18 @@ typedef struct {
                                          cmt_extended_commit_t *out,
                                          bool *out_found);
 
-    /* ── the clock ─────────────────────────────────────────────────── */
+    /* ── the clocks (file header, "DETERMINISM") ───────────────────── */
 
-    /** reactor.go:504 (`time.Since(rs.StartTime)`) and :1379
-     *  (`cmttime.Now()`), plus the tick's instant (file header). THE SAME
-     *  CALLBACK as `cs->host.now`; the host passes it through. */
+    /** WALL: reactor.go:504 (`time.Since(rs.StartTime)`) and :1379
+     *  (`cmttime.Now()`) only. THE SAME CALLBACK as `cs->host.now`; the
+     *  host passes it through. */
     cmt_now_fn now;
+
+    /** WAIT: CLOCK_MONOTONIC, the tick's instant — every `time.Sleep`
+     *  deadline (`not_before_ns`) is armed and checked on it (decision
+     *  2026-09-30-monotonic-waits.md). Called with `host_ctx`. REQUIRED:
+     *  `cmt_conr_init` refuses NULL. */
+    cmt_mono_fn mono;
 } cmt_conr_host_t;
 
 /* ══ one peer slot (C only — the switch's peer set, per index) ════════ */
@@ -528,8 +541,9 @@ typedef struct {
     /** `AddPeer` ran (:191-210): the three routines are live. */
     bool      started;
     cmt_ps_t  ps;                       /* :184 NewPeerState, peer.Set   */
-    /** The `time.Sleep` deadlines, one per routine, in unix nanoseconds
-     *  of the host clock; meaningful only while `asleep[r]`. */
+    /** The `time.Sleep` deadlines, one per routine, in nanoseconds of
+     *  the host's MONOTONIC clock (`host.mono`); meaningful only while
+     *  `asleep[r]`. */
     int64_t   not_before_ns[CMT_CONR_NUM_ROUTINES];
     bool      asleep[CMT_CONR_NUM_ROUTINES];
     /** reactor.go:702 — gossipVotesRoutine's `sleeping` log throttle.
@@ -585,8 +599,11 @@ typedef struct {
  * `rs: consensusState.GetRoundState()` (:60) has no counterpart (live
  * reads); `NopMetrics` (:61) and the options loop (:65-67) are YOK.
  *
- * @param cs BORROWED; outlives the reactor. Its `host.now` is the clock
- *        this reactor's `host.now` must also be.
+ * @param cs BORROWED; outlives the reactor. Its `host.now` is the wall
+ *        clock this reactor's `host.now` must also be. The reactor's
+ *        `host.mono` is its OWN wait clock (CLOCK_MONOTONIC; the state
+ *        machine reads none — its timer is the host's, which runs on the
+ *        same monotonic clock; decision 2026-09-30-monotonic-waits.md).
  * @param wait_sync the reference's `waitSync` (:56, :59): true when the
  *        node is block-syncing and `SwitchToConsensus` will start the
  *        state machine later. The live caller (nodus_witness.c) passes
@@ -594,7 +611,8 @@ typedef struct {
  *        reactor (cmt_bsync_reactor.c) calls
  *        `cmt_conr_switch_to_consensus` when it has caught up.
  * @param recv_arena BORROWED; the lifetime rule is in the file header.
- * @return CMT_OK; CMT_FAULT on NULL or allocation failure.
+ * @return CMT_OK; CMT_FAULT on NULL, a NULL `host->mono`, or allocation
+ *         failure.
  */
 int cmt_conr_init(cmt_conr_t *conR, cmt_cs_t *cs, bool wait_sync,
                   const cmt_conr_host_t *host, void *host_ctx,
@@ -771,11 +789,12 @@ int cmt_conr_receive(cmt_conr_t *conR, int peer_idx, uint8_t channel_id,
  * `gossipDataRoutine` (:539-644), `gossipVotesRoutine` (:698-786) and
  * `queryMaj23Routine` (:848-945) — in that order (:201-203) — each as far
  * as the reference would go before a `time.Sleep` or a false from a send,
- * skipping a routine whose `not_before` has not arrived. Reads the clock
- * ONCE (the host's `now`).
+ * skipping a routine whose `not_before` has not arrived. Reads the WAIT
+ * clock ONCE (the host's `mono`, CLOCK_MONOTONIC).
  *
- * @param out_next_deadline_ns the earliest pending `not_before` in unix
- *        nanoseconds, INT64_MAX when nothing is pending; may be NULL.
+ * @param out_next_deadline_ns the earliest pending `not_before` in
+ *        nanoseconds of the host's MONOTONIC clock, INT64_MAX when
+ *        nothing is pending; may be NULL.
  * @return CMT_OK; CMT_FAULT on NULL, a host-row fault, a state-machine
  *         fault, or one of the NODE-LOCAL panics of the file header.
  *         Never CMT_REJECT: a refused send is "not sent", not an error.

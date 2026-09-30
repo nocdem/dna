@@ -59,10 +59,15 @@
  * and fired by `nodus_cmt_wal_flush_if_due` / `nodus_cmt_wal_group_check_
  * if_due` from the owner's event-loop tick; the next deadline follows
  * the Go runtime ticker's grid rule (nodus_witness_cmt_autofile.h).
+ * A Go ticker is a runtime timer, i.e. MONOTONIC: both deadlines are
+ * armed and checked on the `mono` clock the WAL was opened with, never on
+ * the `now` clock that stamps the records (decision
+ * 2026-09-30-monotonic-waits.md).
  *
  * The caller is the witness loop, `witness_cmt_tick` (nodus_witness.c),
  * which also folds both deadlines into the deadline it returns
- * (decision 2026-09-26-cmt-wal-file-group.md item 4a).
+ * (decision 2026-09-26-cmt-wal-file-group.md item 4a) and fires them with
+ * a reading of the same `mono` clock.
  *
  * ── SIZE ───────────────────────────────────────────────────────────────
  * The reference's defaults, unchanged (decision item 4): the head file
@@ -201,7 +206,7 @@
 #include <sqlite3.h>             /* nodus_cmt_wal_carry_sqlite     */
 
 #include "dnac/cmt_tmhash.h"     /* CMT_OK / CMT_REJECT / CMT_FAULT */
-#include "dnac/cmt_time.h"       /* cmt_now_fn                      */
+#include "dnac/cmt_time.h"       /* cmt_now_fn, cmt_mono_fn         */
 #include "dnac/cmt_wal.h"        /* cmt_wal_message_t, timed, codec */
 #include "witness/nodus_witness_cmt_autofile.h"
 
@@ -246,13 +251,18 @@ typedef struct {
     char     path[NODUS_CMT_AUTOFILE_PATH_MAX]; /* walFile (wal.go:91);
                                        * the repair reopens it         */
 
-    cmt_now_fn now;                   /* wal.go:189 `cmttime.Now()`    */
+    cmt_now_fn now;                   /* wal.go:189 `cmttime.Now()` —
+                                       * the record STAMP, wall clock  */
     void      *now_ctx;
+    cmt_mono_fn mono;                 /* the two tickers' WAIT clock,
+                                       * CLOCK_MONOTONIC (decision
+                                       * 2026-09-30-monotonic-waits.md) */
+    void      *mono_ctx;
 
     bool     started;                 /* OnStart ran (service state)   */
     int64_t  flush_interval_ns;       /* wal.go:83-84, :104            */
     bool     flush_armed;             /* wal.go:83 flushTicker         */
-    int64_t  flush_deadline_ns;
+    int64_t  flush_deadline_ns;       /* on `mono`                     */
 
     /* the replay cursor — the GroupReader `SearchForEndHeight` returns
      * (wal.go:276) and `Decode` reads from (replay.go:143-147) */
@@ -272,17 +282,22 @@ typedef struct {
  * the reference's default limits, the 2 s flush interval (:104), and the
  * buffers. Nothing is written.
  * @param wal_file the head path, `<data_path>/cs.wal/wal` in production.
- * @return CMT_OK, CMT_FAULT.
+ * @param now  the WALL clock every record is stamped with (wal.go:189).
+ * @param mono the MONOTONIC clock the two tickers' deadlines are armed on
+ *        (Go `time.Ticker`s, wal.go:137 and group.go:139).
+ * @return CMT_OK, CMT_FAULT (also for a NULL `now` or `mono`).
  */
 int nodus_cmt_wal_open(nodus_cmt_wal_t *w, const char *wal_file,
-                       cmt_now_fn now, void *now_ctx);
+                       cmt_now_fn now, void *now_ctx,
+                       cmt_mono_fn mono, void *mono_ctx);
 
 /**
  * wal.go:124-140 `OnStart` — first (HARDENING 1(a), header: TORN TAIL) a
  * head ending in a torn record is truncated to its last complete record
  * and fsynced; then, when the head file's size is 0,
  * `WriteSync(EndHeightMessage{0})`; then `group.Start()` (the 5 s
- * check deadline) and the 2 s flush deadline, both from `now`.
+ * check deadline) and the 2 s flush deadline, both from ONE reading of
+ * the `mono` clock (the EndHeight{0} record is stamped with `now`).
  * @return CMT_OK, CMT_FAULT (also when the torn-tail check cannot read
  * the head or the truncate fails).
  */
@@ -342,7 +357,7 @@ int nodus_cmt_wal_read_next(void *ctx, cmt_timed_wal_message_t *out,
  *  HARDENING 1(b): temp file + fsync + rename + directory fsync, never an
  *  empty head), `loadWalFile()` (:382-384) — reopened and
  *  started into the SAME handle, so a host that holds `w` keeps a valid
- *  pointer. The clock callback is carried over.
+ *  pointer. Both clock callbacks (`now`, `mono`) are carried over.
  *  @return CMT_OK; CMT_FAULT at the first failing step (the reference
  *  returns that error from OnStart, :360/:367/:376/:383 — the node does
  *  not start). After a failure the handle is closed. */
@@ -424,27 +439,31 @@ int nodus_cmt_wal_repair(nodus_cmt_wal_t *w);
 int nodus_cmt_wal_carry_sqlite(sqlite3 *db, const char *wal_file,
                                size_t *out_rows);
 
-/** @return true with the deadline when the 2 s flush ticker is armed. */
+/** @return true with the deadline (on the WAL's `mono` clock) when the
+ *  2 s flush ticker is armed. */
 bool nodus_cmt_wal_next_flush_deadline(const nodus_cmt_wal_t *w,
                                        int64_t *out_deadline_ns);
 
 /** wal.go:142-153 `processFlushTicks`, one wake-up: if armed and
- *  `now_ns` has reached the deadline, `FlushAndSync`, and the deadline
- *  moves on. @return CMT_OK, CMT_FAULT (the reference logs "Periodic
- *  WAL flush failed" at :146-148 and keeps ticking — so does this, the
- *  deadline moves on either way). */
-int nodus_cmt_wal_flush_if_due(nodus_cmt_wal_t *w, int64_t now_ns);
+ *  `mono_ns` has reached the deadline, `FlushAndSync`, and the deadline
+ *  moves on. `mono_ns` MUST be a reading of the clock the WAL was opened
+ *  with as `mono` (decision 2026-09-30-monotonic-waits.md).
+ *  @return CMT_OK, CMT_FAULT (the reference logs "Periodic WAL flush
+ *  failed" at :146-148 and keeps ticking — so does this, the deadline
+ *  moves on either way). */
+int nodus_cmt_wal_flush_if_due(nodus_cmt_wal_t *w, int64_t mono_ns);
 
-/** @return true with the deadline when the group's 5 s check ticker is
- *  armed. */
+/** @return true with the deadline (on the WAL's `mono` clock) when the
+ *  group's 5 s check ticker is armed. */
 bool nodus_cmt_wal_next_group_check_deadline(const nodus_cmt_wal_t *w,
                                              int64_t *out_deadline_ns);
 
 /** group.go:239-250 `processTicks`, one wake-up —
  *  `nodus_cmt_group_check_if_due` on the WAL's group (rotation at 10 MB,
- *  the 1 GB total). @return CMT_OK; CMT_FAULT when the rotation or the
- *  directory scan failed (the reference panics there). */
-int nodus_cmt_wal_group_check_if_due(nodus_cmt_wal_t *w, int64_t now_ns);
+ *  the 1 GB total), `mono_ns` as for `nodus_cmt_wal_flush_if_due`.
+ *  @return CMT_OK; CMT_FAULT when the rotation or the directory scan
+ *  failed (the reference panics there). */
+int nodus_cmt_wal_group_check_if_due(nodus_cmt_wal_t *w, int64_t mono_ns);
 
 #ifdef __cplusplus
 }

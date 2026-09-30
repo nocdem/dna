@@ -130,14 +130,15 @@ static void wal_release(nodus_cmt_wal_t *w)
 }
 
 int nodus_cmt_wal_open(nodus_cmt_wal_t *w, const char *wal_file,
-                       cmt_now_fn now, void *now_ctx)
+                       cmt_now_fn now, void *now_ctx,
+                       cmt_mono_fn mono, void *mono_ctx)
 {
     char        dir[NODUS_CMT_AUTOFILE_PATH_MAX];
     const char *slash;
     size_t      dl;
     size_t      pl;
 
-    if (!w || !wal_file || !wal_file[0] || !now) {
+    if (!w || !wal_file || !wal_file[0] || !now || !mono) {
         return CMT_FAULT;
     }
     pl = strlen(wal_file);
@@ -148,6 +149,8 @@ int nodus_cmt_wal_open(nodus_cmt_wal_t *w, const char *wal_file,
     memcpy(w->path, wal_file, pl + 1);
     w->now = now;
     w->now_ctx = now_ctx;
+    w->mono = mono;
+    w->mono_ctx = mono_ctx;
     w->flush_interval_ns = NODUS_CMT_WAL_FLUSH_INTERVAL_NS;       /* :104 */
     nodus_cmt_crc32_make_table(NODUS_CMT_CRC32C_POLY, w->crc32c); /* replay.go:20 */
 
@@ -197,14 +200,12 @@ int nodus_cmt_wal_open(nodus_cmt_wal_t *w, const char *wal_file,
     return CMT_OK;
 }
 
-static int wal_now_ns(nodus_cmt_wal_t *w, int64_t *out)
+/* The tickers' WAIT clock (header, "THE TWO TICKERS"): CLOCK_MONOTONIC. */
+static int wal_mono_ns(nodus_cmt_wal_t *w, int64_t *out)
 {
-    cmt_time_t t;
-
-    if (w->now(w->now_ctx, &t) != CMT_OK) {
+    if (!w->mono || w->mono(w->mono_ctx, out) != CMT_OK) {
         return CMT_FAULT;
     }
-    *out = cmt_time_unix_nano(t);
     return CMT_OK;
 }
 
@@ -358,7 +359,7 @@ int nodus_cmt_wal_start(nodus_cmt_wal_t *w)
             return CMT_FAULT;
         }
     }
-    if (wal_now_ns(w, &now_ns) != CMT_OK) {
+    if (wal_mono_ns(w, &now_ns) != CMT_OK) {             /* both tickers */
         return CMT_FAULT;
     }
     nodus_cmt_group_start(&w->group, now_ns);            /* :133 */
@@ -499,7 +500,7 @@ bool nodus_cmt_wal_next_flush_deadline(const nodus_cmt_wal_t *w,
     return true;
 }
 
-int nodus_cmt_wal_flush_if_due(nodus_cmt_wal_t *w, int64_t now_ns)
+int nodus_cmt_wal_flush_if_due(nodus_cmt_wal_t *w, int64_t now_ns /* mono */)
 {
     int64_t period;
     int     rc;
@@ -533,7 +534,8 @@ bool nodus_cmt_wal_next_group_check_deadline(const nodus_cmt_wal_t *w,
     return nodus_cmt_group_next_check_deadline(&w->group, out_deadline_ns);
 }
 
-int nodus_cmt_wal_group_check_if_due(nodus_cmt_wal_t *w, int64_t now_ns)
+int nodus_cmt_wal_group_check_if_due(nodus_cmt_wal_t *w,
+                                     int64_t now_ns /* mono */)
 {
     if (!w) {
         return CMT_FAULT;
@@ -862,7 +864,8 @@ done:
  * fsync AFTER the rename is CMT_FAULT with the complete head left in
  * place (removing it would leave an absent head — the carry again). */
 static int wal_repair_file(const char *src, const char *dst, const char *tmp,
-                           const char *dir, cmt_now_fn now, void *now_ctx)
+                           const char *dir, cmt_now_fn now, void *now_ctx,
+                           cmt_mono_fn mono, void *mono_ctx)
 {
     nodus_cmt_wal_t         *in;
     cmt_timed_wal_message_t *msg;
@@ -878,7 +881,9 @@ static int wal_repair_file(const char *src, const char *dst, const char *tmp,
         free(msg);
         return CMT_FAULT;
     }
-    if (nodus_cmt_wal_open(in, src, now, now_ctx) != CMT_OK) {     /* :2622-2626 */
+    /* never started: its `mono` is required by open, never read here */
+    if (nodus_cmt_wal_open(in, src, now, now_ctx, mono,
+                           mono_ctx) != CMT_OK) {                  /* :2622-2626 */
         free(in);
         free(msg);
         return CMT_FAULT;
@@ -981,14 +986,18 @@ int nodus_cmt_wal_repair(nodus_cmt_wal_t *w)
     const char *base;
     cmt_now_fn  now;
     void       *now_ctx;
+    cmt_mono_fn mono;
+    void       *mono_ctx;
     int         n;
 
-    if (!w || !w->path[0] || !w->now) {
+    if (!w || !w->path[0] || !w->now || !w->mono) {
         return CMT_FAULT;
     }
     memcpy(path, w->path, sizeof(path));
     now = w->now;
     now_ctx = w->now_ctx;
+    mono = w->mono;
+    mono_ctx = w->mono_ctx;
     n = snprintf(corrupted, sizeof(corrupted), "%s%s", path,
                  NODUS_CMT_WAL_CORRUPTED_SUFFIX);        /* state.go:366 */
     if (n < 0 || (size_t)n >= sizeof(corrupted) ||
@@ -1037,14 +1046,15 @@ int nodus_cmt_wal_repair(nodus_cmt_wal_t *w)
     QGP_LOG_DEBUG(LOG_TAG, "backed up WAL file %s -> %s", path, corrupted);
 
     /* :374-377 — the WAL file is replaced (HARDENING 1(b): temp + rename) */
-    if (wal_repair_file(corrupted, path, tmp, dir, now, now_ctx) != CMT_OK) {
+    if (wal_repair_file(corrupted, path, tmp, dir, now, now_ctx, mono,
+                        mono_ctx) != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "the WAL repair failed");
         return CMT_FAULT;
     }
     QGP_LOG_INFO(LOG_TAG, "%s", "successful WAL repair");
 
     /* :382-384 loadWalFile → OpenWAL: NewWAL + Start (state.go:452-467) */
-    if (nodus_cmt_wal_open(w, path, now, now_ctx) != CMT_OK) {
+    if (nodus_cmt_wal_open(w, path, now, now_ctx, mono, mono_ctx) != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "failed to load state WAL");
         return CMT_FAULT;
     }

@@ -246,6 +246,21 @@ static int t_now(void *ctx, cmt_time_t *out)
     return CMT_OK;
 }
 
+/* The WAIT clock (decision 2026-09-30-monotonic-waits.md): frozen, on a
+ * base disjoint from `g_now` (7 s against ~1.7e9 s), so a deadline armed
+ * on one clock and read on the other is off by decades. */
+static int64_t g_mono = 7LL * 1000000000LL;
+
+static int t_mono(void *ctx, int64_t *out_ns)
+{
+    (void)ctx;
+    if (!out_ns) {
+        return CMT_FAULT;
+    }
+    *out_ns = g_mono;
+    return CMT_OK;
+}
+
 /** `pv.Key.PrivKey.Sign` — the test's signer (R3-C2 binds production's). */
 static int t_raw_sign(void *ctx, const uint8_t *sign_bytes, size_t len,
                       uint8_t sig_out[CMT_MAX_SIGNATURE_SIZE], size_t *sig_len)
@@ -486,6 +501,7 @@ static void opts_default(gfx_t *g, nodus_cmt_node_opts_t *o)
     memset(o, 0, sizeof(*o));
     o->privval_state_path = g->pvpath;
     o->now                = t_now;
+    o->mono               = t_mono;
     o->raw_sign           = t_raw_sign;
     /* A small arena: this fixture's blocks carry no transactions, and
      * the default (`Block.MaxBytes` = 22 020 096) would have three block
@@ -1048,8 +1064,8 @@ static int bx_init_ex(bx_t *x, gfx_t *g, bool save_state)
     lim.tx_arena_cap = BX_SCRATCH_CAP;
     lim.max_evidence = 4;
     if (nodus_cmt_blockexec_init(x->be, x->store, &x->app_if, &x->mp_if,
-                                 &x->ev_if, NULL, NULL, t_now, NULL, NULL,
-                                 NULL, &lim) != CMT_OK) {
+                                 &x->ev_if, NULL, NULL, t_now, NULL, t_mono,
+                                 NULL, NULL, NULL, &lim) != CMT_OK) {
         return -1;
     }
     if (cmt_state_init(x->state, x->stor) != CMT_OK) {
@@ -1332,7 +1348,7 @@ static int run_handshake(gfx_t *g, bx_t *x, int *out_nblocks)
         return CMT_FAULT;
     }
     rc = nodus_cmt_handshaker_init(h, x->store, x->state, &x->doc, g->w,
-                                   t_now, NULL, &lim);
+                                   t_now, NULL, t_mono, NULL, &lim);
     if (rc == CMT_OK) {
         rc = nodus_cmt_handshaker_handshake(h, &shim);
         if (out_nblocks) {
@@ -2661,6 +2677,14 @@ static int t_init_invariants(void)
     o.now = NULL;
     CHECK(nodus_cmt_node_init(n, g.w, &o) == CMT_FAULT,
           "a node with no clock callback is refused — no time is invented");
+
+    /* decision 2026-09-30-monotonic-waits.md — the WAIT clock is as
+     * mandatory as the stamp clock: no timer or WAL ticker may silently
+     * fall back to the wall clock or to 0 */
+    opts_default(&g, &o);
+    o.mono = NULL;
+    CHECK(nodus_cmt_node_init(n, g.w, &o) == CMT_FAULT,
+          "a node with no monotonic clock callback is refused");
 
     /* node.go:343-345 `can't get pubkey` returns an error: a node with no
      * identity does not come up. Without this the private validator would

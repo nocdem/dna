@@ -57,7 +57,8 @@
  * ── THE ONE NON-`now` SOURCE ───────────────────────────────────────────
  * `writeFileRandReseed` (tempfile.go:38-47) seeds the temp-name LCG from
  * `time.Now().UnixNano() + int64(os.Getpid()<<20)`. The clock is the
- * host's `cmt_now_fn` (the APPROVED clock POLICY's one clock); the pid
+ * host's wall `cmt_now_fn` (a seed, not a wait — decision
+ * 2026-09-30-monotonic-waits.md leaves it on the wall clock); the pid
  * is `getpid()`, read here and nowhere else in the port. Neither value
  * reaches consensus: they name a temporary file that is renamed away.
  *

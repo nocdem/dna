@@ -98,6 +98,10 @@
  * The only clock read here is the caller's `now` callback, and it is read
  * exactly where the reference reads one: never for a branch, only to
  * stamp the WAL rows and the privval file (D-20, the clock POLICY). The
+ * caller's `mono` callback (CLOCK_MONOTONIC) is not read here at all: it
+ * is handed to the executor (the consensus timer) and to the WAL (its two
+ * tickers), which arm their WAIT deadlines on it (decision
+ * 2026-09-30-monotonic-waits.md). The
  * genesis document is never completed from the clock — the loader refuses
  * a zero genesis time before that branch can be reached (D-18 rev 2).
  *
@@ -289,9 +293,9 @@ int nodus_cmt_mock_app_build(nodus_cmt_app_t *out, nodus_cmt_mock_app_t *m);
  *     (nodus_witness_cmt_store.h);
  *   · `eventBus` has no counterpart (see the file header);
  *   · `logger` is QGP_LOG;
- *   · `w`, `now`/`now_ctx` and `limits` are what the port's transient
- *     block executors need and Go's `sm.NewBlockExecutor` gets from its
- *     closure over the node.
+ *   · `w`, `now`/`now_ctx`, `mono`/`mono_ctx` and `limits` are what the
+ *     port's transient block executors need and Go's
+ *     `sm.NewBlockExecutor` gets from its closure over the node.
  */
 typedef struct {
     nodus_cmt_store_t       *store;        /* :202 stateStore + :204 store */
@@ -299,6 +303,8 @@ typedef struct {
     nodus_witness_t         *w;            /* the Info answer's source     */
     cmt_now_fn               now;          /* the executors' clock row     */
     void                    *now_ctx;
+    cmt_mono_fn              mono;         /* the executors' timer clock   */
+    void                    *mono_ctx;
     nodus_cmt_host_limits_t  limits;       /* the executors' capacity       */
 
     /** The two stand-ins `replayBlock` hands its fresh BlockExecutor
@@ -341,6 +347,7 @@ int nodus_cmt_handshaker_init(nodus_cmt_handshaker_t *h,
                               const cmt_genesis_doc_t *gendoc,
                               nodus_witness_t *w,
                               cmt_now_fn now, void *now_ctx,
+                              cmt_mono_fn mono, void *mono_ctx,
                               const nodus_cmt_host_limits_t *limits);
 
 /** Frees everything `..._init` allocated; the collaborators stay the
@@ -421,9 +428,18 @@ typedef struct {
      */
     const char *privval_state_path;
 
-    /** MANDATORY. The only clock on this path (D-20). */
+    /** MANDATORY. The WALL clock (D-20): every stamp — the vote and
+     *  proposal times, the WAL records, the privval file, the block-time
+     *  tolerance. */
     cmt_now_fn now;
     void      *now_ctx;
+
+    /** MANDATORY. The WAIT clock, CLOCK_MONOTONIC: the consensus timer's
+     *  deadline and the WAL's two tickers are armed and checked on it
+     *  (decision 2026-09-30-monotonic-waits.md). NULL is CMT_FAULT, like
+     *  a NULL `now`. Never a stamp. */
+    cmt_mono_fn mono;
+    void       *mono_ctx;
 
     /**
      * OPTIONAL — `GenesisDocProvider` (node/setup.go:45-48, called at
@@ -558,8 +574,12 @@ typedef struct {
     bool                 cs_started;
     int64_t              offline_state_sync_height;
 
-    cmt_now_fn now;
+    cmt_now_fn now;         /* opts->now — the wall clock               */
     void      *now_ctx;
+    cmt_mono_fn mono;       /* opts->mono — the wait clock; the witness
+                             * tick reads it for the timer and the WAL
+                             * tickers (nodus_witness.c)                */
+    void       *mono_ctx;
 
     /** `Handshaker.NBlocks()` (replay.go:237-239) of the handshake this
      *  node performed — 0 on a clean restart. Diagnostic only. */

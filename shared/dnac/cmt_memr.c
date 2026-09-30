@@ -161,6 +161,9 @@ int cmt_memr_init(cmt_memr_t *memR, const cmt_mempool_config_t *config,
     if (memR == NULL || config == NULL || mempool == NULL || host == NULL) {
         return CMT_FAULT;
     }
+    if (host->mono == NULL) {        /* the required wait clock (header) */
+        return CMT_FAULT;
+    }
     if (config->max_tx_bytes < 0) {
         return CMT_FAULT;
     }
@@ -624,7 +627,6 @@ static int routine_pass(cmt_memr_t *memR, int slot, cmt_memr_peer_t *p,
 int cmt_memr_tick(cmt_memr_t *memR, int64_t *out_next_deadline_ns,
                   bool *out_has_deadline)
 {
-    cmt_time_t t;
     int64_t    now_ns;
     int64_t    earliest     = 0;
     bool       has_earliest = false;
@@ -640,13 +642,13 @@ int cmt_memr_tick(cmt_memr_t *memR, int64_t *out_next_deadline_ns,
         return CMT_FAULT;
     }
     if (memR->host->send == NULL || memR->host->peer_height == NULL ||
-        memR->host->now == NULL) {
+        memR->host->mono == NULL) {
         return CMT_FAULT;
     }
-    if (memR->host->now(memR->host->ctx, &t) != CMT_OK) {
+    /* The three sleeps' clock: monotonic (header, R3-M-1). */
+    if (memR->host->mono(memR->host->ctx, &now_ns) != CMT_OK) {
         return CMT_FAULT;
     }
-    now_ns = cmt_time_unix_nano(t);
 
     for (i = 0; i < CMT_MEM_MAX_PEERS; i++) {
         cmt_memr_peer_t *p = &memR->peers[i];

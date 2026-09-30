@@ -130,6 +130,33 @@ bool cmt_time_is_zero(cmt_time_t t);
 typedef int (*cmt_now_fn)(void *ctx, cmt_time_t *out);
 
 /**
+ * The WAIT clock, HOST — CLOCK_MONOTONIC, in nanoseconds from an
+ * arbitrary, process-local origin (decision
+ * docs/plans/decisions/2026-09-30-monotonic-waits.md).
+ *
+ * The reference's waits run on Go's monotonic clock: runtime timers
+ * (`time.Timer`, `time.Ticker`, `time.AfterFunc`, consensus/ticker.go:126
+ * `timer.Reset(d)`), `time.Sleep` (consensus/reactor.go, mempool/
+ * reactor.go), and `time.Since(t)` of a `time.Now()` that still carries
+ * its monotonic reading (blocksync/pool.go:114/:128/:232). The port's
+ * single event loop turns each of those into a deadline, and the
+ * deadline is armed and checked on THIS clock, so a step of the wall
+ * clock (NTP, an operator) neither delays nor hastens it.
+ *
+ * NOT a timestamp: a value of this clock never enters a vote, a
+ * proposal, a block, a WAL record, the privval file or anything else
+ * that is stored or sent, and it is meaningless across a restart and
+ * across nodes. Every STAMP stays on `cmt_now_fn` (`cmttime.Now()`,
+ * which has no monotonic component, types/time/time.go:9-15).
+ *
+ * @param ctx    opaque host context.
+ * @param out_ns receives the current monotonic instant, nanoseconds.
+ * @return CMT_OK, or CMT_FAULT if the clock cannot be read — never a
+ *         silent 0 (a 0 would read as "long ago" and fire every deadline).
+ */
+typedef int (*cmt_mono_fn)(void *ctx, int64_t *out_ns);
+
+/**
  * cometbft@v0.38.26 types/time/time.go:16-18 — `Canonical()`.
  *
  * The reference computes `t.Round(0).UTC()`: `Round(0)` strips the

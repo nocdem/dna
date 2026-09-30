@@ -473,14 +473,18 @@ uint64_t nodus_witness_p2p_bonded_joined_total(const nodus_witness_p2p_t *p);
 
 /**
  * Prepare the host rows the two reactors are built with: the block-store
- * rows read `store`; `now` is the consensus clock (the SAME callback as
- * the state machine's, cmt_conr.h). Call before cmt_conr_init /
- * cmt_memr_init. @return CMT_OK; CMT_FAULT (NULL / memory / already
- * prepared).
+ * rows read `store`; `now` is the consensus WALL clock (the SAME callback
+ * as the state machine's, cmt_conr.h) and reaches the consensus reactor's
+ * stamp sites and the block sync reactor's ban/rate state only; `mono` is
+ * the WAIT clock (CLOCK_MONOTONIC) every reactor sleep, ticker and
+ * timeout is armed on (decision 2026-09-30-monotonic-waits.md). Call
+ * before cmt_conr_init / cmt_memr_init. @return CMT_OK; CMT_FAULT (NULL —
+ * including a NULL `now` or `mono` — / memory / already prepared).
  */
 int nodus_witness_p2p_lane_prepare(nodus_witness_p2p_t *p,
                                    nodus_cmt_store_t *store,
-                                   cmt_now_fn now, void *now_ctx);
+                                   cmt_now_fn now, void *now_ctx,
+                                   cmt_mono_fn mono, void *mono_ctx);
 /** The host tables and the receive arena for cmt_conr_init /
  *  cmt_memr_init (valid for the host's life). */
 const cmt_conr_host_t *nodus_witness_p2p_conr_host(nodus_witness_p2p_t *p);
@@ -508,7 +512,9 @@ int  nodus_witness_p2p_lane_live(nodus_witness_p2p_t *p);
  *  (nodus_witness.c witness_cmt_tick). It is never cleared. A CMT_REJECT
  *  there is a peer's fault and is handled where it arises, not here.
  *  @return CMT_OK or CMT_FAULT; `*next_deadline_ns` the earliest of the
- *  reactors' deadlines (INT64_MAX = none). */
+ *  reactors' deadlines, on the lane's MONOTONIC clock (INT64_MAX = none).
+ *  Every reactor reports its deadlines on that one clock, so the minimum
+ *  is well defined. */
 int  nodus_witness_p2p_lane_tick(nodus_witness_p2p_t *p,
                                  int64_t *next_deadline_ns);
 /** The sticky lane fault (above) is set: a reactor call made from a p2p
@@ -526,9 +532,10 @@ void nodus_witness_p2p_lane_unbind(nodus_witness_p2p_t *p);
 /**
  * The block sync reactor's p2p rows (file header, "THE BLOCK SYNC SEAM"):
  * `try_send` / `send` / `broadcast` on channel 0x40 and the deferred
- * `stop_peer_for_error`, all with `ctx` = this host, and `now` = the lane
- * clock given to `nodus_witness_p2p_lane_prepare` (the consensus clock).
- * The store / executor rows (`exec_ctx`) are the caller's. Requires a
+ * `stop_peer_for_error`, all with `ctx` = this host, `now` = the lane's
+ * WALL clock and `mono` = the lane's MONOTONIC clock, both as given to
+ * `nodus_witness_p2p_lane_prepare` (decision 2026-09-30-monotonic-
+ * waits.md). The store / executor rows (`exec_ctx`) are the caller's. Requires a
  * prepared lane. @return CMT_OK; CMT_FAULT on NULL / unprepared lane.
  */
 int  nodus_witness_p2p_bsync_host_fill(nodus_witness_p2p_t *p,

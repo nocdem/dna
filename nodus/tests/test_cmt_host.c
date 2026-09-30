@@ -425,6 +425,26 @@ static int t_now(void *ctx, cmt_time_t *out)
     return CMT_OK;
 }
 
+/* The WAIT clock (CLOCK_MONOTONIC in production, decision
+ * 2026-09-30-monotonic-waits.md): a SEPARATE frozen value, on a base
+ * DISJOINT from `g_now` — 7 s against ~1.7e9 s — so a deadline armed on
+ * one clock and checked on the other is off by ~54 years and every such
+ * mix-up fails its case at once. It has its own fault flag and read
+ * counter, so the block-time-tolerance cases' `g_now_reads` counts are
+ * untouched by it. */
+static int64_t  g_mono = 7LL * 1000000000LL;
+static bool     g_mono_fault = false;
+
+static int t_mono(void *ctx, int64_t *out_ns)
+{
+    (void)ctx;
+    if (g_mono_fault) {
+        return CMT_FAULT;
+    }
+    *out_ns = g_mono;
+    return CMT_OK;
+}
+
 /* ══ the SQLite fixture ═══════════════════════════════════════════════ */
 
 static void rmrf(const char *path)
@@ -2707,6 +2727,84 @@ static int wal_append_raw(const char *path, const uint8_t *b, size_t n)
     return fclose(f) == 0 ? 0 : -1;
 }
 
+/* Decision 2026-09-30-monotonic-waits.md — the WAL's two tickers
+ * (wal.go:137 flushTicker, group.go:139 the check ticker: Go runtime
+ * timers, i.e. monotonic) are armed on the WAL's `mono` clock and NEVER on
+ * the wall `now`, while its records keep the wall stamp (wal.go:189).
+ * The wall clock is stepped an hour BACK and an hour FORWARD around
+ * OnStart and between the fires; the deadlines move with `g_mono` only.
+ * Against 21afb561: does not compile (no `mono` argument to open); with
+ * the argument wired but OnStart still reading the wall `now` (the old
+ * code), both deadlines sit at ~1.7e18 ns and "deadline == g_mono +
+ * period" fails. */
+static int t_wal_tickers_follow_mono(void)
+{
+    const cmt_time_t         wall0 = g_now;
+    const int64_t            mono0 = g_mono;
+    walfx_t                  fx;
+    nodus_cmt_wal_t         *w;
+    cmt_wal_message_t       *m;
+    cmt_timed_wal_message_t *tw;
+    int64_t                  fdl = 0, gdl = 0;
+    long long                s0;
+    bool                     eof = false;
+
+    CHECK(walfx_open(&fx) == 0, "fixture");
+    w = (nodus_cmt_wal_t *)calloc(1, sizeof(*w));
+    m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
+    tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
+    CHECK(w && m && tw, "alloc");
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK,
+          "NewWAL");
+    /* the wall clock steps an hour BACK just before OnStart */
+    g_now.seconds = wall0.seconds - 3600;
+    CHECK(nodus_cmt_wal_start(w) == CMT_OK, "OnStart");
+    CHECK(nodus_cmt_wal_next_flush_deadline(w, &fdl) &&
+          fdl == mono0 + NODUS_CMT_WAL_FLUSH_INTERVAL_NS,
+          "flush deadline = mono + 2 s, whatever the wall clock says");
+    CHECK(nodus_cmt_wal_next_group_check_deadline(w, &gdl) &&
+          gdl == mono0 + NODUS_CMT_GROUP_CHECK_DURATION_NS,
+          "group check deadline = mono + 5 s, whatever the wall clock says");
+    /* the EndHeight{0} OnStart wrote is still a WALL stamp (wal.go:189):
+     * reopened without a search, the reader starts at the first record */
+    nodus_cmt_wal_close(w);
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK,
+          "reopen to read from the first record");
+    CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && !eof &&
+          tw->msg.kind == CMT_PB_WAL_END_HEIGHT &&
+          tw->time.seconds == wall0.seconds - 3600,
+          "the record carries the (stepped) WALL time, not the monotonic one");
+    CHECK(nodus_cmt_wal_start(w) == CMT_OK, "OnStart again");
+    wal_round_state(m, 1, 0);
+    CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "a pending Write");
+    s0 = wal_fsize(fx.file);
+    /* the wall clock steps an hour FORWARD; the monotonic one has not
+     * reached the deadline: nothing fires */
+    g_now.seconds = wall0.seconds + 3600;
+    CHECK(nodus_cmt_wal_next_flush_deadline(w, &fdl) &&
+          fdl == mono0 + NODUS_CMT_WAL_FLUSH_INTERVAL_NS, "still mono + 2 s");
+    CHECK(nodus_cmt_wal_flush_if_due(w, mono0 + NODUS_CMT_WAL_FLUSH_INTERVAL_NS - 1)
+          == CMT_OK && wal_fsize(fx.file) == s0,
+          "mono 1 ns short of the deadline: no flush, wall +1 h or not");
+    CHECK(nodus_cmt_wal_group_check_if_due(w, mono0 + NODUS_CMT_GROUP_CHECK_DURATION_NS - 1)
+          == CMT_OK && nodus_cmt_wal_next_group_check_deadline(w, &gdl) &&
+          gdl == mono0 + NODUS_CMT_GROUP_CHECK_DURATION_NS,
+          "mono short of the group deadline: it stays armed where it was");
+    /* the monotonic clock reaches the deadline: it fires */
+    CHECK(nodus_cmt_wal_flush_if_due(w, mono0 + NODUS_CMT_WAL_FLUSH_INTERVAL_NS)
+          == CMT_OK && wal_fsize(fx.file) > s0, "mono at the deadline: flushed");
+    CHECK(nodus_cmt_wal_group_check_if_due(w, mono0 + NODUS_CMT_GROUP_CHECK_DURATION_NS)
+          == CMT_OK && nodus_cmt_wal_next_group_check_deadline(w, &gdl) &&
+          gdl == mono0 + 2 * NODUS_CMT_GROUP_CHECK_DURATION_NS,
+          "mono at the group deadline: fired, next one a period on");
+    nodus_cmt_wal_close(w);
+    g_now = wall0;
+    g_mono = mono0;
+    free(w); free(m); free(tw);
+    rmrf(fx.dir);
+    return 0;
+}
+
 /* wal.go:91-218 — NewWAL, OnStart, the three write classes, the record
  * layout, the 2 s ticker, close. */
 static int t_wal_write_classes_and_layout(void)
@@ -2723,7 +2821,7 @@ static int t_wal_write_classes_and_layout(void)
     m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
     tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
     CHECK(w && m && tw, "alloc");
-    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK, "NewWAL");
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK, "NewWAL");
     CHECK(wal_fsize(fx.file) == 0, "OpenGroup made an empty head");
     {
         struct stat st;
@@ -2792,8 +2890,9 @@ static int t_wal_write_classes_and_layout(void)
     CHECK(s2 > s1 && nodus_cmt_group_buffered(&w->group) == 0,
           "both records are in the file when WriteSync returns");
 
-    /* the two tickers, armed by OnStart at `now` */
-    t0 = cmt_time_unix_nano(g_now);
+    /* the two tickers, armed by OnStart at the MONOTONIC `mono`, not at
+     * the wall `now` (decision 2026-09-30-monotonic-waits.md) */
+    t0 = g_mono;
     {
         int64_t gdl = 0;
 
@@ -2827,19 +2926,25 @@ static int t_wal_write_classes_and_layout(void)
     s2 = wal_fsize(fx.file);
     CHECK(s2 > s1, "close flushed it");
     /* a non-empty head gets no second EndHeight(0) */
-    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK &&
           nodus_cmt_wal_start(w) == CMT_OK && wal_fsize(fx.file) == s2,
           "OnStart on a non-empty head writes nothing");
     nodus_cmt_wal_close(w);
     nodus_cmt_wal_close(w);                     /* a second close is harmless */
 
-    CHECK(nodus_cmt_wal_open(w, "", t_now, NULL) == CMT_FAULT, "an empty path is refused");
+    CHECK(nodus_cmt_wal_open(w, "", t_now, NULL, t_mono, NULL) == CMT_FAULT,
+          "an empty path is refused");
+    /* decision 2026-09-30-monotonic-waits.md: both clocks are required */
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, NULL, NULL) == CMT_FAULT,
+          "a NULL mono (the tickers' wait clock) is refused");
+    CHECK(nodus_cmt_wal_open(w, fx.file, NULL, NULL, t_mono, NULL) == CMT_FAULT,
+          "a NULL now (the record stamp clock) is refused");
     {
         char p[192];
 
         /* `<dir>/cs.wal/wal` is a FILE, so EnsureDir of it fails */
         snprintf(p, sizeof(p), "%s/cs.wal/wal/x", fx.dir);
-        CHECK(nodus_cmt_wal_open(w, p, t_now, NULL) == CMT_FAULT,
+        CHECK(nodus_cmt_wal_open(w, p, t_now, NULL, t_mono, NULL) == CMT_FAULT,
               "EnsureDir over a file is refused");
     }
     free(w); free(m); free(tw);
@@ -2863,7 +2968,7 @@ static int t_wal_search_and_replay(void)
     m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
     tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
     CHECK(w && m && tw, "alloc");
-    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK, "open");
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK, "open");
     CHECK(nodus_cmt_wal_start(w) == CMT_OK, "OnStart: EndHeight(0)");
     CHECK(nodus_cmt_wal_search_end_height(w, 0, &found) == CMT_OK && found,
           "EndHeight(0) found");
@@ -2969,7 +3074,7 @@ static int wal_reopen_after_end1(nodus_cmt_wal_t *w, const char *file,
     int  i;
 
     nodus_cmt_wal_close(w);
-    if (nodus_cmt_wal_open(w, file, t_now, NULL) != CMT_OK) {
+    if (nodus_cmt_wal_open(w, file, t_now, NULL, t_mono, NULL) != CMT_OK) {
         return 1;
     }
     if (nodus_cmt_wal_search_end_height(w, 1, &found) != CMT_OK || !found) {
@@ -3005,7 +3110,7 @@ static int t_wal_corruption(void)
     tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
     CHECK(w && m && tw, "alloc");
     /* EndHeight(0) rs(1,0) EndHeight(1) rs(2,0) */
-    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK &&
           nodus_cmt_wal_start(w) == CMT_OK, "open + start");
     wal_round_state(m, 1, 0);
     CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "rs(1,0)");
@@ -3027,7 +3132,7 @@ static int t_wal_corruption(void)
           "search skips the corrupted record; rs(2,0) follows EndHeight(1)");
     CHECK(tw->msg.u.event_data_round_state.height == 2, "rs(2,0)");
     nodus_cmt_wal_close(w);
-    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK, "reopen");
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK, "reopen");
     CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && !eof &&
           tw->msg.kind == CMT_PB_WAL_END_HEIGHT, "from the start: EndHeight(0)");
     CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_REJECT,
@@ -3136,7 +3241,7 @@ static int t_wal_validate_basic_and_repair(void)
     m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
     tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
     CHECK(w && m && tw, "alloc");
-    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK, "open");
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK, "open");
     CHECK(nodus_cmt_wal_repair(w) == CMT_FAULT,
           "repair of a WAL that was never started: refused (ErrNotStarted)");
     CHECK(wal_fsize(bak) == -1, "and nothing was copied");
@@ -3237,7 +3342,7 @@ static int t_wal_torn_tail_trimmed_at_start(void)
     tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
     CHECK(w && m && tw, "alloc");
     /* EndHeight(0) rs(1,0) EndHeight(1) rs(2,0) */
-    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK &&
           nodus_cmt_wal_start(w) == CMT_OK, "open + start");
     wal_round_state(m, 1, 0);
     CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "rs(1,0)");
@@ -3252,7 +3357,7 @@ static int t_wal_torn_tail_trimmed_at_start(void)
           "the clean head");
 
     /* a clean head is not written by start */
-    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK &&
           nodus_cmt_wal_start(w) == CMT_OK &&
           wal_file_is(fx.file, good_bytes, good_len),
           "a clean head: start changes no byte");
@@ -3262,7 +3367,7 @@ static int t_wal_torn_tail_trimmed_at_start(void)
     for (k = 1; k <= 7; k++) {
         CHECK(wal_append_raw(fx.file, good_bytes, (size_t)k) == 0, "torn header");
         CHECK(wal_fsize(fx.file) == good + k, "torn bytes on disk");
-        CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+        CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK &&
               nodus_cmt_wal_start(w) == CMT_OK, "open + start");
         CHECK(wal_file_is(fx.file, good_bytes, good_len),
               "start truncated the head to the last complete record");
@@ -3286,7 +3391,7 @@ static int t_wal_torn_tail_trimmed_at_start(void)
                                          1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
 
         CHECK(wal_append_raw(fx.file, hdr, sizeof(hdr)) == 0, "short body");
-        CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+        CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK &&
               nodus_cmt_wal_start(w) == CMT_OK, "open + start");
         CHECK(wal_file_is(fx.file, good_bytes, good_len),
               "a short body is a torn tail: truncated");
@@ -3303,7 +3408,7 @@ static int t_wal_torn_tail_trimmed_at_start(void)
     /* the only record torn: the head becomes empty, and OnStart then
      * writes its EndHeight{0} (wal.go:124-131) */
     CHECK(truncate(fx.file, 5) == 0, "a head of five bytes");
-    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK &&
           nodus_cmt_wal_start(w) == CMT_OK, "open + start");
     {
         bool found = false;
@@ -3343,7 +3448,7 @@ static int t_wal_torn_tail_not_corruption(void)
     m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
     tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
     CHECK(w && m && tw, "alloc");
-    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK &&
           nodus_cmt_wal_start(w) == CMT_OK, "open + start");
     wal_round_state(m, 1, 0);
     CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "rs(1,0)");
@@ -3359,7 +3464,7 @@ static int t_wal_torn_tail_not_corruption(void)
         static const uint8_t big[8] = { 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF };
 
         CHECK(wal_append_raw(fx.file, big, sizeof(big)) == 0, "huge length");
-        CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+        CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK &&
               nodus_cmt_wal_start(w) == CMT_OK && wal_fsize(fx.file) == good + 8,
               "start leaves an over-bound length alone");
         CHECK(nodus_cmt_wal_search_end_height(w, 1, &found) == CMT_OK && found &&
@@ -3379,7 +3484,7 @@ static int t_wal_torn_tail_not_corruption(void)
           "three torn bytes");
     old = wal_slurp(fx.file, &old_len);
     CHECK(old != NULL && (long long)old_len == good + 3, "the corrupted head");
-    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK &&
           nodus_cmt_wal_start(w) == CMT_OK && wal_file_is(fx.file, old, old_len),
           "a mid-file bad checksum stops the walk: start changes no byte");
     CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_OK && !eof &&
@@ -3426,7 +3531,7 @@ static int t_wal_repair_atomic(void)
     m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
     tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
     CHECK(w && m && tw, "alloc");
-    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK &&
           nodus_cmt_wal_start(w) == CMT_OK, "open + start");
     wal_round_state(m, 1, 0);
     CHECK(nodus_cmt_wal_write(w, m) == CMT_OK, "rs(1,0)");
@@ -3442,7 +3547,7 @@ static int t_wal_repair_atomic(void)
 
     /* a failure before the rename */
     CHECK(mkdir(tmp, 0700) == 0, "a directory at the temp path");
-    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK &&
           nodus_cmt_wal_start(w) == CMT_OK, "open + start");
     CHECK(nodus_cmt_wal_repair(w) == CMT_FAULT,
           "the temp path cannot be cleared: the repair fails");
@@ -3454,7 +3559,7 @@ static int t_wal_repair_atomic(void)
 
     /* the retry, over a stale temp FILE */
     CHECK(wal_append_raw(tmp, (const uint8_t *)"junk", 4) == 0, "a stale temp file");
-    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK &&
           nodus_cmt_wal_start(w) == CMT_OK, "open + start again");
     CHECK(nodus_cmt_wal_repair(w) == CMT_OK, "repair");
     CHECK(wal_fsize(tmp) == -1, "no temp file after the rename");
@@ -3467,7 +3572,7 @@ static int t_wal_repair_atomic(void)
 
     /* the FIRST record bad: nothing is kept, the head is EndHeight{0} */
     CHECK(wal_flip(fx.file, 8 + 2) == 0, "flip EndHeight(0)");
-    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK &&
           nodus_cmt_wal_start(w) == CMT_OK, "open + start");
     CHECK(nodus_cmt_wal_read_next(w, tw, &eof) == CMT_REJECT, "record 0 is bad");
     CHECK(nodus_cmt_wal_repair(w) == CMT_OK, "repair");
@@ -3503,9 +3608,9 @@ static int t_wal_size_bound_rotates_and_removes_oldest(void)
     m = (cmt_wal_message_t *)calloc(1, sizeof(*m));
     tw = (cmt_timed_wal_message_t *)calloc(1, sizeof(*tw));
     CHECK(w && m && tw, "alloc");
-    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK &&
           nodus_cmt_wal_start(w) == CMT_OK, "open + start");
-    t0 = cmt_time_unix_nano(g_now);
+    t0 = g_mono;      /* the group check is armed on the monotonic clock */
     /* the reference's option functions (group.go:122-134), lowered */
     w->group.head_size_limit = 256;
     w->group.total_size_limit = 1024;
@@ -3808,7 +3913,7 @@ static int t_wal_carry_sqlite_tail(void)
 
     /* the replay a restarted node runs (replay.go:106-147) */
     s0 = wal_fsize(fx.file);
-    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK &&
           nodus_cmt_wal_start(w) == CMT_OK && wal_fsize(fx.file) == s0,
           "OnStart on the carried head writes no EndHeight{0}");
     CHECK(nodus_cmt_wal_search_end_height(w, 3, &found) == CMT_OK && !found,
@@ -3987,7 +4092,7 @@ static int t_wal_carry_sqlite_refusals_and_noops(void)
     CHECK(carry_db_open(&fx, true, &db) == 0, "an empty table");
     CHECK(nodus_cmt_wal_carry_sqlite(db, fx.file, &rows) == CMT_OK && rows == 0 &&
           wal_fsize(fx.file) == -1, "an empty table: no-op");
-    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL) == CMT_OK &&
+    CHECK(nodus_cmt_wal_open(w, fx.file, t_now, NULL, t_mono, NULL) == CMT_OK &&
           nodus_cmt_wal_start(w) == CMT_OK &&
           nodus_cmt_wal_search_end_height(w, 0, &found) == CMT_OK && found,
           "OnStart wrote EndHeight{0}, as without the carry (wal.go:124-131)");
@@ -5621,7 +5726,8 @@ static int exec_init(t_exec_t *x, t_env_t *e)
     ext_arena_pair[0] = &x->ext_arena[0];
     ext_arena_pair[1] = &x->ext_arena[1];
     return nodus_cmt_blockexec_init(x->be, e->store, &x->app_if, &x->mp_if, &x->ev_if, NULL, NULL,
-                                    t_now, NULL, x->slots, ext_arena_pair, &lim) == CMT_OK ? 0 : -1;
+                                    t_now, NULL, t_mono, NULL, x->slots, ext_arena_pair,
+                                    &lim) == CMT_OK ? 0 : -1;
 }
 
 static void exec_free(t_exec_t *x)
@@ -7017,18 +7123,76 @@ static int t_host_table_and_timer(void)
 
         CHECK(h.now(x.be, &t) == CMT_OK && t.seconds == g_now.seconds, "now forwarded");
     }
-    /* timer: arm 5 s → due at now+5s exactly once; disarm discards */
+    /* timer: arm 5 s → due at mono+5s exactly once; disarm discards. The
+     * deadline is on the MONOTONIC clock (decision
+     * 2026-09-30-monotonic-waits.md). Against 21afb561 this file does not
+     * compile (no `mono` argument); with it wired but `host_timer_arm`
+     * still reading the wall `now` (the old code), the deadline is
+     * ~1.7e18 ns and "deadline = mono + 5 s" fails. */
     CHECK(h.timer_arm(x.be, 5000000000LL) == CMT_OK, "arm");
-    CHECK(nodus_cmt_host_next_deadline(x.be, &dl) && dl == g_now.seconds * 1000000000LL + 5000000000LL,
-          "deadline");
+    CHECK(nodus_cmt_host_next_deadline(x.be, &dl) && dl == g_mono + 5000000000LL,
+          "deadline = mono + 5 s");
     CHECK(!nodus_cmt_host_timer_due(x.be, dl - 1), "not due before");
     CHECK(nodus_cmt_host_timer_due(x.be, dl), "due at the deadline");
     CHECK(!nodus_cmt_host_timer_due(x.be, dl) && !nodus_cmt_host_next_deadline(x.be, &dl),
           "consumed: delivered once");
-    CHECK(h.timer_arm(x.be, -1) == CMT_OK && nodus_cmt_host_timer_due(x.be, g_now.seconds * 1000000000LL),
+    CHECK(h.timer_arm(x.be, -1) == CMT_OK && nodus_cmt_host_timer_due(x.be, g_mono),
           "non-positive duration fires on the next tick");
     CHECK(h.timer_arm(x.be, 1) == CMT_OK && h.timer_disarm(x.be) == CMT_OK &&
           !nodus_cmt_host_timer_due(x.be, INT64_MAX), "disarm discards");
+    /* A wall-clock step moves no pending timeout (G1 of the design):
+     * armed with D = 3 s, the wall clock jumps an hour BACK and then an
+     * hour FORWARD while the monotonic clock advances < D — not due; the
+     * monotonic clock reaches D — due, whatever the wall clock says. */
+    {
+        const cmt_time_t wall0 = g_now;
+        const int64_t    mono0 = g_mono;
+        const int64_t    d     = 3000000000LL;
+
+        CHECK(h.timer_arm(x.be, d) == CMT_OK, "arm D = 3 s");
+        g_now.seconds = wall0.seconds - 3600;           /* wall −1 h */
+        g_mono = mono0 + d / 2;
+        CHECK(!nodus_cmt_host_timer_due(x.be, g_mono),
+              "wall −1 h, mono + D/2: not due");
+        g_now.seconds = wall0.seconds + 3600;           /* wall +1 h */
+        g_mono = mono0 + d - 1;
+        CHECK(!nodus_cmt_host_timer_due(x.be, g_mono),
+              "wall +1 h, mono + D − 1 ns: not due");
+        CHECK(nodus_cmt_host_next_deadline(x.be, &dl) && dl == mono0 + d,
+              "the deadline never moved: mono0 + D");
+        g_now.seconds = wall0.seconds - 3600;           /* wall −1 h again */
+        g_mono = mono0 + d;
+        CHECK(nodus_cmt_host_timer_due(x.be, g_mono),
+              "mono + D: due, with the wall clock an hour behind");
+        /* and the other way round: re-armed while the wall clock is an
+         * hour AHEAD, the deadline is still mono + D */
+        g_now.seconds = wall0.seconds + 3600;
+        CHECK(h.timer_arm(x.be, d) == CMT_OK &&
+              nodus_cmt_host_next_deadline(x.be, &dl) && dl == g_mono + d,
+              "armed with the wall clock +1 h: deadline = mono + D");
+        CHECK(!nodus_cmt_host_timer_due(x.be, g_mono + d - 1) &&
+              nodus_cmt_host_timer_due(x.be, g_mono + d),
+              "fires exactly at mono + D");
+        /* a monotonic-clock fault is CMT_FAULT at arm, never a silent 0 */
+        g_mono_fault = true;
+        CHECK(h.timer_arm(x.be, d) == CMT_FAULT, "mono fault: arm FAULTs");
+        g_mono_fault = false;
+        g_now  = wall0;
+        g_mono = mono0;
+    }
+    /* the wait clock is a REQUIRED row: an executor without one is
+     * refused at init (decision 2026-09-30-monotonic-waits.md) */
+    {
+        nodus_cmt_blockexec_t  *be2 = (nodus_cmt_blockexec_t *)calloc(1, sizeof(*be2));
+        nodus_cmt_host_limits_t lim2 = { 1, 1, 1 };
+
+        CHECK(be2 != NULL &&
+              nodus_cmt_blockexec_init(be2, e.store, &x.app_if, &x.mp_if, &x.ev_if,
+                                       NULL, NULL, t_now, NULL, NULL, NULL,
+                                       NULL, NULL, &lim2) == CMT_FAULT,
+              "blockexec_init with a NULL mono: FAULT");
+        free(be2);
+    }
     /* ORCHESTRATOR delta 1, item 8 / E (R3-C1c-6): host_wal_write on an
      * UNOPENED WAL is now CMT_OK, not CMT_FAULT — the reference's
      * `nilWAL` (state.go:174, wal.go:426 `func (nilWAL) Write(m
@@ -7091,6 +7255,7 @@ int main(void)
         { "privval_unmarshal_validator_state",     t_privval_unmarshal_validator_state },
         { "privval_decoder_rules",                 t_privval_decoder_rules },
         { "privval_save_load",                     t_privval_save_load },
+        { "wal_tickers_follow_mono",               t_wal_tickers_follow_mono },
         { "wal_write_classes_and_layout",          t_wal_write_classes_and_layout },
         { "wal_search_and_replay",                 t_wal_search_and_replay },
         { "wal_corruption",                        t_wal_corruption },

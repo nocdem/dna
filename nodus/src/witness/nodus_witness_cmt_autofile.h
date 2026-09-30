@@ -72,7 +72,10 @@
  * ── DETERMINISM ────────────────────────────────────────────────────────
  * Node-local storage: nothing here reaches a hash, a vote or a block.
  * The clock appears only as the `now_ns` the owner passes to arm and fire
- * the check deadline. `readGroupInfo` iterates the directory in
+ * the check deadline — a MONOTONIC reading (the ticker is a Go runtime
+ * timer; decision docs/plans/decisions/2026-09-30-monotonic-waits.md),
+ * and the SAME clock at arm and at fire: the WAL passes its `mono` clock
+ * to both (nodus_witness_cmt_wal.h). `readGroupInfo` iterates the directory in
  * readdir() order, but computes only a sum, a min and a max, which do
  * not depend on the order.
  *
@@ -223,7 +226,8 @@ typedef struct {
 int nodus_cmt_group_open(nodus_cmt_group_t *g, const char *head_path);
 
 /** group.go:138-142 `OnStart` — arms the check deadline at
- *  `now_ns + group_check_duration_ns` (`time.NewTicker`). */
+ *  `now_ns + group_check_duration_ns` (`time.NewTicker`). `now_ns` is the
+ *  owner's MONOTONIC instant (header, "DETERMINISM"). */
 void nodus_cmt_group_start(nodus_cmt_group_t *g, int64_t now_ns);
 
 /** group.go:146-151 `OnStop` — disarms the check deadline, then

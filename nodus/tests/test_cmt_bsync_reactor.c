@@ -376,6 +376,20 @@ static int h_now(void *ctx, cmt_time_t *out)
     return CMT_OK;
 }
 
+/* The WAIT clock (decision 2026-09-30-monotonic-waits.md): the reactor's
+ * tickers, the pool's sleeps, retries and peer timeouts run on it; the
+ * wall `g_now` keeps the ban list and the rate monitors. Advanced in
+ * lockstep with `g_now` by `pump`, on a DISJOINT base (7 s against
+ * ~1.7e9 s), so an arm on one clock and a check on the other fails. */
+static int64_t g_mono = 7 * SEC;
+
+static int h_mono(void *ctx, int64_t *out_ns)
+{
+    (void)ctx;
+    *out_ns = g_mono;
+    return CMT_OK;
+}
+
 #define MAXNODES 4
 #define MAXPEERS 4
 #define MAXSTOPS 16
@@ -603,6 +617,7 @@ static int node_init(node_t *n, const char *id, const cmt_state_t *state,
     h.apply_verified_block = h_apply;
     h.switch_to_consensus = h_switch;
     h.now = h_now;
+    h.mono = h_mono;
     lim.max_txs = 1024;
     lim.max_evidence = 8;
     n->has_reactor = true;
@@ -745,7 +760,8 @@ static int pump(node_t **nodes, int n, int64_t until_ns,
         if (stop_when != NULL && stop_when(watched)) {
             return 0;
         }
-        g_now += 1 * MS;
+        g_now  += 1 * MS;
+        g_mono += 1 * MS;
     }
     return 0;
 }
@@ -849,6 +865,48 @@ static int t_serving(void)
     CHECK(deliver(nodes, 2) == 0, "deliver"); OK();
     node_free(&a);
     node_free(&p);
+    return 0;
+}
+
+/* Decision 2026-09-30-monotonic-waits.md — the poolRoutine's tickers and
+ * the pool's sleeps are armed at start on the MONOTONIC clock, and the
+ * deadline the tick reports is on it: started at mono M, the earliest is
+ * the trySync ticker, M + 10 ms (reactor.go:322). The wall clock steps an
+ * hour back and an hour forward with the monotonic clock held: the
+ * reported deadline does not move. Against 21afb561: does not compile (no
+ * `mono` host row); with the row wired but start and tick still reading
+ * the wall `now` (the old code), the deadline is ~1.7e18 ns, not
+ * M + 10 ms. */
+static int t_tick_deadline_on_mono(void)
+{
+    static node_t b;
+    const int64_t wall0 = g_now;
+    int64_t       m, dl = 0;
+
+    CHECK(node_init(&b, ID_B, &g_genesis, true, 0, NULL) == CMT_OK,
+          "B (blockSync)"); OK();
+    m = g_mono;
+    CHECK(cmt_bsync_reactor_start(&b.r) == CMT_OK, "start"); OK();
+    CHECK(cmt_bsync_reactor_tick(&b.r, &dl) == CMT_OK &&
+          dl == m + CMT_BSYNC_TRY_SYNC_INTERVAL_NS,
+          "the tick's deadline = mono + the 10 ms trySync ticker"); OK();
+    g_now = wall0 - 3600 * SEC;
+    CHECK(cmt_bsync_reactor_tick(&b.r, &dl) == CMT_OK &&
+          dl == m + CMT_BSYNC_TRY_SYNC_INTERVAL_NS,
+          "wall −1 h: the deadline does not move"); OK();
+    g_now = wall0 + 3600 * SEC;
+    CHECK(cmt_bsync_reactor_tick(&b.r, &dl) == CMT_OK &&
+          dl == m + CMT_BSYNC_TRY_SYNC_INTERVAL_NS,
+          "wall +1 h: the deadline does not move"); OK();
+    g_now = wall0;
+    /* the monotonic clock reaches it: the ticker fires and re-arms one
+     * period on */
+    g_mono = m + CMT_BSYNC_TRY_SYNC_INTERVAL_NS;
+    CHECK(cmt_bsync_reactor_tick(&b.r, &dl) == CMT_OK &&
+          dl == g_mono + CMT_BSYNC_TRY_SYNC_INTERVAL_NS,
+          "mono at the deadline: fired, next one 10 ms on"); OK();
+    q_reset();
+    node_free(&b);
     return 0;
 }
 
@@ -1112,7 +1170,7 @@ static int t_filter_msg_bytes(void)
     cmt_bsync_pool_t *pool;
     uint8_t          *x, *y, *cat;
     size_t            nx = 0, ny = 0;
-    int64_t           t0;
+    int64_t           t0, m0;
     size_t            half = (size_t)CMT_MAX_VOTES_COUNT / 2u + 1u;
 
     q_reset();
@@ -1124,7 +1182,8 @@ static int t_filter_msg_bytes(void)
 
     CHECK(node_init(&b, ID_B, &g_genesis, true, 0, NULL) == CMT_OK, "B"); OK();
     CHECK(cmt_bsync_reactor_start(&b.r) == CMT_OK, "start B"); OK();
-    t0 = g_now;
+    t0 = g_now;       /* wall: the ban list */
+    m0 = g_mono;      /* mono: the pool's start and its sleeps */
     pool = cmt_bsync_reactor_pool(&b.r);
 
     /* "rejects unsolicited BlockResponse with no requesters" */
@@ -1144,8 +1203,9 @@ static int t_filter_msg_bytes(void)
     /* seed a requester for height 1 asking A (the pool's own ticks, not
      * a hand-written map entry as upstream's seedRequester) */
     CHECK(cmt_bsync_pool_set_peer_range(pool, ID_A, 1, 1, t0) == CMT_OK, "A's range"); OK();
-    CHECK(cmt_bsync_pool_tick(pool, t0 + 3 * SEC, NULL) == CMT_OK &&
-          cmt_bsync_pool_tick(pool, t0 + 3 * SEC + 2 * MS, NULL) == CMT_OK, "ticks"); OK();
+    CHECK(cmt_bsync_pool_tick(pool, m0 + 3 * SEC, t0 + 3 * SEC, NULL) == CMT_OK &&
+          cmt_bsync_pool_tick(pool, m0 + 3 * SEC + 2 * MS, t0 + 3 * SEC + 2 * MS,
+                              NULL) == CMT_OK, "ticks"); OK();
     CHECK(cmt_bsync_pool_has_pending_request_from(pool, ID_A), "height 1 asked of A"); OK();
 
     CHECK(filt(&b, ID_P, br_empty, sizeof(br_empty), CMT_BSYNC_FILTER_UNSOLICITED),
@@ -1222,6 +1282,7 @@ int main(void)
 {
     static const s_case_t cases[] = {
         { "serving + boundary refusals (reactor.go:190-305)",  t_serving },
+        { "tick deadlines on the monotonic clock",             t_tick_deadline_on_mono },
         { "two-store sync + SwitchToConsensus (:318-572)",     t_sync_and_switch },
         { "bad commit → stop + ban + redo (:515-531)",         t_bad_commit },
         { "R1-1: bad signature after 2/3 (v0.38.26 :580-585)", t_bad_commit_after_threshold },

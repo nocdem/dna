@@ -36,8 +36,19 @@ static void deadline_min(int64_t *earliest, int64_t t)
     }
 }
 
-/* Read the host clock (header, "THE CLOCK"). */
-static int reactor_now(const cmt_bsync_reactor_t *bcR, int64_t *out_ns)
+/* Read the host's WAIT clock, CLOCK_MONOTONIC (header, "THE CLOCKS"). */
+static int reactor_mono(const cmt_bsync_reactor_t *bcR, int64_t *out_ns)
+{
+    if (bcR->host.mono == NULL ||
+        bcR->host.mono(bcR->host.mono_ctx, out_ns) != CMT_OK) {
+        return CMT_FAULT;
+    }
+    return CMT_OK;
+}
+
+/* Read the host's WALL clock — the ban list and the receive-rate monitor
+ * only (header, "THE CLOCKS"). */
+static int reactor_wall(const cmt_bsync_reactor_t *bcR, int64_t *out_ns)
 {
     cmt_time_t t;
 
@@ -144,7 +155,8 @@ int cmt_bsync_reactor_init(cmt_bsync_reactor_t *bcR, const cmt_state_t *state,
         host->bs_save_block == NULL ||
         host->bs_save_block_with_extended_commit == NULL ||
         host->ss_load_abci_params == NULL || host->validate_block == NULL ||
-        host->apply_verified_block == NULL || host->now == NULL) {
+        host->apply_verified_block == NULL || host->now == NULL ||
+        host->mono == NULL) {
         return CMT_FAULT;
     }
     if (local_addr_len > sizeof(bcR->local_addr) ||
@@ -224,7 +236,7 @@ int cmt_bsync_reactor_start(cmt_bsync_reactor_t *bcR)
     if (!bcR->block_sync) {                                        /* :134 */
         return CMT_OK;
     }
-    if (reactor_now(bcR, &now_ns) != CMT_OK) {
+    if (reactor_mono(bcR, &now_ns) != CMT_OK) {    /* startTime + tickers */
         return CMT_FAULT;
     }
     if (cmt_bsync_pool_start(&bcR->pool, now_ns) != CMT_OK) {      /* :135 */
@@ -647,7 +659,8 @@ static int handle_peer_response(cmt_bsync_reactor_t *bcR,
 {
     cmt_bsync_block_t *b = NULL;
     int                which = 0;
-    int64_t            now_ns;
+    int64_t            mono_ns;
+    int64_t            wall_ns;
     int                rc;
 
     rc = decode_block_response(bcR, m, &b, &which);
@@ -666,12 +679,15 @@ static int handle_peer_response(cmt_bsync_reactor_t *bcR,
         }
         return CMT_REJECT;
     }
-    if (reactor_now(bcR, &now_ns) != CMT_OK) {
+    /* decrPending: the peer timeout (mono) and the rate monitor (wall). */
+    if (reactor_mono(bcR, &mono_ns) != CMT_OK ||
+        reactor_wall(bcR, &wall_ns) != CMT_OK) {
         cmt_bsync_block_free(b);
         return CMT_FAULT;
     }
     /* :274 — AddBlock takes the block in every case. */
-    if (cmt_bsync_pool_add_block(&bcR->pool, peer_id, b, now_ns) != CMT_OK) {
+    if (cmt_bsync_pool_add_block(&bcR->pool, peer_id, b, mono_ns,
+                                 wall_ns) != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to add block (peer %s)", peer_id); /* :275 */
     }
     return CMT_OK;
@@ -806,15 +822,16 @@ int cmt_bsync_reactor_receive(cmt_bsync_reactor_t *bcR, const char *peer_id,
         break;
     }
     case CMT_BSYNC_MSG_STATUS_RESPONSE: {                          /* :296 */
-        int64_t now_ns;
+        int64_t wall_ns;
 
-        if (reactor_now(bcR, &now_ns) != CMT_OK) {
+        /* The ban check/stamp only (v0.38.26 pool.go:494/:500): wall. */
+        if (reactor_wall(bcR, &wall_ns) != CMT_OK) {
             rc = CMT_FAULT;
             break;
         }
         /* :297-298 "Got a peer status. Unverified." */
         rc = cmt_bsync_pool_set_peer_range(&bcR->pool, peer_id, m.base,
-                                           m.height, now_ns);
+                                           m.height, wall_ns);
         break;
     }
     case CMT_BSYNC_MSG_NO_BLOCK_RESPONSE:                          /* :299 */
@@ -858,11 +875,12 @@ static bool local_node_blocks_the_chain(cmt_bsync_reactor_t *bcR)
 /* cometbft@v0.38.26 blocksync/reactor.go:655-677 handleValidationFailure()
  * — the peers that delivered `height_a` and `height_b` are removed,
  * banned, their requests redone, and stopped with ErrReactorValidation;
- * the second only when it is a different peer (:668-670).
+ * the second only when it is a different peer (:668-670). `wall_ns` is the
+ * WALL instant the bans are stamped with (pool.go:500).
  * @return CMT_OK; CMT_FAULT when the pool has no requester (a Go panic). */
 static int handle_validation_failure(cmt_bsync_reactor_t *bcR,
                                      int64_t height_a, int64_t height_b,
-                                     int64_t now_ns)
+                                     int64_t wall_ns)
 {
     char id_a[CMT_P2P_ID_CAP];
     char id_b[CMT_P2P_ID_CAP];
@@ -870,14 +888,14 @@ static int handle_validation_failure(cmt_bsync_reactor_t *bcR,
     QGP_LOG_ERROR(LOG_TAG, "Error in validation (height %lld)",
                   (long long)height_a);                            /* :656 */
     if (cmt_bsync_pool_remove_peer_and_redo_all_peer_requests(
-            &bcR->pool, height_a, now_ns, id_a) != CMT_OK) {       /* :660 */
+            &bcR->pool, height_a, wall_ns, id_a) != CMT_OK) {      /* :660 */
         return CMT_FAULT;
     }
     if (id_a[0] != '\0') {
         stop_peer(bcR, id_a, CMT_BSYNC_STOP_VALIDATION);           /* :661-665 */
     }
     if (cmt_bsync_pool_remove_peer_and_redo_all_peer_requests(
-            &bcR->pool, height_b, now_ns, id_b) != CMT_OK) {       /* :667 */
+            &bcR->pool, height_b, wall_ns, id_b) != CMT_OK) {      /* :667 */
         return CMT_FAULT;
     }
     if (strcmp(id_a, id_b) == 0) {
@@ -891,11 +909,11 @@ static int handle_validation_failure(cmt_bsync_reactor_t *bcR,
 
 /* :480-555 (v0.38.26 :556-645) — one block: MakePartSet, the extension
  * presence rule, VerifyCommit, VerifyCommitExtended, ValidateBlock, then
- * PopRequest → Save → Apply.
+ * PopRequest → Save → Apply. `wall_ns` reaches only a refusal's bans.
  * @return CMT_OK (processed or refused-and-redone); CMT_FAULT (BS-8);
  *         CMT_REJECT when MakePartSet failed — the routine ends (BS-7). */
 static int process_first(cmt_bsync_reactor_t *bcR, cmt_bsync_block_t *first,
-                         cmt_bsync_block_t *second, int64_t now_ns)
+                         cmt_bsync_block_t *second, int64_t wall_ns)
 {
     uint8_t          *scratch = NULL;
     size_t            cap;
@@ -1033,7 +1051,7 @@ static int process_first(cmt_bsync_reactor_t *bcR, cmt_bsync_block_t *first,
         free(parts);
         /* `first` and `second` are freed inside (the requesters are
          * reset), so only their heights are passed. */
-        return handle_validation_failure(bcR, h1, h2, now_ns);     /* continue FOR_LOOP */
+        return handle_validation_failure(bcR, h1, h2, wall_ns);    /* continue FOR_LOOP */
     }
 
     /* :534 PopRequest — `first` now belongs to this function. */
@@ -1088,8 +1106,9 @@ static int process_first(cmt_bsync_reactor_t *bcR, cmt_bsync_block_t *first,
     return CMT_OK;                                                 /* :564 */
 }
 
-/* :382-438 — the switchToConsensusTicker case. */
-static int switch_check(cmt_bsync_reactor_t *bcR, int64_t now_ns)
+/* :382-438 — the switchToConsensusTicker case. `mono_ns` feeds IsCaughtUp's
+ * `time.Since(startTime)` (v0.38.26 pool.go:232). */
+static int switch_check(cmt_bsync_reactor_t *bcR, int64_t mono_ns)
 {
     int64_t height = 0;
     int32_t num_pending = 0;
@@ -1123,7 +1142,7 @@ static int switch_check(cmt_bsync_reactor_t *bcR, int64_t now_ns)
                      (long long)cmt_bsync_pool_max_peer_height(&bcR->pool));
         return CMT_OK;                                             /* :422 */
     }
-    if (cmt_bsync_pool_is_caught_up(&bcR->pool, now_ns) ||
+    if (cmt_bsync_pool_is_caught_up(&bcR->pool, mono_ns) ||
         local_node_blocks_the_chain(bcR)) {                        /* :424 */
         QGP_LOG_INFO(LOG_TAG, "Time to switch to consensus reactor! (height "
                      "%lld, blocks synced %llu)", (long long)height,
@@ -1146,7 +1165,8 @@ static int switch_check(cmt_bsync_reactor_t *bcR, int64_t now_ns)
 
 int cmt_bsync_reactor_tick(cmt_bsync_reactor_t *bcR, int64_t *out_deadline_ns)
 {
-    int64_t now_ns;
+    int64_t now_ns;     /* MONOTONIC — every ticker and deadline below */
+    int64_t wall_ns;    /* WALL — the pool's rate/ban state only       */
     int64_t earliest = INT64_MAX;
     int64_t pool_deadline = INT64_MAX;
     size_t  processed = 0;
@@ -1160,7 +1180,9 @@ int cmt_bsync_reactor_tick(cmt_bsync_reactor_t *bcR, int64_t *out_deadline_ns)
     if (!bcR->running || !bcR->routine_running) {
         return CMT_OK;
     }
-    if (reactor_now(bcR, &now_ns) != CMT_OK) {
+    /* Both clocks once per tick (header, "THE CLOCKS"). */
+    if (reactor_mono(bcR, &now_ns) != CMT_OK ||
+        reactor_wall(bcR, &wall_ns) != CMT_OK) {
         return CMT_FAULT;
     }
 
@@ -1174,7 +1196,8 @@ int cmt_bsync_reactor_tick(cmt_bsync_reactor_t *bcR, int64_t *out_deadline_ns)
     deadline_min(&earliest, bcR->status_next_ns);
 
     /* the pool's goroutines (pool.go:120-156, :597-603, :838-902) */
-    if (cmt_bsync_pool_tick(&bcR->pool, now_ns, &pool_deadline) != CMT_OK) {
+    if (cmt_bsync_pool_tick(&bcR->pool, now_ns, wall_ns,
+                            &pool_deadline) != CMT_OK) {
         return CMT_FAULT;
     }
     deadline_min(&earliest, pool_deadline);
@@ -1220,7 +1243,7 @@ int cmt_bsync_reactor_tick(cmt_bsync_reactor_t *bcR, int64_t *out_deadline_ns)
             return CMT_OK;
         }
         bcR->did_process = true;                                   /* :480 */
-        rc = process_first(bcR, first, second, now_ns);
+        rc = process_first(bcR, first, second, wall_ns);
         processed++;
         if (rc == CMT_FAULT) {
             return CMT_FAULT;
@@ -1236,7 +1259,8 @@ int cmt_bsync_reactor_tick(cmt_bsync_reactor_t *bcR, int64_t *out_deadline_ns)
          * are served before the next peek — otherwise the same refused
          * pair would be peeked and refused again in this very tick. */
         pool_deadline = INT64_MAX;
-        if (cmt_bsync_pool_tick(&bcR->pool, now_ns, &pool_deadline) != CMT_OK) {
+        if (cmt_bsync_pool_tick(&bcR->pool, now_ns, wall_ns,
+                                &pool_deadline) != CMT_OK) {
             return CMT_FAULT;
         }
         deadline_min(&earliest, pool_deadline);

@@ -72,7 +72,7 @@
  * goroutine (:346-377) once: the status ticker, the pool's own routines
  * (cmt_bsync_pool_tick), the trySync ticker, the didProcessCh loop and the
  * switch ticker, in that order (BS-5 below). A ticker is a `next` deadline
- * compared against the host's `now` (a Go ticker drops ticks it could not
+ * compared against the host's `mono` (a Go ticker drops ticks it could not
  * deliver; here the next deadline is `now + period` after a firing — the
  * same "at most one pending tick" behaviour). The didProcessCh loop
  * processes blocks back to back as the reference's re-prime at :480 does,
@@ -81,16 +81,25 @@
  * of NOW, so the host comes straight back. The tick returns the earliest
  * of every pending deadline.
  *
- * ── THE CLOCK (decision 2026-09-25, "where the reference reads it") ───
- * `host.now` — the SAME callback the consensus state machine uses — is
- * read once per `cmt_bsync_reactor_start` (pool.go:114 startTime, and the
- * three tickers' creation, reactor.go:322/:325/:331), once per
- * `cmt_bsync_reactor_tick` (the tickers and every pool deadline — the
- * tick form of the goroutines' sleeps and timers, pool.go:128-153, :219,
- * :592-602, :792, :850, :892) and once per `cmt_bsync_reactor_receive`
- * that reaches the pool (pool.go:345-348 decrPending's monitor/timer,
- * :387/:464 the ban check). Every read schedules or rate-limits THIS
- * node's own requests. `VerifyCommit`, `VerifyCommitExtended`, the apply
+ * ── THE CLOCKS (decision 2026-09-25, "where the reference reads it";
+ *    split by decision 2026-09-30-monotonic-waits.md) ───────────────────
+ * Two host clocks, never compared with each other:
+ *   · `host.mono` (CLOCK_MONOTONIC, `cmt_mono_fn`) — the WAITS: read once
+ *     per `cmt_bsync_reactor_start` (pool.go:114 startTime, and the three
+ *     tickers' creation, reactor.go:322/:325/:331), once per
+ *     `cmt_bsync_reactor_tick` (the tickers and every pool deadline — the
+ *     tick form of the goroutines' sleeps and timers, cometbft@v0.38.26
+ *     pool.go:128-153, :232, :629, :822, :880, :922) and once per
+ *     BlockResponse that reaches the pool (decrPending's peer timeout);
+ *   · `host.now` (the wall clock — the SAME callback the consensus state
+ *     machine stamps with) — the BAN list (v0.38.26 pool.go:494/:500,
+ *     `cmttime.Now()` has no monotonic reading) and the receive-rate
+ *     monitor (pool.go:622, libs/flowrate/util.go:18-22): read once per
+ *     tick (the pool's rate/ban checks and a validation failure's bans),
+ *     once per BlockResponse (the monitor update) and once per
+ *     StatusResponse (the ban check).
+ * Every deadline this reactor reports is MONOTONIC. Every read schedules
+ * or rate-limits THIS node's own requests. `VerifyCommit`, `VerifyCommitExtended`, the apply
  * and FilterMsgBytes never see a time. ValidateBlock DOES, once, since
  * the v0.38.26 pin: the executor behind `validate_block`
  * (nodus_cmt_host_validate_block) refuses a block whose time is not
@@ -331,9 +340,14 @@ typedef struct {
     int (*switch_to_consensus)(void *exec_ctx, const cmt_state_t *state,
                                bool skip_wal);
 
-    /** THE CLOCK (file header). */
+    /** THE WALL CLOCK (file header, "THE CLOCKS"): the ban list and the
+     *  receive-rate monitor only. */
     cmt_now_fn now;
     void      *now_ctx;
+    /** THE WAIT CLOCK, CLOCK_MONOTONIC (file header, "THE CLOCKS"): every
+     *  ticker, sleep, retry and timeout. REQUIRED — init refuses NULL. */
+    cmt_mono_fn mono;
+    void       *mono_ctx;
 } cmt_bsync_host_t;
 
 /** The decode caps of BS-6: the largest transaction and evidence counts
@@ -463,9 +477,10 @@ int cmt_bsync_reactor_receive(cmt_bsync_reactor_t *bcR, const char *peer_id,
 
 /**
  * The poolRoutine and its helper goroutine, once (file header).
- * @param out_deadline_ns the earliest pending deadline (INT64_MAX when
- *        none; `now` when blocks are still waiting to be processed);
- *        may be NULL.
+ * @param out_deadline_ns the earliest pending deadline on the host's
+ *        MONOTONIC clock (INT64_MAX when none; the tick's own `mono`
+ *        instant when blocks are still waiting to be processed); may be
+ *        NULL.
  * @return CMT_OK; CMT_FAULT on the BS-8 cases or a failed row.
  */
 int cmt_bsync_reactor_tick(cmt_bsync_reactor_t *bcR, int64_t *out_deadline_ns);

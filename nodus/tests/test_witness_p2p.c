@@ -423,9 +423,8 @@ static int app_check_tx_fault(void *ctx, const cmt_mem_request_check_tx_t *req,
     return CMT_FAULT;
 }
 
-/* The lane's clock: the wall clock, canonical — the witness's own
- * witness_cmt_now shape. The mempool reactor's sleeps are read against
- * it, so a frozen clock would stall the gossip routine. */
+/* The lane's STAMP clock: the wall clock, canonical — the witness's own
+ * witness_cmt_now shape. */
 static int real_now(void *ctx, cmt_time_t *out) {
     struct timespec ts;
     cmt_time_t raw;
@@ -435,6 +434,20 @@ static int real_now(void *ctx, cmt_time_t *out) {
     raw.seconds = (int64_t)ts.tv_sec;
     raw.nanos   = (int32_t)ts.tv_nsec;
     return cmt_time_canonical(raw, out);
+}
+
+/* The lane's WAIT clock: CLOCK_MONOTONIC — the witness's own
+ * witness_cmt_mono shape (decision 2026-09-30-monotonic-waits.md), a
+ * read failure is CMT_FAULT, never 0 (not nodus_p2p_mono_ns). The
+ * reactors' sleeps are armed and read against it, so a frozen clock
+ * would stall the gossip routine. */
+static int real_mono(void *ctx, int64_t *out_ns) {
+    struct timespec ts;
+
+    (void)ctx;
+    if (out_ns == NULL || clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return CMT_FAULT;
+    *out_ns = (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+    return CMT_OK;
 }
 
 typedef struct {
@@ -532,7 +545,8 @@ static int lane_up(lane_t *l, nodus_witness_p2p_t *p) {
     l->p = p;
     if (tc_setup(&l->tc, 1, 0, 0) != 0) return -1;
     l->tc_up = true;
-    if (nodus_witness_p2p_lane_prepare(p, &l->store, real_now, NULL) != CMT_OK)
+    if (nodus_witness_p2p_lane_prepare(p, &l->store, real_now, NULL,
+                                       real_mono, NULL) != CMT_OK)
         return -1;
     if (cmt_conr_init(&l->conr, l->tc.cs, true /* wait_sync */,
                       nodus_witness_p2p_conr_host(p), p,
