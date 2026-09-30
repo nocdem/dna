@@ -11,11 +11,10 @@
 // the node reports `chainId` (dnac_supply chain_id32). These values belong to
 // the wallet build (design §3 A3 / §5 items 6 and 17: "zincir kimliği ve
 // checkpoint listesi derlemeye gömülür"; the site is the code's root of
-// trust, §5 item 6). They are NOT in this tree yet: the testnet chain id and
-// the validators' keys and WebSocket addresses are the operator's to supply
-// (the nodes' WS entries are not open yet, design package (f)). Until then
-// the value is `null`, `nodusSendModuleFactory` is `null`, and NODUS stays
-// receive-only exactly as before — no placeholder network is ever shipped.
+// trust, §5 item 6). The testnet values are below (operator, 2026-09-30:
+// open the wallet so it can be tested). With `null` instead,
+// `nodusSendModuleFactory` is `null` and NODUS stays receive-only — no
+// placeholder network is ever shipped.
 //
 //   {
 //     chainId:   64 lowercase hex — the v3 chain id (32 bytes)
@@ -36,7 +35,26 @@ export const NODUS_SEND_MAX_ENDPOINTS = 8;   // nodus/include/nodus/nodus.h NODU
 export const NODUS_SEND_MAX_PINS = 64;       // crypto/nodus-send-wasm.c NSW_MAX_PINS
 const MAX_COINS = 100;                       // nodus_types.h NODUS_DNAC_MAX_UTXO_RESULTS
 
-export const NODUS_SEND_NETWORK = null;
+// Nodus testnet (chain born 2026-09-30, the final pre-testnet genesis). The
+// chain id was read from the live genesis document; each pin is the node's
+// identity/nodus.fp, re-derived as SHA3-512(nodus.pk) on every node. Only
+// EU-5 runs the WebSocket entry today (Caddy TLS on 443 with an IP
+// certificate -> ws_port 4005, nodus/docs/DEPLOY_RUNBOOK.md §2.4); every
+// validator key is pinned so the other nodes can be added as endpoints later.
+export const NODUS_SEND_NETWORK = {
+  chainId: 'a48d1a785500a1cdecd739ecd53ef0e95b1dc4a7a300f49176a7fa25ae176114',
+  scheme: 'wss',
+  endpoints: [{ host: '164.68.116.180', port: 443 }],   // EU-5
+  pins: [
+    '03499d1fae35f9e9aaf60a1c3f18d8c7d1ffa49f2c65bd4b6a531bdf8ef92c21c90bf5e64f29fb0b9f689ac20e7dc9df418784c788ffc43c735c9b38253038e0', // US-1
+    'fd429639366cbc41d98db7603d51166ed5542d2d161cf69ff1ab6dbe80176197dca892177f95cdb4757073531588bf63c7d3b91f6f016e0035272068de74b35c', // EU-1
+    '16af3eaa620ab5d239ca63abd01943c7b1a8580a3c0204ec8a093bf7992c79df073b8ac0cacb4f01d6155fff97ef85a908dae4a044f70c1d523da1f43ce09dd7', // EU-2
+    '04cdf00b3c37782b7df02fc0f71ba3b74893a60cbb800369d9ee6e97c46dd3edaf31ddf6cb29798c6e8e603d4c0dbb18e24f9d8f30c7adaeefad078f2225a659', // EU-3
+    '681c12a60cae6956d1c7a1b8c75b08594961888e0d8319882fee4c94ce77b55fd7c1daee065caaacee6c28fb4f69226d1bca716a7be34e831604c88c4cbc6298', // EU-4
+    'a7b23e52f02af2d2f526d58c741bb405825af8e31d753dc670b9c94cc01d2401fc7ecb8ddbdc1f33fe0bda0a365580e905d5f23c1be51d38c3d6055f5faa5ae6', // EU-5
+    '6573f74c177c9d97ba784e9607b487125f973f71026931e522051d9ba6fe713a3dcadce98d4ad2e6eb854c56f6717918fbc1691b39b7adb15cc577b138213466', // EU-6
+  ],
+};
 
 // A checked, frozen copy of a network settings object; throws on anything
 // outside the shape documented above.

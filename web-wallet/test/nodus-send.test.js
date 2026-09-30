@@ -25,15 +25,15 @@ async function readyClient() {
 }
 const walletFor = client => ({ addresses: { nodus: FINGERPRINT }, nodusClient: client });
 
-test('without a send module NODUS stays exactly as before: receive-only, no balance, no send', async () => {
-  assert.equal(nodusSendModuleFactory, null);
+test('without a ready send module NODUS stays exactly as before: receive-only, no balance, no send', async () => {
+  assert.equal(typeof nodusSendModuleFactory, 'function'); // shipped: testnet settings (send-module.js)
   assert.equal(nodusNetworkFor(false), NODUS_NETWORK);
   assert.equal(nodusNetworkFor(undefined), NODUS_NETWORK);
   assert.equal(NODUS_NETWORK.receiveOnly, true); assert.equal(NODUS_NETWORK.balanceUnavailable, true);
   const ready = nodusNetworkFor(true);
   assert.equal(ready.receiveOnly, false); assert.equal(ready.balanceUnavailable, false); assert.equal(ready.sendNote, undefined);
   assert.equal(ready.endpoint, undefined); assert.equal(ready.rpcOptions, undefined);
-  assert.throws(() => createNodusClient({ factory: nodusSendModuleFactory }), /not available/);
+  assert.throws(() => createNodusClient({ factory: null }), /not available/);
   // No client on the wallet: the adapter refuses before any network step.
   await assert.rejects(prepareTransfer({ wallet: { addresses: { nodus: FINGERPRINT } }, chain: 'nodus', symbol: 'NODUS', to: RECIPIENT, amount: '1' }), /not available right now/);
 });

@@ -19,3 +19,21 @@ Apache-2.0.txt
 No MIT text is kept here: Debian ships none in /usr/share/common-licenses. MIT
 entries without their own license file use the permission paragraphs of a
 bundled package's LICENSE file instead (see scripts/third-party-licenses.mjs).
+
+Native code in the NODUS send module (src/nodus/send.wasm, web wallet 0.1.25),
+listed in dist/THIRD-PARTY-LICENSES.txt by scripts/third-party-licenses.mjs NATIVE.
+Each file is a byte-for-byte copy (cp, verified with cmp):
+
+OpenSSL-3.0.15-LICENSE.txt
+  source:  ~/wasm-deps/src/openssl-3.0.15/LICENSE.txt (openssl-3.0.15.tar.gz,
+           sha256 23c666d0edf20f14249b3d8f0368acaee9ab585b09e1de82107c66e1f3ec9533;
+           built by scripts/build-openssl-wasm.sh)
+  sha256:  7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a
+
+musl-COPYRIGHT.txt
+  source:  ~/emsdk/upstream/emscripten/system/lib/libc/musl/COPYRIGHT (emsdk 6.0.10)
+  sha256:  b870108ec5e7790e9f9919064f1b9421d62d5f9b0e6c230c6adf7ea2da62e97b
+
+Emscripten-LICENSE.txt
+  source:  ~/emsdk/upstream/emscripten/LICENSE (emsdk 6.0.10)
+  sha256:  620a78084fc7ca97c0b5dea9abf891f3ffcadfdbf305276f099c9c4e12fc1d86

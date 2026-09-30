@@ -57,9 +57,13 @@ test('the shipped send.wasm exports the module entry points and no test-only one
   assert.match(glue, /export default createNodusSendWasm/);
 });
 
-test('no network settings in this build: the factory is null and NODUS stays receive-only', () => {
-  assert.equal(NODUS_SEND_NETWORK, null);
-  assert.equal(nodusSendModuleFactory, null);
+test('the shipped network settings are the testnet: valid shape, wss only, EU-5 endpoint, 7 validator pins', () => {
+  const net = validateNodusSendNetwork(NODUS_SEND_NETWORK);
+  assert.equal(net.chainId, 'a48d1a785500a1cdecd739ecd53ef0e95b1dc4a7a300f49176a7fa25ae176114');
+  assert.equal(net.scheme, 'wss');
+  assert.deepEqual(net.endpoints, [{ host: '164.68.116.180', port: 443 }]);
+  assert.equal(net.pins.length, 7);
+  assert.equal(typeof nodusSendModuleFactory, 'function');
 });
 
 test('network settings: the documented shape is accepted, everything else refused', () => {

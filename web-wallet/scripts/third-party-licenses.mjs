@@ -64,6 +64,13 @@ function licenseTexts(dir) {
 // in licenses/SOURCES.txt), appended once at the end of the notice file, in this
 // order, when a bundled package's license needs them.
 const APPENDIX = [['LGPL-3.0', 'LGPL-3.0.txt'], ['GPL-3.0', 'GPL-3.0.txt'], ['Apache-2.0', 'Apache-2.0.txt']];
+// Native code compiled into the NODUS send module (send.wasm), each with its
+// own license file copied into licenses/ (OpenSSL's is the Apache-2.0 text).
+const NATIVE = [
+  ['OpenSSL 3.0.15 (libcrypto, compiled into the NODUS send module) — Apache-2.0', 'OpenSSL-3.0.15-LICENSE.txt'],
+  ['musl libc (Emscripten 6.0.10 system library, compiled into the NODUS send module) — MIT', 'musl-COPYRIGHT.txt'],
+  ['Emscripten 6.0.10 runtime (JavaScript glue and system libraries of the NODUS send module) — MIT OR NCSA', 'Emscripten-LICENSE.txt'],
+];
 // A package's own license file carries the Apache text only if it has the
 // license's own terms heading.
 const APACHE_TERMS = 'TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION';
@@ -181,6 +188,12 @@ export function formatThirdPartyLicenses(packages, { licenseDir = fileURLToPath(
     pkg.files.forEach((entry, index) => { if (index) lines.push(''); if (pkg.files.length > 1) lines.push(`--- ${entry.file} ---`); lines.push(entry.text); });
     if (pkg.appendix.length) lines.push('');
     for (const name of pkg.appendix) lines.push(`full text: see Appendix — ${name}`);
+  }
+  // Compiled into the NODUS send module (src/nodus/send.wasm, built by
+  // scripts/build-nodus-send-wasm.sh): not npm packages, so listed here from
+  // the byte-for-byte copies in licenses/ (provenance: licenses/SOURCES.txt).
+  for (const [title, file] of NATIVE) {
+    lines.push('', rule, title, rule, '', readFileSync(join(licenseDir.replaceAll('\\', '/'), file), 'utf8').replace(/\s+$/, ''));
   }
   const needed = new Set(packages.flatMap(pkg => pkg.appendix));
   if (needed.size) {
