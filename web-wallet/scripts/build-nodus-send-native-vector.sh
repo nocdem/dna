@@ -25,6 +25,7 @@ out="${NODUS_SEND_VECTOR_BIN:-/tmp/nodus-send-native-vector}"
   -I$root/nodus/include -I$root/nodus/src -I$root/shared -I$root/dnac/include \
   crypto/nodus-send-native-vector.c crypto/nodus-send-wasm.c \
   $root/nodus/src/client/nodus_v2_spend.c \
+  $root/nodus/src/client/nodus_v2_stake.c \
   $root/nodus/src/nodus_log_shim.c \
   $root/shared/dnac/{env_wire,env_preflight,res_meter,effect_wire,manifest_wire,ledger_roots_v2}.c \
   $root/shared/crypto/hash/qgp_sha3.c \

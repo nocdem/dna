@@ -29,6 +29,9 @@
  * The GENESIS CLAIM (nsw_claim_*, 0.1.26) is nodus-cli's `v2-claim`
  * (cmd_v2_claim) for this wallet's one allocation, over the shared claim
  * codec shared/dnac/manifest_wire.c — see the section of that name.
+ * STAKING (nsw_stake_*, nsw_validators, nsw_delegations, 0.1.29) is
+ * nodus-cli's `v2-envelope stake | delegate | undelegate` over the shared
+ * builder nodus/src/client/nodus_v2_stake.c — see "STAKING".
  *
  * THREE BUILDS of this one file (web-wallet/scripts/build-nodus-send-wasm.sh,
  * build-nodus-send-native-vector.sh):
@@ -79,7 +82,8 @@
  * (nodus-send-native-vector.c) declares the few it calls. */
 
 #include "nodus/nodus_v2_spend.h"
-#include "nodus/nodus_types.h"              /* NODUS_CMT_APP_MAX_EXPIRY_AHEAD,
+#include "client/nodus_v2_stake.h"         /* the shared staking builder    */
+#include "nodus/nodus_types.h"             /* NODUS_CMT_APP_MAX_EXPIRY_AHEAD,
                                              * NODUS_W_BASE_TX_FEE           */
 #include "dnac/dnac.h"                      /* DNAC_MIN_FEE_RAW              */
 #include "dnac/manifest_wire.h"             /* genesis claim codec           */
@@ -318,6 +322,13 @@ typedef struct {
              expiry[NSW_U64_DEC];
     int      n_in;
     char     in_hex[NODUS_V2_SPEND_MAX_IN][129];
+    /* 0 = a SPEND (nsw_build_core); else the staking op (DNA_SYSRULE_*:
+     * 1 STAKE, 2 DELEGATE, 4 UNDELEGATE — nsw_stake_core). For a staking
+     * envelope `recipient` is the validator's fingerprint (DELEGATE /
+     * UNDELEGATE) or this wallet's own (STAKE), `amount` the bond / the
+     * delegated / withdrawn amount. */
+    int      op;
+    char     commission[NSW_U64_DEC];       /* STAKE only, basis points     */
 } nsw_built_t;
 
 static nsw_built_t g_built;
@@ -341,6 +352,8 @@ const char *nsw_built_fee(void)     { return g_built.fee; }
 const char *nsw_built_change(void)  { return g_built.change; }
 const char *nsw_built_expiry(void)  { return g_built.expiry; }
 int nsw_built_n_in(void)            { return g_built.n_in; }
+int nsw_built_op(void)              { return g_built.op; }
+const char *nsw_built_commission(void) { return g_built.commission; }
 const char *nsw_built_in(int i) {
     return (i >= 0 && i < g_built.n_in) ? g_built.in_hex[i] : "";
 }
@@ -574,6 +587,261 @@ int nsw_offline_build(const char *chain_hex, const char *tip_dec,
     free(pk);
     nsw_wipe(g_out_seeds, sizeof(g_out_seeds));
     g_out_seeds_len = g_out_seeds_pos = 0;
+    return rc;
+}
+
+/* ═══ STAKING (0.1.29): STAKE / DELEGATE / UNDELEGATE ═══════════════════
+ *
+ * nodus-cli `v2-envelope stake | delegate | undelegate` (cmd_v2_stake) in
+ * the browser: the envelope is built by the SAME shared builder
+ * (nodus/src/client/nodus_v2_stake.c, nodus_v2_stake_build), over the
+ * ruleset tuples of the generated pins header
+ * (nodus_v2_stake_ruleset_from_pins — the SYSTEM tuple pinned by the same
+ * "Yol 2" mechanism as the CORE one). The request this file fills is the
+ * CLI's: the listed candidate coins, the tip, the gas price read on this
+ * session, expiry = tip + 90, the staker / delegator = this wallet's key.
+ * The builder draws no randomness (its one change output is seeded from
+ * the input nullifiers); only the two hedged signatures draw from
+ * qgp_platform_random. What the chain decides from its state (a bonded
+ * target, the 100-NODUS minimum for a new delegation, the delegator cap,
+ * an undelegation not above the row) is NOT re-decided here. */
+
+/* The chain constants the wallet shows and pre-checks with, as decimal
+ * strings (dnac/include/dnac/dnac.h) — one source, never restated in JS. */
+static char g_const[NSW_U64_DEC];
+static const char *nsw_const(uint64_t v) { nsw_fmt_u64(v, g_const); return g_const; }
+const char *nsw_const_min_delegation(void)  { return nsw_const(DNAC_MIN_DELEGATION); }
+const char *nsw_const_self_stake(void)      { return nsw_const(DNAC_SELF_STAKE_AMOUNT); }
+const char *nsw_const_commission_max(void)  { return nsw_const(DNAC_COMMISSION_BPS_MAX); }
+const char *nsw_const_undelegate_lock_epochs(void) {
+    return nsw_const((uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS);
+}
+const char *nsw_const_epoch_length(void)    { return nsw_const((uint64_t)DNAC_EPOCH_LENGTH); }
+
+static const char *nsw_stake_reason(int rc, int op) {
+    switch (rc) {
+    case NODUS_V2_SPEND_ERR_INSUFFICIENT:
+        return op == NODUS_V2_STAKE_OP_UNDELEGATE
+            ? "Not enough spendable NODUS to pay the network fee."
+            : "Insufficient NODUS balance for this amount plus the network fee (at most 15 coins are used).";
+    case NODUS_V2_STAKE_ERR_BOND:        return "A validator bond must be exactly 10,000,000 NODUS.";
+    case NODUS_V2_STAKE_ERR_COMMISSION:  return "The commission is above the maximum (50%).";
+    case NODUS_V2_STAKE_ERR_AMOUNT:      return "Amount is out of range.";
+    case NODUS_V2_STAKE_ERR_OP:          return "Unknown staking action.";
+    case NODUS_V2_SPEND_ERR_OVERFLOW:
+    case NODUS_V2_SPEND_ERR_INPUT_SUM:   return "Amount is out of range.";
+    case NODUS_V2_SPEND_ERR_GAS_OVERFLOW: return "The network fee is out of range.";
+    case NODUS_V2_SPEND_ERR_EXPIRY:      return "The current Nodus block height is unknown.";
+    default:                             return "The staking transaction could not be built.";
+    }
+}
+
+/*
+ * Build + sign + read back ONE staking envelope from g_req_coins.
+ * `validator_pk` (2592 B): the DELEGATE / UNDELEGATE target, NULL for
+ * STAKE (whose unstake destination is this wallet's own address). On
+ * success g_built holds the envelope and the fields DECODED FROM ITS BYTES
+ * (nodus_v2_stake_built_t.dec), each checked here against the request:
+ * the op, the record identity = this key, the validator key / the bond,
+ * commission and destination, every input from the request, and
+ * Σinputs = lock + fee + change (lock = the amount for STAKE / DELEGATE,
+ * 0 for UNDELEGATE — rtn_sys_call_flow), the change to this wallet.
+ * Large structs are heap: this runs after every network wait of the
+ * networked caller, never across one.
+ */
+static int nsw_stake_core(const uint8_t *pk, const uint8_t *sk,
+                          const uint8_t chain32[DNA_CHAIN_ID_LEN],
+                          uint64_t tip, uint64_t gas_price, int op,
+                          const uint8_t *validator_pk, uint64_t amount,
+                          uint32_t commission, uint64_t expiry) {
+    nsw_built_clear();
+    if (op != NODUS_V2_STAKE_OP_STAKE && op != NODUS_V2_STAKE_OP_DELEGATE &&
+        op != NODUS_V2_STAKE_OP_UNDELEGATE)
+        return nsw_fail("Unknown staking action.");
+    if ((op == NODUS_V2_STAKE_OP_STAKE) != (validator_pk == NULL))
+        return nsw_fail("Invalid staking request.");
+    if (tip == 0)
+        return nsw_fail("The current Nodus block height is unknown. Nothing "
+                        "was built.");
+    if (tip > UINT64_MAX - NSW_EXPIRY_AHEAD || expiry != tip + NSW_EXPIRY_AHEAD)
+        return nsw_fail("The transaction's validity must end at block tip + %u.",
+                        (unsigned)NSW_EXPIRY_AHEAD);
+    if (g_req_n < 1) return nsw_fail("Insufficient NODUS balance.");
+
+    /* the pinned policy digest (fail-closed, as for a send) and the two
+     * ruleset tuples the legs are signed against */
+    {
+        nodus_v2_ruleset_id_t rs;
+        dna_meter_policy_t pol;
+        if (nsw_ruleset(&rs, &pol) != 0) return -1;
+    }
+    nodus_v2_stake_ruleset_t srs;
+    if (nodus_v2_stake_ruleset_from_pins(&srs) != NODUS_V2_SPEND_OK)
+        return nsw_fail("This wallet's staking rules could not be loaded.");
+
+    uint8_t own_raw[64];
+    char own_hex[129];
+    if (qgp_sha3_512(pk, NSW_PK_LEN, own_raw) != 0)
+        return nsw_fail("The staking transaction could not be built (hash).");
+    nsw_fmt_hex(own_raw, 64, own_hex);
+
+    nodus_v2_stake_coin_t *coins = calloc((size_t)g_req_n, sizeof(*coins));
+    nodus_v2_stake_built_t *built = calloc(1, sizeof(*built));
+    int rc = -1;
+    if (!coins || !built) { rc = nsw_fail("Out of memory."); goto done; }
+    for (int i = 0; i < g_req_n; i++) {        /* native, unlocked: g_list  */
+        memcpy(coins[i].nul, g_req_coins[i].nul, 64);
+        coins[i].amount = g_req_coins[i].amount;
+    }
+
+    nodus_v2_stake_req_t req;
+    memset(&req, 0, sizeof(req));
+    req.rs             = &srs;
+    req.op             = (nodus_v2_stake_op_t)op;
+    req.chain32        = chain32;
+    req.tip            = tip;
+    req.expiry_height  = expiry;
+    req.pk             = pk;
+    req.sk             = sk;
+    req.amount         = amount;
+    req.commission_bps = commission;
+    req.dest_fp        = op == NODUS_V2_STAKE_OP_STAKE ? own_raw : NULL;
+    req.validator_pk   = validator_pk;
+    req.gas_price      = gas_price;
+    req.coins          = coins;
+    req.n_coins        = g_req_n;
+    nodus_v2_stake_err_t err;
+    int brc = nodus_v2_stake_build(&req, built, &err);
+    if (brc != NODUS_V2_SPEND_OK) {
+        rc = nsw_fail("%s (build rc=%d)", nsw_stake_reason(brc, op), brc);
+        goto done;
+    }
+
+    /* ── check the read-back against the request (G1) ── */
+    const nodus_v2_stake_decoded_t *d = &built->dec;
+    const uint64_t lock = op == NODUS_V2_STAKE_OP_UNDELEGATE ? 0 : amount;
+    int ok = d->op == (uint32_t)op &&
+             memcmp(d->identity_pk, pk, NSW_PK_LEN) == 0 &&
+             d->amount == amount && d->expiry_height == expiry &&
+             d->fee == built->fee && d->n_in >= 1 &&
+             d->n_in <= (int)NODUS_V2_SPEND_MAX_IN && d->n_out <= 1;
+    if (ok && op == NODUS_V2_STAKE_OP_STAKE)
+        ok = d->commission_bps == commission &&
+             memcmp(d->dest_fp, own_raw, 64) == 0;
+    else if (ok)
+        ok = memcmp(d->validator_pk, validator_pk, NSW_PK_LEN) == 0;
+    uint64_t change = 0;
+    if (ok && d->n_out == 1) {
+        ok = memcmp(d->change_owner, own_hex, 128) == 0;
+        change = d->change_amount;
+    }
+    uint64_t in_sum = 0;
+    for (int i = 0; ok && i < d->n_in; i++) {
+        int found = 0;
+        for (int k = 0; k < g_req_n && !found; k++)
+            if (memcmp(g_req_coins[k].nul, d->in_nul[i], 64) == 0) {
+                found = 1;
+                if (g_req_coins[k].amount > UINT64_MAX - in_sum) ok = 0;
+                else in_sum += g_req_coins[k].amount;
+            }
+        if (!found) ok = 0;
+    }
+    if (ok && (lock > UINT64_MAX - d->fee ||
+               lock + d->fee > UINT64_MAX - change ||
+               lock + d->fee + change != in_sum || built->change != change))
+        ok = 0;
+    if (!ok) {
+        rc = nsw_fail("The built staking transaction does not match the "
+                      "request; nothing was signed for sending.");
+        goto done;
+    }
+
+    g_built.env = built->env;                /* ownership moves here */
+    g_built.env_len = built->env_len;
+    built->env = NULL;
+    memcpy(g_built.wire_id, built->wire_id, 64);
+    memcpy(g_built.intent_id, built->intent_id, 64);
+    nsw_fmt_hex(built->intent_id, 64, g_built.intent_hex);
+    nsw_fmt_hex(built->wire_id, 64, g_built.wire_hex);
+    nsw_fmt_hex(chain32, DNA_CHAIN_ID_LEN, g_built.chain_hex);
+    if (op == NODUS_V2_STAKE_OP_STAKE) {
+        memcpy(g_built.recipient, own_hex, 129);
+        nsw_fmt_u64(d->commission_bps, g_built.commission);
+    } else {
+        uint8_t vfp[64];
+        if (qgp_sha3_512(d->validator_pk, NSW_PK_LEN, vfp) != 0) {
+            nsw_built_clear();
+            rc = nsw_fail("The staking transaction could not be built (hash).");
+            goto done;
+        }
+        nsw_fmt_hex(vfp, 64, g_built.recipient);
+    }
+    nsw_fmt_u64(d->amount, g_built.amount);
+    nsw_fmt_u64(d->fee, g_built.fee);
+    nsw_fmt_u64(change, g_built.change);
+    nsw_fmt_u64(d->expiry_height, g_built.expiry);
+    g_built.n_in = d->n_in;
+    for (int i = 0; i < d->n_in; i++)
+        nsw_fmt_hex(d->in_nul[i], 64, g_built.in_hex[i]);
+    g_built.op = op;
+    rc = 0;
+
+done:
+    if (built) {
+        nodus_v2_stake_built_free(built);
+        free(built);
+    }
+    free(coins);
+    return rc;
+}
+
+/* OFFLINE staking build (parity, like nsw_offline_build): the identity
+ * from nsw_seed_buf (wiped here), the candidate coins (nsw_req_*), the
+ * chain id, tip and gas price as a node would report them, the validator's
+ * public key as 5184 lowercase hex ("" for STAKE). No output seeds: the
+ * builder draws none. */
+int nsw_stake_offline_build(int op, const char *chain_hex, const char *tip_dec,
+                            const char *gas_dec, const char *validator_hex,
+                            const char *amount_dec, const char *commission_dec,
+                            const char *expiry_dec) {
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    uint64_t tip = 0, gas = 0, amount = 0, commission = 0, expiry = 0;
+    uint8_t *vpk = NULL, *pk = NULL, *sk = NULL;
+    int rc = -1;
+    const int is_stake = op == NODUS_V2_STAKE_OP_STAKE;
+    if (nsw_parse_hex(chain_hex, chain32, sizeof(chain32)) != 0 ||
+        nsw_parse_u64(tip_dec, &tip) != 0 ||
+        nsw_parse_u64(gas_dec, &gas) != 0 ||
+        nsw_parse_u64(amount_dec, &amount) != 0 ||
+        nsw_parse_u64(commission_dec, &commission) != 0 ||
+        commission > 0xffffu ||
+        nsw_parse_u64(expiry_dec, &expiry) != 0 ||
+        !validator_hex || (is_stake && validator_hex[0] != '\0')) {
+        rc = nsw_fail("Invalid offline staking input.");
+        goto done;
+    }
+    if (!is_stake) {
+        vpk = malloc(NSW_PK_LEN);
+        if (!vpk) { rc = nsw_fail("Out of memory."); goto done; }
+        if (nsw_parse_hex(validator_hex, vpk, NSW_PK_LEN) != 0) {
+            rc = nsw_fail("Invalid offline staking input.");
+            goto done;
+        }
+    }
+    pk = malloc(NSW_PK_LEN);
+    sk = malloc(NSW_SK_LEN);
+    if (!pk || !sk)
+        rc = nsw_fail("Out of memory.");
+    else if (qgp_dsa87_keypair_derand(pk, sk, g_seed) != 0)
+        rc = nsw_fail("Key derivation failed.");
+    else
+        rc = nsw_stake_core(pk, sk, chain32, tip, gas, op, vpk, amount,
+                            (uint32_t)commission, expiry);
+done:
+    nsw_wipe(g_seed, sizeof(g_seed));
+    if (sk) { nsw_wipe(sk, NSW_SK_LEN); free(sk); }
+    free(pk);
+    free(vpk);
     return rc;
 }
 
@@ -1578,6 +1846,238 @@ int nsw_scan(const char *intent_hex, const char *from_dec, const char *to_dec) {
     return nsw_end(0);
 }
 
+/* ── staking: the validator list, this wallet's delegations, the build ──
+ *
+ * The validator listing is kept HERE: a DELEGATE / UNDELEGATE build names
+ * its target by fingerprint and this module resolves it to the public key
+ * from its own last listing, deriving every fingerprint itself
+ * (SHA3-512(pubkey)) — JS never hands a 2592-byte key in, and a
+ * fingerprint the node reported is never trusted as a key.
+ * Page size: the server caps one answer at 256 rows
+ * (nodus_witness_handlers.c DNAC_VALIDATOR_LIST_MAX_RESULTS). */
+
+#define NSW_MAX_VALIDATORS 256
+#define NSW_VAL_PAGE       256
+#define NSW_MAX_DELEGATIONS NODUS_DNAC_MAX_DELEGATIONS_RESULTS
+
+static struct {
+    int      valid, n, truncated;
+    uint8_t  pk[NSW_MAX_VALIDATORS][NSW_PK_LEN];
+    char     fp_hex[NSW_MAX_VALIDATORS][129];
+    char     self_dec[NSW_MAX_VALIDATORS][NSW_U64_DEC];
+    char     deleg_dec[NSW_MAX_VALIDATORS][NSW_U64_DEC];
+    int      commission[NSW_MAX_VALIDATORS];
+    int      status[NSW_MAX_VALIDATORS];
+} g_vals;
+
+static struct {
+    int      valid, n;
+    char     fp_hex[NSW_MAX_DELEGATIONS][129];
+    char     amount_dec[NSW_MAX_DELEGATIONS][NSW_U64_DEC];
+    char     block_dec[NSW_MAX_DELEGATIONS][NSW_U64_DEC];
+} g_dels;
+
+int nsw_val_count(void)     { return g_vals.valid ? g_vals.n : 0; }
+int nsw_val_truncated(void) { return g_vals.valid ? g_vals.truncated : 0; }
+static int nsw_val_ok(int i) { return g_vals.valid && i >= 0 && i < g_vals.n; }
+const char *nsw_val_fp(int i)        { return nsw_val_ok(i) ? g_vals.fp_hex[i] : ""; }
+const char *nsw_val_self(int i)      { return nsw_val_ok(i) ? g_vals.self_dec[i] : ""; }
+const char *nsw_val_delegated(int i) { return nsw_val_ok(i) ? g_vals.deleg_dec[i] : ""; }
+int nsw_val_commission(int i)        { return nsw_val_ok(i) ? g_vals.commission[i] : -1; }
+int nsw_val_status(int i)            { return nsw_val_ok(i) ? g_vals.status[i] : -1; }
+
+int nsw_del_count(void) { return g_dels.valid ? g_dels.n : 0; }
+static int nsw_del_ok(int i) { return g_dels.valid && i >= 0 && i < g_dels.n; }
+const char *nsw_del_fp(int i)     { return nsw_del_ok(i) ? g_dels.fp_hex[i] : ""; }
+const char *nsw_del_amount(int i) { return nsw_del_ok(i) ? g_dels.amount_dec[i] : ""; }
+const char *nsw_del_block(int i)  { return nsw_del_ok(i) ? g_dels.block_dec[i] : ""; }
+
+/* Every page of dnac_validator_list (all statuses). An answer is refused
+ * whole when a row has no key, a status outside 0..4
+ * (dnac/validator.h dnac_validator_status_t), a commission above
+ * DNAC_COMMISSION_BPS_MAX, or repeats a key; a page that returns nothing
+ * before the reported total is an incomplete read (refused). More rows
+ * than NSW_MAX_VALIDATORS: the first ones are kept and `truncated` set. */
+int nsw_validators(void) {
+    if (nsw_begin() != 0) return -1;
+    g_vals.valid = 0;
+    g_vals.n = 0;
+    g_vals.truncated = 0;
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    static const uint8_t zero_pk[NSW_PK_LEN];
+    int offset = 0, total = -1, pages = 0;
+    for (;;) {
+        if (g_cancel) return nsw_end(-1);
+        nodus_dnac_validator_list_result_t page;
+        memset(&page, 0, sizeof(page));
+        int rc = nodus_client_dnac_validator_list(&g_client, -1, offset,
+                                                  NSW_VAL_PAGE, &page);
+        if (rc != 0) {
+            nodus_client_free_validator_list_result(&page);
+            g_vals.n = 0;
+            return nsw_end(nsw_fail("The validator list could not be read (rc=%d).", rc));
+        }
+        int bad = page.count < 0 || page.count > NSW_VAL_PAGE ||
+                  (page.count > 0 && !page.entries) || page.total < 0 ||
+                  (total >= 0 && page.total != total);
+        if (!bad) total = page.total;
+        for (int i = 0; !bad && i < page.count; i++) {
+            const nodus_dnac_validator_list_entry_t *e = &page.entries[i];
+            if (memcmp(e->pubkey, zero_pk, NSW_PK_LEN) == 0 || e->status > 4 ||
+                e->commission_bps > DNAC_COMMISSION_BPS_MAX) { bad = 1; break; }
+            if (g_vals.n >= NSW_MAX_VALIDATORS) { g_vals.truncated = 1; break; }
+            uint8_t fp[64];
+            char fp_hex[129];
+            if (qgp_sha3_512(e->pubkey, NSW_PK_LEN, fp) != 0) { bad = 1; break; }
+            nsw_fmt_hex(fp, 64, fp_hex);
+            for (int k = 0; k < g_vals.n; k++)
+                if (memcmp(g_vals.fp_hex[k], fp_hex, 128) == 0) bad = 1;
+            if (bad) break;
+            const int n = g_vals.n++;
+            memcpy(g_vals.pk[n], e->pubkey, NSW_PK_LEN);
+            memcpy(g_vals.fp_hex[n], fp_hex, sizeof(fp_hex));
+            nsw_fmt_u64(e->self_stake, g_vals.self_dec[n]);
+            nsw_fmt_u64(e->total_delegated, g_vals.deleg_dec[n]);
+            g_vals.commission[n] = e->commission_bps;
+            g_vals.status[n] = e->status;
+        }
+        const int got = page.count;
+        nodus_client_free_validator_list_result(&page);
+        if (bad) {
+            g_vals.n = 0;
+            return nsw_end(nsw_fail("The Nodus node returned an invalid validator list."));
+        }
+        offset += got;
+        if (g_vals.truncated || offset >= total) break;
+        if (got == 0 || ++pages > NSW_MAX_VALIDATORS) {
+            g_vals.n = 0;
+            return nsw_end(nsw_fail("The validator list could not be read completely."));
+        }
+    }
+    g_vals.valid = 1;
+    return nsw_end(0);
+}
+
+/* dnac_delegations for this wallet's own key (the node checks it against
+ * the session). A row whose validator fingerprint is not 128 lowercase hex,
+ * a zero amount or a repeated validator makes the answer invalid. */
+int nsw_delegations(void) {
+    if (nsw_begin() != 0) return -1;
+    g_dels.valid = 0;
+    g_dels.n = 0;
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    nodus_dnac_delegations_result_t res;
+    memset(&res, 0, sizeof(res));
+    int rc = nodus_client_dnac_delegations(&g_client, g_id.pk.bytes,
+                                           NODUS_PK_BYTES, NSW_MAX_DELEGATIONS,
+                                           &res);
+    if (rc != 0) {
+        nodus_client_free_delegations_result(&res);
+        return nsw_end(nsw_fail("Your delegations could not be read (rc=%d).", rc));
+    }
+    int bad = res.count < 0 || res.count > NSW_MAX_DELEGATIONS ||
+              (res.count > 0 && !res.entries);
+    uint8_t tmp[64];
+    for (int i = 0; !bad && i < res.count; i++) {
+        const nodus_dnac_delegation_entry_t *e = &res.entries[i];
+        if (strnlen(e->validator_fp, sizeof(e->validator_fp)) != 128 ||
+            nsw_parse_hex(e->validator_fp, tmp, sizeof(tmp)) != 0 ||
+            e->amount == 0) { bad = 1; break; }
+        for (int k = 0; k < g_dels.n; k++)
+            if (memcmp(g_dels.fp_hex[k], e->validator_fp, 128) == 0) bad = 1;
+        if (bad) break;
+        const int n = g_dels.n++;
+        memcpy(g_dels.fp_hex[n], e->validator_fp, 128);
+        g_dels.fp_hex[n][128] = '\0';
+        nsw_fmt_u64(e->amount, g_dels.amount_dec[n]);
+        nsw_fmt_u64(e->delegated_at_block, g_dels.block_dec[n]);
+    }
+    nodus_client_free_delegations_result(&res);
+    if (bad) {
+        g_dels.n = 0;
+        return nsw_end(nsw_fail("The Nodus node returned an invalid delegation list."));
+    }
+    g_dels.valid = 1;
+    return nsw_end(0);
+}
+
+/* Build one staking envelope for review. `op`: 1 STAKE, 2 DELEGATE,
+ * 4 UNDELEGATE. `validator_fp_hex`: the target, resolved to its key from
+ * the last nsw_validators listing ("" for STAKE). The candidate coins must
+ * come from the LAST nsw_list, and expiry must be its tip + 90 — the same
+ * gates as nsw_build_and_sign. A DELEGATE target must be bonded and
+ * seat-eligible in that listing (status ACTIVE 0 or ELIGIBLE 4 —
+ * rtn_delegate_exec's target rule); an UNDELEGATE target may have any
+ * status (rtn_undelegate_exec has no status gate). The submission is
+ * nsw_submit (only the envelope built last). Locals stay small: the
+ * network waits below run in THIS frame (Asyncify), the build in
+ * nsw_stake_core after them. */
+int nsw_stake_build(int op, const char *validator_fp_hex, const char *amount_dec,
+                    const char *commission_dec, const char *expiry_dec) {
+    if (nsw_begin() != 0) return -1;
+    nsw_built_clear();
+    uint64_t amount = 0, commission = 0, expiry = 0;
+    int vi = -1;
+    if (op != NODUS_V2_STAKE_OP_STAKE && op != NODUS_V2_STAKE_OP_DELEGATE &&
+        op != NODUS_V2_STAKE_OP_UNDELEGATE)
+        return nsw_end(nsw_fail("Unknown staking action."));
+    if (nsw_parse_u64(amount_dec, &amount) != 0 || amount == 0)
+        return nsw_end(nsw_fail("Enter an amount above zero."));
+    if (nsw_parse_u64(commission_dec, &commission) != 0 || commission > 0xffffu)
+        return nsw_end(nsw_fail("Invalid commission."));
+    if (nsw_parse_u64(expiry_dec, &expiry) != 0)
+        return nsw_end(nsw_fail("Invalid validity height."));
+    if (!validator_fp_hex)
+        return nsw_end(nsw_fail("Invalid staking request."));
+    if (op == NODUS_V2_STAKE_OP_STAKE) {
+        if (validator_fp_hex[0] != '\0')
+            return nsw_end(nsw_fail("Invalid staking request."));
+    } else {
+        if (!g_vals.valid)
+            return nsw_end(nsw_fail("Load the validator list first."));
+        for (int i = 0; i < g_vals.n && vi < 0; i++)
+            if (strnlen(validator_fp_hex, 129) == 128 &&
+                memcmp(g_vals.fp_hex[i], validator_fp_hex, 128) == 0)
+                vi = i;
+        if (vi < 0)
+            return nsw_end(nsw_fail("This validator is not in the current "
+                                    "validator list."));
+        if (op == NODUS_V2_STAKE_OP_DELEGATE &&
+            g_vals.status[vi] != 0 && g_vals.status[vi] != 4)
+            return nsw_end(nsw_fail("This validator does not accept "
+                                    "delegations now."));
+    }
+    if (!g_list.valid || g_list.tip == 0)
+        return nsw_end(nsw_fail("The current Nodus block height is unknown. "
+                                "Nothing was sent; try again later."));
+    for (int i = 0; i < g_req_n; i++) {
+        int found = 0;
+        for (int k = 0; k < g_list.n && !found; k++)
+            if (memcmp(g_list.nul[k], g_req_coins[i].nul, 64) == 0 &&
+                g_list.amount[k] == g_req_coins[i].amount)
+                found = 1;
+        if (!found)
+            return nsw_end(nsw_fail("The request names a coin that is not in "
+                                    "your current coin list."));
+    }
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    if (nsw_check_chain() != 0) return nsw_end(-1);
+    nodus_dnac_fee_info_t fi;
+    memset(&fi, 0, sizeof(fi));
+    int rc = nodus_client_dnac_fee_info(&g_client, &fi);
+    if (rc != 0)
+        return nsw_end(nsw_fail("The network fee is unknown (rc=%d). Nothing "
+                                "was built.", rc));
+    if (g_cancel) return nsw_end(-1);
+    /* the listing may have been replaced only by another export, and none
+     * can run while this one does (nsw_begin) — vi still names the row */
+    rc = nsw_stake_core(g_id.pk.bytes, g_id.sk.bytes, g_net.chain, g_list.tip,
+                        fi.gas_price, op,
+                        op == NODUS_V2_STAKE_OP_STAKE ? NULL : g_vals.pk[vi],
+                        amount, (uint32_t)commission, expiry);
+    return nsw_end(rc);
+}
+
 /* ── tick: keepalive + the pinned reconnect (nodus_client_tick) ── */
 
 int nsw_tick(void) {
@@ -1623,6 +2123,8 @@ void nsw_lock(void) {
     nsw_req_env_free();
     nsw_req_reset();
     memset(&g_list, 0, sizeof(g_list));
+    g_vals.valid = 0; g_vals.n = 0;
+    g_dels.valid = 0; g_dels.n = 0;
     g_unlocked = 0;
 }
 #endif /* !NODUS_SEND_OFFLINE_ONLY */

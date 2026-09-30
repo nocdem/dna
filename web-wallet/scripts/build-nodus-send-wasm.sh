@@ -78,6 +78,13 @@ mode="${1:-release}"
 # release. They keep every large object on the heap or in static storage
 # (dna_claim_t, the claim bytes, the supply buckets are small), so the
 # bound above is expected to hold — expected, not measured.
+# The staking exports of 0.1.29 (nsw_validators, nsw_delegations,
+# nsw_stake_build) have the same shape: every network wait runs in the
+# export's own frame with small scalar locals (the page / result structs are
+# a count and a heap pointer), the validator and delegation caches are
+# static, and the builder's large structs are heap-allocated in
+# nsw_stake_core, which runs only after the last wait. Also expected, not
+# re-measured.
 # The default ASYNCIFY_IGNORE_INDIRECT=0 is kept: Asyncify still
 # instruments every function with an indirect call (OpenSSL's provider
 # tables, the builder's rand callback), which costs size, not correctness.
@@ -127,6 +134,9 @@ sources=(
   $root/nodus/src/nodus_log_shim.c
   # the shared SPEND builder (package (c2)) and the envelope codecs
   $root/nodus/src/client/nodus_v2_spend.c
+  # the shared staking builder (nodus-cli v2-envelope stake|delegate|
+  # undelegate, 0.1.29)
+  $root/nodus/src/client/nodus_v2_stake.c
   $root/shared/dnac/env_wire.c
   $root/shared/dnac/env_preflight.c
   $root/shared/dnac/res_meter.c
@@ -186,6 +196,14 @@ exports_common=(
   nsw_claim_built_bytes nsw_claim_built_len nsw_claim_built_id
   nsw_claim_built_nullifier nsw_claim_built_output nsw_claim_built_recipient
   nsw_claim_built_chain nsw_claim_built_amount nsw_claim_built_leaf
+  # staking (0.1.29)
+  nsw_built_op nsw_built_commission nsw_stake_offline_build
+  nsw_const_min_delegation nsw_const_self_stake nsw_const_commission_max
+  nsw_const_undelegate_lock_epochs nsw_const_epoch_length
+  nsw_validators nsw_val_count nsw_val_truncated nsw_val_fp nsw_val_self
+  nsw_val_delegated nsw_val_commission nsw_val_status
+  nsw_delegations nsw_del_count nsw_del_fp nsw_del_amount nsw_del_block
+  nsw_stake_build
 )
 exports_test=(nsw_test_random_buf nsw_test_random_load)
 

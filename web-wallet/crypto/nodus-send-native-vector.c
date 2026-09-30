@@ -55,6 +55,21 @@
  *   wasm equal on nullifier, output_id, recipient, amount, chain_id,
  *   leaf_index, different claim / claim_id (hedged signature).
  *
+ * STAKING (0.1.29) — one more mode:
+ *
+ *   nodus-send-native-vector stake --op stake|delegate|undelegate
+ *     --seed <64hex> --chain <64hex> --tip <dec> --gas <dec>
+ *     [--validator <5184hex pubkey>] --amount <dec> [--commission <bps>]
+ *     --expiry <dec> --coin <128hex>:<dec> [--coin ...]
+ *     --sign-random <hex, the bytes qgp_platform_random returns in order>
+ *   Builds with nsw_stake_offline_build (the shared builder
+ *   nodus/src/client/nodus_v2_stake.c, the function every wasm build
+ *   runs). No --out-seeds: the builder draws none (its change seed is
+ *   SHA3-512 of the inputs). Output, in this order: envelope, wire_id,
+ *   intent_id, chain_id, op, recipient (the validator's fingerprint, or
+ *   the staker's own for stake), amount, commission, fee, change, expiry,
+ *   then one `input=` per input. Compared like the spend.
+ *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
  */
@@ -107,6 +122,12 @@ const char *nsw_claim_built_recipient(void);
 const char *nsw_claim_built_chain(void);
 const char *nsw_claim_built_amount(void);
 const char *nsw_claim_built_leaf(void);
+int nsw_stake_offline_build(int op, const char *chain_hex, const char *tip_dec,
+                            const char *gas_dec, const char *validator_hex,
+                            const char *amount_dec, const char *commission_dec,
+                            const char *expiry_dec);
+int nsw_built_op(void);
+const char *nsw_built_commission(void);
 
 /* This program's only output channels are its stdout lines and one stderr
  * line on failure (the build's QGP_LOG_* calls go through
@@ -344,9 +365,74 @@ static int main_claim(int argc, char **argv) {
     return 0;
 }
 
+/* Prints the envelope nsw_built_* holds (the spend and staking modes). */
+static int print_env(void) {
+    return hex_line("envelope", nsw_built_env(), (size_t)nsw_built_env_len());
+}
+
+static int main_stake(int argc, char **argv) {
+    const char *op_s = NULL, *seed = NULL, *chain = NULL, *tip = NULL,
+               *gas = NULL, *validator = "", *amount = NULL,
+               *commission = "0", *expiry = NULL, *sign_random = NULL;
+    nsw_req_reset();
+    for (int i = 2; i < argc; i += 2) {
+        const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
+        if (!v) return fail("every option takes a value");
+        if      (!strcmp(a, "--op"))          op_s = v;
+        else if (!strcmp(a, "--seed"))        seed = v;
+        else if (!strcmp(a, "--chain"))       chain = v;
+        else if (!strcmp(a, "--tip"))         tip = v;
+        else if (!strcmp(a, "--gas"))         gas = v;
+        else if (!strcmp(a, "--validator"))   validator = v;
+        else if (!strcmp(a, "--amount"))      amount = v;
+        else if (!strcmp(a, "--commission"))  commission = v;
+        else if (!strcmp(a, "--expiry"))      expiry = v;
+        else if (!strcmp(a, "--sign-random")) sign_random = v;
+        else if (!strcmp(a, "--coin")) {
+            char nul[129];
+            const char *colon = strchr(v, ':');
+            if (!colon || colon - v != 128) return fail("--coin is <128hex>:<amount>");
+            memcpy(nul, v, 128);
+            nul[128] = '\0';
+            if (nsw_req_add_coin(nul, colon + 1) != 0) return fail(nsw_error());
+        } else return fail("unknown option (see the usage in nodus-send-native-vector.c)");
+    }
+    int op = !op_s ? 0 : !strcmp(op_s, "stake") ? 1 : !strcmp(op_s, "delegate") ? 2
+           : !strcmp(op_s, "undelegate") ? 4 : 0;
+    if (!op || !seed || !chain || !tip || !gas || !amount || !expiry || !sign_random)
+        return fail("stake needs --op stake|delegate|undelegate --seed --chain --tip "
+                    "--gas --amount --expiry --coin --sign-random (--validator for "
+                    "delegate / undelegate, --commission for stake)");
+    size_t n = 0;
+    if (unhex(seed, nsw_seed_buf(), 32, &n) != 0 || n != 32)
+        return fail("--seed is 32 bytes of lowercase hex");
+    if (unhex(sign_random, nsw_test_random_buf(), 4096, &n) != 0 ||
+        nsw_test_random_load((int)n) != 0)
+        return fail("--sign-random is at most 4096 bytes of lowercase hex");
+    if (nsw_stake_offline_build(op, chain, tip, gas, validator, amount, commission,
+                                expiry) != 0)
+        return fail(nsw_error());
+    if (print_env()) return 1;
+    line("wire_id", nsw_built_wire());
+    line("intent_id", nsw_built_intent());
+    line("chain_id", nsw_built_chain());
+    char op_dec[4];
+    snprintf(op_dec, sizeof(op_dec), "%d", nsw_built_op());
+    line("op", op_dec);
+    line("recipient", nsw_built_recipient());
+    line("amount", nsw_built_amount());
+    line("commission", nsw_built_commission());
+    line("fee", nsw_built_fee());
+    line("change", nsw_built_change());
+    line("expiry", nsw_built_expiry());
+    for (int i = 0; i < nsw_built_n_in(); i++) line("input", nsw_built_in(i));
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "claim-manifest")) return main_claim_manifest(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "claim")) return main_claim(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "stake")) return main_stake(argc, argv);
     const char *seed = NULL, *chain = NULL, *tip = NULL, *gas = NULL,
                *to = NULL, *amount = NULL, *expiry = NULL,
                *out_seeds = NULL, *sign_random = NULL;
