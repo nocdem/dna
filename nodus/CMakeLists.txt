@@ -151,7 +151,8 @@ set(NODUS_SOURCES
     # two legs: SYSTEM record + CORE SYSFUND funding) — nodus-cli
     # `v2-envelope stake|delegate|undelegate`'s body, moved out I/O-free
     # like the SPEND builder above. Its ruleset identity comes from the
-    # caller (the SYSTEM tuple is not in the pins header).
+    # caller: the compiled table (nodus-cli) or the generated pins header
+    # (the browser, nodus_v2_stake_ruleset_from_pins).
     src/client/nodus_v2_stake.c
     # nodus_cc_client.c (the CLI's short-lived 4004 p2p peer) is DELETED:
     # governance approvals are collected by the proposer's own node

@@ -1426,14 +1426,16 @@ code `nodus-cli v2-envelope spend` used, moved out unchanged in behaviour (desig
 **Ruleset identity.** The caller passes `nodus_v2_ruleset_id_t`. nodus-cli fills it from the
 compiled runtime table (`nodus_runtime_builtin_table`); a client that cannot link the witness (the
 browser module) calls `nodus_v2_ruleset_from_pins`, which reads the GENERATED
-`include/nodus/nodus_ruleset_pins.h` and refuses unless the rebuilt SYSTEM meter policy's digest
+`include/nodus/nodus_ruleset_pins.h` (CORE tuple, SYSTEM meter policy, and — since web wallet
+0.1.29, for the staking builder — the SYSTEM ruleset tuple) and refuses unless the rebuilt SYSTEM meter policy's digest
 equals the pinned one. The header is written by `tools/gen_ruleset_pins.c` from the node's own table
 (`cmake --build <build> --target regen_ruleset_pins`); ctest `test_ruleset_pins` regenerates it
 and byte-compares with the checked-in file, so a ruleset change without a regenerated header is a
 red test (decision above, addendum 2026-09-29 "Yol 2"). Every ruleset change therefore requires a
 new wallet WASM build.
 
-Tests: `test_ruleset_pins` (R1 byte-compare, R2 digest rebuild, R3 lookup) and
+Tests: `test_ruleset_pins` (R1 byte-compare, R2 digest rebuild, R3 CORE lookup, R4 SYSTEM
+lookup == the table's SYSTEM entry) and
 `test_v2_spend_build` (pins == table; a pins-built envelope admitted by the CheckTx dry run on a
 seeded chain with the production runtime; read-back == request; the nodus-cli layout restated;
 the gas-price fixed point; refusals).
@@ -1463,8 +1465,8 @@ CLI did.
   100-NODUS minimum for a new row, delegator cap, undelegate amount <= the row, a partial
   withdrawal leaving 0 or >= the minimum) stay with the chain at CheckTx.
 - **Ruleset identity.** The caller passes both tuples; nodus-cli fills them from the compiled
-  table. The generated pins header does not carry the SYSTEM ruleset tuple, so the browser module
-  cannot use this builder until it does.
+  table, the browser module (web wallet 0.1.29) with `nodus_v2_stake_ruleset_from_pins`, which
+  reads the SYSTEM and CORE tuples of the generated `include/nodus/nodus_ruleset_pins.h`.
 
 CLI: `nodus-cli v2-envelope undelegate --keys <dir> --validator <hex5184 pubkey> --amount <raw>
 (--dry-run | --submit ip:port)`.
