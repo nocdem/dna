@@ -391,6 +391,24 @@ Replaces the removed `dht_chunked_*` API. Hashes chunks, distributes them across
 | `int nodus_ops_media_get(const uint8_t content_hash[64], uint8_t **data_out, size_t *data_len_out)` | Download media from DHT. Fetches metadata + all chunks, reassembles into contiguous buffer. Caller frees `*data_out`. Returns 0 on success. |
 | `int nodus_ops_media_exists(const uint8_t content_hash[64], bool *exists)` | Check if media exists on DHT (deduplication). Returns 0 on success. |
 
+### 12.6 Nodus client SDK — server-key pin, monotonic waits, browser build (`nodus/include/nodus/nodus.h`, `nodus/src/transport/nodus_tcp.h`)
+
+Web wallet NODUS send design, package (c1). Messenger (`nodus_init.c`) zeroes its
+`nodus_client_config_t`, so it runs unpinned and its handshake is unchanged.
+Details: `nodus/docs/ARCHITECTURE.md` Client SDK → "Timeouts and the clock",
+"Server key pin", "Browser build".
+
+| Function / field | Description |
+|----------|-------------|
+| `const nodus_key_t *pinned_server_fps; int pinned_server_fp_count;` (fields of `nodus_client_config_t`) | **NEW (optional).** Fingerprints (SHA3-512 of the server's Dilithium5 pubkey, `nodus_fingerprint()`) the client accepts. NULL / 0 = no pin, handshake unchanged. Set: `do_auth` refuses unless AUTH_OK has `kpk` + `spk` + a verifying `kpk_sig`, fingerprint(`spk`) is in the list, and a verifying `mpk_sig` for `mpk` (ML-KEM-1024 only — no unsigned-kpk, cached-key, Kyber round-3 or unencrypted session). Caller-owned array, must outlive the client. `count < 0`, or `count > 0` with NULL → `nodus_client_init` returns -1. |
+| `int nodus_client_tick(nodus_client_t *client)` | **NEW.** For a client with no read thread (browser build): sends the 60 s keepalive ping when due, then `nodus_client_poll(client, 0)` (delivers input, runs a due reconnect). No-op returning 0 when a read thread runs; -1 on NULL client / no transport. `EMSCRIPTEN_KEEPALIVE` in the browser build, where it must be an async (Asyncify/JSPI) export. |
+| `uint64_t nodus_time_mono_ms(void)` | **NEW.** Monotonic milliseconds (`CLOCK_MONOTONIC`; Windows `GetTickCount64`). Intervals/deadlines only; never compared with `nodus_time_now*()`. |
+| `int nodus_client_poll(nodus_client_t *client, int timeout_ms)` | **CHANGED (browser build only):** `nodus_tcp_poll` does not wait there, so the requested wait is an `emscripten_sleep`. Native behaviour and signature unchanged. |
+| `static int pin_check_auth_ok(const nodus_client_t *client, const nodus_tier2_msg_t *resp)` (`nodus_client.c`) | **NEW (internal).** The pinned-client AUTH_OK gate: 0 = proceed, -1 = refuse (no kpk, no spk/kpk_sig, no mpk/mpk_sig, fingerprint not in list). |
+| `static void keepalive_if_due(nodus_client_t *client)` (`nodus_client.c`) | **NEW (internal).** The 60 s ping, shared by the read thread and `nodus_client_tick`. Caller holds `poll_mutex`. |
+| `static uint64_t elapsed_since(uint64_t start)`, `static bool deadline_passed(uint64_t start, int limit_ms)` (`nodus_client.c`) | **NEW (internal).** Monotonic deadline helpers for `wait_response`, `do_connect_one` and the channel-connection waits (was a count of loop turns). `limit_ms <= 0` has always passed. |
+| `static void client_yield(void)` (`nodus_client.c`, `__EMSCRIPTEN__` only) | **NEW (internal).** `emscripten_sleep(10)` after each poll in the thread-less loops so SOCKFS can deliver bytes. |
+
 ---
 
 ## 13. Salt Agreement (`dht/shared/dht_salt_agreement.h`)
