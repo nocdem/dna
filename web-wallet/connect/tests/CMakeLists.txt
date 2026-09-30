@@ -20,6 +20,9 @@
 #   test_nc_fault_matrix R0 against a fake node over real tier-2: timeout,
 #                        empty, bad signature, wrong owner, undecodable — no
 #                        PUT on UNREADABLE; Q1 create gate; KEY_OWNED = taken
+#   test_nc_history      NC-4a at-rest history crypto: NIST HMAC-SHA3-256
+#                        KAT, root = app SQLCipher derivation, HKDF key,
+#                        AES-GCM records, AAD framing, invocation budget
 cmake_minimum_required(VERSION 3.16)
 project(nodus_connect_tests C)
 
@@ -43,6 +46,7 @@ set(NC_SOURCES
   ${CONNECT_DIR}/nc_requests.c
   ${CONNECT_DIR}/nc_salt.c
   ${CONNECT_DIR}/nc_outbox.c
+  ${CONNECT_DIR}/nc_history.c
   ${ROOT}/messenger/codec/contact_request_codec.c
   ${ROOT}/messenger/codec/dm_outbox_codec.c
   ${ROOT}/messenger/codec/offline_queue_codec.c
@@ -126,3 +130,12 @@ foreach(t test_nc_classify test_nc_wire test_nc_fault_matrix)
   target_compile_options(${t} PRIVATE -Wall -Wextra -Wno-unused-parameter -Werror)
   add_test(NAME ${t} COMMAND ${t})
 endforeach()
+
+# NC-4a: the app's SQLCipher key derivation is compiled in to compare the
+# history root against it; no SQLCipher library is linked — the unit's
+# sqlite-calling function is unreferenced and dropped by --gc-sections.
+add_executable(test_nc_history test_nc_history.c
+  ${ROOT}/messenger/database/db_encryption.c)
+target_link_libraries(test_nc_history nc_core)
+target_compile_options(test_nc_history PRIVATE -Wall -Wextra -Wno-unused-parameter -Werror)
+add_test(NAME test_nc_history COMMAND test_nc_history)
