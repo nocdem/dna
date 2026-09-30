@@ -10,6 +10,10 @@
  * self-stake.md (the bond is EXACTLY DNAC_SELF_STAKE_AMOUNT).
  *
  * ── WHAT THIS PROVES ────────────────────────────────────────────────────
+ *  K0  The pins ruleset (nodus_v2_stake_ruleset_from_pins — the browser's
+ *      source) equals the compiled table (nodus-cli's) for both the SYSTEM
+ *      and the CORE tuple; a pins-built DELEGATE commits the same intent_id
+ *      as a table-built one and the engine admits it.
  *  K1  A STAKE, a DELEGATE (to a seeded validator) and — after that DELEGATE
  *      is applied in a block — an UNDELEGATE of the whole delegation, each
  *      built by the library with the compiled-table ruleset and a fixed key,
@@ -502,6 +506,45 @@ static int check_twin(const nodus_v2_stake_req_t *r,
     return 0;
 }
 
+/* ══ K0 — the pins ruleset (the browser's) == the table (nodus-cli's) ═ */
+
+static int t_pins_equal_table(kb_chain_t *c) {
+    nodus_v2_stake_ruleset_t pins, tab;
+    CHECK(nodus_v2_stake_ruleset_from_pins(&pins) == NODUS_V2_SPEND_OK,
+          "pins ruleset");
+    table_ruleset(&tab);
+    CHECK(pins.sys_ruleset_version == tab.sys_ruleset_version &&
+          memcmp(pins.sys_ruleset_hash, tab.sys_ruleset_hash, 64) == 0,
+          "pins SYSTEM tuple == table");
+    CHECK(pins.core_ruleset_version == tab.core_ruleset_version &&
+          memcmp(pins.core_ruleset_hash, tab.core_ruleset_hash, 64) == 0,
+          "pins CORE tuple == table");
+    /* a pins-ruleset DELEGATE and a table-ruleset DELEGATE of the same
+     * request commit the same intent, and the engine admits the pins one */
+    nodus_v2_stake_coin_t coins[KB_N_COINS];
+    int n = coins_of(c, coins);
+    nodus_v2_stake_req_t r;
+    nodus_v2_stake_built_t bp, bt;
+    nodus_v2_stake_err_t e;
+    base_req(&r, &pins, c, NODUS_V2_STAKE_OP_DELEGATE, DNAC_MIN_DELEGATION,
+             coins, n);
+    CHECK(nodus_v2_stake_build(&r, &bp, &e) == NODUS_V2_SPEND_OK,
+          "pins-ruleset build");
+    base_req(&r, &tab, c, NODUS_V2_STAKE_OP_DELEGATE, DNAC_MIN_DELEGATION,
+             coins, n);
+    CHECK(nodus_v2_stake_build(&r, &bt, &e) == NODUS_V2_SPEND_OK,
+          "table-ruleset build");
+    CHECK(memcmp(bp.intent_id, bt.intent_id, 64) == 0,
+          "pins ruleset intent_id == table ruleset intent_id");
+    uint32_t code = 99;
+    uint8_t wid[64], iid[64];
+    CHECK(dry(c->w, bp.env, bp.env_len, &code, wid, iid) == 0 &&
+          code == NODUS_V2_TX_OK, "the engine admits the pins-built DELEGATE");
+    nodus_v2_stake_built_free(&bp);
+    nodus_v2_stake_built_free(&bt);
+    return 0;
+}
+
 /* ══ K1–K3 ═══════════════════════════════════════════════════════════ */
 
 static int t_stake(kb_chain_t *c) {
@@ -696,6 +739,7 @@ int main(void) {
     }
     int fails = 0;
     fails += t_refusals(&c);
+    fails += t_pins_equal_table(&c);
     fails += t_stake(&c);
     fails += t_delegate_then_undelegate(&c);
     chain_close(&c);

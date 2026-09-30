@@ -9,6 +9,9 @@
  *
  *   - CORE (domain 1): domain_id, runtime_kind, runtime_abi,
  *     ruleset_version, ruleset_hash — the identity tuple a CORE leg carries;
+ *   - SYSTEM (domain 0): the same tuple for a SYSTEM leg (the staking
+ *     envelopes' record leg — the addendum extended by the ORCHESTRATOR,
+ *     2026-09-30, same mechanism and trust);
  *   - SYSTEM (domain 0) metering policy: policy_version, the seven scalar
  *     weights, max_block_env_bytes, every authoritative runtime_op with its
  *     weight, and the committed policy identity digest.
@@ -157,7 +160,9 @@ int nodus_ruleset_pins_render(char **out, size_t *out_len) {
         " *\n"
         " * Governing record: docs/plans/decisions/2026-09-25-web-wallet-nodus-\n"
         " * send-transport.md, addendum 2026-09-29 \"Yol 2\". Consumer: the browser\n"
-        " * wallet's SPEND builder, which cannot link the witness. It must rebuild\n"
+        " * wallet's SPEND and staking builders, which cannot link the witness\n"
+        " * (the CORE tuple signs a CORE leg, the SYSTEM tuple a SYSTEM leg).\n"
+        " * It must rebuild\n"
         " * the SYSTEM meter policy from the fields below (dna_meter_op_set +\n"
         " * dna_meter_policy_seal), recompute dna_meter_policy_digest, and refuse\n"
         " * to send when that differs from NODUS_PIN_SYS_METER_POLICY_DIGEST_INIT.\n"
@@ -179,6 +184,19 @@ int nodus_ruleset_pins_render(char **out, size_t *out_len) {
     out_printf(&o, "#define NODUS_PIN_CORE_RULESET_VERSION  %uu\n", (unsigned)core->ruleset_version);
     out_printf(&o, "\n");
     out_hash_init(&o, "NODUS_PIN_CORE_RULESET_HASH_INIT", core->ruleset_hash);
+
+    /* The SYSTEM tuple a SYSTEM leg (STAKE / DELEGATE / UNDELEGATE —
+     * nodus/src/client/nodus_v2_stake.c) carries and signs over
+     * (env_preflight.c dna_env_call_commit): same mechanism and trust as
+     * the CORE tuple above (the "Yol 2" addendum, extended). */
+    out_printf(&o, "\n/* ── SYSTEM (domain %u) ruleset identity ── */\n\n",
+               (unsigned)sys->domain_id);
+    out_printf(&o, "#define NODUS_PIN_SYS_DOMAIN_ID         %uu\n", (unsigned)sys->domain_id);
+    out_printf(&o, "#define NODUS_PIN_SYS_RUNTIME_KIND      %uu\n", (unsigned)sys->runtime_kind);
+    out_printf(&o, "#define NODUS_PIN_SYS_RUNTIME_ABI       %uu\n", (unsigned)sys->runtime_abi);
+    out_printf(&o, "#define NODUS_PIN_SYS_RULESET_VERSION   %uu\n", (unsigned)sys->ruleset_version);
+    out_printf(&o, "\n");
+    out_hash_init(&o, "NODUS_PIN_SYS_RULESET_HASH_INIT", sys->ruleset_hash);
 
     out_printf(&o, "\n/* ── SYSTEM (domain %u) metering policy ── */\n\n",
                (unsigned)sys->domain_id);

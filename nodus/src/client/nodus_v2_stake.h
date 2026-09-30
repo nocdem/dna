@@ -56,11 +56,12 @@
  * RULESET IDENTITY: leg0 is built against the SYSTEM ruleset tuple and leg1
  * against the CORE one; both hashes enter the digests the signature covers
  * (shared/dnac/env_preflight.c, dna_env_call_commit). A node-linked caller
- * (nodus-cli) fills nodus_v2_stake_ruleset_t from the compiled table. The
- * generated nodus_ruleset_pins.h carries the CORE tuple and the SYSTEM meter
- * policy but NOT the SYSTEM ruleset tuple, so a caller that cannot link the
- * witness (the browser module) has no pinned source for it yet — there is
- * deliberately no from-pins constructor here until that tuple is pinned.
+ * (nodus-cli) fills nodus_v2_stake_ruleset_t from the compiled table; a
+ * caller that cannot link the witness (the browser module) calls
+ * nodus_v2_stake_ruleset_from_pins, which reads both tuples from the
+ * GENERATED nodus_ruleset_pins.h (the "Yol 2" addendum of the decision
+ * above, extended to the SYSTEM tuple by the same mechanism — ctest
+ * test_ruleset_pins byte-compares the header with the node's table).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -150,9 +151,13 @@ typedef struct {
     int            n_coins;
 } nodus_v2_stake_req_t;
 
+/** Fill `out` with the SYSTEM and CORE tuples of the generated
+ *  nodus_ruleset_pins.h. @return NODUS_V2_SPEND_OK / _ERR_ARG. */
+int nodus_v2_stake_ruleset_from_pins(nodus_v2_stake_ruleset_t *out);
+
 /** Which numbers a refusal carries (for the caller's message). */
 typedef struct {
-    uint64_t fee;         /* the fee in force when it stopped              */
+    uint64_t fee;        /* the fee in force when it stopped              */
     uint64_t need;        /* lock + fee the funding had to cover           */
     uint64_t sum_in;      /* what the selected coins summed to             */
     int      n_in;

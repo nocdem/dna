@@ -21,6 +21,10 @@
  *   R3  the header's CORE tuple resolves in the production table
  *       (nodus_runtime_lookup) — the identity a CORE leg will carry is one
  *       the node accepts.
+ *   R4  the header's SYSTEM tuple (added for the staking builder,
+ *       nodus/src/client/nodus_v2_stake.c) resolves in the production table
+ *       AND equals the table's SYSTEM entry (version + hash) — R1 already
+ *       byte-compares it; R4 checks it names the SYSTEM domain's row.
  *
  * What it requires: default build. NODUS_RULESET_PINS_HEADER_PATH (the
  * checked-in header, absolute) is set by CMake. No environment, no ports.
@@ -168,11 +172,35 @@ static void test_core_tuple_resolves(void) {
     if (rt) PASS(); else FAIL("the node would not resolve this CORE identity");
 }
 
+static void test_sys_tuple_resolves(void) {
+    TEST("R4 header SYSTEM tuple resolves and equals the table's SYSTEM entry");
+    static const uint8_t h[DNA_DOM_HASH_LEN] = NODUS_PIN_SYS_RULESET_HASH_INIT;
+    const nodus_domain_runtime_t *rt =
+        nodus_runtime_lookup(NODUS_PIN_SYS_DOMAIN_ID,
+                             (uint8_t)NODUS_PIN_SYS_RUNTIME_KIND,
+                             NODUS_PIN_SYS_RUNTIME_ABI,
+                             NODUS_PIN_SYS_RULESET_VERSION, h);
+    size_t n = 0;
+    const nodus_domain_runtime_t *t = nodus_runtime_builtin_table(&n);
+    const nodus_domain_runtime_t *sys = NULL;
+    for (size_t i = 0; t && i < n; i++)
+        if (t[i].domain_id == DNA_DOMAIN_SYSTEM) sys = &t[i];
+    if (!rt) { FAIL("the node would not resolve this SYSTEM identity"); return; }
+    if (!sys || NODUS_PIN_SYS_DOMAIN_ID != DNA_DOMAIN_SYSTEM ||
+        sys->ruleset_version != NODUS_PIN_SYS_RULESET_VERSION ||
+        memcmp(sys->ruleset_hash, h, DNA_DOM_HASH_LEN) != 0) {
+        FAIL("the pinned SYSTEM tuple is not the table's SYSTEM entry");
+        return;
+    }
+    PASS();
+}
+
 int main(void) {
     printf("=== Generated ruleset pins header (Yol 2) ===\n");
     test_render_matches_checked_in();
     test_policy_self_check_recipe();
     test_core_tuple_resolves();
+    test_sys_tuple_resolves();
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;
 }
