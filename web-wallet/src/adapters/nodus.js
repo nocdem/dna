@@ -223,6 +223,186 @@ export async function checkNodusActivity(row, { signal, client } = {}) {
   return { status: 'pending', note: `Waiting for inclusion; valid until block ${expiryHeight}.` };
 }
 
+// ── Staking (0.1.29) ──────────────────────────────────────────────────────
+// The module side is nodus-cli `v2-envelope stake | delegate | undelegate`
+// over the shared builder (crypto/nodus-send-wasm.c "STAKING"); this side
+// validates what crosses the boundary, pre-checks the chain rules that need
+// the listed state (the builder cannot see it), and builds the review from
+// the module's own read-back of the signed envelope (G1).
+// Sources of the rules: nodus/src/witness/nodus_witness_rt_native.c
+// rtn_delegate_exec (a target that is bonded — ACTIVE or ELIGIBLE —, at
+// least the minimum for a NEW delegation, any amount >= 1 to top one up),
+// rtn_undelegate_exec (amount <= the delegation, a partial withdrawal
+// leaves 0 or at least the minimum), rtn_stake_exec (exactly the
+// self-bond, commission <= the maximum, no second bond unless the row is
+// UNSTAKED), rtn_sysfund_release_coin (the returned coin is locked until
+// the power-exit boundary + DNAC_UNDELEGATE_LOCK_EPOCHS epochs).
+export const VALIDATOR_STATUS = Object.freeze(['active', 'retiring', 'unstaked', 'auto-retired', 'eligible']);
+const STATUS_TEXT = { active: 'Active', retiring: 'Leaving', unstaked: 'Stopped', 'auto-retired': 'Stopped (was not taking part)', eligible: 'Waiting for a seat' };
+const RATE = bps => `${(bps / 100).toFixed(2).replace(/\.?0+$/, '')}%`;
+export function parseStakingRules(rules) {
+  const invalid = () => new Error('Staking is not available in this wallet version.');
+  if (!rules) throw invalid();
+  const out = {};
+  for (const key of ['minDelegation', 'selfStake', 'commissionMaxBps', 'undelegateLockEpochs', 'epochLength']) {
+    out[key] = rawUnits(rules[key], 'staking rule');
+    if (out[key] === 0n) throw invalid();
+  }
+  if (out.commissionMaxBps > 10000n) throw invalid();
+  return out;
+}
+export function parseValidators(result) {
+  const invalid = () => new Error('The Nodus module returned an invalid validator list.');
+  if (!result || typeof result.truncated !== 'boolean' || !Array.isArray(result.validators) || result.validators.length > 256) throw invalid();
+  const seen = new Set();
+  const validators = result.validators.map(v => {
+    if (!v || typeof v.fingerprint !== 'string' || !HEX128.test(v.fingerprint) || seen.has(v.fingerprint) || !Number.isInteger(v.commissionBps) || v.commissionBps < 0 || v.commissionBps > 10000 || !Number.isInteger(v.status) || v.status < 0 || v.status >= VALIDATOR_STATUS.length) throw invalid();
+    seen.add(v.fingerprint);
+    const status = VALIDATOR_STATUS[v.status];
+    return { fingerprint: v.fingerprint, selfStake: rawUnits(v.selfStake, 'validator stake'), delegated: rawUnits(v.delegated, 'validator stake'), commissionBps: v.commissionBps, status, statusText: STATUS_TEXT[status], acceptsDelegation: status === 'active' || status === 'eligible' };
+  });
+  return { truncated: result.truncated, validators };
+}
+export function parseDelegations(rows) {
+  const invalid = () => new Error('The Nodus module returned an invalid delegation list.');
+  if (!Array.isArray(rows) || rows.length > 256) throw invalid();
+  const seen = new Set();
+  return rows.map(row => {
+    if (!row || typeof row.validator !== 'string' || !HEX128.test(row.validator) || seen.has(row.validator)) throw invalid();
+    seen.add(row.validator);
+    const amount = rawUnits(row.amount, 'delegation amount');
+    if (amount === 0n) throw invalid();
+    return { validator: row.validator, amount, block: rawUnits(row.block, 'block height') };
+  });
+}
+function stakeReady(client, from) {
+  if (!client || client.state !== 'ready' || !client.stakeable) throw new Error('Staking is not available right now.');
+  if (from !== client.fingerprint) throw new Error('Nodus address does not match the connected identity.');
+}
+export const shortKey = fp => `${fp.slice(0, 8)}…${fp.slice(-8)}`;
+// The validator list, this wallet's delegations (joined with the list: a
+// delegation whose validator is not listed cannot be undelegated from here —
+// the module needs the validator's key) and whether this wallet is itself a
+// validator (its own fingerprint listed with any status but 'unstaked').
+export async function stakingOverview({ client, from, signal } = {}) {
+  stakeReady(client, from);
+  const rules = parseStakingRules(client.stakingRules);
+  const { truncated, validators } = parseValidators(await client.validators({ signal }));
+  const delegations = parseDelegations(await client.delegations({ signal }));
+  const byKey = new Map(validators.map(v => [v.fingerprint, v]));
+  const own = byKey.get(from);
+  return {
+    rules, truncated, validators,
+    delegations: delegations.map(row => ({ ...row, validatorInfo: byKey.get(row.validator), canUndelegate: byKey.has(row.validator) })),
+    ownValidator: own && own.status !== 'unstaked' ? own : undefined,
+    lockText: `${rules.undelegateLockEpochs} epochs (${rules.undelegateLockEpochs} × ${rules.epochLength} = ${rules.undelegateLockEpochs * rules.epochLength} blocks)`
+  };
+}
+// The module's read-back of a staking envelope, checked for shape.
+function decodeStake(built) {
+  const d = built?.decoded, invalid = () => new Error('The Nodus module returned an invalid transaction.');
+  if (!built || !(built.envelope instanceof Uint8Array) || built.envelope.length === 0 || typeof built.intentId !== 'string' || !HEX128.test(built.intentId) || !d) throw invalid();
+  if (!['stake', 'delegate', 'undelegate'].includes(d.op) || typeof d.validator !== 'string' || !HEX128.test(d.validator) || typeof d.chainId !== 'string' || !HEX64.test(d.chainId)) throw invalid();
+  if (!Array.isArray(d.inputs) || d.inputs.length < 1 || d.inputs.length > NODUS_MAX_INPUTS || new Set(d.inputs).size !== d.inputs.length || !d.inputs.every(input => typeof input === 'string' && HEX128.test(input))) throw invalid();
+  return {
+    envelope: built.envelope, intentId: built.intentId, op: d.op, validator: d.validator, chainId: d.chainId, inputs: [...d.inputs],
+    amount: rawUnits(d.amount, 'transaction amount'), commissionBps: rawUnits(d.commissionBps, 'commission'), fee: rawUnits(d.fee, 'network fee'),
+    change: rawUnits(d.change, 'change amount'), expiryHeight: rawUnits(d.expiryHeight, 'expiry height')
+  };
+}
+// Builds and signs one staking envelope for review, in the shape of
+// prepareClaim (cancel(), confirm(onBroadcast) usable once, refused after
+// expiresAt). kind: 'delegate' | 'undelegate' | 'stake'. `validator`: 128
+// hex (delegate / undelegate). `amount`: NODUS text (delegate /
+// undelegate; stake always bonds exactly the self-bond). `commissionBps`:
+// integer text (stake). `locked`: coins of pending NODUS transactions
+// (lockedInputs) — never offered to the builder.
+export async function prepareStake({ client, from, kind, validator, amount, commissionBps, locked = new Set() } = {}) {
+  stakeReady(client, from);
+  if (!['delegate', 'undelegate', 'stake'].includes(kind)) throw new Error('Unknown staking action.');
+  // Fresh lists: the module resolves the validator's key from ITS last
+  // listing, and the rules below read the current rows.
+  const view = await stakingOverview({ client, from });
+  const { rules } = view;
+  let units, target, commission = 0n, existing;
+  if (kind === 'stake') {
+    if (view.ownValidator) throw new Error('This wallet is already a validator.');
+    units = rules.selfStake;
+    if (typeof commissionBps !== 'string' || !/^(0|[1-9]\d{0,4})$/.test(commissionBps)) throw new Error('Enter a commission between 0% and 50%.');
+    commission = BigInt(commissionBps);
+    if (commission > rules.commissionMaxBps) throw new Error(`The commission can be at most ${RATE(Number(rules.commissionMaxBps))}.`);
+    target = from;
+  } else {
+    target = typeof validator === 'string' ? validator : '';
+    if (!HEX128.test(target)) throw new Error('Choose a validator.');
+    units = nodusAmountUnits(amount);
+    if (units === 0n) throw new Error('Enter an amount above zero.');
+    existing = view.delegations.find(row => row.validator === target);
+    const info = view.validators.find(v => v.fingerprint === target);
+    if (kind === 'delegate') {
+      if (!info) throw new Error('This validator is not in the current validator list.');
+      if (!info.acceptsDelegation) throw new Error(`This validator does not accept delegations now (${info.statusText}).`);
+      if (!existing && units < rules.minDelegation) throw new Error(`A new delegation must be at least ${formatUnits(rules.minDelegation, DECIMALS)} NODUS.`);
+    } else {
+      if (!existing) throw new Error('You have no delegation with this validator.');
+      if (!info) throw new Error('This validator is not in the current validator list, so its delegation cannot be withdrawn from here.');
+      if (units > existing.amount) throw new Error(`You can withdraw at most ${nodusText(existing.amount)}.`);
+      const rest = existing.amount - units;
+      if (rest !== 0n && rest < rules.minDelegation) throw new Error(`Withdraw everything, or leave at least ${formatUnits(rules.minDelegation, DECIMALS)} NODUS delegated.`);
+    }
+  }
+  const { spendable } = parseBalance(await client.balance());
+  const listing = await client.list();
+  const coins = parseCoins(listing);
+  if (coins.length === 0 && spendable > 0n) throw new Error('Your coin list could not be read. Nothing was sent; try again later.');
+  const tip = parseTip(listing.tip), expiryHeight = expiryHeightFor(tip);
+  const candidates = coins.filter(coin => !locked.has(coin.nullifier));
+  if (candidates.length === 0) throw new Error(locked.size ? 'Your coins are held by a pending transaction. Wait for it to be included or to expire.' : 'Insufficient NODUS balance.');
+  const d = decodeStake(await client.stakeBuild({ op: kind, validator: kind === 'stake' ? '' : target, amount: units.toString(), commissionBps: commission.toString(), expiryHeight: expiryHeight.toString(), coins: candidates }));
+  // The signed envelope must be exactly what was requested, or nothing is shown.
+  if (d.op !== kind || d.validator !== target || d.amount !== units || d.commissionBps !== commission || d.expiryHeight !== expiryHeight || d.chainId !== client.chainId) throw new Error('The signed transaction does not match your request. Nothing was sent.');
+  const amounts = new Map(candidates.map(coin => [coin.nullifier, BigInt(coin.amount)]));
+  if (!d.inputs.every(input => amounts.has(input))) throw new Error('The signed transaction uses coins it may not use. Nothing was sent.');
+  const inSum = d.inputs.reduce((sum, input) => sum + amounts.get(input), 0n);
+  const lock = kind === 'undelegate' ? 0n : d.amount;
+  if (inSum !== lock + d.fee + d.change) throw new Error('The signed transaction does not add up. Nothing was sent.');
+  const info = view.validators.find(v => v.fingerprint === target);
+  const review = [['Network', 'Nodus testnet']];
+  if (kind === 'delegate') {
+    review.push(['Action', 'Delegate NODUS'], ['Validator', d.validator], ['Validator commission', info ? RATE(info.commissionBps) : '—'],
+      ['Amount', nodusText(d.amount)], ['Network fee', nodusText(d.fee)], ['Change back to you', nodusText(d.change)],
+      ['Note', `The delegated NODUS stays yours but is held with this validator and cannot be sent while delegated. To get it back you undelegate; it then returns to you locked for ${view.lockText} after the validator set changes.`]);
+  } else if (kind === 'undelegate') {
+    review.push(['Action', 'Undelegate NODUS'], ['Validator', d.validator], ['Amount returned to you', nodusText(d.amount)],
+      ['Network fee', `${nodusText(d.fee)} (paid from your spendable NODUS)`], ['Change back to you', nodusText(d.change)],
+      ['Lock', `The returned NODUS arrives as a separate coin at your address. It stays locked for ${view.lockText} after the validator set next changes; until then it keeps earning and cannot be sent or delegated again.`]);
+  } else {
+    review.push(['Action', 'Become a validator'], ['Bond', nodusText(d.amount)], ['Commission', RATE(Number(d.commissionBps))],
+      ['Bond returns to', `${from} (your own address)`], ['Network fee', nodusText(d.fee)], ['Change back to you', nodusText(d.change)],
+      ['Important', 'The bond stays locked while you are a validator. This wallet has no way to unstake it: there is no leave-the-validator-set action here. An active validator is expected to take part in producing blocks; one that does not is retired automatically.']);
+  }
+  review.push(['Valid until block', d.expiryHeight.toString()], ['Chain ID', d.chainId], ['Fee note', 'The network fee may be charged even if the transaction fails.']);
+  if (listing.truncated === true) review.push(['Coin list', 'Your coin list may be incomplete; only the coins listed are used.']);
+  let used = false;
+  const expiresAt = Date.now() + 60000;
+  return {
+    kind, chain: NODUS_ASSET.chain, from, to: d.validator, symbol: NODUS_ASSET.symbol, amount: formatUnits(d.amount, DECIMALS),
+    endpoint: undefined, fee: nodusText(d.fee), expiresAt, review, intentId: d.intentId,
+    cancel() { used = true; },
+    async confirm(onBroadcast) {
+      if (used) throw new Error('This review is already closed.');
+      used = true; // an ambiguous submission is never retried automatically
+      if (Date.now() >= expiresAt) throw new Error('Review expired. Prepare it again.');
+      // The record is durable before the envelope leaves the browser; its
+      // inputs are held like a send's (lockedInputs) until it resolves.
+      await onBroadcast({ hash: d.intentId, expiryHeight: d.expiryHeight.toString(), fromHeight: (tip + 1n).toString(), inputs: [...d.inputs] });
+      const result = await client.submit({ envelope: d.envelope });
+      if (!result || result.accepted !== true) throw new Error(`The Nodus network did not accept this transaction. Its coins stay held until it expires.${typeof result?.message === 'string' && result.message ? ` ${result.message}` : ''}`);
+      return d.intentId;
+    }
+  };
+}
+
 // ── Genesis claim (0.1.26) ────────────────────────────────────────────────
 // The module side is nodus-cli `v2-claim` (crypto/nodus-send-wasm.c "GENESIS
 // CLAIM"); this side validates what crosses the boundary and applies the

@@ -34,6 +34,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 import { NODUS_SEND_NETWORK, nodusSendModuleFactory, validateNodusSendNetwork, NODUS_CLAIM_DATA, validateNodusClaimData } from '../src/nodus/send-module.js';
 
 const wasmBytes = readFileSync(new URL('../src/nodus/send.wasm', import.meta.url));
@@ -53,7 +54,12 @@ const ENTRY_POINTS = [
   'nsw_claim_status', 'nsw_claim_build', 'nsw_claim_submit', 'nsw_claim_found', 'nsw_claim_window', 'nsw_claim_claimed',
   'nsw_claim_amount', 'nsw_claim_tip', 'nsw_claim_start', 'nsw_claim_end', 'nsw_claim_output', 'nsw_claim_built_bytes',
   'nsw_claim_built_len', 'nsw_claim_built_id', 'nsw_claim_built_nullifier', 'nsw_claim_built_output',
-  'nsw_claim_built_recipient', 'nsw_claim_built_chain', 'nsw_claim_built_amount', 'nsw_claim_built_leaf'
+  'nsw_claim_built_recipient', 'nsw_claim_built_chain', 'nsw_claim_built_amount', 'nsw_claim_built_leaf',
+  // staking (0.1.29)
+  'nsw_built_op', 'nsw_built_commission', 'nsw_stake_offline_build', 'nsw_const_min_delegation', 'nsw_const_self_stake',
+  'nsw_const_commission_max', 'nsw_const_undelegate_lock_epochs', 'nsw_const_epoch_length', 'nsw_validators', 'nsw_val_count',
+  'nsw_val_truncated', 'nsw_val_fp', 'nsw_val_self', 'nsw_val_delegated', 'nsw_val_commission', 'nsw_val_status',
+  'nsw_delegations', 'nsw_del_count', 'nsw_del_fp', 'nsw_del_amount', 'nsw_del_block', 'nsw_stake_build'
 ];
 
 test('the shipped send.wasm exports the module entry points and no test-only one', () => {
@@ -298,6 +304,107 @@ test('claim parity: the shipped wasm (hedged signature) has the same identity, d
   assert.notEqual(wasm.claim, native.claim);
   assert.notEqual(wasm.claim_id, native.claim_id);
   assert.equal(wasm.claim.length, native.claim.length);
+});
+
+// ── staking parity (0.1.29) ────────────────────────────────────────────
+// SYNTHETIC inputs (fixed seed, made-up validator key, coins and chain id).
+// The staking builder draws no randomness of its own (the change seed is
+// SHA3-512 of the inputs), so only the two hedged signatures consume
+// signing randomness: 2 × 32 bytes. Selection is ascending by nullifier
+// (cmd_v2_stake's), taken until lock + fee is covered.
+const STAKE = {
+  seed: fill(32, 5), chain: '33'.repeat(32), tip: '2000', expiry: '2090', gas: '3', signRandom: fill(64, 60),
+  validator: hex(fill(2592, 17)),
+  deleg: { amount: '10000000000', coins: [['d4'.repeat(64), '6000000000'], ['e5'.repeat(64), '6000000000'], ['f6'.repeat(64), '2000000']] },
+  undeleg: { amount: '5000000000', coins: [['d4'.repeat(64), '6000000000'], ['e5'.repeat(64), '6000000000']] },
+  bond: { amount: '1000000000000000', commission: '1250', coins: [['a7'.repeat(64), '1000000100000000']] }
+};
+const OPS = { stake: 1, delegate: 2, undelegate: 4 };
+const stakeCase = op => op === 'stake'
+  ? { validator: '', amount: STAKE.bond.amount, commission: STAKE.bond.commission, coins: STAKE.bond.coins }
+  : { validator: STAKE.validator, amount: STAKE[op === 'delegate' ? 'deleg' : 'undeleg'].amount, commission: '0', coins: STAKE[op === 'delegate' ? 'deleg' : 'undeleg'].coins };
+function nativeStake(op) {
+  const c = stakeCase(op);
+  const args = ['stake', '--op', op, '--seed', hex(STAKE.seed), '--chain', STAKE.chain, '--tip', STAKE.tip, '--gas', STAKE.gas,
+    '--amount', c.amount, '--commission', c.commission, '--expiry', STAKE.expiry, '--sign-random', hex(STAKE.signRandom)];
+  if (c.validator) args.push('--validator', c.validator);
+  for (const [nullifier, amount] of c.coins) args.push('--coin', `${nullifier}:${amount}`);
+  const out = { input: [] };
+  for (const line of execFileSync(VECTOR_BIN, args, { encoding: 'utf8' }).trim().split('\n')) {
+    const at = line.indexOf('='), key = line.slice(0, at), value = line.slice(at + 1);
+    if (key === 'input') out.input.push(value); else out[key] = value;
+  }
+  return out;
+}
+async function wasmStake(file, { fixedRandom }, op) {
+  const c = stakeCase(op), { M, num, str } = await loadParity(file, fixedRandom);
+  M.HEAPU8.set(STAKE.seed, num('nsw_seed_buf'));
+  if (fixedRandom) {
+    M.HEAPU8.set(STAKE.signRandom, num('nsw_test_random_buf'));
+    assert.equal(num('nsw_test_random_load', ['number'], [STAKE.signRandom.length]), 0);
+  }
+  num('nsw_req_reset');
+  for (const [nullifier, amount] of c.coins) assert.equal(num('nsw_req_add_coin', ['string', 'string'], [nullifier, amount]), 0, str('nsw_error'));
+  const rc = num('nsw_stake_offline_build', ['number', 'string', 'string', 'string', 'string', 'string', 'string', 'string'],
+    [OPS[op], STAKE.chain, STAKE.tip, STAKE.gas, c.validator, c.amount, c.commission, STAKE.expiry]);
+  assert.equal(rc, 0, str('nsw_error'));
+  const at = num('nsw_built_env'), length = num('nsw_built_env_len'), input = [];
+  for (let i = 0; i < num('nsw_built_n_in'); i++) input.push(str('nsw_built_in', ['number'], [i]));
+  return {
+    envelope: hex(M.HEAPU8.subarray(at, at + length)), wire_id: str('nsw_built_wire'), intent_id: str('nsw_built_intent'),
+    chain_id: str('nsw_built_chain'), op: String(num('nsw_built_op')), recipient: str('nsw_built_recipient'), amount: str('nsw_built_amount'),
+    commission: str('nsw_built_commission'), fee: str('nsw_built_fee'), change: str('nsw_built_change'), expiry: str('nsw_built_expiry'), input
+  };
+}
+
+for (const op of ['delegate', 'undelegate', 'stake']) {
+  test(`staking parity (${op}): TEST wasm and the native vector build the same envelope byte for byte`, { skip: skipParity }, async () => {
+    const c = stakeCase(op), native = nativeStake(op), wasm = await wasmStake('send-test-node.mjs', { fixedRandom: true }, op);
+    assert.deepEqual(wasm, native);
+    assert.equal(native.op, String(OPS[op]));
+    assert.equal(native.amount, c.amount);
+    assert.equal(native.expiry, STAKE.expiry);
+    assert.equal(native.chain_id, STAKE.chain);
+    // gas price 3: 400 000 units × 3 = 1 200 000, above the 1 000 000 floor
+    assert.equal(native.fee, '1200000');
+    const inSum = native.input.reduce((sum, n) => sum + BigInt(c.coins.find(([nul]) => nul === n)[1]), 0n);
+    const lock = op === 'undelegate' ? 0n : BigInt(c.amount);
+    assert.equal(inSum, lock + BigInt(native.fee) + BigInt(native.change), 'inputs = lock + fee + change');
+    if (op === 'stake') assert.equal(native.commission, STAKE.bond.commission);
+    else assert.equal(native.recipient, createHash('sha3-512').update(Buffer.from(c.validator, 'hex')).digest('hex'));
+    // ascending by nullifier, stopping once covered
+    assert.deepEqual(native.input, op === 'delegate' ? [c.coins[0][0], c.coins[1][0]] : [c.coins[0][0]]);
+  });
+  test(`staking parity (${op}): the shipped wasm has the same intent_id, a different wire_id`, { skip: skipParity }, async () => {
+    assert.ok(readFileSync(join(PARITY_OUT, 'send-node.wasm')).equals(wasmBytes), 'send-node.wasm is not the shipped send.wasm — rebuild both');
+    const native = nativeStake(op), wasm = await wasmStake('send-node.mjs', { fixedRandom: false }, op);
+    for (const key of ['intent_id', 'chain_id', 'op', 'recipient', 'amount', 'commission', 'fee', 'change', 'expiry', 'input']) assert.deepEqual(wasm[key], native[key], key);
+    assert.notEqual(wasm.wire_id, native.wire_id);
+    assert.equal(wasm.envelope.length, native.envelope.length);
+  });
+}
+
+test('staking refusals in the module: a wrong bond, a commission above 50%, an UNSTAKE op, a validator key for STAKE', { skip: skipParity }, async () => {
+  const { M, num, str } = await loadParity('send-node.mjs', false);
+  const build = (op, validator, amount, commission, coins) => {
+    M.HEAPU8.set(STAKE.seed, num('nsw_seed_buf'));
+    num('nsw_req_reset');
+    for (const [nullifier, value] of coins) num('nsw_req_add_coin', ['string', 'string'], [nullifier, value]);
+    return num('nsw_stake_offline_build', ['number', 'string', 'string', 'string', 'string', 'string', 'string', 'string'],
+      [op, STAKE.chain, STAKE.tip, STAKE.gas, validator, amount, commission, STAKE.expiry]);
+  };
+  assert.notEqual(build(1, '', '999999999999999', '0', STAKE.bond.coins), 0); assert.match(str('nsw_error'), /exactly 10,000,000/);
+  assert.notEqual(build(1, '', STAKE.bond.amount, '5001', STAKE.bond.coins), 0); assert.match(str('nsw_error'), /commission/i);
+  assert.notEqual(build(3, STAKE.validator, '1', '0', STAKE.deleg.coins), 0); assert.match(str('nsw_error'), /Unknown staking action/);
+  assert.notEqual(build(1, STAKE.validator, STAKE.bond.amount, '0', STAKE.bond.coins), 0); assert.match(str('nsw_error'), /Invalid offline staking input/);
+  assert.notEqual(build(2, STAKE.validator, '100000000000', '0', STAKE.deleg.coins), 0); assert.match(str('nsw_error'), /Insufficient/);
+  assert.equal(num('nsw_built_env_len'), 0, 'nothing built after a refusal');
+  // the chain constants the wallet shows (dnac.h)
+  assert.equal(str('nsw_const_min_delegation'), '10000000000');
+  assert.equal(str('nsw_const_self_stake'), '1000000000000000');
+  assert.equal(str('nsw_const_commission_max'), '5000');
+  assert.equal(str('nsw_const_undelegate_lock_epochs'), '12');
+  assert.equal(str('nsw_const_epoch_length'), '720');
 });
 
 test('claim data: the embedded testnet data seals in the shipped module; a wrong hash or leaf is refused', { skip: skipParity }, async () => {

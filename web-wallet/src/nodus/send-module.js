@@ -34,6 +34,9 @@ const IPV4 = new RegExp(`^${OCTET}(\\.${OCTET}){3}$`);
 export const NODUS_SEND_MAX_ENDPOINTS = 8;   // nodus/include/nodus/nodus.h NODUS_CLIENT_MAX_SERVERS
 export const NODUS_SEND_MAX_PINS = 64;       // crypto/nodus-send-wasm.c NSW_MAX_PINS
 const MAX_COINS = 100;                       // nodus_types.h NODUS_DNAC_MAX_UTXO_RESULTS
+// The staking ops and their SYSTEM runtime_op (nodus_witness_runtime.h
+// DNA_SYSRULE_STAKE / _DELEGATE / _UNDELEGATE).
+const STAKE_OPS = Object.freeze({ stake: 1, delegate: 2, undelegate: 4 });
 
 // Nodus testnet (chain born 2026-09-30, the final pre-testnet genesis). The
 // chain id was read from the live genesis document; each pin is the node's
@@ -290,6 +293,69 @@ export async function createNodusSendModule(network, { claim = null, loadGlue = 
       if (rc === 0) return { accepted: true };
       if (rc === 1) return { accepted: false, message: str('nsw_error') };
       throw failure();
+    },
+    // STAKING (0.1.29) — nodus-cli `v2-envelope stake | delegate |
+    // undelegate` over the shared builder (nodus-send-wasm.c "STAKING").
+    // The chain constants, read from the module (dnac.h), never restated.
+    stakingRules: Object.freeze({
+      minDelegation: str('nsw_const_min_delegation'), selfStake: str('nsw_const_self_stake'),
+      commissionMaxBps: str('nsw_const_commission_max'), undelegateLockEpochs: str('nsw_const_undelegate_lock_epochs'),
+      epochLength: str('nsw_const_epoch_length')
+    }),
+    // validators() -> { truncated, validators: [{ fingerprint (derived by
+    // the module from the key), selfStake, delegated (raw), commissionBps,
+    // status (0 active, 1 retiring, 2 unstaked, 3 auto-retired, 4 eligible) }] }
+    async validators() {
+      check(await call('nsw_validators'));
+      const validators = [];
+      for (let i = 0, n = num('nsw_val_count'); i < n; i++) {
+        validators.push({
+          fingerprint: str('nsw_val_fp', ['number'], [i]), selfStake: str('nsw_val_self', ['number'], [i]),
+          delegated: str('nsw_val_delegated', ['number'], [i]), commissionBps: num('nsw_val_commission', ['number'], [i]),
+          status: num('nsw_val_status', ['number'], [i])
+        });
+      }
+      return { truncated: num('nsw_val_truncated') === 1, validators };
+    },
+    // delegations() -> [{ validator: 128 hex fingerprint, amount, block }]
+    async delegations() {
+      check(await call('nsw_delegations'));
+      const rows = [];
+      for (let i = 0, n = num('nsw_del_count'); i < n; i++) {
+        rows.push({ validator: str('nsw_del_fp', ['number'], [i]), amount: str('nsw_del_amount', ['number'], [i]), block: str('nsw_del_block', ['number'], [i]) });
+      }
+      return rows;
+    },
+    // stakeBuild({ op: 'stake' | 'delegate' | 'undelegate', validator (128
+    // hex, '' for stake), amount, commissionBps (stake), expiryHeight, coins })
+    // -> { envelope, intentId, decoded: { op, validator, amount,
+    // commissionBps, fee, change, expiryHeight, chainId, inputs } }, `decoded`
+    // read back from the signed bytes by the C side. Submitted with submit().
+    async stakeBuild({ op, validator = '', amount, commissionBps = '0', expiryHeight, coins } = {}) {
+      const code = typeof op === 'string' && Object.hasOwn(STAKE_OPS, op) ? STAKE_OPS[op] : 0;
+      if (!code) throw new Error('Unknown staking action.');
+      if (op === 'stake' ? validator !== '' : typeof validator !== 'string' || !HEX128.test(validator)) throw new Error('Invalid validator.');
+      raw(amount, 'amount'); raw(commissionBps, 'commission'); raw(expiryHeight, 'validity height');
+      if (!Array.isArray(coins) || coins.length > MAX_COINS) throw new Error('Invalid coin list.');
+      num('nsw_req_reset');
+      for (const coin of coins) {
+        if (!coin || typeof coin.nullifier !== 'string' || !HEX128.test(coin.nullifier)) throw new Error('Invalid coin list.');
+        check(num('nsw_req_add_coin', ['string', 'string'], [coin.nullifier, raw(coin.amount, 'coin amount')]));
+      }
+      check(await call('nsw_stake_build', ['number', 'string', 'string', 'string', 'string'], [code, validator, amount, commissionBps, expiryHeight]));
+      const at = num('nsw_built_env'), length = num('nsw_built_env_len');
+      const inputs = [];
+      for (let i = 0, n = num('nsw_built_n_in'); i < n; i++) inputs.push(str('nsw_built_in', ['number'], [i]));
+      const opName = Object.keys(STAKE_OPS).find(name => STAKE_OPS[name] === num('nsw_built_op'));
+      return {
+        envelope: M.HEAPU8.slice(at, at + length),
+        intentId: str('nsw_built_intent'),
+        decoded: {
+          op: opName, validator: str('nsw_built_recipient'), amount: str('nsw_built_amount'),
+          commissionBps: op === 'stake' ? str('nsw_built_commission') : '0', fee: str('nsw_built_fee'),
+          change: str('nsw_built_change'), expiryHeight: str('nsw_built_expiry'), chainId: str('nsw_built_chain'), inputs
+        }
+      };
     },
     // Synchronous: none of these reaches emscripten_sleep (nodus-send-wasm.c
     // nsw_cancel / nsw_lock), so they are safe while another export waits.

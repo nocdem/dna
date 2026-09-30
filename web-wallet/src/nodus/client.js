@@ -52,6 +52,9 @@
 //                                src/nodus/send-module.js). A module without
 //                                all three still unlocks; this client then
 //                                answers every claim call "not available".
+//     validators() / delegations() / stakeBuild({ ... }) + stakingRules
+//                                OPTIONAL (0.1.29, staking — shapes in
+//                                src/nodus/send-module.js), same rule.
 //     tick()                     Keepalive ping (the thread-less stand-in for
 //                                nodus_client.c's 60 s read-thread ping; the
 //                                server drops an idle session at 180 s).
@@ -80,11 +83,20 @@ export const NODUS_TICK_MS = 60000;
 const ASYNC_OPS = ['unlock', 'balance', 'list', 'buildAndSign', 'submit', 'scanConfirm', 'tick'];
 const SYNC_OPS = ['cancel', 'lock', 'release'];
 const CLAIM_OPS = ['claimStatus', 'claimBuild', 'claimSubmit'];
+// OPTIONAL (0.1.29, staking — shapes in src/nodus/send-module.js): a module
+// without all three (and its `stakingRules`) still unlocks; this client then
+// answers every staking call "not available". Staking envelopes are
+// submitted with submit().
+const STAKE_OPS = ['validators', 'delegations', 'stakeBuild'];
+const RAW_RULE = /^[1-9]\d{0,19}$/;
+function validRules(rules) {
+  return !!rules && ['minDelegation', 'selfStake', 'commissionMaxBps', 'undelegateLockEpochs', 'epochLength'].every(key => typeof rules[key] === 'string' && RAW_RULE.test(rules[key]) && BigInt(rules[key]) < 2n ** 64n);
+}
 const lockedError = () => new Error('Wallet is locked.');
 
 export function createNodusClient({ factory, onState, setInterval: every = globalThis.setInterval, clearInterval: stopEvery = globalThis.clearInterval } = {}) {
   if (typeof factory !== 'function') throw new Error('The Nodus send module is not available.');
-  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false;
+  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules;
   // ONE operation queue: Asyncify keeps a single global currData, so a second
   // export entered while the first is suspended corrupts the first. `tail`
   // settles only when the module call itself has returned, never merely when
@@ -158,6 +170,8 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
       }
       module = loaded;
       claimable = CLAIM_OPS.every(name => typeof loaded[name] === 'function');
+      stakeable = STAKE_OPS.every(name => typeof loaded[name] === 'function') && validRules(loaded.stakingRules);
+      stakingRules = stakeable ? Object.freeze({ ...loaded.stakingRules }) : undefined;
       const info = await enqueue('unlock', { seed });
       if (!info || typeof info.fingerprint !== 'string' || !HEX128.test(info.fingerprint) || typeof info.chainId !== 'string' || !HEX64.test(info.chainId)) throw new Error('The Nodus send module returned an invalid identity.');
       // The module derives the identity from the seed on its own; it must be
@@ -174,6 +188,7 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
   }
   const call = op => (args, options) => { try { ready(); } catch (error) { return Promise.reject(error); } return enqueue(op, args, options); };
   const claimCall = op => (args, options) => claimable ? call(op)(args, options) : Promise.reject(new Error('Claiming is not available in this wallet version.'));
+  const stakeCall = op => (args, options) => stakeable ? call(op)(args, options) : Promise.reject(new Error('Staking is not available in this wallet version.'));
   return {
     get state() { return state; },
     get fingerprint() { return fingerprint; },
@@ -189,6 +204,13 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
     claimStatus: (options) => claimCall('claimStatus')(undefined, options),
     claimBuild: (options) => claimCall('claimBuild')(undefined, options),
     claimSubmit: claimCall('claimSubmit'),
+    // Whether the loaded module offers staking (STAKE_OPS), and its chain
+    // constants (raw decimal strings, from the module's own build).
+    get stakeable() { return stakeable && state === 'ready'; },
+    get stakingRules() { return stakeable && state === 'ready' ? stakingRules : undefined; },
+    validators: (options) => stakeCall('validators')(undefined, options),
+    delegations: (options) => stakeCall('delegations')(undefined, options),
+    stakeBuild: stakeCall('stakeBuild'),
     lock
   };
 }

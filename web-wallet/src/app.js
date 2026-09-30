@@ -13,7 +13,7 @@ import { nodusSendModuleFactory } from './nodus/send-module.js';
 import { createNodusClient } from './nodus/client.js';
 import { deriveWallet, disposeWallet, newPhrase, normalizePhrase } from './keys.js';
 import { adapters, prepareTransfer } from './wallet.js';
-import { endpointUrl } from './core.js';
+import { endpointUrl, formatUnits } from './core.js';
 import { createPhraseFields } from './phrase-fields.js';
 import { createPortfolio } from './portfolio-view.js';
 import { renderQr } from './qr.js';
@@ -132,14 +132,20 @@ function renderActivity(save = true) {
     // A claim of this wallet's allocation (src/adapters/nodus.js isClaimRow)
     // pays the wallet itself.
     const claim = adapters.nodus.isClaimRow(row);
+    // A staking row (0.1.29) carries its action in `kind` in this tab only
+    // (src/activity.js recordActivity); reloaded, it reads as a transfer.
+    const state = `${row.status} · ${row.readError || row.note} `;
     div.textContent = claim
-      ? `Allocation claim · ${row.amount} ${row.symbol} → your address · ${row.status} · ${row.readError || row.note} `
-      : `${row.amount} ${row.symbol} → ${row.to} · ${row.status} · ${row.readError || row.note} `;
+      ? `Allocation claim · ${row.amount} ${row.symbol} → your address · ${state}`
+      : row.kind === 'delegate' ? `Delegation · ${row.amount} ${row.symbol} → validator ${row.to} · ${state}`
+      : row.kind === 'undelegate' ? `Undelegation · ${row.amount} ${row.symbol} back from validator ${row.to} (returned locked) · ${state}`
+      : row.kind === 'stake' ? `Validator bond · ${row.amount} ${row.symbol} · ${state}`
+      : `${row.amount} ${row.symbol} → ${row.to} · ${state}`;
     // NODUS has no explorer link in the first delivery (design §1.4).
     if (CHAINS[row.chain]) {
       const link = document.createElement('a');
       link.href = CHAINS[row.chain].explorer + encodeURIComponent(row.hash); link.textContent = 'View transaction'; link.target = '_blank'; link.rel = 'noopener noreferrer'; div.append(link);
-    } else div.append(`${claim ? 'Claim ID' : 'Transfer ID'} ${row.hash}`);
+    } else div.append(`${claim ? 'Claim ID' : row.kind ? 'Transaction ID' : 'Transfer ID'} ${row.hash}`);
     // A NODUS send always resolves: included, or 'expired' once the chain passes
     // its expiry block. Its coins stay held until then (src/adapters/nodus.js
     // lockedInputs), so it is never marked abandoned by hand.
@@ -169,6 +175,9 @@ const checkRow = async (row, options) => {
     void refreshClaim();
     if (update.status === 'confirmed') portfolio.setAddress(NODUS_ASSET.chain, wallet.addresses.nodus);
   }, 0);
+  // Any other NODUS transaction that reaches a final state may have moved a
+  // delegation or the validator list: re-read the staking panel once.
+  else if (terminal(update.status) && !terminal(row.status)) setTimeout(() => { if (wallet && nodusClient) void refreshStaking(); }, 0);
   return update;
 };
 function trackActivity() { stopTracking(); renderActivity(); if (wallet) stopTracking = watchActivity(visibleActivity, renderActivity, { check: checkRow }); }
@@ -264,7 +273,7 @@ function setNodusReady(ready, { reselect = true } = {}) {
   if (receiveOnlyNetworks[NODUS_ASSET.chain] === network) return;
   receiveOnlyNetworks[NODUS_ASSET.chain] = network;
   if (!ready && wallet) wallet.nodusClient = undefined;
-  if (!ready) { claimCheck++; portfolio.setAction(NODUS_ASSET.chain, undefined); }
+  if (!ready) { claimCheck++; portfolio.setAction(NODUS_ASSET.chain, undefined); hideStaking(); }
   portfolio.setNetwork(NODUS_ASSET.chain, network);
   showPortfolioScope(ready);
   if (reselect && wallet && $('chain').value === NODUS_ASSET.chain) selectChain();
@@ -294,6 +303,7 @@ async function startNodusSend(source, address) {
     setNodusReady(true);
     portfolio.setAddress(NODUS_ASSET.chain, address);
     void refreshClaim();
+    void refreshStaking();
   } catch {
     if (client === nodusClient) $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase. Nodus balance and sending are unavailable right now; lock and reopen your wallet to retry.';
   } finally { seed?.fill(0); }
@@ -330,18 +340,121 @@ async function refreshClaim() {
     });
   }
 }
-// Opens the review dialog for a transfer-shaped object (a send, or a claim
-// from src/adapters/nodus.js prepareClaim) with its own entries.
+// STAKING (0.1.29): the "Delegate NODUS" panel, shown while the connected
+// module offers staking (src/nodus/client.js stakeable). Every read and
+// every build goes through src/adapters/nodus.js (stakingOverview,
+// prepareStake); a read started under an older stakeCheck is dropped.
+let stakeCheck = 0, stakeView;
+const STAKE_KINDS = ['delegate', 'undelegate', 'stake'];
+const ACTION_WORD = { claim: 'Claiming', delegate: 'Delegating', undelegate: 'Undelegating', stake: 'Bonding' };
+const CONFIRM_TEXT = { claim: 'Confirm & claim', delegate: 'Confirm & delegate', undelegate: 'Confirm & undelegate', stake: 'Confirm & bond' };
+const nodusAmountText = units => groupDigits(formatUnits(units, NODUS_ASSET.decimals));
+function hideStaking() {
+  stakeCheck++; stakeView = undefined;
+  $('stake-panel').hidden = true; $('validator-list').replaceChildren(); $('delegation-list').replaceChildren();
+  $('delegate-validator').replaceChildren(); $('stake-status').textContent = ''; $('delegate-hint').textContent = ''; $('undelegate-note').textContent = ''; $('become-note').textContent = '';
+}
+async function refreshStaking() {
+  const client = nodusClient, source = wallet, check = ++stakeCheck;
+  if (!client || !source || source.locked || !client.stakeable) { hideStaking(); return; }
+  const current = () => check === stakeCheck && client === nodusClient && source === wallet && !source.locked;
+  $('stake-panel').hidden = false; $('stake-status').textContent = 'Reading validators and your delegations…';
+  try {
+    const view = await adapters.nodus.stakingOverview({ client, from: source.addresses.nodus });
+    if (!current()) return;
+    stakeView = view; renderStaking(view);
+    $('stake-status').textContent = view.truncated ? 'The validator list is longer than this wallet shows; only the first validators are listed.' : '';
+  } catch (error) {
+    if (!current()) return;
+    $('stake-status').textContent = `Could not read validators or delegations: ${error?.message || 'unknown error'} Use Refresh to try again.`;
+  }
+}
+function renderStaking(view) {
+  const { rules } = view;
+  const minText = nodusAmountText(rules.minDelegation);
+  $('validator-list').replaceChildren(...(view.validators.length ? view.validators.map(v => {
+    const row = document.createElement('div');
+    row.textContent = `${adapters.nodus.shortKey(v.fingerprint)} · ${v.statusText} · own stake ${nodusAmountText(v.selfStake)} NODUS · delegated ${nodusAmountText(v.delegated)} NODUS · commission ${(v.commissionBps / 100).toFixed(2).replace(/\.?0+$/, '')}% `;
+    row.title = v.fingerprint;
+    if (v.acceptsDelegation) {
+      const pick = document.createElement('button'); pick.type = 'button'; pick.className = 'secondary small'; pick.textContent = 'Delegate';
+      pick.setAttribute('aria-label', `Delegate to validator ${adapters.nodus.shortKey(v.fingerprint)}`);
+      pick.onclick = () => { $('delegate-validator').value = v.fingerprint; $('delegate-amount').focus(); };
+      row.append(pick);
+    }
+    return row;
+  }) : [Object.assign(document.createElement('p'), { textContent: 'No validators listed.' })]));
+  const open = view.validators.filter(v => v.acceptsDelegation);
+  $('delegate-validator').replaceChildren(...open.map(v => new Option(`${adapters.nodus.shortKey(v.fingerprint)} · ${v.statusText} · commission ${(v.commissionBps / 100).toFixed(2).replace(/\.?0+$/, '')}%`, v.fingerprint)));
+  $('delegate-review').disabled = open.length === 0;
+  $('delegate-hint').textContent = `A new delegation to a validator is at least ${minText} NODUS; adding to one you already have can be any amount. A network fee is paid on top.`;
+  $('delegation-list').replaceChildren(...(view.delegations.length ? view.delegations.map(d => {
+    const row = document.createElement('div');
+    row.textContent = `${nodusAmountText(d.amount)} NODUS with ${adapters.nodus.shortKey(d.validator)}${d.validatorInfo ? ` (${d.validatorInfo.statusText})` : ''} `;
+    row.title = d.validator;
+    if (d.canUndelegate) {
+      const amount = document.createElement('input'); amount.inputMode = 'decimal'; amount.autocomplete = 'off'; amount.spellcheck = false;
+      amount.value = formatUnits(d.amount, NODUS_ASSET.decimals); amount.setAttribute('aria-label', `Amount to undelegate from ${adapters.nodus.shortKey(d.validator)}`);
+      const undo = document.createElement('button'); undo.type = 'button'; undo.className = 'secondary small'; undo.textContent = 'Review undelegation';
+      undo.onclick = () => void startStake('undelegate', { validator: d.validator, amount: amount.value });
+      row.append(amount, ' ', undo);
+    } else row.append('(this validator is not in the list above, so it cannot be undelegated from here)');
+    return row;
+  }) : [Object.assign(document.createElement('p'), { textContent: 'You have no delegations.' })]));
+  $('undelegate-note').textContent = `Undelegating returns the NODUS to your address as a separate coin that stays locked for ${view.lockText} after the validator set next changes. Until then it keeps earning, but it cannot be sent or delegated again. Withdraw everything, or leave at least ${minText} NODUS delegated. The network fee is paid from your spendable NODUS.`;
+  const bond = nodusAmountText(rules.selfStake), maxRate = `${(Number(rules.commissionMaxBps) / 100).toFixed(2).replace(/\.?0+$/, '')}%`;
+  $('become-fields').hidden = !!view.ownValidator;
+  $('become-note').textContent = view.ownValidator
+    ? `This wallet is already a validator (${view.ownValidator.statusText}).`
+    : `Becoming a validator bonds exactly ${bond} NODUS from this wallet (plus the network fee). The bond stays locked while you are a validator, and this wallet has no way to unstake it. Commission: 0% to ${maxRate}. The bond returns to this wallet’s own address.`;
+}
+// Percent text ("5", "12.5", "0.25") -> basis points text, exact; else throws.
+function commissionBps(text) {
+  const m = /^(\d{1,2}|100)(?:\.(\d{1,2}))?$/.exec(String(text).trim());
+  if (!m) throw new Error('Enter a commission as a percentage with at most two decimals, for example 5 or 12.5.');
+  return (BigInt(m[1]) * 100n + BigInt((m[2] || '').padEnd(2, '0') || '0')).toString();
+}
+async function startStake(kind, params) {
+  if (busy || !wallet || !STAKE_KINDS.includes(kind)) return;
+  // Activity lists the selected network's records: show NODUS, where the
+  // transaction will be tracked. (selectChain closes any open review first.)
+  if ($('chain').value !== NODUS_ASSET.chain) { $('chain').value = NODUS_ASSET.chain; selectChain(); }
+  busy = true; const current = revision, client = nodusClient;
+  message('Preparing the transaction and network fee…');
+  try {
+    const locked = adapters.nodus.lockedInputs(history.filter(row => row.address === wallet.addresses.nodus));
+    const transfer = await adapters.nodus.prepareStake({ client, from: wallet.addresses.nodus, kind, locked, ...params });
+    if (current !== revision || !wallet || client !== nodusClient) { transfer.cancel(); return; }
+    const title = kind === 'delegate' ? 'Review delegation' : kind === 'undelegate' ? 'Review undelegation' : 'Review validator bond';
+    showReview(transfer, [...transfer.review, ['Review expires', new Date(transfer.expiresAt).toLocaleTimeString()]], title);
+    message('Review every detail before confirming.');
+  } catch (error) { if (current === revision) message(error.message); }
+  finally { busy = false; }
+}
+$('stake-refresh').onclick = () => void refreshStaking();
+$('delegate-form').onsubmit = event => {
+  event.preventDefault();
+  void startStake('delegate', { validator: $('delegate-validator').value, amount: $('delegate-amount').value });
+};
+$('become-review').onclick = () => {
+  if (!$('become-confirm').checked) { message('Confirm that you understand the bond is locked and cannot be unstaked from this wallet.'); $('become-confirm').focus(); return; }
+  let bps;
+  try { bps = commissionBps($('become-commission').value); } catch (error) { message(error.message); return; }
+  void startStake('stake', { commissionBps: bps });
+};
+// Opens the review dialog for a transfer-shaped object (a send, a claim from
+// src/adapters/nodus.js prepareClaim, or a staking transaction from
+// prepareStake) with its own entries.
 function showReview(transfer, entries, title) {
   pending = transfer; $('review-details').replaceChildren();
   $('review-title').textContent = title;
-  $('review-notice').textContent = `${networkFor(transfer.chain).stage || 'Mainnet'} transaction. ${transfer.kind === 'claim' ? 'Claiming' : 'Sending'} cannot be undone.`;
+  $('review-notice').textContent = `${networkFor(transfer.chain).stage || 'Mainnet'} transaction. ${ACTION_WORD[transfer.kind] || 'Sending'} cannot be undone.`;
   for (const [key, value] of entries) {
     const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = key; dd.textContent = value;
     if (key === 'Address check') dd.className = 'notice';
     $('review-details').append(dt, dd);
   }
-  $('confirm-send').textContent = transfer.kind === 'claim' ? 'Confirm & claim' : 'Confirm & send';
+  $('confirm-send').textContent = CONFIRM_TEXT[transfer.kind] || 'Confirm & send';
   $('confirm-send').disabled = true; $('review-error').textContent = ''; $('review-dialog').showModal();
   clearTimeout(confirmEnableTimer); confirmEnableTimer = setTimeout(() => { $('confirm-send').disabled = false; }, 600);
 }
@@ -667,7 +780,13 @@ $('confirm-send').onclick = async () => {
     closeReview();
     // A submitted claim withdraws the offer while its record is unresolved.
     if (transfer.kind === 'claim') void refreshClaim();
+    if (STAKE_KINDS.includes(transfer.kind)) void refreshStaking();
     if (current !== revision) return;
+    if (STAKE_KINDS.includes(transfer.kind)) {
+      $('delegate-amount').value = ''; $('become-confirm').checked = false;
+      message(`${transfer.kind === 'delegate' ? 'Delegation' : transfer.kind === 'undelegate' ? 'Undelegation' : 'Validator bond'} submitted; confirmation is pending. Transaction ID ${hash}. Its status is tracked in Activity.`);
+      return;
+    }
     $('recipient').value = ''; $('amount').value = '';
     if (transfer.kind === 'claim') { message(`Claim submitted; confirmation is pending. Claim ID ${hash}. Its status is tracked in Activity.`); return; }
     message('Broadcast submitted; confirmation is pending. ');
@@ -677,6 +796,7 @@ $('confirm-send').onclick = async () => {
     if (record) { record.status = 'unknown'; record.note = 'Broadcast outcome uncertain. Tracking the signed transaction; do not resend automatically.'; if (current === revision) trackActivity(); }
     closeReview();
     if (transfer.kind === 'claim') void refreshClaim();
+    if (STAKE_KINDS.includes(transfer.kind)) void refreshStaking();
     const uncertain = transfer.kind === 'claim'
       ? 'The outcome is tracked in Activity. An allocation is never paid out twice.'
       : transfer.chain === NODUS_ASSET.chain

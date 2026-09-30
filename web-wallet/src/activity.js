@@ -24,6 +24,10 @@ export function recordActivity(transfer, details) {
   if (transfer.chain === NODUS_CHAIN) {
     if (!validNodusPending(details)) throw new Error('Invalid pending transfer record.');
     Object.assign(record, { expiryHeight: details.expiryHeight, fromHeight: details.fromHeight, inputs: [...details.inputs] });
+    // Staking (0.1.29): which action, for this tab's Activity text only —
+    // src/activity-storage.js does not keep it, so a reloaded row reads as
+    // a plain NODUS transfer to the validator's address.
+    if (['delegate', 'undelegate', 'stake'].includes(transfer.kind)) record.kind = transfer.kind;
   }
   return record;
 }

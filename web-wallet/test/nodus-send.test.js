@@ -9,7 +9,7 @@ import { NODUS_NETWORK, nodusNetworkFor } from '../src/nodus/network.js';
 import { prepareTransfer } from '../src/wallet.js';
 import { recordActivity } from '../src/activity.js';
 import { serializeActivity, parseActivity, activityKeyFor } from '../src/activity-storage.js';
-import { expiryHeightFor, lockedInputs, resendInputs, balances, checkNodusActivity, nodusRecipient, nodusAmountUnits, NODUS_EXPIRY_AHEAD, claimStatus, prepareClaim, isClaimRow } from '../src/adapters/nodus.js';
+import { expiryHeightFor, lockedInputs, resendInputs, balances, checkNodusActivity, nodusRecipient, nodusAmountUnits, NODUS_EXPIRY_AHEAD, claimStatus, prepareClaim, isClaimRow, stakingOverview, prepareStake } from '../src/adapters/nodus.js';
 import { createMockNodusModule, FINGERPRINT, RECIPIENT, CHAIN_ID, INTENT_ID, coin } from './nodus-mock-module.js';
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -391,7 +391,7 @@ test('claim: record durable before submit, recognised as a claim after storage, 
   const past = await checkNodusActivity(restored, { client });
   assert.equal(past.status, 'expired'); assert.match(past.note, /never paid out twice/); assert.doesNotMatch(past.note, /coins are free/);
   // A refused claim is reported after its record exists.
-  // The module's code-7 wording (0.1.27): a refusal and an unreadable answer
+  // The module's code-7 wording (0.1.29): a refusal and an unreadable answer
   // share code 7, so the message names both and asserts neither.
   claim.accepted = false; claim.message = 'The Nodus node refused this claim, or its answer could not be read (code 7). If the allocation was claimed before, it is already claimed: check the balance before trying again.';
   const refused = await prepareClaim({ client, from: FINGERPRINT });
@@ -400,4 +400,188 @@ test('claim: record durable before submit, recognised as a claim after storage, 
   assert.equal(recorded, true);
   client.lock();
   await assert.rejects(prepareClaim({ client, from: FINGERPRINT }), /not connected/);
+});
+
+// ── Staking (0.1.29) ─────────────────────────────────────────────────────
+// The mock module (test/nodus-mock-module.js) has no staking operations; this
+// file adds them to the SAME module object before unlock (its factory returns
+// that object), so the client sees a staking-capable module. The stand-in
+// builder mirrors the shared C builder's rule (ascending nullifier order,
+// lock + fee, UNDELEGATE locks nothing) only so the wallet-side checks have
+// something consistent to check — the real builder is pinned by
+// nodus/tests/test_v2_stake_build.c and the parity tests.
+const VAL_A = 'a1'.repeat(64), VAL_B = 'b2'.repeat(64), VAL_C = 'c3'.repeat(64);
+const RULES = { minDelegation: '10000000000', selfStake: '1000000000000000', commissionMaxBps: '5000', undelegateLockEpochs: '12', epochLength: '720' };
+function addStaking(mock) {
+  const { module, state } = mock;
+  state.validators = [
+    { fingerprint: VAL_A, selfStake: RULES.selfStake, delegated: '0', commissionBps: 500, status: 0 },
+    { fingerprint: VAL_B, selfStake: RULES.selfStake, delegated: '0', commissionBps: 1000, status: 1 },
+    { fingerprint: VAL_C, selfStake: RULES.selfStake, delegated: '0', commissionBps: 250, status: 4 }
+  ];
+  state.delegations = [];
+  state.stakeTamper = null;
+  state.coins = [coin(1, '20000000000'), coin(2, '5000000')];
+  state.total = state.spendable = '20005000000';
+  module.stakingRules = { ...RULES };
+  module.validators = async () => ({ truncated: false, validators: state.validators });
+  module.delegations = async () => state.delegations;
+  module.stakeBuild = async request => {
+    state.lastStake = request;
+    const lock = request.op === 'undelegate' ? 0n : BigInt(request.amount), need = lock + BigInt(FEE), inputs = [];
+    let sum = 0n;
+    for (const c of [...request.coins].sort((a, b) => (a.nullifier < b.nullifier ? -1 : 1))) {
+      if (sum >= need) break;
+      inputs.push(c.nullifier); sum += BigInt(c.amount);
+    }
+    if (sum < need) throw new Error('Insufficient NODUS balance for this amount plus the network fee.');
+    const decoded = {
+      op: request.op, validator: request.op === 'stake' ? FINGERPRINT : request.validator, amount: request.amount,
+      commissionBps: request.op === 'stake' ? request.commissionBps : '0', fee: FEE, change: (sum - need).toString(),
+      expiryHeight: request.expiryHeight, chainId: state.chainId, inputs
+    };
+    return { envelope: Uint8Array.of(7, 7), intentId: INTENT_ID, decoded: { ...decoded, ...(state.stakeTamper || {}) } };
+  };
+  return mock;
+}
+async function stakingClient() {
+  const mock = addStaking(createMockNodusModule());
+  const client = createNodusClient({ factory: mock.factory, setInterval: () => 1, clearInterval: () => {} });
+  await client.unlock({ seed: new Uint8Array(32).fill(5), fingerprint: FINGERPRINT });
+  return { mock, client };
+}
+
+test('staking: a module without the staking operations still connects; every staking call is "not available"', async () => {
+  const { client } = await readyClient();
+  assert.equal(client.stakeable, false); assert.equal(client.stakingRules, undefined);
+  await assert.rejects(client.validators(), /not available/);
+  await assert.rejects(stakingOverview({ client, from: FINGERPRINT }), /not available right now/);
+  // Staking ops present but rules malformed: not stakeable either.
+  const mock = addStaking(createMockNodusModule()); mock.module.stakingRules = { ...RULES, minDelegation: '0100' };
+  const odd = createNodusClient({ factory: mock.factory, setInterval: () => 1, clearInterval: () => {} });
+  await odd.unlock({ seed: new Uint8Array(32), fingerprint: FINGERPRINT });
+  assert.equal(odd.stakeable, false);
+  client.lock(); odd.lock();
+});
+
+test('staking overview: validators and delegations parsed strictly and joined; lock period from the module rules', async () => {
+  const { mock, client } = await stakingClient();
+  assert.equal(client.stakeable, true); assert.deepEqual(client.stakingRules, RULES);
+  mock.state.delegations = [{ validator: VAL_A, amount: '20000000000', block: '12' }, { validator: 'dd'.repeat(64), amount: '10000000000', block: '9' }];
+  const view = await stakingOverview({ client, from: FINGERPRINT });
+  assert.equal(view.validators.length, 3);
+  assert.deepEqual(view.validators.map(v => [v.status, v.acceptsDelegation]), [['active', true], ['retiring', false], ['eligible', true]]);
+  assert.equal(view.delegations[0].canUndelegate, true); assert.equal(view.delegations[1].canUndelegate, false);
+  assert.equal(view.ownValidator, undefined);
+  assert.equal(view.lockText, '12 epochs (12 × 720 = 8640 blocks)');
+  // This wallet listed as a bonded validator -> ownValidator; UNSTAKED -> not.
+  mock.state.validators = [...mock.state.validators, { fingerprint: FINGERPRINT, selfStake: RULES.selfStake, delegated: '0', commissionBps: 0, status: 0 }];
+  assert.equal((await stakingOverview({ client, from: FINGERPRINT })).ownValidator.fingerprint, FINGERPRINT);
+  mock.state.validators[3] = { ...mock.state.validators[3], status: 2 };
+  assert.equal((await stakingOverview({ client, from: FINGERPRINT })).ownValidator, undefined);
+  // Malformed answers are refused, never shown.
+  for (const bad of [
+    { ...mock.state.validators[0], fingerprint: 'A1'.repeat(64) }, { ...mock.state.validators[0], status: 5 },
+    { ...mock.state.validators[0], commissionBps: 10001 }, { ...mock.state.validators[0], selfStake: '-1' }
+  ]) {
+    mock.state.validators = [bad];
+    await assert.rejects(stakingOverview({ client, from: FINGERPRINT }), /invalid validator (list|stake)/);
+  }
+  mock.state.validators = [{ fingerprint: VAL_A, selfStake: '1', delegated: '0', commissionBps: 0, status: 0 }];
+  mock.state.delegations = [{ validator: VAL_A, amount: '0', block: '1' }];
+  await assert.rejects(stakingOverview({ client, from: FINGERPRINT }), /invalid delegation list/);
+  mock.state.delegations = [{ validator: VAL_A, amount: '1', block: '1' }, { validator: VAL_A, amount: '2', block: '1' }];
+  await assert.rejects(stakingOverview({ client, from: FINGERPRINT }), /invalid delegation list/);
+  await assert.rejects(stakingOverview({ client, from: RECIPIENT }), /does not match/);
+  client.lock();
+});
+
+test('delegate: the chain rules that need the listed state are checked first; the review comes from the signed read-back', async () => {
+  const { mock, client } = await stakingClient();
+  // below the minimum for a NEW delegation, a validator that is leaving, an unknown one
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: VAL_A, amount: '99.99999999' }), /at least 100\.0 NODUS/);
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: VAL_B, amount: '100' }), /does not accept delegations now \(Leaving\)/);
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: 'ee'.repeat(64), amount: '100' }), /not in the current validator list/);
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: 'x', amount: '100' }), /Choose a validator/);
+  assert.equal(mock.state.lastStake, undefined, 'nothing was built');
+  // a top-up of an existing delegation may be any amount >= 1 raw
+  mock.state.delegations = [{ validator: VAL_C, amount: '10000000000', block: '5' }];
+  const topUp = await prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: VAL_C, amount: '0.5' });
+  assert.equal(topUp.kind, 'delegate'); assert.equal(topUp.to, VAL_C);
+  topUp.cancel();
+  // a new delegation: the request, the locked coin left out, the review
+  const locked = new Set([coin(2, '1').nullifier]);
+  const t = await prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: VAL_A, amount: '100', locked });
+  assert.deepEqual(mock.state.lastStake, { op: 'delegate', validator: VAL_A, amount: '10000000000', commissionBps: '0', expiryHeight: '1090', coins: [coin(1, '20000000000')] });
+  const review = Object.fromEntries(t.review);
+  assert.equal(review.Action, 'Delegate NODUS'); assert.equal(review.Validator, VAL_A);
+  assert.equal(review['Validator commission'], '5%'); assert.equal(review.Amount, '100.0 NODUS');
+  assert.equal(review['Change back to you'], '99.99999 NODUS'); assert.match(review.Note, /locked for 12 epochs/);
+  assert.equal(review['Valid until block'], '1090'); assert.equal(review['Chain ID'], CHAIN_ID);
+  // confirm: the record is durable before the envelope is submitted
+  let details;
+  mock.log.length = 0;
+  assert.equal(await t.confirm(async d => { details = d; assert.ok(!mock.log.includes('submit:start')); }), INTENT_ID);
+  assert.deepEqual(details, { hash: INTENT_ID, expiryHeight: '1090', fromHeight: '1001', inputs: [coin(1, '1').nullifier] });
+  assert.deepEqual([...mock.state.submitted], [7, 7]);
+  await assert.rejects(t.confirm(async () => {}), /already closed/);
+  // the record keeps its action for this tab, and holds its coins like a send
+  const record = recordActivity(t, details);
+  assert.equal(record.kind, 'delegate'); assert.equal(record.to, VAL_A);
+  assert.ok(lockedInputs([record]).has(coin(1, '1').nullifier));
+  // a read-back that differs from the request shows nothing
+  for (const tamper of [{ validator: VAL_C }, { amount: '10000000001' }, { op: 'undelegate' }, { expiryHeight: '1091' }, { chainId: 'f'.repeat(64) }, { inputs: [coin(2, '1').nullifier] }, { change: '1' }]) {
+    mock.state.stakeTamper = tamper;
+    await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: VAL_A, amount: '100' }), /does not match your request|may not use|does not add up/, JSON.stringify(tamper));
+  }
+  mock.state.stakeTamper = null;
+  // a refusal by the network is reported after the record exists
+  mock.state.accepted = false;
+  const refused = await prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: VAL_A, amount: '100' });
+  let recorded = false;
+  await assert.rejects(refused.confirm(async () => { recorded = true; }), /did not accept this transaction/);
+  assert.equal(recorded, true);
+  client.lock();
+});
+
+test('undelegate: only an existing delegation, at most its amount, never leaving dust; the funding pays the fee only', async () => {
+  const { mock, client } = await stakingClient();
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'undelegate', validator: VAL_A, amount: '1' }), /no delegation with this validator/);
+  mock.state.delegations = [{ validator: VAL_A, amount: '15000000000', block: '5' }, { validator: 'dd'.repeat(64), amount: '10000000000', block: '5' }];
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'undelegate', validator: VAL_A, amount: '150.00000001' }), /at most 150\.0 NODUS/);
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'undelegate', validator: VAL_A, amount: '100' }), /leave at least 100\.0 NODUS/);
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'undelegate', validator: 'dd'.repeat(64), amount: '100' }), /cannot be withdrawn from here/);
+  const t = await prepareStake({ client, from: FINGERPRINT, kind: 'undelegate', validator: VAL_A, amount: '150' });
+  assert.equal(mock.state.lastStake.op, 'undelegate'); assert.equal(mock.state.lastStake.amount, '15000000000');
+  const review = Object.fromEntries(t.review);
+  assert.equal(review.Action, 'Undelegate NODUS'); assert.equal(review['Amount returned to you'], '150.0 NODUS');
+  assert.match(review.Lock, /separate coin/); assert.match(review.Lock, /12 epochs \(12 × 720 = 8640 blocks\)/);
+  // lock 0: one input covers the fee alone (inputs = fee + change)
+  assert.equal(review['Change back to you'], '199.99999 NODUS');
+  const partial = await prepareStake({ client, from: FINGERPRINT, kind: 'undelegate', validator: VAL_A, amount: '50' });
+  assert.equal(partial.amount, '50.0');
+  client.lock();
+});
+
+test('stake (become a validator): exactly the self-bond, commission 0..50%, refused when already a validator', async () => {
+  const { mock, client } = await stakingClient();
+  mock.state.coins = [coin(4, '1000000100000000')];
+  mock.state.total = mock.state.spendable = '1000000100000000';
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'stake', commissionBps: '5001' }), /at most 50%/);
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'stake', commissionBps: '12.5' }), /between 0% and 50%/);
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'stake' }), /between 0% and 50%/);
+  const t = await prepareStake({ client, from: FINGERPRINT, kind: 'stake', commissionBps: '1250', amount: '5' });
+  assert.deepEqual({ ...mock.state.lastStake, coins: undefined }, { op: 'stake', validator: '', amount: RULES.selfStake, commissionBps: '1250', expiryHeight: '1090', coins: undefined });
+  const review = Object.fromEntries(t.review);
+  assert.equal(review.Action, 'Become a validator'); assert.equal(review.Bond, '10000000.0 NODUS'); assert.equal(review.Commission, '12.5%');
+  assert.match(review['Bond returns to'], /your own address/); assert.match(review.Important, /no way to unstake/);
+  assert.equal(t.to, FINGERPRINT); assert.equal(t.kind, 'stake');
+  t.cancel();
+  // already a validator (any status but unstaked): refused before any build
+  mock.state.lastStake = undefined;
+  mock.state.validators.push({ fingerprint: FINGERPRINT, selfStake: RULES.selfStake, delegated: '0', commissionBps: 0, status: 4 });
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'stake', commissionBps: '0' }), /already a validator/);
+  assert.equal(mock.state.lastStake, undefined);
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'unstake' }), /Unknown staking action/);
+  client.lock();
 });
