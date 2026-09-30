@@ -63,8 +63,8 @@ Shared DHT modules for offline messaging, groups, profiles, contact requests, an
 
 | Function | Description |
 |----------|-------------|
-| `uint64_t dht_dm_outbox_get_day_bucket(void)` | Get current day bucket (timestamp/86400) |
-| `int dht_dm_outbox_make_key(..., const uint8_t *salt)` | Generate DHT key for day bucket (salt REQUIRED, returns -1 if NULL — v0.9.196+) |
+| `uint64_t dht_dm_outbox_get_day_bucket(void)` | Get current day bucket (timestamp/86400). Defined in `codec/dm_outbox_codec.c` (NC-1, §14) |
+| `int dht_dm_outbox_make_key(..., const uint8_t *salt)` | Generate DHT key for day bucket (salt REQUIRED, returns -1 if NULL — v0.9.196+). Defined in `codec/dm_outbox_codec.c` (NC-1, §14) |
 | `int dht_dm_queue_message(..., const uint8_t *salt)` | Queue message to daily bucket (salt-aware) |
 | `int dht_dm_outbox_sync_day(..., const uint8_t *salt)` | Sync messages from specific day (salt-aware) |
 | `int dht_dm_outbox_sync_recent(..., const uint8_t *salt)` | Sync 3 days (salt-aware) |
@@ -84,10 +84,10 @@ Shared DHT modules for offline messaging, groups, profiles, contact requests, an
 | Function | Description |
 |----------|-------------|
 | `int dht_queue_message(..., const uint8_t *salt)` | Store message (redirects to daily bucket API, salt-aware) |
-| `void dht_offline_message_free(dht_offline_message_t*)` | Free single message |
-| `void dht_offline_messages_free(dht_offline_message_t*, size_t)` | Free message array |
-| `int dht_serialize_messages(...)` | Serialize messages to binary |
-| `int dht_deserialize_messages(...)` | Deserialize messages from binary |
+| `void dht_offline_message_free(dht_offline_message_t*)` | Free single message. Defined in `codec/offline_queue_codec.c` (NC-1, §14) |
+| `void dht_offline_messages_free(dht_offline_message_t*, size_t)` | Free message array. Defined in `codec/offline_queue_codec.c` (NC-1, §14) |
+| `int dht_serialize_messages(...)` | Serialize messages to binary. Defined in `codec/offline_queue_codec.c` (NC-1, §14) |
+| `int dht_deserialize_messages(...)` | Deserialize messages from binary. Defined in `codec/offline_queue_codec.c` (NC-1, §14) |
 
 **CORE-04 (v0.9.197+):** Removed `dht_retrieve_queued_messages_from_contacts`, `dht_retrieve_queued_messages_from_contacts_parallel`, and `dht_generate_outbox_key`. These produced deterministic unsalted `SHA3-512(sender:outbox:recipient)` keys leaking communication metadata, had zero callers, and were removed per the No Dead Code rule. The live salted DM retrieval path is `dht_dm_outbox_fetch_*` in `dht_dm_outbox.h`.
 
@@ -97,7 +97,7 @@ Simple per-contact ACK timestamps for delivery confirmation. When recipient sync
 
 | Function | Description |
 |----------|-------------|
-| `int dht_generate_ack_key(const char*, const char*, const uint8_t *salt, uint8_t*)` | Generate ACK DHT key (salt REQUIRED, returns -1 if NULL — v0.9.196+) |
+| `int dht_generate_ack_key(const char*, const char*, const uint8_t *salt, uint8_t*)` | Generate ACK DHT key (salt REQUIRED, returns -1 if NULL — v0.9.196+). Defined in `codec/offline_queue_codec.c` (NC-1, §14) |
 | `int dht_publish_ack(const char*, const char*, const uint8_t *salt)` | Publish ACK timestamp (salt-aware) |
 | `size_t dht_listen_ack(const char*, const char*, const uint8_t *salt, dht_ack_callback_t, void*)` | Listen for ACK updates (salt-aware) |
 | `void dht_cancel_ack_listener(dht_context_t*, size_t)` | Cancel ACK listener |
@@ -128,7 +128,7 @@ Simple per-contact ACK timestamps for delivery confirmation. When recipient sync
 
 | Function | Description |
 |----------|-------------|
-| `void dht_generate_requests_inbox_key(const char*, uint8_t*)` | Generate requests inbox key |
+| `void dht_generate_requests_inbox_key(const char*, uint8_t*)` | Generate requests inbox key. Defined in `codec/contact_request_codec.c` together with `dht_verify_contact_request`, `dht_serialize_contact_request`, `dht_deserialize_contact_request`, `dht_fingerprint_to_value_id` (NC-1, §14) |
 | `int dht_send_contact_request(..., const uint8_t *dht_salt)` | Send contact request (v2 with salt) |
 | `int dht_fetch_contact_requests(dht_context_t*, const char*, dht_contact_request_t**, size_t*)` | Fetch pending requests |
 | `int dht_verify_contact_request(const dht_contact_request_t*)` | Verify request signature |
@@ -183,6 +183,7 @@ Files removed:
 | `void dht_contactlist_cleanup(void)` | Cleanup contact list subsystem |
 | `int dht_contactlist_publish(const char*, const char**, size_t, const uint8_t**, ...)` | Publish encrypted contact list (v2 with salts) |
 | `int dht_contactlist_fetch(const char*, char***, size_t*, uint8_t***, ...)` | Fetch and decrypt contact list (v2 returns salts). v0.11.12+: blobs past the embedded 7-day expiry are accepted (logged only) — DHT storage is permanent, expiry must not block seed restore |
+| `char* dht_contactlist_serialize_to_json(...)` / `int dht_contactlist_deserialize_from_json(...)` | **NC-1:** the contact-list JSON codec (formerly `static serialize_to_json` / `deserialize_from_json` in this file), now in `codec/contactlist_codec.{c,h}` — see §14 |
 | `void dht_contactlist_free_contacts(char**, size_t)` | Free contacts array |
 | `void dht_contactlist_free_salts(uint8_t**, size_t)` | Free salts array from fetch |
 | `void dht_contactlist_free(dht_contactlist_t*)` | Free contact list structure |
@@ -418,7 +419,7 @@ since KEM Faz 1, ML-KEM-1024 (v2, all-or-nothing gate) — Dilithium5 signed.
 
 | Function | Description |
 |----------|-------------|
-| `int salt_agreement_make_key(const char *fp_a, const char *fp_b, char *key_out, size_t key_out_size)` | Compute deterministic DHT key for contact pair. `SHA3-512(min(fp)+":"+max(fp)+":salt_agreement")`. Output: 128-char hex. |
+| `int salt_agreement_make_key(const char *fp_a, const char *fp_b, char *key_out, size_t key_out_size)` | Compute deterministic DHT key for contact pair. `SHA3-512(min(fp)+":"+max(fp)+":salt_agreement")`. Output: 128-char hex. Defined in `codec/salt_agreement_codec.c`, with the four packet-parse helpers `salt_agreement_fp_hex_to_bin` / `_packet_data_size_for_version` / `_packet_decrypt_salt` / `_packet_verify_signature` (NC-1, §14) |
 | `int salt_agreement_publish(const char *my_fp, const char *contact_fp, const uint8_t salt[32], const uint8_t *my_kyber_pub, const uint8_t *contact_kyber_pub, const uint8_t *my_dilithium_priv)` | Publish salt dual-encrypted for both parties (v1 only). **Signature UNCHANGED (KEM Faz 1)** — thin wrapper: `salt_agreement_publish_internal(..., NULL, NULL, ...)`. Returns 0 on success. |
 | `int salt_agreement_publish_v2(const char *my_fp, const char *contact_fp, const uint8_t salt[32], const uint8_t *my_kyber_pub, const uint8_t *contact_kyber_pub, const uint8_t *my_mlkem_pub, const uint8_t *contact_mlkem_pub, const uint8_t *my_dilithium_priv)` | **NEW (KEM Faz 1).** Publishes packet v2 (per-entry `alg` byte, ML-KEM-1024 for both parties) ONLY when BOTH `my_mlkem_pub` and `contact_mlkem_pub` are non-NULL; otherwise falls back to the unchanged v1 packet |
 | `int salt_agreement_fetch(const char *my_fp, const char *contact_fp, const uint8_t *my_kyber_priv, const uint8_t *my_sign_pub, const uint8_t *contact_sign_pub, uint8_t salt_out[32])` | Fetch authenticated salt from DHT. **Signature UNCHANGED (KEM Faz 1)** — thin wrapper: `salt_agreement_fetch_internal(..., NULL, ...)`; can verify/read v2 values but not decrypt an alg=ML-KEM entry without the key. Returns 0 on success, -1 on error, -2 if not found. |
@@ -426,3 +427,58 @@ since KEM Faz 1, ML-KEM-1024 (v2, all-or-nothing gate) — Dilithium5 signed.
 | `int salt_agreement_verify(const char *my_fp, const char *contact_fp, const uint8_t *my_kyber_pub, const uint8_t *my_kyber_priv, const uint8_t *contact_kyber_pub, const uint8_t *my_sign_pub, const uint8_t *my_dilithium_priv, const uint8_t *contact_sign_pub)` | Verify and reconcile salt for a contact. **UNCHANGED (not wired to v2 in this package — its two callers, `dna_engine_contacts.c`/`dna_engine_listeners.c`, are outside package M1's whitelist)**. Compares local vs DHT, applies tiebreaker if diverged, re-publishes winner. Returns 0 on success, 1 if pre-salt contact. |
 
 **Constants (KEM Faz 1):** `SALT_AGREEMENT_VERSION_V2 = 2`, `SALT_AGREEMENT_ALG_KYBER_R3 = 2`, `SALT_AGREEMENT_ALG_MLKEM1024 = 3`.
+
+---
+
+## 14. Codec units (`codec/`, NC-1)
+
+**Directory:** `codec/` (messenger root). Pure encode/decode/derive functions
+moved **verbatim** out of the DHT I/O files (Web Connect design rev 5 §1.3,
+operator decision 2026-09-30 Q2 = a) so the native library and the web thin
+core compile the same source. No network I/O, no database. Behaviour and wire
+bytes are unchanged (before/after vectors: `tests/test_codec_extract_vectors.c`).
+The five units below are compiled into `dht_lib` (the library the functions
+lived in before), added from `messenger/CMakeLists.txt` via `target_sources`.
+
+Functions that were already public keep their name and their declaration in
+the original header. Former `static` helpers became external and got a module
+prefix (bodies unchanged) — marked **RENAMED** below.
+
+| Function | Defined in | Declared in | Moved from |
+|----------|-----------|-------------|------------|
+| `void dht_offline_message_free(dht_offline_message_t*)` | `codec/offline_queue_codec.c` | `dht/shared/dht_offline_queue.h` | `dht/shared/dht_offline_queue.c` |
+| `void dht_offline_messages_free(dht_offline_message_t*, size_t)` | `codec/offline_queue_codec.c` | `dht/shared/dht_offline_queue.h` | `dht/shared/dht_offline_queue.c` |
+| `int dht_serialize_messages(const dht_offline_message_t*, size_t, uint8_t**, size_t*)` | `codec/offline_queue_codec.c` | `dht/shared/dht_offline_queue.h` | `dht/shared/dht_offline_queue.c` |
+| `int dht_deserialize_messages(const uint8_t*, size_t, dht_offline_message_t**, size_t*)` | `codec/offline_queue_codec.c` | `dht/shared/dht_offline_queue.h` | `dht/shared/dht_offline_queue.c` |
+| `static int make_ack_base_key(const char*, const char*, const uint8_t*, char*, size_t)` | `codec/offline_queue_codec.c` (still `static`) | — | `dht/shared/dht_offline_queue.c` |
+| `int dht_generate_ack_key(const char*, const char*, const uint8_t *salt, uint8_t*)` | `codec/offline_queue_codec.c` | `dht/shared/dht_offline_queue.h` | `dht/shared/dht_offline_queue.c` |
+| `uint64_t dht_dm_outbox_get_day_bucket(void)` | `codec/dm_outbox_codec.c` | `dht/shared/dht_dm_outbox.h` | `dht/shared/dht_dm_outbox.c` |
+| `int dht_dm_outbox_make_key(const char*, const char*, uint64_t, const uint8_t *salt, char*, size_t)` | `codec/dm_outbox_codec.c` | `dht/shared/dht_dm_outbox.h` | `dht/shared/dht_dm_outbox.c` |
+| `int salt_agreement_make_key(const char*, const char*, char*, size_t)` | `codec/salt_agreement_codec.c` | `dht/shared/dht_salt_agreement.h` | `dht/shared/dht_salt_agreement.c` |
+| `int salt_agreement_fp_hex_to_bin(const char *hex, uint8_t bin[FP_BIN_SIZE])` | `codec/salt_agreement_codec.c` | `codec/salt_agreement_codec.h` | **RENAMED** from `static fp_hex_to_bin`, `dht_salt_agreement.c` |
+| `size_t salt_agreement_packet_data_size_for_version(uint16_t)` | `codec/salt_agreement_codec.c` | `codec/salt_agreement_codec.h` | **RENAMED** from `static packet_data_size_for_version` |
+| `int salt_agreement_packet_decrypt_salt(const uint8_t*, size_t, const uint8_t[FP_BIN_SIZE], const uint8_t *kyber_priv, const uint8_t *mlkem_priv, uint8_t salt_out[32])` | `codec/salt_agreement_codec.c` | `codec/salt_agreement_codec.h` | **RENAMED** from `static packet_decrypt_salt` |
+| `int salt_agreement_packet_verify_signature(const uint8_t*, size_t, size_t data_size, const uint8_t *pub_a, const uint8_t *pub_b)` | `codec/salt_agreement_codec.c` | `codec/salt_agreement_codec.h` | **RENAMED** from `static packet_verify_signature` |
+| `char* dht_contactlist_serialize_to_json(const char *identity, const char **contacts, const uint8_t **salts, size_t count, uint64_t timestamp)` | `codec/contactlist_codec.c` | `codec/contactlist_codec.h` | **RENAMED** from `static serialize_to_json`, `dht/client/dht_contactlist.c` |
+| `int dht_contactlist_deserialize_from_json(const char*, char***, size_t*, uint8_t***, uint64_t*)` | `codec/contactlist_codec.c` | `codec/contactlist_codec.h` | **RENAMED** from `static deserialize_from_json` |
+| `static int hex_to_bytes(const char*, uint8_t*, size_t)` | `codec/contactlist_codec.c` (still `static`) | — | `dht/client/dht_contactlist.c` |
+| `void dht_generate_requests_inbox_key(const char*, uint8_t*)` | `codec/contact_request_codec.c` | `dht/shared/dht_contact_request.h` | `dht/shared/dht_contact_request.c` |
+| `uint64_t dht_fingerprint_to_value_id(const char*)` | `codec/contact_request_codec.c` | `dht/shared/dht_contact_request.h` | `dht/shared/dht_contact_request.c` |
+| `int dht_serialize_contact_request(const dht_contact_request_t*, uint8_t**, size_t*)` | `codec/contact_request_codec.c` | `dht/shared/dht_contact_request.h` | `dht/shared/dht_contact_request.c` |
+| `int dht_deserialize_contact_request(const uint8_t*, size_t, dht_contact_request_t*)` | `codec/contact_request_codec.c` | `dht/shared/dht_contact_request.h` | `dht/shared/dht_contact_request.c` |
+| `int dht_verify_contact_request(const dht_contact_request_t*)` | `codec/contact_request_codec.c` | `dht/shared/dht_contact_request.h` | `dht/shared/dht_contact_request.c` |
+
+**Macros moved:** `FP_BIN_SIZE`, `PACKET_VERSION_SIZE`, `PACKET_ENTRY_SIZE[_V2]`,
+`PACKET_DATA_SIZE[_V2]`, `PACKET_TOTAL_SIZE[_V2]` → `codec/salt_agreement_codec.h`;
+`DHT_OFFLINE_MAX_MESSAGES_PER_OUTBOX` (1000) → `codec/offline_queue_codec.c`.
+
+**Two value_id derivations — deliberately separate (design §6.4 F6):**
+`dht_fingerprint_to_value_id` = first 16 hex chars of the fingerprint read
+big-endian (contact requests); `nodus_identity_value_id` = first 8 bytes of
+node_id little-endian (every other record). Not merged into one helper.
+
+**NOT moved (still inline in an I/O function, no separate function exists):**
+the salt-agreement packet BUILD (`salt_agreement_publish_internal`), the
+contact-list `CLST` blob build/parse (`dht_contactlist_publish` /
+`dht_contactlist_fetch`), and the 8-byte big-endian ACK value encode/decode
+(`dht_publish_ack` / `ack_listen_callback`).

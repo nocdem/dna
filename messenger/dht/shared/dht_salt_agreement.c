@@ -11,6 +11,7 @@
  */
 
 #include "dht_salt_agreement.h"
+#include "codec/salt_agreement_codec.h"
 #include "../messenger/gek.h"
 #include "nodus_ops.h"
 #include "../../database/contacts_db.h"
@@ -30,195 +31,10 @@
 
 #define LOG_TAG "SALT_AGREE"
 
-/* Fingerprint binary size (SHA3-512 = 64 bytes) */
-#define FP_BIN_SIZE 64
-
-/* Packet layout sizes (v1) */
-#define PACKET_VERSION_SIZE   2
-#define PACKET_ENTRY_SIZE     (FP_BIN_SIZE + GEK_ENC_TOTAL_SIZE)  /* 64 + 1628 = 1692 */
-#define PACKET_DATA_SIZE      (PACKET_VERSION_SIZE + 2 * PACKET_ENTRY_SIZE)  /* 2 + 3384 = 3386 */
-#define PACKET_TOTAL_SIZE     (PACKET_DATA_SIZE + QGP_DSA87_SIGNATURE_BYTES)  /* 3386 + 4627 = 8013 */
-
-/* Packet layout sizes (v2, KEM Faz 1, R9) — each entry gains a 1-byte alg
- * field between the fingerprint and the GEK_ENC blob. */
-#define PACKET_ENTRY_SIZE_V2  (FP_BIN_SIZE + 1 + GEK_ENC_TOTAL_SIZE)  /* 64 + 1 + 1628 = 1693 */
-#define PACKET_DATA_SIZE_V2   (PACKET_VERSION_SIZE + 2 * PACKET_ENTRY_SIZE_V2)  /* 2 + 3386 = 3388 */
-#define PACKET_TOTAL_SIZE_V2  (PACKET_DATA_SIZE_V2 + QGP_DSA87_SIGNATURE_BYTES)  /* 3388 + 4627 = 8015 */
-
-/* ============================================================================
- * HELPERS
- * ============================================================================ */
-
-/** Convert 128-char hex fingerprint to 64-byte binary */
-static int fp_hex_to_bin(const char *hex, uint8_t bin[FP_BIN_SIZE]) {
-    if (!hex || strlen(hex) < 128) return -1;
-    for (int i = 0; i < FP_BIN_SIZE; i++) {
-        unsigned int byte;
-        if (sscanf(hex + i * 2, "%02x", &byte) != 1) return -1;
-        bin[i] = (uint8_t)byte;
-    }
-    return 0;
-}
-
-/**
- * Data-portion size for a packet's version field (KEM Faz 1, R9: v1 or v2).
- * Returns 0 for an unsupported version.
- */
-static size_t packet_data_size_for_version(uint16_t version) {
-    if (version == SALT_AGREEMENT_VERSION) return PACKET_DATA_SIZE;
-    if (version == SALT_AGREEMENT_VERSION_V2) return PACKET_DATA_SIZE_V2;
-    return 0;
-}
-
-/**
- * Try to decrypt salt from a parsed packet for the given fingerprint.
- * Accepts v1 (SALT_AGREEMENT_VERSION) and v2 (SALT_AGREEMENT_VERSION_V2,
- * KEM Faz 1, R9) — v2 entries carry an alg byte selecting the KEM used
- * (gek_decrypt_alg): SALT_AGREEMENT_ALG_MLKEM1024 needs my_mlkem_priv,
- * SALT_AGREEMENT_ALG_KYBER_R3 uses my_kyber_priv (same as v1).
- * Returns 0 on success, -1 if fingerprint not found, decryption fails, or
- * the entry's alg needs a key that was not provided (my_mlkem_priv NULL).
- */
-static int packet_decrypt_salt(
-    const uint8_t *data,
-    size_t data_len,
-    const uint8_t my_fp_bin[FP_BIN_SIZE],
-    const uint8_t *my_kyber_priv,
-    const uint8_t *my_mlkem_priv,
-    uint8_t salt_out[SALT_AGREEMENT_SIZE]
-) {
-    if (data_len < PACKET_VERSION_SIZE) return -1;
-
-    uint16_t version;
-    memcpy(&version, data, 2);
-    version = ntohs(version);
-
-    if (version == SALT_AGREEMENT_VERSION) {
-        if (data_len < PACKET_DATA_SIZE) return -1;
-
-        const uint8_t *my_encrypted = NULL;
-        size_t entry1_offset = PACKET_VERSION_SIZE;
-        size_t entry2_offset = PACKET_VERSION_SIZE + PACKET_ENTRY_SIZE;
-
-        if (memcmp(data + entry1_offset, my_fp_bin, FP_BIN_SIZE) == 0) {
-            my_encrypted = data + entry1_offset + FP_BIN_SIZE;
-        } else if (memcmp(data + entry2_offset, my_fp_bin, FP_BIN_SIZE) == 0) {
-            my_encrypted = data + entry2_offset + FP_BIN_SIZE;
-        } else {
-            return -1;  /* My fingerprint not in this packet */
-        }
-
-        return gek_decrypt_alg(SALT_AGREEMENT_ALG_KYBER_R3, my_encrypted,
-                               GEK_ENC_TOTAL_SIZE, my_kyber_priv, salt_out);
-    }
-
-    if (version == SALT_AGREEMENT_VERSION_V2) {
-        if (data_len < PACKET_DATA_SIZE_V2) return -1;
-
-        const uint8_t *my_entry = NULL;
-        size_t entry1_offset = PACKET_VERSION_SIZE;
-        size_t entry2_offset = PACKET_VERSION_SIZE + PACKET_ENTRY_SIZE_V2;
-
-        if (memcmp(data + entry1_offset, my_fp_bin, FP_BIN_SIZE) == 0) {
-            my_entry = data + entry1_offset;
-        } else if (memcmp(data + entry2_offset, my_fp_bin, FP_BIN_SIZE) == 0) {
-            my_entry = data + entry2_offset;
-        } else {
-            return -1;  /* My fingerprint not in this packet */
-        }
-
-        uint8_t alg = my_entry[FP_BIN_SIZE];
-        const uint8_t *encrypted = my_entry + FP_BIN_SIZE + 1;
-
-        if (alg == SALT_AGREEMENT_ALG_MLKEM1024) {
-            if (!my_mlkem_priv) return -1;
-            return gek_decrypt_alg(SALT_AGREEMENT_ALG_MLKEM1024, encrypted,
-                                   GEK_ENC_TOTAL_SIZE, my_mlkem_priv, salt_out);
-        }
-        if (alg == SALT_AGREEMENT_ALG_KYBER_R3) {
-            return gek_decrypt_alg(SALT_AGREEMENT_ALG_KYBER_R3, encrypted,
-                                   GEK_ENC_TOTAL_SIZE, my_kyber_priv, salt_out);
-        }
-        return -1;  /* unknown alg */
-    }
-
-    return -1;  /* unsupported version */
-}
-
-/**
- * Verify packet signature against one of the two parties' Dilithium pubkeys.
- * data_size is the version-specific data portion (PACKET_DATA_SIZE or
- * PACKET_DATA_SIZE_V2, KEM Faz 1, R9) — the signature covers the data
- * portion exactly as it always has, only its length changed for v2.
- * Returns 0 if signature is valid for either party, -1 if invalid.
- */
-static int packet_verify_signature(
-    const uint8_t *data,
-    size_t data_len,
-    size_t data_size,
-    const uint8_t *sign_pub_a,
-    const uint8_t *sign_pub_b
-) {
-    if (data_size == 0 || data_len < data_size + 1) return -1;
-
-    const uint8_t *sig = data + data_size;
-    size_t sig_len = data_len - data_size;
-
-    /* Try party A's pubkey */
-    if (sign_pub_a &&
-        qgp_dsa87_verify(sig, sig_len, data, data_size, sign_pub_a) == 0) {
-        return 0;
-    }
-
-    /* Try party B's pubkey */
-    if (sign_pub_b &&
-        qgp_dsa87_verify(sig, sig_len, data, data_size, sign_pub_b) == 0) {
-        return 0;
-    }
-
-    return -1;  /* Neither party signed this */
-}
-
-/* ============================================================================
- * KEY DERIVATION
- * ============================================================================ */
-
-int salt_agreement_make_key(
-    const char *fp_a,
-    const char *fp_b,
-    char *key_out,
-    size_t key_out_size
-) {
-    if (!fp_a || !fp_b || !key_out || key_out_size < 300) {
-        return -1;
-    }
-    if (strlen(fp_a) < 128 || strlen(fp_b) < 128) {
-        return -1;
-    }
-
-    /* Sort fingerprints lexicographically */
-    const char *min_fp = (strcmp(fp_a, fp_b) <= 0) ? fp_a : fp_b;
-    const char *max_fp = (min_fp == fp_a) ? fp_b : fp_a;
-
-    /* Build input: min_fp + ":" + max_fp + ":salt_agreement" */
-    char input[400];
-    int len = snprintf(input, sizeof(input), "%.128s:%.128s:salt_agreement", min_fp, max_fp);
-    if (len <= 0 || (size_t)len >= sizeof(input)) {
-        return -1;
-    }
-
-    /* SHA3-512 hash */
-    uint8_t hash[64];
-    qgp_sha3_512((const uint8_t *)input, (size_t)len, hash);
-
-    /* Convert to hex string */
-    for (int i = 0; i < 64; i++) {
-        snprintf(key_out + i * 2, 3, "%02x", hash[i]);
-    }
-    key_out[128] = '\0';
-
-    return 0;
-}
+/* NC-1: the packet layout macros (FP_BIN_SIZE, PACKET_*), the four packet
+ * helpers (now salt_agreement_fp_hex_to_bin / _packet_data_size_for_version /
+ * _packet_decrypt_salt / _packet_verify_signature) and salt_agreement_make_key
+ * moved verbatim to codec/salt_agreement_codec.{h,c}. */
 
 /* ============================================================================
  * PUBLISH
@@ -287,7 +103,7 @@ static int salt_agreement_publish_internal(
 
     /* Entry 1: lower fingerprint + [alg byte, v2 only] + encrypted salt */
     uint8_t fp_bin[FP_BIN_SIZE];
-    if (fp_hex_to_bin(lower_fp, fp_bin) != 0) {
+    if (salt_agreement_fp_hex_to_bin(lower_fp, fp_bin) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid lower fingerprint");
         return -1;
     }
@@ -310,7 +126,7 @@ static int salt_agreement_publish_internal(
     offset += GEK_ENC_TOTAL_SIZE;
 
     /* Entry 2: higher fingerprint + [alg byte, v2 only] + encrypted salt */
-    if (fp_hex_to_bin(higher_fp, fp_bin) != 0) {
+    if (salt_agreement_fp_hex_to_bin(higher_fp, fp_bin) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid higher fingerprint");
         return -1;
     }
@@ -431,7 +247,7 @@ static int salt_agreement_fetch_internal(
 
     /* Convert my fingerprint to binary for packet parsing */
     uint8_t my_fp_bin[FP_BIN_SIZE];
-    if (fp_hex_to_bin(my_fp, my_fp_bin) != 0) {
+    if (salt_agreement_fp_hex_to_bin(my_fp, my_fp_bin) != 0) {
         goto cleanup_not_found;
     }
 
@@ -447,11 +263,11 @@ static int salt_agreement_fetch_internal(
         uint16_t pkt_version;
         memcpy(&pkt_version, values[i], 2);
         pkt_version = ntohs(pkt_version);
-        size_t data_size = packet_data_size_for_version(pkt_version);
+        size_t data_size = salt_agreement_packet_data_size_for_version(pkt_version);
         if (data_size == 0 || lens[i] < data_size) continue;
 
         /* Verify signature against both parties' pubkeys */
-        if (packet_verify_signature(values[i], lens[i], data_size,
+        if (salt_agreement_packet_verify_signature(values[i], lens[i], data_size,
                                      my_sign_pub, contact_sign_pub) != 0) {
             QGP_LOG_WARN(LOG_TAG, "Discarding value %zu: invalid signature (third party)", i);
             continue;
@@ -459,7 +275,7 @@ static int salt_agreement_fetch_internal(
 
         /* Decrypt salt from authenticated packet */
         uint8_t salt[SALT_AGREEMENT_SIZE];
-        if (packet_decrypt_salt(values[i], lens[i], my_fp_bin, my_kyber_priv,
+        if (salt_agreement_packet_decrypt_salt(values[i], lens[i], my_fp_bin, my_kyber_priv,
                                 my_mlkem_priv, salt) == 0) {
             memcpy(valid_salts[valid_count], salt, SALT_AGREEMENT_SIZE);
             valid_count++;

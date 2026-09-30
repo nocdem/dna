@@ -65,7 +65,15 @@ Core messenger functionality including identity management, key generation, mess
 | `void messenger_free_messages(message_info_t*, int)` | Free message array |
 | `int messenger_search_by_date(...)` | Search messages by date range |
 
-**Internal (KEM Faz 1):** `messenger_encrypt_multi_recipient()` (`static`,
+**Codec unit (NC-1, 2026-09-30):** `int messenger_encrypt_multi_recipient(const char *plaintext, size_t plaintext_len, uint8_t **recipient_enc_pubkeys, size_t recipient_count, qgp_key_t *sender_sign_key, uint64_t timestamp, uint8_t alg, uint8_t **ciphertext_out, size_t *ciphertext_len_out)`
+— moved verbatim from `messages.c` (where it was `static`) to
+`codec/seal_multi_codec.c`, declared in `codec/seal_multi_codec.h`, compiled
+into libdna; only `static` was dropped. Its two private structs
+(`messenger_enc_header_t`, `messenger_recipient_entry_t`) and the Windows
+`htobe64` macro moved with it. Wire bytes unchanged (Web Connect design rev 5
+§1.3; vectors `tests/test_codec_extract_vectors.c`).
+
+**Internal (KEM Faz 1):** `messenger_encrypt_multi_recipient()` (then `static`,
 `messages.c`) gained a `uint8_t alg` parameter (`QGP_KEY_TYPE_KEM1024` or
 `QGP_KEY_TYPE_MLKEM1024`) — writes it into the Seal header's `enc_key_type`
 byte and selects `qgp_kem1024_encapsulate` vs `qgp_mlkem1024_encapsulate` per
@@ -120,7 +128,10 @@ before calling it.
 
 ### 3.8 Group Encryption Key (GEK)
 
-**File:** `messenger/gek.h`, `messenger/gek.c`
+**File:** `messenger/gek.h`, `messenger/gek.c`; `gek_encrypt`, `gek_decrypt`,
+`gek_encrypt_alg`, `gek_decrypt_alg` are defined in `codec/gek_wrap_codec.c`
+(NC-1, 2026-09-30: moved verbatim out of `gek.c`, declarations unchanged in
+`gek.h`, compiled into libdna).
 
 GEK provides AES-256 symmetric encryption for group messaging (faster than per-recipient Kyber).
 GEKs are encrypted at rest using Kyber1024 KEM + AES-256-GCM.

@@ -97,6 +97,22 @@ set(NODUS_STANDALONE OFF CACHE BOOL "Nodus built within messenger tree" FORCE)
 add_subdirectory(${CMAKE_SOURCE_DIR}/../nodus ${CMAKE_BINARY_DIR}/nodus)
 
 add_subdirectory(dht)               # DHT integration (uses Nodus v5 compat shim)
+
+# NC-1 codec units (Web Connect design rev 5 §1.3): pure encode/decode/derive
+# functions moved verbatim out of the dht/ I/O files into codec/, so the
+# native library and the web thin core compile the same source. They join
+# dht_lib — the library their functions lived in before the move — so the
+# static link order used by the Windows/Android builds (dna STATIC) is
+# unchanged. Absolute paths: CMP0076 is OLD at cmake_minimum_required 3.10.
+# (Their natural home is DHT_COMMON_SOURCES in dht/CMakeLists.txt.)
+target_sources(dht_lib PRIVATE
+    ${CMAKE_SOURCE_DIR}/codec/offline_queue_codec.c     # offline-message blob + ACK key
+    ${CMAKE_SOURCE_DIR}/codec/dm_outbox_codec.c         # DM outbox day-bucket key
+    ${CMAKE_SOURCE_DIR}/codec/salt_agreement_codec.c    # salt-agreement key + packet parse helpers
+    ${CMAKE_SOURCE_DIR}/codec/contactlist_codec.c       # contact-list JSON codec
+    ${CMAKE_SOURCE_DIR}/codec/contact_request_codec.c   # contact-request codec
+)
+
 add_subdirectory(transport)         # Transport layer (DHT-only messaging)
 
 # =============================================================================
@@ -299,6 +315,9 @@ if(BUILD_SHARED_LIB)
         messenger/keygen.c
         messenger/messages.c
         messenger/gek.c             # Group Encryption Key (GEK system)
+        # NC-1 codec units moved verbatim out of messages.c / gek.c
+        codec/seal_multi_codec.c    # 2-recipient Seal encoder (DM outbox)
+        codec/gek_wrap_codec.c      # KEM-wrap of a 32-byte secret (GEK, salts)
         messenger/groups.c          # Group management (GEK system)
         messenger/group_database.c  # Group database (separate from messages.db)
         # Messenger facade (delegates to messenger/ modules)
@@ -474,6 +493,9 @@ else()
         messenger/keygen.c
         messenger/messages.c
         messenger/gek.c             # Group Encryption Key (GEK system)
+        # NC-1 codec units moved verbatim out of messages.c / gek.c
+        codec/seal_multi_codec.c    # 2-recipient Seal encoder (DM outbox)
+        codec/gek_wrap_codec.c      # KEM-wrap of a 32-byte secret (GEK, salts)
         messenger/groups.c          # Group management (GEK system)
         messenger/group_database.c  # Group database (separate from messages.db)
         # Messenger facade (delegates to messenger/ modules)

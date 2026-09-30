@@ -288,6 +288,16 @@ target_link_libraries(test_salt_agreement ${TEST_LIBS})
 add_test(NAME test_salt_agreement COMMAND test_salt_agreement)
 
 # =============================================================================
+# Test: NC-1 codec extraction vectors (Web Connect design rev 5 §1.3)
+# Prints fixed-input vectors for every codec moved into messenger/codec/;
+# built once against the pre-move and once against the post-move libdna,
+# the two outputs must be byte-identical. Also checks round-trips.
+# =============================================================================
+add_executable(test_codec_extract_vectors test_codec_extract_vectors.c)
+target_link_libraries(test_codec_extract_vectors ${TEST_LIBS})
+add_test(NAME test_codec_extract_vectors COMMAND test_codec_extract_vectors)
+
+# =============================================================================
 # Test: Group Channel (Phase 2) — UUID mapping, crypto, connector lifecycle
 # =============================================================================
 add_executable(test_group_channel test_group_channel.c)
