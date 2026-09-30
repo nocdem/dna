@@ -208,7 +208,7 @@ try {
   assert.equal(await page.locator('#rpc-endpoint').inputValue(), '');
   await page.selectOption('#rpc-choice', '0');
   assert.equal(await page.locator('#rpc-endpoint').isVisible(), false);
-  await page.locator('#refresh').click(); await page.waitForFunction(() => document.querySelector('#balances').textContent.includes('10.0'));
+  await page.locator('#refresh').click(); await page.waitForFunction(() => document.querySelector('#balances').textContent.includes('10 ETH')); // 0.1.28 display form (was '10.0')
   await page.waitForFunction(() => { const strong = document.querySelector('.asset-group[data-symbol="CPUNK"] .holding-value strong'); return strong && strong.textContent.includes('CPUNK'); });
   assert.equal(await page.locator('.asset-group[data-symbol="CPUNK"] .asset-value small').innerText(), '—');
   await page.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await page.locator('#amount').fill('0.01');

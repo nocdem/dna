@@ -200,3 +200,15 @@ Decision `2026-09-25-web-wallet-nodus-send-transport.md` addendum 2026-09-29 "Yo
 |------|-------------|
 | `NODUS_PIN_CORE_*`, `NODUS_PIN_SYS_METER_*` macros | **NEW (GENERATED — never edit).** CORE domain/kind/abi/ruleset_version/ruleset_hash and the SYSTEM meter policy fields, op list, weights and digest, read from `nodus_runtime_builtin_table()`. Regenerate: `cmake --build <nodus build> --target regen_ruleset_pins`. |
 | `int nodus_ruleset_pins_render(char **out, size_t *out_len)` (`nodus/tools/gen_ruleset_pins.c`) | **NEW (tool).** Renders the header text (heap, caller frees); -1 if the runtime selfcheck fails or the SYSTEM policy does not match its committed digest. `test_ruleset_pins` byte-compares it with the checked-in file. |
+| `NODUS_PIN_SYS_DOMAIN_ID`, `NODUS_PIN_SYS_RUNTIME_KIND`, `NODUS_PIN_SYS_RUNTIME_ABI`, `NODUS_PIN_SYS_RULESET_VERSION`, `NODUS_PIN_SYS_RULESET_HASH_INIT` | **NEW (GENERATED, 2026-09-30).** The SYSTEM ruleset identity — the staking envelopes' SYSTEM leg signs over it (`shared/dnac/env_preflight.c:77`). Same generator, same byte-compare test (`test_ruleset_pins` R4). |
+
+## 11. Web wallet staking — the shared STAKE / DELEGATE / UNDELEGATE builder (`nodus/src/client/nodus_v2_stake.h`, `nodus/src/client/nodus_v2_stake.c`)
+
+I/O-free, like the (c2) SPEND builder: nodus-cli `v2-envelope stake|delegate|undelegate` and the web wallet's `send.wasm` build every staking envelope with it.
+
+| Item | Description |
+|------|-------------|
+| `int nodus_v2_stake_ruleset_from_pins(nodus_v2_stake_ruleset_t *out)` | **NEW.** SYSTEM + CORE (version, hash) from the generated pins header; refuses if the SYSTEM meter policy digest does not match. |
+| `int nodus_v2_stake_build(const nodus_v2_stake_req_t *req, nodus_v2_stake_built_t *out, nodus_v2_stake_err_t *err)` | **NEW.** Two-leg envelope: SYSTEM record leg (runtime_op 1 STAKE / 2 DELEGATE / 4 UNDELEGATE) + CORE SYSFUND funding leg; kind-1 single signer; fee = max(floor, 400000 × gas_price); native unlocked coins in ascending nullifier order until lock + fee (lock 0 for UNDELEGATE); one deterministic change output. Signs, then reads the envelope back and refuses on any difference. Returns `NODUS_V2_SPEND_OK` or a refusal (−40..−43 bond / commission / amount / op, others shared with the spend builder). |
+| `int nodus_v2_stake_decode(const uint8_t *env, size_t env_len, nodus_v2_stake_decoded_t *out)` | **NEW.** Strict decode of a staking envelope built by this module (shape, ops, declarations, input order, one signer = record identity). |
+| `void nodus_v2_stake_built_free(nodus_v2_stake_built_t *b)` | **NEW.** NULL-safe. |

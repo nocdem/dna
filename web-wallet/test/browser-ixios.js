@@ -171,11 +171,11 @@ try {
   assert.equal(await page.locator('.asset-group[data-symbol="ETH"] .asset-name small').innerText(), 'Ethereum · Ethereum', 'shared subtitle format unchanged for other coins');
   // Shown like the CPUNK row: the balance, and no USD value.
   const cpunk = page.locator('.asset-group[data-symbol="CPUNK"]');
-  assert.equal(await row.locator('.asset-value strong').innerText(), '1234.567');
+  assert.equal(await row.locator('.asset-value strong').innerText(), '1,234.567'); // 0.1.28 display form
   assert.equal(await row.locator('.asset-value small').innerText(), '—');
   assert.equal(await row.locator('.asset-value small').innerText(), await cpunk.locator('.asset-value small').innerText());
   await row.locator('summary').click();
-  assert.equal(await row.locator('.holding-value strong').innerText(), '1234.567 IXIOS');
+  assert.equal(await row.locator('.holding-value strong').innerText(), '1,234.567 IXIOS');
   assert.equal(await row.locator('.holding-value small').innerText(), '—');
   assert.deepEqual(await row.locator('.holding-actions button').allTextContents(), ['Receive']);
   // Outside the USD total: the priced four networks only (price fixture $2,
@@ -231,7 +231,7 @@ try {
   ixiosCalls.length = 0; ixiosGenesis = IXIOS_GENESIS;
   await page.locator('#portfolio-refresh').click(); await portfolioDone(page);
   assert.deepEqual(ixiosCalls.map(call => call.method), ['eth_getBlockByNumber', 'eth_getBalance']);
-  assert.equal(await row.locator('.holding-value strong').innerText(), '1234.567 IXIOS');
+  assert.equal(await row.locator('.holding-value strong').innerText(), '1,234.567 IXIOS');
   assert.equal(await badge.innerText(), 'Ixios · Balances read');
   assert.doesNotMatch(await page.locator('body').innerText(), /not active/i);
   // The Cellframe derivation also fetches legacy-dilithium-*.wasm on open; what matters

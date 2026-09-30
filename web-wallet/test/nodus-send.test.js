@@ -10,7 +10,7 @@ import { prepareTransfer } from '../src/wallet.js';
 import { recordActivity } from '../src/activity.js';
 import { serializeActivity, parseActivity, activityKeyFor } from '../src/activity-storage.js';
 import { expiryHeightFor, lockedInputs, resendInputs, balances, checkNodusActivity, nodusRecipient, nodusAmountUnits, NODUS_EXPIRY_AHEAD, claimStatus, prepareClaim, isClaimRow, stakingOverview, prepareStake } from '../src/adapters/nodus.js';
-import { createMockNodusModule, FINGERPRINT, RECIPIENT, CHAIN_ID, INTENT_ID, coin } from './nodus-mock-module.js';
+import { createMockNodusModule, FINGERPRINT, RECIPIENT, CHAIN_ID, INTENT_ID, FEE, coin } from './nodus-mock-module.js';
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 async function readyClient() {

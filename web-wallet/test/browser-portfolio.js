@@ -90,7 +90,9 @@ try {
   // effect on the total, and receive-only (no Send button).
   assert.equal(await cpunk.locator('.asset-value small').innerText(), '—');
   await cpunk.locator('summary').click();
-  assert.equal(await cpunk.locator('.holding-value strong').innerText(), '10.0 CPUNK');
+  // 0.1.28 display form (displayAmount): no trailing ".0"; exact value in title.
+  assert.equal(await cpunk.locator('.holding-value strong').innerText(), '10 CPUNK');
+  assert.equal(await cpunk.locator('.holding-value strong').getAttribute('title'), '10.0 CPUNK');
   assert.equal(await cpunk.locator('.holding-value small').innerText(), '—');
   assert.deepEqual(await cpunk.locator('.holding-actions button').allTextContents(), ['Receive']);
   await cpunk.locator('summary').click();
@@ -102,18 +104,18 @@ try {
   if (ixiosShown) {
     const ixios = page.locator('.asset-group[data-symbol="IXIOS"]');
     assert.equal(await page.locator('.asset-group').last().getAttribute('data-symbol'), 'IXIOS');
-    assert.equal(await ixios.locator('.asset-value strong').innerText(), '1.0');
+    assert.equal(await ixios.locator('.asset-value strong').innerText(), '1');
     assert.equal(await ixios.locator('.asset-value small').innerText(), '—');
     await ixios.locator('summary').click();
-    assert.equal(await ixios.locator('.holding-value strong').innerText(), '1.0 IXIOS');
+    assert.equal(await ixios.locator('.holding-value strong').innerText(), '1 IXIOS');
     assert.equal(await ixios.locator('.holding-value small').innerText(), '—');
     assert.deepEqual(await ixios.locator('.holding-actions button').allTextContents(), ['Receive']);
     await ixios.locator('summary').click();
   }
   assert.doesNotMatch(await page.locator('#portfolio-networks').innerText(), /Not active yet/);
-  assert.equal(await usdt.locator('.asset-value strong').innerText(), '4.0');
+  assert.equal(await usdt.locator('.asset-value strong').innerText(), '4');
   await usdt.locator('summary').click(); assert.equal(await usdt.locator('.chain-holding').count(), 4);
-  assert.equal(await usdt.locator('.holding-value strong').allTextContents().then(a => a.every(v => v === '1.0 USDT')), true);
+  assert.equal(await usdt.locator('.holding-value strong').allTextContents().then(a => a.every(v => v === '1 USDT')), true);
   await page.locator('#portfolio-hide').click(); assert.equal(await page.locator('#portfolio-total').innerText(), '••••');
   assert.ok((await page.locator('.asset-value, .holding-value').allTextContents()).every(v => /^•+$/.test(v)));
   await page.locator('#portfolio-hide').click();
@@ -129,7 +131,7 @@ try {
   await page.setViewportSize({ width: 1440, height: 1050 });
   await page.locator('.network-filter[data-chain="solana"]').click();
   assert.equal(await page.locator('.asset-group').count(), 3);
-  assert.equal(await usdt.locator('.asset-value strong').innerText(), '1.0');
+  assert.equal(await usdt.locator('.asset-value strong').innerText(), '1');
   assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00'); // Hero always spans all networks.
   await page.getByRole('button', { name: 'Receive USDT on Solana', exact: true }).click();
   assert.equal(await page.locator('#chain').inputValue(), 'solana'); assert.equal(await page.locator('#asset').inputValue(), 'USDT');
@@ -156,13 +158,13 @@ try {
   assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
   assert.match(await page.locator('#portfolio-status').innerText(), /All supported asset balances/);
   cellframeFail = false; await refresh(); await cpunkSettled();
-  assert.match(await cpunk.innerText(), /10\.0 CPUNK/);
+  assert.match(await cpunk.innerText(), /\b10 CPUNK/);
   await cpunk.locator('summary').click();
   for (const mode of ['failed', 'stale']) {
     priceMode = mode; await refresh();
     assert.equal(await page.locator('#portfolio-total').innerText(), '—');
     assert.match(await page.locator('#portfolio-status').innerText(), /14 prices unavailable/);
-    assert.equal(await usdt.locator('.asset-value strong').innerText(), '4.0');
+    assert.equal(await usdt.locator('.asset-value strong').innerText(), '4');
   }
   priceMode = 'late'; gate = Promise.withResolvers(); requested = Promise.withResolvers(); completed = Promise.withResolvers();
   await page.locator('#portfolio-refresh').click(); await requested.promise;

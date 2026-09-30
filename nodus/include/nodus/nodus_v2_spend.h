@@ -34,12 +34,13 @@
  * nodus_ruleset_pins.h (decision above, addendum 2026-09-29 "Yol 2"), whose
  * SYSTEM meter policy is rebuilt and checked against its pinned digest.
  *
- * EXTENSION (claim / delegate / stake — NOT in this module yet): those
- * builders reuse nodus_v2_xfer_out_put (the SYSFUND funding leg IS a
+ * EXTENSION: the staking builder (nodus/src/client/nodus_v2_stake.{c,h},
+ * 2026-09-30) reuses nodus_v2_xfer_out_put (the SYSFUND funding leg IS a
  * transfer section), nodus_v2_env_sign_one_key (the two-pass signature,
  * any number of legs signed by one key), nodus_v2_spend_ceiling (the units
- * ceiling, with their own read count) and nodus_v2_ruleset_id_t (plus the
- * SYSTEM ruleset tuple, which the pins header does not yet carry).
+ * ceiling, with its own read count) and the pins header, which now also
+ * carries the SYSTEM ruleset tuple. Genesis claims are built in the web
+ * wallet module (web-wallet/crypto/nodus-send-wasm.c) and nodus-cli.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
