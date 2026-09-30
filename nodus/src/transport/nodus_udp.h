@@ -28,6 +28,7 @@ typedef struct {
     nodus_udp_recv_fn   on_recv;
     void               *cb_ctx;
     uint16_t            port;
+    bool                budget_hit;   /* last poll stopped at its read budget */
 } nodus_udp_t;
 
 /**
@@ -46,8 +47,14 @@ int nodus_udp_bind(nodus_udp_t *udp, const char *bind_ip, uint16_t port);
 int nodus_udp_send(nodus_udp_t *udp, const uint8_t *payload, size_t len,
                     const char *ip, uint16_t port);
 
-/** Process pending datagrams. Returns number processed. */
+/** Process pending datagrams, at most a fixed read budget per call.
+ *  Returns number processed. */
 int nodus_udp_poll(nodus_udp_t *udp);
+
+/** True when the last nodus_udp_poll() stopped at its read budget, so
+ *  datagrams may still be queued; the caller should not block before the
+ *  next poll. */
+bool nodus_udp_read_pending(const nodus_udp_t *udp);
 
 /** Close socket and free resources. */
 void nodus_udp_close(nodus_udp_t *udp);

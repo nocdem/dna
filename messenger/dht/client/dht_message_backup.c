@@ -774,18 +774,24 @@ int dht_message_backup_restore(
 
     QGP_LOG_INFO(LOG_TAG, "Decrypted JSON: %zu bytes", decrypted_len);
 
-    // Verify sender public key matches expected (self-verification)
-    if (dilithium_pubkey && sender_pubkey_len_out == DHT_MSGBACKUP_DILITHIUM_PUBKEY_SIZE) {
-        if (memcmp(sender_pubkey_out, dilithium_pubkey, DHT_MSGBACKUP_DILITHIUM_PUBKEY_SIZE) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Sender public key mismatch (not self-encrypted)");
-            free(decrypted_data);
-            free(sender_pubkey_out);
-            if (signature_out) free(signature_out);
-            free(blob);
-            return -1;
-        }
-        QGP_LOG_INFO(LOG_TAG, "Sender public key verified (self-encrypted)");
+    // Verify authorship (self-sealed record).
+    // dna_decrypt_message_raw_alg() returns the sender's 64-byte FINGERPRINT and
+    // does NOT verify the signature (dna_api.c). The record must be sealed by the
+    // user's own key: SHA3-512(dilithium_pubkey) == sender fingerprint AND the
+    // Dilithium5 signature over the plaintext verifies under dilithium_pubkey.
+    if (sender_pubkey_len_out != 64 || !signature_out || signature_out_len == 0 ||
+        dna_verify_seal_authorship(decrypted_data, decrypted_len,
+                                   signature_out, signature_out_len,
+                                   dilithium_pubkey, DHT_MSGBACKUP_DILITHIUM_PUBKEY_SIZE,
+                                   sender_pubkey_out, NULL) != DNA_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Message backup authorship check failed (not sealed by own key)");
+        free(decrypted_data);
+        free(sender_pubkey_out);
+        if (signature_out) free(signature_out);
+        free(blob);
+        return -1;
     }
+    QGP_LOG_INFO(LOG_TAG, "Message backup authorship verified (sealed by own key)");
 
     free(sender_pubkey_out);
     if (signature_out) free(signature_out);

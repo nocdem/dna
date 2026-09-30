@@ -400,6 +400,13 @@ int nodus_value_deserialize(const uint8_t *buf, size_t len,
     if (val->type == NODUS_VALUE_PERMANENT || val->type == NODUS_VALUE_EXCLUSIVE || val->ttl == 0) {
         val->expires_at = 0;
     } else {
+        /* created_at is not covered by the signature (nodus_value.h), so a
+         * peer can send any value; an overflowing sum would wrap and could
+         * land on 0, which means "never expires". Refuse the value. */
+        if (val->created_at > UINT64_MAX - (uint64_t)val->ttl) {
+            nodus_value_free(val);
+            return -1;
+        }
         val->expires_at = val->created_at + val->ttl;
     }
 

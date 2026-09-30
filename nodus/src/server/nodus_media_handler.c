@@ -69,16 +69,77 @@ void handle_t2_media_put(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
+    /* Validate chunk index is inside the declared chunk range
+     * (also rejects chunk_count == 0, where no index is valid) */
+    if (msg->media_chunk_idx >= msg->media_chunk_count) {
+        QGP_LOG_WARN(LOG_TAG, "m_put: chunk index out of range (%u >= %u)",
+                     msg->media_chunk_idx, msg->media_chunk_count);
+        nodus_t2_error(msg->txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                       "chunk index out of range",
+                       media_resp_buf, sizeof(media_resp_buf), &rlen);
+        nodus_tcp_send(sess->conn, media_resp_buf, rlen);
+        return;
+    }
+
+    /* Permanent media is not allowed: ttl 0 would make meta.expires_at 0
+     * (never expires) */
+    if (msg->ttl == 0) {
+        QGP_LOG_WARN(LOG_TAG, "m_put: ttl 0 (permanent media) rejected");
+        nodus_t2_error(msg->txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                       "media ttl must be non-zero",
+                       media_resp_buf, sizeof(media_resp_buf), &rlen);
+        nodus_tcp_send(sess->conn, media_resp_buf, rlen);
+        return;
+    }
+
     /* Check dedup: if media already exists and is complete, short-circuit */
     bool exists = false, complete = false;
-    if (nodus_media_exists(&srv->media_storage, msg->media_hash,
-                           &exists, &complete) == 0 && exists && complete) {
+    int ex_rc = nodus_media_exists(&srv->media_storage, msg->media_hash,
+                                   &exists, &complete);
+    if (ex_rc == 0 && exists && complete) {
         QGP_LOG_DEBUG(LOG_TAG, "m_put: dedup hit, chunk_idx=%u already complete",
                       msg->media_chunk_idx);
         nodus_t2_media_put_ok(msg->txn_id, msg->media_chunk_idx, true,
                               media_resp_buf, sizeof(media_resp_buf), &rlen);
         nodus_tcp_send(sess->conn, media_resp_buf, rlen);
         return;
+    }
+
+    /* A non-first chunk needs the metadata record created by chunk 0;
+     * never store an orphan chunk with no meta */
+    if (msg->media_chunk_idx != 0 && (ex_rc != 0 || !exists)) {
+        QGP_LOG_WARN(LOG_TAG, "m_put: chunk_idx=%u without metadata rejected",
+                     msg->media_chunk_idx);
+        nodus_t2_error(msg->txn_id, NODUS_ERR_NOT_FOUND,
+                       "media metadata not found (send chunk 0 first)",
+                       media_resp_buf, sizeof(media_resp_buf), &rlen);
+        nodus_tcp_send(sess->conn, media_resp_buf, rlen);
+        return;
+    }
+
+    /* A non-first chunk's index is bounded by the chunk_count stored by
+     * chunk 0, not by the count this request declares */
+    if (msg->media_chunk_idx != 0) {
+        nodus_media_meta_t cur_meta;
+        if (nodus_media_get_meta(&srv->media_storage, msg->media_hash,
+                                 &cur_meta) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "m_put: get_meta failed for chunk_idx=%u",
+                          msg->media_chunk_idx);
+            nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
+                           "media meta read failed",
+                           media_resp_buf, sizeof(media_resp_buf), &rlen);
+            nodus_tcp_send(sess->conn, media_resp_buf, rlen);
+            return;
+        }
+        if (msg->media_chunk_idx >= cur_meta.chunk_count) {
+            QGP_LOG_WARN(LOG_TAG, "m_put: chunk index out of stored range (%u >= %u)",
+                         msg->media_chunk_idx, cur_meta.chunk_count);
+            nodus_t2_error(msg->txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                           "chunk index out of range",
+                           media_resp_buf, sizeof(media_resp_buf), &rlen);
+            nodus_tcp_send(sess->conn, media_resp_buf, rlen);
+            return;
+        }
     }
 
     /* First chunk (index 0): check per-owner quota and create metadata */

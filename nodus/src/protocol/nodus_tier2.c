@@ -37,6 +37,14 @@ static char *portable_strndup(const char *s, size_t n) {
 
 /* ── Common helpers ──────────────────────────────────────────────── */
 
+/** One hex digit ('0'-'9', 'a'-'f', 'A'-'F') to its value; -1 otherwise. */
+static int t2_hex_nibble(uint8_t c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
 static void enc_query_header(cbor_encoder_t *enc, size_t map_count,
                               uint32_t txn, const char *method) {
     cbor_encode_map(enc, map_count);
@@ -2478,13 +2486,21 @@ static int t2_decode_body(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg
                                 T2_KEY_ONCE(cks, ck);
                                 if (ck.tstr.len == 4 && memcmp(ck.tstr.ptr, "uuid", 4) == 0) {
                                     cbor_item_t v = cbor_decode_next(&dec);
-                                    if (v.type == CBOR_ITEM_TSTR && v.tstr.len == 32) {
-                                        /* Parse 32-char hex to 16-byte binary */
-                                        for (int b = 0; b < NODUS_UUID_BYTES; b++) {
-                                            unsigned int byte;
-                                            if (sscanf(v.tstr.ptr + b * 2, "%2x", &byte) == 1)
-                                                cm->uuid[b] = (uint8_t)byte;
+                                    if (v.type == CBOR_ITEM_TSTR &&
+                                        v.tstr.len == NODUS_UUID_BYTES * 2) {
+                                        /* Parse 32-char hex to 16-byte binary. The CBOR
+                                         * string is not NUL-terminated: read exactly two
+                                         * chars per byte; any non-hex char leaves the
+                                         * uuid all-zero (cm was memset above). */
+                                        uint8_t tmp[NODUS_UUID_BYTES];
+                                        bool ok = true;
+                                        for (int b = 0; b < NODUS_UUID_BYTES && ok; b++) {
+                                            int hi = t2_hex_nibble((uint8_t)v.tstr.ptr[b * 2]);
+                                            int lo = t2_hex_nibble((uint8_t)v.tstr.ptr[b * 2 + 1]);
+                                            if (hi < 0 || lo < 0) ok = false;
+                                            else tmp[b] = (uint8_t)((hi << 4) | lo);
                                         }
+                                        if (ok) memcpy(cm->uuid, tmp, NODUS_UUID_BYTES);
                                     }
                                 } else if (ck.tstr.len == 4 && memcmp(ck.tstr.ptr, "name", 4) == 0) {
                                     cbor_item_t v = cbor_decode_next(&dec);

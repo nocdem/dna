@@ -52,25 +52,44 @@ static void engine_today_str(char *buf, size_t buf_size) {
  * ============================================================================ */
 
 /**
- * Resolve display name for a fingerprint.
- * Tries: 1) DHT profile (registered_name), 2) Keyserver cache, 3) fingerprint prefix.
+ * Resolve display name (and, optionally, the Dilithium5 public key) for a fingerprint.
+ * Name tries: 1) profile (registered_name), 2) Keyserver cache, 3) fingerprint prefix.
  *
- * @param fingerprint  128-char hex fingerprint
- * @param name_out     Output buffer (min 65 chars)
+ * The public key comes from the SAME profile_manager_get_profile() fetch the
+ * name resolution already performs (cache-first, then DHT) — no extra lookup.
+ * It is returned only if SHA3-512(pubkey) hex == fingerprint, so a verify
+ * against it binds the signature to the claimed author.
+ *
+ * @param fingerprint   128-char hex fingerprint
+ * @param name_out      Output buffer (min 65 chars)
  * @param name_out_size Size of output buffer
+ * @param pubkey_out    Optional output (QGP_DSA87_PUBLICKEYBYTES bytes), may be NULL
+ * @return true iff pubkey_out was filled with a key bound to fingerprint
  */
-static void resolve_author_name(const char *fingerprint, char *name_out, size_t name_out_size) {
-    if (!fingerprint || !name_out || name_out_size == 0) return;
+static bool resolve_author(const char *fingerprint, char *name_out, size_t name_out_size,
+                           uint8_t *pubkey_out) {
+    if (!fingerprint || !name_out || name_out_size == 0) return false;
     name_out[0] = '\0';
 
-    /* Try 1: DHT profile (registered_name) */
+    bool have_pubkey = false;
+
+    /* Try 1: DHT profile (registered_name + dilithium_pubkey) */
     dna_unified_identity_t *identity = NULL;
     if (profile_manager_get_profile(fingerprint, &identity) == 0 && identity) {
+        if (pubkey_out) {
+            char pk_fp[129] = {0};
+            if (qgp_sha3_512_fingerprint(identity->dilithium_pubkey,
+                                         sizeof(identity->dilithium_pubkey), pk_fp) == 0 &&
+                strcmp(pk_fp, fingerprint) == 0) {
+                memcpy(pubkey_out, identity->dilithium_pubkey, QGP_DSA87_PUBLICKEYBYTES);
+                have_pubkey = true;
+            }
+        }
         if (identity->registered_name[0] != '\0') {
             strncpy(name_out, identity->registered_name, name_out_size - 1);
             name_out[name_out_size - 1] = '\0';
             dna_identity_free(identity);
-            return;
+            return have_pubkey;
         }
         dna_identity_free(identity);
     }
@@ -81,7 +100,7 @@ static void resolve_author_name(const char *fingerprint, char *name_out, size_t 
         cached_name[0] != '\0') {
         strncpy(name_out, cached_name, name_out_size - 1);
         name_out[name_out_size - 1] = '\0';
-        return;
+        return have_pubkey;
     }
 
     /* Fallback: fingerprint prefix (first 12 chars) */
@@ -89,10 +108,16 @@ static void resolve_author_name(const char *fingerprint, char *name_out, size_t 
     if (prefix_len >= name_out_size) prefix_len = name_out_size - 1;
     strncpy(name_out, fingerprint, prefix_len);
     name_out[prefix_len] = '\0';
+    return have_pubkey;
 }
 
 /**
  * Convert a dna_wall_post_t (DHT/cache struct) to dna_wall_post_info_t (public API struct).
+ *
+ * verified = the post was signed locally by this device (post->verified, set
+ * only by dna_wall_post*() and persisted in the local cache), OR its Dilithium5
+ * signature verifies under the author's public key. A failed or impossible
+ * check only clears the flag; the post is never dropped.
  *
  * @param post      Source DHT post
  * @param info      Output public API info (must be zeroed by caller)
@@ -106,10 +131,62 @@ static void wall_post_to_info(const dna_wall_post_t *post, dna_wall_post_info_t 
     info->text[sizeof(info->text) - 1] = '\0';
     info->image_json = post->image_json ? strdup(post->image_json) : NULL;
     info->timestamp = post->timestamp;
-    info->verified = post->verified;
 
-    /* Resolve author display name */
-    resolve_author_name(post->author_fingerprint, info->author_name, sizeof(info->author_name));
+    /* Resolve author display name + public key (single profile fetch) */
+    uint8_t author_pk[QGP_DSA87_PUBLICKEYBYTES];
+    bool have_pk = resolve_author(post->author_fingerprint, info->author_name,
+                                  sizeof(info->author_name), author_pk);
+    info->verified = post->verified ||
+                     (have_pk && dna_wall_post_verify(post, author_pk) == 0);
+}
+
+/**
+ * Verify a wall comment carried as a raw DHT JSON object (engagement batch path).
+ * Rebuilds dna_wall_comment_t field-for-field as comment_from_json()
+ * (dht/client/dna_wall_comments.c) does, then runs dna_wall_comment_verify().
+ *
+ * @return true iff the signature verifies under author_pk
+ */
+static bool wall_comment_json_verify(json_object *obj, const uint8_t *author_pk) {
+    if (!obj || !author_pk) return false;
+
+    dna_wall_comment_t *c = calloc(1, sizeof(*c));
+    if (!c) return false;
+
+    json_object *jv;
+    const char *s;
+    if (json_object_object_get_ex(obj, "version", &jv))
+        c->version = json_object_get_int(jv);
+    if (json_object_object_get_ex(obj, "uuid", &jv) && (s = json_object_get_string(jv)))
+        strncpy(c->uuid, s, 36);
+    if (json_object_object_get_ex(obj, "post_uuid", &jv) && (s = json_object_get_string(jv)))
+        strncpy(c->post_uuid, s, 36);
+    if (json_object_object_get_ex(obj, "parent_uuid", &jv) && (s = json_object_get_string(jv)))
+        strncpy(c->parent_comment_uuid, s, 36);
+    if (json_object_object_get_ex(obj, "author", &jv) && (s = json_object_get_string(jv)))
+        strncpy(c->author_fingerprint, s, 128);
+    if (json_object_object_get_ex(obj, "body", &jv) && (s = json_object_get_string(jv)))
+        strncpy(c->body, s, DNA_WALL_COMMENT_MAX_BODY);
+    if (json_object_object_get_ex(obj, "created_at", &jv))
+        c->created_at = json_object_get_int64(jv);
+    if (json_object_object_get_ex(obj, "comment_type", &jv))
+        c->comment_type = json_object_get_int(jv);
+    if (json_object_object_get_ex(obj, "signature", &jv)) {
+        const char *sig_b64 = json_object_get_string(jv);
+        if (sig_b64) {
+            size_t sig_len = 0;
+            uint8_t *sig_bytes = qgp_base64_decode(sig_b64, &sig_len);
+            if (sig_bytes && sig_len <= sizeof(c->signature)) {
+                memcpy(c->signature, sig_bytes, sig_len);
+                c->signature_len = sig_len;
+            }
+            free(sig_bytes);
+        }
+    }
+
+    bool ok = (dna_wall_comment_verify(c, author_pk) == 0);
+    free(c);
+    return ok;
 }
 
 /* ============================================================================
@@ -848,7 +925,7 @@ void dna_handle_wall_add_comment(dna_engine_t *engine, dna_task_t *task) {
     info->comment_type = task->params.wall_add_comment.comment_type;
 
     /* Resolve own name */
-    resolve_author_name(engine->fingerprint, info->author_name, sizeof(info->author_name));
+    (void)resolve_author(engine->fingerprint, info->author_name, sizeof(info->author_name), NULL);
 
     /* Invalidate comment cache for this post */
     wall_cache_invalidate_comments(task->params.wall_add_comment.post_uuid);
@@ -922,12 +999,15 @@ void dna_handle_wall_get_comments(dna_engine_t *engine, dna_task_t *task) {
         strncpy(info[i].author_fingerprint, comments[i].author_fingerprint, 128);
         strncpy(info[i].body, comments[i].body, 2000);
         info[i].created_at = comments[i].created_at;
-        info[i].verified = (comments[i].signature_len > 0);
         info[i].comment_type = comments[i].comment_type;
 
-        /* Resolve author name */
-        resolve_author_name(comments[i].author_fingerprint,
-                           info[i].author_name, sizeof(info[i].author_name));
+        /* Resolve author name + public key; verified = real signature check
+         * (failure only clears the flag, the comment is kept) */
+        uint8_t author_pk[QGP_DSA87_PUBLICKEYBYTES];
+        bool have_pk = resolve_author(comments[i].author_fingerprint,
+                                      info[i].author_name, sizeof(info[i].author_name),
+                                      author_pk);
+        info[i].verified = have_pk && dna_wall_comment_verify(&comments[i], author_pk) == 0;
     }
 
     dna_wall_comments_free(comments, count);
@@ -1197,9 +1277,12 @@ void dna_handle_wall_like(dna_engine_t *engine, dna_task_t *task) {
     for (size_t i = 0; i < count; i++) {
         strncpy(info[i].author_fingerprint, likes[i].author_fingerprint, 128);
         info[i].timestamp = likes[i].timestamp;
-        info[i].verified = (likes[i].signature_len > 0);
-        resolve_author_name(likes[i].author_fingerprint,
-                           info[i].author_name, sizeof(info[i].author_name));
+        uint8_t author_pk[QGP_DSA87_PUBLICKEYBYTES];
+        bool have_pk = resolve_author(likes[i].author_fingerprint,
+                                      info[i].author_name, sizeof(info[i].author_name),
+                                      author_pk);
+        info[i].verified = have_pk &&
+            dna_wall_like_verify(&likes[i], task->params.wall_like.post_uuid, author_pk) == 0;
     }
 
     dna_wall_likes_free(likes, count);
@@ -1276,9 +1359,12 @@ void dna_handle_wall_get_likes(dna_engine_t *engine, dna_task_t *task) {
     for (size_t i = 0; i < count; i++) {
         strncpy(info[i].author_fingerprint, likes[i].author_fingerprint, 128);
         info[i].timestamp = likes[i].timestamp;
-        info[i].verified = (likes[i].signature_len > 0);
-        resolve_author_name(likes[i].author_fingerprint,
-                           info[i].author_name, sizeof(info[i].author_name));
+        uint8_t author_pk[QGP_DSA87_PUBLICKEYBYTES];
+        bool have_pk = resolve_author(likes[i].author_fingerprint,
+                                      info[i].author_name, sizeof(info[i].author_name),
+                                      author_pk);
+        info[i].verified = have_pk &&
+            dna_wall_like_verify(&likes[i], post_uuid, author_pk) == 0;
     }
 
     dna_wall_likes_free(likes, count);
@@ -1482,9 +1568,14 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task) {
                             if (json_object_object_get_ex(obj, "comment_type", &jv))
                                 ci->comment_type = (uint32_t)json_object_get_int(jv);
 
-                            ci->verified = true;
-                            resolve_author_name(ci->author_fingerprint,
-                                               ci->author_name, sizeof(ci->author_name));
+                            /* verified = real signature check against the
+                             * author's key (failure only clears the flag) */
+                            uint8_t author_pk[QGP_DSA87_PUBLICKEYBYTES];
+                            bool have_pk = resolve_author(ci->author_fingerprint,
+                                                          ci->author_name,
+                                                          sizeof(ci->author_name),
+                                                          author_pk);
+                            ci->verified = have_pk && wall_comment_json_verify(obj, author_pk);
                             total_comments++;
                         }
                         json_object_put(arr);

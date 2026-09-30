@@ -14,6 +14,7 @@
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_random.h"
 #include "database/db_encryption.h"
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +24,11 @@
 #include "crypto/utils/qgp_safe_string.h"
 
 #define LOG_TAG "DHT_GROUPS"
+
+// Upper bound on member_count accepted from DHT metadata JSON. The writers
+// (dht_groups_create / dht_groups_add_member) enforce no cap of their own, so
+// this is a parse-side sanity bound, set far above any real group.
+#define DHT_GROUPS_MAX_PARSED_MEMBERS 1024u
 
 // Helper: Escape string for JSON (prevents injection attacks)
 // Caller must free() the returned string
@@ -263,6 +269,14 @@ static int deserialize_metadata(const char *json, dht_group_metadata_t **meta_ou
     if (!p) goto error;
     p += 11;
 
+    // member_count is untrusted (DHT input): bound it before it sizes an allocation.
+    if (meta->member_count > DHT_GROUPS_MAX_PARSED_MEMBERS) {
+        QGP_LOG_ERROR(LOG_TAG, "Parse error: member_count %u exceeds limit %u\n",
+                      meta->member_count, (unsigned)DHT_GROUPS_MAX_PARSED_MEMBERS);
+        meta->member_count = 0;  // members not allocated; keep free() consistent
+        goto error;
+    }
+
     if (meta->member_count > 0) {
         meta->members = calloc(meta->member_count, sizeof(char*));
         if (!meta->members) goto error;
@@ -281,15 +295,26 @@ static int deserialize_metadata(const char *json, dht_group_metadata_t **meta_ou
             sscanf(p, "%128[^\"]%n", meta->members[i], &chars_read);
             QGP_LOG_DEBUG(LOG_TAG, "Parsed member[%u]: '%s' (read %d chars)\n", i, meta->members[i], chars_read);
 
-            // Validate: fingerprint must be 128 hex chars
+            // Validate: fingerprint must be exactly 128 hex chars
             size_t len = strlen(meta->members[i]);
-            if (len != 128) {
+            if (len != 128 || chars_read != 128) {
                 QGP_LOG_ERROR(LOG_TAG, "Invalid member[%u] length: %zu (expected 128)\n", i, len);
                 goto error;
             }
+            for (size_t k = 0; k < len; k++) {
+                if (!isxdigit((unsigned char)meta->members[i][k])) {
+                    QGP_LOG_ERROR(LOG_TAG, "Invalid member[%u]: non-hex character at %zu\n", i, k);
+                    goto error;
+                }
+            }
 
-            p = strchr(p, '"');  // Find closing quote
-            if (p) p++;          // Move past it
+            // The fingerprint must be followed directly by its closing quote
+            p += chars_read;
+            if (*p != '"') {
+                QGP_LOG_ERROR(LOG_TAG, "Parse error: no closing quote for member[%u]\n", i);
+                goto error;
+            }
+            p++;  // Move past it
         }
     }
 
