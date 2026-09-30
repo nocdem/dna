@@ -32,6 +32,11 @@
  * STAKING (nsw_stake_*, nsw_validators, nsw_delegations, 0.1.29) is
  * nodus-cli's `v2-envelope stake | delegate | undelegate` over the shared
  * builder nodus/src/client/nodus_v2_stake.c — see "STAKING".
+ * MESSAGES (nc_*, package NC-4b of docs/plans/2026-09-24-web-connect-design
+ * .md rev 5 §1.1): the Nodus Connect thin core (web-wallet/connect/, its
+ * JSON exports in connect/nc_wasm.c) is linked into this module and runs on
+ * this file's session, op bracket and cancel flag — see "Messages host".
+ * The offline (native vector) build has none of it.
  *
  * THREE BUILDS of this one file (web-wallet/scripts/build-nodus-send-wasm.sh,
  * build-nodus-send-native-vector.sh):
@@ -96,6 +101,7 @@
 #include "nodus/nodus.h"
 #include "crypto/nodus_identity.h"
 #include "crypto/nodus_sign.h"
+#include "nc_core.h"                        /* Messages host (NC-4b)         */
 #endif
 
 #ifdef __EMSCRIPTEN__
@@ -2078,6 +2084,23 @@ int nsw_stake_build(int op, const char *validator_fp_hex, const char *amount_dec
     return nsw_end(rc);
 }
 
+/* ── Messages host (package NC-4b; nc_core.h "Host") ──
+ * The Messages exports (web-wallet/connect/nc_wasm.c, linked into this
+ * module) run on THIS session, inside THIS op bracket, stopped by THIS
+ * cancel flag: one session per identity (nodus_auth.c:95-116), one Asyncify
+ * suspension at a time. They never create a client. */
+
+int nc_host_begin(void)            { return nsw_begin(); }
+int nc_host_end(void)              { g_busy = 0; return (g_locked || g_cancel) ? 1 : 0; }
+const char *nc_host_error(void)    { return g_error; }
+nodus_client_t *nc_host_client(void) {
+    return (g_unlocked && !g_locked && !g_cancel) ? &g_client : NULL;
+}
+const nodus_identity_t *nc_host_identity(void) {
+    return (g_unlocked && !g_locked && !g_cancel) ? &g_id : NULL;
+}
+volatile const int *nc_host_cancel(void) { return &g_cancel; }
+
 /* ── tick: keepalive + the pinned reconnect (nodus_client_tick) ── */
 
 int nsw_tick(void) {
@@ -2125,6 +2148,7 @@ void nsw_lock(void) {
     memset(&g_list, 0, sizeof(g_list));
     g_vals.valid = 0; g_vals.n = 0;
     g_dels.valid = 0; g_dels.n = 0;
+    nc_session_wipe();                      /* the Messages keys and caches */
     g_unlocked = 0;
 }
 #endif /* !NODUS_SEND_OFFLINE_ONLY */

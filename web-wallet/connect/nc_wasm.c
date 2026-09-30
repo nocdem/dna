@@ -1,18 +1,30 @@
-/* Nodus Connect thin core — the standalone WebAssembly entry (package
- * NC-2 of docs/plans/2026-09-24-web-connect-design.md rev 5, §1.9).
+/* Nodus Connect thin core — the browser entry (packages NC-2 / NC-4b of
+ * docs/plans/2026-09-24-web-connect-design.md rev 5, §1.1, §1.8, §1.9).
  *
- * TEST ARTIFACT, NOT FOR SHIPPING BESIDE THE WALLET. This entry owns its
- * own tier-2 session. The wallet's NODUS send module (crypto/nodus-send-
- * wasm.c) owns another; the same identity on two sessions to one node knock
- * each other off (nodus_auth.c:95-116, design §1.1). Package NC-4 links the
- * library (nc_*.c except this file) into the ONE shared module and passes
- * that module's session in nc_ctx_t.
+ * LINKED INTO THE WALLET'S ONE MODULE (NC-4b). This file owns no session:
+ * scripts/build-nodus-send-wasm.sh links it (and the library nc_*.c) into
+ * src/nodus/send.wasm, whose crypto/nodus-send-wasm.c owns the identity's
+ * ONE tier-2 session, the op bracket and the cancel flag, and hands them
+ * over through the "Host" functions of nc_core.h. Two sessions of one
+ * identity to one node knock each other off (nodus_auth.c:95-116, design
+ * §1.1); the module that built them no longer exists.
+ *
+ * Keys: the session identity is the send module's (nodus_identity_from_seed
+ * of the signing seed). The Messages KEM keys (round-3 Kyber from the
+ * encryption seed, ML-KEM-1024 from the master seed, nc_keys_from_words)
+ * cannot be derived from that seed, so nc_unlock takes the words once,
+ * derives nc_keys_t, and refuses unless its ML-DSA-87 public key IS the
+ * session's. nc_keys_t carries its own copy of the ML-DSA key (the
+ * library's nc_ctx_t signs with keys->id); both copies are wiped by the
+ * wallet's lock (nsw_lock -> nc_session_wipe) and by nc_lock.
  *
  * Call model (the send module's, nodus-send-wasm.c "op bracket"):
  *   - every async export (may reach emscripten_sleep) runs inside
- *     nc_begin/nc_end: one at a time, none after cancel/lock;
- *   - nc_cancel / nc_lock are synchronous and never reach emscripten_sleep,
- *     so JS may call them while another export is suspended;
+ *     nc_begin/nc_end, which enter the SEND MODULE'S bracket: one export
+ *     of the whole module at a time, none after its cancel/lock;
+ *   - nc_lock, nc_salt_pick and nc_day_today are synchronous and never
+ *     reach emscripten_sleep, so JS may call them while another export is
+ *     suspended; the module's cancel / lock are nsw_cancel / nsw_lock;
  *   - each async export does ONE bounded network step (one GET, one GET_ALL
  *     or one PUT, each bounded by the client's request timeout) so the JS
  *     queue can put a wallet operation between two sync steps (design §6.4
@@ -23,9 +35,9 @@
  *   - results are one JSON object (json-c), read with nc_result(); u64
  *     values cross as decimal strings, bytes as lowercase hex.
  *
- * RANDOMNESS: qgp_platform_random below is the only source (nodus_random,
- * qgp_randombytes and the hedged ML-DSA rnd all call it), getentropy() ->
- * crypto.getRandomValues, exactly as nodus-send-wasm.c.
+ * RANDOMNESS: the module's one qgp_platform_random (nodus-send-wasm.c:
+ * getentropy() -> crypto.getRandomValues in the shipped build) is the only
+ * source; this file defines none, nor qgp_secure_memzero.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -34,12 +46,18 @@
 #ifndef __EMSCRIPTEN__
 #error "nc_wasm.c is the browser entry; native tests link the library files only"
 #endif
+#if !defined(NODUS_SEND_RELEASE) && !defined(NODUS_SEND_TEST_FIXED_RANDOM)
+#error "nc_wasm.c is linked into the send module only (scripts/build-nodus-send-wasm.sh)"
+#endif
 
 #include "nc_core.h"
+#include "nc_history.h"
 
 #include "dht/shared/dht_dm_outbox.h"
 #include "crypto/nodus_identity.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"      /* qgp_platform_random (the
+                                             * module's, nodus-send-wasm.c) */
 
 #include <emscripten.h>
 #include <json-c/json.h>
@@ -47,36 +65,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>                         /* getentropy */
 
 #define LOG_TAG "NC_WASM"
 
-/* ── memory hygiene / randomness (nodus-send-wasm.c) ─────────────────── */
+/* A history record's plaintext cap. The hex of a record crosses ccall as a
+ * string, which Emscripten copies onto the 1 MiB C stack
+ * (stringToUTF8OnStack); 64 KiB of plaintext is 128 KiB of hex. */
+#define NC_HIST_PT_MAX 65536u
 
 static void nc_wipe(void *p, size_t n) {
     volatile uint8_t *v = (volatile uint8_t *)p;
     while (n--) *v++ = 0;
 }
 
-void qgp_secure_memzero(void *ptr, size_t len) {
-    if (ptr) nc_wipe(ptr, len);
-}
-
-int qgp_platform_random(uint8_t *buf, size_t len) {
-    if (!buf || len == 0) return -1;
-    while (len > 0) {                       /* getentropy: <= 256 per call */
-        size_t n = len > 256 ? 256 : len;
-        if (getentropy(buf, n) != 0) return -1;
-        buf += n;
-        len -= n;
-    }
-    return 0;
-}
-
 /* dna_context_new (messenger/dna_api.c:132-150) refuses to build a context
  * without a home directory; it only records "<home>/.qgp" and the Seal code
  * this module calls never reads it. qgp_platform_linux.c is not linked (its
- * qgp_platform_random would replace the one above), so the linux body is
+ * qgp_platform_random would replace the module's), so the linux body is
  * given here minus the getpwuid fallback, which Emscripten has no passwd
  * database for: Emscripten's environment sets HOME (/home/web_user). */
 const char *qgp_platform_home_dir(void) {
@@ -173,50 +178,76 @@ static int parse_u64(const char *s, uint64_t *out) {
     return 0;
 }
 
-/* ── network settings (the embedded list, nc_servers_parse) ─────────── */
+/* Lowercase hex of 1..max bytes -> a malloc'd buffer (caller wipes and
+ * frees). */
+static int parse_hex_var(const char *hex, size_t max, uint8_t **out, size_t *out_len) {
+    *out = NULL;
+    *out_len = 0;
+    if (!hex) return -1;
+    size_t h = strnlen(hex, 2 * max + 1);
+    if (h == 0 || h > 2 * max || (h & 1u)) return -1;
+    uint8_t *b = malloc(h / 2);
+    if (!b) return -1;
+    for (size_t i = 0; i < h / 2; i++) {
+        int v[2];
+        for (int j = 0; j < 2; j++) {
+            char c = hex[2 * i + (size_t)j];
+            v[j] = (c >= '0' && c <= '9') ? c - '0'
+                 : (c >= 'a' && c <= 'f') ? c - 'a' + 10 : -1;
+            if (v[j] < 0) { nc_wipe(b, h / 2); free(b); return -1; }
+        }
+        b[i] = (uint8_t)(v[0] << 4 | v[1]);
+    }
+    *out = b;
+    *out_len = h / 2;
+    return 0;
+}
 
-static nc_servers_t g_net;
-static int g_net_ok;
+static int parse_hex_fixed(const char *hex, uint8_t *out, size_t n) {
+    uint8_t *b;
+    size_t len;
+    if (parse_hex_var(hex, n, &b, &len) != 0) return -1;
+    int rc = len == n ? 0 : -1;
+    if (rc == 0) memcpy(out, b, n);
+    nc_wipe(b, len);
+    free(b);
+    return rc;
+}
 
-/* ── session state ──────────────────────────────────────────────────── */
+/* ── Messages state (the session itself is the host's) ──────────────── */
 
-static nodus_client_t g_client;         /* static: large; pending slots must
-                                         * outlive any wait                 */
 static nc_keys_t      g_keys;
 static nc_ctx_t       g_ctx;
 static char          *g_words;          /* the caller's words, until unlock */
 static size_t         g_words_len;
-static int g_client_inited, g_used, g_unlocked, g_locked, g_busy;
-static volatile int g_cancel;
-
-int nc_net_load(const char *json) {
-    if (g_used) return fail("The network is fixed once Messages connects.");
-    char why[128];
-    g_net_ok = 0;
-    if (nc_servers_parse(json, &g_net, why, sizeof(why)) != 0)
-        return fail("Nodus server list refused: %s.", why);
-    g_net_ok = 1;
-    return 0;
-}
+static uint8_t        g_hist_key[NC_HISTORY_KEY_LEN];
+static int g_used;                      /* nc_unlock ran (success or not)   */
+static int g_unlocked;                  /* keys derived and checked         */
+static int g_closed;                    /* nc_lock ran: terminal            */
+static int g_inside;                    /* an nc export is in the bracket   */
+static int g_hist_ok;                   /* g_hist_key holds K               */
 
 static int nc_begin(void) {
-    if (g_locked || g_cancel) return fail("Wallet is locked.");
-    if (g_busy) return fail("Another Messages operation is still running.");
-    g_busy = 1;
+    if (g_closed) return fail("Messages is locked.");
+    if (nc_host_begin() != 0) return fail("%s", nc_host_error());
+    g_inside = 1;
     g_error[0] = '\0';
     result_drop();
     return 0;
 }
 
 static int nc_end(int rc) {
-    g_busy = 0;
-    if (g_locked || g_cancel) { result_drop(); return fail("Wallet is locked."); }
+    g_inside = 0;
+    int stopped = nc_host_end();
+    if (g_closed) nc_session_wipe();        /* nc_lock ran meanwhile       */
+    if (stopped || g_closed) { result_drop(); return fail("Wallet is locked."); }
     return rc;
 }
 
 static int session_ok(void) {
     if (!g_unlocked) return fail("Messages is not connected.");
-    if (!nodus_client_is_ready(&g_client))
+    if (!g_ctx.client || g_ctx.client != nc_host_client() ||
+        !nodus_client_is_ready(g_ctx.client))
         return fail("Nodus connection is not ready. Try again shortly.");
     return 0;
 }
@@ -255,7 +286,7 @@ static const nc_peer_t *peer_need(const char *fp) {
  * every path. */
 char *nc_words_alloc(int len) {
     if (g_words) { nc_wipe(g_words, g_words_len); free(g_words); g_words = NULL; }
-    if (len <= 0 || len > 4096 || g_used) return NULL;
+    if (len <= 0 || len > 4096 || g_used || g_closed) return NULL;
     g_words = calloc(1, (size_t)len + 1);
     g_words_len = g_words ? (size_t)len + 1 : 0;
     return g_words;
@@ -267,51 +298,39 @@ static void words_drop(void) {
     g_words_len = 0;
 }
 
+/* Runs after the wallet's nsw_unlock, on ITS session: no client is created
+ * and nothing is sent. Derives the Messages keys from the words and refuses
+ * unless they belong to the session identity. Synchronous in practice
+ * (PBKDF2 + key generation, no network wait), bracketed like the others. */
 int nc_unlock(int fresh) {
     if (nc_begin() != 0) { words_drop(); return -1; }
     if (g_used) { words_drop(); return nc_end(fail("This Messages connection was already used.")); }
     g_used = 1;
-    if (!g_net_ok) { words_drop(); return nc_end(fail("Nodus server list is missing.")); }
+    nodus_client_t *client = nc_host_client();
+    const nodus_identity_t *session_id = nc_host_identity();
+    if (!client || !session_id) {
+        words_drop();
+        return nc_end(fail("Connect the wallet to Nodus first."));
+    }
     if (!g_words) return nc_end(fail("Recovery phrase is missing."));
     int rc = nc_keys_from_words(g_words, &g_keys);
     words_drop();
     if (rc != NC_OK) return nc_end(fail("Recovery phrase was refused."));
+    if (memcmp(g_keys.id.pk.bytes, session_id->pk.bytes, sizeof(session_id->pk.bytes)) != 0) {
+        nc_keys_wipe(&g_keys);
+        return nc_end(fail("These words belong to another Nodus address. Nothing was connected."));
+    }
 
-    nodus_client_config_t cfg;
-    memset(&cfg, 0, sizeof(cfg));
-    memcpy(cfg.servers, g_net.endpoints, sizeof(cfg.servers));
-    cfg.server_count = g_net.n_endpoints;
-    cfg.auto_reconnect = true;
-    cfg.pinned_server_fps = g_net.pins;
-    cfg.pinned_server_fp_count = g_net.n_pins;
-    if (nodus_client_init(&g_client, &cfg, &g_keys.id) != 0)
-        return nc_end(fail("Nodus client setup failed."));
-    g_client_inited = 1;
-    if (g_cancel) return nc_end(-1);
-    if (nodus_client_connect(&g_client) != 0)
-        return nc_end(fail("Could not open a verified connection to any Nodus node."));
-    if (g_cancel) return nc_end(-1);
-
-    g_ctx.client = &g_client;
+    g_ctx.client = client;
     g_ctx.keys = &g_keys;
     g_ctx.fresh = fresh ? true : false;
-    g_ctx.cancel = &g_cancel;
+    g_ctx.cancel = nc_host_cancel();
     g_unlocked = 1;
 
     json_object *o = json_object_new_object();
     json_object_object_add(o, "fingerprint", json_object_new_string(g_keys.fp));
     json_object_object_add(o, "fresh", json_object_new_boolean(g_ctx.fresh));
     return nc_end(set_result(o));
-}
-
-int nc_tick(void) {
-    if (nc_begin() != 0) return -1;
-    if (!g_unlocked) return nc_end(fail("Messages is not connected."));
-    nodus_client_tick(&g_client);
-    nodus_client_state_t st = nodus_client_state(&g_client);
-    if (st != NODUS_CLIENT_READY && st != NODUS_CLIENT_RECONNECTING)
-        return nc_end(fail("Nodus connection lost."));
-    return nc_end(0);
 }
 
 /* ── R1 ─────────────────────────────────────────────────────────────── */
@@ -724,33 +743,120 @@ int nc_ack_get(const char *fp, const char *salt_hex) {
     return nc_end(set_result(o));
 }
 
-/* ── cancel / lock: synchronous, never reach emscripten_sleep ─────────── */
+/* ── history at rest (NC-4a crypto, decision 2026-09-30-connect-history-
+ *    at-rest.md rev 2): K stays in this module; no network ────────────── */
 
-void nc_cancel(void) {
-    g_cancel = 1;
+/* K = nc_history_derive_key(session ML-DSA-87 sk, vault id). vault_id_hex:
+ * the wallet vault's 16-byte id (src/vault.js), 32 lowercase hex. A second
+ * call replaces K. */
+int nc_hist_key(const char *vault_id_hex) {
+    if (nc_begin() != 0) return -1;
+    if (!g_unlocked) return nc_end(fail("Messages is not connected."));
+    const nodus_identity_t *session_id = nc_host_identity();
+    if (!session_id) return nc_end(fail("Messages is not connected."));
+    uint8_t vid[NC_HISTORY_VAULT_ID_LEN];
+    if (parse_hex_fixed(vault_id_hex, vid, sizeof(vid)) != 0)
+        return nc_end(fail("Invalid vault id."));
+    g_hist_ok = 0;
+    int rc = nc_history_derive_key(session_id->sk.bytes, sizeof(session_id->sk.bytes),
+                                   vid, g_hist_key);
+    nc_wipe(vid, sizeof(vid));
+    if (rc != NC_HISTORY_OK) return nc_end(fail("History key could not be derived (%d).", rc));
+    g_hist_ok = 1;
+    return nc_end(set_result(json_object_new_object()));
 }
 
-/* Same order as nsw_lock: with an export suspended (g_busy) the socket is
- * only closed (its wait ends at the next wake-up); the JS side then zeroes
- * the whole linear memory and aborts the instance. */
-void nc_lock(void) {
-    g_cancel = 1;
-    g_locked = 1;
-    if (g_client_inited) {
-        if (g_busy) {
-            nodus_client_force_disconnect(&g_client);
-        } else {
-            nodus_client_close(&g_client);
-            g_client_inited = 0;
-        }
-        nc_wipe(&g_client.identity, sizeof(g_client.identity));
+/* One record. store / id: UTF-8 strings (the AAD, nc_history.h); pt_hex:
+ * 1..NC_HIST_PT_MAX bytes; counter_dec: the vault's invocation counter.
+ * Result { nonce, ct, tag (hex), counter (decimal, +1) }. */
+int nc_hist_encrypt(const char *store, const char *id, const char *pt_hex,
+                    const char *counter_dec) {
+    if (nc_begin() != 0) return -1;
+    if (!g_unlocked || !g_hist_ok) return nc_end(fail("History key is not ready."));
+    uint64_t counter;
+    if (!store || !id || parse_u64(counter_dec, &counter) != 0)
+        return nc_end(fail("Invalid history record."));
+    uint8_t *pt;
+    size_t pt_len;
+    if (parse_hex_var(pt_hex, NC_HIST_PT_MAX, &pt, &pt_len) != 0)
+        return nc_end(fail("Invalid history record."));
+    uint8_t *ct = malloc(pt_len);
+    if (!ct) { nc_wipe(pt, pt_len); free(pt); return nc_end(fail("Out of memory.")); }
+    uint8_t nonce[NC_HISTORY_NONCE_LEN], tag[NC_HISTORY_TAG_LEN];
+    int rc = nc_history_encrypt(g_hist_key, &counter,
+                                (const uint8_t *)store, strlen(store),
+                                (const uint8_t *)id, strlen(id),
+                                pt, pt_len, ct, nonce, tag);
+    nc_wipe(pt, pt_len);
+    free(pt);
+    if (rc != NC_HISTORY_OK) {
+        free(ct);
+        return nc_end(rc == NC_HISTORY_REFUSED
+                      ? fail("History record refused (budget used up or invalid input).")
+                      : fail("History record could not be sealed."));
     }
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "nonce", jhex(nonce, sizeof(nonce)));
+    json_object_object_add(o, "ct", jhex(ct, pt_len));
+    json_object_object_add(o, "tag", jhex(tag, sizeof(tag)));
+    json_object_object_add(o, "counter", jstr_u64(counter));
+    free(ct);
+    return nc_end(set_result(o));
+}
+
+/* Result { pt (hex) }; a record that does not authenticate is an error. */
+int nc_hist_decrypt(const char *store, const char *id, const char *nonce_hex,
+                    const char *ct_hex, const char *tag_hex) {
+    if (nc_begin() != 0) return -1;
+    if (!g_unlocked || !g_hist_ok) return nc_end(fail("History key is not ready."));
+    uint8_t nonce[NC_HISTORY_NONCE_LEN], tag[NC_HISTORY_TAG_LEN];
+    uint8_t *ct;
+    size_t ct_len;
+    if (!store || !id || parse_hex_fixed(nonce_hex, nonce, sizeof(nonce)) != 0 ||
+        parse_hex_fixed(tag_hex, tag, sizeof(tag)) != 0 ||
+        parse_hex_var(ct_hex, NC_HIST_PT_MAX, &ct, &ct_len) != 0)
+        return nc_end(fail("Invalid history record."));
+    uint8_t *pt = malloc(ct_len);
+    if (!pt) { free(ct); return nc_end(fail("Out of memory.")); }
+    int rc = nc_history_decrypt(g_hist_key,
+                                (const uint8_t *)store, strlen(store),
+                                (const uint8_t *)id, strlen(id),
+                                ct, ct_len, nonce, tag, pt);
+    free(ct);
+    if (rc != NC_HISTORY_OK) {
+        free(pt);                           /* wiped by nc_history_decrypt */
+        return nc_end(fail("History record did not open."));
+    }
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "pt", jhex(pt, ct_len));
+    nc_wipe(pt, ct_len);
+    free(pt);
+    return nc_end(set_result(o));
+}
+
+/* ── lock: synchronous, never reaches emscripten_sleep ───────────────── */
+
+/* Every Messages secret and cache. Called by the host's lock (nsw_lock,
+ * which then closes the session; JS zeroes the linear memory and aborts
+ * the instance) and by nc_lock / nc_end below. */
+void nc_session_wipe(void) {
     nc_keys_wipe(&g_keys);
     words_drop();
     result_drop();
+    nc_wipe(g_hist_key, sizeof(g_hist_key));
+    g_hist_ok = 0;
     nc_wipe(g_peers, sizeof(g_peers));
     g_n_peers = 0;
     g_next_peer = 0;
     memset(&g_ctx, 0, sizeof(g_ctx));
     g_unlocked = 0;
+}
+
+/* Closes Messages only; the wallet's session stays (its lock is nsw_lock).
+ * Terminal for this module instance. With an nc export suspended in the
+ * bracket, the wipe runs when it returns (nc_end), so the resumed export
+ * never touches wiped keys. */
+void nc_lock(void) {
+    g_closed = 1;
+    if (!g_inside) nc_session_wipe();
 }

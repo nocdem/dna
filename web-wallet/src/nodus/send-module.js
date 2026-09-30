@@ -184,6 +184,15 @@ export async function createNodusSendModule(network, { claim = null, loadGlue = 
     } catch (error) { claimError = error.message; }
   }
   const claimReady = () => { if (claimError) throw new Error(claimError); };
+  // Messages bridge (NC-4b): only nc_* entry points; the async form only
+  // inside the queue (connect()), never from connectSync().
+  const ncName = name => { if (typeof name !== 'string' || !name.startsWith('nc_')) throw new Error('Not a Messages entry point.'); return name; };
+  const connectApi = async => Object.freeze({
+    num: (name, types = [], args = []) => num(ncName(name), types, args),
+    str: (name, types = [], args = []) => str(ncName(name), types, args),
+    ...(async ? { call: (name, types = [], args = []) => call(ncName(name), types, args) } : {}),
+    heap: () => M.HEAPU8
+  });
   const WINDOW = ['open', 'not-open', 'closed'], CLAIMED = ['no-evidence', 'yes', 'unknown'];
 
   return {
@@ -357,6 +366,16 @@ export async function createNodusSendModule(network, { claim = null, loadGlue = 
         }
       };
     },
+    // MESSAGES (NC-4b): the Nodus Connect exports (nc_*, connect/nc_wasm.c)
+    // linked into THIS module and running on its one session. `connect(run)`
+    // is an asynchronous operation like the others (./client.js runs it in
+    // its one queue): `run` receives { num, str, call, heap } limited to nc_*
+    // names and may await `call` (ccall async) once per step.
+    // `connectSync(run)` is for the exports that never reach
+    // emscripten_sleep (nc_salt_pick, nc_day_today, nc_lock, nc_error,
+    // nc_result): safe while another export waits; `call` is not offered.
+    async connect(run) { return run(connectApi(true)); },
+    connectSync(run) { return run(connectApi(false)); },
     // Synchronous: none of these reaches emscripten_sleep (nodus-send-wasm.c
     // nsw_cancel / nsw_lock), so they are safe while another export waits.
     cancel() { M.ccall('nsw_cancel', null, [], []); },
