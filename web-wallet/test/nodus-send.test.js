@@ -304,7 +304,7 @@ test('claim status: parsed strictly; claimable only when found, open and not pro
   const { client, claim } = await claimClient();
   assert.equal(client.claimable, true);
   const status = await claimStatus({ client, from: FINGERPRINT });
-  assert.equal(status.claimable, true); assert.equal(status.amount, 5000000000000000n); assert.equal(status.amountText, '50000000 NODUS');
+  assert.equal(status.claimable, true); assert.equal(status.amount, 5000000000000000n); assert.equal(status.amountText, '50000000.0 NODUS');
   await assert.rejects(claimStatus({ client, from: 'ef'.repeat(64) }), /does not match/);
   for (const [change, claimable] of [[{ claimed: 'yes' }, false], [{ claimed: 'unknown' }, true], [{ window: 'not-open' }, false], [{ window: 'closed' }, false]]) {
     claim.status = { ...claim.status, claimed: 'no-evidence', window: 'open', ...change };
@@ -327,8 +327,8 @@ test('claim: review from the decoded claim; any mismatch or a closed / claimed a
   const { mock, client, claim } = await claimClient();
   const transfer = await prepareClaim({ client, from: FINGERPRINT });
   const review = Object.fromEntries(transfer.review);
-  assert.equal(transfer.kind, 'claim'); assert.equal(transfer.to, FINGERPRINT); assert.equal(transfer.amount, '50000000'); assert.equal(transfer.symbol, 'NODUS');
-  assert.equal(review.Amount, '50000000 NODUS'); assert.match(review['Paid to'], new RegExp(`^${FINGERPRINT}`)); assert.equal(review['Chain ID'], CHAIN_ID);
+  assert.equal(transfer.kind, 'claim'); assert.equal(transfer.to, FINGERPRINT); assert.equal(transfer.amount, '50000000.0'); assert.equal(transfer.symbol, 'NODUS');
+  assert.equal(review.Amount, '50000000.0 NODUS'); assert.match(review['Paid to'], new RegExp(`^${FINGERPRINT}`)); assert.equal(review['Chain ID'], CHAIN_ID);
   assert.match(review.Note, /only once/);
   transfer.cancel();
   await assert.rejects(transfer.confirm(async () => {}), /already closed/);
