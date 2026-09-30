@@ -25,9 +25,9 @@ extern "C" {
  * reading the string reported a version this binary had not been for a
  * long time. Bump BOTH, together, every time. */
 #define NODUS_VERSION_MAJOR  0
-#define NODUS_VERSION_MINOR  22
-#define NODUS_VERSION_PATCH  2
-#define NODUS_VERSION_STRING "0.22.2"
+#define NODUS_VERSION_MINOR  23
+#define NODUS_VERSION_PATCH  0
+#define NODUS_VERSION_STRING "0.23.0"
 
 /* Mempool lifetime ceiling (docs/plans/decisions/2026-09-25-mempool-
  * policy.md, decision 1 — "100 block yeterli"): CheckTx (new AND
