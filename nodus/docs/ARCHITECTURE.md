@@ -3151,6 +3151,137 @@ not recover it, wipe + pin rejoin does (7/7). Both PASS at grace 15/15
 (the short-grace build) — the LOGIC only, nothing about the production
 grace.
 
+### HF-2 — power-weighted governance approval + net-zero blocks, the second height-activated hard fork (2026-09-30, code only — not versioned, not deployed)
+
+**Governing records:** design `docs/plans/2026-09-30-gov-weight-netzero-design.md`
+(local; rev 2 — "one activation parameter, HF-1 pattern" — supersedes rev 1's
+"no activation height", Fable finding F1), decision
+`docs/plans/decisions/2026-09-30-governance-stake-weight-and-power-cap.md` item 1
+(operator: "oylama zaten stake ağırlıklı olmalıydı, kaçırmışız"),
+`docs/plans/decisions/2026-09-23-height-activated-upgrades-before-testnet.md`
+(a rule change that validates what old nodes refused is a planned hard fork),
+`nodus/BUGS.md` ACİL-1 and ACİL-4. The activation procedure is HF-1's
+(`DEPLOY_RUNBOOK.md` §2.2, "HF-2" there).
+
+**The parameter.** Chain-config id 7, `HF2_ACTIVE` (`DNAC_CFG_HF2_ACTIVE`,
+`dnac/include/dnac/dnac.h`; `CC_PARAM_HF2_ACTIVE`, `nodus_witness_chain_config.c`,
+pinned by `_Static_assert`). Value domain EXACTLY 1 (`DNAC_CFG_HF2_ACTIVE_ON`) —
+a one-way switch: 0 and every other value are refused by the scalar rules on
+both sides (witness `nodus_chain_config_scalar_rules`, client mirror
+`dnac/src/transaction/verify.c`), so no vote can turn HF-2 off; a later vote
+for 1 at a higher height changes nothing. Grace class ERGONOMIC (the HF-1
+class). `DNAC_CFG_PARAM_MAX_ID` / `CC_PARAM_MAX_ID` 6 → 7; id 7 is on
+`dnac_cfg_param_read_by_consensus`. Voted like every parameter
+(`nodus-cli chain-config propose --param HF2_ACTIVE --value 1 --effective <H>`,
+verbs 40/41 — the responder's checks are the scalar rules, so they cover it);
+the row's `effective_block` is the activation: the lookup is
+`effective_block <= height`, so both rules are ON from block H itself.
+
+**The read.** `env_hf2_active` (`nodus_witness_v2_apply.c`) reads param 7 at
+the block's height through the three-valued `nodus_chain_config_get_u64`; a read
+fault — or a stored value other than 0/1, which no writer can produce — is a
+node FAULT, never a default. The engine reads it in `env_authorize_legs` and
+`exec_one_env` (into `nodus_rt_exec_ctx_t.hf2_active`, the HF-1/W-C pattern:
+hooks stay pure) and once per block before phase 9. The CheckTx dry run
+(`nodus_witness_v2_env_dry_run`) runs the SAME two helpers at tip + 1, so
+CheckTx and FinalizeBlock judge an approval set by the same rule.
+
+**GW-1 — approvals weighed by power (ACİL-1).** The engine's committee view
+(`nodus_rt_committee_t`) gains `powers`: per seat, `total_stake /
+DNAC_DECIMAL_UNIT` — the derivation the block-commit validator set uses
+(`nodus_witness_cmt_app.c`, the FinalizeBlock validator-update loop) — filled by
+`committee_snapshot_for_height` before the member array is freed. The kind-2
+auth hook (`nodus_rt_auth_dsa87_v1`) sums, with checked u64 adds in seat
+order, the VERIFIED approving seats' powers (`approved_power`) and every
+seat's (`committee_power`) into the verdict; an overflowing sum leaves both 0
+("unweighable") rather than rejecting, so the hook's answer with HF-2 off is
+the pre-HF-2 answer for every input. The SYSTEM CHAIN_CONFIG exec
+(`nodus_rt_system_exec`): HF-2 off → `n_approvals >= dna_bft_quorum(n)` seats
+(unchanged); HF-2 on → `committee_power > 0` AND `approved_power >
+committee_power * 2 / 3` — cometbft's `tallied > needed`, `needed = total * 2 /
+3` (`shared/dnac/cmt_validation.c`'s `needed` line; reference
+`types/validation.go:37`). The reference doubles its total unchecked because it
+caps it at MaxInt64/8; this total has no cap, so the doubling is a checked
+multiply and an overflow refuses. With equal powers the two rules agree for
+every n ≥ 1, p ≥ 1 (design §1, Fable F3); with unequal powers they differ,
+which is why the switch is height-activated (F4).
+
+**GW-2 — a net-zero block no longer stops the chain (ACİL-4).** Phase 9 of
+`nodus_witness_v2_apply_block`: below H a touched domain whose root the block
+left unchanged is a block VERDICT (on this lane a CMT_FAULT at FinalizeBlock —
+every node stops at the same block); from H it writes its DomainUpdate with
+`pre_root == post_root` exactly like a changed domain (the `tx_batch_root`
+still names the items that ran) and phases 10-12 treat it as touched. The
+trigger ACİL-4 names: one block carrying a DELEGATE that creates a (delegator,
+validator) row and the full UNDELEGATE of the same pair — SYSTEM's validator
+totals and the delegations table return byte-for-byte. Treating the domain as
+untouched instead would FAULT at phase 12 (`v2_tx_local_index` primary key,
+design §4a F6). The legacy lane is deleted (the entry refuses `!cmt.on`), so
+"Comet lane AND HF-2" is "HF-2".
+
+**Byte-identical while off.** With no param-7
+row: `env_hf2_active` answers 0 and touches nothing; the exec takes the
+unchanged seat branch; phase 9 keeps its verdict; `compute_root` hashes
+existing rows only; the verdict's new fields are never hashed, stored or put on
+a wire. `nodus_rt_auth_verdict_t` grows 1 424 → 1 440 B (the two sums, appended
+last) and `NODUS_V2_APPLY_ENV_COST_BYTES` 21 824 → 21 856 — but the
+consensus-read envelope bound `NODUS_V2_ENV_BATCH_MAX` does NOT move: the builder
+first let it follow the struct (3 075 → 3 070, with no height gate — a proposer
+packing 3 071-3 075 decodable-but-unauthorizable envelopes during the rolling
+upgrade could have made old and new binaries disagree); the ORCHESTRATOR froze it
+at 3 075 as a literal and raised the scratch budget 64 → 65 MiB instead
+(`nodus_witness_v2_apply.h` pins; `NODUS_V2_APPLY_MAX_OPS` stays 17 237). Rule:
+a consensus-read bound never moves as a side effect of a struct size (had it
+moved, old nodes would prevote such a block and new nodes nil, and if the old
+side plus the proposer held > 2/3 of the power every NEW node would FAULT at
+FinalizeBlock — the class of HF-1's bundled cache fix). With the bound frozen,
+the HF-2 binary with no param-7 row decides every block exactly as 0.23.1.
+
+**Honest labels.**
+- *One-block offset after an epoch boundary (Fable F2).* The approval set is
+  weighed by the committee governing H−1 (the engine's snapshot rule), while
+  cometbft commits block H with the validator set it adopted two heights
+  earlier (design §4a F2, citing `cmt_host.c:1314`; not re-verified by this
+  package). For the ONE block right after a
+  boundary the approvals are weighed by the NEW set's powers while the block is
+  committed by the OLD set's. Deterministic on every node; it can change which
+  approval sets pass only in that block.
+- *Committee power vs commit power.* The committee view's `total_stake` and
+  the vset entry the commit loop divides are taken to be the same frozen value
+  (design §0/§1: "commit ile AYNI türetme"). This package copies the
+  derivation; it did not re-verify that the two resolution paths read the same
+  column (not re-verified — per design §0).
+- *The online `propose` keeps the seat rule for its own early abort and
+  round-2 decision.* No RPC reports param 7 (`dnac_fee_info` carries 5 and 6
+  only) and adding one was out of scope; the chain's verdict is authoritative
+  either way. The offline `v2-envelope chain-config` builder reads param 7 from
+  its database at tip + 1 and picks approver keys until their power exceeds
+  2/3. `nodus-cli witness` prints both thresholds.
+- *A fresh chain starts HF-2 OFF.* The genesis document seeds params 5 and 6
+  only (`nodus_witness_v2_gen.c`); HF-2 needs its vote.
+- *The legacy type-10 client mirror* keeps its `[5, 128]` vote-count SHAPE
+  window (`DNAC_CHAIN_CONFIG_MIN_SIGS`); the version-3 carrier (auth_kind 2) has
+  no minimum count, so a power majority of fewer than 5 seats is expressible
+  there.
+
+**Tests** (written; run by the ORCHESTRATOR): `test_v2_native`
+`test_hf2_power_hook` (the hook's sums under unequal / zero / overflowing
+powers and a missing power array; the exec matrix on hand-built verdicts —
+count-pass/power-fail and the inverse, the exact threshold and one below at
+totals 65/100/99/3, power 0, a doubling overflow, a kind-1 shape; OFF keeps the
+seat verdicts), `test_hf2_power_engine` (unequal stakes 40/20/1×5 NODUS of
+power, HF-2 at height 2: at 1 two big seats refused and five small applied, at
+2 the five refused, 43/65 refused, 44/65 applied, at 3 the two big applied —
+the H−1 / H boundary through the real engine), `test_hf2_power_zero` (the
+default fixture's zero powers: OFF applies, ON refuses), `test_hf2_netzero_block`
+(the ACİL-4 pair: a VERDICT at height 1, applied at height 2 with SYSTEM's
+DomainUpdate pre == post == the unchanged head root, and a twin fixture fed the
+same bytes lands on identical roots, update hashes and consensus tables);
+`test_chain_config_witness` Test 10 (id 7 on the read list, value 1 only,
+ERGONOMIC grace, the H−1/H read boundary, its own cache slot); `test_cc_appr`
+`hf2_bad_value_refused` / `hf2_legal_signs` (the responder). No Genesis Protocol
+scenario (out of scope for this package).
+
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
 **Records:** `docs/plans/2026-09-28-scan-v3-design.md`, decision

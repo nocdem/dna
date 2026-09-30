@@ -145,7 +145,8 @@ this wave. Read this before any Comet-lane scenario's own header.
    register R3-W3-C2a-19): envelopes ≤ `NODUS_V2_ENV_BATCH_MAX` (3 075
    since general multisig grew the auth verdict — 3 209 before;
    a derived MEMORY ceiling since delta 2 — 64 MiB scratch budget /
-   21 824 B per envelope; NOT the governance hard cap of 10 delta 1
+   21 824 B per envelope — FROZEN at 3 075 by HF-2, budget 65 MiB for
+   21 856 B; NOT the governance hard cap of 10 delta 1
    briefly tied it to),
    claims ≤ `NODUS_V2_APPLY_MAX_CLAIMS` (14 162, derived from cometbft's
    own `MaxBlockSizeBytes` — `nodus_witness_v2_apply.h`), packed from the

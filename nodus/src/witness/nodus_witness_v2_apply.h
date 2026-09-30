@@ -187,7 +187,10 @@
  * the DECLARED touched set IS the leg list) ∪ the claims' committed
  * TARGET domains ∪ the pool batches' owning domains. A domain a leg
  * addresses without changing its state still touches it (post == pre is
- * REJECTED — a DECLARED no-op, no fake empty updates); a runtime that
+ * REJECTED — a DECLARED no-op, no fake empty updates — below the HF-2
+ * height; from the HF-2 height, chain_config param 7 DNAC_CFG_HF2_ACTIVE,
+ * it is a legitimate net-zero block and the DomainUpdate is written with
+ * pre_root == post_root, nodus/BUGS.md ACİL-4 / GW-2); a runtime that
  * CHANGES a domain its leg did not address is caught by the
  * untouched-domain guard (cross-domain substitution rejects the block).
  * An untouched domain gets NO update, NO head write, NO history row and
@@ -291,12 +294,15 @@ extern "C" {
  * `auth_off` went with it, tokenomics-v3 P4)
  * — a RELEASE RESOURCE CHOICE, the same kind of number as the W3
  * receive arena's 64 MiB (nodus_witness_cmt_net.h) — not a consensus
- * parameter, never governed, never voted. 64 MiB. (Unlike
+ * parameter, never governed, never voted. 64 MiB, 65 MiB since HF-2. (Unlike
  * `NODUS_V2_GLOBAL_UNIT_BUDGET` above, which decides which blocks are
  * valid and IS a consensus value — an earlier version of this comment
  * put the two in one class.) */
 #define NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES \
-    ((size_t)64u * 1024u * 1024u)
+    ((size_t)65u * 1024u * 1024u)   /* HF-2: 64 → 65 MiB so the FROZEN
+                                     * 3 075-envelope bound below still fits
+                                     * the larger verdict (ORCHESTRATOR,
+                                     * 2026-09-30) */
 
 /**
  * THE ENGINE'S OWN MEMORY COST OF ONE ENVELOPE'S PER-BLOCK SCRATCH.
@@ -331,9 +337,12 @@ extern "C" {
  *     — not env_wire.h): 2 + 15×64 + 2 + 2 = 966 B before the general-
  *     multisig season; it added n_msig u16 (2) + msig_satisfied[7] (7) +
  *     msig_addr[7][64] (448) = 1 423 B of members, padded to the struct's
- *     2-byte alignment = 1 424 B (every member is `uint16_t`/`uint8_t`;
- *     the one pad byte trails msig_addr). Pinned by the cost assert
- *     below — a passing compile IS the measurement.
+ *     2-byte alignment = 1 424 B (every member was `uint16_t`/`uint8_t`;
+ *     the one pad byte trails msig_addr). HF-2 (2026-09-30) appends
+ *     approved_power + committee_power (2 × u64) AFTER msig_addr: 1 424
+ *     is already 8-aligned, so the struct is 1 424 + 16 = 1 440 B.
+ *     Pinned by the cost assert below — a passing compile IS the
+ *     measurement.
  *   - 2 × 64 B — the `wire_ids` entry each of those (up to) two touched
  *     domains gets (`nodus_witness_v2_apply.c`'s `dom_ctx_t.wire_ids`,
  *     delta 1: heap, lazily allocated, 64 B per touched domain).
@@ -344,10 +353,10 @@ extern "C" {
 
 /**
  * Largest ENVELOPE batch the engine will allocate per-block scratch
- * for, derived: `NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES /
- * NODUS_V2_APPLY_ENV_COST_BYTES` (integer division floors, the SAFE
- * direction — it under-counts, never over-counts, how many envelopes'
- * worth of scratch 64 MiB actually buys).
+ * for. Until HF-2 it was derived as `NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES /
+ * NODUS_V2_APPLY_ENV_COST_BYTES`; since HF-2 it is the literal 3 075 (the
+ * value that derivation gave since general multisig), because consensus
+ * reads it — the budget is sized to fit it (assert below).
  *
  * PROVABLY ABOVE what the surviving bounds allow for AUTHORIZABLE
  * envelopes in practice (the operator's decision's own requirement),
@@ -368,22 +377,41 @@ extern "C" {
  *   - Using ONLY the documented, already-`_Static_assert`-enforced
  *     ceilings (`dna_env_preflight_t` MEASURED 15 096 B, `dna_meter_t`
  *     audited <= 4096 B), the WORST-CASE per-envelope cost is 15 096 +
- *     4 096 + 2x1 424 + 128 = 22 168 B (general multisig; 21 252 with
- *     the 966-B verdict before it), giving a WORST-CASE
- *     `NODUS_V2_ENV_BATCH_MAX` of 67 108 864 / 22 168 = 3 027 (3 157
- *     before) — still above the 3 002 byte-derived practical ceiling,
- *     now by a margin of 25. The REAL compiled value (using the true,
+ *     4 096 + 2x1 440 + 128 = 22 200 B (HF-2; 22 168 with the 1 424-B
+ *     general-multisig verdict, 21 252 with the 966-B one before it),
+ *     giving a WORST-CASE `NODUS_V2_ENV_BATCH_MAX` of 67 108 864 /
+ *     22 200 = 3 022 (3 027 before HF-2, 3 157 before general multisig)
+ *     — still above the 3 002 byte-derived practical ceiling, now by a
+ *     margin of 20. The REAL compiled value (using the true,
  *     possibly-smaller `sizeof(dna_meter_t)`) can only be EQUAL OR
  *     LARGER, so it is provably above 3 002 too.
  *   - MEASURED (ORCHESTRATOR build, 2026-09-18): `sizeof(dna_meter_t)`
  *     = 3 752, so the cost was 20 908 B and this bound 3 209. General
- *     multisig (2026-09-29) grows the verdict 966 → 1 424 B: the cost is
- *     15 096 + 3 752 + 2×1 424 + 128 = 21 824 B and this bound is
- *     67 108 864 / 21 824 = 3 075 — the pins below hold exactly these
+ *     multisig (2026-09-29) grew the verdict 966 → 1 424 B: cost 21 824 B,
+ *     bound 3 075. HF-2 (2026-09-30) grows it 1 424 → 1 440 B: the cost
+ *     is 15 096 + 3 752 + 2×1 440 + 128 = 21 856 B; the bound is NOT
+ *     re-derived from it — it stays frozen at 3 075 and the budget grows
+ *     to 65 MiB (next paragraph) — the pins below hold exactly these
  *     figures (a clean compile is their measurement).
+ *     ⚠ HF-2 (ORCHESTRATOR, 2026-09-30): this bound is READ BY CONSENSUS
+ *     (ProcessProposal refuses a block above it; FinalizeBlock's engine
+ *     returns a VERDICT for one, nodus_witness_v2_apply.c "batch of %llu
+ *     envelopes exceeds the engine bound"), so it must NOT move with a
+ *     struct's size: a binary whose bound differs from the running
+ *     fleet's, deployed without a height gate, can disagree with it about
+ *     one block (a proposer packing decodable-but-unauthorizable envelopes
+ *     between the two bounds). It is therefore FROZEN at 3 075 — the value
+ *     every 0.23.x node runs since general multisig — and the struct
+ *     growth is paid by the scratch budget (64 → 65 MiB): the assert below
+ *     requires 3 075 × cost to fit the budget. Moving this number is a
+ *     height-activated hard fork, never a side effect.
  */
-#define NODUS_V2_ENV_BATCH_MAX \
-    (NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES / NODUS_V2_APPLY_ENV_COST_BYTES)
+#define NODUS_V2_ENV_BATCH_MAX ((size_t)3075u)
+_Static_assert(NODUS_V2_ENV_BATCH_MAX * NODUS_V2_APPLY_ENV_COST_BYTES <=
+                   NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES,
+               "the frozen 3 075-envelope bound no longer fits the scratch "
+               "budget — raise NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES, never "
+               "lower the bound without a height gate");
 
 _Static_assert(NODUS_V2_APPLY_ENV_COST_BYTES <= 32768,
                "NODUS_V2_APPLY_ENV_COST_BYTES exceeded the 32 KiB working "
@@ -395,8 +423,9 @@ _Static_assert(NODUS_V2_ENV_BATCH_MAX > 3002,
                "practical ceiling (this chain's default Block.MaxBytes "
                "22020096 / the smallest authorizable envelope 7334 B = "
                "3002) — the operator's decision requires this bound to "
-               "never decide a block's validity in practice; if this "
-               "fires, NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES needs raising");
+               "never decide a block's validity in practice; the bound "
+               "is a frozen consensus literal — changing it is a "
+               "height-activated hard fork");
 
 /**
  * R3 W4 package C (ORCHESTRATOR, 2026-09-18) — THE MOST CLAIMS ANY
@@ -441,12 +470,13 @@ _Static_assert(NODUS_V2_APPLY_MAX_CLAIMS == 14162,
  *
  * W4 package C (2026-09-18) replaces the flat 16 with the SUM of the two
  * bounds now derived independently above: the envelope batch max
- * (`NODUS_V2_ENV_BATCH_MAX`, the 64 MiB scratch budget over the measured
- * per-envelope cost — 3 075 on this build since general multisig, 3 209
- * before it; delta 1 briefly tied it to the
- * governance hard cap of 10, retired in delta 2) plus the most claims one
- * cometbft block can carry (`NODUS_V2_APPLY_MAX_CLAIMS`, 14 162) =
- * 17 237 (17 371 before general multisig). The per-block scratch this bounded
+ * (`NODUS_V2_ENV_BATCH_MAX` — 3 075 since general multisig, FROZEN at
+ * that value by HF-2 because it is consensus-read; 3 209 before general
+ * multisig; delta 1 briefly tied it to the governance hard cap of 10,
+ * retired in delta 2) plus the most claims one cometbft block can carry
+ * (`NODUS_V2_APPLY_MAX_CLAIMS`, 14 162) = 17 237 (17 371 before general
+ * multisig). The
+ * per-block scratch this bounded
  * (`wire_ids`/`claim_nuls`/`all_ids`/`auths`) is no longer
  * fixed-size at this number — it is heap-allocated and sized by the
  * BLOCK's own `n_envs`/`n_claims`/leg counts (see the per-field comments
@@ -478,21 +508,30 @@ _Static_assert(NODUS_V2_APPLY_MAX_CLAIMS == 14162,
  * arithmetic at the cost macro above) ⇒
  * NODUS_V2_APPLY_ENV_COST_BYTES = 15 096 + 3 752 + 2×1 424 + 128 = 21 824;
  * NODUS_V2_ENV_BATCH_MAX = 67 108 864 / 21 824 = 3 075;
- * NODUS_V2_APPLY_MAX_OPS = 3 075 + 14 162 = 17 237. The pins below are
+ * NODUS_V2_APPLY_MAX_OPS = 3 075 + 14 162 = 17 237.
+ *
+ * HF-2 (design docs/plans/2026-09-30-gov-weight-netzero-design.md rev 2):
+ * the verdict carries the kind-2 approval power sums (approved_power,
+ * committee_power — 2 × u64, appended LAST), sizeof 1 424 → 1 440 ⇒
+ * NODUS_V2_APPLY_ENV_COST_BYTES = 15 096 + 3 752 + 2×1 440 + 128 = 21 856;
+ * NODUS_V2_ENV_BATCH_MAX stays FROZEN at 3 075 (a consensus-read bound;
+ * 3 075 × 21 856 = 67 207 200 ≤ the 65 MiB = 68 157 440 budget);
+ * NODUS_V2_APPLY_MAX_OPS = 3 075 + 14 162 = 17 237 (unchanged). The pins below are
  * the trip-wires: a struct layout or budget change moves them and must
  * move every citation of these numbers with it (known citations outside
- * this header: nodus_witness_cmt_app.h, nodus/docs/MEMPOOL_BLOCK_TIME.md,
- * nodus/docs/ARCHITECTURE.md, stagef/README.md). */
-_Static_assert(sizeof(nodus_rt_auth_verdict_t) == 1424,
+ * this header: nodus_witness_cmt_app.h, nodus_witness_cmt_app.c,
+ * nodus/docs/MEMPOOL_BLOCK_TIME.md, nodus/docs/ARCHITECTURE.md,
+ * stagef/README.md). */
+_Static_assert(sizeof(nodus_rt_auth_verdict_t) == 1440,
                "nodus_rt_auth_verdict_t drifted — re-derive the per-envelope "
                "scratch cost below");
-_Static_assert(NODUS_V2_APPLY_ENV_COST_BYTES == 21824,
+_Static_assert(NODUS_V2_APPLY_ENV_COST_BYTES == 21856,
                "NODUS_V2_APPLY_ENV_COST_BYTES drifted — a struct in the "
                "per-envelope scratch changed size; re-derive "
-               "NODUS_V2_ENV_BATCH_MAX and re-check every citation of 21824");
+               "NODUS_V2_ENV_BATCH_MAX and re-check every citation of 21856");
 _Static_assert(NODUS_V2_ENV_BATCH_MAX == 3075,
-               "NODUS_V2_ENV_BATCH_MAX drifted — re-derive from the scratch "
-               "budget / per-envelope cost and re-check every citation of 3075");
+               "NODUS_V2_ENV_BATCH_MAX is a consensus-read bound frozen at "
+               "3075 — changing it is a height-activated hard fork");
 _Static_assert(NODUS_V2_APPLY_MAX_OPS == 17237,
                "NODUS_V2_APPLY_MAX_OPS drifted — re-derive from "
                "NODUS_V2_ENV_BATCH_MAX + NODUS_V2_APPLY_MAX_CLAIMS and "

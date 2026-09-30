@@ -12102,6 +12102,689 @@ static int test_core_multisig(void) {
     return 0;
 }
 
+/* ══ HF-2 — the second height-activated hard fork (design docs/plans/
+ * 2026-09-30-gov-weight-netzero-design.md rev 2; decision docs/plans/
+ * decisions/2026-09-30-governance-stake-weight-and-power-cap.md; nodus/
+ * BUGS.md ACİL-1 and ACİL-4) ═══════════════════════════════════════════
+ *
+ * One switch, chain_config param 7 (DNAC_CFG_HF2_ACTIVE = 1 at an
+ * effective height H), two rules:
+ *   GW-1 — a CHAIN_CONFIG approval is weighed by VOTING POWER (approving
+ *          power > 2/3 of the governing committee's power, the block
+ *          commit's unit and integer form) instead of by seat count;
+ *   GW-2 — a touched domain whose root a block leaves unchanged writes a
+ *          DomainUpdate with pre_root == post_root instead of failing the
+ *          whole block.
+ * Below H (and on every chain without the row) both rules are the pre-HF-2
+ * ones. The HF-2 row is written into the GENESIS state (g_fx_pre_genesis)
+ * because a post-genesis SQL write into chain_config_history would move
+ * the SYSTEM root outside any block — which would make phase 9 see a
+ * "changed" SYSTEM root and hide exactly what GW-2 is about.
+ *
+ * Sections:
+ *   1. test_hf2_power_hook — the auth hook's power sums (unequal powers,
+ *      zero powers, overflow, a missing power array) and the exec's
+ *      power rule vs the seat rule on hand-built verdicts: count passes /
+ *      power fails and the inverse, the exact threshold and one below it
+ *      at three committee totals, a zero-power committee, an overflowing
+ *      total, a kind-1-shaped verdict; HF-2 OFF keeps today's matrix.
+ *   2. test_hf2_power_engine — the same rules through the real engine on
+ *      a fixture with UNEQUAL stakes (40/20/1/1/1/1/1 NODUS of power) and
+ *      the HF-2 row effective at height 2: at height 1 (OFF) two
+ *      high-power seats are refused and five low-power seats pass; at
+ *      height 2 (ON) the five are refused, 43 of 65 is refused, 44 of 65
+ *      passes; at height 3 the two high-power seats pass. Proves the
+ *      engine derives each seat's power from the committee snapshot and
+ *      hands the switch to the exec at the block's own height — the
+ *      H-1 / H boundary.
+ *   3. test_hf2_power_zero — the default fixture's stakes are 1 000 raw
+ *      (power 0): OFF a 5-seat approval applies, ON a 7-seat approval is
+ *      refused (committee power 0 can approve nothing).
+ *   4. test_hf2_netzero_block — GW-2, the ACİL-4 block: a DELEGATE that
+ *      creates (9 → 0) and the full UNDELEGATE of the same pair in ONE
+ *      block. OFF (height 1): the block is a VERDICT "DECLARED no-op"
+ *      (the pre-HF-2 halt), nothing written. ON (height 2): both items
+ *      apply, SYSTEM's DomainUpdate has pre_root == post_root, the SYSTEM
+ *      head root is unchanged, the head height advanced; an independent
+ *      twin fixture fed the same envelope bytes lands on byte-identical
+ *      roots, updates and consensus tables.
+ * Parameters: the test binary's compiled constants (DNAC_EPOCH_LENGTH
+ * 720 and the SAFETY grace 17 280 in a default build) — every height
+ * used here is inside epoch 0, and every chain-config effective height
+ * (20 000+) clears the SAFETY floor at heights 1-3. */
+
+#define HF2_SEATS 7
+
+/* Pre-genesis knobs (g_fx_pre_genesis is one-shot; set these, arm it). */
+static uint64_t g_hf2_eff;            /* 0 = no HF-2 row                  */
+static int      g_hf2_unequal;        /* 1 = the 40/20/1×5 stake table    */
+static int      g_hf2_fund;           /* 1 = the GW-2 funding coins       */
+static uint8_t  g_hf2_f9a[64], g_hf2_f9b[64], g_hf2_f10[64];
+
+/* powers in NODUS of voting power, per KEY (keys 0..6 are the seats) */
+static const uint64_t HF2_POWER[HF2_SEATS] = { 40, 20, 1, 1, 1, 1, 1 };
+
+static int hf2_pre_genesis(fixture_t *fx) {
+    if (g_hf2_eff != 0) {
+        char sql[256];
+        snprintf(sql, sizeof(sql),
+                 "INSERT INTO chain_config_history (param_id, new_value, "
+                 "effective_block, commit_block, tx_hash, proposal_nonce, "
+                 "created_at_unix) VALUES (%u, %llu, %llu, 0, zeroblob(64), "
+                 "1, 0)", (unsigned)DNAC_CFG_HF2_ACTIVE,
+                 (unsigned long long)DNAC_CFG_HF2_ACTIVE_ON,
+                 (unsigned long long)g_hf2_eff);
+        if (run_sql(fx->w->db, sql) != 0) return -1;
+    }
+    if (g_hf2_unequal) {
+        uint64_t delta = 0;
+        for (int k = 0; k < HF2_SEATS; k++) {
+            uint64_t stake = HF2_POWER[k] * (uint64_t)DNAC_DECIMAL_UNIT;
+            sqlite3_stmt *st = NULL;
+            if (sqlite3_prepare_v2(fx->w->db,
+                    "UPDATE validators SET self_stake = ?1 WHERE pubkey = ?2",
+                    -1, &st, NULL) != SQLITE_OK)
+                return -1;
+            sqlite3_bind_int64(st, 1, (sqlite3_int64)stake);
+            sqlite3_bind_blob(st, 2, g_pk[k], 2592, SQLITE_TRANSIENT);
+            int rc = sqlite3_step(st);
+            sqlite3_finalize(st);
+            if (rc != SQLITE_DONE || sqlite3_changes(fx->w->db) != 1)
+                return -1;
+            delta += stake - VAL_BOND;
+        }
+        char sql[256];
+        snprintf(sql, sizeof(sql),
+                 "UPDATE supply_tracking SET genesis_supply = "
+                 "genesis_supply + %llu, current_supply = current_supply + "
+                 "%llu WHERE id = 1", (unsigned long long)delta,
+                 (unsigned long long)delta);
+        if (run_sql(fx->w->db, sql) != 0) return -1;
+    }
+    if (g_hf2_fund) {
+        if (seed_funding(fx, 9, DLG_FUND, 0xD1, g_hf2_f9a) != 0 ||
+            seed_funding(fx, 9, NOLOCK_FUND, 0xD2, g_hf2_f9b) != 0 ||
+            seed_funding(fx, 10, DLG_FUND, 0xD3, g_hf2_f10) != 0)
+            return -1;
+    }
+    /* whatever read the chain_config table before these rows existed must
+     * not answer from a stale warm cache */
+    fx->w->chain_config_cache_warm = false;
+    return 0;
+}
+
+static int hf2_genesis(fixture_t *fx, const char *tag, uint64_t eff,
+                       int unequal, int fund) {
+    g_hf2_eff = eff;
+    g_hf2_unequal = unequal;
+    g_hf2_fund = fund;
+    g_fx_pre_genesis = hf2_pre_genesis;
+    int rc = fx_genesis(fx, tag);
+    g_hf2_eff = 0;
+    g_hf2_unequal = 0;
+    g_hf2_fund = 0;
+    return rc;
+}
+
+/* The engine's committee view, built by hand from the SAME resolution the
+ * engine consults (cc_learn → nodus_committee_get_for_block at H-1), with
+ * caller-chosen powers per SEAT. Heap: 7 × 2592 B of pubkeys. */
+typedef struct {
+    nodus_rt_committee_t cm;
+    cc_view_t            cv;
+    uint8_t             *pks;
+    uint8_t            (*fps)[64];
+    uint64_t             powers[HF2_SEATS];
+} hf2_view_t;
+
+static void hf2_view_free(hf2_view_t *hv) {
+    free(hv->pks);
+    free(hv->fps);
+    free(hv->cv.mem);
+    memset(hv, 0, sizeof(*hv));
+}
+
+static int hf2_view_build(fixture_t *fx, uint64_t exec_h, hf2_view_t *hv) {
+    memset(hv, 0, sizeof(*hv));
+    if (cc_learn(fx, exec_h, (const uint8_t (*)[2592])g_pk, N_KEYS,
+                 &hv->cv) != 0 || hv->cv.count != HF2_SEATS)
+        return -1;
+    hv->pks = malloc((size_t)HF2_SEATS * 2592);
+    hv->fps = calloc(HF2_SEATS, 64);
+    if (!hv->pks || !hv->fps) return -1;
+    for (int s = 0; s < HF2_SEATS; s++) {
+        memcpy(hv->pks + (size_t)s * 2592, hv->cv.mem[s].pubkey, 2592);
+        if (qgp_sha3_512(hv->cv.mem[s].pubkey, 2592, hv->fps[s]) != 0)
+            return -1;
+    }
+    hv->cm.count = HF2_SEATS;
+    hv->cm.epoch = hv->cv.epoch;
+    memcpy(hv->cm.set_hash, hv->cv.set_hash, 64);
+    hv->cm.pubkeys = hv->pks;
+    hv->cm.fps = (const uint8_t (*)[64])hv->fps;
+    hv->cm.powers = hv->powers;
+    return 0;
+}
+
+/* The SYSTEM leg's preflight at height 1 (wire/intent ids, the leg auth
+ * digest) — the same derivation derive_ids runs. */
+static int hf2_preflight(fixture_t *fx, const env_t *e,
+                         dna_env_preflight_t *pf) {
+    size_t n = 0;
+    const nodus_domain_runtime_t *bt = nodus_runtime_builtin_table(&n);
+    if (!bt || n != 2) return -1;
+    dna_env_leg_ctx_t lctx;
+    memset(&lctx, 0, sizeof(lctx));
+    lctx.domain_id = DNA_DOMAIN_SYSTEM;
+    lctx.ruleset_version = bt[0].ruleset_version;
+    memcpy(lctx.ruleset_hash, bt[0].ruleset_hash, 64);
+    return dna_env_preflight(e->bytes, e->len, fx->chain_id, 1, &lctx, 1,
+                             pf) == DNA_ENV_PF_OK ? 0 : -1;
+}
+
+/* run the SYSTEM exec on one CC leg under a hand-built verdict */
+static int hf2_exec(fixture_t *fx, const dna_env_view_t *v,
+                    const dna_env_preflight_t *pf,
+                    const nodus_rt_auth_verdict_t *av, uint8_t hf2) {
+    static uint8_t res[DNA_EFFECT_MAX_TOTAL_LEN];
+    size_t n = 0, rl = 0;
+    const nodus_domain_runtime_t *bt = nodus_runtime_builtin_table(&n);
+    if (!bt || n != 2) return -99;
+    nodus_rt_exec_ctx_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.chain_id = fx->chain_id;
+    ctx.global_height = 1;
+    ctx.epoch = nodus_v2_epoch_for_height(1);
+    ctx.wire_id = pf->wire_id;
+    ctx.intent_id = pf->intent_id;
+    ctx.auth_context_commit = pf->auth_context_commit;
+    ctx.leg_auth_digest = pf->auth_digest[0];
+    ctx.auth = av;
+    ctx.hf2_active = hf2;
+    return nodus_rt_system_exec(&bt[0], v, 0, &ctx, NULL, 0, res,
+                                sizeof(res), &rl);
+}
+
+/* ── 1. hook level ───────────────────────────────────────────────────── */
+static int test_hf2_power_hook(void) {
+    fixture_t fx;
+    CHECK(fx_genesis(&fx, "hf2hook") == 0, "genesis");
+    size_t n = 0;
+    const nodus_domain_runtime_t *bt = nodus_runtime_builtin_table(&n);
+    CHECK(bt && n == 2, "builtin table");
+
+    /* two envelopes: approvals from keys {0,1} and from keys {0..4} —
+     * param 4 value 9, effective 20000 (clears the SAFETY floor at H=1),
+     * valid_before 30000 — exactly what test_system_cc commits */
+    static env_t e2, e5;
+    int k2[2] = { 0, 1 };
+    int k5[5] = { 0, 1, 2, 3, 4 };
+    CHECK(cc_env(&fx, &e2, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 20000, 0x42,
+                 1, 30000, k2, 2, 0, NULL, NULL) == 0, "build 2");
+    CHECK(cc_env(&fx, &e5, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 20000, 0x43,
+                 1, 30000, k5, 5, 0, NULL, NULL) == 0, "build 5");
+    dna_env_view_t v2, v5;
+    CHECK(dna_env_decode(e2.bytes, e2.len, &v2) == 0 &&
+          dna_env_decode(e5.bytes, e5.len, &v5) == 0, "decode");
+    dna_env_preflight_t *pf2 = calloc(1, sizeof(*pf2));
+    dna_env_preflight_t *pf5 = calloc(1, sizeof(*pf5));
+    CHECK(pf2 && pf5, "alloc");
+    CHECK(hf2_preflight(&fx, &e2, pf2) == 0 &&
+          hf2_preflight(&fx, &e5, pf5) == 0, "preflight");
+
+    hf2_view_t hv;
+    CHECK(hf2_view_build(&fx, 1, &hv) == 0, "committee view");
+    const int s0 = hv.cv.seat_of[0], s1 = hv.cv.seat_of[1];
+    CHECK(s0 >= 0 && s1 >= 0 && s0 != s1, "keys 0 and 1 are seated");
+
+    nodus_rt_exec_ctx_t actx;
+    nodus_rt_auth_verdict_t av, av5;
+
+    /* (a) UNEQUAL powers through the auth hook: seats of keys 0/1 carry
+     * 40/20, the other five 1 each — total 65, approving 60. The hook
+     * sums exactly what it verified. */
+    for (int s = 0; s < HF2_SEATS; s++) hv.powers[s] = 1;
+    hv.powers[s0] = 40;
+    hv.powers[s1] = 20;
+    memset(&actx, 0, sizeof(actx));
+    actx.chain_id = fx.chain_id;
+    actx.global_height = 1;
+    actx.epoch = nodus_v2_epoch_for_height(1);
+    actx.wire_id = pf2->wire_id;
+    actx.intent_id = pf2->intent_id;
+    actx.auth_context_commit = pf2->auth_context_commit;
+    actx.leg_auth_digest = pf2->auth_digest[0];
+    actx.committee = &hv.cm;
+    CHECK(nodus_rt_auth_dsa87_v1(&bt[0], &v2, 0, &actx, &av) == 0,
+          "auth: two real approvals verify");
+    CHECK(av.n_approvals == 2 && av.committee_n == HF2_SEATS,
+          "auth: seat count and committee size");
+    CHECK(av.approved_power == 60 && av.committee_power == 65,
+          "auth: approved 40 + 20, committee 40 + 20 + 5 x 1");
+    OK();
+    /* the same verdict under both rules: 2 seats < quorum(7) = 5, but
+     * 60 > 65 * 2 / 3 = 43 */
+    CHECK(hf2_exec(&fx, &v2, pf2, &av, 0) == -1,
+          "OFF: 2 of 7 seats is below the seat quorum");
+    CHECK(hf2_exec(&fx, &v2, pf2, &av, 1) == 0,
+          "ON: 60 of 65 power passes with only two seats");
+    OK();
+
+    /* (b) the 5-approval envelope under the same powers: 5 seats = the
+     * seat quorum; power 40 + 20 + 1 + 1 + 1 = 63 of 65. And with the two
+     * big seats NOT among the approvers the power fails — rebuilt below
+     * at the verdict level. */
+    actx.wire_id = pf5->wire_id;
+    actx.intent_id = pf5->intent_id;
+    actx.auth_context_commit = pf5->auth_context_commit;
+    actx.leg_auth_digest = pf5->auth_digest[0];
+    CHECK(nodus_rt_auth_dsa87_v1(&bt[0], &v5, 0, &actx, &av5) == 0,
+          "auth: five real approvals verify");
+    CHECK(av5.n_approvals == 5 && av5.approved_power == 63 &&
+          av5.committee_power == 65, "auth: five-seat sums");
+    CHECK(hf2_exec(&fx, &v5, pf5, &av5, 0) == 0 &&
+          hf2_exec(&fx, &v5, pf5, &av5, 1) == 0,
+          "5 seats holding 63 of 65 pass under both rules");
+    OK();
+
+    /* (c) ZERO powers (a committee of sub-NODUS stakes): the hook still
+     * verifies (nothing about the OFF verdict moves), the sums are 0, and
+     * ON refuses — power 0 can approve nothing. */
+    for (int s = 0; s < HF2_SEATS; s++) hv.powers[s] = 0;
+    CHECK(nodus_rt_auth_dsa87_v1(&bt[0], &v5, 0, &actx, &av) == 0 &&
+          av.n_approvals == 5 && av.approved_power == 0 &&
+          av.committee_power == 0, "auth: zero powers verify, sums 0");
+    CHECK(hf2_exec(&fx, &v5, pf5, &av, 0) == 0,
+          "OFF: zero power does not touch the seat rule");
+    CHECK(hf2_exec(&fx, &v5, pf5, &av, 1) == -1,
+          "ON: a zero-power committee approves nothing");
+    OK();
+
+    /* (d) an OVERFLOWING committee total: the hook does NOT reject — with
+     * HF-2 off its answer must be the pre-HF-2 answer for every input —
+     * it reports both sums 0 ("unweighable") and ON refuses. */
+    for (int s = 0; s < HF2_SEATS; s++) hv.powers[s] = UINT64_MAX / 2;
+    CHECK(nodus_rt_auth_dsa87_v1(&bt[0], &v5, 0, &actx, &av) == 0 &&
+          av.n_approvals == 5 && av.approved_power == 0 &&
+          av.committee_power == 0,
+          "auth: an overflowing total verifies and is unweighable");
+    CHECK(hf2_exec(&fx, &v5, pf5, &av, 0) == 0,
+          "OFF: the overflow does not move the seat verdict");
+    CHECK(hf2_exec(&fx, &v5, pf5, &av, 1) == -1,
+          "ON: an unweighable committee approves nothing");
+    OK();
+
+    /* (e) a non-empty view WITHOUT its power array is a deterministic
+     * reject, like one without pubkeys */
+    hv.cm.powers = NULL;
+    CHECK(nodus_rt_auth_dsa87_v1(&bt[0], &v5, 0, &actx, &av) == -1,
+          "auth: a view with no powers refuses");
+    hv.cm.powers = hv.powers;
+    OK();
+
+    /* (f) the exec rule on HAND-BUILT verdicts (the hook's output is
+     * already pinned above; here the arithmetic). Base = av5 (a real
+     * verified kind-2 verdict), only the four numbers overridden. */
+    {
+        struct {
+            const char *name;
+            uint16_t n, cn;
+            uint64_t ap, cp;
+            int off, on;               /* expected exec rc per rule      */
+        } m[] = {
+            { "count passes, power fails (43 of 65 = 65*2/3, not above)",
+              5, 7, 43, 65, 0, -1 },
+            { "exact power threshold (44 of 65)",
+              5, 7, 44, 65, 0, 0 },
+            { "count fails, power passes (60 of 65, 2 seats)",
+              2, 7, 60, 65, -1, 0 },
+            { "count quorum-1 (4 of 7), power passes",
+              4, 7, 50, 65, -1, 0 },
+            { "total 100: 67 passes",   5, 7, 67, 100, 0, 0 },
+            { "total 100: 66 fails",    5, 7, 66, 100, 0, -1 },
+            { "total 99: 67 passes",    5, 7, 67,  99, 0, 0 },
+            { "total 99: 66 fails",     5, 7, 66,  99, 0, -1 },
+            { "total 3: 3 passes",      5, 7,  3,   3, 0, 0 },
+            { "total 3: 2 fails",       5, 7,  2,   3, 0, -1 },
+            { "committee power 0",      7, 7,  0,   0, 0, -1 },
+            { "total*2 overflows u64",  7, 7, UINT64_MAX, UINT64_MAX,
+              0, -1 },
+            { "kind-1 shape (no approvals, no committee)",
+              0, 0, 0, 0, -1, -1 },
+        };
+        for (size_t i = 0; i < sizeof(m) / sizeof(m[0]); i++) {
+            nodus_rt_auth_verdict_t hv_av = av5;
+            hv_av.n_approvals = m[i].n;
+            hv_av.committee_n = m[i].cn;
+            hv_av.approved_power = m[i].ap;
+            hv_av.committee_power = m[i].cp;
+            if (hf2_exec(&fx, &v5, pf5, &hv_av, 0) != m[i].off) {
+                fprintf(stderr, "HF-2 matrix OFF: %s\n", m[i].name);
+                CHECK(0, "HF-2 exec matrix (OFF)");
+            }
+            if (hf2_exec(&fx, &v5, pf5, &hv_av, 1) != m[i].on) {
+                fprintf(stderr, "HF-2 matrix ON: %s\n", m[i].name);
+                CHECK(0, "HF-2 exec matrix (ON)");
+            }
+        }
+        OK();
+    }
+
+    hf2_view_free(&hv);
+    free(pf2);
+    free(pf5);
+    fx_close(&fx);
+    return 0;
+}
+
+/* count the committed chain_config_history rows of one parameter */
+static uint64_t hf2_cc_rows(nodus_witness_t *w, unsigned param) {
+    char sql[128];
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM chain_config_history "
+             "WHERE param_id = %u", param);
+    return q1(w, sql);
+}
+
+/* ── 2. engine level, unequal powers, the H-1 / H boundary ──────────── */
+static int test_hf2_power_engine(void) {
+    fixture_t fx;
+    env_t e;
+    nodus_v2_block_t b;
+    CHECK(hf2_genesis(&fx, "hf2eng", 2, 1, 0) == 0, "genesis");
+
+    /* FIXTURE GUARD: the engine's own committee resolution carries the
+     * stakes this fixture wrote, so each seat's power is 40/20/1… */
+    {
+        cc_view_t cv;
+        CHECK(cc_learn(&fx, 1, (const uint8_t (*)[2592])g_pk, N_KEYS,
+                       &cv) == 0 && cv.count == HF2_SEATS, "learn");
+        uint64_t total = 0;
+        int ok = 1;
+        for (int k = 0; k < HF2_SEATS; k++) {
+            int s = cv.seat_of[k];
+            if (s < 0 ||
+                cv.mem[s].total_stake / DNAC_DECIMAL_UNIT != HF2_POWER[k])
+                ok = 0;
+            else
+                total += cv.mem[s].total_stake / DNAC_DECIMAL_UNIT;
+        }
+        free(cv.mem);
+        CHECK(ok && total == 65,
+              "FIXTURE GUARD: seat powers 40/20/1/1/1/1/1, total 65 "
+              "(65 * 2 / 3 = 43)");
+        OK();
+    }
+    const uint64_t cc4_before = hf2_cc_rows(fx.w, DNAC_CFG_TARGET_ACTIVE_COUNT);
+
+    int big[2] = { 0, 1 };                 /* power 60, 2 seats          */
+    int small[5] = { 2, 3, 4, 5, 6 };      /* power 5, 5 seats (= quorum)*/
+    int at43[4] = { 0, 2, 3, 4 };          /* power 43 — exactly 2/3     */
+    int at44[5] = { 0, 2, 3, 4, 5 };       /* power 44 — one above       */
+
+    /* ── height 1: HF-2 OFF (the row is effective at 2) ──────────────── */
+    CHECK(cc_env(&fx, &e, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 20000, 0x51,
+                 1, 30000, big, 2, 0, NULL, NULL) == 0, "build big@1");
+    {
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(item_refused(fx.w, &b) == 0,
+              "H-1 (OFF): two seats holding 60 of 65 are refused — "
+              "2 < dna_bft_quorum(7)");
+        OK();
+    }
+    CHECK(cc_env(&fx, &e, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 20000, 0x52,
+                 1, 30000, small, 5, 0, NULL, NULL) == 0, "build small@1");
+    {
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+              "H-1 (OFF): five seats holding 5 of 65 apply — the seat rule");
+        OK();
+    }
+    CHECK(hf2_cc_rows(fx.w, DNAC_CFG_TARGET_ACTIVE_COUNT) == cc4_before + 1,
+          "one row committed at height 1"); OK();
+
+    /* ── height 2: HF-2 ON ───────────────────────────────────────────── */
+    CHECK(cc_env(&fx, &e, 2, DNAC_CFG_TARGET_ACTIVE_COUNT, 10, 20001, 0x53,
+                 1, 30000, small, 5, 0, NULL, NULL) == 0, "build small@2");
+    {
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 2, &ve, 1);
+        CHECK(item_refused(fx.w, &b) == 0,
+              "H (ON): five seats holding 5 of 65 are refused — the seat "
+              "count no longer decides");
+        OK();
+    }
+    CHECK(cc_env(&fx, &e, 2, DNAC_CFG_TARGET_ACTIVE_COUNT, 10, 20001, 0x54,
+                 1, 30000, at43, 4, 0, NULL, NULL) == 0, "build 43@2");
+    {
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 2, &ve, 1);
+        CHECK(item_refused(fx.w, &b) == 0,
+              "H (ON): 43 of 65 is exactly 65 * 2 / 3 — not above, refused");
+        OK();
+    }
+    CHECK(cc_env(&fx, &e, 2, DNAC_CFG_TARGET_ACTIVE_COUNT, 10, 20001, 0x55,
+                 1, 30000, at44, 5, 0, NULL, NULL) == 0, "build 44@2");
+    {
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 2, &ve, 1);
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+              "H (ON): 44 of 65 applies");
+        OK();
+    }
+    /* ── height 3: HF-2 still ON — two seats are enough ─────────────── */
+    CHECK(cc_env(&fx, &e, 3, DNAC_CFG_TARGET_ACTIVE_COUNT, 11, 20002, 0x56,
+                 1, 30000, big, 2, 0, NULL, NULL) == 0, "build big@3");
+    {
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 3, &ve, 1);
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+              "H+1 (ON): two seats holding 60 of 65 apply");
+        OK();
+    }
+    CHECK(hf2_cc_rows(fx.w, DNAC_CFG_TARGET_ACTIVE_COUNT) == cc4_before + 3,
+          "exactly the three approved proposals committed"); OK();
+    CHECK(supply_identity_holds(fx.w), "supply identity"); OK();
+    fx_close(&fx);
+    return 0;
+}
+
+/* ── 3. engine level, zero powers (the default fixture's stakes) ────── */
+static int test_hf2_power_zero(void) {
+    fixture_t fx;
+    env_t e;
+    nodus_v2_block_t b;
+    int voters5[5] = { 0, 1, 2, 3, 4 };
+    int voters7[7] = { 0, 1, 2, 3, 4, 5, 6 };
+    CHECK(hf2_genesis(&fx, "hf2zero", 2, 0, 0) == 0, "genesis");
+    CHECK(VAL_BOND < (uint64_t)DNAC_DECIMAL_UNIT,
+          "FIXTURE GUARD: every seat's power is floor(1000 / 10^8) = 0");
+    const uint64_t cc4_before = hf2_cc_rows(fx.w, DNAC_CFG_TARGET_ACTIVE_COUNT);
+
+    CHECK(cc_env(&fx, &e, 1, DNAC_CFG_TARGET_ACTIVE_COUNT, 9, 20000, 0x61,
+                 1, 30000, voters5, 5, 0, NULL, NULL) == 0, "build @1");
+    {
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 1, &ve, 1);
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+              "OFF: the seat rule does not look at power");
+        OK();
+    }
+    CHECK(cc_env(&fx, &e, 2, DNAC_CFG_TARGET_ACTIVE_COUNT, 10, 20001, 0x62,
+                 1, 30000, voters7, 7, 0, NULL, NULL) == 0, "build @2");
+    {
+        nodus_v2_envelope_t ve = { e.bytes, e.len };
+        mk_block(&b, 2, &ve, 1);
+        CHECK(item_refused(fx.w, &b) == 0,
+              "ON: all seven seats of a zero-power committee approve "
+              "nothing");
+        OK();
+    }
+    CHECK(hf2_cc_rows(fx.w, DNAC_CFG_TARGET_ACTIVE_COUNT) == cc4_before + 1,
+          "only the height-1 proposal committed"); OK();
+    fx_close(&fx);
+    return 0;
+}
+
+/* ── 4. GW-2, the ACİL-4 block ───────────────────────────────────────── */
+
+/* the (global_height, domain) DomainUpdate, decoded */
+static int hf2_dupd(nodus_witness_t *w, uint64_t h, uint32_t dom,
+                    dna_domain_update_t *out, uint8_t upd_hash[64]) {
+    sqlite3_stmt *st = NULL;
+    int ok = -1;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT upd, upd_hash FROM v2_domain_updates WHERE "
+            "global_height = ?1 AND domain_id = ?2", -1, &st, NULL)
+        != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)h);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)dom);
+    if (sqlite3_step(st) == SQLITE_ROW &&
+        sqlite3_column_bytes(st, 1) == 64 &&
+        dna_dupd_decode(sqlite3_column_blob(st, 0),
+                        (size_t)sqlite3_column_bytes(st, 0), out) == 0) {
+        memcpy(upd_hash, sqlite3_column_blob(st, 1), 64);
+        ok = 0;
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static int test_hf2_netzero_block(void) {
+    fixture_t fa, fb;
+    nodus_v2_block_t b;
+    int s9[1] = { 9 }, s10[1] = { 10 };
+    static uint8_t scall[8192], fcall[8192];
+    static env_t ep1, ep2, ef;
+
+    CHECK(hf2_genesis(&fa, "hf2nzA", 2, 0, 1) == 0, "genesis A");
+    uint8_t f9a[64], f9b[64], f10[64];
+    memcpy(f9a, g_hf2_f9a, 64);
+    memcpy(f9b, g_hf2_f9b, 64);
+    memcpy(f10, g_hf2_f10, 64);
+    CHECK(hf2_genesis(&fb, "hf2nzB", 2, 0, 1) == 0, "genesis B");
+    CHECK(memcmp(fa.chain_id, fb.chain_id, 32) == 0 &&
+          memcmp(f9a, g_hf2_f9a, 64) == 0,
+          "FIXTURE GUARD: the twins are the same chain with the same "
+          "funding coins, so one envelope is valid on both");
+    OK();
+
+    /* the net-zero pair: DELEGATE creates (9 → 0) with DLG_AMOUNT, the
+     * full UNDELEGATE deletes it — SYSTEM's validator totals and the
+     * delegations table return byte-for-byte; CORE moves (fees, change,
+     * the locked release output) */
+    {
+        uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0,
+                                       DLG_AMOUNT);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), f9a, 9, DLG_CHANGE,
+                                0x71);
+        CHECK(sl && fl, "call P1");
+        CHECK(two_leg_build(&fa, &ep1, DNA_SYSRULE_DELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s9, 1, s9, 1, NULL) == 0, "build P1");
+    }
+    {
+        uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 0,
+                                       DLG_AMOUNT);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), f9b, 9, DLG_CHANGE,
+                                0x72);
+        CHECK(sl && fl, "call P2");
+        CHECK(two_leg_build(&fa, &ep2, DNA_SYSRULE_UNDELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s9, 1, s9, 1, NULL) == 0, "build P2");
+    }
+    /* the filler for height 1: an ordinary DELEGATE (10 → 1) */
+    {
+        uint32_t sl = deleg_call_build(scall, sizeof(scall), 10, 1,
+                                       DLG_AMOUNT);
+        uint32_t fl = fund_call(fcall, sizeof(fcall), f10, 10, DLG_CHANGE,
+                                0x73);
+        CHECK(sl && fl, "call F");
+        CHECK(two_leg_build(&fa, &ef, DNA_SYSRULE_DELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s10, 1, s10, 1, NULL) == 0, "build F");
+    }
+    nodus_v2_envelope_t pair[2] = { { ep1.bytes, ep1.len },
+                                    { ep2.bytes, ep2.len } };
+    nodus_v2_envelope_t fill[1] = { { ef.bytes, ef.len } };
+
+    /* ── height 1, HF-2 OFF: the pre-HF-2 halt, unchanged ───────────── */
+    mk_block(&b, 1, pair, 2);
+    CHECK(v2x_cmt_fault_why(fa.w, &b, V2X_VERDICT, "DECLARED no-op") == 0,
+          "OFF: a block whose SYSTEM items net to zero is a phase-9 "
+          "VERDICT (every node stops) — nothing written");
+    OK();
+    mk_block(&b, 1, fill, 1);
+    CHECK(v2x_cmt_apply_ok(fa.w, &b) == 0, "A: the filler at height 1");
+    mk_block(&b, 1, fill, 1);
+    CHECK(v2x_cmt_apply_ok(fb.w, &b) == 0, "B: the filler at height 1");
+    OK();
+
+    /* ── height 2, HF-2 ON: the same pair applies ───────────────────── */
+    uint8_t sys_before[64], sys_after[64];
+    uint64_t sys_h_before = 0, sys_h_after = 0;
+    CHECK(head_root(fa.w, DNA_DOMAIN_SYSTEM, sys_before) == 0, "SYSTEM root");
+    sys_h_before = q1(fa.w, "SELECT domain_height FROM v2_domain_heads "
+                            "WHERE domain_id = 0");
+    CHECK(sys_h_before != UINT64_MAX, "SYSTEM head height");
+    mk_block(&b, 2, pair, 2);
+    CHECK(v2x_cmt_apply_ok(fa.w, &b) == 0,
+          "ON: the DELEGATE + full UNDELEGATE block applies, both items "
+          "code 0");
+    OK();
+    CHECK(idx_rows_are(fa.w, 2, 2) == 0, "both items indexed at height 2");
+    CHECK(q1(fa.w, "SELECT COUNT(*) FROM delegations") == 1,
+          "only the filler's (10 → 1) delegation remains");
+    OK();
+    CHECK(head_root(fa.w, DNA_DOMAIN_SYSTEM, sys_after) == 0 &&
+          memcmp(sys_before, sys_after, 64) == 0,
+          "the SYSTEM root is byte-identical across the block");
+    sys_h_after = q1(fa.w, "SELECT domain_height FROM v2_domain_heads "
+                           "WHERE domain_id = 0");
+    CHECK(sys_h_after == sys_h_before + 1,
+          "SYSTEM was touched: its head height advanced by one");
+    OK();
+    dna_domain_update_t ua, ub;
+    uint8_t ha[64], hb[64];
+    CHECK(hf2_dupd(fa.w, 2, DNA_DOMAIN_SYSTEM, &ua, ha) == 0,
+          "SYSTEM DomainUpdate at height 2 exists and decodes");
+    CHECK(memcmp(ua.pre_root, ua.post_root, 64) == 0 &&
+          memcmp(ua.post_root, sys_after, 64) == 0,
+          "SYSTEM DomainUpdate: pre_root == post_root == the head root");
+    CHECK(ua.res_tx_count == 2 && ua.new_height == ua.old_height + 1,
+          "SYSTEM DomainUpdate names both items and one height step");
+    OK();
+    CHECK(supply_identity_holds(fa.w), "A supply identity"); OK();
+
+    /* ── the twin: same bytes, same answer ──────────────────────────── */
+    mk_block(&b, 2, pair, 2);
+    CHECK(v2x_cmt_apply_ok(fb.w, &b) == 0, "B: the same block applies");
+    OK();
+    {
+        uint8_t ra[64], rb[64], da[64], db[64];
+        for (uint32_t dom = 0; dom < 2; dom++) {
+            CHECK(head_root(fa.w, dom, ra) == 0 &&
+                  head_root(fb.w, dom, rb) == 0 &&
+                  memcmp(ra, rb, 64) == 0,
+                  "twins: identical domain head roots");
+            CHECK(hf2_dupd(fa.w, 2, dom, &ua, ha) == 0 &&
+                  hf2_dupd(fb.w, 2, dom, &ub, hb) == 0 &&
+                  memcmp(ha, hb, 64) == 0,
+                  "twins: identical DomainUpdate hashes");
+        }
+        CHECK(consensus_state_digest(fa.w, da) == 0 &&
+              consensus_state_digest(fb.w, db) == 0 &&
+              memcmp(da, db, 64) == 0,
+              "twins: identical consensus tables");
+        OK();
+    }
+    fx_close(&fa);
+    fx_close(&fb);
+    return 0;
+}
+
 int main(void) {
     /* This file pins which domain roots a given runtime op moves: "op X
      * moves SYSTEM", "op X must NOT move CORE". The O15J per-block mint
@@ -12142,6 +12825,10 @@ int main(void) {
     if (test_resubmission_no_halt() != 0) return 1;
     if (test_undelegate_totals_underflow() != 0) return 1;
     if (test_core_multisig() != 0) return 1;
+    if (test_hf2_power_hook() != 0) return 1;
+    if (test_hf2_power_engine() != 0) return 1;
+    if (test_hf2_power_zero() != 0) return 1;
+    if (test_hf2_netzero_block() != 0) return 1;
     printf("test_v2_native: ALL OK (%d checks)\n", g_checks);
     return 0;
 }

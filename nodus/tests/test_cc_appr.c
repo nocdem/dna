@@ -1000,6 +1000,69 @@ static int t_gas_price_legal_signs(void) {
     return 0;
 }
 
+/* HF-2 (design docs/plans/2026-09-30-gov-weight-netzero-design.md rev 2):
+ * HF2_ACTIVE (param id 7) has the value domain {1}. An "off" vote (0) and
+ * any other value (2) are refused by the responder's scalar-rules gate —
+ * never signed. RED on the pre-HF-2 tree for a different reason (id 7 was
+ * outside the allowlist); the acceptance case below is the one that is
+ * RED before HF-2. */
+static int t_hf2_bad_value_refused(void) {
+    static const uint64_t bad[2] = { 0, 2 };
+
+    for (int i = 0; i < 2; i++) {
+        if (refusal_case(i == 0 ? "hf2v0" : "hf2v2", 0, -1, 5,
+                         DNAC_CFG_HF2_ACTIVE, bad[i], 1 + 200000,
+                         1 + 300000, 0, NODUS_RT_AUTHKIND_DSA87_CC_V1,
+                         "scalar rules rejected") != 0)
+            return 1;
+    }
+    return 0;
+}
+
+/* HF-2: the one legal id-7 proposal (value 1, effective past the
+ * ERGONOMIC grace floor) is APPROVED by a committee seat through the real
+ * responder. RED on the pre-HF-2 tree: scalar_rules' `param_id >
+ * CC_PARAM_MAX_ID` (then 6) refused id 7 — ok=false "scalar rules
+ * rejected". Same drive as t_gas_price_legal_signs. */
+static int t_hf2_legal_signs(void) {
+    gfx_t  g;
+    dna_env_preflight_t pf1;
+    pre_env_t env;
+    uint64_t tip = 0;
+
+    CHECK(gfx_open(&g, "hf2on") == 0, "version-3 fixture");
+    CHECK(nodus_witness_v2_tip_height(g.w, &tip) == 0, "tip height");
+    CHECK(pre_env_build(g.w, tip, 5, DNAC_CFG_HF2_ACTIVE,
+                        DNAC_CFG_HF2_ACTIVE_ON, tip + 1 + 200000,
+                        tip + 1 + 300000, 0,
+                        NODUS_RT_AUTHKIND_DSA87_CC_V1, &env, &pf1) == 0,
+          "pass-1 build");
+    {
+        uint8_t *p = env.auth;
+        p[0] = 1;
+        memcpy(p + 1, g_ks[0].pk, DNAC_PUBKEY_SIZE);
+        size_t sl = 0;
+        CHECK(qgp_dsa87_sign(p + 1 + DNAC_PUBKEY_SIZE, &sl,
+                             pf1.auth_digest[0], 64, g_ks[0].sk) == 0,
+              "submitter sign");
+        p += 1 + NODUS_RT_AUTH_SIGNER_LEN;
+        p[0] = 0;
+        p[1] = 5;
+    }
+    bind_identity(&g, 1);
+
+    nodus_t3_cc_appr_rsp_t rsp;
+    memset(&rsp, 0, sizeof(rsp));
+    CHECK(ask(&g, requester_not_seat(&g), env.bytes, env.len, &rsp) == 1,
+          rsp.reason[0] ? rsp.reason : "ask");
+    CHECK(rsp.ok, rsp.ok ? "the seat approved the id-7 proposal"
+                         : rsp.reason);
+
+    pre_env_free(&env);
+    gfx_close(&g);
+    return 0;
+}
+
 /* The per-proposer rate limit (nodus_cc_rate_limit_check): the SAME
  * sender_id asked twice for the SAME seat within the 5 s cooldown — the
  * second request is refused "rate-limited", never signed. Since red-team
@@ -1089,6 +1152,8 @@ int main(void) {
         { "gas_price_above_ceiling_refused",
                                         t_gas_price_above_ceiling_refused },
         { "gas_price_legal_signs",      t_gas_price_legal_signs },
+        { "hf2_bad_value_refused",      t_hf2_bad_value_refused },
+        { "hf2_legal_signs",            t_hf2_legal_signs },
         { "rate_limited_second_request", t_rate_limited_second_request },
     };
     size_t failed = 0, ncases = sizeof(cases) / sizeof(cases[0]);

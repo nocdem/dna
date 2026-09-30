@@ -32,11 +32,14 @@
                                                 * (D-18 rev 4)           */
 #include "witness/nodus_witness_committee.h"   /* capacity season: the
                                         * governing snapshot resolution */
+#include "witness/nodus_witness_emission.h"    /* HF-2: DNAC_DECIMAL_UNIT,
+                                        * the voting-power unit          */
 /* HF-1: nodus/nodus_chain_config.h is back (R3 W4-C delta 2 had dropped
  * it with the retired DNAC_CFG_MAX_TXS_PER_BLOCK read). Its uses here are
  * nodus_chain_config_get_u64 of DNAC_CFG_GAS_PRICE_RAW_PER_UNIT
- * (env_gas_price_check) and — final pre-testnet wipe W-C — of
- * DNAC_CFG_TOKEN_CREATE_FEE_RAW (env_token_create_fee). */
+ * (env_gas_price_check), — final pre-testnet wipe W-C — of
+ * DNAC_CFG_TOKEN_CREATE_FEE_RAW (env_token_create_fee) and — HF-2 — of
+ * DNAC_CFG_HF2_ACTIVE (env_hf2_active). */
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_types.h"         /* NODUS_W_BASE_TX_FEE,
                                         * NODUS_W_TOKEN_CREATE_FEE       */
@@ -732,6 +735,44 @@ static int env_token_create_fee(nodus_witness_t *w, uint64_t height,
     return 0;
 }
 
+/* HF-2 (design docs/plans/2026-09-30-gov-weight-netzero-design.md rev 2;
+ * decision 2026-09-30-governance-stake-weight-and-power-cap.md): is the
+ * second height-activated hard fork ON at `height`? The COMMITTED
+ * chain_config param 7 (HF2_ACTIVE) through the same three-valued
+ * accessor and the same read discipline as env_token_create_fee: a read
+ * that cannot be answered is a node FAULT, never a default — a guessed
+ * answer would let two nodes judge one approval set, or one block, by
+ * different rules. No active row = OFF (the default 0), which is what
+ * keeps a chain without the vote byte-identical to the pre-HF-2 binary.
+ * The only value a committed row can hold is DNAC_CFG_HF2_ACTIVE_ON (the
+ * scalar rules refuse every other); any other stored value is this
+ * node's storage disagreeing with every writer, so it is a FAULT too.
+ * `height` is the block being applied — tip + 1 on the CheckTx dry run —
+ * so CheckTx and FinalizeBlock read the same row.
+ * @return 0 (*on = 0/1) / -2 fault (reason written). */
+static int env_hf2_active(nodus_witness_t *w, uint64_t height,
+                          uint8_t *on, char *reason, size_t reason_size)
+{
+    uint64_t v = 0;
+
+    if (nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_HF2_ACTIVE, height,
+                                   0ULL, &v) < 0) {
+        V2AP_ENV_FAULT("HF-2: HF2_ACTIVE at height %llu is unreadable on "
+                       "this node - refusing to judge under a guessed "
+                       "rule set", (unsigned long long)height);
+        return -2;
+    }
+    if (v != 0ULL && v != DNAC_CFG_HF2_ACTIVE_ON) {
+        V2AP_ENV_FAULT("HF-2: HF2_ACTIVE at height %llu reads %llu, a value "
+                       "no committed row can hold - this node's "
+                       "chain_config storage is inconsistent",
+                       (unsigned long long)height, (unsigned long long)v);
+        return -2;
+    }
+    *on = (v == DNAC_CFG_HF2_ACTIVE_ON) ? 1u : 0u;
+    return 0;
+}
+
 /* A fault-injection point firing is a TEST harness event, not a real
  * defect — it says so in its own words rather than borrowing the words
  * of the check it stands in for. */
@@ -1032,6 +1073,12 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
     if (env_token_create_fee(w, blk->global_height, &tc_fee,
                              reason, reason_size) != 0)
         return -2;
+    /* HF-2: the rule set in force at this block's height, read ONCE per
+     * envelope with the same discipline (fault = abort, never default) */
+    uint8_t hf2 = 0;
+    if (env_hf2_active(w, blk->global_height, &hf2, reason,
+                       reason_size) != 0)
+        return -2;
     for (uint16_t l = 0; l < v->leg_count; l++) {
         dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
         if (!d || !d->rt || !d->rt->exec) {          /* admission-scan
@@ -1074,6 +1121,7 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
         ctx.leg_auth_digest     = pf->auth_digest[l];
         ctx.auth                = av;
         ctx.token_create_fee    = tc_fee;
+        ctx.hf2_active          = hf2;
 
         /* ── mediated reads: request phase → engine-charged execution ─
          * TRUST NOTE: the count/length rejects below detect a hook that
@@ -1408,7 +1456,8 @@ static int cmt_savepoint_release(nodus_witness_t *w, const char *name)
  * state and flows into the view (the auth hook rejects kind-2 legs at
  * count 0).
  *
- * On success `*out_pubkeys` / `*out_fps` receive heap buffers the CALLER
+ * On success `*out_pubkeys` / `*out_fps` / `*out_powers` (HF-2: the
+ * seats' voting powers, view->powers) receive heap buffers the CALLER
  * frees; on every failure they are left as they were.
  *
  * @return 0 resolved (possibly empty); 1 `height` is 0, so the governing
@@ -1420,11 +1469,13 @@ static int committee_snapshot_for_height(nodus_witness_t *w, uint64_t height,
                                          nodus_rt_committee_t *view,
                                          uint8_t **out_pubkeys,
                                          uint8_t (**out_fps)[64],
+                                         uint64_t **out_powers,
                                          char *reason, size_t reason_size)
 {
     nodus_committee_member_t *mem = NULL;
     uint8_t                  *cm_pubkeys = NULL;
     uint8_t                 (*cm_fps)[64] = NULL;
+    uint64_t                 *cm_powers = NULL;
     int                       cm_count = 0;
 
     if (height == 0) {
@@ -1449,9 +1500,11 @@ static int committee_snapshot_for_height(nodus_witness_t *w, uint64_t height,
 
         cm_pubkeys = malloc((size_t)cm_count * NODUS_CC_PUBKEY_SIZE);
         cm_fps = malloc((size_t)cm_count * 64);
-        if (!cm_pubkeys || !cm_fps) {
+        cm_powers = malloc((size_t)cm_count * sizeof(*cm_powers));
+        if (!cm_pubkeys || !cm_fps || !cm_powers) {
             free(cm_pubkeys);
             free(cm_fps);
+            free(cm_powers);
             free(mem);
             V2AP_ENV_FAULT("phase 0b: allocation for the %d-member "
                            "committee snapshot failed", cm_count);
@@ -1460,10 +1513,19 @@ static int committee_snapshot_for_height(nodus_witness_t *w, uint64_t height,
         for (ci = 0; ci < cm_count; ci++) {
             memcpy(cm_pubkeys + (size_t)ci * NODUS_CC_PUBKEY_SIZE,
                    mem[ci].pubkey, NODUS_CC_PUBKEY_SIZE);
+            /* HF-2 (GW-1): the seat's VOTING POWER, copied out BEFORE
+             * `mem` is freed below — floor(total_stake / DNAC_DECIMAL_
+             * UNIT), the SAME derivation the block-commit validator set
+             * uses (nodus_witness_cmt_app.c's FinalizeBlock
+             * validator-update loop: `en->total_stake /
+             * DNAC_DECIMAL_UNIT`), in the same seat order the approvals
+             * index. */
+            cm_powers[ci] = mem[ci].total_stake / DNAC_DECIMAL_UNIT;
             if (qgp_sha3_512(mem[ci].pubkey, NODUS_CC_PUBKEY_SIZE,
                              cm_fps[ci]) != 0) {
                 free(cm_pubkeys);
                 free(cm_fps);
+                free(cm_powers);
                 free(mem);
                 V2AP_ENV_FAULT("phase 0b: hash backend failed on "
                                "committee member %d of %d", ci, cm_count);
@@ -1475,6 +1537,7 @@ static int committee_snapshot_for_height(nodus_witness_t *w, uint64_t height,
                                         view->set_hash) != 0) {
             free(cm_pubkeys);
             free(cm_fps);
+            free(cm_powers);
             free(mem);
             V2AP_ENV_FAULT("phase 0b: committee set-hash over %d members "
                            "failed", cm_count);
@@ -1482,8 +1545,10 @@ static int committee_snapshot_for_height(nodus_witness_t *w, uint64_t height,
         }
         view->pubkeys = cm_pubkeys;
         view->fps = (const uint8_t (*)[64])cm_fps;
+        view->powers = cm_powers;
         *out_pubkeys = cm_pubkeys;
         *out_fps = cm_fps;
+        *out_powers = cm_powers;
     }
     free(mem);
     view->count = (uint32_t)cm_count;
@@ -1745,12 +1810,17 @@ static int env_authorize_legs(nodus_witness_t *w,
     const dna_env_view_t *v = &p->view;
     uint16_t l;
     uint64_t tc_fee = 0;
+    uint8_t  hf2 = 0;
 
     /* W-C: every ctx the engine builds carries the committed
      * token-creation fee (runtime.h contract); no auth hook reads it
      * today, but a hook must never see a ctx whose engine facts are
-     * partly zero. Same read, same fault rule as exec_one_env. */
+     * partly zero. Same read, same fault rule as exec_one_env. HF-2's
+     * switch rides along for the same reason (the auth hook computes the
+     * power sums unconditionally and does not read it). */
     if (env_token_create_fee(w, height, &tc_fee, reason, reason_size) != 0)
+        return -2;
+    if (env_hf2_active(w, height, &hf2, reason, reason_size) != 0)
         return -2;
     for (l = 0; l < v->leg_count; l++) {
         dom_ctx_t          *d = dom_for(doms, n_dom, v->leg[l].domain_id);
@@ -1797,6 +1867,7 @@ static int env_authorize_legs(nodus_witness_t *w,
         actx.auth_context_commit = p->auth_context_commit;
         actx.leg_auth_digest     = p->auth_digest[l];
         actx.token_create_fee    = tc_fee;
+        actx.hf2_active          = hf2;
         /* the resolved snapshot view, ONLY for the kind that consumes it
          * (runtime.h's ctx contract) */
         actx.committee =
@@ -1840,6 +1911,7 @@ typedef struct {
     dna_env_preflight_t          *pf;
     uint8_t                      *cm_pubkeys;
     uint8_t                     (*cm_fps)[64];
+    uint64_t                     *cm_powers;
     nodus_rt_committee_t          cmview;
 } env_item_setup_t;
 
@@ -1847,6 +1919,7 @@ static void env_item_setup_free(env_item_setup_t *s)
 {
     free(s->cm_pubkeys);
     free(s->cm_fps);
+    free(s->cm_powers);
     free(s->pf);
     doms_free(s->doms);
     free(s->bctx);
@@ -1960,6 +2033,7 @@ static int env_item_setup(nodus_witness_t *w, const uint8_t *bytes,
     {
         int crc = committee_snapshot_for_height(w, s->height, &s->cmview,
                                                 &s->cm_pubkeys, &s->cm_fps,
+                                                &s->cm_powers,
                                                 reason, reason_size);
         if (crc != 0) {
             if (crc == 1) {
@@ -2838,6 +2912,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
      * 128 × 2592 B of pubkeys; never on the stack). */
     uint8_t *cm_pubkeys = NULL;
     uint8_t (*cm_fps)[64] = NULL;
+    uint64_t *cm_powers = NULL;              /* HF-2: seat voting powers */
     nodus_rt_committee_t cmview;
     memset(&cmview, 0, sizeof(cmview));
     /* R3 W4 package C — HEAP, sized to the BLOCK's own n_claims, not the
@@ -2921,7 +2996,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
         {
             int crc = committee_snapshot_for_height(
                 w, blk->global_height, &cmview, &cm_pubkeys, &cm_fps,
-                blk->out_reason, sizeof blk->out_reason);
+                &cm_powers, blk->out_reason, sizeof blk->out_reason);
 
             if (crc != 0) {
                 if (crc == 1) {
@@ -3745,14 +3820,40 @@ cmt_claim_failed:
     }
     FAIL_POINT(V2AP_FAIL_AFTER_DOMAIN_ROOTS);
 
-    /* 9. DomainUpdates (touched only; a DECLARED no-op — post == pre —
-     * rejects: no fake empty updates) */
+    /* 9. DomainUpdates (touched only).
+     *
+     * A touched domain whose root this block left UNCHANGED (post == pre):
+     *   - HF-2 OFF (below the HF-2 height; every chain without the
+     *     chain_config param-7 row): a block VERDICT, as before HF-2 — "no
+     *     fake empty updates". On this lane the verdict is a CMT_FAULT at
+     *     FinalizeBlock, i.e. every node stops at the same block.
+     *   - HF-2 ON (GW-2, nodus/BUGS.md ACİL-4): a LEGITIMATE outcome, not
+     *     a fake update. Valid items can net to zero — a DELEGATE that
+     *     creates a (delegator, validator) row and a full UNDELEGATE of the
+     *     same pair in one block leave the SYSTEM root byte-identical — and
+     *     a proposer who orders them into one block must not be able to
+     *     stop every honest node. The DomainUpdate is written with
+     *     pre_root == post_root exactly like a changed domain's (its
+     *     tx_batch_root still names the items that ran), and phases 10-12
+     *     treat the domain as touched. Treating it as UNTOUCHED instead
+     *     would keep its head height, so phase 12's v2_tx_local_index
+     *     rows (PRIMARY KEY domain_id, domain_height, local_index) would
+     *     collide with the rows the block that last advanced the domain
+     *     wrote at that height — a FAULT (design §4a F6).
+     * The cometbft lane is the only lane (the entry refused !cmt.on), so
+     * "Comet lane AND HF-2" reduces to HF-2 alone. The switch is read once
+     * for the block at its own height, fault = abort (env_hf2_active). */
     {
         size_t n_upd = 0;
+        uint8_t hf2 = 0;
+        if (env_hf2_active(w, blk->global_height, &hf2, blk->out_reason,
+                           sizeof blk->out_reason) != 0)
+            goto fail_fault;          /* the helper wrote the reason      */
         for (size_t i = 0; i < n_dom; i++) {
             dom_ctx_t *d = &doms[i];
             if (!d->touched) continue;
-            if (memcmp(d->root_now, d->head.domain_state_root, 64) == 0) {
+            if (!hf2 &&
+                memcmp(d->root_now, d->head.domain_state_root, 64) == 0) {
                 char r[17];
                 V2AP_VERDICT("phase 9: domain %u is declared touched but "
                              "its root is unchanged at %s - a DECLARED "
@@ -4320,7 +4421,7 @@ cmt_claim_failed:
      * deleted with the lane.) */
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
     free(claim_nuls);
-    free(cm_pubkeys); free(cm_fps);
+    free(cm_pubkeys); free(cm_fps); free(cm_powers);
     doms_free(doms);
     return 0;
 
@@ -4346,7 +4447,7 @@ fail:
     meters_abort_all(meters, blk->n_envs);
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
     free(claim_nuls);
-    free(cm_pubkeys); free(cm_fps);
+    free(cm_pubkeys); free(cm_fps); free(cm_powers);
     doms_free(doms);
     return -1;
 
@@ -4358,7 +4459,7 @@ fail_fault:
     meters_abort_all(meters, blk->n_envs);
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
     free(claim_nuls);
-    free(cm_pubkeys); free(cm_fps);
+    free(cm_pubkeys); free(cm_fps); free(cm_powers);
     doms_free(doms);
     return -2;
 
@@ -4371,7 +4472,7 @@ fail_fault_pre:
     meters_abort_all(meters, blk->n_envs);
     free(pf); free(meters); free(reads); free(resbuf); free(auths);
     free(claim_nuls);
-    free(cm_pubkeys); free(cm_fps);
+    free(cm_pubkeys); free(cm_fps); free(cm_powers);
     doms_free(doms);
     return -2;
 }

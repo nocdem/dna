@@ -354,6 +354,78 @@ int main(void) {
         teardown_witness(w, data_path);
     }
 
+    /* Test 10 (HF-2, design docs/plans/2026-09-30-gov-weight-netzero-
+     * design.md rev 2): chain-config param 7 HF2_ACTIVE — the one-way
+     * switch of the second height-activated hard fork.
+     *   (a) the id is the new top of the allowlist, and the running
+     *       consensus reads it (dnac_cfg_param_read_by_consensus — the
+     *       predicate both the witness scalar rules and the client mirror
+     *       consume);
+     *   (b) scalar rules: value 1 accepted, 0 (an "off" vote) and 2
+     *       refused — the value domain is EXACTLY 1;
+     *   (c) grace class ERGONOMIC (the HF-1 class), not SAFETY;
+     *   (d) the READ side: no row = default (OFF), a row effective at H is
+     *       invisible at H-1 and visible from H on — the boundary every
+     *       HF-2 rule keys on (nodus_witness_v2_apply.c env_hf2_active).
+     * KILLED BY: dropping case CC_PARAM_HF2_ACTIVE from scalar_rules (1
+     * refused), accepting any value (0/2 accepted), leaving 7 off the
+     * read list (1 refused), or putting it in the SAFETY grace class. */
+    {
+        CHECK(DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_HF2_ACTIVE);
+        CHECK(DNAC_CFG_HF2_ACTIVE == 7);
+        CHECK(DNAC_CFG_HF2_ACTIVE_ON == 1ULL);
+        CHECK(dnac_cfg_param_read_by_consensus((uint8_t)DNAC_CFG_HF2_ACTIVE));
+
+        /* (b) signed_at 1, valid_before 5000 > effective 4000, nonce 7 */
+        CHECK(nodus_chain_config_scalar_rules((uint8_t)DNAC_CFG_HF2_ACTIVE,
+                                              1ULL, 1ULL, 5000ULL, 4000ULL,
+                                              7ULL) == 0);
+        CHECK(nodus_chain_config_scalar_rules((uint8_t)DNAC_CFG_HF2_ACTIVE,
+                                              0ULL, 1ULL, 5000ULL, 4000ULL,
+                                              7ULL) == -1);
+        CHECK(nodus_chain_config_scalar_rules((uint8_t)DNAC_CFG_HF2_ACTIVE,
+                                              2ULL, 1ULL, 5000ULL, 4000ULL,
+                                              7ULL) == -1);
+        CHECK(nodus_chain_config_scalar_rules((uint8_t)DNAC_CFG_HF2_ACTIVE,
+                                              UINT64_MAX, 1ULL, 5000ULL,
+                                              4000ULL, 7ULL) == -1);
+        /* the shared window rules still apply to the new id */
+        CHECK(nodus_chain_config_scalar_rules((uint8_t)DNAC_CFG_HF2_ACTIVE,
+                                              1ULL, 0ULL, 5000ULL, 4000ULL,
+                                              7ULL) == -1);
+        CHECK(nodus_chain_config_scalar_rules((uint8_t)DNAC_CFG_HF2_ACTIVE,
+                                              1ULL, 1ULL, 4000ULL, 4000ULL,
+                                              7ULL) == -1);
+        /* one past the allowlist is still refused */
+        CHECK(nodus_chain_config_scalar_rules(
+                  (uint8_t)(DNAC_CFG_PARAM_MAX_ID + 1), 1ULL, 1ULL, 5000ULL,
+                  4000ULL, 7ULL) == -1);
+
+        /* (c) */
+        CHECK(nodus_chain_config_grace_for_param(
+                  (uint8_t)DNAC_CFG_HF2_ACTIVE) ==
+              (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS);
+        CHECK(nodus_chain_config_grace_for_param(
+                  (uint8_t)DNAC_CFG_HF2_ACTIVE) ==
+              nodus_chain_config_grace_for_param(
+                  (uint8_t)DNAC_CFG_GAS_PRICE_RAW_PER_UNIT));
+
+        /* (d) */
+        char data_path[64];
+        nodus_witness_t *w = setup_witness(data_path);
+        CHECK(cfg_val(w, DNAC_CFG_HF2_ACTIVE, 1ULL, 0ULL) == 0ULL);
+        CHECK(cfg_val(w, DNAC_CFG_HF2_ACTIVE, 1000000ULL, 0ULL) == 0ULL);
+        direct_insert(w, DNAC_CFG_HF2_ACTIVE, 1ULL, 900ULL, 100ULL, 0x77ULL);
+        w->chain_config_cache_warm = false;
+        CHECK(cfg_val(w, DNAC_CFG_HF2_ACTIVE, 899ULL, 0ULL) == 0ULL);
+        CHECK(cfg_val(w, DNAC_CFG_HF2_ACTIVE, 900ULL, 0ULL) == 1ULL);
+        CHECK(cfg_val(w, DNAC_CFG_HF2_ACTIVE, 901ULL, 0ULL) == 1ULL);
+        /* the warm cache holds the new id in its own slot (cache ≡ DB) */
+        CHECK(w->chain_config_cache_warm);
+        CHECK(w->chain_config_cache_count[DNAC_CFG_HF2_ACTIVE] == 1);
+        teardown_witness(w, data_path);
+    }
+
     printf("test_chain_config_witness: ALL CHECKS PASSED\n");
     return 0;
 }

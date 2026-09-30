@@ -431,6 +431,33 @@ chain halts.
    change needs all seats to approve in round 1 (HF-1 red-team R3-F1; the real fix is the
    on-chain governance package).
 
+**HF-2 — the same procedure for chain-config param 7 `HF2_ACTIVE`** (design
+`docs/plans/2026-09-30-gov-weight-netzero-design.md` rev 2; mechanism
+`ARCHITECTURE.md` "HF-2"). From H, governance approvals are weighed by voting
+power (> 2/3) instead of seats, and a block whose touched domain nets to zero
+applies instead of stopping every node.
+1. **Rolling binary upgrade to the HF-2 build, one node at a time**, as step 1
+   above. Before the vote the HF-2 binary decides every block exactly as 0.23.1
+   (the consensus-read envelope bound stays 3 075 — ARCHITECTURE.md "HF-2",
+   "Byte-identical while off").
+2. **Verify 7/7 are on the HF-2 binary BEFORE voting** (step 2 above). An old
+   binary refuses id 7 per item (code 7), commits the vote's block anyway and
+   halts on the next header — the same lagging-node rule and recovery as HF-1.
+3. **Vote under TODAY's rule — seats**:
+   `nodus-cli chain-config propose --param HF2_ACTIVE --value 1 --effective <H>`
+   (`<H>` ≥ tip + 1 + 720, the ERGONOMIC grace). The value domain is exactly 1; there is no
+   "off" vote. The row must appear identically on 7/7 (`chain_config_history`:
+   param_id 7).
+4. **Before H** nothing changes. **From H** every CHAIN_CONFIG approval set must
+   carry > 2/3 of the governing committee's voting power (`nodus-cli witness`
+   prints the threshold). The online `propose` still uses the seat count for its
+   own early abort (it cannot read param 7); a proposal it submits is judged by
+   the chain's power rule. The offline `v2-envelope chain-config` follows the
+   power rule itself.
+5. **Every later hard fork is voted under the power rule** (decision
+   `2026-09-30-governance-stake-weight-and-power-cap.md` item 1: this is the
+   activation path of the others).
+
 **A node that missed the vote (still on the old binary when R committed):**
 - Upgrading its binary and restarting does **NOT** recover it: the ABCI handshake at
   app == store == state height re-executes nothing, so the diverged state carries over
