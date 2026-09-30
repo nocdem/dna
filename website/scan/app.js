@@ -128,13 +128,11 @@
     if (!$('stats-cards')) return;
     $('stat-height').textContent = indexed ?? '—';
     $('stat-supply').textContent = money(stats.supply_current);
-    $('stat-chain-id').textContent = typeof stats.chain_id === 'string' ? stats.chain_id.slice(0,8) + '…' + stats.chain_id.slice(-6) : '—';
-    $('stat-chain-id').title = stats.chain_id ?? '';
   }
   function statsUnavailable() {
     $('api-status').textContent = t('Index unavailable', 'İndekse erişilemiyor');
     $('staleness-banner').classList.add('hidden');
-    for (const id of ['height', 'supply', 'chain-id']) if ($('stat-' + id)) $('stat-' + id).textContent = '—';
+    for (const id of ['height', 'supply']) if ($('stat-' + id)) $('stat-' + id).textContent = '—';
   }
   async function loadBlocks(requested, fresh = false, providedStats) {
     const current = ++blockRequest, body = $('blocks-tbody');
