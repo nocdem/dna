@@ -62,6 +62,7 @@
 #include "witness/nodus_witness_v2_adapter.h"/* effects_apply             */
 #include "witness/nodus_witness_v2_claims.h" /* v2_runtime_for            */
 #include "witness/nodus_witness_validator.h"
+#include "witness/nodus_witness_addr_index.h"  /* node-local payout rows */
 
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_types.h"
@@ -685,6 +686,17 @@ static int v2ec_emit(v2ec_batch_t *b, const uint8_t owner_fp[64],
                                       fp_hex, amount, native_token,
                                       tx_hash, output_index, block_height,
                                       0) != 0)
+        return -2;
+
+    /* the NODE-LOCAL address index row of this payout (decision
+     * 2026-10-01-node-address-history-index.md rev 2) — inside the
+     * block's transaction, out of every root, a no-op unless the node
+     * flag is on. Written as the payout is staged: if the flush below
+     * fails, the whole block fails and the host's ROLLBACK takes it. */
+    if (nodus_witness_addr_index_boundary(b->w, block_height,
+                                          NODUS_ADDR_KIND_PAYOUT,
+                                          (const uint8_t *)fp_hex,
+                                          amount) != 0)
         return -2;
 
     b->n++;

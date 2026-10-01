@@ -135,6 +135,13 @@ typedef struct {
      * NODUS_WS_DEFAULT_ORIGIN, applied in nodus_server_init. */
     uint16_t            ws_port;
     nodus_ws_origins_t  ws_origins;
+
+    /* Node-local address history index (decision docs/plans/decisions/
+     * 2026-10-01-node-address-history-index.md rev 2;
+     * witness/nodus_witness_addr_index.h). nodus.json
+     * "addr_history_index": true; default OFF. Off = the writers write
+     * nothing. It changes no root — the setting may differ per node. */
+    bool                addr_history_index;
 } nodus_server_config_t;
 
 /* ── Inter-node session (lightweight — rate limiting only, no auth) ── */

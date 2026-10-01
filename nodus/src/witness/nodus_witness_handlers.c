@@ -45,6 +45,7 @@
 #include "witness/nodus_witness_v2_produce.h"
 #include "witness/nodus_witness_v2_apply.h"
 #include "witness/nodus_witness_rt_native.h"
+#include "witness/nodus_witness_addr_index.h"   /* dnac_addr_history     */
 #include "dnac/env_wire.h"
 #include "dnac/manifest_wire.h"
 #include "dnac/ledger_ids.h"
@@ -2025,6 +2026,113 @@ static void handle_dnac_history(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * dnac_addr_history — the session owner's history from the node-local
+ * address index (decision docs/plans/decisions/2026-10-01-node-address-
+ * history-index.md rev 2). The wire is specified once, in
+ * include/nodus/nodus.h beside nodus_client_dnac_addr_history; the
+ * answer is nodus_witness_addr_history_build's
+ * (nodus_witness_addr_index.c). This handler only decodes the args
+ * STRICTLY (a duplicate key, a wrong type or a truncated map is refused)
+ * and hands over the session fingerprint for the C11 check — the same
+ * conn->peer_id dnac_history compares against. dnac_history itself is
+ * unchanged (libdna reads its shape).
+ * ════════════════════════════════════════════════════════════════════ */
+
+static void handle_dnac_addr_history(nodus_witness_t *w,
+                                     struct nodus_tcp_conn *conn,
+                                     const uint8_t *payload, size_t len,
+                                     uint32_t txn_id)
+{
+    cbor_decoder_t dec;
+    size_t   args_count;
+    char     owner[NODUS_KEY_HEX_LEN];
+    bool     have_owner = false, have_limit = false, have_before = false,
+             have_bi = false, have_bq = false;
+    uint64_t limit = 0, bi = 0, bq = 0;
+    nodus_witness_addr_cursor_t cur;
+
+    if (decode_args(payload, len, &dec, &args_count) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing args map");
+        return;
+    }
+    memset(owner, 0, sizeof(owner));
+    memset(&cur, 0, sizeof(cur));
+    for (size_t k = 0; k < args_count; k++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        cbor_item_t val;
+        bool       *seen = NULL;
+
+        if (key.type != CBOR_ITEM_TSTR) {
+            send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                       "truncated or malformed args map");
+            return;
+        }
+        if (key_match(&key, "owner")) {
+            val = cbor_decode_next(&dec);
+            if (have_owner || val.type != CBOR_ITEM_TSTR ||
+                val.tstr.len != 128) {
+                send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                           "owner must be one 128-character string");
+                return;
+            }
+            memcpy(owner, val.tstr.ptr, 128);
+            owner[128] = '\0';
+            have_owner = true;
+            continue;
+        }
+        if (key_match(&key, "limit"))       seen = &have_limit;
+        else if (key_match(&key, "before")) seen = &have_before;
+        else if (key_match(&key, "bi"))     seen = &have_bi;
+        else if (key_match(&key, "bq"))     seen = &have_bq;
+        if (!seen) {
+            cbor_decode_skip(&dec);
+            continue;
+        }
+        val = cbor_decode_next(&dec);
+        if (*seen || val.type != CBOR_ITEM_UINT) {
+            send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                       "limit / before / bi / bq must each be one uint");
+            return;
+        }
+        *seen = true;
+        if (seen == &have_limit)       limit = val.uint_val;
+        else if (seen == &have_before) cur.h = val.uint_val;
+        else if (seen == &have_bi)     bi    = val.uint_val;
+        else                           bq    = val.uint_val;
+    }
+    if (dec.error || !have_owner || !have_limit) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing or invalid owner / limit");
+        return;
+    }
+    if (((have_bi || have_bq) && !have_before) ||
+        bi > UINT32_MAX || bq > UINT32_MAX ||
+        limit > NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "invalid cursor or limit");
+        return;
+    }
+    cur.i = (uint32_t)bi;
+    cur.q = (uint32_t)bq;
+
+    uint8_t *frame = NULL;
+    size_t   frame_len = 0;
+    int      ecode = 0;
+    char     emsg[128];
+    if (nodus_witness_addr_history_build(
+            w, txn_id, conn->peer_id_set ? conn->peer_id.bytes : NULL,
+            owner, have_before ? &cur : NULL, (uint32_t)limit, &frame,
+            &frame_len, &ecode, emsg, sizeof(emsg)) != 0) {
+        send_error(conn, txn_id, ecode ? ecode : NODUS_ERR_INTERNAL_ERROR,
+                   emsg);
+        return;
+    }
+    nodus_tcp_send(conn, frame, frame_len);
+    free(frame);
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * dnac_delegations — Query active delegations for the caller
  *
  * Request:  "a": {"pubkey": bstr(2592), "limit": uint}
@@ -3786,6 +3894,8 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_genesis(w, conn, txn_id);
     } else if (strcmp(method, "dnac_history") == 0) {
         handle_dnac_history(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_addr_history") == 0) {
+        handle_dnac_addr_history(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_delegations") == 0) {
         handle_dnac_delegations(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_token_list") == 0) {

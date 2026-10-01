@@ -14,6 +14,7 @@
 #include "witness/nodus_witness_v2_econ.h"   /* O15J Faz 2 — settlement */
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_vset.h"
+#include "witness/nodus_witness_addr_index.h"  /* node-local release rows */
 #include "witness/nodus_witness_emission.h"  /* DNAC_DECIMAL_UNIT (Rule N
                                                 weight floor, round 6)   */
 
@@ -280,6 +281,14 @@ static int v2ep_release_utxo(nodus_witness_t *w,
                       sqlite3_errmsg(w->db));
         return -2;
     }
+    /* the NODE-LOCAL address index row of this release — bond and
+     * delegation alike, both pass here (decision 2026-10-01-node-address-
+     * history-index.md rev 2). Same transaction, out of every root, a
+     * no-op unless the node flag is on. */
+    if (nodus_witness_addr_index_boundary(w, block_height,
+                                          NODUS_ADDR_KIND_RELEASE,
+                                          owner_fp128, amount) != 0)
+        return -2;
     return 0;
 }
 

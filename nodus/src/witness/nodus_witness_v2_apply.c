@@ -32,6 +32,8 @@
                                                 * (D-18 rev 4)           */
 #include "witness/nodus_witness_committee.h"   /* capacity season: the
                                         * governing snapshot resolution */
+#include "witness/nodus_witness_addr_index.h"  /* node-local address
+                                        * index — out of every root     */
 #include "witness/nodus_witness_emission.h"    /* HF-2: DNAC_DECIMAL_UNIT,
                                         * the voting-power unit          */
 /* HF-1: nodus/nodus_chain_config.h is back (R3 W4-C delta 2 had dropped
@@ -3257,6 +3259,21 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 goto fail_fault;       /* the helper owns the reason     */
             }
 
+            /* ── the NODE-LOCAL address index rows, inside the same
+             * savepoint (decision 2026-10-01-node-address-history-
+             * index.md rev 2): a refused item never reaches here, and a
+             * failed block takes them with the host's ROLLBACK. No root
+             * reads them; a no-op unless the node flag is on. A write
+             * failure is this node's FAULT, never a skipped row. */
+            if (nodus_witness_addr_index_env(w, blk->global_height,
+                                             (uint32_t)i, &pf[i], auths,
+                                             blk->out_reason,
+                                             sizeof blk->out_reason) != 0) {
+                (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                (void)cmt_savepoint_release(w, sp);
+                goto fail_fault;       /* the helper owns the reason     */
+            }
+
             /* APPLIED. Only now does the item join the per-domain id
              * lists and the touched set: a rolled-back item must not
              * reach tx_root, a domain root or a local index. */
@@ -3461,6 +3478,16 @@ cmt_item_failed:
                     code = NODUS_V2_TX_ERR_CLAIM;
                     goto cmt_claim_failed;
                 }
+            }
+            /* the NODE-LOCAL address index row of the applied claim,
+             * inside its savepoint (see the envelope lane above) */
+            if (nodus_witness_addr_index_claim(
+                    w, blk->global_height, (uint32_t)(blk->n_envs + i),
+                    &blk->claims[i], claim_nuls[i], target,
+                    blk->out_reason, sizeof blk->out_reason) != 0) {
+                (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                (void)cmt_savepoint_release(w, sp);
+                goto fail_fault;       /* the helper owns the reason     */
             }
             /* APPLIED: only now is the target domain touched, so a
              * refused claim moves no domain root. */
@@ -3720,6 +3747,21 @@ cmt_claim_failed:
             }
         }
     }
+
+    /* 6e+. The NODE-LOCAL address index closes the block (decision
+     * 2026-10-01-node-address-history-index.md rev 2): every writer
+     * above has run (items, claims, the boundary's payout and release
+     * rows), so the block time — `blk->timestamp`, the Comet header's
+     * time the host copied from RequestFinalizeBlock.time.seconds — is
+     * stamped on this height's rows here, still inside the block
+     * transaction, and the first-indexed-height marker advances. Out of
+     * every root; a no-op unless the node flag is on; a failure is this
+     * node's FAULT. */
+    if (nodus_witness_addr_index_block_close(w, blk->global_height,
+                                             blk->timestamp,
+                                             blk->out_reason,
+                                             sizeof blk->out_reason) != 0)
+        goto fail_fault;               /* the helper owns the reason     */
 
     /* 6f. PER-BLOCK BUILD-IDENTITY CHECK (tokenomics-v3 P2, P2-4).
      *

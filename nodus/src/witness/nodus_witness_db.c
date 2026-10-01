@@ -21,6 +21,7 @@
 #include "witness/nodus_witness_roots_v2.h"   /* NODUS_TREASURY_POOL_* (supply view) */
 #include "witness/nodus_witness_v2_produce.h" /* nodus_witness_v2_tip_height (supply view) */
 #include "witness/nodus_witness_v2_claims.h"  /* nodus_witness_v2_unclaimed_total (supply view) */
+#include "witness/nodus_witness_addr_index.h" /* node-local address index tables */
 #include <string.h>
 #include <time.h>
 #include <stdio.h>
@@ -2124,6 +2125,14 @@ int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
      * (nodus_witness_v2_schema.c) adds and VERIFIES the same column; this
      * leg is what keeps every other lane's supply read working. */
     nodus_witness_db_migrate_v18_supply_reward_pool(w);
+
+    /* 2026-10-01 — the node-local address history index tables
+     * (decision 2026-10-01-node-address-history-index.md rev 2 item 6):
+     * RUNG-FREE, CREATE ... IF NOT EXISTS on every open like the
+     * chain_config leg above — no schema version rung, the S16 equality
+     * gates untouched. Created whatever the node flag says; only the
+     * writers consult the flag. */
+    nodus_witness_addr_index_migrate(w);
 
     return 0;
 }

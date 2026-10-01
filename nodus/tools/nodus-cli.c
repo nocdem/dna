@@ -390,6 +390,121 @@ done:
     return rc;
 }
 
+/* `addr-history [--before H] [--limit N]` — THIS identity's history from
+ * the node's local address index (dnac_addr_history, nodus.h; decision
+ * docs/plans/decisions/2026-10-01-node-address-history-index.md). The
+ * owner is the CLI's own fingerprint: the node answers only the
+ * authenticated session's own history (C11). Read-only. One page; the
+ * next page is `--before H:I:Q` with the printed cursor (`--before H`
+ * alone = every row below height H — it would skip the rest of a height
+ * a page was cut inside). */
+static int cmd_addr_history(const char *server_ip, uint16_t server_port,
+                            int argc, char **argv, int optind_cmd) {
+    nodus_dnac_addr_history_cursor_t cur;
+    bool     have_before = false;
+    unsigned long limit = 20;
+
+    memset(&cur, 0, sizeof(cur));
+    for (int a = optind_cmd + 1; a < argc; a++) {
+        char *end = NULL;
+        if (strcmp(argv[a], "--before") == 0 && a + 1 < argc) {
+            const char *s = argv[++a];
+            errno = 0;
+            unsigned long long v = strtoull(s, &end, 10);
+            if (errno || !end || end == s || v == 0) goto bad_before;
+            cur.h = (uint64_t)v;
+            if (*end == ':') {
+                unsigned long iv, qv;
+                s = end + 1;
+                iv = strtoul(s, &end, 10);
+                if (errno || end == s || *end != ':' || iv > UINT32_MAX)
+                    goto bad_before;
+                s = end + 1;
+                qv = strtoul(s, &end, 10);
+                if (errno || end == s || *end || qv > UINT32_MAX)
+                    goto bad_before;
+                cur.i = (uint32_t)iv;
+                cur.q = (uint32_t)qv;
+            } else if (*end) {
+                goto bad_before;
+            }
+            have_before = true;
+            continue;
+bad_before:
+            fprintf(stderr, "--before must be H or H:I:Q (H >= 1)\n");
+            return 1;
+        } else if (strcmp(argv[a], "--limit") == 0 && a + 1 < argc) {
+            errno = 0;
+            limit = strtoul(argv[++a], &end, 10);
+            if (errno || !end || *end || limit < 1 ||
+                limit > NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT) {
+                fprintf(stderr, "--limit must be 1..%u\n",
+                        (unsigned)NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT);
+                return 1;
+            }
+        } else {
+            fprintf(stderr, "Usage: addr-history [--before H] [--limit N]\n");
+            return 1;
+        }
+    }
+
+    nodus_client_t client;
+    nodus_client_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", server_ip);
+    cfg.servers[0].port = server_port;
+    cfg.server_count    = 1;
+    cfg.auto_reconnect  = false;
+
+    if (nodus_client_init(&client, &cfg, &identity) != 0) {
+        fprintf(stderr, "client_init failed\n");
+        return 1;
+    }
+    if (nodus_client_connect(&client) != 0) {
+        fprintf(stderr, "client connect failed (%s:%u)\n", server_ip,
+                (unsigned)server_port);
+        nodus_client_close(&client);
+        return 1;
+    }
+
+    nodus_dnac_addr_history_result_t r;
+    int qrc = nodus_client_dnac_addr_history(&client, identity.fingerprint,
+                                             have_before ? &cur : NULL,
+                                             (uint32_t)limit, &r);
+    if (qrc != 0) {
+        fprintf(stderr, "dnac_addr_history failed (%d)\n", qrc);
+        nodus_client_close(&client);
+        return 1;
+    }
+
+    printf("Address history of %.16s... from %s:%u\n", identity.fingerprint,
+           server_ip, (unsigned)server_port);
+    printf("index %s, complete from height %llu\n",
+           r.enabled ? "ON" : "OFF", (unsigned long long)r.from_height);
+    for (size_t k = 0; k < r.count; k++) {
+        const nodus_dnac_addr_history_entry_t *e = &r.entries[k];
+        bool native = true;
+        for (int b = 0; b < 64; b++)
+            if (e->token_id[b]) { native = false; break; }
+        printf("h=%llu i=%u q=%u ts=%llu %-16s amount=%llu%s fee=%llu",
+               (unsigned long long)e->h, (unsigned)e->i, (unsigned)e->q,
+               (unsigned long long)e->ts, e->kind,
+               (unsigned long long)e->amount, native ? "" : " (token)",
+               (unsigned long long)e->fee);
+        if (e->peer[0]) printf(" peer=%.16s...", e->peer);
+        printf("\n");
+    }
+    if (r.count == limit && r.count > 0) {
+        const nodus_dnac_addr_history_entry_t *last = &r.entries[r.count - 1];
+        printf("more may follow: --before %llu:%u:%u\n",
+               (unsigned long long)last->h, (unsigned)last->i,
+               (unsigned)last->q);
+    }
+    nodus_client_free_addr_history_result(&r);
+    nodus_client_close(&client);
+    return 0;
+}
+
 static int cmd_listen(const char *key_str) {
     nodus_key_t key;
     nodus_hash((const uint8_t *)key_str, strlen(key_str), &key);
@@ -5600,6 +5715,8 @@ static void usage(const char *prog) {
     fprintf(stderr, "  presence [fp..]  Query presence (self + optional fps)\n");
     fprintf(stderr, "  hold             Stay connected (test presence visibility)\n");
     fprintf(stderr, "  witness          Show the committee for the next block\n");
+    fprintf(stderr, "  addr-history [--before H[:I:Q]] [--limit N]\n");
+    fprintf(stderr, "                   This identity's history from the node's local index\n");
     fprintf(stderr, "  ch_listen <uuid> [logfile]  Subscribe to channel on TCP 4003, log posts\n");
 #ifdef NODUS_CLI_HAS_DNAC
     fprintf(stderr, "  chain-config propose --param <NAME> --value <N> --effective <BLOCK>\n");
@@ -5751,6 +5868,15 @@ int main(int argc, char **argv) {
     /* witness: its own nodus_client_t session (dnac_committee). */
     if (strcmp(command, "witness") == 0) {
         int rc = cmd_witness(server_ip, server_port);
+        nodus_identity_clear(&identity);
+        return rc;
+    }
+
+    /* addr-history: its own nodus_client_t session (dnac_addr_history),
+     * as THIS identity — the node answers only the session's own owner. */
+    if (strcmp(command, "addr-history") == 0) {
+        int rc = cmd_addr_history(server_ip, server_port, argc, argv,
+                                  optind);
         nodus_identity_clear(&identity);
         return rc;
     }

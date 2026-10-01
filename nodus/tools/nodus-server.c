@@ -646,6 +646,21 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg) {
     if (json_object_object_get_ex(root, "require_peer_auth", &val))
         cfg->require_peer_auth = json_object_get_boolean(val);
 
+    /* Node-local address history index (nodus_server.h
+     * addr_history_index; decision 2026-10-01-node-address-history-
+     * index.md). Default OFF; a non-boolean value refuses the start
+     * rather than silently guessing what the operator meant. */
+    if (json_object_object_get_ex(root, "addr_history_index", &val)) {
+        if (!json_object_is_type(val, json_type_boolean)) {
+            QGP_LOG_ERROR(LOG_TAG_CFG, "addr_history_index must be true or "
+                          "false");
+            json_object_put(root);
+            return -1;
+        }
+        cfg->addr_history_index = json_object_get_boolean(val) ? true
+                                                               : false;
+    }
+
     /* P2P-PORT F6 — the published network file's path (loaded in main,
      * after both option passes; `--network-file` overrides it). */
     if (json_object_object_get_ex(root, "network_file", &val))
