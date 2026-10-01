@@ -966,6 +966,34 @@ add_executable(test_tier2 tests/test_tier2.c)
 target_link_libraries(test_tier2 nodus dsa nodus)
 add_test(NAME test_tier2 COMMAND test_tier2)
 
+# DHT Package A (server + wire): own / pg / after / more / next wire,
+# forwarded-read merge (S1/F6), originator paging (S3), could-not-look
+# (S6), inter-circuit lifetime (F1/F1b), 4002 pre-auth / pre-key gate
+# (F2/F3). All in-process, no sockets.
+add_executable(test_tier2_owner_page tests/test_tier2_owner_page.c)
+target_link_libraries(test_tier2_owner_page nodus dsa nodus)
+add_test(NAME test_tier2_owner_page COMMAND test_tier2_owner_page)
+
+add_executable(test_bf_merge_pure tests/test_bf_merge_pure.c)
+target_link_libraries(test_bf_merge_pure nodus dsa kem nodus)
+add_test(NAME test_bf_merge_pure COMMAND test_bf_merge_pure)
+
+add_executable(test_get_all_paging tests/test_get_all_paging.c)
+target_link_libraries(test_get_all_paging nodus dsa kem nodus)
+add_test(NAME test_get_all_paging COMMAND test_get_all_paging)
+
+add_executable(test_get_unavailable tests/test_get_unavailable.c)
+target_link_libraries(test_get_unavailable nodus dsa kem nodus)
+add_test(NAME test_get_unavailable COMMAND test_get_unavailable)
+
+add_executable(test_inter_circuit_uaf tests/test_inter_circuit_uaf.c)
+target_link_libraries(test_inter_circuit_uaf nodus dsa kem nodus)
+add_test(NAME test_inter_circuit_uaf COMMAND test_inter_circuit_uaf)
+
+add_executable(test_inter_preauth_gate tests/test_inter_preauth_gate.c)
+target_link_libraries(test_inter_preauth_gate nodus dsa kem nodus)
+add_test(NAME test_inter_preauth_gate COMMAND test_inter_preauth_gate)
+
 # P0-A (2026-09-28): tier-1 / tier-2 / value decoders refuse a repeated map
 # key and a heap field written from two maps; value types outside {1,2,3}.
 add_executable(test_decode_dupkey tests/test_decode_dupkey.c)

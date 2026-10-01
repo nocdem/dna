@@ -22,6 +22,52 @@
 extern "C" {
 #endif
 
+/* ── DHT Package A: owner filter + opt-in paging (S2/S3) ────────────
+ *
+ * Every key below is OPTIONAL; a peer that predates it skips the unknown
+ * key (decoder: unknown keys are skipped) and answers as before.
+ *
+ *   request "a" (get, get_all, get_batch):
+ *     "own"   bstr(64)                      owner fingerprint filter
+ *   request "a" (get_all, get_batch):
+ *     "pg"    bool (true)                   page from the first row
+ *     "after" map {"o": bstr(64), "v": uint} page strictly after this PK
+ *   reply "r" (paged get_all):
+ *     "vals"  array of serialized values    (always present, may be empty)
+ *     "more"  bool                          rows remain after this page
+ *     "next"  map {"o": bstr(64), "v": uint} cursor for the next page
+ *                                           (present only when more)
+ *   reply "r" "batch" entry (paged get_batch): {"k","vs"} + "more" (+"next")
+ *
+ * Page order is the storage PRIMARY KEY order: owner_fp ASC (bytewise),
+ * then value_id ASC compared as SIGNED int64 (nodus_storage_get_all_page).
+ * "v" carries the raw uint64 value_id bits.
+ *
+ * A malformed new key (wrong CBOR type, "own"/"o" not 64 bytes, a cursor
+ * map without both "o" and "v") refuses the whole frame (decode -1): a
+ * silently ignored cursor would restart a paged read at page 1 forever. */
+
+/** One primary-key position: (owner_fp, value_id). */
+typedef struct {
+    nodus_key_t owner;
+    uint64_t    vid;
+} nodus_t2_cursor_t;
+
+/** Read options for get / get_all / get_batch. NULL or all-unset = legacy
+ *  frame, byte-identical to the encoder without options. */
+typedef struct {
+    const nodus_key_t       *own;    /**< owner filter, NULL = every owner */
+    bool                     page;   /**< "pg": paged read from the start */
+    const nodus_t2_cursor_t *after;  /**< "after": continue after this PK */
+} nodus_t2_read_opts_t;
+
+/** Page outcome of one paged key. */
+typedef struct {
+    bool              more;      /**< rows remain after this page */
+    bool              has_next;  /**< next is set (only when more) */
+    nodus_t2_cursor_t next;      /**< last PK included in this page */
+} nodus_t2_page_info_t;
+
 /* ── Client → Nodus encode ───────────────────────────────────────── */
 
 int nodus_t2_hello(uint32_t txn, const nodus_pubkey_t *pk,
@@ -45,6 +91,19 @@ int nodus_t2_get(uint32_t txn, const uint8_t *token,
 int nodus_t2_get_all(uint32_t txn, const uint8_t *token,
                       const nodus_key_t *key,
                       uint8_t *buf, size_t cap, size_t *out_len);
+
+/** "get" with an optional owner filter ("own"). own == NULL produces the
+ *  frame nodus_t2_get() produces, byte for byte. */
+int nodus_t2_get_owner(uint32_t txn, const uint8_t *token,
+                        const nodus_key_t *key, const nodus_key_t *own,
+                        uint8_t *buf, size_t cap, size_t *out_len);
+
+/** "get_all" with optional "own" / "pg" / "after". opts == NULL (or every
+ *  option unset) produces the frame nodus_t2_get_all() produces. */
+int nodus_t2_get_all_ex(uint32_t txn, const uint8_t *token,
+                         const nodus_key_t *key,
+                         const nodus_t2_read_opts_t *opts,
+                         uint8_t *buf, size_t cap, size_t *out_len);
 
 int nodus_t2_listen(uint32_t txn, const uint8_t *token,
                      const nodus_key_t *key,
@@ -262,6 +321,14 @@ int nodus_t2_get_batch(uint32_t txn, const uint8_t *token,
                         const nodus_key_t *keys, int key_count,
                         uint8_t *buf, size_t cap, size_t *out_len);
 
+/** get_batch with optional "own" / "pg" / "after" (node-to-node forward on
+ *  4002; the cursor applies to every key). opts == NULL produces the frame
+ *  nodus_t2_get_batch() produces. */
+int nodus_t2_get_batch_ex(uint32_t txn, const uint8_t *token,
+                           const nodus_key_t *keys, int key_count,
+                           const nodus_t2_read_opts_t *opts,
+                           uint8_t *buf, size_t cap, size_t *out_len);
+
 /** Client → Nodus: batch count for multiple keys (+ has_mine check) */
 int nodus_t2_count_batch(uint32_t txn, const uint8_t *token,
                           const nodus_key_t *keys, int key_count,
@@ -276,6 +343,15 @@ int nodus_t2_result_get_batch(uint32_t txn,
                                nodus_value_t ***vals_per_key,
                                const size_t *counts_per_key,
                                uint8_t *buf, size_t cap, size_t *out_len);
+
+/** Batch get result with per-key page info ("more", "next" in each entry).
+ *  pages == NULL produces the frame nodus_t2_result_get_batch() produces. */
+int nodus_t2_result_get_batch_ex(uint32_t txn,
+                                  const nodus_key_t *keys, int key_count,
+                                  nodus_value_t ***vals_per_key,
+                                  const size_t *counts_per_key,
+                                  const nodus_t2_page_info_t *pages,
+                                  uint8_t *buf, size_t cap, size_t *out_len);
 
 /** Nodus → Client: batch count result (per-key count + has_mine) */
 int nodus_t2_result_count_batch(uint32_t txn,
@@ -332,6 +408,12 @@ int nodus_t2_result_multi(uint32_t txn, nodus_value_t **vals, size_t count,
 
 int nodus_t2_result_empty(uint32_t txn,
                            uint8_t *buf, size_t cap, size_t *out_len);
+
+/** Paged get_all reply: "vals" (always, may be empty) + "more" + "next"
+ *  (only when page->more && page->has_next). */
+int nodus_t2_result_page(uint32_t txn, nodus_value_t **vals, size_t count,
+                          const nodus_t2_page_info_t *page,
+                          uint8_t *buf, size_t cap, size_t *out_len);
 
 int nodus_t2_error(uint32_t txn, int code, const char *msg,
                     uint8_t *buf, size_t cap, size_t *out_len);
@@ -654,6 +736,21 @@ typedef struct {
     bool            has_mlkem_pk;
     nodus_sig_t     mpk_sig;            /* auth_ok: Dilithium5 sig over (mlkem_pk || nonce) */
     bool            has_mpk_sig;
+
+    /* DHT Package A (S2/S3) — request args ("a") */
+    nodus_key_t       own_fp;           /* "own": owner filter */
+    bool              has_own;
+    bool              page;             /* "pg": paged read from the start */
+    nodus_t2_cursor_t after;            /* "after": continue after this PK */
+    bool              has_after;
+    /* DHT Package A (S3) — paged reply ("r") */
+    bool              more;             /* "more" */
+    bool              has_more;
+    nodus_t2_cursor_t next;             /* "next" */
+    bool              has_next;
+    /* Per "batch" entry page info (heap, allocated with "batch"; an entry
+     * without "more"/"next" stays zeroed). */
+    nodus_t2_page_info_t *batch_page;
 
     /* Error */
     int             error_code;
