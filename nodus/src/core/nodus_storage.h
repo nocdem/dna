@@ -25,8 +25,12 @@ extern "C" {
 
 /* Per-owner BYTE quota, enforced inside nodus_storage_put and
  * nodus_storage_put_if_newer: the sum of NODUS_STORAGE_ROW_CHARGE(data_len)
- * over every LIVE row the owner holds on this node.
- * Operator 2026-10-01: 16 MB per owner, counting per-row overhead. */
+ * over every row the owner has stored on this node, expired or not.
+ * The operator set 16 MB per person ("kişi başı 16 MB",
+ * decisions/2026-09-29-dht-review-scope.md, update 2026-10-01).
+ * Counting owner_pk + signature + the fixed per-row overhead inside that
+ * figure is an ORCHESTRATOR decision (DHT Package A plan rev 2,
+ * 2026-10-01), not the operator's words. */
 #define NODUS_STORAGE_OWNER_MAX_BYTES (16ULL * 1024 * 1024)  /* 16 MiB */
 
 /* Fixed per-row overhead charged to the owner on top of data + owner_pk +
@@ -52,6 +56,11 @@ extern "C" {
 #define NODUS_STORAGE_RC_FAULT       (-5)  /* read FAULT: SQLite error or allocation
                                             * failure — the store could not be
                                             * looked at; NOT "no row" */
+#define NODUS_STORAGE_RC_EXPIRED     (-6)  /* write refused: the value is already
+                                            * expired on arrival (expires_at > 0
+                                            * AND expires_at <= now, as int64 —
+                                            * the rows nodus_storage_cleanup
+                                            * deletes); nothing stored */
 
 /* DHT hinted handoff caps (operator 2026-10-01): per target node id 64 rows
  * and 16 MiB of frame bytes, 128 MiB of frame bytes over the whole table,
@@ -97,14 +106,17 @@ typedef struct {
     sqlite3_stmt *stmt_count;
     sqlite3_stmt *stmt_put_if_newer;
     sqlite3_stmt *stmt_fetch_batch;
-    /* Quota checks */
+    /* Never prepared (always NULL) since nodus_storage_check_quota was
+     * removed. Kept only because nodus_server.c (dht_wal_checkpoint's reset
+     * list) still names them; remove both when that list is edited. */
     sqlite3_stmt *stmt_quota_total_bytes;
     sqlite3_stmt *stmt_quota_owner_count;
-    /* Live-row usage (count, data bytes) of one owner / of the whole table —
-     * the write caps inside put / put_if_newer */
+    /* Stored-row usage (count, data bytes; every row, expired or not) of
+     * one owner / of the whole table — the write caps inside put /
+     * put_if_newer */
     sqlite3_stmt *stmt_quota_owner_usage;
     sqlite3_stmt *stmt_quota_global_usage;
-    /* Existing row of one (key, owner, value_id): seq, data length, expires_at */
+    /* Existing row of one (key, owner, value_id): seq, data length */
     sqlite3_stmt *stmt_existing_row;
     /* put_if_newer "would be skipped" pre-check (same predicate as the put) */
     sqlite3_stmt *stmt_newer_exists;
@@ -143,30 +155,32 @@ void nodus_storage_close(nodus_storage_t *store);
  * EXCLUSIVE values enforce first-writer-owns: if the key already has an
  * EXCLUSIVE value from a different owner, the PUT is rejected.
  *
- * Checks, in this order: signature, EXCLUSIVE owner (-2), stale seq (-4:
- * the stored row for the same key, owner and value_id has a STRICTLY higher
- * seq — live or expired; equal or higher seq replaces as before), then the
+ * Checks, in this order: signature (-1), already expired on arrival (-6:
+ * expires_at > 0 AND expires_at <= now — the value nodus_storage_cleanup
+ * would delete the moment it landed; this node's clock, node-local storage
+ * admission, not consensus), EXCLUSIVE owner (-2), stale seq (-4: the
+ * stored row for the same key, owner and value_id has a STRICTLY higher
+ * seq — expired or not; equal or higher seq replaces as before), then the
  * write caps (-3), growth-only:
- *   - a replace of a LIVE stored row of the same (key, owner, value_id)
- *     whose data does not grow is never refused by any cap;
- *   - a NEW row (none stored, or the stored one is expired) is checked
+ *   - a replace of a stored row of the same (key, owner, value_id) —
+ *     expired or not — whose data does not grow is never refused by any cap;
+ *   - a NEW row (none stored for that key, owner, value_id) is checked
  *     against the owner row cap NODUS_STORAGE_MAX_PER_OWNER and the global
  *     row cap NODUS_STORAGE_MAX_VALUES, and its full charge against the
  *     byte caps;
  *   - a GROWING replace is checked against the byte caps for the growth.
  * Byte caps: per owner NODUS_STORAGE_OWNER_MAX_BYTES over
  * NODUS_STORAGE_ROW_CHARGE(data_len) (data + owner_pk + signature + fixed
- * overhead per row); global NODUS_STORAGE_MAX_BYTES over data bytes only
- * (the unit nodus_storage_check_quota uses). Every cap counts LIVE rows
- * only: a row is expired exactly when nodus_storage_cleanup would delete it
- * (expires_at > 0 AND expires_at <= now); the clock is this node's, the
- * check is node-local storage admission, not consensus.
+ * overhead per row); global NODUS_STORAGE_MAX_BYTES over data bytes only.
+ * Every cap counts EVERY stored row, expired or not (the rows on disk,
+ * until nodus_storage_cleanup removes them) — the caps read no clock.
  * seq is compared as SQLite INTEGER (signed int64), as in put_if_newer.
  *
  * @param store   Storage handle
  * @param val     Value to store (must be signed)
  * @return 0 on success, -1 on error, -2 if EXCLUSIVE key owned by another
- *         identity, -3 if a cap or quota would be exceeded, -4 if stale
+ *         identity, -3 if a cap or quota would be exceeded, -4 if stale,
+ *         NODUS_STORAGE_RC_EXPIRED (-6) if already expired on arrival
  */
 int nodus_storage_put(nodus_storage_t *store, const nodus_value_t *val);
 
@@ -290,16 +304,22 @@ int nodus_storage_count(nodus_storage_t *store);
  * Store a value only if it has a higher seq than existing.
  * On equal seq, tiebreak by SHA3-256(data) — higher hash wins.
  * Atomic single-SQL operation (no TOCTOU race).
- * A value that would be stored is first checked against the per-owner caps
+ * First, before any DB read: a value already expired on arrival
+ * (expires_at > 0 AND expires_at <= now — expires_at is created_at + ttl,
+ * and created_at is the sender's, unsigned) is refused with
+ * NODUS_STORAGE_RC_EXPIRED (-6), even one that would be skipped.
+ * A value that would be stored is then checked against the per-owner caps
  * with the same growth-only rule and the same accounting as
  * nodus_storage_put: owner row cap NODUS_STORAGE_MAX_PER_OWNER for a new
  * row, owner byte quota NODUS_STORAGE_OWNER_MAX_BYTES over
- * NODUS_STORAGE_ROW_CHARGE for the growth, live rows only. The global caps
- * (NODUS_STORAGE_MAX_VALUES / NODUS_STORAGE_MAX_BYTES) are NOT applied here.
+ * NODUS_STORAGE_ROW_CHARGE for the growth, every stored row counted,
+ * expired or not. The global caps (NODUS_STORAGE_MAX_VALUES /
+ * NODUS_STORAGE_MAX_BYTES) are NOT applied here.
  * A value that would be skipped returns 1 without a cap check.
  *
  * @return 0 = stored, 1 = skipped (existing is newer/equal), -1 = error,
- *         -2 = EXCLUSIVE key owned by another identity, -3 = owner cap
+ *         -2 = EXCLUSIVE key owned by another identity, -3 = owner cap,
+ *         NODUS_STORAGE_RC_EXPIRED (-6) = already expired on arrival
  */
 int nodus_storage_put_if_newer(nodus_storage_t *store, const nodus_value_t *val);
 
@@ -328,21 +348,6 @@ int nodus_storage_fetch_batch(nodus_storage_t *store,
                                uint64_t after_vid,
                                nodus_value_t **batch_out,
                                int batch_size);
-
-/**
- * Check storage quotas before a PUT.
- * Checks: global count, global bytes, per-owner count — over EVERY row,
- * expired or not, and with no notion of a replace: an owner at the row cap
- * is refused even for a non-growing replace. nodus_storage_put applies the
- * same caps itself with the growth-only rule; this pre-check is kept for
- * callers that want the old, stricter answer.
- *
- * @param store     Storage handle
- * @param owner_fp  Owner fingerprint (for per-owner check)
- * @return 0 = OK (within quota), -1 = quota exceeded
- */
-int nodus_storage_check_quota(nodus_storage_t *store,
-                               const nodus_key_t *owner_fp);
 
 /**
  * Count values for a specific key (all owners).
