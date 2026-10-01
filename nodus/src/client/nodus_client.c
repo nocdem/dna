@@ -1487,8 +1487,27 @@ int nodus_client_put(nodus_client_t *client,
                                 type, ttl, vid, seq, sig, 0);
 }
 
+/* The answer for an error frame ('e') in the Package A reply handlers and
+ * the strict getters. The decoder leaves error_code 0 when "code" is absent
+ * or not a uint, and a uint past INT_MAX lands negative: neither is a code,
+ * and returning it would read as success with no value (rev 2 item 19). */
+static int client_error_rc(const nodus_tier2_msg_t *resp) {
+    if (resp->error_code > 0) return resp->error_code;
+    QGP_LOG_WARN(LOG_TAG, "error reply without a valid code (%d) — "
+                 "reported as a protocol error", resp->error_code);
+    return NODUS_ERR_PROTOCOL_ERROR;
+}
+
+/* Error frame of nodus_client_get / get_all (lenient: the code as decoded,
+ * unchanged for the frozen app) and of their strict variants (rev 3 R-h:
+ * client_error_rc — never 0 / negative). */
+static int client_reply_error_rc(const nodus_tier2_msg_t *resp, bool strict) {
+    return strict ? client_error_rc(resp) : resp->error_code;
+}
+
 /* Shared by nodus_client_get and nodus_client_get_strict. `strict` only
- * changes the answer when no value decoded: the lenient path returns
+ * changes the answer when no value decoded, or when an error frame carries
+ * no valid code (client_reply_error_rc): the lenient path returns
  * NODUS_ERR_NOT_FOUND as it always has; the strict path first checks, in the
  * raw reply the pending slot kept (client_on_frame), whether the node sent a
  * "val" at all (nodus_client_strict.h). */
@@ -1511,7 +1530,11 @@ static int client_get_impl(nodus_client_t *client, const nodus_key_t *key,
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+    if (resp->type == 'e') {
+        int rc = client_reply_error_rc(resp, strict);
+        free_pending(client, req);
+        return rc;
+    }
 
     if (resp->value) {
         *val_out = resp->value;
@@ -1574,7 +1597,12 @@ static int client_get_all_impl(nodus_client_t *client, const nodus_key_t *key,
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+    if (resp->type == 'e') {
+        /* undecodable_out set = the strict path (nodus_client_get_all_strict) */
+        int rc = client_reply_error_rc(resp, undecodable_out != NULL);
+        free_pending(client, req);
+        return rc;
+    }
 
     if (undecodable_out) {
         /* Everything the node put in "vals" that is not among the decoded
@@ -1619,6 +1647,393 @@ int nodus_client_get_all_strict(nodus_client_t *client,
     return client_get_all_impl(client, key, vals_out, count_out,
                                undecodable_out);
 }
+
+/* ── DHT Package A: owner-filtered get + paged get_all (client) ────
+ *
+ * New entry points only; nodus_client_get / get_all / get_batch above keep
+ * their frames and answers (docs/plans/decisions/2026-09-29-dna-connect-
+ * frozen.md). Wire: protocol/nodus_tier2.h "DHT Package A".
+ *
+ * ROLLING DEPLOY: a node that predates Package A skips "own", "pg" and
+ * "after" and answers as before. The reply handling below therefore
+ * re-applies every filter the request asked for:
+ *   - a get_all reply without "more" is a LEGACY reply: its completeness is
+ *     unknown (the old node may have capped it, or failed to look and
+ *     answered empty), so it is flagged legacy, never reported as complete,
+ *     and a legacy reply with no row left after filtering is
+ *     NODUS_ERR_UNAVAILABLE (rev 2 item 18);
+ *   - rows whose key_hash is not the asked key are dropped;
+ *   - with an owner filter, rows of other owners are dropped;
+ *   - with a cursor, rows at or before it (signed PK order) are dropped;
+ *   - with more = true, rows past "next" are dropped (they come back on the
+ *     next page; the node trims to "next" itself, nodus_dht_page_finish).
+ * The reply handlers are pure functions of the decoded reply — no clock, no
+ * I/O — and are fed crafted replies by test_client_get_owner_page.c through
+ * the NODUS_CLIENT_TEST_SEAM wrappers below. */
+
+/* Storage primary-key order: owner_fp bytewise, then value_id as SIGNED
+ * int64 (SQLite INTEGER). Mirrors nodus_dht_pk_cmp (nodus_server.c), which
+ * the client library cannot link. */
+static int client_pk_cmp(const nodus_key_t *a_owner, uint64_t a_vid,
+                         const nodus_key_t *b_owner, uint64_t b_vid) {
+    int c = memcmp(a_owner->bytes, b_owner->bytes, NODUS_KEY_BYTES);
+    if (c != 0) return c;
+    int64_t a = (int64_t)a_vid;
+    int64_t b = (int64_t)b_vid;
+    return (a > b) - (a < b);
+}
+
+/* Single owner-filtered GET reply. Takes the decoded value out of resp on
+ * success. A row of another owner means the node ignored "own" (it predates
+ * Package A): the owner's row may still exist, so this is NOT "not found" —
+ * it is NODUS_ERR_UNAVAILABLE (the node could not answer the question). */
+static int client_owner_result(nodus_tier2_msg_t *resp, const nodus_key_t *key,
+                               const nodus_key_t *own, nodus_value_t **val_out) {
+    *val_out = NULL;
+    if (resp->type == 'e') return client_error_rc(resp);
+    if (!resp->value) return NODUS_ERR_NOT_FOUND;
+
+    if (nodus_key_cmp(&resp->value->key_hash, key) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "GET(owner): the node returned a row of another "
+                     "key — reported as a protocol error");
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+    if (nodus_key_cmp(&resp->value->owner_fp, own) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "GET(owner): the node returned a row of another "
+                     "owner (it ignores the owner filter) — reported as "
+                     "unavailable, not as absent");
+        return NODUS_ERR_UNAVAILABLE;
+    }
+    *val_out = resp->value;
+    resp->value = NULL;
+    return 0;
+}
+
+/* Paged GET_ALL reply. On success takes the kept rows out of resp (the
+ * dropped ones are freed) and sets more / next / legacy; on failure every
+ * output stays empty (legacy false). */
+static int client_page_result(nodus_tier2_msg_t *resp, const nodus_key_t *key,
+                              const nodus_key_t *own,
+                              const nodus_dht_page_cursor_t *after,
+                              nodus_value_t ***vals_out, size_t *count_out,
+                              bool *more_out,
+                              nodus_dht_page_cursor_t *cursor_out,
+                              bool *legacy_out) {
+    *vals_out = NULL;
+    *count_out = 0;
+    *more_out = false;
+    *legacy_out = false;
+    memset(cursor_out, 0, sizeof(*cursor_out));
+    if (resp->type == 'e') return client_error_rc(resp);
+
+    /* No "more" = a node that predates Package A: a legacy get_all whose
+     * completeness is unknown. Never "complete" (rev 2 item 18). */
+    bool legacy = !resp->has_more;
+    bool more = resp->has_more && resp->more;
+    if (resp->has_next && !more) {
+        /* A paging node sends "next" only with more = true. */
+        QGP_LOG_WARN(LOG_TAG, "GET_ALL(page): next cursor without more=true "
+                     "— protocol error");
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+    if (more && !resp->has_next) {
+        QGP_LOG_WARN(LOG_TAG, "GET_ALL(page): more=true without a next "
+                     "cursor — protocol error");
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+    if (more && after &&
+        client_pk_cmp(&resp->next.owner, resp->next.vid,
+                      &after->owner_fp, after->value_id) <= 0) {
+        /* A cursor that does not advance would page forever. */
+        QGP_LOG_WARN(LOG_TAG, "GET_ALL(page): next cursor does not advance "
+                     "past the request cursor — protocol error");
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+
+    size_t kept = 0, dropped = 0;
+    size_t n = resp->values ? resp->value_count : 0;
+    for (size_t i = 0; i < n; i++) {
+        nodus_value_t *v = resp->values[i];
+        resp->values[i] = NULL;
+        if (!v) continue;
+        bool drop =
+            nodus_key_cmp(&v->key_hash, key) != 0 ||
+            (own && nodus_key_cmp(&v->owner_fp, own) != 0) ||
+            (after && client_pk_cmp(&v->owner_fp, v->value_id,
+                                    &after->owner_fp, after->value_id) <= 0) ||
+            (more && client_pk_cmp(&v->owner_fp, v->value_id,
+                                   &resp->next.owner, resp->next.vid) > 0);
+        if (drop) {
+            nodus_value_free(v);
+            dropped++;
+            continue;
+        }
+        resp->values[kept++] = v;
+    }
+    resp->value_count = kept;
+    if (dropped > 0)
+        QGP_LOG_DEBUG(LOG_TAG, "GET_ALL(page): dropped %zu row(s) outside "
+                      "the asked key / owner / page", dropped);
+
+    if (legacy && kept == 0) {
+        /* An old node answers empty both when the key is empty and when it
+         * could not look; with a filter it may also have sent only rows the
+         * client dropped. Nothing usable came back: not "empty". */
+        QGP_LOG_WARN(LOG_TAG, "GET_ALL(page): legacy reply (no \"more\") "
+                     "with no row of the asked page — reported as "
+                     "unavailable, not as empty");
+        return NODUS_ERR_UNAVAILABLE;
+    }
+
+    if (kept > 0) {
+        /* Transfer ownership */
+        *vals_out = resp->values;
+        *count_out = kept;
+        resp->values = NULL;
+        resp->value_count = 0;
+    }
+    *more_out = more;
+    *legacy_out = legacy;
+    if (more) {
+        cursor_out->owner_fp = resp->next.owner;
+        cursor_out->value_id = resp->next.vid;
+    }
+    return 0;
+}
+
+int nodus_client_get_owner(nodus_client_t *client,
+                            const nodus_key_t *key,
+                            const nodus_key_t *owner_fp,
+                            nodus_value_t **val_out) {
+    if (!nodus_client_is_ready(client) || !key || !owner_fp || !val_out) return -1;
+    *val_out = NULL;
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    size_t len = 0;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    if (nodus_t2_get_owner(txn, client->token, key, owner_fp,
+                            buf, CLIENT_BUF_SIZE, &len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    int rc = client_owner_result(resp, key, owner_fp, val_out);
+    free_pending(client, req);
+    return rc;
+}
+
+int nodus_client_get_all_page(nodus_client_t *client,
+                               const nodus_key_t *key,
+                               const nodus_key_t *owner_fp,
+                               const nodus_dht_page_cursor_t *after,
+                               nodus_value_t ***vals_out,
+                               size_t *count_out,
+                               bool *more_out,
+                               nodus_dht_page_cursor_t *cursor_out,
+                               bool *legacy_out) {
+    if (!nodus_client_is_ready(client) || !key || !vals_out || !count_out ||
+        !more_out || !cursor_out || !legacy_out)
+        return -1;
+    *vals_out = NULL;
+    *count_out = 0;
+    *more_out = false;
+    *legacy_out = false;
+    memset(cursor_out, 0, sizeof(*cursor_out));
+
+    nodus_t2_cursor_t t2_after;
+    nodus_t2_read_opts_t opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.own = owner_fp;
+    opts.page = true;
+    if (after) {
+        t2_after.owner = after->owner_fp;
+        t2_after.vid = after->value_id;
+        opts.after = &t2_after;
+    }
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    size_t len = 0;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    if (nodus_t2_get_all_ex(txn, client->token, key, &opts,
+                             buf, CLIENT_BUF_SIZE, &len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    int rc = client_page_result(resp, key, owner_fp, after, vals_out, count_out,
+                                more_out, cursor_out, legacy_out);
+    free_pending(client, req);
+    return rc;
+}
+
+/* get_batch reply with the per-key could-not-look marker "u" (rev 2 items
+ * 15/20). Same result building as nodus_client_get_batch, plus:
+ * unavail_out (key_count entries, caller-owned) is zeroed and then set per
+ * result position from "u"; a reply carrying more entries than were asked
+ * is refused (it would index past unavail_out); an error frame without a
+ * valid code is a protocol error; a local allocation failure is -1 (not
+ * "0 results, nothing unavailable"). On any non-zero return no result is
+ * handed out. */
+static int client_batch_ex_result(nodus_tier2_msg_t *resp,
+                                  const nodus_key_t *keys, int key_count,
+                                  nodus_batch_result_t **results_out,
+                                  int *result_count_out, bool *unavail_out) {
+    *results_out = NULL;
+    *result_count_out = 0;
+    memset(unavail_out, 0, (size_t)key_count * sizeof(bool));
+    if (resp->type == 'e') return client_error_rc(resp);
+
+    /* Rev 3 R-h: a node answers every asked key, in the asked order
+     * (nodus_t2_result_get_batch_ex writes one entry per key). Fewer or
+     * more entries, or an entry for another key at a position, cannot be
+     * matched to the caller's keys: refused. */
+    int n = resp->batch_keys ? resp->batch_key_count : 0;
+    if (n != key_count) {
+        QGP_LOG_WARN(LOG_TAG, "GET_BATCH(ex): %d entries for %d keys asked "
+                     "— protocol error", n, key_count);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+    for (int i = 0; i < n; i++) {
+        if (nodus_key_cmp(&resp->batch_keys[i], &keys[i]) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "GET_BATCH(ex): entry %d is not the key asked "
+                         "at that position — protocol error", i);
+            return NODUS_ERR_PROTOCOL_ERROR;
+        }
+    }
+    nodus_batch_result_t *results = calloc((size_t)n, sizeof(nodus_batch_result_t));
+    if (!results) return -1;
+    for (int i = 0; i < n; i++) {
+        memcpy(&results[i].key, &resp->batch_keys[i], sizeof(nodus_key_t));
+        results[i].vals = resp->batch_vals ? resp->batch_vals[i] : NULL;
+        results[i].count = resp->batch_val_counts ? resp->batch_val_counts[i] : 0;
+        /* Transfer ownership */
+        if (resp->batch_vals) resp->batch_vals[i] = NULL;
+        if (resp->batch_val_counts) resp->batch_val_counts[i] = 0;
+        unavail_out[i] = resp->batch_unavail ? resp->batch_unavail[i] : false;
+    }
+    *results_out = results;
+    *result_count_out = n;
+    return 0;
+}
+
+#ifdef NODUS_CLIENT_TEST_SEAM
+/* Test-only entry points to the three reply handlers above
+ * (tests/test_client_get_owner_page.c). Same arrangement as the DNAC decoder
+ * seam further down: compiled ONLY when a test target builds this TU itself
+ * with NODUS_CLIENT_TEST_SEAM=1, never into libnodus. They decode the reply
+ * bytes exactly as client_on_frame does (nodus_t2_decode) and run the same
+ * handler the request function runs; they bypass nothing. A reply that does
+ * not decode is NODUS_ERR_PROTOCOL_ERROR here (the live client drops such a
+ * frame and the request times out). */
+int nodus_client_test_owner_reply(const uint8_t *raw, size_t raw_len,
+                                  const nodus_key_t *key,
+                                  const nodus_key_t *owner_fp,
+                                  nodus_value_t **val_out);
+int nodus_client_test_page_reply(const uint8_t *raw, size_t raw_len,
+                                 const nodus_key_t *key,
+                                 const nodus_key_t *owner_fp,
+                                 const nodus_dht_page_cursor_t *after,
+                                 nodus_value_t ***vals_out, size_t *count_out,
+                                 bool *more_out,
+                                 nodus_dht_page_cursor_t *cursor_out,
+                                 bool *legacy_out);
+int nodus_client_test_batch_reply(const uint8_t *raw, size_t raw_len,
+                                  const nodus_key_t *keys, int key_count,
+                                  nodus_batch_result_t **results_out,
+                                  int *result_count_out, bool *unavail_out);
+int nodus_client_test_get_error_rc(const uint8_t *raw, size_t raw_len,
+                                   bool strict, int *rc_out);
+
+/* Rev 3 R-h: the answer client_get_impl / client_get_all_impl give for an
+ * error frame (strict = the *_strict getters). @return 0 when raw decoded
+ * as an 'e' frame (*rc_out set), -1 otherwise. */
+int nodus_client_test_get_error_rc(const uint8_t *raw, size_t raw_len,
+                                   bool strict, int *rc_out) {
+    nodus_tier2_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    int ok = -1;
+    if (nodus_t2_decode(raw, raw_len, &msg) == 0 && msg.type == 'e') {
+        *rc_out = client_reply_error_rc(&msg, strict);
+        ok = 0;
+    }
+    nodus_t2_msg_free(&msg);
+    return ok;
+}
+
+int nodus_client_test_owner_reply(const uint8_t *raw, size_t raw_len,
+                                  const nodus_key_t *key,
+                                  const nodus_key_t *owner_fp,
+                                  nodus_value_t **val_out) {
+    *val_out = NULL;
+    nodus_tier2_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    if (nodus_t2_decode(raw, raw_len, &msg) != 0) {
+        nodus_t2_msg_free(&msg);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+    int rc = client_owner_result(&msg, key, owner_fp, val_out);
+    nodus_t2_msg_free(&msg);
+    return rc;
+}
+
+int nodus_client_test_page_reply(const uint8_t *raw, size_t raw_len,
+                                 const nodus_key_t *key,
+                                 const nodus_key_t *owner_fp,
+                                 const nodus_dht_page_cursor_t *after,
+                                 nodus_value_t ***vals_out, size_t *count_out,
+                                 bool *more_out,
+                                 nodus_dht_page_cursor_t *cursor_out,
+                                 bool *legacy_out) {
+    *vals_out = NULL;
+    *count_out = 0;
+    *more_out = false;
+    *legacy_out = false;
+    memset(cursor_out, 0, sizeof(*cursor_out));
+    nodus_tier2_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    if (nodus_t2_decode(raw, raw_len, &msg) != 0) {
+        nodus_t2_msg_free(&msg);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+    int rc = client_page_result(&msg, key, owner_fp, after, vals_out,
+                                count_out, more_out, cursor_out, legacy_out);
+    nodus_t2_msg_free(&msg);
+    return rc;
+}
+
+int nodus_client_test_batch_reply(const uint8_t *raw, size_t raw_len,
+                                  const nodus_key_t *keys, int key_count,
+                                  nodus_batch_result_t **results_out,
+                                  int *result_count_out, bool *unavail_out) {
+    *results_out = NULL;
+    *result_count_out = 0;
+    memset(unavail_out, 0, (size_t)key_count * sizeof(bool));
+    nodus_tier2_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    if (nodus_t2_decode(raw, raw_len, &msg) != 0) {
+        nodus_t2_msg_free(&msg);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+    int rc = client_batch_ex_result(&msg, keys, key_count, results_out,
+                                    result_count_out, unavail_out);
+    nodus_t2_msg_free(&msg);
+    return rc;
+}
+#endif /* NODUS_CLIENT_TEST_SEAM */
 
 /* ── Batch DHT Operations ──────────────────────────────────────── */
 
@@ -1666,6 +2081,43 @@ int nodus_client_get_batch(nodus_client_t *client,
     }
     free_pending(client, req);
     return 0;
+}
+
+int nodus_client_get_batch_ex(nodus_client_t *client,
+                               const nodus_key_t *keys, int key_count,
+                               nodus_batch_result_t **results_out,
+                               int *result_count_out,
+                               bool *unavail_out) {
+    if (!nodus_client_is_ready(client) || !keys || !results_out ||
+        !result_count_out || !unavail_out)
+        return -1;
+    if (key_count < 1 || key_count > NODUS_MAX_BATCH_KEYS) return -1;
+    *results_out = NULL;
+    *result_count_out = 0;
+    memset(unavail_out, 0, (size_t)key_count * sizeof(bool));
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    size_t len = 0;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    /* The request frame is nodus_client_get_batch's, byte for byte: "u" is
+     * reply-only and a node that predates it simply never sends it. */
+    if (nodus_t2_get_batch(txn, client->token, keys, key_count,
+                            buf, CLIENT_BUF_SIZE, &len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    int rc = client_batch_ex_result(resp, keys, key_count, results_out,
+                                    result_count_out, unavail_out);
+    free_pending(client, req);
+    return rc;
 }
 
 int nodus_client_count_batch(nodus_client_t *client,

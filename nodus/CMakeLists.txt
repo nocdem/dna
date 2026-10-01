@@ -913,6 +913,24 @@ add_executable(test_storage tests/test_storage.c ${NODUS_TEST_STORAGE_HELPER})
 target_link_libraries(test_storage nodus dsa nodus)
 add_test(NAME test_storage COMMAND test_storage)
 
+# DHT Package A storage tests (F5 owner quota, F7 stale put, F4 hint caps,
+# owner-scoped + paged reads)
+add_executable(test_storage_owner_quota tests/test_storage_owner_quota.c ${NODUS_TEST_STORAGE_HELPER})
+target_link_libraries(test_storage_owner_quota nodus dsa nodus)
+add_test(NAME test_storage_owner_quota COMMAND test_storage_owner_quota)
+
+add_executable(test_storage_put_stale tests/test_storage_put_stale.c ${NODUS_TEST_STORAGE_HELPER})
+target_link_libraries(test_storage_put_stale nodus dsa nodus)
+add_test(NAME test_storage_put_stale COMMAND test_storage_put_stale)
+
+add_executable(test_hinted_caps tests/test_hinted_caps.c ${NODUS_TEST_STORAGE_HELPER})
+target_link_libraries(test_hinted_caps nodus dsa nodus)
+add_test(NAME test_hinted_caps COMMAND test_hinted_caps)
+
+add_executable(test_storage_get_all_page tests/test_storage_get_all_page.c ${NODUS_TEST_STORAGE_HELPER})
+target_link_libraries(test_storage_get_all_page nodus dsa nodus)
+add_test(NAME test_storage_get_all_page COMMAND test_storage_get_all_page)
+
 # Media storage test
 add_executable(test_media_storage tests/test_media_storage.c)
 target_link_libraries(test_media_storage nodus dsa nodus)
@@ -948,6 +966,51 @@ add_executable(test_tier2 tests/test_tier2.c)
 target_link_libraries(test_tier2 nodus dsa nodus)
 add_test(NAME test_tier2 COMMAND test_tier2)
 
+# DHT Package A (server + wire): own / pg / after / more / next wire,
+# forwarded-read merge (S1/F6), originator paging (S3), could-not-look
+# (S6), inter-circuit lifetime (F1/F1b), 4002 pre-auth / pre-key gate
+# (F2/F3). All in-process, no sockets.
+add_executable(test_tier2_owner_page tests/test_tier2_owner_page.c)
+target_link_libraries(test_tier2_owner_page nodus dsa nodus)
+add_test(NAME test_tier2_owner_page COMMAND test_tier2_owner_page)
+
+add_executable(test_bf_merge_pure tests/test_bf_merge_pure.c)
+target_link_libraries(test_bf_merge_pure nodus dsa kem nodus)
+add_test(NAME test_bf_merge_pure COMMAND test_bf_merge_pure)
+
+add_executable(test_get_all_paging tests/test_get_all_paging.c)
+target_link_libraries(test_get_all_paging nodus dsa kem nodus)
+add_test(NAME test_get_all_paging COMMAND test_get_all_paging)
+
+add_executable(test_get_unavailable tests/test_get_unavailable.c)
+target_link_libraries(test_get_unavailable nodus dsa kem nodus)
+add_test(NAME test_get_unavailable COMMAND test_get_unavailable)
+
+add_executable(test_inter_circuit_uaf tests/test_inter_circuit_uaf.c)
+target_link_libraries(test_inter_circuit_uaf nodus dsa kem nodus)
+add_test(NAME test_inter_circuit_uaf COMMAND test_inter_circuit_uaf)
+
+add_executable(test_inter_preauth_gate tests/test_inter_preauth_gate.c)
+target_link_libraries(test_inter_preauth_gate nodus dsa kem nodus)
+add_test(NAME test_inter_preauth_gate COMMAND test_inter_preauth_gate)
+
+# DHT Package A rev 2: forward path driven with crafted 4002 reply frames
+# (items 11-16, responder storage fault) and the 4002 handshake role split
+# (item 7). In-process, no sockets; the frames test uses the storage fixture.
+add_executable(test_bf_forward_frames tests/test_bf_forward_frames.c ${NODUS_TEST_STORAGE_HELPER})
+target_link_libraries(test_bf_forward_frames nodus dsa kem nodus)
+add_test(NAME test_bf_forward_frames COMMAND test_bf_forward_frames)
+
+add_executable(test_inter_role_split tests/test_inter_role_split.c)
+target_link_libraries(test_inter_role_split nodus dsa kem nodus)
+add_test(NAME test_inter_role_split COMMAND test_inter_role_split)
+
+# DHT Package A (A3): the batch-forward receive reads the frame header
+# little-endian like the wire, checks version, bounds length by the buffer.
+add_executable(test_bf_recv_frame tests/test_bf_recv_frame.c)
+target_link_libraries(test_bf_recv_frame nodus dsa kem nodus)
+add_test(NAME test_bf_recv_frame COMMAND test_bf_recv_frame)
+
 # P0-A (2026-09-28): tier-1 / tier-2 / value decoders refuse a repeated map
 # key and a heap field written from two maps; value types outside {1,2,3}.
 add_executable(test_decode_dupkey tests/test_decode_dupkey.c)
@@ -968,6 +1031,20 @@ target_link_libraries(test_client_dup_array nodus dsa nodus)
 target_compile_definitions(test_client_dup_array PRIVATE
                            NODUS_CLIENT_TEST_SEAM=1)
 add_test(NAME test_client_dup_array COMMAND test_client_dup_array)
+
+# DHT Package A (client): nodus_client_get_owner / nodus_client_get_all_page /
+# nodus_client_get_batch_ex reply handling — absent "more" = legacy
+# (completeness unknown; empty legacy = UNAVAILABLE), rows <= cursor / of
+# other owners / of other keys dropped, UNAVAILABLE and STALE surfaced, an
+# error without a valid code = PROTOCOL_ERROR, get_batch "u" surfaced. Same seam
+# as test_client_dup_array (nodus_client.c compiled into the test with
+# NODUS_CLIENT_TEST_SEAM=1; in-process, no sockets).
+add_executable(test_client_get_owner_page tests/test_client_get_owner_page.c
+               src/client/nodus_client.c)
+target_link_libraries(test_client_get_owner_page nodus dsa nodus)
+target_compile_definitions(test_client_get_owner_page PRIVATE
+                           NODUS_CLIENT_TEST_SEAM=1)
+add_test(NAME test_client_get_owner_page COMMAND test_client_get_owner_page)
 
 # Circuit wire protocol test (VPN mesh Faz 1)
 add_executable(test_circuit_wire tests/test_circuit_wire.c)

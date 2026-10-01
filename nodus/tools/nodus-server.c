@@ -690,6 +690,9 @@ int main(int argc, char **argv) {
     config.witness_port = NODUS_DEFAULT_WITNESS_PORT;
     snprintf(config.data_path, sizeof(config.data_path), "/var/lib/nodus");
     nodus_p2p_config_default(&config.p2p);
+    /* DHT Package A (rev 2 item 10): 4002 peer auth is ON unless the JSON
+     * config sets "require_peer_auth": false explicitly. */
+    config.require_peer_auth = true;
 
     const char *config_file = NULL;
     /* O16A / D1 — held as a LOCAL, exactly like config_file, and for the
@@ -752,6 +755,7 @@ int main(int argc, char **argv) {
         file_cfg.witness_port = NODUS_DEFAULT_WITNESS_PORT;
         snprintf(file_cfg.data_path, sizeof(file_cfg.data_path), "/var/lib/nodus");
         nodus_p2p_config_default(&file_cfg.p2p);
+        file_cfg.require_peer_auth = true;   /* default; the JSON may set false */
 
         if (load_config_json(config_file, &file_cfg) != 0)
             return 1;

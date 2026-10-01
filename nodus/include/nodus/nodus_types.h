@@ -26,8 +26,8 @@ extern "C" {
  * long time. Bump BOTH, together, every time. */
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  23
-#define NODUS_VERSION_PATCH  5
-#define NODUS_VERSION_STRING "0.23.5"
+#define NODUS_VERSION_PATCH  6
+#define NODUS_VERSION_STRING "0.23.6"
 
 /* Mempool lifetime ceiling (docs/plans/decisions/2026-09-25-mempool-
  * policy.md, decision 1 — "100 block yeterli"): CheckTx (new AND
@@ -120,6 +120,11 @@ extern "C" {
  * large values under one key. Both enforced in nodus_storage_get_all. */
 #define NODUS_GET_ALL_MAX_ROWS   10000
 #define NODUS_GET_ALL_MAX_BYTES  (16 * 1024 * 1024)  /* 16 MB */
+
+/* Paged get_all (opt-in): one page carries at most this many SERIALIZED
+ * value bytes (NODUS_VALUE_SERIALIZED_EST, core/nodus_storage.h); a single
+ * row larger than the budget is returned alone. Operator 2026-10-01: 2 MB. */
+#define NODUS_GET_ALL_PAGE_MAX_BYTES (2 * 1024 * 1024)  /* 2 MiB */
 
 /* Channel limits */
 #define NODUS_UUID_BYTES        16          /* UUID v4 */
@@ -497,7 +502,9 @@ typedef enum {
     NODUS_ERR_CIRCUIT_LIMIT     = 16,  /* Per-session circuit cap reached */
     NODUS_ERR_CIRCUIT_NOT_FOUND = 17,  /* Unknown circuit_id */
     NODUS_ERR_PEER_OFFLINE      = 18,  /* Target peer not connected to any nodus */
-    NODUS_ERR_CIRCUIT_CLOSED    = 19   /* Peer torn down circuit */
+    NODUS_ERR_CIRCUIT_CLOSED    = 19,  /* Peer torn down circuit */
+    NODUS_ERR_STALE             = 20,  /* PUT seq lower than the stored row's (same key, owner, value_id) */
+    NODUS_ERR_UNAVAILABLE       = 21   /* Server could not look (no forward slot / all forwards failed) — not "not found" */
 } nodus_error_t;
 
 /** Cluster phases */

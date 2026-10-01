@@ -76,6 +76,38 @@ static int finish(cbor_encoder_t *enc, size_t *out_len) {
     return 0;
 }
 
+/* DHT Package A (S2/S3): optional read options. Each helper adds nothing
+ * for an unset option, so a caller without options encodes the exact
+ * pre-Package-A frame. */
+static size_t t2_read_opts_count(const nodus_t2_read_opts_t *opts) {
+    if (!opts) return 0;
+    return (opts->own ? 1u : 0u) + (opts->page ? 1u : 0u) + (opts->after ? 1u : 0u);
+}
+
+static void enc_cursor(cbor_encoder_t *enc, const nodus_t2_cursor_t *c) {
+    cbor_encode_map(enc, 2);
+    cbor_encode_cstr(enc, "o");
+    cbor_encode_bstr(enc, c->owner.bytes, NODUS_KEY_BYTES);
+    cbor_encode_cstr(enc, "v");
+    cbor_encode_uint(enc, c->vid);
+}
+
+static void enc_read_opts(cbor_encoder_t *enc, const nodus_t2_read_opts_t *opts) {
+    if (!opts) return;
+    if (opts->own) {
+        cbor_encode_cstr(enc, "own");
+        cbor_encode_bstr(enc, opts->own->bytes, NODUS_KEY_BYTES);
+    }
+    if (opts->page) {
+        cbor_encode_cstr(enc, "pg");
+        cbor_encode_bool(enc, true);
+    }
+    if (opts->after) {
+        cbor_encode_cstr(enc, "after");
+        enc_cursor(enc, opts->after);
+    }
+}
+
 /* ── Client → Nodus encode ───────────────────────────────────────── */
 
 int nodus_t2_hello(uint32_t txn, const nodus_pubkey_t *pk,
@@ -139,28 +171,44 @@ int nodus_t2_put(uint32_t txn, const uint8_t *token,
 int nodus_t2_get(uint32_t txn, const uint8_t *token,
                   const nodus_key_t *key,
                   uint8_t *buf, size_t cap, size_t *out_len) {
+    return nodus_t2_get_owner(txn, token, key, NULL, buf, cap, out_len);
+}
+
+int nodus_t2_get_owner(uint32_t txn, const uint8_t *token,
+                        const nodus_key_t *key, const nodus_key_t *own,
+                        uint8_t *buf, size_t cap, size_t *out_len) {
+    nodus_t2_read_opts_t opts = { .own = own, .page = false, .after = NULL };
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, cap);
     enc_query_header(&enc, 5, txn, "get");
     enc_token(&enc, token);
     cbor_encode_cstr(&enc, "a");
-    cbor_encode_map(&enc, 1);
+    cbor_encode_map(&enc, 1 + t2_read_opts_count(&opts));
     cbor_encode_cstr(&enc, "k");
     cbor_encode_bstr(&enc, key->bytes, NODUS_KEY_BYTES);
+    enc_read_opts(&enc, &opts);
     return finish(&enc, out_len);
 }
 
 int nodus_t2_get_all(uint32_t txn, const uint8_t *token,
                       const nodus_key_t *key,
                       uint8_t *buf, size_t cap, size_t *out_len) {
+    return nodus_t2_get_all_ex(txn, token, key, NULL, buf, cap, out_len);
+}
+
+int nodus_t2_get_all_ex(uint32_t txn, const uint8_t *token,
+                         const nodus_key_t *key,
+                         const nodus_t2_read_opts_t *opts,
+                         uint8_t *buf, size_t cap, size_t *out_len) {
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, cap);
     enc_query_header(&enc, 5, txn, "get_all");
     enc_token(&enc, token);
     cbor_encode_cstr(&enc, "a");
-    cbor_encode_map(&enc, 1);
+    cbor_encode_map(&enc, 1 + t2_read_opts_count(opts));
     cbor_encode_cstr(&enc, "k");
     cbor_encode_bstr(&enc, key->bytes, NODUS_KEY_BYTES);
+    enc_read_opts(&enc, opts);
     return finish(&enc, out_len);
 }
 
@@ -490,17 +538,26 @@ int nodus_t2_media_get_chunk(uint32_t txn, const uint8_t *token,
 int nodus_t2_get_batch(uint32_t txn, const uint8_t *token,
                         const nodus_key_t *keys, int key_count,
                         uint8_t *buf, size_t cap, size_t *out_len) {
+    return nodus_t2_get_batch_ex(txn, token, keys, key_count, NULL,
+                                  buf, cap, out_len);
+}
+
+int nodus_t2_get_batch_ex(uint32_t txn, const uint8_t *token,
+                           const nodus_key_t *keys, int key_count,
+                           const nodus_t2_read_opts_t *opts,
+                           uint8_t *buf, size_t cap, size_t *out_len) {
     if (!keys || key_count < 1 || key_count > NODUS_MAX_BATCH_KEYS) return -1;
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, cap);
     enc_query_header(&enc, 5, txn, "get_batch");
     enc_token(&enc, token);
     cbor_encode_cstr(&enc, "a");
-    cbor_encode_map(&enc, 1);
+    cbor_encode_map(&enc, 1 + t2_read_opts_count(opts));
     cbor_encode_cstr(&enc, "ks");
     cbor_encode_array(&enc, (size_t)key_count);
     for (int i = 0; i < key_count; i++)
         cbor_encode_bstr(&enc, keys[i].bytes, NODUS_KEY_BYTES);
+    enc_read_opts(&enc, opts);
     return finish(&enc, out_len);
 }
 
@@ -533,6 +590,18 @@ int nodus_t2_result_get_batch(uint32_t txn,
                                nodus_value_t ***vals_per_key,
                                const size_t *counts_per_key,
                                uint8_t *buf, size_t cap, size_t *out_len) {
+    return nodus_t2_result_get_batch_ex(txn, keys, key_count, vals_per_key,
+                                         counts_per_key, NULL, NULL,
+                                         buf, cap, out_len);
+}
+
+int nodus_t2_result_get_batch_ex(uint32_t txn,
+                                  const nodus_key_t *keys, int key_count,
+                                  nodus_value_t ***vals_per_key,
+                                  const size_t *counts_per_key,
+                                  const nodus_t2_page_info_t *pages,
+                                  const bool *unavail,
+                                  uint8_t *buf, size_t cap, size_t *out_len) {
     if (!keys || key_count < 1) return -1;
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, cap);
@@ -543,7 +612,12 @@ int nodus_t2_result_get_batch(uint32_t txn,
     cbor_encode_array(&enc, (size_t)key_count);
     for (int i = 0; i < key_count; i++) {
         size_t vc = counts_per_key ? counts_per_key[i] : 0;
-        cbor_encode_map(&enc, 2);
+        bool with_next = pages && pages[i].more && pages[i].has_next;
+        /* Rev 3 R-d: "nx" only beside more = true */
+        bool with_nx = pages && pages[i].more && pages[i].has_nx;
+        bool with_u = unavail && unavail[i];
+        cbor_encode_map(&enc, (size_t)2 + (pages ? (with_next ? 2 : 1) : 0) +
+                              (with_nx ? 1 : 0) + (with_u ? 1 : 0));
         cbor_encode_cstr(&enc, "k");
         cbor_encode_bstr(&enc, keys[i].bytes, NODUS_KEY_BYTES);
         cbor_encode_cstr(&enc, "vs");
@@ -558,6 +632,23 @@ int nodus_t2_result_get_batch(uint32_t txn,
             } else {
                 cbor_encode_bstr(&enc, (const uint8_t *)"", 0);
             }
+        }
+        if (pages) {
+            cbor_encode_cstr(&enc, "more");
+            cbor_encode_bool(&enc, pages[i].more);
+            if (with_next) {
+                cbor_encode_cstr(&enc, "next");
+                enc_cursor(&enc, &pages[i].next);
+            }
+            if (with_nx) {
+                cbor_encode_cstr(&enc, "nx");
+                cbor_encode_uint(&enc, pages[i].nx);
+            }
+        }
+        if (with_u) {
+            /* Rev 2 item 15: this key could not be looked up */
+            cbor_encode_cstr(&enc, "u");
+            cbor_encode_bool(&enc, true);
         }
     }
     return finish(&enc, out_len);
@@ -966,6 +1057,36 @@ int nodus_t2_result_empty(uint32_t txn,
     enc_response_header(&enc, 4, txn, "result");
     cbor_encode_cstr(&enc, "r");
     cbor_encode_map(&enc, 0);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_result_page(uint32_t txn, nodus_value_t **vals, size_t count,
+                          const nodus_t2_page_info_t *page,
+                          uint8_t *buf, size_t cap, size_t *out_len) {
+    bool more = page && page->more;
+    bool with_next = more && page->has_next;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "result");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, with_next ? 3 : 2);
+    cbor_encode_cstr(&enc, "vals");
+    cbor_encode_array(&enc, count);
+    for (size_t i = 0; i < count; i++) {
+        uint8_t *vbuf = NULL;
+        size_t vlen = 0;
+        if (!vals || !vals[i] ||
+            nodus_value_serialize(vals[i], &vbuf, &vlen) != 0)
+            return -1;
+        cbor_encode_bstr(&enc, vbuf, vlen);
+        free(vbuf);
+    }
+    cbor_encode_cstr(&enc, "more");
+    cbor_encode_bool(&enc, more);
+    if (with_next) {
+        cbor_encode_cstr(&enc, "next");
+        enc_cursor(&enc, &page->next);
+    }
     return finish(&enc, out_len);
 }
 
@@ -1630,7 +1751,38 @@ int nodus_t2_ch_ring_rejoin(uint32_t txn,
 /* The batch_* fields are owned by exactly one of "ks", "batch", "counts". */
 static bool t2_batch_owned(const nodus_tier2_msg_t *msg) {
     return msg->batch_keys || msg->batch_vals || msg->batch_val_counts ||
-           msg->batch_counts || msg->batch_has_mine;
+           msg->batch_counts || msg->batch_has_mine || msg->batch_page ||
+           msg->batch_unavail;
+}
+
+/* DHT Package A: a cursor map {"o": bstr(64), "v": uint}. Unknown keys
+ * inside are skipped; a repeated key, a missing "o"/"v" or a wrong type
+ * refuses the frame (-1), see the read-option note in nodus_tier2.h. */
+static int t2_decode_cursor(cbor_decoder_t *dec, nodus_t2_cursor_t *out) {
+    cbor_item_t m = cbor_decode_next(dec);
+    if (m.type != CBOR_ITEM_MAP) return -1;
+    nodus_map_keys_t cks;
+    memset(&cks, 0, sizeof(cks));
+    bool have_o = false, have_v = false;
+    for (size_t i = 0; i < m.count; i++) {
+        cbor_item_t k = cbor_decode_next(dec);
+        if (k.type != CBOR_ITEM_TSTR) return -1;
+        if (nodus_map_key_once(&cks, k.tstr.ptr, k.tstr.len) != 0) return -1;
+        if (k.tstr.len == 1 && k.tstr.ptr[0] == 'o') {
+            cbor_item_t v = cbor_decode_next(dec);
+            if (v.type != CBOR_ITEM_BSTR || v.bstr.len != NODUS_KEY_BYTES) return -1;
+            memcpy(out->owner.bytes, v.bstr.ptr, NODUS_KEY_BYTES);
+            have_o = true;
+        } else if (k.tstr.len == 1 && k.tstr.ptr[0] == 'v') {
+            cbor_item_t v = cbor_decode_next(dec);
+            if (v.type != CBOR_ITEM_UINT) return -1;
+            out->vid = v.uint_val;
+            have_v = true;
+        } else {
+            cbor_decode_skip(dec);
+        }
+    }
+    return (have_o && have_v) ? 0 : -1;
 }
 
 /* The pq_* fields are owned by exactly one of "fps" (a) or "ps" (r). */
@@ -2137,6 +2289,25 @@ static int t2_decode_body(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg
                         }
                     }
                 }
+                /* own (DHT Package A S2: owner fingerprint filter) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "own", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type != CBOR_ITEM_BSTR || val.bstr.len != NODUS_KEY_BYTES)
+                        return -1;
+                    memcpy(msg->own_fp.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
+                    msg->has_own = true;
+                }
+                /* pg (DHT Package A S3: paged read from the first row) */
+                else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "pg", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type != CBOR_ITEM_BOOL) return -1;
+                    msg->page = val.bool_val;
+                }
+                /* after (DHT Package A S3: page cursor {o, v}) */
+                else if (akey.tstr.len == 5 && memcmp(akey.tstr.ptr, "after", 5) == 0) {
+                    if (t2_decode_cursor(&dec, &msg->after) != 0) return -1;
+                    msg->has_after = true;
+                }
                 else {
                     cbor_decode_skip(&dec);
                 }
@@ -2245,6 +2416,18 @@ static int t2_decode_body(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg
                         }
                     }
                 }
+                /* more (DHT Package A S3: paged get_all reply) */
+                else if (rkey.tstr.len == 4 && memcmp(rkey.tstr.ptr, "more", 4) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type != CBOR_ITEM_BOOL) return -1;
+                    msg->more = val.bool_val;
+                    msg->has_more = true;
+                }
+                /* next (DHT Package A S3: paged get_all reply cursor) */
+                else if (rkey.tstr.len == 4 && memcmp(rkey.tstr.ptr, "next", 4) == 0) {
+                    if (t2_decode_cursor(&dec, &msg->next) != 0) return -1;
+                    msg->has_next = true;
+                }
                 /* batch (get_batch result: array of {k, vs}) */
                 else if (rkey.tstr.len == 5 && memcmp(rkey.tstr.ptr, "batch", 5) == 0) {
                     cbor_item_t arr = cbor_decode_next(&dec);
@@ -2255,7 +2438,11 @@ static int t2_decode_body(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg
                         msg->batch_keys = calloc(bk_cap, sizeof(nodus_key_t));
                         msg->batch_vals = calloc(bk_cap, sizeof(nodus_value_t **));
                         msg->batch_val_counts = calloc(bk_cap, sizeof(size_t));
-                        if (!msg->batch_keys || !msg->batch_vals || !msg->batch_val_counts)
+                        msg->batch_page = calloc(bk_cap, sizeof(nodus_t2_page_info_t));
+                        msg->batch_unavail = calloc(bk_cap, sizeof(bool));
+                        if (!msg->batch_keys || !msg->batch_vals ||
+                            !msg->batch_val_counts || !msg->batch_page ||
+                            !msg->batch_unavail)
                             return -1;
                         msg->batch_key_count = 0;
                         for (size_t ki = 0; ki < arr.count; ki++) {
@@ -2315,6 +2502,32 @@ static int t2_decode_body(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg
                                             }
                                         }
                                     }
+                                } else if (ek.tstr.len == 4 &&
+                                           memcmp(ek.tstr.ptr, "more", 4) == 0) {
+                                    /* DHT Package A S3: per-key page flag */
+                                    cbor_item_t ev = cbor_decode_next(&dec);
+                                    if (ev.type != CBOR_ITEM_BOOL) return -1;
+                                    msg->batch_page[bi].more = ev.bool_val;
+                                } else if (ek.tstr.len == 4 &&
+                                           memcmp(ek.tstr.ptr, "next", 4) == 0) {
+                                    /* DHT Package A S3: per-key next cursor */
+                                    if (t2_decode_cursor(&dec,
+                                            &msg->batch_page[bi].next) != 0)
+                                        return -1;
+                                    msg->batch_page[bi].has_next = true;
+                                } else if (ek.tstr.len == 2 &&
+                                           memcmp(ek.tstr.ptr, "nx", 2) == 0) {
+                                    /* Rev 3 R-d: est of the row the
+                                     * responder stopped on */
+                                    cbor_item_t ev = cbor_decode_next(&dec);
+                                    if (ev.type != CBOR_ITEM_UINT) return -1;
+                                    msg->batch_page[bi].nx = ev.uint_val;
+                                    msg->batch_page[bi].has_nx = true;
+                                } else if (ek.tstr.len == 1 && ek.tstr.ptr[0] == 'u') {
+                                    /* Rev 2 item 15: per-key could-not-look */
+                                    cbor_item_t ev = cbor_decode_next(&dec);
+                                    if (ev.type != CBOR_ITEM_BOOL) return -1;
+                                    msg->batch_unavail[bi] = ev.bool_val;
                                 } else {
                                     cbor_decode_skip(&dec);
                                 }
@@ -2975,4 +3188,8 @@ void nodus_t2_msg_free(nodus_tier2_msg_t *msg) {
     msg->batch_counts = NULL;
     free(msg->batch_has_mine);
     msg->batch_has_mine = NULL;
+    free(msg->batch_page);
+    msg->batch_page = NULL;
+    free(msg->batch_unavail);
+    msg->batch_unavail = NULL;
 }
