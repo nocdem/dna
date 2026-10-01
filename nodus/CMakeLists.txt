@@ -1015,6 +1015,18 @@ target_compile_definitions(test_client_dup_array PRIVATE
                            NODUS_CLIENT_TEST_SEAM=1)
 add_test(NAME test_client_dup_array COMMAND test_client_dup_array)
 
+# DHT Package A (client): nodus_client_get_owner / nodus_client_get_all_page
+# reply handling — absent "more" = complete, rows <= cursor / of other
+# owners / of other keys dropped, UNAVAILABLE and STALE surfaced. Same seam
+# as test_client_dup_array (nodus_client.c compiled into the test with
+# NODUS_CLIENT_TEST_SEAM=1; in-process, no sockets).
+add_executable(test_client_get_owner_page tests/test_client_get_owner_page.c
+               src/client/nodus_client.c)
+target_link_libraries(test_client_get_owner_page nodus dsa nodus)
+target_compile_definitions(test_client_get_owner_page PRIVATE
+                           NODUS_CLIENT_TEST_SEAM=1)
+add_test(NAME test_client_get_owner_page COMMAND test_client_get_owner_page)
+
 # Circuit wire protocol test (VPN mesh Faz 1)
 add_executable(test_circuit_wire tests/test_circuit_wire.c)
 target_link_libraries(test_circuit_wire nodus dsa nodus)

@@ -387,6 +387,71 @@ int nodus_client_get_all(nodus_client_t *client,
                           nodus_value_t ***vals_out,
                           size_t *count_out);
 
+/* ── Owner-filtered get + paged get_all (DHT Package A) ─────────── */
+
+/**
+ * One position in a key's rows: the storage primary key (owner_fp,
+ * value_id). Pages run in PK order — owner_fp ascending bytewise, then
+ * value_id ascending compared as SIGNED int64.
+ */
+typedef struct {
+    nodus_key_t owner_fp;
+    uint64_t    value_id;
+} nodus_dht_page_cursor_t;
+
+/**
+ * Retrieve one owner's newest value for a key (request "own").
+ * Same request, timeout and ownership rules as nodus_client_get();
+ * caller frees *val_out with nodus_value_free(). The value is NOT
+ * signature-verified here (as with nodus_client_get).
+ *
+ * @return 0 on success,
+ *         NODUS_ERR_NOT_FOUND     the node has no row of that owner,
+ *         NODUS_ERR_UNAVAILABLE   the node could not look (no forward slot /
+ *                                 no forward answered), OR it returned a row
+ *                                 of another owner (a node that predates the
+ *                                 owner filter) — never reported as absent,
+ *         NODUS_ERR_PROTOCOL_ERROR the row is of another key,
+ *         NODUS_ERR_TIMEOUT, another node error code, or -1 (bad args /
+ *         not connected / local allocation).
+ */
+int nodus_client_get_owner(nodus_client_t *client,
+                            const nodus_key_t *key,
+                            const nodus_key_t *owner_fp,
+                            nodus_value_t **val_out);
+
+/**
+ * Retrieve one page of a key's values (request "pg", plus "after" when
+ * `after` is given and "own" when `owner_fp` is given).
+ *
+ * Start with after = NULL; while *more_out is true, call again with
+ * after = the returned *cursor_out. Every returned row carries the asked
+ * key, is past `after` and (with owner_fp) belongs to that owner; the
+ * client drops anything else, so the call is safe against a node that
+ * predates paging: such a node's reply has no "more" and is treated as
+ * complete (*more_out = false). The values are NOT signature-verified here.
+ * Caller frees each value with nodus_value_free() and the array with free().
+ *
+ * @param owner_fp    NULL = every owner
+ * @param after       NULL = first page
+ * @param vals_out    page rows (NULL when the page is empty)
+ * @param more_out    true = rows remain after this page
+ * @param cursor_out  the next page's `after` (zeroed when !*more_out)
+ * @return 0 on success (the page may be empty),
+ *         NODUS_ERR_UNAVAILABLE   the node could not look — not "empty",
+ *         NODUS_ERR_PROTOCOL_ERROR more without a cursor, or a cursor
+ *                                 that does not advance past `after`,
+ *         NODUS_ERR_TIMEOUT, another node error code, or -1.
+ */
+int nodus_client_get_all_page(nodus_client_t *client,
+                               const nodus_key_t *key,
+                               const nodus_key_t *owner_fp,
+                               const nodus_dht_page_cursor_t *after,
+                               nodus_value_t ***vals_out,
+                               size_t *count_out,
+                               bool *more_out,
+                               nodus_dht_page_cursor_t *cursor_out);
+
 /* ── Batch DHT Operations ───────────────────────────────────────── */
 
 /** Result for one key in a get_batch response */
