@@ -538,6 +538,16 @@ defined in `nodus/src/client/nodus_client.c`; `nodus_client_get` /
 | `int nodus_client_get_strict(nodus_client_t*, const nodus_key_t*, nodus_value_t **val_out)` | GET; a `"val"` that did not decode → `NODUS_ERR_PROTOCOL_ERROR`, never `NODUS_ERR_NOT_FOUND` (design §6.4 F1) |
 | `int nodus_client_get_all_strict(nodus_client_t*, const nodus_key_t*, nodus_value_t ***vals_out, size_t *count_out, size_t *undecodable_out)` | GET_ALL; decoded values + the count of items that did not decode |
 
+Strict getters answer an error frame without a valid code (0, absent, > INT_MAX) as `NODUS_ERR_PROTOCOL_ERROR` (DHT Package A, 2026-10-01); the lenient getters are unchanged.
+
+**DHT Package A client additions** (`nodus/include/nodus/nodus.h`, defined in `nodus/src/client/nodus_client.c`; existing functions unchanged):
+
+| Function | Description |
+|----------|-------------|
+| `int nodus_client_get_owner(nodus_client_t*, const nodus_key_t *key, const nodus_key_t *owner_fp, nodus_value_t **val_out)` | GET filtered to one owner's newest row (sends `own`). 0 / `NODUS_ERR_NOT_FOUND` / `NODUS_ERR_UNAVAILABLE` (node could not look, or an old node returned another owner's row) / `NODUS_ERR_PROTOCOL_ERROR` (row of another key or bad error frame) |
+| `int nodus_client_get_all_page(nodus_client_t*, const nodus_key_t *key, const nodus_key_t *owner_fp, const nodus_dht_page_cursor_t *after, nodus_value_t ***vals_out, size_t *count_out, bool *more_out, nodus_dht_page_cursor_t *cursor_out, bool *legacy_out)` | Paged GET_ALL (`pg`, `after`, optional `own`); re-filters key / owner / cursor; `legacy_out` = the node predates paging (completeness unknown; an empty legacy page → `NODUS_ERR_UNAVAILABLE`) |
+| `int nodus_client_get_batch_ex(nodus_client_t*, const nodus_key_t *keys, int key_count, nodus_batch_result_t **results_out, int *result_count_out, bool *unavail_out)` | As `nodus_client_get_batch` plus a per-key "could not look" flag (`"u"`); refuses a reply whose entry count or keys do not match the request |
+
 **Thin core library** (`web-wallet/connect/nc_core.h`):
 
 | Function | Description |

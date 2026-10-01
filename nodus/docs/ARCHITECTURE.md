@@ -1097,6 +1097,31 @@ while (srv->running) {
 > - **get_all / get_batch** answer an explicit error frame when the reply cannot be encoded (previously no reply, and the client waited for its timeout).
 > - **Value decode** refuses a value whose unsigned `created_at + ttl` would overflow (it would otherwise wrap to `expires_at == 0`, "never expires").
 
+### DHT Package A (2026-10-01, branch `p2-pkg-a`)
+
+Design `docs/plans/2026-10-01-dht-ownership-root-fix-design.md` §10 (local) and plan `docs/plans/2026-10-01-dht-package-a-plan.md` rev 1-3 (local). EXCLUSIVE/lock semantics, the value signature payload and value serialization are UNCHANGED.
+
+**Storage admission (`nodus_storage.c`)**
+- Caps live inside `nodus_storage_put` / `nodus_storage_put_if_newer` (the server no longer pre-calls a quota check): per owner `NODUS_STORAGE_MAX_PER_OWNER` (1000) rows and `NODUS_STORAGE_OWNER_MAX_BYTES` (16 MiB), each row charged `NODUS_STORAGE_ROW_CHARGE(len)` = data + pk (2592) + signature (4627) + `NODUS_STORAGE_ROW_FIXED_BYTES` (1024); global `NODUS_STORAGE_MAX_BYTES` (500 MB, data bytes) and the global value count on the client path. Every STORED row counts, expired or not (an expiry chosen by the writer can never open a cap). A replace of an existing (key, owner, value_id) row is checked only for its growth.
+- Return codes: -2 `KEY_OWNED` (checked first, unchanged), -4 `STALE` (client put with a strictly lower seq than the stored row; equal seq replaces as before), -3 `QUOTA`, -5 `FAULT` (read error, distinct from "no row"), -6 `EXPIRED` (replica path only: a value already expired on arrival). The client put maps -3 → `NODUS_ERR_QUOTA_EXCEEDED` (14), -4 → `NODUS_ERR_STALE` (20).
+- Index `idx_nodus_values_owner` (built once at the first open of an existing DB).
+- Hinted handoff: per target node id 64 rows / 16 MiB, total 128 MiB (`dht_hint_totals` kept by triggers), TTL 24 h (was 7 days); hints are written only for cluster members, and `server_on_pending_full` only for authenticated members. Republish skips rows already expired.
+
+**Reads**
+- `get` / `get_all` / 4002 `get_batch` accept an optional `own` (64-byte owner fingerprint) filter; `get_all` and `get_batch` accept opt-in paging (`pg`, `after` {o, v}) with replies `more` / `next` (and per batch entry `nx`, the size estimate of the row the responder stopped on). A request with none of these takes the pre-package path and reply shape. Page budget `NODUS_GET_ALL_PAGE_MAX_BYTES` (2 MiB) in `NODUS_VALUE_SERIALIZED_EST` units; order (owner_fp, value_id as signed int64).
+- Forwarded rows are matched by key, merged by (owner_fp, value_id) keeping the newer (seq, then data hash), and verified only when they would be returned (`NODUS_DHT_VERIFY_CAP` 1024 per request); trusted local rows are never dropped; a source whose row fails verification loses all its undecided rows; rows without owner pk / signature are refused; at most `NODUS_DHT_SRC_MAX_ROWS` rows per source. A `get` with `own` always forwards and merges with the local row.
+- "Could not look" (no forward slot, nothing answered, storage fault) answers `NODUS_ERR_UNAVAILABLE` (21) instead of an empty result; client `get_batch` replies mark such keys per entry with `"u": true`.
+- **Batch forward was dead before this package:** `bf_recv_frame` read the frame length big-endian while the wire is little-endian, so every forward (handshake included) waited for its 5 s timeout. It now uses `nodus_frame_decode` + `nodus_frame_validate` and refuses a declared length larger than its buffer.
+
+**4002 session**
+- Role split: a conn we dialed accepts only challenge / auth_ok / key_ack / error during the handshake, an accepted conn only hello / auth / key_init / error; a wrong-role frame disconnects. The accepting side becomes AUTH_OK only after key_init (no plaintext sends before the session key). Until the session key exists only handshake frames are processed (T2 and T1); a second key_init is refused.
+- Inter-circuits are released when their 4002 conn disconnects or is orphaned, and found by pointer, not by cid; `ri_*` frames act only on circuits of their own conn; a client circuit id that could collide moves the server generator past it (cid 0 and ≥ 2^63 refused).
+- `require_peer_auth` defaults to true in `nodus-server` (the JSON can still set false).
+
+**Client SDK** (`nodus.h`): `nodus_client_get_owner`, `nodus_client_get_all_page` (with `legacy_out` when the node predates paging), `nodus_client_get_batch_ex` (per-key unavailable). Existing client functions are unchanged.
+
+Known open (not in this package): read rate limit; legacy unpaged `get_all` still reports a storage fault as empty; the cluster node id used by the hint gate is learned from unsigned UDP; presence `p_sync` and `circ_open` dials set no expected peer id (refused when 4002 auth is on).
+
 ### Session Management
 
 Each TCP 4001 connection is assigned a **session** (`nodus_session_t`) with:
