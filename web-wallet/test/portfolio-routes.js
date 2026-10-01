@@ -17,6 +17,7 @@ export async function cellframeRead(route, { balance = '10', fail = false } = {}
   if (req.url() !== CELLFRAME.endpoint) return false;
   assert.equal(req.method(), 'POST');
   const body = req.postDataJSON();
+  if (body?.method === 'tx_history') return false;   // historyRead's
   assert.equal(body.method, 'wallet'); assert.equal(body.subcommand, 'info'); assert.equal(body.id, 1);
   assert.deepEqual(Object.keys(body.arguments).sort(), ['addr', 'net', 'token']);
   assert.equal(body.arguments.net, 'Backbone'); assert.equal(body.arguments.token, 'CPUNK');
@@ -24,6 +25,43 @@ export async function cellframeRead(route, { balance = '10', fail = false } = {}
   if (fail) { await route.abort(); return true; }
   await route.fulfill({ json: { result: [[{ addr: body.arguments.addr, balance }]] } });
   return true;
+}
+// Account history (src/history.js, 0.1.42): every provider answered here,
+// shape-checked, never forwarded. `ethereum`: Blockscout txlist rows to
+// serve (default none); everything else answers "no transfers".
+// `seen` (optional array) collects 'chain:what' per request.
+export const BLOCKSCOUT_API = 'https://eth.blockscout.com/api';
+export async function historyRead(route, { ethereum = [], seen } = {}) {
+  const req = route.request(), url = new URL(req.url());
+  if (`${url.origin}${url.pathname}` === BLOCKSCOUT_API) {
+    assert.equal(req.method(), 'GET'); assert.equal(url.searchParams.get('module'), 'account');
+    const action = url.searchParams.get('action');
+    assert.ok(action === 'txlist' || (action === 'tokentx' && CHAINS.ethereum.tokens.some(t => t.address === url.searchParams.get('contractaddress'))));
+    assert.match(url.searchParams.get('address'), /^0x[0-9a-f]{40}$/);
+    seen?.push(`ethereum:${action}`);
+    const rows = typeof ethereum === 'function' ? ethereum(url.searchParams.get('address')) : ethereum;
+    const result = action === 'txlist' ? rows : [];
+    await route.fulfill({ json: { status: result.length ? '1' : '0', message: result.length ? 'OK' : 'No transactions found', result } }); return true;
+  }
+  if (url.origin === new URL(CHAINS.tron.endpoint).origin && /^\/v1\/accounts\/T[1-9A-HJ-NP-Za-km-z]{33}\/transactions(\/trc20)?$/.test(url.pathname)) {
+    assert.equal(req.method(), 'GET'); assert.equal(url.searchParams.get('only_confirmed'), 'true');
+    seen?.push(`tron:${url.pathname.endsWith('trc20') ? 'trc20' : 'transactions'}`);
+    await route.fulfill({ json: { data: [], success: true, meta: { at: Date.now(), page_size: 0 } } }); return true;
+  }
+  if (url.origin === new URL(CHAINS.solana.endpoint).origin && req.method() === 'POST') {
+    const call = req.postDataJSON();
+    if (call?.method !== 'getSignaturesForAddress') return false;
+    seen?.push('solana:signatures');
+    await route.fulfill({ json: { jsonrpc: '2.0', id: call.id, result: [] } }); return true;
+  }
+  if (req.url() === CELLFRAME.endpoint && req.method() === 'POST') {
+    const body = req.postDataJSON();
+    if (body?.method !== 'tx_history') return false;
+    assert.match(body.params?.[0] || '', /^tx_history;-net;Backbone;-addr;[1-9A-HJ-NP-Za-km-z]{100,110}$/);
+    seen?.push('cellframe:tx_history');
+    await route.fulfill({ json: { type: 2, result: [[{ addr: body.params[0].split(';')[4] }, { limit: 1000 }]] } }); return true;
+  }
+  return false;
 }
 // Ixios (flag-on builds only): network identity by genesis block 0, then
 // eth_getBalance for a 48-byte Q-address. Shape-checked like cellframeRead;

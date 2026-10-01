@@ -1,4 +1,4 @@
-import { portfolioRead, cellframeRead } from './portfolio-routes.js';
+import { portfolioRead, cellframeRead, historyRead } from './portfolio-routes.js';
 import { pastePhrase } from './browser-phrase.js';
 // Ixios as a receive-only wallet network handled exactly like Cellframe, both
 // sides of VITE_ENABLE_IXIOS. Public test phrase only; every external request is
@@ -9,7 +9,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
+import { startPreview } from './preview-server.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
@@ -71,10 +72,9 @@ function inspect(outDir) {
   };
 }
 async function serve(outDir, port) {
-  const url = `http://127.0.0.1:${port}`;
-  servers.push(spawn(process.execPath, [vite, 'preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort', '--outDir', outDir], { cwd: app, stdio: 'pipe' }));
-  for (let i = 0; i < 100; i++) { try { if ((await fetch(url)).ok) break; } catch {} await delay(50); }
-  return url;
+  const server = await startPreview([vite, 'preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort', '--outDir', outDir], port, { cwd: app });
+  servers.push(server);
+  return server.url;
 }
 // Any request whose host names Ixios (the public RPC ixios-rpc.innova.limited,
 // or any other Ixios endpoint). Flag on: only the mocked RPC; flag off: none.
@@ -101,6 +101,7 @@ async function openWallet(url) {
   await page.route('**/*', async route => {
     const req = route.request();
     if (await ixiosRead(route)) return;
+    if (await historyRead(route)) return;
     if (await cellframeRead(route)) return;
     if (await portfolioRead(route)) return;
     if (!req.url().startsWith(url + '/') || req.method() !== 'GET' || req.postData()) {
@@ -271,6 +272,6 @@ try {
   console.log('Ixios browser checks passed: flag-on build lists Ixios in the network selector, portfolio filters, badges and assets (IXIOS row: Receive only, balance read like CPUNK after a genesis-block identity check, outside the USD total; a wrong genesis makes no balance read and keeps only the amount read earlier from the right network, marked "Read failed · last read"); selecting it shows the checksummed receive address (its QR decodes to exactly that address; lock clears the QR), hides the send fields and shows the Ixios note while Cellframe keeps its own; Ixios requests go only to the configured RPC; lock clears it; loads only the keygen module (?ixios). Flag-off build shows no Ixios anywhere and ships no Ixios JavaScript; neither build ships mldsa87-sign.wasm or Ixios markup; no unmocked external requests or storage.');
 } finally {
   await browser?.close();
-  for (const server of servers) server.kill();
+  for (const server of servers) server.stop();
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
 }

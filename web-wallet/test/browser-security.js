@@ -1,8 +1,8 @@
-import { portfolioRead, cellframeRead } from './portfolio-routes.js';
+import { portfolioRead, cellframeRead, historyRead } from './portfolio-routes.js';
 import { pastePhrase, readPhrase } from './browser-phrase.js';
 // Production bundle; all external traffic is intercepted. Public test phrase only.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { startPreview } from './preview-server.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
@@ -12,8 +12,7 @@ import { deriveWallet } from '../src/keys.js';
 const app = fileURLToPath(new URL('..', import.meta.url)), url = 'http://127.0.0.1:4189';
 const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
 const password = 'public-security-test-password-2026', addresses = deriveWallet(phrase).addresses;
-const server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '4189', '--strictPort'], { cwd: app, stdio: 'pipe' });
-for (let i = 0; i < 100; i++) { try { if ((await fetch(url)).ok) break; } catch {} await delay(50); }
+const server = await startPreview(['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '4189', '--strictPort'], 4189, { cwd: app });
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, headless: true });
 let page, broadcasts = 0, durable = 0, staleWriteCompleted = false;
 const errors = [];
@@ -21,6 +20,7 @@ const context = await browser.newContext();
 await context.route('**/*', async route => {
   const req = route.request(); if (req.url().startsWith(url + '/')) return route.continue();
   if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' } });
+  if (await historyRead(route)) return;
   if (await cellframeRead(route)) return;
   if (await portfolioRead(route, { ethereum: false })) return;
   const body = req.postDataJSON(); assert.ok(!JSON.stringify(body).includes(phrase));
@@ -262,4 +262,4 @@ try {
 
   assert.deepEqual(errors, []); assert.ok(staleWriteCompleted);
   console.log('Browser security regressions passed. All blockchain traffic was intercepted.');
-} finally { await browser.close(); server.kill(); }
+} finally { await browser.close(); server.stop(); }

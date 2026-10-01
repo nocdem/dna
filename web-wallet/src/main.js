@@ -6,6 +6,8 @@ globalThis.Buffer = Buffer;
 // replacement implementation. The vault's own PBKDF2 uses WebCrypto directly
 // (src/vault.js), not this ethers helper, so locking it changes nothing here.
 randomBytes.lock(); pbkdf2.lock();
+// The release shown on the page (package.json version, vite.config.js define).
+for (const node of document.querySelectorAll('.app-version')) node.textContent = `Version ${__APP_VERSION__}`;
 try {
   await import('./app.js');
   for (const id of ['create', 'restore', 'unlock-wallet']) document.getElementById(id).disabled = false;

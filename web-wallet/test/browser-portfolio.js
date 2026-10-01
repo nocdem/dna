@@ -1,11 +1,11 @@
 // Public fixtures only. Every external request is intercepted; no transaction is sent.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { startPreview } from './preview-server.js';
 import { mkdirSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright';
 import { ASSETS, PRICE_URL } from '../src/portfolio.js';
-import { priceFixture, portfolioRead, cellframeRead } from './portfolio-routes.js';
+import { priceFixture, portfolioRead, cellframeRead, historyRead } from './portfolio-routes.js';
 import { pastePhrase } from './browser-phrase.js';
 import { IXIOS_NETWORK } from '../src/ixios/network.js';
 // A VITE_ENABLE_IXIOS=true dist also reads the IXIOS balance (like CPUNK); its
@@ -25,7 +25,7 @@ async function ixiosRead(route) {
   return true;
 }
 const url =process.env.WALLET_URL || 'http://127.0.0.1:4192';
-const server = process.env.WALLET_URL ? null : spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '4192', '--strictPort'], { stdio: 'pipe' });
+const server = process.env.WALLET_URL ? null : await startPreview(['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '4192', '--strictPort'], 4192);
 const phrase = Array(23).fill('abandon').concat('art').join(' ');
 const holdings = Object.fromEntries(ASSETS.map(a => [a.key, String(10n ** BigInt(a.decimals))]));
 let browser, priceMode = 'valid', failures = [], wrongNetwork, gate, requested, completed, cellframeFail = false;
@@ -50,6 +50,7 @@ try {
       return mode === 'failed' ? route.fulfill({ status: 503, body: 'Unavailable' })
         : route.fulfill({ json: priceFixture(2, Math.floor(Date.now() / 1000) - (mode === 'stale' ? 901 : 0)) });
     }
+    if (await historyRead(route)) return;
     if (await cellframeRead(route, { balance: '10', fail: cellframeFail })) { reads.add(new URL(req.url()).origin); return; }
     if (await portfolioRead(route, { holdings, failures, wrongNetwork })) { reads.add(new URL(req.url()).origin); return; }
     if (await ixiosRead(route)) { reads.add(new URL(req.url()).origin); return; }
@@ -189,4 +190,4 @@ try {
   await page.locator('#lock').click();
   assert.deepEqual(unexpected, []); assert.deepEqual(errors, []);
   console.log('Portfolio browser checks passed: automatic four-network reads; exact grouped holdings/total; filters; hide; per-network send/receive; 320–1440px layout; partial RPC failure; wrong network; failed/stale quotes; balance expiry; lock cancels late replies; reopening refreshes; no persistence or unmocked external requests; CPUNK/Cellframe/ETH coin icons resolve to their own files and decode.');
-} finally { gate?.resolve(); await browser?.close(); server?.kill(); }
+} finally { gate?.resolve(); await browser?.close(); server?.stop(); }

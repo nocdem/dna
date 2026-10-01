@@ -278,6 +278,11 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 .send-footnote { font-size: 11px; text-align: center; margin: 12px 0 0; }
 .activity-panel, .device-panel { margin-top: 22px; }
 .activity-panel .hint { max-width: 740px; }
+.activity-subhead { margin: 18px 0 6px; font-size: 13px; font-weight: 600; letter-spacing: .02em; color: var(--text); }
+.activity-subhead:first-of-type { margin-top: 4px; }
+.history-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.history-head h4 { margin: 0; font-size: 13px; font-weight: 600; }
+.history-dir-in strong { color: var(--lime); }
 .activity-empty { text-align: center; padding: 24px 12px; margin: 0; border: 1px dashed #d5f99826; border-radius: 8px; font-size: 12px; }
 #activity:not(:empty) + .activity-empty { display: none; }
 /* Activity and Earn lists: one bordered group of rows, the same card and row

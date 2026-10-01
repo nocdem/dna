@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import { collectThirdPartyLicenses, formatThirdPartyLicenses } from './scripts/third-party-licenses.mjs';
 
 // The Nodus Connect site (connect.nodusnetwork.io; decision
@@ -34,12 +35,15 @@ function thirdPartyLicenses() {
 }
 
 const here = fileURLToPath(new URL('.', import.meta.url));
+// The release shown on the page (src/connect-main.js, "Version x.y.z").
+const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 
 export default defineConfig({
   root: `${here}connect-site`,
   base: '/',
   publicDir: `${here}public`,
   plugins: [thirdPartyLicenses()],
+  define: { __APP_VERSION__: JSON.stringify(version) },
   // The entry imports ../src/; the dev server must be allowed to serve the
   // whole web-wallet tree, not only connect-site/.
   server: { fs: { allow: [here] } },

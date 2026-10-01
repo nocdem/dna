@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import { readFileSync } from 'node:fs';
 import { collectThirdPartyLicenses, formatThirdPartyLicenses } from './scripts/third-party-licenses.mjs';
 
 // Writes dist/THIRD-PARTY-LICENSES.txt (0.1.22): the license notice of every npm
@@ -23,4 +24,7 @@ function thirdPartyLicenses() {
   };
 }
 
-export default defineConfig({ plugins: [thirdPartyLicenses()] });
+// The release shown on the page (src/main.js, footer "Version x.y.z").
+const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
+
+export default defineConfig({ plugins: [thirdPartyLicenses()], define: { __APP_VERSION__: JSON.stringify(version) } });

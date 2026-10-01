@@ -1,6 +1,7 @@
 import { CHAINS } from './config.js';
 import { validHash, validNodusPending } from './activity.js';
 import { NODUS_ASSET } from './nodus/network.js';
+import { historySupported, checkHistoryRows } from './history.js';
 const encoder = new TextEncoder(), MAX_PLAIN = 150000;
 const context = 'nodus.wallet.activity.v2';
 function encode(bytes) {
@@ -32,29 +33,62 @@ export async function activityKeyFor(phrase, id, info = context) {
 export const BALANCES_CONTEXT = 'nodus.wallet.balances.v1';
 const BALANCES_MAX_PLAIN = 20000, BALANCES_MAX = 64;
 export const balancesKeyFor = (phrase, id) => activityKeyFor(phrase, id, BALANCES_CONTEXT);
-export async function serializeBalances(id, entries, key) {
+
+// One sealed record (balances, history): version 1 envelope, `context` both
+// the HKDF info of its key and the additional-data prefix. `what` names it in
+// the errors.
+async function sealRecord(context, id, value, key, maxPlain, what) {
   const data = { version: 1, id, cipher: 'AES-256-GCM', iv: encode(crypto.getRandomValues(new Uint8Array(12))) };
-  const selected = Object.entries(entries).slice(0, BALANCES_MAX).map(([asset, e]) => [asset, { units: e.units, observedAt: e.observedAt, address: e.address }]);
-  const bytes = encoder.encode(JSON.stringify(Object.fromEntries(selected)));
+  const bytes = encoder.encode(JSON.stringify(value));
   try {
-    if (bytes.length > BALANCES_MAX_PLAIN) throw new Error('Saved balances are too large.');
-    const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: decode(data.iv, 12, 12), additionalData: encoder.encode(BALANCES_CONTEXT + JSON.stringify(header(data))), tagLength: 128 }, key, bytes);
+    if (bytes.length > maxPlain) throw new Error(`Saved ${what} are too large.`);
+    const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: decode(data.iv, 12, 12), additionalData: encoder.encode(context + JSON.stringify(header(data))), tagLength: 128 }, key, bytes);
     return JSON.stringify({ ...data, ciphertext: encode(new Uint8Array(ciphertext)) });
   } finally { bytes.fill(0); }
+}
+async function openRecord(context, text, id, key, maxPlain, what) {
+  if (typeof text !== 'string' || text.length > Math.ceil((maxPlain + 16) / 3) * 4 + 400) throw new Error(`Saved ${what} are too large.`);
+  const data = JSON.parse(text);
+  if (!data || Object.keys(data).sort().join() !== 'cipher,ciphertext,id,iv,version' || data.version !== 1 || data.id !== id || data.cipher !== 'AES-256-GCM') throw new Error(`Saved ${what} do not match this wallet.`);
+  let bytes;
+  try {
+    bytes = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: decode(data.iv, 12, 12), additionalData: encoder.encode(context + JSON.stringify(header(data))), tagLength: 128 }, key, decode(data.ciphertext, maxPlain + 16)));
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  } catch { throw new Error(`Saved ${what} authentication failed.`); }
+  finally { bytes?.fill(0); }
+}
+
+// The account history per network (src/history.js), saved only with a saved
+// wallet, under its own key: { chain: { address, readAt, rows } }.
+export const HISTORY_CONTEXT = 'nodus.wallet.history.v1';
+const HISTORY_MAX_PLAIN = 400000;
+export const historyKeyFor = (phrase, id) => activityKeyFor(phrase, id, HISTORY_CONTEXT);
+export async function serializeHistory(id, byChain, key) {
+  const value = Object.fromEntries(Object.entries(byChain).map(([chain, h]) => [chain, { address: h.address, readAt: h.readAt, rows: h.rows }]));
+  return sealRecord(HISTORY_CONTEXT, id, value, key, HISTORY_MAX_PLAIN, 'history');
+}
+export async function parseHistory(text, id, key, now = Date.now()) {
+  if (!text) return {};
+  const value = await openRecord(HISTORY_CONTEXT, text, id, key, HISTORY_MAX_PLAIN, 'history');
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid saved history.');
+  const out = {};
+  for (const [chain, h] of Object.entries(value)) {
+    if (!historySupported(chain) || !h || typeof h.address !== 'string' || h.address.length === 0 || h.address.length > 128 ||
+        !Number.isSafeInteger(h.readAt) || h.readAt <= 0 || h.readAt > now + 60000) throw new Error('Invalid saved history.');
+    out[chain] = { address: h.address, readAt: h.readAt, rows: checkHistoryRows(chain, h.rows) };
+  }
+  return out;
+}
+
+export async function serializeBalances(id, entries, key) {
+  const selected = Object.entries(entries).slice(0, BALANCES_MAX).map(([asset, e]) => [asset, { units: e.units, observedAt: e.observedAt, address: e.address }]);
+  return sealRecord(BALANCES_CONTEXT, id, Object.fromEntries(selected), key, BALANCES_MAX_PLAIN, 'balances');
 }
 // -> { assetKey: { units: bigint, observedAt, address } }; anything that does
 // not authenticate or check out throws (the caller then shows nothing kept).
 export async function parseBalances(text, id, key, now = Date.now()) {
   if (!text) return {};
-  if (typeof text !== 'string' || text.length > 30000) throw new Error('Saved balances are too large.');
-  const data = JSON.parse(text);
-  if (!data || Object.keys(data).sort().join() !== 'cipher,ciphertext,id,iv,version' || data.version !== 1 || data.id !== id || data.cipher !== 'AES-256-GCM') throw new Error('Saved balances do not match this wallet.');
-  let bytes, entries;
-  try {
-    bytes = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: decode(data.iv, 12, 12), additionalData: encoder.encode(BALANCES_CONTEXT + JSON.stringify(header(data))), tagLength: 128 }, key, decode(data.ciphertext, BALANCES_MAX_PLAIN + 16)));
-    entries = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-  } catch { throw new Error('Saved balances authentication failed.'); }
-  finally { bytes?.fill(0); }
+  const entries = await openRecord(BALANCES_CONTEXT, text, id, key, BALANCES_MAX_PLAIN, 'balances');
   if (!entries || typeof entries !== 'object' || Array.isArray(entries) || Object.keys(entries).length > BALANCES_MAX) throw new Error('Invalid saved balances.');
   const out = {};
   for (const [asset, e] of Object.entries(entries)) {

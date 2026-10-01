@@ -1,4 +1,4 @@
-import { portfolioRead, cellframeRead } from './portfolio-routes.js';
+import { portfolioRead, cellframeRead, historyRead } from './portfolio-routes.js';
 import { pastePhrase, readPhrase } from './browser-phrase.js';
 // Run after npm run build + npm run preview. Every external request is intercepted.
 import assert from 'node:assert/strict';
@@ -8,11 +8,10 @@ import { createRequire } from 'node:module';
 // an injected inline <script>, so the pixels are drawn in the page and decoded here.
 const jsQR = createRequire(import.meta.url)('jsqr');
 const nodusAddress = JSON.parse(readFileSync(new URL('./fixtures/nodus-addresses.json', import.meta.url))).vectors[0].address;
-import { spawn } from 'node:child_process';
+import { startPreview } from './preview-server.js';
 import { setTimeout } from 'node:timers/promises';
 const url = process.env.WALLET_URL || 'http://127.0.0.1:4173';
-const server = process.env.WALLET_URL ? null : spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '4173', '--strictPort'], { stdio: 'pipe' });
-for (let i = 0; i < 100; i++) { try { if ((await fetch(url)).ok) break; } catch {} await setTimeout(50); }
+const server = process.env.WALLET_URL ? null : await startPreview(['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '4173', '--strictPort'], 4173);
 import { chromium } from 'playwright';
 import { Transaction, Interface } from 'ethers';
 const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
@@ -22,10 +21,13 @@ page.setDefaultTimeout(10000);
 const errors = [], broadcasts = [], calls = [];
 page.on('pageerror', error => errors.push(error.message));
 let cellframeBalance = '5', cellframeFail = false, networkId = '0x1', finalized = false;
+const historySeen = [];
 await page.route('**/*', async route => {
   const req = route.request();
   if (req.url().startsWith(url + '/')) return route.continue();
   if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' } });
+  // One received ETH transfer in the account history (Blockscout fixture).
+  if (await historyRead(route, { ethereum: address => [{ hash: '0x' + 'ab'.repeat(32), timeStamp: '1790000000', from: '0x' + '12'.repeat(20), to: address, value: '1500000000000000000', isError: '0', txreceipt_status: '1' }], seen: historySeen })) return;
   if (await cellframeRead(route, { balance: cellframeBalance, fail: cellframeFail })) return;
   if (await portfolioRead(route, { ethereum: false })) return;
   const body = req.postDataJSON(); calls.push(body);
@@ -165,6 +167,19 @@ try {
   await page.selectOption('#chain', 'ethereum');
   assert.equal(await page.locator('#receive-address').innerText(), '0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb');
   assert.equal(await page.locator('#nodus-address-status').isVisible(), false);
+  // Account history (0.1.42): selecting Ethereum reads Blockscout once (txlist
+  // + one tokentx per listed token), and the received transfer is shown with
+  // its sender and an explorer link; a second selection within 30 minutes
+  // does not read again (the provider limits requests).
+  await page.waitForFunction(() => /\+1\.5 ETH/.test(document.querySelector('#history').textContent));
+  assert.match(await page.locator('#history').innerText(), /from 0x121212…121212/);
+  assert.equal(await page.locator('#history a').getAttribute('href'), 'https://etherscan.io/tx/0x' + 'ab'.repeat(32));
+  assert.deepEqual(historySeen.filter(s => s.startsWith('ethereum')), ['ethereum:txlist', 'ethereum:tokentx', 'ethereum:tokentx', 'ethereum:tokentx']);
+  await page.selectOption('#chain', 'bsc'); await page.selectOption('#chain', 'ethereum');
+  assert.equal(historySeen.filter(s => s.startsWith('ethereum')).length, 4);
+  assert.match(await page.locator('#history-status').innerText(), /as reported by Blockscout/);
+  await page.locator('#history-refresh').click();
+  assert.match(await page.locator('#history-status').innerText(), /Try again in a minute/);
   assert.equal(await page.locator('#rpc-settings').isVisible(), true);
   // Cellframe/CPUNK now lives inside the wallet like any other asset: its
   // address is derived automatically (started right after the wallet opened,
@@ -321,6 +336,9 @@ try {
   assert.ok(!licenseText.includes('GNU GENERAL PUBLIC LICENSE'), 'no GPL-3.0 text');
   assert.doesNotMatch(licenseText, /^\S+@\S+ — \S*GPL/m, 'no package declares a GPL-family license');
   assert.ok(licenseText.includes('Copyright (c) 2009 Kazuhiko Arase\n(copyright line from dist/qrcode.mjs:5)'), 'qrcode-generator copyright line');
+  // The release is shown in the footer (package.json version, vite.config.js define).
+  const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(await page.locator('.wallet-footer .app-version').innerText(), `Version ${version}`);
   assert.deepEqual(errors, []);
   console.log('Browser smoke passed: create/backup/restore, NODUS first and default-selected (receive-only row, no balance shown, no Send), Nodus native address/copy/lock/reopen, 4 external chain addresses, one Send / Receive panel whose heading follows the selected network and whose QR decodes to exactly the shown address (Nodus, Ethereum, BNB Smart Chain, Solana, TRON) and clears on lock, holding-row click/keyboard selection, ETH/ERC20 signed mocked broadcasts, wrong-network guard, automatic Cellframe address derivation + CPUNK balance display/error, send disabled on Cellframe, finalized scoped activity, encrypted save/unlock/change/reload/delete, KDF cancellation, temporary storage behavior, mobile layout with the QR shown, third-party license file served. No external request reached a blockchain.');
-} catch (error) { console.error('UI status:', await page.locator('#wallet-status').textContent(), 'Cellframe:', await page.locator('#cellframe-address-status').textContent(), 'Page errors:', errors, 'Methods:', calls.map(c => c?.method)); throw error; } finally { await browser.close(); server?.kill(); }
+} catch (error) { console.error('UI status:', await page.locator('#wallet-status').textContent(), 'Cellframe:', await page.locator('#cellframe-address-status').textContent(), 'Page errors:', errors, 'Methods:', calls.map(c => c?.method)); throw error; } finally { await browser.close(); server?.stop(); }

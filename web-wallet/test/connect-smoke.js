@@ -26,10 +26,10 @@
 // driven by a cookie the test adds.
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { startPreview } from './preview-server.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright';
-import { portfolioRead, cellframeRead, ixiosRead } from './portfolio-routes.js';
+import { portfolioRead, cellframeRead, ixiosRead, historyRead } from './portfolio-routes.js';
 import { pastePhrase } from './browser-phrase.js';
 
 // The wallet build: no app shell, Messages navigation or UI code (static check).
@@ -45,7 +45,7 @@ for (const name of readdirSync(walletAssets).filter(file => file.endsWith('.js')
 console.log('Wallet build check passed: no app shell, Messages navigation or Messages UI code in dist/.');
 
 const url = process.env.CONNECT_URL || 'http://127.0.0.1:4192';
-const server = process.env.CONNECT_URL ? null : spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--config', 'vite.connect.config.js', '--host', '127.0.0.1', '--port', '4192', '--strictPort'], { stdio: 'pipe' });
+const server = process.env.CONNECT_URL ? null : await startPreview(['node_modules/vite/bin/vite.js', 'preview', '--config', 'vite.connect.config.js', '--host', '127.0.0.1', '--port', '4192', '--strictPort'], 4192);
 const { vectors } = JSON.parse(readFileSync(new URL('./fixtures/nodus-addresses.json', import.meta.url)));
 let browser;
 try {
@@ -58,6 +58,7 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   await page.route('**/*', async route => {
     const req = route.request();
+    if (await historyRead(route)) return;
     if (await cellframeRead(route)) return;
     if (await portfolioRead(route)) return;
     // A VITE_ENABLE_IXIOS=true build (the release build) also reads IXIOS.
@@ -152,5 +153,5 @@ try {
   console.log(`Nodus Connect smoke test passed (${sockets.length} node WebSocket(s) refused by the test): one unlock opens wallet and Messages, cross-site refusal, one lock, no horizontal scroll at 390/320 px.`);
 } finally {
   await browser?.close();
-  server?.kill();
+  server?.stop();
 }

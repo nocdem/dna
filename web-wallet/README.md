@@ -377,7 +377,36 @@ Curl results in that run: BSC returned chain ID `0x38` and native balance `0x0`;
 
 ## Confirmation and activity
 
-Sends initiated here appear under **Activity recorded in this tab**, scoped to the current chain and sender. This is not a full incoming/outgoing account history. Use the account explorer for global history. By default records stay in tab memory and are cleared on lock. Opting into a saved wallet also saves up to 100 activity records encrypted for reload recovery; keys are not kept by history.
+Sends initiated here appear under **Sent from here** (scoped to the current chain and sender) and are tracked until final. Since 0.1.42 the incoming and outgoing transfers of the account are listed below them under **Account history** (next section).
+
+## Account history (0.1.42)
+
+Like the DNA Connect app (`messenger/src/api/engine/dna_engine_wallet.c dna_handle_get_transactions`), the Activity panel lists the newest 50 transfers of the selected network's address, in and out, read from the same kind of public source (`src/history.js`):
+
+| Network | Source | Requests per read |
+|---|---|---|
+| Ethereum | Blockscout `eth.blockscout.com/api` `txlist` + `tokentx` per listed token (the app: `eth_rpc.c:363-395`, `:650-660`) | 4 |
+| TRON | TronGrid `/v1/accounts/<a>/transactions` + `/transactions/trc20` (the app: `trx_rpc.c:351`) | 2 |
+| Solana | the selected Solana RPC: `getSignaturesForAddress` (newest 20) + `getTransaction` for each signature not read before (the app skips known ones too, `dna_engine_wallet.c:942-963`) | 1 + new ones, paced 1.2 s |
+| Cellframe | `tx_history` on the CPUNK RPC, CPUNK rows only (the app: `cellframe_rpc.c:371-387`), text/plain like the balance read | 1 |
+| BNB Smart Chain | none — the app has it switched off too (`dna_engine_wallet.c:887`) | 0 |
+| NODUS, Ixios | not yet | 0 |
+
+**Untrusted data.** Every field from a provider is checked: hash format per network, integer amounts, addresses of the network's form, only transfers that involve this address; the symbol and decimals always come from the wallet's own asset list (`src/config.js`), never from the provider (an unlisted token is dropped). Rows are drawn with `textContent`; the explorer link is built from the checked hash. The status line names the provider ("as reported by Blockscout"): the list is what that provider reported, not a proof. An unfiltered `tokentx` of a busy Ethereum address passed the 256 KiB response bound (measured 2026-10-02), so tokens are asked per contract, as the app does.
+
+**Request limits.** Public providers limit requests (operator 2026-10-02; measured that day: Blockscout without a key answered `x-ratelimit-limit: 10` with a reset of about 20 minutes). So history is read only for the network shown in Send / Receive, when it is selected, at most once per 30 minutes for Ethereum and once per 5 minutes for the others; "Refresh history" reads again at most once per 30 seconds. Selecting another network cancels the read in flight. A refused request (HTTP 429 included) is reported ("The history provider is limiting requests right now…") and never retried automatically.
+
+**Kept.** In memory for the session; with a SAVED wallet also encrypted in `localStorage['nodus.history.v1']` (decision `2026-10-02-device-cache-only-when-saved.md`): the same envelope as the saved balances under its own key (HKDF info `nodus.wallet.history.v1`, `src/activity-storage.js` serializeHistory / parseHistory). Saved rows are checked again when loaded (`checkHistoryRows`) and merged with each fresh read (one row per transfer, fresh wins, newest 50 kept — the app's cache merge, `dna_engine_wallet.c:1282-1300`). Deleting the saved wallet deletes it.
+
+Use the account explorer for anything older than the newest 50.
+
+**Version on the page (0.1.42).** Both builds show the release from `package.json` ("Version x.y.z"): the wallet in its footer, Nodus Connect on the start screen and in More. `vite.config.js` and `vite.connect.config.js` define `__APP_VERSION__`; `src/main.js` / `src/connect-main.js` write it into every `.app-version` element.
+
+**Browser tests start and stop their own server (0.1.42).** `test/preview-server.js` startPreview: a port that already answers is refused before anything starts (a `vite preview` left over from an earlier run was answering and the tests checked that old build — two such servers, from 2026-09-30 and 2026-10-01, made test:browser / test:security check an old dist), the server must accept a TCP connection while still running (not fetch(): Node refuses port 4190, a Fetch "bad port"), and it is stopped with SIGKILL in `finally` and on process exit (servers with ppid 1 were left after normal runs).
+
+### Sends made here
+
+By default records stay in tab memory and are cleared on lock. Opting into a saved wallet also saves up to 100 activity records encrypted for reload recovery; keys are not kept by history.
 
 The app computes the transaction ID locally before broadcast and records it even if the response is ambiguous. It never retries a broadcast automatically. Polling checks only public status and stops on lock or chain changes. Ethereum/BSC require a canonical receipt and the provider’s finalized block before reporting confirmed/failed. Solana requires finalized signature status; missing history after the finalized validity window remains unknown, with continued polling and an explorer verification reminder. TRON uses the solidified transaction execution result and checks the observed mainnet genesis; absence is pending, not an invented failure. Providers lacking finality/status APIs may leave activity unresolved with a read error. Transient read failures do not overwrite prior status. Pending and included are never labeled confirmed. Tracking starts with the endpoint that prepared the send. Changing RPC settings cancels current reads and updates visible records to the selected provider; reloaded records use chain defaults until changed.
 

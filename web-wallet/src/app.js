@@ -1,10 +1,11 @@
 import { getAddress } from 'ethers';
-import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
+import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
 import { deleteVaultHistory, HistoryDeleteBlocked } from './connect/store.js';
-import { serializeActivity, parseActivity, activityKeyFor, serializeBalances, parseBalances, balancesKeyFor } from './activity-storage.js';
+import { serializeActivity, parseActivity, activityKeyFor, serializeBalances, parseBalances, balancesKeyFor, serializeHistory, parseHistory, historyKeyFor } from './activity-storage.js';
+import { readHistory, mergeHistory, historySupported, HISTORY_SOURCES, HISTORY_LIMIT } from './history.js';
 import { recordActivity, watchActivity, checkActivity, terminal } from './activity.js';
 import { CHAINS, CELLFRAME } from './config.js';
-import { CPUNK_ASSET } from './portfolio.js';
+import { CPUNK_ASSET, displayAmount } from './portfolio.js';
 // Pure data, referenced only inside `if (import.meta.env.VITE_ENABLE_IXIOS === 'true')`
 // blocks below, so a disabled build tree-shakes the whole module away.
 import { IXIOS_NETWORK, IXIOS_ASSET } from './ixios/network.js';
@@ -152,6 +153,81 @@ function persistBalances(entries) {
     localStorage.setItem(BALANCES_KEY, encrypted);
   }).catch(() => { /* the balances are read again next time */ });
 }
+// ── Account history (src/history.js) ────────────────────────────────────
+// Read for the network selected in Send / Receive, at most once per
+// HISTORY_AUTO_MS by itself and once per HISTORY_MANUAL_MS on "Refresh
+// history": public providers limit requests (operator 2026-10-02; Blockscout
+// answered 10 requests per ~20 minutes, measured that day). Kept in memory;
+// with a SAVED wallet also encrypted in HISTORY_KEY (decision
+// 2026-10-02-device-cache-only-when-saved).
+const HISTORY_AUTO_MS = { ethereum: 30 * 60 * 1000 }, HISTORY_AUTO_DEFAULT_MS = 5 * 60 * 1000, HISTORY_MANUAL_MS = 30 * 1000;
+let historyByChain = {}, historyJob = null, historyNote = {}, accountHistoryWrites = Promise.resolve();
+const historyFor = chain => { const h = historyByChain[chain]; return h && wallet && h.address === wallet.addresses[chain] ? h : null; };
+const historyTime = ms => new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+const shortPeer = peer => peer.length > 18 ? `${peer.slice(0, 8)}…${peer.slice(-6)}` : peer;
+function renderHistory() {
+  const list = $('history'), status = $('history-status'), button = $('history-refresh');
+  if (!wallet) { list.replaceChildren(); status.textContent = ''; button.hidden = true; return; }
+  const chain = $('chain').value, h = historyFor(chain), supported = historySupported(chain);
+  button.hidden = !supported; button.disabled = !!historyJob || !wallet.addresses[chain];
+  status.textContent = !supported ? `Account history for ${networkFor(chain)?.name ?? chain} is not read here. Use the account explorer.`
+    : historyJob?.chain === chain ? `Reading account history from ${HISTORY_SOURCES[chain]}…`
+    : historyNote[chain] || (h ? `Newest ${HISTORY_LIMIT} transfers as reported by ${HISTORY_SOURCES[chain]}, read ${historyTime(h.readAt)}. Your own sends are tracked above.` : 'Account history has not been read yet.');
+  const el = (tag, className, text) => { const node = document.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node; };
+  list.replaceChildren(...(supported && h ? h.rows : []).map(r => {
+    const div = el('div', `activity-row history-dir-${r.dir}`), main = el('span', 'activity-main');
+    const sign = r.dir === 'in' ? '+' : r.dir === 'out' ? '−' : '';
+    const what = r.dir === 'self' ? 'to yourself' : r.peer ? `${r.dir === 'in' ? 'from' : 'to'} ${shortPeer(r.peer)}` : r.dir === 'in' ? 'received' : 'sent';
+    main.append(el('strong', '', `${sign}${displayAmount(r.amount)} ${r.symbol}`), el('small', '', what));
+    const side = el('span', 'activity-side'), badge = el('span', 'status-badge', r.status);
+    badge.dataset.status = r.status;
+    const when = el('time', '', historyTime(r.time)); when.dateTime = new Date(r.time).toISOString();
+    side.append(badge, when);
+    const footer = el('div', 'activity-footer');
+    if (CHAINS[r.chain]) {
+      const link = document.createElement('a');
+      link.href = CHAINS[r.chain].explorer + encodeURIComponent(r.hash); link.textContent = 'View transaction'; link.target = '_blank'; link.rel = 'noopener noreferrer'; footer.append(link);
+    } else footer.append(el('span', 'activity-id', `Transaction ID ${r.hash}`));
+    div.append(main, side, footer);
+    return div;
+  }));
+}
+async function loadHistory(chain, { manual = false } = {}) {
+  if (!wallet || !historySupported(chain) || historyJob?.chain === chain) return;
+  // Another network's read is cancelled: only the shown network is read.
+  if (historyJob) { historyJob.controller.abort(); historyJob = null; }
+  const address = wallet.addresses[chain];
+  if (!address) return;
+  const kept = historyFor(chain), gap = manual ? HISTORY_MANUAL_MS : (HISTORY_AUTO_MS[chain] ?? HISTORY_AUTO_DEFAULT_MS);
+  if (kept && Date.now() - kept.readAt < gap) {
+    if (manual) { historyNote[chain] = `Read ${historyTime(kept.readAt)}. Try again in a minute — the provider limits requests.`; renderHistory(); }
+    return;
+  }
+  const source = wallet, job = { chain, controller: new AbortController() };
+  historyJob = job; delete historyNote[chain]; renderHistory();
+  try {
+    // Solana: signatures already read are not fetched again.
+    const known = new Map();
+    for (const r of kept?.rows || []) { if (!known.has(r.hash)) known.set(r.hash, []); known.get(r.hash).push(r); }
+    const rows = await readHistory(chain, address, { endpoint: endpoints[chain], signal: job.controller.signal, known });
+    if (historyJob !== job || wallet !== source) return;
+    historyByChain[chain] = { address, readAt: Date.now(), rows: mergeHistory(kept?.rows, rows) };
+    persistHistory();
+  } catch (error) { if (historyJob === job) historyNote[chain] = error.message; }
+  finally { if (historyJob === job) { historyJob = null; renderHistory(); } }
+}
+function persistHistory() {
+  const session = activitySession, source = wallet;
+  if (!session?.historyKey || !source) return;
+  const snapshot = Object.fromEntries(Object.entries(historyByChain).filter(([chain, h]) => h.address === source.addresses[chain]));
+  accountHistoryWrites = accountHistoryWrites.catch(() => {}).then(async () => {
+    const encrypted = await serializeHistory(session.id, snapshot, session.historyKey);
+    if (session !== activitySession || source !== wallet || source.locked || localStorage.getItem(VAULT_KEY) !== session.vault) return;
+    localStorage.setItem(HISTORY_KEY, encrypted);
+  }).catch(() => { /* read again next time */ });
+}
+function clearHistory() { historyJob?.controller.abort(); historyJob = null; historyByChain = {}; historyNote = {}; renderHistory(); }
+$('history-refresh').onclick = () => void loadHistory($('chain').value, { manual: true });
 function renderActivity(save = true) {
   if (save) void persistActivity().catch(error => { $('vault-status').textContent = error.message; });
   // A row is laid out like a portfolio holding row (src/portfolio-view.js):
@@ -568,7 +644,7 @@ function lock() {
   cellframeDerivation?.abort(); cellframeDerivation = undefined;
   $('cellframe-address-status').textContent = '';
   stopIxiosAddress();
-  revision++; vaultOperation++; activitySession = null; activityBlocked = false; latestKept = null; idleDeadline = 0; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined;
+  revision++; vaultOperation++; activitySession = null; activityBlocked = false; latestKept = null; clearHistory(); idleDeadline = 0; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined;
   releaseSession(); $('session-conflict').hidden = true;
   $('discard-activity').hidden = true;
   $('phrase-form').hidden = true; $('wallet-open').hidden = true; $('welcome').hidden = false;
@@ -680,7 +756,7 @@ if (import.meta.env.VITE_ENABLE_CPUNK !== 'false') {
         const address = await deriveCpunkAddress(source.recoveryPhrase, { signal: operation.signal });
         if (!current()) return;
         source.addresses.cellframe = address;
-        if ($('chain').value === 'cellframe') setReceiveAddress(address);
+        if ($('chain').value === 'cellframe') { setReceiveAddress(address); renderHistory(); void loadHistory('cellframe'); }
         $('cellframe-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
         portfolio.setAddress('cellframe', address);
       } catch {
@@ -768,6 +844,7 @@ function selectChain() {
   $('send-fields').hidden = !!c.receiveOnly; $('send-disabled-note').hidden = !c.receiveOnly;
   $('send-disabled-note').textContent = c.sendNote || DEFAULT_SEND_DISABLED_NOTE;
   for (const [key, node] of Object.entries(addressStatus)) node.hidden = chain !== key;
+  renderHistory(); void loadHistory(chain);
 }
 $('chain').onchange = selectChain;
 // Both shortcuts lead to the same Send / Receive panel: receive block on top,
@@ -949,10 +1026,14 @@ $('unlock-form').onsubmit = async event => {
     if (session !== sessionRelease) return;
     const saved = await decryptVault(text, password);
     if (operation !== vaultOperation || session !== sessionRelease || text !== localStorage.getItem(VAULT_KEY)) return;
-    const restored = deriveWallet(saved.phrase); let key, balancesKey, rows = [], kept = {}, problem = '';
+    const restored = deriveWallet(saved.phrase); let key, balancesKey, historyKey, rows = [], kept = {}, keptHistory = {}, problem = '';
     try {
       key = await activityKeyFor(saved.phrase, saved.id);
       balancesKey = await balancesKeyFor(saved.phrase, saved.id);
+      historyKey = await historyKeyFor(saved.phrase, saved.id);
+      // Saved history that does not authenticate is simply not shown.
+      try { keptHistory = await parseHistory(localStorage.getItem(HISTORY_KEY), saved.id, historyKey); }
+      catch { keptHistory = {}; }
       try { rows = await parseActivity(localStorage.getItem(ACTIVITY_KEY), saved.id, restored.addresses, key); }
       catch (error) { problem = error.message; }
       // Saved balances that do not authenticate are simply not shown.
@@ -960,7 +1041,8 @@ $('unlock-form').onsubmit = async event => {
       catch { kept = {}; }
       if (operation !== vaultOperation || session !== sessionRelease || text !== localStorage.getItem(VAULT_KEY)) { disposeWallet(restored); return; }
     } catch (error) { disposeWallet(restored); throw error; }
-    disposeWallet(wallet); wallet = restored; activitySession = { id: saved.id, key, balancesKey, vault: text }; activityBlocked = !!problem;
+    disposeWallet(wallet); wallet = restored; activitySession = { id: saved.id, key, balancesKey, historyKey, vault: text }; activityBlocked = !!problem;
+    historyByChain = keptHistory;
     walletFresh = false; siteLock.start();
     history.length = 0; history.push(...rows);
     $('discard-activity').hidden = !problem; $('vault-status').textContent = problem || 'Saved activity authenticated.';
@@ -1015,11 +1097,11 @@ async function saveVault(change) {
     if (operation !== vaultOperation || wallet !== source || source.locked) return;
     const encrypted = await encryptVault(source.recoveryPhrase, password, id);
     const newId = parseVault(encrypted).id, key = await activityKeyFor(source.recoveryPhrase, newId);
-    const balancesKey = await balancesKeyFor(source.recoveryPhrase, newId);
+    const balancesKey = await balancesKeyFor(source.recoveryPhrase, newId), historyKey = await historyKeyFor(source.recoveryPhrase, newId);
     if (operation !== vaultOperation || wallet !== source || source.locked || localStorage.getItem(VAULT_KEY) !== previous) return;
     const stored = await withActivityLock(() => {
       if (operation !== vaultOperation || wallet !== source || source.locked || !$('vault-risk-confirm').checked || localStorage.getItem(VAULT_KEY) !== previous) return false;
-      localStorage.setItem(VAULT_KEY, encrypted); activitySession = { id: newId, key, balancesKey, vault: encrypted }; return true;
+      localStorage.setItem(VAULT_KEY, encrypted); activitySession = { id: newId, key, balancesKey, historyKey, vault: encrypted }; return true;
     });
     if (!stored) {
       if (operation === vaultOperation && wallet === source && !source.locked && !$('vault-risk-confirm').checked) $('vault-status').textContent = 'Save canceled. The storage risks were not accepted; no new copy was saved.';
@@ -1029,6 +1111,7 @@ async function saveVault(change) {
     await persistActivity();
     // Balances read before the save are kept from now on as well.
     if (latestKept) persistBalances(latestKept);
+    persistHistory();
     if (operation !== vaultOperation || wallet !== source || source.locked) return;
     $('vault-risk-confirm').checked = false;
     $('vault-status').textContent = change ? 'Local password changed.' : 'Encrypted wallet saved on this device. Keep your recovery backup.';
@@ -1069,7 +1152,7 @@ $('vault-delete').onclick = async () => {
     if (previous) raise('vaultDeleting');
     const messages = await withActivityLock(async () => {
       if (localStorage.getItem(VAULT_KEY) !== previous) throw new Error('Saved wallet changed before deletion.');
-      localStorage.removeItem(VAULT_KEY); localStorage.removeItem(ACTIVITY_KEY); localStorage.removeItem(BALANCES_KEY);
+      localStorage.removeItem(VAULT_KEY); localStorage.removeItem(ACTIVITY_KEY); localStorage.removeItem(BALANCES_KEY); localStorage.removeItem(HISTORY_KEY);
       if (!previous) return 'none';
       if (!vaultId) return 'unknown';
       try { await deleteVaultHistory(vaultId, localStorage); return 'deleted'; }

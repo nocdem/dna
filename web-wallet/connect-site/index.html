@@ -35,7 +35,7 @@
   <!-- src/connect-main.js moves #vault-delete-details into Device & settings
        while the wallet is open, and back here when it is locked. -->
   <div id="vault-delete-home" class="start-extra"><details id="vault-delete-details"><summary>Delete saved wallet from this device</summary><p class="hint">Deleting removes the encrypted wallet and saved activity here. It does not move funds. You need your recovery backup to restore.</p><label class="check"><input id="vault-delete-confirm" type="checkbox"> I have my recovery backup and want to delete this device’s saved wallet.</label><button id="vault-delete" class="secondary" type="button">Delete saved wallet</button></details></div>
-  <p class="start-links"><a href="#privacy">Privacy &amp; safety</a><span aria-hidden="true">·</span><a href="/THIRD-PARTY-LICENSES.txt">Licenses</a></p>
+  <p class="start-links"><a href="#privacy">Privacy &amp; safety</a><span aria-hidden="true">·</span><a href="/THIRD-PARTY-LICENSES.txt">Licenses</a><span aria-hidden="true">·</span><span class="app-version"></span></p>
 </section>
 
 <div id="wallet-open" class="app-shell" hidden>
@@ -95,7 +95,7 @@
     <details id="become-validator" class="stake-block"><summary>Become a validator</summary><p id="become-note" class="notice"></p><div id="become-fields"><label for="become-commission">Commission you keep from your delegators’ rewards (%)</label><input id="become-commission" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="5"><label class="check"><input id="become-confirm" type="checkbox"> I understand that the bond is locked while I am a validator and that this wallet has no way to unstake it.</label><button type="button" id="become-review">Review validator bond <span aria-hidden="true">↗</span></button></div></details>
   </section>
   </div>
-  <section id="activity-panel" class="dashboard-panel activity-panel" aria-labelledby="activity-title"><div class="panel-heading"><h3 id="activity-title">Activity</h3><a id="account-explorer" target="_blank" rel="noopener noreferrer">Open account explorer <span aria-hidden="true">↗</span></a></div><p class="hint">Only sends made here are listed. Records stay in this tab unless you choose to save the wallet on this device. For all account activity, use the explorer.</p><div id="activity" class="activity-list" aria-live="polite"></div><p class="activity-empty">No sends recorded here for this network.</p></section>
+  <section id="activity-panel" class="dashboard-panel activity-panel" aria-labelledby="activity-title"><div class="panel-heading"><h3 id="activity-title">Activity</h3><a id="account-explorer" target="_blank" rel="noopener noreferrer">Open account explorer <span aria-hidden="true">↗</span></a></div><h4 class="activity-subhead">Sent from here</h4><p class="hint">Sends made in this wallet, tracked until final. Records stay in this tab unless you choose to save the wallet on this device.</p><div id="activity" class="activity-list" aria-live="polite"></div><p class="activity-empty">No sends recorded here for this network.</p><div class="activity-subhead history-head"><h4>Account history</h4><button id="history-refresh" type="button" class="secondary small">Refresh history</button></div><p id="history-status" class="hint" role="status" aria-live="polite"></p><div id="history" class="activity-list"></div></section>
   <section id="device-panel" class="dashboard-panel device-panel" aria-labelledby="device-title"><div class="panel-heading"><h3 id="device-title" tabindex="-1">Device &amp; settings</h3></div><p id="wallet-storage-state" class="storage-state" role="status">Temporary session</p>
     <details id="vault-storage-controls"><summary>Save wallet on this device (optional)</summary>
 <p id="vault-storage-summary" class="hint">This saves an encrypted copy of your 24 recovery words in this browser profile on this device. It is not a cloud backup. The wallet does not store your password or upload your recovery words.</p>
@@ -119,7 +119,7 @@
         <li><a href="/THIRD-PARTY-LICENSES.txt" class="more-row"><svg class="app-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h7"/></svg><span>Licenses</span><svg class="app-icon chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></a></li>
         <li><button id="lock" class="more-row more-lock" type="button"><svg class="app-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg><span>Lock</span></button></li>
       </ul>
-      <p class="hint more-hint">Lock closes your wallet and Messages together. Both lock by themselves after 10 minutes of inactivity and when you leave the page. Nodus Connect · self-custody preview. We cannot reset or recover your wallet for you.</p>
+      <p class="hint more-hint">Lock closes your wallet and Messages together. Both lock by themselves after 10 minutes of inactivity and when you leave the page. Nodus Connect · self-custody preview · <span class="app-version"></span>. We cannot reset or recover your wallet for you.</p>
     </div>
   </section>
 

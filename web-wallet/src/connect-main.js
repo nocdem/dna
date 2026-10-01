@@ -21,6 +21,8 @@ import { randomBytes, pbkdf2 } from 'ethers';
 import './connect/ui/messenger.css';
 globalThis.Buffer = Buffer;
 randomBytes.lock(); pbkdf2.lock();
+// The release shown on the page (package.json version, vite.connect.config.js define).
+for (const node of document.querySelectorAll('.app-version')) node.textContent = `Version ${__APP_VERSION__}`;
 
 const $ = id => document.getElementById(id);
 const TABS = ['home', 'chats', 'wallet', 'more'];

@@ -1,18 +1,18 @@
-import { portfolioRead, cellframeRead, ixiosRead } from './portfolio-routes.js';
+import { portfolioRead, cellframeRead, ixiosRead, historyRead } from './portfolio-routes.js';
 import { pastePhrase, readPhrase } from './browser-phrase.js';
 // Production assets, public test phrases, and no external network requests.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { spawn } from 'node:child_process';
-import { setTimeout as delay } from 'node:timers/promises';
+import { startPreview } from './preview-server.js';
 import { chromium } from 'playwright';
 const url = process.env.WALLET_URL || 'http://127.0.0.1:4190';
-const server = process.env.WALLET_URL ? null : spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '4190', '--strictPort'], { stdio: 'pipe' });
+const server = process.env.WALLET_URL ? null : await startPreview(['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '4190', '--strictPort'], 4190);
 const { vectors } = JSON.parse(readFileSync(new URL('./fixtures/nodus-addresses.json', import.meta.url)));
 const wasm = readFileSync(new URL('../src/nodus/mldsa87.wasm', import.meta.url));
 let browser;
 try {
-  for (let i = 0; i < 100; i++) { try { if ((await fetch(url)).ok) break; } catch {} await delay(50); }
+  // (No fetch() readiness poll: Node's fetch refuses port 4190, a Fetch
+  // "bad port"; startPreview already waited for the server.)
   browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || undefined });
   for (const mode of ['delayed', 'failed']) {
     const startup = await browser.newPage();
@@ -63,6 +63,7 @@ try {
     // the address by format, same as portfolioRead's Solana/EVM checks) before
     // fulfilling it, so a malformed or secret-carrying request here fails this
     // test rather than being silently accepted.
+    if (await historyRead(route)) return;
     if (await cellframeRead(route)) { cellframeRequests.push(req.url()); return; }
     // Flag-on builds also read the Ixios balance (shape-checked mock, never forwarded).
     if (await ixiosRead(route)) return;
@@ -220,4 +221,4 @@ try {
   assert.ok(cellframeRequests.every(u => u === 'https://rpc.cellframe.net/connect'));
   assert.deepEqual(unexpected, []); assert.deepEqual(errors, []);
   console.log('Nodus browser checks passed: 24 numbered boxes, read-only generation, full/partial/overflow and real clipboard paste, blank-word/checksum rejection, mobile layout, local a/ab suggestions and keyboard/click completion; late derivation cannot replace a reopened wallet; lock clears address; external-chain switch preserves native identity; failed module load shows unavailable; automatic Cellframe balance reads are mocked and shape-checked; no other unmocked external requests or storage.');
-} finally { await browser?.close(); server?.kill(); }
+} finally { await browser?.close(); server?.stop(); }
