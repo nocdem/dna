@@ -4,7 +4,8 @@
  *
  * Every packet byte is the codec's (messenger/codec/salt_agreement_codec.c,
  * compiled verbatim): parse = data size per version, signature over either
- * party's key, KEM-unwrap of this party's entry; build =
+ * party's key, the two entry fingerprints = {me, peer} (web addition, see
+ * nc_salt_packet_check), KEM-unwrap of this party's entry; build =
  * salt_agreement_build_packet, the function the app's
  * salt_agreement_publish_internal calls since NC-1b. The web builds packet
  * v1 (round-3 Kyber for both parties): the frozen app publishes v1
@@ -46,6 +47,44 @@ void nc_salt_read_clear(nc_salt_read_t *r) {
     memset(r->salt, 0, sizeof(r->salt));
 }
 
+nc_salt_pkt_t nc_salt_packet_check(const nc_keys_t *keys, const nc_peer_t *peer,
+                                   const uint8_t *data, size_t data_len,
+                                   uint8_t salt_out[NC_SALT_LEN]) {
+    memset(salt_out, 0, NC_SALT_LEN);
+    if (!keys || !peer || !data || data_len < PACKET_VERSION_SIZE)
+        return NC_SALT_PKT_BAD_SIZE;
+    /* 2-byte big-endian version peek (dht_salt_agreement.c, before
+     * salt_agreement_packet_data_size_for_version). */
+    uint16_t version = (uint16_t)((uint16_t)data[0] << 8 | data[1]);
+    size_t data_size = salt_agreement_packet_data_size_for_version(version);
+    if (data_size == 0 || data_len < data_size) return NC_SALT_PKT_BAD_SIZE;
+    if (salt_agreement_packet_verify_signature(data, data_len, data_size,
+                                               keys->id.pk.bytes,
+                                               peer->dsa_pk) != 0)
+        return NC_SALT_PKT_BAD_SIG;
+
+    /* The signed data names the pair; it must be exactly {me, peer}. */
+    uint8_t my_bin[FP_BIN_SIZE], peer_bin[FP_BIN_SIZE];
+    uint8_t e1[FP_BIN_SIZE], e2[FP_BIN_SIZE];
+    if (salt_agreement_fp_hex_to_bin(keys->fp, my_bin) != 0 ||
+        salt_agreement_fp_hex_to_bin(peer->fp, peer_bin) != 0 ||
+        salt_agreement_packet_entry_fps(data, data_len, e1, e2) != 0)
+        return NC_SALT_PKT_BAD_SIZE;
+    bool pair = (memcmp(e1, my_bin, FP_BIN_SIZE) == 0 &&
+                 memcmp(e2, peer_bin, FP_BIN_SIZE) == 0) ||
+                (memcmp(e1, peer_bin, FP_BIN_SIZE) == 0 &&
+                 memcmp(e2, my_bin, FP_BIN_SIZE) == 0);
+    if (!pair) return NC_SALT_PKT_WRONG_PAIR;
+
+    if (salt_agreement_packet_decrypt_salt(data, data_len, my_bin,
+                                           keys->kyber_sk, keys->mlkem_sk,
+                                           salt_out) != 0) {
+        memset(salt_out, 0, NC_SALT_LEN);
+        return NC_SALT_PKT_NO_ENTRY;
+    }
+    return NC_SALT_PKT_OK;
+}
+
 int nc_salt_read(const nc_ctx_t *ctx, const nc_peer_t *peer,
                  nc_salt_read_t *out) {
     if (!out) return NC_ERR_ARG;
@@ -64,36 +103,24 @@ int nc_salt_read(const nc_ctx_t *ctx, const nc_peer_t *peer,
     nc_read_all(ctx, &key, owners, 2, &out->read);
     if (out->read.outcome != NC_FOUND) return NC_OK;
 
-    uint8_t my_fp_bin[FP_BIN_SIZE];
-    if (salt_agreement_fp_hex_to_bin(keys->fp, my_fp_bin) != 0) {
-        nc_read_all_clear(&out->read);
-        return NC_ERR_ARG;
-    }
-
-    /* The native collection loop, salt_agreement_fetch_internal. */
+    /* The native collection loop, salt_agreement_fetch_internal, with the
+     * pair binding of nc_salt_packet_check. */
     uint8_t valid[NC_SALT_MAX_VALID][NC_SALT_LEN];
     size_t n_valid = 0;
     for (size_t i = 0; i < out->read.count && n_valid < NC_SALT_MAX_VALID; i++) {
         const nodus_value_t *v = out->read.values[i];
-        if (v->data_len < PACKET_VERSION_SIZE) continue;
-        /* 2-byte big-endian version peek (dht_salt_agreement.c, before
-         * salt_agreement_packet_data_size_for_version). */
-        uint16_t version = (uint16_t)((uint16_t)v->data[0] << 8 | v->data[1]);
-        size_t data_size = salt_agreement_packet_data_size_for_version(version);
-        if (data_size == 0 || v->data_len < data_size) continue;
-        if (salt_agreement_packet_verify_signature(v->data, v->data_len,
-                                                   data_size, keys->id.pk.bytes,
-                                                   peer->dsa_pk) != 0)
-            continue;
-        out->authenticated++;
         uint8_t salt[NC_SALT_LEN];
-        if (salt_agreement_packet_decrypt_salt(v->data, v->data_len, my_fp_bin,
-                                               keys->kyber_sk, keys->mlkem_sk,
-                                               salt) == 0) {
-            memcpy(valid[n_valid++], salt, NC_SALT_LEN);
-        }
+        nc_salt_pkt_t pk = nc_salt_packet_check(keys, peer, v->data,
+                                                v->data_len, salt);
+        if (pk == NC_SALT_PKT_WRONG_PAIR) out->wrong_pair++;
+        if (pk == NC_SALT_PKT_OK || pk == NC_SALT_PKT_NO_ENTRY)
+            out->authenticated++;
+        if (pk == NC_SALT_PKT_OK) memcpy(valid[n_valid++], salt, NC_SALT_LEN);
         memset(salt, 0, sizeof(salt));
     }
+    if (out->wrong_pair > 0)
+        QGP_LOG_WARN(LOG_TAG, "%zu salt packet(s) signed for another pair "
+                     "dropped", out->wrong_pair);
     nc_read_all_clear(&out->read);
 
     if (n_valid == 0) { memset(valid, 0, sizeof(valid)); return NC_OK; }

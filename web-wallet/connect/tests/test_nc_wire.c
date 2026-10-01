@@ -32,6 +32,17 @@
  *       whose B entry B's round-3 key alone unwraps to the salt (the app's
  *       salt_agreement_fetch has no ML-KEM key).
  *   S6  A third identity neither verifies it nor finds an entry.
+ *   S7  nc_salt_packet_check accepts the genuine (A,B) v1 packet for A
+ *       reading with peer B, and returns the salt.
+ *   S8  A packet A signed for (A,Y), read by A at the (A,B) key: its
+ *       signature verifies and A's entry unwraps (shown with the codec —
+ *       the native reader would accept it), but nc_salt_packet_check
+ *       returns WRONG_PAIR and no salt (the F2 pair binding).
+ *   S9  From B's side: (A,B) accepted, (A,Y) WRONG_PAIR.
+ *   S10 v2 packets (the codec builder, ML-KEM entries — the other entry
+ *       offset): salt_agreement_packet_entry_fps gives {A,B}; (A,B)
+ *       accepted, (A,Y) WRONG_PAIR.
+ *   S11 salt_agreement_packet_entry_fps refuses a short v2 packet.
  *   L8  nc_contactlist_build, read the way dht_contactlist_fetch does with
  *       the codec + dna_api only: CLST v2 header, expiry = ts + 7 days,
  *       self-Seal opens with A's round-3 key, authorship A, entries and
@@ -45,7 +56,11 @@
  * How it can lie: every check runs the SAME C as the web build, so it
  * proves the web core and the codecs agree with each other, not that the
  * frozen app (an older binary) reads these bytes — that is NC-3's test
- * against real app records.
+ * against real app records. S7-S11 check the pure per-packet function; the
+ * DHT replay itself (P re-publishing the bytes under its own owner at
+ * key(A,P)) is not modelled — nc_salt_read feeds every value that passed
+ * the DHT owner check to the same function. Y's entry is wrapped to B's
+ * KEM keys (C has none); only Y's fingerprint is read by the pair check.
  */
 
 #include "nc_core.h"
@@ -197,6 +212,81 @@ static void test_salt_packet(void) {
               "S6 a third identity: signature does not verify, no entry to unwrap");
     }
     free(pkt);
+}
+
+/* F2: a salt packet is bound to the pair it names. */
+static void test_salt_pair(void) {
+    nc_peer_t pb, y;
+    peer_from(B, true, &pb);
+    /* Y: a third identity. Only its fingerprint matters to the pair check;
+     * its entry is wrapped to B's KEM keys because C (a nodus identity) has
+     * none — nobody here needs to open Y's entry. */
+    memset(&y, 0, sizeof(y));
+    qgp_sha3_512_fingerprint(C->pk.bytes, QGP_DSA87_PUBLICKEYBYTES, y.fp);
+    memcpy(y.dsa_pk, C->pk.bytes, sizeof(y.dsa_pk));
+    memcpy(y.kyber_pk, B->kyber_pk, sizeof(y.kyber_pk));
+    memcpy(y.mlkem_pk, B->mlkem_pk, sizeof(y.mlkem_pk));
+    y.has_mlkem = true;
+
+    uint8_t s_ab[NC_SALT_LEN], s_ay[NC_SALT_LEN], got[NC_SALT_LEN], a_bin[FP_BIN_SIZE];
+    memset(s_ab, 0x1B, sizeof(s_ab));
+    memset(s_ay, 0x7E, sizeof(s_ay));
+    int bins = salt_agreement_fp_hex_to_bin(A->fp, a_bin) == 0;
+    uint8_t *pkt_ab = NULL, *pkt_ay = NULL;
+    size_t len_ab = 0, len_ay = 0;
+    int rc = nc_salt_build(A, &pb, s_ab, &pkt_ab, &len_ab);
+    int rc2 = nc_salt_build(A, &y, s_ay, &pkt_ay, &len_ay);
+
+    CHECK(rc == 0 && nc_salt_packet_check(A, &pb, pkt_ab, len_ab, got) == NC_SALT_PKT_OK &&
+          memcmp(got, s_ab, NC_SALT_LEN) == 0,
+          "S7 genuine (A,B) v1 packet at key(A,B): accepted, salt unwrapped");
+
+    /* The packet A signed for (A,Y): A's signature verifies and A's own
+     * entry unwraps — the native reader would take it — but it names Y. */
+    int native_would = rc2 == 0 && bins &&
+        salt_agreement_packet_verify_signature(pkt_ay, len_ay, PACKET_DATA_SIZE,
+                                               A->id.pk.bytes, B->id.pk.bytes) == 0 &&
+        salt_agreement_packet_decrypt_salt(pkt_ay, len_ay, a_bin, A->kyber_sk, NULL, got) == 0;
+    CHECK(native_would &&
+          nc_salt_packet_check(A, &pb, pkt_ay, len_ay, got) == NC_SALT_PKT_WRONG_PAIR &&
+          memcmp(got, (uint8_t[NC_SALT_LEN]){0}, NC_SALT_LEN) == 0,
+          "S8 (A,Y) packet A signed, replayed at key(A,B): wrong_pair, no salt out");
+
+    /* The same from B's side: the genuine packet is accepted, the (A,Y)
+     * one (signed by B's peer A) is not. */
+    nc_peer_t pa;
+    peer_from(A, true, &pa);
+    CHECK(nc_salt_packet_check(B, &pa, pkt_ab, len_ab, got) == NC_SALT_PKT_OK &&
+          memcmp(got, s_ab, NC_SALT_LEN) == 0 &&
+          nc_salt_packet_check(B, &pa, pkt_ay, len_ay, got) == NC_SALT_PKT_WRONG_PAIR,
+          "S9 B reading from A: (A,B) accepted, (A,Y) wrong_pair");
+    free(pkt_ab);
+    free(pkt_ay);
+
+    /* v2 (ML-KEM entries, the other entry offset): the codec's builder. */
+    uint8_t *v2_ab = malloc(PACKET_TOTAL_SIZE_V2), *v2_ay = malloc(PACKET_TOTAL_SIZE_V2);
+    size_t l2_ab = 0, l2_ay = 0;
+    uint8_t e1[FP_BIN_SIZE], e2[FP_BIN_SIZE], b_bin[FP_BIN_SIZE];
+    int ok = v2_ab && v2_ay && bins &&
+        salt_agreement_build_packet(A->fp, B->fp, s_ab, A->kyber_pk, B->kyber_pk,
+                                    A->mlkem_pk, B->mlkem_pk, A->id.sk.bytes,
+                                    v2_ab, &l2_ab) == 0 &&
+        salt_agreement_build_packet(A->fp, y.fp, s_ay, A->kyber_pk, y.kyber_pk,
+                                    A->mlkem_pk, y.mlkem_pk, A->id.sk.bytes,
+                                    v2_ay, &l2_ay) == 0 &&
+        l2_ab == PACKET_TOTAL_SIZE_V2 &&
+        salt_agreement_packet_entry_fps(v2_ab, l2_ab, e1, e2) == 0 &&
+        salt_agreement_fp_hex_to_bin(B->fp, b_bin) == 0 &&
+        ((memcmp(e1, a_bin, FP_BIN_SIZE) == 0 && memcmp(e2, b_bin, FP_BIN_SIZE) == 0) ||
+         (memcmp(e1, b_bin, FP_BIN_SIZE) == 0 && memcmp(e2, a_bin, FP_BIN_SIZE) == 0)) &&
+        nc_salt_packet_check(A, &pb, v2_ab, l2_ab, got) == NC_SALT_PKT_OK &&
+        memcmp(got, s_ab, NC_SALT_LEN) == 0 &&
+        nc_salt_packet_check(A, &pb, v2_ay, l2_ay, got) == NC_SALT_PKT_WRONG_PAIR;
+    CHECK(ok, "S10 v2 packets: entry fps = {A,B}; (A,B) accepted, (A,Y) wrong_pair");
+    CHECK(salt_agreement_packet_entry_fps(v2_ab, PACKET_DATA_SIZE_V2 - 1, e1, e2) != 0,
+          "S11 entry fps refuse a packet shorter than its version's data part");
+    free(v2_ab);
+    free(v2_ay);
 }
 
 static void test_contactlist_blob(void) {
@@ -360,6 +450,7 @@ int main(void) {
     test_requests();
     test_outbox();
     test_salt_packet();
+    test_salt_pair();
     test_contactlist_blob();
     test_ack_value();
     nc_keys_wipe(A); nc_keys_wipe(B); nodus_identity_clear(C);

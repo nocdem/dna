@@ -1135,6 +1135,20 @@ here is loaded by the wallet; the Messages UI and the shared module are NC-4.
   signature, wrong owner, undecodable → no PUT) including the contact-list
   and salt write gates.
 
+RT1 fixes (unreleased). Profiles (own and a contact's) are read with get-all
+filtered to the profile's owner, not with a single GET: a node's single GET
+returns the newest row of ANY writer unless an EXCLUSIVE row exists, so a
+stranger's newer row at `<fp>:profile` used to hide the real profile and the
+web waited forever. The owner's row is chosen (EXCLUSIVE first, then newest);
+rows of other writers are never used and are counted (`foreign` in
+`nc_profile_get` / `nc_profile_update`) so the page can say someone is
+interfering; a stranger's row alone is still "unreadable" (no write), and an
+item that does not decode next to the owner's row makes the read
+"unreadable" too. Salt packets are bound to the pair: a packet is used only
+if its two entries are exactly this identity and the contact
+(`nc_salt_packet_check`); a packet this identity signed for someone else and
+replayed at this pair's key is dropped and counted (`wrong_pair`).
+
 Not in NC-2/NC-1b: removing a contact from the list (add is merge-only);
 at-rest storage (Q4, NC-4). The json-c version of the frozen app build is not
 established (host 0.16, wasm 0.17); the profile signature is over json-c's

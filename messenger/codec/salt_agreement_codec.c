@@ -163,6 +163,38 @@ int salt_agreement_packet_verify_signature(
     return -1;  /* Neither party signed this */
 }
 
+/**
+ * The two entry fingerprints, in packet order (web thin core, pair
+ * binding). Offsets as in salt_agreement_packet_decrypt_salt.
+ * Returns 0, or -1 for a short packet or an unsupported version.
+ */
+int salt_agreement_packet_entry_fps(
+    const uint8_t *data,
+    size_t data_len,
+    uint8_t fp1_out[FP_BIN_SIZE],
+    uint8_t fp2_out[FP_BIN_SIZE]
+) {
+    if (!data || !fp1_out || !fp2_out || data_len < PACKET_VERSION_SIZE) return -1;
+
+    uint16_t version;
+    memcpy(&version, data, 2);
+    version = ntohs(version);
+
+    size_t entry_size;
+    if (version == SALT_AGREEMENT_VERSION) {
+        entry_size = PACKET_ENTRY_SIZE;
+    } else if (version == SALT_AGREEMENT_VERSION_V2) {
+        entry_size = PACKET_ENTRY_SIZE_V2;
+    } else {
+        return -1;  /* unsupported version */
+    }
+    if (data_len < salt_agreement_packet_data_size_for_version(version)) return -1;
+
+    memcpy(fp1_out, data + PACKET_VERSION_SIZE, FP_BIN_SIZE);
+    memcpy(fp2_out, data + PACKET_VERSION_SIZE + entry_size, FP_BIN_SIZE);
+    return 0;
+}
+
 /* ============================================================================
  * KEY DERIVATION
  * ============================================================================ */

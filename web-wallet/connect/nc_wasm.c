@@ -379,6 +379,8 @@ int nc_profile_get(const char *fp) {
     nc_profile_read(&g_ctx, fp, &raw, &id, &peer);
     json_object *o = json_object_new_object();
     add_read(o, raw.outcome, raw.why);
+    /* rows of another owner at the profile key: someone is interfering */
+    json_object_object_add(o, "foreign", jstr_u64(raw.foreign));
     if (raw.outcome == NC_FOUND && id) {
         json_object_object_add(o, "profile", profile_json(id));
         if (strcmp(fp, g_keys.fp) != 0) peer_store(&peer);
@@ -399,6 +401,7 @@ int nc_profile_update(const char *patch_json) {
     json_object_object_add(o, "status", json_object_new_string(ST[r.status]));
     json_object *rd = json_object_new_object();
     add_read(rd, r.read.outcome, r.read.why);
+    json_object_object_add(rd, "foreign", jstr_u64(r.read.foreign));
     json_object_object_add(o, "read", rd);
     json_object_object_add(o, "created", json_object_new_boolean(r.created));
     json_object_object_add(o, "put_rc", json_object_new_int(r.put_rc));
@@ -500,6 +503,7 @@ int nc_salt_get(const char *fp) {
     json_object_object_add(o, "found", json_object_new_boolean(r.found));
     json_object_object_add(o, "salt", r.found ? jhex(r.salt, NC_SALT_LEN) : NULL);
     json_object_object_add(o, "authenticated", jstr_u64(r.authenticated));
+    json_object_object_add(o, "wrong_pair", jstr_u64(r.wrong_pair));
     nc_salt_read_clear(&r);
     return nc_end(set_result(o));
 }
@@ -543,6 +547,7 @@ int nc_salt_reconcile(const char *fp, const char *local_hex) {
     json_object *o = json_object_new_object();
     json_object_object_add(o, "status", json_object_new_string(ST[s.status]));
     add_read(o, s.read.read.outcome, s.read.read.why);
+    json_object_object_add(o, "wrong_pair", jstr_u64(s.read.wrong_pair));
     json_object_object_add(o, "choice", json_object_new_string(CH[s.choice]));
     json_object_object_add(o, "salt", (s.status == NC_SALT_SYNC_WAIT || s.choice == NC_SALT_NONE)
                                           ? NULL : jhex(s.chosen, NC_SALT_LEN));

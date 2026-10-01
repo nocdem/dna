@@ -77,6 +77,22 @@ int salt_agreement_packet_verify_signature(
 );
 
 /**
+ * The two entry fingerprints of a packet (v1 or v2), in packet order: the
+ * 64 bytes at the start of entry 1 and of entry 2, at the same offsets
+ * salt_agreement_packet_decrypt_salt reads. Pure; no signature check (the
+ * caller verifies the signature over the data part first). Added for the
+ * web thin core's pair binding (a packet is accepted only for the pair it
+ * names); no existing function changed. 0, or -1 for a short packet or an
+ * unsupported version.
+ */
+int salt_agreement_packet_entry_fps(
+    const uint8_t *data,
+    size_t data_len,
+    uint8_t fp1_out[FP_BIN_SIZE],
+    uint8_t fp2_out[FP_BIN_SIZE]
+);
+
+/**
  * Build the signed salt-agreement packet (NC-1b, moved out of
  * salt_agreement_publish_internal): version (BE), then the lower and the
  * higher fingerprint (strcmp order) each followed by [alg byte, v2 only] and

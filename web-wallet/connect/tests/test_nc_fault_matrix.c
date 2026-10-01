@@ -25,6 +25,19 @@
  *   W4  FOUND: one EXCLUSIVE PUT; the record keeps the fields it did not
  *       edit (bio from the node), version = node version + 1
  *   W5  the PUT answered NODUS_ERR_KEY_OWNED -> status "taken" (terminal)
+ *   (F1..F6 and W1..W5 read the profile with get_all since the shadowing
+ *   fix: the fake answers get_all with "vals", a single GET with "val".)
+ *   P1  profile shadowing: a stranger's PERMANENT row with seq 2^40 next
+ *       to the owner's PERMANENT seq-1 row (the node's single GET would
+ *       return the stranger's) -> FOUND with the OWNER's record, foreign 1
+ *   P2  the stranger's row alone -> UNREADABLE(wrong_owner), foreign 1 —
+ *       never FOUND. Chosen over EMPTY because design rev 5 §1.4 R0 maps
+ *       "a value whose owner_fp is not the expected writer" to UNREADABLE
+ *   P3  ... and the write gate waits with zero PUTs even for a fresh identity
+ *   P4  shadow + update: the base is the owner's record (version 5 -> 6,
+ *       unedited bio kept), one EXCLUSIVE PUT, foreign 1 reported
+ *   P5  owner row + an item that does not decode -> UNREADABLE(undecodable)
+ *   P6  ... and zero PUTs (the item may be the owner's newer row)
  *   Q1  get_all of the request inbox whose only item does not decode ->
  *       UNREADABLE, never EMPTY
  *   L1  contact-list add after timeout / bad signature / undecodable: wait,
@@ -60,6 +73,11 @@
  *   - "Zero PUTs" is counted at the fake: a PUT the client failed to send
  *     would also count zero — W3/W4, L3/L4 and S4 show the same code paths
  *     do send.
+ *   - P1-P6: the fake decides what get_all returns and in which order (it
+ *     sends seq DESC as nodus_storage.c GET_ALL_SQL does); they prove the
+ *     client-side choice, not that a real node keeps both rows. A real
+ *     node's get_all is also never complete (design §6.4 F5): the owner's
+ *     row can be missing from a real answer, which reads as P2.
  *   - L3/L4 read the PUT back with the same C that wrote it: they prove the
  *     core agrees with the codecs it compiles, not that the frozen app reads
  *     the list (NC-3's job against real app records).
@@ -95,7 +113,10 @@ static const char *WORDS =
 typedef enum {
     M_TIMEOUT = 0, M_EMPTY, M_GOOD, M_BAD_SIG, M_WRONG_OWNER, M_UNDECODABLE,
     M_VALS_JUNK,
-    M_PAYLOAD      /* g_fake.serve as an own EXCLUSIVE value ("val") */
+    M_PAYLOAD,         /* g_fake.serve as an own EXCLUSIVE value            */
+    M_SHADOW,          /* get_all: stranger PERMANENT high seq + owner row  */
+    M_FOREIGN_ONLY,    /* get_all: the stranger's row alone                 */
+    M_OWNER_PLUS_JUNK  /* get_all: owner row + an item that does not decode */
 } mode_t_;
 
 typedef struct {
@@ -151,26 +172,15 @@ static char *profile_json(void) {
     return json;
 }
 
-static int value_bytes(const nodus_key_t *key, const nodus_identity_t *owner,
-                       int corrupt, uint8_t **out, size_t *out_len) {
-    char *json = NULL;
-    const uint8_t *data;
-    size_t data_len;
-    if (atomic_load(&g_fake.mode) == M_PAYLOAD) {
-        data = g_fake.serve;
-        data_len = g_fake.serve_len;
-    } else {
-        json = profile_json();
-        if (!json) return -1;
-        data = (const uint8_t *)json;
-        data_len = strlen(json);
-    }
+/* One signed, serialised DHT value of `owner` at `key`. */
+static int sign_value(const nodus_key_t *key, const nodus_identity_t *owner,
+                      const uint8_t *data, size_t data_len,
+                      nodus_value_type_t type, uint64_t seq, int corrupt,
+                      uint8_t **out, size_t *out_len) {
     nodus_value_t *v = NULL;
-    int rc = nodus_value_create(key, data, data_len,
-                                NODUS_VALUE_EXCLUSIVE, 0,
-                                nodus_identity_value_id(owner), 1,
+    int rc = nodus_value_create(key, data, data_len, type, 0,
+                                nodus_identity_value_id(owner), seq,
                                 &owner->pk, &v);
-    free(json);
     if (rc != 0 || nodus_value_sign(v, &owner->sk) != 0) {
         nodus_value_free(v);
         return -1;
@@ -181,16 +191,58 @@ static int value_bytes(const nodus_key_t *key, const nodus_identity_t *owner,
     return rc;
 }
 
+/* The mode's value: the served payload (M_PAYLOAD) or the good own
+ * profile, EXCLUSIVE, seq 1. */
+static int value_bytes(const nodus_key_t *key, const nodus_identity_t *owner,
+                       int corrupt, uint8_t **out, size_t *out_len) {
+    if (atomic_load(&g_fake.mode) == M_PAYLOAD)
+        return sign_value(key, owner, g_fake.serve, g_fake.serve_len,
+                          NODUS_VALUE_EXCLUSIVE, 1, corrupt, out, out_len);
+    char *json = profile_json();
+    if (!json) return -1;
+    int rc = sign_value(key, owner, (const uint8_t *)json, strlen(json),
+                        NODUS_VALUE_EXCLUSIVE, 1, corrupt, out, out_len);
+    free(json);
+    return rc;
+}
+
+/* F1 shape: a stranger's PERMANENT row at the profile key with a seq far
+ * above the owner's. In M_SHADOW the owner's row is PERMANENT too (what
+ * the frozen app's update leaves), so no row is EXCLUSIVE and the node's
+ * single GET (nodus_storage.c GET_SQL :43-46, seq DESC) would return the
+ * stranger's row. Its data is not a profile: if the core ever chose it,
+ * the record checks would fail and the read would not be FOUND. */
+#define SHADOW_SEQ (1ULL << 40)
+static const char SHADOW_DATA[] = "{\"shadow\":1}";
+
+static int stranger_row(const nodus_key_t *key, uint8_t **out, size_t *out_len) {
+    return sign_value(key, g_stranger, (const uint8_t *)SHADOW_DATA,
+                      sizeof(SHADOW_DATA) - 1, NODUS_VALUE_PERMANENT,
+                      SHADOW_SEQ, 0, out, out_len);
+}
+
+/* The owner's good profile as the frozen app leaves it after an update:
+ * PERMANENT (keyserver_profiles.c:199-201), seq 1. */
+static int owner_row_permanent(const nodus_key_t *key, uint8_t **out,
+                               size_t *out_len) {
+    char *json = profile_json();
+    if (!json) return -1;
+    int rc = sign_value(key, &g_keys->id, (const uint8_t *)json, strlen(json),
+                        NODUS_VALUE_PERMANENT, 1, 0, out, out_len);
+    free(json);
+    return rc;
+}
+
 static void send_get_reply(nodus_tcp_conn_t *conn, uint32_t txn,
-                           const nodus_key_t *key) {
+                           const nodus_key_t *key, bool all) {
     int mode = atomic_load(&g_fake.mode);
     if (mode == M_TIMEOUT) return;
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, g_fake.buf, FAKE_BUF);
     resp_header(&enc, txn);
     cbor_encode_cstr(&enc, "r");
-    uint8_t *vb = NULL;
-    size_t vl = 0;
+    uint8_t *vb = NULL, *vb2 = NULL;
+    size_t vl = 0, vl2 = 0;
     static const uint8_t junk[3] = { 1, 2, 3 };
     switch (mode) {
     case M_EMPTY:
@@ -203,13 +255,16 @@ static void send_get_reply(nodus_tcp_conn_t *conn, uint32_t txn,
         if (value_bytes(key, mode == M_WRONG_OWNER ? g_stranger : &g_keys->id,
                         mode == M_BAD_SIG, &vb, &vl) != 0) return;
         cbor_encode_map(&enc, 1);
-        cbor_encode_cstr(&enc, "val");
+        /* get_all answers "vals" (client_get_all_impl reads only that) */
+        cbor_encode_cstr(&enc, all ? "vals" : "val");
+        if (all) cbor_encode_array(&enc, 1);
         cbor_encode_bstr(&enc, vb, vl);
         free(vb);
         break;
     case M_UNDECODABLE:
         cbor_encode_map(&enc, 1);
-        cbor_encode_cstr(&enc, "val");
+        cbor_encode_cstr(&enc, all ? "vals" : "val");
+        if (all) cbor_encode_array(&enc, 1);
         cbor_encode_bstr(&enc, junk, sizeof(junk));
         break;
     case M_VALS_JUNK:
@@ -217,6 +272,24 @@ static void send_get_reply(nodus_tcp_conn_t *conn, uint32_t txn,
         cbor_encode_cstr(&enc, "vals");
         cbor_encode_array(&enc, 1);
         cbor_encode_bstr(&enc, junk, sizeof(junk));
+        break;
+    case M_SHADOW:          /* get_all only: [stranger, owner] (seq DESC) */
+    case M_FOREIGN_ONLY:    /* get_all only: [stranger]                   */
+    case M_OWNER_PLUS_JUNK: /* get_all only: [owner, junk]                */
+        if (!all) return;
+        if (mode != M_OWNER_PLUS_JUNK && stranger_row(key, &vb, &vl) != 0) return;
+        if (mode != M_FOREIGN_ONLY && owner_row_permanent(key, &vb2, &vl2) != 0) {
+            free(vb);
+            return;
+        }
+        cbor_encode_map(&enc, 1);
+        cbor_encode_cstr(&enc, "vals");
+        cbor_encode_array(&enc, mode == M_FOREIGN_ONLY ? 1 : 2);
+        if (vb) cbor_encode_bstr(&enc, vb, vl);
+        if (vb2) cbor_encode_bstr(&enc, vb2, vl2);
+        if (mode == M_OWNER_PLUS_JUNK) cbor_encode_bstr(&enc, junk, sizeof(junk));
+        free(vb);
+        free(vb2);
         break;
     default:
         return;
@@ -243,7 +316,8 @@ static void on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         if (nodus_t2_auth_ok(msg.txn_id, token, g_fake.buf, FAKE_BUF, &out) == 0)
             nodus_tcp_send(conn, g_fake.buf, out);
     } else if (strcmp(msg.method, "get") == 0 || strcmp(msg.method, "get_all") == 0) {
-        send_get_reply(conn, msg.txn_id, &msg.key);
+        send_get_reply(conn, msg.txn_id, &msg.key,
+                       strcmp(msg.method, "get_all") == 0);
     } else if (strcmp(msg.method, "put") == 0) {
         atomic_fetch_add(&g_fake.puts, 1);
         pthread_mutex_lock(&g_fake.mu);
@@ -341,6 +415,61 @@ static int put_record_ok(const char *bio, uint32_t version) {
     }
     dna_identity_free(id);
     return ok;
+}
+
+/* ── R1 shadowing (get-all filtered to the owner) ─────────────────────── */
+
+static void test_profile_shadow(nc_ctx_t *ctx) {
+    /* P1: stranger's high-seq PERMANENT row + the owner's row -> the
+     * owner's record, foreign counted. */
+    atomic_store(&g_fake.mode, M_SHADOW);
+    nodus_key_t own;
+    nc_fp_parse(g_keys->fp, &own);
+    nc_read_t raw;
+    dna_unified_identity_t *id = NULL;
+    nc_profile_read(ctx, g_keys->fp, &raw, &id, NULL);
+    CHECK(raw.outcome == NC_FOUND && raw.foreign == 1 && id &&
+          strcmp(id->bio, "from-dht") == 0 && id->version == 5 && raw.value &&
+          memcmp(raw.value->owner_fp.bytes, own.bytes, NODUS_KEY_BYTES) == 0 &&
+          raw.value->seq == 1,
+          "P1 shadow: stranger row seq 2^40 + owner row -> FOUND, owner's record, foreign 1");
+    dna_identity_free(id);
+    nc_read_clear(&raw);
+
+    /* P2: the stranger's row alone -> not FOUND. R0 (design rev 5 §1.4 R0,
+     * nc_classify_all) maps a value of another writer to UNREADABLE; the
+     * write gate then waits, even for a fresh identity. */
+    atomic_store(&g_fake.mode, M_FOREIGN_ONLY);
+    id = NULL;
+    nc_profile_read(ctx, g_keys->fp, &raw, &id, NULL);
+    CHECK(raw.outcome == NC_UNREADABLE && raw.why == NC_WHY_WRONG_OWNER &&
+          raw.foreign == 1 && !id && !raw.value,
+          "P2 foreign row alone -> UNREADABLE(wrong_owner), foreign 1, never FOUND");
+    dna_identity_free(id);
+    nc_read_clear(&raw);
+    write_gate_case(ctx, M_FOREIGN_ONLY, true,
+                    "P3 foreign row alone, fresh identity: wait, zero PUTs");
+
+    /* P4: shadow + an update: the base is the owner's record (bio kept,
+     * version 5 + 1), one EXCLUSIVE PUT; foreign reported. */
+    atomic_store(&g_fake.mode, M_SHADOW);
+    atomic_store(&g_fake.puts, 0);
+    atomic_store(&g_fake.put_reply, 0);
+    ctx->fresh = false;
+    nc_profile_result_t r;
+    int rc = nc_profile_publish(ctx, "{\"location\":\"Ankara\"}", &r);
+    CHECK(rc == NC_OK && r.status == NC_PROFILE_PUBLISHED && !r.created &&
+          r.read.foreign == 1 && r.version == 6 && atomic_load(&g_fake.puts) == 1 &&
+          put_record_ok("from-dht", 6),
+          "P4 shadow + update: base = owner's record, one EXCLUSIVE PUT, foreign 1");
+
+    /* P5: the owner's row + an item that does not decode -> UNREADABLE
+     * (the item may be the owner's newer row), zero PUTs. */
+    read_case(ctx, M_OWNER_PLUS_JUNK, NC_UNREADABLE, NC_WHY_UNDECODABLE,
+              "P5 owner row + undecodable item -> UNREADABLE(undecodable)");
+    write_gate_case(ctx, M_OWNER_PLUS_JUNK, true,
+                    "P6 owner row + undecodable item: wait, zero PUTs");
+    ctx->fresh = false;
 }
 
 /* ── R4 / R3 gated writes ─────────────────────────────────────────────── */
@@ -597,6 +726,7 @@ int main(void) {
               "W5 KEY_OWNED -> taken (one attempt, no retry)");
         atomic_store(&g_fake.put_reply, 0);
     }
+    test_profile_shadow(&ctx);
     {
         atomic_store(&g_fake.mode, M_VALS_JUNK);
         nc_requests_t rq;

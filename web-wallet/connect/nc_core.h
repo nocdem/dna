@@ -140,6 +140,10 @@ typedef struct {
     nc_why_t       why;
     int            node_rc;     /* the client's return code, kept for logs   */
     nodus_value_t *value;       /* FOUND only; freed by nc_read_clear        */
+    size_t         foreign;     /* nc_profile_read only (get-all): verified
+                                 * values of ANOTHER owner at the key — never
+                                 * used, reported so the UI can say someone
+                                 * is interfering. 0 for every other read.   */
 } nc_read_t;
 
 void nc_read_clear(nc_read_t *r);
@@ -226,8 +230,26 @@ typedef struct {
 /* ── R1: profile (Anchor record "<fp>:profile") ────────────────────── */
 
 /**
- * Read and verify a profile: R0 with owner = fp, then the frozen app's
- * record checks (keyserver_lookup.c:95-150): dna_identity_from_json,
+ * Read and verify a profile (own AND peer): R0 as a GET_ALL filtered to
+ * owner = fp (nc_read_all, owners = [fp]) — NOT a single GET. The node's
+ * single GET returns the highest-seq row of ANY owner unless an EXCLUSIVE
+ * row exists (nodus_storage.c GET_SQL :43-46), so a stranger's newer
+ * PERMANENT row at "<fp>:profile" would shadow the owner's record; get-all
+ * returns every owner's row (atlas-dec-f6c5aca3: multi-writer locations are
+ * read with get-all).
+ *   >= 1 verified row of the owner, and no item that was undecodable /
+ *     failed its signature / was signed for another key -> the owner's row
+ *     chosen as the node's single GET orders (EXCLUSIVE first, then highest
+ *     seq; tie: lowest value_id) -> the record checks below -> FOUND;
+ *   an owner row plus an undecodable / bad-signature / wrong-key item ->
+ *     UNREADABLE with that why (such an item cannot come from honest
+ *     storage, its owner cannot be attributed, and it may be the owner's
+ *     newest row — an older base would roll the version back);
+ *   only rows of other owners -> UNREADABLE(WRONG_OWNER), as R0 maps a
+ *     value of another writer (design rev 5 §1.4 R0);
+ *   no item at all -> EMPTY; error -> UNREADABLE.
+ * raw->foreign = verified rows of other owners, on every outcome.
+ * Record checks (keyserver_lookup.c:95-150): dna_identity_from_json,
  * ML-DSA-87 signature over dna_identity_to_json_unsigned, and
  * SHA3-512(dilithium_pubkey) == fp. A value that passes R0 but fails a
  * record check is UNREADABLE(BAD_RECORD). On FOUND *identity_out is the
@@ -349,16 +371,44 @@ typedef struct {
     nc_read_all_t read;          /* counters; values freed                  */
     bool          found;         /* >= 1 authenticated, decryptable salt    */
     uint8_t       salt[NC_SALT_LEN];
-    size_t        authenticated; /* packets whose signature verified        */
+    size_t        authenticated; /* packets whose signature verified AND whose
+                                  * two entries are exactly {me, peer}      */
+    size_t        wrong_pair;    /* dropped: signature verified, but the
+                                  * packet names another pair (a packet
+                                  * signed for (me, Y) replayed at the
+                                  * (me, peer) key)                         */
 } nc_salt_read_t;
+
+typedef enum {
+    NC_SALT_PKT_OK         = 0,  /* salt_out holds this party's salt        */
+    NC_SALT_PKT_BAD_SIZE   = 1,  /* unknown version / shorter than it says  */
+    NC_SALT_PKT_BAD_SIG    = 2,  /* signed by neither party                 */
+    NC_SALT_PKT_WRONG_PAIR = 3,  /* entries are not exactly {me, peer}      */
+    NC_SALT_PKT_NO_ENTRY   = 4   /* this party's entry did not unwrap       */
+} nc_salt_pkt_t;
+
+/**
+ * One salt packet, checked in this order (PURE, no I/O): version peek ->
+ * salt_agreement_packet_data_size_for_version; signature under either
+ * party's ML-DSA-87 key (salt_agreement_packet_verify_signature); the two
+ * entry fingerprints (salt_agreement_packet_entry_fps) equal {me, peer} as
+ * a set — any order, the native reader never required one; then this
+ * party's entry unwraps (salt_agreement_packet_decrypt_salt). The pair
+ * check is the web's addition: the native reader accepts any packet signed
+ * by either party whose own entry decrypts, so a peer could republish a
+ * packet this identity signed for someone else and pin the salt of that
+ * other conversation onto this one.
+ */
+nc_salt_pkt_t nc_salt_packet_check(const nc_keys_t *keys, const nc_peer_t *peer,
+                                   const uint8_t *data, size_t data_len,
+                                   uint8_t salt_out[NC_SALT_LEN]);
 
 /**
  * get_all on SHA3-512(salt_agreement_make_key(me, peer)) (string hashed —
- * nodus_ops_get_all_str), DHT signature + owner in {me, peer}, then the
- * native parse and choice (dht_salt_agreement.c salt_agreement_fetch_internal
- * :217-349): version peek -> salt_agreement_packet_data_size_for_version,
- * salt_agreement_packet_verify_signature (either party), packet_decrypt_salt,
- * at most 16 salts, identical salts collapse, else the lowest SHA3-512 wins.
+ * nodus_ops_get_all_str), DHT signature + owner in {me, peer}, then per
+ * value nc_salt_packet_check and the native choice (dht_salt_agreement.c
+ * salt_agreement_fetch_internal :217-349): at most 16 salts, identical salts
+ * collapse, else the lowest SHA3-512 wins.
  * `found` false is NOT "no agreement exists" (F5) — no publish follows.
  */
 int nc_salt_read(const nc_ctx_t *ctx, const nc_peer_t *peer,
