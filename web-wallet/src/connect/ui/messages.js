@@ -285,6 +285,13 @@ async function sync() {
       if (gen !== generation) return;
       await syncContact(contact, gen);
     }
+    // Names for the request screens: the profiles of the people we asked
+    // and of those asking us (read once per session — ensureProfile caches;
+    // a name shows only after nc_name_verify proved it).
+    for (const fp of new Set([...state.outgoing.map(o => o.fp), ...requests.map(r => r.sender)])) {
+      if (gen !== generation) return;
+      await ensureProfile(fp);
+    }
     if (gen === generation) { ui.sync.textContent = `Last checked ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. New messages are checked every 30 seconds.`; render(); }
   } catch (error) {
     if (gen === generation) ui.sync.textContent = explain(error, 'The network could not be reached. Checking again automatically.');
@@ -864,8 +871,9 @@ function renderRequests() {
   ui.requestList.replaceChildren(...(requests.length ? requests.map(request => el('li', { className: 'request-row' },
     avatar(request.sender),
     el('div', { className: 'request-main' },
-      el('span', { className: 'contact-name' }, el('span', { className: 'request-label', text: 'Not a contact' }), el('strong', { text: shortId(request.sender) })),
-      request.claimed_name ? el('span', { className: 'contact-claim' }, 'says their name is ', untrusted(request.claimed_name, undefined, { name: true })) : null,
+      el('span', { className: 'contact-name' }, el('span', { className: 'request-label', text: 'Not a contact' }), el('strong', { text: displayName(request.sender) })),
+      verifiedName(request.sender) ? el('span', { className: 'contact-claim' }, shortId(request.sender))
+        : request.claimed_name ? el('span', { className: 'contact-claim' }, 'says their name is ', untrusted(request.claimed_name, undefined, { name: true })) : null,
       request.message ? el('p', { className: 'request-note' }, untrusted(request.message)) : null,
       el('div', { className: 'request-actions' }, button('Accept', () => void accept(request), 'small'), button('Decline', () => void decline(request), 'secondary small')))
   )) : [el('li', { className: 'contact-empty', text: 'No new requests.' })]));
