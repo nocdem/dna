@@ -65,10 +65,18 @@ const others = new Map();                // fp -> authentic items that are not t
 const lastRead = new Map();              // fp -> highest local seq shown to the user (this session only)
 
 // ── view state ─────────────────────────────────────────────────────────
+// The screens follow the DNA Connect app (messenger/dna_messenger_flutter):
+// 'list' = Chats (screens/messages/messages_screen.dart), 'conversation' =
+// the chat opened on its own (screens/chat/chat_screen.dart), 'contacts' =
+// the contacts hub with its Contacts / Requests tabs
+// (screens/contacts/contacts_hub_screen.dart), 'profile' = your ID and
+// profile. Add contact is a dialog (screens/contacts/add_contact_dialog.dart).
 let ui, host = {};
 let phase = 'waiting';                   // 'waiting' | 'opening' | 'open' | 'closed'
-let pane = 'empty';                      // right side: 'empty' | 'conversation' | 'add' | 'requests' | 'profile'
-let narrow = 'list';                     // ≤ 700 px: 'list' (contacts) or 'main' (the right side)
+let screen = 'list';                     // 'list' | 'conversation' | 'contacts' | 'profile'
+let hubTab = 'contacts';                 // the contacts screen's tab: 'contacts' | 'requests'
+let filter = 'all';                      // the Chats filter chip: 'all' | 'unread' | 'chats'
+let notifiedScreen, notifiedId;          // last values handed to host.onScreen / host.onIdentity
 
 function isOpen() { return !!core && !!state && phase === 'open'; }
 
@@ -90,9 +98,10 @@ function wipe() {
   ui.composer.rows = 1; ui.counter.textContent = '';
   for (const line of [ui.addStatus, ui.sendStatus, ui.profileStatus, ui.copyStatus, ui.emptyCopyStatus, ui.requestsStatus, ui.sync, ui.ownId, ui.profileName]) line.textContent = '';
   ui.messageList.replaceChildren(); ui.requestList.replaceChildren(); ui.outgoingList.replaceChildren();
-  ui.contactList.replaceChildren(); ui.convTitle.textContent = ''; ui.convClaim.replaceChildren(); ui.convNote.textContent = '';
+  ui.contactList.replaceChildren(); ui.hubList.replaceChildren(); ui.convTitle.textContent = ''; ui.convClaim.replaceChildren(); ui.convNote.textContent = '';
   ui.erase.textContent = 'Delete message history on this device';
-  pane = 'empty'; narrow = 'list';
+  if (ui.addDialog.open) ui.addDialog.close();
+  screen = 'list'; hubTab = 'contacts'; filter = 'all';
 }
 
 // Messages is closed with a reason (an error, the connection, a deleted
@@ -191,7 +200,7 @@ async function finishOpen(gen) {
   ui.erase.hidden = !store.persistent;
   fillProfile();
   phase = 'open';
-  pane = 'empty';
+  screen = 'list';
   render();
   clearInterval(syncTimer);
   syncTimer = setInterval(() => { void sync(); }, SYNC_MS);
@@ -437,16 +446,51 @@ function claimedNameHint(fp, prefix = 'claims the name ') {
   return name ? el('span', { className: 'contact-claim' }, prefix, untrusted(name, undefined, { name: true })) : null;
 }
 
-function backButton() {
-  const node = button('← Contacts', () => { narrow = 'list'; renderLayout(); ui.sidebar.querySelector('.contact-row[aria-current="true"], .contact-row')?.focus(); }, 'secondary small messenger-back');
-  node.setAttribute('aria-label', 'Back to contacts');
+// Line icons (stroke only, styled by messenger.css .nc-icon), built with
+// createElementNS: no markup is parsed.
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const ICONS = {
+  back: ['M15 5l-7 7 7 7'],
+  chevron: ['M9 6l6 6-6 6'],
+  send: ['M4 12L20 4l-5 16-3-7z', 'M12 13l8-9'],
+  userPlus: ['M3 19c0-3 2.5-5 6-5s6 2 6 5', 'M9 11a3.5 3.5 0 1 0 0-7a3.5 3.5 0 1 0 0 7z', 'M19 8v6', 'M16 11h6'],
+  requests: ['M4 8h13', 'M14 5l3 3-3 3', 'M20 16H7', 'M10 13l-3 3 3 3'],
+  id: ['M4 6h16v12H4z', 'M9 12a2 2 0 1 0 0-4a2 2 0 1 0 0 4z', 'M6 16c.5-1.5 1.5-2.2 3-2.2s2.5.7 3 2.2', 'M14 10h3', 'M14 13h3']
+};
+function icon(name) {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  for (const [attr, value] of Object.entries({ viewBox: '0 0 24 24', width: '20', height: '20', class: 'nc-icon', 'aria-hidden': 'true', focusable: 'false' })) svg.setAttribute(attr, value);
+  for (const d of ICONS[name]) { const path = document.createElementNS(SVG_NS, 'path'); path.setAttribute('d', d); svg.append(path); }
+  return svg;
+}
+function iconButton(name, label, onClick, className = '') {
+  const node = button('', onClick, `nc-icon-button ${className}`.trim());
+  node.setAttribute('aria-label', label);
+  node.title = label;
+  node.append(icon(name));
   return node;
 }
 
-function viewHead(title, ...extra) {
-  const heading = el('h4', { text: title });
+// A screen's top bar (design_system/navigation/dna_app_bar.dart): an
+// optional back arrow, the title, actions on the right.
+function appBar(title, { back = false, actions = [] } = {}) {
+  const heading = el('h2', { className: 'nc-bar-title', text: title });
   heading.tabIndex = -1;
-  return { heading, head: el('div', { className: 'messenger-view-head' }, backButton(), heading, ...extra) };
+  const bar = el('div', { className: 'nc-bar' }, back ? backButton() : null, heading, actions.length ? el('div', { className: 'nc-bar-actions' }, ...actions) : null);
+  return { bar, heading };
+}
+
+function backButton() { return iconButton('back', 'Back', goBack, 'nc-back'); }
+
+// Back from a screen opened on its own: Messages returns to Chats; the host
+// (the Nodus Connect app) may then show the tab the screen was opened from.
+function goBack() {
+  const from = screen, fp = selectedFp;
+  const handled = host.onBack?.(from);
+  show('list');
+  if (handled) return;
+  const row = fp && [...ui.contactList.querySelectorAll('.contact-row')].find(node => node.dataset.fp === fp);
+  (row || ui.listHeading).focus({ preventScroll: true });
 }
 
 const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
@@ -468,12 +512,19 @@ async function copyOwnId(statusNode) {
 }
 
 // ── view: the one-time DOM ─────────────────────────────────────────────
-// root: an empty element of the host page. host.onUnread(n): optional, the
-// total of unread messages (e.g. for a navigation badge).
+// root: an empty element of the host page. Every host callback is optional:
+//   onUnread(n)      the total of unread messages (a navigation badge);
+//   onRequests(n)    contact requests waiting for an answer;
+//   onIdentity(fp)   the own ID while Messages is open, else null;
+//   onScreen(name)   the screen shown changed ('list', 'conversation',
+//                    'contacts', 'profile');
+//   onBack(from)     Back was pressed on a screen opened on its own (called
+//                    before Messages returns to Chats); a truthy return
+//                    means the host moved the user elsewhere (focus is its).
 export function mountMessages(root, options = {}) {
   host = options;
   const u = {};
-  u.stateTitle = el('h4', { text: 'Messages' });
+  u.stateTitle = el('h3', { text: 'Messages' });
   u.stateText = statusLine('hint');
   u.retry = button('Try again', () => {
     if (!core || !ownFp) return;
@@ -483,72 +534,107 @@ export function mountMessages(root, options = {}) {
   u.stateView = el('div', { className: 'messenger-view messenger-state' }, el('span', { className: 'messenger-state-mark' }), u.stateTitle, u.stateText, u.retry);
   u.stateView.querySelector('.messenger-state-mark').setAttribute('aria-hidden', 'true');
 
-  // Sidebar: actions, the requests entry, the contact list.
-  u.addButton = button('＋ Add contact', () => showPane('add'), 'small');
-  u.profileButton = button('Your ID & profile', () => showPane('profile'), 'secondary small');
-  u.requestCount = el('span', { className: 'count-badge' });
-  u.requestsButton = button('', () => showPane('requests'), 'contact-row requests-row');
-  const requestsIcon = el('span', { className: 'contact-avatar requests-avatar', text: '⇄' });
-  requestsIcon.setAttribute('aria-hidden', 'true');
-  u.requestsText = el('small', { text: '' });
-  u.requestsButton.append(requestsIcon, el('span', { className: 'contact-main' }, el('strong', { text: 'Contact requests' }), u.requestsText), el('span', { className: 'contact-side' }, u.requestCount));
+  // Chats (messages_screen.dart): the bar with the requests and ID actions,
+  // the filter chips, an entry while contact requests are waiting, the list,
+  // and the add-contact button (contacts_screen.dart's floating button).
+  u.requestCount = el('span', { className: 'count-badge nc-icon-badge' });
+  u.requestsAction = iconButton('requests', 'Contact requests', () => show('contacts', { tab: 'requests' }));
+  u.requestsAction.append(u.requestCount);
+  u.profileAction = iconButton('id', 'Your ID & profile', () => show('profile'));
+  const chats = appBar('Chats', { actions: [u.requestsAction, u.profileAction] });
+  u.listHeading = chats.heading;
+  const chip = (name, label) => {
+    const node = button('', () => { filter = name; render(); }, 'nc-chip');
+    node.dataset.filter = name;
+    node.append(el('span', { text: label }));
+    return node;
+  };
+  u.chipAll = chip('all', 'All'); u.chipUnread = chip('unread', 'Unread'); u.chipChats = chip('chats', 'Chats');
+  u.chipUnreadCount = el('span', { className: 'count-badge' }); u.chipUnread.append(u.chipUnreadCount);
+  u.chipChatsCount = el('span', { className: 'count-badge' }); u.chipChats.append(u.chipChatsCount);
+  u.chipRow = setAttrs(el('div', { className: 'nc-chips' }, u.chipAll, u.chipUnread, u.chipChats), { role: 'group', 'aria-label': 'Show' });
+  u.requestsBannerText = el('span', { className: 'nc-banner-text' });
+  u.requestsBanner = button('', () => show('contacts', { tab: 'requests' }), 'nc-banner');
+  u.requestsBanner.append(icon('requests'), u.requestsBannerText, icon('chevron'));
   u.contactList = setAttrs(el('ul', { className: 'contact-list' }), { 'aria-label': 'Conversations' });
-  u.sidebar = setAttrs(el('div', { className: 'messenger-sidebar' }, el('div', { className: 'messenger-actions' }, u.addButton, u.profileButton), u.requestsButton, u.contactList), { role: 'navigation', 'aria-label': 'Contacts' });
+  u.chatsBody = el('div', { className: 'nc-chats-body' }, u.chipRow, u.requestsBanner, u.contactList);
+  u.sync = el('p', { className: 'messenger-sync' });
+  u.sync.setAttribute('role', 'status');
+  u.fab = iconButton('userPlus', 'Add contact', () => openAdd(), 'nc-fab');
+  u.chats = setAttrs(el('section', { className: 'messenger-chats' }, chats.bar, u.stateView, u.chatsBody, u.sync, u.fab), { 'aria-label': 'Chats' });
 
-  // Empty pane.
-  u.emptyTitle = el('h4');
+  // Next to the list on a wide screen while no conversation is open.
+  u.emptyTitle = el('h3');
   u.emptyText = el('p', { className: 'hint' });
   u.emptyCopyStatus = statusLine();
   u.emptyActions = el('div', { className: 'messenger-empty-actions' },
-    button('＋ Add contact', () => showPane('add'), 'small'),
+    button('Add contact', () => openAdd(), 'small'),
     button('Copy your ID', () => void copyOwnId(u.emptyCopyStatus), 'secondary small'));
   u.emptyView = el('div', { className: 'messenger-view messenger-empty' }, el('span', { className: 'messenger-empty-mark', text: '✉' }), u.emptyTitle, u.emptyText, u.emptyActions, u.emptyCopyStatus);
   u.emptyView.querySelector('.messenger-empty-mark').setAttribute('aria-hidden', 'true');
 
-  // Conversation pane.
+  // Conversation (chat_screen.dart): back, the contact's mark and ID, the
+  // messages, the composer pinned at the bottom.
   u.convAvatar = el('span');
-  u.convTitle = el('h4');
+  u.convTitle = el('h2', { className: 'nc-bar-title' });
   u.convTitle.tabIndex = -1;
   u.convClaim = el('span', { className: 'contact-claim' });
-  u.convHead = el('div', { className: 'messenger-view-head conversation-head' }, backButton(), u.convAvatar, el('div', { className: 'conversation-title' }, u.convTitle, u.convClaim));
+  u.convHead = el('div', { className: 'nc-bar conversation-head' }, backButton(), u.convAvatar, el('div', { className: 'conversation-title' }, u.convTitle, u.convClaim));
   u.convNote = el('p', { className: 'notice conversation-note' });
   u.messageList = setAttrs(el('ol', { className: 'message-list' }), { 'aria-label': 'Messages', 'aria-live': 'polite' });
   u.composer = input('textarea', { id: 'nc-send-text', rows: '1', maxlength: String(TEXT_MAX), placeholder: 'Write a message', 'aria-label': 'Message', autocomplete: 'off' });
-  u.sendButton = el('button', { text: 'Send' }); u.sendButton.type = 'submit';
+  u.sendButton = el('button', { className: 'composer-send' }); u.sendButton.type = 'submit';
+  u.sendButton.setAttribute('aria-label', 'Send'); u.sendButton.title = 'Send';
+  u.sendButton.append(icon('send'));
   u.counter = el('small', { className: 'composer-counter' });
   u.sendStatus = statusLine('hint composer-status');
   u.sendForm = el('form', { className: 'composer' }, el('div', { className: 'composer-row' }, u.composer, u.sendButton), el('div', { className: 'composer-foot' }, el('small', { className: 'composer-hint', text: 'Enter to send · Shift+Enter for a new line' }), u.counter), u.sendStatus);
   u.sendForm.id = 'nc-send-form';
   u.notReady = el('p', { className: 'hint composer-closed', text: 'Messaging with this contact is not ready yet. It is checked again automatically.' });
   u.conversationView = el('div', { className: 'messenger-view messenger-conversation' }, u.convHead, u.convNote, u.messageList, u.sendForm, u.notReady);
+  u.pane = el('div', { className: 'messenger-pane' }, u.emptyView, u.conversationView);
 
-  // Add-contact pane.
-  const add = viewHead('Add a contact');
-  u.addHeading = add.heading;
+  // Add contact (add_contact_dialog.dart): a modal dialog.
+  u.addHeading = el('h2', { text: 'Add a contact' });
+  u.addHeading.id = 'nc-add-title';
   u.addId = input('input', { id: 'nc-add-id', type: 'text', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', maxlength: '256', required: '' });
   u.addNote = input('input', { id: 'nc-add-note', type: 'text', maxlength: '200', autocomplete: 'off' });
   u.addStatus = statusLine();
-  const addSubmit = el('button', { text: 'Send contact request' }); addSubmit.type = 'submit';
+  const addSubmit = el('button', { text: 'Send request' }); addSubmit.type = 'submit';
   u.addForm = el('form', { className: 'messenger-form' },
     ...field('nc-add-id', 'Their ID', u.addId),
     el('p', { className: 'hint', text: 'An ID is 128 characters, letters a–f and digits. Ask them to copy it from “Your ID & profile”.' }),
     ...field('nc-add-note', 'Note (optional, they see it with your request)', u.addNote),
-    addSubmit, u.addStatus);
+    u.addStatus,
+    el('div', { className: 'nc-dialog-actions' }, button('Close', () => u.addDialog.close(), 'secondary'), addSubmit));
   u.addForm.id = 'nc-add-form';
-  u.addView = el('div', { className: 'messenger-view messenger-scroll' }, add.head, u.addForm);
+  u.addDialog = setAttrs(el('dialog', { className: 'nc-dialog' }, u.addHeading, u.addForm), { 'aria-labelledby': 'nc-add-title' });
+  u.addDialog.id = 'nc-add-dialog';
 
-  // Requests pane.
-  const req = viewHead('Contact requests');
-  u.requestsHeading = req.heading;
+  // Contacts (contacts_hub_screen.dart): Contacts and Requests tabs.
+  const hub = appBar('Contacts', { back: true, actions: [iconButton('userPlus', 'Add contact', () => openAdd())] });
+  u.hubHeading = hub.heading;
+  const hubTabButton = (name, label) => {
+    const node = button(label, () => { hubTab = name; if (name === 'requests') ui.requestsStatus.textContent = ''; render(); }, 'nc-tab');
+    node.dataset.tab = name;
+    return node;
+  };
+  u.hubTabContacts = hubTabButton('contacts', 'Contacts');
+  u.hubTabRequests = hubTabButton('requests', 'Requests');
+  u.hubRequestCount = el('span', { className: 'count-badge' }); u.hubTabRequests.append(u.hubRequestCount);
+  u.hubTabs = setAttrs(el('div', { className: 'nc-tabs' }, u.hubTabContacts, u.hubTabRequests), { role: 'group', 'aria-label': 'Contacts sections' });
+  u.hubList = setAttrs(el('ul', { className: 'contact-list' }), { 'aria-label': 'Contacts' });
+  u.hubContacts = el('div', { className: 'nc-scroll' }, u.hubList);
   u.requestList = el('ul', { className: 'request-list' });
   u.outgoingList = el('ul', { className: 'request-list' });
   u.requestsStatus = statusLine();
-  u.requestsView = el('div', { className: 'messenger-view messenger-scroll' }, req.head,
-    el('h5', { text: 'Waiting for you' }), u.requestList,
-    el('h5', { text: 'Sent by you' }), u.outgoingList, u.requestsStatus);
+  u.hubRequests = el('div', { className: 'nc-scroll nc-padded' },
+    el('h3', { text: 'Waiting for you' }), u.requestList,
+    el('h3', { text: 'Sent by you' }), u.outgoingList, u.requestsStatus);
+  u.contactsView = setAttrs(el('section', { className: 'messenger-screen messenger-contacts' }, hub.bar, u.hubTabs, u.hubContacts, u.hubRequests), { 'aria-label': 'Contacts' });
 
-  // Profile pane.
-  const prof = viewHead('Your ID & profile');
+  // Your ID & profile.
+  const prof = appBar('Your ID & profile', { back: true });
   u.profileHeading = prof.heading;
   u.ownId = el('code', { className: 'own-id' });
   u.ownId.id = 'nc-own-id';
@@ -567,18 +653,18 @@ export function mountMessages(root, options = {}) {
   u.memoryNote.hidden = true;
   u.erase = button('Delete message history on this device', () => void erase(), 'secondary small messenger-erase');
   u.erase.hidden = true;
-  u.profileView = el('div', { className: 'messenger-view messenger-scroll' }, prof.head,
-    el('div', { className: 'own-id-box' }, el('span', { className: 'own-id-label', text: 'Your ID — share it so others can add you' }), u.ownId,
-      button('Copy your ID', () => void copyOwnId(u.copyStatus), 'secondary small'), u.copyStatus),
-    el('h5', { text: 'Your profile' }),
-    el('p', { className: 'hint', text: 'Everyone can read your profile. A name cannot be chosen here yet.' }),
-    u.profileName, u.profileForm, u.memoryNote, u.erase);
+  u.profileView = setAttrs(el('section', { className: 'messenger-screen messenger-profile' }, prof.bar,
+    el('div', { className: 'nc-scroll nc-padded' },
+      el('div', { className: 'own-id-box' }, el('span', { className: 'own-id-label', text: 'Your ID — share it so others can add you' }), u.ownId,
+        button('Copy your ID', () => void copyOwnId(u.copyStatus), 'secondary small'), u.copyStatus),
+      el('h3', { text: 'Your profile' }),
+      el('p', { className: 'hint', text: 'Everyone can read your profile. A name cannot be chosen here yet.' }),
+      u.profileName, u.profileForm, u.memoryNote, u.erase)), { 'aria-label': 'Your ID & profile' });
 
-  u.main = el('div', { className: 'messenger-main' }, u.stateView, u.emptyView, u.conversationView, u.addView, u.requestsView, u.profileView);
-  u.layout = el('div', { className: 'messenger' }, u.sidebar, u.main);
-  u.sync = el('p', { className: 'messenger-sync' });
-  u.sync.setAttribute('role', 'status');
-  root.replaceChildren(u.layout, u.sync);
+  // One screen at a time on a narrow screen; on a wide one Chats stays next
+  // to the open conversation (messenger.css, data-screen).
+  u.layout = el('div', { className: 'messenger' }, u.chats, u.pane, u.contactsView, u.profileView, u.addDialog);
+  root.replaceChildren(u.layout);
   ui = u;
 
   u.addForm.onsubmit = event => void addContact(event);
@@ -612,89 +698,151 @@ function showState(title, text, retry) {
   render();
 }
 
-function showPane(next) {
-  if (!isOpen()) return;
-  pane = next;
+// Navigation inside Messages. While Messages is not open only Chats (with
+// its status) is shown; every change is handed to host.onScreen (render).
+function show(next, { tab } = {}) {
+  if (!ui) return;
+  if (!isOpen()) next = 'list';
   if (next !== 'conversation') selectedFp = undefined;
-  narrow = 'main';
-  if (next === 'requests') ui.requestsStatus.textContent = '';
+  if (next === 'contacts' && tab) { hubTab = tab; if (tab === 'requests') ui.requestsStatus.textContent = ''; }
+  screen = next;
   render();
-  const focus = { add: ui.addId, requests: ui.requestsHeading, profile: ui.profileHeading }[next];
+  const focus = { contacts: ui.hubHeading, profile: ui.profileHeading }[next];
   focus?.focus({ preventScroll: true });
 }
 
+// The host's navigation (the Nodus Connect app's tabs and More menu):
+// 'chats', 'contacts', 'requests', 'profile' or 'add' (the add-contact dialog).
+export function messagesNavigate(target) {
+  if (target === 'add') openAdd();
+  else if (target === 'contacts' || target === 'requests') show('contacts', { tab: target });
+  else if (target === 'profile') show('profile');
+  else show('list');
+}
+
+function openAdd() {
+  if (!ui) return;
+  if (!isOpen()) { show('list'); return; }
+  ui.addStatus.textContent = '';
+  if (!ui.addDialog.open) ui.addDialog.showModal();
+  ui.addId.focus();
+}
+
 function selectContact(fp) {
-  selectedFp = fp; pane = 'conversation'; narrow = 'main';
+  selectedFp = fp; screen = 'conversation';
   ui.sendStatus.textContent = '';
   markRead(fp);
   render({ scroll: true });
-  if (contactOf(fp)?.salt) ui.composer.focus({ preventScroll: true });
+  (contactOf(fp)?.salt ? ui.composer : ui.convTitle).focus({ preventScroll: true });
 }
 
-// data-view drives the ≤ 700 px layout (messenger.css): 'list', 'main', or
-// 'state' while Messages is not open (its status is the only thing shown).
-function renderLayout() {
-  ui.layout.dataset.view = isOpen() ? narrow : 'state';
+function setCount(node, count) {
+  node.textContent = count ? (count > 99 ? '99+' : String(count)) : '';
+  node.hidden = !count;
 }
 
 function render({ scroll = false } = {}) {
   if (!ui) return;
   const open = isOpen();
-  for (const control of [ui.addButton, ui.profileButton, ui.requestsButton]) control.disabled = !open;
-  if (open && pane === 'conversation' && selectedFp && !contactOf(selectedFp)) { pane = 'empty'; selectedFp = undefined; }
-  const active = !open ? 'state' : pane;
-  const views = { state: ui.stateView, empty: ui.emptyView, conversation: ui.conversationView, add: ui.addView, requests: ui.requestsView, profile: ui.profileView };
-  for (const [name, node] of Object.entries(views)) node.hidden = name !== active;
-  renderLayout();
-  renderSidebar(open);
-  if (!open) { host.onUnread?.(0); return; }
-  if (pane === 'conversation' && selectedFp) markRead(selectedFp);
-  if (pane === 'empty') renderEmpty();
-  if (pane === 'requests') renderRequests();
-  if (pane === 'conversation') renderConversation(scroll);
-  host.onUnread?.(state.contacts.reduce((sum, c) => sum + unreadCount(c.fp), 0));
+  // Closed: Chats only. A conversation whose contact is gone: back to Chats.
+  if ((!open && screen !== 'list') || (screen === 'conversation' && !(selectedFp && contactOf(selectedFp)))) { screen = 'list'; selectedFp = undefined; }
+  // data-screen drives the layout (messenger.css); data-open the closed state.
+  ui.layout.dataset.screen = screen;
+  ui.layout.dataset.open = String(open);
+  ui.stateView.hidden = open;
+  ui.chatsBody.hidden = !open;
+  ui.fab.hidden = !open;
+  ui.emptyView.hidden = screen !== 'list';
+  ui.conversationView.hidden = screen !== 'conversation';
+  ui.contactsView.hidden = screen !== 'contacts';
+  ui.profileView.hidden = screen !== 'profile';
+  for (const control of [ui.requestsAction, ui.profileAction]) control.disabled = !open;
+  if (open && screen === 'conversation') markRead(selectedFp);
+  const unread = open ? state.contacts.reduce((sum, c) => sum + unreadCount(c.fp), 0) : 0;
+  const waiting = open ? requests.length : 0;
+  renderCounts(unread, waiting);
+  renderEmpty(open);
+  if (open) {
+    renderChats();
+    if (screen === 'contacts') renderContacts();
+    if (screen === 'conversation') renderConversation(scroll);
+  }
+  host.onUnread?.(unread);
+  host.onRequests?.(waiting);
+  const id = open ? ownFp : null;
+  if (id !== notifiedId) { notifiedId = id; host.onIdentity?.(id); }
+  if (screen !== notifiedScreen) { notifiedScreen = screen; host.onScreen?.(screen); }
 }
 
-function renderSidebar(open) {
-  ui.requestCount.textContent = open && requests.length ? String(requests.length) : '';
-  ui.requestCount.hidden = !(open && requests.length);
-  ui.requestsText.textContent = !open ? '' : requests.length ? `${requests.length} waiting for you` : state.outgoing.length ? `${state.outgoing.length} sent, waiting for an answer` : 'None waiting';
-  ui.requestsButton.setAttribute('aria-current', String(open && pane === 'requests'));
-  if (!open) {
-    ui.contactList.replaceChildren(el('li', { className: 'contact-empty', text: phase === 'opening' ? 'Loading your contacts…' : 'Your contacts appear here once Messages is open.' }));
-    return;
-  }
+function renderCounts(unread, waiting) {
+  setCount(ui.requestCount, waiting); setCount(ui.hubRequestCount, waiting);
+  setCount(ui.chipUnreadCount, unread); setCount(ui.chipChatsCount, unread);
+  ui.requestsAction.setAttribute('aria-label', waiting ? `Contact requests, ${waiting} waiting` : 'Contact requests');
+  ui.requestsBanner.hidden = !waiting;
+  ui.requestsBannerText.textContent = waiting === 1 ? '1 contact request is waiting for you' : `${waiting} contact requests are waiting for you`;
+}
+
+// Chats rows (contacts_screen.dart _ContactTile): the ID mark, the short ID
+// in bold (a claimed name only as "claims the name …"), the last message;
+// on the right its time and the unread count; a chevron.
+function renderChats() {
+  for (const node of [ui.chipAll, ui.chipUnread, ui.chipChats]) node.setAttribute('aria-pressed', String(node.dataset.filter === filter));
   if (!state.contacts.length) {
-    ui.contactList.replaceChildren(el('li', { className: 'contact-empty', text: 'No contacts yet. Add one with their ID.' }));
+    ui.contactList.replaceChildren(el('li', { className: 'contact-empty', text: 'No contacts yet. Add one with their ID using the add-contact button.' }));
     return;
   }
   // Most recent conversation first (local order), then contacts without
   // messages in list order; ties keep the list order (stable sort).
   const ordered = state.contacts.map((c, index) => ({ c, index, last: lastMessage(c.fp) }))
     .sort((a, b) => (a.last && b.last ? compareLocal(b.last, a.last) : a.last ? -1 : b.last ? 1 : 0) || a.index - b.index);
-  ui.contactList.replaceChildren(...ordered.map(({ c, last }) => {
+  // 'chats' shows the same list as 'all' (the app's Chats chip without groups).
+  const shown = filter === 'unread' ? ordered.filter(({ c }) => unreadCount(c.fp) > 0) : ordered;
+  if (!shown.length) {
+    ui.contactList.replaceChildren(el('li', { className: 'contact-empty', text: 'All caught up. No unread messages.' }));
+    return;
+  }
+  ui.contactList.replaceChildren(...shown.map(({ c, last }) => {
     const unread = unreadCount(c.fp);
     const row = el('button', { className: `contact-row${unread ? ' has-unread' : ''}` });
     row.type = 'button';
-    row.setAttribute('aria-current', String(pane === 'conversation' && c.fp === selectedFp));
+    row.dataset.fp = c.fp;
+    row.setAttribute('aria-current', String(screen === 'conversation' && c.fp === selectedFp));
     const preview = el('span', { className: 'contact-preview' });
     if (last) preview.append(last.dir === 'out' ? 'You: ' : '', untrusted(last.text));
     else preview.textContent = c.salt ? 'No messages yet' : 'Messaging is not ready yet';
     const side = el('span', { className: 'contact-side' });
     if (last) { const when = el('time', { text: shortWhen(last.at) }); when.dateTime = new Date(last.at).toISOString(); side.append(when); }
     if (unread) side.append(setAttrs(el('span', { className: 'count-badge', text: String(unread) }), { 'aria-label': `${unread} new` }));
-    row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, el('strong', { text: shortId(c.fp) }), claimedNameHint(c.fp)), preview), side);
+    row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, el('strong', { text: shortId(c.fp) }), claimedNameHint(c.fp)), preview), side, icon('chevron'));
     row.onclick = () => selectContact(c.fp);
     return el('li', {}, row);
   }));
 }
 
-function renderEmpty() {
+// Contacts screen: the contacts in list order, or the requests.
+function renderContacts() {
+  for (const node of [ui.hubTabContacts, ui.hubTabRequests]) node.setAttribute('aria-pressed', String(node.dataset.tab === hubTab));
+  ui.hubContacts.hidden = hubTab !== 'contacts';
+  ui.hubRequests.hidden = hubTab !== 'requests';
+  if (hubTab === 'requests') { renderRequests(); return; }
+  ui.hubList.replaceChildren(...(state.contacts.length ? state.contacts.map(c => {
+    const row = el('button', { className: 'contact-row' });
+    row.type = 'button';
+    const sub = el('span', { className: 'contact-preview', text: c.salt ? 'Open conversation' : 'Messaging is not ready yet' });
+    row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, el('strong', { text: shortId(c.fp) }), claimedNameHint(c.fp)), sub), icon('chevron'));
+    row.onclick = () => selectContact(c.fp);
+    return el('li', {}, row);
+  }) : [el('li', { className: 'contact-empty', text: 'No contacts yet. Add one with their ID.' })]));
+}
+
+function renderEmpty(open) {
+  ui.emptyActions.hidden = !open;
+  if (!open) { ui.emptyTitle.textContent = 'Messages'; ui.emptyText.textContent = 'Your conversations open here.'; return; }
   const none = state.contacts.length === 0;
   ui.emptyTitle.textContent = none ? 'No contacts yet' : 'Choose a conversation';
   ui.emptyText.textContent = none
     ? 'Add a contact with their ID — a 128-character code they copy from “Your ID & profile”. Share your ID the same way so others can add you. Once they accept, you can write to each other.'
-    : 'Pick a contact on the left, or add a new one with their ID.';
+    : 'Pick a conversation from the list, or add a new contact with their ID.';
 }
 
 function renderRequests() {
@@ -746,8 +894,10 @@ function renderConversation(scroll) {
       const status = messageStatus(m);
       meta.append(el('span', { className: `message-status message-${status.replace(/ /g, '-')}`, text: `${STATUS_MARK[status] || ''} ${status}` }));
     } else meta.append(el('span', { className: 'message-clock', text: senderClockLabel(m.senderTs) }));
-    // The message body lives only inside the bubble (§1.9).
-    items.push(el('li', { className: mine ? 'message message-out' : 'message message-in' }, el('div', { className: 'message-bubble' }, untrusted(m.text)), meta));
+    // The message body lives only inside the bubble (§1.9); time and status
+    // sit small at the bubble's foot (chat_screen.dart message bubble).
+    items.push(el('li', { className: mine ? 'message message-out' : 'message message-in' },
+      el('div', { className: 'message-bubble' }, el('div', { className: 'message-text' }, untrusted(m.text)), meta)));
   }
   if (!items.length) items.push(el('li', { className: 'message-none', text: contact.salt ? 'No messages yet. Say hello.' : 'No messages yet.' }));
   list.replaceChildren(...items);

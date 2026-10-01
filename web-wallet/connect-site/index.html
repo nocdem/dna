@@ -1,22 +1,28 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self' https: wss:; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Nodus Connect</title><link rel="icon" href="/assets/nodus-mark.svg" type="image/svg+xml"><link rel="preload" href="/assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="../src/style.css"></head>
-<body>
-<a class="skip-link" href="#wallet-title">Skip to wallet</a>
-<header class="site-header"><div class="header-inner wrap"><div class="brand-group"><a class="wordmark" href="https://nodusnetwork.io/" aria-label="Nodus home"><img src="/assets/nodus-mark.svg" width="35" height="35" alt="">nodus</a><span class="product-name">Connect</span></div><div class="header-actions"><a class="network-link" href="#privacy">Privacy</a><a class="network-link" href="https://nodusnetwork.io/">Nodus Network <span aria-hidden="true">↗</span></a><span class="pill">Connect preview</span></div></div></header>
-<main class="wrap">
-<section class="hero" aria-labelledby="page-title">
-  <div class="hero-copy"><p class="eyebrow"><span class="eyebrow-dot" aria-hidden="true"></span> NODUS CONNECT · SELF-CUSTODY</p><h1 id="page-title">Your wallet and messages.<br><span>Your control.</span></h1><p>Your Nodus identity, multichain assets and messages.<br>One recovery phrase. No account required.</p></div>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self' https: wss:; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Nodus Connect</title><link rel="icon" href="/assets/nodus-mark.svg" type="image/svg+xml"><link rel="preload" href="/assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="../src/style.css"></head>
+<body class="connect-app">
+<a class="skip-link" href="#app-main">Skip to content</a>
+<!-- The app shape follows the DNA Connect app (messenger/dna_messenger_flutter
+     screens/home_screen.dart): a start screen before unlock, then Home, Chats,
+     Wallet and More. Every id src/app.js reads is kept; the shell is driven by
+     src/connect-main.js and styled by src/connect/ui/messenger.css. -->
+<main id="app-main" class="app-main" tabindex="-1">
+
+<section id="start-screen" class="start-screen" aria-labelledby="start-title">
+  <header class="start-head">
+    <img class="start-mark" src="/assets/nodus-mark.svg" width="56" height="56" alt="">
+    <p class="start-wordmark">nodus<span class="product-name">Connect</span></p>
+    <h1 id="start-title" tabindex="-1">Your wallet and messages.<br><span>Your control.</span></h1>
+    <p>Your Nodus identity, multichain assets and messages. One recovery phrase. No account required.</p>
+  </header>
   <aside class="site-check" aria-labelledby="site-check-title">
     <div class="site-check-heading"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18M7 6.5h.01M10 6.5h.01"/></svg><p class="eyebrow" id="site-check-title">CHECK YOUR ADDRESS BAR</p></div>
     <p class="site-address"><span>https://</span>connect.nodusnetwork.io</p>
     <p>Compare this address with your browser’s address bar before entering recovery words. Bookmark it for your next visit.</p>
   </aside>
-</section>
-<div class="wallet-layout">
-<div class="wallet-column">
-<section class="card wallet-card" aria-labelledby="wallet-title"><div class="section-head"><img class="wallet-mark" src="/assets/nodus-mark.svg" width="40" height="40" alt=""><div><p class="eyebrow">A WALLET THAT’S YOURS</p><h2 id="wallet-title" tabindex="-1">Your wallet</h2></div></div>
-<p id="wallet-boot-status" class="hint" role="status">Loading wallet…</p><noscript><p>This wallet requires JavaScript to run locally in your browser.</p></noscript>
+  <div class="start-card">
+<p id="wallet-boot-status" class="hint" role="status">Loading Nodus Connect…</p><noscript><p>Nodus Connect requires JavaScript to run locally in your browser.</p></noscript>
 <p id="vault-status" role="status" aria-live="polite"></p><div id="session-conflict" class="notice session-conflict" role="alert" hidden><p>Wallet is open in another tab.</p><button id="session-takeover" type="button" class="secondary small">Use it here instead</button></div><button id="discard-activity" type="button" class="secondary" hidden>Discard unreadable saved history (check explorer first)</button><form id="unlock-form" hidden><label for="unlock-password">Local wallet password</label><input id="unlock-password" type="password" autocomplete="current-password" minlength="12" maxlength="1024" required><p class="hint">This password unlocks the encrypted copy in this browser. If you forgot it, restore with your 24 recovery words. There is no password reset service.</p><button id="unlock-wallet" type="submit" disabled>Unlock saved wallet</button></form><div id="welcome"><p>Create a new wallet or restore your 24 recovery words. Open it in this tab, or choose to save an encrypted copy on your device.</p><div class="actions"><button id="create" disabled>Create wallet <span aria-hidden="true">↗</span></button><button id="restore" class="secondary" disabled>Restore wallet <span aria-hidden="true">↗</span></button></div><div class="wallet-network-list" aria-label="Wallet networks"><span class="native-network">NODUS</span><span>ETH</span><span>BNB</span><span>SOL</span><span>TRX</span></div><p class="hint">Your native Nodus address, alongside supported assets on Ethereum, BNB Smart Chain, Solana and TRON.</p></div>
 <form id="phrase-form" hidden><section id="recovery-warning" class="phrase-caution recovery-warning" aria-labelledby="recovery-warning-title">
 <p class="eyebrow">BEFORE YOU ENTER ANY RECOVERY WORDS</p>
@@ -25,21 +31,62 @@
 <p>There is no phrase-sharing step to verify, activate, sync or repair a wallet. Restore reads your words locally in this browser; they are never submitted to Nodus.</p>
 <p>For Nodus Connect, check <strong>https://connect.nodusnetwork.io</strong> in your browser’s address bar yourself before entering any words. If a person, message or website asks you to send your phrase, stop.</p>
 </section><fieldset class="phrase-fieldset"><legend id="phrase-label">Recovery phrase</legend><div id="phrase-grid" class="phrase-grid" aria-describedby="phrase-entry-help phrase-error"></div></fieldset><p id="phrase-entry-help" class="hint">24 words, in order. Paste your full phrase into any box to fill all 24. Start typing for local word suggestions; choose with the arrow keys and Enter, or tap a word.</p><p id="phrase-error" class="field-error" role="alert"></p><p id="phrase-help" class="notice"></p><label class="check"><input id="backup-confirm" type="checkbox" required> I have a private backup of this phrase.</label><div class="actions"><button type="submit" id="phrase-submit">Open wallet</button><button type="button" id="phrase-cancel" class="secondary">Cancel</button></div></form>
-<div id="wallet-open" hidden>
-  <div class="wallet-session"><div><span class="session-indicator" aria-hidden="true"></span><span>Wallet open in this browser</span><span class="session-timeout">Auto-lock after 10 minutes of inactivity</span></div><button id="lock" class="secondary small" type="button">Lock wallet</button></div>
-  <nav class="wallet-navigation" aria-label="Wallet sections"><a href="#assets-panel">Portfolio</a><a href="#send-form">Send / Receive</a><a href="#stake-panel" id="nav-earn" hidden>Earn</a><a href="#messages-panel" id="nav-messages">Messages<span id="nav-messages-count" class="nav-count" hidden></span></a><a href="#activity-panel">Activity</a><a href="#device-panel">Device &amp; settings</a></nav>
+  </div>
+  <!-- src/connect-main.js moves #vault-delete-details into Device & settings
+       while the wallet is open, and back here when it is locked. -->
+  <div id="vault-delete-home" class="start-extra"><details id="vault-delete-details"><summary>Delete saved wallet from this device</summary><p class="hint">Deleting removes the encrypted wallet and saved activity here. It does not move funds. You need your recovery backup to restore.</p><label class="check"><input id="vault-delete-confirm" type="checkbox"> I have my recovery backup and want to delete this device’s saved wallet.</label><button id="vault-delete" class="secondary" type="button">Delete saved wallet</button></details></div>
+  <p class="start-links"><a href="#privacy">Privacy &amp; safety</a><span aria-hidden="true">·</span><a href="/THIRD-PARTY-LICENSES.txt">Licenses</a></p>
+</section>
+
+<div id="wallet-open" class="app-shell" hidden>
+  <nav class="app-nav" aria-label="Nodus Connect">
+    <span class="app-nav-brand"><img src="/assets/nodus-mark.svg" width="36" height="36" alt=""></span>
+    <button type="button" class="app-nav-item" data-tab="home" aria-current="page"><span class="app-nav-icon"><svg class="app-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11l8-7 8 7"/><path d="M6 9.5V20h12V9.5"/><path d="M10 20v-6h4v6"/></svg></span><span class="app-nav-label">Home</span></button>
+    <button type="button" class="app-nav-item" data-tab="chats" id="nav-chats"><span class="app-nav-icon"><svg class="app-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-9l-5 4v-4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg><span id="nav-chats-count" class="count-badge app-nav-badge" hidden></span></span><span class="app-nav-label">Chats</span></button>
+    <button type="button" class="app-nav-item" data-tab="wallet" id="nav-wallet"><span class="app-nav-icon"><svg class="app-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M3 11h18"/><path d="M16 15.5h2"/><path d="M6 7l10-3 1 3"/></svg></span><span class="app-nav-label">Wallet</span></button>
+    <button type="button" class="app-nav-item" data-tab="more" id="nav-more"><span class="app-nav-icon"><svg class="app-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5.5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="18.5" cy="12" r="1.4"/></svg><span id="nav-more-count" class="count-badge app-nav-badge" hidden></span></span><span class="app-nav-label">More</span></button>
+  </nav>
+  <div class="app-screens">
+
+  <section id="tab-home" class="app-screen" aria-labelledby="home-title">
+    <header class="app-bar"><h1 id="home-title" tabindex="-1">Home</h1></header>
+    <div class="app-body">
+      <div class="home-identity"><span id="home-avatar" class="contact-avatar avatar-large home-avatar-empty" aria-hidden="true">··</span><div class="home-identity-text"><strong>Your ID</strong><code id="home-id">Appears when Messages is connected</code></div><button id="home-copy-id" type="button" class="secondary small" disabled>Copy</button></div>
+      <p id="home-id-status" class="hint" role="status" aria-live="polite"></p>
+      <div class="wallet-session"><div><span class="session-indicator" aria-hidden="true"></span><span>Wallet open in this browser</span><span class="session-timeout">Auto-lock after 10 minutes of inactivity</span></div></div>
+      <section class="home-wallet" aria-labelledby="home-wallet-title">
+        <h2 id="home-wallet-title">YOUR WALLET</h2>
+        <dl><div><dt>Estimated value</dt><dd><span id="home-total">—</span><small>USD</small></dd></div><div><dt>NODUS (testnet)</dt><dd id="home-nodus">—</dd></div></dl>
+        <button id="home-open-wallet" type="button" class="secondary">Open wallet</button>
+      </section>
+      <div class="home-actions">
+        <button id="home-new-chat" type="button" class="home-action"><svg class="app-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-9l-5 4v-4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><path d="M12 8v6M9 11h6"/></svg><span>New chat</span></button>
+        <button id="home-send" type="button" class="home-action"><svg class="app-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg><span>Send</span></button>
+        <button id="home-receive" type="button" class="home-action"><svg class="app-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg><span>Receive</span></button>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-chats" class="app-screen app-screen-chats" aria-label="Chats" hidden>
+    <div id="nc-root"></div>
+  </section>
+
+  <section id="tab-wallet" class="app-screen wallet-card" aria-labelledby="wallet-title" hidden>
+    <header class="app-bar"><h1 id="wallet-title" tabindex="-1">Wallet</h1></header>
+    <div class="app-body">
+  <nav class="wallet-navigation" aria-label="Wallet sections"><a href="#assets-panel">Portfolio</a><a href="#send-form">Send / Receive</a><a href="#stake-panel" id="nav-earn" hidden>Earn</a><a href="#activity-panel">Activity</a><a href="#device-panel">Device &amp; settings</a></nav>
   <section class="portfolio-card" aria-labelledby="portfolio-label"><div class="portfolio-heading"><p id="portfolio-label" class="eyebrow">Estimated portfolio value</p><button id="portfolio-hide" type="button" class="secondary small" aria-pressed="false">Hide balances</button></div><p class="portfolio-amount"><span id="portfolio-total">—</span><span class="portfolio-currency">USD</span></p><p id="portfolio-status" role="status">Balances load when you open your wallet.</p><button id="portfolio-refresh" type="button">Refresh all networks <span aria-hidden="true">↻</span></button><p id="portfolio-scope" class="portfolio-scope">Supported assets on Ethereum, BNB Smart Chain, Solana and TRON. NODUS is shown, but its balance is not shown yet. Only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total. CPUNK is not included.</p></section>
   <div id="portfolio-networks" class="portfolio-networks" aria-label="Balance read status by network"></div>
   <div class="transfer-actions"><div><p class="eyebrow">TRANSFER NETWORK</p><p><strong class="selected-network-name"></strong> · <span class="selected-network-stage">Mainnet</span></p></div><div class="transfer-buttons"><button id="quick-send" type="button"><span aria-hidden="true">↑</span> Send</button><button id="quick-receive" type="button" class="secondary"><span aria-hidden="true">↓</span> Receive</button><button id="quick-earn" type="button" class="secondary" hidden><span aria-hidden="true">＋</span> Earn</button></div></div>
   <div class="dashboard-grid">
     <section id="assets-panel" class="dashboard-panel assets-panel" aria-labelledby="assets-title">
-      <div class="panel-heading"><span class="section-number" aria-hidden="true">02 /</span><h3 id="assets-title">Your assets</h3><button id="refresh" class="secondary small" type="button">Refresh all</button></div>
+      <div class="panel-heading"><h3 id="assets-title">Your assets</h3><button id="refresh" class="secondary small" type="button">Refresh all</button></div>
       <div id="portfolio-filters" class="portfolio-filters" role="group" aria-label="Filter assets by network"></div><div id="balances" class="portfolio-assets" aria-live="polite"></div><p id="portfolio-updated" class="hint"></p><p class="price-source">Indicative USD prices from <a href="https://defillama.com/" target="_blank" rel="noopener noreferrer">DefiLlama</a>. This estimate is not a sale quote.</p>
     </section>
-    <form id="send-form" class="dashboard-panel send-panel" aria-labelledby="send-title"><div class="panel-heading"><span class="section-number" aria-hidden="true">03 /</span><h3 id="send-title" tabindex="-1">Send / Receive · <span class="selected-network-name"></span></h3></div><div class="network-select"><label for="chain">Send / receive network</label><span class="selected-network-stage">Mainnet</span><select id="chain"></select></div>
+    <form id="send-form" class="dashboard-panel send-panel" aria-labelledby="send-title"><div class="panel-heading"><h3 id="send-title" tabindex="-1">Send / Receive · <span class="selected-network-name"></span></h3></div><div class="network-select"><label for="chain">Send / receive network</label><span class="selected-network-stage">Mainnet</span><select id="chain"></select></div>
       <div id="receive-panel" class="receive-panel"><h4 id="receive-title" tabindex="-1">Receive on <span class="selected-network-name"></span></h4><div id="receive-qr" class="receive-qr"></div><div class="address-row"><code id="receive-address"></code><button id="copy-address" class="secondary small" type="button">Copy</button></div><p class="hint">Receive only assets on the selected network. This is the first account derived from your recovery phrase.</p><p id="nodus-address-status" class="hint" role="status" aria-live="polite" hidden></p><p id="cellframe-address-status" class="hint" role="status" aria-live="polite" hidden></p></div>
       <div id="send-block" class="send-block"><h4 id="send-block-title" tabindex="-1">Send on <span class="selected-network-name"></span> <span class="send-block-network">· <span class="selected-network-stage">Mainnet</span></span></h4><p class="hint">Check the recipient and network. You’ll review the details before signing.</p><p id="solana-send-hint" class="hint" hidden>Token transfers use your primary associated token account. Balances held in other token accounts are included above but cannot be sent here.</p><p id="send-disabled-note" class="notice" hidden>Sending CPUNK is not available in this release. You can receive to the address above.</p><div id="send-fields"><label for="asset">Asset</label><select id="asset"></select><label for="recipient">Recipient address</label><input id="recipient" required autocomplete="off" spellcheck="false"><label for="amount">Amount</label><input id="amount" required inputmode="decimal" autocomplete="off" placeholder="0.00"><button type="submit" id="review-button">Review transfer <span aria-hidden="true">↗</span></button></div><p class="send-footnote">Signing happens locally. Network fees apply.</p></div></form>
-  <section id="stake-panel" class="dashboard-panel stake-panel" aria-labelledby="stake-title" hidden><div class="panel-heading"><span class="section-number" aria-hidden="true">03 /</span><h3 id="stake-title" tabindex="-1">Earn · Delegate NODUS · Testnet</h3><button id="stake-refresh" class="secondary small" type="button">Refresh</button></div>
+  <section id="stake-panel" class="dashboard-panel stake-panel" aria-labelledby="stake-title" hidden><div class="panel-heading"><h3 id="stake-title" tabindex="-1">Earn · Delegate NODUS · Testnet</h3><button id="stake-refresh" class="secondary small" type="button">Refresh</button></div>
     <p class="hint">Delegating places NODUS with a validator, one of the computers that produce Nodus blocks. The NODUS stays yours, but it cannot be sent while it is delegated. You can take it back at any time; it then stays locked for a while before you can send it again.</p>
     <p id="stake-status" class="hint" role="status" aria-live="polite"></p>
     <div class="stake-block"><h4 id="validators-title">Validators</h4><div id="validator-list" class="stake-list" aria-labelledby="validators-title"></div></div>
@@ -48,9 +95,8 @@
     <details id="become-validator" class="stake-block"><summary>Become a validator</summary><p id="become-note" class="notice"></p><div id="become-fields"><label for="become-commission">Commission you keep from your delegators’ rewards (%)</label><input id="become-commission" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="5"><label class="check"><input id="become-confirm" type="checkbox"> I understand that the bond is locked while I am a validator and that this wallet has no way to unstake it.</label><button type="button" id="become-review">Review validator bond <span aria-hidden="true">↗</span></button></div></details>
   </section>
   </div>
-  <section id="messages-panel" class="dashboard-panel messages-panel" aria-labelledby="messages-title"><div class="panel-heading"><span class="section-number" aria-hidden="true">04 /</span><h3 id="messages-title" tabindex="-1">Messages</h3><span class="pill">Preview</span><button id="messages-lock" class="secondary small" type="button">Lock</button></div><p class="hint messages-intro">Write to your Nodus contacts with the same identity as this wallet. Messages opens when you open your wallet and locks with it.</p><div id="nc-root"></div></section>
-  <section id="activity-panel" class="dashboard-panel activity-panel" aria-labelledby="activity-title"><div class="panel-heading"><span class="section-number" aria-hidden="true">05 /</span><h3 id="activity-title">Activity</h3><a id="account-explorer" target="_blank" rel="noopener noreferrer">Open account explorer <span aria-hidden="true">↗</span></a></div><p class="hint">Only sends made here are listed. Records stay in this tab unless you choose to save the wallet on this device. For all account activity, use the explorer.</p><div id="activity" class="activity-list" aria-live="polite"></div><p class="activity-empty">No sends recorded here for this network.</p></section>
-  <section id="device-panel" class="dashboard-panel device-panel" aria-labelledby="device-title"><div class="panel-heading"><span class="section-number" aria-hidden="true">06 /</span><h3 id="device-title">Device &amp; settings</h3></div><p id="wallet-storage-state" class="storage-state" role="status">Temporary session</p>
+  <section id="activity-panel" class="dashboard-panel activity-panel" aria-labelledby="activity-title"><div class="panel-heading"><h3 id="activity-title">Activity</h3><a id="account-explorer" target="_blank" rel="noopener noreferrer">Open account explorer <span aria-hidden="true">↗</span></a></div><p class="hint">Only sends made here are listed. Records stay in this tab unless you choose to save the wallet on this device. For all account activity, use the explorer.</p><div id="activity" class="activity-list" aria-live="polite"></div><p class="activity-empty">No sends recorded here for this network.</p></section>
+  <section id="device-panel" class="dashboard-panel device-panel" aria-labelledby="device-title"><div class="panel-heading"><h3 id="device-title" tabindex="-1">Device &amp; settings</h3></div><p id="wallet-storage-state" class="storage-state" role="status">Temporary session</p>
     <details id="vault-storage-controls"><summary>Save wallet on this device (optional)</summary>
 <p id="vault-storage-summary" class="hint">This saves an encrypted copy of your 24 recovery words in this browser profile on this device. It is not a cloud backup. The wallet does not store your password or upload your recovery words.</p>
 <p class="hint">Use a unique local password of at least 16 characters. Keep your 24 words backed up privately offline: clearing site data, losing this device or forgetting the password can make the saved copy inaccessible.</p>
@@ -58,11 +104,31 @@
 <p class="hint">Saving also encrypts local transaction activity so pending sends can be checked after reload. <a href="#storage-guide">How storage and protection work</a></p><label for="vault-password">New local password (minimum 16 characters to help resist offline password guessing)</label><input id="vault-password" aria-describedby="vault-storage-summary password-hint" type="password" autocomplete="new-password" minlength="16" maxlength="1024"><p id="password-hint" class="hint">Use a unique password from a password manager or several unrelated words. Repeated and common passwords are rejected.</p><label for="vault-old-password">Current local password (for password change)</label><input id="vault-old-password" type="password" autocomplete="current-password" maxlength="1024"><label class="check storage-consent"><input id="vault-risk-confirm" type="checkbox" required aria-describedby="vault-risk-summary"> I understand and accept the risks of keeping an encrypted wallet in this browser, and choose to save it on this device.</label><button id="vault-save" type="button">Save current wallet</button><button id="vault-change" class="secondary" type="button">Change saved password</button></details>
     <details id="rpc-settings" class="rpc-settings"><summary>Network connection settings</summary><label for="rpc-choice">RPC provider</label><select id="rpc-choice"></select><p id="rpc-choice-note" class="hint" hidden></p><label for="rpc-endpoint" id="rpc-endpoint-label" hidden>Custom HTTPS RPC endpoint</label><input id="rpc-endpoint" type="url" hidden><button id="save-rpc" class="secondary small">Apply</button><p class="hint">Use a trusted mainnet RPC with browser CORS support. TRON transfers use the default mainnet provider.</p></details>
   </section>
-  </div>
-<div id="wallet-status" class="result" role="status" aria-live="polite"></div></section>
+    </div>
+  </section>
 
-<details><summary>Delete saved wallet from this device</summary><p class="hint">Deleting removes the encrypted wallet and saved activity here. It does not move funds. You need your recovery backup to restore.</p><label class="check"><input id="vault-delete-confirm" type="checkbox"> I have my recovery backup and want to delete this device’s saved wallet.</label><button id="vault-delete" class="secondary" type="button">Delete saved wallet</button></details>
+  <section id="tab-more" class="app-screen" aria-labelledby="more-title" hidden>
+    <header class="app-bar"><h1 id="more-title" tabindex="-1">More</h1></header>
+    <div class="app-body">
+      <button id="more-profile" type="button" class="more-profile"><span id="more-avatar" class="contact-avatar avatar-large home-avatar-empty" aria-hidden="true">··</span><span class="more-profile-text"><strong>Your ID &amp; profile</strong><code id="more-id">Appears when Messages is connected</code></span><svg class="app-icon chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
+      <ul class="more-list">
+        <li><button id="more-contacts" type="button" class="more-row"><svg class="app-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M12 11a2.5 2.5 0 1 0 0-5a2.5 2.5 0 1 0 0 5z"/><path d="M8 16c.6-1.8 2-2.7 4-2.7s3.4.9 4 2.7"/></svg><span>Contacts</span><span id="more-contacts-count" class="count-badge" hidden></span><svg class="app-icon chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button></li>
+        <li><button id="more-requests" type="button" class="more-row"><svg class="app-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 19c0-3 2.5-5 6-5s6 2 6 5"/><path d="M9 11a3.5 3.5 0 1 0 0-7a3.5 3.5 0 1 0 0 7z"/><path d="M19 8v6M16 11h6"/></svg><span>Contact requests</span><span id="more-requests-count" class="count-badge" hidden></span><svg class="app-icon chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button></li>
+        <li><button id="more-device" type="button" class="more-row"><svg class="app-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 1 0 0-6a3 3 0 1 0 0 6z"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.3.9a7 7 0 0 0-2.1-1.2L14 3h-4l-.5 2.6a7 7 0 0 0-2.1 1.2l-2.3-.9-2 3.4 2 1.5a7 7 0 0 0 0 2.4l-2 1.5 2 3.4 2.3-.9a7 7 0 0 0 2.1 1.2L10 21h4l.5-2.6a7 7 0 0 0 2.1-1.2l2.3.9 2-3.4-2-1.5c.1-.4.1-.8.1-1.2z"/></svg><span>Device &amp; settings</span><svg class="app-icon chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button></li>
+        <li><a href="#privacy" class="more-row"><svg class="app-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/></svg><span>Privacy &amp; safety</span><svg class="app-icon chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></a></li>
+        <li><a href="/THIRD-PARTY-LICENSES.txt" class="more-row"><svg class="app-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h7"/></svg><span>Licenses</span><svg class="app-icon chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></a></li>
+        <li><button id="lock" class="more-row more-lock" type="button"><svg class="app-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg><span>Lock</span></button></li>
+      </ul>
+      <p class="hint more-hint">Lock closes your wallet and Messages together. Both lock by themselves after 10 minutes of inactivity and when you leave the page. Nodus Connect · self-custody preview. We cannot reset or recover your wallet for you.</p>
+    </div>
+  </section>
+
+  </div>
 </div>
+
+<section id="about-screen" class="about-screen" aria-labelledby="about-title">
+  <header class="app-bar"><button id="about-back" type="button" class="nc-icon-button" aria-label="Back" title="Back"><svg class="nc-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button><h1 id="about-title" tabindex="-1">Privacy &amp; safety</h1></header>
+  <div class="app-body about-body">
 <aside class="privacy-card" id="privacy" aria-labelledby="privacy-title">
   <div class="privacy-heading"><span class="privacy-symbol" aria-hidden="true"><svg viewBox="0 0 24 24" width="24" height="24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4M9 10l2 2 4-4"/></svg></span><p class="eyebrow">YOUR PRIVACY</p></div>
   <h2 id="privacy-title">Local to your browser.<br><span>Yours to manage.</span></h2>
@@ -73,12 +139,11 @@
   </dl>
   <p class="privacy-footnote">Local keys do not make browsing anonymous. Hosting providers also receive connection information when you load this site.</p>
 </aside>
-</div>
 <section class="storage-guide" id="storage-guide" aria-labelledby="storage-title">
   <div class="care-heading"><div><p class="eyebrow">YOUR RECOVERY WORDS</p><h2 id="storage-title">Know what you’re saving.</h2></div><p>Two ways to use your wallet.<br>Keep a private offline backup in either case.</p></div>
   <div class="storage-modes">
     <article><span class="storage-label">DEFAULT · TEMPORARY</span><h3>In this tab’s memory.</h3><p>Creating or restoring a wallet does not automatically save it. Until you choose Save, the app does not write your recovery words to browser storage. You will need your 24 words to open the wallet again.</p></article>
-    <article><span class="storage-label">OPTIONAL · SAVE ON THIS DEVICE</span><h3>Encrypted in this browser.</h3><p>Open your wallet, expand <strong>Save wallet on this device</strong>, set a unique local password, then select <strong>Save current wallet</strong>. The app encrypts your words before saving them to this site’s <code>localStorage</code> in your current browser profile.</p><p class="hint">The app does not upload or sync this copy, and does not store your password.</p></article>
+    <article><span class="storage-label">OPTIONAL · SAVE ON THIS DEVICE</span><h3>Encrypted in this browser.</h3><p>Open your wallet, go to <strong>Device &amp; settings</strong>, expand <strong>Save wallet on this device</strong>, set a unique local password, then select <strong>Save current wallet</strong>. The app encrypts your words before saving them to this site’s <code>localStorage</code> in your current browser profile.</p><p class="hint">The app does not upload or sync this copy, and does not store your password.</p></article>
   </div>
   <div class="storage-risk"><h3>Protection depends on your password and browser.</h3><p>A strong password helps protect a stolen encrypted copy. It cannot stop a fake page, malware, a malicious extension or compromised site code from capturing your words or password when you enter or unlock them. This web wallet is a development preview; tests and reviews are not a guarantee against theft.</p></div>
   <div class="storage-questions">
@@ -96,8 +161,10 @@
     <li><span class="care-number" aria-hidden="true">03 /</span><h3>Use a browser you trust.</h3><p>A web wallet depends on your device and browser. Avoid shared devices and untrusted extensions. Lock your wallet when you finish; keep your recovery backup offline.</p></li>
   </ol>
 </section>
-<footer class="wallet-footer"><span>Nodus Connect <span class="footer-separator" aria-hidden="true">/</span> Self-custody preview <span class="footer-separator" aria-hidden="true">/</span> <a href="/THIRD-PARTY-LICENSES.txt">Licenses</a></span><span>We cannot reset or recover your wallet for you.</span></footer>
+  </div>
+</section>
 </main>
+<div class="app-toast"><p id="wallet-status" class="result" role="status" aria-live="polite"></p><button id="toast-dismiss" type="button" class="nc-icon-button" aria-label="Dismiss" title="Dismiss">×</button></div>
 <dialog id="review-dialog" aria-labelledby="review-title"><h2 id="review-title">Review transfer</h2><p id="review-notice" class="notice">Mainnet transaction. Sending cannot be undone.</p><dl id="review-details"></dl><p id="review-error" role="alert"></p><div class="actions"><button id="cancel-send" class="secondary">Cancel</button><button id="confirm-send" type="button">Confirm &amp; send</button></div></dialog>
 <script type="module" src="../src/connect-main.js"></script>
 </body></html>

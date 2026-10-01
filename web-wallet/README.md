@@ -1345,19 +1345,17 @@ same time in one browser.
 | Command | `npm run build` (`vite.config.js`) | `npm run build:connect` (`vite.connect.config.js`) |
 | Entry | `index.html` → `src/main.js` | `connect-site/index.html` → `src/connect-main.js` |
 | Output | `dist/` | `dist-connect/` (own `THIRD-PARTY-LICENSES.txt`) |
-| Contains | the wallet (portfolio, send / receive, earn, activity, device & settings) | the same wallet page, branded "Nodus Connect", plus a **Messages** section in the wallet navigation |
+| Contains | the wallet (portfolio, send / receive, earn, activity, device & settings) | an app in the shape of the DNA Connect app: Home, Chats (Messages), Wallet (the same wallet sections), More |
 
-`connect-site/index.html` is the wallet's `index.html` with: the title,
-header product name, hero text and footer saying Nodus Connect; the
-address-bar checks naming `connect.nodusnetwork.io`; a "Messages" link in the
-open-wallet navigation (with an unread count); the Messages panel
-(`#messages-panel`, section 04; Activity and Device & settings become 05 and
-06) holding an empty `#nc-root` that `src/connect/ui/messages.js` fills. Keep
-the two files in step when the wallet markup changes: every id `src/app.js`
-reads must exist in both. `npm run preview:connect` serves `dist-connect/`
-locally. The wallet build carries no Messages code: only
-`src/connect-main.js` imports `src/connect/ui/`; `test/connect-smoke.js`
-checks `dist/` for the Messages navigation, panel and UI strings. (The
+`connect-site/index.html` holds the wallet's markup (every id `src/app.js`
+reads) inside an app shell; see "App layout" below. Keep the two files in
+step when the wallet markup changes: every id `src/app.js` reads must exist
+in both, and so must the two selectors it uses, `.wallet-card` and
+`.wallet-navigation a[href="#send-form"]`. `npm run preview:connect` serves
+`dist-connect/` locally. The wallet build carries no Messages or shell code:
+only `src/connect-main.js` imports `src/connect/ui/`, and the shell's styles
+live in `src/connect/ui/messenger.css`; `test/connect-smoke.js` checks
+`dist/` for the shell, the Messages navigation and UI strings. (The
 string "Message history" in the wallet's `app.js` chunk is the saved-wallet
 delete text of 0.1.37, not Messages UI.) Ixios is a build flag in both:
 `VITE_ENABLE_IXIOS=true npm run build:connect` for the same set as the wallet
@@ -1382,8 +1380,8 @@ imports `src/app.js`.
   order of design §1.8 holds (Messages core, then the client). Lock, idle lock
   (10 min; typing in Messages counts as activity), `pagehide`, the single-tab
   takeover, a saved-wallet change in another tab and the cross-site rule all
-  go through the wallet's `lock()`. The Messages panel's Lock button is the
-  wallet's Lock. A lost connection closes Messages with a reason; it reopens
+  go through the wallet's `lock()`. The Lock entry in More IS the wallet's
+  `#lock` button. A lost connection closes Messages with a reason; it reopens
   after the wallet is locked and opened again (`core.lock()` is terminal for
   the module instance). Deleting the saved wallet closes its open history
   first, so the delete is not blocked by this tab.
@@ -1392,24 +1390,86 @@ imports `src/app.js`.
   are unchanged (`text.js`, `store.js`, `core.js`, the `nc_*` C code are not
   touched).
 
-**Messages layout.** Inside a dashboard panel: left, the contacts column
-("Add contact", "Your ID & profile", a "Contact requests" entry with its
-count, then the conversations — an ID mark (two hex digits of the ID, never a
-claimed name), the short ID, a claimed name only as "claims the name …", the
-last message, its time and an unread count; unread counts are kept in memory
-for this session only); right, one view at a time: the conversation (own
-messages right in lime, received left; time under each bubble; own status
-"waiting to send" / "sent" / "delivered"; the "sender's clock" kept, small),
-the add-contact form, the requests (incoming: Accept / Decline; sent: Withdraw),
-or your ID (Copy) and profile. The composer sits at the bottom of the
-conversation: grows to 5 lines, Enter sends, Shift+Enter is a new line (not
-while an input method composes), 4000 characters. Empty, loading and closed
-states are shown in the right side. At 700 px and below the contact list
-comes first and any view opens alone with a "← Contacts" button. All text goes
-through `textContent` (`dom.js`), other people's text in `<bdi>` with the
-unusual-character marker, websites only as checked https links; no innerHTML,
-no inline styles (CSP `style-src 'self'`). Styles: `src/connect/ui/messenger.css`
-on the wallet's tokens.
+**App layout.** The SHAPE follows the DNA Connect app
+(`messenger/dna_messenger_flutter/lib`); the COLOURS are only the wallet's
+(`src/style.css` tokens and the tints already used by the wallet and
+`messenger.css`: lime accent, dark surfaces; no colour of the Flutter app).
+One breakpoint, 900 px (the wallet's `SINGLE_COLUMN_DASHBOARD`).
+- Before unlock: a start screen (`#start-screen`, centred): the mark,
+  "nodus Connect", the address-bar check, then the wallet's own welcome /
+  restore / create / unlock / session-conflict flows (same ids, same logic),
+  "Delete saved wallet from this device", and links to Privacy & safety and
+  the licences.
+- After unlock (`#wallet-open`, shown and hidden by `src/app.js` as before)
+  the app (`screens/home_screen.dart`): four entries Home, Chats (unread
+  count), Wallet, More (count of contact requests waiting). Below 900 px one
+  screen at a time with a 64 px bottom bar (`dna_bottom_bar.dart`: icon over
+  label, active line, badge at the icon); from 900 px a centred app window
+  (max 1200 px) with the same four entries as a left rail. Each screen has a
+  sticky top bar (`dna_app_bar.dart`).
+- Home: your ID (two-hex-digit mark, short ID, Copy — available once Messages
+  is open), "Wallet open in this browser", the wallet's estimated value and
+  NODUS balance shown again read-only from the Wallet screen, an "Open
+  wallet" button, and New chat / Send / Receive (Send and Receive open the
+  Wallet screen and press the wallet's own `#quick-send` / `#quick-receive`).
+- Chats: Messages (below). A screen opened from it (a conversation,
+  Contacts, Your ID & profile) covers the bottom bar below 900 px, as a
+  pushed screen does in the app.
+- Wallet: the wallet's sections unchanged in ids, forms and behaviour
+  (section links as chips, portfolio, network actions, assets | send /
+  receive or earn, activity, device & settings); only the outer frame
+  differs. While the wallet is open, "Delete saved wallet from this device"
+  is moved into Device & settings (the same element, moved back on lock).
+- More (`screens/more/more_screen.dart`): Your ID & profile, Contacts,
+  Contact requests (count), Device & settings, Privacy & safety, Licenses,
+  and Lock (the wallet's `#lock`).
+- Privacy & safety (`#about-screen`): the wallet page's privacy, storage
+  and care texts as one screen with Back, reachable before and after unlock;
+  in-page links to them (`#privacy`, `#storage-guide`) open it.
+- The wallet's status line (`#wallet-status`) is a bar above the bottom bar
+  while it has text, with a Dismiss button (shown again on the next message).
+- `src/connect-main.js` drives the shell: it watches `#wallet-open`'s
+  `hidden` to switch to Home on unlock, shows the screen holding the target
+  of an in-page link before the link's own handlers run, mirrors the two
+  wallet numbers on Home, and hosts Messages' navigation callbacks. It never
+  writes into the wallet's state.
+
+**Messages layout** (`src/connect/ui/messages.js`, also used by `/preview/`).
+- Chats (`screens/messages/messages_screen.dart`): a top bar "Chats" with
+  Contact requests (count) and Your ID & profile; filter chips All / Unread
+  (count) / Chats (count) — Chats shows the same list as All, as in the app
+  without groups; an entry "N contact requests are waiting for you" while
+  some are; the conversations, most recent first — an ID mark (two hex
+  digits of the ID, never a claimed name, 40 px), the short ID in bold, a
+  claimed name only as "claims the name …", the last message, on the right
+  its time and an unread count, a chevron (unread counts are kept in memory
+  for this session only); an add-contact button at the bottom right. While
+  Messages is not open, Chats shows its status (waiting / opening / closed,
+  with Try again where it applies) instead of the chips and list.
+- Conversation (`screens/chat/chat_screen.dart`): its own screen with Back,
+  the 32 px mark, short ID and claimed name; bubbles with 16 px corners, the
+  sender's bottom corner 4 px, 12 x 8 padding, 48 px kept free on the other
+  side; own messages right on the lime accent, received left on a neutral
+  surface; time and status (own: "waiting to send" / "sent" / "delivered";
+  received: the "sender's clock") small at the bubble's foot; day separators.
+  The composer is pinned at the bottom: a rounded field (grows to 5 lines,
+  Enter sends, Shift+Enter is a new line, not while an input method composes,
+  4000 characters) and a round send button. From 900 px Chats stays on the
+  left and the conversation opens on the right (no Back there).
+- Contacts (`screens/contacts/contacts_hub_screen.dart`): Back, Add contact,
+  tabs Contacts / Requests (count); Requests lists incoming (Accept / Decline)
+  and sent (Withdraw) requests.
+- Your ID & profile: your ID (Copy), the profile form, the not-saved note and
+  "Delete message history on this device".
+- Add contact (`screens/contacts/add_contact_dialog.dart`): a modal dialog
+  (their ID, an optional note, Send request / Close).
+- Host callbacks (`mountMessages(root, host)`): `onUnread`, `onRequests`,
+  `onIdentity`, `onScreen`, `onBack`, all optional; `messagesNavigate()`
+  opens Chats, Contacts, Requests, Your ID & profile or the dialog.
+All text goes through `textContent` (`dom.js`), other people's text in
+`<bdi>` with the unusual-character marker, websites only as checked https
+links, icons built with `createElementNS`; no innerHTML, no inline styles
+(CSP `style-src 'self'`). Styles: `src/connect/ui/messenger.css`.
 
 **Cross-site rule — `src/site-lock.js` (both builds).** Web Locks and storage
 are per origin, so the single-tab lock cannot see the other site; a cookie
@@ -1435,15 +1495,22 @@ keeps its own unlock screens, now in `src/connect/ui/standalone.js` (single-tab
 Web Lock, 10-minute idle lock, client creation, lock order: Messages, client,
 Web Lock); the Messages part is the same `messages.js` mounted into `#nc-root`
 (`npm run build:preview` still builds it). The old "Messages could not open"
-screen and the Contacts / My profile tabs are replaced by the layout above.
+screen and the Contacts / My profile tabs are replaced by the Messages layout
+above; with no host callbacks, the Chats bar's Contact requests and Your ID &
+profile buttons are the way to those screens there. The app shell's rules in
+`messenger.css` are scoped to `body.connect-app` and do not apply to it.
 
 **Tests.** `npm run test:connect` (`test/connect-smoke.js`, after `npm run
-build` and `npm run build:connect`): the wallet `dist/` has no Messages
-entry or UI strings; one unlock opens the wallet dashboard and the Messages
-panel (no second unlock screen); a fresh `wallet` mark refuses the unlock;
-no horizontal scroll at 390 and 320 px; the panel's Lock locks the wallet.
+build` and `npm run build:connect`): the wallet `dist/` has no app shell,
+Messages navigation or UI strings; one unlock opens the app on Home (no
+second unlock screen) with Home / Chats / Wallet / More as a left rail at
+1280 px and a bottom bar at 390 and 320 px; the Wallet screen shows the
+wallet's sections and holds "Delete saved wallet" while open (back on the
+start screen after lock); Chats shows Messages' status while it is not open;
+a fresh `wallet` mark refuses the unlock; no horizontal scroll at 390 and
+320 px on any screen; the Lock in More locks the wallet and Messages.
 NOT covered: every node WebSocket is closed by the test, so Messages never
-opens — the contact list with real contacts and the conversation composer
-(shown only for a contact) are not reached; sending, receiving, requests and
-profile editing need a live node. Not verified: nothing in this section has
-been run in a browser yet.
+opens — the chips and list with real contacts, the conversation and its
+composer, Contacts, Your ID & profile and the add-contact dialog are not
+reached; sending, receiving, requests and profile editing need a live node.
+Not verified: nothing in this section has been run in a browser yet.
