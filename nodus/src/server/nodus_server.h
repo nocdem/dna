@@ -814,7 +814,7 @@ int nodus_auth_handle_key_init_alg(nodus_server_t *srv, nodus_session_t *sess,
  * them in-process (tests/test_bf_merge_pure.c, test_get_all_paging.c,
  * test_get_unavailable.c, test_inter_circuit_uaf.c,
  * test_inter_preauth_gate.c, test_bf_forward_frames.c,
- * test_inter_role_split.c). Not an API: no other module calls these.
+ * test_inter_role_split.c, test_bf_recv_frame.c). Not an API: no other module calls these.
  * ════════════════════════════════════════════════════════════════════ */
 
 /** Primary-key order of nodus_values: owner_fp bytewise, then value_id
@@ -952,6 +952,15 @@ void nodus_server_bf_batch_cleanup(nodus_server_t *srv, dht_bf_batch_t *b);
  */
 int nodus_server_bf_absorb_reply(dht_bf_batch_t *b, const dht_bf_conn_t *c,
                                  const uint8_t *payload, size_t len);
+
+/** A3: header check of the batch-forward receive buffer (bf_recv_frame).
+ *  Parses the frame header with the transport's decoder (nodus_frame_decode:
+ *  magic, little-endian length) and nodus_frame_validate (version, TCP
+ *  size limit). @return 1 when buf holds a complete frame, 0 when more bytes
+ *  are needed, -1 on bad magic / version / size, or when the declared frame
+ *  (header + payload) is larger than `cap` — the receive buffer could never
+ *  hold it. */
+int nodus_server_bf_frame_status(const uint8_t *buf, size_t len, size_t cap);
 
 /** Resolve batch `b` and encode the frame its client gets (result /
  *  result_empty / result_multi / result_page / result batch with "u"

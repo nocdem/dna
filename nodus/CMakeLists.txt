@@ -1005,6 +1005,12 @@ add_executable(test_inter_role_split tests/test_inter_role_split.c)
 target_link_libraries(test_inter_role_split nodus dsa kem nodus)
 add_test(NAME test_inter_role_split COMMAND test_inter_role_split)
 
+# DHT Package A (A3): the batch-forward receive reads the frame header
+# little-endian like the wire, checks version, bounds length by the buffer.
+add_executable(test_bf_recv_frame tests/test_bf_recv_frame.c)
+target_link_libraries(test_bf_recv_frame nodus dsa kem nodus)
+add_test(NAME test_bf_recv_frame COMMAND test_bf_recv_frame)
+
 # P0-A (2026-09-28): tier-1 / tier-2 / value decoders refuse a repeated map
 # key and a heap field written from two maps; value types outside {1,2,3}.
 add_executable(test_decode_dupkey tests/test_decode_dupkey.c)

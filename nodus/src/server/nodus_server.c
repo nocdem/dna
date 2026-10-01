@@ -3350,6 +3350,30 @@ int nodus_server_bf_absorb_reply(dht_bf_batch_t *b, const dht_bf_conn_t *c,
 static int bf_build_frame(uint8_t **buf_out, size_t *len_out,
                             const uint8_t *cbor, size_t cbor_len);
 
+int nodus_server_bf_frame_status(const uint8_t *buf, size_t len, size_t cap) {
+    if (!buf) return -1;
+    if (len < NODUS_FRAME_HEADER_SIZE) return 0;  /* need more */
+
+    /* The transport's own decoder: magic, LITTLE-endian length
+     * (nodus_wire.c nodus_frame_encode). It fills version and payload_len
+     * whenever the header is present, complete frame or not. */
+    nodus_frame_t frame;
+    memset(&frame, 0, sizeof(frame));
+    int rc = nodus_frame_decode(buf, len, &frame);
+    if (rc < 0) return -1;  /* bad magic */
+
+    /* Version and TCP size limit, as the transport checks them — here
+     * already at the header, so a frame that can never be accepted is
+     * refused now instead of waited for. */
+    if (!nodus_frame_validate(&frame, false)) return -1;
+
+    /* A declared length the receive buffer can never hold would otherwise
+     * wait until the forward times out. */
+    if ((size_t)NODUS_FRAME_HEADER_SIZE + (size_t)frame.payload_len > cap) return -1;
+
+    return rc > 0 ? 1 : 0;
+}
+
 /** Try to receive a complete nodus frame. Returns 1 if complete, 0 if need more, -1 on error. */
 static int bf_recv_frame(dht_bf_conn_t *c, int fd) {
     ssize_t n = recv(fd, c->recv_buf + c->recv_len,
@@ -3357,14 +3381,7 @@ static int bf_recv_frame(dht_bf_conn_t *c, int fd) {
     if (n <= 0) return -1;  /* closed or error */
     c->recv_len += (size_t)n;
 
-    if (c->recv_len < 7) return 0;  /* need more */
-    if (c->recv_buf[0] != 0x4E || c->recv_buf[1] != 0x44) return -1;  /* bad magic */
-
-    uint32_t frame_len = (uint32_t)c->recv_buf[3] << 24 |
-                         (uint32_t)c->recv_buf[4] << 16 |
-                         (uint32_t)c->recv_buf[5] << 8 |
-                         (uint32_t)c->recv_buf[6];
-    return (c->recv_len >= 7 + frame_len) ? 1 : 0;
+    return nodus_server_bf_frame_status(c->recv_buf, c->recv_len, c->recv_cap);
 }
 
 /** Reset send/recv buffers for next round-trip */
