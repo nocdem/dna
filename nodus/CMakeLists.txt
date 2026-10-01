@@ -1026,9 +1026,11 @@ target_compile_definitions(test_client_dup_array PRIVATE
                            NODUS_CLIENT_TEST_SEAM=1)
 add_test(NAME test_client_dup_array COMMAND test_client_dup_array)
 
-# DHT Package A (client): nodus_client_get_owner / nodus_client_get_all_page
-# reply handling — absent "more" = complete, rows <= cursor / of other
-# owners / of other keys dropped, UNAVAILABLE and STALE surfaced. Same seam
+# DHT Package A (client): nodus_client_get_owner / nodus_client_get_all_page /
+# nodus_client_get_batch_ex reply handling — absent "more" = legacy
+# (completeness unknown; empty legacy = UNAVAILABLE), rows <= cursor / of
+# other owners / of other keys dropped, UNAVAILABLE and STALE surfaced, an
+# error without a valid code = PROTOCOL_ERROR, get_batch "u" surfaced. Same seam
 # as test_client_dup_array (nodus_client.c compiled into the test with
 # NODUS_CLIENT_TEST_SEAM=1; in-process, no sockets).
 add_executable(test_client_get_owner_page tests/test_client_get_owner_page.c

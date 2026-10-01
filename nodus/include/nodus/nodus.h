@@ -411,7 +411,8 @@ typedef struct {
  *                                 no forward answered), OR it returned a row
  *                                 of another owner (a node that predates the
  *                                 owner filter) — never reported as absent,
- *         NODUS_ERR_PROTOCOL_ERROR the row is of another key,
+ *         NODUS_ERR_PROTOCOL_ERROR the row is of another key, or an error
+ *                                 reply without a valid code,
  *         NODUS_ERR_TIMEOUT, another node error code, or -1 (bad args /
  *         not connected / local allocation).
  */
@@ -427,9 +428,15 @@ int nodus_client_get_owner(nodus_client_t *client,
  * Start with after = NULL; while *more_out is true, call again with
  * after = the returned *cursor_out. Every returned row carries the asked
  * key, is past `after` and (with owner_fp) belongs to that owner; the
- * client drops anything else, so the call is safe against a node that
- * predates paging: such a node's reply has no "more" and is treated as
- * complete (*more_out = false). The values are NOT signature-verified here.
+ * client drops anything else.
+ *
+ * A node that predates paging ignores "pg" / "after" / "own" and answers
+ * with a plain get_all reply (no "more"). Its completeness is UNKNOWN: the
+ * old node may have capped the reply, or answered empty because it could
+ * not look. Such a reply sets *legacy_out = true and *more_out = false —
+ * it is NOT a statement that no rows remain. A legacy reply with no row
+ * left after the filtering above is NODUS_ERR_UNAVAILABLE, never an empty
+ * success. The values are NOT signature-verified here.
  * Caller frees each value with nodus_value_free() and the array with free().
  *
  * @param owner_fp    NULL = every owner
@@ -437,10 +444,16 @@ int nodus_client_get_owner(nodus_client_t *client,
  * @param vals_out    page rows (NULL when the page is empty)
  * @param more_out    true = rows remain after this page
  * @param cursor_out  the next page's `after` (zeroed when !*more_out)
- * @return 0 on success (the page may be empty),
- *         NODUS_ERR_UNAVAILABLE   the node could not look — not "empty",
- *         NODUS_ERR_PROTOCOL_ERROR more without a cursor, or a cursor
- *                                 that does not advance past `after`,
+ * @param legacy_out  true = the node predates paging; the rows returned are
+ *                    what it sent, completeness unknown (false on error)
+ * @return 0 on success (a paging node's page may be empty),
+ *         NODUS_ERR_UNAVAILABLE   the node could not look, or a legacy
+ *                                 reply had no row of the asked page —
+ *                                 not "empty",
+ *         NODUS_ERR_PROTOCOL_ERROR more without a cursor, a cursor that
+ *                                 does not advance past `after`, a cursor
+ *                                 without more = true, or an error reply
+ *                                 without a valid code,
  *         NODUS_ERR_TIMEOUT, another node error code, or -1.
  */
 int nodus_client_get_all_page(nodus_client_t *client,
@@ -450,7 +463,8 @@ int nodus_client_get_all_page(nodus_client_t *client,
                                nodus_value_t ***vals_out,
                                size_t *count_out,
                                bool *more_out,
-                               nodus_dht_page_cursor_t *cursor_out);
+                               nodus_dht_page_cursor_t *cursor_out,
+                               bool *legacy_out);
 
 /* ── Batch DHT Operations ───────────────────────────────────────── */
 
@@ -482,6 +496,32 @@ int nodus_client_get_batch(nodus_client_t *client,
                             const nodus_key_t *keys, int key_count,
                             nodus_batch_result_t **results_out,
                             int *result_count_out);
+
+/**
+ * nodus_client_get_batch() plus the per-key "could not look" marker
+ * (DHT Package A). Same request frame, same results and ownership
+ * (free with nodus_client_free_batch_result()).
+ *
+ * unavail_out[i] is true when the node marked result i ("u": true) as not
+ * looked up (no forward slot / no forward answered): an empty result i is
+ * then NOT "no values". A node that predates the marker never sets it, so
+ * false only means "not marked". All key_count entries are zeroed first;
+ * entries at or past *result_count_out stay false.
+ *
+ * @param unavail_out  caller array of key_count bools (required)
+ * @return 0 on success,
+ *         NODUS_ERR_PROTOCOL_ERROR the reply has more entries than
+ *                                 key_count, or an error reply without a
+ *                                 valid code,
+ *         NODUS_ERR_UNAVAILABLE, NODUS_ERR_TIMEOUT, another node error
+ *         code, or -1 (bad args / not connected / local allocation).
+ *         On any non-zero return *results_out is NULL.
+ */
+int nodus_client_get_batch_ex(nodus_client_t *client,
+                               const nodus_key_t *keys, int key_count,
+                               nodus_batch_result_t **results_out,
+                               int *result_count_out,
+                               bool *unavail_out);
 
 /**
  * Batch count: get value counts + has_mine for multiple keys in one request.

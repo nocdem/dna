@@ -4,8 +4,9 @@
  *
  * Pins down:
  *   1. Without options every encoder emits the PRE-Package-A frame byte
- *      for byte (the legacy frame is rebuilt here with the raw CBOR
- *      encoder, exactly as nodus_tier2.c wrote it before the change).
+ *      for byte (the legacy frame — query and get_batch reply — is rebuilt
+ *      here with the raw CBOR encoder, exactly as nodus_tier2.c wrote it
+ *      before the change; never compared encoder against encoder).
  *   2. own / pg / after round-trip through nodus_t2_decode, including a
  *      value_id >= 2^63 (carried as raw uint64 bits).
  *   3. The paged replies (result_page, result_get_batch_ex) round-trip
@@ -13,8 +14,8 @@
  *   4. A malformed new key refuses the frame (decode -1); an unknown key
  *      is still skipped.
  *   5. Rev 2 item 15: the per-entry could-not-look marker "u" round-trips,
- *      is emitted only as true (an all-false array = the legacy frame,
- *      byte for byte), and a non-bool "u" refuses the frame.
+ *      is emitted only as true (an all-false array = the hand-built legacy
+ *      reply, byte for byte), and a non-bool "u" refuses the frame.
  *
  * RED on the tree before Package A: the _ex / _owner / result_page
  * encoders and the decoded fields do not exist.
@@ -22,6 +23,7 @@
 
 #include "protocol/nodus_tier2.h"
 #include "protocol/nodus_cbor.h"
+#include "core/nodus_value.h"
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_identity.h"
 #include <stdio.h>
@@ -77,6 +79,38 @@ static nodus_value_t *mk_value(const nodus_key_t *key, uint64_t vid, uint64_t se
     return v;
 }
 
+/* The pre-Package-A get_batch reply for two keys, the first carrying `v`:
+ * {t, y:"r", q:"result", r:{batch:[{k, vs:[<v>]}, {k, vs:[]}]}}, written
+ * with the raw CBOR encoder exactly as nodus_tier2.c wrote it before the
+ * change (main 4d943bc3). Returns 0 if `v` does not serialize. */
+static size_t legacy_batch_reply(uint8_t *buf, size_t cap, uint32_t txn,
+                                 const nodus_key_t keys[2], const nodus_value_t *v) {
+    uint8_t *vbuf = NULL;
+    size_t vlen = 0;
+    if (nodus_value_serialize(v, &vbuf, &vlen) != 0) return 0;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    cbor_encode_map(&enc, 4);
+    cbor_encode_cstr(&enc, "t"); cbor_encode_uint(&enc, txn);
+    cbor_encode_cstr(&enc, "y"); cbor_encode_cstr(&enc, "r");
+    cbor_encode_cstr(&enc, "q"); cbor_encode_cstr(&enc, "result");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "batch");
+    cbor_encode_array(&enc, 2);
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "k"); cbor_encode_bstr(&enc, keys[0].bytes, NODUS_KEY_BYTES);
+    cbor_encode_cstr(&enc, "vs");
+    cbor_encode_array(&enc, 1);
+    cbor_encode_bstr(&enc, vbuf, vlen);
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "k"); cbor_encode_bstr(&enc, keys[1].bytes, NODUS_KEY_BYTES);
+    cbor_encode_cstr(&enc, "vs");
+    cbor_encode_array(&enc, 0);
+    free(vbuf);
+    return cbor_encoder_len(&enc);
+}
+
 static void test_legacy_bytes_unchanged(void) {
     TEST("no options = pre-Package-A frames, byte for byte");
     nodus_key_t keys[2];
@@ -112,19 +146,25 @@ static void test_legacy_bytes_unchanged(void) {
         nodus_value_t *row[1] = { v };
         nodus_value_t **vpk[2] = { row, NULL };
         size_t cnt[2] = { 1, 0 };
-        size_t l1 = 0, l2 = 0;
+        /* nodus_t2_result_get_batch now delegates to _ex, so comparing the
+         * two proves nothing; the oracle is the legacy reply rebuilt here. */
+        size_t lo = legacy_batch_reply(buf_c, sizeof(buf_c), 3, keys, v);
+        size_t l1 = 0, l2 = 0, l3 = 0;
         int r1 = nodus_t2_result_get_batch(3, keys, 2, vpk, cnt, buf_a, sizeof(buf_a), &l1);
         int r2 = nodus_t2_result_get_batch_ex(3, keys, 2, vpk, cnt, NULL, NULL,
                                                buf_b, sizeof(buf_b), &l2);
+        CHECK(lo > 0, "legacy batch oracle");
+        CHECK(r1 == 0 && r2 == 0, "result_get_batch enc");
+        CHECK(l1 == lo && memcmp(buf_a, buf_c, lo) == 0, "result_get_batch bytes differ");
+        CHECK(l2 == lo && memcmp(buf_b, buf_c, lo) == 0,
+              "result_get_batch_ex(NULL) bytes differ");
         /* rev 2 item 15: an all-false "u" array is the legacy frame too */
         bool no_u[2] = { false, false };
-        size_t l3 = 0;
         int r3 = nodus_t2_result_get_batch_ex(3, keys, 2, vpk, cnt, NULL, no_u,
-                                               buf_c, sizeof(buf_c), &l3);
+                                               buf_a, sizeof(buf_a), &l3);
         nodus_value_free(v);
-        CHECK(r1 == 0 && r2 == 0 && r3 == 0, "result_get_batch enc");
-        CHECK(l1 == l2 && memcmp(buf_a, buf_b, l1) == 0, "result_get_batch_ex(NULL) bytes differ");
-        CHECK(l1 == l3 && memcmp(buf_a, buf_c, l1) == 0,
+        CHECK(r3 == 0, "result_get_batch_ex(all u false) enc");
+        CHECK(l3 == lo && memcmp(buf_a, buf_c, lo) == 0,
               "result_get_batch_ex(all u false) bytes differ");
     }
     PASS();
