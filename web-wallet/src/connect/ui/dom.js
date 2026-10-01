@@ -3,7 +3,7 @@
 // here parses HTML. Text written by someone else goes into a <bdi> (isolated
 // direction) and gets a visible "unusual characters" marker when
 // inspectUntrusted flags it.
-import { inspectUntrusted, httpsLink } from './text.js';
+import { inspectUntrusted, httpsLink, avatarSource } from './text.js';
 
 export function el(tag, { className, text } = {}, ...children) {
   const node = document.createElement(tag);
@@ -28,6 +28,22 @@ export function button(label, onClick, className) {
   const node = el('button', { className, text: label });
   node.type = 'button';
   node.onclick = onClick;
+  return node;
+}
+
+// A round avatar: the profile picture when text.js avatarSource accepts it
+// (set as a data: URL property, nothing parsed as markup), else the
+// initials. A picture the browser cannot decode falls back to the initials.
+export function fillAvatar(node, initials, b64) {
+  const src = avatarSource(b64);
+  node.textContent = src ? '' : initials;
+  if (src) {
+    const img = el('img', { className: 'avatar-img' });
+    img.alt = ''; img.decoding = 'async'; img.draggable = false;
+    img.onerror = () => { node.textContent = initials; };
+    img.src = src;
+    node.append(img);
+  }
   return node;
 }
 

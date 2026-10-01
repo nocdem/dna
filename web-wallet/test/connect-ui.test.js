@@ -20,7 +20,7 @@ import {
   parseContactId, shortId, inspectUntrusted, httpsLink, profilePatch, profileStatusText, senderClockLabel,
   recentDays, isDelivered, pendingOutbox, OUTBOX_MAX, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus,
-  hasUndelivered, DELIVERED_GRACE_SECONDS
+  hasUndelivered, DELIVERED_GRACE_SECONDS, avatarSource, AVATAR_MAX_B64, avatarPatch, AVATAR_UPLOAD_MAX_B64
 } from '../src/connect/ui/text.js';
 
 // A localStorage stand-in (getItem / setItem / removeItem).
@@ -384,4 +384,23 @@ test('local order is the local sequence, not the sender clock; received messages
   assert.equal(a, receivedKey(FP, { seq: 1, senderTs: 5, text: 'hi' }));
   assert.notEqual(a, receivedKey(OTHER, { seq: '1', senderTs: '5', text: 'hi' }));
   assert.notEqual(a, receivedKey(FP, { seq: '1', senderTs: '5', text: 'hi!' }));
+});
+
+test('profile picture: only bounded base64 that starts like a JPEG or PNG is shown; the type comes from the bytes', () => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2]).toString('base64');
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0]).toString('base64');
+  assert.equal(avatarSource(jpeg), `data:image/jpeg;base64,${jpeg}`);
+  assert.equal(avatarSource(png), `data:image/png;base64,${png}`);
+  const gif = Buffer.from('GIF89a').toString('base64');
+  for (const bad of [undefined, null, 42, '', gif, `${jpeg}"`, `${jpeg} `, jpeg.slice(0, -1), 'data:image/jpeg;base64,/9j/', `/9j/${'A'.repeat(AVATAR_MAX_B64)}`]) assert.equal(avatarSource(bad), null);
+  assert.equal(avatarSource(`/9j/${'A'.repeat(AVATAR_MAX_B64 - 4)}`)?.length, 'data:image/jpeg;base64,'.length + AVATAR_MAX_B64);
+});
+
+test('profile picture patch: within the app limit, a picture, or removal', () => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2]).toString('base64');
+  assert.deepEqual(avatarPatch(jpeg), { avatar_base64: jpeg });
+  assert.deepEqual(avatarPatch(''), { avatar_base64: '' });
+  assert.throws(() => avatarPatch(`/9j/${'A'.repeat(AVATAR_UPLOAD_MAX_B64)}`), /Invalid profile picture/);
+  assert.throws(() => avatarPatch(Buffer.from('GIF89a').toString('base64')), /Invalid profile picture/);
+  assert.throws(() => avatarPatch(null), /Invalid profile picture/);
 });

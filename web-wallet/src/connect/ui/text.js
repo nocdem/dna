@@ -73,6 +73,29 @@ export function httpsLink(value) {
   return url.href;
 }
 
+// A profile picture as an <img> source, or null. The app stores a 128x128
+// JPEG (quality 80) as plain base64 (profile_editor_screen.dart:507-513) in
+// avatar_base64 (dna_engine.h:377: 20484 bytes with the NUL). Shown only
+// when it is canonical-looking base64 within that size whose bytes start
+// like a JPEG or a PNG; the type comes from those bytes, never the sender.
+export const AVATAR_MAX_B64 = 20480;
+const B64 = /^[A-Za-z0-9+/]+={0,2}$/;
+export function avatarSource(b64) {
+  if (typeof b64 !== 'string' || b64.length === 0 || b64.length > AVATAR_MAX_B64 || b64.length % 4 !== 0 || !B64.test(b64)) return null;
+  if (b64.startsWith('/9j/')) return `data:image/jpeg;base64,${b64}`;         // FF D8 FF
+  if (b64.startsWith('iVBORw0KGgo')) return `data:image/png;base64,${b64}`;   // 89 50 4E 47 0D 0A 1A 0A
+  return null;
+}
+
+// A picture this site uploads stays under the app's own limit (18000
+// characters of base64, profile_editor_screen.dart:516); '' removes it.
+export const AVATAR_UPLOAD_MAX_B64 = 18000;
+export function avatarPatch(b64) {
+  if (b64 === '') return { avatar_base64: '' };
+  if (typeof b64 !== 'string' || b64.length > AVATAR_UPLOAD_MAX_B64 || !avatarSource(b64)) throw new Error('Invalid profile picture.');
+  return { avatar_base64: b64 };
+}
+
 // Profile edit (fields the core accepts: nc_profile.c TOP_FIELDS bio,
 // location, website — the name is not editable: no name registration in
 // the first release). An empty website is allowed; a non-empty one must be

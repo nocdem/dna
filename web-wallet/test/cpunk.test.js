@@ -10,7 +10,8 @@ test('default and custom HTTPS reads query Cellframe directly with only public d
       calls++; assert.equal(url, endpoint || CPUNK_ENDPOINT); assert.equal(options.redirect, 'error');
       assert.equal(options.credentials, 'omit'); assert.equal(options.referrerPolicy, 'no-referrer'); assert.equal(options.cache, 'no-store');
       assert.deepEqual(JSON.parse(options.body), cpunkQuery(address));
-      assert.deepEqual(options.headers, { 'Content-Type': 'application/json' });
+      // A CORS simple request: no preflight (the RPC refuses OPTIONS).
+      assert.deepEqual(options.headers, { 'Content-Type': 'text/plain;charset=UTF-8' });
       return Response.json({ result: [[{ token: 'CPUNK', balance: '0.000000000000000001' }]] });
     } });
     assert.equal(result.balance, '0.000000000000000001');

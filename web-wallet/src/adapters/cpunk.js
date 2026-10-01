@@ -8,7 +8,12 @@ export async function readCpunk({ address, endpoint = '', signal, fetcher = fetc
   const combined = signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000);
   let response;
   try {
-    response = await fetcher(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cpunkQuery(address)), signal: combined, credentials: 'omit', referrerPolicy: 'no-referrer', redirect: 'error', cache: 'no-store' });
+    // text/plain keeps this a CORS "simple" request: rpc.cellframe.net answers
+    // the OPTIONS preflight a JSON content type needs with 405 and no CORS
+    // headers, so the browser drops the request (checked 2026-10-01); it
+    // answers this POST with Access-Control-Allow-Origin: * and parses the
+    // body as JSON either way.
+    response = await fetcher(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, body: JSON.stringify(cpunkQuery(address)), signal: combined, credentials: 'omit', referrerPolicy: 'no-referrer', redirect: 'error', cache: 'no-store' });
     response = await boundedJson(response);
   } catch (error) {
     if (signal?.aborted) throw new Error('Request cancelled.');

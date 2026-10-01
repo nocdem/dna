@@ -287,6 +287,8 @@ npm run cpunk:verify
 npm run cpunk:verify -- https://rpc.cellframe.net/connect
 ```
 
+**Content type (0.1.40).** The request is sent as `Content-Type: text/plain;charset=UTF-8`, which keeps it a CORS "simple" request with no preflight. On 2026-10-01 `rpc.cellframe.net` answered the `OPTIONS` preflight that `application/json` needs with HTTP 405 and no CORS headers, so browsers dropped every balance read (the Cellframe badge showed "Incomplete" and no CPUNK balance); the same POST with `text/plain` gets HTTP 200, `Access-Control-Allow-Origin: *` and the same JSON (checked with curl and in Chromium from `wallet.nodusnetwork.io`). The body is unchanged JSON.
+
 The command fails on connection errors or malformed responses; it does not test browser CORS. After deployment, use the page's public-address read to verify access from the actual wallet origin. Only the public address and fixed CPUNK query fields are sent to the RPC. Responses are capped at 64 KiB and browser operations at 15 seconds; redirects are refused and balances are not cached. No claim system, snapshot rule or ownership proof is implemented.
 
 ## Permanent chain RPC limitations
@@ -1407,8 +1409,8 @@ One breakpoint, 900 px (the wallet's `SINGLE_COLUMN_DASHBOARD`).
   label, active line, badge at the icon); from 900 px a centred app window
   (max 1200 px) with the same four entries as a left rail. Each screen has a
   sticky top bar (`dna_app_bar.dart`).
-- Home: your ID (two-hex-digit mark, short ID, Copy — available once Messages
-  is open), "Wallet open in this browser", the wallet's estimated value and
+- Home: your ID (your profile picture or initials, verified name, short ID,
+  Copy — available once Messages is open), "Wallet open in this browser", the wallet's estimated value and
   NODUS balance shown again read-only from the Wallet screen, an "Open
   wallet" button, and New chat / Send / Receive (Send and Receive open the
   Wallet screen and press the wallet's own `#quick-send` / `#quick-receive`).
@@ -1439,15 +1441,15 @@ One breakpoint, 900 px (the wallet's `SINGLE_COLUMN_DASHBOARD`).
   Contact requests (count) and Your ID & profile; filter chips All / Unread
   (count) / Chats (count) — Chats shows the same list as All, as in the app
   without groups; an entry "N contact requests are waiting for you" while
-  some are; the conversations, most recent first — an ID mark (two hex
-  digits of the ID, never a claimed name, 40 px), the short ID in bold, a
-  claimed name only as "claims the name …", the last message, on the right
+  some are; the conversations, most recent first — the avatar (40 px, see
+  "Profile pictures" below; never from a claimed name), the verified name or
+  else the short ID in bold, a claimed name only as "claims the name …", the last message, on the right
   its time and an unread count, a chevron (unread counts are kept in memory
   for this session only); an add-contact button at the bottom right. While
   Messages is not open, Chats shows its status (waiting / opening / closed,
   with Try again where it applies) instead of the chips and list.
 - Conversation (`screens/chat/chat_screen.dart`): its own screen with Back,
-  the 32 px mark, short ID and claimed name; bubbles with 16 px corners, the
+  the 32 px avatar, the verified name or short ID and a claimed name; bubbles with 16 px corners, the
   sender's bottom corner 4 px, 12 x 8 padding, 48 px kept free on the other
   side; own messages right on the lime accent, received left on a neutral
   surface; time and status (own: "waiting to send" / "sent" / "delivered";
@@ -1459,8 +1461,26 @@ One breakpoint, 900 px (the wallet's `SINGLE_COLUMN_DASHBOARD`).
 - Contacts (`screens/contacts/contacts_hub_screen.dart`): Back, Add contact,
   tabs Contacts / Requests (count); Requests lists incoming (Accept / Decline)
   and sent (Withdraw) requests.
-- Your ID & profile: your ID (Copy), the profile form, the not-saved note and
-  "Delete message history on this device".
+- Your ID & profile: your ID (Copy), your picture (Change picture / Remove
+  picture), the profile form, the not-saved note and "Delete message history
+  on this device".
+- Profile pictures (0.1.40). The avatar everywhere (Chats, Contacts,
+  requests, the conversation bar, Home, More, Your ID & profile) is the
+  profile's `avatar_base64` — the field the app writes (128x128 JPEG,
+  quality 80, plain base64; `profile_editor_screen.dart:507-516`,
+  `dna_engine.h:377`) in the signature-checked profile — else two letters of
+  the verified name, else of the ID. `text.js avatarSource` shows it only when
+  it is canonical base64 of at most 20480 characters whose bytes start like a
+  JPEG or a PNG; the `data:` type comes from those bytes (CSP `img-src` allows
+  `data:`), and the image is set as a property (`dom.js fillAvatar`), with the
+  initials back if the browser cannot decode it. Change picture takes a JPEG,
+  PNG or WebP (at most 20 MB), crops its centre square, scales it to 128x128 on
+  a canvas (transparent parts white) and encodes JPEG at quality 0.8, stepping
+  down to 0.4 until the base64 fits the app's own 18000-character limit
+  (`profile_editor_screen.dart:516`); it is saved as a patch of
+  `avatar_base64` alone (`core.profileUpdate`: the core applies it to a fresh
+  read of the profile, `nc_profile.c nc_profile_publish`), Remove picture
+  writes `''`. Everyone can read it, as in the app.
 - Add contact (`screens/contacts/add_contact_dialog.dart`): a modal dialog
   (their ID, an optional note, Send request / Close).
 - Host callbacks (`mountMessages(root, host)`): `onUnread`, `onRequests`,

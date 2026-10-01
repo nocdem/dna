@@ -40,9 +40,9 @@ import { openHistoryStore, memoryHistoryStore, StorageError } from '../store.js'
 import {
   parseContactId, shortId, profilePatch, profileStatusText, contactListStatusText, senderClockLabel,
   recentDays, pendingOutbox, hasUndelivered, compareLocal, receivedKey,
-  publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus
+  publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus, avatarPatch, AVATAR_UPLOAD_MAX_B64
 } from './text.js';
-import { el, untrusted, button, website } from './dom.js';
+import { el, untrusted, button, website, fillAvatar } from './dom.js';
 
 const SYNC_MS = 30000;                   // how often requests and messages are checked
 const HEX128 = /^[0-9a-f]{128}$/;
@@ -96,10 +96,11 @@ function wipe() {
   if (!ui) return;
   for (const control of [ui.addId, ui.addNote, ui.composer, ui.bio, ui.location, ui.website]) control.value = '';
   ui.composer.rows = 1; ui.counter.textContent = '';
-  for (const line of [ui.addStatus, ui.sendStatus, ui.profileStatus, ui.copyStatus, ui.emptyCopyStatus, ui.requestsStatus, ui.sync, ui.ownId, ui.profileName]) line.textContent = '';
+  for (const line of [ui.addStatus, ui.sendStatus, ui.profileStatus, ui.copyStatus, ui.emptyCopyStatus, ui.requestsStatus, ui.sync, ui.ownId, ui.profileName, ui.avatarStatus, ui.ownAvatar]) line.textContent = '';
   ui.messageList.replaceChildren(); ui.requestList.replaceChildren(); ui.outgoingList.replaceChildren();
   ui.contactList.replaceChildren(); ui.hubList.replaceChildren(); ui.convTitle.textContent = ''; ui.convClaim.replaceChildren(); ui.convNote.textContent = '';
   ui.erase.textContent = 'Delete message history on this device';
+  ui.avatarChange.disabled = ui.avatarRemove.disabled = false;
   if (ui.addDialog.open) ui.addDialog.close();
   screen = 'list'; hubTab = 'contacts'; filter = 'all';
 }
@@ -439,9 +440,8 @@ function input(tag, attrs) { return setAttrs(document.createElement(tag), attrs)
 function field(id, labelText, control) { return [setAttrs(el('label', { text: labelText }), { for: id }), control]; }
 function statusLine(className = 'hint') { return setAttrs(el('p', { className }), { role: 'status', 'aria-live': 'polite' }); }
 
-// A circle with two hex digits of the ID: an ID-derived mark, never a name
-// (a claimed name is unverified, G9). The colour class is a pure function of
-// the ID, so the same contact keeps its colour.
+// Avatar colour classes are a pure function of the ID, so the same contact
+// keeps its colour; a claimed name is never used (it is unverified, G9).
 // A registered name the core VERIFIED (nc_name_verify: "<name>:lookup"
 // written by this identity points back to it — design §1.9 G9), else ''.
 function verifiedName(fp) {
@@ -451,11 +451,16 @@ function verifiedName(fp) {
 // What a contact is called: the verified name, else the short ID.
 function displayName(fp) { return verifiedName(fp) || shortId(fp); }
 
+// The two letters shown when there is no picture: of the verified name,
+// else of the ID.
+export function initials(fp, name) { return (name ? [...name].slice(0, 2).join('') : fp.slice(0, 2)).toUpperCase(); }
+
+// The profile picture (avatar_base64 of the signature-checked profile,
+// dom.js fillAvatar), else the initials.
 function avatar(fp, extra = '') {
-  const name = verifiedName(fp);
-  const node = el('span', { className: `contact-avatar avatar-${parseInt(fp[0], 16) % 6}${extra}`, text: (name ? [...name].slice(0, 2).join('') : fp.slice(0, 2)).toUpperCase() });
+  const node = el('span', { className: `contact-avatar avatar-${parseInt(fp[0], 16) % 6}${extra}` });
   node.setAttribute('aria-hidden', 'true');
-  return node;
+  return fillAvatar(node, initials(fp, verifiedName(fp)), profiles.get(fp)?.avatar_base64);
 }
 
 // Under a verified name: the short ID. Otherwise an unverified claim, if any.
@@ -534,7 +539,8 @@ async function copyOwnId(statusNode) {
 // root: an empty element of the host page. Every host callback is optional:
 //   onUnread(n)      the total of unread messages (a navigation badge);
 //   onRequests(n)    contact requests waiting for an answer;
-//   onIdentity(fp)   the own ID while Messages is open, else null;
+//   onIdentity(fp, name, avatarBase64)   the own ID while Messages is open,
+//                    else null; with the own verified name and picture ('' if none);
 //   onScreen(name)   the screen shown changed ('list', 'conversation',
 //                    'contacts', 'profile');
 //   onBack(from)     Back was pressed on a screen opened on its own (called
@@ -663,6 +669,15 @@ export function mountMessages(root, options = {}) {
   u.location = input('input', { id: 'nc-location', type: 'text', autocomplete: 'off' });
   u.website = input('input', { id: 'nc-website', type: 'url', autocomplete: 'off' });
   u.profileStatus = statusLine();
+  // Profile picture: chosen here, made into the app's 128x128 JPEG.
+  u.ownAvatar = setAttrs(el('span', { className: 'contact-avatar avatar-large' }), { 'aria-hidden': 'true' });
+  u.avatarFile = input('input', { id: 'nc-avatar-file', type: 'file', accept: 'image/jpeg,image/png,image/webp' });
+  u.avatarFile.hidden = true;
+  u.avatarChange = button('Change picture', () => u.avatarFile.click(), 'secondary small');
+  u.avatarRemove = button('Remove picture', () => void saveAvatar(''), 'secondary small');
+  u.avatarStatus = statusLine();
+  u.avatarBox = el('div', { className: 'own-avatar-box' }, u.ownAvatar,
+    el('div', { className: 'own-avatar-actions' }, u.avatarChange, u.avatarRemove, u.avatarFile), u.avatarStatus);
   const profileSubmit = el('button', { text: 'Save profile' }); profileSubmit.type = 'submit';
   u.profileForm = el('form', { className: 'messenger-form' },
     ...field('nc-bio', 'About you', u.bio), ...field('nc-location', 'Location', u.location),
@@ -677,8 +692,8 @@ export function mountMessages(root, options = {}) {
       el('div', { className: 'own-id-box' }, el('span', { className: 'own-id-label', text: 'Your ID — share it so others can add you' }), u.ownId,
         button('Copy your ID', () => void copyOwnId(u.copyStatus), 'secondary small'), u.copyStatus),
       el('h3', { text: 'Your profile' }),
-      el('p', { className: 'hint', text: 'Everyone can read your profile. A name cannot be chosen here yet.' }),
-      u.profileName, u.profileForm, u.memoryNote, u.erase)), { 'aria-label': 'Your ID & profile' });
+      el('p', { className: 'hint', text: 'Everyone can read your profile, including your picture. A name cannot be chosen here yet.' }),
+      u.avatarBox, u.profileName, u.profileForm, u.memoryNote, u.erase)), { 'aria-label': 'Your ID & profile' });
 
   // One screen at a time on a narrow screen; on a wide one Chats stays next
   // to the open conversation (messenger.css, data-screen).
@@ -689,6 +704,11 @@ export function mountMessages(root, options = {}) {
   u.addForm.onsubmit = event => void addContact(event);
   u.sendForm.onsubmit = event => void send(event);
   u.profileForm.onsubmit = event => void saveProfile(event);
+  u.avatarFile.onchange = () => {
+    const file = u.avatarFile.files?.[0];
+    u.avatarFile.value = '';
+    if (file) void pickAvatar(file);
+  };
   u.composer.addEventListener('input', growComposer);
   u.composer.addEventListener('keydown', event => {
     // Enter sends, Shift+Enter is a new line; never while an IME composes.
@@ -791,8 +811,9 @@ function render({ scroll = false } = {}) {
   const id = open ? ownFp : null;
   // The own verified name (nc_name_verify) travels with the ID.
   const ownName = open && typeof ownProfile?.name === 'string' ? ownProfile.name : '';
-  const idKey = id ? `${id}|${ownName}` : null;
-  if (idKey !== notifiedId) { notifiedId = idKey; host.onIdentity?.(id, ownName); }
+  const ownAvatar = open && typeof ownProfile?.avatar_base64 === 'string' ? ownProfile.avatar_base64 : '';
+  const idKey = id ? `${id}|${ownName}|${ownAvatar}` : null;
+  if (idKey !== notifiedId) { notifiedId = idKey; host.onIdentity?.(id, ownName, ownAvatar); }
   if (screen !== notifiedScreen) { notifiedScreen = screen; host.onScreen?.(screen); }
 }
 
@@ -927,9 +948,17 @@ function renderConversation(scroll) {
   if (scroll || atBottom) list.scrollTop = list.scrollHeight;
 }
 
+function fillOwnAvatar() {
+  const p = ownProfile || {};
+  ui.ownAvatar.className = `contact-avatar avatar-large avatar-${parseInt(ownFp[0], 16) % 6}`;
+  fillAvatar(ui.ownAvatar, initials(ownFp, typeof p.name === 'string' ? p.name : ''), p.avatar_base64);
+  ui.avatarRemove.hidden = !p.avatar_base64;
+}
+
 function fillProfile() {
   const p = ownProfile || {};
   ui.bio.value = p.bio || ''; ui.location.value = p.location || ''; ui.website.value = p.website || '';
+  fillOwnAvatar();
   const line = ui.profileName;
   line.replaceChildren();
   if (p.name) line.append('Your name: ', untrusted(p.name, undefined, { name: true }));
@@ -1033,6 +1062,64 @@ async function saveProfile(event) {
     if (result.status === 'published') { ownProfile = { ...(ownProfile || {}), ...patch }; fillProfile(); }
     if (result.status === 'taken') profileTaken = true;
   } catch (error) { if (gen === generation) ui.profileStatus.textContent = /https|Invalid profile/.test(error.message) ? error.message : 'Saving failed. Try again later.'; }
+}
+
+// A chosen picture made the way the app makes one
+// (profile_editor_screen.dart:507-516): the centre square scaled to 128x128,
+// JPEG at quality 0.8, stepping the quality down until the base64 fits
+// AVATAR_UPLOAD_MAX_B64. Transparent parts become white (JPEG has no alpha).
+const AVATAR_SIDE = 128, AVATAR_FILE_MAX = 20 * 1024 * 1024;
+async function avatarFromFile(file) {
+  if (file.size > AVATAR_FILE_MAX) throw new Error('That picture is too large. Choose one under 20 MB.');
+  let bitmap;
+  try { bitmap = await createImageBitmap(file); } catch { throw new Error('That file could not be read as a picture.'); }
+  try {
+    const side = Math.min(bitmap.width, bitmap.height);
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = AVATAR_SIDE;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, AVATAR_SIDE, AVATAR_SIDE);
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, AVATAR_SIDE, AVATAR_SIDE);
+    for (const quality of [0.8, 0.7, 0.6, 0.5, 0.4]) {
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+      if (!blob) break;
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      const b64 = btoa(binary);
+      if (b64.length <= AVATAR_UPLOAD_MAX_B64) return b64;
+    }
+  } finally { bitmap.close(); }
+  throw new Error('That picture could not be made small enough. Try another one.');
+}
+
+async function pickAvatar(file) {
+  const gen = generation;
+  ui.avatarStatus.textContent = 'Preparing the picture…';
+  let b64;
+  try { b64 = await avatarFromFile(file); }
+  catch (error) { if (gen === generation) ui.avatarStatus.textContent = error.message; return; }
+  if (gen === generation) await saveAvatar(b64);
+}
+
+// Writes only avatar_base64; the core keeps every other profile field as
+// read from the network (nc_profile.c patch). '' removes the picture.
+async function saveAvatar(b64) {
+  const gen = generation;
+  if (profileTaken || ui.avatarChange.disabled) return;
+  ui.avatarChange.disabled = ui.avatarRemove.disabled = true;
+  try {
+    const patch = avatarPatch(b64);
+    ui.avatarStatus.textContent = 'Saving…';
+    const result = await core.profileUpdate(patch);
+    if (gen !== generation) return;
+    ui.avatarStatus.textContent = result.status === 'published' ? (b64 ? 'Your picture was saved.' : 'Your picture was removed.') : profileStatusText(result.status);
+    if (result.status === 'published') { ownProfile = { ...(ownProfile || {}), ...patch }; fillOwnAvatar(); render(); }
+    if (result.status === 'taken') profileTaken = true;
+  } catch { if (gen === generation) ui.avatarStatus.textContent = 'Saving failed. Try again later.'; }
+  finally { if (gen === generation) ui.avatarChange.disabled = ui.avatarRemove.disabled = false; }
 }
 
 async function erase() {

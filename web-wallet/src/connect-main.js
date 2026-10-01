@@ -30,7 +30,7 @@ const NO_ID_TEXT = 'Appears when Messages is connected';
 // tab: the screen shown; origin 'more' while Chats shows a screen opened
 // from the More menu (Contacts, Contact requests, Your ID & profile): Back
 // returns there, and the rail keeps More highlighted.
-let tab = 'home', origin = null, ownId = null, ownName = '', messagesScreen = 'list';
+let tab = 'home', origin = null, ownId = null, ownName = '', ownAvatar = '', messagesScreen = 'list';
 const scrollByTab = {};
 
 function setTab(next, { highlight = next } = {}) {
@@ -51,7 +51,7 @@ function badge(id, count) {
   node.hidden = !count;
 }
 
-function wireShell({ messagesNavigate, shortId, nodusSymbol }) {
+function wireShell({ messagesNavigate, shortId, nodusSymbol, initials, fillAvatar }) {
   const navigate = target => messagesNavigate(target);
 
   function openFromMore(target) {
@@ -161,7 +161,8 @@ function wireShell({ messagesNavigate, shortId, nodusSymbol }) {
   function showIdentity() {
     for (const [markId, textId] of [['home-avatar', 'home-id'], ['more-avatar', 'more-id']]) {
       const mark = $(markId);
-      mark.textContent = ownId ? (ownName ? [...ownName].slice(0, 2).join('') : ownId.slice(0, 2)).toUpperCase() : '··';
+      // The own profile picture (messages.js onIdentity), else the initials.
+      fillAvatar(mark, ownId ? initials(ownId, ownName) : '··', ownId ? ownAvatar : '');
       mark.className = `contact-avatar avatar-large ${ownId ? `avatar-${parseInt(ownId[0], 16) % 6}` : 'home-avatar-empty'}`;
       // A verified registered name (nc_name_verify) first, then the short ID.
       $(textId).textContent = ownId ? (ownName ? `${ownName} · ${shortId(ownId)}` : shortId(ownId)) : NO_ID_TEXT;
@@ -174,7 +175,7 @@ function wireShell({ messagesNavigate, shortId, nodusSymbol }) {
   return {
     onUnread(count) { badge('nav-chats-count', count); },
     onRequests(count) { for (const id of ['nav-more-count', 'more-contacts-count', 'more-requests-count']) badge(id, count); },
-    onIdentity(fp, name = '') { ownId = fp; ownName = fp ? name : ''; showIdentity(); },
+    onIdentity(fp, name = '', avatarBase64 = '') { ownId = fp; ownName = fp ? name : ''; ownAvatar = fp ? avatarBase64 : ''; showIdentity(); },
     onScreen(screen) {
       messagesScreen = screen;
       // A conversation, Contacts or Your ID & profile covers the bottom bar
@@ -193,11 +194,11 @@ function wireShell({ messagesNavigate, shortId, nodusSymbol }) {
 }
 
 try {
-  const [{ configureSite, registerExtension }, { mountMessages, messagesNavigate, walletExtension }, { shortId }, { NODUS_ASSET }] = await Promise.all([
-    import('./wallet-extensions.js'), import('./connect/ui/messages.js'), import('./connect/ui/text.js'), import('./nodus/network.js')
+  const [{ configureSite, registerExtension }, { mountMessages, messagesNavigate, walletExtension, initials }, { shortId }, { NODUS_ASSET }, { fillAvatar }] = await Promise.all([
+    import('./wallet-extensions.js'), import('./connect/ui/messages.js'), import('./connect/ui/text.js'), import('./nodus/network.js'), import('./connect/ui/dom.js')
   ]);
   configureSite('connect');
-  const host = wireShell({ messagesNavigate, shortId, nodusSymbol: NODUS_ASSET.symbol });
+  const host = wireShell({ messagesNavigate, shortId, nodusSymbol: NODUS_ASSET.symbol, initials, fillAvatar });
   mountMessages($('nc-root'), host);
   registerExtension(walletExtension);
   await import('./app.js');
