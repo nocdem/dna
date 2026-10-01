@@ -204,6 +204,10 @@ static bool read_profile(const nc_ctx_t *ctx, const char *record,
     printf("  fp: %.16s...\n", fp);
     bool found = raw.outcome == NC_FOUND && id;
     if (found) print_profile_summary(id);
+    /* G9: the registered name is shown only when nc_name_verify proves it */
+    if (found && id->has_registered_name)
+        printf("  name check: %s\n",
+               nc_name_verify(ctx, fp, id->registered_name) == 1 ? "VERIFIED" : "not verified");
     if (id) dna_identity_free(id);
     nc_read_clear(&raw);
     return found;

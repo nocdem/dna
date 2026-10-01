@@ -29,7 +29,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright';
-import { portfolioRead, cellframeRead } from './portfolio-routes.js';
+import { portfolioRead, cellframeRead, ixiosRead } from './portfolio-routes.js';
 import { pastePhrase } from './browser-phrase.js';
 
 // The wallet build: no app shell, Messages navigation or UI code (static check).
@@ -60,6 +60,8 @@ try {
     const req = route.request();
     if (await cellframeRead(route)) return;
     if (await portfolioRead(route)) return;
+    // A VITE_ENABLE_IXIOS=true build (the release build) also reads IXIOS.
+    if (await ixiosRead(route)) return;
     if (!req.url().startsWith(url + '/') || req.method() !== 'GET' || req.postData()) {
       unexpected.push({ url: req.url(), method: req.method() }); return route.abort();
     }

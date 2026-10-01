@@ -53,6 +53,62 @@ static void read_owner_row(const nc_ctx_t *ctx, const nodus_key_t *key,
                      "key (ignored)", raw->foreign);
 }
 
+/* dht_keyserver_is_valid_registered_name (keyserver_lookup.c:161-182),
+ * mirrored: that file is not in this build. */
+static bool name_valid(const char *name) {
+    if (!name) return false;
+    size_t len = strlen(name);
+    if (len == 0 || len >= 64) return false;
+    if (len >= 3 && name[len - 1] == '.' && name[len - 2] == '.' && name[len - 3] == '.')
+        return false;
+    if (len >= 16) {
+        bool all_hex = true;
+        for (size_t i = 0; i < len && all_hex; i++) {
+            char c = name[i];
+            all_hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+                      (c >= 'A' && c <= 'F');
+        }
+        if (all_hex) return false;
+    }
+    return true;
+}
+
+/* One "<name>:lookup" read, owner = `owner`: 1 holds fp, 0 not, -1 fault. */
+static int lookup_holds(const nc_ctx_t *ctx, const char *name, const char *fp,
+                        const nodus_key_t *owner) {
+    char s[80];
+    if (snprintf(s, sizeof(s), "%s:lookup", name) >= (int)sizeof(s)) return 0;
+    nodus_key_t key;
+    nc_key_str(s, &key);
+    nc_read_t raw;
+    nc_read_one(ctx, &key, owner, &raw);
+    int r;
+    if (raw.outcome == NC_FOUND && raw.value)
+        r = raw.value->data_len >= NC_FP_HEX_LEN &&
+            memcmp(raw.value->data, fp, NC_FP_HEX_LEN) == 0;
+    else
+        r = raw.outcome == NC_EMPTY ? 0 : -1;
+    nc_read_clear(&raw);
+    return r;
+}
+
+int nc_name_verify(const nc_ctx_t *ctx, const char *fp, const char *name) {
+    nodus_key_t owner;
+    if (!ctx || !fp || nc_fp_parse(fp, &owner) != 0 || !name_valid(name))
+        return 0;
+    int r = lookup_holds(ctx, name, fp, &owner);
+    if (r != 0) return r;
+    char lower[64];
+    size_t len = strlen(name);
+    bool changed = false;
+    for (size_t i = 0; i <= len; i++) {
+        char c = name[i];
+        lower[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+        changed = changed || lower[i] != c;
+    }
+    return changed ? lookup_holds(ctx, lower, fp, &owner) : 0;
+}
+
 void nc_profile_read(const nc_ctx_t *ctx, const char *fp, nc_read_t *raw,
                      dna_unified_identity_t **identity_out,
                      nc_peer_t *peer_out) {

@@ -435,13 +435,25 @@ function statusLine(className = 'hint') { return setAttrs(el('p', { className })
 // A circle with two hex digits of the ID: an ID-derived mark, never a name
 // (a claimed name is unverified, G9). The colour class is a pure function of
 // the ID, so the same contact keeps its colour.
+// A registered name the core VERIFIED (nc_name_verify: "<name>:lookup"
+// written by this identity points back to it — design §1.9 G9), else ''.
+function verifiedName(fp) {
+  const name = profiles.get(fp)?.name;
+  return typeof name === 'string' ? name : '';
+}
+// What a contact is called: the verified name, else the short ID.
+function displayName(fp) { return verifiedName(fp) || shortId(fp); }
+
 function avatar(fp, extra = '') {
-  const node = el('span', { className: `contact-avatar avatar-${parseInt(fp[0], 16) % 6}${extra}`, text: fp.slice(0, 2).toUpperCase() });
+  const name = verifiedName(fp);
+  const node = el('span', { className: `contact-avatar avatar-${parseInt(fp[0], 16) % 6}${extra}`, text: (name ? [...name].slice(0, 2).join('') : fp.slice(0, 2)).toUpperCase() });
   node.setAttribute('aria-hidden', 'true');
   return node;
 }
 
+// Under a verified name: the short ID. Otherwise an unverified claim, if any.
 function claimedNameHint(fp, prefix = 'claims the name ') {
+  if (verifiedName(fp)) return el('span', { className: 'contact-claim' }, shortId(fp));
   const name = profiles.get(fp)?.claimed_name;
   return name ? el('span', { className: 'contact-claim' }, prefix, untrusted(name, undefined, { name: true })) : null;
 }
@@ -770,7 +782,10 @@ function render({ scroll = false } = {}) {
   host.onUnread?.(unread);
   host.onRequests?.(waiting);
   const id = open ? ownFp : null;
-  if (id !== notifiedId) { notifiedId = id; host.onIdentity?.(id); }
+  // The own verified name (nc_name_verify) travels with the ID.
+  const ownName = open && typeof ownProfile?.name === 'string' ? ownProfile.name : '';
+  const idKey = id ? `${id}|${ownName}` : null;
+  if (idKey !== notifiedId) { notifiedId = idKey; host.onIdentity?.(id, ownName); }
   if (screen !== notifiedScreen) { notifiedScreen = screen; host.onScreen?.(screen); }
 }
 
@@ -813,7 +828,7 @@ function renderChats() {
     const side = el('span', { className: 'contact-side' });
     if (last) { const when = el('time', { text: shortWhen(last.at) }); when.dateTime = new Date(last.at).toISOString(); side.append(when); }
     if (unread) side.append(setAttrs(el('span', { className: 'count-badge', text: String(unread) }), { 'aria-label': `${unread} new` }));
-    row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, el('strong', { text: shortId(c.fp) }), claimedNameHint(c.fp)), preview), side, icon('chevron'));
+    row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, el('strong', { text: displayName(c.fp) }), claimedNameHint(c.fp)), preview), side, icon('chevron'));
     row.onclick = () => selectContact(c.fp);
     return el('li', {}, row);
   }));
@@ -829,7 +844,7 @@ function renderContacts() {
     const row = el('button', { className: 'contact-row' });
     row.type = 'button';
     const sub = el('span', { className: 'contact-preview', text: c.salt ? 'Open conversation' : 'Messaging is not ready yet' });
-    row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, el('strong', { text: shortId(c.fp) }), claimedNameHint(c.fp)), sub), icon('chevron'));
+    row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, el('strong', { text: displayName(c.fp) }), claimedNameHint(c.fp)), sub), icon('chevron'));
     row.onclick = () => selectContact(c.fp);
     return el('li', {}, row);
   }) : [el('li', { className: 'contact-empty', text: 'No contacts yet. Add one with their ID.' })]));
@@ -858,7 +873,7 @@ function renderRequests() {
   ui.outgoingList.replaceChildren(...(state.outgoing.length ? state.outgoing.map(o => el('li', { className: 'request-row' },
     avatar(o.fp),
     el('div', { className: 'request-main' },
-      el('span', { className: 'contact-name' }, el('strong', { text: shortId(o.fp) })),
+      el('span', { className: 'contact-name' }, el('strong', { text: displayName(o.fp) })),
       el('span', { className: 'contact-claim', text: 'waiting for them to accept' }),
       el('div', { className: 'request-actions' }, button('Withdraw', () => void withdraw(o.fp), 'secondary small')))
   )) : [el('li', { className: 'contact-empty', text: 'None.' })]));
@@ -869,7 +884,7 @@ function renderConversation(scroll) {
   const list = ui.messageList;
   const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
   ui.convAvatar.replaceWith(ui.convAvatar = avatar(contact.fp, ' conversation-avatar'));
-  ui.convTitle.textContent = shortId(contact.fp);
+  ui.convTitle.textContent = displayName(contact.fp);
   const claim = claimedNameHint(contact.fp);
   ui.convClaim.replaceChildren(...(claim ? claim.childNodes : []));
   const lost = dropped.get(contact.fp), other = others.get(contact.fp);
@@ -909,7 +924,8 @@ function fillProfile() {
   ui.bio.value = p.bio || ''; ui.location.value = p.location || ''; ui.website.value = p.website || '';
   const line = ui.profileName;
   line.replaceChildren();
-  if (p.claimed_name) line.append('Name on your profile (not checked here): ', untrusted(p.claimed_name, undefined, { name: true }));
+  if (p.name) line.append('Your name: ', untrusted(p.name, undefined, { name: true }));
+  else if (p.claimed_name) line.append('Name on your profile (not verified — its lookup record does not point to you): ', untrusted(p.claimed_name, undefined, { name: true }));
   else line.textContent = 'Your profile has no name.';
   if (p.website) { const link = website(p.website); if (link) line.append(el('br'), 'Website: ', link); }
 }

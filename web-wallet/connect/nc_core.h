@@ -321,6 +321,20 @@ void nc_profile_read(const nc_ctx_t *ctx, const char *fp, nc_read_t *raw,
                      dna_unified_identity_t **identity_out,
                      nc_peer_t *peer_out);
 
+/**
+ * The app's registered-name check (dht_keyserver_reverse_lookup,
+ * messenger/dht/keyserver/keyserver_lookup.c:186-283), owner-filtered:
+ * `name` (the profile's registered_name) is VERIFIED only when the
+ * "<name>:lookup" record written BY `fp` itself — or, if the name has upper
+ * case, the "<lowercased name>:lookup" record (keyserver_names.c:121-126
+ * writes that form; keyserver_publish.c:65 the name as given) — holds `fp`
+ * in its first 128 bytes. Names the app's validator refuses
+ * (dht_keyserver_is_valid_registered_name, keyserver_lookup.c:161-182) are
+ * never verified. Design §1.9 G9: only a verified name is shown as a name.
+ * Returns 1 verified, 0 not verified, -1 could not read (show the ID).
+ */
+int nc_name_verify(const nc_ctx_t *ctx, const char *fp, const char *name);
+
 typedef enum {
     NC_PROFILE_PUBLISHED = 0,  /* PUT accepted                                */
     NC_PROFILE_WAIT      = 1,  /* read EMPTY for a restored identity, or

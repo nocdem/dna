@@ -382,7 +382,15 @@ int nc_profile_get(const char *fp) {
     /* rows of another owner at the profile key: someone is interfering */
     json_object_object_add(o, "foreign", jstr_u64(raw.foreign));
     if (raw.outcome == NC_FOUND && id) {
-        json_object_object_add(o, "profile", profile_json(id));
+        json_object *p = profile_json(id);
+        /* "name": the registered name ONLY when nc_name_verify proved it
+         * (design §1.9 G9); otherwise "" and the UI shows the ID with the
+         * claim beside it. */
+        bool verified = id->has_registered_name &&
+                        nc_name_verify(&g_ctx, fp, id->registered_name) == 1;
+        json_object_object_add(p, "name",
+                               json_object_new_string(verified ? id->registered_name : ""));
+        json_object_object_add(o, "profile", p);
         if (strcmp(fp, g_keys.fp) != 0) peer_store(&peer);
     }
     dna_identity_free(id);

@@ -661,6 +661,33 @@ static void serve_payload(const uint8_t *b, size_t n) {
     atomic_store(&g_fake.mode, M_PAYLOAD);
 }
 
+/* G9 name check (nc_name_verify): a registered name is shown only when the
+ * "<name>:lookup" record written BY that identity holds its fingerprint.
+ * Live check of punk / chip / nocdem: tools/nc_live_read "name check". */
+static void test_name_verify(nc_ctx_t *ctx) {
+    const char *fp = g_keys->fp;
+    serve_payload((const uint8_t *)fp, NC_FP_HEX_LEN);
+    CHECK(nc_name_verify(ctx, fp, "alice") == 1,
+          "N6 own lookup record holding the own fp -> name VERIFIED");
+    serve_payload((const uint8_t *)g_peer_keys->fp, NC_FP_HEX_LEN);
+    CHECK(nc_name_verify(ctx, fp, "alice") == 0,
+          "N7 own lookup record holding ANOTHER fp -> not verified");
+    atomic_store(&g_fake.mode, M_WRONG_OWNER);
+    CHECK(nc_name_verify(ctx, fp, "alice") != 1,
+          "N8 lookup record written by a stranger -> never verified");
+    atomic_store(&g_fake.mode, M_EMPTY);
+    CHECK(nc_name_verify(ctx, fp, "Alice") == 0,
+          "N9 no lookup record (both spellings) -> not verified");
+    atomic_store(&g_fake.mode, M_TIMEOUT);
+    CHECK(nc_name_verify(ctx, fp, "alice") == -1,
+          "N10 node did not answer -> could not read (-1), never verified");
+    serve_payload((const uint8_t *)fp, NC_FP_HEX_LEN);
+    CHECK(nc_name_verify(ctx, fp, "0123456789abcdef01") == 0 &&
+          nc_name_verify(ctx, fp, "punk...") == 0 &&
+          nc_name_verify(ctx, fp, "") == 0,
+          "N11 names the app's validator refuses are never verified");
+}
+
 static void contact(nc_contact_t *c, const char *fp, uint8_t salt_byte) {
     memset(c, 0, sizeof(*c));
     memcpy(c->fp, fp, NC_FP_HEX_LEN);
@@ -917,6 +944,7 @@ int main(void) {
     }
     test_contactlist_gate(&ctx);
     test_salt_gate(&ctx);
+    test_name_verify(&ctx);
 
     nodus_client_close(c);
     free(c);

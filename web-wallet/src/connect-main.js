@@ -30,7 +30,7 @@ const NO_ID_TEXT = 'Appears when Messages is connected';
 // tab: the screen shown; origin 'more' while Chats shows a screen opened
 // from the More menu (Contacts, Contact requests, Your ID & profile): Back
 // returns there, and the rail keeps More highlighted.
-let tab = 'home', origin = null, ownId = null, messagesScreen = 'list';
+let tab = 'home', origin = null, ownId = null, ownName = '', messagesScreen = 'list';
 const scrollByTab = {};
 
 function setTab(next, { highlight = next } = {}) {
@@ -146,17 +146,25 @@ function wireShell({ messagesNavigate, shortId, nodusSymbol }) {
     $('device-title').focus({ preventScroll: true });
   };
 
-  // Status line: shown again whenever src/app.js writes a new message.
+  // Status line: shown again whenever src/app.js writes a new message, and
+  // hidden again after a few seconds like an app snackbar — it sits over
+  // the chat composer otherwise.
   const toast = document.querySelector('.app-toast');
-  new MutationObserver(() => { delete toast.dataset.dismissed; }).observe($('wallet-status'), { childList: true, characterData: true, subtree: true });
-  $('toast-dismiss').onclick = () => { toast.dataset.dismissed = 'true'; };
+  let toastTimer;
+  new MutationObserver(() => {
+    delete toast.dataset.dismissed;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { toast.dataset.dismissed = 'true'; }, 6000);
+  }).observe($('wallet-status'), { childList: true, characterData: true, subtree: true });
+  $('toast-dismiss').onclick = () => { clearTimeout(toastTimer); toast.dataset.dismissed = 'true'; };
 
   function showIdentity() {
     for (const [markId, textId] of [['home-avatar', 'home-id'], ['more-avatar', 'more-id']]) {
       const mark = $(markId);
-      mark.textContent = ownId ? ownId.slice(0, 2).toUpperCase() : '··';
+      mark.textContent = ownId ? (ownName ? [...ownName].slice(0, 2).join('') : ownId.slice(0, 2)).toUpperCase() : '··';
       mark.className = `contact-avatar avatar-large ${ownId ? `avatar-${parseInt(ownId[0], 16) % 6}` : 'home-avatar-empty'}`;
-      $(textId).textContent = ownId ? shortId(ownId) : NO_ID_TEXT;
+      // A verified registered name (nc_name_verify) first, then the short ID.
+      $(textId).textContent = ownId ? (ownName ? `${ownName} · ${shortId(ownId)}` : shortId(ownId)) : NO_ID_TEXT;
     }
     $('home-copy-id').disabled = !ownId;
     $('home-id-status').textContent = '';
@@ -166,7 +174,7 @@ function wireShell({ messagesNavigate, shortId, nodusSymbol }) {
   return {
     onUnread(count) { badge('nav-chats-count', count); },
     onRequests(count) { for (const id of ['nav-more-count', 'more-contacts-count', 'more-requests-count']) badge(id, count); },
-    onIdentity(fp) { ownId = fp; showIdentity(); },
+    onIdentity(fp, name = '') { ownId = fp; ownName = fp ? name : ''; showIdentity(); },
     onScreen(screen) {
       messagesScreen = screen;
       // A conversation, Contacts or Your ID & profile covers the bottom bar
