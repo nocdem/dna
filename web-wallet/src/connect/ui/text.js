@@ -132,10 +132,16 @@ export function recentDays(today) {
 //      flag, set after core.outboxPublish resolved), and that flag was set
 //      BEFORE the ACK read was issued (publishedSeqs is the snapshot taken
 //      just before core.ackGet), and
-//   2. its timestamp is <= the ACK value read.
+//   2. its timestamp is STRICTLY below the ACK value read (RT2 L2 F1: the
+//      ACK is in seconds, so a message sent in the ACK's own second may not
+//      have been fetched yet).
 // A message that was never published stays pending whatever the ACK says.
 // The flag is stored in the message record, so the decision is made once
-// and kept (isDelivered).
+// and kept (isDelivered). Even so the watermark cannot prove receipt (a
+// clock step back, an app receiver whose ACK is its own clock), so a
+// delivered message stays in the published blob for DELIVERED_GRACE_SECONDS
+// more (pendingOutbox): a receiver online at that time fetches every 30 s
+// and still gets it. Operator 2026-10-01: one hour.
 export function isDelivered(message) { return message?.delivered === true; }
 
 // What the conversation shows next to an own message.
@@ -157,15 +163,24 @@ export function markPublished(messages, fp, set) {
     .map(m => ({ ...m, published: true }));
 }
 
-// After an ACK read of `ackTs`: copies of the own messages to `fp` that
-// become delivered — published before the read (`publishedBefore`, from
-// publishedSeqs) and not later than the ACK value.
-export function markDelivered(messages, fp, ackTs, publishedBefore) {
+// After an ACK read of `ackTs` at `nowSeconds`: copies of the own messages
+// to `fp` that become delivered — published before the read
+// (`publishedBefore`, from publishedSeqs) and strictly older than the ACK
+// value. `deliveredAt` (unix seconds) starts the blob grace (pendingOutbox).
+export const DELIVERED_GRACE_SECONDS = 3600n;
+export function markDelivered(messages, fp, ackTs, publishedBefore, nowSeconds) {
   if (typeof ackTs !== 'string' || !U64.test(ackTs) || ackTs === '0' || !(publishedBefore instanceof Set)) return [];
+  if (typeof nowSeconds !== 'string' || !U64.test(nowSeconds)) throw new Error('Invalid time.');
   const ack = BigInt(ackTs);
   return messages.filter(m => m.dir === 'out' && m.fp === fp && !isDelivered(m) && publishedBefore.has(String(m.seq)) &&
-      U64.test(String(m.ts)) && BigInt(m.ts) <= ack)
-    .map(m => ({ ...m, delivered: true }));
+      U64.test(String(m.ts)) && BigInt(m.ts) < ack)
+    .map(m => ({ ...m, delivered: true, deliveredAt: nowSeconds }));
+}
+
+// Still inside the blob grace after delivery (see the block comment above).
+function inGrace(message, now) {
+  return isDelivered(message) && U64.test(String(message.deliveredAt)) &&
+    BigInt(message.deliveredAt) + DELIVERED_GRACE_SECONDS > now;
 }
 
 // The receiver's ACK value for `fp` (G11, NC-RT2 A): the NEWEST sender
@@ -187,25 +202,39 @@ export function ackToSend(messages, fp, lastSent) {
 
 // The WHOLE pending set of own messages to one contact (the blob replaces
 // today's previous one, core.outboxPublish): outgoing, not yet delivered
-// (isDelivered above), sent within the 7-day life of an outbox value (the outbox
-// PUT is EPHEMERAL, 7 days: design §1.4 R5), in local order; at most the
-// core's 1000. Like the app's writer (design §1.4 R5: messages.c:624-636
+// (isDelivered above) or delivered less than DELIVERED_GRACE_SECONDS ago,
+// sent within the 7-day life of an outbox value (the outbox PUT is
+// EPHEMERAL, 7 days: design §1.4 R5), in local order; at most OUTBOX_MAX
+// = 50, the app's own per-bucket cap (dht_dm_outbox.h
+// DNA_DM_OUTBOX_MAX_MESSAGES_PER_BUCKET): one short message is ~6.8 KB in
+// the blob and a 4000-character one ~23 KB worst case, so 50 stay far under
+// the node's 4 MB value limit, where the old 1000 did not (RT2 follow-up,
+// operator 2026-10-01). Like the app's writer (design §1.4 R5: messages.c:624-636
 // rebuilds the blob from the pending rows, not only today's), a message whose
 // earlier publish failed is carried in today's blob; a message already
 // published keeps travelling until it is ACKed (design §1.4 R5, the
 // messenger/BUGS.md:27 variant the web may fix). The receiver drops the
 // repeats (receivedKey below; the app by content + original timestamp).
-export const OUTBOX_MAX = 1000;
+export const OUTBOX_MAX = 50;
 export const OUTBOX_LIFETIME_SECONDS = 7n * 86400n;
 export function pendingOutbox(messages, fp, nowSeconds) {
   if (typeof nowSeconds !== 'string' || !U64.test(nowSeconds)) throw new Error('Invalid time.');
-  const oldest = BigInt(nowSeconds) - OUTBOX_LIFETIME_SECONDS;
+  const now = BigInt(nowSeconds);
+  const oldest = now - OUTBOX_LIFETIME_SECONDS;
   const list = messages
-    .filter(m => m.dir === 'out' && m.fp === fp && BigInt(m.ts) > oldest && !isDelivered(m))
+    .filter(m => m.dir === 'out' && m.fp === fp && BigInt(m.ts) > oldest && (!isDelivered(m) || inGrace(m, now)))
     .sort(compareLocal)
     .map(m => ({ seq: m.seq, ts: m.ts, text: m.text }));
   // Beyond the limit only the newest are kept.
   return list.length > OUTBOX_MAX ? list.slice(list.length - OUTBOX_MAX) : list;
+}
+
+// Own messages to `fp` still waiting for delivery (what makes a contact's
+// blob worth publishing on open; grace-period copies alone do not).
+export function hasUndelivered(messages, fp, nowSeconds) {
+  if (typeof nowSeconds !== 'string' || !U64.test(nowSeconds)) throw new Error('Invalid time.');
+  const oldest = BigInt(nowSeconds) - OUTBOX_LIFETIME_SECONDS;
+  return messages.some(m => m.dir === 'out' && m.fp === fp && BigInt(m.ts) > oldest && !isDelivered(m));
 }
 
 // Local order = local sequence (receive/send order on this device), never the
