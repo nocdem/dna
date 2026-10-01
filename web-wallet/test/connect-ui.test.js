@@ -2,19 +2,36 @@
 // encoding (src/connect/store.js, decision 2026-09-30-nodus-connect-thin-core.md
 // Ek 2: separate id / nonce / ct / tag fields, one decimal counter record per
 // vault) and the UI helpers (src/connect/ui/text.js, design rev 5 §1.9).
-// fake-indexeddb is not a dependency, so the IndexedDB transactions
-// themselves are covered by the browser tests, not here.
+// NOT COVERED ANYWHERE YET: the IndexedDB transactions of openHistoryStore
+// (readAll / writeAll / oncomplete / onabort, the counter record written in
+// the same transaction). fake-indexeddb is not a dependency and no browser
+// test opens the Messages page, so those paths have no automated test.
+// deleteVaultHistory is covered below against a minimal stub of
+// indexedDB.deleteDatabase (the request's events only, not a database).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   databaseNameForVault, messageRecordId, plaintextBytes, parsePlaintext, PLAINTEXT_MAX,
   encodeRecord, decodeRecord, encodeCounter, decodeCounter, nextCounter, budgetAllows, MAX_INVOCATIONS,
-  COUNTER_ID, emptyState, checkState, memoryHistoryStore
+  COUNTER_ID, emptyState, checkState, memoryHistoryStore,
+  counterStorageKey, readStoredCounter, writeStoredCounter, openingCounter, deleteVaultHistory, HistoryDeleteBlocked
 } from '../src/connect/store.js';
 import {
   parseContactId, shortId, inspectUntrusted, httpsLink, profilePatch, profileStatusText, senderClockLabel,
-  recentDays, isDelivered, pendingOutbox, OUTBOX_MAX, compareLocal, receivedKey
+  recentDays, isDelivered, pendingOutbox, OUTBOX_MAX, compareLocal, receivedKey,
+  publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus
 } from '../src/connect/ui/text.js';
+
+// A localStorage stand-in (getItem / setItem / removeItem).
+function memoryStorage() {
+  const map = new Map();
+  return {
+    getItem: key => (map.has(key) ? map.get(key) : null),
+    setItem: (key, value) => { map.set(key, String(value)); },
+    removeItem: key => { map.delete(key); },
+    map
+  };
+}
 
 const FP = 'ab'.repeat(64), OTHER = 'cd'.repeat(64);
 const bytes = (value, length) => new Uint8Array(length).fill(value);
@@ -117,13 +134,37 @@ test('contact IDs are 128 hex; shown shortened', () => {
 });
 
 test('untrusted text: direction controls and invisible characters removed and flagged; mixed look-alike scripts flagged', () => {
-  assert.deepEqual(inspectUntrusted('hello'), { text: 'hello', unusual: false });
-  assert.deepEqual(inspectUntrusted('Merhaba dünya'), { text: 'Merhaba dünya', unusual: false });
-  assert.deepEqual(inspectUntrusted('Привет'), { text: 'Привет', unusual: false });
-  assert.deepEqual(inspectUntrusted('abc‮gpj.exe'), { text: 'abcgpj.exe', unusual: true });
-  assert.deepEqual(inspectUntrusted('no​de'), { text: 'node', unusual: true });
+  assert.deepEqual(inspectUntrusted('hello'), { text: 'hello', unusual: false, check: false });
+  assert.deepEqual(inspectUntrusted('Merhaba dünya'), { text: 'Merhaba dünya', unusual: false, check: false });
+  assert.deepEqual(inspectUntrusted('Привет'), { text: 'Привет', unusual: false, check: false });
+  assert.deepEqual(inspectUntrusted('abc‮gpj.exe'), { text: 'abcgpj.exe', unusual: true, check: false });
+  assert.deepEqual(inspectUntrusted('no​de'), { text: 'node', unusual: true, check: false });
   assert.equal(inspectUntrusted('pаypal').unusual, true); // Cyrillic a inside Latin
-  assert.deepEqual(inspectUntrusted(undefined), { text: '', unusual: false });
+  assert.deepEqual(inspectUntrusted(undefined), { text: '', unusual: false, check: false });
+});
+
+test('the wider invisible set is removed and flagged: tag characters, variation selectors, deprecated format controls, CGJ, line/paragraph separators', () => {
+  for (const hidden of ['\u{E0020}', '\u{E0041}', '\u{E007F}', '︀', '️', '⁪', '⁯', '͏', ' ', ' ']) {
+    assert.deepEqual(inspectUntrusted(`no${hidden}de`), { text: 'node', unusual: true, check: false }, `U+${hidden.codePointAt(0).toString(16)}`);
+  }
+  // just outside the ranges: kept, not flagged
+  assert.equal(inspectUntrusted('a\u{E0080}b').unusual, false);
+  assert.equal(inspectUntrusted('a︐b').unusual, false);
+});
+
+test('names: a whole-script non-Latin name and fullwidth Latin are marked "check carefully"; message text is not', () => {
+  const name = value => inspectUntrusted(value, { name: true });
+  assert.deepEqual(name('alice'), { text: 'alice', unusual: false, check: false });
+  assert.deepEqual(name('Çağrı'), { text: 'Çağrı', unusual: false, check: false });
+  assert.equal(name('Привет').check, true);             // Cyrillic only
+  assert.equal(name('ραypal').unusual, true);            // mixed: already unusual
+  assert.equal(name('αλφα').check, true);                // Greek only
+  assert.equal(name('李明').check, true);                // no Latin letter at all
+  assert.equal(name('ｐａｙｐａｌ').check, true);          // fullwidth Latin
+  assert.equal(name('payｐal').check, true);         // one fullwidth letter
+  assert.equal(name('1234').check, false);               // no letters
+  assert.equal(inspectUntrusted('Привет').check, false);  // not a name
+  assert.equal(inspectUntrusted('ｐａｙｐａｌ').check, false);
 });
 
 test('websites are links only for https: URLs', () => {
@@ -165,15 +206,131 @@ test('pending set: own undelivered messages to that contact within 7 days, in lo
     { seq: '4', fp: OTHER, dir: 'out', text: 'o', ts: '999999' },
     { seq: '5', fp: FP, dir: 'out', text: 'old', ts: String(1000000 - 7 * 86400) }
   ];
-  assert.deepEqual(pendingOutbox(msgs, FP, now, undefined), [{ seq: '1', ts: '999000', text: 'a' }, { seq: '3', ts: '999990', text: 'c' }]);
-  assert.deepEqual(pendingOutbox(msgs, FP, now, '999000'), [{ seq: '3', ts: '999990', text: 'c' }]);
-  assert.deepEqual(pendingOutbox(msgs, FP, now, '999990'), []);
+  assert.deepEqual(pendingOutbox(msgs, FP, now), [{ seq: '1', ts: '999000', text: 'a' }, { seq: '3', ts: '999990', text: 'c' }]);
+  // delivered is a per-message flag, never derived from an ACK time alone
+  msgs[1].delivered = true;
+  assert.deepEqual(pendingOutbox(msgs, FP, now), [{ seq: '3', ts: '999990', text: 'c' }]);
+  msgs[0].delivered = true;
+  assert.deepEqual(pendingOutbox(msgs, FP, now), []);
   const many = Array.from({ length: OUTBOX_MAX + 5 }, (_, i) => ({ seq: String(i + 1), fp: FP, dir: 'out', text: 't', ts: now }));
-  const capped = pendingOutbox(many, FP, now, undefined);
+  const capped = pendingOutbox(many, FP, now);
   assert.equal(capped.length, OUTBOX_MAX);
   assert.equal(capped[0].seq, '6');
-  assert.equal(isDelivered({ ts: '5' }, '0'), false);
-  assert.equal(isDelivered({ ts: '5' }, '5'), true);
+  assert.equal(isDelivered({ ts: '5' }), false);
+  assert.equal(isDelivered({ ts: '5', published: true }), false);
+  assert.equal(isDelivered({ ts: '5', delivered: true }), true);
+});
+
+test('delivered only if the message was in a successfully published blob BEFORE the ACK was read', () => {
+  const msgs = [
+    { seq: '1', fp: FP, dir: 'out', text: 'a', ts: '100', published: true },
+    { seq: '2', fp: FP, dir: 'out', text: 'b', ts: '100' },                    // never published
+    { seq: '3', fp: FP, dir: 'out', text: 'c', ts: '200', published: true },  // after the ACK value
+    { seq: '4', fp: FP, dir: 'in', text: 'x', senderTs: '50' },
+    { seq: '5', fp: OTHER, dir: 'out', text: 'o', ts: '10', published: true },
+    { seq: '6', fp: FP, dir: 'out', text: 'd', ts: '90', published: true, delivered: true }
+  ];
+  // the snapshot is taken before the ACK read is issued
+  const before = publishedSeqs(msgs, FP);
+  assert.deepEqual([...before].sort(), ['1', '3', '6']);
+  // a publish that completes after the snapshot does not count for this read
+  msgs[1].published = true;
+  const marked = markDelivered(msgs, FP, '150', before);
+  assert.deepEqual(marked.map(m => m.seq), ['1']);
+  assert.equal(marked[0].delivered, true);
+  assert.equal(msgs[0].delivered, undefined, 'returns copies; the caller applies them after saving');
+  // an ACK of 0, a malformed one or none marks nothing
+  for (const bad of ['0', '', 'x', undefined, '-1', 150]) assert.deepEqual(markDelivered(msgs, FP, bad, before), []);
+});
+
+test('published flags: only messages of that contact in the published set that were not flagged yet', () => {
+  const msgs = [
+    { seq: '1', fp: FP, dir: 'out', text: 'a', ts: '1', published: true },
+    { seq: '2', fp: FP, dir: 'out', text: 'b', ts: '2' },
+    { seq: '3', fp: OTHER, dir: 'out', text: 'c', ts: '3' }
+  ];
+  const set = [{ seq: '1' }, { seq: '2' }, { seq: '3' }];
+  const updated = markPublished(msgs, FP, set);
+  assert.deepEqual(updated.map(m => [m.seq, m.published]), [['2', true]]);
+  assert.equal(msgs[1].published, undefined);
+});
+
+test('the status shown for an own message follows its flags', () => {
+  assert.equal(messageStatus({}), 'waiting to send');
+  assert.equal(messageStatus({ published: true }), 'sent');
+  assert.equal(messageStatus({ published: true, delivered: true }), 'delivered');
+});
+
+test('the ACK value is the newest stored sender timestamp of that contact, sent only when it is new', () => {
+  const msgs = [
+    { seq: '1', fp: FP, dir: 'in', text: 'a', senderTs: '900' },
+    { seq: '2', fp: FP, dir: 'in', text: 'b', senderTs: '1000' },
+    { seq: '3', fp: FP, dir: 'in', text: 'c', senderTs: '950' },              // later on this device, older clock
+    { seq: '4', fp: FP, dir: 'out', text: 'mine', ts: '99999' },             // own messages never count
+    { seq: '5', fp: OTHER, dir: 'in', text: 'o', senderTs: '5000' }          // another contact never counts
+  ];
+  assert.equal(ackToSend(msgs, FP, undefined), '1000');
+  assert.equal(ackToSend(msgs, FP, '999'), '1000');
+  assert.equal(ackToSend(msgs, FP, '1000'), null, 'nothing new stored: no re-ACK');
+  assert.equal(ackToSend(msgs, FP, '2000'), null);
+  assert.equal(ackToSend([], FP, undefined), null, 'nothing stored: nothing to ACK');
+  assert.equal(ackToSend([{ seq: '1', fp: FP, dir: 'in', text: 'z', senderTs: '0' }], FP, undefined), null);
+  assert.equal(ackToSend([{ seq: '1', fp: FP, dir: 'in', text: 'z', senderTs: 'bad' }], FP, undefined), null);
+  // 2^64 - 1 compares as a big integer, not as a float
+  assert.equal(ackToSend([...msgs, { seq: '9', fp: FP, dir: 'in', text: 'm', senderTs: '18446744073709551615' }], FP, '18446744073709551614'), '18446744073709551615');
+});
+
+test('the per-vault counter survives a history delete: localStorage copy, max on open, strict parse', () => {
+  const name = '00112233445566778899aabbccddeeff';
+  const storage = memoryStorage();
+  assert.equal(counterStorageKey(name), 'nodus.connect.counter.v1.' + name);
+  assert.notEqual(counterStorageKey(name), 'nodus.wallet.v1');
+  assert.equal(readStoredCounter(storage, name), 0n);
+  writeStoredCounter(storage, name, 41n);
+  assert.equal(storage.getItem(counterStorageKey(name)), '41');
+  assert.equal(readStoredCounter(storage, name), 41n);
+  // the database was deleted (counter record gone -> 0): the copy wins
+  assert.equal(openingCounter(0n, readStoredCounter(storage, name)), 41n);
+  assert.equal(openingCounter(50n, 41n), 50n);
+  for (const bad of ['', '-1', '01', 'x', (MAX_INVOCATIONS + 1n).toString(), '1.5']) {
+    storage.setItem(counterStorageKey(name), bad);
+    assert.throws(() => readStoredCounter(storage, name), /counter/);
+  }
+  assert.throws(() => writeStoredCounter(storage, name, MAX_INVOCATIONS + 1n));
+  assert.throws(() => readStoredCounter(undefined, name), /cannot/);
+  // a storage that refuses the write fails the save (enforced, not assumed)
+  assert.throws(() => writeStoredCounter({ setItem() { throw new Error('quota'); } }, name, 1n), /counter/);
+});
+
+test('deleting a saved wallet deletes its Messages database and counter; a blocked delete is reported as pending', async () => {
+  const id = btoa(String.fromCharCode(...Array.from({ length: 16 }, (_, i) => i * 17)));
+  const name = '00112233445566778899aabbccddeeff';
+  const saved = globalThis.indexedDB;
+  try {
+    const storage = memoryStorage();
+    storage.setItem(counterStorageKey(name), '7');
+    storage.setItem(counterStorageKey('ff'.repeat(16)), '3');
+    let deleted;
+    globalThis.indexedDB = { deleteDatabase(n) { deleted = n; const r = {}; queueMicrotask(() => r.onsuccess?.()); return r; } };
+    await deleteVaultHistory(id, storage);
+    assert.equal(deleted, name);
+    assert.equal(storage.getItem(counterStorageKey(name)), null);
+    assert.equal(storage.getItem(counterStorageKey('ff'.repeat(16))), '3', 'another vault is untouched');
+
+    globalThis.indexedDB = { deleteDatabase() { const r = {}; queueMicrotask(() => r.onblocked?.()); return r; } };
+    await assert.rejects(deleteVaultHistory(id, memoryStorage()), HistoryDeleteBlocked);
+    globalThis.indexedDB = { deleteDatabase() { const r = {}; queueMicrotask(() => r.onerror?.()); return r; } };
+    await assert.rejects(deleteVaultHistory(id, memoryStorage()), /could not be deleted/);
+    await assert.rejects(deleteVaultHistory('bad', memoryStorage()), /saved wallet id/);
+  } finally { globalThis.indexedDB = saved; }
+});
+
+test('state: the per-contact "ACK sent" record defaults for a state saved before it existed', () => {
+  const old = { version: 1, nextSeq: '1', contacts: [], outgoing: [], declined: [], acks: {} };
+  assert.deepEqual(checkState(old).ackSent, {});
+  assert.deepEqual(emptyState().ackSent, {});
+  assert.throws(() => checkState({ ...emptyState(), ackSent: 'x' }));
+  assert.throws(() => checkState({ ...emptyState(), ackSent: null }));
 });
 
 test('local order is the local sequence, not the sender clock; received messages de-duplicate', () => {

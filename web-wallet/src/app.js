@@ -1,5 +1,6 @@
 import { getAddress } from 'ethers';
 import { VAULT_KEY, ACTIVITY_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
+import { deleteVaultHistory, HistoryDeleteBlocked } from './connect/store.js';
 import { serializeActivity, parseActivity, activityKeyFor } from './activity-storage.js';
 import { recordActivity, watchActivity, checkActivity, terminal } from './activity.js';
 import { CHAINS, CELLFRAME } from './config.js';
@@ -992,11 +993,28 @@ $('vault-delete').onclick = async () => {
   vaultOperation++; activitySession = null; activityBlocked = false; $('discard-activity').hidden = true;
   try {
     const previous = localStorage.getItem(VAULT_KEY);
-    await withActivityLock(() => {
+    // The Messages history of this saved wallet (an IndexedDB database named
+    // by the vault id, src/connect/store.js) goes in the same lock section.
+    // The id is read from the saved text without the password; a damaged
+    // text has no readable id, so its history cannot be found.
+    let vaultId = null;
+    try { vaultId = previous ? parseVault(previous).id : null; } catch { vaultId = null; }
+    const messages = await withActivityLock(async () => {
       if (localStorage.getItem(VAULT_KEY) !== previous) throw new Error('Saved wallet changed before deletion.');
       localStorage.removeItem(VAULT_KEY); localStorage.removeItem(ACTIVITY_KEY);
+      if (!previous) return 'none';
+      if (!vaultId) return 'unknown';
+      try { await deleteVaultHistory(vaultId, localStorage); return 'deleted'; }
+      catch (error) { return error instanceof HistoryDeleteBlocked ? 'blocked' : 'failed'; }
     });
-    $('vault-status').textContent = 'Saved wallet and saved activity deleted from this device.'; updateVaultUI();
+    $('vault-status').textContent = {
+      none: 'Saved wallet and saved activity deleted from this device.',
+      deleted: 'Saved wallet, saved activity and message history deleted from this device.',
+      blocked: 'Saved wallet and saved activity deleted. Message history is still open in another tab; it is deleted when that tab is closed.',
+      unknown: 'Saved wallet and saved activity deleted. The saved wallet was damaged, so its message history on this device could not be found and was not deleted.',
+      failed: 'Saved wallet and saved activity deleted. Message history on this device could not be deleted.'
+    }[messages];
+    updateVaultUI();
   }
   catch { $('vault-status').textContent = 'Device storage could not be deleted.'; }
   $('vault-delete-confirm').checked = false;

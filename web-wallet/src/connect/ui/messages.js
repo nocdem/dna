@@ -38,7 +38,8 @@ import { createNodusConnectCore, acceptanceMayAutoApprove } from '../core.js';
 import { openHistoryStore, memoryHistoryStore, StorageError } from '../store.js';
 import {
   parseContactId, shortId, profilePatch, profileStatusText, contactListStatusText, senderClockLabel,
-  recentDays, isDelivered, pendingOutbox, compareLocal, receivedKey
+  recentDays, pendingOutbox, compareLocal, receivedKey,
+  publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus
 } from './text.js';
 import { el, untrusted, button, website } from './dom.js';
 
@@ -56,8 +57,8 @@ const profiles = new Map();              // fp -> verified profile, this session
 const received = new Set();              // receivedKey of every stored incoming message
 const unpublished = new Set();           // contacts whose pending set must be (re)published
 const saltChecked = new Set();           // contacts whose salt was reconciled this session
-const ackedThisSession = new Set();      // contacts ACKed at least once this session
 const dropped = new Map();               // fp -> messages that did not verify, this session
+const others = new Map();                // fp -> authentic items that are not text (reactions, calls, …), last check
 
 function status(text) { $('nc-status').textContent = text; }
 function show(id) { for (const screen of SCREENS) $(screen).hidden = screen !== id; }
@@ -93,7 +94,7 @@ function lock(reason = 'Messages locked.') {
   store = undefined; state = undefined; messages = []; ownFp = undefined; ownProfile = undefined;
   fresh = false; vaultId = null; requests = []; selectedFp = undefined; newPhraseText = undefined;
   eraseArmed = false; profileTaken = false;
-  for (const set of [profiles, received, unpublished, saltChecked, ackedThisSession, dropped]) set.clear();
+  for (const set of [profiles, received, unpublished, saltChecked, dropped, others]) set.clear();
   for (const id of ['nc-password', 'nc-words', 'nc-new-words-check', 'nc-add-id', 'nc-add-note', 'nc-send-text', 'nc-bio', 'nc-location', 'nc-website']) $(id).value = '';
   for (const id of ['nc-new-words', 'nc-requests', 'nc-outgoing', 'nc-contacts', 'nc-messages']) $(id).replaceChildren();
   for (const id of ['nc-own-id', 'nc-add-status', 'nc-send-status', 'nc-profile-status', 'nc-profile-name', 'nc-sync', 'nc-closed-reason', 'nc-conversation-title', 'nc-conversation-note']) $(id).textContent = '';
@@ -121,22 +122,42 @@ function activity() {
 // ── open ───────────────────────────────────────────────────────────────
 class Closed extends Error {}
 
-// getPhrase runs only after this tab holds the session lock.
+// getPhrase runs only after this tab holds the session lock. The caller has
+// hidden every form (show(null)), so nothing can start a second open while
+// this one runs; should one start anyway, the generation check below locks
+// whatever this one built.
 async function open(getPhrase, { persistent, isFresh }) {
+  // A Messages core / client left from an earlier open is superseded: lock
+  // it (core first, then client — the lock order of §1.8) before the slots
+  // below are overwritten.
+  const leftCore = core, leftClient = nodus;
+  core = undefined; nodus = undefined;
+  try { leftCore?.lock(); } catch { /* the client lock must still run */ }
+  try { leftClient?.lock(); } catch { /* nothing left to do */ }
   const gen = ++generation;
   status('Opening Messages…');
-  let words, seed;
+  let words, seed, client, created;
+  // A lock() or a newer open() ran meanwhile (generation moved): lock what
+  // THIS open built unless it is still the page's current one (lock()
+  // already locked those; a newer open owns its own). Both locks are
+  // idempotent.
+  const superseded = () => {
+    if (gen === generation) return false;
+    if (created && created !== core) { try { created.lock(); } catch { /* the client lock must still run */ } }
+    if (client && client !== nodus) { try { client.lock(); } catch { /* nothing left to do */ } }
+    return true;
+  };
   try {
     if (!nodusSendModuleFactory) throw new Closed('Messages is not available in this build.');
-    if (!await acquireSession()) { status('Your wallet is open in another tab. Lock it there, then try again.'); return; }
-    if (gen !== generation) return;
+    if (!await acquireSession()) { if (!superseded()) { status('Your wallet is open in another tab. Lock it there, then try again.'); showStart(); } return; }
+    if (superseded()) return;
     const { phrase, id } = await getPhrase();
-    if (gen !== generation) return;
+    if (superseded()) return;
     // The address is derived locally first; the module must derive the same
     // one (client.unlock refuses otherwise), as in src/app.js.
     const address = await deriveNodusAddress(phrase);
-    if (gen !== generation) return;
-    const client = createNodusClient({
+    if (superseded()) return;
+    client = createNodusClient({
       factory: nodusSendModuleFactory,
       // Once Messages is open, a session that leaves 'ready' (error, or
       // locked from inside) ends it; before that, open()'s catch reports.
@@ -145,18 +166,19 @@ async function open(getPhrase, { persistent, isFresh }) {
     nodus = client;
     seed = nodusSigningSeed(phrase);
     await client.unlock({ seed, fingerprint: address });
-    if (gen !== generation) return;
-    const created = createNodusConnectCore({ nodus: client });
+    if (superseded()) return;
+    created = createNodusConnectCore({ nodus: client });
     core = created;
     words = new TextEncoder().encode(phrase);
     const unlocked = await created.unlock({ words, fresh: isFresh });
-    if (gen !== generation) return;
+    if (superseded()) return;
     ownFp = unlocked.fingerprint; fresh = unlocked.fresh === true; vaultId = persistent ? id : null;
     $('nc-lock').hidden = false;
     activity();
     await finishOpen(gen);
+    superseded();
   } catch (error) {
-    if (gen !== generation) return;
+    if (superseded()) return;
     // Before the identity is open (password, words, module or connection
     // failed): back to the start, nothing kept. After it: Messages stays
     // closed with a retry that re-reads without asking for the words again.
@@ -197,7 +219,7 @@ async function finishOpen(gen) {
     messages = [...store.messages];
     for (const m of messages) if (m.dir === 'in') received.add(receivedKey(m.fp, { seq: m.remoteSeq, senderTs: m.senderTs, text: m.text }));
     const now = nowSeconds();
-    for (const contact of state.contacts) if (pendingOutbox(messages, contact.fp, now, state.acks[contact.fp]).length) unpublished.add(contact.fp);
+    for (const contact of state.contacts) if (pendingOutbox(messages, contact.fp, now).length) unpublished.add(contact.fp);
   }
   await mergeContactList(gen);
   if (gen !== generation) return;
@@ -221,6 +243,13 @@ const u64 = value => /^(0|[1-9]\d{0,19})$/.test(String(value)) ? BigInt(String(v
 const contactOf = fp => state.contacts.find(c => c.fp === fp);
 function takeSeq() { const seq = state.nextSeq; state.nextSeq = String(BigInt(seq) + 1n); return seq; }
 async function persist(newMessages = []) { await store.save(state, newMessages); }
+// Changed copies of stored messages (published / delivered flags): saved
+// first, then put in place of the in-page ones (by local seq).
+async function saveUpdated(updated) {
+  if (!updated.length) return;
+  await persist(updated);
+  for (const u of updated) { const i = messages.findIndex(m => m.seq === u.seq); if (i >= 0) messages[i] = u; }
+}
 
 function addContactLocal(fp, salt) {
   let contact = contactOf(fp);
@@ -334,23 +363,33 @@ async function syncContact(contact, gen) {
   if (!contact.salt) return;
   const salt = contact.salt;
 
+  // Delivery (NC-RT2 A, text.js markDelivered): which own messages were
+  // published is taken BEFORE the ACK read is issued; a publish finishing
+  // meanwhile (send()) does not count for this read.
+  const publishedBefore = publishedSeqs(messages, fp);
   const ack = await core.ackGet(fp, salt);
   if (gen !== generation) return;
-  if (ack.outcome === 'found' && ack.ack_ts !== undefined && String(ack.ack_ts) !== state.acks[fp]) {
-    const value = String(ack.ack_ts);
-    if (/^(0|[1-9]\d{0,19})$/.test(value) && (!state.acks[fp] || BigInt(value) > BigInt(state.acks[fp]))) { state.acks[fp] = value; await persist(); }
+  const ackValue = ack.outcome === 'found' && ack.ack_ts !== undefined && ack.ack_ts !== null ? String(ack.ack_ts) : null;
+  if (ackValue !== null && /^(0|[1-9]\d{0,19})$/.test(ackValue)) {
+    const delivered = markDelivered(messages, fp, ackValue, publishedBefore);
+    if (delivered.length || state.acks[fp] !== ackValue) {
+      state.acks[fp] = ackValue;           // the last ACK value read
+      await saveUpdated(delivered);
+      if (!delivered.length) await persist();
+      if (gen !== generation) return;
+    }
   }
 
   if (unpublished.has(fp)) await publishOutbox(contact, gen);
   if (gen !== generation) return;
 
-  const arrived = []; let fetched = 0, lost = 0;
+  const arrived = []; let lost = 0, other = 0;
   for (const day of recentDays(core.dayToday())) {
     const result = await core.outboxFetchDay(fp, salt, day);
     if (gen !== generation) return;
     lost += Number(result.dropped || 0);
+    other += Number(result.other || 0);
     for (const m of result.messages || []) {
-      fetched++;
       const key = receivedKey(fp, m);
       if (received.has(key)) continue;
       received.add(key);
@@ -358,6 +397,7 @@ async function syncContact(contact, gen) {
     }
   }
   if (lost) dropped.set(fp, lost);
+  if (other) others.set(fp, other); else others.delete(fp);
   if (arrived.length) {
     for (const m of arrived) m.seq = takeSeq();
     try { await persist(arrived); }
@@ -365,34 +405,50 @@ async function syncContact(contact, gen) {
     if (gen !== generation) return;
     messages.push(...arrived);
   }
-  // G11: ACK only after the messages are durably stored (the save above
-  // resolved on the transaction's oncomplete). An unsaved wallet keeps
-  // nothing, so it never ACKs: the sender keeps the messages for next time.
-  if (store.persistent && fetched && (arrived.length || !ackedThisSession.has(fp))) {
-    await core.ackPublish(fp, salt);
-    if (gen === generation) ackedThisSession.add(fp);
+  // G11 + NC-RT2 A: ACK only what is durably stored (the save above resolved
+  // on the transaction's oncomplete), with the NEWEST stored sender
+  // timestamp of this contact as the value (never this device's clock), not
+  // at all when a message of this check could not be verified (it would be
+  // covered without being stored), and not again unless something newer was
+  // stored than the value last published (state.ackSent, kept across
+  // sessions). An unsaved wallet keeps nothing, so it never ACKs: the sender
+  // keeps the messages for next time. Items that are not text (`other`) are
+  // not stored and never raise the value.
+  if (store.persistent && !lost) {
+    const value = ackToSend(messages, fp, state.ackSent[fp]);
+    if (value) {
+      await core.ackPublish(fp, salt, value);
+      if (gen !== generation) return;
+      state.ackSent[fp] = value;
+      await persist();
+    }
   }
 }
 
+// Publishes the whole pending set; after the PUT succeeded, the messages in
+// it are flagged `published` (saved) — only those can later count as
+// delivered (text.js markDelivered).
 async function publishOutbox(contact, gen) {
-  const set = pendingOutbox(messages, contact.fp, nowSeconds(), state.acks[contact.fp]);
+  const set = pendingOutbox(messages, contact.fp, nowSeconds());
   if (!set.length) { unpublished.delete(contact.fp); return; }
   if (!contact.salt || !await ensureProfile(contact.fp) || gen !== generation) return;
   await core.outboxPublish(contact.fp, contact.salt, set);
-  if (gen === generation) unpublished.delete(contact.fp);
+  if (gen !== generation) return;
+  unpublished.delete(contact.fp);
+  await saveUpdated(markPublished(messages, contact.fp, set));
 }
 
 // ── rendering ──────────────────────────────────────────────────────────
 function claimedName(fp) {
   const name = profiles.get(fp)?.claimed_name;
-  return name ? el('span', { className: 'nc-hint', text: ' · claims the name ' }, untrusted(name)) : null;
+  return name ? el('span', { className: 'nc-hint', text: ' · claims the name ' }, untrusted(name, undefined, { name: true })) : null;
 }
 
 function render() {
   if (!isOpen()) return;
   $('nc-requests').replaceChildren(...(requests.length ? requests.map(request => el('li', {},
     el('span', { className: 'nc-label', text: 'Not a contact' }), ' ', el('span', { text: shortId(request.sender) }),
-    request.claimed_name ? el('span', { className: 'nc-hint', text: ' · says their name is ' }, untrusted(request.claimed_name)) : null,
+    request.claimed_name ? el('span', { className: 'nc-hint', text: ' · says their name is ' }, untrusted(request.claimed_name, undefined, { name: true })) : null,
     request.message ? el('p', { className: 'nc-note' }, untrusted(request.message)) : null,
     el('div', { className: 'nc-actions' }, button('Accept', () => void accept(request)), button('Decline', () => void decline(request), 'nc-secondary'))
   )) : [el('li', { className: 'nc-hint', text: 'No new requests.' })]));
@@ -415,17 +471,17 @@ function renderConversation() {
   $('nc-conversation').hidden = !contact;
   if (!contact) return;
   $('nc-conversation-title').replaceChildren(shortId(contact.fp), claimedName(contact.fp) || '');
-  const lost = dropped.get(contact.fp);
+  const lost = dropped.get(contact.fp), other = others.get(contact.fp);
   $('nc-conversation-note').textContent = [
     contact.salt ? '' : 'Messaging with this contact is not ready yet. It is checked again automatically.',
-    lost ? 'Some messages from this contact could not be checked and are not shown.' : ''
+    lost ? 'Some messages from this contact could not be checked and are not shown.' : '',
+    other ? 'This contact also sent items this page cannot show yet (for example reactions, pictures or calls).' : ''
   ].filter(Boolean).join(' ');
   $('nc-send-form').hidden = !contact.salt;
-  const ack = state.acks[contact.fp];
   $('nc-messages').replaceChildren(...messages.filter(m => m.fp === contact.fp).sort(compareLocal).map(m => {
     const mine = m.dir === 'out';
     const meta = mine
-      ? `You · ${new Date(m.at).toLocaleString()} · ${isDelivered(m, ack) ? 'delivered' : unpublished.has(m.fp) ? 'waiting to send' : 'sent'}`
+      ? `You · ${new Date(m.at).toLocaleString()} · ${messageStatus(m)}`
       : `Received ${new Date(m.at).toLocaleString()} · ${senderClockLabel(m.senderTs)}`;
     // The message body lives only inside the bubble (§1.9).
     return el('li', { className: mine ? 'nc-out' : 'nc-in' }, el('div', { className: 'nc-bubble' }, untrusted(m.text)), el('div', { className: 'nc-meta', text: meta }));
@@ -445,7 +501,7 @@ function fillProfile() {
   $('nc-bio').value = p.bio || ''; $('nc-location').value = p.location || ''; $('nc-website').value = p.website || '';
   const line = $('nc-profile-name');
   line.replaceChildren();
-  if (p.claimed_name) line.append('Name on your profile (not checked here): ', untrusted(p.claimed_name));
+  if (p.claimed_name) line.append('Name on your profile (not checked here): ', untrusted(p.claimed_name, undefined, { name: true }));
   else line.textContent = 'Your profile has no name.';
   if (p.website) { const link = website(p.website); if (link) line.append(el('br'), 'Website: ', link); }
 }
@@ -583,9 +639,14 @@ export function startMessages() {
   };
   $('nc-new-words-check').addEventListener('paste', event => event.preventDefault());
 
+  // Each form is hidden (show(null)) before open() starts, so no form can be
+  // submitted again while "Opening Messages…" runs (open() supersedes and
+  // locks anyway). open() shows the start screen, the closed screen or
+  // Messages when it ends.
   $('nc-unlock-form').onsubmit = event => {
     event.preventDefault();
     const password = $('nc-password').value; $('nc-password').value = '';
+    show(null);
     void open(async () => {
       const text = localStorage.getItem(VAULT_KEY);
       if (!text) throw new Closed('No saved wallet on this device.');
@@ -598,6 +659,7 @@ export function startMessages() {
     let phrase;
     try { phrase = validateNodusPhrase($('nc-words').value); } catch (error) { status(error.message); return; }
     $('nc-words').value = '';
+    show(null);
     // Typed words are never "fresh" (decision Q1): a restored identity creates no record.
     void open(async () => ({ phrase, id: null }), { persistent: false, isFresh: false });
   };
@@ -606,6 +668,7 @@ export function startMessages() {
     const phrase = newPhraseText;
     if (!phrase || normalizePhrase($('nc-new-words-check').value) !== phrase) { status('The words do not match. Check your written copy and type them again.'); return; }
     $('nc-new-words-check').value = ''; $('nc-new-words').replaceChildren(); newPhraseText = undefined;
+    show(null);
     // Only words generated in this tab, this session, are "fresh" (Q1).
     void open(async () => ({ phrase, id: null }), { persistent: false, isFresh: true });
   };

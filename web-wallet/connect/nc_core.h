@@ -99,7 +99,10 @@ typedef struct {
     bool                fresh;
     /* Checked before every network call; set by the caller's cancel/lock
      * (a synchronous export). A set flag makes the call return NC_ERR_CANCELLED
-     * without touching the network. */
+     * without touching the network. The browser entry points it at the
+     * wallet's cancel flag while Messages is open and, from nc_lock on, at a
+     * flag that is always set (nc_wasm.c nc_lock): either stop reaches a
+     * suspended gated write before its PUT. */
     volatile const int *cancel;
 } nc_ctx_t;
 
@@ -604,12 +607,36 @@ typedef struct {
 
 typedef struct {
     nc_read_t   read;           /* value freed                              */
-    nc_inmsg_t *items;
+    nc_inmsg_t *items;          /* chat text only (nc_plaintext_is_chat)    */
     size_t      count;
     size_t      dropped;        /* not decryptable / not authored by peer   */
+    size_t      other;          /* authentic, but not chat text: the app's
+                                 * control payloads (reaction, call signal,
+                                 * group invite, delete) and the payloads
+                                 * its chat screen draws as cards; never
+                                 * returned, never shown as text            */
 } nc_inbox_t;
 
 void nc_inbox_clear(nc_inbox_t *in);
+
+/**
+ * Whether a decrypted, authentic 1:1 plaintext is chat text — the classes
+ * the app's receiver tells apart (messenger/messenger_transport.c):
+ *   - default CHAT (:604);
+ *   - reaction {"target":"<64 hex>",...,"op":"add|remove"} (:733-749, the
+ *     substring sniff of messenger/src/reaction/reaction_json.c, mirrored
+ *     here because that file is not in this build);
+ *   - a JSON object whose "type" (json_object_get_string) is "call_signal"
+ *     (:757-771), "group_invite" / "groupinvite" (:773-775) or "delete"
+ *     (:808-903);
+ *   - and, as the app's chat screen draws them as cards instead of text
+ *     (dna_messenger_flutter/lib/screens/chat/chat_screen.dart:2012-2046:
+ *     jsonDecode as a Map, "type" == a string), "token_transfer",
+ *     "media_ref", "image_attachment".
+ * Everything but the default is NOT chat. The text is read up to its first
+ * NUL, as the app's NUL-terminated copy is (:727-732).
+ */
+bool nc_plaintext_is_chat(const uint8_t *pt, size_t len);
 
 /**
  * ONE day bucket of `peer`'s outbox to this identity (dht_dm_outbox_sync_day
@@ -618,6 +645,8 @@ void nc_inbox_clear(nc_inbox_t *in);
  * ML-KEM secret) and the authorship gate of messenger_transport.c:645-716:
  * the Seal's claimed sender must be the peer and dna_verify_seal_authorship
  * must pass under the peer's verified ML-DSA key; anything else is dropped.
+ * An authentic message that is not chat text (nc_plaintext_is_chat) is
+ * counted in `other` and not returned.
  */
 int nc_outbox_fetch_day(const nc_ctx_t *ctx, const nc_peer_t *peer,
                         const uint8_t salt[NC_SALT_LEN], uint64_t day,
@@ -626,16 +655,22 @@ int nc_outbox_fetch_day(const nc_ctx_t *ctx, const nc_peer_t *peer,
 /** ACK that this identity has STORED `peer`'s messages (G11: the caller
  *  calls this only after its store transaction completed). Key =
  *  SHA3-512(dht_generate_ack_key(me, peer, salt)), value =
- *  dht_ack_value_encode(unix time) (8 bytes BE), EPHEMERAL, ttl DHT_ACK_TTL,
- *  value_id 1 (dht_offline_queue.c dht_publish_ack). */
+ *  dht_ack_value_encode(ack_ts) (8 bytes BE unix seconds — the app's wire
+ *  value, dht_offline_queue.c dht_publish_ack), EPHEMERAL, ttl DHT_ACK_TTL,
+ *  value_id 1. `ack_ts` is NOT this device's clock (the app's :148): it is
+ *  the newest SENDER timestamp this identity has durably stored from
+ *  `peer`, so the ACK never covers a message that was not received. 0 is
+ *  refused (nothing stored, nothing to acknowledge). */
 int nc_ack_publish(const nc_ctx_t *ctx, const char *peer_fp,
-                   const uint8_t salt[NC_SALT_LEN]);
+                   const uint8_t salt[NC_SALT_LEN], uint64_t ack_ts);
 
 /** Read `peer`'s ACK for messages this identity sent (owner = peer, value
  *  exactly 8 bytes, dht_ack_value_decode — dht_offline_queue.c
- *  ack_listen_callback). On
- *  FOUND *ack_ts is the peer's unix time: messages with timestamp <= it
- *  were delivered. */
+ *  ack_listen_callback). On FOUND *ack_ts is the ACK value: the app writes
+ *  its own clock there, the web the newest of OUR timestamps it stored. It
+ *  is a watermark, not a list: the caller treats a message as delivered
+ *  only if it was in a blob published BEFORE this read and its timestamp
+ *  is <= *ack_ts. */
 void nc_ack_read(const nc_ctx_t *ctx, const char *peer_fp,
                  const uint8_t salt[NC_SALT_LEN], nc_read_t *raw,
                  uint64_t *ack_ts);

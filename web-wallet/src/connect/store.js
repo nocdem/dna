@@ -22,7 +22,9 @@
 // message, id 'm' + 20-digit local sequence), 'state' (one record, id 'state':
 // contacts, salts, pending requests, ACK times, the next local sequence),
 // 'meta' (the counter record). Record ids are opaque on purpose: who you talk
-// to is inside the ciphertext, not in an id or the AAD.
+// to is inside the ciphertext, not in an id or the AAD. The counter is also
+// kept in localStorage ('nodus.connect.counter.v1.<database name>', a
+// decimal string) so deleting the history does not restart it (NC-RT2 D).
 //
 // Core calls used (src/connect/core.js, NC-4b):
 //   core.historyKey(vaultIdHex)             32 lowercase hex
@@ -123,13 +125,69 @@ export function nextCounter(current, returned) {
 // Whether `count` more encryptions fit the budget.
 export function budgetAllows(current, count) { return current + BigInt(count) <= MAX_INVOCATIONS; }
 
-// The local state kept in the 'state' record, with defaults.
+// A copy of the counter OUTSIDE the database (NC-RT2 D). Deleting the
+// message history deletes the database with its counter record, but the key
+// K is unchanged (same ML-DSA secret, same vault id: decision rev 2 item 2),
+// so the 2^32 budget of K must not restart. The copy lives in localStorage
+// under the database name, survives erase(), is the larger of the two on
+// open, is written before every database write, and is deleted only with
+// the saved wallet itself (deleteVaultHistory, called by src/app.js).
+const COUNTER_STORAGE_PREFIX = 'nodus.connect.counter.v1.';
+export function counterStorageKey(name) { return COUNTER_STORAGE_PREFIX + name; }
+export function readStoredCounter(storage, name) {
+  if (!storage || typeof storage.getItem !== 'function') throw new StorageError('This browser cannot keep the message counter.');
+  const value = storage.getItem(counterStorageKey(name));
+  if (value === null) return 0n;
+  if (typeof value !== 'string' || !U64.test(value) || BigInt(value) > MAX_INVOCATIONS) throw new StorageError('The stored message counter is damaged.');
+  return BigInt(value);
+}
+export function writeStoredCounter(storage, name, count) {
+  if (typeof count !== 'bigint' || count < 0n || count > MAX_INVOCATIONS) throw new StorageError('Invalid counter.');
+  try { storage.setItem(counterStorageKey(name), count.toString()); }
+  catch { throw new StorageError('Message history could not be saved (the message counter could not be stored).'); }
+}
+export function openingCounter(fromDatabase, fromStorage) { return fromDatabase > fromStorage ? fromDatabase : fromStorage; }
+
+// Raised by deleteVaultHistory when another connection keeps the database
+// open: the browser deletes it once that connection closes (the delete
+// request stays queued), but it is NOT deleted yet.
+export class HistoryDeleteBlocked extends StorageError {}
+
+// Deletes the database (no Web Lock taken here: the caller holds the
+// storage lock — store.erase below, or src/app.js deleting the saved wallet;
+// a second request of the same lock inside it would wait forever).
+function deleteDatabase(name) {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') { resolve(); return; }
+    const request = indexedDB.deleteDatabase(name);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(new StorageError('Message history could not be deleted.'));
+    request.onblocked = () => reject(new HistoryDeleteBlocked('Message history is open in another tab; it is deleted when that tab closes it.'));
+  });
+}
+
+// The saved wallet `vaultId` (its base64 id, src/vault.js) is being deleted:
+// its Messages database and its counter copy go with it. Call inside the
+// storage Web Lock. Rejects with StorageError / HistoryDeleteBlocked.
+export async function deleteVaultHistory(vaultId, storage) {
+  const name = databaseNameForVault(vaultId);
+  try { storage?.removeItem(counterStorageKey(name)); }
+  catch { throw new StorageError('The message counter could not be deleted.'); }
+  await deleteDatabase(name);
+}
+
+// The local state kept in the 'state' record, with defaults. `acks`: the
+// last ACK value read per contact; `ackSent`: the last ACK value this device
+// published per contact (no re-ACK unless something newer was stored).
 export function emptyState() {
-  return { version: 1, nextSeq: '1', contacts: [], outgoing: [], declined: [], acks: {} };
+  return { version: 1, nextSeq: '1', contacts: [], outgoing: [], declined: [], acks: {}, ackSent: {} };
 }
 export function checkState(value) {
+  // A state saved before `ackSent` existed gets the default (same version).
+  if (value && value.version === 1 && value.ackSent === undefined) value.ackSent = {};
   if (!value || value.version !== 1 || !U64.test(String(value.nextSeq)) || !Array.isArray(value.contacts) ||
-      !Array.isArray(value.outgoing) || !Array.isArray(value.declined) || !value.acks || typeof value.acks !== 'object') throw new StorageError('The stored contact list is damaged.');
+      !Array.isArray(value.outgoing) || !Array.isArray(value.declined) || !value.acks || typeof value.acks !== 'object' ||
+      !value.ackSent || typeof value.ackSent !== 'object' || Array.isArray(value.ackSent)) throw new StorageError('The stored contact list is damaged.');
   return value;
 }
 
@@ -151,6 +209,7 @@ function openDatabase(name) {
 }
 
 // One read-only pass over the three stores; decryption happens after it.
+// (These IndexedDB paths have no automated test: test/connect-ui.test.js.)
 function readAll(db) {
   return new Promise((resolve, reject) => {
     let tx;
@@ -182,7 +241,7 @@ function writeAll(db, puts) {
 // The persistent store of a saved wallet. Resolves once the whole history
 // has been read and decrypted; rejects (Messages stays closed) on any error.
 // Returns { persistent: true, state, messages, save(state, newMessages), close(), erase() }.
-export async function openHistoryStore({ core, vaultId }) {
+export async function openHistoryStore({ core, vaultId, storage = globalThis.localStorage }) {
   const name = databaseNameForVault(vaultId);
   await sealing(() => core.historyKey(name), 'The key for your message history could not be prepared.');
   const db = await openDatabase(name);
@@ -190,7 +249,9 @@ export async function openHistoryStore({ core, vaultId }) {
   let counter, state, messages;
   try {
     const raw = await readAll(db);
-    counter = decodeCounter(raw.counter);
+    // The larger of the database record and the copy that survives a
+    // history delete (counterStorageKey above).
+    counter = openingCounter(decodeCounter(raw.counter), readStoredCounter(storage, name));
     const open = async (store, record) => {
       const args = decodeRecord(record);
       const { plaintext } = await sealing(() => core.historyDecrypt({ store, ...args }), 'A stored message could not be opened. It may be damaged or from a different wallet.');
@@ -228,6 +289,9 @@ export async function openHistoryStore({ core, vaultId }) {
           puts.push({ store: entry.store, record: encodeRecord(entry.id, sealed) });
         }
       } finally { for (const bytes of plains) bytes.fill(0); }
+      // The copy first: if the tab dies between here and the commit, the
+      // encryptions already made are still counted.
+      writeStoredCounter(storage, name, counter);
       puts.push({ store: STORE_META, record: encodeCounter(counter) });
       if (closed) throw new StorageError('Message history is closed.');
       await writeAll(db, puts);
@@ -237,16 +301,13 @@ export async function openHistoryStore({ core, vaultId }) {
     return result;
   }
   function close() { closed = true; db.close(); }
-  // Delete-from-this-device under the wallet's storage Web Lock (§1.7).
+  // Delete-from-this-device under the wallet's storage Web Lock (§1.7). The
+  // counter copy in localStorage is KEPT: K does not change, so its count
+  // must not restart (NC-RT2 D).
   async function erase() {
     close();
     if (!navigator.locks) throw new StorageError('This browser cannot safely delete saved data.');
-    await navigator.locks.request('nodus.wallet.storage', () => new Promise((resolve, reject) => {
-      const request = indexedDB.deleteDatabase(name);
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(new StorageError('Message history could not be deleted.'));
-      request.onblocked = () => reject(new StorageError('Message history is in use by another tab. Close it and try again.'));
-    }));
+    await navigator.locks.request('nodus.wallet.storage', () => deleteDatabase(name));
   }
   return { persistent: true, state, messages, save, close, erase };
 }

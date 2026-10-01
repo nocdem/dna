@@ -24,16 +24,32 @@ export function shortId(fp) {
 // (the element is also a <bdi>, see dom.js) and reported; so are invisible
 // characters and a mix of look-alike scripts (Latin with Cyrillic or Greek),
 // which the UI marks as "unusual characters".
+// Invisible: soft hyphen, combining grapheme joiner U+034F, the Hangul /
+// Mongolian fillers, zero-width space/joiners U+200B-200D, line/paragraph
+// separators U+2028-2029, word joiner and invisible operators U+2060-2064,
+// deprecated format controls U+206A-206F, variation selectors U+FE00-FE0F,
+// BOM, halfwidth Hangul filler, and the tag characters U+E0020-E007F.
+// (Removing U+FE0F also drops the emoji-presentation selector of e.g. ❤️:
+// such a message is shown with the marker — confusable marking only.)
 const DIRECTION_CONTROLS = /[؜‎‏‪-‮⁦-⁩]/gu;
-const INVISIBLE = /[­ᅟᅠ᠎​-‍⁠-⁤ㅤ﻿ﾠ]/gu;
-export function inspectUntrusted(value) {
+// Built from a string: a regex literal holding U+2028/2029 is turned into
+// raw line terminators by the bundler, which ends the literal.
+const INVISIBLE = new RegExp(String.raw`[­͏ᅟᅠ᠎​-‍  ⁠-⁤⁪-⁯ㅤ︀-️﻿ﾠ\u{E0020}-\u{E007F}]`, 'gu');
+// A name to check carefully (confusable marking only, nothing is refused):
+// letters but none of them Latin (a whole-script Cyrillic / Greek / other
+// name can copy the look of a Latin one), or any fullwidth Latin letter
+// (U+FF21-FF3A, U+FF41-FF5A: Script=Latin, so the mixed-script test above
+// does not see it).
+const FULLWIDTH_LATIN = /[Ａ-Ｚａ-ｚ]/u;
+export function inspectUntrusted(value, { name = false } = {}) {
   const input = typeof value === 'string' ? value : '';
   let unusual = false;
   const text = input.replace(DIRECTION_CONTROLS, () => { unusual = true; return ''; })
     .replace(INVISIBLE, () => { unusual = true; return ''; });
-  const scripts = ['Latin', 'Cyrillic', 'Greek'].filter(name => new RegExp(`\\p{Script=${name}}`, 'u').test(text));
+  const scripts = ['Latin', 'Cyrillic', 'Greek'].filter(script => new RegExp(`\\p{Script=${script}}`, 'u').test(text));
   if (scripts.length > 1) unusual = true;
-  return { text, unusual };
+  const check = name && (FULLWIDTH_LATIN.test(text) || (/\p{L}/u.test(text) && !/\p{Script=Latin}/u.test(text)));
+  return { text, unusual, check };
 }
 
 // A profile website is shown only as link text of a checked https: URL;
@@ -95,16 +111,69 @@ export function recentDays(today) {
   return [d > 0n ? d - 1n : null, d, d + 1n].filter(x => x !== null).map(String);
 }
 
-// Whether an own message counts as delivered: the contact's ACK time covers
-// its send time (both unix seconds, decimal strings).
-export function isDelivered(message, ackTs) {
-  if (typeof ackTs !== 'string' || !U64.test(ackTs) || ackTs === '0') return false;
-  return BigInt(message.ts) <= BigInt(ackTs);
+// Delivery of own messages (NC-RT2 A). The ACK is one 8-byte watermark per
+// contact (dht_ack_value_encode, unix seconds), not a list: it cannot say
+// WHICH messages arrived. So an own message is marked delivered only when
+//   1. it was in a blob that was successfully published (its `published`
+//      flag, set after core.outboxPublish resolved), and that flag was set
+//      BEFORE the ACK read was issued (publishedSeqs is the snapshot taken
+//      just before core.ackGet), and
+//   2. its timestamp is <= the ACK value read.
+// A message that was never published stays pending whatever the ACK says.
+// The flag is stored in the message record, so the decision is made once
+// and kept (isDelivered).
+export function isDelivered(message) { return message?.delivered === true; }
+
+// What the conversation shows next to an own message.
+export function messageStatus(message) {
+  return isDelivered(message) ? 'delivered' : message?.published === true ? 'sent' : 'waiting to send';
+}
+
+// The local seqs of own messages to `fp` already published — taken BEFORE
+// the ACK read is issued.
+export function publishedSeqs(messages, fp) {
+  return new Set(messages.filter(m => m.dir === 'out' && m.fp === fp && m.published === true).map(m => String(m.seq)));
+}
+
+// After a successful publish of `set` (the pendingOutbox entries sent):
+// copies of the own messages to `fp` in it that were not flagged yet.
+export function markPublished(messages, fp, set) {
+  const sent = new Set(set.map(m => String(m.seq)));
+  return messages.filter(m => m.dir === 'out' && m.fp === fp && m.published !== true && sent.has(String(m.seq)))
+    .map(m => ({ ...m, published: true }));
+}
+
+// After an ACK read of `ackTs`: copies of the own messages to `fp` that
+// become delivered — published before the read (`publishedBefore`, from
+// publishedSeqs) and not later than the ACK value.
+export function markDelivered(messages, fp, ackTs, publishedBefore) {
+  if (typeof ackTs !== 'string' || !U64.test(ackTs) || ackTs === '0' || !(publishedBefore instanceof Set)) return [];
+  const ack = BigInt(ackTs);
+  return messages.filter(m => m.dir === 'out' && m.fp === fp && !isDelivered(m) && publishedBefore.has(String(m.seq)) &&
+      U64.test(String(m.ts)) && BigInt(m.ts) <= ack)
+    .map(m => ({ ...m, delivered: true }));
+}
+
+// The receiver's ACK value for `fp` (G11, NC-RT2 A): the NEWEST sender
+// timestamp among the messages from `fp` stored on this device — never this
+// device's clock, so the ACK covers nothing that was not received. Returns
+// the decimal string to publish, or null when nothing is stored or nothing
+// newer than `lastSent` (the value last published) was stored.
+export function ackToSend(messages, fp, lastSent) {
+  let newest = 0n;
+  for (const m of messages) {
+    if (m.dir !== 'in' || m.fp !== fp || !U64.test(String(m.senderTs))) continue;
+    const ts = BigInt(m.senderTs);
+    if (ts > newest) newest = ts;
+  }
+  if (newest === 0n) return null;
+  if (typeof lastSent === 'string' && U64.test(lastSent) && newest <= BigInt(lastSent)) return null;
+  return newest.toString();
 }
 
 // The WHOLE pending set of own messages to one contact (the blob replaces
-// today's previous one, core.outboxPublish): outgoing, not yet covered by the
-// contact's ACK, sent within the 7-day life of an outbox value (the outbox
+// today's previous one, core.outboxPublish): outgoing, not yet delivered
+// (isDelivered above), sent within the 7-day life of an outbox value (the outbox
 // PUT is EPHEMERAL, 7 days: design §1.4 R5), in local order; at most the
 // core's 1000. Like the app's writer (design §1.4 R5: messages.c:624-636
 // rebuilds the blob from the pending rows, not only today's), a message whose
@@ -114,11 +183,11 @@ export function isDelivered(message, ackTs) {
 // repeats (receivedKey below; the app by content + original timestamp).
 export const OUTBOX_MAX = 1000;
 export const OUTBOX_LIFETIME_SECONDS = 7n * 86400n;
-export function pendingOutbox(messages, fp, nowSeconds, ackTs) {
+export function pendingOutbox(messages, fp, nowSeconds) {
   if (typeof nowSeconds !== 'string' || !U64.test(nowSeconds)) throw new Error('Invalid time.');
   const oldest = BigInt(nowSeconds) - OUTBOX_LIFETIME_SECONDS;
   const list = messages
-    .filter(m => m.dir === 'out' && m.fp === fp && BigInt(m.ts) > oldest && !isDelivered(m, ackTs))
+    .filter(m => m.dir === 'out' && m.fp === fp && BigInt(m.ts) > oldest && !isDelivered(m))
     .sort(compareLocal)
     .map(m => ({ seq: m.seq, ts: m.ts, text: m.text }));
   // Beyond the limit only the newest are kept.

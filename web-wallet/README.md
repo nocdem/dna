@@ -1195,18 +1195,52 @@ name, no avatar). No groups, media or calls. The live `/` build is unchanged.
   for yesterday / today / tomorrow, de-duplicated, ordered by the local receive
   sequence, the sender's time labelled "sender's clock". Requests are labelled
   "Not a contact"; claimed names are shown only as "says their name is …".
-- Tests: `test/connect-ui.test.js` (record / counter encoding, UI helpers; no
-  IndexedDB — `fake-indexeddb` is not a dependency).
+- Tests: `test/connect-ui.test.js` (record / counter encoding, UI helpers,
+  the saved-wallet history delete against a stub of `deleteDatabase`). The
+  IndexedDB read / write transactions have NO automated test
+  (`fake-indexeddb` is not a dependency and no browser test opens this page).
 
 One page = one module = one session (NC-4b): the page derives the Nodus
 address locally (`src/nodus/derive.js`), creates and unlocks the wallet's own
 NODUS client (`src/nodus/client.js` with `nodusSendModuleFactory`, the same
 `send.wasm` that carries the Messages exports), and builds the Messages core
 on it (`createNodusConnectCore({ nodus })`). Lock: Messages core, then the
-client, then the store, then the single-tab lock. Delivery times (`ack_ts`)
-are unix seconds (`connect/nc_outbox.c` `nc_ack_publish`: `time(NULL)`).
-History records are sealed as UTF-8 JSON of at most 65536 bytes
-(`nc_wasm.c` `NC_HIST_PT_MAX`).
+client, then the store, then the single-tab lock. History records are sealed
+as UTF-8 JSON of at most 65536 bytes (`nc_wasm.c` `NC_HIST_PT_MAX`).
+
+**NC-RT2 fixes (preview, unreleased).**
+- Delivery confirmation (ACK). The wire value is unchanged (8 bytes BE unix
+  seconds, `dht_ack_value_encode`), but the web no longer writes its clock
+  there: the value is the NEWEST sender timestamp of that contact's messages
+  it has durably stored (`text.js` `ackToSend` → `core.ackPublish(fp, salt,
+  ackTs)` → `nc_ack_send` → `nc_ack_publish`). No ACK when a message of that
+  check failed verification, and none unless something newer was stored than
+  the value last published (`state.ackSent`, kept across sessions). As
+  sender, an own message counts as delivered only if it was in a blob that
+  was successfully published BEFORE the ACK read was issued and its time is
+  <= the ACK value (`published` / `delivered` flags in the message record,
+  `markPublished` / `markDelivered`); a never-published message stays
+  pending whatever the ACK says. Shown as "waiting to send" / "sent" /
+  "delivered".
+- Non-text payloads: the core classifies each authentic plaintext as the app
+  does (`nc_plaintext_is_chat`: reaction, `call_signal`, `group_invite`,
+  `delete`, and the chat screen's `token_transfer` / `media_ref` /
+  `image_attachment` cards) and returns only chat text; the rest is counted
+  as `other` and the conversation says such items were not shown.
+- Opening: the form is hidden while Messages opens; a superseded open locks
+  the core and client it built (core, then client).
+- Closing Messages (`nc_lock`) points the core's cancel flag at an
+  always-set flag, so a suspended read-then-write stops before its PUT.
+- Counter: kept also in localStorage (`nodus.connect.counter.v1.<database>`),
+  the larger value is used on open, written before every database write; a
+  history delete keeps it (the key K does not change), deleting the saved
+  wallet removes it.
+- Deleting the saved wallet (main page) also deletes its Messages database
+  in the same storage-lock section, and says so — or says that it is still
+  open in another tab, or could not be found / deleted.
+- Names: more invisible characters are removed and marked (tag characters,
+  variation selectors, U+206A-206F, U+034F, U+2028/2029); a claimed name with
+  no Latin letter, or with fullwidth Latin, is marked "check carefully".
 
 ## Nodus Connect in the wallet's one module — NC-4b (unreleased, no UI)
 
