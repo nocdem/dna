@@ -412,10 +412,13 @@ chain halts.
    tip, the chain advanced, and 7/7 agree (§3).
 2. **Verify 7/7 are on the new binary BEFORE voting.** On every node:
    `journalctl -u nodus | grep 'Nodus v.* running'` (`nodus_server.c` startup line)
-   shows the new version as the LAST such line, and a fresh
-   `PEER SCHEMA MISMATCH` line must NOT appear after the last restart (every peer now
-   reports the same version). There is no on-chain "how many upgraded" indicator yet
-   (planned: `docs/plans/decisions/2026-09-26-governance-before-testnet.md`).
+   shows the new version as the LAST such line. (Earlier text also told you to look for
+   the absence of a `PEER SCHEMA MISMATCH` line; no code emits that line since 0.20.0 —
+   see the warning at the top of this file — so its absence proves nothing. The version
+   line is the only check.) There is no on-chain "how many upgraded" indicator yet
+   (planned: `docs/plans/decisions/2026-09-26-governance-before-testnet.md`), and the code
+   does not enforce 7/7: an approval collects as soon as seats holding more than 2/3 of the
+   committee power run the new binary — 7/7 first is procedure.
 3. **Vote** with the new CLI:
    `nodus-cli chain-config propose --param GAS_PRICE_RAW_PER_UNIT --value <P> --effective <H>`
    (`<P>` ≤ 1 000 000; `<H>` ≥ tip + grace, ERGONOMIC class). The row must appear
