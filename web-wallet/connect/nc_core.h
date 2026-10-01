@@ -131,8 +131,11 @@ typedef enum {
     NC_WHY_BAD_SIGNATURE, /* nodus_value_verify failed                         */
     NC_WHY_WRONG_KEY,     /* the value is signed for a different DHT key       */
     NC_WHY_WRONG_OWNER,   /* the value's owner is not the expected writer      */
-    NC_WHY_BAD_RECORD     /* the value verified but its content did not
+    NC_WHY_BAD_RECORD,    /* the value verified but its content did not
                            * (record decode / record signature / binding)     */
+    NC_WHY_TOO_LARGE      /* an owner-filtered read still had pages left
+                           * after NC_READ_MAX_PAGES: the owner's newest row
+                           * may be among the unread ones (nc_read_all)       */
 } nc_why_t;
 
 const char *nc_why_str(nc_why_t why);
@@ -143,10 +146,13 @@ typedef struct {
     nc_why_t       why;
     int            node_rc;     /* the client's return code, kept for logs   */
     nodus_value_t *value;       /* FOUND only; freed by nc_read_clear        */
-    size_t         foreign;     /* nc_profile_read only (get-all): verified
-                                 * values of ANOTHER owner at the key — never
-                                 * used, reported so the UI can say someone
-                                 * is interfering. 0 for every other read.   */
+    size_t         foreign;     /* owner-filtered reads (nc_read_one with an
+                                 * owner, nc_profile_read): verified values
+                                 * of ANOTHER owner the node sent for the
+                                 * key — never used, reported so the UI can
+                                 * say someone is interfering. A node that
+                                 * applies the owner filter sends none.
+                                 * 0 for a read without an owner.            */
 } nc_read_t;
 
 void nc_read_clear(nc_read_t *r);
@@ -162,9 +168,36 @@ void nc_read_clear(nc_read_t *r);
 void nc_classify_one(int rc, nodus_value_t *value, const nodus_key_t *key,
                      const nodus_key_t *expect_owner, nc_read_t *out);
 
-/** One strict GET (nodus_client_get_strict) + nc_classify_one. */
+/**
+ * One value at `key`.
+ *   expect_owner NULL: one strict GET (nodus_client_get_strict) +
+ *     nc_classify_one.
+ *   expect_owner set: the owner-filtered paged read nc_read_all(key,
+ *     [expect_owner]) and ONE row of it, picked with nc_row_before. A
+ *     single GET is not used: the node's single GET returns the highest-seq
+ *     row of ANY owner unless an EXCLUSIVE row exists (nodus_storage.c
+ *     GET_SQL :43-46), so a stranger's newer row would shadow the owner's.
+ *       >= 1 verified row of the owner, and no item that was undecodable /
+ *         failed its signature / was signed for another key -> FOUND;
+ *       an owner row plus such an item -> UNREADABLE with that why (the
+ *         item may be the owner's newest row: fail closed);
+ *       only rows of other owners -> UNREADABLE(WRONG_OWNER);
+ *       no item at all -> EMPTY; error / too large -> UNREADABLE.
+ *     out->foreign = rows of other owners the node sent, on every outcome.
+ */
 void nc_read_one(const nc_ctx_t *ctx, const nodus_key_t *key,
                  const nodus_key_t *expect_owner, nc_read_t *out);
+
+/** a before b in the node's single-GET order (nodus_storage.c GET_SQL
+ *  :43-46: EXCLUSIVE first, then highest seq), plus a total tie-break on
+ *  the lowest value_id so the choice never depends on reply order. Every
+ *  field used is covered by the value signature. */
+bool nc_row_before(const nodus_value_t *a, const nodus_value_t *b);
+
+/* Pages one nc_read_all loop reads at most (per owner). One page is at most
+ * NODUS_GET_ALL_PAGE_MAX_BYTES (2 MiB) of rows; 8 pages cover the 16 MiB a
+ * single owner may store (NODUS_STORAGE_OWNER_MAX_BYTES). */
+#define NC_READ_MAX_PAGES 8
 
 typedef struct {
     nc_outcome_t    outcome;     /* FOUND: >= 1 accepted value; EMPTY: the
@@ -175,6 +208,11 @@ typedef struct {
     /* A get_all answer is NEVER complete (design §6.4 F5): a value missing
      * from `values` may exist. Always true when outcome == NC_FOUND.        */
     bool            partial;
+    /* Owner-less read only: the node still had pages after
+     * NC_READ_MAX_PAGES; `values` holds what was read. (An owner-filtered
+     * read in that state is UNREADABLE(TOO_LARGE) instead.) Kept by
+     * nc_read_all_clear, like the counters.                                 */
+    bool            truncated;
     nodus_value_t **values;      /* accepted values, in reply order          */
     size_t          count;
     size_t          undecodable; /* items that did not decode (F1)           */
@@ -192,6 +230,26 @@ void nc_classify_all(int rc, nodus_value_t **vals, size_t count,
                      const nodus_key_t *owners, size_t n_owners,
                      nc_read_all_t *out);
 
+/**
+ * Paged, owner-filtered GET_ALL (nodus_client_get_all_page_strict, DHT
+ * Package A) + nc_classify_all.
+ *   n_owners == 0: one paging loop over every owner;
+ *   n_owners  > 0: one paging loop PER owner, with that owner's filter.
+ * Each loop reads while the node says "more", at most NC_READ_MAX_PAGES
+ * pages; the rows of every loop are concatenated (reply order) and the
+ * undecodable counts summed, then classified exactly as one get_all answer
+ * (rows of another key / owner and bad signatures are COUNTED, never
+ * silently dropped — a node may ignore the filter). The cancel flag is
+ * checked before every page.
+ *   any page error -> UNREADABLE (why from the rc; NODUS_ERR_UNAVAILABLE =
+ *     NODE_ERROR; an error is never EMPTY);
+ *   a legacy reply (a node that predates paging: no "more") with no row ->
+ *     UNREADABLE(NODE_ERROR), never EMPTY (node_rc NODUS_ERR_UNAVAILABLE);
+ *   pages left after NC_READ_MAX_PAGES: owner-filtered ->
+ *     UNREADABLE(TOO_LARGE); owner-less -> what was read, truncated = true
+ *     (UNREADABLE(TOO_LARGE) when not one item was read — rows remain, so
+ *     the answer is not EMPTY).
+ */
 void nc_read_all(const nc_ctx_t *ctx, const nodus_key_t *key,
                  const nodus_key_t *owners, size_t n_owners,
                  nc_read_all_t *out);
@@ -234,7 +292,8 @@ typedef struct {
 
 /**
  * Read and verify a profile (own AND peer): R0 as a GET_ALL filtered to
- * owner = fp (nc_read_all, owners = [fp]) — NOT a single GET. The node's
+ * owner = fp (nc_read_one with expect_owner = fp, i.e. the paged
+ * nc_read_all with owners = [fp]) — NOT a single GET. The node's
  * single GET returns the highest-seq row of ANY owner unless an EXCLUSIVE
  * row exists (nodus_storage.c GET_SQL :43-46), so a stranger's newer
  * PERMANENT row at "<fp>:profile" would shadow the owner's record; get-all

@@ -34,6 +34,7 @@ const char *nc_why_str(nc_why_t why) {
     case NC_WHY_WRONG_KEY:     return "wrong_key";
     case NC_WHY_WRONG_OWNER:   return "wrong_owner";
     case NC_WHY_BAD_RECORD:    return "bad_record";
+    case NC_WHY_TOO_LARGE:     return "too_large";
     }
     return "unknown";
 }
@@ -77,6 +78,8 @@ static nc_why_t why_from_rc(int rc) {
     if (rc == NODUS_ERR_PROTOCOL_ERROR) return NC_WHY_UNDECODABLE;
     if (rc == -1)                       return NC_WHY_NOT_CONNECTED;
     if (rc == NC_ERR_CANCELLED)         return NC_WHY_CANCELLED;
+    /* The node could not look (DHT Package A): an error, never "empty". */
+    if (rc == NODUS_ERR_UNAVAILABLE)    return NC_WHY_NODE_ERROR;
     return NC_WHY_NODE_ERROR;
 }
 
@@ -127,8 +130,56 @@ void nc_classify_one(int rc, nodus_value_t *value, const nodus_key_t *key,
     out->why = rc == 0 ? NC_WHY_UNDECODABLE : why_from_rc(rc);
 }
 
+bool nc_row_before(const nodus_value_t *a, const nodus_value_t *b) {
+    bool ax = a->type == NODUS_VALUE_EXCLUSIVE, bx = b->type == NODUS_VALUE_EXCLUSIVE;
+    if (ax != bx) return ax;
+    if (a->seq != b->seq) return a->seq > b->seq;
+    return a->value_id < b->value_id;
+}
+
+/* R0 for one owner's value (nc_core.h nc_read_one, expect_owner set): the
+ * owner-filtered get-all, then one row of it. */
+static void read_owner_one(const nc_ctx_t *ctx, const nodus_key_t *key,
+                           const nodus_key_t *owner, nc_read_t *out) {
+    nc_read_all_t all;
+    nc_read_all(ctx, key, owner, 1, &all);
+    memset(out, 0, sizeof(*out));
+    out->outcome = all.outcome;
+    out->why = all.why;
+    out->node_rc = all.node_rc;
+    out->foreign = all.wrong_owner;
+    if (all.outcome != NC_FOUND) {
+        nc_read_all_clear(&all);
+        return;
+    }
+    /* An item that did not decode, failed its signature or is signed for
+     * another key may be the owner's newest row: no answer (fail closed). */
+    nc_why_t dropped = all.undecodable ? NC_WHY_UNDECODABLE
+                     : all.bad_sig     ? NC_WHY_BAD_SIGNATURE
+                     : all.wrong_key   ? NC_WHY_WRONG_KEY
+                     : NC_WHY_NONE;
+    if (dropped != NC_WHY_NONE) {
+        nc_read_all_clear(&all);
+        out->outcome = NC_UNREADABLE;
+        out->why = dropped;
+        QGP_LOG_INFO(LOG_TAG, "GET(owner) unreadable: %s next to the owner's "
+                     "row", nc_why_str(dropped));
+        return;
+    }
+    size_t best = 0;
+    for (size_t i = 1; i < all.count; i++)
+        if (nc_row_before(all.values[i], all.values[best])) best = i;
+    out->value = all.values[best];
+    all.values[best] = NULL;
+    nc_read_all_clear(&all);
+}
+
 void nc_read_one(const nc_ctx_t *ctx, const nodus_key_t *key,
                  const nodus_key_t *expect_owner, nc_read_t *out) {
+    if (expect_owner) {
+        read_owner_one(ctx, key, expect_owner, out);
+        return;
+    }
     if (!ctx || !ctx->client || !key) {
         nc_classify_one(-1, NULL, key, expect_owner, out);
         return;
@@ -203,6 +254,71 @@ void nc_classify_all(int rc, nodus_value_t **vals, size_t count,
     out->why = count == 0 ? NC_WHY_UNDECODABLE : last_drop;
 }
 
+/* Local only: an owner-filtered read with pages left (never a node code —
+ * those are positive — nor an NC_ERR_*). */
+#define NC_RC_TOO_LARGE (-1000)
+
+/* Rows of every page of every loop of one nc_read_all, in reply order. */
+typedef struct {
+    nodus_value_t **vals;
+    size_t          count;
+    size_t          undecodable;
+} page_acc_t;
+
+static int acc_append(page_acc_t *acc, nodus_value_t **vals, size_t n) {
+    if (n == 0) return 0;
+    nodus_value_t **grown = realloc(acc->vals,
+                                    (acc->count + n) * sizeof(*grown));
+    if (!grown) return -1;
+    memcpy(grown + acc->count, vals, n * sizeof(*grown));
+    acc->vals = grown;
+    acc->count += n;
+    return 0;
+}
+
+/* One paging loop (owner NULL = every owner): reads while the node says
+ * "more", at most NC_READ_MAX_PAGES pages, cancel checked before every
+ * page. Returns 0 or the first page's error (the rows read so far stay in
+ * acc; the caller frees them). *more_left = pages remained after the cap. */
+static int read_pages(const nc_ctx_t *ctx, const nodus_key_t *key,
+                      const nodus_key_t *owner, page_acc_t *acc,
+                      bool *more_left) {
+    nodus_dht_page_cursor_t cursor;
+    bool have_cursor = false;
+    *more_left = false;
+    for (int page = 0; page < NC_READ_MAX_PAGES; page++) {
+        if (ctx->cancel && *ctx->cancel) return NC_ERR_CANCELLED;
+        nodus_value_t **vals = NULL;
+        size_t n = 0, undecodable = 0;
+        bool more = false, legacy = false;
+        nodus_dht_page_cursor_t next;
+        int rc = nodus_client_get_all_page_strict(ctx->client, key, owner,
+                                                  have_cursor ? &cursor : NULL,
+                                                  &vals, &n, &more, &next,
+                                                  &legacy, &undecodable);
+        if (rc != 0) return rc;
+        acc->undecodable += undecodable;
+        if (acc_append(acc, vals, n) != 0) {
+            for (size_t i = 0; i < n; i++) nodus_value_free(vals[i]);
+            free(vals);
+            return NC_ERR_INTERNAL;
+        }
+        free(vals);
+        if (legacy && n == 0) {
+            /* A node that predates paging answers empty both for an empty
+             * key and when it could not look: not EMPTY. */
+            QGP_LOG_INFO(LOG_TAG, "GET_ALL(page): legacy reply without a row "
+                         "— unreadable, not empty");
+            return NODUS_ERR_UNAVAILABLE;
+        }
+        if (!more) return 0;
+        cursor = next;
+        have_cursor = true;
+    }
+    *more_left = true;
+    return 0;
+}
+
 void nc_read_all(const nc_ctx_t *ctx, const nodus_key_t *key,
                  const nodus_key_t *owners, size_t n_owners,
                  nc_read_all_t *out) {
@@ -215,14 +331,51 @@ void nc_read_all(const nc_ctx_t *ctx, const nodus_key_t *key,
                         out);
         return;
     }
-    nodus_value_t **vals = NULL;
-    size_t count = 0, undecodable = 0;
-    int rc = nodus_client_get_all_strict(ctx->client, key, &vals, &count,
-                                         &undecodable);
-    nc_classify_all(rc, vals, count, undecodable, key, owners, n_owners, out);
-    if (out->outcome == NC_UNREADABLE)
+    page_acc_t acc;
+    memset(&acc, 0, sizeof(acc));
+    int rc = 0;
+    bool more_left = false;
+    size_t loops = n_owners > 0 ? n_owners : 1;
+    for (size_t i = 0; i < loops && rc == 0; i++) {
+        bool left = false;
+        rc = read_pages(ctx, key, n_owners > 0 ? &owners[i] : NULL, &acc,
+                        &left);
+        more_left = more_left || left;
+    }
+    if (rc == 0 && more_left && n_owners > 0) rc = NC_RC_TOO_LARGE;
+    if (rc != 0) {
+        /* Never through nc_classify_all's rc path: its NOT_FOUND -> EMPTY
+         * branch must not turn a page error into EMPTY. */
+        for (size_t i = 0; i < acc.count; i++) nodus_value_free(acc.vals[i]);
+        free(acc.vals);
+        memset(out, 0, sizeof(*out));
+        out->outcome = NC_UNREADABLE;
+        out->undecodable = acc.undecodable;
+        if (rc == NC_RC_TOO_LARGE) {
+            out->why = NC_WHY_TOO_LARGE;
+        } else {
+            out->why = why_from_rc(rc);
+            out->node_rc = rc;
+        }
         QGP_LOG_INFO(LOG_TAG, "GET_ALL unreadable: %s (rc=%d)",
                      nc_why_str(out->why), rc);
+        return;
+    }
+    nc_classify_all(0, acc.vals, acc.count, acc.undecodable, key, owners,
+                    n_owners, out);
+    out->truncated = more_left;          /* owner-less only (rc 0 here)    */
+    if (more_left) {
+        QGP_LOG_INFO(LOG_TAG, "GET_ALL: pages left after %d — the answer is "
+                     "truncated", NC_READ_MAX_PAGES);
+        /* Rows remain at the node: "no item" is not what it said. */
+        if (out->outcome == NC_EMPTY) {
+            out->outcome = NC_UNREADABLE;
+            out->why = NC_WHY_TOO_LARGE;
+        }
+    }
+    if (out->outcome == NC_UNREADABLE)
+        QGP_LOG_INFO(LOG_TAG, "GET_ALL unreadable: %s",
+                     nc_why_str(out->why));
 }
 
 int nc_put(const nc_ctx_t *ctx, const nodus_key_t *key,

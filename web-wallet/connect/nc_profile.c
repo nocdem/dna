@@ -39,54 +39,18 @@ static void mark_bad_record(nc_read_t *raw) {
     raw->why = NC_WHY_BAD_RECORD;
 }
 
-/* a before b in the node's single-GET order (nodus_storage.c GET_SQL
- * :43-46: EXCLUSIVE first, then highest seq), plus a total tie-break on
- * value_id so the choice never depends on reply order. Every field used is
- * covered by the value signature. */
-static bool row_before(const nodus_value_t *a, const nodus_value_t *b) {
-    bool ax = a->type == NODUS_VALUE_EXCLUSIVE, bx = b->type == NODUS_VALUE_EXCLUSIVE;
-    if (ax != bx) return ax;
-    if (a->seq != b->seq) return a->seq > b->seq;
-    return a->value_id < b->value_id;
-}
-
 /* R0 for a profile: get-all filtered to the owner (nc_core.h
  * nc_profile_read). A single GET cannot be used: a stranger's newer
- * PERMANENT row at the key would be the node's answer. */
+ * PERMANENT row at the key would be the node's answer. The owner-row rule
+ * (fail closed on an undecodable / bad-signature / wrong-key item next to
+ * the owner's row; pick by nc_row_before) is nc_read_one's with an owner —
+ * one copy, shared with the contact list and the outbox. */
 static void read_owner_row(const nc_ctx_t *ctx, const nodus_key_t *key,
                            const nodus_key_t *owner, nc_read_t *raw) {
-    nc_read_all_t all;
-    nc_read_all(ctx, key, owner, 1, &all);
-    memset(raw, 0, sizeof(*raw));
-    raw->outcome = all.outcome;
-    raw->why = all.why;
-    raw->node_rc = all.node_rc;
-    raw->foreign = all.wrong_owner;
+    nc_read_one(ctx, key, owner, raw);
     if (raw->foreign > 0)
         QGP_LOG_WARN(LOG_TAG, "%zu profile row(s) of another owner at the "
                      "key (ignored)", raw->foreign);
-    if (all.outcome != NC_FOUND) {
-        nc_read_all_clear(&all);
-        return;
-    }
-    /* An item that did not decode, failed its signature or is signed for
-     * another key may be the owner's newest row: no base (fail closed). */
-    nc_why_t dropped = all.undecodable ? NC_WHY_UNDECODABLE
-                     : all.bad_sig     ? NC_WHY_BAD_SIGNATURE
-                     : all.wrong_key   ? NC_WHY_WRONG_KEY
-                     : NC_WHY_NONE;
-    if (dropped != NC_WHY_NONE) {
-        nc_read_all_clear(&all);
-        raw->outcome = NC_UNREADABLE;
-        raw->why = dropped;
-        return;
-    }
-    size_t best = 0;
-    for (size_t i = 1; i < all.count; i++)
-        if (row_before(all.values[i], all.values[best])) best = i;
-    raw->value = all.values[best];
-    all.values[best] = NULL;
-    nc_read_all_clear(&all);
 }
 
 void nc_profile_read(const nc_ctx_t *ctx, const char *fp, nc_read_t *raw,

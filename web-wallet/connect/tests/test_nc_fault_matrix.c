@@ -38,6 +38,21 @@
  *       unedited bio kept), one EXCLUSIVE PUT, foreign 1 reported
  *   P5  owner row + an item that does not decode -> UNREADABLE(undecodable)
  *   P6  ... and zero PUTs (the item may be the owner's newer row)
+ *   (Since the paged reads — DHT Package A, nc_read_all — every get_all the
+ *   core sends carries "pg" (+ "own" for an owner-filtered read); the fake
+ *   answers it as a paging node, "more": false unless a mode below asks
+ *   for more pages, and still serves every mode above. Expectations of the
+ *   cases above are unchanged.)
+ *   N1  the owner's row on page 2 behind more = true + "next" -> FOUND; two
+ *       page requests, both with "own" = the owner's fp
+ *   N2  an owner-filtered read with pages left after NC_READ_MAX_PAGES ->
+ *       UNREADABLE(too_large) after exactly NC_READ_MAX_PAGES requests;
+ *       profile and contact-list writes wait with zero PUTs (fresh too)
+ *   N3  a pre-paging reply ("vals": [], no "more") -> UNREADABLE(node_error),
+ *       never EMPTY; zero PUTs even for a fresh identity
+ *   N4  error 21 (unavailable) -> UNREADABLE(node_error), zero PUTs
+ *   N5  the owner-less request inbox past NC_READ_MAX_PAGES: truncated; with
+ *       nothing read UNREADABLE(too_large), not EMPTY
  *   Q1  get_all of the request inbox whose only item does not decode ->
  *       UNREADABLE, never EMPTY
  *   L1  contact-list add after timeout / bad signature / undecodable: wait,
@@ -78,6 +93,13 @@
  *     client-side choice, not that a real node keeps both rows. A real
  *     node's get_all is also never complete (design §6.4 F5): the owner's
  *     row can be missing from a real answer, which reads as P2.
+ *   - The fake never applies "own": it sends the rows of its mode whatever
+ *     the filter (as a node that ignores it would). F4, W1c and P1-P4 thus
+ *     pin the client's counting of a foreign row; a real Package A node
+ *     filters by owner, sends no foreign row, and answers F4 / P2 / P3 as
+ *     an empty page (EMPTY — for a fresh identity P3 would then write).
+ *   - N1-N5 prove the client's paging loop against the fake's cursors, not
+ *     a real node's page budget (nodus_storage_get_all_page).
  *   - L3/L4 read the PUT back with the same C that wrote it: they prove the
  *     core agrees with the codecs it compiles, not that the frozen app reads
  *     the list (NC-3's job against real app records).
@@ -116,7 +138,13 @@ typedef enum {
     M_PAYLOAD,         /* g_fake.serve as an own EXCLUSIVE value            */
     M_SHADOW,          /* get_all: stranger PERMANENT high seq + owner row  */
     M_FOREIGN_ONLY,    /* get_all: the stranger's row alone                 */
-    M_OWNER_PLUS_JUNK  /* get_all: owner row + an item that does not decode */
+    M_OWNER_PLUS_JUNK, /* get_all: owner row + an item that does not decode */
+    M_PAGED_OWNER,     /* paged get_all: page 1 empty + more/next, page 2
+                        * (asked with that cursor) = the owner's row        */
+    M_ENDLESS,         /* paged get_all: every page empty + more = true     */
+    M_LEGACY_EMPTY,    /* any read: a pre-paging reply ("vals": [], no
+                        * "more")                                           */
+    M_UNAVAILABLE      /* any read: error NODUS_ERR_UNAVAILABLE (21)        */
 } mode_t_;
 
 typedef struct {
@@ -124,6 +152,8 @@ typedef struct {
     _Atomic int      mode;
     _Atomic int      put_reply;     /* 0 = ok, else an error code */
     _Atomic int      puts;
+    _Atomic int      page_reqs;     /* get_all requests with "pg" / "after" */
+    _Atomic int      own_reqs;      /* ... of which "own" = the own fp      */
     _Atomic bool     stop;
     pthread_t        tid;
     uint8_t         *buf;
@@ -142,6 +172,7 @@ typedef struct {
 #define FAKE_BUF (1024 * 1024)
 static fake_t g_fake;
 static nc_keys_t *g_keys;
+static nodus_key_t g_own_fp;            /* g_keys->fp as a key */
 static nodus_identity_t *g_stranger;
 
 static void resp_header(cbor_encoder_t *enc, uint32_t txn) {
@@ -233,10 +264,51 @@ static int owner_row_permanent(const nodus_key_t *key, uint8_t **out,
     return rc;
 }
 
-static void send_get_reply(nodus_tcp_conn_t *conn, uint32_t txn,
-                           const nodus_key_t *key, bool all) {
+/* The cursor M_PAGED_OWNER hands out after page 1 (and expects back). */
+static const uint64_t PAGE1_NEXT_VID = 0;
+
+static void enc_cursor(cbor_encoder_t *enc, const nodus_key_t *owner,
+                       uint64_t vid) {
+    cbor_encode_map(enc, 2);
+    cbor_encode_cstr(enc, "o"); cbor_encode_bstr(enc, owner->bytes, NODUS_KEY_BYTES);
+    cbor_encode_cstr(enc, "v"); cbor_encode_uint(enc, vid);
+}
+
+/* "r" of a paged get_all reply (nodus_t2_result_page's shape): "vals" with
+ * the given items, "more", and "next" when more. */
+static void enc_page(cbor_encoder_t *enc, const uint8_t *const *items,
+                     const size_t *lens, size_t n, bool more,
+                     const nodus_key_t *next_owner, uint64_t next_vid) {
+    cbor_encode_map(enc, more ? 3 : 2);
+    cbor_encode_cstr(enc, "vals");
+    cbor_encode_array(enc, n);
+    for (size_t i = 0; i < n; i++) cbor_encode_bstr(enc, items[i], lens[i]);
+    cbor_encode_cstr(enc, "more"); cbor_encode_bool(enc, more);
+    if (more) {
+        cbor_encode_cstr(enc, "next");
+        enc_cursor(enc, next_owner, next_vid);
+    }
+}
+
+/* `paged`: a get_all that carried "pg" / "after". Every mode below except
+ * M_LEGACY_EMPTY answers it as a paging node (plus "more"); the fake never
+ * applies "own" — it sends the rows of its mode whatever the filter, as a
+ * node that ignores the filter would, so the client-side classification of
+ * a foreign row stays under test. */
+static void send_get_reply(nodus_tcp_conn_t *conn, const nodus_tier2_msg_t *msg,
+                           bool all) {
     int mode = atomic_load(&g_fake.mode);
     if (mode == M_TIMEOUT) return;
+    uint32_t txn = msg->txn_id;
+    const nodus_key_t *key = &msg->key;
+    bool paged = all && (msg->page || msg->has_after);
+    size_t out = 0;
+    if (mode == M_UNAVAILABLE) {
+        if (nodus_t2_error(txn, NODUS_ERR_UNAVAILABLE, "unavailable",
+                           g_fake.buf, FAKE_BUF, &out) == 0)
+            nodus_tcp_send(conn, g_fake.buf, out);
+        return;
+    }
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, g_fake.buf, FAKE_BUF);
     resp_header(&enc, txn);
@@ -244,9 +316,15 @@ static void send_get_reply(nodus_tcp_conn_t *conn, uint32_t txn,
     uint8_t *vb = NULL, *vb2 = NULL;
     size_t vl = 0, vl2 = 0;
     static const uint8_t junk[3] = { 1, 2, 3 };
+    static const nodus_key_t zero_fp;
     switch (mode) {
     case M_EMPTY:
-        cbor_encode_map(&enc, 0);
+        if (paged) enc_page(&enc, NULL, NULL, 0, false, NULL, 0);
+        else cbor_encode_map(&enc, 0);
+        break;
+    case M_LEGACY_EMPTY:     /* a pre-paging node: no "more", ever */
+        cbor_encode_map(&enc, all ? 1 : 0);
+        if (all) { cbor_encode_cstr(&enc, "vals"); cbor_encode_array(&enc, 0); }
         break;
     case M_GOOD:
     case M_PAYLOAD:
@@ -254,24 +332,27 @@ static void send_get_reply(nodus_tcp_conn_t *conn, uint32_t txn,
     case M_WRONG_OWNER:
         if (value_bytes(key, mode == M_WRONG_OWNER ? g_stranger : &g_keys->id,
                         mode == M_BAD_SIG, &vb, &vl) != 0) return;
-        cbor_encode_map(&enc, 1);
+        cbor_encode_map(&enc, paged ? 2 : 1);
         /* get_all answers "vals" (client_get_all_impl reads only that) */
         cbor_encode_cstr(&enc, all ? "vals" : "val");
         if (all) cbor_encode_array(&enc, 1);
         cbor_encode_bstr(&enc, vb, vl);
+        if (paged) { cbor_encode_cstr(&enc, "more"); cbor_encode_bool(&enc, false); }
         free(vb);
         break;
     case M_UNDECODABLE:
-        cbor_encode_map(&enc, 1);
+        cbor_encode_map(&enc, paged ? 2 : 1);
         cbor_encode_cstr(&enc, all ? "vals" : "val");
         if (all) cbor_encode_array(&enc, 1);
         cbor_encode_bstr(&enc, junk, sizeof(junk));
+        if (paged) { cbor_encode_cstr(&enc, "more"); cbor_encode_bool(&enc, false); }
         break;
     case M_VALS_JUNK:
-        cbor_encode_map(&enc, 1);
+        cbor_encode_map(&enc, paged ? 2 : 1);
         cbor_encode_cstr(&enc, "vals");
         cbor_encode_array(&enc, 1);
         cbor_encode_bstr(&enc, junk, sizeof(junk));
+        if (paged) { cbor_encode_cstr(&enc, "more"); cbor_encode_bool(&enc, false); }
         break;
     case M_SHADOW:          /* get_all only: [stranger, owner] (seq DESC) */
     case M_FOREIGN_ONLY:    /* get_all only: [stranger]                   */
@@ -282,14 +363,37 @@ static void send_get_reply(nodus_tcp_conn_t *conn, uint32_t txn,
             free(vb);
             return;
         }
-        cbor_encode_map(&enc, 1);
+        cbor_encode_map(&enc, paged ? 2 : 1);
         cbor_encode_cstr(&enc, "vals");
         cbor_encode_array(&enc, mode == M_FOREIGN_ONLY ? 1 : 2);
         if (vb) cbor_encode_bstr(&enc, vb, vl);
         if (vb2) cbor_encode_bstr(&enc, vb2, vl2);
         if (mode == M_OWNER_PLUS_JUNK) cbor_encode_bstr(&enc, junk, sizeof(junk));
+        if (paged) { cbor_encode_cstr(&enc, "more"); cbor_encode_bool(&enc, false); }
         free(vb);
         free(vb2);
+        break;
+    case M_PAGED_OWNER:
+        if (!paged) return;
+        if (msg->has_after &&
+            memcmp(msg->after.owner.bytes, zero_fp.bytes, NODUS_KEY_BYTES) == 0 &&
+            msg->after.vid == PAGE1_NEXT_VID) {
+            /* page 2: the owner's good profile row, last page */
+            if (value_bytes(key, &g_keys->id, 0, &vb, &vl) != 0) return;
+            const uint8_t *items[1] = { vb };
+            enc_page(&enc, items, &vl, 1, false, NULL, 0);
+            free(vb);
+        } else {
+            /* page 1 — also the answer to a page-2 request that lost the
+             * cursor, so such a client pages until NC_READ_MAX_PAGES */
+            enc_page(&enc, NULL, NULL, 0, true, &zero_fp, PAGE1_NEXT_VID);
+        }
+        break;
+    case M_ENDLESS:
+        if (!paged) return;
+        /* an advancing cursor that never ends */
+        enc_page(&enc, NULL, NULL, 0, true, &zero_fp,
+                 msg->has_after ? msg->after.vid + 1 : 1);
         break;
     default:
         return;
@@ -316,8 +420,14 @@ static void on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         if (nodus_t2_auth_ok(msg.txn_id, token, g_fake.buf, FAKE_BUF, &out) == 0)
             nodus_tcp_send(conn, g_fake.buf, out);
     } else if (strcmp(msg.method, "get") == 0 || strcmp(msg.method, "get_all") == 0) {
-        send_get_reply(conn, msg.txn_id, &msg.key,
-                       strcmp(msg.method, "get_all") == 0);
+        bool all = strcmp(msg.method, "get_all") == 0;
+        if (all && (msg.page || msg.has_after)) {
+            atomic_fetch_add(&g_fake.page_reqs, 1);
+            if (msg.has_own &&
+                memcmp(msg.own_fp.bytes, g_own_fp.bytes, NODUS_KEY_BYTES) == 0)
+                atomic_fetch_add(&g_fake.own_reqs, 1);
+        }
+        send_get_reply(conn, &msg, all);
     } else if (strcmp(msg.method, "put") == 0) {
         atomic_fetch_add(&g_fake.puts, 1);
         pthread_mutex_lock(&g_fake.mu);
@@ -469,6 +579,70 @@ static void test_profile_shadow(nc_ctx_t *ctx) {
               "P5 owner row + undecodable item -> UNREADABLE(undecodable)");
     write_gate_case(ctx, M_OWNER_PLUS_JUNK, true,
                     "P6 owner row + undecodable item: wait, zero PUTs");
+    ctx->fresh = false;
+}
+
+/* ── Paged, owner-filtered reads (DHT Package A) ─────────────────────── */
+
+static void list_gate_case(nc_ctx_t *ctx, int mode, bool fresh, const char *name);
+
+static void reset_page_counters(void) {
+    atomic_store(&g_fake.page_reqs, 0);
+    atomic_store(&g_fake.own_reqs, 0);
+}
+
+static void test_paging(nc_ctx_t *ctx) {
+    /* N1: the owner's row is on page 2, behind more = true + a cursor. The
+     * read follows the cursor, sends "own" = the owner's fp on both pages,
+     * and finds the row. */
+    reset_page_counters();
+    read_case(ctx, M_PAGED_OWNER, NC_FOUND, NC_WHY_NONE,
+              "N1 owner row on page 2 (more + next) -> FOUND");
+    CHECK(atomic_load(&g_fake.page_reqs) == 2 && atomic_load(&g_fake.own_reqs) == 2,
+          "N1 two page requests, both owner-filtered to the owner's fp");
+
+    /* N2: more than NC_READ_MAX_PAGES pages for an owner-filtered read ->
+     * UNREADABLE(too_large) after exactly NC_READ_MAX_PAGES requests; the
+     * write gate then waits with zero PUTs, even for a fresh identity. */
+    reset_page_counters();
+    read_case(ctx, M_ENDLESS, NC_UNREADABLE, NC_WHY_TOO_LARGE,
+              "N2 owner-filtered read past NC_READ_MAX_PAGES -> UNREADABLE(too_large)");
+    CHECK(atomic_load(&g_fake.page_reqs) == NC_READ_MAX_PAGES,
+          "N2 stops after NC_READ_MAX_PAGES page requests");
+    write_gate_case(ctx, M_ENDLESS, true,
+                    "N2b too large, fresh identity: wait, zero PUTs");
+    list_gate_case(ctx, M_ENDLESS, true,
+                   "N2c contact list too large, fresh identity: wait, zero PUTs");
+
+    /* N3: a pre-paging node's empty reply ("vals": [], no "more") is not
+     * EMPTY: UNREADABLE(node_error), zero PUTs even for a fresh identity. */
+    read_case(ctx, M_LEGACY_EMPTY, NC_UNREADABLE, NC_WHY_NODE_ERROR,
+              "N3 legacy empty reply -> UNREADABLE(node_error), never EMPTY");
+    write_gate_case(ctx, M_LEGACY_EMPTY, true,
+                    "N3b legacy empty, fresh identity: wait, zero PUTs");
+    list_gate_case(ctx, M_LEGACY_EMPTY, true,
+                   "N3c contact list, legacy empty, fresh identity: wait, zero PUTs");
+
+    /* N4: the node could not look (error 21) -> UNREADABLE(node_error). */
+    read_case(ctx, M_UNAVAILABLE, NC_UNREADABLE, NC_WHY_NODE_ERROR,
+              "N4 error 21 (unavailable) -> UNREADABLE(node_error)");
+    write_gate_case(ctx, M_UNAVAILABLE, true,
+                    "N4b unavailable, fresh identity: wait, zero PUTs");
+
+    /* N5: the owner-less request inbox past NC_READ_MAX_PAGES: truncated,
+     * and with not one item read it is UNREADABLE(too_large), not EMPTY. */
+    {
+        atomic_store(&g_fake.mode, M_ENDLESS);
+        reset_page_counters();
+        nc_requests_t rq;
+        int rc = nc_requests_fetch(ctx, &rq);
+        CHECK(rc == NC_OK && rq.read.outcome == NC_UNREADABLE &&
+              rq.read.why == NC_WHY_TOO_LARGE && rq.read.truncated &&
+              rq.count == 0 && atomic_load(&g_fake.page_reqs) == NC_READ_MAX_PAGES &&
+              atomic_load(&g_fake.own_reqs) == 0,
+              "N5 request inbox past NC_READ_MAX_PAGES: truncated, nothing read -> UNREADABLE(too_large)");
+        nc_requests_clear(&rq);
+    }
     ctx->fresh = false;
 }
 
@@ -662,6 +836,10 @@ int main(void) {
         printf("FATAL: identities\n");
         return 1;
     }
+    if (nc_fp_parse(g_keys->fp, &g_own_fp) != 0) {
+        printf("FATAL: own fingerprint\n");
+        return 1;
+    }
     if (fake_start() != 0) { printf("FATAL: fake node\n"); return 1; }
 
     nodus_client_t *c = calloc(1, sizeof(*c));
@@ -727,6 +905,7 @@ int main(void) {
         atomic_store(&g_fake.put_reply, 0);
     }
     test_profile_shadow(&ctx);
+    test_paging(&ctx);
     {
         atomic_store(&g_fake.mode, M_VALS_JUNK);
         nc_requests_t rq;

@@ -1149,6 +1149,23 @@ if its two entries are exactly this identity and the contact
 (`nc_salt_packet_check`); a packet this identity signed for someone else and
 replayed at this pair's key is dropped and counted (`wrong_pair`).
 
+Paged owner-filtered reads (unreleased; needs nodus 0.23.6 — DHT Package A).
+Every get-all of the core is now paged (`nodus_client_get_all_page_strict`):
+the profile, the contact list, the outbox day bucket and the ACK are read
+with the node's owner filter (`own` = the record's owner), the salt with one
+paging loop per party, the request inbox with one loop over every writer.
+A stranger's large rows at someone's key therefore no longer make the
+node's whole-key answer too big to send (`nodus/BUGS.md` "DHT get_all"
+F1). The read rule is unchanged: rows of another owner or key, bad
+signatures and items that do not decode are still counted and still make
+the read "unreadable" where they did before (the client does not trust the
+node to have filtered). New: a loop reads at most `NC_READ_MAX_PAGES` (8)
+pages of ≤ 2 MiB; an owner-filtered read with pages left is "unreadable"
+with why `too_large` (no write); the request inbox keeps what it read and
+reports `truncated` (`nc_requests_get`); a node that predates paging and
+answers empty is "unreadable" (`node_error`), never "empty"; a node that
+could not look (error 21) is `node_error`.
+
 Not in NC-2/NC-1b: removing a contact from the list (add is merge-only);
 at-rest storage (Q4, NC-4). The json-c version of the frozen app build is not
 established (host 0.16, wasm 0.17); the profile signature is over json-c's

@@ -1711,19 +1711,31 @@ static int client_owner_result(nodus_tier2_msg_t *resp, const nodus_key_t *key,
 
 /* Paged GET_ALL reply. On success takes the kept rows out of resp (the
  * dropped ones are freed) and sets more / next / legacy; on failure every
- * output stays empty (legacy false). */
-static int client_page_result(nodus_tier2_msg_t *resp, const nodus_key_t *key,
-                              const nodus_key_t *own,
-                              const nodus_dht_page_cursor_t *after,
-                              nodus_value_t ***vals_out, size_t *count_out,
-                              bool *more_out,
-                              nodus_dht_page_cursor_t *cursor_out,
-                              bool *legacy_out) {
+ * output stays empty (legacy false, undecodable 0).
+ *
+ * strict = false: nodus_client_get_all_page (rules in the block comment
+ * above). strict = true: nodus_client_get_all_page_strict — rows of another
+ * key or owner are KEPT (the caller classifies them), only rows outside the
+ * page bounds are dropped and each counts into *undecodable_out, together
+ * with the "vals" items of `raw` that did not decode (as client_get_all_impl
+ * counts them); a legacy reply with no row is returned as rc 0, count 0,
+ * legacy true — the caller decides what it means. */
+static int client_page_result_impl(nodus_tier2_msg_t *resp,
+                                   const nodus_key_t *key,
+                                   const nodus_key_t *own,
+                                   const nodus_dht_page_cursor_t *after,
+                                   bool strict,
+                                   const uint8_t *raw, size_t raw_len,
+                                   nodus_value_t ***vals_out, size_t *count_out,
+                                   bool *more_out,
+                                   nodus_dht_page_cursor_t *cursor_out,
+                                   bool *legacy_out, size_t *undecodable_out) {
     *vals_out = NULL;
     *count_out = 0;
     *more_out = false;
     *legacy_out = false;
     memset(cursor_out, 0, sizeof(*cursor_out));
+    if (undecodable_out) *undecodable_out = 0;
     if (resp->type == 'e') return client_error_rc(resp);
 
     /* No "more" = a node that predates Package A: a legacy get_all whose
@@ -1750,19 +1762,33 @@ static int client_page_result(nodus_tier2_msg_t *resp, const nodus_key_t *key,
         return NODUS_ERR_PROTOCOL_ERROR;
     }
 
-    size_t kept = 0, dropped = 0;
     size_t n = resp->values ? resp->value_count : 0;
+    size_t not_decoded = 0;
+    if (strict) {
+        /* Everything the node put in "vals" that is not among the decoded
+         * values (same count as client_get_all_impl's strict path). */
+        nodus_reply_value_shape_t shape;
+        if (!raw || nodus_client_reply_value_shape(raw, raw_len, &shape) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "GET_ALL(page, strict): the raw reply was "
+                         "not kept or did not walk — protocol error");
+            return NODUS_ERR_PROTOCOL_ERROR;
+        }
+        not_decoded = shape.vals_total > n ? shape.vals_total - n : 0;
+    }
+
+    size_t kept = 0, dropped = 0;
     for (size_t i = 0; i < n; i++) {
         nodus_value_t *v = resp->values[i];
         resp->values[i] = NULL;
         if (!v) continue;
-        bool drop =
-            nodus_key_cmp(&v->key_hash, key) != 0 ||
-            (own && nodus_key_cmp(&v->owner_fp, own) != 0) ||
+        bool out_of_page =
             (after && client_pk_cmp(&v->owner_fp, v->value_id,
                                     &after->owner_fp, after->value_id) <= 0) ||
             (more && client_pk_cmp(&v->owner_fp, v->value_id,
                                    &resp->next.owner, resp->next.vid) > 0);
+        bool drop = out_of_page ||
+            (!strict && (nodus_key_cmp(&v->key_hash, key) != 0 ||
+                         (own && nodus_key_cmp(&v->owner_fp, own) != 0)));
         if (drop) {
             nodus_value_free(v);
             dropped++;
@@ -1773,9 +1799,14 @@ static int client_page_result(nodus_tier2_msg_t *resp, const nodus_key_t *key,
     resp->value_count = kept;
     if (dropped > 0)
         QGP_LOG_DEBUG(LOG_TAG, "GET_ALL(page): dropped %zu row(s) outside "
-                      "the asked key / owner / page", dropped);
+                      "the asked %s", dropped,
+                      strict ? "page" : "key / owner / page");
 
-    if (legacy && kept == 0) {
+    if (strict) {
+        /* A row outside the page bounds is a protocol anomaly: the caller
+         * counts it with the undecodable items, never as absent. */
+        *undecodable_out = not_decoded + dropped;
+    } else if (legacy && kept == 0) {
         /* An old node answers empty both when the key is empty and when it
          * could not look; with a filter it may also have sent only rows the
          * client dropped. Nothing usable came back: not "empty". */
@@ -1829,15 +1860,19 @@ int nodus_client_get_owner(nodus_client_t *client,
     return rc;
 }
 
-int nodus_client_get_all_page(nodus_client_t *client,
-                               const nodus_key_t *key,
-                               const nodus_key_t *owner_fp,
-                               const nodus_dht_page_cursor_t *after,
-                               nodus_value_t ***vals_out,
-                               size_t *count_out,
-                               bool *more_out,
-                               nodus_dht_page_cursor_t *cursor_out,
-                               bool *legacy_out) {
+/* Shared by nodus_client_get_all_page and nodus_client_get_all_page_strict:
+ * one request, one reply handler (client_page_result_impl). `undecodable_out`
+ * NULL = the non-strict path. */
+static int client_get_all_page_impl(nodus_client_t *client,
+                                    const nodus_key_t *key,
+                                    const nodus_key_t *owner_fp,
+                                    const nodus_dht_page_cursor_t *after,
+                                    nodus_value_t ***vals_out,
+                                    size_t *count_out,
+                                    bool *more_out,
+                                    nodus_dht_page_cursor_t *cursor_out,
+                                    bool *legacy_out,
+                                    size_t *undecodable_out) {
     if (!nodus_client_is_ready(client) || !key || !vals_out || !count_out ||
         !more_out || !cursor_out || !legacy_out)
         return -1;
@@ -1846,6 +1881,7 @@ int nodus_client_get_all_page(nodus_client_t *client,
     *more_out = false;
     *legacy_out = false;
     memset(cursor_out, 0, sizeof(*cursor_out));
+    if (undecodable_out) *undecodable_out = 0;
 
     nodus_t2_cursor_t t2_after;
     nodus_t2_read_opts_t opts;
@@ -1874,10 +1910,43 @@ int nodus_client_get_all_page(nodus_client_t *client,
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    int rc = client_page_result(resp, key, owner_fp, after, vals_out, count_out,
-                                more_out, cursor_out, legacy_out);
+    int rc = client_page_result_impl(resp, key, owner_fp, after,
+                                     undecodable_out != NULL,
+                                     req->raw_response, req->raw_response_len,
+                                     vals_out, count_out, more_out, cursor_out,
+                                     legacy_out, undecodable_out);
     free_pending(client, req);
     return rc;
+}
+
+int nodus_client_get_all_page(nodus_client_t *client,
+                               const nodus_key_t *key,
+                               const nodus_key_t *owner_fp,
+                               const nodus_dht_page_cursor_t *after,
+                               nodus_value_t ***vals_out,
+                               size_t *count_out,
+                               bool *more_out,
+                               nodus_dht_page_cursor_t *cursor_out,
+                               bool *legacy_out) {
+    return client_get_all_page_impl(client, key, owner_fp, after, vals_out,
+                                    count_out, more_out, cursor_out,
+                                    legacy_out, NULL);
+}
+
+int nodus_client_get_all_page_strict(nodus_client_t *client,
+                                     const nodus_key_t *key,
+                                     const nodus_key_t *owner_fp,
+                                     const nodus_dht_page_cursor_t *after,
+                                     nodus_value_t ***vals_out,
+                                     size_t *count_out,
+                                     bool *more_out,
+                                     nodus_dht_page_cursor_t *cursor_out,
+                                     bool *legacy_out,
+                                     size_t *undecodable_out) {
+    if (!undecodable_out) return -1;
+    return client_get_all_page_impl(client, key, owner_fp, after, vals_out,
+                                    count_out, more_out, cursor_out,
+                                    legacy_out, undecodable_out);
 }
 
 /* get_batch reply with the per-key could-not-look marker "u" (rev 2 items
@@ -1951,6 +2020,15 @@ int nodus_client_test_page_reply(const uint8_t *raw, size_t raw_len,
                                  bool *more_out,
                                  nodus_dht_page_cursor_t *cursor_out,
                                  bool *legacy_out);
+int nodus_client_test_page_reply_strict(const uint8_t *raw, size_t raw_len,
+                                        const nodus_key_t *key,
+                                        const nodus_key_t *owner_fp,
+                                        const nodus_dht_page_cursor_t *after,
+                                        nodus_value_t ***vals_out,
+                                        size_t *count_out, bool *more_out,
+                                        nodus_dht_page_cursor_t *cursor_out,
+                                        bool *legacy_out,
+                                        size_t *undecodable_out);
 int nodus_client_test_batch_reply(const uint8_t *raw, size_t raw_len,
                                   const nodus_key_t *keys, int key_count,
                                   nodus_batch_result_t **results_out,
@@ -2009,8 +2087,40 @@ int nodus_client_test_page_reply(const uint8_t *raw, size_t raw_len,
         nodus_t2_msg_free(&msg);
         return NODUS_ERR_PROTOCOL_ERROR;
     }
-    int rc = client_page_result(&msg, key, owner_fp, after, vals_out,
-                                count_out, more_out, cursor_out, legacy_out);
+    int rc = client_page_result_impl(&msg, key, owner_fp, after, false,
+                                     NULL, 0, vals_out, count_out, more_out,
+                                     cursor_out, legacy_out, NULL);
+    nodus_t2_msg_free(&msg);
+    return rc;
+}
+
+/* The strict page handler on raw (it is also the raw reply the live client
+ * keeps in nodus_pending_t.raw_response). */
+int nodus_client_test_page_reply_strict(const uint8_t *raw, size_t raw_len,
+                                        const nodus_key_t *key,
+                                        const nodus_key_t *owner_fp,
+                                        const nodus_dht_page_cursor_t *after,
+                                        nodus_value_t ***vals_out,
+                                        size_t *count_out, bool *more_out,
+                                        nodus_dht_page_cursor_t *cursor_out,
+                                        bool *legacy_out,
+                                        size_t *undecodable_out) {
+    *vals_out = NULL;
+    *count_out = 0;
+    *more_out = false;
+    *legacy_out = false;
+    *undecodable_out = 0;
+    memset(cursor_out, 0, sizeof(*cursor_out));
+    nodus_tier2_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    if (nodus_t2_decode(raw, raw_len, &msg) != 0) {
+        nodus_t2_msg_free(&msg);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+    int rc = client_page_result_impl(&msg, key, owner_fp, after, true,
+                                     raw, raw_len, vals_out, count_out,
+                                     more_out, cursor_out, legacy_out,
+                                     undecodable_out);
     nodus_t2_msg_free(&msg);
     return rc;
 }

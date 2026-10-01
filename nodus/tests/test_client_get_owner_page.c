@@ -39,11 +39,19 @@
  *      past the caller array) (rev 2 item 20); rev 3 R-h: so is a reply
  *      with FEWER entries than asked, or with an entry whose key is not the
  *      key asked at that position.
+ *   9. get_all_page_strict (the Nodus Connect reader): rows of another
+ *      owner and of another key are RETURNED (the caller counts them), not
+ *      dropped; a "vals" item that does not decode is counted in
+ *      undecodable; rows outside the page bounds (at or before "after",
+ *      past "next") are dropped AND counted in undecodable; a legacy empty
+ *      reply is rc 0 / count 0 / legacy true (the caller decides — Connect
+ *      reads it as unreadable); an error 21 comes back as 21; the
+ *      protocol checks on more / next are the non-strict handler's.
  *
  * Seam: the reply handlers are static in nodus_client.c. This target
  * compiles nodus_client.c itself with NODUS_CLIENT_TEST_SEAM=1, which adds
  * nodus_client_test_owner_reply / nodus_client_test_page_reply /
- * nodus_client_test_batch_reply / nodus_client_test_get_error_rc (they run
+ * nodus_client_test_page_reply_strict / nodus_client_test_batch_reply / nodus_client_test_get_error_rc (they run
  * nodus_t2_decode + the same handler the request functions run, and bypass
  * nothing); libnodus is
  * static, so its own nodus_client.o is never pulled — see
@@ -89,6 +97,15 @@ int nodus_client_test_page_reply(const uint8_t *raw, size_t raw_len,
                                  bool *more_out,
                                  nodus_dht_page_cursor_t *cursor_out,
                                  bool *legacy_out);
+int nodus_client_test_page_reply_strict(const uint8_t *raw, size_t raw_len,
+                                        const nodus_key_t *key,
+                                        const nodus_key_t *owner_fp,
+                                        const nodus_dht_page_cursor_t *after,
+                                        nodus_value_t ***vals_out,
+                                        size_t *count_out, bool *more_out,
+                                        nodus_dht_page_cursor_t *cursor_out,
+                                        bool *legacy_out,
+                                        size_t *undecodable_out);
 int nodus_client_test_batch_reply(const uint8_t *raw, size_t raw_len,
                                   const nodus_key_t *keys, int key_count,
                                   nodus_batch_result_t **results_out,
@@ -444,6 +461,138 @@ static void test_malformed_more_next(void) {
     }
 }
 
+/* ── get_all_page_strict ───────────────────────────────────────────── */
+
+typedef struct {
+    page_out_t p;
+    size_t     und;
+} strict_out_t;
+
+static void run_page_strict(const nodus_key_t *own,
+                            const nodus_dht_page_cursor_t *after,
+                            strict_out_t *o) {
+    o->p.vals = (nodus_value_t **)(uintptr_t)1;
+    o->p.n = 99;
+    o->p.more = true;
+    o->p.legacy = true;
+    memset(&o->p.cur, 0xEE, sizeof(o->p.cur));
+    o->und = 99;
+    o->p.rc = nodus_client_test_page_reply_strict(g_frame, g_len, &key_k, own,
+                                                  after, &o->p.vals, &o->p.n,
+                                                  &o->p.more, &o->p.cur,
+                                                  &o->p.legacy, &o->und);
+}
+
+static void test_page_strict(void) {
+    strict_out_t o;
+    nodus_t2_page_info_t pg;
+    memset(&pg, 0, sizeof(pg));
+
+    /* Paging node, more = false, owner filter own_a: the rows of another
+     * owner and of another key come back to the caller. */
+    nodus_value_t *rows[4] = {
+        mk_row(&key_k, &own_lo, 1),       /* other owner -> returned */
+        mk_row(&key_k, &own_a, 2),        /* asked owner -> returned */
+        mk_row(&key_other, &own_a, 3),    /* other key   -> returned */
+        mk_row(&key_k, &own_hi, 4),       /* other owner -> returned */
+    };
+    CHECK(rows[0] && rows[1] && rows[2] && rows[3], "strict-keep: rows");
+    CHECK(nodus_t2_result_page(60, rows, 4, &pg, g_frame, sizeof(g_frame), &g_len) == 0,
+          "strict-keep: encode");
+    free_rows(rows, 4);
+    run_page_strict(&own_a, NULL, &o);
+    CHECK(o.p.rc == 0 && o.p.n == 4 && o.p.vals && o.und == 0 &&
+          !o.p.more && !o.p.legacy,
+          "strict-keep: foreign-owner and other-key rows returned, not dropped");
+    if (o.p.rc == 0 && o.p.n == 4) {
+        CHECK(o.p.vals[0]->value_id == 1 && o.p.vals[1]->value_id == 2 &&
+              o.p.vals[2]->value_id == 3 && o.p.vals[3]->value_id == 4,
+              "strict-keep: reply order kept");
+        CHECK(nodus_key_cmp(&o.p.vals[2]->key_hash, &key_other) == 0,
+              "strict-keep: the other-key row is the caller's to count");
+    }
+    free_out(o.p.vals, o.p.n);
+
+    /* A "vals" item that does not decode, next to a good row: counted. */
+    {
+        nodus_value_t *row = mk_row(&key_k, &own_a, 5);
+        uint8_t *vb = NULL;
+        size_t vl = 0;
+        CHECK(row && nodus_value_serialize(row, &vb, &vl) == 0, "strict-junk: row");
+        nodus_value_free(row);
+        static const uint8_t junk[3] = { 1, 2, 3 };
+        cbor_encoder_t e;
+        cbor_encoder_init(&e, g_frame, sizeof(g_frame));
+        cbor_encode_map(&e, 4);
+        cbor_encode_cstr(&e, "t"); cbor_encode_uint(&e, 61);
+        cbor_encode_cstr(&e, "y"); cbor_encode_cstr(&e, "r");
+        cbor_encode_cstr(&e, "q"); cbor_encode_cstr(&e, "result");
+        cbor_encode_cstr(&e, "r");
+        cbor_encode_map(&e, 2);
+        cbor_encode_cstr(&e, "vals");
+        cbor_encode_array(&e, 2);
+        cbor_encode_bstr(&e, junk, sizeof(junk));
+        if (vb) cbor_encode_bstr(&e, vb, vl);
+        else cbor_encode_bstr(&e, junk, sizeof(junk));
+        cbor_encode_cstr(&e, "more"); cbor_encode_bool(&e, false);
+        g_len = cbor_encoder_len(&e);
+        free(vb);
+        run_page_strict(&own_a, NULL, &o);
+        CHECK(o.p.rc == 0 && o.p.n == 1 && o.und == 1 && !o.p.legacy,
+              "strict-junk: the good row returned, the undecodable item counted");
+        free_out(o.p.vals, o.p.n);
+    }
+
+    /* Page bounds: after = (own_hi, 5), more = true, next = (own_hi, 7).
+     *   (own_lo, 9)   before the cursor owner  -> dropped, counted
+     *   (own_hi, 6)   inside the page          -> returned
+     *   (own_hi, 9)   past next                -> dropped, counted */
+    nodus_value_t *b[3] = {
+        mk_row(&key_k, &own_lo, 9),
+        mk_row(&key_k, &own_hi, 6),
+        mk_row(&key_k, &own_hi, 9),
+    };
+    CHECK(b[0] && b[1] && b[2], "strict-bounds: rows");
+    pg.more = true;
+    pg.has_next = true;
+    pg.next.owner = own_hi;
+    pg.next.vid = 7;
+    CHECK(nodus_t2_result_page(62, b, 3, &pg, g_frame, sizeof(g_frame), &g_len) == 0,
+          "strict-bounds: encode");
+    free_rows(b, 3);
+    nodus_dht_page_cursor_t after = { .owner_fp = own_hi, .value_id = 5 };
+    run_page_strict(NULL, &after, &o);
+    CHECK(o.p.rc == 0 && o.p.n == 1 && o.p.vals && o.p.vals[0]->value_id == 6 &&
+          o.und == 2,
+          "strict-bounds: rows outside the page dropped and counted as undecodable");
+    CHECK(o.p.more && nodus_key_cmp(&o.p.cur.owner_fp, &own_hi) == 0 &&
+          o.p.cur.value_id == 7, "strict-bounds: more and cursor = next");
+    free_out(o.p.vals, o.p.n);
+
+    /* The non-strict protocol checks hold: a next that does not advance. */
+    pg.next.vid = 5;
+    CHECK(nodus_t2_result_page(63, NULL, 0, &pg, g_frame, sizeof(g_frame), &g_len) == 0,
+          "strict-stuck: encode");
+    run_page_strict(NULL, &after, &o);
+    CHECK(o.p.rc == NODUS_ERR_PROTOCOL_ERROR && page_empty(&o.p) && o.und == 0,
+          "strict-stuck: non-advancing next refused");
+
+    /* Legacy empty reply: rc 0, count 0, legacy true — not UNAVAILABLE. */
+    CHECK(nodus_t2_result_multi(64, NULL, 0, g_frame, sizeof(g_frame), &g_len) == 0,
+          "strict-legacy: encode");
+    run_page_strict(&own_a, NULL, &o);
+    CHECK(o.p.rc == 0 && o.p.n == 0 && o.p.vals == NULL && o.p.legacy &&
+          !o.p.more && o.und == 0,
+          "strict-legacy: empty legacy reply = rc 0, count 0, legacy (caller decides)");
+
+    /* Error 21 surfaced. */
+    CHECK(nodus_t2_error(65, NODUS_ERR_UNAVAILABLE, "unavailable",
+                         g_frame, sizeof(g_frame), &g_len) == 0, "strict-err21: encode");
+    run_page_strict(&own_a, NULL, &o);
+    CHECK(o.p.rc == NODUS_ERR_UNAVAILABLE && page_empty(&o.p) && o.und == 0,
+          "strict-err21: UNAVAILABLE surfaced");
+}
+
 /* ── error replies ─────────────────────────────────────────────────── */
 
 /* {t, y:"e", r:{msg:"x"}} — an error frame with no "code". With
@@ -689,6 +838,7 @@ int main(void) {
     test_foreign_owner_and_key_dropped();
     test_more_and_next();
     test_malformed_more_next();
+    test_page_strict();
     test_error_codes_surfaced();
     test_error_without_valid_code();
     test_get_owner();

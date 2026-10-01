@@ -420,6 +420,9 @@ int nc_requests_get(void) {
     json_object *o = json_object_new_object();
     add_read(o, r.read.outcome, r.read.why);
     json_object_object_add(o, "partial", json_object_new_boolean(true));
+    /* The node had pages left after NC_READ_MAX_PAGES (nc_read_all). */
+    json_object_object_add(o, "truncated",
+                           json_object_new_boolean(r.read.truncated));
     json_object *c = json_object_new_object();
     json_object_object_add(c, "undecodable", jstr_u64(r.read.undecodable));
     json_object_object_add(c, "bad_signature", jstr_u64(r.read.bad_sig));

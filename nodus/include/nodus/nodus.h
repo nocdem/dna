@@ -466,6 +466,51 @@ int nodus_client_get_all_page(nodus_client_t *client,
                                nodus_dht_page_cursor_t *cursor_out,
                                bool *legacy_out);
 
+/**
+ * nodus_client_get_all_page, STRICT (the strict-read family of
+ * src/client/nodus_client_strict.h): the same request ("pg", plus "after" /
+ * "own") and the same protocol checks on "more" / "next" / the cursor, but
+ * the caller classifies the rows itself:
+ *   - rows of another key, and (with owner_fp) of another owner, are
+ *     RETURNED, not dropped — a reader that counts them (Nodus Connect,
+ *     web-wallet/connect/nc_read.c) needs to see them;
+ *   - rows outside the page bounds (at or before `after`, or past "next"
+ *     when more = true) are dropped AND counted into *undecodable_out: a
+ *     paging node never sends them, so they are a protocol anomaly;
+ *   - *undecodable_out also counts the "vals" items that did not decode (a
+ *     non-byte-string item, a value nodus_value_deserialize refused, an
+ *     item past NODUS_MAX_WIRE_VALUES), read from the raw reply as
+ *     nodus_client_get_all_strict does; when the raw reply could not be
+ *     kept the call is NODUS_ERR_PROTOCOL_ERROR;
+ *   - a legacy reply (no "more") keeps its meaning (*legacy_out = true,
+ *     *more_out = false, completeness unknown) but is NOT turned into
+ *     NODUS_ERR_UNAVAILABLE when it carries no row: it returns 0 with
+ *     count 0 and *legacy_out = true, and the caller decides (Connect reads
+ *     it as unreadable, never as empty).
+ * Error replies map as in nodus_client_get_all_page. The values are NOT
+ * signature-verified here. Caller frees each value with nodus_value_free()
+ * and the array with free().
+ *
+ * @param undecodable_out  required (NULL = -1)
+ * @return 0 on success (the page may be empty; see legacy above),
+ *         NODUS_ERR_UNAVAILABLE   the node could not look,
+ *         NODUS_ERR_PROTOCOL_ERROR more without a cursor, a cursor that does
+ *                                 not advance past `after`, a cursor without
+ *                                 more = true, an error reply without a
+ *                                 valid code, or the raw reply not kept,
+ *         NODUS_ERR_TIMEOUT, another node error code, or -1.
+ */
+int nodus_client_get_all_page_strict(nodus_client_t *client,
+                                     const nodus_key_t *key,
+                                     const nodus_key_t *owner_fp,
+                                     const nodus_dht_page_cursor_t *after,
+                                     nodus_value_t ***vals_out,
+                                     size_t *count_out,
+                                     bool *more_out,
+                                     nodus_dht_page_cursor_t *cursor_out,
+                                     bool *legacy_out,
+                                     size_t *undecodable_out);
+
 /* ── Batch DHT Operations ───────────────────────────────────────── */
 
 /** Result for one key in a get_batch response */
