@@ -121,6 +121,11 @@ extern "C" {
 #define NODUS_GET_ALL_MAX_ROWS   10000
 #define NODUS_GET_ALL_MAX_BYTES  (16 * 1024 * 1024)  /* 16 MB */
 
+/* Paged get_all (opt-in): one page carries at most this many SERIALIZED
+ * value bytes (NODUS_VALUE_SERIALIZED_EST, core/nodus_storage.h); a single
+ * row larger than the budget is returned alone. Operator 2026-10-01: 2 MB. */
+#define NODUS_GET_ALL_PAGE_MAX_BYTES (2 * 1024 * 1024)  /* 2 MiB */
+
 /* Channel limits */
 #define NODUS_UUID_BYTES        16          /* UUID v4 */
 #define NODUS_MAX_POST_BODY     4000        /* UTF-8 chars */
@@ -497,7 +502,9 @@ typedef enum {
     NODUS_ERR_CIRCUIT_LIMIT     = 16,  /* Per-session circuit cap reached */
     NODUS_ERR_CIRCUIT_NOT_FOUND = 17,  /* Unknown circuit_id */
     NODUS_ERR_PEER_OFFLINE      = 18,  /* Target peer not connected to any nodus */
-    NODUS_ERR_CIRCUIT_CLOSED    = 19   /* Peer torn down circuit */
+    NODUS_ERR_CIRCUIT_CLOSED    = 19,  /* Peer torn down circuit */
+    NODUS_ERR_STALE             = 20,  /* PUT seq lower than the stored row's (same key, owner, value_id) */
+    NODUS_ERR_UNAVAILABLE       = 21   /* Server could not look (no forward slot / all forwards failed) — not "not found" */
 } nodus_error_t;
 
 /** Cluster phases */

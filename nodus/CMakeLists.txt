@@ -913,6 +913,24 @@ add_executable(test_storage tests/test_storage.c ${NODUS_TEST_STORAGE_HELPER})
 target_link_libraries(test_storage nodus dsa nodus)
 add_test(NAME test_storage COMMAND test_storage)
 
+# DHT Package A storage tests (F5 owner quota, F7 stale put, F4 hint caps,
+# owner-scoped + paged reads)
+add_executable(test_storage_owner_quota tests/test_storage_owner_quota.c ${NODUS_TEST_STORAGE_HELPER})
+target_link_libraries(test_storage_owner_quota nodus dsa nodus)
+add_test(NAME test_storage_owner_quota COMMAND test_storage_owner_quota)
+
+add_executable(test_storage_put_stale tests/test_storage_put_stale.c ${NODUS_TEST_STORAGE_HELPER})
+target_link_libraries(test_storage_put_stale nodus dsa nodus)
+add_test(NAME test_storage_put_stale COMMAND test_storage_put_stale)
+
+add_executable(test_hinted_caps tests/test_hinted_caps.c ${NODUS_TEST_STORAGE_HELPER})
+target_link_libraries(test_hinted_caps nodus dsa nodus)
+add_test(NAME test_hinted_caps COMMAND test_hinted_caps)
+
+add_executable(test_storage_get_all_page tests/test_storage_get_all_page.c ${NODUS_TEST_STORAGE_HELPER})
+target_link_libraries(test_storage_get_all_page nodus dsa nodus)
+add_test(NAME test_storage_get_all_page COMMAND test_storage_get_all_page)
+
 # Media storage test
 add_executable(test_media_storage tests/test_media_storage.c)
 target_link_libraries(test_media_storage nodus dsa nodus)

@@ -23,6 +23,35 @@ extern "C" {
 #define NODUS_STORAGE_MAX_BYTES      (500ULL * 1024 * 1024)  /* 500 MB */
 #define NODUS_STORAGE_MAX_PER_OWNER  1000
 
+/* Per-owner BYTE quota (sum of LENGTH(data) over every row the owner holds on
+ * this node), enforced inside nodus_storage_put and nodus_storage_put_if_newer.
+ * Replacing an existing (key, owner, value_id) row counts only its growth.
+ * Operator 2026-10-01: 16 MB per owner. */
+#define NODUS_STORAGE_OWNER_MAX_BYTES (16ULL * 1024 * 1024)  /* 16 MiB */
+
+/* Storage return codes beyond 0 / -1 (error) */
+#define NODUS_STORAGE_RC_KEY_OWNED   (-2)  /* EXCLUSIVE key owned by another identity */
+#define NODUS_STORAGE_RC_QUOTA       (-3)  /* per-owner byte quota / hint cap exceeded */
+#define NODUS_STORAGE_RC_STALE       (-4)  /* seq lower than the stored row's */
+
+/* DHT hinted handoff caps (operator 2026-10-01): per target node id 64 rows
+ * and 16 MiB of frame bytes, 128 MiB of frame bytes over the whole table,
+ * 24 h TTL. Over a cap the insert is refused; the table never grows past it.
+ * Every row counts until nodus_storage_hinted_cleanup removes it (expired or
+ * not), the same rows nodus_storage_hinted_get returns. */
+#define NODUS_DHT_HINT_PEER_MAX_ROWS   64
+#define NODUS_DHT_HINT_PEER_MAX_BYTES  (16ULL * 1024 * 1024)   /* 16 MiB */
+#define NODUS_DHT_HINT_TOTAL_MAX_BYTES (128ULL * 1024 * 1024)  /* 128 MiB */
+#define NODUS_DHT_HINT_TTL_SEC         (24 * 3600)              /* 24 h */
+
+/* Serialized size estimate of one value — the exact buffer estimate of
+ * nodus_value_serialize (core/nodus_value.c, "Conservative buffer size
+ * estimate"). Page budgets (nodus_storage_get_all_page) are counted in this
+ * unit; any code that truncates a merged page MUST use the same macro. */
+#define NODUS_VALUE_SERIALIZED_EST(data_len) \
+    ((size_t)256 + (size_t)(data_len) + NODUS_PK_BYTES + NODUS_SIG_BYTES + \
+     (size_t)NODUS_KEY_BYTES * 2)
+
 /** DHT hinted handoff entry (failed replication, pending retry) */
 typedef struct {
     int64_t     id;
@@ -50,6 +79,14 @@ typedef struct {
     /* Quota checks */
     sqlite3_stmt *stmt_quota_total_bytes;
     sqlite3_stmt *stmt_quota_owner_count;
+    sqlite3_stmt *stmt_quota_owner_bytes;
+    /* Existing row of one (key, owner, value_id): seq + data length */
+    sqlite3_stmt *stmt_existing_row;
+    /* put_if_newer "would be skipped" pre-check (same predicate as the put) */
+    sqlite3_stmt *stmt_newer_exists;
+    /* Owner-scoped and paged reads */
+    sqlite3_stmt *stmt_get_owner;
+    sqlite3_stmt *stmt_get_all_page;
     /* EXCLUSIVE ownership check */
     sqlite3_stmt *stmt_exclusive_owner;
     /* Hinted handoff for DHT replication */
@@ -58,6 +95,9 @@ typedef struct {
     sqlite3_stmt *stmt_hint_delete;
     sqlite3_stmt *stmt_hint_cleanup;
     sqlite3_stmt *stmt_hint_count;
+    sqlite3_stmt *stmt_hint_peer_usage;
+    sqlite3_stmt *stmt_hint_total_bytes;
+    sqlite3_stmt *stmt_hint_exists;
 } nodus_storage_t;
 
 /**
@@ -79,9 +119,17 @@ void nodus_storage_close(nodus_storage_t *store);
  * EXCLUSIVE values enforce first-writer-owns: if the key already has an
  * EXCLUSIVE value from a different owner, the PUT is rejected.
  *
+ * Checks, in this order: signature, EXCLUSIVE owner (-2), stale seq (-4:
+ * the stored row for the same key, owner and value_id has a STRICTLY higher
+ * seq; equal or higher seq replaces as before), per-owner byte quota (-3:
+ * the owner's LENGTH(data) total would exceed NODUS_STORAGE_OWNER_MAX_BYTES;
+ * a replace counts only its growth, a non-growing replace always passes).
+ * seq is compared as SQLite INTEGER (signed int64), as in put_if_newer.
+ *
  * @param store   Storage handle
  * @param val     Value to store (must be signed)
- * @return 0 on success, -1 on error, -2 if EXCLUSIVE key owned by another identity
+ * @return 0 on success, -1 on error, -2 if EXCLUSIVE key owned by another
+ *         identity, -3 if the per-owner byte quota is exceeded, -4 if stale
  */
 int nodus_storage_put(nodus_storage_t *store, const nodus_value_t *val);
 
@@ -110,6 +158,60 @@ int nodus_storage_get_all(nodus_storage_t *store,
                           const nodus_key_t *key_hash,
                           nodus_value_t ***vals_out,
                           size_t *count_out);
+
+/**
+ * Get one owner's newest value at a key: highest seq, then highest
+ * data_hash (SHA3-256 of data; legacy NULL hashes rank lowest), then lowest
+ * value_id — a total order, so every node holding the same rows answers
+ * with the same row.
+ *
+ * @param store     Storage handle
+ * @param key_hash  Key to look up
+ * @param owner_fp  Owner fingerprint
+ * @param val_out   Output value (caller must free with nodus_value_free)
+ * @return 0 on success, -1 if the owner has no row at the key or on error
+ */
+int nodus_storage_get_owner(nodus_storage_t *store,
+                            const nodus_key_t *key_hash,
+                            const nodus_key_t *owner_fp,
+                            nodus_value_t **val_out);
+
+/**
+ * Get one page of the values at a key in primary-key order.
+ *
+ * ORDER: owner_fp ASC (bytewise), then value_id ASC — value_id ordered and
+ * compared AS SQLITE INTEGER (SIGNED INT64), the PRIMARY KEY order. A C-side
+ * comparator that merges pages from several nodes MUST compare
+ * (int64_t)value_id, never uint64_t, or pages interleave differently.
+ *
+ * Rows strictly after the cursor (after_owner, after_vid) when after_owner is
+ * non-NULL; only owner_fp's rows when owner_fp is non-NULL. Rows are added
+ * while the cumulative NODUS_VALUE_SERIALIZED_EST(data_len) stays
+ * <= budget_bytes; the first row is always returned even if it alone is
+ * larger. With ~7.5 KB fixed cost per row the budget also bounds the row
+ * count (2 MiB -> ~270 rows); no separate row cap.
+ *
+ * @param store        Storage handle
+ * @param key_hash     Key
+ * @param owner_fp     Owner filter, or NULL for every owner
+ * @param after_owner  Cursor owner_fp, or NULL to start at the first row
+ * @param after_vid    Cursor value_id (used only when after_owner is set)
+ * @param budget_bytes Serialized byte budget for the page
+ * @param vals_out     Output array (caller frees each + array); NULL if empty
+ * @param count_out    Number of values in the page
+ * @param more_out     1 if rows remain after the page, else 0
+ * @return 0 on success — INCLUDING an empty page (count 0, more 0);
+ *         -1 on error only (differs from get_all's -1-on-none)
+ */
+int nodus_storage_get_all_page(nodus_storage_t *store,
+                               const nodus_key_t *key_hash,
+                               const nodus_key_t *owner_fp,
+                               const nodus_key_t *after_owner,
+                               uint64_t after_vid,
+                               size_t budget_bytes,
+                               nodus_value_t ***vals_out,
+                               size_t *count_out,
+                               int *more_out);
 
 /**
  * Delete a specific value.
@@ -142,8 +244,12 @@ int nodus_storage_count(nodus_storage_t *store);
  * Store a value only if it has a higher seq than existing.
  * On equal seq, tiebreak by SHA3-256(data) — higher hash wins.
  * Atomic single-SQL operation (no TOCTOU race).
+ * A value that would be stored is first checked against the per-owner byte
+ * quota (NODUS_STORAGE_OWNER_MAX_BYTES, growth only); a value that would be
+ * skipped returns 1 without a quota check.
  *
- * @return 0 = stored, 1 = skipped (existing is newer/equal), -1 = error
+ * @return 0 = stored, 1 = skipped (existing is newer/equal), -1 = error,
+ *         -2 = EXCLUSIVE key owned by another identity, -3 = owner quota
  */
 int nodus_storage_put_if_newer(nodus_storage_t *store, const nodus_value_t *val);
 
@@ -210,7 +316,13 @@ int nodus_storage_has_owner(nodus_storage_t *store,
 
 /**
  * Insert a hinted handoff entry (failed DHT replication).
- * TTL: 7 days. No cap.
+ * TTL: NODUS_DHT_HINT_TTL_SEC (24 h). Capped per node_id at
+ * NODUS_DHT_HINT_PEER_MAX_ROWS rows and NODUS_DHT_HINT_PEER_MAX_BYTES frame
+ * bytes, and at NODUS_DHT_HINT_TOTAL_MAX_BYTES over the whole table.
+ * A duplicate (node_id, frame) is ignored and returns 0.
+ *
+ * @return 0 = queued (or duplicate), -1 = error, -3 = a cap would be
+ *         exceeded (refused, logged, nothing stored)
  */
 int nodus_storage_hinted_insert(nodus_storage_t *store,
                                  const nodus_key_t *node_id,
@@ -218,7 +330,9 @@ int nodus_storage_hinted_insert(nodus_storage_t *store,
                                  const uint8_t *frame_data, size_t frame_len);
 
 /**
- * Get pending hints for a node (up to limit).
+ * Get pending hints for a node (up to limit), oldest first. The result also
+ * stops before its frame bytes would exceed NODUS_DHT_HINT_PEER_MAX_BYTES
+ * (the first entry is always returned).
  * Caller must free entries with nodus_storage_hinted_free().
  */
 int nodus_storage_hinted_get(nodus_storage_t *store,
