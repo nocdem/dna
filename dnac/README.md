@@ -1,20 +1,28 @@
-# DNAC — DNA Chain Client Library
+# DNAC — Nodus Chain Client Library
 
-**Version:** v0.18.11-ledgerv2-o15j | **TX Wire:** v2 (since v0.17.1)
+**Version:** v0.19.3 (`dnac/include/dnac/version.h`)
 
-DNAC is the **client side** of the **DNA Chain** — the post-quantum UTXO
-blockchain of the DNA ecosystem. This library builds wallets and
-transactions and talks to the witness cluster. It does **not** run
-consensus: the chain's consensus (BFT witness) is embedded in
-`nodus-server`.
+DNAC is the **client side** of **Nodus Chain** (formerly "DNA Chain") — the
+post-quantum UTXO blockchain whose coin is NODUS, a public testnet since
+30 September 2026. This library builds wallets and transactions and talks to
+the validators. It does **not** run consensus: the chain's consensus is
+embedded in `nodus-server`.
+
+> **⚠ Transfers on the testnet.** The live (version-3) chain accepts only
+> multi-leg **envelope** transactions. This library's transaction builders
+> produce the older DNAC transaction format described below, and nothing under
+> `dnac/` or `messenger/` builds an envelope yet — so `dna-connect-cli dna send`
+> and the other building commands cannot move NODUS on the testnet. Today a
+> transfer is made with the web wallet (`web-wallet/`) or with
+> `nodus-cli v2-envelope spend` (`nodus/README.md`).
 
 The chain is implemented in three layers of the monorepo:
 
 | Layer | Location | Contents |
 |---|---|---|
 | **Client** (this directory) | `dnac/` | Wallet, UTXO management, TX builders, witness RPC client, client-side chain verification |
-| **Canonical codecs** | `shared/dnac/` | Wire formats compiled byte-identical into both the client (`libdna`) and the witness (`libnodus`) |
-| **Consensus** | `nodus/src/witness/` | The BFT witness embedded in `nodus-server` (see `nodus/README.md`) |
+| **Canonical codecs** | `shared/dnac/` | Wire formats compiled byte-identical into both the client (`libdna`) and the validator (`libnodus`); also the CometBFT v0.38.26 port (`cmt_*`, validator side only) |
+| **Consensus** | `nodus/src/witness/` | The validator embedded in `nodus-server`: Ledger V2 engine + CometBFT host (see `nodus/README.md`) |
 
 ## Features (client-side)
 
@@ -23,7 +31,9 @@ The chain is implemented in three layers of the monorepo:
 - **Witness-only architecture** — all chain state lives on the BFT
   witnesses; the wallet syncs via RPC (`dna sync`), no DHT storage of
   chain state
-- **TX builders** for every live transaction type: SPEND, BURN,
+- **TX builders** for every type of the older DNAC transaction format
+  (not accepted as a transfer by the version-3 testnet — see the note at
+  the top): SPEND, BURN,
   TOKEN_CREATE, STAKE, UNSTAKE, DELEGATE, UNDELEGATE,
   VALIDATOR_UPDATE, CHAIN_CONFIG (committee-voted hard-fork parameters —
   **R3 W4-C delta 2, operator "kaldır" 2026-09-18:** parameter id 1
@@ -88,8 +98,8 @@ The chain is implemented in three layers of the monorepo:
   `payout_interval_epochs` boundaries (24 by default — a payday), including
   to a delegator that has since left. Every rounding remainder stays in
   the pool.
-- **Staking parameters (tokenomics-v3 P3, version-3 chain).** Minimum
-  self-stake 10M NODUS; up to 32 validators are seated, chosen by the
+- **Staking parameters (tokenomics-v3 P3, version-3 chain).** Self-stake
+  exactly 10M NODUS, neither less nor more; up to 32 validators are seated, chosen by the
   highest self-stake + delegations as frozen one boundary earlier (status
   and the 2-epoch tenure read live); others wait bonded but unseated.
   A validator's bond is locked 84 epochs after it leaves the set, a
@@ -140,13 +150,14 @@ The chain is implemented in three layers of the monorepo:
 └─────────────────────────────────────────────────────────────┘
 ```
 
-All witness RPCs ride the authenticated, Kyber1024-encrypted Nodus
-client connection (Tier 2, TCP 4001) as `dnac_*` verbs — spend, utxo,
-history, ledger/ledger-range, block/block-range, tx, committee,
-delegations, validator-list, roster, supply, token queries, fee info.
-The witness BFT round itself (PROPOSE → PREVOTE → PRECOMMIT → COMMIT,
-quorum `(2n)/3+1` over the epoch's validator-set snapshot) runs between
-witnesses on TCP 4004.
+All chain RPCs ride the authenticated Nodus client connection (Tier 2,
+TCP 4001; AES-256-GCM after an ML-KEM-1024 or Kyber1024 round-3 key
+exchange) as `dnac_*` verbs — spend, utxo, history, ledger/ledger-range,
+block/block-range, tx, committee, delegations, validator-list, roster,
+supply, token queries, fee info. Consensus itself — the ported CometBFT
+v0.38.26 rounds (propose → prevote → precommit → commit, more than 2/3 of
+the voting power of the epoch's validator-set snapshot) — runs between
+validators on TCP 4004.
 
 ## Building
 
@@ -154,20 +165,15 @@ DNAC has **no standalone runtime**. Its sources are compiled directly
 into `libdna.so` by the messenger build:
 
 ```bash
-cd /opt/dna/messenger/build
-cmake .. && make -j$(nproc)
+cmake -S messenger -B messenger/build && cmake --build messenger/build -j$(nproc)
 ```
 
-The `dnac/build` tree additionally produces `libdnac.a` plus the DNAC
-test binaries. The CLI's `dna` command group is enabled at messenger
-**configure** time only if `dnac/build/libdnac.a` already exists, so the
-full-from-scratch order is:
-
-```bash
-cd /opt/dna/messenger/build && cmake .. && make -j$(nproc)   # 1. libdna
-cd /opt/dna/dnac/build      && cmake .. && make -j$(nproc)   # 2. libdnac.a (requires libdna)
-cd /opt/dna/messenger/build && cmake .. && make -j$(nproc)   # 3. re-run so the CLI picks up libdnac.a
-```
+That is the build to run; `dnac/CMakeLists.txt` still defines a separate
+`libdnac.a` plus test binaries, but the project does not build that tree and
+the library needs nothing from it. The CLI's `dna` command group below is compiled in
+only when a `dnac/build/libdnac.a` is already present at messenger
+**configure** time (`messenger/cli/CMakeLists.txt`); a default build leaves
+it out.
 
 ## CLI Commands
 
@@ -217,7 +223,13 @@ dna-connect-cli dna genesis-prepare / genesis-create / genesis-submit
 dna-connect-cli dna witnesses               # Show witness servers
 ```
 
-Amounts on the CLI are raw base units (10^8 per DNAC).
+Amounts on the CLI are raw base units (10^8 raw = 1 NODUS).
+
+The building commands (`send`, `token-create`, `stake`, `unstake`,
+`delegate`, `undelegate`, `validator-update`, `genesis-*`) produce the
+older DNAC transaction format, which the version-3 testnet does not accept
+(note at the top). The read-only commands have not been re-verified against
+the testnet.
 
 ## Wallet Address
 
@@ -225,7 +237,13 @@ The wallet address is the **SHA3-512 hash of the Dilithium5 public
 key** — 64 bytes, 128 hex characters, identical to the DNA Connect
 identity fingerprint.
 
-## Transaction Format (v2 — since v0.17.1)
+## Transaction Format (older DNAC format, v2 — since v0.17.1)
+
+This is the format this library builds. The version-3 chain does not
+accept it as a transfer: there, every entry that is not a multi-leg
+envelope is classified as a genesis CLAIM
+(`nodus/src/witness/nodus_witness_v2_produce.c`,
+`nodus_witness_v2_classify_entry`).
 
 Canonical layout: `dnac/src/transaction/serialize.c`; the shared tx-hash
 preimage implementation is `shared/dnac/tx_wire.c::dnac_txw_legacy_tx_hash`
@@ -288,44 +306,26 @@ nodus-cli.c`. See `nodus/README.md`'s test table (D-16 rev 7 row) and
 `nodus/docs/ARCHITECTURE.md`'s W4 section for the wire and the
 responder.
 
-## Ledger V2 (successor chain)
+## Ledger V2 (the live chain)
 
-The DNA Chain is about to transition to the **Ledger V2** architecture —
-canonical block headers and BlockIDs, quorum certificates bound to
-committed validator-set snapshots, a domain-partitioned state model and
-multi-leg envelope transactions. The consensus side lives entirely in
-`nodus/src/witness/` (see [`../nodus/README.md`](../nodus/README.md) and
-[`../docs/ledger-v1-vs-v2.md`](../docs/ledger-v1-vs-v2.md) for the
-grounded V1↔V2 reference). On the client side:
+The Nodus Chain testnet runs the **Ledger V2** architecture: a
+domain-partitioned state model, multi-leg envelope transactions and the
+literal C port of CometBFT v0.38.26 as consensus. The consensus side lives
+entirely in `nodus-server` (see [`../nodus/README.md`](../nodus/README.md)).
+There is no V1 chain any more and no migration from it: the testnet started
+from a fresh genesis on 30 September 2026. On the client side:
 
-- the canonical V2 codecs (envelope, block header, QC, claims, pools,
-  activation records) live in `shared/dnac/` and compile into `libdna`;
-- the Tendermint consensus codecs of the T3 season (`shared/dnac/tm_vote.{h,c}`,
-  `tm_commit.{h,c}`) were DELETED in cometbft port R2 (2026-09-11) and
-  `tm_bounds.h` (the derived size bounds) in R3 W3 C2b (2026-09-16); the
-  cometbft port under `shared/dnac/cmt_*` is the one consensus implementation
-  and its block, vote and commit codecs are cometbft's own proto3 forms;
-- the **cometbft @709fd12b literal port, R1 types layer** (`shared/dnac/cmt_*`,
-  2026-09-10: `cmt_pb` proto3 codec, `cmt_merkle`, `cmt_bits`, `cmt_safemath`,
-  `cmt_time`, `cmt_tmhash`, `cmt_canonical`, `cmt_vote`, `cmt_proposal`,
-  `cmt_part_set`, `cmt_block`, `cmt_validator_set`, `cmt_results`, `cmt_params`,
-  `cmt_genesis`, `cmt_validation`, `cmt_evidence`, `cmt_state`) is likewise
-  DORMANT: zero consumers, compiled into `libnodus` only (libdna does not list
-  it), every function cited to cometbft v0.38.19 `file:line`, substitutions
-  limited to SHA3-512 / ML-DSA-87 / 32-byte addresses / a host clock callback.
-  It supersedes the T3-season `tm_*` codecs and the T1 `tm_proposer.c` once the
-  R2 core lands (module table: `../nodus/docs/ARCHITECTURE.md`, "cometbft
-  literal port"); Python oracles under `shared/dnac/tests/` pin its vectors;
-- the legacy v2 TX wire above stays the accepted format until the
-  switch; Wire V3 (types 11/12/13) is defined but rejected by every
-  live admission path;
-- successor-chain operations (claims, V2 envelopes) are built with
-  `nodus-cli v2-claim` / `nodus-cli v2-envelope` on activation builds.
-
-Migration is governed on-chain: a quorum-voted schedule plus
-per-validator readiness signals make the legacy chain terminal at the
-activation height, and legacy balances move to the successor chain via
-deterministic claims.
+- the canonical V2 codecs (envelope, claims, pools) live in `shared/dnac/`
+  and compile into `libdna`;
+- the CometBFT port (`shared/dnac/cmt_*`) compiles into `libnodus` only;
+  its block, vote and commit codecs are CometBFT's own proto3 forms, with
+  SHA3-512 / ML-DSA-87 / 32-byte addresses as the substitutions;
+- the older DNAC transaction format above is still what this library
+  builds; Wire V3 (types 11/12/13) is defined but rejected by every
+  admission path;
+- envelopes and genesis claims are built today by `nodus-cli v2-envelope`
+  / `nodus-cli v2-claim` and by the web wallet's browser module, not by
+  this library.
 
 ### Validator liveness (Rule N) — tokenomics-v3 P1
 
@@ -475,20 +475,20 @@ two older per-block counters this record used to carry
 
 ## Status
 
-**Testnet** — live 7-witness cluster with real tester balances. The
-active chain ID rotates on consensus-format wipes; query the cluster
-rather than hardcoding it. Ledger V2 activation is the next planned
-step.
+**Testnet** — Nodus Chain has been a public testnet since 30 September
+2026, on seven validator nodes, started from a fresh genesis. It is not
+wiped any more: a change to the chain's rules is a hard fork that takes
+effect at an agreed block height (`nodus/docs/DEPLOY_RUNBOOK.md` §2.2).
+Query the chain id from the network rather than hardcoding it.
 
 ## License
 
 Licensed under the [Apache License 2.0](LICENSE) (aligned with the rest
-of the DNA monorepo since 2026-04-24).
+of the monorepo since 2026-04-24).
 
 ## Related
 
-- [Nodus](../nodus/README.md) — DHT server + embedded DNA Chain witness
-- [DNA Connect](../messenger/README.md) — messenger + wallet UI on top
-  of this library
-- [Explorer](../explorer/README.md) — read-only chain indexer
-  (scan.cpunk.io)
+- [Nodus](../nodus/README.md) — `nodus-server`: DHT + embedded Nodus Chain validator
+- [Web Wallet](../web-wallet/README.md) — browser wallet that sends and stakes NODUS on the testnet
+- [DNA Connect](../messenger/README.md) — the frozen messenger + wallet built on this library
+- [Explorer](../explorer/README.md) — Scan, the read-only chain indexer

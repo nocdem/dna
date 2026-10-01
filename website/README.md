@@ -43,7 +43,7 @@ only the supported read endpoints. The browser makes same-origin requests.
 - `wiki/`: 13 pages — a searchable home and 12 EN/TR guides. Edit the authored
   content in `wiki/content.mjs`, then run `npm run build:portals`.
 - `scan/`: explorer home plus block, transaction and address pages. Its script
-  uses the existing JSON API and keeps the current DNAC devnet unit. It does not
+  uses the existing JSON API and labels the native coin NODUS. It does not
   rename backend fields or change consensus, the indexer, or the running chain.
 - `build-portals.mjs`: shared HTML templates for both subdomains. Generates the
   guide search index and each subdomain's sitemap/robots files deterministically.

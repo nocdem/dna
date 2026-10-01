@@ -1,77 +1,80 @@
-# Nodus — Post-Quantum DHT Server
+# Nodus — Post-Quantum DHT and Chain Node
 
 <p align="center">
-  <strong>Pure C Kademlia DHT with Dilithium5 signatures and Kyber1024 encryption</strong>
+  <strong>Pure C Kademlia DHT and Nodus Chain validator — Dilithium5 signatures, ML-KEM-1024 / Kyber1024 key exchange</strong>
 </p>
 
 <p align="center">
   <a href="#license"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="Apache 2.0"></a>
-  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v0.19.41-orange" alt="RC"></a>
-  <a href="#security"><img src="https://img.shields.io/badge/Crypto-Post--quantum-red" alt="Post-quantum cryptography"></a>
+  <a href="#witness-system-nodus-chain"><img src="https://img.shields.io/badge/Status-Testnet%20v0.23.5-orange" alt="Testnet"></a>
+  <a href="#channel-encryption-kyber-round-3--ml-kem-1024"><img src="https://img.shields.io/badge/Crypto-Post--quantum-red" alt="Post-quantum cryptography"></a>
 </p>
 
 ---
 
 ## What is Nodus?
 
-Nodus is the distributed hash table (DHT) infrastructure for the DNA ecosystem. It provides decentralized storage, replication, and real-time subscriptions — all signed with post-quantum cryptography. The network is open — anyone can run a Nodus node and join.
+`nodus-server` is the one server of the Nodus network. Every node is two things at once: the distributed hash table (DHT) that stores, replicates and pushes signed records, and a validator of **Nodus Chain** — the post-quantum UTXO chain whose coin is NODUS (public testnet since 30 September 2026). The DHT is open — anyone can run a Nodus node and join; becoming a chain validator takes a self-stake of exactly 10M NODUS.
 
 - **Pure C** — No C++ dependencies, minimal footprint
 - **Dilithium5 signatures** — All stored values cryptographically signed using the ML-DSA-87 algorithm profile; no validation or certification claim
-- **Kyber round-3 / ML-KEM-1024 channel encryption** — All client connections encrypted (AES-256-GCM after a KEM key exchange). Faz 1 KEM migration (`docs/plans/decisions/2026-09-23-kem-mlkem-migration.md`) in progress: a node opportunistically upgrades to ML-KEM-1024 (FIPS 203) whenever its peer has one and signs it, falling back to Kyber round-3 otherwise — see `shared/crypto/enc/qgp_kyber.h` (legacy) and `shared/crypto/enc/qgp_mlkem.h` (FIPS 203).
+- **ML-KEM-1024 / Kyber round-3 channel encryption** — All client connections encrypted (AES-256-GCM after a KEM key exchange). A node uses ML-KEM-1024 (FIPS 203) whenever its peer advertises a signed ML-KEM key and falls back to Kyber round-3 otherwise. This two-path state is permanent: no forced update removes the Kyber path (decision `2026-09-23-kem-mlkem-migration.md`, K1 rev 2) — see `shared/crypto/enc/qgp_kyber.h` (legacy) and `shared/crypto/enc/qgp_mlkem.h` (FIPS 203).
 - **Cluster management** — Heartbeat-based health monitoring with Kademlia replication
 - **512-bit keyspace** — Kademlia routing with k=8 buckets
 - **7-day TTL** — Values persist across restarts with SQLite storage
 - **CBOR wire format** — Efficient binary serialization
-- **Embedded DNA Chain witness** — BFT consensus for DNA Chain (DNAC) transactions
+- **Embedded Nodus Chain validator** — a literal C port of CometBFT v0.38.26 drives the Ledger V2 engine
 - **Circuit relay** — Peer-to-peer VPN mesh with optional per-circuit E2E encryption; it is not onion-routed
 - **Media storage and replication** — Binary blob storage with cluster-wide replication
-- **Multi-token support** — Custom token creation and management on the DNA Chain
-- **Open network** — Community-managed, anyone can run a node
+- **Multi-token support** — Custom token creation (`TOKEN_CREATE`) on Nodus Chain
+- **Browser entry** — an optional WebSocket listener for the web wallet, off by default
 
 ---
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                        Nodus Server                              │
-├──────────────────────────────────────────────────────────────────┤
-│              Kyber1024 Encryption Layer (AES-256-GCM)            │
-├──────────┬──────────┬──────────┬──────────┬──────────────────────┤
-│ UDP 4000 │ TCP 4001 │ TCP 4002 │ TCP 4003 │ TCP 4004             │
-│ Kademlia │ Client   │ Inter-   │ Channels │ Witness BFT          │
-│          │          │ node     │          │                      │
-│ ping     │ auth     │ repl.    │ channel  │ PROPOSE              │
-│ find_node│ dht_put  │ heartbt  │ subs     │ PREVOTE              │
-│ store    │ dht_get  │ circuit  │ (idle)   │ PRECOMMIT            │
-│ find_val │ get_batch│ fwd      │          │ COMMIT               │
-│          │ cnt_batch│          │          │                      │
-│          │ listen   │          │          │                      │
-│          │ presence │          │          │                      │
-│          │ circuits │          │          │                      │
-│          │ media    │          │          │                      │
-├──────────┴──────────┴──────────┴──────────┴──────────────────────┤
-│  Kademlia Routing   │  Cluster Management  │  Witness BFT        │
-│  512-bit keyspace   │  Heartbeat health    │  DNAC consensus      │
-│  k=8 buckets        │  K-closest repl.     │  PBFT phases         │
-├─────────────────────┴──────────────────────┴─────────────────────┤
-│  SQLite Storage     │  Presence Table      │  Media Storage       │
-│  7-day TTL          │  45s TTL, p_sync 30s │  Binary blobs        │
-└──────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                           nodus-server                               │
+├──────────┬──────────┬──────────┬───────────────────┬─────────────────┤
+│ UDP 4000 │ TCP 4001 │ TCP 4002 │ TCP 4004          │ ws_port         │
+│ Kademlia │ Client   │ Inter-   │ Chain p2p         │ WebSocket       │
+│          │          │ node     │ (CometBFT port)   │ (127.0.0.1,     │
+│ ping     │ auth     │ repl.    │ secret conn.      │  off by         │
+│ find_node│ dht_put  │ heartbt  │  ML-KEM-1024      │  default)       │
+│ store    │ dht_get  │ circuit  │ consensus,        │ same verbs as   │
+│ find_val │ get_batch│ fwd      │ mempool, block-   │ TCP 4001        │
+│          │ cnt_batch│          │ sync, PEX         │                 │
+│          │ listen   │          │ reactors          │                 │
+│          │ presence │          │                   │                 │
+│          │ circuits │          │                   │                 │
+│          │ media    │          │                   │                 │
+│          │ dnac_*   │          │                   │                 │
+├──────────┴──────────┴──────────┼───────────────────┴─────────────────┤
+│  KEM + AES-256-GCM on 4001/4002│  Nodus Chain validator              │
+├─────────────────────┬──────────┴──────────┬──────────────────────────┤
+│  Kademlia Routing   │  Cluster Management │  Ledger V2 engine        │
+│  512-bit keyspace   │  Heartbeat health   │  CometBFT v0.38.26 port  │
+│  k=8 buckets        │  K-closest repl.    │  (shared/dnac/cmt_*)     │
+├─────────────────────┼─────────────────────┼──────────────────────────┤
+│  SQLite Storage     │  Presence Table     │  Media Storage           │
+│  7-day TTL          │  45s TTL, p_sync 30s│  Binary blobs            │
+└─────────────────────┴─────────────────────┴──────────────────────────┘
 ```
 
-**Five Network Ports:**
+**Network ports:**
 
 | Port | Protocol | Purpose |
 |------|----------|---------|
 | UDP 4000 | Kademlia | Peer discovery (ping, find_node, store, find_value) |
-| TCP 4001 | Client | Auth, dht_put, dht_get, get_batch, cnt_batch, listen, presence, circuits, media |
+| TCP 4001 | Client | Auth, dht_put, dht_get, get_batch, cnt_batch, listen, presence, circuits, media, and the chain RPCs (`dnac_*`) |
 | TCP 4002 | Inter-node | Cluster replication, heartbeat, circuit forwarding |
-| TCP 4003 | Channels | Dedicated channel traffic (currently disabled) |
-| TCP 4004 | Witness BFT | DNAC consensus (PROPOSE, PREVOTE, PRECOMMIT, COMMIT) |
+| TCP 4004 | Chain p2p | The ported CometBFT p2p layer: secret connection (ML-KEM-1024 + AES-256-GCM), consensus / mempool / block-sync / PEX reactors |
+| `ws_port` (e.g. 4005) | WebSocket | Optional browser entry to the client protocol; listens on `127.0.0.1` only, a local TLS proxy serves it (see "Configuration") |
 
-**Wire Protocol:** CBOR over framed TCP/UDP — 7-byte header (magic `0x4E44` + version + length)
+TCP 4003 (`NODUS_DEFAULT_CH_PORT`, channels) is still defined, but the channel server is compiled out (`NODUS_CHANNELS_DISABLED`, `nodus/CMakeLists.txt`); the port is not opened.
+
+**Wire Protocol:** CBOR over framed TCP/UDP on 4000-4002 — 7-byte header (magic `0x4E44` + version + length). Port 4004 does not use these frames; it speaks the ported CometBFT p2p protocol with its own protocol version.
 
 ---
 
@@ -89,7 +92,7 @@ nodus/
 │   ├── consensus/   # Cluster heartbeat + membership management
 │   ├── crypto/      # Nodus-specific crypto helpers
 │   ├── circuit/     # Circuit relay for P2P VPN mesh (optional per-circuit E2E encryption)
-│   └── witness/     # DNA Chain BFT witness (embedded in nodus-server; legacy + Ledger V2 lanes)
+│   └── witness/     # Nodus Chain validator (embedded in nodus-server): Ledger V2 engine + CometBFT host (one lane)
 ├── include/
 │   └── nodus/
 │       ├── nodus.h       # Client SDK public API
@@ -133,7 +136,7 @@ read from the chain:
 
 ```bash
 cd nodus/build
-ctest --output-on-failure    # 197 registered tests, 8 of them labelled bench (`ctest -LE bench` runs 189) — measured with ctest at 0.20.6 (0.20.6 added test_ws_frame, test_ws_upgrade, test_ws_server, test_tcp_deferred_close, test_tcp_read_budget; 0.20.5 added test_decode_dupkey, test_client_dup_array; 0.20.3 added test_v3_block_query; the 4004 p2p port added test_p2p_secret/mconn/switch/pex, test_witness_p2p, test_network_file, test_cmt_autofile, test_cc_collect and deleted test_cc_client, test_cmt_net, test_heartbeat_signed_checksum, test_strict_decoder, test_witness_peer_dedup, test_witness_protocol_version_gate)
+ctest --output-on-failure    # 210 registered tests, 8 of them labelled bench (`ctest -LE bench` runs 202) — counted with `ctest -N` at 0.23.5
 ```
 
 **Test coverage (representative areas — `ctest` runs all):**
@@ -142,20 +145,21 @@ ctest --output-on-failure    # 197 registered tests, 8 of them labelled bench (`
 |------|-----------|
 | Core Kademlia | `test_routing`, `test_bucket_refresh`, `test_storage`, `test_value`, `test_hashring` |
 | Client SDK | `test_client`, `test_tier2`, `test_tcp`, `test_fetch_batch` |
-| Protocol | `test_tier1`, `test_tier3`, `test_wire`, `test_cbor`, `test_strict_decoder` |
-| Auth | `test_inter_auth`, `test_udp_auth`, `test_identity`, `test_sign_domain_separation` |
+| Protocol | `test_tier1`, `test_tier3`, `test_wire`, `test_cbor` |
+| Auth | `test_inter_auth`, `test_identity`, `test_sign_domain_separation` |
 | Channels | `test_channel_*` (channel system currently disabled in production) |
 | Circuits (VPN mesh) | `test_circuit_wire`, `test_circuit_table`, `test_circuit_live` |
 | Media / DHT features | `test_media_storage`, `test_media_tier2`, `test_put_if_newer`, `test_hinted_handoff` |
 | Presence / Server | `test_presence`, `test_server` |
-| Witness (the ledger side; the legacy PBFT lane's tests are gone with it, R3 W4) | `test_witness_verify`, `test_vset_*`, `test_qc_v2`, `test_witness_state_root_failclose`, `test_witness_protocol_version_gate` (every retired tier-3 method string is refused at decode — DELETED in 0.20.0 with the 4004 T3 transport), `test_v2_seam_linked` (an `nm` gate: no old-lane symbol is linked into `nodus-server`) |
+| Witness (the ledger side; the legacy PBFT lane's tests are gone with it, R3 W4) | `test_witness_verify`, `test_vset_*`, `test_qc_v2`, `test_witness_state_root_failclose`, `test_v2_seam_linked` (an `nm` gate: no old-lane symbol is linked into `nodus-server`) |
 | cometbft literal port, R1 types (live since R3 W3; the only consensus since R3 W4) | `test_cmt_pb`, `test_cmt_merkle`, `test_cmt_bits`, `test_cmt_safemath`, `test_cmt_time`, `test_cmt_block`, `test_cmt_vote`, `test_cmt_part_set`, `test_cmt_validator_set`, `test_cmt_results`, `test_cmt_params`, `test_cmt_genesis`, `test_cmt_validation`, `test_cmt_evidence`, `test_cmt_state` |
 | cometbft literal port, R2 consensus core (live since R3 W3) | `test_cmt_vote_set`, `test_cmt_hvs`, `test_cmt_msgs`, `test_cmt_wal`, `test_cmt_ticker`, `test_cmt_privval`, `test_cmt_replay`, `test_cmt_cs_unit`, `test_cmt_cs` (44 whole-height scenarios — every `state_test.go` test a single-node fixture can drive; + W3's two P0 part-set-bound scenarios and C2e's two ownership scenarios: a decoded block part and a vote extension survive the overwrite of their wire source), `test_cmt_byzantine` (4 nodes, byzantine proposer, partition — no fork; + R3 W3 P0: the two part-set-bound obligation scenarios — a forged +2/3 for a BlockID whose part count the port's bound refuses: the round recovers on a nil precommit / the commit site parks with no block) |
 | cometbft literal port, R3 wave W1 — reactor / host+stores / mempool (live since R3 W3) | `test_cmt_conr` (19 scenarios: the `reactor_test.go` ValidateBasic tables plus four multi-node runs over an in-memory switch; + C2e's `recv_arena_resets_every_receive` — 392 full-size block parts from four peers leave the receive arena at one message's size and stop no peer), `test_cmt_host` (48 cases against a real SQLite database and real ML-DSA-87 keys: schema S14, the block and state stores, the WAL, the file privval, the BlockExecutor — S14 is no longer the live rung; the file also carries the S15 migration matrix added by tokenomics-v3 P1), `test_cmt_mem`, `test_cmt_memr`, `test_cmt_clist` |
-| cometbft literal port, R3 wave W3 C2b — tier-3 envelope verbs 35-39 + transport glue (live since C2a routed them) | `test_tier3` (8 cometbft envelope sections: strict `{m: bstr}`, ceilings accepted via the real encoder and a hand-built frame, `m_cap+1` refused by the decoder, the universal negative-integer pin, measured envelope overhead, the mempool ceiling pin), `test_cmt_net` (9 cases: peer-set scan transitions over a REAL `cmt_conr`/`cmt_memr` pair, send refused for a down/quarantined slot, verb 35/39 routing, receive before any tick, the per-message receive arena (1 MiB since C2e) and its latches, deferred-close bookkeeping, the scan waits for both reactors, and — harness-found — the mempool peer ids are RESERVED so a client-submitted transaction is gossiped to every up slot and stamped by the receiver's own id) |
-| cometbft literal port, R3 wave W3 — THE LIVE FLIP (C2a server binding + C2c readiness/bundle/pin) | `test_cmt_live` (NEW, 6 cases: a real version-3 chain brought up through the REAL `nodus_witness_init` → `nodus_witness_tick` → `nodus_witness_dispatch_t3` — the genesis-time wait and peer-admission gate, verb 35 accepted at protocol version 7 and refused at 6/8 through the real dispatcher, CheckTx admitting a real signed claim and refusing it under another key (needs the armed gate — C2c's preflight), a restart reopening the same role, the mesh dialing a roster witness, and — harness-found — a PINNED joiner that adopts a chain mid-life builds the server binding and goes LIVE; block PRODUCTION is the harness's — one process holds one of seven equal votes), `test_cmt_app` (21 cases: + the EMPTY decided block, the byte-bound seam with a policy-verified unit ceiling, the count guards at `env_bound + 1`), `test_cmt_host` (50: + the half-present S14 catalogue refusal through the real open path; + `store_get_then_full_write_then_main_write` — the harness-found SQLite snapshot lock that stopped every node after height 1, RED on the old store), `test_cmt_node` (14: + the nilWAL no-op before start), `test_witness_protocol_version_gate` (§1-§4 rewritten: the old lane stays closed at every header version), `test_v2_preflight` (the document-based genesis check: READY on a derived chain; absent row / one flipped byte / app_hash mismatch / chain-id disagreement each raised by one corruption, whole-DB digest unchanged; + harness-found: READY stays true after the FIRST committed block — the check reads block 1's header app hash from that height on — and a block 1 carrying a wrong app hash still raises the mismatch), `test_v2_bundle` (v3 round trip carrying the document, adopt only with the 32-byte chain id, wrong pin / tampered stake / foreign bundle / old magic refused), `test_v2_pools` (`t_s14_flip`: the pool replay REALLY runs at S14 — the old silent skip proven RED), `test_tier3` (verb 24/25: 32-byte `p` round trip, 31/33 refused, chunk at the ceiling accepted and +1 refused) |
+| Tier-3 message bodies (P2P-PORT F5: the tier-3 envelope and consensus verbs 35-39 are DELETED; the bodies survive on 4004 channels 0x70 / 0x71) | `test_tier3` (the four bodies that channel 0x70 — genesis bundle, the former verbs 24/25 — and 0x71 — governance approval, the former verbs 40/41 — carry: round trip of every field, request/response told apart by the key set, the request body pinned to the former `a` map's bytes, a 31- or 33-byte pin a hard decode error, an over-ceiling chunk refused) |
+| 0.20.0+ — the 4004 p2p port, block sync, WebSocket entry, address history index | `test_p2p_secret`, `test_p2p_mconn`, `test_p2p_switch`, `test_p2p_pex`, `test_witness_p2p`, `test_network_file`, `test_cmt_autofile`, `test_cc_collect`, `test_cmt_bsync_msgs`, `test_cmt_bsync_pool`, `test_cmt_bsync_reactor`, `test_ws_frame`, `test_ws_upgrade`, `test_ws_server`, `test_v3_block_query`, `test_addr_index` |
+| cometbft literal port — the live server binding (C2a/C2c, ported onto the 4004 p2p host in P2P-PORT F5) | `test_cmt_live` (3 cases on a REAL version-3 chain through the REAL `nodus_witness_init` → `nodus_witness_tick`, with a real second p2p host on 127.0.0.1: the genesis-time wait and peer admission, CheckTx admitting a real signed claim and refusing it under another key, a restart reopening the same role; block PRODUCTION is the harness's — one process holds one of seven equal votes. The old version-gate, mesh-tick and adopt-then-live cases went with the deleted transport; joiner adoption is `test_witness_p2p`), `test_cmt_app` (21 cases: + the EMPTY decided block, the byte-bound seam with a policy-verified unit ceiling, the count guards at `env_bound + 1`), `test_cmt_host` (50: + the half-present S14 catalogue refusal through the real open path; + `store_get_then_full_write_then_main_write` — the harness-found SQLite snapshot lock that stopped every node after height 1, RED on the old store), `test_cmt_node` (14: + the nilWAL no-op before start), `test_v2_preflight` (the document-based genesis check: READY on a derived chain; absent row / one flipped byte / app_hash mismatch / chain-id disagreement each raised by one corruption, whole-DB digest unchanged; + harness-found: READY stays true after the FIRST committed block — the check reads block 1's header app hash from that height on — and a block 1 carrying a wrong app hash still raises the mismatch), `test_v2_bundle` (v3 round trip carrying the document, adopt only with the 32-byte chain id, wrong pin / tampered stake / foreign bundle / old magic refused), `test_v2_pools` (`t_s14_flip`: the pool replay REALLY runs at S14 — the old silent skip proven RED) |
 | cometbft literal port, R3 wave W2 — application / genesis v3 / startup table (live since R3 W3) | `test_cmt_app` (18 cases on a REAL version-3 chain: InitChain as a genesis check, FinalizeBlock with per-item SAVEPOINT isolation proven against a twin chain, both crash windows, CheckTx incl. the signature stage, PrepareProposal/ProcessProposal), `test_cmt_node` (14 cases: the genesis-document loader's row/provider table, the Handshaker's height cases, both crash windows healed through the real Handshaker, LoadOrGenFilePV, init/start/release), `test_v2_gen` §5-§11 (the version-3 document: oracle KATs, strict decoder, derive end to end, tampered stored rows refused) |
-| D-16 rev 7 (W4-CC) — SYSTEM-governance approval collection re-wired on the Comet lane, verbs 40-41 replacing the retired vote-collect pair (14-15) | `test_tier3` (+2 sections: verb 40/41 round trip incl. the maximal pre-auth envelope, the `ok`-conditional strict key set), `test_witness_protocol_version_gate` (`w_cc_vote_req`/`w_cc_vote_rsp` join the retired-method-string list), `test_cc_client` (renamed onto `nodus_client_cc_appr_send`, same transport-guard-path coverage), `test_cc_appr` (NEW — the responder, `nodus_witness_handle_cc_appr_req`, driven over a REAL derived version-3 chain with 7 REAL ML-DSA-87 committee keys and a REAL loopback `nodus_tcp_conn_t`: happy path from every seat through `nodus_witness_v2_env_dry_run` (CHECKTX-P1, 0.19.78; was `nodus_witness_v2_env_authorize`, deleted) AND through the Comet apply lane (`nodus_witness_v2_apply_block`, item code 0, the `chain_config_history` row committed — ORCHESTRATOR ORC-5), an independent digest recomputation against the wire LAYOUT, a refusal matrix — foreign chain id in the T3 header, non-member, wrong `auth_kind`, nonzero fee, `TARGET_ACTIVE_COUNT` above the V2 ceiling, effective below the grace floor, the per-proposer rate limit — and (since tokenomics-v3 P2, replacing the ORC-6 INFLATION_START pair) a quorum proposal for the RETIRED parameter 3 refused as "scalar rules rejected"; `test_tier3`'s strict-key section also refuses a duplicate `e` / `ok` / `i` (ORC-12)) |
+| D-16 rev 7 (W4-CC) — SYSTEM-governance approval collection on the Comet lane, carried since P2P-PORT F5 on 4004 channel 0x71 | `test_cc_appr` (the responder's verdict `nodus_witness_cc_appr_answer` — the 0x71 handler without its send — over a REAL derived version-3 chain with 7 REAL ML-DSA-87 committee keys: every seat's approval assembled into an envelope that `nodus_witness_v2_env_dry_run` accepts, an independent recomputation of the `NDS.CCSET.v1` / `NDS.CCAPPR.v1` preimages checked against a seat's signature, and a refusal matrix — requester or responder not a seat, wrong `auth_kind`, nonzero fee, `TARGET_ACTIVE_COUNT` above the ceiling, effective below the grace floor, the retired parameter 3, `BLOCK_INTERVAL_SEC`, a gas price above its ceiling, the rate limit). The transport half — a 0x71 request and reply over real sockets, and a foreign-chain requester refused at the secret connection — is `test_witness_p2p`; node-side collection is `test_cc_collect` |
 | Merkle / state_root | `test_witness_merkle`, `test_merkle_utxo_root`, `test_state_root_4subtree`, `test_merkle_scan_fail_close` (`test_merkle_proof` and `test_merkle_state_root_golden` deleted in the root-layout round — their only subjects, `build_proof` and the legacy five-input `compute_state_root`, are gone) |
 | Ledger V2 (the engine; driven through the cometbft application on the live lane) | `test_v2_apply`, `test_v2_native`, `test_v2_epoch`, `test_block_v2`, `test_domain_wire`, `test_v2_pools`, `test_v2_claims`, `test_v2_gen` (§3.5 L2-F1: the supply probe fails closed on a version-3 chain — R3 W4-S), `test_v2_econ_params` (its reopening cases derive version-3 chains) |
 | tokenomics-v3 P2 — rewards, fees, the reward pool (no mint; parameter 3 retired) | `test_v2_econ` (REWRITTEN: the frozen balance copy, the pro-rata distribution through the engine at a boundary, the source copy src(H) and the consistency gate, a mid-epoch withdrawal paid through L(h), partial withdraw + top-up (earned ≤ locked), the decimal_unit refusal, a bar miss forfeiting the whole share, payday, the payout-interval reader, the F55/F56/F59 and payday stage rollbacks, a determinism twin), `test_v2_native` / `test_v2_apply` (every fee leg credits `reward_pool`; an explicit BURN still burns; the supply gate's pool and accrual terms; P2-10 — the UNDELEGATE release UTXO born locked to L(h) + 12E, partial and full drain, refused by the SPEND / SYSFUND / TOKEN_CREATE gates at U and accepted at U+1), `test_roots_v2` (supply-leaf v2, accrual leaf/root and the 7-leg `core_state_root` KATs), `test_cmt_host` (the S16 migration matrix), `test_v2_gen` (Rule P.2 with the reserve). DELETED with their subjects: `test_epoch_state`, `test_emission_boundaries`, `test_epoch_snapshot`, `test_epoch_snapshot_failclose`. Harness: `test_v2_rewards.sh` |
@@ -185,30 +189,44 @@ in full first.
 
 ### Configuration
 
-Config file: `/etc/nodus.conf`
+`nodus-server -c <file>` reads a **JSON** config (`nodus/tools/nodus-server.c`, `load_config_json`). The common keys:
 
-Each node seeds the other nodes in the cluster:
-```
-# /etc/nodus.conf on node-1
-listen_port = 4000
-tcp_port = 4001
-data_dir = /var/lib/nodus
-seed_nodes = 164.68.105.227:4000,164.68.116.180:4000
+```json
+{
+  "bind_ip": "0.0.0.0",
+  "external_ip": "203.0.113.10",
+  "udp_port": 4000,
+  "tcp_port": 4001,
+  "peer_port": 4002,
+  "witness_port": 4004,
+  "identity_path": "/var/lib/nodus/identity",
+  "data_path": "/var/lib/nodus/data",
+  "seed_nodes": ["<id>@198.51.100.20:4000", "198.51.100.21:4000"]
+}
 ```
 
-**WebSocket entry (browsers — web wallet / Web Connect), off by default.**
-`nodus-server -c <file.json>` reads two keys: `"ws_port": 4005` opens a plain
-WebSocket listener of the client port on `127.0.0.1` only (a local Caddy serves TLS
-on 443 and forwards to it); `"ws_origins": [...]` lists the allowed browser
-`Origin` values (default `["https://wallet.nodusnetwork.io"]`). See
-`docs/ARCHITECTURE.md` §10 "WebSocket entry" and `docs/DEPLOY_RUNBOOK.md` §2.4.
+A `seed_nodes` entry `"ip:udp_port"` seeds the DHT. Written as `"id@ip:udp_port"` it also makes that node a persistent peer of the chain p2p layer on `udp_port + 4` — the 4004 layer never dials a peer whose ID is not pinned. Other keys the loader reads: `ws_port`, `ws_origins`, `require_peer_auth`, `addr_history_index`, `network_file`, `ch_port`, and the p2p tuning keys (`moniker`, `send_rate`, `recv_rate`, `dial_timeout`, `handshake_timeout`, …).
+
+**WebSocket entry (browsers — web wallet / Nodus Connect), off by default.**
+`"ws_port": 4005` opens a plain WebSocket listener of the client port on
+`127.0.0.1` only (a local TLS proxy serves it on 443 and forwards to it);
+`"ws_origins": [...]` lists the allowed browser `Origin` values (default
+`["https://wallet.nodusnetwork.io"]`). See `docs/ARCHITECTURE.md` §10
+"WebSocket entry" and `docs/DEPLOY_RUNBOOK.md` §2.4.
+
+**Address history index, off by default.** `"addr_history_index": true` builds
+a node-local address history index and answers the `dnac_addr_history` RPC;
+it is not consensus state.
+
+A chain validator additionally needs the chain's genesis and its own validator
+key — see `docs/DEPLOY_RUNBOOK.md` §1.5 and `tools/genesis/README.md`.
 
 ### Systemd
 
 ```ini
 # /etc/systemd/system/nodus.service
 [Unit]
-Description=Nodus DHT Server
+Description=Nodus server
 After=network.target
 
 [Service]
@@ -219,87 +237,79 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
-### Current Nodes (community-managed)
-
-| Node | IP | UDP | TCP |
-|------|-----|-----|-----|
-| US-1 | 154.38.182.161 | 4000 | 4001 |
-| EU-1 | 161.97.85.25 | 4000 | 4001 |
-| EU-2 | 156.67.24.125 | 4000 | 4001 |
-| EU-3 | 156.67.25.251 | 4000 | 4001 |
-| EU-4 | 164.68.105.227 | 4000 | 4001 |
-| EU-5 | 164.68.116.180 | 4000 | 4001 |
-| EU-6 | 75.119.141.51 | 4000 | 4001 |
-
 ---
 
 ## Client SDK
 
-The Nodus client SDK (`include/nodus/nodus.h`) is used by DNA Connect to connect to the DHT network. All connections are encrypted with AES-256-GCM after a KEM key exchange — ML-KEM-1024 when the server advertises a signed ML-KEM key, otherwise the legacy Kyber1024 round-3 (see "Channel Encryption" below). This protects connection content; it does not hide network metadata.
+The Nodus client SDK (`include/nodus/nodus.h`) is how applications reach the network: `libdna` uses it, and so does the web wallet's browser build. All connections are encrypted with AES-256-GCM after a KEM key exchange — ML-KEM-1024 when the server advertises a signed ML-KEM key, otherwise the legacy Kyber1024 round-3 (see "Channel Encryption" below). This protects connection content; it does not hide network metadata.
+
+Calls are synchronous; the signatures below are copied from `include/nodus/nodus.h`.
 
 ```c
 #include <nodus/nodus.h>
 
-// Connect (Kyber1024 encrypted)
-nodus_client_t *client = nodus_client_create(config);
-nodus_client_connect(client, "154.38.182.161", 4001);
+nodus_client_t client;
+nodus_client_config_t cfg = { .servers = {{"203.0.113.10", 4001}}, .server_count = 1 };
+nodus_client_init(&client, &cfg, &identity);   /* identity: the caller's nodus_identity_t */
+nodus_client_connect(&client);                  /* KEM handshake + AES-256-GCM */
 
-// Store a value (signed with Dilithium5)
-nodus_client_put(client, key, value, value_len, callback, userdata);
+/* Store a value — the caller signs it with Dilithium5 */
+nodus_client_put(&client, &key, data, data_len, type, ttl, vid, seq, &sig);
 
-// Retrieve a value
-nodus_client_get(client, key, callback, userdata);
+/* Read one value / every value stored under a key */
+nodus_client_get(&client, &key, &val);
+nodus_client_get_all(&client, &key, &vals, &count);
 
-// Batch retrieve multiple values
-nodus_client_get_batch(client, keys, key_count, callback, userdata);
+/* Batch read, batch count */
+nodus_client_get_batch(&client, keys, key_count, &results, &result_count);
+nodus_client_count_batch(&client, keys, key_count, &my_fp, &counts, &count_n);
 
-// Count values by prefix
-nodus_client_cnt_batch(client, prefix, prefix_len, callback, userdata);
+/* Subscribe to key changes, presence query */
+nodus_client_listen(&client, &key);
+nodus_client_presence_query(&client, fps, fp_count, &presence);
 
-// Subscribe to key changes
-nodus_client_listen(client, key, on_update, userdata);
+/* Media: chunked put, metadata + chunk get */
+nodus_client_media_put(&client, content_hash, chunk_index, chunk_count, total_size,
+                       media_type, encrypted, ttl, chunk, chunk_len, &sig,
+                       &complete, progress_cb, progress_user_data);
+nodus_client_media_get_meta(&client, content_hash, &meta);
+nodus_client_media_get_chunk(&client, content_hash, chunk_index, &chunk_out, &chunk_out_len);
 
-// Presence query
-nodus_client_presence_query(client, fingerprints, count, callback, userdata);
-
-// Media storage
-nodus_client_media_put(client, key, data, data_len, callback, userdata);
-nodus_client_media_get(client, key, callback, userdata);
+nodus_client_close(&client);
 ```
 
 ---
 
 ## Channel Encryption (Kyber round-3 / ML-KEM-1024)
 
-All TCP connections (ports 4001 and 4002) are encrypted with a KEM key exchange followed by AES-256-GCM symmetric encryption. The handshake occurs immediately after TCP connection, before any protocol messages are exchanged. This ensures all client operations, inter-node replication, and circuit relay traffic are protected against quantum adversaries.
+Client and inter-node TCP connections (ports 4001 and 4002) are encrypted with a KEM key exchange followed by AES-256-GCM symmetric encryption. The handshake occurs immediately after TCP connection, before any protocol messages are exchanged. This ensures all client operations, inter-node replication, and circuit relay traffic are protected against quantum adversaries. The chain p2p port 4004 has its own session: the ported CometBFT secret connection, ML-KEM-1024 only (decision `2026-09-26-witness-port-session.md`).
 
-**Faz 1 KEM migration** (`docs/plans/decisions/2026-09-23-kem-mlkem-migration.md`, rolling-compatible, no wire version bump): a node that has generated an ML-KEM-1024 (FIPS 203) keypair signs and advertises its public key (`mpk`/`mpk_sig`) in AUTH_OK, alongside the existing Kyber round-3 `kpk`/`kpk_sig` — unconditional, unchanged. A peer uses ML-KEM-1024 (`alg=1` on KEY_INIT) only when it has verified the OTHER side's signed `mpk`; a node never sends an ML-KEM ciphertext to a peer that did not itself advertise one. Every peer without an ML-KEM keypair still talks Kyber round-3 (NIST Level 5), exactly as before this migration — the divergences from FIPS 203 in that legacy path are documented in `shared/crypto/enc/qgp_kyber.h` (the wrapper API; the underlying implementation is `shared/crypto/enc/kyber_r3_legacy.h`); the FIPS 203 implementation is `shared/crypto/enc/qgp_mlkem.h`. The `mpk`/`mpk_sig` binding uses a new purpose byte, `NODUS_PURPOSE_MLKEM_BIND` (0x09) — the first **tier-2** purpose to be STRICT (no raw-signature fallback either side), because its preimage is the same shape as `KYBER_BIND`'s and a non-strict signature here would be swappable with a `kpk_sig`. Circuits (VPN mesh) carry the same optional `alg`, but `alg=1` is Faz-2-only: it must not be used until every relay on the path forwards the tag, or an old relay silently drops it and the far end decapsulates with the wrong algorithm. An inbound E2E circuit whose `alg` this client cannot decapsulate is refused outright, never accepted with encryption silently disabled. See `docs/ARCHITECTURE.md` §5 ("Faz 1 KEM migration") for the wire format and the four handshake sites' exact fallback rule.
+**KEM state** (`docs/plans/decisions/2026-09-23-kem-mlkem-migration.md`, rolling-compatible, no wire version bump): a node that has generated an ML-KEM-1024 (FIPS 203) keypair signs and advertises its public key (`mpk`/`mpk_sig`) in AUTH_OK, alongside the existing Kyber round-3 `kpk`/`kpk_sig` — unconditional, unchanged. A peer uses ML-KEM-1024 (`alg=1` on KEY_INIT) only when it has verified the OTHER side's signed `mpk`; a node never sends an ML-KEM ciphertext to a peer that did not itself advertise one. Every peer without an ML-KEM keypair still talks Kyber round-3 (NIST Level 5). This two-path state is the final one: the decision (K1 rev 2) publishes no forced update, so the Kyber round-3 fallback stays. The divergences from FIPS 203 in that legacy path are documented in `shared/crypto/enc/qgp_kyber.h` (the wrapper API; the underlying implementation is `shared/crypto/enc/kyber_r3_legacy.h`); the FIPS 203 implementation is `shared/crypto/enc/qgp_mlkem.h`. The `mpk`/`mpk_sig` binding uses a new purpose byte, `NODUS_PURPOSE_MLKEM_BIND` (0x09) — the first **tier-2** purpose to be STRICT (no raw-signature fallback either side), because its preimage is the same shape as `KYBER_BIND`'s and a non-strict signature here would be swappable with a `kpk_sig`. Circuits (VPN mesh) carry the same optional `alg`, but `alg=1` must not be used until every relay on the path forwards the tag, or an old relay silently drops it and the far end decapsulates with the wrong algorithm. An inbound E2E circuit whose `alg` this client cannot decapsulate is refused outright, never accepted with encryption silently disabled. See `docs/ARCHITECTURE.md` §5 for the wire format and the four handshake sites' exact fallback rule.
 
 ---
 
-## Witness System (DNA Chain)
+## Witness System (Nodus Chain)
 
-Nodus embeds the DNA Chain witness for BFT consensus on DNAC transactions. The witness runs on TCP port 4004 and implements PBFT-style consensus with four phases: PROPOSE, PREVOTE, PRECOMMIT, and COMMIT. The leader collects pending transactions from the mempool and proposes blocks at 5-second intervals (max 10 TXs per round); non-leader nodes forward received transactions to the current leader.
+Every node embeds a Nodus Chain validator. Consensus is a literal C port of **CometBFT v0.38.26** (`shared/dnac/cmt_*`; host glue in `src/witness/nodus_witness_cmt_*.c`): proposal, prevote, precommit and commit rounds as in the reference, with SHA3-512 hashes and ML-DSA-87 (Dilithium5) votes. The p2p layer runs on TCP 4004. Clients never talk to 4004: they submit transactions and read the chain through the `dnac_*` RPCs on TCP 4001, and the receiving node gossips a transaction to its peers through the mempool reactor.
 
-**Voting authority is chain-derived, not gossip-derived:** the committee is the stake-ranked active validator set, frozen per epoch into a committed validator-set snapshot. Quorum is `dna_bft_quorum(n) = (2n)/3 + 1` over the set governing the height (7 seats ⇒ 5); leader election rotates `(epoch + view) % N`. The committee size is a governance parameter (`TARGET_ACTIVE_COUNT`, chain-config param 4). Every witness must produce a byte-identical `state_root` per block — any divergence is a chain split and blocks deploy (Genesis Protocol harness enforces 7/7 identity).
+**Block pace** is a compiled node setting, not a governed parameter: a 4 s commit timeout and, when no transaction is waiting, an empty block every 60 s (`src/witness/nodus_witness_cmt_node.c`). Chain-config parameter 2 (`BLOCK_INTERVAL_SEC`) has no effect on this lane.
+
+**Voting authority is chain-derived:** the validator set is the stake-ranked active set, frozen per epoch into a committed validator-set snapshot; a validator's voting power is its stake / 10^8. The set size is the governance parameter `TARGET_ACTIVE_COUNT` (chain-config param 4, range [7, 32]). Every validator must produce a byte-identical state for every block — any divergence is a chain split and blocks deploy (Genesis Protocol harness enforces 7/7 identity).
+
+**Upgrades.** The testnet (30 September 2026) is never wiped. A consensus, block-format, hash or state-root change is a hard fork that activates at a committed block height; the binaries roll out before that height (`docs/DEPLOY_RUNBOOK.md` §2.2).
 
 Source: `src/witness/`
 
-### Ledger V2 (the witness's only ledger engine)
+### Ledger V2 (the validator's only ledger engine)
 
-The witness carries **one lane**: the Ledger V2 engine, driven by the cometbft @709fd12b port. The legacy V1 lane (flat 5-leg `state_root`, block identity = batch digest, 144-byte finalization certificates) was deleted in R3 W4-D (`docs/ARCHITECTURE.md`, "THE DELETION of the closed lane"). Ledger V2 was built and tested across the S1–O15F seasons:
+The validator carries **one lane**: the Ledger V2 engine, driven by the CometBFT port. The legacy V1 lane (flat 5-leg `state_root`, block identity = batch digest, 144-byte finalization certificates) and the old PBFT round were deleted in R3 W4-D (`docs/ARCHITECTURE.md`, "THE DELETION of the closed lane").
 
-- **Canonical block identity** — 413-byte BlockHeader v3, BlockID over the full header, quorum certificates (QC v2) bound to the committed validator-set snapshot.
 - **Domain model** — state is partitioned into registered domains (SYSTEM, DNA_CORE) with per-domain state roots composed into one global root; new state kinds register a domain instead of forking the root format.
-- **Envelope transactions** — multi-leg envelopes with typed per-domain runtimes (verified authorization, mediated reads, metered execution) and a dual identity (`wire_id` + authorization-witness-stable `intent_id`).
-- **Atomic apply** — one host-owned SQLite transaction per decided cometbft block, one SAVEPOINT per item (a refused item gets a nonzero result code and the block goes on), with deterministic fault-point rollback proofs. The engine's legacy (non-cometbft) block lane is deleted (tokenomics-v3 P4); `nodus_witness_v2_apply_block()` refuses a block that does not set `cmt.on`.
-- **Birth without an ancestor** — a chain is derived directly from an operator config (`config_version = 3`, the cometbft genesis document) by `nodus_witness_v2_gen_derive_v3()` (`src/witness/nodus_witness_v2_gen.c`, run by `nodus-server --derive-v2-genesis`): validators, allocations and the genesis manifest come from the config, and the chain id is the hash of the stored genesis document. The version-2 derivation `nodus_witness_v2_gen_derive()` is deleted (tokenomics-v3 P4), and so is the version-2 engine genesis `nodus_witness_v2_genesis_ex()` (P4, second half): the one genesis is `nodus_witness_v2_genesis_cmt()`. A fill-in template for the ceremony config lives in `tools/genesis/`. There is no V1→V2 migration and none is planned — moving to V2 means **wiping the V1 chain and starting fresh**.
+- **Envelope transactions** — multi-leg envelopes with typed per-domain runtimes (verified authorization, mediated reads, metered execution) and a dual identity (`wire_id` + authorization-witness-stable `intent_id`). An entry that is not an envelope is classified as a genesis CLAIM (`nodus_witness_v2_classify_entry`, `src/witness/nodus_witness_v2_produce.c`); the older DNAC transaction format is not accepted as a transfer.
+- **Atomic apply** — one host-owned SQLite transaction per decided CometBFT block, one SAVEPOINT per item (a refused item gets a nonzero result code and the block goes on), with deterministic fault-point rollback proofs. `nodus_witness_v2_apply_block()` refuses a block that does not come from the CometBFT lane.
+- **Birth without an ancestor** — a chain is derived directly from an operator config (`config_version = 3`, the CometBFT genesis document) by `nodus_witness_v2_gen_derive_v3()` (`src/witness/nodus_witness_v2_gen.c`, run by `nodus-server --derive-v2-genesis`): validators, allocations and the genesis manifest come from the config, and the chain id is the hash of the stored genesis document. The one genesis is `nodus_witness_v2_genesis_cmt()`. A fill-in template for the ceremony config lives in `tools/genesis/`.
 
-Ledger V2 is **no longer compile-gated**. The `NODUS_V2_ACTIVATION` CMake option and the whole V1→V2 activation ceremony (quorum-voted SCHEDULE / all-validator READY, the terminal-chain seam, TX types 15 and 16) were removed in season O15J Faz 3.
-
-Activation authority is now a property of the chain itself: `nodus_witness_v2_gate_authority_present()` (`src/witness/nodus_witness_v2_gate.c`) reads the chain's own committed height-0 genesis manifest and grants authority only when its `source_tag` is `NODUS_V2_GEN_SOURCE_TAG` (`"NDS.GENESIS.v1"`). A manifest that cannot be read or decoded yields `NODUS_V2_GATE_FAULT` — never a silent "no authority". A pure-V2 chain therefore opens the gate and arms its V2 ingress at database open, in an ordinary default build.
-
-Nothing about this changes what is deployed: the production cluster still runs the V1 chain, and this change deploys nothing by itself. The grounded V1↔V2 difference reference is [`../docs/ledger-v1-vs-v2.md`](../docs/ledger-v1-vs-v2.md); season-by-season detail lives in [`CLAUDE.md`](CLAUDE.md).
+Activation authority is a property of the chain itself: `nodus_witness_v2_gate_authority_present()` (`src/witness/nodus_witness_v2_gate.c`) reads the chain's own committed height-0 genesis manifest and grants authority only when its `source_tag` is `NODUS_V2_GEN_SOURCE_TAG`. A manifest that cannot be read or decoded yields `NODUS_V2_GATE_FAULT` — never a silent "no authority".
 
 ---
 
@@ -320,11 +330,7 @@ Source: `src/circuit/`
 | [Mempool & Block Time](docs/MEMPOOL_BLOCK_TIME.md) | Mempool, block timing, witness rounds |
 | [Bootstrap](docs/BOOTSTRAP.md) | Node bootstrap procedure |
 | [Circuit Protocol](docs/CIRCUIT_PROTOCOL.md) | Circuit relay protocol specification |
-| [Replication Design](docs/REPLICATION_DESIGN.md) | DHT value replication strategy |
 | [Replication Issues](docs/REPLICATION_ISSUES.md) | Known replication issues and fixes |
-| [Dynamic Witness Design](docs/DYNAMIC_WITNESS_DESIGN.md) | Witness discovery and roster (superseded for BFT voting — the committee is chain-derived since F17) |
-| [Version Enforcement](docs/PLAN_VERSION_ENFORCEMENT.md) | Version update enforcement plan |
-| [Channel Rewrite Design](docs/archive/CHANNEL_REWRITE_DESIGN.md) | Channel TCP 4003 redesign (archived — channels disabled) |
 | [DNA Nodus Deployment](../messenger/docs/DNA_NODUS.md) | Full deployment guide |
 | [DHT System](../messenger/docs/DHT_SYSTEM.md) | DHT architecture |
 | [P2P Architecture](../messenger/docs/P2P_ARCHITECTURE.md) | Transport layer |

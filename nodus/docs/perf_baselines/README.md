@@ -7,7 +7,7 @@ benchmark CMake targets.
 ## Current inventory
 
 This checkout contains `micro_v0.17.7.json` only. It does not contain a
-cluster baseline, and the current Nodus header reports v0.18.22. Do not treat
+cluster baseline, and the current Nodus header reports v0.23.5. Do not treat
 the available file as a current-version performance claim; capture a new
 host-specific baseline before running a release regression gate.
 

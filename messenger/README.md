@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v1.0.0--rc241-blue" alt="RC"></a>
+  <a href="#dna-connect-is-frozen"><img src="https://img.shields.io/badge/Status-Frozen%20at%20v1.0.0--rc241-lightgrey" alt="Frozen"></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-Apache%202.0-green" alt="Apache 2.0"></a>
   <a href="#platforms"><img src="https://img.shields.io/badge/Platforms-Android%20|%20Linux%20|%20Windows-orange" alt="Platforms"></a>
   <a href="#security"><img src="https://img.shields.io/badge/Cryptography-Post--quantum-red" alt="Post-quantum cryptography"></a>
@@ -18,6 +18,22 @@
 
 ---
 
+## DNA Connect is frozen
+
+As of 29 September 2026 DNA Connect gets **no new releases**. It is not shut
+down: no forced update is published, the Nodus nodes keep serving its data,
+and existing installations keep working. The next user product is
+**Nodus Connect** — web first, inside the Nodus Web Wallet
+(`web-wallet/connect/`), mobile and desktop later. The same 24-word recovery
+phrase opens the same identity in both.
+
+The C library in this directory stays in the tree: Nodus Connect reuses its
+message codecs (`codec/`). Library changes made after the last DNA Connect
+release (for example the ML-KEM-1024 key, added 2026-09-23 in lib 0.11.20-0.11.21) are not shipped
+as a DNA Connect release.
+
+---
+
 ## What is DNA Connect?
 
 DNA Connect is a communication platform and multi-chain crypto wallet built on
@@ -26,7 +42,7 @@ an operator-run DHT network with post-quantum cryptographic primitives.
 - **No single central message server** — Messages travel through a distributed hash table (DHT)
 - **End-to-end encrypted content** — DHT nodes cannot decrypt message bodies
 - **Explicit metadata boundary** — Entry nodes can observe IP addresses, timing and traffic volume; nodes process routing and storage metadata
-- **Post-quantum design** — Dilithium5 (ML-DSA-87) signatures and ML-KEM-1024 key encapsulation, with Kyber1024 round-3 kept as the fallback for peers without an ML-KEM key
+- **Post-quantum design** — Dilithium5 (ML-DSA-87) signatures and Kyber1024 round-3 key encapsulation in the last app version (v1.0.0-rc241, versioned together with lib 0.11.18). The library in this tree adds ML-KEM-1024 (FIPS 203), with Kyber1024 round-3 kept as the fallback for peers without an ML-KEM key; that is not in a DNA Connect release
 
 ---
 
@@ -52,9 +68,9 @@ an operator-run DHT network with post-quantum cryptographic primitives.
 - **Boost system** — 1 per day limit
 
 ### Integrated Multi-Chain Wallet
-- **5 external networks + DNAC native:** Cellframe (CF20), Ethereum (ERC20), BNB Smart Chain (BEP20), TRON (TRC20), Solana (SPL), plus **DNAC** (post-quantum native chain, see bullet below)
+- **5 external networks + DNAC native:** Cellframe (CF20), Ethereum (ERC20), BNB Smart Chain (BEP20), TRON (TRC20), Solana (SPL), plus **DNAC** (see bullet below)
 - **9+ Tokens:** CPUNK, CELL, KEL, NYS, QEVM, ETH, BNB, SOL, TRX, USDT
-- **DNAC (DNA Chain)** — Post-quantum UTXO blockchain with BFT witness consensus
+- **DNAC (DNA Chain, now Nodus Chain)** — the app's native-chain wallet builds the older DNAC transaction format, which the Nodus Chain testnet (since 30 September 2026) does not accept as a transfer; NODUS is sent with the Nodus Web Wallet (`dnac/README.md`)
 - **Send crypto from chat** — Auto-resolves contact's wallet address
 - **Token swaps** — DEX integration with MEV protection
 - **QR codes** — Easy send/receive
@@ -68,7 +84,7 @@ an operator-run DHT network with post-quantum cryptographic primitives.
 - **Native presence** — Server-side presence tracking
 - **SQLCipher database encryption** — 9 encrypted databases at rest
 - **TEE key wrapping** on Android (AES-256-GCM via Android Keystore)
-- **Kyber1024 channel encryption** — All DHT connections encrypted
+- **KEM channel encryption** — All DHT connections encrypted (AES-256-GCM after a Kyber1024 round-3 key exchange; the library in this tree uses ML-KEM-1024 when the node advertises a signed ML-KEM key)
 - **Debug log system** with hybrid encryption (Kyber1024 + AES-256-GCM)
 
 ---
@@ -76,7 +92,9 @@ an operator-run DHT network with post-quantum cryptographic primitives.
 ## Security
 
 The selected parameter sets target NIST security category 5. That target is not
-a security certification.
+a security certification. The ML-KEM-1024 row describes the library in this
+tree; the last DNA Connect app version (rc241, versioned with lib 0.11.18) uses Kyber1024
+round-3.
 
 | Algorithm | Standard | Purpose |
 |-----------|----------|---------|
@@ -204,10 +222,10 @@ cd messenger
 
 | Component | Version |
 |-----------|---------|
-| C Library | v0.11.18 |
-| Flutter App | v1.0.0-rc241 |
-| Nodus | v0.19.16 |
-| DNAC | v0.18.6-ledgerv2-o15b |
+| C Library (in this tree) | v0.11.32 |
+| Flutter App (last version, frozen) | v1.0.0-rc241 |
+| Nodus | v0.23.5 |
+| DNAC | v0.19.3 |
 
 ---
 
@@ -223,7 +241,7 @@ cd messenger
 | [Message System](docs/MESSAGE_SYSTEM.md) | Message handling |
 | [Protocol Specs](docs/PROTOCOL.md) | Wire formats |
 | [Nodus](../nodus/README.md) | DHT server |
-| [DNAC](../dnac/README.md) | DNA Chain client library |
+| [DNAC](../dnac/README.md) | Nodus Chain (formerly DNA Chain) client library |
 
 ---
 
@@ -231,7 +249,7 @@ cd messenger
 
 - **GitLab (Primary):** https://gitlab.cpunk.io/cpunk/dna
 - **GitHub (Mirror):** https://github.com/nocdem/dna
-- **Website:** https://cpunk.io
+- **Website:** https://nodusnetwork.io
 - **Telegram:** [@chippunk_official](https://t.me/chippunk_official)
 
 ---
@@ -245,6 +263,7 @@ The Flutter application is [source-available (proprietary)](dna_messenger_flutte
 ---
 
 <p align="center">
-  <strong>Release Candidate.</strong> This label is not a security certification.
-  Use with appropriate caution for sensitive communications.
+  <strong>Frozen.</strong> No new DNA Connect releases; the next product is Nodus Connect.
+  "Release candidate" was never a security certification. Use with appropriate
+  caution for sensitive communications.
 </p>

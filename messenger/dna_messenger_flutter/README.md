@@ -2,16 +2,21 @@
 
 Cross-platform UI for DNA Connect built with Flutter and Dart.
 
-**Current Version:** v1.0.0-rc241
+**Last version:** v1.0.0-rc241 — **frozen**
+
+As of 29 September 2026 DNA Connect gets no new releases. It is not shut down:
+no forced update is published and existing installations keep working. The
+next user product is Nodus Connect, web first (see `../README.md`, "DNA Connect
+is frozen").
 
 ## Platforms
 
 | Platform | Status |
 |----------|--------|
-| Android | Production |
-| Linux | Production |
-| Windows | Production |
-| iOS | Planned |
+| Android | Release candidate, frozen |
+| Linux | Release candidate, frozen |
+| Windows | Release candidate, frozen |
+| iOS | Not planned for DNA Connect |
 
 ## Quick Start
 
