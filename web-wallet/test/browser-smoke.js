@@ -274,7 +274,10 @@ try {
   await page.selectOption('#chain', 'ethereum');
   await page.waitForFunction(() => document.querySelector('#activity').textContent.includes('confirmed'));
   await page.getByText('Delete saved wallet from this device', { exact: true }).click(); await page.locator('#vault-delete-confirm').check(); await page.locator('#vault-delete').click();
-  await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('saved activity deleted'));
+  // The saved wallet has a readable id, so its Messages history goes in the
+  // same step (app.js vault-delete, the 'deleted' outcome).
+  await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('deleted from this device'));
+  assert.equal(await page.locator('#vault-status').innerText(), 'Saved wallet, saved activity and message history deleted from this device.');
   assert.equal(await page.evaluate(() => localStorage.length), 0);
   await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
   await page.locator('#vault-password').fill('public-test-password-123'); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click(); await page.locator('#lock').click(); assert.equal(await page.locator('#nodus-address-status').textContent(), '');
