@@ -1,7 +1,7 @@
 import { getAddress } from 'ethers';
-import { VAULT_KEY, ACTIVITY_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
+import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
 import { deleteVaultHistory, HistoryDeleteBlocked } from './connect/store.js';
-import { serializeActivity, parseActivity, activityKeyFor } from './activity-storage.js';
+import { serializeActivity, parseActivity, activityKeyFor, serializeBalances, parseBalances, balancesKeyFor } from './activity-storage.js';
 import { recordActivity, watchActivity, checkActivity, terminal } from './activity.js';
 import { CHAINS, CELLFRAME } from './config.js';
 import { CPUNK_ASSET } from './portfolio.js';
@@ -138,6 +138,20 @@ function persistActivity({ required = false } = {}) {
   }));
   return historyWrites;
 }
+// The last balances, saved encrypted only while a SAVED wallet is open
+// (activitySession set by unlock / save; decision
+// 2026-10-02-device-cache-only-when-saved). An unsaved wallet writes nothing.
+let latestKept = null, balanceWrites = Promise.resolve();
+function persistBalances(entries) {
+  latestKept = entries;
+  const session = activitySession, source = wallet;
+  if (!session?.balancesKey || !source) return;
+  balanceWrites = balanceWrites.catch(() => {}).then(async () => {
+    const encrypted = await serializeBalances(session.id, entries, session.balancesKey);
+    if (session !== activitySession || source !== wallet || source.locked || localStorage.getItem(VAULT_KEY) !== session.vault) return;
+    localStorage.setItem(BALANCES_KEY, encrypted);
+  }).catch(() => { /* the balances are read again next time */ });
+}
 function renderActivity(save = true) {
   if (save) void persistActivity().catch(error => { $('vault-status').textContent = error.message; });
   // A row is laid out like a portfolio holding row (src/portfolio-view.js):
@@ -247,6 +261,7 @@ const portfolio = createPortfolio({
     if (action === 'select') { if (matchMedia(SINGLE_COLUMN_DASHBOARD).matches) $('send-form').scrollIntoView({ block: 'start' }); return; }
     $(action === 'send' ? 'quick-send' : action === 'earn' ? 'quick-earn' : 'quick-receive').click();
   },
+  onKept: entries => persistBalances(entries),
   leadingNetworks,
   extraNetworks
 });
@@ -553,7 +568,7 @@ function lock() {
   cellframeDerivation?.abort(); cellframeDerivation = undefined;
   $('cellframe-address-status').textContent = '';
   stopIxiosAddress();
-  revision++; vaultOperation++; activitySession = null; activityBlocked = false; idleDeadline = 0; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined;
+  revision++; vaultOperation++; activitySession = null; activityBlocked = false; latestKept = null; idleDeadline = 0; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined;
   releaseSession(); $('session-conflict').hidden = true;
   $('discard-activity').hidden = true;
   $('phrase-form').hidden = true; $('wallet-open').hidden = true; $('welcome').hidden = false;
@@ -911,9 +926,9 @@ function updateVaultUI() {
     $('wallet-storage-state').textContent = 'Device storage is unavailable.';
   }
 }
-function focusOpenWallet() {
+function focusOpenWallet(kept = {}) {
   updateVaultUI();
-  portfolio.open(wallet.addresses, endpoints);
+  portfolio.open(wallet.addresses, endpoints, { kept });
   $('wallet-title').focus({ preventScroll: true });
   document.querySelector('.wallet-card').scrollIntoView({ block: 'start' });
 }
@@ -934,18 +949,22 @@ $('unlock-form').onsubmit = async event => {
     if (session !== sessionRelease) return;
     const saved = await decryptVault(text, password);
     if (operation !== vaultOperation || session !== sessionRelease || text !== localStorage.getItem(VAULT_KEY)) return;
-    const restored = deriveWallet(saved.phrase); let key, rows = [], problem = '';
+    const restored = deriveWallet(saved.phrase); let key, balancesKey, rows = [], kept = {}, problem = '';
     try {
       key = await activityKeyFor(saved.phrase, saved.id);
+      balancesKey = await balancesKeyFor(saved.phrase, saved.id);
       try { rows = await parseActivity(localStorage.getItem(ACTIVITY_KEY), saved.id, restored.addresses, key); }
       catch (error) { problem = error.message; }
+      // Saved balances that do not authenticate are simply not shown.
+      try { kept = await parseBalances(localStorage.getItem(BALANCES_KEY), saved.id, balancesKey); }
+      catch { kept = {}; }
       if (operation !== vaultOperation || session !== sessionRelease || text !== localStorage.getItem(VAULT_KEY)) { disposeWallet(restored); return; }
     } catch (error) { disposeWallet(restored); throw error; }
-    disposeWallet(wallet); wallet = restored; activitySession = { id: saved.id, key, vault: text }; activityBlocked = !!problem;
+    disposeWallet(wallet); wallet = restored; activitySession = { id: saved.id, key, balancesKey, vault: text }; activityBlocked = !!problem;
     walletFresh = false; siteLock.start();
     history.length = 0; history.push(...rows);
     $('discard-activity').hidden = !problem; $('vault-status').textContent = problem || 'Saved activity authenticated.';
-    $('welcome').hidden = true; $('phrase-form').hidden = true; $('wallet-open').hidden = false; updateVaultUI(); selectChain(); activity(); void showNodusAddress(); void showCellframeAddress(); showIxiosAddress(); message('Saved wallet unlocked locally.'); focusOpenWallet();
+    $('welcome').hidden = true; $('phrase-form').hidden = true; $('wallet-open').hidden = false; updateVaultUI(); selectChain(); activity(); void showNodusAddress(); void showCellframeAddress(); showIxiosAddress(); message('Saved wallet unlocked locally.'); focusOpenWallet(kept);
   } catch (error) { if (operation === vaultOperation) $('vault-status').textContent = error.message; }
   finally { $('unlock-wallet').disabled = false; if (claimed) unclaimSession(); }
 };
@@ -996,10 +1015,11 @@ async function saveVault(change) {
     if (operation !== vaultOperation || wallet !== source || source.locked) return;
     const encrypted = await encryptVault(source.recoveryPhrase, password, id);
     const newId = parseVault(encrypted).id, key = await activityKeyFor(source.recoveryPhrase, newId);
+    const balancesKey = await balancesKeyFor(source.recoveryPhrase, newId);
     if (operation !== vaultOperation || wallet !== source || source.locked || localStorage.getItem(VAULT_KEY) !== previous) return;
     const stored = await withActivityLock(() => {
       if (operation !== vaultOperation || wallet !== source || source.locked || !$('vault-risk-confirm').checked || localStorage.getItem(VAULT_KEY) !== previous) return false;
-      localStorage.setItem(VAULT_KEY, encrypted); activitySession = { id: newId, key, vault: encrypted }; return true;
+      localStorage.setItem(VAULT_KEY, encrypted); activitySession = { id: newId, key, balancesKey, vault: encrypted }; return true;
     });
     if (!stored) {
       if (operation === vaultOperation && wallet === source && !source.locked && !$('vault-risk-confirm').checked) $('vault-status').textContent = 'Save canceled. The storage risks were not accepted; no new copy was saved.';
@@ -1007,6 +1027,8 @@ async function saveVault(change) {
     }
     updateVaultUI();
     await persistActivity();
+    // Balances read before the save are kept from now on as well.
+    if (latestKept) persistBalances(latestKept);
     if (operation !== vaultOperation || wallet !== source || source.locked) return;
     $('vault-risk-confirm').checked = false;
     $('vault-status').textContent = change ? 'Local password changed.' : 'Encrypted wallet saved on this device. Keep your recovery backup.';
@@ -1047,7 +1069,7 @@ $('vault-delete').onclick = async () => {
     if (previous) raise('vaultDeleting');
     const messages = await withActivityLock(async () => {
       if (localStorage.getItem(VAULT_KEY) !== previous) throw new Error('Saved wallet changed before deletion.');
-      localStorage.removeItem(VAULT_KEY); localStorage.removeItem(ACTIVITY_KEY);
+      localStorage.removeItem(VAULT_KEY); localStorage.removeItem(ACTIVITY_KEY); localStorage.removeItem(BALANCES_KEY);
       if (!previous) return 'none';
       if (!vaultId) return 'unknown';
       try { await deleteVaultHistory(vaultId, localStorage); return 'deleted'; }

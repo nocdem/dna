@@ -58,7 +58,13 @@ export function parsePrices(data, now = Date.now()) {
 export async function readPrices({ signal, fetcher } = {}) {
   return parsePrices(await request(PRICE_URL, undefined, { signal, fetcher }));
 }
-export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = ASSETS) {
+// `kept`: assetKey -> { units, observedAt } — the last balance read for this
+// wallet (this session, or saved encrypted with a saved wallet: decision
+// 2026-10-02-device-cache-only-when-saved). A row with no current balance
+// shows it with its read time (`keptAt`), like the app's wallet cache
+// (messenger/database/wallet_cache.h: stale-while-revalidate); it is never
+// priced, never part of the total and still counts as a missing balance.
+export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = ASSETS, kept = {}) {
   const rows = assets.map(asset => {
     // An asset with no balance source yet (NODUS, flagged by portfolio-view.js)
     // is always 'unsupported', whatever `balances` holds: never read, never an
@@ -72,8 +78,10 @@ export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = A
     // balance: there is no price feed for them to be consistent against.
     const usd = priced && freshBalance && (balance.units === 0n || freshPrice)
       ? balance.units * (quote?.units || 0n) / (10n ** BigInt(asset.decimals)) : null;
+    const last = !freshBalance && typeof kept[asset.key]?.units === 'bigint' ? kept[asset.key] : undefined;
     return { ...asset, ...balance, state: balance.state === 'ready' && !freshBalance ? 'stale' : balance.state,
-      balance: freshBalance ? formatUnits(balance.units, asset.decimals) : null, usd,
+      balance: freshBalance ? formatUnits(balance.units, asset.decimals) : last ? formatUnits(last.units, asset.decimals) : null,
+      ...(last ? { units: last.units, keptAt: last.observedAt } : {}), usd,
       positive: freshBalance && balance.units > 0n, priceMissing: priced && freshBalance && balance.units > 0n && !freshPrice };
   });
   const priced = rows.filter(row => row.priceId !== undefined);
@@ -87,7 +95,7 @@ export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = A
   // asset's own load state is already visible on its own row and never was
   // part of "the estimate covers only the 14 configured balances".
   return { rows, complete, state, known: known.length, total: complete || total > 0n ? total : null,
-    positive: known.some(row => row.positive), missingBalances: priced.filter(r => r.balance === null).length,
+    positive: known.some(row => row.positive), missingBalances: priced.filter(r => r.balance === null || r.keptAt !== undefined).length,
     missingPrices: priced.filter(r => r.priceMissing).length };
 }
 export function groupAssets(rows, filter = 'all') {

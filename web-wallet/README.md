@@ -89,12 +89,31 @@ Failed, missing or wrong-network balance reads are unavailable, never zero.
 Missing/invalid prices leave token quantities visible but omit their USD value.
 Partial totals are explicitly marked incomplete; no known positive value means
 an unavailable total rather than a misleading $0. A verified all-zero portfolio
-can display $0 without prices. Balances expire after five minutes and quotes
-after fifteen; a 30-second display check removes stale values. Refresh all
-requests new data; there are no background polling requests or automatic retries.
+can display $0 without prices. A balance counts as current for five minutes and
+a quote for fifteen; a 30-second display check moves older values out of the
+total. Refresh all requests new data; there are no background polling requests
+or automatic retries.
 Lock cancels in-flight reads, clears the portfolio and rejects late replies.
-Endpoint changes invalidate the old snapshot and require Refresh all. Nothing
-from the portfolio is written to browser storage; saving remains explicit opt-in.
+Endpoint changes invalidate the old snapshot and require Refresh all.
+
+**Last balances (0.1.41).** Like the app's wallet cache
+(`messenger/database/wallet_cache.h`, stale-while-revalidate), the last
+balance read per asset stays on screen when it is no longer current (older
+than five minutes, being read again, or the new read failed): the amount
+with "Last read HH:MM" (or "Read failed · last read HH:MM"), the network
+badge "Last read HH:MM". Such a value is never priced, never part of the
+total and still counts as a missing balance. Only a value read for the
+address shown now is used. Where it is kept follows the operator rule of
+2026-10-02 (decision `2026-10-02-device-cache-only-when-saved.md`): an
+unsaved wallet keeps it in memory only, gone on lock; a SAVED wallet also
+writes it to `localStorage['nodus.balances.v1']`, encrypted like the saved
+activity (AES-256-GCM, random 12-byte IV, header as additional data) under
+its own key — HKDF-SHA-256 of the phrase with the vault id as salt and info
+`nodus.wallet.balances.v1` instead of the activity's `nodus.wallet.activity.v2`
+(`src/activity-storage.js` balancesKeyFor / serializeBalances /
+parseBalances). It is shown at once on unlock until fresh reads replace it;
+one that does not authenticate is not shown. Deleting the saved wallet
+deletes it.
 
 `npm run test:portfolio` exercises the production bundle with all external
 traffic intercepted: automatic reads, grouped holdings and totals, filters,
@@ -289,7 +308,7 @@ npm run cpunk:verify -- https://rpc.cellframe.net/connect
 
 **Content type (0.1.40).** The request is sent as `Content-Type: text/plain;charset=UTF-8`, which keeps it a CORS "simple" request with no preflight. On 2026-10-01 `rpc.cellframe.net` answered the `OPTIONS` preflight that `application/json` needs with HTTP 405 and no CORS headers, so browsers dropped every balance read (the Cellframe badge showed "Incomplete" and no CPUNK balance); the same POST with `text/plain` gets HTTP 200, `Access-Control-Allow-Origin: *` and the same JSON (checked with curl and in Chromium from `wallet.nodusnetwork.io`). The body is unchanged JSON.
 
-The command fails on connection errors or malformed responses; it does not test browser CORS. After deployment, use the page's public-address read to verify access from the actual wallet origin. Only the public address and fixed CPUNK query fields are sent to the RPC. Responses are capped at 64 KiB and browser operations at 15 seconds; redirects are refused and balances are not cached. No claim system, snapshot rule or ownership proof is implemented.
+The command fails on connection errors or malformed responses; it does not test browser CORS. After deployment, use the page's public-address read to verify access from the actual wallet origin. Only the public address and fixed CPUNK query fields are sent to the RPC. Responses are capped at 64 KiB and browser operations at 15 seconds; redirects are refused. The last balance read is kept like every other network's ("Last balances" under Multichain portfolio: in memory, and encrypted only with a saved wallet). No claim system, snapshot rule or ownership proof is implemented.
 
 ## Permanent chain RPC limitations
 
@@ -369,6 +388,8 @@ The app computes the transaction ID locally before broadcast and records it even
 Lock/reload requires either the saved local password or the recovery phrase. The recovery phrase remains the backup if storage is cleared or the password is forgotten. Save/unlock/password-change operations are invalidated by lock or wallet replacement; changes in another tab lock this tab. Change password requires the current password and matching open saved wallet. Explicitly deleting the device copy also deletes its saved activity, without moving funds. Temporary wallets remain available. JavaScript strings and garbage-collected copies cannot be reliably erased.
 
 Saving also stores **authenticated encrypted activity** (chain, sender/recipient, amount, symbol, transaction ID and timestamps), capped at 100 rows. The version-2 activity envelope uses AES-256-GCM with fresh 96-bit IVs; a non-extractable key is derived from the high-entropy recovery phrase using HKDF-SHA256, the vault ID as salt and the separate `nodus.wallet.activity.v2` context. The envelope header is authenticated as AAD. It contains no recovery phrase, private key, password or custom provider URL/API credentials. Password changes preserve the vault ID and activity access. Activity is bound to the wallet but is not a proof that an RPC provider is honest.
+
+Since 0.1.41 saving also stores the **last balances** (per asset: amount in base units, read time, the address read) in `nodus.balances.v1`: the same envelope shape (version 1) under a separate non-extractable key from the same HKDF with the `nodus.wallet.balances.v1` context, so neither key opens the other record. They are written only while a saved wallet is open; an unsaved wallet writes nothing (operator rule 2026-10-02). See "Last balances" under Multichain portfolio.
 
 Writes are serialized across tabs using Web Locks and scoped to the active wallet/vault. Each write authenticates and merges the latest stored history before encryption. Vault changes, deletion and explicit history discard use the same lock. A phrase-only restore must lock and unlock the saved wallet before changing its password; it cannot overwrite unread or damaged history. A saved wallet's signed transaction ID is encrypted and stored before the first broadcast; storage failure or a lock/vault change during this operation stops submission. The adapters recheck the lock after this asynchronous step. Old unauthenticated version-1 history and damaged activity are not imported or automatically overwritten: the wallet can still unlock, but sending remains blocked until the user checks the explorer and explicitly discards the unreadable local history. This does not delete the saved wallet or move funds. Previously completed statuses are rechecked after unlock; custom RPC settings remain in memory and restored activity uses chain defaults.
 

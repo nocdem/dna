@@ -37,7 +37,11 @@ function networkIcon(c) { return c.icon ? iconImg(c.icon) : icon(c.symbol); }
 // `balanceUnavailable` has no balance source yet: its assets are flagged so
 // portfolioSnapshot() reports them 'unsupported', and its chain is left out of
 // `chains`, so readBalances is never called for it.
-export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [], extraNetworks = [] }) {
+// `onKept(entries)`: called after every successful read with the last balance
+// per asset — { assetKey: { units (decimal string), observedAt (ms), address } }
+// — so the app can save it with a saved wallet; open(…, { kept }) shows such
+// entries until a fresh read replaces them.
+export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [], extraNetworks = [], onKept }) {
   const entries = (list) => Object.fromEntries(list.map(({ network, asset }) => [asset.chain, network]));
   const networks = { ...entries(leadingNetworks), ...CHAINS, ...entries(extraNetworks) };
   const baseAssets = [...leadingNetworks.map(({ asset }) => asset), ...ASSETS, ...extraNetworks.map(({ asset }) => asset)];
@@ -52,6 +56,12 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   // `selected`: the network chosen in the Send / Receive panel, set by the app
   // through setSelected(). It is UI state, not wallet state, so clear() keeps it.
   let addresses, endpoints, balances = {}, quotes = {}, filter = 'all', hidden = false, session = 0, timer, priceJob, selected;
+  // assetKey -> { units: bigint, observedAt, address }: the last balance read.
+  let kept = {};
+  function keepRead(chain, result) {
+    for (const [key, value] of Object.entries(result)) if (value.state === 'ready') kept[key] = { units: value.units, observedAt: value.observedAt, address: addresses[chain] };
+    onKept?.(Object.fromEntries(Object.entries(kept).map(([key, k]) => [key, { units: k.units.toString(), observedAt: k.observedAt, address: k.address }])));
+  }
   // One extra action per network, shown under that network's asset group
   // (today only NODUS: "Claim your allocation", src/app.js refreshClaim).
   // `{ label, note, run }`; cleared by clear() and setAction(chain, undefined).
@@ -61,8 +71,15 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   let earn = {};
   const jobs = new Map();
   const text = value => hidden ? '••••' : value;
+  // The last balance read per asset of THIS wallet's addresses (kept below);
+  // only an entry whose address is the one shown now is used.
+  function visibleKept() {
+    if (!addresses) return {};
+    return Object.fromEntries(Object.entries(kept).filter(([key, k]) => addresses[key.split(':')[0]] === k.address));
+  }
+  const readTime = ms => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   function render() {
-    const snap = portfolioSnapshot(balances, quotes, Date.now(), assets);
+    const snap = portfolioSnapshot(balances, quotes, Date.now(), assets, visibleKept());
     $('portfolio-total').textContent = text(usdText(snap.total, snap.positive));
     $('portfolio-label').textContent = snap.state === 'partial' ? 'Known value · incomplete' : snap.state === 'loading' ? 'Updating portfolio' : 'Estimated portfolio value';
     $('portfolio-status').textContent = snap.state === 'idle' ? 'Refresh all to read your balances and prices.'
@@ -74,8 +91,10 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     $('portfolio-hide').textContent = hidden ? 'Show balances' : 'Hide balances';
     $('portfolio-hide').setAttribute('aria-pressed', String(hidden));
     $('portfolio-networks').replaceChildren(...Object.entries(networks).map(([chain, c]) => {
-      const rows = snap.rows.filter(r => r.chain === chain), ready = rows.every(r => r.balance !== null);
-      const status = c.balanceUnavailable ? 'Balance not shown yet' : rows.some(r => r.state === 'loading') ? 'Reading' : ready ? 'Balances read' : rows.every(r => r.state === 'idle') ? 'Not read' : 'Incomplete';
+      const rows = snap.rows.filter(r => r.chain === chain), ready = rows.every(r => r.balance !== null && r.keptAt === undefined);
+      const lastRead = rows.filter(r => r.keptAt !== undefined).map(r => r.keptAt);
+      const status = c.balanceUnavailable ? 'Balance not shown yet' : rows.some(r => r.state === 'loading') ? 'Reading' : ready ? 'Balances read'
+        : lastRead.length ? `Last read ${readTime(Math.min(...lastRead))}` : rows.every(r => r.state === 'idle') ? 'Not read' : 'Incomplete';
       const badge = el('span', 'network-health'); badge.append(networkIcon(c), el('span', '', `${c.name} · ${status}`)); return badge;
     }));
     for (const button of $('portfolio-filters').querySelectorAll('button')) button.setAttribute('aria-pressed', String(button.dataset.chain === filter));
@@ -91,7 +110,7 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
       const groupAmount = el('strong', '', text(group.balance === null ? '—' : `${displayAmount(group.balance)}${group.partialBalance ? ' known' : ''}`));
       if (group.balance !== null && !hidden) groupAmount.title = `${group.balance} ${group.symbol}`;
       value.append(groupAmount,
-        el('small', '', text(`${usdText(group.usd, group.positive)}${group.partialValue && group.usd !== null ? ' known' : ''}`)));
+        el('small', '', group.rows.every(r => r.keptAt !== undefined) ? 'Last read' : text(`${usdText(group.usd, group.positive)}${group.partialValue && group.usd !== null ? ' known' : ''}`)));
       summary.append(icon(group.symbol, home), name, value, el('span', 'asset-chevron', '⌄')); detail.append(summary);
       for (const row of group.rows) {
         // The whole row selects its network for the Send / Receive panel (0.1.22);
@@ -110,7 +129,7 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
         const rowAmount = el('strong', '', text(row.balance === null ? state : `${displayAmount(row.balance)} ${row.symbol}`));
         if (row.balance !== null && !hidden) rowAmount.title = `${row.balance} ${row.symbol}`;
         value.append(rowAmount,
-          el('small', '', text(row.priceMissing ? 'Price unavailable' : usdText(row.usd, row.positive))));
+          el('small', '', row.keptAt !== undefined ? `${row.state === 'error' ? 'Read failed · last read' : 'Last read'} ${readTime(row.keptAt)}` : text(row.priceMissing ? 'Price unavailable' : usdText(row.usd, row.positive))));
         const actions = el('span', 'holding-actions');
         for (const action of [...(networks[row.chain].receiveOnly ? ['Receive'] : ['Send', 'Receive']), ...(earn[row.chain] ? ['Earn'] : [])]) {
           const button = el('button', 'secondary small', action); button.type = 'button';
@@ -148,7 +167,11 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     render();
     try {
       const rows = await readBalances(chain, addresses[chain], endpoints[chain], { signal: controller.signal });
-      if (session === current && !controller.signal.aborted) Object.assign(balances, chainBalances(chain, rows, Date.now(), assets));
+      if (session === current && !controller.signal.aborted) {
+        const result = chainBalances(chain, rows, Date.now(), assets);
+        Object.assign(balances, result);
+        keepRead(chain, result);
+      }
     } catch {
       if (session === current && !controller.signal.aborted) for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error' };
     } finally { if (session === current) { if (jobs.get(chain) === controller) jobs.delete(chain); render(); } }
@@ -165,23 +188,26 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     await Promise.allSettled([priceRead, ...reads]);
     if (session !== current) return;
     priceJob = undefined;
-    $('portfolio-updated').textContent = `Last refresh: ${new Date().toLocaleTimeString()}. Balances expire after 5 minutes; prices after 15 minutes.`;
+    $('portfolio-updated').textContent = `Last refresh: ${new Date().toLocaleTimeString()}. After 5 minutes a balance is shown as last read and leaves the total; prices expire after 15 minutes.`;
     render();
   }
   function clear() {
     session++; for (const job of jobs.values()) job.abort(); jobs.clear(); priceJob?.abort(); priceJob = undefined;
-    clearInterval(timer); addresses = undefined; endpoints = undefined; balances = {}; quotes = {}; filter = 'all'; hidden = false; rowActions = {}; earn = {};
+    clearInterval(timer); addresses = undefined; endpoints = undefined; balances = {}; quotes = {}; filter = 'all'; hidden = false; rowActions = {}; earn = {}; kept = {};
     $('portfolio-updated').textContent = ''; render();
   }
-  function open(publicAddresses, publicEndpoints, { automatic = true } = {}) {
+  // `kept`: entries saved with this wallet (src/activity-storage.js
+  // parseBalances), shown until a fresh read replaces them.
+  function open(publicAddresses, publicEndpoints, { automatic = true, kept: initial = {} } = {}) {
     clear(); addresses = { ...publicAddresses }; endpoints = { ...publicEndpoints };
+    for (const [key, k] of Object.entries(initial)) kept[key] = { units: k.units, observedAt: k.observedAt, address: k.address };
     timer = setInterval(render, 30000); render(); if (automatic) void refresh();
   }
   function changeEndpoint(chain, endpoint) {
     if (!endpoints) return;
     // Cancel the old endpoint's reads so they cannot overwrite the new state.
-    const savedAddresses = addresses, savedEndpoints = { ...endpoints, [chain]: endpoint }, savedActions = rowActions;
-    open(savedAddresses, savedEndpoints, { automatic: false });
+    const savedAddresses = addresses, savedEndpoints = { ...endpoints, [chain]: endpoint }, savedActions = rowActions, savedKept = kept;
+    open(savedAddresses, savedEndpoints, { automatic: false, kept: savedKept });
     rowActions = savedActions; render();
     $('portfolio-status').textContent = 'Network endpoint changed. Refresh all to read balances again.';
   }

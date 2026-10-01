@@ -217,15 +217,17 @@ try {
   assert.equal(await page.locator('#receive-address').innerText(), expected);
   assert.equal(await page.locator('#send-disabled-note').innerText(), IXIOS_NOTE);
   // Wrong network (an RPC whose genesis is Ethereum's, same chain id 1): the
-  // balance is never read and the row shows the error state every network shows
-  // for a failed read — no amount, no zero.
+  // balance is never read; the row keeps the amount read earlier from the
+  // right network, marked "Read failed · last read" (0.1.41, the app's
+  // stale-while-revalidate wallet cache) — never an amount from the wrong
+  // network, never a zero.
   ixiosCalls.length = 0; ixiosGenesis = ETHEREUM_GENESIS;
   await page.locator('#portfolio-refresh').click(); await portfolioDone(page);
   assert.deepEqual(ixiosCalls, [{ method: 'eth_getBlockByNumber', params: ['0x1', false] }], 'no eth_getBalance after a wrong genesis');
-  assert.equal(await row.locator('.holding-value strong').innerText(), 'Balance unavailable');
-  assert.equal(await row.locator('.asset-value strong').innerText(), '—');
-  assert.equal(await badge.innerText(), 'Ixios · Incomplete');
-  assert.doesNotMatch(await page.locator('#balances').innerText(), /\d\s*IXIOS/, 'no IXIOS amount from a wrong network');
+  assert.equal(await row.locator('.holding-value strong').innerText(), '1,234.567 IXIOS');
+  assert.match(await row.locator('.holding-value small').innerText(), /^Read failed · last read /);
+  assert.equal(await row.locator('.asset-value small').innerText(), 'Last read');
+  assert.match(await badge.innerText(), /^Ixios · Last read /);
   assert.equal(await page.locator('#portfolio-total').innerText(), '$0.00');
   // The right network again: the balance comes back.
   ixiosCalls.length = 0; ixiosGenesis = IXIOS_GENESIS;
@@ -266,7 +268,7 @@ try {
   assert.equal(await off.page.evaluate(() => localStorage.length + sessionStorage.length), 0);
   assert.deepEqual(off.ixiosRequests, []);
   assert.deepEqual(off.unexpected, []); assert.deepEqual(off.errors, []);
-  console.log('Ixios browser checks passed: flag-on build lists Ixios in the network selector, portfolio filters, badges and assets (IXIOS row: Receive only, balance read like CPUNK after a genesis-block identity check, outside the USD total; a wrong genesis gives the shared "Balance unavailable" state with no balance read); selecting it shows the checksummed receive address (its QR decodes to exactly that address; lock clears the QR), hides the send fields and shows the Ixios note while Cellframe keeps its own; Ixios requests go only to the configured RPC; lock clears it; loads only the keygen module (?ixios). Flag-off build shows no Ixios anywhere and ships no Ixios JavaScript; neither build ships mldsa87-sign.wasm or Ixios markup; no unmocked external requests or storage.');
+  console.log('Ixios browser checks passed: flag-on build lists Ixios in the network selector, portfolio filters, badges and assets (IXIOS row: Receive only, balance read like CPUNK after a genesis-block identity check, outside the USD total; a wrong genesis makes no balance read and keeps only the amount read earlier from the right network, marked "Read failed · last read"); selecting it shows the checksummed receive address (its QR decodes to exactly that address; lock clears the QR), hides the send fields and shows the Ixios note while Cellframe keeps its own; Ixios requests go only to the configured RPC; lock clears it; loads only the keygen module (?ixios). Flag-off build shows no Ixios anywhere and ships no Ixios JavaScript; neither build ships mldsa87-sign.wasm or Ixios markup; no unmocked external requests or storage.');
 } finally {
   await browser?.close();
   for (const server of servers) server.kill();

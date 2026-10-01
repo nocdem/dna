@@ -1,6 +1,9 @@
 import { Mnemonic } from 'ethers';
 import { validateNodusPhrase } from './recovery.js';
 export const VAULT_KEY = 'nodus.wallet.v1', ACTIVITY_KEY = 'nodus.activity.v1';
+// The last balances of a saved wallet, encrypted (src/activity-storage.js
+// serializeBalances); written only while a saved wallet is open.
+export const BALANCES_KEY = 'nodus.balances.v1';
 const ITERATIONS = 600000;
 const encode = bytes => btoa(String.fromCharCode(...bytes));
 function decode(value, length) {

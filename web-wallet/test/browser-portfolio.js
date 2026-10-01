@@ -144,7 +144,9 @@ try {
   failures = ['ethereum:USDT']; await refresh();
   assert.equal(await page.locator('#portfolio-total').innerText(), '$26.00');
   assert.match(await page.locator('#portfolio-label').innerText(), /incomplete/);
-  assert.match(await usdt.innerText(), /Balance unavailable/);
+  // A failed read keeps the last balance read, marked as such (0.1.41, the
+  // app's stale-while-revalidate wallet cache), never a zero.
+  assert.match(await usdt.innerText(), /Read failed · last read/);
   failures = []; wrongNetwork = 'bsc'; await refresh();
   assert.equal(await page.locator('#portfolio-total').innerText(), '$22.00');
   assert.match(await page.locator('#portfolio-status').innerText(), /3 balances/);
@@ -154,7 +156,7 @@ try {
   // portfolio from being reported complete.
   await cpunk.locator('summary').click();
   cellframeFail = true; await refresh(); await cpunkSettled();
-  assert.match(await cpunk.innerText(), /Balance unavailable/);
+  assert.match(await cpunk.innerText(), /Read failed · last read/);
   assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
   assert.match(await page.locator('#portfolio-status').innerText(), /All supported asset balances/);
   cellframeFail = false; await refresh(); await cpunkSettled();

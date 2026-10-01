@@ -236,10 +236,13 @@ try {
   await page.waitForFunction(() => document.querySelector('#activity').textContent.includes('confirmed'));
   await page.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await page.locator('#amount').fill('0.01');
   networkId = '0x38'; await page.locator('#review-button').click(); await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('wrong network')); assert.equal(broadcasts.length, 2);
-  // A CPUNK read failure shows "Balance unavailable" on its own row, never an
-  // inferred zero, and never blocks the rest of the (unrelated) portfolio.
+  // A CPUNK read failure is shown on its own row ("Read failed · last read"
+  // with the amount read earlier, 0.1.41 — the app's stale-while-revalidate
+  // wallet cache), never an inferred zero, and never blocks the rest of the
+  // (unrelated) portfolio.
   cellframeFail = true; await page.locator('#refresh').click();
-  await page.waitForFunction(() => { const strong = document.querySelector('.asset-group[data-symbol="CPUNK"] .holding-value strong'); return strong && strong.textContent === 'Balance unavailable'; });
+  await page.waitForFunction(() => { const small = document.querySelector('.asset-group[data-symbol="CPUNK"] .holding-value small'); return small && small.textContent.startsWith('Read failed · last read'); });
+  assert.notEqual(await page.locator('.asset-group[data-symbol="CPUNK"] .holding-value strong').textContent(), '0 CPUNK');
   cellframeFail = false;
   assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
   networkId = '0x1';
@@ -247,6 +250,15 @@ try {
   await page.locator('#vault-password').fill('public-test-password-123'); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Encrypted wallet saved'));
   const stored = await page.evaluate(() => JSON.stringify({ ...localStorage })); assert.ok(!stored.includes(phrase)); assert.ok(!stored.includes('public-test-password-123'));
+  // 0.1.41: the balances read while the wallet was NOT saved were not written
+  // (localStorage was empty above); once saved they are, encrypted (decision
+  // 2026-10-02-device-cache-only-when-saved).
+  await page.locator('#portfolio-refresh').click();
+  await page.waitForFunction(() => !document.querySelector('#portfolio-refresh').disabled);
+  await page.waitForFunction(() => localStorage.getItem('nodus.balances.v1') !== null);
+  const balancesText = await page.evaluate(() => localStorage.getItem('nodus.balances.v1'));
+  assert.deepEqual(Object.keys(JSON.parse(balancesText)).sort(), ['cipher', 'ciphertext', 'id', 'iv', 'version']);
+  assert.doesNotMatch(balancesText, /0x[0-9a-fA-F]{40}|ethereum:|"units"/, 'saved balances are not readable without the key');
   // Lock with Nodus selected: its address and status are cleared.
   await page.selectOption('#chain', 'nodus'); assert.equal(await page.locator('#receive-address').innerText(), nodusAddress);
   assert.equal(await qrEmpty(), false);

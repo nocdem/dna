@@ -13,12 +13,57 @@ function decode(value, max, exact) {
   if (bytes.length > max || (exact && bytes.length !== exact) || encode(bytes) !== value) throw new Error('Invalid saved activity encoding.');
   return bytes;
 }
-export async function activityKeyFor(phrase, id) {
+// `info` separates the keys of the saved records of one wallet (RFC 5869
+// §3.2: the HKDF "info" binds a key to its use): activity, and since 0.1.41
+// the last balances (BALANCES_CONTEXT). Same phrase, same vault id salt.
+export async function activityKeyFor(phrase, id, info = context) {
   const bytes = encoder.encode(phrase);
   try {
     const material = await crypto.subtle.importKey('raw', bytes, 'HKDF', false, ['deriveKey']);
-    return await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: decode(id, 16, 16), info: encoder.encode(context) }, material, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    return await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: decode(id, 16, 16), info: encoder.encode(info) }, material, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
   } finally { bytes.fill(0); }
+}
+
+// The last balance read per asset, saved only with a saved wallet (decision
+// 2026-10-02-device-cache-only-when-saved; the app's wallet cache,
+// messenger/database/wallet_cache.h). The same envelope as the activity
+// (AES-256-GCM, random 12-byte IV, the header as additional data) under its
+// own key: balancesKeyFor.
+export const BALANCES_CONTEXT = 'nodus.wallet.balances.v1';
+const BALANCES_MAX_PLAIN = 20000, BALANCES_MAX = 64;
+export const balancesKeyFor = (phrase, id) => activityKeyFor(phrase, id, BALANCES_CONTEXT);
+export async function serializeBalances(id, entries, key) {
+  const data = { version: 1, id, cipher: 'AES-256-GCM', iv: encode(crypto.getRandomValues(new Uint8Array(12))) };
+  const selected = Object.entries(entries).slice(0, BALANCES_MAX).map(([asset, e]) => [asset, { units: e.units, observedAt: e.observedAt, address: e.address }]);
+  const bytes = encoder.encode(JSON.stringify(Object.fromEntries(selected)));
+  try {
+    if (bytes.length > BALANCES_MAX_PLAIN) throw new Error('Saved balances are too large.');
+    const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: decode(data.iv, 12, 12), additionalData: encoder.encode(BALANCES_CONTEXT + JSON.stringify(header(data))), tagLength: 128 }, key, bytes);
+    return JSON.stringify({ ...data, ciphertext: encode(new Uint8Array(ciphertext)) });
+  } finally { bytes.fill(0); }
+}
+// -> { assetKey: { units: bigint, observedAt, address } }; anything that does
+// not authenticate or check out throws (the caller then shows nothing kept).
+export async function parseBalances(text, id, key, now = Date.now()) {
+  if (!text) return {};
+  if (typeof text !== 'string' || text.length > 30000) throw new Error('Saved balances are too large.');
+  const data = JSON.parse(text);
+  if (!data || Object.keys(data).sort().join() !== 'cipher,ciphertext,id,iv,version' || data.version !== 1 || data.id !== id || data.cipher !== 'AES-256-GCM') throw new Error('Saved balances do not match this wallet.');
+  let bytes, entries;
+  try {
+    bytes = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: decode(data.iv, 12, 12), additionalData: encoder.encode(BALANCES_CONTEXT + JSON.stringify(header(data))), tagLength: 128 }, key, decode(data.ciphertext, BALANCES_MAX_PLAIN + 16)));
+    entries = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  } catch { throw new Error('Saved balances authentication failed.'); }
+  finally { bytes?.fill(0); }
+  if (!entries || typeof entries !== 'object' || Array.isArray(entries) || Object.keys(entries).length > BALANCES_MAX) throw new Error('Invalid saved balances.');
+  const out = {};
+  for (const [asset, e] of Object.entries(entries)) {
+    if (!/^[a-z0-9]{1,24}:[A-Za-z0-9]{1,12}$/.test(asset) || !e || typeof e.units !== 'string' || !/^(0|[1-9]\d{0,77})$/.test(e.units) ||
+        !Number.isSafeInteger(e.observedAt) || e.observedAt <= 0 || e.observedAt > now + 60000 ||
+        typeof e.address !== 'string' || e.address.length === 0 || e.address.length > 128) throw new Error('Invalid saved balances.');
+    out[asset] = { units: BigInt(e.units), observedAt: e.observedAt, address: e.address };
+  }
+  return out;
 }
 const header = data => ({ version: data.version, id: data.id, cipher: data.cipher, iv: data.iv });
 export async function serializeActivity(id, rows, key) {
