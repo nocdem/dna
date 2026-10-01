@@ -344,7 +344,7 @@ static void test_get_owner_newest(void) {
 
 /* Replace a prepared statement with one that fails at sqlite3_step
  * (abs(INT64_MIN) raises "integer overflow" at run time — checked with the
- * sqlite3 3.44 CLI; the library the build links may differ, the behaviour
+ * sqlite3 3.44 CLI; the build links the system libsqlite3, 3.40.1 here, the behaviour
  * has been the same for many releases). It binds ?1..?4 like the originals.
  * nodus_storage_close finalizes the replacement. */
 static int break_stmt(nodus_storage_t *st, sqlite3_stmt **slot) {

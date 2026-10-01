@@ -141,21 +141,31 @@ static const char *QUOTA_OWNER_COUNT_SQL =
 /* Write caps (nodus_storage_put / put_if_newer) count LIVE rows only. A row
  * is expired exactly when CLEANUP_SQL would delete it (expires_at > 0 AND
  * expires_at <= now), so a row cleanup never removes — expires_at 0, or a
- * negative stored INTEGER — always counts. existing_row_live() applies the
- * same predicate in C.
- * Query plan (sqlite 3.44, checked with EXPLAIN QUERY PLAN; asserted by
- * test_storage_owner_quota): SEARCH nodus_values USING INDEX
- * idx_nodus_values_owner (owner_fp=?). */
+ * negative stored INTEGER — always counts. existing_row() applies the same
+ * predicate in C.
+ * Query plan (EXPLAIN QUERY PLAN, sqlite3 3.44 CLI; asserted at run time
+ * against the linked library by test_storage_owner_quota): SEARCH
+ * nodus_values USING INDEX idx_nodus_values_owner (owner_fp=?). Reading
+ * expires_at (stored after data) walks a large row's overflow pages; bounded
+ * by the owner's rows (row cap + expired rows awaiting cleanup). */
 static const char *OWNER_USAGE_SQL =
     "SELECT COUNT(*), COALESCE(SUM(LENGTH(data)), 0) FROM nodus_values "
     "WHERE owner_fp = ?1 AND NOT (expires_at > 0 AND expires_at <= ?2)";
 
-/* Whole-table live usage — a SCAN, the same cost class as the
- * QUOTA_TOTAL_BYTES_SQL pre-check; only run for a new row or a growing
- * replace that passed the owner caps. */
+/* Whole-table live usage = everything minus the expired rows. The two
+ * whole-table terms read no column stored after data (COUNT(*) scans the
+ * smallest index; LENGTH(data) comes from the record header, no overflow
+ * page), the cost of the QUOTA_TOTAL_BYTES_SQL pre-check; the expired terms
+ * SEARCH idx_nodus_values_expires (the literal expires_at > 0 matches its
+ * partial-index WHERE). Filtering expires_at row by row instead would walk
+ * every large row's overflow chain on each check. Only run for a new row or
+ * a growing replace that passed the owner caps. */
 static const char *GLOBAL_USAGE_SQL =
-    "SELECT COUNT(*), COALESCE(SUM(LENGTH(data)), 0) FROM nodus_values "
-    "WHERE NOT (expires_at > 0 AND expires_at <= ?1)";
+    "SELECT (SELECT COUNT(*) FROM nodus_values) - "
+    "       (SELECT COUNT(*) FROM nodus_values WHERE expires_at > 0 AND expires_at <= ?1), "
+    "       (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nodus_values) - "
+    "       (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nodus_values "
+    "        WHERE expires_at > 0 AND expires_at <= ?1)";
 
 static const char *HINT_SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS dht_hinted_handoff ("
@@ -212,8 +222,9 @@ static const char *HINT_COUNT_SQL =
     "SELECT COUNT(*) FROM dht_hinted_handoff";
 
 /* Hint caps: every row counts until hinted_cleanup removes it, the same rows
- * HINT_GET_SQL returns. Per-peer usage is a SEARCH on node_id (sqlite 3.44
- * picks idx_dht_hint_dedup; asserted by test_hinted_caps) over at most
+ * HINT_GET_SQL returns. Per-peer usage is a SEARCH on node_id (the sqlite3
+ * 3.44 CLI picks idx_dht_hint_dedup; test_hinted_caps asserts a SEARCH on
+ * node_id against the linked library) over at most
  * NODUS_DHT_HINT_PEER_MAX_ROWS rows. */
 static const char *HINT_PEER_USAGE_SQL =
     "SELECT COUNT(*), COALESCE(SUM(LENGTH(frame_data)), 0) "

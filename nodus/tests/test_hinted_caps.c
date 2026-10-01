@@ -237,7 +237,8 @@ static void test_peer_usage_plan(void) {
         if (sqlite3_prepare_v2(st.db, q, -1, &e, NULL) == SQLITE_OK) {
             while (sqlite3_step(e) == SQLITE_ROW) {
                 const char *d = (const char *)sqlite3_column_text(e, 3);
-                /* sqlite 3.44: "SEARCH dht_hinted_handoff USING INDEX
+                /* sqlite3 3.44 CLI (linked lib: system libsqlite3,
+                 * 3.40.1 here): "SEARCH dht_hinted_handoff USING INDEX
                  * idx_dht_hint_dedup (node_id=?)" */
                 if (d && strstr(d, "SEARCH dht_hinted_handoff") && strstr(d, "node_id=?"))
                     found = 1;

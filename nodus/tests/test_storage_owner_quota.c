@@ -452,7 +452,9 @@ static void test_owner_index_plan(void) {
     TEST("owner quota queries SEARCH idx_nodus_values_owner");
     nodus_storage_t st;
     test_storage_open(&st);
-    /* sqlite 3.44: "SEARCH nodus_values USING INDEX idx_nodus_values_owner
+    /* Seen with the sqlite3 3.44 CLI (the build links the system
+     * libsqlite3, 3.40.1 on this host — this assertion is the check there):
+     * "SEARCH nodus_values USING INDEX idx_nodus_values_owner
      * (owner_fp=?)" for the usage query, "... USING COVERING INDEX ..." for
      * the count — both a SEARCH on the owner index, never a SCAN. */
     const char *want = "idx_nodus_values_owner (owner_fp=?)";
@@ -463,6 +465,21 @@ static void test_owner_index_plan(void) {
         PASS();
     else
         FAIL("owner quota query must use the owner_fp index");
+    test_storage_close(&st);
+}
+
+static void test_global_usage_plan(void) {
+    TEST("global usage: expired terms SEARCH idx_nodus_values_expires");
+    nodus_storage_t st;
+    test_storage_open(&st);
+    /* The expired subset must come through the partial index, so the
+     * whole-table terms never need expires_at (stored after data). */
+    if (plan_contains(&st, st.stmt_quota_global_usage,
+                      "SEARCH nodus_values USING") &&
+        plan_contains(&st, st.stmt_quota_global_usage, "idx_nodus_values_expires"))
+        PASS();
+    else
+        FAIL("expired rows must be found through the expires index");
     test_storage_close(&st);
 }
 
@@ -489,6 +506,7 @@ int main(void) {
     test_global_row_cap();
     test_global_byte_cap();
     test_owner_index_plan();
+    test_global_usage_plan();
 
     free(g_buf);
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
