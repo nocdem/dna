@@ -1513,6 +1513,28 @@ reads the transport's unix-seconds `last_activity`, uses `nodus_time_now_ms()`).
 is the client's own scheduling only — nothing it measures enters consensus, a block,
 a vote or stored data.
 
+### Two threads, one write buffer (0.23.5)
+
+A native client sends on the CALLER's thread (`send_request` → `nodus_tcp_send`)
+while its read thread runs `nodus_tcp_poll`, whose `handle_write` drains the same
+connection's `wbuf` when a frame did not fit one `write(2)`. Until 0.23.5 the two
+held different mutexes (`send_mutex`, `poll_mutex`) and both flushed the same byte
+range: one PUT left the socket twice (the node applied it twice and its second
+answer logged "unknown txn"), or `buf_ensure`'s realloc ran under the other thread's
+write and crashed the process — found by the Connect fault matrix under load
+(`nodus/BUGS.md`). The transport now takes an optional write lock
+(`nodus_tcp_set_write_lock`): installed, it is held around every read or write of
+`wbuf` / `wpos` / `wlen` / the pending queues — the send path, the poll side's drain,
+`conn_free` (so a sender sees either the live fd, buffers and key, or CLOSED), the
+WebSocket raw writes and the "unsent bytes?" reads that arm a write event — and never
+across a callback. `nodus_client_t` and `nodus_ch_conn_t` install their `wbuf_mutex`;
+the server installs nothing (one I/O thread), so its behaviour is byte-identical.
+The browser build has no read thread and is unaffected either way. Not covered, and
+older than this fix: the lifetime of `client->conn` itself when the read thread tears
+a connection down while another thread is entering `send_request`. Regression:
+`test_client_concurrent_send` (4 threads × 16 × 4 rounds of 192 KB PUTs, each txn
+must reach the fake node exactly once; red 5/5 without the lock).
+
 ### Server key pin
 
 `nodus_client_config_t` has an optional pin list:

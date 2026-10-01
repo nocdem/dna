@@ -413,6 +413,21 @@ Details: `nodus/docs/ARCHITECTURE.md` Client SDK → "Timeouts and the clock",
 | `static uint64_t elapsed_since(uint64_t start)`, `static bool deadline_passed(uint64_t start, int limit_ms)` (`nodus_client.c`) | **NEW (internal).** Monotonic deadline helpers for `wait_response`, `do_connect_one` and the channel-connection waits (was a count of loop turns). `limit_ms <= 0` has always passed. |
 | `static void client_yield(void)` (`nodus_client.c`, `__EMSCRIPTEN__` only) | **NEW (internal).** `emscripten_sleep(10)` after each poll in the thread-less loops so SOCKFS can deliver bytes. |
 
+### 12.7 Transport write lock — concurrent send vs the read thread (nodus 0.23.5)
+
+A caller's `nodus_tcp_send` and the read thread's write drain inside `nodus_tcp_poll`
+used to touch one connection's write buffer with no common lock; one frame could leave
+the socket twice, and a realloc under the other thread's write crashed the process
+(`nodus/BUGS.md`, regression `nodus/tests/test_client_concurrent_send.c`).
+
+| Function / field | Description |
+|----------|-------------|
+| `void nodus_tcp_set_write_lock(nodus_tcp_t *tcp, void (*fn)(void *ctx, bool lock), void *ctx)` (`nodus_tcp.h`) | **NEW.** Installs a write-side lock: `fn(ctx, true)` acquires, `fn(ctx, false)` releases one non-recursive lock. The transport then holds it inside `nodus_tcp_send` / `_send_progress` / `_send_raw` / `_pending_flush` and around the poll side's write drain, `conn_free` and every "unsent bytes?" read — never across a callback (`progress_cb` and `on_pending_full` run under it and must not send). A caller already holding it when calling those functions deadlocks. NULL `fn` removes it. The server never installs one: its I/O is one thread, behaviour unchanged. |
+| `void (*write_lock)(void *ctx, bool lock); void *write_lock_ctx;` (fields of `nodus_tcp_t`) | **NEW.** Set by `nodus_tcp_set_write_lock`; zeroed by `nodus_tcp_init`. |
+| `pthread_mutex_t wbuf_mutex;` (field of `nodus_client_t` and `nodus_ch_conn_t`, `nodus.h`) | **NEW.** The mutex the client installs as its transport's write lock (`nodus_client_init`, `nodus_channel_init`); destroyed in the close paths after the transport. |
+| `static void client_wbuf_lock(void *ctx, bool lock)` (`nodus_client.c`) | **NEW (internal).** The lock callback over `wbuf_mutex`. |
+| `static void wl_enter(nodus_tcp_t *)`, `static void wl_leave(nodus_tcp_t *)`, `static bool conn_has_unsent(nodus_tcp_t *, nodus_tcp_conn_t *)`, `static bool handle_write_locked(...)`, `static int pending_flush_locked(...)`, `static int send_progress_locked(...)` (`nodus_tcp.c`) | **NEW (internal).** The lock helpers and the locked bodies the public functions wrap. |
+
 ---
 
 ## 13. Salt Agreement (`dht/shared/dht_salt_agreement.h`)

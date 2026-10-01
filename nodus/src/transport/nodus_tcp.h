@@ -313,6 +313,18 @@ typedef struct nodus_tcp {
     int                       read_count;
     uint64_t                  poll_gen;
     uint64_t                  poll_gen_last;
+
+    /* Write-side lock hook (nodus_tcp_set_write_lock). NULL = no lock: the
+     * server does all of its I/O on one thread. A user that sends on one
+     * thread while another runs nodus_tcp_poll — nodus_client.c: callers
+     * send, the read thread polls and drains — installs it, and the
+     * transport then holds it around every read or write of a connection's
+     * wbuf / wpos / wlen / pending queue, on the send path and on the poll
+     * side alike, and never across a callback. Without it both threads
+     * flushed the same wbuf range: the same frame went out twice, and a
+     * realloc under the other thread's write crashed the process. */
+    void                    (*write_lock)(void *ctx, bool lock);
+    void                     *write_lock_ctx;
 } nodus_tcp_t;
 
 /**
@@ -367,6 +379,8 @@ int nodus_tcp_send(nodus_tcp_conn_t *conn,
 /**
  * Send a framed payload with progress reporting.
  * Same as nodus_tcp_send but calls progress_cb after each partial write.
+ * progress_cb (and tcp->on_pending_full) run with the write lock held when
+ * one is installed: they must not send on this transport.
  */
 int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
                              const uint8_t *payload, size_t len,
@@ -379,6 +393,18 @@ int nodus_tcp_send_raw(nodus_tcp_conn_t *conn,
 
 /** Flush pending auth queue to write buffer. Called when auth completes. */
 int nodus_tcp_pending_flush(nodus_tcp_conn_t *conn);
+
+/**
+ * Install the write-side lock (see nodus_tcp_t.write_lock). fn(ctx, true)
+ * must acquire and fn(ctx, false) release one non-recursive lock that no
+ * other code path takes while calling into this transport — the transport
+ * takes it inside nodus_tcp_send / _send_progress / _send_raw /
+ * _pending_flush and inside nodus_tcp_poll's write drain, so a caller that
+ * already holds it when calling them deadlocks. Install before the first
+ * connection is made; NULL fn removes it.
+ */
+void nodus_tcp_set_write_lock(nodus_tcp_t *tcp,
+                              void (*fn)(void *ctx, bool lock), void *ctx);
 
 /**
  * Poll for events. Returns number of events processed (socket events plus

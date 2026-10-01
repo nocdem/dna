@@ -2322,6 +2322,13 @@ add_executable(test_mlkem_handshake tests/test_mlkem_handshake.c)
 target_link_libraries(test_mlkem_handshake nodus dsa kem nodus)
 add_test(NAME test_mlkem_handshake COMMAND test_mlkem_handshake)
 
+# Concurrent sends on one client vs its read thread's write drain: every
+# request reaches the node exactly once (transport write lock,
+# nodus_tcp_set_write_lock). Fake node on loopback; default build, no env.
+add_executable(test_client_concurrent_send tests/test_client_concurrent_send.c)
+target_link_libraries(test_client_concurrent_send nodus dsa kem nodus)
+add_test(NAME test_client_concurrent_send COMMAND test_client_concurrent_send)
+
 # CRIT-3 — AEAD completeness boundary regression test.
 # Pins '>= NODUS_CHANNEL_OVERHEAD -> decrypt' / '< OVERHEAD -> fail-closed drop':
 # a 28-byte empty AEAD frame is legitimate and MUST decrypt (so "drop <=28" is

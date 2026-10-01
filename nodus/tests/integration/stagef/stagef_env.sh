@@ -1003,12 +1003,19 @@ stagef_write_network_file() {
 # harness always ran with, the network file, and the two harness-only
 # p2p settings above.
 stagef_write_nodus_json() {
+    # STAGEF_ADDR_HISTORY_INDEX=1 turns the node-local address history
+    # index on for every node (decision 2026-10-01-node-address-history-
+    # index.md; default off, as in production). Read at bring-up only.
+    local addr_index=""
+    if [ "${STAGEF_ADDR_HISTORY_INDEX:-0}" = "1" ]; then
+        addr_index=$',\n  "addr_history_index": true'
+    fi
     cat > "$BASE_DIR/nodus.json" <<NJ
 {
   "require_peer_auth": true,
   "network_file": "$(stagef_network_file)",
   "allow_duplicate_ip": true,
-  "addr_book_strict": false
+  "addr_book_strict": false${addr_index}
 }
 NJ
 }

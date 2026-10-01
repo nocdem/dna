@@ -224,6 +224,14 @@ static void set_state(nodus_client_t *client, nodus_client_state_t new_state) {
         client->config.on_state_change(old, new_state, client->config.callback_data);
 }
 
+/* The transport's write lock (nodus_tcp_set_write_lock): ctx is the
+ * owner's wbuf_mutex. Taken by the transport only, never by this file. */
+static void client_wbuf_lock(void *ctx, bool lock) {
+    pthread_mutex_t *m = (pthread_mutex_t *)ctx;
+    if (lock) pthread_mutex_lock(m);
+    else      pthread_mutex_unlock(m);
+}
+
 static int send_request(nodus_client_t *client, const uint8_t *payload, size_t len) {
     nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)client->conn;
     if (!conn) return -1;
@@ -753,6 +761,7 @@ int nodus_client_init(nodus_client_t *client,
     pthread_mutex_init(&client->pending_mutex, NULL);
     pthread_mutex_init(&client->send_mutex, NULL);
     pthread_mutex_init(&client->poll_mutex, NULL);
+    pthread_mutex_init(&client->wbuf_mutex, NULL);
     pthread_mutex_init(&client->circuits_mutex, NULL);
 
     /* Initialize circuit state (Faz 1) */
@@ -769,6 +778,7 @@ int nodus_client_init(nodus_client_t *client,
         pthread_mutex_destroy(&client->pending_mutex);
         pthread_mutex_destroy(&client->send_mutex);
         pthread_mutex_destroy(&client->poll_mutex);
+        pthread_mutex_destroy(&client->wbuf_mutex);
         pthread_mutex_destroy(&client->circuits_mutex);
         return -1;
     }
@@ -777,6 +787,10 @@ int nodus_client_init(nodus_client_t *client,
     tcp->on_disconnect = client_on_disconnect;
     tcp->on_connect = client_on_connect;
     tcp->cb_ctx = client;
+    /* Callers send on their own thread while the read thread polls: both
+     * touch the connection's write buffer, so the transport serialises
+     * them on wbuf_mutex. Without it one PUT left the socket twice. */
+    nodus_tcp_set_write_lock(tcp, client_wbuf_lock, &client->wbuf_mutex);
     client->tcp = tcp;
 
     return 0;
@@ -1418,6 +1432,7 @@ void nodus_client_close(nodus_client_t *client) {
     pthread_mutex_destroy(&client->pending_mutex);
     pthread_mutex_destroy(&client->send_mutex);
     pthread_mutex_destroy(&client->poll_mutex);
+    pthread_mutex_destroy(&client->wbuf_mutex);
     pthread_mutex_destroy(&client->circuits_mutex);
 
     client->state = NODUS_CLIENT_DISCONNECTED;
@@ -6493,6 +6508,7 @@ int nodus_channel_init(nodus_ch_conn_t *ch,
 
     pthread_mutex_init(&ch->pending_mutex, NULL);
     pthread_mutex_init(&ch->send_mutex, NULL);
+    pthread_mutex_init(&ch->wbuf_mutex, NULL);
     atomic_store(&ch->read_thread_running, false);
     atomic_store(&ch->read_thread_stop, false);
 
@@ -6501,6 +6517,7 @@ int nodus_channel_init(nodus_ch_conn_t *ch,
     if (!tcp) {
         pthread_mutex_destroy(&ch->pending_mutex);
         pthread_mutex_destroy(&ch->send_mutex);
+        pthread_mutex_destroy(&ch->wbuf_mutex);
         return -1;
     }
     nodus_tcp_init(tcp, -1);
@@ -6508,6 +6525,8 @@ int nodus_channel_init(nodus_ch_conn_t *ch,
     tcp->on_disconnect = ch_conn_on_disconnect;
     tcp->on_connect = ch_conn_on_connect;
     tcp->cb_ctx = ch;
+    /* Same two-thread shape as nodus_client_t: see nodus_client_init. */
+    nodus_tcp_set_write_lock(tcp, client_wbuf_lock, &ch->wbuf_mutex);
     ch->tcp = tcp;
 
     return 0;
@@ -6607,6 +6626,7 @@ void nodus_channel_close(nodus_ch_conn_t *ch) {
 
     pthread_mutex_destroy(&ch->pending_mutex);
     pthread_mutex_destroy(&ch->send_mutex);
+    pthread_mutex_destroy(&ch->wbuf_mutex);
 
     ch->state = NODUS_CH_DISCONNECTED;
     ch->ch_sub_count = 0;

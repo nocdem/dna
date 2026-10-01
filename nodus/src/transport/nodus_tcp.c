@@ -301,6 +301,33 @@ static nodus_tcp_conn_t *read_pending_pop(nodus_tcp_t *tcp) {
     return c;
 }
 
+/* Write-side lock (nodus_tcp_t.write_lock). No-ops when none is installed,
+ * which is every server transport. Held only around wbuf / wpos / wlen /
+ * pending-queue work and released before any callback. */
+static void wl_enter(nodus_tcp_t *tcp) {
+    if (tcp && tcp->write_lock) tcp->write_lock(tcp->write_lock_ctx, true);
+}
+
+static void wl_leave(nodus_tcp_t *tcp) {
+    if (tcp && tcp->write_lock) tcp->write_lock(tcp->write_lock_ctx, false);
+}
+
+/* "Does conn hold unsent bytes?" — the poll side asks it to arm a write
+ * event; read under the lock like every other wbuf access. */
+static bool conn_has_unsent(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    wl_enter(tcp);
+    bool unsent = conn->wlen > conn->wpos;
+    wl_leave(tcp);
+    return unsent;
+}
+
+void nodus_tcp_set_write_lock(nodus_tcp_t *tcp,
+                              void (*fn)(void *ctx, bool lock), void *ctx) {
+    if (!tcp) return;
+    tcp->write_lock = fn;
+    tcp->write_lock_ctx = fn ? ctx : NULL;
+}
+
 /* Tear a connection down. The caller has already run on_disconnect.
  *
  * Detaching is always immediate: the socket leaves epoll and is closed, the
@@ -318,6 +345,11 @@ static nodus_tcp_conn_t *read_pending_pop(nodus_tcp_t *tcp) {
  * pending. Freeing any earlier would reintroduce exactly that aliasing. */
 static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     if (!conn || conn->close_pending) return;
+
+    /* Under the write lock: a sender on another thread must see either the
+     * live fd, buffers and key, or CLOSED — never a closed fd, a freed
+     * pending queue or a cleared key mid-send. */
+    wl_enter(tcp);
 
     if (conn->fd >= 0) {
 #ifdef NODUS_TCP_EPOLL
@@ -360,6 +392,8 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     conn->rlen = 0;
     conn->wlen = 0;
     conn->wpos = 0;
+
+    wl_leave(tcp);
 
     if (tcp->poll_depth > 0) {
         conn->close_next = tcp->close_list;
@@ -905,14 +939,13 @@ static ntcp_io_t conn_flush_wbuf(nodus_tcp_conn_t *conn,
     return NTCP_IO_PROGRESS;
 }
 
-static void handle_write(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+/* The write drain, under the write lock. Returns false when the socket is
+ * dead; the caller then tears the connection down after releasing the lock
+ * (on_disconnect may send, and conn_free takes the lock itself). */
+static bool handle_write_locked(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     ntcp_io_t io = conn_flush_wbuf(conn, NULL, NULL);
-    if (io != NTCP_IO_PROGRESS && io != NTCP_IO_WOULDBLOCK) {
-        if (tcp->on_disconnect)
-            tcp->on_disconnect(conn, tcp->cb_ctx);
-        conn_free(tcp, conn);
-        return;
-    }
+    if (io != NTCP_IO_PROGRESS && io != NTCP_IO_WOULDBLOCK)
+        return false;
 
     if (conn->wpos >= conn->wlen) {
         conn->wpos = 0;
@@ -934,12 +967,8 @@ static void handle_write(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         /* If we queued more data into wbuf, try to push it out right now
          * so drain and send stay in lock-step. */
         io = conn_flush_wbuf(conn, NULL, NULL);
-        if (io != NTCP_IO_PROGRESS && io != NTCP_IO_WOULDBLOCK) {
-            if (tcp->on_disconnect)
-                tcp->on_disconnect(conn, tcp->cb_ctx);
-            conn_free(tcp, conn);
-            return;
-        }
+        if (io != NTCP_IO_PROGRESS && io != NTCP_IO_WOULDBLOCK)
+            return false;
         if (conn->wpos >= conn->wlen) {
             conn->wpos = 0;
             conn->wlen = 0;
@@ -951,7 +980,21 @@ static void handle_write(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         uint32_t ev = EPOLLIN | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET);
         epoll_mod(tcp->epoll_fd, conn->fd, ev, conn);
     }
+#else
+    (void)tcp;
 #endif
+    return true;
+}
+
+static void handle_write(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    wl_enter(tcp);
+    bool alive = handle_write_locked(tcp, conn);
+    wl_leave(tcp);
+    if (!alive) {
+        if (tcp->on_disconnect)
+            tcp->on_disconnect(conn, tcp->cb_ctx);
+        conn_free(tcp, conn);
+    }
 }
 
 #ifdef NODUS_TCP_EPOLL
@@ -980,7 +1023,7 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     /* Switch to read mode */
     uint32_t et = tcp->level_triggered ? 0 : EPOLLET;
     uint32_t events = EPOLLIN | EPOLLRDHUP | et;
-    if (conn->wlen > conn->wpos) events |= EPOLLOUT;
+    if (conn_has_unsent(tcp, conn)) events |= EPOLLOUT;
     epoll_mod(tcp->epoll_fd, conn->fd, events, conn);
 #endif
 
@@ -995,7 +1038,7 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 #ifdef NODUS_TCP_EPOLL
     /* on_connect callback may have queued data (e.g. hello for auth).
      * Re-check wbuf and ensure EPOLLOUT is set so it gets flushed. */
-    if (conn->wlen > conn->wpos) {
+    if (conn_has_unsent(tcp, conn)) {
         uint32_t ev2 = EPOLLIN | EPOLLOUT | EPOLLRDHUP | et;
         epoll_mod(tcp->epoll_fd, conn->fd, ev2, conn);
     }
@@ -1112,8 +1155,10 @@ static int ws_wbuf_append_raw(nodus_tcp_conn_t *conn,
 static void ws_close_now(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
                          const uint8_t *bytes, size_t n) {
     if (conn->close_pending) return;   /* already closed: on_disconnect ran */
+    wl_enter(tcp);
     if (bytes && n > 0 && ws_wbuf_append_raw(conn, bytes, n) == 0)
         (void)conn_flush_wbuf(conn, NULL, NULL);
+    wl_leave(tcp);
     if (tcp->on_disconnect)
         tcp->on_disconnect(conn, tcp->cb_ctx);
     conn_free(tcp, conn);
@@ -1139,9 +1184,13 @@ static int ws_sink_ping(void *ctx, const uint8_t *payload, size_t len) {
     size_t h = nodus_ws_frame_header(NODUS_WS_OP_PONG, len, fr, sizeof(fr));
     if (h == 0) return -1;
     memcpy(fr + h, payload, len);
-    if (ws_wbuf_append_raw(conn, fr, h + len) != 0) return -1;
-    (void)conn_flush_wbuf(conn, NULL, NULL);   /* never frees; errors surface on the next write */
-    return 0;
+    nodus_tcp_t *tcp = conn->tcp_parent;
+    wl_enter(tcp);
+    int rc = ws_wbuf_append_raw(conn, fr, h + len);
+    if (rc == 0)
+        (void)conn_flush_wbuf(conn, NULL, NULL);   /* never frees; errors surface on the next write */
+    wl_leave(tcp);
+    return rc == 0 ? 0 : -1;
 }
 
 /* Feed raw bytes of an open WS connection. Returns true if conn was closed. */
@@ -1218,7 +1267,13 @@ static bool ws_try_upgrade(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 
     char resp[256];
     size_t rl = nodus_ws_handshake_response(&res, resp, sizeof(resp));
-    if (rl == 0 || ws_wbuf_append_raw(conn, (const uint8_t *)resp, rl) != 0) {
+    int queued = -1;
+    if (rl > 0) {
+        wl_enter(tcp);
+        queued = ws_wbuf_append_raw(conn, (const uint8_t *)resp, rl);
+        wl_leave(tcp);
+    }
+    if (queued != 0) {
         QGP_LOG_ERROR(LOG_TAG_TCP, "ws: could not queue 101 response, slot=%d",
                       conn->slot);
         ws_close_now(tcp, conn, NULL, 0);
@@ -1249,7 +1304,9 @@ static bool ws_try_upgrade(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     QGP_LOG_INFO(LOG_TAG_TCP, "ws: upgrade ok slot=%d ip=%s%s",
                  conn->slot, conn->ip, res.proto_binary ? " proto=binary" : "");
 
+    wl_enter(tcp);
     (void)conn_flush_wbuf(conn, NULL, NULL);   /* never frees; see ws_sink_ping */
+    wl_leave(tcp);
 
     if (rest) {
         bool freed = ws_feed_frames(tcp, conn, rest, leftover);
@@ -1728,7 +1785,7 @@ static int pending_queue_append(nodus_tcp_conn_t *conn,
     return 0;
 }
 
-int nodus_tcp_pending_flush(nodus_tcp_conn_t *conn) {
+static int pending_flush_locked(nodus_tcp_conn_t *conn) {
     if (!conn->pending_buf || conn->pending_len == 0) return 0;
 
     if (conn->wpos > 0) {
@@ -1758,16 +1815,36 @@ int nodus_tcp_pending_flush(nodus_tcp_conn_t *conn) {
     return 0;
 }
 
+int nodus_tcp_pending_flush(nodus_tcp_conn_t *conn) {
+    if (!conn) return -1;
+    nodus_tcp_t *tcp = conn->tcp_parent;
+    wl_enter(tcp);
+    int rc = pending_flush_locked(conn);
+    wl_leave(tcp);
+    return rc;
+}
+
+static int send_progress_locked(nodus_tcp_conn_t *conn,
+                                const uint8_t *payload, size_t len,
+                                nodus_tcp_progress_cb progress_cb,
+                                void *user_data);
+
 int nodus_tcp_send(nodus_tcp_conn_t *conn,
                     const uint8_t *payload, size_t len) {
-    /* Auth gate: queue frames while auth in progress */
-    if (conn && conn->auth_required) {
-        if (conn->auth_state == NODUS_CONN_AUTH_FAILED)
-            return -1;
-        if (conn->auth_state != NODUS_CONN_AUTH_OK)
-            return pending_queue_append(conn, payload, len);
-    }
-    return nodus_tcp_send_progress(conn, payload, len, NULL, NULL);
+    if (!conn) return send_progress_locked(conn, payload, len, NULL, NULL);
+    nodus_tcp_t *tcp = conn->tcp_parent;
+    int rc;
+    /* One critical section for the gate and the write, so an auth result
+     * cannot land between "still pending" and the append. */
+    wl_enter(tcp);
+    if (conn->auth_required && conn->auth_state == NODUS_CONN_AUTH_FAILED)
+        rc = -1;
+    else if (conn->auth_required && conn->auth_state != NODUS_CONN_AUTH_OK)
+        rc = pending_queue_append(conn, payload, len);  /* auth in progress */
+    else
+        rc = send_progress_locked(conn, payload, len, NULL, NULL);
+    wl_leave(tcp);
+    return rc;
 }
 
 int nodus_tcp_send_raw(nodus_tcp_conn_t *conn,
@@ -1779,6 +1856,18 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
                              const uint8_t *payload, size_t len,
                              nodus_tcp_progress_cb progress_cb,
                              void *user_data) {
+    nodus_tcp_t *tcp = conn ? conn->tcp_parent : NULL;
+    wl_enter(tcp);
+    int rc = send_progress_locked(conn, payload, len, progress_cb, user_data);
+    wl_leave(tcp);
+    return rc;
+}
+
+/* The send path proper; the caller holds the write lock. */
+static int send_progress_locked(nodus_tcp_conn_t *conn,
+                                const uint8_t *payload, size_t len,
+                                nodus_tcp_progress_cb progress_cb,
+                                void *user_data) {
     if (!conn || !payload) {
         QGP_LOG_ERROR(LOG_TAG_TCP, "send: NULL conn=%p payload=%p", (void*)conn, (void*)payload);
         return -1;
@@ -2017,7 +2106,7 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
             FD_SET((SOCKET)c->fd, &efds);
         } else {
             FD_SET((SOCKET)c->fd, &rfds);
-            if (c->wlen > c->wpos)
+            if (conn_has_unsent(tcp, c))
                 FD_SET((SOCKET)c->fd, &wfds);
         }
         if (c->fd > max_fd) max_fd = c->fd;
@@ -2129,7 +2218,7 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
         if (c->state == NODUS_CONN_CONNECTING)
             pfd[k].events = POLLOUT;
         else
-            pfd[k].events = (short)(POLLIN | (c->wlen > c->wpos ? POLLOUT : 0));
+            pfd[k].events = (short)(POLLIN | (conn_has_unsent(tcp, c) ? POLLOUT : 0));
         pconn[k] = c;
         k++;
     }
@@ -2203,7 +2292,7 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
     /* Re-enable EPOLLOUT for connections with pending writes */
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
         nodus_tcp_conn_t *c = tcp->pool[i];
-        if (c && c->state == NODUS_CONN_CONNECTED && c->wlen > c->wpos) {
+        if (c && c->state == NODUS_CONN_CONNECTED && conn_has_unsent(tcp, c)) {
             uint32_t ev = EPOLLIN | EPOLLOUT | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET);
             epoll_mod(tcp->epoll_fd, c->fd, ev, c);
         }

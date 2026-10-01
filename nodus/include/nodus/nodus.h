@@ -205,6 +205,8 @@ typedef struct nodus_client {
     pthread_mutex_t        pending_mutex;  /* protects pending[] slots */
     pthread_mutex_t        send_mutex;     /* serializes TCP send */
     pthread_mutex_t        poll_mutex;     /* serializes TCP poll */
+    pthread_mutex_t        wbuf_mutex;     /* transport write lock (nodus_tcp_set_write_lock):
+                                            * callers send while the read thread polls */
 
     /* Internal read thread — continuously reads TCP for push notifications */
     pthread_t              read_thread;
@@ -615,6 +617,7 @@ typedef struct {
     nodus_ch_pending_t      pending[NODUS_CH_MAX_PENDING];
     pthread_mutex_t         pending_mutex;
     pthread_mutex_t         send_mutex;
+    pthread_mutex_t         wbuf_mutex;   /* transport write lock, as nodus_client_t */
 
     /* Reconnect state */
     uint64_t                reconnect_at;     /* Monotonic ms (nodus_time_mono_ms) of next reconnect attempt */
