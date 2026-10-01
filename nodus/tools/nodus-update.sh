@@ -13,7 +13,7 @@ NODUS_DIR="/opt/dna/nodus"
 BUILD_DIR="$NODUS_DIR/build"
 BINARY="/usr/local/bin/nodus-server"
 SERVICE="nodus"
-BRANCH="feature/group-channel"  # TODO: change to main after merge
+BRANCH="main"
 SILENT=0
 
 # Parse args
