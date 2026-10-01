@@ -17,6 +17,9 @@
  *   2. F3: an AUTHENTICATED peer whose session key is not established yet
  *      (this node has Kyber) gets its "sub" dropped; once established, the
  *      same frame is processed.
+ *   3. Rev 2 item 17: the same holds for a T2 method — a ri_close for a
+ *      circuit on this conn is dropped before the session key, processed
+ *      after.
  *
  * RED on the tree before Package A: the T1 dispatch had no auth check
  * (the T2 gate sat inside the T2-decode branch) and no handler read
@@ -153,10 +156,54 @@ out:
     free(srv);
 }
 
+/* Rev 2 item 17: the F3 gate also holds for T2 methods, not only T1 "sub":
+ * a ri_close for a circuit routed over this very conn, from an
+ * authenticated peer, is dropped until the session key exists. */
+static void test_f3_t2_method_before_session_key(void) {
+    TEST("F3: T2 method (ri_close) before the session key → dropped");
+    nodus_server_t *srv = new_server(true);
+    nodus_inter_session_t sess;
+    uint8_t buf[256];
+    size_t len = 0;
+    CHECK(srv, "alloc");
+    reset_conn();
+    nodus_circuit_table_init(&srv->sessions[0].circuits);
+    nodus_circuit_t *c = nodus_circuit_alloc(&srv->sessions[0].circuits);
+    nodus_inter_circuit_t *ic = nodus_inter_circuit_alloc(&srv->inter_circuits);
+    CHECK(c && ic, "circuit setup");
+    ic->peer_conn = &conn;
+    ic->peer_cid = 501;
+    ic->local_sess = (struct nodus_session *)&srv->sessions[0];
+    ic->local_cid = c->local_cid;
+    c->inter = ic;
+    uint64_t cid = ic->our_cid;
+
+    memset(&sess, 0, sizeof(sess));
+    sess.conn = &conn;
+    sess.authenticated = true;
+    conn.channel_crypto.established = false;
+
+    CHECK(nodus_t2_ri_close(0, cid, buf, sizeof(buf), &len) == 0, "encode");
+    nodus_server_dispatch_inter_frame(srv, &sess, buf, len);
+    CHECK(nodus_inter_circuit_lookup(&srv->inter_circuits, cid) != NULL,
+          "ri_close processed before the session key existed");
+    CHECK(c->in_use && c->inter == ic, "client circuit touched");
+
+    /* positive control: established → processed */
+    conn.channel_crypto.established = true;
+    nodus_server_dispatch_inter_frame(srv, &sess, buf, len);
+    CHECK(nodus_inter_circuit_lookup(&srv->inter_circuits, cid) == NULL,
+          "ri_close not processed after the session key existed");
+    PASS();
+out:
+    free(srv);
+}
+
 int main(void) {
     printf("=== DHT Package A F2/F3: 4002 pre-auth / pre-key gate ===\n");
     test_f2_unauth_t1_dropped();
     test_f3_before_session_key();
+    test_f3_t2_method_before_session_key();
     printf("\n%d passed, %d failed\n", passed, failed);
     return failed > 0 ? 1 : 0;
 }

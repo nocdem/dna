@@ -17,6 +17,13 @@
  *      unlinks the client circuit.
  *   3. F1b: ri_close arriving on a DIFFERENT 4002 conn than the circuit's
  *      is ignored; on the circuit's own conn it closes it.
+ *   4. F1 through the transport's on_disconnect body
+ *      (nodus_server_inter_disconnected), not only the helper.
+ *   5. Rev 2 item 8: with two client circuits sharing a cid, releasing the
+ *      inter-circuit frees the circuit LINKED to it (pointer identity) and
+ *      leaves the other — by cid it freed the wrong one and left a stale
+ *      c->inter. (The circ_open bump policy that keeps cids unique runs in
+ *      the client-port handler, which has no in-process entry point.)
  *
  * RED on the tree before Package A: on_inter_disconnect never walked
  * inter_circuits, the sweep freed only the global entry, and the ri_*
@@ -170,6 +177,65 @@ out:
     free(srv);
 }
 
+static void test_disconnect_callback_path(void) {
+    TEST("F1: the 4002 on_disconnect body releases the circuits");
+    nodus_server_t *srv = new_server();
+    nodus_circuit_t *c0 = NULL;
+    CHECK(srv, "alloc");
+    nodus_inter_circuit_t *ic = link_circuit(srv, 0, &conn_a, &c0);
+    CHECK(ic, "setup");
+    uint64_t cid = ic->our_cid, local0 = c0->local_cid;
+
+    /* what the inter transport's on_disconnect callback runs */
+    nodus_server_inter_disconnected(srv, &conn_a);
+
+    CHECK(nodus_inter_circuit_lookup(&srv->inter_circuits, cid) == NULL,
+          "inter entry survived the disconnect callback");
+    CHECK(nodus_circuit_lookup(&srv->sessions[0].circuits, local0) == NULL,
+          "client circuit survived the disconnect callback");
+    PASS();
+out:
+    free(srv);
+}
+
+static void test_duplicate_cid_pointer_identity(void) {
+    TEST("item 8: duplicate cid — release frees the linked circuit only");
+    nodus_server_t *srv = new_server();
+    nodus_circuit_t *decoy = NULL, *linked = NULL;
+    nodus_inter_session_t sess_a;
+    uint8_t buf[256];
+    size_t len = 0;
+    CHECK(srv, "alloc");
+    srv->config.require_peer_auth = true;
+    srv->identity.has_kyber = false;      /* F3 gate off */
+    nodus_session_t *s0 = &srv->sessions[0];
+
+    /* entry 0: an unrelated circuit (a client-chosen cid); entry 1: the
+     * inter-linked one carrying the SAME cid (a client cid that collided
+     * with a generated one before the rev 2 bump policy). */
+    decoy = nodus_circuit_alloc(&s0->circuits);
+    CHECK(decoy, "decoy");
+    nodus_inter_circuit_t *ic = link_circuit(srv, 0, &conn_a, &linked);
+    CHECK(ic && linked && linked != decoy, "linked");
+    linked->local_cid = decoy->local_cid;
+    ic->local_cid = decoy->local_cid;
+    uint64_t cid = ic->our_cid;
+
+    memset(&sess_a, 0, sizeof(sess_a));
+    sess_a.conn = &conn_a;
+    sess_a.authenticated = true;
+    CHECK(nodus_t2_ri_close(0, cid, buf, sizeof(buf), &len) == 0, "encode");
+    nodus_server_dispatch_inter_frame(srv, &sess_a, buf, len);
+
+    CHECK(nodus_inter_circuit_lookup(&srv->inter_circuits, cid) == NULL, "inter entry");
+    CHECK(decoy->in_use, "the unrelated circuit with the same cid was freed");
+    CHECK(!linked->in_use, "the linked circuit survived (stale c->inter)");
+    CHECK(s0->circuits.count == 1, "table count");
+    PASS();
+out:
+    free(srv);
+}
+
 int main(void) {
     printf("=== DHT Package A F1/F1b: inter-circuit lifetime ===\n");
     fake_conn(&conn_a, "10.0.0.1");
@@ -177,6 +243,8 @@ int main(void) {
     test_disconnect_closes_circuits();
     test_orphan_sweep_unlinks();
     test_ri_close_wrong_conn_ignored();
+    test_disconnect_callback_path();
+    test_duplicate_cid_pointer_identity();
     printf("\n%d passed, %d failed\n", passed, failed);
     return failed > 0 ? 1 : 0;
 }

@@ -994,6 +994,17 @@ add_executable(test_inter_preauth_gate tests/test_inter_preauth_gate.c)
 target_link_libraries(test_inter_preauth_gate nodus dsa kem nodus)
 add_test(NAME test_inter_preauth_gate COMMAND test_inter_preauth_gate)
 
+# DHT Package A rev 2: forward path driven with crafted 4002 reply frames
+# (items 11-16, responder storage fault) and the 4002 handshake role split
+# (item 7). In-process, no sockets; the frames test uses the storage fixture.
+add_executable(test_bf_forward_frames tests/test_bf_forward_frames.c ${NODUS_TEST_STORAGE_HELPER})
+target_link_libraries(test_bf_forward_frames nodus dsa kem nodus)
+add_test(NAME test_bf_forward_frames COMMAND test_bf_forward_frames)
+
+add_executable(test_inter_role_split tests/test_inter_role_split.c)
+target_link_libraries(test_inter_role_split nodus dsa kem nodus)
+add_test(NAME test_inter_role_split COMMAND test_inter_role_split)
+
 # P0-A (2026-09-28): tier-1 / tier-2 / value decoders refuse a repeated map
 # key and a heap field written from two maps; value types outside {1,2,3}.
 add_executable(test_decode_dupkey tests/test_decode_dupkey.c)

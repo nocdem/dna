@@ -591,7 +591,7 @@ int nodus_t2_result_get_batch(uint32_t txn,
                                const size_t *counts_per_key,
                                uint8_t *buf, size_t cap, size_t *out_len) {
     return nodus_t2_result_get_batch_ex(txn, keys, key_count, vals_per_key,
-                                         counts_per_key, NULL,
+                                         counts_per_key, NULL, NULL,
                                          buf, cap, out_len);
 }
 
@@ -600,6 +600,7 @@ int nodus_t2_result_get_batch_ex(uint32_t txn,
                                   nodus_value_t ***vals_per_key,
                                   const size_t *counts_per_key,
                                   const nodus_t2_page_info_t *pages,
+                                  const bool *unavail,
                                   uint8_t *buf, size_t cap, size_t *out_len) {
     if (!keys || key_count < 1) return -1;
     cbor_encoder_t enc;
@@ -612,7 +613,9 @@ int nodus_t2_result_get_batch_ex(uint32_t txn,
     for (int i = 0; i < key_count; i++) {
         size_t vc = counts_per_key ? counts_per_key[i] : 0;
         bool with_next = pages && pages[i].more && pages[i].has_next;
-        cbor_encode_map(&enc, pages ? (with_next ? 4 : 3) : 2);
+        bool with_u = unavail && unavail[i];
+        cbor_encode_map(&enc, (size_t)2 + (pages ? (with_next ? 2 : 1) : 0) +
+                              (with_u ? 1 : 0));
         cbor_encode_cstr(&enc, "k");
         cbor_encode_bstr(&enc, keys[i].bytes, NODUS_KEY_BYTES);
         cbor_encode_cstr(&enc, "vs");
@@ -635,6 +638,11 @@ int nodus_t2_result_get_batch_ex(uint32_t txn,
                 cbor_encode_cstr(&enc, "next");
                 enc_cursor(&enc, &pages[i].next);
             }
+        }
+        if (with_u) {
+            /* Rev 2 item 15: this key could not be looked up */
+            cbor_encode_cstr(&enc, "u");
+            cbor_encode_bool(&enc, true);
         }
     }
     return finish(&enc, out_len);
@@ -1737,7 +1745,8 @@ int nodus_t2_ch_ring_rejoin(uint32_t txn,
 /* The batch_* fields are owned by exactly one of "ks", "batch", "counts". */
 static bool t2_batch_owned(const nodus_tier2_msg_t *msg) {
     return msg->batch_keys || msg->batch_vals || msg->batch_val_counts ||
-           msg->batch_counts || msg->batch_has_mine || msg->batch_page;
+           msg->batch_counts || msg->batch_has_mine || msg->batch_page ||
+           msg->batch_unavail;
 }
 
 /* DHT Package A: a cursor map {"o": bstr(64), "v": uint}. Unknown keys
@@ -2424,8 +2433,10 @@ static int t2_decode_body(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg
                         msg->batch_vals = calloc(bk_cap, sizeof(nodus_value_t **));
                         msg->batch_val_counts = calloc(bk_cap, sizeof(size_t));
                         msg->batch_page = calloc(bk_cap, sizeof(nodus_t2_page_info_t));
+                        msg->batch_unavail = calloc(bk_cap, sizeof(bool));
                         if (!msg->batch_keys || !msg->batch_vals ||
-                            !msg->batch_val_counts || !msg->batch_page)
+                            !msg->batch_val_counts || !msg->batch_page ||
+                            !msg->batch_unavail)
                             return -1;
                         msg->batch_key_count = 0;
                         for (size_t ki = 0; ki < arr.count; ki++) {
@@ -2498,6 +2509,11 @@ static int t2_decode_body(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg
                                             &msg->batch_page[bi].next) != 0)
                                         return -1;
                                     msg->batch_page[bi].has_next = true;
+                                } else if (ek.tstr.len == 1 && ek.tstr.ptr[0] == 'u') {
+                                    /* Rev 2 item 15: per-key could-not-look */
+                                    cbor_item_t ev = cbor_decode_next(&dec);
+                                    if (ev.type != CBOR_ITEM_BOOL) return -1;
+                                    msg->batch_unavail[bi] = ev.bool_val;
                                 } else {
                                     cbor_decode_skip(&dec);
                                 }
@@ -3160,4 +3176,6 @@ void nodus_t2_msg_free(nodus_tier2_msg_t *msg) {
     msg->batch_has_mine = NULL;
     free(msg->batch_page);
     msg->batch_page = NULL;
+    free(msg->batch_unavail);
+    msg->batch_unavail = NULL;
 }

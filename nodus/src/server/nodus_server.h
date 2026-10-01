@@ -300,24 +300,79 @@ typedef struct {
     uint32_t            next_txn;       /**< Unique UDP txn IDs (single-threaded, no atomic) */
 } iterative_lookup_state_t;
 
-/* ── DHT Package A: forwarded-read merge state (S1/S3) ───────────── */
+/* ── Batch forward limits ────────────────────────────────────────── */
 
-/** What merging one source's rows into a key's set did. */
+#define NODUS_BF_MAX_FORWARDS   8    /* Max concurrent forwards per batch */
+#define NODUS_BF_MAX_BATCHES    4    /* Max concurrent batch requests with forwards */
+#define NODUS_BF_TIMEOUT_MS     5000 /* Per-forward timeout */
+
+/* ── DHT Package A: forwarded-read candidate sets (S1/S3, rev 2) ─── */
+
+/** Signature verifications one forwarded read may spend (rev 2 item 11).
+ *  A Dilithium5 verify costs ~0.1-0.2 ms; 1024 bounds one request to
+ *  ~0.2 s of CPU. An honest read needs at most the rows it returns: a
+ *  2 MiB page holds <= ~270 rows (NODUS_VALUE_SERIALIZED_EST >= ~7.6 KB),
+ *  one forward reply <= ~540 (RESP_BUF_SIZE), and identical copies from
+ *  several replicas are verified once. Local rows (verified at put) are
+ *  free. When the cap runs out a paged read closes its page there (more,
+ *  next = last row kept); an unpaged read drops the rows left (logged). */
+#define NODUS_DHT_VERIFY_CAP    1024
+
+/** At most this many sources per key: the forwards + the local store. */
+#define NODUS_DHT_MAX_SOURCES   (NODUS_BF_MAX_FORWARDS + 1)
+
+/** Verification state of one candidate row. */
+enum {
+    NODUS_DHT_V_UNKNOWN = 0,   /**< not verified (yet) */
+    NODUS_DHT_V_OK      = 1,   /**< nodus_value_verify passed, or a local row */
+    NODUS_DHT_V_BAD     = 2    /**< nodus_value_verify failed */
+};
+
+/** One candidate row of a forwarded read. Every DISTINCT row a source sent
+ *  for a (owner_fp, value_id) is kept until the read resolves — a newer
+ *  row that later fails verification must not have evicted a valid older
+ *  one. */
 typedef struct {
-    size_t            kept;          /**< rows added to / replacing in the set */
-    size_t            dup;           /**< rows that lost to a present row (not verified) */
-    size_t            bad;           /**< dropped: key mismatch, owner filter, verify fail */
+    nodus_value_t *v;
+    uint8_t        hash[32];   /**< SHA3-256(data), computed once (empty → zeros) */
+    uint8_t        vstate;     /**< NODUS_DHT_V_* */
+    uint32_t       order;      /**< arrival order (unpaged replies keep it) */
+} nodus_dht_cand_t;
+
+/** One source's page outcome for a key (paged reads). */
+typedef struct {
+    bool              more;      /**< the source said rows remain */
+    bool              bounds;    /**< more AND (trusted OR its rows filled
+                                  *   the responder's page budget) */
+    bool              has_last;  /**< last is set */
+    nodus_t2_cursor_t last;      /**< largest PK of its rows that passed the
+                                  *   key / owner / cursor filters */
+} nodus_dht_src_page_t;
+
+/** Every candidate and every source outcome for one key of a read. */
+typedef struct {
+    nodus_dht_cand_t     *c;
+    size_t                n;
+    size_t                cap;
+    uint32_t              next_order;
+    int                   nsrc;                        /**< page sources noted */
+    nodus_dht_src_page_t  src[NODUS_DHT_MAX_SOURCES];
+    int                   peers;        /**< peers this key was to be asked (S6) */
+    int                   answered;     /**< sources that LOOKED (an entry without "u") */
+    bool                  local_fault;  /**< the local store could not be read */
+} nodus_dht_keyset_t;
+
+/** What adding one source's rows to a keyset did. */
+typedef struct {
+    size_t            added;         /**< new distinct candidates */
+    size_t            dup;           /**< exact copies of a present candidate (dropped, not verified) */
+    size_t            bad;           /**< dropped: key mismatch / owner filter */
     size_t            below_cursor;  /**< dropped: PK <= the request cursor */
-    bool              has_last;      /**< last_valid is set */
-    nodus_t2_cursor_t last_valid;    /**< largest PK of this source present in the set */
+    size_t            est_bytes;     /**< sum of NODUS_VALUE_SERIALIZED_EST over
+                                      *   every row the source sent */
+    bool              has_last;      /**< last is set */
+    nodus_t2_cursor_t last;          /**< largest PK among the rows that passed the filters */
 } nodus_dht_merge_stats_t;
-
-/** Paged-read accumulator over every source of one key. */
-typedef struct {
-    bool              any_more;      /**< OR of the sources' "more" flags */
-    bool              has_bound;     /**< bound is set */
-    nodus_t2_cursor_t bound;         /**< min over sources with more=true of their last_valid */
-} nodus_dht_page_acc_t;
 
 /** S6: what a read answers once every source has been asked. */
 typedef enum {
@@ -327,10 +382,6 @@ typedef enum {
 } nodus_dht_read_outcome_t;
 
 /* ── Batch forward (get_batch miss → forward to closest peer) ────── */
-
-#define NODUS_BF_MAX_FORWARDS   8    /* Max concurrent forwards per batch */
-#define NODUS_BF_MAX_BATCHES    4    /* Max concurrent batch requests with forwards */
-#define NODUS_BF_TIMEOUT_MS     5000 /* Per-forward timeout */
 
 /** Batch forward connection states */
 enum {
@@ -393,9 +444,9 @@ typedef struct {
     nodus_key_t    *keys;
     int             key_count;
 
-    /* Per-key results (local + forwarded merged) */
-    nodus_value_t ***vals_per_key;
-    size_t          *counts_per_key;
+    /* Per-key candidates (local + forwarded), resolved when the batch
+     * completes (heap array of key_count). */
+    nodus_dht_keyset_t *sets;
 
     /* Active forwards */
     dht_bf_conn_t   forwards[NODUS_BF_MAX_FORWARDS];
@@ -405,21 +456,16 @@ typedef struct {
                                         *   (1 key, respond with result_multi not batch) */
     bool            is_single_get;     /**< True if this BF serves a single-value GET
                                         *   (1 key, respond with `result` (the newest
-                                        *   verified value, single_best) or
-                                        *   `result_empty`). Mutually exclusive with
-                                        *   is_get_all. */
+                                        *   verified value) or `result_empty`).
+                                        *   Mutually exclusive with is_get_all. */
 
     /* DHT Package A */
-    int             answered_forwards; /**< forwards that returned a decodable batch
-                                        *   result (S6: 0 answered + 0 rows = could
-                                        *   not look) */
-    nodus_value_t  *single_best;       /**< is_single_get: newest verified value */
     bool            has_own;           /**< S2 owner filter (forwarded + re-applied) */
     nodus_key_t     own;
     bool            paged;             /**< S3 paged get_all ("pg" or "after") */
     bool            has_after;
     nodus_t2_cursor_t after;           /**< S3 request cursor */
-    nodus_dht_page_acc_t page_acc;     /**< S3 per-source more/bound */
+    int             verify_left;       /**< NODUS_DHT_VERIFY_CAP budget left */
 } dht_bf_batch_t;
 
 /** Batch forward state (part of nodus_server_t) */
@@ -767,7 +813,8 @@ int nodus_auth_handle_key_init_alg(nodus_server_t *srv, nodus_session_t *sess,
  * INTERNAL — DHT Package A helpers. Exposed ONLY so unit tests can drive
  * them in-process (tests/test_bf_merge_pure.c, test_get_all_paging.c,
  * test_get_unavailable.c, test_inter_circuit_uaf.c,
- * test_inter_preauth_gate.c). Not an API: no other module calls these.
+ * test_inter_preauth_gate.c, test_bf_forward_frames.c,
+ * test_inter_role_split.c). Not an API: no other module calls these.
  * ════════════════════════════════════════════════════════════════════ */
 
 /** Primary-key order of nodus_values: owner_fp bytewise, then value_id
@@ -781,31 +828,80 @@ int nodus_dht_pk_cmp(const nodus_key_t *a_owner, uint64_t a_vid,
  *  greater (empty data = 32 zero bytes). 0 otherwise (incl. identical). */
 int nodus_dht_value_newer(const nodus_value_t *in, const nodus_value_t *ex);
 
+/** Free every candidate of a keyset and reset it to empty (keeps nothing). */
+void nodus_dht_keyset_clear(nodus_dht_keyset_t *ks);
+
 /**
- * S1 + F6: merge one source's rows for `key` into a set (heap array, grown
- * with realloc; one row per (owner_fp, value_id)).
+ * S1 + F6, rev 2 item 11: add one source's rows for `key` to a keyset.
  *
- * A src row is dropped when its key_hash != key, when `own` is set and its
- * owner_fp != own, or when `after` is set and its PK <= after. A row whose
- * PK is already present replaces the present row only if it is newer
- * (nodus_dht_value_newer); a row that would not be kept is never verified.
- * With verify_rows, a row that would be kept must pass nodus_value_verify
- * or it is dropped. New rows are appended (set order = first-seen order;
- * a replacement keeps its position).
+ * A src row is dropped (counted bad) when its key_hash != key or `own` is
+ * set and its owner_fp != own; dropped (below_cursor) when `after` is set
+ * and its PK <= after. A row that is an EXACT copy of a present candidate
+ * — same PK, seq, type, ttl, SHA3-256(data), signature and owner_pk, i.e.
+ * everything nodus_value_verify reads — is dropped as dup without being
+ * verified. Every other row becomes a candidate; NOTHING is verified here
+ * (resolution verifies only what it returns). `trusted` marks the rows
+ * verified already (the local store: verified at put).
  *
- * Ownership: a row taken into the set is NULLed in src; the caller frees
- * what is left in src. A replaced set row is freed here.
- * stats (may be NULL) also reports last_valid: the largest PK of this
- * source's rows that is present in the set afterwards.
- * @return 0, or -1 on allocation failure (set stays valid).
+ * Ownership: a row taken in is NULLed in src; the caller frees the rest.
+ * stats (may be NULL): counts, est_bytes over every row sent, and last =
+ * the largest PK among this source's rows that passed the filters.
+ * @return 0, or -1 on allocation failure (keyset stays valid; the rows
+ *         not taken are left in src).
  */
-int nodus_dht_merge_rows(nodus_value_t ***set, size_t *set_count,
+int nodus_dht_keyset_add(nodus_dht_keyset_t *ks,
                          nodus_value_t **src, size_t src_count,
-                         const nodus_key_t *key,
-                         const nodus_key_t *own,
-                         const nodus_t2_cursor_t *after,
-                         bool verify_rows,
+                         const nodus_key_t *key, const nodus_key_t *own,
+                         const nodus_t2_cursor_t *after, bool trusted,
                          nodus_dht_merge_stats_t *stats);
+
+/**
+ * S3, rev 2 item 12: record one source's page outcome for this key. A
+ * more=true source BOUNDS the page (rows past its last PK may interleave
+ * with rows it has not sent) only when it is trusted (the local store) or
+ * its rows filled a page: est_bytes + NODUS_VALUE_SERIALIZED_EST(0) >
+ * responder_budget — not even one more zero-byte row would have fit. A
+ * source answering one small row with more=true therefore cannot hold the
+ * page to that row.
+ */
+void nodus_dht_keyset_note_page(nodus_dht_keyset_t *ks, bool more, bool trusted,
+                                size_t responder_budget,
+                                const nodus_dht_merge_stats_t *stats);
+
+/**
+ * Resolve a keyset into the rows a reply carries; ownership of the rows
+ * moves to *rows_out (heap array, NULL when empty), every other candidate
+ * is freed and the keyset is emptied.
+ *
+ * Candidates are grouped by PK; within a group they are tried in rank
+ * order (seq DESC signed, SHA3-256(data) DESC, then type, ttl, signature,
+ * owner_pk bytes — a total order) and the first that verifies (or is a
+ * local row) is the group's row; a group with none is dropped. Each verify
+ * spends one unit of *verify_left; with none left the walk stops there.
+ *
+ * Paged (S3): groups in PK order; the bound is the smallest last PK of a
+ * bounding source (nodus_dht_keyset_note_page) whose group resolves to a
+ * verified row — a bound at a PK with no valid row is discarded and the
+ * next one taken (unverified rows never set the bound). Rows past the
+ * bound are cut; rows are added while the cumulative
+ * NODUS_VALUE_SERIALIZED_EST stays <= budget (the first row always). A
+ * failed verify drops only that candidate and the walk continues, so the
+ * cut is re-made over what verifies. page_out: more = a row was cut, the
+ * verify budget ran out, or any source said more — and only when the page
+ * is not empty; next = last kept PK.
+ *
+ * Unpaged: every group is resolved (until *verify_left runs out — the
+ * rest is dropped); rows are returned in the order their PK first arrived
+ * (local rows first, then forwarded), the order these replies had before
+ * Package A. page_out may be NULL.
+ * *capped_out (may be NULL): the verify budget ran out before every group
+ * the walk needed was decided — with no row out, the read could not look.
+ * @return 0, or -1 on allocation failure (keyset emptied, nothing out).
+ */
+int nodus_dht_keyset_resolve(nodus_dht_keyset_t *ks, bool paged, size_t budget,
+                             int *verify_left,
+                             nodus_value_t ***rows_out, size_t *count_out,
+                             nodus_t2_page_info_t *page_out, bool *capped_out);
 
 /** Single-GET rank: 1 when cand ranks above best. Order: (exclusive_first:
  *  EXCLUSIVE type first), seq DESC (signed), SHA3-256(data) DESC, owner_fp
@@ -813,34 +909,56 @@ int nodus_dht_merge_rows(nodus_value_t ***set, size_t *set_count,
 int nodus_dht_single_better(const nodus_value_t *cand, const nodus_value_t *best,
                             bool exclusive_first);
 
-/** S1 single GET: offer src rows to *best (same key/owner filters as
- *  nodus_dht_merge_rows); a row is verified only when it would become the
- *  best. Taken row NULLed in src; a replaced *best is freed. */
-void nodus_dht_pick_best(nodus_value_t **best,
-                         nodus_value_t **src, size_t src_count,
-                         const nodus_key_t *key, const nodus_key_t *own,
-                         bool verify_rows, nodus_dht_merge_stats_t *stats);
+/** S1 single GET: the best-ranked candidate (nodus_dht_single_better, ties
+ *  broken by type, ttl, signature, owner_pk bytes) that verifies (or is a
+ *  local row), trying candidates in rank order and spending *verify_left.
+ *  Ownership of the returned value moves to the caller; every other
+ *  candidate is freed and the keyset emptied. NULL when none qualifies.
+ *  *capped_out (may be NULL): the verify budget ran out before a candidate
+ *  was decided — with NULL returned, the read could not look. */
+nodus_value_t *nodus_dht_keyset_pick_best(nodus_dht_keyset_t *ks,
+                                          bool exclusive_first, int *verify_left,
+                                          bool *capped_out);
 
-/** S3: record one source's page outcome (its "more" flag + merge stats). */
-void nodus_dht_page_note_source(nodus_dht_page_acc_t *acc, bool src_more,
-                                const nodus_dht_merge_stats_t *stats);
+/** S6, rev 2 item 13: rows > 0 → ROWS; answered > 0 → EMPTY (some source
+ *  looked and found nothing); peers == 0 and the local store was read →
+ *  EMPTY (nobody else holds the key: single-node truth); anything else →
+ *  UNAVAILABLE (a local fault with no other answer, or peers to ask and
+ *  none answered: no slot, alloc failure, every forward failed / timed out
+ *  / answered "u"). */
+nodus_dht_read_outcome_t nodus_dht_read_outcome(size_t rows, int peers,
+                                                int answered, bool local_fault);
+
+/** Set up an idle batch slot for `n` keys (copied): zeroes it, forwards fd
+ *  -1, allocates keys + one empty keyset per key, verify_left =
+ *  NODUS_DHT_VERIFY_CAP, active. @return 0, -1 on alloc failure (slot
+ *  left idle and zeroed). */
+int nodus_server_bf_batch_setup(dht_bf_batch_t *b, const nodus_key_t *keys, int n);
+
+/** Free everything a batch slot holds (forward sockets, keysets) and make
+ *  it idle. */
+void nodus_server_bf_batch_cleanup(nodus_server_t *srv, dht_bf_batch_t *b);
 
 /**
- * S3 originator page: sort the set by PK, keep only rows <= acc->bound,
- * add rows while the cumulative NODUS_VALUE_SERIALIZED_EST stays <= budget
- * (the first row always), free every row not kept, and fill page_out:
- * more = any source had more OR a row was cut; next = last kept PK when
- * more. An empty page reports more = false.
+ * Absorb one decrypted 4002 reply payload (T2 CBOR) of forward `c` into
+ * batch `b`: each "batch" entry is matched to a key THIS forward asked for
+ * by key AND position among identical keys (rev 2 item 16); an entry with
+ * "u" counts as not looked (item 13/15); otherwise the key gains one
+ * answered source, its rows go through nodus_dht_keyset_add (+ the page
+ * note for paged reads, responder budget NODUS_GET_ALL_PAGE_MAX_BYTES /
+ * the forward's key count — the responder's own split).
+ * @return 0 when the payload was a batch result, -1 otherwise (nothing
+ *         absorbed: an error frame, garbage).
  */
-void nodus_dht_page_finish(nodus_value_t **set, size_t *count,
-                           const nodus_dht_page_acc_t *acc, size_t budget,
-                           nodus_t2_page_info_t *page_out);
+int nodus_server_bf_absorb_reply(dht_bf_batch_t *b, const dht_bf_conn_t *c,
+                                 const uint8_t *payload, size_t len);
 
-/** S6: rows > 0 → ROWS; peers_to_ask == 0 → EMPTY (nobody else holds it);
- *  answered == 0 → UNAVAILABLE (asked nobody successfully: no slot, alloc
- *  failure, every forward failed or timed out); else EMPTY. */
-nodus_dht_read_outcome_t nodus_dht_read_outcome(size_t rows, int peers_to_ask,
-                                                int answered);
+/** Resolve batch `b` and encode the frame its client gets (result /
+ *  result_empty / result_multi / result_page / result batch with "u"
+ *  markers / UNAVAILABLE error) into buf. Keysets are consumed. bf_send_result
+ *  sends exactly this frame. @return 0, -1 on encode failure. */
+int nodus_server_bf_encode_result(dht_bf_batch_t *b, uint8_t *buf, size_t cap,
+                                  size_t *len_out);
 
 /** F1: a 4002 conn is going away — close every inter-circuit routed over
  *  it, tell the attached local client (circ_open_err while the open is
@@ -859,6 +977,10 @@ int nodus_server_inter_sweep_orphans(nodus_server_t *srv, uint64_t now_ms,
 void nodus_server_dispatch_inter_frame(nodus_server_t *srv,
                                        nodus_inter_session_t *sess,
                                        const uint8_t *payload, size_t len);
+
+/** The body of the 4002 transport's on_disconnect callback (F1 circuit
+ *  release + inter session clear), for in-process tests. */
+void nodus_server_inter_disconnected(nodus_server_t *srv, nodus_tcp_conn_t *conn);
 
 #ifdef __cplusplus
 }

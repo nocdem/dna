@@ -185,6 +185,20 @@ static nodus_cluster_peer_t *find_cluster_peer_by_idx(nodus_server_t *srv, uint8
     return NULL;
 }
 
+/* DHT Package A rev 2 item 9: is node_id a member of this node's cluster
+ * (srv->cluster.peers — the configured seeds, whose placeholder id is
+ * replaced by the real one on the first PONG)? Any state counts: a hint is
+ * exactly for a member that is down. Hints (replication failures, pending-
+ * full frames) are persisted only for members; any other peer relies on
+ * the periodic republish. */
+static bool cluster_knows_peer(const nodus_server_t *srv, const nodus_key_t *node_id) {
+    for (int i = 0; i < srv->cluster.peer_count; i++) {
+        if (nodus_key_cmp(&srv->cluster.peers[i].node_id, node_id) == 0)
+            return true;
+    }
+    return false;
+}
+
 /* Tear down all circuits owned by this session: notify bridge peers,
  * free peer-side entries. Called before session_clear on disconnect. */
 static void session_teardown_circuits(nodus_server_t *srv, nodus_session_t *sess) {
@@ -219,6 +233,27 @@ static void session_teardown_circuits(nodus_server_t *srv, nodus_session_t *sess
     }
 }
 
+/* Rev 2 item 8: the client circuit attached to an inter-circuit is found by
+ * POINTER identity (c->inter == ic), never by cid — a client-chosen cid may
+ * equal a server-generated one in the same table, and a by-cid lookup or
+ * free then hits the other circuit. */
+static nodus_circuit_t *circuit_for_inter(nodus_circuit_table_t *t,
+                                          const nodus_inter_circuit_t *ic) {
+    for (int i = 0; i < NODUS_MAX_CIRCUITS_PER_SESSION; i++) {
+        if (t->entries[i].in_use && t->entries[i].inter == ic)
+            return &t->entries[i];
+    }
+    return NULL;
+}
+
+/* Free exactly this table entry (the by-pointer twin of nodus_circuit_free,
+ * which frees the first entry with a matching cid). */
+static void circuit_free_entry(nodus_circuit_table_t *t, nodus_circuit_t *c) {
+    if (!c || !c->in_use) return;
+    memset(c, 0, sizeof(*c));
+    t->count--;
+}
+
 /* F1 (DHT Package A): release one inter-circuit entry together with the
  * local client circuit attached to it. The client is told first —
  * circ_open_err(open_err_code) while its circ_open is still pending, else
@@ -229,8 +264,8 @@ static void inter_circuit_release(nodus_server_t *srv, nodus_inter_circuit_t *ic
                                   int open_err_code) {
     nodus_session_t *client = (nodus_session_t *)ic->local_sess;
     if (client) {
-        nodus_circuit_t *c = nodus_circuit_lookup(&client->circuits, ic->local_cid);
-        if (c && c->inter == ic) {
+        nodus_circuit_t *c = circuit_for_inter(&client->circuits, ic);
+        if (c) {
             if (client->conn) {
                 uint8_t buf[256];
                 size_t blen = 0;
@@ -241,8 +276,7 @@ static void inter_circuit_release(nodus_server_t *srv, nodus_inter_circuit_t *ic
                                           buf, sizeof(buf), &blen);
                 if (rc == 0) nodus_tcp_send(client->conn, buf, blen);
             }
-            c->inter = NULL;
-            nodus_circuit_free(&client->circuits, ic->local_cid);
+            circuit_free_entry(&client->circuits, c);
         }
     }
     nodus_inter_circuit_free(&srv->inter_circuits, ic->our_cid);
@@ -689,6 +723,9 @@ static void do_replicate_store_frame(nodus_server_t *srv,
     if (sent < NODUS_REPLICATION_MIN && peers_tried >= NODUS_REPLICATION_MIN && failed > 0) {
         for (int f = 0; f < failed && f < NODUS_K; f++) {
             int i = fail_indices[f];
+            /* Item 9: hints only for cluster members (routing ids of
+             * unknown nodes are not hinted; republish covers them). */
+            if (!cluster_knows_peer(srv, &closest[i].node_id)) continue;
             uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster, &closest[i].node_id);
             if (offline < NODUS_HINT_OFFLINE_SKIP_SEC) {
                 /* F4: a refused hint (cap reached, -3, logged by storage)
@@ -807,6 +844,7 @@ static void put_replication_complete(nodus_server_t *srv,
     if (sent < NODUS_REPLICATION_MIN && failed > 0) {
         for (int f = 0; f < failed && f < NODUS_K; f++) {
             int i = fail_indices[f];
+            if (!cluster_knows_peer(srv, &closest[i].node_id)) continue;  /* item 9 */
             uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster,
                                                                 &closest[i].node_id);
             if (offline < NODUS_HINT_OFFLINE_SKIP_SEC) {
@@ -935,6 +973,7 @@ static void media_replication_complete(nodus_server_t *srv,
     if (sent < NODUS_REPLICATION_MIN && failed > 0) {
         for (int f = 0; f < failed && f < NODUS_K; f++) {
             int i = fail_indices[f];
+            if (!cluster_knows_peer(srv, &closest[i].node_id)) continue;  /* item 9 */
             uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster,
                                                                 &closest[i].node_id);
             if (offline < NODUS_HINT_OFFLINE_SKIP_SEC) {
@@ -1239,6 +1278,15 @@ static void server_on_pending_full(nodus_tcp_conn_t *conn,
                 conn->ip, (unsigned)conn->port, len);
         return;
     }
+    /* Rev 2 item 9: and only for a member of this node's cluster. Any
+     * authenticated identity (keys are free) could otherwise park frames in
+     * the hint table; non-members rely on the periodic republish. */
+    if (!cluster_knows_peer(srv, &conn->peer_id)) {
+        QGP_LOG_WARN(LOG_TAG, "PENDING_FULL: peer=%s:%u len=%zu not a cluster "
+                     "member — frame DROPPED (no hint)",
+                     conn->ip, (unsigned)conn->port, len);
+        return;
+    }
     nodus_key_t dedup_id;
     memcpy(&dedup_id, &conn->peer_id, sizeof(dedup_id));
     const char *id_source = "peer_id";
@@ -1484,7 +1532,9 @@ static void dht_republish(nodus_server_t *srv) {
             if (nodus_key_cmp(&closest[j].node_id, &srv->identity.node_id) == 0) continue;
             int rc = dht_republish_send(srv, closest[j].ip, closest[j].tcp_port,
                                          &closest[j].node_id, frame, flen);
-            if (rc != 0) {
+            /* Item 9: hints only for cluster members; the next republish
+             * cycle covers any other peer. */
+            if (rc != 0 && cluster_knows_peer(srv, &closest[j].node_id)) {
                 uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster,
                                                                     &closest[j].node_id);
                 if (offline < NODUS_HINT_OFFLINE_SKIP_SEC) {
@@ -1623,14 +1673,12 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
-    /* Check storage quotas (global count, global bytes, per-owner count) */
-    if (nodus_storage_check_quota(&srv->storage, &sess->client_fp) != 0) {
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_QUOTA_EXCEEDED,
-                        "storage quota exceeded", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        return;
-    }
+    /* Storage caps (owner rows / owner bytes / global rows / global bytes)
+     * are applied by nodus_storage_put itself with the growth-only rule:
+     * a replace of a live (key, owner, value_id) row that does not grow is
+     * never refused. The former nodus_storage_check_quota pre-call counted
+     * every row and refused such a replace once the owner was at the cap
+     * (DHT Package A rev 2, storage contract nodus_storage.h). */
 
     /* Create value from message fields + authenticated session identity */
     nodus_value_t *val = NULL;
@@ -1680,14 +1728,15 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
     if (rc == NODUS_STORAGE_RC_QUOTA || rc == NODUS_STORAGE_RC_STALE) {
-        /* F5: the owner's byte quota on this node is full.
+        /* F5: a storage cap on this node would be exceeded — the owner's
+         * row or byte quota, or the node-wide row or byte cap.
          * F7: a stored row of the same (key, owner, value_id) has a higher
          * seq — an older value never replaces a newer one. */
         nodus_value_free(val);
         size_t len = 0;
         if (rc == NODUS_STORAGE_RC_QUOTA)
             nodus_t2_error(msg->txn_id, NODUS_ERR_QUOTA_EXCEEDED,
-                            "owner storage quota exceeded", resp_buf, sizeof(resp_buf), &len);
+                            "storage quota exceeded", resp_buf, sizeof(resp_buf), &len);
         else
             nodus_t2_error(msg->txn_id, NODUS_ERR_STALE,
                             "stored value has a higher seq", resp_buf, sizeof(resp_buf), &len);
@@ -2152,13 +2201,16 @@ static void iterative_lookup_tick(nodus_server_t *srv) {
     }
 }
 
-/* ── DHT Package A: forwarded-read merge (S1, F6, S3, S6) ───────────
+/* ── DHT Package A: forwarded-read candidate sets (S1, F6, S3, S6) ──
  *
  * Pure functions of the rows they are given — no clock, no I/O, no global
- * state. Merging the same multiset of rows gives the same set whatever
- * order the sources answered in (D2), with one residue inherited from the
- * replica predicate: two VALID rows with the same PK, seq and data hash
- * but a different type/ttl/signature — the first one seen stays.
+ * state. Every distinct row is kept as a candidate until the read resolves
+ * and the resolution is a function of the candidate multiset, ranked by a
+ * total order, so the same rows give the same reply whatever order the
+ * sources answered in (D2). Exception, stated: unpaged replies list rows
+ * in the order their PK first arrived (the pre-Package-A order), and the
+ * verify budget (NODUS_DHT_VERIFY_CAP) can only change WHICH rows an
+ * adversarial flood leaves out, never admit an unverified one.
  * Declared in nodus_server.h (internal section) for the unit tests. */
 
 int nodus_dht_pk_cmp(const nodus_key_t *a_owner, uint64_t a_vid,
@@ -2182,14 +2234,21 @@ static void dht_data_hash(const nodus_value_t *v, uint8_t out[32]) {
         memset(out, 0, 32);
 }
 
+/* The replica predicate on (seq, data hash): >0 when a is newer than b,
+ * <0 when older, 0 when both are equal. seq is a SQLite INTEGER (signed). */
+static int dht_newer_cmp(uint64_t a_seq, const uint8_t a_hash[32],
+                         uint64_t b_seq, const uint8_t b_hash[32]) {
+    int64_t sa = (int64_t)a_seq;
+    int64_t sb = (int64_t)b_seq;
+    if (sa != sb) return (sa > sb) ? 1 : -1;
+    return memcmp(a_hash, b_hash, 32);
+}
+
 int nodus_dht_value_newer(const nodus_value_t *in, const nodus_value_t *ex) {
-    int64_t si = (int64_t)in->seq;
-    int64_t se = (int64_t)ex->seq;
-    if (si != se) return si > se;
     uint8_t hi[32], he[32];
     dht_data_hash(in, hi);
     dht_data_hash(ex, he);
-    return memcmp(hi, he, 32) > 0;
+    return dht_newer_cmp(in->seq, hi, ex->seq, he) > 0;
 }
 
 /* Key / owner / cursor filter shared by the merge and the single pick. */
@@ -2212,177 +2271,370 @@ static bool dht_row_passes(const nodus_value_t *v, const nodus_key_t *key,
 static void dht_note_last(nodus_dht_merge_stats_t *st, const nodus_value_t *v) {
     if (!st->has_last ||
         nodus_dht_pk_cmp(&v->owner_fp, v->value_id,
-                         &st->last_valid.owner, st->last_valid.vid) > 0) {
-        st->last_valid.owner = v->owner_fp;
-        st->last_valid.vid = v->value_id;
+                         &st->last.owner, st->last.vid) > 0) {
+        st->last.owner = v->owner_fp;
+        st->last.vid = v->value_id;
         st->has_last = true;
     }
 }
 
-int nodus_dht_merge_rows(nodus_value_t ***set, size_t *set_count,
+/* Two candidates of the same PK that nodus_value_verify cannot tell apart:
+ * it reads key_hash (filtered equal), data (hash), type, ttl, value_id (PK),
+ * seq, owner_pk and the signature. created_at / expires_at are unsigned and
+ * not compared — the first copy's stay. */
+static bool dht_cand_same(const nodus_dht_cand_t *a, const nodus_value_t *v,
+                          const uint8_t hash[32]) {
+    const nodus_value_t *u = a->v;
+    return u->seq == v->seq && u->type == v->type && u->ttl == v->ttl &&
+           memcmp(a->hash, hash, 32) == 0 &&
+           memcmp(u->signature.bytes, v->signature.bytes, NODUS_SIG_BYTES) == 0 &&
+           memcmp(u->owner_pk.bytes, v->owner_pk.bytes, NODUS_PK_BYTES) == 0;
+}
+
+void nodus_dht_keyset_clear(nodus_dht_keyset_t *ks) {
+    if (!ks) return;
+    for (size_t i = 0; i < ks->n; i++) nodus_value_free(ks->c[i].v);
+    free(ks->c);
+    ks->c = NULL;
+    ks->n = 0;
+    ks->cap = 0;
+}
+
+int nodus_dht_keyset_add(nodus_dht_keyset_t *ks,
                          nodus_value_t **src, size_t src_count,
-                         const nodus_key_t *key,
-                         const nodus_key_t *own,
-                         const nodus_t2_cursor_t *after,
-                         bool verify_rows,
+                         const nodus_key_t *key, const nodus_key_t *own,
+                         const nodus_t2_cursor_t *after, bool trusted,
                          nodus_dht_merge_stats_t *stats) {
     nodus_dht_merge_stats_t scratch;
     if (!stats) stats = &scratch;
     memset(stats, 0, sizeof(*stats));
-    if (!set || !set_count || !key) return -1;
+    if (!ks || !key) return -1;
     if (!src || src_count == 0) return 0;
 
-    /* Grow once for the worst case (every src row new). */
-    nodus_value_t **arr = realloc(*set, (*set_count + src_count) * sizeof(*arr));
-    if (!arr) return -1;
-    *set = arr;
+    /* Grow once for the worst case (every src row a new candidate). */
+    if (ks->n + src_count > ks->cap) {
+        size_t ncap = ks->n + src_count;
+        nodus_dht_cand_t *nc = realloc(ks->c, ncap * sizeof(nodus_dht_cand_t));
+        if (!nc) return -1;
+        ks->c = nc;
+        ks->cap = ncap;
+    }
+
+    /* The local store's rows are unique per PK (the table's PRIMARY KEY):
+     * into an empty keyset they need no duplicate scan. */
+    bool scan = !(trusted && ks->n == 0);
 
     for (size_t i = 0; i < src_count; i++) {
         nodus_value_t *v = src[i];
-        if (!v || !dht_row_passes(v, key, own, after, stats)) continue;
-
-        size_t e;
-        for (e = 0; e < *set_count; e++)
-            if (dht_value_pk_cmp(arr[e], v) == 0) break;
-
-        if (e < *set_count) {
-            /* PK present: only a newer row is a candidate (and only a
-             * candidate pays for a signature verify). */
-            if (!nodus_dht_value_newer(v, arr[e])) {
-                stats->dup++;
-                dht_note_last(stats, v);
-                continue;
-            }
-            if (verify_rows && nodus_value_verify(v) != 0) { stats->bad++; continue; }
-            nodus_value_free(arr[e]);
-            arr[e] = v;
-        } else {
-            if (verify_rows && nodus_value_verify(v) != 0) { stats->bad++; continue; }
-            arr[(*set_count)++] = v;
-        }
-        src[i] = NULL;
-        stats->kept++;
+        if (!v) continue;
+        stats->est_bytes += NODUS_VALUE_SERIALIZED_EST(v->data_len);
+        if (!dht_row_passes(v, key, own, after, stats)) continue;
         dht_note_last(stats, v);
+
+        uint8_t h[32];
+        dht_data_hash(v, h);
+        size_t scan_n = scan ? ks->n : 0;
+        size_t e;
+        for (e = 0; e < scan_n; e++) {
+            if (dht_value_pk_cmp(ks->c[e].v, v) == 0 && dht_cand_same(&ks->c[e], v, h))
+                break;
+        }
+        if (e < scan_n) {
+            /* An exact copy: same verify outcome, nothing to add. A trusted
+             * copy (local row) vouches for the present candidate. */
+            if (trusted) ks->c[e].vstate = NODUS_DHT_V_OK;
+            stats->dup++;
+            continue;
+        }
+        nodus_dht_cand_t *c = &ks->c[ks->n++];
+        c->v = v;
+        memcpy(c->hash, h, 32);
+        c->vstate = trusted ? NODUS_DHT_V_OK : NODUS_DHT_V_UNKNOWN;
+        c->order = ks->next_order++;
+        src[i] = NULL;
+        stats->added++;
     }
     return 0;
+}
+
+void nodus_dht_keyset_note_page(nodus_dht_keyset_t *ks, bool more, bool trusted,
+                                size_t responder_budget,
+                                const nodus_dht_merge_stats_t *stats) {
+    if (!ks || ks->nsrc >= NODUS_DHT_MAX_SOURCES) return;
+    nodus_dht_src_page_t *sp = &ks->src[ks->nsrc++];
+    memset(sp, 0, sizeof(*sp));
+    sp->more = more;
+    if (stats && stats->has_last) {
+        sp->has_last = true;
+        sp->last = stats->last;
+    }
+    /* Rev 2 item 12: only a source whose rows filled its page may bound
+     * ours — an honest responder stops only when the next row does not
+     * fit, and no row is smaller than NODUS_VALUE_SERIALIZED_EST(0). */
+    bool filled = stats &&
+        stats->est_bytes + NODUS_VALUE_SERIALIZED_EST(0) > responder_budget;
+    sp->bounds = more && sp->has_last && (trusted || filled);
+}
+
+/* Rank of two candidates of the SAME PK: <0 when a ranks first. seq DESC,
+ * data hash DESC (the replica predicate), then a total tiebreak over every
+ * field nodus_value_verify reads, so qsort's result never depends on the
+ * input order. */
+static int dht_cand_rank_cmp(const nodus_dht_cand_t *a, const nodus_dht_cand_t *b) {
+    int n = dht_newer_cmp(a->v->seq, a->hash, b->v->seq, b->hash);
+    if (n != 0) return -n;
+    if (a->v->type != b->v->type) return (a->v->type < b->v->type) ? -1 : 1;
+    if (a->v->ttl != b->v->ttl) return (a->v->ttl < b->v->ttl) ? -1 : 1;
+    int s = memcmp(a->v->signature.bytes, b->v->signature.bytes, NODUS_SIG_BYTES);
+    if (s != 0) return s;
+    return memcmp(a->v->owner_pk.bytes, b->v->owner_pk.bytes, NODUS_PK_BYTES);
+}
+
+/* PK ASC, then rank. */
+static int dht_qsort_cand(const void *pa, const void *pb) {
+    const nodus_dht_cand_t *a = (const nodus_dht_cand_t *)pa;
+    const nodus_dht_cand_t *b = (const nodus_dht_cand_t *)pb;
+    int c = dht_value_pk_cmp(a->v, b->v);
+    if (c != 0) return c;
+    return dht_cand_rank_cmp(a, b);
+}
+
+/* Settle one candidate: 1 = valid, 0 = invalid, -1 = verify budget gone. */
+static int dht_cand_check(nodus_dht_cand_t *c, int *verify_left) {
+    if (c->vstate == NODUS_DHT_V_OK) return 1;
+    if (c->vstate == NODUS_DHT_V_BAD) return 0;
+    if (!verify_left || *verify_left <= 0) return -1;
+    (*verify_left)--;
+    c->vstate = (nodus_value_verify(c->v) == 0) ? NODUS_DHT_V_OK : NODUS_DHT_V_BAD;
+    return c->vstate == NODUS_DHT_V_OK ? 1 : 0;
+}
+
+/* Resolve the PK group c[g..end) (sorted by rank): index of the first
+ * valid candidate, -1 when none is, -2 when the verify budget ran out
+ * before the group was decided. *end_out = one past the group. */
+static long dht_group_pick(nodus_dht_cand_t *c, size_t n, size_t g,
+                           int *verify_left, size_t *end_out) {
+    size_t end = g + 1;
+    while (end < n && dht_value_pk_cmp(c[end].v, c[g].v) == 0) end++;
+    *end_out = end;
+    for (size_t i = g; i < end; i++) {
+        int r = dht_cand_check(&c[i], verify_left);
+        if (r == 1) return (long)i;
+        if (r < 0) return -2;
+    }
+    return -1;
+}
+
+/* Group start index holding PK (owner, vid), or n when absent. */
+static size_t dht_group_find(const nodus_dht_cand_t *c, size_t n,
+                             const nodus_t2_cursor_t *pk) {
+    for (size_t i = 0; i < n; i++) {
+        int k = nodus_dht_pk_cmp(&c[i].v->owner_fp, c[i].v->value_id,
+                                 &pk->owner, pk->vid);
+        if (k == 0) return i;
+        if (k > 0) break;
+    }
+    return n;
+}
+
+/* A kept row and the arrival order of its PK group (unpaged output order). */
+typedef struct { nodus_value_t *v; uint32_t order; } dht_kept_t;
+
+static int dht_qsort_kept(const void *pa, const void *pb) {
+    const dht_kept_t *a = (const dht_kept_t *)pa;
+    const dht_kept_t *b = (const dht_kept_t *)pb;
+    return (a->order > b->order) - (a->order < b->order);
+}
+
+int nodus_dht_keyset_resolve(nodus_dht_keyset_t *ks, bool paged, size_t budget,
+                             int *verify_left,
+                             nodus_value_t ***rows_out, size_t *count_out,
+                             nodus_t2_page_info_t *page_out, bool *capped_out) {
+    nodus_t2_page_info_t page;
+    memset(&page, 0, sizeof(page));
+    if (rows_out) *rows_out = NULL;
+    if (count_out) *count_out = 0;
+    if (capped_out) *capped_out = false;
+    if (page_out) *page_out = page;
+    if (!ks || !rows_out || !count_out) return -1;
+
+    size_t n = ks->n;
+    nodus_dht_cand_t *c = ks->c;
+    if (n == 0) { nodus_dht_keyset_clear(ks); return 0; }
+
+    /* Total order (PK, rank) — deterministic whatever the arrival order. */
+    if (n > 1) qsort(c, n, sizeof(nodus_dht_cand_t), dht_qsort_cand);
+
+    dht_kept_t *kept = calloc(n, sizeof(dht_kept_t));
+    if (!kept) { nodus_dht_keyset_clear(ks); return -1; }
+    size_t nk = 0;
+
+    /* Paged: the bound = the smallest last PK of a bounding source whose
+     * group resolves to a VALID row; a bound PK without one is discarded
+     * (unverified rows never set it) and the next smallest is tried. */
+    bool has_bound = false, any_more = false, capped = false;
+    nodus_t2_cursor_t bound;
+    memset(&bound, 0, sizeof(bound));
+    if (paged) {
+        bool tried[NODUS_DHT_MAX_SOURCES];
+        memset(tried, 0, sizeof(tried));
+        for (int s = 0; s < ks->nsrc; s++) any_more |= ks->src[s].more;
+        for (;;) {
+            int best = -1;
+            for (int s = 0; s < ks->nsrc; s++) {
+                if (tried[s] || !ks->src[s].bounds) continue;
+                if (best < 0 ||
+                    nodus_dht_pk_cmp(&ks->src[s].last.owner, ks->src[s].last.vid,
+                                     &ks->src[best].last.owner, ks->src[best].last.vid) < 0)
+                    best = s;
+            }
+            if (best < 0) break;
+            tried[best] = true;
+            size_t g = dht_group_find(c, n, &ks->src[best].last);
+            if (g == n) continue;          /* filtered out entirely: no row there */
+            size_t end;
+            long pick = dht_group_pick(c, n, g, verify_left, &end);
+            if (pick == -2) { capped = true; break; }
+            if (pick < 0) continue;        /* nothing valid at that PK */
+            bound = ks->src[best].last;
+            has_bound = true;
+            break;
+        }
+    }
+
+    size_t used = 0;
+    bool cut = false;
+    for (size_t g = 0; g < n && !capped; ) {
+        if (paged && has_bound &&
+            nodus_dht_pk_cmp(&c[g].v->owner_fp, c[g].v->value_id,
+                             &bound.owner, bound.vid) > 0) {
+            cut = true;
+            break;
+        }
+        size_t end;
+        long pick = dht_group_pick(c, n, g, verify_left, &end);
+        if (pick == -2) { capped = true; break; }
+        if (pick >= 0) {
+            if (paged) {
+                size_t est = NODUS_VALUE_SERIALIZED_EST(c[pick].v->data_len);
+                if (nk > 0 && used + est > budget) { cut = true; break; }
+                used += est;
+            }
+            uint32_t first = c[g].order;
+            for (size_t i = g + 1; i < end; i++)
+                if (c[i].order < first) first = c[i].order;
+            kept[nk].v = c[pick].v;
+            kept[nk].order = first;
+            nk++;
+            c[pick].v = NULL;              /* moved out */
+        }
+        g = end;
+    }
+
+    if (capped_out) *capped_out = capped;
+
+    if (!paged && nk > 1) qsort(kept, nk, sizeof(dht_kept_t), dht_qsort_kept);
+
+    nodus_value_t **rows = NULL;
+    if (nk > 0) {
+        rows = calloc(nk, sizeof(nodus_value_t *));
+        if (!rows) {
+            for (size_t i = 0; i < nk; i++) nodus_value_free(kept[i].v);
+            free(kept);
+            nodus_dht_keyset_clear(ks);
+            return -1;
+        }
+        for (size_t i = 0; i < nk; i++) rows[i] = kept[i].v;
+    }
+    free(kept);
+    nodus_dht_keyset_clear(ks);   /* frees every candidate not moved out */
+
+    if (paged && nk > 0) {
+        page.more = cut || capped || any_more;
+        if (page.more) {
+            page.has_next = true;
+            page.next.owner = rows[nk - 1]->owner_fp;
+            page.next.vid = rows[nk - 1]->value_id;
+        }
+    }
+    *rows_out = rows;
+    *count_out = nk;
+    if (page_out) *page_out = page;
+    return 0;
+}
+
+/* Single-GET order of two rows with their data hashes: <0 when a ranks
+ * first. (exclusive_first: EXCLUSIVE first), seq DESC, hash DESC, PK ASC,
+ * then type, ttl, signature, owner_pk — total over what verify reads. */
+static int dht_single_cmp(const nodus_value_t *a, const uint8_t ha[32],
+                          const nodus_value_t *b, const uint8_t hb[32],
+                          bool exclusive_first) {
+    if (exclusive_first) {
+        bool ae = a->type == NODUS_VALUE_EXCLUSIVE;
+        bool be = b->type == NODUS_VALUE_EXCLUSIVE;
+        if (ae != be) return ae ? -1 : 1;
+    }
+    int n = dht_newer_cmp(a->seq, ha, b->seq, hb);
+    if (n != 0) return -n;
+    int p = dht_value_pk_cmp(a, b);
+    if (p != 0) return p;
+    if (a->type != b->type) return (a->type < b->type) ? -1 : 1;
+    if (a->ttl != b->ttl) return (a->ttl < b->ttl) ? -1 : 1;
+    int s = memcmp(a->signature.bytes, b->signature.bytes, NODUS_SIG_BYTES);
+    if (s != 0) return s;
+    return memcmp(a->owner_pk.bytes, b->owner_pk.bytes, NODUS_PK_BYTES);
 }
 
 int nodus_dht_single_better(const nodus_value_t *cand, const nodus_value_t *best,
                             bool exclusive_first) {
     if (!cand) return 0;
     if (!best) return 1;
-    if (exclusive_first) {
-        bool ce = cand->type == NODUS_VALUE_EXCLUSIVE;
-        bool be = best->type == NODUS_VALUE_EXCLUSIVE;
-        if (ce != be) return ce;
-    }
-    int64_t sc = (int64_t)cand->seq;
-    int64_t sb = (int64_t)best->seq;
-    if (sc != sb) return sc > sb;
     uint8_t hc[32], hb[32];
     dht_data_hash(cand, hc);
     dht_data_hash(best, hb);
-    int h = memcmp(hc, hb, 32);
-    if (h != 0) return h > 0;
-    return dht_value_pk_cmp(cand, best) < 0;
+    return dht_single_cmp(cand, hc, best, hb, exclusive_first) < 0;
 }
 
-void nodus_dht_pick_best(nodus_value_t **best,
-                         nodus_value_t **src, size_t src_count,
-                         const nodus_key_t *key, const nodus_key_t *own,
-                         bool verify_rows, nodus_dht_merge_stats_t *stats) {
-    nodus_dht_merge_stats_t scratch;
-    if (!stats) stats = &scratch;
-    memset(stats, 0, sizeof(*stats));
-    if (!best || !src || !key) return;
-    /* Without an owner filter the local read (nodus_storage_get) prefers
-     * an EXCLUSIVE row; with one, the owner's newest row (get_owner). */
-    bool exclusive_first = (own == NULL);
-    for (size_t i = 0; i < src_count; i++) {
-        nodus_value_t *v = src[i];
-        if (!v || !dht_row_passes(v, key, own, NULL, stats)) continue;
-        if (!nodus_dht_single_better(v, *best, exclusive_first)) {
-            stats->dup++;
-            continue;
+nodus_value_t *nodus_dht_keyset_pick_best(nodus_dht_keyset_t *ks,
+                                          bool exclusive_first, int *verify_left,
+                                          bool *capped_out) {
+    if (capped_out) *capped_out = false;
+    if (!ks) return NULL;
+    nodus_value_t *best = NULL;
+    /* Candidates are tried best-first; each pass picks the best not yet
+     * rejected (n is small: one key's forwarded rows), so only rows that
+     * would become the answer are ever verified. */
+    for (;;) {
+        long bi = -1;
+        for (size_t i = 0; i < ks->n; i++) {
+            if (!ks->c[i].v || ks->c[i].vstate == NODUS_DHT_V_BAD) continue;
+            if (bi < 0 || dht_single_cmp(ks->c[i].v, ks->c[i].hash,
+                                         ks->c[bi].v, ks->c[bi].hash,
+                                         exclusive_first) < 0)
+                bi = (long)i;
         }
-        if (verify_rows && nodus_value_verify(v) != 0) { stats->bad++; continue; }
-        nodus_value_free(*best);
-        *best = v;
-        src[i] = NULL;
-        stats->kept++;
-    }
-}
-
-void nodus_dht_page_note_source(nodus_dht_page_acc_t *acc, bool src_more,
-                                const nodus_dht_merge_stats_t *stats) {
-    if (!acc || !src_more) return;
-    acc->any_more = true;
-    /* The bound is a PK that is PRESENT in the set (last_valid), so a
-     * source answering more=true with only bad rows cannot pull the bound
-     * below every honest row: the page always advances by >= 1 row. */
-    if (!stats || !stats->has_last) return;
-    if (!acc->has_bound ||
-        nodus_dht_pk_cmp(&stats->last_valid.owner, stats->last_valid.vid,
-                         &acc->bound.owner, acc->bound.vid) < 0) {
-        acc->bound = stats->last_valid;
-        acc->has_bound = true;
-    }
-}
-
-static int dht_qsort_pk(const void *a, const void *b) {
-    const nodus_value_t *va = *(nodus_value_t * const *)a;
-    const nodus_value_t *vb = *(nodus_value_t * const *)b;
-    return dht_value_pk_cmp(va, vb);
-}
-
-void nodus_dht_page_finish(nodus_value_t **set, size_t *count,
-                           const nodus_dht_page_acc_t *acc, size_t budget,
-                           nodus_t2_page_info_t *page_out) {
-    nodus_t2_page_info_t page;
-    memset(&page, 0, sizeof(page));
-    size_t n = (set && count) ? *count : 0;
-
-    /* PKs are unique in the set → a total order, qsort is deterministic. */
-    if (n > 1) qsort(set, n, sizeof(*set), dht_qsort_pk);
-
-    size_t keep = 0, used = 0;
-    bool cut = false;
-    for (size_t i = 0; i < n; i++) {
-        const nodus_value_t *v = set[i];
-        /* Rows past the bound may interleave with rows a source has not
-         * sent yet: they come back on the next page. */
-        if (acc && acc->has_bound &&
-            nodus_dht_pk_cmp(&v->owner_fp, v->value_id,
-                             &acc->bound.owner, acc->bound.vid) > 0) {
-            cut = true;
+        if (bi < 0) break;
+        int r = dht_cand_check(&ks->c[bi], verify_left);
+        if (r < 0) {                       /* verify budget gone: undecided */
+            if (capped_out) *capped_out = true;
             break;
         }
-        size_t est = NODUS_VALUE_SERIALIZED_EST(v->data_len);
-        if (keep > 0 && used + est > budget) { cut = true; break; }
-        used += est;
-        keep++;
+        if (r == 1) {
+            best = ks->c[bi].v;
+            ks->c[bi].v = NULL;            /* moved out */
+            break;
+        }
     }
-    for (size_t i = keep; i < n; i++) {
-        nodus_value_free(set[i]);
-        set[i] = NULL;
-    }
-    if (count) *count = keep;
-
-    page.more = keep > 0 && (cut || (acc && acc->any_more));
-    if (page.more) {
-        page.has_next = true;
-        page.next.owner = set[keep - 1]->owner_fp;
-        page.next.vid = set[keep - 1]->value_id;
-    }
-    if (page_out) *page_out = page;
+    nodus_dht_keyset_clear(ks);
+    return best;
 }
 
-nodus_dht_read_outcome_t nodus_dht_read_outcome(size_t rows, int peers_to_ask,
-                                                int answered) {
+nodus_dht_read_outcome_t nodus_dht_read_outcome(size_t rows, int peers,
+                                                int answered, bool local_fault) {
     if (rows > 0) return NODUS_DHT_READ_ROWS;
-    if (peers_to_ask <= 0) return NODUS_DHT_READ_EMPTY;
-    if (answered <= 0) return NODUS_DHT_READ_UNAVAILABLE;
-    return NODUS_DHT_READ_EMPTY;
+    if (answered > 0) return NODUS_DHT_READ_EMPTY;
+    if (peers <= 0 && !local_fault) return NODUS_DHT_READ_EMPTY;
+    return NODUS_DHT_READ_UNAVAILABLE;
 }
 
 /* S6: tell the client this node could not look (not "not found"). */
@@ -2401,6 +2653,182 @@ static void dht_free_rows(nodus_value_t **vals, size_t count) {
     free(vals);
 }
 
+static void dht_key_prefix(const nodus_key_t *k, char out[17]) {
+    for (int i = 0; i < 8; i++) snprintf(out + i * 2, 3, "%02x", k->bytes[i]);
+    out[16] = '\0';
+}
+
+/* ── Read replies from a resolved keyset (single GET / get_all / batch) ─
+ *
+ * One encoder per reply shape, used by the forward completion
+ * (nodus_server_bf_encode_result) AND by every path that answers without
+ * forwarding (no peer, no slot, alloc failure), so both answer alike. */
+
+typedef enum {
+    DHT_REPLY_SINGLE = 0,   /* get: result / result_empty */
+    DHT_REPLY_GET_ALL = 1   /* get_all: result_multi / result_empty / result_page */
+} dht_reply_kind_t;
+
+static int dht_encode_unavailable(uint32_t txn, const char *why,
+                                  uint8_t *buf, size_t cap, size_t *len) {
+    return nodus_t2_error(txn, NODUS_ERR_UNAVAILABLE, why, buf, cap, len);
+}
+
+/* Consumes ks (its rows are moved out or freed). */
+static int dht_encode_key_reply(dht_reply_kind_t kind, uint32_t txn,
+                                nodus_dht_keyset_t *ks, bool has_own, bool paged,
+                                int *verify_left,
+                                uint8_t *buf, size_t cap, size_t *len) {
+    char kh[17] = "?";
+    if (ks->n > 0) dht_key_prefix(&ks->c[0].v->key_hash, kh);
+
+    if (kind == DHT_REPLY_SINGLE) {
+        /* Without an owner filter the local read (nodus_storage_get)
+         * prefers an EXCLUSIVE row; with one, the owner's newest row. */
+        bool capped = false;
+        nodus_value_t *best = nodus_dht_keyset_pick_best(ks, !has_own, verify_left,
+                                                         &capped);
+        /* The verify budget ran out before any candidate qualified: the
+         * read could not decide — UNAVAILABLE, never "not found". */
+        if ((capped && !best) ||
+            nodus_dht_read_outcome(best ? 1 : 0, ks->peers, ks->answered,
+                                   ks->local_fault) == NODUS_DHT_READ_UNAVAILABLE) {
+            QGP_LOG_WARN(LOG_TAG, "GET: txn=%u could not look (peers=%d answered=%d "
+                         "local_fault=%d capped=%d)", (unsigned)txn, ks->peers,
+                         ks->answered, ks->local_fault ? 1 : 0, capped ? 1 : 0);
+            nodus_value_free(best);
+            return dht_encode_unavailable(txn, "could not look", buf, cap, len);
+        }
+        int rc;
+        if (best) {
+            rc = nodus_t2_result(txn, best, buf, cap, len);
+            if (rc != 0)
+                rc = nodus_t2_error(txn, NODUS_ERR_INTERNAL_ERROR,
+                                    "value encode failed", buf, cap, len);
+        } else {
+            rc = nodus_t2_result_empty(txn, buf, cap, len);
+        }
+        nodus_value_free(best);
+        return rc;
+    }
+
+    nodus_value_t **rows = NULL;
+    size_t count = 0;
+    nodus_t2_page_info_t page;
+    bool capped = false;
+    if (nodus_dht_keyset_resolve(ks, paged, NODUS_GET_ALL_PAGE_MAX_BYTES,
+                                 verify_left, &rows, &count, &page, &capped) != 0)
+        return nodus_t2_error(txn, NODUS_ERR_INTERNAL_ERROR, "get_all alloc failed",
+                              buf, cap, len);
+    if (capped)
+        QGP_LOG_WARN(LOG_TAG, "GET_ALL: key=%s... verify budget (%d) spent — %zu "
+                     "row(s) returned, the rest %s", kh, NODUS_DHT_VERIFY_CAP, count,
+                     paged ? "left for the next page" : "dropped");
+    if ((capped && count == 0) ||
+        nodus_dht_read_outcome(count, ks->peers, ks->answered, ks->local_fault) ==
+            NODUS_DHT_READ_UNAVAILABLE) {
+        dht_free_rows(rows, count);
+        QGP_LOG_WARN(LOG_TAG, "GET_ALL: key=%s... txn=%u could not look (peers=%d "
+                     "answered=%d local_fault=%d capped=%d)", kh, (unsigned)txn,
+                     ks->peers, ks->answered, ks->local_fault ? 1 : 0, capped ? 1 : 0);
+        return dht_encode_unavailable(txn, "could not look", buf, cap, len);
+    }
+    int rc;
+    if (paged)
+        rc = nodus_t2_result_page(txn, rows, count, &page, buf, cap, len);
+    else if (count > 0)
+        rc = nodus_t2_result_multi(txn, rows, count, buf, cap, len);
+    else
+        rc = nodus_t2_result_empty(txn, buf, cap, len);
+    if (rc != 0)
+        rc = nodus_t2_error(txn, NODUS_ERR_INTERNAL_ERROR, "get_all encode failed",
+                            buf, cap, len);
+    dht_free_rows(rows, count);
+    return rc;
+}
+
+/* Client get_batch reply over n keysets (consumed). A key that could not
+ * be looked up gets "u": true (rev 2 item 15); when NO key has a row and
+ * every key could not be looked up, the whole reply is UNAVAILABLE. */
+static int dht_encode_batch_reply(uint32_t txn, const nodus_key_t *keys, int n,
+                                  nodus_dht_keyset_t *sets, int *verify_left,
+                                  uint8_t *buf, size_t cap, size_t *len) {
+    nodus_value_t ***vals = calloc((size_t)n, sizeof(nodus_value_t **));
+    size_t *counts = calloc((size_t)n, sizeof(size_t));
+    bool *unavail = calloc((size_t)n, sizeof(bool));
+    int rc;
+    if (!vals || !counts || !unavail) {
+        for (int i = 0; i < n; i++) nodus_dht_keyset_clear(&sets[i]);
+        rc = nodus_t2_error(txn, NODUS_ERR_INTERNAL_ERROR, "alloc failed", buf, cap, len);
+        goto out;
+    }
+    size_t rows = 0;
+    int n_unavail = 0;
+    for (int i = 0; i < n; i++) {
+        bool capped = false;
+        if (nodus_dht_keyset_resolve(&sets[i], false, 0, verify_left,
+                                     &vals[i], &counts[i], NULL, &capped) != 0) {
+            unavail[i] = true;     /* could not build the answer for this key */
+            n_unavail++;
+            continue;
+        }
+        if (capped) {
+            char kh[17];
+            dht_key_prefix(&keys[i], kh);
+            QGP_LOG_WARN(LOG_TAG, "GET_BATCH: key=%s... verify budget (%d) spent — "
+                         "%zu row(s) kept, the rest dropped", kh,
+                         NODUS_DHT_VERIFY_CAP, counts[i]);
+        }
+        rows += counts[i];
+        if ((capped && counts[i] == 0) ||
+            nodus_dht_read_outcome(counts[i], sets[i].peers, sets[i].answered,
+                                   sets[i].local_fault) == NODUS_DHT_READ_UNAVAILABLE) {
+            unavail[i] = true;
+            n_unavail++;
+        }
+    }
+    if (rows == 0 && n_unavail == n) {
+        QGP_LOG_WARN(LOG_TAG, "GET_BATCH: txn=%u %d key(s), none could be looked up "
+                     "— UNAVAILABLE", (unsigned)txn, n);
+        rc = dht_encode_unavailable(txn, "could not look", buf, cap, len);
+        goto out;
+    }
+    if (n_unavail > 0)
+        QGP_LOG_INFO(LOG_TAG, "GET_BATCH: txn=%u %d of %d key(s) marked could-not-look",
+                     (unsigned)txn, n_unavail, n);
+    rc = nodus_t2_result_get_batch_ex(txn, keys, n, vals, counts, NULL,
+                                      n_unavail > 0 ? unavail : NULL, buf, cap, len);
+    if (rc != 0)
+        rc = nodus_t2_error(txn, NODUS_ERR_INTERNAL_ERROR, "batch encode failed",
+                            buf, cap, len);
+out:
+    if (vals) {
+        for (int i = 0; i < n; i++) dht_free_rows(vals[i], counts ? counts[i] : 0);
+        free(vals);
+    }
+    free(counts);
+    free(unavail);
+    return rc;
+}
+
+/* Encode with a heap buffer and send; UNAVAILABLE when even that fails. */
+static void dht_send_key_reply(nodus_tcp_conn_t *conn, dht_reply_kind_t kind,
+                               uint32_t txn, nodus_dht_keyset_t *ks, bool has_own,
+                               bool paged) {
+    int verify_left = NODUS_DHT_VERIFY_CAP;
+    uint8_t *buf = malloc(RESP_BUF_SIZE);
+    size_t len = 0;
+    if (!buf) {
+        nodus_dht_keyset_clear(ks);
+        dht_send_unavailable(conn, txn, "reply alloc failed");
+        return;
+    }
+    if (dht_encode_key_reply(kind, txn, ks, has_own, paged, &verify_left,
+                             buf, RESP_BUF_SIZE, &len) == 0 && conn)
+        nodus_tcp_send(conn, buf, len);
+    free(buf);
+}
+
 /* ── handle_t2_get — FIND_NODE + BF forward (TCP) ────────────────── */
 
 /**
@@ -2408,16 +2836,26 @@ static void dht_free_rows(nodus_value_t **vals, size_t count) {
  * Always heap-allocated. `get_lookup_complete` frees it.
  */
 typedef struct {
-    uint32_t    txn_id;
-    int         session_slot;
-    nodus_key_t key;
-    bool        has_own;    /* S2: "own" owner filter */
-    nodus_key_t own;
+    uint32_t       txn_id;
+    int            session_slot;
+    nodus_key_t    key;
+    bool           has_own;     /* S2: "own" owner filter */
+    nodus_key_t    own;
+    nodus_value_t *local;       /* item 14: the owner's local row (own only) */
+    bool           local_fault; /* the local read faulted (rev 2 item 13) */
 } get_lookup_ctx_t;
+
+static void get_lookup_ctx_free(void *p) {
+    get_lookup_ctx_t *ctx = (get_lookup_ctx_t *)p;
+    if (!ctx) return;
+    nodus_value_free(ctx->local);
+    free(ctx);
+}
 
 /**
  * Callback: iterative FIND_NODE completed for a GET request.
- * Now BF forward to K-closest nodes to fetch the value via TCP.
+ * Now BF forward to K-closest nodes to fetch the value via TCP. The local
+ * row (own) is a trusted candidate of the same pick.
  */
 static void get_lookup_complete(nodus_server_t *srv,
                                  nodus_peer_t *closest, int count,
@@ -2426,7 +2864,7 @@ static void get_lookup_complete(nodus_server_t *srv,
     if (!ctx) return;
 
     nodus_session_t *sess = &srv->sessions[ctx->session_slot];
-    if (!sess->conn) { free(ctx); return; }  /* Client disconnected */
+    if (!sess->conn) { get_lookup_ctx_free(ctx); return; }  /* Client disconnected */
 
     /* Filter out self */
     int fwd_count = 0;
@@ -2435,33 +2873,39 @@ static void get_lookup_complete(nodus_server_t *srv,
         if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) != 0)
             fwd_peers[fwd_count++] = closest[i];
     }
-
-    if (fwd_count == 0) {
-        /* No peers to ask and no local row — a truthful empty */
-        size_t len = 0;
-        nodus_t2_result_empty(ctx->txn_id, resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        free(ctx);
-        return;
-    }
+    const nodus_key_t *own = ctx->has_own ? &ctx->own : NULL;
 
     /* Find a free BF batch slot */
     int bi = -1;
-    for (int i = 0; i < NODUS_BF_MAX_BATCHES; i++) {
-        if (!srv->bf_state.batches[i].active) { bi = i; break; }
+    if (fwd_count > 0) {
+        for (int i = 0; i < NODUS_BF_MAX_BATCHES; i++) {
+            if (!srv->bf_state.batches[i].active) { bi = i; break; }
+        }
     }
-    if (bi < 0) {
-        /* S6: peers hold the key but none can be asked — could not look */
-        fprintf(stderr, "GET: no BF slot — answering UNAVAILABLE\n");
-        dht_send_unavailable(sess->conn, ctx->txn_id, "no forward slot");
-        free(ctx);
+    dht_bf_batch_t *b = (bi >= 0) ? &srv->bf_state.batches[bi] : NULL;
+    if (b && nodus_server_bf_batch_setup(b, &ctx->key, 1) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "GET: forward alloc failed");
+        b = NULL;
+    }
+    if (!b) {
+        /* No forward: no peer (a truthful empty, unless the local read
+         * faulted), or (S6) no slot / alloc failure — could not look
+         * unless the local row answers. */
+        if (fwd_count > 0)
+            QGP_LOG_WARN(LOG_TAG, "GET: txn=%u no forward slot", (unsigned)ctx->txn_id);
+        nodus_dht_keyset_t ks;
+        memset(&ks, 0, sizeof(ks));
+        ks.peers = fwd_count;
+        ks.local_fault = ctx->local_fault;
+        if (ctx->local)
+            (void)nodus_dht_keyset_add(&ks, &ctx->local, 1, &ctx->key, own, NULL,
+                                       true, NULL);
+        dht_send_key_reply(sess->conn, DHT_REPLY_SINGLE, ctx->txn_id, &ks,
+                           ctx->has_own, false);
+        get_lookup_ctx_free(ctx);
         return;
     }
 
-    dht_bf_batch_t *b = &srv->bf_state.batches[bi];
-    memset(b, 0, sizeof(*b));
-    for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) b->forwards[i].fd = -1;
-    b->active = true;
     b->is_get_all = false;
     b->is_single_get = true;
     b->has_own = ctx->has_own;
@@ -2469,18 +2913,11 @@ static void get_lookup_complete(nodus_server_t *srv,
     b->txn_id = ctx->txn_id;
     b->session_slot = ctx->session_slot;
     b->started_at = nodus_time_now_ms();
-    b->key_count = 1;
-    b->keys = malloc(sizeof(nodus_key_t));
-    b->vals_per_key = calloc(1, sizeof(nodus_value_t **));
-    b->counts_per_key = calloc(1, sizeof(size_t));
-    if (!b->keys || !b->vals_per_key || !b->counts_per_key) {
-        /* S6: forward-context alloc failure — could not look */
-        bf_batch_cleanup(srv, b);
-        dht_send_unavailable(sess->conn, ctx->txn_id, "forward alloc failed");
-        free(ctx);
-        return;
-    }
-    b->keys[0] = ctx->key;
+    b->sets[0].peers = fwd_count;
+    b->sets[0].local_fault = ctx->local_fault;
+    if (ctx->local)
+        (void)nodus_dht_keyset_add(&b->sets[0], &ctx->local, 1, &ctx->key, own,
+                                   NULL, true, NULL);
 
     /* Start forwards to K-closest peers */
     b->pending_forwards = 0;
@@ -2491,26 +2928,32 @@ static void get_lookup_complete(nodus_server_t *srv,
             b->pending_forwards++;
     }
 
-    if (b->pending_forwards == 0) {
-        /* S6: every forward failed to start — could not look */
-        bf_batch_cleanup(srv, b);
-        dht_send_unavailable(sess->conn, ctx->txn_id, "no forward started");
-    }
-    /* else: response deferred — bf_tick will send when forwards complete */
+    /* Every forward failed to start → answer now from what is there (the
+     * local row, or S6 UNAVAILABLE). Else bf_tick answers. */
+    if (b->pending_forwards == 0)
+        bf_send_result(srv, b);
 
-    free(ctx);
+    get_lookup_ctx_free(ctx);
 }
 
 static void handle_t2_get(nodus_server_t *srv, nodus_session_t *sess,
                            nodus_tier2_msg_t *msg) {
-    /* Fast path: check local storage first. S2: with "own", that owner's
-     * newest row (nodus_storage_get_owner) instead of the key's best row. */
+    /* Local read. S2: with "own", that owner's newest row
+     * (nodus_storage_get_owner) instead of the key's best row. */
     nodus_value_t *val = NULL;
     int rc = msg->has_own
         ? nodus_storage_get_owner(&srv->storage, &msg->key, &msg->own_fp, &val)
         : nodus_storage_get(&srv->storage, &msg->key, &val);
+    bool local_fault = (rc == NODUS_STORAGE_RC_FAULT);
+    if (local_fault)
+        QGP_LOG_WARN(LOG_TAG, "GET: txn=%u local storage read fault — asking peers",
+                     (unsigned)msg->txn_id);
 
-    if (rc == 0 && val) {
+    /* Without "own": a local hit answers at once (unchanged fast path).
+     * Rev 2 item 14: with "own" the owner's row on this node may be older
+     * than on its replicas — always forward and pick the newest verified
+     * row among the local one and the forwarded ones (S1). */
+    if (!msg->has_own && rc == 0 && val) {
         size_t len = 0;
         if (nodus_t2_result(msg->txn_id, val, resp_buf, sizeof(resp_buf), &len) == 0) {
             nodus_tcp_send(sess->conn, resp_buf, len);
@@ -2524,14 +2967,14 @@ static void handle_t2_get(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
-    /* Not found locally.
-     *   Small cluster: routing table covers most nodes — BF forward directly.
+    /*   Small cluster: routing table covers most nodes — BF forward directly.
      *   Large cluster: iterative FIND_NODE first, then BF forward to K-closest. */
     int known = nodus_routing_count(&srv->routing);
 
     get_lookup_ctx_t *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) {
         /* S6: forward-context alloc failure — could not look */
+        nodus_value_free(val);
         dht_send_unavailable(sess->conn, msg->txn_id, "forward alloc failed");
         return;
     }
@@ -2540,6 +2983,9 @@ static void handle_t2_get(nodus_server_t *srv, nodus_session_t *sess,
     ctx->key = msg->key;
     ctx->has_own = msg->has_own;
     if (msg->has_own) ctx->own = msg->own_fp;
+    ctx->local = (rc == 0) ? val : NULL;   /* own only — the fast path took the rest */
+    if (!ctx->local) nodus_value_free(val);
+    ctx->local_fault = local_fault;
 
     if (known <= NODUS_R * 4) {
         /* Small cluster: skip iterative FIND_NODE — use routing table */
@@ -2554,39 +3000,13 @@ static void handle_t2_get(nodus_server_t *srv, nodus_session_t *sess,
     if (iterative_lookup_start(srv, &msg->key,
                                 (int)(sess - srv->sessions),
                                 msg->txn_id,
-                                get_lookup_complete, ctx, free) != 0) {
+                                get_lookup_complete, ctx, get_lookup_ctx_free) != 0) {
         /* No lookup slots — fall back to routing table + BF */
         nodus_peer_t closest[NODUS_K];
         int peer_count = nodus_routing_find_closest(&srv->routing, &msg->key,
                                                       closest, NODUS_K);
         get_lookup_complete(srv, closest, peer_count, ctx);
     }
-}
-
-/* Send a get_all reply from a row set. Unpaged (legacy): result_multi /
- * result_empty, exactly the pre-Package-A shapes. Paged (S3): the set is
- * cut to one page (nodus_dht_page_finish — may free rows past the page and
- * shrink *count) and sent as result_page. The set stays the caller's. */
-static void get_all_send_rows(nodus_tcp_conn_t *conn, uint32_t txn, bool paged,
-                              nodus_value_t **vals, size_t *count,
-                              const nodus_dht_page_acc_t *acc,
-                              uint8_t *buf, size_t cap) {
-    if (!conn) return;
-    size_t len = 0;
-    int rc;
-    if (paged) {
-        nodus_t2_page_info_t page;
-        nodus_dht_page_finish(vals, count, acc, NODUS_GET_ALL_PAGE_MAX_BYTES, &page);
-        rc = nodus_t2_result_page(txn, vals, *count, &page, buf, cap, &len);
-    } else if (*count > 0) {
-        rc = nodus_t2_result_multi(txn, vals, *count, buf, cap, &len);
-    } else {
-        rc = nodus_t2_result_empty(txn, buf, cap, &len);
-    }
-    if (rc != 0)
-        nodus_t2_error(txn, NODUS_ERR_INTERNAL_ERROR, "get_all encode failed",
-                       buf, cap, &len);
-    nodus_tcp_send(conn, buf, len);
 }
 
 static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
@@ -2614,6 +3034,10 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
     } else {
         rc = nodus_storage_get_all(&srv->storage, &msg->key, &vals, &count);
     }
+    /* Rev 2 item 13: a FAULT of the paged / owner read is "could not look"
+     * (nodus_storage_get_all returns -1 for both "none" and a SQLite error,
+     * so the legacy read cannot tell — it stays "no local row"). */
+    bool local_fault = (rc == NODUS_STORAGE_RC_FAULT);
     if (rc != 0) {
         dht_free_rows(vals, count);
         vals = NULL;
@@ -2623,23 +3047,33 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
 
     /* Key hash prefix for logging */
     char ga_kh[17];
-    for (int kk = 0; kk < 8; kk++) snprintf(ga_kh + kk*2, sizeof(ga_kh) - kk*2, "%02x", msg->key.bytes[kk]);
-    ga_kh[16] = '\0';
+    dht_key_prefix(&msg->key, ga_kh);
+    if (local_fault)
+        QGP_LOG_WARN(LOG_TAG, "GET_ALL: key=%s... local storage read fault", ga_kh);
 
     if (!paged && local_more)
         fprintf(stderr, "GET_ALL: key=%s... owner-filtered read truncated at "
                 "%zu local rows (unpaged; use pg/after)\n", ga_kh, count);
 
-    /* S3: the local page is one source. Local rows were verified at put. */
-    nodus_dht_page_acc_t acc;
-    memset(&acc, 0, sizeof(acc));
-    if (paged && local_more && count > 0) {
+    /* The local rows are one TRUSTED source (verified at put): their page
+     * outcome always bounds (S3), their order leads an unpaged reply. */
+    nodus_dht_keyset_t local;
+    memset(&local, 0, sizeof(local));
+    local.local_fault = local_fault;
+    {
         nodus_dht_merge_stats_t lst;
-        memset(&lst, 0, sizeof(lst));
-        lst.has_last = true;
-        lst.last_valid.owner = vals[count - 1]->owner_fp;
-        lst.last_valid.vid = vals[count - 1]->value_id;
-        nodus_dht_page_note_source(&acc, true, &lst);
+        if (nodus_dht_keyset_add(&local, vals, count, &msg->key, own, after,
+                                 true, &lst) != 0) {
+            dht_free_rows(vals, count);
+            nodus_dht_keyset_clear(&local);
+            dht_send_unavailable(sess->conn, msg->txn_id, "local alloc failed");
+            return;
+        }
+        if (paged)
+            nodus_dht_keyset_note_page(&local, local_more != 0, true,
+                                       NODUS_GET_ALL_PAGE_MAX_BYTES, &lst);
+        dht_free_rows(vals, count);   /* rows not taken (filtered): none expected */
+        vals = NULL;
     }
 
     /* Find R closest peers for potential forwarding (needed even on local hit
@@ -2656,17 +3090,15 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
             fwd_peers[fwd_count++] = closest[i];
         }
     }
+    local.peers = fwd_count;
 
     /* No peers to forward to: the local rows are the whole answer (no local
-     * row → a truthful empty; single-node truth). */
+     * row → a truthful empty; single-node truth — unless the read faulted). */
     if (fwd_count == 0) {
-        if (count > 0)
-            fprintf(stderr, "GET_ALL: key=%s... local_hit %zu values, no peers to forward\n", ga_kh, count);
-        else
-            fprintf(stderr, "GET_ALL: key=%s... local_miss, no peers\n", ga_kh);
-        get_all_send_rows(sess->conn, msg->txn_id, paged, vals, &count, &acc,
-                          resp_buf, sizeof(resp_buf));
-        dht_free_rows(vals, count);
+        fprintf(stderr, "GET_ALL: key=%s... local=%zu, no peers to forward\n",
+                ga_kh, count);
+        dht_send_key_reply(sess->conn, DHT_REPLY_GET_ALL, msg->txn_id, &local,
+                           own != NULL, paged);
         return;
     }
 
@@ -2681,52 +3113,29 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
         if (!srv->bf_state.batches[i].active) { bi = i; break; }
     }
     dht_bf_batch_t *b = (bi >= 0) ? &srv->bf_state.batches[bi] : NULL;
-    if (b) {
-        /* Set up 1-key BF batch with is_get_all flag */
-        memset(b, 0, sizeof(*b));
-        for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) b->forwards[i].fd = -1;
-        b->active = true;
-        b->is_get_all = true;
-        b->paged = paged;
-        b->has_own = (own != NULL);
-        if (own) b->own = *own;
-        b->has_after = (after != NULL);
-        if (after) b->after = *after;
-        b->page_acc = acc;
-        b->txn_id = msg->txn_id;
-        b->session_slot = (int)(sess - srv->sessions);
-        b->started_at = nodus_time_now_ms();
-        b->key_count = 1;
-        b->keys = malloc(sizeof(nodus_key_t));
-        b->vals_per_key = calloc(1, sizeof(nodus_value_t **));
-        b->counts_per_key = calloc(1, sizeof(size_t));
-        if (!b->keys || !b->vals_per_key || !b->counts_per_key) {
-            fprintf(stderr, "GET_ALL: key=%s... forward alloc failed\n", ga_kh);
-            bf_batch_cleanup(srv, b);
-            b = NULL;
-        }
-    } else {
+    if (!b) {
         fprintf(stderr, "GET_ALL: key=%s... no BF slots\n", ga_kh);
+    } else if (nodus_server_bf_batch_setup(b, &msg->key, 1) != 0) {
+        fprintf(stderr, "GET_ALL: key=%s... forward alloc failed\n", ga_kh);
+        b = NULL;
     }
     if (!b) {
         /* Could not forward. Local rows are still an answer; with none,
-         * S6: could not look → UNAVAILABLE, not "empty". */
-        if (count > 0)
-            get_all_send_rows(sess->conn, msg->txn_id, paged, vals, &count, &acc,
-                              resp_buf, sizeof(resp_buf));
-        else
-            dht_send_unavailable(sess->conn, msg->txn_id, "no forward slot");
-        dht_free_rows(vals, count);
+         * S6: could not look → UNAVAILABLE (peers > 0, none answered). */
+        dht_send_key_reply(sess->conn, DHT_REPLY_GET_ALL, msg->txn_id, &local,
+                           own != NULL, paged);
         return;
     }
-    b->keys[0] = msg->key;
-
-    /* Seed with local data if any */
-    if (count > 0 && vals) {
-        b->vals_per_key[0] = vals;
-        b->counts_per_key[0] = count;
-        vals = NULL;  /* Ownership transferred to batch */
-    }
+    b->is_get_all = true;
+    b->paged = paged;
+    b->has_own = (own != NULL);
+    if (own) b->own = *own;
+    b->has_after = (after != NULL);
+    if (after) b->after = *after;
+    b->txn_id = msg->txn_id;
+    b->session_slot = (int)(sess - srv->sessions);
+    b->started_at = nodus_time_now_ms();
+    b->sets[0] = local;   /* ownership of the local candidates moves to the batch */
 
     /* Start forwards to up to R closest peers */
     b->pending_forwards = 0;
@@ -2741,15 +3150,12 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
         }
     }
 
-    /* Clean up local vals if not transferred */
-    dht_free_rows(vals, count);
-
     if (b->pending_forwards > 0) {
         return;  /* Response deferred — bf_tick will send when all forwards complete */
     }
 
     /* All forwards failed to start — answer from what we have: local rows,
-     * or (S6, answered_forwards == 0) UNAVAILABLE. */
+     * or (S6, no source answered) UNAVAILABLE. */
     bf_send_result(srv, b);
 }
 
@@ -2788,23 +3194,54 @@ static void bf_batch_cleanup(nodus_server_t *srv, dht_bf_batch_t *b) {
          * practice) are cleaned. */
         if (b->forwards[i].fd > 0) bf_conn_cleanup(srv, &b->forwards[i]);
     }
-    if (b->vals_per_key) {
-        for (int i = 0; i < b->key_count; i++) {
-            if (b->vals_per_key[i]) {
-                for (size_t j = 0; j < b->counts_per_key[i]; j++)
-                    nodus_value_free(b->vals_per_key[i][j]);
-                free(b->vals_per_key[i]);
-            }
-        }
-        free(b->vals_per_key);
+    if (b->sets) {
+        for (int i = 0; i < b->key_count; i++) nodus_dht_keyset_clear(&b->sets[i]);
+        free(b->sets);
     }
-    free(b->counts_per_key);
     free(b->keys);
-    nodus_value_free(b->single_best);
     memset(b, 0, sizeof(*b));
     /* Phase 3.2e FIX: after memset all forwards' fd are 0 — re-init to -1
      * so any later cleanup pass treats them as inactive, not as stdin. */
     for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) b->forwards[i].fd = -1;
+}
+
+void nodus_server_bf_batch_cleanup(nodus_server_t *srv, dht_bf_batch_t *b) {
+    if (b) bf_batch_cleanup(srv, b);
+}
+
+int nodus_server_bf_batch_setup(dht_bf_batch_t *b, const nodus_key_t *keys, int n) {
+    if (!b || !keys || n < 1) return -1;
+    memset(b, 0, sizeof(*b));
+    for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) b->forwards[i].fd = -1;
+    b->keys = malloc((size_t)n * sizeof(nodus_key_t));
+    b->sets = calloc((size_t)n, sizeof(nodus_dht_keyset_t));
+    if (!b->keys || !b->sets) {
+        free(b->keys);
+        free(b->sets);
+        memset(b, 0, sizeof(*b));
+        for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) b->forwards[i].fd = -1;
+        return -1;
+    }
+    memcpy(b->keys, keys, (size_t)n * sizeof(nodus_key_t));
+    b->key_count = n;
+    b->verify_left = NODUS_DHT_VERIFY_CAP;
+    b->active = true;
+    return 0;
+}
+
+int nodus_server_bf_encode_result(dht_bf_batch_t *b, uint8_t *buf, size_t cap,
+                                  size_t *len_out) {
+    if (!b || !b->sets || !buf || !len_out) return -1;
+    if (b->is_single_get && b->key_count == 1)
+        return dht_encode_key_reply(DHT_REPLY_SINGLE, b->txn_id, &b->sets[0],
+                                    b->has_own, false, &b->verify_left,
+                                    buf, cap, len_out);
+    if (b->is_get_all && b->key_count == 1)
+        return dht_encode_key_reply(DHT_REPLY_GET_ALL, b->txn_id, &b->sets[0],
+                                    b->has_own, b->paged, &b->verify_left,
+                                    buf, cap, len_out);
+    return dht_encode_batch_reply(b->txn_id, b->keys, b->key_count, b->sets,
+                                  &b->verify_left, buf, cap, len_out);
 }
 
 /** Send batch response to client and clean up */
@@ -2812,71 +3249,101 @@ static void bf_send_result(nodus_server_t *srv, dht_bf_batch_t *b) {
     nodus_session_t *sess = &srv->sessions[b->session_slot];
     if (!sess->conn) { bf_batch_cleanup(srv, b); return; }
 
-    /* S6: zero rows AND no forward answered (all failed / timed out / never
-     * started) = this node could not look → UNAVAILABLE, not "empty". A
-     * forward batch only exists when there were peers to ask. */
-    size_t total_rows = 0;
-    if (b->is_single_get) {
-        total_rows = b->single_best ? 1 : 0;
-    } else if (b->counts_per_key) {
-        for (int i = 0; i < b->key_count; i++) total_rows += b->counts_per_key[i];
-    }
-    if (nodus_dht_read_outcome(total_rows, 1, b->answered_forwards) ==
-        NODUS_DHT_READ_UNAVAILABLE) {
-        fprintf(stderr, "BF: txn=%u no forward answered, no row — UNAVAILABLE\n",
-                (unsigned)b->txn_id);
-        dht_send_unavailable(sess->conn, b->txn_id, "no forward answered");
-        bf_batch_cleanup(srv, b);
-        return;
+    if (b->is_get_all && b->key_count == 1) {
+        char bfkh[17];
+        dht_key_prefix(&b->keys[0], bfkh);
+        fprintf(stderr, "GET_ALL: key=%s... forward done: %zu candidate(s), "
+                "%d source(s) answered%s\n", bfkh, b->sets[0].n, b->sets[0].answered,
+                b->paged ? " (paged)" : "");
     }
 
-    size_t buf_cap = RESP_BUF_SIZE;
-    uint8_t *buf = malloc(buf_cap);
-    if (buf) {
-        size_t len = 0;
-        if (b->is_single_get && b->key_count == 1) {
-            /* Single-value GET (iterative FIND_NODE + BF forward):
-             * respond with `result` (the newest verified value, S1) or
-             * `result_empty`. */
-            if (b->single_best) {
-                if (nodus_t2_result(b->txn_id, b->single_best,
-                                     buf, buf_cap, &len) == 0)
-                    nodus_tcp_send(sess->conn, buf, len);
-                else {
-                    nodus_t2_result_empty(b->txn_id, buf, buf_cap, &len);
-                    nodus_tcp_send(sess->conn, buf, len);
-                }
-            } else {
-                nodus_t2_result_empty(b->txn_id, buf, buf_cap, &len);
-                nodus_tcp_send(sess->conn, buf, len);
-            }
-        } else if (b->is_get_all && b->key_count == 1) {
-            /* get_all forward: result_multi (legacy) or one page (S3) */
-            char bfkh[17];
-            for (int kk = 0; kk < 8; kk++) snprintf(bfkh + kk*2, sizeof(bfkh) - kk*2, "%02x", b->keys[0].bytes[kk]);
-            bfkh[16] = '\0';
-            if (b->counts_per_key[0] > 0)
-                fprintf(stderr, "GET_ALL: key=%s... forward_result %zu values%s\n",
-                        bfkh, b->counts_per_key[0], b->paged ? " (paged)" : "");
-            else
-                fprintf(stderr, "GET_ALL: key=%s... forward_result EMPTY\n", bfkh);
-            get_all_send_rows(sess->conn, b->txn_id, b->paged,
-                              b->vals_per_key[0], &b->counts_per_key[0],
-                              &b->page_acc, buf, buf_cap);
-        } else {
-            if (nodus_t2_result_get_batch(b->txn_id, b->keys, b->key_count,
-                                           b->vals_per_key, b->counts_per_key,
-                                           buf, buf_cap, &len) == 0) {
-                nodus_tcp_send(sess->conn, buf, len);
-            } else {
-                nodus_t2_error(b->txn_id, NODUS_ERR_INTERNAL_ERROR,
-                                "batch encode failed", buf, buf_cap, &len);
-                nodus_tcp_send(sess->conn, buf, len);
-            }
-        }
+    /* S6 / rev 2 item 13: the encoder answers UNAVAILABLE (whole reply) or
+     * "u" (per batch key) where nothing could be looked up. */
+    uint8_t *buf = malloc(RESP_BUF_SIZE);
+    size_t len = 0;
+    if (!buf) {
+        dht_send_unavailable(sess->conn, b->txn_id, "reply alloc failed");
+    } else {
+        if (nodus_server_bf_encode_result(b, buf, RESP_BUF_SIZE, &len) == 0)
+            nodus_tcp_send(sess->conn, buf, len);
         free(buf);
     }
     bf_batch_cleanup(srv, b);
+}
+
+int nodus_server_bf_absorb_reply(dht_bf_batch_t *b, const dht_bf_conn_t *c,
+                                 const uint8_t *payload, size_t len) {
+    if (!b || !c || !payload || !b->sets) return -1;
+    nodus_tier2_msg_t resp;
+    memset(&resp, 0, sizeof(resp));
+    if (nodus_t2_decode(payload, len, &resp) != 0 ||
+        !resp.batch_keys || resp.batch_key_count <= 0) {
+        nodus_t2_msg_free(&resp);
+        return -1;
+    }
+
+    const nodus_key_t *own = b->has_own ? &b->own : NULL;
+    /* Old peers ignore "after": re-apply the cursor here. */
+    const nodus_t2_cursor_t *after = (b->paged && b->has_after) ? &b->after : NULL;
+    /* The responder splits its page budget over the keys of ITS batch
+     * (the 4002 get_batch handler): the unit a "filled" page is judged in. */
+    size_t responder_budget = c->batch_key_count > 0
+        ? (size_t)NODUS_GET_ALL_PAGE_MAX_BYTES / (size_t)c->batch_key_count
+        : (size_t)NODUS_GET_ALL_PAGE_MAX_BYTES;
+
+    bool used[NODUS_MAX_BATCH_KEYS];
+    memset(used, 0, sizeof(used));
+    for (int r = 0; r < resp.batch_key_count; r++) {
+        /* F6 + rev 2 item 16: match the entry to a key THIS forward asked
+         * for, by key AND position among identical keys — the m-th entry
+         * for key K goes to the m-th index of this forward that asks K.
+         * An entry no asked index is left for is dropped. */
+        int ki = -1;
+        for (int j = 0; j < c->key_count && j < NODUS_MAX_BATCH_KEYS; j++) {
+            int cand = c->key_indices[j];
+            if (used[j] || cand < 0 || cand >= b->key_count) continue;
+            if (nodus_key_cmp(&b->keys[cand], &resp.batch_keys[r]) == 0) {
+                used[j] = true;
+                ki = cand;
+                break;
+            }
+        }
+        if (ki < 0) {
+            fprintf(stderr, "BF: %s:%u reply entry %d for a key not asked (or "
+                    "asked fewer times) — dropped\n", c->ip, (unsigned)c->port, r);
+            continue;
+        }
+        nodus_dht_keyset_t *ks = &b->sets[ki];
+
+        /* Rev 2 items 13/15: "u" = the responder could not look at this key;
+         * not an answer, and any rows beside it are ignored. */
+        if (resp.batch_unavail && resp.batch_unavail[r]) {
+            fprintf(stderr, "BF: %s:%u could not look up reply entry %d\n",
+                    c->ip, (unsigned)c->port, r);
+            continue;
+        }
+        ks->answered++;
+
+        size_t new_count = resp.batch_val_counts ? resp.batch_val_counts[r] : 0;
+        nodus_value_t **new_vals = resp.batch_vals ? resp.batch_vals[r] : NULL;
+
+        /* F6 + S1 + item 11: rows enter as UNVERIFIED candidates (key /
+         * owner / cursor filters applied now); only the rows a reply
+         * returns are signature-verified, at resolution. Rows not taken
+         * stay in resp and are freed with it. */
+        nodus_dht_merge_stats_t st;
+        if (nodus_dht_keyset_add(ks, new_vals, new_count, &b->keys[ki], own, after,
+                                 false, &st) != 0)
+            fprintf(stderr, "BF: merge alloc failed (%s:%u)\n", c->ip, (unsigned)c->port);
+        if (b->paged)
+            nodus_dht_keyset_note_page(ks, resp.batch_page ? resp.batch_page[r].more : false,
+                                       false, responder_budget, &st);
+        if (st.bad > 0)
+            fprintf(stderr, "BF: %s:%u dropped %zu forwarded value(s) "
+                    "(wrong key / owner filter)\n", c->ip, (unsigned)c->port, st.bad);
+    }
+    nodus_t2_msg_free(&resp);
+    return 0;
 }
 
 /** Build a framed CBOR message into malloc'd buffer. Returns 0 on success. */
@@ -3224,64 +3691,9 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
                 payload_len = dec_len;
             }
 
-            nodus_tier2_msg_t resp;
-            memset(&resp, 0, sizeof(resp));
-            if (nodus_t2_decode(payload, payload_len, &resp) == 0 &&
-                resp.batch_keys && resp.batch_key_count > 0) {
-                b->answered_forwards++;
-                const nodus_key_t *own = b->has_own ? &b->own : NULL;
-                /* Old peers ignore "after": re-apply the cursor here. */
-                const nodus_t2_cursor_t *after =
-                    (b->paged && b->has_after) ? &b->after : NULL;
-                for (int r = 0; r < resp.batch_key_count; r++) {
-                    /* F6: match the reply entry to a key THIS forward asked
-                     * for BY KEY, never by position. */
-                    int ki = -1;
-                    for (int j = 0; j < c->key_count; j++) {
-                        int cand = c->key_indices[j];
-                        if (cand >= 0 && cand < b->key_count &&
-                            nodus_key_cmp(&b->keys[cand], &resp.batch_keys[r]) == 0) {
-                            ki = cand;
-                            break;
-                        }
-                    }
-                    if (ki < 0) {
-                        fprintf(stderr, "BF: %s:%u reply entry %d for a key not "
-                                "asked — dropped\n", c->ip, (unsigned)c->port, r);
-                        continue;
-                    }
-
-                    size_t new_count = resp.batch_val_counts ? resp.batch_val_counts[r] : 0;
-                    nodus_value_t **new_vals = resp.batch_vals ? resp.batch_vals[r] : NULL;
-
-                    /* F6 + S1: every kept forwarded row is signature-verified
-                     * and its key_hash must equal the asked key; one row per
-                     * (owner_fp, value_id), the newer kept. Rows not taken
-                     * stay in resp and are freed with it. */
-                    nodus_dht_merge_stats_t st;
-                    if (b->is_single_get) {
-                        nodus_dht_pick_best(&b->single_best, new_vals, new_count,
-                                            &b->keys[ki], own, true, &st);
-                    } else if (nodus_dht_merge_rows(&b->vals_per_key[ki],
-                                                    &b->counts_per_key[ki],
-                                                    new_vals, new_count,
-                                                    &b->keys[ki], own, after,
-                                                    true, &st) != 0) {
-                        fprintf(stderr, "BF: merge alloc failed (%s:%u)\n",
-                                c->ip, (unsigned)c->port);
-                    }
-                    if (b->paged)
-                        nodus_dht_page_note_source(&b->page_acc,
-                            resp.batch_page ? resp.batch_page[r].more : false, &st);
-                    if (st.bad > 0)
-                        fprintf(stderr, "BF: %s:%u dropped %zu forwarded value(s) "
-                                "(bad signature / wrong key / owner filter)\n",
-                                c->ip, (unsigned)c->port, st.bad);
-                }
-                nodus_t2_msg_free(&resp);
-            } else {
-                nodus_t2_msg_free(&resp);
-            }
+            /* An error frame / garbage absorbs nothing: the keys of this
+             * forward stay unanswered (S6). */
+            (void)nodus_server_bf_absorb_reply(b, c, payload, payload_len);
             free(dec_buf);  /* NULL-safe */
         }
         bf_conn_cleanup(srv, c);
@@ -3315,9 +3727,8 @@ static void bf_tick(nodus_server_t *srv) {
              * page) incomplete; with no row and no answer at all the
              * reply is UNAVAILABLE (S6, bf_send_result).
              * Phase 3.2e FIX: `> 0` not `>= 0` — see bf_batch_cleanup. */
-            fprintf(stderr, "BF: txn=%u timeout — %d forward(s) unanswered, "
-                    "%d answered%s\n", (unsigned)b->txn_id, b->pending_forwards,
-                    b->answered_forwards,
+            fprintf(stderr, "BF: txn=%u timeout — %d forward(s) unanswered%s\n",
+                    (unsigned)b->txn_id, b->pending_forwards,
                     b->paged ? " (page may be incomplete)" : "");
             for (int fi = 0; fi < NODUS_BF_MAX_FORWARDS; fi++) {
                 if (b->forwards[fi].fd > 0) {
@@ -3441,11 +3852,10 @@ static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
     }
 
     int n = msg->batch_key_count;
-    nodus_value_t ***vals_per_key = calloc((size_t)n, sizeof(nodus_value_t **));
-    size_t *counts_per_key = calloc((size_t)n, sizeof(size_t));
-    if (!vals_per_key || !counts_per_key) {
-        free(vals_per_key);
-        free(counts_per_key);
+    /* One keyset per key (local rows = trusted candidates). Duplicate keys
+     * in one batch stay separate entries, answered in request order. */
+    nodus_dht_keyset_t *sets = calloc((size_t)n, sizeof(nodus_dht_keyset_t));
+    if (!sets) {
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
                         "alloc failed", resp_buf, sizeof(resp_buf), &len);
@@ -3453,20 +3863,29 @@ static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
-    /* Phase 1: local storage lookup for all keys */
+    /* Phase 1: local storage lookup for all keys. (nodus_storage_get_all
+     * returns -1 for both "no row" and a SQLite error: a local fault is not
+     * visible on this legacy read — it reads as a miss and is forwarded.) */
     int miss_count = 0;
     int miss_indices[NODUS_MAX_BATCH_KEYS];
-    size_t local_rows = 0;
-    /* S6: set when the misses could not be forwarded at all. With no local
-     * row in the whole batch that is "could not look" → UNAVAILABLE; when
-     * some keys hit locally the local-only answer is sent as before. */
-    bool could_not_forward = false;
 
     for (int i = 0; i < n; i++) {
-        nodus_storage_get_all(&srv->storage, &msg->batch_keys[i],
-                               &vals_per_key[i], &counts_per_key[i]);
-        local_rows += counts_per_key[i];
-        if (counts_per_key[i] == 0) {
+        nodus_value_t **vals = NULL;
+        size_t count = 0;
+        if (nodus_storage_get_all(&srv->storage, &msg->batch_keys[i],
+                                  &vals, &count) != 0) {
+            dht_free_rows(vals, count);
+            vals = NULL;
+            count = 0;
+        }
+        if (count > 0 &&
+            nodus_dht_keyset_add(&sets[i], vals, count, &msg->batch_keys[i],
+                                 NULL, NULL, true, NULL) != 0) {
+            /* could not hold this key's rows: answered as could-not-look */
+            sets[i].local_fault = true;
+        }
+        dht_free_rows(vals, count);   /* rows not taken */
+        if (sets[i].n == 0) {
             miss_indices[miss_count++] = i;
         }
     }
@@ -3476,20 +3895,10 @@ static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
         goto send_response;
     }
 
-    /* Phase 3: group misses by closest peer and start batch forwards */
+    /* Phase 3: group misses by closest peer and start batch forwards.
+     * Rev 2 item 15: the peers are found BEFORE the slot check — a miss
+     * with no peer to ask is a truthful empty even when no slot is free. */
     {
-        /* Find a free batch slot */
-        int bi = -1;
-        for (int i = 0; i < NODUS_BF_MAX_BATCHES; i++) {
-            if (!srv->bf_state.batches[i].active) { bi = i; break; }
-        }
-
-        if (bi < 0) {
-            /* No batch slots available — send local-only results */
-            could_not_forward = true;
-            goto send_response;
-        }
-
         /* Group misses by closest peer */
         typedef struct { nodus_peer_t peer; int key_idx[NODUS_MAX_BATCH_KEYS]; int count; } peer_group_t;
         peer_group_t groups[NODUS_BF_MAX_FORWARDS];
@@ -3515,6 +3924,10 @@ static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
                 }
             }
             if (chosen < 0) continue; /* All candidates are self */
+            /* S6: this key has a peer to ask. If it does not make it into a
+             * forward below (groups full, no slot, start failure) nobody
+             * answers it → "u". */
+            sets[ki].peers = 1;
 
             /* Find existing group for this peer or create new */
             int gi = -1;
@@ -3540,24 +3953,28 @@ static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
             goto send_response;
         }
 
-        /* Set up batch context — transfer ownership of results */
-        dht_bf_batch_t *b = &srv->bf_state.batches[bi];
-        memset(b, 0, sizeof(*b));
-        for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) b->forwards[i].fd = -1;
-        b->active = true;
+        /* Find a free batch slot */
+        int bi = -1;
+        for (int i = 0; i < NODUS_BF_MAX_BATCHES; i++) {
+            if (!srv->bf_state.batches[i].active) { bi = i; break; }
+        }
+        dht_bf_batch_t *b = (bi >= 0) ? &srv->bf_state.batches[bi] : NULL;
+        if (!b || nodus_server_bf_batch_setup(b, msg->batch_keys, n) != 0) {
+            /* No slot / alloc failure — local-only results; the misses
+             * that had a peer are "u" (S6). */
+            QGP_LOG_WARN(LOG_TAG, "GET_BATCH: txn=%u %s — %d miss(es) not forwarded",
+                         (unsigned)msg->txn_id, b ? "forward alloc failed" : "no BF slot",
+                         miss_count);
+            goto send_response;
+        }
+
+        /* Set up batch context — the keysets move into the batch */
         b->txn_id = msg->txn_id;
         b->session_slot = (int)(sess - srv->sessions);
         b->started_at = nodus_time_now_ms();
-        b->key_count = n;
-        b->keys = malloc((size_t)n * sizeof(nodus_key_t));
-        if (!b->keys) {
-            b->active = false;
-            could_not_forward = true;
-            goto send_response;
-        }
-        memcpy(b->keys, msg->batch_keys, (size_t)n * sizeof(nodus_key_t));
-        b->vals_per_key = vals_per_key;   /* Transfer ownership */
-        b->counts_per_key = counts_per_key;
+        for (int i = 0; i < n; i++) b->sets[i] = sets[i];
+        free(sets);
+        sets = NULL;
         b->pending_forwards = 0;
 
         /* Start forwards */
@@ -3576,58 +3993,29 @@ static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
             free(fwd_keys);
         }
 
-        if (b->pending_forwards > 0) {
-            /* Response deferred — bf_tick will send when all forwards complete */
-            return;
-        }
-
-        /* All forwards failed to start — send local results and clean up */
-        /* Take back ownership before cleanup */
-        b->vals_per_key = NULL;
-        b->counts_per_key = NULL;
-        bf_batch_cleanup(srv, b);
-        could_not_forward = true;
-        goto send_response;
+        /* Response deferred — bf_tick sends when all forwards complete.
+         * With none started, answer now from what is there (local rows;
+         * the misses unanswered → "u" / UNAVAILABLE). */
+        if (b->pending_forwards == 0)
+            bf_send_result(srv, b);
+        return;
     }
 
 send_response:
-    if (could_not_forward && local_rows == 0) {
-        fprintf(stderr, "GET_BATCH: %d key(s), no local row, could not forward "
-                "— UNAVAILABLE\n", n);
-        dht_send_unavailable(sess->conn, msg->txn_id, "no forward slot");
-        for (int i = 0; i < n; i++) dht_free_rows(vals_per_key[i], counts_per_key[i]);
-        free(vals_per_key);
-        free(counts_per_key);
-        return;
-    }
     {
-        size_t buf_cap = RESP_BUF_SIZE;
-        uint8_t *buf = malloc(buf_cap);
-        if (buf) {
-            size_t len = 0;
-            int rc = nodus_t2_result_get_batch(msg->txn_id, msg->batch_keys, n,
-                                                vals_per_key, counts_per_key,
-                                                buf, buf_cap, &len);
-            if (rc == 0) {
+        int verify_left = NODUS_DHT_VERIFY_CAP;
+        uint8_t *buf = malloc(RESP_BUF_SIZE);
+        size_t len = 0;
+        if (!buf) {
+            for (int i = 0; i < n; i++) nodus_dht_keyset_clear(&sets[i]);
+            dht_send_unavailable(sess->conn, msg->txn_id, "reply alloc failed");
+        } else {
+            if (dht_encode_batch_reply(msg->txn_id, msg->batch_keys, n, sets,
+                                       &verify_left, buf, RESP_BUF_SIZE, &len) == 0)
                 nodus_tcp_send(sess->conn, buf, len);
-            } else {
-                size_t elen = 0;
-                nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
-                                "batch encode failed", resp_buf, sizeof(resp_buf), &elen);
-                nodus_tcp_send(sess->conn, resp_buf, elen);
-            }
             free(buf);
         }
-
-        for (int i = 0; i < n; i++) {
-            if (vals_per_key[i]) {
-                for (size_t j = 0; j < counts_per_key[i]; j++)
-                    nodus_value_free(vals_per_key[i][j]);
-                free(vals_per_key[i]);
-            }
-        }
-        free(vals_per_key);
-        free(counts_per_key);
+        free(sets);
     }
 }
 
@@ -3699,6 +4087,26 @@ static void handle_t2_circ_open(nodus_server_t *srv, nodus_session_t *sess,
     uint8_t resp[256];
     size_t rlen = 0;
 
+    /* Rev 2 item 8: the client chooses the cid of the circuits it opens,
+     * this server generates the cid of the circuits opened TO it (inbound,
+     * nodus_circuit_alloc → next_cid_gen) — both live in sess->circuits.
+     * Policy: BUMP the generator past a client cid, do not refuse it. The
+     * client SDK counts from 1 per process and does not reset on reconnect
+     * (nodus_client.c next_client_cid) while a new session's generator
+     * restarts at 1, so an honest client's cid is routinely >= the
+     * generator; refusing it would break every circuit after a reconnect.
+     * After the bump no generated cid can equal a live client cid (the
+     * generator only grows past it), and a client cid below the generator
+     * that is in use is refused just below. cid 0 (reserved) and cids
+     * >= 2^63 (a generator bumped there could wrap) are refused — no
+     * honest counter reaches them. */
+    if (msg->circ_cid == 0 || msg->circ_cid >= (UINT64_C(1) << 63)) {
+        nodus_t2_circ_open_err(msg->txn_id, msg->circ_cid, NODUS_ERR_PROTOCOL_ERROR,
+                                resp, sizeof(resp), &rlen);
+        nodus_tcp_send(sess->conn, resp, rlen);
+        return;
+    }
+
     /* Reject if originator would collide with existing cid in this session */
     if (nodus_circuit_lookup(&sess->circuits, msg->circ_cid) != NULL) {
         nodus_t2_circ_open_err(msg->txn_id, msg->circ_cid, NODUS_ERR_CIRCUIT_LIMIT,
@@ -3706,6 +4114,8 @@ static void handle_t2_circ_open(nodus_server_t *srv, nodus_session_t *sess,
         nodus_tcp_send(sess->conn, resp, rlen);
         return;
     }
+    if (msg->circ_cid >= sess->circuits.next_cid_gen)
+        sess->circuits.next_cid_gen = msg->circ_cid + 1;
 
     /* Check circuit capacity on originator side */
     if (nodus_circuit_count(&sess->circuits) >= NODUS_MAX_CIRCUITS_PER_SESSION) {
@@ -3940,7 +4350,7 @@ static void handle_t2_circ_close(nodus_server_t *srv, nodus_session_t *sess,
         }
         nodus_inter_circuit_free(&srv->inter_circuits, c->inter->our_cid);
     }
-    nodus_circuit_free(&sess->circuits, msg->circ_cid);
+    circuit_free_entry(&sess->circuits, c);   /* the entry looked up above */
 }
 
 /* ── Inter-node ri_* handlers (VPN mesh Faz 1) ────────────────────── */
@@ -4052,17 +4462,10 @@ static void handle_inter_ri_open_err(nodus_server_t *srv, nodus_inter_session_t 
     nodus_inter_circuit_t *ic = inter_circuit_for_peer(srv, sess, msg->ri_ups_cid);
     if (!ic || !ic->is_originator || !ic->local_sess) return;
 
-    nodus_session_t *client = (nodus_session_t *)ic->local_sess;
-    if (client->conn) {
-        uint8_t buf[256]; size_t blen = 0;
-        if (nodus_t2_circ_open_err(ic->client_txn_id, ic->local_cid, msg->ri_err_code,
-                                    buf, sizeof(buf), &blen) == 0) {
-            nodus_tcp_send(client->conn, buf, blen);
-        }
-    }
-    /* Free client's session circuit entry and inter entry */
-    nodus_circuit_free(&client->circuits, ic->local_cid);
-    nodus_inter_circuit_free(&srv->inter_circuits, ic->our_cid);
+    /* Item 8: tell the client (circ_open_err with the peer's code while the
+     * open is pending, else circ_close), free ITS circuit by pointer, then
+     * the inter entry. */
+    inter_circuit_release(srv, ic, msg->ri_err_code);
 }
 
 static void handle_inter_ri_data(nodus_server_t *srv, nodus_inter_session_t *sess,
@@ -4090,19 +4493,10 @@ static void handle_inter_ri_close(nodus_server_t *srv, nodus_inter_session_t *se
     nodus_inter_circuit_t *ic = inter_circuit_for_peer(srv, sess, msg->ri_cid);
     if (!ic) return;
 
-    /* Propagate close to local user, free local circuit entry */
-    if (ic->local_sess) {
-        nodus_session_t *target = (nodus_session_t *)ic->local_sess;
-        if (target->conn) {
-            uint8_t buf[256]; size_t blen = 0;
-            if (nodus_t2_circ_close(0, target->token, ic->local_cid,
-                                     buf, sizeof(buf), &blen) == 0) {
-                nodus_tcp_send(target->conn, buf, blen);
-            }
-        }
-        nodus_circuit_free(&target->circuits, ic->local_cid);
-    }
-    nodus_inter_circuit_free(&srv->inter_circuits, ic->our_cid);
+    /* Item 8: propagate the close to the local user (circ_open_err while an
+     * originated open is still pending, else circ_close), free its circuit
+     * by pointer identity, then the inter entry. */
+    inter_circuit_release(srv, ic, NODUS_ERR_CIRCUIT_CLOSED);
 }
 
 /**
@@ -4579,6 +4973,29 @@ static bool inter_handshake_method(const char *method) {
            strcmp(method, "error") == 0;
 }
 
+/* Rev 2 item 7: which side of a 4002 conn may RECEIVE a handshake frame.
+ * The dialing side (conn->auth_initiated_by_us) sends hello / auth /
+ * key_init and receives challenge / auth_ok / key_ack; the accepting side
+ * the reverse. "error" is valid on both. */
+typedef enum {
+    INTER_HS_NONE = 0,     /* not a handshake frame */
+    INTER_HS_TO_DIALER,    /* challenge, auth_ok, key_ack */
+    INTER_HS_TO_ACCEPTOR,  /* hello, auth, key_init */
+    INTER_HS_EITHER        /* error */
+} inter_hs_role_t;
+
+static inter_hs_role_t inter_handshake_role(const char *method) {
+    if (strcmp(method, "challenge") == 0 || strcmp(method, "auth_ok") == 0 ||
+        strcmp(method, "key_ack") == 0)
+        return INTER_HS_TO_DIALER;
+    if (strcmp(method, "hello") == 0 || strcmp(method, "auth") == 0 ||
+        strcmp(method, "key_init") == 0)
+        return INTER_HS_TO_ACCEPTOR;
+    if (strcmp(method, "error") == 0)
+        return INTER_HS_EITHER;
+    return INTER_HS_NONE;
+}
+
 static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                             const uint8_t *payload, size_t len) {
     /* DBG: trace dispatch entries on encrypted conns (v0.18.1) */
@@ -4620,6 +5037,34 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             }
         }
 
+        /* Rev 2 item 7: role split. A handshake frame that only the OTHER
+         * side of this conn may receive (an inbound peer sending auth_ok /
+         * challenge / key_ack, or the node we dialed sending hello / auth /
+         * key_init) is a protocol violation: log and disconnect. Applies
+         * whatever require_peer_auth says — before this, an inbound
+         * "auth_ok" marked the session authenticated. No honest peer sends
+         * one: the dialer's on_inter_connect sends hello and its handlers
+         * answer challenge → auth, auth_ok → key_init; the acceptor answers
+         * hello → challenge, auth → auth_ok, key_init → key_ack; the batch-
+         * forward dialer (bf_handle_event) speaks the dialer's side. */
+        if (sess->conn) {
+            inter_hs_role_t role = inter_handshake_role(msg.method);
+            bool dialer = sess->conn->auth_initiated_by_us;
+            if ((role == INTER_HS_TO_DIALER && !dialer) ||
+                (role == INTER_HS_TO_ACCEPTOR && dialer)) {
+                nodus_tcp_conn_t *bad = sess->conn;
+                QGP_LOG_WARN(LOG_TAG, "INTER_ROLE: slot=%d peer=%s:%u sent %s on a "
+                             "conn %s — disconnecting",
+                             bad->slot, bad->ip, (unsigned)bad->port, msg.method,
+                             dialer ? "we dialed" : "we accepted");
+                nodus_t2_msg_free(&msg);
+                bad->auth_state = NODUS_CONN_AUTH_FAILED;
+                /* on_inter_disconnect clears *sess: nothing below may touch it. */
+                nodus_tcp_disconnect(&srv->inter_tcp, bad);
+                return;
+            }
+        }
+
         /* F3 (DHT Package A): role-neutral pre-established gate. While this
          * node requires peer auth and can encrypt (has_kyber) but the
          * session key does not exist yet, only the handshake frames are
@@ -4644,17 +5089,16 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
          * These must be handled regardless of require_peer_auth — they
          * complete auth initiated by us.
          *
-         * C2 fix: enforce outbound-only gate. If an inbound conn sends a
-         * challenge frame, refuse to sign (closes the Dilithium5 oracle). */
+         * C2 fix: enforce outbound-only gate — now the role split above: a
+         * challenge on an inbound conn disconnects before this point, so
+         * this node never signs a nonce an accepted peer chose (closes the
+         * Dilithium5 oracle). One challenge per dialed conn: a repeated one
+         * (the nonce is already retained) is not signed again. */
         if (strcmp(msg.method, "challenge") == 0) {
-            if (!sess->conn->auth_initiated_by_us) {
-                fprintf(stderr, "INTER: challenge on inbound conn — refusing to sign (C2)\n");
-                uint8_t err_buf[256];
-                size_t err_len = 0;
-                nodus_t2_error(msg.txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                                "unexpected challenge on inbound conn",
-                                err_buf, sizeof(err_buf), &err_len);
-                nodus_tcp_send_raw(sess->conn, err_buf, err_len);
+            if (sess->has_challenge_nonce || sess->authenticated) {
+                QGP_LOG_WARN(LOG_TAG, "INTER: repeated challenge from %s:%u — "
+                             "not signed, dropped",
+                             sess->conn->ip, (unsigned)sess->conn->port);
                 nodus_t2_msg_free(&msg);
                 return;
             }
@@ -4672,6 +5116,14 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             nodus_t2_msg_free(&msg);
             return;
         } else if (strcmp(msg.method, "auth_ok") == 0) {
+            /* Only on a conn we dialed (role split above), once: a repeated
+             * auth_ok would start a second key exchange. */
+            if (sess->authenticated || sess->pending_kyber) {
+                QGP_LOG_WARN(LOG_TAG, "INTER: repeated auth_ok from %s:%u — dropped",
+                             sess->conn->ip, (unsigned)sess->conn->port);
+                nodus_t2_msg_free(&msg);
+                return;
+            }
             sess->conn->authenticated = true;
             sess->authenticated = true;
 
@@ -4917,7 +5369,14 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     nodus_tcp_send_raw(sess->conn, resp_buf, rlen);
                 } else {
                     sess->authenticated = true;
-                    sess->conn->auth_state = NODUS_CONN_AUTH_OK;
+                    /* Rev 2 item 7: with Kyber the send gate stays CLOSED
+                     * until key_init has produced the session key (opened
+                     * in the key_init branch below) — nodus_tcp_send queues
+                     * instead of writing plaintext. The handshake replies
+                     * use nodus_tcp_send_raw. Without Kyber no session key
+                     * will ever exist: open now, as before. */
+                    if (!srv->identity.has_kyber)
+                        sess->conn->auth_state = NODUS_CONN_AUTH_OK;
                     sess->nonce_pending = false;
                     sess->conn->peer_id = sess->client_fp;
                     sess->conn->peer_pk = sess->client_pk;
@@ -5012,6 +5471,19 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                                                ss_buf, msg.key_nonce, ns,
                                                NODUS_CHANNEL_ROLE_RESPONDER);
                     qgp_secure_memzero(ss_buf, sizeof(ss_buf));
+                    /* Rev 2 item 7: open the send gate only now (and only
+                     * for an authenticated peer); DISCARD the auth queue —
+                     * it holds pre-framed plaintext, exactly as the dialing
+                     * side does on key_ack. */
+                    if (sess->authenticated) {
+                        sess->conn->auth_state = NODUS_CONN_AUTH_OK;
+                        if (sess->conn->pending_buf) {
+                            free(sess->conn->pending_buf);
+                            sess->conn->pending_buf = NULL;
+                            sess->conn->pending_len = 0;
+                            sess->conn->pending_cap = 0;
+                        }
+                    }
                     fprintf(stderr,
                             "CRYPTO: SET_INCOMING slot=%d peer=%s:%u (inter-node encrypted)\n",
                             sess->conn->slot, sess->conn->ip, (unsigned)sess->conn->port);
@@ -5056,6 +5528,12 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             if (nodus_t1_decode(payload, len, &t1msg) == 0) {
                 nodus_value_t *val = NULL;
                 int rc = nodus_storage_get(&srv->storage, &t1msg.target, &val);
+                /* A storage fault answers like a miss — "not here, ask
+                 * these closer nodes" — so the asking node tries others;
+                 * T1 FIND_VALUE has no "could not look" reply. Logged. */
+                if (rc == NODUS_STORAGE_RC_FAULT)
+                    QGP_LOG_WARN(LOG_TAG, "INTER fv: storage read fault — answered "
+                                 "as not-found with closest nodes");
 
                 size_t rlen = 0;
                 if (rc == 0 && val) {
@@ -5112,7 +5590,13 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                 const nodus_key_t *own = msg.has_own ? &msg.own_fp : NULL;
                 nodus_t2_page_info_t *pages = paged
                     ? calloc((size_t)n, sizeof(nodus_t2_page_info_t)) : NULL;
-                if (vals && counts && (!paged || pages)) {
+                /* Rev 2 items 13/15: a key whose local read FAULTED is sent
+                 * with "u" so the forwarding node does not count it as
+                 * looked at. Only the paged / owner read can tell a fault
+                 * (nodus_storage_get_all returns -1 for "none" and error). */
+                bool *unavail = calloc((size_t)n, sizeof(bool));
+                int n_unavail = 0;
+                if (vals && counts && unavail && (!paged || pages)) {
                     for (int i = 0; i < n; i++) {
                         if (!paged && !own) {
                             nodus_storage_get_all(&srv->storage, &msg.batch_keys[i],
@@ -5123,14 +5607,19 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                         size_t budget = paged
                             ? (size_t)NODUS_GET_ALL_PAGE_MAX_BYTES / (size_t)n
                             : (size_t)NODUS_GET_ALL_MAX_BYTES;
-                        if (nodus_storage_get_all_page(&srv->storage, &msg.batch_keys[i],
+                        int prc = nodus_storage_get_all_page(&srv->storage, &msg.batch_keys[i],
                                 own, msg.has_after ? &msg.after.owner : NULL,
                                 msg.has_after ? msg.after.vid : 0, budget,
-                                &vals[i], &counts[i], &more) != 0) {
+                                &vals[i], &counts[i], &more);
+                        if (prc != 0) {
                             dht_free_rows(vals[i], counts[i]);
                             vals[i] = NULL;
                             counts[i] = 0;
                             more = 0;
+                            if (prc == NODUS_STORAGE_RC_FAULT) {
+                                unavail[i] = true;
+                                n_unavail++;
+                            }
                         }
                         if (paged && more && counts[i] > 0) {
                             pages[i].more = true;
@@ -5144,8 +5633,12 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     uint8_t *buf = malloc(buf_cap);
                     if (buf) {
                         size_t rlen = 0;
+                        if (n_unavail > 0)
+                            QGP_LOG_WARN(LOG_TAG, "INTER get_batch: %d of %d key(s) — "
+                                         "storage read fault, sent as \"u\"", n_unavail, n);
                         if (nodus_t2_result_get_batch_ex(msg.txn_id, msg.batch_keys, n,
                                                           vals, counts, pages,
+                                                          n_unavail > 0 ? unavail : NULL,
                                                           buf, buf_cap, &rlen) == 0) {
                             nodus_tcp_send(sess->conn, buf, rlen);
                         } else {
@@ -5170,6 +5663,7 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                 free(vals);
                 free(counts);
                 free(pages);
+                free(unavail);
             }
             nodus_t2_msg_free(&msg);
             return;
@@ -5538,7 +6032,11 @@ static void on_inter_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
 }
 
 static void on_inter_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
-    nodus_server_t *srv = (nodus_server_t *)ctx;
+    nodus_server_inter_disconnected((nodus_server_t *)ctx, conn);
+}
+
+void nodus_server_inter_disconnected(nodus_server_t *srv, nodus_tcp_conn_t *conn) {
+    if (!srv || !conn) return;
     nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
 
     /* Phase 3.2b-inv: conn lifecycle visibility — capture crypto state
@@ -5939,6 +6437,11 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
         /* FIND_VALUE: respond with value or closest nodes */
         nodus_value_t *val = NULL;
         int rc = nodus_storage_get(&srv->storage, &msg.target, &val);
+        /* Storage fault → answered like a miss (closest nodes), logged —
+         * see the 4002 "fv" handler. */
+        if (rc == NODUS_STORAGE_RC_FAULT)
+            QGP_LOG_WARN(LOG_TAG, "UDP fv: storage read fault — answered as "
+                         "not-found with closest nodes");
 
         size_t rlen = 0;
         if (rc == 0 && val) {

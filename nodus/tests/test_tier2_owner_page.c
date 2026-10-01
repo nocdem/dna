@@ -12,6 +12,9 @@
  *      "more" / "next"; "next" is absent when more == false.
  *   4. A malformed new key refuses the frame (decode -1); an unknown key
  *      is still skipped.
+ *   5. Rev 2 item 15: the per-entry could-not-look marker "u" round-trips,
+ *      is emitted only as true (an all-false array = the legacy frame,
+ *      byte for byte), and a non-bool "u" refuses the frame.
  *
  * RED on the tree before Package A: the _ex / _owner / result_page
  * encoders and the decoded fields do not exist.
@@ -35,6 +38,7 @@ static int failed = 0;
 
 static uint8_t buf_a[65536];
 static uint8_t buf_b[65536];
+static uint8_t buf_c[65536];
 static uint8_t tok[NODUS_SESSION_TOKEN_LEN];
 
 static nodus_identity_t id_a;
@@ -110,11 +114,18 @@ static void test_legacy_bytes_unchanged(void) {
         size_t cnt[2] = { 1, 0 };
         size_t l1 = 0, l2 = 0;
         int r1 = nodus_t2_result_get_batch(3, keys, 2, vpk, cnt, buf_a, sizeof(buf_a), &l1);
-        int r2 = nodus_t2_result_get_batch_ex(3, keys, 2, vpk, cnt, NULL,
+        int r2 = nodus_t2_result_get_batch_ex(3, keys, 2, vpk, cnt, NULL, NULL,
                                                buf_b, sizeof(buf_b), &l2);
+        /* rev 2 item 15: an all-false "u" array is the legacy frame too */
+        bool no_u[2] = { false, false };
+        size_t l3 = 0;
+        int r3 = nodus_t2_result_get_batch_ex(3, keys, 2, vpk, cnt, NULL, no_u,
+                                               buf_c, sizeof(buf_c), &l3);
         nodus_value_free(v);
-        CHECK(r1 == 0 && r2 == 0, "result_get_batch enc");
+        CHECK(r1 == 0 && r2 == 0 && r3 == 0, "result_get_batch enc");
         CHECK(l1 == l2 && memcmp(buf_a, buf_b, l1) == 0, "result_get_batch_ex(NULL) bytes differ");
+        CHECK(l1 == l3 && memcmp(buf_a, buf_c, l1) == 0,
+              "result_get_batch_ex(all u false) bytes differ");
     }
     PASS();
 out:
@@ -225,7 +236,7 @@ static void test_result_get_batch_pages(void) {
     pages[0].next.owner = v->owner_fp;
     pages[0].next.vid = 9;
 
-    CHECK(nodus_t2_result_get_batch_ex(4, keys, 2, vpk, cnt, pages,
+    CHECK(nodus_t2_result_get_batch_ex(4, keys, 2, vpk, cnt, pages, NULL,
                                         buf_a, sizeof(buf_a), &len) == 0, "enc");
     CHECK(nodus_t2_decode(buf_a, len, &m) == 0, "decode");
     CHECK(m.batch_key_count == 2 && m.batch_page, "entries");
@@ -241,6 +252,58 @@ static void test_result_get_batch_pages(void) {
     CHECK(nodus_t2_decode(buf_a, len, &m) == 0, "legacy decode");
     CHECK(m.batch_page && !m.batch_page[0].more && !m.batch_page[0].has_next, "legacy page");
     nodus_t2_msg_free(&m);
+    PASS();
+out:
+    nodus_value_free(v);
+}
+
+/* Rev 2 item 15: per-entry could-not-look marker "u". */
+static void test_result_get_batch_unavail(void) {
+    TEST("result_get_batch_ex: per-key \"u\" round-trip; bad type refused");
+    nodus_key_t keys[2];
+    fill_key(&keys[0], 0x73);
+    fill_key(&keys[1], 0x74);
+    nodus_value_t *v = mk_value(&keys[1], 3, 1, "row");
+    nodus_value_t *row[1] = { v };
+    nodus_value_t **vpk[2] = { NULL, row };
+    size_t cnt[2] = { 0, 1 };
+    bool u[2] = { true, false };
+    size_t len = 0;
+    nodus_tier2_msg_t m;
+    memset(&m, 0, sizeof(m));
+    CHECK(v != NULL, "value");
+
+    CHECK(nodus_t2_result_get_batch_ex(5, keys, 2, vpk, cnt, NULL, u,
+                                        buf_a, sizeof(buf_a), &len) == 0, "enc");
+    CHECK(nodus_t2_decode(buf_a, len, &m) == 0, "decode");
+    CHECK(m.batch_key_count == 2 && m.batch_unavail, "entries");
+    CHECK(m.batch_unavail[0] && !m.batch_unavail[1], "u flags");
+    CHECK(m.batch_val_counts[0] == 0 && m.batch_val_counts[1] == 1, "counts");
+    /* no "more" was added for an unpaged reply */
+    CHECK(m.batch_page && !m.batch_page[0].more && !m.batch_page[1].more, "no page info");
+    nodus_t2_msg_free(&m);
+
+    /* {t, y:"r", q:"result", r:{batch:[{k, vs:[], u: 1}]}} — "u" as uint */
+    {
+        cbor_encoder_t enc;
+        cbor_encoder_init(&enc, buf_b, sizeof(buf_b));
+        cbor_encode_map(&enc, 4);
+        cbor_encode_cstr(&enc, "t"); cbor_encode_uint(&enc, 6);
+        cbor_encode_cstr(&enc, "y"); cbor_encode_cstr(&enc, "r");
+        cbor_encode_cstr(&enc, "q"); cbor_encode_cstr(&enc, "result");
+        cbor_encode_cstr(&enc, "r");
+        cbor_encode_map(&enc, 1);
+        cbor_encode_cstr(&enc, "batch");
+        cbor_encode_array(&enc, 1);
+        cbor_encode_map(&enc, 3);
+        cbor_encode_cstr(&enc, "k"); cbor_encode_bstr(&enc, keys[0].bytes, NODUS_KEY_BYTES);
+        cbor_encode_cstr(&enc, "vs"); cbor_encode_array(&enc, 0);
+        cbor_encode_cstr(&enc, "u"); cbor_encode_uint(&enc, 1);
+        size_t bl = cbor_encoder_len(&enc);
+        memset(&m, 0, sizeof(m));
+        CHECK(nodus_t2_decode(buf_b, bl, &m) != 0, "non-bool u accepted");
+        nodus_t2_msg_free(&m);
+    }
     PASS();
 out:
     nodus_value_free(v);
@@ -306,6 +369,7 @@ int main(void) {
     test_request_args_roundtrip();
     test_result_page_roundtrip();
     test_result_get_batch_pages();
+    test_result_get_batch_unavail();
     test_malformed_refused();
 
     printf("\n%d passed, %d failed\n", passed, failed);

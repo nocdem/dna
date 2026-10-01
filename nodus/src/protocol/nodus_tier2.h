@@ -38,6 +38,15 @@ extern "C" {
  *     "next"  map {"o": bstr(64), "v": uint} cursor for the next page
  *                                           (present only when more)
  *   reply "r" "batch" entry (paged get_batch): {"k","vs"} + "more" (+"next")
+ *   reply "r" "batch" entry (any get_batch, rev 2 item 15):
+ *     "u"     bool (true)                   this key could NOT be looked up
+ *                                           (storage fault / no forward
+ *                                           answered); "vs" is then empty
+ *                                           and means "unknown", not "none".
+ *                                           Sent only as true; absent = looked.
+ *
+ * An old decoder skips "u" and reads the entry as empty — the reply it saw
+ * before this key existed.
  *
  * Page order is the storage PRIMARY KEY order: owner_fp ASC (bytewise),
  * then value_id ASC compared as SIGNED int64 (nodus_storage_get_all_page).
@@ -344,13 +353,16 @@ int nodus_t2_result_get_batch(uint32_t txn,
                                const size_t *counts_per_key,
                                uint8_t *buf, size_t cap, size_t *out_len);
 
-/** Batch get result with per-key page info ("more", "next" in each entry).
- *  pages == NULL produces the frame nodus_t2_result_get_batch() produces. */
+/** Batch get result with per-key page info ("more", "next" in each entry)
+ *  and per-key could-not-look markers ("u": true where unavail[i]).
+ *  pages == NULL and (unavail == NULL or all false) produce the frame
+ *  nodus_t2_result_get_batch() produces, byte for byte. */
 int nodus_t2_result_get_batch_ex(uint32_t txn,
                                   const nodus_key_t *keys, int key_count,
                                   nodus_value_t ***vals_per_key,
                                   const size_t *counts_per_key,
                                   const nodus_t2_page_info_t *pages,
+                                  const bool *unavail,
                                   uint8_t *buf, size_t cap, size_t *out_len);
 
 /** Nodus → Client: batch count result (per-key count + has_mine) */
@@ -751,6 +763,9 @@ typedef struct {
     /* Per "batch" entry page info (heap, allocated with "batch"; an entry
      * without "more"/"next" stays zeroed). */
     nodus_t2_page_info_t *batch_page;
+    /* Per "batch" entry could-not-look marker "u" (rev 2 item 15; heap,
+     * allocated with "batch"; false unless the entry carried "u": true). */
+    bool                 *batch_unavail;
 
     /* Error */
     int             error_code;
