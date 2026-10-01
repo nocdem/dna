@@ -124,13 +124,23 @@ void nc_profile_read(const nc_ctx_t *ctx, const char *fp, nc_read_t *raw,
     profile_key(fp, &key);
     read_owner_row(ctx, &key, &owner, raw);
     if (raw->outcome != NC_FOUND) return;
+    if (nc_profile_check(fp, raw->value->data, raw->value->data_len,
+                         identity_out, peer_out) != 0)
+        mark_bad_record(raw);
+}
+
+int nc_profile_check(const char *fp, const uint8_t *data, size_t len,
+                     dna_unified_identity_t **identity_out,
+                     nc_peer_t *peer_out) {
+    if (identity_out) *identity_out = NULL;
+    nodus_key_t owner;
+    if (!fp || nc_fp_parse(fp, &owner) != 0 || !data || len == 0) return -1;
 
     /* The frozen app's record checks, keyserver_lookup.c:95-150. */
-    const nodus_value_t *v = raw->value;
-    char *json = malloc(v->data_len + 1);
-    if (!json) { mark_bad_record(raw); return; }
-    memcpy(json, v->data, v->data_len);
-    json[v->data_len] = '\0';
+    char *json = malloc(len + 1);
+    if (!json) return -1;
+    memcpy(json, data, len);
+    json[len] = '\0';
 
     dna_unified_identity_t *id = NULL;
     int ok = dna_identity_from_json(json, &id) == 0 && id;
@@ -154,8 +164,7 @@ void nc_profile_read(const nc_ctx_t *ctx, const char *fp, nc_read_t *raw,
     if (!ok) {
         QGP_LOG_WARN(LOG_TAG, "profile %.16s... failed the record checks", fp);
         dna_identity_free(id);
-        mark_bad_record(raw);
-        return;
+        return -1;
     }
     if (peer_out) {
         memset(peer_out, 0, sizeof(*peer_out));
@@ -170,6 +179,7 @@ void nc_profile_read(const nc_ctx_t *ctx, const char *fp, nc_read_t *raw,
     }
     if (identity_out) *identity_out = id;
     else dna_identity_free(id);
+    return 0;
 }
 
 /* ── the edit ─────────────────────────────────────────────────────── */

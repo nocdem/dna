@@ -20,7 +20,8 @@ import {
   parseContactId, shortId, inspectUntrusted, httpsLink, profilePatch, profileStatusText, senderClockLabel,
   recentDays, isDelivered, pendingOutbox, OUTBOX_MAX, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus,
-  hasUndelivered, DELIVERED_GRACE_SECONDS, avatarSource, AVATAR_MAX_B64, avatarPatch, AVATAR_UPLOAD_MAX_B64
+  hasUndelivered, DELIVERED_GRACE_SECONDS, avatarSource, AVATAR_MAX_B64, avatarPatch, AVATAR_UPLOAD_MAX_B64,
+  needFullSync, fullDays, SMART_SYNC_FULL_SECONDS, profileFresh, PROFILE_CACHE_SECONDS
 } from '../src/connect/ui/text.js';
 
 // A localStorage stand-in (getItem / setItem / removeItem).
@@ -403,4 +404,40 @@ test('profile picture patch: within the app limit, a picture, or removal', () =>
   assert.throws(() => avatarPatch(`/9j/${'A'.repeat(AVATAR_UPLOAD_MAX_B64)}`), /Invalid profile picture/);
   assert.throws(() => avatarPatch(Buffer.from('GIF89a').toString('base64')), /Invalid profile picture/);
   assert.throws(() => avatarPatch(null), /Invalid profile picture/);
+});
+
+test('state: the profile cache index and message-check times default for an older state and are checked', () => {
+  const old = { version: 1, nextSeq: '1', contacts: [], outgoing: [], declined: [], acks: {}, ackSent: {} };
+  const s = checkState(old);
+  assert.deepEqual(s.profileCache, {});
+  assert.deepEqual(s.dmSync, {});
+  const fp = 'a'.repeat(128);
+  assert.doesNotThrow(() => checkState({ ...emptyState(), profileCache: { [fp]: { id: `p${'1'.padStart(20, '0')}`, at: '1790000000', name: '' } }, dmSync: { [fp]: '1790000000' } }));
+  assert.throws(() => checkState({ ...emptyState(), profileCache: { [fp]: { id: 'state', at: '1', name: '' } } }));
+  assert.throws(() => checkState({ ...emptyState(), profileCache: { [fp]: { id: `p${'1'.padStart(20, '0')}`, at: 'x', name: '' } } }));
+  assert.throws(() => checkState({ ...emptyState(), dmSync: { [fp]: '-1' } }));
+  assert.throws(() => checkState({ ...emptyState(), dmSync: [] }));
+});
+
+test('smart sync: 8 buckets when a contact was never checked or the oldest check is over 3 days old, else 3', () => {
+  const a = 'a'.repeat(128), b = 'b'.repeat(128), now = '1790000000';
+  assert.equal(needFullSync([a], {}, now), true);
+  assert.equal(needFullSync([a], { [a]: now }, now), false);
+  assert.equal(needFullSync([a], { [a]: String(1790000000 - SMART_SYNC_FULL_SECONDS) }, now), false);
+  assert.equal(needFullSync([a], { [a]: String(1790000000 - SMART_SYNC_FULL_SECONDS - 1) }, now), true);
+  assert.equal(needFullSync([a, b], { [a]: now }, now), true);
+  assert.equal(needFullSync([], {}, now), false);
+  assert.deepEqual(fullDays('20000'), ['19994', '19995', '19996', '19997', '19998', '19999', '20000', '20001']);
+  assert.deepEqual(fullDays('3'), ['0', '1', '2', '3', '4']);
+  assert.deepEqual(recentDays('20000'), ['19999', '20000', '20001']);
+  assert.throws(() => fullDays('x'));
+});
+
+test('profile cache: a kept profile is used for 7 days', () => {
+  const at = 1790000000;
+  assert.equal(profileFresh({ at: String(at) }, String(at)), true);
+  assert.equal(profileFresh({ at: String(at) }, String(at + PROFILE_CACHE_SECONDS - 1)), true);
+  assert.equal(profileFresh({ at: String(at) }, String(at + PROFILE_CACHE_SECONDS)), false);
+  assert.equal(profileFresh({ at: String(at + 10) }, String(at)), false);
+  assert.equal(profileFresh(undefined, String(at)), false);
 });

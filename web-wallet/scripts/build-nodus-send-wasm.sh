@@ -266,11 +266,12 @@ exports_common=(
   # Messages (NC-4b, connect/nc_wasm.c), all run through the wallet's one
   # queue by src/connect/core.js. The ones that wait on the network (every
   # one below except nc_error, nc_result, nc_words_alloc, nc_salt_pick,
-  # nc_day_today, nc_lock and the three nc_hist_*, and except nc_unlock,
-  # which only derives keys) are called with ccall { async: true };
-  # nc_unlock is too (harmless for a call that does not suspend).
+  # nc_day_today, nc_lock, nc_profile_load and the three nc_hist_*, and
+  # except nc_unlock, which only derives keys) are called with ccall
+  # { async: true }; nc_unlock is too (harmless for a call that does not
+  # suspend).
   nc_error nc_result nc_words_alloc nc_unlock
-  nc_profile_get nc_profile_update
+  nc_profile_get nc_profile_load nc_profile_update
   nc_requests_get nc_request_new nc_request_approve nc_request_withdraw
   nc_salt_get nc_salt_pick nc_salt_reconcile
   nc_contacts_get nc_contacts_add

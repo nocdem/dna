@@ -1392,6 +1392,41 @@ imports `src/app.js`.
   are unchanged (`text.js`, `store.js`, `core.js`, the `nc_*` C code are not
   touched).
 
+**Caches like the app's (0.1.41).** Operator rule 2026-10-02 (decision
+`2026-10-02-device-cache-only-when-saved.md`): something is kept on the
+device only for a SAVED wallet; an unsaved one keeps nothing after lock.
+- Profiles (the app's profile cache, `profile_cache.h:40`, and
+  `profile_manager.c:58-130`): a contact's profile row as read
+  (`core.profileGet` now returns it as `record`) is kept in the encrypted
+  history — one record per contact in the `state` store, id `p` + 20
+  digits, indexed by `state.profileCache` (fp -> id, read time, verified
+  name). For 7 days it is used instead of a network read: the core checks
+  it again before its keys are used (`nc_profile_load` ->
+  `nc_profile_check`: decode, ML-DSA-87 signature, SHA3-512(key) == fp; no
+  network) and keeps the verified name only if it is still the row's
+  registered name. Older: read again and replaced; if the network gives
+  nothing, the older row is used (the app's stale fallback); if the
+  network row fails its checks (`bad_record` / `bad_signature`) the kept
+  row is dropped. Kept rows are loaded before the first screen, so names
+  and pictures show at once. Strangers' requests are not kept.
+- Smart sync (the app's, `transport_offline.c:37`, `:228-260`): the
+  per-contact time of the last complete check is in `state.dmSync`; when
+  any contact was never checked or the oldest check is over 3 days old the
+  check reads 8 day buckets (today-6 .. today+1, `dht_dm_outbox_sync_full`),
+  else 3. This closes a gap: messages sent 4-7 days before were never read.
+  Stricter than the app: a contact counts as checked only when none of its
+  buckets was unreadable. The time is saved when it moved by an hour or
+  more. An unsaved wallet starts every session with the 8-bucket check.
+- Day buckets (the app's blob cache, `dht_dm_outbox.c:30-80`; this session
+  only, both kinds of wallet): `core.outboxFetchDay` returns the bucket's
+  SHA3-256 (`blob`); passed back once that bucket's messages are stored, an
+  equal bucket is not decoded (`unchanged`; `nc_outbox_fetch_day`
+  `skip_blob`). A bucket with a message that did not verify is never
+  skipped.
+- Measured live 2026-10-02 (test identity B, saved wallet, one contact with
+  a picture): first open 23 node requests, picture after 22.6 s; reopen 16
+  requests, picture after 4.8 s.
+
 **App layout.** The SHAPE follows the DNA Connect app
 (`messenger/dna_messenger_flutter/lib`); the COLOURS are only the wallet's
 (`src/style.css` tokens and the tints already used by the wallet and

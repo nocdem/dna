@@ -17,6 +17,7 @@
 #include "dht/shared/dht_dm_outbox.h"
 #include "dht/shared/dht_offline_queue.h"
 #include "dna_api.h"
+#include "crypto/hash/qgp_sha3.h"           /* qgp_sha3_256: blob hash */
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"      /* qgp_secure_memzero */
@@ -206,7 +207,7 @@ void nc_inbox_clear(nc_inbox_t *in) {
 
 int nc_outbox_fetch_day(const nc_ctx_t *ctx, const nc_peer_t *peer,
                         const uint8_t salt[NC_SALT_LEN], uint64_t day,
-                        nc_inbox_t *out) {
+                        const uint8_t *skip_blob, nc_inbox_t *out) {
     if (!out) return NC_ERR_ARG;
     memset(out, 0, sizeof(*out));
     if (!ctx || !ctx->keys || !peer || !salt) return NC_ERR_ARG;
@@ -223,6 +224,17 @@ int nc_outbox_fetch_day(const nc_ctx_t *ctx, const nc_peer_t *peer,
     dht_offline_message_t *msgs = NULL;
     size_t count = 0;
     const nodus_value_t *v = out->read.value;
+    if (qgp_sha3_256(v->data, v->data_len, out->blob) != 0) {
+        nc_read_clear(&out->read);
+        out->read.outcome = NC_UNREADABLE;
+        out->read.why = NC_WHY_BAD_RECORD;
+        return NC_OK;
+    }
+    if (skip_blob && memcmp(skip_blob, out->blob, sizeof(out->blob)) == 0) {
+        nc_read_clear(&out->read);            /* outcome FOUND is kept */
+        out->unchanged = true;
+        return NC_OK;
+    }
     if (dht_deserialize_messages(v->data, v->data_len, &msgs, &count) != 0) {
         nc_read_clear(&out->read);
         out->read.outcome = NC_UNREADABLE;

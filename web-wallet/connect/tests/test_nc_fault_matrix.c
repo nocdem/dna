@@ -38,6 +38,18 @@
  *       unedited bio kept), one EXCLUSIVE PUT, foreign 1 reported
  *   P5  owner row + an item that does not decode -> UNREADABLE(undecodable)
  *   P6  ... and zero PUTs (the item may be the owner's newer row)
+ *   C1  a profile row kept from a FOUND read passes nc_profile_check again
+ *       (same keys) — the page's profile cache (profile_cache.h:40)
+ *   C2  the same row under another fingerprint is refused
+ *   C3  the row with one byte changed inside the signed part is refused
+ *   B1  a day bucket read with no skip hash is decoded and its SHA3-256
+ *       blob hash is set
+ *   B2  the same bucket with that hash as skip_blob: FOUND, unchanged,
+ *       nothing decoded (the app's blob cache, dht_dm_outbox.c:30-80)
+ *   B3  a skip hash of another bucket: decoded as usual
+ *   (B1-B3 read the fake's profile row as a bucket: it does not decode as
+ *   messages, which is enough to tell "decoded" from "skipped"; they do
+ *   not prove anything about real message decoding.)
  *   (Since the paged reads — DHT Package A, nc_read_all — every get_all the
  *   core sends carries "pg" (+ "own" for an owner-filtered read); the fake
  *   answers it as a paging node, "more": false unless a mode below asks
@@ -172,6 +184,7 @@ typedef struct {
 #define FAKE_BUF (1024 * 1024)
 static fake_t g_fake;
 static nc_keys_t *g_keys;
+static nc_keys_t *g_peer_keys;
 static nodus_key_t g_own_fp;            /* g_keys->fp as a key */
 static nodus_identity_t *g_stranger;
 
@@ -582,6 +595,93 @@ static void test_profile_shadow(nc_ctx_t *ctx) {
     ctx->fresh = false;
 }
 
+/* ── Profile cache: a kept row is checked again (nc_profile_check) ───── */
+
+static void test_profile_cache(nc_ctx_t *ctx) {
+    atomic_store(&g_fake.mode, M_GOOD);
+    nc_read_t raw;
+    nc_profile_read(ctx, g_keys->fp, &raw, NULL, NULL);
+    CHECK(raw.outcome == NC_FOUND && raw.value, "C0 good own profile read for the cache cases");
+    if (raw.outcome != NC_FOUND || !raw.value) { nc_read_clear(&raw); return; }
+    size_t len = raw.value->data_len;
+    uint8_t *kept = malloc(len);
+    if (!kept) { nc_read_clear(&raw); CHECK(0, "C0 allocation"); return; }
+    memcpy(kept, raw.value->data, len);
+    nc_read_clear(&raw);
+
+    dna_unified_identity_t *id = NULL;
+    nc_peer_t peer;
+    memset(&peer, 0, sizeof(peer));
+    CHECK(nc_profile_check(g_keys->fp, kept, len, &id, &peer) == 0 && id &&
+          strcmp(id->bio, "from-dht") == 0 && strcmp(peer.fp, g_keys->fp) == 0 &&
+          memcmp(peer.dsa_pk, g_keys->id.pk.bytes, sizeof(peer.dsa_pk)) == 0,
+          "C1 kept profile row: passes the record checks again, same keys");
+    dna_identity_free(id);
+
+    id = NULL;
+    CHECK(nc_profile_check(g_peer_keys->fp, kept, len, &id, NULL) != 0 && !id,
+          "C2 kept row under another fingerprint: refused");
+
+    /* a changed byte inside the signed part: "from-dht" -> "from-dhT" */
+    uint8_t *edited = malloc(len);
+    const char *at = NULL;
+    if (edited) {
+        memcpy(edited, kept, len);
+        for (size_t i = 0; i + 8 <= len; i++)
+            if (memcmp(edited + i, "from-dht", 8) == 0) { edited[i + 7] = 'T'; at = "x"; break; }
+    }
+    id = NULL;
+    CHECK(edited && at && nc_profile_check(g_keys->fp, edited, len, &id, NULL) != 0 && !id,
+          "C3 kept row with one changed byte: refused (signature)");
+    free(edited);
+    free(kept);
+}
+
+/* ── Day bucket blob skip (the app's blob cache, dht_dm_outbox.c:30-80) ─ */
+
+static void serve_payload(const uint8_t *b, size_t n);
+
+static void test_blob_skip(nc_ctx_t *ctx) {
+    /* The fake serves one fixed payload (M_PAYLOAD; the DHT value around it
+     * is signed afresh per answer, its data is not) owned by this identity;
+     * read as a day bucket of the "peer" = this identity it is FOUND, does
+     * not decode as messages (BAD_RECORD), and its blob hash is set. (M_GOOD
+     * cannot be used: the profile inside is re-signed per answer, and an
+     * ML-DSA signature differs each time.) */
+    static const char bucket[] = "a fixed day bucket that is not a message list";
+    serve_payload((const uint8_t *)bucket, sizeof(bucket) - 1);
+    nc_peer_t self;
+    memset(&self, 0, sizeof(self));
+    memcpy(self.fp, g_keys->fp, NC_FP_HEX_LEN);
+    memcpy(self.dsa_pk, g_keys->id.pk.bytes, sizeof(self.dsa_pk));
+    uint8_t salt[NC_SALT_LEN];
+    memset(salt, 0x5a, sizeof(salt));
+    nc_inbox_t first;
+    int rc = nc_outbox_fetch_day(ctx, &self, salt, 20000, NULL, &first);
+    uint8_t zero[32] = {0};
+    CHECK(rc == NC_OK && first.read.outcome == NC_UNREADABLE &&
+          first.read.why == NC_WHY_BAD_RECORD && !first.unchanged &&
+          memcmp(first.blob, zero, sizeof(zero)) != 0,
+          "B1 no skip hash: the bucket is decoded (here: refused), its blob hash is set");
+    uint8_t blob[32];
+    memcpy(blob, first.blob, sizeof(blob));
+    nc_inbox_clear(&first);
+
+    nc_inbox_t again;
+    rc = nc_outbox_fetch_day(ctx, &self, salt, 20000, blob, &again);
+    CHECK(rc == NC_OK && again.read.outcome == NC_FOUND && again.unchanged &&
+          again.count == 0 && memcmp(again.blob, blob, sizeof(blob)) == 0,
+          "B2 skip hash equal to the bucket: FOUND, unchanged, nothing decoded");
+    nc_inbox_clear(&again);
+
+    blob[0] ^= 1;
+    nc_inbox_t other;
+    rc = nc_outbox_fetch_day(ctx, &self, salt, 20000, blob, &other);
+    CHECK(rc == NC_OK && !other.unchanged && other.read.outcome == NC_UNREADABLE,
+          "B3 skip hash of another bucket: decoded as usual");
+    nc_inbox_clear(&other);
+}
+
 /* ── Paged, owner-filtered reads (DHT Package A) ─────────────────────── */
 
 static void list_gate_case(nc_ctx_t *ctx, int mode, bool fresh, const char *name);
@@ -651,7 +751,6 @@ static void test_paging(nc_ctx_t *ctx) {
 static const char *WORDS_PEER =
     "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo "
     "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo vote";
-static nc_keys_t *g_peer_keys;
 
 static void serve_payload(const uint8_t *b, size_t n) {
     free(g_fake.serve);
@@ -932,6 +1031,8 @@ int main(void) {
         atomic_store(&g_fake.put_reply, 0);
     }
     test_profile_shadow(&ctx);
+    test_profile_cache(&ctx);
+    test_blob_skip(&ctx);
     test_paging(&ctx);
     {
         atomic_store(&g_fake.mode, M_VALS_JUNK);

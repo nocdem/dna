@@ -322,6 +322,18 @@ void nc_profile_read(const nc_ctx_t *ctx, const char *fp, nc_read_t *raw,
                      nc_peer_t *peer_out);
 
 /**
+ * The record checks of nc_profile_read alone, on bytes already in hand
+ * (the value of a profile row, e.g. one the page kept from an earlier
+ * FOUND read — the app's profile cache, profile_cache.h:40): decode,
+ * ML-DSA-87 signature, SHA3-512(dilithium_pubkey) == fp. 0 = passed
+ * (*identity_out set when non-NULL, `peer_out` filled when non-NULL),
+ * -1 = refused (nothing set). No network.
+ */
+int nc_profile_check(const char *fp, const uint8_t *data, size_t len,
+                     dna_unified_identity_t **identity_out,
+                     nc_peer_t *peer_out);
+
+/**
  * The app's registered-name check (dht_keyserver_reverse_lookup,
  * messenger/dht/keyserver/keyserver_lookup.c:186-283), owner-filtered:
  * `name` (the profile's registered_name) is VERIFIED only when the
@@ -688,6 +700,8 @@ typedef struct {
                                  * group invite, delete) and the payloads
                                  * its chat screen draws as cards; never
                                  * returned, never shown as text            */
+    uint8_t     blob[32];       /* SHA3-256 of the bucket value (FOUND)     */
+    bool        unchanged;      /* blob == skip_blob: nothing was decoded   */
 } nc_inbox_t;
 
 void nc_inbox_clear(nc_inbox_t *in);
@@ -717,7 +731,12 @@ int nc_plaintext_is_chat(const uint8_t *pt, size_t len);
 
 /**
  * ONE day bucket of `peer`'s outbox to this identity (dht_dm_outbox_sync_day
- * :414-474 without the blob cache): strict GET, owner = peer, codec
+ * :414-474): strict GET, owner = peer. On FOUND out->blob is SHA3-256 of
+ * the value; when `skip_blob` (nullable, 32 bytes) equals it the bucket is
+ * the one the caller already processed and stored, so it is NOT decoded
+ * (out->unchanged, no items) — the app's blob hash cache,
+ * dht_dm_outbox.c:30-80, except that the CALLER keeps the hash and passes
+ * it only after storing that bucket's messages. Otherwise codec
  * deserialize, then per message dna_decrypt_message_raw_alg (own round-3 +
  * ML-KEM secret) and the authorship gate of messenger_transport.c:645-716:
  * the Seal's claimed sender must be the peer and dna_verify_seal_authorship
@@ -727,7 +746,7 @@ int nc_plaintext_is_chat(const uint8_t *pt, size_t len);
  */
 int nc_outbox_fetch_day(const nc_ctx_t *ctx, const nc_peer_t *peer,
                         const uint8_t salt[NC_SALT_LEN], uint64_t day,
-                        nc_inbox_t *out);
+                        const uint8_t *skip_blob, nc_inbox_t *out);
 
 /** ACK that this identity has STORED `peer`'s messages (G11: the caller
  *  calls this only after its store transaction completed). Key =

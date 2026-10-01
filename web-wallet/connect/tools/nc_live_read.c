@@ -403,7 +403,7 @@ int main(int argc, char **argv) {
             /* R5 today's bucket of the peer's outbox to this identity */
             uint64_t day = dht_dm_outbox_get_day_bucket();
             nc_inbox_t in;
-            int orc = nc_outbox_fetch_day(&ctx, peer, salt, day, &in);
+            int orc = nc_outbox_fetch_day(&ctx, peer, salt, day, NULL, &in);
             if (orc != NC_OK) {
                 print_lib_error("outbox today", orc);
             } else {

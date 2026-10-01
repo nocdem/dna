@@ -19,9 +19,11 @@
 //
 // Naming: database = the vault id as 32 lowercase hex characters (the same 16
 // bytes as the vault's base64 `id`). Object stores: 'messages' (one record per
-// message, id 'm' + 20-digit local sequence), 'state' (one record, id 'state':
-// contacts, salts, pending requests, ACK times, the next local sequence),
-// 'meta' (the counter record). Record ids are opaque on purpose: who you talk
+// message, id 'm' + 20-digit local sequence), 'state' (the record id 'state':
+// contacts, salts, pending requests, ACK times, the next local sequence,
+// the profile cache index and the message-check times; plus one record per
+// kept contact profile, id 'p' + 20-digit local sequence), 'meta' (the
+// counter record). Record ids are opaque on purpose: who you talk
 // to is inside the ciphertext, not in an id or the AAD. The counter is also
 // kept in localStorage ('nodus.connect.counter.v1.<database name>', a
 // decimal string) so deleting the history does not restart it (NC-RT2 D).
@@ -179,15 +181,35 @@ export async function deleteVaultHistory(vaultId, storage) {
 // The local state kept in the 'state' record, with defaults. `acks`: the
 // last ACK value read per contact; `ackSent`: the last ACK value this device
 // published per contact (no re-ACK unless something newer was stored).
+// `profileCache`: fp -> { id, at, name } — a contact's profile row kept in
+// the 'state' store under record id `id` ('p' + 20 digits), read at `at`
+// (unix seconds) with the verified name `name` (the app's profile cache,
+// profile_cache.h:40). `dmSync`: fp -> unix seconds of the last completed
+// check of that contact's messages (the app's contacts_db dm sync
+// timestamp, transport_offline.c smart sync).
 export function emptyState() {
-  return { version: 1, nextSeq: '1', contacts: [], outgoing: [], declined: [], acks: {}, ackSent: {} };
+  return { version: 1, nextSeq: '1', contacts: [], outgoing: [], declined: [], acks: {}, ackSent: {}, profileCache: {}, dmSync: {} };
 }
+const isMap = value => value && typeof value === 'object' && !Array.isArray(value);
+export const PROFILE_RECORD_ID = /^p\d{20}$/;
 export function checkState(value) {
-  // A state saved before `ackSent` existed gets the default (same version).
-  if (value && value.version === 1 && value.ackSent === undefined) value.ackSent = {};
+  // A state saved before `ackSent`, `profileCache` or `dmSync` existed gets
+  // the default (same version).
+  if (value && value.version === 1) for (const key of ['ackSent', 'profileCache', 'dmSync']) if (value[key] === undefined) value[key] = {};
   if (!value || value.version !== 1 || !U64.test(String(value.nextSeq)) || !Array.isArray(value.contacts) ||
       !Array.isArray(value.outgoing) || !Array.isArray(value.declined) || !value.acks || typeof value.acks !== 'object' ||
-      !value.ackSent || typeof value.ackSent !== 'object' || Array.isArray(value.ackSent)) throw new StorageError('The stored contact list is damaged.');
+      !isMap(value.ackSent) || !isMap(value.profileCache) || !isMap(value.dmSync) ||
+      Object.values(value.profileCache).some(e => !isMap(e) || typeof e.id !== 'string' || !PROFILE_RECORD_ID.test(e.id) ||
+        !U64.test(String(e.at)) || typeof e.name !== 'string') ||
+      Object.values(value.dmSync).some(t => !U64.test(String(t)))) throw new StorageError('The stored contact list is damaged.');
+  return value;
+}
+
+// A kept profile record: { fp, record } (the signed row as read, checked
+// again by the core when loaded: core.profileLoad).
+function checkProfileRecord(value) {
+  if (!isMap(value) || typeof value.fp !== 'string' || !/^[0-9a-f]{128}$/.test(value.fp) ||
+      typeof value.record !== 'string' || value.record.length === 0) throw new StorageError('A stored profile is damaged.');
   return value;
 }
 
@@ -217,7 +239,8 @@ function readAll(db) {
     catch (error) { reject(new StorageError(`Message history could not be read: ${error.message}.`)); return; }
     const out = {};
     tx.objectStore(STORE_MESSAGES).getAll().onsuccess = event => { out.messages = event.target.result; };
-    tx.objectStore(STORE_STATE).get(STATE_ID).onsuccess = event => { out.state = event.target.result; };
+    // The 'state' record and the kept profile records ('p…', profileCache).
+    tx.objectStore(STORE_STATE).getAll().onsuccess = event => { out.stateRecords = event.target.result; };
     tx.objectStore(STORE_META).get(COUNTER_ID).onsuccess = event => { out.counter = event.target.result; };
     tx.oncomplete = () => resolve(out);
     tx.onerror = () => reject(txError(tx, 'Message history could not be read'));
@@ -246,7 +269,7 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
   await sealing(() => core.historyKey(name), 'The key for your message history could not be prepared.');
   const db = await openDatabase(name);
   db.onversionchange = () => db.close();
-  let counter, state, messages;
+  let counter, state, messages, profiles;
   try {
     const raw = await readAll(db);
     // The larger of the database record and the copy that survives a
@@ -257,7 +280,21 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
       const { plaintext } = await sealing(() => core.historyDecrypt({ store, ...args }), 'A stored message could not be opened. It may be damaged or from a different wallet.');
       return parsePlaintext(plaintext);
     };
-    state = raw.state === undefined ? emptyState() : checkState(await open(STORE_STATE, raw.state));
+    const stateRecords = raw.stateRecords || [];
+    const stateRecord = stateRecords.find(r => r?.id === STATE_ID);
+    state = stateRecord === undefined ? emptyState() : checkState(await open(STORE_STATE, stateRecord));
+    // Only the profile records the state still points to are opened; one
+    // that fails is dropped (the profile is read from the network again),
+    // it does not keep Messages closed.
+    profiles = [];
+    const wanted = new Map(Object.entries(state.profileCache).map(([fp, e]) => [e.id, fp]));
+    for (const record of stateRecords) {
+      if (!record || !wanted.has(record.id)) continue;
+      try {
+        const kept = checkProfileRecord(await open(STORE_STATE, record));
+        if (kept.fp === wanted.get(record.id)) profiles.push({ id: record.id, fp: kept.fp, record: kept.record });
+      } catch { /* not used */ }
+    }
     messages = [];
     for (const record of raw.messages || []) {
       const message = await open(STORE_MESSAGES, record);
@@ -275,11 +312,17 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
   // fails after encryption leaves the in-memory counter advanced (the
   // encryptions happened; counting them keeps the 2^32 budget conservative);
   // the next successful write stores it.
-  function save(nextState, newMessages = []) {
+  // `keptProfiles`: [{ id, fp, record }] written to the 'state' store next
+  // to the state that points to them (state.profileCache).
+  function save(nextState, newMessages = [], keptProfiles = []) {
     const run = async () => {
       if (closed) throw new StorageError('Message history is closed.');
       const entries = [
         ...newMessages.map(m => ({ store: STORE_MESSAGES, id: messageRecordId(String(m.seq)), value: m })),
+        ...keptProfiles.map(p => {
+          if (typeof p?.id !== 'string' || !PROFILE_RECORD_ID.test(p.id)) throw new StorageError('Invalid profile record.');
+          return { store: STORE_STATE, id: p.id, value: checkProfileRecord({ fp: p.fp, record: p.record }) };
+        }),
         { store: STORE_STATE, id: STATE_ID, value: checkState(nextState) }
       ];
       if (!budgetAllows(counter, entries.length)) throw new StorageError('This device has stored the maximum number of messages for this wallet. Nothing more can be saved here.');
@@ -315,7 +358,7 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
     if (!navigator.locks) throw new StorageError('This browser cannot safely delete saved data.');
     await navigator.locks.request('nodus.wallet.storage', () => deleteDatabase(name));
   }
-  return { persistent: true, state, messages, save, close, erase };
+  return { persistent: true, state, messages, profiles, save, close, erase };
 }
 
 // An unsaved wallet (words typed in, or a new account): nothing is written
@@ -323,7 +366,7 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
 export function memoryHistoryStore() {
   let closed = false;
   return {
-    persistent: false, state: emptyState(), messages: [],
+    persistent: false, state: emptyState(), messages: [], profiles: [],
     async save(nextState) { if (closed) throw new StorageError('Message history is closed.'); checkState(nextState); },
     close() { closed = true; },
     async erase() { closed = true; }

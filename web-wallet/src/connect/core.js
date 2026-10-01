@@ -38,9 +38,15 @@
 //     address or nothing is connected. fresh: true ONLY for words this
 //     session generated (decision Q1): a restored identity never creates a
 //     record.
-//   core.profileGet(fp) -> { outcome, why, profile? }
+//   core.profileGet(fp) -> { outcome, why, profile?, record? }
 //     outcome 'found' | 'empty' | 'unreadable'. 'empty' is NOT proof of
 //     absence (design §2.1). profile.claimed_name is a claim (G9).
+//     record (found only): the signed row as read, for a profile cache.
+//   core.profileLoad(fp, record, name) -> { profile }   no network: a
+//     record kept from profileGet passes the same checks again (signature,
+//     fingerprint) and its keys are held as after a read; `name` (the
+//     verified name of that read, or '') is kept only if it is still the
+//     record's registered name. Rejects when the record fails.
 //   core.profileUpdate(patch) -> { status, read, created, putRc, version }
 //     status 'published' | 'wait' (nothing written: retry later) |
 //     'taken' (the key is owned by someone else: terminal, show "profile
@@ -73,8 +79,12 @@
 //   core.outboxPublish(fp, saltHex, [{ seq, ts, text }]) -> { day, alg, count }
 //     one 1:1 message send: the WHOLE pending set for that contact for today
 //     (the blob replaces the previous one); needs profileGet(fp) first.
-//   core.outboxFetchDay(fp, saltHex, day?) -> { outcome, why, day, dropped,
-//     other, messages: [{ seq, senderTs, text }] }   senderTs = sender's
+//   core.outboxFetchDay(fp, saltHex, day?, skipBlob?) -> { outcome, why, day,
+//     blob, unchanged, dropped, other, messages: [{ seq, senderTs, text }] }
+//     blob (found only): 64 hex of the bucket value; pass it back as
+//     skipBlob ONLY once that answer's messages are stored — an equal
+//     bucket is then not decoded (unchanged: true, no messages; the app's
+//     blob cache, dht_dm_outbox.c:30-80). senderTs = sender's
 //     clock; messages are chat text only — the app's control payloads and
 //     card payloads are counted in `other` and never returned
 //     (nc_core.h nc_plaintext_is_chat)
@@ -240,6 +250,11 @@ export function createNodusConnectCore({ nodus } = {}) {
     get generation() { return generation; },
     unlock,
     profileGet: op(async (b, who) => { b.check(await b.call('nc_profile_get', ['string'], [fp(who)])); return b.result(); }),
+    profileLoad: op(async (b, who, record, name = '') => {
+      if (typeof record !== 'string' || record.length === 0 || record.length > 65536 || typeof name !== 'string') throw new Error('Invalid stored profile.');
+      b.check(b.num('nc_profile_load', ['string', 'string', 'string'], [fp(who), record, name]));
+      return b.result();
+    }),
     profileUpdate: op(async (b, patch) => {
       if (!patch || typeof patch !== 'object') throw new Error('Invalid profile edit.');
       b.check(await b.call('nc_profile_update', ['string'], [JSON.stringify(patch)]));
@@ -288,12 +303,13 @@ export function createNodusConnectCore({ nodus } = {}) {
       b.check(await b.call('nc_outbox_send', ['string', 'string', 'string'], [fp(who), salt(saltHex), JSON.stringify(list)]));
       return b.result();
     }),
-    outboxFetchDay: op(async (b, who, saltHex, day = '') => {
+    outboxFetchDay: op(async (b, who, saltHex, day = '', skipBlob = '') => {
       if (day !== '' && !U64.test(String(day))) throw new Error('Invalid day.');
-      b.check(await b.call('nc_outbox_get', ['string', 'string', 'string'], [fp(who), salt(saltHex), String(day)]));
+      if (skipBlob !== '' && !HEX64.test(skipBlob)) throw new Error('Invalid blob.');
+      b.check(await b.call('nc_outbox_get', ['string', 'string', 'string', 'string'], [fp(who), salt(saltHex), String(day), skipBlob]));
       const r = b.result();
       const messages = (r.messages || []).map(m => ({ seq: m.seq, senderTs: m.sender_ts, text: hexToText(m.text_hex) }));
-      return { outcome: r.outcome, why: r.why, day: r.day, dropped: r.dropped, other: r.other, messages };
+      return { outcome: r.outcome, why: r.why, day: r.day, blob: r.blob, unchanged: r.unchanged === true, dropped: r.dropped, other: r.other, messages };
     }),
     ackPublish: op(async (b, who, saltHex, ackTs) => {
       if (!U64.test(String(ackTs)) || String(ackTs) === '0') throw new Error('Invalid delivery confirmation.');

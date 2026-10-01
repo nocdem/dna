@@ -140,6 +140,35 @@ export function senderClockLabel(senderTs) {
   return `sender's clock: ${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 }
 
+// The app's smart sync (transport_offline.c:37, :228-260): when any
+// contact's messages were never checked, or the oldest check is more than
+// 3 days old, the next check reads the 8 buckets the messages can still be
+// in (dht_dm_outbox_sync_full, today-6 .. today+1: the buckets live 7 days,
+// DNA_DM_OUTBOX_TTL); otherwise the 3 recent ones.
+export const SMART_SYNC_FULL_SECONDS = 3 * 86400;
+export function needFullSync(contactFps, dmSync, now) {
+  const t = u64OrNull(now);
+  if (t === null) throw new Error('Invalid time.');
+  return contactFps.some(fp => {
+    const last = u64OrNull(dmSync?.[fp]);
+    return last === null || last === 0n || t - last > BigInt(SMART_SYNC_FULL_SECONDS);
+  });
+}
+export function fullDays(today) {
+  if (typeof today !== 'string' || !U64.test(today)) throw new Error('Invalid day.');
+  const d = BigInt(today), out = [];
+  for (let k = -6n; k <= 1n; k++) if (d + k >= 0n) out.push(String(d + k));
+  return out;
+}
+const u64OrNull = value => value !== undefined && value !== null && U64.test(String(value)) ? BigInt(String(value)) : null;
+
+// The app keeps a profile 7 days (profile_cache.h:40 PROFILE_CACHE_TTL_SECONDS).
+export const PROFILE_CACHE_SECONDS = 7 * 24 * 3600;
+export function profileFresh(entry, now) {
+  const at = u64OrNull(entry?.at), t = u64OrNull(now);
+  return at !== null && t !== null && t >= at && t - at < BigInt(PROFILE_CACHE_SECONDS);
+}
+
 // The three day buckets a routine fetch reads (design §1.4 R5,
 // DNA_DM_OUTBOX_RECENT_DAYS = 3): yesterday, today, tomorrow.
 export function recentDays(today) {

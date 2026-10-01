@@ -391,10 +391,44 @@ int nc_profile_get(const char *fp) {
         json_object_object_add(p, "name",
                                json_object_new_string(verified ? id->registered_name : ""));
         json_object_object_add(o, "profile", p);
+        /* the signed row as read, for the page's profile cache
+         * (nc_profile_load); it is checked again when loaded */
+        json_object_object_add(o, "record",
+                               json_object_new_string_len((const char *)raw.value->data,
+                                                          (int)raw.value->data_len));
         if (strcmp(fp, g_keys.fp) != 0) peer_store(&peer);
     }
     dna_identity_free(id);
     nc_read_clear(&raw);
+    return nc_end(set_result(o));
+}
+
+/* A profile row the page kept from an earlier nc_profile_get ("record") —
+ * the app keeps profiles 7 days (profile_cache.h:40). No network: the same
+ * record checks as a read (nc_profile_check), then the peer's keys are
+ * held as after a read. `name`: the name nc_name_verify proved when the row
+ * was read; kept only if it is still the row's registered name. */
+#define NC_PROFILE_RECORD_MAX 65536
+int nc_profile_load(const char *fp, const char *record, const char *name) {
+    if (nc_begin() != 0) return -1;
+    if (!g_unlocked) return nc_end(fail("Messages is not connected."));
+    nodus_key_t chk;
+    if (nc_fp_parse(fp, &chk) != 0) return nc_end(fail("Invalid Nodus address."));
+    size_t len = record ? strnlen(record, NC_PROFILE_RECORD_MAX + 1) : 0;
+    if (len == 0 || len > NC_PROFILE_RECORD_MAX || !name)
+        return nc_end(fail("Invalid stored profile."));
+    dna_unified_identity_t *id = NULL;
+    nc_peer_t peer;
+    if (nc_profile_check(fp, (const uint8_t *)record, len, &id, &peer) != 0)
+        return nc_end(fail("The stored profile failed its checks."));
+    json_object *p = profile_json(id);
+    bool keep = name[0] && id->has_registered_name &&
+                strcmp(name, id->registered_name) == 0;
+    json_object_object_add(p, "name", json_object_new_string(keep ? name : ""));
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "profile", p);
+    if (strcmp(fp, g_keys.fp) != 0) peer_store(&peer);
+    dna_identity_free(id);
     return nc_end(set_result(o));
 }
 
@@ -700,22 +734,30 @@ int nc_outbox_send(const char *fp, const char *salt_hex, const char *msgs_json) 
     return nc_end(set_result(o));
 }
 
-int nc_outbox_get(const char *fp, const char *salt_hex, const char *day_dec) {
+/* skip_hex: "" or the 64-hex "blob" of an earlier answer for this day whose
+ * messages the page has stored (nc_core.h nc_outbox_fetch_day). */
+int nc_outbox_get(const char *fp, const char *salt_hex, const char *day_dec,
+                  const char *skip_hex) {
     if (nc_begin() != 0) return -1;
     if (session_ok() != 0) return nc_end(-1);
     const nc_peer_t *peer = peer_need(fp);
     if (!peer) return nc_end(-1);
-    uint8_t salt[NC_SALT_LEN];
+    uint8_t salt[NC_SALT_LEN], skip[32];
     uint64_t day;
-    if (parse_salt(salt_hex, salt) != 0 || day_arg(day_dec, &day) != 0)
-        return nc_end(fail("Invalid salt or day."));
+    bool has_skip = skip_hex && skip_hex[0];
+    if (parse_salt(salt_hex, salt) != 0 || day_arg(day_dec, &day) != 0 ||
+        (has_skip && parse_hex_fixed(skip_hex, skip, sizeof(skip)) != 0))
+        return nc_end(fail("Invalid salt, day or blob."));
     nc_inbox_t in;
-    int rc = nc_outbox_fetch_day(&g_ctx, peer, salt, day, &in);
+    int rc = nc_outbox_fetch_day(&g_ctx, peer, salt, day,
+                                 has_skip ? skip : NULL, &in);
     nc_wipe(salt, sizeof(salt));
     if (rc != NC_OK) return nc_end(fail("Messages could not be read (%d).", rc));
     json_object *o = json_object_new_object();
     add_read(o, in.read.outcome, in.read.why);
     json_object_object_add(o, "day", jstr_u64(day));
+    if (in.read.outcome == NC_FOUND) json_object_object_add(o, "blob", jhex(in.blob, sizeof(in.blob)));
+    json_object_object_add(o, "unchanged", json_object_new_boolean(in.unchanged));
     json_object_object_add(o, "dropped", jstr_u64(in.dropped));
     /* authentic non-chat payloads: counted, never returned as text */
     json_object_object_add(o, "other", jstr_u64(in.other));

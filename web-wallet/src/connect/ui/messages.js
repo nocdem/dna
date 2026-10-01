@@ -40,7 +40,8 @@ import { openHistoryStore, memoryHistoryStore, StorageError } from '../store.js'
 import {
   parseContactId, shortId, profilePatch, profileStatusText, contactListStatusText, senderClockLabel,
   recentDays, pendingOutbox, hasUndelivered, compareLocal, receivedKey,
-  publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus, avatarPatch, AVATAR_UPLOAD_MAX_B64
+  publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus, avatarPatch, AVATAR_UPLOAD_MAX_B64,
+  needFullSync, fullDays, profileFresh
 } from './text.js';
 import { el, untrusted, button, website, fillAvatar } from './dom.js';
 
@@ -57,6 +58,8 @@ let core, store, state, messages = [], ownFp, ownProfile, fresh = false, vaultId
 let generation = 0, syncTimer, syncing = false;
 let requests = [], selectedFp, eraseArmed = false, profileTaken = false;
 const profiles = new Map();              // fp -> verified profile, this session
+const kept = new Map();                  // fp -> { id, record }: kept profile rows (saved wallet, state.profileCache)
+const blobs = new Map();                 // 'fp|day' -> { blob, other }: day buckets already stored, this session
 const received = new Set();              // receivedKey of every stored incoming message
 const unpublished = new Set();           // contacts whose pending set must be (re)published
 const saltChecked = new Set();           // contacts whose salt was reconciled this session
@@ -92,7 +95,7 @@ function wipe() {
   store = undefined; state = undefined; messages = []; ownFp = undefined; ownProfile = undefined;
   fresh = false; vaultId = null; requests = []; selectedFp = undefined;
   eraseArmed = false; profileTaken = false;
-  for (const set of [profiles, received, unpublished, saltChecked, dropped, others, lastRead]) set.clear();
+  for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead]) set.clear();
   if (!ui) return;
   for (const control of [ui.addId, ui.addNote, ui.composer, ui.bio, ui.location, ui.website]) control.value = '';
   ui.composer.rows = 1; ui.counter.textContent = '';
@@ -187,6 +190,7 @@ async function finishOpen(gen) {
     store = opened;
     state = structuredClone(store.state);
     messages = [...store.messages];
+    for (const p of store.profiles) kept.set(p.fp, { id: p.id, record: p.record });
     for (const m of messages) if (m.dir === 'in') received.add(receivedKey(m.fp, { seq: m.remoteSeq, senderTs: m.senderTs, text: m.text }));
     const now = nowSeconds();
     for (const contact of state.contacts) if (hasUndelivered(messages, contact.fp, now)) unpublished.add(contact.fp);
@@ -195,6 +199,15 @@ async function finishOpen(gen) {
   }
   await mergeContactList(gen);
   if (gen !== generation) return;
+  // Kept profiles younger than 7 days are in place before the first screen
+  // (no network: core.profileLoad), so names and pictures show at once.
+  for (const contact of state.contacts) {
+    const entry = state.profileCache[contact.fp], row = kept.get(contact.fp);
+    if (profiles.has(contact.fp) || !entry || row?.id !== entry.id || !profileFresh(entry, nowSeconds())) continue;
+    try { profiles.set(contact.fp, (await core.profileLoad(contact.fp, row.record, entry.name)).profile); }
+    catch { /* read from the network by the first check */ }
+    if (gen !== generation) return;
+  }
 
   ui.ownId.textContent = ownFp;
   ui.memoryNote.hidden = store.persistent;
@@ -265,12 +278,54 @@ async function publishContacts(gen) {
   if (note && gen === generation) ui.addStatus.textContent = note;
 }
 
-async function ensureProfile(fp) {
+// A profile once per session — for a contact of a saved wallet from the
+// kept row while it is younger than 7 days, as the app does
+// (profile_manager.c:58-130, profile_cache.h:40): the core checks the kept
+// row again (signature, fingerprint) before its keys are used. An older
+// kept row is read again from the network and replaced; if the network
+// cannot give it, the older row is used ("stale fallback"), unless the
+// network row failed its checks (then the kept row is dropped, as the app
+// deletes it). `keep`: a contact's profile (not a stranger's request) is
+// kept for the next session.
+const CHECK_FAILED = new Set(['bad_record', 'bad_signature']);
+async function ensureProfile(fp, keep = false) {
   if (profiles.has(fp)) return true;
+  const entry = state.profileCache[fp], row = kept.get(fp);
+  const fromKept = async () => {
+    try { profiles.set(fp, (await core.profileLoad(fp, row.record, entry.name)).profile); return true; }
+    catch { return false; }
+  };
+  const usable = entry && row && row.id === entry.id;
+  if (usable && profileFresh(entry, nowSeconds()) && await fromKept()) return true;
   const result = await core.profileGet(fp);
-  if (result.outcome !== 'found') return false;
-  profiles.set(fp, result.profile);
-  return true;
+  if (result.outcome === 'found') {
+    profiles.set(fp, result.profile);
+    if (keep) await keepProfile(fp, result);
+    return true;
+  }
+  if (result.outcome === 'unreadable' && CHECK_FAILED.has(result.why)) { await forgetProfile(fp); return false; }
+  return usable ? fromKept() : false;
+}
+
+// Saved wallets only; a row too large for one stored record is not kept.
+const PROFILE_KEEP_MAX = 60000;
+async function keepProfile(fp, result) {
+  if (!store?.persistent || typeof result.record !== 'string' || result.record.length > PROFILE_KEEP_MAX) return;
+  const before = state.profileCache[fp];
+  const id = before?.id || `p${takeSeq().padStart(20, '0')}`;
+  state.profileCache[fp] = { id, at: nowSeconds(), name: typeof result.profile.name === 'string' ? result.profile.name : '' };
+  try {
+    await store.save(state, [], [{ id, fp, record: result.record }]);
+    kept.set(fp, { id, record: result.record });
+  } catch {
+    // not kept: read from the network next time
+    if (before) state.profileCache[fp] = before; else delete state.profileCache[fp];
+  }
+}
+async function forgetProfile(fp) {
+  if (!state.profileCache[fp]) return;
+  delete state.profileCache[fp]; kept.delete(fp);
+  try { await persist(); } catch { /* the entry is gone from this session */ }
 }
 
 // ── sync ───────────────────────────────────────────────────────────────
@@ -282,10 +337,23 @@ async function sync() {
     await syncRequests(gen);
     if (gen !== generation) return;
     await publishContacts(gen);
+    // Smart sync (text.js needFullSync): 8 day buckets when any contact was
+    // never checked or the oldest check is over 3 days old, else 3. The
+    // check time of each contact whose buckets were all read is kept
+    // (state.dmSync) — saved only when it moved by an hour or more, so a
+    // 30-second check does not rewrite the state every time.
+    const startedAt = nowSeconds(), today = core.dayToday();
+    const days = needFullSync(state.contacts.map(c => c.fp), state.dmSync, startedAt) ? fullDays(today) : recentDays(today);
+    let syncMoved = false;
     for (const contact of [...state.contacts]) {
       if (gen !== generation) return;
-      await syncContact(contact, gen);
+      if (await syncContact(contact, gen, days) && gen === generation) {
+        const last = state.dmSync[contact.fp];
+        if (!last || BigInt(startedAt) - BigInt(last) >= 3600n) syncMoved = true;
+        state.dmSync[contact.fp] = startedAt;
+      }
     }
+    if (syncMoved && gen === generation) await persist();
     // Names for the request screens: the profiles of the people we asked
     // and of those asking us (read once per session — ensureProfile caches;
     // a name shows only after nc_name_verify proved it).
@@ -328,9 +396,11 @@ async function completeOutgoing(request, gen) {
   try { await core.requestCancel(request.sender); } catch { /* the request expires on its own */ }
 }
 
-async function syncContact(contact, gen) {
+// True when every bucket of `days` was read (the contact's check time may
+// move, sync above).
+async function syncContact(contact, gen, days) {
   const fp = contact.fp;
-  if (!await ensureProfile(fp) || gen !== generation) return;
+  if (!await ensureProfile(fp, true) || gen !== generation) return false;
   if (!saltChecked.has(fp)) {
     const result = await core.saltReconcile(fp, contact.salt || null);
     if (gen !== generation) return;
@@ -362,16 +432,28 @@ async function syncContact(contact, gen) {
   if (unpublished.has(fp)) await publishOutbox(contact, gen);
   if (gen !== generation) return;
 
-  const arrived = []; let lost = 0, other = 0;
-  for (const day of recentDays(core.dayToday())) {
-    const result = await core.outboxFetchDay(fp, salt, day);
-    if (gen !== generation) return;
-    lost += Number(result.dropped || 0);
-    other += Number(result.other || 0);
+  // Each bucket is passed the hash of the same bucket this session already
+  // stored (blobs); an unchanged bucket is not decoded again (the app's
+  // blob cache, dht_dm_outbox.c:30-80) and its non-text count is reused.
+  // A hash is remembered only after the bucket's messages were stored, and
+  // never for a bucket with a message that did not verify (it stays
+  // counted in `dropped` and keeps the ACK back).
+  const arrived = [], seen = []; let lost = 0, other = 0, complete = true;
+  for (const day of days) {
+    const key = `${fp}|${day}`, before = blobs.get(key);
+    const result = await core.outboxFetchDay(fp, salt, day, before?.blob || '');
+    if (gen !== generation) return false;
+    if (result.outcome === 'unreadable') complete = false;
+    if (result.unchanged && before) { other += before.other; continue; }
+    const dayLost = Number(result.dropped || 0), dayOther = Number(result.other || 0);
+    lost += dayLost;
+    other += dayOther;
+    if (result.outcome === 'found' && typeof result.blob === 'string' && !dayLost) seen.push([key, { blob: result.blob, other: dayOther }]);
+    else blobs.delete(key);
     for (const m of result.messages || []) {
-      const key = receivedKey(fp, m);
-      if (received.has(key)) continue;
-      received.add(key);
+      const k = receivedKey(fp, m);
+      if (received.has(k)) continue;
+      received.add(k);
       arrived.push({ fp, dir: 'in', text: String(m.text), senderTs: String(m.senderTs), remoteSeq: String(m.seq), at: Date.now() });
     }
   }
@@ -381,9 +463,10 @@ async function syncContact(contact, gen) {
     for (const m of arrived) m.seq = takeSeq();
     try { await persist(arrived); }
     catch (error) { for (const m of arrived) received.delete(receivedKey(fp, { seq: m.remoteSeq, senderTs: m.senderTs, text: m.text })); throw error; }
-    if (gen !== generation) return;
+    if (gen !== generation) return false;
     messages.push(...arrived);
   }
+  for (const [key, value] of seen) blobs.set(key, value);
   // G11 + NC-RT2 A: ACK only what is durably stored (the save above resolved
   // on the transaction's oncomplete), with the NEWEST stored sender
   // timestamp of this contact as the value (never this device's clock), not
@@ -397,11 +480,15 @@ async function syncContact(contact, gen) {
     const value = ackToSend(messages, fp, state.ackSent[fp]);
     if (value) {
       await core.ackPublish(fp, salt, value);
-      if (gen !== generation) return;
+      if (gen !== generation) return false;
       state.ackSent[fp] = value;
       await persist();
     }
   }
+  // Stricter than the app, which moves the check time even when a bucket
+  // read failed: a contact counts as checked only when no bucket was
+  // unreadable, so a failed read leads to the 8-bucket check, not a gap.
+  return complete;
 }
 
 // Publishes the whole pending set; after the PUT succeeded, the messages in
@@ -410,7 +497,7 @@ async function syncContact(contact, gen) {
 async function publishOutbox(contact, gen) {
   const set = pendingOutbox(messages, contact.fp, nowSeconds());
   if (!set.length) { unpublished.delete(contact.fp); return; }
-  if (!contact.salt || !await ensureProfile(contact.fp) || gen !== generation) return;
+  if (!contact.salt || !await ensureProfile(contact.fp, true) || gen !== generation) return;
   await core.outboxPublish(contact.fp, contact.salt, set);
   if (gen !== generation) return;
   unpublished.delete(contact.fp);
