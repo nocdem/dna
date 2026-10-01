@@ -262,10 +262,16 @@ static void test_loser_not_verified(void) {
     size_t n = 0;
     int spent = -1;
     nodus_value_t *s1[1] = { mk(&id_a, &key_x, 1, 9, "valid-newer", true) };
-    nodus_value_t *s2[1] = { mk(&id_a, &key_x, 1, 3, "forged-older", false) };
+    /* Rev 3: signed then altered, so R-c lets it in as a candidate (an
+     * unsigned row would be refused at add and this test would pass
+     * without exercising "only the returned row is verified"). */
+    nodus_value_t *s2[1] = { mk(&id_a, &key_x, 1, 3, "forged-older", true) };
+    nodus_dht_merge_stats_t st;
     CHECK(s1[0] && s2[0], "values");
+    s2[0]->data[0] ^= 0x01;
     CHECK(nodus_dht_keyset_add(&ks, s1, 1, &key_x, NULL, NULL, false, NULL) == 0, "m1");
-    CHECK(nodus_dht_keyset_add(&ks, s2, 1, &key_x, NULL, NULL, false, NULL) == 0, "m2");
+    CHECK(nodus_dht_keyset_add(&ks, s2, 1, &key_x, NULL, NULL, false, &st) == 0, "m2");
+    CHECK(st.added == 1 && st.refused == 0, "the forged row must be a candidate");
     CHECK(resolve_all(&ks, &set, &n, &spent) == 0, "resolve");
     CHECK(n == 1 && set[0]->seq == 9, "set");
     CHECK(spent == 1, "the losing older row was verified");
