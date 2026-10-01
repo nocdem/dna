@@ -573,8 +573,9 @@ int main(void) {
 
     TEST("WS entry listens on 127.0.0.1 with the default origin");
     if (g_srv.tcp.ws_listen_fd >= 0 && g_srv.tcp.ws_port == WS_PORT &&
-        g_srv.config.ws_origins.count == 1 &&
-        strcmp(g_srv.config.ws_origins.origin[0], NODUS_WS_DEFAULT_ORIGIN) == 0)
+        g_srv.config.ws_origins.count == 2 &&
+        strcmp(g_srv.config.ws_origins.origin[0], NODUS_WS_DEFAULT_ORIGIN) == 0 &&
+        strcmp(g_srv.config.ws_origins.origin[1], NODUS_WS_CONNECT_ORIGIN) == 0)
         PASS();
     else
         FAIL("listener / default origin");

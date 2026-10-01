@@ -80,8 +80,11 @@ extern "C" {
 #define NODUS_WS_MAX_ORIGINS         8
 #define NODUS_WS_ORIGIN_MAX          256
 
-/** Default allowed Origin when the configuration names none. */
+/** Default allowed Origins when the configuration names none: the web
+ *  wallet and the Nodus Connect site (decision
+ *  2026-10-01-connect-own-origin.md — same client code on two sites). */
 #define NODUS_WS_DEFAULT_ORIGIN      "https://wallet.nodusnetwork.io"
+#define NODUS_WS_CONNECT_ORIGIN      "https://connect.nodusnetwork.io"
 
 /* ── Opcodes (§5.2) and close codes (§7.4.1) ─────────────────────── */
 

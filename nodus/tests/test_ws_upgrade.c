@@ -457,12 +457,35 @@ static void test_reject_responses(void) {
     if (ok) PASS(); else FAIL("responses");
 }
 
+/* Decision 2026-10-01-connect-own-origin: the default list carries the
+ * Nodus Connect site next to the wallet; any other subdomain stays out. */
+static void test_connect_origin(void) {
+    TEST("default origins accept connect.nodusnetwork.io, refuse other subdomains");
+    req_t r = req_default();
+    r.origin = NODUS_WS_CONNECT_ORIGIN;
+    nodus_ws_hs_result_t res;
+    char buf[4096];
+    size_t n = req_build(&r, buf, sizeof(buf));
+    memset(&res, 0, sizeof(res));
+    int ok = nodus_ws_handshake_parse((const uint8_t *)buf, n, "127.0.0.1",
+                                      &g_origins, &res) == NODUS_WS_HS_OK;
+    r = req_default();
+    r.origin = "https://scan.nodusnetwork.io";
+    n = req_build(&r, buf, sizeof(buf));
+    memset(&res, 0, sizeof(res));
+    ok = ok && nodus_ws_handshake_parse((const uint8_t *)buf, n, "127.0.0.1",
+                                        &g_origins, &res) == NODUS_WS_HS_REJECT &&
+         res.status == 403;
+    if (ok) PASS(); else FAIL("connect origin");
+}
+
 static void test_origins_api(void) {
     TEST("origins: default, add, refuse bad entries");
     nodus_ws_origins_t o;
     nodus_ws_origins_default(&o);
-    int ok = o.count == 1 && strcmp(o.origin[0], NODUS_WS_DEFAULT_ORIGIN) == 0;
-    ok = ok && nodus_ws_origins_add(&o, "http://localhost:8080") == 0 && o.count == 2;
+    int ok = o.count == 2 && strcmp(o.origin[0], NODUS_WS_DEFAULT_ORIGIN) == 0 &&
+             strcmp(o.origin[1], NODUS_WS_CONNECT_ORIGIN) == 0;
+    ok = ok && nodus_ws_origins_add(&o, "http://localhost:8080") == 0 && o.count == 3;
     ok = ok && nodus_ws_origins_add(&o, "") == -1;
     ok = ok && nodus_ws_origins_add(&o, "https://a b") == -1;
     ok = ok && nodus_ws_origins_add(&o, "https://x\r\n") == -1;
@@ -482,6 +505,7 @@ int main(void) {
     test_real_ip();
     test_ip_bucket();
     test_reject_responses();
+    test_connect_origin();
     test_origins_api();
     printf("\n%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

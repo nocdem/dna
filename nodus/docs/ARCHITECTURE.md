@@ -1244,7 +1244,7 @@ browser ──wss://<node IP>:443──► Caddy (TLS, X-Forwarded-For) ──ws
 | Key | Default | Meaning |
 |---|---|---|
 | `ws_port` | `0` = off | TCP port of the entry. The address is ALWAYS `127.0.0.1` (`nodus_tcp_ws_listen`); there is no key for it. Must differ from `tcp_port`, `peer_port`, `witness_port`, `ch_port` (checked in `nodus_server_init`). |
-| `ws_origins` | `["https://wallet.nodusnetwork.io"]` | Allowed browser `Origin` values, exact byte match, at most 8 × 255 bytes. An empty or absent list means the default. |
+| `ws_origins` | `["https://wallet.nodusnetwork.io", "https://connect.nodusnetwork.io"]` (Connect since 0.23.8) | Allowed browser `Origin` values, exact byte match, at most 8 × 255 bytes. An empty or absent list means the default. |
 
 Startup logs `WebSocket entry listening on 127.0.0.1:<port>, <n> allowed origin(s)`
 and one line per origin.

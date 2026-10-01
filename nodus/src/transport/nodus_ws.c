@@ -108,6 +108,7 @@ void nodus_ws_origins_default(nodus_ws_origins_t *o) {
     if (!o) return;
     memset(o, 0, sizeof(*o));
     (void)nodus_ws_origins_add(o, NODUS_WS_DEFAULT_ORIGIN);
+    (void)nodus_ws_origins_add(o, NODUS_WS_CONNECT_ORIGIN);
 }
 
 static bool origin_allowed(const nodus_ws_origins_t *o, const char *v, size_t n) {

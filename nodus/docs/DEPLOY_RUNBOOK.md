@@ -513,11 +513,15 @@ browsers `wss://<validator IP>:443` (no domain name).
 ```json
 {
     "ws_port": 4005,
-    "ws_origins": ["https://wallet.nodusnetwork.io"]
+    "ws_origins": ["https://wallet.nodusnetwork.io", "https://connect.nodusnetwork.io"]
 }
 ```
 
-`ws_origins` may be left out: the default is `["https://wallet.nodusnetwork.io"]`.
+`ws_origins` may be left out: the default is
+`["https://wallet.nodusnetwork.io", "https://connect.nodusnetwork.io"]` (the
+Connect site since 0.23.8, decision 2026-10-01-connect-own-origin). A node
+that sets the list explicitly must name both, or the Connect site cannot
+reach it.
 A malformed `ws_port` (not an integer 0..65535) or `ws_origins` entry (not a
 string, empty, containing a space or control character, over 255 bytes, more than
 8 entries) refuses the start. A `ws_port` equal to `tcp_port`, `peer_port`,

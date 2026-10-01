@@ -211,7 +211,7 @@ A `seed_nodes` entry `"ip:udp_port"` seeds the DHT. Written as `"id@ip:udp_port"
 `"ws_port": 4005` opens a plain WebSocket listener of the client port on
 `127.0.0.1` only (a local TLS proxy serves it on 443 and forwards to it);
 `"ws_origins": [...]` lists the allowed browser `Origin` values (default
-`["https://wallet.nodusnetwork.io"]`). See `docs/ARCHITECTURE.md` §10
+`["https://wallet.nodusnetwork.io", "https://connect.nodusnetwork.io"]`). See `docs/ARCHITECTURE.md` §10
 "WebSocket entry" and `docs/DEPLOY_RUNBOOK.md` §2.4.
 
 **Address history index, off by default.** `"addr_history_index": true` builds
