@@ -613,9 +613,11 @@ int nodus_t2_result_get_batch_ex(uint32_t txn,
     for (int i = 0; i < key_count; i++) {
         size_t vc = counts_per_key ? counts_per_key[i] : 0;
         bool with_next = pages && pages[i].more && pages[i].has_next;
+        /* Rev 3 R-d: "nx" only beside more = true */
+        bool with_nx = pages && pages[i].more && pages[i].has_nx;
         bool with_u = unavail && unavail[i];
         cbor_encode_map(&enc, (size_t)2 + (pages ? (with_next ? 2 : 1) : 0) +
-                              (with_u ? 1 : 0));
+                              (with_nx ? 1 : 0) + (with_u ? 1 : 0));
         cbor_encode_cstr(&enc, "k");
         cbor_encode_bstr(&enc, keys[i].bytes, NODUS_KEY_BYTES);
         cbor_encode_cstr(&enc, "vs");
@@ -637,6 +639,10 @@ int nodus_t2_result_get_batch_ex(uint32_t txn,
             if (with_next) {
                 cbor_encode_cstr(&enc, "next");
                 enc_cursor(&enc, &pages[i].next);
+            }
+            if (with_nx) {
+                cbor_encode_cstr(&enc, "nx");
+                cbor_encode_uint(&enc, pages[i].nx);
             }
         }
         if (with_u) {
@@ -2509,6 +2515,14 @@ static int t2_decode_body(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg
                                             &msg->batch_page[bi].next) != 0)
                                         return -1;
                                     msg->batch_page[bi].has_next = true;
+                                } else if (ek.tstr.len == 2 &&
+                                           memcmp(ek.tstr.ptr, "nx", 2) == 0) {
+                                    /* Rev 3 R-d: est of the row the
+                                     * responder stopped on */
+                                    cbor_item_t ev = cbor_decode_next(&dec);
+                                    if (ev.type != CBOR_ITEM_UINT) return -1;
+                                    msg->batch_page[bi].nx = ev.uint_val;
+                                    msg->batch_page[bi].has_nx = true;
                                 } else if (ek.tstr.len == 1 && ek.tstr.ptr[0] == 'u') {
                                     /* Rev 2 item 15: per-key could-not-look */
                                     cbor_item_t ev = cbor_decode_next(&dec);

@@ -110,9 +110,12 @@ static const char *GET_OWNER_SQL =
 /* Paged get_all in PRIMARY KEY order (owner_fp, value_id — value_id as signed
  * int64, SQLite INTEGER). ?2 = owner filter or NULL; ?3/?4 = cursor or NULL.
  * The cursor is bound as NULL when absent — an all-zero sentinel would skip
- * a zero owner_fp with value_id <= 0. */
+ * a zero owner_fp with value_id <= 0. Column 11 = the stored data_hash
+ * (row_to_value reads columns 0..10 only; nodus_storage_get_all_page_hashed
+ * returns it). */
 static const char *GET_ALL_PAGE_SQL =
-    "SELECT key_hash, owner_fp, value_id, data, type, ttl, created_at, expires_at, seq, owner_pk, signature "
+    "SELECT key_hash, owner_fp, value_id, data, type, ttl, created_at, expires_at, seq, owner_pk, signature, "
+    "data_hash "
     "FROM nodus_values WHERE key_hash = ?1 "
     "AND (?2 IS NULL OR owner_fp = ?2) "
     "AND (?3 IS NULL OR owner_fp > ?3 OR (owner_fp = ?3 AND value_id > ?4)) "
@@ -756,8 +759,24 @@ int nodus_storage_get_all_page(nodus_storage_t *store,
                                nodus_value_t ***vals_out,
                                size_t *count_out,
                                int *more_out) {
+    return nodus_storage_get_all_page_hashed(store, key_hash, owner_fp,
+                                             after_owner, after_vid, budget_bytes,
+                                             vals_out, NULL, count_out, more_out);
+}
+
+int nodus_storage_get_all_page_hashed(nodus_storage_t *store,
+                                      const nodus_key_t *key_hash,
+                                      const nodus_key_t *owner_fp,
+                                      const nodus_key_t *after_owner,
+                                      uint64_t after_vid,
+                                      size_t budget_bytes,
+                                      nodus_value_t ***vals_out,
+                                      nodus_storage_data_hash_t **hashes_out,
+                                      size_t *count_out,
+                                      int *more_out) {
     if (!vals_out || !count_out || !more_out) return -1;
     *vals_out = NULL;
+    if (hashes_out) *hashes_out = NULL;
     *count_out = 0;
     *more_out = 0;
     if (!store || !store->db || !key_hash) return -1;
@@ -778,7 +797,14 @@ int nodus_storage_get_all_page(nodus_storage_t *store,
     size_t used = 0;   /* cumulative NODUS_VALUE_SERIALIZED_EST */
     int more = 0;
     nodus_value_t **vals = calloc(cap, sizeof(nodus_value_t *));
-    if (!vals) { sqlite3_reset(s); return NODUS_STORAGE_RC_FAULT; }
+    nodus_storage_data_hash_t *hashes = hashes_out
+        ? calloc(cap, sizeof(nodus_storage_data_hash_t)) : NULL;
+    if (!vals || (hashes_out && !hashes)) {
+        free(vals);
+        free(hashes);
+        sqlite3_reset(s);
+        return NODUS_STORAGE_RC_FAULT;
+    }
 
     int rc;
     while ((rc = sqlite3_step(s)) == SQLITE_ROW) {
@@ -793,10 +819,27 @@ int nodus_storage_get_all_page(nodus_storage_t *store,
             nodus_value_t **nv = realloc(vals, ncap * sizeof(nodus_value_t *));
             if (!nv) goto fail;
             vals = nv;
+            if (hashes) {
+                nodus_storage_data_hash_t *nh =
+                    realloc(hashes, ncap * sizeof(nodus_storage_data_hash_t));
+                if (!nh) goto fail;
+                hashes = nh;
+            }
             cap = ncap;
         }
         nodus_value_t *v = row_to_value(s);
         if (!v) goto fail;
+        if (hashes) {
+            /* Column 11: the stored data_hash; NULL (legacy row) or any
+             * other length = not present, the caller hashes the data. */
+            const void *hb = sqlite3_column_blob(s, 11);
+            int hl = sqlite3_column_bytes(s, 11);
+            memset(&hashes[count], 0, sizeof(hashes[count]));
+            if (hb && hl == 32) {
+                memcpy(hashes[count].bytes, hb, 32);
+                hashes[count].present = true;
+            }
+        }
         vals[count++] = v;
         used += est;
     }
@@ -805,9 +848,11 @@ int nodus_storage_get_all_page(nodus_storage_t *store,
 
     if (count == 0) {
         free(vals);
+        free(hashes);
         return 0;   /* empty page — not an error */
     }
     *vals_out = vals;
+    if (hashes_out) *hashes_out = hashes;
     *count_out = count;
     *more_out = more;
     return 0;
@@ -817,6 +862,7 @@ fail:   /* SQLite step error or allocation failure: could not look */
     for (size_t i = 0; i < count; i++)
         nodus_value_free(vals[i]);
     free(vals);
+    free(hashes);
     return NODUS_STORAGE_RC_FAULT;
 }
 

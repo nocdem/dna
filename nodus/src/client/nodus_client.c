@@ -1487,8 +1487,27 @@ int nodus_client_put(nodus_client_t *client,
                                 type, ttl, vid, seq, sig, 0);
 }
 
+/* The answer for an error frame ('e') in the Package A reply handlers and
+ * the strict getters. The decoder leaves error_code 0 when "code" is absent
+ * or not a uint, and a uint past INT_MAX lands negative: neither is a code,
+ * and returning it would read as success with no value (rev 2 item 19). */
+static int client_error_rc(const nodus_tier2_msg_t *resp) {
+    if (resp->error_code > 0) return resp->error_code;
+    QGP_LOG_WARN(LOG_TAG, "error reply without a valid code (%d) — "
+                 "reported as a protocol error", resp->error_code);
+    return NODUS_ERR_PROTOCOL_ERROR;
+}
+
+/* Error frame of nodus_client_get / get_all (lenient: the code as decoded,
+ * unchanged for the frozen app) and of their strict variants (rev 3 R-h:
+ * client_error_rc — never 0 / negative). */
+static int client_reply_error_rc(const nodus_tier2_msg_t *resp, bool strict) {
+    return strict ? client_error_rc(resp) : resp->error_code;
+}
+
 /* Shared by nodus_client_get and nodus_client_get_strict. `strict` only
- * changes the answer when no value decoded: the lenient path returns
+ * changes the answer when no value decoded, or when an error frame carries
+ * no valid code (client_reply_error_rc): the lenient path returns
  * NODUS_ERR_NOT_FOUND as it always has; the strict path first checks, in the
  * raw reply the pending slot kept (client_on_frame), whether the node sent a
  * "val" at all (nodus_client_strict.h). */
@@ -1511,7 +1530,11 @@ static int client_get_impl(nodus_client_t *client, const nodus_key_t *key,
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+    if (resp->type == 'e') {
+        int rc = client_reply_error_rc(resp, strict);
+        free_pending(client, req);
+        return rc;
+    }
 
     if (resp->value) {
         *val_out = resp->value;
@@ -1574,7 +1597,12 @@ static int client_get_all_impl(nodus_client_t *client, const nodus_key_t *key,
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+    if (resp->type == 'e') {
+        /* undecodable_out set = the strict path (nodus_client_get_all_strict) */
+        int rc = client_reply_error_rc(resp, undecodable_out != NULL);
+        free_pending(client, req);
+        return rc;
+    }
 
     if (undecodable_out) {
         /* Everything the node put in "vals" that is not among the decoded
@@ -1653,17 +1681,6 @@ static int client_pk_cmp(const nodus_key_t *a_owner, uint64_t a_vid,
     int64_t a = (int64_t)a_vid;
     int64_t b = (int64_t)b_vid;
     return (a > b) - (a < b);
-}
-
-/* The answer for an error frame ('e') in the Package A reply handlers. The
- * decoder leaves error_code 0 when "code" is absent or not a uint, and a
- * uint past INT_MAX lands negative: neither is a code, and returning it
- * would read as success with no value (rev 2 item 19). */
-static int client_error_rc(const nodus_tier2_msg_t *resp) {
-    if (resp->error_code > 0) return resp->error_code;
-    QGP_LOG_WARN(LOG_TAG, "error reply without a valid code (%d) — "
-                 "reported as a protocol error", resp->error_code);
-    return NODUS_ERR_PROTOCOL_ERROR;
 }
 
 /* Single owner-filtered GET reply. Takes the decoded value out of resp on
@@ -1871,7 +1888,8 @@ int nodus_client_get_all_page(nodus_client_t *client,
  * valid code is a protocol error; a local allocation failure is -1 (not
  * "0 results, nothing unavailable"). On any non-zero return no result is
  * handed out. */
-static int client_batch_ex_result(nodus_tier2_msg_t *resp, int key_count,
+static int client_batch_ex_result(nodus_tier2_msg_t *resp,
+                                  const nodus_key_t *keys, int key_count,
                                   nodus_batch_result_t **results_out,
                                   int *result_count_out, bool *unavail_out) {
     *results_out = NULL;
@@ -1879,12 +1897,22 @@ static int client_batch_ex_result(nodus_tier2_msg_t *resp, int key_count,
     memset(unavail_out, 0, (size_t)key_count * sizeof(bool));
     if (resp->type == 'e') return client_error_rc(resp);
 
+    /* Rev 3 R-h: a node answers every asked key, in the asked order
+     * (nodus_t2_result_get_batch_ex writes one entry per key). Fewer or
+     * more entries, or an entry for another key at a position, cannot be
+     * matched to the caller's keys: refused. */
     int n = resp->batch_keys ? resp->batch_key_count : 0;
-    if (n <= 0) return 0;
-    if (n > key_count) {
+    if (n != key_count) {
         QGP_LOG_WARN(LOG_TAG, "GET_BATCH(ex): %d entries for %d keys asked "
                      "— protocol error", n, key_count);
         return NODUS_ERR_PROTOCOL_ERROR;
+    }
+    for (int i = 0; i < n; i++) {
+        if (nodus_key_cmp(&resp->batch_keys[i], &keys[i]) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "GET_BATCH(ex): entry %d is not the key asked "
+                         "at that position — protocol error", i);
+            return NODUS_ERR_PROTOCOL_ERROR;
+        }
     }
     nodus_batch_result_t *results = calloc((size_t)n, sizeof(nodus_batch_result_t));
     if (!results) return -1;
@@ -1924,9 +1952,27 @@ int nodus_client_test_page_reply(const uint8_t *raw, size_t raw_len,
                                  nodus_dht_page_cursor_t *cursor_out,
                                  bool *legacy_out);
 int nodus_client_test_batch_reply(const uint8_t *raw, size_t raw_len,
-                                  int key_count,
+                                  const nodus_key_t *keys, int key_count,
                                   nodus_batch_result_t **results_out,
                                   int *result_count_out, bool *unavail_out);
+int nodus_client_test_get_error_rc(const uint8_t *raw, size_t raw_len,
+                                   bool strict, int *rc_out);
+
+/* Rev 3 R-h: the answer client_get_impl / client_get_all_impl give for an
+ * error frame (strict = the *_strict getters). @return 0 when raw decoded
+ * as an 'e' frame (*rc_out set), -1 otherwise. */
+int nodus_client_test_get_error_rc(const uint8_t *raw, size_t raw_len,
+                                   bool strict, int *rc_out) {
+    nodus_tier2_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    int ok = -1;
+    if (nodus_t2_decode(raw, raw_len, &msg) == 0 && msg.type == 'e') {
+        *rc_out = client_reply_error_rc(&msg, strict);
+        ok = 0;
+    }
+    nodus_t2_msg_free(&msg);
+    return ok;
+}
 
 int nodus_client_test_owner_reply(const uint8_t *raw, size_t raw_len,
                                   const nodus_key_t *key,
@@ -1970,7 +2016,7 @@ int nodus_client_test_page_reply(const uint8_t *raw, size_t raw_len,
 }
 
 int nodus_client_test_batch_reply(const uint8_t *raw, size_t raw_len,
-                                  int key_count,
+                                  const nodus_key_t *keys, int key_count,
                                   nodus_batch_result_t **results_out,
                                   int *result_count_out, bool *unavail_out) {
     *results_out = NULL;
@@ -1982,7 +2028,7 @@ int nodus_client_test_batch_reply(const uint8_t *raw, size_t raw_len,
         nodus_t2_msg_free(&msg);
         return NODUS_ERR_PROTOCOL_ERROR;
     }
-    int rc = client_batch_ex_result(&msg, key_count, results_out,
+    int rc = client_batch_ex_result(&msg, keys, key_count, results_out,
                                     result_count_out, unavail_out);
     nodus_t2_msg_free(&msg);
     return rc;
@@ -2068,7 +2114,7 @@ int nodus_client_get_batch_ex(nodus_client_t *client,
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    int rc = client_batch_ex_result(resp, key_count, results_out,
+    int rc = client_batch_ex_result(resp, keys, key_count, results_out,
                                     result_count_out, unavail_out);
     free_pending(client, req);
     return rc;

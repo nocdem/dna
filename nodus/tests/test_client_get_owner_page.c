@@ -24,22 +24,28 @@
  *   6. Error replies NODUS_ERR_UNAVAILABLE (21) and NODUS_ERR_STALE (20)
  *      come back as those codes — never collapsed to not-found / empty. An
  *      error reply whose code is 0, absent, or a uint past INT_MAX is
- *      NODUS_ERR_PROTOCOL_ERROR in all three handlers (rev 2 item 19) —
- *      never 0 with no value.
+ *      NODUS_ERR_PROTOCOL_ERROR in all three handlers (rev 2 item 19) and
+ *      in the strict getters nodus_client_get_strict / get_all_strict
+ *      (rev 3 R-h) — never 0 with no value. The lenient getters
+ *      (nodus_client_get / get_all, frozen app) still return the decoded
+ *      code unchanged.
  *   7. get_owner: the owner's row is returned; no row = NOT_FOUND; a row of
  *      another owner = NODUS_ERR_UNAVAILABLE (not absent); a row of another
  *      key = NODUS_ERR_PROTOCOL_ERROR; UNAVAILABLE surfaced.
  *   8. get_batch_ex: the per-entry "u": true marker comes back in
  *      unavail_out at the entry's position; unmarked and legacy entries are
- *      false; the caller array is zeroed past the result count; a reply with
- *      more entries than asked is NODUS_ERR_PROTOCOL_ERROR with no results
- *      (it would index past the caller array) (rev 2 item 20).
+ *      false; writes stay inside key_count; a reply with more entries than
+ *      asked is NODUS_ERR_PROTOCOL_ERROR with no results (it would index
+ *      past the caller array) (rev 2 item 20); rev 3 R-h: so is a reply
+ *      with FEWER entries than asked, or with an entry whose key is not the
+ *      key asked at that position.
  *
  * Seam: the reply handlers are static in nodus_client.c. This target
  * compiles nodus_client.c itself with NODUS_CLIENT_TEST_SEAM=1, which adds
  * nodus_client_test_owner_reply / nodus_client_test_page_reply /
- * nodus_client_test_batch_reply (they run nodus_t2_decode + the same
- * handler the request functions run, and bypass nothing); libnodus is
+ * nodus_client_test_batch_reply / nodus_client_test_get_error_rc (they run
+ * nodus_t2_decode + the same handler the request functions run, and bypass
+ * nothing); libnodus is
  * static, so its own nodus_client.o is never pulled — see
  * nodus/CMakeLists.txt (test_client_dup_array uses the same seam).
  * Reply frames are built with the node's own encoders (nodus_t2_result_*,
@@ -84,9 +90,11 @@ int nodus_client_test_page_reply(const uint8_t *raw, size_t raw_len,
                                  nodus_dht_page_cursor_t *cursor_out,
                                  bool *legacy_out);
 int nodus_client_test_batch_reply(const uint8_t *raw, size_t raw_len,
-                                  int key_count,
+                                  const nodus_key_t *keys, int key_count,
                                   nodus_batch_result_t **results_out,
                                   int *result_count_out, bool *unavail_out);
+int nodus_client_test_get_error_rc(const uint8_t *raw, size_t raw_len,
+                                   bool strict, int *rc_out);
 
 static int passed = 0;
 static int failed = 0;
@@ -457,7 +465,8 @@ static void build_error_frame(uint32_t txn, int code_kind) {
     g_len = cbor_encoder_len(&e);
 }
 
-/* The three handlers on the current g_frame must all answer `want`. */
+/* The three Package A handlers and the strict getters (rev 3 R-h) on the
+ * current g_frame must all answer `want`. */
 static void check_all_handlers(int want, const char *name) {
     page_out_t o;
     run_page(NULL, NULL, &o);
@@ -471,8 +480,24 @@ static void check_all_handlers(int want, const char *name) {
     nodus_batch_result_t *res = (nodus_batch_result_t *)(uintptr_t)1;
     int rn = 7;
     bool u[2] = { true, true };
-    rc = nodus_client_test_batch_reply(g_frame, g_len, 2, &res, &rn, u);
+    nodus_key_t bkeys[2] = { key_k, key_other };
+    rc = nodus_client_test_batch_reply(g_frame, g_len, bkeys, 2, &res, &rn, u);
     CHECK(rc == want && res == NULL && rn == 0 && !u[0] && !u[1], name);
+
+    /* Rev 3 R-h: nodus_client_get_strict / get_all_strict use the same
+     * rule. FAILS WITHOUT R-h for a code-less frame: the strict getters
+     * returned the decoded code (0 = "success" with no value). */
+    rc = -12345;
+    CHECK(nodus_client_test_get_error_rc(g_frame, g_len, true, &rc) == 0 && rc == want,
+          name);
+}
+
+/* The lenient getters (nodus_client_get / get_all — the frozen app) keep
+ * returning the decoded code unchanged. */
+static void check_lenient_unchanged(int decoded_code, const char *name) {
+    int rc = -12345;
+    CHECK(nodus_client_test_get_error_rc(g_frame, g_len, false, &rc) == 0 &&
+          rc == decoded_code, name);
 }
 
 static void test_error_codes_surfaced(void) {
@@ -496,6 +521,7 @@ static void test_error_without_valid_code(void) {
           m.error_code == 0, "code0: decodes as 'e' with code 0");
     nodus_t2_msg_free(&m);
     check_all_handlers(NODUS_ERR_PROTOCOL_ERROR, "code0: protocol error, not 0");
+    check_lenient_unchanged(0, "code0: lenient getter unchanged");
 
     /* code absent. */
     build_error_frame(41, 0);
@@ -504,14 +530,19 @@ static void test_error_without_valid_code(void) {
           m.error_code == 0, "nocode: decodes as 'e' with code 0");
     nodus_t2_msg_free(&m);
     check_all_handlers(NODUS_ERR_PROTOCOL_ERROR, "nocode: protocol error, not 0");
+    check_lenient_unchanged(0, "nocode: lenient getter unchanged");
 
     /* code past INT_MAX lands negative in the decoder's int. */
     build_error_frame(42, 1);
     memset(&m, 0, sizeof(m));
     CHECK(nodus_t2_decode(g_frame, g_len, &m) == 0 && m.type == 'e' &&
           m.error_code <= 0, "bigcode: decodes as 'e' with code <= 0");
-    nodus_t2_msg_free(&m);
-    check_all_handlers(NODUS_ERR_PROTOCOL_ERROR, "bigcode: protocol error");
+    {
+        int decoded = m.error_code;
+        nodus_t2_msg_free(&m);
+        check_all_handlers(NODUS_ERR_PROTOCOL_ERROR, "bigcode: protocol error");
+        check_lenient_unchanged(decoded, "bigcode: lenient getter unchanged");
+    }
 }
 
 /* ── get_owner ─────────────────────────────────────────────────────── */
@@ -565,8 +596,7 @@ static void test_get_batch_ex_unavail(void) {
     nodus_value_t **vpk[2] = { NULL, row };
     size_t cnt[2] = { 0, 1 };
 
-    /* Entry 0 marked "u": true, entry 1 carries a row. Asked for 3 keys
-     * (the third entry is missing): unavail[2] must come back zeroed. */
+    /* Entry 0 marked "u": true, entry 1 carries a row; 2 keys asked. */
     bool u_wire[2] = { true, false };
     CHECK(nodus_t2_result_get_batch_ex(50, keys, 2, vpk, cnt, NULL, u_wire,
                                         g_frame, sizeof(g_frame), &g_len) == 0,
@@ -574,11 +604,11 @@ static void test_get_batch_ex_unavail(void) {
     nodus_batch_result_t *res = NULL;
     int rn = 0;
     bool u[3] = { true, true, true };
-    int rc = nodus_client_test_batch_reply(g_frame, g_len, 3, &res, &rn, u);
+    int rc = nodus_client_test_batch_reply(g_frame, g_len, keys, 2, &res, &rn, u);
     CHECK(rc == 0 && res != NULL && rn == 2, "batch-u: two results");
     CHECK(u[0] == true, "batch-u: entry 0 marked could-not-look");
     CHECK(u[1] == false, "batch-u: entry 1 not marked");
-    CHECK(u[2] == false, "batch-u: entry past the result count zeroed");
+    CHECK(u[2] == true, "batch-u: writes stay inside key_count");
     if (res && rn == 2) {
         CHECK(nodus_key_cmp(&res[0].key, &keys[0]) == 0 && res[0].count == 0,
               "batch-u: entry 0 empty");
@@ -588,16 +618,41 @@ static void test_get_batch_ex_unavail(void) {
     }
     nodus_client_free_batch_result(res, rn);
 
+    /* Rev 3 R-h: 3 keys asked, 2 entries answered — the missing entry
+     * cannot be told from "no values": refused, outputs zeroed.
+     * FAILS WITHOUT R-h: rc 0 with two results (the old rule refused only
+     * MORE entries than asked). */
+    res = (nodus_batch_result_t *)(uintptr_t)1; rn = 7;
+    u[0] = u[1] = u[2] = true;
+    rc = nodus_client_test_batch_reply(g_frame, g_len, keys, 3, &res, &rn, u);
+    CHECK(rc == NODUS_ERR_PROTOCOL_ERROR, "batch-under: fewer entries than asked refused");
+    CHECK(res == NULL && rn == 0 && !u[0] && !u[1] && !u[2], "batch-under: outputs empty");
+
     /* A legacy batch reply (no "u"): nothing marked. */
     CHECK(nodus_t2_result_get_batch(51, keys, 2, vpk, cnt,
                                      g_frame, sizeof(g_frame), &g_len) == 0,
           "batch-legacy: encode");
     res = NULL; rn = 0;
     u[0] = u[1] = u[2] = true;
-    rc = nodus_client_test_batch_reply(g_frame, g_len, 2, &res, &rn, u);
+    rc = nodus_client_test_batch_reply(g_frame, g_len, keys, 2, &res, &rn, u);
     CHECK(rc == 0 && rn == 2 && !u[0] && !u[1], "batch-legacy: nothing marked");
     CHECK(u[2] == true, "batch-legacy: writes stay inside key_count");
     nodus_client_free_batch_result(res, rn);
+
+    /* Rev 3 R-h: entries for the asked keys in the WRONG positions —
+     * refused. FAILS WITHOUT R-h: rc 0, results[0].key != keys[0]. */
+    {
+        nodus_key_t swapped[2] = { keys[1], keys[0] };
+        nodus_value_t **vps[2] = { row, NULL };
+        CHECK(nodus_t2_result_get_batch(53, swapped, 2, vps, cnt,
+                                         g_frame, sizeof(g_frame), &g_len) == 0,
+              "batch-swap: encode");
+        res = (nodus_batch_result_t *)(uintptr_t)1; rn = 7;
+        u[0] = u[1] = true;
+        rc = nodus_client_test_batch_reply(g_frame, g_len, keys, 2, &res, &rn, u);
+        CHECK(rc == NODUS_ERR_PROTOCOL_ERROR, "batch-swap: key mismatch refused");
+        CHECK(res == NULL && rn == 0 && !u[0] && !u[1], "batch-swap: outputs empty");
+    }
 
     /* More entries than asked: refused, nothing handed out. */
     nodus_value_t **vpk3[3] = { NULL, row, NULL };
@@ -607,7 +662,7 @@ static void test_get_batch_ex_unavail(void) {
           "batch-over: encode");
     res = (nodus_batch_result_t *)(uintptr_t)1; rn = 7;
     bool u2[3] = { true, true, true };
-    rc = nodus_client_test_batch_reply(g_frame, g_len, 2, &res, &rn, u2);
+    rc = nodus_client_test_batch_reply(g_frame, g_len, keys, 2, &res, &rn, u2);
     CHECK(rc == NODUS_ERR_PROTOCOL_ERROR, "batch-over: more entries than asked refused");
     CHECK(res == NULL && rn == 0 && !u2[0] && !u2[1], "batch-over: outputs empty");
     CHECK(u2[2] == true, "batch-over: writes stay inside key_count");

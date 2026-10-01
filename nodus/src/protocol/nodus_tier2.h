@@ -38,6 +38,11 @@ extern "C" {
  *     "next"  map {"o": bstr(64), "v": uint} cursor for the next page
  *                                           (present only when more)
  *   reply "r" "batch" entry (paged get_batch): {"k","vs"} + "more" (+"next")
+ *     "nx"    uint                          (rev 3 R-d; only with more = true,
+ *                                           node-to-node 4002 replies only)
+ *                                           NODUS_VALUE_SERIALIZED_EST of the
+ *                                           row the responder stopped on — the
+ *                                           row that did not fit its budget
  *   reply "r" "batch" entry (any get_batch, rev 2 item 15):
  *     "u"     bool (true)                   this key could NOT be looked up
  *                                           (storage fault / no forward
@@ -52,8 +57,9 @@ extern "C" {
  * then value_id ASC compared as SIGNED int64 (nodus_storage_get_all_page).
  * "v" carries the raw uint64 value_id bits.
  *
- * A malformed new key (wrong CBOR type, "own"/"o" not 64 bytes, a cursor
- * map without both "o" and "v") refuses the whole frame (decode -1): a
+ * A malformed new key (wrong CBOR type — "nx" not a uint included —, "own"/"o"
+ * not 64 bytes, a cursor map without both "o" and "v") refuses the whole frame
+ * (decode -1): a
  * silently ignored cursor would restart a paged read at page 1 forever. */
 
 /** One primary-key position: (owner_fp, value_id). */
@@ -75,6 +81,11 @@ typedef struct {
     bool              more;      /**< rows remain after this page */
     bool              has_next;  /**< next is set (only when more) */
     nodus_t2_cursor_t next;      /**< last PK included in this page */
+    /* Rev 3 R-d — 4002 get_batch entries only (nodus_t2_result_get_batch_ex);
+     * nodus_t2_result_page never sends it. */
+    bool              has_nx;    /**< nx is set (sent only when more) */
+    uint64_t          nx;        /**< NODUS_VALUE_SERIALIZED_EST of the row
+                                  *   the responder stopped on */
 } nodus_t2_page_info_t;
 
 /* ── Client → Nodus encode ───────────────────────────────────────── */

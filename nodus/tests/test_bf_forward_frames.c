@@ -30,6 +30,10 @@
  *   7. items 13/15 responder: a 4002 get_batch whose local read FAULTS
  *      answers that key with "u" (not an empty entry); the originator
  *      with a local fault and only a "u" answer says UNAVAILABLE.
+ *   8. rev 3 R-d: a paged 4002 get_batch that stops before a row too large
+ *      for its per-key budget answers "nx" = that row's serialized
+ *      estimate; the originator, fed the reply, counts the source as a
+ *      full page (it bounds). Costs one 600 KB value in the fixture DB.
  *
  * Requires: default build. Leaves behind: nothing (fixture DB unlinked).
  * RED on the tree before rev 2: the merge took the first verified row per
@@ -420,6 +424,97 @@ out:
     free(srv);
 }
 
+/* Rev 3 R-d end to end. The responder's store holds a small row (vid 1)
+ * and a LARGE row (vid 2) that does not fit the per-key budget of a
+ * 4-key paged get_batch (2 MiB / 4). It answers vid 1, more = true, and
+ * "nx" = NODUS_VALUE_SERIALIZED_EST of vid 2. The originator, fed that
+ * reply, counts the page as full: the source bounds.
+ * FAILS WITHOUT R-d: no "nx" in the reply (has_nx false), and the old
+ * rule (EST(5) + EST(0) > 512 KiB) leaves the source not bounding. */
+static void test_nx_responder(void) {
+    TEST("R-d: responder sends nx; originator counts the page full");
+    nodus_server_t *srv = calloc(1, sizeof(*srv));
+    nodus_tcp_conn_t *conn = calloc(1, sizeof(*conn));
+    nodus_inter_session_t sess;
+    nodus_tier2_msg_t m;
+    memset(&m, 0, sizeof(m));
+    bool opened = false;
+    const size_t big_len = 600000;
+    uint8_t *big_data = malloc(big_len);
+    nodus_value_t *small = mk(&id_a, &key_k, 1, 1, "small");
+    nodus_value_t *large = NULL;
+    CHECK(srv && conn && big_data && small, "alloc");
+    memset(big_data, 'L', big_len);
+    CHECK(nodus_value_create(&key_k, big_data, big_len, NODUS_VALUE_PERMANENT, 0, 2, 1,
+                             &id_a.pk, &large) == 0 &&
+          nodus_value_sign(large, &id_a.sk) == 0, "large value");
+    CHECK(test_storage_open(&srv->storage) == 0, "store");
+    opened = true;
+    CHECK(nodus_storage_put(&srv->storage, small) == 0 &&
+          nodus_storage_put(&srv->storage, large) == 0, "put");
+    srv->config.require_peer_auth = false;     /* isolate the responder */
+    conn->fd = -1;
+    conn->slot = -1;
+    conn->state = NODUS_CONN_CONNECTED;        /* send writes into wbuf */
+    snprintf(conn->ip, sizeof(conn->ip), "%s", "10.0.0.7");
+    memset(&sess, 0, sizeof(sess));
+    sess.conn = conn;
+    sess.authenticated = true;
+    {
+        uint8_t q[4096];
+        size_t qlen = 0;
+        uint8_t tok[NODUS_SESSION_TOKEN_LEN];
+        memset(tok, 0, sizeof(tok));
+        nodus_key_t keys[4] = { key_k, key_l, key_l, key_l };
+        nodus_t2_read_opts_t opts = { .own = NULL, .page = true, .after = NULL };
+        CHECK(nodus_t2_get_batch_ex(4, tok, keys, 4, &opts, q, sizeof(q), &qlen) == 0,
+              "encode query");
+        nodus_server_dispatch_inter_frame(srv, &sess, q, qlen);
+    }
+    CHECK(conn->wlen > 7, "responder sent nothing");
+    {
+        nodus_frame_t fr;
+        CHECK(nodus_frame_decode(conn->wbuf, conn->wlen, &fr) > 0, "frame");
+        uint32_t flen = fr.payload_len;
+        CHECK(nodus_t2_decode(conn->wbuf + NODUS_FRAME_HEADER_SIZE, flen, &m) == 0,
+              "decode responder reply");
+        CHECK(m.batch_key_count == 4 && m.batch_page, "entries");
+        CHECK(m.batch_val_counts[0] == 1 && m.batch_vals[0][0]->value_id == 1,
+              "the large row must not fit the page");
+        CHECK(m.batch_page[0].more && m.batch_page[0].has_nx &&
+              m.batch_page[0].nx == (uint64_t)NODUS_VALUE_SERIALIZED_EST(big_len),
+              "nx must be the estimate of the row the page stopped on");
+        CHECK(!m.batch_page[1].has_nx, "nx on a complete key");
+
+        CHECK(setup(&key_k, 1) == 0, "setup");
+        B.is_get_all = true;
+        B.paged = true;
+        B.sets[0].peers = 1;
+        int idx[1] = { 0 };
+        fwd(idx, 1);
+        C.batch_key_count = 4;      /* the responder split its budget over 4 keys */
+        CHECK(nodus_server_bf_absorb_reply(&B, &C, conn->wbuf + NODUS_FRAME_HEADER_SIZE,
+                                           flen) == 0, "absorb");
+        CHECK(B.sets[0].nsrc == 1 && B.sets[0].src[0].noted, "source noted");
+        CHECK(B.sets[0].src[0].bounds, "a source that stopped on a large row must bound");
+    }
+    PASS();
+out:
+    nodus_t2_msg_free(&m);
+    done();
+    if (opened) test_storage_close(&srv->storage);
+    if (conn) {
+        free(conn->wbuf);
+        free(conn->rbuf);
+        free(conn->pending_buf);
+    }
+    free(conn);
+    free(srv);
+    free(big_data);
+    nodus_value_free(small);
+    nodus_value_free(large);
+}
+
 int main(void) {
     printf("=== DHT Package A rev 2: forward path with crafted 4002 frames ===\n");
     uint8_t seed[32];
@@ -438,6 +533,7 @@ int main(void) {
     test_one_row_page_source();
     test_unasked_key_entry();
     test_storage_fault();
+    test_nx_responder();
 
     printf("\n%d passed, %d failed\n", passed, failed);
     return failed > 0 ? 1 : 0;

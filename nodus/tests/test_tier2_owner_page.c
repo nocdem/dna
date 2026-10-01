@@ -16,9 +16,13 @@
  *   5. Rev 2 item 15: the per-entry could-not-look marker "u" round-trips,
  *      is emitted only as true (an all-false array = the hand-built legacy
  *      reply, byte for byte), and a non-bool "u" refuses the frame.
+ *   6. Rev 3 R-d: the per-entry "nx" (uint) round-trips, is written only
+ *      beside more = true, is never written by result_page, and a
+ *      non-uint "nx" refuses the frame.
  *
+ * Requires: default build. Leaves behind: nothing (in-process).
  * RED on the tree before Package A: the _ex / _owner / result_page
- * encoders and the decoded fields do not exist.
+ * encoders and the decoded fields do not exist. RED before rev 3: no "nx".
  */
 
 #include "protocol/nodus_tier2.h"
@@ -349,6 +353,80 @@ out:
     nodus_value_free(v);
 }
 
+/* Rev 3 R-d: per-entry "nx". Emitted only beside more = true; round-trips
+ * as a uint (value above 2^32 to catch narrowing); never written by
+ * nodus_t2_result_page; a non-uint "nx" refuses the frame.
+ * FAILS WITHOUT R-d: the encoder writes no "nx" (has_nx stays false) and
+ * the decoder has no field to fill. */
+static void test_result_get_batch_nx(void) {
+    TEST("result_get_batch_ex: \"nx\" round-trip; only with more");
+    nodus_key_t keys[2];
+    fill_key(&keys[0], 0x75);
+    fill_key(&keys[1], 0x76);
+    nodus_value_t *v = mk_value(&keys[0], 4, 1, "row");
+    nodus_value_t *row[1] = { v };
+    nodus_value_t **vpk[2] = { row, NULL };
+    size_t cnt[2] = { 1, 0 };
+    nodus_t2_page_info_t pages[2];
+    memset(pages, 0, sizeof(pages));
+    size_t len = 0, len2 = 0;
+    nodus_tier2_msg_t m;
+    memset(&m, 0, sizeof(m));
+    CHECK(v != NULL, "value");
+    pages[0].more = true;
+    pages[0].has_next = true;
+    pages[0].next.owner = v->owner_fp;
+    pages[0].next.vid = 4;
+    pages[0].has_nx = true;
+    pages[0].nx = 0x123456789ULL;
+    pages[1].has_nx = true;          /* more = false: must not be sent */
+    pages[1].nx = 5;
+
+    CHECK(nodus_t2_result_get_batch_ex(7, keys, 2, vpk, cnt, pages, NULL,
+                                        buf_a, sizeof(buf_a), &len) == 0, "enc");
+    CHECK(nodus_t2_decode(buf_a, len, &m) == 0, "decode");
+    CHECK(m.batch_key_count == 2 && m.batch_page, "entries");
+    CHECK(m.batch_page[0].more && m.batch_page[0].has_nx &&
+          m.batch_page[0].nx == 0x123456789ULL, "nx lost");
+    CHECK(!m.batch_page[1].more && !m.batch_page[1].has_nx, "nx sent without more");
+    nodus_t2_msg_free(&m);
+
+    /* result_page (client get_all) never carries nx: same bytes with or
+     * without it set */
+    CHECK(nodus_t2_result_page(8, row, 1, &pages[0], buf_b, sizeof(buf_b), &len) == 0,
+          "page enc");
+    pages[0].has_nx = false;
+    CHECK(nodus_t2_result_page(8, row, 1, &pages[0], buf_c, sizeof(buf_c), &len2) == 0,
+          "page enc2");
+    CHECK(len == len2 && memcmp(buf_b, buf_c, len) == 0, "result_page wrote nx");
+
+    /* {..., r:{batch:[{k, vs:[], more:true, nx: h'00'}]}} — "nx" as bstr */
+    {
+        cbor_encoder_t enc;
+        cbor_encoder_init(&enc, buf_b, sizeof(buf_b));
+        cbor_encode_map(&enc, 4);
+        cbor_encode_cstr(&enc, "t"); cbor_encode_uint(&enc, 9);
+        cbor_encode_cstr(&enc, "y"); cbor_encode_cstr(&enc, "r");
+        cbor_encode_cstr(&enc, "q"); cbor_encode_cstr(&enc, "result");
+        cbor_encode_cstr(&enc, "r");
+        cbor_encode_map(&enc, 1);
+        cbor_encode_cstr(&enc, "batch");
+        cbor_encode_array(&enc, 1);
+        cbor_encode_map(&enc, 4);
+        cbor_encode_cstr(&enc, "k"); cbor_encode_bstr(&enc, keys[0].bytes, NODUS_KEY_BYTES);
+        cbor_encode_cstr(&enc, "vs"); cbor_encode_array(&enc, 0);
+        cbor_encode_cstr(&enc, "more"); cbor_encode_bool(&enc, true);
+        cbor_encode_cstr(&enc, "nx"); cbor_encode_bstr(&enc, keys[0].bytes, 1);
+        size_t bl = cbor_encoder_len(&enc);
+        memset(&m, 0, sizeof(m));
+        CHECK(nodus_t2_decode(buf_b, bl, &m) != 0, "non-uint nx accepted");
+        nodus_t2_msg_free(&m);
+    }
+    PASS();
+out:
+    nodus_value_free(v);
+}
+
 /* {t, y:"q", q:"get_all", a:{k:key, <name>: <one raw item>}} */
 static size_t frame_with_arg(uint8_t *buf, size_t cap, const nodus_key_t *key,
                              const char *name, int kind) {
@@ -410,6 +488,7 @@ int main(void) {
     test_result_page_roundtrip();
     test_result_get_batch_pages();
     test_result_get_batch_unavail();
+    test_result_get_batch_nx();
     test_malformed_refused();
 
     printf("\n%d passed, %d failed\n", passed, failed);

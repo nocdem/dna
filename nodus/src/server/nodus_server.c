@@ -1160,7 +1160,6 @@ static void dht_wal_checkpoint(nodus_server_t *srv) {
         srv->storage.stmt_get_all, srv->storage.stmt_delete,
         srv->storage.stmt_cleanup, srv->storage.stmt_count,
         srv->storage.stmt_put_if_newer, srv->storage.stmt_fetch_batch,
-        srv->storage.stmt_quota_total_bytes, srv->storage.stmt_quota_owner_count,
         srv->storage.stmt_exclusive_owner,
         srv->storage.stmt_hint_insert, srv->storage.stmt_hint_get,
         srv->storage.stmt_hint_delete, srv->storage.stmt_hint_cleanup,
@@ -1490,6 +1489,17 @@ static void dht_republish(nodus_server_t *srv) {
 
     for (int i = 0; i < fetched; i++) {
         nodus_value_t *val = batch[i];
+
+        /* A row already expired (the rows nodus_storage_cleanup deletes) is
+         * not sent: every peer would refuse it as expired on arrival
+         * (NODUS_STORAGE_RC_EXPIRED). The bookmark still moves past it. */
+        if (val->expires_at > 0 && val->expires_at <= now) {
+            rs->last_key = val->key_hash;
+            rs->last_owner = val->owner_fp;
+            rs->last_vid = val->value_id;
+            nodus_value_free(val);
+            continue;
+        }
 
         /* Encode frame once for all peers */
         uint8_t *cbor_buf = malloc(RESP_BUF_SIZE);
@@ -2209,8 +2219,10 @@ static void iterative_lookup_tick(nodus_server_t *srv) {
  * total order, so the same rows give the same reply whatever order the
  * sources answered in (D2). Exception, stated: unpaged replies list rows
  * in the order their PK first arrived (the pre-Package-A order), and the
- * verify budget (NODUS_DHT_VERIFY_CAP) can only change WHICH rows an
- * adversarial flood leaves out, never admit an unverified one.
+ * verify budget (NODUS_DHT_VERIFY_CAP) and the per-source discard (rev 3
+ * R-b, which depends on which row the PK-ordered walk verifies first) can
+ * only change WHICH forwarded rows an adversarial source leaves out, never
+ * admit an unverified one nor drop a local row.
  * Declared in nodus_server.h (internal section) for the unit tests. */
 
 int nodus_dht_pk_cmp(const nodus_key_t *a_owner, uint64_t a_vid,
@@ -2278,17 +2290,73 @@ static void dht_note_last(nodus_dht_merge_stats_t *st, const nodus_value_t *v) {
     }
 }
 
-/* Two candidates of the same PK that nodus_value_verify cannot tell apart:
- * it reads key_hash (filtered equal), data (hash), type, ttl, value_id (PK),
- * seq, owner_pk and the signature. created_at / expires_at are unsigned and
- * not compared — the first copy's stay. */
-static bool dht_cand_same(const nodus_dht_cand_t *a, const nodus_value_t *v,
-                          const uint8_t hash[32]) {
-    const nodus_value_t *u = a->v;
-    return u->seq == v->seq && u->type == v->type && u->ttl == v->ttl &&
-           memcmp(a->hash, hash, 32) == 0 &&
-           memcmp(u->signature.bytes, v->signature.bytes, NODUS_SIG_BYTES) == 0 &&
-           memcmp(u->owner_pk.bytes, v->owner_pk.bytes, NODUS_PK_BYTES) == 0;
+/* Rev 3 R-e: the unpaged per-source row bound is what one forward reply
+ * buffer can carry of rows that hold an owner pk and a signature. */
+_Static_assert(NODUS_DHT_SRC_MAX_ROWS ==
+               (size_t)RESP_BUF_SIZE / (size_t)(NODUS_PK_BYTES + NODUS_SIG_BYTES),
+               "NODUS_DHT_SRC_MAX_ROWS must follow RESP_BUF_SIZE");
+_Static_assert(NODUS_DHT_MAX_SOURCES <= 16, "source bitmask is uint16_t");
+
+static bool dht_all_zero(const uint8_t *p, size_t n) {
+    uint8_t acc = 0;
+    for (size_t i = 0; i < n; i++) acc |= p[i];
+    return acc == 0;
+}
+
+/* Rank of two candidates of the SAME PK: <0 when a ranks first. seq DESC,
+ * data hash DESC (the replica predicate), then a total tiebreak over every
+ * field nodus_value_verify reads (key_hash is filtered equal, value_id and
+ * owner_fp are the PK), so 0 means the two are EXACT copies: verify cannot
+ * tell them apart. created_at / expires_at are not signed and not compared
+ * (R-f picks which copy's stand, dht_copy_stands). */
+static int dht_cand_rank_cmp(const nodus_dht_cand_t *a, const nodus_dht_cand_t *b) {
+    int n = dht_newer_cmp(a->v->seq, a->hash, b->v->seq, b->hash);
+    if (n != 0) return -n;
+    if (a->v->type != b->v->type) return (a->v->type < b->v->type) ? -1 : 1;
+    if (a->v->ttl != b->v->ttl) return (a->v->ttl < b->v->ttl) ? -1 : 1;
+    int s = memcmp(a->v->signature.bytes, b->v->signature.bytes, NODUS_SIG_BYTES);
+    if (s != 0) return s;
+    return memcmp(a->v->owner_pk.bytes, b->v->owner_pk.bytes, NODUS_PK_BYTES);
+}
+
+/* The keyset order: PK ASC, then rank. 0 = exact copies. */
+static int dht_cand_cmp(const nodus_dht_cand_t *a, const nodus_dht_cand_t *b) {
+    int c = dht_value_pk_cmp(a->v, b->v);
+    if (c != 0) return c;
+    return dht_cand_rank_cmp(a, b);
+}
+
+/* R-f: of two exact copies, true when b's object (created_at / expires_at)
+ * should stand instead of a's: a trusted copy (the local store) beats an
+ * untrusted one; otherwise the smaller created_at. A function of the two
+ * copies only — the same whatever order they arrived in. */
+static bool dht_copy_stands(const nodus_dht_cand_t *a, const nodus_dht_cand_t *b) {
+    if (a->trusted != b->trusted) return b->trusted;
+    return b->v->created_at < a->v->created_at;
+}
+
+/* One row of the source being added (its index in the caller's array). */
+typedef struct {
+    nodus_dht_cand_t c;
+    size_t           idx;
+} dht_in_t;
+
+/* R-e cut: PK ASC, then arrival. */
+static int dht_qsort_in_pk(const void *pa, const void *pb) {
+    const dht_in_t *a = (const dht_in_t *)pa;
+    const dht_in_t *b = (const dht_in_t *)pb;
+    int c = dht_value_pk_cmp(a->c.v, b->c.v);
+    if (c != 0) return c;
+    return (a->idx > b->idx) - (a->idx < b->idx);
+}
+
+/* Keyset order, then arrival (exact copies adjacent, earliest first). */
+static int dht_qsort_in_full(const void *pa, const void *pb) {
+    const dht_in_t *a = (const dht_in_t *)pa;
+    const dht_in_t *b = (const dht_in_t *)pb;
+    int c = dht_cand_cmp(&a->c, &b->c);
+    if (c != 0) return c;
+    return (a->idx > b->idx) - (a->idx < b->idx);
 }
 
 void nodus_dht_keyset_clear(nodus_dht_keyset_t *ks) {
@@ -2300,129 +2368,225 @@ void nodus_dht_keyset_clear(nodus_dht_keyset_t *ks) {
     ks->cap = 0;
 }
 
+int nodus_dht_keyset_add_ex(nodus_dht_keyset_t *ks,
+                            nodus_value_t **src, size_t src_count,
+                            const nodus_key_t *key, const nodus_key_t *own,
+                            const nodus_t2_cursor_t *after, bool trusted,
+                            size_t max_rows,
+                            const nodus_storage_data_hash_t *hashes,
+                            nodus_dht_merge_stats_t *stats) {
+    nodus_dht_merge_stats_t scratch;
+    if (!stats) stats = &scratch;
+    memset(stats, 0, sizeof(*stats));
+    stats->src = -1;
+    if (!ks || !key) return -1;
+    if (ks->nsrc >= NODUS_DHT_MAX_SOURCES) {
+        QGP_LOG_WARN(LOG_TAG, "DHT merge: more than %d sources for one key — "
+                     "rows refused", NODUS_DHT_MAX_SOURCES);
+        return -1;
+    }
+    int s = ks->nsrc;
+    if (!src) src_count = 0;
+
+    /* This source's rows that pass the filters (key / owner / cursor, then
+     * R-c for an untrusted source). */
+    dht_in_t *in = NULL;
+    size_t m = 0;
+    if (src_count > 0) {
+        in = calloc(src_count, sizeof(dht_in_t));
+        if (!in) return -1;
+    }
+    for (size_t i = 0; i < src_count; i++) {
+        nodus_value_t *v = src[i];
+        if (!v) continue;
+        if (!dht_row_passes(v, key, own, after, stats)) continue;
+        /* R-c: nodus_value_deserialize leaves owner_pk / signature zeroed
+         * when "owner" / "sig" is absent; such a row can never verify and
+         * would only spend verify budget. Local rows were verified at put. */
+        if (!trusted &&
+            (dht_all_zero(v->owner_pk.bytes, NODUS_PK_BYTES) ||
+             dht_all_zero(v->signature.bytes, NODUS_SIG_BYTES))) {
+            stats->refused++;
+            continue;
+        }
+        in[m].c.v = v;
+        in[m].idx = i;
+        m++;
+    }
+
+    /* R-e: at most max_rows from one source — the smallest PKs (a page is
+     * filled from the low end; the rest come back on a later page). */
+    if (max_rows > 0 && m > max_rows) {
+        qsort(in, m, sizeof(dht_in_t), dht_qsort_in_pk);
+        stats->over_cap = m - max_rows;
+        stats->truncated = true;
+        m = max_rows;
+    }
+
+    for (size_t k = 0; k < m; k++) {
+        nodus_dht_cand_t *c = &in[k].c;
+        stats->est_bytes += NODUS_VALUE_SERIALIZED_EST(c->v->data_len);
+        dht_note_last(stats, c->v);
+        if (hashes && hashes[in[k].idx].present)
+            memcpy(c->hash, hashes[in[k].idx].bytes, 32);   /* R-g: stored hash */
+        else
+            dht_data_hash(c->v, c->hash);
+        c->vstate = trusted ? NODUS_DHT_V_OK : NODUS_DHT_V_UNKNOWN;
+        c->trusted = trusted;
+        c->srcs = (uint16_t)(1u << s);
+        c->order = ks->next_order + (uint32_t)in[k].idx;
+    }
+
+    /* Sort this source's rows into keyset order; collapse its own exact
+     * copies (R-f: the copy that stands keeps its object; the other stays
+     * in src for the caller to free). */
+    if (m > 1) qsort(in, m, sizeof(dht_in_t), dht_qsort_in_full);
+    size_t u = 0;
+    for (size_t k = 0; k < m; k++) {
+        if (u > 0 && dht_cand_cmp(&in[u - 1].c, &in[k].c) == 0) {
+            stats->dup++;
+            if (dht_copy_stands(&in[u - 1].c, &in[k].c)) {
+                uint32_t first = in[u - 1].c.order;   /* earliest arrival stays */
+                in[u - 1].c.v = in[k].c.v;
+                in[u - 1].idx = in[k].idx;
+                in[u - 1].c.order = first;
+            }
+            continue;
+        }
+        in[u++] = in[k];
+    }
+    m = u;
+
+    /* Merge into the sorted candidates: O(n + m). An incoming exact copy
+     * of a present candidate is collapsed into it. */
+    size_t need = ks->n + m;
+    if (need > 0 && m > 0) {
+        nodus_dht_cand_t *out = malloc(need * sizeof(nodus_dht_cand_t));
+        if (!out) { free(in); return -1; }
+        size_t i = 0, j = 0, o = 0;
+        while (i < ks->n || j < m) {
+            int r = (j == m) ? -1 : (i == ks->n) ? 1 : dht_cand_cmp(&ks->c[i], &in[j].c);
+            if (r < 0) {
+                out[o++] = ks->c[i++];
+            } else if (r > 0) {
+                out[o++] = in[j].c;
+                src[in[j].idx] = NULL;          /* taken */
+                stats->added++;
+                j++;
+            } else {
+                nodus_dht_cand_t e = ks->c[i++];
+                e.srcs |= in[j].c.srcs;
+                /* A trusted copy (local row) vouches for the candidate. */
+                if (in[j].c.trusted) e.vstate = NODUS_DHT_V_OK;
+                if (dht_copy_stands(&e, &in[j].c)) {
+                    nodus_value_t *old = e.v;
+                    e.v = in[j].c.v;
+                    src[in[j].idx] = old;       /* replaced object back to the caller */
+                }
+                e.trusted = e.trusted || in[j].c.trusted;
+                if (in[j].c.order < e.order) e.order = in[j].c.order;
+                out[o++] = e;
+                stats->dup++;
+                j++;
+            }
+        }
+        free(ks->c);
+        ks->c = out;
+        ks->n = o;
+        ks->cap = need;
+    }
+    free(in);
+
+    ks->next_order += (uint32_t)src_count;
+    memset(&ks->src[s], 0, sizeof(ks->src[s]));
+    ks->src[s].trusted = trusted;
+    ks->nsrc = s + 1;
+    stats->src = s;
+    return 0;
+}
+
 int nodus_dht_keyset_add(nodus_dht_keyset_t *ks,
                          nodus_value_t **src, size_t src_count,
                          const nodus_key_t *key, const nodus_key_t *own,
                          const nodus_t2_cursor_t *after, bool trusted,
                          nodus_dht_merge_stats_t *stats) {
-    nodus_dht_merge_stats_t scratch;
-    if (!stats) stats = &scratch;
-    memset(stats, 0, sizeof(*stats));
-    if (!ks || !key) return -1;
-    if (!src || src_count == 0) return 0;
-
-    /* Grow once for the worst case (every src row a new candidate). */
-    if (ks->n + src_count > ks->cap) {
-        size_t ncap = ks->n + src_count;
-        nodus_dht_cand_t *nc = realloc(ks->c, ncap * sizeof(nodus_dht_cand_t));
-        if (!nc) return -1;
-        ks->c = nc;
-        ks->cap = ncap;
-    }
-
-    /* The local store's rows are unique per PK (the table's PRIMARY KEY):
-     * into an empty keyset they need no duplicate scan. */
-    bool scan = !(trusted && ks->n == 0);
-
-    for (size_t i = 0; i < src_count; i++) {
-        nodus_value_t *v = src[i];
-        if (!v) continue;
-        stats->est_bytes += NODUS_VALUE_SERIALIZED_EST(v->data_len);
-        if (!dht_row_passes(v, key, own, after, stats)) continue;
-        dht_note_last(stats, v);
-
-        uint8_t h[32];
-        dht_data_hash(v, h);
-        size_t scan_n = scan ? ks->n : 0;
-        size_t e;
-        for (e = 0; e < scan_n; e++) {
-            if (dht_value_pk_cmp(ks->c[e].v, v) == 0 && dht_cand_same(&ks->c[e], v, h))
-                break;
-        }
-        if (e < scan_n) {
-            /* An exact copy: same verify outcome, nothing to add. A trusted
-             * copy (local row) vouches for the present candidate. */
-            if (trusted) ks->c[e].vstate = NODUS_DHT_V_OK;
-            stats->dup++;
-            continue;
-        }
-        nodus_dht_cand_t *c = &ks->c[ks->n++];
-        c->v = v;
-        memcpy(c->hash, h, 32);
-        c->vstate = trusted ? NODUS_DHT_V_OK : NODUS_DHT_V_UNKNOWN;
-        c->order = ks->next_order++;
-        src[i] = NULL;
-        stats->added++;
-    }
-    return 0;
+    return nodus_dht_keyset_add_ex(ks, src, src_count, key, own, after, trusted,
+                                   trusted ? 0 : NODUS_DHT_SRC_MAX_ROWS, NULL, stats);
 }
 
 void nodus_dht_keyset_note_page(nodus_dht_keyset_t *ks, bool more, bool trusted,
-                                size_t responder_budget,
+                                size_t responder_budget, const uint64_t *nx,
                                 const nodus_dht_merge_stats_t *stats) {
-    if (!ks || ks->nsrc >= NODUS_DHT_MAX_SOURCES) return;
-    nodus_dht_src_page_t *sp = &ks->src[ks->nsrc++];
-    memset(sp, 0, sizeof(*sp));
-    sp->more = more;
-    if (stats && stats->has_last) {
+    if (!ks || !stats || stats->src < 0 || stats->src >= ks->nsrc) return;
+    nodus_dht_src_page_t *sp = &ks->src[stats->src];
+    sp->noted = true;
+    /* R-e: a source cut by its row cap has rows past its last kept PK. */
+    sp->more = more || stats->truncated;
+    if (stats->has_last) {
         sp->has_last = true;
         sp->last = stats->last;
     }
-    /* Rev 2 item 12: only a source whose rows filled its page may bound
-     * ours — an honest responder stops only when the next row does not
-     * fit, and no row is smaller than NODUS_VALUE_SERIALIZED_EST(0). */
-    bool filled = stats &&
-        stats->est_bytes + NODUS_VALUE_SERIALIZED_EST(0) > responder_budget;
-    sp->bounds = more && sp->has_last && (trusted || filled);
+    /* Rev 2 item 12 + rev 3 R-d: only a source whose rows filled its page
+     * may bound ours. With nx the responder's own stop rule is replayed
+     * (its next row did not fit); without it (older peer) no row is
+     * smaller than NODUS_VALUE_SERIALIZED_EST(0). */
+    size_t next_est = NODUS_VALUE_SERIALIZED_EST(0);
+    if (nx) next_est = (*nx > (uint64_t)SIZE_MAX) ? SIZE_MAX : (size_t)*nx;
+    bool filled = stats->truncated ||
+                  stats->est_bytes > responder_budget ||
+                  next_est > responder_budget - stats->est_bytes;
+    sp->bounds = sp->more && sp->has_last && (trusted || sp->trusted || filled);
 }
 
-/* Rank of two candidates of the SAME PK: <0 when a ranks first. seq DESC,
- * data hash DESC (the replica predicate), then a total tiebreak over every
- * field nodus_value_verify reads, so qsort's result never depends on the
- * input order. */
-static int dht_cand_rank_cmp(const nodus_dht_cand_t *a, const nodus_dht_cand_t *b) {
-    int n = dht_newer_cmp(a->v->seq, a->hash, b->v->seq, b->hash);
-    if (n != 0) return -n;
-    if (a->v->type != b->v->type) return (a->v->type < b->v->type) ? -1 : 1;
-    if (a->v->ttl != b->v->ttl) return (a->v->ttl < b->v->ttl) ? -1 : 1;
-    int s = memcmp(a->v->signature.bytes, b->v->signature.bytes, NODUS_SIG_BYTES);
-    if (s != 0) return s;
-    return memcmp(a->v->owner_pk.bytes, b->v->owner_pk.bytes, NODUS_PK_BYTES);
-}
-
-/* PK ASC, then rank. */
-static int dht_qsort_cand(const void *pa, const void *pb) {
-    const nodus_dht_cand_t *a = (const nodus_dht_cand_t *)pa;
-    const nodus_dht_cand_t *b = (const nodus_dht_cand_t *)pb;
-    int c = dht_value_pk_cmp(a->v, b->v);
-    if (c != 0) return c;
-    return dht_cand_rank_cmp(a, b);
-}
-
-/* Settle one candidate: 1 = valid, 0 = invalid, -1 = verify budget gone. */
-static int dht_cand_check(nodus_dht_cand_t *c, int *verify_left) {
+/* Settle one candidate: 1 = valid, 0 = invalid, -1 = verify budget gone.
+ * R-b: a candidate whose every sender was discarded is invalid without a
+ * verify; a failed verify discards every source that sent the row. */
+static int dht_cand_check(nodus_dht_keyset_t *ks, nodus_dht_cand_t *c,
+                          int *verify_left) {
     if (c->vstate == NODUS_DHT_V_OK) return 1;
     if (c->vstate == NODUS_DHT_V_BAD) return 0;
+    if ((c->srcs & (uint16_t)~ks->tainted) == 0) {
+        c->vstate = NODUS_DHT_V_BAD;
+        return 0;
+    }
     if (!verify_left || *verify_left <= 0) return -1;
     (*verify_left)--;
-    c->vstate = (nodus_value_verify(c->v) == 0) ? NODUS_DHT_V_OK : NODUS_DHT_V_BAD;
-    return c->vstate == NODUS_DHT_V_OK ? 1 : 0;
+    if (nodus_value_verify(c->v) == 0) {
+        c->vstate = NODUS_DHT_V_OK;
+        return 1;
+    }
+    c->vstate = NODUS_DHT_V_BAD;
+    if (c->srcs & (uint16_t)~ks->tainted) {
+        char kh[17];
+        for (int i = 0; i < 8; i++) snprintf(kh + i * 2, 3, "%02x", c->v->key_hash.bytes[i]);
+        kh[16] = '\0';
+        QGP_LOG_WARN(LOG_TAG, "DHT merge: key=%s... a forwarded row failed "
+                     "verification — its source(s) 0x%03x discarded for this read",
+                     kh, (unsigned)(c->srcs & (uint16_t)~ks->tainted));
+    }
+    ks->tainted |= c->srcs;
+    return 0;
 }
 
 /* Resolve the PK group c[g..end) (sorted by rank): index of the first
- * valid candidate, -1 when none is, -2 when the verify budget ran out
- * before the group was decided. *end_out = one past the group. */
-static long dht_group_pick(nodus_dht_cand_t *c, size_t n, size_t g,
-                           int *verify_left, size_t *end_out) {
+ * valid candidate. R-a: a candidate the budget cannot decide is passed
+ * over and a lower-ranked one already valid is taken. -1 when none is
+ * valid and none undecided, -2 when none is valid and one is undecided.
+ * *end_out = one past the group. */
+static long dht_group_pick(nodus_dht_keyset_t *ks, size_t g, int *verify_left,
+                           size_t *end_out) {
+    nodus_dht_cand_t *c = ks->c;
+    size_t n = ks->n;
     size_t end = g + 1;
     while (end < n && dht_value_pk_cmp(c[end].v, c[g].v) == 0) end++;
     *end_out = end;
+    bool undecided = false;
     for (size_t i = g; i < end; i++) {
-        int r = dht_cand_check(&c[i], verify_left);
+        int r = dht_cand_check(ks, &c[i], verify_left);
         if (r == 1) return (long)i;
-        if (r < 0) return -2;
+        if (r < 0) undecided = true;
     }
-    return -1;
+    return undecided ? -2 : -1;
 }
 
 /* Group start index holding PK (owner, vid), or n when absent. */
@@ -2435,6 +2599,43 @@ static size_t dht_group_find(const nodus_dht_cand_t *c, size_t n,
         if (k > 0) break;
     }
     return n;
+}
+
+/* Paged bound: the smallest last PK of a noted, bounding source that is
+ * not discarded (R-b) and whose PK group resolves to a VALID row. A bound
+ * PK with no valid row is discarded (unverified rows never set it) and the
+ * next smallest is tried; a source discarded while its own PK was checked
+ * is skipped. R-a exception: a bound PK the budget leaves undecided is
+ * kept as the bound (*capped set) — a smaller page, never a skipped row.
+ * @return the source index of the bound, -1 when there is none. */
+static int dht_pick_bound(nodus_dht_keyset_t *ks, int *verify_left,
+                          nodus_t2_cursor_t *bound, bool *capped) {
+    bool tried[NODUS_DHT_MAX_SOURCES];
+    memset(tried, 0, sizeof(tried));
+    for (;;) {
+        int best = -1;
+        for (int s = 0; s < ks->nsrc; s++) {
+            const nodus_dht_src_page_t *sp = &ks->src[s];
+            if (tried[s] || !sp->noted || !sp->bounds ||
+                (ks->tainted & (uint16_t)(1u << s)))
+                continue;
+            if (best < 0 ||
+                nodus_dht_pk_cmp(&sp->last.owner, sp->last.vid,
+                                 &ks->src[best].last.owner, ks->src[best].last.vid) < 0)
+                best = s;
+        }
+        if (best < 0) return -1;
+        tried[best] = true;
+        size_t g = dht_group_find(ks->c, ks->n, &ks->src[best].last);
+        if (g == ks->n) continue;          /* filtered out entirely: no row there */
+        size_t end;
+        long pick = dht_group_pick(ks, g, verify_left, &end);
+        if (ks->tainted & (uint16_t)(1u << best)) continue;   /* discarded meanwhile */
+        if (pick == -1) continue;          /* nothing valid at that PK */
+        if (pick == -2) *capped = true;    /* undecided: kept, conservatively */
+        *bound = ks->src[best].last;
+        return best;
+    }
 }
 
 /* A kept row and the arrival order of its PK group (unpaged output order). */
@@ -2459,52 +2660,27 @@ int nodus_dht_keyset_resolve(nodus_dht_keyset_t *ks, bool paged, size_t budget,
     if (!ks || !rows_out || !count_out) return -1;
 
     size_t n = ks->n;
-    nodus_dht_cand_t *c = ks->c;
+    nodus_dht_cand_t *c = ks->c;   /* sorted (PK, rank) by nodus_dht_keyset_add_ex */
     if (n == 0) { nodus_dht_keyset_clear(ks); return 0; }
-
-    /* Total order (PK, rank) — deterministic whatever the arrival order. */
-    if (n > 1) qsort(c, n, sizeof(nodus_dht_cand_t), dht_qsort_cand);
 
     dht_kept_t *kept = calloc(n, sizeof(dht_kept_t));
     if (!kept) { nodus_dht_keyset_clear(ks); return -1; }
     size_t nk = 0;
 
-    /* Paged: the bound = the smallest last PK of a bounding source whose
-     * group resolves to a VALID row; a bound PK without one is discarded
-     * (unverified rows never set it) and the next smallest is tried. */
+    /* Paged: the bound = the smallest last PK of a bounding, not discarded
+     * source whose group resolves to a VALID row (dht_pick_bound). */
     bool has_bound = false, any_more = false, capped = false;
     nodus_t2_cursor_t bound;
     memset(&bound, 0, sizeof(bound));
+    int bsrc = -1;
     if (paged) {
-        bool tried[NODUS_DHT_MAX_SOURCES];
-        memset(tried, 0, sizeof(tried));
-        for (int s = 0; s < ks->nsrc; s++) any_more |= ks->src[s].more;
-        for (;;) {
-            int best = -1;
-            for (int s = 0; s < ks->nsrc; s++) {
-                if (tried[s] || !ks->src[s].bounds) continue;
-                if (best < 0 ||
-                    nodus_dht_pk_cmp(&ks->src[s].last.owner, ks->src[s].last.vid,
-                                     &ks->src[best].last.owner, ks->src[best].last.vid) < 0)
-                    best = s;
-            }
-            if (best < 0) break;
-            tried[best] = true;
-            size_t g = dht_group_find(c, n, &ks->src[best].last);
-            if (g == n) continue;          /* filtered out entirely: no row there */
-            size_t end;
-            long pick = dht_group_pick(c, n, g, verify_left, &end);
-            if (pick == -2) { capped = true; break; }
-            if (pick < 0) continue;        /* nothing valid at that PK */
-            bound = ks->src[best].last;
-            has_bound = true;
-            break;
-        }
+        bsrc = dht_pick_bound(ks, verify_left, &bound, &capped);
+        has_bound = (bsrc >= 0);
     }
 
     size_t used = 0;
     bool cut = false;
-    for (size_t g = 0; g < n && !capped; ) {
+    for (size_t g = 0; g < n; ) {
         if (paged && has_bound &&
             nodus_dht_pk_cmp(&c[g].v->owner_fp, c[g].v->value_id,
                              &bound.owner, bound.vid) > 0) {
@@ -2512,8 +2688,27 @@ int nodus_dht_keyset_resolve(nodus_dht_keyset_t *ks, bool paged, size_t budget,
             break;
         }
         size_t end;
-        long pick = dht_group_pick(c, n, g, verify_left, &end);
-        if (pick == -2) { capped = true; break; }
+        uint16_t tainted_before = ks->tainted;
+        long pick = dht_group_pick(ks, g, verify_left, &end);
+        if (paged && has_bound && ks->tainted != tainted_before &&
+            (ks->tainted & (uint16_t)(1u << bsrc))) {
+            /* R-b: the bounding source was just discarded — its note no
+             * longer counts. The bound can only move up (fewer sources), so
+             * every row kept so far stays inside it. */
+            bsrc = dht_pick_bound(ks, verify_left, &bound, &capped);
+            has_bound = (bsrc >= 0);
+        }
+        if (pick == -2) {
+            /* R-a: no row of this PK is settled valid and one could not be
+             * checked. Unpaged: skip it, the walk goes on (rows already
+             * valid — local rows included — are still returned). Paged:
+             * close the page here — a cursor past this PK would hide a row
+             * nobody checked; it comes back first on the next page. */
+            capped = true;
+            if (paged) { cut = true; break; }
+            g = end;
+            continue;
+        }
         if (pick >= 0) {
             if (paged) {
                 size_t est = NODUS_VALUE_SERIALIZED_EST(c[pick].v->data_len);
@@ -2549,6 +2744,13 @@ int nodus_dht_keyset_resolve(nodus_dht_keyset_t *ks, bool paged, size_t budget,
     free(kept);
     nodus_dht_keyset_clear(ks);   /* frees every candidate not moved out */
 
+    if (paged) {
+        /* R-b: a discarded source's "more" no longer counts. */
+        for (int s = 0; s < ks->nsrc; s++)
+            if (ks->src[s].noted && ks->src[s].more &&
+                !(ks->tainted & (uint16_t)(1u << s)))
+                any_more = true;
+    }
     if (paged && nk > 0) {
         page.more = cut || capped || any_more;
         if (page.more) {
@@ -2601,23 +2803,37 @@ nodus_value_t *nodus_dht_keyset_pick_best(nodus_dht_keyset_t *ks,
     if (capped_out) *capped_out = false;
     if (!ks) return NULL;
     nodus_value_t *best = NULL;
+    bool budget_gone = false;
     /* Candidates are tried best-first; each pass picks the best not yet
-     * rejected (n is small: one key's forwarded rows), so only rows that
-     * would become the answer are ever verified. */
+     * rejected (one key's rows: bounded by the per-source row cap), so
+     * only rows that would become the answer are ever verified. */
     for (;;) {
         long bi = -1;
         for (size_t i = 0; i < ks->n; i++) {
-            if (!ks->c[i].v || ks->c[i].vstate == NODUS_DHT_V_BAD) continue;
-            if (bi < 0 || dht_single_cmp(ks->c[i].v, ks->c[i].hash,
+            nodus_dht_cand_t *c = &ks->c[i];
+            if (!c->v || c->vstate == NODUS_DHT_V_BAD) continue;
+            if (budget_gone && c->vstate == NODUS_DHT_V_UNKNOWN) {
+                /* R-a: passed over — unless every sender was discarded
+                 * (then it is simply invalid, R-b). */
+                if ((c->srcs & (uint16_t)~ks->tainted) == 0)
+                    c->vstate = NODUS_DHT_V_BAD;
+                else if (capped_out)
+                    *capped_out = true;
+                continue;
+            }
+            if (bi < 0 || dht_single_cmp(c->v, c->hash,
                                          ks->c[bi].v, ks->c[bi].hash,
                                          exclusive_first) < 0)
                 bi = (long)i;
         }
         if (bi < 0) break;
-        int r = dht_cand_check(&ks->c[bi], verify_left);
-        if (r < 0) {                       /* verify budget gone: undecided */
+        int r = dht_cand_check(ks, &ks->c[bi], verify_left);
+        if (r < 0) {
+            /* R-a: verify budget gone — keep looking among the candidates
+             * already settled valid (the local row among them). */
+            budget_gone = true;
             if (capped_out) *capped_out = true;
-            break;
+            continue;
         }
         if (r == 1) {
             best = ks->c[bi].v;
@@ -3019,19 +3235,22 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
     const nodus_t2_cursor_t *after = msg->has_after ? &msg->after : NULL;
 
     nodus_value_t **vals = NULL;
+    nodus_storage_data_hash_t *hashes = NULL;   /* R-g: stored data_hash per row */
     size_t count = 0;
     int local_more = 0;
     int rc;
     if (paged || own) {
         /* PK order; an owner-filtered unpaged read keeps the legacy reply
          * shape and the legacy byte cap (truncation is logged below). */
-        rc = nodus_storage_get_all_page(&srv->storage, &msg->key, own,
-                                        after ? &after->owner : NULL,
-                                        after ? after->vid : 0,
-                                        paged ? (size_t)NODUS_GET_ALL_PAGE_MAX_BYTES
-                                              : (size_t)NODUS_GET_ALL_MAX_BYTES,
-                                        &vals, &count, &local_more);
+        rc = nodus_storage_get_all_page_hashed(&srv->storage, &msg->key, own,
+                                               after ? &after->owner : NULL,
+                                               after ? after->vid : 0,
+                                               paged ? (size_t)NODUS_GET_ALL_PAGE_MAX_BYTES
+                                                     : (size_t)NODUS_GET_ALL_MAX_BYTES,
+                                               &vals, &hashes, &count, &local_more);
     } else {
+        /* The legacy read returns no stored hashes: these rows are hashed
+         * by the merge (R-g covers the paged / owner read only). */
         rc = nodus_storage_get_all(&srv->storage, &msg->key, &vals, &count);
     }
     /* Rev 2 item 13: a FAULT of the paged / owner read is "could not look"
@@ -3041,6 +3260,8 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
     if (rc != 0) {
         dht_free_rows(vals, count);
         vals = NULL;
+        free(hashes);
+        hashes = NULL;
         count = 0;
         local_more = 0;
     }
@@ -3062,8 +3283,11 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
     local.local_fault = local_fault;
     {
         nodus_dht_merge_stats_t lst;
-        if (nodus_dht_keyset_add(&local, vals, count, &msg->key, own, after,
-                                 true, &lst) != 0) {
+        int arc = nodus_dht_keyset_add_ex(&local, vals, count, &msg->key, own, after,
+                                          true, 0, hashes, &lst);
+        free(hashes);
+        hashes = NULL;
+        if (arc != 0) {
             dht_free_rows(vals, count);
             nodus_dht_keyset_clear(&local);
             dht_send_unavailable(sess->conn, msg->txn_id, "local alloc failed");
@@ -3071,7 +3295,7 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
         }
         if (paged)
             nodus_dht_keyset_note_page(&local, local_more != 0, true,
-                                       NODUS_GET_ALL_PAGE_MAX_BYTES, &lst);
+                                       NODUS_GET_ALL_PAGE_MAX_BYTES, NULL, &lst);
         dht_free_rows(vals, count);   /* rows not taken (filtered): none expected */
         vals = NULL;
     }
@@ -3290,6 +3514,12 @@ int nodus_server_bf_absorb_reply(dht_bf_batch_t *b, const dht_bf_conn_t *c,
     size_t responder_budget = c->batch_key_count > 0
         ? (size_t)NODUS_GET_ALL_PAGE_MAX_BYTES / (size_t)c->batch_key_count
         : (size_t)NODUS_GET_ALL_PAGE_MAX_BYTES;
+    /* R-e: rows taken from one source — paged, what its page budget can
+     * hold (no row is smaller than NODUS_VALUE_SERIALIZED_EST(0); the first
+     * row always comes); unpaged, what one reply buffer can carry. */
+    size_t max_rows = b->paged
+        ? responder_budget / NODUS_VALUE_SERIALIZED_EST(0) + 1
+        : NODUS_DHT_SRC_MAX_ROWS;
 
     bool used[NODUS_MAX_BATCH_KEYS];
     memset(used, 0, sizeof(used));
@@ -3332,15 +3562,24 @@ int nodus_server_bf_absorb_reply(dht_bf_batch_t *b, const dht_bf_conn_t *c,
          * returns are signature-verified, at resolution. Rows not taken
          * stay in resp and are freed with it. */
         nodus_dht_merge_stats_t st;
-        if (nodus_dht_keyset_add(ks, new_vals, new_count, &b->keys[ki], own, after,
-                                 false, &st) != 0)
-            fprintf(stderr, "BF: merge alloc failed (%s:%u)\n", c->ip, (unsigned)c->port);
-        if (b->paged)
-            nodus_dht_keyset_note_page(ks, resp.batch_page ? resp.batch_page[r].more : false,
-                                       false, responder_budget, &st);
+        if (nodus_dht_keyset_add_ex(ks, new_vals, new_count, &b->keys[ki], own, after,
+                                    false, max_rows, NULL, &st) != 0)
+            QGP_LOG_WARN(LOG_TAG, "BF: %s:%u merge failed (alloc / too many "
+                         "sources) — rows dropped", c->ip, (unsigned)c->port);
+        if (b->paged) {
+            /* R-d: "nx" = the size of the row the responder stopped on */
+            const nodus_t2_page_info_t *pi = resp.batch_page ? &resp.batch_page[r] : NULL;
+            nodus_dht_keyset_note_page(ks, pi ? pi->more : false, false,
+                                       responder_budget,
+                                       (pi && pi->has_nx) ? &pi->nx : NULL, &st);
+        }
         if (st.bad > 0)
             fprintf(stderr, "BF: %s:%u dropped %zu forwarded value(s) "
                     "(wrong key / owner filter)\n", c->ip, (unsigned)c->port, st.bad);
+        if (st.refused > 0 || st.over_cap > 0)
+            QGP_LOG_WARN(LOG_TAG, "BF: %s:%u dropped %zu forwarded value(s) without "
+                         "owner key / signature and %zu past the per-source cap (%zu)",
+                         c->ip, (unsigned)c->port, st.refused, st.over_cap, max_rows);
     }
     nodus_t2_msg_free(&resp);
     return 0;
@@ -5639,10 +5878,29 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                             }
                         }
                         if (paged && more && counts[i] > 0) {
+                            const nodus_value_t *lastv = vals[i][counts[i] - 1];
                             pages[i].more = true;
                             pages[i].has_next = true;
-                            pages[i].next.owner = vals[i][counts[i] - 1]->owner_fp;
-                            pages[i].next.vid = vals[i][counts[i] - 1]->value_id;
+                            pages[i].next.owner = lastv->owner_fp;
+                            pages[i].next.vid = lastv->value_id;
+                            /* Rev 3 R-d: "nx" = the serialized estimate of
+                             * the row this page stopped on — the first row
+                             * after the last one sent, same filters (a
+                             * budget of 0 still returns that one row). The
+                             * originator then knows the page was full. A
+                             * probe fault leaves "nx" out (old rule). */
+                            nodus_value_t **probe = NULL;
+                            size_t pn = 0;
+                            int pmore = 0;
+                            if (nodus_storage_get_all_page(&srv->storage,
+                                    &msg.batch_keys[i], own, &lastv->owner_fp,
+                                    lastv->value_id, 0, &probe, &pn, &pmore) == 0 &&
+                                pn > 0) {
+                                pages[i].has_nx = true;
+                                pages[i].nx = (uint64_t)NODUS_VALUE_SERIALIZED_EST(
+                                    probe[0]->data_len);
+                            }
+                            dht_free_rows(probe, pn);
                         }
                     }
 

@@ -107,11 +107,6 @@ typedef struct {
     sqlite3_stmt *stmt_count;
     sqlite3_stmt *stmt_put_if_newer;
     sqlite3_stmt *stmt_fetch_batch;
-    /* Never prepared (always NULL) since nodus_storage_check_quota was
-     * removed. Kept only because nodus_server.c (dht_wal_checkpoint's reset
-     * list) still names them; remove both when that list is edited. */
-    sqlite3_stmt *stmt_quota_total_bytes;
-    sqlite3_stmt *stmt_quota_owner_count;
     /* Stored-row usage (count, data bytes; every row, expired or not) of
      * one owner / of the whole table — the write caps inside put /
      * put_if_newer */
@@ -274,6 +269,35 @@ int nodus_storage_get_all_page(nodus_storage_t *store,
                                nodus_value_t ***vals_out,
                                size_t *count_out,
                                int *more_out);
+
+/** The stored data_hash column of one row (SHA3-256(data) written by
+ *  nodus_storage_put / put_if_newer; empty data = 32 zero bytes).
+ *  present = false for a legacy row whose data_hash is NULL (rows stored
+ *  before the column existed) — the caller hashes the data itself. */
+typedef struct {
+    uint8_t bytes[32];
+    bool    present;
+} nodus_storage_data_hash_t;
+
+/**
+ * nodus_storage_get_all_page plus the STORED data_hash of every row
+ * returned (DHT Package A rev 3, R-g: the forwarded-read merge ranks rows by
+ * SHA3-256(data) and need not re-hash what the store already hashed).
+ * Same rows, order, budget, return codes and outputs as
+ * nodus_storage_get_all_page; hashes_out (may be NULL = not wanted)
+ * receives a heap array of *count_out entries, NULL when the page is empty
+ * or on any non-zero return. Caller frees it.
+ */
+int nodus_storage_get_all_page_hashed(nodus_storage_t *store,
+                                      const nodus_key_t *key_hash,
+                                      const nodus_key_t *owner_fp,
+                                      const nodus_key_t *after_owner,
+                                      uint64_t after_vid,
+                                      size_t budget_bytes,
+                                      nodus_value_t ***vals_out,
+                                      nodus_storage_data_hash_t **hashes_out,
+                                      size_t *count_out,
+                                      int *more_out);
 
 /**
  * Delete a specific value.

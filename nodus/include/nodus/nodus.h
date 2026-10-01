@@ -505,14 +505,16 @@ int nodus_client_get_batch(nodus_client_t *client,
  * unavail_out[i] is true when the node marked result i ("u": true) as not
  * looked up (no forward slot / no forward answered): an empty result i is
  * then NOT "no values". A node that predates the marker never sets it, so
- * false only means "not marked". All key_count entries are zeroed first;
- * entries at or past *result_count_out stay false.
+ * false only means "not marked". All key_count entries are zeroed first.
+ * On success *result_count_out == key_count and results[i].key == keys[i]
+ * (a node answers every asked key in the asked order).
  *
  * @param unavail_out  caller array of key_count bools (required)
  * @return 0 on success,
- *         NODUS_ERR_PROTOCOL_ERROR the reply has more entries than
- *                                 key_count, or an error reply without a
- *                                 valid code,
+ *         NODUS_ERR_PROTOCOL_ERROR the reply does not carry exactly
+ *                                 key_count entries, an entry's key is not
+ *                                 keys[i] at its position, or an error
+ *                                 reply without a valid code,
  *         NODUS_ERR_UNAVAILABLE, NODUS_ERR_TIMEOUT, another node error
  *         code, or -1 (bad args / not connected / local allocation).
  *         On any non-zero return *results_out is NULL.
