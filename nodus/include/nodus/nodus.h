@@ -1396,6 +1396,127 @@ int nodus_dnac_balance_decode(const uint8_t *raw, size_t raw_len,
  *  zeroed). */
 void nodus_client_free_balance_result(nodus_dnac_balance_result_t *result);
 
+/* ── dnac_addr_history — the session owner's history from the node's
+ * LOCAL address index (decision docs/plans/decisions/2026-10-01-node-
+ * address-history-index.md rev 2; tables and per-op rows:
+ * nodus/src/witness/nodus_witness_addr_index.h).
+ *
+ * NODE-LOCAL, NOT CONSENSUS: a node indexes only while it runs with
+ * `addr_history_index: true`, and only from the first block it indexed
+ * ("from_height"); rows below it are simply not there. Another node may
+ * answer differently for heights one of them did not index.
+ *
+ * C11: the owner MUST be the authenticated session's own fingerprint
+ * (the dnac_history rule) — nobody reads another owner's history.
+ *
+ * Request  "a": {"owner": tstr — exactly 128 lowercase hex,
+ *                "limit": uint 1..NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT,
+ *                "before": uint (optional) — cursor height,
+ *                "bi": uint, "bq": uint (optional, only with "before") —
+ *                cursor item / sequence; the page holds rows strictly
+ *                older than (before, bi, bq); "before" alone = (before,
+ *                0, 0) = every row below that height}
+ *   A page cut inside one height is continued with the LAST entry's
+ *   (h, i, q) as the cursor — a height-only cursor would skip the rest of
+ *   that height.
+ * Response "r":
+ *   "count"       u64   entries in this page
+ *   "enabled"     bool  this node is indexing now
+ *   "from_height" u64   first height of the node's current gap-free
+ *                       indexed run; 0 = it never indexed
+ *   "entries"     array newest first — (h, i, q) strictly descending:
+ *     "h" u64       global height
+ *     "i" u64       engine item position (envelopes in block order, then
+ *                   claims) — NOT the dnac_v3_block tx index; 4294967295
+ *                   = a block-boundary row (payout, release)
+ *     "q" u64       sequence within (h, i)
+ *     "kind" tstr   spend_out | spend_in | burn | token_create | claim |
+ *                   stake | delegate | undelegate | unstake |
+ *                   validator_update | payout | release | fee
+ *     "amount" u64
+ *     "token" bstr64  all zero = native
+ *     "fee" u64     the envelope fee, on the payer's first row only
+ *     "peer" tstr   counterparty fingerprint (128 hex) or "" (none —
+ *                   claims, payouts and releases have no sender)
+ *     "wire" bstr   the item's 64-byte wire id, or empty (boundary rows)
+ *     "ts" u64      block time, unix seconds (the Comet header time)
+ * Errors (never a partial answer):
+ *   NODUS_ERR_PROTOCOL_ERROR   owner / limit / cursor missing, duplicated
+ *                              or malformed
+ *   NODUS_ERR_NOT_AUTHENTICATED  no session, or owner != session
+ *   NODUS_ERR_NOT_FOUND        the node serves no version-3 chain
+ *   NODUS_ERR_INTERNAL_ERROR   a store fault or a malformed stored row
+ */
+
+/** Entries one dnac_addr_history page carries at most. */
+#define NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT  100u
+
+typedef struct {
+    uint64_t h;
+    uint32_t i;
+    uint32_t q;
+    char     kind[24];           /* NUL-terminated                       */
+    uint64_t amount;
+    uint8_t  token_id[64];
+    uint64_t fee;
+    char     peer[129];          /* 128 hex + NUL, or "" = none          */
+    bool     has_wire;
+    uint8_t  wire_id[64];
+    uint64_t ts;
+} nodus_dnac_addr_history_entry_t;
+
+/** One `dnac_addr_history` page. `entries` is heap (count entries; NULL
+ *  when count is 0) — free with nodus_client_free_addr_history_result. */
+typedef struct {
+    size_t   count;
+    bool     enabled;
+    uint64_t from_height;
+    nodus_dnac_addr_history_entry_t *entries;
+} nodus_dnac_addr_history_result_t;
+
+/** A page cursor: rows strictly older than (h, i, q). {H, 0, 0} = every
+ *  row below height H. */
+typedef struct {
+    uint64_t h;
+    uint32_t i;
+    uint32_t q;
+} nodus_dnac_addr_history_cursor_t;
+
+/**
+ * Query the session owner's address history (dnac_addr_history, above).
+ * @param owner_hex  exactly 128 lowercase hex characters — the client's
+ *                   own fingerprint (checked here before anything is sent)
+ * @param before     NULL = the newest page
+ * @param limit      1..NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT
+ * @return 0 and `result_out` filled (free with
+ *         nodus_client_free_addr_history_result); the NODUS_ERR_* code the
+ *         node answered; NODUS_ERR_PROTOCOL_ERROR for a reply the decoder
+ *         refuses; -1 on invalid arguments / encode / transport failure.
+ */
+int nodus_client_dnac_addr_history(nodus_client_t *client,
+                                   const char *owner_hex,
+                                   const nodus_dnac_addr_history_cursor_t *before,
+                                   uint32_t limit,
+                                   nodus_dnac_addr_history_result_t *result_out);
+
+/**
+ * Decode a raw `dnac_addr_history` response message — the decoder
+ * nodus_client_dnac_addr_history uses, exported for tests. STRICT: all
+ * four top-level keys required, "count" equal to the array length, the
+ * array bounded by NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT before it is walked,
+ * every entry carries all ten keys typed, a known kind, "peer" empty or
+ * 128 lowercase hex, "wire" empty or 64 bytes, (h, i, q) strictly
+ * descending; a duplicate key anywhere is refused; unknown keys are
+ * skipped by a walker that refuses truncation. On any refusal
+ * `result_out` is left empty (nothing to free).
+ * @return 0; -1 malformed.
+ */
+int nodus_dnac_addr_history_decode(const uint8_t *raw, size_t raw_len,
+                                   nodus_dnac_addr_history_result_t *result_out);
+
+/** Free a `dnac_addr_history` result's entries (NULL-safe; zeroed). */
+void nodus_client_free_addr_history_result(nodus_dnac_addr_history_result_t *result);
+
 /**
  * Page through the full validator table on the witness (all statuses).
  *

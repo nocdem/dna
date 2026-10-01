@@ -3541,6 +3541,71 @@ sits, and a circulating figure.
   `explorer/tests/test_explorer.c` (blob round trip, 450M genesis day, underflow →
   null, older node → null).
 
+### Node-local address history index — `dnac_addr_history` (2026-10-01, code only — not versioned, not deployed)
+
+**Record:** decision `docs/plans/decisions/2026-10-01-node-address-history-index.md`
+(rev 2 is authoritative; it voids rev 1's "a write failure does not stop the
+node" and rev 1's backfill). Why: `dnac_history` reads the legacy
+`committed_transactions` / `tx_outputs` tables, which the version-3 lane never
+writes, so a wallet had no history of its own address from a node.
+
+- **Where it lives:** `src/witness/nodus_witness_addr_index.{h,c}`. Two tables in
+  the witness chain DB, created rung-free (`CREATE ... IF NOT EXISTS`) by
+  `nodus_witness_addr_index_migrate`, called from `nodus_witness_db_migrate_v12`
+  on every open — no schema rung, the S16 equality gates are untouched:
+  `addr_history(h, i, seq, owner, kind, amount, token, fee, peer, wire, ts)`
+  (PK `(h, i, seq)`, index `(owner, h, i, seq)`; `owner` / `peer` are RAW 64-byte
+  fingerprints) and `addr_history_mark(id = 1, from_height, last_height)`.
+- **Switch:** nodus.json `"addr_history_index": true` (default OFF; a non-boolean
+  refuses the start) → `nodus_server_config_t.addr_history_index`. Off = every
+  writer is a no-op. The setting may differ per node: no root moves.
+- **Written inside the block's SQL transaction, never read back by consensus:**
+  envelope rows inside the item's SAVEPOINT right after `cmt_item_index`
+  (`nodus_witness_v2_apply.c`), claim rows inside the claim's SAVEPOINT after
+  `claim_execute_one`, payout rows in `v2ec_emit` (`nodus_witness_v2_econ.c`),
+  bond and delegation release rows in `v2ep_release_utxo`
+  (`nodus_witness_v2_epoch.c`). A refused item never reaches its writer; a
+  failed block's rows go with the host's ROLLBACK. A write failure is a block
+  FAULT (the node stops) — the same class as every other in-transaction write.
+- **Row derivation:** effects from `nodus_rt_native_describe_leg` (the exec's
+  own decoders). Self set = the CORE leg verdict's signers ∪ satisfied multisig
+  addresses (`rtn_owners_init`'s ownership). A created coin to someone outside the
+  self set gives the payer a `spend_out` and the owner a `spend_in`; change writes
+  nothing; a TOKEN_CREATE's non-native coins give `token_create`; BURN gives
+  `burn` (native); SYSTEM records give `stake` / `delegate` / `undelegate` /
+  `unstake` / `validator_update` (chain_config: none); the fee rides on the
+  payer's first row, or a `fee` row when the payer has none. Claims (CORE target)
+  give the claimant a `claim` row; paydays `payout`; graduations `release`. No
+  sender is invented for claims, payouts or releases. The PAYER (first satisfied
+  multisig address, else `signer_fp[0]`, of the CORE leg) is a convention — a
+  verdict does not attribute a fee to one of several owners.
+- **Positions:** `i` is the ENGINE item position (envelopes in block order, then
+  claims) — NOT the `dnac_v3_block` tx index; `wire` (envelope wire id, or
+  SHA3-512 of the claim bytes) is the cross-reference. Boundary rows use
+  `i = 4294967295`. `seq` orders rows within `(h, i)`.
+- **Time:** `ts` = `blk->timestamp` = `RequestFinalizeBlock.time.seconds` (the
+  Comet header time), stamped once per block by
+  `nodus_witness_addr_index_block_close` after phase 6e — still inside the block
+  transaction, because the boundary writers are not handed the block time.
+- **Marker:** `from_height` = the first height of the current gap-free indexed
+  run (a block that is not `last_height + 1` restarts it); answered as
+  `from_height`. No backfill: the table fills with real use (operator,
+  "zamanla dolsun").
+- **RPC `dnac_addr_history`** {owner, limit 1..100, optional cursor before / bi /
+  bq} → {count, enabled, from_height, entries newest first}. C11: owner must be
+  the authenticated session (`dnac_history`'s rule). The cursor is the last
+  entry's `(h, i, q)`; `before` alone means every row below that height (a
+  height-only cursor would skip the rest of a height cut inside a page). Store
+  fault or malformed row → `INTERNAL_ERROR`, never a partial list. Wire spec:
+  `nodus.h` beside `nodus_client_dnac_addr_history`. `dnac_history` is unchanged.
+- **Client / CLI:** `nodus_client_dnac_addr_history` + the strict
+  `nodus_dnac_addr_history_decode`; `nodus-cli addr-history [--before H[:I:Q]]
+  [--limit N]` (the CLI identity's own history).
+- Tests: `test_addr_index` — rows for an applied claim and SPEND on a real
+  derived chain, none for refused items, none after a faulted block, none with
+  the flag off; the builder's C11 refusals, limits, paging and byte-identical
+  answers; hostile client replies.
+
 ### Chain-config accepts only parameters the consensus reads (0.20.3)
 
 **Governing record:** `docs/plans/decisions/2026-09-23-height-activated-upgrades-before-testnet.md`
@@ -4478,6 +4543,8 @@ SQLite tables managed by the witness module (`nodus_witness_db.c`):
 | `v2_treasury` | final pre-testnet wipe W-A: the nine keyless, locked treasury pools (pool_id 1..9 → balance), seeded from the genesis document; a leg of `system_state_root` and `system_payload_root`; a term of the supply equation; no exit rule (parked) |
 | `v2_balance_copy` | tokenomics-v3 P2/P3: the stake frozen at each boundary (three copies kept since P3: H−2E, H−E, H); read by the selection (okuma B) and the reward split; out of every root. PK `(epoch_start, validator_fp, owner_fp, kind)` — `kind` 0 the bond, 1 a delegation (W-B: a self-delegation shares its owner with the bond) |
 | `committed_transactions` | Full serialized TX data (hub/spoke queries) |
+| `addr_history` | Node-local address history index (decision 2026-10-01): one row per owner effect (h, i, seq, raw owner, kind, amount, token, fee, peer, wire, ts), written in the block transaction only while `addr_history_index` is on; out of every root; read by `dnac_addr_history`. Created rung-free by `nodus_witness_addr_index_migrate` |
+| `addr_history_mark` | Its one marker row: `from_height` (first height of the current gap-free indexed run) and `last_height` |
 
 ### Witness startup and chain-database faults
 
@@ -4657,6 +4724,20 @@ Consensus:       ACTIVE
 f_tolerance:     1
 Quorum:          3
 ```
+
+### `addr-history`
+
+This identity's history from the node's local address index (`dnac_addr_history`;
+the node must run with `"addr_history_index": true`, and answers only from the
+first height it indexed). The owner is the CLI identity's own fingerprint — the
+node refuses any other (C11).
+
+```bash
+nodus-cli -s <server_ip> -i <identity_dir> addr-history [--before H[:I:Q]] [--limit N]
+```
+
+One line per row (height, item, sequence, block time, kind, amount, fee, peer);
+when the page is full it prints the `--before H:I:Q` cursor of the next page.
 
 ### Planned witness subcommands
 

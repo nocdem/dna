@@ -216,6 +216,11 @@ set(NODUS_SOURCES
     src/witness/nodus_witness_rt_native.c
     src/witness/nodus_witness_domreg.c
 
+    # Node-local address history index + the dnac_addr_history answer
+    # (decision 2026-10-01-node-address-history-index.md) — out of every
+    # root; written only with the node flag addr_history_index on.
+    src/witness/nodus_witness_addr_index.c
+
     # Ledger V2 S5 — INACTIVE versioned schema/migration + atomic
     # global-block apply engine + V2 supply gate.
     src/witness/nodus_witness_v2_schema.c
@@ -1702,6 +1707,15 @@ add_executable(test_v3_block_query tests/test_v3_block_query.c)
 target_link_libraries(test_v3_block_query nodus dsa kem nodus crypto pthread)
 target_compile_definitions(test_v3_block_query PRIVATE NODUS_WITNESS_INTERNAL_API)
 add_test(NAME test_v3_block_query COMMAND test_v3_block_query)
+
+# Node-local address history index (decision 2026-10-01-node-address-
+# history-index.md): rows per applied item / claim over a REAL derived
+# version-3 chain, refused items and a faulted block leave none, flag off
+# writes nothing, the dnac_addr_history builder's C11 refusal and paging.
+add_executable(test_addr_index tests/test_addr_index.c)
+target_link_libraries(test_addr_index nodus dsa kem nodus crypto pthread)
+target_compile_definitions(test_addr_index PRIVATE NODUS_WITNESS_INTERNAL_API)
+add_test(NAME test_addr_index COMMAND test_addr_index)
 
 # FLEET-TM-R3 W2 (R3-C1c) — THE STARTUP TABLE over a REAL version-3
 # chain: the genesis document loader (stored row, provider, refusals),
