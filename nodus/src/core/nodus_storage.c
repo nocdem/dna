@@ -419,18 +419,19 @@ static void key_prefix_hex(const uint8_t *bytes, char out[17]) {
  * the int64 the row would be stored with (expires_at > 0 AND
  * expires_at <= now), so a refused value is exactly one the next cleanup
  * would delete the moment it landed. expires_at 0 never expires. The clock
- * is this node's: node-local storage admission, not consensus. If refused,
- * logs and returns 1; else 0. */
-static int refuse_expired_on_arrival(const nodus_value_t *val, const char *path) {
+ * is this node's: node-local storage admission, not consensus. Used by
+ * put_if_newer only (replica path: created_at comes from the wire). If
+ * refused, logs and returns 1; else 0. */
+static int refuse_expired_on_arrival(const nodus_value_t *val) {
     sqlite3_int64 exp = (sqlite3_int64)val->expires_at;
     sqlite3_int64 now = (sqlite3_int64)time(NULL);
     if (!(exp > 0 && exp <= now)) return 0;
     char kh[17], own_hex[17];
     key_prefix_hex(val->key_hash.bytes, kh);
     key_prefix_hex(val->owner_fp.bytes, own_hex);
-    QGP_LOG_WARN(LOG_TAG, "%s refused — already expired: key=%s... owner=%s... vid=%llu "
+    QGP_LOG_WARN(LOG_TAG, "PUT_IF_NEWER refused — already expired: key=%s... owner=%s... vid=%llu "
                  "expires_at=%lld <= now %lld",
-                 path, kh, own_hex, (unsigned long long)val->value_id,
+                 kh, own_hex, (unsigned long long)val->value_id,
                  (long long)exp, (long long)now);
     return 1;
 }
@@ -558,11 +559,11 @@ int nodus_storage_put(nodus_storage_t *store, const nodus_value_t *val) {
         return -1;
     }
 
-    /* Rev 3 S-b: a value already expired on arrival is never stored — it
-     * would sit on disk until cleanup. Checked before any DB read, so it
-     * comes before -2 / -4 / -3. */
-    if (refuse_expired_on_arrival(val, "PUT"))
-        return NODUS_STORAGE_RC_EXPIRED;
+    /* No expired-on-arrival refusal here (rev 3 S-b applies to
+     * put_if_newer only): on the client path the server stamps created_at
+     * itself (nodus_value_create), so such a check could only fire through
+     * a second-boundary race on a ttl=1 value — a flaky refusal. Rows that
+     * expire count against the caps like any stored row. */
 
     /* EXCLUSIVE ownership enforcement:
      * If any existing value at (key_hash, value_id) has type=EXCLUSIVE
@@ -908,7 +909,7 @@ int nodus_storage_put_if_newer(nodus_storage_t *store, const nodus_value_t *val)
      * so expires_at = created_at + ttl is the sender's word; refusing an
      * already-expired one keeps it off disk. Checked first (no DB read),
      * so it comes before -2, the skip (1) and -3. */
-    if (refuse_expired_on_arrival(val, "PUT_IF_NEWER"))
+    if (refuse_expired_on_arrival(val))
         return NODUS_STORAGE_RC_EXPIRED;
 
     /* EXCLUSIVE ownership enforcement (same check as nodus_storage_put) */

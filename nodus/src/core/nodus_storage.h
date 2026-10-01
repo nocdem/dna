@@ -56,7 +56,8 @@ extern "C" {
 #define NODUS_STORAGE_RC_FAULT       (-5)  /* read FAULT: SQLite error or allocation
                                             * failure — the store could not be
                                             * looked at; NOT "no row" */
-#define NODUS_STORAGE_RC_EXPIRED     (-6)  /* write refused: the value is already
+#define NODUS_STORAGE_RC_EXPIRED     (-6)  /* put_if_newer (replica path) only —
+                                            * write refused: the value is already
                                             * expired on arrival (expires_at > 0
                                             * AND expires_at <= now, as int64 —
                                             * the rows nodus_storage_cleanup
@@ -155,10 +156,7 @@ void nodus_storage_close(nodus_storage_t *store);
  * EXCLUSIVE values enforce first-writer-owns: if the key already has an
  * EXCLUSIVE value from a different owner, the PUT is rejected.
  *
- * Checks, in this order: signature (-1), already expired on arrival (-6:
- * expires_at > 0 AND expires_at <= now — the value nodus_storage_cleanup
- * would delete the moment it landed; this node's clock, node-local storage
- * admission, not consensus), EXCLUSIVE owner (-2), stale seq (-4: the
+ * Checks, in this order: signature (-1), EXCLUSIVE owner (-2), stale seq (-4: the
  * stored row for the same key, owner and value_id has a STRICTLY higher
  * seq — expired or not; equal or higher seq replaces as before), then the
  * write caps (-3), growth-only:
@@ -174,13 +172,17 @@ void nodus_storage_close(nodus_storage_t *store);
  * overhead per row); global NODUS_STORAGE_MAX_BYTES over data bytes only.
  * Every cap counts EVERY stored row, expired or not (the rows on disk,
  * until nodus_storage_cleanup removes them) — the caps read no clock.
+ * No expired-on-arrival refusal on this path (put_if_newer has one): the
+ * client path's created_at is stamped by this server (nodus_value_create),
+ * so such a check could only fire through a second-boundary race on a
+ * ttl=1 value. A value stored already expired counts against the caps
+ * until cleanup removes it.
  * seq is compared as SQLite INTEGER (signed int64), as in put_if_newer.
  *
  * @param store   Storage handle
  * @param val     Value to store (must be signed)
  * @return 0 on success, -1 on error, -2 if EXCLUSIVE key owned by another
- *         identity, -3 if a cap or quota would be exceeded, -4 if stale,
- *         NODUS_STORAGE_RC_EXPIRED (-6) if already expired on arrival
+ *         identity, -3 if a cap or quota would be exceeded, -4 if stale
  */
 int nodus_storage_put(nodus_storage_t *store, const nodus_value_t *val);
 

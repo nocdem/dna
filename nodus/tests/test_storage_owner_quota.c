@@ -20,11 +20,15 @@
  *    keeps it full after the values expire, until cleanup; replacing an
  *    expired row of the same (key, owner, value_id) is a REPLACE (growth
  *    only), not a new row;
- *  - rev 3 S-b: a value already expired on arrival (expires_at > 0 AND
- *    expires_at <= now) is refused with exactly NODUS_STORAGE_RC_EXPIRED
- *    (-6) by put AND put_if_newer (replica value with a past created_at),
+ *  - rev 3 S-b: on the REPLICA path a value already expired on arrival
+ *    (expires_at > 0 AND expires_at <= now; created_at from the wire) is
+ *    refused by put_if_newer with exactly NODUS_STORAGE_RC_EXPIRED (-6),
  *    before the EXCLUSIVE lock (-2) and before the replica skip (1);
- *    nothing is stored; expires_at 0 and a future expires_at are accepted;
+ *    nothing is stored. The CLIENT path (put) has no such check (the
+ *    server stamps created_at there; a check could only fire through a
+ *    second-boundary race): the same values are stored, the lock answers
+ *    -2, and cleanup deletes them. expires_at 0 and a future expires_at
+ *    are accepted on both paths;
  *  - every cap refusal is exactly NODUS_STORAGE_RC_QUOTA (-3);
  *  - the owner quota query SEARCHes idx_nodus_values_owner (EXPLAIN QUERY
  *    PLAN on the prepared statement's own SQL text), and neither cap query
@@ -482,22 +486,24 @@ static void test_replace_expired_growth(void) {
 /* ── already expired on arrival (rev 3 S-b) ──────────────────────── */
 
 static void test_expired_on_arrival(void) {
-    TEST("already expired on arrival -> -6, nothing stored");
+    TEST("expired on arrival: put_if_newer -6; put stores (no check)");
     nodus_storage_t st;
     test_storage_open(&st);
     uint64_t now = (uint64_t)time(NULL);
-    /* replica-style value with a past created_at: expires_at = 3601 */
-    int rc1 = put_and_free(nodus_storage_put, &st, make_timed(&id_a, 1, 10, 0x01, 1,
-                           NODUS_VALUE_EPHEMERAL, 3600, 1));
-    int rc2 = put_and_free(nodus_storage_put_if_newer, &st, make_timed(&id_a, 1, 10, 0x01, 1,
+    /* replica path: a past created_at, expires_at = 3601 */
+    int rc1 = put_and_free(nodus_storage_put_if_newer, &st, make_timed(&id_a, 1, 10, 0x01, 1,
                            NODUS_VALUE_EPHEMERAL, 3600, 1));
     /* boundary: expires_at == this test's now (storage's now is >= it) */
-    int rc3 = put_and_free(nodus_storage_put, &st, make_timed(&id_a, 2, 10, 0x02, 1,
-                           NODUS_VALUE_EPHEMERAL, 3600, now - 3600));
-    int rc4 = put_and_free(nodus_storage_put_if_newer, &st, make_timed(&id_a, 2, 10, 0x02, 1,
+    int rc2 = put_and_free(nodus_storage_put_if_newer, &st, make_timed(&id_a, 2, 10, 0x02, 1,
                            NODUS_VALUE_EPHEMERAL, 3600, now - 3600));
     int n0 = nodus_storage_count(&st);
-    /* future expiry and expires_at 0 are stored */
+    /* client path: no expired-on-arrival refusal (the server stamps
+     * created_at there); the same values are stored */
+    int rc3 = put_and_free(nodus_storage_put, &st, make_timed(&id_a, 1, 10, 0x01, 1,
+                           NODUS_VALUE_EPHEMERAL, 3600, 1));
+    int rc4 = put_and_free(nodus_storage_put, &st, make_timed(&id_a, 2, 10, 0x02, 1,
+                           NODUS_VALUE_EPHEMERAL, 3600, now - 3600));
+    /* future expiry and expires_at 0 are stored on both paths */
     int rc5 = put_and_free(nodus_storage_put, &st, make_timed(&id_a, 3, 10, 0x03, 1,
                            NODUS_VALUE_EPHEMERAL, 3600, now));
     int rc6 = put_and_free(nodus_storage_put_if_newer, &st, make_timed(&id_a, 4, 10, 0x04, 1,
@@ -507,23 +513,26 @@ static void test_expired_on_arrival(void) {
     int rc8 = put_and_free(nodus_storage_put_if_newer, &st, make_timed(&id_a, 6, 10, 0x06, 1,
                            NODUS_VALUE_PERMANENT, 0, 1));
     int n1 = nodus_storage_count(&st);
-    if (rc1 == NODUS_STORAGE_RC_EXPIRED && rc2 == NODUS_STORAGE_RC_EXPIRED &&
-        rc3 == NODUS_STORAGE_RC_EXPIRED && rc4 == NODUS_STORAGE_RC_EXPIRED && n0 == 0 &&
-        rc5 == 0 && rc6 == 0 && rc7 == 0 && rc8 == 0 && n1 == 4)
+    /* the two expired client-path rows are what cleanup deletes */
+    int c = nodus_storage_cleanup(&st);
+    if (rc1 == NODUS_STORAGE_RC_EXPIRED && rc2 == NODUS_STORAGE_RC_EXPIRED && n0 == 0 &&
+        rc3 == 0 && rc4 == 0 && rc5 == 0 && rc6 == 0 && rc7 == 0 && rc8 == 0 &&
+        n1 == 6 && c == 2)
         PASS();
     else
-        FAIL("expired-on-arrival must be -6 on both paths; live / permanent stored");
+        FAIL("put_if_newer -6 on expired arrival; put stores; live / permanent stored");
     test_storage_close(&st);
 }
 
 static void test_expired_on_arrival_order(void) {
-    TEST("expired on arrival: -6 before lock (-2) and replica skip (1)");
+    TEST("put_if_newer: -6 before lock (-2) and skip (1); put -2");
     nodus_storage_t st;
     test_storage_open(&st);
     uint64_t now = (uint64_t)time(NULL);
     /* B locks key 50 */
     int rc0 = put_and_free(nodus_storage_put, &st, make_timed(&id_b, 50, 4, 0x50, 1,
                            NODUS_VALUE_EXCLUSIVE, 0, now));
+    /* client path has no expired-on-arrival check: the lock answers */
     int rc1 = put_and_free(nodus_storage_put, &st, make_timed(&id_a, 50, 4, 0x51, 9,
                            NODUS_VALUE_EPHEMERAL, 3600, 1));
     int rc2 = put_and_free(nodus_storage_put_if_newer, &st, make_timed(&id_a, 50, 4, 0x51, 9,
@@ -535,11 +544,11 @@ static void test_expired_on_arrival_order(void) {
     /* control: the same replica not expired is the skip */
     int rc5 = put_and_free(nodus_storage_put_if_newer, &st, make_timed(&id_a, 60, 4, 0x61, 1,
                            NODUS_VALUE_EPHEMERAL, 3600, now));
-    if (rc0 == 0 && rc1 == NODUS_STORAGE_RC_EXPIRED && rc2 == NODUS_STORAGE_RC_EXPIRED &&
+    if (rc0 == 0 && rc1 == NODUS_STORAGE_RC_KEY_OWNED && rc2 == NODUS_STORAGE_RC_EXPIRED &&
         rc3 == 0 && rc4 == NODUS_STORAGE_RC_EXPIRED && rc5 == 1)
         PASS();
     else
-        FAIL("-6 is checked first, before any DB read");
+        FAIL("put_if_newer checks -6 first; put has no -6");
     test_storage_close(&st);
 }
 
