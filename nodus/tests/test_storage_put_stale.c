@@ -6,7 +6,9 @@
  * an equal seq replaces (today's behaviour, TTL refreshed); a higher seq
  * replaces; a different value_id of the same owner is independent; the
  * EXCLUSIVE lock check (-2) still runs first, so a foreign owner gets -2
- * even with a lower seq.
+ * even with a lower seq; the stale refusal (-4) also runs BEFORE the write
+ * caps (-3), so a stale value at the owner row cap is -4; the stale check
+ * compares against any stored row, expired-but-not-cleaned included.
  *
  * Requires: default build. Leaves behind: nothing (fixture DB unlinked).
  * How it can lie: none known — every case reads the row back.
@@ -156,6 +158,56 @@ static void test_lock_before_stale(void) {
     test_storage_close(&st);
 }
 
+/* n unsigned filler rows for id's owner_fp via direct SQL (key zeroblob(64),
+ * value_id 1000..) — the caps only read owner_fp, LENGTH(data), expires_at. */
+static int sql_fill_owner(nodus_storage_t *st, const nodus_identity_t *id, int n) {
+    static const char *sql =
+        "WITH RECURSIVE c(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM c WHERE n + 1 < ?2) "
+        "INSERT INTO nodus_values (key_hash, owner_fp, value_id, data, type, ttl, "
+        "  created_at, expires_at, seq, owner_pk, signature) "
+        "SELECT zeroblob(64), ?1, 1000 + n, zeroblob(1), 1, 0, 0, 0, 1, "
+        "  zeroblob(1), zeroblob(1) FROM c";
+    nodus_key_t fp;
+    nodus_fingerprint(&id->pk, &fp);
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(st->db, sql, -1, &s, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_blob(s, 1, fp.bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+    sqlite3_bind_int(s, 2, n);
+    int rc = sqlite3_step(s);
+    sqlite3_finalize(s);
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+static void test_stale_before_caps(void) {
+    TEST("at the owner row cap: lower seq -> -4 (not -3); new -> -3");
+    nodus_storage_t st;
+    test_storage_open(&st);
+    int ok = sql_fill_owner(&st, &id_a, NODUS_STORAGE_MAX_PER_OWNER - 1) == 0;
+    int rc1 = put_free(&st, make_val(&id_a, "k-cap", "five", NODUS_VALUE_EPHEMERAL, 1, 5));
+    /* stale AND growing: the stale refusal comes first */
+    int rc2 = put_free(&st, make_val(&id_a, "k-cap", "three-longer", NODUS_VALUE_EPHEMERAL, 1, 3));
+    int rc3 = put_free(&st, make_val(&id_a, "k-cap-new", "x", NODUS_VALUE_EPHEMERAL, 1, 9));
+    if (ok && rc1 == 0 && rc2 == NODUS_STORAGE_RC_STALE && rc3 == NODUS_STORAGE_RC_QUOTA)
+        PASS();
+    else
+        FAIL("stale check must run before the caps");
+    test_storage_close(&st);
+}
+
+static void test_stale_against_expired_row(void) {
+    TEST("stored row expired (not yet cleaned): lower seq -> -4");
+    nodus_storage_t st;
+    test_storage_open(&st);
+    int rc1 = put_free(&st, make_val(&id_a, "k-exp", "five", NODUS_VALUE_EPHEMERAL, 1, 5));
+    int ok = sqlite3_exec(st.db, "UPDATE nodus_values SET expires_at = 1",
+                          NULL, NULL, NULL) == SQLITE_OK;
+    int rc2 = put_free(&st, make_val(&id_a, "k-exp", "three", NODUS_VALUE_EPHEMERAL, 1, 3));
+    int rc3 = put_free(&st, make_val(&id_a, "k-exp", "six", NODUS_VALUE_EPHEMERAL, 1, 6));
+    if (rc1 == 0 && ok && rc2 == NODUS_STORAGE_RC_STALE && rc3 == 0) PASS();
+    else FAIL("stale check compares against any stored row, live or expired");
+    test_storage_close(&st);
+}
+
 int main(void) {
     printf("=== Nodus put stale-seq refusal ===\n");
     init_ids();
@@ -166,6 +218,8 @@ int main(void) {
     test_other_value_id_independent();
     test_other_owner_independent();
     test_lock_before_stale();
+    test_stale_before_caps();
+    test_stale_against_expired_row();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;

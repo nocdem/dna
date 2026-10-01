@@ -10,7 +10,11 @@
  *  - the page budget counts NODUS_VALUE_SERIALIZED_EST bytes, a first row
  *    larger than the budget comes back alone, an empty page is rc 0;
  *  - the owner filter combines with the cursor;
- *  - nodus_storage_get_all is unchanged (still returns every row).
+ *  - nodus_storage_get_all is unchanged (still returns every row);
+ *  - a SQLite read fault is NODUS_STORAGE_RC_FAULT (-5) from get_owner,
+ *    get_all_page and get — distinct from the miss code -1 — with the out
+ *    parameters cleared (forced by swapping in a statement that fails at
+ *    step).
  *
  * Requires: default build. Leaves behind: nothing (fixture DB unlinked).
  * How it can lie: the expected order is computed here with the same
@@ -338,6 +342,60 @@ static void test_get_owner_newest(void) {
     test_storage_close(&st);
 }
 
+/* Replace a prepared statement with one that fails at sqlite3_step
+ * (abs(INT64_MIN) raises "integer overflow" at run time — checked with the
+ * sqlite3 3.44 CLI; the library the build links may differ, the behaviour
+ * has been the same for many releases). It binds ?1..?4 like the originals.
+ * nodus_storage_close finalizes the replacement. */
+static int break_stmt(nodus_storage_t *st, sqlite3_stmt **slot) {
+    sqlite3_finalize(*slot);
+    *slot = NULL;
+    return sqlite3_prepare_v2(st->db,
+        "SELECT abs(-9223372036854775807 - 1), ?1, ?2, ?3, ?4",
+        -1, slot, NULL) == SQLITE_OK ? 0 : -1;
+}
+
+static void test_read_fault_code(void) {
+    TEST("read fault -> -5 (get_owner, get_all_page, get); miss -> -1");
+    nodus_storage_t st;
+    test_storage_open(&st);
+    int ok = populate(&st) == 0;
+
+    /* misses before breaking anything */
+    nodus_key_t none;
+    nodus_hash((const uint8_t *)"fault-none", 10, &none);
+    nodus_value_t *got = NULL;
+    ok = ok && nodus_storage_get(&st, &none, &got) == -1 && got == NULL;
+    ok = ok && nodus_storage_get_owner(&st, &none, &fps[0], &got) == -1 && got == NULL;
+
+    ok = ok && break_stmt(&st, &st.stmt_get_owner) == 0 &&
+         break_stmt(&st, &st.stmt_get_all_page) == 0 &&
+         break_stmt(&st, &st.stmt_get) == 0;
+
+    got = (nodus_value_t *)1;   /* must be cleared */
+    int rc1 = nodus_storage_get_owner(&st, &g_key, &fps[0], &got);
+    ok = ok && rc1 == NODUS_STORAGE_RC_FAULT && got == NULL;
+
+    nodus_value_t **vals = NULL;
+    size_t cnt = 99;
+    int more = -1;
+    int rc2 = nodus_storage_get_all_page(&st, &g_key, NULL, NULL, 0,
+                                         NODUS_GET_ALL_PAGE_MAX_BYTES,
+                                         &vals, &cnt, &more);
+    ok = ok && rc2 == NODUS_STORAGE_RC_FAULT && vals == NULL && cnt == 0 && more == 0;
+
+    got = NULL;
+    int rc3 = nodus_storage_get(&st, &g_key, &got);
+    ok = ok && rc3 == NODUS_STORAGE_RC_FAULT && got == NULL;
+
+    /* invalid arguments stay -1 */
+    int rc4 = nodus_storage_get_all_page(&st, NULL, NULL, NULL, 0, 1, &vals, &cnt, &more);
+    ok = ok && rc4 == -1;
+
+    if (ok) PASS(); else FAIL("a read fault must be -5, never the miss code");
+    test_storage_close(&st);
+}
+
 int main(void) {
     printf("=== Nodus get_owner / get_all_page ===\n");
     for (int o = 0; o < N_OWNERS; o++) {
@@ -358,6 +416,7 @@ int main(void) {
     test_owner_filter();
     test_get_all_unchanged();
     test_get_owner_newest();
+    test_read_fault_code();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;

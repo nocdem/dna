@@ -36,7 +36,11 @@ static const char *SCHEMA_SQL =
     "  PRIMARY KEY (key_hash, owner_fp, value_id)"
     ");"
     "CREATE INDEX IF NOT EXISTS idx_nodus_values_key ON nodus_values(key_hash);"
-    "CREATE INDEX IF NOT EXISTS idx_nodus_values_expires ON nodus_values(expires_at) WHERE expires_at > 0;";
+    "CREATE INDEX IF NOT EXISTS idx_nodus_values_expires ON nodus_values(expires_at) WHERE expires_at > 0;"
+    /* Owner quota queries (OWNER_USAGE_SQL, QUOTA_OWNER_COUNT_SQL) search by
+     * owner_fp; without it each write cap check scanned the whole table.
+     * Built once on the first open of an existing DB. */
+    "CREATE INDEX IF NOT EXISTS idx_nodus_values_owner ON nodus_values(owner_fp);";
 
 static const char *PUT_SQL =
     "INSERT OR REPLACE INTO nodus_values "
@@ -90,9 +94,11 @@ static const char *NEWER_EXISTS_SQL =
     "AND (seq > ?9 OR (seq = ?9 AND data_hash >= ?12))";
 
 /* The stored row of one (key, owner, value_id): seq (SQLite INTEGER, compared
- * as signed int64 like PUT_IF_NEWER_SQL) and data length (quota growth). */
+ * as signed int64 like PUT_IF_NEWER_SQL), data length (quota growth) and
+ * expires_at (an expired row is not counted by the caps — replacing it is a
+ * new row for them). */
 static const char *EXISTING_ROW_SQL =
-    "SELECT seq, LENGTH(data) FROM nodus_values "
+    "SELECT seq, LENGTH(data), expires_at FROM nodus_values "
     "WHERE key_hash = ? AND owner_fp = ? AND value_id = ?";
 
 /* One owner's newest row at a key — total order: seq, data_hash (NULL legacy
@@ -132,8 +138,24 @@ static const char *QUOTA_TOTAL_BYTES_SQL =
 static const char *QUOTA_OWNER_COUNT_SQL =
     "SELECT COUNT(*) FROM nodus_values WHERE owner_fp = ?";
 
-static const char *QUOTA_OWNER_BYTES_SQL =
-    "SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nodus_values WHERE owner_fp = ?";
+/* Write caps (nodus_storage_put / put_if_newer) count LIVE rows only. A row
+ * is expired exactly when CLEANUP_SQL would delete it (expires_at > 0 AND
+ * expires_at <= now), so a row cleanup never removes — expires_at 0, or a
+ * negative stored INTEGER — always counts. existing_row_live() applies the
+ * same predicate in C.
+ * Query plan (sqlite 3.44, checked with EXPLAIN QUERY PLAN; asserted by
+ * test_storage_owner_quota): SEARCH nodus_values USING INDEX
+ * idx_nodus_values_owner (owner_fp=?). */
+static const char *OWNER_USAGE_SQL =
+    "SELECT COUNT(*), COALESCE(SUM(LENGTH(data)), 0) FROM nodus_values "
+    "WHERE owner_fp = ?1 AND NOT (expires_at > 0 AND expires_at <= ?2)";
+
+/* Whole-table live usage — a SCAN, the same cost class as the
+ * QUOTA_TOTAL_BYTES_SQL pre-check; only run for a new row or a growing
+ * replace that passed the owner caps. */
+static const char *GLOBAL_USAGE_SQL =
+    "SELECT COUNT(*), COALESCE(SUM(LENGTH(data)), 0) FROM nodus_values "
+    "WHERE NOT (expires_at > 0 AND expires_at <= ?1)";
 
 static const char *HINT_SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS dht_hinted_handoff ("
@@ -149,7 +171,27 @@ static const char *HINT_SCHEMA_SQL =
     ");"
     "CREATE INDEX IF NOT EXISTS idx_dht_hint_node ON dht_hinted_handoff(node_id);"
     "CREATE INDEX IF NOT EXISTS idx_dht_hint_expires ON dht_hinted_handoff(expires_at);"
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_dht_hint_dedup ON dht_hinted_handoff(node_id, frame_hash);";
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_dht_hint_dedup ON dht_hinted_handoff(node_id, frame_hash);"
+    /* Whole-table frame byte total for the global hint cap, kept by SQLite
+     * itself: every path that inserts or deletes a hint row (insert,
+     * delete, cleanup, any future one) moves it, so it cannot drift from
+     * SUM(LENGTH(frame_data)). An ignored duplicate inserts nothing and
+     * fires nothing. Re-seeded from the table on every open. */
+    "CREATE TABLE IF NOT EXISTS dht_hint_totals ("
+    "  id          INTEGER PRIMARY KEY CHECK (id = 1),"
+    "  total_bytes INTEGER NOT NULL"
+    ");"
+    "INSERT OR REPLACE INTO dht_hint_totals (id, total_bytes) "
+    "  SELECT 1, COALESCE(SUM(LENGTH(frame_data)), 0) FROM dht_hinted_handoff;"
+    "CREATE TRIGGER IF NOT EXISTS trg_dht_hint_ins AFTER INSERT ON dht_hinted_handoff BEGIN "
+    "  UPDATE dht_hint_totals SET total_bytes = total_bytes + LENGTH(NEW.frame_data) WHERE id = 1; "
+    "END;"
+    "CREATE TRIGGER IF NOT EXISTS trg_dht_hint_del AFTER DELETE ON dht_hinted_handoff BEGIN "
+    "  UPDATE dht_hint_totals SET total_bytes = total_bytes - LENGTH(OLD.frame_data) WHERE id = 1; "
+    "END;"
+    "CREATE TRIGGER IF NOT EXISTS trg_dht_hint_upd AFTER UPDATE OF frame_data ON dht_hinted_handoff BEGIN "
+    "  UPDATE dht_hint_totals SET total_bytes = total_bytes - LENGTH(OLD.frame_data) + LENGTH(NEW.frame_data) WHERE id = 1; "
+    "END;";
 
 static const char *HINT_INSERT_SQL =
     "INSERT OR IGNORE INTO dht_hinted_handoff (node_id, peer_ip, peer_port, frame_data, frame_hash, created_at, expires_at) "
@@ -170,13 +212,16 @@ static const char *HINT_COUNT_SQL =
     "SELECT COUNT(*) FROM dht_hinted_handoff";
 
 /* Hint caps: every row counts until hinted_cleanup removes it, the same rows
- * HINT_GET_SQL returns. */
+ * HINT_GET_SQL returns. Per-peer usage is a SEARCH on node_id (sqlite 3.44
+ * picks idx_dht_hint_dedup; asserted by test_hinted_caps) over at most
+ * NODUS_DHT_HINT_PEER_MAX_ROWS rows. */
 static const char *HINT_PEER_USAGE_SQL =
     "SELECT COUNT(*), COALESCE(SUM(LENGTH(frame_data)), 0) "
     "FROM dht_hinted_handoff WHERE node_id = ?";
 
+/* O(1): the trigger-maintained total (HINT_SCHEMA_SQL), no table scan. */
 static const char *HINT_TOTAL_BYTES_SQL =
-    "SELECT COALESCE(SUM(LENGTH(frame_data)), 0) FROM dht_hinted_handoff";
+    "SELECT total_bytes FROM dht_hint_totals WHERE id = 1";
 
 static const char *HINT_EXISTS_SQL =
     "SELECT 1 FROM dht_hinted_handoff WHERE node_id = ? AND frame_hash = ?";
@@ -265,8 +310,11 @@ int nodus_storage_open(const char *path, nodus_storage_t *store) {
         return -1;
     }
 
-    /* Hinted handoff schema — drop and recreate (data is transient) */
+    /* Hinted handoff schema — drop and recreate (data is transient). The
+     * triggers go with their table; the totals row is re-seeded from the
+     * table by HINT_SCHEMA_SQL either way. */
     sqlite3_exec(store->db, "DROP TABLE IF EXISTS dht_hinted_handoff", NULL, NULL, NULL);
+    sqlite3_exec(store->db, "DROP TABLE IF EXISTS dht_hint_totals", NULL, NULL, NULL);
     rc = sqlite3_exec(store->db, HINT_SCHEMA_SQL, NULL, NULL, &err);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "nodus_storage: hint schema failed: %s\n", err);
@@ -316,7 +364,8 @@ int nodus_storage_open(const char *path, nodus_storage_t *store) {
         sqlite3_prepare_v2(store->db, FETCH_BATCH_SQL, -1, &store->stmt_fetch_batch, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, QUOTA_TOTAL_BYTES_SQL, -1, &store->stmt_quota_total_bytes, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, QUOTA_OWNER_COUNT_SQL, -1, &store->stmt_quota_owner_count, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(store->db, QUOTA_OWNER_BYTES_SQL, -1, &store->stmt_quota_owner_bytes, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(store->db, OWNER_USAGE_SQL, -1, &store->stmt_quota_owner_usage, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(store->db, GLOBAL_USAGE_SQL, -1, &store->stmt_quota_global_usage, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, EXISTING_ROW_SQL, -1, &store->stmt_existing_row, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, NEWER_EXISTS_SQL, -1, &store->stmt_newer_exists, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, GET_OWNER_SQL, -1, &store->stmt_get_owner, NULL) != SQLITE_OK ||
@@ -349,7 +398,8 @@ void nodus_storage_close(nodus_storage_t *store) {
     if (store->stmt_fetch_batch) sqlite3_finalize(store->stmt_fetch_batch);
     if (store->stmt_quota_total_bytes) sqlite3_finalize(store->stmt_quota_total_bytes);
     if (store->stmt_quota_owner_count) sqlite3_finalize(store->stmt_quota_owner_count);
-    if (store->stmt_quota_owner_bytes) sqlite3_finalize(store->stmt_quota_owner_bytes);
+    if (store->stmt_quota_owner_usage) sqlite3_finalize(store->stmt_quota_owner_usage);
+    if (store->stmt_quota_global_usage) sqlite3_finalize(store->stmt_quota_global_usage);
     if (store->stmt_existing_row) sqlite3_finalize(store->stmt_existing_row);
     if (store->stmt_newer_exists) sqlite3_finalize(store->stmt_newer_exists);
     if (store->stmt_get_owner) sqlite3_finalize(store->stmt_get_owner);
@@ -374,10 +424,21 @@ static void key_prefix_hex(const uint8_t *bytes, char out[17]) {
     out[16] = '\0';
 }
 
-/* Look up the stored row of (key, owner, value_id).
- * Returns 0 and sets *exists (and *seq / *data_len when it exists), -1 on error. */
+/* The stored row of one (key, owner, value_id), as the write paths see it. */
+typedef struct {
+    int           exists;     /* a row is stored (live or expired) */
+    int           live;       /* ... and the caps count it (not expired) */
+    sqlite3_int64 seq;
+    size_t        data_len;
+} stored_row_t;
+
+/* Look up the stored row of (key, owner, value_id). `now` decides liveness
+ * with CLEANUP_SQL's predicate: expired = expires_at > 0 AND
+ * expires_at <= now (signed int64, as SQLite compares it).
+ * Returns 0 and fills *row, -1 on error. */
 static int existing_row(nodus_storage_t *store, const nodus_value_t *val,
-                        int *exists, sqlite3_int64 *seq, size_t *data_len) {
+                        sqlite3_int64 now, stored_row_t *row) {
+    memset(row, 0, sizeof(*row));
     sqlite3_stmt *s = store->stmt_existing_row;
     sqlite3_reset(s);
     sqlite3_bind_blob(s, 1, val->key_hash.bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
@@ -385,14 +446,12 @@ static int existing_row(nodus_storage_t *store, const nodus_value_t *val,
     sqlite3_bind_int64(s, 3, (sqlite3_int64)val->value_id);
     int rc = sqlite3_step(s);
     if (rc == SQLITE_ROW) {
-        *exists = 1;
-        *seq = sqlite3_column_int64(s, 0);
-        *data_len = (size_t)sqlite3_column_int64(s, 1);
-    } else if (rc == SQLITE_DONE) {
-        *exists = 0;
-        *seq = 0;
-        *data_len = 0;
-    } else {
+        sqlite3_int64 exp = sqlite3_column_int64(s, 2);
+        row->exists = 1;
+        row->live = !(exp > 0 && exp <= now);
+        row->seq = sqlite3_column_int64(s, 0);
+        row->data_len = (size_t)sqlite3_column_int64(s, 1);
+    } else if (rc != SQLITE_DONE) {
         sqlite3_reset(s);
         return -1;
     }
@@ -400,32 +459,87 @@ static int existing_row(nodus_storage_t *store, const nodus_value_t *val,
     return 0;
 }
 
-/* Per-owner byte quota (F5): only growth counts. A replace that does not grow
- * always passes, even if the owner is already over the quota.
- * Returns 0 = within quota, NODUS_STORAGE_RC_QUOTA = exceeded, -1 = error. */
-static int owner_quota_check(nodus_storage_t *store, const nodus_value_t *val,
-                             size_t old_len) {
-    if (val->data_len <= old_len) return 0;
-    uint64_t growth = (uint64_t)(val->data_len - old_len);
-
-    sqlite3_stmt *s = store->stmt_quota_owner_bytes;
+/* Live-row usage of one owner (owner_fp != NULL) or of the whole table:
+ * row count and data bytes. Returns 0, or -1 on error. */
+static int live_usage(nodus_storage_t *store, const nodus_key_t *owner_fp,
+                      sqlite3_int64 now, uint64_t *rows, uint64_t *data_bytes) {
+    sqlite3_stmt *s = owner_fp ? store->stmt_quota_owner_usage
+                               : store->stmt_quota_global_usage;
     sqlite3_reset(s);
-    sqlite3_bind_blob(s, 1, val->owner_fp.bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+    if (owner_fp) {
+        sqlite3_bind_blob(s, 1, owner_fp->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+        sqlite3_bind_int64(s, 2, now);
+    } else {
+        sqlite3_bind_int64(s, 1, now);
+    }
     if (sqlite3_step(s) != SQLITE_ROW) {
         sqlite3_reset(s);
         return -1;
     }
-    uint64_t owner_bytes = (uint64_t)sqlite3_column_int64(s, 0);
+    *rows = (uint64_t)sqlite3_column_int64(s, 0);
+    *data_bytes = (uint64_t)sqlite3_column_int64(s, 1);
     sqlite3_reset(s);
+    return 0;
+}
 
-    if (growth > NODUS_STORAGE_OWNER_MAX_BYTES ||
-        owner_bytes > NODUS_STORAGE_OWNER_MAX_BYTES - growth) {
+/* "Would `add` more on top of `used` pass `cap`?" — overflow-safe. */
+static int over_cap(uint64_t used, uint64_t add, uint64_t cap) {
+    return add > cap || used > cap - add;
+}
+
+/* Write caps (F5 + rev 2 items 1-3), growth-only:
+ *   - a replace of a LIVE stored row that does not grow -> 0, no query;
+ *   - a new row (none stored, or the stored one expired) -> owner row cap,
+ *     and (with_global) the global row cap;
+ *   - new row or growing replace -> owner byte quota over
+ *     NODUS_STORAGE_ROW_CHARGE, and (with_global) the global byte cap over
+ *     data bytes (the unit nodus_storage_check_quota uses).
+ * Owner caps first (indexed); the global SCAN only when they pass.
+ * Returns 0 = within caps, NODUS_STORAGE_RC_QUOTA = refused, -1 = error. */
+static int write_caps_check(nodus_storage_t *store, const nodus_value_t *val,
+                            const stored_row_t *row, sqlite3_int64 now,
+                            int with_global) {
+    int new_row = !row->live;
+    if (!new_row && val->data_len <= row->data_len) return 0;
+
+    /* Owner charge growth equals data growth on a replace (the fixed part
+     * of NODUS_STORAGE_ROW_CHARGE is already paid by the stored row). */
+    uint64_t data_growth = new_row ? (uint64_t)val->data_len
+                                   : (uint64_t)(val->data_len - row->data_len);
+    uint64_t charge_growth = new_row ? NODUS_STORAGE_ROW_CHARGE(val->data_len)
+                                     : data_growth;
+
+    uint64_t owner_rows = 0, owner_data = 0;
+    if (live_usage(store, &val->owner_fp, now, &owner_rows, &owner_data) != 0)
+        return -1;
+    uint64_t owner_charge = owner_data + owner_rows * NODUS_STORAGE_ROW_CHARGE(0);
+
+    const char *why = NULL;
+    if (new_row && owner_rows >= NODUS_STORAGE_MAX_PER_OWNER)
+        why = "owner row cap";
+    else if (over_cap(owner_charge, charge_growth, NODUS_STORAGE_OWNER_MAX_BYTES))
+        why = "owner byte quota";
+
+    uint64_t total_rows = 0, total_data = 0;
+    if (!why && with_global) {
+        if (live_usage(store, NULL, now, &total_rows, &total_data) != 0)
+            return -1;
+        if (new_row && total_rows >= NODUS_STORAGE_MAX_VALUES)
+            why = "global row cap";
+        else if (data_growth > 0 &&
+                 over_cap(total_data, data_growth, NODUS_STORAGE_MAX_BYTES))
+            why = "global byte cap";
+    }
+
+    if (why) {
         char own_hex[17];
         key_prefix_hex(val->owner_fp.bytes, own_hex);
-        QGP_LOG_WARN(LOG_TAG, "PUT refused — owner %s... byte quota: holds %llu, +%llu > %llu",
-                     own_hex, (unsigned long long)owner_bytes,
-                     (unsigned long long)growth,
-                     (unsigned long long)NODUS_STORAGE_OWNER_MAX_BYTES);
+        QGP_LOG_WARN(LOG_TAG, "PUT refused (%s) — owner %s...: %s, +%llu bytes; "
+                     "owner %llu rows / %llu charged bytes, table %llu rows / %llu data bytes",
+                     why, own_hex, new_row ? "new row" : "growing replace",
+                     (unsigned long long)charge_growth,
+                     (unsigned long long)owner_rows, (unsigned long long)owner_charge,
+                     (unsigned long long)total_rows, (unsigned long long)total_data);
         return NODUS_STORAGE_RC_QUOTA;
     }
     return 0;
@@ -467,31 +581,32 @@ int nodus_storage_put(nodus_storage_t *store, const nodus_value_t *val) {
         }
     }
 
-    /* F7 stale refusal + F5 quota — both need the stored row of this
+    /* F7 stale refusal + write caps — both need the stored row of this
      * (key, owner, value_id). Runs after the EXCLUSIVE check: -2 keeps
      * priority over -4 / -3. */
-    int row_exists = 0;
-    sqlite3_int64 row_seq = 0;
-    size_t row_len = 0;
-    if (existing_row(store, val, &row_exists, &row_seq, &row_len) != 0)
+    sqlite3_int64 now = (sqlite3_int64)time(NULL);
+    stored_row_t row;
+    if (existing_row(store, val, now, &row) != 0)
         return -1;
 
     /* F7: only a STRICTLY lower seq is refused; equal or higher seq replaces
      * as before (INSERT OR REPLACE below). Compared as signed int64, the
-     * SQLite INTEGER order PUT_IF_NEWER_SQL uses. */
-    if (row_exists && row_seq > (sqlite3_int64)val->seq) {
+     * SQLite INTEGER order PUT_IF_NEWER_SQL uses. Any stored row counts,
+     * live or expired. */
+    if (row.exists && row.seq > (sqlite3_int64)val->seq) {
         char kh[17], own_hex[17];
         key_prefix_hex(val->key_hash.bytes, kh);
         key_prefix_hex(val->owner_fp.bytes, own_hex);
         QGP_LOG_WARN(LOG_TAG, "PUT refused — stale seq: key=%s... owner=%s... vid=%llu seq=%lld < stored %lld",
                      kh, own_hex, (unsigned long long)val->value_id,
-                     (long long)(sqlite3_int64)val->seq, (long long)row_seq);
+                     (long long)(sqlite3_int64)val->seq, (long long)row.seq);
         return NODUS_STORAGE_RC_STALE;
     }
 
-    /* F5: per-owner byte quota, growth only */
+    /* Write caps: owner rows / owner bytes / global rows / global bytes,
+     * growth only. */
     {
-        int q = owner_quota_check(store, val, row_exists ? row_len : 0);
+        int q = write_caps_check(store, val, &row, now, 1);
         if (q != 0) return q;
     }
 
@@ -537,11 +652,13 @@ int nodus_storage_get(nodus_storage_t *store,
     sqlite3_bind_blob(s, 1, key_hash->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
 
     int rc = sqlite3_step(s);
+    if (rc == SQLITE_DONE)
+        return -1;                       /* no row */
     if (rc != SQLITE_ROW)
-        return -1;
+        return NODUS_STORAGE_RC_FAULT;   /* could not look */
 
     *val_out = row_to_value(s);
-    return (*val_out) ? 0 : -1;
+    return (*val_out) ? 0 : NODUS_STORAGE_RC_FAULT;
 }
 
 int nodus_storage_get_all(nodus_storage_t *store,
@@ -611,10 +728,13 @@ int nodus_storage_get_owner(nodus_storage_t *store,
     sqlite3_bind_blob(s, 1, key_hash->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
     sqlite3_bind_blob(s, 2, owner_fp->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
 
-    if (sqlite3_step(s) == SQLITE_ROW)
+    int rc = sqlite3_step(s);
+    if (rc == SQLITE_ROW)
         *val_out = row_to_value(s);
     sqlite3_reset(s);
-    return (*val_out) ? 0 : -1;
+    if (rc == SQLITE_DONE) return -1;                 /* no row */
+    if (rc != SQLITE_ROW) return NODUS_STORAGE_RC_FAULT;
+    return (*val_out) ? 0 : NODUS_STORAGE_RC_FAULT;   /* row, alloc failed */
 }
 
 int nodus_storage_get_all_page(nodus_storage_t *store,
@@ -648,7 +768,7 @@ int nodus_storage_get_all_page(nodus_storage_t *store,
     size_t used = 0;   /* cumulative NODUS_VALUE_SERIALIZED_EST */
     int more = 0;
     nodus_value_t **vals = calloc(cap, sizeof(nodus_value_t *));
-    if (!vals) { sqlite3_reset(s); return -1; }
+    if (!vals) { sqlite3_reset(s); return NODUS_STORAGE_RC_FAULT; }
 
     int rc;
     while ((rc = sqlite3_step(s)) == SQLITE_ROW) {
@@ -682,12 +802,12 @@ int nodus_storage_get_all_page(nodus_storage_t *store,
     *more_out = more;
     return 0;
 
-fail:
+fail:   /* SQLite step error or allocation failure: could not look */
     sqlite3_reset(s);
     for (size_t i = 0; i < count; i++)
         nodus_value_free(vals[i]);
     free(vals);
-    return -1;
+    return NODUS_STORAGE_RC_FAULT;
 }
 
 int nodus_storage_delete(nodus_storage_t *store,
@@ -802,8 +922,10 @@ int nodus_storage_put_if_newer(nodus_storage_t *store, const nodus_value_t *val)
     }
 
     /* F5: a value the atomic put below would skip returns 1 (skipped)
-     * without a quota check — same predicate, NEWER_EXISTS_SQL. A value it
-     * would store is checked against the per-owner byte quota (growth only). */
+     * without a cap check — same predicate, NEWER_EXISTS_SQL. A value it
+     * would store is checked against the per-owner caps (row cap for a new
+     * row, byte quota for growth) with nodus_storage_put's accounting; the
+     * global caps are not applied on the replica path. */
     {
         sqlite3_stmt *ne = store->stmt_newer_exists;
         sqlite3_reset(ne);
@@ -817,12 +939,11 @@ int nodus_storage_put_if_newer(nodus_storage_t *store, const nodus_value_t *val)
         if (ne_rc == SQLITE_ROW) return 1;  /* skipped — existing is newer/equal */
         if (ne_rc != SQLITE_DONE) return -1;
 
-        int row_exists = 0;
-        sqlite3_int64 row_seq = 0;
-        size_t row_len = 0;
-        if (existing_row(store, val, &row_exists, &row_seq, &row_len) != 0)
+        sqlite3_int64 now = (sqlite3_int64)time(NULL);
+        stored_row_t row;
+        if (existing_row(store, val, now, &row) != 0)
             return -1;
-        int q = owner_quota_check(store, val, row_exists ? row_len : 0);
+        int q = write_caps_check(store, val, &row, now, 0);
         if (q != 0) return q;
     }
 
@@ -932,8 +1053,9 @@ int nodus_storage_hinted_insert(nodus_storage_t *store,
     uint8_t hash_full[64];
     qgp_sha3_512(frame_data, frame_len, hash_full);
 
-    /* F4 caps: per node_id rows + bytes, whole-table bytes. Checked before
-     * the insert; over a cap nothing is stored. */
+    /* F4 caps: per node_id rows + bytes first (indexed, <= 64 rows), and
+     * only when they pass the whole-table byte total (O(1) trigger-kept
+     * row). Checked before the insert; over a cap nothing is stored. */
     {
         int64_t peer_rows = 0, peer_bytes = 0, total_bytes = 0;
         sqlite3_stmt *u = store->stmt_hint_peer_usage;
@@ -947,14 +1069,6 @@ int nodus_storage_hinted_insert(nodus_storage_t *store,
         sqlite3_reset(u);
         if (urc != SQLITE_ROW) return -1;
 
-        sqlite3_stmt *t = store->stmt_hint_total_bytes;
-        sqlite3_reset(t);
-        int trc = sqlite3_step(t);
-        if (trc == SQLITE_ROW)
-            total_bytes = sqlite3_column_int64(t, 0);
-        sqlite3_reset(t);
-        if (trc != SQLITE_ROW) return -1;
-
         uint64_t flen = (uint64_t)frame_len;
         const char *why = NULL;
         if ((uint64_t)peer_rows >= NODUS_DHT_HINT_PEER_MAX_ROWS)
@@ -962,8 +1076,20 @@ int nodus_storage_hinted_insert(nodus_storage_t *store,
         else if (flen > NODUS_DHT_HINT_PEER_MAX_BYTES ||
                  (uint64_t)peer_bytes > NODUS_DHT_HINT_PEER_MAX_BYTES - flen)
             why = "peer byte cap";
-        else if ((uint64_t)total_bytes > NODUS_DHT_HINT_TOTAL_MAX_BYTES - flen)
-            why = "total byte cap";
+
+        if (!why) {
+            sqlite3_stmt *t = store->stmt_hint_total_bytes;
+            sqlite3_reset(t);
+            int trc = sqlite3_step(t);
+            if (trc == SQLITE_ROW)
+                total_bytes = sqlite3_column_int64(t, 0);
+            sqlite3_reset(t);
+            if (trc != SQLITE_ROW) return -1;
+            /* flen <= PEER_MAX_BYTES < TOTAL_MAX_BYTES here: no underflow */
+            if (total_bytes < 0 ||
+                (uint64_t)total_bytes > NODUS_DHT_HINT_TOTAL_MAX_BYTES - flen)
+                why = "total byte cap";
+        }
 
         if (why) {
             /* A duplicate (node_id, frame) adds nothing — keep today's
