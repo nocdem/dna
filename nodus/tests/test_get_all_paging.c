@@ -83,6 +83,10 @@ static void free_set(nodus_value_t **set, size_t n) {
 static int source(nodus_dht_keyset_t *ks, nodus_value_t **rows, size_t n,
                   const nodus_t2_cursor_t *after, bool more, size_t responder_budget,
                   nodus_dht_merge_stats_t *st) {
+    /* The page note needs THIS source's stats (last PK, est_bytes): keep
+     * them even when the caller does not ask for them. */
+    nodus_dht_merge_stats_t local_st;
+    if (!st) st = &local_st;
     if (nodus_dht_keyset_add(ks, rows, n, &key_x, NULL, after, false, st) != 0) return -1;
     nodus_dht_keyset_note_page(ks, more, false, responder_budget, st);
     return 0;

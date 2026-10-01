@@ -42,6 +42,7 @@
 #include "core/nodus_storage.h"
 #include "core/nodus_value.h"
 #include "protocol/nodus_tier2.h"
+#include "protocol/nodus_wire.h"
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_identity.h"
 #include "test_storage_helper.h"
@@ -382,9 +383,12 @@ static void test_storage_fault(void) {
     }
     CHECK(conn->wlen > 7, "responder sent nothing");
     {
-        uint32_t flen = (uint32_t)conn->wbuf[3] << 24 | (uint32_t)conn->wbuf[4] << 16 |
-                        (uint32_t)conn->wbuf[5] << 8 | (uint32_t)conn->wbuf[6];
-        CHECK(7 + (size_t)flen <= conn->wlen, "frame length");
+        /* The wire header's length is LITTLE-endian (nodus_wire.c
+         * nodus_frame_encode); parse with the transport's own decoder. */
+        nodus_frame_t fr;
+        CHECK(nodus_frame_decode(conn->wbuf, conn->wlen, &fr) > 0, "frame length");
+        uint32_t flen = fr.payload_len;
+        CHECK(fr.payload == conn->wbuf + NODUS_FRAME_HEADER_SIZE, "payload offset");
         CHECK(nodus_t2_decode(conn->wbuf + 7, flen, &m) == 0, "decode responder reply");
         CHECK(m.batch_key_count == 1 && m.batch_unavail && m.batch_unavail[0],
               "fault answered as an empty entry, not \"u\"");
