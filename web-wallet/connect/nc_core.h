@@ -635,8 +635,12 @@ void nc_inbox_clear(nc_inbox_t *in);
  *     "media_ref", "image_attachment".
  * Everything but the default is NOT chat. The text is read up to its first
  * NUL, as the app's NUL-terminated copy is (:727-732).
+ * Returns 1 chat, 0 not chat, -1 could not classify (empty input or no
+ * memory): the caller counts -1 as dropped, never as "other" — "other"
+ * does not hold the ACK back, so an unclassified chat message would be
+ * acknowledged without being shown (Connect RT2 L2 F3).
  */
-bool nc_plaintext_is_chat(const uint8_t *pt, size_t len);
+int nc_plaintext_is_chat(const uint8_t *pt, size_t len);
 
 /**
  * ONE day bucket of `peer`'s outbox to this identity (dht_dm_outbox_sync_day

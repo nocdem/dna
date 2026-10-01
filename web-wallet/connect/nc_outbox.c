@@ -162,10 +162,10 @@ static bool is_reaction(const char *s) {
     return strcmp(op, "add") == 0 || strcmp(op, "remove") == 0;
 }
 
-bool nc_plaintext_is_chat(const uint8_t *pt, size_t len) {
-    if (!pt || len == 0) return false;
+int nc_plaintext_is_chat(const uint8_t *pt, size_t len) {
+    if (!pt || len == 0) return -1;
     char *s = malloc(len + 1);                 /* the app's NUL, :727-732 */
-    if (!s) return false;                      /* unknown -> not shown     */
+    if (!s) return -1;                         /* unknown: counted dropped */
     memcpy(s, pt, len);
     s[len] = '\0';
     bool chat = !is_reaction(s);
@@ -192,7 +192,7 @@ bool nc_plaintext_is_chat(const uint8_t *pt, size_t len) {
     }
     qgp_secure_memzero(s, len);
     free(s);
-    return chat;
+    return chat ? 1 : 0;
 }
 
 void nc_inbox_clear(nc_inbox_t *in) {
@@ -267,11 +267,12 @@ int nc_outbox_fetch_day(const nc_ctx_t *ctx, const nc_peer_t *peer,
              dna_verify_seal_authorship(pt, pt_len, sig, sig_len,
                                         peer->dsa_pk, sizeof(peer->dsa_pk),
                                         claimed, NULL) == DNA_OK;
-        if (ok && !nc_plaintext_is_chat(pt, pt_len)) {
+        int kind = ok ? nc_plaintext_is_chat(pt, pt_len) : -1;
+        if (kind == 0) {
             /* authentic, but a control payload / card: not text for the UI */
             out->other++;
             qgp_secure_memzero(pt, pt_len);
-        } else if (ok) {
+        } else if (kind == 1) {
             nc_inmsg_t *m = &out->items[out->count++];
             m->seq = msgs[i].seq_num;
             m->sender_timestamp = ts;

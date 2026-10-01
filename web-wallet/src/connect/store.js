@@ -267,6 +267,10 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
   } catch (error) { db.close(); throw error; }
 
   let queue = Promise.resolve(), closed = false;
+  // Another tab deleting this history (the wallet page's vault delete) closes
+  // the store for good: a save already sealing must not write the counter
+  // copy back after the delete (Connect RT2 L3 F1).
+  db.onversionchange = () => { closed = true; db.close(); };
   // Writes are serialised so the counter only ever grows. A transaction that
   // fails after encryption leaves the in-memory counter advanced (the
   // encryptions happened; counting them keeps the 2^32 budget conservative);
@@ -289,11 +293,13 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
           puts.push({ store: entry.store, record: encodeRecord(entry.id, sealed) });
         }
       } finally { for (const bytes of plains) bytes.fill(0); }
+      // Closed while sealing (lock, or the history deleted by another tab):
+      // nothing is written, not even the counter copy.
+      if (closed) throw new StorageError('Message history is closed.');
       // The copy first: if the tab dies between here and the commit, the
       // encryptions already made are still counted.
       writeStoredCounter(storage, name, counter);
       puts.push({ store: STORE_META, record: encodeCounter(counter) });
-      if (closed) throw new StorageError('Message history is closed.');
       await writeAll(db, puts);
     };
     const result = queue.then(run, run);

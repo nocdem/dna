@@ -147,9 +147,27 @@ test('the wider invisible set is removed and flagged: tag characters, variation 
   for (const hidden of ['\u{E0020}', '\u{E0041}', '\u{E007F}', '︀', '️', '⁪', '⁯', '͏', ' ', ' ']) {
     assert.deepEqual(inspectUntrusted(`no${hidden}de`), { text: 'node', unusual: true, check: false }, `U+${hidden.codePointAt(0).toString(16)}`);
   }
-  // just outside the ranges: kept, not flagged
-  assert.equal(inspectUntrusted('a\u{E0080}b').unusual, false);
+  // RT2 L2 F4: the whole Default_Ignorable_Code_Point set, not a hand list
+  for (const cp of [0xE0080, 0xE0100, 0xE01EF, 0xE0001, 0x180B, 0x180F, 0xFFF0, 0x1D173, 0x2065, 0x1BCA0]) {
+    assert.deepEqual(inspectUntrusted(`no${String.fromCodePoint(cp)}de`), { text: 'node', unusual: true, check: false }, `U+${cp.toString(16)}`);
+  }
+  // a visible character next to the ranges: kept, not flagged
   assert.equal(inspectUntrusted('a︐b').unusual, false);
+});
+
+test('names: one letter of another script inside a Latin name is unusual; mixed-language message text is not', () => {
+  const name = value => inspectUntrusted(value, { name: true });
+  assert.equal(name('aliօe').unusual, true);        // Armenian oh
+  assert.equal(name('payᎢal').unusual, true);       // Cherokee
+  assert.equal(name('Ali 王').unusual, true);        // Han inside a Latin name
+  assert.equal(name('Çağrı').unusual, false);
+  assert.equal(inspectUntrusted('hello 世界').unusual, false); // message text
+});
+
+test('sender clock: a safe integer past the Date range is "unknown", never a thrown render', () => {
+  assert.equal(senderClockLabel('8640000000001'), "sender's clock: unknown");
+  assert.equal(senderClockLabel('9007199254740'), "sender's clock: unknown");
+  assert.match(senderClockLabel('1790000000'), /^sender's clock: 2026-/);
 });
 
 test('names: a whole-script non-Latin name and fullwidth Latin are marked "check carefully"; message text is not', () => {

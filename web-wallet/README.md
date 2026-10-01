@@ -1242,6 +1242,28 @@ as UTF-8 JSON of at most 65536 bytes (`nc_wasm.c` `NC_HIST_PT_MAX`).
   variation selectors, U+206A-206F, U+034F, U+2028/2029); a claimed name with
   no Latin letter, or with fullwidth Latin, is marked "check carefully".
 
+### NC-RT3 — red-team round 2 fixes (LOW)
+
+- Invisible characters are now Unicode's whole `Default_Ignorable_Code_Point`
+  set plus U+2028/2029 (the hand list missed U+E0100-E01EF, U+180B-180F,
+  U+FFF0-FFF8, U+1D173-1D17A, …). Direction controls and every range are
+  written as escapes in `text.js`, no literal invisible character remains.
+- A NAME that holds Latin letters and any letter of another script (Armenian,
+  Cherokee, Han, …) is marked unusual; message text keeps the Latin /
+  Cyrillic / Greek rule so mixed-language chat is not marked.
+- "sender's clock": a peer-signed value past the Date range (8.64e15 ms)
+  shows "unknown" instead of throwing and breaking the conversation view.
+- `nc_plaintext_is_chat` returns 1 / 0 / -1; -1 (no memory) counts as
+  dropped, never as `other`, so an unclassified message can no longer be
+  covered by the next ACK without being shown.
+- The history store closes for good on `versionchange` (another tab deleting
+  the saved wallet), and a save that finishes sealing after that writes
+  nothing — not even the localStorage counter copy.
+- OPEN (operator decision): the delivery watermark (`markDelivered`,
+  `ts <= ack`, seconds) can mark a published-but-not-fetched message
+  delivered and drop it from the next blob (same second, a clock step back,
+  an app receiver whose ACK is its own clock).
+
 ## Nodus Connect in the wallet's one module — NC-4b (unreleased, no UI)
 
 Design rev 5 §1.1: one WebAssembly module, one tier-2 session per unlocked

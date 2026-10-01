@@ -24,17 +24,27 @@ export function shortId(fp) {
 // (the element is also a <bdi>, see dom.js) and reported; so are invisible
 // characters and a mix of look-alike scripts (Latin with Cyrillic or Greek),
 // which the UI marks as "unusual characters".
-// Invisible: soft hyphen, combining grapheme joiner U+034F, the Hangul /
-// Mongolian fillers, zero-width space/joiners U+200B-200D, line/paragraph
-// separators U+2028-2029, word joiner and invisible operators U+2060-2064,
-// deprecated format controls U+206A-206F, variation selectors U+FE00-FE0F,
-// BOM, halfwidth Hangul filler, and the tag characters U+E0020-E007F.
-// (Removing U+FE0F also drops the emoji-presentation selector of e.g. ❤️:
-// such a message is shown with the marker — confusable marking only.)
+// Direction controls: U+061C, U+200E-200F, U+202A-202E, U+2066-2069.
+// Invisible: Unicode's own Default_Ignorable_Code_Point set — every
+// character a renderer may draw as nothing (soft hyphen, U+034F, the Hangul
+// / Mongolian fillers and selectors, zero-width space/joiners, word joiner
+// and invisible operators, deprecated format controls, variation selectors
+// U+FE00-FE0F and the supplement U+E0100-E01EF, BOM, U+FFF0-FFF8,
+// U+1D173-1D17A, the whole U+E0000-E0FFF tag block, … — Connect RT2 L2 F4)
+// — plus the line/paragraph separators U+2028-2029, which are not in it.
+// (Removing U+FE0F also drops the emoji-presentation selector of e.g. a red
+// heart: such a message is shown with the marker — confusable marking only.)
+// Both are written with escapes: a literal U+2028/2029 inside a regex
+// literal is turned into a raw line terminator by the bundler, and literal
+// invisible characters cannot be reviewed.
 const DIRECTION_CONTROLS = /[؜‎‏‪-‮⁦-⁩]/gu;
-// Built from a string: a regex literal holding U+2028/2029 is turned into
-// raw line terminators by the bundler, which ends the literal.
-const INVISIBLE = new RegExp(String.raw`[­͏ᅟᅠ᠎​-‍  ⁠-⁤⁪-⁯ㅤ︀-️﻿ﾠ\u{E0020}-\u{E007F}]`, 'gu');
+const INVISIBLE = new RegExp(String.raw`[\p{Default_Ignorable_Code_Point}  ]`, 'gu');
+// A letter of a script other than Latin (Common / Inherited letters belong
+// to no other script). Used for NAMES only: a Latin name holding one Armenian
+// "օ" or a Cherokee / Lisu look-alike is marked (RT2 L2 F4); message text
+// keeps the Latin / Cyrillic / Greek rule so mixed-language chat is not
+// marked.
+const NON_LATIN_LETTER = /(?![\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}])\p{L}/u;
 // A name to check carefully (confusable marking only, nothing is refused):
 // letters but none of them Latin (a whole-script Cyrillic / Greek / other
 // name can copy the look of a Latin one), or any fullwidth Latin letter
@@ -48,6 +58,7 @@ export function inspectUntrusted(value, { name = false } = {}) {
     .replace(INVISIBLE, () => { unusual = true; return ''; });
   const scripts = ['Latin', 'Cyrillic', 'Greek'].filter(script => new RegExp(`\\p{Script=${script}}`, 'u').test(text));
   if (scripts.length > 1) unusual = true;
+  if (name && /\p{Script=Latin}/u.test(text) && NON_LATIN_LETTER.test(text)) unusual = true;
   const check = name && (FULLWIDTH_LATIN.test(text) || (/\p{L}/u.test(text) && !/\p{Script=Latin}/u.test(text)));
   return { text, unusual, check };
 }
@@ -99,7 +110,10 @@ export function contactListStatusText(status) {
 export function senderClockLabel(senderTs) {
   if (typeof senderTs !== 'string' || !U64.test(senderTs)) return "sender's clock: unknown";
   const ms = Number(senderTs) * 1000;
-  if (!Number.isSafeInteger(ms)) return "sender's clock: unknown";
+  // A Date holds at most 8.64e15 ms (ECMAScript time value range); a larger
+  // safe integer would make toISOString throw and break the conversation's
+  // render (Connect RT2 L2 F5) — any peer can sign such a value.
+  if (!Number.isSafeInteger(ms) || ms > 8.64e15) return "sender's clock: unknown";
   return `sender's clock: ${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 }
 
