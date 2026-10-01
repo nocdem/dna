@@ -13,11 +13,14 @@ export function el(tag, { className, text } = {}, ...children) {
   return node;
 }
 
-export function untrusted(value, className) {
-  const { text, unusual } = inspectUntrusted(value);
+// `name`: the value is a claimed name — also marked "check carefully" when it
+// has no Latin letter or has fullwidth Latin (text.js inspectUntrusted).
+export function untrusted(value, className, { name = false } = {}) {
+  const { text, unusual, check } = inspectUntrusted(value, { name });
   const wrap = el('span', { className });
   wrap.append(el('bdi', { text }));
   if (unusual) wrap.append(el('span', { className: 'nc-unusual', text: ' (contains unusual characters)' }));
+  else if (check) wrap.append(el('span', { className: 'nc-unusual', text: ' (check carefully: may look like another name)' }));
   return wrap;
 }
 

@@ -701,6 +701,8 @@ int nc_outbox_get(const char *fp, const char *salt_hex, const char *day_dec) {
     add_read(o, in.read.outcome, in.read.why);
     json_object_object_add(o, "day", jstr_u64(day));
     json_object_object_add(o, "dropped", jstr_u64(in.dropped));
+    /* authentic non-chat payloads: counted, never returned as text */
+    json_object_object_add(o, "other", jstr_u64(in.other));
     json_object *a = json_object_new_array();
     for (size_t i = 0; i < in.count; i++) {
         json_object *e = json_object_new_object();
@@ -716,12 +718,18 @@ int nc_outbox_get(const char *fp, const char *salt_hex, const char *day_dec) {
     return nc_end(set_result(o));
 }
 
-int nc_ack_send(const char *fp, const char *salt_hex) {
+/* ack_ts_dec: the newest sender timestamp (decimal unix seconds, > 0) of
+ * this contact's messages the page has durably stored — never a clock
+ * (nc_core.h nc_ack_publish, design §5 G11). */
+int nc_ack_send(const char *fp, const char *salt_hex, const char *ack_ts_dec) {
     if (nc_begin() != 0) return -1;
     if (session_ok() != 0) return nc_end(-1);
     uint8_t salt[NC_SALT_LEN];
+    uint64_t ack_ts;
+    if (parse_u64(ack_ts_dec, &ack_ts) != 0 || ack_ts == 0)
+        return nc_end(fail("Invalid delivery confirmation."));
     if (parse_salt(salt_hex, salt) != 0) return nc_end(fail("Invalid salt."));
-    int rc = nc_ack_publish(&g_ctx, fp, salt);
+    int rc = nc_ack_publish(&g_ctx, fp, salt, ack_ts);
     nc_wipe(salt, sizeof(salt));
     if (rc != 0) return nc_end(fail("Delivery confirmation was not sent (%d).", rc));
     return nc_end(set_result(json_object_new_object()));
@@ -852,11 +860,20 @@ void nc_session_wipe(void) {
     g_unlocked = 0;
 }
 
+/* Always set: the context's cancel flag once Messages is closed. */
+static volatile const int g_stopped = 1;
+
 /* Closes Messages only; the wallet's session stays (its lock is nsw_lock).
  * Terminal for this module instance. With an nc export suspended in the
  * bracket, the wipe runs when it returns (nc_end), so the resumed export
- * never touches wiped keys. */
+ * never touches wiped keys — and the context's cancel now reads the set
+ * flag above instead of the wallet's (which nc_lock does not set), so a
+ * suspended gated export (read, then PUT) refuses its PUT, and any further
+ * read, with NC_ERR_CANCELLED (nc_read.c checks ctx->cancel before every
+ * network call). Before nc_lock the pointer is the wallet's cancel flag
+ * (nc_unlock), so the wallet's cancel/lock stops Messages too. */
 void nc_lock(void) {
     g_closed = 1;
+    g_ctx.cancel = &g_stopped;
     if (!g_inside) nc_session_wipe();
 }

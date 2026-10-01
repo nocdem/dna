@@ -19,11 +19,12 @@
 #include "dna_api.h"
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"      /* qgp_secure_memzero */
 #include "crypto/nodus_identity.h"
 
+#include <json-c/json.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define LOG_TAG "NC_OUTBOX"
 
@@ -127,6 +128,73 @@ int nc_outbox_publish(const nc_ctx_t *ctx, const nc_peer_t *peer,
     return rc;
 }
 
+/* messenger/src/reaction/reaction_json.c dna_reaction_parse_target /
+ * dna_reaction_parse_op, mirrored (that file is not in this build): the
+ * value after `"<name>":"` up to the next '"'. */
+static int reaction_field(const char *s, const char *prefix, size_t min_out,
+                          char *out, size_t out_len) {
+    if (out_len < min_out) return -1;
+    const char *p = strstr(s, prefix);
+    if (!p) return -1;
+    p += strlen(prefix);
+    const char *end = strchr(p, '"');
+    if (!end) return -1;
+    size_t len = (size_t)(end - p);
+    if (len >= out_len) return -1;
+    memcpy(out, p, len);
+    out[len] = '\0';
+    return 0;
+}
+
+/* messenger_transport.c:741-748 */
+static bool is_reaction(const char *s) {
+    char target[65], op[8];
+    if (reaction_field(s, "\"target\":\"", 65, target, sizeof(target)) != 0 ||
+        strlen(target) != 64)                  /* reaction_json.c :15 */
+        return false;
+    for (int i = 0; i < 64; i++) {
+        char c = target[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F')))
+            return false;
+    }
+    if (reaction_field(s, "\"op\":\"", 8, op, sizeof(op)) != 0) return false;
+    return strcmp(op, "add") == 0 || strcmp(op, "remove") == 0;
+}
+
+bool nc_plaintext_is_chat(const uint8_t *pt, size_t len) {
+    if (!pt || len == 0) return false;
+    char *s = malloc(len + 1);                 /* the app's NUL, :727-732 */
+    if (!s) return false;                      /* unknown -> not shown     */
+    memcpy(s, pt, len);
+    s[len] = '\0';
+    bool chat = !is_reaction(s);
+    if (chat) {
+        json_object *j = json_tokener_parse(s);           /* :751 */
+        json_object *jt = NULL;
+        if (j && json_object_object_get_ex(j, "type", &jt)) {
+            /* the receiver's classes (:753-808), read as it reads them */
+            const char *t = json_object_get_string(jt);
+            if (t && (strcmp(t, "call_signal") == 0 ||
+                      strcmp(t, "group_invite") == 0 ||
+                      strcmp(t, "groupinvite") == 0 ||
+                      strcmp(t, "delete") == 0))
+                chat = false;
+            /* the chat screen's cards (chat_screen.dart:2012-2046): an
+             * object whose "type" is exactly that string */
+            if (json_object_is_type(jt, json_type_string) &&
+                (strcmp(t, "token_transfer") == 0 ||
+                 strcmp(t, "media_ref") == 0 ||
+                 strcmp(t, "image_attachment") == 0))
+                chat = false;
+        }
+        if (j) json_object_put(j);
+    }
+    qgp_secure_memzero(s, len);
+    free(s);
+    return chat;
+}
+
 void nc_inbox_clear(nc_inbox_t *in) {
     if (!in) return;
     nc_read_clear(&in->read);
@@ -199,7 +267,11 @@ int nc_outbox_fetch_day(const nc_ctx_t *ctx, const nc_peer_t *peer,
              dna_verify_seal_authorship(pt, pt_len, sig, sig_len,
                                         peer->dsa_pk, sizeof(peer->dsa_pk),
                                         claimed, NULL) == DNA_OK;
-        if (ok) {
+        if (ok && !nc_plaintext_is_chat(pt, pt_len)) {
+            /* authentic, but a control payload / card: not text for the UI */
+            out->other++;
+            qgp_secure_memzero(pt, pt_len);
+        } else if (ok) {
             nc_inmsg_t *m = &out->items[out->count++];
             m->seq = msgs[i].seq_num;
             m->sender_timestamp = ts;
@@ -229,17 +301,21 @@ static int ack_key(const char *recipient, const char *sender,
 }
 
 int nc_ack_publish(const nc_ctx_t *ctx, const char *peer_fp,
-                   const uint8_t salt[NC_SALT_LEN]) {
-    if (!ctx || !ctx->keys || !peer_fp || !salt) return NC_ERR_ARG;
+                   const uint8_t salt[NC_SALT_LEN], uint64_t ack_ts) {
+    if (!ctx || !ctx->keys || !peer_fp || !salt || ack_ts == 0)
+        return NC_ERR_ARG;
     nodus_key_t chk, key;
     if (nc_fp_parse(peer_fp, &chk) != 0) return NC_ERR_ARG;
     /* I am the recipient (ACK owner), the peer the sender (:136-138). */
     if (ack_key(ctx->keys->fp, peer_fp, salt, &key) != 0) return NC_ERR_ARG;
-    /* The value: unix time, 8 bytes big-endian — dht_ack_value_encode, the
-     * function dht_publish_ack calls (NC-1b). */
-    uint64_t t = (uint64_t)time(NULL);
+    /* The value: 8 bytes big-endian unix seconds — dht_ack_value_encode,
+     * the function dht_publish_ack calls (NC-1b). The app puts its clock
+     * there (dht_offline_queue.c:148); the web puts the newest sender
+     * timestamp it has stored (nc_core.h), which the app's sender reads the
+     * same way (a newer value marks its pending messages received,
+     * dna_engine_listeners.c:866-895). */
     uint8_t value[8];
-    dht_ack_value_encode(t, value);
+    dht_ack_value_encode(ack_ts, value);
     return nc_put(ctx, &key, value, sizeof(value), NODUS_VALUE_EPHEMERAL,
                   DHT_ACK_TTL, 1 /* value_id 1, :160-163 */);
 }

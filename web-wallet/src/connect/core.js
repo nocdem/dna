@@ -74,10 +74,18 @@
 //     one 1:1 message send: the WHOLE pending set for that contact for today
 //     (the blob replaces the previous one); needs profileGet(fp) first.
 //   core.outboxFetchDay(fp, saltHex, day?) -> { outcome, why, day, dropped,
-//     messages: [{ seq, senderTs, text }] }   senderTs = sender's clock
-//   core.ackPublish(fp, saltHex)  ONLY after the store transaction's
-//     oncomplete (G11) — the sender drops ACKed messages from its blob.
-//   core.ackGet(fp, saltHex) -> { outcome, why, ack_ts }
+//     other, messages: [{ seq, senderTs, text }] }   senderTs = sender's
+//     clock; messages are chat text only — the app's control payloads and
+//     card payloads are counted in `other` and never returned
+//     (nc_core.h nc_plaintext_is_chat)
+//   core.ackPublish(fp, saltHex, ackTs)  ONLY after the store transaction's
+//     oncomplete (G11) and only when that contact's fetch dropped nothing.
+//     ackTs (decimal, > 0): the NEWEST sender timestamp stored from that
+//     contact — never a clock — so the ACK covers only what was received.
+//     The sender drops ACKed messages from its blob.
+//   core.ackGet(fp, saltHex) -> { outcome, why, ack_ts }   a watermark: a
+//     message counts as delivered only if it was in a blob published before
+//     this read and its timestamp is <= ack_ts (ui/text.js markDelivered)
 //   core.historyKey(vaultIdHex)  K = the history key of this vault
 //     (decision 2026-09-30-connect-history-at-rest.md rev 2: from the
 //     session's ML-DSA-87 secret key and the vault's 16-byte id, 32 hex).
@@ -284,9 +292,13 @@ export function createNodusConnectCore({ nodus } = {}) {
       b.check(await b.call('nc_outbox_get', ['string', 'string', 'string'], [fp(who), salt(saltHex), String(day)]));
       const r = b.result();
       const messages = (r.messages || []).map(m => ({ seq: m.seq, senderTs: m.sender_ts, text: hexToText(m.text_hex) }));
-      return { outcome: r.outcome, why: r.why, day: r.day, dropped: r.dropped, messages };
+      return { outcome: r.outcome, why: r.why, day: r.day, dropped: r.dropped, other: r.other, messages };
     }),
-    ackPublish: op(async (b, who, saltHex) => { b.check(await b.call('nc_ack_send', ['string', 'string'], [fp(who), salt(saltHex)])); return {}; }),
+    ackPublish: op(async (b, who, saltHex, ackTs) => {
+      if (!U64.test(String(ackTs)) || String(ackTs) === '0') throw new Error('Invalid delivery confirmation.');
+      b.check(await b.call('nc_ack_send', ['string', 'string', 'string'], [fp(who), salt(saltHex), String(ackTs)]));
+      return {};
+    }),
     ackGet: op(async (b, who, saltHex) => { b.check(await b.call('nc_ack_get', ['string', 'string'], [fp(who), salt(saltHex)])); return b.result(); }),
     historyKey: op(async (b, vaultIdHex) => {
       if (typeof vaultIdHex !== 'string' || !HEX32.test(vaultIdHex)) throw new Error('Invalid vault id.');
