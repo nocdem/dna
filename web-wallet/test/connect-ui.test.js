@@ -19,7 +19,8 @@ import {
 import {
   parseContactId, shortId, inspectUntrusted, httpsLink, profilePatch, profileStatusText, senderClockLabel,
   recentDays, isDelivered, pendingOutbox, OUTBOX_MAX, compareLocal, receivedKey,
-  publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus
+  publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus,
+  hasUndelivered, DELIVERED_GRACE_SECONDS
 } from '../src/connect/ui/text.js';
 
 // A localStorage stand-in (getItem / setItem / removeItem).
@@ -215,7 +216,8 @@ test('routine fetch reads yesterday, today and tomorrow', () => {
   assert.throws(() => recentDays('-1'));
 });
 
-test('pending set: own undelivered messages to that contact within 7 days, in local order, capped at 1000', () => {
+test('pending set: own undelivered messages to that contact within 7 days, in local order, capped at 50 (the app per-bucket cap)', () => {
+  assert.equal(OUTBOX_MAX, 50);
   const now = '1000000';
   const msgs = [
     { seq: '3', fp: FP, dir: 'out', text: 'c', ts: '999990' },
@@ -253,12 +255,36 @@ test('delivered only if the message was in a successfully published blob BEFORE 
   assert.deepEqual([...before].sort(), ['1', '3', '6']);
   // a publish that completes after the snapshot does not count for this read
   msgs[1].published = true;
-  const marked = markDelivered(msgs, FP, '150', before);
+  const marked = markDelivered(msgs, FP, '150', before, '5000');
   assert.deepEqual(marked.map(m => m.seq), ['1']);
   assert.equal(marked[0].delivered, true);
+  assert.equal(marked[0].deliveredAt, '5000');
   assert.equal(msgs[0].delivered, undefined, 'returns copies; the caller applies them after saving');
   // an ACK of 0, a malformed one or none marks nothing
-  for (const bad of ['0', '', 'x', undefined, '-1', 150]) assert.deepEqual(markDelivered(msgs, FP, bad, before), []);
+  for (const bad of ['0', '', 'x', undefined, '-1', 150]) assert.deepEqual(markDelivered(msgs, FP, bad, before, '5000'), []);
+  assert.throws(() => markDelivered(msgs, FP, '150', before, undefined));
+});
+
+test('RT2 L2 F1: a message in the ACK\'s own second is not delivered; a delivered message stays in the blob for one hour', () => {
+  const msgs = [
+    { seq: '1', fp: FP, dir: 'out', text: 'a', ts: '150', published: true },
+    { seq: '2', fp: FP, dir: 'out', text: 'b', ts: '149', published: true }
+  ];
+  const marked = markDelivered(msgs, FP, '150', publishedSeqs(msgs, FP), '1000');
+  assert.deepEqual(marked.map(m => m.seq), ['2'], 'ts == ack is not covered (seconds watermark)');
+  assert.equal(DELIVERED_GRACE_SECONDS, 3600n);
+  const now = 1000 + 100;
+  const withDelivered = [msgs[0], marked[0]];
+  // inside the grace: still published in the blob
+  assert.deepEqual(pendingOutbox(withDelivered, FP, String(now)).map(m => m.seq).sort(), ['1', '2']);
+  // one second before the end of the grace: still in; at the end: out
+  assert.deepEqual(pendingOutbox(withDelivered, FP, String(1000 + 3599)).map(m => m.seq).sort(), ['1', '2']);
+  assert.deepEqual(pendingOutbox(withDelivered, FP, String(1000 + 3600)).map(m => m.seq), ['1']);
+  // a delivered record with no deliveredAt (older versions) is not in the blob
+  assert.deepEqual(pendingOutbox([{ ...marked[0], deliveredAt: undefined }], FP, String(now)), []);
+  // grace copies alone do not make a contact "unpublished" on open
+  assert.equal(hasUndelivered([marked[0]], FP, String(now)), false);
+  assert.equal(hasUndelivered(withDelivered, FP, String(now)), true);
 });
 
 test('published flags: only messages of that contact in the published set that were not flagged yet', () => {

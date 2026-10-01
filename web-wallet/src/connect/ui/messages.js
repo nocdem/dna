@@ -38,7 +38,7 @@ import { createNodusConnectCore, acceptanceMayAutoApprove } from '../core.js';
 import { openHistoryStore, memoryHistoryStore, StorageError } from '../store.js';
 import {
   parseContactId, shortId, profilePatch, profileStatusText, contactListStatusText, senderClockLabel,
-  recentDays, pendingOutbox, compareLocal, receivedKey,
+  recentDays, pendingOutbox, hasUndelivered, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus
 } from './text.js';
 import { el, untrusted, button, website } from './dom.js';
@@ -219,7 +219,7 @@ async function finishOpen(gen) {
     messages = [...store.messages];
     for (const m of messages) if (m.dir === 'in') received.add(receivedKey(m.fp, { seq: m.remoteSeq, senderTs: m.senderTs, text: m.text }));
     const now = nowSeconds();
-    for (const contact of state.contacts) if (pendingOutbox(messages, contact.fp, now).length) unpublished.add(contact.fp);
+    for (const contact of state.contacts) if (hasUndelivered(messages, contact.fp, now)) unpublished.add(contact.fp);
   }
   await mergeContactList(gen);
   if (gen !== generation) return;
@@ -371,7 +371,7 @@ async function syncContact(contact, gen) {
   if (gen !== generation) return;
   const ackValue = ack.outcome === 'found' && ack.ack_ts !== undefined && ack.ack_ts !== null ? String(ack.ack_ts) : null;
   if (ackValue !== null && /^(0|[1-9]\d{0,19})$/.test(ackValue)) {
-    const delivered = markDelivered(messages, fp, ackValue, publishedBefore);
+    const delivered = markDelivered(messages, fp, ackValue, publishedBefore, nowSeconds());
     if (delivered.length || state.acks[fp] !== ackValue) {
       state.acks[fp] = ackValue;           // the last ACK value read
       await saveUpdated(delivered);

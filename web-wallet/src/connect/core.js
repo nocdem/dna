@@ -82,10 +82,11 @@
 //     oncomplete (G11) and only when that contact's fetch dropped nothing.
 //     ackTs (decimal, > 0): the NEWEST sender timestamp stored from that
 //     contact — never a clock — so the ACK covers only what was received.
-//     The sender drops ACKed messages from its blob.
+//     The sender drops ACKed messages from its blob one hour after
+//     marking them delivered (ui/text.js DELIVERED_GRACE_SECONDS).
 //   core.ackGet(fp, saltHex) -> { outcome, why, ack_ts }   a watermark: a
 //     message counts as delivered only if it was in a blob published before
-//     this read and its timestamp is <= ack_ts (ui/text.js markDelivered)
+//     this read and its timestamp is < ack_ts (ui/text.js markDelivered)
 //   core.historyKey(vaultIdHex)  K = the history key of this vault
 //     (decision 2026-09-30-connect-history-at-rest.md rev 2: from the
 //     session's ML-DSA-87 secret key and the vault's 16-byte id, 32 hex).
