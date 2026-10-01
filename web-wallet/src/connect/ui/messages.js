@@ -1,39 +1,40 @@
-// Nodus Connect — the Messages preview page (/preview/, package NC-4c of
-// docs/plans/2026-09-24-web-connect-design.md rev 5).
+// Nodus Connect — Messages (contacts, requests, 1:1 text, own profile).
 //
 // Governing records: docs/plans/decisions/2026-09-30-nodus-connect-thin-core.md
 // (first stage, Ek 2: contact list, send/accept contact requests, 1:1 text
 // messages, own profile edit — no groups, media or calls; Q1: only words
-// generated in this session are "fresh"; S8: history store = vault id) and
-// 2026-09-30-connect-history-at-rest.md rev 2 (src/connect/store.js).
+// generated in this session are "fresh"; S8: history store = vault id),
+// 2026-09-30-connect-history-at-rest.md rev 2 (src/connect/store.js) and
+// 2026-10-01-connect-own-origin.md (Messages lives in the Nodus Connect site,
+// together with the wallet, on ONE unlock).
 //
-// One page = one module = one session (NC-4b): the page creates the wallet's
-// own NODUS client (src/nodus/client.js createNodusClient with
-// src/nodus/send-module.js nodusSendModuleFactory — the module that also
-// carries the Messages exports), unlocks it with the signing seed and the
-// locally derived address exactly as src/app.js startNodusSend does, and
-// builds the Messages core on it (src/connect/core.js createNodusConnectCore
-// ({ nodus })). The client keeps the session alive itself (its tick).
+// HOST-DRIVEN. This module never asks for words, never creates or unlocks a
+// NODUS client, never takes the single-tab Web Lock and has no idle timer:
+// its host does all of that and hands over an unlocked client.
+//   - Nodus Connect page (src/connect-main.js): the wallet itself is the host
+//     (src/app.js raises the events of src/wallet-extensions.js; this file's
+//     `walletExtension` answers them). Messages opens on the wallet's one
+//     client (one send.wasm module, one tier-2 session — NC-4b) as soon as
+//     the wallet's NODUS client is ready; the wallet's Lock, idle lock,
+//     pagehide, single-tab and cross-site rules close it.
+//   - Messages preview page (/preview/, src/connect/ui/standalone.js): its
+//     own unlock screens are the host.
 //
-// Lifecycle (§1.8): the page opens only while this tab holds the wallet's
-// single-tab Web Lock `nodus.wallet.session` (src/app.js pattern); 10 minutes
-// without input, a manual Lock, `pagehide`, a change of the saved wallet, or
-// the client leaving 'ready' locks it. Lock order: timers stop ->
-// core.lock() (Messages keys wiped, nc_lock) -> client.lock() (queue stops,
-// cancel, WebSocket closed, module memory zeroed, instance released) ->
-// history store closed -> in-page data dropped -> THEN the Web Lock is
-// released.
+// Lock order (design rev 5 §1.8): the host calls closeMessages /
+// resetMessages BEFORE it locks the client: sync stops -> core.lock()
+// (Messages keys wiped, nc_lock) -> history store closed -> in-page data
+// dropped. core.lock() is terminal for the module instance: Messages opens
+// again only after the wallet is locked and opened again.
 //
 // Network calls: each is awaited before the next one is queued (design §6.4
 // F7), so a wallet operation queued meanwhile waits at most one step.
 // An error text coming from the core is never shown: it can carry technical
 // terms; the page shows its own plain words.
-import { Mnemonic, randomBytes } from 'ethers';
-import { VAULT_KEY, decryptVault } from '../../vault.js';
-import { normalizePhrase, validateNodusPhrase } from '../../recovery.js';
-import { nodusSendModuleFactory } from '../../nodus/send-module.js';
-import { createNodusClient } from '../../nodus/client.js';
-import { deriveNodusAddress, nodusSigningSeed } from '../../nodus/derive.js';
+//
+// Rendering (design rev 5 §1.9): every text through textContent (dom.js el);
+// text written by someone else (names, notes, messages, profile fields) in a
+// <bdi> with the "unusual characters" marker (dom.js untrusted); a website
+// only as a checked https: link; no innerHTML, no inline style attribute.
 import { createNodusConnectCore, acceptanceMayAutoApprove } from '../core.js';
 import { openHistoryStore, memoryHistoryStore, StorageError } from '../store.js';
 import {
@@ -43,161 +44,120 @@ import {
 } from './text.js';
 import { el, untrusted, button, website } from './dom.js';
 
-const $ = id => document.getElementById(id);
-const IDLE_MS = 10 * 60 * 1000;          // src/app.js idle lock
 const SYNC_MS = 30000;                   // how often requests and messages are checked
 const HEX128 = /^[0-9a-f]{128}$/;
-const SCREENS = ['nc-start', 'nc-unlock-form', 'nc-words-form', 'nc-create-form', 'nc-closed', 'nc-open'];
+const TEXT_MAX = 4000;                   // one message, characters (the composer's maxlength)
+const COMPOSER_ROWS = 5;                 // the composer grows up to this many lines
+const STATUS_MARK = { 'waiting to send': '○', sent: '✓', delivered: '✓✓' };
+const WAITING_TEXT = 'Messages opens when your wallet is connected to the Nodus network.';
+const UNAVAILABLE_TEXT = 'Messages needs the Nodus network connection, which is unavailable right now. Lock and open your wallet again to retry.';
 
-// ── session state (all dropped by lock) ────────────────────────────────
-let nodus, core, store, state, messages = [], ownFp, ownProfile, fresh = false, vaultId = null;
-let generation = 0, sessionRelease, syncTimer, idleTimer, idleDeadline = 0, syncing = false;
-let requests = [], selectedFp, newPhraseText, eraseArmed = false, profileTaken = false;
+// ── session state (all dropped by close / reset) ───────────────────────
+let core, store, state, messages = [], ownFp, ownProfile, fresh = false, vaultId = null;
+let generation = 0, syncTimer, syncing = false;
+let requests = [], selectedFp, eraseArmed = false, profileTaken = false;
 const profiles = new Map();              // fp -> verified profile, this session
 const received = new Set();              // receivedKey of every stored incoming message
 const unpublished = new Set();           // contacts whose pending set must be (re)published
 const saltChecked = new Set();           // contacts whose salt was reconciled this session
 const dropped = new Map();               // fp -> messages that did not verify, this session
 const others = new Map();                // fp -> authentic items that are not text (reactions, calls, …), last check
+const lastRead = new Map();              // fp -> highest local seq shown to the user (this session only)
 
-function status(text) { $('nc-status').textContent = text; }
-function show(id) { for (const screen of SCREENS) $(screen).hidden = screen !== id; }
-function isOpen() { return !!core && !!state; }
+// ── view state ─────────────────────────────────────────────────────────
+let ui, host = {};
+let phase = 'waiting';                   // 'waiting' | 'opening' | 'open' | 'closed'
+let pane = 'empty';                      // right side: 'empty' | 'conversation' | 'add' | 'requests' | 'profile'
+let narrow = 'list';                     // ≤ 700 px: 'list' (contacts) or 'main' (the right side)
 
-// ── single-tab Web Lock (decision 2026-09-23-web-wallet-single-tab) ────
-function acquireSession() {
-  if (sessionRelease) return Promise.resolve(true);
-  if (!navigator.locks) return Promise.reject(new Error('This browser cannot keep Messages open in only one tab. Use a browser with Web Locks support.'));
-  return new Promise((resolve, reject) => {
-    let mine;
-    navigator.locks.request('nodus.wallet.session', { ifAvailable: true }, held => {
-      if (!held) { resolve(false); return undefined; }
-      return new Promise(release => { mine = sessionRelease = release; resolve(true); });
-    }).catch(error => {
-      reject(error);
-      // A hold this tab still has ends in a rejection only when another tab took it.
-      if (mine && sessionRelease === mine) { sessionRelease = undefined; lock('Your wallet was opened in another tab. Messages was locked.'); }
-    });
-  });
-}
-function releaseSession() { const release = sessionRelease; sessionRelease = undefined; release?.(); }
+function isOpen() { return !!core && !!state && phase === 'open'; }
 
-// ── lock ───────────────────────────────────────────────────────────────
-function lock(reason = 'Messages locked.') {
+// ── close / reset ──────────────────────────────────────────────────────
+// Stops everything Messages runs and drops every in-page secret. Never
+// touches the NODUS client (the host locks it afterwards).
+function wipe() {
   generation++;
-  clearInterval(syncTimer); clearTimeout(idleTimer);
-  syncTimer = idleTimer = undefined; idleDeadline = 0; syncing = false;
-  const c = core, client = nodus; core = undefined; nodus = undefined;
-  try { c?.lock(); } catch { /* the rest of the lock must still run */ }
-  try { client?.lock(); } catch { /* same */ }
+  clearInterval(syncTimer); syncTimer = undefined; syncing = false;
+  const c = core; core = undefined;
+  try { c?.lock(); } catch { /* the rest must still run */ }
   try { store?.close(); } catch { /* same */ }
   store = undefined; state = undefined; messages = []; ownFp = undefined; ownProfile = undefined;
-  fresh = false; vaultId = null; requests = []; selectedFp = undefined; newPhraseText = undefined;
+  fresh = false; vaultId = null; requests = []; selectedFp = undefined;
   eraseArmed = false; profileTaken = false;
-  for (const set of [profiles, received, unpublished, saltChecked, dropped, others]) set.clear();
-  for (const id of ['nc-password', 'nc-words', 'nc-new-words-check', 'nc-add-id', 'nc-add-note', 'nc-send-text', 'nc-bio', 'nc-location', 'nc-website']) $(id).value = '';
-  for (const id of ['nc-new-words', 'nc-requests', 'nc-outgoing', 'nc-contacts', 'nc-messages']) $(id).replaceChildren();
-  for (const id of ['nc-own-id', 'nc-add-status', 'nc-send-status', 'nc-profile-status', 'nc-profile-name', 'nc-sync', 'nc-closed-reason', 'nc-conversation-title', 'nc-conversation-note']) $(id).textContent = '';
-  $('nc-conversation').hidden = true; $('nc-lock').hidden = true;
-  $('nc-erase').textContent = 'Delete message history on this device';
-  releaseSession();
-  showStart();
-  status(reason);
+  for (const set of [profiles, received, unpublished, saltChecked, dropped, others, lastRead]) set.clear();
+  if (!ui) return;
+  for (const control of [ui.addId, ui.addNote, ui.composer, ui.bio, ui.location, ui.website]) control.value = '';
+  ui.composer.rows = 1; ui.counter.textContent = '';
+  for (const line of [ui.addStatus, ui.sendStatus, ui.profileStatus, ui.copyStatus, ui.emptyCopyStatus, ui.requestsStatus, ui.sync, ui.ownId, ui.profileName]) line.textContent = '';
+  ui.messageList.replaceChildren(); ui.requestList.replaceChildren(); ui.outgoingList.replaceChildren();
+  ui.contactList.replaceChildren(); ui.convTitle.textContent = ''; ui.convClaim.replaceChildren(); ui.convNote.textContent = '';
+  ui.erase.textContent = 'Delete message history on this device';
+  pane = 'empty'; narrow = 'list';
 }
 
-function showStart() {
-  $('nc-choose-saved').disabled = !localStorage.getItem(VAULT_KEY);
-  show('nc-start');
+// Messages is closed with a reason (an error, the connection, a deleted
+// history). `retry`: the identity is open and only reading failed.
+export function closeMessages(reason, { retry = false } = {}) {
+  if (!retry) wipe();
+  phase = 'closed';
+  showState('Messages is closed', reason, retry);
 }
 
-// ── idle lock (as src/app.js) ──────────────────────────────────────────
-function expireIdle() { if (idleDeadline && Date.now() >= idleDeadline) { lock('Messages locked after 10 minutes without activity.'); return true; } return false; }
-function activity() {
-  if (expireIdle()) return;
-  clearTimeout(idleTimer);
-  const sensitive = core || sessionRelease || !$('nc-words-form').hidden || !$('nc-create-form').hidden || !$('nc-unlock-form').hidden;
-  if (sensitive) { idleDeadline = Date.now() + IDLE_MS; idleTimer = setTimeout(() => lock('Messages locked after 10 minutes without activity.'), IDLE_MS); }
+// Back to the start (the wallet was locked, or is reconnecting).
+export function resetMessages(text = WAITING_TEXT) {
+  wipe();
+  phase = 'waiting';
+  showState('Messages', text, false);
 }
 
 // ── open ───────────────────────────────────────────────────────────────
 class Closed extends Error {}
 
-// getPhrase runs only after this tab holds the session lock. The caller has
-// hidden every form (show(null)), so nothing can start a second open while
-// this one runs; should one start anyway, the generation check below locks
-// whatever this one built.
-async function open(getPhrase, { persistent, isFresh }) {
-  // A Messages core / client left from an earlier open is superseded: lock
-  // it (core first, then client — the lock order of §1.8) before the slots
-  // below are overwritten.
-  const leftCore = core, leftClient = nodus;
-  core = undefined; nodus = undefined;
-  try { leftCore?.lock(); } catch { /* the client lock must still run */ }
-  try { leftClient?.lock(); } catch { /* nothing left to do */ }
-  const gen = ++generation;
-  status('Opening Messages…');
-  let words, seed, client, created;
-  // A lock() or a newer open() ran meanwhile (generation moved): lock what
-  // THIS open built unless it is still the page's current one (lock()
-  // already locked those; a newer open owns its own). Both locks are
-  // idempotent.
+// client: an unlocked NODUS client (state 'ready', module with the Messages
+// exports); phrase: the normalised recovery phrase; vaultId: the saved
+// wallet's id or null (memory only: nothing is kept after lock and no
+// delivery confirmation is sent); fresh: words generated in this tab (Q1).
+export async function openMessages({ client, phrase, vaultId: id = null, fresh: isFresh = false }) {
+  wipe();
+  const gen = generation;
+  phase = 'opening';
+  showState('Opening Messages', 'Opening Messages…', false);
+  let words, created;
+  // A close / reset or a newer open ran meanwhile: lock what THIS open built
+  // unless it is still the current one (idempotent).
   const superseded = () => {
     if (gen === generation) return false;
-    if (created && created !== core) { try { created.lock(); } catch { /* the client lock must still run */ } }
-    if (client && client !== nodus) { try { client.lock(); } catch { /* nothing left to do */ } }
+    if (created && created !== core) { try { created.lock(); } catch { /* nothing left to do */ } }
     return true;
   };
   try {
-    if (!nodusSendModuleFactory) throw new Closed('Messages is not available in this build.');
-    if (!await acquireSession()) { if (!superseded()) { status('Your wallet is open in another tab. Lock it there, then try again.'); showStart(); } return; }
-    if (superseded()) return;
-    const { phrase, id } = await getPhrase();
-    if (superseded()) return;
-    // The address is derived locally first; the module must derive the same
-    // one (client.unlock refuses otherwise), as in src/app.js.
-    const address = await deriveNodusAddress(phrase);
-    if (superseded()) return;
-    client = createNodusClient({
-      factory: nodusSendModuleFactory,
-      // Once Messages is open, a session that leaves 'ready' (error, or
-      // locked from inside) ends it; before that, open()'s catch reports.
-      onState: next => { if (client === nodus && ownFp && next !== 'ready') lock('The connection to the network was lost. Unlock again to continue.'); }
-    });
-    nodus = client;
-    seed = nodusSigningSeed(phrase);
-    await client.unlock({ seed, fingerprint: address });
-    if (superseded()) return;
+    if (typeof phrase !== 'string' || !phrase) throw new Closed(UNAVAILABLE_TEXT);
     created = createNodusConnectCore({ nodus: client });
     core = created;
     words = new TextEncoder().encode(phrase);
-    const unlocked = await created.unlock({ words, fresh: isFresh });
+    const unlocked = await created.unlock({ words, fresh: isFresh === true });
     if (superseded()) return;
-    ownFp = unlocked.fingerprint; fresh = unlocked.fresh === true; vaultId = persistent ? id : null;
-    $('nc-lock').hidden = false;
-    activity();
+    ownFp = unlocked.fingerprint; fresh = unlocked.fresh === true; vaultId = id || null;
     await finishOpen(gen);
-    superseded();
   } catch (error) {
     if (superseded()) return;
-    // Before the identity is open (password, words, module or connection
-    // failed): back to the start, nothing kept. After it: Messages stays
-    // closed with a retry that re-reads without asking for the words again.
-    if (!ownFp) { lock(error instanceof Closed || /password|phrase|words/i.test(error.message) ? error.message : 'Messages could not connect right now. Try again in a minute.'); return; }
-    closed(explain(error, 'Messages could not connect to the network right now. Try again in a minute.'));
-  } finally { words?.fill(0); seed?.fill(0); }
+    // Before the identity is open: Messages stays closed until the wallet is
+    // opened again (core.lock is terminal). After it: retry the reads.
+    if (!ownFp) { closeMessages(explain(error, 'Messages could not open right now. Lock and open your wallet again to retry.')); return; }
+    closeMessages(explain(error, 'Messages could not connect to the network right now. Try again in a minute.'), { retry: true });
+  } finally { words?.fill(0); }
 }
 
 // Our own plain-words errors (Closed, a storage failure) are shown as they
 // are; anything else gets the caller's plain-words fallback.
 function explain(error, fallback) { return error instanceof Closed || error instanceof StorageError ? error.message : fallback; }
 
-function closed(reason) { $('nc-closed-reason').textContent = reason; show('nc-closed'); status(''); }
-
 // Messages opens only after the own profile was read (or, for a fresh
 // account, created) and the history was loaded. Any failure keeps it closed
 // and writes nothing (design §1.7, §7 Q1 (iii)).
 async function finishOpen(gen) {
-  status('Reading your account…');
+  phase = 'opening';
+  showState('Opening Messages', 'Reading your account…', false);
   const own = await core.profileGet(ownFp);
   if (gen !== generation) return;
   if (own.outcome === 'found') ownProfile = own.profile;
@@ -209,7 +169,7 @@ async function finishOpen(gen) {
   } else throw new Closed('Your account could not be read from the network right now. Nothing was changed. Try again in a minute.');
 
   if (!store) {
-    status('Loading your messages…');
+    showState('Opening Messages', 'Loading your messages…', false);
     // A saved wallet keeps its history (S8); typed words and a new account
     // keep nothing.
     const opened = vaultId ? await openHistoryStore({ core, vaultId }) : memoryHistoryStore();
@@ -220,18 +180,20 @@ async function finishOpen(gen) {
     for (const m of messages) if (m.dir === 'in') received.add(receivedKey(m.fp, { seq: m.remoteSeq, senderTs: m.senderTs, text: m.text }));
     const now = nowSeconds();
     for (const contact of state.contacts) if (hasUndelivered(messages, contact.fp, now)) unpublished.add(contact.fp);
+    // History from earlier sessions is not "new".
+    for (const contact of state.contacts) markRead(contact.fp);
   }
   await mergeContactList(gen);
   if (gen !== generation) return;
 
-  $('nc-own-id').textContent = ownFp;
-  $('nc-memory-note').hidden = store.persistent;
-  $('nc-erase').hidden = !store.persistent;
+  ui.ownId.textContent = ownFp;
+  ui.memoryNote.hidden = store.persistent;
+  ui.erase.hidden = !store.persistent;
   fillProfile();
-  showTab('contacts');
-  show('nc-open');
-  status('');
+  phase = 'open';
+  pane = 'empty';
   render();
+  clearInterval(syncTimer);
   syncTimer = setInterval(() => { void sync(); }, SYNC_MS);
   void sync();
 }
@@ -290,7 +252,7 @@ async function publishContacts(gen) {
   if (result.status === 'published' || result.status === 'unchanged') { for (const c of missing) c.listed = true; await persist(); }
   else if (result.status === 'taken') { state.listTaken = true; await persist(); }
   const note = contactListStatusText(result.status);
-  if (note && gen === generation) $('nc-add-status').textContent = note;
+  if (note && gen === generation) ui.addStatus.textContent = note;
 }
 
 async function ensureProfile(fp) {
@@ -314,9 +276,9 @@ async function sync() {
       if (gen !== generation) return;
       await syncContact(contact, gen);
     }
-    if (gen === generation) { $('nc-sync').textContent = `Last checked ${new Date().toLocaleTimeString()}.`; render(); }
+    if (gen === generation) { ui.sync.textContent = `Last checked ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. New messages are checked every 30 seconds.`; render(); }
   } catch (error) {
-    if (gen === generation) $('nc-sync').textContent = explain(error, 'The network could not be reached. Checking again automatically.');
+    if (gen === generation) ui.sync.textContent = explain(error, 'The network could not be reached. Checking again automatically.');
   } finally { if (gen === generation) syncing = false; }
 }
 
@@ -438,68 +400,364 @@ async function publishOutbox(contact, gen) {
   await saveUpdated(markPublished(messages, contact.fp, set));
 }
 
-// ── rendering ──────────────────────────────────────────────────────────
-function claimedName(fp) {
+// ── read marks (UI only, this session; nothing is stored) ──────────────
+function newestSeq(fp) {
+  let newest = -1n;
+  for (const m of messages) if (m.fp === fp && BigInt(m.seq) > newest) newest = BigInt(m.seq);
+  return newest;
+}
+function markRead(fp) { lastRead.set(fp, newestSeq(fp)); }
+function unreadCount(fp) {
+  const seen = lastRead.get(fp) ?? -1n;
+  return messages.filter(m => m.fp === fp && m.dir === 'in' && BigInt(m.seq) > seen).length;
+}
+function lastMessage(fp) {
+  let last;
+  for (const m of messages) if (m.fp === fp && (!last || compareLocal(m, last) > 0)) last = m;
+  return last;
+}
+
+// ── view: building blocks ──────────────────────────────────────────────
+function setAttrs(node, attrs) { for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, value); return node; }
+function input(tag, attrs) { return setAttrs(document.createElement(tag), attrs); }
+function field(id, labelText, control) { return [setAttrs(el('label', { text: labelText }), { for: id }), control]; }
+function statusLine(className = 'hint') { return setAttrs(el('p', { className }), { role: 'status', 'aria-live': 'polite' }); }
+
+// A circle with two hex digits of the ID: an ID-derived mark, never a name
+// (a claimed name is unverified, G9). The colour class is a pure function of
+// the ID, so the same contact keeps its colour.
+function avatar(fp, extra = '') {
+  const node = el('span', { className: `contact-avatar avatar-${parseInt(fp[0], 16) % 6}${extra}`, text: fp.slice(0, 2).toUpperCase() });
+  node.setAttribute('aria-hidden', 'true');
+  return node;
+}
+
+function claimedNameHint(fp, prefix = 'claims the name ') {
   const name = profiles.get(fp)?.claimed_name;
-  return name ? el('span', { className: 'nc-hint', text: ' · claims the name ' }, untrusted(name, undefined, { name: true })) : null;
+  return name ? el('span', { className: 'contact-claim' }, prefix, untrusted(name, undefined, { name: true })) : null;
 }
 
-function render() {
+function backButton() {
+  const node = button('← Contacts', () => { narrow = 'list'; renderLayout(); ui.sidebar.querySelector('.contact-row[aria-current="true"], .contact-row')?.focus(); }, 'secondary small messenger-back');
+  node.setAttribute('aria-label', 'Back to contacts');
+  return node;
+}
+
+function viewHead(title, ...extra) {
+  const heading = el('h4', { text: title });
+  heading.tabIndex = -1;
+  return { heading, head: el('div', { className: 'messenger-view-head' }, backButton(), heading, ...extra) };
+}
+
+const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+function shortWhen(at) {
+  const date = new Date(at), now = new Date();
+  return sameDay(date, now) ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+function dayLabel(date) {
+  const now = new Date(), yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  if (sameDay(date, now)) return 'Today';
+  if (sameDay(date, yesterday)) return 'Yesterday';
+  return date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: date.getFullYear() === now.getFullYear() ? undefined : 'numeric' });
+}
+
+async function copyOwnId(statusNode) {
+  if (!ownFp) return;
+  try { await navigator.clipboard.writeText(ownFp); statusNode.textContent = 'Your ID was copied.'; }
+  catch { statusNode.textContent = 'Copy is unavailable. Select your ID and copy it.'; }
+}
+
+// ── view: the one-time DOM ─────────────────────────────────────────────
+// root: an empty element of the host page. host.onUnread(n): optional, the
+// total of unread messages (e.g. for a navigation badge).
+export function mountMessages(root, options = {}) {
+  host = options;
+  const u = {};
+  u.stateTitle = el('h4', { text: 'Messages' });
+  u.stateText = statusLine('hint');
+  u.retry = button('Try again', () => {
+    if (!core || !ownFp) return;
+    const gen = generation;
+    finishOpen(gen).catch(error => { if (gen === generation) closeMessages(explain(error, 'Messages could not connect to the network right now. Try again in a minute.'), { retry: true }); });
+  }, 'secondary small');
+  u.stateView = el('div', { className: 'messenger-view messenger-state' }, el('span', { className: 'messenger-state-mark' }), u.stateTitle, u.stateText, u.retry);
+  u.stateView.querySelector('.messenger-state-mark').setAttribute('aria-hidden', 'true');
+
+  // Sidebar: actions, the requests entry, the contact list.
+  u.addButton = button('＋ Add contact', () => showPane('add'), 'small');
+  u.profileButton = button('Your ID & profile', () => showPane('profile'), 'secondary small');
+  u.requestCount = el('span', { className: 'count-badge' });
+  u.requestsButton = button('', () => showPane('requests'), 'contact-row requests-row');
+  const requestsIcon = el('span', { className: 'contact-avatar requests-avatar', text: '⇄' });
+  requestsIcon.setAttribute('aria-hidden', 'true');
+  u.requestsText = el('small', { text: '' });
+  u.requestsButton.append(requestsIcon, el('span', { className: 'contact-main' }, el('strong', { text: 'Contact requests' }), u.requestsText), el('span', { className: 'contact-side' }, u.requestCount));
+  u.contactList = setAttrs(el('ul', { className: 'contact-list' }), { 'aria-label': 'Conversations' });
+  u.sidebar = setAttrs(el('div', { className: 'messenger-sidebar' }, el('div', { className: 'messenger-actions' }, u.addButton, u.profileButton), u.requestsButton, u.contactList), { role: 'navigation', 'aria-label': 'Contacts' });
+
+  // Empty pane.
+  u.emptyTitle = el('h4');
+  u.emptyText = el('p', { className: 'hint' });
+  u.emptyCopyStatus = statusLine();
+  u.emptyActions = el('div', { className: 'messenger-empty-actions' },
+    button('＋ Add contact', () => showPane('add'), 'small'),
+    button('Copy your ID', () => void copyOwnId(u.emptyCopyStatus), 'secondary small'));
+  u.emptyView = el('div', { className: 'messenger-view messenger-empty' }, el('span', { className: 'messenger-empty-mark', text: '✉' }), u.emptyTitle, u.emptyText, u.emptyActions, u.emptyCopyStatus);
+  u.emptyView.querySelector('.messenger-empty-mark').setAttribute('aria-hidden', 'true');
+
+  // Conversation pane.
+  u.convAvatar = el('span');
+  u.convTitle = el('h4');
+  u.convTitle.tabIndex = -1;
+  u.convClaim = el('span', { className: 'contact-claim' });
+  u.convHead = el('div', { className: 'messenger-view-head conversation-head' }, backButton(), u.convAvatar, el('div', { className: 'conversation-title' }, u.convTitle, u.convClaim));
+  u.convNote = el('p', { className: 'notice conversation-note' });
+  u.messageList = setAttrs(el('ol', { className: 'message-list' }), { 'aria-label': 'Messages', 'aria-live': 'polite' });
+  u.composer = input('textarea', { id: 'nc-send-text', rows: '1', maxlength: String(TEXT_MAX), placeholder: 'Write a message', 'aria-label': 'Message', autocomplete: 'off' });
+  u.sendButton = el('button', { text: 'Send' }); u.sendButton.type = 'submit';
+  u.counter = el('small', { className: 'composer-counter' });
+  u.sendStatus = statusLine('hint composer-status');
+  u.sendForm = el('form', { className: 'composer' }, el('div', { className: 'composer-row' }, u.composer, u.sendButton), el('div', { className: 'composer-foot' }, el('small', { className: 'composer-hint', text: 'Enter to send · Shift+Enter for a new line' }), u.counter), u.sendStatus);
+  u.sendForm.id = 'nc-send-form';
+  u.notReady = el('p', { className: 'hint composer-closed', text: 'Messaging with this contact is not ready yet. It is checked again automatically.' });
+  u.conversationView = el('div', { className: 'messenger-view messenger-conversation' }, u.convHead, u.convNote, u.messageList, u.sendForm, u.notReady);
+
+  // Add-contact pane.
+  const add = viewHead('Add a contact');
+  u.addHeading = add.heading;
+  u.addId = input('input', { id: 'nc-add-id', type: 'text', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', maxlength: '256', required: '' });
+  u.addNote = input('input', { id: 'nc-add-note', type: 'text', maxlength: '200', autocomplete: 'off' });
+  u.addStatus = statusLine();
+  const addSubmit = el('button', { text: 'Send contact request' }); addSubmit.type = 'submit';
+  u.addForm = el('form', { className: 'messenger-form' },
+    ...field('nc-add-id', 'Their ID', u.addId),
+    el('p', { className: 'hint', text: 'An ID is 128 characters, letters a–f and digits. Ask them to copy it from “Your ID & profile”.' }),
+    ...field('nc-add-note', 'Note (optional, they see it with your request)', u.addNote),
+    addSubmit, u.addStatus);
+  u.addForm.id = 'nc-add-form';
+  u.addView = el('div', { className: 'messenger-view messenger-scroll' }, add.head, u.addForm);
+
+  // Requests pane.
+  const req = viewHead('Contact requests');
+  u.requestsHeading = req.heading;
+  u.requestList = el('ul', { className: 'request-list' });
+  u.outgoingList = el('ul', { className: 'request-list' });
+  u.requestsStatus = statusLine();
+  u.requestsView = el('div', { className: 'messenger-view messenger-scroll' }, req.head,
+    el('h5', { text: 'Waiting for you' }), u.requestList,
+    el('h5', { text: 'Sent by you' }), u.outgoingList, u.requestsStatus);
+
+  // Profile pane.
+  const prof = viewHead('Your ID & profile');
+  u.profileHeading = prof.heading;
+  u.ownId = el('code', { className: 'own-id' });
+  u.ownId.id = 'nc-own-id';
+  u.copyStatus = statusLine();
+  u.profileName = el('p', { className: 'hint' });
+  u.bio = input('textarea', { id: 'nc-bio', rows: '3' });
+  u.location = input('input', { id: 'nc-location', type: 'text', autocomplete: 'off' });
+  u.website = input('input', { id: 'nc-website', type: 'url', autocomplete: 'off' });
+  u.profileStatus = statusLine();
+  const profileSubmit = el('button', { text: 'Save profile' }); profileSubmit.type = 'submit';
+  u.profileForm = el('form', { className: 'messenger-form' },
+    ...field('nc-bio', 'About you', u.bio), ...field('nc-location', 'Location', u.location),
+    ...field('nc-website', 'Website (https:// only)', u.website), profileSubmit, u.profileStatus);
+  u.profileForm.id = 'nc-profile-form';
+  u.memoryNote = el('p', { className: 'notice', text: 'This wallet is not saved on this device: messages are not kept after you lock, and senders are not told their messages arrived. Save the wallet in Device & settings, then lock and open it again to keep messages.' });
+  u.memoryNote.hidden = true;
+  u.erase = button('Delete message history on this device', () => void erase(), 'secondary small messenger-erase');
+  u.erase.hidden = true;
+  u.profileView = el('div', { className: 'messenger-view messenger-scroll' }, prof.head,
+    el('div', { className: 'own-id-box' }, el('span', { className: 'own-id-label', text: 'Your ID — share it so others can add you' }), u.ownId,
+      button('Copy your ID', () => void copyOwnId(u.copyStatus), 'secondary small'), u.copyStatus),
+    el('h5', { text: 'Your profile' }),
+    el('p', { className: 'hint', text: 'Everyone can read your profile. A name cannot be chosen here yet.' }),
+    u.profileName, u.profileForm, u.memoryNote, u.erase);
+
+  u.main = el('div', { className: 'messenger-main' }, u.stateView, u.emptyView, u.conversationView, u.addView, u.requestsView, u.profileView);
+  u.layout = el('div', { className: 'messenger' }, u.sidebar, u.main);
+  u.sync = el('p', { className: 'messenger-sync' });
+  u.sync.setAttribute('role', 'status');
+  root.replaceChildren(u.layout, u.sync);
+  ui = u;
+
+  u.addForm.onsubmit = event => void addContact(event);
+  u.sendForm.onsubmit = event => void send(event);
+  u.profileForm.onsubmit = event => void saveProfile(event);
+  u.composer.addEventListener('input', growComposer);
+  u.composer.addEventListener('keydown', event => {
+    // Enter sends, Shift+Enter is a new line; never while an IME composes.
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    u.sendForm.requestSubmit();
+  });
+  resetMessages();
+}
+
+function growComposer() {
+  const text = ui.composer.value;
+  const lines = text.split('\n').length + Math.floor(text.length / 60);
+  ui.composer.rows = Math.max(1, Math.min(COMPOSER_ROWS, lines));
+  ui.counter.textContent = text.length > TEXT_MAX - 500 ? `${text.length} / ${TEXT_MAX}` : '';
+}
+
+// ── view: what is shown ────────────────────────────────────────────────
+function showState(title, text, retry) {
+  if (!ui) return;
+  ui.stateTitle.textContent = title;
+  ui.stateText.textContent = text;
+  ui.retry.hidden = !retry;
+  ui.stateView.dataset.kind = phase;
+  ui.sync.textContent = phase === 'open' ? ui.sync.textContent : '';
+  render();
+}
+
+function showPane(next) {
   if (!isOpen()) return;
-  $('nc-requests').replaceChildren(...(requests.length ? requests.map(request => el('li', {},
-    el('span', { className: 'nc-label', text: 'Not a contact' }), ' ', el('span', { text: shortId(request.sender) }),
-    request.claimed_name ? el('span', { className: 'nc-hint', text: ' · says their name is ' }, untrusted(request.claimed_name, undefined, { name: true })) : null,
-    request.message ? el('p', { className: 'nc-note' }, untrusted(request.message)) : null,
-    el('div', { className: 'nc-actions' }, button('Accept', () => void accept(request)), button('Decline', () => void decline(request), 'nc-secondary'))
-  )) : [el('li', { className: 'nc-hint', text: 'No new requests.' })]));
-
-  $('nc-outgoing').replaceChildren(...(state.outgoing.length ? state.outgoing.map(o => el('li', {},
-    el('span', { text: shortId(o.fp) }), el('span', { className: 'nc-hint', text: ' · waiting for them to accept' }), ' ',
-    button('Withdraw', () => void withdraw(o.fp), 'nc-secondary')
-  )) : [el('li', { className: 'nc-hint', text: 'None.' })]));
-
-  $('nc-contacts').replaceChildren(...(state.contacts.length ? state.contacts.map(c => el('li', { className: c.fp === selectedFp ? 'nc-selected' : undefined },
-    button(shortId(c.fp), () => selectContact(c.fp), 'nc-link'), claimedName(c.fp),
-    c.salt ? null : el('span', { className: 'nc-hint', text: ' · messaging is not ready with this contact yet' })
-  )) : [el('li', { className: 'nc-hint', text: 'No contacts yet. Add one by ID.' })]));
-
-  renderConversation();
+  pane = next;
+  if (next !== 'conversation') selectedFp = undefined;
+  narrow = 'main';
+  if (next === 'requests') ui.requestsStatus.textContent = '';
+  render();
+  const focus = { add: ui.addId, requests: ui.requestsHeading, profile: ui.profileHeading }[next];
+  focus?.focus({ preventScroll: true });
 }
 
-function renderConversation() {
-  const contact = selectedFp && contactOf(selectedFp);
-  $('nc-conversation').hidden = !contact;
-  if (!contact) return;
-  $('nc-conversation-title').replaceChildren(shortId(contact.fp), claimedName(contact.fp) || '');
-  const lost = dropped.get(contact.fp), other = others.get(contact.fp);
-  $('nc-conversation-note').textContent = [
-    contact.salt ? '' : 'Messaging with this contact is not ready yet. It is checked again automatically.',
-    lost ? 'Some messages from this contact could not be checked and are not shown.' : '',
-    other ? 'This contact also sent items this page cannot show yet (for example reactions, pictures or calls).' : ''
-  ].filter(Boolean).join(' ');
-  $('nc-send-form').hidden = !contact.salt;
-  $('nc-messages').replaceChildren(...messages.filter(m => m.fp === contact.fp).sort(compareLocal).map(m => {
-    const mine = m.dir === 'out';
-    const meta = mine
-      ? `You · ${new Date(m.at).toLocaleString()} · ${messageStatus(m)}`
-      : `Received ${new Date(m.at).toLocaleString()} · ${senderClockLabel(m.senderTs)}`;
-    // The message body lives only inside the bubble (§1.9).
-    return el('li', { className: mine ? 'nc-out' : 'nc-in' }, el('div', { className: 'nc-bubble' }, untrusted(m.text)), el('div', { className: 'nc-meta', text: meta }));
+function selectContact(fp) {
+  selectedFp = fp; pane = 'conversation'; narrow = 'main';
+  ui.sendStatus.textContent = '';
+  markRead(fp);
+  render({ scroll: true });
+  if (contactOf(fp)?.salt) ui.composer.focus({ preventScroll: true });
+}
+
+// data-view drives the ≤ 700 px layout (messenger.css): 'list', 'main', or
+// 'state' while Messages is not open (its status is the only thing shown).
+function renderLayout() {
+  ui.layout.dataset.view = isOpen() ? narrow : 'state';
+}
+
+function render({ scroll = false } = {}) {
+  if (!ui) return;
+  const open = isOpen();
+  for (const control of [ui.addButton, ui.profileButton, ui.requestsButton]) control.disabled = !open;
+  if (open && pane === 'conversation' && selectedFp && !contactOf(selectedFp)) { pane = 'empty'; selectedFp = undefined; }
+  const active = !open ? 'state' : pane;
+  const views = { state: ui.stateView, empty: ui.emptyView, conversation: ui.conversationView, add: ui.addView, requests: ui.requestsView, profile: ui.profileView };
+  for (const [name, node] of Object.entries(views)) node.hidden = name !== active;
+  renderLayout();
+  renderSidebar(open);
+  if (!open) { host.onUnread?.(0); return; }
+  if (pane === 'conversation' && selectedFp) markRead(selectedFp);
+  if (pane === 'empty') renderEmpty();
+  if (pane === 'requests') renderRequests();
+  if (pane === 'conversation') renderConversation(scroll);
+  host.onUnread?.(state.contacts.reduce((sum, c) => sum + unreadCount(c.fp), 0));
+}
+
+function renderSidebar(open) {
+  ui.requestCount.textContent = open && requests.length ? String(requests.length) : '';
+  ui.requestCount.hidden = !(open && requests.length);
+  ui.requestsText.textContent = !open ? '' : requests.length ? `${requests.length} waiting for you` : state.outgoing.length ? `${state.outgoing.length} sent, waiting for an answer` : 'None waiting';
+  ui.requestsButton.setAttribute('aria-current', String(open && pane === 'requests'));
+  if (!open) {
+    ui.contactList.replaceChildren(el('li', { className: 'contact-empty', text: phase === 'opening' ? 'Loading your contacts…' : 'Your contacts appear here once Messages is open.' }));
+    return;
+  }
+  if (!state.contacts.length) {
+    ui.contactList.replaceChildren(el('li', { className: 'contact-empty', text: 'No contacts yet. Add one with their ID.' }));
+    return;
+  }
+  // Most recent conversation first (local order), then contacts without
+  // messages in list order; ties keep the list order (stable sort).
+  const ordered = state.contacts.map((c, index) => ({ c, index, last: lastMessage(c.fp) }))
+    .sort((a, b) => (a.last && b.last ? compareLocal(b.last, a.last) : a.last ? -1 : b.last ? 1 : 0) || a.index - b.index);
+  ui.contactList.replaceChildren(...ordered.map(({ c, last }) => {
+    const unread = unreadCount(c.fp);
+    const row = el('button', { className: `contact-row${unread ? ' has-unread' : ''}` });
+    row.type = 'button';
+    row.setAttribute('aria-current', String(pane === 'conversation' && c.fp === selectedFp));
+    const preview = el('span', { className: 'contact-preview' });
+    if (last) preview.append(last.dir === 'out' ? 'You: ' : '', untrusted(last.text));
+    else preview.textContent = c.salt ? 'No messages yet' : 'Messaging is not ready yet';
+    const side = el('span', { className: 'contact-side' });
+    if (last) { const when = el('time', { text: shortWhen(last.at) }); when.dateTime = new Date(last.at).toISOString(); side.append(when); }
+    if (unread) side.append(setAttrs(el('span', { className: 'count-badge', text: String(unread) }), { 'aria-label': `${unread} new` }));
+    row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, el('strong', { text: shortId(c.fp) }), claimedNameHint(c.fp)), preview), side);
+    row.onclick = () => selectContact(c.fp);
+    return el('li', {}, row);
   }));
 }
 
-function selectContact(fp) { selectedFp = fp; $('nc-send-status').textContent = ''; render(); $('nc-send-text').focus(); }
+function renderEmpty() {
+  const none = state.contacts.length === 0;
+  ui.emptyTitle.textContent = none ? 'No contacts yet' : 'Choose a conversation';
+  ui.emptyText.textContent = none
+    ? 'Add a contact with their ID — a 128-character code they copy from “Your ID & profile”. Share your ID the same way so others can add you. Once they accept, you can write to each other.'
+    : 'Pick a contact on the left, or add a new one with their ID.';
+}
 
-function showTab(tab) {
-  const contacts = tab === 'contacts';
-  $('nc-contacts-panel').hidden = !contacts; $('nc-profile-panel').hidden = contacts;
-  $('nc-tab-contacts').setAttribute('aria-pressed', String(contacts)); $('nc-tab-profile').setAttribute('aria-pressed', String(!contacts));
+function renderRequests() {
+  ui.requestList.replaceChildren(...(requests.length ? requests.map(request => el('li', { className: 'request-row' },
+    avatar(request.sender),
+    el('div', { className: 'request-main' },
+      el('span', { className: 'contact-name' }, el('span', { className: 'request-label', text: 'Not a contact' }), el('strong', { text: shortId(request.sender) })),
+      request.claimed_name ? el('span', { className: 'contact-claim' }, 'says their name is ', untrusted(request.claimed_name, undefined, { name: true })) : null,
+      request.message ? el('p', { className: 'request-note' }, untrusted(request.message)) : null,
+      el('div', { className: 'request-actions' }, button('Accept', () => void accept(request), 'small'), button('Decline', () => void decline(request), 'secondary small')))
+  )) : [el('li', { className: 'contact-empty', text: 'No new requests.' })]));
+
+  ui.outgoingList.replaceChildren(...(state.outgoing.length ? state.outgoing.map(o => el('li', { className: 'request-row' },
+    avatar(o.fp),
+    el('div', { className: 'request-main' },
+      el('span', { className: 'contact-name' }, el('strong', { text: shortId(o.fp) })),
+      el('span', { className: 'contact-claim', text: 'waiting for them to accept' }),
+      el('div', { className: 'request-actions' }, button('Withdraw', () => void withdraw(o.fp), 'secondary small')))
+  )) : [el('li', { className: 'contact-empty', text: 'None.' })]));
+}
+
+function renderConversation(scroll) {
+  const contact = contactOf(selectedFp);
+  const list = ui.messageList;
+  const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+  ui.convAvatar.replaceWith(ui.convAvatar = avatar(contact.fp, ' conversation-avatar'));
+  ui.convTitle.textContent = shortId(contact.fp);
+  const claim = claimedNameHint(contact.fp);
+  ui.convClaim.replaceChildren(...(claim ? claim.childNodes : []));
+  const lost = dropped.get(contact.fp), other = others.get(contact.fp);
+  ui.convNote.textContent = [
+    lost ? 'Some messages from this contact could not be checked and are not shown.' : '',
+    other ? 'This contact also sent items this page cannot show yet (for example reactions, pictures or calls).' : ''
+  ].filter(Boolean).join(' ');
+  ui.convNote.hidden = !ui.convNote.textContent;
+  ui.sendForm.hidden = !contact.salt;
+  ui.notReady.hidden = !!contact.salt;
+
+  const items = [];
+  let day;
+  for (const m of messages.filter(x => x.fp === contact.fp).sort(compareLocal)) {
+    const at = new Date(m.at);
+    if (!day || !sameDay(day, at)) { day = at; items.push(el('li', { className: 'message-day', text: dayLabel(at) })); }
+    const mine = m.dir === 'out';
+    const when = el('time', { text: at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
+    when.dateTime = at.toISOString();
+    const meta = el('div', { className: 'message-meta' }, when);
+    if (mine) {
+      const status = messageStatus(m);
+      meta.append(el('span', { className: `message-status message-${status.replace(/ /g, '-')}`, text: `${STATUS_MARK[status] || ''} ${status}` }));
+    } else meta.append(el('span', { className: 'message-clock', text: senderClockLabel(m.senderTs) }));
+    // The message body lives only inside the bubble (§1.9).
+    items.push(el('li', { className: mine ? 'message message-out' : 'message message-in' }, el('div', { className: 'message-bubble' }, untrusted(m.text)), meta));
+  }
+  if (!items.length) items.push(el('li', { className: 'message-none', text: contact.salt ? 'No messages yet. Say hello.' : 'No messages yet.' }));
+  list.replaceChildren(...items);
+  if (scroll || atBottom) list.scrollTop = list.scrollHeight;
 }
 
 function fillProfile() {
   const p = ownProfile || {};
-  $('nc-bio').value = p.bio || ''; $('nc-location').value = p.location || ''; $('nc-website').value = p.website || '';
-  const line = $('nc-profile-name');
+  ui.bio.value = p.bio || ''; ui.location.value = p.location || ''; ui.website.value = p.website || '';
+  const line = ui.profileName;
   line.replaceChildren();
   if (p.claimed_name) line.append('Name on your profile (not checked here): ', untrusted(p.claimed_name, undefined, { name: true }));
   else line.textContent = 'Your profile has no name.';
@@ -509,9 +767,9 @@ function fillProfile() {
 // ── actions ────────────────────────────────────────────────────────────
 async function accept(request) {
   const gen = generation;
-  $('nc-add-status').textContent = 'Accepting…';
+  ui.requestsStatus.textContent = 'Accepting…';
   try {
-    if (!await ensureProfile(request.sender)) { if (gen === generation) $('nc-add-status').textContent = "This person's account could not be read right now. Try again in a minute."; return; }
+    if (!await ensureProfile(request.sender)) { if (gen === generation) ui.requestsStatus.textContent = "This person's account could not be read right now. Try again in a minute."; return; }
     if (gen !== generation) return;
     await core.requestAccept(request.sender, request.salt || null);
     if (gen !== generation) return;
@@ -519,10 +777,11 @@ async function accept(request) {
     requests = requests.filter(r => r.sender !== request.sender);
     await persist();
     if (gen !== generation) return;
-    $('nc-add-status').textContent = 'Contact added.';
+    ui.requestsStatus.textContent = 'Contact added.';
+    markRead(request.sender);
     render();
     await publishContacts(gen);
-  } catch (error) { if (gen === generation) $('nc-add-status').textContent = explain(error, 'Accepting failed. Try again in a minute.'); }
+  } catch (error) { if (gen === generation) ui.requestsStatus.textContent = explain(error, 'Accepting failed. Try again in a minute.'); }
 }
 
 async function decline(request) {
@@ -530,7 +789,7 @@ async function decline(request) {
   state.declined.push(request.sender);
   requests = requests.filter(r => r.sender !== request.sender);
   render();
-  try { await persist(); } catch (error) { $('nc-add-status').textContent = error.message; }
+  try { await persist(); } catch (error) { ui.requestsStatus.textContent = error.message; }
 }
 
 async function withdraw(fp) {
@@ -540,20 +799,20 @@ async function withdraw(fp) {
     if (gen !== generation) return;
     state.outgoing = state.outgoing.filter(o => o.fp !== fp);
     await persist();
-    if (gen === generation) { $('nc-add-status').textContent = 'Request withdrawn.'; render(); }
-  } catch (error) { if (gen === generation) $('nc-add-status').textContent = explain(error, 'Withdrawing failed. Try again in a minute.'); }
+    if (gen === generation) { ui.requestsStatus.textContent = 'Request withdrawn.'; render(); }
+  } catch (error) { if (gen === generation) ui.requestsStatus.textContent = explain(error, 'Withdrawing failed. Try again in a minute.'); }
 }
 
 async function addContact(event) {
   event.preventDefault();
   const gen = generation;
   try {
-    const fp = parseContactId($('nc-add-id').value);
+    const fp = parseContactId(ui.addId.value);
     if (fp === ownFp) throw new Error('That is your own ID.');
     if (contactOf(fp)) throw new Error('This person is already a contact.');
     if (state.outgoing.some(o => o.fp === fp)) throw new Error('You already sent this person a request.');
-    const note = $('nc-add-note').value;
-    $('nc-add-status').textContent = 'Sending request…';
+    const note = ui.addNote.value;
+    ui.addStatus.textContent = 'Sending request…';
     let result;
     try { result = await core.requestSend(fp, note); }
     catch { throw new Error(new TextEncoder().encode(note).length > 255 ? 'The note is too long.' : 'The request could not be sent. Try again in a minute.'); }
@@ -562,28 +821,29 @@ async function addContact(event) {
     state.outgoing.push({ fp, salt: result.salt, at: nowSeconds() });
     await persist();
     if (gen !== generation) return;
-    $('nc-add-id').value = ''; $('nc-add-note').value = '';
-    $('nc-add-status').textContent = 'Request sent. They appear in your contacts once they accept.';
+    ui.addId.value = ''; ui.addNote.value = '';
+    ui.addStatus.textContent = 'Request sent. They appear in your contacts once they accept.';
     render();
-  } catch (error) { if (gen === generation) $('nc-add-status').textContent = error.message; }
+  } catch (error) { if (gen === generation) ui.addStatus.textContent = error.message; }
 }
 
 async function send(event) {
   event.preventDefault();
   const gen = generation, contact = selectedFp && contactOf(selectedFp);
-  const text = $('nc-send-text').value;
+  const text = ui.composer.value;
   if (!contact || !contact.salt || !text.trim()) return;
+  if (text.length > TEXT_MAX) { ui.sendStatus.textContent = `A message can be at most ${TEXT_MAX} characters.`; return; }
   try {
     const message = { seq: takeSeq(), fp: contact.fp, dir: 'out', text, ts: nowSeconds(), at: Date.now() };
     await persist([message]);
     if (gen !== generation) return;
     messages.push(message); unpublished.add(contact.fp);
-    $('nc-send-text').value = '';
-    render();
-    try { await publishOutbox(contact, gen); if (gen === generation) $('nc-send-status').textContent = ''; }
-    catch { if (gen === generation) $('nc-send-status').textContent = 'Not sent yet. It is tried again automatically.'; }
+    ui.composer.value = ''; growComposer();
+    render({ scroll: true });
+    try { await publishOutbox(contact, gen); if (gen === generation) ui.sendStatus.textContent = ''; }
+    catch { if (gen === generation) ui.sendStatus.textContent = 'Not sent yet. It is tried again automatically.'; }
     if (gen === generation) render();
-  } catch (error) { if (gen === generation) $('nc-send-status').textContent = error.message; }
+  } catch (error) { if (gen === generation) ui.sendStatus.textContent = error.message; }
 }
 
 async function saveProfile(event) {
@@ -591,91 +851,34 @@ async function saveProfile(event) {
   const gen = generation;
   if (profileTaken) return;
   try {
-    const patch = profilePatch({ bio: $('nc-bio').value, location: $('nc-location').value, website: $('nc-website').value });
-    $('nc-profile-status').textContent = 'Saving…';
+    const patch = profilePatch({ bio: ui.bio.value, location: ui.location.value, website: ui.website.value });
+    ui.profileStatus.textContent = 'Saving…';
     const result = await core.profileUpdate(patch);
     if (gen !== generation) return;
-    $('nc-profile-status').textContent = profileStatusText(result.status);
+    ui.profileStatus.textContent = profileStatusText(result.status);
     if (result.status === 'published') { ownProfile = { ...(ownProfile || {}), ...patch }; fillProfile(); }
     if (result.status === 'taken') profileTaken = true;
-  } catch (error) { if (gen === generation) $('nc-profile-status').textContent = /https|Invalid profile/.test(error.message) ? error.message : 'Saving failed. Try again later.'; }
+  } catch (error) { if (gen === generation) ui.profileStatus.textContent = /https|Invalid profile/.test(error.message) ? error.message : 'Saving failed. Try again later.'; }
 }
 
 async function erase() {
   if (!store?.persistent) return;
-  if (!eraseArmed) { eraseArmed = true; $('nc-erase').textContent = 'Confirm: delete all messages on this device'; return; }
+  if (!eraseArmed) { eraseArmed = true; ui.erase.textContent = 'Confirm: delete all messages on this device'; return; }
   const target = store;
-  try { await target.erase(); lock('Message history deleted from this device.'); }
-  catch (error) { lock(error.message); }
+  try { await target.erase(); closeMessages('Message history deleted from this device. Lock and open your wallet again to use Messages.'); }
+  catch (error) { closeMessages(error.message); }
 }
 
-// ── wiring ─────────────────────────────────────────────────────────────
-export function startMessages() {
-  for (const event of ['pointerdown', 'keydown', 'input']) document.addEventListener(event, activity);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) expireIdle(); });
-  window.addEventListener('focus', expireIdle);
-  window.addEventListener('pagehide', () => lock());
-  // A saved wallet changed or removed in another tab (src/app.js does the same).
-  window.addEventListener('storage', event => { if ((event.key === VAULT_KEY || event.key === null) && (core || sessionRelease)) lock('Saved wallet changed in another tab. Unlock again to continue.'); });
-
-  for (const cancel of document.querySelectorAll('.nc-cancel')) cancel.onclick = () => lock('');
-  $('nc-lock').onclick = () => lock();
-  $('nc-retry').onclick = () => {
-    if (!core || !ownFp) { lock(''); return; }
-    const gen = generation;
-    show(null);
-    finishOpen(gen).catch(error => { if (gen === generation) closed(explain(error, 'Messages could not connect to the network right now. Try again in a minute.')); });
-  };
-  $('nc-tab-contacts').onclick = () => showTab('contacts');
-  $('nc-tab-profile').onclick = () => showTab('profile');
-
-  $('nc-choose-saved').onclick = () => { status(''); show('nc-unlock-form'); $('nc-password').focus(); activity(); };
-  $('nc-choose-words').onclick = () => { status(''); show('nc-words-form'); $('nc-words').focus(); activity(); };
-  $('nc-choose-create').onclick = () => {
-    status('');
-    newPhraseText = Mnemonic.entropyToPhrase(randomBytes(32));
-    $('nc-new-words').replaceChildren(...newPhraseText.split(' ').map(word => el('li', { text: word })));
-    show('nc-create-form'); activity();
-  };
-  $('nc-new-words-check').addEventListener('paste', event => event.preventDefault());
-
-  // Each form is hidden (show(null)) before open() starts, so no form can be
-  // submitted again while "Opening Messages…" runs (open() supersedes and
-  // locks anyway). open() shows the start screen, the closed screen or
-  // Messages when it ends.
-  $('nc-unlock-form').onsubmit = event => {
-    event.preventDefault();
-    const password = $('nc-password').value; $('nc-password').value = '';
-    show(null);
-    void open(async () => {
-      const text = localStorage.getItem(VAULT_KEY);
-      if (!text) throw new Closed('No saved wallet on this device.');
-      const saved = await decryptVault(text, password);
-      return { phrase: saved.phrase, id: saved.id };
-    }, { persistent: true, isFresh: false });
-  };
-  $('nc-words-form').onsubmit = event => {
-    event.preventDefault();
-    let phrase;
-    try { phrase = validateNodusPhrase($('nc-words').value); } catch (error) { status(error.message); return; }
-    $('nc-words').value = '';
-    show(null);
-    // Typed words are never "fresh" (decision Q1): a restored identity creates no record.
-    void open(async () => ({ phrase, id: null }), { persistent: false, isFresh: false });
-  };
-  $('nc-create-form').onsubmit = event => {
-    event.preventDefault();
-    const phrase = newPhraseText;
-    if (!phrase || normalizePhrase($('nc-new-words-check').value) !== phrase) { status('The words do not match. Check your written copy and type them again.'); return; }
-    $('nc-new-words-check').value = ''; $('nc-new-words').replaceChildren(); newPhraseText = undefined;
-    show(null);
-    // Only words generated in this tab, this session, are "fresh" (Q1).
-    void open(async () => ({ phrase, id: null }), { persistent: false, isFresh: true });
-  };
-
-  $('nc-add-form').onsubmit = event => void addContact(event);
-  $('nc-send-form').onsubmit = event => void send(event);
-  $('nc-profile-form').onsubmit = event => void saveProfile(event);
-  $('nc-erase').onclick = () => void erase();
-  showStart();
-}
+// ── the wallet as host (src/wallet-extensions.js events) ───────────────
+// Registered only by the Nodus Connect page (src/connect-main.js).
+export const walletExtension = {
+  nodusReady(detail) { void openMessages(detail); },
+  // reason: the connection was lost (Messages stays closed until the wallet
+  // is opened again); none: the wallet is locking or reconnecting.
+  nodusClosing({ reason } = {}) { if (reason) closeMessages(reason); else resetMessages(); },
+  nodusUnavailable() { closeMessages(UNAVAILABLE_TEXT); },
+  // The saved wallet (and with it this history, src/app.js vault-delete) is
+  // being deleted: the open store must not hold the database.
+  vaultDeleting() { if (store?.persistent) closeMessages('The saved wallet and its message history were deleted from this device. Lock and open your wallet again to use Messages.'); },
+  locked() { resetMessages(); }
+};

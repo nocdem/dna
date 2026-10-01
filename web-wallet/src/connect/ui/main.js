@@ -3,10 +3,11 @@
 // any other code runs, then load the page code.
 import { randomBytes, pbkdf2 } from 'ethers';
 import './style.css';
+import './messenger.css';
 randomBytes.lock(); pbkdf2.lock();
 try {
-  const { startMessages } = await import('./messages.js');
-  startMessages();
+  const { startStandalone } = await import('./standalone.js');
+  startStandalone();
   document.getElementById('nc-boot').hidden = true;
 } catch {
   document.getElementById('nc-boot').textContent = 'Messages could not load. Reload this page to try again.';

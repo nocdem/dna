@@ -1,4 +1,5 @@
 node_modules/
 dist/
 dist-preview/
+dist-connect/
 playwright-report/

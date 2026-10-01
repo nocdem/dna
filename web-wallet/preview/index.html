@@ -31,38 +31,10 @@
   <div class="nc-actions"><button type="submit">Open Messages</button><button type="button" class="nc-secondary nc-cancel">Cancel</button></div>
 </form>
 
-<section id="nc-closed" class="nc-card" hidden><h2>Messages could not open</h2><p id="nc-closed-reason"></p><div class="nc-actions"><button id="nc-retry" type="button">Try again</button></div></section>
-
-<section id="nc-open" hidden>
-  <nav class="nc-tabs" aria-label="Messages sections"><button id="nc-tab-contacts" type="button" aria-pressed="true">Contacts</button><button id="nc-tab-profile" type="button" aria-pressed="false">My profile</button></nav>
-  <p id="nc-sync" class="nc-hint" role="status"></p>
-  <p id="nc-memory-note" class="nc-hint" hidden>This wallet is not saved on this device: messages are not kept after you lock, and senders are not told their messages arrived.</p>
-
-  <div id="nc-contacts-panel" class="nc-grid">
-    <section class="nc-card" aria-labelledby="nc-contacts-title">
-      <h2 id="nc-contacts-title">Contacts</h2>
-      <p class="nc-hint">Your ID — share it so others can add you:</p>
-      <p id="nc-own-id" class="nc-id"></p>
-      <form id="nc-add-form"><label for="nc-add-id">Add a contact by ID</label><input id="nc-add-id" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="256" required><label for="nc-add-note">Note (optional)</label><input id="nc-add-note" type="text" maxlength="200" autocomplete="off"><button type="submit">Send contact request</button><p id="nc-add-status" class="nc-hint" role="status"></p></form>
-      <h3>Requests</h3><ul id="nc-requests" class="nc-list"></ul>
-      <h3>Waiting for an answer</h3><ul id="nc-outgoing" class="nc-list"></ul>
-      <h3>Your contacts</h3><ul id="nc-contacts" class="nc-list"></ul>
-    </section>
-    <section id="nc-conversation" class="nc-card" hidden aria-labelledby="nc-conversation-title">
-      <h2 id="nc-conversation-title"></h2>
-      <p id="nc-conversation-note" class="nc-hint"></p>
-      <ol id="nc-messages" class="nc-messages"></ol>
-      <form id="nc-send-form"><label for="nc-send-text">Message</label><textarea id="nc-send-text" rows="3" maxlength="4000" required></textarea><button type="submit">Send</button><p id="nc-send-status" class="nc-hint" role="status"></p></form>
-    </section>
-  </div>
-
-  <section id="nc-profile-panel" class="nc-card" hidden aria-labelledby="nc-profile-title">
-    <h2 id="nc-profile-title">My profile</h2>
-    <p class="nc-hint">Everyone can read your profile. A name cannot be chosen here yet.</p>
-    <p id="nc-profile-name" class="nc-hint"></p>
-    <form id="nc-profile-form"><label for="nc-bio">About you</label><textarea id="nc-bio" rows="3"></textarea><label for="nc-location">Location</label><input id="nc-location" type="text" autocomplete="off"><label for="nc-website">Website (https:// only)</label><input id="nc-website" type="url" autocomplete="off"><button type="submit">Save profile</button><p id="nc-profile-status" class="nc-hint" role="status"></p></form>
-    <button id="nc-erase" type="button" class="nc-secondary" hidden>Delete message history on this device</button>
-  </section>
+<!-- Messages itself is built by src/connect/ui/messages.js (mountMessages). -->
+<section id="nc-open" class="nc-card" hidden aria-labelledby="nc-open-title">
+  <h1 id="nc-open-title">Messages</h1>
+  <div id="nc-root"></div>
 </section>
 </main>
 <script type="module" src="../src/connect/ui/main.js"></script>

@@ -333,6 +333,7 @@ The browser test starts its own preview server and intercepts **all external HTT
 - `src/activity.js`, `src/activity-storage.js`: public confirmation tracking and bounded, authenticated encrypted activity storage.
 - `src/vault.js`: optional authenticated local encryption.
 - `src/app.js`, `index.html`, `src/style.css`: accountless responsive UI.
+- `src/wallet-extensions.js`, `src/site-lock.js`, `src/connect-main.js`, `connect-site/index.html`, `vite.connect.config.js`, `src/connect/ui/`: the Nodus Connect site build and the cross-site rule (section "Nodus Connect site" below).
 - `src/qr.js` (0.1.22): draws the receive-address QR code as SVG DOM nodes with `qrcode-generator`; `src/app.js` `setReceiveAddress()` is the only writer of the address text and its QR.
 - `scripts/third-party-licenses.mjs`, `vite.config.js` (0.1.22): collect the license notice of every npm package rendered into the bundle and write `dist/THIRD-PARTY-LICENSES.txt`; the build fails for a bundled package with no license field and no license file.
 - `test/`: offline and fully intercepted browser verification.
@@ -1187,7 +1188,9 @@ name, no avatar). No groups, media or calls. The live `/` build is unchanged.
   `/preview/` except the node WebSockets. Response headers (CSP header,
   `frame-ancestors 'none'`) are the deploy package's job.
 - `preview/index.html` + `src/connect/ui/` — `main.js` (entry; freezes ethers'
-  RNG/KDF as `src/main.js` does), `messages.js` (screens, sync, lifecycle),
+  RNG/KDF as `src/main.js` does), `standalone.js` (this page's unlock screens
+  and lifecycle) and `messages.js` (Messages: views, sync; host-driven since
+  the Nodus Connect site, see "Nodus Connect site" below), `messenger.css`,
   `dom.js` (every text through `textContent`; someone else's text in a `<bdi>`
   with an "unusual characters" marker), `text.js` (pure helpers), `style.css`.
 - Opening: unlock the saved wallet (same vault, same password), type the 24
@@ -1326,3 +1329,121 @@ NODUS send would knock each other off.
   expected to hold, not measured.
 
 Not verified: nothing here has been run in a browser or against a node.
+
+## Nodus Connect site (connect.nodusnetwork.io) — unreleased
+
+Decision `docs/plans/decisions/2026-10-01-connect-own-origin.md` (operator,
+2026-10-01): `wallet.nodusnetwork.io` stays the wallet only;
+`connect.nodusnetwork.io` is ONE app holding the wallet AND Messages, built
+from this same directory; the two sites must not be open (unlocked) at the
+same time in one browser.
+
+**Two builds from one tree.**
+
+| | Wallet site | Nodus Connect site |
+|---|---|---|
+| Command | `npm run build` (`vite.config.js`) | `npm run build:connect` (`vite.connect.config.js`) |
+| Entry | `index.html` → `src/main.js` | `connect-site/index.html` → `src/connect-main.js` |
+| Output | `dist/` | `dist-connect/` (own `THIRD-PARTY-LICENSES.txt`) |
+| Contains | the wallet (portfolio, send / receive, earn, activity, device & settings) | the same wallet page, branded "Nodus Connect", plus a **Messages** section in the wallet navigation |
+
+`connect-site/index.html` is the wallet's `index.html` with: the title,
+header product name, hero text and footer saying Nodus Connect; the
+address-bar checks naming `connect.nodusnetwork.io`; a "Messages" link in the
+open-wallet navigation (with an unread count); the Messages panel
+(`#messages-panel`, section 04; Activity and Device & settings become 05 and
+06) holding an empty `#nc-root` that `src/connect/ui/messages.js` fills. Keep
+the two files in step when the wallet markup changes: every id `src/app.js`
+reads must exist in both. `npm run preview:connect` serves `dist-connect/`
+locally. The wallet build carries no Messages code: only
+`src/connect-main.js` imports `src/connect/ui/`; `test/connect-smoke.js`
+checks `dist/` for the Messages navigation, panel and UI strings. (The
+string "Message history" in the wallet's `app.js` chunk is the saved-wallet
+delete text of 0.1.37, not Messages UI.) Ixios is a build flag in both:
+`VITE_ENABLE_IXIOS=true npm run build:connect` for the same set as the wallet
+site.
+
+**One unlock, one session, one lock.** `src/wallet-extensions.js` is the only
+seam: `src/app.js` raises `attach`, `nodusReady`, `nodusClosing`,
+`nodusUnavailable`, `vaultDeleting` and `locked`; the wallet page registers
+nothing (no-ops). `src/connect-main.js` names the site (`configureSite
+('connect')`), mounts Messages and registers `walletExtension` BEFORE it
+imports `src/app.js`.
+- Open: when the wallet's NODUS client is ready (`startNodusSend`), Messages
+  is opened on THAT client (`openMessages({ client, phrase, vaultId, fresh })`):
+  same words, same send.wasm module, same tier-2 session — no second unlock
+  screen and no second session. `vaultId` is the saved wallet's id when the
+  wallet was opened by unlocking its saved copy (or saved here before
+  Messages opened): message history is then kept in IndexedDB (S8);
+  otherwise memory only and no delivery confirmations (saving the wallet
+  later takes effect at the next unlock). `fresh` is true only for words created and
+  verified in this tab (decision thin-core Q1).
+- Close: `stopNodusSend` raises `nodusClosing` BEFORE `client.lock()`, so the
+  order of design §1.8 holds (Messages core, then the client). Lock, idle lock
+  (10 min; typing in Messages counts as activity), `pagehide`, the single-tab
+  takeover, a saved-wallet change in another tab and the cross-site rule all
+  go through the wallet's `lock()`. The Messages panel's Lock button is the
+  wallet's Lock. A lost connection closes Messages with a reason; it reopens
+  after the wallet is locked and opened again (`core.lock()` is terminal for
+  the module instance). Deleting the saved wallet closes its open history
+  first, so the delete is not blocked by this tab.
+- Messages itself (`src/connect/ui/messages.js`) has no unlock, no Web Lock and
+  no idle timer of its own; the sync, delivery, ACK, outbox and history rules
+  are unchanged (`text.js`, `store.js`, `core.js`, the `nc_*` C code are not
+  touched).
+
+**Messages layout.** Inside a dashboard panel: left, the contacts column
+("Add contact", "Your ID & profile", a "Contact requests" entry with its
+count, then the conversations — an ID mark (two hex digits of the ID, never a
+claimed name), the short ID, a claimed name only as "claims the name …", the
+last message, its time and an unread count; unread counts are kept in memory
+for this session only); right, one view at a time: the conversation (own
+messages right in lime, received left; time under each bubble; own status
+"waiting to send" / "sent" / "delivered"; the "sender's clock" kept, small),
+the add-contact form, the requests (incoming: Accept / Decline; sent: Withdraw),
+or your ID (Copy) and profile. The composer sits at the bottom of the
+conversation: grows to 5 lines, Enter sends, Shift+Enter is a new line (not
+while an input method composes), 4000 characters. Empty, loading and closed
+states are shown in the right side. At 700 px and below the contact list
+comes first and any view opens alone with a "← Contacts" button. All text goes
+through `textContent` (`dom.js`), other people's text in `<bdi>` with the
+unusual-character marker, websites only as checked https links; no innerHTML,
+no inline styles (CSP `style-src 'self'`). Styles: `src/connect/ui/messenger.css`
+on the wallet's tokens.
+
+**Cross-site rule — `src/site-lock.js` (both builds).** Web Locks and storage
+are per origin, so the single-tab lock cannot see the other site; a cookie
+can. While a wallet is unlocked its page writes, at once and every 5 s,
+`nodus_open=<site>.<ms>; Path=/; Max-Age=15; Secure; SameSite=Strict`, with
+`Domain=nodusnetwork.io` only when the host name ends in `.nodusnetwork.io`
+(none on localhost / in tests). `<site>` is `wallet` or `connect`; the cookie
+holds no identity data. Before any open (restore, create, unlock, "Use it here
+instead") a fresh (< 15 s) mark of the OTHER site refuses with "Your wallet is
+open on wallet.nodusnetwork.io. Lock it there first." (or the Nodus Connect
+equivalent) — before any key derivation or password check. While open, the
+other site's fresh mark locks this page with a plain message. On lock and
+`pagehide` the cookie is cleared if the mark is ours. Limits: per browser
+profile only (two browsers or two devices can both be open; then only the
+node's same-node session eviction applies); a background tab whose timers the
+browser throttles below one tick per 15 s lets its mark expire, so the other
+site may open — the throttled tab then locks itself at its next tick; a
+browser that refuses the cookie is not blocked (fails open). Tests:
+`test/site-lock.test.js` (`npm test`).
+
+**/preview/ (until it is removed from the wallet site).** `preview/index.html`
+keeps its own unlock screens, now in `src/connect/ui/standalone.js` (single-tab
+Web Lock, 10-minute idle lock, client creation, lock order: Messages, client,
+Web Lock); the Messages part is the same `messages.js` mounted into `#nc-root`
+(`npm run build:preview` still builds it). The old "Messages could not open"
+screen and the Contacts / My profile tabs are replaced by the layout above.
+
+**Tests.** `npm run test:connect` (`test/connect-smoke.js`, after `npm run
+build` and `npm run build:connect`): the wallet `dist/` has no Messages
+entry or UI strings; one unlock opens the wallet dashboard and the Messages
+panel (no second unlock screen); a fresh `wallet` mark refuses the unlock;
+no horizontal scroll at 390 and 320 px; the panel's Lock locks the wallet.
+NOT covered: every node WebSocket is closed by the test, so Messages never
+opens — the contact list with real contacts and the conversation composer
+(shown only for a contact) are not reached; sending, receiving, requests and
+profile editing need a live node. Not verified: nothing in this section has
+been run in a browser yet.

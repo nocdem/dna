@@ -18,6 +18,10 @@ import { endpointUrl, formatUnits } from './core.js';
 import { createPhraseFields } from './phrase-fields.js';
 import { createPortfolio } from './portfolio-view.js';
 import { renderQr } from './qr.js';
+// Wallet-only page: no extension is registered and these are no-ops; the
+// Nodus Connect page registers Messages (src/connect-main.js).
+import { raise, siteName } from './wallet-extensions.js';
+import { createSiteLock } from './site-lock.js';
 const $ = id => document.getElementById(id);
 // Must equal the src/style.css media query that sets `.dashboard-grid` to one
 // column (`@media (max-width: 900px)`): below it the Send / Receive panel sits
@@ -52,6 +56,14 @@ const addressStatus = { nodus: $('nodus-address-status'), cellframe: $('cellfram
 // index.html's #send-disabled-note text is Cellframe's; a network may carry its own `sendNote`.
 const DEFAULT_SEND_DISABLED_NOTE = $('send-disabled-note').textContent;
 let activitySession = null, activityBlocked = false, historyWrites = Promise.resolve(), vaultOperation = 0;
+// True only while the open wallet's words were generated in this tab and
+// verified (the create flow); handed to extensions (src/wallet-extensions.js
+// nodusReady, decision 2026-09-30-nodus-connect-thin-core Q1).
+let walletFresh = false;
+// Cross-site rule (src/site-lock.js, decision 2026-10-01-connect-own-origin):
+// while a wallet is open here its site's mark is refreshed; the other site's
+// fresh mark refuses an open and locks an open wallet.
+const siteLock = createSiteLock({ site: siteName(), onOther: text => { lock(); message(text); } });
 const history = []; let stopTracking = () => {};
 function withActivityLock(write) {
   if (!navigator.locks) return Promise.reject(new Error('This browser cannot safely save wallet activity across tabs. Use a browser with Web Locks support.'));
@@ -296,6 +308,8 @@ function setNodusReady(ready, { reselect = true } = {}) {
 // C cancel flag -> close the WebSocket -> zero module memory -> release.
 function stopNodusSend(options) {
   const client = nodusClient; nodusClient = undefined;
+  // Extensions on this client (Messages) close first (design rev 5 §1.8).
+  if (client) raise('nodusClosing', {});
   client?.lock();
   setNodusReady(false, options);
 }
@@ -303,7 +317,12 @@ function stopNodusSend(options) {
 // be checked against it (client.unlock). Never runs while no module exists.
 async function startNodusSend(source, address) {
   stopNodusSend();
-  const client = createNodusClient({ factory: nodusSendModuleFactory, onState: state => { if (client === nodusClient && state !== 'ready') setNodusReady(false); } });
+  const client = createNodusClient({ factory: nodusSendModuleFactory, onState: state => {
+    if (client !== nodusClient || state === 'ready') return;
+    // The client locked itself (error): extensions on it close too.
+    if (state === 'locked' || state === 'error') raise('nodusClosing', { reason: 'The connection to the Nodus network was lost. Lock and open your wallet again to reconnect.' });
+    setNodusReady(false);
+  } });
   nodusClient = client;
   const current = () => client === nodusClient && source === wallet && !source.locked;
   let seed;
@@ -318,8 +337,14 @@ async function startNodusSend(source, address) {
     portfolio.setAddress(NODUS_ASSET.chain, address);
     void refreshClaim();
     void refreshStaking();
+    // The saved wallet's id only when this wallet is the unlocked saved copy
+    // (activitySession is set by unlock or by saving it here).
+    raise('nodusReady', { client, phrase: source.recoveryPhrase, vaultId: activitySession?.id ?? null, fresh: walletFresh });
   } catch {
-    if (client === nodusClient) $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase. Nodus balance and sending are unavailable right now; lock and reopen your wallet to retry.';
+    if (client === nodusClient) {
+      $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase. Nodus balance and sending are unavailable right now; lock and reopen your wallet to retry.';
+      raise('nodusUnavailable');
+    }
   } finally { seed?.fill(0); }
 }
 // "1234567.5" -> "1,234,567.5" (display only).
@@ -517,7 +542,10 @@ async function startClaim() {
   finally { busy = false; }
 }
 function lock() {
+  // Extensions close before the NODUS client (stopNodusSend raises
+  // nodusClosing first), then the cross-site mark is dropped.
   stopNodusSend({ reselect: false });
+  siteLock.stop(); walletFresh = false;
   portfolio.clear();
   phraseFields.clear();
   nodusDerivation?.abort(); nodusDerivation = undefined;
@@ -534,6 +562,7 @@ function lock() {
   for (const id of ['unlock-password', 'vault-password', 'vault-old-password']) $(id).value = '';
   $('vault-risk-confirm').checked = false;
   updateVaultUI(); clearTimeout(lockTimer); message('Wallet locked. Restore your recovery phrase or unlock your saved wallet.');
+  raise('locked');
 }
 window.addEventListener('pagehide', lock);
 function phraseForm(create) {
@@ -566,13 +595,19 @@ $('phrase-form').onsubmit = async event => {
   const operation = ++vaultOperation; let claimed = false;
   try {
     const phrase = phraseFields.read();
-    if (phraseStep === 'verify' && normalizePhrase(phrase) !== generatedPhrase) throw new Error('The phrase does not match. Re-enter your saved backup.');
+    // Only the create flow reaches 'verify': words generated in this tab.
+    const fresh = phraseStep === 'verify';
+    if (fresh && normalizePhrase(phrase) !== generatedPhrase) throw new Error('The phrase does not match. Re-enter your saved backup.');
+    // The other site (src/site-lock.js) must not have a wallet open.
+    const otherSite = siteLock.otherOpen();
+    if (otherSite) throw new Error(otherSite);
     // No key is derived until this tab holds the single-tab session lock.
     claimed = true; const session = await claimSession();
     if (operation !== vaultOperation) return;
     if (!session) { refuseOpen('phrase'); return; }
     if (session !== sessionRelease) return;
     wallet = deriveWallet(phrase); generatedPhrase = undefined; phraseFields.clear();
+    walletFresh = fresh; siteLock.start();
     $('phrase-form').hidden = true; $('wallet-open').hidden = false; message('Wallet open. Portfolio balances load automatically.'); selectChain(); activity(); void showNodusAddress(); void showCellframeAddress(); showIxiosAddress(); focusOpenWallet();
   } catch (error) { if (operation === vaultOperation) message(error.message); }
   finally { if (claimed) unclaimSession(); }
@@ -596,8 +631,9 @@ async function showNodusAddress() {
     if ($('chain').value === NODUS_ASSET.chain) setReceiveAddress(address);
     $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
     if (nodusSendModuleFactory) void startNodusSend(source, address);
+    else raise('nodusUnavailable');
   } catch {
-    if (current()) $('nodus-address-status').textContent = 'Nodus address unavailable. Lock and reopen your wallet to retry.';
+    if (current()) { $('nodus-address-status').textContent = 'Nodus address unavailable. Lock and reopen your wallet to retry.'; raise('nodusUnavailable'); }
   }
 }
 // Same pattern as showNodusAddress(): AbortController, current() guard, aborted
@@ -888,6 +924,9 @@ $('unlock-form').onsubmit = async event => {
   const password = $('unlock-password').value; $('unlock-password').value = ''; $('unlock-wallet').disabled = true; $('session-conflict').hidden = true;
   try {
     const text = localStorage.getItem(VAULT_KEY); if (!text) throw new Error('No saved wallet on this device.');
+    // The other site (src/site-lock.js) must not have a wallet open.
+    const otherSite = siteLock.otherOpen();
+    if (otherSite) throw new Error(otherSite);
     // The password is not even tried until this tab holds the single-tab session lock.
     claimed = true; const session = await claimSession();
     if (operation !== vaultOperation) return;
@@ -903,6 +942,7 @@ $('unlock-form').onsubmit = async event => {
       if (operation !== vaultOperation || session !== sessionRelease || text !== localStorage.getItem(VAULT_KEY)) { disposeWallet(restored); return; }
     } catch (error) { disposeWallet(restored); throw error; }
     disposeWallet(wallet); wallet = restored; activitySession = { id: saved.id, key, vault: text }; activityBlocked = !!problem;
+    walletFresh = false; siteLock.start();
     history.length = 0; history.push(...rows);
     $('discard-activity').hidden = !problem; $('vault-status').textContent = problem || 'Saved activity authenticated.';
     $('welcome').hidden = true; $('phrase-form').hidden = true; $('wallet-open').hidden = false; updateVaultUI(); selectChain(); activity(); void showNodusAddress(); void showCellframeAddress(); showIxiosAddress(); message('Saved wallet unlocked locally.'); focusOpenWallet();
@@ -913,6 +953,9 @@ $('session-takeover').onclick = async () => {
   const operation = ++vaultOperation, flow = sessionConflictFlow;
   $('session-conflict').hidden = true;
   try {
+    // The other site (src/site-lock.js) must not have a wallet open.
+    const otherSite = siteLock.otherOpen();
+    if (otherSite) throw new Error(otherSite);
     // The other tab's hold is aborted and that tab locks itself. Nothing entered
     // before the refusal was kept, so the wallet is reopened here from scratch.
     const session = await requestSession({ steal: true });
@@ -999,6 +1042,9 @@ $('vault-delete').onclick = async () => {
     // text has no readable id, so its history cannot be found.
     let vaultId = null;
     try { vaultId = previous ? parseVault(previous).id : null; } catch { vaultId = null; }
+    // An extension holding that history open in THIS tab (Messages on the
+    // Nodus Connect page) closes it first, so the delete is not blocked.
+    if (previous) raise('vaultDeleting');
     const messages = await withActivityLock(async () => {
       if (localStorage.getItem(VAULT_KEY) !== previous) throw new Error('Saved wallet changed before deletion.');
       localStorage.removeItem(VAULT_KEY); localStorage.removeItem(ACTIVITY_KEY);
@@ -1021,3 +1067,5 @@ $('vault-delete').onclick = async () => {
 };
 
 window.addEventListener('storage', event => { if (event.key === VAULT_KEY || event.key === null) { lock(); $('vault-status').textContent = 'Saved wallet changed in another tab. Unlock again to continue.'; } });
+// Extensions get the wallet's one lock (src/wallet-extensions.js).
+raise('attach', { lock: reason => { lock(); if (reason) message(reason); } });

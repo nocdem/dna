@@ -48,3 +48,11 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .nc-bubble { background: var(--dark); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .nc-out .nc-bubble { border-color: #d5f99855; }
 .nc-meta { color: var(--muted); font-size: .75rem; margin-top: 2px; }
+/* The wallet's class names used by src/connect/ui/messages.js (styled by
+   src/style.css on the Nodus Connect page; here, for the preview). */
+.secondary { background: transparent; color: var(--text); border: 1px solid var(--line); }
+.small { padding: 6px 11px; font-size: .8rem; }
+.hint { color: var(--muted); font-size: .9rem; }
+.notice { font-size: .85rem; padding: 10px 12px; border-left: 2px solid var(--lime); background: #d5f99808; }
+#nc-open { padding: 16px; }
+#nc-open > h1 { font-size: 1.2rem; }
