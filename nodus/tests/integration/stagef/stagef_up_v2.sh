@@ -205,6 +205,14 @@ printf '%s\n' "$MODE" > "$BASE_DIR/stagef_mode"
 
 for n in $(seq 1 "$C"); do
     mkdir -p "$(stagef_node_dir "$n")/identity" "$(stagef_node_dir "$n")/data"
+    # A split node's witness listens on <data>/witness.sock, and the Unix
+    # socket entry refuses a directory that group/other can write
+    # (nodus_tcp.c unix_parent_dir_ok, split S2 review) — mkdir -p follows
+    # the caller's umask (0002 on a desktop shell gives 0775). Combined
+    # nodes keep today's mode.
+    if stagef_node_is_split "$n"; then
+        chmod 0700 "$(stagef_node_dir "$n")/data"
+    fi
 done
 echo "[ok] dir layout created"
 
