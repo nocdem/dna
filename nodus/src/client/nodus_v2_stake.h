@@ -155,6 +155,13 @@ typedef struct {
  *  nodus_ruleset_pins.h. @return NODUS_V2_SPEND_OK / _ERR_ARG. */
 int nodus_v2_stake_ruleset_from_pins(nodus_v2_stake_ruleset_t *out);
 
+/** HF-4 — the same for pinned generation `generation` (the one whose
+ *  tuple equals the node's dnac_ruleset_info answer;
+ *  nodus_v2_stake_ruleset_from_pins above is generation 1, kept for the
+ *  web wallet's WASM module). @return NODUS_V2_SPEND_OK / _ERR_ARG. */
+int nodus_v2_stake_ruleset_from_pins_gen(uint32_t generation,
+                                         nodus_v2_stake_ruleset_t *out);
+
 /** Which numbers a refusal carries (for the caller's message). */
 typedef struct {
     uint64_t fee;        /* the fee in force when it stopped              */

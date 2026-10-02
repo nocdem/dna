@@ -70,22 +70,23 @@ static uint64_t get_u64(const uint8_t *p) {
 
 /* ── the ruleset identity from the generated pins header ───────────── */
 
-int nodus_v2_stake_ruleset_from_pins(nodus_v2_stake_ruleset_t *out) {
-    static const uint8_t sys_hash[DNA_ENV_RULESET_HASH_LEN] =
-        NODUS_PIN_SYS_RULESET_HASH_INIT;
-    static const uint8_t core_hash[DNA_ENV_RULESET_HASH_LEN] =
-        NODUS_PIN_CORE_RULESET_HASH_INIT;
+int nodus_v2_stake_ruleset_from_pins_gen(uint32_t generation,
+                                         nodus_v2_stake_ruleset_t *out) {
     _Static_assert(NODUS_PIN_SYS_DOMAIN_ID == DNA_DOMAIN_SYSTEM,
                    "the pinned SYSTEM tuple is domain 0");
     _Static_assert(NODUS_PIN_CORE_DOMAIN_ID == DNA_DOMAIN_CORE,
                    "the pinned CORE tuple is domain 1");
     if (!out) return NODUS_V2_SPEND_ERR_ARG;
     memset(out, 0, sizeof(*out));
-    out->sys_ruleset_version  = NODUS_PIN_SYS_RULESET_VERSION;
-    memcpy(out->sys_ruleset_hash, sys_hash, sizeof(sys_hash));
-    out->core_ruleset_version = NODUS_PIN_CORE_RULESET_VERSION;
-    memcpy(out->core_ruleset_hash, core_hash, sizeof(core_hash));
-    return NODUS_V2_SPEND_OK;
+    /* HF-4: the ONE per-generation pins table (nodus_v2_spend.c) */
+    return nodus_v2_pins_tuples(generation, &out->sys_ruleset_version,
+                                out->sys_ruleset_hash,
+                                &out->core_ruleset_version,
+                                out->core_ruleset_hash);
+}
+
+int nodus_v2_stake_ruleset_from_pins(nodus_v2_stake_ruleset_t *out) {
+    return nodus_v2_stake_ruleset_from_pins_gen(1, out);
 }
 
 /* ── read-back ──────────────────────────────────────────────────────── */

@@ -16,6 +16,8 @@
  */
 
 #include "witness/nodus_witness_v2_apply.h"
+#include "witness/nodus_witness_rt_native.h"   /* HF-4: the CheckTx OWNER
+                                                * conflict key           */
 #include "witness/nodus_witness_v2_schema.h"
 #include "witness/nodus_witness_v2_claims.h"
 #include "witness/nodus_witness_v2_adapter.h"
@@ -882,6 +884,49 @@ static int env_ruleset_gen2_voted(nodus_witness_t *w, uint8_t *voted,
     return 0;
 }
 
+/* HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §2
+ * Price): the four NAME_REGISTER price tiers at `height` — chain_config
+ * params 10..13 (NAME_PRICE_3P..6P), each the committed row active at
+ * `height` or the compiled DNAC_NAME_PRICE_*_DEFAULT (no genesis row on
+ * the testnet chain — the design's stated deviation). The
+ * env_token_create_fee discipline: the one three-valued accessor, and an
+ * unanswerable read is a node FAULT, never a default. A stored value
+ * outside the votable range is this node's storage disagreeing with every
+ * writer (the scalar rules admit only [10^8, 10^15]) — a FAULT too.
+ * Filled into every exec ctx (both sites) so the pure CORE hook never
+ * touches the database. @return 0 / -2 (reason written). */
+static int env_name_prices(nodus_witness_t *w, uint64_t height,
+                           uint64_t out[4], char *reason,
+                           size_t reason_size)
+{
+    static const uint8_t ids[4] = {
+        (uint8_t)DNAC_CFG_NAME_PRICE_3P, (uint8_t)DNAC_CFG_NAME_PRICE_4P,
+        (uint8_t)DNAC_CFG_NAME_PRICE_5P, (uint8_t)DNAC_CFG_NAME_PRICE_6P };
+    static const uint64_t dflt[4] = {
+        DNAC_NAME_PRICE_3P_DEFAULT, DNAC_NAME_PRICE_4P_DEFAULT,
+        DNAC_NAME_PRICE_5P_DEFAULT, DNAC_NAME_PRICE_6P_DEFAULT };
+
+    for (int k = 0; k < 4; k++) {
+        if (nodus_chain_config_get_u64(w, ids[k], height, dflt[k],
+                                       &out[k]) < 0) {
+            V2AP_ENV_FAULT("HF-4: NAME_PRICE param %u at height %llu is "
+                           "unreadable on this node - refusing to judge a "
+                           "registration against a guessed price",
+                           (unsigned)ids[k], (unsigned long long)height);
+            return -2;
+        }
+        if (out[k] < DNAC_CFG_MIN_NAME_PRICE ||
+            out[k] > DNAC_CFG_MAX_NAME_PRICE) {
+            V2AP_ENV_FAULT("HF-4: NAME_PRICE param %u at height %llu reads "
+                           "%llu, a value no committed row can hold",
+                           (unsigned)ids[k], (unsigned long long)height,
+                           (unsigned long long)out[k]);
+            return -2;
+        }
+    }
+    return 0;
+}
+
 /* A fault-injection point firing is a TEST harness event, not a real
  * defect — it says so in its own words rather than borrowing the words
  * of the check it stands in for. */
@@ -1194,6 +1239,11 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
     uint8_t gen2_voted = 0;
     if (env_ruleset_gen2_voted(w, &gen2_voted, reason, reason_size) != 0)
         return -2;
+    /* HF-4: the name price tiers at this block's height, once per item */
+    uint64_t name_price[4];
+    if (env_name_prices(w, blk->global_height, name_price, reason,
+                        reason_size) != 0)
+        return -2;
     for (uint16_t l = 0; l < v->leg_count; l++) {
         dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
         if (!d || !d->rt || !d->rt->exec) {          /* admission-scan
@@ -1238,6 +1288,7 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
         ctx.token_create_fee    = tc_fee;
         ctx.hf2_active          = hf2;
         ctx.ruleset_gen2_voted  = gen2_voted;
+        memcpy(ctx.name_price, name_price, sizeof(ctx.name_price));
 
         /* ── mediated reads: request phase → engine-charged execution ─
          * TRUST NOTE: the count/length rejects below detect a hook that
@@ -1447,6 +1498,42 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
                                (unsigned)env_index, (unsigned)l,
                                (unsigned)d->domain_id);
                 return -2;
+            }
+            /* HF-4 (design §2 "Same owner, two names pending"): a CORE
+             * NAME_REGISTER leg also claims a SYNTHETIC OWNER(owner) row,
+             * so one node's mempool admits one registration per owner
+             * (the effect rows key only NAME(name)). Mempool only: the
+             * apply path never reaches this branch. */
+            {
+                uint32_t oop = 0;
+                uint8_t  okey[64];
+                int krc = nodus_rt_core_name_owner_key(v, l, av, &oop,
+                                                       okey);
+                if (krc < 0) {
+                    V2AP_ENV_FAULT("env %u leg %u: the owner key of an "
+                                   "executed registration is underivable "
+                                   "(engine invariant broken on this "
+                                   "node)", (unsigned)env_index,
+                                   (unsigned)l);
+                    return -2;
+                }
+                if (krc == 0) {
+                    nodus_v2_dry_run_row_t *grown = realloc(
+                        dry->rows, (dry->n_rows + 1) * sizeof(*grown));
+                    if (!grown) {
+                        V2AP_ENV_FAULT("env %u leg %u: allocation of the "
+                                       "dry run's owner key failed",
+                                       (unsigned)env_index, (unsigned)l);
+                        return -2;
+                    }
+                    dry->rows = grown;
+                    nodus_v2_dry_run_row_t *r = &dry->rows[dry->n_rows++];
+                    memset(r, 0, sizeof(*r));
+                    r->domain_id = d->domain_id;
+                    r->op_id     = oop;
+                    r->key_len   = 64;
+                    memcpy(r->key, okey, 64);
+                }
             }
             ast = effects_probe_only(w, rt, &ev, &fidx);
         } else {
@@ -2000,6 +2087,7 @@ static int env_authorize_legs(nodus_witness_t *w,
     uint64_t tc_fee = 0;
     uint8_t  hf2 = 0;
     uint8_t  gen2_voted = 0;
+    uint64_t name_price[4];
 
     /* W-C: every ctx the engine builds carries the committed
      * token-creation fee (runtime.h contract); no auth hook reads it
@@ -2013,6 +2101,8 @@ static int env_authorize_legs(nodus_witness_t *w,
     if (env_hf2_active(w, height, &hf2, reason, reason_size) != 0)
         return -2;
     if (env_ruleset_gen2_voted(w, &gen2_voted, reason, reason_size) != 0)
+        return -2;
+    if (env_name_prices(w, height, name_price, reason, reason_size) != 0)
         return -2;
     for (l = 0; l < v->leg_count; l++) {
         dom_ctx_t          *d = dom_for(doms, n_dom, v->leg[l].domain_id);
@@ -2061,6 +2151,7 @@ static int env_authorize_legs(nodus_witness_t *w,
         actx.token_create_fee    = tc_fee;
         actx.hf2_active          = hf2;
         actx.ruleset_gen2_voted  = gen2_voted;
+        memcpy(actx.name_price, name_price, sizeof(actx.name_price));
         /* the resolved snapshot view, ONLY for the kind that consumes it
          * (runtime.h's ctx contract) */
         actx.committee =

@@ -157,7 +157,12 @@ int nodus_witness_v2_preflight(nodus_witness_t *w,
             "v2_manifests", "v2_claims_spent", "validators",
             "validator_set_snapshots", "supply_tracking",
             "cmt_blockstore", "cmt_state", "cmt_wal", "cmt_wal_sync",
-            "cmt_light"
+            "cmt_light",
+            /* HF-4 (design 2026-10-02-onchain-names-design.md rev 4 §2
+             * "State"): the CORE name_root leg reads it; created by the
+             * base schema on every open (nodus_witness.h
+             * NODUS_V2_NAMES_DDL) */
+            "v2_names"
         };
         for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); i++) {
             int t = pf_table_exists(w, required[i]);

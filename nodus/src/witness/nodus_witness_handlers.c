@@ -46,6 +46,8 @@
 #include "witness/nodus_witness_v2_apply.h"
 #include "witness/nodus_witness_rt_native.h"
 #include "witness/nodus_witness_addr_index.h"   /* dnac_addr_history     */
+#include "witness/nodus_witness_v2_claims.h"    /* HF-4: runtime_for     */
+#include "witness/nodus_witness_runtime.h"      /* HF-4: generation      */
 #include "dnac/env_wire.h"
 #include "dnac/manifest_wire.h"
 #include "dnac/ledger_ids.h"
@@ -494,16 +496,73 @@ static void handle_dnac_fee_info(nodus_witness_t *w,
         return;
     }
 
-    /* 5 keys: the longest reply is 1 map header + "dnac_fee_info"
-     * framing (enc_dnac_response) + 5 short keys (the longest,
-     * "token_create_fee", 17 bytes with its head) + 5 uint64 values at
-     * 9 bytes each — well inside 256; the rlen check below still
-     * refuses an overflow rather than sending a truncated map. */
-    uint8_t buf[256];
+    /* HF-4 (design §2 Price: "dnac_fee_info returns the computed tier
+     * prices and any scheduled price row"): "np" = the four COMPUTED
+     * prices at tip + 1 for names of 3 / 4 / 5 / 6+ characters (the
+     * engine's own fold, dnac_name_price_for_len over params 10-13 with
+     * the compiled defaults); "ns" = the committed params-10..13 rows
+     * whose effective height is above tip + 1, ascending (effective,
+     * param), at most NODUS_DNAC_NAME_SCHED_MAX — each {"p" u8, "v" u64,
+     * "e" u64}. Same fault rule: unreadable = an error reply. Older
+     * clients skip the two unknown keys. */
+    uint64_t tiers[4] = { DNAC_NAME_PRICE_3P_DEFAULT,
+                          DNAC_NAME_PRICE_4P_DEFAULT,
+                          DNAC_NAME_PRICE_5P_DEFAULT,
+                          DNAC_NAME_PRICE_6P_DEFAULT };
+    struct { uint8_t p; uint64_t v, e; } sched[NODUS_DNAC_NAME_SCHED_MAX];
+    size_t n_sched = 0;
+    if (w->db) {
+        for (int k = 0; k < 4; k++) {
+            if (nodus_chain_config_get_u64(
+                    w, (uint8_t)(DNAC_CFG_NAME_PRICE_3P + k), tip + 1,
+                    tiers[k], &tiers[k]) < 0) {
+                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                           "name price unreadable");
+                return;
+            }
+        }
+        sqlite3_stmt *st = NULL;
+        int ok = 0;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT param_id, new_value, effective_block FROM "
+                "chain_config_history WHERE param_id BETWEEN ?1 AND ?2 "
+                "AND effective_block > ?3 "
+                "ORDER BY effective_block ASC, param_id ASC LIMIT ?4",
+                -1, &st, NULL) == SQLITE_OK) {
+            sqlite3_bind_int(st, 1, (int)DNAC_CFG_NAME_PRICE_3P);
+            sqlite3_bind_int(st, 2, (int)DNAC_CFG_NAME_PRICE_6P);
+            sqlite3_bind_int64(st, 3, (sqlite3_int64)(tip + 1));
+            sqlite3_bind_int(st, 4, (int)NODUS_DNAC_NAME_SCHED_MAX);
+            int rc;
+            ok = 1;
+            while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+                sqlite3_int64 v = sqlite3_column_int64(st, 1);
+                sqlite3_int64 e = sqlite3_column_int64(st, 2);
+                if (v < 0 || e < 0) { ok = 0; break; }
+                sched[n_sched].p = (uint8_t)sqlite3_column_int(st, 0);
+                sched[n_sched].v = (uint64_t)v;
+                sched[n_sched].e = (uint64_t)e;
+                n_sched++;
+            }
+            if (ok && rc != SQLITE_DONE) ok = 0;
+        }
+        sqlite3_finalize(st);
+        if (!ok) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                       "scheduled name prices unreadable");
+            return;
+        }
+    }
+
+    /* 7 keys: the 5 scalar keys (well inside 256 bytes) + "np" (4 × 9)
+     * + "ns" (up to NODUS_DNAC_NAME_SCHED_MAX × ~25 bytes); the rlen
+     * check below still refuses an overflow rather than sending a
+     * truncated map. */
+    uint8_t buf[256 + 64 + NODUS_DNAC_NAME_SCHED_MAX * 32];
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, sizeof(buf));
 
-    enc_dnac_response(&enc, txn_id, "dnac_fee_info", 5);
+    enc_dnac_response(&enc, txn_id, "dnac_fee_info", 7);
     cbor_encode_cstr(&enc, "base_fee");
     cbor_encode_uint(&enc, base_fee);
     cbor_encode_cstr(&enc, "mempool");
@@ -514,6 +573,18 @@ static void handle_dnac_fee_info(nodus_witness_t *w,
     cbor_encode_uint(&enc, gas_price);
     cbor_encode_cstr(&enc, "token_create_fee");
     cbor_encode_uint(&enc, token_create_fee);
+    cbor_encode_cstr(&enc, "np");
+    cbor_encode_array(&enc, 4);
+    for (size_t len_i = 3; len_i <= 6; len_i++)
+        cbor_encode_uint(&enc, dnac_name_price_for_len(tiers, len_i));
+    cbor_encode_cstr(&enc, "ns");
+    cbor_encode_array(&enc, n_sched);
+    for (size_t k = 0; k < n_sched; k++) {
+        cbor_encode_map(&enc, 3);
+        cbor_encode_cstr(&enc, "p"); cbor_encode_uint(&enc, sched[k].p);
+        cbor_encode_cstr(&enc, "v"); cbor_encode_uint(&enc, sched[k].v);
+        cbor_encode_cstr(&enc, "e"); cbor_encode_uint(&enc, sched[k].e);
+    }
 
     size_t rlen = cbor_encoder_len(&enc);
     if (rlen > 0) {
@@ -2566,6 +2637,269 @@ static void handle_dnac_token_list(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * HF-4 queries (design docs/plans/2026-10-02-onchain-names-design.md
+ * rev 4 §1.6, §2 "Queries"; wire: include/nodus/nodus.h beside the
+ * client functions). Every statement is finalized before the reply is
+ * sent; a store fault is an error reply, never a fabricated value.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* The committed tip of the version-3 chain, and "a v3 chain is open". */
+static int hf4_tip(nodus_witness_t *w, uint64_t *tip) {
+    if (!w->db) return -1;
+    return nodus_witness_v2_tip_height(w, tip) == 0 ? 0 : -1;
+}
+
+/* dnac_ruleset_info — the rule-set GENERATION governing tip + 1, read
+ * from the REGISTRY (the committed SYSTEM and CORE manifests, never the
+ * heads — the switch rewrites the registry at the end of H-1).
+ * Response "r": {"tip" u64, "gen" u32, "sv" u32 SYSTEM ruleset_version,
+ *   "sh" bstr64 SYSTEM ruleset_hash, "cv" u32, "ch" bstr64 (CORE),
+ *   "pd" bstr64 the SYSTEM meter-policy digest of that generation,
+ *   "H" u64 the earliest committed param-9 effective height (0 = none),
+ *   "d2" u64 this build's DNAC_CFG_RULESET_GEN2_D2}. */
+static void handle_dnac_ruleset_info(nodus_witness_t *w,
+                                     struct nodus_tcp_conn *conn,
+                                     uint32_t txn_id) {
+    uint64_t tip = 0, H = 0;
+    const nodus_domain_runtime_t *rs = NULL, *rc = NULL;
+    if (hf4_tip(w, &tip) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_FOUND,
+                   "no version-3 chain on this node");
+        return;
+    }
+    if (nodus_witness_v2_runtime_for(w, DNA_DOMAIN_SYSTEM, 1, &rs) != 0 ||
+        nodus_witness_v2_runtime_for(w, DNA_DOMAIN_CORE, 1, &rc) != 0 ||
+        !rs || !rc || rs->generation != rc->generation ||
+        rs->generation == 0) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "the registry does not resolve one compiled generation");
+        return;
+    }
+    {
+        sqlite3_stmt *st = NULL;
+        int ok = 0;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT MIN(effective_block) FROM chain_config_history "
+                "WHERE param_id = ?1", -1, &st, NULL) == SQLITE_OK) {
+            sqlite3_bind_int(st, 1, (int)DNAC_CFG_RULESET_GEN2);
+            if (sqlite3_step(st) == SQLITE_ROW) {
+                if (sqlite3_column_type(st, 0) == SQLITE_NULL) {
+                    H = 0;
+                    ok = 1;
+                } else {
+                    sqlite3_int64 v = sqlite3_column_int64(st, 0);
+                    if (v > 0) { H = (uint64_t)v; ok = 1; }
+                }
+            }
+        }
+        sqlite3_finalize(st);
+        if (!ok) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                       "RULESET_GEN2 history unreadable");
+            return;
+        }
+    }
+
+    uint8_t buf[512];
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+    enc_dnac_response(&enc, txn_id, "dnac_ruleset_info", 9);
+    cbor_encode_cstr(&enc, "tip"); cbor_encode_uint(&enc, tip);
+    cbor_encode_cstr(&enc, "gen"); cbor_encode_uint(&enc, rs->generation);
+    cbor_encode_cstr(&enc, "sv");  cbor_encode_uint(&enc, rs->ruleset_version);
+    cbor_encode_cstr(&enc, "sh");  cbor_encode_bstr(&enc, rs->ruleset_hash, 64);
+    cbor_encode_cstr(&enc, "cv");  cbor_encode_uint(&enc, rc->ruleset_version);
+    cbor_encode_cstr(&enc, "ch");  cbor_encode_bstr(&enc, rc->ruleset_hash, 64);
+    cbor_encode_cstr(&enc, "pd");
+    cbor_encode_bstr(&enc, rs->descriptor.meter_policy_digest, 64);
+    cbor_encode_cstr(&enc, "H");   cbor_encode_uint(&enc, H);
+    cbor_encode_cstr(&enc, "d2");
+    cbor_encode_uint(&enc, (uint64_t)DNAC_CFG_RULESET_GEN2_D2);
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0) nodus_tcp_send(conn, buf, rlen);
+    else send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+}
+
+/* Decode the single text argument `name_key` of a request. 0 / -1. */
+static int hf4_tstr_arg(const uint8_t *payload, size_t len,
+                        const char *name_key, const char **out,
+                        size_t *out_len) {
+    cbor_decoder_t dec;
+    size_t args_count;
+    int found = 0;
+    if (decode_args(payload, len, &dec, &args_count) != 0) return -1;
+    for (size_t i = 0; i < args_count; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key_match(&key, name_key)) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (found || val.type != CBOR_ITEM_TSTR) return -1;
+            *out = val.tstr.ptr;
+            *out_len = val.tstr.len;
+            found = 1;
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+    return found ? 0 : -1;
+}
+
+static void hf4_hex128(const uint8_t raw[64], char out[129]) {
+    static const char hx[] = "0123456789abcdef";
+    for (int i = 0; i < 64; i++) {
+        out[2 * i]     = hx[raw[i] >> 4];
+        out[2 * i + 1] = hx[raw[i] & 0x0F];
+    }
+    out[128] = '\0';
+}
+
+/* dnac_name_lookup — Request "a": {"name": tstr} (LOWERCASE only — the
+ * consensus byte rule dnac_name_bytes_ok; a client lower-cases with an
+ * ASCII-only mapping). Response "r": {"found" bool, "owner" tstr128 hex
+ * (found), "rh" u64 registered_height (found), "ch" u64 the committed
+ * height the answer is from}. */
+static void handle_dnac_name_lookup(nodus_witness_t *w,
+                                    struct nodus_tcp_conn *conn,
+                                    const uint8_t *payload, size_t len,
+                                    uint32_t txn_id) {
+    const char *name = NULL;
+    size_t nl = 0;
+    uint64_t tip = 0;
+    if (hf4_tstr_arg(payload, len, "name", &name, &nl) != 0 ||
+        !dnac_name_bytes_ok((const uint8_t *)name, nl)) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing or invalid name (3-36 of a-z0-9, lowercase)");
+        return;
+    }
+    if (hf4_tip(w, &tip) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_FOUND,
+                   "no version-3 chain on this node");
+        return;
+    }
+    sqlite3_stmt *st = NULL;
+    int found = 0, ok = 0;
+    uint8_t owner[64];
+    uint64_t rh = 0;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT owner, registered_height FROM v2_names WHERE name = ?1",
+            -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_blob(st, 1, name, (int)nl, SQLITE_TRANSIENT);
+        int rc = sqlite3_step(st);
+        if (rc == SQLITE_DONE) {
+            ok = 1;
+        } else if (rc == SQLITE_ROW &&
+                   sqlite3_column_bytes(st, 0) == 64 &&
+                   sqlite3_column_int64(st, 1) >= 1) {
+            memcpy(owner, sqlite3_column_blob(st, 0), 64);
+            rh = (uint64_t)sqlite3_column_int64(st, 1);
+            found = ok = 1;
+        }
+    }
+    sqlite3_finalize(st);
+    if (!ok) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "names store unreadable");
+        return;
+    }
+    uint8_t buf[512];
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+    enc_dnac_response(&enc, txn_id, "dnac_name_lookup", found ? 4 : 2);
+    cbor_encode_cstr(&enc, "found"); cbor_encode_bool(&enc, found != 0);
+    if (found) {
+        char hex[129];
+        hf4_hex128(owner, hex);
+        cbor_encode_cstr(&enc, "owner"); cbor_encode_cstr(&enc, hex);
+        cbor_encode_cstr(&enc, "rh");    cbor_encode_uint(&enc, rh);
+    }
+    cbor_encode_cstr(&enc, "ch"); cbor_encode_uint(&enc, tip);
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0) nodus_tcp_send(conn, buf, rlen);
+    else send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+}
+
+/* dnac_name_of — Request "a": {"owner": tstr, exactly 128 lowercase
+ * hex}. Response "r": {"found" bool, "name" tstr (found), "rh" u64
+ * (found), "ch" u64 committed height}. */
+static void handle_dnac_name_of(nodus_witness_t *w,
+                                struct nodus_tcp_conn *conn,
+                                const uint8_t *payload, size_t len,
+                                uint32_t txn_id) {
+    const char *hex = NULL;
+    size_t hl = 0;
+    uint8_t owner[64];
+    uint64_t tip = 0;
+    int bad = hf4_tstr_arg(payload, len, "owner", &hex, &hl) != 0 ||
+              hl != 128;
+    for (size_t i = 0; !bad && i < 64; i++) {
+        int v = 0;
+        for (int j = 0; j < 2; j++) {
+            char c = hex[2 * i + (size_t)j];
+            int d;
+            if (c >= '0' && c <= '9') d = c - '0';
+            else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+            else { bad = 1; break; }
+            v = (v << 4) | d;
+        }
+        owner[i] = (uint8_t)v;
+    }
+    if (bad) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing or invalid owner (128 lowercase hex)");
+        return;
+    }
+    if (hf4_tip(w, &tip) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_FOUND,
+                   "no version-3 chain on this node");
+        return;
+    }
+    sqlite3_stmt *st = NULL;
+    int found = 0, ok = 0;
+    char name[37];
+    uint64_t rh = 0;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT name, registered_height FROM v2_names WHERE owner = ?1",
+            -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_blob(st, 1, owner, 64, SQLITE_TRANSIENT);
+        int rc = sqlite3_step(st);
+        if (rc == SQLITE_DONE) {
+            ok = 1;
+        } else if (rc == SQLITE_ROW) {
+            int nl = sqlite3_column_bytes(st, 0);
+            const uint8_t *nm = sqlite3_column_blob(st, 0);
+            if (nm && dnac_name_bytes_ok(nm, (size_t)nl) &&
+                sqlite3_column_int64(st, 1) >= 1) {
+                memcpy(name, nm, (size_t)nl);
+                name[nl] = '\0';
+                rh = (uint64_t)sqlite3_column_int64(st, 1);
+                found = ok = 1;
+            }
+        }
+    }
+    sqlite3_finalize(st);
+    if (!ok) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "names store unreadable");
+        return;
+    }
+    uint8_t buf[256];
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+    enc_dnac_response(&enc, txn_id, "dnac_name_of", found ? 4 : 2);
+    cbor_encode_cstr(&enc, "found"); cbor_encode_bool(&enc, found != 0);
+    if (found) {
+        cbor_encode_cstr(&enc, "name"); cbor_encode_cstr(&enc, name);
+        cbor_encode_cstr(&enc, "rh");   cbor_encode_uint(&enc, rh);
+    }
+    cbor_encode_cstr(&enc, "ch"); cbor_encode_uint(&enc, tip);
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0) nodus_tcp_send(conn, buf, rlen);
+    else send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * dnac_token_info — Query single token by token_id
  *
  * Request:  "a": {"tid": bstr(64)}
@@ -3099,6 +3433,7 @@ static const char *v3b_op_name(const dna_env_view_t *v)
             case DNA_CORERULE_BURN:         core = "burn";         break;
             case DNA_CORERULE_TOKEN_CREATE: core = "token_create"; break;
             case DNA_CORERULE_SYSFUND:      core = "sysfund";      break;
+            case DNA_CORERULE_NAME_REGISTER: core = "name_register"; break;
             default:                        core = NULL;           break;
             }
         }
@@ -3451,6 +3786,7 @@ static int v3b_item(v3b_ctx_t *c, uint32_t i, uint32_t *gidx,
         n_keys += 2;                              /* sp cr */
         n_keys += (core && core->burned) ? 1 : 0;
         n_keys += (sys && sys->rec != NODUS_RT_DESC_REC_NONE) ? 1 : 0;
+        n_keys += (core && core->name_len) ? 2 : 0;   /* HF-4: nm pr  */
     }
     cbor_encode_map(e, n_keys);
     cbor_encode_cstr(e, "i"); cbor_encode_uint(e, i);
@@ -3480,6 +3816,15 @@ static int v3b_item(v3b_ctx_t *c, uint32_t i, uint32_t *gidx,
         }
         if (core && core->burned) {
             cbor_encode_cstr(e, "bu"); cbor_encode_uint(e, core->burned);
+        }
+        /* HF-4 (design §1.7): a NAME_REGISTER carries two OPTIONAL keys —
+         * the name and the price paid into the reward pool. No new record
+         * kind (old decoders bound rec_kind); old decoders skip unknown
+         * keys. The price is never reported as "bu". */
+        if (core && core->name_len) {
+            cbor_encode_cstr(e, "nm");
+            cbor_encode_tstr(e, (const char *)core->name, core->name_len);
+            cbor_encode_cstr(e, "pr"); cbor_encode_uint(e, core->name_price);
         }
         if (sys && sys->rec != NODUS_RT_DESC_REC_NONE) {
             cbor_encode_cstr(e, "rc");
@@ -3904,6 +4249,12 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_token_info(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_fee_info") == 0) {
         handle_dnac_fee_info(w, conn, txn_id);
+    } else if (strcmp(method, "dnac_ruleset_info") == 0) {
+        handle_dnac_ruleset_info(w, conn, txn_id);
+    } else if (strcmp(method, "dnac_name_lookup") == 0) {
+        handle_dnac_name_lookup(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_name_of") == 0) {
+        handle_dnac_name_of(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_committee_query") == 0) {
         handle_dnac_committee_query(w, conn, txn_id);
     } else if (strcmp(method, "dnac_validator_list_query") == 0) {

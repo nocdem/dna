@@ -269,6 +269,45 @@ int dna_v2_accrual_root(const uint8_t (*owner_fps)[DNA_V2_ROOT_LEN],
                         const uint64_t *amounts, size_t n,
                         uint8_t out[DNA_V2_ROOT_LEN]);
 
+/* ── name_root (HF-4) ──────────────────────────────────────────────────
+ * The on-chain names (`v2_names`, design docs/plans/2026-10-02-onchain-
+ * names-design.md rev 4 §2 "name_root"; tags approved by decision
+ * 2026-10-02-onchain-names.md item 18). The EXISTING 5th leg of
+ * core_state_root (it was the tagged-empty placeholder since S2), so the
+ * composition tag "NDS.CORE.v2" does not change: an empty table is
+ * byte-identical to every pre-H root. */
+
+/** Longest name the leaf accepts (DNAC_NAME_MAX_LEN, dnac.h). */
+#define DNA_V2_NAME_MAX_LEN 36u
+
+typedef struct {
+    uint8_t  name_len;                      /* 1..DNA_V2_NAME_MAX_LEN     */
+    uint8_t  name[DNA_V2_NAME_MAX_LEN];
+    uint8_t  owner[DNA_V2_ROOT_LEN];        /* 64 raw bytes               */
+    uint64_t registered_height;
+} dna_v2_name_row_t;
+
+/** leaf = SHA3-512("NDS.NMLEAF.v1" ‖ name_len u8 ‖ name ‖ owner[64]
+ *  ‖ registered_height u64 BE). @return 0 / -1 (NULL, length 0 or over
+ *  DNA_V2_NAME_MAX_LEN). */
+int dna_v2_name_leaf_hash(const dna_v2_name_row_t *row,
+                          uint8_t out[DNA_V2_ROOT_LEN]);
+
+/**
+ * name_root over `v2_names` rows in STRICTLY ascending BINARY name order
+ * (memcmp over the common prefix, then the shorter first — "abc" < "abcd"
+ * < "abd"; equal or descending neighbours reject); inner =
+ * SHA3-512("NDS.NMNODE.v1" ‖ left ‖ right); odd node promoted; n == 1 the
+ * single leaf; n == 0 -> DNA_V2_EMPTY_NAMES ("NDS.E.NAMES.v1").
+ * @return 0 / -1.
+ */
+int dna_v2_names_root(const dna_v2_name_row_t *rows, size_t n,
+                      uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** BINARY name order (SQLite's default BLOB collation): <0 / 0 / >0. */
+int dna_v2_name_cmp(const uint8_t *a, size_t a_len,
+                    const uint8_t *b, size_t b_len);
+
 /* ── treasury_root (final pre-testnet wipe, W-A) ───────────────────────
  * The keyless, locked treasury pools (`v2_treasury`): one balance per
  * pool id, seeded from the genesis document. A leg of system_state_root

@@ -219,6 +219,29 @@ int nodus_v2_env_sign_one_key(const dna_env_in_t *env_in,
 int nodus_v2_ruleset_from_pins(nodus_v2_ruleset_id_t *out,
                                dna_meter_policy_t *policy_storage);
 
+/* HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.6
+ * — pins header v2 with every generation). A client asks the node
+ * (dnac_ruleset_info), finds the pinned generation whose (SYSTEM, CORE)
+ * tuple EQUALS the answer — never by height — and builds with it; no
+ * match means the client is out of date (fail closed).
+ * nodus_v2_ruleset_from_pins above is generation 1 (kept for the web
+ * wallet's WASM module until it migrates to the _gen form). */
+
+/** Number of generations nodus_ruleset_pins.h carries (1..count). */
+uint32_t nodus_v2_pins_generation_count(void);
+
+/** One pinned generation's (SYSTEM, CORE) tuples; any out may be NULL.
+ *  @return NODUS_V2_SPEND_OK / _ERR_ARG (unknown generation). */
+int nodus_v2_pins_tuples(uint32_t generation, uint32_t *sys_version,
+                         uint8_t sys_hash[64], uint32_t *core_version,
+                         uint8_t core_hash[64]);
+
+/** nodus_v2_ruleset_from_pins for generation `generation`.
+ *  @return NODUS_V2_SPEND_OK / _ERR_ARG / _ERR_PINS. */
+int nodus_v2_ruleset_from_pins_gen(uint32_t generation,
+                                   nodus_v2_ruleset_id_t *out,
+                                   dna_meter_policy_t *policy_storage);
+
 /* ── plan ───────────────────────────────────────────────────────────── */
 
 typedef struct {

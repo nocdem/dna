@@ -37,6 +37,15 @@
  * (spend_out + spend_in), plus a BURN row, a SYSTEM record row and a
  * standalone fee row. */
 #define AI_MAX_ROWS  (2u * NODUS_RT_DESC_MAX_OUT + 3u)
+/* HF-4: a NAME_REGISTER has no BURN row and no SYSTEM record, so its
+ * "name" row takes one of those slots — the bound above still holds. */
+
+/* HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.7):
+ * the "name" row kind — a registration, on its owner, amount = the price.
+ * Defined HERE beside AI_KINDS because nodus_witness_addr_index.h (where
+ * the other kinds live) was outside the HF-4 file set; the client's
+ * AHD_KINDS (nodus_client.c) and the nodus.h list name the same string. */
+#define NODUS_ADDR_KIND_NAME              "name"
 
 typedef struct {
     uint8_t     owner[64];
@@ -381,6 +390,14 @@ repeated:
             ai_row(&rows[n++], payer, NODUS_ADDR_KIND_BURN, core->burned,
                    AI_NATIVE, NULL);
         }
+        /* HF-4 (design §1.7): a registration is a "name" row on the
+         * owner (the payer — the registration's ONE signer), amount =
+         * the price paid into the reward pool (never a burn) */
+        if (core->name_len > 0) {
+            if (!payer) goto no_payer;
+            ai_row(&rows[n++], payer, NODUS_ADDR_KIND_NAME,
+                   core->name_price, AI_NATIVE, NULL);
+        }
     }
 
     /* ── SYSTEM record ────────────────────────────────────────────── */
@@ -687,7 +704,8 @@ static const char *const AI_KINDS[] = {
     NODUS_ADDR_KIND_CLAIM, NODUS_ADDR_KIND_STAKE,
     NODUS_ADDR_KIND_DELEGATE, NODUS_ADDR_KIND_UNDELEGATE,
     NODUS_ADDR_KIND_UNSTAKE, NODUS_ADDR_KIND_VALIDATOR_UPDATE,
-    NODUS_ADDR_KIND_PAYOUT, NODUS_ADDR_KIND_RELEASE, NODUS_ADDR_KIND_FEE
+    NODUS_ADDR_KIND_PAYOUT, NODUS_ADDR_KIND_RELEASE, NODUS_ADDR_KIND_FEE,
+    NODUS_ADDR_KIND_NAME
 };
 
 /* @return the canonical kind string for a stored value, NULL when the

@@ -96,6 +96,10 @@
  * refuses a 0 tip before encoding. */
 #define CLI_ENV_EXPIRY_AHEAD \
     ((uint64_t)NODUS_CMT_APP_MAX_EXPIRY_AHEAD - 10u)
+/* HF-4: the expiry every builder uses — the margin above, capped at the
+ * RULESET_GEN2 height while the node is below it (defined with
+ * cli_select_runtimes). */
+static uint64_t cli_env_expiry(uint64_t tip);
 
 /* ── Globals ─────────────────────────────────────────────────────── */
 
@@ -1063,7 +1067,7 @@ static int cc_appr_build_pass1(cc_appr_envelope_t *b, dna_env_preflight_t *pf,
      * blocks at the 4 s commit timeout is ~6 minutes. The expiry is part
      * of the signed digest, so it is fixed here, before anyone signs. */
     if (tip == 0) return -1;     /* callers refuse a 0 tip first        */
-    b->env_in.expiry_height       = tip + CLI_ENV_EXPIRY_AHEAD;
+    b->env_in.expiry_height       = cli_env_expiry(tip);
     b->env_in.fee_amount          = 0;   /* SYSTEM leg rule               */
     b->env_in.res_max_total_units = 200000;
     b->env_in.leg_count           = 1;
@@ -1126,18 +1130,105 @@ static void cc_appr_envelope_free(cc_appr_envelope_t *b) {
  *
  * HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.1):
  * the compiled table is a list of rule-set GENERATIONS, so the lookup is
- * (domain, generation) — never "the first entry of this domain". Every
- * builder in this file passes CLI_RULESET_GENERATION below: generation 1,
- * the generation every chain runs until its RULESET_GEN2 height. From
- * that height a generation-1 envelope fails closed at the node's
- * preflight (ERR_CTX_VERSION — SYSTEM v6 != v7, CORE v4 != v5), never
- * silently. Choosing the generation from the node's answer (the
- * dnac_ruleset_info query, design §1.6) is the clients' part of HF-4 and
- * replaces this one site. @return the runtime, or NULL. */
-#define CLI_RULESET_GENERATION NODUS_RT_GEN_1
+ * (domain, generation) — never "the first entry of this domain". A
+ * chain runs generation 1 until its RULESET_GEN2 height; from it a
+ * generation-1 envelope fails closed at the node's preflight
+ * (ERR_CTX_VERSION — SYSTEM v6 != v7, CORE v4 != v5), never silently.
+ * Every builder therefore asks the node, on its own session,
+ * which generation it runs (cli_select_runtimes below — dnac_ruleset_info,
+ * design §1.6) and builds with THAT generation; the lookups made before
+ * the session exists use generation 1 only as a "the table is present"
+ * check and are replaced after connect. @return the runtime, or NULL. */
 static const nodus_domain_runtime_t *cli_builtin_runtime(uint32_t domain_id,
                                                          uint32_t generation) {
     return nodus_runtime_for_generation(generation, domain_id);
+}
+
+/* HF-4 — the node's last dnac_ruleset_info answer on this process's
+ * session (the expiry cap below reads its H). */
+static nodus_dnac_ruleset_info_t g_cli_ri;
+static int g_cli_ri_valid = 0;
+
+/* HF-4 (design §1.6): ask the node which rule-set generation governs its
+ * tip + 1 and pick the compiled generation whose (SYSTEM, CORE) tuple
+ * EQUALS the answer — never by height. An older node (unknown method), a
+ * failed query or no matching generation FAILS CLOSED: nothing is built.
+ * `sys_rt` / `core_rt` (either may be NULL) receive that generation's
+ * entries. @return 0 / -1 (reason printed). */
+static int cli_select_runtimes(nodus_client_t *client,
+                               const nodus_domain_runtime_t **sys_rt,
+                               const nodus_domain_runtime_t **core_rt) {
+    nodus_dnac_ruleset_info_t ri;
+    int rc = nodus_client_dnac_ruleset_info(client, &ri);
+    if (rc != 0) {
+        fprintf(stderr, "dnac_ruleset_info failed (rc=%d) — the node is "
+                "older than this CLI or did not answer; refusing to build "
+                "an envelope for a rule-set generation it did not name\n",
+                rc);
+        return -1;
+    }
+    for (uint32_t g = 1; g <= nodus_runtime_generation_count(); g++) {
+        const nodus_domain_runtime_t *s =
+            cli_builtin_runtime(DNA_DOMAIN_SYSTEM, g);
+        const nodus_domain_runtime_t *c =
+            cli_builtin_runtime(DNA_DOMAIN_CORE, g);
+        if (!s || !c) continue;
+        if (s->ruleset_version == ri.sys_version &&
+            memcmp(s->ruleset_hash, ri.sys_hash, 64) == 0 &&
+            c->ruleset_version == ri.core_version &&
+            memcmp(c->ruleset_hash, ri.core_hash, 64) == 0) {
+            if (sys_rt) *sys_rt = s;
+            if (core_rt) *core_rt = c;
+            g_cli_ri = ri;
+            g_cli_ri_valid = 1;
+            return 0;
+        }
+    }
+    fprintf(stderr, "the node runs a rule-set generation this CLI does not "
+            "carry (generation %u: SYSTEM v%u, CORE v%u) — this CLI is out "
+            "of date; rebuild it\n", (unsigned)ri.generation,
+            (unsigned)ri.sys_version, (unsigned)ri.core_version);
+    return -1;
+}
+
+/* HF-4: the compiled CORE entry an already-built envelope was made for —
+ * the generation whose CORE ruleset_version equals the envelope's CORE
+ * leg's (versions strictly increase across generations, runtime
+ * selfcheck, so at most one matches). Offline paths (msig sign/combine)
+ * judge an export with it. @return the entry or NULL. */
+static const nodus_domain_runtime_t *
+cli_core_runtime_for_env(const uint8_t *env, size_t env_len) {
+    dna_env_view_t *v = calloc(1, sizeof(*v));
+    const nodus_domain_runtime_t *hit = NULL;
+    if (!v) return NULL;
+    if (dna_env_decode(env, env_len, v) == 0) {
+        for (uint16_t l = 0; l < v->leg_count && !hit; l++) {
+            if (v->leg[l].domain_id != DNA_DOMAIN_CORE) continue;
+            for (uint32_t g = 1; g <= nodus_runtime_generation_count(); g++) {
+                const nodus_domain_runtime_t *c =
+                    cli_builtin_runtime(DNA_DOMAIN_CORE, g);
+                if (c && c->ruleset_version == v->leg[l].ruleset_version) {
+                    hit = c;
+                    break;
+                }
+            }
+        }
+    }
+    free(v);
+    return hit;
+}
+
+/* HF-4 (design §1.6 "Expiry"): tip + CLI_ENV_EXPIRY_AHEAD, capped at H-1
+ * while tip + 1 < H (H = the committed RULESET_GEN2 height the node
+ * reported) — an envelope built for generation 1 must not outlive the
+ * last generation-1 block. With no vote (H = 0) or once tip + 1 >= H the
+ * plain margin applies. */
+static uint64_t cli_env_expiry(uint64_t tip) {
+    uint64_t e = tip + CLI_ENV_EXPIRY_AHEAD;
+    if (g_cli_ri_valid && g_cli_ri.gen2_height != 0 &&
+        tip + 1u < g_cli_ri.gen2_height && e > g_cli_ri.gen2_height - 1u)
+        e = g_cli_ri.gen2_height - 1u;
+    return e;
 }
 
 /* ── Stage E.3 — chain-config propose ───────────────────────────── */
@@ -1581,8 +1672,10 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
      * on every chain SYSTEM is even resolvable on. A mismatched binary
      * version fails closed at preflight (ERR_CTX_VERSION) rather than
      * building a wrongly-keyed envelope. The lookup itself is the shared
-     * cli_builtin_runtime (also used by `v2-envelope spend`). */
-    const nodus_domain_runtime_t *sys_rt = cli_builtin_runtime(DNA_DOMAIN_SYSTEM, CLI_RULESET_GENERATION);
+     * cli_builtin_runtime (also used by `v2-envelope spend`). HF-4: the
+     * generation is the one the node names (cli_select_runtimes). */
+    const nodus_domain_runtime_t *sys_rt = NULL;
+    if (cli_select_runtimes(&client, &sys_rt, NULL) != 0) goto done;
     if (!sys_rt) {
         fprintf(stderr, "SYSTEM runtime not found in the compiled "
                         "production table\n");
@@ -3290,8 +3383,8 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
 
     /* SYSTEM + CORE ruleset from the compiled table — the registry a
      * version-3 chain is seeded with (cli_builtin_runtime's own comment). */
-    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM, CLI_RULESET_GENERATION);
-    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE, CLI_RULESET_GENERATION);
+    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM, NODUS_RT_GEN_1);
+    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE, NODUS_RT_GEN_1);
     if (!sys_rt || !core_rt) {
         fprintf(stderr, "SYSTEM / CORE runtime not found in the compiled "
                 "production table\n");
@@ -3343,6 +3436,8 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             goto done;
         }
     }
+    /* HF-4: build for the generation the node names */
+    if (cli_select_runtimes(&client, &sys_rt, &core_rt) != 0) goto done;
 
     /* HF-1 — the gas price (decision 2026-09-25-gas-price.md "HF-1 O4":
      * the CLI price source is dnac_fee_info's gas_price), read on this
@@ -3422,7 +3517,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
      * expiry within (tip, tip + NODUS_CMT_APP_MAX_EXPIRY_AHEAD], with the
      * gossip margin (CLI_ENV_EXPIRY_AHEAD). `tip` is the node's own
      * committed tip from the dnac_utxo reply; a 0 tip was refused above. */
-    sreq.expiry_height  = tip + CLI_ENV_EXPIRY_AHEAD;
+    sreq.expiry_height  = cli_env_expiry(tip);
     sreq.pk             = keys[0].pk.bytes;
     sreq.sk             = keys[0].sk.bytes;
     sreq.amount         = bond;
@@ -3833,8 +3928,8 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
         goto done;
     qgp_fp_raw_to_hex(sender_raw, sender_fp);
 
-    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE, CLI_RULESET_GENERATION);
-    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM, CLI_RULESET_GENERATION);
+    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE, NODUS_RT_GEN_1);
+    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM, NODUS_RT_GEN_1);
     if (!core_rt || !sys_rt || !sys_rt->meter_policy) {
         fprintf(stderr, "CORE runtime / SYSTEM block metering policy not "
                 "found in the compiled production table\n");
@@ -3875,6 +3970,9 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
                 "needs a version-3 chain\n");
         goto done;
     }
+    /* HF-4: build for the generation the node names */
+    if (cli_select_runtimes(&client, &sys_rt, &core_rt) != 0) goto done;
+    cli_ruleset_id(core_rt, sys_rt, &rs);
 
     /* HF-1 — the committed gas price at tip + 1, on the SAME session
      * (decision 2026-09-25-gas-price.md "HF-1 O4": the CLI price source
@@ -4057,7 +4155,7 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
          * 1): expiry within (tip, tip + NODUS_CMT_APP_MAX_EXPIRY_AHEAD],
          * with the gossip margin (CLI_ENV_EXPIRY_AHEAD); a 0 tip was
          * refused above */
-        breq.expiry_height = tip + CLI_ENV_EXPIRY_AHEAD;
+        breq.expiry_height = cli_env_expiry(tip);
         breq.pk            = keys[0].pk.bytes;
         breq.sk            = keys[0].sk.bytes;
         breq.to_fp         = to_raw;
@@ -4462,8 +4560,8 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
     if (to_hex) qgp_fp_raw_to_hex(to_raw, to_fp);   /* canonical lowercase */
     else        snprintf(to_fp, sizeof(to_fp), "%s", creator_fp);
 
-    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE, CLI_RULESET_GENERATION);
-    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM, CLI_RULESET_GENERATION);
+    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE, NODUS_RT_GEN_1);
+    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM, NODUS_RT_GEN_1);
     if (!core_rt || !sys_rt || !sys_rt->meter_policy) {
         fprintf(stderr, "CORE runtime / SYSTEM block metering policy not "
                 "found in the compiled production table\n");
@@ -4502,6 +4600,8 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
                 "token-create needs a version-3 chain\n");
         goto done;
     }
+    /* HF-4: build for the generation the node names */
+    if (cli_select_runtimes(&client, &sys_rt, &core_rt) != 0) goto done;
 
     /* HF-1 — the committed gas price at tip + 1, on the SAME session (the
      * spend builder's source, decision 2026-09-25-gas-price.md "HF-1
@@ -4708,7 +4808,7 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
         memset(&env_in, 0, sizeof(env_in));
         /* the mempool lifetime rule (decision 2026-09-25-mempool-policy.md
          * 1), the spend builder's margin; a 0 tip was refused above */
-        env_in.expiry_height = tip + CLI_ENV_EXPIRY_AHEAD;
+        env_in.expiry_height = cli_env_expiry(tip);
         env_in.fee_amount    = fee;
         env_in.leg_count     = 1;
         env_in.legs          = &leg;
@@ -4791,6 +4891,507 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
             goto done;
     }
     fflush(stdout);
+    rc = 0;
+
+done:
+    free(env_bytes);
+    free(call);
+    free(auth);
+    free(pf);
+    free(coins);
+    if (utxos_valid) nodus_client_free_utxo_result(&utxos);
+    if (connected) nodus_client_close(&client);
+    if (keys) {
+        for (int i = 0; i < 4; i++) nodus_identity_clear(&keys[i]);
+        free(keys);
+    }
+    return rc;
+}
+
+/* ══ HF-4 — on-chain names (design docs/plans/2026-10-02-onchain-names-
+ *    design.md rev 4 §1.6, §2; decision 2026-10-02-onchain-names.md) ═══ */
+
+/* The NAME_REGISTER call's input ceiling (rt_native.c RTN_NAME_MAX_IN:
+ * the 16-read budget minus the pool, NAME and OWNER reads). */
+#define T8_NAME_MAX_IN    13u
+#define T8_NAME_MAX_OUTS  1u    /* native change only                   */
+
+/* The EXACT (res_max_effects, res_max_effect_bytes) of one CORE
+ * NAME_REGISTER leg — rtn_name_exec's effect list: n_out UTXO CREATEs
+ * (key 64, value 284), ONE NAME CREATE (key name_len, value 72), ONE pool
+ * SET (key 1, value 8), n_in DELETEs (key 64, value 0):
+ *   effects = n_in + n_out + 2
+ *   bytes   = 23 + 84·effects + n_out·(64 + 284) + (name_len + 72)
+ *             + (1 + 8) + n_in·64 */
+static void t8_name_effect_decl(uint32_t n_in, uint32_t n_out,
+                                uint32_t name_len, uint32_t *effects_out,
+                                uint32_t *bytes_out) {
+    const uint32_t effects = n_in + n_out + 2u;
+    *effects_out = effects;
+    *bytes_out = (uint32_t)DNA_EFFECT_FIXED_HEAD +
+                 (uint32_t)DNA_EFFECT_RECORD_LEN * effects +
+                 n_out * (64u + NODUS_RT_CORE_UTXO_REC_LEN) +
+                 (name_len + 72u) + (1u + 8u) + n_in * 64u;
+}
+
+/* ASCII-only lower-casing (design §2: a locale tolower maps 'I' to 'ı'
+ * under tr_TR); the result is then judged by the consensus byte rule.
+ * @return 0 / -1 (too long). */
+static int t8_name_lower(const char *in, char out[DNAC_NAME_MAX_LEN + 1]) {
+    size_t n = strlen(in);
+    if (n > DNAC_NAME_MAX_LEN) return -1;
+    for (size_t i = 0; i < n; i++) {
+        char c = in[i];
+        out[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+    }
+    out[n] = '\0';
+    return 0;
+}
+
+/* One read-only session as the CLI's own identity. 0 / -1. */
+static int t8_session(nodus_client_t *client, const char *ip, uint16_t port) {
+    nodus_client_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", ip);
+    cfg.servers[0].port = port;
+    cfg.server_count    = 1;
+    cfg.auto_reconnect  = false;
+    if (nodus_client_init(client, &cfg, &identity) != 0) {
+        fprintf(stderr, "client_init failed\n");
+        return -1;
+    }
+    if (nodus_client_connect(client) != 0) {
+        fprintf(stderr, "client connect failed (%s:%u)\n", ip,
+                (unsigned)port);
+        nodus_client_close(client);
+        return -1;
+    }
+    return 0;
+}
+
+/* `ruleset-info`: the generation the node runs, and whether this CLI
+ * carries it. */
+static int cmd_ruleset_info(const char *server_ip, uint16_t server_port) {
+    nodus_client_t client;
+    if (t8_session(&client, server_ip, server_port) != 0) return 1;
+    nodus_dnac_ruleset_info_t ri;
+    int qrc = nodus_client_dnac_ruleset_info(&client, &ri);
+    nodus_client_close(&client);
+    if (qrc != 0) {
+        fprintf(stderr, "dnac_ruleset_info failed (rc=%d) — an older node "
+                "does not know the method\n", qrc);
+        return 1;
+    }
+    printf("tip=%llu generation=%u (governs tip+1)\n",
+           (unsigned long long)ri.tip, (unsigned)ri.generation);
+    printf("  SYSTEM v%u hash=", (unsigned)ri.sys_version);
+    for (int b = 0; b < 64; b++) printf("%02x", ri.sys_hash[b]);
+    printf("\n  CORE   v%u hash=", (unsigned)ri.core_version);
+    for (int b = 0; b < 64; b++) printf("%02x", ri.core_hash[b]);
+    printf("\n  policy digest=");
+    for (int b = 0; b < 64; b++) printf("%02x", ri.policy_digest[b]);
+    printf("\n  RULESET_GEN2 height H=%llu%s\n",
+           (unsigned long long)ri.gen2_height,
+           ri.gen2_height ? "" : " (no vote committed)");
+    printf("  node D2=0x%016llx  this CLI D2=0x%016llx%s\n",
+           (unsigned long long)ri.d2,
+           (unsigned long long)DNAC_CFG_RULESET_GEN2_D2,
+           ri.d2 == (uint64_t)DNAC_CFG_RULESET_GEN2_D2 ? "" : "  MISMATCH");
+    int carried = 0;
+    for (uint32_t g = 1; g <= nodus_runtime_generation_count(); g++) {
+        const nodus_domain_runtime_t *s = cli_builtin_runtime(DNA_DOMAIN_SYSTEM, g);
+        const nodus_domain_runtime_t *c = cli_builtin_runtime(DNA_DOMAIN_CORE, g);
+        if (s && c && s->ruleset_version == ri.sys_version &&
+            memcmp(s->ruleset_hash, ri.sys_hash, 64) == 0 &&
+            c->ruleset_version == ri.core_version &&
+            memcmp(c->ruleset_hash, ri.core_hash, 64) == 0) {
+            printf("  this CLI carries it as compiled generation %u\n",
+                   (unsigned)g);
+            carried = 1;
+        }
+    }
+    if (!carried)
+        printf("  this CLI does NOT carry it — out of date, rebuild\n");
+    return carried ? 0 : 1;
+}
+
+/* `name lookup <name>` / `name of <fp128>`. */
+static int cmd_name_query(const char *server_ip, uint16_t server_port,
+                          int is_of, const char *arg) {
+    char lname[DNAC_NAME_MAX_LEN + 1];
+    if (!is_of) {
+        if (t8_name_lower(arg, lname) != 0 ||
+            !dnac_name_bytes_ok((const uint8_t *)lname, strlen(lname))) {
+            fprintf(stderr, "a name is 3-36 of a-z0-9 (an all-hex name of 8+ "
+                    "characters is never a name)\n");
+            return 1;
+        }
+    } else if (strlen(arg) != 128) {
+        fprintf(stderr, "the owner is 128 hex characters (a fingerprint)\n");
+        return 1;
+    }
+    char lowfp[129];
+    if (is_of) {
+        for (int i = 0; i < 128; i++) {
+            char c = arg[i];
+            lowfp[i] = (c >= 'A' && c <= 'F') ? (char)(c - 'A' + 'a') : c;
+        }
+        lowfp[128] = '\0';
+    }
+    nodus_client_t client;
+    if (t8_session(&client, server_ip, server_port) != 0) return 1;
+    nodus_dnac_name_result_t r;
+    int qrc = is_of ? nodus_client_dnac_name_of(&client, lowfp, &r)
+                    : nodus_client_dnac_name_lookup(&client, lname, &r);
+    nodus_client_close(&client);
+    if (qrc != 0) {
+        fprintf(stderr, "%s failed (rc=%d)\n",
+                is_of ? "dnac_name_of" : "dnac_name_lookup", qrc);
+        return 1;
+    }
+    if (!r.found) {
+        printf("%s: not registered (committed height %llu)\n",
+               is_of ? lowfp : lname,
+               (unsigned long long)r.committed_height);
+        return 2;
+    }
+    if (is_of)
+        printf("name=%s registered_height=%llu committed_height=%llu\n",
+               r.name, (unsigned long long)r.registered_height,
+               (unsigned long long)r.committed_height);
+    else
+        printf("owner=%s registered_height=%llu committed_height=%llu\n",
+               r.owner, (unsigned long long)r.registered_height,
+               (unsigned long long)r.committed_height);
+    return 0;
+}
+
+/* `name register <name> --keys <dir> (--dry-run | --submit ip:port)
+ *  [--fee <raw>]`: ONE CORE NAME_REGISTER envelope, owner = the --keys
+ * identity (its one signature), paid from its own native coins. The
+ * price comes from dnac_fee_info's "np" at tip + 1 and is declared in the
+ * call; the network fee is the floor (or units × gas price). Generation 2
+ * only: on a node still at generation 1 it refuses before building. */
+static int cmd_name_register(const char *server_ip, uint16_t server_port,
+                             int argc, char **argv, int cmd_start) {
+    const char *keys_csv = NULL, *submit = NULL, *raw_name = NULL;
+    uint64_t fee = 0;
+    int dry_run = 0, have_fee = 0, bad_arg = 0;
+    static const uint8_t native_tok[64] = {0};
+
+    for (int i = cmd_start + 2; i < argc; i++) {  /* skip "name register" */
+        const char *a = argv[i];
+        char *end = NULL;
+        if      (!strcmp(a, "--keys")   && i + 1 < argc) keys_csv = argv[++i];
+        else if (!strcmp(a, "--submit") && i + 1 < argc) submit   = argv[++i];
+        else if (!strcmp(a, "--fee")    && i + 1 < argc) {
+            const char *v = argv[++i];
+            if (v[0] < '0' || v[0] > '9') { bad_arg = 1; break; }
+            errno = 0;
+            fee = strtoull(v, &end, 10);
+            if (!end || *end != '\0' || errno == ERANGE) { bad_arg = 1; break; }
+            have_fee = 1;
+        } else if (!strcmp(a, "--dry-run")) dry_run = 1;
+        else if (a[0] != '-' && !raw_name) raw_name = a;
+        else { bad_arg = 1; break; }
+    }
+    if (bad_arg || !keys_csv || !raw_name || (!submit && !dry_run)) {
+        fprintf(stderr,
+            "Usage: name register <name> --keys <keydir> "
+            "(--dry-run | --submit ip:port) [--fee <raw>]\n"
+            "  Registers <name> (3-36 of a-z0-9, lower-cased ASCII-only) to "
+            "the --keys\n"
+            "  identity: first come, one name per ID, permanent. Pays the "
+            "price for the\n"
+            "  name's length (dnac_fee_info) into the reward pool, plus the "
+            "network fee.\n");
+        return 1;
+    }
+    char name[DNAC_NAME_MAX_LEN + 1];
+    if (t8_name_lower(raw_name, name) != 0 ||
+        !dnac_name_bytes_ok((const uint8_t *)name, strlen(name))) {
+        fprintf(stderr, "a name is 3-36 of a-z0-9 (an all-hex name of 8+ "
+                "characters is never a name)\n");
+        return 1;
+    }
+    const size_t name_len = strlen(name);
+
+    int rc = 1, connected = 0, utxos_valid = 0;
+    nodus_identity_t *keys = NULL;
+    nodus_v2_coin_t *coins = NULL;
+    uint8_t *call = NULL, *auth = NULL, *env_bytes = NULL;
+    dna_env_preflight_t *pf = NULL;
+    nodus_dnac_utxo_result_t utxos;
+    memset(&utxos, 0, sizeof(utxos));
+    nodus_client_t client;
+    memset(&client, 0, sizeof(client));
+    const nodus_domain_runtime_t *core_rt = NULL, *sys_rt = NULL;
+
+    keys = calloc(4, sizeof(*keys));
+    if (!keys) return 1;
+    if (act_load_keys(keys_csv, keys, 4) != 1) {
+        fprintf(stderr, "name register needs exactly one --keys identity\n");
+        goto done;
+    }
+    uint8_t owner_raw[64];
+    char owner_fp[QGP_FP_HEX_BUFFER];
+    if (qgp_sha3_512(keys[0].pk.bytes, DNAC_PUBKEY_SIZE, owner_raw) != 0)
+        goto done;
+    qgp_fp_raw_to_hex(owner_raw, owner_fp);
+
+    {
+        char sip[64];
+        uint16_t sport = 0;
+        if (t6_resolve_target(submit, server_ip, server_port, sip,
+                              &sport) != 0) {
+            fprintf(stderr, "invalid --submit target (and no -s server)\n");
+            goto done;
+        }
+        nodus_client_config_t cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", sip);
+        cfg.servers[0].port = sport;
+        cfg.server_count    = 1;
+        cfg.auto_reconnect  = false;
+        if (nodus_client_init(&client, &cfg, &keys[0]) != 0) goto done;
+        connected = 1;
+        if (nodus_client_connect(&client) != 0) {
+            fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
+            goto done;
+        }
+    }
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    {
+        bool has = false;
+        if (nodus_client_dnac_chain_id32(&client, &has, chain32) != 0 ||
+            !has) {
+            fprintf(stderr, "this node is not on a version-3 chain\n");
+            goto done;
+        }
+    }
+    if (cli_select_runtimes(&client, &sys_rt, &core_rt) != 0) goto done;
+    if (core_rt->generation < NODUS_RT_GEN_2) {
+        fprintf(stderr, "the node still runs rule-set generation %u — names "
+                "open at its RULESET_GEN2 height%s; nothing was built\n",
+                (unsigned)core_rt->generation,
+                g_cli_ri.gen2_height ? "" : " (no vote committed yet)");
+        goto done;
+    }
+    {
+        nodus_dnac_name_result_t taken;
+        int nrc = nodus_client_dnac_name_lookup(&client, name, &taken);
+        if (nrc != 0) {
+            fprintf(stderr, "dnac_name_lookup failed (rc=%d)\n", nrc);
+            goto done;
+        }
+        if (taken.found) {
+            fprintf(stderr, "%s is already registered (owner %.16s...) — "
+                    "nothing was built\n", name, taken.owner);
+            goto done;
+        }
+        nodus_dnac_name_result_t mine;
+        nrc = nodus_client_dnac_name_of(&client, owner_fp, &mine);
+        if (nrc != 0) {
+            fprintf(stderr, "dnac_name_of failed (rc=%d)\n", nrc);
+            goto done;
+        }
+        if (mine.found) {
+            fprintf(stderr, "this ID already holds the name %s (one name per "
+                    "ID) — nothing was built\n", mine.name);
+            goto done;
+        }
+    }
+    uint64_t price = 0, gas_price = 0;
+    {
+        nodus_dnac_name_prices_t np;
+        int prc = nodus_client_dnac_name_prices(&client, &np);
+        if (prc != 0) {
+            fprintf(stderr, "dnac_fee_info carries no name prices (rc=%d) — "
+                    "refusing to guess a price\n", prc);
+            goto done;
+        }
+        price = np.price[name_len >= 6 ? 3 : name_len - 3];
+        nodus_dnac_fee_info_t fi;
+        memset(&fi, 0, sizeof(fi));
+        int frc = nodus_client_dnac_fee_info(&client, &fi);
+        if (frc != 0) {
+            fprintf(stderr, "dnac_fee_info failed (rc=%d)\n", frc);
+            goto done;
+        }
+        gas_price = fi.gas_price;
+        uint64_t floor_fee = DNAC_MIN_FEE_RAW > NODUS_W_BASE_TX_FEE
+                                 ? DNAC_MIN_FEE_RAW : NODUS_W_BASE_TX_FEE;
+        if (have_fee && fee < floor_fee) {
+            fprintf(stderr, "--fee %llu is below the network fee floor %llu "
+                    "raw\n", (unsigned long long)fee,
+                    (unsigned long long)floor_fee);
+            goto done;
+        }
+        if (!have_fee) fee = floor_fee;
+    }
+
+    int urc = nodus_client_dnac_utxo(&client, owner_fp,
+                                     NODUS_DNAC_MAX_UTXO_RESULTS, &utxos);
+    if (urc != 0) {
+        fprintf(stderr, "dnac_utxo query failed (rc=%d)\n", urc);
+        goto done;
+    }
+    utxos_valid = 1;
+    const uint64_t tip = utxos.block_height;
+    if (tip == 0) {
+        fprintf(stderr, "the node reported tip 0 — refusing to anchor an "
+                "expiry on it\n");
+        goto done;
+    }
+    coins = calloc((size_t)(utxos.count > 0 ? utxos.count : 1),
+                   sizeof(*coins));
+    if (!coins) goto done;
+    int n_coins = 0;
+    for (int i = 0; i < utxos.count; i++) {
+        const nodus_dnac_utxo_entry_t *e = &utxos.entries[i];
+        if (e->amount == 0) continue;
+        if (memcmp(e->token_id, native_tok, 64) != 0) continue;
+        if (e->unlock_block >= tip + 1) continue;    /* locked at tip+1  */
+        nodus_v2_coin_t *c = &coins[n_coins++];
+        memcpy(c->nul, e->nullifier, 64);
+        c->amount = e->amount;
+        c->kind = 0;
+        c->used = 0;
+    }
+    if (nodus_v2_spend_sort_coins(coins, n_coins,
+                                  NODUS_V2_SPEND_ORDER_LARGEST_FIRST) != 0)
+        goto done;
+
+    const uint32_t alen = 1u + NODUS_RT_AUTH_SIGNER_LEN;
+    call = malloc(1 + DNAC_NAME_MAX_LEN + 8 + 2 + (size_t)T8_NAME_MAX_IN * 64 +
+                  (size_t)T8_NAME_MAX_OUTS * NODUS_V2_SPEND_OUT_LEN);
+    auth = calloc(1, alen);
+    pf   = calloc(1, sizeof(*pf));
+    if (!call || !auth || !pf) goto done;
+
+    dna_env_leg_ctx_t lctx;
+    memset(&lctx, 0, sizeof(lctx));
+    lctx.domain_id       = DNA_DOMAIN_CORE;
+    lctx.ruleset_version = core_rt->ruleset_version;
+    memcpy(lctx.ruleset_hash, core_rt->ruleset_hash, 64);
+
+    nodus_v2_spend_plan_t plan;
+    dna_env_leg_in_t leg;
+    dna_env_in_t env_in;
+    uint64_t units = 0, change = 0;
+    for (int pass = 0; ; pass++) {
+        uint64_t need = 0;
+        if (fee > UINT64_MAX - price) {
+            fprintf(stderr, "fee + price overflows u64\n");
+            goto done;
+        }
+        need = fee + price;
+        memset(&plan, 0, sizeof(plan));
+        for (int i = 0; i < n_coins; i++) coins[i].used = 0;
+        int prc = nodus_v2_spend_pick(coins, n_coins, 0, need, &plan,
+                                      &plan.native_in);
+        if (prc == 0 && plan.n_in > (int)T8_NAME_MAX_IN) prc = -2;
+        if (prc != 0) {
+            fprintf(stderr, "cannot fund price %llu + fee %llu raw from at "
+                    "most %u unlocked native coin(s) (%d listed) — nothing "
+                    "was submitted\n", (unsigned long long)price,
+                    (unsigned long long)fee, (unsigned)T8_NAME_MAX_IN,
+                    n_coins);
+            goto done;
+        }
+        change = plan.native_in - need;
+
+        uint8_t nulls[NODUS_V2_SPEND_MAX_IN][64];
+        for (int j = 0; j < plan.n_in; j++)
+            memcpy(nulls[j], coins[plan.idx[j]].nul, 64);
+        qsort(nulls, (size_t)plan.n_in, 64, nodus_v2_nul_cmp);
+
+        size_t off = 0;
+        call[off++] = (uint8_t)name_len;
+        memcpy(call + off, name, name_len);          off += name_len;
+        for (int b = 0; b < 8; b++)
+            call[off++] = (uint8_t)(price >> (56 - 8 * b));
+        call[off++] = (uint8_t)plan.n_in;
+        for (int j = 0; j < plan.n_in; j++) {
+            memcpy(call + off, nulls[j], 64);
+            off += 64;
+        }
+        const uint32_t n_out = change > 0 ? 1u : 0u;
+        call[off++] = (uint8_t)n_out;
+        if (n_out) {
+            uint8_t seed[32];
+            if (nodus_random(seed, sizeof(seed)) != 0) goto done;
+            nodus_v2_xfer_out_put(call + off, owner_fp, change, NULL, seed);
+            off += NODUS_V2_SPEND_OUT_LEN;
+        }
+
+        memset(&leg, 0, sizeof(leg));
+        leg.hdr.domain_id       = DNA_DOMAIN_CORE;
+        leg.hdr.runtime_op      = DNA_CORERULE_NAME_REGISTER;
+        leg.hdr.ruleset_version = core_rt->ruleset_version;
+        leg.hdr.access_mode     = DNA_ENV_ACCESS_INVOKE;
+        leg.hdr.auth_kind       = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+        leg.hdr.call_len        = (uint32_t)off;
+        leg.hdr.auth_len        = alen;
+        t8_name_effect_decl((uint32_t)plan.n_in, n_out, (uint32_t)name_len,
+                            &leg.hdr.res_max_effects,
+                            &leg.hdr.res_max_effect_bytes);
+        leg.call_data = call;
+        memset(auth, 0, alen);
+        leg.auth_data = auth;
+
+        memset(&env_in, 0, sizeof(env_in));
+        env_in.expiry_height = cli_env_expiry(tip);
+        env_in.fee_amount    = fee;
+        env_in.leg_count     = 1;
+        env_in.legs          = &leg;
+        /* reads: inputs + the pool + NAME + OWNER (read plan) */
+        if (nodus_v2_spend_ceiling(&env_in, sys_rt->meter_policy,
+                                   (uint32_t)plan.n_in + 3u, &units) != 0) {
+            fprintf(stderr, "could not size res_max_total_units\n");
+            goto done;
+        }
+        env_in.res_max_total_units = units;
+        if (gas_price == 0) break;
+        if (units > UINT64_MAX / gas_price) goto done;
+        const uint64_t required = units * gas_price;
+        if (required <= fee) break;
+        if (have_fee) {
+            fprintf(stderr, "--fee %llu is below units %llu x gas price %llu "
+                    "= %llu raw — nothing was submitted\n",
+                    (unsigned long long)fee, (unsigned long long)units,
+                    (unsigned long long)gas_price,
+                    (unsigned long long)required);
+            goto done;
+        }
+        if (pass >= 7) goto done;
+        fee = required;
+    }
+
+    uint8_t *auths[1] = { auth };
+    size_t env_len = 0;
+    if (cli_sign_one_key(&env_in, auths, &lctx, chain32, tip, &keys[0],
+                         &env_bytes, &env_len, pf) != 0)
+        goto done;
+    printf("name register: %s -> %.16s... price=%llu fee=%llu inputs=%d "
+           "change=%llu units=%llu expiry=%llu generation=%u\n", name,
+           owner_fp, (unsigned long long)price, (unsigned long long)fee,
+           plan.n_in, (unsigned long long)change, (unsigned long long)units,
+           (unsigned long long)env_in.expiry_height,
+           (unsigned)core_rt->generation);
+    printf("  wire_id=");
+    for (int b = 0; b < 64; b++) printf("%02x", pf->wire_id[b]);
+    printf("\n  intent_id=");
+    for (int b = 0; b < 64; b++) printf("%02x", pf->intent_id[b]);
+    printf("\n");
+    fflush(stdout);
+    if (dry_run) {
+        printf("  PREFLIGHT SELF-CHECK: OK (1 leg CORE NAME_REGISTER) — not "
+               "submitted (--dry-run)\n");
+    } else if (t6_submit_on(&client, &keys[0], pf->wire_id, env_bytes,
+                            (uint32_t)env_len) != 0) {
+        goto done;
+    }
     rc = 0;
 
 done:
@@ -5012,8 +5613,15 @@ static int msig_leg_open(const msig_export_t *x, dna_env_view_t *v,
 
 /* The CORE leg digest of the exported envelope, re-derived. */
 static int msig_digest(const msig_export_t *x, dna_env_preflight_t *pf) {
-    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE, CLI_RULESET_GENERATION);
-    if (!core_rt) return -1;
+    /* HF-4: the export was built for ONE generation (cli_select_runtimes
+     * on the exporter's session); its CORE leg names that ruleset_version */
+    const nodus_domain_runtime_t *core_rt =
+        cli_core_runtime_for_env(x->env, x->env_len);
+    if (!core_rt) {
+        fprintf(stderr, "the exported envelope's CORE leg names a ruleset "
+                "version this CLI does not carry\n");
+        return -1;
+    }
     dna_env_leg_ctx_t lctx;
     memset(&lctx, 0, sizeof(lctx));
     lctx.domain_id       = DNA_DOMAIN_CORE;
@@ -5232,8 +5840,8 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
         goto done;
     }
 
-    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE, CLI_RULESET_GENERATION);
-    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM, CLI_RULESET_GENERATION);
+    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE, NODUS_RT_GEN_1);
+    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM, NODUS_RT_GEN_1);
     if (!core_rt || !sys_rt || !sys_rt->meter_policy) goto done;
 
     /* ── the session (chain id, tip, gas price) — it signs nothing ─── */
@@ -5268,6 +5876,8 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
         fprintf(stderr, "this node is not on a version-3 chain\n");
         goto done;
     }
+    /* HF-4: build for the generation the node names */
+    if (cli_select_runtimes(&client, &sys_rt, &core_rt) != 0) goto done;
     uint64_t gas_price = 0;
     {
         nodus_dnac_fee_info_t fi;
@@ -5347,7 +5957,7 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
         leg.call_data = call;
         leg.auth_data = auth;
         memset(&env_in, 0, sizeof(env_in));
-        env_in.expiry_height = tip + CLI_ENV_EXPIRY_AHEAD;
+        env_in.expiry_height = cli_env_expiry(tip);
         env_in.fee_amount    = fee;
         env_in.leg_count     = 1;
         env_in.legs          = &leg;
@@ -5407,14 +6017,14 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
            n_in, (unsigned long long)sum_in, (unsigned long long)amount,
            (unsigned long long)fee, (unsigned long long)change,
            (unsigned long long)units, k_signers,
-           (unsigned long long)(tip + CLI_ENV_EXPIRY_AHEAD));
+           (unsigned long long)env_in.expiry_height);
     printf("  intent_id=");
     for (int b = 0; b < 64; b++) printf("%02x", pf->intent_id[b]);
     printf("\n  digest=");
     for (int b = 0; b < 64; b++) printf("%02x", pf->auth_digest[0][b]);
     printf("\n  export written to %s — next: `msig sign` by %ld co-signers, "
            "then `msig combine` before block %llu\n", export_path,
-           k_signers, (unsigned long long)(tip + CLI_ENV_EXPIRY_AHEAD));
+           k_signers, (unsigned long long)env_in.expiry_height);
     rc = 0;
 
 done:
@@ -5668,7 +6278,7 @@ static int cmd_msig_combine(const char *server_ip, uint16_t server_port,
     /* the chain's OWN auth hook, locally: >= M keys must be satisfied */
     {
         const nodus_domain_runtime_t *core_rt =
-            cli_builtin_runtime(DNA_DOMAIN_CORE, CLI_RULESET_GENERATION);
+            cli_core_runtime_for_env(x.env, x.env_len);
         nodus_rt_auth_verdict_t av;
         nodus_rt_exec_ctx_t ctx;
         memset(&ctx, 0, sizeof(ctx));
@@ -5763,6 +6373,9 @@ static void usage(const char *prog) {
     fprintf(stderr, "                   This identity's history from the node's local index\n");
     fprintf(stderr, "  ch_listen <uuid> [logfile]  Subscribe to channel on TCP 4003, log posts\n");
 #ifdef NODUS_CLI_HAS_DNAC
+    fprintf(stderr, "  ruleset-info     The rule-set generation the node runs (and if this CLI carries it)\n");
+    fprintf(stderr, "  name register <name> --keys <dir> (--dry-run | --submit ip:port) [--fee <raw>]\n");
+    fprintf(stderr, "  name lookup <name> | name of <fp128>   On-chain names (one node's answer)\n");
     fprintf(stderr, "  chain-config propose --param <NAME> --value <N> --effective <BLOCK>\n");
     fprintf(stderr, "  stake [--commission BPS] [--bond RAW = exactly 10M NODUS]   Bond this node identity as validator (S3)\n");
     fprintf(stderr, "                              [--nonce <N>]  (committee operator only)\n");
@@ -5972,6 +6585,33 @@ int main(int argc, char **argv) {
                                      optind);
         else
             rc = cmd_v2_envelope(server_ip, server_port, argc, argv, optind);
+        nodus_identity_clear(&identity);
+        return rc;
+    }
+
+    /* HF-4 — the rule-set generation the node runs, and on-chain names */
+    if (strcmp(command, "ruleset-info") == 0) {
+        int rc = cmd_ruleset_info(server_ip, server_port);
+        nodus_identity_clear(&identity);
+        return rc;
+    }
+    if (strcmp(command, "name") == 0) {
+        int rc;
+        const char *sub = optind + 1 < argc ? argv[optind + 1] : NULL;
+        if (sub && strcmp(sub, "register") == 0)
+            rc = cmd_name_register(server_ip, server_port, argc, argv,
+                                   optind);
+        else if (sub && (strcmp(sub, "lookup") == 0 ||
+                         strcmp(sub, "of") == 0) && optind + 2 < argc)
+            rc = cmd_name_query(server_ip, server_port,
+                                strcmp(sub, "of") == 0, argv[optind + 2]);
+        else {
+            fprintf(stderr, "Usage: name register <name> --keys <dir> "
+                    "(--dry-run | --submit ip:port) [--fee <raw>]\n"
+                    "       name lookup <name>\n"
+                    "       name of <fp128>\n");
+            rc = 1;
+        }
         nodus_identity_clear(&identity);
         return rc;
     }

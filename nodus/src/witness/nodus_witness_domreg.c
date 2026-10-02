@@ -9,7 +9,6 @@
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_runtime.h"
 #include "witness/nodus_witness_roots_v2.h"
-#include "witness/nodus_witness_v2_apply.h"   /* HF-4 switch declarations */
 
 #include <sqlite3.h>
 #include <stdlib.h>

@@ -342,6 +342,10 @@ static const char *WITNESS_DB_SCHEMA =
     "  owner_fp BLOB PRIMARY KEY,"
     "  amount INTEGER NOT NULL"
     ");"
+    /* HF-4 — the on-chain names (CORE name_root leg). The exact DDL and
+     * why it lives in the base schema: nodus_witness.h
+     * NODUS_V2_NAMES_DDL_BODY. */
+    NODUS_V2_NAMES_DDL ";"
     "CREATE TABLE IF NOT EXISTS v2_balance_copy ("
     "  epoch_start INTEGER NOT NULL,"
     "  validator_fp BLOB NOT NULL,"
@@ -576,6 +580,64 @@ static int witness_db_open_fail(nodus_witness_t *witness) {
     return -1;
 }
 
+/* HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §2
+ * "State") — the PER-OPEN shape check of `v2_names`: the table's stored
+ * sqlite_master.sql must be byte-identical to what THIS build's SQLite
+ * stores for NODUS_V2_NAMES_DDL. The reference text is produced by
+ * executing the same statement into a private ":memory:" database and
+ * reading its sqlite_master.sql back — no assumption about how SQLite
+ * normalizes stored DDL (IF NOT EXISTS, spacing), the same library
+ * answers both sides. The existing table_cols_exact (v2_schema.c) compares
+ * column NAMES only and runs only inside migration rungs; this compares
+ * the whole definition (types, CHECKs, UNIQUE, WITHOUT ROWID) on every
+ * open. A pre-existing table of the same name with another shape — the
+ * IF NOT EXISTS above would silently keep it — therefore refuses THIS
+ * node's open (node-local; every other node's table is its own).
+ * @return SQLITE_OK, or SQLITE_CORRUPT (a PERMANENT class — the open
+ *         refuses, waiting cannot fix a wrong table) / the failing rc. */
+static int witness_v2_names_ddl_check(sqlite3 *db) {
+    static const char *const q =
+        "SELECT sql FROM sqlite_master WHERE type='table' AND "
+        "name='v2_names'";
+    sqlite3 *mem = NULL;
+    sqlite3_stmt *a = NULL, *b = NULL;
+    int rc = sqlite3_open(":memory:", &mem);
+    if (rc != SQLITE_OK) {
+        if (mem) sqlite3_close(mem);
+        return rc;
+    }
+    rc = sqlite3_exec(mem, NODUS_V2_NAMES_DDL, NULL, NULL, NULL);
+    if (rc == SQLITE_OK)
+        rc = sqlite3_prepare_v2(mem, q, -1, &a, NULL);
+    if (rc == SQLITE_OK)
+        rc = sqlite3_prepare_v2(db, q, -1, &b, NULL);
+    if (rc == SQLITE_OK) {
+        int ra = sqlite3_step(a);
+        int rb = sqlite3_step(b);
+        if (ra != SQLITE_ROW) {
+            rc = (ra == SQLITE_DONE) ? SQLITE_INTERNAL : ra;
+        } else if (rb != SQLITE_ROW) {
+            /* the base schema just created it: absent is a fault */
+            rc = (rb == SQLITE_DONE) ? SQLITE_CORRUPT : rb;
+        } else {
+            const unsigned char *sa = sqlite3_column_text(a, 0);
+            const unsigned char *sb = sqlite3_column_text(b, 0);
+            int la = sqlite3_column_bytes(a, 0);
+            int lb = sqlite3_column_bytes(b, 0);
+            if (!sa || !sb || la != lb || memcmp(sa, sb, (size_t)la) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "v2_names exists with a shape "
+                              "this build did not create (sqlite_master.sql "
+                              "differs) — refusing to open this database");
+                rc = SQLITE_CORRUPT;
+            }
+        }
+    }
+    sqlite3_finalize(a);
+    sqlite3_finalize(b);
+    sqlite3_close(mem);
+    return rc;
+}
+
 /* ONE attempt at bringing `db_path` to a usable handle. Returns SQLITE_OK
  * on success, otherwise the sqlite code that decided the failure — and on
  * any failure the handle is CLOSED and NULLed by witness_db_open_fail, so
@@ -655,6 +717,13 @@ static int witness_db_open_attempt(nodus_witness_t *witness,
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: schema creation failed: %s\n", LOG_TAG, err_msg);
         sqlite3_free(err_msg);
+        witness_db_open_fail(witness);
+        return rc;
+    }
+
+    /* HF-4: the exact shape of v2_names, on every open (helper above) */
+    rc = witness_v2_names_ddl_check(witness->db);
+    if (rc != SQLITE_OK) {
         witness_db_open_fail(witness);
         return rc;
     }

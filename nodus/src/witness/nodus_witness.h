@@ -174,6 +174,26 @@ typedef struct {
  * table (nodus_witness_cmt_app.c) are sized by it. Going above 32 is a
  * code change plus a separate operator decision. */
 #define NODUS_V2_ACTIVE_SET_MAX     32
+
+/* HF-4 — the on-chain names table (design docs/plans/2026-10-02-onchain-
+ * names-design.md rev 4 §2 "State"), EXACTLY the design's DDL: BINARY
+ * order and one storage class (typed CHECKs on every column), WITHOUT
+ * ROWID. In the BASE schema (WITNESS_DB_SCHEMA, nodus_witness.c), so a
+ * database of any rung gets it on open; user_version stays 16 — no
+ * migration rung, no pre-H root moves (an empty table is the name leg's
+ * existing tagged-empty root). The column shape is checked on EVERY open
+ * against this same text (nodus_witness.c witness_v2_names_ddl_check —
+ * the stored sqlite_master.sql must equal what this build's SQLite
+ * stores for this exact statement); a mismatch refuses this node's open.
+ * The body is shared so the CREATE and the check can never disagree. */
+#define NODUS_V2_NAMES_DDL_BODY                                           \
+    "v2_names(name BLOB NOT NULL PRIMARY KEY CHECK(typeof(name)='blob' "  \
+    "AND length(name) BETWEEN 3 AND 36), owner BLOB NOT NULL UNIQUE "     \
+    "CHECK(typeof(owner)='blob' AND length(owner)=64), registered_height " \
+    "INTEGER NOT NULL CHECK(typeof(registered_height)='integer' AND "     \
+    "registered_height >= 1)) WITHOUT ROWID"
+#define NODUS_V2_NAMES_DDL                                                \
+    "CREATE TABLE IF NOT EXISTS " NODUS_V2_NAMES_DDL_BODY
 _Static_assert(NODUS_V2_ACTIVE_SET_MAX <= DNAC_MAX_ACTIVE_VALIDATORS,
                "successor active-set max exceeds resource ceiling");
 _Static_assert(DNAC_TARGET_ACTIVE_DEFAULT == NODUS_V2_ACTIVE_SET_MAX,

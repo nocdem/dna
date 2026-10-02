@@ -97,6 +97,87 @@ static void out_hash_init(pins_out_t *o, const char *name, const uint8_t h[64]) 
  * nodus_v2_stake.c) read the macro names below. */
 #define PINS_GENERATION NODUS_RT_GEN_1
 
+/* HF-4: one later generation `g` (> 1) — its CORE and SYSTEM tuples and
+ * its SYSTEM metering policy, the generation-1 layout under
+ * NODUS_PIN_G<g>_* names. @return 0 / -1 (missing entry, policy not
+ * matching its committed digest). */
+static int render_later_gen(pins_out_t *o, uint32_t g) {
+    const nodus_domain_runtime_t *core =
+        nodus_runtime_for_generation(g, DNA_DOMAIN_CORE);
+    const nodus_domain_runtime_t *sys =
+        nodus_runtime_for_generation(g, DNA_DOMAIN_SYSTEM);
+    if (!core || !sys || !sys->meter_policy) return -1;
+    const dna_meter_policy_t *p = sys->meter_policy;
+    uint8_t digest[DNA_DOM_HASH_LEN];
+    if (dna_meter_policy_check(p) != 0 ||
+        dna_meter_policy_digest(p, digest) != 0 ||
+        memcmp(digest, sys->descriptor.meter_policy_digest,
+               DNA_DOM_HASH_LEN) != 0)
+        return -1;
+    char nm[96];
+
+    out_printf(o, "\n/* ── generation %u: CORE (domain %u) ruleset identity ── */\n\n",
+               (unsigned)g, (unsigned)core->domain_id);
+    out_printf(o, "#define NODUS_PIN_G%u_CORE_RULESET_VERSION  %uu\n",
+               (unsigned)g, (unsigned)core->ruleset_version);
+    out_printf(o, "\n");
+    snprintf(nm, sizeof(nm), "NODUS_PIN_G%u_CORE_RULESET_HASH_INIT", (unsigned)g);
+    out_hash_init(o, nm, core->ruleset_hash);
+
+    out_printf(o, "\n/* ── generation %u: SYSTEM (domain %u) ruleset identity ── */\n\n",
+               (unsigned)g, (unsigned)sys->domain_id);
+    out_printf(o, "#define NODUS_PIN_G%u_SYS_RULESET_VERSION   %uu\n",
+               (unsigned)g, (unsigned)sys->ruleset_version);
+    out_printf(o, "\n");
+    snprintf(nm, sizeof(nm), "NODUS_PIN_G%u_SYS_RULESET_HASH_INIT", (unsigned)g);
+    out_hash_init(o, nm, sys->ruleset_hash);
+
+    out_printf(o, "\n/* ── generation %u: SYSTEM (domain %u) metering policy ── */\n\n",
+               (unsigned)g, (unsigned)sys->domain_id);
+    out_printf(o, "#define NODUS_PIN_G%u_SYS_METER_POLICY_VERSION       %uu\n",
+               (unsigned)g, (unsigned)p->policy_version);
+    out_printf(o, "#define NODUS_PIN_G%u_SYS_METER_W_BASE               %lluull\n",
+               (unsigned)g, (unsigned long long)p->w_base);
+    out_printf(o, "#define NODUS_PIN_G%u_SYS_METER_W_CALLBYTE           %lluull\n",
+               (unsigned)g, (unsigned long long)p->w_callbyte);
+    out_printf(o, "#define NODUS_PIN_G%u_SYS_METER_W_AUTHBYTE           %lluull\n",
+               (unsigned)g, (unsigned long long)p->w_authbyte);
+    out_printf(o, "#define NODUS_PIN_G%u_SYS_METER_W_EFFECT             %lluull\n",
+               (unsigned)g, (unsigned long long)p->w_effect);
+    out_printf(o, "#define NODUS_PIN_G%u_SYS_METER_W_EFFECTBYTE         %lluull\n",
+               (unsigned)g, (unsigned long long)p->w_effectbyte);
+    out_printf(o, "#define NODUS_PIN_G%u_SYS_METER_W_READ               %lluull\n",
+               (unsigned)g, (unsigned long long)p->w_read);
+    out_printf(o, "#define NODUS_PIN_G%u_SYS_METER_W_WRITE              %lluull\n",
+               (unsigned)g, (unsigned long long)p->w_write);
+    out_printf(o, "#define NODUS_PIN_G%u_SYS_METER_MAX_BLOCK_ENV_BYTES  %lluull\n",
+               (unsigned)g, (unsigned long long)p->max_block_env_bytes);
+    uint32_t ops[DNA_METER_OP_SPACE];
+    uint64_t wts[DNA_METER_OP_SPACE];
+    uint32_t n_ops = 0;
+    for (uint32_t op = 0; op < DNA_METER_OP_SPACE; op++) {
+        uint64_t w = 0;
+        if (dna_meter_op_weight(p, op, &w) == 0) {
+            ops[n_ops] = op;
+            wts[n_ops] = w;
+            n_ops++;
+        }
+    }
+    if (n_ops == 0) return -1;
+    out_printf(o, "#define NODUS_PIN_G%u_SYS_METER_OP_COUNT  %uu\n",
+               (unsigned)g, (unsigned)n_ops);
+    out_printf(o, "#define NODUS_PIN_G%u_SYS_METER_OPS_INIT {", (unsigned)g);
+    for (uint32_t i = 0; i < n_ops; i++)
+        out_printf(o, " %uu%s", (unsigned)ops[i], i + 1 == n_ops ? " }\n" : ",");
+    out_printf(o, "#define NODUS_PIN_G%u_SYS_METER_OP_WEIGHTS_INIT {", (unsigned)g);
+    for (uint32_t i = 0; i < n_ops; i++)
+        out_printf(o, " %lluull%s", (unsigned long long)wts[i], i + 1 == n_ops ? " }\n" : ",");
+    out_printf(o, "\n");
+    snprintf(nm, sizeof(nm), "NODUS_PIN_G%u_SYS_METER_POLICY_DIGEST_INIT", (unsigned)g);
+    out_hash_init(o, nm, digest);
+    return o->err ? -1 : 0;
+}
+
 /**
  * Render the header text from the compiled runtime table.
  * @param out      receives a malloc'd, NUL-terminated buffer (caller frees)
@@ -234,6 +315,25 @@ int nodus_ruleset_pins_render(char **out, size_t *out_len) {
         out_printf(&o, " %lluull%s", (unsigned long long)wts[i], i + 1 == n_ops ? " }\n" : ",");
     out_printf(&o, "\n");
     out_hash_init(&o, "NODUS_PIN_SYS_METER_POLICY_DIGEST_INIT", digest);
+
+    /* HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4
+     * §1.6 — pins header v2): every LATER compiled generation, under
+     * NODUS_PIN_G<g>_* names. The unprefixed names above stay generation
+     * 1 byte for byte (their consumers — the web wallet WASM — read
+     * them unchanged); a client picks the generation whose tuple equals
+     * the node's dnac_ruleset_info answer. kind / abi / domain ids are
+     * the same in every generation (runtime selfcheck), so they are not
+     * repeated. */
+    uint32_t n_gen = nodus_runtime_generation_count();
+    out_printf(&o, "\n/* ── rule-set generations (HF-4): the names above are generation 1;\n"
+                   " * generation g > 1 is NODUS_PIN_G<g>_* below ── */\n\n");
+    out_printf(&o, "#define NODUS_PIN_GEN_COUNT  %uu\n", (unsigned)n_gen);
+    for (uint32_t g = PINS_GENERATION + 1u; g <= n_gen; g++) {
+        if (render_later_gen(&o, g) != 0) {
+            free(o.buf);
+            return -1;
+        }
+    }
 
     out_printf(&o, "\n#endif /* NODUS_RULESET_PINS_H */\n");
 

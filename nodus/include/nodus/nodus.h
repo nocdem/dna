@@ -1270,7 +1270,8 @@ int nodus_dnac_cc_collect_decode(const uint8_t *raw, size_t raw_len,
  *     "f"  u64     declared fee (an envelope that decodes)
  *     "op" tstr    "spend" "burn" "token_create" "sysfund" "stake"
  *                  "delegate" "unstake" "undelegate" "validator_update"
- *                  "chain_config" "claim" — absent when unnamed
+ *                  "chain_config" "claim" "name_register" (HF-4) —
+ *                  absent when unnamed
  *     EFFECTS — present on APPLIED items only (a refused item has none):
  *     "sp" array   consumed coin ids (bstr64), call order
  *     "cr" array   created coins, call order, each
@@ -1280,6 +1281,10 @@ int nodus_dnac_cc_collect_decode(const uint8_t *raw, size_t raw_len,
  *                   "a"  u64   amount, "t" bstr64 token id (zero = native),
  *                   "u"  u64   unlock block (0 = unlocked)}
  *     "bu" u64     burned amount (BURN only)
+ *     "nm" tstr    HF-4 NAME_REGISTER only (OPTIONAL — an older decoder
+ *                  skips it): the registered name, 3..36 of a-z0-9
+ *     "pr" u64     HF-4 NAME_REGISTER only (OPTIONAL): the price paid
+ *                  into the reward pool — NOT a burn, never in "bu"
  *     "rc" map     the SYSTEM record written:
  *                  {"k" u8 NODUS_DNAC_V3_REC_*,
  *                   "v" tstr128 validator fp, "d" tstr128 delegator fp,
@@ -1289,6 +1294,94 @@ int nodus_dnac_cc_collect_decode(const uint8_t *raw, size_t raw_len,
  * An error reply (NODUS_ERR_NOT_FOUND: not committed / not held;
  * NODUS_ERR_INTERNAL_ERROR: a store/decode fault on the node) is never a
  * partial page. */
+
+/* ── HF-4 queries (design docs/plans/2026-10-02-onchain-names-design.md
+ *    rev 4 §1.6, §2 "Queries") ─────────────────────────────────────────
+ *
+ * dnac_ruleset_info — Request: no args. Response "r":
+ *   "tip" u64  the node's committed tip
+ *   "gen" u32  the rule-set generation governing tip + 1 (from the
+ *              registry — the switch rewrites it at the end of H-1)
+ *   "sv" u32, "sh" bstr64   SYSTEM ruleset_version / ruleset_hash
+ *   "cv" u32, "ch" bstr64   DNA_CORE ruleset_version / ruleset_hash
+ *   "pd" bstr64  the SYSTEM meter-policy digest of that generation
+ *   "H"  u64   the earliest committed RULESET_GEN2 effective height,
+ *              0 = no vote committed
+ *   "d2" u64   the node build's DNAC_CFG_RULESET_GEN2_D2
+ * A client builds an envelope for the compiled generation whose tuple
+ * EQUALS (sv, sh, cv, ch) — never by height; no match = this client is
+ * out of date. An older node answers "unknown DNAC method": fail closed.
+ *
+ * dnac_name_lookup — "a": {"name": tstr, 3..36 of a-z0-9, LOWERCASE}.
+ * dnac_name_of     — "a": {"owner": tstr, 128 lowercase hex}.
+ * Response "r": {"found" bool, "ch" u64 the committed height the answer
+ *   is from, and when found: "owner" tstr128 + "rh" u64 (lookup) /
+ *   "name" tstr + "rh" u64 (name_of)}. One node is trusted for the answer
+ *   (decision 2026-10-02-onchain-names.md item 9 — accepted risk).
+ *
+ * dnac_fee_info gains (HF-4) "np" — the COMPUTED NAME_REGISTER prices at
+ * tip + 1 for names of 3 / 4 / 5 / 6+ characters — and "ns", the
+ * committed NAME_PRICE rows effective above tip + 1 (at most
+ * NODUS_DNAC_NAME_SCHED_MAX, ascending (effective, param)). */
+
+/** Scheduled name-price rows one dnac_fee_info answer carries at most. */
+#define NODUS_DNAC_NAME_SCHED_MAX  16u
+
+typedef struct {
+    uint64_t tip;
+    uint32_t generation;
+    uint32_t sys_version;
+    uint8_t  sys_hash[64];
+    uint32_t core_version;
+    uint8_t  core_hash[64];
+    uint8_t  policy_digest[64];
+    uint64_t gen2_height;              /* "H": 0 = no vote committed     */
+    uint64_t d2;
+} nodus_dnac_ruleset_info_t;
+
+typedef struct {
+    bool     found;
+    char     owner[129];               /* lookup: 128 hex + NUL          */
+    char     name[37];                 /* name_of: NUL-terminated        */
+    uint64_t registered_height;
+    uint64_t committed_height;
+} nodus_dnac_name_result_t;
+
+typedef struct {
+    uint64_t price[4];                 /* 3, 4, 5, 6+ characters         */
+    size_t   n_sched;
+    struct {
+        uint8_t  param_id;             /* DNAC_CFG_NAME_PRICE_3P..6P     */
+        uint64_t value;
+        uint64_t effective;
+    } sched[NODUS_DNAC_NAME_SCHED_MAX];
+} nodus_dnac_name_prices_t;
+
+/** dnac_ruleset_info. @return 0; a NODUS_ERR_* the node answered (an
+ *  older node: "unknown DNAC method" — the caller must fail closed);
+ *  NODUS_ERR_TIMEOUT; -1 on invalid args / transport failure. */
+int nodus_client_dnac_ruleset_info(nodus_client_t *client,
+                                   nodus_dnac_ruleset_info_t *out);
+/** dnac_name_lookup (`name` must already be lowercase). Same returns. */
+int nodus_client_dnac_name_lookup(nodus_client_t *client, const char *name,
+                                  nodus_dnac_name_result_t *out);
+/** dnac_name_of (`owner_hex` = 128 lowercase hex). Same returns. */
+int nodus_client_dnac_name_of(nodus_client_t *client, const char *owner_hex,
+                              nodus_dnac_name_result_t *out);
+/** dnac_fee_info's HF-4 keys ("np", "ns"). An older node sends neither:
+ *  NODUS_ERR_PROTOCOL_ERROR (fail closed — no price is ever guessed). */
+int nodus_client_dnac_name_prices(nodus_client_t *client,
+                                  nodus_dnac_name_prices_t *out);
+
+/** The raw-reply decoders the four functions above use, exported for
+ *  tests (no network). @return 0 / -1 malformed. */
+int nodus_dnac_ruleset_info_decode(const uint8_t *raw, size_t raw_len,
+                                   nodus_dnac_ruleset_info_t *out);
+int nodus_dnac_name_result_decode(const uint8_t *raw, size_t raw_len,
+                                  int is_name_of,
+                                  nodus_dnac_name_result_t *out);
+int nodus_dnac_name_prices_decode(const uint8_t *raw, size_t raw_len,
+                                  nodus_dnac_name_prices_t *out);
 
 #define NODUS_DNAC_V3_BLOCK_BUDGET_MIN      1024u
 #define NODUS_DNAC_V3_BLOCK_BUDGET_MAX      (1024u * 1024u)
@@ -1348,6 +1441,12 @@ typedef struct {
     uint8_t  cc_param_id;
     uint64_t cc_new_value;
     uint64_t cc_effective;
+    /* HF-4 NAME_REGISTER (optional keys "nm" / "pr", applied items only):
+     * the registered name (3..36 of a-z0-9, NUL-terminated; "" = not a
+     * registration) and the price paid into the reward pool — never a
+     * burn, so it is not `burned`. */
+    char     name[37];
+    uint64_t name_price;
 } nodus_dnac_v3_item_t;
 
 /** One `dnac_v3_block` page. `items` is heap (count entries) — free with
@@ -1587,7 +1686,10 @@ void nodus_client_free_balance_result(nodus_dnac_balance_result_t *result);
  *     "q" u64       sequence within (h, i)
  *     "kind" tstr   spend_out | spend_in | burn | token_create | claim |
  *                   stake | delegate | undelegate | unstake |
- *                   validator_update | payout | release | fee
+ *                   validator_update | payout | release | fee |
+ *                   name (HF-4: a NAME_REGISTER on its owner, amount =
+ *                   the price; an older CLI refuses this kind — it fails
+ *                   closed on the whole page)
  *     "amount" u64
  *     "token" bstr64  all zero = native
  *     "fee" u64     the envelope fee, on the payer's first row only

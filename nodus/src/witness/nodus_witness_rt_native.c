@@ -398,6 +398,15 @@ static void rtn_put32(uint8_t *p, uint32_t v) {
 /** CHAIN_CONFIG call v2: the canonical PROPOSAL, nothing else (header
  *  block — approval evidence lives in auth_kind 2). Exact length. */
 #define RTN_CC_CALL_LEN  41u
+/* HF-4 NAME_REGISTER call v1 (design docs/plans/2026-10-02-onchain-names-
+ * design.md rev 4 §2 "Call"): name_len u8 ‖ name ‖ price u64 BE ‖
+ * transfer section. The read budget funds in_count input reads + the
+ * reward pool + NAME(name) + OWNER(owner) = NODUS_RT_MAX_READS (16), so
+ * the input ceiling is 13 (the TOKEN_CREATE 14-of-16 precedent); out
+ * 0..16, every output native. */
+#define RTN_NAME_MAX_IN       13u
+#define RTN_NAME_MAX_OUT      16u
+#define RTN_NAME_REC_LEN      72u  /* owner 64 ‖ registered_height u64 BE */
 
 /* Capacity-derivation pins (header block above). Every participating
  * bound enters BY MACRO — a drift in any of them re-derives, or breaks,
@@ -431,6 +440,17 @@ _Static_assert(700914u + DNA_ENV_LEG_HDR_LEN + 4717u +
                    (1u + (unsigned)NODUS_RT_AUTH_MAX_SIGNERS *
                              NODUS_RT_AUTH_SIGNER_LEN) == 813947u,
                "worst-case CC+TOKEN_CREATE two-leg envelope drifted");
+/* HF-4: the maximal NAME_REGISTER call (1 + 36 + 8 + 1 + 13·64 + 1 +
+ * 16·232 = 4591) is SHORTER than the maximal TOKEN_CREATE call (4717),
+ * so the worst-case envelope derivations above (and the O11 ones below)
+ * stay the governing bounds — pinned, not assumed. */
+_Static_assert((1u + DNAC_NAME_MAX_LEN + 8u + 1u + RTN_NAME_MAX_IN * 64u +
+                1u + RTN_NAME_MAX_OUT * RTN_SPEND_OUT_LEN) == 4591u &&
+               4591u < 4717u,
+               "a maximal NAME_REGISTER call no longer fits under the "
+               "TOKEN_CREATE capacity derivation");
+_Static_assert(RTN_NAME_MAX_IN + 3u == NODUS_RT_MAX_READS,
+               "NAME_REGISTER reads: inputs + pool + NAME + OWNER");
 /* "Worst case" means worst FRAMING-AND-ALLOWLIST-legal: an envelope the
  * pre-BEGIN admission scan and the authorization stage accept and the
  * block therefore RESERVES AND PAYS FOR, whether or not exec later
@@ -1179,6 +1199,13 @@ static int rtn_sys_stake_auth(const dna_env_view_t *env, uint16_t leg_index,
 #define RTN_CORE_OP_SUPPLY  3u   /* SET + mediated read: burned counter  */
 #define RTN_CORE_OP_TOKEN   4u   /* CREATE + mediated read: tokens row
                                   * (burn season — TOKEN_CREATE registry)*/
+/* HF-4 (design §2 "First wins, one per ID, permanent"): the v2_names
+ * table. NAME is keyed by the name bytes (3..36); NAMEOWN is a READ-ONLY
+ * view of the SAME table keyed by the 64-byte raw owner fingerprint
+ * (allowed_kinds 0 — the SYSTEM DELEGCNT precedent): one CREATE on NAME
+ * is the only write, so two effects can never target one row. */
+#define RTN_CORE_OP_NAME    5u   /* CREATE + mediated read: v2_names row */
+#define RTN_CORE_OP_NAMEOWN 6u   /* READ-ONLY: v2_names row by owner     */
 
 /* The canonical UTXO record value (exact 284 bytes):
  *   [0..127]   owner fingerprint, exactly 128 lowercase-hex chars
@@ -1446,6 +1473,69 @@ static int rtn_tc_parse(const dna_env_view_t *env, uint16_t leg,
     return 0;
 }
 
+/* ── DNA_CORERULE_NAME_REGISTER (HF-4) ───────────────────────────────
+ *
+ * call v1 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §2;
+ * decision 2026-10-02-onchain-names.md items 2-6, 10, 11):
+ *   name_len u8 (3..36) ‖ name ‖ price u64 BE
+ *   ‖ transfer section (in 1..13, out 0..16)
+ * exact length. The name bytes pass dnac_name_bytes_ok (dnac.h — a-z0-9,
+ * no hex-only name of 8+ bytes): the rule lives HERE in the parse, which
+ * read_plan and exec both call, never only in mempool admission (a
+ * proposer would bypass that). Every output is native — the leg pays a
+ * native fee and a native price and creates native change only. */
+typedef struct {
+    const uint8_t *name;
+    uint8_t        name_len;
+    uint64_t       price;                /* the DECLARED price            */
+    rtn_spend_call_t xfer;
+} rtn_name_call_t;
+
+static int rtn_name_parse(const dna_env_view_t *env, uint16_t leg,
+                          rtn_name_call_t *n) {
+    static const uint8_t native_tok[64] = { 0 };
+    uint32_t len = env->leg[leg].call_len;
+    if (len < 1 || !env->buf) return -1;
+    const uint8_t *p = env->buf + env->call_off[leg];
+    uint8_t nl = p[0];
+    if (nl < DNAC_NAME_MIN_LEN || nl > DNAC_NAME_MAX_LEN) return -1;
+    size_t off = 1;
+    if ((size_t)len < off + nl + 8) return -1;
+    n->name = p + off;
+    n->name_len = nl;
+    if (!dnac_name_bytes_ok(n->name, nl)) return -1;
+    off += nl;
+    n->price = rtn_get64(p + off);
+    off += 8;
+    size_t used = rtn_xfer_section_parse(p + off, len - off,
+                                         RTN_NAME_MAX_IN, RTN_NAME_MAX_OUT,
+                                         0, &n->xfer);
+    if (used == 0 || off + used != (size_t)len)
+        return -1;                       /* exact length, never a prefix */
+    for (uint8_t o = 0; o < n->xfer.out_count; o++)
+        if (memcmp(n->xfer.outs + (size_t)o * RTN_SPEND_OUT_LEN + 136,
+                   native_tok, 64) != 0)
+            return -1;                   /* native change only           */
+    return 0;
+}
+
+/* The OWNER of a registration (design §2 "Owner"): the leg's verified
+ * verdict for auth_kind 1 with EXACTLY one signer and no multisig facts —
+ * owner = signer_fp[0], the 64 raw SHA3-512 bytes (the stake-auth
+ * precedent, rtn_sys_stake_auth). Anything else — no verdict, kind 2/3,
+ * several signers — is a REFUSAL (-1), never a fault: the owner key the
+ * read plan derives cannot be guessed. @return 0 / -1. */
+static int rtn_name_owner(const dna_env_view_t *env, uint16_t leg,
+                          const nodus_rt_exec_ctx_t *ctx,
+                          const uint8_t **owner_out) {
+    if (!ctx || !ctx->auth) return -1;
+    if (env->leg[leg].auth_kind != NODUS_RT_AUTHKIND_DSA87_MULTI_V1)
+        return -1;
+    if (ctx->auth->n_signers != 1 || ctx->auth->n_msig != 0) return -1;
+    *owner_out = ctx->auth->signer_fp[0];
+    return 0;
+}
+
 /* ── DNA_CORERULE_SYSFUND (O11) — the staking funding/release leg ────
  *
  * call v1 = EXACTLY the SPEND transfer section, and nothing else:
@@ -1535,7 +1625,7 @@ int nodus_rt_core_read_plan(const nodus_domain_runtime_t *rt,
                             const nodus_rt_exec_ctx_t *ctx,
                             nodus_rt_read_req_t *reqs_out,
                             uint16_t max_reqs, uint16_t *n_out) {
-    (void)rt;
+    /* `rt` is read by NAME_REGISTER only (HF-4: its generation) */
     if (!env || !ctx || !reqs_out || !n_out) return -2;
     if (leg_index >= env->leg_count) return -2;
     switch (env->leg[leg_index].runtime_op) {
@@ -1586,6 +1676,34 @@ int nodus_rt_core_read_plan(const nodus_domain_runtime_t *rt,
         uint16_t need = (uint16_t)(c.in_count + 1);
         if (need > max_reqs) return -1;
         (void)rtn_xfer_reads(&c, 0, reqs_out);
+        *n_out = need;
+        return 0;
+    }
+    case DNA_CORERULE_NAME_REGISTER: {
+        /* HF-4: generation 2 only — generation 1's descriptor does not
+         * own op 8 (admission refuses it), and the shared hook refuses
+         * it too, so a NULL or synthetic runtime reads as "not gen 2" */
+        rtn_name_call_t nc;
+        const uint8_t *owner = NULL;
+        if (!rt || rt->generation < NODUS_RT_GEN_2) return -1;
+        if (rtn_name_parse(env, leg_index, &nc) != 0) return -1;
+        if (rtn_name_owner(env, leg_index, ctx, &owner) != 0) return -1;
+        /* inputs (op 1, ascending) + the pool (op 3) + NAME (op 5) +
+         * OWNER (op 6) — ascending (op_id, key), the canonical order;
+         * the OWNER key comes from the verified verdict, not the call */
+        uint16_t need = (uint16_t)(nc.xfer.in_count + 3);
+        if (need > max_reqs) return -1;
+        (void)rtn_xfer_reads(&nc.xfer, 0, reqs_out);
+        nodus_rt_read_req_t *rn = &reqs_out[nc.xfer.in_count + 1];
+        memset(rn, 0, sizeof(*rn));
+        rn->op_id = RTN_CORE_OP_NAME;
+        rn->key_len = nc.name_len;
+        memcpy(rn->key, nc.name, nc.name_len);
+        nodus_rt_read_req_t *ro = &reqs_out[nc.xfer.in_count + 2];
+        memset(ro, 0, sizeof(*ro));
+        ro->op_id = RTN_CORE_OP_NAMEOWN;
+        ro->key_len = 64;
+        memcpy(ro->key, owner, 64);
         *n_out = need;
         return 0;
     }
@@ -2197,6 +2315,145 @@ static int rtn_tc_exec(const rtn_tc_call_t *t,
     return 0;
 }
 
+/* NAME_REGISTER executor (HF-4; design docs/plans/2026-10-02-onchain-
+ * names-design.md rev 4 §2). The BURN shape with the price in place of
+ * burn_amount — but the price is CREDITED, not destroyed:
+ *   - envelope: exactly ONE leg; fee_amount >= max(DNAC_MIN_FEE_RAW,
+ *     NODUS_W_BASE_TX_FEE) checked HERE (the engine's gas check returns
+ *     before that floor when the gas price is 0, and governance may vote
+ *     0);
+ *   - first wins, one per ID, permanent: the NAME and OWNER reads must
+ *     both be ABSENT; ONE PRE_ABSENT CREATE on NAME(name) is the only
+ *     name write (the adapter re-checks absence at apply);
+ *   - price: call.price == dnac_name_price_for_len(ctx->name_price,
+ *     name_len), the tiers at the block's height (engine-read);
+ *   - inputs: present, UNLOCKED (unlock >= height refused — change is
+ *     created unlocked, so the lock rule is what stops a locked coin
+ *     escaping early), owned (rtn_input_owned), native-only — the
+ *     TOKEN_CREATE input loop;
+ *   - Σnative_in == Σnative_out + fee + price (checked adds); fee + price
+ *     credited to the reward pool in ONE checked SET (tokenomics-v3
+ *     decision: every fee goes to the pool; the name price likewise —
+ *     design §2, decision item 6).
+ * `owner` is the verdict's signer_fp[0] (rtn_name_owner).
+ * @return 0 / -1 verdict / -2 node fault. */
+static int rtn_name_exec(const rtn_name_call_t *nc, const uint8_t *owner,
+                         const dna_env_view_t *env,
+                         const nodus_rt_exec_ctx_t *ctx,
+                         rtn_owners_t *own,
+                         const nodus_rt_read_res_t *reads, uint16_t n_reads,
+                         uint8_t *res_out, size_t res_cap,
+                         size_t *res_len_out) {
+    const rtn_spend_call_t *c = &nc->xfer;
+    static const uint8_t native_token[64] = { 0 };
+    if (!reads || n_reads != (uint16_t)(c->in_count + 3)) return -2;
+    const nodus_rt_read_res_t *r_pool  = &reads[c->in_count];
+    const nodus_rt_read_res_t *r_name  = &reads[c->in_count + 1];
+    const nodus_rt_read_res_t *r_owner = &reads[c->in_count + 2];
+
+    if (env->leg_count != 1) return -1;          /* single CORE leg      */
+
+    /* ── first wins, one per ID ─────────────────────────────────────── */
+    if (r_name->present) return -1;              /* the name is taken    */
+    if (r_owner->present) return -1;             /* this ID has a name   */
+
+    /* ── fee floor and price ────────────────────────────────────────── */
+    uint64_t fee = env->fee_amount;
+    if (fee < DNAC_MIN_FEE_RAW || fee < NODUS_W_BASE_TX_FEE) return -1;
+    for (int k = 0; k < 4; k++)
+        if (ctx->name_price[k] < DNAC_CFG_MIN_NAME_PRICE ||
+            ctx->name_price[k] > DNAC_CFG_MAX_NAME_PRICE)
+            return -2;                           /* engine fill broken   */
+    uint64_t price = dnac_name_price_for_len(ctx->name_price,
+                                             nc->name_len);
+    if (price == 0) return -2;                   /* parse bounded len    */
+    if (nc->price != price) return -1;           /* wrong declared price */
+
+    /* ── inputs: exist, unlocked, owned, native-only ────────────────── */
+    uint64_t native_in = 0;
+    for (uint8_t i = 0; i < c->in_count; i++) {
+        const nodus_rt_read_res_t *r = &reads[i];
+        if (!r->present) return -1;              /* missing OR spent     */
+        if (r->value_len != RTN_UTXO_REC_LEN) return -2;
+        const uint8_t *rec = r->value;
+        uint64_t unlock = rtn_get64(rec + RTN_UTXO_UNLOCK_OFF);
+        if (unlock >= ctx->global_height) return -1;   /* locked         */
+        if (!rtn_input_owned(own, rec + RTN_UTXO_OWNER_OFF))
+            return -1;                           /* not the signer's     */
+        if (memcmp(rec + RTN_UTXO_TOKEN_OFF, native_token, 64) != 0)
+            return -1;                           /* native-only          */
+        if (dna_ck_add_u64(native_in,
+                           rtn_get64(rec + RTN_UTXO_AMOUNT_OFF),
+                           &native_in) != 0)
+            return -1;
+    }
+    if (!rtn_owners_all_used(own)) return -1;
+
+    /* ── conservation: Σin == Σout + fee + price ────────────────────── */
+    uint64_t native_out = 0, credit = 0, need = 0;
+    for (uint8_t o = 0; o < c->out_count; o++) {
+        const uint8_t *rec = c->outs + (size_t)o * RTN_SPEND_OUT_LEN;
+        if (dna_ck_add_u64(native_out, rtn_get64(rec + 128),
+                           &native_out) != 0)
+            return -1;
+    }
+    if (dna_ck_add_u64(fee, price, &credit) != 0) return -1;
+    if (dna_ck_add_u64(native_out, credit, &need) != 0) return -1;
+    if (native_in != need) return -1;
+
+    /* ── output identities + duplicate reject ───────────────────────── */
+    uint8_t nul[RTN_NAME_MAX_OUT][64];
+    uint8_t sorted[RTN_NAME_MAX_OUT];
+    if (c->out_count > 0) {
+        int rc = rtn_out_ids(c, nul, sorted);
+        if (rc != 0) return rc;
+    }
+
+    /* ── canonical typed-effect result: CREATEs (op 1 asc, then op 5),
+     *    the ONE pool SET (op 3), DELETEs (op 2) ─────────────────────── */
+    dna_effect_in_t effs[RTN_NAME_MAX_OUT + 2 + RTN_NAME_MAX_IN];
+    uint8_t crv[RTN_NAME_MAX_OUT][RTN_UTXO_REC_LEN];
+    uint8_t namev[RTN_NAME_REC_LEN];
+    uint8_t dvh[RTN_NAME_MAX_IN][64];
+    uint8_t supv[8];
+    uint16_t ne = 0;
+    memset(effs, 0, sizeof(effs));
+
+    for (uint8_t a = 0; a < c->out_count; a++) {
+        uint8_t o = sorted[a];
+        rtn_utxo_create_eff(&effs[ne], crv[a],
+                            c->outs + (size_t)o * RTN_SPEND_OUT_LEN, o,
+                            nul[o], ctx, 0);
+        ne++;
+    }
+    memcpy(namev, owner, 64);
+    rtn_put64(namev + 64, ctx->global_height);   /* registered_height    */
+    effs[ne].hdr.op_id = RTN_CORE_OP_NAME;
+    effs[ne].hdr.effect_kind = DNA_EFFECT_CREATE;
+    effs[ne].hdr.precond_tag = DNA_EFFECT_PRE_ABSENT;
+    effs[ne].hdr.key_len = nc->name_len;
+    effs[ne].hdr.value_len = RTN_NAME_REC_LEN;
+    effs[ne].key = nc->name;
+    effs[ne].value = namev;
+    ne++;
+    {
+        int rc = rtn_supply_add_eff(&effs[ne], supv, r_pool, credit,
+                                    RTN_SUPPLY_SEL_POOL);
+        if (rc != 0) return rc;
+        ne++;
+    }
+    for (uint8_t i = 0; i < c->in_count; i++) {
+        if (rtn_utxo_delete_eff(&effs[ne], dvh[i], &reads[i],
+                                c->ins + (size_t)i * 64) != 0)
+            return -2;
+        ne++;
+    }
+    if (dna_effect_result_encode(effs, ne, res_out, res_cap,
+                                 res_len_out) != 0)
+        return -2;
+    return 0;
+}
+
 /* The release UTXO's provenance constants — the SOURCE synthetic-UTXO
  * derivation of the legacy UNDELEGATE payout (emit_synthetic_utxo,
  * nodus_witness_bft.c:1720-1729 + the call site at :1873-1877): kind
@@ -2525,10 +2782,23 @@ int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
                        const nodus_rt_read_res_t *reads, uint16_t n_reads,
                        uint8_t *res_out, size_t res_cap,
                        size_t *res_len_out) {
-    (void)rt;
     if (!env || !ctx || !ctx->intent_id || !res_out || !res_len_out)
         return -2;
     if (leg_index >= env->leg_count) return -2;
+
+    /* HF-4 NAME_REGISTER: decided BEFORE the generic verdict check below,
+     * because every owner-shape problem of a registration (no verdict,
+     * kind 2/3, several signers) is a REFUSAL (-1), never the fault (-2)
+     * rtn_owners_init answers for a missing verdict. Generation 2 only
+     * (`rt` — NULL or a synthetic runtime reads as not generation 2). */
+    const uint8_t *name_owner = NULL;
+    rtn_name_call_t nc;
+    if (env->leg[leg_index].runtime_op == DNA_CORERULE_NAME_REGISTER) {
+        if (!rt || rt->generation < NODUS_RT_GEN_2) return -1;
+        if (rtn_name_owner(env, leg_index, ctx, &name_owner) != 0)
+            return -1;
+        if (rtn_name_parse(env, leg_index, &nc) != 0) return -1;
+    }
 
     /* The ENGINE-verified authorization verdict is the ONLY ownership
      * authority. A commitment without a verdict never reaches here —
@@ -2569,9 +2839,34 @@ int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
         return rtn_sysfund_exec(&c, env, ctx, &own, reads, n_reads,
                                 res_out, res_cap, res_len_out);
     }
+    case DNA_CORERULE_NAME_REGISTER:
+        /* gen, owner and parse decided above (before the verdict check) */
+        return rtn_name_exec(&nc, name_owner, env, ctx, &own, reads,
+                             n_reads, res_out, res_cap, res_len_out);
     default:
         return -1;                       /* un-migrated op: fail closed  */
     }
+}
+
+/* HF-4 (contract: nodus_witness_rt_native.h) — the CheckTx synthetic
+ * OWNER conflict key of a NAME_REGISTER leg: (CORE, NAMEOWN op, owner).
+ * The op id stays this file's own; the dry run only copies it. */
+int nodus_rt_core_name_owner_key(const dna_env_view_t *env,
+                                 uint16_t leg_index,
+                                 const nodus_rt_auth_verdict_t *verdict,
+                                 uint32_t *op_id_out,
+                                 uint8_t key_out[64]) {
+    if (!env || !verdict || !op_id_out || !key_out) return -1;
+    if (leg_index >= env->leg_count) return -1;
+    if (env->leg[leg_index].domain_id != DNA_DOMAIN_CORE ||
+        env->leg[leg_index].runtime_op != DNA_CORERULE_NAME_REGISTER)
+        return 1;
+    if (env->leg[leg_index].auth_kind != NODUS_RT_AUTHKIND_DSA87_MULTI_V1 ||
+        verdict->n_signers != 1 || verdict->n_msig != 0)
+        return -1;
+    *op_id_out = RTN_CORE_OP_NAMEOWN;
+    memcpy(key_out, verdict->signer_fp[0], 64);
+    return 0;
 }
 
 /* ── The compiled CORE storage adapter ──────────────────────────────── */
@@ -2753,6 +3048,71 @@ static int rtn_core_supply_fetch(nodus_witness_t *w, uint8_t sel,
     return rc == SQLITE_DONE ? 1 : -1;
 }
 
+/* HF-4 — one v2_names row by NAME (the 3..36-byte key, bound as a BLOB:
+ * a key bound as TEXT would compare unequal to the stored BLOB, read
+ * "absent", and the INSERT would then hit the primary key — a FAULT on
+ * every node at once, design §2). The canonical 72-byte record is
+ * owner[64] ‖ registered_height u64 BE. Shape-checked: a malformed row is
+ * never surfaced as a value. 0 = record built, 1 = absent, -1 = fault. */
+static int rtn_core_name_fetch(nodus_witness_t *w, const uint8_t *key,
+                               uint16_t key_len,
+                               uint8_t rec[RTN_NAME_REC_LEN]) {
+    if (key_len < DNAC_NAME_MIN_LEN || key_len > DNAC_NAME_MAX_LEN)
+        return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT owner, registered_height FROM v2_names WHERE name = ?1",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, key, key_len, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    int out = -1;
+    if (rc == SQLITE_DONE) {
+        out = 1;
+    } else if (rc == SQLITE_ROW) {
+        const uint8_t *own = sqlite3_column_blob(st, 0);
+        sqlite3_int64 h = sqlite3_column_int64(st, 1);
+        if (own && sqlite3_column_bytes(st, 0) == 64 && h >= 1) {
+            memcpy(rec, own, 64);
+            rtn_put64(rec + 64, (uint64_t)h);
+            out = 0;
+        }
+    }
+    sqlite3_finalize(st);
+    return out;
+}
+
+/* HF-4 — the READ-ONLY OWNER view: the name this 64-byte raw owner holds,
+ * if any (owner is UNIQUE in v2_names). `name_out` holds up to
+ * DNAC_NAME_MAX_LEN bytes. 0 = found, 1 = absent, -1 = fault. */
+static int rtn_core_nameown_fetch(nodus_witness_t *w, const uint8_t *key,
+                                  uint16_t key_len, uint8_t *name_out,
+                                  uint32_t *name_len_out) {
+    if (key_len != 64) return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT name FROM v2_names WHERE owner = ?1",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, key, 64, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    int out = -1;
+    if (rc == SQLITE_DONE) {
+        out = 1;
+    } else if (rc == SQLITE_ROW) {
+        const uint8_t *nm = sqlite3_column_blob(st, 0);
+        int nl = sqlite3_column_bytes(st, 0);
+        if (nm && nl >= (int)DNAC_NAME_MIN_LEN &&
+            nl <= (int)DNAC_NAME_MAX_LEN) {
+            memcpy(name_out, nm, (size_t)nl);
+            *name_len_out = (uint32_t)nl;
+            out = 0;
+        }
+    }
+    sqlite3_finalize(st);
+    return out;
+}
+
 static nodus_adapter_status_t rtn_core_probe(
         const nodus_domain_adapter_t *ad, struct nodus_witness *wns,
         uint32_t dom, const nodus_adapter_op_t *op,
@@ -2801,6 +3161,21 @@ static nodus_adapter_status_t rtn_core_probe(
         }
         return NODUS_ADAPTER_OK;
     }
+    if (op->op_id == RTN_CORE_OP_NAME) {
+        uint8_t rec[RTN_NAME_REC_LEN];
+        int rc = rtn_core_name_fetch(w, key, key_len, rec);
+        if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        f->exists = (rc == 0);
+        if (f->exists) {
+            f->version = rtn_get64(rec + 64);    /* registered_height    */
+            if (dna_effect_value_hash(rec, RTN_NAME_REC_LEN,
+                                      f->value_hash) != 0)
+                return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        }
+        return NODUS_ADAPTER_OK;
+    }
+    /* RTN_CORE_OP_NAMEOWN is read-only (allowed_kinds 0): no effect can
+     * name it, so a probe of it is an engine invariant broken here. */
     return NODUS_ADAPTER_ERR_STORAGE_FAULT;
 }
 
@@ -2847,6 +3222,29 @@ static nodus_adapter_status_t rtn_core_read(
         memcpy(value, rec, RTN_TOKEN_REC_LEN);
         *present = 1;
         *vlen = RTN_TOKEN_REC_LEN;
+        return NODUS_ADAPTER_OK;
+    }
+    if (op->op_id == RTN_CORE_OP_NAME) {
+        uint8_t rec[RTN_NAME_REC_LEN];
+        int rc = rtn_core_name_fetch(w, key, key_len, rec);
+        if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        if (rc == 1) return NODUS_ADAPTER_OK;        /* absent           */
+        if (cap < RTN_NAME_REC_LEN) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        memcpy(value, rec, RTN_NAME_REC_LEN);
+        *present = 1;
+        *vlen = RTN_NAME_REC_LEN;
+        return NODUS_ADAPTER_OK;
+    }
+    if (op->op_id == RTN_CORE_OP_NAMEOWN) {
+        uint8_t nm[DNAC_NAME_MAX_LEN];
+        uint32_t nl = 0;
+        int rc = rtn_core_nameown_fetch(w, key, key_len, nm, &nl);
+        if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        if (rc == 1) return NODUS_ADAPTER_OK;        /* no name held     */
+        if (cap < nl) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        memcpy(value, nm, nl);
+        *present = 1;
+        *vlen = nl;
         return NODUS_ADAPTER_OK;
     }
     return NODUS_ADAPTER_ERR_STORAGE_FAULT;
@@ -2967,6 +3365,27 @@ static nodus_adapter_status_t rtn_core_mutate(
                            (sqlite3_int64)value[RTN_TOKEN_FLAGS_OFF]);
         sqlite3_bind_int64(st, 8,
             (sqlite3_int64)rtn_get64(value + RTN_TOKEN_BH_OFF));
+    } else if (op->op_id == RTN_CORE_OP_NAME &&
+               kind == DNA_EFFECT_CREATE) {
+        /* HF-4: the ONE name write. The key passes the consensus byte
+         * rule again and the height fits the INTEGER column (>= 1 — the
+         * table's CHECK); every key is bound as a BLOB. STRICT insert:
+         * the PRE_ABSENT precondition already ruled for NAME, and exec
+         * refused a present OWNER — a UNIQUE conflict here is a broken
+         * invariant on THIS node (a fault), never a silent drop. */
+        if (value_len != RTN_NAME_REC_LEN || !value ||
+            !dnac_name_bytes_ok(key, key_len))
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        uint64_t rh = rtn_get64(value + 64);
+        if (rh < 1 || rh > (uint64_t)INT64_MAX)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        if (sqlite3_prepare_v2(w->db,
+                "INSERT INTO v2_names (name, owner, registered_height) "
+                "VALUES (?1, ?2, ?3)", -1, &st, NULL) != SQLITE_OK)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        sqlite3_bind_blob(st, 1, key, key_len, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 2, value, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 3, (sqlite3_int64)rh);
     } else {
         return NODUS_ADAPTER_ERR_STORAGE_FAULT;
     }
@@ -2978,7 +3397,7 @@ static nodus_adapter_status_t rtn_core_mutate(
     return NODUS_ADAPTER_OK;
 }
 
-static const nodus_adapter_op_t RTN_CORE_OPS[4] = {
+static const nodus_adapter_op_t RTN_CORE_OPS[6] = {
     { RTN_CORE_OP_UTXO,
       NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_CREATE),
       NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_ABSENT),
@@ -2998,13 +3417,22 @@ static const nodus_adapter_op_t RTN_CORE_OPS[4] = {
     { RTN_CORE_OP_TOKEN,
       NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_CREATE),
       NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_ABSENT),
-      64, 64, RTN_TOKEN_REC_LEN, RTN_TOKEN_REC_LEN }
+      64, 64, RTN_TOKEN_REC_LEN, RTN_TOKEN_REC_LEN },
+    /* HF-4 — the v2_names row by name (NAME_REGISTER's one write) */
+    { RTN_CORE_OP_NAME,
+      NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_CREATE),
+      NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_ABSENT),
+      DNAC_NAME_MIN_LEN, DNAC_NAME_MAX_LEN,
+      RTN_NAME_REC_LEN, RTN_NAME_REC_LEN },
+    /* HF-4 — READ-ONLY view by owner (the DELEGCNT shape): no kind, no
+     * precondition; the answer is the held name (3..36 bytes) */
+    { RTN_CORE_OP_NAMEOWN, 0, 0, 64, 64, 0, DNAC_NAME_MAX_LEN }
 };
 
 const nodus_domain_adapter_t NODUS_RT_CORE_ADAPTER = {
     .adapter_version = NODUS_DOMAIN_ADAPTER_V1,
     .ops = RTN_CORE_OPS,
-    .n_ops = 4,
+    .n_ops = 6,
     .probe = rtn_core_probe,
     .mutate = rtn_core_mutate,
     .read = rtn_core_read
@@ -5259,6 +5687,16 @@ static int rtn_desc_core(const dna_env_view_t *env, uint16_t leg,
         rtn_tc_call_t t;
         if (rtn_tc_parse(env, leg, &t) != 0) return -1;
         return rtn_desc_xfer(&t.xfer, out);
+    }
+    case DNA_CORERULE_NAME_REGISTER: {
+        /* HF-4 (design §1.7): inputs and change, plus the name and the
+         * price paid into the reward pool — never `burned` */
+        rtn_name_call_t nc;
+        if (rtn_name_parse(env, leg, &nc) != 0) return -1;
+        out->name_len = nc.name_len;
+        memcpy(out->name, nc.name, nc.name_len);
+        out->name_price = nc.price;
+        return rtn_desc_xfer(&nc.xfer, out);
     }
     case DNA_CORERULE_SYSFUND: {
         rtn_spend_call_t c;

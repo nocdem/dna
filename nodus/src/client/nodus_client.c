@@ -20,6 +20,7 @@
 #include "crypto/nodus_identity.h"
 #include "core/nodus_value.h"
 #include "client/nodus_client_strict.h"
+#include "dnac/dnac.h"                /* HF-4: dnac_name_bytes_ok         */
 
 #include <stdlib.h>
 #include <string.h>
@@ -5725,6 +5726,23 @@ static int v3d_item(cbor_decoder_t *d, nodus_dnac_v3_item_t *it)
             have |= 16u;
         } else if (KEY_EQ(k, "bu")) {
             if (v3d_u64(d, UINT64_MAX, &it->burned) != 0) return -1;
+        } else if (KEY_EQ(k, "nm")) {
+            /* HF-4: the registered name — 3..36 of a-z0-9 */
+            cbor_item_t s;
+            if (v3d_next(d, &s) != 0 || s.type != CBOR_ITEM_TSTR ||
+                s.tstr.len < 3 || s.tstr.len > 36)
+                return -1;
+            for (size_t c = 0; c < s.tstr.len; c++) {
+                char ch = s.tstr.ptr[c];
+                if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')))
+                    return -1;
+            }
+            memcpy(it->name, s.tstr.ptr, s.tstr.len);
+            it->name[s.tstr.len] = '\0';
+            have |= 32u;
+        } else if (KEY_EQ(k, "pr")) {
+            if (v3d_u64(d, UINT64_MAX, &it->name_price) != 0) return -1;
+            have |= 64u;
         } else if (KEY_EQ(k, "rc")) {
             if (v3d_record(d, it) != 0) return -1;
         } else if (v3d_skip(d, 0) != 0) {
@@ -5738,6 +5756,9 @@ static int v3d_item(cbor_decoder_t *d, nodus_dnac_v3_item_t *it)
         return -1;
     if (!it->has_effects &&
         (it->burned != 0 || it->rec_kind != NODUS_DNAC_V3_REC_NONE))
+        return -1;
+    /* HF-4: "nm" and "pr" come as a pair, and only on an applied item */
+    if ((have & 96u) != 0 && ((have & 96u) != 96u || !it->has_effects))
         return -1;
     return 0;
 }
@@ -5904,6 +5925,279 @@ int nodus_client_dnac_v3_block(nodus_client_t *client, uint64_t height,
         return NODUS_ERR_PROTOCOL_ERROR;
     }
     return 0;
+}
+
+/* ── HF-4 queries (wire: nodus.h) — the v3d_* hostile-reply discipline:
+ *    duplicate keys, truncation and wrong types refuse the reply ─────── */
+
+int nodus_dnac_ruleset_info_decode(const uint8_t *raw, size_t raw_len,
+                                   nodus_dnac_ruleset_info_t *out)
+{
+    cbor_decoder_t dec;
+    size_t         mc;
+    v3d_keys_t     ks;
+    cbor_item_t    k;
+    uint64_t       v;
+    unsigned       have = 0;
+
+    if (!raw || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    memset(&ks, 0, sizeof(ks));
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0) return -1;
+    if (mc > V3D_MAX_KEYS || mc > v3d_left(&dec) / 2) return -1;
+    for (size_t i = 0; i < mc; i++) {
+        if (v3d_key(&dec, &ks, &k) != 0) return -1;
+        if (KEY_EQ(k, "tip")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->tip) != 0) return -1;
+            have |= 1u;
+        } else if (KEY_EQ(k, "gen")) {
+            if (v3d_u64(&dec, UINT32_MAX, &v) != 0 || v == 0) return -1;
+            out->generation = (uint32_t)v;
+            have |= 2u;
+        } else if (KEY_EQ(k, "sv")) {
+            if (v3d_u64(&dec, UINT32_MAX, &v) != 0) return -1;
+            out->sys_version = (uint32_t)v;
+            have |= 4u;
+        } else if (KEY_EQ(k, "sh")) {
+            if (v3d_b64(&dec, out->sys_hash) != 0) return -1;
+            have |= 8u;
+        } else if (KEY_EQ(k, "cv")) {
+            if (v3d_u64(&dec, UINT32_MAX, &v) != 0) return -1;
+            out->core_version = (uint32_t)v;
+            have |= 16u;
+        } else if (KEY_EQ(k, "ch")) {
+            if (v3d_b64(&dec, out->core_hash) != 0) return -1;
+            have |= 32u;
+        } else if (KEY_EQ(k, "pd")) {
+            if (v3d_b64(&dec, out->policy_digest) != 0) return -1;
+            have |= 64u;
+        } else if (KEY_EQ(k, "H")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->gen2_height) != 0) return -1;
+            have |= 128u;
+        } else if (KEY_EQ(k, "d2")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->d2) != 0) return -1;
+            have |= 256u;
+        } else if (v3d_skip(&dec, 0) != 0) {
+            return -1;
+        }
+    }
+    if (have != 511u || dec.error) return -1;   /* every key is required */
+    return 0;
+}
+
+int nodus_dnac_name_result_decode(const uint8_t *raw, size_t raw_len,
+                                  int is_name_of,
+                                  nodus_dnac_name_result_t *out)
+{
+    cbor_decoder_t dec;
+    size_t         mc;
+    v3d_keys_t     ks;
+    cbor_item_t    k, it;
+    unsigned       have = 0;
+
+    if (!raw || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    memset(&ks, 0, sizeof(ks));
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0) return -1;
+    if (mc > V3D_MAX_KEYS || mc > v3d_left(&dec) / 2) return -1;
+    for (size_t i = 0; i < mc; i++) {
+        if (v3d_key(&dec, &ks, &k) != 0) return -1;
+        if (KEY_EQ(k, "found")) {
+            if (v3d_next(&dec, &it) != 0 || it.type != CBOR_ITEM_BOOL)
+                return -1;
+            out->found = it.bool_val;
+            have |= 1u;
+        } else if (KEY_EQ(k, "ch")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->committed_height) != 0)
+                return -1;
+            have |= 2u;
+        } else if (KEY_EQ(k, "rh")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->registered_height) != 0 ||
+                out->registered_height == 0)
+                return -1;
+            have |= 4u;
+        } else if (!is_name_of && KEY_EQ(k, "owner")) {
+            if (v3d_hex128(&dec, out->owner) != 0) return -1;
+            have |= 8u;
+        } else if (is_name_of && KEY_EQ(k, "name")) {
+            if (v3d_next(&dec, &it) != 0 || it.type != CBOR_ITEM_TSTR ||
+                !dnac_name_bytes_ok((const uint8_t *)it.tstr.ptr,
+                                    it.tstr.len))
+                return -1;
+            memcpy(out->name, it.tstr.ptr, it.tstr.len);
+            out->name[it.tstr.len] = '\0';
+            have |= 8u;
+        } else if (v3d_skip(&dec, 0) != 0) {
+            return -1;
+        }
+    }
+    if (dec.error || (have & 3u) != 3u) return -1;
+    /* found ⇔ the answer carries the row */
+    if (out->found != ((have & 12u) == 12u)) return -1;
+    if (!out->found && (have & 12u) != 0) return -1;
+    return 0;
+}
+
+int nodus_dnac_name_prices_decode(const uint8_t *raw, size_t raw_len,
+                                  nodus_dnac_name_prices_t *out)
+{
+    cbor_decoder_t dec;
+    size_t         mc;
+    v3d_keys_t     ks;
+    cbor_item_t    k, a, m;
+    unsigned       have = 0;
+
+    if (!raw || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    memset(&ks, 0, sizeof(ks));
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0) return -1;
+    if (mc > V3D_MAX_KEYS || mc > v3d_left(&dec) / 2) return -1;
+    for (size_t i = 0; i < mc; i++) {
+        if (v3d_key(&dec, &ks, &k) != 0) return -1;
+        if (KEY_EQ(k, "np")) {
+            if (v3d_next(&dec, &a) != 0 || a.type != CBOR_ITEM_ARRAY ||
+                a.count != 4)
+                return -1;
+            for (size_t j = 0; j < 4; j++)
+                if (v3d_u64(&dec, UINT64_MAX, &out->price[j]) != 0 ||
+                    out->price[j] == 0)
+                    return -1;
+            have |= 1u;
+        } else if (KEY_EQ(k, "ns")) {
+            if (v3d_next(&dec, &a) != 0 || a.type != CBOR_ITEM_ARRAY ||
+                a.count > NODUS_DNAC_NAME_SCHED_MAX)
+                return -1;
+            for (size_t j = 0; j < a.count; j++) {
+                v3d_keys_t es;
+                cbor_item_t ek;
+                unsigned eh = 0;
+                uint64_t pv = 0;
+                memset(&es, 0, sizeof(es));
+                if (v3d_next(&dec, &m) != 0 || m.type != CBOR_ITEM_MAP ||
+                    m.count != 3)
+                    return -1;
+                for (size_t q = 0; q < 3; q++) {
+                    if (v3d_key(&dec, &es, &ek) != 0) return -1;
+                    if (KEY_EQ(ek, "p")) {
+                        if (v3d_u64(&dec, 255, &pv) != 0) return -1;
+                        out->sched[j].param_id = (uint8_t)pv;
+                        eh |= 1u;
+                    } else if (KEY_EQ(ek, "v")) {
+                        if (v3d_u64(&dec, UINT64_MAX,
+                                    &out->sched[j].value) != 0)
+                            return -1;
+                        eh |= 2u;
+                    } else if (KEY_EQ(ek, "e")) {
+                        if (v3d_u64(&dec, UINT64_MAX,
+                                    &out->sched[j].effective) != 0)
+                            return -1;
+                        eh |= 4u;
+                    } else {
+                        return -1;
+                    }
+                }
+                if (eh != 7u) return -1;
+            }
+            out->n_sched = a.count;
+            have |= 2u;
+        } else if (v3d_skip(&dec, 0) != 0) {
+            return -1;
+        }
+    }
+    if (dec.error || have != 3u) return -1;     /* older node: no "np"  */
+    return 0;
+}
+
+/* One HF-4 request: `method` with zero or one text argument; the raw
+ * reply is handed to `decode`. @return 0 / NODUS_ERR_* / -1. */
+static int hf4_query(nodus_client_t *client, const char *method,
+                     const char *arg_key, const char *arg_val,
+                     int (*decode)(const uint8_t *, size_t, void *),
+                     void *out)
+{
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+    enc_dnac_query(&enc, txn, client->token, method, arg_key ? 1 : 0);
+    if (arg_key) {
+        cbor_encode_cstr(&enc, arg_key);
+        cbor_encode_cstr(&enc, arg_val);
+    }
+    size_t len = cbor_encoder_len(&enc);
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    free(buf);
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        free_pending(client, req); return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        int rc = resp->error_code; free_pending(client, req); return rc;
+    }
+    int drc = decode(req->raw_response, req->raw_response_len, out);
+    free_pending(client, req);
+    return drc == 0 ? 0 : NODUS_ERR_PROTOCOL_ERROR;
+}
+
+static int hf4_dec_ruleset(const uint8_t *r, size_t l, void *o) {
+    return nodus_dnac_ruleset_info_decode(r, l,
+                                          (nodus_dnac_ruleset_info_t *)o);
+}
+static int hf4_dec_lookup(const uint8_t *r, size_t l, void *o) {
+    return nodus_dnac_name_result_decode(r, l, 0,
+                                         (nodus_dnac_name_result_t *)o);
+}
+static int hf4_dec_name_of(const uint8_t *r, size_t l, void *o) {
+    return nodus_dnac_name_result_decode(r, l, 1,
+                                         (nodus_dnac_name_result_t *)o);
+}
+static int hf4_dec_prices(const uint8_t *r, size_t l, void *o) {
+    return nodus_dnac_name_prices_decode(r, l,
+                                         (nodus_dnac_name_prices_t *)o);
+}
+
+int nodus_client_dnac_ruleset_info(nodus_client_t *client,
+                                   nodus_dnac_ruleset_info_t *out)
+{
+    if (!nodus_client_is_ready(client) || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    return hf4_query(client, "dnac_ruleset_info", NULL, NULL,
+                     hf4_dec_ruleset, out);
+}
+
+int nodus_client_dnac_name_lookup(nodus_client_t *client, const char *name,
+                                  nodus_dnac_name_result_t *out)
+{
+    if (!nodus_client_is_ready(client) || !name || !out) return -1;
+    if (!dnac_name_bytes_ok((const uint8_t *)name, strlen(name))) return -1;
+    memset(out, 0, sizeof(*out));
+    return hf4_query(client, "dnac_name_lookup", "name", name,
+                     hf4_dec_lookup, out);
+}
+
+int nodus_client_dnac_name_of(nodus_client_t *client, const char *owner_hex,
+                              nodus_dnac_name_result_t *out)
+{
+    if (!nodus_client_is_ready(client) || !owner_hex || !out) return -1;
+    if (strlen(owner_hex) != 128) return -1;
+    memset(out, 0, sizeof(*out));
+    return hf4_query(client, "dnac_name_of", "owner", owner_hex,
+                     hf4_dec_name_of, out);
+}
+
+int nodus_client_dnac_name_prices(nodus_client_t *client,
+                                  nodus_dnac_name_prices_t *out)
+{
+    if (!nodus_client_is_ready(client) || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    return hf4_query(client, "dnac_fee_info", NULL, NULL, hf4_dec_prices,
+                     out);
 }
 
 int nodus_client_dnac_supply_tip(nodus_client_t *client, bool *has_out,
@@ -6221,7 +6515,8 @@ int nodus_client_dnac_balance(nodus_client_t *client, const char *owner_hex,
 static const char *const AHD_KINDS[] = {
     "spend_out", "spend_in", "burn", "token_create", "claim", "stake",
     "delegate", "undelegate", "unstake", "validator_update", "payout",
-    "release", "fee"
+    "release", "fee",
+    "name"          /* HF-4: a NAME_REGISTER, amount = the price */
 };
 
 /* (a) strictly after (b) in the newest-first order, i.e. a < b. */

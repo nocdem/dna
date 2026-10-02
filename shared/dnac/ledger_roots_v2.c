@@ -61,6 +61,10 @@ static const uint8_t TAG_ACNODE[TAG_LEN]  = "NDS.ACNODE.v1\0\0";
  * adoption (git grep "NDS\.TR", "NDS\.E\.TREAS", "TRLEAF", "TRNODE": no
  * prior use). SELF-CONSISTENT, not externally referenced — proven by an
  * independent oracle KAT, the ACLEAF precedent above. */
+/* HF-4 (decision 2026-10-02-onchain-names.md item 18, operator "4 ok";
+ * collision scan 2026-10-02: no other "NDS.NM" tag in the tree). */
+static const uint8_t TAG_NMLEAF[TAG_LEN]  = "NDS.NMLEAF.v1\0\0";
+static const uint8_t TAG_NMNODE[TAG_LEN]  = "NDS.NMNODE.v1\0\0";
 static const uint8_t TAG_TRLEAF[TAG_LEN]  = "NDS.TRLEAF.v1\0\0";
 static const uint8_t TAG_TRNODE[TAG_LEN]  = "NDS.TRNODE.v1\0\0";
 
@@ -330,6 +334,54 @@ int dna_v2_accrual_root(const uint8_t (*owner_fps)[DNA_V2_ROOT_LEN],
         }
     }
     int rc = tagged_merkle(TAG_ACNODE, level, n, out);
+    free(level);
+    return rc;
+}
+
+/* ── name_root (HF-4) ─────────────────────────────────────────────────
+ * Contract: ledger_roots_v2.h. */
+
+int dna_v2_name_cmp(const uint8_t *a, size_t a_len,
+                    const uint8_t *b, size_t b_len) {
+    size_t m = a_len < b_len ? a_len : b_len;
+    int c = m ? memcmp(a, b, m) : 0;
+    if (c != 0) return c;
+    if (a_len == b_len) return 0;
+    return a_len < b_len ? -1 : 1;
+}
+
+int dna_v2_name_leaf_hash(const dna_v2_name_row_t *row,
+                          uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!row || !out) return -1;
+    if (row->name_len == 0 || row->name_len > DNA_V2_NAME_MAX_LEN) return -1;
+    uint8_t pre[TAG_LEN + 1 + DNA_V2_NAME_MAX_LEN + DNA_V2_ROOT_LEN + 8];
+    size_t off = 0;
+    memcpy(pre, TAG_NMLEAF, TAG_LEN);              off += TAG_LEN;
+    pre[off++] = row->name_len;
+    memcpy(pre + off, row->name, row->name_len);   off += row->name_len;
+    memcpy(pre + off, row->owner, DNA_V2_ROOT_LEN); off += DNA_V2_ROOT_LEN;
+    put_be64(row->registered_height, pre + off);   off += 8;
+    return qgp_sha3_512(pre, off, out) == 0 ? 0 : -1;
+}
+
+int dna_v2_names_root(const dna_v2_name_row_t *rows, size_t n,
+                      uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!out || (n > 0 && !rows)) return -1;
+    if (n == 0)
+        return dna_v2_empty_root(DNA_V2_EMPTY_NAMES, out);
+    for (size_t i = 1; i < n; i++)
+        if (dna_v2_name_cmp(rows[i - 1].name, rows[i - 1].name_len,
+                            rows[i].name, rows[i].name_len) >= 0)
+            return -1;                     /* strictly ascending only    */
+    uint8_t (*level)[DNA_V2_ROOT_LEN] = malloc(n * sizeof(*level));
+    if (!level) return -1;
+    for (size_t i = 0; i < n; i++) {
+        if (dna_v2_name_leaf_hash(&rows[i], level[i]) != 0) {
+            free(level);
+            return -1;
+        }
+    }
+    int rc = tagged_merkle(TAG_NMNODE, level, n, out);
     free(level);
     return rc;
 }

@@ -744,6 +744,46 @@ done:
  *  application; one value is enough because the mempool only tests
  *  `code == CodeTypeOK` (clist_mempool.go:412, :492). */
 #define NODUS_CMT_APP_CODE_REJECTED  ((uint32_t)1)
+/** HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.6
+ *  "A distinct CheckTx code for 'generation not in force'"): the refused
+ *  envelope names, for some domain, a ruleset_version that IS a compiled
+ *  generation of that domain but not the one the committed registry runs
+ *  — a client built for the other side of the RULESET_GEN2 height. Its
+ *  only reader is the client that submitted (reload, rebuild). OUTSIDE
+ *  every hash by construction: a CheckTx response code is mempool-only
+ *  (the mempool tests `code == OK` and nothing else, shared/dnac/
+ *  cmt_mem.c :1250/:1336) and LastResultsHash is built from FinalizeBlock
+ *  results (shared/dnac/cmt_results.c), which never carry this value. */
+#define NODUS_CMT_APP_CODE_GENERATION ((uint32_t)2)
+
+/** HF-4 — is a REFUSED envelope a "generation not in force" case (the
+ *  code above)? Pure classification of an already-refused entry: decode
+ *  the envelope; for each leg, the committed manifest of its domain runs
+ *  ruleset_version R, and the leg names V != R where V is the
+ *  ruleset_version of SOME compiled generation of that domain.
+ *  @return 1 yes / 0 no (any decode or read problem is "no" — the entry
+ *  is refused either way, only the code differs). */
+static int app_generation_not_in_force(nodus_witness_t *w,
+                                       const uint8_t *tx, size_t tx_len)
+{
+    dna_env_view_t v;
+    memset(&v, 0, sizeof(v));
+    if (dna_env_decode(tx, tx_len, &v) != 0) return 0;
+    for (uint16_t l = 0; l < v.leg_count; l++) {
+        dna_domain_manifest_t man;
+        if (nodus_witness_domreg_get(w, v.leg[l].domain_id, NULL, &man,
+                                     NULL) != 0)
+            return 0;
+        if (v.leg[l].ruleset_version == man.ruleset_version) continue;
+        for (uint32_t g = 1; g <= nodus_runtime_generation_count(); g++) {
+            const nodus_domain_runtime_t *rt =
+                nodus_runtime_for_generation(g, v.leg[l].domain_id);
+            if (rt && rt->ruleset_version == v.leg[l].ruleset_version)
+                return 1;
+        }
+    }
+    return 0;
+}
 
 /** Encode one 64-byte identity key (intent_id / claim nullifier). */
 static void app_key_id(app_key_t *k, uint8_t tag, const uint8_t id[64])
@@ -995,7 +1035,11 @@ int nodus_cmt_app_check_tx(void *vctx, const cmt_mem_request_check_tx_t *req,
         /* −1 invalid and −2 double-spend are both deterministic verdicts
          * about the bytes; neither is this node failing. */
         QGP_LOG_DEBUG(LOG_TAG, "check_tx refused (rc %d): %s", rc, reason);
-        res->code = NODUS_CMT_APP_CODE_REJECTED;
+        res->code = (cls == NODUS_W_TX_V2_ENVELOPE &&
+                     app_generation_not_in_force(ctx->w, req->tx,
+                                                 req->tx_len))
+                        ? NODUS_CMT_APP_CODE_GENERATION
+                        : NODUS_CMT_APP_CODE_REJECTED;
         return CMT_OK;
     }
     /* ── AND THE SIGNATURES, AND EVERYTHING ELSE THE ITEM WOULD MEET ──

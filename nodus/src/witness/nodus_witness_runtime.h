@@ -449,6 +449,16 @@ typedef struct {
      * gas_used moves. One consumer: the SYSTEM CHAIN_CONFIG exec's
      * single-use rule (nodus_chain_config_stateful_rules). */
     uint8_t        ruleset_gen2_voted;
+    /* HF-4 (design §2 Price): the four NAME_REGISTER price tiers at
+     * `global_height` — [0] = chain_config param 10 (NAME_PRICE_3P) …
+     * [3] = param 13 (NAME_PRICE_6P), each the committed row active at
+     * that height or the compiled DNAC_NAME_PRICE_*_DEFAULT. RAW values:
+     * the monotonic fold is dnac_name_price_for_len (dnac.h), applied by
+     * the consumer. Filled by the ENGINE on every ctx it builds
+     * (nodus_witness_v2_apply.c env_name_prices — an unreadable row is a
+     * node FAULT, never a default). One consumer: the CORE NAME_REGISTER
+     * exec. A hook never chooses it. */
+    uint64_t       name_price[4];
 } nodus_rt_exec_ctx_t;
 
 /**

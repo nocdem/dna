@@ -334,46 +334,122 @@ fail:
 
 /* ── the ruleset identity from the generated pins header ───────────── */
 
-int nodus_v2_ruleset_from_pins(nodus_v2_ruleset_id_t *out,
-                               dna_meter_policy_t *policy_storage) {
-    static const uint8_t core_hash[DNA_ENV_RULESET_HASH_LEN] =
-        NODUS_PIN_CORE_RULESET_HASH_INIT;
-    static const uint32_t ops[NODUS_PIN_SYS_METER_OP_COUNT] =
-        NODUS_PIN_SYS_METER_OPS_INIT;
-    static const uint64_t wts[NODUS_PIN_SYS_METER_OP_COUNT] =
-        NODUS_PIN_SYS_METER_OP_WEIGHTS_INIT;
-    static const uint8_t want[64] = NODUS_PIN_SYS_METER_POLICY_DIGEST_INIT;
-    _Static_assert(NODUS_PIN_CORE_DOMAIN_ID == DNA_DOMAIN_CORE,
-                   "the pinned CORE tuple is domain 1");
+/* HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.6
+ * — pins header v2): one generation's pinned values. Generation 1 is the
+ * unprefixed NODUS_PIN_* set, generation g > 1 the NODUS_PIN_G<g>_* set;
+ * the policy SHAPE (seven scalar weights + the byte bound) is the same
+ * layout in every generation. */
+typedef struct {
+    uint32_t       core_version;
+    const uint8_t *core_hash;
+    uint32_t       sys_version;
+    const uint8_t *sys_hash;
+    uint32_t       pol_version;
+    uint64_t       w[7];                /* base callbyte authbyte effect
+                                         * effectbyte read write          */
+    uint64_t       max_env_bytes;
+    uint32_t       n_ops;
+    const uint32_t *ops;
+    const uint64_t *wts;
+    const uint8_t  *digest;
+} pins_gen_t;
 
-    if (!out || !policy_storage) return NODUS_V2_SPEND_ERR_ARG;
+static const uint8_t PG1_CORE[64] = NODUS_PIN_CORE_RULESET_HASH_INIT;
+static const uint8_t PG1_SYS[64]  = NODUS_PIN_SYS_RULESET_HASH_INIT;
+static const uint32_t PG1_OPS[NODUS_PIN_SYS_METER_OP_COUNT] =
+    NODUS_PIN_SYS_METER_OPS_INIT;
+static const uint64_t PG1_WTS[NODUS_PIN_SYS_METER_OP_COUNT] =
+    NODUS_PIN_SYS_METER_OP_WEIGHTS_INIT;
+static const uint8_t PG1_DIG[64] = NODUS_PIN_SYS_METER_POLICY_DIGEST_INIT;
+static const uint8_t PG2_CORE[64] = NODUS_PIN_G2_CORE_RULESET_HASH_INIT;
+static const uint8_t PG2_SYS[64]  = NODUS_PIN_G2_SYS_RULESET_HASH_INIT;
+static const uint32_t PG2_OPS[NODUS_PIN_G2_SYS_METER_OP_COUNT] =
+    NODUS_PIN_G2_SYS_METER_OPS_INIT;
+static const uint64_t PG2_WTS[NODUS_PIN_G2_SYS_METER_OP_COUNT] =
+    NODUS_PIN_G2_SYS_METER_OP_WEIGHTS_INIT;
+static const uint8_t PG2_DIG[64] = NODUS_PIN_G2_SYS_METER_POLICY_DIGEST_INIT;
+
+static const pins_gen_t PINS_GEN[] = {
+    { NODUS_PIN_CORE_RULESET_VERSION, PG1_CORE,
+      NODUS_PIN_SYS_RULESET_VERSION, PG1_SYS,
+      NODUS_PIN_SYS_METER_POLICY_VERSION,
+      { NODUS_PIN_SYS_METER_W_BASE, NODUS_PIN_SYS_METER_W_CALLBYTE,
+        NODUS_PIN_SYS_METER_W_AUTHBYTE, NODUS_PIN_SYS_METER_W_EFFECT,
+        NODUS_PIN_SYS_METER_W_EFFECTBYTE, NODUS_PIN_SYS_METER_W_READ,
+        NODUS_PIN_SYS_METER_W_WRITE },
+      NODUS_PIN_SYS_METER_MAX_BLOCK_ENV_BYTES,
+      NODUS_PIN_SYS_METER_OP_COUNT, PG1_OPS, PG1_WTS, PG1_DIG },
+    { NODUS_PIN_G2_CORE_RULESET_VERSION, PG2_CORE,
+      NODUS_PIN_G2_SYS_RULESET_VERSION, PG2_SYS,
+      NODUS_PIN_G2_SYS_METER_POLICY_VERSION,
+      { NODUS_PIN_G2_SYS_METER_W_BASE, NODUS_PIN_G2_SYS_METER_W_CALLBYTE,
+        NODUS_PIN_G2_SYS_METER_W_AUTHBYTE, NODUS_PIN_G2_SYS_METER_W_EFFECT,
+        NODUS_PIN_G2_SYS_METER_W_EFFECTBYTE, NODUS_PIN_G2_SYS_METER_W_READ,
+        NODUS_PIN_G2_SYS_METER_W_WRITE },
+      NODUS_PIN_G2_SYS_METER_MAX_BLOCK_ENV_BYTES,
+      NODUS_PIN_G2_SYS_METER_OP_COUNT, PG2_OPS, PG2_WTS, PG2_DIG },
+};
+_Static_assert(sizeof(PINS_GEN) / sizeof(PINS_GEN[0]) == NODUS_PIN_GEN_COUNT,
+               "one pins entry per generation in nodus_ruleset_pins.h");
+_Static_assert(NODUS_PIN_CORE_DOMAIN_ID == DNA_DOMAIN_CORE,
+               "the pinned CORE tuple is domain 1");
+
+uint32_t nodus_v2_pins_generation_count(void) {
+    return (uint32_t)NODUS_PIN_GEN_COUNT;
+}
+
+int nodus_v2_pins_tuples(uint32_t generation, uint32_t *sys_version,
+                         uint8_t sys_hash[64], uint32_t *core_version,
+                         uint8_t core_hash[64]) {
+    if (generation < 1 || generation > NODUS_PIN_GEN_COUNT)
+        return NODUS_V2_SPEND_ERR_ARG;
+    const pins_gen_t *g = &PINS_GEN[generation - 1u];
+    if (sys_version) *sys_version = g->sys_version;
+    if (sys_hash) memcpy(sys_hash, g->sys_hash, 64);
+    if (core_version) *core_version = g->core_version;
+    if (core_hash) memcpy(core_hash, g->core_hash, 64);
+    return NODUS_V2_SPEND_OK;
+}
+
+int nodus_v2_ruleset_from_pins_gen(uint32_t generation,
+                                   nodus_v2_ruleset_id_t *out,
+                                   dna_meter_policy_t *policy_storage) {
+    if (!out || !policy_storage || generation < 1 ||
+        generation > NODUS_PIN_GEN_COUNT)
+        return NODUS_V2_SPEND_ERR_ARG;
+    const pins_gen_t *g = &PINS_GEN[generation - 1u];
     memset(out, 0, sizeof(*out));
     memset(policy_storage, 0, sizeof(*policy_storage));
 
     dna_meter_policy_t *p = policy_storage;
-    p->policy_version      = NODUS_PIN_SYS_METER_POLICY_VERSION;
-    p->w_base              = NODUS_PIN_SYS_METER_W_BASE;
-    p->w_callbyte          = NODUS_PIN_SYS_METER_W_CALLBYTE;
-    p->w_authbyte          = NODUS_PIN_SYS_METER_W_AUTHBYTE;
-    p->w_effect            = NODUS_PIN_SYS_METER_W_EFFECT;
-    p->w_effectbyte        = NODUS_PIN_SYS_METER_W_EFFECTBYTE;
-    p->w_read              = NODUS_PIN_SYS_METER_W_READ;
-    p->w_write             = NODUS_PIN_SYS_METER_W_WRITE;
-    p->max_block_env_bytes = NODUS_PIN_SYS_METER_MAX_BLOCK_ENV_BYTES;
-    for (uint32_t i = 0; i < NODUS_PIN_SYS_METER_OP_COUNT; i++)
-        if (dna_meter_op_set(p, ops[i], wts[i]) != 0)
+    p->policy_version      = g->pol_version;
+    p->w_base              = g->w[0];
+    p->w_callbyte          = g->w[1];
+    p->w_authbyte          = g->w[2];
+    p->w_effect            = g->w[3];
+    p->w_effectbyte        = g->w[4];
+    p->w_read              = g->w[5];
+    p->w_write             = g->w[6];
+    p->max_block_env_bytes = g->max_env_bytes;
+    for (uint32_t i = 0; i < g->n_ops; i++)
+        if (dna_meter_op_set(p, g->ops[i], g->wts[i]) != 0)
             return NODUS_V2_SPEND_ERR_PINS;
     uint8_t got[64];
     if (dna_meter_policy_seal(p) != 0 ||
         dna_meter_policy_digest(p, got) != 0 ||
-        memcmp(got, want, sizeof(want)) != 0) {
+        memcmp(got, g->digest, 64) != 0) {
         memset(policy_storage, 0, sizeof(*policy_storage));
         return NODUS_V2_SPEND_ERR_PINS;
     }
-    out->core_ruleset_version = NODUS_PIN_CORE_RULESET_VERSION;
-    memcpy(out->core_ruleset_hash, core_hash, sizeof(core_hash));
+    out->core_ruleset_version = g->core_version;
+    memcpy(out->core_ruleset_hash, g->core_hash, 64);
     out->meter_policy = p;
     return NODUS_V2_SPEND_OK;
+}
+
+int nodus_v2_ruleset_from_pins(nodus_v2_ruleset_id_t *out,
+                               dna_meter_policy_t *policy_storage) {
+    return nodus_v2_ruleset_from_pins_gen(1, out, policy_storage);
 }
 
 /* ── plan ───────────────────────────────────────────────────────────── */

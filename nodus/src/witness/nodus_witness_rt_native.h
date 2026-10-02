@@ -33,6 +33,7 @@
 #include <stddef.h>
 
 #include "dnac/env_wire.h"
+#include "witness/nodus_witness_runtime.h"   /* nodus_rt_auth_verdict_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -78,6 +79,13 @@ typedef struct {
     uint8_t  n_created;
     nodus_rt_desc_coin_t created[NODUS_RT_DESC_MAX_OUT];
     uint64_t burned;              /* BURN's burn_amount; 0 otherwise       */
+    /* HF-4 NAME_REGISTER (design §1.7): the registered name and the
+     * price paid into the reward pool. The price is NEVER folded into
+     * `burned` — nothing is destroyed (a consumer would show it as
+     * "Burned"). name_len 0 = not a registration. */
+    uint8_t  name_len;
+    uint8_t  name[36];            /* name_len bytes, NOT NUL-terminated    */
+    uint64_t name_price;
 
     /* SYSTEM record — only the fields its kind names are meaningful.
      * Fingerprints are the RAW SHA3-512 of the call-carried pubkey (the
@@ -126,6 +134,23 @@ int nodus_rt_native_describe_leg(const dna_env_view_t *env,
                                  uint64_t global_height,
                                  const uint8_t *intent_id,
                                  nodus_rt_leg_desc_t *out);
+
+/**
+ * HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §2
+ * "Same owner, two names pending") — the CheckTx-only synthetic OWNER
+ * conflict key of a CORE NAME_REGISTER leg: the CORE adapter's read-only
+ * OWNER op id and the leg's owner (the verified verdict's signer_fp[0]).
+ * The CheckTx dry run appends it to its conflict rows so one node's
+ * mempool admits one registration per owner. Mempool only — it never
+ * reaches consensus state or a result.
+ * @return 0 key filled; 1 the leg is not a CORE NAME_REGISTER leg (no
+ *         key); -1 bad arguments or an owner shape the exec refuses.
+ */
+int nodus_rt_core_name_owner_key(const dna_env_view_t *env,
+                                 uint16_t leg_index,
+                                 const nodus_rt_auth_verdict_t *verdict,
+                                 uint32_t *op_id_out,
+                                 uint8_t key_out[64]);
 
 #ifdef __cplusplus
 }

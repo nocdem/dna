@@ -2267,6 +2267,16 @@ register_witness_test(test_hf4_params)
 register_witness_test(test_hf4_switch)
 register_witness_test(test_hf4_genesis)
 
+# HF-4 part A2 — CORE rule 8 NAME_REGISTER. test_hf4_names: the name byte
+# rule and price fold, the name_root KATs, the read plan / exec / describer
+# / CheckTx owner key over fabricated engine facts, the pins generation
+# tuples, the client decoders of the new queries and v3-block keys.
+# test_hf4_names_engine: the v2_names per-open DDL check, and a
+# registration applied end to end on a generation-2 chain (state, pool,
+# name_root, twin determinism, refusals, dry-run owner key, address index).
+register_witness_test(test_hf4_names)
+register_witness_test(test_hf4_names_engine)
+
 # Web wallet package (c2) — the shared CORE SPEND builder
 # (src/client/nodus_v2_spend.c): the pins ruleset == the compiled table,
 # a pins-built envelope admitted by the CheckTx dry run on a seeded

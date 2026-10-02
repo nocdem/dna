@@ -236,6 +236,79 @@ int nodus_witness_accrual_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     return ret;
 }
 
+/* ── name_root (HF-4) ──────────────────────────────────────────────────
+ * Design docs/plans/2026-10-02-onchain-names-design.md rev 4 §2
+ * "name_root". The accrual leg's fail-closed shape: `v2_names` is in the
+ * base schema (nodus_witness.h NODUS_V2_NAMES_DDL), so a missing table is
+ * a FAULT (prepare fails), never an empty leg; a scan fault is never a
+ * shorter table. Per row it checks ONLY what the leaf needs to be well
+ * defined — storage type, length, the a-z0-9 alphabet — and the strict
+ * BINARY order (dna_v2_names_root); the hex-like rule is the parse's
+ * (it never wrote such a row), deliberately not re-judged here.
+ * Static: nodus_witness_roots_v2.h was outside the HF-4 file set; the
+ * one caller is nodus_witness_core_root_v2 below. */
+static int names_root_v2(nodus_witness_t *w, uint8_t out[64]) {
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT name, owner, registered_height, typeof(name), "
+        "typeof(owner), typeof(registered_height) FROM v2_names "
+        "ORDER BY name ASC", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "names scan prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    size_t cap = 16, n = 0;
+    dna_v2_name_row_t *rows = malloc(cap * sizeof(*rows));
+    if (!rows) { sqlite3_finalize(stmt); return -1; }
+    int fail = 0;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        if (n >= cap) {
+            dna_v2_name_row_t *nr = realloc(rows, cap * 2 * sizeof(*rows));
+            if (!nr) { fail = 1; break; }
+            rows = nr;
+            cap *= 2;
+        }
+        const uint8_t *nm = sqlite3_column_blob(stmt, 0);
+        int nl = sqlite3_column_bytes(stmt, 0);
+        const uint8_t *ow = sqlite3_column_blob(stmt, 1);
+        int ol = sqlite3_column_bytes(stmt, 1);
+        sqlite3_int64 h = sqlite3_column_int64(stmt, 2);
+        const char *tn = (const char *)sqlite3_column_text(stmt, 3);
+        const char *to = (const char *)sqlite3_column_text(stmt, 4);
+        const char *th = (const char *)sqlite3_column_text(stmt, 5);
+        int ok = nm && ow && tn && to && th &&
+                 strcmp(tn, "blob") == 0 && strcmp(to, "blob") == 0 &&
+                 strcmp(th, "integer") == 0 &&
+                 nl >= 3 && nl <= (int)DNA_V2_NAME_MAX_LEN && ol == 64 &&
+                 h >= 1;
+        for (int i = 0; ok && i < nl; i++)
+            ok = (nm[i] >= 'a' && nm[i] <= 'z') ||
+                 (nm[i] >= '0' && nm[i] <= '9');
+        if (!ok) {
+            QGP_LOG_ERROR(LOG_TAG, "v2_names row %zu malformed — failing "
+                          "root", n);
+            fail = 1;
+            break;
+        }
+        memset(&rows[n], 0, sizeof(rows[n]));
+        rows[n].name_len = (uint8_t)nl;
+        memcpy(rows[n].name, nm, (size_t)nl);
+        memcpy(rows[n].owner, ow, 64);
+        rows[n].registered_height = (uint64_t)h;
+        n++;
+    }
+    if (!fail && rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "names scan aborted mid-stream (rc=%d) — "
+                      "failing root", rc);
+        fail = 1;
+    }
+    sqlite3_finalize(stmt);
+    int ret = fail ? -1 : dna_v2_names_root(rows, n, out);
+    free(rows);
+    return ret;
+}
+
 /* ── treasury (final pre-testnet wipe, W-A) ────────────────────────────
  * Contract: nodus_witness_roots_v2.h. The accrual leg's fail-closed
  * shape, with one scan used by the root AND the supply term so the two
@@ -547,7 +620,11 @@ int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]) {
      * byte-identically (pre-S6 chains unchanged). */
     if (nodus_witness_claims_root_v2(w, DNA_DOMAIN_CORE, claims) != 0)
         return -1;
-    if (dna_v2_empty_root(DNA_V2_EMPTY_NAMES, names) != 0)
+    /* HF-4: the name leg is REAL — names_root_v2 over v2_names. An empty
+     * table (every chain before its first registration) is exactly the
+     * tagged-empty root this leg held since S2, so no pre-H root moves
+     * and the composition tag stays "NDS.CORE.v2". */
+    if (names_root_v2(w, names) != 0)
         return -1;
     /* Native issuance (genesis/minted/burned) is the CORE runtime's OWN
      * asset commitment — the supply leg lives HERE (locked ownership). */

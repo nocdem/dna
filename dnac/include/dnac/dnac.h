@@ -876,6 +876,50 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
 #define DNAC_NAME_PRICE_5P_DEFAULT          10000000000ULL
 #define DNAC_NAME_PRICE_6P_DEFAULT          100000000ULL
 
+/** HF-4 NAME_REGISTER name bytes (design §2 "Name bytes"; decision items
+ *  5 and 11): 3..36 bytes, each in the byte table a-z / 0-9 (uppercase
+ *  is REFUSED — clients lower-case with an ASCII-only mapping, never a
+ *  locale tolower); a name made only of 0-9a-f whose length is >= 8 is
+ *  refused (it would read as an ID prefix). */
+#define DNAC_NAME_MIN_LEN                   3u
+#define DNAC_NAME_MAX_LEN                   36u
+#define DNAC_NAME_HEXLIKE_MIN_LEN           8u
+
+/** The ONE name-byte rule — the CORE op-8 parse (consensus), the queries
+ *  and every client consume it. @return 1 legal / 0 refused. */
+static inline int dnac_name_bytes_ok(const uint8_t *name, size_t len) {
+    if (!name || len < DNAC_NAME_MIN_LEN || len > DNAC_NAME_MAX_LEN)
+        return 0;
+    int all_hex = 1;
+    for (size_t i = 0; i < len; i++) {
+        uint8_t c = name[i];
+        int digit = (c >= '0' && c <= '9');
+        int lower = (c >= 'a' && c <= 'z');
+        if (!digit && !lower) return 0;
+        if (!digit && !(c >= 'a' && c <= 'f')) all_hex = 0;
+    }
+    if (all_hex && len >= DNAC_NAME_HEXLIKE_MIN_LEN) return 0;
+    return 1;
+}
+
+/** HF-4 NAME_REGISTER price of a `len`-byte name (design §2 Price): the
+ *  MONOTONIC read of the four committed tiers p[0..3] = params 10..13
+ *  (NAME_PRICE_3P..6P, compiled defaults where no row is active):
+ *    3 = max(P3, P4, P5, P6), 4 = max(P4, P5, P6), 5 = max(P5, P6),
+ *    6+ = P6 — a shorter name never costs less than a longer one,
+ *  whatever the votes. The ONE derivation the engine, dnac_fee_info and
+ *  the clients share. @return the price, or 0 for a length outside
+ *  DNAC_NAME_MIN_LEN..DNAC_NAME_MAX_LEN. */
+static inline uint64_t dnac_name_price_for_len(const uint64_t p[4],
+                                               size_t len) {
+    if (!p || len < DNAC_NAME_MIN_LEN || len > DNAC_NAME_MAX_LEN) return 0;
+    size_t first = len >= 6u ? 3u : len - 3u;   /* tier index 0..3 */
+    uint64_t m = p[first];
+    for (size_t k = first + 1u; k < 4u; k++)
+        if (p[k] > m) m = p[k];
+    return m;
+}
+
 #ifndef __cplusplus
 _Static_assert(DNAC_CFG_RULESET_GEN2_D2 <= 0x7FFFFFFFFFFFFFFFULL,
                "D2 must fit SQLite int64 (top bit cleared by construction)");

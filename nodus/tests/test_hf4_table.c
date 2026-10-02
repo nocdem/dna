@@ -31,9 +31,10 @@
  *     literals, the encoder is this build's.
  *  6. dna_ruleset_gen_digest: top bit always clear; generation, either
  *     hash and the switch spec version each move the value; NULL refused.
- *  7. CORE rule 8: owned by generation 2 only; the CORE read_plan and
- *     exec hooks REFUSE it as a verdict (-1), never a fault (-2), until
- *     the op-8 package lands.
+ *  7. CORE rule 8: owned by generation 2 only; the shared CORE read_plan
+ *     and exec hooks REFUSE it as a verdict (-1), never a fault (-2), for
+ *     a generation-1 or NULL runtime (its execution under generation 2:
+ *     test_hf4_names.c).
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none. Environment: none. No database.
@@ -46,8 +47,9 @@
  *    literals (generation-2 SYSTEM / CORE ruleset_hash and policy digest
  *    in nodus_witness_runtime.c, D2 in dnac.h). That failure is the
  *    point: a table whose pins do not re-derive must not start.
- *  - Section 7 proves the CURRENT refusal of op 8; the op-8 package
- *    replaces it with an exec and must replace this section too.
+ *  - Section 7 feeds the hooks a view with no call bytes, so its gen-2
+ *    case proves only the parse refusal; the op-8 matrix is
+ *    test_hf4_names.c.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -251,12 +253,25 @@ int main(void) {
         ctx.global_height = 10;
         ctx.auth = &av;
 
+        /* A2: generation 2 EXECUTES op 8 (test_hf4_names.c); the shared
+         * CORE hooks refuse it — as a verdict (-1), never a fault — for a
+         * generation-1 runtime and for a NULL / synthetic one, whatever
+         * the call bytes (this view carries none). */
         nodus_rt_read_req_t reqs[NODUS_RT_MAX_READS];
         uint16_t nr = 0;
-        CHECK(nodus_rt_core_read_plan(&g2[1], &v, 0, &ctx, reqs,
-                                      NODUS_RT_MAX_READS, &nr) == -1);
         static uint8_t res[DNA_EFFECT_MAX_TOTAL_LEN];
         size_t rl = 0;
+        CHECK(nodus_rt_core_read_plan(&g1[1], &v, 0, &ctx, reqs,
+                                      NODUS_RT_MAX_READS, &nr) == -1);
+        CHECK(nodus_rt_core_exec(&g1[1], &v, 0, &ctx, NULL, 0, res,
+                                 sizeof(res), &rl) == -1);
+        CHECK(nodus_rt_core_read_plan(NULL, &v, 0, &ctx, reqs,
+                                      NODUS_RT_MAX_READS, &nr) == -1);
+        CHECK(nodus_rt_core_exec(NULL, &v, 0, &ctx, NULL, 0, res,
+                                 sizeof(res), &rl) == -1);
+        /* and a gen-2 runtime with an empty call refuses at the parse */
+        CHECK(nodus_rt_core_read_plan(&g2[1], &v, 0, &ctx, reqs,
+                                      NODUS_RT_MAX_READS, &nr) == -1);
         CHECK(nodus_rt_core_exec(&g2[1], &v, 0, &ctx, NULL, 0, res,
                                  sizeof(res), &rl) == -1);
     }
