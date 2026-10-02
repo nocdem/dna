@@ -673,8 +673,8 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg) {
 
     /* Component split S3 (nodus_server.h witness_external). Default
      * false = the in-process witness; a non-boolean value refuses the
-     * start, like addr_history_index. nodus-witness reads and ignores
-     * it. */
+     * start, like addr_history_index. nodus-witness requires it to be
+     * true and refuses to start otherwise (tools/nodus-witness.c). */
     if (json_object_object_get_ex(root, "witness_external", &val)) {
         if (!json_object_is_type(val, json_type_boolean)) {
             QGP_LOG_ERROR(LOG_TAG_CFG, "witness_external must be true or "
