@@ -268,6 +268,63 @@ test('send to a chain name (other coin): no field for that network, an unsigned 
   assert.deepEqual(seen, []);
 });
 
+// ── address-shaped text is never a chain name ────────────────────────────
+// The real adapters' isRecipientAddress / looksLikeAddress with a stub
+// prepare; the mock module's log is the spy on the name lookup.
+const TRON_VALID = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';          // src/config.js USDT (TRON)
+const TRX_OWNER_ADDR = 'TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8';      // src/config.js USDC (TRON)
+function addressStub(adapter, seen) {
+  return { isRecipientAddress: adapter.isRecipientAddress, looksLikeAddress: adapter.looksLikeAddress, prepare: async ({ to }) => { seen.push(to); return { expiresAt: Date.now() + 10000, fee: '1', nonce: 1, send: async () => 'hash' }; } };
+}
+const sendOn = (client, chain, to, implementations) => prepareTransfer({ wallet: walletFor(client), chain, symbol: { tron: 'TRX', ethereum: 'ETH', bsc: 'BNB' }[chain], to, amount: '1' }, implementations);
+
+test('address-shaped text is never a chain name: TRON (34 x T/t, 41+40 hex) and EVM (0x / 0X)', async () => {
+  const tronAdapter = adapters.tron, evmAdapter = adapters.ethereum;
+  // A 34-char lower-cased TRON text is a legal chain name — the reason for this rule.
+  assert.equal(chainName(TRON_VALID.toLowerCase()), TRON_VALID.toLowerCase());
+  const { mock, client } = await readyClient(m => {
+    // the lower-cased TRON text IS a registered name here: only the shape rule keeps it from resolving
+    m.state.names = { punk: RECIPIENT, [TRON_VALID.toLowerCase()]: RECIPIENT };
+    m.state.profiles = { [RECIPIENT]: { trx: TRX_OWNER_ADDR, eth: EVM_TO, bsc: EVM_TO } };
+  });
+  const lookups = () => mock.log.filter(entry => entry === 'nameLookup:start').length;
+  const seen = [];
+  const impl = { tron: addressStub(tronAdapter, seen), ethereum: addressStub(evmAdapter, seen), bsc: addressStub(evmAdapter, seen), nodus: adapters.nodus };
+  const before = lookups();
+  // a valid TRON address goes straight to the adapter
+  (await sendOn(client, 'tron', TRON_VALID, impl)).cancel();
+  assert.deepEqual(seen, [TRON_VALID]);
+  // case-mangled (lower / upper) and a bad checksum: refused, never looked up
+  for (const bad of [TRON_VALID.toLowerCase(), TRON_VALID.toUpperCase(), TRON_VALID.slice(0, -1) + 'u']) {
+    assert.equal(tronAdapter.isRecipientAddress(bad), false, bad);
+    assert.equal(tronAdapter.looksLikeAddress(bad), true, bad);
+    await assert.rejects(sendOn(client, 'tron', bad, impl), /Invalid TRON address\./, bad);
+  }
+  assert.deepEqual(seen, [TRON_VALID], 'no adapter build for a refused address');
+  // the 41 + 40 hex form is an address attempt: to the adapter if TronWeb
+  // accepts it, refused otherwise — never a lookup either way
+  const hex41 = '41' + 'ab'.repeat(20);
+  assert.equal(tronAdapter.looksLikeAddress(hex41), true);
+  if (tronAdapter.isRecipientAddress(hex41)) { (await sendOn(client, 'tron', hex41, impl)).cancel(); assert.equal(seen.pop(), hex41); }
+  else await assert.rejects(sendOn(client, 'tron', hex41, impl), /Invalid TRON address\./);
+  // EVM: anything starting with 0x / 0X is an address attempt
+  for (const bad of ['0x' + 'ab'.repeat(17), '0X' + 'ab'.repeat(20), '0xpunk']) {
+    assert.equal(evmAdapter.looksLikeAddress(bad), true, bad);
+    await assert.rejects(sendOn(client, 'ethereum', bad, impl), /Invalid Ethereum address\./, bad);
+    await assert.rejects(sendOn(client, 'bsc', bad, impl), /Invalid BNB Smart Chain address\./, bad);
+  }
+  assert.equal(lookups(), before, 'no name lookup for any address-shaped text');
+  assert.deepEqual(seen, [TRON_VALID], 'no adapter build for a refused address');
+  // a real name still resolves on TRON and on EVM
+  (await sendOn(client, 'tron', 'punk', impl)).cancel();
+  (await sendOn(client, 'ethereum', 'Punk', impl)).cancel();
+  assert.equal(lookups(), before + 2);
+  assert.deepEqual(seen, [TRON_VALID, TRX_OWNER_ADDR, EVM_TO]);
+  // Solana is unchanged: no looksLikeAddress (real addresses are 43-44 chars, names at most 36)
+  assert.equal(adapters.solana.looksLikeAddress, undefined);
+  client.lock();
+});
+
 // ── Connect: chain names vs profile names (R3/R6) ────────────────────────
 test('Connect names: only a chain name is the title and verified; the short ID beside it; a profile name only labelled', () => {
   const fp = RECIPIENT;

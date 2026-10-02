@@ -16,6 +16,9 @@ export async function balances(chain, address, endpoint, options = {}) {
 // always wins over a chain name). A mixed-case text with a wrong checksum
 // is an address that fails (prepare refuses it), not a name.
 export function isRecipientAddress(text) { return typeof text === 'string' && /^0x[0-9a-fA-F]{40}$/.test(text); }
+// Whether `text` is an ATTEMPT at an EVM address — anything starting with
+// 0x / 0X. Such text is never looked up as a chain name (src/wallet.js).
+export function looksLikeAddress(text) { return typeof text === 'string' && /^0[xX]/.test(text); }
 export async function checkNetwork(chain, endpoint, options) {
   if (rawInteger(await rpc(endpoint, 'eth_chainId', [], options)) !== BigInt(CHAINS[chain].chainId)) throw new Error('RPC is connected to the wrong network.');
 }

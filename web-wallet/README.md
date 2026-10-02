@@ -970,7 +970,12 @@ before the RULESET_GEN2 vote (design §1.5).
   the JS mirror of `dnac_name_bytes_ok`; A–Z is lower-cased with an
   ASCII-only table; shared vectors `test/chain-name-vectors.js`, also run
   against the module's `nsw_name_ok`). An address of the selected network
-  always wins. NODUS: `dnac_name_lookup` → the owner's fingerprint → the
+  always wins, and address-SHAPED text is never a name: TRON text of 34
+  characters starting with T/t or `41` + 40 hex, and EVM text starting with
+  `0x`/`0X`, is refused as "Invalid … address" when it is not a valid
+  address — never looked up (`looksLikeAddress` in `src/adapters/tron.js` /
+  `evm.js`, used by `src/wallet.js`; a case-mangled TRON address lower-cases
+  to a legal name). NODUS: `dnac_name_lookup` → the owner's fingerprint → the
   normal send. Ethereum / BNB Smart Chain / Solana / TRON: the owner's
   `eth` / `bsc` / `sol` / `trx` address from the owner's profile, read and
   signature-checked by the module with the Messages profile reader

@@ -37,8 +37,14 @@ export async function prepareTransfer({ wallet, chain, symbol, to, amount, endpo
   // in a signature-checked profile (src/adapters/nodus.js
   // resolveNameAddress, through the NODUS module). An address always wins;
   // a name that does not resolve is an error, never a fallback.
+  // ADDRESS-SHAPED text (the adapter's looksLikeAddress: TRON 34 chars
+  // starting T/t or 41+40 hex; EVM 0x/0X…) is never a name: if it is not a
+  // valid address it is refused here, before any lookup.
   const typed = typeof to === 'string' ? to.trim() : '';
-  const name = implementations[chain].isRecipientAddress?.(typed) ? null : chainName(typed);
+  const impl = implementations[chain];
+  const shaped = impl.looksLikeAddress?.(typed) === true;
+  if (shaped && typeof impl.isRecipientAddress === 'function' && !impl.isRecipientAddress(typed)) throw new Error(`Invalid ${CHAINS[chain].name} address.`);
+  const name = shaped || impl.isRecipientAddress?.(typed) ? null : chainName(typed);
   if (name && typeof implementations.nodus?.resolveNameAddress !== 'function') throw new Error('Chain names are not available in this wallet version.');
   const named = name ? await implementations.nodus.resolveNameAddress({ client: wallet.nodusClient, chain, name }) : undefined;
   const recipient = named ? named.address : typed;
