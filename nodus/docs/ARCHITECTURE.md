@@ -1452,7 +1452,7 @@ Data is stored in:
 - `<data_path>/channels.db` — Channel post storage (SQLite)
 - `<identity_path>/nodus.pk`, `nodus.sk`, `nodus.fp` — Node identity
 
-### Component split — S1 witness host seam, S2 local IPC primitives, S3 `nodus-witness` process, S4 core/DHT seam, S5a 4002 connection fixes (2026-10-02)
+### Component split — S1 witness host seam, S2 local IPC primitives, S3 `nodus-witness` process, S4 core/DHT seam, S5a 4002 connection fixes, S5b `nodus-storage` process (2026-10-02 / 03)
 
 Governing record: decision `docs/plans/decisions/2026-10-01-nodus-component-split.md`
 (local; items 1-26 APPROVED; rev 4 items 27-29 APPROVED 2026-10-02, operator "ikisine de
@@ -1467,7 +1467,8 @@ witness in-process exactly as before. S4 splits the server's own state into a co
 and a DHT / storage half joined by a message-shaped seam, **inside the combined binary,
 stated as no behaviour change** (commit `b6bd6d3f`: "no wire, DB or log change"; the loop
 order is the same — "Event Loop" above); the `nodus-storage` process that uses the seam
-is S5.
+is S5 (S5b below; opt-in `storage_external`, the default leaves the combined binary as
+it was apart from the S5a / S5b changes stated there).
 
 #### S1 — the witness host seam (commit `da2d2dfa`)
 
@@ -1954,13 +1955,15 @@ keep the `NODUS_SRV` tag, `nodus_dht_server.c:16-17`); `8eced563` the link gate.
 Lifecycle, in the order `nodus_server_init` had before the seam: `nodus_dht_init`
 (`nodus_dht.h:613`, phase one, BEFORE the identity is loaded — zero, copy the host,
 BF fds to -1, republish jitter, lookup txn counter, BF epoll; reached through
-`nodus_dht_backend_inproc_new`, `nodus_server.c:2741-2753`), then after the identity
+`nodus_dht_backend_inproc_new`, `nodus_server.c:2639-2665` — with `storage_external`
+the same block opens the IPC backend instead), then after the identity
 `nodus_dht_open` (`nodus_dht.h:624-625` — `nodus.db` + media on the same handle,
 `channels.db` + default channels, routing table, hash ring with this node at its
-advertised address; through `nodus_dht_backend_inproc_open`, `nodus_server.c:2772-2774`).
+advertised address; through `nodus_dht_backend_inproc_open`, `nodus_server.c:2681-2692`,
+skipped with `storage_external`).
 `nodus_server_close` calls `ops->stop` (abandon lookups and BFs, close the BF epoll)
 first and `ops->close` (databases, free the backend) after the transports
-(`nodus_server.c:3302-3327`); a failed init calls `ops->close` (`:3139-3141`).
+(`nodus_server.c:3250-3274`); a failed init calls `ops->close` (`:3075-3076`).
 
 **Origins: `{kind, slot, gen}`, no pointer** (`nodus_dht.h:62-93`). A request's origin
 and its replies' destination is `nodus_dht_origin_t { kind, slot, gen }`, `kind` =
@@ -1977,8 +1980,8 @@ server-wide counter (`srv->next_session_gen`, `nodus_server.h:263`; per-session
 `dht_gen`, `:149`, `:187`) and hands it over in `session_opened`; a deferred reply is
 dropped by the DHT unless the slot's shadow is open with that generation
 (`dht_origin_live`, `nodus_dht_server.c:79-84`), and core's `send_to_origin` writes only
-to a session of that generation (`server_dht_send_to_origin`, `nodus_server.c:2618-2631`).
-Test: `test_origin_gen`.
+to a session of that generation (`server_dht_send_to_origin`, `nodus_server.c:2446-2460`).
+Test: `test_origin_gen`; over the S5b sockets, `test_dht_ipc` case 13.
 
 **Session shadows** (`nodus_dht.h:481-519`). Core keeps the session (connection,
 identity, token, circuits); the DHT keeps, per slot:
@@ -1995,15 +1998,21 @@ identity, token, circuits); the DHT keeps, per slot:
 
 Where core opens / closes them (`ops->session_opened` / `ops->session_closed`; the DHT
 side zeroes the shadow and, for a client, sets `open`, and records the generation,
-`nodus_dht_server.c:4278-4301`):
+`nodus_dht_server.c:4245-4268`; line numbers in this S4 part are re-read at the S5b
+tree):
 
 | Event | Core site | Call |
 |---|---|---|
-| client accept (slot gets `sess->conn`) | `on_tcp_accept`, after `session_clear` + `sess->conn = conn` | `session_dht_opened` (`nodus_server.c:2234-2238`, call `:2254`) |
-| client disconnect | `on_tcp_disconnect`, after `session_clear` | `session_dht_closed` (`:2240-2244`, call `:2295`) |
-| 4002 dial connected | `on_inter_connect` | `inter_session_dht(…, true)` (`:1846-1853`, call `:1866`) |
-| 4002 accept | `on_inter_accept` | `inter_session_dht(…, true)` (call `:1901`) |
-| 4002 disconnect | `on_inter_disconnect`, after `inter_session_clear` | `inter_session_dht(…, false)` (call `:1989`) |
+| client accept (slot gets `sess->conn`) | `on_tcp_accept`, after `session_clear` + `sess->conn = conn` | `session_dht_opened` (`nodus_server.c:2062-2066`, call `:2082`) |
+| client disconnect | `on_tcp_disconnect`, after `session_clear` | `session_dht_closed` (`:2068-2072`, call `:2123`) |
+| 4002 dial connected | `on_inter_connect` | `inter_session_dht(…, true)` (`:1674-1681`, call `:1694`) |
+| 4002 accept | `on_inter_accept` | `inter_session_dht(…, true)` (call `:1729`) |
+| 4002 disconnect | `on_inter_disconnect`, after `inter_session_clear` | `inter_session_dht(…, false)` (call `:1817`) |
+
+With `storage_external` (S5b) the same calls reach the IPC backend, which sends nothing
+for them: `session_opened` records the generation and closes a connection left from the
+slot's previous session, `session_closed` closes the origin connection — its EOF is the
+storage process's "session closed" (see S5b below).
 
 **Core → DHT: `nodus_dht_backend_ops_t`** (`nodus_dht_backend.h:42-131`; HOT = per client
 put / get or per replicated value, COLD = periodic, per heartbeat, per session open /
@@ -2011,18 +2020,18 @@ close, or on failure only — `:18-19`):
 
 | Op | HOT/COLD | Core call site (`nodus_server.c` unless named) | In-process → |
 |---|---|---|---|
-| `client_frame(b, slot, client_fp, client_pk, payload, len, msg)` | HOT | `dispatch_t2`, 13 methods, `:2132-2147` | `nodus_dht_client_request` |
-| `inter_frame(b, slot, payload, len, msg)` | HOT | `dispatch_inter`: `fv` `:1637`, `get_batch` `:1666`, `m_sv` `:1677` | `nodus_dht_inter_request` |
-| `inter_t1(b, slot, peer_fp, peer_ip, payload, len, t1)` | HOT (sv = replication) | `dispatch_inter`, T1 `sv` / `sub` / `unsub` / `ntf` after the F2 gate, with `&sess->client_fp` and the conn's ip, `:1754-1757` | `nodus_dht_inter_t1` |
-| `udp_frame(b, from_ip, from_port, payload, len, msg)` | HOT in a large cluster, COLD at 7 nodes | `handle_udp_message`, `fn` / `fn_r` / `sv` / `fv`, `:2211-2215` | `nodus_dht_udp_request` |
-| `peer_seen(b, kind, node_id, ip, udp_port, tcp_port)` | COLD | UDP ping `:2194`, pong `:2201` + `:2207`; cluster ALIVE `nodus_cluster.c:248-249` | `nodus_dht_peer_seen` |
+| `client_frame(b, slot, client_fp, client_pk, payload, len, msg)` | HOT | `dispatch_t2`, 13 methods, `:1960-1975` | `nodus_dht_client_request` |
+| `inter_frame(b, slot, peer_fp, peer_ip, payload, len, msg)` | HOT | `dispatch_inter`: `fv` `:1459`, `get_batch` `:1490`, `m_sv` `:1503` (`peer_fp` / `peer_ip` added in S5b for the IPC preface; in-process unused) | `nodus_dht_inter_request` |
+| `inter_t1(b, slot, peer_fp, peer_ip, payload, len, t1)` | HOT (sv = replication) | `dispatch_inter`, T1 `sv` / `sub` / `unsub` / `ntf` after the F2 gate, with `&sess->client_fp` and the conn's ip, `:1582-1585` | `nodus_dht_inter_t1` |
+| `udp_frame(b, from_ip, from_port, payload, len, msg)` | HOT in a large cluster, COLD at 7 nodes | `handle_udp_message`, `fn` / `fn_r` / `sv` / `fv`, `:2043` | `nodus_dht_udp_request` |
+| `peer_seen(b, kind, node_id, ip, udp_port, tcp_port)` | COLD | UDP ping `:2022`, pong `:2029` + `:2035`; cluster ALIVE `nodus_cluster.c:248-249` | `nodus_dht_peer_seen` |
 | `peer_dead(b, node_id)` | COLD | cluster DEAD, `nodus_cluster.c:186` | `nodus_dht_peer_dead` |
 | `session_opened(b, origin)` / `session_closed(b, origin)` | COLD | table above | `nodus_dht_session_opened` / `_closed` |
-| `hint_store(b, node_id, ip, port, frame, len)` | COLD | `nodus_server_on_pending_full`, `:424-426` — DHT replication frames only since S5a | `nodus_dht_hint_store` |
-| `routing_snapshot(b, out, max)` | COLD (every `NODUS_PRESENCE_SYNC_SEC`) | `nodus_presence_tick`, `nodus_presence.c:241-242` | `nodus_dht_routing_snapshot` |
-| `read_pending(b)` | — | both poll waits, `:3199`, `:3216` | always `false` |
-| `evict_tick(b)` | — | right after `nodus_cluster_tick`, `:3236` | `nodus_dht_evict_tick` |
-| `tick(b)` | — | right after `nodus_presence_tick`, `:3285` | `nodus_dht_tick` |
+| `hint_store(b, node_id, ip, port, frame, len)` | COLD | `nodus_server_on_pending_full`, `:390-392` — DHT replication frames only since S5a | `nodus_dht_hint_store` |
+| `routing_snapshot(b, out, max)` | COLD (every `NODUS_PRESENCE_SYNC_SEC`) | `nodus_presence_tick`, `nodus_presence.c:308-309` | `nodus_dht_routing_snapshot` |
+| `read_pending(b)` | — | both poll waits, `:3136`, `:3153` | always `false` |
+| `evict_tick(b)` | — | right after `nodus_cluster_tick`, `:3173` | `nodus_dht_evict_tick` |
+| `tick(b)` | — | right after `nodus_presence_tick`, `:3233` | `nodus_dht_tick` |
 | `stop(b)` / `close(b)` | — | `nodus_server_close` / init failure | `nodus_dht_stop` / `nodus_dht_close` + free |
 
 In-process the decoded message (`msg` / `t1`) is passed beside the frame bytes so the
@@ -2038,18 +2047,19 @@ ping-before-evict, then cancel that peer's pending eviction; core updates the cl
 after), `PONG_TOUCH` (routing touch, BEFORE core's cluster update), `PONG` (AFTER it:
 cancel the pending eviction, then insert), `ALIVE` (cluster saw a member turn ALIVE:
 plain routing insert). Core passes `tcp_port = from_port + 2` for UDP events, as before
-(`nodus_server.c:2234-2249`).
+(`nodus_server.c:2016-2037`).
 
 **DHT → core: `nodus_dht_host_t`** (`nodus_dht.h:427-463`), filled by
-`nodus_server_dht_host` (`nodus_server.c:2688-2696`):
+`nodus_server_dht_host` (`nodus_server.c:2487-2495`) in-process; the nodus-storage
+process fills the same members itself (`nodus_dht_ipc_host`, S5b below):
 
 | Member | HOT/COLD | Core implementation |
 |---|---|---|
-| `const nodus_identity_t *identity` | configuration, not a crossing (`nodus_dht.h:443-447`) | `&srv->identity` — read for `node_id` (routing, self-skips) and `pk` / `sk` (the BF dialer's hello and auth signature, `nodus_dht_server.c:3651`, `:3333`) |
-| `send_to_origin(ctx, origin, frame, len)` | HOT | `server_dht_send_to_origin` (`:2618-2631`): `nodus_tcp_send(srv->sessions[slot].conn \| srv->inter_sessions[slot].conn, …)` when that session's `dht_gen` equals `origin.gen`; -1 for a slot out of range or another generation |
-| `udp_send(ctx, payload, len, ip, port)` | HOT in a large cluster, COLD at 7 nodes | `server_dht_udp_send` (`:2635-2639`): `nodus_udp_send(&srv->udp, …)` — T1 replies must leave from port 4000 |
-| `inter_send(ctx, ip, port, expected_peer_id, frame, flen)` | HOT (every put × R, every republished value, every remote listener notify) | `server_dht_inter_send` (`:2642-2647`) → `dht_republish_send` (`:476`), which **stayed in core**: `srv->inter_tcp` pool, find-or-dial through `nodus_server_inter_dial` (`:447-469`, `expected_peer_id` pinned on a new conn, CRIT-1), pre-auth pending buffer. **Synchronous** 0 / -1 — the caller decides on a hint from it in the same call (`nodus_dht.h:463-471`) |
-| `hint_wanted(ctx, node_id)` | COLD (after a failed send) | `server_dht_hint_wanted` (`:2652-2657`): a cluster member (`cluster_knows_peer`) last seen less than `NODUS_HINT_OFFLINE_SKIP_SEC` ago — reads `srv->cluster` synchronously |
+| `const nodus_identity_t *identity` | configuration, not a crossing (`nodus_dht.h:443-447`) | `&srv->identity` — read for `node_id` (routing, self-skips) and `pk` / `sk` (the BF dialer's hello and auth signature, since S5b through the shared dialer module, `nodus_dht_server.c` `bf_dial_io` `:3293`) |
+| `send_to_origin(ctx, origin, frame, len)` | HOT | `server_dht_send_to_origin` (`:2446-2460`): `nodus_tcp_send(srv->sessions[slot].conn \| srv->inter_sessions[slot].conn, …)` when that session's `dht_gen` equals `origin.gen`; -1 for a slot out of range or another generation |
+| `udp_send(ctx, payload, len, ip, port)` | HOT in a large cluster, COLD at 7 nodes | `server_dht_udp_send` (`:2463-2467`): `nodus_udp_send(&srv->udp, …)` — T1 replies must leave from port 4000 |
+| `inter_send(ctx, ip, port, expected_peer_id, frame, flen)` | HOT (every put × R, every republished value, every remote listener notify) | `server_dht_inter_send` (`:2470-2475`) → `dht_republish_send` (`:434-440`) → `nodus_inter_pool_send_framed` on `srv->inter_tcp` (since S5b in the shared `server/nodus_inter_dial.c:355`, the same code nodus-storage runs on its own pool): find-or-dial (`expected_peer_id` pinned on a new conn, CRIT-1), pre-auth pending buffer. **Synchronous** 0 / -1 — the caller decides on a hint from it in the same call (`nodus_dht.h:463-471`) |
+| `hint_wanted(ctx, node_id)` | COLD (after a failed send) | `server_dht_hint_wanted` (`:2480-2485`): a cluster member (`cluster_knows_peer`) last seen less than `NODUS_HINT_OFFLINE_SKIP_SEC` ago — reads `srv->cluster` synchronously |
 
 **Where each crossing of the S4 plan went.** The rev 2 plan (`tasks/split-fable-plan-rev2.md`
 §1.1, local) listed nine crossings A-I; with today's code:
@@ -2127,7 +2137,11 @@ renamed `nodus_dht_bf_*`; the fixtures that poke DHT state reach it through
 behaviour change) is the ctest suite and the Genesis Protocol harness, run by the
 orchestrator; not recorded here.
 
-**Open for S5** (the `nodus-storage` process) — S4 does not decide these:
+**Open for S5** (the `nodus-storage` process) — S4 does not decide these; **each is
+answered by S5a / S5b below** (outbound 4002 from storage's own pool, the membership
+snapshot, the shared dialer incl. BF, the generation; the two cycles — the first stays
+inside nodus-storage, the second disappears because storage's dialed connections are no
+core sessions):
 - **Outbound 4002 from storage's own pool — decision item 16 (APPROVED).** Today
   `inter_send` runs core's `dht_republish_send` on core's `inter_tcp` pool. Item 16 says
   storage opens its outgoing 4002 itself (replication / republish / hinted handoff stay
@@ -2157,6 +2171,11 @@ orchestrator; not recorded here.
   What these become when the DHT is another process is not decided.
 
 #### S5a — 4002 connection fixes before the storage process (decision items 28, 30, 33)
+
+(`nodus_server.c` line numbers in this S5a part are those of commit `f1d48425`. S5b
+moved the find-or-dial bodies, `dht_republish_send`'s body, `pending_full_is_replication`
+and the dialer's host-side sync / gate opening into `server/nodus_inter_dial.c` — see
+S5b; the S5a behaviour of each is unchanged.)
 
 Three changes to how core uses port 4002, inside the combined binary, before the
 `nodus-storage` process (S5) takes its own outbound 4002 (item 16). No consensus,
@@ -2245,9 +2264,10 @@ prints them to stderr with a `[WRN/NODUS_DIAL] ` style prefix,
 `src/nodus_log_shim.c:21-36`). `nodus_inter_session_t` holds the module state as `dial`
 (`nodus_server.h:177`) instead of the five fields it had.
 
-**Open:** batch forward (BF) still has its own dialer copy inside the DHT
-(`nodus_dht_server.c`, hello `:3651`, challenge → `key_ack` `:3311-3489`), with the same
-CRIT-1 checks. It is not changed in S5a; moving it onto the shared module is the S5
+**Closed in S5b:** batch forward (BF) had its own dialer copy inside the DHT at S5a
+(hello, challenge → `key_ack`, with the same CRIT-1 checks); S5b moved it onto the shared
+module (see S5b, "Batch forward on the shared dialer"). The S5a text said: moving it onto
+the shared module is the S5
 storage work.
 
 **Pending-full parks only DHT replication frames (item 33).** When a 4002 send fits
@@ -2350,7 +2370,169 @@ format or crypto change):
   builds them, keyed on the peer); `p_sync`, `ri_close`, `ntf`, `sub`, `fv_r`, `sv_ack`,
   an error and junk dropped; the authentication and member gates unchanged.
 - `test_inter_role_split` follows the field move (`sess.dial.pending_kem`).
-- `test_dht_linked` unchanged: no DHT object references the module.
+- `test_dht_linked` unchanged at S5a: no DHT object referenced the module then (since
+  S5b batch forward does — the module is no core object, so the gate is unaffected).
+
+#### S5b — the `nodus-storage` process + the IPC DHT backend (decision items 7, 16, 17, 19, 27, 28, 29, 31, 32, 34)
+
+The DHT / storage half can run as its own process, `nodus-storage`
+(`tools/nodus-storage.c`), beside a `nodus-server` started with **`storage_external`**
+(`nodus_server_config_t.storage_external`, `nodus_server.h`). Opt-in, like
+`witness_external`: with the default (`false`) the combined binary still runs both
+halves in-process. No wire byte on 4000 / 4001 / 4002 changes; the IPC is local and
+versioned in its preface. Nothing here reaches consensus state.
+
+⚠ **Not wired yet:** the option / JSON key is parsed by `tools/nodus_node_config.c`,
+outside the S5b package's whitelist — until it parses `--storage-external` /
+`"storage_external"`, neither process can be started in this mode; and `nodus-storage`
+links that loader, whose `--derive-v2-genesis` one-shot pulls the witness objects in,
+so `test_storage_linked` (FORBIDDEN `nodus_witness_init` / `nodus_witness_p2p_new`)
+fails until the loader is split.
+
+| File | Role |
+|---|---|
+| `src/dht/nodus_dht_ipc.h` | the `storage.sock` contract: connection kinds, frames, bounds, the storage-side API |
+| `src/dht/nodus_dht_ipc_wire.c` | the encoders and the ONE strict decoder — both ends link it (pure) |
+| `src/dht/nodus_dht_ipc.c` | the storage side: listener, origin shadows, control connection, the process's own outbound 4002 pool |
+| `src/server/nodus_dht_backend_ipc.c` | core's door over the socket (`nodus_dht_backend_ipc_open`, `nodus_dht_backend.h`) |
+| `tools/nodus-storage.c` | the process: config (same loader and file), identity READ-ONLY, DHT init / open, loop |
+| `src/server/nodus_inter_dial.{h,c}` | gains the shared outbound-pool helpers (below) |
+
+**Connections on `<data>/storage.sock`** (mode 0600, SO_PEERCRED, the S2 parent-directory
+rule — `nodus_tcp_unix_listen`). Every frame is an ordinary nodus frame, plaintext.
+- **Origin** — one per core session (client 4001 / WebSocket, or 4002) that sent a DHT
+  frame (item 19). First frame `{"q":"ds_origin","v":1,"k":0|1,"s":slot,"g":gen,
+  "b":boot,"fp":…, CLIENT "pk":… | INTER "ip":…}` (ORCHESTRATOR ruling on Fable S5 g3:
+  CLIENT = slot, gen, fp, pk; INTER = slot, gen, peer fp, peer ip — `sub` records the
+  subscriber's address from it). Then the session's DHT payloads unchanged; the storage
+  side re-decodes them with the decoders core used (T2 for client requests and 4002 `fv`
+  / `get_batch` / `m_sv`; T1 for `sv` / `sub` / `unsub` / `ntf`) — same bytes, same
+  classification. Every frame the DHT writes for that origin (replies, and listener pushes
+  caused by ANY origin, e.g. a 4002 `sv` notifying a client) comes back on it; core
+  writes it to the session through `send_to_origin` (generation-checked, item 29).
+- **ONE carrier for a session's lifetime** (ruling on Fable S5 H2): the preface IS
+  "session opened" (the storage side calls `nodus_dht_session_opened`), the EOF IS
+  "session closed" — the storage side clears the shadow only while the slot still maps
+  to THAT connection. Nothing about open / close travels on the control connection.
+  Core's `session_opened` op sends nothing (it records the generation and closes a
+  connection left from the slot's previous session); `session_closed` closes the
+  connection. Slot reuse: a preface for a slot mapped to another, still-open connection
+  takes the slot when it is newer — another boot id (core restarted; generations start
+  at 1 again), or the same boot id and a larger generation — and is refused when older;
+  frames on a connection the slot no longer maps to are dropped. The boot id: 8 random
+  bytes core's backend draws at creation.
+- **Control** — one per core: `{"q":"ds_ctl","v":1,"b":boot}`, then core → storage in
+  call order UDP 4000 datagrams for the DHT (`ds_udp`), `peer_seen` (all four kinds,
+  `ds_seen`), `peer_dead` (`ds_dead`) and the membership snapshot (`ds_mbr`: node id +
+  offline seconds of every cluster member — item 27); storage → core datagrams to send
+  from UDP 4000 (`ds_udps`) and the routing snapshot (`ds_rt`: node id, ip, tcp port in
+  bucket order — item 17; presence pins the node id, item 30). A first frame of another
+  `q` or `v` — e.g. a core dialling `witness.sock` — closes the connection on both
+  listeners.
+
+**Snapshots** (Fable S5 g9 / g10). Routing: the storage side compares the PROJECTED set
+(node id, ip, tcp port) every 1 s (`NODUS_DHT_IPC_SNAPSHOT_CHECK_MS`) and pushes on a
+change, at least every 30 s (`NODUS_DHT_IPC_SNAPSHOT_MAX_SEC`), and in full on every new
+control connection; core keeps the last one while storage is away (presence keeps
+dialling the peers it knew) and logs `routing snapshot from nodus-storage: N peer(s)` on
+the first of each control connection and on a count change. Membership: core compares
+the member set and each member's "offline < `NODUS_HINT_OFFLINE_SKIP_SEC`" bit, pushes on
+a change, every 30 s and in full on every (re)connect; the storage side's `hint_wanted`
+= member AND reported offline seconds + time since the snapshot < the threshold; no
+snapshot → no hint (republish covers it). A joining peer is p_synced within ≤ 60 s
+instead of ≤ 30 s (snapshot age + presence tick); a NEW cluster member is un-hintable
+until the next push (≤ 1 s on a change).
+
+**Decision 31 — storage unavailable / cap → the error at once.** A client DHT request
+is answered `nodus_t2_error(txn, NODUS_ERR_UNAVAILABLE, "storage module not available")`
+(`NODUS_DHT_NO_STORAGE_MSG`, `nodus_dht_backend.h`) without dialling when the control
+connection is down (the control backoff 250 ms → 5 s is the only re-dial driver), when
+`NODUS_DHT_IPC_MAX_ORIGIN_CONNS` (= `NODUS_TCP_MAX_CONNS` − 64 = 960, client and 4002
+origins together, ONE IPC pool per side — g11) are open, or when that origin's queue to
+storage holds ≥ `NODUS_DHT_IPC_QUEUE_MAX` (4 MiB; the request is not queued, the
+connection stays). A 4002 DHT frame in those states is dropped (rate-limited WARN) — the
+remote batch forward then waits for its 5 s timeout, a replication is repeated by
+republish.
+
+**Decision 32 — storage closes an origin → core ends that session.** When an origin
+connection closes and core's backend did not close it — the storage side closed it (its
+reply queue reached `NODUS_DHT_IPC_REPLY_QUEUE_MAX` = 16 MiB: the close is deferred to the
+end of the pass, never under the DHT handler that was sending; a frame that does not
+decode) or the process went away — core calls `close_origin`, which disconnects that
+client (or 4002) session if it is still of that generation; the client reconnects and
+re-LISTENs. A send fault on an origin connection does the same. Consequence: killing
+`nodus-storage` disconnects every client session that had done a DHT request on its
+current connection — including a session that also did `dnac_*` on it. Never a silent
+re-dial.
+
+**Storage's own outbound 4002 (items 16, 28).** Replication, republish, hinted retry and
+listen forwarding go out on the storage process's pool through the SAME code core uses,
+moved out of `nodus_server.c` into `server/nodus_inter_dial.c` unchanged:
+`nodus_inter_pool_find` / `_dial` (`:298`, `:327`; core's `nodus_server_inter_find` /
+`_dial` are now wrappers), `nodus_inter_pool_send_framed` (`:355`, the former
+`dht_republish_send` body, log lines unchanged), `nodus_inter_pool_sweep` (`:465`, the
+4002 half of core's idle sweep), `nodus_inter_frame_is_replication` (`:496`, the S5a
+hint filter), `nodus_inter_dial_conn_sync` / `_conn_open` (`:525`, `:539`, the dialer's
+host side; the `INTER_CRYPTO … encrypted` line's tag is now `NODUS_DIAL`). The storage
+pool's hooks: `on_connect` sends the module's hello; `on_frame` feeds `challenge` /
+`auth_ok` / `key_ack` to the module (REFUSED → AUTH_FAILED + disconnect), drops `error`
+silently and **drops + WARNs every other frame** — this process serves no 4002 request
+(core's listener does, behind its F2 / F3 gates); `on_pending_full` parks a replication
+frame of an authenticated cluster member (membership snapshot, any state) in the hint
+table directly (S4 cycle 1 stays inside the process) and drops anything else. Hygiene
+core's presence tick and idle sweep did for the shared pool (Fable S5 b3 / g8): every
+30 s the idle / HELLO_SENT sweep, and every 30 s a close of dialed connections whose IP
+left the routing table. The S4 cycle 2 (slow consumer → `on_inter_disconnect` →
+`session_closed`) is gone: storage's dialed connections are no core sessions. Core's
+`hint_store` op over IPC logs and refuses (core's pool carries no DHT frame any more).
+Core keeps its own pinned dials for presence and circuits (S5a).
+
+**Batch forward on the shared dialer (decision 28 "no copy").** BF keeps its socket and
+send / receive state machine; its handshake now runs `nodus_inter_dial_start` /
+`nodus_inter_dial_on_frame` (`nodus_dht_server.c` `bf_dial_*`, `:3274-3335`) with the
+module's `send_raw` framing into BF's `send_buf`. Byte-visible on 4002: BF's hello txn
+is 0 (was 1) and its `auth` echoes the challenge's txn (was 2); format unchanged. An
+absent (all-zero) challenge nonce is now refused (the module's rule). A swallowed KEM
+encapsulation failure (`pending_kem` false after `auth_ok`) or a `key_ack` that did not
+establish the key fails the forward at once.
+
+**The process** (`tools/nodus-storage.c`). Same command line and config as nodus-server
+(item 18); reads `data_path`, `identity_path` (READ-ONLY load, refuses to start without
+it — item 10; never creates one), `require_peer_auth` (the dialed conns' handshake),
+`external_ip` / `bind_ip` / `peer_port` (its own hash-ring entry, as
+`nodus_server_init` gives the in-process DHT). Refuses to start without
+`storage_external` (the misconfiguration guard: a nodus-server without it would open the
+same `nodus.db`) and holds `<data>/nodus-storage.lock` for its lifetime. Loop:
+`nodus_dht_ipc_poll` (≤ 50 ms idle) → `nodus_dht_ipc_tick` → `nodus_dht_evict_tick`
+BEFORE `nodus_dht_tick` (g10: core ran the evict sweep after its cluster tick, ahead of
+the DHT tick). It does NOT run the partial-wipe gate (item 9 keeps it in core): started
+BEFORE core on a host whose `nodus.db` was wiped, it would recreate the file before
+core's gate looks — the unit order (core first, S6) is what prevents that today.
+
+**Core in `storage_external` mode** (`nodus_server.c`): the IPC backend replaces the
+in-process one (init `:2639-2665`; no DHT database opened, "STORAGE: external" logged,
+"Storage: external (nodus-storage)" in the run banner); `server_dht_close_origin`
+(`:2504`) and `server_dht_members` (`:2526`) are what core gives it, with the existing
+`send_to_origin` / `udp_send`. The channel server (compiled out,
+`NODUS_CHANNELS_DISABLED`) refuses to start in this mode — it reads the in-process DHT.
+**Partial-wipe marker (g5):** `nodus_server_marker_dbs_ready` (`:2548`) is true
+in-process and, with `storage_external`, only when `nodus.db` AND `channels.db` exist
+(the rule `tools/nodus-witness.c` applies from the other side); init arms the marker only
+then, and the run loop arms it once (looked at once a second) for `witness_external` OR
+`storage_external`.
+
+**Tests** (written, not run by the builder): `test_dht_ipc` (14 cases — routing /
+membership snapshots, preface identity, replies and cross-origin pushes by generation,
+UDP relay and peer-event order, decision 32, deterministic slot-reuse reorder with held
+connections, decision 31 with no dial, both bounds, snapshot re-push on reconnect,
+origin generation over sockets, the marker rule); `test_storage_linked` (nm gate on
+`nodus-storage`). Harness: `STAGEF_MODE` `splits` / `mixeds` and
+`tests/test_split_storage_restart.sh` (stagef README).
+
+**Not done in S5b:** core's `dht_send_stats_dump` covers core's pool only — the storage
+pool has no stats dump; no core-side `nm` probe proves the IPC backend TU pulls no DHT
+object into a core-only binary (deferred to S6's `nodus-core` gate; `nodus-server`
+links both halves by design).
 
 ---
 
