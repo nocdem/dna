@@ -444,11 +444,44 @@ void nodus_server_on_pending_full(nodus_tcp_conn_t *conn,
 
 /* ── Outbound 4002 dial (find-or-dial, identity pinned) ────────────── */
 
+nodus_tcp_conn_t *nodus_server_inter_find(nodus_server_t *srv, const char *ip,
+                                          uint16_t port,
+                                          const nodus_key_t *expected_node_id) {
+    if (!srv || !ip) return NULL;
+    /* No pin requested: the first pool entry for ip:port, as before. */
+    if (!expected_node_id)
+        return nodus_tcp_find_by_addr(&srv->inter_tcp, ip, port);
+    /* Pinned: only a conn WE dialed whose identity is the requested one —
+     * never an accepted conn (its peer chose to call us; the pin was never
+     * checked on it), never a dial pinned to another node_id, never a conn
+     * proven for another node_id. Every identity the conn carries must
+     * match (expected and, once proven, peer_id) and at least one must be
+     * set. Pool slot order: the first such conn. */
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+        nodus_tcp_conn_t *c = srv->inter_tcp.pool[i];
+        if (!c || c->is_unix || c->port != port || strcmp(c->ip, ip) != 0)
+            continue;
+        if (!c->auth_initiated_by_us) continue;
+        bool exp_eq = c->expected_peer_id_set &&
+                      nodus_key_cmp(&c->expected_peer_id, expected_node_id) == 0;
+        bool proven_eq = c->peer_id_set &&
+                         nodus_key_cmp(&c->peer_id, expected_node_id) == 0;
+        if (c->expected_peer_id_set && !exp_eq) continue;
+        if (c->peer_id_set && !proven_eq) continue;
+        if (exp_eq || proven_eq) return c;
+    }
+    return NULL;
+}
+
 nodus_tcp_conn_t *nodus_server_inter_dial(nodus_server_t *srv, const char *ip,
                                           uint16_t port,
                                           const nodus_key_t *expected_node_id) {
-    nodus_tcp_conn_t *conn = nodus_tcp_find_by_addr(&srv->inter_tcp, ip, port);
+    nodus_tcp_conn_t *conn = nodus_server_inter_find(srv, ip, port,
+                                                     expected_node_id);
     if (conn) return conn;
+    /* None usable: a fresh conn. The transport has no duplicate check —
+     * a second conn to an ip:port already in the pool (an accepted conn,
+     * or one dialed for another identity) is simply another slot. */
     conn = nodus_tcp_connect(&srv->inter_tcp, ip, port);
     if (!conn) return NULL;
     conn->is_nodus = true;
@@ -678,9 +711,11 @@ static void handle_t2_circ_open(nodus_server_t *srv, nodus_session_t *sess,
 
         /* Open or reuse inter-node TCP 4002 connection to peer nodus, the
          * cluster member's node_id pinned (decision item 30). The member is
-         * ALIVE (find_cluster_peer_by_idx), so its node_id is the real one:
-         * ALIVE is set only after a PONG, which replaces a seed's
-         * placeholder id first (nodus_cluster_on_pong). */
+         * ALIVE (find_cluster_peer_by_idx); its node_id is trusted
+         * discovery, the same class as the republish pin: it comes from an
+         * unsigned UDP pong (nodus_cluster_on_pong writes it), not from a
+         * proof. The pin binds the channel to that id; it does not prove
+         * the id belongs to the member. */
         nodus_tcp_conn_t *pconn = nodus_server_inter_dial(
             srv, peer_node->ip, peer_node->tcp_port, &peer_node->node_id);
         if (!pconn) {

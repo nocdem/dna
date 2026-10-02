@@ -2174,24 +2174,30 @@ refuses exactly those ("INTER CRIT-1: no expected peer identity for … — cann
 refusing" → `AUTH_FAILED` + disconnect; seen on the live EU-1 node, 6 times in 6 hours,
 masked because replication's own pinned connection carried the traffic). Now all three
 sites call one find-or-dial, `nodus_server_inter_dial(srv, ip, port, expected_node_id)`
-(`nodus_server.c:447-469`, declared `nodus_server.h:450-452`): a connection already in the
-pool for `ip:port` is returned unchanged (its pin, if any, untouched — as before); a new
-one is marked `is_nodus` and gets `expected_peer_id` when the caller passes one. The
-pin comes from:
+(`nodus_server.c:476-500`, declared `nodus_server.h:461-463`); its find half is
+`nodus_server_inter_find` (`nodus_server.c:447-474`, `nodus_server.h:469-471`). Which
+pooled connection is reused was tightened by the S5a connection review (below, "Review
+fixes", F2): with a pin, only a connection this node dialed for that same identity; with
+no pin (NULL), the first pool entry for `ip:port`, as before. A new connection is marked
+`is_nodus` and gets `expected_peer_id` when the caller passes one; a pooled connection is
+never re-pinned. The pin comes from:
 - replication / republish / hinted retry — the routing / roster `node_id` the DHT passes
   to `inter_send` (unchanged, `dht_republish_send`, `:476-481`);
 - presence — the routing snapshot entry, which now carries `node_id`
   (`nodus_dht_peer_addr_t`, `nodus_dht.h:546-550`, filled by
-  `nodus_dht_routing_snapshot`, `nodus_dht_server.c:4779-4796`; call `nodus_presence.c:259-260`);
-- circuits — the cluster member's `node_id` (`nodus_server.c:684-685`). The member is
-  ALIVE (`find_cluster_peer_by_idx`), and ALIVE is set only after a PONG, which first
-  replaces a seed's placeholder id with the real one (`nodus_cluster_on_pong`,
-  `nodus_cluster.c:216-226`), or by the tick once `last_seen` is set, which only a PONG or
-  a heartbeat for a known id does — so no placeholder id is ever pinned.
+  `nodus_dht_routing_snapshot`, `nodus_dht_server.c:4779-4796`; find / dial
+  `nodus_presence.c:332-358`, paced since the review — F5 below);
+- circuits — the cluster member's `node_id` (`nodus_server.c:719-720`). The member is
+  ALIVE (`find_cluster_peer_by_idx`). Its `node_id` is trusted discovery, the same class
+  as the republish pin — not a proof: `nodus_cluster_on_pong` writes it from an
+  unsigned UDP pong, replacing a seed's placeholder id by ip:port
+  (`nodus_cluster.c:216-229`). (Corrected in the S5a review, F3: this text and the
+  comment at `nodus_server.c:712-718` used to call it "the real one".)
 
 The pin is the routing / cluster `node_id` — the same trust reference replication already
-used (unsigned FIND_NODE data; adversarial Kademlia injection on UDP 4000 is out of
-scope, as stated at the pin check).
+used (unsigned FIND_NODE data / unsigned UDP pong; adversarial injection on UDP 4000 is
+out of scope, as stated at the pin check). The pin binds the channel to that id; it does
+not prove the id belongs to the intended member.
 
 **The dialer handshake is one shared module (item 28).** `server/nodus_inter_dial.{h,c}`
 holds the DIALER half of the 4002 handshake that was inline in core: the hello
@@ -2262,17 +2268,84 @@ sends over 4002, every reply or error (`"y"` = `"r"` / `"e"`: `fv_r`, `sv_ack`,
 replication frame — frame DROPPED (no hint)" (`:396-401`). Rows already in the hint table
 from before S5a are still re-sent by the hinted-retry drain until their TTL.
 
+**Review fixes** (a connection-focused review of S5a, decision items 30 and 34; no wire
+format or crypto change):
+
+- **F2 — pinned find-or-dial reuses only a matching conn we dialed.** Before, a pinned
+  `nodus_server_inter_dial` returned whatever `nodus_tcp_find_by_addr(ip, port)` found
+  first: possibly an accepted (inbound) conn, a dial still in flight pinned to another
+  `node_id`, or a conn proven for another identity. Now (`nodus_server_inter_find`,
+  `nodus_server.c:447-474`) a pinned call returns a pooled conn only if
+  `auth_initiated_by_us` and its identity is the requested one: `expected_peer_id`
+  and/or the proven `peer_id` equal it, neither (when set) differs, at least one is set;
+  first in pool-slot order. Otherwise a fresh conn is dialed beside the existing ones —
+  the transport has no duplicate check, `nodus_tcp_connect` just takes another slot.
+  With a NULL pin the old rule stands (`nodus_tcp_find_by_addr`, no new dial). The
+  consequence: between two nodes there is now, in steady state, one conn each side
+  dialed (each side's p_sync / replication / circuits use their own pinned outbound
+  conn) where before one side could reuse the other's inbound conn; and
+  `find_by_addr`'s `FIND_DUP` line can now fire for an inter-node ip:port only on a
+  NULL-pin call.
+- **F4 — the dialer never sends a reply it could not build.** In the shared module
+  (`nodus_inter_dial.c`) the challenge signature is zero-initialised (`:76`); a
+  signing failure (`:77`), an `auth` encode failure (`:84`) or a `key_init` encode
+  failure (`:226`, the KEM secret and our nonce zeroed) returns `REFUSED` with nothing
+  sent and nothing retained; the hello's encode result was already checked
+  (`nodus_inter_dial_start` → -1). A challenge whose nonce is absent is refused
+  (`:70`): the T2 decoder has no presence flag for `nonce` (it zeroes the message and
+  copies the field only when it is a 32-byte bstr), so absent and malformed both arrive
+  as all zeros, and all zeros is refused (`nonce_all_zero`, `:51`). That cannot refuse
+  an honest acceptor in practice: its nonce is `nodus_random(…, 32)`
+  (`nodus_auth.c:48`, `nodus_server.c` acceptor path), all zeros with probability
+  2^-256, and a refused dial is redialed.
+- **F5 — presence p_sync dials are paced.** Before, every routing peer without a conn
+  was dialed every 30 s, with no backoff and no cap (routing table up to
+  `NODUS_BUCKETS * NODUS_K` peers vs a pool of `NODUS_TCP_MAX_CONNS` = 1024). Now
+  (`nodus_presence.c:332-358`, constants `nodus_presence.h:33-61`):
+  - per-key backoff, key = (ip, port, node_id): each fresh dial is recorded and that
+    key is not dialed again before `now + delay(fail_count)`, delay 30, 60, 120, 240,
+    480, then 900 s (15 min) for good; the first tick that finds the conn established
+    (`CONNECTED` and `AUTH_OK`, or no auth required) clears the key. Because the base
+    delay equals the 30 s sync interval, a dial that succeeds is never held back — no
+    change when dials succeed. A dial whose handshake is refused (CRIT-1 pin mismatch,
+    TCP refused) leaves no conn, so the next allowed tick redials at the next delay.
+  - at most `NODUS_PRESENCE_DIAL_CAP` = 16 fresh dials per tick (a dial returning NULL
+    counts); peers over the cap are skipped without penalty. 16 ≥ the 7-node cluster,
+    so a healthy cluster still connects fully on the first tick; at most 16 handshakes
+    (a Dilithium5 sign + a KEM each) and 16 pool slots per tick.
+  - the table holds 512 keys (`NODUS_PRESENCE_BACKOFF_SLOTS`): keys are created only
+    by dials (≤ 16 per tick) and a key is held at most 900 s = 30 ticks, so at most
+    16 × 30 = 480 keys are ever in backoff at once. When full (keys of peers that left
+    the routing table linger), the key with the smallest `next_try` is replaced, lowest
+    slot on a tie. The backoff functions are pure (`now` passed in,
+    `nodus_presence.c:25-85`); the tick passes the `nodus_time_now()` it already read.
+    Presence is not consensus state; nothing here reaches a block or a vote.
+- **F3 — comment only.** The circuit dial's pin was described as "the real one"; it is
+  trusted discovery from an unsigned UDP pong (see the circuits bullet above). Cluster
+  behaviour is unchanged.
+
 **Tests** (S5a; run by the orchestrator, not recorded here):
 - `test_inter_dial` — the module against an in-memory peer that plays the acceptor with
   the public encoders: pinned exchange (ML-KEM and Kyber-only) ending in the same channel
   key on both sides; wrong pin, no pin, bad `kpk_sig`, downgrade `auth_ok` → `REFUSED`
   with no `key_init`; a repeated challenge is not signed; early `key_ack` is `NOT_MINE`;
-  a node without Kyber opens in plaintext. Byte identity with the pre-move code is a
-  property of the diff (sig, ct, nc are random per run), not of this test.
+  a node without Kyber opens in plaintext; (review F4) a challenge with no nonce or an
+  all-zero nonce is `REFUSED` with nothing signed or sent. Byte identity with the
+  pre-move code is a property of the diff (sig, ct, nc are random per run), not of this
+  test. Not covered: the signing / encode failure paths of F4 — no input reaches them
+  (`qgp_dsa87_sign` fails only on NULL arguments, the buffers cannot overflow) and the
+  module has no injection seam.
 - `test_presence_dial_pin` — `nodus_presence_tick` dials the snapshot peer with its
-  `node_id` pinned; `nodus_server_inter_dial` pins a new connection, returns an existing
-  one unchanged, records nothing for a NULL identity (one loopback listener, no event
-  loop). The circuit dial is covered by reading only.
+  `node_id` pinned; `nodus_server_inter_dial` (review F2) pins a new connection, reuses
+  it for the same identity, dials a second conn to the same ip:port for another
+  identity (the first keeps its pin), never returns an inbound conn, an unpinned conn
+  or a conn proven for another identity to a pinned call, reuses a conn proven for the
+  identity, and keeps the first-pool-entry rule for a NULL pin; (review F5) the backoff
+  delays, hold-until-`next_try`, clear and full-table eviction with literal
+  timestamps; a tick does not dial a key in backoff and opens exactly 16 conns for 19
+  new peers (loopback listeners, no event loop, no clock in an assertion). The circuit
+  dial and the tick's "established clears the backoff" branch are covered by reading
+  only.
 - `test_pending_full_hint` — `sv` and `m_sv` parked (framed as `nodus_frame_encode`
   builds them, keyed on the peer); `p_sync`, `ri_close`, `ntf`, `sub`, `fv_r`, `sv_ack`,
   an error and junk dropped; the authentication and member gates unchanged.

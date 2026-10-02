@@ -123,6 +123,10 @@ int nodus_inter_dial_start(const nodus_inter_dial_io_t *io);
  * Feed one decoded T2 frame received on a connection we dialed.
  * Handles challenge, auth_ok and key_ack (see the file comment); the
  * frames it sends are byte-for-byte those the inline handler sent.
+ * REFUSED, with nothing sent, also when a challenge carries no nonce (the
+ * decoder leaves an absent nonce all-zero; all-zero is refused), or when
+ * signing the challenge or encoding the auth / key_init reply fails — a
+ * zero signature or a truncated frame is never written.
  */
 nodus_inter_dial_rc_t nodus_inter_dial_on_frame(nodus_inter_dial_t *d,
                                                 const nodus_inter_dial_io_t *io,

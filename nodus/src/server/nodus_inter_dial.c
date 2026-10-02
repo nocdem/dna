@@ -41,9 +41,24 @@ int nodus_inter_dial_start(const nodus_inter_dial_io_t *io) {
     return 0;
 }
 
+/* True when every byte of the challenge nonce is zero. The T2 decoder has
+ * no presence flag for "nonce": nodus_t2_decode zeroes the message first
+ * and copies the field only when it is a bstr of exactly NODUS_NONCE_LEN
+ * bytes, so a challenge whose nonce is absent (or malformed) reaches us as
+ * all zeros. An honest acceptor draws the nonce from nodus_random (32
+ * bytes); all zeros from it has probability 2^-256, and a refused honest
+ * dial is simply redialed. */
+static bool nonce_all_zero(const uint8_t *nonce) {
+    uint8_t acc = 0;
+    for (size_t i = 0; i < NODUS_NONCE_LEN; i++) acc |= nonce[i];
+    return acc == 0;
+}
+
 /* challenge → auth. Only on a conn we dialed (the caller's role split), and
  * once: a repeated challenge (the nonce is already retained) is not signed
- * again — this node never signs a nonce a second time on one conn. */
+ * again — this node never signs a nonce a second time on one conn.
+ * Fail closed (REFUSED, nothing sent, the nonce not retained) when the
+ * nonce is absent, or when signing or encoding the auth fails. */
 static nodus_inter_dial_rc_t on_challenge(nodus_inter_dial_t *d,
                                           const nodus_inter_dial_io_t *io,
                                           const nodus_tier2_msg_t *msg) {
@@ -52,16 +67,30 @@ static nodus_inter_dial_rc_t on_challenge(nodus_inter_dial_t *d,
                      "not signed, dropped", io_ip(io), (unsigned)io->peer_port);
         return NODUS_INTER_DIAL_DONE;
     }
+    if (nonce_all_zero(msg->nonce)) {
+        QGP_LOG_WARN(LOG_TAG, "INTER: challenge from %s:%u without a nonce — "
+                     "not signed, refusing", io_ip(io), (unsigned)io->peer_port);
+        return NODUS_INTER_DIAL_REFUSED;
+    }
     nodus_sig_t sig;
-    nodus_sign_auth_challenge(&sig, msg->nonce, &io->identity->sk);
+    memset(&sig, 0, sizeof(sig));
+    if (nodus_sign_auth_challenge(&sig, msg->nonce, &io->identity->sk) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "INTER: signing the challenge from %s:%u failed "
+                      "— refusing", io_ip(io), (unsigned)io->peer_port);
+        return NODUS_INTER_DIAL_REFUSED;
+    }
+    uint8_t buf[8192];
+    size_t rlen = 0;
+    if (nodus_t2_auth(msg->txn_id, &sig, buf, sizeof(buf), &rlen) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "INTER: encoding the auth for %s:%u failed "
+                      "— refusing", io_ip(io), (unsigned)io->peer_port);
+        return NODUS_INTER_DIAL_REFUSED;
+    }
     /* CRIT-1: retain the challenge nonce — the peer signs
      * (kyber_pk || this nonce) as kpk_sig, so auth_ok cannot verify the
      * binding without it. */
     memcpy(d->challenge_nonce, msg->nonce, NODUS_NONCE_LEN);
     d->has_challenge_nonce = true;
-    uint8_t buf[8192];
-    size_t rlen = 0;
-    nodus_t2_auth(msg->txn_id, &sig, buf, sizeof(buf), &rlen);
     io->send_raw(io->ctx, buf, rlen);
     return NODUS_INTER_DIAL_DONE;
 }
@@ -194,7 +223,15 @@ static nodus_inter_dial_rc_t on_auth_ok(nodus_inter_dial_t *d,
         nodus_random(nc, NODUS_NONCE_LEN);
         uint8_t ki_buf[4096];
         size_t ki_len = 0;
-        nodus_t2_key_init(msg->txn_id, ct, nc, alg, ki_buf, sizeof(ki_buf), &ki_len);
+        if (nodus_t2_key_init(msg->txn_id, ct, nc, alg, ki_buf, sizeof(ki_buf),
+                              &ki_len) != 0) {
+            /* Nothing sent, no key exchange pending: fail closed. */
+            QGP_LOG_ERROR(LOG_TAG, "INTER: encoding key_init for %s:%u failed "
+                          "— refusing", io_ip(io), (unsigned)io->peer_port);
+            qgp_secure_memzero(ss_buf, sizeof(ss_buf));
+            qgp_secure_memzero(nc, sizeof(nc));
+            return NODUS_INTER_DIAL_REFUSED;
+        }
         io->send_raw(io->ctx, ki_buf, ki_len);
         /* Store shared secret + nonce for key_ack */
         memcpy(d->pending_ss, ss_buf, 32);

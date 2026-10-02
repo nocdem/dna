@@ -15,7 +15,74 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
+#define LOG_TAG "NODUS_PRESENCE"
+
+/* ── Dial backoff (S5a review F5; pure, see nodus_presence.h) ─────── */
+
+uint64_t nodus_presence_backoff_delay(uint32_t fail_count) {
+    if (fail_count == 0) return 0;
+    uint64_t d = NODUS_PRESENCE_BACKOFF_BASE_SEC;
+    for (uint32_t i = 1; i < fail_count && d < NODUS_PRESENCE_BACKOFF_MAX_SEC; i++)
+        d <<= 1;
+    return d > NODUS_PRESENCE_BACKOFF_MAX_SEC ? NODUS_PRESENCE_BACKOFF_MAX_SEC : d;
+}
+
+static int backoff_find(const nodus_presence_backoff_table_t *t, const char *ip,
+                        uint16_t port, const nodus_key_t *node_id) {
+    for (int i = 0; i < NODUS_PRESENCE_BACKOFF_SLOTS; i++) {
+        const nodus_presence_backoff_t *e = &t->slots[i];
+        if (e->used && e->port == port && strcmp(e->ip, ip) == 0 &&
+            nodus_key_cmp(&e->node_id, node_id) == 0)
+            return i;
+    }
+    return -1;
+}
+
+bool nodus_presence_backoff_allows(const nodus_presence_backoff_table_t *t,
+                                   const char *ip, uint16_t port,
+                                   const nodus_key_t *node_id, uint64_t now) {
+    if (!t || !ip || !node_id) return true;
+    int i = backoff_find(t, ip, port, node_id);
+    return i < 0 || now >= t->slots[i].next_try;
+}
+
+void nodus_presence_backoff_record(nodus_presence_backoff_table_t *t,
+                                   const char *ip, uint16_t port,
+                                   const nodus_key_t *node_id, uint64_t now) {
+    if (!t || !ip || !node_id) return;
+    int i = backoff_find(t, ip, port, node_id);
+    if (i < 0) {
+        /* A free slot, else the entry closest to its retry (lowest index on
+         * a tie) — deterministic, no clock beyond `now`. */
+        int victim = -1;
+        for (int s = 0; s < NODUS_PRESENCE_BACKOFF_SLOTS; s++) {
+            if (!t->slots[s].used) { victim = s; break; }
+            if (victim < 0 || t->slots[s].next_try < t->slots[victim].next_try)
+                victim = s;
+        }
+        i = victim;
+        nodus_presence_backoff_t *e = &t->slots[i];
+        memset(e, 0, sizeof(*e));
+        e->node_id = *node_id;
+        snprintf(e->ip, sizeof(e->ip), "%s", ip);
+        e->port = port;
+        e->used = true;
+    }
+    nodus_presence_backoff_t *e = &t->slots[i];
+    if (e->fail_count < UINT32_MAX) e->fail_count++;
+    e->next_try = now + nodus_presence_backoff_delay(e->fail_count);
+}
+
+void nodus_presence_backoff_clear(nodus_presence_backoff_table_t *t,
+                                  const char *ip, uint16_t port,
+                                  const nodus_key_t *node_id) {
+    if (!t || !ip || !node_id) return;
+    int i = backoff_find(t, ip, port, node_id);
+    if (i >= 0) memset(&t->slots[i], 0, sizeof(t->slots[i]));
+}
 
 /* ── Internal helpers ─────────────────────────────────────────────── */
 
@@ -247,8 +314,14 @@ void nodus_presence_tick(struct nodus_server *srv) {
      * sets EPOLLOUT when wlen > wpos). Connection stays in pool for reuse.
      *
      * Auth is handled automatically: on_inter_connect sends hello,
-     * nodus_tcp_send gates messages until auth completes (AUTH_OK). */
-    int sent = 0;
+     * nodus_tcp_send gates messages until auth completes (AUTH_OK).
+     *
+     * Dial pacing (S5a review F5, nodus_presence.h): a fresh dial is made
+     * only when the key is out of backoff and fewer than
+     * NODUS_PRESENCE_DIAL_CAP fresh dials were made this tick; an
+     * established conn clears the key's backoff. */
+    nodus_presence_backoff_table_t *bt = &srv->presence.dial_backoff;
+    int sent = 0, dials = 0, backed_off = 0, capped = 0;
     for (int i = 0; i < peer_count; i++) {
         nodus_dht_peer_addr_t *peer = &peers[i];
         if (peer->tcp_port == 0) continue;
@@ -256,9 +329,30 @@ void nodus_presence_tick(struct nodus_server *srv) {
         /* Find or dial, the routing entry's node_id pinned as the expected
          * peer (decision item 30) — an unpinned dial is refused at auth_ok
          * ("cannot pin, refusing"). */
-        nodus_tcp_conn_t *pconn = nodus_server_inter_dial(
+        nodus_tcp_conn_t *pconn = nodus_server_inter_find(
             srv, peer->ip, peer->tcp_port, &peer->node_id);
-        if (!pconn) continue;
+        if (pconn) {
+            if (pconn->state == NODUS_CONN_CONNECTED &&
+                (!pconn->auth_required || pconn->auth_state == NODUS_CONN_AUTH_OK))
+                nodus_presence_backoff_clear(bt, peer->ip, peer->tcp_port,
+                                             &peer->node_id);
+        } else {
+            if (!nodus_presence_backoff_allows(bt, peer->ip, peer->tcp_port,
+                                               &peer->node_id, now)) {
+                backed_off++;
+                continue;
+            }
+            if (dials >= NODUS_PRESENCE_DIAL_CAP) {
+                capped++;
+                continue;
+            }
+            dials++;
+            nodus_presence_backoff_record(bt, peer->ip, peer->tcp_port,
+                                          &peer->node_id, now);
+            pconn = nodus_server_inter_dial(
+                srv, peer->ip, peer->tcp_port, &peer->node_id);
+            if (!pconn) continue;
+        }
 
         if (nodus_tcp_send(pconn, sync_buf, sync_len) == 0)
             sent++;
@@ -267,6 +361,10 @@ void nodus_presence_tick(struct nodus_server *srv) {
     if (sent > 0 || peer_count > 0)
         fprintf(stderr, "P_SYNC: broadcast %d local fps to %d/%d routing peers\n",
                 local_count, sent, peer_count);
+    if (backed_off > 0 || capped > 0)
+        QGP_LOG_INFO(LOG_TAG, "P_SYNC: %d new dials, %d peers in dial backoff, "
+                     "%d over the per-tick cap of %d (next tick)",
+                     dials, backed_off, capped, NODUS_PRESENCE_DIAL_CAP);
 
     /* Clean up stale outgoing p_sync connections: disconnect any is_nodus
      * connection whose IP is no longer in the routing table.

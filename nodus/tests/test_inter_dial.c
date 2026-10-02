@@ -31,6 +31,15 @@
  *      dispatches it as before); a node without a Kyber identity opens the
  *      connection in plaintext at auth_ok (established, encrypted=false).
  *
+ *   5. (S5a review F4) A challenge without a nonce — absent in the decoded
+ *      message, or 32 zero bytes on the wire (the decoder cannot tell them
+ *      apart) — is REFUSED, nothing is signed or sent, no nonce retained.
+ *      NOT covered: a signing failure or an auth / key_init encode failure
+ *      (also REFUSED, nothing sent, in the module) — no input reaches them
+ *      (qgp_dsa87_sign fails only on NULL arguments; the 8192 / 4096-byte
+ *      buffers hold the ~4.6 KB auth / ~1.6 KB key_init) and the module has
+ *      no injection seam.
+ *
  * Byte identity with the pre-move code is NOT asserted here: sig, ct and
  * nc are randomised per run. It is a property of the diff (same encoder
  * calls, same arguments) — see the S5a commit message.
@@ -365,6 +374,47 @@ out:
     free(cap);
 }
 
+/* ── 5: a challenge without a nonce is refused (S5a review F4) ─────── */
+
+static void test_challenge_without_nonce(void) {
+    TEST("challenge with no nonce / all-zero nonce → REFUSED, unsigned");
+    nodus_inter_dial_t d;
+    nodus_inter_dial_io_t io;
+    capture_t *cap = calloc(1, sizeof(*cap));
+    nodus_channel_crypto_t cc;
+    nodus_tier2_msg_t *m = calloc(1, sizeof(*m));
+    uint8_t zero[NODUS_NONCE_LEN];
+    size_t len = 0;
+    memset(&d, 0, sizeof(d));
+    memset(&cc, 0, sizeof(cc));
+    memset(zero, 0, sizeof(zero));
+    CHECK(cap && m, "alloc");
+    io_init(&io, cap, &cc, &id_dialer, &id_peer.node_id);
+    CHECK(nodus_inter_dial_start(&io) == 0 && cap->sends == 1, "hello not sent");
+
+    /* The decoder's view of a challenge whose "nonce" field is absent:
+     * nodus_t2_decode zeroes the message and leaves nonce untouched. */
+    snprintf(m->method, sizeof(m->method), "%s", "challenge");
+    m->type = 'q';
+    m->txn_id = 7;
+    CHECK(nodus_inter_dial_on_frame(&d, &io, m) == NODUS_INTER_DIAL_REFUSED,
+          "a challenge without a nonce was not refused");
+    CHECK(cap->sends == 1, "something was sent for a challenge without a nonce");
+    CHECK(!d.has_challenge_nonce, "an absent nonce was retained");
+
+    /* On the wire: a challenge carrying 32 zero bytes is the same refusal. */
+    memset(&d, 0, sizeof(d));
+    CHECK(nodus_t2_challenge(7, zero, frame, sizeof(frame), &len) == 0, "enc challenge");
+    CHECK(feed(&d, &io, frame, len) == NODUS_INTER_DIAL_REFUSED,
+          "an all-zero nonce was not refused");
+    CHECK(cap->sends == 1, "an all-zero nonce was signed");
+    CHECK(!d.has_challenge_nonce && !d.authenticated, "state changed on refusal");
+    PASS();
+out:
+    free(m);
+    free(cap);
+}
+
 int main(void) {
     printf("=== Split S5a item 28: the shared 4002 dialer handshake ===\n");
     uint8_t seed[32];
@@ -383,6 +433,7 @@ int main(void) {
     test_full_kyber();
     test_refusals();
     test_edges();
+    test_challenge_without_nonce();
 
     printf("\n%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

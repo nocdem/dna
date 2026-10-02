@@ -438,16 +438,35 @@ void nodus_server_dht_host(nodus_server_t *srv, nodus_dht_host_t *out);
  * republish, hinted retry), presence p_sync and circuits (decision
  * 2026-10-01-nodus-component-split item 30).
  *
- * A connection already in the pool for ip:port is returned as it is (its
- * pin, if any, unchanged). Otherwise a new connection is opened, marked
- * is_nodus, and — when `expected_node_id` is non-NULL — that identity is
- * recorded as conn->expected_peer_id: the dialer's auth_ok handler pins
- * fingerprint(server_pk) against it and
- * refuses a connection without one (CRIT-1).
+ * Find (nodus_server_inter_find): with `expected_node_id` NULL, the first
+ * pool entry for ip:port is returned as it is, whatever it is (unchanged
+ * behaviour). With a node_id, a pooled conn is returned only if WE dialed
+ * it (auth_initiated_by_us) and its identity is that node_id — its
+ * expected_peer_id (the pin recorded at dial) and/or its proven peer_id
+ * (set after auth_ok passed the pin) equal it, and neither, when set,
+ * differs. An accepted (inbound) conn, a dial pinned to another node_id,
+ * a conn proven for another node_id, or an unpinned dial is NOT reused:
+ * a fresh conn is dialed beside it (the pool allows several conns to one
+ * ip:port; the transport has no duplicate check). A pooled conn is never
+ * re-pinned.
+ *
+ * Dial: a new connection is opened, marked is_nodus, and — when
+ * `expected_node_id` is non-NULL — that identity is recorded as
+ * conn->expected_peer_id: the dialer's auth_ok handler pins
+ * fingerprint(server_pk) against it and refuses a connection without one
+ * (CRIT-1).
  *
  * @return the connection, or NULL if the dial could not be started.
  */
 nodus_tcp_conn_t *nodus_server_inter_dial(nodus_server_t *srv, const char *ip,
+                                          uint16_t port,
+                                          const nodus_key_t *expected_node_id);
+
+/**
+ * The find half of nodus_server_inter_dial (the match rule above), without
+ * dialing. NULL when no pooled conn qualifies.
+ */
+nodus_tcp_conn_t *nodus_server_inter_find(nodus_server_t *srv, const char *ip,
                                           uint16_t port,
                                           const nodus_key_t *expected_node_id);
 
