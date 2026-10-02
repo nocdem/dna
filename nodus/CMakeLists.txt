@@ -1037,6 +1037,10 @@ add_executable(test_inter_circuit_uaf tests/test_inter_circuit_uaf.c)
 target_link_libraries(test_inter_circuit_uaf nodus dsa kem nodus)
 add_test(NAME test_inter_circuit_uaf COMMAND test_inter_circuit_uaf)
 
+add_executable(test_session_gen tests/test_session_gen.c)
+target_link_libraries(test_session_gen nodus dsa kem nodus)
+add_test(NAME test_session_gen COMMAND test_session_gen)
+
 add_executable(test_inter_preauth_gate tests/test_inter_preauth_gate.c)
 target_link_libraries(test_inter_preauth_gate nodus dsa kem nodus)
 add_test(NAME test_inter_preauth_gate COMMAND test_inter_preauth_gate)

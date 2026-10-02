@@ -72,6 +72,7 @@ static int dht_republish_send(nodus_server_t *srv, const char *ip,
 static int iterative_lookup_start(nodus_server_t *srv,
                                    const nodus_key_t *target,
                                    int session_slot,
+                                   uint64_t session_gen,
                                    uint32_t client_txn_id,
                                    void (*on_complete)(struct nodus_server *,
                                                        nodus_peer_t *, int,
@@ -156,6 +157,17 @@ static void inter_session_clear(nodus_inter_session_t *sess,
 static void session_clear(nodus_session_t *sess) {
     memset(sess, 0, sizeof(*sess));
     nodus_circuit_table_init(&sess->circuits);
+}
+
+/* A deferred reply goes to the session that asked, never to a later
+ * occupant of the same slot: the slot must still hold a connection AND
+ * the generation recorded with the request (see nodus_session_t.gen). */
+nodus_session_t *nodus_server_session_if_same(nodus_server_t *srv, int slot,
+                                              uint64_t gen) {
+    if (!srv || slot < 0 || slot >= NODUS_MAX_SESSIONS) return NULL;
+    nodus_session_t *sess = &srv->sessions[slot];
+    if (!sess->conn || sess->gen != gen) return NULL;
+    return sess;
 }
 
 /* Find an authenticated session by client fingerprint (for local circuit bridge) */
@@ -536,7 +548,7 @@ static void subscription_renew_tick(nodus_server_t *srv) {
         nodus_key_t *key_copy = malloc(sizeof(nodus_key_t));
         if (key_copy) {
             *key_copy = s->listen_keys[srv->sub_renewal.key_idx];
-            if (iterative_lookup_start(srv, key_copy, -1, 0,
+            if (iterative_lookup_start(srv, key_copy, -1, 0, 0,
                                         listen_fwd_complete, key_copy, free) != 0) {
                 /* No slots — fallback (synchronous) */
                 nodus_peer_t closest[NODUS_R];
@@ -800,7 +812,7 @@ void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val)
     QGP_LOG_DEBUG(LOG_TAG, "REPL: key=%s... vid=%llu iter_path known=%d",
                   rpl_kh, (unsigned long long)val->value_id, known);
 
-    if (iterative_lookup_start(srv, &val->key_hash, -1, 0,
+    if (iterative_lookup_start(srv, &val->key_hash, -1, 0, 0,
                                 put_replication_complete, ctx,
                                 put_repl_ctx_free) != 0) {
         /* No lookup slots — fallback to routing table fast path. */
@@ -930,7 +942,7 @@ void nodus_server_replicate_media_chunk(nodus_server_t *srv,
             "MEDIA-REPL-ITER: hash=%s chunk=%u routing=%d (large cluster)\n",
             mkh, chunk_index, known);
 
-    if (iterative_lookup_start(srv, &media_key, -1, 0,
+    if (iterative_lookup_start(srv, &media_key, -1, 0, 0,
                                 media_replication_complete, ctx,
                                 put_media_ctx_free) != 0) {
         /* No lookup slots — fallback to routing table fast path. */
@@ -1936,6 +1948,8 @@ static void lookup_send_round(nodus_server_t *srv, iterative_lookup_t *l) {
  *     cb_data is stack-allocated or static.
  *
  * @param session_slot  Client session (-1 for internal/async operations)
+ * @param session_gen   That session's gen (0 for internal lookups); the
+ *                      lookup is abandoned once the slot holds another
  * @param client_txn_id Client's T2 txn ID (unused for internal lookups)
  * @param on_complete   Called when lookup converges (REQUIRED)
  * @param cb_data       Passed to on_complete
@@ -1946,6 +1960,7 @@ static void lookup_send_round(nodus_server_t *srv, iterative_lookup_t *l) {
 static int iterative_lookup_start(nodus_server_t *srv,
                                    const nodus_key_t *target,
                                    int session_slot,
+                                   uint64_t session_gen,
                                    uint32_t client_txn_id,
                                    void (*on_complete)(struct nodus_server *,
                                                        nodus_peer_t *, int,
@@ -1964,6 +1979,7 @@ static int iterative_lookup_start(nodus_server_t *srv,
     l->target_key = *target;
     l->client_txn_id = client_txn_id;
     l->session_slot = session_slot;
+    l->session_gen = session_gen;
     l->started_at = nodus_time_now_ms();
     l->on_complete = on_complete;
     l->cb_data = cb_data;
@@ -2120,10 +2136,10 @@ static void iterative_lookup_tick(nodus_server_t *srv) {
             continue;
         }
 
-        /* Client disconnect check */
+        /* Client disconnect check (or the slot now holds another client) */
         if (l->session_slot >= 0) {
-            nodus_session_t *sess = &srv->sessions[l->session_slot];
-            if (!sess->conn) {
+            if (!nodus_server_session_if_same(srv, l->session_slot,
+                                              l->session_gen)) {
                 if (l->cb_data && l->cb_data_free) l->cb_data_free(l->cb_data);
                 l->cb_data = NULL;
                 l->cb_data_free = NULL;
@@ -3054,6 +3070,7 @@ static void dht_send_key_reply(nodus_tcp_conn_t *conn, dht_reply_kind_t kind,
 typedef struct {
     uint32_t       txn_id;
     int            session_slot;
+    uint64_t       session_gen; /* that session's gen at request time */
     nodus_key_t    key;
     bool           has_own;     /* S2: "own" owner filter */
     nodus_key_t    own;
@@ -3079,8 +3096,10 @@ static void get_lookup_complete(nodus_server_t *srv,
     get_lookup_ctx_t *ctx = (get_lookup_ctx_t *)user_data;
     if (!ctx) return;
 
-    nodus_session_t *sess = &srv->sessions[ctx->session_slot];
-    if (!sess->conn) { get_lookup_ctx_free(ctx); return; }  /* Client disconnected */
+    /* Client disconnected, or the slot now holds another client */
+    nodus_session_t *sess = nodus_server_session_if_same(srv, ctx->session_slot,
+                                                         ctx->session_gen);
+    if (!sess) { get_lookup_ctx_free(ctx); return; }
 
     /* Filter out self */
     int fwd_count = 0;
@@ -3128,6 +3147,7 @@ static void get_lookup_complete(nodus_server_t *srv,
     b->own = ctx->own;
     b->txn_id = ctx->txn_id;
     b->session_slot = ctx->session_slot;
+    b->session_gen = ctx->session_gen;
     b->started_at = nodus_time_now_ms();
     b->sets[0].peers = fwd_count;
     b->sets[0].local_fault = ctx->local_fault;
@@ -3196,6 +3216,7 @@ static void handle_t2_get(nodus_server_t *srv, nodus_session_t *sess,
     }
     ctx->txn_id = msg->txn_id;
     ctx->session_slot = (int)(sess - srv->sessions);
+    ctx->session_gen = sess->gen;
     ctx->key = msg->key;
     ctx->has_own = msg->has_own;
     if (msg->has_own) ctx->own = msg->own_fp;
@@ -3214,7 +3235,7 @@ static void handle_t2_get(nodus_server_t *srv, nodus_session_t *sess,
 
     /* Large cluster: iterative FIND_NODE to discover true K-closest */
     if (iterative_lookup_start(srv, &msg->key,
-                                (int)(sess - srv->sessions),
+                                (int)(sess - srv->sessions), sess->gen,
                                 msg->txn_id,
                                 get_lookup_complete, ctx, get_lookup_ctx_free) != 0) {
         /* No lookup slots — fall back to routing table + BF */
@@ -3358,6 +3379,7 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
     if (after) b->after = *after;
     b->txn_id = msg->txn_id;
     b->session_slot = (int)(sess - srv->sessions);
+    b->session_gen = sess->gen;
     b->started_at = nodus_time_now_ms();
     b->sets[0] = local;   /* ownership of the local candidates moves to the batch */
 
@@ -3470,8 +3492,10 @@ int nodus_server_bf_encode_result(dht_bf_batch_t *b, uint8_t *buf, size_t cap,
 
 /** Send batch response to client and clean up */
 static void bf_send_result(nodus_server_t *srv, dht_bf_batch_t *b) {
-    nodus_session_t *sess = &srv->sessions[b->session_slot];
-    if (!sess->conn) { bf_batch_cleanup(srv, b); return; }
+    /* Client disconnected, or the slot now holds another client: drop */
+    nodus_session_t *sess = nodus_server_session_if_same(srv, b->session_slot,
+                                                         b->session_gen);
+    if (!sess) { bf_batch_cleanup(srv, b); return; }
 
     if (b->is_get_all && b->key_count == 1) {
         char bfkh[17];
@@ -3493,6 +3517,10 @@ static void bf_send_result(nodus_server_t *srv, dht_bf_batch_t *b) {
         free(buf);
     }
     bf_batch_cleanup(srv, b);
+}
+
+void nodus_server_bf_send_result(nodus_server_t *srv, dht_bf_batch_t *b) {
+    if (srv && b) bf_send_result(srv, b);
 }
 
 int nodus_server_bf_absorb_reply(dht_bf_batch_t *b, const dht_bf_conn_t *c,
@@ -3972,9 +4000,11 @@ static void bf_tick(nodus_server_t *srv) {
         dht_bf_batch_t *b = &srv->bf_state.batches[bi];
         if (!b->active) continue;
 
-        /* Check client disconnect */
-        nodus_session_t *sess = &srv->sessions[b->session_slot];
-        if (!sess->conn) { bf_batch_cleanup(srv, b); continue; }
+        /* Check client disconnect (or the slot now holds another client) */
+        if (!nodus_server_session_if_same(srv, b->session_slot, b->session_gen)) {
+            bf_batch_cleanup(srv, b);
+            continue;
+        }
 
         /* Overall batch timeout */
         if (now - b->started_at > NODUS_BF_TIMEOUT_MS) {
@@ -4227,6 +4257,7 @@ static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
         /* Set up batch context — the keysets move into the batch */
         b->txn_id = msg->txn_id;
         b->session_slot = (int)(sess - srv->sessions);
+        b->session_gen = sess->gen;
         b->started_at = nodus_time_now_ms();
         for (int i = 0; i < n; i++) b->sets[i] = sets[i];
         free(sets);
@@ -4818,7 +4849,7 @@ static void handle_t2_listen(nodus_server_t *srv, nodus_session_t *sess,
     if (!key_copy) return;
     *key_copy = msg->key;
 
-    if (iterative_lookup_start(srv, &msg->key, -1, 0,
+    if (iterative_lookup_start(srv, &msg->key, -1, 0, 0,
                                 listen_fwd_complete, key_copy, free) != 0) {
         /* No lookup slots available — synchronous fallback via routing table */
         nodus_peer_t closest[NODUS_R];
@@ -6737,13 +6768,19 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
 
 /* ── TCP callbacks ───────────────────────────────────────────────── */
 
-static void on_tcp_accept(nodus_tcp_conn_t *conn, void *ctx) {
-    nodus_server_t *srv = (nodus_server_t *)ctx;
+void nodus_server_client_accepted(nodus_server_t *srv, nodus_tcp_conn_t *conn) {
     nodus_session_t *sess = session_for_conn(srv, conn);
     if (sess) {
         session_clear(sess);
         sess->conn = conn;
+        /* A new occupant of this slot: replies deferred for the previous
+         * one (recorded with its gen) no longer match and are dropped. */
+        sess->gen = ++srv->next_session_gen;
     }
+}
+
+static void on_tcp_accept(nodus_tcp_conn_t *conn, void *ctx) {
+    nodus_server_client_accepted((nodus_server_t *)ctx, conn);
 }
 
 static void on_tcp_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
@@ -6755,8 +6792,7 @@ static void on_tcp_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
     dispatch_t2(srv, sess, payload, len);
 }
 
-static void on_tcp_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
-    nodus_server_t *srv = (nodus_server_t *)ctx;
+void nodus_server_client_disconnected(nodus_server_t *srv, nodus_tcp_conn_t *conn) {
     nodus_session_t *sess = session_for_conn(srv, conn);
     if (sess) {
         char fp_hex[33] = {0};
@@ -6782,6 +6818,10 @@ static void on_tcp_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
         session_teardown_circuits(srv, sess);
         session_clear(sess);
     }
+}
+
+static void on_tcp_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
+    nodus_server_client_disconnected((nodus_server_t *)ctx, conn);
 }
 
 /* ── Channel post replication callback ────────────────────────── */

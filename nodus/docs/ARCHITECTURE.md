@@ -1133,6 +1133,20 @@ Each TCP 4001 connection is assigned a **session** (`nodus_session_t`) with:
 Sessions are cleared on disconnect. The server supports up to `NODUS_MAX_SESSIONS`
 concurrent clients.
 
+**Session generation (0.23.11).** Every accepted client session gets a fresh
+`nodus_session_t.gen` from the server-wide, only-increasing
+`nodus_server_t.next_session_gen` (assigned in `nodus_server_client_accepted`;
+`session_clear` resets the slot's `gen` to 0). A DHT reply that is sent LATER —
+iterative lookup completions (`iterative_lookup_t.session_gen`), the GET lookup
+context, and every batch-forward batch (`dht_bf_batch_t.session_gen`) — records the
+slot AND its generation, and is sent only through
+`nodus_server_session_if_same(srv, slot, gen)`: if the requester disconnected and
+another client was accepted into the same slot (the transport always hands out the
+lowest free slot), the reply is dropped and the work cleaned up exactly as for a
+plain disconnect. Before 0.23.11 a deferred reply checked only that the slot was
+occupied, so a reused slot received the previous client's reply (nodus/BUGS.md,
+2026-10-02). Test: `test_session_gen`.
+
 **Connection close (deferred inside a poll).** `nodus_tcp_disconnect()` — and every
 teardown inside the transport (bad frame, read/write error, `EPOLLERR`/`EPOLLHUP`,
 WebSocket refusal via `ws_close_now`; not `nodus_tcp_close()`, which runs no

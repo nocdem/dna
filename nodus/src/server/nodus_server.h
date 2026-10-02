@@ -197,6 +197,12 @@ typedef struct {
 
 typedef struct {
     nodus_tcp_conn_t   *conn;
+    /* Occupant generation: a fresh value from srv->next_session_gen at
+     * every accept into this slot (0 while the slot is free). A deferred
+     * reply records (slot, gen) and is sent only while both still match,
+     * so a client accepted into a reused slot never receives a reply to
+     * the previous occupant's request. */
+    uint64_t            gen;
     nodus_key_t         client_fp;
     nodus_pubkey_t      client_pk;
     uint8_t             token[NODUS_SESSION_TOKEN_LEN];
@@ -266,6 +272,7 @@ typedef struct {
     nodus_key_t         target_key;         /**< Key being looked up */
     uint32_t            client_txn_id;      /**< Client's T2 transaction ID */
     int                 session_slot;       /**< Client session index (-1 internal) */
+    uint64_t            session_gen;        /**< That session's gen at start */
     uint64_t            started_at;
 
     /* Kademlia iterative state */
@@ -472,6 +479,7 @@ typedef struct {
     bool            active;
     uint32_t        txn_id;          /**< Client's transaction ID */
     int             session_slot;    /**< Client session index */
+    uint64_t        session_gen;     /**< That session's gen at request time */
     uint64_t        started_at;
 
     /* All keys in the batch */
@@ -594,6 +602,7 @@ typedef struct nodus_server {
     /* Sessions (indexed by conn->slot) */
     nodus_session_t         sessions[NODUS_MAX_SESSIONS];
     nodus_inter_session_t   inter_sessions[NODUS_MAX_INTER_SESSIONS];
+    uint64_t                next_session_gen; /* last nodus_session_t.gen handed out */
 
     /* Iterative Kademlia FIND_NODE lookup engine (UDP-based) */
     iterative_lookup_state_t lookup_state;
@@ -1084,6 +1093,25 @@ void nodus_server_dispatch_inter_frame(nodus_server_t *srv,
 /** The body of the 4002 transport's on_disconnect callback (F1 circuit
  *  release + inter session clear), for in-process tests. */
 void nodus_server_inter_disconnected(nodus_server_t *srv, nodus_tcp_conn_t *conn);
+
+/** The client session in `slot` if it is still the occupant a deferred
+ *  reply was recorded for: in range, connected, and its gen equal to
+ *  `gen`. @return the session, or NULL (gone, or the slot was reused). */
+nodus_session_t *nodus_server_session_if_same(nodus_server_t *srv, int slot,
+                                              uint64_t gen);
+
+/** The body of the 4001 transport's on_accept callback (session cleared,
+ *  bound to conn, a fresh gen assigned), for in-process tests. */
+void nodus_server_client_accepted(nodus_server_t *srv, nodus_tcp_conn_t *conn);
+
+/** The body of the 4001 transport's on_disconnect callback (circuits torn
+ *  down, session cleared), for in-process tests. */
+void nodus_server_client_disconnected(nodus_server_t *srv, nodus_tcp_conn_t *conn);
+
+/** Send batch `b`'s reply to its client — only if the recorded
+ *  (session_slot, session_gen) is still the occupant — and clean the
+ *  batch up either way (bf_send_result), for in-process tests. */
+void nodus_server_bf_send_result(nodus_server_t *srv, dht_bf_batch_t *b);
 
 #ifdef __cplusplus
 }
