@@ -57,7 +57,10 @@ invariant H-10 enforces is true, because the gate demands all three databases
 and only a completed `nodus_server_init` has created all three.
 
 It is therefore written in exactly one place: the success path at the bottom of
-`nodus_server_init`, guarded on `srv->witness->db` being non-NULL. A pre-genesis
+`nodus_server_init`, guarded on `srv->chain && srv->chain->ops->chain_open(srv->chain)`
+(`nodus_server.c:7574`; the in-process chain backend answers `w->db != NULL`,
+`nodus_chain_backend_inproc.c:68-70` — the S1 witness seam replaced the former
+`srv->witness->db` test with this, same condition). A pre-genesis
 node has no chain, has not crossed the boundary the marker records, and must not
 arm the gate — arming it would turn its legitimate two-of-three state into a
 refusal.

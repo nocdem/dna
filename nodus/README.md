@@ -139,7 +139,7 @@ read from the chain:
 
 ```bash
 cd nodus/build
-ctest --output-on-failure    # 210 registered tests, 8 of them labelled bench (`ctest -LE bench` runs 202) — counted with `ctest -N` at 0.23.5
+ctest --output-on-failure    # 232 registered tests, 9 of them labelled bench (`ctest -LE bench` runs 223) — counted with `ctest -N` / `ctest -N -L bench` at split S2 (11b8254e), json-c found
 ```
 
 **Test coverage (representative areas — `ctest` runs all):**
@@ -149,7 +149,8 @@ ctest --output-on-failure    # 210 registered tests, 8 of them labelled bench (`
 | Core Kademlia | `test_routing`, `test_bucket_refresh`, `test_storage`, `test_value`, `test_hashring` |
 | Client SDK | `test_client`, `test_tier2`, `test_tcp`, `test_fetch_batch` |
 | Protocol | `test_tier1`, `test_tier3`, `test_wire`, `test_cbor` |
-| Auth | `test_inter_auth`, `test_identity`, `test_sign_domain_separation` |
+| Auth | `test_inter_auth`, `test_identity` (+ the read-only loader, split S2), `test_sign_domain_separation` |
+| Component split S2 — local IPC | `test_tcp_unix` (Unix domain socket entry: mode 0600, frames both ways, `SO_PEERCRED` refusal, stale / live / regular-file path handling, unlink on close) |
 | Channels | `test_channel_*` (channel system currently disabled in production) |
 | Circuits (VPN mesh) | `test_circuit_wire`, `test_circuit_table`, `test_circuit_live` |
 | Media / DHT features | `test_media_storage`, `test_media_tier2`, `test_put_if_newer`, `test_hinted_handoff` |
