@@ -149,17 +149,26 @@ static const uint8_t SYS_METER_POLICY_DIGEST[DNA_DOM_HASH_LEN] = {
  * set grown to 1..8 so generation 2's CORE rule 8 (NAME_REGISTER) has a
  * committed weight (1). The identity digest commits w_op and the presence
  * bitmap, so it differs from generation 1's by construction. The literal
- * comes from the INDEPENDENT oracle (shared/dnac/tests/
- * ruleset_desc_oracle.py, extended for HF-4; its control legs must first
+ * comes from the INDEPENDENT oracle (shared/dnac/tests/hf4_oracle.py,
+ * built on ruleset_desc_oracle.py's helpers; its control legs must first
  * reproduce SYSTEM v6, CORE v4 and 8f1f9cb2…) — never this build's
  * serializer. Selfcheck re-derives it on every start. */
 static dna_meter_policy_t g_sys_policy_g2;
 static int g_sys_policy_g2_ready = 0;
 
 static const uint8_t SYS_METER_POLICY_DIGEST_G2[DNA_DOM_HASH_LEN] = {
-    /* HF4-ORACLE: filled by ORCHESTRATOR (generation-2 SYSTEM meter-policy
-     * identity digest, "NDS.METPOLID.v1", ops 1..8 weight 1) */
-    0
+    /* Generation-2 SYSTEM meter-policy identity digest ("NDS.METPOLID.v1",
+     * ops 1..8 weight 1) — G1 of shared/dnac/tests/hf4_oracle.py, whose
+     * control legs reproduced 8f1f9cb2…, SYSTEM v6 and CORE v4 first
+     * (written by an agent that read no HF-4 C). */
+    0x0c, 0x25, 0x1c, 0xa2, 0x92, 0x0d, 0x77, 0x88,
+    0x2b, 0xca, 0xb2, 0x94, 0x31, 0x10, 0x52, 0xa0,
+    0x68, 0x13, 0x62, 0xc5, 0x5b, 0x06, 0xf4, 0x17,
+    0xf6, 0xaa, 0xda, 0x46, 0xfe, 0xb7, 0x55, 0xb3,
+    0xab, 0x30, 0x47, 0x76, 0xed, 0x33, 0x53, 0x7a,
+    0xe0, 0x7e, 0x73, 0xf7, 0x9a, 0x10, 0xda, 0x3d,
+    0x3f, 0x4b, 0x78, 0x8b, 0xd5, 0x6e, 0x4c, 0x06,
+    0xa7, 0x17, 0x2a, 0x6f, 0x19, 0xce, 0xec, 0x87
 };
 
 /* The highest authoritative runtime op of each generation's SYSTEM policy:
@@ -323,7 +332,7 @@ static const uint8_t CORE_RULESET_HASH[DNA_DOM_HASH_LEN] = {
 
 /* HF-4 — the GENERATION-2 pins (design docs/plans/2026-10-02-onchain-
  * names-design.md rev 4 §1.1). Both from the INDEPENDENT oracle
- * (shared/dnac/tests/ruleset_desc_oracle.py, extended for HF-4 — its
+ * (shared/dnac/tests/hf4_oracle.py, on ruleset_desc_oracle.py's helpers — its
  * control legs reproduce SYSTEM v6 ca05b4d9…, CORE v4 b87aabb8… and the
  * policy 8f1f9cb2… first), never from this build's encoder. Preimages:
  *   SYSTEM v7: version 2, domain 0, "SYSTEM", abi 1, ruleset_version 7,
@@ -335,14 +344,26 @@ static const uint8_t CORE_RULESET_HASH[DNA_DOM_HASH_LEN] = {
  * Selfcheck re-derives both through the C encoder on every start, and
  * the D2 vote literal (dnac.h DNAC_CFG_RULESET_GEN2_D2) from them. */
 static const uint8_t SYS_RULESET_HASH_G2[DNA_DOM_HASH_LEN] = {
-    /* HF4-ORACLE: filled by ORCHESTRATOR (generation-2 SYSTEM v7
-     * ruleset_hash) */
-    0
+    /* Generation-2 SYSTEM v7 ruleset_hash — G2 of hf4_oracle.py. */
+    0x87, 0x80, 0xa3, 0xa9, 0x12, 0x90, 0x41, 0xe1,
+    0x6d, 0xb2, 0x75, 0xfc, 0xa2, 0xe2, 0xbf, 0xb8,
+    0xd2, 0x1a, 0xae, 0x33, 0x37, 0x1c, 0x0b, 0x4c,
+    0xaf, 0xdb, 0xcb, 0x62, 0x31, 0x59, 0xea, 0xcb,
+    0x74, 0x85, 0x41, 0x07, 0xfa, 0xd3, 0x50, 0x3e,
+    0xe2, 0xe0, 0x18, 0xec, 0x25, 0x78, 0x37, 0x7a,
+    0x63, 0x00, 0x1e, 0x51, 0x56, 0xa0, 0x7d, 0x38,
+    0x6a, 0x7c, 0x7b, 0x55, 0x31, 0x1d, 0x14, 0xb4
 };
 static const uint8_t CORE_RULESET_HASH_G2[DNA_DOM_HASH_LEN] = {
-    /* HF4-ORACLE: filled by ORCHESTRATOR (generation-2 CORE v5
-     * ruleset_hash) */
-    0
+    /* Generation-2 CORE v5 ruleset_hash — G3 of hf4_oracle.py. */
+    0x20, 0xc7, 0x23, 0x5b, 0x13, 0xdb, 0x0f, 0x02,
+    0x9a, 0x8c, 0x3b, 0xe0, 0x96, 0xe2, 0x44, 0x03,
+    0xfd, 0x3a, 0x3e, 0x39, 0x3e, 0x9f, 0xf7, 0x23,
+    0xe0, 0x67, 0x2a, 0x60, 0x27, 0x60, 0x1a, 0x35,
+    0x05, 0x86, 0xdb, 0x18, 0x98, 0x5e, 0x7a, 0x6a,
+    0xc7, 0x33, 0x65, 0xbe, 0x6c, 0xfe, 0x65, 0xf0,
+    0xfb, 0x9a, 0xd5, 0x33, 0x57, 0xdb, 0x2d, 0x53,
+    0x9a, 0x1c, 0x69, 0xd9, 0x3d, 0x81, 0xca, 0xe5
 };
 
 /* ── Function tables ────────────────────────────────────────────────── */

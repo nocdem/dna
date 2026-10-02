@@ -853,12 +853,12 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  decision 2026-09-26-hard-fork-lagging-node.md).
  *
  *  The value is a literal from the INDEPENDENT oracle
- *  (shared/dnac/tests/ruleset_desc_oracle.py, extended for HF-4) — never
+ *  (shared/dnac/tests/hf4_oracle.py, G4) — never
  *  the C encoder's own output. nodus_witness_runtime_selfcheck re-derives
  *  it through dna_ruleset_gen_digest (shared/dnac/domain_wire.c) on every
  *  start; nothing in the vote path hashes. The same literal is the client
  *  mirror's (dnac/src/transaction/verify.c). */
-#define DNAC_CFG_RULESET_GEN2_D2            0x0000000000000000ULL /* HF4-ORACLE: filled by ORCHESTRATOR */
+#define DNAC_CFG_RULESET_GEN2_D2            0x44dfbe7ad3c75adfULL /* G4 of shared/dnac/tests/hf4_oracle.py (4962894749133920991) */
 
 /** HF-4 NAME_REGISTER price range (params 10-13), both inclusive:
  *  [10^8, 10^15] raw = [1 NODUS, 10 000 000 NODUS] (design §2 Price). */
