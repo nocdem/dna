@@ -540,8 +540,11 @@ typedef enum {
 } nodus_dht_peer_seen_t;
 
 /** One routing-table peer address (nodus_dht_routing_snapshot) — what
- *  core's presence sync dials. */
+ *  core's presence sync dials. `node_id` is the routing entry's identity:
+ *  the dial pins it as the expected peer (CRIT-1; decision
+ *  2026-10-01-nodus-component-split item 30). */
 typedef struct {
+    nodus_key_t node_id;
     char        ip[64];
     uint16_t    tcp_port;
 } nodus_dht_peer_addr_t;
@@ -703,9 +706,9 @@ int nodus_dht_hint_store(nodus_dht_t *dht, const nodus_key_t *node_id,
                          const char *ip, uint16_t port,
                          const uint8_t *frame, size_t len);
 
-/** COLD (every NODUS_PRESENCE_SYNC_SEC) — the routing table's peer
- *  addresses, active entries in bucket order, at most `max`, read at the
- *  moment of the call. @return the count written. */
+/** COLD (every NODUS_PRESENCE_SYNC_SEC) — the routing table's peers
+ *  (node id + address), active entries in bucket order, at most `max`,
+ *  read at the moment of the call. @return the count written. */
 int nodus_dht_routing_snapshot(const nodus_dht_t *dht,
                                nodus_dht_peer_addr_t *out, int max);
 

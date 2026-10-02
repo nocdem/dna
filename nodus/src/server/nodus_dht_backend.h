@@ -98,7 +98,9 @@ typedef struct {
                        const uint8_t *frame, size_t len);
 
     /** COLD (presence sync, every NODUS_PRESENCE_SYNC_SEC) — the routing
-     *  table's peer addresses (nodus_dht_routing_snapshot). In-process it
+     *  table's peers, node id + address (nodus_dht_routing_snapshot); the
+     *  node id is the identity the presence dial pins (decision item 30).
+     *  In-process it
      *  is read at the call, the very moment the server read the routing
      *  buckets before the seam; split S5 answers it from the snapshot the
      *  storage process pushes (decision item 17). @return the count. */

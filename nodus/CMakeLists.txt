@@ -1060,6 +1060,13 @@ add_executable(test_origin_gen tests/test_origin_gen.c)
 target_link_libraries(test_origin_gen nodus dsa kem nodus)
 add_test(NAME test_origin_gen COMMAND test_origin_gen)
 
+# Split S5a item 30: core's outbound 4002 dials (presence p_sync, circuits,
+# the DHT's inter_send) pin the expected peer identity; the routing
+# snapshot carries node_id. One loopback listener, no event loop run.
+add_executable(test_presence_dial_pin tests/test_presence_dial_pin.c)
+target_link_libraries(test_presence_dial_pin nodus dsa kem nodus)
+add_test(NAME test_presence_dial_pin COMMAND test_presence_dial_pin)
+
 add_executable(test_inter_circuit_uaf tests/test_inter_circuit_uaf.c)
 target_link_libraries(test_inter_circuit_uaf nodus dsa kem nodus)
 add_test(NAME test_inter_circuit_uaf COMMAND test_inter_circuit_uaf)

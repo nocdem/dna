@@ -4784,6 +4784,7 @@ int nodus_dht_routing_snapshot(const nodus_dht_t *dht,
         const nodus_bucket_t *bkt = &dht->routing.buckets[b];
         for (int e = 0; e < bkt->count && n < max; e++) {
             if (bkt->entries[e].active) {
+                out[n].node_id = bkt->entries[e].peer.node_id;
                 snprintf(out[n].ip, sizeof(out[n].ip), "%s",
                          bkt->entries[e].peer.ip);
                 out[n].tcp_port = bkt->entries[e].peer.tcp_port;

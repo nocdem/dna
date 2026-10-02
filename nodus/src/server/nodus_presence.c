@@ -253,14 +253,12 @@ void nodus_presence_tick(struct nodus_server *srv) {
         nodus_dht_peer_addr_t *peer = &peers[i];
         if (peer->tcp_port == 0) continue;
 
-        nodus_tcp_conn_t *pconn = nodus_tcp_find_by_addr(
-            (nodus_tcp_t *)&srv->inter_tcp, peer->ip, peer->tcp_port);
-        if (!pconn) {
-            pconn = nodus_tcp_connect(
-                (nodus_tcp_t *)&srv->inter_tcp, peer->ip, peer->tcp_port);
-            if (!pconn) continue;
-            pconn->is_nodus = true;
-        }
+        /* Find or dial, the routing entry's node_id pinned as the expected
+         * peer (decision item 30) — an unpinned dial is refused at auth_ok
+         * ("cannot pin, refusing"). */
+        nodus_tcp_conn_t *pconn = nodus_server_inter_dial(
+            srv, peer->ip, peer->tcp_port, &peer->node_id);
+        if (!pconn) continue;
 
         if (nodus_tcp_send(pconn, sync_buf, sync_len) == 0)
             sent++;

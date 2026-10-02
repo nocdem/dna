@@ -440,6 +440,25 @@ void nodus_server_close(nodus_server_t *srv);
  */
 void nodus_server_dht_host(nodus_server_t *srv, nodus_dht_host_t *out);
 
+/**
+ * Core's outbound 4002 dial — find-or-dial on `srv->inter_tcp`, shared by
+ * every outbound site core has: the DHT host's inter_send (replication,
+ * republish, hinted retry), presence p_sync and circuits (decision
+ * 2026-10-01-nodus-component-split item 30).
+ *
+ * A connection already in the pool for ip:port is returned as it is (its
+ * pin, if any, unchanged). Otherwise a new connection is opened, marked
+ * is_nodus, and — when `expected_node_id` is non-NULL — that identity is
+ * recorded as conn->expected_peer_id: the dialer's auth_ok handler pins
+ * fingerprint(server_pk) against it and
+ * refuses a connection without one (CRIT-1).
+ *
+ * @return the connection, or NULL if the dial could not be started.
+ */
+nodus_tcp_conn_t *nodus_server_inter_dial(nodus_server_t *srv, const char *ip,
+                                          uint16_t port,
+                                          const nodus_key_t *expected_node_id);
+
 /* ── Auth helpers (used by server) ───────────────────────────────── */
 
 /**

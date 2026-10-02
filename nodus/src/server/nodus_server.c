@@ -393,6 +393,32 @@ static void server_on_pending_full(nodus_tcp_conn_t *conn,
             conn->ip, (unsigned)conn->port, len, id_source);
 }
 
+/* ── Outbound 4002 dial (find-or-dial, identity pinned) ────────────── */
+
+nodus_tcp_conn_t *nodus_server_inter_dial(nodus_server_t *srv, const char *ip,
+                                          uint16_t port,
+                                          const nodus_key_t *expected_node_id) {
+    nodus_tcp_conn_t *conn = nodus_tcp_find_by_addr(&srv->inter_tcp, ip, port);
+    if (conn) return conn;
+    conn = nodus_tcp_connect(&srv->inter_tcp, ip, port);
+    if (!conn) return NULL;
+    conn->is_nodus = true;
+    /* CRIT-1: record WHO we believe we are dialing, from the routing/roster
+     * entry that produced this ip:port. The auth_ok handler pins
+     * fingerprint(server_pk) against it before Kyber-encapsulating, so an
+     * on-path attacker cannot substitute its own identity. Stored on the
+     * conn (not the session): on_inter_connect clears the session, and on
+     * an immediate (localhost) connect it has already run inside
+     * nodus_tcp_connect above — the dialer reads the pin from the conn at
+     * auth_ok time. */
+    if (expected_node_id) {
+        conn->expected_peer_id = *expected_node_id;
+        conn->expected_peer_id_set = true;
+    }
+    /* on_inter_connect callback handles auth_required + hello */
+    return conn;
+}
+
 /* ── Periodic republish (via inter_tcp pool) ────────────────────── */
 
 /** Send a pre-framed replication payload via persistent inter_tcp pool.
@@ -402,23 +428,9 @@ static int dht_republish_send(nodus_server_t *srv, const char *ip,
                                uint16_t port,
                                const nodus_key_t *expected_node_id,
                                const uint8_t *frame, size_t flen) {
-    nodus_tcp_conn_t *conn = nodus_tcp_find_by_addr(&srv->inter_tcp, ip, port);
-    if (!conn) {
-        conn = nodus_tcp_connect(&srv->inter_tcp, ip, port);
-        if (!conn) return -1;
-        conn->is_nodus = true;
-        /* CRIT-1: record WHO we believe we are dialing, from the routing/roster
-         * entry that produced this ip:port. The auth_ok handler pins
-         * fingerprint(server_pk) against it before Kyber-encapsulating, so an
-         * on-path attacker cannot substitute its own identity. Stored on the
-         * conn (not the session) because on_inter_connect fires later and
-         * inter_session_clear() would wipe session state. */
-        if (expected_node_id) {
-            conn->expected_peer_id = *expected_node_id;
-            conn->expected_peer_id_set = true;
-        }
-        /* on_inter_connect callback handles auth_required + hello */
-    }
+    nodus_tcp_conn_t *conn = nodus_server_inter_dial(srv, ip, port,
+                                                     expected_node_id);
+    if (!conn) return -1;
 
     /* Auth gate for pre-framed data */
     if (conn->auth_required && conn->auth_state != NODUS_CONN_AUTH_OK) {
@@ -615,14 +627,13 @@ static void handle_t2_circ_open(nodus_server_t *srv, nodus_session_t *sess,
             return;
         }
 
-        /* Open or reuse inter-node TCP 4002 connection to peer nodus */
-        nodus_tcp_conn_t *pconn = nodus_tcp_find_by_addr(
-            (nodus_tcp_t *)&srv->inter_tcp, peer_node->ip, peer_node->tcp_port);
-        if (!pconn) {
-            pconn = nodus_tcp_connect(
-                (nodus_tcp_t *)&srv->inter_tcp, peer_node->ip, peer_node->tcp_port);
-            if (pconn) pconn->is_nodus = true;
-        }
+        /* Open or reuse inter-node TCP 4002 connection to peer nodus, the
+         * cluster member's node_id pinned (decision item 30). The member is
+         * ALIVE (find_cluster_peer_by_idx), so its node_id is the real one:
+         * ALIVE is set only after a PONG, which replaces a seed's
+         * placeholder id first (nodus_cluster_on_pong). */
+        nodus_tcp_conn_t *pconn = nodus_server_inter_dial(
+            srv, peer_node->ip, peer_node->tcp_port, &peer_node->node_id);
         if (!pconn) {
             nodus_inter_circuit_free(&srv->inter_circuits, ic->our_cid);
             nodus_circuit_free(&sess->circuits, c->local_cid);
