@@ -10,8 +10,9 @@ export const NAME_BYTE_VECTORS = Object.freeze([
   { text: 'abc', ok: true },                                  // shortest
   { text: 'ab', ok: false },                                  // too short
   { text: '', ok: false },
-  { text: 'a'.repeat(36), ok: true },                         // longest
-  { text: 'a'.repeat(37), ok: false },                        // too long
+  { text: 'z'.repeat(36), ok: true },                         // longest
+  { text: 'z'.repeat(37), ok: false },                        // too long
+  { text: 'a'.repeat(36), ok: false },                        // all hex, >= 8 (item 11)
   { text: 'punk', ok: true },
   { text: 'nodus2026', ok: true },
   { text: '123', ok: true },                                  // digits only, short
