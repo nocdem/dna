@@ -538,14 +538,25 @@ static int roots_agree(fixture_t *a, fixture_t *b) {
 static int apply_both(fixture_t *a, fixture_t *b, uint64_t h,
                       const nodus_v2_envelope_t *envs, size_t n,
                       uint32_t *codes) {
+    /* each block its OWN results array — the fixture's default (v2x_res)
+     * is one process-global array, which would make the A/B comparison
+     * below compare an array with itself */
+    nodus_v2_tx_result_t ra[4], rb[4];
     nodus_v2_block_t ba, bb;
+    if (n > 4) return -1;
+    memset(ra, 0, sizeof(ra));
+    memset(rb, 0, sizeof(rb));
     mk_block(&ba, h, envs, n);
     mk_block(&bb, h, envs, n);
+    ba.cmt.results = ra;
+    ba.cmt.results_cap = 4;
+    bb.cmt.results = rb;
+    bb.cmt.results_cap = 4;
     if (v2x_cmt_apply(a->w, &ba) != 0 || v2x_cmt_apply(b->w, &bb) != 0)
         return -1;
     for (size_t i = 0; i < n; i++) {
-        if (ba.cmt.results[i].code != bb.cmt.results[i].code) return -1;
-        if (codes) codes[i] = ba.cmt.results[i].code;
+        if (ra[i].code != rb[i].code) return -1;
+        if (codes) codes[i] = ra[i].code;
     }
     return roots_agree(a, b);
 }
