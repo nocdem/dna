@@ -4362,7 +4362,9 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
                          const nodus_rt_read_res_t *reads, uint16_t n_reads,
                          uint8_t *res_out, size_t res_cap,
                          size_t *res_len_out) {
-    (void)rt;
+    /* `rt` is read by the CHAIN_CONFIG branch only (HF-4: its generation
+     * decides whether params 10-13 are votable); NULL reads as
+     * generation 0 there. */
     if (!env || !ctx || !ctx->intent_id || !ctx->chain_id || !res_out ||
         !res_len_out)
         return -2;
@@ -4477,6 +4479,21 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
             return -1;
         if (c.effective < floor_h) return -1;
     }
+    /* HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4
+     * §1.2) — the STATEFUL rules, the ONE authority the 0x71 responder
+     * applies too: param 9 single use (ctx->ruleset_gen2_voted — an
+     * UNMETERED engine fact, NOT a mediated read, so this leg still reads
+     * nothing and a refused param-9 leg committed before HF-4 replays
+     * with the same code and the same gas_used), HF-2 active, H-1 not an
+     * epoch boundary; params 10-13 only while generation 2 judges (this
+     * runtime's own generation; 0 for a synthetic runtime). A refusal
+     * here is the same verdict class, at the same point (no reads, no
+     * effect charged), as the scalar refusal above. */
+    if (nodus_chain_config_stateful_rules(c.param_id, c.effective,
+                                          ctx->hf2_active,
+                                          ctx->ruleset_gen2_voted,
+                                          rt ? rt->generation : 0u) != 0)
+        return -1;
 
     /* tokenomics-v3 P2 (P2-4): the read plan emits nothing for a
      * chain-config leg since the INFLATION_START monotonicity rule left

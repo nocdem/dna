@@ -9,6 +9,7 @@
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_runtime.h"
 #include "witness/nodus_witness_roots_v2.h"
+#include "witness/nodus_witness_v2_apply.h"   /* HF-4 switch declarations */
 
 #include <sqlite3.h>
 #include <stdlib.h>
@@ -320,9 +321,17 @@ int nodus_witness_domreg_init_genesis(nodus_witness_t *w) {
     if (!w || !w->db) return -1;
     if (nodus_witness_runtime_selfcheck() != 0) return -1;
 
+    /* HF-4 (design 2026-10-02-onchain-names-design.md rev 4 §1.1):
+     * GENERATION 1 ONLY — nodus_runtime_builtin_table is the genesis
+     * generation, so every genesis this binary seeds (the derivation,
+     * the bundle joiner, a wipe + pin rejoin) is byte-identical to the
+     * pre-HF-4 binary's. Live nodes never recompute genesis, so a drift
+     * here would go unnoticed; the genesis-invariance test pins it. */
     size_t n = 0;
     const nodus_domain_runtime_t *table = nodus_runtime_builtin_table(&n);
-    if (!table || n != 2) return -1;
+    if (!table || n != 2 || table[0].generation != NODUS_RT_GEN_1 ||
+        table[1].generation != NODUS_RT_GEN_1)
+        return -1;
 
     /* S7: activation-time domain-state initialization runs FIRST —
      * inside the caller's genesis transaction, BEFORE the payload
@@ -377,6 +386,126 @@ int nodus_witness_domreg_init_genesis(nodus_witness_t *w) {
         if (rc != 1) return -1;
         if (row_store(w, &rec, &m, NULL) != 0) return -1;
     }
+    return 0;
+}
+
+/* ── HF-4 — the rule-set generation switch (contract:
+ * nodus_witness_v2_apply.h; design docs/plans/2026-10-02-onchain-names-
+ * design.md rev 4 §1.3-§1.4). The procedure is versioned by
+ * DNAC_RULESET_SWITCH_SPEC_VERSION, which D2 commits. ───────────────── */
+
+int nodus_witness_domreg_gen_manifest(const dna_domain_manifest_t *cur,
+                                      const nodus_domain_runtime_t *from,
+                                      const nodus_domain_runtime_t *to,
+                                      dna_domain_manifest_t *out) {
+    if (!cur || !from || !to || !out) return -1;
+    if (from->domain_id != to->domain_id ||
+        cur->domain_id != from->domain_id)
+        return -1;
+    /* the committed manifest must BE generation `from` — the full tuple */
+    if (cur->runtime_kind != from->runtime_kind ||
+        cur->runtime_abi != from->runtime_abi ||
+        cur->ruleset_version != from->ruleset_version ||
+        memcmp(cur->ruleset_hash, from->ruleset_hash, DNA_DOM_HASH_LEN) != 0)
+        return 1;
+    /* kind / abi are COPIED (§1.4); the compiled table never changes them
+     * across generations (selfcheck), and a table that did is broken */
+    if (to->runtime_kind != from->runtime_kind ||
+        to->runtime_abi != from->runtime_abi)
+        return -1;
+    if (to->descriptor.tx_type_count > DNA_DOM_MAX_TX_TYPES ||
+        (to->descriptor.tx_type_count > 0 && !to->descriptor.tx_types))
+        return -1;
+
+    dna_domain_manifest_t m = *cur;          /* every field COPIED…      */
+    m.ruleset_version = to->ruleset_version; /* …then the four REPLACED  */
+    memcpy(m.ruleset_hash, to->ruleset_hash, DNA_DOM_HASH_LEN);
+    m.tx_type_count = to->descriptor.tx_type_count;
+    memset(m.tx_types, 0, sizeof(m.tx_types));
+    if (m.tx_type_count > 0)
+        memcpy(m.tx_types, to->descriptor.tx_types, m.tx_type_count);
+    if (dna_domman_validate(&m) != 0) return -1;
+    *out = m;
+    return 0;
+}
+
+int nodus_witness_domreg_gen_record(const dna_domreg_record_t *cur,
+                                    const dna_domain_manifest_t *new_man,
+                                    dna_domreg_record_t *out) {
+    static const uint8_t zero[DNA_DOM_HASH_LEN] = { 0 };
+    if (!cur || !new_man || !out) return -1;
+    if (new_man->domain_id != cur->domain_id) return -1;
+    if (cur->status != DNA_DOMST_ACTIVE) return -1;
+    if (cur->pending_present != 0 || cur->proposal_present != 0 ||
+        memcmp(cur->pending_manifest_hash, zero, DNA_DOM_HASH_LEN) != 0 ||
+        memcmp(cur->proposal_digest, zero, DNA_DOM_HASH_LEN) != 0 ||
+        cur->scheduled_activation_epoch != 0 ||
+        cur->readiness_deadline_epoch != 0 ||
+        cur->postpone_count != 0)
+        return -1;
+    dna_domreg_record_t r = *cur;             /* every field COPIED…      */
+    if (dna_domman_hash(new_man, r.current_manifest_hash) != 0)
+        return -1;                            /* …but the manifest hash   */
+    if (dna_domreg_record_validate(&r) != 0) return -1;
+    *out = r;
+    return 0;
+}
+
+int nodus_witness_domreg_generation_switch(nodus_witness_t *w,
+                                           uint32_t from_gen,
+                                           uint32_t to_gen) {
+    static const uint32_t DOMS[2] = { DNA_DOMAIN_SYSTEM, DNA_DOMAIN_CORE };
+    dna_domreg_record_t   rec[2];
+    dna_domain_manifest_t man[2];
+    if (!w || !w->db || from_gen == to_gen) return -1;
+
+    /* 1. load + transform BOTH before writing EITHER (ascending id) */
+    for (size_t i = 0; i < 2; i++) {
+        dna_domreg_record_t   cur_rec;
+        dna_domain_manifest_t cur, pend;
+        int hp = 0;
+        const nodus_domain_runtime_t *from =
+            nodus_runtime_for_generation(from_gen, DOMS[i]);
+        const nodus_domain_runtime_t *to =
+            nodus_runtime_for_generation(to_gen, DOMS[i]);
+        if (!from || !to) {
+            QGP_LOG_ERROR(LOG_TAG, "generation switch %u -> %u: domain %u "
+                          "has no compiled entry", (unsigned)from_gen,
+                          (unsigned)to_gen, (unsigned)DOMS[i]);
+            return -1;
+        }
+        if (row_load(w, DOMS[i], &cur_rec, &cur, &pend, &hp) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "generation switch: registry row of "
+                          "domain %u is unreadable", (unsigned)DOMS[i]);
+            return -1;
+        }
+        if (hp) {
+            QGP_LOG_ERROR(LOG_TAG, "generation switch: domain %u carries a "
+                          "pending manifest", (unsigned)DOMS[i]);
+            return -1;
+        }
+        int mrc = nodus_witness_domreg_gen_manifest(&cur, from, to, &man[i]);
+        if (mrc == 1) {
+            QGP_LOG_ERROR(LOG_TAG, "generation switch: domain %u is not at "
+                          "generation %u (ruleset_version %u)",
+                          (unsigned)DOMS[i], (unsigned)from_gen,
+                          (unsigned)cur.ruleset_version);
+            return 1;
+        }
+        if (mrc != 0) return -1;
+        if (nodus_witness_domreg_gen_record(&cur_rec, &man[i],
+                                            &rec[i]) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "generation switch: domain %u record is "
+                          "not ACTIVE with empty pending/proposal/"
+                          "scheduling fields (status %u)",
+                          (unsigned)DOMS[i], (unsigned)cur_rec.status);
+            return -1;
+        }
+    }
+
+    /* 2. write both (row_store re-validates and re-hashes) */
+    for (size_t i = 0; i < 2; i++)
+        if (row_store(w, &rec[i], &man[i], NULL) != 0) return -1;
     return 0;
 }
 

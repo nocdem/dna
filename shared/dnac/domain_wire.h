@@ -54,6 +54,9 @@
  *   "NDS.DRNODE.v1"   registry Merkle inner node (S4 JUDGMENT tag)
  *   "NDS.DOMRDY.v1"   readiness signal preimage  (S4 JUDGMENT tag)
  *   "NDS.DOMPROP.v1"  proposal digest            (S4 JUDGMENT tag)
+ *   "NDS.RSGEN.v1"    rule-set generation vote digest (HF-4; operator-
+ *                     approved, decision 2026-10-02-onchain-names.md
+ *                     item 18)
  *   "NDS.E.DOMREG.v1" EMPTY registry root        (frozen since S2 —
  *                     ledger_roots_v2.h; dna_v2_empty_root(DNA_V2_EMPTY_DOMREG))
  *
@@ -307,6 +310,29 @@ typedef struct {
  *  non-ascending lists (NULL list allowed iff its count is 0). */
 int dna_ruleset_desc_hash(const dna_ruleset_desc_t *d,
                           uint8_t out[DNA_DOM_HASH_LEN]);
+
+/**
+ * HF-4 — the rule-set generation vote digest (design docs/plans/2026-10-
+ * 02-onchain-names-design.md rev 4 §1.2; tag approved by decision
+ * 2026-10-02-onchain-names.md item 18):
+ *
+ *   SHA3-512( "NDS.RSGEN.v1" (16 bytes, zero-padded)
+ *             ‖ generation u32 BE
+ *             ‖ sys_ruleset_hash[64]
+ *             ‖ core_ruleset_hash[64]
+ *             ‖ switch_spec_version u32 BE )        — 152-byte preimage
+ *
+ * *out = the first 8 digest bytes read big-endian, top bit cleared
+ * (so *out <= INT64_MAX). Consumers: nodus_witness_runtime_selfcheck,
+ * which re-derives the compiled literal DNAC_CFG_RULESET_GEN2_D2 — the
+ * vote path itself only compares against that literal.
+ * @return 0 / -1 (NULL argument or hash backend failure; *out untouched).
+ */
+int dna_ruleset_gen_digest(uint32_t generation,
+                           const uint8_t sys_ruleset_hash[DNA_DOM_HASH_LEN],
+                           const uint8_t core_ruleset_hash[DNA_DOM_HASH_LEN],
+                           uint32_t switch_spec_version,
+                           uint64_t *out);
 
 /* ══════════════════════════════════════════════════════════════════════
  * 3. DomainRegistryRecord v1

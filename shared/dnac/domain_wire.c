@@ -24,6 +24,8 @@ static const uint8_t TAG_DRLEAF[TAG_LEN]  = "NDS.DRLEAF.v1\0\0";
 static const uint8_t TAG_DRNODE[TAG_LEN]  = "NDS.DRNODE.v1\0\0";
 static const uint8_t TAG_DOMRDY[TAG_LEN]  = "NDS.DOMRDY.v1\0\0";
 static const uint8_t TAG_DOMPROP[TAG_LEN] = "NDS.DOMPROP.v1\0";
+/* HF-4 tag (decision 2026-10-02-onchain-names.md item 18) */
+static const uint8_t TAG_RSGEN[TAG_LEN]   = "NDS.RSGEN.v1\0\0\0";
 /* S5 tags */
 static const uint8_t TAG_DUPD[TAG_LEN]    = "NDS.DUPD.v1\0\0\0\0";
 static const uint8_t TAG_DUNODE[TAG_LEN]  = "NDS.DUNODE.v1\0\0";
@@ -235,6 +237,28 @@ int dna_ruleset_desc_hash(const dna_ruleset_desc_t *d,
         rc = qgp_sha3_512(pre, TAG_LEN + enc_len, out) == 0 ? 0 : -1;
     free(pre);
     return rc;
+}
+
+/* HF-4 — the generation vote digest (layout: domain_wire.h). */
+int dna_ruleset_gen_digest(uint32_t generation,
+                           const uint8_t sys_ruleset_hash[DNA_DOM_HASH_LEN],
+                           const uint8_t core_ruleset_hash[DNA_DOM_HASH_LEN],
+                           uint32_t switch_spec_version,
+                           uint64_t *out) {
+    if (!sys_ruleset_hash || !core_ruleset_hash || !out) return -1;
+    uint8_t pre[TAG_LEN + 4 + 2 * DNA_DOM_HASH_LEN + 4];
+    uint8_t *p = pre;
+    memcpy(p, TAG_RSGEN, TAG_LEN);                 p += TAG_LEN;
+    put_be32(generation, p);                       p += 4;
+    memcpy(p, sys_ruleset_hash, DNA_DOM_HASH_LEN); p += DNA_DOM_HASH_LEN;
+    memcpy(p, core_ruleset_hash, DNA_DOM_HASH_LEN); p += DNA_DOM_HASH_LEN;
+    put_be32(switch_spec_version, p);              p += 4;
+    if ((size_t)(p - pre) != sizeof(pre)) return -1;
+
+    uint8_t h[DNA_DOM_HASH_LEN];
+    if (qgp_sha3_512(pre, sizeof(pre), h) != 0) return -1;
+    *out = get_be64(h) & 0x7FFFFFFFFFFFFFFFULL;
+    return 0;
 }
 
 /* ══════════════════════════════════════════════════════════════════════

@@ -113,9 +113,9 @@ int main(void) {
      * case checks accepts a valid value. */
     build_valid_chain_config(&tx, 0, 5);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 9 (HF-3) */
+    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 14 (HF-4) */
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    CHECK(DNAC_CFG_PARAM_MAX_ID + 1 == 9);
+    CHECK(DNAC_CFG_PARAM_MAX_ID + 1 == 14);
     build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
 
@@ -130,7 +130,66 @@ int main(void) {
     build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_HF3_ACTIVE, 2);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
 
-    /* 5b. The read list itself: exactly {4, 5, 6, 7, 8} of the governed
+    /* 5a'. RULESET_GEN2 (id 9, HF-4): EXACTLY the dnac.h literal D2 — the
+     * mirror of the witness-side scalar_rules. D2 ± 1, 0 (when D2 is not
+     * 0), 1 and UINT64_MAX refuse. The witness's stateful rules (single
+     * use, HF-2, epoch boundary) are NOT mirrored — no chain state here
+     * (design 2026-10-02-onchain-names-design.md rev 4 §1.2). MUTANT
+     * KILLED: dropping the case (default refuses D2), comparing against
+     * anything but the literal. NOTE: while DNAC_CFG_RULESET_GEN2_D2 is
+     * the unfilled oracle placeholder 0, the "0 refuses" probe is skipped
+     * by its own guard and D2 - 1 wraps to UINT64_MAX (still refused). */
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN2,
+                             DNAC_CFG_RULESET_GEN2_D2);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN2,
+                             DNAC_CFG_RULESET_GEN2_D2 + 1u);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN2,
+                             DNAC_CFG_RULESET_GEN2_D2 - 1u);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN2, UINT64_MAX);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    if (DNAC_CFG_RULESET_GEN2_D2 != 0u) {
+        build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN2, 0);
+        CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    }
+    CHECK(DNAC_CFG_RULESET_GEN2_D2 <= (uint64_t)INT64_MAX);
+    CHECK(DNAC_RULESET_SWITCH_SPEC_VERSION == 1u);
+
+    /* 5a''. NAME_PRICE_3P..6P (ids 10-13, HF-4): [10^8, 10^15] — both
+     * ends inclusive, one past either end refuses; and the compiled
+     * no-row defaults are 10^11 / 5*10^10 / 10^10 / 10^8 (decision
+     * 2026-10-02-onchain-names.md items 6 and 10). The "generation 2
+     * judges" rule is witness-side only. MUTANT KILLED: an off-by-one
+     * bound, a missing id, a default drift. */
+    {
+        const uint8_t ids[4] = { (uint8_t)DNAC_CFG_NAME_PRICE_3P,
+                                 (uint8_t)DNAC_CFG_NAME_PRICE_4P,
+                                 (uint8_t)DNAC_CFG_NAME_PRICE_5P,
+                                 (uint8_t)DNAC_CFG_NAME_PRICE_6P };
+        for (int k = 0; k < 4; k++) {
+            CHECK(ids[k] == 10 + k);
+            build_valid_chain_config(&tx, ids[k], DNAC_CFG_MIN_NAME_PRICE);
+            CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+            build_valid_chain_config(&tx, ids[k], DNAC_CFG_MAX_NAME_PRICE);
+            CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+            build_valid_chain_config(&tx, ids[k], DNAC_CFG_MIN_NAME_PRICE - 1u);
+            CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+            build_valid_chain_config(&tx, ids[k], DNAC_CFG_MAX_NAME_PRICE + 1u);
+            CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+            build_valid_chain_config(&tx, ids[k], 0);
+            CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+        }
+        CHECK(DNAC_CFG_MIN_NAME_PRICE == 100000000ULL);
+        CHECK(DNAC_CFG_MAX_NAME_PRICE == 1000000000000000ULL);
+        CHECK(DNAC_NAME_PRICE_3P_DEFAULT == 100000000000ULL);
+        CHECK(DNAC_NAME_PRICE_4P_DEFAULT == 50000000000ULL);
+        CHECK(DNAC_NAME_PRICE_5P_DEFAULT == 10000000000ULL);
+        CHECK(DNAC_NAME_PRICE_6P_DEFAULT == 100000000ULL);
+    }
+
+    /* 5b. The read list itself: exactly {4, 5, 6, 7, 8, 9..13} of the governed
      * id space are read by the running consensus (id 8 = HF3_ACTIVE, read
      * by the engine's env_hf3_active — HF-3, 2026-10-02; id 7 =
      * HF2_ACTIVE, read by the engine's env_hf2_active, 2026-09-30).
@@ -149,7 +208,16 @@ int main(void) {
                            id == DNAC_CFG_GAS_PRICE_RAW_PER_UNIT ||
                            id == DNAC_CFG_TOKEN_CREATE_FEE_RAW ||
                            id == DNAC_CFG_HF2_ACTIVE ||
-                           id == DNAC_CFG_HF3_ACTIVE);
+                           id == DNAC_CFG_HF3_ACTIVE ||
+                           /* HF-4: 9 read by phase 6b' and
+                            * env_ruleset_gen2_voted; 10-13 by the
+                            * generation-2 name price (gated by the
+                            * witness's generation rule until then) */
+                           id == DNAC_CFG_RULESET_GEN2 ||
+                           id == DNAC_CFG_NAME_PRICE_3P ||
+                           id == DNAC_CFG_NAME_PRICE_4P ||
+                           id == DNAC_CFG_NAME_PRICE_5P ||
+                           id == DNAC_CFG_NAME_PRICE_6P);
         CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id) == want);
     }
 

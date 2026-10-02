@@ -608,7 +608,57 @@ typedef enum {
                                           *   DNAC_CFG_HF3_ACTIVE_ON (1)
                                           *   — there is no "off" vote;
                                           *   grace class ERGONOMIC. */
-    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_HF3_ACTIVE
+    DNAC_CFG_RULESET_GEN2          = 9,  /**< HF-4 (design docs/plans/
+                                          *   2026-10-02-onchain-names-
+                                          *   design.md rev 4 §1.2;
+                                          *   decision docs/plans/
+                                          *   decisions/2026-10-02-
+                                          *   onchain-names.md): the
+                                          *   rule-set upgrade vote. Its
+                                          *   effective_block H is the
+                                          *   first block judged under
+                                          *   the compiled generation 2;
+                                          *   the engine rewrites the
+                                          *   SYSTEM and CORE registry
+                                          *   records at the end of
+                                          *   block H-1 (phase 6b').
+                                          *   Value domain EXACTLY
+                                          *   DNAC_CFG_RULESET_GEN2_D2 —
+                                          *   the vote names its target.
+                                          *   Single use; HF-2 must be
+                                          *   active; H-1 must not be an
+                                          *   epoch boundary (witness-
+                                          *   side stateful rules — the
+                                          *   client mirror cannot apply
+                                          *   them). Grace class
+                                          *   ERGONOMIC (decision item
+                                          *   17). */
+    DNAC_CFG_NAME_PRICE_3P         = 10, /**< HF-4 (design §2 Price,
+                                          *   decision items 6, 10, 16):
+                                          *   the NAME_REGISTER price, in
+                                          *   raw units, of a 3-character
+                                          *   name. No row = the compiled
+                                          *   DNAC_NAME_PRICE_3P_DEFAULT.
+                                          *   Range [DNAC_CFG_MIN_NAME_
+                                          *   PRICE, DNAC_CFG_MAX_NAME_
+                                          *   PRICE]; votable only once
+                                          *   generation 2 judges the
+                                          *   vote; grace ERGONOMIC. */
+    DNAC_CFG_NAME_PRICE_4P         = 11, /**< HF-4: 4-character names —
+                                          *   the NAME_PRICE_3P contract,
+                                          *   default DNAC_NAME_PRICE_4P_
+                                          *   DEFAULT. */
+    DNAC_CFG_NAME_PRICE_5P         = 12, /**< HF-4: 5-character names —
+                                          *   the NAME_PRICE_3P contract,
+                                          *   default DNAC_NAME_PRICE_5P_
+                                          *   DEFAULT. */
+    DNAC_CFG_NAME_PRICE_6P         = 13, /**< HF-4: names of 6 or more
+                                          *   characters — the NAME_
+                                          *   PRICE_3P contract, default
+                                          *   DNAC_NAME_PRICE_6P_DEFAULT
+                                          *   (decision item 10: 1
+                                          *   NODUS). */
+    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_NAME_PRICE_6P
 } dnac_chain_config_param_id_t;
 
 /** The chain-config parameters the RUNNING consensus reads — the one list
@@ -637,7 +687,18 @@ typedef enum {
  *      read once per block-start context by block_ctx_from_doms into
  *      nodus_witness_v2_block_ctx_t.hf3_active (the seam's byte step,
  *      the budget's unbounded flags, the res_max_total_units ceiling
- *      rule and the ProcessProposal fee check).
+ *      rule and the ProcessProposal fee check);
+ *    - RULESET_GEN2 (9, HF-4): nodus_witness_v2_apply.c phase 6b' (the
+ *      edge trigger that switches the registry to generation 2 at the
+ *      end of block H-1) and env_ruleset_gen2_voted (the engine reads
+ *      "any param-9 row" into nodus_rt_exec_ctx_t.ruleset_gen2_voted —
+ *      the single-use vote rule);
+ *    - NAME_PRICE_3P..6P (10-13, HF-4): the generation-2 CORE
+ *      NAME_REGISTER price (the op-8 package). They are on this list so
+ *      the scalar rules accept them, but every vote for them is refused
+ *      by nodus_chain_config_stateful_rules until generation 2 judges
+ *      the vote (design §1.2: "refused unless the judging runtime is
+ *      gen >= 2").
  *  No other governed id has a reader: 1 and 3 are RETIRED (above), and 2
  *  (BLOCK_INTERVAL_SEC) is not read on this lane.
  *
@@ -656,7 +717,12 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
            param_id == (uint8_t)DNAC_CFG_GAS_PRICE_RAW_PER_UNIT ||
            param_id == (uint8_t)DNAC_CFG_TOKEN_CREATE_FEE_RAW ||
            param_id == (uint8_t)DNAC_CFG_HF2_ACTIVE ||
-           param_id == (uint8_t)DNAC_CFG_HF3_ACTIVE;
+           param_id == (uint8_t)DNAC_CFG_HF3_ACTIVE ||
+           param_id == (uint8_t)DNAC_CFG_RULESET_GEN2 ||
+           param_id == (uint8_t)DNAC_CFG_NAME_PRICE_3P ||
+           param_id == (uint8_t)DNAC_CFG_NAME_PRICE_4P ||
+           param_id == (uint8_t)DNAC_CFG_NAME_PRICE_5P ||
+           param_id == (uint8_t)DNAC_CFG_NAME_PRICE_6P;
 }
 
 /** Value range bounds — consensus-critical (client + witness reject out-of-range).
@@ -762,6 +828,73 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  config.c, dnac/src/transaction/verify.c); a later vote for 1 at a
  *  higher height changes nothing. */
 #define DNAC_CFG_HF3_ACTIVE_ON              1ULL
+
+/** HF-4 — the switch procedure version (design docs/plans/2026-10-02-
+ *  onchain-names-design.md rev 4 §1.2-§1.4). It names the procedure the
+ *  engine's phase 6b' runs at the end of block H-1 (which registry fields
+ *  are copied, which are replaced from the compiled generation, which
+ *  domains are touched). It is hashed into DNAC_CFG_RULESET_GEN2_D2, so
+ *  two binaries that carry the same generation-2 tuples but a different
+ *  switch cannot share a vote value; any change to the switch bumps it,
+ *  and with it D2 and the switch KAT (nodus/tests/test_hf4_switch.c). */
+#define DNAC_RULESET_SWITCH_SPEC_VERSION    1u
+
+/** RULESET_GEN2 value domain (HF-4, param_id 9): EXACTLY this literal.
+ *
+ *  D2 = the first 8 bytes, big-endian, of
+ *    SHA3-512( TAG16("NDS.RSGEN.v1") ‖ u32 BE 2
+ *              ‖ generation-2 SYSTEM ruleset_hash[64]
+ *              ‖ generation-2 CORE ruleset_hash[64]
+ *              ‖ u32 BE DNAC_RULESET_SWITCH_SPEC_VERSION )
+ *  with the top bit cleared (so D2 <= INT64_MAX — chain_config_history
+ *  stores new_value as SQLite int64). Tag approved: decision 2026-10-02-
+ *  onchain-names.md item 18. The vote names its TARGET: a binary whose
+ *  generation 2 differs refuses the vote at the vote block (recoverable,
+ *  decision 2026-09-26-hard-fork-lagging-node.md).
+ *
+ *  The value is a literal from the INDEPENDENT oracle
+ *  (shared/dnac/tests/ruleset_desc_oracle.py, extended for HF-4) — never
+ *  the C encoder's own output. nodus_witness_runtime_selfcheck re-derives
+ *  it through dna_ruleset_gen_digest (shared/dnac/domain_wire.c) on every
+ *  start; nothing in the vote path hashes. The same literal is the client
+ *  mirror's (dnac/src/transaction/verify.c). */
+#define DNAC_CFG_RULESET_GEN2_D2            0x0000000000000000ULL /* HF4-ORACLE: filled by ORCHESTRATOR */
+
+/** HF-4 NAME_REGISTER price range (params 10-13), both inclusive:
+ *  [10^8, 10^15] raw = [1 NODUS, 10 000 000 NODUS] (design §2 Price). */
+#define DNAC_CFG_MIN_NAME_PRICE             100000000ULL
+#define DNAC_CFG_MAX_NAME_PRICE             1000000000000000ULL
+
+/** HF-4 compiled no-row NAME_REGISTER prices (design §2 Price; decision
+ *  2026-10-02-onchain-names.md items 6 and 10): 3 chars 1 000 NODUS,
+ *  4 chars 500, 5 chars 100, 6+ chars 1. The ONE definition — the engine
+ *  and every client read these names. A committed params-10..13 row at
+ *  the judged height replaces the matching default (testnet: no genesis
+ *  row, the deviation the design states). */
+#define DNAC_NAME_PRICE_3P_DEFAULT          100000000000ULL
+#define DNAC_NAME_PRICE_4P_DEFAULT          50000000000ULL
+#define DNAC_NAME_PRICE_5P_DEFAULT          10000000000ULL
+#define DNAC_NAME_PRICE_6P_DEFAULT          100000000ULL
+
+#ifndef __cplusplus
+_Static_assert(DNAC_CFG_RULESET_GEN2_D2 <= 0x7FFFFFFFFFFFFFFFULL,
+               "D2 must fit SQLite int64 (top bit cleared by construction)");
+_Static_assert(DNAC_NAME_PRICE_3P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&
+               DNAC_NAME_PRICE_3P_DEFAULT <= DNAC_CFG_MAX_NAME_PRICE &&
+               DNAC_NAME_PRICE_4P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&
+               DNAC_NAME_PRICE_4P_DEFAULT <= DNAC_CFG_MAX_NAME_PRICE &&
+               DNAC_NAME_PRICE_5P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&
+               DNAC_NAME_PRICE_5P_DEFAULT <= DNAC_CFG_MAX_NAME_PRICE &&
+               DNAC_NAME_PRICE_6P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&
+               DNAC_NAME_PRICE_6P_DEFAULT <= DNAC_CFG_MAX_NAME_PRICE,
+               "every compiled name price lies inside the votable range");
+_Static_assert(DNAC_NAME_PRICE_3P_DEFAULT >= DNAC_NAME_PRICE_4P_DEFAULT &&
+               DNAC_NAME_PRICE_4P_DEFAULT >= DNAC_NAME_PRICE_5P_DEFAULT &&
+               DNAC_NAME_PRICE_5P_DEFAULT >= DNAC_NAME_PRICE_6P_DEFAULT,
+               "compiled name prices are non-increasing with length");
+_Static_assert(DNAC_NAME_PRICE_6P_DEFAULT == DNAC_CFG_MIN_NAME_PRICE,
+               "6+ characters cost exactly the 1 NODUS floor (item 10)");
+#endif
 
 /** chain_config_tx vote-count SHAPE bounds — NOT the quorum rule.
  *

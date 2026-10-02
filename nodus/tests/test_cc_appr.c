@@ -28,7 +28,10 @@
  * INFLATION_START parameter (tokenomics-v3 P2 — it replaces the ORC-6
  * monotonicity pair), BLOCK_INTERVAL_SEC — not read by the running
  * consensus since 0.20.3 — HF-1's GAS_PRICE_RAW_PER_UNIT above its ceiling,
- * the per-proposer rate limit) each drives ONE call
+ * HF-4's RULESET_GEN2 with HF-2 off / after a prior param-9 row / with H-1
+ * an epoch boundary / with a value other than D2, HF-4's NAME_PRICE_*
+ * while generation 1 judges — the responder's parity with the exec's
+ * stateful rules — the per-proposer rate limit) each drives ONE call
  * and checks `ok == false` plus a specific `reason` substring and an
  * all-zero signature field — never a signature. The requester case also
  * checks that the refused (bonded) attempt IS recorded in the rate-limit
@@ -1063,6 +1066,237 @@ static int t_hf2_legal_signs(void) {
     return 0;
 }
 
+/* ══ HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4
+ * §1.2) — the responder applies the SAME stateful rules as the exec
+ * (nodus_chain_config_stateful_rules), over facts it derives at its
+ * candidate height h = tip + 1: HF-2 at h (param 7), "any param-9 row",
+ * and the generation the committed SYSTEM manifest resolves to. The rows
+ * below are written straight into chain_config_history (no block): the
+ * responder and the dry run only READ them. ═════════════════════════ */
+
+#define HF4_E     ((uint64_t)DNAC_EPOCH_LENGTH)
+#define HF4_GRACE ((uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS)
+
+static int hf4_row(gfx_t *g, unsigned param, uint64_t value,
+                   uint64_t effective, uint64_t nonce) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g->w->db,
+            "INSERT INTO chain_config_history (param_id, new_value, "
+            "effective_block, commit_block, tx_hash, proposal_nonce, "
+            "created_at_unix) VALUES (?1, ?2, ?3, 1, zeroblob(64), ?4, 0)",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)param);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)value);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)effective);
+    sqlite3_bind_int64(st, 4, (sqlite3_int64)nonce);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    g->w->chain_config_cache_warm = false;
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+/* effective heights past the candidate's grace floor: one whose
+ * predecessor is not an epoch boundary, one whose predecessor is */
+static uint64_t hf4_eff_ok(uint64_t h) {
+    uint64_t e = h + HF4_GRACE;
+    while (((e - 1u) % HF4_E) == 0 && (e - 1u) != 0) e++;
+    return e;
+}
+static uint64_t hf4_eff_boundary(uint64_t h) {
+    return ((h + HF4_GRACE - 1u) / HF4_E + 1u) * HF4_E + 1u;
+}
+
+/* One refusal through the responder, on a chain carrying the optional
+ * HF-2 row (param 7 effective 1) and an optional prior param-9 row. */
+static int hf4_refusal(const char *tag, int hf2_row, int p9_row,
+                       uint8_t param, uint64_t value, int boundary,
+                       const char *expect_substr) {
+    gfx_t  g;
+    dna_env_preflight_t pf1;
+    pre_env_t env;
+    uint64_t tip = 0;
+
+    CHECK(gfx_open(&g, tag) == 0, "version-3 fixture");
+    CHECK(nodus_witness_v2_tip_height(g.w, &tip) == 0, "tip height");
+    if (hf2_row)
+        CHECK(hf4_row(&g, DNAC_CFG_HF2_ACTIVE, DNAC_CFG_HF2_ACTIVE_ON, 1, 71)
+                  == 0, "HF-2 row");
+    if (p9_row)
+        CHECK(hf4_row(&g, DNAC_CFG_RULESET_GEN2, DNAC_CFG_RULESET_GEN2_D2,
+                      hf4_eff_ok(tip + 1u) + 50u, 72) == 0,
+              "a prior param-9 row");
+    const uint64_t eff = boundary ? hf4_eff_boundary(tip + 1u)
+                                  : hf4_eff_ok(tip + 1u);
+    CHECK(pre_env_build(g.w, tip, 5, param, value, eff, eff + 1000u, 0,
+                        NODUS_RT_AUTHKIND_DSA87_CC_V1, &env, &pf1) == 0,
+          "pass-1 build");
+    {
+        uint8_t *p = env.auth;
+        p[0] = 1;
+        memcpy(p + 1, g_ks[0].pk, DNAC_PUBKEY_SIZE);
+        size_t sl = 0;
+        CHECK(qgp_dsa87_sign(p + 1 + DNAC_PUBKEY_SIZE, &sl,
+                             pf1.auth_digest[0], 64, g_ks[0].sk) == 0,
+              "submitter sign");
+        p += 1 + NODUS_RT_AUTH_SIGNER_LEN;
+        p[0] = 0;
+        p[1] = 5;
+    }
+    bind_identity(&g, 1);
+
+    nodus_t3_cc_appr_rsp_t rsp;
+    memset(&rsp, 0xAA, sizeof(rsp));
+    CHECK(ask(&g, requester_not_seat(&g), env.bytes, env.len, &rsp) == 0,
+          "ask refused");
+    CHECK(!rsp.ok, "refused (not approved)");
+    CHECK(strstr(rsp.reason, expect_substr) != NULL, rsp.reason);
+    CHECK(sig_is_zero(&rsp), "a refusal carries no signature");
+
+    pre_env_free(&env);
+    gfx_close(&g);
+    return 0;
+}
+
+/* (b): HF-2 not active at the candidate height → refused */
+static int t_hf4_gen2_hf2_off_refused(void) {
+    return hf4_refusal("hf4nohf2", 0, 0, DNAC_CFG_RULESET_GEN2,
+                       DNAC_CFG_RULESET_GEN2_D2, 0,
+                       "stateful rules rejected") == 0 ? 0 : 1;
+}
+
+/* (a): a param-9 row already committed (any effective) → refused */
+static int t_hf4_gen2_second_refused(void) {
+    return hf4_refusal("hf4second", 1, 1, DNAC_CFG_RULESET_GEN2,
+                       DNAC_CFG_RULESET_GEN2_D2, 0,
+                       "stateful rules rejected") == 0 ? 0 : 1;
+}
+
+/* (c): H-1 an epoch boundary → refused */
+static int t_hf4_gen2_boundary_refused(void) {
+    return hf4_refusal("hf4bound", 1, 0, DNAC_CFG_RULESET_GEN2,
+                       DNAC_CFG_RULESET_GEN2_D2, 1,
+                       "stateful rules rejected") == 0 ? 0 : 1;
+}
+
+/* the value is not this build's D2 → the scalar rule refuses first */
+static int t_hf4_gen2_wrong_value_refused(void) {
+    return hf4_refusal("hf4val", 1, 0, DNAC_CFG_RULESET_GEN2,
+                       DNAC_CFG_RULESET_GEN2_D2 + 1u, 0,
+                       "scalar rules rejected") == 0 ? 0 : 1;
+}
+
+/* params 10-13 while generation 1 judges → refused (every id) */
+static int t_hf4_name_price_gen1_refused(void) {
+    for (uint8_t id = DNAC_CFG_NAME_PRICE_3P; id <= DNAC_CFG_NAME_PRICE_6P;
+         id++) {
+        char tag[16];
+        snprintf(tag, sizeof(tag), "hf4np%u", (unsigned)id);
+        if (hf4_refusal(tag, 1, 0, id, DNAC_NAME_PRICE_6P_DEFAULT, 0,
+                        "stateful rules rejected") != 0)
+            return 1;
+    }
+    return 0;
+}
+
+/* The legal vote: every seat APPROVES through the real responder, the
+ * assembled envelope passes the CheckTx dry run (which runs the exec with
+ * the ENGINE-filled facts); then a param-9 row lands and the SAME
+ * envelope is refused by the dry run (code EXEC — the single-use rule in
+ * exec, reached through CheckTx) and by the responder. */
+static int t_hf4_gen2_signs_then_single_use(void) {
+    gfx_t  g;
+    dna_env_preflight_t pf1, pf2;
+    pre_env_t env;
+    nodus_committee_member_t *cm = NULL;
+    int cmn = 0;
+    uint64_t tip = 0;
+
+    CHECK(gfx_open(&g, "hf4ok") == 0, "version-3 fixture");
+    CHECK(nodus_witness_v2_tip_height(g.w, &tip) == 0, "tip height");
+    CHECK(hf4_row(&g, DNAC_CFG_HF2_ACTIVE, DNAC_CFG_HF2_ACTIVE_ON, 1, 71)
+              == 0, "HF-2 row");
+    CHECK(nodus_committee_get_for_block_alloc(g.w, tip, &cm, &cmn) == 0 &&
+          cmn == N_KEYS, "committee resolves to all 7 seats");
+    const uint64_t eff = hf4_eff_ok(tip + 1u);
+    CHECK(pre_env_build(g.w, tip, (uint32_t)cmn, DNAC_CFG_RULESET_GEN2,
+                        DNAC_CFG_RULESET_GEN2_D2, eff, eff + 1000u, 0,
+                        NODUS_RT_AUTHKIND_DSA87_CC_V1, &env, &pf1) == 0,
+          "pass-1 build");
+    {
+        uint8_t *p = env.auth;
+        p[0] = 1;
+        memcpy(p + 1, g_ks[0].pk, DNAC_PUBKEY_SIZE);
+        size_t sl = 0;
+        CHECK(qgp_dsa87_sign(p + 1 + DNAC_PUBKEY_SIZE, &sl, pf1.auth_digest[0],
+                             64, g_ks[0].sk) == 0, "submitter sign");
+        p += 1 + NODUS_RT_AUTH_SIGNER_LEN;
+        p[0] = (uint8_t)((uint32_t)cmn >> 8);
+        p[1] = (uint8_t)cmn;
+    }
+    for (int seat = 0; seat < cmn; seat++) {
+        int ki = -1;
+        for (int k = 0; k < N_KEYS; k++)
+            if (memcmp(cm[seat].pubkey, g_ks[k].pk, DNAC_PUBKEY_SIZE) == 0) {
+                ki = k;
+                break;
+            }
+        CHECK(ki >= 0, "resolved seat maps to one of this file's keys");
+        bind_identity(&g, ki);
+        /* one witness stands in for seven nodes (see t_happy_path) */
+        memset(&g.w->cc_rate_limit, 0, sizeof(g.w->cc_rate_limit));
+        nodus_t3_cc_appr_rsp_t rsp;
+        memset(&rsp, 0, sizeof(rsp));
+        CHECK(ask(&g, requester_not_seat(&g), env.bytes, env.len, &rsp) == 1,
+              rsp.reason[0] ? rsp.reason : "ask seat");
+        CHECK(rsp.ok, rsp.ok ? "the seat approved the param-9 vote"
+                             : rsp.reason);
+        uint8_t *p = env.auth + 1 + NODUS_RT_AUTH_SIGNER_LEN + 2 +
+                    (size_t)seat * NODUS_RT_AUTH_APPROVAL_LEN;
+        p[0] = (uint8_t)((uint16_t)seat >> 8);
+        p[1] = (uint8_t)seat;
+        memcpy(p + 2, rsp.sig, NODUS_SIG_BYTES);
+    }
+    CHECK(pre_env_reencode(&env, g.w, tip, &pf2) == 0, "pass-2 preflight");
+
+    char reason[256];
+    nodus_v2_env_dry_run_t *dry = calloc(1, sizeof(*dry));
+    CHECK(dry != NULL, "alloc");
+    reason[0] = '\0';
+    int arc = nodus_witness_v2_env_dry_run(g.w, env.bytes, env.len, NULL,
+                                           dry, reason, sizeof(reason));
+    nodus_witness_v2_env_dry_run_free(dry);
+    CHECK(arc == 0, reason[0] ? reason : "CheckTx accepts the legal vote");
+
+    /* a param-9 row is committed (another vote): single use */
+    CHECK(hf4_row(&g, DNAC_CFG_RULESET_GEN2, DNAC_CFG_RULESET_GEN2_D2,
+                  eff + 7u, 73) == 0, "another param-9 row");
+    memset(dry, 0, sizeof(*dry));
+    reason[0] = '\0';
+    arc = nodus_witness_v2_env_dry_run(g.w, env.bytes, env.len, NULL, dry,
+                                       reason, sizeof(reason));
+    uint32_t code = dry->code;
+    nodus_witness_v2_env_dry_run_free(dry);
+    free(dry);
+    CHECK(arc == -1 && code == NODUS_V2_TX_ERR_EXEC,
+          "CheckTx refuses the second vote in exec (single use)");
+    {
+        bind_identity(&g, 1);
+        memset(&g.w->cc_rate_limit, 0, sizeof(g.w->cc_rate_limit));
+        nodus_t3_cc_appr_rsp_t rsp;
+        memset(&rsp, 0xAA, sizeof(rsp));
+        CHECK(ask(&g, requester_not_seat(&g), env.bytes, env.len, &rsp) == 0,
+              "ask refused");
+        CHECK(!rsp.ok && strstr(rsp.reason, "stateful rules rejected"),
+              rsp.reason);
+    }
+
+    free(cm);
+    pre_env_free(&env);
+    gfx_close(&g);
+    return 0;
+}
+
 /* The per-proposer rate limit (nodus_cc_rate_limit_check): the SAME
  * sender_id asked twice for the SAME seat within the 5 s cooldown — the
  * second request is refused "rate-limited", never signed. Since red-team
@@ -1154,6 +1388,16 @@ int main(void) {
         { "gas_price_legal_signs",      t_gas_price_legal_signs },
         { "hf2_bad_value_refused",      t_hf2_bad_value_refused },
         { "hf2_legal_signs",            t_hf2_legal_signs },
+        /* HF-4 — responder parity with the exec's stateful rules */
+        { "hf4_gen2_hf2_off_refused",   t_hf4_gen2_hf2_off_refused },
+        { "hf4_gen2_second_refused",    t_hf4_gen2_second_refused },
+        { "hf4_gen2_boundary_refused",  t_hf4_gen2_boundary_refused },
+        { "hf4_gen2_wrong_value_refused",
+                                        t_hf4_gen2_wrong_value_refused },
+        { "hf4_name_price_gen1_refused",
+                                        t_hf4_name_price_gen1_refused },
+        { "hf4_gen2_signs_then_single_use",
+                                        t_hf4_gen2_signs_then_single_use },
         { "rate_limited_second_request", t_rate_limited_second_request },
     };
     size_t failed = 0, ncases = sizeof(cases) / sizeof(cases[0]);

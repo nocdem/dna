@@ -100,6 +100,28 @@ extern "C" {
  *  declared HERE (not in runtime.c) because both the CORE hook and the
  *  SYSTEM stake hooks name it when they check their sibling leg. */
 #define DNA_CORERULE_SYSFUND         ((uint32_t)7)
+/** HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §2):
+ *  NAME_REGISTER — owned by the generation-2 CORE descriptor only (CORE
+ *  v5, rules {1..8}). Generation 1 does not own it, so admission refuses
+ *  op 8 there exactly as before HF-4 (nodus_witness_v2_apply.c
+ *  env_admit_legs, rt_owns_runtime_op). Its execution arrives with the
+ *  op-8 package; until then the CORE hooks' default branch refuses it as
+ *  a deterministic verdict (-1), never a fault. */
+#define DNA_CORERULE_NAME_REGISTER   ((uint32_t)8)
+
+/* ── HF-4 rule-set GENERATIONS (design §1.1) ───────────────────────────
+ * The compiled table is an ordered list of generations since genesis:
+ * generation → (SYSTEM tuple, CORE tuple, sealed SYSTEM meter policy).
+ * Generation 1 is the genesis generation (SYSTEM v6 / CORE v4 / policy
+ * 8f1f9cb2…), byte-identical to the pre-HF-4 table; generation 2 is
+ * SYSTEM v7 / CORE v5. Every generation stays in every future binary
+ * (replay from genesis). The registry's committed manifests decide which
+ * generation judges a block (nodus_witness_v2_runtime_for — exact
+ * tuple); the switch from 1 to 2 is phase 6b' of the engine. */
+#define NODUS_RT_GEN_1               ((uint32_t)1)
+#define NODUS_RT_GEN_2               ((uint32_t)2)
+/** The newest compiled generation. */
+#define NODUS_RT_GEN_MAX             NODUS_RT_GEN_2
 
 struct nodus_domain_runtime;
 
@@ -416,6 +438,17 @@ typedef struct {
      * CHAIN_CONFIG exec, which weighs approvals by voting power while it
      * is 1 and by seat count while it is 0. A hook never chooses it. */
     uint8_t        hf2_active;
+    /* HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4
+     * §1.2 rule (a)): 1 when ANY chain_config param-9 (RULESET_GEN2) row
+     * exists, at any effective height, else 0. Filled by the ENGINE
+     * (nodus_witness_v2_apply.c env_ruleset_gen2_voted) on every ctx it
+     * builds, re-read per item so a row an earlier item of the SAME block
+     * wrote counts; an unreadable answer is a node FAULT, never a
+     * default. UNMETERED by design: it is not a mediated read, so the
+     * CHAIN_CONFIG read plan stays empty and no committed block's
+     * gas_used moves. One consumer: the SYSTEM CHAIN_CONFIG exec's
+     * single-use rule (nodus_chain_config_stateful_rules). */
+    uint8_t        ruleset_gen2_voted;
 } nodus_rt_exec_ctx_t;
 
 /**
@@ -538,6 +571,13 @@ typedef struct nodus_domain_runtime {
     uint32_t runtime_abi;                /* NODUS_DOMAIN_RUNTIME_ABI_V1   */
     uint32_t ruleset_version;
     uint8_t  ruleset_hash[DNA_DOM_HASH_LEN];  /* pinned descriptor digest */
+    /* HF-4: the rule-set GENERATION this entry belongs to (NODUS_RT_GEN_*;
+     * 1 = genesis). NOT an identity axis and not hashed anywhere — the
+     * exact five-axis tuple above is what resolves a runtime; this field
+     * says which compiled generation the resolved entry is. Synthetic
+     * test runtimes leave it 0, which every "generation >= 2" gate reads
+     * as "not generation 2" (the fail-closed direction). */
+    uint32_t generation;
     /* ── checked-in canonical descriptor the digest is recomputed from ─ */
     dna_ruleset_desc_t descriptor;
     /* ── function table ─────────────────────────────────────────────── */
@@ -617,15 +657,42 @@ nodus_runtime_lookup_in(const nodus_domain_runtime_t *table, size_t n,
                         uint32_t runtime_abi, uint32_t ruleset_version,
                         const uint8_t ruleset_hash[DNA_DOM_HASH_LEN]);
 
-/** Exact-tuple lookup in the compiled production table
- *  (SYSTEM + DNA_CORE only). @return the entry or NULL. */
+/** Exact-tuple lookup across EVERY compiled generation of the production
+ *  table (HF-4: a tuple names at most one entry — selfcheck enforces
+ *  exact-tuple uniqueness). @return the entry or NULL. */
 const nodus_domain_runtime_t *
 nodus_runtime_lookup(uint32_t domain_id, uint8_t runtime_kind,
                      uint32_t runtime_abi, uint32_t ruleset_version,
                      const uint8_t ruleset_hash[DNA_DOM_HASH_LEN]);
 
-/** The compiled production table. @param n_out receives the entry count. */
+/** The GENESIS generation of the compiled production table (generation
+ *  1: SYSTEM then DNA_CORE — exactly the two entries every pre-HF-4
+ *  consumer saw). Genesis seeding, the pre-registry supply walk and the
+ *  test fixtures read THIS; it is never a lookup surface for a committed
+ *  tuple (use nodus_runtime_lookup / nodus_runtime_all_table, which see
+ *  every generation). @param n_out receives the entry count (2). */
 const nodus_domain_runtime_t *nodus_runtime_builtin_table(size_t *n_out);
+
+/** HF-4: EVERY compiled entry of every generation, generation-major
+ *  (generation 1 SYSTEM, generation 1 CORE, generation 2 SYSTEM, …) —
+ *  the table exact-tuple resolution of a COMMITTED registry tuple walks
+ *  (nodus_witness_v2_runtime_for with no test override).
+ *  @param n_out receives the entry count. */
+const nodus_domain_runtime_t *nodus_runtime_all_table(size_t *n_out);
+
+/** HF-4: the number of compiled generations (generation ids are
+ *  1..count, contiguous). */
+uint32_t nodus_runtime_generation_count(void);
+
+/** HF-4: one generation's contiguous slice of the production table
+ *  (SYSTEM then DNA_CORE). @return NULL for an unknown generation. */
+const nodus_domain_runtime_t *
+nodus_runtime_generation_table(uint32_t generation, size_t *n_out);
+
+/** HF-4: the (domain, generation) entry — the replacement for every
+ *  "first entry whose domain matches" lookup. @return the entry or NULL. */
+const nodus_domain_runtime_t *
+nodus_runtime_for_generation(uint32_t generation, uint32_t domain_id);
 
 /**
  * Self-check of the production table, fail-closed:
@@ -653,6 +720,21 @@ const nodus_domain_runtime_t *nodus_runtime_builtin_table(size_t *n_out);
  *     none — the exact configured shape, like the entry list itself;
  *   - exactly the CONFIGURED native runtimes (initially SYSTEM and
  *     DNA_CORE) are present, ascending by domain_id.
+ * HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.1)
+ * adds, over the generation list:
+ *   - every exact tuple names ONE entry (no tuple in two generations);
+ *   - every generation has exactly one SYSTEM and one CORE entry, and
+ *     generation ids are 1..count with no gap;
+ *   - per domain, ruleset_version strictly increases with generation,
+ *     and runtime_kind / runtime_abi never change across generations
+ *     (the switch copies them, §1.4);
+ *   - generation 1 equals today's literals (SYSTEM v6 + 8f1f9cb2… policy,
+ *     CORE v4) — the genesis generation is never re-pinned;
+ *   - every SYSTEM entry carries a sealed policy, and each generation's
+ *     SYSTEM policy prices every rule id of that generation's SYSTEM AND
+ *     CORE descriptors;
+ *   - the compiled vote literal DNAC_CFG_RULESET_GEN2_D2 re-derives from
+ *     the generation-2 pins (dna_ruleset_gen_digest).
  * @return 0 healthy, -1 on the first violation.
  */
 int nodus_witness_runtime_selfcheck(void);

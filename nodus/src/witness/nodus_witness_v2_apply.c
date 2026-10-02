@@ -150,7 +150,10 @@ int nodus_witness_v2_supply_check(nodus_witness_t *w) {
 
     if (n_dom == 0) {
         /* Pre-registry: the configured native runtimes check their own
-         * invariants (NULL hook = no asset state declared). */
+         * invariants (NULL hook = no asset state declared). HF-4 (design
+         * 2026-10-02-onchain-names-design.md rev 4 §1.1): GENERATION 1
+         * only — nodus_runtime_builtin_table is the genesis generation;
+         * a chain without a registry has never switched. */
         const nodus_domain_runtime_t *table = w->v2_runtime_table;
         size_t n = w->v2_runtime_table_n;
         if (!table)
@@ -850,6 +853,35 @@ static int env_hf3_active(nodus_witness_t *w, uint64_t height,
     return 0;
 }
 
+/* HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.2
+ * rule (a)): has ANY chain_config param-9 (RULESET_GEN2) row been
+ * committed — at any effective height? The one three-valued accessor at
+ * current_block INT64_MAX: every committed effective_block is <=
+ * INT64_MAX (the scalar rules' int64 bound), the cache path compares
+ * `effective_block <= current_block` and the DB path binds the value as
+ * an int64 — UINT64_MAX would bind as -1 and find nothing. An
+ * unanswerable read is a node FAULT, never "no row". Read by the engine
+ * (UNMETERED — not a mediated read) into ctx.ruleset_gen2_voted on every
+ * ctx it builds, once per item, so a row an EARLIER item of the same
+ * block wrote counts (the CHAIN_CONFIG adapter's mutate drops the lookup
+ * cache, nodus_witness_rt_native.c). @return 0 (*voted = 0/1) / -2. */
+static int env_ruleset_gen2_voted(nodus_witness_t *w, uint8_t *voted,
+                                  char *reason, size_t reason_size)
+{
+    uint64_t v = 0;
+    int rc = nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_RULESET_GEN2,
+                                        (uint64_t)INT64_MAX, 0ULL, &v);
+
+    if (rc < 0) {
+        V2AP_ENV_FAULT("%s", "HF-4: the RULESET_GEN2 history is unreadable "
+                       "on this node - refusing to judge a vote's single-"
+                       "use rule against a guess");
+        return -2;
+    }
+    *voted = (rc == 0) ? 1u : 0u;
+    return 0;
+}
+
 /* A fault-injection point firing is a TEST harness event, not a real
  * defect — it says so in its own words rather than borrowing the words
  * of the check it stands in for. */
@@ -1156,6 +1188,12 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
     if (env_hf2_active(w, blk->global_height, &hf2, reason,
                        reason_size) != 0)
         return -2;
+    /* HF-4: "any param-9 row", read ONCE per envelope (= per item: one
+     * item is live at a time), so a vote an earlier item of this block
+     * committed counts — fault = abort, never default */
+    uint8_t gen2_voted = 0;
+    if (env_ruleset_gen2_voted(w, &gen2_voted, reason, reason_size) != 0)
+        return -2;
     for (uint16_t l = 0; l < v->leg_count; l++) {
         dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
         if (!d || !d->rt || !d->rt->exec) {          /* admission-scan
@@ -1199,6 +1237,7 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
         ctx.auth                = av;
         ctx.token_create_fee    = tc_fee;
         ctx.hf2_active          = hf2;
+        ctx.ruleset_gen2_voted  = gen2_voted;
 
         /* ── mediated reads: request phase → engine-charged execution ─
          * TRUST NOTE: the count/length rejects below detect a hook that
@@ -1960,16 +1999,20 @@ static int env_authorize_legs(nodus_witness_t *w,
     uint16_t l;
     uint64_t tc_fee = 0;
     uint8_t  hf2 = 0;
+    uint8_t  gen2_voted = 0;
 
     /* W-C: every ctx the engine builds carries the committed
      * token-creation fee (runtime.h contract); no auth hook reads it
      * today, but a hook must never see a ctx whose engine facts are
      * partly zero. Same read, same fault rule as exec_one_env. HF-2's
      * switch rides along for the same reason (the auth hook computes the
-     * power sums unconditionally and does not read it). */
+     * power sums unconditionally and does not read it), and so does
+     * HF-4's single-use fact (no auth hook reads it either). */
     if (env_token_create_fee(w, height, &tc_fee, reason, reason_size) != 0)
         return -2;
     if (env_hf2_active(w, height, &hf2, reason, reason_size) != 0)
+        return -2;
+    if (env_ruleset_gen2_voted(w, &gen2_voted, reason, reason_size) != 0)
         return -2;
     for (l = 0; l < v->leg_count; l++) {
         dom_ctx_t          *d = dom_for(doms, n_dom, v->leg[l].domain_id);
@@ -2017,6 +2060,7 @@ static int env_authorize_legs(nodus_witness_t *w,
         actx.leg_auth_digest     = p->auth_digest[l];
         actx.token_create_fee    = tc_fee;
         actx.hf2_active          = hf2;
+        actx.ruleset_gen2_voted  = gen2_voted;
         /* the resolved snapshot view, ONLY for the kind that consumes it
          * (runtime.h's ctx contract) */
         actx.committee =
@@ -2710,6 +2754,111 @@ static int cmt_item_index(nodus_witness_t *w, uint64_t global_height,
  * return becomes -2 there. Splitting it that way keeps each refusal site
  * below saying exactly WHY it refused — the reason text is unchanged —
  * while the CLASS is corrected in one auditable place. */
+/*
+ * PHASE 6b' — HF-4 RULE-SET GENERATION SWITCH (design docs/plans/
+ * 2026-10-02-onchain-names-design.md rev 4 §1.3-§1.4; decision
+ * docs/plans/decisions/2026-10-02-onchain-names.md).
+ *
+ * EDGE TRIGGER at block h (idempotent — replay of h switches exactly
+ * once, because the host rolls a faulted block back whole):
+ *   param 9 (RULESET_GEN2) present at h+1 AND absent at h — i.e. the
+ *   committed row's effective height H is h+1 — and
+ *     the registry's SYSTEM and CORE manifests are generation 1 → switch;
+ *     the registry is anything else → node FAULT;
+ *   otherwise → nothing.
+ * Either read unanswerable → node FAULT, never "absent". The row's value
+ * must be the compiled D2 (the scalar rules admit nothing else); another
+ * value is this node's storage disagreeing with every writer → FAULT.
+ *
+ * WHY HERE: after the item/claim loop (every item of h ran under
+ * generation 1) and BEFORE the 6c lifecycle re-scan, so 6c reloads the
+ * generation-2 manifests and runtimes, phases 8-11 commit the rewritten
+ * registry into SYSTEM's root, the heads and h's app_hash — and block H
+ * starts under generation 2. Doing it after apply_block returns would
+ * leave h's app_hash without the rewrite and stop every node at H.
+ *
+ * TOUCHED: SYSTEM (its root moves — domreg_root is a SYSTEM leg) and
+ * CORE (its root does NOT move; phase 9 accepts that only while HF-2 is
+ * on — guaranteed by the vote's stateful rule (b), HF-2 having no off
+ * vote). Both are declared on the pre-6c working set, which 6c carries
+ * over (the 6e pattern).
+ *
+ * The H-1 DomainUpdate / root-history rows therefore name generation 2
+ * although h's items ran under generation 1 — outside the app hash,
+ * stated in the design (§1.3) for explorers.
+ *
+ * @return 0 (switched or nothing to do) / -2 node FAULT (reason written).
+ */
+static int phase_6b_ruleset_switch(nodus_witness_t *w, nodus_v2_block_t *blk,
+                                   dom_ctx_t *doms, size_t n_dom) {
+    const uint64_t h = blk->global_height;
+    uint64_t h_next = 0, v_next = 0, v_h = 0;
+    int at_next, at_h, src;
+
+    if (dna_ck_add_u64(h, 1u, &h_next) != 0 ||
+        h_next > (uint64_t)INT64_MAX) {
+        V2AP_FAULT("phase 6b': height %llu + 1 leaves the int64 range of "
+                   "chain_config effective heights",
+                   (unsigned long long)h);
+        return -2;
+    }
+    at_next = nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_RULESET_GEN2,
+                                         h_next, 0ULL, &v_next);
+    at_h = nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_RULESET_GEN2, h,
+                                      0ULL, &v_h);
+    if (at_next < 0 || at_h < 0) {
+        V2AP_FAULT("phase 6b': RULESET_GEN2 at heights %llu/%llu is "
+                   "unreadable on this node - refusing to decide the "
+                   "generation switch on a guess",
+                   (unsigned long long)h_next, (unsigned long long)h);
+        return -2;
+    }
+    if (!(at_next == 0 && at_h == 1))
+        return 0;                       /* not the H-1 edge: nothing     */
+    if (v_next != (uint64_t)DNAC_CFG_RULESET_GEN2_D2) {
+        V2AP_FAULT("phase 6b': the RULESET_GEN2 row effective at %llu reads "
+                   "0x%016llx, not this build's D2 0x%016llx - a value no "
+                   "committed row can hold here",
+                   (unsigned long long)h_next, (unsigned long long)v_next,
+                   (unsigned long long)DNAC_CFG_RULESET_GEN2_D2);
+        return -2;
+    }
+
+    src = nodus_witness_domreg_generation_switch(w, NODUS_RT_GEN_1,
+                                                 NODUS_RT_GEN_2);
+    if (src == 1) {
+        V2AP_FAULT("phase 6b': the generation-2 vote reaches its edge at "
+                   "height %llu but the registry is not generation 1",
+                   (unsigned long long)h);
+        return -2;
+    }
+    if (src != 0) {
+        V2AP_FAULT("phase 6b': the registry rewrite to generation 2 failed "
+                   "on this node at height %llu (read, precondition or "
+                   "write)", (unsigned long long)h);
+        return -2;
+    }
+
+    {
+        dom_ctx_t *dsys = dom_for(doms, n_dom, DNA_DOMAIN_SYSTEM);
+        dom_ctx_t *dcore = dom_for(doms, n_dom, DNA_DOMAIN_CORE);
+        if (!dsys || !dcore) {
+            V2AP_FAULT("phase 6b': SYSTEM or CORE is absent from the "
+                       "block-start working set at height %llu",
+                       (unsigned long long)h);
+            return -2;
+        }
+        dsys->touched = 1;
+        dcore->touched = 1;
+    }
+    QGP_LOG_INFO(LOG_TAG, "HF-4: rule-set generation 1 -> 2 at the end of "
+                 "height %llu (D2 0x%016llx); height %llu is judged under "
+                 "generation 2", (unsigned long long)h,
+                 (unsigned long long)DNAC_CFG_RULESET_GEN2_D2,
+                 (unsigned long long)h_next);
+    return 0;
+}
+
 static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
     /* A NULL/misused argument is a LOCAL programming fault, not a
      * statement about a block — there is no block here to judge.
@@ -3699,6 +3848,13 @@ cmt_claim_failed:
      * — are deleted with the lane. Pool batches cannot reach this engine
      * at all: the item loop above refuses a block carrying one as a node
      * FAULT.) */
+
+    /* 6b'. HF-4 RULE-SET GENERATION SWITCH — at the end of block H-1 only
+     * (phase_6b_ruleset_switch above: edge trigger, registry rewrite,
+     * SYSTEM + CORE declared touched). BEFORE 6c, so the re-scan below
+     * reloads the generation-2 manifests and runtimes. */
+    if (phase_6b_ruleset_switch(w, blk, doms, n_dom) != 0)
+        goto fail_fault;               /* the helper wrote the reason     */
 
     /* 6c. LIFECYCLE re-scan (unchanged from S5/S6: canonical DomainHead
      * lifecycle; execution authority stays the BLOCK-ENTRY status). */

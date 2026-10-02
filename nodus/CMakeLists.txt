@@ -688,6 +688,53 @@ endif()
 
 add_library(nodus STATIC ${NODUS_SOURCES})
 
+# HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.5):
+# the witness prints the git commit it was built from at startup, next to
+# the generation-2 vote literal D2, so the runbook can compare both on all
+# seven nodes before the vote. Recorded at BUILD time, not configure time:
+# nodes build with `git pull` + `make` (DEPLOY_RUNBOOK.md), which does not
+# re-run cmake, so a configure-time value would go stale. The helper script
+# is written into the build tree (no checked-in script); the header is
+# replaced only when the text changes (copy_if_different), so an unchanged
+# commit does not recompile nodus_witness.c. No git / not a work tree →
+# "unknown"; tracked changes on top of the commit → "<sha>-dirty".
+find_package(Git QUIET)
+set(NODUS_BUILD_COMMIT_HDR ${CMAKE_CURRENT_BINARY_DIR}/generated/nodus_build_commit.h)
+set(NODUS_BUILD_COMMIT_SCRIPT ${CMAKE_CURRENT_BINARY_DIR}/nodus_build_commit.cmake)
+file(WRITE ${NODUS_BUILD_COMMIT_SCRIPT} [=[
+set(commit "unknown")
+if(NOT "${GIT}" STREQUAL "")
+  execute_process(COMMAND "${GIT}" rev-parse HEAD
+                  WORKING_DIRECTORY "${SRC}"
+                  OUTPUT_VARIABLE out RESULT_VARIABLE rc
+                  OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  if(rc EQUAL 0 AND out MATCHES "^[0-9a-f]+$")
+    set(commit "${out}")
+    execute_process(COMMAND "${GIT}" status --porcelain --untracked-files=no
+                    WORKING_DIRECTORY "${SRC}"
+                    OUTPUT_VARIABLE st RESULT_VARIABLE rc2 ERROR_QUIET)
+    if(NOT rc2 EQUAL 0)
+      set(commit "${commit}-status-unknown")
+    elseif(NOT "${st}" STREQUAL "")
+      set(commit "${commit}-dirty")
+    endif()
+  endif()
+endif()
+file(WRITE "${OUT}.tmp" "#define NODUS_BUILD_GIT_COMMIT \"${commit}\"\n")
+execute_process(COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${OUT}.tmp" "${OUT}")
+file(REMOVE "${OUT}.tmp")
+]=])
+add_custom_target(nodus_build_commit
+    COMMAND ${CMAKE_COMMAND} -DGIT=${GIT_EXECUTABLE}
+            -DSRC=${CMAKE_CURRENT_SOURCE_DIR}
+            -DOUT=${NODUS_BUILD_COMMIT_HDR}
+            -P ${NODUS_BUILD_COMMIT_SCRIPT}
+    BYPRODUCTS ${NODUS_BUILD_COMMIT_HDR}
+    COMMENT "Recording the git commit of this nodus build"
+    VERBATIM)
+add_dependencies(nodus nodus_build_commit)
+target_include_directories(nodus PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+
 # Channel system disabled — heap corruption in ring/replication causes SIGABRT
 target_compile_definitions(nodus PUBLIC NODUS_CHANNELS_DISABLED)
 
@@ -2203,6 +2250,22 @@ register_witness_test(test_v2_chain_id_cache)
 # runtime), and the rule-off inertness twin (design D3's unit half).
 # Decision docs/plans/decisions/2026-09-25-gas-price.md.
 register_witness_test(test_v2_gas_price)
+
+# HF-4 part A1 (design docs/plans/2026-10-02-onchain-names-design.md rev 4;
+# decision docs/plans/decisions/2026-10-02-onchain-names.md) — the rule-set
+# upgrade mechanism. test_hf4_table: the generation table, its selfcheck,
+# the D2 digest, CORE rule 8 refused until its exec. test_hf4_params:
+# chain_config params 9-13 (scalar, grace, the stateful authority, the
+# exec hook, cache slots). test_hf4_switch: engine phase 6b' (the switch
+# at H-1, the not-generation-1 FAULT), the registry-transform KAT, the
+# per-item single-use fact and the refused-leg gas invariance.
+# test_hf4_genesis: generation-1 genesis invariance against literals
+# captured from the pre-HF-4 build (derivation + bundle join). Every
+# HF4-ORACLE literal must be filled before these pass (file headers).
+register_witness_test(test_hf4_table)
+register_witness_test(test_hf4_params)
+register_witness_test(test_hf4_switch)
+register_witness_test(test_hf4_genesis)
 
 # Web wallet package (c2) — the shared CORE SPEND builder
 # (src/client/nodus_v2_spend.c): the pins ruleset == the compiled table,

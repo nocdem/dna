@@ -72,9 +72,10 @@ typedef struct nodus_witness nodus_witness_t;
  * checked on every block, nodus_witness_v2_econ_params_load.)
  *
  * WHY 200+. The band must never collide with a future
- * DNAC_CFG_* allocation, which grows upward from 1 (currently 8 — HF-3's
- * HF3_ACTIVE, after HF-2's HF2_ACTIVE = 7, W-C's TOKEN_CREATE_FEE_RAW = 6
- * and HF-1's GAS_PRICE_RAW_PER_UNIT = 5). Starting at 200 leaves 191 free
+ * DNAC_CFG_* allocation, which grows upward from 1 (currently 13 — HF-4's
+ * RULESET_GEN2 = 9 and NAME_PRICE_3P..6P = 10-13, after HF-3's
+ * HF3_ACTIVE = 8, HF-2's HF2_ACTIVE = 7, W-C's TOKEN_CREATE_FEE_RAW = 6
+ * and HF-1's GAS_PRICE_RAW_PER_UNIT = 5). Starting at 200 leaves 186 free
  * governance ids; a future allocation that reaches
  * this band collides with THIS COMMENT rather than silently overwriting a
  * committed economic parameter. The ids fit uint8_t, which is what the
@@ -303,6 +304,34 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
                                     uint64_t valid_before_block,
                                     uint64_t effective_block_height,
                                     uint64_t proposal_nonce);
+
+/**
+ * HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.2)
+ * — the STATEFUL half of the CHAIN_CONFIG rules, over facts the caller
+ * derives from committed state (the pure half is
+ * nodus_chain_config_scalar_rules, which the caller runs first):
+ *   - param 9 RULESET_GEN2: refused if (a) `ruleset_gen2_voted` (any
+ *     param-9 row is committed — single use), (b) !`hf2_active` (HF-2
+ *     not active at the vote height), or (c) effective - 1 is an epoch
+ *     boundary (nonzero multiple of DNAC_EPOCH_LENGTH);
+ *   - params 10-13 NAME_PRICE_*: refused unless `judging_generation` >= 2
+ *     (the runtime that judges the vote; 0 for a synthetic or unresolved
+ *     runtime);
+ *   - ids 1-8: no stateful rule (0);
+ *   - any other id: -1.
+ * THREE sites apply it with the same facts: the SYSTEM CHAIN_CONFIG exec
+ * (engine-filled ctx.hf2_active / ctx.ruleset_gen2_voted and the
+ * resolved runtime's generation — CheckTx reaches it through the dry
+ * run's exec), and the 0x71 approval responder at its candidate height.
+ * The client mirror (dnac verify.c) has no chain state and cannot apply
+ * it — the documented divergence from decision 2026-09-23 item 1's "same
+ * list". Pure function. @return 0 legal / -1.
+ */
+int nodus_chain_config_stateful_rules(uint8_t param_id,
+                                      uint64_t effective_block_height,
+                                      uint8_t hf2_active,
+                                      uint8_t ruleset_gen2_voted,
+                                      uint32_t judging_generation);
 
 /**
  * Per-param grace minimum in blocks (Q4 Option B tiers): the earliest

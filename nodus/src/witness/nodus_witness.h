@@ -342,7 +342,10 @@ typedef struct nodus_witness {
      * second dimension from this array). The first dimension is derived
      * from DNAC_CFG_PARAM_MAX_ID (index 0 is unused, param ids start at 1)
      * so adding a param id cannot leave the new param silently
-     * unreachable behind a stale literal. */
+     * unreachable behind a stale literal. HF-4 (design 2026-10-02-
+     * onchain-names-design.md rev 4 §1.1) grew it to 14 rows (ids 9-13:
+     * RULESET_GEN2 and NAME_PRICE_3P..6P) through that derivation —
+     * without them every read of 9-13 would FAULT on every node. */
     struct {
         uint64_t new_value;
         uint64_t effective_block;

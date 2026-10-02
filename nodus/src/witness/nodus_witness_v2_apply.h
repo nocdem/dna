@@ -1525,6 +1525,64 @@ int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
                                  size_t manifest_len,
                                  uint8_t out_global_root[64]);
 
+/* ── HF-4 — the rule-set generation switch (phase 6b') ────────────────
+ *
+ * Design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.3-§1.4;
+ * decision docs/plans/decisions/2026-10-02-onchain-names.md. The engine
+ * phase lives in nodus_witness_v2_apply.c (v2_apply_block_body, between
+ * the item/claim loop and the 6c lifecycle re-scan); the registry
+ * transforms below are IMPLEMENTED in nodus_witness_domreg.c next to its
+ * one row writer. LAYOUT NOTE: they are declared here, not in
+ * nodus_witness_domreg.h, because that header was outside the HF-4 A1
+ * package's file whitelist — the ORCHESTRATOR may move the three
+ * declarations without any other change.
+ *
+ * The switch procedure is versioned by DNAC_RULESET_SWITCH_SPEC_VERSION
+ * (dnac.h), which the vote literal D2 commits: a change to WHICH fields
+ * these functions copy or replace is a change of that version.
+ */
+
+/**
+ * Pure manifest transform of one domain from generation `from` to `to`:
+ * COPIED from `cur` — manifest_version, domain_id, name, runtime_kind,
+ * runtime_abi, genesis_state_root, fee_policy, quota_tx_per_block,
+ * quota_verify_cost, upgrade_authority, activation_epoch,
+ * readiness_policy; REPLACED from `to` — ruleset_version, ruleset_hash,
+ * tx_type_count, tx_types (§1.4).
+ * @return 0 (*out written, validated) / 1 `cur` is not `from`'s exact
+ *         tuple (domain, kind, abi, version, hash) / -1 malformed input
+ *         (mismatched domains, a kind/abi change, an invalid result).
+ */
+int nodus_witness_domreg_gen_manifest(const dna_domain_manifest_t *cur,
+                                      const nodus_domain_runtime_t *from,
+                                      const nodus_domain_runtime_t *to,
+                                      dna_domain_manifest_t *out);
+
+/**
+ * Pure record transform (§1.4): every field copied from `cur` except
+ * current_manifest_hash, recomputed over `new_man`. Requires status
+ * ACTIVE and every pending / proposal / scheduling field empty (pending
+ * and proposal absent with zero hashes, scheduled_activation_epoch,
+ * readiness_deadline_epoch and postpone_count all 0).
+ * @return 0 / -1 (a precondition fails, or hashing fails).
+ */
+int nodus_witness_domreg_gen_record(const dna_domreg_record_t *cur,
+                                    const dna_domain_manifest_t *new_man,
+                                    dna_domreg_record_t *out);
+
+/**
+ * Rewrite the SYSTEM and CORE registry rows from compiled generation
+ * `from_gen` to `to_gen`, inside the caller's transaction. BOTH domains
+ * are loaded and transformed before EITHER is written. Domains other
+ * than SYSTEM and CORE are untouched.
+ * @return 0 switched / 1 the registry is not at `from_gen` (the engine
+ *         FAULTs) / -1 a read, precondition or write fault (the engine
+ *         FAULTs; the host rolls the block back).
+ */
+int nodus_witness_domreg_generation_switch(nodus_witness_t *w,
+                                           uint32_t from_gen,
+                                           uint32_t to_gen);
+
 #ifdef __cplusplus
 }
 #endif

@@ -413,7 +413,8 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *   - signer_count == 1
  *   - chain_config_fields.param_id ∈ {1..DNAC_CFG_PARAM_MAX_ID}
  *   - dnac_cfg_param_read_by_consensus(param_id) (0.20.3) — the running
- *     consensus reads the parameter; today {4, 5, 6, 7, 8}
+ *     consensus reads the parameter; today {4, 5, 6, 7, 8, 9, 10, 11,
+ *     12, 13}
  *   - chain_config_fields.new_value in per-param range (§5.2):
  *       MAX_TXS_PER_BLOCK      : RETIRED (R3 W4-C delta 2, operator
  *                                "kaldır" 2026-09-18;
@@ -443,6 +444,15 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *                                a one-way switch)
  *       HF3_ACTIVE             : exactly DNAC_CFG_HF3_ACTIVE_ON = 1 (HF-3;
  *                                a one-way switch)
+ *       RULESET_GEN2           : exactly DNAC_CFG_RULESET_GEN2_D2 (HF-4;
+ *                                the vote names its target generation;
+ *                                the witness's single-use / HF-2 /
+ *                                epoch-boundary rules are not mirrored —
+ *                                they need chain state)
+ *       NAME_PRICE_3P..6P      : [DNAC_CFG_MIN_NAME_PRICE=10^8,
+ *                                 DNAC_CFG_MAX_NAME_PRICE=10^15] (HF-4;
+ *                                "generation 2 judges the vote" is
+ *                                witness-side only)
  *   - signed_at_block > 0             (CC-AUDIT-008)
  *   - valid_before_block > effective_block_height
  *   - valid_before_block > signed_at_block
@@ -551,6 +561,42 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
                               "a legal value",
                               (unsigned long long)cc->new_value,
                               (unsigned long long)DNAC_CFG_HF3_ACTIVE_ON);
+                return DNAC_ERROR_INVALID_PARAM;
+            }
+            break;
+        case DNAC_CFG_RULESET_GEN2:
+            /* HF-4 (design 2026-10-02-onchain-names-design.md rev 4
+             * §1.2), mirroring nodus_witness_chain_config.c's
+             * scalar_rules: EXACTLY the compiled vote literal D2 (the
+             * same dnac.h literal the witness compares against). The
+             * witness's stateful rules — single use, HF-2 active, H-1
+             * not an epoch boundary — need chain state this mirror does
+             * not have (documented divergence, design §1.2). */
+            if (cc->new_value != (uint64_t)DNAC_CFG_RULESET_GEN2_D2) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "CHAIN_CONFIG: RULESET_GEN2=0x%016llx, only "
+                              "D2=0x%016llx is a legal value",
+                              (unsigned long long)cc->new_value,
+                              (unsigned long long)DNAC_CFG_RULESET_GEN2_D2);
+                return DNAC_ERROR_INVALID_PARAM;
+            }
+            break;
+        case DNAC_CFG_NAME_PRICE_3P:
+        case DNAC_CFG_NAME_PRICE_4P:
+        case DNAC_CFG_NAME_PRICE_5P:
+        case DNAC_CFG_NAME_PRICE_6P:
+            /* HF-4 (design §2 Price), mirroring the witness scalar
+             * rules: [DNAC_CFG_MIN_NAME_PRICE, DNAC_CFG_MAX_NAME_PRICE].
+             * "Votable only while generation 2 judges" is a witness-side
+             * stateful rule this mirror cannot apply. */
+            if (cc->new_value < DNAC_CFG_MIN_NAME_PRICE ||
+                cc->new_value > DNAC_CFG_MAX_NAME_PRICE) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "CHAIN_CONFIG: NAME_PRICE (param %u)=%llu out "
+                              "of [%llu,%llu]", (unsigned)cc->param_id,
+                              (unsigned long long)cc->new_value,
+                              (unsigned long long)DNAC_CFG_MIN_NAME_PRICE,
+                              (unsigned long long)DNAC_CFG_MAX_NAME_PRICE);
                 return DNAC_ERROR_INVALID_PARAM;
             }
             break;

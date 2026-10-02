@@ -1122,14 +1122,22 @@ static void cc_appr_envelope_free(cc_appr_envelope_t *b) {
  * different ruleset fails closed at the node's preflight
  * (DNA_ENV_PF_ERR_CTX_VERSION / a call_commit mismatch) rather than
  * being silently accepted. Shared by `chain-config propose` (SYSTEM) and
- * `v2-envelope spend` (CORE). @return the runtime, or NULL. */
-static const nodus_domain_runtime_t *cli_builtin_runtime(uint32_t domain_id) {
-    size_t n_rt = 0;
-    const nodus_domain_runtime_t *rtbl = nodus_runtime_builtin_table(&n_rt);
-    if (!rtbl) return NULL;
-    for (size_t i = 0; i < n_rt; i++)
-        if (rtbl[i].domain_id == domain_id) return &rtbl[i];
-    return NULL;
+ * `v2-envelope spend` (CORE).
+ *
+ * HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.1):
+ * the compiled table is a list of rule-set GENERATIONS, so the lookup is
+ * (domain, generation) — never "the first entry of this domain". Every
+ * builder in this file passes CLI_RULESET_GENERATION below: generation 1,
+ * the generation every chain runs until its RULESET_GEN2 height. From
+ * that height a generation-1 envelope fails closed at the node's
+ * preflight (ERR_CTX_VERSION — SYSTEM v6 != v7, CORE v4 != v5), never
+ * silently. Choosing the generation from the node's answer (the
+ * dnac_ruleset_info query, design §1.6) is the clients' part of HF-4 and
+ * replaces this one site. @return the runtime, or NULL. */
+#define CLI_RULESET_GENERATION NODUS_RT_GEN_1
+static const nodus_domain_runtime_t *cli_builtin_runtime(uint32_t domain_id,
+                                                         uint32_t generation) {
+    return nodus_runtime_for_generation(generation, domain_id);
 }
 
 /* ── Stage E.3 — chain-config propose ───────────────────────────── */
@@ -1165,6 +1173,19 @@ static int cc_param_name_to_id(const char *name, uint8_t *out_id) {
          * design.md rev 3) — param id 8, value exactly 1 */
         { "HF3_ACTIVE",           DNAC_CFG_HF3_ACTIVE },
         { "hf3_active",           DNAC_CFG_HF3_ACTIVE },
+        /* HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev
+         * 4 §1.2, §2) — param id 9, value exactly D2; ids 10-13, votable
+         * once generation 2 judges the vote */
+        { "RULESET_GEN2",         DNAC_CFG_RULESET_GEN2 },
+        { "ruleset_gen2",         DNAC_CFG_RULESET_GEN2 },
+        { "NAME_PRICE_3P",        DNAC_CFG_NAME_PRICE_3P },
+        { "name_price_3p",        DNAC_CFG_NAME_PRICE_3P },
+        { "NAME_PRICE_4P",        DNAC_CFG_NAME_PRICE_4P },
+        { "name_price_4p",        DNAC_CFG_NAME_PRICE_4P },
+        { "NAME_PRICE_5P",        DNAC_CFG_NAME_PRICE_5P },
+        { "name_price_5p",        DNAC_CFG_NAME_PRICE_5P },
+        { "NAME_PRICE_6P",        DNAC_CFG_NAME_PRICE_6P },
+        { "name_price_6p",        DNAC_CFG_NAME_PRICE_6P },
     };
     for (size_t i = 0; i < sizeof(map)/sizeof(map[0]); i++) {
         if (strcmp(name, map[i].n) == 0) { *out_id = map[i].id; return 0; }
@@ -1396,6 +1417,12 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             "  HF3_ACTIVE             exactly %llu   "
             "(HF-3 switch: blocks bounded by the consensus params only, "
             "proposal fee check, from --effective on; one-way)\n"
+            "  RULESET_GEN2           exactly %llu   "
+            "(HF-4 rule-set generation 2 from --effective on; once only; "
+            "HF-2 must be active; --effective - 1 not an epoch boundary)\n"
+            "  NAME_PRICE_3P..6P      [%llu, %llu]   "
+            "(raw price of a 3/4/5/6+ character name; votable once "
+            "generation 2 is in force)\n"
             "BLOCK_INTERVAL_SEC is not read by the running consensus "
             "and is refused.\n",
             (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
@@ -1404,14 +1431,19 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             (unsigned long long)DNAC_CFG_MIN_TOKEN_CREATE_FEE,
             (unsigned long long)DNAC_CFG_MAX_TOKEN_CREATE_FEE,
             (unsigned long long)DNAC_CFG_HF2_ACTIVE_ON,
-            (unsigned long long)DNAC_CFG_HF3_ACTIVE_ON);
+            (unsigned long long)DNAC_CFG_HF3_ACTIVE_ON,
+            (unsigned long long)DNAC_CFG_RULESET_GEN2_D2,
+            (unsigned long long)DNAC_CFG_MIN_NAME_PRICE,
+            (unsigned long long)DNAC_CFG_MAX_NAME_PRICE);
         return 1;
     }
     uint8_t param_id = 0;
     if (cc_param_name_to_id(param_name, &param_id) != 0) {
         fprintf(stderr, "Unknown param name: %s - accepted: "
                 "TARGET_ACTIVE_COUNT | GAS_PRICE_RAW_PER_UNIT | "
-                "TOKEN_CREATE_FEE_RAW | HF2_ACTIVE | HF3_ACTIVE "
+                "TOKEN_CREATE_FEE_RAW | HF2_ACTIVE | HF3_ACTIVE | "
+                "RULESET_GEN2 | NAME_PRICE_3P | NAME_PRICE_4P | "
+                "NAME_PRICE_5P | NAME_PRICE_6P "
                 "(the parameters the running consensus reads)\n",
                 param_name);
         return 1;
@@ -1550,7 +1582,7 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
      * version fails closed at preflight (ERR_CTX_VERSION) rather than
      * building a wrongly-keyed envelope. The lookup itself is the shared
      * cli_builtin_runtime (also used by `v2-envelope spend`). */
-    const nodus_domain_runtime_t *sys_rt = cli_builtin_runtime(DNA_DOMAIN_SYSTEM);
+    const nodus_domain_runtime_t *sys_rt = cli_builtin_runtime(DNA_DOMAIN_SYSTEM, CLI_RULESET_GENERATION);
     if (!sys_rt) {
         fprintf(stderr, "SYSTEM runtime not found in the compiled "
                         "production table\n");
@@ -3258,8 +3290,8 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
 
     /* SYSTEM + CORE ruleset from the compiled table — the registry a
      * version-3 chain is seeded with (cli_builtin_runtime's own comment). */
-    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM);
-    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE);
+    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM, CLI_RULESET_GENERATION);
+    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE, CLI_RULESET_GENERATION);
     if (!sys_rt || !core_rt) {
         fprintf(stderr, "SYSTEM / CORE runtime not found in the compiled "
                 "production table\n");
@@ -3801,8 +3833,8 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
         goto done;
     qgp_fp_raw_to_hex(sender_raw, sender_fp);
 
-    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE);
-    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM);
+    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE, CLI_RULESET_GENERATION);
+    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM, CLI_RULESET_GENERATION);
     if (!core_rt || !sys_rt || !sys_rt->meter_policy) {
         fprintf(stderr, "CORE runtime / SYSTEM block metering policy not "
                 "found in the compiled production table\n");
@@ -4430,8 +4462,8 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
     if (to_hex) qgp_fp_raw_to_hex(to_raw, to_fp);   /* canonical lowercase */
     else        snprintf(to_fp, sizeof(to_fp), "%s", creator_fp);
 
-    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE);
-    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM);
+    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE, CLI_RULESET_GENERATION);
+    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM, CLI_RULESET_GENERATION);
     if (!core_rt || !sys_rt || !sys_rt->meter_policy) {
         fprintf(stderr, "CORE runtime / SYSTEM block metering policy not "
                 "found in the compiled production table\n");
@@ -4980,7 +5012,7 @@ static int msig_leg_open(const msig_export_t *x, dna_env_view_t *v,
 
 /* The CORE leg digest of the exported envelope, re-derived. */
 static int msig_digest(const msig_export_t *x, dna_env_preflight_t *pf) {
-    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE);
+    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE, CLI_RULESET_GENERATION);
     if (!core_rt) return -1;
     dna_env_leg_ctx_t lctx;
     memset(&lctx, 0, sizeof(lctx));
@@ -5200,8 +5232,8 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
         goto done;
     }
 
-    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE);
-    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM);
+    const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE, CLI_RULESET_GENERATION);
+    const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM, CLI_RULESET_GENERATION);
     if (!core_rt || !sys_rt || !sys_rt->meter_policy) goto done;
 
     /* ── the session (chain id, tip, gas price) — it signs nothing ─── */
@@ -5636,7 +5668,7 @@ static int cmd_msig_combine(const char *server_ip, uint16_t server_port,
     /* the chain's OWN auth hook, locally: >= M keys must be satisfied */
     {
         const nodus_domain_runtime_t *core_rt =
-            cli_builtin_runtime(DNA_DOMAIN_CORE);
+            cli_builtin_runtime(DNA_DOMAIN_CORE, CLI_RULESET_GENERATION);
         nodus_rt_auth_verdict_t av;
         nodus_rt_exec_ctx_t ctx;
         memset(&ctx, 0, sizeof(ctx));
@@ -5736,7 +5768,9 @@ static void usage(const char *prog) {
     fprintf(stderr, "                              [--nonce <N>]  (committee operator only)\n");
     fprintf(stderr, "                  NAME: TARGET_ACTIVE_COUNT | GAS_PRICE_RAW_PER_UNIT |\n");
     fprintf(stderr, "                        TOKEN_CREATE_FEE_RAW | HF2_ACTIVE |\n");
-    fprintf(stderr, "                        HF3_ACTIVE\n");
+    fprintf(stderr, "                        HF3_ACTIVE | RULESET_GEN2 |\n");
+    fprintf(stderr, "                        NAME_PRICE_3P | NAME_PRICE_4P |\n");
+    fprintf(stderr, "                        NAME_PRICE_5P | NAME_PRICE_6P\n");
     fprintf(stderr, "                        (the parameters the running consensus reads)\n");
     fprintf(stderr, "                  run without --value for per-param ranges\n");
     fprintf(stderr, "  v2-claim --legacy-db <t.db> --db <s.db> --keys <dir>\n");

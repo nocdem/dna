@@ -445,7 +445,11 @@ int main(void) {
      * SAFETY grace. (The explicit-vs-default distinction is a code-shape
      * rule a return-value test cannot see: both answer ERGONOMIC today.) */
     {
-        CHECK(DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_HF3_ACTIVE);
+        /* HF-4 appended ids 9-13 after HF-3 (RULESET_GEN2,
+         * NAME_PRICE_3P..6P — their own test: test_hf4_params.c), so id 8
+         * is no longer the top of the allowlist; it is the id right
+         * below HF-4's first. */
+        CHECK(DNAC_CFG_HF3_ACTIVE + 1 == DNAC_CFG_RULESET_GEN2);
         CHECK(DNAC_CFG_HF3_ACTIVE == 8);
         CHECK(DNAC_CFG_HF3_ACTIVE_ON == 1ULL);
         CHECK(dnac_cfg_param_read_by_consensus((uint8_t)DNAC_CFG_HF3_ACTIVE));

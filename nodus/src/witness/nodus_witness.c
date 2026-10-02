@@ -37,6 +37,12 @@
 #include "witness/nodus_witness_v2_produce.h"   /* classify_entry / tip  */
 #include "witness/nodus_witness_domreg.h"       /* contextual rulesets   */
 #include "witness/nodus_witness_runtime.h"      /* start-time selfcheck  */
+#include "dnac/dnac.h"                          /* HF-4: D2 + switch spec */
+#include "nodus_build_commit.h"                 /* HF-4: NODUS_BUILD_GIT_
+                                                 * COMMIT — generated at
+                                                 * build time by the
+                                                 * nodus_build_commit
+                                                 * target (CMakeLists)   */
 /* FLEET-TM-R3 W3 package C2a — the cometbft server binding: the startup
  * table and the two reactors, whose host tables are the p2p host's
  * (P2P-PORT F5; the C2b transport glue nodus_witness_cmt_net is deleted).
@@ -2442,6 +2448,18 @@ int nodus_witness_init(nodus_witness_t *witness,
                 "This build is broken; do not run it.\n", LOG_TAG);
         return -1;
     }
+    /* HF-4 (design 2026-10-02-onchain-names-design.md rev 4 §1.5): the
+     * generation-2 vote literal this binary will accept — selfcheck just
+     * re-derived it from the compiled generation-2 pins — and the git
+     * commit it was built from. The rollout compares BOTH on all seven
+     * nodes before the RULESET_GEN2 vote (binary SHA-256 is not
+     * comparable: the build is not reproducible). */
+    QGP_LOG_INFO(LOG_TAG, "rule-set generations %u, generation-2 vote D2 "
+                 "0x%016llx (switch spec v%u), built from git commit %s",
+                 (unsigned)nodus_runtime_generation_count(),
+                 (unsigned long long)DNAC_CFG_RULESET_GEN2_D2,
+                 (unsigned)DNAC_RULESET_SWITCH_SPEC_VERSION,
+                 NODUS_BUILD_GIT_COMMIT);
 
     /* Phase 10 / Task 53 — invalidate the committee cache. UINT64_MAX
      * is the sentinel meaning "no epoch cached yet"; a real epoch

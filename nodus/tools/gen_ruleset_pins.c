@@ -16,8 +16,9 @@
  *     weights, max_block_env_bytes, every authoritative runtime_op with its
  *     weight, and the committed policy identity digest.
  *
- * The values are READ from nodus_runtime_builtin_table() — the same call
- * nodus-cli's cli_builtin_runtime() uses — never restated by hand. The
+ * The values are READ from the compiled runtime table (generation 1,
+ * nodus_runtime_for_generation — the same lookup nodus-cli's
+ * cli_builtin_runtime() uses) — never restated by hand. The
  * table must pass nodus_witness_runtime_selfcheck() and the policy's
  * digest must equal the descriptor-committed one, or nothing is written.
  *
@@ -85,12 +86,16 @@ static void out_hash_init(pins_out_t *o, const char *name, const uint8_t h[64]) 
     }
 }
 
-static const nodus_domain_runtime_t *find_domain(const nodus_domain_runtime_t *t,
-                                                 size_t n, uint32_t domain_id) {
-    for (size_t i = 0; i < n; i++)
-        if (t[i].domain_id == domain_id) return &t[i];
-    return NULL;
-}
+/* HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.1):
+ * the compiled table is a list of rule-set GENERATIONS, so the pinned
+ * tuple is looked up by (domain, generation) — never "the first entry of
+ * this domain". This header pins GENERATION 1, the rule set every chain
+ * runs until its RULESET_GEN2 height; its bytes are unchanged by HF-4.
+ * A pins header carrying every generation (and the readers choosing the
+ * generation from the node's dnac_ruleset_info answer) is the clients'
+ * part of HF-4 (design §1.6) — its consumers (nodus_v2_spend.c,
+ * nodus_v2_stake.c) read the macro names below. */
+#define PINS_GENERATION NODUS_RT_GEN_1
 
 /**
  * Render the header text from the compiled runtime table.
@@ -108,10 +113,10 @@ int nodus_ruleset_pins_render(char **out, size_t *out_len) {
         return -1;
     }
 
-    size_t n = 0;
-    const nodus_domain_runtime_t *t = nodus_runtime_builtin_table(&n);
-    const nodus_domain_runtime_t *core = t ? find_domain(t, n, DNA_DOMAIN_CORE) : NULL;
-    const nodus_domain_runtime_t *sys  = t ? find_domain(t, n, DNA_DOMAIN_SYSTEM) : NULL;
+    const nodus_domain_runtime_t *core =
+        nodus_runtime_for_generation(PINS_GENERATION, DNA_DOMAIN_CORE);
+    const nodus_domain_runtime_t *sys =
+        nodus_runtime_for_generation(PINS_GENERATION, DNA_DOMAIN_SYSTEM);
     if (!core || !sys || !sys->meter_policy) {
         QGP_LOG_ERROR(LOG_TAG, "CORE / SYSTEM entry or SYSTEM meter policy missing");
         return -1;

@@ -80,7 +80,7 @@
 #define CC_MAX_SIGS                 CC_MAX_ACTIVE
 #define CC_PURPOSE_TAG_LEN          16
 #define CC_TX_TYPE                  10    /* DNAC_TX_CHAIN_CONFIG */
-#define CC_PARAM_MAX_ID             8
+#define CC_PARAM_MAX_ID             13
 #define CC_PARAM_MAX_TXS            1
 #define CC_PARAM_BLOCK_INTERVAL     2
 #define CC_PARAM_INFLATION_START    3
@@ -89,8 +89,16 @@
 #define CC_PARAM_TOKEN_CREATE_FEE   6     /* W-C — DNAC_CFG_TOKEN_CREATE_FEE_RAW */
 #define CC_PARAM_HF2_ACTIVE         7     /* HF-2 — DNAC_CFG_HF2_ACTIVE */
 #define CC_PARAM_HF3_ACTIVE         8     /* HF-3 — DNAC_CFG_HF3_ACTIVE */
+#define CC_PARAM_RULESET_GEN2       9     /* HF-4 — DNAC_CFG_RULESET_GEN2 */
+#define CC_PARAM_NAME_PRICE_3P      10    /* HF-4 — DNAC_CFG_NAME_PRICE_3P */
+#define CC_PARAM_NAME_PRICE_4P      11    /* HF-4 — DNAC_CFG_NAME_PRICE_4P */
+#define CC_PARAM_NAME_PRICE_5P      12    /* HF-4 — DNAC_CFG_NAME_PRICE_5P */
+#define CC_PARAM_NAME_PRICE_6P      13    /* HF-4 — DNAC_CFG_NAME_PRICE_6P */
 /* Number of per-param cache rows dimensions: param ids are 1..CC_PARAM_MAX_ID
- * and index 0 is unused, so the arrays are CC_PARAM_MAX_ID + 1 wide. */
+ * and index 0 is unused, so the arrays are CC_PARAM_MAX_ID + 1 wide.
+ * HF-4 grew it 9 -> 14 (design 2026-10-02-onchain-names-design.md rev 4
+ * §1.1): without the slots nodus_chain_config_get_u64 answers -1 for ids
+ * 9-13 and every read of them would FAULT on every node. */
 #define CC_PARAM_SLOTS              (CC_PARAM_MAX_ID + 1)
 /* CC_MAX_TXS_HARD_CAP RETIRED (R3 W4-C delta 2) with CC_PARAM_MAX_TXS —
  * no live consumer; the id space stays 1..CC_PARAM_MAX_ID unchanged. */
@@ -118,6 +126,10 @@
 /* HF-3 HF3_ACTIVE value domain (design 2026-10-01-hf3-comet-block-bounds-
  * design.md rev 3 §0): exactly 1 — the HF-2 one-way switch shape. */
 #define CC_HF3_ACTIVE_ON            1ULL
+/* HF-4 NAME_REGISTER price range (params 10-13; design 2026-10-02-
+ * onchain-names-design.md rev 4 §2 Price): [1 NODUS, 10M NODUS]. */
+#define CC_MIN_NAME_PRICE           100000000ULL
+#define CC_MAX_NAME_PRICE           1000000000000000ULL
 
 static const uint8_t CC_PURPOSE_TAG[CC_PURPOSE_TAG_LEN] = {
     'D','N','A','C','_','C','C','_','v','1',0,0,0,0,0,0
@@ -169,6 +181,16 @@ _Static_assert(CC_PARAM_HF3_ACTIVE == DNAC_CFG_HF3_ACTIVE,
                "CC_PARAM_HF3_ACTIVE drift vs dnac param id");
 _Static_assert(CC_HF3_ACTIVE_ON == DNAC_CFG_HF3_ACTIVE_ON,
                "HF3_ACTIVE value drift vs dnac");
+_Static_assert(CC_PARAM_RULESET_GEN2 == DNAC_CFG_RULESET_GEN2,
+               "CC_PARAM_RULESET_GEN2 drift vs dnac param id");
+_Static_assert(CC_PARAM_NAME_PRICE_3P == DNAC_CFG_NAME_PRICE_3P &&
+               CC_PARAM_NAME_PRICE_4P == DNAC_CFG_NAME_PRICE_4P &&
+               CC_PARAM_NAME_PRICE_5P == DNAC_CFG_NAME_PRICE_5P &&
+               CC_PARAM_NAME_PRICE_6P == DNAC_CFG_NAME_PRICE_6P,
+               "CC_PARAM_NAME_PRICE_* drift vs dnac param ids");
+_Static_assert(CC_MIN_NAME_PRICE == DNAC_CFG_MIN_NAME_PRICE &&
+               CC_MAX_NAME_PRICE == DNAC_CFG_MAX_NAME_PRICE,
+               "NAME_PRICE range drift vs dnac");
 /* nodus_chain_config.h keeps this as a bare literal so it stays free of
  * shared/ includes — pin it here, the one TU that sees both. */
 _Static_assert(NODUS_CC_RATE_LIMIT_MAX_PROPOSERS == CC_MAX_ACTIVE,
@@ -719,6 +741,26 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
              * design.md §0). */
             if (new_value != CC_HF3_ACTIVE_ON) return -1;
             break;
+        case CC_PARAM_RULESET_GEN2:
+            /* HF-4 (design 2026-10-02-onchain-names-design.md rev 4
+             * §1.2): EXACTLY the compiled vote literal D2 — the vote names
+             * its target generation (tuples + switch procedure). A binary
+             * whose generation 2 differs refuses here, at the vote block.
+             * Pure: the literal, never a hash. The single-use / HF-2 /
+             * epoch-boundary rules need chain state and live in
+             * nodus_chain_config_stateful_rules. */
+            if (new_value != (uint64_t)DNAC_CFG_RULESET_GEN2_D2) return -1;
+            break;
+        case CC_PARAM_NAME_PRICE_3P:
+        case CC_PARAM_NAME_PRICE_4P:
+        case CC_PARAM_NAME_PRICE_5P:
+        case CC_PARAM_NAME_PRICE_6P:
+            /* HF-4 (design §2 Price): [10^8, 10^15] raw. Votable only
+             * while generation 2 judges the vote — a stateful rule
+             * (nodus_chain_config_stateful_rules), not this one. */
+            if (new_value < CC_MIN_NAME_PRICE ||
+                new_value > CC_MAX_NAME_PRICE) return -1;
+            break;
         default:
             return -1;
     }
@@ -785,6 +827,17 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
              * default:, so a later change to the default class cannot
              * move this switch's grace. */
             return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
+        case CC_PARAM_RULESET_GEN2:
+            /* HF-4 — ERGONOMIC (decision 2026-10-02-onchain-names.md item
+             * 17: "Param 9 bekleme süresi ERGONOMIC 720 blok"). Its own
+             * return, the HF-3 shape: never the default: branch. */
+            return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
+        case CC_PARAM_NAME_PRICE_3P:
+        case CC_PARAM_NAME_PRICE_4P:
+        case CC_PARAM_NAME_PRICE_5P:
+        case CC_PARAM_NAME_PRICE_6P:
+            /* HF-4 — ERGONOMIC (decision item 17: "10–13 de ERGONOMIC"). */
+            return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
         case CC_PARAM_GAS_PRICE:
             /* HF-1 — ERGONOMIC by decision (2026-09-25-gas-price.md,
              * detail decision 3: "bekleme süresi 720 blok"). Named
@@ -800,6 +853,64 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
              * the grace only has to cover the vote-to-H window). */
         default:
             return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
+    }
+}
+
+/* HF-4 — the STATEFUL half of the CHAIN_CONFIG rules (contract:
+ * nodus_chain_config.h). Pure over the facts its callers derive; the
+ * SYSTEM CHAIN_CONFIG exec (nodus_witness_rt_native.c) passes the
+ * engine-filled ctx facts and its own runtime's generation, the 0x71
+ * approval responder (cc_appr_rules_chain_config below) derives the same
+ * three facts at its candidate height — so the two sites cannot fork. */
+int nodus_chain_config_stateful_rules(uint8_t param_id,
+                                      uint64_t effective_block_height,
+                                      uint8_t hf2_active,
+                                      uint8_t ruleset_gen2_voted,
+                                      uint32_t judging_generation) {
+    switch (param_id) {
+        case CC_PARAM_RULESET_GEN2: {
+            /* (a) single use: any committed param-9 row — at any
+             * effective height, the far-future one included (design §1.2:
+             * "a far-future effective retires param 9 for good") —
+             * refuses every further vote. */
+            if (ruleset_gen2_voted) return -1;
+            /* (b) HF-2 must be active at the vote height: the switch
+             * leaves CORE's root unchanged at H-1, which phase 9 accepts
+             * only while HF-2 is on (HF-2 has no off vote, so on at the
+             * vote height means on at H-1). */
+            if (!hf2_active) return -1;
+            /* (c) H-1 must not be an epoch boundary (the
+             * nodus_witness_v2_epoch_boundary_apply gate: height != 0 and
+             * height % DNAC_EPOCH_LENGTH == 0). */
+            if (effective_block_height == 0) return -1;
+            {
+                uint64_t h1 = effective_block_height - 1u;
+                if (h1 != 0 && (h1 % (uint64_t)DNAC_EPOCH_LENGTH) == 0)
+                    return -1;
+            }
+            return 0;
+        }
+        case CC_PARAM_NAME_PRICE_3P:
+        case CC_PARAM_NAME_PRICE_4P:
+        case CC_PARAM_NAME_PRICE_5P:
+        case CC_PARAM_NAME_PRICE_6P:
+            /* votable only once generation 2 judges the vote (design
+             * §1.2 / §2: "refused unless the judging runtime is
+             * gen >= 2"); a synthetic or unresolved runtime reads 0 here */
+            if (judging_generation < NODUS_RT_GEN_2) return -1;
+            return 0;
+        case CC_PARAM_MAX_TXS:
+        case CC_PARAM_BLOCK_INTERVAL:
+        case CC_PARAM_INFLATION_START:
+        case CC_PARAM_TARGET_ACTIVE:
+        case CC_PARAM_GAS_PRICE:
+        case CC_PARAM_TOKEN_CREATE_FEE:
+        case CC_PARAM_HF2_ACTIVE:
+        case CC_PARAM_HF3_ACTIVE:
+            /* no stateful rule — the scalar rules decide these alone */
+            return 0;
+        default:
+            return -1;                   /* unknown id: fail closed      */
     }
 }
 
@@ -1088,6 +1199,46 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
         }
         if (c.effective < floor_h) {
             snprintf(reason, reason_size, "effective is below the grace floor");
+            return -1;
+        }
+    }
+    /* HF-4 (design 2026-10-02-onchain-names-design.md rev 4 §1.2): the
+     * STATEFUL rules, through the ONE authority the exec applies, over
+     * the same three facts the engine hands the exec — derived here at
+     * the candidate height h with the engine's read discipline (an
+     * unanswerable read refuses, never defaults):
+     *   - HF-2 at h: chain_config param 7 (exec: ctx.hf2_active);
+     *   - "any param-9 row": param 9 at INT64_MAX — every committed
+     *     effective is <= INT64_MAX by the scalar rules' int64 bound, and
+     *     the DB path binds an int64 (exec: ctx.ruleset_gen2_voted);
+     *   - the judging generation: the runtime the committed SYSTEM
+     *     manifest resolves — the registry after the tip names the
+     *     generation that judges tip + 1 = h (exec: rt->generation). */
+    {
+        uint64_t v7 = 0, v9 = 0;
+        int r7 = nodus_chain_config_get_u64(w, (uint8_t)CC_PARAM_HF2_ACTIVE,
+                                            h, 0ULL, &v7);
+        int r9 = nodus_chain_config_get_u64(w, (uint8_t)CC_PARAM_RULESET_GEN2,
+                                            (uint64_t)INT64_MAX, 0ULL, &v9);
+        const nodus_domain_runtime_t *sys_rt = NULL;
+        if (r7 < 0 || r9 < 0 ||
+            (v7 != 0ULL && v7 != CC_HF2_ACTIVE_ON)) {
+            snprintf(reason, reason_size,
+                     "chain_config state unreadable on this node");
+            return -2;
+        }
+        if (nodus_witness_v2_runtime_for(w, DNA_DOMAIN_SYSTEM, 1,
+                                         &sys_rt) != 0 || !sys_rt) {
+            snprintf(reason, reason_size,
+                     "the SYSTEM runtime does not resolve on this node");
+            return -2;
+        }
+        if (nodus_chain_config_stateful_rules(
+                c.param_id, c.effective,
+                (uint8_t)(v7 == CC_HF2_ACTIVE_ON ? 1u : 0u),
+                (uint8_t)(r9 == 0 ? 1u : 0u),
+                sys_rt->generation) != 0) {
+            snprintf(reason, reason_size, "stateful rules rejected");
             return -1;
         }
     }

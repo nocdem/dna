@@ -252,8 +252,13 @@ int nodus_witness_v2_runtime_for(nodus_witness_t *w, uint32_t domain_id,
 
     const nodus_domain_runtime_t *table = w->v2_runtime_table;
     size_t n = w->v2_runtime_table_n;
+    /* HF-4 (design 2026-10-02-onchain-names-design.md rev 4 §1.1): the
+     * committed tuple is resolved against EVERY compiled generation —
+     * after the phase-6b' switch the registry names generation 2, and
+     * replay from genesis still needs generation 1. The exact tuple is
+     * unique across generations (selfcheck), so at most one entry hits. */
     if (!table)
-        table = nodus_runtime_builtin_table(&n);
+        table = nodus_runtime_all_table(&n);
 
     const nodus_domain_runtime_t *rt = nodus_runtime_lookup_in(
         table, n, domain_id, man.runtime_kind, man.runtime_abi,
