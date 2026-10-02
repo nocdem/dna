@@ -6,11 +6,11 @@
  * (split S4): called from nodus_dht_client_request with the request's
  * origin slot; replies go back through the DHT host.
  *
- * @file nodus_media_handler.h
+ * @file nodus_dht_media.h
  */
 
-#ifndef NODUS_MEDIA_HANDLER_H
-#define NODUS_MEDIA_HANDLER_H
+#ifndef NODUS_DHT_MEDIA_H
+#define NODUS_DHT_MEDIA_H
 
 #include "dht/nodus_dht.h"
 #include "protocol/nodus_tier2.h"
@@ -33,4 +33,4 @@ void handle_t2_media_get_chunk(nodus_dht_t *dht, int slot,
 }
 #endif
 
-#endif /* NODUS_MEDIA_HANDLER_H */
+#endif /* NODUS_DHT_MEDIA_H */

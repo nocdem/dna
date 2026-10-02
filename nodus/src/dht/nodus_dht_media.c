@@ -2,12 +2,13 @@
  * Nodus — Server-side Media Request Handlers
  *
  * Handles chunked media upload (m_put), metadata retrieval (m_meta),
- * and chunk download (m_chunk) for authenticated clients.
+ * and chunk download (m_chunk) for authenticated clients. DHT side
+ * (split S4).
  *
- * @file nodus_media_handler.c
+ * @file nodus_dht_media.c
  */
 
-#include "server/nodus_media_handler.h"
+#include "dht/nodus_dht_media.h"
 #include "core/nodus_media_storage.h"
 #include "protocol/nodus_tier2.h"
 #include "crypto/utils/qgp_log.h"

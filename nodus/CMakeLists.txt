@@ -536,7 +536,12 @@ if(NOT WIN32)
         src/channel/nodus_channel_ring.c
         src/consensus/nodus_cluster.c
         src/server/nodus_server.c
-        src/server/nodus_media_handler.c
+        # Split S4 — the DHT / storage half: its handlers, ticks and state
+        # (dht/nodus_dht.h), reached only through server/nodus_dht_backend.h.
+        # No core-only symbol (auth, presence, cluster, sessions) is
+        # referenced from these TUs (test_dht_linked).
+        src/dht/nodus_dht_server.c
+        src/dht/nodus_dht_media.c
         src/server/nodus_auth.c
         src/server/nodus_presence.c
         # Split S4 (decision 2026-10-01-nodus-component-split.md): the

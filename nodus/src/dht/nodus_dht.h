@@ -173,7 +173,7 @@ typedef struct {
 
 /** Rev 3 R-e — unpaged per-source row bound. The originator receives one
  *  forward reply into a buffer of RESP_BUF_SIZE (NODUS_MAX_VALUE_SIZE +
- *  65536, nodus_server.c; bf_start_forward recv_cap), and every forwarded
+ *  65536, nodus_dht_server.c; bf_start_forward recv_cap), and every forwarded
  *  row that becomes a candidate carries an owner public key and a signature
  *  (R-c), so no honest reply holds more than RESP_BUF_SIZE /
  *  (NODUS_PK_BYTES + NODUS_SIG_BYTES) = 590 rows. Paged reads use the
@@ -347,7 +347,7 @@ typedef struct {
     int             verify_left;       /**< NODUS_DHT_VERIFY_CAP budget left */
 } dht_bf_batch_t;
 
-/** Batch forward state (part of nodus_server_t) */
+/** Batch forward state (part of nodus_dht_t) */
 typedef struct {
     dht_bf_batch_t  batches[NODUS_BF_MAX_BATCHES];
     int             bf_epoll_fd;     /**< Separate epoll for batch forward fds */
