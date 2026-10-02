@@ -566,6 +566,9 @@ static int identity_read_file_exact(const char *dir, const char *name,
         QGP_LOG_ERROR(LOG_TAG, "identity file %s missing or unreadable", filepath);
         return -1;
     }
+    /* Unbuffered: fread copies straight into `out`, so no secret key bytes
+     * are left behind in a stdio buffer that fclose frees without zeroing. */
+    setvbuf(f, NULL, _IONBF, 0);
     size_t got = fread(out, 1, len, f);
     fclose(f);
     if (got != len) {

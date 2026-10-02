@@ -16,10 +16,24 @@
  *     with the listener configured to allow geteuid()+1 — the same-process
  *     peer is then the "wrong uid". The decision function itself is also
  *     tested with injected credentials (nodus_tcp_unix_peercred_ok);
+ *   - the client checks the server too: a listener whose uid is not the
+ *     expected uid is refused by nodus_tcp_unix_connect (run with
+ *     expected_uid = geteuid()+1 against our own listener), nothing leaks;
+ *   - the parent directory is checked before anything at the path is
+ *     touched: a group- or other-writable parent, or a symlink in place of
+ *     the parent, is refused and no socket file is created;
+ *   - one listener event accepts every queued peer (a burst of clients is
+ *     accepted in ONE server poll);
+ *   - nodus_tcp_find_by_addr never returns an AF_UNIX conn, even when asked
+ *     for its placeholder address (NODUS_TCP_UNIX_PEER_IP, port 0);
  *   - a regular file at the path is refused and left untouched; a stale
  *     socket file is replaced; a live listener's socket is refused and the
  *     live listener keeps working; a too-long path is refused;
  *   - nodus_tcp_close removes the socket file it created.
+ * Not covered: the "mode is not 0600 after bind" refusal (bind under the
+ * forced umask 0177 always yields 0600, so the branch cannot be reached
+ * from a test) and the parent-owner rule (needs a directory owned by a
+ * third uid, which an unprivileged test cannot create).
  *
  * Requires: a default build; no environment. Uses a mkdtemp directory under
  * /tmp and leaves nothing behind (directory removed at the end).
@@ -170,7 +184,7 @@ static void test_roundtrip(void) {
         return;
     }
 
-    nodus_tcp_conn_t *cc = nodus_tcp_unix_connect(&client, path);
+    nodus_tcp_conn_t *cc = nodus_tcp_unix_connect(&client, path, NODUS_TCP_UNIX_UID_SELF);
     bool client_ok = cc && cc->state == NODUS_CONN_CONNECTED && cc->is_unix &&
                      cc->port == 0 && strcmp(cc->ip, NODUS_TCP_UNIX_PEER_IP) == 0 &&
                      connected_count == 1 && cc->auth_initiated_by_us;
@@ -226,8 +240,9 @@ static void test_wrong_uid_rejected(void) {
     }
 
     /* The kernel completes the connect (it is queued on the backlog); the
-     * refusal happens at accept, on the server's poll. */
-    nodus_tcp_conn_t *cc = nodus_tcp_unix_connect(&client, path);
+     * refusal happens at accept, on the server's poll. The client expects
+     * our own uid, which is what the listener runs as, so it connects. */
+    nodus_tcp_conn_t *cc = nodus_tcp_unix_connect(&client, path, NODUS_TCP_UNIX_UID_SELF);
     if (!cc) {
         FAIL("client connect failed before the uid check could run");
         nodus_tcp_close(&client);
@@ -319,7 +334,7 @@ static void test_live_listener_kept(void) {
      * live listener (connect, then close at once), which the server may
      * accept and then see close — so the accept count is not asserted
      * exactly. What is asserted: the live listener still serves cc. */
-    nodus_tcp_conn_t *cc = nodus_tcp_unix_connect(&client, path);
+    nodus_tcp_conn_t *cc = nodus_tcp_unix_connect(&client, path, NODUS_TCP_UNIX_UID_SELF);
     bool frame_ok = false;
     if (cc) {
         const uint8_t msg[] = "still alive";
@@ -356,11 +371,11 @@ static void test_bad_paths(void) {
     nodus_tcp_t tcp;
     nodus_tcp_init(&tcp, -1);
     int lrc = nodus_tcp_unix_listen(&tcp, longp, NODUS_TCP_UNIX_UID_SELF);
-    nodus_tcp_conn_t *c1 = nodus_tcp_unix_connect(&tcp, longp);
+    nodus_tcp_conn_t *c1 = nodus_tcp_unix_connect(&tcp, longp, NODUS_TCP_UNIX_UID_SELF);
 
     char missing[128];
     sock_path(missing, sizeof(missing), "none.sock");
-    nodus_tcp_conn_t *c2 = nodus_tcp_unix_connect(&tcp, missing);
+    nodus_tcp_conn_t *c2 = nodus_tcp_unix_connect(&tcp, missing, NODUS_TCP_UNIX_UID_SELF);
 
     bool ok = lrc == -1 && c1 == NULL && c2 == NULL && tcp.count == 0 &&
               tcp.unix_listen_fd == -1;
@@ -384,6 +399,155 @@ static void test_close_unlinks(void) {
     else FAIL("socket file not removed on close");
 }
 
+static void test_server_wrong_uid_refused(void) {
+    TEST("client refuses a server whose uid is not the expected one");
+    reset_counters();
+    char path[128];
+    sock_path(path, sizeof(path), "sv.sock");
+
+    nodus_tcp_t server, client;
+    setup_pair(&server, &client);
+    if (nodus_tcp_unix_listen(&server, path, NODUS_TCP_UNIX_UID_SELF) != 0) {
+        FAIL("listen failed");
+        nodus_tcp_close(&client);
+        nodus_tcp_close(&server);
+        return;
+    }
+
+    /* The listener runs as geteuid(); the client expects someone else. */
+    nodus_tcp_conn_t *cc = nodus_tcp_unix_connect(&client, path,
+                                                  (uint32_t)geteuid() + 1u);
+    bool refused = cc == NULL && client.count == 0 && connected_count == 0;
+
+    /* Positive control on the same listener: the right uid connects. */
+    nodus_tcp_conn_t *ok_cc = nodus_tcp_unix_connect(&client, path,
+                                                     (uint32_t)geteuid());
+    bool control = ok_cc != NULL && client.count == 1 && connected_count == 1;
+
+    nodus_tcp_close(&client);
+    nodus_tcp_close(&server);
+    if (!refused)      FAIL("connect to a wrong-uid server returned a conn or leaked");
+    else if (!control) FAIL("connect with the correct expected uid failed");
+    else               PASS();
+}
+
+static void test_parent_dir_writable_refused(void) {
+    TEST("group/other-writable parent directory is refused, no file");
+    static const mode_t modes[] = { 0777, 0720, 0702 };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]) && ok; i++) {
+        char dir[128], path[160];
+        sock_path(dir, sizeof(dir), "ww");
+        snprintf(path, sizeof(path), "%s/w.sock", dir);
+        if (mkdir(dir, 0700) != 0 || chmod(dir, modes[i]) != 0) {
+            FAIL("cannot create fixture directory");
+            rmdir(dir);
+            return;
+        }
+        nodus_tcp_t tcp;
+        nodus_tcp_init(&tcp, -1);
+        int rc = nodus_tcp_unix_listen(&tcp, path, NODUS_TCP_UNIX_UID_SELF);
+        struct stat st;
+        bool absent = lstat(path, &st) != 0 && errno == ENOENT;
+        bool clean = tcp.unix_listen_fd == -1 && tcp.unix_path[0] == '\0';
+        nodus_tcp_close(&tcp);
+        unlink(path);
+        rmdir(dir);
+        ok = rc == -1 && absent && clean;
+    }
+    if (ok) PASS();
+    else    FAIL("listen accepted a writable parent or created the socket file");
+}
+
+static void test_parent_dir_symlink_refused(void) {
+    TEST("symlink in place of the parent directory is refused, no file");
+    char real[128], link_path[128], via_link[160], in_real[160];
+    sock_path(real, sizeof(real), "real");
+    sock_path(link_path, sizeof(link_path), "lnk");
+    snprintf(via_link, sizeof(via_link), "%s/y.sock", link_path);
+    snprintf(in_real, sizeof(in_real), "%s/y.sock", real);
+    if (mkdir(real, 0700) != 0 || symlink(real, link_path) != 0) {
+        FAIL("cannot create fixture directory/symlink");
+        unlink(link_path);
+        rmdir(real);
+        return;
+    }
+
+    nodus_tcp_t tcp;
+    nodus_tcp_init(&tcp, -1);
+    int rc = nodus_tcp_unix_listen(&tcp, via_link, NODUS_TCP_UNIX_UID_SELF);
+    struct stat st;
+    bool absent = lstat(in_real, &st) != 0 && errno == ENOENT;
+    nodus_tcp_close(&tcp);
+
+    unlink(in_real);
+    unlink(link_path);
+    rmdir(real);
+    if (rc == -1 && absent) PASS();
+    else                    FAIL("listen followed a symlinked parent or created the file");
+}
+
+static void test_accept_burst_one_poll(void) {
+    TEST("burst of queued clients accepted in one server poll");
+    reset_counters();
+    char path[128];
+    sock_path(path, sizeof(path), "b.sock");
+
+    nodus_tcp_t server, client;
+    setup_pair(&server, &client);
+    if (nodus_tcp_unix_listen(&server, path, NODUS_TCP_UNIX_UID_SELF) != 0) {
+        FAIL("listen failed");
+        nodus_tcp_close(&client);
+        nodus_tcp_close(&server);
+        return;
+    }
+
+    /* Every connect completes into the listener's backlog before the server
+     * polls at all; without the accept loop one poll accepts only one. */
+    enum { BURST = 5 };
+    int opened = 0;
+    for (int i = 0; i < BURST; i++)
+        if (nodus_tcp_unix_connect(&client, path, NODUS_TCP_UNIX_UID_SELF))
+            opened++;
+
+    nodus_tcp_poll(&server, 100);
+    bool ok = opened == BURST && accepted_count == BURST && server.count == BURST;
+
+    nodus_tcp_close(&client);
+    nodus_tcp_close(&server);
+    if (ok) PASS();
+    else    FAIL("not every queued client was accepted in one poll");
+}
+
+static void test_find_by_addr_skips_unix(void) {
+    TEST("find_by_addr never returns an AF_UNIX conn");
+    reset_counters();
+    char path[128];
+    sock_path(path, sizeof(path), "a.sock");
+
+    nodus_tcp_t server, client;
+    setup_pair(&server, &client);
+    if (nodus_tcp_unix_listen(&server, path, NODUS_TCP_UNIX_UID_SELF) != 0) {
+        FAIL("listen failed");
+        nodus_tcp_close(&client);
+        nodus_tcp_close(&server);
+        return;
+    }
+    nodus_tcp_conn_t *cc = nodus_tcp_unix_connect(&client, path, NODUS_TCP_UNIX_UID_SELF);
+    poll_until(&server, &client, &accepted_count, 1);
+
+    bool present = cc != NULL && accepted_count == 1 &&
+                   client.count == 1 && server.count == 1;
+    bool none = nodus_tcp_find_by_addr(&client, NODUS_TCP_UNIX_PEER_IP, 0) == NULL &&
+                nodus_tcp_find_by_addr(&server, NODUS_TCP_UNIX_PEER_IP, 0) == NULL;
+
+    nodus_tcp_close(&client);
+    nodus_tcp_close(&server);
+    if (!present)   FAIL("fixture: UDS conns not established on both ends");
+    else if (!none) FAIL("find_by_addr returned an is_unix conn");
+    else            PASS();
+}
+
 int main(void) {
     printf("=== Nodus TCP Unix-socket Tests ===\n");
 
@@ -397,6 +561,11 @@ int main(void) {
     test_mode_0600();
     test_roundtrip();
     test_wrong_uid_rejected();
+    test_server_wrong_uid_refused();
+    test_parent_dir_writable_refused();
+    test_parent_dir_symlink_refused();
+    test_accept_burst_one_poll();
+    test_find_by_addr_skips_unix();
     test_regular_file_refused();
     test_stale_socket_replaced();
     test_live_listener_kept();

@@ -1487,18 +1487,39 @@ static void handle_accept_ws(nodus_tcp_t *tcp) {
  * are admitted by the socket file's mode (0600, nodus_tcp_unix_listen) and
  * by their SO_PEERCRED uid (below). The per-IP limit of handle_accept does
  * not apply: every peer is a local process, there is no address, and the
- * pool cap NODUS_TCP_MAX_CONNS still bounds the total. */
+ * pool cap NODUS_TCP_MAX_CONNS still bounds the total.
+ *
+ * One listener event accepts every queued peer (up to
+ * NODUS_TCP_UNIX_ACCEPT_BURST), so a burst of local services connecting at
+ * once is not served one per poll. The bound keeps one event from starving
+ * the rest of the loop; the listener is level-triggered, so peers left in
+ * the backlog fire it again on the next poll. */
 
-static void handle_accept_unix(nodus_tcp_t *tcp) {
+#define NODUS_TCP_UNIX_ACCEPT_BURST  64
+
+/* Accept and admit one queued peer. Returns false when the backlog is
+ * empty (EAGAIN/EWOULDBLOCK) or accept failed in a way retrying in this
+ * event cannot fix; true when the caller may try the next one. */
+static bool accept_one_unix(nodus_tcp_t *tcp) {
     /* No peer address is requested: an AF_UNIX peer has none worth reading
      * (an unbound client's is empty) and nothing here may treat a
      * sockaddr_un as a sockaddr_in. */
     int fd = accept4(tcp->unix_listen_fd, NULL, NULL, SOCK_CLOEXEC);
-    if (fd < 0) return;
+    if (fd < 0) {
+        int err = errno;
+        if (err == EAGAIN || err == EWOULDBLOCK)
+            return false;
+        if (err == EINTR || err == ECONNABORTED)
+            return true;   /* this peer is gone; the next may be queued */
+        QGP_LOG_WARN(LOG_TAG_TCP, "unix: accept failed (errno=%d)", err);
+        return false;
+    }
 
     if (tcp->count >= NODUS_TCP_MAX_CONNS) {
+        QGP_LOG_WARN(LOG_TAG_TCP, "unix: connection pool full (%d), local peer dropped",
+                     NODUS_TCP_MAX_CONNS);
         close(fd);
-        return;
+        return true;
     }
 
     /* SO_PEERCRED: the peer process's credentials as of its connect().
@@ -1513,14 +1534,14 @@ static void handle_accept_unix(nodus_tcp_t *tcp) {
         QGP_LOG_WARN(LOG_TAG_TCP, "unix: peer credentials unreadable (errno=%d), "
                      "connection refused", errno);
         close(fd);
-        return;
+        return true;
     }
     if (!nodus_tcp_unix_peercred_ok((uint32_t)cr.uid, tcp->unix_allowed_uid)) {
         QGP_LOG_WARN(LOG_TAG_TCP, "unix: peer uid=%u pid=%d is not the allowed uid=%u, "
                      "connection refused",
                      (unsigned)cr.uid, (int)cr.pid, (unsigned)tcp->unix_allowed_uid);
         close(fd);
-        return;
+        return true;
     }
 
     /* A blocking socket in the event loop would stall every connection. */
@@ -1528,12 +1549,16 @@ static void handle_accept_unix(nodus_tcp_t *tcp) {
         QGP_LOG_WARN(LOG_TAG_TCP, "unix: cannot make accepted socket non-blocking "
                      "(errno=%d), connection refused", errno);
         close(fd);
-        return;
+        return true;
     }
     /* No set_keepalive / set_nodelay: both are TCP options. */
 
     nodus_tcp_conn_t *conn = conn_alloc(tcp);
-    if (!conn) { close(fd); return; }
+    if (!conn) {
+        QGP_LOG_WARN(LOG_TAG_TCP, "unix: no free connection slot, local peer dropped");
+        close(fd);
+        return true;
+    }
 
     conn->fd = fd;
     conn->state = NODUS_CONN_CONNECTED;
@@ -1557,9 +1582,18 @@ static void handle_accept_unix(nodus_tcp_t *tcp) {
         tcp->on_accept(conn, tcp->cb_ctx);
 
     if (conn->close_pending)   /* closed by on_accept */
-        return;
+        return true;
 
     handle_read_fwd(tcp, conn);
+    return true;
+}
+
+static void handle_accept_unix(nodus_tcp_t *tcp) {
+    for (int i = 0; i < NODUS_TCP_UNIX_ACCEPT_BURST; i++) {
+        /* A callback may have closed the transport's Unix entry. */
+        if (tcp->unix_listen_fd < 0 || !accept_one_unix(tcp))
+            break;
+    }
 }
 
 /* Is a listener alive at the socket file `path`? A non-blocking connect:
@@ -1587,6 +1621,61 @@ static int unix_addr_fill(struct sockaddr_un *sa, const char *path) {
     sa->sun_family = AF_UNIX;
     memcpy(sa->sun_path, path, plen + 1);
     return 0;
+}
+
+/* The socket file is only as safe as the directory holding it: whoever can
+ * write there can remove or replace the file, and the service runs as root.
+ * The parent of `path` (path already fits NODUS_TCP_UNIX_PATH_MAX) must be,
+ * by lstat — a symlink in its place is refused, not followed — a directory
+ * owned by this process's euid or by root, with no group/other write bit.
+ * Returns 0 if so; otherwise logs an ERROR naming the directory, -1. */
+static int unix_parent_dir_ok(const char *path) {
+    char dir[NODUS_TCP_UNIX_PATH_MAX];
+    size_t plen = strlen(path);
+    if (plen >= sizeof(dir)) return -1;
+    memcpy(dir, path, plen + 1);
+    char *slash = strrchr(dir, '/');
+    if (!slash) {
+        dir[0] = '.'; dir[1] = '\0';          /* relative name: current dir */
+    } else if (slash == dir) {
+        dir[1] = '\0';                        /* "/name": the root directory */
+    } else {
+        *slash = '\0';
+    }
+
+    struct stat st;
+    if (lstat(dir, &st) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "unix: socket directory %s cannot be checked (errno=%d), "
+                      "refusing", dir, errno);
+        return -1;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "unix: socket directory %s is not a directory "
+                      "(or is a symlink), refusing", dir);
+        return -1;
+    }
+    if (st.st_uid != geteuid() && st.st_uid != 0) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "unix: socket directory %s is owned by uid=%u, "
+                      "neither this process (uid=%u) nor root, refusing",
+                      dir, (unsigned)st.st_uid, (unsigned)geteuid());
+        return -1;
+    }
+    if ((st.st_mode & 022) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "unix: socket directory %s is group/other-writable "
+                      "(mode %04o), refusing", dir, (unsigned)(st.st_mode & 07777));
+        return -1;
+    }
+    return 0;
+}
+
+/* Remove the socket file at `path` only if it is still the one this
+ * transport bound (a socket with that dev/ino): never a file someone else
+ * put there after our bind. */
+static void unix_unlink_if_ours(const char *path, uint64_t dev, uint64_t ino) {
+    struct stat st;
+    if (lstat(path, &st) == 0 && S_ISSOCK(st.st_mode) &&
+        (uint64_t)st.st_dev == dev && (uint64_t)st.st_ino == ino)
+        unlink(path);
 }
 
 _Static_assert(sizeof(((struct sockaddr_un *)0)->sun_path) == NODUS_TCP_UNIX_PATH_MAX,
@@ -1796,6 +1885,11 @@ int nodus_tcp_unix_listen(nodus_tcp_t *tcp, const char *path,
         return -1;
     }
 
+    /* The directory first: nothing at the path is looked at, removed or
+     * created unless only this uid (or root) can change that directory. */
+    if (unix_parent_dir_ok(path) != 0)
+        return -1;
+
     /* Something already at the path. Only a STALE socket file is removed:
      * never a regular file or directory (a mistyped path must not delete
      * data), and never a socket a live listener still serves (that would
@@ -1833,7 +1927,9 @@ int nodus_tcp_unix_listen(nodus_tcp_t *tcp, const char *path,
      * no window in which another uid could connect. umask is process-wide:
      * a file another thread creates during these two calls gets the
      * stricter mask too (never a looser one). The result is verified with
-     * lstat below and corrected with chmod if anything else intervened. */
+     * lstat below; anything other than exactly 0600 is a refusal. There is
+     * deliberately no chmod repair: chmod follows a symlink, so a path
+     * swapped after bind could make it change some other file's mode. */
     mode_t old_mask = umask(0177);
     int brc = bind(fd, (struct sockaddr *)&sa, sizeof(sa));
     int berr = errno;
@@ -1844,28 +1940,29 @@ int nodus_tcp_unix_listen(nodus_tcp_t *tcp, const char *path,
         return -1;
     }
 
-    /* From here on the file is ours: every failure removes it. */
+    /* What is at the path now must be the socket we just bound. If it is
+     * not a socket, nothing proves it is ours, so it is left in place. */
     if (lstat(path, &st) != 0 || !S_ISSOCK(st.st_mode)) {
         QGP_LOG_ERROR(LOG_TAG_TCP, "unix: %s is not a socket after bind", path);
         close(fd);
-        unlink(path);
         return -1;
     }
+    /* From here on every failure removes the file — but only while it is
+     * still the socket with the dev/ino recorded right after bind. */
+    uint64_t bound_dev = (uint64_t)st.st_dev;
+    uint64_t bound_ino = (uint64_t)st.st_ino;
     if ((st.st_mode & 07777) != 0600) {
-        if (chmod(path, 0600) != 0 || lstat(path, &st) != 0 ||
-            !S_ISSOCK(st.st_mode) || (st.st_mode & 07777) != 0600) {
-            QGP_LOG_ERROR(LOG_TAG_TCP, "unix: %s cannot be made mode 0600, refusing",
-                          path);
-            close(fd);
-            unlink(path);
-            return -1;
-        }
+        QGP_LOG_ERROR(LOG_TAG_TCP, "unix: %s has mode %04o after bind, not 0600, "
+                      "refusing", path, (unsigned)(st.st_mode & 07777));
+        close(fd);
+        unix_unlink_if_ours(path, bound_dev, bound_ino);
+        return -1;
     }
 
     if (listen(fd, 128) != 0 || set_nonblocking(fd) != 0) {
         QGP_LOG_ERROR(LOG_TAG_TCP, "unix: listen %s failed (errno=%d)", path, errno);
         close(fd);
-        unlink(path);
+        unix_unlink_if_ours(path, bound_dev, bound_ino);
         return -1;
     }
 
@@ -1875,7 +1972,7 @@ int nodus_tcp_unix_listen(nodus_tcp_t *tcp, const char *path,
     if (epoll_ctl(tcp->epoll_fd, EPOLL_CTL_ADD, fd, &ev) != 0) {
         QGP_LOG_ERROR(LOG_TAG_TCP, "unix: epoll add %s failed (errno=%d)", path, errno);
         close(fd);
-        unlink(path);
+        unix_unlink_if_ours(path, bound_dev, bound_ino);
         return -1;
     }
 
@@ -1883,8 +1980,8 @@ int nodus_tcp_unix_listen(nodus_tcp_t *tcp, const char *path,
     tcp->unix_allowed_uid = (allowed_uid == NODUS_TCP_UNIX_UID_SELF)
                                 ? (uint32_t)geteuid() : allowed_uid;
     snprintf(tcp->unix_path, sizeof(tcp->unix_path), "%s", path);
-    tcp->unix_dev = (uint64_t)st.st_dev;
-    tcp->unix_ino = (uint64_t)st.st_ino;
+    tcp->unix_dev = bound_dev;
+    tcp->unix_ino = bound_ino;
     QGP_LOG_INFO(LOG_TAG_TCP, "unix: listening on %s (mode 0600, allowed uid=%u)",
                  path, (unsigned)tcp->unix_allowed_uid);
     return 0;
@@ -1942,9 +2039,10 @@ static bool conn_connected_now(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     return true;
 }
 
-nodus_tcp_conn_t *nodus_tcp_unix_connect(nodus_tcp_t *tcp, const char *path) {
+nodus_tcp_conn_t *nodus_tcp_unix_connect(nodus_tcp_t *tcp, const char *path,
+                                         uint32_t expected_uid) {
 #ifndef NODUS_TCP_EPOLL
-    (void)tcp; (void)path;
+    (void)tcp; (void)path; (void)expected_uid;
     return NULL;  /* Unix socket entry is Linux-only */
 #else
     if (!tcp || !path) return NULL;
@@ -1969,6 +2067,30 @@ nodus_tcp_conn_t *nodus_tcp_unix_connect(nodus_tcp_t *tcp, const char *path) {
      * the CONNECTING state. */
     if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
         QGP_LOG_WARN(LOG_TAG_TCP, "unix: connect %s failed (errno=%d)", path, errno);
+        close(fd);
+        return NULL;
+    }
+
+    /* The listener checks us; we check the listener. SO_PEERCRED on the
+     * dialing fd is the credentials of the process that called listen()
+     * on that socket — whoever bound the path, not whoever we meant. Fail
+     * closed, before a connection is allocated (on_connect never runs). */
+    uint32_t want_uid = (expected_uid == NODUS_TCP_UNIX_UID_SELF)
+                            ? (uint32_t)geteuid() : expected_uid;
+    struct ucred cr;
+    socklen_t cr_len = sizeof(cr);
+    memset(&cr, 0, sizeof(cr));
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cr, &cr_len) != 0 ||
+        cr_len != sizeof(cr)) {
+        QGP_LOG_WARN(LOG_TAG_TCP, "unix: server credentials at %s unreadable (errno=%d), "
+                     "connection refused", path, errno);
+        close(fd);
+        return NULL;
+    }
+    if (!nodus_tcp_unix_peercred_ok((uint32_t)cr.uid, want_uid)) {
+        QGP_LOG_WARN(LOG_TAG_TCP, "unix: server at %s is uid=%u pid=%d, expected uid=%u, "
+                     "connection refused",
+                     path, (unsigned)cr.uid, (int)cr.pid, (unsigned)want_uid);
         close(fd);
         return NULL;
     }
@@ -2762,7 +2884,9 @@ nodus_tcp_conn_t *nodus_tcp_find_by_addr(nodus_tcp_t *tcp,
     int second_slot = -1;
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
         nodus_tcp_conn_t *c = tcp->pool[i];
-        if (c && c->port == port && strcmp(c->ip, ip) == 0) {
+        /* An AF_UNIX conn carries the placeholder NODUS_TCP_UNIX_PEER_IP /
+         * port 0 — it is never a network peer, whatever the caller asks. */
+        if (c && !c->is_unix && c->port == port && strcmp(c->ip, ip) == 0) {
             if (!first) first = c;
             else if (second_slot < 0) second_slot = c->slot;
             match_count++;
@@ -2826,11 +2950,7 @@ void nodus_tcp_close(nodus_tcp_t *tcp) {
         tcp->unix_listen_fd = -1;
         /* Remove the socket file only if it is still the one we bound: a
          * later process may have replaced a file it found stale. */
-        struct stat st;
-        if (lstat(tcp->unix_path, &st) == 0 && S_ISSOCK(st.st_mode) &&
-            (uint64_t)st.st_dev == tcp->unix_dev &&
-            (uint64_t)st.st_ino == tcp->unix_ino)
-            unlink(tcp->unix_path);
+        unix_unlink_if_ours(tcp->unix_path, tcp->unix_dev, tcp->unix_ino);
         tcp->unix_path[0] = '\0';
     }
 #endif
