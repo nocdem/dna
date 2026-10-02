@@ -28,6 +28,10 @@ export function recordActivity(transfer, details) {
     // src/activity-storage.js does not keep it, so a reloaded row reads as
     // a plain NODUS transfer to the validator's address.
     if (['delegate', 'undelegate', 'stake'].includes(transfer.kind)) record.kind = transfer.kind;
+    // A chain-name registration (HF-4): the action and the name, for this
+    // tab's Activity text only (not kept by src/activity-storage.js either;
+    // reloaded, it reads as a NODUS transfer to this wallet's own address).
+    if (transfer.kind === 'name') { record.kind = 'name'; record.name = transfer.name; }
   }
   return record;
 }

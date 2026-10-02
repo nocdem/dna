@@ -27,7 +27,7 @@
 // - Amounts are decimal strings at the module boundary, BigInt here (RT1 L4 F10).
 import { amountUnits, formatUnits } from '../core.js';
 import { NODUS_ASSET } from '../nodus/network.js';
-import { chainName, chainNameOk } from '../nodus/names.js';
+import { chainName, chainNameOk, parseNameOf } from '../nodus/names.js';
 
 const HEX128 = /^[0-9a-f]{128}$/, HEX64 = /^[0-9a-f]{64}$/, RAW = /^(0|[1-9]\d{0,19})$/;
 const U64_MAX = 2n ** 64n - 1n;
@@ -516,6 +516,148 @@ export async function prepareStake({ client, from, kind, validator, amount, comm
       await onBroadcast({ hash: d.intentId, expiryHeight: d.expiryHeight.toString(), fromHeight: (tip + 1n).toString(), inputs: [...d.inputs] });
       const result = await client.submit({ envelope: d.envelope });
       if (!result || result.accepted !== true) throw new Error(`The Nodus network did not accept this transaction. Its coins stay held until it expires.${typeof result?.message === 'string' && result.message ? ` ${result.message}` : ''}`);
+      return d.intentId;
+    }
+  };
+}
+
+// ── Chain-name registration (HF-4) ────────────────────────────────────────
+// The module side is nodus-cli `name register` over the shared builder
+// (crypto/nodus-send-wasm.c "CHAIN NAME REGISTRATION"); this side checks
+// what crosses the boundary, shows availability and the price before
+// anything is built, and builds the review from the module's own read-back
+// of the signed envelope (G1). Rules (decision 2026-10-02-onchain-names.md;
+// design docs/plans/2026-10-02-onchain-names-design.md rev 4 §2): first
+// come wins, one name per ID, permanent (no expiry, no renewal); 3 to 36
+// of a-z0-9, an all-hex name of 8+ characters is never a name; the price by
+// length is the NODE's (dnac_fee_info) — never a number in this file; a
+// refused registration never pays the price (design §2 "Refused
+// registration"). The availability answers come from ONE node's committed
+// state (decision item 9); the chain decides again when it runs it.
+// The price parameters (dnac/include/dnac/dnac.h DNAC_CFG_NAME_PRICE_3P..6P).
+export const NAME_PRICE_PARAMS = Object.freeze([10, 11, 12, 13]);
+const NAME_PRICE_LENGTHS = Object.freeze(['3 characters', '4 characters', '5 characters', '6 or more characters']);
+// The module's namePrices() answer, checked: four prices > 0 and at most 16
+// scheduled changes of the four price parameters.
+export function parseNamePrices(result) {
+  const invalid = () => new Error('The Nodus module returned invalid name prices.');
+  if (!result || !Array.isArray(result.prices) || result.prices.length !== 4 || !Array.isArray(result.scheduled) || result.scheduled.length > 16) throw invalid();
+  const prices = result.prices.map(price => rawUnits(price, 'name price'));
+  if (prices.some(price => price === 0n)) throw invalid();
+  const scheduled = result.scheduled.map(row => {
+    if (!row || !NAME_PRICE_PARAMS.includes(row.param)) throw invalid();
+    const value = rawUnits(row.value, 'name price');
+    if (value === 0n) throw invalid();
+    return { param: row.param, value, effective: rawUnits(row.effective, 'block height') };
+  });
+  return { prices, scheduled };
+}
+// The price of `name` (a valid chain name) from parseNamePrices' list.
+export function namePriceFor(prices, name) {
+  if (!chainNameOk(name) || !Array.isArray(prices) || prices.length !== 4) throw new Error('Not a chain name: 3 to 36 letters a-z and digits.');
+  return prices[name.length >= 6 ? 3 : name.length - 3];
+}
+// A one-line price list for the page: "3 characters: 1,000 NODUS · …".
+export function namePriceList(prices) {
+  return prices.map((price, i) => `${NAME_PRICE_LENGTHS[i]}: ${nodusText(price)}`).join(' · ');
+}
+function registerReady(client, from) {
+  if (!client || client.state !== 'ready' || !client.nameable || !client.registrable) throw new Error('Registering a chain name is not available right now.');
+  if (from !== client.fingerprint) throw new Error('Nodus address does not match the connected identity.');
+}
+// This wallet's own chain name: { found: false } or { found: true, name }.
+export async function ownChainName({ client, from, signal } = {}) {
+  if (!client || client.state !== 'ready' || !client.nameable) throw new Error('Chain names are not available right now.');
+  if (from !== client.fingerprint) throw new Error('Nodus address does not match the connected identity.');
+  return parseNameOf(await client.nameOf({ owner: from }, { signal }));
+}
+// What the page shows before anything is built, for what the person typed:
+//   { status: 'has-name', ownName }        this ID already holds a name
+//   { status: 'taken', name }              someone registered it first
+//   { status: 'available', name, price, priceText, prices, scheduled }
+// Throws for text that is not a chain name.
+export async function nameQuote({ client, from, name: typed, signal } = {}) {
+  registerReady(client, from);
+  const name = chainName(typed);
+  if (!name) throw new Error('A chain name is 3 to 36 letters a-z and digits (no spaces, dots or dashes). A name made only of 0-9 and a-f with 8 or more characters is not allowed, because it would look like an ID.');
+  const own = parseNameOf(await client.nameOf({ owner: from }, { signal }));
+  if (own.found) return { status: 'has-name', ownName: own.name };
+  const found = parseNameLookup(await client.nameLookup({ name }, { signal }));
+  if (found.found) return { status: 'taken', name };
+  const { prices, scheduled } = parseNamePrices(await client.namePrices({ signal }));
+  const price = namePriceFor(prices, name);
+  return { status: 'available', name, price, priceText: nodusText(price), prices, scheduled };
+}
+// The module's read-back of a registration envelope, checked for shape.
+function decodeName(built) {
+  const d = built?.decoded, invalid = () => new Error('The Nodus module returned an invalid transaction.');
+  if (!built || !(built.envelope instanceof Uint8Array) || built.envelope.length === 0 || typeof built.intentId !== 'string' || !HEX128.test(built.intentId) || !d) throw invalid();
+  if (!chainNameOk(d.name) || typeof d.owner !== 'string' || !HEX128.test(d.owner) || typeof d.chainId !== 'string' || !HEX64.test(d.chainId)) throw invalid();
+  if (!Array.isArray(d.inputs) || d.inputs.length < 1 || d.inputs.length > 13 || new Set(d.inputs).size !== d.inputs.length || !d.inputs.every(input => typeof input === 'string' && HEX128.test(input))) throw invalid();
+  return {
+    envelope: built.envelope, intentId: built.intentId, name: d.name, owner: d.owner, chainId: d.chainId, inputs: [...d.inputs],
+    price: rawUnits(d.price, 'name price'), fee: rawUnits(d.fee, 'network fee'), change: rawUnits(d.change, 'change amount'),
+    expiryHeight: rawUnits(d.expiryHeight, 'expiry height')
+  };
+}
+// Builds and signs one registration of `name` for review, in the shape of
+// prepareStake (cancel(), confirm(onBroadcast) usable once, refused after
+// expiresAt). `locked`: coins of pending NODUS transactions (lockedInputs) —
+// never offered to the builder.
+export async function prepareName({ client, from, name: typed, locked = new Set() } = {}) {
+  const quote = await nameQuote({ client, from, name: typed });
+  if (quote.status === 'has-name') throw new Error(`This wallet already has the chain name "${quote.ownName}". Each Nodus ID can hold one name.`);
+  if (quote.status === 'taken') throw new Error(`The name "${quote.name}" is already registered. Try another name.`);
+  const { name } = quote;
+  const { spendable } = parseBalance(await client.balance());
+  const listing = await client.list();
+  const coins = parseCoins(listing);
+  if (coins.length === 0 && spendable > 0n) throw new Error('Your coin list could not be read. Nothing was sent; try again later.');
+  // HF-4: which rules the node runs, then the expiry they allow.
+  const ruleset = parseRulesetInfo(await client.rulesetInfo());
+  if (ruleset.generation < 2n) throw new Error(ruleset.gen2Height > 0n ? `Chain names open at block ${ruleset.gen2Height}. Try again after that block.` : 'Chain names are not open on the Nodus network yet.');
+  const tip = parseTip(listing.tip), expiryHeight = expiryHeightFor(tip, ruleset);
+  const candidates = coins.filter(coin => !locked.has(coin.nullifier));
+  if (candidates.length === 0) throw new Error(locked.size ? 'Your coins are held by a pending transaction. Wait for it to be included or to expire.' : 'Insufficient NODUS balance.');
+  const d = decodeName(await client.nameBuild({ name, expiryHeight: expiryHeight.toString(), coins: candidates }));
+  // The signed envelope must be exactly what was requested, or nothing is shown.
+  if (d.name !== name || d.owner !== from || d.expiryHeight !== expiryHeight || d.chainId !== client.chainId) throw new Error('The signed transaction does not match your request. Nothing was sent.');
+  if (d.price !== quote.price) throw new Error(`The price of this name changed while it was being prepared (now ${nodusText(d.price)}). Nothing was sent; prepare it again.`);
+  const amounts = new Map(candidates.map(coin => [coin.nullifier, BigInt(coin.amount)]));
+  if (!d.inputs.every(input => amounts.has(input))) throw new Error('The signed transaction uses coins it may not use. Nothing was sent.');
+  const inSum = d.inputs.reduce((sum, input) => sum + amounts.get(input), 0n);
+  if (inSum !== d.price + d.fee + d.change) throw new Error('The signed transaction does not add up. Nothing was sent.');
+  const review = [
+    ['Network', 'Nodus testnet'],
+    ['Action', 'Register a chain name'],
+    ['Name', d.name],
+    ['Owner (your Nodus ID)', d.owner],
+    ['Name check', 'Names can look alike (for example the digit 0 and the letter o). Check that this is exactly the name you want.'],
+    ['Price', nodusText(d.price)],
+    ['Network fee', nodusText(d.fee)],
+    ['Total', nodusText(d.price + d.fee)],
+    ['Change back to you', nodusText(d.change)],
+    ['Rules', 'First come, first served: if someone registers this name before yours is included, yours is refused and the price is not charged. Each Nodus ID can hold one name. The name does not expire and needs no renewal.']
+  ];
+  const changing = quote.scheduled.filter(row => row.effective <= d.expiryHeight);
+  if (changing.length) review.push(['Price change', `A name price change is scheduled at block ${changing.map(row => row.effective).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))[0]}. If it takes effect before this registration is included, the registration is refused and the price is not charged; prepare it again.`]);
+  review.push(['Valid until block', d.expiryHeight.toString()], ...expiryCapRows(tip, d.expiryHeight, ruleset), ['Chain ID', d.chainId], ['Fee note', 'The network fee may be charged even if the transaction fails.']);
+  if (listing.truncated === true) review.push(['Coin list', 'Your coin list may be incomplete; only the coins listed are used.']);
+  let used = false;
+  const expiresAt = Date.now() + NODUS_REVIEW_MS;
+  return {
+    kind: 'name', name: d.name, chain: NODUS_ASSET.chain, from, to: d.owner, symbol: NODUS_ASSET.symbol, amount: formatUnits(d.price, DECIMALS),
+    endpoint: undefined, fee: nodusText(d.fee), expiresAt, review, intentId: d.intentId,
+    cancel() { used = true; },
+    async confirm(onBroadcast) {
+      if (used) throw new Error('This review is already closed.');
+      used = true; // an ambiguous submission is never retried automatically
+      if (Date.now() >= expiresAt) throw new Error('Review expired. Prepare it again.');
+      // The record is durable before the envelope leaves the browser; its
+      // inputs are held like a send's (lockedInputs) until it resolves.
+      await onBroadcast({ hash: d.intentId, expiryHeight: d.expiryHeight.toString(), fromHeight: (tip + 1n).toString(), inputs: [...d.inputs] });
+      const result = await client.submit({ envelope: d.envelope });
+      if (!result || result.accepted !== true) throw new Error(`The Nodus network did not accept this registration. Its coins stay held until it expires.${typeof result?.message === 'string' && result.message ? ` ${result.message}` : ''}`);
       return d.intentId;
     }
   };

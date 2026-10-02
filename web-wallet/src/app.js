@@ -245,6 +245,7 @@ function renderActivity(save = true) {
       : row.kind === 'delegate' ? ['Delegation', `→ validator ${row.to}`]
       : row.kind === 'undelegate' ? ['Undelegation', `back from validator ${row.to} (returned locked)`]
       : row.kind === 'stake' ? ['Validator bond']
+      : row.kind === 'name' ? ['Chain name registration', row.name ? `"${row.name}"` : 'for your address']
       : [`→ ${row.to}`];
     const main = el('span', 'activity-main');
     main.append(el('strong', '', `${row.amount} ${row.symbol}`), el('small', '', what.join(' · ')));
@@ -291,8 +292,9 @@ const checkRow = async (row, options) => {
     if (update.status === 'confirmed') portfolio.setAddress(NODUS_ASSET.chain, wallet.addresses.nodus);
   }, 0);
   // Any other NODUS transaction that reaches a final state may have moved a
-  // delegation or the validator list: re-read the staking panel once.
-  else if (terminal(update.status) && !terminal(row.status)) setTimeout(() => { if (wallet && nodusClient) void refreshStaking(); }, 0);
+  // delegation or the validator list, or registered this wallet's chain
+  // name (a reloaded row no longer says which): re-read both once.
+  else if (terminal(update.status) && !terminal(row.status)) setTimeout(() => { if (wallet && nodusClient) { void refreshStaking(); void refreshName(); } }, 0);
   return update;
 };
 function trackActivity() { stopTracking(); renderActivity(); if (wallet) stopTracking = watchActivity(visibleActivity, renderActivity, { check: checkRow }); }
@@ -390,7 +392,7 @@ function setNodusReady(ready, { reselect = true } = {}) {
   if (receiveOnlyNetworks[NODUS_ASSET.chain] === network) return;
   receiveOnlyNetworks[NODUS_ASSET.chain] = network;
   if (!ready && wallet) wallet.nodusClient = undefined;
-  if (!ready) { claimCheck++; portfolio.setAction(NODUS_ASSET.chain, undefined); hideStaking(); }
+  if (!ready) { claimCheck++; portfolio.setAction(NODUS_ASSET.chain, undefined); hideStaking(); hideName(); }
   portfolio.setNetwork(NODUS_ASSET.chain, network);
   showPortfolioScope(ready);
   if (reselect && wallet && $('chain').value === NODUS_ASSET.chain) selectChain();
@@ -428,6 +430,7 @@ async function startNodusSend(source, address) {
     portfolio.setAddress(NODUS_ASSET.chain, address);
     void refreshClaim();
     void refreshStaking();
+    void refreshName();
     // The saved wallet's id only when this wallet is the unlocked saved copy
     // (activitySession is set by unlock or by saving it here).
     raise('nodusReady', { client, phrase: source.recoveryPhrase, vaultId: activitySession?.id ?? null, fresh: walletFresh });
@@ -476,8 +479,8 @@ async function refreshClaim() {
 // prepareStake); a read started under an older stakeCheck is dropped.
 let stakeCheck = 0, stakeView;
 const STAKE_KINDS = ['delegate', 'undelegate', 'stake'];
-const ACTION_WORD = { claim: 'Claiming', delegate: 'Delegating', undelegate: 'Undelegating', stake: 'Bonding' };
-const CONFIRM_TEXT = { claim: 'Confirm & claim', delegate: 'Confirm & delegate', undelegate: 'Confirm & undelegate', stake: 'Confirm & bond' };
+const ACTION_WORD = { claim: 'Claiming', delegate: 'Delegating', undelegate: 'Undelegating', stake: 'Bonding', name: 'Registering a name' };
+const CONFIRM_TEXT = { claim: 'Confirm & claim', delegate: 'Confirm & delegate', undelegate: 'Confirm & undelegate', stake: 'Confirm & bond', name: 'Confirm & register' };
 const nodusAmountText = units => groupDigits(formatUnits(units, NODUS_ASSET.decimals));
 // Earn (0.1.31): the staking panel is reached from an "Earn" button beside
 // Send / Receive, a navigation link and the NODUS portfolio row. All three
@@ -632,6 +635,96 @@ async function startClaim() {
   } catch (error) { if (current === revision) message(error.message); }
   finally { busy = false; }
 }
+// CHAIN NAME (HF-4): the "Chain name" block of the NODUS receive panel and
+// the "Register a name" action beside Send / Receive / Earn (a new coin is
+// handled like the other coins: no panel of its own). Shown while the
+// connected module resolves names (src/nodus/client.js nameable); the
+// registration part only while it can also register (registrable) and this
+// wallet holds no name. Every read and the build go through
+// src/adapters/nodus.js (ownChainName, nameQuote, prepareName); a read
+// started under an older nameCheck / nameQuoteCheck is dropped.
+let nameCheck = 0, nameQuoteCheck = 0, nameQuoted, nameReady = false;
+function showNameBlock() { $('name-block').hidden = !(nameReady && $('chain').value === NODUS_ASSET.chain); }
+function clearNameQuote() {
+  nameQuoteCheck++; nameQuoted = undefined;
+  $('name-review').disabled = true; $('name-quote').textContent = '';
+}
+function hideName() {
+  nameCheck++; nameReady = false; clearNameQuote();
+  $('quick-name').hidden = true; $('name-block').hidden = true; $('name-fields').hidden = true;
+  $('own-name').textContent = ''; $('name-prices').textContent = ''; $('name-input').value = '';
+}
+async function refreshName() {
+  const client = nodusClient, source = wallet, check = ++nameCheck;
+  if (!client || !source || source.locked || !client.nameable) { hideName(); return; }
+  const current = () => check === nameCheck && client === nodusClient && source === wallet && !source.locked;
+  nameReady = true; showNameBlock();
+  $('own-name').textContent = 'Reading your chain name…';
+  try {
+    const own = await adapters.nodus.ownChainName({ client, from: source.addresses.nodus });
+    if (!current()) return;
+    if (own.found) {
+      $('own-name').textContent = `Your chain name is "${own.name}". People can send NODUS to you by typing this name instead of your address.`;
+      $('name-fields').hidden = true; $('quick-name').hidden = true; clearNameQuote();
+      return;
+    }
+    if (!client.registrable) {
+      $('own-name').textContent = 'This wallet has no chain name. Registering one is not available in this version.';
+      $('name-fields').hidden = true; $('quick-name').hidden = true;
+      return;
+    }
+    $('own-name').textContent = 'This wallet has no chain name yet. A chain name lets people send NODUS to you by typing a short name instead of your long address. First come, first served; one name per wallet; it does not expire.';
+    $('name-fields').hidden = false; $('quick-name').hidden = false;
+    $('name-prices').textContent = 'Reading name prices…';
+    try {
+      const { prices } = adapters.nodus.parseNamePrices(await client.namePrices());
+      if (current()) $('name-prices').textContent = `Prices by name length — ${adapters.nodus.namePriceList(prices)}. A network fee is added.`;
+    } catch (error) {
+      if (current()) $('name-prices').textContent = `Name prices could not be read: ${error?.message || 'unknown error'}`;
+    }
+  } catch (error) {
+    if (!current()) return;
+    $('own-name').textContent = `Could not read your chain name: ${error?.message || 'unknown error'} Lock and reopen your wallet to retry.`;
+    $('name-fields').hidden = true; $('quick-name').hidden = true;
+  }
+}
+async function checkName() {
+  const client = nodusClient, source = wallet;
+  if (!client || !source || source.locked) return;
+  clearNameQuote();
+  const check = nameQuoteCheck, typed = $('name-input').value;
+  const current = () => check === nameQuoteCheck && client === nodusClient && source === wallet && !source.locked;
+  $('name-quote').textContent = 'Checking the name…';
+  try {
+    const quote = await adapters.nodus.nameQuote({ client, from: source.addresses.nodus, name: typed });
+    if (!current()) return;
+    if (quote.status === 'has-name') { $('name-quote').textContent = `This wallet already has the chain name "${quote.ownName}".`; void refreshName(); return; }
+    if (quote.status === 'taken') { $('name-quote').textContent = `"${quote.name}" is already registered by someone else. Try another name.`; return; }
+    nameQuoted = quote.name;
+    const lowered = quote.name !== typed.trim() ? ` Names are lower-case, so it is registered as "${quote.name}".` : '';
+    $('name-quote').textContent = `"${quote.name}" is available. Price: ${quote.priceText}. The network fee is shown on the review before you confirm.${lowered}`;
+    $('name-review').disabled = false;
+  } catch (error) { if (current()) $('name-quote').textContent = error?.message || 'The name could not be checked.'; }
+}
+async function startName() {
+  if (busy || !wallet || !nameQuoted) return;
+  if ($('chain').value !== NODUS_ASSET.chain) { $('chain').value = NODUS_ASSET.chain; selectChain(); }
+  busy = true; const current = revision, client = nodusClient, name = nameQuoted;
+  message('Preparing the name registration and network fee…');
+  try {
+    const locked = adapters.nodus.lockedInputs(history.filter(row => row.address === wallet.addresses.nodus));
+    const transfer = await adapters.nodus.prepareName({ client, from: wallet.addresses.nodus, name, locked });
+    if (current !== revision || !wallet || client !== nodusClient) { transfer.cancel(); return; }
+    showReview(transfer, [...transfer.review, ['Review expires', new Date(transfer.expiresAt).toLocaleTimeString()]], 'Review name registration');
+    message('Review every detail before confirming.');
+  } catch (error) { if (current === revision) message(error.message); }
+  finally { busy = false; }
+}
+$('name-input').addEventListener('input', clearNameQuote);
+// The block sits inside #send-form: Enter checks the name, never submits a send.
+$('name-input').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); void checkName(); } });
+$('name-check').onclick = () => void checkName();
+$('name-review').onclick = () => void startName();
 function lock() {
   // Extensions close before the NODUS client (stopNodusSend raises
   // nodusClosing first), then the cross-site mark is dropped.
@@ -844,6 +937,7 @@ function selectChain() {
   $('send-fields').hidden = !!c.receiveOnly; $('send-disabled-note').hidden = !c.receiveOnly;
   $('send-disabled-note').textContent = c.sendNote || DEFAULT_SEND_DISABLED_NOTE;
   for (const [key, node] of Object.entries(addressStatus)) node.hidden = chain !== key;
+  showNameBlock();
   renderHistory(); void loadHistory(chain);
 }
 $('chain').onchange = selectChain;
@@ -870,6 +964,16 @@ $('quick-earn').onclick = () => {
   $('stake-panel').scrollIntoView({ block: 'start' });
 };
 $('nav-earn').onclick = event => { event.preventDefault(); $('quick-earn').click(); };
+// "Register a name" (HF-4): the NODUS receive block's "Chain name" part,
+// reached like Receive; the selected network moves to NODUS.
+$('quick-name').onclick = () => {
+  if ($('quick-name').hidden) return;
+  if ($('chain').value !== NODUS_ASSET.chain) { $('chain').value = NODUS_ASSET.chain; selectChain(); }
+  showEarn(false);
+  $('name-block').scrollIntoView({ block: 'start' });
+  if (!$('name-fields').hidden) $('name-input').focus({ preventScroll: true });
+  else $('name-title').focus({ preventScroll: true });
+};
 document.querySelector('.wallet-navigation a[href="#send-form"]').onclick = () => showEarn(false);
 $('lock').onclick = lock;
 $('copy-address').onclick = async () => {
@@ -975,6 +1079,11 @@ $('confirm-send').onclick = async () => {
     if (STAKE_KINDS.includes(transfer.kind)) {
       $('delegate-amount').value = ''; $('become-confirm').checked = false;
       message(`${transfer.kind === 'delegate' ? 'Delegation' : transfer.kind === 'undelegate' ? 'Undelegation' : 'Validator bond'} submitted; confirmation is pending. Transaction ID ${hash}. Its status is tracked in Activity.`);
+      return;
+    }
+    if (transfer.kind === 'name') {
+      $('name-input').value = ''; clearNameQuote();
+      message(`Registration of the chain name "${transfer.name}" submitted; confirmation is pending. Transaction ID ${hash}. Its status is tracked in Activity.`);
       return;
     }
     $('recipient').value = ''; $('amount').value = '';

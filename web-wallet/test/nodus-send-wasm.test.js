@@ -28,6 +28,8 @@
 // signature), and the EMBEDDED testnet claim data passes the module's own
 // checks (manifest re-hash, allocation root) while a wrong hash or leaf is
 // refused. The claim parity tree is SYNTHETIC (see CLAIM below).
+// Chain-name registration (HF-4): with NODUS_SEND_PARITY_OUT only (no native
+// vector — see "chain-name registration parity" below).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
@@ -63,7 +65,10 @@ const ENTRY_POINTS = [
   // HF-4: rule-set generation, chain names, a name owner's profile address
   'nsw_name_ok', 'nsw_ruleset_info', 'nsw_ri_gen', 'nsw_ri_tip', 'nsw_ri_h', 'nsw_name_lookup', 'nsw_name_of',
   'nsw_name_found', 'nsw_name_owner', 'nsw_name_name', 'nsw_name_registered', 'nsw_name_committed',
-  'nsw_profile_address', 'nsw_profile_addr'
+  'nsw_profile_address', 'nsw_profile_addr',
+  // HF-4: chain-name registration (nodus-cli name register, shared builder nodus_v2_name.c)
+  'nsw_built_name', 'nsw_built_price', 'nsw_name_offline_build', 'nsw_name_prices', 'nsw_np_price', 'nsw_np_sched_count',
+  'nsw_np_sched_param', 'nsw_np_sched_value', 'nsw_np_sched_effective', 'nsw_name_build'
 ];
 
 test('the shipped send.wasm exports the module entry points and no test-only one', () => {
@@ -409,6 +414,90 @@ test('staking refusals in the module: a wrong bond, a commission above 50%, an U
   assert.equal(str('nsw_const_commission_max'), '5000');
   assert.equal(str('nsw_const_undelegate_lock_epochs'), '12');
   assert.equal(str('nsw_const_epoch_length'), '720');
+});
+
+// ── chain-name registration parity (HF-4) ──────────────────────────────
+// NO native vector here: the name section of nodus-send-wasm.c is built
+// only into the two emcc modules (the native vector's script,
+// scripts/build-nodus-send-native-vector.sh, does not link
+// nodus/src/client/nodus_v2_name.c). What these prove instead:
+//   - TEST wasm, fed the same randomness twice, builds the same envelope byte
+//     for byte, and its CORE call is EXACTLY the layout nodus-cli wrote before
+//     the builder moved — the same literal bytes as the nodus ctest
+//     test_v2_name_build N1 fixture (same coins, name, price, floor fee and
+//     change), with this test's own change seed and owner;
+//   - the shipped wasm (hedged signature) has the same intent_id and decoded
+//     fields, a different wire_id;
+//   - the module's refusals: generation 1, a name outside the rule, price 0,
+//     change seeds given but not used.
+// SYNTHETIC inputs (fixed seed, made-up coins and chain id, gas price 0 —
+// one fee pass, one change seed).
+const skipNameParity = !PARITY_OUT ? 'set NODUS_SEND_PARITY_OUT (build-nodus-send-wasm.sh parity)' : false;
+const NAME = {
+  seed: fill(32, 7), chain: '44'.repeat(32), tip: '3000', gas: '0', price: '50000000000', expiry: '3090', name: 'punk',
+  coins: [['33'.repeat(64), '40000000000'], ['11'.repeat(64), '20000000000'], ['22'.repeat(64), '5000000000']],
+  outSeeds: fill(32, 160), signRandom: fill(32, 200)
+};
+async function wasmName(file, { fixedRandom }, over = {}) {
+  const input = { ...NAME, ...over }, { M, num, str } = await loadParity(file, fixedRandom);
+  M.HEAPU8.set(input.seed, num('nsw_seed_buf'));
+  M.HEAPU8.set(input.outSeeds, num('nsw_out_seed_buf'));
+  assert.equal(num('nsw_out_seed_load', ['number'], [input.outSeeds.length]), 0);
+  if (fixedRandom) {
+    M.HEAPU8.set(input.signRandom, num('nsw_test_random_buf'));
+    assert.equal(num('nsw_test_random_load', ['number'], [input.signRandom.length]), 0);
+  }
+  num('nsw_req_reset');
+  for (const [nullifier, amount] of input.coins) assert.equal(num('nsw_req_add_coin', ['string', 'string'], [nullifier, amount]), 0, str('nsw_error'));
+  const rc = num('nsw_name_offline_build', ['number', 'string', 'string', 'string', 'string', 'string', 'string'],
+    [input.gen ?? 2, input.name, input.chain, input.tip, input.gas, input.price, input.expiry]);
+  if (rc !== 0) return { rc, error: str('nsw_error'), envLen: num('nsw_built_env_len') };
+  const at = num('nsw_built_env'), length = num('nsw_built_env_len'), inputs = [];
+  for (let i = 0; i < num('nsw_built_n_in'); i++) inputs.push(str('nsw_built_in', ['number'], [i]));
+  return {
+    rc, envelope: hex(M.HEAPU8.subarray(at, at + length)), wire_id: str('nsw_built_wire'), intent_id: str('nsw_built_intent'),
+    chain_id: str('nsw_built_chain'), name: str('nsw_built_name'), price: str('nsw_built_price'), owner: str('nsw_built_recipient'),
+    fee: str('nsw_built_fee'), change: str('nsw_built_change'), expiry: str('nsw_built_expiry'), inputs, op: num('nsw_built_op')
+  };
+}
+
+test('name parity: TEST wasm builds the same registration twice, with the pre-move nodus-cli call layout', { skip: skipNameParity }, async () => {
+  const a = await wasmName('send-test-node.mjs', { fixedRandom: true }), b = await wasmName('send-test-node.mjs', { fixedRandom: true });
+  assert.equal(a.rc, 0, a.error);
+  assert.deepEqual(a, b);
+  assert.equal(a.name, 'punk'); assert.equal(a.price, NAME.price); assert.equal(a.op, 0);
+  assert.equal(a.fee, '1000000', 'the floor at gas price 0');
+  assert.equal(a.change, '9999000000', '6·10^10 − 5·10^10 − 10^6');
+  assert.equal(a.expiry, NAME.expiry); assert.equal(a.chain_id, NAME.chain);
+  assert.deepEqual(a.inputs, ['11'.repeat(64), '33'.repeat(64)], 'largest first (40, 20), written ascending');
+  // the CORE call, byte for byte: name_len ‖ name ‖ price u64 BE ‖ in 2 ‖
+  // nullifiers ‖ out 1 ‖ owner hex (ASCII) ‖ change u64 BE ‖ native token ‖
+  // the change seed
+  const call = '04' + Buffer.from('punk').toString('hex') + '0000000ba43b7400' + '02' + '11'.repeat(64) + '33'.repeat(64) + '01' +
+    Buffer.from(a.owner).toString('hex') + '0000000253fca1c0' + '00'.repeat(64) + hex(NAME.outSeeds);
+  assert.ok(a.envelope.includes(call), 'the envelope carries the nodus-cli call bytes');
+});
+
+test('name parity: the shipped wasm (hedged signature) has the same intent_id, a different wire_id', { skip: skipNameParity }, async () => {
+  assert.ok(readFileSync(join(PARITY_OUT, 'send-node.wasm')).equals(wasmBytes), 'send-node.wasm is not the shipped send.wasm — rebuild both');
+  const fixed = await wasmName('send-test-node.mjs', { fixedRandom: true }), shipped = await wasmName('send-node.mjs', { fixedRandom: false });
+  assert.equal(shipped.rc, 0, shipped.error);
+  for (const key of ['intent_id', 'chain_id', 'name', 'price', 'owner', 'fee', 'change', 'expiry', 'inputs']) assert.deepEqual(shipped[key], fixed[key], key);
+  assert.notEqual(shipped.wire_id, fixed.wire_id);
+  assert.equal(shipped.envelope.length, fixed.envelope.length);
+});
+
+test('name refusals in the module: generation 1, a name outside the rule, price 0, unused change seeds', { skip: skipNameParity }, async () => {
+  const gen1 = await wasmName('send-node.mjs', { fixedRandom: false }, { gen: 1 });
+  assert.notEqual(gen1.rc, 0); assert.match(gen1.error, /Invalid offline name input/); assert.equal(gen1.envLen, 0);
+  const upper = await wasmName('send-node.mjs', { fixedRandom: false }, { name: 'PUNK' });
+  assert.notEqual(upper.rc, 0); assert.match(upper.error, /Not a chain name/);
+  const hexlike = await wasmName('send-node.mjs', { fixedRandom: false }, { name: 'deadbeef' });
+  assert.notEqual(hexlike.rc, 0); assert.match(hexlike.error, /Not a chain name/);
+  const free = await wasmName('send-node.mjs', { fixedRandom: false }, { price: '0' });
+  assert.notEqual(free.rc, 0); assert.match(free.error, /gave no price/);
+  const extra = await wasmName('send-node.mjs', { fixedRandom: false }, { outSeeds: fill(64, 160) });
+  assert.notEqual(extra.rc, 0); assert.match(extra.error, /used 32 of the 64/); assert.equal(extra.envLen, 0);
 });
 
 test('claim data: the embedded testnet data seals in the shipped module; a wrong hash or leaf is refused', { skip: skipParity }, async () => {

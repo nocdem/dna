@@ -28,7 +28,14 @@ export function createMockNodusModule() {
     // HF-4 chain names: name -> owner fingerprint; owner -> { eth, bsc, sol,
     // trx } profile addresses; profileError: the module's refusal of an
     // unreadable / unsigned profile.
-    names: {}, profiles: {}, profileError: null, nameError: null
+    names: {}, profiles: {}, profileError: null, nameError: null,
+    // HF-4 chain-name registration: the node's prices (3, 4, 5, 6+
+    // characters; raw decimal strings — test values, the module's are the
+    // node's), scheduled price rows, the price the BUILD reads (null = the
+    // same list; a test sets it to model a price change between the quote
+    // and the build), a tamper of the build's read-back, the last request.
+    namePrices: { prices: ['100000000000', '50000000000', '10000000000', '100000000'], scheduled: [] },
+    buildPrices: null, nameTamper: null, lastNameBuild: null
   };
   const bytes = () => new Uint8Array(memory.buffer);
   async function op(name, fn) {
@@ -77,6 +84,26 @@ export function createMockNodusModule() {
       const address = state.profiles[owner]?.[field];
       if (!address) throw new Error('The owner of this name has no address for this network in their profile. Nothing was sent.');
       return { address };
+    }),
+    namePrices: () => op('namePrices', async () => ({ prices: [...state.namePrices.prices], scheduled: state.namePrices.scheduled.map(row => ({ ...row })) })),
+    // The module's rules, modelled: the name must be free and this ID must
+    // hold none (it asks the node itself), the price is ITS OWN read of the
+    // node (never the caller's), largest-first coins until price + fee.
+    nameBuild: request => op('nameBuild', async () => {
+      state.lastNameBuild = request;
+      if (state.names[request.name]) throw new Error(`The name "${request.name}" is already registered. Nothing was built.`);
+      if (Object.values(state.names).includes(state.fingerprint)) throw new Error('This wallet already has a chain name. Nothing was built.');
+      const prices = (state.buildPrices || state.namePrices).prices;
+      const price = prices[request.name.length >= 6 ? 3 : request.name.length - 3];
+      const need = BigInt(price) + BigInt(FEE), inputs = [];
+      let sum = 0n;
+      for (const c of [...request.coins].sort((a, b) => (BigInt(b.amount) > BigInt(a.amount) ? 1 : BigInt(b.amount) < BigInt(a.amount) ? -1 : 0))) {
+        if (sum >= need) break;
+        inputs.push(c.nullifier); sum += BigInt(c.amount);
+      }
+      if (sum < need) throw new Error("Not enough spendable NODUS for the name's price plus the network fee.");
+      const decoded = { name: request.name, price, owner: state.fingerprint, fee: FEE, change: (sum - need).toString(), expiryHeight: request.expiryHeight, chainId: state.chainId, inputs };
+      return { envelope: Uint8Array.of(8, 8, 8), intentId: INTENT_ID, decoded: { ...decoded, ...(state.nameTamper || {}) } };
     }),
     cancel() { log.push('cancel'); if (state.failCancel) throw new Error('cancel failed'); },
     lock() { log.push('lock'); state.seedAtLock = bytes().subarray(SEED_AT, SEED_AT + 32).some(b => b !== 0); },

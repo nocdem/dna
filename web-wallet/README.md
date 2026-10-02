@@ -934,6 +934,66 @@ Decision: `docs/plans/decisions/2026-09-25-web-wallet-solana-kit.md` (operator,
   all JavaScript chunks 1,477,466 → 1,315,743 bytes. The default build's app
   chunk is 1,254,356 bytes.
 
+## Register a chain name (unreleased)
+
+Decision `docs/plans/decisions/2026-10-02-onchain-names.md` (items 2–6, 10,
+11, 16: first come wins, one name per ID, permanent; 3–36 of a–z0–9, an
+all-hex name of 8+ characters refused; the price by length is the chain's,
+votable) and design `docs/plans/2026-10-02-onchain-names-design.md` rev 4 §2.
+The wallet and Nodus Connect (the same `src/app.js` and markup in
+`connect-site/index.html`) can now register this wallet's chain name.
+
+- **Where.** No panel of its own: a "Register a name" button beside Send /
+  Receive / Earn, and a "Chain name" block in the NODUS receive part of the
+  Send / Receive panel (shown while NODUS is the selected network). It
+  shows this wallet's chain name if it has one (`dnac_name_of`); otherwise
+  the prices by length and a name field.
+- **Steps.** Type a name → "Check name": taken / this wallet already has a
+  name / available with the price for its length (`nameQuote`,
+  `src/adapters/nodus.js`; uppercase is lower-cased ASCII-only) → "Review
+  registration": the module builds and signs, the usual review dialog shows
+  the name, the owner (this wallet's Nodus ID), the price, the network fee,
+  the total, the change, the rules (first come; a refused registration never
+  pays the price — design §2; one name per ID; no expiry), a "Price change"
+  row when a scheduled price change takes effect before the registration's
+  last valid block, and the expiry → "Confirm & register" → the
+  registration is tracked in Activity ("Chain name registration") like a
+  send, its coins held until it is included or expires. When it is
+  included the block re-reads and shows the new name.
+- **Prices come from the node, never from this code.** The module reads
+  `dnac_fee_info`'s name prices on the build call itself
+  (`nodus_client_dnac_name_prices`; no answer → nothing is built) and the
+  wallet never hands it a price; the price on the review is the one decoded
+  from the signed envelope, and if it differs from the price shown at
+  "Check name" nothing is shown ("the price of this name changed").
+- **Same C code as nodus-cli.** The envelope is built by the shared builder
+  `nodus/src/client/nodus_v2_name.c` (nodus-cli `name register` now calls it
+  too), compiled into `send.wasm` (`crypto/nodus-send-wasm.c` "CHAIN NAME
+  REGISTRATION": `nsw_name_prices`, `nsw_name_build`,
+  `nsw_name_offline_build`, the `nsw_np_*` and `nsw_built_name` /
+  `nsw_built_price` getters). Before building, the module repeats the CLI's
+  checks on the same session: rule-set generation 2 or later (generation 1
+  → "Chain names open at block H"), the name is free, this ID holds no
+  name. The chain judges all of them again. Module contract: the optional
+  pair `namePrices()` / `nameBuild()` (`src/nodus/client.js` `registrable`;
+  a module without them still resolves names).
+- **Not in the native vector.** The name section is compiled into the two
+  emcc modules only (`scripts/build-nodus-send-native-vector.sh` does not
+  link `nodus_v2_name.c`); its parity is TEST wasm vs the shipped wasm plus
+  the call layout pinned against the nodus ctest `test_v2_name_build`
+  fixture.
+
+Tests (written, not run by the change author): `test/name-register.test.js`
+(client gating, price list and tier, the quote, every refusal before a
+build, every read-back field, a price change between quote and build, the
+scheduled-change row, record-before-submit), the mock module's
+`namePrices` / `nameBuild` (`test/nodus-mock-module.js`), and in
+`test/nodus-send-wasm.test.js` the export list plus "name parity" (needs
+`NODUS_SEND_PARITY_OUT`, else SKIP). **How they can lie:** the mock models
+the module's rules with canned data; the parity tests use synthetic coins
+and a made-up chain id and never talk to a node; nothing drives the browser
+UI (`src/app.js` wiring is untested).
+
 ## Release build always includes Ixios (0.1.44)
 
 The 0.1.43 release was built without `VITE_ENABLE_IXIOS=true`, so neither the

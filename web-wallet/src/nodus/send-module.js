@@ -299,6 +299,48 @@ export async function createNodusSendModule(network, { claim = null, loadGlue = 
       check(await call('nsw_profile_address', ['string', 'string'], [owner, field]));
       return { address: str('nsw_profile_addr') };
     },
+    // CHAIN-NAME REGISTRATION — nodus-cli `name register` over the shared
+    // builder (nodus-send-wasm.c "CHAIN NAME REGISTRATION"; decision
+    // 2026-10-02-onchain-names.md). namePrices() -> { prices: [3, 4, 5, 6+
+    // characters] (raw decimal strings: dnac_fee_info "np" at tip + 1),
+    // scheduled: [{ param (10..13), value, effective }] } — for display;
+    // the build reads the price again on its own call.
+    async namePrices() {
+      check(await call('nsw_name_prices'));
+      const scheduled = [];
+      for (let i = 0, n = num('nsw_np_sched_count'); i < n; i++) {
+        scheduled.push({ param: num('nsw_np_sched_param', ['number'], [i]), value: str('nsw_np_sched_value', ['number'], [i]), effective: str('nsw_np_sched_effective', ['number'], [i]) });
+      }
+      return { prices: [0, 1, 2, 3].map(i => str('nsw_np_price', ['number'], [i])), scheduled };
+    },
+    // nameBuild({ name (lower-case), expiryHeight, coins }) -> { envelope,
+    // intentId, decoded: { name, price, owner, fee, change, expiryHeight,
+    // chainId, inputs } }, `decoded` read back from the signed bytes by the
+    // C side. NO price is passed in: the module reads it from the node on
+    // this call (never a compiled or JS value), after checking that the
+    // name is free and this ID holds none. Submitted with submit().
+    async nameBuild({ name, expiryHeight, coins } = {}) {
+      if (typeof name !== 'string' || num('nsw_name_ok', ['string'], [name]) !== 1) throw new Error('Not a chain name: 3 to 36 letters a-z and digits.');
+      raw(expiryHeight, 'validity height');
+      if (!Array.isArray(coins) || coins.length > MAX_COINS) throw new Error('Invalid coin list.');
+      num('nsw_req_reset');
+      for (const coin of coins) {
+        if (!coin || typeof coin.nullifier !== 'string' || !HEX128.test(coin.nullifier)) throw new Error('Invalid coin list.');
+        check(num('nsw_req_add_coin', ['string', 'string'], [coin.nullifier, raw(coin.amount, 'coin amount')]));
+      }
+      check(await call('nsw_name_build', ['string', 'string'], [name, expiryHeight]));
+      const at = num('nsw_built_env'), length = num('nsw_built_env_len');
+      const inputs = [];
+      for (let i = 0, n = num('nsw_built_n_in'); i < n; i++) inputs.push(str('nsw_built_in', ['number'], [i]));
+      return {
+        envelope: M.HEAPU8.slice(at, at + length),
+        intentId: str('nsw_built_intent'),
+        decoded: {
+          name: str('nsw_built_name'), price: str('nsw_built_price'), owner: str('nsw_built_recipient'), fee: str('nsw_built_fee'),
+          change: str('nsw_built_change'), expiryHeight: str('nsw_built_expiry'), chainId: str('nsw_built_chain'), inputs
+        }
+      };
+    },
     // GENESIS CLAIM. claimStatus() -> { found: false } or { found: true,
     // amount (raw), tip, startHeight, endHeight, window: 'open' | 'not-open'
     // | 'closed' (for the next block), claimed: 'yes' (proven: the node's

@@ -123,7 +123,8 @@ nodus/
 │   │   ├── nodus_singleton.c  # Thread-safe global client instance
 │   │   ├── nodus_republish.c  # Migration republish helper
 │   │   ├── nodus_v2_spend.c   # Shared version-3 CORE SPEND builder (plan + build, no I/O)
-│   │   └── nodus_v2_stake.c/h # Shared STAKE / DELEGATE / UNDELEGATE envelope builder (no I/O)
+│   │   ├── nodus_v2_stake.c/h # Shared STAKE / DELEGATE / UNDELEGATE envelope builder (no I/O)
+│   │   └── nodus_v2_name.c/h  # Shared HF-4 NAME_REGISTER (chain name) envelope builder (no I/O)
 │   └── witness/               # DNAC BFT witness module (embedded)
 │       ├── nodus_witness.c          # Witness init, DB schema, lifecycle
 │       ├── nodus_witness_db.c/h     # SQLite ops (nullifiers, ledger, UTXOs, TXs, blocks)
@@ -1523,6 +1524,45 @@ Test: `test_v2_stake_build` (STAKE, DELEGATE and — after the DELEGATE is appli
 UNDELEGATE admitted by the CheckTx dry run on a seeded chain with the production runtime;
 read-back == request; the pre-move nodus-cli layout restated; twin builds identical outside the two
 auth blobs; the gas-price fee; refusals).
+
+### Shared name registration builder (`src/client/nodus_v2_name.h`)
+
+`src/client/nodus_v2_name.c` builds the HF-4 single-leg CORE NAME_REGISTER envelope (op 8,
+generation 2 only; call = `name_len ‖ name ‖ price u64 BE ‖ in_count ‖ nullifiers ascending ‖
+out_count ‖ the native change`), kind-1 signed by the owner. It is the body of
+`nodus-cli name register` (`cmd_name_register`) moved out unchanged in behaviour (decision
+`docs/plans/decisions/2026-10-02-onchain-names.md`; design `docs/plans/2026-10-02-onchain-names-design.md`
+rev 4 §2): the CLI now does only the session work — `cli_select_runtimes` (generation >= 2 or it
+refuses), `dnac_name_lookup` (taken → refused), `dnac_name_of` (this ID already holds a name →
+refused), `dnac_fee_info`'s name prices (`nodus_client_dnac_name_prices`; no prices → refused,
+never a guessed price) and gas price, `dnac_utxo`, `cli_env_expiry` — and calls the library.
+The web wallet's WASM module compiles the same file (`web-wallet/crypto/nodus-send-wasm.c`
+"CHAIN NAME REGISTRATION", networked builds only). Inputs only (the listed coins with token and
+unlock height, tip + expiry, gas price, the price, `chain_id32`, the CORE ruleset tuple + the
+SYSTEM meter policy of the node's generation, the key, a randomness callback for the change
+seed); no network and no clock.
+
+- `nodus_v2_name_normalize` — ASCII-only lower-casing (A–Z → a–z; never a locale `tolower`),
+  then `dnac_name_bytes_ok` (3–36 of a–z0–9; an all-hex name of 8+ refused).
+- `nodus_v2_name_price_for` — the tier (3, 4, 5, 6+ characters) from the node's four prices.
+- `nodus_v2_name_effect_decl` — the exact declaration: effects = in + out + 2, bytes = 23 +
+  84·effects + 348·out + (name_len + 72) + 9 + 64·in.
+- `nodus_v2_name_build` — coins filtered (zero, non-native, locked at tip + 1 skipped), largest
+  first (`nodus_v2_spend_sort_coins` / `nodus_v2_spend_pick`), at most 13 inputs
+  (`NODUS_V2_NAME_MAX_IN`: the 16-read budget minus pool, NAME, OWNER); fee = the floor (or a fixed
+  `--fee`), raised to units × gas price in at most 8 passes, units = `nodus_v2_spend_ceiling` with
+  inputs + 3 reads; one 32-byte change seed drawn per pass that writes a change (nodus-cli:
+  `nodus_random`; the browser: its CSPRNG); two-pass signature; read-back
+  (`nodus_v2_name_decode`) refused if it differs from the request. Refuses a name outside the
+  rule, price 0, tip 0, an expiry outside `(tip, tip + NODUS_CMT_APP_MAX_EXPIRY_AHEAD]`, a fixed
+  fee below the floor or below units × gas price. "Taken", "one name per ID", the price at the
+  block height and the generation stay with the chain (op 8 exec), which judges them again.
+
+Test: `test_v2_name_build` (the helpers; the call against literal bytes of the pre-move
+nodus-cli layout; the pre-move algorithm restated — same intent_id, bytes identical outside the
+auth blob, at gas price 0 and at a two-pass gas price; refusals; a library-built registration
+admitted by the CheckTx dry run and applied on a seeded generation-2 chain, pins == compiled
+table).
 
 ### Connection States
 
@@ -4057,7 +4097,9 @@ equals the answer; no match or an older node → nothing is built. The expiry
 param-9 height H is committed; once H−1 is not above the larger of the builder's tip and the
 ruleset answer's tip (`H − 1 < tip + 1`), no generation-1 expiry is valid and the build is
 refused ("retry after height H"). A generation-2 envelope, or no vote (H = 0), takes the plain
-margin. The offline `v2-envelope chain-config --db` takes the same two facts from its local
+margin. `name register` builds through the shared library `src/client/nodus_v2_name.c`
+(section "Shared name registration builder"), which the web wallet and Nodus Connect compile
+too. The offline `v2-envelope chain-config --db` takes the same two facts from its local
 database (`cli_local_ruleset_facts`), and the msig sign / combine paths judge an export with
 the CORE generation its own leg names (`cli_core_runtime_for_env`). The generated pins header
 carries every generation (`NODUS_PIN_GEN_COUNT` 2; generation 1 = the unprefixed `NODUS_PIN_*`

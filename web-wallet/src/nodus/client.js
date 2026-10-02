@@ -74,7 +74,15 @@
 //                                OPTIONAL (HF-4, chain names — shapes in
 //                                src/nodus/send-module.js), same rule as
 //                                the claim operations.
-//     tick()                     Keepalive ping (the thread-less stand-in for
+//     namePrices() / nameBuild({ name, expiryHeight, coins })
+//                                OPTIONAL (HF-4, chain-name registration —
+//                                shapes in src/nodus/send-module.js), its
+//                                own group: a module without both still
+//                                unlocks and still resolves names; this
+//                                client then answers "registering is not
+//                                available". The registration envelope is
+//                                submitted with submit().
+//     tick()                   Keepalive ping (the thread-less stand-in for
 //                                nodus_client.c's 60 s read-thread ping; the
 //                                server drops an idle session at 180 s).
 //
@@ -118,6 +126,11 @@ const CONNECT_OPS = ['connect', 'connectSync'];
 // module without all three still unlocks; this client then answers every
 // name call "not available" (a name never resolves to anything).
 const NAME_OPS = ['nameLookup', 'nameOf', 'profileAddress'];
+// OPTIONAL (HF-4, chain-name registration — shapes in
+// src/nodus/send-module.js): a group of its own, so a module that resolves
+// names but cannot register keeps send-to-name. Registering also needs the
+// name lookups above (the availability check).
+const NAME_REG_OPS = ['namePrices', 'nameBuild'];
 const RAW_RULE = /^[1-9]\d{0,19}$/;
 function validRules(rules) {
   return !!rules && ['minDelegation', 'selfStake', 'commissionMaxBps', 'undelegateLockEpochs', 'epochLength'].every(key => typeof rules[key] === 'string' && RAW_RULE.test(rules[key]) && BigInt(rules[key]) < 2n ** 64n);
@@ -126,7 +139,7 @@ const lockedError = () => new Error('Wallet is locked.');
 
 export function createNodusClient({ factory, onState, setInterval: every = globalThis.setInterval, clearInterval: stopEvery = globalThis.clearInterval } = {}) {
   if (typeof factory !== 'function') throw new Error('The Nodus send module is not available.');
-  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, connectable = false, nameable = false;
+  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, connectable = false, nameable = false, registrable = false;
   // ONE operation queue: Asyncify keeps a single global currData, so a second
   // export entered while the first is suspended corrupts the first. `tail`
   // settles only when the module call itself has returned, never merely when
@@ -204,6 +217,7 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
       stakingRules = stakeable ? Object.freeze({ ...loaded.stakingRules }) : undefined;
       connectable = CONNECT_OPS.every(name => typeof loaded[name] === 'function');
       nameable = NAME_OPS.every(name => typeof loaded[name] === 'function');
+      registrable = nameable && NAME_REG_OPS.every(name => typeof loaded[name] === 'function');
       const info = await enqueue('unlock', { seed });
       if (!info || typeof info.fingerprint !== 'string' || !HEX128.test(info.fingerprint) || typeof info.chainId !== 'string' || !HEX64.test(info.chainId)) throw new Error('The Nodus send module returned an invalid identity.');
       // The module derives the identity from the seed on its own; it must be
@@ -223,6 +237,7 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
   const stakeCall = op => (args, options) => stakeable ? call(op)(args, options) : Promise.reject(new Error('Staking is not available in this wallet version.'));
   const noMessages = () => new Error('Messages is not available in this wallet version.');
   const nameCall = op => (args, options) => nameable ? call(op)(args, options) : Promise.reject(new Error('Chain names are not available in this wallet version.'));
+  const registerCall = op => (args, options) => registrable ? call(op)(args, options) : Promise.reject(new Error('Registering a chain name is not available in this wallet version.'));
   return {
     get state() { return state; },
     get fingerprint() { return fingerprint; },
@@ -241,6 +256,10 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
     nameLookup: nameCall('nameLookup'),
     nameOf: nameCall('nameOf'),
     profileAddress: nameCall('profileAddress'),
+    // Whether the loaded module can register a chain name (NAME_REG_OPS).
+    get registrable() { return registrable && state === 'ready'; },
+    namePrices: (options) => registerCall('namePrices')(undefined, options),
+    nameBuild: registerCall('nameBuild'),
     claimStatus: (options) => claimCall('claimStatus')(undefined, options),
     claimBuild: (options) => claimCall('claimBuild')(undefined, options),
     claimSubmit: claimCall('claimSubmit'),
