@@ -397,7 +397,8 @@ static int reg_env(nodus_witness_t *w, uint64_t height, int k, int c,
     leg.hdr.call_len        = (uint32_t)off;
     leg.hdr.auth_len        = AUTH_LEN;
     /* the exact result size: n_in + n_out + 2 effects (restated from the
-     * effect codec, independently of nodus-cli t8_name_effect_decl) */
+     * effect codec, independently of nodus_v2_name_effect_decl in the
+     * shared builder src/client/nodus_v2_name.c) */
     leg.hdr.res_max_effects = 1u + n_out + 2u;
     leg.hdr.res_max_effect_bytes =
         (uint32_t)DNA_EFFECT_FIXED_HEAD +
