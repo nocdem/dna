@@ -35,7 +35,9 @@
 #   restarts and floods included. Run earlier, it reads a partial history.
 #
 # WHAT IT LEAVES BEHIND
-#   Nothing. Read-only: greps every node's already-written nodus.log.
+#   Nothing. Read-only: greps every node's already-written witness log —
+#   nodus.log, or witness.log on a node that is split in the cluster's
+#   STAGEF_MODE (stagef_node_log, split S3).
 #
 # HOW IT CAN LIE
 #   - **A green scan on a build without the seam is vacuous.** Before
@@ -66,6 +68,11 @@
 #     and test_v2_join.sh (node 6) TRUNCATE theirs (their own headers and
 #     README rows say so) — for those two nodes this scan covers only the
 #     process lifetime since that scenario. Disclosed, not hidden.
+#   - **Split S3 (splitw / mixedw).** A split node's witness.log covers
+#     nodus-witness only; nothing here reads the core's nodus.log, so a
+#     fault the core logged about its witness IPC is not counted. The
+#     restart scenarios SKIP for a split victim, so in splitw no node's
+#     witness.log is truncated mid-sweep.
 #
 # ════════════════════════════════════════════════════════════════════
 set -euo pipefail
@@ -87,8 +94,11 @@ stagef_sentinel SETUP_OK   # the runner turns PASS-without-ASSERT_RUN into FAIL
 bad=0
 stagef_sentinel ASSERT_RUN   # the terminal assertion (the fault scan) is next
 for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
-    log="$(stagef_node_dir "$n")/nodus.log"
-    [ -f "$log" ] || { echo "[FAIL] node$n has no nodus.log" >&2; bad=1; continue; }
+    # Split S3: the 4004 host and both reactors live in nodus-witness on a
+    # split node — stagef_node_log is its witness.log there, nodus.log on a
+    # combined node (the path this loop always read).
+    log="$(stagef_node_log "$n")"
+    [ -f "$log" ] || { echo "[FAIL] node$n has no witness log ($log)" >&2; bad=1; continue; }
     # anti-vacuity: the seam this scenario is about must have existed
     if ! grep -q 'p2p on .* persistent peer(s)' "$log"; then
         echo "[FAIL] node$n: no 4004 p2p host start line — this binary has no seam to check (pre-F5?)" >&2

@@ -229,6 +229,9 @@
 # ════════════════════════════════════════════════════════════════════
 set -euo pipefail
 . "$(dirname "$0")/../stagef_env.sh"
+# Split S3: spawns candidates and SIGSTOPs/starts genesis nodes as one
+# nodus-server process each — SKIP (99) in any split mode (splitw, mixedw).
+stagef_split_skip_if $(seq 1 "$STAGEF_COMMITTEE_SIZE")
 
 die()  { echo "[FAIL] $*" >&2; exit 1; }
 ok()   { echo "[ok] $*"; }

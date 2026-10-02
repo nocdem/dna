@@ -113,6 +113,9 @@
 # Usage:
 #   bash genesis_protocol_v2.sh              # bring up + run + tear down
 #   bash genesis_protocol_v2.sh --scenarios  # run only; cluster must be up
+#   STAGEF_MODE=splitw|mixedw bash genesis_protocol_v2.sh
+#                                            # split S3 harness modes (README
+#                                            # "Harness modes"); default combined
 #
 # ════════════════════════════════════════════════════════════════════
 set -uo pipefail
@@ -122,6 +125,14 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 SCENARIOS_ONLY=0
 [ "${1:-}" = "--scenarios" ] && SCENARIOS_ONLY=1
+
+# Split S3 — the harness mode (STAGEF_MODE, stagef_env.sh; decision
+# 2026-10-01-nodus-component-split.md items 15/22/23). A full run brings
+# the cluster up in $STAGEF_MODE; --scenarios reads the mode the running
+# cluster recorded (stagef_mode). A scenario that cannot handle a split
+# node exits 99 and is reported as SKIP — coverage that did not happen —
+# exactly like every other 99.
+echo "════ V2 Genesis Protocol — mode: $(if [ "$SCENARIOS_ONLY" = 1 ]; then stagef_mode; else echo "${STAGEF_MODE:-combined}"; fi) ════"
 
 # R3 W3 (C2d) — ORDER IS EXPLICIT AND NO LONGER ALPHABETICAL.
 #
@@ -266,9 +277,12 @@ fi
 pass=0; fail=0; skip=0
 failed_names=""
 skipped_names=""
+# The mode the cluster under test was BORN in (its $BASE_DIR/stagef_mode),
+# read before Phase 4 can remove $BASE_DIR.
+RUN_MODE="$(stagef_mode)"
 
 echo ""
-echo "════ Phase 3 — V2 scenarios ════"
+echo "════ Phase 3 — V2 scenarios (mode: $RUN_MODE) ════"
 for t in $V2_TESTS; do
     script="$HERE/tests/$t"
     if [ ! -x "$script" ]; then
@@ -368,6 +382,7 @@ fi
 
 echo ""
 echo "════ V2 Genesis Protocol — result ════"
+echo "  mode:    $RUN_MODE"
 echo "  passed:  $pass"
 echo "  skipped: $skip${skipped_names:+ —$skipped_names}"
 echo "  failed:  $fail${failed_names:+ —$failed_names}"
@@ -378,6 +393,10 @@ if [ "$skip" -gt 0 ]; then
     echo ""
     echo "  ⚠ A SKIP IS NOT A PASS. The scenarios above declined to run and"
     echo "    their coverage is ABSENT from this result."
+    if [ "$RUN_MODE" != "combined" ]; then
+        echo "    In mode $RUN_MODE a scenario that spawns/stops nodes itself SKIPs"
+        echo "    when its node is split (README \"Harness modes\")."
+    fi
 fi
 [ "$fail" -eq 0 ] || exit 1
 exit 0

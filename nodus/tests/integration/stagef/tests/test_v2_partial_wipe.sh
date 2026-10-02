@@ -91,6 +91,12 @@ PINFILE="$BASE_DIR/v2_genesis_pin"
 
 die() { echo "[FAIL] $*" >&2; exit 1; }
 
+# Split S3: this scenario kills and boots the victim as ONE nodus-server
+# process (its pin-rejoin restore would bring back a core with no
+# nodus-witness beside it) — SKIP (99) when the victim is split
+# (splitw); runs unchanged when it is combined (combined, mixedw).
+stagef_split_skip_if "$VICTIM"
+
 ref_db=$(stagef_node_chain_db "$REF")
 [ -n "$ref_db" ] && [ -s "$ref_db" ] || die "no chain DB for node$REF"
 has_v2=$(sqlite3 "$ref_db" \

@@ -262,6 +262,9 @@
 # ════════════════════════════════════════════════════════════════════
 set -euo pipefail
 . "$(dirname "$0")/../stagef_env.sh"
+# Split S3: upgrades EVERY node by restarting it as one nodus-server
+# process — SKIP (99) in any split mode (splitw, mixedw).
+stagef_split_skip_if $(seq 1 "$STAGEF_COMMITTEE_SIZE")
 
 die() { echo "[FAIL] $*" >&2; exit 1; }
 

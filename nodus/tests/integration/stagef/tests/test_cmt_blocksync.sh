@@ -87,6 +87,11 @@ DIST="${STAGEF_BLOCKSYNC_DISTANCE:-20}"
 
 die() { echo "[FAIL] $*" >&2; exit 1; }
 
+# Split S3: this scenario stops and restarts the victim as ONE
+# nodus-server process — SKIP (99) when the victim is split (splitw);
+# runs unchanged when it is combined (combined, mixedw).
+stagef_split_skip_if "$VICTIM"
+
 db_of() { stagef_node_chain_db "$1"; }
 
 case "$DIST" in ''|*[!0-9]*) die "STAGEF_BLOCKSYNC_DISTANCE must be a positive integer (got '$DIST')";; esac

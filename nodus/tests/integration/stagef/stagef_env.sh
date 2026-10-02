@@ -18,7 +18,33 @@ export STAGEF_REPO_ROOT
 STAGEF_NODUS_BIN="${STAGEF_NODUS_BIN:-$STAGEF_REPO_ROOT/nodus/build/nodus-server}"
 STAGEF_DNACLI_BIN="${STAGEF_DNACLI_BIN:-$STAGEF_REPO_ROOT/messenger/build/cli/dna-connect-cli}"
 STAGEF_NODUSCLI_BIN="${STAGEF_NODUSCLI_BIN:-$STAGEF_REPO_ROOT/nodus/build/nodus-cli}"
-export STAGEF_NODUS_BIN STAGEF_DNACLI_BIN STAGEF_NODUSCLI_BIN
+# Split S3 — the external witness binary (read only in a split mode,
+# STAGEF_MODE below). Default: the same build directory as the default
+# STAGEF_NODUS_BIN. Decision 2026-10-01-nodus-component-split.md item 23:
+# a split / mixed run uses nodus-server and nodus-witness from the SAME
+# build — point both at one tree.
+STAGEF_NODUSWITNESS_BIN="${STAGEF_NODUSWITNESS_BIN:-$STAGEF_REPO_ROOT/nodus/build/nodus-witness}"
+export STAGEF_NODUS_BIN STAGEF_DNACLI_BIN STAGEF_NODUSCLI_BIN STAGEF_NODUSWITNESS_BIN
+
+# Harness mode (decision 2026-10-01-nodus-component-split.md item 15:
+# combined / split / mixed before any split deploy; item 22: witness
+# first; item 23: mixed = the SAME build's combined binary):
+#   combined  (default) every node is one nodus-server — today's harness,
+#             unchanged.
+#   splitw    every node is nodus-server --witness-external (core + DHT)
+#             PLUS a nodus-witness process (consensus, the witness port).
+#             This is item 15's "split" at the witness-only stage (split
+#             S3), not the later three-process split.
+#   mixedw    nodes 1..STAGEF_MIXEDW_SPLIT_NODES (3) as in splitw, the rest
+#             combined — both from the same build (item 23), NOT the
+#             previous release.
+# Read by stagef_up_v2.sh at bring-up, which records it in
+# $BASE_DIR/stagef_mode; every later script asks stagef_mode, which
+# prefers that recorded value, so a scenario run from a shell without
+# STAGEF_MODE exported still sees the mode the cluster was born in.
+STAGEF_MODE="${STAGEF_MODE:-combined}"
+STAGEF_MIXEDW_SPLIT_NODES=3
+export STAGEF_MODE STAGEF_MIXEDW_SPLIT_NODES
 
 # Pointer file — stagef_up_v2.sh writes, stagef_down.sh reads+removes.
 STAGEF_POINTER=/tmp/stagef_current
@@ -86,6 +112,89 @@ stagef_node_chain_db() {
 }
 
 stagef_user_home() { echo "$BASE_DIR/user"; }
+
+# ──────────────────────────────────────────────────────────────────────
+# SPLIT S3 — HARNESS MODES (STAGEF_MODE, above)
+#
+# In a split node the witness lines (`chain role: COMETBFT`, `cometbft
+# startup table built`, `cometbft lane LIVE`, `p2p on … persistent
+# peer(s)`, `completed ABCI handshake`, `ABCI replay blocks`, every
+# CMT_FAULT) are printed by nodus-witness into node<N>/witness.log, not by
+# nodus-server into node<N>/nodus.log. Every read of a witness line goes
+# through stagef_node_log, which picks the right file; in combined mode it
+# returns node<N>/nodus.log, exactly the path every caller used before.
+# ──────────────────────────────────────────────────────────────────────
+
+# stagef_mode — the active cluster's mode: the value stagef_up_v2.sh
+# recorded in $BASE_DIR/stagef_mode when that file exists, else
+# $STAGEF_MODE (default combined).
+stagef_mode() {
+    local m=""
+    if [ -n "${BASE_DIR:-}" ] && [ -f "$BASE_DIR/stagef_mode" ]; then
+        m="$(cat "$BASE_DIR/stagef_mode" 2>/dev/null || true)"
+    fi
+    echo "${m:-${STAGEF_MODE:-combined}}"
+}
+
+# stagef_node_is_split N — 0 if node N runs as nodus-server
+# --witness-external + nodus-witness in the active mode, 1 otherwise.
+stagef_node_is_split() {
+    case "$(stagef_mode)" in
+        splitw) return 0 ;;
+        mixedw) [ "$1" -le "$STAGEF_MIXEDW_SPLIT_NODES" ] ;;
+        *)      return 1 ;;
+    esac
+}
+
+# stagef_node_witness_log N — where node N's nodus-witness writes (split
+# node only; the file does not exist for a combined node).
+stagef_node_witness_log() { echo "$BASE_DIR/node$1/witness.log"; }
+
+# stagef_node_log N — the log that carries node N's WITNESS lines:
+# witness.log for a split node, nodus.log otherwise.
+stagef_node_log() {
+    if stagef_node_is_split "$1"; then
+        stagef_node_witness_log "$1"
+    else
+        echo "$BASE_DIR/node$1/nodus.log"
+    fi
+}
+
+# stagef_node_witness_pid N — the pid of node N's nodus-witness process
+# (split node only): a process whose command line names node N's data
+# directory AND whose executable is STAGEF_NODUSWITNESS_BIN (the
+# /proc/<pid>/exe check test_cmt_hf1_gas_upgrade.sh's node_pid uses), so
+# node N's nodus-server — same data directory — is never picked. The
+# scenario must therefore see the SAME STAGEF_NODUSWITNESS_BIN the
+# bring-up used. Prints nothing and returns 1 when there is none.
+stagef_node_witness_pid() {
+    local want pid
+    want="$(readlink -f "$STAGEF_NODUSWITNESS_BIN" 2>/dev/null || echo "$STAGEF_NODUSWITNESS_BIN")"
+    for pid in $(pgrep -f -- "node$1/data( |\$)" || true); do
+        if [ "$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)" = "$want" ]; then
+            echo "$pid"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# stagef_split_skip_if NODE... — for a scenario that spawns, kills,
+# restarts or stops nodes ITSELF and only knows how to handle one process
+# per node: if ANY of the named nodes is split in the active mode, print
+# the SKIP reason and exit 99 (SKIP — coverage that did not happen, never
+# a pass). Call it at the scenario's start, before any EXIT trap and
+# before stagef_sentinel SETUP_OK. Does nothing in combined mode.
+stagef_split_skip_if() {
+    local n
+    for n in "$@"; do
+        if stagef_node_is_split "$n"; then
+            echo "[SKIP] $(stagef_mode): scenario spawns/stops nodes directly — not yet adapted (split S6) (node$n is split)"
+            exit 99
+        fi
+    done
+    return 0
+}
 
 # Wrapper: run dna-connect-cli as the test user, fully isolated.
 # HOME → test-only .dna directory (no pollution of the real ~/.dna).

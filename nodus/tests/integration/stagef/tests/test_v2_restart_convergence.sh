@@ -126,6 +126,11 @@ REF=1
 
 die() { echo "[FAIL] $*" >&2; exit 1; }
 
+# Split S3: this scenario kills and restarts the victim as ONE
+# nodus-server process — SKIP (99) when the victim is split (splitw);
+# runs unchanged when it is combined (combined, mixedw).
+stagef_split_skip_if "$VICTIM"
+
 db_of() { stagef_node_chain_db "$1"; }
 
 # ── Precondition: this MUST be a V2 cluster ─────────────────────────

@@ -66,6 +66,14 @@
 #   the fleet a validator short for everything after it. No leaf is
 #   spent; no leader-derivation state to leave behind, because there is
 #   none on this lane.
+#   SPLIT S3 (STAGEF_MODE=splitw / mixedw — node 2 is split in both): the
+#   process stopped and resumed is node 2's nodus-witness
+#   (stagef_node_witness_pid); its nodus-server keeps running throughout.
+#   That stops the validator exactly as in combined mode — the core holds
+#   no consensus state — but it is NOT the same event as a whole host
+#   stopping: the core still answers clients (a dnac_* request to node 2
+#   meets a frozen witness behind a live core). Nothing here submits to
+#   node 2, so that path is not exercised.
 #
 # HOW IT CAN LIE
 #   - **"Height advanced" alone would be exactly the liveness test that
@@ -168,7 +176,14 @@ stagef_cmt_diff_at_floor "pre-cmt-dead-proposer" || exit 2
 # The signal is delivered FIRST, synchronously, before either DB read.
 voter_id=$(stagef_voter_id "$(stagef_node_dir "$VICTIM")/identity/nodus.pk")
 [ "${#voter_id}" = 64 ] || die "could not derive node$VICTIM's voter_id"
-VPID=$(pgrep -f "node$VICTIM/data" | head -1 || true)
+if stagef_node_is_split "$VICTIM"; then
+    # Split S3: the validator is node$VICTIM's nodus-witness process —
+    # stopping IT is what silences the validator; its nodus-server (core,
+    # DHT) keeps running, exactly as a split host's core would.
+    VPID=$(stagef_node_witness_pid "$VICTIM" || true)
+else
+    VPID=$(pgrep -f "node$VICTIM/data" | head -1 || true)
+fi
 [ -n "$VPID" ] || die "node$VICTIM is not running"
 kill -STOP "$VPID"
 echo "[ok] node$VICTIM (pid $VPID) STOPPED (voter_id ${voter_id:0:16}...)"

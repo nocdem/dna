@@ -147,7 +147,11 @@
 #   for everything after it. Node 7 permanently AUTO_RETIRED on this
 #   chain (UNSTAKED after its own next graduation boundary, per D-11) —
 #   this is NOT reversible within this bring-up; a scenario run AFTER
-#   this one that assumes 7 ACTIVE validators will not find them. The
+#   this one that assumes 7 ACTIVE validators will not find them.
+#   SPLIT S3: in STAGEF_MODE=splitw node 7 is split and the process
+#   stopped/resumed is its nodus-witness (stagef_node_witness_pid); its
+#   nodus-server keeps running. In mixedw node 7 is combined (original
+#   path). The CMT-APP line is read from stagef_node_log 1. The
 #   runner places it immediately before `test_p2p_seam_faults.sh`
 #   (which only reads node logs) and after everything else.
 #   When pumped: node 3's genesis leaf CLAIMED by the first pump step (if
@@ -282,7 +286,13 @@ e2=$(( e1 + E_LEN ))
 e3=$(( e2 + E_LEN ))
 echo "[ok] aligned at height $aligned_h; boundaries at $e1/$e2/$e3"
 
-VPID=$(pgrep -f "node$VICTIM/data" | head -1 || true)
+if stagef_node_is_split "$VICTIM"; then
+    # Split S3: stop node$VICTIM's nodus-witness — the validator; its
+    # nodus-server (core, DHT) keeps running (header, WHAT IT LEAVES BEHIND).
+    VPID=$(stagef_node_witness_pid "$VICTIM" || true)
+else
+    VPID=$(pgrep -f "node$VICTIM/data" | head -1 || true)
+fi
 [ -n "$VPID" ] || die "node$VICTIM is not running"
 kill -STOP "$VPID"
 echo "[ok] node$VICTIM (pid $VPID) STOPPED (voter_id ${voter_id:0:16}...) at height $aligned_h"
@@ -337,8 +347,10 @@ echo "[ok] boundary $e2 (height $h2): node$VICTIM AUTO_RETIRED (status=3), conse
 # epoch behind the DB flip — see this script's own header). ─────────
 h3=$(stagef_cmt_advance_to "$ref_db" "$e3" 12) \
     || die "tip did not reach the third boundary $e3 with node$VICTIM stopped ($pace; stuck at $h3)"
-log="$(stagef_node_dir "$REF")/nodus.log"
-[ -f "$log" ] || die "no nodus.log for node$REF"
+# Split S3: the CMT-APP line is a witness line — stagef_node_log picks
+# node$REF's witness.log when node$REF is split, nodus.log otherwise.
+log="$(stagef_node_log "$REF")"
+[ -f "$log" ] || die "no witness log ($log) for node$REF"
 if ! grep -q "boundary height $e3 .*n_removed=1" "$log"; then
     echo "[FAIL] node$REF's log has no 'boundary height $e3 ... n_removed=1' CMT-APP line" >&2
     grep "boundary height $e3" "$log" >&2 || true
