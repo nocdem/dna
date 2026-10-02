@@ -1,6 +1,6 @@
 # DNAC — Nodus Chain Client Library
 
-**Version:** v0.19.3 (`dnac/include/dnac/version.h`)
+**Version:** v0.19.5 (`dnac/include/dnac/version.h`)
 
 DNAC is the **client side** of **Nodus Chain** (formerly "DNA Chain") — the
 post-quantum UTXO blockchain whose coin is NODUS, a public testnet since
@@ -51,7 +51,7 @@ The chain is implemented in three layers of the monorepo:
   proposal is accepted only for a parameter the RUNNING consensus reads
   — the one list is `dnac_cfg_param_read_by_consensus`
   (`dnac/include/dnac/dnac.h`), consumed by both the witness's scalar
-  rules and this library's mirror: ids 4 and 5 at 0.20.3 (4, 5, 6, 7 and 8
+  rules and this library's mirror: ids 4 and 5 at 0.20.3 (4 through 13
   today — below). Id 2
   (`BLOCK_INTERVAL_SEC`) is refused — the Comet lane's block pace is a
   compile-time node setting and never reads it — but it is NOT retired:
@@ -90,8 +90,39 @@ The chain is implemented in three layers of the monorepo:
   refused, and the block proposal itself is checked for the gas price and
   for already-committed envelopes; no row = every rule as before. No wire
   change for wallets: the transaction format, the fee rule they pay and
-  the ruleset pins are unchanged. The read list is therefore ids 4, 5, 6,
-  7 and 8), GENESIS
+  the ruleset pins are unchanged. **HF-4 (dnac 0.19.5 / nodus 0.23.10,
+  design `docs/plans/2026-10-02-onchain-names-design.md` rev 4; decision
+  `docs/plans/decisions/2026-10-02-onchain-names.md`):** id 9
+  `RULESET_GEN2` (`DNAC_CFG_RULESET_GEN2`) — the rule-set upgrade vote:
+  its value domain is EXACTLY `DNAC_CFG_RULESET_GEN2_D2`
+  (`0x44dfbe7ad3c75adf` = 4962894749133920991 — the first 8 bytes of a
+  SHA3-512 over the tag `NDS.RSGEN.v1`, the generation number 2, the
+  generation-2 SYSTEM and CORE ruleset hashes and
+  `DNAC_RULESET_SWITCH_SPEC_VERSION` = 1, top bit cleared), so the vote
+  names the rule set it switches to; ERGONOMIC grace. From the row's
+  effective height H the validators judge every block under rule-set
+  generation 2 (SYSTEM v7 / CORE v5), whose CORE adds op 8
+  NAME_REGISTER (on-chain names). Ids 10-13 `NAME_PRICE_3P` /
+  `NAME_PRICE_4P` / `NAME_PRICE_5P` / `NAME_PRICE_6P` — the price, in raw
+  units, of a 3- / 4- / 5- / 6+-character name; range
+  [`DNAC_CFG_MIN_NAME_PRICE`, `DNAC_CFG_MAX_NAME_PRICE`] = [10^8, 10^15]
+  raw = [1, 10 000 000] NODUS; compiled no-row defaults
+  `DNAC_NAME_PRICE_3P_DEFAULT` … `_6P_DEFAULT` = 1 000 / 500 / 100 / 1
+  NODUS; ERGONOMIC grace. `DNAC_CFG_PARAM_MAX_ID` 8 → 13. The `verify.c`
+  mirror applies only the SCALAR half (id 9 = exactly D2; ids 10-13 the
+  range): the witness's stateful rules — id 9 single use, HF-2 active at
+  the vote, H−1 not an epoch boundary; ids 10-13 only while generation 2
+  judges the vote — need chain state this library does not have. Two
+  inline helpers in `dnac.h` are the one definition the validator and
+  every client share: `dnac_name_bytes_ok(name, len)` (3..36 bytes —
+  `DNAC_NAME_MIN_LEN` / `DNAC_NAME_MAX_LEN` — each `a-z` or `0-9`,
+  uppercase refused, a name made only of `0-9a-f` with length ≥
+  `DNAC_NAME_HEXLIKE_MIN_LEN` = 8 refused; 1 legal / 0 refused) and
+  `dnac_name_price_for_len(p[4], len)` (the monotonic fold of the four
+  tiers: 3 = max(P3..P6), 4 = max(P4..P6), 5 = max(P5, P6), 6+ = P6; 0
+  outside 3..36). Nothing under `dnac/` builds a NAME_REGISTER — it is a
+  version-3 envelope (`nodus-cli name register`, `nodus/README.md`). The
+  read list is therefore ids 4 through 13), GENESIS
 - **Explicit committed fee** on the wire (v2 header) with a min-fee
   gate. **Since tokenomics-v3 P2 every fee goes to the chain's REWARD
   POOL** (`supply_tracking.reward_pool`) — it is neither burned nor paid

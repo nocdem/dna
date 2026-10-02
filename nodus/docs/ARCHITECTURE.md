@@ -1449,15 +1449,22 @@ code `nodus-cli v2-envelope spend` used, moved out unchanged in behaviour (desig
   `nodus_v2_spend_pick`, `nodus_v2_spend_effect_decl`.
 
 **Ruleset identity.** The caller passes `nodus_v2_ruleset_id_t`. nodus-cli fills it from the
-compiled runtime table (`nodus_runtime_builtin_table`); a client that cannot link the witness (the
-browser module) calls `nodus_v2_ruleset_from_pins`, which reads the GENERATED
-`include/nodus/nodus_ruleset_pins.h` (CORE tuple, SYSTEM meter policy, and — since web wallet
-0.1.29, for the staking builder — the SYSTEM ruleset tuple) and refuses unless the rebuilt SYSTEM meter policy's digest
-equals the pinned one. The header is written by `tools/gen_ruleset_pins.c` from the node's own table
-(`cmake --build <build> --target regen_ruleset_pins`); ctest `test_ruleset_pins` regenerates it
-and byte-compares with the checked-in file, so a ruleset change without a regenerated header is a
-red test (decision above, addendum 2026-09-29 "Yol 2"). Every ruleset change therefore requires a
-new wallet WASM build.
+compiled runtime table — since HF-4 for the GENERATION the node names: it asks
+`dnac_ruleset_info` and takes the generation whose (SYSTEM, CORE) tuple equals the answer
+(`cli_select_runtimes` over `nodus_runtime_for_generation`; no match = nothing is built — see
+"HF-4"). A client that cannot link the witness (the browser module) calls
+`nodus_v2_ruleset_from_pins`, which reads the GENERATED `include/nodus/nodus_ruleset_pins.h`
+(CORE tuple, SYSTEM meter policy, and — since web wallet 0.1.29, for the staking builder — the
+SYSTEM ruleset tuple) and refuses unless the rebuilt SYSTEM meter policy's digest equals the
+pinned one. Since HF-4 the header carries every generation (`NODUS_PIN_GEN_COUNT`; generation 1
+unprefixed, generation 2 as `NODUS_PIN_G2_*`), `nodus_v2_ruleset_from_pins_gen(generation, …)`
+reads any of them, and `nodus_v2_ruleset_from_pins` is its generation-1 wrapper — which is what
+the web wallet's WASM module still calls (`web-wallet/crypto/nodus-send-wasm.c`), so it builds
+generation-1 envelopes only. The header is written by `tools/gen_ruleset_pins.c` from the node's
+own table (`cmake --build <build> --target regen_ruleset_pins`); ctest `test_ruleset_pins`
+regenerates it and byte-compares with the checked-in file, so a ruleset change without a
+regenerated header is a red test (decision above, addendum 2026-09-29 "Yol 2"). Every ruleset
+change therefore requires a new wallet WASM build.
 
 Tests: `test_ruleset_pins` (R1 byte-compare, R2 digest rebuild, R3 CORE lookup, R4 SYSTEM
 lookup == the table's SYSTEM entry) and
@@ -1490,8 +1497,10 @@ CLI did.
   100-NODUS minimum for a new row, delegator cap, undelegate amount <= the row, a partial
   withdrawal leaving 0 or >= the minimum) stay with the chain at CheckTx.
 - **Ruleset identity.** The caller passes both tuples; nodus-cli fills them from the compiled
-  table, the browser module (web wallet 0.1.29) with `nodus_v2_stake_ruleset_from_pins`, which
-  reads the SYSTEM and CORE tuples of the generated `include/nodus/nodus_ruleset_pins.h`.
+  table (since HF-4 for the generation the node names in `dnac_ruleset_info`), the browser
+  module (web wallet 0.1.29) with `nodus_v2_stake_ruleset_from_pins`, which reads the SYSTEM and
+  CORE tuples of the generated `include/nodus/nodus_ruleset_pins.h` — since HF-4 the
+  generation-1 wrapper of `nodus_v2_stake_ruleset_from_pins_gen`.
 
 CLI: `nodus-cli v2-envelope undelegate --keys <dir> --validator <hex5184 pubkey> --amount <raw>
 (--dry-run | --submit ip:port)`.
@@ -3389,7 +3398,7 @@ not recover it, wipe + pin rejoin does (7/7). Both PASS at grace 15/15
 (the short-grace build) — the LOGIC only, nothing about the production
 grace.
 
-### HF-2 — power-weighted governance approval + net-zero blocks, the second height-activated hard fork (2026-09-30, code only — not versioned, not deployed)
+### HF-2 — power-weighted governance approval + net-zero blocks, the second height-activated hard fork (2026-09-30; introduced by nodus 0.23.2, live on the testnet chain from block 1500 — `DEPLOY_RUNBOOK.md` §2.2 "Live hard forks")
 
 **Governing records:** design `docs/plans/2026-09-30-gov-weight-netzero-design.md`
 (local; rev 2 — "one activation parameter, HF-1 pattern" — supersedes rev 1's
@@ -3518,9 +3527,9 @@ same bytes lands on identical roots, update hashes and consensus tables);
 `test_chain_config_witness` Test 10 (id 7 on the read list, value 1 only,
 ERGONOMIC grace, the H−1/H read boundary, its own cache slot); `test_cc_appr`
 `hf2_bad_value_refused` / `hf2_legal_signs` (the responder). No Genesis Protocol
-scenario (out of scope for this package).
+scenario in this package; `test_cmt_hf2_gov_power.sh` was added later (stagef README).
 
-### HF-3 — Comet-only block bounds + proposal fee/replay check, the third height-activated hard fork (2026-10-02, code only — not versioned, not deployed)
+### HF-3 — Comet-only block bounds + proposal fee/replay check, the third height-activated hard fork (2026-10-02; introduced by nodus 0.23.9, live on the testnet chain from block 2926 — `DEPLOY_RUNBOOK.md` §2.2 "Live hard forks")
 
 **Governing records:** design `docs/plans/2026-10-01-hf3-comet-block-bounds-design.md`
 (local; rev 3, with the round-2 Fable findings and rule 6b folded in), decision
@@ -3554,7 +3563,7 @@ value are refused by `nodus_chain_config_scalar_rules` and by the client mirror
 `case CC_PARAM_HF3_ACTIVE` in `nodus_chain_config_grace_for_param` — an explicit return,
 not the `default:` branch, so a later change to the default class cannot move this
 switch's grace. `DNAC_CFG_PARAM_MAX_ID` / `CC_PARAM_MAX_ID` 7 → 8; id 8 is on
-`dnac_cfg_param_read_by_consensus` (the read list is now {4, 5, 6, 7, 8}). Voted like
+`dnac_cfg_param_read_by_consensus` (the read list was then {4, 5, 6, 7, 8}; HF-4 adds 9-13). Voted like
 every parameter (`nodus-cli chain-config propose --param HF3_ACTIVE --value 1
 --effective <H>`; `HF3_ACTIVE` / `hf3_active` in the CLI's name table). The lookup is
 `effective_block <= height`, so every HF-3 rule is ON from block H itself.
@@ -3712,6 +3721,429 @@ NOT exercise the capacity lift, the proposal checks, rule 4 or rule 5 (the unit 
 above do) and does not perform the pre-vote measurements; block size is reported, never
 asserted.
 
+### HF-4 — the rule-set generation switch at a height + on-chain names (CORE op 8 NAME_REGISTER), the fourth height-activated hard fork (2026-10-02, nodus 0.23.10 / dnac 0.19.5 — no RULESET_GEN2 vote yet)
+
+**Governing records:** design `docs/plans/2026-10-02-onchain-names-design.md` rev 4
+(local; APPROVED by the operator 2026-10-02), decision
+`docs/plans/decisions/2026-10-02-onchain-names.md` (items 1-18 and the upgrade mechanism,
+APPROVED 2026-10-02), `docs/plans/decisions/2026-09-23-height-activated-upgrades-before-testnet.md`
+(scope extension 2026-10-02: a new transaction type needs a mechanism that changes the
+rule-set identity at a height — the HF-1 parameter mechanism cannot, because the op list is
+part of that identity), `docs/plans/decisions/2026-09-26-hard-fork-lagging-node.md` (a node
+that misses the vote is recovered by wipe + genesis-pin rejoin). The activation procedure is
+HF-1's with additional pre-vote checks (`DEPLOY_RUNBOOK.md` §2.2, "HF-4" there).
+
+**Why a generation, not a parameter.** A domain's committed manifest names its runtime by
+the exact tuple (domain, runtime_kind, runtime_abi, ruleset_version, ruleset_hash), and
+`ruleset_hash` is the digest of the domain's ruleset DESCRIPTOR, whose rule-id list is the
+op list. A new CORE op therefore changes the CORE identity, and a parameter vote cannot
+reach it. HF-4 makes the compiled table a list of rule-set GENERATIONS and moves the
+committed SYSTEM and CORE registry records from generation 1 to generation 2 at a voted
+height. Every block is still judged by whatever runtime the committed registry resolves to
+(`nodus_witness_v2_runtime_for`), so replay and block sync cross the switch at the same
+block as the live chain.
+
+**The generation table** (`nodus_witness_runtime.{h,c}`):
+
+| Generation | SYSTEM | DNA_CORE | SYSTEM meter policy |
+|---|---|---|---|
+| 1 (genesis, byte-identical to the pre-HF-4 table) | v6, rules {1..6}, types {4,5,6,7,9,10}, hash `ca05b4d9…` | v4, rules {1..7}, types {1,2,3,11,12,13}, hash `b87aabb8…` | shape v2, ops 1..7 weight 1, digest `8f1f9cb2…` |
+| 2 | v7, same rules and types, hash `8780a3a9…` | v5, rules {1..8} (+ `DNA_CORERULE_NAME_REGISTER` = 8), same types, hash `20c7235b…` | shape v2 unchanged — seven scalar weights 1, the 2 MiB `max_block_env_bytes` field KEPT (decision item 12) — ops 1..8 weight 1, digest `0c251ca2…` |
+
+SYSTEM's version moves 6 → 7 although its descriptor lists did not change: its committed
+meter-policy digest did (op 8 needs a weight — an op with no committed weight is refused at
+reservation), and the version bump makes a generation-1 SYSTEM envelope fail preflight
+cheaply after the switch. Descriptor names, runtime kind and ABI, hooks and auth allowlists
+are the same in both generations. `nodus_domain_runtime_t.generation` says which generation
+an entry is (`NODUS_RT_GEN_1`, `NODUS_RT_GEN_2`, `NODUS_RT_GEN_MAX` = 2); it is not hashed and
+not an identity axis, and a synthetic test runtime leaves it 0, which every "generation ≥ 2"
+gate reads as "not generation 2" (the fail-closed direction). Lookups:
+- `nodus_runtime_builtin_table` = generation 1 ONLY (SYSTEM then CORE, exactly the two
+  entries every pre-HF-4 consumer saw) — genesis seeding, the pre-registry supply walk
+  (`nodus_witness_v2_supply_check` with no registry) and the test fixtures read it; it is
+  never a lookup surface for a committed tuple.
+- `nodus_runtime_all_table` = every generation, generation-major; `nodus_witness_v2_runtime_for`
+  (no test override) resolves the committed tuple against it, and `nodus_runtime_lookup` is
+  exact-tuple across every generation.
+- `nodus_runtime_generation_count`, `nodus_runtime_generation_table(gen)`,
+  `nodus_runtime_for_generation(gen, domain)` — the (domain, generation) lookup that replaces
+  every "first entry of this domain" lookup (nodus-cli, `tools/gen_ruleset_pins.c`).
+- Genesis seeding (`nodus_witness_domreg_init_genesis`, reached by the derivation, the bundle
+  joiner and a wipe + pin rejoin) walks generation 1 only and refuses a table whose two
+  entries are not generation 1 — so every genesis this binary seeds equals the pre-HF-4
+  binary's (live nodes never recompute genesis, so a drift would otherwise go unnoticed;
+  `test_hf4_genesis` pins it).
+- Every generation stays in every future binary (replay from genesis).
+
+`nodus_witness_runtime_selfcheck` (start refuses on failure) gains, over the generation list:
+every exact tuple names one entry; exactly one SYSTEM and one CORE per generation, ids 1..count
+with no gap; per domain `ruleset_version` strictly increases with generation and
+`runtime_kind` / `runtime_abi` never change; generation 1 equals the genesis literals (SYSTEM
+v6 + policy `8f1f9cb2…`, CORE v4); every SYSTEM entry carries a sealed policy that prices every
+rule id of its generation's SYSTEM AND CORE descriptors; and the compiled vote literal D2
+re-derives from the generation-2 pins (below). The generation-2 hashes and policy digest are
+INDEPENDENT-oracle literals (`shared/dnac/tests/hf4_oracle.py`, built on
+`ruleset_desc_oracle.py`'s helpers; its control legs reproduce the shipped policy
+`8f1f9cb2…`, SYSTEM v6, CORE v4 and the empty name root first, else it exits 1 and emits
+nothing), never this build's encoder; selfcheck re-derives them through the C encoder on
+every start.
+
+**The vote — chain-config id 9 `RULESET_GEN2`** (`DNAC_CFG_RULESET_GEN2`,
+`dnac/include/dnac/dnac.h`; `CC_PARAM_RULESET_GEN2`, `nodus_witness_chain_config.c`, pinned
+by `_Static_assert`). Value domain EXACTLY `DNAC_CFG_RULESET_GEN2_D2` =
+`0x44dfbe7ad3c75adf` (decimal 4962894749133920991; G4 of `hf4_oracle.py`):
+
+    D2 = first 8 bytes, big-endian, of SHA3-512( "NDS.RSGEN.v1" (16 B, zero-padded)
+           ‖ u32 BE 2 ‖ gen-2 SYSTEM ruleset_hash[64] ‖ gen-2 CORE ruleset_hash[64]
+           ‖ u32 BE DNAC_RULESET_SWITCH_SPEC_VERSION )        — 152-byte preimage
+         with the top bit cleared (D2 ≤ INT64_MAX; chain_config_history stores int64)
+
+`dna_ruleset_gen_digest` (`shared/dnac/domain_wire.c`) computes it; its one consumer is
+selfcheck — the vote path never hashes, it compares against the literal. The tag is the
+operator-approved `NDS.RSGEN.v1` (decision item 18). `DNAC_RULESET_SWITCH_SPEC_VERSION` = 1
+names the switch procedure (which registry fields are copied, which are replaced, which
+domains are touched): two binaries with the same generation-2 tuples but a different switch
+cannot share a vote value; changing the switch bumps it, and with it D2 and the switch KAT
+(`test_hf4_switch.c` holds a static assert on version 1). `DNAC_CFG_PARAM_MAX_ID` /
+`CC_PARAM_MAX_ID` 8 → 13; ids 9-13 are on `dnac_cfg_param_read_by_consensus` (the read list is
+now {4, 5, 6, 7, 8, 9, 10, 11, 12, 13}); `chain_config_cache` and `CC_PARAM_SLOTS` grow with
+`DNAC_CFG_PARAM_MAX_ID` to 14 rows (without the slots `nodus_chain_config_get_u64` answers -1 for
+9-13 and every read of them would FAULT on every node). Grace class ERGONOMIC
+(`DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS`, 720 in a default build; decision item 17) through its
+OWN `case` in `nodus_chain_config_grace_for_param`. Voted like every parameter
+(`nodus-cli chain-config propose --param RULESET_GEN2 --value <D2 in decimal> --effective <H>`;
+`RULESET_GEN2` / `ruleset_gen2` in the CLI's name table). The row's `effective_block` is H, the
+FIRST block judged under generation 2.
+
+**The rules — a pure half and a stateful half, one authority each.**
+- *Scalar* (`nodus_chain_config_scalar_rules`, pure): id 9 accepts exactly D2. A binary whose
+  generation 2 differs refuses the vote at the VOTE block (recoverable — the lagging-node
+  rule). The client mirror (`dnac/src/transaction/verify.c` `verify_chain_config_rules`)
+  compares against the same `dnac.h` literal.
+- *Stateful* (`nodus_chain_config_stateful_rules(param_id, effective, hf2_active,
+  ruleset_gen2_voted, judging_generation)`, new, pure over facts the caller derives from
+  committed state): id 9 is refused when (a) `ruleset_gen2_voted` — any param-9 row is
+  committed, at ANY effective height, a far-future one included (single use); (b)
+  `!hf2_active` — HF-2 is not active at the vote height; (c) `effective` is 0, or
+  `effective − 1` is a nonzero multiple of `DNAC_EPOCH_LENGTH` (H−1 must not be an epoch
+  boundary — the gate `nodus_witness_v2_epoch_boundary_apply` uses). Ids 10-13 are refused
+  unless `judging_generation >= 2`. Ids 1-8: no stateful rule (0). Any other id: -1.
+- *Where the stateful half is applied:* the SYSTEM CHAIN_CONFIG exec (`nodus_rt_system_exec`,
+  after freshness and grace, from the engine-filled `ctx.hf2_active` / `ctx.ruleset_gen2_voted`
+  and its OWN runtime's `generation` — NULL reads 0), which the CheckTx dry run reaches through
+  its exec; and the 0x71 approval responder (`cc_appr_rules_chain_config`) at its candidate
+  height h = tip + 1, which derives the same three facts with the engine's read discipline:
+  param 7 at h, "any param-9 row" as param 9 read at `INT64_MAX`, and the generation of the
+  runtime the committed SYSTEM manifest resolves to. An unanswerable read there answers -2
+  ("chain_config state unreadable on this node" / "the SYSTEM runtime does not resolve on this
+  node"); a refusal answers "stateful rules rejected" — the SAME text for (a), (b) and (c). The
+  client mirror has no chain state and cannot apply the stateful half — the documented
+  divergence from the 2026-09-23 decision's item 1 "same list".
+- *Why rule (a) is not a read.* A refused item still records the gas it consumed
+  (`cmt_item_failed` in `v2_apply_block_body` sets `res->gas_used` before aborting the meter),
+  and `gas_used` is part of the result leaf behind LastResultsHash. A charged read added to the
+  CHAIN_CONFIG read plan would change the `gas_used` of a refused param-9 leg that a
+  pre-HF-4 block may already hold (a proposer can put one in a block; ProcessProposal does
+  not execute items), so a node replaying that block on the HF-4 binary — a joiner, or the
+  wipe + pin recovery — would compute a different LastResultsHash and stop. Instead the
+  engine fills the UNMETERED exec-ctx field `nodus_rt_exec_ctx_t.ruleset_gen2_voted`
+  (`env_ruleset_gen2_voted`, `nodus_witness_v2_apply.c`: param 9 read through the three-valued
+  accessor at `INT64_MAX` — `UINT64_MAX` would bind as -1 and find nothing; unreadable = node
+  FAULT) at both ctx sites (`exec_one_env`, once per envelope, and `env_authorize_legs`), so a
+  row an EARLIER item of the same block wrote counts. The CHAIN_CONFIG read plan stays empty.
+- *Old blocks replay unchanged.* On the pre-HF-4 binary a param-9 leg is refused by the scalar
+  rules' range gate (9 > `CC_PARAM_MAX_ID` 8) with zero reads; under HF-4 it is refused (wrong
+  value, or no > 2/3 approvals — the old responders refuse param 9) with the same code and the
+  same zero reads.
+- *Once committed, H cannot be moved,* and a far-future effective (allowed up to the int64
+  bound) retires param 9 for good — a recovery would need a new param id and a new D2
+  (accepted, decision item 15).
+
+**The switch — engine phase 6b′** (`phase_6b_ruleset_switch`, `nodus_witness_v2_apply.c`; in
+`v2_apply_block_body` after the item/claim loop and BEFORE the 6c lifecycle re-scan). At block
+h: h + 1 must stay ≤ `INT64_MAX` (else FAULT); param 9 is read at h + 1 and at h (either
+unreadable → FAULT). It fires only on the EDGE — present at h + 1 and absent at h, i.e. h = H−1
+— and then: the row's value must be this build's D2 (anything else is this node's storage
+disagreeing with every writer → FAULT); `nodus_witness_domreg_generation_switch(w, 1, 2)` must
+return 0 (1 = the registry is not generation 1 → FAULT; -1 = a read, precondition or write
+fault → FAULT); SYSTEM and CORE are both marked TOUCHED on the pre-6c working set (6c carries
+them over — the 6e pattern). It logs `HF-4: rule-set generation 1 -> 2 at the end of height
+<H-1> (D2 0x…); height <H> is judged under generation 2` (tag `W_V2APPLY`). Idempotent: a
+faulted block is rolled back whole, so a replay of H−1 switches exactly once.
+- *Why there:* every item of H−1 ran under generation 1; 6c then reloads the generation-2
+  manifests and runtimes, phases 8-11 commit the rewritten registry into SYSTEM's root
+  (`domreg_root` is a SYSTEM leg), the heads and H−1's app_hash, and block H starts under
+  generation 2. Switching after `apply_block` returns would leave H−1's app_hash without the
+  rewrite and stop every node at H.
+- *Touched domains:* SYSTEM's root moves; CORE's does not. Phase 9 applies an unchanged
+  touched root only while HF-2 is on ("HF-2", GW-2) — guaranteed by vote rule (b), HF-2 having
+  no off vote.
+- *Registry transforms* (`nodus_witness_domreg.{h,c}`, versioned by
+  `DNAC_RULESET_SWITCH_SPEC_VERSION`): `nodus_witness_domreg_gen_manifest` COPIES
+  manifest_version, domain_id, name, runtime_kind, runtime_abi, genesis_state_root, fee_policy,
+  quota_tx_per_block, quota_verify_cost, upgrade_authority, activation_epoch and
+  readiness_policy, and REPLACES ruleset_version, ruleset_hash, tx_type_count and tx_types from
+  the compiled target generation (1 = the committed manifest is not the source generation's
+  exact tuple; -1 = a domain mismatch, a kind/ABI change or an invalid result);
+  `nodus_witness_domreg_gen_record` copies every record field except `current_manifest_hash`
+  (recomputed) and requires status ACTIVE with every pending / proposal / scheduling field
+  empty; `nodus_witness_domreg_generation_switch` loads and transforms BOTH domains before
+  writing EITHER (a pending manifest refuses) and leaves every other domain untouched.
+- *What H−1's rows say:* the SYSTEM / CORE heads and the H−1 DomainUpdate / root-history rows
+  name generation 2 although H−1's items ran under generation 1 (design §1.3, which places the
+  DomainUpdate / root-history rows outside the app hash — explorers reading them must know).
+- *From H:* a generation-1 envelope fails the node's preflight (`DNA_ENV_PF_ERR_CTX_VERSION`,
+  `shared/dnac/env_preflight.c` — the leg's `ruleset_version` must equal the committed one:
+  SYSTEM v6 ≠ v7, CORE v4 ≠ v5). Below H an op-8 leg is refused at admission (generation 1's
+  CORE descriptor does not own op 8 — `rt_owns_runtime_op` in `env_admit_legs`), and the CORE
+  read-plan / exec hooks refuse op 8 for a runtime below generation 2 as a verdict (-1).
+
+**CheckTx "generation not in force" — code 100.** `NODUS_CMT_APP_CODE_GENERATION`
+(`nodus_witness_cmt_app.c`): when CheckTx refuses a version-3 envelope, `app_generation_not_in_force`
+decodes it and answers 100 instead of 1 when some leg names a `ruleset_version` that differs
+from its domain's committed manifest but equals the version of SOME compiled generation of
+that domain — a client built for the other side of H. Any decode or read problem is "no"
+(code 1); the entry is refused either way. The CheckTx code space (`ResponseCheckTx.Code`,
+this file only): 0 OK, 1 `NODUS_CMT_APP_CODE_REJECTED`, 100 `NODUS_CMT_APP_CODE_GENERATION` —
+a different space from the FinalizeBlock per-item codes `nodus_v2_tx_code_t` (0 OK, 1..9 DECODE …
+FEE); 100 sits outside both (`_Static_assert` above `NODUS_V2_TX_ERR_FEE`). It is outside every
+hash: the mempool tests only `code == OK`, and LastResultsHash is built from FinalizeBlock
+results.
+
+**Params 10-13 — the name prices** (`DNAC_CFG_NAME_PRICE_3P` / `_4P` / `_5P` / `_6P` = 10 / 11 / 12 /
+13; `CC_PARAM_NAME_PRICE_*`, static-assert pinned). The price, in raw units, of a 3- / 4- / 5- /
+6+-character name. Range `[DNAC_CFG_MIN_NAME_PRICE, DNAC_CFG_MAX_NAME_PRICE]` = [10^8, 10^15] raw
+= [1, 10 000 000] NODUS, applied by the scalar rules and the client mirror. Compiled no-row
+defaults `DNAC_NAME_PRICE_3P_DEFAULT` … `_6P_DEFAULT` = 10^11 / 5·10^10 / 10^10 / 10^8 raw = 1 000 /
+500 / 100 / 1 NODUS (decision items 6 and 10; static asserts: inside the range, non-increasing,
+the 6+ default equals the 1 NODUS floor). There is no genesis row (testnet, no wipe — the
+design's stated deviation): the defaults ARE the price until a vote. Grace ERGONOMIC (decision
+item 17). Votable only while generation 2 judges the vote (stateful rule, decision item 16).
+The price of a `len`-byte name is the MONOTONIC fold `dnac_name_price_for_len(p[4], len)`
+(`dnac.h`): 3 = max(P3, P4, P5, P6), 4 = max(P4, P5, P6), 5 = max(P5, P6), 6..36 = P6, 0 outside
+3..36 — a shorter name never costs less than a longer one, whatever the votes. The engine reads
+the four tiers at the block's height (`env_name_prices`) into `nodus_rt_exec_ctx_t.name_price[4]`
+at both ctx sites; an unreadable row or a stored value outside the range is a node FAULT, never
+a default.
+
+**CORE op 8 `NAME_REGISTER`** (`DNA_CORERULE_NAME_REGISTER`, `nodus_witness_runtime.h`; parse,
+read plan, exec and describer in `nodus_witness_rt_native.c`). Generation 2 only.
+- *Call v1:* `name_len u8 (3..36) ‖ name ‖ price u64 BE ‖ transfer section (inputs 1..13,
+  outputs 0..16)`, exact length, every output native (change only). The maximal call (4 591 B)
+  is shorter than the maximal TOKEN_CREATE call (4 717 B), so the worst-case envelope
+  derivations stay the governing bounds (static assert).
+- *Name bytes* (`dnac_name_bytes_ok`, `dnac.h` — the one rule the parse, the queries and the
+  clients consume): 3..36 bytes, each in `a-z` / `0-9`; uppercase is REFUSED (clients
+  lower-case with an ASCII-only mapping — a Turkish-locale `tolower` maps 'I' to 'ı'); a name
+  made only of `0-9a-f` whose length is ≥ 8 (`DNAC_NAME_HEXLIKE_MIN_LEN`) is refused, because it
+  reads as an ID prefix (decision item 11). The rule sits in the op-8 parse
+  (`rtn_name_parse`), which the read plan, the exec and the describer all call — not in a
+  mempool-only check a proposer could bypass.
+- *Owner:* the leg's verdict for auth_kind 1 (`NODUS_RT_AUTHKIND_DSA87_MULTI_V1`) with exactly
+  one signer and no multisig facts; owner = `signer_fp[0]` (64 raw SHA3-512 bytes). No verdict,
+  kind 2/3 or several signers is a REFUSAL (-1), never a FAULT. (Consequence: a multisig
+  address cannot hold a name in generation 2.)
+- *Reads* (`nodus_rt_core_read_plan`, the canonical ascending (op, key) order): every input
+  (op 1), the supply/pool row (op 3), `NAME` (op 5, key = the name bytes), `OWNER` (op 6, key =
+  the owner) — in + 3 ≤ `NODUS_RT_MAX_READS` (16), hence the 13-input ceiling. The OWNER key is
+  the first read key derived from the auth verdict instead of the call bytes.
+- *Exec* (`rtn_name_exec`): exactly one leg; NAME absent and OWNER absent (first wins, one name
+  per ID — decision items 2-3); `fee_amount ≥ max(DNAC_MIN_FEE_RAW, NODUS_W_BASE_TX_FEE)`
+  (1 000 000 raw) checked HERE, because the engine's gas check returns before that floor when
+  the gas price is 0; the declared price equals `dnac_name_price_for_len(ctx.name_price,
+  name_len)` at the block's height; every input present, UNLOCKED (`unlock >= height`
+  refused — change is created unlocked, so this is what stops a locked coin escaping early),
+  owned by the signer and native — the TOKEN_CREATE input rule; Σnative_in == Σnative_out +
+  fee + price (checked adds). Effects, in order: the change CREATEs (op 1), ONE `NAME` CREATE
+  with `PRE_ABSENT` (value = owner[64] ‖ registered_height u64 BE, 72 B, registered_height =
+  the block's `global_height`), ONE pool SET crediting fee + price to the reward pool, the
+  input DELETEs. -2 only for an engine-side breakage (a ctx price tier out of range, a read
+  count that is not the plan's).
+- *Money:* the network fee AND the price go to the reward pool (tokenomics decision
+  `2026-09-22-nodus-tokenomics-v3-operator.md`, names decision item 6). The price is NOT a burn
+  and never appears as one. A REFUSED registration pays nothing today — the engine's existing
+  refused-item rule (`cmt_item_failed`: the item's savepoint is rolled back, its fee with it);
+  the design notes that a later failed-tx-pays-fee rule would charge the network fee only,
+  never the price.
+- *Storage adapter* (`NODUS_RT_CORE_ADAPTER`, `RTN_CORE_OPS` 4 → 6): `NAME` (op 5, CREATE +
+  PRE_ABSENT, key 3..36, value 72) and `NAMEOWN` (op 6, READ-ONLY — no effect kind, no
+  precondition, key 64, answer = the held name; the SYSTEM `DELEGCNT` shape). Every name and
+  owner key is bound with `sqlite3_bind_blob` (a key bound as TEXT would compare unequal to
+  the stored BLOB, read "absent", and the INSERT would hit the primary key — a FAULT on every
+  node at once). The mutate re-checks the byte rule and 1 ≤ registered_height ≤ `INT64_MAX`
+  and INSERTs strictly: a UNIQUE conflict is a fault on this node, never a silent drop.
+- *Same owner, two registrations pending:* the CheckTx conflict set keys only the intent and
+  the effect rows, so the dry run adds a SYNTHETIC `OWNER(owner)` row (CORE, op 6,
+  `signer_fp[0]` — `nodus_rt_core_name_owner_key`), and one node's mempool admits one
+  registration per owner. Mempool only; a proposer that packs two still gets the second
+  refused in the block.
+
+**State — `v2_names`** (`NODUS_V2_NAMES_DDL`, `nodus_witness.h`, exactly the design's DDL):
+`v2_names(name BLOB NOT NULL PRIMARY KEY CHECK(typeof(name)='blob' AND length(name) BETWEEN 3
+AND 36), owner BLOB NOT NULL UNIQUE CHECK(typeof(owner)='blob' AND length(owner)=64),
+registered_height INTEGER NOT NULL CHECK(typeof(registered_height)='integer' AND
+registered_height >= 1)) WITHOUT ROWID` — BINARY order, one storage class per column. It is in
+the BASE schema (`WITNESS_DB_SCHEMA`, `CREATE TABLE IF NOT EXISTS`), so a database of any rung
+gets it on open; `user_version` stays 16 (no migration rung) and the table joins the preflight
+`required[]` list. Because `IF NOT EXISTS` would silently keep a same-named table of another
+shape, `witness_v2_names_ddl_check` (`nodus_witness.c`) runs on EVERY open: it executes the same
+statement in a private `:memory:` database and requires the stored `sqlite_master.sql` to be
+byte-identical; a mismatch refuses THIS node's open (`SQLITE_CORRUPT`, permanent class). (The
+existing `table_cols_exact` compares column names only and runs only in migration rungs.)
+
+**`name_root` — the CORE root's 5th leg.** `dna_v2_names_root` / `dna_v2_name_leaf_hash` /
+`dna_v2_name_cmp` (`shared/dnac/ledger_roots_v2.{h,c}`): leaf = SHA3-512(`"NDS.NMLEAF.v1"` ‖
+name_len u8 ‖ name ‖ owner[64] ‖ registered_height u64 BE); inner = SHA3-512(`"NDS.NMNODE.v1"` ‖ L ‖
+R); rows in STRICTLY ascending BINARY name order (memcmp over the common prefix, then the
+shorter first: "abc" < "abcd" < "abd"; equal or descending neighbours → -1); an unpaired node
+promoted; n = 1 → the leaf; n = 0 → `DNA_V2_EMPTY_NAMES` (`"NDS.E.NAMES.v1"`). Tags are 16-byte
+zero-padded ASCII (decision item 18). The DB side `names_root_v2` (static,
+`nodus_witness_roots_v2.c`) scans `v2_names ORDER BY name` and fails closed on a missing table,
+a scan fault or a row whose storage type, length, owner length, height or alphabet is wrong
+(the hex-like rule is the parse's and is not re-judged). It replaces the hard-coded
+`dna_v2_empty_root(DNA_V2_EMPTY_NAMES)` that held this leg of `nodus_witness_core_root_v2` since
+S2: an empty table is byte-identical to that placeholder, so no pre-H root moves and the CORE
+composition tag stays `"NDS.CORE.v2"`.
+
+**Queries** (`nodus_witness_handlers.c`; wire spec `nodus.h` beside the client functions):
+- `dnac_ruleset_info` (no args) → `{tip, gen, sv, sh, cv, ch, pd, H, d2}`: the committed tip, the
+  generation governing tip + 1 read from the REGISTRY (both committed manifests must resolve
+  to one compiled generation, else `INTERNAL_ERROR`), the SYSTEM and CORE (version, hash), that
+  generation's SYSTEM meter-policy digest, H = the EARLIEST committed param-9 effective (0 = no
+  vote), and this build's D2. No version-3 chain → `NOT_FOUND`. A client chooses the compiled
+  generation whose tuple EQUALS (sv, sh, cv, ch) — never by height; an older node answers
+  "unknown DNAC method" and the client must fail closed.
+- `dnac_name_lookup {name}` (lowercase only; the byte rule, else `PROTOCOL_ERROR`) →
+  `{found, owner (128 hex), rh, ch}`; `dnac_name_of {owner}` (exactly 128 lowercase hex) →
+  `{found, name, rh, ch}` — `rh` = registered_height, `ch` = the committed height the answer is
+  from. One node is trusted for the answer (decision item 9, accepted). Store fault →
+  `INTERNAL_ERROR`, never a fabricated answer.
+- `dnac_fee_info` gains `np` — the COMPUTED prices at tip + 1 for 3 / 4 / 5 / 6+ characters
+  (the engine's fold over params 10-13 with the compiled defaults) — and `ns`, the committed
+  params-10..13 rows effective above tip + 1, ascending (effective, param), at most
+  `NODUS_DNAC_NAME_SCHED_MAX` (16), each `{p, v, e}`. Older clients skip both keys; the new
+  client's `nodus_client_dnac_name_prices` refuses a reply without them (an older node) — a
+  price is never guessed.
+
+**Consumers that know op 8.** The describer `nodus_rt_native_describe_leg` fills
+`nodus_rt_leg_desc_t.name_len` / `name[36]` / `name_price` for a registration (inputs and change
+as the call carries them; the price is never put in `burned`). `dnac_v3_block` names the op
+`"name_register"` and adds two OPTIONAL item keys on applied registrations only, `"nm"` (the
+name) and `"pr"` (the price paid into the pool) — no new record kind, so old decoders (which
+bound the record kind) keep working and skip the unknown keys; the client decoder requires the
+two as a pair (`nodus_dnac_v3_item_t.name` / `.name_price`). The address-history index writes
+a `"name"` row on the owner (the payer — the registration's one signer) with amount = the price
+(`NODUS_ADDR_KIND_NAME` in the reader's `AI_KINDS`, the client's `AHD_KINDS` and the `nodus.h`
+list); an OLDER CLI refuses that kind and fails closed on the whole page.
+
+**Clients (nodus-cli and the pins).** Every networked builder of `nodus-cli` asks the node first
+(`cli_select_runtimes` → `dnac_ruleset_info`) and builds for the compiled generation whose tuple
+equals the answer; no match or an older node → nothing is built. The expiry
+(`cli_env_expiry`) is tip + the CLI margin, capped at H−1 for a generation-1 envelope while a
+param-9 height H is committed; once H−1 is not above the larger of the builder's tip and the
+ruleset answer's tip (`H − 1 < tip + 1`), no generation-1 expiry is valid and the build is
+refused ("retry after height H"). A generation-2 envelope, or no vote (H = 0), takes the plain
+margin. The offline `v2-envelope chain-config --db` takes the same two facts from its local
+database (`cli_local_ruleset_facts`), and the msig sign / combine paths judge an export with
+the CORE generation its own leg names (`cli_core_runtime_for_env`). The generated pins header
+carries every generation (`NODUS_PIN_GEN_COUNT` 2; generation 1 = the unprefixed `NODUS_PIN_*`
+set, generation 2 = `NODUS_PIN_G2_*`); readers `nodus_v2_pins_generation_count`,
+`nodus_v2_pins_tuples`, `nodus_v2_ruleset_from_pins_gen` and
+`nodus_v2_stake_ruleset_from_pins_gen` take the generation; `nodus_v2_ruleset_from_pins` /
+`nodus_v2_stake_ruleset_from_pins` remain as their generation-1 wrappers.
+
+**Startup lines** (`nodus_witness_init`, tag `WITNESS`, after selfcheck):
+`rule-set generations 2, generation-2 vote D2 0x44dfbe7ad3c75adf (switch spec v1), built from
+git commit <sha>` and `consensus build constants: epoch_length <E>, grace_safety <S>,
+grace_ergonomic <G>, blocks_per_year <Y>, fault_inject <ON|off>` — a production build prints
+720 / 17280 / 720 / 6307200 / off. The commit is `NODUS_BUILD_GIT_COMMIT`, generated at BUILD
+time (not configure time — nodes build with `git pull` + `make`) by the `nodus_build_commit`
+target (`nodus/CMakeLists.txt`): `git rev-parse HEAD`, `-dirty` with tracked changes,
+`-status-unknown` if `git status` fails, `unknown` with no git. The rollout compares both lines
+on all seven nodes before the vote (binary SHA-256 is not comparable — the build is not
+reproducible).
+
+**Deleted with this package:** `nodus_chain_config_apply`, the legacy CHAIN_CONFIG tx apply,
+with its private parse / rule / digest helpers (incl. `verify_cc_local_rules`) — it had no
+caller since R3 W4 closed the legacy lane. The one apply path is the SYSTEM CHAIN_CONFIG runtime.
+
+**Byte-identical while off** (design §3 D7). With no param-9 row: phase 6b′ returns at its edge
+test; the registry stays at generation 1, which is the pre-HF-4 table byte for byte, so every
+block is judged by the same runtimes; the two new ctx fields are read only by the stateful rule
+for ids 9-13 (which the old binary refused anyway) and by the op-8 exec (unreachable under
+generation 1); `v2_names` is empty, so the name leg equals the tagged-empty root it held before;
+genesis seeding is unchanged; no gen-1 op gained a read or a charge. The new reads
+(`env_ruleset_gen2_voted`, `env_name_prices`, the responder's three facts) can only fail as
+node-local FAULTs, never as a different verdict. CheckTx's code 100 is mempool-only.
+
+**Honest labels.**
+- *What D2 does NOT bind* (design §1.4): generation-2 execution details outside the descriptor
+  hashes — the name alphabet table, the compiled price defaults, the NMLEAF layout, the ranges
+  of params 10-13. Two builds that differ there agree at the vote block and split at the first
+  registration after H. The guards are version discipline, the KATs and the 7/7 comparison of
+  the D2 + commit lines — procedure, not code.
+- *7/7 is procedure.* The code enforces only that seats holding > 2/3 of the power answer the
+  approval (HF-2's rule); an old binary refuses id 9 (> its `CC_PARAM_MAX_ID` 8), commits the
+  vote's block anyway and diverges there; recovery = wipe + genesis-pin rejoin on the new binary.
+- *Early vote (decision item 15, accepted):* any committee seat on the HF-4 binary can propose
+  param 9 at an H the operator did not pick; the other seats approve automatically.
+- *Accepted risks (decision items 8 and 9):* no commit-reveal — anyone connected to 4004 sees a
+  pending registration and can race it; a name lookup trusts the one node asked.
+- *Clients not migrated in this change:* the web wallet's WASM module still calls the
+  generation-1 `nodus_v2_ruleset_from_pins` / `nodus_v2_stake_ruleset_from_pins`
+  (`web-wallet/crypto/nodus-send-wasm.c`), so after H its NODUS envelopes are generation 1 and
+  are refused by the node; Nodus Connect and the explorer (`explorer/`) are not changed either.
+  The design (§1.6, §1.7) lists them as released BEFORE the vote.
+- *Not measured:* the design's cost gate — phase 8 inside FinalizeBlock at 10^5 and 10^6 name
+  rows on the slowest validator, against the 4 s commit pace, before the vote. `names_root_v2`
+  scans the whole table every time the CORE root is computed.
+- *Not replayed anywhere:* a refused param-9 leg in a block COMMITTED BY THE OLD BINARY.
+  `test_hf4_switch` case E is a proxy on one binary (a param-14 leg refused by the range gate
+  shows the same `gas_wanted` / `gas_used` as the HF-4 refusals).
+- *A fresh chain starts at generation 1* and needs the vote (and HF-2) like the live one.
+
+**Tests** (written; run by the ORCHESTRATOR): `test_hf4_table` (the generation table's shape
+and lookups, generation 1 = the genesis literals, generation 2's lists / policy / weights,
+exact-tuple resolution and a cross-generation mix resolving to nothing, selfcheck incl. the D2
+re-derivation, `dna_ruleset_gen_digest` sensitivity, CORE rule 8 refused as a verdict below
+generation 2); `test_hf4_params` (ids and the read list, the scalar matrix — exactly D2, D2 ± 1
+refused, [10^8, 10^15] inclusive —, ERGONOMIC grace, the full stateful matrix, the SYSTEM exec
+applying it from ctx facts with an EMPTY read plan, cache slots for 9-13 and the far-future
+param-9 row found at `INT64_MAX`); `test_hf4_switch` (A: the transform KAT against
+`hf4_switch_oracle.py` literals keyed to switch spec 1; B: param 7 effective 1 and param 9
+effective H = 4 at genesis — the switch at block 3 = H−1, both domains touched, CORE's
+DomainUpdate pre == post, registry and heads at generation 2, no second switch at H; C: the
+not-generation-1 FAULT with the DB byte-unchanged; D: two param-9 legs in one block — the second
+sees `ruleset_gen2_voted` = 1 and is refused; E: the replay-invariance proxy); `test_hf4_genesis`
+(chain id, global root and domain-registry root of the fixture genesis equal literals captured
+from the PRE-HF-4 build, through the derivation and the bundle join); `test_hf4_names` (byte rule
+and fold, name_root vectors and order, read plan / exec / describer / owner key at the hook level
+— every refusal -1, never -2 —, pins tuples per generation, the client decoders of the new
+replies and v3-block keys); `test_hf4_names_engine` (the per-open DDL check refusing a
+wrong-shape table; twin fixtures A/B through the engine — a registration refused under
+generation 1, admitted by the dry run with the synthetic owner key before H, applied at H with
+the pool rising by exactly fee + price, taken name / second name per ID / same-block second
+registration refused, the address-index `"name"` row on A only with A's root still equal to
+B's, and the names leg bound into the CORE root); `test_cc_appr` (+ the responder: HF-2 off,
+second vote, epoch-boundary H−1, wrong value, a name price under generation 1 — each refused —,
+and a param-9 vote that signs and is then single use); `dnac/tests/test_chain_config_verify.c`
+cases 5a′ / 5a″ / 5b (the client mirror and the read list); the tests' whole-database digest
+helpers order a `WITHOUT ROWID` table by its primary key (`v2x_digest_select_sql`,
+`tests/v2_genesis_fixture.h` and the other digest helpers). Oracles:
+`shared/dnac/tests/hf4_oracle.py` (generation-2 policy digest, SYSTEM v7 / CORE v5 hashes, D2,
+name_root vectors) and `shared/dnac/tests/hf4_switch_oracle.py` (the post-switch manifest hashes
+and registry root), each written from the written contracts, not from the C. Harness
+`test_cmt_hf4_names.sh` (standalone, two binaries — `nodus/tests/integration/stagef/README.md`;
+**written against the source, NOT yet run**): OLD → NEW rolling upgrade with HF-2 and HF-3 active
+first, the param-9 vote, a second param-9 proposal refused by the seats, the crossing of H on
+idle blocks with 7/7 at H−1 / H / H+1, `name register punk` applied and read back on 7/7, a
+restart and a wipe + pin rejoin across H. Its own labels: every `name register` refusal it
+asserts is the CLI's pre-check, not the chain's (the chain-side first-wins / one-per-ID refusal,
+the synthetic owner key and the node's generation-1 refusal are proven only by the unit tests);
+rule (a) is proven at the approval responder only, rules (b) and (c) not as refusals; the expiry
+cap is not asserted; it runs at the short-epoch / short-grace build (15 / 15) — the LOGIC only,
+nothing about the production 720-block grace.
+
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
 **Records:** `docs/plans/2026-09-28-scan-v3-design.md`, decision
@@ -3733,7 +4165,9 @@ version-3 lane never writes (`ledger_entries` has no writer).
   UNDELEGATE release-coin derivation is one helper shared with the exec
   (`rtn_sysfund_release_coin`). Pure read: no write, no clock, no cache; refused
   while a ledger transaction is open; any store/decode fault fails the request.
-  Wire keys: `nodus.h` (the `dnac_v3_block` comment).
+  Wire keys: `nodus.h` (the `dnac_v3_block` comment). Since HF-4 an applied
+  NAME_REGISTER (op `"name_register"`) also carries the OPTIONAL pair `"nm"`
+  (name) / `"pr"` (price paid into the reward pool, never `"bu"`) — see "HF-4".
 - **`dnac_balance` {owner}** — PUBLIC, TRANSPARENT coins only: per token the
   total, the spendable part (`unlock_block < tip + 1`, the spend exec's lock
   rule) and the coin count, summed in C with overflow checks (SQL SUM switches
@@ -3823,7 +4257,9 @@ writes, so a wallet had no history of its own address from a node.
   self set gives the payer a `spend_out` and the owner a `spend_in`; change writes
   nothing; a TOKEN_CREATE's non-native coins give `token_create`; BURN gives
   `burn` (native); SYSTEM records give `stake` / `delegate` / `undelegate` /
-  `unstake` / `validator_update` (chain_config: none); the fee rides on the
+  `unstake` / `validator_update` (chain_config: none); a CORE NAME_REGISTER
+  (HF-4) gives its owner — the payer, its one signer — a `name` row with
+  amount = the price paid into the reward pool; the fee rides on the
   payer's first row, or a `fee` row when the payer has none. Claims (CORE target)
   give the claimant a `claim` row; paydays `payout`; graduations `release`. No
   sender is invented for claims, payouts or releases. The PAYER (first satisfied
@@ -3870,7 +4306,9 @@ retirement (the id-1 treatment) was the rejected alternative.
 `nodus_witness_committee.c`, and `vset_target_for_epoch`,
 `nodus_witness_vset.c`) and `GAS_PRICE_RAW_PER_UNIT` (5; read by
 `env_gas_price_check`, `nodus_witness_v2_apply.c`, and the fee quote in
-`nodus_witness_handlers.c`). Ids 1 and 3 stay RETIRED; id 2
+`nodus_witness_handlers.c`) at 0.20.3; later packages appended 6 (W-C),
+7 (HF-2), 8 (HF-3) and 9-13 (HF-4), so today the list is
+{4, 5, 6, 7, 8, 9, 10, 11, 12, 13}. Ids 1 and 3 stay RETIRED; id 2
 (`BLOCK_INTERVAL_SEC`) is off the list because the Comet lane's block
 pace is a compile-time node setting (`nodus_witness_cmt_node.c`, the
 consensus-config block: "has NO effect on this lane and is not read").
@@ -3883,7 +4321,11 @@ an unread id: the SYSTEM CHAIN_CONFIG exec in block apply
 refused before its one effect, no `chain_config_history` row; the CheckTx
 dry run executes the same exec), the 0x71 approval answer
 (`cc_appr_rules_chain_config` — "scalar rules rejected", no signature),
-the legacy `verify_cc_local_rules`, and the nodus-cli pre-check.
+and the nodus-cli pre-check. (The legacy `verify_cc_local_rules` that
+also consumed it was deleted with `nodus_chain_config_apply` in HF-4 —
+neither had a caller since R3 W4.) Since HF-4 the exec and the 0x71
+answer also apply the stateful half, `nodus_chain_config_stateful_rules`
+(see "HF-4").
 `nodus_chain_config_grace_for_param` returns `UINT64_MAX` for id 2, as for
 1 and 3. The client mirror `dnac_tx_verify_chain_config_rules`
 (`dnac/src/transaction/verify.c`) consults the SAME predicate, so the two
@@ -4793,6 +5235,7 @@ SQLite tables managed by the witness module (`nodus_witness_db.c`):
 | `v2_reward_accrual` | tokenomics-v3 P2: rewards credited at each boundary, one row per recipient fp, paid out and emptied at each payday; a leg of `core_state_root` |
 | `v2_treasury` | final pre-testnet wipe W-A: the nine keyless, locked treasury pools (pool_id 1..9 → balance), seeded from the genesis document; a leg of `system_state_root` and `system_payload_root`; a term of the supply equation; no exit rule (parked) |
 | `v2_balance_copy` | tokenomics-v3 P2/P3: the stake frozen at each boundary (three copies kept since P3: H−2E, H−E, H); read by the selection (okuma B) and the reward split; out of every root. PK `(epoch_start, validator_fp, owner_fp, kind)` — `kind` 0 the bond, 1 a delegation (W-B: a self-delegation shares its owner with the bond) |
+| `v2_names` | HF-4: the on-chain names (`name` BLOB PK 3..36, `owner` BLOB UNIQUE 64, `registered_height` INTEGER ≥ 1, `WITHOUT ROWID`); in the BASE schema, its DDL checked byte-for-byte on every open; written only by CORE op 8 NAME_REGISTER (generation 2); the 5th leg of `core_state_root` (`name_root`, empty = `NDS.E.NAMES.v1`) |
 | `committed_transactions` | Full serialized TX data (hub/spoke queries) |
 | `addr_history` | Node-local address history index (decision 2026-10-01): one row per owner effect (h, i, seq, raw owner, kind, amount, token, fee, peer, wire, ts), written in the block transaction only while `addr_history_index` is on; out of every root; read by `dnac_addr_history`. Created rung-free by `nodus_witness_addr_index_migrate` |
 | `addr_history_mark` | Its one marker row: `from_height` (first height of the current gap-free indexed run) and `last_height` |

@@ -35,7 +35,7 @@ One node at a time for a rolling deploy; all nodes at once for a stop-all.
 | Anything that changes **which blocks are valid** (verify/admission rules, fee gates, consensus checks) | **STOP-ALL** |
 | `state_root` format / wire format / DB schema | **STOP-ALL + chain wipe** |
 | Any consensus change (the cometbft port's `cmt_*`, the application's ABCI rows, the genesis document) | **STOP-ALL + fresh chain** — a version-3 chain has no migration; §2.1 explains why there is no `pbft_state` step any more |
-| A **height-activated** rule that is inert until a chain-config vote turns it on (HF-1 gas price, nodus 0.19.80; HF-2 param 7; HF-3 param 8) | **Rolling** binary upgrade (the rule is byte-identical to the old binary while no row exists) — then the vote, ONLY after 7/7 run the new binary. §2.2 |
+| A **height-activated** rule that is inert until a chain-config vote turns it on (HF-1 gas price, nodus 0.19.80; HF-2 param 7; HF-3 param 8; HF-4 param 9 — the rule-set generation switch, nodus 0.23.10) | **Rolling** binary upgrade (the rule is byte-identical to the old binary while no row exists) — then the vote, ONLY after 7/7 run the new binary. §2.2 |
 | Logging, metrics, non-consensus tooling | Rolling, one node at a time |
 
 **Why stop-all for validity changes:** during a rolling window the cluster runs mixed
@@ -535,6 +535,91 @@ decision orders HF-3 BEFORE the nodus component split (answer 8).
    Accepted by the operator (decision answer 7): any seat on the HF-3 binary can propose
    param 8 at a height the operator did not pick — today all 7 seats are the operator's.
 
+**HF-4 — the same procedure for chain-config param 9 `RULESET_GEN2`, with more pre-vote
+checks** (design `docs/plans/2026-10-02-onchain-names-design.md` rev 4; decision
+`docs/plans/decisions/2026-10-02-onchain-names.md` items 1-18; mechanism `ARCHITECTURE.md`
+"HF-4"). At the end of block H−1 every node rewrites the SYSTEM and CORE registry records from
+rule-set generation 1 (SYSTEM v6 / CORE v4) to the compiled generation 2 (SYSTEM v7 / CORE v5);
+from H the chain accepts CORE op 8 NAME_REGISTER (on-chain names: first come, one per ID,
+permanent, priced by length into the reward pool) and the name-price parameters 10-13 become
+votable. Unlike HF-1..HF-3 the vote's VALUE names the target: it must equal the build's compiled
+D2, `0x44dfbe7ad3c75adf` = **4962894749133920991** in decimal. The decision orders HF-4 BEFORE
+the nodus component split (item 13).
+1. **Rolling binary upgrade to the HF-4 build (nodus 0.23.10), one node at a time**, as step 1
+   above. No wipe: with no param-9 row the registry stays at generation 1 and the HF-4 binary
+   decides every block as the binary it replaces (ARCHITECTURE.md "HF-4", "Byte-identical while
+   off"). Do not change any node's binary between the vote and H.
+2. **Before the vote — all of the following:**
+   - **Per-node version check** (step 2 above): each node's own log shows the HF-4 build's
+     `Nodus v0.23.10 running` line as the LAST such line. An old binary does not know id 9
+     (its `CC_PARAM_MAX_ID` is 8): it refuses the vote's item, commits the vote's block
+     anyway and diverges there.
+   - **Same generation 2 and same build on 7/7.** On every node:
+     `journalctl -u nodus | grep -E 'rule-set generations|consensus build constants'` — the
+     LAST pair of lines (tag `WITNESS`, printed at start after the runtime selfcheck) must be
+     identical on all seven:
+     `rule-set generations 2, generation-2 vote D2 0x44dfbe7ad3c75adf (switch spec v1), built from git commit <sha>`
+     `consensus build constants: epoch_length 720, grace_safety 17280, grace_ergonomic 720, blocks_per_year 6307200, fault_inject off`
+     A different D2 means a different generation 2 (that node would refuse the vote at the
+     vote block and diverge — the lagging-node case); a different commit, or a `-dirty` /
+     `-status-unknown` / `unknown` commit, means the seven are not provably the same source —
+     settle it before the vote. Generation-2 details that D2 does not bind (the name alphabet,
+     the compiled prices, the name-leaf layout, the ranges of params 10-13) are guarded ONLY by
+     this comparison: two builds that differ there agree at the vote and split at the first
+     registration after H. Binary SHA-256 is not compared — the build is not reproducible.
+     Any other `consensus build constants` value (a short-epoch or fault-injection build) must
+     never reach a validator.
+   - **HF-2 is active.** Rule (b): the vote is refused unless param 7 is active at the vote
+     height. On the testnet chain it is (param 7 effective 1500 — "Live hard forks" above).
+     The switch leaves CORE's root unchanged at H−1, which only HF-2 accepts.
+   - **6 live peers per validator (full mesh on 4004)** — the HF-3 item above; the method of
+     reading it is still the open item recorded there.
+   - **Clients released BEFORE the vote** (design §1.6, §1.7): from H the node refuses a
+     generation-1 envelope at preflight (`DNA_ENV_PF_ERR_CTX_VERSION` — SYSTEM v6 ≠ v7, CORE
+     v4 ≠ v5; CheckTx answers code **100**, "generation not in force", instead of 1), so a
+     client that cannot build generation 2 stops working at H. In this tree: the 0.23.10
+     `nodus-cli` asks the node (`dnac_ruleset_info`) and builds for the generation it names;
+     the web wallet's WASM module still builds generation 1 only
+     (`nodus_v2_ruleset_from_pins`, `web-wallet/crypto/nodus-send-wasm.c`); Nodus Connect and
+     the explorer are not changed by HF-4. An older CLI reading the address history of an ID
+     that registered a name fails closed on that page (new row kind `name`). Settle every
+     client before the vote.
+   - **Name-root cost** (design §2 "Cost"): FinalizeBlock time with 10^5 and 10^6 `v2_names`
+     rows on the slowest validator, against the 4 s commit pace. Not measured anywhere yet;
+     the harness scenario does not measure it.
+   - **Pick `<H>` — asked of the operator** (never chosen by whoever runs the vote), with
+     BOTH constraints, else the chain refuses the vote: `<H>` ≥ (the vote's block) + 720, the
+     ERGONOMIC grace (decision item 17); and `(<H> − 1) mod 720 ≠ 0` — H−1 must not be an
+     epoch boundary (rule (c), `DNAC_EPOCH_LENGTH` 720). Once committed, H can be neither
+     moved nor voted again: param 9 is single use (rule (a)), and a far-future H retires it
+     for good (decision item 15).
+3. **Vote** with the HF-4 CLI (the value is parsed as DECIMAL — `strtoull(…, 10)` — while the
+   log and `ruleset-info` print D2 in hex; `nodus-cli chain-config propose` run without
+   `--value` prints the decimal it accepts):
+   `nodus-cli chain-config propose --param RULESET_GEN2 --value 4962894749133920991 --effective <H>`
+   The row must appear identically on 7/7 (`chain_config_history`: param_id 9, new_value
+   4962894749133920991, same commit_block and tx_hash). Each seat's responder checks the
+   scalar rule (exactly D2) and the stateful rules (no earlier param-9 row, HF-2 active, H−1
+   not an epoch boundary); a refusal reads `stateful rules rejected`. The approval set is
+   judged by the power rule (HF-2). Then **add the row to "Live hard forks" above in the same
+   push**, read back from 7/7.
+4. **Check** on every node with `nodus-cli -s <ip> ruleset-info`: before H it prints
+   `generation=1` and `RULESET_GEN2 height H=<H>`; from H, `generation=2` (SYSTEM v7, CORE v5)
+   and `this CLI carries it as compiled generation 2`; `node D2` equal to `this CLI D2` (else
+   it prints `MISMATCH`). Each node logs once, at the end of H−1:
+   `HF-4: rule-set generation 1 -> 2 at the end of height <H-1> (D2 0x44dfbe7ad3c75adf); height <H> is judged under generation 2`
+   (tag `W_V2APPLY`).
+5. **Between the vote and H** nothing changes on chain, but the HF-4 CLI caps a
+   generation-1 envelope's expiry at H−1, and once H−1 is no longer above the tip it refuses
+   to build at all ("retry after height H") — expect a short window around H in which
+   `nodus-cli` builds nothing. **From H**: `nodus-cli name register <name> --keys <dir>
+   --submit ip:port` works; the prices are params 10-13 (compiled defaults 1 000 / 500 / 100 /
+   1 NODUS for 3 / 4 / 5 / 6+ characters, `dnac_fee_info` "np"), votable from H only, range
+   [1, 10 000 000] NODUS, ERGONOMIC grace.
+6. **Reverting** is another hard fork: generation 1 cannot be voted back. Accepted by the
+   operator (decision item 15): any seat on the HF-4 binary can propose param 9 at an H the
+   operator did not pick — today all 7 seats are the operator's.
+
 **A node that missed the vote (still on the old binary when R committed):**
 - Upgrading its binary and restarting does **NOT** recover it: the ABCI handshake at
   app == store == state height re-executes nothing, so the diverged state carries over
@@ -544,6 +629,12 @@ decision orders HF-3 BEFORE the nodus component split (answer 8).
   `archive/` (keep the identity directory); start the NEW binary with
   `--v2-genesis-pin <the fleet's pin>`; it re-derives the chain, including the vote's
   block under the new rules, and must match the fleet's `state_root` at a common height.
+- **HF-4:** the same applies to a node on an old binary AND to a node on an HF-4 build whose
+  D2 differs from the fleet's (both refuse the vote's item and diverge at the vote's block).
+  The rejoining HF-4 binary seeds genesis from generation 1 (byte-identical to the
+  pre-HF-4 genesis) and re-executes the generation switch at H−1 itself — its log carries the
+  `rule-set generation 1 -> 2 at the end of height <H-1>` line again. Proven on localhost only
+  by `test_cmt_hf4_names.sh` step 10, which is written but NOT yet run (stagef README).
 
 ## 2.1 View-authority cutover — DOES NOT APPLY to a version-3 (cometbft) chain
 
