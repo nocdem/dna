@@ -241,7 +241,8 @@ on `127.0.0.1` therefore produced ONE cluster peer; six were dropped without a l
 
 **Impact chain:** one cluster peer → the heartbeat pings one node → the only cluster-side
 `nodus_routing_insert` (that peer's ALIVE transition) fills one Kademlia routing slot →
-`nodus_server_replicate_value`'s small-cluster fast path calls
+`nodus_dht_replicate_value`'s (named `nodus_server_replicate_value` until split S4)
+small-cluster fast path calls
 `nodus_routing_find_closest` on a one-entry table → **R=8 becomes R=1**. The cluster
 became a star through the first seed, and every value's second and later replicas
 depended on the hub's 600 s `NODUS_REPUBLISH_SEC` cycle happening to run in time. That is

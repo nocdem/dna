@@ -445,6 +445,10 @@ Decision `docs/plans/decisions/2026-10-01-nodus-component-split.md` items 7 (UDS
 | `int nodus_identity_load_readonly(const char *path, nodus_identity_t *id_out)` (`nodus_identity.h`) | **NEW.** Reads the same six files as `nodus_identity_load` (`nodus.pk`, `nodus.sk`, `nodus.kyber_pk`, `nodus.kyber_sk`, `nodus.mlkem_pk`, `nodus.mlkem_sk`) with exact lengths, derives `node_id` / fingerprint the same way, same ML-KEM pair check (pk == sk offset 1536). Never writes: where `nodus_identity_load` would generate/save/regenerate, this returns -1. Files read unbuffered (`_IONBF`) so no key bytes stay in a stdio buffer. 0 (`has_kyber` and `has_mlkem` true) / -1 (`id_out` cleared, failing file logged). |
 | `static int identity_read_file_exact(const char *dir, const char *name, uint8_t *out, size_t len)` (`nodus_identity.c`) | **NEW (internal).** `fopen "rb"`, unbuffered, exactly `len` bytes; logs the failing file. |
 
+### 12.9 Nodus server DHT half — component split S4 (`nodus/src/dht/nodus_dht.h`, `nodus/src/server/nodus_dht_backend.h`)
+
+The nodus server's own DHT / storage half (routing table, lookups, replication, republish, hinted handoff, listen subscriptions, batch forward, `nodus.db`, `channels.db`) has its own state `nodus_dht_t` and API (`nodus_dht_*`, `nodus_dht_backend_*`, `nodus_server_dht_host`) since split S4; `nodus_server_replicate_value` / `_media_chunk` and `nodus_server_bf_*` are now `nodus_dht_replicate_value` / `_media_chunk` and `nodus_dht_bf_*`, and the media handlers moved to `nodus/src/dht/nodus_dht_media.h` with `(nodus_dht_t *dht, int slot, …)` signatures. Server-side only — the client SDK (`nodus.h`) and `nodus_ops` are unchanged. Entries: `ledger.md` §18. Narrative: `nodus/docs/ARCHITECTURE.md` §10 "Component split", S4.
+
 ---
 
 ## 13. Salt Agreement (`dht/shared/dht_salt_agreement.h`)

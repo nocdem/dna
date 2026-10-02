@@ -83,7 +83,10 @@ TCP 4003 (`NODUS_DEFAULT_CH_PORT`, channels) is still defined, but the channel s
 ```
 nodus/
 ├── src/
-│   ├── server/      # Server event loop (epoll), nodus_server.c
+│   ├── server/      # Server event loop (epoll), nodus_server.c — core: auth, sessions, presence,
+│   │                #   circuits, 4002 handshake, cluster heartbeat; the DHT backend door (split S4)
+│   ├── dht/         # The DHT / storage half: nodus_dht.h (state + seam), nodus_dht_server.c
+│   │                #   (DHT handlers, lookups, replication, republish), nodus_dht_media.c (split S4)
 │   ├── client/      # Client SDK, nodus_client.c
 │   ├── protocol/    # Wire protocol, Tier 1 + Tier 2 dispatch
 │   ├── core/        # Kademlia routing, storage
@@ -142,7 +145,7 @@ read from the chain:
 
 ```bash
 cd nodus/build
-ctest --output-on-failure    # count: see `ctest -N` (and `ctest -N -L bench`). At split S3 (1faf4d4f), json-c found, the orchestrator measured 234 registered, 9 labelled bench, 225 run by `ctest -LE bench`
+ctest --output-on-failure    # count: see `ctest -N` (and `ctest -N -L bench`). At split S3 (1faf4d4f), json-c found, the orchestrator measured 234 registered, 9 labelled bench, 225 run by `ctest -LE bench`; at split S4 (8eced563), 226 run by `ctest -LE bench`
 ```
 
 **Test coverage (representative areas — `ctest` runs all):**
@@ -155,6 +158,7 @@ ctest --output-on-failure    # count: see `ctest -N` (and `ctest -N -L bench`). 
 | Auth | `test_inter_auth`, `test_identity` (+ the read-only loader, split S2), `test_sign_domain_separation` |
 | Component split S2 — local IPC | `test_tcp_unix` (Unix domain socket entry: mode 0600, frames both ways, `SO_PEERCRED` refusal, stale / live / regular-file path handling, unlink on close) |
 | Component split S3 — `nodus-witness` + IPC chain backend | `test_witness_ipc` (core's IPC chain backend against the witness IPC listener over a real socket, test handlers in place of the witness: preface key/token reach the handler and `find_session_conn`, reply relayed unchanged, `dnac_cc_collect` routing, `session_closed` → no session, status snapshot round-trip, non-preface first frame closed, no witness / control connection down → the "witness module not enabled" error and no session dial, the per-session queue bound, `read_pending`); `test_split_linked` (an `nm` gate: the linked `nodus-witness` carries no `nodus_server_init` / `nodus_cluster_init` / `nodus_storage_open` / `nodus_presence_tick`, and does carry the witness's own entry points) |
+| Component split S4 — core/DHT seam | `test_dht_linked` (an `nm` gate on the never-run `dht_link_probe`, which references only the core → DHT entry points of `dht/nodus_dht.h`: the DHT objects must reach no `nodus_server_init` / `nodus_server_dht_host` / `nodus_auth_handle_auth` / `nodus_presence_tick` / `nodus_cluster_init` / `nodus_cluster_tick` / `nodus_dht_backend_inproc_new`, and must carry `nodus_dht_init` / `nodus_dht_client_request` / `nodus_dht_tick` / `handle_t2_media_put` / `nodus_storage_open` / `nodus_routing_try_insert`); `test_bf_forward_frames` and `test_bf_recv_frame` call the renamed `nodus_dht_bf_*`; `test_bf_forward_frames`, `test_inter_preauth_gate`, `test_circuit_cross_live` (and `circuit_latency_probe`) reach the DHT state through `nodus_dht_backend_inproc_state` |
 | Channels | `test_channel_*` (channel system currently disabled in production) |
 | Circuits (VPN mesh) | `test_circuit_wire`, `test_circuit_table`, `test_circuit_live` |
 | Media / DHT features | `test_media_storage`, `test_media_tier2`, `test_put_if_newer`, `test_hinted_handoff` |
