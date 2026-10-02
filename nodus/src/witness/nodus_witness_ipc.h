@@ -33,7 +33,9 @@
  *                   "po":bool p2p host exists,"lp":uint 4004 port}.
  *
  * Anything else as a first frame — or a frame a connection's kind does not
- * serve — closes that connection.
+ * serve — closes that connection. So does any frame that arrives while
+ * that connection's own queue toward core is at
+ * NODUS_WITNESS_IPC_REPLY_QUEUE_MAX (core has stopped reading it).
  *
  * This file includes no server header: the nodus-witness binary must not
  * link nodus_server.c (tests/split_linked.cmake).
@@ -69,6 +71,53 @@ struct nodus_witness;
 
 /** Largest control frame either side builds (status answer ≈ 150 B). */
 #define NODUS_WITNESS_IPC_CTL_FRAME_MAX  512
+
+/*
+ * Per-connection queue bounds. "Queued" = the bytes one IPC connection
+ * has for its peer that the kernel has not yet taken: the unsent part of
+ * its write buffer plus its pending FIFO (nodus_tcp_conn_t
+ * `wlen - wpos + pending_bytes`). Each bound is checked BEFORE a frame is
+ * queued, never with the new frame's length added, so one frame of the
+ * transport's largest size (NODUS_MAX_FRAME_TCP, 5 MiB) still goes onto
+ * an idle connection.
+ */
+
+/**
+ * Core side (server/nodus_chain_backend_ipc.c): a client `dnac_*` request
+ * whose session socket has this much or more queued toward the witness is
+ * answered NODUS_CHAIN_NO_WITNESS_MSG and NOT queued; the session socket
+ * stays open and what it already carries is still delivered.
+ *
+ * Why 4 MiB: the transport grows a write buffer to one maximum frame
+ * (~5 MiB, nodus_tcp.c buf_ensure) before it spills to the pending FIFO.
+ * With the bound below that, a frame reaches the FIFO only while fewer
+ * than 4 MiB are queued, and the next check then refuses — the FIFO holds
+ * at most one frame, never NODUS_PENDING_MAX_FRAMES (20), so a send on a
+ * session socket fails only on a real transport fault (allocation, peer
+ * gone), never on capacity. Worst case per session: the bound plus one
+ * maximum frame (~9 MiB) instead of the transport's ~37 MiB (5 MiB write
+ * buffer + NODUS_PENDING_MAX_BYTES). At the size of today's `dnac_*`
+ * requests (bytes to kilobytes) that is still hundreds of requests in
+ * flight per session.
+ */
+#define NODUS_WITNESS_IPC_QUEUE_MAX        ((size_t)4 * 1024 * 1024)
+
+/**
+ * Witness side (nodus_witness_ipc.c): a frame read from a connection that
+ * has this much or more of its replies queued toward core closes the
+ * connection instead of being dispatched (see that file's "Bound" note).
+ *
+ * Why 16 MiB, larger than the core bound: requests are small but replies
+ * are not — one `dnac_block` reply is up to NODUS_DNAC_V3_BLOCK_BUDGET_MAX
+ * (1 MiB) of items, and a syncing client may pipeline several. Core reads
+ * its IPC transport once per loop pass, so a burst of replies produced
+ * within one witness poll must not trip the close; about 16 one-MiB
+ * replies between two core reads still pass. It stays below the transport's own
+ * per-connection ceiling (~5 MiB write buffer + 20 pending frames /
+ * NODUS_PENDING_MAX_BYTES), past which the transport drops replies one by
+ * one with only a log line.
+ */
+#define NODUS_WITNESS_IPC_REPLY_QUEUE_MAX  ((size_t)16 * 1024 * 1024)
 
 /**
  * The socket path for `data_path` ("/tmp" when empty — where the server

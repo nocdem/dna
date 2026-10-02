@@ -68,7 +68,9 @@
 #   as TWO processes from the SAME build: nodus-server --witness-external
 #   (core + DHT; no witness, no witness port) FIRST, then — once its
 #   identity files exist, attempt-bounded — STAGEF_NODUSWITNESS_BIN with
-#   the identical arguments, writing node<N>/witness.log. A split mode
+#   the identical arguments, `--witness-external` included (nodus-witness
+#   refuses to start without witness_external), writing
+#   node<N>/witness.log. A split mode
 #   needs STAGEF_NODUSWITNESS_BIN executable (refused otherwise, exit 2).
 #   For a split node the four anti-vacuity lines are read from
 #   witness.log (stagef_node_log), and three more are required: its
@@ -870,7 +872,10 @@ done
 # every identity long before this point, so the wait is a CONTRACT GUARD
 # that returns on its first look; it is bounded by ATTEMPTS (40 x 0.25 s,
 # the same bound section 1 uses), never a bare sleep, and a miss is a
-# FAIL. Same arguments as the core minus --witness-external; its own log.
+# FAIL. Same arguments as the core, `--witness-external` included:
+# nodus-witness refuses to start (exit 1) unless its loaded config has
+# witness_external, and this harness sets it on the command line only
+# (see the core spawn above). Its own log.
 WPIDS=""
 for n in $(seq 1 "$C"); do
     stagef_node_is_split "$n" || continue
@@ -883,7 +888,7 @@ for n in $(seq 1 "$C"); do
     done
     [ "$id_ok" = 1 ] || { echo "[FAIL] node $n: core identity files never appeared — nodus-witness cannot start" >&2; exit 7; }
     # shellcheck disable=SC2086
-    "$STAGEF_NODUSWITNESS_BIN" -c "$BASE_DIR/nodus.json" -b 127.0.0.1 \
+    "$STAGEF_NODUSWITNESS_BIN" -c "$BASE_DIR/nodus.json" --witness-external -b 127.0.0.1 \
         -u "$(stagef_udp_port "$n")" -t "$(stagef_tcp_port "$n")" \
         -p "$(stagef_peer_port "$n")" -C "$(stagef_chan_port "$n")" \
         -W "$(stagef_witness_port "$n")" \

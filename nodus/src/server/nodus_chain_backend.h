@@ -54,6 +54,15 @@ typedef struct {
      *  consensus lane) — once per server loop iteration. */
     void (*tick)(nodus_chain_backend_t *b);
 
+    /** true while the backend's own transport has connections left on its
+     *  pending-read list (nodus_tcp_read_pending): the server's loop then
+     *  waits 0 ms in its other polls, so that input is not held behind a
+     *  50 ms wait (the nodus_tcp.h read-budget rule). In-process: always
+     *  false — the witness polls its 4004 host inside `tick`, and the
+     *  server's poll timings stay exactly what they were. IPC: the
+     *  backend's Unix-socket transport. */
+    bool (*read_pending)(nodus_chain_backend_t *b);
+
     /** Fill the chain fields of a `status` reply (block_height,
      *  state_root, chain_id); untouched when no chain is open. */
     void (*status)(nodus_chain_backend_t *b, nodus_t2_status_info_t *info);
@@ -142,8 +151,11 @@ int nodus_chain_backend_inproc_open(const nodus_witness_host_t *host,
  * empty, as the server's own databases). Opens no socket yet: the control
  * connection is dialled on the first `tick` and re-dialled with bounded
  * backoff whenever it is down; a session's socket is dialled on that
- * session's first `dnac_*` request. A witness that is not running costs
- * nothing but the NODUS_CHAIN_NO_WITNESS_MSG error to the requester.
+ * session's first `dnac_*` request, and only while the control connection
+ * is up. A witness that is not running costs nothing but the
+ * NODUS_CHAIN_NO_WITNESS_MSG error to the requester. Each session socket
+ * holds at most NODUS_WITNESS_IPC_QUEUE_MAX queued bytes; a request past
+ * that gets the same error and the socket stays open.
  * @return 0 `*out` set; -1 bad argument or socket path too long;
  *         -2 out of memory.
  */

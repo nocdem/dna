@@ -35,6 +35,13 @@ static void inproc_tick(nodus_chain_backend_t *b) {
     nodus_witness_tick(inproc_w(b));
 }
 
+/* The witness polls its own 4004 host inside the tick; nothing here for
+ * the server loop to hurry for — its poll timings stay as they were. */
+static bool inproc_read_pending(nodus_chain_backend_t *b) {
+    (void)b;
+    return false;
+}
+
 /* Cluster-status chain fields (nodus_server.c handle_t2_status). The fill
  * itself is witness-side (nodus_witness_status_fill), shared with the
  * nodus-witness process's `ipc_status` answer (split S3). */
@@ -95,6 +102,7 @@ static void inproc_close(nodus_chain_backend_t *b) {
 
 static const nodus_chain_backend_ops_t inproc_ops = {
     .tick          = inproc_tick,
+    .read_pending  = inproc_read_pending,
     .status        = inproc_status,
     .chain_open    = inproc_chain_open,
     .listen_port   = inproc_listen_port,

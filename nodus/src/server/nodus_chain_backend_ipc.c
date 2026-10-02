@@ -7,7 +7,9 @@
  * <data_path>/witness.sock. Frame formats: witness/nodus_witness_ipc.h.
  *
  * Its own nodus_tcp_t (never the client or the inter-node pool), polled
- * with a 0 ms wait from `tick`, i.e. once per server loop pass.
+ * with a 0 ms wait from `tick`, i.e. once per server loop pass; while it
+ * has connections left on its pending-read list (`read_pending`), the
+ * server's own polls wait 0 ms too.
  *
  *  - Session sockets (item 19): a client session's first `dnac_*` request
  *    dials one socket, sends the ipc_hello preface (the session's key and
@@ -21,8 +23,17 @@
  *  - A witness that cannot be reached, or a session beyond
  *    NODUS_CHAIN_IPC_MAX_SESSION_CONNS, is answered at once with the error
  *    a witness-less server gives (item 20, NODUS_CHAIN_NO_WITNESS_MSG).
+ *    "Cannot be reached" includes "the control connection is down": a
+ *    session without a socket is then answered without dialling — the
+ *    control connection's backoff is the only re-dial driver, so a
+ *    stopped witness costs no connect attempt per request.
  *    A request already forwarded when the witness goes away gets no
  *    answer; the client times out.
+ *  - Per-session bound: a request whose session socket already has
+ *    NODUS_WITNESS_IPC_QUEUE_MAX or more queued toward the witness
+ *    (witness/nodus_witness_ipc.h) gets the same error and is not
+ *    queued; the socket stays open. Only a failed send (a real transport
+ *    fault) closes it.
  *  - The control socket: dialled on the first `tick`, re-dialled with a
  *    bounded backoff while the witness is down; an ipc_status query on
  *    connect and every IPC_STATUS_EVERY_MS after. The last answer is the
@@ -235,6 +246,13 @@ static nodus_tcp_conn_t *ipc_session_conn(ipc_backend_t *ib,
         ipc_session_close(ib, s);
     if (s->ipc) return s->ipc;
 
+    /* No control connection = the witness is known unreachable (its last
+     * dial failed or it went away). Do not dial a session socket for it:
+     * every `dnac_*` would otherwise cost a failed connect and a WARN.
+     * The control connection's backoff (ipc_ctl_tick) is the one re-dial
+     * driver; once it is back, sessions dial again. */
+    if (!ib->ctl) return NULL;
+
     if (ib->n_sess >= NODUS_CHAIN_IPC_MAX_SESSION_CONNS) {
         if (!ib->cap_logged) {
             QGP_LOG_WARN(LOG_TAG, "%d client sessions already hold a witness "
@@ -290,6 +308,16 @@ static void ipc_forward(ipc_backend_t *ib, nodus_tcp_conn_t *client,
         ipc_no_witness(client, txn_id);
         return;
     }
+    /* Per-session bound (NODUS_WITNESS_IPC_QUEUE_MAX): the witness is not
+     * taking this session's requests as fast as the client sends them.
+     * Answer this one request and queue nothing; the socket and what it
+     * already carries stay. */
+    if ((c->wlen - c->wpos) + c->pending_bytes >= NODUS_WITNESS_IPC_QUEUE_MAX) {
+        ipc_no_witness(client, txn_id);
+        return;
+    }
+    /* With the bound above, a send fails only on a real transport fault
+     * (allocation, peer gone) — then the socket is useless. */
     if (nodus_tcp_send(c, payload, len) != 0) {
         ipc_session_close(ib, &ib->sess[client->slot]);
         ipc_no_witness(client, txn_id);
@@ -353,6 +381,10 @@ static void ipcb_tick(nodus_chain_backend_t *b) {
     nodus_tcp_poll(&ib->tcp, 0);
 }
 
+static bool ipcb_read_pending(nodus_chain_backend_t *b) {
+    return nodus_tcp_read_pending(&ipc_be(b)->tcp);
+}
+
 static void ipcb_status(nodus_chain_backend_t *b, nodus_t2_status_info_t *info) {
     const nodus_witness_ipc_status_t *st = ipc_snap(ipc_be(b));
     /* Mirrors inproc_status: untouched when no chain is open. */
@@ -409,6 +441,7 @@ static void ipcb_close(nodus_chain_backend_t *b) {
 
 static const nodus_chain_backend_ops_t ipc_ops = {
     .tick           = ipcb_tick,
+    .read_pending   = ipcb_read_pending,
     .status         = ipcb_status,
     .chain_open     = ipcb_chain_open,
     .listen_port    = ipcb_listen_port,

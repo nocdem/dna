@@ -13,6 +13,11 @@
  * from `conn` exactly as they do on a client connection in the combined
  * binary (nodus_auth.c sets the same three fields there).
  *
+ * Bound: a connection whose own queue toward core has reached
+ * NODUS_WITNESS_IPC_REPLY_QUEUE_MAX is closed on its next frame instead of
+ * dispatching it (ipc_on_frame) — the witness's memory per connection
+ * stays bounded when core stops reading, and nothing here ever waits.
+ *
  * @file nodus_witness_ipc.c
  */
 
@@ -308,11 +313,34 @@ static void ipc_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
     if (s) ipc_slot_reset(s);
 }
 
+/* Bytes this connection has queued toward core and the kernel has not yet
+ * taken (the write buffer's unsent part plus the pending FIFO). */
+static size_t ipc_queued_bytes(const nodus_tcp_conn_t *conn) {
+    return (conn->wlen - conn->wpos) + conn->pending_bytes;
+}
+
 static void ipc_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                          size_t len, void *ctx) {
     nodus_witness_ipc_t *ipc = (nodus_witness_ipc_t *)ctx;
     ipc_slot_t *s = ipc_slot(ipc, conn);
     if (!s) return;
+
+    /* Bound (NODUS_WITNESS_IPC_REPLY_QUEUE_MAX): core is not reading this
+     * connection's replies. Close it rather than dispatch more work that
+     * would only grow the queue. Closing is the choice that cannot hold
+     * up consensus: it runs here, on this loop, and never waits; the
+     * transport has no "stop reading this connection" switch, and leaving
+     * frames unread would not shrink the queue either. Core sees the
+     * close, forgets the session socket, and its next `dnac_*` dials a
+     * new one; what it had forwarded on this one gets no answer (the
+     * client times out), as when the witness goes away. */
+    if (s->kind != IPC_KIND_NONE &&
+        ipc_queued_bytes(conn) >= NODUS_WITNESS_IPC_REPLY_QUEUE_MAX) {
+        ipc_refuse(ipc, conn, "its queue to core is over "
+                   "NODUS_WITNESS_IPC_REPLY_QUEUE_MAX — core is not "
+                   "reading it");
+        return;
+    }
 
     switch (s->kind) {
     case IPC_KIND_NONE:

@@ -77,11 +77,12 @@ static void usage(const char *prog, const char *title) {
     fprintf(stderr, "                    With --derive-v2-genesis the derived\n");
     fprintf(stderr, "                    chain id is written into an EMPTY pin.\n");
     fprintf(stderr, "  --witness-external\n");
-    fprintf(stderr, "                    nodus-server only: the witness runs as\n");
+    fprintf(stderr, "                    nodus-server: the witness runs as\n");
     fprintf(stderr, "                    the separate nodus-witness process,\n");
     fprintf(stderr, "                    reached over <data_dir>/witness.sock\n");
     fprintf(stderr, "                    (nodus.json key \"witness_external\").\n");
-    fprintf(stderr, "                    nodus-witness ignores it.\n");
+    fprintf(stderr, "                    nodus-witness REQUIRES it (flag or\n");
+    fprintf(stderr, "                    key) and refuses to start without it.\n");
     fprintf(stderr, "  -h                Show this help\n");
 }
 

@@ -7664,10 +7664,15 @@ int nodus_server_run(nodus_server_t *srv) {
          * can fill or empty a list. The UDP socket is not in either epoll:
          * when the last nodus_udp_poll() stopped at its read budget,
          * neither poll may block either, or queued datagrams would wait
-         * up to 2 x 50 ms per budget. */
+         * up to 2 x 50 ms per budget. The chain backend's own transport
+         * counts too (split S3: the IPC backend's Unix socket, polled
+         * 0 ms from its tick); the in-process backend always answers
+         * false, so the combined binary's timings are unchanged. */
         int poll_ms = (nodus_tcp_read_pending(&srv->tcp) ||
                        nodus_tcp_read_pending(&srv->inter_tcp) ||
-                       nodus_udp_read_pending(&srv->udp)) ? 0 : 50;
+                       nodus_udp_read_pending(&srv->udp) ||
+                       (srv->chain &&
+                        srv->chain->ops->read_pending(srv->chain))) ? 0 : 50;
 
         /* Poll client TCP events (plain port and, when enabled, the
          * WebSocket entry — same transport) */
@@ -7681,7 +7686,9 @@ int nodus_server_run(nodus_server_t *srv) {
         /* Poll inter-node TCP events */
         poll_ms = (nodus_tcp_read_pending(&srv->tcp) ||
                    nodus_tcp_read_pending(&srv->inter_tcp) ||
-                   nodus_udp_read_pending(&srv->udp)) ? 0 : 50;
+                   nodus_udp_read_pending(&srv->udp) ||
+                   (srv->chain &&
+                    srv->chain->ops->read_pending(srv->chain))) ? 0 : 50;
         nodus_tcp_poll(&srv->inter_tcp, poll_ms);
 
         /* The witness port 4004 (the p2p host) is polled inside

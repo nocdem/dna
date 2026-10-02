@@ -29,13 +29,33 @@
  *   - with no witness listening, a dnac_* request is answered at once with
  *     exactly the bytes a witness-less server sends (nodus_t2_error,
  *     NODUS_ERR_PROTOCOL_ERROR, NODUS_CHAIN_NO_WITNESS_MSG), and that
- *     backend reports no chain.
+ *     backend reports no chain;
+ *   - with the witness listening but the backend's control connection
+ *     not up (never ticked), a dnac_* request gets that same error and
+ *     NO session socket is dialled: the witness never sees a session for
+ *     that key/token and its dnac handler never runs;
+ *   - per-session bound: with the witness not reading, ~64 KiB requests
+ *     are forwarded until the session socket holds
+ *     NODUS_WITNESS_IPC_QUEUE_MAX queued bytes; the next request gets the
+ *     decision-20 error bytes for ITS txn id, and the socket stays open —
+ *     once the witness reads again it serves EVERY forwarded request on
+ *     that same connection and the client gets every reply;
+ *   - the read_pending op exists and is false on an idle IPC backend.
+ *     (The in-process backend's read_pending is `return false`; it is not
+ *     instantiated here — that needs a full nodus_witness_init — so that
+ *     half is checked by reading nodus_chain_backend_inproc.c.)
  *
  * Requires: a default build; no environment. Uses two mkdtemp directories
  * under /tmp and removes them; no ports.
  * How it can lie: every wait is a bounded poll loop whose exhaustion FAILs
  * the case (a timeout is never a pass); the polls' own 5 ms waits only
- * pace the loop.
+ * pace the loop. Two checks are absences, read after a bounded number of
+ * witness polls: "no session was dialled" (backed by the positive check
+ * that the requester got the error, not the handler's reply), and, in the
+ * bound case, "this request was forwarded" = no client frame after it —
+ * a refusal's error is written to the client socket synchronously inside
+ * dispatch, so a missed one would be counted as forwarded and the final
+ * "every forwarded request served" count would FAIL, never pass.
  */
 
 #define _DEFAULT_SOURCE 1   /* mkdtemp under -std=c11 */
@@ -335,6 +355,154 @@ static void test_no_witness(void) {
     PASS();
 }
 
+static void test_no_dial_without_ctl(nodus_witness_ipc_t *ipc) {
+    TEST("control conn down: dnac_* gets the error, no session dialled");
+    nodus_chain_backend_t *b3 = NULL;
+    /* The LIVE witness directory: a dial would succeed here. Never
+     * ticked, so its control connection is not up. */
+    if (nodus_chain_backend_ipc_open(g_dir, &b3) != 0 || !b3) {
+        FAIL("open");
+        return;
+    }
+    uint8_t tok3[NODUS_SESSION_TOKEN_LEN];
+    for (int i = 0; i < NODUS_SESSION_TOKEN_LEN; i++)
+        tok3[i] = (uint8_t)(0xC3 ^ i);
+
+    uint8_t frame[256];
+    size_t n = t2_query(12, "dnac_test", frame, sizeof(frame));
+    uint8_t want[256];
+    size_t want_len = 0;
+    nodus_t2_error(12, NODUS_ERR_PROTOCOL_ERROR, NODUS_CHAIN_NO_WITNESS_MSG,
+                   want, sizeof(want), &want_len);
+
+    int frames_before = cli_frames;
+    int calls_before = h_dnac_calls;
+    b3->ops->dispatch_dnac(b3, g_client_conn, g_pk, tok3, frame, n,
+                           "dnac_test", 12);
+    for (int i = 0; i < POLL_ROUNDS && cli_frames <= frames_before; i++) {
+        nodus_tcp_poll(&g_front, 5);
+        nodus_tcp_poll(&g_cli, 5);
+    }
+    bool got = cli_frames == frames_before + 1 && cli_last_len == want_len &&
+               memcmp(cli_last, want, want_len) == 0;
+
+    /* Give a dial, had one happened, every chance to reach the witness. */
+    for (int i = 0; i < 20; i++)
+        nodus_witness_ipc_poll(ipc, 5);
+    bool dialled = nodus_witness_ipc_find_session_conn(ipc, g_pk, tok3) != NULL;
+    bool served = h_dnac_calls != calls_before;
+    b3->ops->close(b3);
+    if (!got) { FAIL("not the decision-20 error bytes"); return; }
+    if (dialled) { FAIL("a session socket reached the witness"); return; }
+    if (served) { FAIL("the witness served the request"); return; }
+    PASS();
+}
+
+/* A client tier-2 query with an extra top-level "pad" byte string of
+ * `pad` bytes (nodus_t2_decode skips unknown top-level keys). */
+static size_t t2_query_padded(uint32_t txn, const char *method,
+                              const uint8_t *pad, size_t pad_len,
+                              uint8_t *buf, size_t cap) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    cbor_encode_map(&enc, 5);
+    cbor_encode_cstr(&enc, "t");   cbor_encode_uint(&enc, txn);
+    cbor_encode_cstr(&enc, "y");   cbor_encode_cstr(&enc, "q");
+    cbor_encode_cstr(&enc, "q");   cbor_encode_cstr(&enc, method);
+    cbor_encode_cstr(&enc, "tok"); cbor_encode_bstr(&enc, g_token,
+                                                    sizeof(g_token));
+    cbor_encode_cstr(&enc, "pad"); cbor_encode_bstr(&enc, pad, pad_len);
+    return cbor_encoder_len(&enc);
+}
+
+#define OVERCAP_PAD       (64 * 1024)
+/* 200 x 64 KiB = 12.5 MiB: the 4 MiB bound plus any kernel socket buffer
+ * a default Linux gives an AF_UNIX stream (~208 KiB) with a wide margin. */
+#define OVERCAP_MAX_REQS  200
+
+static void test_session_bound(nodus_chain_backend_t *b,
+                               nodus_witness_ipc_t *ipc) {
+    TEST("per-session bound: over-cap request refused, socket stays");
+    static uint8_t pad[OVERCAP_PAD];
+    static uint8_t frame[OVERCAP_PAD + 256];
+    memset(pad, 0x5A, sizeof(pad));
+
+    int calls_before = h_dnac_calls;
+    int frames_before = cli_frames;
+    int forwarded = 0;
+    bool refused = false, right_bytes = false;
+
+    /* The witness is NOT polled in this phase: nothing drains the
+     * session socket, so its queue grows until the bound. */
+    for (int i = 0; i < OVERCAP_MAX_REQS && !refused; i++) {
+        uint32_t txn = 2000u + (uint32_t)i;
+        size_t n = t2_query_padded(txn, "dnac_test", pad, sizeof(pad),
+                                   frame, sizeof(frame));
+        if (n == 0) { FAIL("encode"); return; }
+
+        int f0 = cli_frames;
+        b->ops->dispatch_dnac(b, g_client_conn, g_pk, g_token, frame, n,
+                              "dnac_test", txn);
+        for (int r = 0; r < 4 && cli_frames == f0; r++) {
+            nodus_tcp_poll(&g_front, 0);
+            nodus_tcp_poll(&g_cli, 0);
+        }
+        if (cli_frames == f0) {
+            forwarded++;
+            continue;
+        }
+        refused = true;
+        uint8_t want[256];
+        size_t want_len = 0;
+        nodus_t2_error(txn, NODUS_ERR_PROTOCOL_ERROR,
+                       NODUS_CHAIN_NO_WITNESS_MSG, want, sizeof(want),
+                       &want_len);
+        right_bytes = cli_frames == f0 + 1 && cli_last_len == want_len &&
+                      memcmp(cli_last, want, want_len) == 0;
+    }
+    if (!refused) { FAIL("no request was refused within the bound"); return; }
+    if (!right_bytes) { FAIL("the refusal is not the decision-20 error"); return; }
+    if (forwarded < 1) { FAIL("nothing was forwarded before the bound"); return; }
+
+    /* Let the witness read again: every forwarded request must be served
+     * on the one session connection, and every reply relayed. */
+    int replies_want = frames_before + 1 + forwarded;
+    for (int i = 0; i < POLL_ROUNDS &&
+                    (h_dnac_calls < calls_before + forwarded ||
+                     cli_frames < replies_want); i++)
+        poll_all(b, ipc);
+    if (h_dnac_calls != calls_before + forwarded) {
+        FAIL("forwarded requests were lost (the socket was closed?)");
+        return;
+    }
+    if (cli_frames != replies_want) {
+        FAIL("not every forwarded request's reply reached the client");
+        return;
+    }
+    nodus_tcp_conn_t *sc = nodus_witness_ipc_find_session_conn(ipc, g_pk,
+                                                               g_token);
+    if (!sc || sc != h_dnac_conn) {
+        FAIL("the session connection did not stay open");
+        return;
+    }
+    PASS();
+}
+
+static void test_read_pending_op(void) {
+    TEST("read_pending op exists; false on an idle IPC backend");
+    nodus_chain_backend_t *b4 = NULL;
+    if (nodus_chain_backend_ipc_open(g_dir2, &b4) != 0 || !b4) {
+        FAIL("open");
+        return;
+    }
+    bool has_op = b4->ops->read_pending != NULL;
+    bool pending = has_op && b4->ops->read_pending(b4);
+    b4->ops->close(b4);
+    if (!has_op) { FAIL("no read_pending op"); return; }
+    if (pending) { FAIL("an idle backend reports pending reads"); return; }
+    PASS();
+}
+
 int main(void) {
     printf("test_witness_ipc:\n");
 
@@ -390,11 +558,16 @@ int main(void) {
     }
 
     test_no_witness();
+    test_no_dial_without_ctl(ipc);
+    test_read_pending_op();
+    /* The control connection first: without it no session socket is
+     * dialled (the backend's no-dial-while-down rule). */
+    test_status(b, ipc);
     test_session_roundtrip(b, ipc);
     test_cc_collect(b, ipc);
-    test_status(b, ipc);
     test_session_closed(b, ipc);
     test_non_preface(ipc, wsock);
+    test_session_bound(b, ipc);
 
     b->ops->close(b);
     nodus_witness_ipc_free(ipc);

@@ -156,7 +156,9 @@ typedef struct {
      * "witness_external": true / `--witness-external`; default false =
      * the in-process witness, unchanged. When true this server opens no
      * port 4004 and holds no chain database; the partial-wipe gate and
-     * the network-file pin check still run here. */
+     * the network-file pin check still run here. nodus-witness refuses
+     * to start unless its loaded config has it too
+     * (tools/nodus-witness.c). */
     bool                witness_external;
 } nodus_server_config_t;
 
@@ -734,8 +736,12 @@ _Static_assert(sizeof(((nodus_witness_host_config_t *)0)->seq_dir) ==
  * The witness's configuration subset, copied from a node config — the ONE
  * definition both hosts use: nodus_server_witness_host (the combined
  * binary) and tools/nodus-witness.c (split S3), so the two processes give
- * the witness byte-identical settings. seq_dir = identity_path: the p2p
- * address-record sequence file stays in the identity directory.
+ * the witness byte-identical settings — with ONE exception: seq_dir.
+ * Here seq_dir = identity_path, where the combined binary has always kept
+ * the p2p address-record sequence file. nodus-witness clears it after
+ * this call (seq_dir "" → the witness uses data_path), because only core
+ * writes the identity directory (decision
+ * 2026-10-01-nodus-component-split items 10 and 21).
  * `static inline` on purpose: the nodus-witness binary must not link
  * nodus_server.c (test_split_linked).
  */
@@ -747,8 +753,9 @@ nodus_server_witness_host_config(const nodus_server_config_t *cfg,
     memcpy(out->external_ip, cfg->external_ip, sizeof(out->external_ip));
     out->witness_port = cfg->witness_port;
     memcpy(out->data_path, cfg->data_path, sizeof(out->data_path));
-    /* The address-record sequence file stays where it has always been:
-     * the identity directory (empty → the witness uses data_path). */
+    /* The combined binary's address-record sequence file stays where it
+     * has always been: the identity directory (empty → the witness uses
+     * data_path; nodus-witness empties it). */
     memcpy(out->seq_dir, cfg->identity_path, sizeof(out->seq_dir));
     out->p2p = cfg->p2p;
     out->has_v2_genesis_pin = cfg->has_v2_genesis_pin;
