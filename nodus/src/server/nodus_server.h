@@ -594,6 +594,10 @@ typedef struct nodus_server {
     /* The witness module, behind the chain backend (NULL when its init
      * failed — the node runs without consensus) */
     nodus_chain_backend_t  *chain;
+    /* Split S3, config.witness_external only: the partial-wipe marker has
+     * been written by nodus_server_run after nodus-witness first reported
+     * an open chain (never read in the in-process mode). */
+    bool                    genesis_marker_armed;
 
     /* Presence tracking (connected clients, cluster-wide) */
     nodus_presence_table_t  presence;

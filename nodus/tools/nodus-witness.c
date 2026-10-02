@@ -31,8 +31,10 @@
 #include "witness/nodus_witness_network_file.h"
 #include "crypto/nodus_identity.h"
 
+#include <sys/stat.h>
 #include <errno.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,10 +48,29 @@ static void sighandler(int sig) {
 
 /* The partial-wipe gate's marker (NODUS_PARTIAL_WIPE_GENESIS_MARKER): this
  * node completed a normal start with a chain. The combined binary writes
- * it at the end of nodus_server_init when its witness has a chain open
- * (see the O16A comment there); a node whose witness runs here gets it
- * from here, under the same condition. The gate itself stays in core
- * (decision item 9). Not fatal, but loud. */
+ * it at the END of nodus_server_init, when its witness has a chain open —
+ * and, by then, nodus.db and channels.db exist too (see the O16A comment
+ * there: the gate demands all three DBs or none, and a marker armed while
+ * only the chain DB exists refuses the next start of a freshly derived
+ * host). This process does not open those two, and may start before core
+ * has created them; so it writes the marker only when the chain is open
+ * AND both core databases are already present — the same "all three are
+ * real" condition. Otherwise core arms it (nodus_server_run, external
+ * mode). The gate itself stays in core (decision item 9). */
+static bool core_dbs_present(const char *data_path) {
+    static const char *const names[] = { "nodus.db", "channels.db" };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        char p[640];
+        struct stat st;
+        int n = snprintf(p, sizeof(p), "%s/%s",
+                         data_path[0] ? data_path : "/tmp", names[i]);
+        if (n < 0 || (size_t)n >= sizeof(p) || stat(p, &st) != 0)
+            return false;
+    }
+    return true;
+}
+
+/* Not fatal, but loud (the combined binary's rule). */
 static void write_genesis_marker(const char *data_path) {
     char marker[640];
     int mk = snprintf(marker, sizeof(marker), "%s/%s",
@@ -179,7 +200,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (w->db)
+    if (w->db && core_dbs_present(config.data_path))
         write_genesis_marker(config.data_path);
 
     if (nodus_witness_ipc_listen(ipc, sock_path) != 0) {

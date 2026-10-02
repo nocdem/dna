@@ -7078,6 +7078,32 @@ void nodus_server_witness_host(nodus_server_t *srv, nodus_witness_host_t *out) {
     out->ctx = srv;
 }
 
+/* Arm the partial-wipe gate: write NODUS_PARTIAL_WIPE_GENESIS_MARKER under
+ * `data_path` (see "O16A — ARM THE PARTIAL-WIPE GATE" in nodus_server_init
+ * for when this may run). Not fatal, but loud. */
+static void server_write_genesis_marker(const char *data_path) {
+    char marker[640];
+    int mk = snprintf(marker, sizeof(marker), "%s/%s",
+                      data_path[0] ? data_path : "/tmp",
+                      NODUS_PARTIAL_WIPE_GENESIS_MARKER);
+    if (mk < 0 || (size_t)mk >= sizeof(marker)) {
+        fprintf(stderr,
+            "NODUS_SRV: WARNING data path too long to form %s — the "
+            "partial-wipe gate stays OPEN on this node\n",
+            NODUS_PARTIAL_WIPE_GENESIS_MARKER);
+    } else {
+        FILE *mf = fopen(marker, "w");
+        if (mf) {
+            fclose(mf);
+        } else {
+            fprintf(stderr,
+                "NODUS_SRV: WARNING failed to write %s: %s — the "
+                "partial-wipe gate stays OPEN on this node's next "
+                "boot\n", marker, strerror(errno));
+        }
+    }
+}
+
 /* ── Public API ──────────────────────────────────────────────────── */
 
 int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) {
@@ -7566,28 +7592,8 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
      * staying open is exactly what an operator would never otherwise
      * learn. The file's presence is the signal — its contents are never
      * read. */
-    if (srv->chain && srv->chain->ops->chain_open(srv->chain)) {
-        char marker[640];
-        int mk = snprintf(marker, sizeof(marker), "%s/%s",
-                          config->data_path[0] ? config->data_path : "/tmp",
-                          NODUS_PARTIAL_WIPE_GENESIS_MARKER);
-        if (mk < 0 || (size_t)mk >= sizeof(marker)) {
-            fprintf(stderr,
-                "NODUS_SRV: WARNING data path too long to form %s — the "
-                "partial-wipe gate stays OPEN on this node\n",
-                NODUS_PARTIAL_WIPE_GENESIS_MARKER);
-        } else {
-            FILE *mf = fopen(marker, "w");
-            if (mf) {
-                fclose(mf);
-            } else {
-                fprintf(stderr,
-                    "NODUS_SRV: WARNING failed to write %s: %s — the "
-                    "partial-wipe gate stays OPEN on this node's next "
-                    "boot\n", marker, strerror(errno));
-            }
-        }
-    }
+    if (srv->chain && srv->chain->ops->chain_open(srv->chain))
+        server_write_genesis_marker(config->data_path);
 
     return 0;
 
@@ -7701,6 +7707,17 @@ int nodus_server_run(nodus_server_t *srv) {
         /* Witness: the 4004 p2p host and the consensus lane */
         if (srv->chain)
             srv->chain->ops->tick(srv->chain);
+
+        /* Split S3: with the witness in nodus-witness, init could not see
+         * its chain (no status answer yet), so the partial-wipe marker is
+         * armed here, once, when the witness first reports an open chain
+         * — this process has opened nodus.db and channels.db by now, so
+         * "all three are real" holds as at the end of init (O16A). */
+        if (srv->config.witness_external && !srv->genesis_marker_armed &&
+            srv->chain && srv->chain->ops->chain_open(srv->chain)) {
+            server_write_genesis_marker(srv->config.data_path);
+            srv->genesis_marker_armed = true;
+        }
 
 #ifndef NODUS_CHANNELS_DISABLED
         /* Channel server tick: heartbeat send/check */
