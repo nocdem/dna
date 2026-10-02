@@ -6,10 +6,11 @@
  * DNAC_TX_CHAIN_CONFIG, signs as the proposer, and broadcasts. Modeled
  * after validator_update.c — fee-only TX with no non-change outputs.
  *
- * The witness-side apply path (nodus_chain_config_apply) runs the full
- * consensus rule set: re-verifies every vote signature against current
- * committee pubkeys, checks grace / freshness / monotonicity, and
- * INSERTs into chain_config_history before the state_root is recomputed.
+ * The witness-side legacy apply path that judged this tx
+ * (nodus_chain_config_apply) is deleted (HF-4 review L1 F1; its lane
+ * closed in R3 W4). Chain-config votes are judged today by the SYSTEM
+ * CHAIN_CONFIG runtime (nodus_witness_rt_native.c) through
+ * nodus_chain_config_scalar_rules + nodus_chain_config_stateful_rules.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT

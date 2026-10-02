@@ -43,10 +43,12 @@
  * Nothing.
  *
  * ── HOW IT CAN LIE ──────────────────────────────────────────────────────
- *  - Section 5 FAILS until the ORCHESTRATOR fills the four HF4-ORACLE
- *    literals (generation-2 SYSTEM / CORE ruleset_hash and policy digest
- *    in nodus_witness_runtime.c, D2 in dnac.h). That failure is the
- *    point: a table whose pins do not re-derive must not start.
+ *  - Section 5 checks the four oracle-filled literals (generation-2
+ *    SYSTEM / CORE ruleset_hash and policy digest G1-G3 in
+ *    nodus_witness_runtime.c, D2 in dnac.h — filled from
+ *    shared/dnac/tests/hf4_oracle.py, commit 89f9da09). If one stops
+ *    re-deriving, section 5 fails — that is the point: a table whose
+ *    pins do not re-derive must not start.
  *  - Section 7 feeds the hooks a view with no call bytes, so its gen-2
  *    case proves only the parse refusal; the op-8 matrix is
  *    test_hf4_names.c.

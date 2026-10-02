@@ -132,7 +132,10 @@ int dnac_cc_wire_encode(const dnac_cc_wire_ext_t *fields,
  *
  * Does NOT enforce the [MIN_SIGS, MAX_SIGS] range or any semantic rule —
  * callers layer those on top (dnac_tx_verify_chain_config_rules on the
- * client, verify_cc_local_rules on the witness). Writes bytes_consumed_out
+ * client; the witness-side verify_cc_local_rules is deleted with the
+ * legacy apply — the witness judges votes through
+ * nodus_chain_config_scalar_rules + nodus_chain_config_stateful_rules).
+ * Writes bytes_consumed_out
  * on success; unused trailing vote slots in `out` are zeroed.
  *
  * @return 0 on success, -1 on null arg / truncated / invalid count.

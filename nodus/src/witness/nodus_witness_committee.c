@@ -107,8 +107,10 @@ static int cmp_frozen_desc_tiebreak_asc(const void *pa, const void *pb) {
  * DNAC_TARGET_ACTIVE_DEFAULT (32) since tokenomics-v3 P3-7 (decision file
  * §3 2026-09-24 "P3 soruları" (4); it was DNAC_COMMITTEE_SIZE = 7, which
  * stays the governed MINIMUM). The clamp is the release ceiling,
- * defence-in-depth on top of the apply-side range check in
- * nodus_chain_config_apply.
+ * defence-in-depth on top of the apply-side range check, today
+ * nodus_chain_config_scalar_rules (the TARGET_ACTIVE_COUNT bounds) as the
+ * SYSTEM CHAIN_CONFIG runtime applies it (the legacy
+ * nodus_chain_config_apply that once did is deleted — HF-4 review L1 F1).
  *
  * O15J Block 2 (A2) — FAIL CLOSED. The lookup is three-valued now, and
  * `1` (genuinely no governance row) keeps the historical behaviour

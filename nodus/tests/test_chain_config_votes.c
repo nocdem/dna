@@ -209,14 +209,16 @@ int main(void) {
     }
 
     /* Test 8 (S3): the quorum formula that REPLACED the hardcoded 5-of-7
-     * threshold in nodus_chain_config_apply.
+     * threshold in the legacy nodus_chain_config_apply (since deleted —
+     * HF-4 review L1 F1; the SYSTEM CHAIN_CONFIG exec applies it now as
+     * its seat rule, nodus_witness_rt_native.c, while HF-2 is off).
      *
      * The load-bearing claim of the whole generalization is the first
      * assertion: at the live chain's 7 seats, dna_bft_quorum(7) is exactly
      * the old DNAC_CHAIN_CONFIG_MIN_SIGS, so no live behaviour moved.
      *
      * SCOPE (honest): this pins the FORMULA, not the apply-path wiring.
-     * Exercising nodus_chain_config_apply needs a seeded validator DB plus
+     * Exercising the apply path needs a seeded validator DB plus
      * real Dilithium5 votes from a synthesized committee of size N; no
      * fixture in this tree builds a dynamic-N committee, so the "4 verified
      * rejects / 5 accepts at N=7" and "sig_count > committee_count rejects"

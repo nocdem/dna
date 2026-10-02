@@ -206,7 +206,9 @@ static uint64_t self_stake_of(nodus_witness_t *w, uint8_t pub_fill) {
  * (nodus_witness.h chain_config_cache*, warmed lazily by
  * nodus_chain_config_get_u64). A direct SQL write bypasses the apply
  * path that would normally clear the flag, so the test clears it here —
- * exactly what nodus_chain_config_apply does after its own INSERT. */
+ * exactly what the SYSTEM CHAIN_CONFIG adapter does after its own INSERT
+ * (nodus_witness_rt_native.c rtn_sys_mutate; the legacy
+ * nodus_chain_config_apply that did so before is deleted). */
 static int set_target_active(nodus_witness_t *w, uint64_t value,
                              uint64_t effective_block) {
     sqlite3_stmt *st = NULL;

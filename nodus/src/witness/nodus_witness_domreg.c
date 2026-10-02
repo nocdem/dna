@@ -389,7 +389,7 @@ int nodus_witness_domreg_init_genesis(nodus_witness_t *w) {
 }
 
 /* ── HF-4 — the rule-set generation switch (contract:
- * nodus_witness_v2_apply.h; design docs/plans/2026-10-02-onchain-names-
+ * nodus_witness_domreg.h; design docs/plans/2026-10-02-onchain-names-
  * design.md rev 4 §1.3-§1.4). The procedure is versioned by
  * DNAC_RULESET_SWITCH_SPEC_VERSION, which D2 commits. ───────────────── */
 

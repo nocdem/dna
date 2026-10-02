@@ -104,9 +104,10 @@ extern "C" {
  *  NAME_REGISTER — owned by the generation-2 CORE descriptor only (CORE
  *  v5, rules {1..8}). Generation 1 does not own it, so admission refuses
  *  op 8 there exactly as before HF-4 (nodus_witness_v2_apply.c
- *  env_admit_legs, rt_owns_runtime_op). Its execution arrives with the
- *  op-8 package; until then the CORE hooks' default branch refuses it as
- *  a deterministic verdict (-1), never a fault. */
+ *  env_admit_legs, rt_owns_runtime_op). Executed by the CORE hooks
+ *  (nodus_witness_rt_native.c rtn_name_parse / rtn_name_exec), which
+ *  refuse it under a generation-1 or NULL runtime as a deterministic
+ *  verdict (-1), never a fault. */
 #define DNA_CORERULE_NAME_REGISTER   ((uint32_t)8)
 
 /* ── HF-4 rule-set GENERATIONS (design §1.1) ───────────────────────────

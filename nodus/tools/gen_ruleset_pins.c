@@ -16,10 +16,14 @@
  *     weights, max_block_env_bytes, every authoritative runtime_op with its
  *     weight, and the committed policy identity digest.
  *
- * The values are READ from the compiled runtime table (generation 1,
- * nodus_runtime_for_generation — the same lookup nodus-cli's
- * cli_builtin_runtime() uses) — never restated by hand. The
- * table must pass nodus_witness_runtime_selfcheck() and the policy's
+ * The values are READ from the compiled runtime table
+ * (nodus_runtime_for_generation — the same lookup nodus-cli's
+ * cli_builtin_runtime() uses) — never restated by hand. HF-4 (pins
+ * header v2, design 2026-10-02-onchain-names rev 4 §1.6): EVERY compiled
+ * generation is emitted — generation 1 under the unprefixed names (the
+ * readers that predate HF-4 keep reading them), each later generation g
+ * under NODUS_PIN_G<g>_*, with NODUS_PIN_GEN_COUNT (render_later_gen). The
+ * table must pass nodus_witness_runtime_selfcheck() and each policy's
  * digest must equal the descriptor-committed one, or nothing is written.
  *
  * Output is deterministic: no timestamp, no path, no host data — the same

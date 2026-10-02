@@ -35,9 +35,9 @@
  * Two /tmp directories (source chain, joiner), removed at the end.
  *
  * ── HOW IT CAN LIE ──────────────────────────────────────────────────────
- *  - Until the ORCHESTRATOR fills the three HF4-ORACLE literals below
- *    (captured from the base build, NOT from the python oracle), section
- *    1 fails, and section 3 pins to the unfilled value and fails too.
+ *  - The three literals below are filled (commit 89f9da09) by a
+ *    capture from the pre-HF-4 base build 30010235, NOT from the python
+ *    oracle — they prove "unchanged from that build", not "correct".
  *  - It pins ONE fixture genesis. The live testnet genesis document is
  *    not in this tree; a seeding drift that only a different config
  *    exercises would pass here.

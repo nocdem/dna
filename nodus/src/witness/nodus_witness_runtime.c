@@ -39,9 +39,10 @@
  * manifests choose the generation that judges a block (exact-tuple
  * lookup across every generation); the engine's phase 6b' moves the
  * registry from 1 to 2 at the end of block H-1 of the RULESET_GEN2 vote.
- * The generation-2 pins are INDEPENDENT-oracle literals (HF4-ORACLE
- * markers until the ORCHESTRATOR fills them); selfcheck re-derives them
- * and the D2 vote literal on every start.
+ * The generation-2 pins (G1-G3) are INDEPENDENT-oracle literals, filled
+ * from shared/dnac/tests/hf4_oracle.py (commit 89f9da09, with D2 in
+ * dnac.h); selfcheck re-derives them and the D2 vote literal on every
+ * start.
  *
  * @file nodus_witness_runtime.c
  */

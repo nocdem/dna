@@ -32,6 +32,15 @@ nodus_add_bench(bench_merkle_combine)
 nodus_add_bench(bench_framework_smoke)
 nodus_add_bench(bench_injection_smoke)
 
+# HF-4 pre-vote cost gate (design 2026-10-02-onchain-names rev 4 §2
+# "Cost"): the CORE root with N rows in v2_names, through the production
+# open path. Defaults 100000 and 1000000 rows — minutes, not seconds; it
+# carries the `bench` label like every target here, so `ctest -LE bench`
+# / `ctest -E bench` skips it.
+nodus_add_bench(bench_hf4_name_root)
+target_compile_definitions(bench_hf4_name_root PRIVATE
+                           NODUS_WITNESS_INTERNAL_API)
+
 # Cluster TPS bench — uses pthreads + fork/exec. Not run via ctest
 # (requires a running cluster); built for manual invocation by
 # tests/bench_run.sh (Phase 5 orchestrator).

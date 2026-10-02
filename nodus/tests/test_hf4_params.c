@@ -46,9 +46,11 @@
  * behind if a CHECK aborts).
  *
  * ── HOW IT CAN LIE ──────────────────────────────────────────────────────
- *  - While DNAC_CFG_RULESET_GEN2_D2 is the unfilled oracle placeholder 0
- *    (HF4-ORACLE), "exactly D2" is "exactly 0": section 2's probes still
- *    discriminate (D2 ± 1, UINT64_MAX) but do not prove the real literal.
+ *  - DNAC_CFG_RULESET_GEN2_D2 is the oracle-filled literal (dnac.h, from
+ *    shared/dnac/tests/hf4_oracle.py, commit 89f9da09); section 2 proves
+ *    "exactly D2" against it by its neighbours (D2 ± 1, UINT64_MAX), not
+ *    that the literal itself is right — test_hf4_table.c's selfcheck
+ *    re-derivation is that check.
  *  - Section 5 fabricates the auth verdict (quorum met) so the hook
  *    reaches its stateful rules; whether the ENGINE fills ctx facts per
  *    item is test_hf4_switch.c's block-level case, not this file's.

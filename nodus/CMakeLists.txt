@@ -2254,14 +2254,16 @@ register_witness_test(test_v2_gas_price)
 # HF-4 part A1 (design docs/plans/2026-10-02-onchain-names-design.md rev 4;
 # decision docs/plans/decisions/2026-10-02-onchain-names.md) — the rule-set
 # upgrade mechanism. test_hf4_table: the generation table, its selfcheck,
-# the D2 digest, CORE rule 8 refused until its exec. test_hf4_params:
+# the D2 digest, CORE rule 8 refused outside generation 2. test_hf4_params:
 # chain_config params 9-13 (scalar, grace, the stateful authority, the
 # exec hook, cache slots). test_hf4_switch: engine phase 6b' (the switch
 # at H-1, the not-generation-1 FAULT), the registry-transform KAT, the
 # per-item single-use fact and the refused-leg gas invariance.
 # test_hf4_genesis: generation-1 genesis invariance against literals
-# captured from the pre-HF-4 build (derivation + bundle join). Every
-# HF4-ORACLE literal must be filled before these pass (file headers).
+# captured from the pre-HF-4 build (derivation + bundle join). The
+# HF4-ORACLE literals are filled (commit 89f9da09): runtime.c G1-G3 and
+# dnac.h D2 from hf4_oracle.py, the switch KAT K1-K3 from
+# hf4_switch_oracle.py, the genesis capture from base build 30010235.
 register_witness_test(test_hf4_table)
 register_witness_test(test_hf4_params)
 register_witness_test(test_hf4_switch)

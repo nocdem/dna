@@ -57,10 +57,11 @@
  * (left behind when a CHECK aborts).
  *
  * ── HOW IT CAN LIE ──────────────────────────────────────────────────────
- *  - Until the ORCHESTRATOR fills the HF4-ORACLE literals (A's three KAT
- *    values here; the generation-2 pins in nodus_witness_runtime.c; D2 in
- *    dnac.h), A fails, and B/C fail at the first block judged under
- *    generation 2 (an all-zero policy digest is a block-context FAULT).
+ *  - The oracle literals are filled (commit 89f9da09): A's three KAT
+ *    values K1-K3 here from shared/dnac/tests/hf4_switch_oracle.py, the
+ *    generation-2 pins G1-G3 in nodus_witness_runtime.c and D2 in dnac.h
+ *    from hf4_oracle.py. Should a pin stop re-deriving, A fails and B/C
+ *    fail at the first block judged under generation 2.
  *  - B pins the fixture's H-1 roots by SELF-CONSISTENCY (committed ==
  *    recomputed, moved / unmoved) — not by an oracle literal: the
  *    fixture's full state is not oracle-computable. The oracle pins the
