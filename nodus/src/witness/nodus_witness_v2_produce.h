@@ -140,6 +140,21 @@ uint8_t nodus_witness_v2_classify_entry(const uint8_t *bytes, uint32_t len);
  * candidate list or a ProcessProposal/FinalizeBlock request), and frees
  * it once this call returns.
  *
+ * HF-3 (design docs/plans/2026-10-01-hf3-comet-block-bounds-design.md rev
+ * 3, §0 rules 1/5/6, §0.2): the envelope subset's block-start context is
+ * built at the candidate height (committed tip + 1). When its HF-3 switch
+ * is on, the seam skips the envelope-byte bound (skip_byte_bound), the
+ * budget's unbounded flags apply, and — after a clean reservation, over
+ * every envelope in batch order, with the gas price read ONCE at the
+ * candidate height — the item loop's committed-replay guard (rule 6b,
+ * decision answer 12: an intent or wire id already committed), the HF-1
+ * gas-price rule and the res_max_total_units <= INT64_MAX rule run, in
+ * that order per envelope (the item loop's order); a refusal is -1 with
+ * result_out->kind = NODUS_V2_BATCH_FAIL_ENTRY_INVALID and
+ * *fail_index_out = that envelope's index in `items`; an unreadable price
+ * or replay index is -2 (kind FAULT). Below the HF-3 height none of this runs (the seam
+ * is byte-identical to before HF-3).
+ *
  * @param cap the admission ceiling; count > cap is CMT-style refused as
  *            -2 (a caller error / malformed input, not a batch verdict
  *            about a valid-shaped request — the caller turns THAT into

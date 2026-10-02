@@ -113,14 +113,28 @@ int main(void) {
      * case checks accepts a valid value. */
     build_valid_chain_config(&tx, 0, 5);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 8 (HF-2) */
+    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 9 (HF-3) */
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    CHECK(DNAC_CFG_PARAM_MAX_ID + 1 == 9);
     build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
 
-    /* 5b. The read list itself: exactly {4, 5, 6, 7} of the governed id
-     * space are read by the running consensus (id 7 = HF2_ACTIVE, read by
-     * the engine's env_hf2_active, 2026-09-30). Before HF-2: exactly {4, 5, 6} of the governed id
+    /* 5a. HF3_ACTIVE (id 8, HF-3): EXACTLY 1 — the mirror of the
+     * witness-side scalar_rules (nodus_witness_chain_config.c). 0 (an
+     * "off" vote) and 2 refuse. */
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_HF3_ACTIVE,
+                             DNAC_CFG_HF3_ACTIVE_ON);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_HF3_ACTIVE, 0);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_HF3_ACTIVE, 2);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+
+    /* 5b. The read list itself: exactly {4, 5, 6, 7, 8} of the governed
+     * id space are read by the running consensus (id 8 = HF3_ACTIVE, read
+     * by the engine's env_hf3_active — HF-3, 2026-10-02; id 7 =
+     * HF2_ACTIVE, read by the engine's env_hf2_active, 2026-09-30).
+     * Before HF-2: exactly {4, 5, 6} of the governed id
      * space are read by the running consensus. Id 6
      * (TOKEN_CREATE_FEE_RAW) joined with its consensus reader in the
      * final pre-testnet wipe W-C: the engine reads the committed row into
@@ -134,7 +148,8 @@ int main(void) {
         const bool want = (id == DNAC_CFG_TARGET_ACTIVE_COUNT ||
                            id == DNAC_CFG_GAS_PRICE_RAW_PER_UNIT ||
                            id == DNAC_CFG_TOKEN_CREATE_FEE_RAW ||
-                           id == DNAC_CFG_HF2_ACTIVE);
+                           id == DNAC_CFG_HF2_ACTIVE ||
+                           id == DNAC_CFG_HF3_ACTIVE);
         CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id) == want);
     }
 

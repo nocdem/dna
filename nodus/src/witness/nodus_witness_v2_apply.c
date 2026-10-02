@@ -40,8 +40,9 @@
  * it with the retired DNAC_CFG_MAX_TXS_PER_BLOCK read). Its uses here are
  * nodus_chain_config_get_u64 of DNAC_CFG_GAS_PRICE_RAW_PER_UNIT
  * (env_gas_price_check), — final pre-testnet wipe W-C — of
- * DNAC_CFG_TOKEN_CREATE_FEE_RAW (env_token_create_fee) and — HF-2 — of
- * DNAC_CFG_HF2_ACTIVE (env_hf2_active). */
+ * DNAC_CFG_TOKEN_CREATE_FEE_RAW (env_token_create_fee), — HF-2 — of
+ * DNAC_CFG_HF2_ACTIVE (env_hf2_active) and — HF-3 — of
+ * DNAC_CFG_HF3_ACTIVE (env_hf3_active). */
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_types.h"         /* NODUS_W_BASE_TX_FEE,
                                         * NODUS_W_TOKEN_CREATE_FEE       */
@@ -540,12 +541,45 @@ static dom_ctx_t *dom_for(dom_ctx_t *doms, size_t n, uint32_t id) {
  * NOT consensus-visible: this only MOVES existing engine code. The set of
  * blocks the engine accepts is unchanged, byte for byte.
  *
- * @return 0 / -1 chain-state verdict (SYSTEM unusable) / -2 node fault.
+ * HF-3 (design docs/plans/2026-10-01-hf3-comet-block-bounds-design.md rev
+ * 3, D1/D2): `w` and `height` select the HF-3 switch — the committed
+ * chain_config param 8 at the height of the block this context judges
+ * (tip + 1 on every pre-commit path, the block's own height in
+ * FinalizeBlock). It is resolved HERE, once per context, through the one
+ * fail-closed reader env_hf3_active, and carried in ctx->hf3_active; when
+ * it is 1 the global remainder and every domain slot that takes the
+ * NODUS_V2_GLOBAL_UNIT_BUDGET literal (quota_verify_cost 0) are marked
+ * unbounded (res_meter.h flags; §0 rules 2-3), while a non-zero quota
+ * keeps its real budget (rule 4, decided: it stays a block bound). With
+ * no param-8 row every field is what it was before HF-3.
+ *
+ * @return 0 / -1 chain-state verdict (SYSTEM unusable) / -2 node fault
+ *         (including an unreadable or impossible param-8 row — read
+ *         FIRST, so this node abstains before judging anything else).
  */
-static int block_ctx_from_doms(dom_ctx_t *doms, size_t n_dom,
+static int env_hf3_active(nodus_witness_t *w, uint64_t height,
+                          uint8_t *on, char *reason, size_t reason_size);
+
+static int block_ctx_from_doms(nodus_witness_t *w, uint64_t height,
+                               dom_ctx_t *doms, size_t n_dom,
                                nodus_witness_v2_block_ctx_t *ctx) {
-    if (!doms || !ctx) return -2;
+    if (!w || !doms || !ctx) return -2;
     memset(ctx, 0, sizeof(*ctx));
+
+    /* HF-3: the switch, once. A read that cannot be answered is a node
+     * FAULT (the env_hf2_active discipline) — never "off". */
+    {
+        char why[192];
+
+        why[0] = '\0';
+        if (env_hf3_active(w, height, &ctx->hf3_active, why,
+                           sizeof why) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "block context: %s", why);
+            memset(ctx, 0, sizeof(*ctx));
+            return -2;
+        }
+    }
+    ctx->budget.global_unbounded = ctx->hf3_active;
 
     /* Contextual ruleset table: one entry per block-entry-ACTIVE,
      * runtime-backed domain, ascending by construction (doms[] is ASC).
@@ -573,6 +607,12 @@ static int block_ctx_from_doms(dom_ctx_t *doms, size_t n_dom,
             doms[i].man.quota_verify_cost != 0
                 ? (uint64_t)doms[i].man.quota_verify_cost
                 : (uint64_t)NODUS_V2_GLOBAL_UNIT_BUDGET;
+        /* HF-3 rule 3: the literal fallback is no bound from the HF-3
+         * height (the remainder value stays and is simply not read —
+         * res_meter.h); a non-zero committed quota stays one (rule 4). */
+        ctx->budget.dom[ctx->budget.n_domains].unbounded =
+            (ctx->hf3_active && doms[i].man.quota_verify_cost == 0) ? 1u
+                                                                    : 0u;
         ctx->budget.n_domains++;
     }
 
@@ -604,7 +644,7 @@ static int block_ctx_from_doms(dom_ctx_t *doms, size_t n_dom,
 }
 
 /* Contract: nodus_witness_v2_env.h. */
-int nodus_witness_v2_block_ctx_build(nodus_witness_t *w,
+int nodus_witness_v2_block_ctx_build(nodus_witness_t *w, uint64_t height,
                                      nodus_witness_v2_block_ctx_t *ctx) {
     if (!w || !w->db || !ctx) return -2;
     memset(ctx, 0, sizeof(*ctx));
@@ -622,7 +662,7 @@ int nodus_witness_v2_block_ctx_build(nodus_witness_t *w,
      * verdict about the batch. */
     int rc = (doms_load(w, doms, &n_dom, /*strict_active=*/1) != 0)
                  ? -2
-                 : block_ctx_from_doms(doms, n_dom, ctx);
+                 : block_ctx_from_doms(w, height, doms, n_dom, ctx);
     doms_free(doms);
     if (rc != 0) memset(ctx, 0, sizeof(*ctx));
     return rc;
@@ -772,6 +812,41 @@ static int env_hf2_active(nodus_witness_t *w, uint64_t height,
         return -2;
     }
     *on = (v == DNAC_CFG_HF2_ACTIVE_ON) ? 1u : 0u;
+    return 0;
+}
+
+/* HF-3 (design docs/plans/2026-10-01-hf3-comet-block-bounds-design.md rev
+ * 3; decision 2026-10-01-hf3-comet-only-block-bounds.md): is the third
+ * height-activated hard fork ON at `height`? The env_hf2_active shape
+ * above, statement for statement, over chain_config param 8
+ * (HF3_ACTIVE): the one three-valued accessor over committed rows, an
+ * unanswerable read is a node FAULT, never a default; no active row = OFF
+ * (keeps a chain without the vote byte-identical to the pre-HF-3 binary);
+ * a stored value other than 0/1 is this node's storage disagreeing with
+ * every writer (the scalar rules admit only DNAC_CFG_HF3_ACTIVE_ON), a
+ * FAULT too. ONE caller: block_ctx_from_doms, which resolves the switch
+ * once per block-start context (D2) at the height that context judges.
+ * @return 0 (*on = 0/1) / -2 fault (reason written). */
+static int env_hf3_active(nodus_witness_t *w, uint64_t height,
+                          uint8_t *on, char *reason, size_t reason_size)
+{
+    uint64_t v = 0;
+
+    if (nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_HF3_ACTIVE, height,
+                                   0ULL, &v) < 0) {
+        V2AP_ENV_FAULT("HF-3: HF3_ACTIVE at height %llu is unreadable on "
+                       "this node - refusing to judge under a guessed "
+                       "rule set", (unsigned long long)height);
+        return -2;
+    }
+    if (v != 0ULL && v != DNAC_CFG_HF3_ACTIVE_ON) {
+        V2AP_ENV_FAULT("HF-3: HF3_ACTIVE at height %llu reads %llu, a value "
+                       "no committed row can hold - this node's "
+                       "chain_config storage is inconsistent",
+                       (unsigned long long)height, (unsigned long long)v);
+        return -2;
+    }
+    *on = (v == DNAC_CFG_HF3_ACTIVE_ON) ? 1u : 0u;
     return 0;
 }
 
@@ -1387,9 +1462,15 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
     }
 
     /* Per-domain consumed-unit accounting for the DomainUpdate resource
-     * fields (ACTUAL consumed units, not the reservation). Bounded by
-     * the block budgets, but checked anyway — one arithmetic
-     * discipline. */
+     * fields (ACTUAL consumed units, not the reservation). Each item's
+     * consumed units are bounded by its own declared ceiling (the
+     * meter's CEILING gate) and are the real fixed work plus the real
+     * effect counts / bytes and reads / writes × the policy weights.
+     * Below the HF-3 height the block budgets also bound the sum; from
+     * it the global and quota-0 budgets are unbounded (res_meter.h
+     * flags), so nothing bounds the per-block SUM except the item count
+     * — the checked add below is the guard: a wrap is a node FAULT,
+     * never a silently wrong res_cost. */
     for (uint16_t l = 0; l < v->leg_count; l++) {
         dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
         if (!d) {
@@ -1569,10 +1650,17 @@ static int committee_snapshot_for_height(nodus_witness_t *w, uint64_t height,
  * @param item  the item index, for the fault text only.
  * @return 0 with `*hit` set (1 = replay); -2 a node-local fault, reason
  *         written into (reason, reason_size).
+ *
+ * HF-3 rule 6b (decision 2026-10-01-hf3-comet-only-block-bounds.md answer
+ * 12): EXPORTED as nodus_witness_v2_replay_guard so the proposal seam
+ * (nodus_witness_v2_produce.c) asks the SAME question from the HF-3
+ * height; env_replay_guard below is a one-line wrapper, so the dry run
+ * and the item loop run these statements unchanged.
  */
-static int env_replay_guard(nodus_witness_t *w, const dna_env_preflight_t *p,
-                            size_t item, int *hit,
-                            char *reason, size_t reason_size)
+int nodus_witness_v2_replay_guard(nodus_witness_t *w,
+                                  const dna_env_preflight_t *p,
+                                  size_t item, int *hit,
+                                  char *reason, size_t reason_size)
 {
     static const char *const guard_sql[2] = {
         "SELECT 1 FROM v2_intent_index WHERE intent_id = ?1",
@@ -1606,6 +1694,14 @@ static int env_replay_guard(nodus_witness_t *w, const dna_env_preflight_t *p,
         }
     }
     return 0;
+}
+
+static int env_replay_guard(nodus_witness_t *w, const dna_env_preflight_t *p,
+                            size_t item, int *hit,
+                            char *reason, size_t reason_size)
+{
+    return nodus_witness_v2_replay_guard(w, p, item, hit, reason,
+                                         reason_size);
 }
 
 /**
@@ -1709,14 +1805,21 @@ static int env_admit_legs(const dna_env_view_t *v, dom_ctx_t *doms,
  *         on this node — a FAULT, never a verdict (the three-valued
  *         get_u64 contract, nodus_chain_config.h), reason written into
  *         (reason, reason_size).
+ *
+ * HF-3 (design 2026-10-01-hf3-comet-block-bounds-design.md §0.2): the body
+ * is split into its two exported halves, nodus_witness_v2_gas_price_at
+ * (the read) and nodus_witness_v2_gas_price_judge (the pure rule), so the
+ * proposal seam can read the price ONCE per run and judge every envelope
+ * with the SAME rule. env_gas_price_check (below the two) is exactly the
+ * two in sequence — the same statements, the same order, the same answers
+ * as before the split.
  */
-static int env_gas_price_check(nodus_witness_t *w, const dna_env_view_t *v,
-                               uint64_t height, uint32_t *code,
-                               char *reason, size_t reason_size)
+int nodus_witness_v2_gas_price_at(nodus_witness_t *w, uint64_t height,
+                                  uint64_t *price_out,
+                                  char *reason, size_t reason_size)
 {
-    uint64_t price = 0, required = 0, floor_fee;
-    uint16_t l;
-    int      crc, all_system = 1;
+    uint64_t price = 0;
+    int      crc;
 
     crc = nodus_chain_config_get_u64(
         w, (uint8_t)DNAC_CFG_GAS_PRICE_RAW_PER_UNIT, height, 0ULL, &price);
@@ -1727,6 +1830,18 @@ static int env_gas_price_check(nodus_witness_t *w, const dna_env_view_t *v,
                        (unsigned long long)height);
         return -2;
     }
+    *price_out = price;
+    return 0;
+}
+
+int nodus_witness_v2_gas_price_judge(const dna_env_view_t *v, uint64_t price,
+                                     uint32_t *code,
+                                     char *reason, size_t reason_size)
+{
+    uint64_t required = 0, floor_fee;
+    uint16_t l;
+    int      all_system = 1;
+
     if (price == 0) {
         return 0;                        /* rule OFF: nothing else runs  */
     }
@@ -1758,6 +1873,38 @@ static int env_gas_price_check(nodus_witness_t *w, const dna_env_view_t *v,
                          (unsigned long long)required,
                          (unsigned long long)floor_fee);
         *code = NODUS_V2_TX_ERR_FEE;
+        return -1;
+    }
+    return 0;
+}
+
+static int env_gas_price_check(nodus_witness_t *w, const dna_env_view_t *v,
+                               uint64_t height, uint32_t *code,
+                               char *reason, size_t reason_size)
+{
+    uint64_t price = 0;
+
+    if (nodus_witness_v2_gas_price_at(w, height, &price, reason,
+                                      reason_size) != 0) {
+        return -2;                       /* the reader wrote the reason  */
+    }
+    return nodus_witness_v2_gas_price_judge(v, price, code, reason,
+                                            reason_size);
+}
+
+/* HF-3 rule 5 (decision 2026-10-01-hf3-comet-only-block-bounds.md answer
+ * 10). Contract: nodus_witness_v2_apply.h. The caller has already decided
+ * that HF-3 is on (its block-start context's hf3_active). */
+int nodus_witness_v2_units_ceiling_check(const dna_env_view_t *v,
+                                         uint32_t *code,
+                                         char *reason, size_t reason_size)
+{
+    if (v->res_max_total_units > (uint64_t)INT64_MAX) {
+        V2AP_ENV_VERDICT("HF-3: res_max_total_units %llu exceeds INT64_MAX "
+                         "- the item's gas_wanted must fit the reference's "
+                         "int64 gas",
+                         (unsigned long long)v->res_max_total_units);
+        *code = NODUS_V2_TX_ERR_CAPACITY;
         return -1;
     }
     return 0;
@@ -1984,7 +2131,10 @@ static int env_item_setup(nodus_witness_t *w, const uint8_t *bytes,
                        "tuples are unreadable on this node");
         return -2;
     }
-    if (block_ctx_from_doms(s->doms, s->n_dom, s->bctx) != 0) {
+    /* HF-3 D1 (a): the context is built at the candidate height (tip + 1)
+     * the whole dry run uses, so its switch is the one the item would be
+     * judged under. */
+    if (block_ctx_from_doms(w, s->height, s->doms, s->n_dom, s->bctx) != 0) {
         V2AP_ENV_FAULT("%s", "auth: the block-start context could not be "
                        "built on this node");
         return -2;
@@ -2139,6 +2289,17 @@ int nodus_witness_v2_env_dry_run(nodus_witness_t *w, const uint8_t *bytes,
     ret = env_gas_price_check(w, v, s.height, &code, reason, reason_size);
     if (ret != 0) {
         goto done;
+    }
+
+    /* ── HF-3 rule 5: the declared ceiling fits int64 — from the HF-3
+     * height only (the context's switch, built at the same tip + 1), the
+     * item loop's own order: after the gas price, before the reserve ── */
+    if (s.bctx->hf3_active) {
+        ret = nodus_witness_v2_units_ceiling_check(v, &code, reason,
+                                                   reason_size);
+        if (ret != 0) {
+            goto done;
+        }
     }
 
     /* ── reserve against a FRESH block budget (the block-start context
@@ -2873,7 +3034,11 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
      * ~5.7 KB, the same footprint the two locals it replaces had. */
     nodus_witness_v2_block_ctx_t bctx;
     {
-        int bcrc = block_ctx_from_doms(doms, n_dom, &bctx);
+        /* HF-3 D1 (d): the block's own height — the one FinalizeBlock
+         * hands the engine (req->height); phase 0 above already
+         * classified any mismatch with the local head. */
+        int bcrc = block_ctx_from_doms(w, blk->global_height, doms, n_dom,
+                                       &bctx);
         if (bcrc != 0) {
             /* The class follows the value the builder already chose —
              * the reason must never re-decide it. */
@@ -3183,6 +3348,19 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 if (grc != 0) {
                     goto cmt_item_failed;
                 }
+            }
+
+            /* ── HF-3 RULE 5 (decision 2026-10-01-hf3-comet-only-block-
+             * bounds.md answer 10): from the HF-3 height the declared
+             * ceiling must fit int64 — it becomes gas_wanted below. After
+             * the gas price, BEFORE the reservation, so a refused item
+             * keeps gas_wanted = gas_used = 0 (metered stays 0). The
+             * switch is the block-start context's (D2). ─────────────── */
+            if (bctx.hf3_active &&
+                nodus_witness_v2_units_ceiling_check(
+                    v, &code, blk->out_reason,
+                    sizeof blk->out_reason) != 0) {
+                goto cmt_item_failed;
             }
 
             /* ── RESERVE against what is LEFT of the block's budget ── */

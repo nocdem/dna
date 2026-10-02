@@ -598,6 +598,185 @@ static void test_budget_check(void) {
     b.n_domains = DNA_METER_MAX_DOMAINS + 1;
     CHECK(dna_meter_budget_check(&b) == -1);
     CHECK(dna_meter_budget_check(NULL) == -1);
+
+    /* HF-3: the unbounded flags are booleans — 1 is legal, any other
+     * byte is a malformed budget (res_meter.h dna_meter_budget_t). */
+    b.n_domains = 3;
+    b.global_unbounded = 1;
+    b.dom[2].unbounded = 1;
+    CHECK(dna_meter_budget_check(&b) == 0);
+    b.global_unbounded = 2;
+    CHECK(dna_meter_budget_check(&b) == -1);
+    b.global_unbounded = 0;
+    b.dom[2].unbounded = 2;
+    CHECK(dna_meter_budget_check(&b) == -1);
+    b.dom[2].unbounded = 0;
+    CHECK(dna_meter_budget_check(&b) == 0);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * D2. HF-3 — the unbounded flags (design docs/plans/2026-10-01-hf3-comet-
+ *     block-bounds-design.md §0.1; R2-1, R2-2; rule 4)
+ *
+ * A flagged remainder is neither read nor written by reserve / charge /
+ * finalize / abort; everything the meter itself records is computed
+ * exactly as for a bounded slot. Pinned here:
+ *   - the flags live in former struct padding (sizes unchanged), so a
+ *     zeroed budget is today's budget byte for byte;
+ *   - reserve at a UINT64_MAX and an INT64_MAX + 1 ceiling against a
+ *     flagged global + flagged domain whose remainders are 0 — passes,
+ *     budget byte-identical;
+ *   - charges PAST the static share by more than 2x (R2-1: dom_dyn must
+ *     still grow, or the next charge / finalize FAULTs) — every charge
+ *     passes, dom_dyn grows exactly, the flagged remainder stays 0;
+ *   - finalize after that: the meter-local identities hold (reserved ==
+ *     consumed + released, both scopes), no overflow although the global
+ *     release is ~2^64 (R2-2: no budget arithmetic on a flagged slot);
+ *   - abort after dynamic claims: budget byte-identical;
+ *   - rule 4: a NON-flagged domain next to a flagged global keeps its
+ *     real budget — one unit short still refuses ERR_DOMAIN_BUDGET, an
+ *     exact fit debits to 0, a dynamic claim beyond it refuses.
+ * ════════════════════════════════════════════════════════════════════ */
+static void test_hf3_unbounded_flags(void) {
+    dna_meter_policy_t *pol = malloc(sizeof(*pol));
+    MUST_ALLOC(pol);
+    fixture_policy(pol);
+
+    dna_env_view_t view;
+    dna_meter_t m;
+    dna_meter_budget_t bud, snap;
+    uint8_t *env;
+
+    /* both flags sit in what was padding: the structs did not grow */
+    CHECK(sizeof(dna_meter_domain_budget_t) == 16);
+    CHECK(sizeof(dna_meter_budget_t) == 16 + 16 * DNA_METER_MAX_DOMAINS);
+
+    /* ── reserve at the extreme ceilings, flagged global + domain ────── */
+    {
+        leg_spec_t l = { 5, 1, 0, 0, 0, 0 };     /* static 60, total 67  */
+        const uint64_t ceils[2] = { UINT64_MAX,
+                                    (uint64_t)INT64_MAX + 1u };
+        for (int c = 0; c < 2; c++) {
+            env = build_env(&l, 1, ceils[c], &view);
+            bud_init(&bud, 0);                    /* remainders 0 ...     */
+            bud_add(&bud, 5, 0);
+            bud.global_unbounded = 1;             /* ... but no bound     */
+            bud.dom[0].unbounded = 1;
+            snap = bud;
+            memset(&m, 0, sizeof(m));
+            CHECK(dna_meter_reserve(&m, pol, &view, &bud) == DNA_METER_OK);
+            CHECK(m.g_reserved == ceils[c]);
+            CHECK(memcmp(&bud, &snap, sizeof(bud)) == 0);
+            CHECK(dna_meter_abort(&m) == DNA_METER_OK);
+            CHECK(memcmp(&bud, &snap, sizeof(bud)) == 0);
+
+            /* the SAME envelope with the flags OFF: today's refusal */
+            bud.global_unbounded = 0;
+            bud.dom[0].unbounded = 0;
+            snap = bud;
+            memset(&m, 0, sizeof(m));
+            CHECK(dna_meter_reserve(&m, pol, &view, &bud) ==
+                  DNA_METER_ERR_GLOBAL_BUDGET);
+            CHECK(memcmp(&bud, &snap, sizeof(bud)) == 0);
+            free(env);
+        }
+    }
+
+    /* ── R2-1: charge past the static share x2, finalize, abort ─────── */
+    {
+        /* leg dom 5 op 1: static 60 = fixed 60, so after activate every
+         * read (w_read 5) is a DYNAMIC claim. 30 reads = 150 units of
+         * dynamic claim = 2.5x the static share. Ceiling UINT64_MAX. */
+        leg_spec_t l = { 5, 1, 0, 0, 0, 0 };
+        env = build_env(&l, 1, UINT64_MAX, &view);
+
+        bud_init(&bud, 0);
+        bud_add(&bud, 5, 0);
+        bud.global_unbounded = 1;
+        bud.dom[0].unbounded = 1;
+        snap = bud;
+        memset(&m, 0, sizeof(m));
+        CHECK(dna_meter_reserve(&m, pol, &view, &bud) == DNA_METER_OK);
+        CHECK(dna_meter_activate(&m) == DNA_METER_OK);
+        CHECK(m.g_consumed == 67 && m.dom_consumed[0] == 60);
+        for (int r = 0; r < 30; r++)
+            CHECK(dna_meter_charge_read(&m, 5) == DNA_METER_OK);
+        CHECK(m.dom_dyn[0] == 150);               /* grew exactly         */
+        CHECK(m.dom_consumed[0] == 210);
+        CHECK(m.g_consumed == 67 + 150);
+        CHECK(memcmp(&bud, &snap, sizeof(bud)) == 0);   /* never read   */
+
+        CHECK(dna_meter_finalize(&m) == DNA_METER_OK);
+        CHECK(m.g_released == UINT64_MAX - (67 + 150));
+        CHECK(m.dom_released[0] == 0);            /* 60 + 150 - 210       */
+        CHECK(m.g_reserved == m.g_consumed + m.g_released);
+        CHECK(m.plan.leg[0].static_units + m.dom_dyn[0] ==
+              m.dom_consumed[0] + m.dom_released[0]);
+        CHECK(memcmp(&bud, &snap, sizeof(bud)) == 0);
+
+        /* the same reads, then ABORT */
+        memset(&m, 0, sizeof(m));
+        CHECK(dna_meter_reserve(&m, pol, &view, &bud) == DNA_METER_OK);
+        CHECK(dna_meter_activate(&m) == DNA_METER_OK);
+        for (int r = 0; r < 30; r++)
+            CHECK(dna_meter_charge_read(&m, 5) == DNA_METER_OK);
+        CHECK(m.dom_dyn[0] == 150);
+        CHECK(dna_meter_abort(&m) == DNA_METER_OK);
+        CHECK(memcmp(&bud, &snap, sizeof(bud)) == 0);
+
+        /* the SAME reads with the flags OFF and a domain budget of 100:
+         * today's behaviour — 20 dynamic reads drain it, the 21st
+         * refuses, and the budget moved by exactly what was claimed */
+        bud_init(&bud, UINT64_MAX);
+        bud_add(&bud, 5, 160);                    /* 60 static + 100 dyn  */
+        memset(&m, 0, sizeof(m));
+        CHECK(dna_meter_reserve(&m, pol, &view, &bud) == DNA_METER_OK);
+        CHECK(bud.global_remaining == 0 && bud.dom[0].remaining_units == 100);
+        CHECK(dna_meter_activate(&m) == DNA_METER_OK);
+        for (int r = 0; r < 20; r++)
+            CHECK(dna_meter_charge_read(&m, 5) == DNA_METER_OK);
+        CHECK(bud.dom[0].remaining_units == 0 && m.dom_dyn[0] == 100);
+        CHECK(dna_meter_charge_read(&m, 5) == DNA_METER_ERR_DOMAIN_BUDGET);
+        CHECK(dna_meter_abort(&m) == DNA_METER_OK);
+        CHECK(bud.global_remaining == UINT64_MAX &&
+              bud.dom[0].remaining_units == 160);
+        free(env);
+    }
+
+    /* ── rule 4: a bounded domain beside a flagged global ───────────── */
+    {
+        /* legs: dom 5 (flagged, quota-0 style) and dom 9 (bounded, a
+         * non-zero quota): each static 60. */
+        leg_spec_t l2[2] = { { 5, 1, 0, 0, 0, 0 }, { 9, 1, 0, 0, 0, 0 } };
+        env = build_env(l2, 2, UINT64_MAX, &view);
+
+        bud_init(&bud, 0);
+        bud_add(&bud, 5, 0);
+        bud_add(&bud, 9, 59);                     /* one unit short       */
+        bud.global_unbounded = 1;
+        bud.dom[0].unbounded = 1;
+        snap = bud;
+        memset(&m, 0, sizeof(m));
+        CHECK(dna_meter_reserve(&m, pol, &view, &bud) ==
+              DNA_METER_ERR_DOMAIN_BUDGET);
+        CHECK(memcmp(&bud, &snap, sizeof(bud)) == 0);
+
+        bud.dom[1].remaining_units = 60;          /* exact fit            */
+        memset(&m, 0, sizeof(m));
+        CHECK(dna_meter_reserve(&m, pol, &view, &bud) == DNA_METER_OK);
+        CHECK(bud.dom[1].remaining_units == 0);   /* the real debit       */
+        CHECK(bud.dom[0].remaining_units == 0 && bud.global_remaining == 0);
+        CHECK(dna_meter_activate(&m) == DNA_METER_OK);
+        CHECK(dna_meter_charge_read(&m, 5) == DNA_METER_OK);   /* flagged */
+        CHECK(dna_meter_charge_read(&m, 9) ==
+              DNA_METER_ERR_DOMAIN_BUDGET);       /* bounded: no room     */
+        CHECK(dna_meter_abort(&m) == DNA_METER_OK);
+        CHECK(bud.dom[1].remaining_units == 60);  /* restored             */
+        CHECK(bud.dom[0].remaining_units == 0 && bud.global_remaining == 0);
+        free(env);
+    }
+
+    free(pol);
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -1475,6 +1654,7 @@ int main(void) {
     test_policy();
     test_plan_build();
     test_budget_check();
+    test_hf3_unbounded_flags();
     test_meter_lifecycle();
     test_effect_charging();
     test_property_formula();

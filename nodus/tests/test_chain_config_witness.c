@@ -371,7 +371,9 @@ int main(void) {
      * refused), accepting any value (0/2 accepted), leaving 7 off the
      * read list (1 refused), or putting it in the SAFETY grace class. */
     {
-        CHECK(DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_HF2_ACTIVE);
+        /* HF-2 was the top of the allowlist until HF-3 took id 8 (Test
+         * 11 pins the new top) */
+        CHECK(DNAC_CFG_HF2_ACTIVE + 1 == DNAC_CFG_HF3_ACTIVE);
         CHECK(DNAC_CFG_HF2_ACTIVE == 7);
         CHECK(DNAC_CFG_HF2_ACTIVE_ON == 1ULL);
         CHECK(dnac_cfg_param_read_by_consensus((uint8_t)DNAC_CFG_HF2_ACTIVE));
@@ -423,6 +425,86 @@ int main(void) {
         /* the warm cache holds the new id in its own slot (cache ≡ DB) */
         CHECK(w->chain_config_cache_warm);
         CHECK(w->chain_config_cache_count[DNAC_CFG_HF2_ACTIVE] == 1);
+        teardown_witness(w, data_path);
+    }
+
+    /* Test 11 (HF-3, design docs/plans/2026-10-01-hf3-comet-block-bounds-
+     * design.md rev 3 §0, test plan "chain-config id 8"): param 8
+     * HF3_ACTIVE — the one-way switch of the third height-activated hard
+     * fork. The Test 10 shape:
+     *   (a) the id is the new top of the allowlist and on the read list;
+     *   (b) scalar rules: value 1 accepted, 0 / 2 / UINT64_MAX refused,
+     *       the shared window rules still apply, MAX_ID + 1 refused;
+     *   (c) grace class ERGONOMIC — through its OWN explicit case (the
+     *       design asks for it, not the default: branch): equal to the
+     *       ERGONOMIC constant and to HF-2's class, and not SAFETY;
+     *   (d) the READ side: no row = OFF, a row effective at H invisible at
+     *       H-1 and visible from H on, in its own cache slot.
+     * KILLED BY: dropping case CC_PARAM_HF3_ACTIVE from scalar_rules (1
+     * refused), accepting any value, leaving 8 off the read list, or a
+     * SAFETY grace. (The explicit-vs-default distinction is a code-shape
+     * rule a return-value test cannot see: both answer ERGONOMIC today.) */
+    {
+        CHECK(DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_HF3_ACTIVE);
+        CHECK(DNAC_CFG_HF3_ACTIVE == 8);
+        CHECK(DNAC_CFG_HF3_ACTIVE_ON == 1ULL);
+        CHECK(dnac_cfg_param_read_by_consensus((uint8_t)DNAC_CFG_HF3_ACTIVE));
+
+        /* (b) signed_at 1, valid_before 5000 > effective 4000, nonce 7 */
+        CHECK(nodus_chain_config_scalar_rules((uint8_t)DNAC_CFG_HF3_ACTIVE,
+                                              1ULL, 1ULL, 5000ULL, 4000ULL,
+                                              7ULL) == 0);
+        CHECK(nodus_chain_config_scalar_rules((uint8_t)DNAC_CFG_HF3_ACTIVE,
+                                              0ULL, 1ULL, 5000ULL, 4000ULL,
+                                              7ULL) == -1);
+        CHECK(nodus_chain_config_scalar_rules((uint8_t)DNAC_CFG_HF3_ACTIVE,
+                                              2ULL, 1ULL, 5000ULL, 4000ULL,
+                                              7ULL) == -1);
+        CHECK(nodus_chain_config_scalar_rules((uint8_t)DNAC_CFG_HF3_ACTIVE,
+                                              UINT64_MAX, 1ULL, 5000ULL,
+                                              4000ULL, 7ULL) == -1);
+        CHECK(nodus_chain_config_scalar_rules((uint8_t)DNAC_CFG_HF3_ACTIVE,
+                                              1ULL, 0ULL, 5000ULL, 4000ULL,
+                                              7ULL) == -1);
+        CHECK(nodus_chain_config_scalar_rules((uint8_t)DNAC_CFG_HF3_ACTIVE,
+                                              1ULL, 1ULL, 4000ULL, 4000ULL,
+                                              7ULL) == -1);
+        CHECK(nodus_chain_config_scalar_rules(
+                  (uint8_t)(DNAC_CFG_PARAM_MAX_ID + 1), 1ULL, 1ULL, 5000ULL,
+                  4000ULL, 7ULL) == -1);
+
+        /* (c) */
+        CHECK(nodus_chain_config_grace_for_param(
+                  (uint8_t)DNAC_CFG_HF3_ACTIVE) ==
+              (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS);
+        CHECK(nodus_chain_config_grace_for_param(
+                  (uint8_t)DNAC_CFG_HF3_ACTIVE) ==
+              nodus_chain_config_grace_for_param(
+                  (uint8_t)DNAC_CFG_HF2_ACTIVE));
+#if DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS != \
+    DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS
+        /* not SAFETY — only decidable when the two classes differ (the
+         * harness short-grace build sets both to 15) */
+        CHECK(nodus_chain_config_grace_for_param(
+                  (uint8_t)DNAC_CFG_HF3_ACTIVE) !=
+              nodus_chain_config_grace_for_param(
+                  (uint8_t)DNAC_CFG_TARGET_ACTIVE_COUNT));
+#endif
+
+        /* (d) */
+        char data_path[64];
+        nodus_witness_t *w = setup_witness(data_path);
+        CHECK(cfg_val(w, DNAC_CFG_HF3_ACTIVE, 1ULL, 0ULL) == 0ULL);
+        CHECK(cfg_val(w, DNAC_CFG_HF3_ACTIVE, 1000000ULL, 0ULL) == 0ULL);
+        direct_insert(w, DNAC_CFG_HF3_ACTIVE, 1ULL, 900ULL, 100ULL, 0x78ULL);
+        w->chain_config_cache_warm = false;
+        CHECK(cfg_val(w, DNAC_CFG_HF3_ACTIVE, 899ULL, 0ULL) == 0ULL);
+        CHECK(cfg_val(w, DNAC_CFG_HF3_ACTIVE, 900ULL, 0ULL) == 1ULL);
+        CHECK(cfg_val(w, DNAC_CFG_HF3_ACTIVE, 901ULL, 0ULL) == 1ULL);
+        CHECK(w->chain_config_cache_warm);
+        CHECK(w->chain_config_cache_count[DNAC_CFG_HF3_ACTIVE] == 1);
+        /* HF-2's slot is not where HF-3's row went */
+        CHECK(cfg_val(w, DNAC_CFG_HF2_ACTIVE, 901ULL, 0ULL) == 0ULL);
         teardown_witness(w, data_path);
     }
 

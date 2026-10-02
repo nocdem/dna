@@ -283,6 +283,15 @@ typedef struct {
                                              * SYSTEM runtime — outlives
                                              * this struct (the runtime
                                              * registry owns it)          */
+    /* HF-3 (design docs/plans/2026-10-01-hf3-comet-block-bounds-design.md
+     * rev 3, D2): the COMMITTED chain_config param 8 (HF3_ACTIVE) at the
+     * height this context was built for, 0 or 1 — resolved ONCE, by the
+     * builder, and carried from here to every consumer: the seam's byte
+     * step (skip_byte_bound), the budget's unbounded flags (set by the
+     * builder itself), PrepareProposal's envelope-byte bound, the
+     * res_max_total_units <= INT64_MAX rule and the seam's fee check.
+     * No consumer re-reads the switch. */
+    uint8_t            hf3_active;
 } nodus_witness_v2_block_ctx_t;
 
 /**
@@ -293,21 +302,32 @@ typedef struct {
  * persisted head), then fills the context through the same body the apply
  * engine runs — see the engine's block-start snapshot section.
  *
+ * `height` (HF-3) is the height of the block this context judges — the
+ * caller's candidate height (tip + 1) on every pre-commit path, the
+ * block's own height in FinalizeBlock. It selects ONE input: the HF-3
+ * switch (chain_config param 8, effective_block <= height), which sets
+ * ctx->hf3_active and, when 1, marks the global budget and every
+ * quota-0 domain's budget unbounded (res_meter.h flags). With no param-8
+ * row the context is byte-identical to the pre-HF-3 one.
+ *
  * Determinism: registry rows are read ORDER BY domain_id ASC, the ruleset
  * table and the budget's domain array come out strictly ascending by
- * construction, and the only other input is the SYSTEM runtime's SEALED
- * compiled policy (verified against its descriptor-committed digest). No
- * clock, no RNG, no unordered iteration, no write.
+ * construction, and the only other inputs are the SYSTEM runtime's SEALED
+ * compiled policy (verified against its descriptor-committed digest) and
+ * the committed param-8 row at `height`. No clock, no RNG, no unordered
+ * iteration, no write.
  *
  * @return  0 built;
  *         -1 CHAIN-STATE VERDICT: SYSTEM is not ACTIVE / not runtime-
  *            backed, so no block on this chain is appliable;
  *         -2 NODE-LOCAL FAULT: registry/head/runtime state unreadable,
- *            an engine array bound exceeded, or a broken/mutated/digest-
- *            mismatched compiled policy on THIS node. A caller must not
- *            turn this into a verdict about anyone's transaction.
+ *            an engine array bound exceeded, a broken/mutated/digest-
+ *            mismatched compiled policy, or the param-8 row unreadable /
+ *            holding a value no committed row can hold, on THIS node. A
+ *            caller must not turn this into a verdict about anyone's
+ *            transaction.
  */
-int nodus_witness_v2_block_ctx_build(nodus_witness_t *w,
+int nodus_witness_v2_block_ctx_build(nodus_witness_t *w, uint64_t height,
                                      nodus_witness_v2_block_ctx_t *ctx);
 
 /**
@@ -447,6 +467,11 @@ nodus_v2_env_status_t nodus_witness_v2_env_preflight_batch(
  *      while no transport admits > 64 KiB frames; the season that
  *      wires a live V2 ingress MUST add its own per-frame byte check
  *      ahead of this seam rather than rely on the per-block sum here.
+ *      HF-3: when `skip_byte_bound` is nonzero this whole step is
+ *      SKIPPED (no sum, no allocation, never ERR_BLOCK_BYTES) — from the
+ *      HF-3 height the block is bounded by the cometbft consensus params
+ *      alone (Block.MaxBytes, cmt_cs.c). 0 = the step runs exactly as
+ *      described above; every caller below the HF-3 height passes 0.
  *   5. Per envelope, in index order: dna_meter_reserve(&meters_out[i],
  *      policy, &out[i].view, budget) — plan build + ATOMIC debit of the
  *      global ceiling and each leg's static units. Envelope i+1 is
@@ -473,6 +498,11 @@ nodus_v2_env_status_t nodus_witness_v2_env_preflight_batch(
  *                         view; mutated ONLY on NODUS_V2_ENV_OK.
  *                         BORROWED by every returned meter (res_meter.h
  *                         lifetime rule).
+ * @param skip_byte_bound  HF-3: 0 = step 4b runs (today's behaviour);
+ *                         nonzero = step 4b is skipped. The caller takes
+ *                         it from the block-start context's hf3_active
+ *                         (nodus_witness_v2_block_ctx_t) — never from a
+ *                         second read of the switch.
  * @param meters_out       caller array of n_envs meters; each RESERVED
  *                         on success. Zeroed on every post-gate reject.
  * @param meter_status_out OPTIONAL. MEANINGFUL ONLY when the return is
@@ -488,6 +518,7 @@ nodus_v2_env_status_t nodus_witness_v2_env_preflight_reserve_batch(
     const dna_env_leg_ctx_t *rulesets, size_t n_rulesets,
     const dna_meter_policy_t *policy,
     dna_meter_budget_t *budget,
+    int skip_byte_bound,
     const nodus_v2_envelope_t *envs, size_t n_envs,
     dna_env_preflight_t *out,
     dna_meter_t *meters_out,

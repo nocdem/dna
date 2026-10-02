@@ -101,7 +101,9 @@
 #     a restart on a chain that has genuinely stopped producing is now
 #     RED here.
 #   - **DELTA 1 (verifier CLAIM 20 note) — the "never listened again"
-#     wait (60 x 0.5 s) and the role-delta wait (30 x 1 s) are
+#     wait (60 x 0.5 s), the role-delta wait (30 x 1 s) and the
+#     handshake-delta wait (30 x 1 s, added 2026-10-02 — the one-shot read
+#     it replaces raced the Handshaker, which logs after the role line) are
 #     ATTEMPT-bounded, not a single fixed timer deciding the verdict**:
 #     each polls for a socket or a log line and dies if it never appears
 #     within the bound, the same shape bring-up's own anti-vacuity loop
@@ -164,6 +166,8 @@ role_before=$(grep -c 'chain role: COMETBFT' "$vlog" || true)
 [ "$role_before" -ge 1 ] || die "node$VICTIM never reported the COMETBFT role before the kill"
 hs_before=$(grep -c 'ABCI replay blocks:' "$vlog" || true)
 [ "$hs_before" -ge 1 ] || die "node$VICTIM has no ABCI handshake line from its first boot — cannot take a delta"
+done_before=$(grep -c 'completed ABCI handshake' "$vlog" || true)
+[ "$done_before" -ge 1 ] || die "node$VICTIM has no 'completed ABCI handshake' line from its first boot — cannot take a delta"
 tip_before=$(stagef_cmt_tip "$(db_of "$VICTIM")")
 echo "[ok] node$VICTIM baseline: chain_db=$chain_before role_lines=$role_before handshake_lines=$hs_before tip=$tip_before"
 
@@ -233,11 +237,31 @@ echo "[ok] node$VICTIM re-established the COMETBFT role ($role_before -> $role_a
 #    what proves the restarted node read its OWN ledger height correctly
 #    rather than assuming a fresh chain. A BEFORE/AFTER delta, because
 #    the first boot already logged one.
-hs_after=$(grep -c 'ABCI replay blocks:' "$vlog" || true)
+#
+#    POLLED, not read once (2026-10-02 fix). The role line is written
+#    BEFORE the Handshaker runs — several init steps separate them (p2p
+#    start, the CMT-APP capacity line) — so reading the count the instant
+#    the role delta appeared raced the handshake itself. Measured on the
+#    production-constants sweep of /tmp/stagef-20261001T232844Z: node4's
+#    restart logged the role at line 98 and "ABCI replay blocks" at 105,
+#    "completed ABCI handshake" at 106, yet the one-shot read reported
+#    before=1 after=1. Same attempt-bounded shape as the role wait above
+#    (30 x 1 s): it dies if the lines never appear, and no single sleep
+#    decides the verdict. "completed" is now a delta too — the first
+#    boot's line made the old `-ge 1` check vacuously true.
+hs_ok=0
+for _ in $(seq 1 30); do
+    hs_after=$(grep -c 'ABCI replay blocks:' "$vlog" || true)
+    done_after=$(grep -c 'completed ABCI handshake' "$vlog" || true)
+    if [ "$hs_after" -gt "$hs_before" ] && [ "$done_after" -gt "$done_before" ]; then
+        hs_ok=1; break
+    fi
+    sleep 1
+done
 [ "$hs_after" -gt "$hs_before" ] || die \
   "node$VICTIM shows no NEW 'ABCI replay blocks:' line after restart (before=$hs_before after=$hs_after) — the Handshaker did not run, or the log capture missed it"
-completed=$(grep -c 'completed ABCI handshake' "$vlog" || true)
-[ "$completed" -ge 1 ] || die "node$VICTIM never logged 'completed ABCI handshake' — the reconciliation did not finish"
+[ "$hs_ok" = 1 ] || die \
+  "node$VICTIM logged no NEW 'completed ABCI handshake' after restart (before=$done_before after=$done_after) — the reconciliation did not finish"
 echo "[ok] node$VICTIM ran and completed the ABCI Handshake on restart ($hs_before -> $hs_after)"
 echo "     $(grep 'ABCI replay blocks:' "$vlog" | tail -1)"
 

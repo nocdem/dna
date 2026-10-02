@@ -320,6 +320,7 @@ int dna_meter_op_weight(const dna_meter_policy_t *p, uint32_t runtime_op,
 
 typedef struct {
     uint32_t domain_id;
+    uint8_t  unbounded;                 /* HF-3: 1 = no block cap, below  */
     uint64_t remaining_units;
 } dna_meter_domain_budget_t;
 
@@ -329,14 +330,30 @@ typedef struct {
  * descending both reject — a duplicate entry makes the authority for
  * that domain ambiguous, dna_meter_budget_check). Mutated ONLY by
  * reserve / finalize / abort, atomically.
+ *
+ * THE UNBOUNDED FLAGS (HF-3, design docs/plans/2026-10-01-hf3-comet-
+ * block-bounds-design.md §0.1): `global_unbounded` for the global
+ * remainder and `dom[i].unbounded` per domain slot, each 0 or 1 (any
+ * other value fails dna_meter_budget_check). A flagged remainder is NOT
+ * A BOUND: reserve, charge, finalize and abort neither read nor write
+ * that slot's remaining units (`global_remaining` / `remaining_units`)
+ * and evaluate no arithmetic on it — so it can neither refuse
+ * (ERR_GLOBAL_BUDGET / ERR_DOMAIN_BUDGET) nor overflow. Everything the
+ * METER itself records (g_reserved, g_consumed, dom_dyn, dom_consumed,
+ * the released amounts, the CEILING / LIMIT gates) is computed exactly
+ * as for an unflagged slot. Both flags 0 (zeroed memory) is the pre-HF-3
+ * behaviour, byte for byte. Both fields sit in what was struct padding,
+ * so neither struct changed size.
  */
 typedef struct {
     uint64_t global_remaining;
     uint16_t n_domains;                 /* 0 .. DNA_METER_MAX_DOMAINS    */
+    uint8_t  global_unbounded;          /* HF-3: 1 = no global block cap */
     dna_meter_domain_budget_t dom[DNA_METER_MAX_DOMAINS];
 } dna_meter_budget_t;
 
-/** Structural check: n_domains in range, strictly ascending domain_id.
+/** Structural check: n_domains in range, strictly ascending domain_id,
+ *  every unbounded flag (global and per domain) 0 or 1.
  *  @return 0 / -1. */
 int dna_meter_budget_check(const dna_meter_budget_t *b);
 
@@ -446,7 +463,8 @@ _Static_assert(sizeof(dna_meter_t) <= 4096,
  * Rejects: everything plan build rejects, plus ERR_STATE (meter not
  * ZERO), ERR_DOMAIN (budget malformed, or a leg's domain has no budget
  * entry), ERR_GLOBAL_BUDGET / ERR_DOMAIN_BUDGET (exact-fit passes;
- * one unit short rejects).
+ * one unit short rejects; never for a remainder flagged unbounded —
+ * HF-3, the dna_meter_budget_t flags: such a slot is not debited).
  *
  * REJECT OUTPUT — two distinct cases (the ZERO-state gate at the top of
  * res_meter.c dna_meter_reserve; pinned by test_res_meter's
@@ -498,10 +516,13 @@ dna_meter_status_t dna_meter_charge_effects(dna_meter_t *m,
 dna_meter_status_t dna_meter_charge_read(dna_meter_t *m, uint32_t domain_id);
 dna_meter_status_t dna_meter_charge_write(dna_meter_t *m, uint32_t domain_id);
 
-/** ACTIVE -> FINALIZED; releases unused units (header block above). */
+/** ACTIVE -> FINALIZED; releases unused units (header block above).
+ *  g_released / dom_released are set for every slot; a remainder
+ *  flagged unbounded (HF-3) receives no release (it was never debited). */
 dna_meter_status_t dna_meter_finalize(dna_meter_t *m);
 
-/** RESERVED|ACTIVE -> ABORTED; restores everything taken. NOTE:
+/** RESERVED|ACTIVE -> ABORTED; restores everything taken (a remainder
+ *  flagged unbounded — HF-3 — took nothing and gets nothing). NOTE:
  *  g_released / dom_released stay ZERO on abort (they are finalize's
  *  outputs) — the "reserved == consumed + released" identity is
  *  readable only on a FINALIZED meter; on an ABORTED one the budget

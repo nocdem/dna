@@ -158,6 +158,11 @@ int dna_meter_op_weight(const dna_meter_policy_t *p, uint32_t runtime_op,
 
 int dna_meter_budget_check(const dna_meter_budget_t *b) {
     if (!b || b->n_domains > DNA_METER_MAX_DOMAINS) return -1;
+    /* HF-3: the unbounded flags are booleans (res_meter.h); any other
+     * byte is a malformed budget, not a second kind of "unbounded". */
+    if (b->global_unbounded > 1) return -1;
+    for (uint16_t i = 0; i < b->n_domains; i++)
+        if (b->dom[i].unbounded > 1) return -1;
     for (uint16_t i = 1; i < b->n_domains; i++)
         if (b->dom[i - 1].domain_id >= b->dom[i].domain_id) return -1;
     return 0;
@@ -299,9 +304,13 @@ dna_meter_status_t dna_meter_reserve(dna_meter_t *m,
         return DNA_METER_ERR_DOMAIN;
     }
 
-    /* Fit checks + new values, ALL in temporaries. */
-    uint64_t new_global;
-    if (dna_ck_sub_u64(bud->global_remaining, m->plan.total_ceiling,
+    /* Fit checks + new values, ALL in temporaries. A slot flagged
+     * unbounded (HF-3, res_meter.h) is neither read nor written and has
+     * no fit check: its new_global / dom_new temporary is never computed
+     * and never used. */
+    uint64_t new_global = 0;
+    if (!bud->global_unbounded &&
+        dna_ck_sub_u64(bud->global_remaining, m->plan.total_ceiling,
                        &new_global) != 0) {
         memset(m, 0, sizeof(*m));
         return DNA_METER_ERR_GLOBAL_BUDGET;
@@ -315,7 +324,9 @@ dna_meter_status_t dna_meter_reserve(dna_meter_t *m,
             memset(m, 0, sizeof(*m));
             return DNA_METER_ERR_DOMAIN;
         }
-        if (dna_ck_sub_u64(bud->dom[di].remaining_units,
+        dom_new[i] = 0;
+        if (!bud->dom[di].unbounded &&
+            dna_ck_sub_u64(bud->dom[di].remaining_units,
                            m->plan.leg[i].static_units, &dom_new[i]) != 0) {
             memset(m, 0, sizeof(*m));
             return DNA_METER_ERR_DOMAIN_BUDGET;
@@ -324,9 +335,11 @@ dna_meter_status_t dna_meter_reserve(dna_meter_t *m,
     }
 
     /* Commit. */
-    bud->global_remaining = new_global;
+    if (!bud->global_unbounded)
+        bud->global_remaining = new_global;
     for (uint16_t i = 0; i < m->plan.n_legs; i++)
-        bud->dom[dom_idx[i]].remaining_units = dom_new[i];
+        if (!bud->dom[dom_idx[i]].unbounded)
+            bud->dom[dom_idx[i]].remaining_units = dom_new[i];
 
     m->budget     = bud;
     m->g_reserved = m->plan.total_ceiling;
@@ -377,7 +390,14 @@ static dna_meter_status_t meter_charge(dna_meter_t *m, int li,
         uint64_t need = amount - avail;  /* > 0; no wrap: amount > avail */
         int di = budget_dom_index(m->budget, m->plan.leg[li].domain_id);
         if (di < 0) return DNA_METER_ERR_FAULT;  /* was present at reserve */
-        if (dna_ck_sub_u64(m->budget->dom[di].remaining_units, need,
+        /* HF-3 (res_meter.h): a slot flagged unbounded has no remainder
+         * to claim from — no read, no fit check, and new_bud is never
+         * computed. The dynamic claim itself (dom_dyn) is meter-local
+         * and grows exactly as for a bounded slot: finalize/abort and the
+         * next charge read static + dom_dyn as this leg's available
+         * units (design §0.1, R2-1). */
+        if (!m->budget->dom[di].unbounded &&
+            dna_ck_sub_u64(m->budget->dom[di].remaining_units, need,
                            &new_bud) != 0)
             return DNA_METER_ERR_DOMAIN_BUDGET;
         if (dna_ck_add_u64(m->dom_dyn[li], need, &new_dyn) != 0)
@@ -389,7 +409,8 @@ static dna_meter_status_t meter_charge(dna_meter_t *m, int li,
     m->g_consumed = new_gc;
     m->dom_consumed[li] = new_dc;
     if (need_budget_write) {
-        m->budget->dom[need_budget_write - 1].remaining_units = new_bud;
+        if (!m->budget->dom[need_budget_write - 1].unbounded)
+            m->budget->dom[need_budget_write - 1].remaining_units = new_bud;
         m->dom_dyn[li] = new_dyn;
     }
     return DNA_METER_OK;
@@ -512,9 +533,14 @@ dna_meter_status_t dna_meter_finalize(dna_meter_t *m) {
     if (m->state != DNA_METER_ST_ACTIVE) return DNA_METER_ERR_STATE;
     if (!m->budget) return DNA_METER_ERR_FAULT;
 
-    /* ALL releases in temporaries first — a fault commits nothing. */
-    uint64_t g_rel, new_global;
-    if (dna_ck_sub_u64(m->g_reserved, m->g_consumed, &g_rel) != 0 ||
+    /* ALL releases in temporaries first — a fault commits nothing. The
+     * released amounts (g_rel, dom_rel) are meter-local and computed for
+     * every slot; only the budget add + write is skipped for a slot
+     * flagged unbounded (HF-3, res_meter.h). */
+    uint64_t g_rel, new_global = 0;
+    if (dna_ck_sub_u64(m->g_reserved, m->g_consumed, &g_rel) != 0)
+        return DNA_METER_ERR_FAULT;
+    if (!m->budget->global_unbounded &&
         dna_ck_add_u64(m->budget->global_remaining, g_rel,
                        &new_global) != 0)
         return DNA_METER_ERR_FAULT;
@@ -528,7 +554,10 @@ dna_meter_status_t dna_meter_finalize(dna_meter_t *m) {
         uint64_t taken;
         if (dna_ck_add_u64(m->plan.leg[i].static_units, m->dom_dyn[i],
                            &taken) != 0 ||
-            dna_ck_sub_u64(taken, m->dom_consumed[i], &dom_rel[i]) != 0 ||
+            dna_ck_sub_u64(taken, m->dom_consumed[i], &dom_rel[i]) != 0)
+            return DNA_METER_ERR_FAULT;
+        dom_new[i] = 0;
+        if (!m->budget->dom[di].unbounded &&
             dna_ck_add_u64(m->budget->dom[di].remaining_units, dom_rel[i],
                            &dom_new[i]) != 0)
             return DNA_METER_ERR_FAULT;
@@ -536,10 +565,12 @@ dna_meter_status_t dna_meter_finalize(dna_meter_t *m) {
     }
 
     /* Commit. */
-    m->budget->global_remaining = new_global;
+    if (!m->budget->global_unbounded)
+        m->budget->global_remaining = new_global;
     m->g_released = g_rel;
     for (uint16_t i = 0; i < m->plan.n_legs; i++) {
-        m->budget->dom[dom_idx[i]].remaining_units = dom_new[i];
+        if (!m->budget->dom[dom_idx[i]].unbounded)
+            m->budget->dom[dom_idx[i]].remaining_units = dom_new[i];
         m->dom_released[i] = dom_rel[i];
     }
     m->state = DNA_METER_ST_FINALIZED;
@@ -557,9 +588,12 @@ dna_meter_status_t dna_meter_abort(dna_meter_t *m) {
      * claims per domain. Restoring more than was taken cannot be
      * expressed here (the amounts ARE what reserve/charge recorded);
      * an overflow of the budget on restore means the budget was mutated
-     * behind the meter's back — a FAULT, and nothing commits. */
-    uint64_t new_global;
-    if (dna_ck_add_u64(m->budget->global_remaining, m->g_reserved,
+     * behind the meter's back — a FAULT, and nothing commits. A slot
+     * flagged unbounded (HF-3, res_meter.h) took nothing from its
+     * remainder, so nothing is restored to it: no add, no write. */
+    uint64_t new_global = 0;
+    if (!m->budget->global_unbounded &&
+        dna_ck_add_u64(m->budget->global_remaining, m->g_reserved,
                        &new_global) != 0)
         return DNA_METER_ERR_FAULT;
 
@@ -570,7 +604,10 @@ dna_meter_status_t dna_meter_abort(dna_meter_t *m) {
         if (di < 0) return DNA_METER_ERR_FAULT;
         uint64_t taken;
         if (dna_ck_add_u64(m->plan.leg[i].static_units, m->dom_dyn[i],
-                           &taken) != 0 ||
+                           &taken) != 0)
+            return DNA_METER_ERR_FAULT;
+        dom_new[i] = 0;
+        if (!m->budget->dom[di].unbounded &&
             dna_ck_add_u64(m->budget->dom[di].remaining_units, taken,
                            &dom_new[i]) != 0)
             return DNA_METER_ERR_FAULT;
@@ -578,9 +615,11 @@ dna_meter_status_t dna_meter_abort(dna_meter_t *m) {
     }
 
     /* Commit. */
-    m->budget->global_remaining = new_global;
+    if (!m->budget->global_unbounded)
+        m->budget->global_remaining = new_global;
     for (uint16_t i = 0; i < m->plan.n_legs; i++)
-        m->budget->dom[dom_idx[i]].remaining_units = dom_new[i];
+        if (!m->budget->dom[dom_idx[i]].unbounded)
+            m->budget->dom[dom_idx[i]].remaining_units = dom_new[i];
     m->state = DNA_METER_ST_ABORTED;
     return DNA_METER_OK;
 }

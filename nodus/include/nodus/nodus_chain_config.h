@@ -72,9 +72,9 @@ typedef struct nodus_witness nodus_witness_t;
  * checked on every block, nodus_witness_v2_econ_params_load.)
  *
  * WHY 200+. The band must never collide with a future
- * DNAC_CFG_* allocation, which grows upward from 1 (currently 7 — HF-2's
- * HF2_ACTIVE, after W-C's TOKEN_CREATE_FEE_RAW = 6 and HF-1's
- * GAS_PRICE_RAW_PER_UNIT = 5). Starting at 200 leaves 192 free
+ * DNAC_CFG_* allocation, which grows upward from 1 (currently 8 — HF-3's
+ * HF3_ACTIVE, after HF-2's HF2_ACTIVE = 7, W-C's TOKEN_CREATE_FEE_RAW = 6
+ * and HF-1's GAS_PRICE_RAW_PER_UNIT = 5). Starting at 200 leaves 191 free
  * governance ids; a future allocation that reaches
  * this band collides with THIS COMMENT rather than silently overwriting a
  * committed economic parameter. The ids fit uint8_t, which is what the

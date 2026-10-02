@@ -294,6 +294,7 @@ nodus_v2_env_status_t nodus_witness_v2_env_preflight_reserve_batch(
         const dna_env_leg_ctx_t *rulesets, size_t n_rulesets,
         const dna_meter_policy_t *policy,
         dna_meter_budget_t *budget,
+        int skip_byte_bound,
         const nodus_v2_envelope_t *envs, size_t n_envs,
         dna_env_preflight_t *out,
         dna_meter_t *meters_out,
@@ -343,8 +344,12 @@ nodus_v2_env_status_t nodus_witness_v2_env_preflight_reserve_batch(
      * budget, and the distinct status cannot be masked by unit
      * exhaustion (header doc — the order is load-bearing). The lengths
      * summed are the DECODE-ACCEPTED exact lengths, not the caller's
-     * claims: preflight proved env_len == the length the bytes imply. */
-    {
+     * claims: preflight proved env_len == the length the bytes imply.
+     * HF-3 (design 2026-10-01-hf3-comet-block-bounds-design.md §0 rule
+     * 1): a caller at or above the HF-3 height passes skip_byte_bound
+     * != 0 and the whole step is skipped — the block is bounded by the
+     * cometbft consensus params alone. 0 = this step, unchanged. */
+    if (!skip_byte_bound) {
         /* R3 W4-C delta 2 — HEAP, sized to the BATCH's own n_envs, not
          * the compile-time NODUS_V2_ENV_BATCH_MAX (a ~3 000+ derived
          * memory ceiling since the chain-config item cap retired — a

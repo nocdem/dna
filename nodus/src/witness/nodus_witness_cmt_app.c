@@ -703,7 +703,10 @@ int nodus_cmt_app_entry_identity(nodus_cmt_app_ledger_t *ctx,
     if (nodus_witness_v2_tip_height(ctx->w, &tip) != 0) {
         goto done;                              /* node-local read fault   */
     }
-    switch (nodus_witness_v2_block_ctx_build(ctx->w, bctx)) {
+    /* HF-3: the context is built at the candidate height (tip + 1), the
+     * same height the preflight below uses; only its ruleset table is
+     * read here. */
+    switch (nodus_witness_v2_block_ctx_build(ctx->w, tip + 1u, bctx)) {
     case 0:
         break;
     case -1:
@@ -1705,7 +1708,11 @@ int nodus_cmt_app_prepare_proposal(
      * reserve seam (nodus_witness_v2_env.c, step 4b). It is read here
      * through the ONE block-start context builder the seam itself uses
      * (nodus_witness_v2_produce.c, the envelope subset), never
-     * hard-coded, so a repinned policy moves both sides together.
+     * hard-coded, so a repinned policy moves both sides together. From
+     * the HF-3 height (the context's hf3_active) the seam skips that sum
+     * and this bound becomes UINT64_MAX with it — still the same
+     * authority on both sides (design 2026-10-01-hf3-comet-block-bounds-
+     * design.md §0 rule 1).
      *
      * 2026-09-25 devnet halt at height 135: this bound was NOT applied
      * here, ~827 envelopes (~6 MB) reached the seam, the seam answered
@@ -1730,15 +1737,36 @@ int nodus_cmt_app_prepare_proposal(
     if (k < n) {
         nodus_witness_v2_block_ctx_t *bctx =
             (nodus_witness_v2_block_ctx_t *)calloc(1, sizeof(*bctx));
+        uint64_t prep_tip = 0;
         int bcrc;
 
         if (!bctx) {
             rc_out = CMT_FAULT;
             goto done;
         }
-        bcrc = nodus_witness_v2_block_ctx_build(ctx->w, bctx);
+        /* HF-3 D1 (b): this proposal's OWN height source — the committed
+         * tip + 1 from the database, the height the seam's `candidate`
+         * (nodus_witness_v2_produce.c) resolves too, so the pack and the
+         * drop loop's seam runs judge under one switch. An unreadable
+         * tip is this node's fault (the same -2 the builder answers). */
+        bcrc = (nodus_witness_v2_tip_height(ctx->w, &prep_tip) != 0)
+                   ? -2
+                   : nodus_witness_v2_block_ctx_build(ctx->w, prep_tip + 1u,
+                                                      bctx);
         if (bcrc == 0 && bctx->policy) {
-            max_env_bytes = bctx->policy->max_block_env_bytes;
+            /* HF-3 §0 rule 1: from the HF-3 height the envelope-byte
+             * bound is NOT a bound — the seam skips its byte step
+             * (skip_byte_bound = hf3_active) and the pack must not trim
+             * on it either, or Prepare and Process would disagree about
+             * the same batch. UINT64_MAX, never 0 (0 is the FAULT gate
+             * below and a -1 in nodus_witness_v2_block_bytes_check): the
+             * pack's `len > max_env_bytes` / `env_total > max_env_bytes -
+             * len` tests then never fire (env_total <= max_tx_bytes, so
+             * the subtraction cannot wrap), and neither does the
+             * chain_config candidate's `len > max_env_bytes`. */
+            max_env_bytes = bctx->hf3_active
+                                ? UINT64_MAX
+                                : bctx->policy->max_block_env_bytes;
             /* CHECKTX-P1 round 2 — the pack's unit/quota inputs from the
              * SAME context: the sealed policy (BORROWED from the runtime
              * registry, outlives this call), the fresh budget, and every

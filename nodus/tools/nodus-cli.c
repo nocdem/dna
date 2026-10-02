@@ -1161,6 +1161,10 @@ static int cc_param_name_to_id(const char *name, uint8_t *out_id) {
          * rev 2) — param id 7, value exactly 1 */
         { "HF2_ACTIVE",           DNAC_CFG_HF2_ACTIVE },
         { "hf2_active",           DNAC_CFG_HF2_ACTIVE },
+        /* HF-3 (design docs/plans/2026-10-01-hf3-comet-block-bounds-
+         * design.md rev 3) — param id 8, value exactly 1 */
+        { "HF3_ACTIVE",           DNAC_CFG_HF3_ACTIVE },
+        { "hf3_active",           DNAC_CFG_HF3_ACTIVE },
     };
     for (size_t i = 0; i < sizeof(map)/sizeof(map[0]); i++) {
         if (strcmp(name, map[i].n) == 0) { *out_id = map[i].id; return 0; }
@@ -1389,6 +1393,9 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             "  HF2_ACTIVE             exactly %llu   "
             "(HF-2 switch: power-weighted approvals + net-zero blocks "
             "from --effective on; one-way)\n"
+            "  HF3_ACTIVE             exactly %llu   "
+            "(HF-3 switch: blocks bounded by the consensus params only, "
+            "proposal fee check, from --effective on; one-way)\n"
             "BLOCK_INTERVAL_SEC is not read by the running consensus "
             "and is refused.\n",
             (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
@@ -1396,14 +1403,15 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             (unsigned long long)DNAC_CFG_MAX_GAS_PRICE,
             (unsigned long long)DNAC_CFG_MIN_TOKEN_CREATE_FEE,
             (unsigned long long)DNAC_CFG_MAX_TOKEN_CREATE_FEE,
-            (unsigned long long)DNAC_CFG_HF2_ACTIVE_ON);
+            (unsigned long long)DNAC_CFG_HF2_ACTIVE_ON,
+            (unsigned long long)DNAC_CFG_HF3_ACTIVE_ON);
         return 1;
     }
     uint8_t param_id = 0;
     if (cc_param_name_to_id(param_name, &param_id) != 0) {
         fprintf(stderr, "Unknown param name: %s - accepted: "
                 "TARGET_ACTIVE_COUNT | GAS_PRICE_RAW_PER_UNIT | "
-                "TOKEN_CREATE_FEE_RAW | HF2_ACTIVE "
+                "TOKEN_CREATE_FEE_RAW | HF2_ACTIVE | HF3_ACTIVE "
                 "(the parameters the running consensus reads)\n",
                 param_name);
         return 1;
@@ -3593,7 +3601,11 @@ done:
  * per-block envelope count: 8 221 units for a 1-in/1-out spend
  * (ARITHMETIC, all weights 1) → at most 255 per block; a round 200 000
  * (the test precedent) would admit ten spends per block, 400 000 (the
- * stake builder) five.
+ * stake builder) five. That is the rule BELOW the HF-3 height (chain_
+ * config param 8, DNAC_CFG_HF3_ACTIVE): from it the global budget and
+ * every quota-0 domain's budget are unbounded (res_meter.h unbounded
+ * flags), so the ceiling no longer caps the per-block count — it stays
+ * the fee base (units × price) and must be ≤ INT64_MAX.
  *
  * The plan and the build themselves are the shared SPEND builder
  * (nodus/src/client/nodus_v2_spend.c, web wallet package (c2)):
@@ -5723,7 +5735,8 @@ static void usage(const char *prog) {
     fprintf(stderr, "  stake [--commission BPS] [--bond RAW = exactly 10M NODUS]   Bond this node identity as validator (S3)\n");
     fprintf(stderr, "                              [--nonce <N>]  (committee operator only)\n");
     fprintf(stderr, "                  NAME: TARGET_ACTIVE_COUNT | GAS_PRICE_RAW_PER_UNIT |\n");
-    fprintf(stderr, "                        TOKEN_CREATE_FEE_RAW | HF2_ACTIVE\n");
+    fprintf(stderr, "                        TOKEN_CREATE_FEE_RAW | HF2_ACTIVE |\n");
+    fprintf(stderr, "                        HF3_ACTIVE\n");
     fprintf(stderr, "                        (the parameters the running consensus reads)\n");
     fprintf(stderr, "                  run without --value for per-param ranges\n");
     fprintf(stderr, "  v2-claim --legacy-db <t.db> --db <s.db> --keys <dir>\n");

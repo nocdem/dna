@@ -2342,7 +2342,7 @@ today has that row and takes the old branch unchanged.
 
 | Module | cometbft source | What it is |
 |---|---|---|
-| `nodus/src/witness/nodus_witness_cmt_app.{h,c}` | `abci/types/application.go`, `proxy/app_conn.go`, `consensus/replay.go:318-373`, `state/execution.go:101-323` | the APPLICATION behind `AppConnConsensus`/`AppConnMempool` over the ledger: InitChain as a genesis CHECK (chain id, committed global root == the document's `app_hash`, validators as a multiset), PrepareProposal (the ledger's fee order and chain_config-alone rules, the byte budgets — `max_tx_bytes` and the meter policy's `max_block_env_bytes` —, the capacity seam read by refusal kind), ProcessProposal, the vote-extension defaults, FinalizeBlock over the engine's Comet lane, Commit = the SQL `COMMIT` of the host's transaction, CheckTx = the ledger's admission check PLUS the envelope's authorization stage (D-23 rev 5, D-4 rev 3) |
+| `nodus/src/witness/nodus_witness_cmt_app.{h,c}` | `abci/types/application.go`, `proxy/app_conn.go`, `consensus/replay.go:318-373`, `state/execution.go:101-323` | the APPLICATION behind `AppConnConsensus`/`AppConnMempool` over the ledger: InitChain as a genesis CHECK (chain id, committed global root == the document's `app_hash`, validators as a multiset), PrepareProposal (the ledger's fee order and chain_config-alone rules, the byte budgets — `max_tx_bytes` and the meter policy's `max_block_env_bytes`, the latter until HF-3's activation height only —, the capacity seam read by refusal kind), ProcessProposal, the vote-extension defaults, FinalizeBlock over the engine's Comet lane, Commit = the SQL `COMMIT` of the host's transaction, CheckTx = the ledger's admission check PLUS the envelope's authorization stage (D-23 rev 5, D-4 rev 3) |
 | `nodus/src/witness/nodus_witness_v2_apply.{h,c}` (Comet lane) | `state/execution.go:224-323` | `nodus_v2_block_t.cmt`: every item in its own SAVEPOINT inside the host's transaction, a per-item `nodus_v2_tx_code_t` (consensus data), claims as items, the ten-column S14 block row with consensus's own block hash, `tx_root`/`tx_count` over applied items only, the committed-global-root reader, `nodus_witness_v2_genesis_cmt` (no height-0 row) |
 | `nodus/src/witness/nodus_witness_v2_gen.{h,c}` (version 3), `nodus/tools/nodus_v2_gen_config.c` | `types/genesis.go`, `proto/tendermint/types/params.proto`, `node/setup.go:551` | the version-3 genesis DOCUMENT (D-18 rev 4): v2 body ‖ Comet tail; two hashes (chain id with its own field zeroed, source commit with `app_hash` zeroed too); `derive_v3` (ledger genesis at S12, climb to S14, store under "genesisDoc"); the CANONICAL-STRICT reader (four checks); the tool's v3 keys; an independent Python oracle |
 | `nodus/src/witness/nodus_witness_cmt_node.{h,c}` | `node/node.go:285-422`, `node/setup.go:551-611`, `consensus/replay.go:201-565`, `consensus/replay_stubs.go:60-79`, `consensus/state.go:318-405`, `privval/file.go:237-245` | THE STARTUP TABLE: `NewNodeWithContext` step for step, the Handshaker (InitChain branch, six edge cases, five height outcomes, replayBlocks/replayBlock), the mock application (its `commit` issues the COMMIT), the genesis document loader's three-way table, `LoadOrGenFilePV` on the state file, OnStart minus the file WAL; the first production caller of `cmt_cs_init` |
@@ -2409,7 +2409,7 @@ W3 closed the legacy lane; W4-D deletes it (OBLIGATION `atlas-dec-71525f3b4918f7
 
 The flat 16-item cap R3-W3-C2a-19 introduced (envelopes AND claims counted together, against the engine's own MAX_OPS-sized STACK/heap scratch) closed a live defect but was itself a chosen, not derived, number — its own rev-9 record said so ("moving them to the heap is a later season's change"). Package C is that season: `nodus_witness_v2_apply.c`'s per-block scratch (`wire_ids` per domain, `claim_nuls`, `env_phase`, the tx_root-building `all_ids`, and the auth-verdict array `auths`) is HEAP now, sized by the BLOCK's own `n_envs`/`n_claims`/leg counts — never a compile-time worst case. Two bounds replace the one flat cap, each derived from something the engine or cometbft already enforces, with a `_Static_assert` pinning the arithmetic:
 
-- **`NODUS_V2_ENV_BATCH_MAX`** — CURRENT definition (`nodus_witness_v2_apply.h`, delta 2 below): `NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES / NODUS_V2_APPLY_ENV_COST_BYTES` = 64 MiB / 20 908 = **3 209**, a derived MEMORY ceiling. This bullet described delta 1's OWN first cut, now superseded: `nodus_witness_v2_env.h` := `DNAC_CFG_MAX_TXS_HARD_CAP` (dnac.h, 10) — the chain-config governance ceiling `MAX_TXS_PER_BLOCK` enforced as a VERDICT on every envelope batch at the time, so an array bound above it was unreachable and one below it would have refused a valid block. 16 (R3-W3-C2a-19) → 10 (delta 1) → 3 209 (delta 2, once the governance parameter itself was retired — see delta 2's section below).
+- **`NODUS_V2_ENV_BATCH_MAX`** — definition at delta 2 (`nodus_witness_v2_apply.h`, delta 2 below): `NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES / NODUS_V2_APPLY_ENV_COST_BYTES` = 64 MiB / 20 908 = **3 209**, a derived MEMORY ceiling. (Today: **3 075**, 21 824 B per envelope after general multisig, then frozen as a literal with the scratch budget raised to 65 MiB in HF-2 — see "HF-2"; `NODUS_V2_APPLY_MAX_OPS` 17 237.) This bullet described delta 1's OWN first cut, now superseded: `nodus_witness_v2_env.h` := `DNAC_CFG_MAX_TXS_HARD_CAP` (dnac.h, 10) — the chain-config governance ceiling `MAX_TXS_PER_BLOCK` enforced as a VERDICT on every envelope batch at the time, so an array bound above it was unreachable and one below it would have refused a valid block. 16 (R3-W3-C2a-19) → 10 (delta 1) → 3 209 (delta 2, once the governance parameter itself was retired — see delta 2's section below).
 - **`NODUS_V2_APPLY_MAX_CLAIMS`** (`nodus_witness_v2_apply.h`, new) := `CMT_MAX_BLOCK_SIZE_BYTES / DNA_CLAIM_FIXED_LEN` = 104 857 600 / 7 404 = **14 162** — the most claims of the smallest possible size cometbft's own 100 MiB block ceiling could ever carry side by side. A claim is not chain-config-metered, so this is the only thing that bounds it.
 - **`NODUS_V2_APPLY_MAX_OPS`** := their SUM, **17 371** after delta 2 (14 172 for the hours delta 1 tied the envelope bound to the governance hard cap of 10) — kept as the engine's release-resource bound and as a mixed, defense-in-depth cap at the Comet application's two proposal gates, now redundant in practice once the per-class caps below hold.
 
@@ -2427,7 +2427,7 @@ Delta 1 derived `NODUS_V2_ENV_BATCH_MAX` FROM the chain-config governance parame
 
 **Governance (`dnac/include/dnac/dnac.h`, `nodus_witness_chain_config.c`):** parameter id 1 (`DNAC_CFG_MAX_TXS_PER_BLOCK`) keeps its enumerator (ids never renumber — 2-4 stay BLOCK_INTERVAL_SEC/INFLATION_START_BLOCK/TARGET_ACTIVE_COUNT) marked `/* RETIRED */`; `DNAC_CFG_MAX_TXS_HARD_CAP` is deleted from `dnac.h` and its `nodus_witness_chain_config.c` mirror (`CC_MAX_TXS_HARD_CAP`); `nodus_chain_config_scalar_rules` and `nodus_chain_config_grace_for_param` both refuse id 1 unconditionally (the latter returns `UINT64_MAX` defensively, since its return type cannot express "refuse"); the CLI's `chain-config propose` name table and usage text lose the `MAX_TXS_PER_BLOCK` row entirely. **BLOCKED AT DELTA 2 TIME, RESOLVED IN DELTA 3 (do not read the rest of this paragraph as current):** at delta 2, `dnac/src/transaction/verify.c:404/439-444` (the CLIENT-side mirror of this SAME scalar rule, `dnac_tx_verify_chain_config_rules`) and `dnac/tests/test_chain_config_verify.c` / `test_chain_config_serialize.c` still accepted id 1 in `[1,10]` and still referenced `DNAC_CFG_MAX_TXS_HARD_CAP` directly — outside delta 2's whitelist (which named only the witness-side `nodus_witness_chain_config.c`), so the macro was kept defined rather than deleted, deviating from delta 2's own dispatch instruction, specifically so those out-of-whitelist files kept compiling. **Delta 3 closed this**, once its own whitelist was extended to include exactly those files: `verify.c:447-459`'s `DNAC_CFG_MAX_TXS_PER_BLOCK` case now logs "is retired" and returns `DNAC_ERROR_INVALID_PARAM` unconditionally (no range check against the cap at all), `DNAC_CFG_MAX_TXS_HARD_CAP` is DELETED from `dnac.h` (grep + `atlas_code_impact` both confirmed zero remaining consumers), and both `dnac/tests/test_chain_config_*` files were updated to stop referencing the retired id and the deleted macro. No client-vs-witness inconsistency remains.
 
-**The engine (`nodus_witness_v2_apply.c`, `nodus_witness_v2_apply.h`, `nodus_witness_v2_env.h`, `nodus_witness_v2_env.c`):** the "global tx-count cap (chain config)" block and its `nodus_chain_config_get_u64` read are DELETED (per-domain tx quotas, an unrelated committed-manifest policy, are UNCHANGED). `NODUS_V2_ENV_BATCH_MAX` moves from `nodus_witness_v2_env.h` to `nodus_witness_v2_apply.h` (env.h no longer needs `dnac/dnac.h` at all) and is re-derived from a MEMORY budget instead of a governance value: `NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES` = 64 MiB (a release resource choice, the same class as the W3 receive arena's own 64 MiB — NOT the same class as `NODUS_V2_GLOBAL_UNIT_BUDGET`, which decides block validity and is a consensus value: 1 000 000 until 2026-09-24, then 2 097 152 by operator decision, see the block-capacity section below) divided by `NODUS_V2_APPLY_ENV_COST_BYTES` = `sizeof(dna_env_preflight_t)` (15 096 B, MEASURED) + `sizeof(dna_meter_t)` (audited ceiling ≤ 4 096 B) + 2 × `sizeof(nodus_rt_auth_verdict_t)` (966 B each, computed exactly from `NODUS_RT_AUTH_MAX_SIGNERS`=15's layout — no padding) + 2 × 64 B (two `wire_ids` entries) — "two" because no shipped runtime op produces a leg count other than 1 or 2 (every cross-domain op in `nodus_witness_rt_native.c` hard-refuses any `leg_count` but 2; there is no third registered domain). Result: `NODUS_V2_ENV_BATCH_MAX` = **3 209**, MEASURED (`NODUS_V2_APPLY_ENV_COST_BYTES` = 20 908 B, from the compiler's own `sizeof(dna_meter_t)` = 3 752 on this build; 67 108 864 / 20 908 = 3 209, ORC-3, delta 2's build-verified pins). 3 157 is NOT a second live value — it is only the WORST-CASE FLOOR this bound is `_Static_assert`-proven to clear even under `sizeof(dna_meter_t)`'s AUDITED ceiling (≤ 4 096 B, never actually reached on any build), a bound-on-a-bound, not an alternate measurement. Both 3 209 and the 3 157 floor are `_Static_assert`-PROVEN above 3 002, the most AUTHORIZABLE envelopes (73 B header + ≥41 B call + 7 220 B kind-1 ML-DSA-87 auth = 7 334 B each) this chain's own default `Block.MaxBytes` (22 020 096) could ever carry, so the memory ceiling is provably never the binding constraint in practice — the operator's decision's own requirement. Every per-block scratch array delta 1 already moved to the heap needed NO further change (already sized by the block's real counts); one PRODUCTION site (`nodus_witness_v2_env.c`'s block-byte-admission `lens[NODUS_V2_ENV_BATCH_MAX]`) and several TEST-file stack arrays sized by the literal constant were found and converted (heap or a small test-local cap) — the same class of stack risk delta 1 fixed for claims now recurring for envelopes, since the constant itself moved from a small governed number (10) to a memory ceiling in the thousands.
+**The engine (`nodus_witness_v2_apply.c`, `nodus_witness_v2_apply.h`, `nodus_witness_v2_env.h`, `nodus_witness_v2_env.c`):** the "global tx-count cap (chain config)" block and its `nodus_chain_config_get_u64` read are DELETED (per-domain tx quotas, an unrelated committed-manifest policy, are UNCHANGED). `NODUS_V2_ENV_BATCH_MAX` moves from `nodus_witness_v2_env.h` to `nodus_witness_v2_apply.h` (env.h no longer needs `dnac/dnac.h` at all) and is re-derived from a MEMORY budget instead of a governance value: `NODUS_V2_APPLY_SCRATCH_BUDGET_BYTES` = 64 MiB (a release resource choice, the same class as the W3 receive arena's own 64 MiB — NOT the same class as `NODUS_V2_GLOBAL_UNIT_BUDGET`, which decides block validity and is a consensus value: 1 000 000 until 2026-09-24, then 2 097 152 by operator decision, see the block-capacity section below — and, until HF-3's activation height only; from it the global and quota-0 domain budgets are unbounded, see "HF-3") divided by `NODUS_V2_APPLY_ENV_COST_BYTES` = `sizeof(dna_env_preflight_t)` (15 096 B, MEASURED) + `sizeof(dna_meter_t)` (audited ceiling ≤ 4 096 B) + 2 × `sizeof(nodus_rt_auth_verdict_t)` (966 B each, computed exactly from `NODUS_RT_AUTH_MAX_SIGNERS`=15's layout — no padding) + 2 × 64 B (two `wire_ids` entries) — "two" because no shipped runtime op produces a leg count other than 1 or 2 (every cross-domain op in `nodus_witness_rt_native.c` hard-refuses any `leg_count` but 2; there is no third registered domain). Result: `NODUS_V2_ENV_BATCH_MAX` = **3 209**, MEASURED (`NODUS_V2_APPLY_ENV_COST_BYTES` = 20 908 B, from the compiler's own `sizeof(dna_meter_t)` = 3 752 on this build; 67 108 864 / 20 908 = 3 209, ORC-3, delta 2's build-verified pins). 3 157 is NOT a second live value — it is only the WORST-CASE FLOOR this bound is `_Static_assert`-proven to clear even under `sizeof(dna_meter_t)`'s AUDITED ceiling (≤ 4 096 B, never actually reached on any build), a bound-on-a-bound, not an alternate measurement. Both 3 209 and the 3 157 floor are `_Static_assert`-PROVEN above 3 002, the most AUTHORIZABLE envelopes (73 B header + ≥41 B call + 7 220 B kind-1 ML-DSA-87 auth = 7 334 B each) this chain's own default `Block.MaxBytes` (22 020 096) could ever carry, so the memory ceiling is provably never the binding constraint in practice — the operator's decision's own requirement. Every per-block scratch array delta 1 already moved to the heap needed NO further change (already sized by the block's real counts); one PRODUCTION site (`nodus_witness_v2_env.c`'s block-byte-admission `lens[NODUS_V2_ENV_BATCH_MAX]`) and several TEST-file stack arrays sized by the literal constant were found and converted (heap or a small test-local cap) — the same class of stack risk delta 1 fixed for claims now recurring for envelopes, since the constant itself moved from a small governed number (10) to a memory ceiling in the thousands.
 
 **The application (`nodus_witness_cmt_app.c`):** the envelope class cap becomes `min(ctx->env_bound, NODUS_V2_ENV_BATCH_MAX)` (matching the claim cap's own `min()` shape) at both PrepareProposal and ProcessProposal; the derived-bounds INFO log line reports the engine's raw ceiling AND the effective (min'd) cap separately.
 
@@ -2875,11 +2875,14 @@ recipient).
 
 ### Block capacity (2026-09-24, nodus 0.19.71)
 
-A block is bounded by three things: cometbft's `Block.MaxBytes`
-(22 020 096), the meter policy's `max_block_env_bytes` (2 MiB =
-2 × `DNA_ENV_MAX_TOTAL_LEN`, `nodus_witness_runtime.c` sys_policy_build)
-and the per-block unit budget `NODUS_V2_GLOBAL_UNIT_BUDGET`
-(`nodus_witness_v2_apply.h`). PrepareProposal reserves each envelope's
+Until HF-3's activation height, a block is bounded by three things:
+cometbft's `Block.MaxBytes` (22 020 096), the meter policy's
+`max_block_env_bytes` (2 MiB = 2 × `DNA_ENV_MAX_TOTAL_LEN`,
+`nodus_witness_runtime.c` sys_policy_build) and the per-block unit budget
+`NODUS_V2_GLOBAL_UNIT_BUDGET` (`nodus_witness_v2_apply.h`). From that
+height (chain-config param 8, "HF-3" below) the 2 MiB bound is not
+checked and the global and quota-0 domain unit budgets are unbounded —
+`Block.MaxBytes` and `NODUS_V2_ENV_BATCH_MAX` remain. PrepareProposal reserves each envelope's
 WHOLE declared `res_max_total_units` against the budget before any is
 finalized (`nodus_witness_v2_env.c` sequential reservation), so the
 declared ceiling, not the work done, decides how many fit.
@@ -2888,7 +2891,10 @@ declared ceiling, not the work done, decides how many fit.
   `docs/plans/decisions/2026-09-24-block-capacity-trial-b.md`): equal to
   the 2 MiB envelope byte bound — every metering weight is 1, so a unit
   is about a byte and the two bounds sit together. Consensus value:
-  devnet wipe + stop-all.
+  devnet wipe + stop-all. It holds until HF-3's activation height; from
+  it the global budget and every quota-0 domain's budget are unbounded
+  (a non-zero domain quota stays a bound), so the per-block counts
+  below (255 by units, 276 by bytes) are the pre-HF-3 limits.
 - **Exact effect declaration in `nodus-cli v2-envelope spend`**
   (`t6_spend_effect_decl`, since web wallet package (c2)
   `nodus_v2_spend_effect_decl` in `src/client/nodus_v2_spend.c`): a CORE SPEND emits one CREATE per output
@@ -2954,6 +2960,9 @@ FLAKY: only the proposer chooses the transactions).
    the SAME authority the seam uses — `nodus_witness_v2_block_ctx_build`
    → the SYSTEM runtime's sealed meter policy → `max_block_env_bytes` —
    never hard-coded, so a repinned policy moves both sides together.
+   (From HF-3's activation height the context's `hf3_active` makes this
+   bound `UINT64_MAX` and the seam skips its byte step — the same
+   authority still decides both sides; see "HF-3" below.)
    It is applied in the SAME single tail-trim pass as `max_tx_bytes`:
    the pass sums the wire length of ENVELOPE entries only (the seam's
    exact measure — `view.env_len`, which equals the entry length for
@@ -2981,7 +2990,9 @@ FLAKY: only the proposer chooses the transactions).
 **The invariant.** PrepareProposal applies every byte bound the engine
 enforces before the seam runs; the seam is the check that what is
 proposed will apply, not the tool that shapes it. Derived from the
-figures in "Block capacity" above, not measured: at the 1-in/1-out
+figures in "Block capacity" above, not measured, and valid below HF-3's
+activation height only (from it neither the 2 MiB byte bound nor the
+CORE unit budget binds): at the 1-in/1-out
 spend (8 221 units, ≈ 7.6 KB) the byte trim keeps ≈ 276, the seam then
 refuses on units at ≈ 255 and the loop truncates there once — two seam
 runs per PrepareProposal, whatever the mempool holds.
@@ -3508,6 +3519,198 @@ same bytes lands on identical roots, update hashes and consensus tables);
 ERGONOMIC grace, the H−1/H read boundary, its own cache slot); `test_cc_appr`
 `hf2_bad_value_refused` / `hf2_legal_signs` (the responder). No Genesis Protocol
 scenario (out of scope for this package).
+
+### HF-3 — Comet-only block bounds + proposal fee/replay check, the third height-activated hard fork (2026-10-02, code only — not versioned, not deployed)
+
+**Governing records:** design `docs/plans/2026-10-01-hf3-comet-block-bounds-design.md`
+(local; rev 3, with the round-2 Fable findings and rule 6b folded in), decision
+`docs/plans/decisions/2026-10-01-hf3-comet-only-block-bounds.md` (APPROVED by the
+operator 2026-10-02; items 1-5 and operator answers 6-12). The decision applies the
+approved records D-25 rev 3 and D-4 rev 3 (`docs/plans/atlas-export/APPROVED-decisions.md`
+— in the Comet lane a block is bounded by cometbft's ConsensusParams only, and the
+2 MiB envelope budget has no effect) on the live testnet, where a validity change is a
+height-activated hard fork (`2026-09-23-height-activated-upgrades-before-testnet.md`).
+A node that misses the vote: `2026-09-26-hard-fork-lagging-node.md`. The activation
+procedure is HF-1's (`DEPLOY_RUNBOOK.md` §2.2, "HF-3" there).
+
+**Why.** Two per-block bounds in the ledger have no reference behind them: the SYSTEM
+meter policy's `max_block_env_bytes = 2u * DNA_ENV_MAX_TOTAL_LEN` (2 MiB,
+`nodus_witness_runtime.c` `sys_policy_build`) and the unit budget
+`NODUS_V2_GLOBAL_UNIT_BUDGET` 2 097 152 (`nodus_witness_v2_apply.h`), which a quota-0
+domain also takes as its per-domain budget. Deleting the 2 MiB field from the policy
+would change the SYSTEM ruleset identity (the policy digest is committed in the
+descriptor) and no live identity-change path is wired, so the field STAYS in the sealed
+policy, byte for byte — from H it is simply not checked (decision items 3 and 5: it is
+removed with the first SYSTEM identity change). `NODUS_V2_GLOBAL_UNIT_BUDGET` stays too:
+it is the rule below H.
+
+**The parameter.** Chain-config id 8, `HF3_ACTIVE` (`DNAC_CFG_HF3_ACTIVE`,
+`dnac/include/dnac/dnac.h`; `CC_PARAM_HF3_ACTIVE`, `nodus_witness_chain_config.c`,
+pinned by `_Static_assert`, as is `CC_HF3_ACTIVE_ON` to `DNAC_CFG_HF3_ACTIVE_ON`). Value
+domain EXACTLY 1 (`DNAC_CFG_HF3_ACTIVE_ON`) — the HF-2 one-way switch: 0 and every other
+value are refused by `nodus_chain_config_scalar_rules` and by the client mirror
+(`dnac/src/transaction/verify.c` `verify_chain_config_rules`). Grace class ERGONOMIC
+(`DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS`, 720 in a default build) through its OWN
+`case CC_PARAM_HF3_ACTIVE` in `nodus_chain_config_grace_for_param` — an explicit return,
+not the `default:` branch, so a later change to the default class cannot move this
+switch's grace. `DNAC_CFG_PARAM_MAX_ID` / `CC_PARAM_MAX_ID` 7 → 8; id 8 is on
+`dnac_cfg_param_read_by_consensus` (the read list is now {4, 5, 6, 7, 8}). Voted like
+every parameter (`nodus-cli chain-config propose --param HF3_ACTIVE --value 1
+--effective <H>`; `HF3_ACTIVE` / `hf3_active` in the CLI's name table). The lookup is
+`effective_block <= height`, so every HF-3 rule is ON from block H itself.
+
+**The read — once per block-start context.** `env_hf3_active` (`nodus_witness_v2_apply.c`,
+static) is `env_hf2_active` statement for statement over param 8: the three-valued
+`nodus_chain_config_get_u64` with default 0; no active row = OFF; a read fault, or a
+stored value other than 0/1 (which no writer can produce), is a node FAULT (-2), never
+"off". Its ONE caller is `block_ctx_from_doms`, which now takes `w` and the `height` of
+the block the context judges and reads the switch FIRST (so a faulting node abstains
+before judging anything else) into `nodus_witness_v2_block_ctx_t.hf3_active`. Every
+consumer takes the switch from that field; none re-reads it (design D2). The height
+each caller passes (design D1 groups them into four sources):
+- CheckTx dry run — `env_item_setup` builds at `s->height` = committed tip + 1;
+- PrepareProposal's pack — `nodus_cmt_app_prepare_proposal` now reads the committed tip
+  itself (`nodus_witness_v2_tip_height`) and builds at tip + 1; an unreadable tip is a
+  node fault (-2 → `CMT_FAULT`);
+- the capacity seam — `produce_batch_check_impl` (`nodus_witness_v2_produce.c`) builds at
+  `candidate` = tip + 1; this is the ONE path both PrepareProposal's drop loop and
+  ProcessProposal reach, so the two judge under one switch;
+- FinalizeBlock — `v2_apply_block_body` builds at `blk->global_height` (the request's
+  height; a mismatch with the local head is already classified by phase 0 — HF-3 adds no
+  class there);
+- and two callers that use only the ruleset table: `nodus_cmt_app_entry_identity` (tip +
+  1) and the chain-config approval responder `cc_appr_verdict` (`h` = tip + 1).
+
+**What changes from H** (numbered as the design's §0):
+1. *The envelope-byte bound is not checked.* The seam
+   `nodus_witness_v2_env_preflight_reserve_batch` gains `int skip_byte_bound`; nonzero
+   skips step 4b entirely (no sum, no allocation, never `ERR_BLOCK_BYTES`). Its one
+   production caller passes `(int)bctx->hf3_active`. PrepareProposal's
+   `max_env_bytes` becomes `UINT64_MAX` (never 0 — 0 is its own FAULT gate and a -1 in
+   `nodus_witness_v2_block_bytes_check`), so neither the pack's trim nor the
+   chain_config-alone candidate's length test fires. Prepare and Process therefore lift
+   the bound together. The block is then bounded by cometbft's `Block.MaxBytes`
+   (22 020 096) — every validator refuses parts beyond it (`shared/dnac/cmt_cs.c`) — and
+   by `NODUS_V2_ENV_BATCH_MAX` (3 075), both unchanged.
+2. *The global unit budget is unbounded.* `block_ctx_from_doms` sets
+   `ctx->budget.global_unbounded = ctx->hf3_active`.
+3. *Every quota-0 domain's unit budget is unbounded.* Each domain slot gets
+   `unbounded = (hf3_active && quota_verify_cost == 0)`. Without this the fork would lift
+   nothing — CORE (quota 0) would still cap a block at about 255 spends (design F1).
+4. *A non-zero units quota stays a block bound* (decision answer 9): such a slot keeps
+   `unbounded = 0` and its real budget, and the seam is all-or-nothing — a
+   `DOMAIN_BUDGET` refusal is `CAPACITY_UNITS` → ProcessProposal REJECT, exactly as
+   today. No code beyond the line in rule 3; unreachable today (genesis quotas are 0).
+5. *NEW validity rule — `res_max_total_units` ≤ `INT64_MAX`* (decision answer 10;
+   `nodus_witness_v2_units_ceiling_check`). The declared ceiling becomes the item's
+   `gas_wanted`, and the reference's gas is `int64`. Refusal = item code **5
+   `NODUS_V2_TX_ERR_CAPACITY`** (the code the same envelope gets below H from the global
+   budget). Three sites, each only when its context's `hf3_active` is 1: the CheckTx dry
+   run (after the gas price, before the reservation); the FinalizeBlock item loop (after
+   the gas price, before the reservation, so a refused item keeps `gas_wanted = gas_used
+   = 0`); the seam (below). It is reachable only where the gas-price rule does not
+   already price the ceiling (price 0 or 1, or an all-SYSTEM envelope). Without it a
+   post-H ceiling above `INT64_MAX` would turn negative in FinalizeBlock's deterministic
+   result field (`r->det.gas_wanted = (int64_t)e->gas_wanted`, `nodus_witness_cmt_app.c`)
+   — deterministic, no split (design §0 rule 5), but outside the reference's type.
+6. *The proposal is fee-checked and replay-checked* (decision answers 6 and 12). In
+   `produce_batch_check_impl`, after a reservation-clean seam run and before `pf` /
+   `meters` / `bctx` are freed, when `bctx->hf3_active`: the gas price is read ONCE at
+   `candidate` (`nodus_witness_v2_gas_price_at`), then for every envelope in batch order
+   — the item loop's own order — (6b) `nodus_witness_v2_replay_guard` (intent id already
+   in the committed intent index, or wire id in the committed tx index), (6)
+   `nodus_witness_v2_gas_price_judge`, (5) `nodus_witness_v2_units_ceiling_check`. A
+   refusal is `rc -1`, kind `NODUS_V2_BATCH_FAIL_ENTRY_INVALID`, `*fail_index_out` = that
+   envelope's index in the request (the raw seam statuses stay at their OK values), so
+   PrepareProposal's drop loop excludes it and ProcessProposal REJECTs a block carrying
+   it. An unreadable price or replay index is `rc -2`, kind `NODUS_V2_BATCH_FAIL_FAULT`.
+   In-batch duplicates were already refused by the seam's own dedup. Claims are
+   unchanged (no fee field). The three halves are the engine's own code, exported, not
+   copies: `env_gas_price_check` is now exactly `_gas_price_at` then `_gas_price_judge`,
+   and `env_replay_guard` is a one-line wrapper over `nodus_witness_v2_replay_guard` —
+   so the CheckTx dry run, the item loop and the seam cannot judge one envelope
+   differently. Honest proposers never hit it: the dry run prices before the
+   authorization reuse, and the port's recheck after every block is synchronous and
+   complete (design §0.2), so the mempool holds no envelope underpaid at the next height.
+
+**The "unbounded" flag — exact rule** (`shared/dnac/res_meter.{h,c}`, design §0.1).
+`dna_meter_budget_t.global_unbounded` and `dna_meter_domain_budget_t.unbounded`, each 0 or
+1 (`dna_meter_budget_check` now refuses any other byte). A flagged remainder is not a
+bound: `dna_meter_reserve`, the charges, `dna_meter_finalize` and `dna_meter_abort`
+neither read nor write that slot's `global_remaining` / `remaining_units` and evaluate
+no arithmetic on it — so it can neither refuse (`ERR_GLOBAL_BUDGET` /
+`ERR_DOMAIN_BUDGET`) nor overflow, even at a `UINT64_MAX` ceiling. Everything the meter
+itself records — `g_reserved`, `g_consumed`, `dom_dyn`, `dom_consumed`, the released
+amounts, the CEILING / LIMIT gates — is computed exactly as for an unflagged slot (the
+dynamic claim `dom_dyn` must still grow past the static share, or the next charge or
+finalize would FAULT at the first post-H spend; design R2-1). Both fields sit in what was
+struct padding, so neither struct changed size. A flag, not a `UINT64_MAX` start value:
+"no cap" is explicit, and rule 5 bounds what one envelope can declare. With the per-block
+SUM unbounded, the engine's per-domain consumed-unit accounting relies on its checked add
+(a wrap is a node FAULT, never a silently wrong `res_cost`).
+
+**Not closed — accepted (F6 class).** The seam checks the DECLARED fee and committed
+replay only. A Byzantine proposer can still fill a block with envelopes that declare a
+sufficient fee but cannot pay it, are unauthorizable, or fail execution — solvency and
+authorization are known only by executing. They pay nothing (refused per item) and cost
+every validator their verification in FinalizeBlock — with up to ~3 000 envelopes in a
+post-H block (decision answer 12; design §2, F6).
+
+**Byte-identical while off.** With no param-8 row: `hf3_active` = 0, both flags 0
+(zeroed memory = the pre-HF-3 budget arithmetic), `skip_byte_bound` = 0 (step 4b runs as
+before), PrepareProposal's bound is the policy's `max_block_env_bytes`, and the seam's
+HF-3 block does not run (running the fee check below H would change ProcessProposal
+validity without an activation height). The dry-run and item-loop rule 5 is gated on the
+same field. So a chain without the vote decides every block as the pre-HF-3 binary does.
+
+**Honest labels.**
+- *Liveness at ~3 000 envelopes per block is NOT measured* (decision "Sonuçlar"; operator:
+  no measurement). Live run 4 (0.19.79) put EU-2 at 88 % of one core at 212 envelopes
+  per block. A validator that cannot finish a block in time falls behind; more than 1/3
+  of the power behind = no commits. A full 21 MB block ≈ 22 020 096 units × 121 raw ≈
+  26.6 NODUS of fees — arithmetic, not a measurement.
+- *Pre-vote measurements are deploy steps, not done here* (decision answer 11; design
+  §2): fsync + PrepareProposal at 336 block parts (PrepareProposal runs after the propose
+  timer is armed and each internal part message is WAL-fsync'd before the first is
+  gossiped), and FinalizeBlock time at ~3 000 envelopes. The round-2 advisor's ≈ 80 s per
+  block figure is UNVERIFIED arithmetic from old-binary numbers.
+- *Propose timing*: 22 MB over one link at 5 120 000 B/s takes ≥ 4.3 s, longer than
+  `timeout_propose` in rounds 0-2 — a validator fed by a single link may prevote nil, so
+  a full-mesh check precedes the vote (design R4-5; runbook).
+- *An old binary splits at the VOTE's block*, not at H: it does not know id 8, refuses
+  the vote's item and still commits the block — the HF-1 lagging-node rule; recovery =
+  wipe + genesis-pin rejoin on the new binary.
+- *Early vote (R3-2) is accepted* (decision answer 7): any seat on the new binary can
+  propose param 8 at a height the operator did not pick; today all 7 seats are the
+  operator's.
+- *No governance knob lowers `Block.MaxBytes`* — the application sends no
+  `consensus_param_updates`; reverting HF-3 is another hard fork.
+- *A fresh chain starts HF-3 OFF*; HF-3 needs its vote.
+
+**Tests** (written; run by the ORCHESTRATOR): `test_v2_apply` `test_hf3_engine` (the
+engine and the seam at H−1 vs H over N large envelopes, N derived from the fixture's
+`env_len`, asserting applied bytes > 2 MiB AND count > 255 at H; zero code-9 items in a
+seam-accepted block; rule 5 at the dry run, the seam and the item loop; the
+recheck-across-a-price-change pin; twin-chain root + results identity); `test_cmt_app`
+`t_hf3_bounds_and_fee` (Prepare/Process at H−1 vs H over N envelopes, N from the measured
+`env_len`, byte sum > 2 MiB AND count > 255 asserted from what Prepare kept; the proposal
+fee check — price 0 off, underpaid REJECT / dropped, all-SYSTEM exempt, no check below H;
+rule 5 — `INT64_MAX` accepted, `INT64_MAX + 1` REJECTed; rule 4 — a non-zero units quota
+still refuses; an unreadable price = FAULT); `test_res_meter` `test_hf3_unbounded_flags`
+(the struct sizes unchanged; flagged reserve + abort at the `UINT64_MAX` and
+`INT64_MAX + 1` ceilings; charges past twice the static share, then finalize, then
+abort — design R2-1; a bounded domain beside a flagged global — rule 4); `test_v2_env_meter` case 9b-HF3 (the same
+over-bound batch refused with `skip_byte_bound` 0, accepted with 1, the budget restored
+by abort); `test_chain_config_witness` Test 11 (id 8 on the read list, value 1 only,
+ERGONOMIC grace, the H−1/H read boundary, its own cache slot); `test_v2_gas_price` (the
+allowlist's new top); `dnac/tests/test_chain_config_verify.c` cases 5a/5b (the client
+mirror, the read list {4, 5, 6, 7, 8}). Harness `test_cmt_hf3_block_bounds.sh`
+(standalone, two binaries — `nodus/tests/integration/stagef/README.md`; **written against
+the source, NOT yet run**): the ACTIVATION on a fleet already running HF-2 (rolling OLD →
+NEW with 7/7 after every step, the param-8 vote, crossing H with real spends). It does
+NOT exercise the capacity lift, the proposal checks, rule 4 or rule 5 (the unit tests
+above do) and does not perform the pre-vote measurements; block size is reported, never
+asserted.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
@@ -4543,9 +4746,10 @@ every ≈ 4-5 s with demand, or ≈ 60 s idle (tokenomics-v3 P1, D-4 — attenda
 is out-of-root, so an empty block no longer forces the ≈ 6 s "proof block"
 pace; see MEMPOOL_BLOCK_TIME.md), the round's PROPOSER (weighted round-robin over the frozen epoch validator set):
   PrepareProposal (fee-descending, chain_config alone, byte budgets
-                   (max_tx_bytes + the policy's max_block_env_bytes),
-                   per-class caps: envelopes <= 3 209 (memory ceiling),
-                   claims <= 14 162 (cometbft byte ceiling), mixed <= 17 371)
+                   (max_tx_bytes + the policy's max_block_env_bytes —
+                   the latter below HF-3's activation height only),
+                   per-class caps: envelopes <= 3 075 (frozen literal),
+                   claims <= 14 162 (cometbft byte ceiling), mixed <= 17 237)
   → Proposal + BlockParts (verbs 35/36) → Prevote → Precommit (verb 37) → +2/3
   → FinalizeBlock (the Ledger V2 apply engine, per-item SAVEPOINTs) → Commit (SQL COMMIT)
   → the next height

@@ -239,7 +239,11 @@ static int produce_batch_check_impl(
             rc_out = -2;
             goto done;
         }
-        int bcrc = nodus_witness_v2_block_ctx_build(w, bctx);
+        /* HF-3 D1 (c): built at `candidate` (tip + 1), the height this
+         * batch would be included at — the context's hf3_active is then
+         * the switch both PrepareProposal's drop loop and
+         * ProcessProposal judge under. */
+        int bcrc = nodus_witness_v2_block_ctx_build(w, candidate, bctx);
         if (bcrc != 0) {
             /* -1 (SYSTEM unusable) is a chain-state condition no entry in
              * this batch caused, and -2 is a node-local read failure.
@@ -268,8 +272,77 @@ static int produce_batch_check_impl(
         nodus_v2_env_status_t est =
             nodus_witness_v2_env_preflight_reserve_batch(
                 w, candidate, bctx->rulesets, bctx->n_rulesets,
-                bctx->policy, &bctx->budget, envs, (size_t)n_env,
-                pf, meters, &fail_i, &pst, &mst);
+                bctx->policy, &bctx->budget, (int)bctx->hf3_active,
+                envs, (size_t)n_env, pf, meters, &fail_i, &pst, &mst);
+
+        /* ── HF-3 (design 2026-10-01-hf3-comet-block-bounds-design.md
+         * §0.2, decision answers 6 and 10): from the HF-3 height the
+         * proposal itself is fee-checked, and every declared ceiling must
+         * fit int64 — the SAME two rules the CheckTx dry run and the
+         * FinalizeBlock item loop apply (nodus_witness_v2_gas_price_judge,
+         * nodus_witness_v2_units_ceiling_check), here over every envelope
+         * of a reservation-clean batch, in batch order. The price is
+         * read ONCE per seam run, at `candidate`; the views live in `pf`,
+         * so this runs BEFORE the frees below. Below the HF-3 height this
+         * block does not run at all (adding it there would change
+         * ProcessProposal validity without an activation height). This
+         * path is the ONE both PrepareProposal (drop loop) and
+         * ProcessProposal reach, so the two cannot disagree.
+         * RULE 6b (decision answer 12): every envelope also passes the
+         * item loop's own committed-replay guard
+         * (nodus_witness_v2_replay_guard) — an intent or wire id already
+         * committed is ENTRY_INVALID at its index; a read fault is a
+         * FAULT. PER ENVELOPE the order is the item loop's and the dry
+         * run's: replay, then the gas price, then the ceiling (rule 5),
+         * so the seam names the same first refusal the item loop would
+         * record. The one price read precedes the loop (a fault there is
+         * a FAULT for the whole run, as any read fault is). In-batch
+         * duplicates are already refused by the seam's own dedup. ───── */
+        int hf3_rc = 0;                  /* 0 / -1 verdict / -2 fault     */
+        size_t hf3_i = 0;
+        if (est == NODUS_V2_ENV_OK && bctx->hf3_active) {
+            char     why[256];
+            uint64_t price = 0;
+            uint32_t code = 0;
+
+            why[0] = '\0';
+            if (nodus_witness_v2_gas_price_at(w, candidate, &price, why,
+                                              sizeof why) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "batch pre-check: %s", why);
+                hf3_rc = -2;
+            }
+            for (size_t i = 0; hf3_rc == 0 && i < (size_t)n_env; i++) {
+                int hit = 0;
+
+                if (nodus_witness_v2_replay_guard(w, &pf[i], i, &hit, why,
+                                                  sizeof why) != 0) {
+                    QGP_LOG_ERROR(LOG_TAG, "batch pre-check: %s", why);
+                    hf3_rc = -2;
+                    break;
+                }
+                if (hit) {
+                    QGP_LOG_WARN(LOG_TAG, "batch pre-check: HF-3 refused "
+                                 "envelope %zu: its intent or wire id is "
+                                 "already committed (replay)", i);
+                    hf3_rc = -1;
+                    hf3_i  = i;
+                    break;
+                }
+                if (nodus_witness_v2_gas_price_judge(&pf[i].view, price,
+                                                     &code, why,
+                                                     sizeof why) != 0 ||
+                    nodus_witness_v2_units_ceiling_check(&pf[i].view,
+                                                         &code, why,
+                                                         sizeof why) != 0) {
+                    QGP_LOG_WARN(LOG_TAG, "batch pre-check: HF-3 refused "
+                                 "envelope %zu (code %u): %s", i,
+                                 (unsigned)code, why);
+                    hf3_rc = -1;
+                    hf3_i  = i;
+                }
+            }
+        }
+
         /* The reservations die with the scratch budget: `meters` is a
          * local array bound to `bctx->budget`, both freed below, and the
          * seam already restored the budget byte-identically on any
@@ -277,6 +350,29 @@ static int produce_batch_check_impl(
         free(pf);
         free(meters);
         free(bctx);
+
+        if (hf3_rc == -2) {
+            /* the price or a replay index is unreadable on THIS node:
+             * no verdict */
+            if (result_out) result_out->kind = NODUS_V2_BATCH_FAIL_FAULT;
+            rc_out = -2;
+            goto done;
+        }
+        if (hf3_rc == -1) {
+            /* a property of that envelope's own bytes at this height:
+             * the drop loop excludes it, ProcessProposal REJECTs. The
+             * raw seam statuses stay at their OK values — the seam
+             * itself accepted the batch. */
+            if (fail_index_out) *fail_index_out = env_idx[hf3_i];
+            if (result_out) {
+                result_out->kind         = NODUS_V2_BATCH_FAIL_ENTRY_INVALID;
+                result_out->env_status   = NODUS_V2_ENV_OK;
+                result_out->pf_status    = DNA_ENV_PF_OK;
+                result_out->meter_status = DNA_METER_OK;
+            }
+            rc_out = -1;
+            goto done;
+        }
 
         if (est != NODUS_V2_ENV_OK) {
             nodus_v2_batch_fail_kind_t kind =

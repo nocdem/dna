@@ -766,7 +766,7 @@ static int test_meter_authority(void) {
         bud.dom[1].domain_id = 1;
         bud.dom[1].remaining_units = stat - 1;   /* ONE UNIT SHORT     */
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(fe.w, 1, rs, 2,
-                  pol, &bud, &ve, 1, pf, m, NULL, NULL, &ms)
+                  pol, &bud, 0, &ve, 1, pf, m, NULL, NULL, &ms)
                   == NODUS_V2_ENV_ERR_METER &&
               ms == DNA_METER_ERR_DOMAIN_BUDGET,
               "one unit short was not ERR_DOMAIN_BUDGET"); OK();
@@ -775,7 +775,7 @@ static int test_meter_authority(void) {
 
         bud.dom[1].remaining_units = stat;       /* EXACT FIT          */
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(fe.w, 1, rs, 2,
-                  pol, &bud, &ve, 1, pf, m, NULL, NULL, &ms)
+                  pol, &bud, 0, &ve, 1, pf, m, NULL, NULL, &ms)
                   == NODUS_V2_ENV_OK, "exact fit rejected");
         CHECK(bud.dom[1].remaining_units == 0,
               "exact fit did not drain the entry"); OK();

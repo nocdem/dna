@@ -576,7 +576,39 @@ typedef enum {
                                           *   DNAC_CFG_HF2_ACTIVE_ON (1)
                                           *   — there is no "off" vote;
                                           *   grace class ERGONOMIC. */
-    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_HF2_ACTIVE
+    DNAC_CFG_HF3_ACTIVE            = 8,  /**< HF-3 (design docs/plans/
+                                          *   2026-10-01-hf3-comet-
+                                          *   block-bounds-design.md
+                                          *   rev 3; decision docs/
+                                          *   plans/decisions/2026-10-
+                                          *   01-hf3-comet-only-block-
+                                          *   bounds.md): the one-way
+                                          *   switch of the third
+                                          *   height-activated hard
+                                          *   fork. From the row's
+                                          *   effective_block on, a
+                                          *   block is bounded by the
+                                          *   cometbft consensus
+                                          *   params only: the 2 MiB
+                                          *   envelope-byte bound is
+                                          *   not checked, the global
+                                          *   unit budget and every
+                                          *   quota-0 domain's unit
+                                          *   budget are unbounded, a
+                                          *   declared
+                                          *   res_max_total_units
+                                          *   above INT64_MAX is
+                                          *   refused, and
+                                          *   ProcessProposal runs the
+                                          *   HF-1 gas-price rule on
+                                          *   every envelope. No row =
+                                          *   every rule as before
+                                          *   (byte-identical). Value
+                                          *   domain EXACTLY
+                                          *   DNAC_CFG_HF3_ACTIVE_ON (1)
+                                          *   — there is no "off" vote;
+                                          *   grace class ERGONOMIC. */
+    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_HF3_ACTIVE
 } dnac_chain_config_param_id_t;
 
 /** The chain-config parameters the RUNNING consensus reads — the one list
@@ -600,7 +632,12 @@ typedef enum {
  *    - HF2_ACTIVE (7, HF-2): nodus_witness_v2_apply.c env_hf2_active
  *      (the engine reads it into nodus_rt_exec_ctx_t.hf2_active — the
  *      SYSTEM CHAIN_CONFIG exec's approval rule — and itself for
- *      phase 9's unchanged-root rule).
+ *      phase 9's unchanged-root rule);
+ *    - HF3_ACTIVE (8, HF-3): nodus_witness_v2_apply.c env_hf3_active,
+ *      read once per block-start context by block_ctx_from_doms into
+ *      nodus_witness_v2_block_ctx_t.hf3_active (the seam's byte step,
+ *      the budget's unbounded flags, the res_max_total_units ceiling
+ *      rule and the ProcessProposal fee check).
  *  No other governed id has a reader: 1 and 3 are RETIRED (above), and 2
  *  (BLOCK_INTERVAL_SEC) is not read on this lane.
  *
@@ -618,7 +655,8 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
     return param_id == (uint8_t)DNAC_CFG_TARGET_ACTIVE_COUNT ||
            param_id == (uint8_t)DNAC_CFG_GAS_PRICE_RAW_PER_UNIT ||
            param_id == (uint8_t)DNAC_CFG_TOKEN_CREATE_FEE_RAW ||
-           param_id == (uint8_t)DNAC_CFG_HF2_ACTIVE;
+           param_id == (uint8_t)DNAC_CFG_HF2_ACTIVE ||
+           param_id == (uint8_t)DNAC_CFG_HF3_ACTIVE;
 }
 
 /** Value range bounds — consensus-critical (client + witness reject out-of-range).
@@ -714,6 +752,16 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  vote can switch HF-2 off again; a later vote for 1 at a higher height
  *  changes nothing. */
 #define DNAC_CFG_HF2_ACTIVE_ON              1ULL
+
+/** HF3_ACTIVE value domain (HF-3, param_id 8): EXACTLY 1.
+ *
+ *  The same one-way switch as HF2_ACTIVE (design docs/plans/2026-10-01-
+ *  hf3-comet-block-bounds-design.md §0): voted 1 at a future height H,
+ *  the HF-3 block rules hold from H on. 0 and every other value are
+ *  refused by the scalar rules on both sides (nodus_witness_chain_
+ *  config.c, dnac/src/transaction/verify.c); a later vote for 1 at a
+ *  higher height changes nothing. */
+#define DNAC_CFG_HF3_ACTIVE_ON              1ULL
 
 /** chain_config_tx vote-count SHAPE bounds — NOT the quorum rule.
  *
