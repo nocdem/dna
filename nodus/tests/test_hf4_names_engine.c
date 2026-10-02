@@ -364,8 +364,13 @@ static int reg_env(nodus_witness_t *w, uint64_t height, int k, int c,
     if (nl < 3 || nl > 36) return -1;
     if (nodus_witness_domreg_get(w, DNA_DOMAIN_CORE, NULL, &core, NULL) != 0)
         return -1;
-    if (nodus_witness_v2_runtime_for(w, DNA_DOMAIN_SYSTEM, 1, &sys) != 0 ||
-        !sys || !sys->meter_policy)
+    /* the units are priced under the GENERATION-2 SYSTEM policy ALWAYS —
+     * a client builds a registration against the generation-2 pins; the
+     * generation-1 policy has no op-8 weight, so a block-2 envelope could
+     * not even be sized under it, and the generation-1 refusal must
+     * happen inside the chain, which is what block 2 tests */
+    sys = nodus_runtime_for_generation(NODUS_RT_GEN_2, DNA_DOMAIN_SYSTEM);
+    if (!sys || !sys->meter_policy)
         return -1;
 
     size_t off = 0;

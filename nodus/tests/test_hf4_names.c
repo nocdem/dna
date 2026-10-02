@@ -148,13 +148,17 @@ static int is_name(const char *s) {
 /* ══ 1. the byte rule and the price fold ═════════════════════════════ */
 
 static int t_bytes_and_price(void) {
-    char a36[37], a37[38];
+    /* 'z' is not a hex digit: these exercise the LENGTH bounds alone */
+    char z36[37], z37[38], a36[37];
+    memset(z36, 'z', 36); z36[36] = '\0';
+    memset(z37, 'z', 37); z37[37] = '\0';
     memset(a36, 'a', 36); a36[36] = '\0';
-    memset(a37, 'a', 37); a37[37] = '\0';
     CHECK(is_name("abc") && is_name("punk") && is_name("n0dus") &&
-          is_name(a36), "a-z0-9 of 3..36 accepted");
-    CHECK(!is_name("ab") && !is_name(a37) && !is_name(""),
+          is_name(z36), "a-z0-9 of 3..36 accepted");
+    CHECK(!is_name("ab") && !is_name(z37) && !is_name(""),
           "length bounds refused");
+    CHECK(!is_name(a36), "36 x 'a' is all-hex of 8+ bytes: refused "
+          "(decision item 11), whatever its length");
     CHECK(!is_name("Punk") && !is_name("pu-k") && !is_name("pu k") &&
           !is_name("pünk"), "uppercase / punctuation / non-ASCII refused");
     CHECK(is_name("cafe") && is_name("deadbee") && is_name("1234567"),
@@ -352,7 +356,11 @@ static size_t nm_call(uint8_t *dst, const char *name, uint64_t price,
     return off;
 }
 
-/* Encode + decode an envelope of `n_legs` identical CORE op-`op` legs. */
+/* Encode + decode an envelope whose LAST leg is the CORE op-`op` leg.
+ * n_legs 2 puts a SYSTEM CHAIN_CONFIG leg (the same call bytes — the
+ * codec does not parse calls) in front of it: legs must be strictly
+ * ascending by domain (SYSTEM 0 < CORE 1), so two CORE legs cannot
+ * exist (dna_env_decode refuses a repeated domain). */
 static int nm_env(nm_env_t *e, uint32_t op, uint8_t auth_kind,
                   uint16_t n_legs, uint64_t fee) {
     dna_env_leg_in_t legs[2];
@@ -370,6 +378,11 @@ static int nm_env(nm_env_t *e, uint32_t op, uint8_t auth_kind,
         legs[l].hdr.res_max_effect_bytes = 16384;
         legs[l].call_data = e->call;
         legs[l].auth_data = e->auth;
+    }
+    if (n_legs == 2) {
+        legs[0].hdr.domain_id       = DNA_DOMAIN_SYSTEM;
+        legs[0].hdr.runtime_op      = DNA_SYSRULE_CHAIN_CONFIG;
+        legs[0].hdr.ruleset_version = 7;
     }
     dna_env_in_t in;
     memset(&in, 0, sizeof(in));
@@ -467,7 +480,9 @@ static int run_exec(const nodus_domain_runtime_t *rt, const nm_env_t *e) {
     ctx_of(&ctx);
     size_t rl = 0;
     memset(&g_ev, 0, sizeof(g_ev));
-    int rc = nodus_rt_core_exec(rt, &e->view, 0, &ctx, g_f.reads,
+    /* the CORE op-8 leg is always the LAST leg (nm_env) */
+    const uint16_t leg = (uint16_t)(e->view.leg_count - 1u);
+    int rc = nodus_rt_core_exec(rt, &e->view, leg, &ctx, g_f.reads,
                                 g_f.n_reads, g_res, sizeof(g_res), &rl);
     if (rc == 0 && dna_effect_result_decode(g_res, rl, &g_ev) != 0)
         return 99;                   /* an undecodable result: a test FAIL */
@@ -699,12 +714,15 @@ static int t_exec(const nodus_domain_runtime_t *g1,
     facts_reset(1, amt);
     CHECK(run_exec(g2, &e) == -1, "fee one below DNAC_MIN_FEE_RAW");
 
-    /* two legs: the registration is a single-CORE-leg envelope */
+    /* two legs (SYSTEM + the CORE op-8 leg): the registration is a
+     * single-leg envelope — the exec's leg_count rule refuses it */
     CHECK(nm_env(&e, DNA_CORERULE_NAME_REGISTER,
-                 NODUS_RT_AUTHKIND_DSA87_MULTI_V1, 2, FEE) == 0, "env");
+                 NODUS_RT_AUTHKIND_DSA87_MULTI_V1, 2, FEE) == 0 &&
+          e.view.leg_count == 2 && e.view.leg[1].domain_id == DNA_DOMAIN_CORE,
+          "a decodable two-leg envelope (SYSTEM, CORE op 8)");
     amt[0] = P4 + FEE + CHG;
     facts_reset(1, amt);
-    CHECK(run_exec(g2, &e) == -1, "a two-leg envelope");
+    CHECK(run_exec(g2, &e) == -1, "a two-leg envelope: exec refuses (-1)");
 
     /* generation / owner shape */
     CHECK(nm_env(&e, DNA_CORERULE_NAME_REGISTER,

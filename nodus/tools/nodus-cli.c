@@ -96,10 +96,11 @@
  * refuses a 0 tip before encoding. */
 #define CLI_ENV_EXPIRY_AHEAD \
     ((uint64_t)NODUS_CMT_APP_MAX_EXPIRY_AHEAD - 10u)
-/* HF-4: the expiry every builder uses — the margin above, capped at the
- * RULESET_GEN2 height while the node is below it (defined with
- * cli_select_runtimes). */
-static uint64_t cli_env_expiry(uint64_t tip);
+/* HF-4: the expiry every builder uses — the margin above, capped at H-1
+ * for an envelope built for rule-set generation 1 while a RULESET_GEN2
+ * height H is committed; -1 (reason printed) when no valid expiry
+ * remains (defined with cli_select_runtimes). */
+static int cli_env_expiry(uint64_t tip, uint64_t *expiry_out);
 
 /* ── Globals ─────────────────────────────────────────────────────── */
 
@@ -1067,7 +1068,7 @@ static int cc_appr_build_pass1(cc_appr_envelope_t *b, dna_env_preflight_t *pf,
      * blocks at the 4 s commit timeout is ~6 minutes. The expiry is part
      * of the signed digest, so it is fixed here, before anyone signs. */
     if (tip == 0) return -1;     /* callers refuse a 0 tip first        */
-    b->env_in.expiry_height       = cli_env_expiry(tip);
+    if (cli_env_expiry(tip, &b->env_in.expiry_height) != 0) return -1;
     b->env_in.fee_amount          = 0;   /* SYSTEM leg rule               */
     b->env_in.res_max_total_units = 200000;
     b->env_in.leg_count           = 1;
@@ -1145,9 +1146,17 @@ static const nodus_domain_runtime_t *cli_builtin_runtime(uint32_t domain_id,
 }
 
 /* HF-4 — the node's last dnac_ruleset_info answer on this process's
- * session (the expiry cap below reads its H). */
+ * session and the generation cli_select_runtimes picked from it (the
+ * expiry cap below reads both). */
 static nodus_dnac_ruleset_info_t g_cli_ri;
 static int g_cli_ri_valid = 0;
+static uint32_t g_cli_sel_gen = 0;
+/* HF-4 — the same two facts read from a LOCAL committed database
+ * (`v2-envelope chain-config --db`, no session): the registry's
+ * generation and the earliest committed RULESET_GEN2 effective height. */
+static int g_cli_local_valid = 0;
+static uint32_t g_cli_local_gen = 0;
+static uint64_t g_cli_local_h = 0;
 
 /* HF-4 (design §1.6): ask the node which rule-set generation governs its
  * tip + 1 and pick the compiled generation whose (SYSTEM, CORE) tuple
@@ -1181,6 +1190,7 @@ static int cli_select_runtimes(nodus_client_t *client,
             if (core_rt) *core_rt = c;
             g_cli_ri = ri;
             g_cli_ri_valid = 1;
+            g_cli_sel_gen = g;
             return 0;
         }
     }
@@ -1218,17 +1228,91 @@ cli_core_runtime_for_env(const uint8_t *env, size_t env_len) {
     return hit;
 }
 
-/* HF-4 (design §1.6 "Expiry"): tip + CLI_ENV_EXPIRY_AHEAD, capped at H-1
- * while tip + 1 < H (H = the committed RULESET_GEN2 height the node
- * reported) — an envelope built for generation 1 must not outlive the
- * last generation-1 block. With no vote (H = 0) or once tip + 1 >= H the
- * plain margin applies. */
-static uint64_t cli_env_expiry(uint64_t tip) {
-    uint64_t e = tip + CLI_ENV_EXPIRY_AHEAD;
-    if (g_cli_ri_valid && g_cli_ri.gen2_height != 0 &&
-        tip + 1u < g_cli_ri.gen2_height && e > g_cli_ri.gen2_height - 1u)
-        e = g_cli_ri.gen2_height - 1u;
-    return e;
+/* HF-4 (design §1.6 "Expiry"): tip + CLI_ENV_EXPIRY_AHEAD, and — for an
+ * envelope built for rule-set GENERATION 1 while a RULESET_GEN2 height H
+ * is committed — never past H-1: a generation-1 envelope must not
+ * outlive the last generation-1 block. The facts come from the session
+ * (dnac_ruleset_info + the generation cli_select_runtimes picked) or,
+ * with no session, from the local database (cli_local_ruleset_facts).
+ * Validity is judged against the MOST CONSERVATIVE tip this process has:
+ * the larger of `tip` (the builder's own) and the ruleset answer's tip —
+ * if H-1 is not above it, no generation-1 expiry is valid and the build
+ * is refused ("retry after H"). A generation-2 envelope, or no vote
+ * (H = 0), takes the plain margin. @return 0 / -1 (reason printed). */
+static int cli_env_expiry(uint64_t tip, uint64_t *expiry_out) {
+    uint64_t e = tip + CLI_ENV_EXPIRY_AHEAD, H = 0, hi = tip;
+    int gen1 = 0;
+    if (g_cli_ri_valid) {
+        H = g_cli_ri.gen2_height;
+        gen1 = (g_cli_sel_gen == NODUS_RT_GEN_1);
+        if (g_cli_ri.tip > hi) hi = g_cli_ri.tip;
+    } else if (g_cli_local_valid) {
+        H = g_cli_local_h;
+        gen1 = (g_cli_local_gen == NODUS_RT_GEN_1);
+    }
+    if (gen1 && H != 0) {
+        if (H - 1u < hi + 1u) {
+            fprintf(stderr, "rule-set switch at height %llu: an envelope "
+                    "for the current rule-set generation 1 cannot expire "
+                    "at or before %llu while the tip is %llu — nothing "
+                    "was built; retry after height %llu\n",
+                    (unsigned long long)H, (unsigned long long)(H - 1u),
+                    (unsigned long long)hi, (unsigned long long)H);
+            return -1;
+        }
+        if (e > H - 1u) e = H - 1u;
+    }
+    *expiry_out = e;
+    return 0;
+}
+
+/* HF-4 — the expiry facts of a LOCAL committed database (no session):
+ * which compiled generation its SYSTEM registry row is, and the earliest
+ * committed RULESET_GEN2 effective height (0 = no vote) — the same query
+ * dnac_ruleset_info answers "H" with. @return 0 / -1 (reason printed). */
+static int cli_local_ruleset_facts(nodus_witness_t *wr,
+                                   const dna_domain_manifest_t *sys_man) {
+    uint32_t gen = 0;
+    for (uint32_t g = 1; g <= nodus_runtime_generation_count(); g++) {
+        const nodus_domain_runtime_t *s =
+            cli_builtin_runtime(DNA_DOMAIN_SYSTEM, g);
+        if (s && s->ruleset_version == sys_man->ruleset_version &&
+            memcmp(s->ruleset_hash, sys_man->ruleset_hash, 64) == 0) {
+            gen = g;
+            break;
+        }
+    }
+    if (gen == 0) {
+        fprintf(stderr, "the database's SYSTEM registry is a rule-set "
+                "generation this CLI does not carry (v%u) — rebuild it\n",
+                (unsigned)sys_man->ruleset_version);
+        return -1;
+    }
+    sqlite3_stmt *st = NULL;
+    int ok = 0;
+    uint64_t H = 0;
+    if (sqlite3_prepare_v2(wr->db,
+            "SELECT MIN(effective_block) FROM chain_config_history "
+            "WHERE param_id = ?1", -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(st, 1, (int)DNAC_CFG_RULESET_GEN2);
+        if (sqlite3_step(st) == SQLITE_ROW) {
+            if (sqlite3_column_type(st, 0) == SQLITE_NULL) {
+                ok = 1;
+            } else {
+                sqlite3_int64 v = sqlite3_column_int64(st, 0);
+                if (v > 0) { H = (uint64_t)v; ok = 1; }
+            }
+        }
+    }
+    sqlite3_finalize(st);
+    if (!ok) {
+        fprintf(stderr, "RULESET_GEN2 history unreadable in the database\n");
+        return -1;
+    }
+    g_cli_local_gen = gen;
+    g_cli_local_h = H;
+    g_cli_local_valid = 1;
+    return 0;
 }
 
 /* ── Stage E.3 — chain-config propose ───────────────────────────── */
@@ -2273,6 +2357,9 @@ static int cmd_v2_envelope(const char *server_ip, uint16_t server_port,
         fprintf(stderr, "SYSTEM registry row unreadable\n");
         goto done;
     }
+    /* HF-4 (design §1.6 "Expiry"): the H-1 cap the network builders take
+     * from dnac_ruleset_info, read here from this database */
+    if (cli_local_ruleset_facts(wr, &sys_man) != 0) goto done;
 
     /* The governing committee for inclusion height H = tip+1 is resolved
      * at H−1 = tip (the engine's expression). */
@@ -3517,7 +3604,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
      * expiry within (tip, tip + NODUS_CMT_APP_MAX_EXPIRY_AHEAD], with the
      * gossip margin (CLI_ENV_EXPIRY_AHEAD). `tip` is the node's own
      * committed tip from the dnac_utxo reply; a 0 tip was refused above. */
-    sreq.expiry_height  = cli_env_expiry(tip);
+    if (cli_env_expiry(tip, &sreq.expiry_height) != 0) goto done;
     sreq.pk             = keys[0].pk.bytes;
     sreq.sk             = keys[0].sk.bytes;
     sreq.amount         = bond;
@@ -4155,7 +4242,7 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
          * 1): expiry within (tip, tip + NODUS_CMT_APP_MAX_EXPIRY_AHEAD],
          * with the gossip margin (CLI_ENV_EXPIRY_AHEAD); a 0 tip was
          * refused above */
-        breq.expiry_height = cli_env_expiry(tip);
+        if (cli_env_expiry(tip, &breq.expiry_height) != 0) goto done;
         breq.pk            = keys[0].pk.bytes;
         breq.sk            = keys[0].sk.bytes;
         breq.to_fp         = to_raw;
@@ -4808,7 +4895,7 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
         memset(&env_in, 0, sizeof(env_in));
         /* the mempool lifetime rule (decision 2026-09-25-mempool-policy.md
          * 1), the spend builder's margin; a 0 tip was refused above */
-        env_in.expiry_height = cli_env_expiry(tip);
+        if (cli_env_expiry(tip, &env_in.expiry_height) != 0) goto done;
         env_in.fee_amount    = fee;
         env_in.leg_count     = 1;
         env_in.legs          = &leg;
@@ -5341,7 +5428,7 @@ static int cmd_name_register(const char *server_ip, uint16_t server_port,
         leg.auth_data = auth;
 
         memset(&env_in, 0, sizeof(env_in));
-        env_in.expiry_height = cli_env_expiry(tip);
+        if (cli_env_expiry(tip, &env_in.expiry_height) != 0) goto done;
         env_in.fee_amount    = fee;
         env_in.leg_count     = 1;
         env_in.legs          = &leg;
@@ -5957,7 +6044,7 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
         leg.call_data = call;
         leg.auth_data = auth;
         memset(&env_in, 0, sizeof(env_in));
-        env_in.expiry_height = cli_env_expiry(tip);
+        if (cli_env_expiry(tip, &env_in.expiry_height) != 0) goto done;
         env_in.fee_amount    = fee;
         env_in.leg_count     = 1;
         env_in.legs          = &leg;

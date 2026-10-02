@@ -23,9 +23,10 @@
  *      over the ONE
  *      shipped proposal digest (nodus_chain_config_compute_digest),
  *      scalar rules / grace tiers come from the SAME exported helpers
- *      the legacy apply consumes (nodus_chain_config_scalar_rules /
- *      nodus_chain_config_grace_for_param), freshness is mirrored 1:1
- *      from nodus_chain_config_apply (nodus_witness_chain_config.c).
+ *      the legacy apply consumed (nodus_chain_config_scalar_rules /
+ *      nodus_chain_config_grace_for_param), freshness was mirrored 1:1
+ *      from the legacy nodus_chain_config_apply (deleted in the HF-4
+ *      review, L1 F1 — this runtime is now the only apply path).
  *      The INFLATION_START monotonicity rule left with parameter id 3
  *      (tokenomics-v3 P2, P2-4 — RETIRED, refused by the scalar rules).
  *      Since 0.20.3 the scalar rules also refuse every id the running
@@ -4897,8 +4898,8 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
     if (c.param_id == DNAC_CFG_TARGET_ACTIVE_COUNT &&
         c.new_value > NODUS_V2_ACTIVE_SET_MAX)
         return -1;
-    /* freshness (CC-G) + per-param grace (CC-C), 1:1 from
-     * nodus_chain_config_apply */
+    /* freshness (CC-G) + per-param grace (CC-C), 1:1 from the legacy
+     * nodus_chain_config_apply (deleted, HF-4 review L1 F1) */
     if (H > c.valid_before) return -1;
     {
         uint64_t floor_h;

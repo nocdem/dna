@@ -15,7 +15,6 @@
 #include "dnac/chain_config_wire.h"   /* shared CHAIN_CONFIG extension codec */
 #include "dnac/ledger_ids.h"          /* DNA_MAX_ACTIVE_VALIDATORS, dna_bft_quorum,
                                        * DNA_DOMAIN_SYSTEM                    */
-#include "dnac/transaction.h"         /* DNAC_TX_HEADER_SIZE (v0.17.1) */
 #include "dnac/dnac.h"                /* DNAC_CFG_* governance param ids      */
 #include "dnac/env_wire.h"            /* dna_env_view_t, DNA_ENV_MAX_TOTAL_LEN */
 #include "dnac/env_preflight.h"       /* dna_env_preflight_status_t           */
@@ -54,14 +53,11 @@
 
 #define LOG_TAG "CHAIN_CONFIG"
 
-/* CHAIN_CONFIG TX constants -- mirror of dnac/include/dnac/transaction.h
- * and dnac/include/dnac/dnac.h. Duplicated here so the nodus standalone
- * build does not need to link libdna. If any constant drifts between
- * the client and witness, chain_config TXs get silent consensus
- * divergence -- so all values are pinned by static_assert below. */
-#define CC_PUBKEY_SIZE              2592
-#define CC_SIGNATURE_SIZE           4627
-#define CC_TX_HASH_SIZE             64
+/* CHAIN_CONFIG constants -- mirror of dnac/include/dnac/dnac.h. If any
+ * constant drifts between the client and witness, chain_config votes get
+ * silent consensus divergence -- so all values are pinned by
+ * static_assert below. (The legacy tx-apply's wire sizes left with
+ * nodus_chain_config_apply — HF-4 review L1 F1.) */
 
 /* DNA's initial seat count / minimum-seats policy. NOT the size of the
  * committee that governs a given height — that comes from chain state via
@@ -70,17 +66,8 @@
 /* This release's active-validator ceiling (shared/dnac/ledger_ids.h). */
 #define CC_MAX_ACTIVE               DNA_MAX_ACTIVE_VALIDATORS
 
-/* SHAPE bounds on committee_sig_count. MIN stays 5: the committee can never
- * be smaller than CC_COMMITTEE_SIZE in this release and
- * dna_bft_quorum(7) == 5, so no sub-5 proposal can reach quorum at any legal
- * set size — rejecting early is free. MAX is the slot cap.
- * The BINDING rule is dna_bft_quorum(committee_count) in
- * nodus_chain_config_apply, not these macros. */
-#define CC_MIN_SIGS                 5
-#define CC_MAX_SIGS                 CC_MAX_ACTIVE
 #define CC_PURPOSE_TAG_LEN          16
-#define CC_TX_TYPE                  10    /* DNAC_TX_CHAIN_CONFIG */
-#define CC_PARAM_MAX_ID             13
+#define CC_PARAM_MAX_ID            13
 #define CC_PARAM_MAX_TXS            1
 #define CC_PARAM_BLOCK_INTERVAL     2
 #define CC_PARAM_INFLATION_START    3
@@ -135,24 +122,10 @@ static const uint8_t CC_PURPOSE_TAG[CC_PURPOSE_TAG_LEN] = {
     'D','N','A','C','_','C','C','_','v','1',0,0,0,0,0,0
 };
 
-/* Wire-format constants from dnac/src/transaction/serialize.c layout.
- * v0.17.1: committed_fee(8) added after tx_hash → 82 bytes. Mirror via
- * the dnac header to keep a single source of truth. */
-#define CC_TX_HEADER_SIZE    DNAC_TX_HEADER_SIZE  /* 82 in v0.17.1 */
-#define CC_NULLIFIER_LEN     NODUS_T3_NULLIFIER_LEN          /* 64 */
-#define CC_TOKEN_ID_LEN      64
-#define CC_FINGERPRINT_LEN   129
-#define CC_SEED_LEN          32
-
 /* Pin the nodus-local CC_* mirror macros against the shared wire constants
- * — drift between libnodus and libdna would silently break consensus. The
- * parsed-field struct itself is now the shared dnac_cc_wire_ext_t. */
-_Static_assert(CC_SIGNATURE_SIZE == DNAC_CC_WIRE_SIGNATURE_SIZE,
-               "CC_SIGNATURE_SIZE drift vs shared wire");
+ * — drift between libnodus and libdna would silently break consensus. */
 _Static_assert(CC_MAX_ACTIVE == DNAC_CC_WIRE_MAX_SLOTS,
                "CC_MAX_ACTIVE drift vs shared wire slot cap");
-_Static_assert(CC_MIN_SIGS == DNAC_CC_WIRE_MIN_SIGS,
-               "CC_MIN_SIGS drift vs shared wire");
 _Static_assert(CC_COMMITTEE_SIZE == DNAC_COMMITTEE_SIZE,
                "CC_COMMITTEE_SIZE drift vs dnac initial seat count");
 _Static_assert(CC_PARAM_MAX_ID == DNAC_CFG_PARAM_MAX_ID,
@@ -610,77 +583,11 @@ int nodus_chain_config_compute_root(nodus_witness_t *w, uint8_t out_root[64]) {
     return result;
 }
 
-/* ============================================================================
- * TX-parse helpers
- * ========================================================================== */
-
-/* Walk tx_data past inputs/outputs/witnesses/signers to position `off` at
- * the start of the appended CHAIN_CONFIG fields. Returns 0 on success,
- * -1 on truncated / malformed input. The walk mirrors dnac/src/transaction
- * /serialize.c exactly -- a drift here is a silent consensus break. */
-static int find_cc_appended_offset(const uint8_t *tx_data, uint32_t tx_len,
-                                    size_t *off_out) {
-    if (!tx_data || !off_out) return -1;
-    if (tx_len < CC_TX_HEADER_SIZE + 1) return -1;
-    size_t off = CC_TX_HEADER_SIZE;  /* past version+type+timestamp+tx_hash */
-
-    /* inputs */
-    if (off >= tx_len) return -1;
-    uint8_t input_count = tx_data[off++];
-    const size_t input_size = CC_NULLIFIER_LEN + 8 + CC_TOKEN_ID_LEN;
-    if ((size_t)input_count * input_size > tx_len - off) return -1;
-    off += (size_t)input_count * input_size;
-
-    /* outputs (variable memo) */
-    if (off >= tx_len) return -1;
-    uint8_t output_count = tx_data[off++];
-    for (int i = 0; i < output_count; i++) {
-        /* version(1) + fp(129) + amount(8) + token_id(64) + seed(32) + memo_len(1) */
-        if (off + 1 + CC_FINGERPRINT_LEN + 8 + CC_TOKEN_ID_LEN + CC_SEED_LEN + 1 > tx_len)
-            return -1;
-        off += 1 + CC_FINGERPRINT_LEN + 8 + CC_TOKEN_ID_LEN + CC_SEED_LEN;
-        uint8_t memo_len = tx_data[off++];
-        if (memo_len > tx_len - off) return -1;
-        off += memo_len;
-    }
-
-    /* witnesses */
-    if (off >= tx_len) return -1;
-    uint8_t witness_count = tx_data[off++];
-    const size_t witness_size = 32 + CC_SIGNATURE_SIZE + 8 + CC_PUBKEY_SIZE;
-    if ((size_t)witness_count * witness_size > tx_len - off) return -1;
-    off += (size_t)witness_count * witness_size;
-
-    /* signers */
-    if (off >= tx_len) return -1;
-    uint8_t signer_count = tx_data[off++];
-    if (signer_count == 0) return -1;
-    const size_t signer_size = CC_PUBKEY_SIZE + CC_SIGNATURE_SIZE;
-    if ((size_t)signer_count * signer_size > tx_len - off) return -1;
-    off += (size_t)signer_count * signer_size;
-
-    *off_out = off;
-    return 0;
-}
-
-/* Parse the CHAIN_CONFIG appended fields starting at `off`. Thin wrapper
- * over the shared dnac_cc_wire_decode — returns 0 on success. The shared
- * decoder enforces the count-cap and per-vote byte-range checks. */
-static int parse_cc_fields(const uint8_t *tx_data, uint32_t tx_len, size_t off,
-                            dnac_cc_wire_ext_t *out) {
-    if (off > tx_len) return -1;
-    size_t consumed = 0;
-    return dnac_cc_wire_decode(tx_data + off,
-                                (size_t)(tx_len - off),
-                                out, &consumed);
-}
-
 /* The SCALAR half of the CHAIN_CONFIG local rules — param allowlist +
  * per-param value bounds + the signing/validity window shape. Exported
  * (nodus_chain_config.h) so the Ledger V2 native SYSTEM runtime
  * (nodus_witness_rt_native.c) consumes the SAME authority instead of a
- * drift-prone mirror; verify_cc_local_rules below layers the vote-shape
- * rules (sig-count window, pairwise-distinct witness_ids) on top. */
+ * drift-prone mirror. */
 int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
                                     uint64_t signed_at_block,
                                     uint64_t valid_before_block,
@@ -789,8 +696,7 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
 }
 
 /* Per-param grace minimum, exported for the same single-authority
- * reason (the static grace_period_for_param below stays as the local
- * alias so existing call sites are untouched). */
+ * reason. */
 uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
     switch (param_id) {
         case CC_PARAM_TARGET_ACTIVE:
@@ -913,36 +819,6 @@ int nodus_chain_config_stateful_rules(uint8_t param_id,
             return -1;                   /* unknown id: fail closed      */
     }
 }
-
-/* Client-side local rule subset (mirror of dnac_tx_verify_chain_config_rules
- * in dnac/src/transaction/verify.c). Returns 0 on success. */
-static int verify_cc_local_rules(const dnac_cc_wire_ext_t *cc) {
-    if (nodus_chain_config_scalar_rules(cc->param_id, cc->new_value,
-                                        cc->signed_at_block,
-                                        cc->valid_before_block,
-                                        cc->effective_block_height,
-                                        cc->proposal_nonce) != 0)
-        return -1;
-    /* SHAPE window only. The quorum decision lives in
-     * nodus_chain_config_apply, which needs the committee snapshot this
-     * pure-function check does not have. */
-    if (cc->committee_sig_count < CC_MIN_SIGS ||
-        cc->committee_sig_count > CC_MAX_SIGS) return -1;
-
-    /* pairwise-distinct witness_ids */
-    for (uint8_t i = 0; i < cc->committee_sig_count; i++) {
-        for (uint8_t j = (uint8_t)(i + 1); j < cc->committee_sig_count; j++) {
-            if (memcmp(cc->votes[i].witness_id,
-                       cc->votes[j].witness_id, 32) == 0)
-                return -1;
-        }
-    }
-    return 0;
-}
-
-/* ============================================================================
- * Apply
- * ========================================================================== */
 
 /* ============================================================================
  * Vote primitives (Stage C — public API, pure functions)
@@ -1959,274 +1835,9 @@ void nodus_chain_config_log_stats(nodus_witness_t *w) {
         (unsigned long long)w->cc_rate_limit.rate_limited_count);
 }
 
-/* Internal wrapper so the apply function's call site stays compact;
- * delegates to the public primitive so the formula is single-sourced. */
-static int compute_proposal_digest(const uint8_t chain_id[32],
-                                    const dnac_cc_wire_ext_t *cc,
-                                    uint8_t digest[64]) {
-    return nodus_chain_config_compute_digest(chain_id,
-                                              cc->param_id,
-                                              cc->new_value,
-                                              cc->effective_block_height,
-                                              cc->proposal_nonce,
-                                              cc->signed_at_block,
-                                              cc->valid_before_block,
-                                              digest);
-}
-
-/* Internal alias kept for readability at the apply call site. */
-static int derive_witness_id(const uint8_t pubkey[CC_PUBKEY_SIZE],
-                              uint8_t out_id[32]) {
-    return nodus_chain_config_derive_witness_id(pubkey, out_id);
-}
-
-/* Per-param grace minimum (Q4 Option B, CC-GOV-004 mitigation).
- * Safety-critical params (block interval, inflation start, and — since S3 —
- * target active-validator count) get the longer operator-notice window;
- * ergonomic params (max txs per block) get a shorter window. Both constants
- * are decoupled from DNAC_EPOCH_LENGTH so either can be tuned without
- * ripple effects.
- *
- * TARGET_ACTIVE_COUNT is SAFETY-CRITICAL: it resizes the set that produces
- * blocks and therefore moves the BFT quorum. Operators need the full
- * 24-hour notice window to provision or retire validator capacity before
- * the change activates. */
-static uint64_t grace_period_for_param(uint8_t param_id) {
-    return nodus_chain_config_grace_for_param(param_id);
-}
-
-int nodus_chain_config_apply(nodus_witness_t *w,
-                              const uint8_t *tx_data,
-                              uint32_t tx_len,
-                              uint64_t block_height,
-                              uint64_t block_timestamp) {
-    if (!w || !w->db || !tx_data) {
-        QGP_LOG_ERROR(LOG_TAG, "apply: invalid args");
-        return -1;
-    }
-    /* Q17 / CC-OPS-005 — pessimistic counter bump: assume rejected, then
-     * decrement + bump committed at the single success path. This keeps
-     * the counter correct across the many early-return paths below
-     * without per-site bookkeeping. */
-    w->chain_config_proposals_rejected++;
-    if (tx_len < CC_TX_HEADER_SIZE) {
-        QGP_LOG_ERROR(LOG_TAG, "apply: tx_len < header");
-        return -1;
-    }
-
-    /* Header sanity. tx_data[0]=version, tx_data[1]=type, tx_data[2..9]=timestamp,
-     * tx_data[10..73]=tx_hash. */
-    if (tx_data[1] != CC_TX_TYPE) {
-        QGP_LOG_ERROR(LOG_TAG, "apply: type_byte=%u != CHAIN_CONFIG(10)",
-                      (unsigned)tx_data[1]);
-        return -1;
-    }
-    const uint8_t *tx_hash = tx_data + 10;
-
-    /* Walk past inputs/outputs/witnesses/signers to reach appended section. */
-    size_t off = 0;
-    if (find_cc_appended_offset(tx_data, tx_len, &off) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "apply: malformed tx (offset walk)");
-        return -1;
-    }
-
-    /* S3: both fixtures below are far too large for the stack —
-     * dnac_cc_wire_ext_t is ~583 KiB and the committee snapshot ~326 KiB at
-     * DNA_MAX_ACTIVE_VALIDATORS. Heap-allocate, and route every exit through
-     * `goto out` so no path leaks. */
-    int rc = -1;
-    dnac_cc_wire_ext_t *cc = calloc(1, sizeof(*cc));
-    nodus_committee_member_t *committee =
-        calloc(CC_MAX_ACTIVE, sizeof(*committee));
-    if (!cc || !committee) {
-        QGP_LOG_ERROR(LOG_TAG, "apply: fixture allocation failed");
-        goto out;
-    }
-
-    if (parse_cc_fields(tx_data, tx_len, off, cc) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "apply: malformed appended fields");
-        goto out;
-    }
-
-    /* Local rules (match client-side verify). */
-    if (verify_cc_local_rules(cc) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "apply: local rule violation");
-        goto out;
-    }
-
-    /* Freshness (CC-G). */
-    if (block_height > cc->valid_before_block) {
-        QGP_LOG_ERROR(LOG_TAG,
-                      "apply: stale -- commit=%llu > valid_before=%llu",
-                      (unsigned long long)block_height,
-                      (unsigned long long)cc->valid_before_block);
-        goto out;
-    }
-
-    /* Grace (CC-C, Q4 Option B per-param tier). */
-    uint64_t grace = grace_period_for_param(cc->param_id);
-    if (cc->effective_block_height < block_height + grace) {
-        QGP_LOG_ERROR(LOG_TAG,
-                      "apply: grace -- effective=%llu < commit=%llu + grace=%llu",
-                      (unsigned long long)cc->effective_block_height,
-                      (unsigned long long)block_height,
-                      (unsigned long long)grace);
-        goto out;
-    }
-
-    /* Committee lookup at commit_block - 1. Request up to the release's
-     * active-validator ceiling — the authority for "how many seats govern
-     * this height" is the returned count, never a compile-time constant.
-     *
-     * S3 wave 2 landed the dynamic producer: the committee size now comes
-     * from the epoch's TARGET_ACTIVE_COUNT chain-config value (default
-     * DNAC_COMMITTEE_SIZE — nodus_witness_committee.c
-     * committee_target_for_epoch), served from the persisted validator-set
-     * snapshot when the epoch has one. On a default-target chain
-     * committee_count is still 7 and dna_bft_quorum(committee_count)
-     * below is exactly the historical 5. */
-    int committee_count = 0;
-    uint64_t lookup_height = (block_height == 0) ? 0 : block_height - 1;
-    if (nodus_committee_get_for_block(w, lookup_height, committee,
-                                       CC_MAX_ACTIVE,
-                                       &committee_count) != 0 ||
-        committee_count <= 0 ||
-        committee_count > CC_MAX_ACTIVE) {
-        QGP_LOG_ERROR(LOG_TAG,
-                      "apply: committee lookup failed at height=%llu",
-                      (unsigned long long)lookup_height);
-        goto out;
-    }
-
-    /* 128 × 32 B = 4 KiB — small enough to stay automatic. */
-    uint8_t committee_ids[CC_MAX_ACTIVE][32];
-    for (int i = 0; i < committee_count; i++) {
-        if (derive_witness_id(committee[i].pubkey, committee_ids[i]) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "apply: derive_witness_id failed i=%d", i);
-            goto out;
-        }
-    }
-
-    /* Rule CC-F shape bound: a proposal can never carry more votes than the
-     * signing-height committee has seats. verify_cc_local_rules already
-     * rejects duplicate witness_ids, so sig_count <= committee_count means
-     * the votes name at most every distinct member exactly once. Without
-     * this, the quorum comparison below could be satisfied by padding the
-     * vote array beyond the real committee size. */
-    if ((int)cc->committee_sig_count > committee_count) {
-        QGP_LOG_ERROR(LOG_TAG,
-                      "apply: sig_count=%u > committee_count=%d",
-                      (unsigned)cc->committee_sig_count, committee_count);
-        goto out;
-    }
-
-    /* Compute proposal digest committee members signed. Uses w->chain_id
-     * (witness local truth), not any client-supplied chain_id. */
-    uint8_t digest[64];
-    if (compute_proposal_digest(w->chain_id, cc, digest) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "apply: digest compute failed");
-        goto out;
-    }
-
-    /* Verify each vote. */
-    int verified = 0;
-    for (uint8_t v = 0; v < cc->committee_sig_count; v++) {
-        int match = -1;
-        for (int c = 0; c < committee_count; c++) {
-            if (memcmp(cc->votes[v].witness_id, committee_ids[c], 32) == 0) {
-                match = c;
-                break;
-            }
-        }
-        if (match < 0) {
-            QGP_LOG_ERROR(LOG_TAG,
-                          "apply: vote[%u] witness_id not in current committee",
-                          (unsigned)v);
-            goto out;
-        }
-        if (qgp_dsa87_verify(cc->votes[v].signature, CC_SIGNATURE_SIZE,
-                              digest, sizeof(digest),
-                              committee[match].pubkey) != 0) {
-            QGP_LOG_ERROR(LOG_TAG,
-                          "apply: vote[%u] Dilithium5 verify failed",
-                          (unsigned)v);
-            goto out;
-        }
-        verified++;
-    }
-    /* Rule CC-F quorum: BFT supermajority of the committee that governs the
-     * SIGNING height, not a compile-time constant. dna_bft_quorum(7) == 5, so
-     * on the live 7-seat chain this is bit-for-bit the historical 5-of-7
-     * rule; it simply scales when the active set does. */
-    {
-        uint32_t quorum = dna_bft_quorum((uint32_t)committee_count);
-        if ((uint32_t)verified < quorum) {
-            QGP_LOG_ERROR(LOG_TAG,
-                          "apply: verified=%d < quorum=%u of committee_count=%d",
-                          verified, (unsigned)quorum, committee_count);
-            goto out;
-        }
-    }
-
-    /* tokenomics-v3 P2 (P2-4): the INFLATION_START_BLOCK monotonicity
-     * block that stood here left with parameter id 3 — the scalar rules
-     * refuse id 3 before this point, so it was unreachable. */
-
-    /* INSERT row; PK conflict = replay reject. */
-    const char *ins_sql =
-        "INSERT INTO chain_config_history "
-        "(param_id, new_value, effective_block, commit_block, tx_hash, "
-        " proposal_nonce, created_at_unix) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)";
-    sqlite3_stmt *ins = NULL;
-    if (sqlite3_prepare_v2(w->db, ins_sql, -1, &ins, NULL) != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "apply: insert prepare failed: %s",
-                      sqlite3_errmsg(w->db));
-        goto out;
-    }
-    sqlite3_bind_int  (ins, 1, (int)cc->param_id);
-    sqlite3_bind_int64(ins, 2, (sqlite3_int64)cc->new_value);
-    sqlite3_bind_int64(ins, 3, (sqlite3_int64)cc->effective_block_height);
-    sqlite3_bind_int64(ins, 4, (sqlite3_int64)block_height);
-    sqlite3_bind_blob (ins, 5, tx_hash, CC_TX_HASH_SIZE, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(ins, 6, (sqlite3_int64)cc->proposal_nonce);
-    /* Determinism: created_at_unix from consensus-agreed block timestamp.
-     * Pre-fix used strftime('now') which produced different values on
-     * each node for the same TX. */
-    sqlite3_bind_int64(ins, 7, (sqlite3_int64)block_timestamp);
-
-    int srv = sqlite3_step(ins);
-    sqlite3_finalize(ins);
-    if (srv != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "apply: insert failed rc=%d", srv);
-        goto out;
-    }
-
-    /* CC-OPS-004 / Q16 — invalidate cache BEFORE outer transaction
-     * commits. Rationale: if outer tx rolls back after this point the
-     * cache being stale (flag=false) just means next lookup re-warms
-     * from DB, which will NOT have the rolled-back row. Cache coherence
-     * preserved in both commit and rollback paths. */
-    w->chain_config_cache_warm = false;
-
-    /* Q17 / CC-OPS-005 — correct the pessimistic counter bump: this
-     * apply succeeded. */
-    w->chain_config_proposals_rejected--;
-    w->chain_config_proposals_committed++;
-
-    QGP_LOG_WARN(LOG_TAG,
-                 "CHAIN_CONFIG_PROPOSAL committed: param_id=%u new_value=%llu "
-                 "effective=%llu commit=%llu nonce=%016llx",
-                 (unsigned)cc->param_id,
-                 (unsigned long long)cc->new_value,
-                 (unsigned long long)cc->effective_block_height,
-                 (unsigned long long)block_height,
-                 (unsigned long long)cc->proposal_nonce);
-
-    rc = 0;
-
-out:
-    free(cc);
-    free(committee);
-    return rc;
-}
+/* HF-4 review (L1 F1): nodus_chain_config_apply — the legacy CHAIN_CONFIG
+ * tx apply, with its private parse / rule / digest helpers — is DELETED:
+ * it had no caller in nodus/src or in any test since R3 W4 closed the
+ * legacy lane. The ONE apply path is the SYSTEM CHAIN_CONFIG runtime
+ * (nodus_witness_rt_native.c), which judges through
+ * nodus_chain_config_scalar_rules + nodus_chain_config_stateful_rules. */

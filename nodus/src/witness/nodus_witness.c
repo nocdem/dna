@@ -38,6 +38,7 @@
 #include "witness/nodus_witness_domreg.h"       /* contextual rulesets   */
 #include "witness/nodus_witness_runtime.h"      /* start-time selfcheck  */
 #include "dnac/dnac.h"                          /* HF-4: D2 + switch spec */
+#include "witness/nodus_witness_emission.h"    /* DNAC_BLOCKS_PER_YEAR    */
 #include "nodus_build_commit.h"                 /* HF-4: NODUS_BUILD_GIT_
                                                  * COMMIT — generated at
                                                  * build time by the
@@ -2529,6 +2530,24 @@ int nodus_witness_init(nodus_witness_t *witness,
                  (unsigned long long)DNAC_CFG_RULESET_GEN2_D2,
                  (unsigned)DNAC_RULESET_SWITCH_SPEC_VERSION,
                  NODUS_BUILD_GIT_COMMIT);
+    /* HF-4 review (L1 F2): the compile-time constants consensus depends
+     * on and that a harness build overrides (#ifndef in dnac.h /
+     * nodus_witness_emission.h), plus whether the fault-injection hooks
+     * are compiled in — on the next line, so the runbook's 7/7
+     * comparison sees a short-epoch or fault-inject binary before the
+     * vote, not after a split. */
+#ifdef QGP_FAULT_INJECT
+    static const char *const fault_inject = "ON";
+#else
+    static const char *const fault_inject = "off";
+#endif
+    QGP_LOG_INFO(LOG_TAG, "consensus build constants: epoch_length %llu, "
+                 "grace_safety %llu, grace_ergonomic %llu, blocks_per_year "
+                 "%llu, fault_inject %s",
+                 (unsigned long long)DNAC_EPOCH_LENGTH,
+                 (unsigned long long)DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS,
+                 (unsigned long long)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS,
+                 (unsigned long long)DNAC_BLOCKS_PER_YEAR, fault_inject);
 
     /* Phase 10 / Task 53 — invalidate the committee cache. UINT64_MAX
      * is the sentinel meaning "no epoch cached yet"; a real epoch

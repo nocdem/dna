@@ -671,7 +671,11 @@ static const char *SCHEMA_SQL =
      * production's DDL; left EMPTY by the fixtures it yields the tagged
      * DNA_V2_EMPTY_TREASURY root. */
     "CREATE TABLE IF NOT EXISTS v2_treasury ("
-    "  pool_id INTEGER PRIMARY KEY, balance INTEGER NOT NULL);";
+    "  pool_id INTEGER PRIMARY KEY, balance INTEGER NOT NULL);"
+    /* HF-4: v2_names — the CORE root's names leg FAILS on an absent table
+     * (it is in the base schema). From the production macro itself, never
+     * a copy of its text; left EMPTY it yields DNA_V2_EMPTY_NAMES. */
+    NODUS_V2_NAMES_DDL ";";
 
 static int setup_w(nodus_witness_t **w_out) {
     nodus_witness_t *w = calloc(1, sizeof(*w));   /* multi-MB: heap-alloc */

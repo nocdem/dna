@@ -753,8 +753,24 @@ done:
  *  every hash by construction: a CheckTx response code is mempool-only
  *  (the mempool tests `code == OK` and nothing else, shared/dnac/
  *  cmt_mem.c :1250/:1336) and LastResultsHash is built from FinalizeBlock
- *  results (shared/dnac/cmt_results.c), which never carry this value. */
-#define NODUS_CMT_APP_CODE_GENERATION ((uint32_t)2)
+ *  results (shared/dnac/cmt_results.c), which never carry this value.
+ *
+ *  THE CHECKTX CODE SPACE (ResponseCheckTx.Code, this file only):
+ *    0    OK (the reference's CodeTypeOK)
+ *    1    NODUS_CMT_APP_CODE_REJECTED   — every other refusal
+ *    100  NODUS_CMT_APP_CODE_GENERATION — this one
+ *  The FinalizeBlock per-item codes are a DIFFERENT space,
+ *  nodus_v2_tx_code_t (nodus_witness_v2_apply.h: 0 OK, 1..9 DECODE …
+ *  FEE). 100 is deliberately outside it so a reader holding a bare
+ *  number never confuses "generation not in force" with a FinalizeBlock
+ *  class (2 would read as NODUS_V2_TX_ERR_CONTEXT). (REJECTED = 1 equals
+ *  NODUS_V2_TX_ERR_DECODE numerically — pre-HF-4, unchanged here.) A new
+ *  CheckTx code takes a value unused by both spaces. */
+#define NODUS_CMT_APP_CODE_GENERATION ((uint32_t)100)
+_Static_assert(NODUS_CMT_APP_CODE_GENERATION != NODUS_CMT_APP_CODE_REJECTED &&
+               NODUS_CMT_APP_CODE_GENERATION >
+                   (uint32_t)NODUS_V2_TX_ERR_FEE,
+               "the CheckTx generation code collides with another code");
 
 /** HF-4 — is a REFUSED envelope a "generation not in force" case (the
  *  code above)? Pure classification of an already-refused entry: decode

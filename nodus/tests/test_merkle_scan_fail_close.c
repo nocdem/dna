@@ -452,9 +452,11 @@ static int create_empty_supply_tracking(nodus_witness_t *w) {
  * its tagged-empty value: `tokens` (token_root fails on an absent table),
  * `v2_reward_accrual` (accrual_root fails on an absent table — it is in
  * the base schema), and supply_tracking (above). pools / claims answer
- * an absent table with their tagged-empty root, and names is a constant
- * — so those need nothing. The DDL mirrors production's
- * (nodus_witness.c). */
+ * an absent table with their tagged-empty root — so those need nothing.
+ * HF-4: names is a REAL leg now (names_root_v2 FAILS on an absent
+ * v2_names — it is in the base schema), so v2_names is created EMPTY
+ * from the production macro NODUS_V2_NAMES_DDL itself (never a copy of
+ * its text). The other DDL mirrors production's (nodus_witness.c). */
 static int create_companion_tables(nodus_witness_t *w) {
     if (exec_sql(w,
         "CREATE TABLE tokens ("
@@ -470,6 +472,8 @@ static int create_companion_tables(nodus_witness_t *w) {
         "CREATE TABLE v2_reward_accrual ("
         "  owner_fp BLOB PRIMARY KEY, amount INTEGER NOT NULL"
         ");") != 0) return -1;
+
+    if (exec_sql(w, NODUS_V2_NAMES_DDL ";") != 0) return -1;
 
     return create_empty_supply_tracking(w);
 }

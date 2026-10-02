@@ -7,9 +7,9 @@
  * Public API for:
  *   - Active-override lookup (consumed by finalize_block in Stage D)
  *   - chain_config_root merkle tree construction
- *   - chain_config_tx apply logic (nodus_chain_config_apply; R3 W4
- *     deleted apply_tx_to_state and nodus_witness_bft.c, its caller —
- *     nodus_chain_config_apply currently has no production caller)
+ *   - the CHAIN_CONFIG rule authorities (scalar + stateful) the SYSTEM
+ *     runtime judges with (the legacy tx apply, nodus_chain_config_apply,
+ *     is deleted — HF-4 review L1 F1)
  *   - DB schema migration (CREATE TABLE chain_config_history)
  *
  * Copyright (c) 2026 nocdem
@@ -211,63 +211,11 @@ int nodus_chain_config_get_u64(nodus_witness_t *w,
  */
 int nodus_chain_config_compute_root(nodus_witness_t *w, uint8_t out_root[64]);
 
-/* ============================================================================
- * chain_config_tx Apply (nodus_chain_config_apply — R3 W4 deleted its
- * former caller, apply_tx_to_state in nodus_witness_bft.c; no
- * production caller replaces it today)
- * ========================================================================== */
-
-/**
- * Apply a DNAC_TX_CHAIN_CONFIG transaction.
- *
- * Runs the full witness-side consensus rule set (design §6.4):
- *   1. Parse TX body + appended chain_config fields.
- *   2. Re-verify local rules via dnac_tx_verify_chain_config_rules.
- *   3. Freshness: commit_block <= valid_before_block (Rule CC-G).
- *   4. Grace: effective_block >= commit_block + grace_period_for_param
- *      (Rule CC-C). Safety-critical params (since Ledger V2 S3
- *      TARGET_ACTIVE_COUNT; INFLATION_START_BLOCK was one until
- *      tokenomics-v3 P2 retired it, and BLOCK_INTERVAL_SEC until 0.20.3
- *      refused it as not read by the running consensus —
- *      `nodus_chain_config_grace_for_param` now refuses ids 2 and 3 as
- *      it does id 1) use DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS
- *      (24 hours); every other (unassigned) id falls back to
- *      DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS (1 hour), an ergonomic
- *      class with NO current member — R3 W4-C delta 2 retired MAX_TXS,
- *      its one occupant (`nodus_chain_config_grace_for_param` now
- *      refuses id 1 outright, returning UINT64_MAX defensively rather
- *      than reaching this default case in practice).
- *   5. Committee membership + quorum (Rule CC-F). The committee governing
- *      commit_block - 1 is read from chain state; its SIZE is whatever the
- *      snapshot returns, never a compile-time constant. Two bounds:
- *        (a) committee_sig_count <= committee_count — a proposal cannot
- *            carry more votes than that committee has seats;
- *        (b) verified >= dna_bft_quorum(committee_count).
- *      At the DNA chain's 7 seats dna_bft_quorum(7) == 5, so this is
- *      exactly the historical 5-of-7 rule.
- *   6. Signature verify: each committee_votes[i].signature valid against
- *      that witness's Dilithium5 pubkey over the proposal preimage.
- *   7. (RETIRED, tokenomics-v3 P2 — the INFLATION_START_BLOCK
- *      monotonicity rule left with parameter id 3, which step 2's
- *      scalar rules now refuse.)
- *   8. INSERT row into chain_config_history (PK conflict = replay reject).
- *
- * R3 W4 deleted apply_tx_to_state and nodus_witness_bft.c, the caller
- * this function used to be reached from; it has no production caller
- * today. On any rule violation, returns -1 and the enclosing DB
- * transaction will be rolled back by the caller.
- *
- * @param w            Witness context.
- * @param tx_data      Serialized TX bytes (dnac_tx_serialize output).
- * @param tx_len       Byte length of tx_data.
- * @param block_height Block being finalized (commit_block for this TX).
- * @return 0 on success, -1 on any rule failure.
- */
-int nodus_chain_config_apply(nodus_witness_t *w,
-                              const uint8_t *tx_data,
-                              uint32_t tx_len,
-                              uint64_t block_height,
-                              uint64_t block_timestamp);
+/* chain_config_tx Apply — nodus_chain_config_apply, the legacy tx-lane
+ * apply, is DELETED (HF-4 review L1 F1): no caller since R3 W4 deleted
+ * nodus_witness_bft.c. The one apply path is the SYSTEM CHAIN_CONFIG
+ * runtime, judging through nodus_chain_config_scalar_rules +
+ * nodus_chain_config_stateful_rules. */
 
 /* ============================================================================
  * Vote primitives (Stage C — pure functions used by CLI + RPC handlers)
@@ -292,9 +240,9 @@ int nodus_chain_config_apply(nodus_witness_t *w,
  * dnac.h dnac_cfg_param_read_by_consensus (4, 5 and 6), shared with the
  * client mirror dnac_tx_verify_chain_config_rules — so a proposal for an
  * id this consensus does not read (2) is refused like the retired 1 and 3.
- * Pure function — the ONE authority both the legacy apply path
- * (verify_cc_local_rules) and the Ledger V2 native SYSTEM runtime
- * consume, so the rule set cannot fork between lanes. Vote-shape rules
+ * Pure function — the ONE authority the Ledger V2 native SYSTEM runtime
+ * and the client mirror judge with (the legacy apply path that also
+ * consumed it is deleted — HF-4 review L1 F1). Vote-shape rules
  * (sig-count window, distinct witness_ids) and the quorum decision are
  * deliberately NOT here — they need the committee context.
  * @return 0 legal / -1.
@@ -453,8 +401,9 @@ int nodus_witness_handle_cc_appr_req(nodus_witness_t *w,
  * Scope note: the design doc (§Q15) calls for BOTH a 5s timeout AND
  * "1 in-flight per epoch". Only the 5s cooldown is implemented here —
  * the per-epoch hard cap is implicitly covered by the existing
- * (param_id, effective_block) PRIMARY KEY replay rejection in
- * chain_config_apply, which no duplicate proposal can bypass even if a
+ * (param_id, effective_block) PRIMARY KEY replay rejection of
+ * chain_config_history (the SYSTEM CHAIN_CONFIG runtime's PRE_ABSENT
+ * CREATE), which no duplicate proposal can bypass even if a
  * proposer floods the network within one epoch.
  *
  * In-memory only (by design — a persisted table would have to flush on
