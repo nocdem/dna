@@ -1,7 +1,7 @@
 /**
  * @file nodus/src/client/nodus_v2_stake.h
  * @brief The shared version-3 staking envelope builder — STAKE, DELEGATE,
- *        UNDELEGATE — build + read back, no I/O.
+ *        UNSTAKE, UNDELEGATE — build + read back, no I/O.
  *
  * Governing records: docs/plans/decisions/2026-09-25-web-wallet-nodus-send-
  * transport.md ("İşlem kurucu": the wallet builds with the SAME C code
@@ -12,7 +12,8 @@
  *
  * WHAT IT IS: the body of nodus-cli `v2-envelope stake|delegate`
  * (cmd_v2_stake), moved out unchanged in behaviour, plus the UNDELEGATE
- * sibling nodus-cli had no builder for. Pure functions over caller-supplied
+ * sibling nodus-cli had no builder for, and the UNSTAKE sibling
+ * (`v2-envelope unstake`). Pure functions over caller-supplied
  * inputs — the listed coins, the committed tip, the gas price, the chain
  * id, the ruleset identity and the signing key. It opens no socket, reads
  * no clock, touches no database and draws NO randomness: the only output
@@ -29,16 +30,28 @@
  *                       (rtn_stake_parse)
  *     DELEGATE   (op 2) delegator_pk[2592] ‖ validator_pk[2592]
  *                       ‖ amount u64 BE                      = 5192 bytes
+ *     UNSTAKE    (op 3) validator_pk[2592]                   = 2592 bytes
+ *                       (RTN_SYS_UNSTAKE_CALL_LEN, rtn_sys_call_identity:
+ *                       the call IS the validator key, and the signer
+ *                       must be that key — rtn_sys_stake_auth)
  *     UNDELEGATE (op 4) the DELEGATE layout (rtn_deleg_parse,
  *                       RTN_SYS_UNDELEGATE_CALL_LEN)
  *   leg1 CORE SYSFUND (op 7) = a SPEND transfer section (rtn_sysfund_parse):
  *     in_count ‖ nullifiers ascending ‖ out_count (0/1) ‖ native change.
  *   Conservation (rtn_sysfund_exec): Σnative_in == Σchange + fee + lock,
  *   where rtn_sys_call_flow derives lock = bond (STAKE) / amount (DELEGATE)
- *   / 0 (UNDELEGATE). UNDELEGATE's funding leg therefore pays the FEE ONLY;
- *   its principal comes back as a release coin the CHAIN creates in the same
- *   block (rtn_sysfund_release_coin), LOCKED until L(h) +
+ *   / 0 (UNSTAKE, UNDELEGATE). UNDELEGATE's funding leg therefore pays the
+ *   FEE ONLY; its principal comes back as a release coin the CHAIN creates
+ *   in the same block (rtn_sysfund_release_coin), LOCKED until L(h) +
  *   DNAC_UNDELEGATE_LOCK_EPOCHS · E — this builder writes no release output.
+ *   UNSTAKE's funding leg pays the FEE ONLY too (lock 0, release 0): the
+ *   exec only moves the row to RETIRING (rtn_unstake_exec); the bond is
+ *   released at the epoch-boundary graduation (nodus_witness_v2_epoch.c
+ *   v2ep_graduate), locked DNAC_VALIDATOR_UNBOND_EPOCHS epochs, to the row's
+ *   unstake_destination_fp, and every delegation the validator still holds
+ *   is returned to its delegator at the same boundary, locked
+ *   DNAC_UNDELEGATE_LOCK_EPOCHS epochs (v2ep_release_delegations — the
+ *   "no delegators" Rule A is gone, tokenomics-v3 P3-4).
  *
  * WHAT THE BUILDER DECIDES vs WHAT THE CHAIN DECIDES: the builder refuses
  * only what the call bytes alone decide (the same checks cmd_v2_stake made
@@ -47,11 +60,15 @@
  *              commission_bps <= DNAC_COMMISSION_BPS_MAX (P3-8)
  *   DELEGATE /
  *   UNDELEGATE 1 <= amount <= DNAC_DEFAULT_TOTAL_SUPPLY
+ *   UNSTAKE    nothing — the call is the signer's own key; `amount`,
+ *              `commission_bps`, `dest_fp` and `validator_pk` are ignored
  * Everything that needs committed state is the chain's, at CheckTx:
  * DELEGATE — a bonded target, DNAC_MIN_DELEGATION for a NEW row, the
  * per-validator delegator cap; UNDELEGATE — the row exists, amount <= its
  * amount, a partial withdrawal leaves 0 or >= DNAC_MIN_DELEGATION
- * (rtn_undelegate_exec).
+ * (rtn_undelegate_exec); UNSTAKE — the validator row exists and is ACTIVE
+ * or ELIGIBLE (a repeated UNSTAKE finds it RETIRING and is rejected,
+ * rtn_unstake_exec).
  *
  * RULESET IDENTITY: leg0 is built against the SYSTEM ruleset tuple and leg1
  * against the CORE one; both hashes enter the digests the signature covers
@@ -89,9 +106,11 @@ extern "C" {
 #define NODUS_V2_STAKE_FUND_EFFECTS       40u
 #define NODUS_V2_STAKE_FUND_EFFECT_BYTES  16384u
 
-/** SYSTEM call lengths (rtn_stake_parse / rtn_deleg_parse). */
+/** SYSTEM call lengths (rtn_stake_parse / rtn_deleg_parse /
+ *  RTN_SYS_UNSTAKE_CALL_LEN). */
 #define NODUS_V2_STAKE_CALL_LEN           2666u
 #define NODUS_V2_DELEG_CALL_LEN           5192u
+#define NODUS_V2_UNSTAKE_CALL_LEN         2592u
 
 /** Refusals of this module beyond the shared nodus_v2_spend_rc_t values it
  *  also returns (ERR_ARG, ERR_ALLOC, ERR_OVERFLOW, ERR_INPUT_SUM,
@@ -101,7 +120,8 @@ typedef enum {
     NODUS_V2_STAKE_ERR_BOND       = -40,  /* STAKE bond != the self-bond   */
     NODUS_V2_STAKE_ERR_COMMISSION = -41,  /* > DNAC_COMMISSION_BPS_MAX     */
     NODUS_V2_STAKE_ERR_AMOUNT     = -42,  /* outside 1..total supply       */
-    NODUS_V2_STAKE_ERR_OP         = -43   /* not STAKE/DELEGATE/UNDELEGATE */
+    NODUS_V2_STAKE_ERR_OP         = -43   /* not STAKE/DELEGATE/UNSTAKE/
+                                           * UNDELEGATE                   */
 } nodus_v2_stake_rc_t;
 
 /** Which SYSTEM record leg — the value IS the runtime_op on the wire
@@ -109,6 +129,7 @@ typedef enum {
 typedef enum {
     NODUS_V2_STAKE_OP_STAKE      = 1,
     NODUS_V2_STAKE_OP_DELEGATE   = 2,
+    NODUS_V2_STAKE_OP_UNSTAKE    = 3,
     NODUS_V2_STAKE_OP_UNDELEGATE = 4
 } nodus_v2_stake_op_t;
 
@@ -138,11 +159,14 @@ typedef struct {
     uint64_t       expiry_height;    /* (tip, tip + NODUS_CMT_APP_MAX_
                                       * EXPIRY_AHEAD]                       */
     const uint8_t *pk;               /* ML-DSA-87 pk 2592 B: the record
-                                      * identity (staker / delegator), the
+                                      * identity (staker / delegator /
+                                      * the retiring validator), the
                                       * signer of both legs and the owner of
                                       * every funding coin                  */
     const uint8_t *sk;               /* 4896 B                              */
-    uint64_t       amount;           /* STAKE: the bond; else the amount    */
+    uint64_t       amount;           /* STAKE: the bond; DELEGATE /
+                                      * UNDELEGATE: the amount; UNSTAKE:
+                                      * ignored                             */
     uint32_t       commission_bps;   /* STAKE only                          */
     const uint8_t *dest_fp;          /* STAKE only: 64 raw bytes            */
     const uint8_t *validator_pk;     /* DELEGATE / UNDELEGATE: 2592 B       */
@@ -178,9 +202,11 @@ typedef struct {
     uint32_t op;                         /* DNA_SYSRULE_*                   */
     uint64_t expiry_height, fee, units;
     uint32_t sys_ruleset_version, core_ruleset_version;
-    uint8_t  identity_pk[2592];          /* staker / delegator              */
-    uint8_t  validator_pk[2592];         /* DELEGATE / UNDELEGATE           */
-    uint64_t amount;                     /* bond / amount                   */
+    uint8_t  identity_pk[2592];          /* staker / delegator / the
+                                          * retiring validator (UNSTAKE)    */
+    uint8_t  validator_pk[2592];         /* DELEGATE / UNDELEGATE; zero
+                                          * for STAKE and UNSTAKE           */
+    uint64_t amount;                     /* bond / amount; 0 for UNSTAKE    */
     uint32_t commission_bps;             /* STAKE                           */
     uint8_t  dest_fp[64];                /* STAKE                           */
     int      n_in;
@@ -207,7 +233,7 @@ typedef struct {
  *   fee    = max(DNAC_MIN_FEE_RAW, NODUS_W_BASE_TX_FEE), raised to
  *            NODUS_V2_STAKE_UNITS × gas_price when that is larger;
  *   need   = lock + fee (lock = amount for STAKE/DELEGATE, 0 for
- *            UNDELEGATE);
+ *            UNSTAKE and UNDELEGATE);
  *   inputs = eligible coins ascending by nullifier, taken until their sum
  *            covers `need`, at most NODUS_V2_SPEND_MAX_IN;
  *   change = sum − need, one native output to the signer when > 0.

@@ -1,8 +1,8 @@
 /**
  * @file nodus/tests/test_v2_stake_build.c
  * @brief The shared staking envelope builder (nodus/src/client/
- *        nodus_v2_stake.c — STAKE, DELEGATE, UNDELEGATE) against the
- *        production engine.
+ *        nodus_v2_stake.c — STAKE, DELEGATE, UNSTAKE, UNDELEGATE) against
+ *        the production engine.
  *
  * Governing records: docs/plans/decisions/2026-09-25-web-wallet-nodus-send-
  * transport.md ("İşlem kurucu" — the wallet builds with the SAME C code as
@@ -48,18 +48,33 @@
  *      floor) and the engine admits the overpaying envelope.
  *  K5  Refusals: a bond other than the self-bond, a commission above the
  *      maximum, a DELEGATE amount of 0 or above the supply, an op that is
- *      not STAKE / DELEGATE / UNDELEGATE, a 0 tip, and funding that cannot
- *      cover (no coin; only a locked coin; only a non-native coin).
+ *      not STAKE / DELEGATE / UNSTAKE / UNDELEGATE (VALIDATOR_UPDATE, a
+ *      real SYSTEM op this builder does not build), a 0 tip, and funding
+ *      that cannot cover (no coin; only a locked coin; only a non-native
+ *      coin).
+ *  K6  UNSTAKE (op 3) of a validator WITH a delegation, on a second seeded
+ *      chain whose committee includes the fixed key: a second key
+ *      delegates to it (applied at height 2); the builder's UNSTAKE —
+ *      validator_pk NULL, an `amount` it must ignore — has two legs, a
+ *      SYSTEM call whose bytes ARE the validator key (2592), a fee-only
+ *      funding leg and no amount on the read-back; K2/K3 hold for it; the
+ *      engine admits it with the builder's ids; applied at height 3 the
+ *      row is RETIRING with unstake_commit_block 3, its bond and the
+ *      delegation untouched (released at graduation, not here); a
+ *      repeated UNSTAKE is not admitted. False if Rule A ("no delegators")
+ *      came back, or if the call layout / funding / auth binding of op 3
+ *      were wrong.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
- * Compile flags: none beyond a default build (blocks at heights 1 and 2;
- * it assumes neither is an epoch boundary — true for every
- * DNAC_EPOCH_LENGTH > 2). Environment: none. SQLite >= 3.35.0 (the seeded
+ * Compile flags: none beyond a default build (blocks at heights 1, 2 and
+ * 3; it assumes none is an epoch boundary — true for every
+ * DNAC_EPOCH_LENGTH > 3). Environment: none. SQLite >= 3.35.0 (the seeded
  * genesis fixture).
  *
  * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
- * One /tmp/test_v2_stake_build_XXXXXX directory, removed at the end; a
- * CHECK failure leaves it behind (this tree's fixture convention).
+ * Two /tmp/test_v2_stake_build_XXXXXX directories (K6 has its own chain),
+ * each removed at its end; a failure inside a CHECK-returning helper
+ * leaves the open one behind (this tree's fixture convention).
  *
  * ── HOW IT CAN LIE ──────────────────────────────────────────────────────
  *  1. The genesis is SEEDED (v2_genesis_fixture.h TIER B) with spendable
@@ -76,7 +91,13 @@
  *     it, and it was written by the same author as the library.
  *  5. The STAKE and the UNDELEGATE are only dry-run (never applied); only
  *     the DELEGATE is applied in a block, so the UNDELEGATE has a row.
- *  6. Written, compiled, NOT RUN by its author (the BUILDER rule).
+ *  6. K6's committee is seeded by the test (one real key, six synthetic
+ *     ones that never sign), not derived from a ceremony document; K6
+ *     stops at the UNSTAKE request — the graduation that releases the
+ *     bond and the delegation is the epoch boundary's (test_v2_epoch.c),
+ *     not exercised here. The engine-level Rule A pin also lives in
+ *     test_v2_native.c U4; K6 pins it through THIS builder's bytes.
+ *  7. Written, compiled, NOT RUN by its author (the BUILDER rule).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -143,12 +164,22 @@ static uint8_t g_pk[2592], g_sk[4896];
 static char    g_fp[QGP_FP_HEX_BUFFER];
 static uint8_t g_fp_raw[64];
 
+/* a second key: the delegator of the UNSTAKE section (K6) — a delegation
+ * that is NOT the validator's own, so it is unambiguously one the removed
+ * Rule A would have counted */
+static uint8_t g2_pk[2592], g2_sk[4896];
+static char    g2_fp[QGP_FP_HEX_BUFFER];
+
 static int keys_init(void) {
-    uint8_t seed[32];
+    uint8_t seed[32], raw[64];
     memset(seed, 0x5E, sizeof(seed));
     if (qgp_dsa87_keypair_derand(g_pk, g_sk, seed) != 0) return -1;
     if (qgp_sha3_512(g_pk, sizeof(g_pk), g_fp_raw) != 0) return -1;
     qgp_fp_raw_to_hex(g_fp_raw, g_fp);
+    memset(seed, 0x5F, sizeof(seed));
+    if (qgp_dsa87_keypair_derand(g2_pk, g2_sk, seed) != 0) return -1;
+    if (qgp_sha3_512(g2_pk, sizeof(g2_pk), raw) != 0) return -1;
+    qgp_fp_raw_to_hex(raw, g2_fp);
     return 0;
 }
 
@@ -161,6 +192,7 @@ typedef struct {
     uint8_t          chain32[32];
     uint64_t         tip;
     uint8_t          nul[KB_N_COINS][64];
+    uint8_t          nul2[64];             /* K6: the delegator g2's coin */
     uint8_t          validator_pk[2592];   /* a seeded, bonded validator */
 } kb_chain_t;
 
@@ -186,13 +218,13 @@ static void rmrf(const char *path) {
     }
 }
 
-/* One CORE utxo owned by the key; nullifier = SHA3-512(owner128 ‖ seed32)
- * (test_v2_spend_build.c seed_coin). */
-static int seed_coin(kb_chain_t *c, uint64_t amount, uint8_t seed_byte,
-                     uint8_t nul_out[64]) {
+/* One CORE utxo owned by `owner_fp` (128 lowercase hex); nullifier =
+ * SHA3-512(owner128 ‖ seed32) (test_v2_spend_build.c seed_coin). */
+static int seed_coin_of(kb_chain_t *c, const char *owner_fp, uint64_t amount,
+                        uint8_t seed_byte, uint8_t nul_out[64]) {
     uint8_t seed[32], pre[160];
     memset(seed, seed_byte, sizeof(seed));
-    memcpy(pre, g_fp, 128);
+    memcpy(pre, owner_fp, 128);
     memcpy(pre + 128, seed, 32);
     if (qgp_sha3_512(pre, sizeof(pre), nul_out) != 0) return -1;
     sqlite3_stmt *st = NULL;
@@ -204,11 +236,16 @@ static int seed_coin(kb_chain_t *c, uint64_t amount, uint8_t seed_byte,
             -1, &st, NULL) != SQLITE_OK)
         return -1;
     sqlite3_bind_blob(st, 1, nul_out, 64, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st, 2, g_fp, 128, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, owner_fp, 128, SQLITE_TRANSIENT);
     sqlite3_bind_int64(st, 3, (sqlite3_int64)amount);
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     return rc == SQLITE_DONE ? 0 : -1;
+}
+
+static int seed_coin(kb_chain_t *c, uint64_t amount, uint8_t seed_byte,
+                     uint8_t nul_out[64]) {
+    return seed_coin_of(c, g_fp, amount, seed_byte, nul_out);
 }
 
 /* the lowest-pubkey seeded validator (the document's own committee) */
@@ -229,7 +266,43 @@ static int first_validator(kb_chain_t *c) {
     return rc;
 }
 
-static int chain_open(kb_chain_t *c) {
+/* K6's committee: seven ACTIVE rows bonding exactly the self-bond, the
+ * FIRST of them the fixed key g_pk (so it can sign its own UNSTAKE), the
+ * other six synthetic keys (they never sign). Each row carries its own
+ * key's fingerprint as a real 128-hex unstake_destination_fp — the
+ * writable shape every STAKE writes (test_v2_native.c fx_genesis_n). */
+static int seed_own_committee(kb_chain_t *c) {
+    static const char hexd[] = "0123456789abcdef";
+    for (int i = 0; i < 7; i++) {
+        dnac_validator_record_t v;
+        uint8_t fpr[64];
+        memset(&v, 0, sizeof(v));
+        if (i == 0) {
+            memcpy(v.pubkey, g_pk, sizeof(v.pubkey));
+        } else {
+            for (size_t k = 0; k < sizeof(v.pubkey); k++)
+                v.pubkey[k] = (uint8_t)(0x23 * i + (k & 0x3F) + 0x40);
+        }
+        v.self_stake         = DNAC_SELF_STAKE_AMOUNT;
+        v.status             = DNAC_VALIDATOR_ACTIVE;
+        v.active_since_block = 1;
+        v.commission_bps     = KB_COMMISSION;
+        if (qgp_sha3_512(v.pubkey, sizeof(v.pubkey), fpr) != 0) return -1;
+        for (int b = 0; b < 64; b++) {
+            v.unstake_destination_fp[2 * b]     = hexd[fpr[b] >> 4];
+            v.unstake_destination_fp[2 * b + 1] = hexd[fpr[b] & 0xF];
+        }
+        v.unstake_destination_fp[128] = '\0';
+        if (nodus_validator_insert(c->w, &v) != 0) return -1;
+    }
+    return 0;
+}
+
+/* own_committee = 0: the document's own seven validators (synthetic keys)
+ * and the lowest of them as the DELEGATE target. own_committee = 1 (K6):
+ * seed_own_committee — g_pk is a validator — plus one coin for the
+ * delegator g2 (c->nul2), and the DELEGATE target is g_pk. */
+static int chain_open_ex(kb_chain_t *c, int own_committee) {
     memset(c, 0, sizeof(*c));
     c->w = calloc(1, sizeof(*c->w));
     if (!c->w) return -1;
@@ -237,15 +310,23 @@ static int chain_open(kb_chain_t *c) {
     snprintf(c->dir, sizeof(c->dir), "/tmp/test_v2_stake_build_XXXXXX");
     if (!mkdtemp(c->dir)) return -1;
     snprintf(c->w->data_path, sizeof(c->w->data_path), "%s", c->dir);
-    memset(c->file16, 0x6B, sizeof(c->file16));
+    memset(c->file16, own_committee ? 0x6C : 0x6B, sizeof(c->file16));
     if (v2x_seed_prepare(c->w, c->file16, 0) != 0) return -1;
+    if (own_committee && seed_own_committee(c) != 0) return -1;
     for (int i = 0; i < KB_N_COINS; i++)
         if (seed_coin(c, KB_AMT[i], (uint8_t)(0xB1 + i), c->nul[i]) != 0)
             return -1;
+    if (own_committee &&
+        seed_coin_of(c, g2_fp, 2ULL * DNAC_MIN_DELEGATION, 0xC1,
+                     c->nul2) != 0)
+        return -1;
     v2x_seed_not_real(V2X_SEED_NOT_REAL_UTXOS);
     if (v2x_seed_genesis(c->w, c->file16, 0, NULL, 0, NULL) != 0) return -1;
     if (nodus_witness_v2_chain_id(c->w, c->chain32) != 0) return -1;
-    if (first_validator(c) != 0) return -1;
+    if (own_committee)
+        memcpy(c->validator_pk, g_pk, sizeof(c->validator_pk));
+    else if (first_validator(c) != 0)
+        return -1;
 
     nodus_v2_block_t b;
     memset(&b, 0, sizeof(b));
@@ -255,6 +336,8 @@ static int chain_open(kb_chain_t *c) {
     return nodus_witness_v2_tip_height(c->w, &c->tip) == 0 && c->tip == 1
                ? 0 : -1;
 }
+
+static int chain_open(kb_chain_t *c) { return chain_open_ex(c, 0); }
 
 static void chain_close(kb_chain_t *c) {
     if (c->w) {
@@ -390,6 +473,8 @@ static size_t restate_fund_call(const kb_sel_t *s, uint8_t *out) {
 static size_t restate_sys_call(nodus_v2_stake_op_t op, uint64_t amount,
                                const uint8_t *validator_pk, uint8_t *out) {
     memcpy(out, g_pk, 2592);
+    if (op == NODUS_V2_STAKE_OP_UNSTAKE)
+        return 2592;                    /* the validator key, nothing else */
     if (op == NODUS_V2_STAKE_OP_STAKE) {
         out[2592] = (uint8_t)(KB_COMMISSION >> 8);
         out[2593] = (uint8_t)KB_COMMISSION;
@@ -408,7 +493,9 @@ static int check_layout(const nodus_v2_stake_built_t *b,
                         const nodus_v2_stake_req_t *r,
                         const nodus_v2_stake_ruleset_t *rs,
                         uint64_t want_fee) {
-    const uint64_t lock = r->op == NODUS_V2_STAKE_OP_UNDELEGATE ? 0 : r->amount;
+    const int is_unstake = r->op == NODUS_V2_STAKE_OP_UNSTAKE;
+    const uint64_t lock = (is_unstake || r->op == NODUS_V2_STAKE_OP_UNDELEGATE)
+                        ? 0 : r->amount;
     kb_sel_t s;
     CHECK(restate_select(r->coins, r->n_coins, r->tip, lock + want_fee, &s) == 0,
           "restated selection covers lock + fee");
@@ -417,7 +504,8 @@ static int check_layout(const nodus_v2_stake_built_t *b,
     const nodus_v2_stake_decoded_t *d = &b->dec;
     CHECK(d->op == (uint32_t)r->op, "read-back op");
     CHECK(memcmp(d->identity_pk, g_pk, 2592) == 0, "read-back identity key");
-    CHECK(d->amount == r->amount, "read-back amount / bond");
+    CHECK(d->amount == (is_unstake ? 0 : r->amount),
+          "read-back amount / bond (UNSTAKE: none)");
     CHECK(d->fee == want_fee && b->fee == want_fee, "read-back fee");
     CHECK(d->units == NODUS_V2_STAKE_UNITS, "read-back units = 400000");
     CHECK(d->expiry_height == r->tip + KB_EXPIRY_AHEAD, "read-back expiry");
@@ -432,13 +520,19 @@ static int check_layout(const nodus_v2_stake_built_t *b,
     if (s.change > 0)
         CHECK(memcmp(d->change_owner, g_fp, 128) == 0 &&
               d->change_amount == s.change, "read-back change record");
-    if (r->op == NODUS_V2_STAKE_OP_STAKE)
+    if (r->op == NODUS_V2_STAKE_OP_STAKE) {
         CHECK(d->commission_bps == KB_COMMISSION &&
               memcmp(d->dest_fp, g_fp_raw, 64) == 0,
               "read-back commission + destination");
-    else
+    } else if (is_unstake) {
+        static const uint8_t zero_pk[2592] = {0};
+        CHECK(memcmp(d->validator_pk, zero_pk, 2592) == 0 &&
+              d->commission_bps == 0,
+              "read-back UNSTAKE: no validator key, no commission");
+    } else {
         CHECK(memcmp(d->validator_pk, r->validator_pk, 2592) == 0,
               "read-back validator key");
+    }
 
     /* K3(a)(b) — an INDEPENDENT parse against the restated CLI */
     dna_env_view_t *v = calloc(1, sizeof(*v));
@@ -660,6 +754,218 @@ static int t_delegate_then_undelegate(kb_chain_t *c) {
     return 0;
 }
 
+/* ══ K6 — UNSTAKE, with a delegation present ═════════════════════════ */
+
+/* the coins of `coins` the built envelope did not spend, plus its change
+ * coin; @return the count written to `left` */
+static int coins_left(const nodus_v2_stake_coin_t *coins, int n,
+                      const nodus_v2_stake_built_t *b,
+                      nodus_v2_stake_coin_t *left) {
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        int used = 0;
+        for (int j = 0; j < b->dec.n_in; j++)
+            if (memcmp(coins[i].nul, b->dec.in_nul[j], 64) == 0) used = 1;
+        if (!used) left[m++] = coins[i];
+    }
+    if (b->dec.n_out == 1) {
+        memset(&left[m], 0, sizeof(left[m]));
+        memcpy(left[m].nul, b->dec.change_id, 64);
+        left[m].amount = b->dec.change_amount;
+        m++;
+    }
+    return m;
+}
+
+/* delegation rows naming `vpk` as their validator; -1 on error */
+static int delegations_to(kb_chain_t *c, const uint8_t *vpk) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(c->w->db,
+            "SELECT COUNT(*) FROM delegations WHERE validator_pubkey = ?1",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, vpk, 2592, SQLITE_TRANSIENT);
+    int n = -1;
+    if (sqlite3_step(st) == SQLITE_ROW) n = sqlite3_column_int(st, 0);
+    sqlite3_finalize(st);
+    return n;
+}
+
+static void apply_one(nodus_v2_block_t *blk, nodus_v2_envelope_t *ve,
+                      uint64_t h) {
+    memset(blk, 0, sizeof(*blk));
+    blk->global_height = h;
+    blk->epoch = nodus_v2_epoch_for_height(h);
+    blk->envs = ve;
+    blk->n_envs = 1;
+}
+
+static int t_unstake(void) {
+    kb_chain_t k;
+    if (chain_open_ex(&k, 1) != 0) {
+        fprintf(stderr, "K6: seeded chain (own committee) setup failed\n");
+        chain_close(&k);
+        return 1;
+    }
+    int rc = 1;
+    nodus_v2_stake_ruleset_t rs;
+    table_ruleset(&rs);
+    nodus_v2_stake_built_t bd, bu, br;
+    memset(&bd, 0, sizeof(bd));
+    memset(&bu, 0, sizeof(bu));
+    memset(&br, 0, sizeof(br));
+    nodus_v2_stake_err_t e;
+    uint32_t code = 99;
+    uint8_t wid[64], iid[64];
+    nodus_v2_block_t blk;
+    dnac_validator_record_t vrow;
+    nodus_v2_stake_coin_t coins[KB_N_COINS + 1], left[KB_N_COINS + 1];
+    nodus_v2_stake_req_t ru;
+    int n = 0;
+
+    /* g2 delegates DNAC_MIN_DELEGATION to the validator g_pk; applied at
+     * height 2 so a delegation row the removed Rule A would have counted
+     * exists when the validator unstakes */
+    {
+        nodus_v2_stake_coin_t c2;
+        memset(&c2, 0, sizeof(c2));
+        memcpy(c2.nul, k.nul2, 64);
+        c2.amount = 2ULL * DNAC_MIN_DELEGATION;
+        nodus_v2_stake_req_t r;
+        base_req(&r, &rs, &k, NODUS_V2_STAKE_OP_DELEGATE,
+                 DNAC_MIN_DELEGATION, &c2, 1);
+        r.pk = g2_pk;
+        r.sk = g2_sk;
+        if (nodus_v2_stake_build(&r, &bd, &e) != NODUS_V2_SPEND_OK) {
+            fprintf(stderr, "CHECK failed: K6 build g2's DELEGATE\n");
+            goto out;
+        }
+        if (dry(k.w, bd.env, bd.env_len, &code, wid, iid) != 0 ||
+            code != NODUS_V2_TX_OK) {
+            fprintf(stderr, "CHECK failed: K6 the engine admits g2's "
+                    "DELEGATE\n");
+            goto out;
+        }
+        nodus_v2_envelope_t ve = { bd.env, bd.env_len };
+        apply_one(&blk, &ve, 2);
+        if (v2x_cmt_apply_ok(k.w, &blk) != 0 ||
+            nodus_witness_v2_tip_height(k.w, &k.tip) != 0 || k.tip != 2) {
+            fprintf(stderr, "CHECK failed: K6 the DELEGATE applies in "
+                    "block 2\n");
+            goto out;
+        }
+        g_checks += 3;
+    }
+    if (delegations_to(&k, g_pk) != 1 ||
+        nodus_validator_get(k.w, g_pk, &vrow) != 0 ||
+        vrow.total_delegated != DNAC_MIN_DELEGATION) {
+        fprintf(stderr, "CHECK failed: K6 one delegation to the validator "
+                "before its UNSTAKE\n");
+        goto out;
+    }
+    g_checks++;
+
+    /* the validator's UNSTAKE: no validator_pk, an `amount` the builder
+     * must ignore, funded by g_pk's own coins (fee only) */
+    n = coins_of(&k, coins);
+    base_req(&ru, &rs, &k, NODUS_V2_STAKE_OP_UNSTAKE, 12345, coins, n);
+    ru.validator_pk = NULL;
+    ru.dest_fp      = NULL;
+    if (nodus_v2_stake_build(&ru, &bu, &e) != NODUS_V2_SPEND_OK) {
+        fprintf(stderr, "CHECK failed: K6 build UNSTAKE\n");
+        goto out;
+    }
+    g_checks++;
+    {
+        dna_env_view_t *v = calloc(1, sizeof(*v));
+        int ok = v && dna_env_decode(bu.env, bu.env_len, v) == 0 &&
+                 v->leg_count == 2 &&
+                 v->leg[0].domain_id == DNA_DOMAIN_SYSTEM &&
+                 v->leg[0].runtime_op == DNA_SYSRULE_UNSTAKE &&
+                 v->leg[0].call_len == 2592u &&
+                 memcmp(v->buf + v->call_off[0], g_pk, 2592) == 0 &&
+                 v->leg[1].domain_id == DNA_DOMAIN_CORE &&
+                 v->leg[1].runtime_op == DNA_CORERULE_SYSFUND;
+        free(v);
+        if (!ok) {
+            fprintf(stderr, "CHECK failed: K6 two legs, SYSTEM op 3 whose "
+                    "call bytes ARE the validator key, CORE SYSFUND\n");
+            goto out;
+        }
+        g_checks++;
+    }
+    if (bu.sum_in != bu.change + KB_FLOOR || bu.dec.amount != 0) {
+        fprintf(stderr, "CHECK failed: K6 UNSTAKE funding = fee only "
+                "(lock 0), no amount on the wire\n");
+        goto out;
+    }
+    g_checks++;
+    if (check_layout(&bu, &ru, &rs, KB_FLOOR) != 0) goto out;
+    if (check_twin(&ru, &bu) != 0) goto out;
+    if (dry(k.w, bu.env, bu.env_len, &code, wid, iid) != 0 ||
+        code != NODUS_V2_TX_OK ||
+        memcmp(wid, bu.wire_id, 64) != 0 ||
+        memcmp(iid, bu.intent_id, 64) != 0) {
+        fprintf(stderr, "CHECK failed: K6 the engine admits the UNSTAKE of "
+                "a delegated validator and derives the builder's ids\n");
+        goto out;
+    }
+    g_checks++;
+
+    /* applied at height 3: RETIRING, unstake_commit_block 3, the bond and
+     * the delegation still held until graduation */
+    {
+        nodus_v2_envelope_t ve = { bu.env, bu.env_len };
+        apply_one(&blk, &ve, 3);
+        if (v2x_cmt_apply_ok(k.w, &blk) != 0 ||
+            nodus_witness_v2_tip_height(k.w, &k.tip) != 0 || k.tip != 3) {
+            fprintf(stderr, "CHECK failed: K6 a validator WITH a delegation "
+                    "CAN unstake (Rule A removed) — block 3 applies\n");
+            goto out;
+        }
+        g_checks++;
+    }
+    if (nodus_validator_get(k.w, g_pk, &vrow) != 0 ||
+        vrow.status != (uint8_t)DNAC_VALIDATOR_RETIRING ||
+        vrow.unstake_commit_block != 3 ||
+        vrow.self_stake != DNAC_SELF_STAKE_AMOUNT ||
+        vrow.total_delegated != DNAC_MIN_DELEGATION ||
+        delegations_to(&k, g_pk) != 1) {
+        fprintf(stderr, "CHECK failed: K6 RETIRING at 3, bond and "
+                "delegation held until graduation\n");
+        goto out;
+    }
+    g_checks++;
+
+    /* a repeated UNSTAKE: the row is RETIRING, the chain rejects it */
+    {
+        int m = coins_left(coins, n, &bu, left);
+        nodus_v2_stake_req_t r2;
+        base_req(&r2, &rs, &k, NODUS_V2_STAKE_OP_UNSTAKE, 0, left, m);
+        r2.validator_pk = NULL;
+        if (m < 1 ||
+            nodus_v2_stake_build(&r2, &br, &e) != NODUS_V2_SPEND_OK) {
+            fprintf(stderr, "CHECK failed: K6 build the repeated UNSTAKE\n");
+            goto out;
+        }
+        code = 99;
+        int drc = dry(k.w, br.env, br.env_len, &code, wid, iid);
+        if (drc == 0 && code == NODUS_V2_TX_OK) {
+            fprintf(stderr, "CHECK failed: K6 a RETIRING validator cannot "
+                    "unstake again\n");
+            goto out;
+        }
+        g_checks += 2;
+    }
+    rc = 0;
+out:
+    nodus_v2_stake_built_free(&br);
+    nodus_v2_stake_built_free(&bu);
+    nodus_v2_stake_built_free(&bd);
+    chain_close(&k);
+    return rc;
+}
+
 /* ══ K5 ══════════════════════════════════════════════════════════════ */
 
 static int t_refusals(kb_chain_t *c) {
@@ -692,9 +998,11 @@ static int t_refusals(kb_chain_t *c) {
 
     base_req(&r, &rs, c, NODUS_V2_STAKE_OP_DELEGATE, DNAC_MIN_DELEGATION,
              coins, n);
-    r.op = (nodus_v2_stake_op_t)3;               /* UNSTAKE — not built here */
+    /* VALIDATOR_UPDATE — a real SYSTEM op this builder does not build */
+    r.op = (nodus_v2_stake_op_t)DNA_SYSRULE_VALIDATOR_UPDATE;
     CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_OP,
-          "an op other than STAKE / DELEGATE / UNDELEGATE is refused");
+          "an op other than STAKE / DELEGATE / UNSTAKE / UNDELEGATE is "
+          "refused");
 
     base_req(&r, &rs, c, NODUS_V2_STAKE_OP_DELEGATE, DNAC_MIN_DELEGATION,
              coins, n);
@@ -726,7 +1034,7 @@ static int t_refusals(kb_chain_t *c) {
 
 int main(void) {
     printf("=== shared staking envelope builder (STAKE / DELEGATE / "
-           "UNDELEGATE) ===\n");
+           "UNSTAKE / UNDELEGATE) ===\n");
     if (keys_init() != 0) {
         fprintf(stderr, "key setup failed\n");
         return 1;
@@ -743,6 +1051,7 @@ int main(void) {
     fails += t_stake(&c);
     fails += t_delegate_then_undelegate(&c);
     chain_close(&c);
+    fails += t_unstake();
 
     printf("=== %s: %d checks, %d failed section(s) ===\n",
            fails ? "FAIL" : "PASS", g_checks, fails);

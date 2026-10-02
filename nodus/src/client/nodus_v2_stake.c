@@ -1,7 +1,7 @@
 /**
  * @file nodus/src/client/nodus_v2_stake.c
  * @brief The shared version-3 staking envelope builder (STAKE, DELEGATE,
- *        UNDELEGATE) — see nodus_v2_stake.h for the contract.
+ *        UNSTAKE, UNDELEGATE) — see nodus_v2_stake.h for the contract.
  *
  * Moved out of nodus/tools/nodus-cli.c cmd_v2_stake (`v2-envelope stake |
  * delegate`): the fee rule, the coin filter, the ascending-nullifier
@@ -13,6 +13,9 @@
  * request before they are returned. UNDELEGATE is new: the DELEGATE call
  * layout under runtime_op 4 with a fee-only funding leg
  * (nodus_witness_rt_native.c rtn_sys_call_flow: lock 0, release = amount).
+ * UNSTAKE (op 3) is new too: call = the signer's own 2592-byte key
+ * (RTN_SYS_UNSTAKE_CALL_LEN) with a fee-only funding leg (rtn_sys_call_flow:
+ * lock 0, release 0).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -42,8 +45,11 @@ _Static_assert(NODUS_V2_STAKE_CALL_LEN == DNAC_PUBKEY_SIZE + 2u + 8u + 64u,
                "STAKE call = pk ‖ commission u16 ‖ bond u64 ‖ dest_fp");
 _Static_assert(NODUS_V2_DELEG_CALL_LEN == 2u * DNAC_PUBKEY_SIZE + 8u,
                "DELEGATE / UNDELEGATE call = pk ‖ pk ‖ amount u64");
+_Static_assert(NODUS_V2_UNSTAKE_CALL_LEN == DNAC_PUBKEY_SIZE,
+               "UNSTAKE call = the validator pk (RTN_SYS_UNSTAKE_CALL_LEN)");
 _Static_assert((uint32_t)NODUS_V2_STAKE_OP_STAKE == DNA_SYSRULE_STAKE &&
                (uint32_t)NODUS_V2_STAKE_OP_DELEGATE == DNA_SYSRULE_DELEGATE &&
+               (uint32_t)NODUS_V2_STAKE_OP_UNSTAKE == DNA_SYSRULE_UNSTAKE &&
                (uint32_t)NODUS_V2_STAKE_OP_UNDELEGATE == DNA_SYSRULE_UNDELEGATE,
                "the op enum is the wire runtime_op");
 
@@ -102,7 +108,7 @@ int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
         goto done;
     const uint32_t op = v->leg[0].runtime_op;
     if (op != DNA_SYSRULE_STAKE && op != DNA_SYSRULE_DELEGATE &&
-        op != DNA_SYSRULE_UNDELEGATE)
+        op != DNA_SYSRULE_UNSTAKE && op != DNA_SYSRULE_UNDELEGATE)
         goto done;
     if (v->leg[0].domain_id != DNA_DOMAIN_SYSTEM ||
         v->leg[1].domain_id != DNA_DOMAIN_CORE ||
@@ -129,6 +135,10 @@ int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
                               s[V2K_PK_LEN + 1];
         out->amount = get_u64(s + V2K_PK_LEN + 2);
         memcpy(out->dest_fp, s + V2K_PK_LEN + 10, 64);
+    } else if (op == DNA_SYSRULE_UNSTAKE) {
+        /* the call IS the validator key (rtn_sys_call_identity) */
+        if (slen != NODUS_V2_UNSTAKE_CALL_LEN) goto done;
+        memcpy(out->identity_pk, s, V2K_PK_LEN);
     } else {
         if (slen != NODUS_V2_DELEG_CALL_LEN) goto done;
         memcpy(out->identity_pk, s, V2K_PK_LEN);
@@ -213,10 +223,12 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
         return NODUS_V2_SPEND_ERR_ARG;
     const nodus_v2_stake_op_t op = req->op;
     const int is_stake = op == NODUS_V2_STAKE_OP_STAKE;
-    if (!is_stake && op != NODUS_V2_STAKE_OP_DELEGATE &&
+    const int is_unstake = op == NODUS_V2_STAKE_OP_UNSTAKE;
+    if (!is_stake && !is_unstake && op != NODUS_V2_STAKE_OP_DELEGATE &&
         op != NODUS_V2_STAKE_OP_UNDELEGATE)
         return NODUS_V2_STAKE_ERR_OP;
-    if (is_stake ? !req->dest_fp : !req->validator_pk)
+    /* UNSTAKE's call is the signer's own key — nothing else is needed */
+    if (is_stake ? !req->dest_fp : (!is_unstake && !req->validator_pk))
         return NODUS_V2_SPEND_ERR_ARG;
 
     /* what the call bytes alone decide (cmd_v2_stake's pre-I/O checks) */
@@ -229,7 +241,8 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
          * self-bond */
         if (req->amount != DNAC_SELF_STAKE_AMOUNT)
             return NODUS_V2_STAKE_ERR_BOND;
-    } else if (req->amount < 1 || req->amount > DNAC_DEFAULT_TOTAL_SUPPLY) {
+    } else if (!is_unstake &&
+               (req->amount < 1 || req->amount > DNAC_DEFAULT_TOTAL_SUPPLY)) {
         return NODUS_V2_STAKE_ERR_AMOUNT;          /* rtn_delegate_exec's
                                                     * scalar rule */
     }
@@ -252,8 +265,10 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
         if (required > fee) fee = required;
     }
 
-    /* ── need = lock + fee (rtn_sys_call_flow: UNDELEGATE locks 0) ──── */
-    const uint64_t lock = op == NODUS_V2_STAKE_OP_UNDELEGATE ? 0 : req->amount;
+    /* ── need = lock + fee (rtn_sys_call_flow: UNSTAKE and UNDELEGATE
+     *    lock 0 — their funding leg pays the fee only) ───────────────── */
+    const uint64_t lock = (is_unstake || op == NODUS_V2_STAKE_OP_UNDELEGATE)
+                        ? 0 : req->amount;
     if (lock > UINT64_MAX - fee) {
         if (err) err->fee = fee;
         return NODUS_V2_SPEND_ERR_OVERFLOW;
@@ -322,6 +337,13 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
         scall[V2K_PK_LEN + 1] = (uint8_t)req->commission_bps;
         put_u64(scall + V2K_PK_LEN + 2, req->amount);
         memcpy(scall + V2K_PK_LEN + 10, req->dest_fp, 64);
+    } else if (is_unstake) {
+        /* validator_pk — the signer itself (RTN_SYS_UNSTAKE_CALL_LEN;
+         * rtn_sys_stake_auth binds SHA3-512(call) to the signer) */
+        scall_len = NODUS_V2_UNSTAKE_CALL_LEN;
+        scall = calloc(1, scall_len);
+        if (!scall) goto done;
+        memcpy(scall, req->pk, V2K_PK_LEN);
     } else {
         /* delegator_pk (the signer) ‖ validator_pk ‖ amount u64 — one
          * layout for DELEGATE and UNDELEGATE (rtn_deleg_parse) */
@@ -449,7 +471,7 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
             d->sys_ruleset_version != req->rs->sys_ruleset_version ||
             d->core_ruleset_version != req->rs->core_ruleset_version ||
             memcmp(d->identity_pk, req->pk, V2K_PK_LEN) != 0 ||
-            d->amount != req->amount ||
+            (!is_unstake && d->amount != req->amount) ||
             d->n_in != n_in ||
             memcmp(d->in_nul, nulls, (size_t)n_in * 64) != 0 ||
             d->n_out != (int)out_count)
@@ -458,6 +480,8 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
             if (d->commission_bps != req->commission_bps ||
                 memcmp(d->dest_fp, req->dest_fp, 64) != 0)
                 goto done;
+        } else if (is_unstake) {
+            if (d->amount != 0) goto done;   /* the call carries none */
         } else if (memcmp(d->validator_pk, req->validator_pk,
                           V2K_PK_LEN) != 0) {
             goto done;

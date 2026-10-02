@@ -123,7 +123,7 @@ nodus/
 │   │   ├── nodus_singleton.c  # Thread-safe global client instance
 │   │   ├── nodus_republish.c  # Migration republish helper
 │   │   ├── nodus_v2_spend.c   # Shared version-3 CORE SPEND builder (plan + build, no I/O)
-│   │   ├── nodus_v2_stake.c/h # Shared STAKE / DELEGATE / UNDELEGATE envelope builder (no I/O)
+│   │   ├── nodus_v2_stake.c/h # Shared STAKE / DELEGATE / UNSTAKE / UNDELEGATE envelope builder (no I/O)
 │   │   └── nodus_v2_name.c/h  # Shared HF-4 NAME_REGISTER (chain name) envelope builder (no I/O)
 │   └── witness/               # DNAC BFT witness module (embedded)
 │       ├── nodus_witness.c          # Witness init, DB schema, lifecycle
@@ -1491,11 +1491,12 @@ the gas-price fixed point; refusals).
 ### Shared staking envelope builder (`src/client/nodus_v2_stake.h`)
 
 `src/client/nodus_v2_stake.c` builds the two-leg staking envelopes — leg0 SYSTEM record
-(STAKE op 1, call 2666 B; DELEGATE op 2 and UNDELEGATE op 4, call 5192 B — `rtn_stake_parse`,
-`rtn_deleg_parse`), leg1 CORE SYSFUND (op 7, a SPEND transfer section) — each leg kind-1 signed
-by the one `--keys` identity. It is the body of `nodus-cli v2-envelope stake|delegate`
-(`cmd_v2_stake`) moved out unchanged in behaviour, plus `undelegate`, which had no client
-builder before. Inputs only (the listed coins with token and unlock height, the tip + expiry,
+(STAKE op 1, call 2666 B; DELEGATE op 2 and UNDELEGATE op 4, call 5192 B; UNSTAKE op 3, call =
+the validator's own 2592-B key — `rtn_stake_parse`, `rtn_deleg_parse`,
+`RTN_SYS_UNSTAKE_CALL_LEN`), leg1 CORE SYSFUND (op 7, a SPEND transfer section) — each leg
+kind-1 signed by the one `--keys` identity. It is the body of `nodus-cli v2-envelope
+stake|delegate` (`cmd_v2_stake`) moved out unchanged in behaviour, plus `undelegate` and
+`unstake`, which had no client builder before. Inputs only (the listed coins with token and unlock height, the tip + expiry,
 gas price, `chain_id32`, the SYSTEM and CORE ruleset tuples, the key); no network, no clock and
 no randomness — the one change output is seeded `SHA3-512(selected nullifiers)[0..31]` as the
 CLI did.
@@ -1504,14 +1505,18 @@ CLI did.
   `unlock_block > tip` skipped), ascending by nullifier, taken until they cover lock + fee (lock =
   bond / amount; **0 for UNDELEGATE**, whose funding leg pays the fee only — `rtn_sys_call_flow`
   derives release = amount and the chain creates the principal coin LOCKED for
-  `DNAC_UNDELEGATE_LOCK_EPOCHS` epochs, `rtn_sysfund_exec`); fixed declarations 8/16384 (leg0),
+  `DNAC_UNDELEGATE_LOCK_EPOCHS` epochs, `rtn_sysfund_exec`; **0 for UNSTAKE** too — lock 0,
+  release 0: the exec only moves the row to RETIRING, the bond and every delegation the
+  validator still holds are released at the graduation boundary); fixed declarations 8/16384 (leg0),
   40/16384 (leg1), 400 000 units; two-pass signature; read-back (`nodus_v2_stake_decode`) refused
   if it differs from the request.
 - Refuses what the call bytes alone decide: bond != `DNAC_SELF_STAKE_AMOUNT`, commission >
   `DNAC_COMMISSION_BPS_MAX`, a DELEGATE/UNDELEGATE amount outside 1..total supply, tip 0, an
   expiry outside `(tip, tip + NODUS_CMT_APP_MAX_EXPIRY_AHEAD]`. Row-dependent rules (bonded target,
   100-NODUS minimum for a new row, delegator cap, undelegate amount <= the row, a partial
-  withdrawal leaving 0 or >= the minimum) stay with the chain at CheckTx.
+  withdrawal leaving 0 or >= the minimum; for UNSTAKE the row exists and is ACTIVE or ELIGIBLE)
+  stay with the chain at CheckTx. UNSTAKE has no call-byte rule of its own: the request's
+  amount, commission, destination and validator key are ignored.
 - **Ruleset identity.** The caller passes both tuples; nodus-cli fills them from the compiled
   table (since HF-4 for the generation the node names in `dnac_ruleset_info`), the browser
   module (web wallet 0.1.29) with `nodus_v2_stake_ruleset_from_pins`, which reads the SYSTEM and
@@ -1521,10 +1526,26 @@ CLI did.
 CLI: `nodus-cli v2-envelope undelegate --keys <dir> --validator <hex5184 pubkey> --amount <raw>
 (--dry-run | --submit ip:port)`.
 
+CLI: `nodus-cli v2-envelope unstake --keys <dir> (--dry-run | --submit ip:port)` — the `--keys`
+identity retires as a validator. A validator WITH delegators may exit (tokenomics-v3 P3-4, Rule A
+removed), so the CLI refuses nothing on their account. Before building it reads the validator's
+own row from the node (`dnac_validator_list_query`, `cli_validator_row`): a row that is not
+ACTIVE / ELIGIBLE is refused (the chain would reject it — a repeated unstake finds it RETIRING);
+otherwise it prints the delegated total (the RPC returns `total_delegated`, the self-delegation
+included — it carries no delegation COUNT), that delegations return to their delegators at
+graduation locked `DNAC_UNDELEGATE_LOCK_EPOCHS` epochs, that the bond returns to the unstake
+destination recorded at STAKE locked `DNAC_VALIDATOR_UNBOND_EPOCHS` epochs after graduation, and
+that the node must keep running until the exit takes effect (it graduates at the first boundary
+whose new validator set no longer includes it). A row the listing does not contain, or a failed
+listing, is a warning only; the chain decides.
+
 Test: `test_v2_stake_build` (STAKE, DELEGATE and — after the DELEGATE is applied in a block — an
 UNDELEGATE admitted by the CheckTx dry run on a seeded chain with the production runtime;
 read-back == request; the pre-move nodus-cli layout restated; twin builds identical outside the two
-auth blobs; the gas-price fee; refusals).
+auth blobs; the gas-price fee; refusals; K6 — on a second seeded chain whose committee includes
+the test key, another key's DELEGATE to it applied, then its UNSTAKE (call = the key, fee-only
+funding) admitted and applied: the row is RETIRING at that height with bond and delegation still
+held, and a repeated UNSTAKE is not admitted).
 
 ### Shared name registration builder (`src/client/nodus_v2_name.h`)
 

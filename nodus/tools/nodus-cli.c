@@ -52,6 +52,7 @@
  * dependency. See project_nodus_cli_libdna_decouple.md. */
 #include "dnac/dnac.h"
 #include "dnac/transaction.h"
+#include "dnac/validator.h"   /* DNAC_VALIDATOR_* (v2-envelope unstake) */
 #include "dnac/nodus.h"   /* DNAC_MAX_UTXO_QUERY_RESULTS, DNAC_MAX_TX_SIZE */
 #include "crypto/sign/qgp_dilithium.h"      /* qgp_dsa87_sign (offline votes) */
 /* O15D — `v2-envelope chain-config`: successor-chain envelope builder.
@@ -3299,6 +3300,56 @@ static int t6_hex_exact(const char *hex, uint8_t *out, size_t n) {
     return 0;
 }
 
+/* `v2-envelope unstake`: the name of a validator row's status byte
+ * (dnac/validator.h dnac_validator_status_t). */
+static const char *cli_validator_status_name(uint8_t st) {
+    switch (st) {
+    case DNAC_VALIDATOR_ACTIVE:       return "ACTIVE";
+    case DNAC_VALIDATOR_RETIRING:     return "RETIRING";
+    case DNAC_VALIDATOR_UNSTAKED:     return "UNSTAKED";
+    case DNAC_VALIDATOR_AUTO_RETIRED: return "AUTO_RETIRED";
+    case DNAC_VALIDATOR_ELIGIBLE:     return "ELIGIBLE";
+    default:                          return "UNKNOWN";
+    }
+}
+
+/* One page of the validator listing, and the most pages read before the
+ * walk gives up: DNAC_MAX_VALIDATORS rows fit in one page, the bound only
+ * stops a node that keeps answering full pages. */
+#define CLI_VLIST_PAGE       DNAC_MAX_VALIDATORS
+#define CLI_VLIST_MAX_PAGES  64
+
+/* `v2-envelope unstake`: find `pk`'s row in the node's validator list
+ * (dnac_validator_list_query, every status, paged by offset).
+ * @return 1 found (*row filled) / 0 the listing ended without it /
+ *         -1 the query failed or the walk did not end. */
+static int cli_validator_row(nodus_client_t *client, const uint8_t *pk,
+                             nodus_dnac_validator_list_entry_t *row) {
+    int offset = 0;
+    for (int page = 0; page < CLI_VLIST_MAX_PAGES; page++) {
+        nodus_dnac_validator_list_result_t res;
+        memset(&res, 0, sizeof(res));
+        if (nodus_client_dnac_validator_list(client, -1, offset,
+                                             CLI_VLIST_PAGE, &res) != 0)
+            return -1;
+        int found = 0;
+        for (int i = 0; i < res.count && res.entries; i++) {
+            if (memcmp(res.entries[i].pubkey, pk, DNAC_PUBKEY_SIZE) == 0) {
+                *row = res.entries[i];
+                found = 1;
+                break;
+            }
+        }
+        const int count = res.count, total = res.total;
+        nodus_client_free_validator_list_result(&res);
+        if (found) return 1;
+        if (count <= 0) return 0;
+        offset += count;
+        if (offset >= total) return 0;
+    }
+    return -1;
+}
+
 /* P2P-PORT F6 (K3, decision 2026-09-26-witness-port-session.md): no
  * local database. Everything comes from the node over ONE session
  * authenticated AS THE STAKER, exactly as `v2-envelope spend`:
@@ -3342,6 +3393,22 @@ static int t6_hex_exact(const char *hex, uint8_t *out, size_t n) {
  * (it exists, amount <= its amount, a partial withdrawal leaves 0 or >=
  * DNAC_MIN_DELEGATION) are the chain's (rtn_undelegate_exec).
  *
+ * `v2-envelope unstake` retires the --keys identity as a validator:
+ * leg0 = SYSTEM UNSTAKE (runtime_op 3, DNA_SYSRULE_UNSTAKE; call = the
+ * validator's own 2592-byte key, RTN_SYS_UNSTAKE_CALL_LEN — the signer
+ * must be that key, rtn_sys_stake_auth), leg1 = a fee-only SYSFUND
+ * (rtn_sys_call_flow: lock 0, release 0). The exec moves the row to
+ * RETIRING (rtn_unstake_exec); the bond and any delegations come back at
+ * the graduation boundary (nodus_witness_v2_epoch.c). A validator WITH
+ * delegators may exit (tokenomics-v3 P3-4, Rule A removed — decision
+ * 2026-09-22-nodus-tokenomics-v3-operator.md §3 2026-09-24 (3)), so the
+ * CLI refuses nothing on their account; it reads the validator's row from
+ * the node's validator list (dnac_validator_list_query) and refuses only
+ * a status the chain would reject (not ACTIVE / ELIGIBLE), otherwise it
+ * prints what will happen to the delegations and the bond, and that an
+ * ACTIVE validator keeps signing until the set that drops it takes effect
+ * (same decision, 2026-09-23 graduation deferral).
+ *
  * The envelope itself is built by the shared, I/O-free builder
  * (nodus/src/client/nodus_v2_stake.c, nodus_v2_stake_build) — the body
  * this function had before the move; this function does the I/O and the
@@ -3354,28 +3421,33 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     uint64_t bond = 0;
     uint32_t commission = 0;
     int dry_run = 0, have_bond = 0, have_comm = 0, bad_arg = 0;
-    /* "stake", "delegate" or "undelegate" — the word after "v2-envelope"
-     * (main's dispatch routes only those three here). DELEGATE and
-     * UNDELEGATE share the call layout and so the arguments. */
+    /* "stake", "delegate", "unstake" or "undelegate" — the word after
+     * "v2-envelope" (main's dispatch routes only those four here).
+     * DELEGATE and UNDELEGATE share the call layout and so the arguments;
+     * UNSTAKE takes none beyond the key (its call is the key itself). */
+    const int is_unstake = !strcmp(argv[cmd_start + 1], "unstake");
     const int is_undeleg = !strcmp(argv[cmd_start + 1], "undelegate");
     const int is_deleg = is_undeleg ||
                          !strcmp(argv[cmd_start + 1], "delegate");
-    const char *verb = is_undeleg ? "undelegate"
+    const int is_stake = !is_deleg && !is_unstake;
+    const char *verb = is_unstake ? "unstake"
+                     : is_undeleg ? "undelegate"
                      : is_deleg   ? "delegate" : "stake";
-    const nodus_v2_stake_op_t op = is_undeleg ? NODUS_V2_STAKE_OP_UNDELEGATE
+    const nodus_v2_stake_op_t op = is_unstake ? NODUS_V2_STAKE_OP_UNSTAKE
+                                 : is_undeleg ? NODUS_V2_STAKE_OP_UNDELEGATE
                                  : is_deleg   ? NODUS_V2_STAKE_OP_DELEGATE
                                               : NODUS_V2_STAKE_OP_STAKE;
 
     for (int i = cmd_start + 2; i < argc; i++) {   /* skip the verb word */
         const char *a = argv[i];
         if      (!strcmp(a, "--keys")       && i + 1 < argc) keys_csv = argv[++i];
-        else if (!is_deleg && !strcmp(a, "--bond") && i + 1 < argc) {
+        else if (is_stake && !strcmp(a, "--bond") && i + 1 < argc) {
             bond = strtoull(argv[++i], NULL, 10); have_bond = 1;
         } else if (is_deleg && !strcmp(a, "--amount") && i + 1 < argc) {
             bond = strtoull(argv[++i], NULL, 10); have_bond = 1;
-        } else if (!is_deleg && !strcmp(a, "--commission") && i + 1 < argc) {
+        } else if (is_stake && !strcmp(a, "--commission") && i + 1 < argc) {
             commission = (uint32_t)strtoul(argv[++i], NULL, 10); have_comm = 1;
-        } else if (!is_deleg && !strcmp(a, "--dest-fp") && i + 1 < argc)
+        } else if (is_stake && !strcmp(a, "--dest-fp") && i + 1 < argc)
             dest_fp_hex = argv[++i];
         else if (is_deleg && !strcmp(a, "--validator") && i + 1 < argc)
             validator_hex = argv[++i];
@@ -3383,8 +3455,9 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
         else if (!strcmp(a, "--dry-run"))                    dry_run = 1;
         else { bad_arg = 1; break; }   /* incl. the retired --db */
     }
-    if (bad_arg || !keys_csv || !have_bond || (!submit && !dry_run) ||
-        (!is_deleg && (!dest_fp_hex || !have_comm)) ||
+    if (bad_arg || !keys_csv || (!is_unstake && !have_bond) ||
+        (!submit && !dry_run) ||
+        (is_stake && (!dest_fp_hex || !have_comm)) ||
         (is_deleg && !validator_hex)) {
         fprintf(stderr,
             "Usage: v2-envelope stake --keys <keydir> --bond <raw> "
@@ -3396,6 +3469,8 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             "       v2-envelope undelegate --keys <keydir> --validator "
             "<hex5184 pubkey> --amount <raw>\n"
             "       (--dry-run | --submit ip:port)\n"
+            "       v2-envelope unstake --keys <keydir> "
+            "(--dry-run | --submit ip:port)\n"
             "  Everything (chain id, coins, tip, gas price) is read from "
             "the node over ONE\n"
             "  session: --submit, or the outer -s server for --dry-run. No "
@@ -3403,7 +3478,14 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             "  (--db is retired). --dry-run builds and self-checks, submits "
             "nothing.\n"
             "  delegate: --validator may be the --keys identity's own key "
-            "(self-delegation).\n");
+            "(self-delegation).\n"
+            "  unstake: the --keys identity retires as a validator; its "
+            "delegations are\n"
+            "  returned to their delegators when it graduates (locked %d "
+            "epochs), its bond\n"
+            "  to its recorded unstake destination (locked %d epochs).\n",
+            (int)DNAC_UNDELEGATE_LOCK_EPOCHS,
+            (int)DNAC_VALIDATOR_UNBOND_EPOCHS);
         return 1;
     }
     uint8_t validator_pk[DNAC_PUBKEY_SIZE] = {0};
@@ -3423,7 +3505,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     }
     /* the witness bound (tokenomics-v3 P3-8, rtn_stake_exec) — the u16
      * wire field alone would admit values the chain refuses */
-    if (!is_deleg && commission > (uint32_t)DNAC_COMMISSION_BPS_MAX) {
+    if (is_stake && commission > (uint32_t)DNAC_COMMISSION_BPS_MAX) {
         fprintf(stderr, "--commission must be 0..%u\n",
                 (unsigned)DNAC_COMMISSION_BPS_MAX);
         return 1;
@@ -3431,7 +3513,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     /* the witness rule (final pre-testnet wipe W-B, rtn_stake_exec): the
      * bond is EXACTLY DNAC_SELF_STAKE_AMOUNT — refused here with a reason
      * rather than left to the preflight self-check's bare VERDICT */
-    if (!is_deleg && bond != DNAC_SELF_STAKE_AMOUNT) {
+    if (is_stake && bond != DNAC_SELF_STAKE_AMOUNT) {
         fprintf(stderr, "--bond %llu != the self-bond %llu (the chain "
                 "accepts exactly this amount; add more by delegating to "
                 "yourself: v2-envelope delegate)\n",
@@ -3440,7 +3522,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
         return 1;
     }
     uint8_t dest_fp[64] = {0};
-    if (!is_deleg && qgp_fp_hex_to_raw(dest_fp_hex, dest_fp) != 0) {
+    if (is_stake && qgp_fp_hex_to_raw(dest_fp_hex, dest_fp) != 0) {
         fprintf(stderr, "--dest-fp must be exactly 128 lowercase hex chars\n");
         return 1;
     }
@@ -3527,6 +3609,56 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     /* HF-4: build for the generation the node names */
     if (cli_select_runtimes(&client, &sys_rt, &core_rt) != 0) goto done;
 
+    /* `unstake`: the validator's own row, read on this session. The chain
+     * decides (rtn_unstake_exec); the CLI refuses only a status the chain
+     * would reject, and never on account of delegations — a validator
+     * with delegators may exit (tokenomics-v3 P3-4, Rule A removed). */
+    if (is_unstake) {
+        nodus_dnac_validator_list_entry_t vrow;
+        memset(&vrow, 0, sizeof(vrow));
+        const int vr = cli_validator_row(&client, keys[0].pk.bytes, &vrow);
+        if (vr == 1 && vrow.status != (uint8_t)DNAC_VALIDATOR_ACTIVE &&
+            vrow.status != (uint8_t)DNAC_VALIDATOR_ELIGIBLE) {
+            fprintf(stderr, "this validator is %s — the chain accepts an "
+                    "unstake only from an ACTIVE or ELIGIBLE validator (a "
+                    "repeated unstake is rejected); nothing built\n",
+                    cli_validator_status_name(vrow.status));
+            goto done;
+        }
+        if (vr == 1)
+            printf("validator %s, bond %llu raw\n",
+                   cli_validator_status_name(vrow.status),
+                   (unsigned long long)vrow.self_stake);
+        else if (vr == 0)
+            fprintf(stderr, "warning: this key has no row in the node's "
+                    "validator list — the chain rejects an unstake from a "
+                    "key that is not a validator\n");
+        else
+            fprintf(stderr, "warning: the node's validator list could not "
+                    "be read — status and delegations not checked here; "
+                    "the chain decides\n");
+        if (vr == 1 && vrow.total_delegated == 0)
+            printf("  - delegations: none to this validator\n");
+        else if (vr == 1)
+            printf("  - delegations: %llu raw delegated to this validator "
+                   "(its own self-delegation included) is returned to the "
+                   "delegators when it graduates, locked %d epochs\n",
+                   (unsigned long long)vrow.total_delegated,
+                   (int)DNAC_UNDELEGATE_LOCK_EPOCHS);
+        else
+            printf("  - delegations: any delegation to this validator is "
+                   "returned to its delegator when it graduates, locked %d "
+                   "epochs\n", (int)DNAC_UNDELEGATE_LOCK_EPOCHS);
+        printf("  - bond: returned to the unstake destination recorded "
+               "when it staked, locked %d epochs after it graduates\n",
+               (int)DNAC_VALIDATOR_UNBOND_EPOCHS);
+        printf("  - keep this node running until the exit takes effect: it "
+               "stays in the validator set until the set change after it "
+               "leaves, and graduates at the first epoch boundary whose "
+               "new validator set no longer includes it\n");
+        fflush(stdout);
+    }
+
     /* HF-1 — the gas price (decision 2026-09-25-gas-price.md "HF-1 O4":
      * the CLI price source is dnac_fee_info's gas_price), read on this
      * session; the builder pays max(floor, NODUS_V2_STAKE_UNITS ×
@@ -3610,7 +3742,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     sreq.sk             = keys[0].sk.bytes;
     sreq.amount         = bond;
     sreq.commission_bps = commission;
-    sreq.dest_fp        = is_deleg ? NULL : dest_fp;
+    sreq.dest_fp        = is_stake ? dest_fp : NULL;
     sreq.validator_pk   = is_deleg ? validator_pk : NULL;
     sreq.gas_price      = gas_price;
     sreq.coins          = coins;
@@ -3623,8 +3755,9 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
         nodus_v2_stake_err_t se;
         memset(&se, 0, sizeof(se));
         int brc = nodus_v2_stake_build(&sreq, &built, &se);
-        if (brc == NODUS_V2_SPEND_ERR_INSUFFICIENT && is_undeleg) {
-            /* UNDELEGATE's funding leg pays the fee only */
+        if (brc == NODUS_V2_SPEND_ERR_INSUFFICIENT &&
+            (is_undeleg || is_unstake)) {
+            /* UNDELEGATE's and UNSTAKE's funding leg pays the fee only */
             fprintf(stderr, "insufficient native funding for the fee: have "
                     "%llu, need %llu over %d input(s)\n",
                     (unsigned long long)se.sum_in,
@@ -3678,12 +3811,19 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     /* Printed on BOTH paths (P2P-PORT F6): the submitted envelope's own
      * intent_id is what a caller waits for — a dry run's may differ (its
      * expiry is tip-relative, see this function's header). */
-    printf("v2-envelope %s: %zu bytes, inputs=%d sum_in=%llu "
-           "%s=%llu fee=%llu change=%llu tip=%llu\n", verb, built.env_len,
-           built.n_in, (unsigned long long)built.sum_in,
-           is_deleg ? "amount" : "bond",
-           (unsigned long long)bond, (unsigned long long)built.fee,
-           (unsigned long long)built.change, (unsigned long long)tip);
+    if (is_unstake)
+        printf("v2-envelope %s: %zu bytes, inputs=%d sum_in=%llu "
+               "fee=%llu change=%llu tip=%llu\n", verb, built.env_len,
+               built.n_in, (unsigned long long)built.sum_in,
+               (unsigned long long)built.fee,
+               (unsigned long long)built.change, (unsigned long long)tip);
+    else
+        printf("v2-envelope %s: %zu bytes, inputs=%d sum_in=%llu "
+               "%s=%llu fee=%llu change=%llu tip=%llu\n", verb,
+               built.env_len, built.n_in, (unsigned long long)built.sum_in,
+               is_deleg ? "amount" : "bond",
+               (unsigned long long)bond, (unsigned long long)built.fee,
+               (unsigned long long)built.change, (unsigned long long)tip);
     printf("  wire_id=");
     for (int b = 0; b < 64; b++) printf("%02x", built.wire_id[b]);
     printf("\n  intent_id=");
@@ -3693,7 +3833,8 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     if (dry_run) {
         printf("  PREFLIGHT SELF-CHECK: OK (2 legs SYSTEM %s + CORE "
                "SYSFUND) — not submitted (--dry-run)\n",
-               is_undeleg ? "UNDELEGATE" : is_deleg ? "DELEGATE" : "STAKE");
+               is_unstake ? "UNSTAKE" : is_undeleg ? "UNDELEGATE"
+             : is_deleg   ? "DELEGATE" : "STAKE");
     } else {
         /* on the session the gas price and the coins were read from */
         if (t6_submit_on(&client, &keys[0], built.wire_id, built.env,
@@ -6400,6 +6541,12 @@ static void usage(const char *prog) {
     fprintf(stderr, "           --amount <raw> (--dry-run | --submit ip:port)\n");
     fprintf(stderr, "                                   two-leg UNDELEGATE (returned coin locked %d epochs)\n",
             (int)DNAC_UNDELEGATE_LOCK_EPOCHS);
+    fprintf(stderr, "  v2-envelope unstake --keys <dir> (--dry-run | --submit ip:port)\n");
+    fprintf(stderr, "                                   two-leg UNSTAKE: the --keys validator retires;\n");
+    fprintf(stderr, "                                   bond back %d epochs after graduation,\n",
+            (int)DNAC_VALIDATOR_UNBOND_EPOCHS);
+    fprintf(stderr, "                                   delegations back to delegators, locked %d epochs\n",
+            (int)DNAC_UNDELEGATE_LOCK_EPOCHS);
     fprintf(stderr, "  v2-envelope spend --keys <dir> --to <fp128hex> --amount <raw|all>\n");
     fprintf(stderr, "           [--fee <raw>] [--token <hex128>] [--count <N|all>]\n");
     fprintf(stderr, "           [--shard <I>/<M>]\n");
@@ -6571,12 +6718,14 @@ int main(int argc, char **argv) {
      * O15F T6 adds the `stake` subcommand (O11 two-leg STAKE); CLI-SPEND
      * adds `spend` (single-leg CORE SPEND, networked); `token-create`
      * builds a single-leg CORE TOKEN_CREATE the same way; W-B adds
-     * `delegate` (two-leg DELEGATE, the stake builder's sibling). */
+     * `delegate` (two-leg DELEGATE, the stake builder's sibling);
+     * `undelegate` and `unstake` are the same builder's ops 4 and 3. */
     if (strcmp(command, "v2-envelope") == 0) {
         int rc;
         if (optind + 1 < argc &&
             (strcmp(argv[optind + 1], "stake") == 0 ||
              strcmp(argv[optind + 1], "delegate") == 0 ||
+             strcmp(argv[optind + 1], "unstake") == 0 ||
              strcmp(argv[optind + 1], "undelegate") == 0))
             rc = cmd_v2_stake(server_ip, server_port, argc, argv, optind);
         else if (optind + 1 < argc && strcmp(argv[optind + 1], "spend") == 0)
