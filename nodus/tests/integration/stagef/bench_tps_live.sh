@@ -234,9 +234,14 @@
 #     with the local bench's inline stagef_cmt_wait_row rules: stall =
 #     180 s (3 x the 60 s idle interval, stagef_env.sh:466) of WALL CLOCK
 #     with the node's tip not moving -> the worker FAILS and the bench
-#     aborts; budget = 20 heights past the submission tip -> the missing
-#     spends are counted as DROPPED. Wall clock, not a poll count, because
-#     a poll here costs an ssh round trip.
+#     aborts; budget = 20 consecutive heights in which NO spend of the
+#     batch was applied (progress-based since 2026-10-03; it used to be 20
+#     heights past the submission tip, which counted spends merely queued
+#     behind a backlog as DROPPED) -> the missing spends are counted as
+#     DROPPED. A node's refusal (a status refusal, or an error frame from
+#     dnac_spend: "dnac_spend RPC failed (rc=N)", N != 6) is COUNTED as
+#     refused, not treated as a client fault. Wall clock, not a poll
+#     count, because a poll here costs an ssh round trip.
 #   - **tx_count counts applied envelopes of ANYONE.** The live chain may
 #     carry other users' envelopes; the summary prints the workers' own
 #     applied total next to Σ tx_count so a stray submitter shows.
@@ -736,8 +741,19 @@ wait_new_height() {
 # read is NEVER a height and never a count: it is retried, and only a
 # node that stayed unreadable for STALL_S becomes rc 3 — so an ssh or
 # sqlite error can never turn into DROPPED spends.
+#
+# The height budget is PROGRESS-based (2026-10-03): DROPPED means no spend
+# of THIS batch was applied for MAX_HEIGHTS consecutive heights, not "the
+# whole batch was not applied within MAX_HEIGHTS of the submission tip".
+# The old absolute budget counted spends that were only queued behind a
+# backlog as DROPPED (3-host run: 32 of 100 "dropped", 100/100 found in
+# v2_intent_index 1-7 heights later); the next round then re-spent coins
+# whose spend was still pending and the node refused it. While the chain
+# keeps applying this batch the wait continues; a batch with no progress
+# for MAX_HEIGHTS heights is still declared DROPPED.
 wait_applied() {
     local node="$1" start_h="$2" acc="$3" in_list="$4" last="$2" moved r n_app h bad_since=""
+    local prog_n=0 prog_h="$2"
     [ "$start_h" -ge 0 ] || { echo "0 -1"; return 3; }
     moved=$(date +%s)
     while :; do
@@ -758,7 +774,8 @@ wait_applied() {
         if [ "$n_app" -ge "$acc" ]; then echo "$n_app $h"; return 0; fi
         if [ "$h" -gt "$last" ]; then last="$h"; moved=$(date +%s); fi
         if [ $(( $(date +%s) - moved )) -ge "$STALL_S" ]; then echo "$n_app $h"; return 1; fi
-        if [ $(( h - start_h )) -gt "$MAX_HEIGHTS" ]; then echo "$n_app $h"; return 2; fi
+        if [ "$n_app" -gt "$prog_n" ]; then prog_n="$n_app"; prog_h="$h"; fi
+        if [ $(( h - prog_h )) -gt "$MAX_HEIGHTS" ]; then echo "$n_app $h"; return 2; fi
         sleep 1
     done
 }
@@ -770,7 +787,12 @@ parse_round() {
     local out="$1"
     P_PLANNED=$(printf '%s\n' "$out" | grep -c '^v2-envelope spend [0-9]*/[0-9]*:' || true)
     P_ACC=$(printf '%s\n' "$out" | grep -c '^accepted: mempool CheckTx approved' || true)
-    P_REF=$(printf '%s\n' "$out" | grep -c '^dnac_spend refused (status=' || true)
+    # A refusal is the NODE's answer: a status refusal, or an error frame
+    # from dnac_spend (nodus-cli prints "dnac_spend RPC failed (rc=N)";
+    # N is the node's error code — e.g. 7 for a CheckTx refusal such as a
+    # spend of a coin whose earlier spend is still pending). rc 6 is the
+    # CLIENT's own wait timeout and rc < 0 a local failure: not refusals.
+    P_REF=$(printf '%s\n' "$out" | grep -c -E '^dnac_spend refused \(status=|^dnac_spend RPC failed \(rc=([1-57-9]|[1-9][0-9]+)\)$' || true)
     P_INTENTS=$(printf '%s\n' "$out" | awk -F= -v n="$P_ACC" '/^  intent_id=/ { c++; if (c <= n) print $2 }')
     P_INLIST=""
     local x
@@ -839,7 +861,7 @@ prep_identity() {
         read -r n_app h <<< "$r"
         case "$rc" in
             0) ;;
-            2) echo "[warn] prep ${PK_NAME[$j]} round $rounds: $(( P_ACC - n_app )) of $P_ACC splits not applied within $MAX_HEIGHTS heights — DROPPED; the next round recounts from the DB" >&2 ;;
+            2) echo "[warn] prep ${PK_NAME[$j]} round $rounds: $(( P_ACC - n_app )) of $P_ACC splits with no progress for $MAX_HEIGHTS heights — DROPPED; the next round recounts from the DB" >&2 ;;
             3) echo "[FAIL] prep ${PK_NAME[$j]}: node$node UNREACHABLE while confirming round $rounds (no valid answer for ${STALL_S}s)" >&2; exit 1 ;;
             *) echo "[FAIL] prep ${PK_NAME[$j]}: $n_app of $P_ACC splits applied and node$node's tip STALLED at $h" >&2; exit 1 ;;
         esac
@@ -970,7 +992,7 @@ worker() {
         case "$rc" in
             0) ;;
             2)
-                echo "[warn] worker $I: $(( P_ACC - n_app )) of $P_ACC spends not applied within $MAX_HEIGHTS heights (tip $start_h -> $h) — counted as DROPPED" >&2
+                echo "[warn] worker $I: $(( P_ACC - n_app )) of $P_ACC spends not applied, no progress for $MAX_HEIGHTS heights (tip $start_h -> $h) — counted as DROPPED" >&2
                 dropped=$(( dropped + P_ACC - n_app )) ;;
             3)
                 echo "[FAIL] worker $I: node$node UNREACHABLE while confirming round $rounds (no valid answer for ${STALL_S}s) — its $P_ACC accepted spend(s) are neither applied nor dropped as far as this bench can tell" >&2
@@ -1355,10 +1377,19 @@ agree_out=$(agreement); agree_rc=$?
     echo "  block interval max          $w_ivmax s"
     echo "  tail after the window       $w_tail_b block(s), $w_tail_e envelope(s) (not in the rate)"
     echo ""
+    # HF-3 (param 8 = 1, decision 2026-10-01-hf3-comet-only-block-bounds)
+    # makes the global unit budget unbounded from its effective height, so
+    # the cap below is NOT a bound on a window at or after it (2026-10-03
+    # run: 296 envelopes in one block against a "cap" of 255).
+    hf3_h=$(node_sql "$REF" "SELECT COALESCE(MIN(effective_block),-1) FROM chain_config_history WHERE param_id=8 AND new_value=1;" 2>/dev/null) || hf3_h=""
     echo "per-block cap (theory):       $cap = floor($BUDGET NODUS_V2_GLOBAL_UNIT_BUDGET / ${units:-?} declared units)"
     [ "${n_units:-0}" -le 1 ] || echo "  WARNING: the CLIs declared $n_units different unit ceilings; the cap uses the LARGEST"
     echo "measured max per block:       $w_max"
-    if [ "$cap" = "n/a" ]; then
+    if is_uint "${hf3_h:-}" && [ "$hf3_h" -le "$(( base_h + 1 ))" ]; then
+        echo "  VERDICT: none from the cap — HF-3 is active since height $hf3_h (param 8 on node$REF), so the global"
+        echo "           unit budget does not bound these blocks; the cap above is pre-HF-3 arithmetic only."
+        echo "           Whether the clients or the chain bounded the rate is NOT decided by this section."
+    elif [ "$cap" = "n/a" ]; then
         echo "  VERDICT: no spend was built, no cap to compare against"
     elif [ "$w_max" -lt "$cap" ]; then
         echo "  VERDICT: NO block reached the unit cap — the CLIENTS were the bottleneck,"
@@ -1375,7 +1406,7 @@ agree_out=$(agreement); agree_rc=$?
     echo "clients (sum over workers):"
     echo "  rounds $w_rounds (idle — nothing of the shard visible, or its first spend refused — then one height waited: $w_idle)"
     echo "  submitted $w_sub = accepted $w_acc + refused $w_ref (a refusal ends that round's batch)"
-    echo "  applied (created row seen on the worker's node) $w_app; DROPPED (not applied within $MAX_HEIGHTS heights) $w_drop"
+    echo "  applied (created row seen on the worker's node) $w_app; DROPPED (batch made no progress for $MAX_HEIGHTS heights) $w_drop"
     echo "  cross-check: workers' applied $w_app vs Σ tx_count over window+tail $(( w_env + w_tail_e )) (a live chain may carry other submitters' envelopes)"
     for f in "$BENCH_OUT"/worker_*.stats; do
         [ -f "$f" ] && echo "  $(tr '\n' ' ' < "$f")"

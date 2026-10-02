@@ -801,10 +801,21 @@ sessions — separated only when `BENCH_CLIENT_IPS` is set, otherwise the
 summary says it is not; UDP 4000 is never seen. Bandwidth windows are
 each node's own sampled span on its own clock. (The journald NETSTATS
 section is deleted — P2P-PORT F6; the bench no longer needs
-`journalctl` on the nodes.) Stall and drop rules are
-the local bench's inline `stagef_cmt_wait_row` rules, with the stall
-measured in wall-clock seconds (180 s with the tip not moving) because a
-poll costs an ssh round trip. `tx_count` counts ANY submitter's
+`journalctl` on the nodes.) Stall rule as the local bench's
+inline `stagef_cmt_wait_row`, measured in wall-clock seconds (180 s with
+the tip not moving) because a poll costs an ssh round trip. **The drop
+rule is PROGRESS-based (2026-10-03):** a round's spends are DROPPED only
+when NONE of them was applied for 20 consecutive heights. It used to be
+20 heights past the submission tip; under a backlog (the 3-host run of
+2026-10-03, ~42 TPS offered) that counted 32 merely-delayed spends as
+DROPPED (all 100 were in `v2_intent_index` 1-7 heights later), and the
+next round re-spent coins whose spend was still pending — the node
+refused it (CheckTx, `dnac_spend RPC failed (rc=7)`), which the bench
+then misread as a client fault and aborted. A node refusal (status
+refusal, or an error frame from `dnac_spend`, rc ≠ 6) is now COUNTED as
+refused. The cap section names HF-3: when param 8 is active at the
+window, the unit cap is printed as pre-HF-3 arithmetic and gives no
+verdict. `tx_count` counts ANY submitter's
 envelopes on the live chain — the workers' own applied total is printed
 next to it. The preparation's blocks precede the window and are not
 counted. **An unreadable node is not a height:** a failed tip / row read
