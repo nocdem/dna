@@ -38,6 +38,7 @@
 #include "crypto/nodus_channel_crypto.h"
 #include "protocol/nodus_tier1.h"
 #include "protocol/nodus_tier2.h"   /* nodus_t2_cursor_t / page info (DHT Package A) */
+#include "server/nodus_inter_dial.h" /* the shared 4002 dialer (batch forward) */
 
 #ifdef __cplusplus
 extern "C" {
@@ -330,15 +331,16 @@ typedef struct {
     /* Kyber handshake state */
     nodus_channel_crypto_t crypto;  /**< AES-256-GCM session (after Kyber handshake) */
     bool        encrypted;          /**< true after successful Kyber key exchange */
-    uint8_t     pending_ss[32];     /**< Shared secret (cleared after key_ack) */
-    uint8_t     pending_nc[32];     /**< Local nonce (cleared after key_ack) */
-    /* CRIT-1: retained challenge nonce + EXPECTED peer identity, so the
-     * batch-forward dialer can verify the peer's kpk_sig over
-     * (kyber_pk || challenge_nonce) and pin fingerprint(server_pk) against the
-     * FIND_NODE peer it actually dialed, before Kyber-encapsulating to it. */
-    uint8_t     challenge_nonce[NODUS_NONCE_LEN];
-    bool        has_challenge_nonce;
-    nodus_key_t expected_node_id;   /**< the peer bf_start_forward dialed */
+    /* The 4002 dialer handshake — the SHARED module core uses too
+     * (server/nodus_inter_dial.h; decision 2026-10-01-nodus-component-split
+     * item 28, split S5b): the retained challenge nonce the CRIT-1 kpk_sig
+     * check needs, the pending KEM secret between key_init and key_ack
+     * (zeroed at key_ack and at cleanup), the proven peer identity. */
+    nodus_inter_dial_t dial;
+    /* CRIT-1: the EXPECTED peer identity — the FIND_NODE peer
+     * bf_start_forward dialed; the module pins fingerprint(server_pk)
+     * against it before Kyber-encapsulating. */
+    nodus_key_t expected_node_id;
     bool        has_expected_node_id;
     /* Batch keys (stored for sending after auth) */
     nodus_key_t *batch_keys;     /**< Keys to query (heap, freed on cleanup) */

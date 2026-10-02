@@ -3009,8 +3009,7 @@ static void bf_conn_cleanup(nodus_dht_t *dht, dht_bf_conn_t *c) {
     free(c->batch_keys); c->batch_keys = NULL;
     if (c->encrypted) nodus_channel_crypto_clear(&c->crypto);
     c->encrypted = false;
-    qgp_secure_memzero(c->pending_ss, sizeof(c->pending_ss));
-    qgp_secure_memzero(c->pending_nc, sizeof(c->pending_nc));
+    qgp_secure_memzero(&c->dial, sizeof(c->dial));
     c->state = BF_DONE;
 }
 
@@ -3254,6 +3253,83 @@ static void bf_forward_fail(nodus_dht_t *dht, dht_bf_batch_t *b, dht_bf_conn_t *
     if (--b->pending_forwards <= 0) nodus_dht_bf_send_result(dht, b);
 }
 
+/* ── The batch-forward dialer on the shared 4002 dialer module ──────
+ *
+ * Split S5b, decision 2026-10-01-nodus-component-split item 28 ("no copy"):
+ * the handshake BF used to carry its own copy of (challenge → auth,
+ * auth_ok → CRIT-1 kpk_sig + identity pin → KEM → key_init, key_ack →
+ * channel crypto) now runs through server/nodus_inter_dial.c, the code
+ * core's dialer runs. BF keeps its own socket and its own send / receive
+ * state machine; the module's send_raw hands each handshake payload to
+ * that state machine (framed into send_buf), and its `established` says
+ * the channel key exists. */
+typedef struct {
+    dht_bf_conn_t *c;
+    bool           sent;          /* send_raw framed a payload into send_buf */
+    bool           build_failed;  /* framing it failed */
+    bool           established;   /* the module reported the handshake done */
+    bool           encrypted;     /* ... with channel crypto */
+} bf_dial_ctx_t;
+
+static int bf_dial_send_raw(void *ctx, const uint8_t *payload, size_t len) {
+    bf_dial_ctx_t *x = (bf_dial_ctx_t *)ctx;
+    free(x->c->send_buf);
+    x->c->send_buf = NULL;
+    x->c->send_len = 0;
+    if (bf_build_frame(&x->c->send_buf, &x->c->send_len, payload, len) != 0) {
+        x->build_failed = true;
+        return -1;
+    }
+    x->sent = true;
+    return 0;
+}
+
+static void bf_dial_established(void *ctx, bool encrypted) {
+    bf_dial_ctx_t *x = (bf_dial_ctx_t *)ctx;
+    x->established = true;
+    x->encrypted = encrypted;
+}
+
+static void bf_dial_io(nodus_dht_t *dht, dht_bf_conn_t *c, bf_dial_ctx_t *x,
+                       nodus_inter_dial_io_t *io) {
+    memset(x, 0, sizeof(*x));
+    x->c = c;
+    memset(io, 0, sizeof(*io));
+    io->identity = dht->host.identity;
+    io->expected_peer_id = c->has_expected_node_id ? &c->expected_node_id : NULL;
+    io->crypto = &c->crypto;
+    io->peer_ip = c->ip;
+    io->peer_port = c->port;
+    io->slot = c->fd;          /* log lines only: BF has no pool slot */
+    io->send_raw = bf_dial_send_raw;
+    io->established = bf_dial_established;
+    io->ctx = x;
+}
+
+/* Decode the frame in c->recv_buf and run it through the dialer module.
+ * @return the module's answer; NODUS_INTER_DIAL_REFUSED as well when the
+ *         frame does not decode or is an error reply. `msg_token` (may be
+ *         NULL) receives the frame's session token (auth_ok). */
+static nodus_inter_dial_rc_t bf_dial_feed(nodus_dht_t *dht, dht_bf_conn_t *c,
+                                          bf_dial_ctx_t *x,
+                                          uint8_t *msg_token) {
+    nodus_inter_dial_io_t io;
+    bf_dial_io(dht, c, x, &io);
+    nodus_tier2_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    if (nodus_t2_decode(c->recv_buf + NODUS_FRAME_HEADER_SIZE,
+                        c->recv_len - NODUS_FRAME_HEADER_SIZE, &msg) != 0 ||
+        msg.type == 'e') {
+        nodus_t2_msg_free(&msg);
+        return NODUS_INTER_DIAL_REFUSED;
+    }
+    if (msg_token)
+        memcpy(msg_token, msg.token, NODUS_SESSION_TOKEN_LEN);
+    nodus_inter_dial_rc_t rc = nodus_inter_dial_on_frame(&c->dial, &io, &msg);
+    nodus_t2_msg_free(&msg);
+    return rc;
+}
+
 /** Handle epoll events for batch forward fds — full auth state machine */
 static void bf_handle_event(nodus_dht_t *dht, int fd, uint32_t events) {
     /* Phase 3.2e: log every BF event with fd. Captures BF subsystem activity
@@ -3314,33 +3390,14 @@ static void bf_handle_event(nodus_dht_t *dht, int fd, uint32_t events) {
         if (rc < 0) { bf_forward_fail(dht, b, c); return; }
         if (rc == 0) return;  /* need more data */
 
-        /* Parse challenge nonce */
-        nodus_tier2_msg_t msg;
-        memset(&msg, 0, sizeof(msg));
-        if (nodus_t2_decode(c->recv_buf + 7, c->recv_len - 7, &msg) != 0) {
-            nodus_t2_msg_free(&msg);
-            bf_forward_fail(dht, b, c); return;
-        }
-
-        /* C2 fix: domain-tagged AUTH_CHALLENGE. bf_forward owns its own TCP
-         * socket and only runs outbound (we dialed the leader), so no
-         * inbound-conn oracle vector exists here — just the domain tag. */
-        nodus_sig_t sig;
-        /* CRIT-1: retain the challenge nonce so BF_RECV_AUTHOK can verify the
-         * peer's kpk_sig over (kyber_pk || nonce). */
-        memcpy(c->challenge_nonce, msg.nonce, NODUS_NONCE_LEN);
-        c->has_challenge_nonce = true;
-        if (nodus_sign_auth_challenge(&sig, msg.nonce, &dht->host.identity->sk) != 0) {
-            nodus_t2_msg_free(&msg);
-            bf_forward_fail(dht, b, c); return;
-        }
-        nodus_t2_msg_free(&msg);
-
-        /* Build AUTH frame */
-        uint8_t cbor[8192];
-        size_t clen = 0;
-        if (nodus_t2_auth(2, &sig, cbor, sizeof(cbor), &clen) != 0 ||
-            bf_build_frame(&c->send_buf, &c->send_len, cbor, clen) != 0) {
+        /* challenge → auth, in the shared dialer module: it signs the
+         * nonce (C2 domain tag) and retains it for the CRIT-1 kpk_sig
+         * check at auth_ok; it refuses an absent (all-zero) nonce and
+         * never signs a second challenge. Anything but a signed auth
+         * framed for sending fails the forward. */
+        bf_dial_ctx_t x;
+        nodus_inter_dial_rc_t drc = bf_dial_feed(dht, c, &x, NULL);
+        if (drc != NODUS_INTER_DIAL_DONE || !x.sent || x.build_failed) {
             bf_forward_fail(dht, b, c); return;
         }
         c->send_pos = 0;
@@ -3356,103 +3413,20 @@ static void bf_handle_event(nodus_dht_t *dht, int fd, uint32_t events) {
         if (rc < 0) { bf_forward_fail(dht, b, c); return; }
         if (rc == 0) return;
 
-        /* Parse auth_ok → get token + kyber_pk */
-        nodus_tier2_msg_t msg;
-        memset(&msg, 0, sizeof(msg));
-        if (nodus_t2_decode(c->recv_buf + 7, c->recv_len - 7, &msg) != 0 ||
-            msg.type == 'e') {
-            nodus_t2_msg_free(&msg);
-            bf_forward_fail(dht, b, c); return;
-        }
-        memcpy(c->token, msg.token, NODUS_SESSION_TOKEN_LEN);
-        uint32_t authok_txn = msg.txn_id;
-
-        /* CRIT-1: authenticate the peer's Kyber pk BEFORE encapsulating to it —
-         * verify kpk_sig over (kyber_pk || our challenge nonce) under server_pk,
-         * then pin fingerprint(server_pk) to the FIND_NODE peer we dialed. The
-         * signature alone only proves the triple is self-consistent; the pin is
-         * what stops an on-path MITM from substituting its own identity. All
-         * paths fail closed (bf_forward_fail). */
-        if (!msg.has_kyber_pk || !msg.has_kpk_sig || !msg.has_server_pk ||
-            !c->has_challenge_nonce || !c->has_expected_node_id) {
-            fprintf(stderr,
-                    "BF CRIT-1: auth_ok from %s:%u missing kyber_pk/kpk_sig/"
-                    "server_pk or local pin state — refusing\n",
-                    c->ip, (unsigned)c->port);
-            nodus_t2_msg_free(&msg);
-            bf_forward_fail(dht, b, c); return;
-        }
-        {
-            uint8_t sign_data[NODUS_KYBER_PK_BYTES + NODUS_NONCE_LEN];
-            memcpy(sign_data, msg.kyber_pk, NODUS_KYBER_PK_BYTES);
-            memcpy(sign_data + NODUS_KYBER_PK_BYTES,
-                   c->challenge_nonce, NODUS_NONCE_LEN);
-            nodus_key_t actual_id;
-            if (nodus_verify_kyber_bind(&msg.kpk_sig, sign_data,
-                                         sizeof(sign_data), &msg.server_pk) != 0) {
-                fprintf(stderr,
-                        "BF CRIT-1: kyber_pk signature INVALID from %s:%u — "
-                        "possible MITM, refusing\n", c->ip, (unsigned)c->port);
-                nodus_t2_msg_free(&msg);
-                bf_forward_fail(dht, b, c); return;
-            }
-            if (nodus_fingerprint(&msg.server_pk, &actual_id) != 0 ||
-                nodus_key_cmp(&actual_id, &c->expected_node_id) != 0) {
-                fprintf(stderr,
-                        "BF CRIT-1: identity PIN MISMATCH at %s:%u — server_pk "
-                        "fingerprint != dialed node_id, refusing\n",
-                        c->ip, (unsigned)c->port);
-                nodus_t2_msg_free(&msg);
-                bf_forward_fail(dht, b, c); return;
-            }
-        }
-
-        /* Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-mlkem-
-         * migration.md): if the peer ALSO advertised a signed ML-KEM-1024
-         * pubkey, verify it under MLKEM_BIND against the SAME pinned
-         * server_pk (the CRIT-1 block above already proved server_pk is
-         * the peer we dialed) and prefer it; otherwise fall back to Kyber
-         * round-3 exactly as today. */
-        bool use_mlkem = false;
-        if (msg.has_mlkem_pk && msg.has_mpk_sig) {
-            uint8_t msign_data[NODUS_MLKEM_PK_BYTES + NODUS_NONCE_LEN];
-            memcpy(msign_data, msg.mlkem_pk, NODUS_MLKEM_PK_BYTES);
-            memcpy(msign_data + NODUS_MLKEM_PK_BYTES,
-                   c->challenge_nonce, NODUS_NONCE_LEN);
-            if (nodus_verify_mlkem_bind(&msg.mpk_sig, msign_data, sizeof(msign_data),
-                                         &msg.server_pk) == 0) {
-                use_mlkem = true;
-            } else {
-                fprintf(stderr,
-                        "BF: mlkem_pk signature INVALID from %s:%u — falling "
-                        "back to Kyber round-3\n", c->ip, (unsigned)c->port);
-            }
-        }
-
-        /* KEM encapsulate → shared secret + ciphertext */
-        uint8_t ct[NODUS_KYBER_CT_BYTES], ss[NODUS_KYBER_SS_BYTES];
-        uint8_t alg = use_mlkem ? 1 : 0;
-        int enc_rc = use_mlkem
-            ? qgp_mlkem1024_encapsulate(ct, ss, msg.mlkem_pk)
-            : qgp_kem1024_encapsulate(ct, ss, msg.kyber_pk);
-        if (enc_rc != 0) {
-            nodus_t2_msg_free(&msg);
-            bf_forward_fail(dht, b, c); return;
-        }
-        nodus_t2_msg_free(&msg);
-
-        /* Generate local nonce, store pending state */
-        uint8_t nc[NODUS_NONCE_LEN];
-        nodus_random(nc, NODUS_NONCE_LEN);
-        memcpy(c->pending_ss, ss, 32);
-        memcpy(c->pending_nc, nc, 32);
-        qgp_secure_memzero(ss, sizeof(ss));
-
-        /* Build key_init frame */
-        uint8_t ki_buf[4096];
-        size_t ki_len = 0;
-        if (nodus_t2_key_init(authok_txn, ct, nc, alg, ki_buf, sizeof(ki_buf), &ki_len) != 0 ||
-            bf_build_frame(&c->send_buf, &c->send_len, ki_buf, ki_len) != 0) {
+        /* auth_ok → (CRIT-1) → key_init, in the shared dialer module: the
+         * peer's kpk_sig over (kyber_pk || our challenge nonce) must verify
+         * under server_pk AND fingerprint(server_pk) must be the FIND_NODE
+         * peer we dialed (expected_node_id), or the module refuses; then
+         * ML-KEM-1024 when the peer's mpk_sig verifies under the same
+         * server_pk, else Kyber round-3. All paths fail closed. The
+         * forward needs the channel key: a key exchange that did not start
+         * (the module swallows an encapsulation failure, and a node
+         * without a Kyber identity would go plaintext) fails it too. The
+         * auth_ok's session token goes into the get_batch, as before. */
+        bf_dial_ctx_t x;
+        nodus_inter_dial_rc_t drc = bf_dial_feed(dht, c, &x, c->token);
+        if (drc != NODUS_INTER_DIAL_DONE || !c->dial.pending_kem ||
+            !x.sent || x.build_failed) {
             bf_forward_fail(dht, b, c); return;
         }
         c->send_pos = 0;
@@ -3470,23 +3444,16 @@ static void bf_handle_event(nodus_dht_t *dht, int fd, uint32_t events) {
         if (rc < 0) { bf_forward_fail(dht, b, c); return; }
         if (rc == 0) return;
 
-        /* Parse key_ack → get server nonce */
-        nodus_tier2_msg_t msg;
-        memset(&msg, 0, sizeof(msg));
-        if (nodus_t2_decode(c->recv_buf + 7, c->recv_len - 7, &msg) != 0 ||
-            !msg.has_key_nonce) {
-            nodus_t2_msg_free(&msg);
+        /* key_ack → AES-256-GCM session key (we DIALED → initiator), in the
+         * shared dialer module; it zeroes the pending secret. A key_ack
+         * without the server nonce, or any other frame, leaves the channel
+         * without a key and fails the forward. */
+        bf_dial_ctx_t x;
+        nodus_inter_dial_rc_t drc = bf_dial_feed(dht, c, &x, NULL);
+        if (drc != NODUS_INTER_DIAL_DONE || !x.established || !x.encrypted) {
             bf_forward_fail(dht, b, c); return;
         }
-
-        /* Derive AES-256-GCM session key. We DIALED this peer → initiator. */
-        nodus_channel_crypto_init(&c->crypto, c->pending_ss,
-                                    c->pending_nc, msg.key_nonce,
-                                    NODUS_CHANNEL_ROLE_INITIATOR);
         c->encrypted = true;
-        qgp_secure_memzero(c->pending_ss, sizeof(c->pending_ss));
-        qgp_secure_memzero(c->pending_nc, sizeof(c->pending_nc));
-        nodus_t2_msg_free(&msg);
 
         /* Build get_batch CBOR, encrypt, frame, send. S2/S3: forward the
          * owner filter and paging args (an old peer skips them; the merge
@@ -3645,15 +3612,15 @@ static int bf_start_forward(nodus_dht_t *dht, dht_bf_batch_t *b,
     memcpy(c->batch_keys, keys, (size_t)key_count * sizeof(nodus_key_t));
     c->batch_key_count = key_count;
 
-    /* Build HELLO frame (first message in auth handshake) */
-    uint8_t cbor_buf[4096];
-    size_t cbor_len = 0;
-    if (nodus_t2_hello(1, &dht->host.identity->pk, &dht->host.identity->node_id,
-                        cbor_buf, sizeof(cbor_buf), &cbor_len) != 0)
-        goto fail;
-
-    if (bf_build_frame(&c->send_buf, &c->send_len, cbor_buf, cbor_len) != 0)
-        goto fail;
+    /* Build HELLO frame (first message in auth handshake) — the shared
+     * dialer module's hello (split S5b, decision item 28). */
+    {
+        bf_dial_ctx_t x;
+        nodus_inter_dial_io_t io;
+        bf_dial_io(dht, c, &x, &io);
+        if (nodus_inter_dial_start(&io) != 0 || !x.sent || x.build_failed)
+            goto fail;
+    }
 
     c->recv_cap = RESP_BUF_SIZE;
     c->recv_buf = malloc(c->recv_cap);

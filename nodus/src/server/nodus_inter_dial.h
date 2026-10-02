@@ -132,6 +132,96 @@ nodus_inter_dial_rc_t nodus_inter_dial_on_frame(nodus_inter_dial_t *d,
                                                 const nodus_inter_dial_io_t *io,
                                                 const nodus_tier2_msg_t *msg);
 
+/* ── The outbound 4002 pool (split S5b, decision items 16, 28) ─────────
+ *
+ * The find-or-dial rule, the pre-framed send, the dialed-conn hygiene and
+ * the hint filter that core's inter-node pool always used, moved here
+ * unchanged so that core (presence, circuits) and the nodus-storage
+ * process (replication, republish, hinted handoff) run the SAME code on
+ * their own pools. Every function works on the pool it is given and on
+ * nothing else; none holds state of its own. Log lines are the ones core
+ * printed before the move.
+ */
+
+struct nodus_tcp;
+struct nodus_tcp_conn;
+
+/** Idle limit of a 4002 connection in seconds (core's IDLE_TIMEOUT_AUTH). */
+#define NODUS_INTER_POOL_IDLE_SEC        180
+/** A dialed conn still in HELLO_SENT after this many seconds is closed. */
+#define NODUS_INTER_POOL_HELLO_TIMEOUT_SEC 10
+
+/**
+ * The find half of find-or-dial: with `expected_node_id` NULL, the first
+ * pool entry for ip:port, whatever it is; with a node_id, the first conn
+ * (pool slot order) WE dialed whose identity is that node_id — its
+ * expected_peer_id and/or its proven peer_id equal it, and neither, when
+ * set, differs. Never an AF_UNIX conn. NULL when none qualifies.
+ */
+struct nodus_tcp_conn *nodus_inter_pool_find(struct nodus_tcp *pool,
+                                             const char *ip, uint16_t port,
+                                             const nodus_key_t *expected_node_id);
+
+/**
+ * Find-or-dial: nodus_inter_pool_find, else a new connection marked
+ * is_nodus with `expected_node_id` (when non-NULL) recorded as the pin
+ * (conn->expected_peer_id) the dialer's auth_ok checks (CRIT-1).
+ * @return the connection, or NULL if the dial could not be started.
+ */
+struct nodus_tcp_conn *nodus_inter_pool_dial(struct nodus_tcp *pool,
+                                             const char *ip, uint16_t port,
+                                             const nodus_key_t *expected_node_id);
+
+/**
+ * Send one PRE-FRAMED frame (7-byte header + payload) to a peer's 4002:
+ * find-or-dial with the pin; while the handshake runs the bytes wait in
+ * the conn's auth queue (cap NODUS_TCP_PENDING_MAX); on an encrypted conn
+ * the payload goes through nodus_tcp_send_progress; on a plaintext conn
+ * the frame is appended to the write buffer. A slow consumer (a failed
+ * send, or a write buffer that would pass one maximum frame) is
+ * disconnected.
+ * @return 0 queued / written, -1 failed (the caller decides on a hint).
+ */
+int nodus_inter_pool_send_framed(struct nodus_tcp *pool, const char *ip,
+                                 uint16_t port,
+                                 const nodus_key_t *expected_node_id,
+                                 const uint8_t *frame, size_t flen);
+
+/**
+ * The pool's half of core's idle sweep, at `now` (seconds,
+ * nodus_time_now): a connected conn idle longer than
+ * NODUS_INTER_POOL_IDLE_SEC is disconnected; a conn in HELLO_SENT for more
+ * than NODUS_INTER_POOL_HELLO_TIMEOUT_SEC is marked AUTH_FAILED and
+ * disconnected. The caller decides how often it runs.
+ */
+void nodus_inter_pool_sweep(struct nodus_tcp *pool, uint64_t now);
+
+/**
+ * The hint filter (decision item 33): is this 4002 payload a DHT
+ * REPLICATION frame — a CBOR map whose envelope says query ("y" == "q")
+ * and whose method ("q") is "sv" or "m_sv"? Only those may be parked in
+ * the hinted-handoff table on pending-full; everything else is dropped.
+ */
+bool nodus_inter_frame_is_replication(const uint8_t *payload, size_t len);
+
+/**
+ * The dialer state's outcome copied onto the connection: an auth_ok was
+ * received → conn->authenticated; the peer identity proven at auth_ok
+ * (signature + pin) → conn->peer_id / peer_pk / peer_id_set (F4: hints key
+ * on a real identity).
+ */
+void nodus_inter_dial_conn_sync(const nodus_inter_dial_t *d,
+                                struct nodus_tcp_conn *conn);
+
+/**
+ * Open a dialed conn's send gate when the handshake finished
+ * (nodus_inter_dial_io_t.established): auth_state OK; plaintext (no Kyber
+ * identity) → the auth queue is flushed; encrypted → the auth queue is
+ * DISCARDED (it holds pre-framed plaintext that would bypass encryption;
+ * the periodic senders repeat their frames).
+ */
+void nodus_inter_dial_conn_open(struct nodus_tcp_conn *conn, bool encrypted);
+
 #ifdef __cplusplus
 }
 #endif

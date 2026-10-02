@@ -313,43 +313,9 @@ static void dht_send_stats_dump(nodus_server_t *srv) {
 
 /* ── Phase 3: Pending-full hint fallback ─────────────────────────── */
 
-/* Split S5a, decision item 33: is this 4002 payload a DHT REPLICATION frame
- * — the only kind the hint table may hold? Rule: the payload is a CBOR map
- * whose envelope says query ("y" == "q") and whose method ("q") is "sv" or
- * "m_sv". Those are exactly the frames the DHT builds with
- * nodus_t1_store_value (replication on put, republish, hinted retry) and
- * nodus_t2_media_store_value (media chunk replication); T1 and T2 encode
- * the envelope with the same bytes (`y` = text "q", `q` = method text).
- * Everything else — p_sync, ri_*, ntf, sub / unsub, and every reply or
- * error ("y" == "r" / "e": fv_r, sv_ack, get_batch results, ...) — is not.
- * Only the envelope is read; the value is not parsed. */
-static bool pending_full_is_replication(const uint8_t *payload, size_t len) {
-    cbor_decoder_t dec;
-    cbor_decoder_init(&dec, payload, len);
-    cbor_item_t top = cbor_decode_next(&dec);
-    if (top.type != CBOR_ITEM_MAP) return false;
-    bool is_query = false, is_repl = false, saw_y = false, saw_q = false;
-    for (size_t i = 0; i < top.count && !dec.error && !(saw_y && saw_q); i++) {
-        cbor_item_t k = cbor_decode_next(&dec);
-        if (k.type != CBOR_ITEM_TSTR) return false;
-        if (k.tstr.len == 1 && (k.tstr.ptr[0] == 'y' || k.tstr.ptr[0] == 'q')) {
-            char which = k.tstr.ptr[0];
-            cbor_item_t v = cbor_decode_next(&dec);
-            if (v.type != CBOR_ITEM_TSTR) return false;
-            if (which == 'y') {
-                saw_y = true;
-                is_query = v.tstr.len == 1 && v.tstr.ptr[0] == 'q';
-            } else {
-                saw_q = true;
-                is_repl = (v.tstr.len == 2 && memcmp(v.tstr.ptr, "sv", 2) == 0) ||
-                          (v.tstr.len == 4 && memcmp(v.tstr.ptr, "m_sv", 4) == 0);
-            }
-        } else {
-            cbor_decode_skip(&dec);
-        }
-    }
-    return !dec.error && is_query && is_repl;
-}
+/* Split S5a, decision item 33: only a DHT REPLICATION frame may be parked
+ * in the hint table — the rule is nodus_inter_frame_is_replication
+ * (server/nodus_inter_dial.c, shared with nodus-storage's pool since S5b). */
 
 /* Invoked by the TCP layer when a send cannot fit into wbuf AND the
  * per-conn pending queue is also at its cap. A DHT replication frame is
@@ -393,7 +359,7 @@ void nodus_server_on_pending_full(nodus_tcp_conn_t *conn,
     /* Decision item 33: only DHT replication frames are parked; p_sync,
      * ri_*, notifications, subscriptions and relayed replies are dropped
      * (their senders repeat them or their requester times out). */
-    if (!pending_full_is_replication(payload, len)) {
+    if (!nodus_inter_frame_is_replication(payload, len)) {
         QGP_LOG_WARN(LOG_TAG, "PENDING_FULL: peer=%s:%u len=%zu not a "
                      "replication frame — frame DROPPED (no hint)",
                      conn->ip, (unsigned)conn->port, len);
@@ -447,173 +413,30 @@ void nodus_server_on_pending_full(nodus_tcp_conn_t *conn,
 nodus_tcp_conn_t *nodus_server_inter_find(nodus_server_t *srv, const char *ip,
                                           uint16_t port,
                                           const nodus_key_t *expected_node_id) {
-    if (!srv || !ip) return NULL;
-    /* No pin requested: the first pool entry for ip:port, as before. */
-    if (!expected_node_id)
-        return nodus_tcp_find_by_addr(&srv->inter_tcp, ip, port);
-    /* Pinned: only a conn WE dialed whose identity is the requested one —
-     * never an accepted conn (its peer chose to call us; the pin was never
-     * checked on it), never a dial pinned to another node_id, never a conn
-     * proven for another node_id. Every identity the conn carries must
-     * match (expected and, once proven, peer_id) and at least one must be
-     * set. Pool slot order: the first such conn. */
-    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
-        nodus_tcp_conn_t *c = srv->inter_tcp.pool[i];
-        if (!c || c->is_unix || c->port != port || strcmp(c->ip, ip) != 0)
-            continue;
-        if (!c->auth_initiated_by_us) continue;
-        bool exp_eq = c->expected_peer_id_set &&
-                      nodus_key_cmp(&c->expected_peer_id, expected_node_id) == 0;
-        bool proven_eq = c->peer_id_set &&
-                         nodus_key_cmp(&c->peer_id, expected_node_id) == 0;
-        if (c->expected_peer_id_set && !exp_eq) continue;
-        if (c->peer_id_set && !proven_eq) continue;
-        if (exp_eq || proven_eq) return c;
-    }
-    return NULL;
+    if (!srv) return NULL;
+    /* The shared rule (server/nodus_inter_dial.c, split S5b). */
+    return nodus_inter_pool_find(&srv->inter_tcp, ip, port, expected_node_id);
 }
 
 nodus_tcp_conn_t *nodus_server_inter_dial(nodus_server_t *srv, const char *ip,
                                           uint16_t port,
                                           const nodus_key_t *expected_node_id) {
-    nodus_tcp_conn_t *conn = nodus_server_inter_find(srv, ip, port,
-                                                     expected_node_id);
-    if (conn) return conn;
-    /* None usable: a fresh conn. The transport has no duplicate check —
-     * a second conn to an ip:port already in the pool (an accepted conn,
-     * or one dialed for another identity) is simply another slot. */
-    conn = nodus_tcp_connect(&srv->inter_tcp, ip, port);
-    if (!conn) return NULL;
-    conn->is_nodus = true;
-    /* CRIT-1: record WHO we believe we are dialing, from the routing/roster
-     * entry that produced this ip:port. The auth_ok handler pins
-     * fingerprint(server_pk) against it before Kyber-encapsulating, so an
-     * on-path attacker cannot substitute its own identity. Stored on the
-     * conn (not the session): on_inter_connect clears the session, and on
-     * an immediate (localhost) connect it has already run inside
-     * nodus_tcp_connect above — the dialer reads the pin from the conn at
-     * auth_ok time. */
-    if (expected_node_id) {
-        conn->expected_peer_id = *expected_node_id;
-        conn->expected_peer_id_set = true;
-    }
-    /* on_inter_connect callback handles auth_required + hello */
-    return conn;
+    if (!srv) return NULL;
+    /* on_inter_connect handles auth_required + hello */
+    return nodus_inter_pool_dial(&srv->inter_tcp, ip, port, expected_node_id);
 }
 
 /* ── Periodic republish (via inter_tcp pool) ────────────────────── */
 
-/** Send a pre-framed replication payload via persistent inter_tcp pool.
- *  Frame is already wire-encoded (nodus_frame_encode already called by caller).
+/** Send a pre-framed replication payload via persistent inter_tcp pool
+ *  (nodus_inter_pool_send_framed — shared with nodus-storage's own pool).
  *  Returns 0 on success, -1 on failure (caller should use hinted handoff). */
 static int dht_republish_send(nodus_server_t *srv, const char *ip,
                                uint16_t port,
                                const nodus_key_t *expected_node_id,
                                const uint8_t *frame, size_t flen) {
-    nodus_tcp_conn_t *conn = nodus_server_inter_dial(srv, ip, port,
-                                                     expected_node_id);
-    if (!conn) return -1;
-
-    /* Auth gate for pre-framed data */
-    if (conn->auth_required && conn->auth_state != NODUS_CONN_AUTH_OK) {
-        if (conn->auth_state == NODUS_CONN_AUTH_FAILED) return -1;
-        /* Queue raw pre-framed bytes in pending buffer */
-        if (!conn->pending_buf) {
-            conn->pending_cap = NODUS_TCP_BUF_INIT;
-            conn->pending_buf = malloc(conn->pending_cap);
-            if (!conn->pending_buf) return -1;
-            conn->pending_len = 0;
-        }
-        if (conn->pending_len + flen > NODUS_TCP_PENDING_MAX) return -1;
-        if (conn->pending_len + flen > conn->pending_cap) {
-            size_t new_cap = conn->pending_cap;
-            while (new_cap < conn->pending_len + flen) new_cap *= 2;
-            if (new_cap > NODUS_TCP_PENDING_MAX) new_cap = NODUS_TCP_PENDING_MAX;
-            uint8_t *nb = realloc(conn->pending_buf, new_cap);
-            if (!nb) return -1;
-            conn->pending_buf = nb;
-            conn->pending_cap = new_cap;
-        }
-        memcpy(conn->pending_buf + conn->pending_len, frame, flen);
-        conn->pending_len += flen;
-        return 0;
-    }
-
-    /* Auth OK or not required.
-     * If crypto is active, we must go through nodus_tcp_send() so the
-     * payload gets encrypted. Extract payload from pre-framed data and
-     * send via the normal path. */
-    if (conn->channel_crypto.established) {
-        /* frame = [7-byte header][payload]. Extract payload.
-         * B3 fix — read inline channel_crypto. */
-        if (flen <= NODUS_FRAME_HEADER_SIZE) return -1;
-        const uint8_t *payload = frame + NODUS_FRAME_HEADER_SIZE;
-        size_t payload_len = flen - NODUS_FRAME_HEADER_SIZE;
-        /* Phase 3.2b-inv2: republish send path visibility. Sample: first 3
-         * calls per conn logged via cc->tx_counter check inside send_progress;
-         * this log just tags the entry point so we know which caller. */
-        {
-            nodus_channel_crypto_t *cc = &conn->channel_crypto;
-            if (cc->tx_counter < 3) {
-                fprintf(stderr,
-                        "REPUBLISH_SEND slot=%d peer=%s:%u crypto=%p "
-                        "tx_counter=%llu flen=%zu\n",
-                        conn->slot, conn->ip, (unsigned)conn->port,
-                        (void *)cc,
-                        (unsigned long long)cc->tx_counter, flen);
-            }
-        }
-        int rc = nodus_tcp_send_progress(conn, payload, payload_len, NULL, NULL);
-        if (rc != 0) {
-            /* Send failed (buffer full / slow consumer) — disconnect so
-             * next retry opens a fresh connection instead of hammering
-             * the same stalled conn with buf_ensure errors. */
-            fprintf(stderr, "REPL_SEND: slow consumer %s:%d, disconnecting\n",
-                    conn->ip, conn->port);
-            nodus_tcp_disconnect(&srv->inter_tcp, conn);
-        }
-        return rc;
-    }
-
-    /* No crypto — write pre-framed data directly to wbuf (fast path) */
-    if (conn->wpos > 0) {
-        size_t remaining = conn->wlen - conn->wpos;
-        if (remaining > 0)
-            memmove(conn->wbuf, conn->wbuf + conn->wpos, remaining);
-        conn->wlen = remaining;
-        conn->wpos = 0;
-    }
-    size_t needed = conn->wlen + flen;
-    const size_t max_wbuf = NODUS_MAX_FRAME_TCP + NODUS_FRAME_HEADER_SIZE + 4096;
-    if (needed > max_wbuf) {
-        /* Buffer full — slow consumer, disconnect */
-        fprintf(stderr, "REPL_SEND: slow consumer %s:%d (wlen=%zu), disconnecting\n",
-                conn->ip, conn->port, conn->wlen);
-        nodus_tcp_disconnect(&srv->inter_tcp, conn);
-        return -1;
-    }
-    if (needed > conn->wcap) {
-        size_t new_cap = conn->wcap;
-        while (new_cap < needed) new_cap *= 2;
-        if (new_cap > max_wbuf) new_cap = max_wbuf;
-        uint8_t *nb = realloc(conn->wbuf, new_cap);
-        if (!nb) return -1;
-        conn->wbuf = nb;
-        conn->wcap = new_cap;
-    }
-    memcpy(conn->wbuf + conn->wlen, frame, flen);
-    conn->wlen += flen;
-
-#ifndef _WIN32
-    /* Ensure EPOLLOUT so data gets flushed */
-    if (conn->fd >= 0 && srv->inter_tcp.epoll_fd >= 0) {
-        uint32_t et = srv->inter_tcp.level_triggered ? 0 : EPOLLET;
-        struct epoll_event ev = { .events = EPOLLIN | EPOLLOUT | et, .data.ptr = conn };
-        epoll_ctl(srv->inter_tcp.epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
-    }
-#endif
-
-    return 0;
+    return nodus_inter_pool_send_framed(&srv->inter_tcp, ip, port,
+                                        expected_node_id, frame, flen);
 }
 
 /* ── Circuit handlers (VPN mesh Faz 1) ────────────────────────────── */
@@ -1164,25 +987,12 @@ static void idle_timeout_sweep(nodus_server_t *srv) {
         }
     }
 
-    /* Sweep inter-node TCP pool */
-    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
-        nodus_tcp_conn_t *c = srv->inter_tcp.pool[i];
-        if (!c || c->state != NODUS_CONN_CONNECTED) continue;
-        if (now - c->last_activity > IDLE_TIMEOUT_AUTH)
-            nodus_tcp_disconnect(&srv->inter_tcp, c);
-    }
-
-    /* Auth timeout: connections stuck in HELLO_SENT for >10s */
-    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
-        nodus_tcp_conn_t *c = srv->inter_tcp.pool[i];
-        if (!c || c->auth_state != NODUS_CONN_AUTH_HELLO_SENT) continue;
-        if (now - c->connected_at > 10) {
-            fprintf(stderr, "INTER_AUTH: auth timeout for %s:%d, disconnecting\n",
-                    c->ip, c->port);
-            c->auth_state = NODUS_CONN_AUTH_FAILED;
-            nodus_tcp_disconnect(&srv->inter_tcp, c);
-        }
-    }
+    /* Sweep inter-node TCP pool: idle conns (IDLE_TIMEOUT_AUTH) and conns
+     * stuck in HELLO_SENT for >10s — the shared pool sweep (split S5b;
+     * nodus-storage runs the same on its own outbound pool). */
+    _Static_assert(NODUS_INTER_POOL_IDLE_SEC == IDLE_TIMEOUT_AUTH,
+                   "the 4002 pool's idle limit is the authenticated one");
+    nodus_inter_pool_sweep(&srv->inter_tcp, now);
 
     /* Witness TCP uses T3 w_ident auth — not covered by this sweep. */
 
@@ -1269,18 +1079,11 @@ static inter_hs_role_t inter_handshake_role(const char *method) {
  * carried into the module before each call, and back out (with the proven
  * peer identity, F4) to the session and the conn after it. */
 static void inter_dial_sync_out(nodus_inter_session_t *sess) {
-    const nodus_inter_dial_t *d = &sess->dial;
-    if (d->authenticated) {
+    if (sess->dial.authenticated)
         sess->authenticated = true;
-        sess->conn->authenticated = true;
-    }
-    if (d->peer_id_set) {
-        /* F4: like the accepting side does after auth, so pending-full
-         * hints key on a real identity. */
-        sess->conn->peer_id = d->peer_id;
-        sess->conn->peer_pk = d->peer_pk;
-        sess->conn->peer_id_set = true;
-    }
+    /* conn->authenticated and the proven peer identity (F4) — shared with
+     * nodus-storage's dialer (nodus_inter_dial_conn_sync). */
+    nodus_inter_dial_conn_sync(&sess->dial, sess->conn);
 }
 
 static int inter_dial_send_raw(void *ctx, const uint8_t *payload, size_t len) {
@@ -1295,26 +1098,10 @@ static int inter_dial_send_raw_conn(void *ctx, const uint8_t *payload, size_t le
 
 static void inter_dial_established(void *ctx, bool encrypted) {
     nodus_inter_session_t *sess = (nodus_inter_session_t *)ctx;
-    nodus_tcp_conn_t *conn = sess->conn;
     inter_dial_sync_out(sess);
-    conn->auth_state = NODUS_CONN_AUTH_OK;
-    if (!encrypted) {
-        /* No Kyber identity on this node: plaintext is the only option —
-         * release what was queued during the handshake. */
-        nodus_tcp_pending_flush(conn);
-        return;
-    }
-    /* Session key set. DISCARD the pending queue — it contains pre-framed
-     * plaintext that would bypass encryption. Inter-node queued frames are
-     * periodic (heartbeat/repl) and will be re-sent on next cycle. */
-    if (conn->pending_buf) {
-        free(conn->pending_buf);
-        conn->pending_buf = NULL;
-        conn->pending_len = 0;
-        conn->pending_cap = 0;
-    }
-    QGP_LOG_INFO(LOG_TAG, "INTER_CRYPTO: outgoing conn to %s:%d encrypted",
-                 conn->ip, conn->port);
+    /* auth_state OK; plaintext → flush the auth queue, encrypted → discard
+     * it (shared with nodus-storage's dialer). */
+    nodus_inter_dial_conn_open(sess->conn, encrypted);
 }
 
 static void inter_dial_io(nodus_server_t *srv, nodus_inter_session_t *sess,
