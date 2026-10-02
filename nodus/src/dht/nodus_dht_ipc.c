@@ -112,6 +112,7 @@ struct nodus_dht_ipc {
     int                     rt_last_n;
     nodus_dht_peer_addr_t  *rt_scratch;
     uint8_t                *rt_buf;
+    nodus_dht_ipc_msg_t    *msg_scratch;   /* control-frame decode */
     bool                    rt_force;
     uint64_t                rt_pushed_ms;
     uint64_t                rt_checked_ms;
@@ -340,12 +341,11 @@ static void dipc_on_origin_frame(nodus_dht_ipc_t *ipc, nodus_tcp_conn_t *conn,
 
 static void dipc_on_ctl_frame(nodus_dht_ipc_t *ipc, const uint8_t *payload,
                               size_t len) {
-    nodus_dht_ipc_msg_t *msg = malloc(sizeof(*msg));
-    if (!msg) return;
+    /* Scratch allocated once (most control frames are UDP datagrams). */
+    nodus_dht_ipc_msg_t *msg = ipc->msg_scratch;
     if (nodus_dht_ipc_decode(payload, len, msg, NULL, 0) != 0) {
         QGP_LOG_WARN(LOG_TAG, "malformed control frame (len=%zu) — dropped",
                      len);
-        free(msg);
         return;
     }
     switch (msg->type) {
@@ -377,7 +377,6 @@ static void dipc_on_ctl_frame(nodus_dht_ipc_t *ipc, const uint8_t *payload,
                      "(type=%d) — dropped", (int)msg->type);
         break;
     }
-    free(msg);
 }
 
 /* ── IPC transport callbacks ─────────────────────────────────────── */
@@ -715,7 +714,10 @@ nodus_dht_ipc_t *nodus_dht_ipc_new(const nodus_identity_t *identity,
     ipc->rt_last    = calloc(NODUS_DHT_IPC_ROUTING_MAX, sizeof(*ipc->rt_last));
     ipc->rt_scratch = calloc(NODUS_DHT_IPC_ROUTING_MAX, sizeof(*ipc->rt_scratch));
     ipc->rt_buf     = malloc(NODUS_DHT_IPC_ROUTING_FRAME_MAX);
-    if (!ipc->rt_last || !ipc->rt_scratch || !ipc->rt_buf) goto fail;
+    ipc->msg_scratch = malloc(sizeof(*ipc->msg_scratch));
+    if (!ipc->rt_last || !ipc->rt_scratch || !ipc->rt_buf ||
+        !ipc->msg_scratch)
+        goto fail;
     if (nodus_tcp_init(&ipc->tcp, -1) != 0) goto fail;
     if (nodus_tcp_init(&ipc->out, -1) != 0) {
         nodus_tcp_close(&ipc->tcp);
@@ -746,6 +748,7 @@ fail:
     free(ipc->rt_last);
     free(ipc->rt_scratch);
     free(ipc->rt_buf);
+    free(ipc->msg_scratch);
     free(ipc);
     return NULL;
 }
@@ -779,5 +782,6 @@ void nodus_dht_ipc_free(nodus_dht_ipc_t *ipc) {
     free(ipc->rt_last);
     free(ipc->rt_scratch);
     free(ipc->rt_buf);
+    free(ipc->msg_scratch);
     free(ipc);
 }

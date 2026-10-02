@@ -116,6 +116,9 @@ typedef struct {
     nodus_dht_peer_addr_t  *rt;
     int                     rt_n;
     bool                    rt_logged;   /* since this control connection */
+    /* Decode scratch for control frames (allocated once). */
+    nodus_dht_peer_addr_t  *rt_scratch;
+    nodus_dht_ipc_msg_t    *msg_scratch;
 
     uint64_t                drop_logged_ms;
     uint64_t                drops;
@@ -353,13 +356,10 @@ static void ob_ctl_tick(ipc_be_t *ib, uint64_t now) {
 /* ── Transport callbacks ─────────────────────────────────────────── */
 
 static void ob_on_ctl_frame(ipc_be_t *ib, const uint8_t *payload, size_t len) {
-    nodus_dht_ipc_msg_t *msg = malloc(sizeof(*msg));
-    nodus_dht_peer_addr_t *rt = calloc(NODUS_DHT_IPC_ROUTING_MAX, sizeof(*rt));
-    if (!msg || !rt) {
-        free(msg);
-        free(rt);
-        return;
-    }
+    /* Scratch allocated once (nodus_dht_backend_ipc_open): most control
+     * frames are ds_udps datagrams, one per DHT UDP reply. */
+    nodus_dht_ipc_msg_t *msg = ib->msg_scratch;
+    nodus_dht_peer_addr_t *rt = ib->rt_scratch;
     if (nodus_dht_ipc_decode(payload, len, msg, rt,
                              NODUS_DHT_IPC_ROUTING_MAX) != 0) {
         QGP_LOG_WARN(LOG_TAG, "malformed control frame from nodus-storage "
@@ -383,8 +383,6 @@ static void ob_on_ctl_frame(ipc_be_t *ib, const uint8_t *payload, size_t len) {
         QGP_LOG_WARN(LOG_TAG, "control frame of a kind nodus-storage does not "
                      "send (type=%d) — dropped", (int)msg->type);
     }
-    free(msg);
-    free(rt);
 }
 
 static void ob_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
@@ -593,6 +591,8 @@ static void ipcd_close(nodus_dht_backend_t *b) {
     /* nodus_tcp_close frees the connections without on_disconnect. */
     nodus_tcp_close(&ib->tcp);
     free(ib->rt);
+    free(ib->rt_scratch);
+    free(ib->msg_scratch);
     free(ib);
 }
 
@@ -632,12 +632,13 @@ int nodus_dht_backend_ipc_open(const char *data_path,
         return -1;
     }
     ib->rt = calloc(NODUS_DHT_IPC_ROUTING_MAX, sizeof(*ib->rt));
-    if (!ib->rt) {
-        free(ib);
-        return -2;
-    }
-    if (nodus_tcp_init(&ib->tcp, -1) != 0) {
+    ib->rt_scratch = calloc(NODUS_DHT_IPC_ROUTING_MAX, sizeof(*ib->rt_scratch));
+    ib->msg_scratch = malloc(sizeof(*ib->msg_scratch));
+    if (!ib->rt || !ib->rt_scratch || !ib->msg_scratch ||
+        nodus_tcp_init(&ib->tcp, -1) != 0) {
         free(ib->rt);
+        free(ib->rt_scratch);
+        free(ib->msg_scratch);
         free(ib);
         return -2;
     }
