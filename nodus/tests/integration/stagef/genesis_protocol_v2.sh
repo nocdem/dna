@@ -116,6 +116,9 @@
 #   STAGEF_MODE=splitw|mixedw bash genesis_protocol_v2.sh
 #                                            # split S3 harness modes (README
 #                                            # "Harness modes"); default combined
+#   STAGEF_MODE=splits|mixeds bash genesis_protocol_v2.sh
+#                                            # split S5b: the DHT in nodus-storage
+#                                            # (README "Harness modes")
 #
 # ════════════════════════════════════════════════════════════════════
 set -uo pipefail
@@ -229,6 +232,13 @@ echo "════ V2 Genesis Protocol — mode: $(if [ "$SCENARIOS_ONLY" = 1 ];
 #     reversible within this bring-up), so nothing after it may assume 7
 #     ACTIVE validators. The seam scan only READS logs, unaffected by
 #     which validators are still ACTIVE.
+#   test_split_storage_restart.sh (split S5b) — SKIPS (99) unless the
+#     cluster was born in `splits` / `mixeds`; then it kills and restarts
+#     the first storage-split node's nodus-storage (never a validator's
+#     witness — that runs in the core), spends no leaf, and needs only
+#     that the chain keeps committing. Placed after every scenario that
+#     counts on a node's DHT being up, and before the seam scan, which
+#     reads logs only.
 #   test_p2p_seam_faults.sh    LAST, unconditionally: it reads every
 #     node's log across the whole sweep and asserts the 4004 host started
 #     and no consensus/mempool reactor reported a node-local CMT_FAULT.
@@ -251,6 +261,7 @@ test_v2_epoch_boundary.sh
 test_v2_rewards.sh
 test_cmt_blocksync.sh
 test_cmt_rule_n_retire.sh
+test_split_storage_restart.sh
 test_p2p_seam_faults.sh
 "
 

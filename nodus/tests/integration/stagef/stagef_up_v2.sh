@@ -78,6 +78,25 @@
 #   `chain role: COMETBFT` (the core did not run a witness in-process),
 #   and <data>/witness.sock exists.
 #
+#   SPLIT S5b — `splits` (every node) / `mixeds` (nodes 1-3; 4-7
+#   combined) start a storage-split node as TWO processes from the SAME
+#   build: nodus-server --storage-external (core + the witness in-process;
+#   no nodus.db / channels.db opened by it) FIRST, then — once its identity
+#   files exist, attempt-bounded — STAGEF_NODUSSTORAGE_BIN with the
+#   identical arguments, `--storage-external` included (nodus-storage
+#   refuses to start without storage_external), writing node<N>/storage.log
+#   (stagef_spawn_storage). A storage-split mode needs
+#   STAGEF_NODUSSTORAGE_BIN executable (refused otherwise, exit 2). Four
+#   more facts per storage-split node: nodus-storage is alive and printed
+#   its running line; the core's nodus.log says "STORAGE: external";
+#   <data>/storage.sock exists; the core received a NON-EMPTY routing
+#   snapshot from nodus-storage (routing that storage filled from the
+#   core's relayed peer events came back — both directions of the control
+#   connection carried data).
+#   ⚠ Until tools/nodus_node_config.c parses `--storage-external` (S5b
+#   report: outside that package's whitelist) every storage-split spawn
+#   is refused by the option parser and these modes cannot come up.
+#
 #   P2P-PORT F6 ALSO PROVES (p2p-aware server only): the 4004 mesh is
 #   formed from ONE published network file — every node started with its
 #   seven persistent peers (the "p2p on … 7 persistent peer(s)" line) —
@@ -98,7 +117,10 @@
 #   unchanged. Lines 1..7 of pids.txt are node 1..7's nodus-server, in
 #   node order, in EVERY mode (bench_tps_v2.sh reads line N as node N);
 #   in a split mode each split node's nodus-witness pid is appended after
-#   them, in node order.
+#   them, in node order; in a storage-split mode (splits / mixeds) each
+#   storage-split node's nodus-storage pid likewise. Per storage-split
+#   node: node<N>/storage.log, node<N>/data/storage.sock and
+#   node<N>/data/nodus-storage.lock.
 #   $BASE_DIR/stagef_mode (every mode, `combined` included): the mode the
 #   cluster was born in, read back by stagef_mode. In a split mode, per
 #   split node, node<N>/witness.log and the witness's Unix socket
@@ -188,7 +210,14 @@ case "$MODE" in
             echo "[warn] nodus-server and nodus-witness are in DIFFERENT directories — a split run must use one build (decision 2026-10-01-nodus-component-split.md item 23)"
         fi
         ;;
-    *) echo "[FAIL] STAGEF_MODE='$MODE' — must be combined, splitw or mixedw" >&2; exit 2 ;;
+    splits|mixeds)
+        [ -x "$STAGEF_NODUSSTORAGE_BIN" ] || { echo "[FAIL] STAGEF_MODE=$MODE needs nodus-storage — none at $STAGEF_NODUSSTORAGE_BIN (STAGEF_NODUSSTORAGE_BIN)" >&2; exit 2; }
+        echo "[ok] nodus-storage: $STAGEF_NODUSSTORAGE_BIN"
+        if [ "$(dirname "$(readlink -f "$STAGEF_NODUS_BIN")")" != "$(dirname "$(readlink -f "$STAGEF_NODUSSTORAGE_BIN")")" ]; then
+            echo "[warn] nodus-server and nodus-storage are in DIFFERENT directories — a split run must use one build (decision 2026-10-01-nodus-component-split.md item 23)"
+        fi
+        ;;
+    *) echo "[FAIL] STAGEF_MODE='$MODE' — must be combined, splitw, mixedw, splits or mixeds" >&2; exit 2 ;;
 esac
 echo "[ok] mode: $MODE"
 
@@ -212,7 +241,7 @@ for n in $(seq 1 "$C"); do
     # (nodus_tcp.c unix_parent_dir_ok, split S2 review) — mkdir -p follows
     # the caller's umask (0002 on a desktop shell gives 0775). Combined
     # nodes keep today's mode.
-    if stagef_node_is_split "$n"; then
+    if stagef_node_is_split "$n" || stagef_node_is_storage_split "$n"; then
         chmod 0700 "$(stagef_node_dir "$n")/data"
     fi
 done
@@ -852,6 +881,22 @@ for n in $(seq 1 "$C"); do
         echo "[ok] node $n core spawned pid=$! (--witness-external)"
         continue
     fi
+    if stagef_node_is_storage_split "$n"; then
+        # Split S5b: the CORE half of a storage-split node — the same
+        # command as a combined node plus `--storage-external` (command
+        # line only, for the reason given above). Its witness runs
+        # in-process; its DHT is nodus-storage, spawned in section 4c.
+        # shellcheck disable=SC2086
+        "$STAGEF_NODUS_BIN" -c "$BASE_DIR/nodus.json" --storage-external -b 127.0.0.1 \
+            -u "$(stagef_udp_port "$n")" -t "$(stagef_tcp_port "$n")" \
+            -p "$(stagef_peer_port "$n")" -C "$(stagef_chan_port "$n")" \
+            -W "$(stagef_witness_port "$n")" \
+            -i "$nd/identity" -d "$nd/data" $SEEDS \
+            > "$nd/nodus.log" 2>&1 &
+        echo $! >> "$BASE_DIR/pids.txt"
+        echo "[ok] node $n core spawned pid=$! (--storage-external)"
+        continue
+    fi
     # shellcheck disable=SC2086
     "$STAGEF_NODUS_BIN" -c "$BASE_DIR/nodus.json" -b 127.0.0.1 \
         -u "$(stagef_udp_port "$n")" -t "$(stagef_tcp_port "$n")" \
@@ -898,6 +943,29 @@ for n in $(seq 1 "$C"); do
     echo "$wpid" >> "$BASE_DIR/pids.txt"
     WPIDS="$WPIDS $n:$wpid"
     echo "[ok] node $n witness spawned pid=$wpid"
+done
+
+# ── 4c. split S5b: the STORAGE half of every storage-split node ─────
+# After every core (and every witness), so pids.txt lines 1..C stay node
+# 1..C's nodus-server. nodus-storage loads the identity READ-ONLY (decision
+# item 10) — the same attempt-bounded contract guard as 4b. Its own log,
+# node<N>/storage.log; the shared spawn line is stagef_spawn_storage
+# (stagef_env.sh), which the storage restart scenario reuses.
+SPIDS=""
+for n in $(seq 1 "$C"); do
+    stagef_node_is_storage_split "$n" || continue
+    nd=$(stagef_node_dir "$n")
+    id_ok=0
+    for _ in $(seq 1 40); do
+        if [ -s "$nd/identity/nodus.pk" ] && [ -s "$nd/identity/nodus.fp" ] && \
+           [ -s "$nd/identity/nodus.mlkem_sk" ]; then id_ok=1; break; fi
+        sleep 0.25
+    done
+    [ "$id_ok" = 1 ] || { echo "[FAIL] node $n: core identity files never appeared — nodus-storage cannot start" >&2; exit 7; }
+    spid=$(stagef_spawn_storage "$n")
+    echo "$spid" >> "$BASE_DIR/pids.txt"
+    SPIDS="$SPIDS $n:$spid"
+    echo "[ok] node $n storage spawned pid=$spid"
 done
 
 for n in $(seq 1 "$C"); do
@@ -1014,6 +1082,63 @@ for n in $(seq 1 "$C"); do
             fi
             if [ "$split_bad" = 0 ]; then
                 echo "[ok] node $n split: nodus-witness pid=$wp alive, core runs no witness, $nd/data/witness.sock present"
+            else
+                bad=1
+            fi
+        fi
+        # SPLIT S5b — a storage-split node is really two processes AND
+        # their two sockets talk (Fable S5 review (f)4 anti-vacuity):
+        #   (a) its nodus-storage is alive and printed its running line;
+        #   (b) the CORE logged "STORAGE: external" — it opened no DHT
+        #       database itself;
+        #   (c) <data>/storage.sock exists;
+        #   (d) the core logged "routing snapshot from nodus-storage: N
+        #       peer(s)" with N >= 1 — the routing table nodus-storage
+        #       filled from THIS core's relayed peer events came back over
+        #       the control connection (both directions of it carried
+        #       data). Attempt-bounded (60 x 1 s: the first cluster
+        #       heartbeat round is what fills routing), never a bare sleep.
+        if stagef_node_is_storage_split "$n"; then
+            s_bad=0
+            sp=""
+            for e in $SPIDS; do [ "${e%%:*}" = "$n" ] && sp="${e#*:}"; done
+            slog=$(stagef_node_storage_log "$n")
+            if [ -z "$sp" ] || ! kill -0 "$sp" 2>/dev/null; then
+                echo "[FAIL] node $n: its nodus-storage (pid ${sp:-none}) is not running" >&2
+                tail -10 "$slog" >&2
+                s_bad=1
+            elif ! grep -q 'Nodus storage v.* running' "$slog"; then
+                echo "[FAIL] node $n: nodus-storage never printed its running line" >&2
+                tail -10 "$slog" >&2
+                s_bad=1
+            fi
+            if ! grep -q 'STORAGE: external' "$nd/nodus.log"; then
+                echo "[FAIL] node $n: the core's nodus.log has no 'STORAGE: external' line — it ran the DHT in-process despite --storage-external" >&2
+                s_bad=1
+            fi
+            sock_ok=0
+            for _ in $(seq 1 40); do
+                if [ -S "$nd/data/storage.sock" ]; then sock_ok=1; break; fi
+                sleep 0.25
+            done
+            if [ "$sock_ok" != 1 ]; then
+                echo "[FAIL] node $n: no Unix socket at $nd/data/storage.sock" >&2
+                s_bad=1
+            fi
+            rt_ok=0
+            for _ in $(seq 1 60); do
+                if grep -Eq 'routing snapshot from nodus-storage: [1-9][0-9]* peer' "$nd/nodus.log"; then
+                    rt_ok=1; break
+                fi
+                sleep 1
+            done
+            if [ "$rt_ok" != 1 ]; then
+                echo "[FAIL] node $n: the core never received a non-empty routing snapshot from nodus-storage" >&2
+                grep -E 'DHT_IPC|routing snapshot' "$nd/nodus.log" | tail -5 >&2
+                s_bad=1
+            fi
+            if [ "$s_bad" = 0 ]; then
+                echo "[ok] node $n storage split: nodus-storage pid=$sp alive, core runs no DHT, $nd/data/storage.sock present, routing snapshot received"
             else
                 bad=1
             fi

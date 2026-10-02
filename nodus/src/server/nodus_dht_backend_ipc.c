@@ -115,6 +115,7 @@ typedef struct {
     /* Routing snapshot (item 17): the last one storage pushed. */
     nodus_dht_peer_addr_t  *rt;
     int                     rt_n;
+    bool                    rt_logged;   /* since this control connection */
 
     uint64_t                drop_logged_ms;
     uint64_t                drops;
@@ -340,6 +341,7 @@ static void ob_ctl_tick(ipc_be_t *ib, uint64_t now) {
     ib->by_ipc[c->slot] = OB_CTL;
     ib->ctl_backoff_ms = OB_DIAL_BACKOFF_MIN;
     ib->ctl_down_logged = false;
+    ib->rt_logged = false;
     /* Full re-push of the membership snapshot on every (re)connect; the
      * storage side re-pushes its routing snapshot on a new control
      * connection. */
@@ -367,6 +369,14 @@ static void ob_on_ctl_frame(ipc_be_t *ib, const uint8_t *payload, size_t len) {
         ib->core.udp_send(ib->core.ctx, msg->payload, msg->payload_len,
                           msg->ip, msg->port);
     } else if (msg->type == NODUS_DHT_IPC_MSG_ROUTING) {
+        /* Logged on the first snapshot of a control connection and when
+         * the count changes — the harness's evidence that the routing
+         * table storage filled from this core's peer events came back
+         * (stagef splits / mixeds bring-up). */
+        if (!ib->rt_logged || msg->routing_count != ib->rt_n)
+            QGP_LOG_INFO(LOG_TAG, "routing snapshot from nodus-storage: %d "
+                         "peer(s)", msg->routing_count);
+        ib->rt_logged = true;
         memcpy(ib->rt, rt, (size_t)msg->routing_count * sizeof(*rt));
         ib->rt_n = msg->routing_count;
     } else {

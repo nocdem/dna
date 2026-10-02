@@ -24,7 +24,12 @@ STAGEF_NODUSCLI_BIN="${STAGEF_NODUSCLI_BIN:-$STAGEF_REPO_ROOT/nodus/build/nodus-
 # a split / mixed run uses nodus-server and nodus-witness from the SAME
 # build — point both at one tree.
 STAGEF_NODUSWITNESS_BIN="${STAGEF_NODUSWITNESS_BIN:-$STAGEF_REPO_ROOT/nodus/build/nodus-witness}"
+# Split S5b — the external storage binary (read only in a storage-split
+# mode, splits / mixeds below). Same rule: the SAME build as
+# STAGEF_NODUS_BIN (decision item 23).
+STAGEF_NODUSSTORAGE_BIN="${STAGEF_NODUSSTORAGE_BIN:-$STAGEF_REPO_ROOT/nodus/build/nodus-storage}"
 export STAGEF_NODUS_BIN STAGEF_DNACLI_BIN STAGEF_NODUSCLI_BIN STAGEF_NODUSWITNESS_BIN
+export STAGEF_NODUSSTORAGE_BIN
 
 # Harness mode (decision 2026-10-01-nodus-component-split.md item 15:
 # combined / split / mixed before any split deploy; item 22: witness
@@ -38,13 +43,21 @@ export STAGEF_NODUS_BIN STAGEF_DNACLI_BIN STAGEF_NODUSCLI_BIN STAGEF_NODUSWITNES
 #   mixedw    nodes 1..STAGEF_MIXEDW_SPLIT_NODES (3) as in splitw, the rest
 #             combined — both from the same build (item 23), NOT the
 #             previous release.
+#   splits    (split S5b) every node is nodus-server --storage-external
+#             (core + the witness in-process) PLUS a nodus-storage process
+#             (the DHT: nodus.db, channels.db, routing, replication).
+#             The storage-only split, by the same naming as splitw; the
+#             three-process split (both external) is S6's.
+#   mixeds    nodes 1..STAGEF_MIXEDS_SPLIT_NODES (3) as in splits, the rest
+#             combined — same build (item 23).
 # Read by stagef_up_v2.sh at bring-up, which records it in
 # $BASE_DIR/stagef_mode; every later script asks stagef_mode, which
 # prefers that recorded value, so a scenario run from a shell without
 # STAGEF_MODE exported still sees the mode the cluster was born in.
 STAGEF_MODE="${STAGEF_MODE:-combined}"
 STAGEF_MIXEDW_SPLIT_NODES=3
-export STAGEF_MODE STAGEF_MIXEDW_SPLIT_NODES
+STAGEF_MIXEDS_SPLIT_NODES=3
+export STAGEF_MODE STAGEF_MIXEDW_SPLIT_NODES STAGEF_MIXEDS_SPLIT_NODES
 
 # Pointer file — stagef_up_v2.sh writes, stagef_down.sh reads+removes.
 STAGEF_POINTER=/tmp/stagef_current
@@ -179,17 +192,78 @@ stagef_node_witness_pid() {
     return 1
 }
 
+# stagef_node_is_storage_split N — 0 if node N runs as nodus-server
+# --storage-external + nodus-storage in the active mode (split S5b:
+# splits / mixeds), 1 otherwise. Independent of stagef_node_is_split
+# (witness): no mode today splits both.
+stagef_node_is_storage_split() {
+    case "$(stagef_mode)" in
+        splits) return 0 ;;
+        mixeds) [ "$1" -le "$STAGEF_MIXEDS_SPLIT_NODES" ] ;;
+        *)      return 1 ;;
+    esac
+}
+
+# stagef_node_storage_log N — where node N's nodus-storage writes
+# (storage-split node only).
+stagef_node_storage_log() { echo "$BASE_DIR/node$1/storage.log"; }
+
+# stagef_node_storage_pid N — the pid of node N's nodus-storage process
+# (storage-split node only): a process whose command line names node N's
+# data directory AND whose executable is STAGEF_NODUSSTORAGE_BIN, so node
+# N's nodus-server — same data directory — is never picked. Prints
+# nothing and returns 1 when there is none.
+stagef_node_storage_pid() {
+    local want pid
+    want="$(readlink -f "$STAGEF_NODUSSTORAGE_BIN" 2>/dev/null || echo "$STAGEF_NODUSSTORAGE_BIN")"
+    for pid in $(pgrep -f -- "node$1/data( |\$)" || true); do
+        if [ "$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)" = "$want" ]; then
+            echo "$pid"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# stagef_spawn_storage N [>> append] — start node N's nodus-storage with
+# the bring-up's arguments (stagef_up_v2.sh section 4c), appending to its
+# storage.log, and print its pid. The caller records the pid in pids.txt.
+# `--storage-external` on the command line, as for the core (the
+# misconfiguration guard: nodus-storage refuses without it).
+stagef_spawn_storage() {
+    local n="$1" nd seeds m
+    nd="$(stagef_node_dir "$n")"
+    seeds=""
+    for m in $(seq 1 "${STAGEF_COMMITTEE_SIZE:-7}"); do
+        seeds="$seeds -s 127.0.0.1:$(stagef_udp_port "$m")"
+    done
+    # shellcheck disable=SC2086
+    "$STAGEF_NODUSSTORAGE_BIN" -c "$BASE_DIR/nodus.json" --storage-external -b 127.0.0.1 \
+        -u "$(stagef_udp_port "$n")" -t "$(stagef_tcp_port "$n")" \
+        -p "$(stagef_peer_port "$n")" -C "$(stagef_chan_port "$n")" \
+        -W "$(stagef_witness_port "$n")" \
+        -i "$nd/identity" -d "$nd/data" $seeds \
+        >> "$(stagef_node_storage_log "$n")" 2>&1 &
+    echo $!
+}
+
 # stagef_split_skip_if NODE... — for a scenario that spawns, kills,
 # restarts or stops nodes ITSELF and only knows how to handle one process
-# per node: if ANY of the named nodes is split in the active mode, print
-# the SKIP reason and exit 99 (SKIP — coverage that did not happen, never
-# a pass). Call it at the scenario's start, before any EXIT trap and
-# before stagef_sentinel SETUP_OK. Does nothing in combined mode.
+# per node: if ANY of the named nodes is split in the active mode — its
+# witness (splitw / mixedw) or its storage (splits / mixeds) in a process
+# of its own — print the SKIP reason and exit 99 (SKIP — coverage that did
+# not happen, never a pass). Call it at the scenario's start, before any
+# EXIT trap and before stagef_sentinel SETUP_OK. Does nothing in combined
+# mode.
 stagef_split_skip_if() {
     local n
     for n in "$@"; do
         if stagef_node_is_split "$n"; then
             echo "[SKIP] $(stagef_mode): scenario spawns/stops nodes directly — not yet adapted (split S6) (node$n is split)"
+            exit 99
+        fi
+        if stagef_node_is_storage_split "$n"; then
+            echo "[SKIP] $(stagef_mode): scenario spawns/stops nodes directly — not yet adapted (split S6) (node$n's storage is split)"
             exit 99
         fi
     done
