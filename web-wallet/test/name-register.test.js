@@ -72,7 +72,8 @@ test('the node price list is checked and the tier is picked by length', () => {
   assert.equal(namePriceFor(tiers, 'abcd'), 4n);
   assert.equal(namePriceFor(tiers, 'abcde'), 5n);
   assert.equal(namePriceFor(tiers, 'abcdef'), 6n);
-  assert.equal(namePriceFor(tiers, 'a'.repeat(36)), 6n);
+  assert.equal(namePriceFor(tiers, 'z'.repeat(36)), 6n);
+  assert.throws(() => namePriceFor(tiers, 'a'.repeat(36)), /Not a chain name/, 'all-hex, 8+ characters (item 11)');
   assert.throws(() => namePriceFor(tiers, 'ab'), /Not a chain name/);
   assert.throws(() => namePriceFor(tiers, 'Abc'), /Not a chain name/);
   // ethers formatUnits keeps one decimal on whole amounts ("1.0")

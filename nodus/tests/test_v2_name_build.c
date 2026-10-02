@@ -353,10 +353,13 @@ static int t_helpers(void) {
     CHECK(nodus_v2_name_normalize("a-b", out) != 0, "'-' refused");
     CHECK(nodus_v2_name_normalize("p\xc4\xb1nk", out) != 0,
           "a non-ASCII byte refused (no locale lower-casing)");
-    CHECK(nodus_v2_name_normalize("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", out)
+    /* 'z' — not a hex digit, so the all-hex rule does not apply */
+    CHECK(nodus_v2_name_normalize("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", out)
               == 0, "36 characters accepted");
-    CHECK(nodus_v2_name_normalize("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", out)
+    CHECK(nodus_v2_name_normalize("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", out)
               != 0, "37 characters refused");
+    CHECK(nodus_v2_name_normalize("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", out)
+              != 0, "36 all-hex characters refused (item 11)");
 
     const uint64_t tiers[4] = { 11, 22, 33, 44 };
     uint64_t p = 0;
@@ -467,17 +470,23 @@ static int t_fixture(void) {
           "byte-identical outside the auth blob");
     free(old.env);
 
-    /* N2 — a gas price that forces a second pass */
+    /* N2 — a gas price that forces a second pass: derived from the gas-0
+     * build's units so units × gas lands just above the floor and the
+     * envelope's shape (inputs, one change) does not move */
+    const uint64_t units0 = b->units;
+    CHECK(units0 > 0, "the gas-0 build declared units");
+    const uint64_t gas = NB_FLOOR / units0 + 1;    /* units0 × gas > floor */
     nodus_v2_name_built_free(b);
     r.next = 0xA0; r.calls = 0;
     base_req(&req, &rs, chain32, NB_TIP, "punk", 50000000000ULL, coins, 3, &r);
-    req.gas_price = 1000000;   /* units × 10^6 is far above the floor */
+    req.gas_price = gas;
     CHECK(nodus_v2_name_build(&req, b, &err) == NODUS_V2_SPEND_OK,
-          "builds at gas price 10^6");
-    CHECK(b->passes == 2 && r.calls == 2 && b->fee == b->units * 1000000ULL,
+          "builds at a gas price just above the floor");
+    CHECK(b->passes == 2 && r.calls == 2 && b->units == units0 &&
+          b->fee == units0 * gas && b->fee > NB_FLOOR,
           "two passes, two seeds, fee = units x gas price");
     r.next = 0xA0; r.calls = 0;
-    CHECK(restate_old(&rs, chain32, NB_TIP, "punk", 50000000000ULL, 1000000,
+    CHECK(restate_old(&rs, chain32, NB_TIP, "punk", 50000000000ULL, gas,
                       coins, 3, &r, &old) == 0, "the restated build (gas)");
     CHECK(old.env_len == b->env_len && old.fee == b->fee &&
           old.units == b->units && old.passes == 2 &&

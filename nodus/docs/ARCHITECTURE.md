@@ -1473,9 +1473,10 @@ compiled runtime table — since HF-4 for the GENERATION the node names: it asks
 SYSTEM ruleset tuple) and refuses unless the rebuilt SYSTEM meter policy's digest equals the
 pinned one. Since HF-4 the header carries every generation (`NODUS_PIN_GEN_COUNT`; generation 1
 unprefixed, generation 2 as `NODUS_PIN_G2_*`), `nodus_v2_ruleset_from_pins_gen(generation, …)`
-reads any of them, and `nodus_v2_ruleset_from_pins` is its generation-1 wrapper — which is what
-the web wallet's WASM module still calls (`web-wallet/crypto/nodus-send-wasm.c`), so it builds
-generation-1 envelopes only. The header is written by `tools/gen_ruleset_pins.c` from the node's
+reads any of them, and `nodus_v2_ruleset_from_pins` is its generation-1 wrapper (the offline
+builders use it). The web wallet's WASM module (`web-wallet/crypto/nodus-send-wasm.c`, since
+web wallet 0.1.43) calls the `_gen` form for the generation whose tuple equals the node's
+`dnac_ruleset_info` answer, as nodus-cli does. The header is written by `tools/gen_ruleset_pins.c` from the node's
 own table (`cmake --build <build> --target regen_ruleset_pins`); ctest `test_ruleset_pins`
 regenerates it and byte-compares with the checked-in file, so a ruleset change without a
 regenerated header is a red test (decision above, addendum 2026-09-29 "Yol 2"). Every ruleset
@@ -4145,11 +4146,14 @@ node-local FAULTs, never as a different verdict. CheckTx's code 100 is mempool-o
   param 9 at an H the operator did not pick; the other seats approve automatically.
 - *Accepted risks (decision items 8 and 9):* no commit-reveal — anyone connected to 4004 sees a
   pending registration and can race it; a name lookup trusts the one node asked.
-- *Clients not migrated in this change:* the web wallet's WASM module still calls the
-  generation-1 `nodus_v2_ruleset_from_pins` / `nodus_v2_stake_ruleset_from_pins`
-  (`web-wallet/crypto/nodus-send-wasm.c`), so after H its NODUS envelopes are generation 1 and
-  are refused by the node; Nodus Connect and the explorer (`explorer/`) are not changed either.
-  The design (§1.6, §1.7) lists them as released BEFORE the vote.
+- *Clients:* the web wallet's WASM module (the wallet and Nodus Connect, web wallet 0.1.43)
+  selects the generation like nodus-cli (`nsw_select_generation`, then
+  `nodus_v2_ruleset_from_pins_gen` / `nodus_v2_stake_ruleset_from_pins_gen` for that
+  generation — `web-wallet/crypto/nodus-send-wasm.c`), and registers chain names through the
+  shared builder `src/client/nodus_v2_name.c` (unreleased at the time of writing). When this
+  package landed, the module still called the generation-1 readers. The explorer
+  (`explorer/`) was not re-checked for this note. The design (§1.6, §1.7) lists the clients as
+  released BEFORE the vote.
 - *Not measured:* the design's cost gate — phase 8 inside FinalizeBlock at 10^5 and 10^6 name
   rows on the slowest validator, against the 4 s commit pace, before the vote. `names_root_v2`
   scans the whole table every time the CORE root is computed.
