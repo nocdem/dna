@@ -1074,6 +1074,12 @@ add_executable(test_inter_dial tests/test_inter_dial.c)
 target_link_libraries(test_inter_dial nodus dsa kem nodus)
 add_test(NAME test_inter_dial COMMAND test_inter_dial)
 
+# Split S5a item 33: the 4002 pending-full hook parks only DHT replication
+# frames (sv / m_sv) in the hint table; p_sync, ri_*, replies are dropped.
+add_executable(test_pending_full_hint tests/test_pending_full_hint.c)
+target_link_libraries(test_pending_full_hint nodus dsa kem nodus)
+add_test(NAME test_pending_full_hint COMMAND test_pending_full_hint)
+
 add_executable(test_presence_dial_pin tests/test_presence_dial_pin.c)
 target_link_libraries(test_presence_dial_pin nodus dsa kem nodus)
 add_test(NAME test_presence_dial_pin COMMAND test_presence_dial_pin)

@@ -312,19 +312,59 @@ static void dht_send_stats_dump(nodus_server_t *srv) {
 }
 
 /* ── Phase 3: Pending-full hint fallback ─────────────────────────── */
+
+/* Split S5a, decision item 33: is this 4002 payload a DHT REPLICATION frame
+ * — the only kind the hint table may hold? Rule: the payload is a CBOR map
+ * whose envelope says query ("y" == "q") and whose method ("q") is "sv" or
+ * "m_sv". Those are exactly the frames the DHT builds with
+ * nodus_t1_store_value (replication on put, republish, hinted retry) and
+ * nodus_t2_media_store_value (media chunk replication); T1 and T2 encode
+ * the envelope with the same bytes (`y` = text "q", `q` = method text).
+ * Everything else — p_sync, ri_*, ntf, sub / unsub, and every reply or
+ * error ("y" == "r" / "e": fv_r, sv_ack, get_batch results, ...) — is not.
+ * Only the envelope is read; the value is not parsed. */
+static bool pending_full_is_replication(const uint8_t *payload, size_t len) {
+    cbor_decoder_t dec;
+    cbor_decoder_init(&dec, payload, len);
+    cbor_item_t top = cbor_decode_next(&dec);
+    if (top.type != CBOR_ITEM_MAP) return false;
+    bool is_query = false, is_repl = false, saw_y = false, saw_q = false;
+    for (size_t i = 0; i < top.count && !dec.error && !(saw_y && saw_q); i++) {
+        cbor_item_t k = cbor_decode_next(&dec);
+        if (k.type != CBOR_ITEM_TSTR) return false;
+        if (k.tstr.len == 1 && (k.tstr.ptr[0] == 'y' || k.tstr.ptr[0] == 'q')) {
+            char which = k.tstr.ptr[0];
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type != CBOR_ITEM_TSTR) return false;
+            if (which == 'y') {
+                saw_y = true;
+                is_query = v.tstr.len == 1 && v.tstr.ptr[0] == 'q';
+            } else {
+                saw_q = true;
+                is_repl = (v.tstr.len == 2 && memcmp(v.tstr.ptr, "sv", 2) == 0) ||
+                          (v.tstr.len == 4 && memcmp(v.tstr.ptr, "m_sv", 4) == 0);
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+    return !dec.error && is_query && is_repl;
+}
+
 /* Invoked by the TCP layer when a send cannot fit into wbuf AND the
- * per-conn pending queue is also at its cap. We persist the frame to
- * the DHT hinted handoff table so it can be delivered when the peer
- * has drained — same path that periodic republish already uses.
+ * per-conn pending queue is also at its cap. A DHT replication frame is
+ * persisted to the DHT hinted handoff table so it can be delivered when
+ * the peer has drained — same path that periodic republish already uses.
+ * Any other frame is dropped (decision item 33).
  *
  * Dedup key policy: the authenticated peer identity (peer_id), so
  * retries bucket with the canonical node_id. DHT Package A F4: a conn
  * without an authenticated peer_id persists nothing (the former synthetic
  * SHA3-512("ip:port") fallback is gone); the per-peer and whole-table caps
  * live in nodus_storage_hinted_insert. */
-static void server_on_pending_full(nodus_tcp_conn_t *conn,
-                                    const uint8_t *payload, size_t len,
-                                    void *ctx) {
+void nodus_server_on_pending_full(nodus_tcp_conn_t *conn,
+                                  const uint8_t *payload, size_t len,
+                                  void *ctx) {
     nodus_server_t *srv = (nodus_server_t *)ctx;
     if (!srv || !conn || !payload) return;
 
@@ -347,6 +387,15 @@ static void server_on_pending_full(nodus_tcp_conn_t *conn,
     if (!cluster_knows_peer(srv, &conn->peer_id)) {
         QGP_LOG_WARN(LOG_TAG, "PENDING_FULL: peer=%s:%u len=%zu not a cluster "
                      "member — frame DROPPED (no hint)",
+                     conn->ip, (unsigned)conn->port, len);
+        return;
+    }
+    /* Decision item 33: only DHT replication frames are parked; p_sync,
+     * ri_*, notifications, subscriptions and relayed replies are dropped
+     * (their senders repeat them or their requester times out). */
+    if (!pending_full_is_replication(payload, len)) {
+        QGP_LOG_WARN(LOG_TAG, "PENDING_FULL: peer=%s:%u len=%zu not a "
+                     "replication frame — frame DROPPED (no hint)",
                      conn->ip, (unsigned)conn->port, len);
         return;
     }
@@ -2765,7 +2814,7 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     srv->inter_tcp.auth_required = srv->config.require_peer_auth;
     srv->inter_tcp.auth_ctx      = &srv->identity;
     /* Phase 3: hint-table fallback when pending queue is saturated. */
-    srv->inter_tcp.on_pending_full   = server_on_pending_full;
+    srv->inter_tcp.on_pending_full   = nodus_server_on_pending_full;
     srv->inter_tcp.pending_full_ctx  = srv;
 
     /* Bind TCP (client port) */

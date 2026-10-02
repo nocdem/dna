@@ -516,6 +516,15 @@ void nodus_server_dispatch_inter_frame(nodus_server_t *srv,
  *  release + inter session clear), for in-process tests. */
 void nodus_server_inter_disconnected(nodus_server_t *srv, nodus_tcp_conn_t *conn);
 
+/** The 4002 transport's pending-full hook (`ctx` = the server): a frame to
+ *  an authenticated cluster member that neither wbuf nor the pending queue
+ *  could take is parked in the DHT hint table ONLY if it is a DHT
+ *  replication frame (T1 "sv" / T2 "m_sv" query); anything else is dropped
+ *  with a log line (split S5a, decision item 33). For in-process tests. */
+void nodus_server_on_pending_full(nodus_tcp_conn_t *conn,
+                                  const uint8_t *payload, size_t len,
+                                  void *ctx);
+
 #ifdef __cplusplus
 }
 #endif
