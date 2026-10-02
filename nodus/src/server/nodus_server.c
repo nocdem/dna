@@ -54,7 +54,48 @@ static uint8_t resp_buf[RESP_BUF_SIZE];
 
 /* Channel post signature verification is now in nodus_channel_primary.c */
 
-/* Forward declaration for inter_tcp pool send (used in replicate_value and hinted_retry) */
+/* ── DHT → core: the host view's sends (nodus_dht_host_t) ────────── */
+
+/* HOT: a reply / push frame to the session in `origin`'s slot. */
+static int dht_send_origin(nodus_dht_t *dht, nodus_dht_origin_t origin,
+                           const uint8_t *frame, size_t len) {
+    return dht->host.send_to_origin(dht->host.ctx, origin, frame, len);
+}
+
+static int dht_send_client(nodus_dht_t *dht, int slot,
+                           const uint8_t *frame, size_t len) {
+    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_CLIENT, slot };
+    return dht_send_origin(dht, o, frame, len);
+}
+
+static int dht_send_inter(nodus_dht_t *dht, int slot,
+                          const uint8_t *frame, size_t len) {
+    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_INTER, slot };
+    return dht_send_origin(dht, o, frame, len);
+}
+
+/* A T1 datagram from UDP 4000 (raw CBOR; the transport frames it). */
+static int dht_udp_send(nodus_dht_t *dht, const uint8_t *payload, size_t len,
+                        const char *ip, uint16_t port) {
+    return dht->host.udp_send(dht->host.ctx, payload, len, ip, port);
+}
+
+/* A pre-framed frame to a peer's 4002 over core's inter-node pool;
+ * 0 / -1, synchronous (the hinted-handoff decision reads it). */
+static int dht_inter_send(nodus_dht_t *dht, const char *ip, uint16_t port,
+                          const nodus_key_t *expected_node_id,
+                          const uint8_t *frame, size_t flen) {
+    return dht->host.inter_send(dht->host.ctx, ip, port, expected_node_id,
+                                frame, flen);
+}
+
+/* A failed send to `node_id` is worth a hint (cluster member, recently
+ * seen — core's cluster). */
+static bool dht_hint_wanted(nodus_dht_t *dht, const nodus_key_t *node_id) {
+    return dht->host.hint_wanted(dht->host.ctx, node_id);
+}
+
+/* Forward declaration for inter_tcp pool send (the DHT host's inter_send) */
 static int dht_republish_send(nodus_server_t *srv, const char *ip,
                                uint16_t port,
                                const nodus_key_t *expected_node_id,
@@ -63,11 +104,11 @@ static int dht_republish_send(nodus_server_t *srv, const char *ip,
 /* Forward declaration: iterative lookup engine (defined later in file).
  * Used by replicate_value / replicate_media_chunk for large-cluster PUT
  * discovery of true K-closest nodes. */
-static int iterative_lookup_start(nodus_server_t *srv,
+static int iterative_lookup_start(nodus_dht_t *dht,
                                    const nodus_key_t *target,
                                    int session_slot,
                                    uint32_t client_txn_id,
-                                   void (*on_complete)(struct nodus_server *,
+                                   void (*on_complete)(struct nodus_dht *,
                                                        nodus_peer_t *, int,
                                                        void *),
                                    void *cb_data,
@@ -102,10 +143,10 @@ static void put_media_ctx_free(void *p) {
     free(ctx);
 }
 
-static void put_replication_complete(nodus_server_t *srv,
+static void put_replication_complete(nodus_dht_t *dht,
                                       nodus_peer_t *closest, int count,
                                       void *user_data);
-static void media_replication_complete(nodus_server_t *srv,
+static void media_replication_complete(nodus_dht_t *dht,
                                         nodus_peer_t *closest, int count,
                                         void *user_data);
 
@@ -123,6 +164,12 @@ static nodus_inter_session_t *inter_session_for_conn(nodus_server_t *srv,
     if (!conn || conn->slot < 0 || conn->slot >= NODUS_MAX_INTER_SESSIONS)
         return NULL;
     return &srv->inter_sessions[conn->slot];
+}
+
+/* The DHT origin of a 4002 session: its connection's slot (the index
+ * inter_session_for_conn uses); -1 without a connection. */
+static int inter_origin_slot(const nodus_inter_session_t *sess) {
+    return sess->conn ? sess->conn->slot : -1;
 }
 
 static void inter_session_clear(nodus_inter_session_t *sess,
@@ -320,7 +367,7 @@ static bool session_check_token(nodus_session_t *sess, const uint8_t *token) {
 
 /* ── Rate limiting ───────────────────────────────────────────────── */
 
-static bool rate_check_put(nodus_session_t *sess) {
+static bool rate_check_put(nodus_dht_session_t *sess) {
     uint64_t now = nodus_time_now();
     if (now - sess->rate_window_start >= 60) {
         sess->rate_window_start = now;
@@ -334,7 +381,7 @@ static bool rate_check_put(nodus_session_t *sess) {
 
 /* ── LISTEN subscription management ─────────────────────────────── */
 
-static int session_add_listen(nodus_session_t *sess, const nodus_key_t *key) {
+static int session_add_listen(nodus_dht_session_t *sess, const nodus_key_t *key) {
     /* Check duplicate */
     for (int i = 0; i < sess->listen_count; i++) {
         if (nodus_key_cmp(&sess->listen_keys[i], key) == 0)
@@ -346,7 +393,7 @@ static int session_add_listen(nodus_session_t *sess, const nodus_key_t *key) {
     return 0;
 }
 
-static void session_remove_listen(nodus_session_t *sess, const nodus_key_t *key) {
+static void session_remove_listen(nodus_dht_session_t *sess, const nodus_key_t *key) {
     for (int i = 0; i < sess->listen_count; i++) {
         if (nodus_key_cmp(&sess->listen_keys[i], key) == 0) {
             sess->listen_keys[i] = sess->listen_keys[--sess->listen_count];
@@ -356,7 +403,7 @@ static void session_remove_listen(nodus_session_t *sess, const nodus_key_t *key)
 }
 
 /** Notify all sessions listening on this key */
-static void notify_listeners(nodus_server_t *srv, const nodus_key_t *key,
+static void notify_listeners(nodus_dht_t *dht, const nodus_key_t *key,
                               const nodus_value_t *val) {
     /* HIGH-5 fix: use per-operation heap buffer instead of shared static resp_buf
      * to avoid reentrancy risk when iterating sessions */
@@ -364,15 +411,17 @@ static void notify_listeners(nodus_server_t *srv, const nodus_key_t *key,
     if (!notify_buf) return;
 
     for (int i = 0; i < NODUS_MAX_SESSIONS; i++) {
-        nodus_session_t *s = &srv->sessions[i];
-        if (!s->conn || !s->authenticated) continue;
+        nodus_dht_session_t *s = &dht->sessions[i];
+        /* open == conn && authenticated for a session with listen keys
+         * (nodus_dht_session_t) */
+        if (!s->open) continue;
 
         for (int j = 0; j < s->listen_count; j++) {
             if (nodus_key_cmp(&s->listen_keys[j], key) == 0) {
                 size_t len = 0;
                 if (nodus_t2_value_changed(0, key, val,
                         notify_buf, RESP_BUF_SIZE, &len) == 0) {
-                    nodus_tcp_send(s->conn, notify_buf, len);
+                    dht_send_client(dht, i, notify_buf, len);
                 }
                 break;
             }
@@ -477,7 +526,7 @@ static void subscription_cleanup_expired(nodus_subscription_table_t *table) {
 #define NODUS_SUB_RENEWAL_PER_TICK  5   /* Max listens to renew per event loop tick */
 
 /* Forward decl — defined later in file */
-static void listen_fwd_complete(nodus_server_t *srv,
+static void listen_fwd_complete(nodus_dht_t *dht,
                                  nodus_peer_t *closest, int count,
                                  void *user_data);
 
@@ -487,76 +536,77 @@ static void listen_fwd_complete(nodus_server_t *srv,
  *  Walks through all sessions and their listen_keys, starting a new
  *  iterative FIND_NODE lookup for each. Processes up to
  *  NODUS_SUB_RENEWAL_PER_TICK keys per call, saving progress in
- *  srv->sub_renewal bookmark to resume next tick.
+ *  dht->sub_renewal bookmark to resume next tick.
  *
  *  A full renewal cycle starts every NODUS_SUBSCRIPTION_TTL/2 (7.5 min).
  */
-static void subscription_renew_tick(nodus_server_t *srv) {
-    if (!srv) return;
+static void subscription_renew_tick(nodus_dht_t *dht) {
+    if (!dht) return;
 
     /* Start a new renewal cycle every NODUS_SUBSCRIPTION_TTL / 2 */
     uint64_t now = nodus_time_now();
-    if (now - srv->sub_renewal.last_renewal < NODUS_SUBSCRIPTION_TTL / 2) {
+    if (now - dht->sub_renewal.last_renewal < NODUS_SUBSCRIPTION_TTL / 2) {
         /* Not time yet — but if we're mid-cycle, continue processing */
-        if (srv->sub_renewal.session_idx == 0 && srv->sub_renewal.key_idx == 0) {
+        if (dht->sub_renewal.session_idx == 0 && dht->sub_renewal.key_idx == 0) {
             return;
         }
-    } else if (srv->sub_renewal.session_idx == 0 && srv->sub_renewal.key_idx == 0) {
+    } else if (dht->sub_renewal.session_idx == 0 && dht->sub_renewal.key_idx == 0) {
         /* Start new cycle */
-        srv->sub_renewal.last_renewal = now;
+        dht->sub_renewal.last_renewal = now;
     }
 
     int processed = 0;
     while (processed < NODUS_SUB_RENEWAL_PER_TICK &&
-           srv->sub_renewal.session_idx < NODUS_MAX_SESSIONS) {
+           dht->sub_renewal.session_idx < NODUS_MAX_SESSIONS) {
 
-        nodus_session_t *s = &srv->sessions[srv->sub_renewal.session_idx];
+        nodus_dht_session_t *s = &dht->sessions[dht->sub_renewal.session_idx];
 
-        if (!s->conn || !s->authenticated) {
-            /* Skip disconnected/unauthed sessions */
-            srv->sub_renewal.session_idx++;
-            srv->sub_renewal.key_idx = 0;
+        if (!s->open) {
+            /* Skip disconnected sessions (an unauthenticated one has no
+             * listen keys — the branch below skips it the same way) */
+            dht->sub_renewal.session_idx++;
+            dht->sub_renewal.key_idx = 0;
             continue;
         }
 
-        if (srv->sub_renewal.key_idx >= s->listen_count) {
+        if (dht->sub_renewal.key_idx >= s->listen_count) {
             /* Done with this session */
-            srv->sub_renewal.session_idx++;
-            srv->sub_renewal.key_idx = 0;
+            dht->sub_renewal.session_idx++;
+            dht->sub_renewal.key_idx = 0;
             continue;
         }
 
         /* Process this listen key: re-forward subscription */
         nodus_key_t *key_copy = malloc(sizeof(nodus_key_t));
         if (key_copy) {
-            *key_copy = s->listen_keys[srv->sub_renewal.key_idx];
-            if (iterative_lookup_start(srv, key_copy, -1, 0,
+            *key_copy = s->listen_keys[dht->sub_renewal.key_idx];
+            if (iterative_lookup_start(dht, key_copy, -1, 0,
                                         listen_fwd_complete, key_copy, free) != 0) {
                 /* No slots — fallback (synchronous) */
                 nodus_peer_t closest[NODUS_R];
-                int count = nodus_routing_find_closest(&srv->routing, key_copy,
+                int count = nodus_routing_find_closest(&dht->routing, key_copy,
                                                          closest, NODUS_R);
-                listen_fwd_complete(srv, closest, count, key_copy);
+                listen_fwd_complete(dht, closest, count, key_copy);
             }
         }
 
-        srv->sub_renewal.key_idx++;
+        dht->sub_renewal.key_idx++;
         processed++;
     }
 
     /* If we walked past all sessions, reset for next cycle */
-    if (srv->sub_renewal.session_idx >= NODUS_MAX_SESSIONS) {
-        srv->sub_renewal.session_idx = 0;
-        srv->sub_renewal.key_idx = 0;
+    if (dht->sub_renewal.session_idx >= NODUS_MAX_SESSIONS) {
+        dht->sub_renewal.session_idx = 0;
+        dht->sub_renewal.key_idx = 0;
         QGP_LOG_DEBUG(LOG_TAG, "SUB_RENEWAL: cycle complete");
     }
 }
 
 /** Send a T1 notify to every remote subscriber interested in key. */
-static void subscription_notify(nodus_server_t *srv, const nodus_key_t *key,
+static void subscription_notify(nodus_dht_t *dht, const nodus_key_t *key,
                                  const nodus_value_t *val) {
-    if (!srv || !key || !val) return;
-    nodus_subscription_table_t *table = &srv->subscriptions;
+    if (!dht || !key || !val) return;
+    nodus_subscription_table_t *table = &dht->subscriptions;
     if (table->count == 0) return;
 
     /* Encode once, reuse for all subscribers. */
@@ -581,10 +631,10 @@ static void subscription_notify(nodus_server_t *srv, const nodus_key_t *key,
         if (e->expires_at && e->expires_at <= now) continue;
         if (nodus_key_cmp(&e->key, key) != 0) continue;
         /* Skip sending to self */
-        if (nodus_key_cmp(&e->subscriber_node_id, &srv->identity.node_id) == 0) continue;
+        if (nodus_key_cmp(&e->subscriber_node_id, &dht->host.identity->node_id) == 0) continue;
         if (!e->subscriber_ip[0]) continue;
-        if (dht_republish_send(srv, e->subscriber_ip, e->subscriber_port,
-                                &e->subscriber_node_id, frame, flen) == 0) {
+        if (dht_inter_send(dht, e->subscriber_ip, e->subscriber_port,
+                           &e->subscriber_node_id, frame, flen) == 0) {
             sent++;
         }
     }
@@ -601,12 +651,6 @@ static void subscription_notify(nodus_server_t *srv, const nodus_key_t *key,
 }
 
 /* Channel session helpers are now in nodus_channel_server.c */
-
-/* Forward declaration for inter_tcp pool replication */
-static int dht_republish_send(nodus_server_t *srv, const char *ip,
-                               uint16_t port,
-                               const nodus_key_t *expected_node_id,
-                               const uint8_t *frame, size_t flen);
 
 /* ── Server-to-server TCP STORE (with hinted handoff on failure) ── */
 
@@ -680,7 +724,7 @@ static int __attribute__((unused)) send_frame_to_peer(const char *peer_ip, uint1
  * Shared by small-cluster fast path and large-cluster fallback path.
  * Performs hinted-handoff bookkeeping on transient failures.
  */
-static void do_replicate_store_frame(nodus_server_t *srv,
+static void do_replicate_store_frame(nodus_dht_t *dht,
                                       const nodus_key_t *key_hash,
                                       const uint8_t *frame, size_t flen,
                                       nodus_peer_t *closest, int count,
@@ -691,13 +735,13 @@ static void do_replicate_store_frame(nodus_server_t *srv,
     bool is_media = (strncmp(log_prefix, "MEDIA", 5) == 0);
     for (int i = 0; i < count; i++) {
         /* Skip self */
-        if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0) {
+        if (nodus_key_cmp(&closest[i].node_id, &dht->host.identity->node_id) == 0) {
             skipped_self++;
             continue;
         }
 
-        int send_rc = dht_republish_send(srv, closest[i].ip, closest[i].tcp_port,
-                                          &closest[i].node_id, frame, flen);
+        int send_rc = dht_inter_send(dht, closest[i].ip, closest[i].tcp_port,
+                                     &closest[i].node_id, frame, flen);
         if (is_media) {
             fprintf(stderr,
                     "MEDIA-REPL-SEND: hash=%s peer=%s:%d rc=%d flen=%zu\n",
@@ -718,18 +762,16 @@ static void do_replicate_store_frame(nodus_server_t *srv,
         for (int f = 0; f < failed && f < NODUS_K; f++) {
             int i = fail_indices[f];
             /* Item 9: hints only for cluster members (routing ids of
-             * unknown nodes are not hinted; republish covers them). */
-            if (!cluster_knows_peer(srv, &closest[i].node_id)) continue;
-            uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster, &closest[i].node_id);
-            if (offline < NODUS_HINT_OFFLINE_SKIP_SEC) {
-                /* F4: a refused hint (cap reached, -3, logged by storage)
-                 * is not counted as queued. */
-                if (nodus_storage_hinted_insert(&srv->storage,
-                                                 &closest[i].node_id,
-                                                 closest[i].ip, closest[i].tcp_port,
-                                                 frame, flen) == 0)
-                    hinted++;
-            }
+             * unknown nodes are not hinted; republish covers them) seen
+             * less than NODUS_HINT_OFFLINE_SKIP_SEC ago (core's cluster). */
+            if (!dht_hint_wanted(dht, &closest[i].node_id)) continue;
+            /* F4: a refused hint (cap reached, -3, logged by storage)
+             * is not counted as queued. */
+            if (nodus_storage_hinted_insert(&dht->storage,
+                                             &closest[i].node_id,
+                                             closest[i].ip, closest[i].tcp_port,
+                                             frame, flen) == 0)
+                hinted++;
         }
     }
 
@@ -744,7 +786,7 @@ static void do_replicate_store_frame(nodus_server_t *srv,
     (void)key_hash;  /* reserved for future */
 }
 
-void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val) {
+void nodus_dht_replicate_value(nodus_dht_t *dht, const nodus_value_t *val) {
     /* Key hash prefix for logging */
     char rpl_kh[17];
     for (int kk = 0; kk < 8; kk++) snprintf(rpl_kh + kk*2, sizeof(rpl_kh) - kk*2, "%02x", val->key_hash.bytes[kk]);
@@ -767,16 +809,16 @@ void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val)
     free(cbor_buf);
     if (flen == 0) { free(frame); return; }
 
-    int known = nodus_routing_count(&srv->routing);
+    int known = nodus_routing_count(&dht->routing);
 
     if (known <= NODUS_R * 4) {
         /* Small cluster fast path — routing table IS the network. */
         nodus_peer_t closest[NODUS_R];
-        int count = nodus_routing_find_closest(&srv->routing, &val->key_hash,
+        int count = nodus_routing_find_closest(&dht->routing, &val->key_hash,
                                                 closest, NODUS_R);
         QGP_LOG_DEBUG(LOG_TAG, "REPL: key=%s... vid=%llu fast_path found=%d (R=%d)",
                       rpl_kh, (unsigned long long)val->value_id, count, NODUS_R);
-        do_replicate_store_frame(srv, &val->key_hash, frame, flen,
+        do_replicate_store_frame(dht, &val->key_hash, frame, flen,
                                  closest, count, "REPL", rpl_kh);
         free(frame);
         return;
@@ -794,22 +836,22 @@ void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val)
     QGP_LOG_DEBUG(LOG_TAG, "REPL: key=%s... vid=%llu iter_path known=%d",
                   rpl_kh, (unsigned long long)val->value_id, known);
 
-    if (iterative_lookup_start(srv, &val->key_hash, -1, 0,
+    if (iterative_lookup_start(dht, &val->key_hash, -1, 0,
                                 put_replication_complete, ctx,
                                 put_repl_ctx_free) != 0) {
         /* No lookup slots — fallback to routing table fast path. */
         nodus_peer_t closest[NODUS_R];
-        int count = nodus_routing_find_closest(&srv->routing, &val->key_hash,
+        int count = nodus_routing_find_closest(&dht->routing, &val->key_hash,
                                                 closest, NODUS_R);
         QGP_LOG_DEBUG(LOG_TAG, "REPL: key=%s... iter FALLBACK found=%d",
                       rpl_kh, count);
-        do_replicate_store_frame(srv, &val->key_hash, frame, flen,
+        do_replicate_store_frame(dht, &val->key_hash, frame, flen,
                                  closest, count, "REPL-FB", rpl_kh);
         put_repl_ctx_free(ctx);
     }
 }
 
-static void put_replication_complete(nodus_server_t *srv,
+static void put_replication_complete(nodus_dht_t *dht,
                                       nodus_peer_t *closest, int count,
                                       void *user_data) {
     put_repl_ctx_t *ctx = (put_repl_ctx_t *)user_data;
@@ -823,10 +865,10 @@ static void put_replication_complete(nodus_server_t *srv,
     int sent = 0, failed = 0;
     int fail_indices[NODUS_K];
     for (int i = 0; i < count; i++) {
-        if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0) continue;
-        if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port,
-                                &closest[i].node_id,
-                                ctx->frame, ctx->flen) == 0) {
+        if (nodus_key_cmp(&closest[i].node_id, &dht->host.identity->node_id) == 0) continue;
+        if (dht_inter_send(dht, closest[i].ip, closest[i].tcp_port,
+                           &closest[i].node_id,
+                           ctx->frame, ctx->flen) == 0) {
             sent++;
         } else {
             if (failed < NODUS_K) fail_indices[failed] = i;
@@ -838,14 +880,11 @@ static void put_replication_complete(nodus_server_t *srv,
     if (sent < NODUS_REPLICATION_MIN && failed > 0) {
         for (int f = 0; f < failed && f < NODUS_K; f++) {
             int i = fail_indices[f];
-            if (!cluster_knows_peer(srv, &closest[i].node_id)) continue;  /* item 9 */
-            uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster,
-                                                                &closest[i].node_id);
-            if (offline < NODUS_HINT_OFFLINE_SKIP_SEC) {
-                nodus_storage_hinted_insert(&srv->storage, &closest[i].node_id,
-                                             closest[i].ip, closest[i].tcp_port,
-                                             ctx->frame, ctx->flen);
-            }
+            /* item 9: cluster members seen recently only */
+            if (!dht_hint_wanted(dht, &closest[i].node_id)) continue;
+            nodus_storage_hinted_insert(&dht->storage, &closest[i].node_id,
+                                         closest[i].ip, closest[i].tcp_port,
+                                         ctx->frame, ctx->flen);
         }
     }
 
@@ -857,11 +896,11 @@ static void put_replication_complete(nodus_server_t *srv,
     put_repl_ctx_free(ctx);
 }
 
-void nodus_server_replicate_media_chunk(nodus_server_t *srv,
-                                         const nodus_media_meta_t *meta,
-                                         uint32_t chunk_index,
-                                         const uint8_t *data, size_t data_len) {
-    if (!srv || !meta || !data || data_len == 0) return;
+void nodus_dht_replicate_media_chunk(nodus_dht_t *dht,
+                                     const nodus_media_meta_t *meta,
+                                     uint32_t chunk_index,
+                                     const uint8_t *data, size_t data_len) {
+    if (!dht || !meta || !data || data_len == 0) return;
 
     /* Encode m_sv message with meta + chunk */
     uint8_t *cbor_buf = malloc(RESP_BUF_SIZE);
@@ -890,7 +929,7 @@ void nodus_server_replicate_media_chunk(nodus_server_t *srv,
     for (int x = 0; x < 8; x++) snprintf(mkh + x*2, sizeof(mkh) - x*2, "%02x", meta->content_hash[x]);
     mkh[16] = '\0';
 
-    int known = nodus_routing_count(&srv->routing);
+    int known = nodus_routing_count(&dht->routing);
 
     fprintf(stderr,
             "MEDIA-REPL-CALL: hash=%s chunk=%u routing=%d path=%s\n",
@@ -900,12 +939,12 @@ void nodus_server_replicate_media_chunk(nodus_server_t *srv,
     if (known <= NODUS_R * 4) {
         /* Small cluster fast path — routing table is the network */
         nodus_peer_t closest[NODUS_R];
-        int count = nodus_routing_find_closest(&srv->routing, &media_key,
+        int count = nodus_routing_find_closest(&dht->routing, &media_key,
                                                 closest, NODUS_R);
         fprintf(stderr,
                 "MEDIA-REPL-FAST: hash=%s chunk=%u found=%d (target_R=%d)\n",
                 mkh, chunk_index, count, NODUS_R);
-        do_replicate_store_frame(srv, &media_key, frame, flen,
+        do_replicate_store_frame(dht, &media_key, frame, flen,
                                  closest, count, "MEDIA-REPL", mkh);
         free(frame);
         return;
@@ -924,23 +963,23 @@ void nodus_server_replicate_media_chunk(nodus_server_t *srv,
             "MEDIA-REPL-ITER: hash=%s chunk=%u routing=%d (large cluster)\n",
             mkh, chunk_index, known);
 
-    if (iterative_lookup_start(srv, &media_key, -1, 0,
+    if (iterative_lookup_start(dht, &media_key, -1, 0,
                                 media_replication_complete, ctx,
                                 put_media_ctx_free) != 0) {
         /* No lookup slots — fallback to routing table fast path. */
         nodus_peer_t closest[NODUS_R];
-        int count = nodus_routing_find_closest(&srv->routing, &media_key,
+        int count = nodus_routing_find_closest(&dht->routing, &media_key,
                                                 closest, NODUS_R);
         fprintf(stderr,
                 "MEDIA-REPL-ITER-FB: hash=%s chunk=%u found=%d (no lookup slots)\n",
                 mkh, chunk_index, count);
-        do_replicate_store_frame(srv, &media_key, frame, flen,
+        do_replicate_store_frame(dht, &media_key, frame, flen,
                                  closest, count, "MEDIA-REPL-FB", mkh);
         put_media_ctx_free(ctx);
     }
 }
 
-static void media_replication_complete(nodus_server_t *srv,
+static void media_replication_complete(nodus_dht_t *dht,
                                         nodus_peer_t *closest, int count,
                                         void *user_data) {
     put_media_ctx_t *ctx = (put_media_ctx_t *)user_data;
@@ -953,10 +992,10 @@ static void media_replication_complete(nodus_server_t *srv,
     int sent = 0, failed = 0;
     int fail_indices[NODUS_K];
     for (int i = 0; i < count; i++) {
-        if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0) continue;
-        if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port,
-                                &closest[i].node_id,
-                                ctx->frame, ctx->flen) == 0) {
+        if (nodus_key_cmp(&closest[i].node_id, &dht->host.identity->node_id) == 0) continue;
+        if (dht_inter_send(dht, closest[i].ip, closest[i].tcp_port,
+                           &closest[i].node_id,
+                           ctx->frame, ctx->flen) == 0) {
             sent++;
         } else {
             if (failed < NODUS_K) fail_indices[failed] = i;
@@ -967,14 +1006,11 @@ static void media_replication_complete(nodus_server_t *srv,
     if (sent < NODUS_REPLICATION_MIN && failed > 0) {
         for (int f = 0; f < failed && f < NODUS_K; f++) {
             int i = fail_indices[f];
-            if (!cluster_knows_peer(srv, &closest[i].node_id)) continue;  /* item 9 */
-            uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster,
-                                                                &closest[i].node_id);
-            if (offline < NODUS_HINT_OFFLINE_SKIP_SEC) {
-                nodus_storage_hinted_insert(&srv->storage, &closest[i].node_id,
-                                             closest[i].ip, closest[i].tcp_port,
-                                             ctx->frame, ctx->flen);
-            }
+            /* item 9: cluster members seen recently only */
+            if (!dht_hint_wanted(dht, &closest[i].node_id)) continue;
+            nodus_storage_hinted_insert(&dht->storage, &closest[i].node_id,
+                                         closest[i].ip, closest[i].tcp_port,
+                                         ctx->frame, ctx->flen);
         }
     }
 
@@ -989,7 +1025,7 @@ static void media_replication_complete(nodus_server_t *srv,
  * Retry DHT hinted handoff entries every NODUS_HINTED_RETRY_SEC seconds.
  * For each ALIVE cluster peer, query pending hints, attempt send, delete on success.
  */
-static void dht_hinted_retry(nodus_server_t *srv) {
+static void dht_hinted_retry(nodus_dht_t *dht) {
     static uint64_t last_retry = 0;
     uint64_t now = nodus_time_now();
 
@@ -998,15 +1034,15 @@ static void dht_hinted_retry(nodus_server_t *srv) {
     last_retry = now;
 
     /* Cleanup expired entries first */
-    int cleaned = nodus_storage_hinted_cleanup(&srv->storage);
-    int total_hints = nodus_storage_hinted_count(&srv->storage);
+    int cleaned = nodus_storage_hinted_cleanup(&dht->storage);
+    int total_hints = nodus_storage_hinted_count(&dht->storage);
     if (total_hints > 0 || cleaned > 0)
         fprintf(stderr, "HINT-RETRY: tick start — %d pending, %d expired-cleaned\n",
                 total_hints, cleaned > 0 ? cleaned : 0);
 
     /* Query distinct node_ids with pending hints */
     sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(srv->storage.db,
+    if (sqlite3_prepare_v2(dht->storage.db,
             "SELECT DISTINCT node_id FROM dht_hinted_handoff WHERE expires_at > ?",
             -1, &stmt, NULL) != SQLITE_OK)
         return;
@@ -1025,7 +1061,7 @@ static void dht_hinted_retry(nodus_server_t *srv) {
          * peer_ip/peer_port that was current at hint creation time. */
         nodus_dht_hint_t *entries = NULL;
         size_t count = 0;
-        if (nodus_storage_hinted_get(&srv->storage, &node_id,
+        if (nodus_storage_hinted_get(&dht->storage, &node_id,
                                        100, &entries, &count) != 0 || count == 0)
             continue;
 
@@ -1038,7 +1074,7 @@ static void dht_hinted_retry(nodus_server_t *srv) {
         nodus_peer_t peer;
         const char *ip;
         uint16_t tcp_port;
-        if (nodus_routing_lookup(&srv->routing, &node_id, &peer) == 0) {
+        if (nodus_routing_lookup(&dht->routing, &node_id, &peer) == 0) {
             ip = peer.ip;
             tcp_port = peer.tcp_port;
         } else {
@@ -1048,20 +1084,20 @@ static void dht_hinted_retry(nodus_server_t *srv) {
 
         int h_sent = 0, h_bumped = 0, h_expired = 0;
         for (size_t j = 0; j < count; j++) {
-            if (dht_republish_send(srv, ip, tcp_port,
-                                    &node_id,
-                                    entries[j].frame_data,
-                                    entries[j].frame_len) == 0) {
-                nodus_storage_hinted_delete(&srv->storage, entries[j].id);
+            if (dht_inter_send(dht, ip, tcp_port,
+                               &node_id,
+                               entries[j].frame_data,
+                               entries[j].frame_len) == 0) {
+                nodus_storage_hinted_delete(&dht->storage, entries[j].id);
                 h_sent++;
             } else {
                 /* Send failed — TCP buffer likely full. Bump retry count,
                  * delete if max retries reached, then STOP trying this
                  * peer to avoid flooding the buffer. */
                 int retries = nodus_storage_hinted_bump_retry(
-                    &srv->storage, entries[j].id);
+                    &dht->storage, entries[j].id);
                 if (retries >= NODUS_HINT_MAX_RETRIES) {
-                    nodus_storage_hinted_delete(&srv->storage, entries[j].id);
+                    nodus_storage_hinted_delete(&dht->storage, entries[j].id);
                     h_expired++;
                 } else {
                     h_bumped++;
@@ -1080,14 +1116,14 @@ static void dht_hinted_retry(nodus_server_t *srv) {
 
 /* ── Kademlia bucket refresh ──────────────────────────────────────── */
 
-static void dht_bucket_refresh(nodus_server_t *srv) {
+static void dht_bucket_refresh(nodus_dht_t *dht) {
     static uint64_t last_refresh = 0;
     uint64_t now = nodus_time_now();
     if (now - last_refresh < NODUS_BUCKET_REFRESH_SEC) return;
     last_refresh = now;
 
     for (int b = 0; b < NODUS_BUCKETS; b++) {
-        const nodus_bucket_t *bucket = &srv->routing.buckets[b];
+        const nodus_bucket_t *bucket = &dht->routing.buckets[b];
         if (bucket->count == 0) continue;
 
         /* Skip recently active buckets */
@@ -1112,7 +1148,7 @@ static void dht_bucket_refresh(nodus_server_t *srv) {
 
         /* Generate random key in this bucket's range and send FIND_NODE */
         nodus_key_t random_key;
-        nodus_key_random_in_bucket(&random_key, &srv->identity.node_id, b);
+        nodus_key_random_in_bucket(&random_key, &dht->host.identity->node_id, b);
 
         /* FIX-L2: pass raw CBOR to nodus_udp_send() — it applies the
          * wire frame internally. Previously we framed twice, producing
@@ -1120,87 +1156,95 @@ static void dht_bucket_refresh(nodus_server_t *srv) {
         uint8_t buf[512];
         size_t len = 0;
         if (nodus_t1_find_node(0, &random_key, buf, sizeof(buf), &len) == 0 && len > 0)
-            nodus_udp_send(&srv->udp, buf, len, target->ip, target->udp_port);
+            dht_udp_send(dht, buf, len, target->ip, target->udp_port);
     }
 }
 
 /* ── Storage cleanup timer ───────────────────────────────────────── */
 
-static void dht_storage_cleanup(nodus_server_t *srv) {
+static void dht_storage_cleanup(nodus_dht_t *dht) {
     static uint64_t last_cleanup = 0;
     uint64_t now = nodus_time_now();
     if (now - last_cleanup < NODUS_CLEANUP_SEC) return;
     last_cleanup = now;
 
-    int cleaned = nodus_storage_cleanup(&srv->storage);
+    int cleaned = nodus_storage_cleanup(&dht->storage);
     if (cleaned > 0)
         fprintf(stderr, "DHT-CLEANUP: removed %d expired values\n", cleaned);
 
-    nodus_media_cleanup(&srv->media_storage);
+    nodus_media_cleanup(&dht->media_storage);
 }
 
 /* ── WAL checkpoint + incremental vacuum ─────────────────────────── */
 
-static void dht_wal_checkpoint(nodus_server_t *srv) {
+static void dht_wal_checkpoint(nodus_dht_t *dht) {
     uint64_t now = nodus_time_now();
-    if (now - srv->last_wal_checkpoint < NODUS_WAL_CHECKPOINT_SEC) return;
-    srv->last_wal_checkpoint = now;
+    if (now - dht->last_wal_checkpoint < NODUS_WAL_CHECKPOINT_SEC) return;
+    dht->last_wal_checkpoint = now;
 
     /* Reset all prepared statements to release read snapshots.
      * Without this, stepped-but-not-reset cursors hold implicit
      * read transactions that block WAL checkpoint. */
     sqlite3_stmt *stmts[] = {
-        srv->storage.stmt_put, srv->storage.stmt_get,
-        srv->storage.stmt_get_all, srv->storage.stmt_delete,
-        srv->storage.stmt_cleanup, srv->storage.stmt_count,
-        srv->storage.stmt_put_if_newer, srv->storage.stmt_fetch_batch,
-        srv->storage.stmt_exclusive_owner,
-        srv->storage.stmt_hint_insert, srv->storage.stmt_hint_get,
-        srv->storage.stmt_hint_delete, srv->storage.stmt_hint_cleanup,
-        srv->storage.stmt_hint_count,
-        srv->media_storage.stmt_put_meta, srv->media_storage.stmt_put_chunk,
-        srv->media_storage.stmt_get_meta, srv->media_storage.stmt_get_chunk,
-        srv->media_storage.stmt_exists, srv->media_storage.stmt_mark_complete,
-        srv->media_storage.stmt_count_chunks,
-        srv->media_storage.stmt_cleanup_expired,
-        srv->media_storage.stmt_cleanup_incomplete,
-        srv->media_storage.stmt_cleanup_orphan_chunks,
-        srv->media_storage.stmt_count_per_owner,
-        srv->media_storage.stmt_fetch_batch,
+        dht->storage.stmt_put, dht->storage.stmt_get,
+        dht->storage.stmt_get_all, dht->storage.stmt_delete,
+        dht->storage.stmt_cleanup, dht->storage.stmt_count,
+        dht->storage.stmt_put_if_newer, dht->storage.stmt_fetch_batch,
+        dht->storage.stmt_exclusive_owner,
+        dht->storage.stmt_hint_insert, dht->storage.stmt_hint_get,
+        dht->storage.stmt_hint_delete, dht->storage.stmt_hint_cleanup,
+        dht->storage.stmt_hint_count,
+        dht->media_storage.stmt_put_meta, dht->media_storage.stmt_put_chunk,
+        dht->media_storage.stmt_get_meta, dht->media_storage.stmt_get_chunk,
+        dht->media_storage.stmt_exists, dht->media_storage.stmt_mark_complete,
+        dht->media_storage.stmt_count_chunks,
+        dht->media_storage.stmt_cleanup_expired,
+        dht->media_storage.stmt_cleanup_incomplete,
+        dht->media_storage.stmt_cleanup_orphan_chunks,
+        dht->media_storage.stmt_count_per_owner,
+        dht->media_storage.stmt_fetch_batch,
     };
     for (size_t i = 0; i < sizeof(stmts)/sizeof(stmts[0]); i++) {
         if (stmts[i]) sqlite3_reset(stmts[i]);
     }
 
     int nlog = 0, nckpt = 0;
-    int rc = sqlite3_wal_checkpoint_v2(srv->storage.db, NULL,
+    int rc = sqlite3_wal_checkpoint_v2(dht->storage.db, NULL,
                                         SQLITE_CHECKPOINT_TRUNCATE, &nlog, &nckpt);
     if (rc == SQLITE_OK && nlog > 0)
         fprintf(stderr, "WAL-CKPT: nodus.db truncated (%d frames)\n", nckpt);
     else if (rc == SQLITE_BUSY && nlog > 0)
         fprintf(stderr, "WAL-CKPT: nodus.db BUSY (%d/%d frames), retrying PASSIVE\n", nckpt, nlog);
     if (rc == SQLITE_BUSY)
-        sqlite3_wal_checkpoint_v2(srv->storage.db, NULL,
+        sqlite3_wal_checkpoint_v2(dht->storage.db, NULL,
                                    SQLITE_CHECKPOINT_PASSIVE, NULL, NULL);
 
-    /* channels.db has its own DB handle */
-    if (srv->ch_server.ch_store && srv->ch_server.ch_store->db) {
-        sqlite3_wal_checkpoint_v2(srv->ch_server.ch_store->db, NULL,
+#ifndef NODUS_CHANNELS_DISABLED
+    /* channels.db has its own DB handle. Only the channel server (4003)
+     * attaches it (ch_server.ch_store = &ch_store, nodus_server_init); with
+     * the channel server compiled out it was never checkpointed here, and
+     * still is not. */
+    if (dht->ch_store.db) {
+        sqlite3_wal_checkpoint_v2(dht->ch_store.db, NULL,
                                    SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
     }
+#endif
 }
 
-static void dht_incremental_vacuum(nodus_server_t *srv) {
+static void dht_incremental_vacuum(nodus_dht_t *dht) {
     uint64_t now = nodus_time_now();
-    if (now - srv->last_vacuum < NODUS_VACUUM_SEC) return;
-    srv->last_vacuum = now;
+    if (now - dht->last_vacuum < NODUS_VACUUM_SEC) return;
+    dht->last_vacuum = now;
 
-    sqlite3_exec(srv->storage.db, "PRAGMA incremental_vacuum(10000)",
+    sqlite3_exec(dht->storage.db, "PRAGMA incremental_vacuum(10000)",
                  NULL, NULL, NULL);
-    if (srv->ch_server.ch_store && srv->ch_server.ch_store->db) {
-        sqlite3_exec(srv->ch_server.ch_store->db, "PRAGMA incremental_vacuum(10000)",
+#ifndef NODUS_CHANNELS_DISABLED
+    /* channels.db — only with the channel server (see dht_wal_checkpoint) */
+    if (dht->ch_store.db) {
+        sqlite3_exec(dht->ch_store.db, "PRAGMA incremental_vacuum(10000)",
                      NULL, NULL, NULL);
     }
+#endif
     fprintf(stderr, "VACUUM: incremental vacuum completed\n");
 }
 
@@ -1300,10 +1344,11 @@ static void server_on_pending_full(nodus_tcp_conn_t *conn,
         return;
     }
 
-    int rc = nodus_storage_hinted_insert(&srv->storage,
-                                          &dedup_id,
-                                          conn->ip, conn->port,
-                                          framed, frame_size);
+    /* The hint table is the DHT's (nodus.db): parked there through the
+     * seam, with the insert's result back for the log lines below. */
+    int rc = srv->dht->ops->hint_store(srv->dht, &dedup_id,
+                                       conn->ip, conn->port,
+                                       framed, frame_size);
     free(framed);
 
     if (rc != 0) {
@@ -1452,15 +1497,15 @@ static int dht_republish_send(nodus_server_t *srv, const char *ip,
 }
 
 /** Main republish tick — fetch batch, send to K-closest, manage connections */
-static void dht_republish(nodus_server_t *srv) {
-    dht_republish_state_t *rs = &srv->republish;
+static void dht_republish(nodus_dht_t *dht) {
+    dht_republish_state_t *rs = &dht->republish;
     uint64_t now = nodus_time_now();
 
     if (!rs->active) {
         /* Start new cycle every NODUS_REPUBLISH_SEC */
         if (now - rs->cycle_start < NODUS_REPUBLISH_SEC) return;
         /* Wait for routing table to have enough peers */
-        if (nodus_routing_count(&srv->routing) < NODUS_REPLICATION_MIN) return;
+        if (nodus_routing_count(&dht->routing) < NODUS_REPLICATION_MIN) return;
         memset(&rs->last_key, 0, sizeof(rs->last_key));
         memset(&rs->last_owner, 0, sizeof(rs->last_owner));
         rs->last_vid = 0;
@@ -1474,7 +1519,7 @@ static void dht_republish(nodus_server_t *srv) {
      * and bookmarking only on key_hash skipped tied rows at batch
      * boundaries (~15% loss per cycle on multi-row keys). */
     nodus_value_t *batch[NODUS_REPUBLISH_BATCH];
-    int fetched = nodus_storage_fetch_batch(&srv->storage,
+    int fetched = nodus_storage_fetch_batch(&dht->storage,
                                              rs->first_batch ? NULL : &rs->last_key,
                                              rs->first_batch ? NULL : &rs->last_owner,
                                              rs->first_batch ? 0 : rs->last_vid,
@@ -1510,7 +1555,7 @@ static void dht_republish(nodus_server_t *srv) {
         if (flen == 0) { free(frame); nodus_value_free(val); continue; }
 
         nodus_peer_t closest[NODUS_R];
-        int n = nodus_routing_find_closest(&srv->routing, &val->key_hash, closest, NODUS_R);
+        int n = nodus_routing_find_closest(&dht->routing, &val->key_hash, closest, NODUS_R);
 
         /* DBG: log per-value republish targets (v0.18.1) */
         {
@@ -1533,20 +1578,16 @@ static void dht_republish(nodus_server_t *srv) {
          * the same frame to the same peer collapses to one row even if
          * many cycles fail. */
         for (int j = 0; j < n; j++) {
-            if (nodus_key_cmp(&closest[j].node_id, &srv->identity.node_id) == 0) continue;
-            int rc = dht_republish_send(srv, closest[j].ip, closest[j].tcp_port,
-                                         &closest[j].node_id, frame, flen);
-            /* Item 9: hints only for cluster members; the next republish
-             * cycle covers any other peer. */
-            if (rc != 0 && cluster_knows_peer(srv, &closest[j].node_id)) {
-                uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster,
-                                                                    &closest[j].node_id);
-                if (offline < NODUS_HINT_OFFLINE_SKIP_SEC) {
-                    nodus_storage_hinted_insert(&srv->storage,
-                                                 &closest[j].node_id,
-                                                 closest[j].ip, closest[j].tcp_port,
-                                                 frame, flen);
-                }
+            if (nodus_key_cmp(&closest[j].node_id, &dht->host.identity->node_id) == 0) continue;
+            int rc = dht_inter_send(dht, closest[j].ip, closest[j].tcp_port,
+                                    &closest[j].node_id, frame, flen);
+            /* Item 9: hints only for cluster members (seen recently); the
+             * next republish cycle covers any other peer. */
+            if (rc != 0 && dht_hint_wanted(dht, &closest[j].node_id)) {
+                nodus_storage_hinted_insert(&dht->storage,
+                                             &closest[j].node_id,
+                                             closest[j].ip, closest[j].tcp_port,
+                                             frame, flen);
             }
         }
 
@@ -1573,22 +1614,22 @@ static void dht_republish(nodus_server_t *srv) {
  * exactly one chunk per tick we let the event loop drain wbufs between
  * chunks, so pending stays well under cap.
  */
-static void dht_media_republish(nodus_server_t *srv) {
-    dht_media_republish_state_t *mrs = &srv->media_republish;
+static void dht_media_republish(nodus_dht_t *dht) {
+    dht_media_republish_state_t *mrs = &dht->media_republish;
     uint64_t now = nodus_time_now();
 
     /* Cycle activation gate */
     if (!mrs->active) {
         if (now - mrs->cycle_start < NODUS_MEDIA_REPUBLISH_SEC) return;
-        if (nodus_routing_count(&srv->routing) < NODUS_REPLICATION_MIN) {
+        if (nodus_routing_count(&dht->routing) < NODUS_REPLICATION_MIN) {
             fprintf(stderr,
                     "MEDIA-REPUB-SKIP: routing sparse (%d < %d)\n",
-                    nodus_routing_count(&srv->routing), NODUS_REPLICATION_MIN);
+                    nodus_routing_count(&dht->routing), NODUS_REPLICATION_MIN);
             return;
         }
         fprintf(stderr,
                 "MEDIA-REPUB-CYCLE: start cycle, routing=%d\n",
-                nodus_routing_count(&srv->routing));
+                nodus_routing_count(&dht->routing));
         memset(mrs->last_hash, 0, sizeof(mrs->last_hash));
         mrs->active = true;
         mrs->first_batch = true;
@@ -1600,7 +1641,7 @@ static void dht_media_republish(nodus_server_t *srv) {
     /* Need a current entry? Fetch the next one (size 1 — pacing). */
     if (!mrs->has_current) {
         nodus_media_meta_t one[1];
-        int fetched = nodus_media_fetch_batch(&srv->media_storage,
+        int fetched = nodus_media_fetch_batch(&dht->media_storage,
                                                mrs->first_batch ? NULL : mrs->last_hash,
                                                one, 1);
         mrs->first_batch = false;
@@ -1629,13 +1670,13 @@ static void dht_media_republish(nodus_server_t *srv) {
     if (mrs->chunk_cursor < mrs->current_meta.chunk_count) {
         uint8_t *chunk_data = NULL;
         size_t chunk_len = 0;
-        if (nodus_media_get_chunk(&srv->media_storage,
+        if (nodus_media_get_chunk(&dht->media_storage,
                                    mrs->current_meta.content_hash,
                                    mrs->chunk_cursor,
                                    &chunk_data, &chunk_len) == 0) {
-            nodus_server_replicate_media_chunk(srv, &mrs->current_meta,
-                                                mrs->chunk_cursor,
-                                                chunk_data, chunk_len);
+            nodus_dht_replicate_media_chunk(dht, &mrs->current_meta,
+                                            mrs->chunk_cursor,
+                                            chunk_data, chunk_len);
             free(chunk_data);
         } else {
             char hpfx[17];
@@ -1658,13 +1699,15 @@ static void dht_media_republish(nodus_server_t *srv) {
 
 /* ── Tier 2 message handlers (Client -> Nodus) ──────────────────── */
 
-static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
+static void handle_t2_put(nodus_dht_t *dht, int slot,
+                           const nodus_key_t *client_fp,
+                           const nodus_pubkey_t *client_pk,
                            nodus_tier2_msg_t *msg) {
-    if (!rate_check_put(sess)) {
+    if (!rate_check_put(&dht->sessions[slot])) {
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_RATE_LIMITED,
                         "too many puts", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
+        dht_send_client(dht, slot, resp_buf, len);
         return;
     }
 
@@ -1673,7 +1716,7 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_TOO_LARGE,
                         "value exceeds max size", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
+        dht_send_client(dht, slot, resp_buf, len);
         return;
     }
 
@@ -1689,12 +1732,12 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
     int rc = nodus_value_create(&msg->key, msg->data, msg->data_len,
                                  msg->val_type, msg->ttl,
                                  msg->vid, msg->seq,
-                                 &sess->client_pk, &val);
+                                 client_pk, &val);
     if (rc != 0 || !val) {
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
                         "value creation failed", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
+        dht_send_client(dht, slot, resp_buf, len);
         return;
     }
 
@@ -1706,7 +1749,7 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
         char kh[17], fp_hex[17];
         for (int i = 0; i < 8; i++) {
             snprintf(kh + i*2, sizeof(kh) - i*2, "%02x", val->key_hash.bytes[i]);
-            snprintf(fp_hex + i*2, sizeof(fp_hex) - i*2, "%02x", sess->client_fp.bytes[i]);
+            snprintf(fp_hex + i*2, sizeof(fp_hex) - i*2, "%02x", client_fp->bytes[i]);
         }
         kh[16] = '\0'; fp_hex[16] = '\0';
         fprintf(stderr, "T2_PUT: verify FAILED key=%s... client=%s... vid=%llu seq=%llu\n",
@@ -1715,20 +1758,20 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_INVALID_SIGNATURE,
                         "value signature invalid", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
+        dht_send_client(dht, slot, resp_buf, len);
         return;
     }
 
     /* Store — with EXCLUSIVE ownership enforcement.
      * put_if_newer is only for inter-node replication paths. */
-    rc = nodus_storage_put(&srv->storage, val);
+    rc = nodus_storage_put(&dht->storage, val);
     if (rc == -2) {
         /* EXCLUSIVE key owned by different identity */
         nodus_value_free(val);
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_KEY_OWNED,
                         "key owned by different identity", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
+        dht_send_client(dht, slot, resp_buf, len);
         return;
     }
     if (rc == NODUS_STORAGE_RC_QUOTA || rc == NODUS_STORAGE_RC_STALE) {
@@ -1744,7 +1787,7 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
         else
             nodus_t2_error(msg->txn_id, NODUS_ERR_STALE,
                             "stored value has a higher seq", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
+        dht_send_client(dht, slot, resp_buf, len);
         return;
     }
     if (rc != 0) {
@@ -1752,22 +1795,22 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
                         "storage error", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
+        dht_send_client(dht, slot, resp_buf, len);
         return;
     }
 
     /* Notify listeners */
-    notify_listeners(srv, &msg->key, val);
+    notify_listeners(dht, &msg->key, val);
     /* Forward to remote subscribers (Scribe pattern) */
-    subscription_notify(srv, &msg->key, val);
+    subscription_notify(dht, &msg->key, val);
 
     /* Replicate to alive cluster peers via TCP STORE */
-    nodus_server_replicate_value(srv, val);
+    nodus_dht_replicate_value(dht, val);
 
     /* Respond OK */
     size_t len = 0;
     nodus_t2_put_ok(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
-    nodus_tcp_send(sess->conn, resp_buf, len);
+    dht_send_client(dht, slot, resp_buf, len);
 
     nodus_value_free(val);
 }
@@ -1785,9 +1828,9 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
  */
 
 /* Forward declarations — BF infrastructure is defined further down */
-static void bf_send_result(nodus_server_t *srv, dht_bf_batch_t *b);
-static void bf_batch_cleanup(nodus_server_t *srv, dht_bf_batch_t *b);
-static int bf_start_forward(nodus_server_t *srv, dht_bf_batch_t *b,
+static void bf_send_result(nodus_dht_t *dht, dht_bf_batch_t *b);
+static void bf_batch_cleanup(nodus_dht_t *dht, dht_bf_batch_t *b);
+static int bf_start_forward(nodus_dht_t *dht, dht_bf_batch_t *b,
                               int fi, const nodus_peer_t *peer,
                               const nodus_key_t *keys, const int *key_indices,
                               int key_count);
@@ -1853,11 +1896,11 @@ static void lookup_update_closest_k(iterative_lookup_t *l) {
 }
 
 /** Send a FIND_NODE query to a peer via UDP */
-static int lookup_send_query(nodus_server_t *srv, iterative_lookup_t *l,
+static int lookup_send_query(nodus_dht_t *dht, iterative_lookup_t *l,
                               int qi, const nodus_peer_t *peer) {
     lookup_query_t *q = &l->queries[qi];
 
-    uint32_t txn = srv->lookup_state.next_txn++;
+    uint32_t txn = dht->lookup_state.next_txn++;
 
     /* Encode T1 FIND_NODE. Always FIND_NODE, never FIND_VALUE. */
     uint8_t buf[256];
@@ -1867,7 +1910,7 @@ static int lookup_send_query(nodus_server_t *srv, iterative_lookup_t *l,
 
     /* FIX-C1: send RAW CBOR — nodus_udp_send() applies the wire frame
      * internally. Calling nodus_frame_encode() here would double-frame. */
-    if (nodus_udp_send(&srv->udp, buf, len, peer->ip, peer->udp_port) != 0)
+    if (dht_udp_send(dht, buf, len, peer->ip, peer->udp_port) != 0)
         return -1;
 
     q->state = LOOKUP_QUERY_SENT;
@@ -1884,7 +1927,7 @@ static int lookup_send_query(nodus_server_t *srv, iterative_lookup_t *l,
 }
 
 /** Send queries to up to ALPHA unqueried closest peers */
-static void lookup_send_round(nodus_server_t *srv, iterative_lookup_t *l) {
+static void lookup_send_round(nodus_dht_t *dht, iterative_lookup_t *l) {
     int sent = 0;
     lookup_sort_shortlist(l);
 
@@ -1894,7 +1937,7 @@ static void lookup_send_round(nodus_server_t *srv, iterative_lookup_t *l) {
         if (lookup_is_queried(l, &p->node_id)) continue;
 
         /* Skip self */
-        if (nodus_key_cmp(&p->node_id, &srv->identity.node_id) == 0) {
+        if (nodus_key_cmp(&p->node_id, &dht->host.identity->node_id) == 0) {
             lookup_mark_queried(l, &p->node_id);
             continue;
         }
@@ -1906,7 +1949,7 @@ static void lookup_send_round(nodus_server_t *srv, iterative_lookup_t *l) {
         }
         if (qi < 0) break;
 
-        if (lookup_send_query(srv, l, qi, p) == 0)
+        if (lookup_send_query(dht, l, qi, p) == 0)
             sent++;
     }
 
@@ -1919,7 +1962,7 @@ static void lookup_send_round(nodus_server_t *srv, iterative_lookup_t *l) {
  * Start an iterative FIND_NODE lookup.
  *
  * Discovers K-closest nodes to target_key via UDP FIND_NODE queries.
- * On completion, calls on_complete(srv, closest_nodes, count, cb_data).
+ * On completion, calls on_complete(dht, closest_nodes, count, cb_data).
  *
  * CONTRACT: cb_data ownership transfers to the lookup engine.
  *   - Normal completion: on_complete() is called with cb_data; the callback
@@ -1937,22 +1980,22 @@ static void lookup_send_round(nodus_server_t *srv, iterative_lookup_t *l) {
  *                      see CONTRACT above)
  * @return 0 on success (lookup started), -1 on failure (no slots / no peers)
  */
-static int iterative_lookup_start(nodus_server_t *srv,
+static int iterative_lookup_start(nodus_dht_t *dht,
                                    const nodus_key_t *target,
                                    int session_slot,
                                    uint32_t client_txn_id,
-                                   void (*on_complete)(struct nodus_server *,
+                                   void (*on_complete)(struct nodus_dht *,
                                                        nodus_peer_t *, int,
                                                        void *),
                                    void *cb_data,
                                    void (*cb_data_free)(void *)) {
     int slot = -1;
     for (int i = 0; i < NODUS_LOOKUP_MAX_INFLIGHT; i++) {
-        if (!srv->lookup_state.lookups[i].active) { slot = i; break; }
+        if (!dht->lookup_state.lookups[i].active) { slot = i; break; }
     }
     if (slot < 0) return -1;
 
-    iterative_lookup_t *l = &srv->lookup_state.lookups[slot];
+    iterative_lookup_t *l = &dht->lookup_state.lookups[slot];
     memset(l, 0, sizeof(*l));
     l->active = true;
     l->target_key = *target;
@@ -1965,7 +2008,7 @@ static int iterative_lookup_start(nodus_server_t *srv,
 
     /* Bootstrap: seed shortlist from local routing table */
     nodus_peer_t seeds[NODUS_K * 2];
-    int seed_count = nodus_routing_find_closest(&srv->routing, target,
+    int seed_count = nodus_routing_find_closest(&dht->routing, target,
                                                  seeds, NODUS_K * 2);
     for (int i = 0; i < seed_count && l->shortlist_count < NODUS_LOOKUP_MAX_CANDIDATES; i++)
         l->shortlist[l->shortlist_count++] = seeds[i];
@@ -1984,7 +2027,7 @@ static int iterative_lookup_start(nodus_server_t *srv,
 
     lookup_update_closest_k(l);
 
-    lookup_send_round(srv, l);
+    lookup_send_round(dht, l);
 
     if (l->queries_pending == 0) {
         l->active = false;
@@ -2002,13 +2045,13 @@ static int iterative_lookup_start(nodus_server_t *srv,
  * they match the peer we originally queried to prevent a malicious node from
  * forging fn_r responses (guessing txn) and polluting our shortlist.
  */
-static void iterative_lookup_handle_response(nodus_server_t *srv,
+static void iterative_lookup_handle_response(nodus_dht_t *dht,
                                               uint32_t txn,
                                               const nodus_tier1_msg_t *msg,
                                               const char *from_ip,
                                               uint16_t from_port) {
     for (int li = 0; li < NODUS_LOOKUP_MAX_INFLIGHT; li++) {
-        iterative_lookup_t *l = &srv->lookup_state.lookups[li];
+        iterative_lookup_t *l = &dht->lookup_state.lookups[li];
         if (!l->active) continue;
 
         for (int qi = 0; qi < NODUS_ALPHA; qi++) {
@@ -2031,7 +2074,7 @@ static void iterative_lookup_handle_response(nodus_server_t *srv,
 
             for (int p = 0; p < msg->peer_count; p++) {
                 const nodus_peer_t *np = &msg->peers[p];
-                if (nodus_key_cmp(&np->node_id, &srv->identity.node_id) == 0)
+                if (nodus_key_cmp(&np->node_id, &dht->host.identity->node_id) == 0)
                     continue;
                 bool dup = false;
                 for (int s = 0; s < l->shortlist_count; s++) {
@@ -2057,9 +2100,9 @@ static void iterative_lookup_handle_response(nodus_server_t *srv,
  *
  * Ownership: on_complete is responsible for freeing cb_data (normal
  * completion path). cb_data_free is only called on abandonment paths
- * (iterative_lookup_tick disconnect, nodus_server_close shutdown).
+ * (iterative_lookup_tick disconnect, nodus_dht_stop shutdown).
  */
-static void lookup_finalize(nodus_server_t *srv, iterative_lookup_t *l) {
+static void lookup_finalize(nodus_dht_t *dht, iterative_lookup_t *l) {
     /* Populate result_nodes from closest_k if not already set */
     if (l->result_node_count == 0 && l->closest_k_count > 0) {
         memcpy(l->result_nodes, l->closest_k,
@@ -2069,7 +2112,7 @@ static void lookup_finalize(nodus_server_t *srv, iterative_lookup_t *l) {
 
     /* Snapshot callback + result into locals BEFORE clearing the slot.
      * This makes it safe for on_complete to re-enter the engine. */
-    void (*cb)(struct nodus_server *, nodus_peer_t *, int, void *) = l->on_complete;
+    void (*cb)(struct nodus_dht *, nodus_peer_t *, int, void *) = l->on_complete;
     void *cb_data = l->cb_data;
     nodus_peer_t result_nodes[NODUS_K];
     int result_count = l->result_node_count;
@@ -2091,18 +2134,18 @@ static void lookup_finalize(nodus_server_t *srv, iterative_lookup_t *l) {
 
     /* Invoke callback with local copies — safe to re-enter the engine.
      * The callback is responsible for freeing cb_data. */
-    if (cb) cb(srv, result_nodes, result_count, cb_data);
+    if (cb) cb(dht, result_nodes, result_count, cb_data);
 }
 
 /**
  * Tick: advance all active lookups.
  * Called from main event loop every iteration.
  */
-static void iterative_lookup_tick(nodus_server_t *srv) {
+static void iterative_lookup_tick(nodus_dht_t *dht) {
     uint64_t now = nodus_time_now_ms();
 
     for (int li = 0; li < NODUS_LOOKUP_MAX_INFLIGHT; li++) {
-        iterative_lookup_t *l = &srv->lookup_state.lookups[li];
+        iterative_lookup_t *l = &dht->lookup_state.lookups[li];
         if (!l->active) continue;
 
         /* Overall timeout — finalize with best-effort closest_k */
@@ -2110,14 +2153,13 @@ static void iterative_lookup_tick(nodus_server_t *srv) {
             QGP_LOG_DEBUG(LOG_TAG,
                 "lookup_timeout after %llu ms (overall), finalizing",
                 (unsigned long long)(now - l->started_at));
-            lookup_finalize(srv, l);
+            lookup_finalize(dht, l);
             continue;
         }
 
         /* Client disconnect check */
         if (l->session_slot >= 0) {
-            nodus_session_t *sess = &srv->sessions[l->session_slot];
-            if (!sess->conn) {
+            if (!dht->sessions[l->session_slot].open) {
                 if (l->cb_data && l->cb_data_free) l->cb_data_free(l->cb_data);
                 l->cb_data = NULL;
                 l->cb_data_free = NULL;
@@ -2137,7 +2179,7 @@ static void iterative_lookup_tick(nodus_server_t *srv) {
                     size_t len = 0;
                     if (nodus_t1_find_node(q->txn, &l->target_key,
                                             buf, sizeof(buf), &len) == 0 && len > 0) {
-                        nodus_udp_send(&srv->udp, buf, len, q->ip, q->udp_port);
+                        dht_udp_send(dht, buf, len, q->ip, q->udp_port);
                     }
                     q->sent_at = now;
                 } else {
@@ -2178,10 +2220,10 @@ static void iterative_lookup_tick(nodus_server_t *srv) {
                          i < l->closest_k_count && free_slots > 0; i++) {
                         if (lookup_is_queried(l, &l->closest_k[i].node_id)) continue;
                         if (nodus_key_cmp(&l->closest_k[i].node_id,
-                                           &srv->identity.node_id) == 0) continue;
+                                           &dht->host.identity->node_id) == 0) continue;
                         for (int qi = 0; qi < NODUS_ALPHA; qi++) {
                             if (l->queries[qi].state != LOOKUP_QUERY_SENT) {
-                                if (lookup_send_query(srv, l, qi,
+                                if (lookup_send_query(dht, l, qi,
                                                        &l->closest_k[i]) == 0)
                                     free_slots--;
                                 break;
@@ -2191,14 +2233,14 @@ static void iterative_lookup_tick(nodus_server_t *srv) {
                     if (l->queries_pending > 0) continue;
                 }
 
-                lookup_finalize(srv, l);
+                lookup_finalize(dht, l);
             } else {
                 /* Not converged — send another round */
-                lookup_send_round(srv, l);
+                lookup_send_round(dht, l);
 
                 if (l->queries_pending == 0) {
                     /* No more peers to query — done */
-                    lookup_finalize(srv, l);
+                    lookup_finalize(dht, l);
                 }
             }
         }
@@ -2848,13 +2890,13 @@ nodus_dht_read_outcome_t nodus_dht_read_outcome(size_t rows, int peers,
 }
 
 /* S6: tell the client this node could not look (not "not found"). */
-static void dht_send_unavailable(nodus_tcp_conn_t *conn, uint32_t txn,
+static void dht_send_unavailable(nodus_dht_t *dht, int slot, uint32_t txn,
                                  const char *why) {
-    if (!conn) return;
+    if (!dht->sessions[slot].open) return;
     size_t len = 0;
     if (nodus_t2_error(txn, NODUS_ERR_UNAVAILABLE, why,
                        resp_buf, sizeof(resp_buf), &len) == 0)
-        nodus_tcp_send(conn, resp_buf, len);
+        dht_send_client(dht, slot, resp_buf, len);
 }
 
 static void dht_free_rows(nodus_value_t **vals, size_t count) {
@@ -2871,7 +2913,7 @@ static void dht_key_prefix(const nodus_key_t *k, char out[17]) {
 /* ── Read replies from a resolved keyset (single GET / get_all / batch) ─
  *
  * One encoder per reply shape, used by the forward completion
- * (nodus_server_bf_encode_result) AND by every path that answers without
+ * (nodus_dht_bf_encode_result) AND by every path that answers without
  * forwarding (no peer, no slot, alloc failure), so both answer alike. */
 
 typedef enum {
@@ -3022,7 +3064,7 @@ out:
 }
 
 /* Encode with a heap buffer and send; UNAVAILABLE when even that fails. */
-static void dht_send_key_reply(nodus_tcp_conn_t *conn, dht_reply_kind_t kind,
+static void dht_send_key_reply(nodus_dht_t *dht, int slot, dht_reply_kind_t kind,
                                uint32_t txn, nodus_dht_keyset_t *ks, bool has_own,
                                bool paged) {
     int verify_left = NODUS_DHT_VERIFY_CAP;
@@ -3030,12 +3072,12 @@ static void dht_send_key_reply(nodus_tcp_conn_t *conn, dht_reply_kind_t kind,
     size_t len = 0;
     if (!buf) {
         nodus_dht_keyset_clear(ks);
-        dht_send_unavailable(conn, txn, "reply alloc failed");
+        dht_send_unavailable(dht, slot, txn, "reply alloc failed");
         return;
     }
     if (dht_encode_key_reply(kind, txn, ks, has_own, paged, &verify_left,
-                             buf, RESP_BUF_SIZE, &len) == 0 && conn)
-        nodus_tcp_send(conn, buf, len);
+                             buf, RESP_BUF_SIZE, &len) == 0 && dht->sessions[slot].open)
+        dht_send_client(dht, slot, buf, len);
     free(buf);
 }
 
@@ -3067,20 +3109,20 @@ static void get_lookup_ctx_free(void *p) {
  * Now BF forward to K-closest nodes to fetch the value via TCP. The local
  * row (own) is a trusted candidate of the same pick.
  */
-static void get_lookup_complete(nodus_server_t *srv,
+static void get_lookup_complete(nodus_dht_t *dht,
                                  nodus_peer_t *closest, int count,
                                  void *user_data) {
     get_lookup_ctx_t *ctx = (get_lookup_ctx_t *)user_data;
     if (!ctx) return;
 
-    nodus_session_t *sess = &srv->sessions[ctx->session_slot];
-    if (!sess->conn) { get_lookup_ctx_free(ctx); return; }  /* Client disconnected */
+    /* Client disconnected */
+    if (!dht->sessions[ctx->session_slot].open) { get_lookup_ctx_free(ctx); return; }
 
     /* Filter out self */
     int fwd_count = 0;
     nodus_peer_t fwd_peers[NODUS_K];
     for (int i = 0; i < count && fwd_count < NODUS_K; i++) {
-        if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) != 0)
+        if (nodus_key_cmp(&closest[i].node_id, &dht->host.identity->node_id) != 0)
             fwd_peers[fwd_count++] = closest[i];
     }
     const nodus_key_t *own = ctx->has_own ? &ctx->own : NULL;
@@ -3089,11 +3131,11 @@ static void get_lookup_complete(nodus_server_t *srv,
     int bi = -1;
     if (fwd_count > 0) {
         for (int i = 0; i < NODUS_BF_MAX_BATCHES; i++) {
-            if (!srv->bf_state.batches[i].active) { bi = i; break; }
+            if (!dht->bf_state.batches[i].active) { bi = i; break; }
         }
     }
-    dht_bf_batch_t *b = (bi >= 0) ? &srv->bf_state.batches[bi] : NULL;
-    if (b && nodus_server_bf_batch_setup(b, &ctx->key, 1) != 0) {
+    dht_bf_batch_t *b = (bi >= 0) ? &dht->bf_state.batches[bi] : NULL;
+    if (b && nodus_dht_bf_batch_setup(b, &ctx->key, 1) != 0) {
         QGP_LOG_WARN(LOG_TAG, "GET: forward alloc failed");
         b = NULL;
     }
@@ -3110,7 +3152,7 @@ static void get_lookup_complete(nodus_server_t *srv,
         if (ctx->local)
             (void)nodus_dht_keyset_add(&ks, &ctx->local, 1, &ctx->key, own, NULL,
                                        true, NULL);
-        dht_send_key_reply(sess->conn, DHT_REPLY_SINGLE, ctx->txn_id, &ks,
+        dht_send_key_reply(dht, ctx->session_slot, DHT_REPLY_SINGLE, ctx->txn_id, &ks,
                            ctx->has_own, false);
         get_lookup_ctx_free(ctx);
         return;
@@ -3134,26 +3176,26 @@ static void get_lookup_complete(nodus_server_t *srv,
     int key_idx = 0;
     int fwd_limit = fwd_count < NODUS_BF_MAX_FORWARDS ? fwd_count : NODUS_BF_MAX_FORWARDS;
     for (int f = 0; f < fwd_limit; f++) {
-        if (bf_start_forward(srv, b, f, &fwd_peers[f], &ctx->key, &key_idx, 1) == 0)
+        if (bf_start_forward(dht, b, f, &fwd_peers[f], &ctx->key, &key_idx, 1) == 0)
             b->pending_forwards++;
     }
 
     /* Every forward failed to start → answer now from what is there (the
      * local row, or S6 UNAVAILABLE). Else bf_tick answers. */
     if (b->pending_forwards == 0)
-        bf_send_result(srv, b);
+        bf_send_result(dht, b);
 
     get_lookup_ctx_free(ctx);
 }
 
-static void handle_t2_get(nodus_server_t *srv, nodus_session_t *sess,
+static void handle_t2_get(nodus_dht_t *dht, int slot,
                            nodus_tier2_msg_t *msg) {
     /* Local read. S2: with "own", that owner's newest row
      * (nodus_storage_get_owner) instead of the key's best row. */
     nodus_value_t *val = NULL;
     int rc = msg->has_own
-        ? nodus_storage_get_owner(&srv->storage, &msg->key, &msg->own_fp, &val)
-        : nodus_storage_get(&srv->storage, &msg->key, &val);
+        ? nodus_storage_get_owner(&dht->storage, &msg->key, &msg->own_fp, &val)
+        : nodus_storage_get(&dht->storage, &msg->key, &val);
     bool local_fault = (rc == NODUS_STORAGE_RC_FAULT);
     if (local_fault)
         QGP_LOG_WARN(LOG_TAG, "GET: txn=%u local storage read fault — asking peers",
@@ -3166,12 +3208,12 @@ static void handle_t2_get(nodus_server_t *srv, nodus_session_t *sess,
     if (!msg->has_own && rc == 0 && val) {
         size_t len = 0;
         if (nodus_t2_result(msg->txn_id, val, resp_buf, sizeof(resp_buf), &len) == 0) {
-            nodus_tcp_send(sess->conn, resp_buf, len);
+            dht_send_client(dht, slot, resp_buf, len);
         } else {
             fprintf(stderr, "NODUS_SRV: GET result encode failed (value too large?)\n");
             nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
                             "value encode failed", resp_buf, sizeof(resp_buf), &len);
-            nodus_tcp_send(sess->conn, resp_buf, len);
+            dht_send_client(dht, slot, resp_buf, len);
         }
         nodus_value_free(val);
         return;
@@ -3179,17 +3221,17 @@ static void handle_t2_get(nodus_server_t *srv, nodus_session_t *sess,
 
     /*   Small cluster: routing table covers most nodes — BF forward directly.
      *   Large cluster: iterative FIND_NODE first, then BF forward to K-closest. */
-    int known = nodus_routing_count(&srv->routing);
+    int known = nodus_routing_count(&dht->routing);
 
     get_lookup_ctx_t *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) {
         /* S6: forward-context alloc failure — could not look */
         nodus_value_free(val);
-        dht_send_unavailable(sess->conn, msg->txn_id, "forward alloc failed");
+        dht_send_unavailable(dht, slot, msg->txn_id, "forward alloc failed");
         return;
     }
     ctx->txn_id = msg->txn_id;
-    ctx->session_slot = (int)(sess - srv->sessions);
+    ctx->session_slot = slot;
     ctx->key = msg->key;
     ctx->has_own = msg->has_own;
     if (msg->has_own) ctx->own = msg->own_fp;
@@ -3200,26 +3242,26 @@ static void handle_t2_get(nodus_server_t *srv, nodus_session_t *sess,
     if (known <= NODUS_R * 4) {
         /* Small cluster: skip iterative FIND_NODE — use routing table */
         nodus_peer_t closest[NODUS_K];
-        int peer_count = nodus_routing_find_closest(&srv->routing, &msg->key,
+        int peer_count = nodus_routing_find_closest(&dht->routing, &msg->key,
                                                       closest, NODUS_K);
-        get_lookup_complete(srv, closest, peer_count, ctx);
+        get_lookup_complete(dht, closest, peer_count, ctx);
         return;
     }
 
     /* Large cluster: iterative FIND_NODE to discover true K-closest */
-    if (iterative_lookup_start(srv, &msg->key,
-                                (int)(sess - srv->sessions),
+    if (iterative_lookup_start(dht, &msg->key,
+                                slot,
                                 msg->txn_id,
                                 get_lookup_complete, ctx, get_lookup_ctx_free) != 0) {
         /* No lookup slots — fall back to routing table + BF */
         nodus_peer_t closest[NODUS_K];
-        int peer_count = nodus_routing_find_closest(&srv->routing, &msg->key,
+        int peer_count = nodus_routing_find_closest(&dht->routing, &msg->key,
                                                       closest, NODUS_K);
-        get_lookup_complete(srv, closest, peer_count, ctx);
+        get_lookup_complete(dht, closest, peer_count, ctx);
     }
 }
 
-static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
+static void handle_t2_get_all(nodus_dht_t *dht, int slot,
                                nodus_tier2_msg_t *msg) {
     /* S3: paging is OPT-IN ("pg" or "after"); S2: "own" filters by owner.
      * Without any of them this is the pre-Package-A read: nodus_storage_get_all
@@ -3236,7 +3278,7 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
     if (paged || own) {
         /* PK order; an owner-filtered unpaged read keeps the legacy reply
          * shape and the legacy byte cap (truncation is logged below). */
-        rc = nodus_storage_get_all_page_hashed(&srv->storage, &msg->key, own,
+        rc = nodus_storage_get_all_page_hashed(&dht->storage, &msg->key, own,
                                                after ? &after->owner : NULL,
                                                after ? after->vid : 0,
                                                paged ? (size_t)NODUS_GET_ALL_PAGE_MAX_BYTES
@@ -3245,7 +3287,7 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
     } else {
         /* The legacy read returns no stored hashes: these rows are hashed
          * by the merge (R-g covers the paged / owner read only). */
-        rc = nodus_storage_get_all(&srv->storage, &msg->key, &vals, &count);
+        rc = nodus_storage_get_all(&dht->storage, &msg->key, &vals, &count);
     }
     /* Rev 2 item 13: a FAULT of the paged / owner read is "could not look"
      * (nodus_storage_get_all returns -1 for both "none" and a SQLite error,
@@ -3284,7 +3326,7 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
         if (arc != 0) {
             dht_free_rows(vals, count);
             nodus_dht_keyset_clear(&local);
-            dht_send_unavailable(sess->conn, msg->txn_id, "local alloc failed");
+            dht_send_unavailable(dht, slot, msg->txn_id, "local alloc failed");
             return;
         }
         if (paged)
@@ -3297,14 +3339,14 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
     /* Find R closest peers for potential forwarding (needed even on local hit
      * because multi-owner keys may have different value_ids on different nodes) */
     nodus_peer_t closest[NODUS_R];
-    int peer_count = nodus_routing_find_closest(&srv->routing, &msg->key,
+    int peer_count = nodus_routing_find_closest(&dht->routing, &msg->key,
                                                   closest, NODUS_R);
 
     /* Filter out self */
     int fwd_count = 0;
     nodus_peer_t fwd_peers[NODUS_R];
     for (int i = 0; i < peer_count; i++) {
-        if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) != 0) {
+        if (nodus_key_cmp(&closest[i].node_id, &dht->host.identity->node_id) != 0) {
             fwd_peers[fwd_count++] = closest[i];
         }
     }
@@ -3315,7 +3357,7 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
     if (fwd_count == 0) {
         fprintf(stderr, "GET_ALL: key=%s... local=%zu, no peers to forward\n",
                 ga_kh, count);
-        dht_send_key_reply(sess->conn, DHT_REPLY_GET_ALL, msg->txn_id, &local,
+        dht_send_key_reply(dht, slot, DHT_REPLY_GET_ALL, msg->txn_id, &local,
                            own != NULL, paged);
         return;
     }
@@ -3328,19 +3370,19 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
     /* Find a free BF batch slot */
     int bi = -1;
     for (int i = 0; i < NODUS_BF_MAX_BATCHES; i++) {
-        if (!srv->bf_state.batches[i].active) { bi = i; break; }
+        if (!dht->bf_state.batches[i].active) { bi = i; break; }
     }
-    dht_bf_batch_t *b = (bi >= 0) ? &srv->bf_state.batches[bi] : NULL;
+    dht_bf_batch_t *b = (bi >= 0) ? &dht->bf_state.batches[bi] : NULL;
     if (!b) {
         fprintf(stderr, "GET_ALL: key=%s... no BF slots\n", ga_kh);
-    } else if (nodus_server_bf_batch_setup(b, &msg->key, 1) != 0) {
+    } else if (nodus_dht_bf_batch_setup(b, &msg->key, 1) != 0) {
         fprintf(stderr, "GET_ALL: key=%s... forward alloc failed\n", ga_kh);
         b = NULL;
     }
     if (!b) {
         /* Could not forward. Local rows are still an answer; with none,
          * S6: could not look → UNAVAILABLE (peers > 0, none answered). */
-        dht_send_key_reply(sess->conn, DHT_REPLY_GET_ALL, msg->txn_id, &local,
+        dht_send_key_reply(dht, slot, DHT_REPLY_GET_ALL, msg->txn_id, &local,
                            own != NULL, paged);
         return;
     }
@@ -3351,7 +3393,7 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
     b->has_after = (after != NULL);
     if (after) b->after = *after;
     b->txn_id = msg->txn_id;
-    b->session_slot = (int)(sess - srv->sessions);
+    b->session_slot = slot;
     b->started_at = nodus_time_now_ms();
     b->sets[0] = local;   /* ownership of the local candidates moves to the batch */
 
@@ -3360,7 +3402,7 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
     int key_idx = 0;
     int fwd_limit = fwd_count < NODUS_BF_MAX_FORWARDS ? fwd_count : NODUS_BF_MAX_FORWARDS;
     for (int f = 0; f < fwd_limit; f++) {
-        if (bf_start_forward(srv, b, f, &fwd_peers[f], &msg->key, &key_idx, 1) == 0) {
+        if (bf_start_forward(dht, b, f, &fwd_peers[f], &msg->key, &key_idx, 1) == 0) {
             b->pending_forwards++;
         } else {
             fprintf(stderr, "GET_ALL: key=%s... forward START_FAILED to %s:%d\n",
@@ -3374,20 +3416,20 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
 
     /* All forwards failed to start — answer from what we have: local rows,
      * or (S6, no source answered) UNAVAILABLE. */
-    bf_send_result(srv, b);
+    bf_send_result(dht, b);
 }
 
 /* ── Batch Forward (BF) ─── get_batch miss → forward to closest peer ── */
 
-static void bf_conn_cleanup(nodus_server_t *srv, dht_bf_conn_t *c) {
+static void bf_conn_cleanup(nodus_dht_t *dht, dht_bf_conn_t *c) {
     if (c->fd >= 0) {
         /* Phase 3.2e: log BF close so we can correlate close(fd) → recycle. */
         fprintf(stderr, "BF_CLOSE: fd=%d state=%d encrypted=%d\n",
                 c->fd, (int)c->state, c->encrypted ? 1 : 0);
-        epoll_ctl(srv->bf_state.bf_epoll_fd, EPOLL_CTL_DEL, c->fd, NULL);
+        epoll_ctl(dht->bf_state.bf_epoll_fd, EPOLL_CTL_DEL, c->fd, NULL);
         if (c->fd < NODUS_BF_FD_TABLE_SIZE) {
-            srv->bf_fd_table[c->fd].batch_idx = -1;
-            srv->bf_fd_table[c->fd].forward_idx = -1;
+            dht->bf_fd_table[c->fd].batch_idx = -1;
+            dht->bf_fd_table[c->fd].forward_idx = -1;
         }
         close(c->fd);
     }
@@ -3403,14 +3445,14 @@ static void bf_conn_cleanup(nodus_server_t *srv, dht_bf_conn_t *c) {
     c->state = BF_DONE;
 }
 
-static void bf_batch_cleanup(nodus_server_t *srv, dht_bf_batch_t *b) {
+static void bf_batch_cleanup(nodus_dht_t *dht, dht_bf_batch_t *b) {
     for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) {
         /* Phase 3.2e FIX: was `fd >= 0` which treated zero-initialized
          * uninitialized forwards (.bss start, or post-memset state below)
          * as valid fds, calling close(0) on each batch cleanup pass and
          * stomping stdin. Use `> 0` so only real socket fds (>= 3 in
          * practice) are cleaned. */
-        if (b->forwards[i].fd > 0) bf_conn_cleanup(srv, &b->forwards[i]);
+        if (b->forwards[i].fd > 0) bf_conn_cleanup(dht, &b->forwards[i]);
     }
     if (b->sets) {
         for (int i = 0; i < b->key_count; i++) nodus_dht_keyset_clear(&b->sets[i]);
@@ -3423,11 +3465,11 @@ static void bf_batch_cleanup(nodus_server_t *srv, dht_bf_batch_t *b) {
     for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) b->forwards[i].fd = -1;
 }
 
-void nodus_server_bf_batch_cleanup(nodus_server_t *srv, dht_bf_batch_t *b) {
-    if (b) bf_batch_cleanup(srv, b);
+void nodus_dht_bf_batch_cleanup(nodus_dht_t *dht, dht_bf_batch_t *b) {
+    if (b) bf_batch_cleanup(dht, b);
 }
 
-int nodus_server_bf_batch_setup(dht_bf_batch_t *b, const nodus_key_t *keys, int n) {
+int nodus_dht_bf_batch_setup(dht_bf_batch_t *b, const nodus_key_t *keys, int n) {
     if (!b || !keys || n < 1) return -1;
     memset(b, 0, sizeof(*b));
     for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) b->forwards[i].fd = -1;
@@ -3447,8 +3489,8 @@ int nodus_server_bf_batch_setup(dht_bf_batch_t *b, const nodus_key_t *keys, int 
     return 0;
 }
 
-int nodus_server_bf_encode_result(dht_bf_batch_t *b, uint8_t *buf, size_t cap,
-                                  size_t *len_out) {
+int nodus_dht_bf_encode_result(dht_bf_batch_t *b, uint8_t *buf, size_t cap,
+                               size_t *len_out) {
     if (!b || !b->sets || !buf || !len_out) return -1;
     if (b->is_single_get && b->key_count == 1)
         return dht_encode_key_reply(DHT_REPLY_SINGLE, b->txn_id, &b->sets[0],
@@ -3463,9 +3505,8 @@ int nodus_server_bf_encode_result(dht_bf_batch_t *b, uint8_t *buf, size_t cap,
 }
 
 /** Send batch response to client and clean up */
-static void bf_send_result(nodus_server_t *srv, dht_bf_batch_t *b) {
-    nodus_session_t *sess = &srv->sessions[b->session_slot];
-    if (!sess->conn) { bf_batch_cleanup(srv, b); return; }
+static void bf_send_result(nodus_dht_t *dht, dht_bf_batch_t *b) {
+    if (!dht->sessions[b->session_slot].open) { bf_batch_cleanup(dht, b); return; }
 
     if (b->is_get_all && b->key_count == 1) {
         char bfkh[17];
@@ -3480,17 +3521,17 @@ static void bf_send_result(nodus_server_t *srv, dht_bf_batch_t *b) {
     uint8_t *buf = malloc(RESP_BUF_SIZE);
     size_t len = 0;
     if (!buf) {
-        dht_send_unavailable(sess->conn, b->txn_id, "reply alloc failed");
+        dht_send_unavailable(dht, b->session_slot, b->txn_id, "reply alloc failed");
     } else {
-        if (nodus_server_bf_encode_result(b, buf, RESP_BUF_SIZE, &len) == 0)
-            nodus_tcp_send(sess->conn, buf, len);
+        if (nodus_dht_bf_encode_result(b, buf, RESP_BUF_SIZE, &len) == 0)
+            dht_send_client(dht, b->session_slot, buf, len);
         free(buf);
     }
-    bf_batch_cleanup(srv, b);
+    bf_batch_cleanup(dht, b);
 }
 
-int nodus_server_bf_absorb_reply(dht_bf_batch_t *b, const dht_bf_conn_t *c,
-                                 const uint8_t *payload, size_t len) {
+int nodus_dht_bf_absorb_reply(dht_bf_batch_t *b, const dht_bf_conn_t *c,
+                              const uint8_t *payload, size_t len) {
     if (!b || !c || !payload || !b->sets) return -1;
     nodus_tier2_msg_t resp;
     memset(&resp, 0, sizeof(resp));
@@ -3583,7 +3624,7 @@ int nodus_server_bf_absorb_reply(dht_bf_batch_t *b, const dht_bf_conn_t *c,
 static int bf_build_frame(uint8_t **buf_out, size_t *len_out,
                             const uint8_t *cbor, size_t cbor_len);
 
-int nodus_server_bf_frame_status(const uint8_t *buf, size_t len, size_t cap) {
+int nodus_dht_bf_frame_status(const uint8_t *buf, size_t len, size_t cap) {
     if (!buf) return -1;
     if (len < NODUS_FRAME_HEADER_SIZE) return 0;  /* need more */
 
@@ -3614,7 +3655,7 @@ static int bf_recv_frame(dht_bf_conn_t *c, int fd) {
     if (n <= 0) return -1;  /* closed or error */
     c->recv_len += (size_t)n;
 
-    return nodus_server_bf_frame_status(c->recv_buf, c->recv_len, c->recv_cap);
+    return nodus_dht_bf_frame_status(c->recv_buf, c->recv_len, c->recv_cap);
 }
 
 /** Reset send/recv buffers for next round-trip */
@@ -3625,40 +3666,40 @@ static void bf_reset_buffers(dht_bf_conn_t *c) {
 }
 
 /** Switch epoll to EPOLLOUT for sending */
-static void bf_switch_to_send(nodus_server_t *srv, dht_bf_conn_t *c) {
+static void bf_switch_to_send(nodus_dht_t *dht, dht_bf_conn_t *c) {
     struct epoll_event ev = { .events = EPOLLOUT | EPOLLERR | EPOLLHUP, .data.fd = c->fd };
-    epoll_ctl(srv->bf_state.bf_epoll_fd, EPOLL_CTL_MOD, c->fd, &ev);
+    epoll_ctl(dht->bf_state.bf_epoll_fd, EPOLL_CTL_MOD, c->fd, &ev);
 }
 
 /** Switch epoll to EPOLLIN for receiving */
-static void bf_switch_to_recv(nodus_server_t *srv, dht_bf_conn_t *c) {
+static void bf_switch_to_recv(nodus_dht_t *dht, dht_bf_conn_t *c) {
     struct epoll_event ev = { .events = EPOLLIN | EPOLLERR | EPOLLHUP, .data.fd = c->fd };
-    epoll_ctl(srv->bf_state.bf_epoll_fd, EPOLL_CTL_MOD, c->fd, &ev);
+    epoll_ctl(dht->bf_state.bf_epoll_fd, EPOLL_CTL_MOD, c->fd, &ev);
 }
 
 /** Forward error → cleanup + check batch completion */
-static void bf_forward_fail(nodus_server_t *srv, dht_bf_batch_t *b, dht_bf_conn_t *c) {
-    bf_conn_cleanup(srv, c);
-    if (--b->pending_forwards <= 0) bf_send_result(srv, b);
+static void bf_forward_fail(nodus_dht_t *dht, dht_bf_batch_t *b, dht_bf_conn_t *c) {
+    bf_conn_cleanup(dht, c);
+    if (--b->pending_forwards <= 0) bf_send_result(dht, b);
 }
 
 /** Handle epoll events for batch forward fds — full auth state machine */
-static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
+static void bf_handle_event(nodus_dht_t *dht, int fd, uint32_t events) {
     /* Phase 3.2e: log every BF event with fd. Captures BF subsystem activity
      * we previously had no visibility into. */
     fprintf(stderr, "BF_EVENT: fd=%d events=0x%x\n", fd, events);
     if (fd < 0 || fd >= NODUS_BF_FD_TABLE_SIZE) return;
-    int bi = srv->bf_fd_table[fd].batch_idx;
-    int fi = srv->bf_fd_table[fd].forward_idx;
+    int bi = dht->bf_fd_table[fd].batch_idx;
+    int fi = dht->bf_fd_table[fd].forward_idx;
     if (bi < 0 || bi >= NODUS_BF_MAX_BATCHES) return;
     if (fi < 0 || fi >= NODUS_BF_MAX_FORWARDS) return;
-    dht_bf_batch_t *b = &srv->bf_state.batches[bi];
+    dht_bf_batch_t *b = &dht->bf_state.batches[bi];
     if (!b->active) return;
     dht_bf_conn_t *c = &b->forwards[fi];
     if (c->fd < 0) return;
 
     if (events & (EPOLLERR | EPOLLHUP)) {
-        bf_forward_fail(srv, b, c);
+        bf_forward_fail(dht, b, c);
         return;
     }
 
@@ -3672,7 +3713,7 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
     if ((c->state == BF_SEND_HELLO || c->state == BF_SEND_AUTH ||
          c->state == BF_SEND_KEY_INIT || c->state == BF_SEND_BATCH) &&
         (events & EPOLLOUT)) {
-        if (!c->send_buf) { bf_forward_fail(srv, b, c); return; }
+        if (!c->send_buf) { bf_forward_fail(dht, b, c); return; }
         /* Phase 3.2e: log BF send target fd + state. If fd ever points at a
          * recycled stale value, this log will reveal the mismatch. */
         fprintf(stderr,
@@ -3682,7 +3723,7 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
                 c->send_pos, c->send_len, c->encrypted ? 1 : 0, bi, fi);
         ssize_t n = send(fd, c->send_buf + c->send_pos,
                          c->send_len - c->send_pos, MSG_NOSIGNAL);
-        if (n < 0) { bf_forward_fail(srv, b, c); return; }
+        if (n < 0) { bf_forward_fail(dht, b, c); return; }
         if (n > 0) c->send_pos += (size_t)n;
         if (c->send_pos >= c->send_len) {
             /* Send complete → switch to recv for response */
@@ -3691,7 +3732,7 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
             else if (c->state == BF_SEND_KEY_INIT) c->state = BF_RECV_KEY_ACK;
             else if (c->state == BF_SEND_BATCH)  c->state = BF_RECV_RESULT;
             bf_reset_buffers(c);
-            bf_switch_to_recv(srv, c);
+            bf_switch_to_recv(dht, c);
         }
         return;
     }
@@ -3699,7 +3740,7 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
     /* ── State 2: Recv CHALLENGE → sign nonce → send AUTH ── */
     if (c->state == BF_RECV_CHALL && (events & EPOLLIN)) {
         int rc = bf_recv_frame(c, fd);
-        if (rc < 0) { bf_forward_fail(srv, b, c); return; }
+        if (rc < 0) { bf_forward_fail(dht, b, c); return; }
         if (rc == 0) return;  /* need more data */
 
         /* Parse challenge nonce */
@@ -3707,7 +3748,7 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
         memset(&msg, 0, sizeof(msg));
         if (nodus_t2_decode(c->recv_buf + 7, c->recv_len - 7, &msg) != 0) {
             nodus_t2_msg_free(&msg);
-            bf_forward_fail(srv, b, c); return;
+            bf_forward_fail(dht, b, c); return;
         }
 
         /* C2 fix: domain-tagged AUTH_CHALLENGE. bf_forward owns its own TCP
@@ -3718,9 +3759,9 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
          * peer's kpk_sig over (kyber_pk || nonce). */
         memcpy(c->challenge_nonce, msg.nonce, NODUS_NONCE_LEN);
         c->has_challenge_nonce = true;
-        if (nodus_sign_auth_challenge(&sig, msg.nonce, &srv->identity.sk) != 0) {
+        if (nodus_sign_auth_challenge(&sig, msg.nonce, &dht->host.identity->sk) != 0) {
             nodus_t2_msg_free(&msg);
-            bf_forward_fail(srv, b, c); return;
+            bf_forward_fail(dht, b, c); return;
         }
         nodus_t2_msg_free(&msg);
 
@@ -3729,19 +3770,19 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
         size_t clen = 0;
         if (nodus_t2_auth(2, &sig, cbor, sizeof(cbor), &clen) != 0 ||
             bf_build_frame(&c->send_buf, &c->send_len, cbor, clen) != 0) {
-            bf_forward_fail(srv, b, c); return;
+            bf_forward_fail(dht, b, c); return;
         }
         c->send_pos = 0;
         c->recv_len = 0;
         c->state = BF_SEND_AUTH;
-        bf_switch_to_send(srv, c);
+        bf_switch_to_send(dht, c);
         return;
     }
 
     /* ── State 4: Recv AUTH_OK → Kyber key_init → key exchange ── */
     if (c->state == BF_RECV_AUTHOK && (events & EPOLLIN)) {
         int rc = bf_recv_frame(c, fd);
-        if (rc < 0) { bf_forward_fail(srv, b, c); return; }
+        if (rc < 0) { bf_forward_fail(dht, b, c); return; }
         if (rc == 0) return;
 
         /* Parse auth_ok → get token + kyber_pk */
@@ -3750,7 +3791,7 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
         if (nodus_t2_decode(c->recv_buf + 7, c->recv_len - 7, &msg) != 0 ||
             msg.type == 'e') {
             nodus_t2_msg_free(&msg);
-            bf_forward_fail(srv, b, c); return;
+            bf_forward_fail(dht, b, c); return;
         }
         memcpy(c->token, msg.token, NODUS_SESSION_TOKEN_LEN);
         uint32_t authok_txn = msg.txn_id;
@@ -3768,7 +3809,7 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
                     "server_pk or local pin state — refusing\n",
                     c->ip, (unsigned)c->port);
             nodus_t2_msg_free(&msg);
-            bf_forward_fail(srv, b, c); return;
+            bf_forward_fail(dht, b, c); return;
         }
         {
             uint8_t sign_data[NODUS_KYBER_PK_BYTES + NODUS_NONCE_LEN];
@@ -3782,7 +3823,7 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
                         "BF CRIT-1: kyber_pk signature INVALID from %s:%u — "
                         "possible MITM, refusing\n", c->ip, (unsigned)c->port);
                 nodus_t2_msg_free(&msg);
-                bf_forward_fail(srv, b, c); return;
+                bf_forward_fail(dht, b, c); return;
             }
             if (nodus_fingerprint(&msg.server_pk, &actual_id) != 0 ||
                 nodus_key_cmp(&actual_id, &c->expected_node_id) != 0) {
@@ -3791,7 +3832,7 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
                         "fingerprint != dialed node_id, refusing\n",
                         c->ip, (unsigned)c->port);
                 nodus_t2_msg_free(&msg);
-                bf_forward_fail(srv, b, c); return;
+                bf_forward_fail(dht, b, c); return;
             }
         }
 
@@ -3825,7 +3866,7 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
             : qgp_kem1024_encapsulate(ct, ss, msg.kyber_pk);
         if (enc_rc != 0) {
             nodus_t2_msg_free(&msg);
-            bf_forward_fail(srv, b, c); return;
+            bf_forward_fail(dht, b, c); return;
         }
         nodus_t2_msg_free(&msg);
 
@@ -3841,12 +3882,12 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
         size_t ki_len = 0;
         if (nodus_t2_key_init(authok_txn, ct, nc, alg, ki_buf, sizeof(ki_buf), &ki_len) != 0 ||
             bf_build_frame(&c->send_buf, &c->send_len, ki_buf, ki_len) != 0) {
-            bf_forward_fail(srv, b, c); return;
+            bf_forward_fail(dht, b, c); return;
         }
         c->send_pos = 0;
         c->recv_len = 0;
         c->state = BF_SEND_KEY_INIT;
-        bf_switch_to_send(srv, c);
+        bf_switch_to_send(dht, c);
         return;
     }
 
@@ -3855,7 +3896,7 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
     /* ── State 6: Recv KEY_ACK → init crypto → send encrypted batch ── */
     if (c->state == BF_RECV_KEY_ACK && (events & EPOLLIN)) {
         int rc = bf_recv_frame(c, fd);
-        if (rc < 0) { bf_forward_fail(srv, b, c); return; }
+        if (rc < 0) { bf_forward_fail(dht, b, c); return; }
         if (rc == 0) return;
 
         /* Parse key_ack → get server nonce */
@@ -3864,7 +3905,7 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
         if (nodus_t2_decode(c->recv_buf + 7, c->recv_len - 7, &msg) != 0 ||
             !msg.has_key_nonce) {
             nodus_t2_msg_free(&msg);
-            bf_forward_fail(srv, b, c); return;
+            bf_forward_fail(dht, b, c); return;
         }
 
         /* Derive AES-256-GCM session key. We DIALED this peer → initiator. */
@@ -3888,28 +3929,28 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
         size_t clen = 0;
         if (nodus_t2_get_batch_ex(3, c->token, c->batch_keys, c->batch_key_count,
                                    &fwd_opts, cbor, sizeof(cbor), &clen) != 0) {
-            bf_forward_fail(srv, b, c); return;
+            bf_forward_fail(dht, b, c); return;
         }
         /* Encrypt the CBOR payload */
         size_t enc_cap = clen + NODUS_CHANNEL_OVERHEAD;
         uint8_t *enc_buf = malloc(enc_cap);
-        if (!enc_buf) { bf_forward_fail(srv, b, c); return; }
+        if (!enc_buf) { bf_forward_fail(dht, b, c); return; }
         size_t enc_len = 0;
         if (nodus_channel_encrypt(&c->crypto, cbor, clen,
                                     enc_buf, enc_cap, &enc_len) != 0) {
             free(enc_buf);
-            bf_forward_fail(srv, b, c); return;
+            bf_forward_fail(dht, b, c); return;
         }
         /* Frame the encrypted payload */
         if (bf_build_frame(&c->send_buf, &c->send_len, enc_buf, enc_len) != 0) {
             free(enc_buf);
-            bf_forward_fail(srv, b, c); return;
+            bf_forward_fail(dht, b, c); return;
         }
         free(enc_buf);
         c->send_pos = 0;
         c->recv_len = 0;
         c->state = BF_SEND_BATCH;
-        bf_switch_to_send(srv, c);
+        bf_switch_to_send(dht, c);
         return;
     }
 
@@ -3930,12 +3971,12 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
             if (c->encrypted) {
                 size_t dec_cap = payload_len;  /* decrypted is smaller */
                 dec_buf = malloc(dec_cap);
-                if (!dec_buf) { bf_forward_fail(srv, b, c); return; }
+                if (!dec_buf) { bf_forward_fail(dht, b, c); return; }
                 size_t dec_len = 0;
                 if (nodus_channel_decrypt(&c->crypto, payload, payload_len,
                                             dec_buf, dec_cap, &dec_len) != 0) {
                     free(dec_buf);
-                    bf_forward_fail(srv, b, c); return;
+                    bf_forward_fail(dht, b, c); return;
                 }
                 payload = dec_buf;
                 payload_len = dec_len;
@@ -3943,32 +3984,31 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
 
             /* An error frame / garbage absorbs nothing: the keys of this
              * forward stay unanswered (S6). */
-            (void)nodus_server_bf_absorb_reply(b, c, payload, payload_len);
+            (void)nodus_dht_bf_absorb_reply(b, c, payload, payload_len);
             free(dec_buf);  /* NULL-safe */
         }
-        bf_conn_cleanup(srv, c);
-        if (--b->pending_forwards <= 0) bf_send_result(srv, b);
+        bf_conn_cleanup(dht, c);
+        if (--b->pending_forwards <= 0) bf_send_result(dht, b);
     }
 }
 
 /** Tick: advance all batch forwards (called from main event loop) */
-static void bf_tick(nodus_server_t *srv) {
-    if (srv->bf_state.bf_epoll_fd < 0) return;
+static void bf_tick(nodus_dht_t *dht) {
+    if (dht->bf_state.bf_epoll_fd < 0) return;
 
     struct epoll_event events[32];
-    int n = epoll_wait(srv->bf_state.bf_epoll_fd, events, 32, 0);
+    int n = epoll_wait(dht->bf_state.bf_epoll_fd, events, 32, 0);
     for (int i = 0; i < n; i++)
-        bf_handle_event(srv, events[i].data.fd, events[i].events);
+        bf_handle_event(dht, events[i].data.fd, events[i].events);
 
     /* Check timeouts */
     uint64_t now = nodus_time_now_ms();
     for (int bi = 0; bi < NODUS_BF_MAX_BATCHES; bi++) {
-        dht_bf_batch_t *b = &srv->bf_state.batches[bi];
+        dht_bf_batch_t *b = &dht->bf_state.batches[bi];
         if (!b->active) continue;
 
         /* Check client disconnect */
-        nodus_session_t *sess = &srv->sessions[b->session_slot];
-        if (!sess->conn) { bf_batch_cleanup(srv, b); continue; }
+        if (!dht->sessions[b->session_slot].open) { bf_batch_cleanup(dht, b); continue; }
 
         /* Overall batch timeout */
         if (now - b->started_at > NODUS_BF_TIMEOUT_MS) {
@@ -3982,10 +4022,10 @@ static void bf_tick(nodus_server_t *srv) {
                     b->paged ? " (page may be incomplete)" : "");
             for (int fi = 0; fi < NODUS_BF_MAX_FORWARDS; fi++) {
                 if (b->forwards[fi].fd > 0) {
-                    bf_conn_cleanup(srv, &b->forwards[fi]);
+                    bf_conn_cleanup(dht, &b->forwards[fi]);
                 }
             }
-            bf_send_result(srv, b);
+            bf_send_result(dht, b);
         }
     }
 }
@@ -4004,7 +4044,7 @@ static int bf_build_frame(uint8_t **buf_out, size_t *len_out,
 }
 
 /** Start a batch forward to a peer node */
-static int bf_start_forward(nodus_server_t *srv, dht_bf_batch_t *b,
+static int bf_start_forward(nodus_dht_t *dht, dht_bf_batch_t *b,
                               int fi, const nodus_peer_t *peer,
                               const nodus_key_t *keys, const int *key_indices,
                               int key_count) {
@@ -4036,7 +4076,7 @@ static int bf_start_forward(nodus_server_t *srv, dht_bf_batch_t *b,
     /* Build HELLO frame (first message in auth handshake) */
     uint8_t cbor_buf[4096];
     size_t cbor_len = 0;
-    if (nodus_t2_hello(1, &srv->identity.pk, &srv->identity.node_id,
+    if (nodus_t2_hello(1, &dht->host.identity->pk, &dht->host.identity->node_id,
                         cbor_buf, sizeof(cbor_buf), &cbor_len) != 0)
         goto fail;
 
@@ -4074,12 +4114,12 @@ static int bf_start_forward(nodus_server_t *srv, dht_bf_batch_t *b,
     c->port = inter_port;
 
     /* Register with batch forward epoll */
-    int bi = (int)(b - srv->bf_state.batches);
-    srv->bf_fd_table[fd].batch_idx = bi;
-    srv->bf_fd_table[fd].forward_idx = fi;
+    int bi = (int)(b - dht->bf_state.batches);
+    dht->bf_fd_table[fd].batch_idx = bi;
+    dht->bf_fd_table[fd].forward_idx = fi;
 
     struct epoll_event ev = { .events = EPOLLOUT | EPOLLERR | EPOLLHUP, .data.fd = fd };
-    epoll_ctl(srv->bf_state.bf_epoll_fd, EPOLL_CTL_ADD, fd, &ev);
+    epoll_ctl(dht->bf_state.bf_epoll_fd, EPOLL_CTL_ADD, fd, &ev);
 
     return 0;
 
@@ -4091,13 +4131,13 @@ fail:
     return -1;
 }
 
-static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
+static void handle_t2_get_batch(nodus_dht_t *dht, int slot,
                                  nodus_tier2_msg_t *msg) {
     if (msg->batch_key_count < 1 || msg->batch_key_count > NODUS_MAX_BATCH_KEYS) {
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_PROTOCOL_ERROR,
                         "invalid batch key count", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
+        dht_send_client(dht, slot, resp_buf, len);
         return;
     }
 
@@ -4109,7 +4149,7 @@ static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
                         "alloc failed", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
+        dht_send_client(dht, slot, resp_buf, len);
         return;
     }
 
@@ -4122,7 +4162,7 @@ static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
     for (int i = 0; i < n; i++) {
         nodus_value_t **vals = NULL;
         size_t count = 0;
-        if (nodus_storage_get_all(&srv->storage, &msg->batch_keys[i],
+        if (nodus_storage_get_all(&dht->storage, &msg->batch_keys[i],
                                   &vals, &count) != 0) {
             dht_free_rows(vals, count);
             vals = NULL;
@@ -4161,14 +4201,14 @@ static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
              * unreachable or not hold the key. Trying R candidates gives
              * the same reliability as replication factor. */
             nodus_peer_t closest[NODUS_R];
-            int found = nodus_routing_find_closest(&srv->routing, &msg->batch_keys[ki],
+            int found = nodus_routing_find_closest(&dht->routing, &msg->batch_keys[ki],
                                                      closest, NODUS_R);
             if (found == 0) continue; /* No peers known — skip */
 
             /* Pick the first non-self closest peer */
             int chosen = -1;
             for (int c = 0; c < found; c++) {
-                if (nodus_key_cmp(&closest[c].node_id, &srv->identity.node_id) != 0) {
+                if (nodus_key_cmp(&closest[c].node_id, &dht->host.identity->node_id) != 0) {
                     chosen = c;
                     break;
                 }
@@ -4206,10 +4246,10 @@ static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
         /* Find a free batch slot */
         int bi = -1;
         for (int i = 0; i < NODUS_BF_MAX_BATCHES; i++) {
-            if (!srv->bf_state.batches[i].active) { bi = i; break; }
+            if (!dht->bf_state.batches[i].active) { bi = i; break; }
         }
-        dht_bf_batch_t *b = (bi >= 0) ? &srv->bf_state.batches[bi] : NULL;
-        if (!b || nodus_server_bf_batch_setup(b, msg->batch_keys, n) != 0) {
+        dht_bf_batch_t *b = (bi >= 0) ? &dht->bf_state.batches[bi] : NULL;
+        if (!b || nodus_dht_bf_batch_setup(b, msg->batch_keys, n) != 0) {
             /* No slot / alloc failure — local-only results; the misses
              * that had a peer are "u" (S6). */
             QGP_LOG_WARN(LOG_TAG, "GET_BATCH: txn=%u %s — %d miss(es) not forwarded",
@@ -4220,7 +4260,7 @@ static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
 
         /* Set up batch context — the keysets move into the batch */
         b->txn_id = msg->txn_id;
-        b->session_slot = (int)(sess - srv->sessions);
+        b->session_slot = slot;
         b->started_at = nodus_time_now_ms();
         for (int i = 0; i < n; i++) b->sets[i] = sets[i];
         free(sets);
@@ -4235,7 +4275,7 @@ static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
             for (int k = 0; k < groups[g].count; k++)
                 fwd_keys[k] = msg->batch_keys[groups[g].key_idx[k]];
 
-            if (bf_start_forward(srv, b, g, &groups[g].peer,
+            if (bf_start_forward(dht, b, g, &groups[g].peer,
                                   fwd_keys, groups[g].key_idx,
                                   groups[g].count) == 0) {
                 b->pending_forwards++;
@@ -4247,7 +4287,7 @@ static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
          * With none started, answer now from what is there (local rows;
          * the misses unanswered → "u" / UNAVAILABLE). */
         if (b->pending_forwards == 0)
-            bf_send_result(srv, b);
+            bf_send_result(dht, b);
         return;
     }
 
@@ -4258,24 +4298,25 @@ send_response:
         size_t len = 0;
         if (!buf) {
             for (int i = 0; i < n; i++) nodus_dht_keyset_clear(&sets[i]);
-            dht_send_unavailable(sess->conn, msg->txn_id, "reply alloc failed");
+            dht_send_unavailable(dht, slot, msg->txn_id, "reply alloc failed");
         } else {
             if (dht_encode_batch_reply(msg->txn_id, msg->batch_keys, n, sets,
                                        &verify_left, buf, RESP_BUF_SIZE, &len) == 0)
-                nodus_tcp_send(sess->conn, buf, len);
+                dht_send_client(dht, slot, buf, len);
             free(buf);
         }
         free(sets);
     }
 }
 
-static void handle_t2_count_batch(nodus_server_t *srv, nodus_session_t *sess,
+static void handle_t2_count_batch(nodus_dht_t *dht, int slot,
+                                    const nodus_key_t *client_fp,
                                     nodus_tier2_msg_t *msg) {
     if (msg->batch_key_count < 1 || msg->batch_key_count > NODUS_MAX_BATCH_KEYS) {
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_PROTOCOL_ERROR,
                         "invalid batch key count", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
+        dht_send_client(dht, slot, resp_buf, len);
         return;
     }
 
@@ -4288,7 +4329,7 @@ static void handle_t2_count_batch(nodus_server_t *srv, nodus_session_t *sess,
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
                         "alloc failed", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
+        dht_send_client(dht, slot, resp_buf, len);
         return;
     }
 
@@ -4299,16 +4340,16 @@ static void handle_t2_count_batch(nodus_server_t *srv, nodus_session_t *sess,
     if (memcmp(msg->fp.bytes, "\0\0\0\0\0\0\0\0", 8) != 0) {
         memcpy(&caller_fp, &msg->fp, sizeof(nodus_key_t));
         has_caller = true;
-    } else if (memcmp(sess->client_fp.bytes, "\0\0\0\0\0\0\0\0", 8) != 0) {
-        memcpy(&caller_fp, &sess->client_fp, sizeof(nodus_key_t));
+    } else if (memcmp(client_fp->bytes, "\0\0\0\0\0\0\0\0", 8) != 0) {
+        memcpy(&caller_fp, client_fp, sizeof(nodus_key_t));
         has_caller = true;
     }
 
     for (int i = 0; i < n; i++) {
-        int c = nodus_storage_count_key(&srv->storage, &msg->batch_keys[i]);
+        int c = nodus_storage_count_key(&dht->storage, &msg->batch_keys[i]);
         counts[i] = c >= 0 ? (size_t)c : 0;
         if (has_caller) {
-            int ho = nodus_storage_has_owner(&srv->storage,
+            int ho = nodus_storage_has_owner(&dht->storage,
                                               &msg->batch_keys[i], &caller_fp);
             has_mine[i] = (ho == 1);
         }
@@ -4318,12 +4359,12 @@ static void handle_t2_count_batch(nodus_server_t *srv, nodus_session_t *sess,
     if (nodus_t2_result_count_batch(msg->txn_id, msg->batch_keys, n,
                                      counts, has_mine,
                                      resp_buf, sizeof(resp_buf), &len) == 0) {
-        nodus_tcp_send(sess->conn, resp_buf, len);
+        dht_send_client(dht, slot, resp_buf, len);
     } else {
         size_t elen = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
                         "count batch encode failed", resp_buf, sizeof(resp_buf), &elen);
-        nodus_tcp_send(sess->conn, resp_buf, elen);
+        dht_send_client(dht, slot, resp_buf, elen);
     }
 
     free(counts);
@@ -4757,11 +4798,11 @@ static void handle_inter_ri_close(nodus_server_t *srv, nodus_inter_session_t *se
  * user_data is a heap-allocated nodus_key_t (the listen key),
  * freed here or via cb_data_free on abandonment (see iterative_lookup_start).
  */
-static void listen_fwd_complete(nodus_server_t *srv,
+static void listen_fwd_complete(nodus_dht_t *dht,
                                  nodus_peer_t *closest, int count,
                                  void *user_data) {
     nodus_key_t *key = (nodus_key_t *)user_data;
-    if (!srv || !key) { free(key); return; }
+    if (!dht || !key) { free(key); return; }
 
     uint8_t cbor_buf[256];
     size_t clen = 0;
@@ -4775,9 +4816,9 @@ static void listen_fwd_complete(nodus_server_t *srv,
 
     int sent = 0;
     for (int i = 0; i < count; i++) {
-        if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0) continue;
-        if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port,
-                                &closest[i].node_id, frame, flen) == 0) {
+        if (nodus_key_cmp(&closest[i].node_id, &dht->host.identity->node_id) == 0) continue;
+        if (dht_inter_send(dht, closest[i].ip, closest[i].tcp_port,
+                           &closest[i].node_id, frame, flen) == 0) {
             sent++;
         }
     }
@@ -4792,19 +4833,19 @@ static void listen_fwd_complete(nodus_server_t *srv,
     free(key);
 }
 
-static void handle_t2_listen(nodus_server_t *srv, nodus_session_t *sess,
+static void handle_t2_listen(nodus_dht_t *dht, int slot,
                               nodus_tier2_msg_t *msg) {
-    if (session_add_listen(sess, &msg->key) != 0) {
+    if (session_add_listen(&dht->sessions[slot], &msg->key) != 0) {
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_RATE_LIMITED,
                         "too many listeners", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
+        dht_send_client(dht, slot, resp_buf, len);
         return;
     }
 
     size_t len = 0;
     nodus_t2_listen_ok(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
-    nodus_tcp_send(sess->conn, resp_buf, len);
+    dht_send_client(dht, slot, resp_buf, len);
 
     /* Forward subscription to the key's responsible nodes so that remote
      * PUTs will generate NOTIFY messages back to us (Scribe pattern). */
@@ -4812,25 +4853,24 @@ static void handle_t2_listen(nodus_server_t *srv, nodus_session_t *sess,
     if (!key_copy) return;
     *key_copy = msg->key;
 
-    if (iterative_lookup_start(srv, &msg->key, -1, 0,
+    if (iterative_lookup_start(dht, &msg->key, -1, 0,
                                 listen_fwd_complete, key_copy, free) != 0) {
         /* No lookup slots available — synchronous fallback via routing table */
         nodus_peer_t closest[NODUS_R];
-        int count = nodus_routing_find_closest(&srv->routing, &msg->key,
+        int count = nodus_routing_find_closest(&dht->routing, &msg->key,
                                                  closest, NODUS_R);
-        listen_fwd_complete(srv, closest, count, key_copy);
+        listen_fwd_complete(dht, closest, count, key_copy);
     }
 }
 
-static void handle_t2_unlisten(nodus_server_t *srv, nodus_session_t *sess,
+static void handle_t2_unlisten(nodus_dht_t *dht, int slot,
                                 nodus_tier2_msg_t *msg) {
-    (void)srv;
-    session_remove_listen(sess, &msg->key);
+    session_remove_listen(&dht->sessions[slot], &msg->key);
 
     uint8_t resp_buf[256];
     size_t len = 0;
     nodus_t2_listen_ok(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
-    nodus_tcp_send(sess->conn, resp_buf, len);
+    dht_send_client(dht, slot, resp_buf, len);
 }
 
 static void handle_t2_ping(nodus_server_t *srv, nodus_session_t *sess,
@@ -4843,18 +4883,18 @@ static void handle_t2_ping(nodus_server_t *srv, nodus_session_t *sess,
 
 /* ── Channel discovery on TCP 4001 ────────────────────────────────── */
 
-static void handle_t2_ch_list(nodus_server_t *srv, nodus_session_t *sess,
+static void handle_t2_ch_list(nodus_dht_t *dht, int slot,
                                 nodus_tier2_msg_t *msg) {
     nodus_channel_meta_t *metas = NULL;
     size_t count = 0;
-    int rc = nodus_channel_store_list_public(&srv->ch_store,
+    int rc = nodus_channel_store_list_public(&dht->ch_store,
                                               msg->ch_offset, msg->ch_limit,
                                               &metas, &count);
     if (rc != 0) {
         uint8_t buf[256];
         size_t len = 0;
         nodus_t2_error(msg->txn_id, 500, "internal error", buf, sizeof(buf), &len);
-        nodus_tcp_send(sess->conn, buf, len);
+        dht_send_client(dht, slot, buf, len);
         return;
     }
 
@@ -4862,29 +4902,29 @@ static void handle_t2_ch_list(nodus_server_t *srv, nodus_session_t *sess,
     if (!buf) { free(metas); return; }
     size_t len = 0;
     nodus_t2_ch_list_ok(msg->txn_id, metas, count, buf, 65536, &len);
-    nodus_tcp_send(sess->conn, buf, len);
+    dht_send_client(dht, slot, buf, len);
     free(buf);
     free(metas);
 }
 
-static void handle_t2_ch_search(nodus_server_t *srv, nodus_session_t *sess,
+static void handle_t2_ch_search(nodus_dht_t *dht, int slot,
                                   nodus_tier2_msg_t *msg) {
     const char *query = msg->ch_query;
     if (!query || query[0] == '\0') {
-        handle_t2_ch_list(srv, sess, msg);
+        handle_t2_ch_list(dht, slot, msg);
         return;
     }
 
     nodus_channel_meta_t *metas = NULL;
     size_t count = 0;
-    int rc = nodus_channel_store_search(&srv->ch_store, query,
+    int rc = nodus_channel_store_search(&dht->ch_store, query,
                                          msg->ch_offset, msg->ch_limit,
                                          &metas, &count);
     if (rc != 0) {
         uint8_t buf[256];
         size_t len = 0;
         nodus_t2_error(msg->txn_id, 500, "internal error", buf, sizeof(buf), &len);
-        nodus_tcp_send(sess->conn, buf, len);
+        dht_send_client(dht, slot, buf, len);
         return;
     }
 
@@ -4892,21 +4932,21 @@ static void handle_t2_ch_search(nodus_server_t *srv, nodus_session_t *sess,
     if (!buf) { free(metas); return; }
     size_t len = 0;
     nodus_t2_ch_list_ok(msg->txn_id, metas, count, buf, 65536, &len);
-    nodus_tcp_send(sess->conn, buf, len);
+    dht_send_client(dht, slot, buf, len);
     free(buf);
     free(metas);
 }
 
-static void handle_t2_ch_get(nodus_server_t *srv, nodus_session_t *sess,
+static void handle_t2_ch_get(nodus_dht_t *dht, int slot,
                                nodus_tier2_msg_t *msg) {
     nodus_channel_meta_t meta;
-    int rc = nodus_channel_load_meta(&srv->ch_store, msg->channel_uuid, &meta);
+    int rc = nodus_channel_load_meta(&dht->ch_store, msg->channel_uuid, &meta);
     if (rc != 0) {
         uint8_t buf[256];
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_NOT_FOUND, "channel not found",
                        buf, sizeof(buf), &len);
-        nodus_tcp_send(sess->conn, buf, len);
+        dht_send_client(dht, slot, buf, len);
         return;
     }
 
@@ -4915,7 +4955,7 @@ static void handle_t2_ch_get(nodus_server_t *srv, nodus_session_t *sess,
     if (!buf) return;
     size_t len = 0;
     nodus_t2_ch_list_ok(msg->txn_id, &meta, 1, buf, 4096, &len);
-    nodus_tcp_send(sess->conn, buf, len);
+    dht_send_client(dht, slot, buf, len);
     free(buf);
 }
 
@@ -5010,14 +5050,14 @@ static void handle_t2_servers(nodus_server_t *srv, nodus_session_t *sess,
  * send a UDP PING to the LRU candidate and queue the eviction.
  * The main loop sweep handles timeout-based eviction.
  */
-static void routing_insert_or_ping(nodus_server_t *srv, const nodus_peer_t *peer) {
+static void routing_insert_or_ping(nodus_dht_t *dht, const nodus_peer_t *peer) {
     nodus_peer_t lru;
     memset(&lru, 0, sizeof(lru));
-    int rc = nodus_routing_try_insert(&srv->routing, peer, &lru);
+    int rc = nodus_routing_try_insert(&dht->routing, peer, &lru);
 
     /* Sync hashring with routing table on insert/update */
     if (rc == 0 || rc == 1) {
-        nodus_hashring_add(&srv->ring, &peer->node_id,
+        nodus_hashring_add(&dht->ring, &peer->node_id,
                            peer->ip, peer->tcp_port);
     }
 
@@ -5025,27 +5065,27 @@ static void routing_insert_or_ping(nodus_server_t *srv, const nodus_peer_t *peer
 
     /* Bucket full — check if we already have a pending eviction for this LRU */
     for (int i = 0; i < NODUS_MAX_PENDING_EVICTIONS; i++) {
-        if (srv->pending_evictions[i].active &&
-            nodus_key_cmp(&srv->pending_evictions[i].lru_peer.node_id,
+        if (dht->pending_evictions[i].active &&
+            nodus_key_cmp(&dht->pending_evictions[i].lru_peer.node_id,
                           &lru.node_id) == 0)
             return;  /* Already pinging this LRU, discard new peer */
     }
 
     /* Find a free slot */
     for (int i = 0; i < NODUS_MAX_PENDING_EVICTIONS; i++) {
-        if (!srv->pending_evictions[i].active) {
-            srv->pending_evictions[i].active = true;
-            srv->pending_evictions[i].new_peer = *peer;
-            srv->pending_evictions[i].lru_peer = lru;
-            srv->pending_evictions[i].ping_sent_at = nodus_time_now();
+        if (!dht->pending_evictions[i].active) {
+            dht->pending_evictions[i].active = true;
+            dht->pending_evictions[i].new_peer = *peer;
+            dht->pending_evictions[i].lru_peer = lru;
+            dht->pending_evictions[i].ping_sent_at = nodus_time_now();
 
             /* Send UDP PING to the LRU candidate */
             uint8_t ping_buf[256];
             size_t plen = 0;
-            nodus_t1_ping(0, &srv->identity.node_id,
+            nodus_t1_ping(0, &dht->host.identity->node_id,
                            ping_buf, sizeof(ping_buf), &plen);
-            nodus_udp_send(&srv->udp, ping_buf, plen,
-                            lru.ip, lru.udp_port);
+            dht_udp_send(dht, ping_buf, plen,
+                         lru.ip, lru.udp_port);
             return;
         }
     }
@@ -5056,14 +5096,14 @@ static void routing_insert_or_ping(nodus_server_t *srv, const nodus_peer_t *peer
  * Called from the PONG handler: if the responding peer is an LRU candidate
  * in a pending eviction, cancel the eviction (keep existing peer).
  */
-static void eviction_on_pong(nodus_server_t *srv, const nodus_key_t *node_id) {
+static void eviction_on_pong(nodus_dht_t *dht, const nodus_key_t *node_id) {
     for (int i = 0; i < NODUS_MAX_PENDING_EVICTIONS; i++) {
-        if (srv->pending_evictions[i].active &&
-            nodus_key_cmp(&srv->pending_evictions[i].lru_peer.node_id,
+        if (dht->pending_evictions[i].active &&
+            nodus_key_cmp(&dht->pending_evictions[i].lru_peer.node_id,
                           node_id) == 0) {
             /* LRU responded — keep it, discard new peer */
-            srv->pending_evictions[i].active = false;
-            nodus_routing_touch(&srv->routing, node_id);
+            dht->pending_evictions[i].active = false;
+            nodus_routing_touch(&dht->routing, node_id);
         }
     }
 }
@@ -5072,25 +5112,25 @@ static void eviction_on_pong(nodus_server_t *srv, const nodus_key_t *node_id) {
  * Periodic sweep: evict LRU peers that didn't respond to PING within timeout.
  * Called from the main event loop.
  */
-static void eviction_sweep(nodus_server_t *srv) {
+static void eviction_sweep(nodus_dht_t *dht) {
     uint64_t now = nodus_time_now();
     for (int i = 0; i < NODUS_MAX_PENDING_EVICTIONS; i++) {
-        if (!srv->pending_evictions[i].active) continue;
-        if (now - srv->pending_evictions[i].ping_sent_at < NODUS_EVICT_PING_TIMEOUT)
+        if (!dht->pending_evictions[i].active) continue;
+        if (now - dht->pending_evictions[i].ping_sent_at < NODUS_EVICT_PING_TIMEOUT)
             continue;
 
         /* Timeout — evict LRU and insert new peer */
-        nodus_routing_remove(&srv->routing,
-                              &srv->pending_evictions[i].lru_peer.node_id);
-        nodus_hashring_remove(&srv->ring,
-                               &srv->pending_evictions[i].lru_peer.node_id);
-        nodus_routing_insert(&srv->routing,
-                              &srv->pending_evictions[i].new_peer);
-        nodus_hashring_add(&srv->ring,
-                           &srv->pending_evictions[i].new_peer.node_id,
-                           srv->pending_evictions[i].new_peer.ip,
-                           srv->pending_evictions[i].new_peer.tcp_port);
-        srv->pending_evictions[i].active = false;
+        nodus_routing_remove(&dht->routing,
+                              &dht->pending_evictions[i].lru_peer.node_id);
+        nodus_hashring_remove(&dht->ring,
+                               &dht->pending_evictions[i].lru_peer.node_id);
+        nodus_routing_insert(&dht->routing,
+                              &dht->pending_evictions[i].new_peer);
+        nodus_hashring_add(&dht->ring,
+                           &dht->pending_evictions[i].new_peer.node_id,
+                           dht->pending_evictions[i].new_peer.ip,
+                           dht->pending_evictions[i].new_peer.tcp_port);
+        dht->pending_evictions[i].active = false;
     }
 }
 
@@ -5746,42 +5786,9 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
         }
 
         if (strcmp(msg.method, "fv") == 0) {
-            /* Inter-node FIND_VALUE (per-session rate limit) */
-            uint64_t fv_now = nodus_time_now();
-            if (fv_now != sess->fv_window_start) { sess->fv_window_start = fv_now; sess->fv_count = 0; }
-            if (++sess->fv_count > NODUS_FV_MAX_PER_SEC) {
-                nodus_t2_msg_free(&msg);
-                return;
-            }
-
-            nodus_tier1_msg_t t1msg;
-            memset(&t1msg, 0, sizeof(t1msg));
-            if (nodus_t1_decode(payload, len, &t1msg) == 0) {
-                nodus_value_t *val = NULL;
-                int rc = nodus_storage_get(&srv->storage, &t1msg.target, &val);
-                /* A storage fault answers like a miss — "not here, ask
-                 * these closer nodes" — so the asking node tries others;
-                 * T1 FIND_VALUE has no "could not look" reply. Logged. */
-                if (rc == NODUS_STORAGE_RC_FAULT)
-                    QGP_LOG_WARN(LOG_TAG, "INTER fv: storage read fault — answered "
-                                 "as not-found with closest nodes");
-
-                size_t rlen = 0;
-                if (rc == 0 && val) {
-                    nodus_t1_value_found(t1msg.txn_id, val,
-                                          resp_buf, sizeof(resp_buf), &rlen);
-                    nodus_value_free(val);
-                } else {
-                    nodus_peer_t results[NODUS_K];
-                    int found = nodus_routing_find_closest(&srv->routing, &t1msg.target,
-                                                            results, NODUS_K);
-                    nodus_t1_value_not_found(t1msg.txn_id, results, found,
-                                              resp_buf, sizeof(resp_buf), &rlen);
-                }
-                if (rlen > 0)
-                    nodus_tcp_send(sess->conn, resp_buf, rlen);
-            }
-            nodus_t1_msg_free(&t1msg);
+            /* Inter-node FIND_VALUE — the DHT's (nodus_dht_inter_request) */
+            srv->dht->ops->inter_frame(srv->dht, inter_origin_slot(sess),
+                                       payload, len, &msg);
             nodus_t2_msg_free(&msg);
             return;
 
@@ -5807,114 +5814,10 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
         }
 
         if (strcmp(msg.method, "get_batch") == 0) {
-            /* Inter-node forwarded get_batch — local-only, no re-forward */
-            if (msg.batch_key_count > 0 && msg.batch_key_count <= NODUS_MAX_BATCH_KEYS &&
-                msg.batch_keys) {
-                int n = msg.batch_key_count;
-                nodus_value_t ***vals = calloc((size_t)n, sizeof(nodus_value_t **));
-                size_t *counts = calloc((size_t)n, sizeof(size_t));
-                /* S2/S3: "own" filters by owner; "pg"/"after" ask for one
-                 * page per key in PK order (the cursor applies to every
-                 * key; the forwarding node sends one key). Without them the
-                 * pre-Package-A read (nodus_storage_get_all) and reply. */
-                bool paged = msg.page || msg.has_after;
-                const nodus_key_t *own = msg.has_own ? &msg.own_fp : NULL;
-                nodus_t2_page_info_t *pages = paged
-                    ? calloc((size_t)n, sizeof(nodus_t2_page_info_t)) : NULL;
-                /* Rev 2 items 13/15: a key whose local read FAULTED is sent
-                 * with "u" so the forwarding node does not count it as
-                 * looked at. Only the paged / owner read can tell a fault
-                 * (nodus_storage_get_all returns -1 for "none" and error). */
-                bool *unavail = calloc((size_t)n, sizeof(bool));
-                int n_unavail = 0;
-                if (vals && counts && unavail && (!paged || pages)) {
-                    for (int i = 0; i < n; i++) {
-                        if (!paged && !own) {
-                            nodus_storage_get_all(&srv->storage, &msg.batch_keys[i],
-                                                   &vals[i], &counts[i]);
-                            continue;
-                        }
-                        int more = 0;
-                        size_t budget = paged
-                            ? (size_t)NODUS_GET_ALL_PAGE_MAX_BYTES / (size_t)n
-                            : (size_t)NODUS_GET_ALL_MAX_BYTES;
-                        int prc = nodus_storage_get_all_page(&srv->storage, &msg.batch_keys[i],
-                                own, msg.has_after ? &msg.after.owner : NULL,
-                                msg.has_after ? msg.after.vid : 0, budget,
-                                &vals[i], &counts[i], &more);
-                        if (prc != 0) {
-                            dht_free_rows(vals[i], counts[i]);
-                            vals[i] = NULL;
-                            counts[i] = 0;
-                            more = 0;
-                            if (prc == NODUS_STORAGE_RC_FAULT) {
-                                unavail[i] = true;
-                                n_unavail++;
-                            }
-                        }
-                        if (paged && more && counts[i] > 0) {
-                            const nodus_value_t *lastv = vals[i][counts[i] - 1];
-                            pages[i].more = true;
-                            pages[i].has_next = true;
-                            pages[i].next.owner = lastv->owner_fp;
-                            pages[i].next.vid = lastv->value_id;
-                            /* Rev 3 R-d: "nx" = the serialized estimate of
-                             * the row this page stopped on — the first row
-                             * after the last one sent, same filters (a
-                             * budget of 0 still returns that one row). The
-                             * originator then knows the page was full. A
-                             * probe fault leaves "nx" out (old rule). */
-                            nodus_value_t **probe = NULL;
-                            size_t pn = 0;
-                            int pmore = 0;
-                            if (nodus_storage_get_all_page(&srv->storage,
-                                    &msg.batch_keys[i], own, &lastv->owner_fp,
-                                    lastv->value_id, 0, &probe, &pn, &pmore) == 0 &&
-                                pn > 0) {
-                                pages[i].has_nx = true;
-                                pages[i].nx = (uint64_t)NODUS_VALUE_SERIALIZED_EST(
-                                    probe[0]->data_len);
-                            }
-                            dht_free_rows(probe, pn);
-                        }
-                    }
-
-                    size_t buf_cap = RESP_BUF_SIZE;
-                    uint8_t *buf = malloc(buf_cap);
-                    if (buf) {
-                        size_t rlen = 0;
-                        if (n_unavail > 0)
-                            QGP_LOG_WARN(LOG_TAG, "INTER get_batch: %d of %d key(s) — "
-                                         "storage read fault, sent as \"u\"", n_unavail, n);
-                        if (nodus_t2_result_get_batch_ex(msg.txn_id, msg.batch_keys, n,
-                                                          vals, counts, pages,
-                                                          n_unavail > 0 ? unavail : NULL,
-                                                          buf, buf_cap, &rlen) == 0) {
-                            nodus_tcp_send(sess->conn, buf, rlen);
-                        } else {
-                            /* The forwarding peer's BF reader ignores a frame
-                             * without batch results and completes the forward
-                             * instead of waiting for its timeout. */
-                            nodus_t2_error(msg.txn_id, NODUS_ERR_INTERNAL_ERROR,
-                                            "batch encode failed", buf, buf_cap, &rlen);
-                            nodus_tcp_send(sess->conn, buf, rlen);
-                        }
-                        free(buf);
-                    }
-
-                    for (int i = 0; i < n; i++) {
-                        if (vals[i]) {
-                            for (size_t j = 0; j < counts[i]; j++)
-                                nodus_value_free(vals[i][j]);
-                            free(vals[i]);
-                        }
-                    }
-                }
-                free(vals);
-                free(counts);
-                free(pages);
-                free(unavail);
-            }
+            /* Inter-node forwarded get_batch — local-only, no re-forward:
+             * the DHT's (nodus_dht_inter_request) */
+            srv->dht->ops->inter_frame(srv->dht, inter_origin_slot(sess),
+                                       payload, len, &msg);
             nodus_t2_msg_free(&msg);
             return;
         }
@@ -5922,55 +5825,10 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
         /* ch_rep, ring_check, ring_ack, ring_evict now go via TCP 4003 (channel server) */
 
         if (strcmp(msg.method, "m_sv") == 0 && msg.has_media) {
-            /* Inter-node media replication: store replicated media chunk */
-
-            /* Per-session rate limit (same window as sv) */
-            uint64_t msv_now = nodus_time_now();
-            if (msv_now != sess->sv_window_start) { sess->sv_window_start = msv_now; sess->sv_count = 0; }
-            if (++sess->sv_count > NODUS_SV_MAX_PER_SEC) {
-                fprintf(stderr, "MEDIA_REPL: m_sv rate limit hit (%d/s), slot=%d\n",
-                        sess->sv_count, sess->conn ? sess->conn->slot : -1);
-                nodus_t2_msg_free(&msg);
-                return;
-            }
-
-            /* Validate fields */
-            if (msg.data && msg.data_len > 0 &&
-                msg.media_chunk_count > 0 && msg.media_chunk_count <= NODUS_MEDIA_MAX_CHUNKS &&
-                msg.media_total_size > 0 && msg.media_total_size <= NODUS_MEDIA_MAX_TOTAL_SIZE &&
-                msg.data_len <= NODUS_MEDIA_MAX_CHUNK_SIZE) {
-
-                /* Create meta via INSERT OR IGNORE (dedup safe) */
-                nodus_media_meta_t meta;
-                memset(&meta, 0, sizeof(meta));
-                memcpy(meta.content_hash, msg.media_hash, 64);
-                memcpy(meta.owner_fp, "replicated", 11);
-                meta.media_type  = msg.media_type;
-                meta.total_size  = msg.media_total_size;
-                meta.chunk_count = msg.media_chunk_count;
-                meta.encrypted   = msg.media_encrypted;
-                meta.ttl         = msg.ttl;
-                meta.created_at  = (uint64_t)time(NULL);
-                meta.expires_at  = (meta.ttl > 0) ? meta.created_at + meta.ttl : 0;
-                meta.complete    = false;
-
-                /* INSERT OR IGNORE — if meta already exists, this is a no-op */
-                nodus_media_put_meta(&srv->media_storage, &meta);
-
-                /* Store chunk data */
-                int rc = nodus_media_put_chunk(&srv->media_storage, msg.media_hash,
-                                               msg.media_chunk_idx,
-                                               msg.data, msg.data_len);
-                if (rc == 0) {
-                    /* Check completeness */
-                    int chunk_count = nodus_media_count_chunks(&srv->media_storage, msg.media_hash);
-                    if (chunk_count >= (int)msg.media_chunk_count) {
-                        nodus_media_mark_complete(&srv->media_storage, msg.media_hash);
-                        fprintf(stderr, "MEDIA_REPL: m_sv replicated media complete (%d/%u chunks)\n",
-                                chunk_count, msg.media_chunk_count);
-                    }
-                }
-            }
+            /* Inter-node media replication: store replicated media chunk —
+             * the DHT's (nodus_dht_inter_request) */
+            srv->dht->ops->inter_frame(srv->dht, inter_origin_slot(sess),
+                                       payload, len, &msg);
             nodus_t2_msg_free(&msg);
             return;
         }
@@ -6039,72 +5897,17 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     t1msg.value ? 1 : 0);
         }
 
-        if (strcmp(t1msg.method, "sv") == 0 && t1msg.value) {
-            /* STORE_VALUE: replication from another node */
-            uint64_t sv_now = nodus_time_now();
-            if (sv_now != sess->sv_window_start) { sess->sv_window_start = sv_now; sess->sv_count = 0; }
-            if (++sess->sv_count > NODUS_SV_MAX_PER_SEC) {
-                fprintf(stderr, "REPL_TCP: sv rate limit hit (%d/s), slot=%d\n",
-                        sess->sv_count, sess->conn ? sess->conn->slot : -1);
-                nodus_t1_msg_free(&t1msg);
-                return;
-            }
-
-            if (nodus_value_verify(t1msg.value) == 0) {
-                int put_rc = nodus_storage_put_if_newer(&srv->storage, t1msg.value);
-                /* DBG: log put_rc for replication diagnosis (v0.18.1) */
-                if (put_rc != 0) {
-                    char dbg_kh[17];
-                    for (int x = 0; x < 8; x++)
-                        snprintf(dbg_kh + x*2, sizeof(dbg_kh) - x*2,
-                                 "%02x", t1msg.value->key_hash.bytes[x]);
-                    dbg_kh[16] = '\0';
-                    fprintf(stderr,
-                            "DBG_PUT_SKIP: put_rc=%d key=%s vid=%llu seq=%llu type=%d\n",
-                            put_rc, dbg_kh,
-                            (unsigned long long)t1msg.value->value_id,
-                            (unsigned long long)t1msg.value->seq,
-                            (int)t1msg.value->type);
-                }
-                if (put_rc == 0) {
-                    notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
-                    /* Forward to remote subscribers (Scribe pattern) */
-                    subscription_notify(srv, &t1msg.value->key_hash, t1msg.value);
-                }
-            } else {
-                char kh[17];
-                for (int i = 0; i < 8; i++)
-                    snprintf(kh + i*2, sizeof(kh) - i*2, "%02x", t1msg.value->key_hash.bytes[i]);
-                kh[16] = '\0';
-                fprintf(stderr, "REPL_TCP: verify FAILED for key=%s... vid=%llu seq=%llu — value DROPPED\n",
-                        kh, (unsigned long long)t1msg.value->value_id,
-                        (unsigned long long)t1msg.value->seq);
-            }
-
-        } else if (strcmp(t1msg.method, "sub") == 0) {
-            /* SUBSCRIBE_FWD: remote node subscribing to a key on us.
-             * Look up subscriber's TCP 4002 port from routing table. */
-            nodus_peer_t peer;
-            uint16_t sub_port = NODUS_DEFAULT_PEER_PORT;
-            if (nodus_routing_lookup(&srv->routing, &sess->client_fp, &peer) == 0) {
-                sub_port = peer.tcp_port ? peer.tcp_port : NODUS_DEFAULT_PEER_PORT;
-            }
-            subscription_add(&srv->subscriptions, &t1msg.target, &sess->client_fp,
-                              sess->conn ? sess->conn->ip : "", sub_port);
-
-        } else if (strcmp(t1msg.method, "unsub") == 0) {
-            subscription_remove(&srv->subscriptions, &t1msg.target, &sess->client_fp);
-
-        } else if (strcmp(t1msg.method, "ntf") == 0 && t1msg.value) {
-            /* NOTIFY forwarded from a responsible node — we have a local
-             * listener that asked for this key. Verify and push to local
-             * listeners only. Do NOT store: this node is not necessarily
-             * a responsible node for the key, and storing here would bloat
-             * non-responsible nodes and break R=3 invariants. Scribe is
-             * push-only — the value lives only on responsible nodes. */
-            if (nodus_value_verify(t1msg.value) == 0) {
-                notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
-            }
+        if ((strcmp(t1msg.method, "sv") == 0 && t1msg.value) ||
+            strcmp(t1msg.method, "sub") == 0 ||
+            strcmp(t1msg.method, "unsub") == 0 ||
+            (strcmp(t1msg.method, "ntf") == 0 && t1msg.value)) {
+            /* STORE_VALUE (replication), SUBSCRIBE_FWD / unsubscribe (a
+             * remote listener), NOTIFY (for a local listener) — the DHT's
+             * (nodus_dht_inter_t1), with this session's peer identity */
+            srv->dht->ops->inter_t1(srv->dht, inter_origin_slot(sess),
+                                    &sess->client_fp,
+                                    sess->conn ? sess->conn->ip : "",
+                                    payload, len, &t1msg);
 
         } else {
             QGP_LOG_DEBUG(LOG_TAG, "INTER_TCP: unknown T1 method '%s'",
@@ -6184,6 +5987,17 @@ void nodus_server_dispatch_inter_frame(nodus_server_t *srv,
 
 /* ── Inter-node TCP callbacks ───────────────────────────────────── */
 
+/* The DHT's shadow of a 4002 session (its rate windows) is reset wherever
+ * core's session is (connect, accept, disconnect). */
+static void inter_session_dht(nodus_server_t *srv, nodus_tcp_conn_t *conn,
+                              bool opened) {
+    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_INTER, conn->slot };
+    if (opened)
+        srv->dht->ops->session_opened(srv->dht, o);
+    else
+        srv->dht->ops->session_closed(srv->dht, o);
+}
+
 static void on_inter_connect(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_server_t *srv = (nodus_server_t *)ctx;
 
@@ -6194,6 +6008,7 @@ static void on_inter_connect(nodus_tcp_conn_t *conn, void *ctx) {
     if (sess) {
         inter_session_clear(sess, conn->slot, "on_inter_connect");
         sess->conn = conn;
+        inter_session_dht(srv, conn, true);
     }
 
     conn->is_nodus = true;
@@ -6225,6 +6040,7 @@ static void on_inter_accept(nodus_tcp_conn_t *conn, void *ctx) {
     if (sess) {
         inter_session_clear(sess, conn->slot, "on_inter_accept");
         sess->conn = conn;
+        inter_session_dht(srv, conn, true);
     }
     conn->is_nodus = true;
     conn->auth_required = srv->inter_tcp.auth_required;
@@ -6311,6 +6127,7 @@ void nodus_server_inter_disconnected(nodus_server_t *srv, nodus_tcp_conn_t *conn
 
     if (sess) {
         inter_session_clear(sess, conn->slot, "on_inter_disconnect");
+        inter_session_dht(srv, conn, false);
     }
 }
 
@@ -6450,39 +6267,31 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
-    /* Dispatch to handler */
-    if (strcmp(msg.method, "put") == 0)
-        handle_t2_put(srv, sess, &msg);
-    else if (strcmp(msg.method, "get") == 0)
-        handle_t2_get(srv, sess, &msg);
-    else if (strcmp(msg.method, "get_all") == 0)
-        handle_t2_get_all(srv, sess, &msg);
-    else if (strcmp(msg.method, "get_batch") == 0)
-        handle_t2_get_batch(srv, sess, &msg);
-    else if (strcmp(msg.method, "cnt_batch") == 0)
-        handle_t2_count_batch(srv, sess, &msg);
-    else if (strcmp(msg.method, "listen") == 0)
-        handle_t2_listen(srv, sess, &msg);
-    else if (strcmp(msg.method, "unlisten") == 0)
-        handle_t2_unlisten(srv, sess, &msg);
+    /* Dispatch to handler. The DHT methods (values, listen, channels
+     * directory, media) go to the DHT with this session's slot and
+     * authenticated identity (nodus_dht_client_request). */
+    if (strcmp(msg.method, "put") == 0 ||
+        strcmp(msg.method, "get") == 0 ||
+        strcmp(msg.method, "get_all") == 0 ||
+        strcmp(msg.method, "get_batch") == 0 ||
+        strcmp(msg.method, "cnt_batch") == 0 ||
+        strcmp(msg.method, "listen") == 0 ||
+        strcmp(msg.method, "unlisten") == 0 ||
+        strcmp(msg.method, "ch_list") == 0 ||
+        strcmp(msg.method, "ch_search") == 0 ||
+        strcmp(msg.method, "ch_get") == 0 ||
+        strcmp(msg.method, "m_put") == 0 ||
+        strcmp(msg.method, "m_meta") == 0 ||
+        strcmp(msg.method, "m_chunk") == 0)
+        srv->dht->ops->client_frame(srv->dht, (int)(sess - srv->sessions),
+                                    &sess->client_fp, &sess->client_pk,
+                                    payload, len, &msg);
     else if (strcmp(msg.method, "ping") == 0)
         handle_t2_ping(srv, sess, &msg);
     else if (strcmp(msg.method, "servers") == 0)
         handle_t2_servers(srv, sess, &msg);
     else if (strcmp(msg.method, "status") == 0)
         handle_t2_status(srv, sess, &msg);
-    else if (strcmp(msg.method, "ch_list") == 0)
-        handle_t2_ch_list(srv, sess, &msg);
-    else if (strcmp(msg.method, "ch_search") == 0)
-        handle_t2_ch_search(srv, sess, &msg);
-    else if (strcmp(msg.method, "ch_get") == 0)
-        handle_t2_ch_get(srv, sess, &msg);
-    else if (strcmp(msg.method, "m_put") == 0)
-        handle_t2_media_put(srv, sess, &msg);
-    else if (strcmp(msg.method, "m_meta") == 0)
-        handle_t2_media_get_meta(srv, sess, &msg);
-    else if (strcmp(msg.method, "m_chunk") == 0)
-        handle_t2_media_get_chunk(srv, sess, &msg);
     else if (strcmp(msg.method, "circ_open") == 0)
         handle_t2_circ_open(srv, sess, &msg);
     else if (strcmp(msg.method, "circ_data") == 0)
@@ -6574,6 +6383,705 @@ static int udp_rate_check(const char *ip) {
     return 0;
 }
 
+/* ── DHT entry points: core → DHT (dht/nodus_dht.h) ──────────────── */
+
+void nodus_dht_session_opened(nodus_dht_t *dht, nodus_dht_origin_t origin) {
+    if (!dht || origin.slot < 0) return;
+    if (origin.kind == NODUS_DHT_ORIGIN_CLIENT) {
+        if (origin.slot >= NODUS_MAX_SESSIONS) return;
+        memset(&dht->sessions[origin.slot], 0, sizeof(dht->sessions[0]));
+        dht->sessions[origin.slot].open = true;
+    } else {
+        if (origin.slot >= NODUS_MAX_INTER_SESSIONS) return;
+        memset(&dht->inter_sessions[origin.slot], 0, sizeof(dht->inter_sessions[0]));
+    }
+}
+
+void nodus_dht_session_closed(nodus_dht_t *dht, nodus_dht_origin_t origin) {
+    if (!dht || origin.slot < 0) return;
+    if (origin.kind == NODUS_DHT_ORIGIN_CLIENT) {
+        if (origin.slot >= NODUS_MAX_SESSIONS) return;
+        memset(&dht->sessions[origin.slot], 0, sizeof(dht->sessions[0]));
+    } else {
+        if (origin.slot >= NODUS_MAX_INTER_SESSIONS) return;
+        memset(&dht->inter_sessions[origin.slot], 0, sizeof(dht->inter_sessions[0]));
+    }
+}
+
+void nodus_dht_client_request(nodus_dht_t *dht, int slot,
+                              const nodus_key_t *client_fp,
+                              const nodus_pubkey_t *client_pk,
+                              nodus_tier2_msg_t *msg) {
+    if (!dht || !msg || slot < 0 || slot >= NODUS_MAX_SESSIONS) return;
+
+    if (strcmp(msg->method, "put") == 0)
+        handle_t2_put(dht, slot, client_fp, client_pk, msg);
+    else if (strcmp(msg->method, "get") == 0)
+        handle_t2_get(dht, slot, msg);
+    else if (strcmp(msg->method, "get_all") == 0)
+        handle_t2_get_all(dht, slot, msg);
+    else if (strcmp(msg->method, "get_batch") == 0)
+        handle_t2_get_batch(dht, slot, msg);
+    else if (strcmp(msg->method, "cnt_batch") == 0)
+        handle_t2_count_batch(dht, slot, client_fp, msg);
+    else if (strcmp(msg->method, "listen") == 0)
+        handle_t2_listen(dht, slot, msg);
+    else if (strcmp(msg->method, "unlisten") == 0)
+        handle_t2_unlisten(dht, slot, msg);
+    else if (strcmp(msg->method, "ch_list") == 0)
+        handle_t2_ch_list(dht, slot, msg);
+    else if (strcmp(msg->method, "ch_search") == 0)
+        handle_t2_ch_search(dht, slot, msg);
+    else if (strcmp(msg->method, "ch_get") == 0)
+        handle_t2_ch_get(dht, slot, msg);
+    else if (strcmp(msg->method, "m_put") == 0)
+        handle_t2_media_put(dht, slot, client_fp, msg);
+    else if (strcmp(msg->method, "m_meta") == 0)
+        handle_t2_media_get_meta(dht, slot, msg);
+    else if (strcmp(msg->method, "m_chunk") == 0)
+        handle_t2_media_get_chunk(dht, slot, msg);
+    else {
+        /* Not a DHT method (core routes only these here): the answer the
+         * client port gives any unknown method. */
+        size_t rlen = 0;
+        nodus_t2_error(msg->txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                        "unknown method", resp_buf, sizeof(resp_buf), &rlen);
+        dht_send_client(dht, slot, resp_buf, rlen);
+    }
+}
+
+void nodus_dht_inter_request(nodus_dht_t *dht, int slot,
+                             const uint8_t *payload, size_t len,
+                             nodus_tier2_msg_t *msg) {
+    if (!dht || !msg || slot < 0 || slot >= NODUS_MAX_INTER_SESSIONS) return;
+    nodus_dht_inter_session_t *sess = &dht->inter_sessions[slot];
+
+    if (strcmp(msg->method, "fv") == 0) {
+        /* Inter-node FIND_VALUE (per-session rate limit) */
+        uint64_t fv_now = nodus_time_now();
+        if (fv_now != sess->fv_window_start) { sess->fv_window_start = fv_now; sess->fv_count = 0; }
+        if (++sess->fv_count > NODUS_FV_MAX_PER_SEC)
+            return;
+
+        nodus_tier1_msg_t t1msg;
+        memset(&t1msg, 0, sizeof(t1msg));
+        if (nodus_t1_decode(payload, len, &t1msg) == 0) {
+            nodus_value_t *val = NULL;
+            int rc = nodus_storage_get(&dht->storage, &t1msg.target, &val);
+            /* A storage fault answers like a miss — "not here, ask
+             * these closer nodes" — so the asking node tries others;
+             * T1 FIND_VALUE has no "could not look" reply. Logged. */
+            if (rc == NODUS_STORAGE_RC_FAULT)
+                QGP_LOG_WARN(LOG_TAG, "INTER fv: storage read fault — answered "
+                             "as not-found with closest nodes");
+
+            size_t rlen = 0;
+            if (rc == 0 && val) {
+                nodus_t1_value_found(t1msg.txn_id, val,
+                                      resp_buf, sizeof(resp_buf), &rlen);
+                nodus_value_free(val);
+            } else {
+                nodus_peer_t results[NODUS_K];
+                int found = nodus_routing_find_closest(&dht->routing, &t1msg.target,
+                                                        results, NODUS_K);
+                nodus_t1_value_not_found(t1msg.txn_id, results, found,
+                                          resp_buf, sizeof(resp_buf), &rlen);
+            }
+            if (rlen > 0)
+                dht_send_inter(dht, slot, resp_buf, rlen);
+        }
+        nodus_t1_msg_free(&t1msg);
+        return;
+    }
+
+    if (strcmp(msg->method, "get_batch") == 0) {
+        /* Inter-node forwarded get_batch — local-only, no re-forward */
+        if (msg->batch_key_count > 0 && msg->batch_key_count <= NODUS_MAX_BATCH_KEYS &&
+            msg->batch_keys) {
+            int n = msg->batch_key_count;
+            nodus_value_t ***vals = calloc((size_t)n, sizeof(nodus_value_t **));
+            size_t *counts = calloc((size_t)n, sizeof(size_t));
+            /* S2/S3: "own" filters by owner; "pg"/"after" ask for one
+             * page per key in PK order (the cursor applies to every
+             * key; the forwarding node sends one key). Without them the
+             * pre-Package-A read (nodus_storage_get_all) and reply. */
+            bool paged = msg->page || msg->has_after;
+            const nodus_key_t *own = msg->has_own ? &msg->own_fp : NULL;
+            nodus_t2_page_info_t *pages = paged
+                ? calloc((size_t)n, sizeof(nodus_t2_page_info_t)) : NULL;
+            /* Rev 2 items 13/15: a key whose local read FAULTED is sent
+             * with "u" so the forwarding node does not count it as
+             * looked at. Only the paged / owner read can tell a fault
+             * (nodus_storage_get_all returns -1 for "none" and error). */
+            bool *unavail = calloc((size_t)n, sizeof(bool));
+            int n_unavail = 0;
+            if (vals && counts && unavail && (!paged || pages)) {
+                for (int i = 0; i < n; i++) {
+                    if (!paged && !own) {
+                        nodus_storage_get_all(&dht->storage, &msg->batch_keys[i],
+                                               &vals[i], &counts[i]);
+                        continue;
+                    }
+                    int more = 0;
+                    size_t budget = paged
+                        ? (size_t)NODUS_GET_ALL_PAGE_MAX_BYTES / (size_t)n
+                        : (size_t)NODUS_GET_ALL_MAX_BYTES;
+                    int prc = nodus_storage_get_all_page(&dht->storage, &msg->batch_keys[i],
+                            own, msg->has_after ? &msg->after.owner : NULL,
+                            msg->has_after ? msg->after.vid : 0, budget,
+                            &vals[i], &counts[i], &more);
+                    if (prc != 0) {
+                        dht_free_rows(vals[i], counts[i]);
+                        vals[i] = NULL;
+                        counts[i] = 0;
+                        more = 0;
+                        if (prc == NODUS_STORAGE_RC_FAULT) {
+                            unavail[i] = true;
+                            n_unavail++;
+                        }
+                    }
+                    if (paged && more && counts[i] > 0) {
+                        const nodus_value_t *lastv = vals[i][counts[i] - 1];
+                        pages[i].more = true;
+                        pages[i].has_next = true;
+                        pages[i].next.owner = lastv->owner_fp;
+                        pages[i].next.vid = lastv->value_id;
+                        /* Rev 3 R-d: "nx" = the serialized estimate of
+                         * the row this page stopped on — the first row
+                         * after the last one sent, same filters (a
+                         * budget of 0 still returns that one row). The
+                         * originator then knows the page was full. A
+                         * probe fault leaves "nx" out (old rule). */
+                        nodus_value_t **probe = NULL;
+                        size_t pn = 0;
+                        int pmore = 0;
+                        if (nodus_storage_get_all_page(&dht->storage,
+                                &msg->batch_keys[i], own, &lastv->owner_fp,
+                                lastv->value_id, 0, &probe, &pn, &pmore) == 0 &&
+                            pn > 0) {
+                            pages[i].has_nx = true;
+                            pages[i].nx = (uint64_t)NODUS_VALUE_SERIALIZED_EST(
+                                probe[0]->data_len);
+                        }
+                        dht_free_rows(probe, pn);
+                    }
+                }
+
+                size_t buf_cap = RESP_BUF_SIZE;
+                uint8_t *buf = malloc(buf_cap);
+                if (buf) {
+                    size_t rlen = 0;
+                    if (n_unavail > 0)
+                        QGP_LOG_WARN(LOG_TAG, "INTER get_batch: %d of %d key(s) — "
+                                     "storage read fault, sent as \"u\"", n_unavail, n);
+                    if (nodus_t2_result_get_batch_ex(msg->txn_id, msg->batch_keys, n,
+                                                      vals, counts, pages,
+                                                      n_unavail > 0 ? unavail : NULL,
+                                                      buf, buf_cap, &rlen) == 0) {
+                        dht_send_inter(dht, slot, buf, rlen);
+                    } else {
+                        /* The forwarding peer's BF reader ignores a frame
+                         * without batch results and completes the forward
+                         * instead of waiting for its timeout. */
+                        nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
+                                        "batch encode failed", buf, buf_cap, &rlen);
+                        dht_send_inter(dht, slot, buf, rlen);
+                    }
+                    free(buf);
+                }
+
+                for (int i = 0; i < n; i++) {
+                    if (vals[i]) {
+                        for (size_t j = 0; j < counts[i]; j++)
+                            nodus_value_free(vals[i][j]);
+                        free(vals[i]);
+                    }
+                }
+            }
+            free(vals);
+            free(counts);
+            free(pages);
+            free(unavail);
+        }
+        return;
+    }
+
+    if (strcmp(msg->method, "m_sv") == 0 && msg->has_media) {
+        /* Inter-node media replication: store replicated media chunk */
+
+        /* Per-session rate limit (same window as sv) */
+        uint64_t msv_now = nodus_time_now();
+        if (msv_now != sess->sv_window_start) { sess->sv_window_start = msv_now; sess->sv_count = 0; }
+        if (++sess->sv_count > NODUS_SV_MAX_PER_SEC) {
+            fprintf(stderr, "MEDIA_REPL: m_sv rate limit hit (%d/s), slot=%d\n",
+                    sess->sv_count, slot);
+            return;
+        }
+
+        /* Validate fields */
+        if (msg->data && msg->data_len > 0 &&
+            msg->media_chunk_count > 0 && msg->media_chunk_count <= NODUS_MEDIA_MAX_CHUNKS &&
+            msg->media_total_size > 0 && msg->media_total_size <= NODUS_MEDIA_MAX_TOTAL_SIZE &&
+            msg->data_len <= NODUS_MEDIA_MAX_CHUNK_SIZE) {
+
+            /* Create meta via INSERT OR IGNORE (dedup safe) */
+            nodus_media_meta_t meta;
+            memset(&meta, 0, sizeof(meta));
+            memcpy(meta.content_hash, msg->media_hash, 64);
+            memcpy(meta.owner_fp, "replicated", 11);
+            meta.media_type  = msg->media_type;
+            meta.total_size  = msg->media_total_size;
+            meta.chunk_count = msg->media_chunk_count;
+            meta.encrypted   = msg->media_encrypted;
+            meta.ttl         = msg->ttl;
+            meta.created_at  = (uint64_t)time(NULL);
+            meta.expires_at  = (meta.ttl > 0) ? meta.created_at + meta.ttl : 0;
+            meta.complete    = false;
+
+            /* INSERT OR IGNORE — if meta already exists, this is a no-op */
+            nodus_media_put_meta(&dht->media_storage, &meta);
+
+            /* Store chunk data */
+            int rc = nodus_media_put_chunk(&dht->media_storage, msg->media_hash,
+                                           msg->media_chunk_idx,
+                                           msg->data, msg->data_len);
+            if (rc == 0) {
+                /* Check completeness */
+                int chunk_count = nodus_media_count_chunks(&dht->media_storage, msg->media_hash);
+                if (chunk_count >= (int)msg->media_chunk_count) {
+                    nodus_media_mark_complete(&dht->media_storage, msg->media_hash);
+                    fprintf(stderr, "MEDIA_REPL: m_sv replicated media complete (%d/%u chunks)\n",
+                            chunk_count, msg->media_chunk_count);
+                }
+            }
+        }
+        return;
+    }
+}
+
+void nodus_dht_inter_t1(nodus_dht_t *dht, int slot,
+                        const nodus_key_t *peer_fp, const char *peer_ip,
+                        nodus_tier1_msg_t *t1msg) {
+    if (!dht || !t1msg || slot < 0 || slot >= NODUS_MAX_INTER_SESSIONS) return;
+    nodus_dht_inter_session_t *sess = &dht->inter_sessions[slot];
+
+    if (strcmp(t1msg->method, "sv") == 0 && t1msg->value) {
+        /* STORE_VALUE: replication from another node */
+        uint64_t sv_now = nodus_time_now();
+        if (sv_now != sess->sv_window_start) { sess->sv_window_start = sv_now; sess->sv_count = 0; }
+        if (++sess->sv_count > NODUS_SV_MAX_PER_SEC) {
+            fprintf(stderr, "REPL_TCP: sv rate limit hit (%d/s), slot=%d\n",
+                    sess->sv_count, slot);
+            return;
+        }
+
+        if (nodus_value_verify(t1msg->value) == 0) {
+            int put_rc = nodus_storage_put_if_newer(&dht->storage, t1msg->value);
+            /* DBG: log put_rc for replication diagnosis (v0.18.1) */
+            if (put_rc != 0) {
+                char dbg_kh[17];
+                for (int x = 0; x < 8; x++)
+                    snprintf(dbg_kh + x*2, sizeof(dbg_kh) - x*2,
+                             "%02x", t1msg->value->key_hash.bytes[x]);
+                dbg_kh[16] = '\0';
+                fprintf(stderr,
+                        "DBG_PUT_SKIP: put_rc=%d key=%s vid=%llu seq=%llu type=%d\n",
+                        put_rc, dbg_kh,
+                        (unsigned long long)t1msg->value->value_id,
+                        (unsigned long long)t1msg->value->seq,
+                        (int)t1msg->value->type);
+            }
+            if (put_rc == 0) {
+                notify_listeners(dht, &t1msg->value->key_hash, t1msg->value);
+                /* Forward to remote subscribers (Scribe pattern) */
+                subscription_notify(dht, &t1msg->value->key_hash, t1msg->value);
+            }
+        } else {
+            char kh[17];
+            for (int i = 0; i < 8; i++)
+                snprintf(kh + i*2, sizeof(kh) - i*2, "%02x", t1msg->value->key_hash.bytes[i]);
+            kh[16] = '\0';
+            fprintf(stderr, "REPL_TCP: verify FAILED for key=%s... vid=%llu seq=%llu — value DROPPED\n",
+                    kh, (unsigned long long)t1msg->value->value_id,
+                    (unsigned long long)t1msg->value->seq);
+        }
+
+    } else if (strcmp(t1msg->method, "sub") == 0) {
+        /* SUBSCRIBE_FWD: remote node subscribing to a key on us.
+         * Look up subscriber's TCP 4002 port from routing table. */
+        nodus_peer_t peer;
+        uint16_t sub_port = NODUS_DEFAULT_PEER_PORT;
+        if (nodus_routing_lookup(&dht->routing, peer_fp, &peer) == 0) {
+            sub_port = peer.tcp_port ? peer.tcp_port : NODUS_DEFAULT_PEER_PORT;
+        }
+        subscription_add(&dht->subscriptions, &t1msg->target, peer_fp,
+                          peer_ip, sub_port);
+
+    } else if (strcmp(t1msg->method, "unsub") == 0) {
+        subscription_remove(&dht->subscriptions, &t1msg->target, peer_fp);
+
+    } else if (strcmp(t1msg->method, "ntf") == 0 && t1msg->value) {
+        /* NOTIFY forwarded from a responsible node — we have a local
+         * listener that asked for this key. Verify and push to local
+         * listeners only. Do NOT store: this node is not necessarily
+         * a responsible node for the key, and storing here would bloat
+         * non-responsible nodes and break R=3 invariants. Scribe is
+         * push-only — the value lives only on responsible nodes. */
+        if (nodus_value_verify(t1msg->value) == 0) {
+            notify_listeners(dht, &t1msg->value->key_hash, t1msg->value);
+        }
+    }
+}
+
+void nodus_dht_udp_request(nodus_dht_t *dht, const char *from_ip,
+                           uint16_t from_port, nodus_tier1_msg_t *msg) {
+    if (!dht || !msg) return;
+
+    if (strcmp(msg->method, "fn") == 0) {
+        /* FIND_NODE: rate-limit to mitigate UDP amplification (HIGH-9) */
+        if (udp_rate_check(from_ip) != 0)
+            return;
+        /* FIND_NODE: return k closest nodes */
+        nodus_peer_t results[NODUS_K];
+        int found = nodus_routing_find_closest(&dht->routing, &msg->target,
+                                                results, NODUS_K);
+        size_t rlen = 0;
+        nodus_t1_nodes_found(msg->txn_id, results, found,
+                              resp_buf, sizeof(resp_buf), &rlen);
+        dht_udp_send(dht, resp_buf, rlen, from_ip, from_port);
+
+    } else if (strcmp(msg->method, "fn_r") == 0) {
+        /* NODES_FOUND: feed to iterative lookup engine FIRST (FIX-C3),
+         * then update routing table (existing behavior, kept). */
+        iterative_lookup_handle_response(dht, msg->txn_id, msg,
+                                          from_ip, from_port);
+        for (int i = 0; i < msg->peer_count; i++) {
+            msg->peers[i].last_seen = nodus_time_now();
+            routing_insert_or_ping(dht, &msg->peers[i]);
+        }
+
+    } else if (strcmp(msg->method, "sv") == 0) {
+        /* STORE_VALUE: rate-limit to mitigate UDP abuse (H-05) */
+        if (udp_rate_check(from_ip) != 0) {
+            fprintf(stderr, "REPL_UDP: sv rate limited from %s:%d\n", from_ip, from_port);
+            return;
+        }
+        /* STORE_VALUE: inter-node replication */
+        if (msg->value) {
+            if (nodus_value_verify(msg->value) == 0) {
+                if (nodus_storage_put_if_newer(&dht->storage, msg->value) == 0)
+                    notify_listeners(dht, &msg->value->key_hash, msg->value);
+            } else {
+                char kh[17];
+                for (int i = 0; i < 8; i++)
+                    snprintf(kh + i*2, sizeof(kh) - i*2, "%02x", msg->value->key_hash.bytes[i]);
+                kh[16] = '\0';
+                fprintf(stderr, "REPL_UDP: verify FAILED for key=%s... from %s:%d — value DROPPED\n",
+                        kh, from_ip, from_port);
+            }
+            /* Send ACK */
+            size_t rlen = 0;
+            nodus_t1_store_ack(msg->txn_id, resp_buf, sizeof(resp_buf), &rlen);
+            dht_udp_send(dht, resp_buf, rlen, from_ip, from_port);
+        }
+
+    } else if (strcmp(msg->method, "fv") == 0) {
+        /* FIND_VALUE: rate-limit to mitigate UDP amplification (HIGH-9) */
+        if (udp_rate_check(from_ip) != 0)
+            return;
+        /* FIND_VALUE: respond with value or closest nodes */
+        nodus_value_t *val = NULL;
+        int rc = nodus_storage_get(&dht->storage, &msg->target, &val);
+        /* Storage fault → answered like a miss (closest nodes), logged —
+         * see the 4002 "fv" handler. */
+        if (rc == NODUS_STORAGE_RC_FAULT)
+            QGP_LOG_WARN(LOG_TAG, "UDP fv: storage read fault — answered as "
+                         "not-found with closest nodes");
+
+        size_t rlen = 0;
+        if (rc == 0 && val) {
+            nodus_t1_value_found(msg->txn_id, val, resp_buf, sizeof(resp_buf), &rlen);
+            nodus_value_free(val);
+        } else {
+            nodus_peer_t results[NODUS_K];
+            int found = nodus_routing_find_closest(&dht->routing, &msg->target,
+                                                    results, NODUS_K);
+            nodus_t1_value_not_found(msg->txn_id, results, found,
+                                      resp_buf, sizeof(resp_buf), &rlen);
+        }
+        dht_udp_send(dht, resp_buf, rlen, from_ip, from_port);
+    }
+}
+
+void nodus_dht_peer_seen(nodus_dht_t *dht, nodus_dht_peer_seen_t kind,
+                         const nodus_key_t *node_id, const char *ip,
+                         uint16_t udp_port, uint16_t tcp_port) {
+    if (!dht || !node_id || !ip) return;
+
+    nodus_peer_t peer;
+    switch (kind) {
+    case NODUS_DHT_PEER_PING:
+        /* Update routing table (ping-before-evict if bucket full) */
+        memset(&peer, 0, sizeof(peer));
+        peer.node_id = *node_id;
+        strncpy(peer.ip, ip, sizeof(peer.ip) - 1);
+        peer.udp_port = udp_port;
+        peer.tcp_port = tcp_port;
+        peer.last_seen = nodus_time_now();
+        routing_insert_or_ping(dht, &peer);
+
+        /* A received PING proves the peer is alive (same as PONG).
+         * Cancel any pending eviction for this peer. */
+        eviction_on_pong(dht, node_id);
+        break;
+
+    case NODUS_DHT_PEER_PONG_TOUCH:
+        /* Update routing table (the cluster health update follows, core) */
+        nodus_routing_touch(&dht->routing, node_id);
+        break;
+
+    case NODUS_DHT_PEER_PONG:
+        /* Cancel pending evictions for this peer (it responded) */
+        eviction_on_pong(dht, node_id);
+
+        /* Also insert into routing table if new */
+        memset(&peer, 0, sizeof(peer));
+        peer.node_id = *node_id;
+        strncpy(peer.ip, ip, sizeof(peer.ip) - 1);
+        peer.udp_port = udp_port;
+        peer.tcp_port = tcp_port;
+        peer.last_seen = nodus_time_now();
+        routing_insert_or_ping(dht, &peer);
+        break;
+
+    case NODUS_DHT_PEER_ALIVE:
+        /* Inject into Kademlia routing table so replication can find this
+         * peer immediately (otherwise routing table stays empty until UDP
+         * discovery completes, causing PUT replication to silently drop
+         * data) */
+        memset(&peer, 0, sizeof(peer));
+        peer.node_id = *node_id;
+        snprintf(peer.ip, sizeof(peer.ip), "%s", ip);
+        peer.udp_port = udp_port;
+        peer.tcp_port = tcp_port;
+        peer.last_seen = nodus_time_now();
+        nodus_routing_insert(&dht->routing, &peer);
+        break;
+    }
+}
+
+void nodus_dht_peer_dead(nodus_dht_t *dht, const nodus_key_t *node_id) {
+    if (!dht || !node_id) return;
+    /* Remove dead nodes from routing table to prevent stale replication */
+    nodus_routing_remove(&dht->routing, node_id);
+}
+
+int nodus_dht_hint_store(nodus_dht_t *dht, const nodus_key_t *node_id,
+                         const char *ip, uint16_t port,
+                         const uint8_t *frame, size_t len) {
+    if (!dht) return -1;
+    return nodus_storage_hinted_insert(&dht->storage, node_id, ip, port,
+                                       frame, len);
+}
+
+int nodus_dht_routing_snapshot(const nodus_dht_t *dht,
+                               nodus_dht_peer_addr_t *out, int max) {
+    if (!dht || !out || max <= 0) return 0;
+    int n = 0;
+    for (int b = 0; b < NODUS_BUCKETS && n < max; b++) {
+        const nodus_bucket_t *bkt = &dht->routing.buckets[b];
+        for (int e = 0; e < bkt->count && n < max; e++) {
+            if (bkt->entries[e].active) {
+                snprintf(out[n].ip, sizeof(out[n].ip), "%s",
+                         bkt->entries[e].peer.ip);
+                out[n].tcp_port = bkt->entries[e].peer.tcp_port;
+                n++;
+            }
+        }
+    }
+    return n;
+}
+
+void nodus_dht_evict_tick(nodus_dht_t *dht) {
+    if (!dht) return;
+    /* Ping-before-evict: evict LRU peers that didn't respond */
+    eviction_sweep(dht);
+}
+
+void nodus_dht_tick(nodus_dht_t *dht) {
+    if (!dht) return;
+
+    /* Retry DHT hinted handoff (failed replication, every 30s) */
+    dht_hinted_retry(dht);
+
+    /* Listen-forward subscription cleanup (every 60s) */
+    {
+        uint64_t now_sec = nodus_time_now();
+        if (now_sec - dht->last_sub_cleanup > 60) {
+            subscription_cleanup_expired(&dht->subscriptions);
+            dht->last_sub_cleanup = now_sec;
+        }
+    }
+
+    /* Periodic subscription renewal (re-forward local LISTENs to K-closest).
+     * Rate-limited internally to NODUS_SUB_RENEWAL_PER_TICK per call. */
+    subscription_renew_tick(dht);
+
+    /* Iterative Kademlia FIND_NODE lookup engine tick */
+    iterative_lookup_tick(dht);
+
+    /* Batch forward async tick */
+    bf_tick(dht);
+
+    /* Kademlia bucket refresh (every 15 min) */
+    dht_bucket_refresh(dht);
+
+    /* Storage cleanup — remove expired values (every 1 hour) */
+    dht_storage_cleanup(dht);
+
+    /* Periodic republish — send stored values to R-closest (every 1 hour) */
+    dht_republish(dht);
+
+    /* Periodic media republish — send stored media to R-closest (every 24 hours) */
+    dht_media_republish(dht);
+
+    /* WAL checkpoint — truncate WAL file (every 5 min) */
+    dht_wal_checkpoint(dht);
+
+    /* Incremental vacuum — reclaim freelist pages (every 24 hours) */
+    dht_incremental_vacuum(dht);
+}
+
+/* ── DHT lifecycle (dht/nodus_dht.h) ─────────────────────────────── */
+
+int nodus_dht_init(nodus_dht_t *dht, const nodus_dht_host_t *host) {
+    if (!dht || !host) return -1;
+    memset(dht, 0, sizeof(*dht));
+    dht->host = *host;
+
+    /* Phase 3.2e FIX: bf_state.batches[].forwards[].fd starts at 0 from
+     * memset above, but 0 is a VALID stdio fd (stdin). Cleanup paths use
+     * fd >= 0 as "active" check, so uninitialized forwards trigger
+     * close(0) and stomp stdin. Initialize all forward fds to -1. */
+    for (int bi = 0; bi < NODUS_BF_MAX_BATCHES; bi++) {
+        for (int fi = 0; fi < NODUS_BF_MAX_FORWARDS; fi++) {
+            dht->bf_state.batches[bi].forwards[fi].fd = -1;
+        }
+    }
+
+    /* Jitter republish start to avoid thundering herd across cluster.
+     * Each node delays its first republish cycle by a random offset
+     * (0 to REPUBLISH_SEC), spreading replication traffic over time. */
+    {
+        uint64_t now = nodus_time_now();
+        uint32_t jitter_seed;
+        nodus_random((uint8_t *)&jitter_seed, sizeof(jitter_seed));
+        uint64_t value_jitter = jitter_seed % NODUS_REPUBLISH_SEC;
+        uint64_t media_jitter = (jitter_seed >> 16) % NODUS_MEDIA_REPUBLISH_SEC;
+        dht->republish.cycle_start = now - NODUS_REPUBLISH_SEC + value_jitter;
+        /* Stagger media 60s after value cycle to avoid wbuf contention */
+        dht->media_republish.cycle_start = now - NODUS_MEDIA_REPUBLISH_SEC + media_jitter + 60;
+    }
+
+    /* Iterative Kademlia lookup engine — no epoll/fd state.
+     * All active lookups live in dht->lookup_state (already zeroed by memset). */
+    dht->lookup_state.next_txn = 1;
+
+    /* Create batch forward epoll fd */
+    dht->bf_state.bf_epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+    if (dht->bf_state.bf_epoll_fd < 0) {
+        fprintf(stderr, "Failed to create BF epoll fd\n");
+        return -1;
+    }
+    for (int i = 0; i < NODUS_BF_FD_TABLE_SIZE; i++) {
+        dht->bf_fd_table[i].batch_idx = -1;
+        dht->bf_fd_table[i].forward_idx = -1;
+    }
+    return 0;
+}
+
+int nodus_dht_open(nodus_dht_t *dht, const char *data_path,
+                   const char *self_ip, uint16_t self_peer_port) {
+    if (!dht || !data_path || !self_ip) return -1;
+
+    /* Open DHT storage */
+    char db_path[512];
+    snprintf(db_path, sizeof(db_path), "%s/nodus.db",
+             data_path[0] ? data_path : "/tmp");
+    if (nodus_storage_open(db_path, &dht->storage) != 0) {
+        fprintf(stderr, "Failed to open storage: %s\n", db_path);
+        return -1;
+    }
+    dht->storage_open = true;
+
+    /* Open media storage (shares same DB handle) */
+    if (nodus_media_storage_open(dht->storage.db, &dht->media_storage) != 0) {
+        fprintf(stderr, "Failed to open media storage\n");
+        return -1;
+    }
+    dht->media_open = true;
+
+    /* Open channel storage */
+    char ch_db_path[512];
+    snprintf(ch_db_path, sizeof(ch_db_path), "%s/channels.db",
+             data_path[0] ? data_path : "/tmp");
+    if (nodus_channel_store_open(ch_db_path, &dht->ch_store) != 0) {
+        fprintf(stderr, "Failed to open channel store: %s\n", ch_db_path);
+        return -1;
+    }
+    dht->ch_open = true;
+
+    /* Register default channels (idempotent) */
+    nodus_channel_store_register_defaults(&dht->ch_store);
+
+    /* Init routing table */
+    nodus_routing_init(&dht->routing, &dht->host.identity->node_id);
+
+    /* Init hash ring (populated by Kademlia routing, NOT cluster peers) */
+    nodus_hashring_init(&dht->ring);
+
+    /* Add self to hash ring */
+    nodus_hashring_add(&dht->ring, &dht->host.identity->node_id,
+                        self_ip, self_peer_port);
+    return 0;
+}
+
+void nodus_dht_stop(nodus_dht_t *dht) {
+    if (!dht) return;
+
+    /* Clean up any active iterative lookups (free callback data) */
+    for (int i = 0; i < NODUS_LOOKUP_MAX_INFLIGHT; i++) {
+        iterative_lookup_t *l = &dht->lookup_state.lookups[i];
+        if (!l->active) continue;
+        if (l->cb_data && l->cb_data_free) l->cb_data_free(l->cb_data);
+        l->cb_data = NULL;
+        l->cb_data_free = NULL;
+        l->active = false;
+    }
+
+    /* Clean up batch forward state */
+    for (int i = 0; i < NODUS_BF_MAX_BATCHES; i++) {
+        if (dht->bf_state.batches[i].active)
+            bf_batch_cleanup(dht, &dht->bf_state.batches[i]);
+    }
+    if (dht->bf_state.bf_epoll_fd >= 0) {
+        close(dht->bf_state.bf_epoll_fd);
+        dht->bf_state.bf_epoll_fd = -1;
+    }
+}
+
+void nodus_dht_close(nodus_dht_t *dht) {
+    if (!dht) return;
+    if (dht->media_open) nodus_media_storage_close(&dht->media_storage);
+    if (dht->storage_open) nodus_storage_close(&dht->storage);
+    if (dht->ch_open) nodus_channel_store_close(&dht->ch_store);
+    dht->media_open = dht->storage_open = dht->ch_open = false;
+    if (dht->bf_state.bf_epoll_fd >= 0) {
+        close(dht->bf_state.bf_epoll_fd);
+        dht->bf_state.bf_epoll_fd = -1;
+    }
+}
+
 /* ── Tier 1 UDP handler (Kademlia routing) ───────────────────────── */
 
 static void handle_udp_message(const uint8_t *payload, size_t len,
@@ -6595,117 +7103,31 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
                        resp_buf, sizeof(resp_buf), &rlen);
         nodus_udp_send(&srv->udp, resp_buf, rlen, from_ip, from_port);
 
-        /* Update routing table (ping-before-evict if bucket full) */
-        nodus_peer_t peer;
-        memset(&peer, 0, sizeof(peer));
-        peer.node_id = msg.node_id;
-        strncpy(peer.ip, from_ip, sizeof(peer.ip) - 1);
-        peer.udp_port = from_port;
-        peer.tcp_port = from_port + 2;  /* Peer TCP = UDP + 2 */
-        peer.last_seen = nodus_time_now();
-        routing_insert_or_ping(srv, &peer);
-
-        /* A received PING proves the peer is alive (same as PONG).
-         * Cancel any pending eviction for this peer. */
-        eviction_on_pong(srv, &msg.node_id);
+        /* Update routing table (ping-before-evict if bucket full) and
+         * cancel any pending eviction for this peer — a received PING
+         * proves the peer is alive (same as PONG). The DHT's. */
+        srv->dht->ops->peer_seen(srv->dht, NODUS_DHT_PEER_PING, &msg.node_id,
+                                 from_ip, from_port,
+                                 from_port + 2 /* Peer TCP = UDP + 2 */);
         nodus_cluster_on_pong(&srv->cluster, &msg.node_id, from_ip, from_port);
 
     } else if (strcmp(msg.method, "pong") == 0) {
         /* Update routing table + cluster health (IP-aware for seed discovery) */
-        nodus_routing_touch(&srv->routing, &msg.node_id);
+        srv->dht->ops->peer_seen(srv->dht, NODUS_DHT_PEER_PONG_TOUCH, &msg.node_id,
+                                 from_ip, from_port, from_port + 2);
         nodus_cluster_on_pong(&srv->cluster, &msg.node_id, from_ip, from_port);
 
-        /* Cancel pending evictions for this peer (it responded) */
-        eviction_on_pong(srv, &msg.node_id);
+        /* Cancel pending evictions for this peer (it responded), and
+         * insert it into the routing table if new — the DHT's. */
+        srv->dht->ops->peer_seen(srv->dht, NODUS_DHT_PEER_PONG, &msg.node_id,
+                                 from_ip, from_port,
+                                 from_port + 2 /* Peer TCP = UDP + 2 */);
 
-        /* Also insert into routing table if new */
-        nodus_peer_t rpeer;
-        memset(&rpeer, 0, sizeof(rpeer));
-        rpeer.node_id = msg.node_id;
-        strncpy(rpeer.ip, from_ip, sizeof(rpeer.ip) - 1);
-        rpeer.udp_port = from_port;
-        rpeer.tcp_port = from_port + 2;  /* Peer TCP = UDP + 2 */
-        rpeer.last_seen = nodus_time_now();
-        routing_insert_or_ping(srv, &rpeer);
-
-    } else if (strcmp(msg.method, "fn") == 0) {
-        /* FIND_NODE: rate-limit to mitigate UDP amplification (HIGH-9) */
-        if (udp_rate_check(from_ip) != 0) {
-            nodus_t1_msg_free(&msg);
-            return;
-        }
-        /* FIND_NODE: return k closest nodes */
-        nodus_peer_t results[NODUS_K];
-        int found = nodus_routing_find_closest(&srv->routing, &msg.target,
-                                                results, NODUS_K);
-        size_t rlen = 0;
-        nodus_t1_nodes_found(msg.txn_id, results, found,
-                              resp_buf, sizeof(resp_buf), &rlen);
-        nodus_udp_send(&srv->udp, resp_buf, rlen, from_ip, from_port);
-
-    } else if (strcmp(msg.method, "fn_r") == 0) {
-        /* NODES_FOUND: feed to iterative lookup engine FIRST (FIX-C3),
-         * then update routing table (existing behavior, kept). */
-        iterative_lookup_handle_response(srv, msg.txn_id, &msg,
-                                          from_ip, from_port);
-        for (int i = 0; i < msg.peer_count; i++) {
-            msg.peers[i].last_seen = nodus_time_now();
-            routing_insert_or_ping(srv, &msg.peers[i]);
-        }
-
-    } else if (strcmp(msg.method, "sv") == 0) {
-        /* STORE_VALUE: rate-limit to mitigate UDP abuse (H-05) */
-        if (udp_rate_check(from_ip) != 0) {
-            fprintf(stderr, "REPL_UDP: sv rate limited from %s:%d\n", from_ip, from_port);
-            nodus_t1_msg_free(&msg);
-            return;
-        }
-        /* STORE_VALUE: inter-node replication */
-        if (msg.value) {
-            if (nodus_value_verify(msg.value) == 0) {
-                if (nodus_storage_put_if_newer(&srv->storage, msg.value) == 0)
-                    notify_listeners(srv, &msg.value->key_hash, msg.value);
-            } else {
-                char kh[17];
-                for (int i = 0; i < 8; i++)
-                    snprintf(kh + i*2, sizeof(kh) - i*2, "%02x", msg.value->key_hash.bytes[i]);
-                kh[16] = '\0';
-                fprintf(stderr, "REPL_UDP: verify FAILED for key=%s... from %s:%d — value DROPPED\n",
-                        kh, from_ip, from_port);
-            }
-            /* Send ACK */
-            size_t rlen = 0;
-            nodus_t1_store_ack(msg.txn_id, resp_buf, sizeof(resp_buf), &rlen);
-            nodus_udp_send(&srv->udp, resp_buf, rlen, from_ip, from_port);
-        }
-
-    } else if (strcmp(msg.method, "fv") == 0) {
-        /* FIND_VALUE: rate-limit to mitigate UDP amplification (HIGH-9) */
-        if (udp_rate_check(from_ip) != 0) {
-            nodus_t1_msg_free(&msg);
-            return;
-        }
-        /* FIND_VALUE: respond with value or closest nodes */
-        nodus_value_t *val = NULL;
-        int rc = nodus_storage_get(&srv->storage, &msg.target, &val);
-        /* Storage fault → answered like a miss (closest nodes), logged —
-         * see the 4002 "fv" handler. */
-        if (rc == NODUS_STORAGE_RC_FAULT)
-            QGP_LOG_WARN(LOG_TAG, "UDP fv: storage read fault — answered as "
-                         "not-found with closest nodes");
-
-        size_t rlen = 0;
-        if (rc == 0 && val) {
-            nodus_t1_value_found(msg.txn_id, val, resp_buf, sizeof(resp_buf), &rlen);
-            nodus_value_free(val);
-        } else {
-            nodus_peer_t results[NODUS_K];
-            int found = nodus_routing_find_closest(&srv->routing, &msg.target,
-                                                    results, NODUS_K);
-            nodus_t1_value_not_found(msg.txn_id, results, found,
-                                      resp_buf, sizeof(resp_buf), &rlen);
-        }
-        nodus_udp_send(&srv->udp, resp_buf, rlen, from_ip, from_port);
+    } else if (strcmp(msg.method, "fn") == 0 || strcmp(msg.method, "fn_r") == 0 ||
+               strcmp(msg.method, "sv") == 0 || strcmp(msg.method, "fv") == 0) {
+        /* FIND_NODE, NODES_FOUND, STORE_VALUE, FIND_VALUE — the DHT's
+         * (nodus_dht_udp_request); its replies leave from this socket. */
+        srv->dht->ops->udp_frame(srv->dht, from_ip, from_port, payload, len, &msg);
     }
 
     nodus_t1_msg_free(&msg);
@@ -6721,6 +7143,18 @@ static void session_chain_closed(nodus_server_t *srv, nodus_tcp_conn_t *conn) {
         srv->chain->ops->session_closed(srv->chain, conn);
 }
 
+/* The DHT's shadow of a client session follows core's: opened where
+ * `sess->conn` is set, closed where the session is cleared. */
+static void session_dht_opened(nodus_server_t *srv, nodus_tcp_conn_t *conn) {
+    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_CLIENT, conn->slot };
+    srv->dht->ops->session_opened(srv->dht, o);
+}
+
+static void session_dht_closed(nodus_server_t *srv, nodus_tcp_conn_t *conn) {
+    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_CLIENT, conn->slot };
+    srv->dht->ops->session_closed(srv->dht, o);
+}
+
 static void on_tcp_accept(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_server_t *srv = (nodus_server_t *)ctx;
     nodus_session_t *sess = session_for_conn(srv, conn);
@@ -6728,6 +7162,7 @@ static void on_tcp_accept(nodus_tcp_conn_t *conn, void *ctx) {
         session_chain_closed(srv, conn);
         session_clear(sess);
         sess->conn = conn;
+        session_dht_opened(srv, conn);
     }
 }
 
@@ -6767,6 +7202,7 @@ static void on_tcp_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
         session_teardown_circuits(srv, sess);
         session_chain_closed(srv, conn);
         session_clear(sess);
+        session_dht_closed(srv, conn);
     }
 }
 
@@ -6805,12 +7241,14 @@ static int ch_dht_put_signed(const uint8_t *key_hash, size_t key_len,
     rc = nodus_value_sign(val, &srv->identity.sk);
     if (rc != 0) { nodus_value_free(val); return -1; }
 
-    /* Store locally */
-    rc = nodus_storage_put(&srv->storage, val);
+    /* Store locally (the channel server runs only with the in-process
+     * DHT) */
+    nodus_dht_t *dht = nodus_dht_backend_inproc_state(srv->dht);
+    rc = nodus_storage_put(&dht->storage, val);
     if (rc != 0) { nodus_value_free(val); return -1; }
 
     /* Replicate to K-closest peers */
-    nodus_server_replicate_value(srv, val);
+    nodus_dht_replicate_value(dht, val);
     nodus_value_free(val);
     return 0;
 }
@@ -6834,10 +7272,13 @@ static int ch_dht_put_signed(const uint8_t *key_hash, size_t key_len,
 #ifndef NODUS_CHANNELS_DISABLED
 static void ch_startup_rejoin(nodus_server_t *srv)
 {
+    /* The channel server runs only with the in-process DHT */
+    nodus_dht_t *dht = nodus_dht_backend_inproc_state(srv->dht);
+
     /* 1. List all channels in local store */
     uint8_t *uuids = NULL;
     size_t count = 0;
-    if (nodus_channel_store_list_all(&srv->ch_store, &uuids, &count) != 0 || count == 0) {
+    if (nodus_channel_store_list_all(&dht->ch_store, &uuids, &count) != 0 || count == 0) {
         fprintf(stderr, "CH_STARTUP: No existing channels in store, skipping rejoin\n");
         free(uuids);
         return;
@@ -6850,7 +7291,7 @@ static void ch_startup_rejoin(nodus_server_t *srv)
     for (size_t i = 0; i < count; i++) {
         const uint8_t *uuid = uuids + i * NODUS_UUID_BYTES;
         nodus_responsible_set_t rset;
-        if (nodus_hashring_responsible(&srv->ring, uuid, &rset) != 0)
+        if (nodus_hashring_responsible(&dht->ring, uuid, &rset) != 0)
             continue;
 
         bool self_responsible = false;
@@ -6865,10 +7306,10 @@ static void ch_startup_rejoin(nodus_server_t *srv)
             continue;
 
         /* Re-track this channel */
-        nodus_ch_ring_track(&srv->ch_ring, uuid, srv->ring.version);
+        nodus_ch_ring_track(&srv->ch_ring, uuid, dht->ring.version);
 
         /* Ensure table exists (idempotent) */
-        nodus_channel_create(&srv->ch_store, uuid, false, NULL, NULL, false);
+        nodus_channel_create(&dht->ch_store, uuid, false, NULL, NULL, false);
 
         tracked++;
     }
@@ -6884,7 +7325,7 @@ static void ch_startup_rejoin(nodus_server_t *srv)
         uint8_t buf[256];
         size_t len = 0;
         if (nodus_t2_ch_ring_rejoin(0, &srv->identity.node_id,
-                                     srv->ring.version,
+                                     dht->ring.version,
                                      buf, sizeof(buf), &len) == 0) {
             nodus_tcp_send(ns->conn, buf, len);
             fprintf(stderr, "CH_STARTUP: Sent ring_rejoin to %s:%u\n",
@@ -6901,7 +7342,7 @@ static void ch_startup_rejoin(nodus_server_t *srv)
             continue;
 
         nodus_responsible_set_t rset;
-        if (nodus_hashring_responsible(&srv->ring, uuid, &rset) != 0)
+        if (nodus_hashring_responsible(&dht->ring, uuid, &rset) != 0)
             continue;
 
         /* Find PRIMARY (first in responsible set that isn't us) */
@@ -7078,6 +7519,57 @@ void nodus_server_witness_host(nodus_server_t *srv, nodus_witness_host_t *out) {
     out->ctx = srv;
 }
 
+/* ── S4 DHT seam — the host this server gives its DHT ───────────── */
+
+/* HOT: a DHT reply / push to the session in `origin`'s slot — the
+ * connection the DHT handler wrote to before the seam (`sess->conn`). */
+static int server_dht_send_to_origin(void *ctx, nodus_dht_origin_t origin,
+                                     const uint8_t *frame, size_t len) {
+    nodus_server_t *srv = ctx;
+    if (!srv || origin.slot < 0) return -1;
+    if (origin.kind == NODUS_DHT_ORIGIN_CLIENT) {
+        if (origin.slot >= NODUS_MAX_SESSIONS) return -1;
+        return nodus_tcp_send(srv->sessions[origin.slot].conn, frame, len);
+    }
+    if (origin.slot >= NODUS_MAX_INTER_SESSIONS) return -1;
+    return nodus_tcp_send(srv->inter_sessions[origin.slot].conn, frame, len);
+}
+
+/* A T1 datagram from this node's UDP 4000 socket. */
+static int server_dht_udp_send(void *ctx, const uint8_t *payload, size_t len,
+                               const char *ip, uint16_t port) {
+    nodus_server_t *srv = ctx;
+    return nodus_udp_send(&srv->udp, payload, len, ip, port);
+}
+
+/* A pre-framed frame over the inter-node pool (dht_republish_send). */
+static int server_dht_inter_send(void *ctx, const char *ip, uint16_t port,
+                                 const nodus_key_t *expected_peer_id,
+                                 const uint8_t *frame, size_t flen) {
+    nodus_server_t *srv = ctx;
+    return dht_republish_send(srv, ip, port, expected_peer_id, frame, flen);
+}
+
+/* Hints only for a member of this node's cluster (item 9) seen less than
+ * NODUS_HINT_OFFLINE_SKIP_SEC ago — the test every hint writer made
+ * before the seam. */
+static bool server_dht_hint_wanted(void *ctx, const nodus_key_t *node_id) {
+    const nodus_server_t *srv = ctx;
+    if (!cluster_knows_peer(srv, node_id)) return false;
+    return nodus_cluster_peer_offline_secs(&srv->cluster, node_id) <
+           NODUS_HINT_OFFLINE_SKIP_SEC;
+}
+
+void nodus_server_dht_host(nodus_server_t *srv, nodus_dht_host_t *out) {
+    memset(out, 0, sizeof(*out));
+    out->identity       = &srv->identity;
+    out->ctx            = srv;
+    out->send_to_origin = server_dht_send_to_origin;
+    out->udp_send       = server_dht_udp_send;
+    out->inter_send     = server_dht_inter_send;
+    out->hint_wanted    = server_dht_hint_wanted;
+}
+
 /* Arm the partial-wipe gate: write NODUS_PARTIAL_WIPE_GENESIS_MARKER under
  * `data_path` (see "O16A — ARM THE PARTIAL-WIPE GATE" in nodus_server_init
  * for when this may run). Not fatal, but loud. */
@@ -7117,9 +7609,7 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
      * process holding TCP 15001 hostage after "server init failed". Flags
      * (not nodus_server_close) because close() on the zeroed structs of
      * never-initialized members would touch fd 0. */
-    bool have_bf = false, have_storage = false, have_media = false,
-         have_ch = false, have_tcp = false, have_udp = false,
-         have_inter = false;
+    bool have_tcp = false, have_udp = false, have_inter = false;
 #ifndef NODUS_CHANNELS_DISABLED
     bool have_chsrv = false;
 #endif
@@ -7152,44 +7642,18 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         }
     }
 
-    /* Phase 3.2e FIX: bf_state.batches[].forwards[].fd starts at 0 from
-     * memset above, but 0 is a VALID stdio fd (stdin). Cleanup paths use
-     * fd >= 0 as "active" check, so uninitialized forwards trigger
-     * close(0) and stomp stdin. Initialize all forward fds to -1. */
-    for (int bi = 0; bi < NODUS_BF_MAX_BATCHES; bi++) {
-        for (int fi = 0; fi < NODUS_BF_MAX_FORWARDS; fi++) {
-            srv->bf_state.batches[bi].forwards[fi].fd = -1;
-        }
-    }
-
-    /* Jitter republish start to avoid thundering herd across cluster.
-     * Each node delays its first republish cycle by a random offset
-     * (0 to REPUBLISH_SEC), spreading replication traffic over time. */
+    /* The DHT half, phase one (S4 seam, nodus_dht_init): batch-forward
+     * fds, republish jitter, lookup txn counter, batch-forward epoll —
+     * here, before the identity is loaded, as before the seam. Its host
+     * view points at srv->identity, which is filled just below. */
     {
-        uint64_t now = nodus_time_now();
-        uint32_t jitter_seed;
-        nodus_random((uint8_t *)&jitter_seed, sizeof(jitter_seed));
-        uint64_t value_jitter = jitter_seed % NODUS_REPUBLISH_SEC;
-        uint64_t media_jitter = (jitter_seed >> 16) % NODUS_MEDIA_REPUBLISH_SEC;
-        srv->republish.cycle_start = now - NODUS_REPUBLISH_SEC + value_jitter;
-        /* Stagger media 60s after value cycle to avoid wbuf contention */
-        srv->media_republish.cycle_start = now - NODUS_MEDIA_REPUBLISH_SEC + media_jitter + 60;
-    }
-
-    /* Iterative Kademlia lookup engine — no epoll/fd state.
-     * All active lookups live in srv->lookup_state (already zeroed by memset). */
-    srv->lookup_state.next_txn = 1;
-
-    /* Create batch forward epoll fd */
-    srv->bf_state.bf_epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-    if (srv->bf_state.bf_epoll_fd < 0) {
-        fprintf(stderr, "Failed to create BF epoll fd\n");
-        return -1;
-    }
-    have_bf = true;
-    for (int i = 0; i < NODUS_BF_FD_TABLE_SIZE; i++) {
-        srv->bf_fd_table[i].batch_idx = -1;
-        srv->bf_fd_table[i].forward_idx = -1;
+        nodus_dht_host_t dhost;
+        nodus_server_dht_host(srv, &dhost);
+        int drc = nodus_dht_backend_inproc_new(&dhost, &srv->dht);
+        if (drc == -2)
+            fprintf(stderr, "Failed to allocate DHT state\n");
+        if (drc != 0)
+            return -1;
     }
 
     /* Load or generate identity */
@@ -7204,47 +7668,14 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         nodus_identity_generate(&srv->identity);
     }
 
-    /* Open DHT storage */
-    char db_path[512];
-    snprintf(db_path, sizeof(db_path), "%s/nodus.db",
-             config->data_path[0] ? config->data_path : "/tmp");
-    if (nodus_storage_open(db_path, &srv->storage) != 0) {
-        fprintf(stderr, "Failed to open storage: %s\n", db_path);
-        goto fail;
-    }
-    have_storage = true;
-
-    /* Open media storage (shares same DB handle) */
-    if (nodus_media_storage_open(srv->storage.db, &srv->media_storage) != 0) {
-        fprintf(stderr, "Failed to open media storage\n");
-        goto fail;
-    }
-    have_media = true;
-
-    /* Open channel storage */
-    char ch_db_path[512];
-    snprintf(ch_db_path, sizeof(ch_db_path), "%s/channels.db",
-             config->data_path[0] ? config->data_path : "/tmp");
-    if (nodus_channel_store_open(ch_db_path, &srv->ch_store) != 0) {
-        fprintf(stderr, "Failed to open channel store: %s\n", ch_db_path);
-        goto fail;
-    }
-    have_ch = true;
-
-    /* Register default channels (idempotent) */
-    nodus_channel_store_register_defaults(&srv->ch_store);
-
-    /* Init routing table */
-    nodus_routing_init(&srv->routing, &srv->identity.node_id);
-
-    /* Init hash ring (populated by Kademlia routing, NOT cluster peers) */
-    nodus_hashring_init(&srv->ring);
-
-    /* Add self to hash ring */
+    /* The DHT half, phase two (nodus_dht_open): nodus.db (values + media),
+     * channels.db + default channels, the routing table, the hash ring
+     * with this node at its advertised address and peer port. */
     uint16_t self_peer_port = config->peer_port ? config->peer_port : NODUS_DEFAULT_PEER_PORT;
     const char *self_ip = config->external_ip[0] ? config->external_ip : config->bind_ip;
-    nodus_hashring_add(&srv->ring, &srv->identity.node_id,
-                        self_ip, self_peer_port);
+    if (nodus_dht_backend_inproc_open(srv->dht, config->data_path,
+                                      self_ip, self_peer_port) != 0)
+        goto fail;
 
     /* Init inter-node circuit table (VPN mesh Faz 1) */
     nodus_inter_circuit_table_init(&srv->inter_circuits);
@@ -7343,8 +7774,9 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         goto fail;
     have_chsrv = true;
 
-    srv->ch_server.ch_store = &srv->ch_store;
-    srv->ch_server.ring = &srv->ring;
+    /* The channel server shares the in-process DHT's channels.db and ring */
+    srv->ch_server.ch_store = &nodus_dht_backend_inproc_state(srv->dht)->ch_store;
+    srv->ch_server.ring = &nodus_dht_backend_inproc_state(srv->dht)->ring;
     srv->ch_server.identity = &srv->identity;
     const char *ch_self_ip = config->external_ip[0] ? config->external_ip : config->bind_ip;
     snprintf(srv->ch_server.self_ip, sizeof(srv->ch_server.self_ip), "%s", ch_self_ip);
@@ -7608,13 +8040,9 @@ fail:
     if (have_inter) nodus_tcp_close(&srv->inter_tcp);
     if (have_udp) nodus_udp_close(&srv->udp);
     if (have_tcp) nodus_tcp_close(&srv->tcp);
-    if (have_ch) nodus_channel_store_close(&srv->ch_store);
-    if (have_media) nodus_media_storage_close(&srv->media_storage);
-    if (have_storage) nodus_storage_close(&srv->storage);
-    if (have_bf) {
-        close(srv->bf_state.bf_epoll_fd);
-        srv->bf_state.bf_epoll_fd = -1;
-    }
+    /* The DHT's databases (those it opened) and its batch-forward epoll */
+    srv->dht->ops->close(srv->dht);
+    srv->dht = NULL;
     nodus_identity_clear(&srv->identity);
     return -1;
 }
@@ -7667,10 +8095,12 @@ int nodus_server_run(nodus_server_t *srv) {
          * up to 2 x 50 ms per budget. The chain backend's own transport
          * counts too (split S3: the IPC backend's Unix socket, polled
          * 0 ms from its tick); the in-process backend always answers
-         * false, so the combined binary's timings are unchanged. */
+         * false, so the combined binary's timings are unchanged. The DHT
+         * backend's likewise (S4: in-process, always false). */
         int poll_ms = (nodus_tcp_read_pending(&srv->tcp) ||
                        nodus_tcp_read_pending(&srv->inter_tcp) ||
                        nodus_udp_read_pending(&srv->udp) ||
+                       srv->dht->ops->read_pending(srv->dht) ||
                        (srv->chain &&
                         srv->chain->ops->read_pending(srv->chain))) ? 0 : 50;
 
@@ -7687,6 +8117,7 @@ int nodus_server_run(nodus_server_t *srv) {
         poll_ms = (nodus_tcp_read_pending(&srv->tcp) ||
                    nodus_tcp_read_pending(&srv->inter_tcp) ||
                    nodus_udp_read_pending(&srv->udp) ||
+                   srv->dht->ops->read_pending(srv->dht) ||
                    (srv->chain &&
                     srv->chain->ops->read_pending(srv->chain))) ? 0 : 50;
         nodus_tcp_poll(&srv->inter_tcp, poll_ms);
@@ -7705,8 +8136,8 @@ int nodus_server_run(nodus_server_t *srv) {
         /* Cluster: send heartbeats, check peer health */
         nodus_cluster_tick(&srv->cluster);
 
-        /* Ping-before-evict: evict LRU peers that didn't respond */
-        eviction_sweep(srv);
+        /* Ping-before-evict: evict LRU peers that didn't respond (DHT) */
+        srv->dht->ops->evict_tick(srv->dht);
 
         /* CRIT-4: Disconnect idle TCP connections */
         idle_timeout_sweep(srv);
@@ -7740,7 +8171,8 @@ int nodus_server_run(nodus_server_t *srv) {
 
             /* One-shot channel startup rejoin: scan channels.db, re-track,
              * send ring_rejoin to peers once hashring has ≥2 members */
-            if (!srv->ch_startup_done && srv->ring.count >= 2) {
+            if (!srv->ch_startup_done &&
+                nodus_dht_backend_inproc_state(srv->dht)->ring.count >= 2) {
                 srv->ch_startup_done = true;
                 ch_startup_rejoin(srv);
             }
@@ -7750,45 +8182,11 @@ int nodus_server_run(nodus_server_t *srv) {
         /* Presence: expire stale entries + broadcast local list to peers */
         nodus_presence_tick(srv);
 
-        /* Retry DHT hinted handoff (failed replication, every 30s) */
-        dht_hinted_retry(srv);
-
-        /* Listen-forward subscription cleanup (every 60s) */
-        {
-            uint64_t now_sec = nodus_time_now();
-            if (now_sec - srv->last_sub_cleanup > 60) {
-                subscription_cleanup_expired(&srv->subscriptions);
-                srv->last_sub_cleanup = now_sec;
-            }
-        }
-
-        /* Periodic subscription renewal (re-forward local LISTENs to K-closest).
-         * Rate-limited internally to NODUS_SUB_RENEWAL_PER_TICK per call. */
-        subscription_renew_tick(srv);
-
-        /* Iterative Kademlia FIND_NODE lookup engine tick */
-        iterative_lookup_tick(srv);
-
-        /* Batch forward async tick */
-        bf_tick(srv);
-
-        /* Kademlia bucket refresh (every 15 min) */
-        dht_bucket_refresh(srv);
-
-        /* Storage cleanup — remove expired values (every 1 hour) */
-        dht_storage_cleanup(srv);
-
-        /* Periodic republish — send stored values to R-closest (every 1 hour) */
-        dht_republish(srv);
-
-        /* Periodic media republish — send stored media to R-closest (every 24 hours) */
-        dht_media_republish(srv);
-
-        /* WAL checkpoint — truncate WAL file (every 5 min) */
-        dht_wal_checkpoint(srv);
-
-        /* Incremental vacuum — reclaim freelist pages (every 24 hours) */
-        dht_incremental_vacuum(srv);
+        /* The DHT's periodic work (nodus_dht_tick): hinted-handoff retry,
+         * subscription cleanup + renewal, lookups, batch forward, bucket
+         * refresh, storage cleanup, republish, media republish, WAL
+         * checkpoint, incremental vacuum — in that order. */
+        srv->dht->ops->tick(srv->dht);
 
         /* Phase 1 visibility: per-peer send counter dump (every 5 min) */
         dht_send_stats_dump(srv);
@@ -7808,25 +8206,10 @@ void nodus_server_stop(nodus_server_t *srv) {
 void nodus_server_close(nodus_server_t *srv) {
     if (!srv) return;
 
-    /* Clean up any active iterative lookups (free callback data) */
-    for (int i = 0; i < NODUS_LOOKUP_MAX_INFLIGHT; i++) {
-        iterative_lookup_t *l = &srv->lookup_state.lookups[i];
-        if (!l->active) continue;
-        if (l->cb_data && l->cb_data_free) l->cb_data_free(l->cb_data);
-        l->cb_data = NULL;
-        l->cb_data_free = NULL;
-        l->active = false;
-    }
-
-    /* Clean up batch forward state */
-    for (int i = 0; i < NODUS_BF_MAX_BATCHES; i++) {
-        if (srv->bf_state.batches[i].active)
-            bf_batch_cleanup(srv, &srv->bf_state.batches[i]);
-    }
-    if (srv->bf_state.bf_epoll_fd >= 0) {
-        close(srv->bf_state.bf_epoll_fd);
-        srv->bf_state.bf_epoll_fd = -1;
-    }
+    /* The DHT's in-flight lookups (callback data freed) and batch
+     * forwards; NULL after a failed init (released there). */
+    if (srv->dht)
+        srv->dht->ops->stop(srv->dht);
 
     if (srv->chain) {
         srv->chain->ops->close(srv->chain);
@@ -7839,8 +8222,10 @@ void nodus_server_close(nodus_server_t *srv) {
     nodus_tcp_close(&srv->tcp);
     nodus_tcp_close(&srv->inter_tcp);
     nodus_udp_close(&srv->udp);
-    nodus_media_storage_close(&srv->media_storage);
-    nodus_storage_close(&srv->storage);
-    nodus_channel_store_close(&srv->ch_store);
+    /* The DHT's databases (media, values, channels) */
+    if (srv->dht) {
+        srv->dht->ops->close(srv->dht);
+        srv->dht = NULL;
+    }
     nodus_identity_clear(&srv->identity);
 }

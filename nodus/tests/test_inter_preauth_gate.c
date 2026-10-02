@@ -2,11 +2,12 @@
  * Nodus — DHT Package A F2 / F3: nothing on 4002 is processed before the
  * peer authenticated AND the session key exists.
  *
- * In-process: a calloc'd server with require_peer_auth, one inter session
- * on a fake (never-connected, fd -1) conn, frames fed to
- * nodus_server_dispatch_inter_frame (nodus_server.h internal section). The
- * observable is a T1 "sub" (SUBSCRIBE_FWD): when processed it adds an
- * entry to srv->subscriptions, and it sends nothing.
+ * In-process: a calloc'd server with require_peer_auth and the in-process
+ * DHT attached (split S4), one inter session on a fake (never-connected,
+ * fd -1, slot 0) conn, frames fed to nodus_server_dispatch_inter_frame
+ * (nodus_server.h internal section). The observable is a T1 "sub"
+ * (SUBSCRIBE_FWD): when processed it adds an entry to the DHT's
+ * subscriptions, and it sends nothing.
  *
  * Pins down:
  *   1. F2: a frame that the T2 decoder REFUSES but the T1 decoder accepts
@@ -48,24 +49,37 @@ static uint8_t frame[4096];
 static nodus_server_t *new_server(bool has_kyber) {
     nodus_server_t *srv = calloc(1, sizeof(*srv));
     if (!srv) return NULL;
+    nodus_dht_host_t host;
+    nodus_server_dht_host(srv, &host);
+    if (nodus_dht_backend_inproc_new(&host, &srv->dht) != 0) {
+        free(srv);
+        return NULL;
+    }
     srv->config.require_peer_auth = true;
     srv->identity.has_kyber = has_kyber;
     nodus_inter_circuit_table_init(&srv->inter_circuits);
     return srv;
 }
 
+static void free_server(nodus_server_t *srv) {
+    if (!srv) return;
+    srv->dht->ops->close(srv->dht);
+    free(srv);
+}
+
 static void reset_conn(void) {
     memset(&conn, 0, sizeof(conn));
     conn.fd = -1;
-    conn.slot = -1;
+    conn.slot = 0;              /* the DHT origin of this 4002 session */
     snprintf(conn.ip, sizeof(conn.ip), "%s", "10.9.9.9");
     conn.port = 4002;
 }
 
-static int active_subs(const nodus_server_t *srv) {
+static int active_subs(nodus_server_t *srv) {
+    const nodus_dht_t *dht = nodus_dht_backend_inproc_state(srv->dht);
     int n = 0;
-    for (int i = 0; i < srv->subscriptions.count; i++)
-        if (srv->subscriptions.entries[i].active) n++;
+    for (int i = 0; i < dht->subscriptions.count; i++)
+        if (dht->subscriptions.entries[i].active) n++;
     return n;
 }
 
@@ -120,7 +134,7 @@ static void test_f2_unauth_t1_dropped(void) {
     CHECK(active_subs(srv) == 1, "authenticated T1 sub was not processed");
     PASS();
 out:
-    free(srv);
+    free_server(srv);
 }
 
 static void test_f3_before_session_key(void) {
@@ -153,7 +167,7 @@ static void test_f3_before_session_key(void) {
     CHECK(active_subs(srv) == 1, "sub not processed after the session key existed");
     PASS();
 out:
-    free(srv);
+    free_server(srv);
 }
 
 /* Rev 2 item 17: the F3 gate also holds for T2 methods, not only T1 "sub":
@@ -196,7 +210,7 @@ static void test_f3_t2_method_before_session_key(void) {
           "ri_close not processed after the session key existed");
     PASS();
 out:
-    free(srv);
+    free_server(srv);
 }
 
 int main(void) {

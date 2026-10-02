@@ -10,7 +10,6 @@
 #include "server/nodus_presence.h"
 #include "server/nodus_server.h"
 #include "protocol/nodus_tier2.h"
-#include "core/nodus_routing.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -232,17 +231,15 @@ void nodus_presence_tick(struct nodus_server *srv) {
                                  sync_buf, sizeof(sync_buf), &sync_len) != 0)
         return;
 
-    /* HIGH-4: Heap-allocate peer array to avoid ~576KB stack allocation */
-    nodus_peer_t *peers = malloc(sizeof(nodus_peer_t) * PRESENCE_MAX_PEERS);
+    /* HIGH-4: Heap-allocate peer array to avoid a large stack allocation.
+     * The routing table is the DHT's (split S4): its peer addresses — the
+     * active entries in bucket order, as read here before the seam — come
+     * through the DHT backend, read at this very moment (in-process). */
+    nodus_dht_peer_addr_t *peers = malloc(sizeof(nodus_dht_peer_addr_t) *
+                                          PRESENCE_MAX_PEERS);
     if (!peers) return;
-    int peer_count = 0;
-    for (int b = 0; b < NODUS_BUCKETS && peer_count < PRESENCE_MAX_PEERS; b++) {
-        const nodus_bucket_t *bkt = &srv->routing.buckets[b];
-        for (int e = 0; e < bkt->count && peer_count < PRESENCE_MAX_PEERS; e++) {
-            if (bkt->entries[e].active)
-                peers[peer_count++] = bkt->entries[e].peer;
-        }
-    }
+    int peer_count = srv->dht->ops->routing_snapshot(srv->dht, peers,
+                                                     PRESENCE_MAX_PEERS);
 
     /* Send to all peers in routing table using persistent connections.
      * Non-blocking connect: data is buffered in write buffer and flushed
@@ -253,7 +250,7 @@ void nodus_presence_tick(struct nodus_server *srv) {
      * nodus_tcp_send gates messages until auth completes (AUTH_OK). */
     int sent = 0;
     for (int i = 0; i < peer_count; i++) {
-        nodus_peer_t *peer = &peers[i];
+        nodus_dht_peer_addr_t *peer = &peers[i];
         if (peer->tcp_port == 0) continue;
 
         nodus_tcp_conn_t *pconn = nodus_tcp_find_by_addr(

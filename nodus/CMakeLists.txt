@@ -539,6 +539,10 @@ if(NOT WIN32)
         src/server/nodus_media_handler.c
         src/server/nodus_auth.c
         src/server/nodus_presence.c
+        # Split S4 (decision 2026-10-01-nodus-component-split.md): the
+        # server's one door to its DHT / storage half, in-process
+        # implementation (server/nodus_dht_backend.h).
+        src/server/nodus_dht_backend_inproc.c
         # Split S1 (decision 2026-10-01-nodus-component-split.md): the
         # server's one door to the witness, in-process implementation.
         src/server/nodus_chain_backend_inproc.c
