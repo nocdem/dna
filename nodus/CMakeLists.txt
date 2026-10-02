@@ -1309,6 +1309,21 @@ add_executable(test_witness_ipc tests/test_witness_ipc.c)
 target_link_libraries(test_witness_ipc nodus dsa nodus)
 add_test(NAME test_witness_ipc COMMAND test_witness_ipc)
 
+# Component split S5b: the DHT IPC (dht/nodus_dht_ipc.c, the nodus-storage
+# runtime, with a real DHT in a mkdtemp dir) against the core's IPC DHT
+# backend (server/nodus_dht_backend_ipc.c) over a real storage.sock —
+# routing / membership snapshots, preface fp+pk / fp+ip, replies and
+# cross-origin pushes addressed by generation, UDP relay and peer-event
+# order, decision 32 (storage closes an origin → core ends that session),
+# deterministic slot-reuse reorder with held connections, decision 31
+# (control down → the error at once, no dial), both queue bounds, full
+# snapshot re-push on reconnect, origin generation over sockets, and the
+# storage_external partial-wipe marker rule. One loopback listener on an
+# ephemeral port; no fixed port.
+add_executable(test_dht_ipc tests/test_dht_ipc.c)
+target_link_libraries(test_dht_ipc nodus dsa nodus)
+add_test(NAME test_dht_ipc COMMAND test_dht_ipc)
+
 # 2026-07-21 parallel-safety: every server-spawning test now uses a FULLY
 # explicit, test-unique port set (test_server 140xx, test_circuit_live
 # 150xx, test_client 151xx, test_server_init_fail_closes 152xx,
