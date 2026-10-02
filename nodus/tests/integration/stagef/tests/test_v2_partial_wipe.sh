@@ -28,10 +28,11 @@
 #   everything and rejoin on the genesis pin.
 #
 # R3 W3 (C2d) — THE GATE ITSELF DID NOT MOVE
-#   `nodus_server_check_partial_wipe` (nodus_server.c:5700-5796) and the
-#   marker write after a successful open
-#   (nodus_server.c:6233-6252, gated only on `srv->witness &&
-#   srv->witness->db`) are lane-agnostic: file presence and an open chain
+#   `nodus_server_check_partial_wipe` (nodus_server.c) and the
+#   marker write after a successful open (nodus_server.c, gated only on
+#   `srv->chain && srv->chain->ops->chain_open(srv->chain)` since split
+#   S1 — the in-process backend's chain_open is `w->db != NULL`,
+#   nodus_chain_backend_inproc.c) are lane-agnostic: file presence and an open chain
 #   handle, nothing about which consensus runs on it. Read for this
 #   package and confirmed unchanged — this scenario's core mechanism
 #   needed NO rewrite. What changed is the RESTORE step below: it is
