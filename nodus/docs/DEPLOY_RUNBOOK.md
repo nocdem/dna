@@ -392,6 +392,25 @@ vote only in `cs.wal`. Therefore:
 
 ## 2.2 Height-activated parameter (hard fork) — the HF-1 gas price procedure
 
+### Live hard forks — testnet chain `a48d1a785500a1cd…` (genesis 2026-09-30)
+
+The chain's own record is `chain_config_history` (one row per vote; the row is the same
+on every node). Read it on any node:
+`sqlite3 /var/lib/nodus/data/witness_*.db "SELECT param_id,new_value,effective_block,commit_block,hex(tx_hash) FROM chain_config_history ORDER BY param_id;"`.
+**Add a row here in the same push as every new vote**, read back from 7/7.
+
+| Fork | Rule from the effective height | Param | Value | Voted in block | Effective block | Binary that introduced it | tx_hash (first 8 bytes) |
+|---|---|---|---|---|---|---|---|
+| HF-1 | gas price: an envelope with a non-SYSTEM leg pays `max(units × price, floor)` | 5 `GAS_PRICE_RAW_PER_UNIT` | 121 | genesis document (0) | 0 | 0.19.80 | `DE43BDFAD6600BF5` |
+| HF-2 | governance approvals weighed by voting power (> 2/3); a touched domain that nets to zero applies | 7 `HF2_ACTIVE` | 1 | 724 | 1500 | 0.23.2 | `477E05BD7C62EE4A` |
+| HF-3 | block bounded by cometbft's limits only (no 2 MiB / 2 097 152-unit bound); ProcessProposal checks gas price, committed replay, units ≤ INT64_MAX | 8 `HF3_ACTIVE` | 1 | 2206 | 2926 | 0.23.9 | `4CE838897C4F853B` |
+
+Read 2026-10-02: the HF-3 row on 7/7 (identical; proposed from EU-5, 7/7 approvals); the
+HF-1 and HF-2 rows on EU-5 (the HF-2 row was read on 7/7 when it was voted, 2026-09-30). A node that was not on the introducing binary when a vote committed
+diverges at that block — recovery at the end of this section.
+
+### Procedure
+
 Decisions: `docs/plans/decisions/2026-09-25-gas-price.md`,
 `docs/plans/decisions/2026-09-26-hard-fork-lagging-node.md`. Mechanism:
 `ARCHITECTURE.md` "HF-1". Proven on localhost only, at grace 15/15
