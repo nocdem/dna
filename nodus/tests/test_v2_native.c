@@ -280,8 +280,8 @@ static int db_state_digest(nodus_witness_t *w, uint8_t out[64]) {
         const char *name = (const char *)sqlite3_column_text(ts, 0);
         if (dyn_put(&d, name, strlen(name) + 1) != 0) goto done;
         char sql[256];
-        snprintf(sql, sizeof(sql), "SELECT * FROM \"%s\" ORDER BY rowid",
-                 name);
+        if (v2x_digest_select_sql(w->db, name, sql, sizeof(sql)) != 0)
+            goto done;
         sqlite3_stmt *rs = NULL;
         if (sqlite3_prepare_v2(w->db, sql, -1, &rs, NULL) != SQLITE_OK)
             goto done;
@@ -3148,8 +3148,8 @@ static int consensus_state_digest(nodus_witness_t *w, uint8_t out[64]) {
     int out_rc = -1;
     for (size_t t = 0; t < sizeof(tables) / sizeof(tables[0]); t++) {
         char sql[128];
-        snprintf(sql, sizeof(sql), "SELECT * FROM \"%s\" ORDER BY rowid",
-                 tables[t]);
+        if (v2x_digest_select_sql(w->db, tables[t], sql, sizeof(sql)) != 0)
+            goto done;
         sqlite3_stmt *rs = NULL;
         if (sqlite3_prepare_v2(w->db, sql, -1, &rs, NULL) != SQLITE_OK)
             goto done;
@@ -9029,7 +9029,8 @@ static int test_undelegate_release_lock(void) {
 static int table_digest(nodus_witness_t *w, const char *name,
                         uint8_t out[64]) {
     char sql[192];
-    snprintf(sql, sizeof(sql), "SELECT * FROM \"%s\" ORDER BY rowid", name);
+    if (v2x_digest_select_sql(w->db, name, sql, sizeof(sql)) != 0)
+        return -1;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK)
         return -1;

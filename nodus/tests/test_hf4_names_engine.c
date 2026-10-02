@@ -67,12 +67,10 @@
  *    proves the engine's answer is a function of (state, block bytes), not
  *    a 7-machine run. The Genesis Protocol harness is the latter.
  *  - Refusals are asserted by item code and by the v2_names / root
- *    observations, NOT by a whole-database digest: the shared digest
- *    helpers (v2_genesis_fixture.h v2x_db_digest / v2x_ledger_digest)
- *    read every table "ORDER BY rowid", which a WITHOUT ROWID table
- *    (v2_names, as the design requires) does not have — they fail on
- *    every chain DB until they are taught that shape (reported in the A2
- *    hand-off). For the same reason no FAULT case is driven here.
+ *    observations, NOT by a whole-database digest (v2x_db_digest /
+ *    v2x_ledger_digest — which order a WITHOUT ROWID table such as
+ *    v2_names by its primary key, v2x_digest_select_sql). No FAULT case
+ *    is driven here.
  *  - The generation-1 attempt at block 2 asserts only "not applied"
  *    (whatever refusal class the gen-1 lane picks); the distinct CheckTx
  *    "generation not in force" code (nodus_witness_cmt_app.c) is NOT

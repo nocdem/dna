@@ -704,6 +704,75 @@ static int table_cols(sqlite3 *db, const char *table, char *out, size_t cap)
     return rc == SQLITE_DONE ? 0 : -1;
 }
 
+/* HF-4 (v2_names, design 2026-10-02-onchain-names rev 4 §2: WITHOUT
+ * ROWID) — the SELECT one whole-database digest reads ONE table with. A
+ * rowid table keeps "ORDER BY rowid" byte-for-byte (every existing digest
+ * of such a table is unchanged); a table whose stored DDL
+ * (sqlite_master.sql) declares WITHOUT ROWID — it has no rowid to order
+ * by — is ordered by its PRIMARY KEY columns in pk order
+ * (pragma_table_info). Detected from the DDL text (case-insensitive,
+ * any whitespace between the two words), never by trying the query. A
+ * WITHOUT ROWID table with no pk column, a lookup fault or a buffer too
+ * small FAILS (-1): the caller fails its digest, never skips the table.
+ * Identical text in every digest helper of nodus/tests (one shape).
+ * @return 0 / -1. */
+static inline int v2x_digest_select_sql(sqlite3 *db, const char *table,
+                                        char *sql, size_t cap) {
+    sqlite3_stmt *st = NULL;
+    int without = 0, rc, n;
+    size_t off;
+    if (!db || !table || !sql || cap == 0) return -1;
+    if (sqlite3_prepare_v2(db, "SELECT sql FROM sqlite_master WHERE "
+                           "type='table' AND name=?1", -1, &st, NULL)
+        != SQLITE_OK)
+        return -1;
+    sqlite3_bind_text(st, 1, table, -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(st);
+    if (rc == SQLITE_ROW) {
+        const char *d = (const char *)sqlite3_column_text(st, 0);
+        for (size_t i = 0; d && d[i] && !without; i++) {
+            static const char w1[] = "without", w2[] = "rowid";
+            size_t j = i, k = 0;
+            for (; w1[k] && d[j]; j++, k++)
+                if ((d[j] | 0x20) != w1[k]) break;
+            if (w1[k] != '\0') continue;
+            if (d[j] != ' ' && d[j] != '\t' && d[j] != '\n' && d[j] != '\r')
+                continue;
+            while (d[j] == ' ' || d[j] == '\t' || d[j] == '\n' ||
+                   d[j] == '\r')
+                j++;
+            for (k = 0; w2[k] && d[j]; j++, k++)
+                if ((d[j] | 0x20) != w2[k]) break;
+            if (w2[k] == '\0') without = 1;
+        }
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_ROW && rc != SQLITE_DONE) return -1;
+    if (!without) {
+        n = snprintf(sql, cap, "SELECT * FROM \"%s\" ORDER BY rowid", table);
+        return (n > 0 && (size_t)n < cap) ? 0 : -1;
+    }
+    n = snprintf(sql, cap, "SELECT * FROM \"%s\" ORDER BY ", table);
+    if (n <= 0 || (size_t)n >= cap) return -1;
+    off = (size_t)n;
+    if (sqlite3_prepare_v2(db, "SELECT name FROM pragma_table_info(?1) "
+                           "WHERE pk > 0 ORDER BY pk", -1, &st, NULL)
+        != SQLITE_OK)
+        return -1;
+    sqlite3_bind_text(st, 1, table, -1, SQLITE_TRANSIENT);
+    int cols = 0;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const char *c = (const char *)sqlite3_column_text(st, 0);
+        if (!c) break;
+        n = snprintf(sql + off, cap - off, "%s\"%s\"", cols ? ", " : "", c);
+        if (n <= 0 || (size_t)n >= cap - off) break;
+        off += (size_t)n;
+        cols++;
+    }
+    sqlite3_finalize(st);
+    return (rc == SQLITE_DONE && cols > 0) ? 0 : -1;
+}
+
 /* Whole-database digest: every table by name, every row by rowid, every
  * column's type+bytes — the same oracle test_v2_schema.c uses through
  * v2_genesis_fixture.h, reproduced here to keep this file's includes
@@ -746,7 +815,9 @@ static int db_digest(sqlite3 *db, uint8_t out[64])
             goto done;
         }
         DD_PUT(name, strlen(name) + 1);
-        snprintf(sql, sizeof(sql), "SELECT * FROM \"%s\" ORDER BY rowid", name);
+        if (v2x_digest_select_sql(db, name, sql, sizeof(sql)) != 0) {
+            goto done;
+        }
         if (sqlite3_prepare_v2(db, sql, -1, &rs, NULL) != SQLITE_OK) {
             goto done;
         }

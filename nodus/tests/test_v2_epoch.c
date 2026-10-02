@@ -237,8 +237,8 @@ static int db_state_digest(nodus_witness_t *w, uint8_t out[64]) {
         const char *name = (const char *)sqlite3_column_text(ts, 0);
         if (dyn_put(&d, name, strlen(name) + 1) != 0) goto done;
         char sql[256];
-        snprintf(sql, sizeof(sql), "SELECT * FROM \"%s\" ORDER BY rowid",
-                 name);
+        if (v2x_digest_select_sql(w->db, name, sql, sizeof(sql)) != 0)
+            goto done;
         sqlite3_stmt *rs = NULL;
         if (sqlite3_prepare_v2(w->db, sql, -1, &rs, NULL) != SQLITE_OK)
             goto done;
