@@ -934,6 +934,18 @@ Decision: `docs/plans/decisions/2026-09-25-web-wallet-solana-kit.md` (operator,
   all JavaScript chunks 1,477,466 → 1,315,743 bytes. The default build's app
   chunk is 1,254,356 bytes.
 
+## Release build always includes Ixios (0.1.44)
+
+The 0.1.43 release was built without `VITE_ENABLE_IXIOS=true`, so neither the
+wallet nor Connect shipped any Ixios code (the flag is read only at
+`src/app.js` — `import.meta.env.VITE_ENABLE_IXIOS === 'true'` — and nothing in
+the tree set it; it depended on the builder's shell). Decision
+`2026-09-23-ixios-send-mainnet-first.md` keeps Ixios visible in the live build.
+0.1.44 pins the flag in `package.json`: `npm run build` and
+`npm run build:connect` now always build with `VITE_ENABLE_IXIOS=true`.
+No code change. The Ixios row still shows "Balance unavailable" until the
+Ixios RPC stops sending `Access-Control-Allow-Origin` twice (their server).
+
 ## HF-4 client: rule-set generation, expiry cap, chain names (0.1.43)
 
 Design `docs/plans/2026-10-02-onchain-names-design.md` rev 4 §1.6, §2

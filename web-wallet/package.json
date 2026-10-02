@@ -1,15 +1,15 @@
 {
   "name": "nodus-web-wallet",
-  "version": "0.1.43",
+  "version": "0.1.44",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "vite build",
+    "build": "VITE_ENABLE_IXIOS=true vite build",
     "preview": "vite preview --host 127.0.0.1",
     "build:preview": "vite build --config vite.preview.config.js",
     "preview:preview": "vite preview --config vite.preview.config.js --host 127.0.0.1",
-    "build:connect": "vite build --config vite.connect.config.js",
+    "build:connect": "VITE_ENABLE_IXIOS=true vite build --config vite.connect.config.js",
     "preview:connect": "vite preview --config vite.connect.config.js --host 127.0.0.1",
     "test:connect": "node test/connect-smoke.js",
     "test": "node --test test/*.test.js",
