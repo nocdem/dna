@@ -11,7 +11,7 @@
  * view below (nodus_dht_host_t, DHT → core). Core reaches the DHT only
  * through server/nodus_dht_backend.h (core → DHT). Neither direction
  * hands over a pointer into the other side's state: a session is an
- * ORIGIN (a slot number), a peer is (node id, ip, ports), a frame is
+ * ORIGIN (a slot number + its generation), a peer is (node id, ip, ports), a frame is
  * bytes. Step S5 runs this half as the `nodus-storage` process by putting
  * an IPC implementation behind the same two doors.
  *
@@ -44,8 +44,9 @@ extern "C" {
 #endif
 
 /* Session slots: one per connection of the client transport (4001 +
- * WebSocket) and of the inter-node transport (4002). A slot number is the
- * ORIGIN of a request (nodus_dht_origin_t). */
+ * WebSocket) and of the inter-node transport (4002). A slot number and the
+ * generation of the session in it are the ORIGIN of a request
+ * (nodus_dht_origin_t). */
 #define NODUS_MAX_SESSIONS        NODUS_TCP_MAX_CONNS
 #define NODUS_MAX_INTER_SESSIONS  NODUS_TCP_MAX_CONNS
 #define NODUS_MAX_LISTEN_KEYS     128    /* Per session */
@@ -56,6 +57,40 @@ struct nodus_dht;   /* nodus_dht_t, below */
 
 #define NODUS_MAX_SUBSCRIPTIONS  4096
 #define NODUS_SUBSCRIPTION_TTL   900     /* 15 min — must be > 2x renewal interval */
+
+/* ── Origins ─────────────────────────────────────────────────────── */
+
+/** Which transport a request came in on. */
+typedef enum {
+    NODUS_DHT_ORIGIN_CLIENT = 0,   /**< client port 4001 / WebSocket entry */
+    NODUS_DHT_ORIGIN_INTER  = 1    /**< inter-node port 4002 */
+} nodus_dht_origin_kind_t;
+
+/**
+ * The origin of a request and the destination of its replies: the slot of
+ * that connection in its transport (core's session index) and the
+ * GENERATION of the session that held the slot. An opaque id, never a
+ * pointer into core.
+ *
+ * The generation is what tells two occupants of one slot apart. Core
+ * gives every session it opens (client accept, 4002 connect / accept) a
+ * fresh value from one server-wide counter that only increases (first
+ * live value 1; 0 = a cleared slot, or one no open ever reached) and
+ * hands it over in nodus_dht_session_opened. A reply the DHT sends LATER
+ * (a forwarded get / get_all / get_batch, an iterative lookup's
+ * completion) carries the origin recorded when the request came in: the
+ * DHT drops it unless the slot's shadow is open AND has that generation,
+ * and core's send_to_origin writes it only to a session of that same
+ * generation. A client accepted into a reused slot therefore never
+ * receives the previous client's deferred reply (nodus/BUGS.md, decision
+ * 2026-10-01-nodus-component-split.md item 29). A reply sent while the
+ * request is being handled carries the slot's current generation.
+ */
+typedef struct {
+    nodus_dht_origin_kind_t kind;
+    int                     slot;
+    uint64_t                gen;
+} nodus_dht_origin_t;
 
 typedef struct {
     bool            active;
@@ -110,7 +145,8 @@ typedef struct {
     bool                active;
     nodus_key_t         target_key;         /**< Key being looked up */
     uint32_t            client_txn_id;      /**< Client's T2 transaction ID */
-    int                 session_slot;       /**< Client session index (-1 internal) */
+    nodus_dht_origin_t  origin;             /**< Client session (slot + generation);
+                                             *   slot -1 = internal lookup */
     uint64_t            started_at;
 
     /* Kademlia iterative state */
@@ -316,7 +352,8 @@ typedef struct {
 typedef struct {
     bool            active;
     uint32_t        txn_id;          /**< Client's transaction ID */
-    int             session_slot;    /**< Client session index */
+    nodus_dht_origin_t origin;       /**< Client session (slot + generation) the
+                                      *   result goes to */
     uint64_t        started_at;
 
     /* All keys in the batch */
@@ -394,29 +431,7 @@ typedef struct {
     bool        has_current;         /**< current_meta is valid */
 } dht_media_republish_state_t;
 
-/* ── Origins, the host view, the session shadows ─────────────────── */
-
-/** Which transport a request came in on. */
-typedef enum {
-    NODUS_DHT_ORIGIN_CLIENT = 0,   /**< client port 4001 / WebSocket entry */
-    NODUS_DHT_ORIGIN_INTER  = 1    /**< inter-node port 4002 */
-} nodus_dht_origin_kind_t;
-
-/**
- * The origin of a request and the destination of its replies: the slot of
- * that connection in its transport (core's session index). An opaque id,
- * never a pointer into core.
- *
- * No generation, on purpose: a reply the DHT sends LATER (a forwarded get /
- * get_all / get_batch, the batch forward below) goes to whichever session
- * holds the slot when it is sent, exactly as before the split — the DHT
- * checks that the slot is open, as the server checked `sess->conn`. Split
- * S5 gives every origin its own socket, which closes with the session.
- */
-typedef struct {
-    nodus_dht_origin_kind_t kind;
-    int                     slot;
-} nodus_dht_origin_t;
+/* ── The host view, the session shadows ──────────────────────────── */
 
 /**
  * The DHT's view of core (DHT → core). Core fills it
@@ -433,8 +448,9 @@ typedef struct {
     void                   *ctx;
 
     /** HOT — write one encoded reply / push frame to the session in
-     *  `origin`'s slot (nodus_tcp_send). Returns that send's result (-1
-     *  when the slot holds no connection). */
+     *  `origin`'s slot (nodus_tcp_send) when that session has `origin`'s
+     *  generation. Returns that send's result (-1 when the slot holds no
+     *  connection, or a session of another generation — nothing sent). */
     int  (*send_to_origin)(void *ctx, nodus_dht_origin_t origin,
                            const uint8_t *frame, size_t len);
 
@@ -478,6 +494,8 @@ typedef struct {
  */
 typedef struct {
     bool                open;
+    uint64_t            gen;     /**< the open session's generation
+                                  *   (nodus_dht_origin_t); 0 when closed */
 
     /* LISTEN subscriptions (DHT keys) */
     nodus_key_t         listen_keys[NODUS_MAX_LISTEN_KEYS];
@@ -490,8 +508,10 @@ typedef struct {
 
 /** The DHT's shadow of one 4002 session: the per-session rate windows of
  *  the DHT methods (`sv` and `m_sv` share the sv window). Zeroed where
- *  core opens or clears that session. */
+ *  core opens or clears that session; `gen` is then the opened session's
+ *  generation (nodus_dht_origin_t; 0 when cleared). */
 typedef struct {
+    uint64_t            gen;
     uint64_t            sv_window_start;
     int                 sv_count;
     uint64_t            fv_window_start;
@@ -618,12 +638,14 @@ void nodus_dht_close(nodus_dht_t *dht);
  * does nothing. */
 
 /** COLD — core's session in `origin`'s slot got a connection (accept /
- *  dial) — the slot's shadow starts empty. */
+ *  dial) — the slot's shadow starts empty, with `origin.gen` as its
+ *  generation. */
 void nodus_dht_session_opened(nodus_dht_t *dht, nodus_dht_origin_t origin);
 
 /** COLD — core cleared the session in `origin`'s slot (disconnect) — the
- *  shadow is emptied (listen keys, rate windows). Lookups and batch
- *  forwards started for that slot notice on their next tick. */
+ *  shadow is emptied (listen keys, rate windows, generation), whatever
+ *  `origin.gen` says. Lookups and batch forwards started for that slot
+ *  notice on their next tick, or when they would reply. */
 void nodus_dht_session_closed(nodus_dht_t *dht, nodus_dht_origin_t origin);
 
 /**
@@ -700,10 +722,12 @@ void nodus_dht_tick(nodus_dht_t *dht);
 
 /* ── Inside the DHT (shared with the media handlers' TU) ─────────── */
 
-/** Send one encoded frame to (CLIENT, slot). */
+/** Send one encoded frame to (CLIENT, slot) while its request is being
+ *  handled: the slot's current generation. */
 static inline int nodus_dht_send_client(nodus_dht_t *dht, int slot,
                                         const uint8_t *frame, size_t len) {
-    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_CLIENT, slot };
+    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_CLIENT, slot,
+                             dht->sessions[slot].gen };
     return dht->host.send_to_origin(dht->host.ctx, o, frame, len);
 }
 
@@ -721,7 +745,8 @@ void nodus_dht_replicate_media_chunk(nodus_dht_t *dht,
  * INTERNAL — DHT Package A helpers. Exposed ONLY so unit tests can drive
  * them in-process (tests/test_bf_merge_pure.c, test_get_all_paging.c,
  * test_get_unavailable.c, test_bf_forward_frames.c,
- * test_bf_recv_frame.c). Not an API: no other module calls these.
+ * test_bf_recv_frame.c, test_origin_gen.c). Not an API: no other module
+ * calls these.
  * ════════════════════════════════════════════════════════════════════ */
 
 /** Primary-key order of nodus_values: owner_fp bytewise, then value_id
@@ -935,6 +960,13 @@ int nodus_dht_bf_frame_status(const uint8_t *buf, size_t len, size_t cap);
  *  sends exactly this frame. @return 0, -1 on encode failure. */
 int nodus_dht_bf_encode_result(dht_bf_batch_t *b, uint8_t *buf, size_t cap,
                                size_t *len_out);
+
+/** A batch forward is done (every forward answered, failed or timed out):
+ *  send its client the frame nodus_dht_bf_encode_result builds — only when
+ *  the slot of `b->origin` is still open with that origin's generation —
+ *  and free the batch (idle afterwards, either way). Item 29: tests/
+ *  test_origin_gen.c drives it. */
+void nodus_dht_bf_send_result(nodus_dht_t *dht, dht_bf_batch_t *b);
 
 #ifdef __cplusplus
 }

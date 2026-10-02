@@ -1054,6 +1054,12 @@ add_executable(test_get_unavailable tests/test_get_unavailable.c)
 target_link_libraries(test_get_unavailable nodus dsa kem nodus)
 add_test(NAME test_get_unavailable COMMAND test_get_unavailable)
 
+# Split item 29: a deferred DHT reply reaches only the session generation
+# that asked (DHT guard, core guard, both). In-process, no sockets, no store.
+add_executable(test_origin_gen tests/test_origin_gen.c)
+target_link_libraries(test_origin_gen nodus dsa kem nodus)
+add_test(NAME test_origin_gen COMMAND test_origin_gen)
+
 add_executable(test_inter_circuit_uaf tests/test_inter_circuit_uaf.c)
 target_link_libraries(test_inter_circuit_uaf nodus dsa kem nodus)
 add_test(NAME test_inter_circuit_uaf COMMAND test_inter_circuit_uaf)

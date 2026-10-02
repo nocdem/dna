@@ -65,17 +65,41 @@ static int dht_send_origin(nodus_dht_t *dht, nodus_dht_origin_t origin,
     return dht->host.send_to_origin(dht->host.ctx, origin, frame, len);
 }
 
+/* The origin of the client request now being handled: the slot and the
+ * generation of the session that holds it. A deferred reply records it. */
+static nodus_dht_origin_t dht_client_origin(const nodus_dht_t *dht, int slot) {
+    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_CLIENT, slot,
+                             dht->sessions[slot].gen };
+    return o;
+}
+
+/* Item 29: the session `origin` recorded is still the one in its slot —
+ * open, and of the same generation. A slot reused by another session
+ * (closed and opened again) fails this even though it is open. */
+static bool dht_origin_live(const nodus_dht_t *dht, nodus_dht_origin_t origin) {
+    if (origin.kind != NODUS_DHT_ORIGIN_CLIENT) return false;
+    if (origin.slot < 0 || origin.slot >= NODUS_MAX_SESSIONS) return false;
+    const nodus_dht_session_t *s = &dht->sessions[origin.slot];
+    return s->open && s->gen == origin.gen;
+}
+
+/* A reply while the request is being handled: the current session. */
 static int dht_send_client(nodus_dht_t *dht, int slot,
                            const uint8_t *frame, size_t len) {
-    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_CLIENT, slot };
-    return dht_send_origin(dht, o, frame, len);
+    return dht_send_origin(dht, dht_client_origin(dht, slot), frame, len);
 }
 
 static int dht_send_inter(nodus_dht_t *dht, int slot,
                           const uint8_t *frame, size_t len) {
-    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_INTER, slot };
+    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_INTER, slot,
+                             dht->inter_sessions[slot].gen };
     return dht_send_origin(dht, o, frame, len);
 }
+
+/* The origin of an internal lookup (no client waits for it). */
+static const nodus_dht_origin_t DHT_ORIGIN_INTERNAL = {
+    NODUS_DHT_ORIGIN_CLIENT, -1, 0
+};
 
 /* A T1 datagram from UDP 4000 (raw CBOR; the transport frames it). */
 static int dht_udp_send(nodus_dht_t *dht, const uint8_t *payload, size_t len,
@@ -103,7 +127,7 @@ static bool dht_hint_wanted(nodus_dht_t *dht, const nodus_key_t *node_id) {
  * discovery of true K-closest nodes. */
 static int iterative_lookup_start(nodus_dht_t *dht,
                                    const nodus_key_t *target,
-                                   int session_slot,
+                                   nodus_dht_origin_t origin,
                                    uint32_t client_txn_id,
                                    void (*on_complete)(struct nodus_dht *,
                                                        nodus_peer_t *, int,
@@ -362,7 +386,7 @@ static void subscription_renew_tick(nodus_dht_t *dht) {
         nodus_key_t *key_copy = malloc(sizeof(nodus_key_t));
         if (key_copy) {
             *key_copy = s->listen_keys[dht->sub_renewal.key_idx];
-            if (iterative_lookup_start(dht, key_copy, -1, 0,
+            if (iterative_lookup_start(dht, key_copy, DHT_ORIGIN_INTERNAL, 0,
                                         listen_fwd_complete, key_copy, free) != 0) {
                 /* No slots — fallback (synchronous) */
                 nodus_peer_t closest[NODUS_R];
@@ -618,7 +642,7 @@ void nodus_dht_replicate_value(nodus_dht_t *dht, const nodus_value_t *val) {
     QGP_LOG_DEBUG(LOG_TAG, "REPL: key=%s... vid=%llu iter_path known=%d",
                   rpl_kh, (unsigned long long)val->value_id, known);
 
-    if (iterative_lookup_start(dht, &val->key_hash, -1, 0,
+    if (iterative_lookup_start(dht, &val->key_hash, DHT_ORIGIN_INTERNAL, 0,
                                 put_replication_complete, ctx,
                                 put_repl_ctx_free) != 0) {
         /* No lookup slots — fallback to routing table fast path. */
@@ -745,7 +769,7 @@ void nodus_dht_replicate_media_chunk(nodus_dht_t *dht,
             "MEDIA-REPL-ITER: hash=%s chunk=%u routing=%d (large cluster)\n",
             mkh, chunk_index, known);
 
-    if (iterative_lookup_start(dht, &media_key, -1, 0,
+    if (iterative_lookup_start(dht, &media_key, DHT_ORIGIN_INTERNAL, 0,
                                 media_replication_complete, ctx,
                                 put_media_ctx_free) != 0) {
         /* No lookup slots — fallback to routing table fast path. */
@@ -1363,8 +1387,8 @@ static void handle_t2_put(nodus_dht_t *dht, int slot,
  * and always fit UDP.
  */
 
-/* Forward declarations — BF infrastructure is defined further down */
-static void bf_send_result(nodus_dht_t *dht, dht_bf_batch_t *b);
+/* Forward declarations — BF infrastructure is defined further down
+ * (nodus_dht_bf_send_result: nodus_dht.h) */
 static void bf_batch_cleanup(nodus_dht_t *dht, dht_bf_batch_t *b);
 static int bf_start_forward(nodus_dht_t *dht, dht_bf_batch_t *b,
                               int fi, const nodus_peer_t *peer,
@@ -1508,7 +1532,9 @@ static void lookup_send_round(nodus_dht_t *dht, iterative_lookup_t *l) {
  *     lookup is abandoned, cb_data leaks — always provide cb_data_free unless
  *     cb_data is stack-allocated or static.
  *
- * @param session_slot  Client session (-1 for internal/async operations)
+ * @param origin        Client session the lookup answers (slot + generation,
+ *                      recorded when its request came in);
+ *                      DHT_ORIGIN_INTERNAL (slot -1) for internal operations
  * @param client_txn_id Client's T2 txn ID (unused for internal lookups)
  * @param on_complete   Called when lookup converges (REQUIRED)
  * @param cb_data       Passed to on_complete
@@ -1518,7 +1544,7 @@ static void lookup_send_round(nodus_dht_t *dht, iterative_lookup_t *l) {
  */
 static int iterative_lookup_start(nodus_dht_t *dht,
                                    const nodus_key_t *target,
-                                   int session_slot,
+                                   nodus_dht_origin_t origin,
                                    uint32_t client_txn_id,
                                    void (*on_complete)(struct nodus_dht *,
                                                        nodus_peer_t *, int,
@@ -1536,7 +1562,7 @@ static int iterative_lookup_start(nodus_dht_t *dht,
     l->active = true;
     l->target_key = *target;
     l->client_txn_id = client_txn_id;
-    l->session_slot = session_slot;
+    l->origin = origin;
     l->started_at = nodus_time_now_ms();
     l->on_complete = on_complete;
     l->cb_data = cb_data;
@@ -1693,9 +1719,10 @@ static void iterative_lookup_tick(nodus_dht_t *dht) {
             continue;
         }
 
-        /* Client disconnect check */
-        if (l->session_slot >= 0) {
-            if (!dht->sessions[l->session_slot].open) {
+        /* Client disconnect check: the session that asked is gone (its
+         * slot closed, or reused by another session — item 29) */
+        if (l->origin.slot >= 0) {
+            if (!dht_origin_live(dht, l->origin)) {
                 if (l->cb_data && l->cb_data_free) l->cb_data_free(l->cb_data);
                 l->cb_data = NULL;
                 l->cb_data_free = NULL;
@@ -2425,14 +2452,15 @@ nodus_dht_read_outcome_t nodus_dht_read_outcome(size_t rows, int peers,
     return NODUS_DHT_READ_UNAVAILABLE;
 }
 
-/* S6: tell the client this node could not look (not "not found"). */
-static void dht_send_unavailable(nodus_dht_t *dht, int slot, uint32_t txn,
-                                 const char *why) {
-    if (!dht->sessions[slot].open) return;
+/* S6: tell the client this node could not look (not "not found"). Only to
+ * the session `origin` recorded (item 29). */
+static void dht_send_unavailable(nodus_dht_t *dht, nodus_dht_origin_t origin,
+                                 uint32_t txn, const char *why) {
+    if (!dht_origin_live(dht, origin)) return;
     size_t len = 0;
     if (nodus_t2_error(txn, NODUS_ERR_UNAVAILABLE, why,
                        resp_buf, sizeof(resp_buf), &len) == 0)
-        dht_send_client(dht, slot, resp_buf, len);
+        dht_send_origin(dht, origin, resp_buf, len);
 }
 
 static void dht_free_rows(nodus_value_t **vals, size_t count) {
@@ -2599,8 +2627,10 @@ out:
     return rc;
 }
 
-/* Encode with a heap buffer and send; UNAVAILABLE when even that fails. */
-static void dht_send_key_reply(nodus_dht_t *dht, int slot, dht_reply_kind_t kind,
+/* Encode with a heap buffer and send to the session `origin` recorded
+ * (item 29); UNAVAILABLE when even that fails. */
+static void dht_send_key_reply(nodus_dht_t *dht, nodus_dht_origin_t origin,
+                               dht_reply_kind_t kind,
                                uint32_t txn, nodus_dht_keyset_t *ks, bool has_own,
                                bool paged) {
     int verify_left = NODUS_DHT_VERIFY_CAP;
@@ -2608,12 +2638,13 @@ static void dht_send_key_reply(nodus_dht_t *dht, int slot, dht_reply_kind_t kind
     size_t len = 0;
     if (!buf) {
         nodus_dht_keyset_clear(ks);
-        dht_send_unavailable(dht, slot, txn, "reply alloc failed");
+        dht_send_unavailable(dht, origin, txn, "reply alloc failed");
         return;
     }
     if (dht_encode_key_reply(kind, txn, ks, has_own, paged, &verify_left,
-                             buf, RESP_BUF_SIZE, &len) == 0 && dht->sessions[slot].open)
-        dht_send_client(dht, slot, buf, len);
+                             buf, RESP_BUF_SIZE, &len) == 0 &&
+        dht_origin_live(dht, origin))
+        dht_send_origin(dht, origin, buf, len);
     free(buf);
 }
 
@@ -2625,7 +2656,7 @@ static void dht_send_key_reply(nodus_dht_t *dht, int slot, dht_reply_kind_t kind
  */
 typedef struct {
     uint32_t       txn_id;
-    int            session_slot;
+    nodus_dht_origin_t origin;  /* the asking session (slot + generation) */
     nodus_key_t    key;
     bool           has_own;     /* S2: "own" owner filter */
     nodus_key_t    own;
@@ -2651,8 +2682,8 @@ static void get_lookup_complete(nodus_dht_t *dht,
     get_lookup_ctx_t *ctx = (get_lookup_ctx_t *)user_data;
     if (!ctx) return;
 
-    /* Client disconnected */
-    if (!dht->sessions[ctx->session_slot].open) { get_lookup_ctx_free(ctx); return; }
+    /* Client disconnected (or its slot holds another session — item 29) */
+    if (!dht_origin_live(dht, ctx->origin)) { get_lookup_ctx_free(ctx); return; }
 
     /* Filter out self */
     int fwd_count = 0;
@@ -2688,7 +2719,7 @@ static void get_lookup_complete(nodus_dht_t *dht,
         if (ctx->local)
             (void)nodus_dht_keyset_add(&ks, &ctx->local, 1, &ctx->key, own, NULL,
                                        true, NULL);
-        dht_send_key_reply(dht, ctx->session_slot, DHT_REPLY_SINGLE, ctx->txn_id, &ks,
+        dht_send_key_reply(dht, ctx->origin, DHT_REPLY_SINGLE, ctx->txn_id, &ks,
                            ctx->has_own, false);
         get_lookup_ctx_free(ctx);
         return;
@@ -2699,7 +2730,7 @@ static void get_lookup_complete(nodus_dht_t *dht,
     b->has_own = ctx->has_own;
     b->own = ctx->own;
     b->txn_id = ctx->txn_id;
-    b->session_slot = ctx->session_slot;
+    b->origin = ctx->origin;
     b->started_at = nodus_time_now_ms();
     b->sets[0].peers = fwd_count;
     b->sets[0].local_fault = ctx->local_fault;
@@ -2719,7 +2750,7 @@ static void get_lookup_complete(nodus_dht_t *dht,
     /* Every forward failed to start → answer now from what is there (the
      * local row, or S6 UNAVAILABLE). Else bf_tick answers. */
     if (b->pending_forwards == 0)
-        bf_send_result(dht, b);
+        nodus_dht_bf_send_result(dht, b);
 
     get_lookup_ctx_free(ctx);
 }
@@ -2763,11 +2794,12 @@ static void handle_t2_get(nodus_dht_t *dht, int slot,
     if (!ctx) {
         /* S6: forward-context alloc failure — could not look */
         nodus_value_free(val);
-        dht_send_unavailable(dht, slot, msg->txn_id, "forward alloc failed");
+        dht_send_unavailable(dht, dht_client_origin(dht, slot), msg->txn_id,
+                             "forward alloc failed");
         return;
     }
     ctx->txn_id = msg->txn_id;
-    ctx->session_slot = slot;
+    ctx->origin = dht_client_origin(dht, slot);
     ctx->key = msg->key;
     ctx->has_own = msg->has_own;
     if (msg->has_own) ctx->own = msg->own_fp;
@@ -2786,7 +2818,7 @@ static void handle_t2_get(nodus_dht_t *dht, int slot,
 
     /* Large cluster: iterative FIND_NODE to discover true K-closest */
     if (iterative_lookup_start(dht, &msg->key,
-                                slot,
+                                ctx->origin,
                                 msg->txn_id,
                                 get_lookup_complete, ctx, get_lookup_ctx_free) != 0) {
         /* No lookup slots — fall back to routing table + BF */
@@ -2862,7 +2894,8 @@ static void handle_t2_get_all(nodus_dht_t *dht, int slot,
         if (arc != 0) {
             dht_free_rows(vals, count);
             nodus_dht_keyset_clear(&local);
-            dht_send_unavailable(dht, slot, msg->txn_id, "local alloc failed");
+            dht_send_unavailable(dht, dht_client_origin(dht, slot), msg->txn_id,
+                                 "local alloc failed");
             return;
         }
         if (paged)
@@ -2893,8 +2926,8 @@ static void handle_t2_get_all(nodus_dht_t *dht, int slot,
     if (fwd_count == 0) {
         fprintf(stderr, "GET_ALL: key=%s... local=%zu, no peers to forward\n",
                 ga_kh, count);
-        dht_send_key_reply(dht, slot, DHT_REPLY_GET_ALL, msg->txn_id, &local,
-                           own != NULL, paged);
+        dht_send_key_reply(dht, dht_client_origin(dht, slot), DHT_REPLY_GET_ALL,
+                           msg->txn_id, &local, own != NULL, paged);
         return;
     }
 
@@ -2918,8 +2951,8 @@ static void handle_t2_get_all(nodus_dht_t *dht, int slot,
     if (!b) {
         /* Could not forward. Local rows are still an answer; with none,
          * S6: could not look → UNAVAILABLE (peers > 0, none answered). */
-        dht_send_key_reply(dht, slot, DHT_REPLY_GET_ALL, msg->txn_id, &local,
-                           own != NULL, paged);
+        dht_send_key_reply(dht, dht_client_origin(dht, slot), DHT_REPLY_GET_ALL,
+                           msg->txn_id, &local, own != NULL, paged);
         return;
     }
     b->is_get_all = true;
@@ -2929,7 +2962,7 @@ static void handle_t2_get_all(nodus_dht_t *dht, int slot,
     b->has_after = (after != NULL);
     if (after) b->after = *after;
     b->txn_id = msg->txn_id;
-    b->session_slot = slot;
+    b->origin = dht_client_origin(dht, slot);
     b->started_at = nodus_time_now_ms();
     b->sets[0] = local;   /* ownership of the local candidates moves to the batch */
 
@@ -2952,7 +2985,7 @@ static void handle_t2_get_all(nodus_dht_t *dht, int slot,
 
     /* All forwards failed to start — answer from what we have: local rows,
      * or (S6, no source answered) UNAVAILABLE. */
-    bf_send_result(dht, b);
+    nodus_dht_bf_send_result(dht, b);
 }
 
 /* ── Batch Forward (BF) ─── get_batch miss → forward to closest peer ── */
@@ -3040,9 +3073,11 @@ int nodus_dht_bf_encode_result(dht_bf_batch_t *b, uint8_t *buf, size_t cap,
                                   &b->verify_left, buf, cap, len_out);
 }
 
-/** Send batch response to client and clean up */
-static void bf_send_result(nodus_dht_t *dht, dht_bf_batch_t *b) {
-    if (!dht->sessions[b->session_slot].open) { bf_batch_cleanup(dht, b); return; }
+/** Send batch response to client and clean up. Item 29: only to the session
+ *  the batch recorded — a slot closed, or reused by another session since
+ *  the request came in, gets nothing (the batch is freed all the same). */
+void nodus_dht_bf_send_result(nodus_dht_t *dht, dht_bf_batch_t *b) {
+    if (!dht_origin_live(dht, b->origin)) { bf_batch_cleanup(dht, b); return; }
 
     if (b->is_get_all && b->key_count == 1) {
         char bfkh[17];
@@ -3057,10 +3092,10 @@ static void bf_send_result(nodus_dht_t *dht, dht_bf_batch_t *b) {
     uint8_t *buf = malloc(RESP_BUF_SIZE);
     size_t len = 0;
     if (!buf) {
-        dht_send_unavailable(dht, b->session_slot, b->txn_id, "reply alloc failed");
+        dht_send_unavailable(dht, b->origin, b->txn_id, "reply alloc failed");
     } else {
         if (nodus_dht_bf_encode_result(b, buf, RESP_BUF_SIZE, &len) == 0)
-            dht_send_client(dht, b->session_slot, buf, len);
+            dht_send_origin(dht, b->origin, buf, len);
         free(buf);
     }
     bf_batch_cleanup(dht, b);
@@ -3216,7 +3251,7 @@ static void bf_switch_to_recv(nodus_dht_t *dht, dht_bf_conn_t *c) {
 /** Forward error → cleanup + check batch completion */
 static void bf_forward_fail(nodus_dht_t *dht, dht_bf_batch_t *b, dht_bf_conn_t *c) {
     bf_conn_cleanup(dht, c);
-    if (--b->pending_forwards <= 0) bf_send_result(dht, b);
+    if (--b->pending_forwards <= 0) nodus_dht_bf_send_result(dht, b);
 }
 
 /** Handle epoll events for batch forward fds — full auth state machine */
@@ -3524,7 +3559,7 @@ static void bf_handle_event(nodus_dht_t *dht, int fd, uint32_t events) {
             free(dec_buf);  /* NULL-safe */
         }
         bf_conn_cleanup(dht, c);
-        if (--b->pending_forwards <= 0) bf_send_result(dht, b);
+        if (--b->pending_forwards <= 0) nodus_dht_bf_send_result(dht, b);
     }
 }
 
@@ -3543,8 +3578,9 @@ static void bf_tick(nodus_dht_t *dht) {
         dht_bf_batch_t *b = &dht->bf_state.batches[bi];
         if (!b->active) continue;
 
-        /* Check client disconnect */
-        if (!dht->sessions[b->session_slot].open) { bf_batch_cleanup(dht, b); continue; }
+        /* Check client disconnect (or its slot reused by another session —
+         * item 29) */
+        if (!dht_origin_live(dht, b->origin)) { bf_batch_cleanup(dht, b); continue; }
 
         /* Overall batch timeout */
         if (now - b->started_at > NODUS_BF_TIMEOUT_MS) {
@@ -3561,7 +3597,7 @@ static void bf_tick(nodus_dht_t *dht) {
                     bf_conn_cleanup(dht, &b->forwards[fi]);
                 }
             }
-            bf_send_result(dht, b);
+            nodus_dht_bf_send_result(dht, b);
         }
     }
 }
@@ -3796,7 +3832,7 @@ static void handle_t2_get_batch(nodus_dht_t *dht, int slot,
 
         /* Set up batch context — the keysets move into the batch */
         b->txn_id = msg->txn_id;
-        b->session_slot = slot;
+        b->origin = dht_client_origin(dht, slot);
         b->started_at = nodus_time_now_ms();
         for (int i = 0; i < n; i++) b->sets[i] = sets[i];
         free(sets);
@@ -3823,7 +3859,7 @@ static void handle_t2_get_batch(nodus_dht_t *dht, int slot,
          * With none started, answer now from what is there (local rows;
          * the misses unanswered → "u" / UNAVAILABLE). */
         if (b->pending_forwards == 0)
-            bf_send_result(dht, b);
+            nodus_dht_bf_send_result(dht, b);
         return;
     }
 
@@ -3834,7 +3870,8 @@ send_response:
         size_t len = 0;
         if (!buf) {
             for (int i = 0; i < n; i++) nodus_dht_keyset_clear(&sets[i]);
-            dht_send_unavailable(dht, slot, msg->txn_id, "reply alloc failed");
+            dht_send_unavailable(dht, dht_client_origin(dht, slot), msg->txn_id,
+                                 "reply alloc failed");
         } else {
             if (dht_encode_batch_reply(msg->txn_id, msg->batch_keys, n, sets,
                                        &verify_left, buf, RESP_BUF_SIZE, &len) == 0)
@@ -3972,7 +4009,7 @@ static void handle_t2_listen(nodus_dht_t *dht, int slot,
     if (!key_copy) return;
     *key_copy = msg->key;
 
-    if (iterative_lookup_start(dht, &msg->key, -1, 0,
+    if (iterative_lookup_start(dht, &msg->key, DHT_ORIGIN_INTERNAL, 0,
                                 listen_fwd_complete, key_copy, free) != 0) {
         /* No lookup slots available — synchronous fallback via routing table */
         nodus_peer_t closest[NODUS_R];
@@ -4244,9 +4281,11 @@ void nodus_dht_session_opened(nodus_dht_t *dht, nodus_dht_origin_t origin) {
         if (origin.slot >= NODUS_MAX_SESSIONS) return;
         memset(&dht->sessions[origin.slot], 0, sizeof(dht->sessions[0]));
         dht->sessions[origin.slot].open = true;
+        dht->sessions[origin.slot].gen = origin.gen;
     } else {
         if (origin.slot >= NODUS_MAX_INTER_SESSIONS) return;
         memset(&dht->inter_sessions[origin.slot], 0, sizeof(dht->inter_sessions[0]));
+        dht->inter_sessions[origin.slot].gen = origin.gen;
     }
 }
 

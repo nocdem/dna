@@ -83,7 +83,10 @@ typedef struct {
     void (*peer_dead)(nodus_dht_backend_t *b, const nodus_key_t *node_id);
 
     /** COLD — core's session in `origin`'s slot got a connection / was
-     *  cleared. */
+     *  cleared. Opened: `origin.gen` is the new session's generation (fresh
+     *  from core's server-wide counter, decision item 29); the DHT records
+     *  it and every reply it sends later must carry it. Closed: the shadow
+     *  is cleared whatever `origin.gen` (the ended session's) says. */
     void (*session_opened)(nodus_dht_backend_t *b, nodus_dht_origin_t origin);
     void (*session_closed)(nodus_dht_backend_t *b, nodus_dht_origin_t origin);
 

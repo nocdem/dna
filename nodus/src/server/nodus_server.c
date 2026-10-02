@@ -1886,11 +1886,18 @@ void nodus_server_dispatch_inter_frame(nodus_server_t *srv,
 
 /* ── Inter-node TCP callbacks ───────────────────────────────────── */
 
+/* Item 29: a fresh generation for a session core opens (client accept,
+ * 4002 connect / accept). One server-wide counter; it only increases. */
+static uint64_t session_gen_next(nodus_server_t *srv) {
+    return ++srv->next_session_gen;
+}
+
 /* The DHT's shadow of a 4002 session (its rate windows) is reset wherever
- * core's session is (connect, accept, disconnect). */
+ * core's session is (connect, accept, disconnect). `gen`: the generation
+ * of the session opened, or of the one that ended. */
 static void inter_session_dht(nodus_server_t *srv, nodus_tcp_conn_t *conn,
-                              bool opened) {
-    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_INTER, conn->slot };
+                              uint64_t gen, bool opened) {
+    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_INTER, conn->slot, gen };
     if (opened)
         srv->dht->ops->session_opened(srv->dht, o);
     else
@@ -1907,7 +1914,8 @@ static void on_inter_connect(nodus_tcp_conn_t *conn, void *ctx) {
     if (sess) {
         inter_session_clear(sess, conn->slot, "on_inter_connect");
         sess->conn = conn;
-        inter_session_dht(srv, conn, true);
+        sess->dht_gen = session_gen_next(srv);
+        inter_session_dht(srv, conn, sess->dht_gen, true);
     }
 
     conn->is_nodus = true;
@@ -1939,7 +1947,8 @@ static void on_inter_accept(nodus_tcp_conn_t *conn, void *ctx) {
     if (sess) {
         inter_session_clear(sess, conn->slot, "on_inter_accept");
         sess->conn = conn;
-        inter_session_dht(srv, conn, true);
+        sess->dht_gen = session_gen_next(srv);
+        inter_session_dht(srv, conn, sess->dht_gen, true);
     }
     conn->is_nodus = true;
     conn->auth_required = srv->inter_tcp.auth_required;
@@ -2025,8 +2034,9 @@ void nodus_server_inter_disconnected(nodus_server_t *srv, nodus_tcp_conn_t *conn
     nodus_server_inter_conn_closed(srv, conn);
 
     if (sess) {
+        uint64_t gen = sess->dht_gen;
         inter_session_clear(sess, conn->slot, "on_inter_disconnect");
-        inter_session_dht(srv, conn, false);
+        inter_session_dht(srv, conn, gen, false);
     }
 }
 
@@ -2269,14 +2279,17 @@ static void session_chain_closed(nodus_server_t *srv, nodus_tcp_conn_t *conn) {
 }
 
 /* The DHT's shadow of a client session follows core's: opened where
- * `sess->conn` is set, closed where the session is cleared. */
-static void session_dht_opened(nodus_server_t *srv, nodus_tcp_conn_t *conn) {
-    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_CLIENT, conn->slot };
+ * `sess->conn` is set (with the session's fresh generation), closed where
+ * the session is cleared (`gen`: the generation of the one that ended). */
+static void session_dht_opened(nodus_server_t *srv, nodus_tcp_conn_t *conn,
+                               uint64_t gen) {
+    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_CLIENT, conn->slot, gen };
     srv->dht->ops->session_opened(srv->dht, o);
 }
 
-static void session_dht_closed(nodus_server_t *srv, nodus_tcp_conn_t *conn) {
-    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_CLIENT, conn->slot };
+static void session_dht_closed(nodus_server_t *srv, nodus_tcp_conn_t *conn,
+                               uint64_t gen) {
+    nodus_dht_origin_t o = { NODUS_DHT_ORIGIN_CLIENT, conn->slot, gen };
     srv->dht->ops->session_closed(srv->dht, o);
 }
 
@@ -2287,7 +2300,8 @@ static void on_tcp_accept(nodus_tcp_conn_t *conn, void *ctx) {
         session_chain_closed(srv, conn);
         session_clear(sess);
         sess->conn = conn;
-        session_dht_opened(srv, conn);
+        sess->dht_gen = session_gen_next(srv);
+        session_dht_opened(srv, conn, sess->dht_gen);
     }
 }
 
@@ -2326,8 +2340,9 @@ static void on_tcp_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
         /* Tear down circuits (notify bridge peers) before clearing session */
         session_teardown_circuits(srv, sess);
         session_chain_closed(srv, conn);
+        uint64_t gen = sess->dht_gen;
         session_clear(sess);
-        session_dht_closed(srv, conn);
+        session_dht_closed(srv, conn, gen);
     }
 }
 
@@ -2647,17 +2662,23 @@ void nodus_server_witness_host(nodus_server_t *srv, nodus_witness_host_t *out) {
 /* ── S4 DHT seam — the host this server gives its DHT ───────────── */
 
 /* HOT: a DHT reply / push to the session in `origin`'s slot — the
- * connection the DHT handler wrote to before the seam (`sess->conn`). */
+ * connection the DHT handler wrote to before the seam (`sess->conn`) —
+ * only when that session is the one the origin names (item 29: same
+ * generation). A slot reused by another session gets nothing. */
 static int server_dht_send_to_origin(void *ctx, nodus_dht_origin_t origin,
                                      const uint8_t *frame, size_t len) {
     nodus_server_t *srv = ctx;
     if (!srv || origin.slot < 0) return -1;
     if (origin.kind == NODUS_DHT_ORIGIN_CLIENT) {
         if (origin.slot >= NODUS_MAX_SESSIONS) return -1;
-        return nodus_tcp_send(srv->sessions[origin.slot].conn, frame, len);
+        nodus_session_t *sess = &srv->sessions[origin.slot];
+        if (sess->dht_gen != origin.gen) return -1;
+        return nodus_tcp_send(sess->conn, frame, len);
     }
     if (origin.slot >= NODUS_MAX_INTER_SESSIONS) return -1;
-    return nodus_tcp_send(srv->inter_sessions[origin.slot].conn, frame, len);
+    nodus_inter_session_t *isess = &srv->inter_sessions[origin.slot];
+    if (isess->dht_gen != origin.gen) return -1;
+    return nodus_tcp_send(isess->conn, frame, len);
 }
 
 /* A T1 datagram from this node's UDP 4000 socket. */

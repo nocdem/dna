@@ -142,6 +142,10 @@ typedef struct {
 
 typedef struct {
     nodus_tcp_conn_t   *conn;
+    /* Generation of this session as the DHT's origins name it
+     * (nodus_dht_origin_t): a fresh value from srv->next_session_gen where
+     * conn is set (connect / accept); 0 once cleared. */
+    uint64_t            dht_gen;
 
     /* C-01/C-02: Dilithium5 authentication (same as client sessions) */
     nodus_key_t         client_fp;
@@ -185,6 +189,10 @@ typedef struct {
 
 typedef struct {
     nodus_tcp_conn_t   *conn;
+    /* Generation of this session as the DHT's origins name it
+     * (nodus_dht_origin_t): a fresh value from srv->next_session_gen where
+     * conn is set (accept); 0 once cleared. */
+    uint64_t            dht_gen;
     nodus_key_t         client_fp;
     nodus_pubkey_t      client_pk;
     uint8_t             token[NODUS_SESSION_TOKEN_LEN];
@@ -257,6 +265,10 @@ typedef struct nodus_server {
     /* Sessions (indexed by conn->slot) */
     nodus_session_t         sessions[NODUS_MAX_SESSIONS];
     nodus_inter_session_t   inter_sessions[NODUS_MAX_INTER_SESSIONS];
+    /* Last session generation handed out (client and 4002 sessions share
+     * it; only increases — the first is 1). Decision
+     * 2026-10-01-nodus-component-split.md item 29. */
+    uint64_t                next_session_gen;
 
     /* CRIT-4: TCP idle connection sweep (every 30s) */
     uint64_t                last_idle_sweep;
@@ -420,7 +432,9 @@ void nodus_server_close(nodus_server_t *srv);
 /**
  * Fill the DHT's host view from this server: `identity` points at
  * `srv->identity`; send_to_origin writes to `srv->sessions[slot].conn` /
- * `srv->inter_sessions[slot].conn`; udp_send uses `srv->udp`; inter_send
+ * `srv->inter_sessions[slot].conn` when that session's dht_gen equals the
+ * origin's generation (else nothing is sent, -1); udp_send uses `srv->udp`;
+ * inter_send
  * is the inter-node pool send (`srv->inter_tcp`); hint_wanted asks
  * `srv->cluster`.
  */
