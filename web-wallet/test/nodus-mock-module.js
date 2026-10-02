@@ -21,7 +21,14 @@ export function createMockNodusModule() {
     fingerprint: FINGERPRINT, chainId: CHAIN_ID, tip: '1000', total: '450000000', spendable: '450000000',
     coins: [coin(1, '100000000'), coin(2, '300000000'), coin(3, '50000000')], truncated: false,
     accepted: true, scan: { tip: '1000', found: false }, tamper: null, tickFails: false, lastBuild: null,
-    overlap: false, seedAtLock: null, zeroAtRelease: null, failCancel: false
+    overlap: false, seedAtLock: null, zeroAtRelease: null, failCancel: false,
+    // HF-4: rulesetInfo's answer (generation 1, no switch), or an Error the
+    // module would raise (an older node / an unknown generation).
+    ruleset: { tip: '1000', generation: '1', gen2Height: '0' }, rulesetError: null,
+    // HF-4 chain names: name -> owner fingerprint; owner -> { eth, bsc, sol,
+    // trx } profile addresses; profileError: the module's refusal of an
+    // unreadable / unsigned profile.
+    names: {}, profiles: {}, profileError: null, nameError: null
   };
   const bytes = () => new Uint8Array(memory.buffer);
   async function op(name, fn) {
@@ -54,6 +61,23 @@ export function createMockNodusModule() {
     submit: ({ envelope }) => op('submit', async () => { state.submitted = envelope; return { accepted: state.accepted }; }),
     scanConfirm: request => op('scanConfirm', async () => { state.lastScan = request; return state.scan; }),
     tick: () => op('tick', async () => { if (state.tickFails) throw new Error('session closed'); }),
+    rulesetInfo: () => op('rulesetInfo', async () => { if (state.rulesetError) throw state.rulesetError; return { ...state.ruleset }; }),
+    nameLookup: ({ name }) => op('nameLookup', async () => {
+      if (state.nameError) throw state.nameError;
+      const owner = state.names[name];
+      return owner ? { found: true, committedHeight: '1000', owner, registeredHeight: '900' } : { found: false, committedHeight: '1000' };
+    }),
+    nameOf: ({ owner }) => op('nameOf', async () => {
+      if (state.nameError) throw state.nameError;
+      const name = Object.keys(state.names).find(key => state.names[key] === owner);
+      return name ? { found: true, committedHeight: '1000', name, registeredHeight: '900' } : { found: false, committedHeight: '1000' };
+    }),
+    profileAddress: ({ owner, field }) => op('profileAddress', async () => {
+      if (state.profileError) throw state.profileError;
+      const address = state.profiles[owner]?.[field];
+      if (!address) throw new Error('The owner of this name has no address for this network in their profile. Nothing was sent.');
+      return { address };
+    }),
     cancel() { log.push('cancel'); if (state.failCancel) throw new Error('cancel failed'); },
     lock() { log.push('lock'); state.seedAtLock = bytes().subarray(SEED_AT, SEED_AT + 32).some(b => b !== 0); },
     release() { log.push('release'); state.zeroAtRelease = bytes().every(b => b === 0); }

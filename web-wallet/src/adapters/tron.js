@@ -3,6 +3,9 @@ import { TronWeb, utils, providers } from 'tronweb';
 import { CHAINS } from '../config.js';
 import { request, rawInteger, formatUnits, endpointUrl } from '../core.js';
 const FEE_LIMIT = 100_000_000;
+// Whether `text` is a TRON address as typed (src/wallet.js: an address
+// always wins over a chain name).
+export function isRecipientAddress(text) { return typeof text === 'string' && TronWeb.isAddress(text); }
 export async function checkNetwork(endpoint, options) {
   if (endpointUrl(endpoint) !== endpointUrl(CHAINS.tron.endpoint)) throw new Error('TRON requires the configured mainnet provider.');
   const genesis = await request(`${endpoint.replace(/\/$/, '')}/wallet/getblockbynum`, { num: 0 }, options);

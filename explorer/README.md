@@ -101,6 +101,7 @@ half a height.
 | `items` | `(height, idx)` | `kind` (1 envelope, 2 claim, 0 empty), `code` (0 applied, else refused), `wire_id`, `intent_id`, `fee`, `op`, `has_effects`, `burned` — NULL where the node sent no value |
 | `item_io` | `(height, idx, dir, pos)` | `dir` 0 consumed / 1 created, `coin_id`, `address`, `token`, `amount`, `unlock_block` |
 | `item_records` | `(height, idx)` | the SYSTEM record an applied item wrote: `kind`, `validator`, `delegator`, `dest`, `amount`, `commission_bps`, `param_id`, `new_value`, `effective` |
+| `item_names` | `(height, idx)` | HF-4: the chain name an applied NAME_REGISTER item registered (`dnac_v3_block` keys `"nm"`/`"pr"`): `name`, `price` (paid into the reward pool — not a burn), `owner` (the resolved address of the item's first consumed coin — every input is the one signer's; NULL when that coin's creating item is not indexed). Created `IF NOT EXISTS` on every open, so a v2 index gains it without a rebuild; an index advanced past the HF-4 switch by a binary without it lacks those names until rebuilt |
 | `meta` | `key` | `schema_version` (2), `last_indexed_height`, `chain_id32`, `tip_height`, `supply_current`/`_burned`/`_genesis`, `supply_buckets` (one 97-byte blob: a has-flag byte, then 12 little-endian u64 — `current`, `reward_pool`, `treasury` pool 1..9, `unclaimed` — all from ONE `dnac_supply` reply; rewritten on every accepted observation, has = 0 for an older node; `exp_chain.h`) |
 
 Records are a typed table, not a JSON column: the address history looks
@@ -206,7 +207,7 @@ into git.
 
 ## HTTP API
 
-All responses are JSON. All monetary fields (`fee`, `burned`, `amount`,
+All responses are JSON. All monetary fields (`fee`, `burned`, `name_price`, `amount`,
 `total`, `spendable`, `new_value`, `supply_*`) are **decimal strings**, not JSON numbers — values
 can exceed 2^53. Ids, addresses and `token_id` are lowercase hex strings;
 native DNAC is the all-zero 64-byte `token_id`. `time` is the block
@@ -221,12 +222,15 @@ addressed by its **position** `"<height>:<index>"`; send the `:` as it is
 | `/api/block/<height\|block_id>?from=<index>&limit=<n>` | `{block:{…, prev_id, global_root}, items:[item], next_from}` — one page of the block's items, index-ascending from `from` (default 0; `limit` default and max 100); `next_from` is the next page's first index, `null` on the last page. |
 | `/api/tx/<wire_id\|intent_id\|height:index>` | `{tx:{item…, record}, inputs:[{coin_id, address, token_id, amount}], outputs:[{coin_id, address, token_id, amount, unlock_block}]}`. An input's `address`/`token_id`/`amount` are `null` when the coin's creating item is not in the index. A refused envelope has no ids — its position is its only address. |
 | `/api/address/<fp>?before=<height:index>&limit=<n>` | `{address, balances:[{token_id, total, spendable, coins}] \| null, balance_status:"ok"\|"unavailable", items:[item], next_before}` — `balances` is the node's per-token list, token id ascending (`total`/`spendable` decimal strings, `coins` a number; see "Balance" above), `null` only with `"unavailable"`; `items` are the items touching the address (owner of a created or resolved consumed coin, or a record's validator/delegator/destination), newest first; `next_before` is the next page's cursor, `null` on a short page. |
-| `/api/search?q=<term>` | `{matches:[{type, target}]}` — every match: a decimal height → `block`; a `height:index` → `tx`; a 128-hex → `tx` (wire or intent id), `block` (block id), `address` (has indexed history). Empty for a term that matches nothing. |
+| `/api/search?q=<term>` | `{matches:[{type, target}]}` — every match: a decimal height → `block`; a `height:index` → `tx`; a 128-hex → `tx` (wire or intent id), `block` (block id), `address` (has indexed history); a chain name (lower-case, the chain's byte rule) → `name`, target = the registering item's position. An all-digit name also matches as a height: both are listed. Empty for a term that matches nothing. |
 
 `item` = `{position, height, index, time, kind ("envelope"|"claim"|"empty"),
 op ("spend", "burn", "token_create", "sysfund", "stake", "delegate",
-"unstake", "undelegate", "validator_update", "chain_config", "claim" or
-null), code, refused (code ≠ 0), wire_id, intent_id, fee, burned}`.
+"unstake", "undelegate", "validator_update", "chain_config", "claim",
+"name_register" or null), code, refused (code ≠ 0), wire_id, intent_id,
+fee, burned, name, name_price, name_owner}` — `name`/`name_price` (decimal
+string)/`name_owner` are set on an applied name registration only, `null`
+otherwise (`name_owner` also `null` when the owner is not in the index).
 `record` = `{kind, validator, delegator, destination, amount,
 commission_bps, param_id, new_value, effective_height}` or `null`.
 

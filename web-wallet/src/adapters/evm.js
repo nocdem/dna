@@ -12,6 +12,10 @@ export async function balances(chain, address, endpoint, options = {}) {
   const tokens = await Promise.allSettled(c.tokens.map(async t => ({ ...t, balance: formatUnits(rawInteger(await rpc(endpoint, 'eth_call', [{ to: t.address, data: erc20.encodeFunctionData('balanceOf', [address]) }, 'latest'], options)), t.decimals) })));
   return [{ symbol: c.symbol, balance: formatUnits(native, 18) }, ...tokens.map((r, i) => r.status === 'fulfilled' ? r.value : { symbol: c.tokens[i].symbol, error: 'Balance unavailable' })];
 }
+// Whether `text` is an EVM address as typed (src/wallet.js: an address
+// always wins over a chain name). A mixed-case text with a wrong checksum
+// is an address that fails (prepare refuses it), not a name.
+export function isRecipientAddress(text) { return typeof text === 'string' && /^0x[0-9a-fA-F]{40}$/.test(text); }
 export async function checkNetwork(chain, endpoint, options) {
   if (rawInteger(await rpc(endpoint, 'eth_chainId', [], options)) !== BigInt(CHAINS[chain].chainId)) throw new Error('RPC is connected to the wrong network.');
 }

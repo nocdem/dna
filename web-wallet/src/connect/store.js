@@ -41,6 +41,8 @@
 // meant for the user (§1.7: onerror/onabort are shown, not hidden behind a
 // network message). A failed core seal/open is reported the same way; the
 // core's own error text is not shown.
+import { chainNameOk } from '../nodus/names.js';
+
 export class StorageError extends Error {}
 const sealing = async (run, what) => {
   try { return await run(); }
@@ -186,22 +188,29 @@ export async function deleteVaultHistory(vaultId, storage) {
 // (unix seconds) with the verified name `name` (the app's profile cache,
 // profile_cache.h:40). `dmSync`: fp -> unix seconds of the last completed
 // check of that contact's messages (the app's contacts_db dm sync
-// timestamp, transport_offline.c smart sync).
+// timestamp, transport_offline.c smart sync). `chainNames`: fp -> { name,
+// at } — the chain name (HF-4, dnac_name_of) the node reported for that ID
+// at `at` (unix seconds), kept like a profile (text.js profileFresh, 7
+// days); only a found name is kept (a name is permanent — decision
+// 2026-10-02-onchain-names.md item 4 — while "no name" can change any
+// block).
 export function emptyState() {
-  return { version: 1, nextSeq: '1', contacts: [], outgoing: [], declined: [], acks: {}, ackSent: {}, profileCache: {}, dmSync: {} };
+  return { version: 1, nextSeq: '1', contacts: [], outgoing: [], declined: [], acks: {}, ackSent: {}, profileCache: {}, dmSync: {}, chainNames: {} };
 }
 const isMap = value => value && typeof value === 'object' && !Array.isArray(value);
+const HEX128_KEY = /^[0-9a-f]{128}$/;
 export const PROFILE_RECORD_ID = /^p\d{20}$/;
 export function checkState(value) {
-  // A state saved before `ackSent`, `profileCache` or `dmSync` existed gets
-  // the default (same version).
-  if (value && value.version === 1) for (const key of ['ackSent', 'profileCache', 'dmSync']) if (value[key] === undefined) value[key] = {};
+  // A state saved before `ackSent`, `profileCache`, `dmSync` or
+  // `chainNames` existed gets the default (same version).
+  if (value && value.version === 1) for (const key of ['ackSent', 'profileCache', 'dmSync', 'chainNames']) if (value[key] === undefined) value[key] = {};
   if (!value || value.version !== 1 || !U64.test(String(value.nextSeq)) || !Array.isArray(value.contacts) ||
       !Array.isArray(value.outgoing) || !Array.isArray(value.declined) || !value.acks || typeof value.acks !== 'object' ||
-      !isMap(value.ackSent) || !isMap(value.profileCache) || !isMap(value.dmSync) ||
+      !isMap(value.ackSent) || !isMap(value.profileCache) || !isMap(value.dmSync) || !isMap(value.chainNames) ||
       Object.values(value.profileCache).some(e => !isMap(e) || typeof e.id !== 'string' || !PROFILE_RECORD_ID.test(e.id) ||
         !U64.test(String(e.at)) || typeof e.name !== 'string') ||
-      Object.values(value.dmSync).some(t => !U64.test(String(t)))) throw new StorageError('The stored contact list is damaged.');
+      Object.values(value.dmSync).some(t => !U64.test(String(t))) ||
+      Object.entries(value.chainNames).some(([fp, e]) => !HEX128_KEY.test(fp) || !isMap(e) || !chainNameOk(e.name) || !U64.test(String(e.at)))) throw new StorageError('The stored contact list is damaged.');
   return value;
 }
 

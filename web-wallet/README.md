@@ -934,6 +934,74 @@ Decision: `docs/plans/decisions/2026-09-25-web-wallet-solana-kit.md` (operator,
   all JavaScript chunks 1,477,466 → 1,315,743 bytes. The default build's app
   chunk is 1,254,356 bytes.
 
+## HF-4 client: rule-set generation, expiry cap, chain names (unreleased)
+
+Design `docs/plans/2026-10-02-onchain-names-design.md` rev 4 §1.6, §2
+"Queries"/"Clients", §4 (R2, R3, R6, R12); decisions
+`2026-10-02-onchain-names.md` (item 9: one node's answer is trusted —
+accepted risk) and `2026-10-02-device-cache-only-when-saved.md`. Must ship
+before the RULESET_GEN2 vote (design §1.5).
+
+- **Which rules the node runs.** Before any NODUS envelope is built (send,
+  stake, delegate, undelegate) the module asks the node `dnac_ruleset_info`
+  and builds for the pinned generation (`nodus/include/nodus/nodus_ruleset_pins.h`,
+  every generation) whose SYSTEM and CORE (version, hash) EQUAL the answer —
+  never chosen by height; nodus-cli `cli_select_runtimes` is the reference
+  (`crypto/nodus-send-wasm.c` `nsw_select_generation` / `nsw_gen_match`).
+  An older node ("unknown DNAC method") or an unreadable answer: nothing is
+  built. No matching generation: "This page is out of date … Reload the
+  page." Each build asks again on its own call; `rulesetInfo()` (new,
+  required in the module contract, `src/nodus/client.js`) only feeds the
+  expiry the wallet requests. `unlock` checks every pinned generation's
+  policy digest.
+- **Expiry cap.** `tip + 90`, and for a generation-1 envelope while a switch
+  height H is committed never past H−1, judged against the larger of the
+  listing tip and the ruleset answer's tip; with H−1 not above it nothing is
+  built ("try again after block H"). Same rule in JS (`src/adapters/nodus.js`
+  `expiryHeightFor`) and C (`nsw_expiry_for`, which refuses any other value);
+  nodus-cli `cli_env_expiry` is the reference. A capped expiry adds a
+  "Rule change" row to the review, and a "Timing" row when at most 15 blocks
+  remain (60 s review / 4 s minimum block gap, `nodus_witness_cmt_node.c`
+  `timeout_commit`): it may expire before the user confirms; then nothing is
+  spent and its coins are free after that block. The genesis claim is not an
+  envelope and is unchanged.
+- **Send to a chain name.** The recipient field takes an address or a chain
+  name (`src/nodus/names.js`: 3–36 of a–z0–9, an all-hex name of 8+ refused —
+  the JS mirror of `dnac_name_bytes_ok`; A–Z is lower-cased with an
+  ASCII-only table; shared vectors `test/chain-name-vectors.js`, also run
+  against the module's `nsw_name_ok`). An address of the selected network
+  always wins. NODUS: `dnac_name_lookup` → the owner's fingerprint → the
+  normal send. Ethereum / BNB Smart Chain / Solana / TRON: the owner's
+  `eth` / `bsc` / `sol` / `trx` address from the owner's profile, read and
+  signature-checked by the module with the Messages profile reader
+  (`nsw_profile_address` → `connect/nc_profile.c` `nc_profile_read`); no
+  field is used for another network. The review shows the name, the source
+  ("looked up on one Nodus node", the block of that state), the owner's
+  Nodus ID (other coins), the address, and a look-alike note in place of the
+  address-check note. An unregistered name, an unreadable or unsigned
+  profile, or a missing field is an error — never a fallback.
+- **History.** The wallet reads no NODUS account history (table above:
+  "NODUS — not yet"); its only `dnac_v3_block` reader is the module's
+  confirmation scan, whose decoder (`nodus_client.c`) accepts the new
+  `"nm"`/`"pr"` keys. A name registration therefore has no wallet row to
+  render yet; Nodus Scan shows it.
+- **Nodus Connect.** Contacts, requests, the conversation head, the home
+  identity and "Your ID & profile" show the CHAIN name (`dnac_name_of`, one
+  read per ID per session; a found name of an own contact kept in the saved
+  wallet's encrypted state `chainNames` for 7 days, like profiles; nothing
+  kept for an unsaved wallet) as the title, with a check mark, a "chain
+  name" label and the short ID beside it. The profile (network directory)
+  name is shown only as "profile name …"; it is no longer the title. An
+  older node or a failed read: no chain name, nothing kept.
+
+Tests (written, not run by the change author): `test/hf4-client.test.js`,
+`test/chain-name-vectors.js`, the mock module's new operations
+(`test/nodus-mock-module.js`), the export list in
+`test/nodus-send-wasm.test.js`. **How they can lie:** the mock echoes canned
+answers; the C generation choice and name rule are checked only with the
+parity build (`NODUS_SEND_PARITY_OUT`, else SKIP); nothing here talks to a
+node or drives the browser UI.
+
 ## NODUS send skeleton — wallet side only, inert until the module exists (unreleased)
 
 Design: `docs/plans/2026-09-25-web-wallet-nodus-send-design.md` (package (d),
@@ -982,7 +1050,8 @@ What is in place:
     `ready`.
 - **NODUS adapter** (`src/adapters/nodus.js`, `adapters.nodus` in
   `src/wallet.js`):
-  - Recipient: a 128-hex fingerprint (upper case accepted, shown lower case).
+  - Recipient: a 128-hex fingerprint (upper case accepted, shown lower case),
+    or — HF-4 — a chain name resolved to its owner (section above).
     There is no checksum, so the review shows all 128 characters with a
     compare-every-character note. Amount: 8 decimals, `BigInt`, at most
     2^64 − 1 raw units.
@@ -991,7 +1060,8 @@ What is in place:
     "Balance unavailable", never 0. Unpriced, outside the USD total.
   - Building: `balance()` then `list()`. Tip 0 or missing → **no send** ("The
     current Nodus block height is unknown"); otherwise `expiry_height = tip + 90`
-    (`nodus-cli.c` `CLI_ENV_EXPIRY_AHEAD` = 100 − 10). An empty coin list with a
+    (`nodus-cli.c` `CLI_ENV_EXPIRY_AHEAD` = 100 − 10), capped at H−1 before a
+    committed rule-set switch (HF-4, section above). An empty coin list with a
     positive spendable balance is reported as "coin list could not be read",
     never "insufficient". Coins held by pending sends are removed from the
     candidate list given to the builder.
@@ -1080,8 +1150,11 @@ What the module does (every chain rule is the shared C code, not this wallet):
 - **list** — `dnac_utxo`: native, non-zero, `unlock_block <= tip` coins (the
   nodus-cli filter); the tip is passed through (the wallet refuses 0); a row of
   another owner or a repeated coin rejects the whole answer.
-- **buildAndSign** — only coins of the last listing; `expiryHeight` must be
-  exactly listing tip + 90; the chain id is re-read on the session;
+- **buildAndSign** — only coins of the last listing; the rule-set generation
+  is chosen from the node's `dnac_ruleset_info` answer on this call, and
+  `expiryHeight` must be exactly the expiry rule's value (listing tip + 90,
+  capped at H−1 for generation 1 — see "HF-4 client" above); the chain id is
+  re-read on the session;
   `gas_price` from `dnac_fee_info` (a failed read refuses); then nodus-cli's
   request for one native spend (fee floor `max(DNAC_MIN_FEE_RAW,
   NODUS_W_BASE_TX_FEE)`, largest-first, no shard) through

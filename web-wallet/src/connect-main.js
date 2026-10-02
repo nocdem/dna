@@ -166,7 +166,7 @@ function wireShell({ messagesNavigate, shortId, nodusSymbol, initials, fillAvata
       // The own profile picture (messages.js onIdentity), else the initials.
       fillAvatar(mark, ownId ? initials(ownId, ownName) : '··', ownId ? ownAvatar : '');
       mark.className = `contact-avatar avatar-large ${ownId ? `avatar-${parseInt(ownId[0], 16) % 6}` : 'home-avatar-empty'}`;
-      // A verified registered name (nc_name_verify) first, then the short ID.
+      // The chain name (HF-4, messages.js onIdentity) first, then the short ID.
       $(textId).textContent = ownId ? (ownName ? `${ownName} · ${shortId(ownId)}` : shortId(ownId)) : NO_ID_TEXT;
     }
     $('home-copy-id').disabled = !ownId;

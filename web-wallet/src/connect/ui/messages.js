@@ -38,12 +38,13 @@
 import { createNodusConnectCore, acceptanceMayAutoApprove } from '../core.js';
 import { openHistoryStore, memoryHistoryStore, StorageError } from '../store.js';
 import {
-  parseContactId, shortId, profilePatch, profileStatusText, contactListStatusText, senderClockLabel,
+  parseContactId, profilePatch, profileStatusText, contactListStatusText, senderClockLabel,
   recentDays, pendingOutbox, hasUndelivered, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus, avatarPatch, AVATAR_UPLOAD_MAX_B64,
-  needFullSync, fullDays, profileFresh
+  needFullSync, fullDays, profileFresh, contactNames
 } from './text.js';
 import { el, untrusted, button, website, fillAvatar } from './dom.js';
+import { chainNameOk, parseNameOf } from '../../nodus/names.js';
 
 const SYNC_MS = 30000;                   // how often requests and messages are checked
 const HEX128 = /^[0-9a-f]{128}$/;
@@ -66,6 +67,10 @@ const saltChecked = new Set();           // contacts whose salt was reconciled t
 const dropped = new Map();               // fp -> messages that did not verify, this session
 const others = new Map();                // fp -> authentic items that are not text (reactions, calls, …), last check
 const lastRead = new Map();              // fp -> highest local seq shown to the user (this session only)
+// HF-4 chain names: fp -> the chain name ('' = none, or not answered), this
+// session; kept across sessions only for a saved wallet (state.chainNames).
+const chainNames = new Map();
+let nodusClient;                         // the wallet's client (nameOf), this session
 
 // ── view state ─────────────────────────────────────────────────────────
 // The screens follow the DNA Connect app (messenger/dna_messenger_flutter):
@@ -93,9 +98,9 @@ function wipe() {
   try { c?.lock(); } catch { /* the rest must still run */ }
   try { store?.close(); } catch { /* same */ }
   store = undefined; state = undefined; messages = []; ownFp = undefined; ownProfile = undefined;
-  fresh = false; vaultId = null; requests = []; selectedFp = undefined;
+  fresh = false; vaultId = null; requests = []; selectedFp = undefined; nodusClient = undefined;
   eraseArmed = false; profileTaken = false;
-  for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead]) set.clear();
+  for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, chainNames]) set.clear();
   if (!ui) return;
   for (const control of [ui.addId, ui.addNote, ui.composer, ui.bio, ui.location, ui.website]) control.value = '';
   ui.composer.rows = 1; ui.counter.textContent = '';
@@ -147,6 +152,7 @@ export async function openMessages({ client, phrase, vaultId: id = null, fresh: 
     if (typeof phrase !== 'string' || !phrase) throw new Closed(UNAVAILABLE_TEXT);
     created = createNodusConnectCore({ nodus: client });
     core = created;
+    nodusClient = client;
     words = new TextEncoder().encode(phrase);
     const unlocked = await created.unlock({ words, fresh: isFresh === true });
     if (superseded()) return;
@@ -208,6 +214,8 @@ async function finishOpen(gen) {
     catch { /* read from the network by the first check */ }
     if (gen !== generation) return;
   }
+  // Kept chain names younger than 7 days, likewise (no network).
+  for (const fp of [ownFp, ...state.contacts.map(c => c.fp)]) keptChainName(fp);
 
   ui.ownId.textContent = ownFp;
   ui.memoryNote.hidden = store.persistent;
@@ -328,6 +336,33 @@ async function forgetProfile(fp) {
   try { await persist(); } catch { /* the entry is gone from this session */ }
 }
 
+// HF-4 chain names (design docs/plans/2026-10-02-onchain-names-design.md
+// rev 4 §2 "Clients", R3/R6): the name an ID registered on the chain, from
+// ONE node's committed state (dnac_name_of; decision
+// 2026-10-02-onchain-names.md item 9). Asked once per session per ID; a
+// found name is kept for a saved wallet like a profile (state.chainNames,
+// 7 days — decision 2026-10-02-device-cache-only-when-saved: an unsaved
+// wallet's state lives in memory only). An older node, a failed read or a
+// module without names: no chain name is shown and nothing is kept.
+function keptChainName(fp) {
+  const entry = state.chainNames[fp];
+  if (!chainNames.has(fp) && entry && chainNameOk(entry.name) && profileFresh(entry, nowSeconds())) chainNames.set(fp, entry.name);
+}
+// `keep`: this ID's or a contact's name (a stranger's request is not kept,
+// as ensureProfile). @return true when state.chainNames changed (the caller
+// saves once).
+async function ensureChainName(fp, keep = false) {
+  keptChainName(fp);
+  if (chainNames.has(fp) || !nodusClient?.nameable) return false;
+  let found;
+  try { found = parseNameOf(await nodusClient.nameOf({ owner: fp })); }
+  catch { chainNames.set(fp, ''); return false; }
+  chainNames.set(fp, found.found ? found.name : '');
+  if (found.found && keep) { state.chainNames[fp] = { name: found.name, at: nowSeconds() }; return true; }
+  if (!found.found && state.chainNames[fp]) { delete state.chainNames[fp]; return true; }
+  return false;
+}
+
 // ── sync ───────────────────────────────────────────────────────────────
 async function sync() {
   if (syncing || !isOpen()) return;
@@ -361,6 +396,15 @@ async function sync() {
       if (gen !== generation) return;
       await ensureProfile(fp);
     }
+    // Chain names (HF-4) of this ID, the contacts and the request screens:
+    // one read per ID per session (ensureChainName).
+    let namesMoved = false;
+    for (const fp of new Set([ownFp, ...state.contacts.map(c => c.fp), ...state.outgoing.map(o => o.fp), ...requests.map(r => r.sender)])) {
+      if (gen !== generation) return;
+      if (await ensureChainName(fp, fp === ownFp || !!contactOf(fp))) namesMoved = true;
+    }
+    if (namesMoved && gen === generation) await persist();
+    if (gen === generation) { fillOwnAvatar(); fillNameLine(); }
     if (gen === generation) { ui.sync.textContent = `Last checked ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. New messages are checked every 30 seconds.`; render(); }
   } catch (error) {
     if (gen === generation) ui.sync.textContent = explain(error, 'The network could not be reached. Checking again automatically.');
@@ -529,17 +573,35 @@ function statusLine(className = 'hint') { return setAttrs(el('p', { className })
 
 // Avatar colour classes are a pure function of the ID, so the same contact
 // keeps its colour; a claimed name is never used (it is unverified, G9).
-// A registered name the core VERIFIED (nc_name_verify: "<name>:lookup"
-// written by this identity points back to it — design §1.9 G9), else ''.
-function verifiedName(fp) {
+// A registered PROFILE name the core verified (nc_name_verify:
+// "<name>:lookup" written by this identity points back to it — design
+// §1.9 G9), else ''. Since HF-4 it is shown only labelled "profile name"
+// (text.js contactNames): the chain name is the one shown as THE name.
+function profileName(fp) {
   const name = profiles.get(fp)?.name;
   return typeof name === 'string' ? name : '';
 }
-// What a contact is called: the verified name, else the short ID.
-function displayName(fp) { return verifiedName(fp) || shortId(fp); }
+// The chain name of `fp` this session ('' = none or not known).
+function chainNameOf(fp) {
+  const name = chainNames.get(fp);
+  return typeof name === 'string' ? name : '';
+}
+function namesOf(fp, claimed = profiles.get(fp)?.claimed_name) {
+  return contactNames(fp, { chain: chainNameOf(fp), profile: profileName(fp), claimed: typeof claimed === 'string' ? claimed : '' });
+}
+// What a contact is called: the chain name, else the short ID.
+function displayName(fp) { return namesOf(fp).title; }
+// The bold line: a chain name gets the verified look (class chain-name and
+// a "chain name" label), anything else is the plain short ID.
+function nameTitle(fp) {
+  const n = namesOf(fp);
+  return n.verified
+    ? el('strong', { className: 'chain-name', text: n.title })
+    : el('strong', { text: n.title });
+}
 
-// The two letters shown when there is no picture: of the verified name,
-// else of the ID.
+// The two letters shown when there is no picture: of the chain name, else
+// of the ID.
 export function initials(fp, name) { return (name ? [...name].slice(0, 2).join('') : fp.slice(0, 2)).toUpperCase(); }
 
 // The profile picture (avatar_base64 of the signature-checked profile,
@@ -547,14 +609,19 @@ export function initials(fp, name) { return (name ? [...name].slice(0, 2).join('
 function avatar(fp, extra = '') {
   const node = el('span', { className: `contact-avatar avatar-${parseInt(fp[0], 16) % 6}${extra}` });
   node.setAttribute('aria-hidden', 'true');
-  return fillAvatar(node, initials(fp, verifiedName(fp)), profiles.get(fp)?.avatar_base64);
+  return fillAvatar(node, initials(fp, chainNameOf(fp)), profiles.get(fp)?.avatar_base64);
 }
 
-// Under a verified name: the short ID. Otherwise an unverified claim, if any.
-function claimedNameHint(fp, prefix = 'claims the name ') {
-  if (verifiedName(fp)) return el('span', { className: 'contact-claim' }, shortId(fp));
-  const name = profiles.get(fp)?.claimed_name;
-  return name ? el('span', { className: 'contact-claim' }, prefix, untrusted(name, undefined, { name: true })) : null;
+// The line beside the title (design R3/R6): under a chain name the label
+// "chain name" and the short ID; a profile name only as "profile name …";
+// an unverified claim only when nothing better is known. null = nothing.
+function nameHint(fp, { claimed, prefix = 'claims the name ' } = {}) {
+  const n = namesOf(fp, claimed);
+  const parts = [];
+  if (n.verified) parts.push(el('span', { className: 'name-kind', text: 'chain name' }), ` ${n.id}`);
+  if (n.profile) parts.push(parts.length ? ' · profile name ' : 'profile name ', untrusted(n.profile, undefined, { name: true }));
+  if (n.claimed) parts.push(prefix, untrusted(n.claimed, undefined, { name: true }));
+  return parts.length ? el('span', { className: 'contact-claim' }, ...parts) : null;
 }
 
 // Line icons (stroke only, styled by messenger.css .nc-icon), built with
@@ -896,8 +963,9 @@ function render({ scroll = false } = {}) {
   host.onUnread?.(unread);
   host.onRequests?.(waiting);
   const id = open ? ownFp : null;
-  // The own verified name (nc_name_verify) travels with the ID.
-  const ownName = open && typeof ownProfile?.name === 'string' ? ownProfile.name : '';
+  // The own CHAIN name (HF-4, dnac_name_of) travels with the ID; the
+  // profile name is shown only on the profile screen, labelled.
+  const ownName = open ? chainNameOf(ownFp) : '';
   const ownAvatar = open && typeof ownProfile?.avatar_base64 === 'string' ? ownProfile.avatar_base64 : '';
   const idKey = id ? `${id}|${ownName}|${ownAvatar}` : null;
   if (idKey !== notifiedId) { notifiedId = idKey; host.onIdentity?.(id, ownName, ownAvatar); }
@@ -943,7 +1011,7 @@ function renderChats() {
     const side = el('span', { className: 'contact-side' });
     if (last) { const when = el('time', { text: shortWhen(last.at) }); when.dateTime = new Date(last.at).toISOString(); side.append(when); }
     if (unread) side.append(setAttrs(el('span', { className: 'count-badge', text: String(unread) }), { 'aria-label': `${unread} new` }));
-    row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, el('strong', { text: displayName(c.fp) }), claimedNameHint(c.fp)), preview), side, icon('chevron'));
+    row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, nameTitle(c.fp), nameHint(c.fp)), preview), side, icon('chevron'));
     row.onclick = () => selectContact(c.fp);
     return el('li', {}, row);
   }));
@@ -959,7 +1027,7 @@ function renderContacts() {
     const row = el('button', { className: 'contact-row' });
     row.type = 'button';
     const sub = el('span', { className: 'contact-preview', text: c.salt ? 'Open conversation' : 'Messaging is not ready yet' });
-    row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, el('strong', { text: displayName(c.fp) }), claimedNameHint(c.fp)), sub), icon('chevron'));
+    row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, nameTitle(c.fp), nameHint(c.fp)), sub), icon('chevron'));
     row.onclick = () => selectContact(c.fp);
     return el('li', {}, row);
   }) : [el('li', { className: 'contact-empty', text: 'No contacts yet. Add one with their ID.' })]));
@@ -979,9 +1047,8 @@ function renderRequests() {
   ui.requestList.replaceChildren(...(requests.length ? requests.map(request => el('li', { className: 'request-row' },
     avatar(request.sender),
     el('div', { className: 'request-main' },
-      el('span', { className: 'contact-name' }, el('span', { className: 'request-label', text: 'Not a contact' }), el('strong', { text: displayName(request.sender) })),
-      verifiedName(request.sender) ? el('span', { className: 'contact-claim' }, shortId(request.sender))
-        : request.claimed_name ? el('span', { className: 'contact-claim' }, 'says their name is ', untrusted(request.claimed_name, undefined, { name: true })) : null,
+      el('span', { className: 'contact-name' }, el('span', { className: 'request-label', text: 'Not a contact' }), nameTitle(request.sender)),
+      nameHint(request.sender, { claimed: request.claimed_name, prefix: 'says their name is ' }),
       request.message ? el('p', { className: 'request-note' }, untrusted(request.message)) : null,
       el('div', { className: 'request-actions' }, button('Accept', () => void accept(request), 'small'), button('Decline', () => void decline(request), 'secondary small')))
   )) : [el('li', { className: 'contact-empty', text: 'No new requests.' })]));
@@ -989,7 +1056,8 @@ function renderRequests() {
   ui.outgoingList.replaceChildren(...(state.outgoing.length ? state.outgoing.map(o => el('li', { className: 'request-row' },
     avatar(o.fp),
     el('div', { className: 'request-main' },
-      el('span', { className: 'contact-name' }, el('strong', { text: displayName(o.fp) })),
+      el('span', { className: 'contact-name' }, nameTitle(o.fp)),
+      nameHint(o.fp),
       el('span', { className: 'contact-claim', text: 'waiting for them to accept' }),
       el('div', { className: 'request-actions' }, button('Withdraw', () => void withdraw(o.fp), 'secondary small')))
   )) : [el('li', { className: 'contact-empty', text: 'None.' })]));
@@ -1001,7 +1069,8 @@ function renderConversation(scroll) {
   const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
   ui.convAvatar.replaceWith(ui.convAvatar = avatar(contact.fp, ' conversation-avatar'));
   ui.convTitle.textContent = displayName(contact.fp);
-  const claim = claimedNameHint(contact.fp);
+  ui.convTitle.classList.toggle('chain-name', namesOf(contact.fp).verified);
+  const claim = nameHint(contact.fp);
   ui.convClaim.replaceChildren(...(claim ? claim.childNodes : []));
   const lost = dropped.get(contact.fp), other = others.get(contact.fp);
   ui.convNote.textContent = [
@@ -1038,7 +1107,7 @@ function renderConversation(scroll) {
 function fillOwnAvatar() {
   const p = ownProfile || {};
   ui.ownAvatar.className = `contact-avatar avatar-large avatar-${parseInt(ownFp[0], 16) % 6}`;
-  fillAvatar(ui.ownAvatar, initials(ownFp, typeof p.name === 'string' ? p.name : ''), p.avatar_base64);
+  fillAvatar(ui.ownAvatar, initials(ownFp, chainNameOf(ownFp)), p.avatar_base64);
   ui.avatarRemove.hidden = !p.avatar_base64;
 }
 
@@ -1046,11 +1115,22 @@ function fillProfile() {
   const p = ownProfile || {};
   ui.bio.value = p.bio || ''; ui.location.value = p.location || ''; ui.website.value = p.website || '';
   fillOwnAvatar();
+  fillNameLine();
+}
+
+// The names line of "Your ID & profile" (also refreshed when the own chain
+// name arrives, without touching the edit fields).
+function fillNameLine() {
+  const p = ownProfile || {};
   const line = ui.profileName;
   line.replaceChildren();
-  if (p.name) line.append('Your name: ', untrusted(p.name, undefined, { name: true }));
+  // HF-4 (design R6): the chain name and the profile name are two different
+  // things and are labelled as such.
+  const chain = chainNameOf(ownFp);
+  line.append(chain ? el('span', {}, 'Your chain name: ', el('strong', { className: 'chain-name', text: chain })) : 'You have no chain name.', el('br'));
+  if (p.name) line.append('Your profile name (in the network directory, not on the chain): ', untrusted(p.name, undefined, { name: true }));
   else if (p.claimed_name) line.append('Name on your profile (not verified — its lookup record does not point to you): ', untrusted(p.claimed_name, undefined, { name: true }));
-  else line.textContent = 'Your profile has no name.';
+  else line.append('Your profile has no name.');
   if (p.website) { const link = website(p.website); if (link) line.append(el('br'), 'Website: ', link); }
 }
 

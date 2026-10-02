@@ -18,6 +18,17 @@
  *     session-expiry.md — expiry_height = tip + 90; tip 0 / unknown: no send.
  *   2026-09-25-gas-price.md — fee = max(floor, units x gas_price), gas_price
  *     from dnac_fee_info on the same session.
+ *   2026-10-02-onchain-names.md (design docs/plans/2026-10-02-onchain-names-
+ *     design.md rev 4 §1.6, §2 "Queries"/"Clients") — HF-4: every envelope is
+ *     built for the pinned rule-set GENERATION whose (SYSTEM, CORE) tuple
+ *     EQUALS the node's dnac_ruleset_info answer (never chosen by height; no
+ *     match or an older node = nothing is built); a generation-1 envelope
+ *     never expires past H-1 once a RULESET_GEN2 height H is committed
+ *     (nodus-cli's cli_select_runtimes / cli_env_expiry). Chain names
+ *     (dnac_name_lookup / dnac_name_of) resolve from ONE node's committed
+ *     state (decision item 9, accepted risk); a name's non-NODUS address is
+ *     read from the owner's signature-checked profile (the Messages profile
+ *     reader, connect/nc_profile.c), never from an unsigned source.
  *
  * WHAT IS HERE: small wrappers only. Every chain rule is the shared builder's
  * (nodus_v2_spend_plan / nodus_v2_spend_build), every network call is the
@@ -25,7 +36,9 @@
  * package (c1)). The request each wrapper fills is nodus-cli's
  * `v2-envelope spend` (nodus/tools/nodus-cli.c cmd_v2_spend) for one native
  * spend: fee floor max(DNAC_MIN_FEE_RAW, NODUS_W_BASE_TX_FEE), not fixed,
- * largest-first selection, count 1, no shard, expiry tip + 90.
+ * largest-first selection, count 1, no shard, expiry tip + 90 (capped at
+ * H-1 for a generation-1 envelope once a rule-set switch at H is
+ * committed — nsw_expiry_for).
  * The GENESIS CLAIM (nsw_claim_*, 0.1.26) is nodus-cli's `v2-claim`
  * (cmd_v2_claim) for this wallet's one allocation, over the shared claim
  * codec shared/dnac/manifest_wire.c — see the section of that name.
@@ -366,15 +379,141 @@ const char *nsw_built_in(int i) {
 
 /* ── the build: nodus-cli's request for ONE native spend ────────────── */
 
-/* The ruleset identity, rebuilt from the generated pins and REFUSED unless
- * the SYSTEM meter policy digest equals the pinned one
- * (nodus_v2_ruleset_from_pins, nodus_v2_spend.c). */
-static int nsw_ruleset(nodus_v2_ruleset_id_t *rs, dna_meter_policy_t *pol) {
-    int rc = nodus_v2_ruleset_from_pins(rs, pol);
+/* HF-4 — the rule-set generation an envelope is built for, and the facts
+ * its expiry is judged against (design rev 4 §1.6): `gen` the pinned
+ * generation whose (SYSTEM, CORE) tuple equals the node's
+ * dnac_ruleset_info answer, `h` that answer's "H" (the earliest committed
+ * RULESET_GEN2 effective height, 0 = no vote), `ri_tip` that answer's own
+ * tip. The OFFLINE builds (parity, no session) use NSW_GEN_OFFLINE:
+ * generation 1, no vote — the envelope they always built. */
+typedef struct {
+    uint32_t gen;
+    uint64_t h;
+    uint64_t ri_tip;
+} nsw_gen_t;
+
+static const nsw_gen_t NSW_GEN_OFFLINE = { 1u, 0u, 0u };
+
+/* The ruleset identity of generation `gen`, rebuilt from the generated pins
+ * and REFUSED unless that generation's SYSTEM meter policy digest equals
+ * the pinned one (nodus_v2_ruleset_from_pins_gen, nodus_v2_spend.c). */
+static int nsw_ruleset(uint32_t gen, nodus_v2_ruleset_id_t *rs,
+                       dna_meter_policy_t *pol) {
+    int rc = nodus_v2_ruleset_from_pins_gen(gen, rs, pol);
     if (rc != NODUS_V2_SPEND_OK)
         return nsw_fail("This wallet's transfer rules do not match their "
                         "pinned digest; nothing was built (rc=%d).", rc);
     return 0;
+}
+
+/* The ONE expiry rule (nodus-cli cli_env_expiry): tip + NSW_EXPIRY_AHEAD,
+ * and — for an envelope of rule-set generation 1 while a RULESET_GEN2
+ * height H is committed — never past H-1: a generation-1 envelope must not
+ * outlive the last generation-1 block. Validity is judged against the MORE
+ * CONSERVATIVE tip: the larger of `tip` (the coin listing's) and the
+ * ruleset answer's; if H-1 is not above it, no generation-1 expiry is valid
+ * and nothing is built ("try again after H"). `tip` 0 (the node's read-error
+ * answer) refuses. @return 0 (*out set) / -1 (reason in nsw_error). */
+static int nsw_expiry_for(uint64_t tip, const nsw_gen_t *g, uint64_t *out) {
+    if (tip == 0)
+        return nsw_fail("The current Nodus block height is unknown. Nothing "
+                        "was built.");
+    if (tip > UINT64_MAX - NSW_EXPIRY_AHEAD)
+        return nsw_fail("The current Nodus block height is out of range.");
+    uint64_t e = tip + NSW_EXPIRY_AHEAD;
+    const uint64_t hi = tip > g->ri_tip ? tip : g->ri_tip;
+    if (g->gen == 1u && g->h != 0) {
+        if (g->h - 1u <= hi)
+            return nsw_fail("The Nodus network switches to new transaction "
+                            "rules at block %llu, and a transaction built "
+                            "now could not be included before it. Nothing "
+                            "was built; try again after block %llu.",
+                            (unsigned long long)g->h,
+                            (unsigned long long)g->h);
+        if (e > g->h - 1u) e = g->h - 1u;
+    }
+    *out = e;
+    return 0;
+}
+
+/* `expiry` (the wallet's request) must be exactly the rule's value.
+ * @return 0 / -1 (reason in nsw_error). */
+static int nsw_expiry_check(uint64_t tip, const nsw_gen_t *g,
+                            uint64_t expiry) {
+    uint64_t want = 0;
+    if (nsw_expiry_for(tip, g, &want) != 0) return -1;
+    if (expiry != want)
+        return nsw_fail("The transaction's validity must end at block %llu "
+                        "under the network's current rules. Nothing was "
+                        "built; prepare it again.",
+                        (unsigned long long)want);
+    return 0;
+}
+
+/* The pinned generation whose (SYSTEM, CORE) tuple EQUALS the given one —
+ * all four fields — or 0 for none (nodus-cli cli_select_runtimes' loop over
+ * the pins header, nodus_v2_pins_tuples). */
+static uint32_t nsw_gen_match(uint32_t sys_version, const uint8_t sys_hash[64],
+                              uint32_t core_version,
+                              const uint8_t core_hash[64]) {
+    for (uint32_t gen = 1; gen <= nodus_v2_pins_generation_count(); gen++) {
+        uint32_t sv = 0, cv = 0;
+        uint8_t sh[64], ch[64];
+        if (nodus_v2_pins_tuples(gen, &sv, sh, &cv, ch) != NODUS_V2_SPEND_OK)
+            continue;
+        if (sv == sys_version && memcmp(sh, sys_hash, 64) == 0 &&
+            cv == core_version && memcmp(ch, core_hash, 64) == 0)
+            return gen;
+    }
+    return 0;
+}
+
+#ifdef NODUS_SEND_TEST_FIXED_RANDOM
+/* TEST-only (parity build, never shipped — build-nodus-send-wasm.sh
+ * exports_test): one pinned generation's tuple as
+ * "<sys version>:<sys hash hex>:<core version>:<core hash hex>" ("" for an
+ * unknown generation), and nsw_gen_match on such a text — so the
+ * generation choice is pinned without a node. */
+static char g_test_tuple[2 * NSW_U64_DEC + 2 * 128 + 4];
+
+const char *nsw_test_pins_tuple(int gen) {
+    uint32_t sv = 0, cv = 0;
+    uint8_t sh[64], ch[64];
+    char svd[NSW_U64_DEC], cvd[NSW_U64_DEC], shx[129], chx[129];
+    g_test_tuple[0] = '\0';
+    if (gen < 1 || nodus_v2_pins_tuples((uint32_t)gen, &sv, sh, &cv, ch) !=
+                       NODUS_V2_SPEND_OK)
+        return g_test_tuple;
+    nsw_fmt_u64(sv, svd);
+    nsw_fmt_u64(cv, cvd);
+    nsw_fmt_hex(sh, 64, shx);
+    nsw_fmt_hex(ch, 64, chx);
+    snprintf(g_test_tuple, sizeof(g_test_tuple), "%s:%s:%s:%s", svd, shx, cvd,
+             chx);
+    return g_test_tuple;
+}
+
+int nsw_test_gen_match(const char *sv_dec, const char *sh_hex,
+                       const char *cv_dec, const char *ch_hex) {
+    uint64_t sv = 0, cv = 0;
+    uint8_t sh[64], ch[64];
+    if (nsw_parse_u64(sv_dec, &sv) != 0 || sv > UINT32_MAX ||
+        nsw_parse_u64(cv_dec, &cv) != 0 || cv > UINT32_MAX ||
+        nsw_parse_hex(sh_hex, sh, sizeof(sh)) != 0 ||
+        nsw_parse_hex(ch_hex, ch, sizeof(ch)) != 0)
+        return -1;
+    return (int)nsw_gen_match((uint32_t)sv, sh, (uint32_t)cv, ch);
+}
+#endif
+
+/* The chain-name byte rule (dnac/include/dnac/dnac.h dnac_name_bytes_ok —
+ * the one the CORE op-8 parse and the queries use) on a NUL-terminated
+ * string. Synchronous, no network: the JS mirror's shared test vectors
+ * are checked against it. @return 1 legal / 0 refused. */
+int nsw_name_ok(const char *name) {
+    if (!name) return 0;
+    size_t n = strnlen(name, DNAC_NAME_MAX_LEN + 1u);
+    return dnac_name_bytes_ok((const uint8_t *)name, n) ? 1 : 0;
 }
 
 static const char *nsw_spend_reason(int rc) {
@@ -403,25 +542,23 @@ static const char *nsw_spend_reason(int rc) {
  * envelope: it is the one the pass-2 preflight bound into wire_id and
  * intent_id (nodus_v2_env_sign_one_key) — reported as the chain the bytes
  * were signed for (self-consistent, design §1.4 / RT1 L4 F7).
+ * `g`: the rule-set generation the envelope is built for and its expiry
+ * facts (HF-4, nsw_gen_t); `expiry` must equal nsw_expiry_for's value.
  */
 static int nsw_build_core(const uint8_t *pk, const uint8_t *sk,
                           const uint8_t chain32[DNA_CHAIN_ID_LEN],
                           uint64_t tip, uint64_t gas_price,
                           const uint8_t to_raw[64], uint64_t amount,
-                          uint64_t expiry, nodus_v2_rand_fn rand) {
+                          uint64_t expiry, nodus_v2_rand_fn rand,
+                          const nsw_gen_t *g) {
     nsw_built_clear();
-    if (tip == 0)
-        return nsw_fail("The current Nodus block height is unknown. Nothing "
-                        "was built.");
-    if (tip > UINT64_MAX - NSW_EXPIRY_AHEAD || expiry != tip + NSW_EXPIRY_AHEAD)
-        return nsw_fail("The transfer's validity must end at block tip + %u.",
-                        (unsigned)NSW_EXPIRY_AHEAD);
+    if (nsw_expiry_check(tip, g, expiry) != 0) return -1;
     if (amount == 0) return nsw_fail("Enter an amount above zero.");
     if (g_req_n < 1) return nsw_fail("Insufficient NODUS balance.");
 
     nodus_v2_ruleset_id_t rs;
     dna_meter_policy_t pol;
-    if (nsw_ruleset(&rs, &pol) != 0) return -1;
+    if (nsw_ruleset(g->gen, &rs, &pol) != 0) return -1;
 
     /* the planner sorts in place: plan over a copy, the request stays */
     nodus_v2_coin_t coins[NSW_MAX_COINS];
@@ -581,7 +718,7 @@ int nsw_offline_build(const char *chain_hex, const char *tip_dec,
         rc = nsw_fail("Key derivation failed.");
     } else {
         rc = nsw_build_core(pk, sk, chain32, tip, gas, to_raw, amount, expiry,
-                            nsw_rand_explicit);
+                            nsw_rand_explicit, &NSW_GEN_OFFLINE);
         if (rc == 0 && g_out_seeds_pos != g_out_seeds_len) {
             nsw_built_clear();
             rc = nsw_fail("The build used %u of the %u output seed bytes given.",
@@ -605,7 +742,9 @@ int nsw_offline_build(const char *chain_hex, const char *tip_dec,
  * (nodus_v2_stake_ruleset_from_pins — the SYSTEM tuple pinned by the same
  * "Yol 2" mechanism as the CORE one). The request this file fills is the
  * CLI's: the listed candidate coins, the tip, the gas price read on this
- * session, expiry = tip + 90, the staker / delegator = this wallet's key.
+ * session, expiry = nsw_expiry_for (tip + 90, capped at H-1 for a
+ * generation-1 envelope before a committed rule-set switch at H), the
+ * staker / delegator = this wallet's key.
  * The builder draws no randomness (its one change output is seeded from
  * the input nullifiers); only the two hedged signatures draw from
  * qgp_platform_random. What the chain decides from its state (a bonded
@@ -653,36 +792,33 @@ static const char *nsw_stake_reason(int rc, int op) {
  * Σinputs = lock + fee + change (lock = the amount for STAKE / DELEGATE,
  * 0 for UNDELEGATE — rtn_sys_call_flow), the change to this wallet.
  * Large structs are heap: this runs after every network wait of the
- * networked caller, never across one.
+ * networked caller, never across one. `g`: as for nsw_build_core.
  */
 static int nsw_stake_core(const uint8_t *pk, const uint8_t *sk,
                           const uint8_t chain32[DNA_CHAIN_ID_LEN],
                           uint64_t tip, uint64_t gas_price, int op,
                           const uint8_t *validator_pk, uint64_t amount,
-                          uint32_t commission, uint64_t expiry) {
+                          uint32_t commission, uint64_t expiry,
+                          const nsw_gen_t *g) {
     nsw_built_clear();
     if (op != NODUS_V2_STAKE_OP_STAKE && op != NODUS_V2_STAKE_OP_DELEGATE &&
         op != NODUS_V2_STAKE_OP_UNDELEGATE)
         return nsw_fail("Unknown staking action.");
     if ((op == NODUS_V2_STAKE_OP_STAKE) != (validator_pk == NULL))
         return nsw_fail("Invalid staking request.");
-    if (tip == 0)
-        return nsw_fail("The current Nodus block height is unknown. Nothing "
-                        "was built.");
-    if (tip > UINT64_MAX - NSW_EXPIRY_AHEAD || expiry != tip + NSW_EXPIRY_AHEAD)
-        return nsw_fail("The transaction's validity must end at block tip + %u.",
-                        (unsigned)NSW_EXPIRY_AHEAD);
+    if (nsw_expiry_check(tip, g, expiry) != 0) return -1;
     if (g_req_n < 1) return nsw_fail("Insufficient NODUS balance.");
 
-    /* the pinned policy digest (fail-closed, as for a send) and the two
-     * ruleset tuples the legs are signed against */
+    /* the pinned policy digest of the generation (fail-closed, as for a
+     * send) and that generation's two ruleset tuples the legs are signed
+     * against */
     {
         nodus_v2_ruleset_id_t rs;
         dna_meter_policy_t pol;
-        if (nsw_ruleset(&rs, &pol) != 0) return -1;
+        if (nsw_ruleset(g->gen, &rs, &pol) != 0) return -1;
     }
     nodus_v2_stake_ruleset_t srs;
-    if (nodus_v2_stake_ruleset_from_pins(&srs) != NODUS_V2_SPEND_OK)
+    if (nodus_v2_stake_ruleset_from_pins_gen(g->gen, &srs) != NODUS_V2_SPEND_OK)
         return nsw_fail("This wallet's staking rules could not be loaded.");
 
     uint8_t own_raw[64];
@@ -842,7 +978,7 @@ int nsw_stake_offline_build(int op, const char *chain_hex, const char *tip_dec,
         rc = nsw_fail("Key derivation failed.");
     else
         rc = nsw_stake_core(pk, sk, chain32, tip, gas, op, vpk, amount,
-                            (uint32_t)commission, expiry);
+                            (uint32_t)commission, expiry, &NSW_GEN_OFFLINE);
 done:
     nsw_wipe(g_seed, sizeof(g_seed));
     if (sk) { nsw_wipe(sk, NSW_SK_LEN); free(sk); }
@@ -1363,6 +1499,38 @@ static int nsw_session_ok(void) {
     return 0;
 }
 
+/* HF-4 (design rev 4 §1.6; nodus-cli cli_select_runtimes): ask the node
+ * which rule-set generation governs its tip + 1 and pick the PINNED
+ * generation whose (SYSTEM, CORE) tuple EQUALS the answer — never by
+ * height. A failed query FAILS CLOSED: an older node answers "unknown DNAC
+ * method" as NODUS_ERR_PROTOCOL_ERROR (nodus_witness_handlers.c dispatch
+ * default), the same code the client returns for an answer it cannot
+ * decode (hf4_query), so the message names both. No matching generation =
+ * this page's build is older than the network's rules. The answer's
+ * structure lives on the C stack (its address is taken), not in the
+ * Asyncify unwind buffer. @return 0 (*out set) / -1 (reason in nsw_error). */
+static int nsw_select_generation(nsw_gen_t *out) {
+    nodus_dnac_ruleset_info_t ri;
+    memset(&ri, 0, sizeof(ri));
+    int rc = nodus_client_dnac_ruleset_info(&g_client, &ri);
+    if (rc != 0)
+        return nsw_fail("This Nodus node did not say which transaction rules "
+                        "it runs (an older node, or an unreadable answer; "
+                        "rc=%d). Nothing was built.", rc);
+    const uint32_t gen = nsw_gen_match(ri.sys_version, ri.sys_hash,
+                                       ri.core_version, ri.core_hash);
+    if (gen != 0) {
+        out->gen = gen;
+        out->h = ri.gen2_height;
+        out->ri_tip = ri.tip;
+        return 0;
+    }
+    return nsw_fail("This page is out of date: the Nodus network runs "
+                    "transaction rules this page does not know (generation "
+                    "%u). Reload the page. Nothing was built.",
+                    (unsigned)ri.generation);
+}
+
 /* ── unlock: identity from the seed, pinned session, chain check ── */
 
 int nsw_unlock(void) {
@@ -1378,10 +1546,12 @@ int nsw_unlock(void) {
         nsw_wipe(g_seed, sizeof(g_seed));
         return nsw_end(nsw_fail("Nodus network settings are missing."));
     }
-    {
+    /* every pinned generation must rebuild its pinned policy digest before
+     * anything connects (HF-4: the build picks one of them later) */
+    for (uint32_t gen = 1; gen <= nodus_v2_pins_generation_count(); gen++) {
         nodus_v2_ruleset_id_t rs;
         dna_meter_policy_t pol;
-        if (nsw_ruleset(&rs, &pol) != 0) {
+        if (nsw_ruleset(gen, &rs, &pol) != 0) {
             nsw_wipe(g_seed, sizeof(g_seed));
             return nsw_end(-1);
         }
@@ -1516,6 +1686,10 @@ int nsw_build_and_sign(const char *to_hex, const char *amount_dec,
     if (nsw_session_ok() != 0) return nsw_end(-1);
     /* signing: re-read the chain id on this session, whatever the cache */
     if (nsw_check_chain() != 0) return nsw_end(-1);
+    /* HF-4: the generation is chosen from the node's answer on THIS call,
+     * never from an earlier nsw_ruleset_info */
+    nsw_gen_t gen;
+    if (nsw_select_generation(&gen) != 0) return nsw_end(-1);
     nodus_dnac_fee_info_t fi;
     memset(&fi, 0, sizeof(fi));
     int rc = nodus_client_dnac_fee_info(&g_client, &fi);
@@ -1525,7 +1699,8 @@ int nsw_build_and_sign(const char *to_hex, const char *amount_dec,
                                 "was built.", rc));
     if (g_cancel) return nsw_end(-1);
     rc = nsw_build_core(g_id.pk.bytes, g_id.sk.bytes, g_net.chain, g_list.tip,
-                        fi.gas_price, to_raw, amount, expiry, nsw_rand_csprng);
+                        fi.gas_price, to_raw, amount, expiry, nsw_rand_csprng,
+                        &gen);
     return nsw_end(rc);
 }
 
@@ -2010,8 +2185,9 @@ int nsw_delegations(void) {
 /* Build one staking envelope for review. `op`: 1 STAKE, 2 DELEGATE,
  * 4 UNDELEGATE. `validator_fp_hex`: the target, resolved to its key from
  * the last nsw_validators listing ("" for STAKE). The candidate coins must
- * come from the LAST nsw_list, and expiry must be its tip + 90 — the same
- * gates as nsw_build_and_sign. A DELEGATE target must be bonded and
+ * come from the LAST nsw_list, and expiry must be nsw_expiry_for's value
+ * for its tip — the same gates as nsw_build_and_sign, including the
+ * rule-set generation chosen from the node's answer on this call. A DELEGATE target must be bonded and
  * seat-eligible in that listing (status ACTIVE 0 or ELIGIBLE 4 —
  * rtn_delegate_exec's target rule); an UNDELEGATE target may have any
  * status (rtn_undelegate_exec has no status gate). The submission is
@@ -2068,6 +2244,8 @@ int nsw_stake_build(int op, const char *validator_fp_hex, const char *amount_dec
     }
     if (nsw_session_ok() != 0) return nsw_end(-1);
     if (nsw_check_chain() != 0) return nsw_end(-1);
+    nsw_gen_t gen;                           /* HF-4, as nsw_build_and_sign */
+    if (nsw_select_generation(&gen) != 0) return nsw_end(-1);
     nodus_dnac_fee_info_t fi;
     memset(&fi, 0, sizeof(fi));
     int rc = nodus_client_dnac_fee_info(&g_client, &fi);
@@ -2080,7 +2258,169 @@ int nsw_stake_build(int op, const char *validator_fp_hex, const char *amount_dec
     rc = nsw_stake_core(g_id.pk.bytes, g_id.sk.bytes, g_net.chain, g_list.tip,
                         fi.gas_price, op,
                         op == NODUS_V2_STAKE_OP_STAKE ? NULL : g_vals.pk[vi],
-                        amount, (uint32_t)commission, expiry);
+                        amount, (uint32_t)commission, expiry, &gen);
+    return nsw_end(rc);
+}
+
+/* ── HF-4: rule-set generation, chain names, a name's coin address ──
+ *
+ * nsw_ruleset_info: the generation a build made now would use and the
+ * facts its expiry is judged against (nsw_select_generation), for the
+ * wallet to compute the expiry it requests (src/adapters/nodus.js
+ * expiryHeightFor — the same rule as nsw_expiry_for). The builds do NOT
+ * reuse this answer: each asks the node again.
+ * nsw_name_lookup / nsw_name_of: dnac_name_lookup / dnac_name_of — ONE
+ * node's committed state (decision 2026-10-02-onchain-names.md item 9,
+ * accepted risk); the client's decoders refuse a malformed answer
+ * (nodus_dnac_name_result_decode: a name outside dnac_name_bytes_ok, an
+ * owner that is not 128 lowercase hex).
+ * nsw_profile_address: the coin address the name's OWNER published in
+ * its profile, read with the Messages profile reader (connect/nc_profile.c
+ * nc_profile_read: the owner's row only, decoded, its ML-DSA-87 signature
+ * verified and SHA3-512(signing key) == the owner) — never an unsigned
+ * source. Only the read needs the session (nc_read_one uses the client and
+ * the cancel flag, never the Messages keys), so it runs without Messages
+ * being open. */
+
+static struct {
+    int  gen;
+    char tip[NSW_U64_DEC], h[NSW_U64_DEC];
+} g_ri;
+
+int nsw_ri_gen(void)         { return g_ri.gen; }
+const char *nsw_ri_tip(void) { return g_ri.tip; }
+const char *nsw_ri_h(void)   { return g_ri.h; }
+
+int nsw_ruleset_info(void) {
+    if (nsw_begin() != 0) return -1;
+    memset(&g_ri, 0, sizeof(g_ri));
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    nsw_gen_t gen;
+    if (nsw_select_generation(&gen) != 0) return nsw_end(-1);
+    g_ri.gen = (int)gen.gen;
+    nsw_fmt_u64(gen.ri_tip, g_ri.tip);
+    nsw_fmt_u64(gen.h, g_ri.h);
+    return nsw_end(0);
+}
+
+static struct {
+    int  found;
+    char owner[129], name[DNAC_NAME_MAX_LEN + 1u];
+    char registered[NSW_U64_DEC], committed[NSW_U64_DEC];
+} g_nm;
+
+int nsw_name_found(void)             { return g_nm.found; }
+const char *nsw_name_owner(void)     { return g_nm.owner; }
+const char *nsw_name_name(void)      { return g_nm.name; }
+const char *nsw_name_registered(void) { return g_nm.registered; }
+const char *nsw_name_committed(void) { return g_nm.committed; }
+
+static void nsw_name_keep(const nodus_dnac_name_result_t *r) {
+    g_nm.found = r->found ? 1 : 0;
+    nsw_fmt_u64(r->committed_height, g_nm.committed);
+    if (!r->found) return;
+    memcpy(g_nm.owner, r->owner, sizeof(g_nm.owner));
+    g_nm.owner[128] = '\0';
+    memcpy(g_nm.name, r->name, sizeof(g_nm.name));
+    g_nm.name[DNAC_NAME_MAX_LEN] = '\0';
+    nsw_fmt_u64(r->registered_height, g_nm.registered);
+}
+
+/* `name`: already lower-case (the wallet maps A-Z with an ASCII-only table;
+ * uppercase is refused here, as by the chain). */
+int nsw_name_lookup(const char *name) {
+    if (nsw_begin() != 0) return -1;
+    memset(&g_nm, 0, sizeof(g_nm));
+    if (!nsw_name_ok(name))
+        return nsw_end(nsw_fail("Not a chain name: 3 to 36 letters a-z and "
+                                "digits."));
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    nodus_dnac_name_result_t r;
+    memset(&r, 0, sizeof(r));
+    int rc = nodus_client_dnac_name_lookup(&g_client, name, &r);
+    if (rc != 0)
+        return nsw_end(nsw_fail("The chain name could not be looked up (an "
+                                "older node, or no readable answer; rc=%d).",
+                                rc));
+    uint8_t tmp[64];
+    if (r.found && nsw_parse_hex(r.owner, tmp, sizeof(tmp)) != 0)
+        return nsw_end(nsw_fail("The Nodus node returned an invalid owner."));
+    nsw_name_keep(&r);
+    if (g_nm.found) memcpy(g_nm.name, name, strnlen(name, DNAC_NAME_MAX_LEN) + 1u);
+    return nsw_end(0);
+}
+
+/* `owner_hex`: 128 lowercase hex. */
+int nsw_name_of(const char *owner_hex) {
+    if (nsw_begin() != 0) return -1;
+    memset(&g_nm, 0, sizeof(g_nm));
+    uint8_t tmp[64];
+    if (nsw_parse_hex(owner_hex, tmp, sizeof(tmp)) != 0)
+        return nsw_end(nsw_fail("Invalid Nodus address."));
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    nodus_dnac_name_result_t r;
+    memset(&r, 0, sizeof(r));
+    int rc = nodus_client_dnac_name_of(&g_client, owner_hex, &r);
+    if (rc != 0)
+        return nsw_end(nsw_fail("The chain name of this ID could not be read "
+                                "(an older node, or no readable answer; "
+                                "rc=%d).", rc));
+    nsw_name_keep(&r);
+    if (g_nm.found) memcpy(g_nm.owner, owner_hex, 129);
+    return nsw_end(0);
+}
+
+static char g_paddr[129];
+
+const char *nsw_profile_addr(void) { return g_paddr; }
+
+/* The address for coin network `field` ("eth", "bsc", "sol" or "trx" — the
+ * profile's wallet fields, messenger/dht/client/dna_profile.h dna_wallets_t)
+ * in the signed profile of `owner_hex`. No fallback between fields: an
+ * empty field is a refusal. The address text is the owner's own claim;
+ * the coin's adapter checks its format before anything is built. */
+int nsw_profile_address(const char *owner_hex, const char *field) {
+    if (nsw_begin() != 0) return -1;
+    g_paddr[0] = '\0';
+    uint8_t tmp[64];
+    if (nsw_parse_hex(owner_hex, tmp, sizeof(tmp)) != 0)
+        return nsw_end(nsw_fail("Invalid Nodus address."));
+    if (!field || (strcmp(field, "eth") != 0 && strcmp(field, "bsc") != 0 &&
+                   strcmp(field, "sol") != 0 && strcmp(field, "trx") != 0))
+        return nsw_end(nsw_fail("This network has no profile address field."));
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    nc_ctx_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.client = &g_client;
+    ctx.keys = NULL;                         /* a read: no Messages key used */
+    ctx.fresh = false;
+    ctx.cancel = &g_cancel;
+    nc_read_t raw;
+    dna_unified_identity_t *id = NULL;
+    nc_profile_read(&ctx, owner_hex, &raw, &id, NULL);
+    int rc;
+    if (raw.outcome != NC_FOUND || !id) {
+        rc = nsw_fail("The profile of this name's owner could not be read, or "
+                      "did not pass its signature check. Nothing was sent.");
+    } else {
+        const char *a = strcmp(field, "eth") == 0 ? id->wallets.eth
+                      : strcmp(field, "bsc") == 0 ? id->wallets.bsc
+                      : strcmp(field, "sol") == 0 ? id->wallets.sol
+                      : id->wallets.trx;
+        size_t n = strnlen(a, sizeof(id->wallets.eth));
+        if (n == 0)
+            rc = nsw_fail("The owner of this name has no address for this "
+                          "network in their profile. Nothing was sent.");
+        else if (n >= sizeof(g_paddr))
+            rc = nsw_fail("The owner's profile address is too long.");
+        else {
+            memcpy(g_paddr, a, n);
+            g_paddr[n] = '\0';
+            rc = 0;
+        }
+    }
+    dna_identity_free(id);
+    nc_read_clear(&raw);
     return nsw_end(rc);
 }
 
@@ -2148,6 +2488,9 @@ void nsw_lock(void) {
     memset(&g_list, 0, sizeof(g_list));
     g_vals.valid = 0; g_vals.n = 0;
     g_dels.valid = 0; g_dels.n = 0;
+    memset(&g_ri, 0, sizeof(g_ri));
+    memset(&g_nm, 0, sizeof(g_nm));
+    nsw_wipe(g_paddr, sizeof(g_paddr));
     nc_session_wipe();                      /* the Messages keys and caches */
     g_unlocked = 0;
 }

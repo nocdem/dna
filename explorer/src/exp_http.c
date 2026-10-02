@@ -15,6 +15,7 @@
 #include <sys/socket.h>
 
 #include "nodus/nodus.h"          /* NODUS_DNAC_V3_* kinds, bounds */
+#include "dnac/dnac.h"            /* dnac_name_bytes_ok (HF-4 name search) */
 
 #include "crypto/utils/qgp_log.h"
 #define LOG_TAG "EXP_HTTP"
@@ -247,6 +248,15 @@ static void emit_item_fields(exp_json_t *j, const exp_item_row_t *it) {
     exp_json_raw(j, ",\"burned\":");
     if (it->has_effects && it->burned > 0) exp_json_u64_str(j, it->burned);
     else exp_json_raw(j, "null");
+    /* HF-4 NAME_REGISTER: the registered name, the price paid into the
+     * reward pool (not a burn) and the owner (the resolved address of the
+     * first input; null when not indexed) — all null on any other item. */
+    exp_json_raw(j, ",\"name\":");
+    if (it->name[0]) exp_json_str(j, it->name); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"name_price\":");
+    if (it->name[0]) exp_json_u64_str(j, it->name_price); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"name_owner\":");
+    if (it->name[0] && it->name_owner[0]) exp_json_str(j, it->name_owner); else exp_json_raw(j, "null");
 }
 
 static void emit_item_summary(exp_json_t *j, const exp_item_row_t *it) {
@@ -767,7 +777,11 @@ static void emit_match(exp_json_t *j, int *wrote, const char *type, const char *
 
 /* Every match is reported, never short-circuited on the first hit:
  * decimal -> block height; "height:index" -> tx position; 128-hex -> tx
- * (wire or intent id), block id, address (has indexed history). */
+ * (wire or intent id), block id, address (has indexed history); a legal
+ * chain name (HF-4, dnac_name_bytes_ok — lower-case only, as the chain
+ * stores it) -> "name", target = the registering item's position (an
+ * all-digit name also matches the block-height branch: both are
+ * reported). */
 static void route_search(exp_db_t *db, const char *query, exp_json_t *j, int *status) {
     char q[512];
     if (!query_get(query, "q", q, sizeof(q)) || q[0] == '\0') {
@@ -803,6 +817,14 @@ static void route_search(exp_db_t *db, const char *query, exp_json_t *j, int *st
         int n = 0;
         if (exp_db_query_address(db, q, UINT64_MAX, UINT32_MAX, 1, &probe, &n) == 0 && n > 0)
             emit_match(j, &wrote, "address", q);
+    }
+    if (dnac_name_bytes_ok((const uint8_t *)q, strlen(q))) {
+        exp_item_row_t it;
+        if (exp_db_query_item_by_name(db, q, &it) == 0) {
+            char pos[48];
+            snprintf(pos, sizeof(pos), "%llu:%u", (unsigned long long)it.height, (unsigned)it.idx);
+            emit_match(j, &wrote, "name", pos);
+        }
     }
     /* none of the shapes: empty matches — search is a lookup, not a
      * format validator. */

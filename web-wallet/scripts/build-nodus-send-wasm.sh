@@ -101,6 +101,13 @@ mode="${1:-release}"
 # emscripten_sleep; their records, identities and value lists are on the
 # heap or in static storage. Their frames were NOT measured from a
 # --profiling-funcs disassembly: expected to hold, not measured.
+# The HF-4 exports (nsw_ruleset_info, nsw_name_lookup, nsw_name_of,
+# nsw_profile_address) and the generation choice added to nsw_build_and_sign
+# / nsw_stake_build have the same shape: the answer structs
+# (nodus_dnac_ruleset_info_t ~230 B, nodus_dnac_name_result_t ~190 B, the
+# profile read's nc_read_t) have their address taken, so they live on the
+# C stack, not in the unwind buffer; the profile itself is heap. Expected to
+# hold, not measured.
 # There is no ASYNCIFY_ONLY / ASYNCIFY_ADD list: with ASYNCIFY=1 Binaryen
 # instruments every function that can reach emscripten_sleep (directly or,
 # with the default ASYNCIFY_IGNORE_INDIRECT=0, through an indirect call),
@@ -263,6 +270,15 @@ exports_common=(
   nsw_val_delegated nsw_val_commission nsw_val_status
   nsw_delegations nsw_del_count nsw_del_fp nsw_del_amount nsw_del_block
   nsw_stake_build
+  # HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.6,
+  # §2 "Clients"): the rule-set generation the node runs, chain names and a
+  # name owner's signed profile address. nsw_ruleset_info, nsw_name_lookup,
+  # nsw_name_of and nsw_profile_address wait on the network (ccall
+  # { async: true }); nsw_name_ok and the getters do not.
+  nsw_name_ok nsw_ruleset_info nsw_ri_gen nsw_ri_tip nsw_ri_h
+  nsw_name_lookup nsw_name_of nsw_name_found nsw_name_owner nsw_name_name
+  nsw_name_registered nsw_name_committed
+  nsw_profile_address nsw_profile_addr
   # Messages (NC-4b, connect/nc_wasm.c), all run through the wallet's one
   # queue by src/connect/core.js. The ones that wait on the network (every
   # one below except nc_error, nc_result, nc_words_alloc, nc_salt_pick,
@@ -279,7 +295,7 @@ exports_common=(
   nc_hist_key nc_hist_encrypt nc_hist_decrypt
   nc_lock
 )
-exports_test=(nsw_test_random_buf nsw_test_random_load)
+exports_test=(nsw_test_random_buf nsw_test_random_load nsw_test_pins_tuple nsw_test_gen_match)
 
 join_exports() {
   local out="" name

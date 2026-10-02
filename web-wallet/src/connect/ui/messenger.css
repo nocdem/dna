@@ -59,6 +59,11 @@
 .contact-name { display: flex; align-items: baseline; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; }
 .contact-name strong { flex-shrink: 0; font-size: 15px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
 .contact-claim { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--muted); }
+/* HF-4 (design R3/R6): only a chain name gets the verified look — a check
+   mark after the name and the "chain name" label beside the short ID. A
+   profile name is plain text labelled "profile name". */
+.chain-name::after { content: " \2713"; color: var(--lime); font-weight: 600; }
+.name-kind { padding: 0 5px; border: 1px solid #d5f99840; border-radius: 6px; color: var(--lime); font-size: 10px; }
 .contact-preview { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--muted); }
 .has-unread .contact-preview { color: #cad8ba; }
 .has-unread .contact-name strong { color: var(--lime); }

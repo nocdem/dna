@@ -28,6 +28,7 @@ static const char *DROP_ALL_SQL =
     "DROP TABLE IF EXISTS addr_stats;"
     "DROP TABLE IF EXISTS tx_io;"
     "DROP TABLE IF EXISTS txs;"
+    "DROP TABLE IF EXISTS item_names;"
     "DROP TABLE IF EXISTS item_records;"
     "DROP TABLE IF EXISTS item_io;"
     "DROP TABLE IF EXISTS items;"
@@ -94,6 +95,16 @@ static const char *SCHEMA_SQL =
     "  effective      INTEGER NOT NULL,"
     "  PRIMARY KEY(height, idx)"
     ");"
+    /* HF-4 (exp_db.h): one row per applied NAME_REGISTER item. Created IF
+     * NOT EXISTS on every open — an existing v2 index gains it unchanged. */
+    "CREATE TABLE IF NOT EXISTS item_names ("
+    "  height INTEGER NOT NULL,"
+    "  idx    INTEGER NOT NULL,"
+    "  name   TEXT NOT NULL,"
+    "  price  INTEGER NOT NULL,"
+    "  owner  TEXT,"                       /* NULL = first input's creator not indexed */
+    "  PRIMARY KEY(height, idx)"
+    ");"
     "CREATE INDEX IF NOT EXISTS idx_blocks_id ON blocks(block_id);"
     "CREATE INDEX IF NOT EXISTS idx_items_wire ON items(wire_id);"
     "CREATE INDEX IF NOT EXISTS idx_items_intent ON items(intent_id);"
@@ -101,7 +112,8 @@ static const char *SCHEMA_SQL =
     "CREATE INDEX IF NOT EXISTS idx_io_addr ON item_io(address);"
     "CREATE INDEX IF NOT EXISTS idx_rec_validator ON item_records(validator);"
     "CREATE INDEX IF NOT EXISTS idx_rec_delegator ON item_records(delegator);"
-    "CREATE INDEX IF NOT EXISTS idx_rec_dest ON item_records(dest);";
+    "CREATE INDEX IF NOT EXISTS idx_rec_dest ON item_records(dest);"
+    "CREATE INDEX IF NOT EXISTS idx_names_name ON item_names(name);";
 
 /* ── Prepared statement SQL ─────────────────────────────────────────── */
 
@@ -120,6 +132,12 @@ static const char *INSERT_RECORD_SQL =
 static const char *INSERT_IO_SQL =
     "INSERT INTO item_io (height, idx, dir, pos, coin_id, address, token, amount, "
     "unlock_block) VALUES (?,?,?,?,?,?,?,?,?)";
+
+/* HF-4: the owner is the resolved address of the item's first consumed
+ * coin, written just before in the same transaction (exp_db.h item_names). */
+static const char *INSERT_NAME_SQL =
+    "INSERT INTO item_names (height, idx, name, price, owner) VALUES (?1, ?2, ?3, ?4, "
+    "(SELECT address FROM item_io WHERE height = ?1 AND idx = ?2 AND dir = 0 AND pos = 0))";
 
 /* The creating row of a coin. A coin id is created once (the utxo_set
  * key); ORDER BY + LIMIT 1 keeps a (never expected) duplicate
@@ -150,11 +168,13 @@ static const char *QUERY_BLOCK_BY_ID_SQL =
 #define ITEM_COLS \
     "i.height, i.idx, i.kind, i.code, i.wire_id, i.intent_id, i.fee, i.op, " \
     "i.has_effects, i.burned, r.kind, r.validator, r.delegator, r.dest, r.amount, " \
-    "r.commission_bps, r.param_id, r.new_value, r.effective, b.time_ms"
+    "r.commission_bps, r.param_id, r.new_value, r.effective, b.time_ms, " \
+    "n.name, n.price, n.owner"
 
 #define ITEM_JOINS \
     "JOIN blocks b ON b.height = i.height " \
-    "LEFT JOIN item_records r ON r.height = i.height AND r.idx = i.idx "
+    "LEFT JOIN item_records r ON r.height = i.height AND r.idx = i.idx " \
+    "LEFT JOIN item_names n ON n.height = i.height AND n.idx = i.idx "
 
 #define ITEM_FROM " FROM items i " ITEM_JOINS
 
@@ -168,6 +188,10 @@ static const char *QUERY_ITEM_SQL =
 static const char *QUERY_ITEM_BY_ID_SQL =
     "SELECT " ITEM_COLS ITEM_FROM
     "WHERE i.wire_id = ?1 OR i.intent_id = ?1 ORDER BY i.height ASC, i.idx ASC LIMIT 1";
+
+static const char *QUERY_ITEM_BY_NAME_SQL =
+    "SELECT " ITEM_COLS ITEM_FROM
+    "WHERE n.name = ?1 ORDER BY i.height ASC, i.idx ASC LIMIT 1";
 
 static const char *QUERY_IOS_SQL =
     "SELECT height, idx, dir, pos, coin_id, address, token, amount, unlock_block "
@@ -193,6 +217,7 @@ struct exp_db {
     sqlite3_stmt *stmt_insert_item;
     sqlite3_stmt *stmt_insert_record;
     sqlite3_stmt *stmt_insert_io;
+    sqlite3_stmt *stmt_insert_name;
     sqlite3_stmt *stmt_resolve_coin;
     sqlite3_stmt *stmt_get_meta;
     sqlite3_stmt *stmt_set_meta;
@@ -202,6 +227,7 @@ struct exp_db {
     sqlite3_stmt *stmt_query_items;
     sqlite3_stmt *stmt_query_item;
     sqlite3_stmt *stmt_query_item_by_id;
+    sqlite3_stmt *stmt_query_item_by_name;
     sqlite3_stmt *stmt_query_ios;
     sqlite3_stmt *stmt_query_address;
 };
@@ -260,7 +286,7 @@ static void row_to_block(sqlite3_stmt *s, exp_block_row_t *b) {
     b->n_items = (uint32_t)sqlite3_column_int64(s, 7);
 }
 
-/* The ITEM_COLS projection (20 columns). */
+/* The ITEM_COLS projection (23 columns). */
 static void row_to_item(sqlite3_stmt *s, exp_item_row_t *it) {
     memset(it, 0, sizeof(*it));
     it->height = (uint64_t)sqlite3_column_int64(s, 0);
@@ -293,6 +319,14 @@ static void row_to_item(sqlite3_stmt *s, exp_item_row_t *it) {
         it->rec.effective = (uint64_t)sqlite3_column_int64(s, 18);
     }
     it->block_time_ms = (uint64_t)sqlite3_column_int64(s, 19);
+    /* HF-4 NAME_REGISTER (item_names, LEFT JOIN: NULL = not a registration) */
+    const unsigned char *nm = sqlite3_column_text(s, 20);
+    if (nm) {
+        strncpy(it->name, (const char *)nm, sizeof(it->name) - 1);
+        it->name[sizeof(it->name) - 1] = '\0';
+        it->name_price = (uint64_t)sqlite3_column_int64(s, 21);
+        col_text129(s, 22, it->name_owner);
+    }
 }
 
 static void row_to_io(sqlite3_stmt *s, exp_io_row_t *io) {
@@ -427,6 +461,7 @@ int exp_db_open(const char *path, exp_db_t **db_out) {
         sqlite3_prepare_v2(db->conn, INSERT_ITEM_SQL, -1, &db->stmt_insert_item, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, INSERT_RECORD_SQL, -1, &db->stmt_insert_record, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, INSERT_IO_SQL, -1, &db->stmt_insert_io, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db->conn, INSERT_NAME_SQL, -1, &db->stmt_insert_name, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, RESOLVE_COIN_SQL, -1, &db->stmt_resolve_coin, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, GET_META_SQL, -1, &db->stmt_get_meta, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, SET_META_SQL, -1, &db->stmt_set_meta, NULL) != SQLITE_OK ||
@@ -436,6 +471,7 @@ int exp_db_open(const char *path, exp_db_t **db_out) {
         sqlite3_prepare_v2(db->conn, QUERY_ITEMS_SQL, -1, &db->stmt_query_items, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, QUERY_ITEM_SQL, -1, &db->stmt_query_item, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, QUERY_ITEM_BY_ID_SQL, -1, &db->stmt_query_item_by_id, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db->conn, QUERY_ITEM_BY_NAME_SQL, -1, &db->stmt_query_item_by_name, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, QUERY_IOS_SQL, -1, &db->stmt_query_ios, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, QUERY_ADDRESS_SQL, -1, &db->stmt_query_address, NULL) != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "prepare failed: %s", sqlite3_errmsg(db->conn));
@@ -452,10 +488,11 @@ void exp_db_close(exp_db_t *db) {
 
     sqlite3_stmt *stmts[] = {
         db->stmt_insert_block, db->stmt_insert_item, db->stmt_insert_record,
-        db->stmt_insert_io, db->stmt_resolve_coin, db->stmt_get_meta, db->stmt_set_meta,
+        db->stmt_insert_io, db->stmt_insert_name, db->stmt_resolve_coin,
+        db->stmt_get_meta, db->stmt_set_meta,
         db->stmt_query_blocks, db->stmt_query_block_by_height, db->stmt_query_block_by_id,
         db->stmt_query_items, db->stmt_query_item, db->stmt_query_item_by_id,
-        db->stmt_query_ios, db->stmt_query_address,
+        db->stmt_query_item_by_name, db->stmt_query_ios, db->stmt_query_address,
     };
     for (size_t i = 0; i < sizeof(stmts) / sizeof(stmts[0]); i++) {
         if (stmts[i]) sqlite3_finalize(stmts[i]);
@@ -483,6 +520,11 @@ static int batch_valid(const exp_block_batch_t *b) {
         const exp_item_row_t *it = &b->items[i];
         if (it->height != b->block.height || it->idx != (uint32_t)i) return 0;
         if (!it->has_effects && (it->rec.kind != 0 || it->burned != 0)) return 0;
+        /* HF-4: a name only on an applied item, with a price; a price only
+         * with a name (exp_extract item_ok checks the name's bytes) */
+        if (memchr(it->name, '\0', sizeof(it->name)) == NULL) return 0;
+        if (it->name[0] && (!it->has_effects || it->code != 0 || it->name_price == 0)) return 0;
+        if (!it->name[0] && it->name_price != 0) return 0;
     }
     for (size_t k = 0; k < b->n_ios; k++) {
         const exp_io_row_t *io = &b->ios[k];
@@ -610,6 +652,18 @@ static int insert_io(exp_db_t *db, const exp_io_row_t *io) {
     return step_done(db, s, "insert item_io");
 }
 
+/* HF-4: the item_names row of a registration, after the item's io rows
+ * (its owner is read from the first consumed one, INSERT_NAME_SQL). */
+static int insert_name(exp_db_t *db, const exp_item_row_t *it) {
+    sqlite3_stmt *s = db->stmt_insert_name;
+    sqlite3_reset(s);
+    sqlite3_bind_int64(s, 1, (sqlite3_int64)it->height);
+    sqlite3_bind_int64(s, 2, (sqlite3_int64)it->idx);
+    sqlite3_bind_text(s, 3, it->name, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(s, 4, (sqlite3_int64)it->name_price);
+    return step_done(db, s, "insert item_names");
+}
+
 int exp_db_write_height(exp_db_t *db, const exp_block_batch_t *b) {
     if (!db || !db->conn || !b) return -1;
     if (!batch_valid(b)) {
@@ -661,6 +715,7 @@ int exp_db_write_height(exp_db_t *db, const exp_block_batch_t *b) {
             if (insert_io(db, &b->ios[k]) != 0) goto fail;
             k++;
         }
+        if (b->items[i].name[0] && insert_name(db, &b->items[i]) != 0) goto fail;
     }
     if (k != b->n_ios) goto fail;   /* unreachable after batch_valid */
 
@@ -804,6 +859,12 @@ int exp_db_verify_index(exp_db_t *db) {
           " AND i.code = 0 AND i.has_effects = 1)" },
         { "refused item with effects",
           "SELECT COUNT(*) FROM items WHERE code != 0 AND (has_effects != 0 OR burned != 0)" },
+        { "name row without an applied item",
+          "SELECT COUNT(*) FROM item_names n WHERE NOT EXISTS "
+          "(SELECT 1 FROM items i WHERE i.height = n.height AND i.idx = n.idx "
+          " AND i.code = 0 AND i.has_effects = 1)" },
+        { "chain name registered twice",
+          "SELECT COUNT(*) FROM (SELECT name FROM item_names GROUP BY name HAVING COUNT(*) > 1)" },
     };
 
     for (size_t c = 0; c < sizeof(checks) / sizeof(checks[0]); c++) {
@@ -929,6 +990,14 @@ int exp_db_query_item_by_id(exp_db_t *db, const uint8_t id[64], exp_item_row_t *
     sqlite3_stmt *s = db->stmt_query_item_by_id;
     sqlite3_reset(s);
     sqlite3_bind_blob(s, 1, id, 64, SQLITE_STATIC);
+    return query_one_item(s, row_out);
+}
+
+int exp_db_query_item_by_name(exp_db_t *db, const char *name, exp_item_row_t *row_out) {
+    if (!db || !db->conn || !name || !row_out) return -1;
+    sqlite3_stmt *s = db->stmt_query_item_by_name;
+    sqlite3_reset(s);
+    sqlite3_bind_text(s, 1, name, -1, SQLITE_STATIC);
     return query_one_item(s, row_out);
 }
 

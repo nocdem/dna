@@ -127,8 +127,11 @@ test('lock order: queue stopped -> cancel flag -> socket closed -> memory zeroed
 
 test('expiry = tip + 90; tip 0 or unknown refuses before anything is built', async () => {
   assert.equal(NODUS_EXPIRY_AHEAD, 90n);
-  assert.equal(expiryHeightFor(1000n), 1090n); assert.equal(expiryHeightFor(1n), 91n);
-  for (const tip of [0n, undefined, null, 1000, '1000']) assert.throws(() => expiryHeightFor(tip), /height is unknown/);
+  const gen1 = { generation: 1n, tip: 0n, gen2Height: 0n };
+  assert.equal(expiryHeightFor(1000n, gen1), 1090n); assert.equal(expiryHeightFor(1n, gen1), 91n);
+  for (const tip of [0n, undefined, null, 1000, '1000']) assert.throws(() => expiryHeightFor(tip, gen1), /height is unknown/);
+  // The network's rules are required (HF-4): no ruleset answer, no expiry.
+  assert.throws(() => expiryHeightFor(1000n), /rules are unknown/);
   for (const tip of ['0', undefined]) {
     const { mock, client } = await readyClient();
     mock.state.tip = tip;
