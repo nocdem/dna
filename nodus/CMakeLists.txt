@@ -2653,6 +2653,18 @@ add_test(NAME test_split_linked
                  -DNODUS_WITNESS=$<TARGET_FILE:nodus-witness>
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/split_linked.cmake)
 
+# Split S4 — LINK GATE for the DHT / storage half: a never-run probe that
+# references only the core -> DHT entry points (dht/nodus_dht.h), so its
+# linked symbol table is the closure of the DHT objects; `nm` must find no
+# server / auth / presence / cluster entry point in it and must find the
+# DHT's own (tests/dht_linked.cmake).
+add_executable(dht_link_probe tests/dht_link_probe.c)
+target_link_libraries(dht_link_probe nodus dsa nodus crypto)
+add_test(NAME test_dht_linked
+         COMMAND ${CMAKE_COMMAND}
+                 -DDHT_PROBE=$<TARGET_FILE:dht_link_probe>
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/dht_linked.cmake)
+
 # Stake & delegation v1 — stake/committee/timing constants pin
 register_witness_test(test_stake_constants)
 
