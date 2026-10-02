@@ -8,6 +8,7 @@
 #include "server/nodus_server.h"
 #include "server/nodus_media_handler.h"
 #include "server/nodus_chain_backend.h"     /* the witness, behind one door */
+#include "witness/nodus_witness_ipc.h"      /* NODUS_WITNESS_IPC_SOCK_NAME (S3) */
 #include "channel/nodus_channel_server.h"
 #include "channel/nodus_channel_replication.h"
 #include "channel/nodus_channel_ring.h"
@@ -6405,12 +6406,13 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
     if (strncmp(msg.method, "dnac_", 5) == 0) {
         if (srv->chain) {
             srv->chain->ops->dispatch_dnac(srv->chain, sess->conn,
+                                           sess->client_pk.bytes, sess->token,
                                            payload, len,
                                            msg.method, msg.txn_id);
         } else {
             size_t rlen = 0;
             nodus_t2_error(msg.txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                            "witness module not enabled",
+                            NODUS_CHAIN_NO_WITNESS_MSG,
                             resp_buf, sizeof(resp_buf), &rlen);
             nodus_tcp_send(sess->conn, resp_buf, rlen);
         }
@@ -6711,10 +6713,19 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
 
 /* ── TCP callbacks ───────────────────────────────────────────────── */
 
+/* A client session ends (or its slot starts a new one): the chain
+ * backend forgets it, so a reply the witness sends later finds no
+ * session (split S3; the in-process backend has nothing to do). */
+static void session_chain_closed(nodus_server_t *srv, nodus_tcp_conn_t *conn) {
+    if (srv->chain)
+        srv->chain->ops->session_closed(srv->chain, conn);
+}
+
 static void on_tcp_accept(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_server_t *srv = (nodus_server_t *)ctx;
     nodus_session_t *sess = session_for_conn(srv, conn);
     if (sess) {
+        session_chain_closed(srv, conn);
         session_clear(sess);
         sess->conn = conn;
     }
@@ -6754,6 +6765,7 @@ static void on_tcp_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
         }
         /* Tear down circuits (notify bridge peers) before clearing session */
         session_teardown_circuits(srv, sess);
+        session_chain_closed(srv, conn);
         session_clear(sess);
     }
 }
@@ -7055,55 +7067,16 @@ static struct nodus_tcp_conn *server_find_session_conn(
     return NULL;
 }
 
-_Static_assert(sizeof(((nodus_witness_host_config_t *)0)->bind_ip) ==
-               sizeof(((nodus_server_config_t *)0)->bind_ip),
-               "host bind_ip must hold the server's");
-_Static_assert(sizeof(((nodus_witness_host_config_t *)0)->external_ip) ==
-               sizeof(((nodus_server_config_t *)0)->external_ip),
-               "host external_ip must hold the server's");
-_Static_assert(sizeof(((nodus_witness_host_config_t *)0)->data_path) ==
-               sizeof(((nodus_server_config_t *)0)->data_path),
-               "host data_path must hold the server's");
-_Static_assert(sizeof(((nodus_witness_host_config_t *)0)->seq_dir) ==
-               sizeof(((nodus_server_config_t *)0)->identity_path),
-               "host seq_dir must hold the server's identity_path");
-
+/* The config subset (and its array-size asserts) is the shared
+ * nodus_server_witness_host_config (nodus_server.h), so the split
+ * nodus-witness process fills the very same values. */
 void nodus_server_witness_host(nodus_server_t *srv, nodus_witness_host_t *out) {
     memset(out, 0, sizeof(*out));
     out->identity = &srv->identity;
-    memcpy(out->config.bind_ip, srv->config.bind_ip,
-           sizeof(out->config.bind_ip));
-    memcpy(out->config.external_ip, srv->config.external_ip,
-           sizeof(out->config.external_ip));
-    out->config.witness_port = srv->config.witness_port;
-    memcpy(out->config.data_path, srv->config.data_path,
-           sizeof(out->config.data_path));
-    /* The address-record sequence file stays where it has always been:
-     * the identity directory (empty → the witness uses data_path). */
-    memcpy(out->config.seq_dir, srv->config.identity_path,
-           sizeof(out->config.seq_dir));
-    out->config.p2p = srv->config.p2p;
-    out->config.has_v2_genesis_pin = srv->config.has_v2_genesis_pin;
-    memcpy(out->config.v2_genesis_pin, srv->config.v2_genesis_pin,
-           sizeof(out->config.v2_genesis_pin));
-    out->config.addr_history_index = srv->config.addr_history_index;
+    nodus_server_witness_host_config(&srv->config, &out->config);
     out->find_session_conn = server_find_session_conn;
     out->ctx = srv;
 }
-
-#ifdef NODUS_HAS_JSONC
-nodus_network_file_target_t
-nodus_server_network_file_target(nodus_server_config_t *cfg) {
-    nodus_network_file_target_t t = {
-        .p2p                = &cfg->p2p,
-        .has_v2_genesis_pin = &cfg->has_v2_genesis_pin,
-        .v2_genesis_pin     = cfg->v2_genesis_pin,
-        .has_network_pin    = &cfg->has_network_pin,
-        .network_pin        = cfg->network_pin,
-    };
-    return t;
-}
-#endif /* NODUS_HAS_JSONC */
 
 /* ── Public API ──────────────────────────────────────────────────── */
 
@@ -7451,10 +7424,32 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
      * in this process, through the chain backend. Its host view is this
      * server's identity, config and session table
      * (nodus_server_witness_host). */
-    nodus_witness_host_t whost;
-    nodus_server_witness_host(srv, &whost);
-    int wrc = nodus_chain_backend_inproc_open(&whost, &config->witness,
+    int wrc;
+    if (config->witness_external) {
+        /* Split S3 — the witness is the separate nodus-witness process
+         * (decision 2026-10-01-nodus-component-split items 5, 19, 20):
+         * this server opens no port 4004 and no chain database; it
+         * reaches the witness over <data_path>/witness.sock. Nothing is
+         * dialled here — a witness that is not (yet) running only makes
+         * `dnac_*` requests answer NODUS_CHAIN_NO_WITNESS_MSG. */
+        wrc = nodus_chain_backend_ipc_open(config->data_path, &srv->chain);
+        if (wrc == -1) {
+            fprintf(stderr, "witness_external: the witness socket path "
+                    "under data_path \"%s\" is unusable (too long) — not "
+                    "starting\n", config->data_path);
+            goto fail;
+        }
+        if (wrc == 0)
+            fprintf(stderr, "WITNESS: external — served by the nodus-witness "
+                    "process over %s/%s\n",
+                    config->data_path[0] ? config->data_path : "/tmp",
+                    NODUS_WITNESS_IPC_SOCK_NAME);
+    } else {
+        nodus_witness_host_t whost;
+        nodus_server_witness_host(srv, &whost);
+        wrc = nodus_chain_backend_inproc_open(&whost, &config->witness,
                                               &srv->chain);
+    }
     if (wrc == -2) {
         fprintf(stderr, "Failed to allocate witness context\n");
         goto fail;
@@ -7639,11 +7634,17 @@ int nodus_server_run(nodus_server_t *srv) {
     fprintf(stderr, "  Identity: %s\n", srv->identity.fingerprint);
     fprintf(stderr, "  TCP port: %d\n", srv->tcp.port);
     fprintf(stderr, "  Peer port: %d\n", srv->inter_tcp.port);
-    bool wport_opened = false;
-    int wport = srv->chain
-              ? srv->chain->ops->listen_port(srv->chain, &wport_opened) : 0;
-    fprintf(stderr, "  Witness port: %d%s\n",
-            wport, wport_opened ? "" : " (not opened)");
+    if (srv->config.witness_external) {
+        /* Split S3: port 4004 belongs to the nodus-witness process, which
+         * logs its own "Witness port" line. */
+        fprintf(stderr, "  Witness port: external (nodus-witness)\n");
+    } else {
+        bool wport_opened = false;
+        int wport = srv->chain
+                  ? srv->chain->ops->listen_port(srv->chain, &wport_opened) : 0;
+        fprintf(stderr, "  Witness port: %d%s\n",
+                wport, wport_opened ? "" : " (not opened)");
+    }
 #ifndef NODUS_CHANNELS_DISABLED
     fprintf(stderr, "  Channel port: %d\n", srv->ch_server.port);
 #endif

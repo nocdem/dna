@@ -11,6 +11,7 @@
 #define NODUS_SERVER_H
 
 #include <signal.h>                /* sig_atomic_t — see stop_requested */
+#include <string.h>                /* the static inline config helpers */
 
 #include "nodus/nodus_types.h"
 #include "transport/nodus_tcp.h"
@@ -146,6 +147,17 @@ typedef struct {
      * "addr_history_index": true; default OFF. Off = the writers write
      * nothing. It changes no root — the setting may differ per node. */
     bool                addr_history_index;
+
+    /* Component split S3 (decision docs/plans/decisions/2026-10-01-nodus-
+     * component-split.md items 5, 7, 19, 20): the witness runs as its own
+     * process (`nodus-witness`) and this server reaches it over the Unix
+     * socket <data_path>/witness.sock (server/nodus_chain_backend_ipc.c)
+     * instead of starting it in this process. nodus.json
+     * "witness_external": true / `--witness-external`; default false =
+     * the in-process witness, unchanged. When true this server opens no
+     * port 4004 and holds no chain database; the partial-wipe gate and
+     * the network-file pin check still run here. */
+    bool                witness_external;
 } nodus_server_config_t;
 
 /* ── Inter-node session (lightweight — rate limiting only, no auth) ── */
@@ -701,10 +713,62 @@ int nodus_server_check_partial_wipe(const char *data_path);
  */
 void nodus_server_witness_host(nodus_server_t *srv, nodus_witness_host_t *out);
 
+_Static_assert(sizeof(((nodus_witness_host_config_t *)0)->bind_ip) ==
+               sizeof(((nodus_server_config_t *)0)->bind_ip),
+               "host bind_ip must hold the server's");
+_Static_assert(sizeof(((nodus_witness_host_config_t *)0)->external_ip) ==
+               sizeof(((nodus_server_config_t *)0)->external_ip),
+               "host external_ip must hold the server's");
+_Static_assert(sizeof(((nodus_witness_host_config_t *)0)->data_path) ==
+               sizeof(((nodus_server_config_t *)0)->data_path),
+               "host data_path must hold the server's");
+_Static_assert(sizeof(((nodus_witness_host_config_t *)0)->seq_dir) ==
+               sizeof(((nodus_server_config_t *)0)->identity_path),
+               "host seq_dir must hold the server's identity_path");
+
+/**
+ * The witness's configuration subset, copied from a node config — the ONE
+ * definition both hosts use: nodus_server_witness_host (the combined
+ * binary) and tools/nodus-witness.c (split S3), so the two processes give
+ * the witness byte-identical settings. seq_dir = identity_path: the p2p
+ * address-record sequence file stays in the identity directory.
+ * `static inline` on purpose: the nodus-witness binary must not link
+ * nodus_server.c (test_split_linked).
+ */
+static inline void
+nodus_server_witness_host_config(const nodus_server_config_t *cfg,
+                                 nodus_witness_host_config_t *out) {
+    memset(out, 0, sizeof(*out));
+    memcpy(out->bind_ip, cfg->bind_ip, sizeof(out->bind_ip));
+    memcpy(out->external_ip, cfg->external_ip, sizeof(out->external_ip));
+    out->witness_port = cfg->witness_port;
+    memcpy(out->data_path, cfg->data_path, sizeof(out->data_path));
+    /* The address-record sequence file stays where it has always been:
+     * the identity directory (empty → the witness uses data_path). */
+    memcpy(out->seq_dir, cfg->identity_path, sizeof(out->seq_dir));
+    out->p2p = cfg->p2p;
+    out->has_v2_genesis_pin = cfg->has_v2_genesis_pin;
+    memcpy(out->v2_genesis_pin, cfg->v2_genesis_pin,
+           sizeof(out->v2_genesis_pin));
+    out->addr_history_index = cfg->addr_history_index;
+}
+
 #ifdef NODUS_HAS_JSONC
-/** The fields of `cfg` a network file sets (nodus_network_file_apply). */
-nodus_network_file_target_t
-nodus_server_network_file_target(nodus_server_config_t *cfg);
+/** The fields of `cfg` a network file sets (nodus_network_file_apply).
+ *  `static inline` so that tools/nodus_node_config.c (shared by
+ *  nodus-server and nodus-witness) does not pull nodus_server.c into the
+ *  witness binary. */
+static inline nodus_network_file_target_t
+nodus_server_network_file_target(nodus_server_config_t *cfg) {
+    nodus_network_file_target_t t = {
+        .p2p                = &cfg->p2p,
+        .has_v2_genesis_pin = &cfg->has_v2_genesis_pin,
+        .v2_genesis_pin     = cfg->v2_genesis_pin,
+        .has_network_pin    = &cfg->has_network_pin,
+        .network_pin        = cfg->network_pin,
+    };
+    return t;
+}
 #endif /* NODUS_HAS_JSONC */
 
 /**

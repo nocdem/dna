@@ -542,6 +542,12 @@ if(NOT WIN32)
         # Split S1 (decision 2026-10-01-nodus-component-split.md): the
         # server's one door to the witness, in-process implementation.
         src/server/nodus_chain_backend_inproc.c
+        # Split S3 — the IPC implementation of the same door (core side of
+        # <data_path>/witness.sock, "witness_external") and the witness
+        # side's listener (nodus-witness process). The witness TU includes
+        # no server header (test_split_linked).
+        src/server/nodus_chain_backend_ipc.c
+        src/witness/nodus_witness_ipc.c
         src/witness/nodus_witness.c
         # Split S1 — the published network file + the chain-pin start
         # check, moved out of nodus_server.c (witness-side, no server).
@@ -1243,6 +1249,17 @@ add_test(NAME test_tcp_read_budget COMMAND test_tcp_read_budget)
 add_executable(test_tcp_unix tests/test_tcp_unix.c)
 target_link_libraries(test_tcp_unix nodus dsa nodus)
 add_test(NAME test_tcp_unix COMMAND test_tcp_unix)
+
+# Component split S3: the witness IPC (witness/nodus_witness_ipc.c) against
+# the core's IPC chain backend (server/nodus_chain_backend_ipc.c) over a
+# real socket in a mkdtemp dir — preface + dnac_* request reach the witness
+# handler with the session's key/token and the reply reaches the client
+# unchanged; session_closed makes find_session_conn NULL; no witness →
+# the decision-20 error; a non-preface first frame is closed; the status
+# snapshot round-trips. Test handlers stand in for the witness; no ports.
+add_executable(test_witness_ipc tests/test_witness_ipc.c)
+target_link_libraries(test_witness_ipc nodus dsa nodus)
+add_test(NAME test_witness_ipc COMMAND test_witness_ipc)
 
 # 2026-07-21 parallel-safety: every server-spawning test now uses a FULLY
 # explicit, test-unique port set (test_server 140xx, test_circuit_live
@@ -2581,8 +2598,14 @@ target_compile_options(nodus-circ PRIVATE -Wall -Wextra -Wno-unused-parameter)
 # the SAME compiled DNAC_EPOCH_LENGTH / DNAC_BLOCKS_PER_YEAR /
 # DNAC_DECIMAL_UNIT as the node that will later run the chain, and a
 # second executable is a second place those can differ.
+#
+# Split S3: the command line, the JSON config and the derivation one-shot
+# live in tools/nodus_node_config.c, shared with nodus-witness — one
+# config file, one option set (decision 2026-10-01-nodus-component-split
+# item 18).
 add_executable(nodus-server
     tools/nodus-server.c
+    tools/nodus_node_config.c
     tools/nodus_v2_gen_config.c)
 target_link_libraries(nodus-server nodus dsa nodus)
 target_compile_options(nodus-server PRIVATE -Wall -Wextra -Wno-unused-parameter)
@@ -2593,6 +2616,33 @@ if(JSONC_FOUND)
     target_include_directories(nodus-server PRIVATE ${JSONC_INCLUDE_DIRS})
     target_link_libraries(nodus-server ${JSONC_LIBRARIES})
 endif()
+
+# Split S3 — the witness as its own process (decision
+# 2026-10-01-nodus-component-split items 5, 10, 11, 19, 22). Same command
+# line and config file as nodus-server; --derive-v2-genesis works here too,
+# compiled with the same chain constants (the reason given above). It must
+# not link the server: test_split_linked checks the symbol table.
+add_executable(nodus-witness
+    tools/nodus-witness.c
+    tools/nodus_node_config.c
+    tools/nodus_v2_gen_config.c)
+target_link_libraries(nodus-witness nodus dsa nodus)
+target_compile_options(nodus-witness PRIVATE -Wall -Wextra -Wno-unused-parameter)
+target_include_directories(nodus-witness PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+if(JSONC_FOUND)
+    target_compile_definitions(nodus-witness PRIVATE NODUS_HAS_JSONC)
+    target_include_directories(nodus-witness PRIVATE ${JSONC_INCLUDE_DIRS})
+    target_link_libraries(nodus-witness ${JSONC_LIBRARIES})
+endif()
+
+# Split S3 — LINK GATE for the witness binary: `nm` on the linked
+# nodus-witness must find no server/cluster/storage/presence entry point
+# and must find the witness's own (tests/split_linked.cmake).
+add_test(NAME test_split_linked
+         COMMAND ${CMAKE_COMMAND}
+                 -DNODUS_WITNESS=$<TARGET_FILE:nodus-witness>
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/split_linked.cmake)
 
 # Stake & delegation v1 — stake/committee/timing constants pin
 register_witness_test(test_stake_constants)
