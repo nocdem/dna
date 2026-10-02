@@ -1234,6 +1234,16 @@ add_executable(test_tcp_read_budget tests/test_tcp_read_budget.c)
 target_link_libraries(test_tcp_read_budget nodus dsa nodus)
 add_test(NAME test_tcp_read_budget COMMAND test_tcp_read_budget)
 
+# Component split S2: the transport's Unix domain socket entry (decision
+# 2026-10-01-nodus-component-split item 7) — socket file mode 0600, frame
+# round-trip both ways, SO_PEERCRED refusal of a wrong uid (real accept
+# path, listener configured for geteuid()+1, plus the decision function
+# with injected credentials), stale/live/regular-file handling at the
+# path, unlink on close. Uses its own mkdtemp dir under /tmp; no ports.
+add_executable(test_tcp_unix tests/test_tcp_unix.c)
+target_link_libraries(test_tcp_unix nodus dsa nodus)
+add_test(NAME test_tcp_unix COMMAND test_tcp_unix)
+
 # 2026-07-21 parallel-safety: every server-spawning test now uses a FULLY
 # explicit, test-unique port set (test_server 140xx, test_circuit_live
 # 150xx, test_client 151xx, test_server_init_fail_closes 152xx,

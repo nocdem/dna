@@ -551,6 +551,93 @@ int nodus_identity_load(const char *path, nodus_identity_t *id_out) {
     return 0;
 }
 
+/* Read exactly `len` bytes of {dir}/{name} into `out`. Never creates,
+ * truncates or rewrites anything (fopen "rb"). Logs which file failed. */
+static int identity_read_file_exact(const char *dir, const char *name,
+                                    uint8_t *out, size_t len) {
+    char filepath[1024];
+    int n = snprintf(filepath, sizeof(filepath), "%s/%s", dir, name);
+    if (n < 0 || (size_t)n >= sizeof(filepath)) {
+        QGP_LOG_ERROR(LOG_TAG, "identity path too long: %s/%s", dir, name);
+        return -1;
+    }
+    FILE *f = fopen(filepath, "rb");
+    if (!f) {
+        QGP_LOG_ERROR(LOG_TAG, "identity file %s missing or unreadable", filepath);
+        return -1;
+    }
+    size_t got = fread(out, 1, len, f);
+    fclose(f);
+    if (got != len) {
+        QGP_LOG_ERROR(LOG_TAG, "identity file %s is short (%zu of %zu bytes)",
+                      filepath, got, len);
+        return -1;
+    }
+    return 0;
+}
+
+/* Component split, decision docs/plans/decisions/2026-10-01-nodus-component-
+ * split.md item 10: only nodus-core writes identity files; storage and
+ * witness read them and refuse to start if one is missing. This is the
+ * loader for those readers.
+ *
+ * Reads the same six files nodus_identity_load() reads, with the same
+ * exact-length rule (fread of the full key size), derives node_id and the
+ * hex fingerprint the same way, and applies the same ML-KEM pk/sk pair
+ * check (pk == the ek copy at offset 1536 of sk). Unlike
+ * nodus_identity_load() it NEVER writes: no Kyber or ML-KEM generation, no
+ * nodus_identity_save(), no identity_write_file_atomic() — a missing,
+ * short or mismatched file is an error. nodus.fp is not read, as
+ * nodus_identity_load() does not read it either (the fingerprint is
+ * derived from nodus.pk). On any error id_out is securely zeroed. */
+int nodus_identity_load_readonly(const char *path, nodus_identity_t *id_out) {
+    if (!path || !id_out)
+        return -1;
+
+    memset(id_out, 0, sizeof(*id_out));
+
+    if (identity_read_file_exact(path, "nodus.pk", id_out->pk.bytes, NODUS_PK_BYTES) != 0 ||
+        identity_read_file_exact(path, "nodus.sk", id_out->sk.bytes, NODUS_SK_BYTES) != 0)
+        goto fail;
+
+    if (nodus_fingerprint(&id_out->pk, &id_out->node_id) != 0 ||
+        nodus_fingerprint_hex(&id_out->pk, id_out->fingerprint) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "fingerprint derivation failed for %s/nodus.pk", path);
+        goto fail;
+    }
+
+    if (identity_read_file_exact(path, "nodus.kyber_pk", id_out->kyber_pk,
+                                 NODUS_KYBER_PK_BYTES) != 0 ||
+        identity_read_file_exact(path, "nodus.kyber_sk", id_out->kyber_sk,
+                                 NODUS_KYBER_SK_BYTES) != 0)
+        goto fail;
+    id_out->has_kyber = true;
+
+    if (identity_read_file_exact(path, "nodus.mlkem_pk", id_out->mlkem_pk,
+                                 NODUS_MLKEM_PK_BYTES) != 0 ||
+        identity_read_file_exact(path, "nodus.mlkem_sk", id_out->mlkem_sk,
+                                 NODUS_MLKEM_SK_BYTES) != 0)
+        goto fail;
+
+    /* Same pair check and offset as nodus_identity_load() (E1, N1 delta 2,
+     * FIPS 203 Algorithm 16 decapsulation key layout); a mismatch is an
+     * error here, never a regeneration. */
+    if (memcmp(id_out->mlkem_pk, id_out->mlkem_sk + 1536, NODUS_MLKEM_PK_BYTES) != 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "%s/nodus.mlkem_pk and %s/nodus.mlkem_sk do not belong to "
+                      "the same ML-KEM-1024 keypair — refusing (read-only load, "
+                      "only nodus-core may regenerate identity files)",
+                      path, path);
+        goto fail;
+    }
+    id_out->has_mlkem = true;
+    return 0;
+
+fail:
+    nodus_identity_clear(id_out);
+    return -1;
+}
+
 uint64_t nodus_identity_value_id(const nodus_identity_t *id) {
     if (!id)
         return 0;

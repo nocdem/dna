@@ -6,6 +6,15 @@
  * Windows: select() (client SDK only)
  */
 
+/* struct ucred (SO_PEERCRED, the Unix socket entry's peer check) is exposed
+ * by glibc only under _GNU_SOURCE; -std=gnu11 gives _DEFAULT_SOURCE only.
+ * Must precede the first include (features.h is fixed by the first system
+ * header). Linux/Android only: Windows and Emscripten builds of this file
+ * compile no Unix socket code. */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+  #define _GNU_SOURCE 1
+#endif
+
 #include "transport/nodus_tcp.h"
 #include "protocol/nodus_wire.h"
 #include "crypto/nodus_channel_crypto.h"
@@ -109,6 +118,8 @@
  * NODUS_TCP_EPOLL marks everything that exists only in the first build. */
 #if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
   #define NODUS_TCP_EPOLL 1
+  #include <sys/un.h>     /* Unix socket entry (server side, like listen) */
+  #include <sys/stat.h>
 #endif
 
 #define MAX_EVENTS 64
@@ -1016,8 +1027,10 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     conn->state = NODUS_CONN_CONNECTED;
     conn->connected_at = nodus_time_now();
     conn->last_activity = conn->connected_at;
-    set_keepalive(conn->fd);
-    set_nodelay(conn->fd);
+    if (!conn->is_unix) {   /* TCP options; an AF_UNIX conn never connects async anyway */
+        set_keepalive(conn->fd);
+        set_nodelay(conn->fd);
+    }
 
 #ifdef NODUS_TCP_EPOLL
     /* Switch to read mode */
@@ -1074,7 +1087,7 @@ static void handle_accept(nodus_tcp_t *tcp) {
     inet_ntop(AF_INET, &addr.sin_addr, new_ip, sizeof(new_ip));
     int ip_count = 0;
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
-        if (tcp->pool[i] && !tcp->pool[i]->is_ws &&
+        if (tcp->pool[i] && !tcp->pool[i]->is_ws && !tcp->pool[i]->is_unix &&
             strcmp(tcp->pool[i]->ip, new_ip) == 0)
             ip_count++;
     }
@@ -1466,6 +1479,118 @@ static void handle_accept_ws(nodus_tcp_t *tcp) {
 
     handle_read_fwd(tcp, conn);
 }
+
+/* ── Unix domain socket entry ────────────────────────────────────────
+ *
+ * Local IPC between the split nodus services (decision
+ * docs/plans/decisions/2026-10-01-nodus-component-split.md item 7). Peers
+ * are admitted by the socket file's mode (0600, nodus_tcp_unix_listen) and
+ * by their SO_PEERCRED uid (below). The per-IP limit of handle_accept does
+ * not apply: every peer is a local process, there is no address, and the
+ * pool cap NODUS_TCP_MAX_CONNS still bounds the total. */
+
+static void handle_accept_unix(nodus_tcp_t *tcp) {
+    /* No peer address is requested: an AF_UNIX peer has none worth reading
+     * (an unbound client's is empty) and nothing here may treat a
+     * sockaddr_un as a sockaddr_in. */
+    int fd = accept4(tcp->unix_listen_fd, NULL, NULL, SOCK_CLOEXEC);
+    if (fd < 0) return;
+
+    if (tcp->count >= NODUS_TCP_MAX_CONNS) {
+        close(fd);
+        return;
+    }
+
+    /* SO_PEERCRED: the peer process's credentials as of its connect().
+     * Fail closed — credentials that cannot be read are a refusal. Checked
+     * BEFORE a connection is allocated, so on_accept never runs for a
+     * refused peer. */
+    struct ucred cr;
+    socklen_t cr_len = sizeof(cr);
+    memset(&cr, 0, sizeof(cr));
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cr, &cr_len) != 0 ||
+        cr_len != sizeof(cr)) {
+        QGP_LOG_WARN(LOG_TAG_TCP, "unix: peer credentials unreadable (errno=%d), "
+                     "connection refused", errno);
+        close(fd);
+        return;
+    }
+    if (!nodus_tcp_unix_peercred_ok((uint32_t)cr.uid, tcp->unix_allowed_uid)) {
+        QGP_LOG_WARN(LOG_TAG_TCP, "unix: peer uid=%u pid=%d is not the allowed uid=%u, "
+                     "connection refused",
+                     (unsigned)cr.uid, (int)cr.pid, (unsigned)tcp->unix_allowed_uid);
+        close(fd);
+        return;
+    }
+
+    /* A blocking socket in the event loop would stall every connection. */
+    if (set_nonblocking(fd) != 0) {
+        QGP_LOG_WARN(LOG_TAG_TCP, "unix: cannot make accepted socket non-blocking "
+                     "(errno=%d), connection refused", errno);
+        close(fd);
+        return;
+    }
+    /* No set_keepalive / set_nodelay: both are TCP options. */
+
+    nodus_tcp_conn_t *conn = conn_alloc(tcp);
+    if (!conn) { close(fd); return; }
+
+    conn->fd = fd;
+    conn->state = NODUS_CONN_CONNECTED;
+    conn->is_unix = true;
+    conn->peer_cred_set = true;
+    conn->peer_uid = (uint32_t)cr.uid;
+    conn->peer_pid = (int32_t)cr.pid;
+    conn->port = 0;
+    snprintf(conn->ip, sizeof(conn->ip), "%s", NODUS_TCP_UNIX_PEER_IP);
+    conn->connected_at = nodus_time_now();
+    conn->last_activity = conn->connected_at;
+
+    QGP_LOG_DEBUG(LOG_TAG_TCP, "unix: accepted slot=%d fd=%d peer uid=%u pid=%d",
+                  conn->slot, fd, (unsigned)conn->peer_uid, (int)conn->peer_pid);
+
+    epoll_add(tcp->epoll_fd, fd,
+              EPOLLIN | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET), conn);
+
+    /* Same lifecycle as a plain accept. */
+    if (tcp->on_accept)
+        tcp->on_accept(conn, tcp->cb_ctx);
+
+    if (conn->close_pending)   /* closed by on_accept */
+        return;
+
+    handle_read_fwd(tcp, conn);
+}
+
+/* Is a listener alive at the socket file `path`? A non-blocking connect:
+ * 0 or EAGAIN (backlog full) = alive → 1; ECONNREFUSED = nobody listens
+ * (a stale file left by a process that died) → 0; anything else → -1
+ * (undecidable, e.g. EACCES — the caller must not unlink). */
+static int unix_path_probe(const struct sockaddr_un *sa) {
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    if (fd < 0) return -1;
+    int rc = connect(fd, (const struct sockaddr *)sa, sizeof(*sa));
+    int err = errno;
+    close(fd);
+    if (rc == 0) return 1;
+    if (err == EAGAIN || err == EWOULDBLOCK) return 1;
+    if (err == ECONNREFUSED) return 0;
+    return -1;
+}
+
+/* Fill an AF_UNIX address. Returns -1 if path does not fit in sun_path
+ * (with its terminating NUL). */
+static int unix_addr_fill(struct sockaddr_un *sa, const char *path) {
+    size_t plen = strlen(path);
+    memset(sa, 0, sizeof(*sa));
+    if (plen == 0 || plen >= sizeof(sa->sun_path)) return -1;
+    sa->sun_family = AF_UNIX;
+    memcpy(sa->sun_path, path, plen + 1);
+    return 0;
+}
+
+_Static_assert(sizeof(((struct sockaddr_un *)0)->sun_path) == NODUS_TCP_UNIX_PATH_MAX,
+               "NODUS_TCP_UNIX_PATH_MAX must equal sizeof(sockaddr_un.sun_path)");
 #endif /* NODUS_TCP_EPOLL */
 
 /* ── Public API ──────────────────────────────────────────────────── */
@@ -1515,6 +1640,7 @@ int nodus_tcp_init(nodus_tcp_t *tcp, int shared_epoll_fd) {
     memset(tcp, 0, sizeof(*tcp));
     tcp->listen_fd = -1;
     tcp->ws_listen_fd = -1;
+    tcp->unix_listen_fd = -1;
 
 #ifdef _WIN32
     /* Initialize Winsock */
@@ -1645,6 +1771,126 @@ int nodus_tcp_ws_listen(nodus_tcp_t *tcp, uint16_t port,
 #endif
 }
 
+bool nodus_tcp_unix_peercred_ok(uint32_t peer_uid, uint32_t allowed_uid) {
+    /* The unresolved sentinel is no uid: it admits nobody, so a caller that
+     * forgot to resolve it fails closed. */
+    if (allowed_uid == NODUS_TCP_UNIX_UID_SELF)
+        return false;
+    return peer_uid == allowed_uid;
+}
+
+int nodus_tcp_unix_listen(nodus_tcp_t *tcp, const char *path,
+                          uint32_t allowed_uid) {
+#ifndef NODUS_TCP_EPOLL
+    (void)tcp; (void)path; (void)allowed_uid;
+    return -1;  /* Server is Linux-only (not Windows, not the browser) */
+#else
+    /* unix_path is set only by a successful call: one entry per transport. */
+    if (!tcp || !path || tcp->unix_path[0] != '\0')
+        return -1;
+
+    struct sockaddr_un sa;
+    if (unix_addr_fill(&sa, path) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "unix: socket path empty or longer than %d bytes",
+                      NODUS_TCP_UNIX_PATH_MAX - 1);
+        return -1;
+    }
+
+    /* Something already at the path. Only a STALE socket file is removed:
+     * never a regular file or directory (a mistyped path must not delete
+     * data), and never a socket a live listener still serves (that would
+     * orphan it — its clients could no longer reach it). */
+    struct stat st;
+    if (lstat(path, &st) == 0) {
+        if (!S_ISSOCK(st.st_mode)) {
+            QGP_LOG_ERROR(LOG_TAG_TCP, "unix: %s exists and is not a socket, refusing",
+                          path);
+            return -1;
+        }
+        int live = unix_path_probe(&sa);
+        if (live != 0) {
+            QGP_LOG_ERROR(LOG_TAG_TCP, "unix: %s %s, refusing to replace it", path,
+                          live > 0 ? "has a live listener"
+                                   : "cannot be probed (errno other than ECONNREFUSED)");
+            return -1;
+        }
+        if (unlink(path) != 0) {
+            QGP_LOG_ERROR(LOG_TAG_TCP, "unix: cannot remove stale socket %s (errno=%d)",
+                          path, errno);
+            return -1;
+        }
+        QGP_LOG_INFO(LOG_TAG_TCP, "unix: removed stale socket %s", path);
+    } else if (errno != ENOENT) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "unix: lstat %s failed (errno=%d)", path, errno);
+        return -1;
+    }
+
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -1;
+
+    /* 0600 from the moment the file exists: bind() creates the socket file
+     * with mode 0777 & ~umask, so umask 0177 yields exactly 0600 — there is
+     * no window in which another uid could connect. umask is process-wide:
+     * a file another thread creates during these two calls gets the
+     * stricter mask too (never a looser one). The result is verified with
+     * lstat below and corrected with chmod if anything else intervened. */
+    mode_t old_mask = umask(0177);
+    int brc = bind(fd, (struct sockaddr *)&sa, sizeof(sa));
+    int berr = errno;
+    umask(old_mask);
+    if (brc != 0) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "unix: bind %s failed (errno=%d)", path, berr);
+        close(fd);
+        return -1;
+    }
+
+    /* From here on the file is ours: every failure removes it. */
+    if (lstat(path, &st) != 0 || !S_ISSOCK(st.st_mode)) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "unix: %s is not a socket after bind", path);
+        close(fd);
+        unlink(path);
+        return -1;
+    }
+    if ((st.st_mode & 07777) != 0600) {
+        if (chmod(path, 0600) != 0 || lstat(path, &st) != 0 ||
+            !S_ISSOCK(st.st_mode) || (st.st_mode & 07777) != 0600) {
+            QGP_LOG_ERROR(LOG_TAG_TCP, "unix: %s cannot be made mode 0600, refusing",
+                          path);
+            close(fd);
+            unlink(path);
+            return -1;
+        }
+    }
+
+    if (listen(fd, 128) != 0 || set_nonblocking(fd) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "unix: listen %s failed (errno=%d)", path, errno);
+        close(fd);
+        unlink(path);
+        return -1;
+    }
+
+    /* Level-triggered like the other listeners; the marker is the address
+     * of unix_listen_fd, which no connection pointer can equal. */
+    struct epoll_event ev = { .events = EPOLLIN, .data.ptr = &tcp->unix_listen_fd };
+    if (epoll_ctl(tcp->epoll_fd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "unix: epoll add %s failed (errno=%d)", path, errno);
+        close(fd);
+        unlink(path);
+        return -1;
+    }
+
+    tcp->unix_listen_fd = fd;
+    tcp->unix_allowed_uid = (allowed_uid == NODUS_TCP_UNIX_UID_SELF)
+                                ? (uint32_t)geteuid() : allowed_uid;
+    snprintf(tcp->unix_path, sizeof(tcp->unix_path), "%s", path);
+    tcp->unix_dev = (uint64_t)st.st_dev;
+    tcp->unix_ino = (uint64_t)st.st_ino;
+    QGP_LOG_INFO(LOG_TAG_TCP, "unix: listening on %s (mode 0600, allowed uid=%u)",
+                 path, (unsigned)tcp->unix_allowed_uid);
+    return 0;
+#endif
+}
+
 int nodus_tcp_ws_sweep(nodus_tcp_t *tcp, uint64_t now) {
     if (!tcp) return 0;
     int closed = 0;
@@ -1661,6 +1907,93 @@ int nodus_tcp_ws_sweep(nodus_tcp_t *tcp, uint64_t now) {
         closed++;
     }
     return closed;
+}
+
+/* connect() returned 0 for conn->fd: mark the connection CONNECTED,
+ * register it for reading and run on_connect. Returns false if on_connect
+ * closed it — the caller then returns NULL. Shared by nodus_tcp_connect
+ * (an immediate localhost TCP connect) and nodus_tcp_unix_connect (an
+ * AF_UNIX connect always completes at once). */
+static bool conn_connected_now(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+    conn->state = NODUS_CONN_CONNECTED;
+    conn->connected_at = nodus_time_now();
+    conn->last_activity = conn->connected_at;
+    if (!conn->is_unix) {   /* TCP options; meaningless on AF_UNIX */
+        set_keepalive(conn->fd);
+        set_nodelay(conn->fd);
+    }
+#ifdef NODUS_TCP_EPOLL
+    epoll_add(tcp->epoll_fd, conn->fd, EPOLLIN | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET), conn);
+#endif
+    if (tcp->on_connect) {
+        /* The callback runs under the deferred-close rule like every
+         * other one: if it disconnects this connection, the memory
+         * must outlive the check below, and the caller gets NULL
+         * instead of a pointer to a closed connection. */
+        tcp->poll_depth++;
+        tcp->on_connect(conn, tcp->cb_ctx);
+        tcp->poll_depth--;
+        bool closed = conn->close_pending;
+        if (tcp->poll_depth == 0)
+            conn_release_deferred(tcp);
+        if (closed)
+            return false;
+    }
+    return true;
+}
+
+nodus_tcp_conn_t *nodus_tcp_unix_connect(nodus_tcp_t *tcp, const char *path) {
+#ifndef NODUS_TCP_EPOLL
+    (void)tcp; (void)path;
+    return NULL;  /* Unix socket entry is Linux-only */
+#else
+    if (!tcp || !path) return NULL;
+
+    struct sockaddr_un sa;
+    if (unix_addr_fill(&sa, path) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "unix: socket path empty or longer than %d bytes",
+                      NODUS_TCP_UNIX_PATH_MAX - 1);
+        return NULL;
+    }
+
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return NULL;
+    if (set_nonblocking(fd) != 0) {
+        close(fd);
+        return NULL;
+    }
+
+    /* AF_UNIX connect never reports EINPROGRESS: it is done (0) or failed
+     * (ENOENT, ECONNREFUSED, EACCES, EAGAIN = backlog full). So it is made
+     * before a connection is allocated, and a UDS connection is never in
+     * the CONNECTING state. */
+    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+        QGP_LOG_WARN(LOG_TAG_TCP, "unix: connect %s failed (errno=%d)", path, errno);
+        close(fd);
+        return NULL;
+    }
+
+    nodus_tcp_conn_t *conn = conn_alloc(tcp);
+    if (!conn) { close(fd); return NULL; }
+
+    conn->fd = fd;
+    conn->is_unix = true;
+    conn->port = 0;
+    snprintf(conn->ip, sizeof(conn->ip), "%s", NODUS_TCP_UNIX_PEER_IP);
+    /* Same as nodus_tcp_connect: an outbound conn we opened, inheriting the
+     * transport's auth requirement before any frame can be queued. */
+    conn->auth_initiated_by_us = true;
+    conn->auth_required = tcp->auth_required;
+    if (tcp->auth_required)
+        conn->auth_state = NODUS_CONN_AUTH_NONE;
+
+    QGP_LOG_DEBUG(LOG_TAG_TCP, "unix: connected slot=%d fd=%d path=%s",
+                  conn->slot, fd, path);
+
+    if (!conn_connected_now(tcp, conn))
+        return NULL;
+    return conn;
+#endif
 }
 
 nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
@@ -1708,28 +2041,8 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
     int rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
     if (rc == 0) {
         /* Immediate connect (localhost) */
-        conn->state = NODUS_CONN_CONNECTED;
-        conn->connected_at = nodus_time_now();
-        conn->last_activity = conn->connected_at;
-        set_keepalive(fd);
-        set_nodelay(fd);
-#ifdef NODUS_TCP_EPOLL
-        epoll_add(tcp->epoll_fd, fd, EPOLLIN | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET), conn);
-#endif
-        if (tcp->on_connect) {
-            /* The callback runs under the deferred-close rule like every
-             * other one: if it disconnects this connection, the memory
-             * must outlive the check below, and the caller gets NULL
-             * instead of a pointer to a closed connection. */
-            tcp->poll_depth++;
-            tcp->on_connect(conn, tcp->cb_ctx);
-            tcp->poll_depth--;
-            bool closed = conn->close_pending;
-            if (tcp->poll_depth == 0)
-                conn_release_deferred(tcp);
-            if (closed)
-                return NULL;
-        }
+        if (!conn_connected_now(tcp, conn))
+            return NULL;
     } else if (IS_EINPROGRESS(get_socket_error())) {
         /* Connecting — wait for writable */
 #ifdef NODUS_TCP_EPOLL
@@ -2330,6 +2643,12 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
             handle_accept_ws(tcp);
             continue;
         }
+        if ((void *)conn == (void *)&tcp->unix_listen_fd) {
+            /* Unix socket listener (marker set in nodus_tcp_unix_listen);
+             * not a connection — must not be dereferenced as one. */
+            handle_accept_unix(tcp);
+            continue;
+        }
 
         /* Skip a connection an earlier event of this batch closed (a
          * callback's nodus_tcp_disconnect, or a transport teardown). The
@@ -2495,6 +2814,26 @@ void nodus_tcp_close(nodus_tcp_t *tcp) {
         close(tcp->ws_listen_fd);
         tcp->ws_listen_fd = -1;
     }
+
+#ifdef NODUS_TCP_EPOLL
+    /* unix_path is set only by a successful nodus_tcp_unix_listen, so a
+     * transport that never opened the Unix entry closes nothing here. */
+    if (tcp->unix_path[0] != '\0') {
+        if (tcp->unix_listen_fd >= 0) {
+            epoll_ctl(tcp->epoll_fd, EPOLL_CTL_DEL, tcp->unix_listen_fd, NULL);
+            close(tcp->unix_listen_fd);
+        }
+        tcp->unix_listen_fd = -1;
+        /* Remove the socket file only if it is still the one we bound: a
+         * later process may have replaced a file it found stale. */
+        struct stat st;
+        if (lstat(tcp->unix_path, &st) == 0 && S_ISSOCK(st.st_mode) &&
+            (uint64_t)st.st_dev == tcp->unix_dev &&
+            (uint64_t)st.st_ino == tcp->unix_ino)
+            unlink(tcp->unix_path);
+        tcp->unix_path[0] = '\0';
+    }
+#endif
 
 #ifdef NODUS_TCP_EPOLL
     if (tcp->owns_epoll && tcp->epoll_fd >= 0) {
