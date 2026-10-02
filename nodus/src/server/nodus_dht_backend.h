@@ -13,7 +13,9 @@
  * Implementations:
  *   - nodus_dht_backend_inproc.c — the DHT in this process (the combined
  *     nodus-server). Calls the dht/nodus_dht.h functions directly.
- *   - split S5 adds the IPC implementation (the `nodus-storage` process).
+ *   - nodus_dht_backend_ipc.c — split S5b: the DHT is the separate
+ *     `nodus-storage` process, reached over <data_path>/storage.sock
+ *     (dht/nodus_dht_ipc.h; nodus.json "storage_external": true).
  *
  * HOT = per client put / get or per replicated value; COLD = periodic,
  * per peer heartbeat, per session open / close, or on failure only.
@@ -30,6 +32,7 @@
 
 #include "nodus/nodus_types.h"
 #include "dht/nodus_dht.h"
+#include "dht/nodus_dht_ipc.h"     /* nodus_dht_ipc_member_t (S5b) */
 #include "protocol/nodus_tier1.h"
 #include "protocol/nodus_tier2.h"
 
@@ -54,8 +57,12 @@ typedef struct {
                          nodus_tier2_msg_t *msg);
 
     /** HOT — a 4002 T2 frame with a DHT method (fv, get_batch, m_sv),
-     *  after core's handshake / F3 gates. Replies go to (INTER, slot). */
+     *  after core's handshake / F3 gates. Replies go to (INTER, slot).
+     *  `peer_fp` / `peer_ip`: as for inter_t1 — the in-process DHT does not
+     *  read them; the IPC backend puts them in the origin's preface (split
+     *  S5b), whichever of the two ops opens it. */
     void (*inter_frame)(nodus_dht_backend_t *b, int slot,
+                        const nodus_key_t *peer_fp, const char *peer_ip,
                         const uint8_t *payload, size_t len,
                         nodus_tier2_msg_t *msg);
 
@@ -161,6 +168,70 @@ int nodus_dht_backend_inproc_open(nodus_dht_backend_t *b, const char *data_path,
  * the unit tests that set it up or inspect it directly.
  */
 nodus_dht_t *nodus_dht_backend_inproc_state(nodus_dht_backend_t *b);
+
+/* ── IPC implementation (nodus_dht_backend_ipc.c) — split S5b ─────── */
+
+/**
+ * The error text (code NODUS_ERR_UNAVAILABLE, "the node could not look") a
+ * client DHT request gets AT ONCE when no storage process can serve it —
+ * nodus-storage is not reachable (its control connection is down), the
+ * origin cap below is reached, or the session's queue toward it is over
+ * NODUS_DHT_IPC_QUEUE_MAX (decision 2026-10-01-nodus-component-split item
+ * 31, the NODUS_CHAIN_NO_WITNESS_MSG pattern). Never a timeout.
+ */
+#define NODUS_DHT_NO_STORAGE_MSG  "storage module not available"
+
+/**
+ * The most core sessions (client and 4002 together) that hold an origin
+ * connection to nodus-storage at once. Both ends' IPC pools hold
+ * NODUS_TCP_MAX_CONNS (1024) connections; the storage end must also fit
+ * the control connection and the origin connections core has closed but
+ * the storage process has not yet seen close. 64 slots are kept for those
+ * (the S3 rule, NODUS_CHAIN_IPC_MAX_SESSION_CONNS). A client session
+ * beyond the cap gets NODUS_DHT_NO_STORAGE_MSG; a 4002 frame beyond it is
+ * dropped (logged). More concurrent DHT-active sessions need a second
+ * listener socket (S6+).
+ */
+#define NODUS_DHT_IPC_MAX_ORIGIN_CONNS  (NODUS_TCP_MAX_CONNS - 64)
+
+/**
+ * What core gives its IPC backend (nodus_server_dht_ipc_core): the two
+ * sends the DHT's host view has in-process (a frame to an origin's
+ * session, generation-checked; a datagram from UDP 4000), the decision-32
+ * close, and a read of core's cluster membership for the decision-27
+ * snapshot.
+ */
+typedef struct {
+    int  (*send_to_origin)(void *ctx, nodus_dht_origin_t origin,
+                           const uint8_t *frame, size_t len);
+    int  (*udp_send)(void *ctx, const uint8_t *payload, size_t len,
+                     const char *ip, uint16_t port);
+    /** The storage process closed this origin's connection (or went away):
+     *  core ends that session — a client reconnects and re-LISTENs, a 4002
+     *  peer redials (decision item 32; never a silent re-dial). Only for
+     *  the session of `origin.gen`. */
+    void (*close_origin)(void *ctx, nodus_dht_origin_t origin);
+    /** Fill `out` with core's cluster members (node id, offline seconds),
+     *  in cluster order, at most `max`. @return the count. */
+    int  (*members)(void *ctx, nodus_dht_ipc_member_t *out, int max);
+    void *ctx;
+} nodus_dht_ipc_core_t;
+
+/**
+ * Reach the DHT of the separate `nodus-storage` process over the Unix
+ * socket <data_path>/NODUS_DHT_IPC_SOCK_NAME ("/tmp" when data_path is
+ * empty). Opens no socket yet: the control connection is dialled on the
+ * first `tick` and re-dialled with a bounded backoff while it is down; an
+ * origin connection is dialled on its session's first DHT frame, and only
+ * while the control connection is up (decision item 31: with storage down
+ * a client request is answered NODUS_DHT_NO_STORAGE_MSG at once, without a
+ * connect attempt). Frame formats: dht/nodus_dht_ipc.h.
+ * @return 0 `*out` set; -1 bad argument or socket path too long;
+ *         -2 out of memory / transport init failure.
+ */
+int nodus_dht_backend_ipc_open(const char *data_path,
+                               const nodus_dht_ipc_core_t *core,
+                               nodus_dht_backend_t **out);
 
 #ifdef __cplusplus
 }

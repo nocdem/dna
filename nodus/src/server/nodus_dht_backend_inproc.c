@@ -36,8 +36,11 @@ static void inproc_client_frame(nodus_dht_backend_t *b, int slot,
 }
 
 static void inproc_inter_frame(nodus_dht_backend_t *b, int slot,
+                               const nodus_key_t *peer_fp, const char *peer_ip,
                                const uint8_t *payload, size_t len,
                                nodus_tier2_msg_t *msg) {
+    (void)peer_fp;   /* the IPC backend's preface carries them */
+    (void)peer_ip;
     nodus_dht_inter_request(inproc_dht(b), slot, payload, len, msg);
 }
 

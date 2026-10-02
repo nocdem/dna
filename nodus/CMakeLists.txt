@@ -553,6 +553,15 @@ if(NOT WIN32)
         # server's one door to its DHT / storage half, in-process
         # implementation (server/nodus_dht_backend.h).
         src/server/nodus_dht_backend_inproc.c
+        # Split S5b — the IPC implementation of the same door (core side of
+        # <data_path>/storage.sock, "storage_external"), the storage side's
+        # runtime (listener, origin shadows, control connection, its own
+        # outbound 4002 pool — the nodus-storage process) and the frame
+        # codec both ends link. The two dht/ TUs include no server header
+        # but the shared dialer's (tests/storage_linked.cmake).
+        src/server/nodus_dht_backend_ipc.c
+        src/dht/nodus_dht_ipc.c
+        src/dht/nodus_dht_ipc_wire.c
         # Split S1 (decision 2026-10-01-nodus-component-split.md): the
         # server's one door to the witness, in-process implementation.
         src/server/nodus_chain_backend_inproc.c
@@ -2674,6 +2683,34 @@ if(JSONC_FOUND)
     target_include_directories(nodus-witness PRIVATE ${JSONC_INCLUDE_DIRS})
     target_link_libraries(nodus-witness ${JSONC_LIBRARIES})
 endif()
+
+# Split S5b — the DHT / storage half as its own process (decision
+# 2026-10-01-nodus-component-split items 7, 10, 16, 19). Same command line
+# and config file as nodus-server (tools/nodus_node_config.c, item 18). It
+# must not link the server, auth, cluster, presence or witness:
+# test_storage_linked checks the symbol table.
+add_executable(nodus-storage
+    tools/nodus-storage.c
+    tools/nodus_node_config.c
+    tools/nodus_v2_gen_config.c)
+target_link_libraries(nodus-storage nodus dsa nodus)
+target_compile_options(nodus-storage PRIVATE -Wall -Wextra -Wno-unused-parameter)
+target_include_directories(nodus-storage PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+if(JSONC_FOUND)
+    target_compile_definitions(nodus-storage PRIVATE NODUS_HAS_JSONC)
+    target_include_directories(nodus-storage PRIVATE ${JSONC_INCLUDE_DIRS})
+    target_link_libraries(nodus-storage ${JSONC_LIBRARIES})
+endif()
+
+# Split S5b — LINK GATE for the storage binary (tests/storage_linked.cmake):
+# `nm` on the linked nodus-storage must find no server / auth / cluster /
+# presence / witness entry point and must find the DHT's own, the IPC
+# runtime's and the shared 4002 dialer's.
+add_test(NAME test_storage_linked
+         COMMAND ${CMAKE_COMMAND}
+                 -DNODUS_STORAGE=$<TARGET_FILE:nodus-storage>
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/storage_linked.cmake)
 
 # Split S3 — LINK GATE for the witness binary: `nm` on the linked
 # nodus-witness must find no server/cluster/storage/presence entry point

@@ -137,6 +137,20 @@ typedef struct {
      * to start unless its loaded config has it too
      * (tools/nodus-witness.c). */
     bool                witness_external;
+
+    /* Component split S5b (decision docs/plans/decisions/2026-10-01-nodus-
+     * component-split.md items 7, 16, 19, 31, 32): the DHT / storage half
+     * runs as its own process (`nodus-storage`) and this server reaches it
+     * over the Unix socket <data_path>/storage.sock
+     * (server/nodus_dht_backend_ipc.c) instead of opening nodus.db and
+     * channels.db itself. nodus.json "storage_external": true /
+     * `--storage-external` (the parser in tools/nodus_node_config.c — see
+     * the S5b report: not wired yet); default false = the in-process DHT,
+     * unchanged. When true this server keeps 4000 / 4001 / 4002, sessions,
+     * cluster, presence and circuits; the partial-wipe gate still runs here
+     * (decision item 9). nodus-storage refuses to start unless its loaded
+     * config has it too (tools/nodus-storage.c). */
+    bool                storage_external;
 } nodus_server_config_t;
 
 /* ── Inter-node session (lightweight — rate limiting only, no auth) ── */
@@ -237,10 +251,15 @@ typedef struct nodus_server {
     /* The witness module, behind the chain backend (NULL when its init
      * failed — the node runs without consensus) */
     nodus_chain_backend_t  *chain;
-    /* Split S3, config.witness_external only: the partial-wipe marker has
-     * been written by nodus_server_run after nodus-witness first reported
-     * an open chain (never read in the in-process mode). */
+    /* The partial-wipe marker has been written by this process: at the end
+     * of nodus_server_init, or (split S3 witness_external / S5b
+     * storage_external) by nodus_server_run once the chain is open and the
+     * DHT's databases exist (nodus_server_marker_dbs_ready). Read only in
+     * those two modes. */
     bool                    genesis_marker_armed;
+    /* S5b: the second the run loop last asked nodus_server_marker_dbs_ready
+     * (it stats two files; once a second at most while waiting). */
+    uint64_t                last_marker_check;
 
     /* Presence tracking (connected clients, cluster-wide) */
     nodus_presence_table_t  presence;
@@ -314,6 +333,18 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config);
  *         -1 on partial-wipe detected (caller MUST refuse init).
  */
 int nodus_server_check_partial_wipe(const char *data_path);
+
+/**
+ * Split S5b — may this server arm the partial-wipe marker now, as far as the
+ * DHT's two databases go? The marker asserts "all three databases are real"
+ * (O16A, nodus_server_init). The in-process DHT has opened nodus.db and
+ * channels.db before the marker is armed, so: true. With
+ * `storage_external` this process opens neither — nodus-storage does, and
+ * may not have yet — so: true only when both files exist under data_path
+ * ("/tmp" when empty), the rule tools/nodus-witness.c (core_dbs_present)
+ * applies from the other side. Reads the file system only (stat).
+ */
+bool nodus_server_marker_dbs_ready(const nodus_server_config_t *cfg);
 
 /* ── S1 witness seam ──────────────────────────────────────────────────
  *

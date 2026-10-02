@@ -1457,6 +1457,8 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
         if (strcmp(msg.method, "fv") == 0) {
             /* Inter-node FIND_VALUE — the DHT's (nodus_dht_inter_request) */
             srv->dht->ops->inter_frame(srv->dht, inter_origin_slot(sess),
+                                       &sess->client_fp,
+                                       sess->conn ? sess->conn->ip : "",
                                        payload, len, &msg);
             nodus_t2_msg_free(&msg);
             return;
@@ -1486,6 +1488,8 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             /* Inter-node forwarded get_batch — local-only, no re-forward:
              * the DHT's (nodus_dht_inter_request) */
             srv->dht->ops->inter_frame(srv->dht, inter_origin_slot(sess),
+                                       &sess->client_fp,
+                                       sess->conn ? sess->conn->ip : "",
                                        payload, len, &msg);
             nodus_t2_msg_free(&msg);
             return;
@@ -1497,6 +1501,8 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             /* Inter-node media replication: store replicated media chunk —
              * the DHT's (nodus_dht_inter_request) */
             srv->dht->ops->inter_frame(srv->dht, inter_origin_slot(sess),
+                                       &sess->client_fp,
+                                       sess->conn ? sess->conn->ip : "",
                                        payload, len, &msg);
             nodus_t2_msg_free(&msg);
             return;
@@ -2488,6 +2494,72 @@ void nodus_server_dht_host(nodus_server_t *srv, nodus_dht_host_t *out) {
     out->hint_wanted    = server_dht_hint_wanted;
 }
 
+/* ── S5b — what this server gives the IPC DHT backend ───────────── */
+
+/* Decision 32: nodus-storage closed the connection of the session in
+ * `origin` (or went away) — end that session, if it is still the one of
+ * that generation. The client reconnects and re-LISTENs; a 4002 peer
+ * redials. The disconnect runs this server's own on_*_disconnect, which
+ * clears the session as for any other close. */
+static void server_dht_close_origin(void *ctx, nodus_dht_origin_t origin) {
+    nodus_server_t *srv = ctx;
+    if (!srv || origin.slot < 0) return;
+    if (origin.kind == NODUS_DHT_ORIGIN_CLIENT) {
+        if (origin.slot >= NODUS_MAX_SESSIONS) return;
+        nodus_session_t *sess = &srv->sessions[origin.slot];
+        if (sess->dht_gen != origin.gen || !sess->conn) return;
+        nodus_tcp_disconnect(&srv->tcp, sess->conn);
+        return;
+    }
+    if (origin.slot >= NODUS_MAX_INTER_SESSIONS) return;
+    nodus_inter_session_t *isess = &srv->inter_sessions[origin.slot];
+    if (isess->dht_gen != origin.gen || !isess->conn) return;
+    nodus_tcp_disconnect(&srv->inter_tcp, isess->conn);
+}
+
+/* Decision 27: core's cluster members (node id + offline seconds), in
+ * cluster order — the input of hint_wanted / the pending-full membership
+ * check on the storage side. */
+_Static_assert(NODUS_DHT_IPC_MEMBERS_MAX == NODUS_CLUSTER_MAX_PEERS,
+               "a membership snapshot holds the whole cluster");
+
+static int server_dht_members(void *ctx, nodus_dht_ipc_member_t *out, int max) {
+    const nodus_server_t *srv = ctx;
+    if (!srv || !out) return 0;
+    int n = 0;
+    for (int i = 0; i < srv->cluster.peer_count && n < max; i++) {
+        out[n].node_id = srv->cluster.peers[i].node_id;
+        out[n].offline_secs = nodus_cluster_peer_offline_secs(
+            &srv->cluster, &srv->cluster.peers[i].node_id);
+        n++;
+    }
+    return n;
+}
+
+static void server_dht_ipc_core(nodus_server_t *srv, nodus_dht_ipc_core_t *out) {
+    memset(out, 0, sizeof(*out));
+    out->send_to_origin = server_dht_send_to_origin;
+    out->udp_send       = server_dht_udp_send;
+    out->close_origin   = server_dht_close_origin;
+    out->members        = server_dht_members;
+    out->ctx            = srv;
+}
+
+bool nodus_server_marker_dbs_ready(const nodus_server_config_t *cfg) {
+    if (!cfg) return false;
+    if (!cfg->storage_external) return true;
+    static const char *const names[] = { "nodus.db", "channels.db" };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        char p[640];
+        struct stat st;
+        int n = snprintf(p, sizeof(p), "%s/%s",
+                         cfg->data_path[0] ? cfg->data_path : "/tmp", names[i]);
+        if (n < 0 || (size_t)n >= sizeof(p) || stat(p, &st) != 0)
+            return false;
+    }
+    return true;
+}
+
 /* Arm the partial-wipe gate: write NODUS_PARTIAL_WIPE_GENESIS_MARKER under
  * `data_path` (see "O16A — ARM THE PARTIAL-WIPE GATE" in nodus_server_init
  * for when this may run). Not fatal, but loud. */
@@ -2565,9 +2637,26 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
      * here, before the identity is loaded, as before the seam. Its host
      * view points at srv->identity, which is filled just below. */
     {
-        nodus_dht_host_t dhost;
-        nodus_server_dht_host(srv, &dhost);
-        int drc = nodus_dht_backend_inproc_new(&dhost, &srv->dht);
+        int drc;
+        if (config->storage_external) {
+            /* Split S5b — the DHT is the separate nodus-storage process
+             * (decision 2026-10-01-nodus-component-split items 7, 16, 19):
+             * reached over <data_path>/storage.sock; nothing is dialled
+             * here. A storage process that is not (yet) running only makes
+             * client DHT requests answer NODUS_DHT_NO_STORAGE_MSG. */
+            nodus_dht_ipc_core_t core;
+            server_dht_ipc_core(srv, &core);
+            drc = nodus_dht_backend_ipc_open(config->data_path, &core,
+                                             &srv->dht);
+            if (drc == -1)
+                fprintf(stderr, "storage_external: the storage socket path "
+                        "under data_path \"%s\" is unusable (too long) — not "
+                        "starting\n", config->data_path);
+        } else {
+            nodus_dht_host_t dhost;
+            nodus_server_dht_host(srv, &dhost);
+            drc = nodus_dht_backend_inproc_new(&dhost, &srv->dht);
+        }
         if (drc == -2)
             fprintf(stderr, "Failed to allocate DHT state\n");
         if (drc != 0)
@@ -2589,11 +2678,18 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     /* The DHT half, phase two (nodus_dht_open): nodus.db (values + media),
      * channels.db + default channels, the routing table, the hash ring
      * with this node at its advertised address and peer port. */
-    uint16_t self_peer_port = config->peer_port ? config->peer_port : NODUS_DEFAULT_PEER_PORT;
-    const char *self_ip = config->external_ip[0] ? config->external_ip : config->bind_ip;
-    if (nodus_dht_backend_inproc_open(srv->dht, config->data_path,
-                                      self_ip, self_peer_port) != 0)
-        goto fail;
+    if (config->storage_external) {
+        fprintf(stderr, "STORAGE: external — served by the nodus-storage "
+                "process over %s/%s\n",
+                config->data_path[0] ? config->data_path : "/tmp",
+                NODUS_DHT_IPC_SOCK_NAME);
+    } else {
+        uint16_t self_peer_port = config->peer_port ? config->peer_port : NODUS_DEFAULT_PEER_PORT;
+        const char *self_ip = config->external_ip[0] ? config->external_ip : config->bind_ip;
+        if (nodus_dht_backend_inproc_open(srv->dht, config->data_path,
+                                          self_ip, self_peer_port) != 0)
+            goto fail;
+    }
 
     /* Init inter-node circuit table (VPN mesh Faz 1) */
     nodus_inter_circuit_table_init(&srv->inter_circuits);
@@ -2688,6 +2784,15 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
      * Channel system has known memory safety issues causing SIGABRT crashes.
      * Disabled until root cause is fixed. See commit history for re-enable. */
 #ifndef NODUS_CHANNELS_DISABLED
+    /* The channel server reads the in-process DHT's state directly
+     * (nodus_dht_backend_inproc_state, here and in ch_dht_put_signed /
+     * ch_startup_rejoin / the run loop) — there is none with
+     * storage_external. */
+    if (config->storage_external) {
+        fprintf(stderr, "ERROR: the channel server needs the in-process DHT; "
+                "it cannot run with storage_external\n");
+        goto fail;
+    }
     if (nodus_channel_server_init(&srv->ch_server) != 0)
         goto fail;
     have_chsrv = true;
@@ -2942,8 +3047,16 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
      * staying open is exactly what an operator would never otherwise
      * learn. The file's presence is the signal — its contents are never
      * read. */
-    if (srv->chain && srv->chain->ops->chain_open(srv->chain))
+    /* Split S5b: with storage_external this process opened neither DHT
+     * database; nodus-storage may not have created them yet, and a marker
+     * armed now would refuse this host's next start (marker + chain DB +
+     * no nodus.db). nodus_server_marker_dbs_ready says "both exist" (always
+     * true in-process); otherwise nodus_server_run arms it once they do. */
+    if (srv->chain && srv->chain->ops->chain_open(srv->chain) &&
+        nodus_server_marker_dbs_ready(&srv->config)) {
         server_write_genesis_marker(config->data_path);
+        srv->genesis_marker_armed = true;
+    }
 
     return 0;
 
@@ -3001,6 +3114,8 @@ int nodus_server_run(nodus_server_t *srv) {
     fprintf(stderr, "  Channel port: %d\n", srv->ch_server.port);
 #endif
     fprintf(stderr, "  UDP port: %d\n", srv->udp.port);
+    if (srv->config.storage_external)
+        fprintf(stderr, "  Storage: external (nodus-storage)\n");
 
     while (srv->running && !srv->stop_requested) {
         /* Read budget: while either transport has connections left on its
@@ -3069,10 +3184,21 @@ int nodus_server_run(nodus_server_t *srv) {
          * armed here, once, when the witness first reports an open chain
          * — this process has opened nodus.db and channels.db by now, so
          * "all three are real" holds as at the end of init (O16A). */
-        if (srv->config.witness_external && !srv->genesis_marker_armed &&
+        /* Split S5b: with storage_external the same holds for the DHT's
+         * two databases — armed once the chain is open AND nodus-storage
+         * has created both (nodus_server_marker_dbs_ready; looked at once a
+         * second while waiting, not every pass). */
+        if ((srv->config.witness_external || srv->config.storage_external) &&
+            !srv->genesis_marker_armed &&
             srv->chain && srv->chain->ops->chain_open(srv->chain)) {
-            server_write_genesis_marker(srv->config.data_path);
-            srv->genesis_marker_armed = true;
+            uint64_t now_s = nodus_time_now();
+            if (now_s != srv->last_marker_check) {
+                srv->last_marker_check = now_s;
+                if (nodus_server_marker_dbs_ready(&srv->config)) {
+                    server_write_genesis_marker(srv->config.data_path);
+                    srv->genesis_marker_armed = true;
+                }
+            }
         }
 
 #ifndef NODUS_CHANNELS_DISABLED
