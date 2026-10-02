@@ -404,8 +404,11 @@ on every node). Read it on any node:
 | HF-1 | gas price: an envelope with a non-SYSTEM leg pays `max(units × price, floor)` | 5 `GAS_PRICE_RAW_PER_UNIT` | 121 | genesis document (0) | 0 | 0.19.80 | `DE43BDFAD6600BF5` |
 | HF-2 | governance approvals weighed by voting power (> 2/3); a touched domain that nets to zero applies | 7 `HF2_ACTIVE` | 1 | 724 | 1500 | 0.23.2 | `477E05BD7C62EE4A` |
 | HF-3 | block bounded by cometbft's limits only (no 2 MiB / 2 097 152-unit bound); ProcessProposal checks gas price, committed replay, units ≤ INT64_MAX | 8 `HF3_ACTIVE` | 1 | 2206 | 2926 | 0.23.9 | `4CE838897C4F853B` |
+| HF-4 | rule-set generation 2 (SYSTEM v7 / CORE v5): the registry switches at the end of H−1; CORE op 8 NAME_REGISTER (on-chain names) and the name-price params 10-13 are in force from H | 9 `RULESET_GEN2` | 4962894749133920991 (D2 = 0x44dfbe7ad3c75adf) | 2431 | 3151 | 0.23.10 | `BD84A28A3D3EE5B1` |
 
-Read 2026-10-02: the HF-3 row on 7/7 (identical; proposed from EU-5, 7/7 approvals); the
+Read 2026-10-02: the HF-4 row on 7/7 (identical; proposed from EU-5, 7/7 approvals; the
+seven nodes on 0.23.10 with identical D2/commit/consensus-constants startup lines, the web
+wallet, Connect, explorer and Scan released before the vote). The HF-3 row on 7/7 (identical; proposed from EU-5, 7/7 approvals); the
 HF-1 and HF-2 rows on EU-5 (the HF-2 row was read on 7/7 when it was voted, 2026-09-30). A node that was not on the introducing binary when a vote committed
 diverges at that block — recovery at the end of this section.
 
