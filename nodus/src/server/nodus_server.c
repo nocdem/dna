@@ -1177,6 +1177,95 @@ static inter_hs_role_t inter_handshake_role(const char *method) {
     return INTER_HS_NONE;
 }
 
+/* ── The dialer handshake's host side (split S5a, decision item 28) ── */
+
+/* On a conn we dialed, core's session flag and the dialer module's are the
+ * same fact: an auth_ok was received. Core's gates (F2/F3, "authenticate
+ * first") read sess->authenticated, the module reads d->authenticated —
+ * carried into the module before each call, and back out (with the proven
+ * peer identity, F4) to the session and the conn after it. */
+static void inter_dial_sync_out(nodus_inter_session_t *sess) {
+    const nodus_inter_dial_t *d = &sess->dial;
+    if (d->authenticated) {
+        sess->authenticated = true;
+        sess->conn->authenticated = true;
+    }
+    if (d->peer_id_set) {
+        /* F4: like the accepting side does after auth, so pending-full
+         * hints key on a real identity. */
+        sess->conn->peer_id = d->peer_id;
+        sess->conn->peer_pk = d->peer_pk;
+        sess->conn->peer_id_set = true;
+    }
+}
+
+static int inter_dial_send_raw(void *ctx, const uint8_t *payload, size_t len) {
+    nodus_inter_session_t *sess = (nodus_inter_session_t *)ctx;
+    return nodus_tcp_send_raw(sess->conn, payload, len);
+}
+
+/* The hello's send (on_inter_connect): ctx is the conn itself. */
+static int inter_dial_send_raw_conn(void *ctx, const uint8_t *payload, size_t len) {
+    return nodus_tcp_send_raw((nodus_tcp_conn_t *)ctx, payload, len);
+}
+
+static void inter_dial_established(void *ctx, bool encrypted) {
+    nodus_inter_session_t *sess = (nodus_inter_session_t *)ctx;
+    nodus_tcp_conn_t *conn = sess->conn;
+    inter_dial_sync_out(sess);
+    conn->auth_state = NODUS_CONN_AUTH_OK;
+    if (!encrypted) {
+        /* No Kyber identity on this node: plaintext is the only option —
+         * release what was queued during the handshake. */
+        nodus_tcp_pending_flush(conn);
+        return;
+    }
+    /* Session key set. DISCARD the pending queue — it contains pre-framed
+     * plaintext that would bypass encryption. Inter-node queued frames are
+     * periodic (heartbeat/repl) and will be re-sent on next cycle. */
+    if (conn->pending_buf) {
+        free(conn->pending_buf);
+        conn->pending_buf = NULL;
+        conn->pending_len = 0;
+        conn->pending_cap = 0;
+    }
+    QGP_LOG_INFO(LOG_TAG, "INTER_CRYPTO: outgoing conn to %s:%d encrypted",
+                 conn->ip, conn->port);
+}
+
+static void inter_dial_io(nodus_server_t *srv, nodus_inter_session_t *sess,
+                          nodus_inter_dial_io_t *io) {
+    nodus_tcp_conn_t *conn = sess->conn;
+    memset(io, 0, sizeof(*io));
+    io->identity = &srv->identity;
+    /* CRIT-1: the pin recorded at dial time (nodus_server_inter_dial),
+     * read from the conn now — never cached in the session. */
+    io->expected_peer_id = conn->expected_peer_id_set ? &conn->expected_peer_id
+                                                      : NULL;
+    io->crypto = &conn->channel_crypto;
+    io->peer_ip = conn->ip;
+    io->peer_port = conn->port;
+    io->slot = conn->slot;
+    io->send_raw = inter_dial_send_raw;
+    io->established = inter_dial_established;
+    io->ctx = sess;
+}
+
+/* One received T2 frame through the dialer module, on a conn we DIALED
+ * (sess->conn non-NULL, auth_initiated_by_us). On an accepted conn the
+ * role split above has already disconnected any challenge / auth_ok /
+ * key_ack, so the module is not consulted there. */
+static nodus_inter_dial_rc_t inter_dial_frame(nodus_server_t *srv,
+                                              nodus_inter_session_t *sess,
+                                              const nodus_tier2_msg_t *msg) {
+    nodus_inter_dial_io_t io;
+    inter_dial_io(srv, sess, &io);
+    if (sess->authenticated) sess->dial.authenticated = true;
+    nodus_inter_dial_rc_t rc = nodus_inter_dial_on_frame(&sess->dial, &io, msg);
+    inter_dial_sync_out(sess);
+    return rc;
+}
+
 static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                             const uint8_t *payload, size_t len) {
     /* DBG: trace dispatch entries on encrypted conns (v0.18.1) */
@@ -1266,232 +1355,31 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
         }
 
         /* Handle auth RESPONSES for outgoing inter-node connections (this
-         * node opened the conn, sent hello, now receives challenge/auth_ok).
-         * These must be handled regardless of require_peer_auth — they
-         * complete auth initiated by us.
+         * node opened the conn, sent hello, now receives challenge /
+         * auth_ok / key_ack): the shared dialer module (split S5a, decision
+         * item 28 — server/nodus_inter_dial.h, the code that was inline
+         * here). These must be handled regardless of require_peer_auth —
+         * they complete auth initiated by us.
          *
          * C2 fix: enforce outbound-only gate — now the role split above: a
          * challenge on an inbound conn disconnects before this point, so
          * this node never signs a nonce an accepted peer chose (closes the
-         * Dilithium5 oracle). One challenge per dialed conn: a repeated one
-         * (the nonce is already retained) is not signed again. */
-        if (strcmp(msg.method, "challenge") == 0) {
-            if (sess->has_challenge_nonce || sess->authenticated) {
-                QGP_LOG_WARN(LOG_TAG, "INTER: repeated challenge from %s:%u — "
-                             "not signed, dropped",
-                             sess->conn->ip, (unsigned)sess->conn->port);
+         * Dilithium5 oracle). */
+        if (sess->conn && sess->conn->auth_initiated_by_us) {
+            nodus_inter_dial_rc_t drc = inter_dial_frame(srv, sess, &msg);
+            if (drc == NODUS_INTER_DIAL_REFUSED) {
+                /* CRIT-1 fail-closed (the module logged why). */
+                sess->conn->auth_state = NODUS_CONN_AUTH_FAILED;
+                nodus_t2_msg_free(&msg);
+                nodus_tcp_disconnect(&srv->inter_tcp, sess->conn);
+                return;
+            }
+            if (drc == NODUS_INTER_DIAL_DONE) {
                 nodus_t2_msg_free(&msg);
                 return;
             }
-            nodus_sig_t sig;
-            nodus_sign_auth_challenge(&sig, msg.nonce, &srv->identity.sk);
-            /* CRIT-1: retain the challenge nonce — the peer signs
-             * (kyber_pk || this nonce) as kpk_sig, so auth_ok cannot verify the
-             * binding without it. Previously it was signed and discarded. */
-            memcpy(sess->challenge_nonce, msg.nonce, NODUS_NONCE_LEN);
-            sess->has_challenge_nonce = true;
-            uint8_t buf[8192];
-            size_t rlen = 0;
-            nodus_t2_auth(msg.txn_id, &sig, buf, sizeof(buf), &rlen);
-            nodus_tcp_send_raw(sess->conn, buf, rlen);
-            nodus_t2_msg_free(&msg);
-            return;
-        } else if (strcmp(msg.method, "auth_ok") == 0) {
-            /* Only on a conn we dialed (role split above), once: a repeated
-             * auth_ok would start a second key exchange. */
-            if (sess->authenticated || sess->pending_kyber) {
-                QGP_LOG_WARN(LOG_TAG, "INTER: repeated auth_ok from %s:%u — dropped",
-                             sess->conn->ip, (unsigned)sess->conn->port);
-                nodus_t2_msg_free(&msg);
-                return;
-            }
-            sess->conn->authenticated = true;
-            sess->authenticated = true;
-
-            /* Inter-node Kyber handshake (connecting side).
-             * Keep auth gate CLOSED (auth_state != AUTH_OK) during handshake
-             * so no plaintext frames leak through. Open after key_ack. */
-            /* CRIT-1: authenticate the peer's Kyber public key BEFORE
-             * encapsulating to it. Without this an active MITM on the plaintext
-             * handshake substitutes its own self-consistent triple
-             * (server_pk', kyber_pk', kpk_sig') and owns the channel key — which
-             * makes every downstream nonce/AEAD property moot. Three gates, all
-             * fail-closed:
-             *   1. downgrade-close: if WE support Kyber, a missing kyber_pk /
-             *      kpk_sig / server_pk is refused — never fall through to the
-             *      plaintext branch (an attacker could otherwise just strip the
-             *      field to force cleartext inter-node traffic).
-             *   2. signature: kpk_sig must verify over (kyber_pk || the nonce we
-             *      challenged with) under server_pk.
-             *   3. identity pin: fingerprint(server_pk) must equal the node_id we
-             *      believed we were dialing. Step 2 alone only proves the triple
-             *      is SELF-consistent — the attacker signs its own key with its
-             *      own identity and passes. The pin is what actually binds the
-             *      channel to the intended peer; SHA3-512 preimage resistance
-             *      means a MITM cannot produce a pk matching that fingerprint.
-             * Trust note: the pin reference is the routing-table node_id
-             * (trusted-discovery; adversarial UDP-4000 Kademlia injection is out
-             * of scope per the threat model). */
-            if (srv->identity.has_kyber) {
-                bool bind_ok = false;
-
-                if (!msg.has_kyber_pk || !msg.has_kpk_sig || !msg.has_server_pk) {
-                    fprintf(stderr,
-                            "INTER CRIT-1: auth_ok missing kyber_pk/kpk_sig/server_pk "
-                            "from %s:%u — refusing (downgrade attempt?)\n",
-                            sess->conn->ip, (unsigned)sess->conn->port);
-                } else if (!sess->has_challenge_nonce) {
-                    fprintf(stderr,
-                            "INTER CRIT-1: no retained challenge nonce for %s:%u — "
-                            "cannot verify kpk_sig, refusing\n",
-                            sess->conn->ip, (unsigned)sess->conn->port);
-                } else {
-                    uint8_t sign_data[NODUS_KYBER_PK_BYTES + NODUS_NONCE_LEN];
-                    memcpy(sign_data, msg.kyber_pk, NODUS_KYBER_PK_BYTES);
-                    memcpy(sign_data + NODUS_KYBER_PK_BYTES,
-                           sess->challenge_nonce, NODUS_NONCE_LEN);
-
-                    if (nodus_verify_kyber_bind(&msg.kpk_sig, sign_data,
-                                                 sizeof(sign_data),
-                                                 &msg.server_pk) != 0) {
-                        fprintf(stderr,
-                                "INTER CRIT-1: kyber_pk signature INVALID from %s:%u "
-                                "— possible MITM, refusing\n",
-                                sess->conn->ip, (unsigned)sess->conn->port);
-                    } else if (!sess->conn->expected_peer_id_set) {
-                        fprintf(stderr,
-                                "INTER CRIT-1: no expected peer identity for %s:%u "
-                                "— cannot pin, refusing\n",
-                                sess->conn->ip, (unsigned)sess->conn->port);
-                    } else {
-                        nodus_key_t actual_id;
-                        if (nodus_fingerprint(&msg.server_pk, &actual_id) != 0) {
-                            fprintf(stderr,
-                                    "INTER CRIT-1: fingerprint() failed for %s:%u "
-                                    "— refusing\n",
-                                    sess->conn->ip, (unsigned)sess->conn->port);
-                        } else if (nodus_key_cmp(&actual_id,
-                                                 &sess->conn->expected_peer_id) != 0) {
-                            /* Fail closed + alarm. Do NOT re-resolve the identity
-                             * here: FIND_NODE data is unsigned, so adopting a
-                             * fresh node_id at attack time would let the same
-                             * adversary both trigger and answer the mismatch.
-                             * Recovery is via authenticated discovery refresh. */
-                            fprintf(stderr,
-                                    "INTER CRIT-1: identity PIN MISMATCH at %s:%u — "
-                                    "server_pk fingerprint != dialed node_id. "
-                                    "Refusing (MITM or peer identity rotation).\n",
-                                    sess->conn->ip, (unsigned)sess->conn->port);
-                        } else {
-                            bind_ok = true;
-                            /* F4: the dialed peer's identity is now proven
-                             * (signature + pin) — record it on the conn,
-                             * like the accepting side does after auth, so
-                             * pending-full hints key on a real identity. */
-                            sess->conn->peer_id = actual_id;
-                            sess->conn->peer_pk = msg.server_pk;
-                            sess->conn->peer_id_set = true;
-                        }
-                    }
-                }
-
-                if (!bind_ok) {
-                    sess->conn->auth_state = NODUS_CONN_AUTH_FAILED;
-                    nodus_t2_msg_free(&msg);
-                    nodus_tcp_disconnect(&srv->inter_tcp, sess->conn);
-                    return;
-                }
-
-                /* Faz 1 KEM migration (docs/plans/decisions/2026-09-23-kem-
-                 * mlkem-migration.md): if the peer ALSO advertised a signed
-                 * ML-KEM-1024 pubkey, verify it under MLKEM_BIND against
-                 * the SAME pinned server_pk (bind_ok above already proved
-                 * it) and prefer it; otherwise fall back to the Kyber kpk
-                 * exactly as today. */
-                bool use_mlkem = false;
-                if (msg.has_mlkem_pk && msg.has_mpk_sig) {
-                    uint8_t msign_data[NODUS_MLKEM_PK_BYTES + NODUS_NONCE_LEN];
-                    memcpy(msign_data, msg.mlkem_pk, NODUS_MLKEM_PK_BYTES);
-                    memcpy(msign_data + NODUS_MLKEM_PK_BYTES,
-                           sess->challenge_nonce, NODUS_NONCE_LEN);
-                    if (nodus_verify_mlkem_bind(&msg.mpk_sig, msign_data, sizeof(msign_data),
-                                                 &msg.server_pk) == 0) {
-                        use_mlkem = true;
-                    } else {
-                        fprintf(stderr,
-                                "INTER: mlkem_pk signature INVALID from %s:%u — "
-                                "falling back to Kyber round-3\n",
-                                sess->conn->ip, (unsigned)sess->conn->port);
-                    }
-                }
-
-                uint8_t ct[NODUS_KYBER_CT_BYTES], ss_buf[NODUS_KYBER_SS_BYTES];
-                uint8_t alg = use_mlkem ? 1 : 0;
-                int enc_rc = use_mlkem
-                    ? qgp_mlkem1024_encapsulate(ct, ss_buf, msg.mlkem_pk)
-                    : qgp_kem1024_encapsulate(ct, ss_buf, msg.kyber_pk);
-                if (enc_rc == 0) {
-                    uint8_t nc[NODUS_NONCE_LEN];
-                    nodus_random(nc, NODUS_NONCE_LEN);
-                    uint8_t ki_buf[4096];
-                    size_t ki_len = 0;
-                    nodus_t2_key_init(msg.txn_id, ct, nc, alg, ki_buf, sizeof(ki_buf), &ki_len);
-                    nodus_tcp_send_raw(sess->conn, ki_buf, ki_len);
-                    /* Store shared secret + nonce for key_ack */
-                    memcpy(sess->pending_ss, ss_buf, 32);
-                    memcpy(sess->pending_nc, nc, 32);
-                    sess->pending_kyber = true;
-                }
-                qgp_secure_memzero(ss_buf, sizeof(ss_buf));
-            } else {
-                /* This node has no Kyber identity — it cannot do channel
-                 * encryption at all, so plaintext is the only option and is not
-                 * an attacker-induced downgrade. */
-                sess->conn->auth_state = NODUS_CONN_AUTH_OK;
-                nodus_tcp_pending_flush(sess->conn);
-            }
-
-            nodus_t2_msg_free(&msg);
-            return;
-        } else if (strcmp(msg.method, "key_ack") == 0 && sess->pending_kyber) {
-            /* Phase 3.2b-inv: KEY_ACK receive visibility */
-            fprintf(stderr,
-                    "CRYPTO: KEY_ACK_RX slot=%d peer=%s:%u has_nonce=%d sess=%p\n",
-                    sess->conn ? sess->conn->slot : -1,
-                    sess->conn ? sess->conn->ip : "?",
-                    sess->conn ? (unsigned)sess->conn->port : 0,
-                    msg.has_key_nonce ? 1 : 0, (void *)sess);
-            /* Complete inter-node Kyber handshake.
-             * B3 fix — init the per-conn channel_crypto directly; no
-             * separate crypto-pointer alias needed. */
-            if (msg.has_key_nonce) {
-                /* We DIALED this peer (outgoing inter-node conn) → initiator. */
-                nodus_channel_crypto_init(&sess->conn->channel_crypto,
-                                           sess->pending_ss, sess->pending_nc, msg.key_nonce,
-                                           NODUS_CHANNEL_ROLE_INITIATOR);
-                fprintf(stderr,
-                        "CRYPTO: SET_OUTGOING slot=%d peer=%s:%u (inter-node encrypted)\n",
-                        sess->conn->slot, sess->conn->ip, (unsigned)sess->conn->port);
-                qgp_secure_memzero(sess->pending_ss, sizeof(sess->pending_ss));
-                qgp_secure_memzero(sess->pending_nc, sizeof(sess->pending_nc));
-                sess->pending_kyber = false;
-                /* Open auth gate. DISCARD pending queue — it contains
-                 * pre-framed plaintext that would bypass encryption.
-                 * Inter-node queued frames are periodic (heartbeat/repl)
-                 * and will be re-sent on next cycle. */
-                sess->conn->auth_state = NODUS_CONN_AUTH_OK;
-                if (sess->conn->pending_buf) {
-                    free(sess->conn->pending_buf);
-                    sess->conn->pending_buf = NULL;
-                    sess->conn->pending_len = 0;
-                    sess->conn->pending_cap = 0;
-                }
-                fprintf(stderr, "INTER_CRYPTO: outgoing conn to %s:%d encrypted\n",
-                        sess->conn->ip, sess->conn->port);
-            }
-            nodus_t2_msg_free(&msg);
-            return;
-        } else if (strcmp(msg.method, "error") == 0) {
+        }
+        if (strcmp(msg.method, "error") == 0) {
             nodus_t2_msg_free(&msg);
             return;
         }
@@ -1937,16 +1825,18 @@ static void on_inter_connect(nodus_tcp_conn_t *conn, void *ctx) {
             conn->slot, conn->ip, (unsigned)conn->port, (void *)sess);
 
     if (conn->auth_required) {
-        /* Auto-send hello to initiate auth */
-        uint8_t hello_buf[8192];
-        size_t hello_len = 0;
-        if (nodus_t2_hello(0, &srv->identity.pk, &srv->identity.node_id,
-                            hello_buf, sizeof(hello_buf), &hello_len) == 0) {
-            nodus_tcp_send_raw(conn, hello_buf, hello_len);
+        /* Auto-send hello to initiate auth — the dialer module's first
+         * frame (split S5a, decision item 28). The hello needs only this
+         * node's identity and the conn. */
+        nodus_inter_dial_io_t io;
+        memset(&io, 0, sizeof(io));
+        io.identity = &srv->identity;
+        io.send_raw = inter_dial_send_raw_conn;
+        io.ctx = conn;
+        if (nodus_inter_dial_start(&io) == 0)
             conn->auth_state = NODUS_CONN_AUTH_HELLO_SENT;
-        } else {
+        else
             conn->auth_state = NODUS_CONN_AUTH_FAILED;
-        }
     } else {
         conn->auth_state = NODUS_CONN_AUTH_OK;
     }

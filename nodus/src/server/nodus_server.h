@@ -30,6 +30,7 @@
 #include "witness/nodus_witness_network_file.h" /* nodus_network_file_target_t */
 #include "server/nodus_chain_backend.h"     /* srv->chain */
 #include "server/nodus_presence.h"
+#include "server/nodus_inter_dial.h"       /* the 4002 dialer handshake (S5a) */
 #include "circuit/nodus_circuit.h"
 #include "circuit/nodus_inter_circuit.h"
 #include "crypto/nodus_channel_crypto.h"
@@ -166,23 +167,14 @@ typedef struct {
     /* Peer protocol version (from hello) */
     uint32_t            proto_version;
 
-    /* Channel encryption (Kyber handshake for inter-node).
-     * B3 fix — channel_crypto storage moved to nodus_tcp_conn_t.
-     * Read via sess->conn->channel_crypto. The pending_* fields stay
-     * here because they're per-handshake-attempt state, not session
-     * state — a new key_init can arrive before the previous handshake
-     * completes, and the conn's channel_crypto only becomes valid on
-     * key_ack/key_init completion. */
-    uint8_t             pending_ss[32];     /* shared secret awaiting key_ack */
-    uint8_t             pending_nc[32];     /* client nonce awaiting key_ack */
-    bool                pending_kyber;
-
-    /* CRIT-1: the auth challenge nonce we received and signed, retained so the
-     * dialer can reconstruct the signed message (kyber_pk || nonce) and verify
-     * the peer's kpk_sig at auth_ok time. Previously the nonce was signed and
-     * immediately discarded, so the binding could not be checked at all. */
-    uint8_t             challenge_nonce[NODUS_NONCE_LEN];
-    bool                has_challenge_nonce;
+    /* The DIALER side of the handshake on a conn we opened (split S5a,
+     * decision item 28: server/nodus_inter_dial.h — challenge nonce, the
+     * pending KEM secret between key_init and key_ack, the proven peer
+     * identity). Channel crypto itself lives on the conn (B3 fix:
+     * sess->conn->channel_crypto). On a dialed conn, `authenticated` above
+     * and dial.authenticated are carried both ways around each call
+     * (dispatch_inter). Unused on an accepted conn. */
+    nodus_inter_dial_t  dial;
 } nodus_inter_session_t;
 
 /* ── Client session ──────────────────────────────────────────────── */

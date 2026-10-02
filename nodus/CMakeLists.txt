@@ -544,6 +544,11 @@ if(NOT WIN32)
         src/dht/nodus_dht_media.c
         src/server/nodus_auth.c
         src/server/nodus_presence.c
+        # Split S5a (decision item 28): the DIALER side of the 4002
+        # handshake (challenge / auth_ok with the CRIT-1 pin / key_ack), one
+        # module core links now and the S5 storage process will link too.
+        # Knows no server, session or transport type.
+        src/server/nodus_inter_dial.c
         # Split S4 (decision 2026-10-01-nodus-component-split.md): the
         # server's one door to its DHT / storage half, in-process
         # implementation (server/nodus_dht_backend.h).
@@ -1063,6 +1068,12 @@ add_test(NAME test_origin_gen COMMAND test_origin_gen)
 # Split S5a item 30: core's outbound 4002 dials (presence p_sync, circuits,
 # the DHT's inter_send) pin the expected peer identity; the routing
 # snapshot carries node_id. One loopback listener, no event loop run.
+# Split S5a item 28: the shared 4002 dialer handshake module against an
+# in-memory peer (correct pin, wrong / missing pin, bad kpk_sig, downgrade).
+add_executable(test_inter_dial tests/test_inter_dial.c)
+target_link_libraries(test_inter_dial nodus dsa kem nodus)
+add_test(NAME test_inter_dial COMMAND test_inter_dial)
+
 add_executable(test_presence_dial_pin tests/test_presence_dial_pin.c)
 target_link_libraries(test_presence_dial_pin nodus dsa kem nodus)
 add_test(NAME test_presence_dial_pin COMMAND test_presence_dial_pin)
