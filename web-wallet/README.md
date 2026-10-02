@@ -934,6 +934,37 @@ Decision: `docs/plans/decisions/2026-09-25-web-wallet-solana-kit.md` (operator,
   all JavaScript chunks 1,477,466 → 1,315,743 bytes. The default build's app
   chunk is 1,254,356 bytes.
 
+## Status line follows the submission (unreleased)
+
+Operator 2026-10-03: after a send, delegation, undelegation, claim or chain
+name registration the status line said "confirmation is pending" and never
+changed, even once the transaction was in a block. It now follows the
+Activity record that the existing tracker already polls (`src/activity.js`
+`watchActivity`, 12 s; no second poller): `src/app.js` `followSubmission`
+rewrites the line with `submissionStatus()` each time the tracker stores a
+new answer on the record —
+
+- NODUS: "… confirmed at block N (reported by one Nodus node)" once the
+  block scan found the transaction (`src/adapters/nodus.js`
+  `checkNodusActivity` now also returns the height as `block`; the saved
+  activity format does not keep it), or "… expired. Not included before
+  block X …" once the tip passes its expiry block (a claim: the claim state
+  decides, as before).
+- Other networks: "seen on the network, not final yet", then "confirmed" /
+  "failed" / "was replaced" from the same checks Activity shows; the
+  explorer link stays.
+
+While the record is unresolved the submission text stays; "confirmed" is
+written only after a check reported the transaction included. The line stops
+following once the answer is final, or as soon as any other message replaces
+it (another action, lock); the record itself is still tracked in Activity.
+The tracker checks only the selected network's records, so while another
+network is selected the line does not change. It is rewritten only when its text changes, so the
+Nodus Connect toast (`src/connect-main.js`) re-appears once with the final
+answer rather than on every check. Tests: `test/activity.test.js`
+(submission status line), `test/nodus-send.test.js` (pending → confirmed at
+block N / expired through `watchActivity` and the mock module).
+
 ## "Become a validator" removed from the page (unreleased)
 
 Operator 2026-10-03: the "Become a validator" block of the Earn panel

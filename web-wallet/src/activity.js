@@ -97,6 +97,26 @@ export async function checkActivity(row, { signal, call = rpc, post = request } 
   if (Object.keys(tx).length) throw new Error('Unrecognized TRON transaction response.');
   return { status: 'pending', note: 'Not solidified. Check explorer before resending; no absence-based failure is assumed.' };
 }
+// The status line shown after a submission (src/app.js), once the tracker
+// (watchActivity below) has stored a network answer on the record. `what`
+// names the action ("Delegation", "Transfer", …); `idLabel` is the ID
+// sentence's label, or null where the caller shows its own explorer link.
+// Returns null while the record is unresolved: the submission text stays.
+// "confirmed" comes only from a check that reported the transaction
+// included (checkActivity / checkNodusActivity); this never infers it.
+const UNRESOLVED_TEXT = { failed: 'failed', expired: 'expired', replaced: 'was replaced', abandoned: 'was marked abandoned' };
+export function submissionStatus(record, { what, idLabel = null }) {
+  const id = idLabel ? ` ${idLabel} ${record.hash}.` : '', note = record.note ? ` ${record.note}` : '';
+  if (record.status === 'confirmed') {
+    // NODUS: the block the scan found it in (src/adapters/nodus.js); the
+    // answer comes from one node, and the line says so.
+    if (record.block) return `${what} confirmed at block ${record.block}${record.chain === NODUS_CHAIN ? ' (reported by one Nodus node)' : ''}.${id}`;
+    return `${what} confirmed.${note}${id}`;
+  }
+  if (record.status === 'included') return `${what} seen on the network, not final yet.${note}${id}`;
+  if (UNRESOLVED_TEXT[record.status]) return `${what} ${UNRESOLVED_TEXT[record.status]}.${note}${id}`;
+  return null;
+}
 // A tracker never submits transactions. Stop aborts in-flight reads and future polling.
 export function watchActivity(rows, onChange, { interval = 12000, check = checkActivity } = {}) {
   const controller = new AbortController(); let timer;

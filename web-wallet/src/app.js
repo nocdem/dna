@@ -3,7 +3,7 @@ import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, parseVault, encrypt
 import { deleteVaultHistory, HistoryDeleteBlocked } from './connect/store.js';
 import { serializeActivity, parseActivity, activityKeyFor, serializeBalances, parseBalances, balancesKeyFor, serializeHistory, parseHistory, historyKeyFor } from './activity-storage.js';
 import { readHistory, mergeHistory, historySupported, HISTORY_SOURCES, HISTORY_LIMIT } from './history.js';
-import { recordActivity, watchActivity, checkActivity, terminal } from './activity.js';
+import { recordActivity, watchActivity, checkActivity, terminal, submissionStatus } from './activity.js';
 import { CHAINS, CELLFRAME } from './config.js';
 import { CPUNK_ASSET, displayAmount } from './portfolio.js';
 // Pure data, referenced only inside `if (import.meta.env.VITE_ENABLE_IXIOS === 'true')`
@@ -297,7 +297,7 @@ const checkRow = async (row, options) => {
   else if (terminal(update.status) && !terminal(row.status)) setTimeout(() => { if (wallet && nodusClient) { void refreshStaking(); void refreshName(); } }, 0);
   return update;
 };
-function trackActivity() { stopTracking(); renderActivity(); if (wallet) stopTracking = watchActivity(visibleActivity, renderActivity, { check: checkRow }); }
+function trackActivity() { stopTracking(); renderActivity(); if (wallet) stopTracking = watchActivity(visibleActivity, () => { renderActivity(); followSubmission(); }, { check: checkRow }); }
 const endpoints = Object.fromEntries(Object.entries(CHAINS).map(([key, chain]) => [key, chain.endpoint]));
 // Receive-only networks outside CHAINS, in display order (network selector,
 // portfolio filters, badges and asset rows). None can be sent to: src/wallet.js
@@ -343,7 +343,27 @@ const portfolio = createPortfolio({
   leadingNetworks,
   extraNetworks
 });
-const message = text => { $('wallet-status').textContent = text; };
+// The status line after a submission follows its Activity record: it changes
+// when the tracker (trackActivity) stores a network answer on the record
+// (src/activity.js submissionStatus), and stops following once that answer
+// is final or any other message replaces the line. It is written only when
+// its text changes (Nodus Connect re-shows its toast on every write,
+// src/connect-main.js).
+let submissionFollow = null;
+const message = text => { submissionFollow = null; $('wallet-status').textContent = text; };
+function explorerLink(chain, hash) {
+  const link = document.createElement('a'); link.href = CHAINS[chain].explorer + encodeURIComponent(hash); link.textContent = `View transaction ${hash}`; link.target = '_blank'; link.rel = 'noopener noreferrer';
+  return link;
+}
+function followSubmission() {
+  const follow = submissionFollow;
+  if (!follow) return;
+  const text = submissionStatus(follow.record, follow);
+  if (text === null || text === follow.shown) return;
+  follow.shown = text; $('wallet-status').textContent = follow.link ? `${text} ` : text;
+  if (follow.link) $('wallet-status').append(explorerLink(follow.record.chain, follow.record.hash));
+  if (terminal(follow.record.status)) submissionFollow = null;
+}
 for (const { network, asset } of leadingNetworks) $('chain').add(new Option(network.name, asset.chain));
 for (const [key, chain] of Object.entries(CHAINS)) $('chain').add(new Option(chain.name, key));
 for (const { network, asset } of extraNetworks) $('chain').add(new Option(network.name, asset.chain));
@@ -1048,6 +1068,12 @@ $('review-dialog').addEventListener('cancel', event => { if (busy) event.prevent
 $('confirm-send').onclick = async () => {
   if (!pending || busy) return;
   busy = true; const transfer = pending, current = revision; pending = undefined; let record;
+  // The action's name in the status line, now and once its record resolves
+  // (followSubmission); the ID label is null where an explorer link is shown.
+  const what = transfer.kind === 'delegate' ? 'Delegation' : transfer.kind === 'undelegate' ? 'Undelegation' : transfer.kind === 'stake' ? 'Validator bond'
+    : transfer.kind === 'name' ? `Registration of the chain name "${transfer.name}"` : transfer.kind === 'claim' ? 'Claim' : 'Transfer';
+  const idLabel = transfer.kind === 'claim' ? 'Claim ID' : transfer.kind ? 'Transaction ID' : CHAINS[transfer.chain] ? null : 'Transfer ID';
+  const follow = () => { if (record) { submissionFollow = { record, what, idLabel, link: !idLabel, shown: null }; followSubmission(); } };
   $('confirm-send').disabled = true; $('cancel-send').disabled = true; $('review-error').textContent = 'Signing locally and broadcasting…';
   try {
     const hash = await transfer.confirm(async details => {
@@ -1061,21 +1087,16 @@ $('confirm-send').onclick = async () => {
     if (transfer.kind === 'claim') void refreshClaim();
     if (STAKE_KINDS.includes(transfer.kind)) void refreshStaking();
     if (current !== revision) return;
-    if (STAKE_KINDS.includes(transfer.kind)) {
-      $('delegate-amount').value = '';
-      message(`${transfer.kind === 'delegate' ? 'Delegation' : transfer.kind === 'undelegate' ? 'Undelegation' : 'Validator bond'} submitted; confirmation is pending. Transaction ID ${hash}. Its status is tracked in Activity.`);
-      return;
+    if (STAKE_KINDS.includes(transfer.kind)) $('delegate-amount').value = '';
+    else if (transfer.kind === 'name') { $('name-input').value = ''; clearNameQuote(); }
+    else { $('recipient').value = ''; $('amount').value = ''; }
+    if (transfer.kind) message(`${what} submitted; confirmation is pending. ${idLabel} ${hash}. Its status is tracked in Activity.`);
+    else {
+      message('Broadcast submitted; confirmation is pending. ');
+      if (CHAINS[transfer.chain]) $('wallet-status').append(explorerLink(transfer.chain, hash));
+      else $('wallet-status').append(`Transfer ID ${hash}. Its status is tracked in Activity.`);
     }
-    if (transfer.kind === 'name') {
-      $('name-input').value = ''; clearNameQuote();
-      message(`Registration of the chain name "${transfer.name}" submitted; confirmation is pending. Transaction ID ${hash}. Its status is tracked in Activity.`);
-      return;
-    }
-    $('recipient').value = ''; $('amount').value = '';
-    if (transfer.kind === 'claim') { message(`Claim submitted; confirmation is pending. Claim ID ${hash}. Its status is tracked in Activity.`); return; }
-    message('Broadcast submitted; confirmation is pending. ');
-    if (CHAINS[transfer.chain]) { const link = document.createElement('a'); link.href = CHAINS[transfer.chain].explorer + encodeURIComponent(hash); link.textContent = `View transaction ${hash}`; link.target = '_blank'; link.rel = 'noopener noreferrer'; $('wallet-status').append(link); }
-    else $('wallet-status').append(`Transfer ID ${hash}. Its status is tracked in Activity.`);
+    follow();
   } catch (error) {
     if (record) { record.status = 'unknown'; record.note = 'Broadcast outcome uncertain. Tracking the signed transaction; do not resend automatically.'; if (current === revision) trackActivity(); }
     closeReview();
@@ -1086,7 +1107,7 @@ $('confirm-send').onclick = async () => {
       : transfer.chain === NODUS_ASSET.chain
       ? 'The outcome is tracked in Activity; its coins stay held until it is included or its expiry block passes.'
       : 'A broadcast failure can have an uncertain outcome. Check your address on the chain explorer before creating another transfer.';
-    if (current === revision) message(record ? `${error.message} ${uncertain}` : error.message);
+    if (current === revision) { message(record ? `${error.message} ${uncertain}` : error.message); follow(); }
   } finally { busy = false; $('cancel-send').disabled = false; }
 };
 function updateVaultUI() {

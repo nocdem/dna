@@ -327,7 +327,9 @@ export async function checkNodusActivity(row, { signal, client } = {}) {
   if (result.found) {
     const height = rawUnits(result.height, 'block height');
     if (height < fromHeight || height > expiryHeight) throw new Error('The Nodus module returned an invalid status.');
-    return { status: 'confirmed', note: claim ? `Allocation claimed in block ${height} (reported by one Nodus node).` : `Included in block ${height} (reported by one Nodus node).` };
+    // `block`: the inclusion height, for the status line after a submission
+    // (src/activity.js submissionStatus); src/activity-storage.js does not keep it.
+    return { status: 'confirmed', block: height.toString(), note: claim ? `Allocation claimed in block ${height} (reported by one Nodus node).` : `Included in block ${height} (reported by one Nodus node).` };
   }
   if (claim) {
     if (tip <= expiryHeight) return { status: 'pending', note: `Waiting for the claim to be included (checking up to block ${expiryHeight}).` };

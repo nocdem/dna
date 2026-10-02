@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { checkActivity, watchActivity, terminal } from '../src/activity.js';
+import { checkActivity, watchActivity, terminal, submissionStatus } from '../src/activity.js';
 import { endpointUrl } from '../src/core.js';
 const hash = '0x' + 'a'.repeat(64), blockHash = '0x' + 'b'.repeat(64);
 const row = { chain: 'ethereum', hash, endpoint: 'https://rpc.example', status: 'pending' };
@@ -101,4 +101,22 @@ test('tracking preserves state on transient failure and ignores results after ca
   const stop2 = watchActivity(() => [item], () => updates++, { interval: 999999, check: async () => { throw Error('offline'); } });
   await new Promise(resolve => setImmediate(resolve)); stop2();
   assert.equal(item.status, 'included'); assert.match(item.readError, /offline/);
+});
+// The status line after a submission (src/app.js followSubmission): null while
+// the record is unresolved, so the submission text stays; a final or included
+// status only as the tracker stored it — "confirmed" is never inferred.
+test('submission status line: unresolved stays, every resolution is said plainly', () => {
+  const id = 'f'.repeat(128), nodus = { chain: 'nodus', hash: id };
+  const say = (record, labels = { what: 'Transfer', idLabel: 'Transfer ID' }) => submissionStatus(record, labels);
+  for (const status of ['pending', 'unknown']) assert.equal(say({ ...nodus, status, note: 'Waiting for inclusion; valid until block 90.' }), null);
+  assert.equal(say({ ...nodus, status: 'confirmed', block: '42', note: 'Included in block 42 (reported by one Nodus node).' }), `Transfer confirmed at block 42 (reported by one Nodus node). Transfer ID ${id}.`);
+  // A claim confirmed from the claim state (no block found by the scan).
+  assert.equal(say({ ...nodus, status: 'confirmed', note: 'Your allocation has been claimed (reported by one Nodus node).' }, { what: 'Claim', idLabel: 'Claim ID' }), `Claim confirmed. Your allocation has been claimed (reported by one Nodus node). Claim ID ${id}.`);
+  assert.equal(say({ ...nodus, status: 'expired', note: 'Not included before block 90; it can no longer be included and its coins are free again.' }, { what: 'Registration of the chain name "alice"', idLabel: 'Transaction ID' }),
+    `Registration of the chain name "alice" expired. Not included before block 90; it can no longer be included and its coins are free again. Transaction ID ${id}.`);
+  // Another network: the caller shows its explorer link instead of an ID.
+  assert.equal(say({ ...row, status: 'included', note: 'Included; awaiting finality.' }, { what: 'Transfer', idLabel: null }), 'Transfer seen on the network, not final yet. Included; awaiting finality.');
+  assert.equal(say({ ...row, status: 'confirmed', note: 'Receipt is in a finalized canonical block.' }, { what: 'Transfer', idLabel: null }), 'Transfer confirmed. Receipt is in a finalized canonical block.');
+  assert.equal(say({ ...row, status: 'failed', note: 'Receipt is in a finalized canonical block.' }, { what: 'Transfer', idLabel: null }), 'Transfer failed. Receipt is in a finalized canonical block.');
+  assert.match(say({ ...row, status: 'replaced', note: 'x.' }, { what: 'Transfer' }), /^Transfer was replaced\. x\.$/);
 });

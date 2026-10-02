@@ -7,7 +7,7 @@ import { createNodusClient, NODUS_TICK_MS } from '../src/nodus/client.js';
 import { nodusSendModuleFactory } from '../src/nodus/send-module.js';
 import { NODUS_NETWORK, nodusNetworkFor } from '../src/nodus/network.js';
 import { prepareTransfer } from '../src/wallet.js';
-import { recordActivity } from '../src/activity.js';
+import { recordActivity, watchActivity, submissionStatus, terminal } from '../src/activity.js';
 import { serializeActivity, parseActivity, activityKeyFor } from '../src/activity-storage.js';
 import { expiryHeightFor, lockedInputs, resendInputs, balances, checkNodusActivity, nodusRecipient, nodusAmountUnits, NODUS_EXPIRY_AHEAD, claimStatus, prepareClaim, isClaimRow, stakingOverview, prepareStake } from '../src/adapters/nodus.js';
 import { createMockNodusModule, FINGERPRINT, RECIPIENT, CHAIN_ID, INTENT_ID, FEE, coin } from './nodus-mock-module.js';
@@ -243,7 +243,8 @@ test('confirmation scan: included / still pending / expired past its expiry bloc
   const { mock, client } = await readyClient();
   const row = { chain: 'nodus', hash: INTENT_ID, fromHeight: '1001', expiryHeight: '1090', status: 'pending' };
   mock.state.scan = { tip: '1005', found: true, height: '1003' };
-  assert.equal((await checkNodusActivity(row, { client })).status, 'confirmed');
+  const included = await checkNodusActivity(row, { client });
+  assert.equal(included.status, 'confirmed'); assert.equal(included.block, '1003');
   assert.deepEqual(mock.state.lastScan, { intentId: INTENT_ID, fromHeight: '1001', toHeight: '1090' });
   mock.state.scan = { tip: '1090', found: false };
   assert.equal((await checkNodusActivity(row, { client })).status, 'pending');
@@ -253,6 +254,36 @@ test('confirmation scan: included / still pending / expired past its expiry bloc
   await assert.rejects(checkNodusActivity(row, { client }), /invalid status/);
   client.lock();
   await assert.rejects(checkNodusActivity(row, { client }), /not ready/);
+});
+
+// The status line after a submission (src/app.js followSubmission) is
+// submissionStatus() over the record the tracker updates: it stays on the
+// submission text while the scan finds nothing, says "confirmed at block N"
+// only after the scan reported the intent included, and says "expired" once
+// the tip passes the expiry block. The tracker stops checking a final record.
+test('status line after a submission follows the tracker: pending, then confirmed at block N, or expired', async () => {
+  const { mock, client } = await readyClient();
+  const follow = async (scans) => {
+    const row = { chain: 'nodus', hash: INTENT_ID, fromHeight: '1001', expiryHeight: '1090', status: 'pending', note: 'Broadcast submitted; awaiting confirmation.' };
+    const lines = []; let checks = 0, stop;
+    await new Promise((resolve, reject) => {
+      const deadline = setTimeout(() => { stop(); reject(new Error('the record never resolved')); }, 1000);
+      stop = watchActivity(() => [row], () => {
+        lines.push(submissionStatus(row, { what: 'Delegation', idLabel: 'Transaction ID' }));
+        if (terminal(row.status)) { stop(); clearTimeout(deadline); resolve(); }
+      }, { interval: 1, check: (record, options) => { mock.state.scan = scans[Math.min(checks++, scans.length - 1)]; return checkNodusActivity(record, { ...options, client }); } });
+    });
+    return { row, lines, checks };
+  };
+  const done = await follow([{ tip: '1002', found: false }, { tip: '1003', found: false }, { tip: '1004', found: true, height: '1003' }]);
+  assert.deepEqual(done.lines.slice(0, 2), [null, null], 'no answer of inclusion: the submission text stays');
+  assert.equal(done.lines[2], `Delegation confirmed at block 1003 (reported by one Nodus node). Transaction ID ${INTENT_ID}.`);
+  assert.equal(done.checks, 3, 'a final record is not checked again');
+  const gone = await follow([{ tip: '1050', found: false }, { tip: '1091', found: false }]);
+  assert.equal(gone.lines[0], null);
+  assert.match(gone.lines[1], /^Delegation expired\. Not included before block 1090; it can no longer be included/);
+  assert.doesNotMatch(gone.lines.join(' '), /confirmed/);
+  client.lock();
 });
 
 test('balance: spendable shown, a read failure is an error never a zero', async () => {
