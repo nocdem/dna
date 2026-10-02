@@ -101,6 +101,13 @@
 
 #include "nodus/nodus_v2_spend.h"
 #include "client/nodus_v2_stake.h"         /* the shared staking builder    */
+#include "client/nodus_v2_name.h"          /* the shared name registration
+                                             * builder (networked builds
+                                             * only — see "CHAIN NAME
+                                             * REGISTRATION")                */
+#include "witness/nodus_witness_runtime.h"  /* NODUS_RT_GEN_2 — header
+                                             * constants only, no witness
+                                             * link (as nodus_v2_stake.c)    */
 #include "nodus/nodus_types.h"             /* NODUS_CMT_APP_MAX_EXPIRY_AHEAD,
                                              * NODUS_W_BASE_TX_FEE           */
 #include "dnac/dnac.h"                      /* DNAC_MIN_FEE_RAW              */
@@ -348,6 +355,11 @@ typedef struct {
      * delegated / withdrawn amount. */
     int      op;
     char     commission[NSW_U64_DEC];       /* STAKE only, basis points     */
+    /* A chain-name registration (nsw_name_core): the name ("" for every
+     * other envelope) and its price; `recipient` is this wallet's own
+     * address (the owner), `amount` the price. */
+    char     name[DNAC_NAME_MAX_LEN + 1];
+    char     price[NSW_U64_DEC];
 } nsw_built_t;
 
 static nsw_built_t g_built;
@@ -373,6 +385,8 @@ const char *nsw_built_expiry(void)  { return g_built.expiry; }
 int nsw_built_n_in(void)            { return g_built.n_in; }
 int nsw_built_op(void)              { return g_built.op; }
 const char *nsw_built_commission(void) { return g_built.commission; }
+const char *nsw_built_name(void)    { return g_built.name; }
+const char *nsw_built_price(void)   { return g_built.price; }
 const char *nsw_built_in(int i) {
     return (i >= 0 && i < g_built.n_in) ? g_built.in_hex[i] : "";
 }
@@ -2424,6 +2438,375 @@ int nsw_profile_address(const char *owner_hex, const char *field) {
     return nsw_end(rc);
 }
 
+/* ═══ CHAIN NAME REGISTRATION (HF-4) ═════════════════════════════════════
+ *
+ * nodus-cli `name register` (cmd_name_register) in the browser: the
+ * envelope is built by the SAME shared builder (nodus/src/client/
+ * nodus_v2_name.c, nodus_v2_name_build) over the pinned generation whose
+ * tuple equals the node's dnac_ruleset_info answer — generation 2 or later
+ * only (CORE op 8 exists from generation 2; decision 2026-10-02-onchain-
+ * names.md, design rev 4 §2). The request is the CLI's: the listed
+ * candidate coins, the tip, the gas price read on this session, expiry =
+ * nsw_expiry_for, the name (already lower-case: the wallet maps A-Z with
+ * an ASCII-only table, src/nodus/names.js), the PRICE READ FROM THE NODE on
+ * this call (dnac_fee_info "np" at tip + 1, nodus_client_dnac_name_prices
+ * — never a compiled value, never a value JS hands in), the owner = this
+ * wallet's key. Before building, the CLI's two state checks on the same
+ * session: the name is not registered (dnac_name_lookup) and this ID holds
+ * no name (dnac_name_of) — one node's committed state (decision item 9);
+ * the chain decides both again when it runs the registration.
+ *
+ * NOT IN THE NATIVE VECTOR: this whole section is inside the networked
+ * part (#ifndef NODUS_SEND_OFFLINE_ONLY), because the native vector's
+ * build script (scripts/build-nodus-send-native-vector.sh) does not link
+ * nodus_v2_name.c. The parity of a name build is TEST wasm against the
+ * shipped wasm (nsw_name_offline_build, test/nodus-send-wasm.test.js) and
+ * the nodus ctest test_v2_name_build against the pre-move nodus-cli bytes.
+ */
+
+static const char *nsw_name_reason(int rc) {
+    switch (rc) {
+    case NODUS_V2_SPEND_ERR_INSUFFICIENT:
+        return "Not enough spendable NODUS for the name's price plus the network fee.";
+    case NODUS_V2_SPEND_ERR_MAX_INPUTS:
+        return "Paying for this name needs more than 13 of your coins. Send some NODUS to yourself to combine coins first, then try again.";
+    case NODUS_V2_SPEND_ERR_OVERFLOW:
+    case NODUS_V2_SPEND_ERR_INPUT_SUM:    return "Amount is out of range.";
+    case NODUS_V2_SPEND_ERR_GAS_OVERFLOW: return "The network fee is out of range.";
+    case NODUS_V2_SPEND_ERR_FEE_UNSETTLED: return "The network fee could not be settled.";
+    case NODUS_V2_SPEND_ERR_EXPIRY:       return "The current Nodus block height is unknown.";
+    case NODUS_V2_SPEND_ERR_RANDOM:       return "Random number generation failed.";
+    case NODUS_V2_NAME_ERR_NAME:          return "Not a chain name: 3 to 36 letters a-z and digits.";
+    case NODUS_V2_NAME_ERR_PRICE:         return "The Nodus network gave no price for this name.";
+    default:                              return "The name registration could not be built.";
+    }
+}
+
+/*
+ * Build + sign + read back ONE registration of `name` from g_req_coins.
+ * On success g_built holds the envelope and the fields DECODED FROM ITS
+ * BYTES (nodus_v2_name_built_t.dec), each checked here against the
+ * request: the name, the price, the owner key = this key, the expiry,
+ * every input from the request, the change to this wallet, and
+ * Σinputs = price + fee + change. Large structs are heap: this runs after
+ * every network wait of the networked caller, never across one.
+ * `g`: the generation (>= 2) and its expiry facts, as for nsw_build_core.
+ */
+static int nsw_name_core(const uint8_t *pk, const uint8_t *sk,
+                         const uint8_t chain32[DNA_CHAIN_ID_LEN],
+                         uint64_t tip, uint64_t gas_price, const char *name,
+                         uint64_t price, uint64_t expiry,
+                         nodus_v2_rand_fn rand, const nsw_gen_t *g) {
+    nsw_built_clear();
+    if (g->gen < NODUS_RT_GEN_2)
+        return nsw_fail("Chain names are not open on this network yet.");
+    if (!nsw_name_ok(name))
+        return nsw_fail("Not a chain name: 3 to 36 letters a-z and digits.");
+    if (nsw_expiry_check(tip, g, expiry) != 0) return -1;
+    if (g_req_n < 1) return nsw_fail("Insufficient NODUS balance.");
+
+    nodus_v2_ruleset_id_t rs;
+    dna_meter_policy_t pol;
+    if (nsw_ruleset(g->gen, &rs, &pol) != 0) return -1;
+
+    uint8_t own_raw[64];
+    char own_hex[129];
+    if (qgp_sha3_512(pk, NSW_PK_LEN, own_raw) != 0)
+        return nsw_fail("The name registration could not be built (hash).");
+    nsw_fmt_hex(own_raw, 64, own_hex);
+
+    nodus_v2_name_coin_t *coins = calloc((size_t)g_req_n, sizeof(*coins));
+    nodus_v2_name_built_t *built = calloc(1, sizeof(*built));
+    int rc = -1;
+    if (!coins || !built) { rc = nsw_fail("Out of memory."); goto done; }
+    for (int i = 0; i < g_req_n; i++) {      /* native, unlocked: g_list   */
+        memcpy(coins[i].nul, g_req_coins[i].nul, 64);
+        coins[i].amount = g_req_coins[i].amount;
+    }
+
+    nodus_v2_name_req_t req;
+    memset(&req, 0, sizeof(req));
+    req.rs            = &rs;
+    req.chain32       = chain32;
+    req.tip           = tip;
+    req.expiry_height = expiry;
+    req.pk            = pk;
+    req.sk            = sk;
+    req.name          = name;
+    req.price         = price;
+    req.fee_fixed     = 0;                   /* the floor, raised by gas  */
+    req.gas_price     = gas_price;
+    req.coins         = coins;
+    req.n_coins       = g_req_n;
+    req.rand          = rand;
+    req.rand_ctx      = NULL;
+    nodus_v2_name_err_t err;
+    int brc = nodus_v2_name_build(&req, built, &err);
+    if (brc != NODUS_V2_SPEND_OK) {
+        rc = nsw_fail("%s (build rc=%d)", nsw_name_reason(brc), brc);
+        goto done;
+    }
+
+    /* ── check the read-back against the request (G1) ── */
+    const nodus_v2_name_decoded_t *d = &built->dec;
+    int ok = strcmp(d->name, name) == 0 && d->price == price &&
+             memcmp(d->owner_pk, pk, NSW_PK_LEN) == 0 &&
+             d->expiry_height == expiry && d->fee == built->fee &&
+             d->n_in >= 1 && d->n_in <= (int)NODUS_V2_NAME_MAX_IN &&
+             d->n_out <= 1;
+    uint64_t change = 0;
+    if (ok && d->n_out == 1) {
+        ok = memcmp(d->change_owner, own_hex, 128) == 0;
+        change = d->change_amount;
+    }
+    uint64_t in_sum = 0;
+    for (int i = 0; ok && i < d->n_in; i++) {
+        int found = 0;
+        for (int k = 0; k < g_req_n && !found; k++)
+            if (memcmp(g_req_coins[k].nul, d->in_nul[i], 64) == 0) {
+                found = 1;
+                if (g_req_coins[k].amount > UINT64_MAX - in_sum) ok = 0;
+                else in_sum += g_req_coins[k].amount;
+            }
+        if (!found) ok = 0;
+    }
+    if (ok && (price > UINT64_MAX - d->fee ||
+               price + d->fee > UINT64_MAX - change ||
+               price + d->fee + change != in_sum || built->change != change))
+        ok = 0;
+    if (!ok) {
+        rc = nsw_fail("The built name registration does not match the "
+                      "request; nothing was signed for sending.");
+        goto done;
+    }
+
+    g_built.env = built->env;                /* ownership moves here */
+    g_built.env_len = built->env_len;
+    built->env = NULL;
+    memcpy(g_built.wire_id, built->wire_id, 64);
+    memcpy(g_built.intent_id, built->intent_id, 64);
+    nsw_fmt_hex(built->intent_id, 64, g_built.intent_hex);
+    nsw_fmt_hex(built->wire_id, 64, g_built.wire_hex);
+    nsw_fmt_hex(chain32, DNA_CHAIN_ID_LEN, g_built.chain_hex);
+    memcpy(g_built.recipient, own_hex, 129);
+    memcpy(g_built.name, d->name, sizeof(g_built.name));
+    nsw_fmt_u64(d->price, g_built.price);
+    nsw_fmt_u64(d->price, g_built.amount);
+    nsw_fmt_u64(d->fee, g_built.fee);
+    nsw_fmt_u64(change, g_built.change);
+    nsw_fmt_u64(d->expiry_height, g_built.expiry);
+    g_built.n_in = d->n_in;
+    for (int i = 0; i < d->n_in; i++)
+        nsw_fmt_hex(d->in_nul[i], 64, g_built.in_hex[i]);
+    g_built.op = 0;
+    rc = 0;
+
+done:
+    if (built) {
+        nodus_v2_name_built_free(built);
+        free(built);
+    }
+    free(coins);
+    return rc;
+}
+
+/* OFFLINE name build (parity, like nsw_offline_build): the identity from
+ * nsw_seed_buf (wiped here), the candidate coins (nsw_req_*), the change
+ * seeds (nsw_out_seed_*; exactly consumed — one per fee pass that writes a
+ * change), the pinned generation `gen` (>= 2), the chain id, tip, gas price
+ * and price as a node would report them; no vote height, so the expiry is
+ * tip + 90. */
+int nsw_name_offline_build(int gen, const char *name, const char *chain_hex,
+                           const char *tip_dec, const char *gas_dec,
+                           const char *price_dec, const char *expiry_dec) {
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    uint64_t tip = 0, gas = 0, price = 0, expiry = 0;
+    uint8_t *pk = NULL, *sk = NULL;
+    int rc = -1;
+    if (gen < (int)NODUS_RT_GEN_2 ||
+        (uint32_t)gen > nodus_v2_pins_generation_count() ||
+        nsw_parse_hex(chain_hex, chain32, sizeof(chain32)) != 0 ||
+        nsw_parse_u64(tip_dec, &tip) != 0 ||
+        nsw_parse_u64(gas_dec, &gas) != 0 ||
+        nsw_parse_u64(price_dec, &price) != 0 ||
+        nsw_parse_u64(expiry_dec, &expiry) != 0) {
+        rc = nsw_fail("Invalid offline name input.");
+        goto done;
+    }
+    pk = malloc(NSW_PK_LEN);
+    sk = malloc(NSW_SK_LEN);
+    if (!pk || !sk) {
+        rc = nsw_fail("Out of memory.");
+    } else if (qgp_dsa87_keypair_derand(pk, sk, g_seed) != 0) {
+        rc = nsw_fail("Key derivation failed.");
+    } else {
+        const nsw_gen_t g = { (uint32_t)gen, 0u, 0u };
+        rc = nsw_name_core(pk, sk, chain32, tip, gas, name, price, expiry,
+                           nsw_rand_explicit, &g);
+        if (rc == 0 && g_out_seeds_pos != g_out_seeds_len) {
+            nsw_built_clear();
+            rc = nsw_fail("The build used %u of the %u output seed bytes given.",
+                          (unsigned)g_out_seeds_pos, (unsigned)g_out_seeds_len);
+        }
+    }
+done:
+    nsw_wipe(g_seed, sizeof(g_seed));
+    if (sk) { nsw_wipe(sk, NSW_SK_LEN); free(sk); }
+    free(pk);
+    nsw_wipe(g_out_seeds, sizeof(g_out_seeds));
+    g_out_seeds_len = g_out_seeds_pos = 0;
+    return rc;
+}
+
+/* ── the node's name prices (dnac_fee_info "np" / "ns"), for display ──
+ * The four tier prices at tip + 1 (3, 4, 5, 6+ characters) and the
+ * committed price changes scheduled above tip + 1. A price outside the
+ * chain's range [DNAC_CFG_MIN_NAME_PRICE, DNAC_CFG_MAX_NAME_PRICE] or a
+ * scheduled row for another parameter makes the answer invalid. The build
+ * (nsw_name_build) reads the price again; this answer is only shown. */
+
+static struct {
+    int  valid, n_sched;
+    char price[4][NSW_U64_DEC];
+    int  sched_param[NODUS_DNAC_NAME_SCHED_MAX];
+    char sched_value[NODUS_DNAC_NAME_SCHED_MAX][NSW_U64_DEC];
+    char sched_effective[NODUS_DNAC_NAME_SCHED_MAX][NSW_U64_DEC];
+} g_np;
+
+static int nsw_np_ok(int i) { return g_np.valid && i >= 0 && i < g_np.n_sched; }
+const char *nsw_np_price(int i) {
+    return (g_np.valid && i >= 0 && i < 4) ? g_np.price[i] : "";
+}
+int nsw_np_sched_count(void)            { return g_np.valid ? g_np.n_sched : 0; }
+int nsw_np_sched_param(int i)           { return nsw_np_ok(i) ? g_np.sched_param[i] : -1; }
+const char *nsw_np_sched_value(int i)   { return nsw_np_ok(i) ? g_np.sched_value[i] : ""; }
+const char *nsw_np_sched_effective(int i) {
+    return nsw_np_ok(i) ? g_np.sched_effective[i] : "";
+}
+
+static int nsw_price_in_range(uint64_t p) {
+    return p >= DNAC_CFG_MIN_NAME_PRICE && p <= DNAC_CFG_MAX_NAME_PRICE;
+}
+
+int nsw_name_prices(void) {
+    if (nsw_begin() != 0) return -1;
+    memset(&g_np, 0, sizeof(g_np));
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    nodus_dnac_name_prices_t np;
+    memset(&np, 0, sizeof(np));
+    int rc = nodus_client_dnac_name_prices(&g_client, &np);
+    if (rc != 0)
+        return nsw_end(nsw_fail("The Nodus node did not give name prices (an "
+                                "older node, or no readable answer; rc=%d).",
+                                rc));
+    int bad = np.n_sched > NODUS_DNAC_NAME_SCHED_MAX;
+    for (int i = 0; !bad && i < 4; i++)
+        if (!nsw_price_in_range(np.price[i])) bad = 1;
+    for (size_t i = 0; !bad && i < np.n_sched; i++)
+        if (np.sched[i].param_id < DNAC_CFG_NAME_PRICE_3P ||
+            np.sched[i].param_id > DNAC_CFG_NAME_PRICE_6P ||
+            !nsw_price_in_range(np.sched[i].value))
+            bad = 1;
+    if (bad)
+        return nsw_end(nsw_fail("The Nodus node returned invalid name prices."));
+    for (int i = 0; i < 4; i++) nsw_fmt_u64(np.price[i], g_np.price[i]);
+    for (size_t i = 0; i < np.n_sched; i++) {
+        g_np.sched_param[i] = np.sched[i].param_id;
+        nsw_fmt_u64(np.sched[i].value, g_np.sched_value[i]);
+        nsw_fmt_u64(np.sched[i].effective, g_np.sched_effective[i]);
+    }
+    g_np.n_sched = (int)np.n_sched;
+    g_np.valid = 1;
+    return nsw_end(0);
+}
+
+/* Build one registration of `name` (lower-case) for review. The candidate
+ * coins must come from the LAST nsw_list and `expiry_dec` must be
+ * nsw_expiry_for's value for its tip — the gates of nsw_build_and_sign,
+ * including the rule-set generation chosen from the node's answer on this
+ * call (>= 2 required). Then, on this session and in the CLI's order: the
+ * name is free, this ID holds no name, the price for its length (fail
+ * closed: no price, no build), the gas price. The submission is nsw_submit
+ * (only the envelope built last). Every network wait runs in THIS frame
+ * (Asyncify); the build in nsw_name_core after them. */
+int nsw_name_build(const char *name, const char *expiry_dec) {
+    if (nsw_begin() != 0) return -1;
+    nsw_built_clear();
+    uint64_t expiry = 0;
+    if (!nsw_name_ok(name))
+        return nsw_end(nsw_fail("Not a chain name: 3 to 36 letters a-z and "
+                                "digits."));
+    if (nsw_parse_u64(expiry_dec, &expiry) != 0)
+        return nsw_end(nsw_fail("Invalid validity height."));
+    if (!g_list.valid || g_list.tip == 0)
+        return nsw_end(nsw_fail("The current Nodus block height is unknown. "
+                                "Nothing was sent; try again later."));
+    for (int i = 0; i < g_req_n; i++) {
+        int found = 0;
+        for (int k = 0; k < g_list.n && !found; k++)
+            if (memcmp(g_list.nul[k], g_req_coins[i].nul, 64) == 0 &&
+                g_list.amount[k] == g_req_coins[i].amount)
+                found = 1;
+        if (!found)
+            return nsw_end(nsw_fail("The request names a coin that is not in "
+                                    "your current coin list."));
+    }
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    if (nsw_check_chain() != 0) return nsw_end(-1);
+    nsw_gen_t gen;                           /* HF-4, as nsw_build_and_sign */
+    if (nsw_select_generation(&gen) != 0) return nsw_end(-1);
+    if (gen.gen < NODUS_RT_GEN_2)
+        return nsw_end(gen.h != 0
+            ? nsw_fail("Chain names open at block %llu, when the Nodus "
+                       "network switches to its new rules. Nothing was "
+                       "built.", (unsigned long long)gen.h)
+            : nsw_fail("Chain names are not open on this network yet. "
+                       "Nothing was built."));
+    nodus_dnac_name_result_t r;
+    memset(&r, 0, sizeof(r));
+    int rc = nodus_client_dnac_name_lookup(&g_client, name, &r);
+    if (rc != 0)
+        return nsw_end(nsw_fail("Could not check whether the name is free "
+                                "(rc=%d). Nothing was built.", rc));
+    if (r.found)
+        return nsw_end(nsw_fail("The name \"%s\" is already registered. "
+                                "Nothing was built.", name));
+    if (g_cancel) return nsw_end(-1);
+    memset(&r, 0, sizeof(r));
+    rc = nodus_client_dnac_name_of(&g_client, g_fp_hex, &r);
+    if (rc != 0)
+        return nsw_end(nsw_fail("Could not check whether this wallet already "
+                                "has a name (rc=%d). Nothing was built.", rc));
+    if (r.found)
+        return nsw_end(nsw_fail("This wallet already has the chain name \"%s\"."
+                                " Each ID can hold one name. Nothing was "
+                                "built.", r.name));
+    if (g_cancel) return nsw_end(-1);
+    nodus_dnac_name_prices_t np;
+    memset(&np, 0, sizeof(np));
+    rc = nodus_client_dnac_name_prices(&g_client, &np);
+    if (rc != 0)                             /* never a guessed price      */
+        return nsw_end(nsw_fail("The Nodus node did not give the name price "
+                                "(rc=%d). Nothing was built.", rc));
+    uint64_t price = 0;
+    if (nodus_v2_name_price_for(np.price, strlen(name), &price) != 0 ||
+        !nsw_price_in_range(price))
+        return nsw_end(nsw_fail("The Nodus node returned an invalid name "
+                                "price. Nothing was built."));
+    if (g_cancel) return nsw_end(-1);
+    nodus_dnac_fee_info_t fi;
+    memset(&fi, 0, sizeof(fi));
+    rc = nodus_client_dnac_fee_info(&g_client, &fi);
+    if (rc != 0)
+        return nsw_end(nsw_fail("The network fee is unknown (rc=%d). Nothing "
+                                "was built.", rc));
+    if (g_cancel) return nsw_end(-1);
+    rc = nsw_name_core(g_id.pk.bytes, g_id.sk.bytes, g_net.chain, g_list.tip,
+                       fi.gas_price, name, price, expiry, nsw_rand_csprng,
+                       &gen);
+    return nsw_end(rc);
+}
+
 /* ── Messages host (package NC-4b; nc_core.h "Host") ──
  * The Messages exports (web-wallet/connect/nc_wasm.c, linked into this
  * module) run on THIS session, inside THIS op bracket, stopped by THIS
@@ -2490,6 +2873,7 @@ void nsw_lock(void) {
     g_dels.valid = 0; g_dels.n = 0;
     memset(&g_ri, 0, sizeof(g_ri));
     memset(&g_nm, 0, sizeof(g_nm));
+    memset(&g_np, 0, sizeof(g_np));
     nsw_wipe(g_paddr, sizeof(g_paddr));
     nc_session_wipe();                      /* the Messages keys and caches */
     g_unlocked = 0;

@@ -108,6 +108,13 @@ mode="${1:-release}"
 # profile read's nc_read_t) have their address taken, so they live on the
 # C stack, not in the unwind buffer; the profile itself is heap. Expected to
 # hold, not measured.
+# The chain-name registration exports (nsw_name_prices, nsw_name_build)
+# have the same shape: every wait (dnac_ruleset_info, dnac_name_lookup,
+# dnac_name_of, dnac_fee_info's name prices and gas price) runs in the
+# export's own frame; the answer structs have their address taken (C
+# stack, not the unwind buffer), and the builder's large structs are
+# heap-allocated in nsw_name_core, which runs only after the last wait.
+# Expected to hold, not measured.
 # There is no ASYNCIFY_ONLY / ASYNCIFY_ADD list: with ASYNCIFY=1 Binaryen
 # instruments every function that can reach emscripten_sleep (directly or,
 # with the default ASYNCIFY_IGNORE_INDIRECT=0, through an indirect call),
@@ -203,6 +210,10 @@ sources=(
   # the shared staking builder (nodus-cli v2-envelope stake|delegate|
   # undelegate, 0.1.29)
   $root/nodus/src/client/nodus_v2_stake.c
+  # the shared chain-name registration builder (nodus-cli name register,
+  # HF-4). NOT in the native vector (build-nodus-send-native-vector.sh):
+  # its section of nodus-send-wasm.c is networked-build only.
+  $root/nodus/src/client/nodus_v2_name.c
   $root/shared/dnac/env_wire.c
   $root/shared/dnac/env_preflight.c
   $root/shared/dnac/res_meter.c
@@ -279,6 +290,13 @@ exports_common=(
   nsw_name_lookup nsw_name_of nsw_name_found nsw_name_owner nsw_name_name
   nsw_name_registered nsw_name_committed
   nsw_profile_address nsw_profile_addr
+  # HF-4 chain-name registration (nodus-cli name register over the shared
+  # builder nodus_v2_name.c). nsw_name_prices and nsw_name_build wait on
+  # the network (ccall { async: true }); nsw_name_offline_build (parity)
+  # and the getters do not.
+  nsw_built_name nsw_built_price nsw_name_offline_build
+  nsw_name_prices nsw_np_price nsw_np_sched_count nsw_np_sched_param
+  nsw_np_sched_value nsw_np_sched_effective nsw_name_build
   # Messages (NC-4b, connect/nc_wasm.c), all run through the wallet's one
   # queue by src/connect/core.js. The ones that wait on the network (every
   # one below except nc_error, nc_result, nc_words_alloc, nc_salt_pick,
