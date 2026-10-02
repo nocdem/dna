@@ -30,6 +30,11 @@
 /* 8 KB request line/header buffer (G3) — anything longer is 413. */
 #define EXP_HTTP_MAX_REQUEST 8192
 
+/* /api/governance: a hard cap on the chain_config records one reply
+ * carries — the whole list, not a page (the chain has a handful of votes;
+ * a list longer than this answers the first 1000 and "truncated":true). */
+#define EXP_HTTP_GOVERNANCE_MAX 1000
+
 /* An item's io rows never exceed the node's per-item bounds. */
 #define EXP_HTTP_MAX_IOS (NODUS_DNAC_V3_ITEM_MAX_IN + NODUS_DNAC_V3_ITEM_MAX_OUT)
 
@@ -194,6 +199,27 @@ static const char *record_name(int kind) {
     case NODUS_DNAC_V3_REC_VALIDATOR_UPDATE: return "validator_update";
     case NODUS_DNAC_V3_REC_CHAIN_CONFIG:     return "chain_config";
     default:                                 return "unknown";
+    }
+}
+
+/* chain_config parameter ids — the DNAC_CFG_* enum (dnac/include/dnac/
+ * dnac.h). NULL for an id this build does not know (shown by id). */
+static const char *param_name(uint32_t id) {
+    switch (id) {
+    case DNAC_CFG_MAX_TXS_PER_BLOCK:      return "MAX_TXS_PER_BLOCK";
+    case DNAC_CFG_BLOCK_INTERVAL_SEC:     return "BLOCK_INTERVAL_SEC";
+    case DNAC_CFG_INFLATION_START_BLOCK:  return "INFLATION_START_BLOCK";
+    case DNAC_CFG_TARGET_ACTIVE_COUNT:    return "TARGET_ACTIVE_COUNT";
+    case DNAC_CFG_GAS_PRICE_RAW_PER_UNIT: return "GAS_PRICE_RAW_PER_UNIT";
+    case DNAC_CFG_TOKEN_CREATE_FEE_RAW:   return "TOKEN_CREATE_FEE_RAW";
+    case DNAC_CFG_HF2_ACTIVE:             return "HF2_ACTIVE";
+    case DNAC_CFG_HF3_ACTIVE:             return "HF3_ACTIVE";
+    case DNAC_CFG_RULESET_GEN2:           return "RULESET_GEN2";
+    case DNAC_CFG_NAME_PRICE_3P:          return "NAME_PRICE_3P";
+    case DNAC_CFG_NAME_PRICE_4P:          return "NAME_PRICE_4P";
+    case DNAC_CFG_NAME_PRICE_5P:          return "NAME_PRICE_5P";
+    case DNAC_CFG_NAME_PRICE_6P:          return "NAME_PRICE_6P";
+    default:                              return NULL;
     }
 }
 
@@ -553,6 +579,72 @@ static void route_tx(exp_db_t *db, const char *ident, exp_json_t *j, int *status
     *status = 200;
 }
 
+/* /api/governance — every applied chain_config vote in the index,
+ * (height, index) ascending, at most EXP_HTTP_GOVERNANCE_MAX; plus the
+ * node's last reported tip and the indexed height, so a reader can tell
+ * an activated rule (tip >= effective_height) from a pending one, and see
+ * when a vote may still be past the indexed height. A genesis-document
+ * row (height 0) is not a block item and is never listed. */
+static void route_governance(exp_db_t *db, exp_json_t *j, int *status) {
+    uint64_t indexed_height = 0, tip_height = 0;
+    int have_indexed_height = (exp_db_get_meta_u64(db, "last_indexed_height", &indexed_height) == 0);
+    int have_tip_height     = (exp_db_get_meta_u64(db, "tip_height", &tip_height) == 0);
+
+    /* one row past the cap tells "exactly the cap" from "truncated" */
+    exp_item_row_t *rows = malloc(sizeof(exp_item_row_t) * (EXP_HTTP_GOVERNANCE_MAX + 1));
+    if (!rows) {
+        json_error(j, "out of memory");
+        *status = 500;
+        return;
+    }
+    int count = 0;
+    if (exp_db_query_records_by_kind(db, NODUS_DNAC_V3_REC_CHAIN_CONFIG, EXP_HTTP_GOVERNANCE_MAX + 1,
+                                     rows, &count) != 0) {
+        free(rows);
+        json_error(j, "query failed");
+        *status = 500;
+        return;
+    }
+    int truncated = (count > EXP_HTTP_GOVERNANCE_MAX);
+    if (truncated) count = EXP_HTTP_GOVERNANCE_MAX;
+
+    exp_json_raw(j, "{\"tip\":");
+    if (have_tip_height) exp_json_u64(j, tip_height); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"indexed_height\":");
+    if (have_indexed_height) exp_json_u64(j, indexed_height); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"records\":[");
+    for (int i = 0; i < count; i++) {
+        const exp_item_row_t *it = &rows[i];
+        const char *pname = param_name(it->rec.param_id);
+        if (i) exp_json_raw(j, ",");
+        exp_json_raw(j, "{\"position\":");
+        json_position(j, it->height, it->idx);
+        exp_json_raw(j, ",\"height\":");
+        exp_json_u64(j, it->height);
+        exp_json_raw(j, ",\"index\":");
+        exp_json_u64(j, it->idx);
+        exp_json_raw(j, ",\"time\":");
+        exp_json_u64(j, it->block_time_ms);
+        exp_json_raw(j, ",\"param_id\":");
+        exp_json_u64(j, it->rec.param_id);
+        exp_json_raw(j, ",\"param_name\":");
+        if (pname) exp_json_str(j, pname); else exp_json_raw(j, "null");
+        exp_json_raw(j, ",\"new_value\":");
+        exp_json_u64_str(j, it->rec.new_value);
+        exp_json_raw(j, ",\"effective_height\":");
+        exp_json_u64(j, it->rec.effective);
+        exp_json_raw(j, ",\"wire_id\":");
+        if (it->has_wire_id) exp_json_hex(j, it->wire_id, 64); else exp_json_raw(j, "null");
+        exp_json_raw(j, ",\"intent_id\":");
+        if (it->has_intent_id) exp_json_hex(j, it->intent_id, 64); else exp_json_raw(j, "null");
+        exp_json_raw(j, "}");
+    }
+    exp_json_raw(j, truncated ? "],\"truncated\":true}" : "],\"truncated\":false}");
+
+    free(rows);
+    *status = 200;
+}
+
 /* ── The chain-backed balance source (contract: exp_http.h) ─────────── */
 
 typedef struct {
@@ -904,6 +996,10 @@ static void route_index(exp_http_ctx_t *ctx, const char *path_only,
     }
     if (strcmp(path_only, "/api/search") == 0) {
         route_search(db, query, body_out, status_out);
+        return;
+    }
+    if (strcmp(path_only, "/api/governance") == 0) {
+        route_governance(db, body_out, status_out);
         return;
     }
 

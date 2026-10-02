@@ -18,7 +18,7 @@ function shell(site, slug, title, description, content) {
 <meta property="og:title" content="${escape(title[0])} — Nodus ${suffix}"><meta property="og:description" content="${escape(description[0])}">
 <meta property="og:type" content="website"><meta property="og:site_name" content="Nodus ${suffix}">
 <meta property="og:url" content="${origin}/${slug === 'index' ? '' : slug + '.html'}">
-<meta name="robots" content="${site === 'scan' && slug !== 'index' ? 'noindex, follow' : 'index, follow'}">
+<meta name="robots" content="${site === 'scan' && slug !== 'index' && slug !== 'hardforks' ? 'noindex, follow' : 'index, follow'}">
 <link rel="icon" href="../assets/nodus-mark.svg" type="image/svg+xml">
 <link rel="preload" href="../assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="../portal.css"><script src="../portal.js" defer></script>
@@ -26,7 +26,7 @@ ${site === 'wiki' ? (slug === 'index' ? '<script src="search.js" defer></script>
 </head><body class="${site}-site" data-page="${slug}" data-title-tr="${escape(title[1])} — Nodus ${suffix}">
 ${anchor('#main', 'Skip to content', 'İçeriğe geç', 'class="skip-link"')}
 <header class="portal-header"><div class="wrap"><a class="portal-brand" href="./" aria-label="Nodus ${suffix}"><img src="../assets/nodus-mark.svg" alt="" width="34" height="34">nodus<span class="portal-name">${suffix.toLowerCase()}</span></a>
-<nav class="portal-nav" aria-label="Main navigation" data-label-tr="Ana gezinme">${anchor('https://nodusnetwork.io/', 'Nodus ↗', 'Nodus ↗')}${anchor('https://wiki.nodusnetwork.io/', 'Wiki', 'Wiki')}${anchor('https://scan.nodusnetwork.io/', 'Scan', 'Scan')}${anchor('https://nodusnetwork.io/docs.html', 'Developers', 'Geliştiriciler')}${anchor('https://connect.nodusnetwork.io/', 'Nodus Connect — preview ↗', 'Nodus Connect — önizleme ↗', 'class="wide-only"')}</nav><button type="button" class="portal-language" aria-label="Switch to Turkish">EN</button></div></header>
+<nav class="portal-nav" aria-label="Main navigation" data-label-tr="Ana gezinme">${anchor('https://nodusnetwork.io/', 'Nodus ↗', 'Nodus ↗')}${anchor('https://wiki.nodusnetwork.io/', 'Wiki', 'Wiki')}${anchor('https://scan.nodusnetwork.io/', 'Scan', 'Scan')}${site === 'scan' ? anchor('hardforks.html', 'Hard forks', 'Hard fork’lar', slug === 'hardforks' ? 'aria-current="page"' : '') : ''}${anchor('https://nodusnetwork.io/docs.html', 'Developers', 'Geliştiriciler')}${anchor('https://connect.nodusnetwork.io/', 'Nodus Connect — preview ↗', 'Nodus Connect — önizleme ↗', 'class="wide-only"')}</nav><button type="button" class="portal-language" aria-label="Switch to Turkish">EN</button></div></header>
 <main class="wrap" id="main">${content}</main>
 <footer class="portal-footer"><div class="wrap"><div><p>© 2026 Nodus · ${suffix}</p>${site === 'scan' ? text('Read-only index from the witness cluster. Consensus certificates are not independently re-verified. Nodus testnet.', 'Doğrulayıcı kümesinden salt okunur indeks. Konsensüs sertifikaları bağımsız olarak yeniden doğrulanmaz. Nodus testnet.', 'p') : text('Independent by nature. Connected by Nodus.', 'Doğasında bağımsızlık. Bağlantısında Nodus.', 'p')}</div><nav>${anchor('https://nodusnetwork.io/manifesto.html', 'Manifesto ↗', 'Manifesto ↗')}${anchor('https://nodusnetwork.io/roadmap.html', 'Roadmap ↗', 'Yol haritası ↗')}${anchor('https://github.com/nocdem/dna', 'Source ↗', 'Kaynak ↗')}</nav></div></footer>
 </body></html>`;
@@ -52,8 +52,9 @@ for (const [i, guide] of guides.entries()) {
 const searchIndex = guides.map(g => ({ slug: g.slug, title: g.title, lead: g.lead, text: [0, 1].map(i => g.sections.map(s => s.title[i] + ' ' + s.body[i].replace(/<[^>]*>/g, ' ')).join(' ')) }));
 await output('wiki/search-index.json', JSON.stringify(searchIndex));
 const search = `<label class="search-label" for="search-input">${text('Block height, full hash or address fingerprint', 'Blok yüksekliği, tam hash veya adres parmak izi')}</label><form id="search-form" class="search-form" autocomplete="off"><input id="search-input" class="search-input" type="search" maxlength="128" placeholder="Search the testnet ledger…" data-placeholder-tr="Testnet zincirinde ara…" required><button type="submit" class="btn-primary">${text('Search →', 'Ara →')}</button></form><div id="search-results" class="search-results" aria-live="polite"></div><div id="staleness-banner" class="staleness-banner hidden" role="status"></div>`;
-for (const slug of ['index', 'block', 'tx', 'address']) {
-  const titles = { index: ['Read the network.', 'Ağı incele.'], block: ['Block details', 'Blok ayrıntıları'], tx: ['Transaction details', 'İşlem ayrıntıları'], address: ['Address overview', 'Adres özeti'] };
+for (const slug of ['index', 'block', 'tx', 'address', 'hardforks']) {
+  // hardforks: explorer /api/governance, rendered by scan/app.js into #hardforks-content.
+  const titles = { index: ['Read the network.', 'Ağı incele.'], block: ['Block details', 'Blok ayrıntıları'], tx: ['Transaction details', 'İşlem ayrıntıları'], address: ['Address overview', 'Adres özeti'], hardforks: ['Hard forks', 'Hard fork’lar'] };
   const desc = ['Blocks, transactions and address history on the Nodus testnet.', 'Nodus testnet ağındaki bloklar, işlemler ve adres geçmişi.'];
   const hero = `<section class="scan-hero"><div>${text('NODUS SCAN / TESTNET', 'NODUS SCAN / TESTNET', 'span', 'class="devnet-tag"')}${text(...titles[slug], 'h1')}${text(...desc, 'p')}</div>${slug === 'index' ? '<div class="scan-art" aria-hidden="true"><img src="../assets/artwork/scan-v1.webp" width="220" height="147" alt=""></div>' : ''}</section>`;
   const status = `<div class="scan-status"><span id="api-status" role="status">${text('Connecting to the index…', 'İndekse bağlanıyor…')}</span><button id="refresh-data" type="button" class="btn-secondary">${text('Refresh ↻', 'Yenile ↻')}</button></div>`;
@@ -67,8 +68,8 @@ for (const slug of ['index', 'block', 'tx', 'address']) {
   await output(`scan/${slug}.html`, shell('scan', slug, titles[slug], desc, hero + search + status + (slug === 'index' ? stats + blocks : details) + footer));
 }
 for (const site of ['wiki', 'scan']) {
-  const pages = site === 'wiki' ? ['', ...guides.map(g => g.slug + '.html')] : [''];
+  const pages = site === 'wiki' ? ['', ...guides.map(g => g.slug + '.html')] : ['', 'hardforks.html'];
   await output(`${site}/sitemap.xml`, `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${pages.map(p => `<url><loc>https://${site}.nodusnetwork.io/${p}</loc></url>`).join('')}</urlset>`);
   await output(`${site}/robots.txt`, `User-agent: *\nAllow: /\n${site === 'scan' ? 'Disallow: /api/\n' : ''}\nSitemap: https://${site}.nodusnetwork.io/sitemap.xml`);
 }
-console.log(`Built ${guides.length + 1} Wiki pages and 4 Scan pages.`);
+console.log(`Built ${guides.length + 1} Wiki pages and 5 Scan pages.`);

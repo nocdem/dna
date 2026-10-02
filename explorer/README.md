@@ -222,6 +222,7 @@ addressed by its **position** `"<height>:<index>"`; send the `:` as it is
 | `/api/block/<height\|block_id>?from=<index>&limit=<n>` | `{block:{…, prev_id, global_root}, items:[item], next_from}` — one page of the block's items, index-ascending from `from` (default 0; `limit` default and max 100); `next_from` is the next page's first index, `null` on the last page. |
 | `/api/tx/<wire_id\|intent_id\|height:index>` | `{tx:{item…, record}, inputs:[{coin_id, address, token_id, amount}], outputs:[{coin_id, address, token_id, amount, unlock_block}]}`. An input's `address`/`token_id`/`amount` are `null` when the coin's creating item is not in the index. A refused envelope has no ids — its position is its only address. |
 | `/api/address/<fp>?before=<height:index>&limit=<n>` | `{address, balances:[{token_id, total, spendable, coins}] \| null, balance_status:"ok"\|"unavailable", items:[item], next_before}` — `balances` is the node's per-token list, token id ascending (`total`/`spendable` decimal strings, `coins` a number; see "Balance" above), `null` only with `"unavailable"`; `items` are the items touching the address (owner of a created or resolved consumed coin, or a record's validator/delegator/destination), newest first; `next_before` is the next page's cursor, `null` on a short page. |
+| `/api/governance` | `{tip, indexed_height, records:[{position, height, index, time, param_id, param_name, new_value, effective_height, wire_id, intent_id}], truncated}` — every **applied** `chain_config` vote in the index (refused items carry no record), `(height, index)` ascending. `param_name` is the `DNAC_CFG_*` name of `param_id` (`dnac/include/dnac/dnac.h`, without the prefix — e.g. `HF2_ACTIVE`, `RULESET_GEN2`, `NAME_PRICE_3P`), `null` for an id this build does not know; `new_value` is a decimal string; `effective_height` is the block from which the value is in force. `tip` is the node's last reported committed height (`/api/stats` `tip_height`), `indexed_height` the index watermark — both `null` until known; a vote between the two is not listed yet. A rule is active when `tip ≥ effective_height`. Not a page: a hard cap of 1000 records, `truncated:true` when the index holds more. A chain_config row written from the genesis document (height 0 — HF-1's `GAS_PRICE_RAW_PER_UNIT` and `TOKEN_CREATE_FEE_RAW`) is not a block item and never appears. |
 | `/api/search?q=<term>` | `{matches:[{type, target}]}` — every match: a decimal height → `block`; a `height:index` → `tx`; a 128-hex → `tx` (wire or intent id), `block` (block id), `address` (has indexed history); a chain name (lower-case, the chain's byte rule) → `name`, target = the registering item's position. An all-digit name also matches as a height: both are listed. Empty for a term that matches nothing. |
 
 `item` = `{position, height, index, time, kind ("envelope"|"claim"|"empty"),
@@ -286,7 +287,8 @@ signs nothing, votes on nothing, and cannot cause a chain split.
   from height 1 reproduces identical query results. The node's answer for a
   height is a pure function of its committed stores (design, Determinism).
 - **D2** — every API list is ordered by an explicit total key (blocks by
-  `height`, items by `(height, index)`, io rows by `(dir, pos)`) — no
+  `height`, items and `/api/governance` records by `(height, index)`, io
+  rows by `(dir, pos)`) — no
   hash-map iteration order reaches a response.
 - **D3** — consumed-coin resolution reads only rows written earlier in
   chain order (lower height, or lower index in the same block, inserted
@@ -312,7 +314,8 @@ buggy witness):**
   whole: pages must agree on the header and continue the item indices, and
   a block announcing more than `EXP_BLOCK_MAX_ITEMS` items is refused.
 - **G4** — bounded resource use: nginx `limit_req` on `/api/`; daemon-side
-  hard caps (pagination ≤ 100, request line ≤ 8 KB, parameterized SQL
+  hard caps (pagination ≤ 100, `/api/governance` ≤ 1000 records, request
+  line ≤ 8 KB, parameterized SQL
   only, ≤ 256 heights per tick).
 - **G5** — the API binds `127.0.0.1` and renders no HTML from chain data;
   the frontend inserts API data with `textContent` only.

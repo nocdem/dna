@@ -275,9 +275,75 @@
       if(page==='block')renderBlock(data,content);else if(page==='tx')renderTx(data,content);else renderAddress(data,content);
     } catch(error){errorBox(content,error);}
   }
+  // Hard forks (explorer /api/governance: every applied chain_config vote, (height, index)
+  // ascending). The rules are the runbook's "Live hard forks" table (nodus/docs/DEPLOY_RUNBOOK.md
+  // §2.2); param ids are dnac/include/dnac/dnac.h DNAC_CFG_*. HF-1 is set by the genesis
+  // document (gas price 121 raw units per gas unit, effective at block 0) — not a block item,
+  // so it is a fixed row here. Every other param is an ordinary governance change.
+  const hardForks = [
+    { fork: 'HF-1', param: 5, genesisValue: '121', name: t('Gas price', 'Gas fiyatı'),
+      rule: t('A transaction with a non-system part pays at least its declared gas units × the gas price, never less than the flat minimum fee.', 'Sistem dışı bir bölümü olan işlem, en az bildirdiği gas birimi × gas fiyatı öder; sabit asgari ücretin altına inmez.') },
+    { fork: 'HF-2', param: 7, name: t('Governance by stake weight', 'Stake ağırlıklı yönetişim'),
+      rule: t('Governance approvals are weighed by validator voting power (more than 2/3), not by seat count; a block that leaves a touched domain unchanged still applies.', 'Yönetişim onayları koltuk sayısıyla değil validator oy gücüyle (2/3’ten fazla) tartılır; dokunduğu alanı değiştirmeyen bir blok yine uygulanır.') },
+    { fork: 'HF-3', param: 8, name: t('Consensus-only block bounds', 'Yalnız konsensüs blok sınırları'),
+      rule: t('Blocks are bounded by the consensus engine’s limits only (the 2 MiB / 2 097 152-unit bound is removed); proposals are checked for gas price, committed replay and units ≤ INT64_MAX.', 'Bloklar yalnız konsensüs motorunun sınırlarıyla sınırlanır (2 MiB / 2 097 152 birim sınırı kalkar); öneriler gas fiyatı, işlenmiş tekrar ve birim ≤ INT64_MAX için denetlenir.') },
+    { fork: 'HF-4', param: 9, name: t('Rule-set generation 2 + on-chain names', 'Kural seti nesil 2 + zincir üstü isimler'),
+      rule: t('The rule registry switches to generation 2 at the end of the block before activation; on-chain name registration and the name-price parameters 10–13 are in force from activation.', 'Kural kaydı, etkinleşmeden önceki bloğun sonunda 2. nesle geçer; zincir üstü isim kaydı ve 10–13 isim fiyatı parametreleri etkinleşmeden itibaren geçerlidir.') }
+  ];
+  const idleBlockSeconds = 60;
+  function duration(seconds) {
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return minutes + t(' min', ' dk');
+    const hours = Math.floor(minutes / 60), rest = minutes % 60;
+    if (hours < 48) return hours + t(' h ', ' sa ') + rest + t(' min', ' dk');
+    return Math.floor(hours / 24) + t(' days ', ' gün ') + (hours % 24) + t(' h', ' sa');
+  }
+  // ACTIVE when the chain's last reported tip has reached the effective height, else PENDING
+  // with the distance in blocks and a time estimate at the idle block pace (an estimate only:
+  // blocks with transactions commit faster).
+  function forkStatus(effective, tip) {
+    if (!Number.isSafeInteger(effective)) return el('span', '—', 'muted');
+    if (!Number.isSafeInteger(tip)) return el('span', t('Unknown — tip not reported', 'Bilinmiyor — son blok bildirilmedi'), 'muted');
+    if (tip >= effective) return el('span', t('Active', 'Etkin'), 'badge');
+    const left = effective - tip, wrap = el('span');
+    wrap.append(el('span', t('Pending', 'Bekliyor'), 'badge'), document.createTextNode(' ' + left + t(' blocks to go (~', ' blok kaldı (~') + duration(left * idleBlockSeconds) + t(' at ~60 s per idle block — estimate)', ', boş blok başına ~60 sn ile — tahmin)')));
+    return wrap;
+  }
+  const recordValue = r => typeof r.new_value === 'string' && /^\d+$/.test(r.new_value) ? r.new_value : '—';
+  const recordParam = r => (typeof r.param_name === 'string' && r.param_name ? r.param_name + ' (' + r.param_id + ')' : t('Parameter ', 'Parametre ') + r.param_id);
+  const voteCell = r => Number.isSafeInteger(r.height) ? link(txHref(r), r.height) : el('span', '—', 'muted');
+  function renderGovernance(data, content) {
+    if (!Array.isArray(data.records)) throw new Error(t('Unexpected index response.', 'Beklenmeyen indeks yanıtı.'));
+    const tip = data.tip, records = data.records.filter(r => r && typeof r === 'object' && Number.isSafeInteger(r.param_id));
+    const forkParams = new Set(hardForks.filter(f => !f.genesisValue).map(f => f.param));
+    const forkRows = [];
+    for (const f of hardForks) {
+      if (f.genesisValue) {
+        forkRows.push(row([f.fork + ' · ' + f.name, f.rule, recordParam({ param_id: f.param, param_name: 'GAS_PRICE_RAW_PER_UNIT' }) + ' = ' + f.genesisValue, el('span', t('Genesis document', 'Genesis belgesi'), 'muted'), 0, forkStatus(0, tip)]));
+        continue;
+      }
+      const votes = records.filter(r => r.param_id === f.param);
+      if (!votes.length) forkRows.push(row([f.fork + ' · ' + f.name, f.rule, recordParam({ param_id: f.param }), el('span', t('Not voted yet', 'Henüz oylanmadı'), 'muted'), '—', el('span', '—', 'muted')]));
+      for (const r of votes) forkRows.push(row([f.fork + ' · ' + f.name, f.rule, recordParam(r) + ' = ' + recordValue(r), voteCell(r), Number.isSafeInteger(r.effective_height) ? r.effective_height : '—', forkStatus(r.effective_height, tip)]));
+    }
+    const other = records.filter(r => !forkParams.has(r.param_id)).map(r => row([recordParam(r), recordValue(r), voteCell(r), time(r.time), Number.isSafeInteger(r.effective_height) ? r.effective_height : '—', forkStatus(r.effective_height, tip)]));
+    content.replaceChildren(
+      el('p', t('Hard forks on Nodus Chain activate at a block height after a validator vote; every node switches at the same block.', 'Nodus Chain’deki hard fork’lar bir validator oylamasından sonra belirli bir blok yüksekliğinde etkinleşir; her düğüm aynı blokta geçiş yapar.'), 'scan-explanation'),
+      el('p', t('Last reported tip: ', 'Son bildirilen blok: ') + (Number.isSafeInteger(tip) ? tip : '—'), 'muted'),
+      el('h2', t('Hard forks', 'Hard fork’lar')),
+      table([t('Fork', 'Fork'), t('What it changes', 'Neyi değiştirir'), t('Parameter', 'Parametre'), t('Voted in block', 'Oylandığı blok'), t('Effective block', 'Geçerlilik bloğu'), t('Status', 'Durum')], forkRows, t('None', 'Yok')),
+      el('h2', t('Other governance changes', 'Diğer yönetişim değişiklikleri')),
+      table([t('Parameter', 'Parametre'), t('New value', 'Yeni değer'), t('Voted in block', 'Oylandığı blok'), t('Time', 'Zaman'), t('Effective block', 'Geçerlilik bloğu'), t('Status', 'Durum')], other, t('No other governance changes.', 'Başka yönetişim değişikliği yok.')));
+    if (data.truncated === true) content.append(el('p', t('Only the first 1000 governance records are shown.', 'Yalnız ilk 1000 yönetişim kaydı gösteriliyor.'), 'muted'));
+  }
+  async function loadGovernance() {
+    const content = $('hardforks-content');
+    content.replaceChildren(el('div', t('Loading…', 'Yükleniyor…'), 'loading'));
+    try { renderGovernance(await api('/governance'), content); } catch (error) { errorBox(content, error); }
+  }
   async function refresh() {
     if(refreshing)return;refreshing=true;$('refresh-data').disabled=true;
-    const detail = page!=='index' ? loadDetail() : null;
+    const detail = page==='hardforks' ? loadGovernance() : page!=='index' ? loadDetail() : null;
     try {
       const stats=await api('/stats');displayStats(stats);
       if(page==='index')await loadBlocks(pageNumber,pageNumber===1,stats);

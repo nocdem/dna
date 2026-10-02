@@ -52,8 +52,8 @@
  *
  * Determinism (PRIMARY OBJECTIVE: DETERMINISM, index reproducibility — the
  * explorer is outside consensus): every multi-row query has an explicit
- * ORDER BY on a total key — blocks by height, items by (height, idx), io
- * rows by (dir, pos). Index content is a function of the queried heights
+ * ORDER BY on a total key — blocks by height, items (and the record list
+ * of exp_db_query_records_by_kind) by (height, idx), io rows by (dir, pos). Index content is a function of the queried heights
  * only.
  */
 #ifndef EXP_DB_H
@@ -220,6 +220,13 @@ int  exp_db_query_address(exp_db_t *db, const char *fp,
  * keeps a (never expected) duplicate deterministic. 0 found, -1 not found
  * or error. */
 int  exp_db_query_item_by_name(exp_db_t *db, const char *name, exp_item_row_t *row_out);
+
+/* The items that wrote a SYSTEM record of kind `rec_kind` (the node's
+ * NODUS_DNAC_V3_REC_* value — /api/governance asks for CHAIN_CONFIG),
+ * (height, idx) ascending, at most `max`. Only applied items carry a
+ * record (exp_db_verify_index), so every row is an applied item. */
+int  exp_db_query_records_by_kind(exp_db_t *db, int rec_kind, int max,
+                                  exp_item_row_t *rows, int *count_out);
 
 #ifdef __cplusplus
 }

@@ -193,6 +193,12 @@ static const char *QUERY_ITEM_BY_NAME_SQL =
     "SELECT " ITEM_COLS ITEM_FROM
     "WHERE n.name = ?1 ORDER BY i.height ASC, i.idx ASC LIMIT 1";
 
+/* item_records is keyed (height, idx) and written only for applied items;
+ * the join keeps the ITEM_COLS projection (row_to_item). */
+static const char *QUERY_RECORDS_BY_KIND_SQL =
+    "SELECT " ITEM_COLS ITEM_FROM
+    "WHERE r.kind = ?1 ORDER BY i.height ASC, i.idx ASC LIMIT ?2";
+
 static const char *QUERY_IOS_SQL =
     "SELECT height, idx, dir, pos, coin_id, address, token, amount, unlock_block "
     "FROM item_io WHERE height = ? AND idx = ? ORDER BY dir ASC, pos ASC LIMIT ?";
@@ -228,6 +234,7 @@ struct exp_db {
     sqlite3_stmt *stmt_query_item;
     sqlite3_stmt *stmt_query_item_by_id;
     sqlite3_stmt *stmt_query_item_by_name;
+    sqlite3_stmt *stmt_query_records_by_kind;
     sqlite3_stmt *stmt_query_ios;
     sqlite3_stmt *stmt_query_address;
 };
@@ -472,6 +479,7 @@ int exp_db_open(const char *path, exp_db_t **db_out) {
         sqlite3_prepare_v2(db->conn, QUERY_ITEM_SQL, -1, &db->stmt_query_item, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, QUERY_ITEM_BY_ID_SQL, -1, &db->stmt_query_item_by_id, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, QUERY_ITEM_BY_NAME_SQL, -1, &db->stmt_query_item_by_name, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db->conn, QUERY_RECORDS_BY_KIND_SQL, -1, &db->stmt_query_records_by_kind, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, QUERY_IOS_SQL, -1, &db->stmt_query_ios, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, QUERY_ADDRESS_SQL, -1, &db->stmt_query_address, NULL) != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "prepare failed: %s", sqlite3_errmsg(db->conn));
@@ -492,7 +500,8 @@ void exp_db_close(exp_db_t *db) {
         db->stmt_get_meta, db->stmt_set_meta,
         db->stmt_query_blocks, db->stmt_query_block_by_height, db->stmt_query_block_by_id,
         db->stmt_query_items, db->stmt_query_item, db->stmt_query_item_by_id,
-        db->stmt_query_item_by_name, db->stmt_query_ios, db->stmt_query_address,
+        db->stmt_query_item_by_name, db->stmt_query_records_by_kind,
+        db->stmt_query_ios, db->stmt_query_address,
     };
     for (size_t i = 0; i < sizeof(stmts) / sizeof(stmts[0]); i++) {
         if (stmts[i]) sqlite3_finalize(stmts[i]);
@@ -999,6 +1008,16 @@ int exp_db_query_item_by_name(exp_db_t *db, const char *name, exp_item_row_t *ro
     sqlite3_reset(s);
     sqlite3_bind_text(s, 1, name, -1, SQLITE_STATIC);
     return query_one_item(s, row_out);
+}
+
+int exp_db_query_records_by_kind(exp_db_t *db, int rec_kind, int max,
+                                 exp_item_row_t *rows, int *count_out) {
+    if (!db || !db->conn || !rows || !count_out || max <= 0) return -1;
+    sqlite3_stmt *s = db->stmt_query_records_by_kind;
+    sqlite3_reset(s);
+    sqlite3_bind_int(s, 1, rec_kind);
+    sqlite3_bind_int(s, 2, max);
+    return query_items_list(db, s, max, rows, count_out, "query_records_by_kind");
 }
 
 int exp_db_query_item_ios(exp_db_t *db, uint64_t height, uint32_t idx,

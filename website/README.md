@@ -45,6 +45,17 @@ only the supported read endpoints. The browser makes same-origin requests.
 - `scan/`: explorer home plus block, transaction and address pages. Its script
   uses the existing JSON API and labels the native coin NODUS. It does not
   rename backend fields or change consensus, the indexer, or the running chain.
+  The script also renders the hard forks page (`data-page="hardforks"`, into
+  `#hardforks-content`) from the explorer's `/api/governance`: a "Hard forks"
+  table — HF-1 gas price (param 5, set by the genesis document: a fixed row,
+  value 121, effective at block 0), HF-2 governance by stake weight (param 7),
+  HF-3 consensus-only block bounds (param 8), HF-4 rule-set generation 2 +
+  on-chain names (param 9), each with its rule in one sentence (from
+  `nodus/docs/DEPLOY_RUNBOOK.md` §2.2 "Live hard forks"), vote block,
+  effective block and status — Active when the reported `tip` ≥ the effective
+  block, else Pending with the blocks left and a time estimate at ~60 s per
+  idle block — and "Other governance changes" for every other vote
+  (including a later gas-price change on param 5), param shown by name.
 - `build-portals.mjs`: shared HTML templates for both subdomains. Generates the
   guide search index and each subdomain's sitemap/robots files deterministically.
 - `portal.css`, `portal.js`: shared typography, colors, responsive navigation,

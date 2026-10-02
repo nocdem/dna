@@ -1469,6 +1469,139 @@ static void test_name_register_indexed(void) {
     PASS();
 }
 
+/* One applied chain_config vote item at (h, index). */
+static void cc_item(nodus_dnac_v3_item_t *it, uint32_t index, uint8_t tag,
+                    uint8_t param_id, uint64_t new_value, uint64_t effective) {
+    it->index = index;
+    it->kind = NODUS_DNAC_V3_KIND_ENVELOPE;
+    it->has_wire_id = true;   fill(it->wire_id, 64, tag);
+    it->has_intent_id = true; fill(it->intent_id, 64, (uint8_t)(tag + 1));
+    strcpy(it->op, "chain_config");
+    it->has_effects = true;
+    it->rec_kind = NODUS_DNAC_V3_REC_CHAIN_CONFIG;
+    it->cc_param_id = param_id;
+    it->cc_new_value = new_value;
+    it->cc_effective = effective;
+}
+
+/* Governance fixture:
+ *   height 1: item 0 applied delegate (a record that is NOT chain_config),
+ *             item 1 applied chain_config HF2_ACTIVE (7) = 1 @ 1500,
+ *             item 2 refused envelope (no record)
+ *   height 2: item 0 applied chain_config RULESET_GEN2 (9) =
+ *             4962894749133920991 @ 3151 (above 2^53: a string),
+ *             item 1 applied chain_config unknown id 200 = 5 @ 4000 */
+static int seed_governance(exp_db_t *db) {
+    nodus_dnac_v3_block_result_t p;
+    exp_block_batch_t b;
+    int rc;
+
+    page_header(&p, 1, 3, 2, 2);
+    p.count = 3;
+    p.items = calloc(3, sizeof(nodus_dnac_v3_item_t));
+    nodus_dnac_v3_item_t *it = &p.items[0];
+    it->index = 0;
+    it->kind = NODUS_DNAC_V3_KIND_ENVELOPE;
+    it->has_wire_id = true;   fill(it->wire_id, 64, 0x71);
+    it->has_intent_id = true; fill(it->intent_id, 64, 0x72);
+    strcpy(it->op, "delegate");
+    it->has_effects = true;
+    it->rec_kind = NODUS_DNAC_V3_REC_DELEGATE;
+    set_test_fp(it->rec_validator_fp, 'c');
+    set_test_fp(it->rec_delegator_fp, 'a');
+    it->rec_amount = 100;
+    cc_item(&p.items[1], 1, 0x73, 7, 1, 1500);
+    it = &p.items[2];
+    it->index = 2;
+    it->kind = NODUS_DNAC_V3_KIND_ENVELOPE;
+    it->code = 7;
+    strcpy(it->op, "chain_config");
+    exp_block_batch_init(&b);
+    rc = exp_extract_page(&p, &b);
+    if (rc == 0) rc = exp_db_write_height(db, &b);
+    exp_block_batch_free(&b);
+    nodus_client_free_v3_block_result(&p);
+    if (rc != 0) return rc;
+
+    page_header(&p, 2, 2, 2, 2);
+    p.count = 2;
+    p.items = calloc(2, sizeof(nodus_dnac_v3_item_t));
+    cc_item(&p.items[0], 0, 0x75, 9, 4962894749133920991ULL, 3151);
+    cc_item(&p.items[1], 1, 0x77, 200, 5, 4000);
+    exp_block_batch_init(&b);
+    rc = exp_extract_page(&p, &b);
+    if (rc == 0) rc = exp_db_write_height(db, &b);
+    exp_block_batch_free(&b);
+    nodus_client_free_v3_block_result(&p);
+    return rc;
+}
+
+/* /api/governance lists exactly the chain_config records, (height, index)
+ * ascending, with the param's name (null for an unknown id), the value as
+ * a decimal string, the effective height, the item's ids, the stored tip
+ * (null before the first observation) and truncated false. An empty index
+ * answers an empty list. */
+static void test_route_governance(void) {
+    TEST("route: /api/governance (chain_config only, ordered, names, tip)");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+
+    static const char *const empty[] = { "{\"tip\":null,\"indexed_height\":null,\"records\":[],\"truncated\":false}", NULL };
+    if (route_expect(db, "/api/governance", 200, empty) != 0) { FAIL("empty index"); exp_db_close(db); return; }
+
+    if (seed_governance(db) != 0) { FAIL("seed failed"); exp_db_close(db); return; }
+
+    static const char *const no_tip[] = { "{\"tip\":null,\"indexed_height\":2,", NULL };
+    if (route_expect(db, "/api/governance", 200, no_tip) != 0) { FAIL("tip must be null before observed"); exp_db_close(db); return; }
+
+    exp_db_set_meta_u64(db, "tip_height", 3000);
+
+    char wire[129], intent[129], want_ids[400];
+    uint8_t w[64], in[64];
+    fill(w, 64, 0x73); fill(in, 64, 0x74);
+    bytes_to_hex128(w, wire);
+    bytes_to_hex128(in, intent);
+    snprintf(want_ids, sizeof(want_ids), "\"wire_id\":\"%s\",\"intent_id\":\"%s\"}", wire, intent);
+
+    const char *const needles[] = {
+        "{\"tip\":3000,\"indexed_height\":2,\"records\":[",
+        "{\"position\":\"1:1\",\"height\":1,\"index\":1,\"time\":1700000001000,\"param_id\":7,"
+        "\"param_name\":\"HF2_ACTIVE\",\"new_value\":\"1\",\"effective_height\":1500,",
+        want_ids,
+        "\"param_id\":9,\"param_name\":\"RULESET_GEN2\",\"new_value\":\"4962894749133920991\","
+        "\"effective_height\":3151,",
+        "\"param_id\":200,\"param_name\":null,\"new_value\":\"5\",\"effective_height\":4000,",
+        "],\"truncated\":false}",
+        NULL };
+
+    exp_http_ctx_t ctx = {0};
+    ctx.db = &db;
+    int stop = 0;
+    ctx.stop = &stop;
+    exp_json_t body;
+    int status = -1;
+    if (exp_http_route(&ctx, "GET", "/api/governance", &body, &status) != 0) { FAIL("route"); exp_db_close(db); return; }
+    int ok = (status == 200);
+    for (int i = 0; ok && needles[i]; i++) if (!strstr(body.buf, needles[i])) ok = 0;
+    /* exactly three records — the delegate record and the refused item are not listed */
+    if (ok && count_substr(body.buf, "\"param_id\":") != 3) ok = 0;
+    /* (height, index) ascending */
+    if (ok) {
+        const char *a = strstr(body.buf, "\"position\":\"1:1\"");
+        const char *c = strstr(body.buf, "\"position\":\"2:0\"");
+        const char *d = strstr(body.buf, "\"position\":\"2:1\"");
+        if (!a || !c || !d || !(a < c && c < d)) ok = 0;
+    }
+    if (!ok) printf("(%d: %s) ", status, body.buf ? body.buf : "(null)");
+    exp_json_freebuf(&body);
+    if (!ok) { FAIL("governance body"); exp_db_close(db); return; }
+
+    if (exp_db_verify_index(db) != 0) { FAIL("verify_index"); exp_db_close(db); return; }
+    exp_db_close(db);
+    PASS();
+}
+
 /* item_ok's name rule: a name only on an applied item, with a price, and
  * only of the chain's bytes; a price only with a name. Each bad page is
  * refused whole and leaves the batch empty. */
@@ -1731,6 +1864,7 @@ int main(void) {
     test_route_block_tx_address();
     test_route_search();
     test_name_register_indexed();
+    test_route_governance();
     test_extract_refuses_bad_name();
     test_route_errors();
     test_route_null_db_503();
