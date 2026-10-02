@@ -12,9 +12,12 @@
  * before-evict, storage cleanup, WAL checkpoint and vacuum.
  *
  * Reaches core only through its host view (dht/nodus_dht.h,
- * nodus_dht_host_t); includes no server header, so a storage binary can
- * link it without core (test_dht_linked). Log lines keep the "NODUS_SRV"
- * tag they had, so what operators and the harness grep is unchanged.
+ * nodus_dht_host_t); includes no server header but the shared 4002
+ * dialer's (server/nodus_inter_dial.h, no server object — batch forward
+ * runs its handshake since split S5b), so a storage binary can link it
+ * without core (test_dht_linked, test_storage_linked). Log lines keep the
+ * "NODUS_SRV" tag they had, so what operators and the harness grep is
+ * unchanged.
  *
  * @file nodus_dht_server.c
  */
