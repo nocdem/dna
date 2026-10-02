@@ -24,8 +24,10 @@
  *    generation and closes a connection left from the slot's previous
  *    session; `session_closed` closes the connection (its EOF is the
  *    storage side's "session closed").
- *  - Decision 31: with no control connection (storage not reachable), past
- *    NODUS_DHT_IPC_MAX_ORIGIN_CONNS, or with the session's queue at
+ *  - Decision 31: with no CONFIRMED control connection (storage not
+ *    reachable, or it has not answered on a new one yet — F6), past its
+ *    kind's cap (NODUS_DHT_IPC_MAX_CLIENT_ORIGINS /
+ *    NODUS_DHT_IPC_MAX_INTER_ORIGINS — F4), or with the session's queue at
  *    NODUS_DHT_IPC_QUEUE_MAX, a client DHT request is answered AT ONCE with
  *    NODUS_ERR_UNAVAILABLE / NODUS_DHT_NO_STORAGE_MSG and nothing is
  *    dialled or queued. A 4002 DHT frame in the same state is dropped (a
@@ -39,7 +41,10 @@
  *    leave it believing its listens are still in place. A send fault on an
  *    origin connection does the same.
  *  - The control connection: dialled on the first `tick`, re-dialled with a
- *    bounded backoff while storage is down. Carries, in call order, UDP
+ *    bounded backoff while storage is down. It counts as up only once
+ *    storage's first frame (its routing snapshot) has arrived on it; the
+ *    backoff is reset only then, and one that closes before that is a
+ *    failed dial (F6). Carries, in call order, UDP
  *    4000 datagrams for the DHT (dropped — the newest — past
  *    NODUS_DHT_IPC_CTL_QUEUE_MAX), peer_seen / peer_dead, and core's
  *    membership snapshot (item 27: on change, at least every
@@ -47,7 +52,11 @@
  *    back, datagrams to send from UDP 4000 and the routing snapshot
  *    (item 17) that `routing_snapshot` answers from — the last one
  *    received, kept while storage is away (presence keeps dialling the
- *    peers it knew). Never closed for a bound.
+ *    peers it knew). Never closed for a bound. A control frame the
+ *    transport refuses or loses is counted and WARNed (rate-limited); a
+ *    lost membership snapshot is re-sent at the next check, a lost
+ *    peer_dead is re-sent once the control connection is confirmed, a
+ *    lost peer_seen / datagram is repeated by the next heartbeat (F1).
  *  - hint_store: no DHT frame leaves through core's 4002 pool any more
  *    (storage dials its own, item 16), so core's pending-full filter passes
  *    no frame to it; it logs and refuses.
@@ -94,21 +103,39 @@ typedef struct {
     ob_origin_t             inter[NODUS_MAX_INTER_SESSIONS];
     /* Indexed by the IPC connection's slot (this backend's pool). */
     int                     by_ipc[NODUS_TCP_MAX_CONNS];
-    int                     n_origins;
-    bool                    cap_logged;
+    /* Open origin connections and their caps, per kind (F4:
+     * NODUS_DHT_IPC_MAX_CLIENT_ORIGINS / _INTER_ORIGINS; lowered only by the
+     * test hook nodus_dht_backend_ipc_test_set_caps). */
+    int                     n_origins[2];
+    int                     cap[2];
+    bool                    cap_logged[2];
     /* A disconnect this backend started: its on_disconnect must not end
      * the session (decision 32 is for closes storage made). */
     bool                    closing;
 
     nodus_tcp_conn_t       *ctl;
+    /* F6: the control connection counts as up only once a frame from
+     * storage has arrived on it (storage answers a new control connection
+     * with its routing snapshot). Until then no origin is dialled (client
+     * requests get the decision-31 error) and the backoff is not reset; a
+     * control connection that closes before confirming is a failed dial. */
+    bool                    ctl_confirmed;
     uint64_t                ctl_next_dial_ms;
     uint64_t                ctl_backoff_ms;
     bool                    ctl_down_logged;
+    /* F1: control frames core could not hand to the transport. */
+    uint64_t                ctl_lost;
+    uint64_t                ctl_lost_logged_ms;
+    /* F1: peer_dead events that could not be sent — re-sent (cluster
+     * order) on the next tick with a confirmed control connection. */
+    nodus_key_t             dead_retry[NODUS_DHT_IPC_MEMBERS_MAX];
+    int                     dead_retry_n;
 
     /* Membership snapshot (item 27). */
     nodus_dht_ipc_member_t  mbr_last[NODUS_DHT_IPC_MEMBERS_MAX];
     int                     mbr_last_n;
-    bool                    mbr_force;
+    bool                    mbr_force;   /* push even when unchanged */
+    bool                    mbr_now;     /* ... without waiting a check */
     uint64_t                mbr_pushed_ms;
     uint64_t                mbr_checked_ms;
 
@@ -175,15 +202,19 @@ static nodus_tcp_conn_t *ob_origin_conn(ipc_be_t *ib,
     if (!o) return NULL;
     if (o->ipc) return o->ipc;
     /* The control connection's backoff is the one re-dial driver: a
-     * stopped storage costs no connect attempt per request. */
-    if (!ib->ctl || o->gen == 0) return NULL;
-    if (ib->n_origins >= NODUS_DHT_IPC_MAX_ORIGIN_CONNS) {
-        if (!ib->cap_logged) {
-            QGP_LOG_WARN(LOG_TAG, "%d sessions already hold a storage "
-                         "connection (the cap) — further client DHT requests "
-                         "are answered \"" NODUS_DHT_NO_STORAGE_MSG "\"",
-                         NODUS_DHT_IPC_MAX_ORIGIN_CONNS);
-            ib->cap_logged = true;
+     * stopped storage costs no connect attempt per request. F6: and only a
+     * CONFIRMED control connection counts (storage has answered on it). */
+    if (!ib->ctl || !ib->ctl_confirmed || o->gen == 0) return NULL;
+    int k = kind == NODUS_DHT_ORIGIN_CLIENT ? 0 : 1;
+    if (ib->n_origins[k] >= ib->cap[k]) {
+        if (!ib->cap_logged[k]) {
+            QGP_LOG_WARN(LOG_TAG, "%d %s sessions already hold a storage "
+                         "connection (the cap) — further %s", ib->cap[k],
+                         k == 0 ? "client" : "4002",
+                         k == 0 ? "client DHT requests are answered \""
+                                  NODUS_DHT_NO_STORAGE_MSG "\""
+                                : "4002 DHT frames are dropped");
+            ib->cap_logged[k] = true;
         }
         return NULL;
     }
@@ -225,7 +256,7 @@ static nodus_tcp_conn_t *ob_origin_conn(ipc_be_t *ib,
     free(buf);
     o->ipc = c;
     ib->by_ipc[c->slot] = (int)kind * NODUS_TCP_MAX_CONNS + slot;
-    ib->n_origins++;
+    ib->n_origins[k]++;
     return c;
 }
 
@@ -276,10 +307,16 @@ static int ob_forward(ipc_be_t *ib, nodus_dht_origin_kind_t kind, int slot,
 
 /* ── Control connection ──────────────────────────────────────────── */
 
+static int ob_ctl_send(ipc_be_t *ib, const uint8_t *p, size_t n,
+                       const char *what);
+
 static void ob_members_tick(ipc_be_t *ib, uint64_t now) {
     if (!ib->ctl || !ib->core.members) return;
-    if (!ib->mbr_force && now - ib->mbr_checked_ms < NODUS_DHT_IPC_SNAPSHOT_CHECK_MS)
+    /* A new control connection's full push goes out at once (mbr_now); a
+     * retry after a failed or lost push waits for the next check. */
+    if (!ib->mbr_now && now - ib->mbr_checked_ms < NODUS_DHT_IPC_SNAPSHOT_CHECK_MS)
         return;
+    ib->mbr_now = false;
     ib->mbr_checked_ms = now;
 
     nodus_dht_ipc_member_t m[NODUS_DHT_IPC_MEMBERS_MAX];
@@ -302,15 +339,17 @@ static void ob_members_tick(ipc_be_t *ib, uint64_t now) {
 
     uint8_t buf[64 + NODUS_DHT_IPC_MEMBERS_MAX * (NODUS_KEY_BYTES + 16)];
     size_t len = nodus_dht_ipc_encode_members(m, n, buf, sizeof(buf));
+    /* Cleared before the send: the pending-full hook sets it again when
+     * the frame was lost (ob_on_pending_full). */
+    ib->mbr_force = false;
     if (len == 0 || ob_queued(ib->ctl) >= NODUS_DHT_IPC_CTL_QUEUE_MAX ||
-        nodus_tcp_send(ib->ctl, buf, len) != 0) {
+        ob_ctl_send(ib, buf, len, "membership snapshot") != 0) {
         ib->mbr_force = true;      /* retried at the next check */
         return;
     }
     memcpy(ib->mbr_last, m, sizeof(ib->mbr_last));
     ib->mbr_last_n = n;
     ib->mbr_pushed_ms = now;
-    ib->mbr_force = false;
 }
 
 static void ob_ctl_tick(ipc_be_t *ib, uint64_t now) {
@@ -341,19 +380,104 @@ static void ob_ctl_tick(ipc_be_t *ib, uint64_t now) {
         return;
     }
     ib->ctl = c;
+    ib->ctl_confirmed = false;
     ib->by_ipc[c->slot] = OB_CTL;
-    ib->ctl_backoff_ms = OB_DIAL_BACKOFF_MIN;
-    ib->ctl_down_logged = false;
     ib->rt_logged = false;
     /* Full re-push of the membership snapshot on every (re)connect; the
      * storage side re-pushes its routing snapshot on a new control
-     * connection. */
+     * connection — that first frame confirms it (ob_on_ctl_frame). The
+     * backoff is NOT reset here (F6): a socket that accepts and closes at
+     * once must not be re-dialled at the minimum delay forever. */
     ib->mbr_force = true;
+    ib->mbr_now = true;
+}
+
+/* F6: the first frame from storage on a new control connection. */
+static void ob_ctl_confirm(ipc_be_t *ib) {
+    if (ib->ctl_confirmed) return;
+    ib->ctl_confirmed = true;
+    ib->ctl_backoff_ms = OB_DIAL_BACKOFF_MIN;
+    ib->ctl_down_logged = false;
     QGP_LOG_INFO(LOG_TAG, "control connection to nodus-storage up (%s)",
                  ib->path);
 }
 
+/* F1: send one control frame. A failure (allocation, the transport's
+ * refusal, or a frame its pending-full hook reports lost — ob_on_pending_
+ * full) is never silent: counted, and a WARN at most every
+ * OB_DROP_LOG_MS. @return 0 handed to the transport, -1 not. */
+static int ob_ctl_send(ipc_be_t *ib, const uint8_t *p, size_t n,
+                       const char *what) {
+    if (!ib->ctl || n == 0) return -1;
+    if (nodus_tcp_send(ib->ctl, p, n) == 0) return 0;
+    ib->ctl_lost++;
+    uint64_t now = nodus_time_mono_ms();
+    if (now - ib->ctl_lost_logged_ms >= OB_DROP_LOG_MS) {
+        ib->ctl_lost_logged_ms = now;
+        QGP_LOG_WARN(LOG_TAG, "a %s for nodus-storage could not be sent on "
+                     "the control connection (%llu control frame(s) lost so "
+                     "far)", what, (unsigned long long)ib->ctl_lost);
+    }
+    return -1;
+}
+
+/* F1: a peer_dead that did not go out is kept (dedup, at most one per
+ * cluster member) and re-sent by ob_dead_retry_tick. */
+static void ob_dead_retry_add(ipc_be_t *ib, const nodus_key_t *id) {
+    for (int i = 0; i < ib->dead_retry_n; i++)
+        if (nodus_key_cmp(&ib->dead_retry[i], id) == 0) return;
+    if (ib->dead_retry_n < NODUS_DHT_IPC_MEMBERS_MAX)
+        ib->dead_retry[ib->dead_retry_n++] = *id;
+}
+
+static void ob_dead_retry_tick(ipc_be_t *ib) {
+    if (!ib->ctl || !ib->ctl_confirmed || ib->dead_retry_n == 0) return;
+    int kept = 0;
+    for (int i = 0; i < ib->dead_retry_n; i++) {
+        uint8_t buf[128];
+        size_t n = nodus_dht_ipc_encode_dead(&ib->dead_retry[i], buf,
+                                             sizeof(buf));
+        if (ob_ctl_send(ib, buf, n, "peer_dead (retry)") != 0)
+            ib->dead_retry[kept++] = ib->dead_retry[i];
+    }
+    ib->dead_retry_n = kept;
+}
+
 /* ── Transport callbacks ─────────────────────────────────────────── */
+
+/* F1: the IPC transport could neither buffer nor queue a frame (its pending
+ * FIFO is full) and the frame is LOST although the send reported 0.
+ * Control connection: counted + WARN; a lost membership snapshot is pushed
+ * again at the next check, a lost peer_dead is queued for re-sending (the
+ * other kinds repeat by themselves). Origin connection: cannot happen by
+ * construction — ob_forward refuses at NODUS_DHT_IPC_QUEUE_MAX (4 MiB),
+ * below the write buffer's one-frame ceiling — logged if it ever does. */
+static void ob_on_pending_full(nodus_tcp_conn_t *conn, const uint8_t *payload,
+                               size_t len, void *ctx) {
+    ipc_be_t *ib = (ipc_be_t *)ctx;
+    if (!ib || !conn) return;
+    if (conn != ib->ctl) {
+        QGP_LOG_WARN(LOG_TAG, "a frame for nodus-storage on an origin "
+                     "connection was lost (transport queue full, len=%zu)",
+                     len);
+        return;
+    }
+    ib->ctl_lost++;
+    nodus_dht_ipc_msg_t *msg = ib->msg_scratch;
+    if (payload && nodus_dht_ipc_decode(payload, len, msg, NULL, 0) == 0) {
+        if (msg->type == NODUS_DHT_IPC_MSG_DEAD)
+            ob_dead_retry_add(ib, &msg->node_id);
+        else if (msg->type == NODUS_DHT_IPC_MSG_MEMBERS)
+            ib->mbr_force = true;
+    }
+    uint64_t now = nodus_time_mono_ms();
+    if (now - ib->ctl_lost_logged_ms >= OB_DROP_LOG_MS) {
+        ib->ctl_lost_logged_ms = now;
+        QGP_LOG_WARN(LOG_TAG, "a control frame for nodus-storage was lost "
+                     "(transport queue full; %llu control frame(s) lost so "
+                     "far)", (unsigned long long)ib->ctl_lost);
+    }
+}
 
 static void ob_on_ctl_frame(ipc_be_t *ib, const uint8_t *payload, size_t len) {
     /* Scratch allocated once (nodus_dht_backend_ipc_open): most control
@@ -391,6 +515,7 @@ static void ob_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
     if (conn->slot < 0 || conn->slot >= NODUS_TCP_MAX_CONNS) return;
     int idx = ib->by_ipc[conn->slot];
     if (idx == OB_CTL && conn == ib->ctl) {
+        ob_ctl_confirm(ib);
         ob_on_ctl_frame(ib, payload, len);
         return;
     }
@@ -412,8 +537,24 @@ static void ob_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
     ib->by_ipc[conn->slot] = OB_FREE;
 
     if (idx == OB_CTL && conn == ib->ctl) {
+        bool was_confirmed = ib->ctl_confirmed;
         ib->ctl = NULL;
+        ib->ctl_confirmed = false;
         ib->ctl_next_dial_ms = nodus_time_mono_ms() + ib->ctl_backoff_ms;
+        if (!was_confirmed) {
+            /* F6: closed before storage ever answered — a failed dial. */
+            ib->ctl_backoff_ms *= 2;
+            if (ib->ctl_backoff_ms > OB_DIAL_BACKOFF_MAX)
+                ib->ctl_backoff_ms = OB_DIAL_BACKOFF_MAX;
+            if (!ib->ctl_down_logged) {
+                QGP_LOG_WARN(LOG_TAG, "the control connection to %s closed "
+                             "before nodus-storage answered — client DHT "
+                             "requests are answered \"" NODUS_DHT_NO_STORAGE_MSG
+                             "\" until it does", ib->path);
+                ib->ctl_down_logged = true;
+            }
+            return;
+        }
         QGP_LOG_WARN(LOG_TAG, "control connection to nodus-storage lost (%s) "
                      "— client DHT requests are answered \""
                      NODUS_DHT_NO_STORAGE_MSG "\" until it is back", ib->path);
@@ -425,9 +566,10 @@ static void ob_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
     ob_origin_t *o = ob_origin(ib, kind, slot);
     if (!o || o->ipc != conn) return;
     o->ipc = NULL;
-    ib->n_origins--;
-    if (ib->n_origins < NODUS_DHT_IPC_MAX_ORIGIN_CONNS)
-        ib->cap_logged = false;
+    int k = kind == NODUS_DHT_ORIGIN_CLIENT ? 0 : 1;
+    ib->n_origins[k]--;
+    if (ib->n_origins[k] < ib->cap[k])
+        ib->cap_logged[k] = false;
     if (!ib->closing) {
         /* Decision 32: storage closed it (or went away) — its shadow and
          * listen keys are gone; the session is ended, not re-dialled. */
@@ -494,13 +636,20 @@ static void ipcd_udp_frame(nodus_dht_backend_t *b, const char *from_ip,
                                         from_port, payload, len,
                                         buf, sizeof(buf));
     if (n > 0)
-        nodus_tcp_send(ib->ctl, buf, n);
+        (void)ob_ctl_send(ib, buf, n, "UDP datagram");
 }
 
 /* COLD, and in call order on the one control connection (peer_seen's four
- * kinds keep their order around core's cluster update). Never dropped for
- * the bound; lost only while storage is away (routing refills on the next
- * heartbeat round). */
+ * kinds keep their order around core's cluster update). Not held back by
+ * NODUS_DHT_IPC_CTL_QUEUE_MAX, but they CAN be lost — storage away (no or
+ * an unconfirmed control connection), or the transport refusing / losing
+ * the frame (counted and WARNed, ob_ctl_send / ob_on_pending_full):
+ *   - a lost peer_seen is repaired by the next heartbeat round, which
+ *     reports the same peer again (cluster ping / pong);
+ *   - a lost peer_dead has no such repeat, so it is kept and re-sent
+ *     (ob_dead_retry_tick) once the control connection is confirmed; a
+ *     peer_dead that happened while storage was away entirely is not
+ *     queued (storage starts from an empty routing table then). */
 static void ipcd_peer_seen(nodus_dht_backend_t *b, nodus_dht_peer_seen_t kind,
                            const nodus_key_t *node_id, const char *ip,
                            uint16_t udp_port, uint16_t tcp_port) {
@@ -510,7 +659,7 @@ static void ipcd_peer_seen(nodus_dht_backend_t *b, nodus_dht_peer_seen_t kind,
     size_t n = nodus_dht_ipc_encode_seen(kind, node_id, ip, udp_port,
                                          tcp_port, buf, sizeof(buf));
     if (n > 0)
-        nodus_tcp_send(ib->ctl, buf, n);
+        (void)ob_ctl_send(ib, buf, n, "peer_seen");
 }
 
 static void ipcd_peer_dead(nodus_dht_backend_t *b, const nodus_key_t *node_id) {
@@ -518,8 +667,8 @@ static void ipcd_peer_dead(nodus_dht_backend_t *b, const nodus_key_t *node_id) {
     if (!ib->ctl || !node_id) return;
     uint8_t buf[128];
     size_t n = nodus_dht_ipc_encode_dead(node_id, buf, sizeof(buf));
-    if (n > 0)
-        nodus_tcp_send(ib->ctl, buf, n);
+    if (n > 0 && ob_ctl_send(ib, buf, n, "peer_dead") != 0)
+        ob_dead_retry_add(ib, node_id);
 }
 
 static void ipcd_session_opened(nodus_dht_backend_t *b,
@@ -579,6 +728,7 @@ static void ipcd_tick(nodus_dht_backend_t *b) {
     uint64_t now = nodus_time_mono_ms();
     ob_ctl_tick(ib, now);
     ob_members_tick(ib, now);
+    ob_dead_retry_tick(ib);
     nodus_tcp_poll(&ib->tcp, 0);
 }
 
@@ -614,6 +764,22 @@ static const nodus_dht_backend_ops_t ipc_ops = {
     .close            = ipcd_close,
 };
 
+void nodus_dht_backend_ipc_test_set_caps(nodus_dht_backend_t *b,
+                                         int client_cap, int inter_cap) {
+    if (!b) return;
+    ipc_be_t *ib = ipc_be(b);
+    if (client_cap >= 0 && client_cap <= NODUS_DHT_IPC_MAX_CLIENT_ORIGINS)
+        ib->cap[0] = client_cap;
+    if (inter_cap >= 0 && inter_cap <= NODUS_DHT_IPC_MAX_INTER_ORIGINS)
+        ib->cap[1] = inter_cap;
+}
+
+bool nodus_dht_backend_ipc_ready(nodus_dht_backend_t *b) {
+    if (!b) return false;
+    ipc_be_t *ib = ipc_be(b);
+    return ib->ctl != NULL && ib->ctl_confirmed;
+}
+
 int nodus_dht_backend_ipc_open(const char *data_path,
                                const nodus_dht_ipc_core_t *core,
                                nodus_dht_backend_t **out) {
@@ -647,8 +813,12 @@ int nodus_dht_backend_ipc_open(const char *data_path,
     ib->tcp.on_frame      = ob_on_frame;
     ib->tcp.on_disconnect = ob_on_disconnect;
     ib->tcp.cb_ctx        = ib;
+    ib->tcp.on_pending_full  = ob_on_pending_full;
+    ib->tcp.pending_full_ctx = ib;
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++)
         ib->by_ipc[i] = OB_FREE;
+    ib->cap[0] = NODUS_DHT_IPC_MAX_CLIENT_ORIGINS;
+    ib->cap[1] = NODUS_DHT_IPC_MAX_INTER_ORIGINS;
     nodus_random(ib->boot, NODUS_DHT_IPC_BOOT_LEN);
     ib->ctl_backoff_ms = OB_DIAL_BACKOFF_MIN;
     ib->ctl_next_dial_ms = 0;           /* the first tick dials */

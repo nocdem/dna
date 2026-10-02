@@ -187,12 +187,25 @@ nodus_dht_t *nodus_dht_backend_inproc_state(nodus_dht_backend_t *b);
  * NODUS_TCP_MAX_CONNS (1024) connections; the storage end must also fit
  * the control connection and the origin connections core has closed but
  * the storage process has not yet seen close. 64 slots are kept for those
- * (the S3 rule, NODUS_CHAIN_IPC_MAX_SESSION_CONNS). A client session
- * beyond the cap gets NODUS_DHT_NO_STORAGE_MSG; a 4002 frame beyond it is
- * dropped (logged). More concurrent DHT-active sessions need a second
- * listener socket (S6+).
+ * (the S3 rule, NODUS_CHAIN_IPC_MAX_SESSION_CONNS). More concurrent
+ * DHT-active sessions need a second listener socket (S6+).
+ *
+ * The total is split per kind (S5b fix round F4), so one kind can never
+ * starve the other — e.g. a flood of client sessions doing DHT requests
+ * cannot leave no room for the 4002 sessions that carry replication:
+ *   - 4002 (INTER) origins: 128. Each is a peer node that dialled this
+ *     node's 4002 and sent a DHT frame: at most every routing / cluster
+ *     peer, plus their redials (at 7 nodes: ≤ 2 × 6 in steady state;
+ *     the cluster table holds ≤ 16 members, decision 27).
+ *   - client origins: the rest, 832.
+ * A client session beyond its cap gets NODUS_DHT_NO_STORAGE_MSG; a 4002
+ * frame beyond its cap is dropped (rate-limited WARN), as when storage is
+ * unreachable.
  */
-#define NODUS_DHT_IPC_MAX_ORIGIN_CONNS  (NODUS_TCP_MAX_CONNS - 64)
+#define NODUS_DHT_IPC_MAX_ORIGIN_CONNS    (NODUS_TCP_MAX_CONNS - 64)
+#define NODUS_DHT_IPC_MAX_INTER_ORIGINS   128
+#define NODUS_DHT_IPC_MAX_CLIENT_ORIGINS  \
+    (NODUS_DHT_IPC_MAX_ORIGIN_CONNS - NODUS_DHT_IPC_MAX_INTER_ORIGINS)
 
 /**
  * What core gives its IPC backend (nodus_server_dht_ipc_core): the two
@@ -232,6 +245,20 @@ typedef struct {
 int nodus_dht_backend_ipc_open(const char *data_path,
                                const nodus_dht_ipc_core_t *core,
                                nodus_dht_backend_t **out);
+
+/* ════════════════════════════════════════════════════════════════════
+ * INTERNAL — exposed ONLY so tests/test_dht_ipc.c can drive the IPC backend
+ * in-process. Not an API: no other module calls these.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/** Lower the per-kind origin caps of an IPC backend (each clamped to its
+ *  production value; a negative value leaves that cap as it is). */
+void nodus_dht_backend_ipc_test_set_caps(nodus_dht_backend_t *b,
+                                         int client_cap, int inter_cap);
+
+/** true when the IPC backend's control connection is up AND confirmed (a
+ *  frame from nodus-storage has arrived on it — S5b F6). */
+bool nodus_dht_backend_ipc_ready(nodus_dht_backend_t *b);
 
 #ifdef __cplusplus
 }

@@ -634,6 +634,14 @@ void nodus_dht_stop(nodus_dht_t *dht);
  *  the batch-forward epoll when nodus_dht_stop has not. */
 void nodus_dht_close(nodus_dht_t *dht);
 
+/** Split S5b (F5): drop every deferred reply — every lookup that would
+ *  answer a session (origin slot >= 0; its cb_data freed) and every batch
+ *  forward (sockets closed) — without sending anything. The storage process
+ *  calls it when a core of another boot id connects: the old core's
+ *  sessions are gone and its generations may repeat. Internal lookups
+ *  (slot -1) keep running. */
+void nodus_dht_cancel_deferred(nodus_dht_t *dht);
+
 /* ── Core → DHT: each call is one message of the seam ────────────── *
  *
  * In-process the decoded message (`msg` / `t1`) is passed along so the

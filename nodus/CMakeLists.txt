@@ -561,6 +561,9 @@ if(NOT WIN32)
         # but the shared dialer's (tests/storage_linked.cmake).
         src/server/nodus_dht_backend_ipc.c
         src/dht/nodus_dht_ipc.c
+        # Split S5b — the H-10 partial-wipe boot gate in its own object, so
+        # nodus-storage runs the same check as core before opening nodus.db.
+        src/server/nodus_partial_wipe.c
         src/dht/nodus_dht_ipc_wire.c
         # Split S1 (decision 2026-10-01-nodus-component-split.md): the
         # server's one door to the witness, in-process implementation.
@@ -1323,6 +1326,13 @@ add_test(NAME test_witness_ipc COMMAND test_witness_ipc)
 add_executable(test_dht_ipc tests/test_dht_ipc.c)
 target_link_libraries(test_dht_ipc nodus dsa nodus)
 add_test(NAME test_dht_ipc COMMAND test_dht_ipc)
+
+# Split S5b fix round F2: frames queued in a 4002 dial's auth queue are
+# re-sent ENCRYPTED, in order, when the channel key is set
+# (nodus_inter_dial_conn_open) — two loopback transports, ephemeral port.
+add_executable(test_inter_pending_replay tests/test_inter_pending_replay.c)
+target_link_libraries(test_inter_pending_replay nodus dsa nodus)
+add_test(NAME test_inter_pending_replay COMMAND test_inter_pending_replay)
 
 # 2026-07-21 parallel-safety: every server-spawning test now uses a FULLY
 # explicit, test-unique port set (test_server 140xx, test_circuit_live

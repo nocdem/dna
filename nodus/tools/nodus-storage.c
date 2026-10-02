@@ -14,7 +14,10 @@
  *     network port;
  *   - identity files are only READ here and a missing one refuses the
  *     start (item 10); the 4002 handshake signs with the identity's key;
- *   - the partial-wipe gate stays in core (item 9).
+ *   - the partial-wipe gate stays in core (item 9) — and this process runs
+ *     the SAME check (server/nodus_partial_wipe.c) before it opens
+ *     nodus.db / channels.db, which would otherwise recreate a wiped file
+ *     before core's gate looks (nodus_dht_ipc_open_storage).
  *
  * Same command line and same config file as nodus-server
  * (nodus_node_config.c, item 18 — nodus_node_config_load_storage: the 4004
@@ -200,10 +203,19 @@ int main(int argc, char **argv) {
                                                : NODUS_DEFAULT_PEER_PORT;
     const char *self_ip = config.external_ip[0] ? config.external_ip
                                                 : config.bind_ip;
-    if (nodus_dht_open(dht, config.data_path, self_ip, self_peer_port) != 0) {
-        fprintf(stderr, "NODUS_STORAGE: a database under \"%s\" did not open "
-                "(the lines above say which) — exiting\n",
-                config.data_path[0] ? config.data_path : "/tmp");
+    /* The partial-wipe gate first (decision item 9 — the same check core
+     * runs), then the databases. */
+    int orc = nodus_dht_ipc_open_storage(dht, config.data_path, self_ip,
+                                         self_peer_port);
+    if (orc != 0) {
+        if (orc == -2)
+            fprintf(stderr, "NODUS_STORAGE: the partial-wipe gate refused "
+                    "the data directory (the line above says why) — not "
+                    "starting; nothing was opened or created\n");
+        else
+            fprintf(stderr, "NODUS_STORAGE: a database under \"%s\" did not "
+                    "open (the lines above say which) — exiting\n",
+                    config.data_path[0] ? config.data_path : "/tmp");
         nodus_dht_stop(dht);
         nodus_dht_close(dht);
         nodus_dht_ipc_free(ipc);

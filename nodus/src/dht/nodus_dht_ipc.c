@@ -53,6 +53,7 @@
 
 #include "dht/nodus_dht_ipc.h"
 #include "server/nodus_inter_dial.h"
+#include "server/nodus_partial_wipe.h"   /* the H-10 boot gate (decision 9) */
 #include "transport/nodus_tcp.h"
 #include "protocol/nodus_tier1.h"
 #include "protocol/nodus_tier2.h"
@@ -97,6 +98,7 @@ struct nodus_dht_ipc {
 
     nodus_tcp_conn_t       *ctl;
     uint8_t                 ctl_boot[NODUS_DHT_IPC_BOOT_LEN];
+    bool                    boot_have;   /* ctl_boot is set (dipc_boot_seen) */
 
     /* The dialer state of each outbound connection (out pool slot). */
     nodus_inter_dial_t      dial[NODUS_TCP_MAX_CONNS];
@@ -113,7 +115,8 @@ struct nodus_dht_ipc {
     nodus_dht_peer_addr_t  *rt_scratch;
     uint8_t                *rt_buf;
     nodus_dht_ipc_msg_t    *msg_scratch;   /* control-frame decode */
-    bool                    rt_force;
+    bool                    rt_force;   /* push even when unchanged */
+    bool                    rt_now;     /* ... and without waiting a check */
     uint64_t                rt_pushed_ms;
     uint64_t                rt_checked_ms;
 
@@ -148,15 +151,73 @@ static nodus_tcp_conn_t *dipc_origin_conn(nodus_dht_ipc_t *ipc,
     return c;
 }
 
-/* A preface of the same boot id and a smaller generation is older; one of
- * another boot id is newer (core restarted; the old core is gone). */
+/* Within one core boot id generations only grow: a preface of a smaller
+ * (or the same) generation is older. Prefaces of another boot id never
+ * reach this comparison (dipc_on_preface refuses them). */
 static bool dipc_preface_newer(const nodus_dht_ipc_preface_t *a,
                                const nodus_dht_ipc_preface_t *b) {
-    if (memcmp(a->boot, b->boot, NODUS_DHT_IPC_BOOT_LEN) != 0) return true;
     return a->origin.gen > b->origin.gen;
 }
 
+/* Fable S5b F5: the CURRENT core boot id is set by a control connection's
+ * preface only — core dials an origin only after its control connection
+ * is confirmed (this side has answered on it), so an origin of a live core
+ * always arrives after its boot id is known here. A control preface of
+ * ANOTHER boot id means core restarted: every session of the old core is
+ * gone, and generations start at 1 again — so a deferred reply recorded
+ * for (slot, gen) of the old core could match a new session of the same
+ * slot and generation. Before any new session opens: cancel every
+ * deferred DHT op (nodus_dht_cancel_deferred), close every shadow, and
+ * unmap every origin connection (their EOFs then change nothing). */
+static void dipc_boot_seen(nodus_dht_ipc_t *ipc,
+                           const uint8_t boot[NODUS_DHT_IPC_BOOT_LEN]) {
+    bool changed = ipc->boot_have &&
+                   memcmp(ipc->ctl_boot, boot, NODUS_DHT_IPC_BOOT_LEN) != 0;
+    memcpy(ipc->ctl_boot, boot, NODUS_DHT_IPC_BOOT_LEN);
+    ipc->boot_have = true;
+    if (!changed) return;
+
+    QGP_LOG_WARN(LOG_TAG, "%s", "a core with another boot id connected — the "
+                 "previous core's sessions are dropped and their deferred "
+                 "replies cancelled");
+    if (ipc->dht)
+        nodus_dht_cancel_deferred(ipc->dht);
+    for (int k = 0; k < 2; k++) {
+        int *map = k == 0 ? ipc->client_map : ipc->inter_map;
+        int n = k == 0 ? NODUS_MAX_SESSIONS : NODUS_MAX_INTER_SESSIONS;
+        for (int slot = 0; slot < n; slot++) {
+            if (map[slot] < 0) continue;
+            int cs = map[slot];
+            dipc_slot_t *s = &ipc->slots[cs];
+            map[slot] = -1;
+            if (ipc->dht && s->kind == DIPC_ORIGIN)
+                nodus_dht_session_closed(ipc->dht, s->pf.origin);
+            /* Its core is gone (or, with two cores on one socket — a
+             * misconfiguration — it is told at once, decision 32). */
+            nodus_tcp_conn_t *c = ipc->tcp.pool[cs];
+            if (c && !c->close_pending)
+                nodus_tcp_disconnect(&ipc->tcp, c);
+        }
+    }
+}
+
 /* ── The DHT's host view (nodus_dht_host_t) ─────────────────────── */
+
+/* An origin connection lost (or would lose) a frame for its session: mark
+ * it — closed at the end of the pass by nodus_dht_ipc_tick, never under
+ * the DHT handler that was sending — so core ends that session (decision
+ * 32) instead of the client silently missing a reply or a push. */
+static void dipc_origin_overflow(nodus_dht_ipc_t *ipc, nodus_tcp_conn_t *c,
+                                 const char *why) {
+    if (!c || c->slot < 0 || c->slot >= NODUS_TCP_MAX_CONNS) return;
+    dipc_slot_t *s = &ipc->slots[c->slot];
+    if (s->kind != DIPC_ORIGIN || s->overflow) return;
+    QGP_LOG_WARN(LOG_TAG, "origin %s slot=%d gen=%llu: %s — closing it",
+                 s->pf.origin.kind == NODUS_DHT_ORIGIN_CLIENT ? "client" : "inter",
+                 s->pf.origin.slot, (unsigned long long)s->pf.origin.gen, why);
+    s->overflow = true;
+    ipc->overflow_any = true;
+}
 
 static int dipc_send_to_origin(void *ctx, nodus_dht_origin_t origin,
                                const uint8_t *frame, size_t len) {
@@ -166,18 +227,42 @@ static int dipc_send_to_origin(void *ctx, nodus_dht_origin_t origin,
     dipc_slot_t *s = &ipc->slots[c->slot];
     if (s->overflow) return -1;
     if (dipc_queued(c) >= NODUS_DHT_IPC_REPLY_QUEUE_MAX) {
-        /* Core is not reading this origin's replies. Close it — at the end
-         * of the pass, not under the DHT handler that is sending — rather
-         * than grow the queue; core ends the session (decision 32). */
-        QGP_LOG_WARN(LOG_TAG, "origin %s slot=%d gen=%llu: queue to core is "
-                     "over NODUS_DHT_IPC_REPLY_QUEUE_MAX — closing it",
-                     origin.kind == NODUS_DHT_ORIGIN_CLIENT ? "client" : "inter",
-                     origin.slot, (unsigned long long)origin.gen);
-        s->overflow = true;
-        ipc->overflow_any = true;
+        /* Core is not reading this origin's replies. */
+        dipc_origin_overflow(ipc, c, "queue to core is over "
+                             "NODUS_DHT_IPC_REPLY_QUEUE_MAX");
         return -1;
     }
-    return nodus_tcp_send(c, frame, len);
+    int rc = nodus_tcp_send(c, frame, len);
+    if (rc != 0) {
+        /* ANY failed send (allocation, write-buffer refusal) lost this
+         * frame: same outcome as the bound. A frame the transport could
+         * neither buffer nor queue (its pending FIFO full — many small
+         * replies reach that before the byte bound) comes back through
+         * dipc_on_pending_full instead, with the send reporting 0. */
+        dipc_origin_overflow(ipc, c, "a reply / push could not be queued");
+    }
+    return rc;
+}
+
+/* The IPC transport's pending-full hook: a frame for core that neither the
+ * write buffer nor the pending FIFO could take is LOST. On an origin
+ * connection that ends the session (decision 32); on the control
+ * connection the frame (a datagram or a routing snapshot) is dropped with
+ * a WARN — the next snapshot check re-sends the routing table in full. */
+static void dipc_on_pending_full(nodus_tcp_conn_t *conn, const uint8_t *payload,
+                                 size_t len, void *ctx) {
+    (void)payload;
+    nodus_dht_ipc_t *ipc = (nodus_dht_ipc_t *)ctx;
+    if (!ipc || !conn) return;
+    if (conn == ipc->ctl) {
+        QGP_LOG_WARN(LOG_TAG, "control frame to core dropped (len=%zu): the "
+                     "transport queue is full — routing re-sent in full at "
+                     "the next check", len);
+        ipc->rt_force = true;
+        return;
+    }
+    dipc_origin_overflow(ipc, conn, "the transport queue to core is full (a "
+                         "frame was lost)");
 }
 
 /* Control-connection send of a COLD / snapshot frame (never closed for a
@@ -257,6 +342,15 @@ static void dipc_on_preface(nodus_dht_ipc_t *ipc, nodus_tcp_conn_t *conn,
     int *m = dipc_map(ipc, pf->origin.kind, pf->origin.slot);
     if (!m) {
         dipc_refuse(ipc, conn, "preface slot out of range");
+        return;
+    }
+    /* Only the current core's sessions (dipc_boot_seen): a late preface of
+     * a core that has since restarted, or one before any control
+     * connection, is refused. */
+    if (!ipc->boot_have ||
+        memcmp(pf->boot, ipc->ctl_boot, NODUS_DHT_IPC_BOOT_LEN) != 0) {
+        dipc_refuse(ipc, conn, "preface of a core boot id that is not the "
+                    "current control connection's");
         return;
     }
     if (*m >= 0 && *m != conn->slot) {
@@ -441,8 +535,9 @@ static void dipc_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
             }
             s->kind = DIPC_CTL;
             ipc->ctl = conn;
-            memcpy(ipc->ctl_boot, msg->boot, NODUS_DHT_IPC_BOOT_LEN);
+            dipc_boot_seen(ipc, msg->boot);
             ipc->rt_force = true;
+            ipc->rt_now = true;
             QGP_LOG_INFO(LOG_TAG, "%s", "control connection from core up");
         } else {
             dipc_refuse(ipc, conn, "first frame is neither ds_origin nor ds_ctl");
@@ -566,8 +661,9 @@ static void dipc_out_on_pending_full(nodus_tcp_conn_t *conn,
     nodus_dht_ipc_t *ipc = (nodus_dht_ipc_t *)ctx;
     if (!ipc || !conn || !payload) return;
     if (!conn->peer_id_set) {
-        fprintf(stderr, "PENDING_FULL: peer=%s:%u len=%zu not authenticated — "
-                "frame DROPPED (no hint)\n", conn->ip, (unsigned)conn->port, len);
+        QGP_LOG_WARN(LOG_TAG, "PENDING_FULL: peer=%s:%u len=%zu not "
+                     "authenticated — frame DROPPED (no hint)",
+                     conn->ip, (unsigned)conn->port, len);
         return;
     }
     if (!dipc_member(ipc, &conn->peer_id)) {
@@ -586,13 +682,13 @@ static void dipc_out_on_pending_full(nodus_tcp_conn_t *conn,
     size_t frame_size = NODUS_FRAME_HEADER_SIZE + len;
     uint8_t *framed = malloc(frame_size);
     if (!framed) {
-        fprintf(stderr, "PENDING_FULL: malloc failed (peer=%s:%u len=%zu)\n",
-                conn->ip, (unsigned)conn->port, len);
+        QGP_LOG_ERROR(LOG_TAG, "PENDING_FULL: malloc failed (peer=%s:%u "
+                      "len=%zu)", conn->ip, (unsigned)conn->port, len);
         return;
     }
     if (nodus_frame_encode(framed, frame_size, payload, (uint32_t)len) != frame_size) {
-        fprintf(stderr, "PENDING_FULL: frame_encode failed (peer=%s:%u len=%zu)\n",
-                conn->ip, (unsigned)conn->port, len);
+        QGP_LOG_ERROR(LOG_TAG, "PENDING_FULL: frame_encode failed (peer=%s:%u "
+                      "len=%zu)", conn->ip, (unsigned)conn->port, len);
         free(framed);
         return;
     }
@@ -600,14 +696,14 @@ static void dipc_out_on_pending_full(nodus_tcp_conn_t *conn,
                                   conn->port, framed, frame_size);
     free(framed);
     if (rc != 0) {
-        fprintf(stderr, "PENDING_FULL: hint %s (peer=%s:%u len=%zu id=peer_id "
-                "rc=%d) — frame DROPPED\n",
-                rc == NODUS_STORAGE_RC_QUOTA ? "cap reached" : "insert failed",
-                conn->ip, (unsigned)conn->port, len, rc);
+        QGP_LOG_WARN(LOG_TAG, "PENDING_FULL: hint %s (peer=%s:%u len=%zu "
+                     "id=peer_id rc=%d) — frame DROPPED",
+                     rc == NODUS_STORAGE_RC_QUOTA ? "cap reached" : "insert failed",
+                     conn->ip, (unsigned)conn->port, len, rc);
         return;
     }
-    fprintf(stderr, "PENDING_FULL: peer=%s:%u len=%zu queued to hint table "
-            "(id=peer_id)\n", conn->ip, (unsigned)conn->port, len);
+    QGP_LOG_INFO(LOG_TAG, "PENDING_FULL: peer=%s:%u len=%zu queued to hint "
+                 "table (id=peer_id)", conn->ip, (unsigned)conn->port, len);
 }
 
 /* ── Periodic work ───────────────────────────────────────────────── */
@@ -618,10 +714,13 @@ static void dipc_out_on_pending_full(nodus_tcp_conn_t *conn,
  * control connection. Looked at every NODUS_DHT_IPC_SNAPSHOT_CHECK_MS. */
 static void dipc_routing_tick(nodus_dht_ipc_t *ipc, uint64_t now_ms) {
     if (!ipc->ctl || !ipc->dht) return;
-    if (!ipc->rt_force &&
+    /* A new control connection is served at once (rt_now); a retry after a
+     * failed or lost push (rt_force alone) waits for the next check. */
+    if (!ipc->rt_now &&
         now_ms - ipc->rt_checked_ms < NODUS_DHT_IPC_SNAPSHOT_CHECK_MS)
         return;
     ipc->rt_checked_ms = now_ms;
+    ipc->rt_now = false;
 
     int n = nodus_dht_routing_snapshot(ipc->dht, ipc->rt_scratch,
                                        NODUS_DHT_IPC_ROUTING_MAX);
@@ -640,16 +739,19 @@ static void dipc_routing_tick(nodus_dht_ipc_t *ipc, uint64_t now_ms) {
 
     size_t len = nodus_dht_ipc_encode_routing(ipc->rt_scratch, n, ipc->rt_buf,
                                               NODUS_DHT_IPC_ROUTING_FRAME_MAX);
+    /* Cleared BEFORE the send: the transport's pending-full hook
+     * (dipc_on_pending_full) sets it again when the frame was lost. */
+    ipc->rt_force = false;
     if (dipc_ctl_send(ipc, ipc->rt_buf, len) != 0) {
         /* Over the control bound, or no encoder room: try again at the next
-         * check — never by closing the control connection. */
+         * check (NODUS_DHT_IPC_SNAPSHOT_CHECK_MS) — never by closing the
+         * control connection. */
         ipc->rt_force = true;
         return;
     }
     memcpy(ipc->rt_last, ipc->rt_scratch, (size_t)n * sizeof(*ipc->rt_last));
     ipc->rt_last_n = n;
     ipc->rt_pushed_ms = now_ms;
-    ipc->rt_force = false;
 }
 
 /* Dialed connections to an IP no longer in the routing table — what core's
@@ -670,8 +772,8 @@ static void dipc_stale_cleanup(nodus_dht_ipc_t *ipc) {
             }
         }
         if (!found) {
-            fprintf(stderr, "STORAGE_POOL: closing stale connection to %s:%d\n",
-                    c->ip, c->port);
+            QGP_LOG_INFO(LOG_TAG, "STORAGE_POOL: closing stale connection "
+                         "to %s:%d", c->ip, c->port);
             nodus_tcp_disconnect(&ipc->out, c);
         }
     }
@@ -731,6 +833,8 @@ nodus_dht_ipc_t *nodus_dht_ipc_new(const nodus_identity_t *identity,
     ipc->tcp.on_frame      = dipc_on_frame;
     ipc->tcp.on_disconnect = dipc_on_disconnect;
     ipc->tcp.cb_ctx        = ipc;
+    ipc->tcp.on_pending_full  = dipc_on_pending_full;
+    ipc->tcp.pending_full_ctx = ipc;
 
     ipc->out.on_connect       = dipc_out_on_connect;
     ipc->out.on_frame         = dipc_out_on_frame;
@@ -751,6 +855,14 @@ fail:
     free(ipc->msg_scratch);
     free(ipc);
     return NULL;
+}
+
+int nodus_dht_ipc_open_storage(nodus_dht_t *dht, const char *data_path,
+                               const char *self_ip, uint16_t self_peer_port) {
+    if (!dht || !data_path || !self_ip) return -1;
+    if (data_path[0] != '\0' && nodus_server_check_partial_wipe(data_path) != 0)
+        return -2;
+    return nodus_dht_open(dht, data_path, self_ip, self_peer_port) == 0 ? 0 : -1;
 }
 
 void nodus_dht_ipc_attach(nodus_dht_ipc_t *ipc, nodus_dht_t *dht) {

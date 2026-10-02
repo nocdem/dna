@@ -4933,6 +4933,32 @@ void nodus_dht_stop(nodus_dht_t *dht) {
     }
 }
 
+void nodus_dht_cancel_deferred(nodus_dht_t *dht) {
+    if (!dht) return;
+    int lookups = 0, batches = 0;
+    /* Lookups that will answer a session (origin slot >= 0); internal
+     * lookups (replication, listen forwarding: slot -1) answer nobody and
+     * keep running. */
+    for (int i = 0; i < NODUS_LOOKUP_MAX_INFLIGHT; i++) {
+        iterative_lookup_t *l = &dht->lookup_state.lookups[i];
+        if (!l->active || l->origin.slot < 0) continue;
+        if (l->cb_data && l->cb_data_free) l->cb_data_free(l->cb_data);
+        l->cb_data = NULL;
+        l->cb_data_free = NULL;
+        l->active = false;
+        lookups++;
+    }
+    /* Every batch forward answers a session. */
+    for (int i = 0; i < NODUS_BF_MAX_BATCHES; i++) {
+        if (!dht->bf_state.batches[i].active) continue;
+        bf_batch_cleanup(dht, &dht->bf_state.batches[i]);
+        batches++;
+    }
+    if (lookups || batches)
+        QGP_LOG_INFO(LOG_TAG, "deferred DHT replies cancelled: %d lookup(s), "
+                     "%d batch forward(s)", lookups, batches);
+}
+
 void nodus_dht_close(nodus_dht_t *dht) {
     if (!dht) return;
     if (dht->media_open) nodus_media_storage_close(&dht->media_storage);

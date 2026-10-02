@@ -63,13 +63,23 @@
  * core dialling the witness socket, or another "v") closes the connection.
  * The control connection is never closed for a queue bound: past
  * NODUS_DHT_IPC_CTL_QUEUE_MAX a UDP datagram is dropped (the newest), and a
- * snapshot is retried at the next check.
+ * snapshot that could not be sent — or that the transport reports lost —
+ * is sent again in full at the next check (NODUS_DHT_IPC_SNAPSHOT_CHECK_MS;
+ * only a new control connection is served without waiting). A peer event
+ * core could not send is counted and WARNed; a lost peer_dead is re-sent
+ * (server/nodus_dht_backend_ipc.c).
  *
  * The boot id: core's IPC backend draws 8 random bytes when it is created.
  * Generations restart at 1 when core restarts, so (boot id, generation)
- * names a session; a preface of another boot id always replaces the shadow
- * (the old core is gone), one of the same boot id only when its generation
- * is newer.
+ * names a session. The CURRENT boot id is the one of the latest control
+ * connection; core dials an origin only once its control connection is
+ * confirmed (this side has answered on it), so an origin preface of any
+ * other boot id is refused. A control connection of a NEW boot id means
+ * the old core is gone: before anything of the new core opens, every
+ * deferred DHT reply is cancelled (nodus_dht_cancel_deferred), every shadow
+ * is closed and every origin connection of the old core is closed (S5b fix
+ * round F5). Within one boot id a preface replaces a slot's live
+ * connection only when its generation is newer.
  *
  * Determinism: nothing here reaches consensus state — the storage process
  * is DHT only; its clocks schedule this node's own pushes and sweeps.
@@ -141,7 +151,11 @@ extern "C" {
  * connection at that bound is not queued and the connection is closed (at
  * the end of that poll pass); core then closes that client session
  * (decision item 32) — its listen keys went with the shadow, and the client
- * is told by its reconnect, never silently.
+ * is told by its reconnect, never silently. The same holds for ANY reply
+ * or push the transport could not take — a failed send, or a frame its
+ * pending-full hook reports lost (many small frames reach the transport's
+ * own ceiling — ~5 MiB write buffer + NODUS_PENDING_MAX_FRAMES queued
+ * frames — before 16 MiB): S5b fix round F1.
  *
  * Control connection, either direction: NODUS_DHT_IPC_CTL_QUEUE_MAX. Never
  * a close; see the file comment.
@@ -277,6 +291,20 @@ nodus_dht_ipc_t *nodus_dht_ipc_new(const nodus_identity_t *identity,
  * nodus_dht_init.
  */
 void nodus_dht_ipc_host(nodus_dht_ipc_t *ipc, nodus_dht_host_t *out);
+
+/**
+ * Open the storage process's databases (nodus_dht_open) — but FIRST run the
+ * partial-wipe boot gate core runs (nodus_server_check_partial_wipe,
+ * server/nodus_partial_wipe.h; decision item 9), when `data_path` is set,
+ * exactly as nodus_server_init does. nodus_dht_open creates a missing
+ * nodus.db / channels.db; without the gate a storage process started
+ * before core on a partly wiped host would recreate the file and core's
+ * gate would then pass.
+ * @return 0 opened; -2 the gate refused (its message printed, NOTHING
+ *         opened or created); -1 a database did not open (logged).
+ */
+int nodus_dht_ipc_open_storage(nodus_dht_t *dht, const char *data_path,
+                               const char *self_ip, uint16_t self_peer_port);
 
 /** The DHT this runtime serves (initialised and opened). Before the first
  *  poll. */

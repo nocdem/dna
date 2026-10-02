@@ -31,6 +31,7 @@
 #include "server/nodus_chain_backend.h"     /* srv->chain */
 #include "server/nodus_presence.h"
 #include "server/nodus_inter_dial.h"       /* the 4002 dialer handshake (S5a) */
+#include "server/nodus_partial_wipe.h"     /* the H-10 boot gate (S5b) */
 #include "circuit/nodus_circuit.h"
 #include "circuit/nodus_inter_circuit.h"
 #include "crypto/nodus_channel_crypto.h"
@@ -311,28 +312,9 @@ typedef struct nodus_server {
  */
 int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config);
 
-/**
- * PR 3 / E5 — Partial-wipe XOR check (H-10 mitigation).
- *
- * The 3 SQLite DB files under <data_path> (nodus.db, channels.db,
- * any witness_<hex>.db) MUST be in a consistent state at boot, but
- * the invariant is gated on the genesis marker
- * NODUS_PARTIAL_WIPE_GENESIS_MARKER (witness/nodus_witness_host.h):
- *
- *   - marker absent  -> pre-genesis (fresh node or mid-bootstrap),
- *                       any subset of the 3 DBs is allowed; pass
- *   - marker present + all 3 absent  -> someone wiped DBs but left
- *                                       the marker; treat as fresh
- *   - marker present + all 3 present -> normal running, pass
- *   - marker present + 1 or 2 present -> partial wipe, REFUSE START
- *
- * MUST be called BEFORE nodus_storage_open / nodus_channel_store_open
- * — those calls auto-create the missing files and defeat detection.
- *
- * Returns: 0 on consistent state (caller proceeds),
- *         -1 on partial-wipe detected (caller MUST refuse init).
- */
-int nodus_server_check_partial_wipe(const char *data_path);
+/* nodus_server_check_partial_wipe (PR 3 / E5, H-10) is declared in
+ * server/nodus_partial_wipe.h, included above — its own object since
+ * split S5b, so nodus-storage links it without this server. */
 
 /**
  * Split S5b — may this server arm the partial-wipe marker now, as far as the

@@ -2535,6 +2535,42 @@ origin generation over sockets, the marker rule); `test_storage_linked` (nm gate
 `nodus-storage`). Harness: `STAGEF_MODE` `splits` / `mixeds` and
 `tests/test_split_storage_restart.sh` (stagef README).
 
+**S5b fix round** (ORCHESTRATOR review of S5b; F1-F6):
+- **F1 — no silent reply loss.** On the storage side ANY failed send of a reply / push to
+  an origin connection, and any frame the IPC transport's pending-full hook reports lost
+  (`dipc_on_pending_full`, `nodus_dht_ipc.c`), marks the origin like the 16 MiB bound: it
+  is closed at the end of the pass and core ends that session (decision 32). Many SMALL
+  replies reach the transport's own ceiling (~5 MiB write buffer + 20 queued frames)
+  long before 16 MiB — before the fix they were dropped one by one with nothing told.
+  A lost control frame to core forces the routing snapshot again at the next check. On
+  core's side a control frame that cannot be sent is counted and WARNed (rate-limited);
+  a lost membership snapshot is re-sent at the next check, a lost `peer_dead` is kept and
+  re-sent once the control connection is confirmed (`ob_dead_retry_*`), `peer_seen` /
+  datagrams are repeated by the next heartbeat.
+- **F2 — frames queued during a 4002 dial's handshake are no longer discarded** (also
+  live on main before S5b). `nodus_inter_dial_conn_open` re-sends every frame of the auth
+  queue ENCRYPTED, in queue order, through `nodus_tcp_send`, instead of freeing it while
+  each sender had been told "queued" (a hinted retry deleted its row; a put's replication
+  and a circuit's `ri_open` were lost). Same bound (`NODUS_TCP_PENDING_MAX`). Applies to
+  core's dials and storage's alike. NOT changed: the ACCEPTOR side's key_init still drops
+  its auth queue (`dispatch_inter`; replies queued on an accepted conn before the key).
+  Test: `test_inter_pending_replay`.
+- **F3 — nodus-storage runs the partial-wipe gate.** The check moved, unchanged, into
+  `server/nodus_partial_wipe.{h,c}` (`nodus_server.h` includes it; core still calls it in
+  `nodus_server_init`); `nodus_dht_ipc_open_storage` runs it before `nodus_dht_open` and
+  refuses (-2, nothing opened or created) on a partial wipe.
+- **F4 — separate caps.** 128 origin connections for 4002 sessions, 832 for client
+  sessions (sum 960 = `NODUS_DHT_IPC_MAX_ORIGIN_CONNS`; reasons in `nodus_dht_backend.h`).
+- **F5 — a core restart cancels the old core's deferred replies.** The current boot id is
+  set by the control connection only; an origin of another boot id is refused; a NEW boot
+  id's control connection cancels every deferred lookup reply and batch forward
+  (`nodus_dht_cancel_deferred`), closes every shadow and every old origin connection —
+  before the new core's sessions (whose generations restart at 1) open.
+- **F6 — control connection confirmed by storage's first frame.** Until then no origin is
+  dialled (client requests get the decision-31 error) and the reconnect backoff is not
+  reset; a control connection closed before confirming counts as a failed dial.
+- `nodus_dht_ipc.c` logs through `QGP_LOG_*` only.
+
 **Not done in S5b:** core's `dht_send_stats_dump` covers core's pool only — the storage
 pool has no stats dump; no core-side `nm` probe proves the IPC backend TU pulls no DHT
 object into a core-only binary (deferred to S6's `nodus-core` gate; `nodus-server`

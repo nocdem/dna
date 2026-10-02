@@ -545,15 +545,47 @@ void nodus_inter_dial_conn_open(nodus_tcp_conn_t *conn, bool encrypted) {
         nodus_tcp_pending_flush(conn);
         return;
     }
-    /* Session key set. DISCARD the pending queue — it contains pre-framed
-     * plaintext that would bypass encryption. Inter-node queued frames are
-     * periodic (heartbeat/repl) and will be re-sent on next cycle. */
-    if (conn->pending_buf) {
-        free(conn->pending_buf);
-        conn->pending_buf = NULL;
-        conn->pending_len = 0;
-        conn->pending_cap = 0;
+    /* Session key set. The auth queue holds PRE-FRAMED PLAINTEXT
+     * ([7-byte header][payload] per frame, written while the handshake
+     * ran — nodus_inter_pool_send_framed, nodus_tcp_send's
+     * pending_queue_append): it must never reach the socket as it is. S5b
+     * fix round F2: before, it was DISCARDED here although each sender had
+     * been told "queued" (0) — a hinted retry then deleted its row for a
+     * frame never sent, and a put's replication / a circuit's ri_open were
+     * lost the same way. Now every queued frame is RE-SENT ENCRYPTED, in
+     * queue order: its payload goes through nodus_tcp_send, which applies
+     * the channel crypto now that auth_state is OK. The bound is the one
+     * the queue already had (NODUS_TCP_PENDING_MAX). A frame that does not
+     * parse ends the replay (the rest is dropped, logged): its bytes are
+     * not trusted as a frame boundary. */
+    uint8_t *q = conn->pending_buf;
+    size_t qlen = conn->pending_len;
+    conn->pending_buf = NULL;
+    conn->pending_len = 0;
+    conn->pending_cap = 0;
+    size_t off = 0;
+    int resent = 0, failed = 0;
+    while (q && off < qlen) {
+        nodus_frame_t f;
+        memset(&f, 0, sizeof(f));
+        int used = nodus_frame_decode(q + off, qlen - off, &f);
+        if (used <= 0 || !f.payload) {
+            QGP_LOG_WARN(LOG_TAG, "INTER_CRYPTO: %s:%d auth queue holds %zu "
+                         "unparsable byte(s) — dropped", conn->ip, conn->port,
+                         qlen - off);
+            break;
+        }
+        if (nodus_tcp_send(conn, f.payload, f.payload_len) == 0)
+            resent++;
+        else
+            failed++;
+        off += (size_t)used;
     }
-    QGP_LOG_INFO(LOG_TAG, "INTER_CRYPTO: outgoing conn to %s:%d encrypted",
-                 conn->ip, conn->port);
+    free(q);
+    QGP_LOG_INFO(LOG_TAG, "INTER_CRYPTO: outgoing conn to %s:%d encrypted "
+                 "(%d queued frame(s) re-sent encrypted%s)",
+                 conn->ip, conn->port, resent, failed ? ", some FAILED" : "");
+    if (failed)
+        QGP_LOG_WARN(LOG_TAG, "INTER_CRYPTO: %s:%d — %d queued frame(s) could "
+                     "not be re-sent", conn->ip, conn->port, failed);
 }

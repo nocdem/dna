@@ -216,9 +216,10 @@ void nodus_inter_dial_conn_sync(const nodus_inter_dial_t *d,
 /**
  * Open a dialed conn's send gate when the handshake finished
  * (nodus_inter_dial_io_t.established): auth_state OK; plaintext (no Kyber
- * identity) → the auth queue is flushed; encrypted → the auth queue is
- * DISCARDED (it holds pre-framed plaintext that would bypass encryption;
- * the periodic senders repeat their frames).
+ * identity) → the auth queue is flushed; encrypted → every frame of the
+ * auth queue (pre-framed plaintext, never written as it is) is RE-SENT
+ * ENCRYPTED through nodus_tcp_send, in queue order (S5b fix round F2 —
+ * it used to be discarded although its senders had been told "queued").
  */
 void nodus_inter_dial_conn_open(struct nodus_tcp_conn *conn, bool encrypted);
 
