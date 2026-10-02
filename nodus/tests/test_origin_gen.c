@@ -195,11 +195,16 @@ static void test_core_guard(void) {
           "inter: stale generation not refused");
     CHECK(ic->wlen == 0, "inter: stale generation written to the connection");
 
-    CHECK(host.send_to_origin(host.ctx, client_origin(SLOT, 8), payload, plen) == 0 &&
-          cc->wlen > 0, "client: own generation not written");
+    /* The fixture connection has no socket (fd -1): the frame is appended to
+     * wbuf, then the flush fails and nodus_tcp_send returns -1 (nodus_tcp.c
+     * send_progress_locked, "write failed"). So the discriminator is the
+     * buffer — written for the own generation, untouched for a stale one —
+     * not the return code. */
+    (void)host.send_to_origin(host.ctx, client_origin(SLOT, 8), payload, plen);
+    CHECK(cc->wlen > 0, "client: own generation not written");
     io.gen = 9;
-    CHECK(host.send_to_origin(host.ctx, io, payload, plen) == 0 && ic->wlen > 0,
-          "inter: own generation not written");
+    (void)host.send_to_origin(host.ctx, io, payload, plen);
+    CHECK(ic->wlen > 0, "inter: own generation not written");
     PASS();
 out:
     conn_free(cc);
