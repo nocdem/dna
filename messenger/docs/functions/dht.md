@@ -430,7 +430,7 @@ the socket twice, and a realloc under the other thread's write crashed the proce
 
 ### 12.8 Unix domain socket entry + read-only identity load (component split S2; `nodus/src/transport/nodus_tcp.h`, `nodus/src/crypto/nodus_identity.h`)
 
-Decision `docs/plans/decisions/2026-10-01-nodus-component-split.md` items 7 (UDS IPC, 0600, `SO_PEERCRED`) and 10 (only core writes identity files). **No caller outside the transport, identity module and tests yet** — the combined `nodus-server` behaves as before. Narrative: `nodus/docs/ARCHITECTURE.md` §10 "Component split". Linux only (`NODUS_TCP_EPOLL`).
+Decision `docs/plans/decisions/2026-10-01-nodus-component-split.md` items 7 (UDS IPC, 0600, `SO_PEERCRED`) and 10 (only core writes identity files). **Callers since split S3** (opt-in `witness_external` only; the combined `nodus-server` behaves as before): `nodus_tcp_unix_listen` — the witness IPC listener (`nodus_witness_ipc_listen`); `nodus_tcp_unix_connect` — the IPC chain backend's control and session dials (`nodus_chain_backend_ipc.c`); `nodus_identity_load_readonly` — `nodus-witness` (`tools/nodus-witness.c`). Those functions: `messenger/docs/functions/ledger.md` §17. Narrative: `nodus/docs/ARCHITECTURE.md` §10 "Component split". Linux only (`NODUS_TCP_EPOLL`).
 
 | Function / field | Description |
 |----------|-------------|

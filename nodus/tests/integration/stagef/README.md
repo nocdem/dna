@@ -394,7 +394,7 @@ three-process split.
 |---|---|---|
 | `combined` (default) | every node one `nodus-server` | `bash genesis_protocol_v2.sh` |
 | `splitw` | every node: `nodus-server --witness-external` (core + DHT; no witness, does not open the 14xx4 witness port) + `nodus-witness` (consensus, the 14xx4 port, the chain DB) | `STAGEF_MODE=splitw bash genesis_protocol_v2.sh` |
-| `mixedw` | nodes 1-3 as `splitw`, nodes 4-7 combined — one build | `STAGEF_MODE=mixedw bash genesis_protocol_v2.sh` |
+| `mixedw` | nodes 1-3 as `splitw` (`STAGEF_MIXEDW_SPLIT_NODES=3`, fixed in `stagef_env.sh`), nodes 4-7 combined — one build | `STAGEF_MODE=mixedw bash genesis_protocol_v2.sh` |
 
 **What it proves.** `splitw`: a fleet whose every validator runs consensus
 in a separate `nodus-witness` process is born, commits and stays 7/7
@@ -434,7 +434,12 @@ peer(s)`, `completed ABCI handshake`, `ABCI replay blocks`, every
 witness's one-per-data-directory lock) and, if it signs an own address
 record at all, `node<N>/data/nodus.addr_seq` (a split node keeps it in the data
 directory, never in `identity/` — decision items 10 and 21; the harness
-starts from fresh directories, so there is nothing to migrate). `$BASE_DIR/stagef_mode` in every mode
+starts from fresh directories, so there is nothing to migrate). A split node's
+`node<N>/data` is mode **0700**: bring-up `chmod`s it right after creating it
+(`stagef_up_v2.sh`, dir layout step), because the Unix socket entry refuses a
+group/other-writable socket directory (`nodus_tcp.c` `unix_parent_dir_ok`) and
+`mkdir -p` under a 0002 umask gives 0775; combined nodes keep the umask's mode.
+`$BASE_DIR/stagef_mode` in every mode
 (`combined` included). Read witness lines through `stagef_node_log N`.
 
 **Scenarios in a split mode.**
@@ -486,7 +491,8 @@ from production:
   keys in `/var/lib/nodus/identity/`.
 - `/tmp/stagef-*/node[1-7]/data/` — witness DB + nodus DB + logs (and,
   on the p2p-port build, the 4004 address book and own-ADDR sequence;
-  on a split node also `witness.sock`).
+  on a split node also `witness.sock` and `nodus-witness.lock`; a split
+  node's `data/` is mode 0700 — see "Harness modes").
 - `/tmp/stagef-*/node[1-7]/nodus.log` — `nodus-server`'s log;
   `/tmp/stagef-*/node[1-3 or 1-7]/witness.log` — `nodus-witness`'s log on
   a split node (`STAGEF_MODE` mixedw / splitw); `stagef_node_log N` names

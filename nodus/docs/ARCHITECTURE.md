@@ -95,13 +95,14 @@ nodus/
 │   │   └── nodus_tier2.c      # T2 encode/decode (client ↔ server)
 │   ├── transport/
 │   │   ├── nodus_tcp.c        # TCP transport (epoll, framing, connections; + the WS entry glue;
-│   │   │                      #   + the AF_UNIX entry nodus_tcp_unix_* — split S2, no caller yet)
+│   │   │                      #   + the AF_UNIX entry nodus_tcp_unix_* — split S2; used by the S3
+│   │   │                      #   witness IPC, both ends)
 │   │   ├── nodus_ws.c         # WebSocket entry codec (RFC 6455 handshake + frames; no sockets)
 │   │   └── nodus_udp.c        # UDP transport (non-blocking recvfrom)
 │   ├── crypto/
 │   │   ├── nodus_sign.c       # Dilithium5 sign/verify/hash wrappers
 │   │   └── nodus_identity.c   # Identity generation, save/load, seed derivation
-│   │                          #   (+ nodus_identity_load_readonly — split S2, no caller yet)
+│   │                          #   (+ nodus_identity_load_readonly — split S2; called by nodus-witness, S3)
 │   ├── channel/
 │   │   ├── nodus_channel_store.c       # SQLite channel + post storage
 │   │   ├── nodus_hashring.c            # Consistent hash ring
@@ -121,6 +122,8 @@ nodus/
 │   │   ├── nodus_server.c     # Server event loop + message dispatch
 │   │   ├── nodus_chain_backend.h        # the server's ONE door to the witness (ops table; split S1)
 │   │   ├── nodus_chain_backend_inproc.c # its in-process implementation (combined nodus-server)
+│   │   ├── nodus_chain_backend_ipc.c    # its IPC implementation (core side of <data_path>/witness.sock;
+│   │   │                                #   "witness_external", split S3)
 │   │   └── nodus_auth.c       # Dilithium5 challenge-response auth
 │   ├── client/
 │   │   ├── nodus_client.c     # Client SDK (connect, auth, DHT, channels, DNAC)
@@ -131,6 +134,8 @@ nodus/
 │   └── witness/               # DNAC BFT witness module (embedded)
 │       ├── nodus_witness.c          # Witness init, DB schema, lifecycle
 │       ├── nodus_witness_host.h     # the witness's ONE view of its host process (split S1)
+│       ├── nodus_witness_ipc.c/h    # the nodus-witness process's listener on <data_path>/witness.sock
+│       │                            #   (split S3; includes no server header)
 │       ├── nodus_witness_network_file.c/h # network file + chain-id read + chain-pin start check
 │       │                            #   (moved out of nodus_server.c by split S1)
 │       ├── nodus_witness_db.c/h     # SQLite ops (nullifiers, ledger, UTXOs, TXs, blocks)
@@ -200,7 +205,13 @@ nodus/
 │   ├── test_cmt_byzantine.c   # cometbft port R2-BYZ: TestByzantineConflictingProposalsWithPartition — 4 nodes, byzantine proposer, partition heals, all honest nodes commit the SAME block; + 2 C-only scenarios; + R3 W3 P0: the two part-set-bound OBLIGATION scenarios (atlas-dec-247e5c0e…): forged +2/3 prevotes for a BlockID the bound refuses → every honest node reaches setProposal / addVote / enterPrecommit, signs nil, commits an honest block later (parts_cap clause); forged precommits too → enterCommit parks the node with no block (MAX_PARTS clause)
 │   ├── test_cmt_app.c         # cometbft port R3-C1a: the application over a REAL version-3 chain — InitChain as a genesis check, FinalizeBlock with per-item SAVEPOINT isolation, both crash windows, Commit as the COMMIT, CheckTx (incl. the signature stage, the per-item dry run, the pending conflict set and the light recheck), PrepareProposal / ProcessProposal (incl. the envelope-byte trim, the seam's refusal-kind handling with a seam-run count, the refused-chain_config / refill / claims-past-the-window fixes, the mempool lifetime rule, row-identity conflict keys, the unit-aware pack and fee-per-unit ordering); 45 cases
 │   ├── test_cmt_node.c        # cometbft port R3-C1c: the startup table — genesis document loader (row / provider / refusals), the Handshaker's height cases and BOTH crash windows healed (real app / mock app), LoadOrGenFilePV, init/start/release; 14 cases
-│   └── test_cmt_net.c         # cometbft port R3 W3 C2b: the transport glue (nodus_witness_cmt_net) — peer-set scan over a hand-built witness peer table driving a REAL cmt_conr/cmt_memr pair, send refused for a down/quarantined slot, verb 35/39 receive routing, receive-before-tick, the 64 MiB receive-arena runway + latches, deferred close bookkeeping, scan waits for both reactors; 8 cases
+│   ├── test_cmt_net.c         # cometbft port R3 W3 C2b: the transport glue (nodus_witness_cmt_net) — peer-set scan over a hand-built witness peer table driving a REAL cmt_conr/cmt_memr pair, send refused for a down/quarantined slot, verb 35/39 receive routing, receive-before-tick, the 64 MiB receive-arena runway + latches, deferred close bookkeeping, scan waits for both reactors; 8 cases
+│   ├── test_witness_ipc.c     # split S3: the IPC chain backend against the witness IPC listener over a real socket (test handlers stand in for the witness)
+│   └── split_linked.cmake     # split S3: `nm` link gate — nodus-witness links no core entry point (ctest `test_split_linked`)
+├── tools/                     # (excerpt — the two node mains and their shared config only)
+│   ├── nodus-server.c         # nodus-server main (combined, or core with "witness_external")
+│   ├── nodus-witness.c        # nodus-witness main (split S3)
+│   └── nodus_node_config.c/h  # the shared command line + JSON config + --derive-v2-genesis (split S3)
 ├── CMakeLists.txt             # Build system
 └── docs/
     └── ARCHITECTURE.md        # This file
@@ -1097,7 +1108,7 @@ while (srv->running) {
 ```
 
 > The sketch above is simplified and partly historical (the channel server is compiled out; the real loop is `nodus_server_run`). Read budgets as of 2026-09-30 (P2 hardening, branch `p2-dht-fix`):
-> - **TCP:** each `nodus_tcp_poll` waits 50 ms, or 0 ms when either TCP transport or the UDP socket still has queued input (`nodus_tcp_read_pending`, `nodus_udp_read_pending`).
+> - **TCP:** each `nodus_tcp_poll` waits 50 ms, or 0 ms when either TCP transport or the UDP socket still has queued input (`nodus_tcp_read_pending`, `nodus_udp_read_pending`) — or, since split S3, when the chain backend's own transport does (`srv->chain->ops->read_pending`, `nodus_server.c:7671-7675` and `:7687-7691`; the in-process backend always answers false, so the combined binary's timings are unchanged; the IPC backend answers for its Unix-socket transport — "Component split", S3).
 > - **UDP 4000:** the socket is not in any epoll the loop waits on; `nodus_udp_poll` runs once per iteration and reads at most `NODUS_UDP_POLL_BUDGET` (64) datagrams. When it stops at the budget it sets `budget_hit`, so the next iteration does not block its TCP polls — the cap bounds one call's work without a throughput ceiling.
 > - **Unauthenticated client connections** (4001 / WebSocket) are closed by `idle_timeout_sweep` either after 15 s idle or 30 s after `connected_at` (`IDLE_ABSOLUTE_UNAUTH`), whichever comes first; the sweep runs every 30 s.
 > - **Media `m_put`** refuses a chunk index ≥ the request's chunk count, a non-first chunk with no stored metadata or with an index ≥ the STORED chunk count, and `ttl == 0` (media rate limit intentionally not added — operator 2026-09-30). The `m_sv` replication receive path does not apply these checks yet.
@@ -1229,6 +1240,12 @@ Server configuration via JSON file (default: `/etc/nodus.conf`):
 - **TCP 4003** — Channel system: client posts + inter-node replication (dedicated)
 - **TCP `ws_port`, 127.0.0.1 only** — WebSocket entry of the client port (off by
   default; see below)
+
+**`"witness_external": true`** (or `--witness-external`; boolean, a non-boolean value
+refuses the start, `tools/nodus_node_config.c:678-686`; default false) makes
+`nodus-server` start no witness: TCP 4004 and the chain database then belong to the
+separate `nodus-witness` process, reached over `<data_path>/witness.sock`. Split S3,
+see "Component split" below; not for production yet.
 
 ### WebSocket entry (browser clients)
 
@@ -1399,7 +1416,7 @@ Data is stored in:
 - `<data_path>/channels.db` — Channel post storage (SQLite)
 - `<identity_path>/nodus.pk`, `nodus.sk`, `nodus.fp` — Node identity
 
-### Component split — S1 witness host seam + S2 local IPC primitives (2026-10-02)
+### Component split — S1 witness host seam, S2 local IPC primitives, S3 `nodus-witness` process (2026-10-02)
 
 Governing record: decision `docs/plans/decisions/2026-10-01-nodus-component-split.md`
 (local; APPROVED). Goal: `nodus-core` / `nodus-storage` / `nodus-witness` as separate
@@ -1407,6 +1424,9 @@ processes talking over Unix domain sockets (items 2, 7), with the combined
 `nodus-server` binary kept through the transition (item 8). Order: witness first
 (item 22). S1 and S2 are the first two steps; **neither changes what the running
 combined binary does** — no wire, consensus byte, `app_hash` or file location moved.
+S3 adds the separate `nodus-witness` process as an **opt-in** mode
+(`witness_external`); with the default (`false`) the combined binary still runs the
+witness in-process exactly as before.
 
 #### S1 — the witness host seam (commit `da2d2dfa`)
 
@@ -1437,51 +1457,67 @@ const nodus_witness_config_t *config)` (`nodus_witness.h:667-669`) replaces the
 `host->identity` (`nodus_witness.c:2493`).
 
 The combined binary fills the host view with `nodus_server_witness_host(srv, &host)`
-(`nodus_server.c:7071-7092`): `identity = &srv->identity`; the config subset copied
-from `srv->config` (array sizes pinned equal by `_Static_assert`s at `:7058-7069`);
+(`nodus_server.c:7073-7079`): `identity = &srv->identity`; the config subset copied
+from `srv->config` by `nodus_server_witness_host_config` (since S3 a `static inline`
+in `nodus_server.h:748-765`, shared with `nodus-witness`; array sizes pinned equal by
+the `_Static_assert`s at `nodus_server.h:722-733`);
 `find_session_conn = server_find_session_conn` with `ctx = srv` — the loop over
 `srv->sessions[]` matching `authenticated && conn != NULL && token && client_pk`
-(`:7041-7056`), moved unchanged from the former `cc_collect_session_conn` body in
-`nodus_witness_chain_config.c`. The host struct is a copy taken at init; the header
-comment (`nodus_server.h:693-701`) states that a caller editing `srv->config`
-afterwards must fill again.
+(`nodus_server.c:7053-7068`), moved unchanged from the former
+`cc_collect_session_conn` body in `nodus_witness_chain_config.c`. The host struct is a
+copy taken at init; the header comment above `nodus_server_witness_host`
+(`nodus_server.h:711-720`) states that a caller editing `srv->config` afterwards must
+fill again.
 
 **`nodus.addr_seq` does not move in the combined binary.** The p2p address-record
 sequence file (`NODUS_P2P_ADDR_SEQ_FILE` = `"nodus.addr_seq"`,
-`nodus_witness_p2p.c:1775`) is written under `seq_dir`; the server fills
-`seq_dir = identity_path` (`nodus_server.c:7081-7084`) and the witness falls back to
-`data_path` only when `seq_dir` is empty (`nodus_witness.c:2696-2698`) — the same
-directory as before S1. The decision moves this file to the witness's data directory
-(item 10) and assigns the move to the installer (item 21); that step is not part of
-S1/S2.
+`nodus_witness_p2p.c:1775`) is written under `seq_dir`;
+`nodus_server_witness_host_config` fills `seq_dir = identity_path`
+(`nodus_server.h:759`) and the witness falls back to `data_path` only when `seq_dir`
+is empty (`nodus_witness.c:2696-2698`) — the same directory as before S1. The decision
+moves this file to the witness's data directory (item 10) and assigns the move of an
+existing file to the installer (item 21). Since S3 the separate `nodus-witness`
+process keeps it in its data directory (it empties `seq_dir`, see S3 below); the
+combined binary does not change.
 
 **Server → witness: `nodus_chain_backend_t`** (`nodus/src/server/nodus_chain_backend.h`).
 `nodus_server_t.witness` is gone; the server holds `nodus_chain_backend_t *chain`
-(`nodus_server.h:584`, NULL when the witness failed to initialise) and calls only
-through its ops table (`nodus_chain_backend.h:41-72`), one op per former direct call site:
+(`nodus_server.h:598`, NULL when the witness failed to initialise) and calls only
+through its ops table (`nodus_chain_backend.h:52-106`). S1 made one op per former
+direct call site; S3 added `read_pending` and `session_closed` and gave
+`dispatch_dnac` the session's key and token:
 
-| Op | Former direct call | Server call site |
-|---|---|---|
-| `tick(b)` | `nodus_witness_tick` | main loop, `nodus_server.c:7701-7702` |
-| `status(b, info)` | chain fields of the `status` reply | `handle_t2_status`, `:4932-4933` |
-| `chain_open(b)` | `srv->witness->db != NULL` | genesis-marker write, `:7574` |
-| `listen_port(b, &opened)` | the 4004 bound port | startup log, `:7643-7644` |
-| `dispatch_dnac(b, conn, payload, len, method, txn_id)` | `nodus_witness_dispatch_dnac` | post-auth `dnac_*`, `:6405-6409` |
-| `cc_collect(b, conn, client_pk, token, payload, len, txn_id)` | `nodus_witness_handle_cc_collect` | `dnac_cc_collect`, `:6396-6401` |
-| `close(b)` | `nodus_witness_close` + free | shutdown, `:7806-7808` |
+| Op | Former direct call | Server call site | In-process (`_inproc.c`) | IPC (`_ipc.c`, S3) |
+|---|---|---|---|---|
+| `tick(b)` | `nodus_witness_tick` | main loop, `nodus_server.c:7715-7716` | `nodus_witness_tick` | control-connection dial / status query, then `nodus_tcp_poll(&ib->tcp, 0)` (`nodus_chain_backend_ipc.c:378-382`) |
+| `read_pending(b)` (S3) | — | both poll-wait computations, `:7671-7675`, `:7687-7691` | always `false` (`nodus_chain_backend_inproc.c:40-43`) | `nodus_tcp_read_pending` of its own transport (`:384-386`) |
+| `status(b, info)` | chain fields of the `status` reply | `handle_t2_status`, `:4933-4934` | `nodus_witness_status_fill` (`:48-51`) | the last `ipc_status` answer, if fresh (`:388-395`) |
+| `chain_open(b)` | `srv->witness->db != NULL` | genesis-marker write, `:7595`; S3 external-mode arming, `:7723-7724` | `w->db != NULL` | snapshot `co` (`:397-400`) |
+| `listen_port(b, &opened)` | the 4004 bound port | startup log, `:7649-7650` (not called in external mode, `:7643-7646`) | the witness's p2p port | snapshot `lp` / `po` (`:402-406`) |
+| `dispatch_dnac(b, conn, client_pk, token, payload, len, method, txn_id)` | `nodus_witness_dispatch_dnac` | post-auth `dnac_*`, `:6408-6411` (`sess->client_pk.bytes`, `sess->token`) | ignores `client_pk` / `token` (`:64-74`) | forwards on the session socket (`:408-416`) |
+| `cc_collect(b, conn, client_pk, token, payload, len, txn_id)` | `nodus_witness_handle_cc_collect` | `dnac_cc_collect`, `:6397-6400` | `nodus_witness_handle_cc_collect` | forwards on the session socket (`:418-425`) |
+| `session_closed(b, conn)` (S3) | — | `session_chain_closed` (`:6719-6722`), called from `on_tcp_accept` before a reused slot's `session_clear` (`:6728`) and from `on_tcp_disconnect` (`:6768`) | nothing (`:89-93`) — the witness looks sessions up in the server's own table | closes that session's socket (`:427-432`) |
+| `close(b)` | `nodus_witness_close` + free | shutdown, `:7831-7834` | `nodus_witness_close` + free | `nodus_tcp_close` + free (`:434-440`) |
 
-The only implementation is in-process, `nodus/src/server/nodus_chain_backend_inproc.c`:
-`nodus_chain_backend_inproc_open(host, config, &out)` (`:120-147`) allocates the
-backend and the witness, **copies `*host` into the backend** (the witness points at
-that copy, so it lives exactly as long as the witness), and calls
-`nodus_witness_init`; it returns 0, -1 (the witness refused — nothing left allocated;
-a failed init is freed without `nodus_witness_close`, the witness stops its own p2p
-host on that path, `nodus_witness.c:2735-2739`) or -2 (out of memory).
-`nodus_chain_backend_inproc_check_pin(data_path, pin)` (`:115-118`) is the pin-at-start
-check, wrapping `nodus_witness_check_chain_pin`. `nodus_server_init` calls the pin
-check after the partial-wipe gate (`nodus_server.c:7147-7153`) and opens the backend
-after cluster setup (`:7450-7457`): -2 → init fails (`goto fail`), -1 → the node runs
-degraded with the loud ERROR block, exactly as a failed witness init did before.
+**Two implementations.** The in-process one, `nodus/src/server/nodus_chain_backend_inproc.c`
+(the combined binary, the default): `nodus_chain_backend_inproc_open(host, config, &out)`
+(`:120`) allocates the backend and the witness, **copies `*host` into the backend**
+(the witness points at that copy, so it lives exactly as long as the witness), and
+calls `nodus_witness_init`; it returns 0, -1 (the witness refused — nothing left
+allocated; a failed init is freed without `nodus_witness_close`, the witness stops its
+own p2p host on that path) or -2 (out of memory). Its `status` fill moved to the
+witness side in S3 (`nodus_witness_status_fill`, `nodus_witness_ipc.c:42-66`) so the
+`ipc_status` answer uses the same code. The IPC one,
+`nodus/src/server/nodus_chain_backend_ipc.c`, is S3's (below).
+`nodus_chain_backend_inproc_check_pin(data_path, pin)` (`nodus_chain_backend_inproc.c:115`)
+is the pin-at-start check, wrapping `nodus_witness_check_chain_pin`.
+`nodus_server_init` calls the pin check after the partial-wipe gate
+(`nodus_server.c:7146-7153`) **in both modes** — in external mode it inspects the
+chain database `nodus-witness` keeps in the same `data_path` — and opens the backend
+after cluster setup: IPC (`:7461`) when `witness_external`, otherwise in-process
+(`:7474-7477`). In-process: -2 → init fails (`goto fail`), -1 → the node runs degraded
+with the loud ERROR block, exactly as a failed witness init did before. IPC: -1 (socket
+path too long) → `goto fail` (`:7462-7467`), -2 → `goto fail`.
 
 **Witness-side file code moved out of `nodus_server.c`** to
 `nodus/src/witness/nodus_witness_network_file.{c,h}` (no server dependency):
@@ -1498,20 +1534,24 @@ degraded with the loud ERROR block, exactly as a failed witness init did before.
 `nodus_network_file_target_t` (`:76-82`) — pointers to `p2p`, `has_v2_genesis_pin`,
 `v2_genesis_pin`, `has_network_pin`, `network_pin` — and refuses (-1) a target with
 any NULL pointer (`nodus_witness_network_file.c:260-264`). The server builds that view
-with `nodus_server_network_file_target(&config)` (`nodus_server.h:705-707`,
-`nodus_server.c:7095-7105`); `tools/nodus-server.c` main does so before load + apply.
+with `nodus_server_network_file_target(&config)` — since S3 a `static inline` in
+`nodus_server.h:772-782` (no longer defined in `nodus_server.c`), so the shared config
+loader does not pull `nodus_server.c` into `nodus-witness`; `nodus_node_config_load`
+(`tools/nodus_node_config.c:891-898`) does so before load + apply.
 The parse/validate rules, the pin rules and the write-pin procedure are unchanged
-(moved verbatim with their comments). The `--derive-v2-genesis` ceremony
-(`tools/nodus-server.c`) calls the renamed `nodus_witness_read_chain_id` and
-`nodus_witness_check_chain_pin`.
+(moved verbatim with their comments). The `--derive-v2-genesis` ceremony (since S3
+in `tools/nodus_node_config.c`, `run_derive_v2_genesis`; before S3 in
+`tools/nodus-server.c`) calls the renamed `nodus_witness_read_chain_id` (`:221`) and
+`nodus_witness_check_chain_pin` (`:356`).
 
-**`nodus_server_check_partial_wipe` stays in the server** (`nodus_server.h:682`,
-`nodus_server.c:6939`): it inspects all three DBs (`nodus.db`, `channels.db`,
+**`nodus_server_check_partial_wipe` stays in the server** (`nodus_server.h:700`,
+`nodus_server.c:6951`): it inspects all three DBs (`nodus.db`, `channels.db`,
 `witness_*.db`) and the decision gives the partial-wipe gate to core (item 9).
 
 CMake: `src/server/nodus_chain_backend_inproc.c` and
 `src/witness/nodus_witness_network_file.c` are added to the `nodus` library
-(`nodus/CMakeLists.txt:542-548`). Tests that construct a witness now pass a
+(`nodus/CMakeLists.txt:542-554`, which since S3 also lists
+`src/server/nodus_chain_backend_ipc.c` and `src/witness/nodus_witness_ipc.c`). Tests that construct a witness now pass a
 `nodus_witness_host_t` to `nodus_witness_init` (some fill it from a test server with
 `nodus_server_witness_host`, e.g. `test_cmt_live`): `test_addr_index`, `test_cc_appr`,
 `test_cc_collect`, `test_cmt_app`, `test_cmt_live`, `test_cmt_node`,
@@ -1592,15 +1632,17 @@ file.** Files are opened `"rb"` and read **unbuffered** (`setvbuf(f, NULL, _IONB
 zeroing. On error `id_out` is cleared with `nodus_identity_clear`. On success
 `has_kyber` and `has_mlkem` are both true.
 
-**Nothing in the running server uses S2 yet.** `git grep` finds no caller of
-`nodus_tcp_unix_listen`, `nodus_tcp_unix_connect`, `nodus_tcp_unix_peercred_ok` or
-`nodus_identity_load_readonly` outside `nodus_tcp.[ch]`, `nodus_identity.[ch]` and
-the tests. The hooks S2 put on every transport's path are inert there:
+**Callers since S3:** `nodus_tcp_unix_listen` — the witness IPC listener
+(`nodus_witness_ipc.c:377`); `nodus_tcp_unix_connect` — the IPC chain backend's
+control and session dials (`nodus_chain_backend_ipc.c:198`, `:267`);
+`nodus_identity_load_readonly` — `nodus-witness` (`tools/nodus-witness.c:258`). All
+three run only on their OWN `nodus_tcp_t` (never the client 4001 or inter-node 4002
+transport), and only in the opt-in `witness_external` mode. In the combined binary
+(the default) the hooks S2 put on every transport's path stay inert:
 `nodus_tcp_init` sets `unix_listen_fd = -1`, the poll dispatch's listener branch
 (`nodus_tcp.c:2768`) is never hit, `nodus_tcp_close` does nothing unless
 `unix_path` was set by a successful listen, and the `!is_unix` checks (`:1090`,
-`:2889`) never see an AF_UNIX connection. The combined binary's behaviour is
-unchanged.
+`:2889`) never see an AF_UNIX connection.
 
 Tests: `test_tcp_unix` (new, `nodus/CMakeLists.txt:1237-1245`, unconditional — socket mode 0600, frame
 round-trip both ways, `SO_PEERCRED` refusal of a wrong uid on the real accept path plus
@@ -1609,24 +1651,230 @@ the path, unlink on close; own `mkdtemp` dir, no ports); `test_identity` gained 
 read-only cases (a full load leaves the directory unchanged; a control proving the OLD
 loader does write when ML-KEM is missing).
 
-#### Next — S3: the `nodus-witness` process
+#### S3 — the `nodus-witness` process + the IPC chain backend (commits `2f85a5bf`, `546da3d1`, `1faf4d4f`; harness `6af3e600`, `2c71acf1`)
 
-S3 runs the witness as its own process (decision items 2, 5, 11, 22) behind a chain
-backend that talks to core over the S2 socket. Open points recorded for S3 (not
-decided here):
+The witness (the 4004 p2p host + the Comet consensus lane) can run as its own process
+(decision items 5, 7, 10, 11, 19, 20, 22). **Opt-in, not for production yet** — no
+systemd unit and no installer exist for it (`nodus/deploy/` holds only `nodus.service`
+and `build-nodus.sh`; see `DEPLOY_RUNBOOK.md` §0). The combined `nodus-server` with the
+default config is unchanged.
 
-- **UDS pool sizing vs decision item 19.** Item 19 is one UDS connection per client
-  session plus one control connection per service. A `nodus_tcp_t` pool holds
-  `NODUS_TCP_MAX_CONNS` (1024, `nodus_tcp.h:22`) and core's client sessions are
-  `NODUS_MAX_SESSIONS = NODUS_TCP_MAX_CONNS` (`nodus_server.h:44`); a UDS listener in
-  the client transport would compete with clients for the same slots.
-- **The UDS listener on its own `nodus_tcp_t`**, for that reason (the transport
-  allows one Unix entry per `nodus_tcp_t`).
-- **`key_init` must be refused on `is_unix` connections in host code.** The
-  transport keeps `is_unix` connections plaintext only because nothing sets
-  `channel_crypto.established` on them; the host's handshake handlers
-  (`nodus_server.c:5202-5208` today) must not run `key_init` on such a connection
-  (the rule is in the `is_unix` comment, `nodus_tcp.h:212-223`).
+**The mode switch: `witness_external`.** `nodus_server_config_t.witness_external`
+(`nodus_server.h:151-162`), set by the JSON key `"witness_external": true`
+(boolean; any other type refuses the start, `tools/nodus_node_config.c:678-686`) or
+the flag `--witness-external` (`:764`, re-applied after the file in the second option
+pass, `:834-837`). With it, `nodus_server_init` opens the IPC chain backend instead of
+the in-process witness (`nodus_server.c:7454-7471`): **core opens no port 4004 and no
+chain database**, dials nothing at init, and logs
+`WITNESS: external — served by the nodus-witness process over <data_path>/witness.sock`
+(`:7468-7471`); `nodus_server_run` logs `  Witness port: external (nodus-witness)`
+(`:7643-7646`). The partial-wipe gate (item 9) and the network-file pin check still run
+in core.
+
+**The `nodus-witness` binary** (`nodus/tools/nodus-witness.c`; CMake target
+`nodus/CMakeLists.txt:2625-2638`). Same command line and same config file as
+`nodus-server` — both mains call `nodus_node_config_load` (`tools/nodus_node_config.c:705`,
+item 18), so `--derive-v2-genesis` works here too, compiled with this binary's chain
+constants; the DHT/core-only settings are read and not used (`nodus-witness.c:12-16`).
+Start sequence (`nodus-witness.c:196-358`):
+
+1. `nodus_node_config_load`; a result ≥ 0 is the exit code (`-h` → 0, a refused option
+   or file → 1; `:200-203`).
+2. **Requires `witness_external`** (`:208-216`): without it the same config would make
+   the `nodus-server` beside it run its own in-process witness — a second witness with
+   the same validator key on the same `data_path`. ERROR `the loaded config does not set
+   witness_external (...) Not starting.`, exit 1.
+3. Requires `identity_path` (`:224-229`), exit 1 otherwise — the witness never creates an
+   identity.
+4. **One `nodus-witness` per data directory:** `flock(LOCK_EX | LOCK_NB)` on
+   `<data_path>/nodus-witness.lock` (`NODUS_WITNESS_LOCK_NAME`, `:71`; file created 0600,
+   `take_data_lock`, `:137-165`), held for the process lifetime; held by another →
+   ERROR `... is held by another nodus-witness on this data directory — not starting a
+   second witness with the same validator key`, exit 1. The combined binary does NOT
+   take this lock (`:24-26`).
+5. Network-file pin check against the chain it is about to open (`:240-246`), exit 1 on
+   mismatch.
+6. Socket path `<data_path>/witness.sock` must fit `NODUS_TCP_UNIX_PATH_MAX` (`:248-255`).
+7. **Read-only identity** — `nodus_identity_load_readonly` (`:257-263`; item 10): a
+   missing or incomplete identity → exit 1 (`start nodus-server first to create it`).
+8. Host view (`:290-297`): `nodus_server_witness_host_config` (the same subset the
+   combined binary gives its witness), then **`seq_dir` emptied** so the witness keeps
+   `nodus.addr_seq` in `data_path`, never in the identity directory (items 10, 21);
+   `find_session_conn = nodus_witness_ipc_find_session_conn`, `ctx` = the IPC listener.
+9. `nodus_witness_init`; failure → the `WITNESS MODULE INIT FAILED — nodus-witness EXITS
+   (code 1)` block, which states that DHT / clients are unaffected and `dnac_*` is
+   answered `"witness module not enabled"` until the process is back (`:299-323`;
+   item 11: exit non-zero, the unit restarts it).
+10. Partial-wipe marker, see below (`:325-326`).
+11. `nodus_witness_ipc_listen` (`:328-336`), exit 1 on failure.
+12. Startup lines to stderr: `Nodus witness v<NODUS_VERSION_STRING> running`,
+    `  Identity: <fp>`, `  Witness port: <port>` (` (not opened)` without a p2p host),
+    `  IPC socket: <path>` (`:338-343`).
+13. Loop (`:355-358`): `nodus_witness_tick(w)` then `nodus_witness_ipc_poll(ipc,
+    (w->running && w->p2p) ? 0 : 50)`; SIGINT/SIGTERM end it with
+    `Nodus witness: stopping`, exit 0.
+
+Exit codes: 0 clean stop (or `-h`); 1 every refusal above;
+`--derive-v2-genesis` returns its one-shot's own result (`nodus_node_config.c:882-883`).
+
+**`nodus.addr_seq` in external mode.** `nodus-witness` writes the address-record
+sequence file in its DATA directory. Moving an existing host's file out of the
+identity directory is the **installer's** step (item 21), not this process's: when
+`<identity_path>/nodus.addr_seq` exists and `<data_path>/nodus.addr_seq` does not, it
+logs ONE WARN at start (`warn_addr_seq_not_migrated`, `:172-194`: `... the address-record
+sequence file was not migrated to the data directory (installer step, decision
+2026-10-01-nodus-component-split item 21) ...`) and touches neither directory. Without
+the file the witness numbers its next own address record from the highest own record
+its address book (in the data directory) has seen (`:33-36`).
+
+**The IPC** — one Unix domain socket, `<data_path>/witness.sock`
+(`NODUS_WITNESS_IPC_SOCK_NAME`, `nodus_witness_ipc.h:65`; `"/tmp"` when `data_path` is
+empty, `nodus_witness_ipc_sock_path`, `:126-132`). Listener: `nodus_tcp_unix_listen`
+with `NODUS_TCP_UNIX_UID_SELF` (`nodus_witness_ipc.c:375-378`) — the S2 rules apply:
+file 0600, parent directory not group/other-writable, every peer's `SO_PEERCRED` uid =
+the witness's euid; core dials with `nodus_tcp_unix_connect(..., UID_SELF)`, which checks
+the listener's uid the same way. Frames are ordinary nodus wire frames, **plaintext**, no
+handshake method (`nodus_witness_ipc.h:9-10`). Each side runs the IPC on its OWN
+`nodus_tcp_t` — never the client or inter-node pool (`nodus_chain_backend_ipc.c:80`,
+`nodus_witness_ipc.c:125`). A connection's kind is decided by its FIRST frame
+(`nodus_witness_ipc.h:12-38`):
+
+| Connection | First frame | Then |
+|---|---|---|
+| session — one per core client session that has sent a `dnac_*` (item 19) | `{"q":"ipc_hello","pk":<bstr NODUS_PK_BYTES>,"tk":<bstr NODUS_SESSION_TOKEN_LEN>}` — the client session's key and session token | the client's tier-2 `dnac_*` payloads, unchanged; the witness's replies on the same socket, relayed to the client unchanged |
+| control — one per core | `{"q":"ipc_ctl"}` | `{"q":"ipc_status"}` queries, each answered `{"q":"ipc_status","co":bool chain open,"h":uint height,"sr":bstr 64 state root,"ci":bstr 32 chain id,"po":bool p2p host exists,"lp":uint 4004 port}` |
+
+Witness side (`nodus_witness_ipc.c`): control-plane frames are parsed strictly — a CBOR
+map of 1-3 entries, only `q` / `pk` / `tk`, exact sizes, no repeated key, no trailing
+bytes (`ipc_parse_ctl`, `:146-187`). An `ipc_hello` key is turned into a fingerprint
+and recorded on the connection as `peer_pk` / `peer_id` / `peer_id_set`, the fields
+`nodus_auth.c` sets on a client connection, because the witness's `dnac_*` handlers read
+the requester from `conn` (`:208-226`). **Every session frame** is decoded with
+`nodus_t2_decode` and must carry a token equal to the preface token (`:242-252`); then
+`dnac_cc_collect` goes to the `cc_collect` handler with the preface key and token, any
+other `dnac_*` to `dispatch_dnac`, and **any non-`dnac_*` method closes the connection**
+(`:253-262`). A first frame that is not a valid preface (`:204-206`, `:231`), a control
+frame that is not `ipc_status` (`:274-277`), a session frame that does not decode or
+carries another token — each closes the connection with a WARN `closing IPC connection
+slot=<n>: <why>`. No IPC frame reaches the server's `dispatch_t2` or its `key_init`
+handshake handlers: the core backend's `on_frame` only relays a session frame to its
+client or decodes an `ipc_status` answer (`nodus_chain_backend_ipc.c:329-352`).
+`nodus_witness_ipc_find_session_conn` (`:385-401`) returns the session connection whose
+preface named `pk` and `token` and that is not closing — the witness's
+`find_session_conn` in external mode, so once core closes a session's socket the
+delayed `dnac_cc_collect` reply finds no session and is dropped, as in the combined
+binary.
+
+Core side (`nodus_chain_backend_ipc.c`, `nodus_chain_backend_ipc_open`, `:454-483`;
+opens no socket):
+
+- **Control connection.** Dialled on the first `tick`; while down, re-dialled with
+  backoff `IPC_DIAL_BACKOFF_MIN` 250 ms doubling to `IPC_DIAL_BACKOFF_MAX` 5000 ms
+  (`:65-66`, `:193-221`). On connect it sends `ipc_ctl` + `ipc_status` and logs INFO
+  `control connection to the witness up (<path>)`; then an `ipc_status` query every
+  `IPC_STATUS_EVERY_MS` 1000 ms (`:63`). The answer is decoded strictly (all seven keys,
+  once each, exact types/sizes, `:108-169`); a malformed answer closes the control
+  connection (WARN `malformed ipc_status answer — closing the control connection`).
+  Losing it logs WARN `control connection to the witness lost (<path>) — chain status
+  unavailable until it is back` (`:364-365`).
+- **Status snapshot.** `status`, `chain_open` and `listen_port` report the last answer
+  only while the control connection is up AND the answer is younger than
+  `IPC_STATUS_STALE_MS` 5000 ms (`:64`, `ipc_snap` `:172-177`); otherwise core reports
+  no chain, as a witness-less server does.
+- **Session sockets.** A session's first `dnac_*` dials its socket and sends the
+  `ipc_hello` preface; later requests of that session use the same socket; a socket
+  belonging to another connection or token in that client slot is closed first
+  (`:234-291`). `session_closed` closes it (`:427-432`).
+- **`NODUS_CHAIN_NO_WITNESS_MSG`** (`"witness module not enabled"`,
+  `nodus_chain_backend.h:48`) — the same bytes a server without a chain backend sends
+  (`nodus_server.c:6413-6417`, item 20) — answers a `dnac_*` request at once, with code
+  `NODUS_ERR_PROTOCOL_ERROR` (`ipc_no_witness`, `:293-300`), when: the control
+  connection is down (**no session socket is dialled then** — the control backoff is the
+  only re-dial driver, `:249-254`); the session cap is reached; the session dial or the
+  preface send fails; the session socket already has `NODUS_WITNESS_IPC_QUEUE_MAX` or
+  more queued (the request is not queued and the socket stays open, `:311-318`); or the
+  forward send fails (a real transport fault — the socket is then closed, `:319-324`).
+  A request already forwarded when the witness goes away gets no answer; the client
+  times out (`:30-31`).
+- **Session cap** `NODUS_CHAIN_IPC_MAX_SESSION_CONNS = NODUS_TCP_MAX_CONNS - 64` = 960
+  (`nodus_chain_backend.h:146`; `NODUS_TCP_MAX_CONNS` 1024, `nodus_tcp.h:22`): the 64
+  kept slots hold the control connection and session sockets core has closed but the
+  witness has not yet seen close. Reaching it logs one WARN
+  (`<n> client sessions already hold a witness socket (the cap) ...`, `:256-265`).
+
+**Queue bounds** (`nodus_witness_ipc.h:75-120`; "queued" = `wlen - wpos + pending_bytes`,
+checked BEFORE a frame is queued, so one maximum-size frame still goes onto an idle
+connection):
+
+| Constant | Value | Side | Effect |
+|---|---|---|---|
+| `NODUS_WITNESS_IPC_QUEUE_MAX` | 4 MiB | core, per session socket toward the witness | the request is answered `NODUS_CHAIN_NO_WITNESS_MSG`, not queued; socket stays open |
+| `NODUS_WITNESS_IPC_REPLY_QUEUE_MAX` | 16 MiB | witness, per connection toward core | the next frame read on that connection closes it instead of being dispatched (`nodus_witness_ipc.c:337-343`); core forgets the session socket and the next `dnac_*` dials a new one |
+| `NODUS_WITNESS_IPC_CTL_FRAME_MAX` | 512 B | witness | the `ipc_status` answer buffer (`:284`) |
+
+**Poll fairness.** Core: the IPC backend's transport is polled with a 0 ms wait from
+`tick` once per loop pass, and `read_pending` makes the server's own polls wait 0 ms while
+it has input left (see the §10 "Event Loop" read-budget note). `nodus-witness`:
+see "Not done yet".
+
+**Partial-wipe marker in external mode** (commit `546da3d1`). The gate demands all
+three DBs or none (O16A), so the marker `NODUS_PARTIAL_WIPE_GENESIS_MARKER` may only be
+written once `nodus.db`, `channels.db` AND the chain DB are real. `nodus-witness` does
+not open the first two and may start before core has created them, so it writes the
+marker only when its chain is open AND both core DBs already exist (`core_dbs_present`,
+`nodus-witness.c:96-107`, `:325-326`). Otherwise core arms it: in `nodus_server_run`,
+once, the first time the witness reports an open chain (`witness_external &&
+!genesis_marker_armed && chain_open`, `nodus_server.c:7723-7727`; field
+`nodus_server_t.genesis_marker_armed`, `nodus_server.h:602`). Both writers log the
+combined binary's WARNING lines on failure (not fatal).
+
+**Operational requirements.**
+- `data_path` (the socket's parent directory) must NOT be group- or other-writable and
+  must be owned by the process's euid or root — `nodus_tcp_unix_listen` refuses it
+  otherwise (`unix_parent_dir_ok`, `nodus_tcp.c:1632-1669`; ERROR `unix: socket
+  directory <dir> is group/other-writable (mode <m>), refusing`), and `nodus-witness`
+  then exits 1. A directory made by `mkdir -p` under a 0002 umask is 0775 — the harness
+  `chmod 0700`s a split node's data directory for this reason
+  (`stagef_up_v2.sh:209-217`).
+- **`nodus-server` and `nodus-witness` run as the same uid**: both ends check the
+  other's `SO_PEERCRED` uid against their own euid (`NODUS_TCP_UNIX_UID_SELF`,
+  `nodus_witness_ipc.c:377`, `nodus_chain_backend_ipc.c:198-199`, `:267-268`).
+- Both use the same `data_path` (the socket, the lock, the chain DB, the marker and the
+  pin check all live there; item 9) and the same config (item 18), each with
+  `witness_external` set.
+
+**Link gate.** `test_split_linked` (`nodus/CMakeLists.txt:2639-2645`,
+`tests/split_linked.cmake`) runs `nm --defined-only` on the linked `nodus-witness`: no
+global text symbol `nodus_server_init`, `nodus_cluster_init`, `nodus_storage_open`,
+`nodus_presence_tick` may be present, and `nodus_witness_init`, `nodus_witness_p2p_new`,
+`nodus_witness_v2_gen_derive_v3` must be (so a pass cannot come from an empty table);
+a missing `nm` fails closed. That is why `nodus_server_witness_host_config` and
+`nodus_server_network_file_target` are `static inline` in `nodus_server.h` and why
+`nodus_witness_ipc.h` includes no server header.
+
+**Tests.** `test_witness_ipc` (`nodus/CMakeLists.txt:1253-1262`): the IPC backend against
+the witness listener over a real socket in a `mkdtemp` dir, test handlers standing in for
+the witness (it proves the IPC, not the chain) — preface key/token reach the handler and
+`find_session_conn`; the reply reaches the client unchanged; `cc_collect` routing;
+`session_closed` makes `find_session_conn` NULL; the status snapshot round-trips; a
+non-preface first frame is closed; no witness → the exact item-20 error bytes and no
+chain; control connection not up → the error and NO session dial; the per-session
+bound; `read_pending` (file header `tests/test_witness_ipc.c:1-59`). `test_split_linked`
+above. Harness: `STAGEF_MODE=splitw` / `mixedw` (`tests/integration/stagef/README.md`
+"Harness modes").
+
+**Not done yet** (S3 ships these open, on purpose):
+- **`nodus-witness`'s own poll fairness.** `nodus_witness_tick` waits up to 50 ms in its
+  4004 poll while it runs with a p2p host; that wait is computed inside the tick and is
+  not shortened for leftover IPC input, so IPC input can wait up to 50 ms extra
+  (`nodus-witness.c:345-354`). Closing it needs a wait cap passed into
+  `nodus_witness_tick`.
+- **Restart / kill / wipe / rejoin / block-sync / upgrade of a split node is untested:**
+  every harness scenario that spawns or stops nodes itself exits 99 (SKIP) when its node
+  is split, "not yet adapted (split S6)" (`stagef_env.sh:182-197`).
+- **`nodus.addr_seq` migration** for an existing host is the installer's (item 21); there
+  is no installer yet.
+- No systemd unit for `nodus-witness`, no installer (items 11, 26).
 
 ---
 

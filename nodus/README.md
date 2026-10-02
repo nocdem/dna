@@ -92,11 +92,13 @@ nodus/
 │   ├── consensus/   # Cluster heartbeat + membership management
 │   ├── crypto/      # Nodus-specific crypto helpers
 │   ├── circuit/     # Circuit relay for P2P VPN mesh (optional per-circuit E2E encryption)
-│   └── witness/     # Nodus Chain validator (embedded in nodus-server): Ledger V2 engine + CometBFT host (one lane)
+│   └── witness/     # Nodus Chain validator: Ledger V2 engine + CometBFT host (one lane) — embedded in
+│                    #   nodus-server by default, or the separate nodus-witness process (opt-in, split S3)
 ├── include/
 │   └── nodus/
 │       ├── nodus.h       # Client SDK public API
 │       └── nodus_types.h # Constants, version
+├── tools/               # nodus-server.c, nodus-witness.c, nodus_node_config.c (shared options/config), nodus-cli, …
 └── tests/               # Unit + integration tests
 ```
 
@@ -111,7 +113,8 @@ make -j$(nproc)
 ```
 
 Produces:
-- `nodus-server` — DHT server binary
+- `nodus-server` — the node binary (DHT + the in-process chain witness; with `witness_external` the DHT/client core only)
+- `nodus-witness` — the chain witness (4004 p2p + consensus) as its own process, beside a `nodus-server` started with `witness_external` (component split S3; opt-in, **not for production yet** — no unit file or installer). Same options and config file as `nodus-server`; refuses to start unless the config sets `witness_external`. See `docs/ARCHITECTURE.md` §10 "Component split".
 - `nodus-cli` — CLI tool for testing and chain operations
 - `nodus-circ` — circuit relay test tool
 - `test_*` — Unit test binaries
@@ -139,7 +142,7 @@ read from the chain:
 
 ```bash
 cd nodus/build
-ctest --output-on-failure    # 232 registered tests, 9 of them labelled bench (`ctest -LE bench` runs 223) — counted with `ctest -N` / `ctest -N -L bench` at split S2 (11b8254e), json-c found
+ctest --output-on-failure    # count: see `ctest -N` (and `ctest -N -L bench`). At split S3 (1faf4d4f), json-c found, the orchestrator measured 234 registered, 9 labelled bench, 225 run by `ctest -LE bench`
 ```
 
 **Test coverage (representative areas — `ctest` runs all):**
@@ -151,6 +154,7 @@ ctest --output-on-failure    # 232 registered tests, 9 of them labelled bench (`
 | Protocol | `test_tier1`, `test_tier3`, `test_wire`, `test_cbor` |
 | Auth | `test_inter_auth`, `test_identity` (+ the read-only loader, split S2), `test_sign_domain_separation` |
 | Component split S2 — local IPC | `test_tcp_unix` (Unix domain socket entry: mode 0600, frames both ways, `SO_PEERCRED` refusal, stale / live / regular-file path handling, unlink on close) |
+| Component split S3 — `nodus-witness` + IPC chain backend | `test_witness_ipc` (core's IPC chain backend against the witness IPC listener over a real socket, test handlers in place of the witness: preface key/token reach the handler and `find_session_conn`, reply relayed unchanged, `dnac_cc_collect` routing, `session_closed` → no session, status snapshot round-trip, non-preface first frame closed, no witness / control connection down → the "witness module not enabled" error and no session dial, the per-session queue bound, `read_pending`); `test_split_linked` (an `nm` gate: the linked `nodus-witness` carries no `nodus_server_init` / `nodus_cluster_init` / `nodus_storage_open` / `nodus_presence_tick`, and does carry the witness's own entry points) |
 | Channels | `test_channel_*` (channel system currently disabled in production) |
 | Circuits (VPN mesh) | `test_circuit_wire`, `test_circuit_table`, `test_circuit_live` |
 | Media / DHT features | `test_media_storage`, `test_media_tier2`, `test_put_if_newer`, `test_hinted_handoff` |
@@ -194,7 +198,7 @@ in full first.
 
 ### Configuration
 
-`nodus-server -c <file>` reads a **JSON** config (`nodus/tools/nodus-server.c`, `load_config_json`). The common keys:
+`nodus-server -c <file>` (and `nodus-witness -c <file>`, the same loader) reads a **JSON** config (`nodus/tools/nodus_node_config.c`, `load_config_json`). The common keys:
 
 ```json
 {
@@ -210,7 +214,7 @@ in full first.
 }
 ```
 
-A `seed_nodes` entry `"ip:udp_port"` seeds the DHT. Written as `"id@ip:udp_port"` it also makes that node a persistent peer of the chain p2p layer on `udp_port + 4` — the 4004 layer never dials a peer whose ID is not pinned. Other keys the loader reads: `ws_port`, `ws_origins`, `require_peer_auth`, `addr_history_index`, `network_file`, `ch_port`, and the p2p tuning keys (`moniker`, `send_rate`, `recv_rate`, `dial_timeout`, `handshake_timeout`, …).
+A `seed_nodes` entry `"ip:udp_port"` seeds the DHT. Written as `"id@ip:udp_port"` it also makes that node a persistent peer of the chain p2p layer on `udp_port + 4` — the 4004 layer never dials a peer whose ID is not pinned. Other keys the loader reads: `ws_port`, `ws_origins`, `require_peer_auth`, `addr_history_index`, `witness_external` (boolean, default false — see "Build" above for `nodus-witness`), `network_file`, `ch_port`, and the p2p tuning keys (`moniker`, `send_rate`, `recv_rate`, `dial_timeout`, `handshake_timeout`, …).
 
 **WebSocket entry (browsers — web wallet / Nodus Connect), off by default.**
 `"ws_port": 4005` opens a plain WebSocket listener of the client port on

@@ -53,6 +53,21 @@ in NodeInfo (`CompatibleWith`) — so a 0.19.x node cannot join a 0.20.x mesh �
 nodes on mixed versions is therefore **silently permitted**. The discipline is yours,
 not the binary's.
 
+### Split mode (`nodus-witness` + `witness_external`) — NOT for production yet
+
+Since component split S3 the build also produces `nodus-witness`, and `nodus-server`
+accepts `"witness_external": true` / `--witness-external` to leave the witness (4004 +
+consensus + chain DB) to that separate process over `<data_path>/witness.sock`
+(`docs/ARCHITECTURE.md` §10 "Component split"). **Do not deploy it.** There is no
+systemd unit for `nodus-witness` and no installer — `nodus/deploy/` holds only
+`nodus.service` (one `nodus-server` unit) and `build-nodus.sh`, and nothing in it or in
+`tools/nodus-update.sh` references `nodus-witness` — so none of this runbook's
+procedures cover a split node; the decision assigns each service its own unit (item 11)
+and the migration of an existing host's `nodus.addr_seq` to the installer (item 21),
+and neither exists yet. The harness also skips every restart / kill / wipe / rejoin
+scenario on a split node (stagef README, "Harness modes"). Keep production nodes on
+the combined `nodus-server` with `witness_external` unset (the default).
+
 ---
 
 ## 1. Archive on-disk witness chain state
