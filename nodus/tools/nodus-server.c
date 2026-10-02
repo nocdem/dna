@@ -205,10 +205,11 @@ static int find_single_chain_db(const char *dir, char *out, size_t out_len) {
  * @return 0 / -1. */
 static int read_genesis_chain_id(const char *db_path,
                                  uint8_t out[NODUS_V2_GEN_CHAIN_ID_LEN]) {
-    /* P2P-PORT F6: the reader itself moved to nodus_server.c
-     * (nodus_server_read_chain_id) so the network file's pin-at-start
-     * check reads the chain id through the SAME code as this ceremony. */
-    int rc = nodus_server_read_chain_id(db_path, out);
+    /* P2P-PORT F6: the reader itself lives in
+     * nodus_witness_network_file.c (nodus_witness_read_chain_id) so the
+     * network file's pin-at-start check reads the chain id through the
+     * SAME code as this ceremony. */
+    int rc = nodus_witness_read_chain_id(db_path, out);
     if (rc != 0)
         fprintf(stderr,
                 "the derived chain database %s could not be opened or has "
@@ -343,7 +344,7 @@ static int run_derive_v2_genesis(const char *cfg_path, const char *data_path,
          * idempotent there). Without a chain the id exists only after
          * the derivation, and the comparison happens at the write. */
         if (nf.has_pin &&
-            nodus_server_check_chain_pin(data_path, nf.pin) != 0) {
+            nodus_witness_check_chain_pin(data_path, nf.pin) != 0) {
             fprintf(stderr, "network file %s pins a different chain than "
                     "the one in %s — nothing derived.\n", network_file,
                     data_path);
@@ -858,8 +859,10 @@ int main(int argc, char **argv) {
     if (network_file) {
 #ifdef NODUS_HAS_JSONC
         nodus_network_file_t nf;
+        nodus_network_file_target_t nft =
+            nodus_server_network_file_target(&config);
         if (nodus_network_file_load(network_file, &nf) != 0 ||
-            nodus_network_file_apply(&nf, &config) != 0) {
+            nodus_network_file_apply(&nf, &nft) != 0) {
             fprintf(stderr, "network file %s was REFUSED (the lines above "
                     "say why) — not starting\n", network_file);
             return 1;

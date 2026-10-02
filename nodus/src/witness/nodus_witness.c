@@ -57,7 +57,7 @@
 #include "crypto/utils/qgp_log.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "protocol/nodus_tier2.h"  /* MED-27: pending_forward timeout error */
-#include "server/nodus_server.h"
+#include "witness/nodus_witness_host.h"
 #include "crypto/nodus_identity.h"
 
 #include <stdio.h>
@@ -1582,7 +1582,7 @@ static int nodus_witness_recovery_sentinel_check(const char *data_path,
 
 static void witness_setup_identity(nodus_witness_t *witness) {
     /* Derive witness_id from first 32 bytes of server's node_id (SHA3-512 of pk) */
-    memcpy(witness->my_id, witness->server->identity.node_id.bytes,
+    memcpy(witness->my_id, witness->host->identity->node_id.bytes,
            NODUS_T3_WITNESS_ID_LEN);
 }
 
@@ -1671,10 +1671,10 @@ static int witness_cmt_raw_sign(void *ctx, const uint8_t *sign_bytes,
     nodus_witness_t *w = (nodus_witness_t *)ctx;
     size_t siglen = 0;
 
-    if (!w || !w->server || !sign_bytes || !sig_out || !sig_len)
+    if (!w || !w->host || !sign_bytes || !sig_out || !sig_len)
         return CMT_FAULT;
     if (qgp_dsa87_sign(sig_out, &siglen, sign_bytes, len,
-                       w->server->identity.sk.bytes) != 0) {
+                       w->host->identity->sk.bytes) != 0) {
         return CMT_FAULT;
     }
     *sig_len = siglen;
@@ -2010,7 +2010,7 @@ static witness_bsync_t *witness_bsync_new(nodus_witness_t *witness,
  * reached through `nodus_witness_create_chain_db` (path 1, at process
  * start) or `nodus_witness_scan_chain_db` (path 2, called directly by
  * `join_adopt` at nodus_witness_v2_join.c:187, which itself calls
- * `witness_post_open_gate` at nodus_witness.c:1150); `w->server` and
+ * `witness_post_open_gate` at nodus_witness.c:1150); `w->host` and
  * `w->data_path` are set once, at process start
  * (`nodus_witness_init`/the server's own construction), and `join_adopt`
  * never touches the LIVE witness's copies of either (it only sets them
@@ -2488,12 +2488,12 @@ static int64_t witness_cmt_tick(nodus_witness_t *witness) {
 /* ── Public API ──────────────────────────────────────────────────── */
 
 int nodus_witness_init(nodus_witness_t *witness,
-                       struct nodus_server *server,
+                       const struct nodus_witness_host *host,
                        const nodus_witness_config_t *config) {
-    if (!witness || !server || !config) return -1;
+    if (!witness || !host || !host->identity || !config) return -1;
 
     memset(witness, 0, sizeof(*witness));
-    witness->server = server;
+    witness->host = host;
     witness->config = *config;
     witness->running = true;
 
@@ -2555,12 +2555,12 @@ int nodus_witness_init(nodus_witness_t *witness,
     witness->cached_committee_epoch_start = UINT64_MAX;
     witness->cached_committee_count = 0;
 
-    /* Setup identity from server keys */
+    /* Setup identity from the host's keys */
     witness_setup_identity(witness);
 
     /* Save data path for chain DB creation on genesis */
     snprintf(witness->data_path, sizeof(witness->data_path), "%s",
-             server->config.data_path);
+             host->config.data_path);
 
     /* Faz 4D follow-up 2026-05-02 — recovery sentinel boot gate (B-2
      * closure). If a previous halt_recovery_check armed the sentinel
@@ -2681,20 +2681,20 @@ int nodus_witness_init(nodus_witness_t *witness,
         }
         if (network) {
             nodus_witness_p2p_params_t prm;
-            uint16_t wport = server->config.witness_port
-                           ? server->config.witness_port
+            uint16_t wport = host->config.witness_port
+                           ? host->config.witness_port
                            : NODUS_DEFAULT_WITNESS_PORT;
 
             memset(&prm, 0, sizeof(prm));
-            prm.identity      = &server->identity;
+            prm.identity      = host->identity;
             prm.chain_id      = network;
-            prm.cfg           = &server->config.p2p;
-            prm.listen_ip     = server->config.bind_ip;
+            prm.cfg           = &host->config.p2p;
+            prm.listen_ip     = host->config.bind_ip;
             prm.listen_port   = wport;
-            prm.external_ip   = server->config.external_ip;
+            prm.external_ip   = host->config.external_ip;
             prm.data_path     = witness->data_path;
-            prm.seq_dir       = server->config.identity_path[0]
-                              ? server->config.identity_path
+            prm.seq_dir       = host->config.seq_dir[0]
+                              ? host->config.seq_dir
                               : witness->data_path;
             prm.open_listener = true;
             witness->p2p = nodus_witness_p2p_new(witness, &prm);
@@ -2733,8 +2733,8 @@ int nodus_witness_init(nodus_witness_t *witness,
                     "%s: the cometbft server binding could not be built — "
                     "refusing init\n", LOG_TAG);
             /* The caller frees `witness` without nodus_witness_close on a
-             * failed init (nodus_server.c): stop the p2p host's threads
-             * and sockets here. */
+             * failed init (nodus_chain_backend_inproc.c): stop the p2p
+             * host's threads and sockets here. */
             nodus_witness_p2p_free(witness->p2p);
             witness->p2p = NULL;
             return -1;

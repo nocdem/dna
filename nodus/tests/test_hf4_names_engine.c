@@ -658,12 +658,14 @@ static int t_engine(void) {
     nodus_server_t *srv = calloc(1, sizeof(*srv));
     CHECK(srv != NULL, "alloc");
     srv->config.addr_history_index = true;
-    A.w->server = srv;
+    nodus_witness_host_t host;
+    nodus_server_witness_host(srv, &host);
+    A.w->host = &host;
     CHECK(nodus_witness_addr_index_migrate(A.w) == 0, "index tables");
     {
         nodus_v2_envelope_t env[1] = { { e1, l1 } };
         int rc = apply_both(&A, &B, H, env, 1, codes);
-        A.w->server = NULL;
+        A.w->host = NULL;
         CHECK(rc == 0, "block 4 on both; roots agree (index out of roots)");
         CHECK(codes[0] == NODUS_V2_TX_OK, "the registration applies");
     }

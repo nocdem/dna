@@ -35,7 +35,7 @@
 #include "protocol/nodus_tier3.h"     /* cc_appr_{req,rsp} (channel 0x71) */
 #include "protocol/nodus_cbor.h"      /* the dnac_cc_collect reply          */
 #include "witness/nodus_witness_p2p.h" /* the 0x71 reply path (P2P-PORT F5) */
-#include "server/nodus_server.h"      /* w->server->identity, ->sessions */
+#include "witness/nodus_witness_host.h" /* identity, find_session_conn */
 #include "transport/nodus_tcp.h"      /* nodus_tcp_send (the 4001 reply)  */
 #include "nodus/nodus.h"              /* NODUS_CC_COLLECT_ST_* (the wire's
                                        * status values, shared with the
@@ -1407,7 +1407,7 @@ static int cc_appr_verdict(nodus_witness_t *w,
      * uses to find ITS signers' seats (nodus-cli.c:1898-1900). */
     int seat = -1;
     for (int i = 0; i < cm_count; i++) {
-        if (memcmp(committee[i].pubkey, w->server->identity.pk.bytes,
+        if (memcmp(committee[i].pubkey, w->host->identity->pk.bytes,
                    NODUS_CC_PUBKEY_SIZE) == 0) {
             seat = i;
             break;
@@ -1437,8 +1437,8 @@ static int cc_appr_verdict(nodus_witness_t *w,
     }
 
     uint8_t scratch_witness_id[NODUS_CC_WITNESS_ID_SIZE];
-    if (nodus_chain_config_sign_vote(w->server->identity.pk.bytes,
-                                     w->server->identity.sk.bytes,
+    if (nodus_chain_config_sign_vote(w->host->identity->pk.bytes,
+                                     w->host->identity->sk.bytes,
                                      adigest, scratch_witness_id,
                                      rsp->sig) != 0) {
         memset(rsp->sig, 0, sizeof(rsp->sig));
@@ -1572,20 +1572,14 @@ struct nodus_cc_collect {
 };
 
 /* The requesting session, if it is still authenticated as the same
- * identity in the same session (its token). @return its connection, or
+ * identity in the same session (its token) — asked of the host
+ * (nodus_witness_host.h find_session_conn). @return its connection, or
  * NULL (gone / re-authenticated / never existed). */
 static struct nodus_tcp_conn *cc_collect_session_conn(nodus_witness_t *w,
                                                       const nodus_cc_collect_t *c) {
-    if (!w->server) return NULL;
-    for (int i = 0; i < NODUS_MAX_SESSIONS; i++) {
-        const nodus_session_t *s = &w->server->sessions[i];
-        if (s->authenticated && s->conn != NULL &&
-            memcmp(s->token, c->token, NODUS_SESSION_TOKEN_LEN) == 0 &&
-            memcmp(s->client_pk.bytes, c->requester_pk, NODUS_PK_BYTES) == 0) {
-            return s->conn;
-        }
-    }
-    return NULL;
+    if (!w->host || !w->host->find_session_conn) return NULL;
+    return w->host->find_session_conn(w->host->ctx, c->requester_pk,
+                                      c->token);
 }
 
 /* The reply: {"t": txn, "y": "r", "q": "dnac_cc_collect", "r": {"res":
@@ -1685,14 +1679,14 @@ int nodus_witness_cc_collect_start(nodus_witness_t *w,
                                    const uint8_t *e, size_t e_len,
                                    int64_t now_ms,
                                    char *err, size_t err_size) {
-    if (!w || !w->server || !requester_pk || !token || !e || !err ||
+    if (!w || !w->host || !requester_pk || !token || !e || !err ||
         err_size == 0)
         return -1;
     err[0] = '\0';
 
     /* Decision (2): served ONLY to a session authenticated with THIS
      * node's own identity key — the proposer is this node's seat. */
-    if (memcmp(requester_pk, w->server->identity.pk.bytes, NODUS_PK_BYTES) != 0) {
+    if (memcmp(requester_pk, w->host->identity->pk.bytes, NODUS_PK_BYTES) != 0) {
         snprintf(err, err_size, "dnac_cc_collect is served only to this "
                                 "node's own identity");
         return -1;
@@ -1722,7 +1716,7 @@ int nodus_witness_cc_collect_start(nodus_witness_t *w,
 
     int self_seat = -1;
     for (int i = 0; i < cm_count; i++) {
-        if (memcmp(committee[i].pubkey, w->server->identity.pk.bytes,
+        if (memcmp(committee[i].pubkey, w->host->identity->pk.bytes,
                    NODUS_CC_PUBKEY_SIZE) == 0) {
             self_seat = i;
             break;

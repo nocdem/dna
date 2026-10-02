@@ -37,7 +37,7 @@ extern "C" {
 #endif
 
 /* Forward declarations */
-struct nodus_server;
+struct nodus_witness_host;      /* witness/nodus_witness_host.h */
 struct nodus_tcp_conn;
 struct nodus_witness_p2p;
 
@@ -219,7 +219,7 @@ typedef struct {
      * persisted to the commit_certificates table nor carried on the T3
      * wire format (both fields remain witness_id + signature only).
      * Populated at vote-record-write time:
-     *   - self-votes: from w->server->identity.pk.bytes
+     *   - self-votes: from w->host->identity->pk.bytes
      *   - incoming votes: from gossip roster's pubkey map at handle_vote
      *     time (safe because witness_id = H(pubkey) per
      *     nodus_chain_config.h:157, see F17 design A15).
@@ -252,8 +252,9 @@ typedef struct {
 /* ── Main witness context ────────────────────────────────────────── */
 
 typedef struct nodus_witness {
-    /* Parent server (non-owning) */
-    struct nodus_server     *server;
+    /* The host this witness runs in (non-owning; nodus_witness_host.h):
+     * identity, the node configuration subset, the session lookup. */
+    const struct nodus_witness_host *host;
 
     /* The witness port 4004 (P2P-PORT F5): the p2p host, OWNED here.
      * NULL on a node that holds no chain and no genesis pin (it has no
@@ -267,7 +268,7 @@ typedef struct nodus_witness {
     uint8_t     my_id[NODUS_T3_WITNESS_ID_LEN];
     /* F17 A4 — my_index field removed. Consensus paths resolve
      * self-identity on-demand via committee_find_pubkey against
-     * w->server->identity.pk.bytes. Transport paths that need
+     * w->host->identity->pk.bytes. Transport paths that need
      * "skip self" use memcmp of witness_id against w->my_id. */
 
     /* R3 W4 — the legacy BFT consensus state (current_round,
@@ -654,15 +655,17 @@ typedef struct nodus_witness {
 /**
  * Initialize witness module. Opens the chain database and, when the node
  * holds a chain or a genesis pin, starts the 4004 p2p host.
- * Called from nodus_server_init() — all nodes are automatic witnesses.
+ * Called from nodus_server_init() through the in-process chain backend —
+ * all nodes are automatic witnesses.
  *
  * @param witness  Allocated witness context (caller owns)
- * @param server   Parent server
+ * @param host     The host view (nodus_witness_host.h); non-owning, must
+ *                 outlive the witness
  * @param config   Witness configuration (reserved for future use)
  * @return 0 on success, -1 on failure
  */
 int nodus_witness_init(nodus_witness_t *witness,
-                       struct nodus_server *server,
+                       const struct nodus_witness_host *host,
                        const nodus_witness_config_t *config);
 
 /**
@@ -845,7 +848,7 @@ int nodus_witness_create_chain_db(nodus_witness_t *witness,
  * needs the reactor this function builds. See the function's own doc
  * comment in nodus_witness.c for the full precondition proof (both
  * callers reach it only after `v2_successor`/`v2_chain32` are set by the
- * SAME gate, with `w->server`/`w->data_path` already populated at
+ * SAME gate, with `w->host`/`w->data_path` already populated at
  * process start either way) and why no tick can land between a caller's
  * scan and its call to this function.
  *

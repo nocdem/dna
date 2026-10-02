@@ -267,6 +267,7 @@ static int cfg_make_v3_real(cfgbox_t *b) {
 typedef struct {
     nodus_witness_t *w;
     nodus_server_t  *srv;
+    nodus_witness_host_t host;              /* w->host, filled from srv */
     cfgbox_t         box;
     char             dir[128];
     uint8_t          chain32[32];
@@ -300,7 +301,8 @@ static int gfx_open(gfx_t *g, const char *tag) {
     memcpy(g->srv->identity.pk.bytes, g_ks[0].pk, NODUS_PK_BYTES);
     memcpy(g->srv->identity.sk.bytes, g_ks[0].sk, QGP_DSA87_SECRETKEYBYTES);
     memcpy(g->srv->identity.node_id.bytes, g_ks[0].voter, 32);
-    g->w->server = g->srv;
+    nodus_server_witness_host(g->srv, &g->host);
+    g->w->host = &g->host;
     memcpy(g->w->my_id, g_ks[0].voter, 32);
     return 0;
 }
@@ -319,7 +321,7 @@ static void gfx_close(gfx_t *g) {
 /* Rebind the fixture's OWN witness identity to committee seat `k` of
  * `g_ks` — this IS what makes the responder resolve "my own seat" as
  * `k` (nodus_witness_handle_cc_appr_req finds its seat by comparing
- * w->server->identity.pk against the resolved committee, exactly the
+ * w->host->identity->pk against the resolved committee, exactly the
  * comparison this line sets up for). */
 static void bind_identity(gfx_t *g, int k) {
     memcpy(g->srv->identity.pk.bytes, g_ks[k].pk, NODUS_PK_BYTES);

@@ -26,8 +26,11 @@
 #include "consensus/nodus_cluster.h"
 #include "crypto/nodus_identity.h"
 #include "crypto/nodus_channel_crypto.h"
-#include "witness/nodus_witness.h"
+#include "witness/nodus_witness.h"          /* nodus_witness_config_t */
 #include "witness/nodus_witness_p2p.h"      /* nodus_p2p_config_t (P2P-PORT F5) */
+#include "witness/nodus_witness_host.h"     /* the witness's host view (S1) */
+#include "witness/nodus_witness_network_file.h" /* nodus_network_file_target_t */
+#include "server/nodus_chain_backend.h"     /* srv->chain */
 #include "server/nodus_presence.h"
 #include "circuit/nodus_circuit.h"
 #include "circuit/nodus_inter_circuit.h"
@@ -576,8 +579,9 @@ typedef struct nodus_server {
     /* Consensus */
     nodus_cluster_t         cluster;
 
-    /* Witness module (NULL when disabled) */
-    nodus_witness_t        *witness;
+    /* The witness module, behind the chain backend (NULL when its init
+     * failed — the node runs without consensus) */
+    nodus_chain_backend_t  *chain;
 
     /* Presence tracking (connected clients, cluster-wide) */
     nodus_presence_table_t  presence;
@@ -655,32 +659,12 @@ typedef struct nodus_server {
 int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config);
 
 /**
- * Marker file written by the witness module when the chain DB is first
- * created (nodus_witness_create_chain_db on genesis commit). Its
- * presence under <data_path> means "this node has crossed the genesis
- * boundary at least once" and is the signal that allows the
- * partial-wipe gate below to enforce its strict invariant.
- *
- * Without this marker, the gate cannot distinguish two file-level
- * indistinguishable states:
- *   - fresh node mid-bootstrap (storage opens populated nodus.db +
- *     channels.db before FETCH_GENESIS lands the first witness DB)
- *   - post-genesis node where the operator wiped only witness_*.db
- * Both look like (nodus=Y, channels=Y, witness=N) on disk.
- *
- * The marker is itself wipeable. Threat model: catches operator
- * MISTAKES (rm of one DB by accident), not a determined adversary
- * (who would just wipe everything → fresh state → bootstrap, the
- * intended recovery path).
- */
-#define NODUS_PARTIAL_WIPE_GENESIS_MARKER  ".witness_db_seen"
-
-/**
  * PR 3 / E5 — Partial-wipe XOR check (H-10 mitigation).
  *
  * The 3 SQLite DB files under <data_path> (nodus.db, channels.db,
  * any witness_<hex>.db) MUST be in a consistent state at boot, but
- * the invariant is gated on the genesis marker above:
+ * the invariant is gated on the genesis marker
+ * NODUS_PARTIAL_WIPE_GENESIS_MARKER (witness/nodus_witness_host.h):
  *
  *   - marker absent  -> pre-genesis (fresh node or mid-bootstrap),
  *                       any subset of the 3 DBs is allowed; pass
@@ -697,85 +681,31 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config);
  */
 int nodus_server_check_partial_wipe(const char *data_path);
 
-/* ── P2P-PORT F6 — the published network file ─────────────────────────
+/* ── S1 witness seam ──────────────────────────────────────────────────
  *
- * Decision `docs/plans/decisions/2026-09-26-witness-port-session.md`
- * ("Ağ config dosyası (pin + seed'ler)", "Pin'i tören yazar"); design
- * `docs/plans/2026-09-26-p2p-port-design.md` §4. A JSON object, SEPARATE
- * from the node's own nodus.json, with exactly these keys:
- *
- *   {
- *     "v2_genesis_pin":   "<64 hex>" | "" | absent,
- *     "persistent_peers": ["<id>@<ip>:<port>", ...]  | absent
- *   }
- *
- * Any other key, a pin that is not 0 or 64 hex digits, a peer entry that
- * is not "id@ip:port" with a valid ID and an IP literal (R-P2P-24 /
- * R-P2P-33), a duplicate peer entry, or more than NODUS_P2P_MAX_PEER_LIST
- * peers makes the WHOLE file refused: a typo'd key would otherwise read
- * as "no pin" and silently change what the node does.
- *
- * Pin rules (operator): empty/absent → no join; set + no local chain →
- * join exactly like --v2-genesis-pin; set + local chain → must equal the
- * chain's 32-byte id or the node refuses to start; the offline
- * `--derive-v2-genesis` writes the derived id into an EMPTY pin (a pin
- * already there: equal → nothing written, different → refused, never
- * overwritten). A running node never writes the file.
- *
- * Built only with json-c (NODUS_HAS_JSONC), like nodus-server's own
- * config loader.
+ * Decision docs/plans/decisions/2026-10-01-nodus-component-split.md: the
+ * witness sees this server only through a nodus_witness_host_t
+ * (witness/nodus_witness_host.h), and the server reaches the witness only
+ * through `srv->chain` (server/nodus_chain_backend.h). The network file
+ * and the chain-pin check moved to witness/nodus_witness_network_file.h.
  */
+
+/**
+ * Fill the witness's host view from this server: `identity` points at
+ * `srv->identity`; the config subset is copied from `srv->config` (seq_dir
+ * = identity_path, where the p2p address-record sequence file lives);
+ * `find_session_conn` searches `srv->sessions[]` for an authenticated
+ * session with that client key and session token. nodus_server_init calls
+ * it after loading the identity; a caller that edits `srv->config`
+ * afterwards must fill again.
+ */
+void nodus_server_witness_host(nodus_server_t *srv, nodus_witness_host_t *out);
+
 #ifdef NODUS_HAS_JSONC
-typedef struct {
-    bool    has_pin;
-    uint8_t pin[32];
-    int     n_peers;
-    char    peers[NODUS_P2P_MAX_PEER_LIST][CMT_P2P_NETADDR_STR_MAX];
-} nodus_network_file_t;
-
-/** Parse and validate `path` (rules above). @return 0; -1 refused (the
- *  reason is logged at ERROR). `out` is zeroed first. */
-int nodus_network_file_load(const char *path, nodus_network_file_t *out);
-
-/**
- * Apply a loaded file to a server config: the file's persistent peers are
- * merged into `cfg->p2p` (an entry already present — e.g. from `-s id@` or
- * nodus.json — is not added twice); a file pin arms the joiner
- * (`has_v2_genesis_pin`) and the start check (`has_network_pin`). A file
- * pin that differs from an already-given `--v2-genesis-pin` is refused.
- * @return 0; -1 refused (logged).
- */
-int nodus_network_file_apply(const nodus_network_file_t *nf,
-                             nodus_server_config_t *cfg);
-
-/**
- * The pin-auto write of the genesis ceremony: put `chain32` into the
- * file's EMPTY pin — temp file in the same directory, fsync, rename,
- * directory fsync; every other key kept, in its order.
- * @return 0 written; 1 the file already holds exactly this pin (nothing
- *         written); -1 refused — the file is malformed or holds a
- *         DIFFERENT pin (never overwritten) — or an I/O fault (logged).
- */
-int nodus_network_file_write_pin(const char *path, const uint8_t chain32[32]);
+/** The fields of `cfg` a network file sets (nodus_network_file_apply). */
+nodus_network_file_target_t
+nodus_server_network_file_target(nodus_server_config_t *cfg);
 #endif /* NODUS_HAS_JSONC */
-
-/**
- * The committed chain id (32 bytes) of the version-3 chain database at
- * `db_path`, read on a read-only handle through
- * nodus_witness_v2_gen_stored_chain_id. @return 0 / -1.
- */
-int nodus_server_read_chain_id(const char *db_path, uint8_t out[32]);
-
-/**
- * P2P-PORT F6 — the pin-at-start check. The chain database the witness
- * will open (nodus_witness_scan_chain_db's selection: the
- * lexicographically smallest canonical `witness_<32 lowercase hex>.db`)
- * must be a readable version-3 chain whose id equals `pin`.
- * @return 0 no chain database present, or it matches;
- *         -1 a chain with a different id, or one whose id cannot be read
- *         (logged at ERROR) — the caller refuses to start.
- */
-int nodus_server_check_chain_pin(const char *data_path, const uint8_t pin[32]);
 
 /**
  * Run the server event loop (blocks until stopped).

@@ -539,7 +539,13 @@ if(NOT WIN32)
         src/server/nodus_media_handler.c
         src/server/nodus_auth.c
         src/server/nodus_presence.c
+        # Split S1 (decision 2026-10-01-nodus-component-split.md): the
+        # server's one door to the witness, in-process implementation.
+        src/server/nodus_chain_backend_inproc.c
         src/witness/nodus_witness.c
+        # Split S1 — the published network file + the chain-pin start
+        # check, moved out of nodus_server.c (witness-side, no server).
+        src/witness/nodus_witness_network_file.c
         # R3 W4 — nodus_witness_fault.c (the QGP_FAULT_INJECT drop-predicate
         # installer), nodus_witness_o15h_diag.c, nodus_witness_bft.c,
         # nodus_witness_sync.c, nodus_witness_mempool.c, nodus_witness_cert.c
@@ -784,7 +790,7 @@ if(NOT WIN32)
     find_package(Threads REQUIRED)
     target_link_libraries(nodus PUBLIC Threads::Threads)
 endif()
-# P2P-PORT F6: the published network file (nodus_server.c
+# P2P-PORT F6: the published network file (nodus_witness_network_file.c
 # nodus_network_file_*) is parsed with json-c, as nodus-server's own
 # config is. Compiled in only when json-c is found (standalone: the
 # pkg_check_modules above; in the messenger tree: the parent's).
@@ -1567,7 +1573,7 @@ add_test(NAME test_p2p_pex COMMAND test_p2p_pex)
 # time gate with a real p2p peer admitted at go-live, CheckTx through the
 # live mempool, a restart reopening the same role.
 # P2P-PORT F6 — the published network file + the pin-at-start check
-# (nodus_server.c). Only with json-c, which the subject needs.
+# (nodus_witness_network_file.c). Only with json-c, which the subject needs.
 if(JSONC_FOUND)
     register_witness_test(test_network_file)
 endif()

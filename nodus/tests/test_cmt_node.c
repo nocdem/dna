@@ -409,6 +409,7 @@ static int cfg_make_v3_real(cfgbox_t *b)
 typedef struct {
     nodus_witness_t *w;
     nodus_server_t  *srv;
+    nodus_witness_host_t host;              /* w->host, filled from srv */
     cfgbox_t         box;
     char             dir[128];
     char             dbpath[600];
@@ -470,7 +471,8 @@ static int gfx_open(gfx_t *g, const char *tag)
     memcpy(g->srv->identity.pk.bytes, g_ks[0].pk, NODUS_PK_BYTES);
     memcpy(g->srv->identity.sk.bytes, g_ks[0].sk, QGP_DSA87_SECRETKEYBYTES);
     memcpy(g->srv->identity.node_id.bytes, g_ks[0].voter, 32);
-    g->w->server = g->srv;
+    nodus_server_witness_host(g->srv, &g->host);
+    g->w->host = &g->host;
     memcpy(g->w->my_id, g_ks[0].voter, 32);
     return 0;
 }
@@ -2763,12 +2765,12 @@ static int t_init_invariants(void)
      * and the node would start believing it is not a validator. */
     opts_default(&g, &o);
     {
-        nodus_server_t *saved = g.w->server;
+        const nodus_witness_host_t *saved = g.w->host;
 
-        g.w->server = NULL;
+        g.w->host = NULL;
         CHECK(nodus_cmt_node_init(n, g.w, &o) == CMT_FAULT,
               "a node with no identity is refused (node.go:343-345)");
-        g.w->server = saved;
+        g.w->host = saved;
     }
 
     free(n);
