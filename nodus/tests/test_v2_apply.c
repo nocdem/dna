@@ -54,6 +54,11 @@
  *   7. Supply (fixture 2, official DNA numbers): unchanged direct-SQL
  *      invariant matrix + engine blocks (mint/pool/burn/sneak/fault
  *      matrix) driven through typed effects.
+ *   8. HF-3 (test_hf3_engine): the engine and the seam at H-1 vs H over
+ *      N large envelopes (N derived from env_len; applied bytes > 2 MiB
+ *      AND count > 255 at H), zero code-9 items in a seam-accepted block,
+ *      rule 5 at the dry run / seam / item loop, the recheck-across-a-
+ *      price-change pin, twin-chain root + results identity.
  *
  * @file test_v2_apply.c
  */
@@ -66,6 +71,8 @@
 #include "witness/nodus_witness_v2_apply.h"
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_roots_v2.h"
+#include "witness/nodus_witness_v2_produce.h"  /* HF-3: the seam, as
+                                                * ProcessProposal calls it */
 #include "nodus/nodus_chain_config.h"
 
 #include "dnac/domain_wire.h"
@@ -479,6 +486,434 @@ static int env_cross_fee_to_pool(v2x_env_t *env, uint64_t book_new,
         { 1, 1, ccall, ccl, 4, 2048 }
     };
     return v2x_env_build(env, legs, 2);
+}
+
+/* ══ HF-3 — the engine at the activation boundary ════════════════════
+ * Design docs/plans/2026-10-01-hf3-comet-block-bounds-design.md rev 3
+ * (§0 rules 1-6, D1-D5, test plan); decision docs/plans/decisions/
+ * 2026-10-01-hf3-comet-only-block-bounds.md (answers 6, 10).
+ *
+ * One chain, rows written BEFORE genesis (the HF-2 precedent,
+ * test_v2_native.c hf2_pre_genesis: a post-genesis chain_config write
+ * would move the SYSTEM root outside any block and fault the next one):
+ *   param 5 GAS_PRICE_RAW_PER_UNIT = 1 effective at 2,
+ *   param 8 HF3_ACTIVE = 1 effective at H = 3.
+ * Blocks:
+ *   1  one small envelope (price 0, OFF);
+ *   2  (H-1) N large envelopes — the seam ("ProcessProposal") REJECTs
+ *      them on the 2 MiB byte bound; the engine applies only what the
+ *      2 097 152-unit budget pays for, the rest code 5 (CAPACITY) with
+ *      gas_wanted 0, and NO code 9 (every envelope pays the price);
+ *      its LAST item replays block 1's envelope: the seam ACCEPTs that
+ *      envelope below H (no replay check pre-H) and the item loop
+ *      refuses it code 3 REPLAY with gas 0/0 (rule 6b, H-1 half);
+ *   before 3, at candidate H: a batch carrying block 2's applied v2[0]
+ *      is ENTRY_INVALID at its index (rule 6b, decision answer 12);
+ *   3  (H) N other large envelopes — the seam ACCEPTs them, the engine
+ *      applies ALL N: the measured byte sum of the applied envelopes is
+ *      > 2 097 152 AND their count > 255 (N is DERIVED from the encoded
+ *      env_len, never hardcoded); zero code 9 (the "a Process-ACCEPTed
+ *      block at H finalizes with ZERO code-9 items" pin);
+ *   4  (H) rule 5: a ceiling of INT64_MAX applies with gas_wanted
+ *      INT64_MAX; INT64_MAX + 1 is code 5 with gas_wanted = gas_used = 0
+ *      (both pay the fee, so only rule 5 can refuse the second); the
+ *      CheckTx dry run refuses the same envelope with the rule-5 reason,
+ *      and the seam refuses it ENTRY_INVALID.
+ * Plus the CheckTx symmetry pin: a dry run that passed at price 0 with a
+ * kind-1 verdict, re-run WITH that verdict offered for reuse once the
+ * price row is active, is refused code 9 BEFORE any reuse (the gas
+ * check precedes authorization) — so a recheck never keeps an envelope
+ * the proposal fee check would refuse.
+ * TWIN: an independent second chain with the same rows, fed the same
+ * bytes, lands on byte-identical global roots and results arrays at
+ * every height, including the lifted one.
+ * Large envelopes: one CORE UTXO-create leg whose auth blob is
+ * HF3_AUTH_LEN bytes (the scripted v2x_auth hashes whatever it is given;
+ * w_authbyte = 1 makes the bytes units too).
+ * Parameters: default build (DNAC_EPOCH_LENGTH 720); heights 1-4 are in
+ * epoch 0. HOW IT CAN LIE: the scripted runtime ignores the fee (no
+ * debit), so "pays the price" is the engine's fee RULE, not a transfer;
+ * the native fee path is test_v2_native / test_v2_gas_price. */
+#define HF3_AUTH_LEN   8000u
+#define HF3_CEIL       (HF3_AUTH_LEN + 2400u)  /* > static (auth + 2235) */
+#define HF3_FLOOR_FEE  1000000ull              /* max(DNAC_MIN_FEE_RAW,
+                                                * NODUS_W_BASE_TX_FEE)   */
+static uint8_t g_hf3_auth[HF3_AUTH_LEN];
+
+/** One large CORE envelope: UTXO CREATE of key (0xF3, tag, idx), auth
+ *  blob of auth_len bytes. Heap, exact size; the caller frees *out. */
+static int hf3_env(uint8_t **out, size_t *out_len, uint8_t tag, uint32_t idx,
+                   uint32_t auth_len, uint64_t ceiling, uint64_t fee) {
+    uint8_t key[64] = { 0 };
+    key[60] = 0xF3;
+    key[61] = tag;
+    key[62] = (uint8_t)(idx >> 8);
+    key[63] = (uint8_t)idx;
+    uint8_t val[8];
+    v2x_put64(val, 1);
+    uint8_t res[512];
+    size_t rl = 0;
+    if (v2x_eff1(res, sizeof(res), V2X_OP_UTXO, DNA_EFFECT_CREATE,
+                 DNA_EFFECT_PRE_ABSENT, key, 64, val, 8, &rl) != 0)
+        return -1;
+    uint8_t call[600];
+    uint32_t cl = v2x_script_build(call, sizeof(call), NULL, 0, res, rl);
+    if (!cl) return -1;
+    dna_env_leg_in_t leg;
+    memset(&leg, 0, sizeof(leg));
+    leg.hdr.domain_id            = 1;
+    leg.hdr.runtime_op           = 1;
+    leg.hdr.ruleset_version      = v2x_ruleset_version_for(1);
+    leg.hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
+    leg.hdr.auth_kind            = 1;
+    leg.hdr.call_len             = cl;
+    leg.hdr.auth_len             = auth_len;
+    leg.hdr.res_max_effects      = 4;
+    leg.hdr.res_max_effect_bytes = 2048;
+    leg.call_data                = call;
+    leg.auth_data                = g_hf3_auth;
+    dna_env_in_t env;
+    memset(&env, 0, sizeof(env));
+    env.expiry_height       = 0;
+    env.fee_amount          = fee;
+    env.res_max_total_units = ceiling;
+    env.leg_count           = 1;
+    env.legs                = &leg;
+    size_t need = 0;
+    if (dna_env_encoded_size(&leg, 1, &need) != 0 || need == 0) return -1;
+    uint8_t *b = malloc(need);
+    if (!b) return -1;
+    if (dna_env_encode(&env, b, need, out_len) != 0 || *out_len != need) {
+        free(b);
+        return -1;
+    }
+    *out = b;
+    return 0;
+}
+
+/** Open one HF-3 chain: the param-5 and param-8 rows land BEFORE genesis.
+ *  0 / -1. */
+static int hf3_fx_open(fixture_t *fx) {
+    if (fx_open(fx) != 0) return -1;
+    if (v2x_table_init(fx->w) != 0) return -1;
+    char sql[320];
+    snprintf(sql, sizeof(sql),
+             "INSERT INTO chain_config_history (param_id, new_value, "
+             "effective_block, commit_block, tx_hash, proposal_nonce, "
+             "created_at_unix) VALUES (%u, 1, 2, 0, zeroblob(64), 1, 0), "
+             "(%u, %llu, 3, 0, zeroblob(64), 2, 0)",
+             (unsigned)DNAC_CFG_GAS_PRICE_RAW_PER_UNIT,
+             (unsigned)DNAC_CFG_HF3_ACTIVE,
+             (unsigned long long)DNAC_CFG_HF3_ACTIVE_ON);
+    if (run_sql(fx->w->db, sql) != 0) return -1;
+    fx->w->chain_config_cache_warm = false;
+    return v2x_seed_genesis(fx->w, fx->chain_id16, 0, NULL, 0, NULL);
+}
+
+/** The seam over `n` envelopes at the committed tip + 1 — exactly the
+ *  call ProcessProposal makes (nodus_witness_cmt_app.c app_seam_check).
+ *  rc 0 / -1 / -2; *kind and *fi from the classified result. */
+static int hf3_seam(nodus_witness_t *w, const nodus_v2_envelope_t *v,
+                    size_t n, nodus_v2_batch_fail_kind_t *kind, int *fi) {
+    nodus_witness_batch_item_t *it = calloc(n, sizeof(*it));
+    nodus_v2_batch_check_result_t r;
+    if (!it) return -3;
+    for (size_t i = 0; i < n; i++) {
+        it[i].tx_type = NODUS_W_TX_V2_ENVELOPE;
+        it[i].tx_data = v[i].env_bytes;
+        it[i].tx_len  = (uint32_t)v[i].env_len;
+    }
+    memset(&r, 0, sizeof(r));
+    *fi = -1;
+    int rc = nodus_witness_v2_produce_batch_check_capped(w, it, (int)n,
+                                                         (int)n, fi, &r);
+    *kind = r.kind;
+    free(it);
+    return rc;
+}
+
+/* The results one block left, copied out of the shared v2x_res array. */
+typedef struct {
+    uint32_t code;
+    uint64_t gas_wanted, gas_used;
+} hf3_res_t;
+
+static void hf3_res_copy(const nodus_v2_block_t *b, hf3_res_t *out) {
+    for (size_t i = 0; i < b->n_envs; i++) {
+        out[i].code       = b->cmt.results[i].code;
+        out[i].gas_wanted = b->cmt.results[i].gas_wanted;
+        out[i].gas_used   = b->cmt.results[i].gas_used;
+    }
+}
+
+static int test_hf3_engine(void) {
+    memset(g_hf3_auth, 0xAB, sizeof(g_hf3_auth));
+
+    /* ── the envelopes: N from the measured length ──────────────────── */
+    uint8_t *probe = NULL;
+    size_t   plen = 0;
+    const uint64_t fee_big = HF3_CEIL * 1u + HF3_FLOOR_FEE;  /* price 1 */
+    CHECK(hf3_env(&probe, &plen, 0xEE, 0, HF3_AUTH_LEN, HF3_CEIL, fee_big)
+              == 0, "hf3 probe envelope");
+    free(probe);
+    size_t n = 2097152u / plen + 2u;
+    if (n < 256u) n = 256u;
+    CHECK(n <= NODUS_V2_ENV_BATCH_MAX && n <= V2X_RES_MAX,
+          "PREMISE: N fits the engine bound and the fixture results array");
+    OK();
+
+    /* v2 / r2 carry ONE extra slot: block 2 ends with a replay of block
+     * 1's envelope (rule 6b, H-1 half — see block 2 below) */
+    uint8_t **b2 = calloc(n, sizeof(*b2)), **b3 = calloc(n, sizeof(*b3));
+    nodus_v2_envelope_t *v2 = calloc(n + 1u, sizeof(*v2));
+    nodus_v2_envelope_t *v3 = calloc(n, sizeof(*v3));
+    hf3_res_t *r2 = calloc(n + 1u, sizeof(*r2)), *r3 = calloc(n, sizeof(*r3));
+    CHECK(b2 && b3 && v2 && v3 && r2 && r3, "hf3 alloc");
+    uint64_t sum3 = 0;
+    for (size_t i = 0; i < n; i++) {
+        size_t l2 = 0, l3 = 0;
+        CHECK(hf3_env(&b2[i], &l2, 2, (uint32_t)i, HF3_AUTH_LEN, HF3_CEIL,
+                      fee_big) == 0 &&
+              hf3_env(&b3[i], &l3, 3, (uint32_t)i, HF3_AUTH_LEN, HF3_CEIL,
+                      fee_big) == 0, "hf3 envelope");
+        CHECK(l2 == plen && l3 == plen, "PREMISE: every envelope has the "
+              "measured length");
+        v2[i].env_bytes = b2[i]; v2[i].env_len = l2;
+        v3[i].env_bytes = b3[i]; v3[i].env_len = l3;
+        sum3 += l3;
+    }
+    CHECK(sum3 > 2097152u && n > 255u, "PREMISE: the lifted block is above "
+          "2 MiB of envelope bytes AND above 255 envelopes"); OK();
+
+    /* block 1 (small) and block 4 (rule 5) */
+    static v2x_env_t e1;
+    CHECK(env_core_utxo_create(&e1, 0xF1, 1) == 0, "hf3 block-1 env");
+    nodus_v2_envelope_t v1 = { e1.bytes, e1.len };
+    /* The recheck probe is a DIFFERENT envelope that is never committed:
+     * re-checking e1 after block 1 would stop at the replay guard (the
+     * dry run's stage order is preflight → replay → admission → gas,
+     * nodus_witness_v2_apply.c), never reaching the gas price. */
+    static v2x_env_t e1b;
+    CHECK(env_core_utxo_create(&e1b, 0xF2, 1) == 0, "hf3 recheck probe env");
+    uint8_t *emax = NULL, *eover = NULL;
+    size_t lmax = 0, lover = 0;
+    CHECK(hf3_env(&emax, &lmax, 4, 0, 1, (uint64_t)INT64_MAX, UINT64_MAX)
+              == 0 &&
+          hf3_env(&eover, &lover, 4, 1, 1, (uint64_t)INT64_MAX + 1u,
+                  UINT64_MAX) == 0, "hf3 rule-5 envelopes");
+    nodus_v2_envelope_t v4[2] = { { emax, lmax }, { eover, lover } };
+
+    /* ── chain A ──────────────────────────────────────────────────────── */
+    fixture_t fa;
+    CHECK(hf3_fx_open(&fa) == 0, "hf3 chain A"); OK();
+    uint8_t ga[4][64];
+    nodus_v2_block_t blk;
+    nodus_v2_batch_fail_kind_t kind = NODUS_V2_BATCH_FAIL_NONE;
+    int fi = -1;
+
+    /* CheckTx symmetry, step 1: at tip 0 (candidate 1, price 0) the
+     * small envelope passes and leaves a kind-1 verdict to reuse */
+    nodus_v2_env_dry_run_t *dr = calloc(1, sizeof(*dr));
+    char why[256];
+    CHECK(dr != NULL, "hf3 alloc");
+    CHECK(nodus_witness_v2_env_dry_run(fa.w, e1b.bytes, e1b.len, NULL, dr,
+                                       why, sizeof(why)) == 0 &&
+          dr->code == NODUS_V2_TX_OK && dr->leg_count == 1,
+          "hf3: the recheck probe passes the dry run at price 0"); OK();
+    uint8_t present[1] = { 1 };
+    uint8_t digest[1][64];
+    nodus_rt_auth_verdict_t verdict[1];
+    memcpy(digest[0], dr->leg_digest[0], 64);
+    verdict[0] = dr->verdict[0];
+    nodus_witness_v2_env_dry_run_free(dr);
+
+    mk_block(&blk, 1, &v1, 1);
+    CHECK(v2x_cmt_apply_ok(fa.w, &blk) == 0, "hf3 block 1"); OK();
+    CHECK(nodus_witness_global_root_v2(fa.w, ga[0], NULL, NULL, NULL) == 0,
+          "root 1");
+
+    /* CheckTx symmetry, step 2: candidate 2, price 1 now active — the
+     * same envelope (fee 0) WITH its verdict offered for reuse is
+     * refused code 9, and the verdict was NOT reused (the gas check
+     * runs before authorization) */
+    {
+        nodus_v2_auth_reuse_t reuse;
+        reuse.leg_count = 1;
+        reuse.present   = present;
+        reuse.digest    = (const uint8_t (*)[64])digest;
+        reuse.verdict   = verdict;
+        memset(dr, 0, sizeof(*dr));
+        CHECK(nodus_witness_v2_env_dry_run(fa.w, e1b.bytes, e1b.len, &reuse,
+                                           dr, why, sizeof(why)) == -1 &&
+              dr->code == NODUS_V2_TX_ERR_FEE && dr->verdict_reused[0] == 0,
+              "hf3: a recheck across the price change is refused before "
+              "any verdict reuse"); OK();
+        nodus_witness_v2_env_dry_run_free(dr);
+    }
+
+    /* block 2 = H-1: the seam refuses on bytes; the engine caps on units */
+    CHECK(hf3_seam(fa.w, v2, n, &kind, &fi) == -1 &&
+          kind == NODUS_V2_BATCH_FAIL_CAPACITY_BYTES,
+          "hf3 H-1: Process would REJECT (the 2 MiB envelope-byte bound)");
+    OK();
+    /* RULE 6b, the H-1 half (pre-H identity): e1 was committed in block
+     * 1 (expiry 0 = never expires). Below H the seam runs no replay
+     * check, so Process ACCEPTs a block carrying it ... */
+    CHECK(hf3_seam(fa.w, &v1, 1, &kind, &fi) == 0,
+          "hf3 H-1: Process ACCEPTs a block carrying an already-committed "
+          "envelope (no seam replay check below H)"); OK();
+    /* ... and the item loop refuses it code 3 REPLAY, paying nothing —
+     * appended as block 2's LAST item, after the unit-budget items */
+    v2[n] = v1;
+    mk_block(&blk, 2, v2, n + 1u);
+    CHECK(v2x_cmt_apply(fa.w, &blk) == 0, "hf3 block 2 committed"); OK();
+    hf3_res_copy(&blk, r2);
+    CHECK(r2[n].code == NODUS_V2_TX_ERR_REPLAY && r2[n].gas_wanted == 0 &&
+          r2[n].gas_used == 0,
+          "hf3 H-1: the item loop refuses the replay code 3 with gas 0/0");
+    OK();
+    {
+        size_t applied = 0;
+        int ok = 1;
+        for (size_t i = 0; i < n; i++) {
+            if (r2[i].code == NODUS_V2_TX_OK) {
+                applied++;
+            } else if (r2[i].code != NODUS_V2_TX_ERR_CAPACITY ||
+                       r2[i].gas_wanted != 0 || r2[i].gas_used != 0) {
+                ok = 0;
+            }
+        }
+        CHECK(ok, "hf3 H-1: every refused item is code 5 with gas 0/0 — "
+              "no code 9"); OK();
+        CHECK(applied >= 1 && applied < n && applied <= 255u,
+              "hf3 H-1: the unit budget caps the block below N and at or "
+              "below 255"); OK();
+    }
+    CHECK(nodus_witness_global_root_v2(fa.w, ga[1], NULL, NULL, NULL) == 0,
+          "root 2");
+
+    /* RULE 6b, the H half (decision answer 12): at candidate 3 = H a
+     * batch whose SECOND envelope is block 2's applied v2[0] — fee paid,
+     * small ceiling, never expires, so the fee check, rule 5 and the
+     * (unbounded) budget all pass it — is ENTRY_INVALID at index 1.
+     * RED without the seam's replay check: that batch would be rc 0. */
+    CHECK(r2[0].code == NODUS_V2_TX_OK, "PREMISE: v2[0] applied at H-1");
+    {
+        nodus_v2_envelope_t rp[2] = { v3[0], v2[0] };
+        CHECK(hf3_seam(fa.w, rp, 2, &kind, &fi) == -1 &&
+              kind == NODUS_V2_BATCH_FAIL_ENTRY_INVALID && fi == 1,
+              "hf3 H: Process REJECTs a block carrying an already-committed "
+              "envelope — ENTRY_INVALID at its index"); OK();
+        CHECK(hf3_seam(fa.w, rp, 1, &kind, &fi) == 0,
+              "hf3 H: the same batch without the replay is accepted"); OK();
+    }
+
+    /* block 3 = H: the seam accepts, the engine applies ALL N */
+    CHECK(hf3_seam(fa.w, v3, n, &kind, &fi) == 0,
+          "hf3 H: Process would ACCEPT the lifted block"); OK();
+    mk_block(&blk, 3, v3, n);
+    CHECK(v2x_cmt_apply(fa.w, &blk) == 0, "hf3 block 3 committed"); OK();
+    hf3_res_copy(&blk, r3);
+    {
+        size_t applied = 0, code9 = 0;
+        uint64_t bytes = 0;
+        for (size_t i = 0; i < n; i++) {
+            if (r3[i].code == NODUS_V2_TX_OK) {
+                applied++;
+                bytes += v3[i].env_len;
+            }
+            if (r3[i].code == NODUS_V2_TX_ERR_FEE) code9++;
+        }
+        CHECK(code9 == 0, "hf3 H: a Process-ACCEPTed block finalizes with "
+              "ZERO code-9 items"); OK();
+        CHECK(applied == n, "hf3 H: the engine applies all N"); OK();
+        CHECK(bytes > 2097152u && applied > 255u,
+              "hf3 H: applied envelope bytes > 2 097 152 AND count > 255 "
+              "(measured)"); OK();
+        CHECK(r3[0].gas_wanted == HF3_CEIL, "hf3 H: gas_wanted is the "
+              "declared ceiling (D5)"); OK();
+    }
+    CHECK(nodus_witness_global_root_v2(fa.w, ga[2], NULL, NULL, NULL) == 0,
+          "root 3");
+
+    /* rule 5 — CheckTx dry run and seam at candidate 4 (ON) */
+    memset(dr, 0, sizeof(*dr));
+    CHECK(nodus_witness_v2_env_dry_run(fa.w, eover, lover, NULL, dr, why,
+                                       sizeof(why)) == -1 &&
+          dr->code == NODUS_V2_TX_ERR_CAPACITY &&
+          strstr(why, "INT64_MAX") != NULL,
+          "hf3: the dry run refuses a ceiling above INT64_MAX by rule 5");
+    OK();
+    nodus_witness_v2_env_dry_run_free(dr);
+    CHECK(hf3_seam(fa.w, &v4[1], 1, &kind, &fi) == -1 &&
+          kind == NODUS_V2_BATCH_FAIL_ENTRY_INVALID && fi == 0,
+          "hf3: the seam refuses it ENTRY_INVALID at its index"); OK();
+    CHECK(hf3_seam(fa.w, &v4[0], 1, &kind, &fi) == 0,
+          "hf3: a ceiling of exactly INT64_MAX passes the seam"); OK();
+
+    /* block 4: the item loop */
+    hf3_res_t r4[2];
+    memset(r4, 0, sizeof(r4));          /* padding too: memcmp'd below    */
+    mk_block(&blk, 4, v4, 2);
+    CHECK(v2x_cmt_apply(fa.w, &blk) == 0, "hf3 block 4 committed"); OK();
+    hf3_res_copy(&blk, r4);
+    CHECK(r4[0].code == NODUS_V2_TX_OK &&
+          r4[0].gas_wanted == (uint64_t)INT64_MAX,
+          "hf3: INT64_MAX applies, gas_wanted INT64_MAX"); OK();
+    CHECK(r4[1].code == NODUS_V2_TX_ERR_CAPACITY &&
+          r4[1].gas_wanted == 0 && r4[1].gas_used == 0,
+          "hf3: INT64_MAX + 1 is refused code 5 with gas_wanted 0 (rule 5 "
+          "runs before the reservation)"); OK();
+    CHECK(nodus_witness_global_root_v2(fa.w, ga[3], NULL, NULL, NULL) == 0,
+          "root 4");
+
+    /* ── chain B, the twin: same rows, same bytes, same answers ───────── */
+    fixture_t fb;
+    CHECK(hf3_fx_open(&fb) == 0, "hf3 chain B"); OK();
+    {
+        uint8_t gb[64];
+        hf3_res_t *rb = calloc(n + 1u, sizeof(*rb));   /* block 2: n + 1 */
+        CHECK(rb != NULL, "hf3 alloc");
+
+        mk_block(&blk, 1, &v1, 1);
+        CHECK(v2x_cmt_apply_ok(fb.w, &blk) == 0, "twin block 1");
+        CHECK(nodus_witness_global_root_v2(fb.w, gb, NULL, NULL, NULL) == 0 &&
+              memcmp(gb, ga[0], 64) == 0, "twin root 1"); OK();
+
+        mk_block(&blk, 2, v2, n + 1u);
+        CHECK(v2x_cmt_apply(fb.w, &blk) == 0, "twin block 2");
+        hf3_res_copy(&blk, rb);
+        CHECK(memcmp(rb, r2, (n + 1u) * sizeof(*rb)) == 0, "twin results 2");
+        CHECK(nodus_witness_global_root_v2(fb.w, gb, NULL, NULL, NULL) == 0 &&
+              memcmp(gb, ga[1], 64) == 0, "twin root 2"); OK();
+
+        mk_block(&blk, 3, v3, n);
+        CHECK(v2x_cmt_apply(fb.w, &blk) == 0, "twin block 3");
+        hf3_res_copy(&blk, rb);
+        CHECK(memcmp(rb, r3, n * sizeof(*rb)) == 0,
+              "twin results at the lifted count"); OK();
+        CHECK(nodus_witness_global_root_v2(fb.w, gb, NULL, NULL, NULL) == 0 &&
+              memcmp(gb, ga[2], 64) == 0, "twin root at the lifted count");
+        OK();
+
+        mk_block(&blk, 4, v4, 2);
+        CHECK(v2x_cmt_apply(fb.w, &blk) == 0, "twin block 4");
+        hf3_res_copy(&blk, rb);
+        CHECK(memcmp(rb, r4, 2 * sizeof(*rb)) == 0, "twin results 4");
+        CHECK(nodus_witness_global_root_v2(fb.w, gb, NULL, NULL, NULL) == 0 &&
+              memcmp(gb, ga[3], 64) == 0, "twin root 4"); OK();
+        free(rb);
+    }
+    fx_close(&fb);
+    fx_close(&fa);
+
+    for (size_t i = 0; i < n; i++) {
+        free(b2[i]);
+        free(b3[i]);
+    }
+    free(b2); free(b3); free(v2); free(v3); free(r2); free(r3);
+    free(emax); free(eover); free(dr);
+    return 0;
 }
 
 int main(void) {
@@ -1801,6 +2236,9 @@ int main(void) {
         CHECK(nodus_witness_v2_supply_check(fs.w) == 0, "conserved");
     }
     fx_close(&fs);
+
+    /* ── 8. HF-3 at the activation boundary ─────────────────────────── */
+    CHECK(test_hf3_engine() == 0, "HF-3 engine section"); OK();
 
     printf("test_v2_apply: ALL %d checks passed\n", g_checks);
     return 0;

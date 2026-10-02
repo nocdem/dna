@@ -51,7 +51,7 @@ The chain is implemented in three layers of the monorepo:
   proposal is accepted only for a parameter the RUNNING consensus reads
   — the one list is `dnac_cfg_param_read_by_consensus`
   (`dnac/include/dnac/dnac.h`), consumed by both the witness's scalar
-  rules and this library's mirror: ids 4 and 5 at 0.20.3 (4, 5, 6 and 7
+  rules and this library's mirror: ids 4 and 5 at 0.20.3 (4, 5, 6, 7 and 8
   today — below). Id 2
   (`BLOCK_INTERVAL_SEC`) is refused — the Comet lane's block pace is a
   compile-time node setting and never reads it — but it is NOT retired:
@@ -75,8 +75,23 @@ The chain is implemented in three layers of the monorepo:
   weighs a CHAIN_CONFIG approval by VOTING POWER (approving power > 2/3
   of the governing committee's, power = stake / 10^8) instead of by seat
   count, and a block whose touched domain's root nets to zero is applied
-  instead of halting every node; no row = both rules as before. The
-  read list is therefore ids 4, 5, 6 and 7), GENESIS
+  instead of halting every node; no row = both rules as before.
+  **HF-3 (2026-10-02, design
+  `docs/plans/2026-10-01-hf3-comet-block-bounds-design.md` rev 3; decision
+  `docs/plans/decisions/2026-10-01-hf3-comet-only-block-bounds.md`):** id 8
+  `HF3_ACTIVE` (`DNAC_CFG_HF3_ACTIVE`, value EXACTLY
+  `DNAC_CFG_HF3_ACTIVE_ON` = 1 — the same one-way switch, 0 and every
+  other value refused by both the witness's scalar rules and the
+  `verify.c` mirror; ERGONOMIC grace); `DNAC_CFG_PARAM_MAX_ID` 7 → 8.
+  From the row's effective height the witness bounds a block by the
+  cometbft consensus params only — the 2 MiB envelope-byte bound is not
+  checked, the global unit budget and every quota-0 domain's unit budget
+  are unbounded, a declared `res_max_total_units` above `INT64_MAX` is
+  refused, and the block proposal itself is checked for the gas price and
+  for already-committed envelopes; no row = every rule as before. No wire
+  change for wallets: the transaction format, the fee rule they pay and
+  the ruleset pins are unchanged. The read list is therefore ids 4, 5, 6,
+  7 and 8), GENESIS
 - **Explicit committed fee** on the wire (v2 header) with a min-fee
   gate. **Since tokenomics-v3 P2 every fee goes to the chain's REWARD
   POOL** (`supply_tracking.reward_pool`) — it is neither burned nor paid

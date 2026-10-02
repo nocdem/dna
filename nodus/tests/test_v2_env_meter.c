@@ -244,7 +244,7 @@ int main(void) {
 
     /* ── 1+2. HAPPY METERED BATCH: pinned sequential debits ─────────── */
     CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-              ch.w, 1, &tab, 1, pol, &bud, envs, 3, out, meters,
+              ch.w, 1, &tab, 1, pol, &bud, 0, envs, 3, out, meters,
               &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_OK,
           "happy metered batch"); OK();
     CHECK(fail_idx == 0 && pf_st == DNA_ENV_PF_OK && ms == DNA_METER_OK,
@@ -295,7 +295,7 @@ int main(void) {
     memset(meters, 0xAA, NODUS_V2_ENV_BATCH_MAX * sizeof(*meters));
     fail_idx = 999; ms = DNA_METER_OK;
     CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-              ch.w, 1, &tab, 1, pol, &bud, envs, 3, out, meters,
+              ch.w, 1, &tab, 1, pol, &bud, 0, envs, 3, out, meters,
               &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_METER,
           "domain-budget failure"); OK();
     CHECK(fail_idx == 2, "failing envelope index"); OK();
@@ -316,7 +316,7 @@ int main(void) {
     entry_bud = bud;
     fail_idx = 999; ms = DNA_METER_OK;
     CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-              ch.w, 1, &tab, 1, pol, &bud, envs, 3, out, meters,
+              ch.w, 1, &tab, 1, pol, &bud, 0, envs, 3, out, meters,
               &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_METER,
           "global-budget failure"); OK();
     CHECK(fail_idx == 0 && ms == DNA_METER_ERR_GLOBAL_BUDGET,
@@ -332,7 +332,7 @@ int main(void) {
     entry_bud = bud;
     ms = DNA_METER_OK;
     CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-              ch.w, 1, &tab, 1, pol, &bud, envs, 3, out, meters,
+              ch.w, 1, &tab, 1, pol, &bud, 0, envs, 3, out, meters,
               &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_METER,
           "missing domain entry"); OK();
     CHECK(ms == DNA_METER_ERR_DOMAIN, "missing-domain status"); OK();
@@ -350,7 +350,7 @@ int main(void) {
     memset(meters, 0xAA, NODUS_V2_ENV_BATCH_MAX * sizeof(*meters));
     ms = DNA_METER_OK;
     CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-              ch.w, 1, &tab, 1, pol, &bud, envs, 3, out, meters,
+              ch.w, 1, &tab, 1, pol, &bud, 0, envs, 3, out, meters,
               &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_METER,
           "mutated policy accepted"); OK();
     CHECK(ms == DNA_METER_ERR_POLICY, "policy status"); OK();
@@ -372,7 +372,7 @@ int main(void) {
         memset(meters, 0xAA, sizeof(*meters));
         ms = DNA_METER_ERR_FAULT;
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  ch.w, 2, &tab, 1, pol, &bud, &one, 1, out, meters,
+                  ch.w, 2, &tab, 1, pol, &bud, 0, &one, 1, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_PREFLIGHT,
               "expired envelope status"); OK();
         CHECK(pf_st == DNA_ENV_PF_ERR_EXPIRED, "pf status"); OK();
@@ -387,7 +387,7 @@ int main(void) {
         two[0].env_bytes = e0; two[0].env_len = l0;
         two[1].env_bytes = e0; two[1].env_len = l0;
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  ch.w, 1, &tab, 1, pol, &bud, two, 2, out, meters,
+                  ch.w, 1, &tab, 1, pol, &bud, 0, two, 2, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_DUP,
               "duplicate status"); OK();
         CHECK(fail_idx == 1, "dup second member"); OK();
@@ -398,20 +398,20 @@ int main(void) {
         memset(out, 0xAA, sizeof(*out));
         memset(meters, 0xAA, sizeof(*meters));
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  ch.w, 1, &tab, 1, pol, &bud, envs, 3, NULL, meters,
+                  ch.w, 1, &tab, 1, pol, &bud, 0, envs, 3, NULL, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_ARG,
               "NULL out"); OK();
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  ch.w, 1, &tab, 1, pol, &bud, envs, 3, out, NULL,
+                  ch.w, 1, &tab, 1, pol, &bud, 0, envs, 3, out, NULL,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_ARG,
               "NULL meters"); OK();
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  ch.w, 1, &tab, 1, pol, &bud, envs,
+                  ch.w, 1, &tab, 1, pol, &bud, 0, envs,
                   NODUS_V2_ENV_BATCH_MAX + 1, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_ARG,
               "oversize batch"); OK();
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  ch.w, 1, &tab, 1, pol, &bud, envs, 0, out, meters,
+                  ch.w, 1, &tab, 1, pol, &bud, 0, envs, 0, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_ARG,
               "zero batch"); OK();
         /* the 0xAA sentinel survived the gate rejects */
@@ -420,14 +420,14 @@ int main(void) {
               "gate reject wrote a caller buffer"); OK();
         /* NULL policy / budget: after the gates, arrays ARE zeroed */
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  ch.w, 1, &tab, 1, NULL, &bud, envs, 3, out, meters,
+                  ch.w, 1, &tab, 1, NULL, &bud, 0, envs, 3, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_ARG,
               "NULL policy"); OK();
         CHECK(all_zero((const uint8_t *)out, 3 * sizeof(*out)) &&
               all_zero((const uint8_t *)meters, 3 * sizeof(*meters)),
               "arrays not zeroed on NULL policy"); OK();
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  ch.w, 1, &tab, 1, pol, NULL, envs, 3, out, meters,
+                  ch.w, 1, &tab, 1, pol, NULL, 0, envs, 3, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_ARG,
               "NULL budget"); OK();
     }
@@ -440,7 +440,7 @@ int main(void) {
         bud.dom[0].domain_id = 1;
         bud.dom[0].remaining_units = 300;
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  ch.w, 1, &tab, 1, pol, &bud, envs, 1, out, meters,
+                  ch.w, 1, &tab, 1, pol, &bud, 0, envs, 1, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_OK,
               "single batch"); OK();
         CHECK(dna_meter_activate(&meters[0]) == DNA_METER_OK, "activate");
@@ -472,7 +472,7 @@ int main(void) {
         memset(meters, 0xAA, sizeof(*meters));
         ms = DNA_METER_ERR_FAULT;
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  ch.w, 1, two, 2, pol, &bud, envs, 1, out, meters,
+                  ch.w, 1, two, 2, pol, &bud, 0, envs, 1, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_RULESETS,
               "unsorted rulesets status"); OK();
         CHECK(ms == DNA_METER_OK, "meter status on RULESETS fail"); OK();
@@ -484,7 +484,7 @@ int main(void) {
         mk_rulesets(&other, 0xB7);
         other.domain_id = 2;                      /* envelope is domain 1 */
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  ch.w, 1, &other, 1, pol, &bud, envs, 1, out, meters,
+                  ch.w, 1, &other, 1, pol, &bud, 0, envs, 1, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_CTX_MISSING,
               "missing ctx status"); OK();
         CHECK(pf_st == DNA_ENV_PF_OK && ms == DNA_METER_OK,
@@ -499,7 +499,7 @@ int main(void) {
         memset(out, 0xAA, sizeof(*out));
         memset(meters, 0xAA, sizeof(*meters));
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  fx2.w, 1, &tab, 1, pol, &bud, envs, 1, out, meters,
+                  fx2.w, 1, &tab, 1, pol, &bud, 0, envs, 1, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_CHAIN,
               "no-genesis status"); OK();
         CHECK(all_zero((const uint8_t *)out, sizeof(*out)) &&
@@ -542,7 +542,7 @@ int main(void) {
         CHECK(dna_meter_policy_seal(pol) == 0, "reseal"); OK();
         memcpy(&entry_bud, &bud, sizeof(bud));
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  ch.w, 1, &tab, 1, pol, &bud, envs, 2, out, meters,
+                  ch.w, 1, &tab, 1, pol, &bud, 0, envs, 2, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_OK,
               "batch exactly at the byte bound reserves"); OK();
         for (size_t i = 0; i < 2; i++)
@@ -551,7 +551,7 @@ int main(void) {
               "abort restored the budget byte-identically"); OK();
         memcpy(&entry_bud, &bud, sizeof(bud));
         CHECK(nodus_witness_v2_env_preflight_reserve_batch(
-                  ch.w, 1, &tab, 1, pol, &bud, envs, 3, out, meters,
+                  ch.w, 1, &tab, 1, pol, &bud, 0, envs, 3, out, meters,
                   &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_ERR_BLOCK_BYTES,
               "sum above the bound returns the DISTINCT byte status");
         OK();
@@ -560,6 +560,25 @@ int main(void) {
         CHECK(all_zero((const uint8_t *)out, 3 * sizeof(*out)) &&
               all_zero((const uint8_t *)meters, 3 * sizeof(*meters)),
               "byte-rejected batch publishes nothing"); OK();
+        /* 9b-HF3 (design 2026-10-01-hf3-comet-block-bounds-design.md
+         * test plan "seam OFF refuses > 2 MiB / ON accepts", F3): the
+         * SAME three-envelope batch, the SAME sealed policy whose byte
+         * bound it exceeds, with skip_byte_bound = 1 — step 4b is
+         * skipped and the batch reserves exactly as an in-bound batch
+         * would (global 1000 - 400, domain 300 - 3*83). RED before
+         * HF-3: there was no such parameter, and the bound could not be
+         * lifted without a policy change (zero is not a policy, 9c). */
+        CHECK(nodus_witness_v2_env_preflight_reserve_batch(
+                  ch.w, 1, &tab, 1, pol, &bud, 1, envs, 3, out, meters,
+                  &fail_idx, &pf_st, &ms) == NODUS_V2_ENV_OK,
+              "skip_byte_bound=1 still refused the over-bound batch"); OK();
+        CHECK(bud.global_remaining == 600 && bud.dom[0].remaining_units == 51,
+              "skip_byte_bound changed the unit debits"); OK();
+        for (size_t i = 0; i < 3; i++)
+            dna_meter_abort(&meters[i]);
+        CHECK(memcmp(&entry_bud, &bud, sizeof(bud)) == 0,
+              "abort after the skipped byte step did not restore the "
+              "budget"); OK();
         /* 9c. a zero-bound policy cannot even reseal — the fail-closed
          * source rule (res_meter policy shape) */
         pol->max_block_env_bytes = 0;

@@ -158,6 +158,20 @@
  *     quota 0 — nodus_witness_domreg.c:312). The round-2 hash set has no
  *     dedicated case: its behaviour is pinned by every conflict case, its
  *     O(1) insert and its all-or-none allocation are not observable here.
+ * 12. HF-3 — `t_hf3_bounds_and_fee` (design docs/plans/2026-10-01-hf3-
+ *     comet-block-bounds-design.md rev 3): chain_config param 8 at the
+ *     candidate height, Prepare/Process at H-1 vs H over N envelopes with
+ *     N derived from the measured env_len (byte sum > 2 MiB AND count >
+ *     255, asserted from what Prepare kept), the proposal fee check
+ *     (price 0 off, underpaid REJECT / dropped, all-SYSTEM exempt, no
+ *     check below H), rule 5 (INT64_MAX accepted, INT64_MAX + 1
+ *     REJECTed), rule 4 (a non-zero units quota still refuses) and an
+ *     unreadable price = FAULT. Rows are direct SQL writes — honest only
+ *     because no block is applied afterwards (see the case's own note).
+ *     Since HF-3 PrepareProposal reads the tip once itself; the
+ *     seam-run counter above subtracts that read (SEAM_RUNS()).
+ *     Requirements: none beyond a default build; ~17 MiB of heap for the
+ *     ~257 fixture envelopes. Leaves nothing behind (its own tmp dir).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: Apache-2.0
@@ -4595,14 +4609,22 @@ static int t_prepare_fee_order(void)
  * (nodus_witness_db.c — callers in verify.c/peer.c/handlers.c only,
  * none on this path). PrepareProposal's own envelope-byte read goes
  * through `nodus_witness_v2_block_ctx_build`, which does not read the
- * tip. So the count IS the number of seam runs. HOW IT CAN LIE: if a
- * later change routes another tip read through this path, the counts
- * below rise and the case fails loudly — it cannot pass silently.
+ * tip itself — but since HF-3 (design 2026-10-01-hf3-comet-block-bounds-
+ * design.md D1 (b)) PrepareProposal reads the tip ONCE, through the same
+ * `nodus_witness_v2_tip_height`, to build that context at its own
+ * candidate height; it does so exactly when at least one envelope is a
+ * candidate, which every counted case below has. So the count is the
+ * number of seam runs PLUS that one read — SEAM_RUNS() subtracts it.
+ * HOW IT CAN LIE: if a later change routes another tip read through this
+ * path, the counts below rise and the case fails loudly — it cannot pass
+ * silently.
  *
  * The counter is a file-scope static because a failing CHECK returns
  * before the trace is cleared, and the hook must never point at a dead
  * stack frame. */
 static int g_seam_runs = 0;
+#define PREP_OWN_TIP_READS 1      /* HF-3 D1 (b): Prepare's own tip read */
+#define SEAM_RUNS() (g_seam_runs - PREP_OWN_TIP_READS)
 
 static int seam_run_trace(unsigned mask, void *ctx, void *p, void *x)
 {
@@ -4673,6 +4695,19 @@ static int cap_env_build(v2x_env_t *e, const dna_meter_policy_t *pol,
     return v2x_env_build_ex(e, ceiling, 0, fee, &leg, 1);
 }
 
+/** The block-start context exactly as the seam builds it: at the
+ *  candidate height, committed tip + 1 (HF-3 D1 (c) — the height the
+ *  context's HF-3 switch is read at). 0 / -1. */
+static int cap_ctx_build(nodus_witness_t *w, nodus_witness_v2_block_ctx_t *b)
+{
+    uint64_t tip = 0;
+
+    if (nodus_witness_v2_tip_height(w, &tip) != 0) {
+        return -1;
+    }
+    return nodus_witness_v2_block_ctx_build(w, tip + 1u, b) == 0 ? 0 : -1;
+}
+
 /** Bind an application to `g`, with the scripted runtime table and the
  *  block-start context the seam itself builds (`*bctx_out`, heap — its
  *  `policy` is the SYSTEM runtime's sealed meter policy). */
@@ -4695,8 +4730,8 @@ static int cap_fixture(gfx_t *g, const char *tag, cmt_genesis_doc_t *doc,
         nodus_cmt_app_ledger_init(*app_out, g->w, doc) != CMT_OK) {
         return -1;
     }
-    if (nodus_witness_v2_block_ctx_build(g->w, *bctx_out) != 0 ||
-        !(*bctx_out)->policy) {
+    /* HF-3: the context at the seam's own candidate height, tip + 1 */
+    if (cap_ctx_build(g->w, *bctx_out) != 0 || !(*bctx_out)->policy) {
         return -1;
     }
     return 0;
@@ -4833,7 +4868,7 @@ static int t_prepare_env_byte_bound(void)
         sum += resp.txs[i].len;
     }
     CHECK(sum <= bound, "the proposal's envelope bytes are within the bound");
-    CHECK(g_seam_runs == 1,
+    CHECK(SEAM_RUNS() == 1,
           "ONE seam run: the byte trim happened before the seam, so the "
           "seam accepted the first batch it saw (the unfixed loop ran it "
           "once per dropped envelope)");
@@ -4933,7 +4968,7 @@ static int t_prepare_units_truncate(void)
               "the prefix, in request order (a fee tie), without the "
               "poison");
     }
-    CHECK(g_seam_runs == 1, "ONE seam run: the pack reserved the units "
+    CHECK(SEAM_RUNS() == 1, "ONE seam run: the pack reserved the units "
           "itself (CHECKTX-P1 round 2), skipping the poison and every "
           "envelope the budget no longer had room for");
 
@@ -5006,7 +5041,7 @@ static int t_prepare_entry_invalid_only(void)
     CHECK(resp.txs[1].data == envs[2].bytes,
           "fee 5 second — the entry AFTER the offender was not truncated "
           "away with it");
-    CHECK(g_seam_runs == 1, "ONE seam run: the pack excluded the "
+    CHECK(SEAM_RUNS() == 1, "ONE seam run: the pack excluded the "
           "unpriceable envelope itself");
 
     free(envs);
@@ -5849,7 +5884,7 @@ static int t_prepare_cc_refused_packs_rest(void)
     CHECK(resp.txs_len == 1 && resp.txs[0].data == envs[0].bytes &&
           resp.txs[0].len == envs[0].len, "the duplicate is dropped, the "
           "envelope proposed once");
-    CHECK(g_seam_runs == 2, "two seam runs: the duplicate refusal, then "
+    CHECK(SEAM_RUNS() == 2, "two seam runs: the duplicate refusal, then "
           "clean");
 
     free(poison.bytes);
@@ -5957,7 +5992,7 @@ static int t_prepare_refill_after_drop(void)
         sum += resp.txs[i].len;
     }
     CHECK(sum <= bound, "within the envelope-byte bound");
-    CHECK(g_seam_runs == 1, "ONE seam run: the pack excluded the "
+    CHECK(SEAM_RUNS() == 1, "ONE seam run: the pack excluded the "
           "unpriceable top candidate and filled its room");
 
     free(call);
@@ -6007,7 +6042,7 @@ static int t_prepare_claims_past_env_window(void)
     CHECK(app && bctx && envs && txs && call && claim, "alloc");
     CHECK(gfx_doc(&g, &doc, gvals) == 0, "the completed genesis document");
     CHECK(nodus_cmt_app_ledger_init(app, g.w, &doc) == CMT_OK, "bind");
-    CHECK(nodus_witness_v2_block_ctx_build(g.w, bctx) == 0 && bctx->policy,
+    CHECK(cap_ctx_build(g.w, bctx) == 0 && bctx->policy,
           "the block context");
     bound = bctx->policy->max_block_env_bytes;
 
@@ -6372,7 +6407,7 @@ static int t_prepare_hog_skipped(void)
     CHECK(app && bctx && envs && claim, "alloc");
     CHECK(gfx_doc(&g, &doc, gvals) == 0, "the completed genesis document");
     CHECK(nodus_cmt_app_ledger_init(app, g.w, &doc) == CMT_OK, "bind");
-    CHECK(nodus_witness_v2_block_ctx_build(g.w, bctx) == 0 && bctx->policy,
+    CHECK(cap_ctx_build(g.w, bctx) == 0 && bctx->policy,
           "the block context");
     budget = bctx->budget.global_remaining;
 
@@ -6427,7 +6462,7 @@ static int t_prepare_hog_skipped(void)
               "the four small ones, request order (a tie)");
     }
     CHECK(resp.txs[5].data == claim, "the claim lands too");
-    CHECK(g_seam_runs == 1, "ONE seam run: the pack applied the unit "
+    CHECK(SEAM_RUNS() == 1, "ONE seam run: the pack applied the unit "
           "budget itself");
 
     free(claim);
@@ -6538,6 +6573,438 @@ static int t_bind_refuses_legacy(void)
     return 0;
 }
 
+/* ══ HF-3 — Comet-only block bounds + the proposal fee check ═══════════
+ * Design docs/plans/2026-10-01-hf3-comet-block-bounds-design.md rev 3;
+ * decision docs/plans/decisions/2026-10-01-hf3-comet-only-block-bounds.md
+ * (answers 6, 9, 10). Chain-config param 8 HF3_ACTIVE, read ONCE per
+ * block-start context at the candidate height (tip + 1).
+ *
+ * WHY DIRECT SQL ROWS ARE HONEST HERE: these cases run PrepareProposal and
+ * ProcessProposal only — the seam preflights and reserves, it never
+ * applies — so no block is applied after a row is written and the
+ * engine's untouched-domain guard (which a post-genesis chain_config
+ * write would trip) never runs. The FinalizeBlock half (the engine at H,
+ * "zero code-9 items at H", twin roots) is test_v2_apply.c's
+ * test_hf3_engine, whose rows are written BEFORE genesis.
+ *
+ * The chain has no block rows, so the candidate height is 1 throughout:
+ * "H-1" is a param-8 row effective at 2, "H" the same row moved to 1. */
+
+static int hf3_sql(nodus_witness_t *w, const char *sql)
+{
+    char *err = NULL;
+
+    if (sqlite3_exec(w->db, sql, NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr, "hf3 sql failed: %s\n", err ? err : "?");
+        sqlite3_free(err);
+        return -1;
+    }
+    w->chain_config_cache_warm = false;        /* cache = DB, re-read   */
+    return 0;
+}
+
+static int hf3_cc_insert(nodus_witness_t *w, uint8_t param, uint64_t value,
+                         uint64_t eff)
+{
+    char sql[320];
+
+    snprintf(sql, sizeof(sql),
+             "INSERT INTO chain_config_history (param_id, new_value, "
+             "effective_block, commit_block, tx_hash, proposal_nonce, "
+             "created_at_unix) VALUES (%u, %llu, %llu, 0, zeroblob(64), "
+             "%u, 0)", (unsigned)param, (unsigned long long)value,
+             (unsigned long long)eff, 9000u + (unsigned)param);
+    return hf3_sql(w, sql);
+}
+
+/** One ProcessProposal over `n` envelopes; the status, or -1 on a
+ *  non-CMT_OK return (the answer a FAULT gives). */
+static int hf3_process(nodus_cmt_app_ledger_t *app, cmt_pb_bytes_t *txs,
+                       size_t n)
+{
+    nodus_abci_request_process_proposal_t  req;
+    nodus_abci_response_process_proposal_t resp;
+
+    memset(&req, 0, sizeof(req));
+    memset(&resp, 0, sizeof(resp));
+    req.txs     = txs;
+    req.txs_len = n;
+    if (nodus_cmt_app_process_proposal(app, &req, &resp) != CMT_OK) {
+        return -1;
+    }
+    return (int)resp.status;
+}
+
+/** One PrepareProposal over `n` envelopes; the kept count (resp.txs is
+ *  the app's buffer, valid until the next call), or -1 on a FAULT. */
+static long hf3_prepare(nodus_cmt_app_ledger_t *app, cmt_pb_bytes_t *txs,
+                        size_t n, nodus_abci_response_prepare_proposal_t *resp)
+{
+    nodus_abci_request_prepare_proposal_t req;
+
+    memset(&req, 0, sizeof(req));
+    memset(resp, 0, sizeof(*resp));
+    req.txs          = txs;
+    req.txs_len      = n;
+    req.max_tx_bytes = 22020096;           /* Block.MaxBytes, not binding */
+    if (nodus_cmt_app_prepare_proposal(app, &req, resp) != CMT_OK) {
+        return -1;
+    }
+    return (long)resp->txs_len;
+}
+
+/**
+ * (1) THE LIFT (test plan R4-1 / round 2 G3), RED before HF-3: N CORE
+ * envelopes with N DERIVED from the fixture's own encoded env_len —
+ * N = max(256, floor(2 097 152 / env_len) + 2), never a hardcoded count —
+ * so the request is above BOTH the 2 MiB envelope-byte bound and 255
+ * envelopes. Asserted from the MEASURED bytes of what Prepare kept.
+ *   no row            Prepare caps (< N kept, <= 2 MiB), Process REJECT;
+ *   row at 2 (H-1)    the same — a committed-but-future row changes
+ *                     nothing (D3/D4);
+ *   row at 1 (H)      Prepare keeps all N (byte sum > 2 097 152 AND
+ *                     count > 255), Process ACCEPTs the same N.
+ * (2) THE PROPOSAL FEE CHECK (operator answer 6, §0.2), at H:
+ *   price 0           an underpaid envelope is not checked (rule off);
+ *   price 1           Process REJECTs a block carrying it, ACCEPTs the
+ *                     block without it; Prepare drops exactly it (the
+ *                     drop loop's ENTRY_INVALID exclusion); an all-SYSTEM
+ *                     chain_config (fee 0) stays exempt;
+ *   row back at 2     (H-1, price 1) the same underpaid block is
+ *                     ACCEPTed — pre-H identity, no fee check in the seam.
+ * (3) RULE 5 (answer 10) at H: a ceiling of INT64_MAX is accepted (the
+ *     flagged budget does not refuse it), INT64_MAX + 1 is REJECTed —
+ *     both with a fee that pays it, so only rule 5 can refuse.
+ * (3b) RULE 6b (answer 12) at H: a block carrying an envelope already in
+ *     the committed intent index is REJECTed by Process and the drop loop
+ *     excludes exactly it; at H-1 the same block is ACCEPTed.
+ * (4) RULE 4 (answer 9, decided A) at H: a NON-zero CORE quota_verify_cost
+ *     still refuses the block at Process (the seam's all-or-nothing
+ *     reservation), exactly as below H.
+ * (5) An unreadable price at H is a FAULT (CMT_FAULT), never a verdict.
+ * HOW IT CAN LIE: (1) relies on cap_env_build giving every envelope the
+ * same length; the premise checks below re-measure every one. (5) uses a
+ * VIEW that raises only when the param-5 row is EVALUATED; the param-8
+ * read never evaluates it (WHERE param_id = 8), which the ACCEPT just
+ * before the poison proves on the same view shape.
+ */
+#define HF3_CALL_LEN 8126u                 /* ~8.2 KB envelopes          */
+static int t_hf3_bounds_and_fee(void)
+{
+    gfx_t                                   g;
+    cmt_genesis_doc_t                       doc;
+    cmt_genesis_validator_t                 gvals[DNAC_COMMITTEE_SIZE];
+    nodus_cmt_app_ledger_t                 *app = NULL;
+    nodus_witness_v2_block_ctx_t           *bctx = NULL;
+    nodus_abci_response_prepare_proposal_t  resp;
+    v2x_env_t                              *envs = NULL;
+    v2x_env_t                              *small = NULL;
+    cmt_pb_bytes_t                         *txs = NULL;
+    cmt_pb_bytes_t                          ftx[4];
+    uint8_t                                *call = NULL;
+    test_env_t                              cc;
+    size_t                                  i, n, len0;
+    uint64_t                                sum, st = 0;
+    long                                    kept;
+    const uint64_t                          floor_fee = 1000000ull;
+
+    memset(&cc, 0, sizeof(cc));
+    CHECK(cap_fixture(&g, "hf3", &doc, gvals, &app, &bctx) == 0,
+          "version-3 fixture, scripted runtime, bound app, block context");
+    CHECK(bctx->hf3_active == 0, "no param-8 row: HF-3 is OFF");
+    CHECK(bctx->budget.global_unbounded == 0, "OFF: the global budget is "
+          "a bound");
+
+    /* ── the N envelopes, N from the measured length ───────────────── */
+    call = calloc(1, HF3_CALL_LEN);
+    CHECK(call != NULL, "alloc");
+    memset(call, 0x3C, HF3_CALL_LEN);
+    {
+        v2x_env_t *probe = calloc(1, sizeof(*probe));
+
+        CHECK(probe != NULL, "alloc");
+        CHECK(cap_env_build(probe, bctx->policy, call, HF3_CALL_LEN, 1, 1000,
+                            0, NULL) == 0, "the probe envelope");
+        len0 = probe->len;
+        free(probe);
+    }
+    n = 2097152u / len0 + 2u;
+    if (n < 256u) {
+        n = 256u;
+    }
+    CHECK(n <= app->prep_bound && n <= NODUS_V2_ENV_BATCH_MAX,
+          "PREMISE: N fits the mempool and the engine's batch bound");
+    envs = calloc(n, sizeof(*envs));          /* n x 64 KiB: heap        */
+    txs  = calloc(n, sizeof(*txs));
+    CHECK(envs && txs, "alloc");
+    sum = 0;
+    for (i = 0; i < n; i++) {
+        call[0] = (uint8_t)(i >> 8);              /* distinct intent     */
+        call[1] = (uint8_t)i;
+        CHECK(cap_env_build(&envs[i], bctx->policy, call, HF3_CALL_LEN, 1,
+                            1000u + i, 0, NULL) == 0,
+              "a ~8 KB CORE envelope with an exact ceiling");
+        CHECK(envs[i].len == len0, "PREMISE: every envelope has the "
+              "measured length");
+        txs[i].data = envs[i].bytes;
+        txs[i].len  = envs[i].len;
+        sum += envs[i].len;
+    }
+    CHECK(sum > 2097152u && n > 255u, "PREMISE: the request is above the "
+          "2 MiB envelope-byte bound AND above 255 envelopes");
+
+    /* ── OFF, no row ───────────────────────────────────────────────── */
+    kept = hf3_prepare(app, txs, n, &resp);
+    CHECK(kept >= 1 && (size_t)kept < n, "OFF: Prepare caps the proposal");
+    sum = 0;
+    for (i = 0; i < (size_t)kept; i++) {
+        sum += resp.txs[i].len;
+    }
+    CHECK(sum <= 2097152u, "OFF: the kept bytes stay within 2 MiB");
+    CHECK(hf3_process(app, txs, n) == NODUS_ABCI_PROPOSAL_STATUS_REJECT,
+          "OFF: Process REJECTs the over-bound block");
+
+    /* ── H-1: the row is committed but effective at 2 ──────────────── */
+    CHECK(hf3_cc_insert(g.w, (uint8_t)DNAC_CFG_HF3_ACTIVE,
+                        DNAC_CFG_HF3_ACTIVE_ON, 2) == 0, "param-8 row @2");
+    CHECK(cap_ctx_build(g.w, bctx) == 0 && bctx->hf3_active == 0,
+          "H-1: the context still reads OFF");
+    kept = hf3_prepare(app, txs, n, &resp);
+    CHECK(kept >= 1 && (size_t)kept < n, "H-1: Prepare still caps");
+    CHECK(hf3_process(app, txs, n) == NODUS_ABCI_PROPOSAL_STATUS_REJECT,
+          "H-1: Process still REJECTs");
+
+    /* ── H: the same row, effective at the candidate height ────────── */
+    CHECK(hf3_sql(g.w, "UPDATE chain_config_history SET effective_block "
+                       "= 1 WHERE param_id = 8") == 0, "row -> @1");
+    CHECK(cap_ctx_build(g.w, bctx) == 0 && bctx->hf3_active == 1 &&
+          bctx->budget.global_unbounded == 1,
+          "H: the context reads ON and flags the global budget");
+    for (i = 0; i < bctx->budget.n_domains; i++) {
+        CHECK(bctx->budget.dom[i].unbounded == 1, "H: every quota-0 "
+              "domain slot is flagged (genesis quotas are 0)");
+    }
+    kept = hf3_prepare(app, txs, n, &resp);
+    CHECK(kept >= 0 && (size_t)kept == n, "H: Prepare keeps ALL N");
+    sum = 0;
+    for (i = 0; i < (size_t)kept; i++) {
+        sum += resp.txs[i].len;
+    }
+    CHECK(sum > 2097152u && kept > 255,
+          "H: the kept proposal is above 2 MiB AND above 255 envelopes "
+          "(measured)");
+    CHECK(hf3_process(app, txs, n) == NODUS_ABCI_PROPOSAL_STATUS_ACCEPT,
+          "H: Process ACCEPTs the same N");
+
+    /* ── (2) the proposal fee check ────────────────────────────────── */
+    small = calloc(5, sizeof(*small));
+    CHECK(small != NULL, "alloc");
+    for (i = 0; i < 3; i++) {
+        uint8_t c[200];
+
+        memset(c, (int)(0x90 + i), sizeof(c));
+        CHECK(cap_env_build(&small[i], bctx->policy, c, sizeof(c), 1,
+                            i < 2 ? 0 : 1000, 0, &st) == 0, "small env");
+        if (i < 2) {
+            /* paid at price 1: units x 1 + the flat floor */
+            CHECK(cap_env_build(&small[i], bctx->policy, c, sizeof(c), 1,
+                                st + floor_fee, 0, NULL) == 0, "paid env");
+        }
+    }
+    ftx[0].data = small[0].bytes; ftx[0].len = small[0].len;   /* paid  */
+    ftx[1].data = small[1].bytes; ftx[1].len = small[1].len;   /* paid  */
+    ftx[2].data = small[2].bytes; ftx[2].len = small[2].len;   /* under */
+
+    CHECK(hf3_process(app, ftx, 3) == NODUS_ABCI_PROPOSAL_STATUS_ACCEPT,
+          "H, price 0: no fee check — the rule is off");
+
+    CHECK(hf3_cc_insert(g.w, (uint8_t)DNAC_CFG_GAS_PRICE_RAW_PER_UNIT, 1,
+                        1) == 0, "price 1 @1");
+    CHECK(hf3_process(app, ftx, 3) == NODUS_ABCI_PROPOSAL_STATUS_REJECT,
+          "H, price 1: Process REJECTs a block carrying an underpaid "
+          "envelope");
+    CHECK(hf3_process(app, ftx, 2) == NODUS_ABCI_PROPOSAL_STATUS_ACCEPT,
+          "H, price 1: the same block without it is ACCEPTed");
+    kept = hf3_prepare(app, ftx, 3, &resp);
+    CHECK(kept == 2, "H, price 1: Prepare drops exactly one envelope");
+    for (i = 0; i < 2; i++) {
+        CHECK(resp.txs[i].data != small[2].bytes,
+              "H, price 1: the dropped one is the underpaid one");
+    }
+    CHECK(build_cc_env(g.w, g.chain32, 0x3F03, &cc) == 0,
+          "an all-SYSTEM chain_config envelope (fee 0)");
+    ftx[3].data = cc.bytes; ftx[3].len = cc.len;
+    CHECK(hf3_process(app, &ftx[3], 1) == NODUS_ABCI_PROPOSAL_STATUS_ACCEPT,
+          "H, price 1: an all-SYSTEM envelope stays exempt");
+
+    /* pre-H identity: the row back at 2, price 1 still active */
+    CHECK(hf3_sql(g.w, "UPDATE chain_config_history SET effective_block "
+                       "= 2 WHERE param_id = 8") == 0, "row -> @2");
+    CHECK(hf3_process(app, ftx, 3) == NODUS_ABCI_PROPOSAL_STATUS_ACCEPT,
+          "H-1, price 1: the underpaid block is ACCEPTed — the seam runs "
+          "no fee check below H");
+    kept = hf3_prepare(app, ftx, 3, &resp);
+    CHECK(kept == 3, "H-1, price 1: Prepare keeps all three");
+
+    /* ── (3) rule 5 at H, OFF for contrast ─────────────────────────── */
+    {
+        uint8_t c[200];
+
+        memset(c, 0xA7, sizeof(c));
+        CHECK(cap_env_build(&small[3], bctx->policy, c, sizeof(c), 1,
+                            UINT64_MAX, (uint64_t)INT64_MAX, NULL) == 0,
+              "a ceiling of exactly INT64_MAX, fee UINT64_MAX");
+        memset(c, 0xA8, sizeof(c));
+        CHECK(cap_env_build(&small[4], bctx->policy, c, sizeof(c), 1,
+                            UINT64_MAX, (uint64_t)INT64_MAX + 1u, NULL) == 0,
+              "a ceiling of INT64_MAX + 1, fee UINT64_MAX");
+    }
+    ftx[0].data = small[3].bytes; ftx[0].len = small[3].len;
+    ftx[1].data = small[4].bytes; ftx[1].len = small[4].len;
+    CHECK(hf3_process(app, &ftx[0], 1) == NODUS_ABCI_PROPOSAL_STATUS_REJECT,
+          "H-1: an INT64_MAX ceiling exceeds the bounded unit budget");
+    CHECK(hf3_sql(g.w, "UPDATE chain_config_history SET effective_block "
+                       "= 1 WHERE param_id = 8") == 0, "row -> @1");
+    CHECK(hf3_process(app, &ftx[0], 1) == NODUS_ABCI_PROPOSAL_STATUS_ACCEPT,
+          "H: a ceiling of INT64_MAX is accepted (the flagged budget does "
+          "not bound it, rule 5 admits it)");
+    CHECK(hf3_process(app, &ftx[1], 1) == NODUS_ABCI_PROPOSAL_STATUS_REJECT,
+          "H: a ceiling of INT64_MAX + 1 is REJECTed by rule 5");
+
+    /* ── (3b) rule 6b (decision answer 12): committed replay at H ──────
+     * small[0] (fee paid at price 1, exact ceiling, expiry 0 = never) is
+     * marked COMMITTED by writing its derived intent_id / wire_id into
+     * v2_intent_index — the row cmt_item_index writes for an applied
+     * item. Honest only because no block is applied afterwards (the
+     * case's note above). At H Process REJECTs a block carrying it and
+     * ACCEPTs the same block without it (so the refusal is the replay —
+     * the fee, rule 5 and the unbounded budget all pass small[0]); Prepare
+     * drops exactly it; at H-1 the same block is ACCEPTed (no seam replay
+     * check below H). RED without the seam's replay check: the first
+     * REJECT is an ACCEPT. */
+    {
+        nodus_v2_envelope_t  e0;
+        dna_env_preflight_t *pf0 = calloc(1, sizeof(*pf0));
+        sqlite3_stmt        *stmt = NULL;
+
+        CHECK(pf0 != NULL, "alloc");
+        CHECK(cap_ctx_build(g.w, bctx) == 0, "H: context");
+        e0.env_bytes = small[0].bytes;
+        e0.env_len   = small[0].len;
+        CHECK(nodus_witness_v2_env_preflight_batch(g.w, 1, bctx->rulesets,
+                                                   bctx->n_rulesets, &e0, 1,
+                                                   pf0, NULL, NULL)
+                  == NODUS_V2_ENV_OK, "small[0]'s derived identities");
+        CHECK(sqlite3_prepare_v2(g.w->db, "INSERT INTO v2_intent_index "
+                                 "(intent_id, tx_id, global_height, "
+                                 "global_index) VALUES (?1, ?2, 0, 0)", -1,
+                                 &stmt, NULL) == SQLITE_OK, "prep");
+        sqlite3_bind_blob(stmt, 1, pf0->intent_id, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(stmt, 2, pf0->wire_id, 64, SQLITE_TRANSIENT);
+        CHECK(sqlite3_step(stmt) == SQLITE_DONE, "mark small[0] committed");
+        sqlite3_finalize(stmt);
+        free(pf0);
+
+        ftx[0].data = small[1].bytes; ftx[0].len = small[1].len;   /* fresh */
+        ftx[1].data = small[0].bytes; ftx[1].len = small[0].len;   /* replay */
+        CHECK(hf3_process(app, ftx, 2) == NODUS_ABCI_PROPOSAL_STATUS_REJECT,
+              "H: Process REJECTs a block carrying an already-committed "
+              "envelope");
+        CHECK(hf3_process(app, ftx, 1) == NODUS_ABCI_PROPOSAL_STATUS_ACCEPT,
+              "H: the same block without it is ACCEPTed");
+        kept = hf3_prepare(app, ftx, 2, &resp);
+        CHECK(kept == 1 && resp.txs[0].data == small[1].bytes,
+              "H: Prepare's drop loop excludes exactly the replay");
+        CHECK(hf3_sql(g.w, "UPDATE chain_config_history SET effective_block "
+                           "= 2 WHERE param_id = 8") == 0, "row -> @2");
+        CHECK(hf3_process(app, ftx, 2) == NODUS_ABCI_PROPOSAL_STATUS_ACCEPT,
+              "H-1: the same block is ACCEPTed — no seam replay check below "
+              "H (the item loop would refuse the item code 3, "
+              "test_v2_apply test_hf3_engine)");
+        CHECK(hf3_sql(g.w, "UPDATE chain_config_history SET effective_block "
+                           "= 1 WHERE param_id = 8") == 0, "row -> @1");
+    }
+
+    /* ── (4) rule 4: a non-zero CORE units quota stays a block bound ─ */
+    {
+        dna_domain_manifest_t man, qman;
+        dna_domreg_record_t   rec;
+        uint8_t               enc[DNA_DOMMAN_MAX_ENC_LEN], mh[64];
+        uint8_t               recb[DNA_DOMREG_REC_ENC_LEN];
+        size_t                el = 0;
+        sqlite3_stmt         *stmt = NULL;
+
+        CHECK(nodus_witness_domreg_get(g.w, DNA_DOMAIN_CORE, &rec, &man,
+                                       NULL) == 0, "the CORE manifest");
+        qman = man;
+        qman.quota_verify_cost = 5;     /* covers no real leg's reservation */
+        CHECK(dna_domman_encode(&qman, enc, sizeof(enc), &el) == 0 &&
+              dna_domman_hash(&qman, mh) == 0, "the quota manifest");
+        memcpy(rec.current_manifest_hash, mh, 64);
+        CHECK(dna_domreg_record_encode(&rec, recb) == 0, "the record");
+        CHECK(sqlite3_prepare_v2(g.w->db, "UPDATE domain_registry SET "
+                                 "record=?1, current_manifest=?2 WHERE "
+                                 "domain_id=?3", -1, &stmt, NULL)
+                  == SQLITE_OK, "prep");
+        sqlite3_bind_blob(stmt, 1, recb, sizeof(recb), SQLITE_TRANSIENT);
+        sqlite3_bind_blob(stmt, 2, enc, (int)el, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 3, (sqlite3_int64)DNA_DOMAIN_CORE);
+        CHECK(sqlite3_step(stmt) == SQLITE_DONE, "write the quota manifest");
+        sqlite3_finalize(stmt);
+
+        CHECK(cap_ctx_build(g.w, bctx) == 0 && bctx->hf3_active == 1,
+              "H: context");
+        for (i = 0; i < bctx->budget.n_domains; i++) {
+            if (bctx->budget.dom[i].domain_id == DNA_DOMAIN_CORE) {
+                CHECK(bctx->budget.dom[i].unbounded == 0 &&
+                      bctx->budget.dom[i].remaining_units == 5,
+                      "H: a non-zero quota keeps its real budget");
+            }
+        }
+        /* small[1], not small[0]: (3b) marked small[0] committed, and a
+         * replay refusal would mask the quota's */
+        ftx[0].data = small[1].bytes; ftx[0].len = small[1].len;
+        CHECK(hf3_process(app, ftx, 1) == NODUS_ABCI_PROPOSAL_STATUS_REJECT,
+              "H: the non-zero units quota still refuses the block at "
+              "Process (rule 4, decided A)");
+    }
+
+    /* ── (5) an unreadable price at H is a FAULT ───────────────────── */
+    CHECK(hf3_sql(g.w, "DELETE FROM chain_config_history WHERE "
+                       "param_id = 5 AND effective_block = 1") == 0 &&
+          hf3_sql(g.w, "ALTER TABLE chain_config_history RENAME TO "
+                       "cch_raw") == 0 &&
+          hf3_sql(g.w, "ALTER TABLE cch_raw ADD COLUMN bad INTEGER NOT "
+                       "NULL DEFAULT 0") == 0 &&
+          hf3_sql(g.w, "CREATE VIEW chain_config_history AS SELECT "
+                       "param_id, CASE WHEN bad = 1 THEN "
+                       "abs(-9223372036854775808) ELSE new_value END AS "
+                       "new_value, effective_block, commit_block, tx_hash, "
+                       "proposal_nonce, created_at_unix FROM cch_raw") == 0,
+          "the chain_config view");
+    CHECK(hf3_process(app, &ftx[3], 1) == NODUS_ABCI_PROPOSAL_STATUS_ACCEPT,
+          "the view answers every read while no row is poisoned (the "
+          "non-vacuity leg)");
+    CHECK(hf3_sql(g.w, "INSERT INTO cch_raw (param_id, new_value, "
+                       "effective_block, commit_block, tx_hash, "
+                       "proposal_nonce, created_at_unix, bad) VALUES "
+                       "(5, 1, 1, 0, zeroblob(64), 9905, 0, 1)") == 0,
+          "a param-5 row that raises when evaluated");
+    CHECK(hf3_process(app, &ftx[3], 1) == -1,
+          "H: an unreadable gas price is a node FAULT, never a verdict");
+
+    free(cc.bytes);
+    free(small);
+    free(call);
+    free(txs);
+    free(envs);
+    free(bctx);
+    nodus_cmt_app_ledger_release(app);
+    free(app);
+    gfx_close(&g);
+    return 0;
+}
+
 /* ══ main ════════════════════════════════════════════════════════════ */
 
 int main(void)
@@ -6601,6 +7068,8 @@ int main(void)
         { "check_tx_row_keys",          t_check_tx_row_keys },
         { "prepare_hog_skipped",        t_prepare_hog_skipped },
         { "prepare_fee_per_unit",       t_prepare_fee_per_unit },
+        /* HF-3 (Comet-only block bounds + the proposal fee check) */
+        { "hf3_bounds_and_fee",         t_hf3_bounds_and_fee },
     };
     size_t i, failed = 0, ncases = sizeof(cases) / sizeof(cases[0]);
 

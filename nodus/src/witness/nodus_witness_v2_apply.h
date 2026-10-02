@@ -275,7 +275,13 @@ extern "C" {
  *  byte and the two per-block bounds sit at the same place. Consensus
  *  value: changing it is a devnet wipe + stop-all deploy. Kept a plain
  *  literal (bench_tps_v2.sh reads it from this line). Never a price: it
- *  bounds what a block may reserve, the policy alone prices. */
+ *  bounds what a block may reserve, the policy alone prices.
+ *  HF-3 (chain_config param 8, DNAC_CFG_HF3_ACTIVE; design docs/plans/
+ *  2026-10-01-hf3-comet-block-bounds-design.md §0 rules 2-3): this bound
+ *  holds only BELOW the HF-3 height. From it the block-start context
+ *  marks the global remainder, and every domain slot that would take
+ *  this literal (quota_verify_cost 0), unbounded (res_meter.h flags);
+ *  a non-zero domain quota stays a bound (rule 4). */
 #define NODUS_V2_GLOBAL_UNIT_BUDGET  2097152u
 
 /**
@@ -1331,6 +1337,72 @@ int nodus_witness_v2_env_dry_run(nodus_witness_t *w, const uint8_t *bytes,
 /** Free what nodus_witness_v2_env_dry_run allocated inside `out`
  *  (not `out` itself). NULL-safe. */
 void nodus_witness_v2_env_dry_run_free(nodus_v2_env_dry_run_t *out);
+
+/**
+ * THE HF-1 GAS-PRICE RULE, in its two halves (HF-3, design docs/plans/
+ * 2026-10-01-hf3-comet-block-bounds-design.md §0.2: the proposal seam
+ * runs the SAME rule as the CheckTx dry run and the FinalizeBlock item
+ * loop, with the price read ONCE per seam run).
+ *
+ * The engine's own per-item check (nodus_witness_v2_apply.c
+ * env_gas_price_check) is exactly `_at` followed by `_judge` — there is no
+ * second implementation of either half, so the three sites cannot price
+ * one envelope differently.
+ *
+ * nodus_witness_v2_gas_price_at: the COMMITTED GAS_PRICE_RAW_PER_UNIT
+ * (chain_config param 5) active at `height`, 0 when no row is active.
+ * @return 0 (*price_out set) / -2 the row is unreadable on this node — a
+ *         FAULT, never a verdict; reason written into (reason,
+ *         reason_size).
+ *
+ * nodus_witness_v2_gas_price_judge: PURE. price 0 → the rule is off
+ * (return 0 before any other test); every leg SYSTEM → exempt; otherwise
+ * refuse when fee_amount < max(res_max_total_units × price, the flat
+ * floor) — a u64 overflow of the product is a refusal (no u64 fee can pay
+ * it). @return 0 pass / -1 refused with *code = NODUS_V2_TX_ERR_FEE
+ * (reason written).
+ */
+int nodus_witness_v2_gas_price_at(nodus_witness_t *w, uint64_t height,
+                                  uint64_t *price_out,
+                                  char *reason, size_t reason_size);
+int nodus_witness_v2_gas_price_judge(const dna_env_view_t *v, uint64_t price,
+                                     uint32_t *code,
+                                     char *reason, size_t reason_size);
+
+/**
+ * HF-3 rule 5 (decision docs/plans/decisions/2026-10-01-hf3-comet-only-
+ * block-bounds.md answer 10): from the HF-3 height a declared
+ * res_max_total_units above INT64_MAX is refused — the reference's gas is
+ * int64 (cometbft v0.38.26 abci/types/types.pb.go:2231, :3055), and the
+ * ceiling becomes the item's gas_wanted. PURE; the CALLER decides whether
+ * HF-3 is on (the block-start context's hf3_active) and calls this only
+ * then — at the CheckTx dry run and in the FinalizeBlock item loop (after
+ * the gas-price check, before the reservation) and in the proposal seam
+ * (beside the fee check).
+ * @return 0 pass / -1 refused with *code = NODUS_V2_TX_ERR_CAPACITY
+ *         (reason written).
+ */
+int nodus_witness_v2_units_ceiling_check(const dna_env_view_t *v,
+                                         uint32_t *code,
+                                         char *reason, size_t reason_size);
+
+/**
+ * THE ITEM'S COMMITTED-REPLAY GUARD (HF-3 rule 6b, decision docs/plans/
+ * decisions/2026-10-01-hf3-comet-only-block-bounds.md answer 12): is the
+ * preflighted envelope's intent_id already in the committed intent index,
+ * or its wire_id in the committed tx index? The ONE implementation — the
+ * CheckTx dry run and the FinalizeBlock item loop call it (their order:
+ * preflight → replay → admission → gas price), and from the HF-3 height
+ * the proposal seam (nodus_witness_v2_produce.c) calls it too.
+ * @param item  an index, for the fault text only.
+ * @return 0 with *hit set (1 = already committed); -2 a node-local read
+ *         fault, reason written into (reason, reason_size) — never a
+ *         verdict.
+ */
+int nodus_witness_v2_replay_guard(nodus_witness_t *w,
+                                  const dna_env_preflight_t *p,
+                                  size_t item, int *hit,
+                                  char *reason, size_t reason_size);
 
 /**
  * One claim's canonical NULLIFIER from its wire bytes — the derivation

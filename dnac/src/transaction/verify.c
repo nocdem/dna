@@ -413,7 +413,7 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *   - signer_count == 1
  *   - chain_config_fields.param_id ∈ {1..DNAC_CFG_PARAM_MAX_ID}
  *   - dnac_cfg_param_read_by_consensus(param_id) (0.20.3) — the running
- *     consensus reads the parameter; today {4, 5, 6, 7}
+ *     consensus reads the parameter; today {4, 5, 6, 7, 8}
  *   - chain_config_fields.new_value in per-param range (§5.2):
  *       MAX_TXS_PER_BLOCK      : RETIRED (R3 W4-C delta 2, operator
  *                                "kaldır" 2026-09-18;
@@ -441,7 +441,9 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *                                (final pre-testnet wipe W-C)
  *       HF2_ACTIVE             : exactly DNAC_CFG_HF2_ACTIVE_ON = 1 (HF-2;
  *                                a one-way switch)
- *   - signed_at_block > 0              (CC-AUDIT-008)
+ *       HF3_ACTIVE             : exactly DNAC_CFG_HF3_ACTIVE_ON = 1 (HF-3;
+ *                                a one-way switch)
+ *   - signed_at_block > 0             (CC-AUDIT-008)
  *   - valid_before_block > effective_block_height
  *   - valid_before_block > signed_at_block
  *   - proposal_nonce, signed_at_block, valid_before_block and
@@ -535,6 +537,20 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
                               "a legal value",
                               (unsigned long long)cc->new_value,
                               (unsigned long long)DNAC_CFG_HF2_ACTIVE_ON);
+                return DNAC_ERROR_INVALID_PARAM;
+            }
+            break;
+        case DNAC_CFG_HF3_ACTIVE:
+            /* HF-3 (design 2026-10-01-hf3-comet-block-bounds-design.md
+             * rev 3), mirroring nodus_witness_chain_config.c's
+             * scalar_rules: EXACTLY 1 — a one-way switch, the HF-2 shape
+             * above. */
+            if (cc->new_value != DNAC_CFG_HF3_ACTIVE_ON) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "CHAIN_CONFIG: HF3_ACTIVE=%llu, only %llu is "
+                              "a legal value",
+                              (unsigned long long)cc->new_value,
+                              (unsigned long long)DNAC_CFG_HF3_ACTIVE_ON);
                 return DNAC_ERROR_INVALID_PARAM;
             }
             break;

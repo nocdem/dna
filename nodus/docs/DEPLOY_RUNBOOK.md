@@ -35,7 +35,7 @@ One node at a time for a rolling deploy; all nodes at once for a stop-all.
 | Anything that changes **which blocks are valid** (verify/admission rules, fee gates, consensus checks) | **STOP-ALL** |
 | `state_root` format / wire format / DB schema | **STOP-ALL + chain wipe** |
 | Any consensus change (the cometbft port's `cmt_*`, the application's ABCI rows, the genesis document) | **STOP-ALL + fresh chain** — a version-3 chain has no migration; §2.1 explains why there is no `pbft_state` step any more |
-| A **height-activated** rule that is inert until a chain-config vote turns it on (HF-1 gas price, nodus 0.19.80) | **Rolling** binary upgrade (the rule is byte-identical to the old binary while no row exists) — then the vote, ONLY after 7/7 run the new binary. §2.2 |
+| A **height-activated** rule that is inert until a chain-config vote turns it on (HF-1 gas price, nodus 0.19.80; HF-2 param 7; HF-3 param 8) | **Rolling** binary upgrade (the rule is byte-identical to the old binary while no row exists) — then the vote, ONLY after 7/7 run the new binary. §2.2 |
 | Logging, metrics, non-consensus tooling | Rolling, one node at a time |
 
 **Why stop-all for validity changes:** during a rolling window the cluster runs mixed
@@ -460,6 +460,61 @@ applies instead of stopping every node.
 5. **Every later hard fork is voted under the power rule** (decision
    `2026-09-30-governance-stake-weight-and-power-cap.md` item 1: this is the
    activation path of the others).
+
+**HF-3 — the same procedure for chain-config param 8 `HF3_ACTIVE`** (design
+`docs/plans/2026-10-01-hf3-comet-block-bounds-design.md` rev 3; decision
+`docs/plans/decisions/2026-10-01-hf3-comet-only-block-bounds.md`; mechanism
+`ARCHITECTURE.md` "HF-3"). From H a block is bounded by cometbft's consensus params only
+(`Block.MaxBytes` 22 020 096 and the 3 075-envelope bound): the 2 MiB envelope-byte bound
+is not checked, the global unit budget and every quota-0 domain's budget are unbounded
+(today ≤ 255 one-in/one-out spends per block; afterwards up to ~3 000 envelopes), a
+declared `res_max_total_units` above `INT64_MAX` is refused, and ProcessProposal refuses
+a block carrying an envelope that underpays the gas price or is already committed. The
+decision orders HF-3 BEFORE the nodus component split (answer 8).
+1. **Rolling binary upgrade to the HF-3 build, one node at a time**, as step 1 above.
+   No wipe: with no param-8 row the HF-3 binary decides every block exactly as the binary
+   it replaces (ARCHITECTURE.md "HF-3", "Byte-identical while off") — HF-3 is inert until
+   voted.
+2. **Before the vote — all of the following, on every validator:**
+   - **Per-node version check.** Each node's own log shows the HF-3 build's
+     `Nodus v… running` line as the LAST such line (step 2 above). Do NOT rely on the
+     absence of a `PEER SCHEMA MISMATCH` line — nothing has emitted it since 0.20.0. An
+     old binary does not know id 8: it refuses the vote's item, commits the vote's block
+     anyway and diverges there — at the VOTE's block, whatever the grace. Recovery is
+     the one below (decision `2026-09-26-hard-fork-lagging-node.md`): wipe +
+     genesis-pin rejoin on the HF-3 binary; a restart alone does not recover it.
+   - **6 live peers per validator (full mesh on 4004).** A post-H block can reach 22 MB;
+     over one link at 5 120 000 B/s that is ≥ 4.3 s, longer than `timeout_propose` in
+     rounds 0-2, so a validator fed through a single link may prevote nil (design R4-5).
+     ⚠ This runbook has no command that reads it yet: `cluster-status`'s `PEERS` column
+     counts the inter-node cluster table's ALIVE entries (`nodus_server.c`
+     `handle_t2_status`), not the 4004 p2p mesh, and the only 4004 signal in the log is
+     the ERROR `this node holds a chain but has … connected` (`nodus_witness_p2p.c`
+     `no_peer_check`), which fires only at 0 connected. The method is an open item —
+     settle it before the vote.
+   - **Harness measurements** (decision answer 11; design §2), on the HF-3 build: fsync +
+     PrepareProposal time at 336 block parts (PrepareProposal runs after the propose timer
+     is armed, and each internal part message is WAL-fsync'd before the first is
+     gossiped), and FinalizeBlock time on a block of ~3 000 envelopes. Liveness at that
+     size is NOT measured anywhere else. `test_cmt_hf3_block_bounds.sh` does NOT perform
+     these measurements (stagef README, its row) — they are separate runs.
+   - **The effective height `<H>` is asked of the operator** before the vote (decision
+     item 4), never chosen by whoever runs the vote.
+3. **Vote** with the HF-3 CLI:
+   `nodus-cli chain-config propose --param HF3_ACTIVE --value 1 --effective <H>`
+   (`<H>` ≥ tip + 1 + 720, the ERGONOMIC grace). The value domain is exactly 1; there is
+   no "off" vote. The row must appear identically on 7/7 (`chain_config_history`:
+   param_id 8). HF-2's step 3 ("vote under TODAY's rule — seats") described the vote
+   BEFORE HF-2's own H; HF-3's vote comes after it on the live chain, so its approval set
+   is judged by the power rule (HF-2 step 4) — the design records the live chain's
+   param 7 = 1 effective 1500 (read 2026-10-02, EU-1 + EU-2).
+4. **Before H** nothing changes. **From H** the bounds above hold. Wallets and CLIs need
+   no new release (no wire or pin change); the per-block count is no longer capped by
+   the declared unit ceiling, which stays the fee base (`units × gas price`).
+5. **Reverting** is another hard fork: there is no off value, and the application sends
+   no `consensus_param_updates`, so `Block.MaxBytes` cannot be lowered by governance.
+   Accepted by the operator (decision answer 7): any seat on the HF-3 binary can propose
+   param 8 at a height the operator did not pick — today all 7 seats are the operator's.
 
 **A node that missed the vote (still on the old binary when R committed):**
 - Upgrading its binary and restarting does **NOT** recover it: the ABCI handshake at

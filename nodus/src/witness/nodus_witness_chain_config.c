@@ -80,7 +80,7 @@
 #define CC_MAX_SIGS                 CC_MAX_ACTIVE
 #define CC_PURPOSE_TAG_LEN          16
 #define CC_TX_TYPE                  10    /* DNAC_TX_CHAIN_CONFIG */
-#define CC_PARAM_MAX_ID             7
+#define CC_PARAM_MAX_ID             8
 #define CC_PARAM_MAX_TXS            1
 #define CC_PARAM_BLOCK_INTERVAL     2
 #define CC_PARAM_INFLATION_START    3
@@ -88,6 +88,7 @@
 #define CC_PARAM_GAS_PRICE          5     /* HF-1 — DNAC_CFG_GAS_PRICE_RAW_PER_UNIT */
 #define CC_PARAM_TOKEN_CREATE_FEE   6     /* W-C — DNAC_CFG_TOKEN_CREATE_FEE_RAW */
 #define CC_PARAM_HF2_ACTIVE         7     /* HF-2 — DNAC_CFG_HF2_ACTIVE */
+#define CC_PARAM_HF3_ACTIVE         8     /* HF-3 — DNAC_CFG_HF3_ACTIVE */
 /* Number of per-param cache rows dimensions: param ids are 1..CC_PARAM_MAX_ID
  * and index 0 is unused, so the arrays are CC_PARAM_MAX_ID + 1 wide. */
 #define CC_PARAM_SLOTS              (CC_PARAM_MAX_ID + 1)
@@ -114,6 +115,9 @@
 /* HF-2 HF2_ACTIVE value domain (design 2026-09-30-gov-weight-netzero-
  * design.md rev 2): exactly 1 — a one-way switch, no "off" vote. */
 #define CC_HF2_ACTIVE_ON            1ULL
+/* HF-3 HF3_ACTIVE value domain (design 2026-10-01-hf3-comet-block-bounds-
+ * design.md rev 3 §0): exactly 1 — the HF-2 one-way switch shape. */
+#define CC_HF3_ACTIVE_ON            1ULL
 
 static const uint8_t CC_PURPOSE_TAG[CC_PURPOSE_TAG_LEN] = {
     'D','N','A','C','_','C','C','_','v','1',0,0,0,0,0,0
@@ -161,6 +165,10 @@ _Static_assert(CC_PARAM_HF2_ACTIVE == DNAC_CFG_HF2_ACTIVE,
                "CC_PARAM_HF2_ACTIVE drift vs dnac param id");
 _Static_assert(CC_HF2_ACTIVE_ON == DNAC_CFG_HF2_ACTIVE_ON,
                "HF2_ACTIVE value drift vs dnac");
+_Static_assert(CC_PARAM_HF3_ACTIVE == DNAC_CFG_HF3_ACTIVE,
+               "CC_PARAM_HF3_ACTIVE drift vs dnac param id");
+_Static_assert(CC_HF3_ACTIVE_ON == DNAC_CFG_HF3_ACTIVE_ON,
+               "HF3_ACTIVE value drift vs dnac");
 /* nodus_chain_config.h keeps this as a bare literal so it stays free of
  * shared/ includes — pin it here, the one TU that sees both. */
 _Static_assert(NODUS_CC_RATE_LIMIT_MAX_PROPOSERS == CC_MAX_ACTIVE,
@@ -705,6 +713,12 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
              * once, the old rules hold below H, the new ones from H). */
             if (new_value != CC_HF2_ACTIVE_ON) return -1;
             break;
+        case CC_PARAM_HF3_ACTIVE:
+            /* HF-3: EXACTLY 1, the HF-2 shape above — a one-way switch,
+             * no "off" vote (design 2026-10-01-hf3-comet-block-bounds-
+             * design.md §0). */
+            if (new_value != CC_HF3_ACTIVE_ON) return -1;
+            break;
         default:
             return -1;
     }
@@ -764,6 +778,13 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
              * somehow reaches this function directly with the retired
              * id. */
             return (uint64_t)-1;
+        case CC_PARAM_HF3_ACTIVE:
+            /* HF-3 — ERGONOMIC, HF-2's class (design 2026-10-01-hf3-
+             * comet-block-bounds-design.md §0: "an explicit case, not the
+             * default: branch"). Its OWN return, not a fall-through into
+             * default:, so a later change to the default class cannot
+             * move this switch's grace. */
+            return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
         case CC_PARAM_GAS_PRICE:
             /* HF-1 — ERGONOMIC by decision (2026-09-25-gas-price.md,
              * detail decision 3: "bekleme süresi 720 blok"). Named
@@ -1298,7 +1319,7 @@ static int cc_appr_verdict(nodus_witness_t *w,
         free(bctx); free(pf); free(fps); free(committee);
         return cc_appr_refuse(rsp, "fault");
     }
-    int bcrc = nodus_witness_v2_block_ctx_build(w, bctx);
+    int bcrc = nodus_witness_v2_block_ctx_build(w, h, bctx);
     if (bcrc != 0) {
         free(bctx); free(pf); free(fps); free(committee);
         return cc_appr_refuse(rsp, bcrc == -1 ? "SYSTEM is not ACTIVE"
