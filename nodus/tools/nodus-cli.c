@@ -78,6 +78,7 @@
 #include "crypto/utils/qgp_fingerprint.h"      /* O15F T6: fp raw<->hex      */
 #include "nodus/nodus_v2_spend.h"              /* the shared SPEND builder   */
 #include "client/nodus_v2_stake.h"             /* the shared stake builder   */
+#include "client/nodus_v2_name.h"              /* the shared name builder    */
 #endif
 
 /* CHECKTX-P1 round 3 — the expiry every envelope this CLI builds carries:
@@ -4998,42 +4999,10 @@ done:
 /* ══ HF-4 — on-chain names (design docs/plans/2026-10-02-onchain-names-
  *    design.md rev 4 §1.6, §2; decision 2026-10-02-onchain-names.md) ═══ */
 
-/* The NAME_REGISTER call's input ceiling (rt_native.c RTN_NAME_MAX_IN:
- * the 16-read budget minus the pool, NAME and OWNER reads). */
-#define T8_NAME_MAX_IN    13u
-#define T8_NAME_MAX_OUTS  1u    /* native change only                   */
-
-/* The EXACT (res_max_effects, res_max_effect_bytes) of one CORE
- * NAME_REGISTER leg — rtn_name_exec's effect list: n_out UTXO CREATEs
- * (key 64, value 284), ONE NAME CREATE (key name_len, value 72), ONE pool
- * SET (key 1, value 8), n_in DELETEs (key 64, value 0):
- *   effects = n_in + n_out + 2
- *   bytes   = 23 + 84·effects + n_out·(64 + 284) + (name_len + 72)
- *             + (1 + 8) + n_in·64 */
-static void t8_name_effect_decl(uint32_t n_in, uint32_t n_out,
-                                uint32_t name_len, uint32_t *effects_out,
-                                uint32_t *bytes_out) {
-    const uint32_t effects = n_in + n_out + 2u;
-    *effects_out = effects;
-    *bytes_out = (uint32_t)DNA_EFFECT_FIXED_HEAD +
-                 (uint32_t)DNA_EFFECT_RECORD_LEN * effects +
-                 n_out * (64u + NODUS_RT_CORE_UTXO_REC_LEN) +
-                 (name_len + 72u) + (1u + 8u) + n_in * 64u;
-}
-
-/* ASCII-only lower-casing (design §2: a locale tolower maps 'I' to 'ı'
- * under tr_TR); the result is then judged by the consensus byte rule.
- * @return 0 / -1 (too long). */
-static int t8_name_lower(const char *in, char out[DNAC_NAME_MAX_LEN + 1]) {
-    size_t n = strlen(in);
-    if (n > DNAC_NAME_MAX_LEN) return -1;
-    for (size_t i = 0; i < n; i++) {
-        char c = in[i];
-        out[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
-    }
-    out[n] = '\0';
-    return 0;
-}
+/* The name normaliser (ASCII-only lower-casing + the consensus byte rule),
+ * the price tier index, the effect declaration and the whole envelope
+ * build live in the shared builder nodus/src/client/nodus_v2_name.{c,h}
+ * (the web wallet's WASM module compiles the same file). */
 
 /* One read-only session as the CLI's own identity. 0 / -1. */
 static int t8_session(nodus_client_t *client, const char *ip, uint16_t port) {
@@ -5107,8 +5076,7 @@ static int cmd_name_query(const char *server_ip, uint16_t server_port,
                           int is_of, const char *arg) {
     char lname[DNAC_NAME_MAX_LEN + 1];
     if (!is_of) {
-        if (t8_name_lower(arg, lname) != 0 ||
-            !dnac_name_bytes_ok((const uint8_t *)lname, strlen(lname))) {
+        if (nodus_v2_name_normalize(arg, lname) != 0) {
             fprintf(stderr, "a name is 3-36 of a-z0-9 (an all-hex name of 8+ "
                     "characters is never a name)\n");
             return 1;
@@ -5164,7 +5132,6 @@ static int cmd_name_register(const char *server_ip, uint16_t server_port,
     const char *keys_csv = NULL, *submit = NULL, *raw_name = NULL;
     uint64_t fee = 0;
     int dry_run = 0, have_fee = 0, bad_arg = 0;
-    static const uint8_t native_tok[64] = {0};
 
     for (int i = cmd_start + 2; i < argc; i++) {  /* skip "name register" */
         const char *a = argv[i];
@@ -5195,8 +5162,7 @@ static int cmd_name_register(const char *server_ip, uint16_t server_port,
         return 1;
     }
     char name[DNAC_NAME_MAX_LEN + 1];
-    if (t8_name_lower(raw_name, name) != 0 ||
-        !dnac_name_bytes_ok((const uint8_t *)name, strlen(name))) {
+    if (nodus_v2_name_normalize(raw_name, name) != 0) {
         fprintf(stderr, "a name is 3-36 of a-z0-9 (an all-hex name of 8+ "
                 "characters is never a name)\n");
         return 1;
@@ -5205,9 +5171,9 @@ static int cmd_name_register(const char *server_ip, uint16_t server_port,
 
     int rc = 1, connected = 0, utxos_valid = 0;
     nodus_identity_t *keys = NULL;
-    nodus_v2_coin_t *coins = NULL;
-    uint8_t *call = NULL, *auth = NULL, *env_bytes = NULL;
-    dna_env_preflight_t *pf = NULL;
+    nodus_v2_name_coin_t *coins = NULL;
+    nodus_v2_name_built_t built;
+    memset(&built, 0, sizeof(built));
     nodus_dnac_utxo_result_t utxos;
     memset(&utxos, 0, sizeof(utxos));
     nodus_client_t client;
@@ -5297,7 +5263,8 @@ static int cmd_name_register(const char *server_ip, uint16_t server_port,
                     "refusing to guess a price\n", prc);
             goto done;
         }
-        price = np.price[name_len >= 6 ? 3 : name_len - 3];
+        if (nodus_v2_name_price_for(np.price, name_len, &price) != 0)
+            goto done;
         nodus_dnac_fee_info_t fi;
         memset(&fi, 0, sizeof(fi));
         int frc = nodus_client_dnac_fee_info(&client, &fi);
@@ -5330,162 +5297,110 @@ static int cmd_name_register(const char *server_ip, uint16_t server_port,
                 "expiry on it\n");
         goto done;
     }
+    /* the listed rows as they are; the shared builder applies the filter
+     * (zero / non-native / locked at tip + 1), the largest-first
+     * selection, the call layout and the fee fixed point */
     coins = calloc((size_t)(utxos.count > 0 ? utxos.count : 1),
                    sizeof(*coins));
     if (!coins) goto done;
-    int n_coins = 0;
     for (int i = 0; i < utxos.count; i++) {
         const nodus_dnac_utxo_entry_t *e = &utxos.entries[i];
-        if (e->amount == 0) continue;
-        if (memcmp(e->token_id, native_tok, 64) != 0) continue;
-        if (e->unlock_block >= tip + 1) continue;    /* locked at tip+1  */
-        nodus_v2_coin_t *c = &coins[n_coins++];
-        memcpy(c->nul, e->nullifier, 64);
-        c->amount = e->amount;
-        c->kind = 0;
-        c->used = 0;
+        memcpy(coins[i].nul, e->nullifier, 64);
+        coins[i].amount = e->amount;
+        memcpy(coins[i].token, e->token_id, 64);
+        coins[i].unlock_block = e->unlock_block;
     }
-    if (nodus_v2_spend_sort_coins(coins, n_coins,
-                                  NODUS_V2_SPEND_ORDER_LARGEST_FIRST) != 0)
-        goto done;
 
-    const uint32_t alen = 1u + NODUS_RT_AUTH_SIGNER_LEN;
-    call = malloc(1 + DNAC_NAME_MAX_LEN + 8 + 2 + (size_t)T8_NAME_MAX_IN * 64 +
-                  (size_t)T8_NAME_MAX_OUTS * NODUS_V2_SPEND_OUT_LEN);
-    auth = calloc(1, alen);
-    pf   = calloc(1, sizeof(*pf));
-    if (!call || !auth || !pf) goto done;
-
-    dna_env_leg_ctx_t lctx;
-    memset(&lctx, 0, sizeof(lctx));
-    lctx.domain_id       = DNA_DOMAIN_CORE;
-    lctx.ruleset_version = core_rt->ruleset_version;
-    memcpy(lctx.ruleset_hash, core_rt->ruleset_hash, 64);
-
-    nodus_v2_spend_plan_t plan;
-    dna_env_leg_in_t leg;
-    dna_env_in_t env_in;
-    uint64_t units = 0, change = 0;
-    for (int pass = 0; ; pass++) {
-        uint64_t need = 0;
-        if (fee > UINT64_MAX - price) {
-            fprintf(stderr, "fee + price overflows u64\n");
-            goto done;
-        }
-        need = fee + price;
-        memset(&plan, 0, sizeof(plan));
-        for (int i = 0; i < n_coins; i++) coins[i].used = 0;
-        int prc = nodus_v2_spend_pick(coins, n_coins, 0, need, &plan,
-                                      &plan.native_in);
-        if (prc == 0 && plan.n_in > (int)T8_NAME_MAX_IN) prc = -2;
-        if (prc != 0) {
+    nodus_v2_ruleset_id_t rs;
+    cli_ruleset_id(core_rt, sys_rt, &rs);
+    nodus_v2_name_req_t req;
+    memset(&req, 0, sizeof(req));
+    if (cli_env_expiry(tip, &req.expiry_height) != 0) goto done;
+    req.rs        = &rs;
+    req.chain32   = chain32;
+    req.tip       = tip;
+    req.pk        = keys[0].pk.bytes;
+    req.sk        = keys[0].sk.bytes;
+    req.name      = name;
+    req.price     = price;
+    req.fee       = fee;
+    req.fee_fixed = have_fee;
+    req.gas_price = gas_price;
+    req.coins     = coins;
+    req.n_coins   = utxos.count;
+    req.rand      = cli_rand;
+    req.rand_ctx  = NULL;
+    nodus_v2_name_err_t ne;
+    int brc = nodus_v2_name_build(&req, &built, &ne);
+    if (brc != NODUS_V2_SPEND_OK) {
+        switch (brc) {
+        case NODUS_V2_SPEND_ERR_INSUFFICIENT:
+        case NODUS_V2_SPEND_ERR_MAX_INPUTS:
+        case NODUS_V2_SPEND_ERR_INPUT_SUM:
             fprintf(stderr, "cannot fund price %llu + fee %llu raw from at "
                     "most %u unlocked native coin(s) (%d listed) — nothing "
                     "was submitted\n", (unsigned long long)price,
-                    (unsigned long long)fee, (unsigned)T8_NAME_MAX_IN,
-                    n_coins);
-            goto done;
-        }
-        change = plan.native_in - need;
-
-        uint8_t nulls[NODUS_V2_SPEND_MAX_IN][64];
-        for (int j = 0; j < plan.n_in; j++)
-            memcpy(nulls[j], coins[plan.idx[j]].nul, 64);
-        qsort(nulls, (size_t)plan.n_in, 64, nodus_v2_nul_cmp);
-
-        size_t off = 0;
-        call[off++] = (uint8_t)name_len;
-        memcpy(call + off, name, name_len);          off += name_len;
-        for (int b = 0; b < 8; b++)
-            call[off++] = (uint8_t)(price >> (56 - 8 * b));
-        call[off++] = (uint8_t)plan.n_in;
-        for (int j = 0; j < plan.n_in; j++) {
-            memcpy(call + off, nulls[j], 64);
-            off += 64;
-        }
-        const uint32_t n_out = change > 0 ? 1u : 0u;
-        call[off++] = (uint8_t)n_out;
-        if (n_out) {
-            uint8_t seed[32];
-            if (nodus_random(seed, sizeof(seed)) != 0) goto done;
-            nodus_v2_xfer_out_put(call + off, owner_fp, change, NULL, seed);
-            off += NODUS_V2_SPEND_OUT_LEN;
-        }
-
-        memset(&leg, 0, sizeof(leg));
-        leg.hdr.domain_id       = DNA_DOMAIN_CORE;
-        leg.hdr.runtime_op      = DNA_CORERULE_NAME_REGISTER;
-        leg.hdr.ruleset_version = core_rt->ruleset_version;
-        leg.hdr.access_mode     = DNA_ENV_ACCESS_INVOKE;
-        leg.hdr.auth_kind       = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
-        leg.hdr.call_len        = (uint32_t)off;
-        leg.hdr.auth_len        = alen;
-        t8_name_effect_decl((uint32_t)plan.n_in, n_out, (uint32_t)name_len,
-                            &leg.hdr.res_max_effects,
-                            &leg.hdr.res_max_effect_bytes);
-        leg.call_data = call;
-        memset(auth, 0, alen);
-        leg.auth_data = auth;
-
-        memset(&env_in, 0, sizeof(env_in));
-        if (cli_env_expiry(tip, &env_in.expiry_height) != 0) goto done;
-        env_in.fee_amount    = fee;
-        env_in.leg_count     = 1;
-        env_in.legs          = &leg;
-        /* reads: inputs + the pool + NAME + OWNER (read plan) */
-        if (nodus_v2_spend_ceiling(&env_in, sys_rt->meter_policy,
-                                   (uint32_t)plan.n_in + 3u, &units) != 0) {
+                    (unsigned long long)ne.fee, (unsigned)NODUS_V2_NAME_MAX_IN,
+                    ne.n_eligible);
+            break;
+        case NODUS_V2_SPEND_ERR_OVERFLOW:
+            fprintf(stderr, "fee + price overflows u64\n");
+            break;
+        case NODUS_V2_SPEND_ERR_METER:
             fprintf(stderr, "could not size res_max_total_units\n");
-            goto done;
-        }
-        env_in.res_max_total_units = units;
-        if (gas_price == 0) break;
-        if (units > UINT64_MAX / gas_price) goto done;
-        const uint64_t required = units * gas_price;
-        if (required <= fee) break;
-        if (have_fee) {
+            break;
+        case NODUS_V2_SPEND_ERR_FEE_BELOW_GAS:
             fprintf(stderr, "--fee %llu is below units %llu x gas price %llu "
                     "= %llu raw — nothing was submitted\n",
-                    (unsigned long long)fee, (unsigned long long)units,
-                    (unsigned long long)gas_price,
-                    (unsigned long long)required);
-            goto done;
+                    (unsigned long long)ne.fee, (unsigned long long)ne.units,
+                    (unsigned long long)ne.gas_price,
+                    (unsigned long long)ne.required);
+            break;
+        case NODUS_V2_NAME_ERR_FEE_FLOOR:
+            fprintf(stderr, "--fee %llu is below the network fee floor %llu "
+                    "raw\n", (unsigned long long)ne.fee,
+                    (unsigned long long)ne.floor);
+            break;
+        case NODUS_V2_SPEND_ERR_PREFLIGHT1:
+            fprintf(stderr, "pass-1 preflight failed\n");
+            break;
+        case NODUS_V2_SPEND_ERR_SIGN:
+            fprintf(stderr, "leg %d signature failed\n", ne.leg);
+            break;
+        case NODUS_V2_SPEND_ERR_PREFLIGHT2:
+            fprintf(stderr, "pass-2 preflight (self-check) failed\n");
+            break;
+        default:
+            fprintf(stderr, "the name registration could not be built "
+                    "(rc=%d) — nothing was submitted\n", brc);
+            break;
         }
-        if (pass >= 7) goto done;
-        fee = required;
-    }
-
-    uint8_t *auths[1] = { auth };
-    size_t env_len = 0;
-    if (cli_sign_one_key(&env_in, auths, &lctx, chain32, tip, &keys[0],
-                         &env_bytes, &env_len, pf) != 0)
         goto done;
+    }
     printf("name register: %s -> %.16s... price=%llu fee=%llu inputs=%d "
            "change=%llu units=%llu expiry=%llu generation=%u\n", name,
-           owner_fp, (unsigned long long)price, (unsigned long long)fee,
-           plan.n_in, (unsigned long long)change, (unsigned long long)units,
-           (unsigned long long)env_in.expiry_height,
+           owner_fp, (unsigned long long)built.price,
+           (unsigned long long)built.fee, built.n_in,
+           (unsigned long long)built.change, (unsigned long long)built.units,
+           (unsigned long long)built.dec.expiry_height,
            (unsigned)core_rt->generation);
     printf("  wire_id=");
-    for (int b = 0; b < 64; b++) printf("%02x", pf->wire_id[b]);
+    for (int b = 0; b < 64; b++) printf("%02x", built.wire_id[b]);
     printf("\n  intent_id=");
-    for (int b = 0; b < 64; b++) printf("%02x", pf->intent_id[b]);
+    for (int b = 0; b < 64; b++) printf("%02x", built.intent_id[b]);
     printf("\n");
     fflush(stdout);
     if (dry_run) {
         printf("  PREFLIGHT SELF-CHECK: OK (1 leg CORE NAME_REGISTER) — not "
                "submitted (--dry-run)\n");
-    } else if (t6_submit_on(&client, &keys[0], pf->wire_id, env_bytes,
-                            (uint32_t)env_len) != 0) {
+    } else if (t6_submit_on(&client, &keys[0], built.wire_id, built.env,
+                            (uint32_t)built.env_len) != 0) {
         goto done;
     }
     rc = 0;
 
 done:
-    free(env_bytes);
-    free(call);
-    free(auth);
-    free(pf);
+    nodus_v2_name_built_free(&built);
     free(coins);
     if (utxos_valid) nodus_client_free_utxo_result(&utxos);
     if (connected) nodus_client_close(&client);

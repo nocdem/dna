@@ -154,6 +154,11 @@ set(NODUS_SOURCES
     # caller: the compiled table (nodus-cli) or the generated pins header
     # (the browser, nodus_v2_stake_ruleset_from_pins).
     src/client/nodus_v2_stake.c
+    # The shared on-chain name registration builder (HF-4, one CORE
+    # NAME_REGISTER leg) — nodus-cli `name register`'s body, moved out
+    # I/O-free like the two builders above; the web wallet's WASM module
+    # compiles the same file (decision 2026-10-02-onchain-names.md).
+    src/client/nodus_v2_name.c
     # nodus_cc_client.c (the CLI's short-lived 4004 p2p peer) is DELETED:
     # governance approvals are collected by the proposer's own node
     # (decision docs/plans/decisions/2026-09-26-cc-approval-via-own-node.md,
@@ -2297,6 +2302,13 @@ register_witness_test(test_v2_spend_build)
 # read-back == request, the pre-refactor nodus-cli layout restated, the
 # twin build identical outside the two auth blobs, refusals.
 register_witness_test(test_v2_stake_build)
+
+# The shared name registration builder (src/client/nodus_v2_name.c, HF-4):
+# the helpers, the call against a literal fixture of the pre-move nodus-cli
+# bytes, the pre-move algorithm restated (gas 0 and a two-pass gas price),
+# refusals, and a library-built registration admitted by the CheckTx dry
+# run and applied on a seeded generation-2 chain.
+register_witness_test(test_v2_name_build)
 
 # test_cc_client (nodus_client_cc_appr_send's guard paths) is DELETED with
 # the client it tested (decision docs/plans/decisions/2026-09-26-cc-
