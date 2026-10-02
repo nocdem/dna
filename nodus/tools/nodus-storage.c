@@ -17,7 +17,9 @@
  *   - the partial-wipe gate stays in core (item 9).
  *
  * Same command line and same config file as nodus-server
- * (nodus_node_config.c, item 18). Read here: data_path, identity_path,
+ * (nodus_node_config.c, item 18 — nodus_node_config_load_storage: the 4004
+ * p2p keys and the network file are not read, --derive-v2-genesis is
+ * refused). Read here: data_path, identity_path,
  * require_peer_auth (the 4002 handshake of the dialed connections),
  * external_ip / bind_ip and peer_port (this node's own entry in the hash
  * ring, as nodus_server_init gives the in-process DHT). Everything else is
@@ -112,8 +114,11 @@ int main(int argc, char **argv) {
     nodus_server_config_t config;
     memset(&config, 0, sizeof(config));
 
-    int exit_code = nodus_node_config_load(argc, argv, "Nodus Storage",
-                                           &config);
+    /* The parse without the witness-side parts (no 4004 p2p section, no
+     * network file, no derivation one-shot): this binary links no witness
+     * object (tests/storage_linked.cmake). */
+    int exit_code = nodus_node_config_load_storage(argc, argv, "Nodus Storage",
+                                                   &config);
     if (exit_code >= 0)
         return exit_code;
 

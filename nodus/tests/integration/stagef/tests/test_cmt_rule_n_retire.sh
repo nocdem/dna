@@ -291,7 +291,11 @@ if stagef_node_is_split "$VICTIM"; then
     # nodus-server (core, DHT) keeps running (header, WHAT IT LEAVES BEHIND).
     VPID=$(stagef_node_witness_pid "$VICTIM" || true)
 else
-    VPID=$(pgrep -f "node$VICTIM/data" | head -1 || true)
+    # The node's nodus-server — the validator when the witness runs
+    # in-process (combined, and split S5b's splits / mixeds, where
+    # node$VICTIM's nodus-storage shares the data directory): picked by
+    # its executable (stagef_node_core_pid), never by pgrep order.
+    VPID=$(stagef_node_core_pid "$VICTIM" || true)
 fi
 [ -n "$VPID" ] || die "node$VICTIM is not running"
 kill -STOP "$VPID"

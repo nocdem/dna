@@ -225,6 +225,26 @@ stagef_node_storage_pid() {
     return 1
 }
 
+# stagef_node_core_pid N — the pid of node N's nodus-server (the core in a
+# split mode, the whole node otherwise): the ONE process whose command
+# line names node N's data directory AND whose executable is
+# STAGEF_NODUS_BIN — never node N's nodus-witness or nodus-storage, which
+# share that data directory. Deterministic in every mode (no `head -1`
+# over pgrep order). Prints nothing and returns 1 when there is none, or
+# more than one (ambiguous — the caller must not guess).
+stagef_node_core_pid() {
+    local want pid found=""
+    want="$(readlink -f "$STAGEF_NODUS_BIN" 2>/dev/null || echo "$STAGEF_NODUS_BIN")"
+    for pid in $(pgrep -f -- "node$1/data( |\$)" || true); do
+        if [ "$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)" = "$want" ]; then
+            [ -z "$found" ] || return 1
+            found="$pid"
+        fi
+    done
+    [ -n "$found" ] || return 1
+    echo "$found"
+}
+
 # stagef_spawn_storage N [>> append] — start node N's nodus-storage with
 # the bring-up's arguments (stagef_up_v2.sh section 4c), appending to its
 # storage.log, and print its pid. The caller records the pid in pids.txt.

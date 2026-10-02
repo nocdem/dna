@@ -32,10 +32,10 @@
 #   Environment: a cluster brought up by stagef_up_v2.sh in STAGEF_MODE
 #   `splits` or `mixeds` (README "Harness modes"); in any other mode no
 #   node is storage-split and it exits 99 (SKIP — coverage that did not
-#   happen). STAGEF_NODUSCLI_BIN executable (put / get).
-#   ⚠ Not runnable until tools/nodus_node_config.c parses
-#   `--storage-external` (S5b report): before that a storage-split mode
-#   cannot even come up.
+#   happen). STAGEF_NODUSCLI_BIN executable (put / get). The scenario
+#   must see the bring-up's STAGEF_NODUS_BIN / STAGEF_NODUSSTORAGE_BIN:
+#   both processes are found by their executable (stagef_node_core_pid,
+#   stagef_node_storage_pid).
 #
 # WHAT IT LEAVES BEHIND
 #   The victim node's nodus-storage killed and restarted under a NEW pid,
@@ -92,22 +92,11 @@ db=$(stagef_node_chain_db "$VICTIM")
 
 cli() { "$STAGEF_NODUSCLI_BIN" -s 127.0.0.1 -p "$port" "$@" 2>&1 || true; }
 
-# The core: the process naming node$VICTIM/data whose executable is
-# STAGEF_NODUS_BIN (never the storage process, same data directory).
-core_pid() {
-    local want pid
-    want="$(readlink -f "$STAGEF_NODUS_BIN" 2>/dev/null || echo "$STAGEF_NODUS_BIN")"
-    for pid in $(pgrep -f -- "node$VICTIM/data( |\$)" || true); do
-        if [ "$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)" = "$want" ]; then
-            echo "$pid"; return 0
-        fi
-    done
-    return 1
-}
-
 stagef_sentinel SETUP_OK
 
-cpid=$(core_pid) || die "node$VICTIM's nodus-server is not running"
+# The core: picked by its executable (stagef_node_core_pid), never the
+# storage process that shares node$VICTIM's data directory.
+cpid=$(stagef_node_core_pid "$VICTIM") || die "node$VICTIM's nodus-server is not running (or is ambiguous)"
 spid=$(stagef_node_storage_pid "$VICTIM") || die "node$VICTIM's nodus-storage is not running"
 echo "[ok] node$VICTIM: core pid=$cpid storage pid=$spid"
 

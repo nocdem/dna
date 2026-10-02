@@ -2382,12 +2382,18 @@ The DHT / storage half can run as its own process, `nodus-storage`
 halves in-process. No wire byte on 4000 / 4001 / 4002 changes; the IPC is local and
 versioned in its preface. Nothing here reaches consensus state.
 
-⚠ **Not wired yet:** the option / JSON key is parsed by `tools/nodus_node_config.c`,
-outside the S5b package's whitelist — until it parses `--storage-external` /
-`"storage_external"`, neither process can be started in this mode; and `nodus-storage`
-links that loader, whose `--derive-v2-genesis` one-shot pulls the witness objects in,
-so `test_storage_linked` (FORBIDDEN `nodus_witness_init` / `nodus_witness_p2p_new`)
-fails until the loader is split.
+**Config.** `"storage_external": true` / `--storage-external` is parsed by
+`tools/nodus_node_config.c` exactly as `witness_external` is (usage line, JSON key —
+a non-boolean refuses the start —, the long option in both getopt passes). The loader is
+two files since S5b: `nodus_node_config.c` (options, JSON keys, the two passes —
+`nodus_node_config_parse`, references no witness object) and
+`nodus_node_config_witness.c` (the 4004 p2p defaults / peer lists / the "id@" half of a
+seed, the network file, the `--derive-v2-genesis` one-shot moved verbatim), handed to the
+parse as `nodus_node_config_witness_t` by `nodus_node_config_load` — linked only by
+`nodus-server` and `nodus-witness`, which build the same configuration as before.
+`nodus-storage` uses `nodus_node_config_load_storage` (no witness parts: no p2p section,
+no network file, `--derive-v2-genesis` refused), so `test_storage_linked` holds by
+construction.
 
 | File | Role |
 |---|---|

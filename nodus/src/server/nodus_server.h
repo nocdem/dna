@@ -144,9 +144,8 @@ typedef struct {
      * over the Unix socket <data_path>/storage.sock
      * (server/nodus_dht_backend_ipc.c) instead of opening nodus.db and
      * channels.db itself. nodus.json "storage_external": true /
-     * `--storage-external` (the key and the option belong to
-     * tools/nodus_node_config.c, beside witness_external; the parser does
-     * not read them yet); default false = the in-process DHT,
+     * `--storage-external` (tools/nodus_node_config.c, beside
+     * witness_external); default false = the in-process DHT,
      * unchanged. When true this server keeps 4000 / 4001 / 4002, sessions,
      * cluster, presence and circuits; the partial-wipe gate still runs here
      * (decision item 9). nodus-storage refuses to start unless its loaded

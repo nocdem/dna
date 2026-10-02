@@ -93,9 +93,6 @@
 #   snapshot from nodus-storage (routing that storage filled from the
 #   core's relayed peer events came back — both directions of the control
 #   connection carried data).
-#   ⚠ Until tools/nodus_node_config.c parses `--storage-external` (S5b
-#   report: outside that package's whitelist) every storage-split spawn
-#   is refused by the option parser and these modes cannot come up.
 #
 #   P2P-PORT F6 ALSO PROVES (p2p-aware server only): the 4004 mesh is
 #   formed from ONE published network file — every node started with its

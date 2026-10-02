@@ -2665,10 +2665,14 @@ target_compile_options(nodus-circ PRIVATE -Wall -Wextra -Wno-unused-parameter)
 # Split S3: the command line, the JSON config and the derivation one-shot
 # live in tools/nodus_node_config.c, shared with nodus-witness — one
 # config file, one option set (decision 2026-10-01-nodus-component-split
-# item 18).
+# item 18). Split S5b: the witness-side parts of that loader (the 4004 p2p
+# section, the network file, the derivation one-shot) are
+# tools/nodus_node_config_witness.c, linked by nodus-server and
+# nodus-witness only, so nodus-storage links no witness object.
 add_executable(nodus-server
     tools/nodus-server.c
     tools/nodus_node_config.c
+    tools/nodus_node_config_witness.c
     tools/nodus_v2_gen_config.c)
 target_link_libraries(nodus-server nodus dsa nodus)
 target_compile_options(nodus-server PRIVATE -Wall -Wextra -Wno-unused-parameter)
@@ -2688,6 +2692,7 @@ endif()
 add_executable(nodus-witness
     tools/nodus-witness.c
     tools/nodus_node_config.c
+    tools/nodus_node_config_witness.c
     tools/nodus_v2_gen_config.c)
 target_link_libraries(nodus-witness nodus dsa nodus)
 target_compile_options(nodus-witness PRIVATE -Wall -Wextra -Wno-unused-parameter)
@@ -2701,13 +2706,14 @@ endif()
 
 # Split S5b — the DHT / storage half as its own process (decision
 # 2026-10-01-nodus-component-split items 7, 10, 16, 19). Same command line
-# and config file as nodus-server (tools/nodus_node_config.c, item 18). It
-# must not link the server, auth, cluster, presence or witness:
-# test_storage_linked checks the symbol table.
+# and config file as nodus-server (tools/nodus_node_config.c, item 18 —
+# WITHOUT nodus_node_config_witness.c and nodus_v2_gen_config.c: no 4004
+# p2p section, no network file, no derivation one-shot). It must not link
+# the server, auth, cluster, presence or witness: test_storage_linked
+# checks the symbol table.
 add_executable(nodus-storage
     tools/nodus-storage.c
-    tools/nodus_node_config.c
-    tools/nodus_v2_gen_config.c)
+    tools/nodus_node_config.c)
 target_link_libraries(nodus-storage nodus dsa nodus)
 target_compile_options(nodus-storage PRIVATE -Wall -Wextra -Wno-unused-parameter)
 target_include_directories(nodus-storage PRIVATE

@@ -1,35 +1,36 @@
 /**
- * Nodus — node command line + config file (shared by nodus-server and
- * nodus-witness)
+ * Nodus — node command line + config file (shared by nodus-server,
+ * nodus-witness and nodus-storage)
  *
  * Component split S3 (decision docs/plans/decisions/2026-10-01-nodus-
  * component-split.md item 18: one config file, each service reads its own
- * keys): the option set, the JSON config keys, the network file and the
- * --derive-v2-genesis one-shot that nodus-server's main() always had,
- * moved here unchanged so the nodus-witness binary takes the SAME command
- * line and the SAME config file. Each binary uses the fields it needs.
+ * keys): the option set and the JSON config keys that nodus-server's
+ * main() always had, moved here unchanged so the nodus-witness binary
+ * takes the SAME command line and the SAME config file. Each binary uses
+ * the fields it needs.
+ *
+ * Split S5b: the witness-side parts — the 4004 p2p section, the network
+ * file, the --derive-v2-genesis one-shot — live in
+ * nodus_node_config_witness.c and reach this parse through
+ * nodus_node_config_witness_t, so nodus-storage (nodus_node_config_load_
+ * storage) links no witness object (tests/storage_linked.cmake).
  *
  * Usage:
- *   nodus-server / nodus-witness
+ *   nodus-server / nodus-witness / nodus-storage
  *                [-c <config.json>] [-b <bind_ip>] [-u <udp_port>]
  *                [-t <tcp_port>] [-i <identity_dir>] [-d <data_dir>]
  *                [-s <seed_ip:port>] [-h]
  */
 
 #include "nodus_node_config.h"
-#include "witness/nodus_witness_v2_gen.h" /* O16A / D1 — the genesis builder */
-#include "nodus_v2_gen_config.h"          /* O16A / D2 — its text config     */
 #include "nodus/nodus_types.h"
 
-#include <dirent.h>
-#include <sys/stat.h>                     /* O16A — derive-time sentinel check */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
 #include <getopt.h>
-#include <sqlite3.h>
 
 #ifdef NODUS_HAS_JSONC
 #include <json-c/json.h>
@@ -83,6 +84,13 @@ static void usage(const char *prog, const char *title) {
     fprintf(stderr, "                    (nodus.json key \"witness_external\").\n");
     fprintf(stderr, "                    nodus-witness REQUIRES it (flag or\n");
     fprintf(stderr, "                    key) and refuses to start without it.\n");
+    fprintf(stderr, "  --storage-external\n");
+    fprintf(stderr, "                    nodus-server: the DHT runs as the\n");
+    fprintf(stderr, "                    separate nodus-storage process,\n");
+    fprintf(stderr, "                    reached over <data_dir>/storage.sock\n");
+    fprintf(stderr, "                    (nodus.json key \"storage_external\").\n");
+    fprintf(stderr, "                    nodus-storage REQUIRES it (flag or\n");
+    fprintf(stderr, "                    key) and refuses to start without it.\n");
     fprintf(stderr, "  -h                Show this help\n");
 }
 
@@ -98,12 +106,14 @@ static void usage(const char *prog, const char *title) {
 #define LONGOPT_DERIVE_V2_GENESIS 1003
 #define LONGOPT_NETWORK_FILE      1004   /* P2P-PORT F6 */
 #define LONGOPT_WITNESS_EXTERNAL  1005   /* component split S3 */
+#define LONGOPT_STORAGE_EXTERNAL  1006   /* component split S5b */
 
 static const struct option g_longopts[] = {
     {"v2-genesis-pin",     required_argument, NULL, LONGOPT_V2_GENESIS_PIN},
     {"derive-v2-genesis",  required_argument, NULL, LONGOPT_DERIVE_V2_GENESIS},
     {"network-file",       required_argument, NULL, LONGOPT_NETWORK_FILE},
     {"witness-external",   no_argument,       NULL, LONGOPT_WITNESS_EXTERNAL},
+    {"storage-external",   no_argument,       NULL, LONGOPT_STORAGE_EXTERNAL},
     {0, 0, 0, 0}
 };
 
@@ -124,328 +134,9 @@ static int parse_v2_pin(const char *hex, uint8_t out[32]) {
     return 0;
 }
 
-/* ── O16A / D1 — the offline genesis derivation one-shot ─────────────
- *
- * Everything below runs INSTEAD OF starting a server, never beside one.
- * That shape is not a convenience; two properties of the ceremony fall
- * out of it rather than out of a check:
- *
- *  - The node is not on the network while the chain is being derived.
- *    nodus_witness_v2_gen_derive_v3 takes no witness and no server
- *    handle (nodus_witness_v2_gen.h), so nothing arriving from a peer can
- *    reach a derived byte; with an offline tool there is additionally no
- *    process a peer could talk to.
- *  - The two abort()ing migrations inside nodus_witness_create_chain_db
- *    (nodus_witness_db.c, migrate_v12's ALTER and DROP INDEX paths)
- *    cannot kill a live node. On a one-shot tool an abort is a failed
- *    ceremony step the operator sees on their terminal; inside a running
- *    node it is a process death.
- *
- * ⚠ The rejected alternative was "derive automatically when the data dir
- * is empty and a genesis config is present". A node that lost its
- * database would then silently re-derive a chain instead of refusing or
- * joining, and in a hard cutover there is no second chance: the operator
- * gets a node that looks healthy and is on its own chain.
- */
-
-/* Print a byte string as lowercase hex on stdout. */
-static void print_hex(const uint8_t *b, size_t n) {
-    for (size_t i = 0; i < n; i++) printf("%02x", b[i]);
-}
-
-/* Locate the single chain database in `dir`.
- *
- * The filename predicate is character-for-character the one
- * gen_chain_db_scan uses (nodus_witness_v2_gen.c). That agreement is
- * load-bearing rather than tidy: if this tool counted a file the builder
- * ignores — or missed one it counts — the operator would be shown a pin
- * for a database the builder does not consider part of the data path.
- *
- * @return 0 exactly one found (path written), -1 otherwise. */
-static int find_single_chain_db(const char *dir, char *out, size_t out_len) {
-    DIR *d = opendir(dir);
-    if (!d) {
-        fprintf(stderr, "cannot read data directory %s\n", dir);
-        return -1;
-    }
-    struct dirent *e;
-    int found = 0;
-    int truncated = 0;
-    while ((e = readdir(d)) != NULL) {
-        if (strncmp(e->d_name, "witness_", 8) != 0) continue;
-        size_t len = strlen(e->d_name);
-        if (len < 4 || strcmp(e->d_name + len - 3, ".db") != 0) continue;
-        found++;
-        if (found == 1) {
-            int n = snprintf(out, out_len, "%s/%s", dir, e->d_name);
-            if (n < 0 || (size_t)n >= out_len) truncated = 1;
-        }
-    }
-    closedir(d);
-    if (truncated) {
-        fprintf(stderr,
-                "the chain database path under %s is too long to express — "
-                "refusing rather than reading a truncated path\n", dir);
-        return -1;
-    }
-    if (found == 1) return 0;
-    /* More than one is refused rather than reported: with two chain
-     * databases present, "which chain did this ceremony produce" has no
-     * answer, and printing whichever readdir handed over first would make
-     * the operator's pin depend on filesystem order. */
-    fprintf(stderr,
-            "expected exactly one witness_<hex>.db in %s after a "
-            "derivation, found %d\n", dir, found);
-    return -1;
-}
-
-/* Read the committed chain id out of a landed version-3 chain database.
- *
- * R3 W3 (D-17 rev 10 (8) / D-18 rev 4): a version-3 chain writes no
- * height-0 `v2_blocks` row (D-19 rev 6 withdrew the genesis block) — its
- * identity is the hash of its stored genesis DOCUMENT, read through the
- * canonical-strict accessor `nodus_witness_v2_gen_stored_chain_id`
- * (nodus_witness_v2_gen.h), the same reader the preflight and the join
- * pipeline use. `nodus_witness_v2_gen_stored_chain_id`'s own doc comment
- * says only `w->db` is used, so a read-only handle with nothing else set
- * is enough — no full witness-open ceremony is needed for an offline
- * tool.
- *
- * @return 0 / -1. */
-static int read_genesis_chain_id(const char *db_path,
-                                 uint8_t out[NODUS_V2_GEN_CHAIN_ID_LEN]) {
-    /* P2P-PORT F6: the reader itself lives in
-     * nodus_witness_network_file.c (nodus_witness_read_chain_id) so the
-     * network file's pin-at-start check reads the chain id through the
-     * SAME code as this ceremony. */
-    int rc = nodus_witness_read_chain_id(db_path, out);
-    if (rc != 0)
-        fprintf(stderr,
-                "the derived chain database %s could not be opened or has "
-                "no readable genesis document identity — the W_V2GEN lines "
-                "above name the reason\n", db_path);
-    return rc;
-}
-
-/* Parse the config, derive the chain into `data_path`, print the two
- * values the ceremony needs, and return the process exit code. */
-/* Refuse to derive into a data directory that still carries unfinished
- * business from a previous life.
- *
- * ── WHAT WOULD HAVE TO HAPPEN, because a risk without a cause is a
- * guess ──────────────────────────────────────────────────────────────
- *
- * Two dotfiles live beside the chain, and BOTH SURVIVE THE CEREMONY'S
- * WIPE: the runbook removes `witness_*`, and a name beginning with a dot
- * does not match that glob.
- *
- *   .bootstrap_in_progress — written by the LEGACY FETCH_GENESIS handler,
- *     which used to create it before deriving a chain database and unlink
- *     it on success. R3 W4 deleted that handler (and the DISCOVER branch
- *     that reached it) with the closed consensus lane, so a binary built
- *     from this tree can no longer write this file; present at boot, it
- *     means an OLDER binary died mid-write before this delta.
- *
- *   .recovery_in_progress — armed by halt recovery between dropping the
- *     witness database and replaying the first block.
- *
- * For either to be sitting here when the ceremony runs, a node must have
- * died inside one of those windows AND never been restarted since —
- * because the very next start clears the first and refuses on the
- * second. A stop-all cutover is exactly the situation that supplies the
- * "never restarted": the node crashed, nobody brought it back, and the
- * operator moved straight to the ceremony.
- *
- * ── WHY THIS IS WORTH A CHECK, given how narrow that is ──────────────
- *
- * The two consequences are not equally survivable. `.recovery_in_progress`
- * REFUSES the start, loudly, printing its own remedy — annoying, not
- * dangerous. `.bootstrap_in_progress` is the dangerous one: witness init
- * hands it to nodus_witness_check_orphan_bootstrap_sentinel, which calls
- * witness_archive_stale_chain_dbs(data_path, NULL) — and NULL means
- * archive EVERY witness_<hex>.db in the directory, including the genesis
- * chain derived twenty minutes earlier. It then clears the sentinel and
- * the node comes up reporting "no chain DB found — pre-genesis state".
- * A correct ceremony, silently undone, with no error anywhere.
- *
- * ── WHY HERE AND NOT IN THE ARCHIVE PATH ─────────────────────────────
- *
- * The archive is not wrong about what it was written for: a partial
- * database from a crashed legacy bootstrap IS garbage. It is wrong only
- * about a pure-V2 chain, which that path never produced. Teaching it the
- * difference means touching witness init; refusing here costs one stat
- * per ceremony and puts the message in front of the operator at the one
- * moment they are present, with nothing derived yet to lose.
- *
- * And the window is now closed for every node, not just a pure-V2 one:
- * R3 W4 deleted the legacy DISCOVER/FETCH_GENESIS bootstrap path
- * (nodus_witness_bootstrap_start and the verbs it drove) outright, so
- * no binary built from this tree can write .bootstrap_in_progress
- * again. The reader side this precheck guards against —
- * nodus_witness_check_orphan_bootstrap_sentinel and
- * witness_archive_stale_chain_dbs, both still live in nodus_witness.c
- * — is unchanged, which is why a sentinel left by an older binary is
- * still worth refusing on here.
- *
- * @return 0 clean, -1 refuse. */
-static int derive_precheck_sentinels(const char *data_path) {
-    static const struct {
-        const char *name;
-        const char *what;
-    } sentinels[] = {
-        { ".bootstrap_in_progress",
-          "a previous LEGACY bootstrap died mid-write. Left in place, the "
-          "next start would ARCHIVE the chain this ceremony is about to "
-          "derive and come up as if it had none" },
-        { ".recovery_in_progress",
-          "a previous halt recovery did not finish. Left in place, the "
-          "next start refuses outright" },
-    };
-
-    int bad = 0;
-    for (size_t i = 0; i < sizeof(sentinels) / sizeof(sentinels[0]); i++) {
-        char p[640];
-        int n = snprintf(p, sizeof(p), "%s/%s", data_path, sentinels[i].name);
-        if (n < 0 || (size_t)n >= sizeof(p)) {
-            fprintf(stderr, "data path too long to check for %s\n",
-                    sentinels[i].name);
-            return -1;
-        }
-        struct stat st;
-        if (stat(p, &st) != 0) continue;          /* absent — the normal case */
-
-        fprintf(stderr,
-                "REFUSING TO DERIVE — %s is present in %s.\n"
-                "  What it means: %s.\n"
-                "  Note it survived the wipe: the runbook removes "
-                "witness_*, and a dot-file does not match that glob.\n"
-                "  Fix: establish why the node died, then `rm %s` and "
-                "re-run this command.\n",
-                sentinels[i].name, data_path, sentinels[i].what, p);
-        bad = 1;
-    }
-    return bad ? -1 : 0;
-}
-
-/* P2P-PORT F6 — `network_file` (may be NULL): the published network file
- * the ceremony writes the derived chain id into ("Pin'i tören yazar",
- * decision 2026-09-26-witness-port-session.md). An EMPTY pin is filled;
- * the SAME pin is left alone (several nodes deriving independently all
- * reach this case after the first); a DIFFERENT pin stops the ceremony
- * and is never overwritten. */
-static int run_derive_v2_genesis(const char *cfg_path, const char *data_path,
-                                 const char *network_file) {
-    /* BEFORE the config is even parsed: nothing has been done yet, so a
-     * refusal here costs the operator nothing but a message. */
-    if (derive_precheck_sentinels(data_path) != 0)
-        return 1;
-
-#ifdef NODUS_HAS_JSONC
-    if (network_file) {
-        nodus_network_file_t nf;
-        if (nodus_network_file_load(network_file, &nf) != 0) {
-            fprintf(stderr, "network file %s was REFUSED (the lines above "
-                    "say why) — nothing derived.\n", network_file);
-            return 1;
-        }
-        /* A data directory that already holds a chain lets the pin be
-         * compared BEFORE anything is written (the derivation is
-         * idempotent there). Without a chain the id exists only after
-         * the derivation, and the comparison happens at the write. */
-        if (nf.has_pin &&
-            nodus_witness_check_chain_pin(data_path, nf.pin) != 0) {
-            fprintf(stderr, "network file %s pins a different chain than "
-                    "the one in %s — nothing derived.\n", network_file,
-                    data_path);
-            return 1;
-        }
-    }
-#else
-    if (network_file) {
-        fprintf(stderr, "--network-file / \"network_file\" needs a build "
-                "with json-c — nothing derived.\n");
-        return 1;
-    }
-#endif
-
-    nodus_v2_gen_config_t *cfg = NULL;
-    if (nodus_v2_gen_config_parse_file(cfg_path, &cfg) != 0) {
-        fprintf(stderr, "genesis config %s was REFUSED — nothing derived.\n",
-                cfg_path);
-        return 1;
-    }
-
-    fprintf(stderr,
-            "deriving a cometbft (version 3) chain from %s into %s\n"
-            "(offline one-shot: no socket is opened, no server is started)\n",
-            cfg_path, data_path);
-
-    /* R3 W3 (D-17 rev 10 (9)): the ceremony derives version 3 only. The
-     * version-2 entry (nodus_witness_v2_gen_derive), closed by W3, is
-     * DELETED from the tree by tokenomics-v3 P4 (OBLIGATION
-     * atlas-dec-71525f3b), and the config parser refuses a version-2 or
-     * version-less file before this point. out_chain32 is still passed
-     * as NULL on purpose, and the printed value comes from the committed
-     * database instead: nodus_witness_v2_gen_derive_v3 is idempotent and
-     * returns 0 WITHOUT writing out_chain32 when a chain built from this
-     * same config is already present, so printing from that buffer would
-     * print whatever it held on exactly the re-run an operator is most
-     * likely to perform — and a WRONG pin handed to six other nodes is
-     * the failure this whole change exists to make impossible. The
-     * database is the one source that is correct on both paths. */
-    int derived_ok = (nodus_witness_v2_gen_derive_v3(data_path, cfg,
-                                                     NULL) == 0);
-    nodus_v2_gen_config_free(cfg);
-    cfg = NULL;
-
-    if (!derived_ok) {
-        fprintf(stderr,
-                "derivation REFUSED — the W_V2GEN lines above name the "
-                "reason. The data directory is unchanged.\n");
-        return 1;
-    }
-
-    char db_path[600];
-    if (find_single_chain_db(data_path, db_path, sizeof(db_path)) != 0)
-        return 1;
-
-    /* R3 W3 (D-18 rev 4 / D-24 rev 4 (1)): the chain id IS the pin — a
-     * version-3 chain has no 64-byte genesis BlockID to derive one from
-     * (D-19 rev 6). One identity, read once. */
-    uint8_t chain_id[NODUS_V2_GEN_CHAIN_ID_LEN];
-    if (read_genesis_chain_id(db_path, chain_id) != 0) return 1;
-
-    printf("chain-id       ");
-    print_hex(chain_id, sizeof(chain_id));
-    printf("\n");
-    printf("v2-genesis-pin ");
-    print_hex(chain_id, sizeof(chain_id));
-    printf("\n");
-
-    fprintf(stderr,
-            "\nThe chain-id above MUST be identical on every node of the "
-            "fleet — compare them before starting anything. Hand the\n"
-            "v2-genesis-pin value to a joining node as\n"
-            "  nodus-server --v2-genesis-pin <that 64-hex string> ...\n"
-            "It is that node's LOCAL trust anchor: it adopts a peer's "
-            "genesis bundle only if the bundle re-derives to it.\n");
-
-#ifdef NODUS_HAS_JSONC
-    if (network_file) {
-        int wrc = nodus_network_file_write_pin(network_file, chain_id);
-        if (wrc < 0) {
-            fprintf(stderr, "network file %s: the pin was NOT written (the "
-                    "lines above say why) — the ceremony is NOT complete. "
-                    "The chain above is derived in %s.\n", network_file,
-                    data_path);
-            return 1;
-        }
-        printf("network-file   %s %s\n", network_file,
-               wrc == 0 ? "pin-written" : "pin-already-equal");
-    }
-#endif
-    return 0;
-}
+/* The O16A / D1 offline genesis derivation one-shot (run_derive_v2_genesis
+ * and its helpers) lives in nodus_node_config_witness.c since split S5b —
+ * reached through nodus_node_config_witness_t.derive. */
 
 static int parse_seed(const char *str, char *ip, size_t ip_len, uint16_t *port) {
     const char *colon = strrchr(str, ':');
@@ -468,8 +159,11 @@ static int parse_seed(const char *str, char *ip, size_t ip_len, uint16_t *port) 
  * witness-port derivation the deleted seed dial used
  * (nodus_witness_peer.c before F5). An entry without an ID cannot be a
  * persistent peer: the 4004 p2p layer never dials unpinned (R-P2P-33).
+ * Split S5b: the persistent-peer half only with the witness-side parts
+ * (`w`); without them (nodus-storage) an "id@" entry adds its DHT seed.
  * @return 0; -1 malformed / full. */
-static int add_seed_entry(nodus_server_config_t *cfg, const char *s) {
+static int add_seed_entry(nodus_server_config_t *cfg, const char *s,
+                          const nodus_node_config_witness_t *w) {
     const char *at = strchr(s, '@');
     const char *hostport = at ? at + 1 : s;
 
@@ -478,7 +172,7 @@ static int add_seed_entry(nodus_server_config_t *cfg, const char *s) {
                    sizeof(cfg->seed_nodes[0]),
                    &cfg->seed_ports[cfg->seed_count]) != 0)
         return -1;
-    if (at) {
+    if (at && w) {
         char pp[CMT_P2P_NETADDR_STR_MAX];
         const char *ip = cfg->seed_nodes[cfg->seed_count];
         bool v6 = strchr(ip, ':') != NULL && ip[0] != '[';
@@ -487,7 +181,7 @@ static int add_seed_entry(nodus_server_config_t *cfg, const char *s) {
                          (unsigned)(cfg->seed_ports[cfg->seed_count] + 4));
 
         if (n < 0 || (size_t)n >= sizeof(pp) ||
-            nodus_p2p_config_add_persistent(&cfg->p2p, pp) != 0) {
+            w->p2p_add_persistent(&cfg->p2p, pp) != 0) {
             fprintf(stderr, "seed %s: witness persistent peer list full or "
                     "entry too long\n", s);
             return -1;
@@ -525,17 +219,19 @@ static void load_list(struct json_object *val, nodus_p2p_config_t *c,
 }
 
 /* P2P-PORT F5 — the witness port's P2P section: reference config.go
- * P2P key names (p2p-port design §4), top-level nodus.json keys. */
-static void load_p2p_json(struct json_object *root, nodus_p2p_config_t *c) {
+ * P2P key names (p2p-port design §4), top-level nodus.json keys. The list
+ * adders are the witness-side parts' (`w`, never NULL here). */
+static void load_p2p_json(struct json_object *root, nodus_p2p_config_t *c,
+                          const nodus_node_config_witness_t *w) {
     struct json_object *val;
 
     if (json_object_object_get_ex(root, "persistent_peers", &val))
-        load_list(val, c, nodus_p2p_config_add_persistent, "persistent_peers");
+        load_list(val, c, w->p2p_add_persistent, "persistent_peers");
     if (json_object_object_get_ex(root, "unconditional_peer_ids", &val))
-        load_list(val, c, nodus_p2p_config_add_unconditional,
+        load_list(val, c, w->p2p_add_unconditional,
                   "unconditional_peer_ids");
     if (json_object_object_get_ex(root, "private_peer_ids", &val))
-        load_list(val, c, nodus_p2p_config_add_private, "private_peer_ids");
+        load_list(val, c, w->p2p_add_private, "private_peer_ids");
     if (json_object_object_get_ex(root, "pex", &val))
         c->pex = json_object_get_boolean(val);
     if (json_object_object_get_ex(root, "addr_book_strict", &val))
@@ -562,7 +258,8 @@ static void load_p2p_json(struct json_object *root, nodus_p2p_config_t *c) {
         snprintf(c->moniker, sizeof(c->moniker), "%s", json_object_get_string(val));
 }
 
-static int load_config_json(const char *path, nodus_server_config_t *cfg) {
+static int load_config_json(const char *path, nodus_server_config_t *cfg,
+                            const nodus_node_config_witness_t *w) {
     struct json_object *root = json_object_from_file(path);
     if (!root) {
         fprintf(stderr, "Failed to parse config: %s\n", path);
@@ -637,8 +334,10 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg) {
      * reader, the legacy safety_halt recovery check, is deleted. */
 
     /* P2P-PORT F5: the witness-port list keys first, so an "id@" seed
-     * below appends to a persistent_peers list that is already loaded. */
-    load_p2p_json(root, &cfg->p2p);
+     * below appends to a persistent_peers list that is already loaded.
+     * Split S5b: only with the witness-side parts (not nodus-storage). */
+    if (w)
+        load_p2p_json(root, &cfg->p2p, w);
 
     if (json_object_object_get_ex(root, "seed_nodes", &val) &&
         json_object_is_type(val, json_type_array)) {
@@ -647,7 +346,7 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg) {
             struct json_object *entry = json_object_array_get_idx(val, i);
             const char *s = json_object_get_string(entry);
             if (s)
-                (void)add_seed_entry(cfg, s);
+                (void)add_seed_entry(cfg, s, w);
         }
     }
 
@@ -686,6 +385,21 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg) {
                                                              : false;
     }
 
+    /* Component split S5b (nodus_server.h storage_external). Default
+     * false = the in-process DHT; a non-boolean value refuses the start,
+     * like witness_external. nodus-storage requires it to be true and
+     * refuses to start otherwise (tools/nodus-storage.c). */
+    if (json_object_object_get_ex(root, "storage_external", &val)) {
+        if (!json_object_is_type(val, json_type_boolean)) {
+            QGP_LOG_ERROR(LOG_TAG_CFG, "storage_external must be true or "
+                          "false");
+            json_object_put(root);
+            return -1;
+        }
+        cfg->storage_external = json_object_get_boolean(val) ? true
+                                                             : false;
+    }
+
     /* P2P-PORT F6 — the published network file's path (loaded in main,
      * after both option passes; `--network-file` overrides it). */
     if (json_object_object_get_ex(root, "network_file", &val))
@@ -702,8 +416,9 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg) {
 }
 #endif
 
-int nodus_node_config_load(int argc, char **argv, const char *title,
-                           nodus_server_config_t *out) {
+int nodus_node_config_parse(int argc, char **argv, const char *title,
+                            const nodus_node_config_witness_t *w,
+                            nodus_server_config_t *out) {
     nodus_server_config_t config;
     memset(&config, 0, sizeof(config));
 
@@ -715,7 +430,8 @@ int nodus_node_config_load(int argc, char **argv, const char *title,
     config.ch_port = NODUS_DEFAULT_CH_PORT;
     config.witness_port = NODUS_DEFAULT_WITNESS_PORT;
     snprintf(config.data_path, sizeof(config.data_path), "/var/lib/nodus");
-    nodus_p2p_config_default(&config.p2p);
+    if (w)
+        w->p2p_default(&config.p2p);
     /* DHT Package A (rev 2 item 10): 4002 peer auth is ON unless the JSON
      * config sets "require_peer_auth": false explicitly. */
     config.require_peer_auth = true;
@@ -743,7 +459,7 @@ int nodus_node_config_load(int argc, char **argv, const char *title,
         case 'i': snprintf(config.identity_path, sizeof(config.identity_path), "%s", optarg); break;
         case 'd': snprintf(config.data_path, sizeof(config.data_path), "%s", optarg); break;
         case 's':
-            (void)add_seed_entry(&config, optarg);
+            (void)add_seed_entry(&config, optarg, w);
             break;
         case LONGOPT_V2_GENESIS_PIN:
             if (parse_v2_pin(optarg, config.v2_genesis_pin) != 0) {
@@ -764,6 +480,9 @@ int nodus_node_config_load(int argc, char **argv, const char *title,
         case LONGOPT_WITNESS_EXTERNAL:
             config.witness_external = true;
             break;
+        case LONGOPT_STORAGE_EXTERNAL:
+            config.storage_external = true;
+            break;
         case 'h':
         default:
             usage(argv[0], title);
@@ -783,10 +502,11 @@ int nodus_node_config_load(int argc, char **argv, const char *title,
         file_cfg.ch_port = NODUS_DEFAULT_CH_PORT;
         file_cfg.witness_port = NODUS_DEFAULT_WITNESS_PORT;
         snprintf(file_cfg.data_path, sizeof(file_cfg.data_path), "/var/lib/nodus");
-        nodus_p2p_config_default(&file_cfg.p2p);
+        if (w)
+            w->p2p_default(&file_cfg.p2p);
         file_cfg.require_peer_auth = true;   /* default; the JSON may set false */
 
-        if (load_config_json(config_file, &file_cfg) != 0)
+        if (load_config_json(config_file, &file_cfg, w) != 0)
             return 1;
 
         /* CLI args take precedence: only copy file values where CLI was default */
@@ -807,7 +527,7 @@ int nodus_node_config_load(int argc, char **argv, const char *title,
             case 'i': snprintf(config.identity_path, sizeof(config.identity_path), "%s", optarg); break;
             case 'd': snprintf(config.data_path, sizeof(config.data_path), "%s", optarg); break;
             case 's':
-                (void)add_seed_entry(&config, optarg);
+                (void)add_seed_entry(&config, optarg, w);
                 break;
             case LONGOPT_V2_GENESIS_PIN:
                 /* O15E Faz D — the re-parse pass (after `config = file_cfg`
@@ -834,6 +554,10 @@ int nodus_node_config_load(int argc, char **argv, const char *title,
             case LONGOPT_WITNESS_EXTERNAL:
                 /* Re-applied after the clobber, like the pin above. */
                 config.witness_external = true;
+                break;
+            case LONGOPT_STORAGE_EXTERNAL:
+                /* Re-applied after the clobber, like witness_external. */
+                config.storage_external = true;
                 break;
             default: break;
             }
@@ -875,39 +599,36 @@ int nodus_node_config_load(int argc, char **argv, const char *title,
                     "one that already exists. Give exactly one.\n");
             return 1;
         }
+        /* Split S5b: the one-shot is a witness-side part — nodus-storage
+         * does not carry it. */
+        if (!w) {
+            fprintf(stderr, "--derive-v2-genesis is not served by %s — run "
+                    "it with nodus-server or nodus-witness\n", title);
+            return 1;
+        }
         /* A network file's pin is NOT refused here, unlike the CLI pin
          * above: the ceremony is the one writer of that pin, and a node
          * deriving after another has already written it must find its
          * own id equal (nothing written) or different (stop) —
          * run_derive_v2_genesis. */
-        return run_derive_v2_genesis(derive_v2_genesis_cfg,
-                                     config.data_path, network_file);
+        return w->derive(derive_v2_genesis_cfg, config.data_path,
+                         network_file);
     }
 
     /* P2P-PORT F6 — a running node READS the network file, never writes
-     * it: the pin arms the joiner (no chain) and the start check in
-     * nodus_server_init (a chain), the peers join the witness port's
-     * persistent peers. A malformed file refuses the start. */
-    if (network_file) {
-#ifdef NODUS_HAS_JSONC
-        nodus_network_file_t nf;
-        nodus_network_file_target_t nft =
-            nodus_server_network_file_target(&config);
-        if (nodus_network_file_load(network_file, &nf) != 0 ||
-            nodus_network_file_apply(&nf, &nft) != 0) {
-            fprintf(stderr, "network file %s was REFUSED (the lines above "
-                    "say why) — not starting\n", network_file);
+     * it (nodus_node_config_witness.c network_file_apply). Split S5b:
+     * nodus-storage reads none of what it carries (the pin, the 4004
+     * peers) and does not load it. */
+    if (network_file && w) {
+        if (w->network_file_apply(network_file, &config) != 0)
             return 1;
-        }
-        fprintf(stderr, "network file %s: pin %s, %d persistent peer(s)\n",
-                network_file, nf.has_pin ? "set" : "empty", nf.n_peers);
-#else
-        fprintf(stderr, "a network file is configured but this build has "
-                "no json-c — not starting\n");
-        return 1;
-#endif
     }
 
     *out = config;
     return -1;
+}
+
+int nodus_node_config_load_storage(int argc, char **argv, const char *title,
+                                   nodus_server_config_t *out) {
+    return nodus_node_config_parse(argc, argv, title, NULL, out);
 }
