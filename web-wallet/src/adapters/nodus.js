@@ -9,6 +9,17 @@
 // - expiry_height = tip + 90; tip 0 or unknown -> do not send
 //   (docs/plans/2026-09-26-note-to-web-wallet-session-expiry.md items 1-2;
 //   nodus/tools/nodus-cli.c:93-94 CLI_ENV_EXPIRY_AHEAD = 100 - 10).
+// - HF-4 (docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.6;
+//   decision 2026-10-02-onchain-names.md): before anything is built the
+//   node is asked which rule-set generation it runs (client.rulesetInfo —
+//   the module picks the pinned generation whose tuple equals the answer
+//   and refuses an older node or an unknown generation); a generation-1
+//   envelope never expires past H-1 once a switch at H is committed, and
+//   with no valid expiry left nothing is built (expiryHeightFor — the rule
+//   of nodus-cli cli_env_expiry and nodus-send-wasm.c nsw_expiry_for).
+// - A recipient may be a chain name (src/nodus/names.js): resolved by ONE
+//   node (decision item 9, accepted risk) and shown on the review next to
+//   the address it resolved to; a name that does not resolve is an error.
 // - Pending-send coins stay locked; a resend before expiry reuses the same
 //   coins; different coins only once the chain passed expiry_height AND the
 //   first send was seen not to enter (same note, item 3; design §1.4, G7).
@@ -16,6 +27,7 @@
 // - Amounts are decimal strings at the module boundary, BigInt here (RT1 L4 F10).
 import { amountUnits, formatUnits } from '../core.js';
 import { NODUS_ASSET } from '../nodus/network.js';
+import { chainName, chainNameOk } from '../nodus/names.js';
 
 const HEX128 = /^[0-9a-f]{128}$/, HEX64 = /^[0-9a-f]{64}$/, RAW = /^(0|[1-9]\d{0,19})$/;
 const U64_MAX = 2n ** 64n - 1n;
@@ -48,11 +60,109 @@ export function nodusAmountUnits(value) {
   if (units > U64_MAX) throw new Error('Amount is out of range.');
   return units;
 }
-// tip: the chain height the node reported. 0 is what the node answers on a
-// read error (session-expiry note item 2), so 0 and "unknown" both refuse.
-export function expiryHeightFor(tip) {
+// The module's rulesetInfo() answer (src/nodus/send-module.js), checked:
+// { generation >= 1, tip, gen2Height (0 = no switch committed) } as BigInt.
+export function parseRulesetInfo(result) {
+  if (!result) throw new Error('The Nodus module returned invalid network rules.');
+  const generation = rawUnits(result.generation, 'rule-set generation');
+  if (generation === 0n) throw new Error('The Nodus module returned invalid network rules.');
+  return { generation, tip: rawUnits(result.tip, 'block height'), gen2Height: rawUnits(result.gen2Height, 'block height') };
+}
+// tip: the chain height the coin listing reported. 0 is what the node
+// answers on a read error (session-expiry note item 2), so 0 and "unknown"
+// both refuse. ruleset: parseRulesetInfo's result (required). The rule of
+// nodus-cli cli_env_expiry: tip + 90, and for a generation-1 envelope while
+// a switch at H is committed never past H - 1, judged against the larger
+// of the two tips; with H - 1 not above it no expiry is valid.
+export function expiryHeightFor(tip, ruleset) {
   if (typeof tip !== 'bigint' || tip <= 0n) throw new Error('The current Nodus block height is unknown. Nothing was sent; try again later.');
-  return tip + NODUS_EXPIRY_AHEAD;
+  if (!ruleset || typeof ruleset.generation !== 'bigint' || typeof ruleset.gen2Height !== 'bigint' || typeof ruleset.tip !== 'bigint') throw new Error('The Nodus network rules are unknown. Nothing was sent; try again later.');
+  let expiry = tip + NODUS_EXPIRY_AHEAD;
+  if (expiry > U64_MAX) throw new Error('The current Nodus block height is out of range.');
+  const hi = tip > ruleset.tip ? tip : ruleset.tip, H = ruleset.gen2Height;
+  if (ruleset.generation === 1n && H !== 0n) {
+    if (H - 1n <= hi) throw new Error(`The Nodus network switches to new transaction rules at block ${H}, and a transaction made now could not be included before it. Nothing was sent; try again after block ${H}.`);
+    if (expiry > H - 1n) expiry = H - 1n;
+  }
+  return expiry;
+}
+// The review window (prepare()'s expiresAt) and the shortest gap between
+// two blocks: a node waits timeout_commit = 4000 ms after a commit before
+// the next height starts (nodus/src/witness/nodus_witness_cmt_node.c:1773),
+// so at most NODUS_REVIEW_MS / NODUS_MIN_BLOCK_MS blocks pass while the
+// review is open.
+export const NODUS_REVIEW_MS = 60000;
+export const NODUS_MIN_BLOCK_MS = 4000;
+// Review rows for an expiry capped by a rule-set switch (none otherwise).
+export function expiryCapRows(tip, expiryHeight, ruleset) {
+  if (expiryHeight >= tip + NODUS_EXPIRY_AHEAD) return [];
+  const rows = [['Rule change', `The Nodus network switches to new transaction rules at block ${ruleset.gen2Height}. This transaction is built for the current rules and can only be included up to block ${expiryHeight}.`]];
+  const left = expiryHeight - tip;
+  if (left * BigInt(NODUS_MIN_BLOCK_MS) <= BigInt(NODUS_REVIEW_MS)) rows.push(['Timing', `Only ${left} ${left === 1n ? 'block remains' : 'blocks remain'} before it expires — fewer than can pass while this review is open. If you confirm too late it is not included: nothing is spent, and its coins are free again after block ${expiryHeight}.`]);
+  return rows;
+}
+
+// ── Chain names (HF-4) ───────────────────────────────────────────────────
+// The module's nameLookup() answer, checked.
+export function parseNameLookup(result) {
+  const invalid = () => new Error('The Nodus module returned an invalid name lookup.');
+  if (!result || typeof result.found !== 'boolean') throw invalid();
+  const committedHeight = rawUnits(result.committedHeight, 'block height');
+  if (!result.found) return { found: false, committedHeight };
+  if (typeof result.owner !== 'string' || !HEX128.test(result.owner)) throw invalid();
+  const registeredHeight = rawUnits(result.registeredHeight, 'block height');
+  if (registeredHeight === 0n) throw invalid();
+  return { found: true, owner: result.owner, registeredHeight, committedHeight };
+}
+// `name` (lower-case, src/nodus/names.js) -> its owner's fingerprint, from
+// ONE node's committed state. A name nobody holds is an error, never a
+// fallback to anything else.
+export async function resolveChainName(client, name) {
+  if (!client || client.state !== 'ready' || !client.nameable) throw new Error('Sending to a chain name needs the Nodus network connection, which is not available right now.');
+  if (!chainNameOk(name)) throw new Error('Not a chain name: 3 to 36 letters a-z and digits.');
+  const found = parseNameLookup(await client.nameLookup({ name }));
+  if (!found.found) throw new Error(`No one has registered the chain name "${name}". Nothing was sent.`);
+  return found;
+}
+// The profile wallet field of each network a name can be sent to on
+// (messenger/dht/client/dna_profile.h dna_wallets_t). No field is used for
+// another network.
+export const PROFILE_ADDRESS_FIELD = Object.freeze({ ethereum: 'eth', bsc: 'bsc', solana: 'sol', tron: 'trx' });
+// A non-NODUS send to a chain name: the owner (resolveChainName), then the
+// address the owner published for `chain` in its profile, read and
+// signature-checked by the module. The caller's adapter still checks the
+// address format before anything is built.
+export async function resolveNameAddress({ client, chain, name }) {
+  const field = PROFILE_ADDRESS_FIELD[chain];
+  if (!field) throw new Error('Chain names cannot be used on this network.');
+  const found = await resolveChainName(client, name);
+  const result = await client.profileAddress({ owner: found.owner, field });
+  if (!result || typeof result.address !== 'string' || !result.address || result.address.length > 128 || result.address.trim() !== result.address) throw new Error('The Nodus module returned an invalid profile address.');
+  return { name, owner: found.owner, address: result.address, committedHeight: found.committedHeight };
+}
+// The review rows that say where an address came from: the name, its
+// source and (showOwner) the Nodus ID that owns it. `via`: how the address
+// was read after the owner was found (non-NODUS sends).
+export function nameReviewRows({ name, owner, committedHeight }, { via = '', showOwner = true } = {}) {
+  const rows = [
+    ['To (chain name)', name],
+    ['Recipient source', `Chain name${via ? `, then ${via}` : ''} — looked up on one Nodus node (state of block ${committedHeight}).`]
+  ];
+  if (showOwner) rows.push(['Name owner (Nodus ID)', owner]);
+  return rows;
+}
+// In place of the "Address check" row when the address came from a name.
+export const NAME_CHECK_ROW = Object.freeze(['Name check', 'Names can look alike (for example the digit 0 and the letter o). Check that the name is exactly the one the recipient gave you.']);
+// A NODUS recipient as typed: a 128-hex address, or a chain name resolved
+// to its owner. -> { recipient, resolved? } (resolved = resolveChainName's
+// result plus the name).
+export async function resolveNodusRecipient(client, value) {
+  const typed = typeof value === 'string' ? value.trim() : '';
+  if (HEX128.test(typed.toLowerCase())) return { recipient: nodusRecipient(typed) };
+  const name = chainName(typed);
+  if (!name) throw new Error('Enter a Nodus address (128 characters, 0-9 and a-f) or a chain name (3 to 36 letters a-z and digits).');
+  const found = await resolveChainName(client, name);
+  return { recipient: found.owner, resolved: { ...found, name } };
 }
 function parseTip(value) {
   if (value === undefined || value === null) return expiryHeightFor(undefined);
@@ -136,14 +246,18 @@ export async function balances(chain, address, _endpoint, { signal, client } = {
 export async function prepare({ client, from, to, amount, locked = new Set(), inputs = null }) {
   if (!client || client.state !== 'ready') throw new Error('Nodus sending is not available right now.');
   if (from !== client.fingerprint) throw new Error('Nodus address does not match the connected identity.');
-  const recipient = nodusRecipient(to), units = nodusAmountUnits(amount);
+  const units = nodusAmountUnits(amount);
+  // A chain name resolves to its owner first (one node, decision item 9).
+  const { recipient, resolved } = await resolveNodusRecipient(client, to);
   const { spendable } = parseBalance(await client.balance());
   const listing = await client.list();
   const coins = parseCoins(listing);
   // A read error on the node answers "0 coins" (design §1.4); with a positive
   // spendable balance, an empty list is a read failure, not "insufficient".
   if (coins.length === 0 && spendable > 0n) throw new Error('Your coin list could not be read. Nothing was sent; try again later.');
-  const tip = parseTip(listing.tip), expiryHeight = expiryHeightFor(tip);
+  // HF-4: which rules the node runs, then the expiry they allow.
+  const ruleset = parseRulesetInfo(await client.rulesetInfo());
+  const tip = parseTip(listing.tip), expiryHeight = expiryHeightFor(tip, ruleset);
   let candidates;
   if (inputs) {
     const listed = new Map(coins.map(coin => [coin.nullifier, coin]));
@@ -161,22 +275,24 @@ export async function prepare({ client, from, to, amount, locked = new Set(), in
   const review = [
     ['Network', 'Nodus'],
     ['From', from],
+    ...(resolved ? nameReviewRows(resolved, { showOwner: false }) : []),
     ['To', decoded.recipient],
-    ['Address check', 'Nodus addresses have no checksum. Compare all 128 characters with your source.'],
+    resolved ? [...NAME_CHECK_ROW] : ['Address check', 'Nodus addresses have no checksum. Compare all 128 characters with your source.'],
     ['Amount', nodusText(decoded.amount)],
     ['Network fee', nodusText(decoded.fee)],
     ['Change back to you', nodusText(decoded.change)],
     ['Valid until block', decoded.expiryHeight.toString()],
+    ...expiryCapRows(tip, decoded.expiryHeight, ruleset),
     ['Chain ID', decoded.chainId],
     ['Fee note', 'The network fee may be charged even if the transfer fails.']
   ];
   if (listing.truncated === true) review.push(['Coin list', 'Your coin list may be incomplete; the transfer uses only the coins listed.']);
   let used = false;
   return {
-    to: decoded.recipient, amount: formatUnits(decoded.amount, DECIMALS), symbol: NODUS_ASSET.symbol, fee: nodusText(decoded.fee),
+    to: decoded.recipient, recipientName: resolved?.name, amount: formatUnits(decoded.amount, DECIMALS), symbol: NODUS_ASSET.symbol, fee: nodusText(decoded.fee),
     // Review-dialog timeout only (UI). The envelope's own validity is its
     // expiry height, checked by the chain.
-    expiresAt: Date.now() + 60000,
+    expiresAt: Date.now() + NODUS_REVIEW_MS,
     intentId: decoded.intentId, expiryHeight: decoded.expiryHeight.toString(), review,
     // onBroadcast must make the pending-send record durable BEFORE the envelope
     // leaves the browser (the same rule as the other networks, src/app.js).
@@ -355,7 +471,9 @@ export async function prepareStake({ client, from, kind, validator, amount, comm
   const listing = await client.list();
   const coins = parseCoins(listing);
   if (coins.length === 0 && spendable > 0n) throw new Error('Your coin list could not be read. Nothing was sent; try again later.');
-  const tip = parseTip(listing.tip), expiryHeight = expiryHeightFor(tip);
+  // HF-4: which rules the node runs, then the expiry they allow.
+  const ruleset = parseRulesetInfo(await client.rulesetInfo());
+  const tip = parseTip(listing.tip), expiryHeight = expiryHeightFor(tip, ruleset);
   const candidates = coins.filter(coin => !locked.has(coin.nullifier));
   if (candidates.length === 0) throw new Error(locked.size ? 'Your coins are held by a pending transaction. Wait for it to be included or to expire.' : 'Insufficient NODUS balance.');
   const d = decodeStake(await client.stakeBuild({ op: kind, validator: kind === 'stake' ? '' : target, amount: units.toString(), commissionBps: commission.toString(), expiryHeight: expiryHeight.toString(), coins: candidates }));
@@ -381,10 +499,10 @@ export async function prepareStake({ client, from, kind, validator, amount, comm
       ['Bond returns to', `${from} (your own address)`], ['Network fee', nodusText(d.fee)], ['Change back to you', nodusText(d.change)],
       ['Important', 'The bond stays locked while you are a validator. This wallet has no way to unstake it: there is no leave-the-validator-set action here. An active validator is expected to take part in producing blocks; one that does not is retired automatically.']);
   }
-  review.push(['Valid until block', d.expiryHeight.toString()], ['Chain ID', d.chainId], ['Fee note', 'The network fee may be charged even if the transaction fails.']);
+  review.push(['Valid until block', d.expiryHeight.toString()], ...expiryCapRows(tip, d.expiryHeight, ruleset), ['Chain ID', d.chainId], ['Fee note', 'The network fee may be charged even if the transaction fails.']);
   if (listing.truncated === true) review.push(['Coin list', 'Your coin list may be incomplete; only the coins listed are used.']);
   let used = false;
-  const expiresAt = Date.now() + 60000;
+  const expiresAt = Date.now() + NODUS_REVIEW_MS;
   return {
     kind, chain: NODUS_ASSET.chain, from, to: d.validator, symbol: NODUS_ASSET.symbol, amount: formatUnits(d.amount, DECIMALS),
     endpoint: undefined, fee: nodusText(d.fee), expiresAt, review, intentId: d.intentId,

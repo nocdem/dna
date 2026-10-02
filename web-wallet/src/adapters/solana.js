@@ -14,6 +14,9 @@ function solanaAddress(text) {
   if (!isAddress(text)) throw new Error('Invalid Solana address.');
   return text;
 }
+// Whether `text` is a Solana address as typed (src/wallet.js: an address
+// always wins over a chain name).
+export function isRecipientAddress(text) { return typeof text === 'string' && isAddress(text); }
 // kit's default HTTP transport calls the global fetch and takes no custom one, so it
 // would bypass the response-size, JSON-shape and pacing limits in rpc-transport.js.
 // Every kit RPC call of this adapter goes through rpcFetch instead. Integers travel

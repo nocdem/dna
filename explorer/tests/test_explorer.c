@@ -1383,6 +1383,147 @@ static void test_route_search(void) {
     PASS();
 }
 
+/* HF-4 NAME_REGISTER fixture (height 1):
+ *   item 0: applied spend — creates coin X (owner A, 500 native)
+ *   item 1: applied name_register "punk" — consumes X, creates change
+ *           (owner A, 1), price 50000000000 ("nm"/"pr") */
+static void name_fixture_page(nodus_dnac_v3_block_result_t *p) {
+    page_header(p, 1, 2, 2, 1);
+    p->count = 2;
+    p->items = calloc(2, sizeof(nodus_dnac_v3_item_t));
+
+    nodus_dnac_v3_item_t *it = &p->items[0];
+    it->index = 0;
+    it->kind = NODUS_DNAC_V3_KIND_ENVELOPE;
+    it->has_wire_id = true;   fill(it->wire_id, 64, 0x51);
+    it->has_intent_id = true; fill(it->intent_id, 64, 0x61);
+    it->has_fee = true;       it->fee = 1000;
+    strcpy(it->op, "spend");
+    it->has_effects = true;
+    it->n_created = 1;
+    fill(it->created[0].id, 64, 0xD1);
+    set_test_fp(it->created[0].owner, 'a');
+    it->created[0].amount = 500;
+
+    it = &p->items[1];
+    it->index = 1;
+    it->kind = NODUS_DNAC_V3_KIND_ENVELOPE;
+    it->has_wire_id = true;   fill(it->wire_id, 64, 0x52);
+    it->has_intent_id = true; fill(it->intent_id, 64, 0x62);
+    it->has_fee = true;       it->fee = 1000;
+    strcpy(it->op, "name_register");
+    it->has_effects = true;
+    it->n_consumed = 1;
+    fill(it->consumed[0], 64, 0xD1);   /* X, created by item 0 */
+    it->n_created = 1;
+    fill(it->created[0].id, 64, 0xD2);
+    set_test_fp(it->created[0].owner, 'a');
+    it->created[0].amount = 1;
+    strcpy(it->name, "punk");
+    it->name_price = 50000000000ULL;
+}
+
+/* A registration is indexed with its name, price and owner (the first
+ * input's resolved address); every other item answers name null; search
+ * finds the name (type "name", the item's position); the index verifies. */
+static void test_name_register_indexed(void) {
+    TEST("HF-4: op 8 item -> item_names (name, price, owner) + search");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+    nodus_dnac_v3_block_result_t p;
+    name_fixture_page(&p);
+    exp_block_batch_t b;
+    exp_block_batch_init(&b);
+    int rc = exp_extract_page(&p, &b);
+    if (rc == 0) rc = exp_db_write_height(db, &b);
+    exp_block_batch_free(&b);
+    nodus_client_free_v3_block_result(&p);
+    if (rc != 0) { FAIL("seed failed"); exp_db_close(db); return; }
+
+    char fp_a[129], want_owner[200];
+    set_test_fp(fp_a, 'a');
+    snprintf(want_owner, sizeof(want_owner), "\"name_owner\":\"%s\"", fp_a);
+    const char *tx_needles[] = { "\"op\":\"name_register\"", "\"name\":\"punk\"",
+                                 "\"name_price\":\"50000000000\"", want_owner,
+                                 "\"burned\":null", NULL };
+    if (route_expect(db, "/api/tx/1:1", 200, tx_needles) != 0) { FAIL("registration item"); exp_db_close(db); return; }
+
+    static const char *const plain[] = { "\"name\":null,\"name_price\":null,\"name_owner\":null", NULL };
+    if (route_expect(db, "/api/tx/1:0", 200, plain) != 0) { FAIL("other item must carry name null"); exp_db_close(db); return; }
+
+    static const char *const found[] = { "{\"type\":\"name\",\"target\":\"1:1\"}", NULL };
+    if (route_expect(db, "/api/search?q=punk", 200, found) != 0) { FAIL("name search"); exp_db_close(db); return; }
+    static const char *const none[] = { "{\"matches\":[]}", NULL };
+    if (route_expect(db, "/api/search?q=punkk", 200, none) != 0) { FAIL("unknown name"); exp_db_close(db); return; }
+    /* upper case is not how the chain stores a name: no match */
+    if (route_expect(db, "/api/search?q=PUNK", 200, none) != 0) { FAIL("upper-case name"); exp_db_close(db); return; }
+
+    char path[300];
+    snprintf(path, sizeof(path), "/api/address/%s", fp_a);
+    static const char *const addr[] = { "\"position\":\"1:1\"", "\"name\":\"punk\"", NULL };
+    if (route_expect(db, path, 200, addr) != 0) { FAIL("owner history"); exp_db_close(db); return; }
+
+    if (exp_db_verify_index(db) != 0) { FAIL("verify_index"); exp_db_close(db); return; }
+    exp_db_close(db);
+    PASS();
+}
+
+/* item_ok's name rule: a name only on an applied item, with a price, and
+ * only of the chain's bytes; a price only with a name. Each bad page is
+ * refused whole and leaves the batch empty. */
+static void test_extract_refuses_bad_name(void) {
+    TEST("HF-4: extract refuses a bad name / price / refused-item name");
+
+    static const struct { const char *name; uint64_t price; uint32_t code; int effects; } bad[] = {
+        { "Punk", 50000000000ULL, 0, 1 },        /* upper case            */
+        { "ab", 50000000000ULL, 0, 1 },          /* too short             */
+        { "deadbeef", 100000000ULL, 0, 1 },      /* all-hex, length 8     */
+        { "punk", 0, 0, 1 },                     /* name without a price  */
+        { "", 100000000ULL, 0, 1 },              /* price without a name  */
+        { "punk", 50000000000ULL, 7, 0 },        /* refused item          */
+    };
+    for (size_t k = 0; k < sizeof(bad) / sizeof(bad[0]); k++) {
+        nodus_dnac_v3_block_result_t p;
+        name_fixture_page(&p);
+        nodus_dnac_v3_item_t *it = &p.items[1];
+        memset(it->name, 0, sizeof(it->name));
+        strcpy(it->name, bad[k].name);
+        it->name_price = bad[k].price;
+        it->code = bad[k].code;
+        if (!bad[k].effects) {
+            it->has_effects = false;
+            it->n_consumed = 0;
+            it->n_created = 0;
+            it->has_intent_id = false;
+            it->has_wire_id = false;
+        }
+        exp_block_batch_t b;
+        exp_block_batch_init(&b);
+        int rc = exp_extract_page(&p, &b);
+        size_t n = b.n_items;
+        exp_block_batch_free(&b);
+        nodus_client_free_v3_block_result(&p);
+        if (rc == 0 || n != 0) {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "bad case %zu accepted", k);
+            FAIL(msg);
+            return;
+        }
+    }
+    /* "deadbee" (7 hex characters) is a legal name */
+    nodus_dnac_v3_block_result_t p;
+    name_fixture_page(&p);
+    strcpy(p.items[1].name, "deadbee");
+    exp_block_batch_t b;
+    exp_block_batch_init(&b);
+    int rc = exp_extract_page(&p, &b);
+    exp_block_batch_free(&b);
+    nodus_client_free_v3_block_result(&p);
+    if (rc != 0) { FAIL("deadbee refused"); return; }
+    PASS();
+}
+
 static void test_route_errors(void) {
     TEST("route: 404 unknown path, 405 POST, 400 malformed ids");
 
@@ -1589,6 +1730,8 @@ int main(void) {
     test_route_stats_buckets();
     test_route_block_tx_address();
     test_route_search();
+    test_name_register_indexed();
+    test_extract_refuses_bad_name();
     test_route_errors();
     test_route_null_db_503();
     test_route_address_balance();

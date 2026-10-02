@@ -259,6 +259,46 @@ export async function createNodusSendModule(network, { claim = null, loadGlue = 
     async tick() {
       check(await call('nsw_tick'));
     },
+    // HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4
+    // §1.6). rulesetInfo() -> { tip, generation, gen2Height }: the pinned
+    // rule-set generation whose tuple equals the node's dnac_ruleset_info
+    // answer (the module refuses an older node and an unknown generation),
+    // that answer's tip and "H" (0 = no switch committed) — decimal
+    // strings. Only for the expiry the wallet requests; every build asks
+    // the node again (nodus-send-wasm.c nsw_select_generation).
+    async rulesetInfo() {
+      check(await call('nsw_ruleset_info'));
+      return { tip: str('nsw_ri_tip'), generation: String(num('nsw_ri_gen')), gen2Height: str('nsw_ri_h') };
+    },
+    // Chain names: ONE node's committed state (decision
+    // 2026-10-02-onchain-names.md item 9). nameLookup({ name }) -> { found,
+    // committedHeight, owner?, registeredHeight? }; nameOf({ owner }) ->
+    // { found, committedHeight, name?, registeredHeight? }. `name` must
+    // already be lowercase (src/nodus/names.js).
+    async nameLookup({ name } = {}) {
+      if (typeof name !== 'string' || num('nsw_name_ok', ['string'], [name]) !== 1) throw new Error('Not a chain name: 3 to 36 letters a-z and digits.');
+      check(await call('nsw_name_lookup', ['string'], [name]));
+      return num('nsw_name_found') === 1
+        ? { found: true, committedHeight: str('nsw_name_committed'), owner: str('nsw_name_owner'), registeredHeight: str('nsw_name_registered') }
+        : { found: false, committedHeight: str('nsw_name_committed') };
+    },
+    async nameOf({ owner } = {}) {
+      if (typeof owner !== 'string' || !HEX128.test(owner)) throw new Error('Invalid Nodus address.');
+      check(await call('nsw_name_of', ['string'], [owner]));
+      return num('nsw_name_found') === 1
+        ? { found: true, committedHeight: str('nsw_name_committed'), name: str('nsw_name_name'), registeredHeight: str('nsw_name_registered') }
+        : { found: false, committedHeight: str('nsw_name_committed') };
+    },
+    // profileAddress({ owner, field: 'eth' | 'bsc' | 'sol' | 'trx' }) ->
+    // { address }: the address the owner published in its profile, read and
+    // signature-checked by the module (connect/nc_profile.c); an unreadable,
+    // unsigned or field-less profile rejects.
+    async profileAddress({ owner, field } = {}) {
+      if (typeof owner !== 'string' || !HEX128.test(owner)) throw new Error('Invalid Nodus address.');
+      if (!['eth', 'bsc', 'sol', 'trx'].includes(field)) throw new Error('This network has no profile address field.');
+      check(await call('nsw_profile_address', ['string', 'string'], [owner, field]));
+      return { address: str('nsw_profile_addr') };
+    },
     // GENESIS CLAIM. claimStatus() -> { found: false } or { found: true,
     // amount (raw), tip, startHeight, endHeight, window: 'open' | 'not-open'
     // | 'closed' (for the next block), claimed: 'yes' (proven: the node's

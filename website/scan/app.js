@@ -62,6 +62,7 @@
   function opBadges(item) {
     const wrap = el('span', undefined, 'tx-title-row');
     wrap.append(el('span', opLabel(item), 'badge'));
+    if (typeof item.name === 'string' && item.name) wrap.append(el('span', t('Name: ', 'İsim: ') + item.name, 'badge'));
     if (item.refused) wrap.append(el('span', t('Refused', 'Reddedildi') + ' · ' + t('code ', 'kod ') + item.code, 'badge'));
     return wrap;
   }
@@ -221,6 +222,12 @@
       [t('Wire ID','Kablo kimliği'), tx.wire_id ? hash(tx.wire_id) : el('span', t('Not assigned','Atanmadı'), 'muted')], [t('Intent ID','Niyet kimliği'), tx.intent_id ? hash(tx.intent_id) : el('span', '—', 'muted')],
       [t('Fee','Ücret'), money(tx.fee)]];
     if (tx.burned !== null && tx.burned !== undefined) entries.push([t('Burned','Yakılan'), money(tx.burned)]);
+    // HF-4 name registration (explorer item name / name_price / name_owner): the price goes to
+    // the reward pool — it is not a burn. The owner is shown in full beside the name (look-alikes).
+    if (typeof tx.name === 'string' && tx.name) {
+      entries.push([t('Name registered','Kaydedilen isim'), el('strong', tx.name)], [t('Name price (to the reward pool)','İsim ücreti (ödül havuzuna)'), money(tx.name_price)],
+        [t('Name owner','İsim sahibi'), typeof tx.name_owner === 'string' ? hash(tx.name_owner, 'address.html?fp=' + encodeURIComponent(tx.name_owner)) : el('span', t('Not in the index', 'İndekste yok'), 'muted')]);
+    }
     content.replaceChildren(opBadges(tx), fields(entries));
     if (tx.refused) content.append(el('p', t('A refused transaction stays in the block but changes nothing: no coins are spent or created.', 'Reddedilen işlem blokta kalır ama hiçbir şeyi değiştirmez: coin harcanmaz, oluşturulmaz.'), 'muted'));
     if (tx.record) content.append(el('h2', t('Recorded change','Kaydedilen değişiklik')), renderRecord(tx.record));
@@ -279,16 +286,21 @@
   }
   $('search-form').addEventListener('submit',async event=>{
     event.preventDefault();const typed=$('search-input').value.trim();if(!typed)return;
-    const term=/^[a-fA-F0-9]{128}$/.test(typed)?typed.toLowerCase():typed;
+    // A 128-hex id, or a chain name (HF-4: the chain stores names lower-case; A-Z is mapped with
+    // an ASCII-only table, never a locale's lower-casing), is sent lower-case.
+    const asciiLower=s=>s.replace(/[A-Z]/g,c=>String.fromCharCode(c.charCodeAt(0)+32));
+    const term=/^[a-fA-F0-9]{128}$/.test(typed)?typed.toLowerCase():/^[A-Za-z0-9]{3,36}$/.test(typed)?asciiLower(typed):typed;
     const current=++searchRequest,results=$('search-results');results.replaceChildren(el('div',t('Searching…','Aranıyor…'),'loading'));
     try{
       const data=await api('/search?q='+apiValue(term));if(current!==searchRequest)return;
       if(!Array.isArray(data.matches))throw new Error(t('Unexpected search response.','Beklenmeyen arama yanıtı.'));
-      const matches=data.matches.filter(m=>['tx','block','address'].includes(m.type)&&typeof m.target==='string');
-      const href=m=>m.type+'.html?'+(m.type==='tx'?'hash':m.type==='block'?'h':'fp')+'='+encodeURIComponent(m.target);
+      const matches=data.matches.filter(m=>['tx','block','address','name'].includes(m.type)&&typeof m.target==='string');
+      // A "name" match (HF-4) targets the registering transaction's position.
+      const href=m=>(m.type==='name'?'tx':m.type)+'.html?'+(m.type==='tx'||m.type==='name'?'hash':m.type==='block'?'h':'fp')+'='+encodeURIComponent(m.target);
       if(matches.length===1){location.assign(window.nodusLink(href(matches[0])));return;}
       results.replaceChildren();if(!matches.length){results.append(el('p',t('No matching records.','Eşleşen kayıt yok.'),'search-empty'));return;}
-      const list=el('ul',undefined,'search-list');for(const match of matches){const li=el('li');li.append(el('span',match.type==='block'?t('Block','Blok'):match.type==='tx'?t('Transaction','İşlem'):t('Address','Adres'),'search-type'),hash(match.target,href(match)));list.append(li);}results.append(list);
+      const label=m=>m.type==='block'?t('Block','Blok'):m.type==='tx'?t('Transaction','İşlem'):m.type==='name'?t('Chain name','Zincir ismi'):t('Address','Adres');
+      const list=el('ul',undefined,'search-list');for(const match of matches){const li=el('li');li.append(el('span',label(match),'search-type'),hash(match.target,href(match)));list.append(li);}results.append(list);
     }catch(error){if(current===searchRequest)errorBox(results,error);}
   });
   $('search-input').addEventListener('input',()=>{searchRequest++;$('search-results').replaceChildren();});

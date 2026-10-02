@@ -610,7 +610,7 @@ function showReview(transfer, entries, title) {
   $('review-notice').textContent = `${networkFor(transfer.chain).stage || 'Mainnet'} transaction. ${ACTION_WORD[transfer.kind] || 'Sending'} cannot be undone.`;
   for (const [key, value] of entries) {
     const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = key; dd.textContent = value;
-    if (key === 'Address check') dd.className = 'notice';
+    if (key === 'Address check' || key === 'Name check' || key === 'Timing') dd.className = 'notice';
     $('review-details').append(dt, dd);
   }
   $('confirm-send').textContent = CONFIRM_TEXT[transfer.kind] || 'Confirm & send';
@@ -938,8 +938,13 @@ $('send-form').onsubmit = async event => {
       entries = [...transfer.review, ['Review expires', new Date(transfer.expiresAt).toLocaleTimeString()]];
     } else {
       const isEvm = transfer.chain === 'ethereum' || transfer.chain === 'bsc';
-      const details = { Network: `${CHAINS[transfer.chain].name} mainnet`, From: transfer.from, To: isEvm ? getAddress(transfer.to) : transfer.to };
-      if (isEvm && /^0x[0-9a-f]{40}$/.test(transfer.to)) details['Address check'] = 'No checksum in what you typed — compare the form above with your source character by character.';
+      const details = { Network: `${CHAINS[transfer.chain].name} mainnet`, From: transfer.from };
+      // HF-4 send to a chain name (src/wallet.js): the name, where the
+      // address came from and the owner's Nodus ID, then the address itself.
+      if (transfer.named) Object.assign(details, Object.fromEntries(adapters.nodus.nameReviewRows(transfer.named, { via: 'the address published in the owner’s signed profile' })));
+      details.To = isEvm ? getAddress(transfer.to) : transfer.to;
+      if (transfer.named) details[adapters.nodus.NAME_CHECK_ROW[0]] = adapters.nodus.NAME_CHECK_ROW[1];
+      else if (isEvm && /^0x[0-9a-f]{40}$/.test(transfer.to)) details['Address check'] = 'No checksum in what you typed — compare the form above with your source character by character.';
       Object.assign(details, { Asset: transfer.symbol, Amount: transfer.amount, 'Network fee': transfer.fee });
       if (isEvm) details['Transaction number (nonce)'] = transfer.nonce;
       details['Review expires'] = new Date(transfer.expiresAt).toLocaleTimeString();

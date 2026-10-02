@@ -62,6 +62,18 @@
 //                                its session: connect() is queued like every
 //                                other operation; connectSync() never
 //                                suspends.
+//     rulesetInfo()              HF-4: dnac_ruleset_info. Resolves { tip,
+//                                generation, gen2Height } (decimal strings):
+//                                the pinned rule-set generation whose tuple
+//                                equals the node's answer, the answer's tip
+//                                and "H" (0 = no switch committed). Must
+//                                reject for an older node or an unknown
+//                                generation ("this page is out of date").
+//                                REQUIRED: without it nothing is built.
+//     nameLookup({ name }) / nameOf({ owner }) / profileAddress({ owner, field })
+//                                OPTIONAL (HF-4, chain names — shapes in
+//                                src/nodus/send-module.js), same rule as
+//                                the claim operations.
 //     tick()                     Keepalive ping (the thread-less stand-in for
 //                                nodus_client.c's 60 s read-thread ping; the
 //                                server drops an idle session at 180 s).
@@ -87,7 +99,7 @@
 // export can never skip the wipe.
 const HEX128 = /^[0-9a-f]{128}$/, HEX64 = /^[0-9a-f]{64}$/;
 export const NODUS_TICK_MS = 60000;
-const ASYNC_OPS = ['unlock', 'balance', 'list', 'buildAndSign', 'submit', 'scanConfirm', 'tick'];
+const ASYNC_OPS = ['unlock', 'balance', 'list', 'buildAndSign', 'submit', 'scanConfirm', 'tick', 'rulesetInfo'];
 const SYNC_OPS = ['cancel', 'lock', 'release'];
 const CLAIM_OPS = ['claimStatus', 'claimBuild', 'claimSubmit'];
 // OPTIONAL (0.1.29, staking — shapes in src/nodus/send-module.js): a module
@@ -102,6 +114,10 @@ const STAKE_OPS = ['validators', 'delegations', 'stakeBuild'];
 // still unlocks; this client then answers "Messages is not available".
 // src/connect/core.js is the only caller.
 const CONNECT_OPS = ['connect', 'connectSync'];
+// OPTIONAL (HF-4, chain names — shapes in src/nodus/send-module.js): a
+// module without all three still unlocks; this client then answers every
+// name call "not available" (a name never resolves to anything).
+const NAME_OPS = ['nameLookup', 'nameOf', 'profileAddress'];
 const RAW_RULE = /^[1-9]\d{0,19}$/;
 function validRules(rules) {
   return !!rules && ['minDelegation', 'selfStake', 'commissionMaxBps', 'undelegateLockEpochs', 'epochLength'].every(key => typeof rules[key] === 'string' && RAW_RULE.test(rules[key]) && BigInt(rules[key]) < 2n ** 64n);
@@ -110,7 +126,7 @@ const lockedError = () => new Error('Wallet is locked.');
 
 export function createNodusClient({ factory, onState, setInterval: every = globalThis.setInterval, clearInterval: stopEvery = globalThis.clearInterval } = {}) {
   if (typeof factory !== 'function') throw new Error('The Nodus send module is not available.');
-  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, connectable = false;
+  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, connectable = false, nameable = false;
   // ONE operation queue: Asyncify keeps a single global currData, so a second
   // export entered while the first is suspended corrupts the first. `tail`
   // settles only when the module call itself has returned, never merely when
@@ -187,6 +203,7 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
       stakeable = STAKE_OPS.every(name => typeof loaded[name] === 'function') && validRules(loaded.stakingRules);
       stakingRules = stakeable ? Object.freeze({ ...loaded.stakingRules }) : undefined;
       connectable = CONNECT_OPS.every(name => typeof loaded[name] === 'function');
+      nameable = NAME_OPS.every(name => typeof loaded[name] === 'function');
       const info = await enqueue('unlock', { seed });
       if (!info || typeof info.fingerprint !== 'string' || !HEX128.test(info.fingerprint) || typeof info.chainId !== 'string' || !HEX64.test(info.chainId)) throw new Error('The Nodus send module returned an invalid identity.');
       // The module derives the identity from the seed on its own; it must be
@@ -205,6 +222,7 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
   const claimCall = op => (args, options) => claimable ? call(op)(args, options) : Promise.reject(new Error('Claiming is not available in this wallet version.'));
   const stakeCall = op => (args, options) => stakeable ? call(op)(args, options) : Promise.reject(new Error('Staking is not available in this wallet version.'));
   const noMessages = () => new Error('Messages is not available in this wallet version.');
+  const nameCall = op => (args, options) => nameable ? call(op)(args, options) : Promise.reject(new Error('Chain names are not available in this wallet version.'));
   return {
     get state() { return state; },
     get fingerprint() { return fingerprint; },
@@ -217,6 +235,12 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
     buildAndSign: call('buildAndSign'),
     submit: call('submit'),
     scanConfirm: call('scanConfirm'),
+    rulesetInfo: (options) => call('rulesetInfo')(undefined, options),
+    // Whether the loaded module resolves chain names (NAME_OPS).
+    get nameable() { return nameable && state === 'ready'; },
+    nameLookup: nameCall('nameLookup'),
+    nameOf: nameCall('nameOf'),
+    profileAddress: nameCall('profileAddress'),
     claimStatus: (options) => claimCall('claimStatus')(undefined, options),
     claimBuild: (options) => claimCall('claimBuild')(undefined, options),
     claimSubmit: claimCall('claimSubmit'),

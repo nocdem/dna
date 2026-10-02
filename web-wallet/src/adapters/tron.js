@@ -3,6 +3,15 @@ import { TronWeb, utils, providers } from 'tronweb';
 import { CHAINS } from '../config.js';
 import { request, rawInteger, formatUnits, endpointUrl } from '../core.js';
 const FEE_LIMIT = 100_000_000;
+// Whether `text` is a TRON address as typed (src/wallet.js: an address
+// always wins over a chain name).
+export function isRecipientAddress(text) { return typeof text === 'string' && TronWeb.isAddress(text); }
+// Whether `text` is an ATTEMPT at a TRON address — valid or not: 34
+// characters starting with T or t (base58, also a case-mangled one, which
+// lower-cases to a legal chain name), or the 42-hex "41…" form. Such text
+// is never looked up as a chain name (src/wallet.js): a broken address is
+// refused, not resolved.
+export function looksLikeAddress(text) { return typeof text === 'string' && (/^[Tt][0-9A-Za-z]{33}$/.test(text) || /^41[0-9a-fA-F]{40}$/.test(text)); }
 export async function checkNetwork(endpoint, options) {
   if (endpointUrl(endpoint) !== endpointUrl(CHAINS.tron.endpoint)) throw new Error('TRON requires the configured mainnet provider.');
   const genesis = await request(`${endpoint.replace(/\/$/, '')}/wallet/getblockbynum`, { num: 0 }, options);

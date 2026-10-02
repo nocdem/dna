@@ -8,7 +8,21 @@
  *   item_io      coins an applied item consumed (dir 0) / created (dir 1)
  *   item_records the SYSTEM record an applied item wrote (stake, delegate,
  *                unstake, undelegate, validator update, chain config)
+ *   item_names   the chain name an applied NAME_REGISTER item registered
+ *                (HF-4, dnac_v3_block optional keys "nm"/"pr"; design
+ *                docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.7):
+ *                name, price paid into the reward pool, and the owner — the
+ *                resolved address of the item's first consumed coin (every
+ *                input of a NAME_REGISTER is owned by its one signer, the
+ *                name's owner: rtn_name_exec, nodus_witness_rt_native.c),
+ *                NULL when that coin's creating item is not indexed
  *   meta         key/value (watermark, chain_id32 reference, tip, supply)
+ *
+ * item_names is created with CREATE TABLE IF NOT EXISTS on every open, so
+ * an existing v2 index gains it without a rebuild (no name can exist
+ * before the HF-4 switch height). An index advanced past that height by a
+ * binary WITHOUT this table lacks those heights' names until it is rebuilt
+ * (the design's rule: explorer decoders ship before the vote).
  *
  * Schema versioning: meta "schema_version" = EXP_DB_SCHEMA_VERSION, written
  * in the same transaction that creates the schema. exp_db_open on a file
@@ -97,6 +111,13 @@ typedef struct {
     int      has_effects;        /* 1 = applied item with decoded effects */
     uint64_t burned;
     exp_record_row_t rec;        /* rec.kind 0 = no record */
+    /* HF-4 NAME_REGISTER (applied items only): the registered name ("" =
+     * not a registration), the price paid into the reward pool — never a
+     * burn — and, read side only, the owner (the resolved address of the
+     * first consumed coin; "" when not indexed). */
+    char     name[37];
+    uint64_t name_price;
+    char     name_owner[129];
     uint64_t block_time_ms;      /* read side only: the block's header time */
 } exp_item_row_t;
 
@@ -159,8 +180,9 @@ int  exp_db_set_meta_blob(exp_db_t *db, const char *key, const uint8_t *buf, siz
  * Checks: the blocks are exactly heights 1..last_indexed_height; every
  * block's item count equals its n_items and its applied envelope count
  * (kind 1, code 0) equals applied_count; every item has a block row; every
- * io row and record row belongs to an applied item; no refused item has
- * effects. 0 = consistent, -1 = inconsistent or query failure. */
+ * io row, record row and name row belongs to an applied item; no refused
+ * item has effects; no chain name is registered twice. 0 = consistent,
+ * -1 = inconsistent or query failure. */
 int  exp_db_verify_index(exp_db_t *db);
 
 /* ── read side ─────────────────────────────────────────────────────── */
@@ -191,6 +213,13 @@ int  exp_db_query_item_ios(exp_db_t *db, uint64_t height, uint32_t idx,
 int  exp_db_query_address(exp_db_t *db, const char *fp,
                           uint64_t before_height, uint32_t before_idx, int limit,
                           exp_item_row_t *rows, int *count_out);
+
+/* HF-4: the item that registered chain name `name` (exact, lower-case).
+ * A name is registered once (first wins, permanent — the chain refuses a
+ * second registration), so at most one applied item holds it; ORDER BY
+ * keeps a (never expected) duplicate deterministic. 0 found, -1 not found
+ * or error. */
+int  exp_db_query_item_by_name(exp_db_t *db, const char *name, exp_item_row_t *row_out);
 
 #ifdef __cplusplus
 }

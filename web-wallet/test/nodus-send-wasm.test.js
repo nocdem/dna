@@ -59,7 +59,11 @@ const ENTRY_POINTS = [
   'nsw_built_op', 'nsw_built_commission', 'nsw_stake_offline_build', 'nsw_const_min_delegation', 'nsw_const_self_stake',
   'nsw_const_commission_max', 'nsw_const_undelegate_lock_epochs', 'nsw_const_epoch_length', 'nsw_validators', 'nsw_val_count',
   'nsw_val_truncated', 'nsw_val_fp', 'nsw_val_self', 'nsw_val_delegated', 'nsw_val_commission', 'nsw_val_status',
-  'nsw_delegations', 'nsw_del_count', 'nsw_del_fp', 'nsw_del_amount', 'nsw_del_block', 'nsw_stake_build'
+  'nsw_delegations', 'nsw_del_count', 'nsw_del_fp', 'nsw_del_amount', 'nsw_del_block', 'nsw_stake_build',
+  // HF-4: rule-set generation, chain names, a name owner's profile address
+  'nsw_name_ok', 'nsw_ruleset_info', 'nsw_ri_gen', 'nsw_ri_tip', 'nsw_ri_h', 'nsw_name_lookup', 'nsw_name_of',
+  'nsw_name_found', 'nsw_name_owner', 'nsw_name_name', 'nsw_name_registered', 'nsw_name_committed',
+  'nsw_profile_address', 'nsw_profile_addr'
 ];
 
 test('the shipped send.wasm exports the module entry points and no test-only one', () => {

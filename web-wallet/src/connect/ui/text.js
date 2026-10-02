@@ -19,6 +19,26 @@ export function shortId(fp) {
   return `ID ${fp.slice(0, 8)}…${fp.slice(-4)}`;
 }
 
+// HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4, R3 and
+// R6): what a contact is called and how each name is labelled, so a chain
+// name and a profile (network directory) name can never be confused.
+//   chain    the chain name the node reported (dnac_name_of), '' if none
+//   profile  the profile name nc_name_verify proved, '' if none
+//   claimed  an unverified name claim, '' if none
+// Only a chain name is the title and gets the verified look; the short ID
+// is shown beside every chain name (ASCII look-alikes, R3); a profile name
+// is shown only as "profile name …", a claim only when nothing better is
+// known.
+export function contactNames(fp, { chain = '', profile = '', claimed = '' } = {}) {
+  return {
+    title: chain || shortId(fp),
+    verified: !!chain,
+    id: chain ? shortId(fp) : '',
+    profile: profile && profile !== chain ? profile : '',
+    claimed: !chain && !profile ? claimed : ''
+  };
+}
+
 // Text written by someone else (a request note, a claimed name, a message,
 // a profile field). Direction controls are removed from what is shown
 // (the element is also a <bdi>, see dom.js) and reported; so are invisible

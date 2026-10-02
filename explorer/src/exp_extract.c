@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "crypto/utils/qgp_log.h"
+#include "dnac/dnac.h"                 /* dnac_name_bytes_ok (HF-4) */
 #define LOG_TAG "EXP_EXTRACT"
 
 /* "" or exactly 128 lowercase hex + NUL. */
@@ -36,9 +37,22 @@ static int header_matches(const exp_block_row_t *b, const nodus_dnac_v3_block_re
            b->n_items == p->total_items;
 }
 
+/* HF-4 NAME_REGISTER ("nm"/"pr", nodus.h dnac_v3_block): "" with no price,
+ * or a legal chain name (the ONE byte rule, dnac_name_bytes_ok) with a
+ * price above zero on an applied item. */
+static int name_ok(const nodus_dnac_v3_item_t *it) {
+    const char *end = memchr(it->name, '\0', sizeof(it->name));
+    if (!end) return 0;
+    size_t len = (size_t)(end - it->name);
+    if (len == 0) return it->name_price == 0;
+    return it->has_effects && it->code == 0 && it->name_price > 0 &&
+           dnac_name_bytes_ok((const uint8_t *)it->name, len);
+}
+
 static int item_ok(const nodus_dnac_v3_item_t *it) {
     if (it->kind > NODUS_DNAC_V3_KIND_CLAIM) return 0;
     if (!op_ok(it->op)) return 0;
+    if (!name_ok(it)) return 0;
     if (!it->has_effects) {
         return it->burned == 0 && it->rec_kind == NODUS_DNAC_V3_REC_NONE &&
                it->n_consumed == 0 && it->n_created == 0;
@@ -148,6 +162,9 @@ int exp_extract_page(const nodus_dnac_v3_block_result_t *page, exp_block_batch_t
         r->op[sizeof(r->op) - 1] = '\0';
         r->has_effects = it->has_effects ? 1 : 0;
         r->burned = it->burned;
+        /* HF-4: the registered name and its price (item_ok checked both) */
+        memcpy(r->name, it->name, sizeof(r->name));
+        r->name_price = it->name_price;
         if (it->has_effects && it->rec_kind != NODUS_DNAC_V3_REC_NONE) {
             r->rec.kind = it->rec_kind;
             memcpy(r->rec.validator, it->rec_validator_fp, 129);

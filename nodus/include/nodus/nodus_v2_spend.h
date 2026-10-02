@@ -224,8 +224,9 @@ int nodus_v2_ruleset_from_pins(nodus_v2_ruleset_id_t *out,
  * (dnac_ruleset_info), finds the pinned generation whose (SYSTEM, CORE)
  * tuple EQUALS the answer — never by height — and builds with it; no
  * match means the client is out of date (fail closed).
- * nodus_v2_ruleset_from_pins above is generation 1 (kept for the web
- * wallet's WASM module until it migrates to the _gen form). */
+ * nodus_v2_ruleset_from_pins above is generation 1 (the offline builders
+ * use it; the web wallet's networked WASM builds use the _gen form since
+ * web wallet 0.1.43). */
 
 /** Number of generations nodus_ruleset_pins.h carries (1..count). */
 uint32_t nodus_v2_pins_generation_count(void);
