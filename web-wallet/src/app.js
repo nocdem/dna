@@ -501,7 +501,7 @@ function showEarn(on) {
 function hideStaking() {
   stakeCheck++; stakeView = undefined; setEarnAvailable(false);
   showEarn(false); $('validator-list').replaceChildren(); $('delegation-list').replaceChildren();
-  $('delegate-validator').replaceChildren(); $('stake-status').textContent = ''; $('delegate-hint').textContent = ''; $('undelegate-note').textContent = ''; $('become-note').textContent = '';
+  $('delegate-validator').replaceChildren(); $('stake-status').textContent = ''; $('delegate-hint').textContent = ''; $('undelegate-note').textContent = '';
 }
 async function refreshStaking() {
   const client = nodusClient, source = wallet, check = ++stakeCheck;
@@ -564,18 +564,9 @@ function renderStaking(view) {
     return row;
   }) : [el('p', 'stake-empty', 'You have no delegations.')]));
   $('undelegate-note').textContent = `Undelegating returns the NODUS to your address as a separate coin that stays locked for ${view.lockText} after the validator set next changes. Until then it cannot be sent or delegated again. Withdraw everything, or leave at least ${minText} NODUS delegated. The network fee is paid from your spendable NODUS.`;
-  const bond = nodusAmountText(rules.selfStake), maxRate = `${(Number(rules.commissionMaxBps) / 100).toFixed(2).replace(/\.?0+$/, '')}%`;
-  $('become-fields').hidden = !!view.ownValidator;
-  $('become-note').textContent = view.ownValidator
-    ? `This wallet is already a validator (${view.ownValidator.statusText}).`
-    : `Becoming a validator bonds exactly ${bond} NODUS from this wallet (plus the network fee). The bond stays locked while you are a validator, and this wallet has no way to unstake it. Commission: 0% to ${maxRate}. The bond returns to this wallet’s own address.`;
 }
-// Percent text ("5", "12.5", "0.25") -> basis points text, exact; else throws.
-function commissionBps(text) {
-  const m = /^(\d{1,2}|100)(?:\.(\d{1,2}))?$/.exec(String(text).trim());
-  if (!m) throw new Error('Enter a commission as a percentage with at most two decimals, for example 5 or 12.5.');
-  return (BigInt(m[1]) * 100n + BigInt((m[2] || '').padEnd(2, '0') || '0')).toString();
-}
+// "Become a validator" was removed from the page (operator 2026-10-03); the
+// module / adapter STAKE builder (prepareStake kind 'stake') stays.
 async function startStake(kind, params) {
   if (busy || !wallet || !STAKE_KINDS.includes(kind)) return;
   // Activity lists the selected network's records: show NODUS, where the
@@ -597,12 +588,6 @@ $('stake-refresh').onclick = () => void refreshStaking();
 $('delegate-form').onsubmit = event => {
   event.preventDefault();
   void startStake('delegate', { validator: $('delegate-validator').value, amount: $('delegate-amount').value });
-};
-$('become-review').onclick = () => {
-  if (!$('become-confirm').checked) { message('Confirm that you understand the bond is locked and cannot be unstaked from this wallet.'); $('become-confirm').focus(); return; }
-  let bps;
-  try { bps = commissionBps($('become-commission').value); } catch (error) { message(error.message); return; }
-  void startStake('stake', { commissionBps: bps });
 };
 // Opens the review dialog for a transfer-shaped object (a send, a claim from
 // src/adapters/nodus.js prepareClaim, or a staking transaction from
@@ -1077,7 +1062,7 @@ $('confirm-send').onclick = async () => {
     if (STAKE_KINDS.includes(transfer.kind)) void refreshStaking();
     if (current !== revision) return;
     if (STAKE_KINDS.includes(transfer.kind)) {
-      $('delegate-amount').value = ''; $('become-confirm').checked = false;
+      $('delegate-amount').value = '';
       message(`${transfer.kind === 'delegate' ? 'Delegation' : transfer.kind === 'undelegate' ? 'Undelegation' : 'Validator bond'} submitted; confirmation is pending. Transaction ID ${hash}. Its status is tracked in Activity.`);
       return;
     }

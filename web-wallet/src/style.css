@@ -320,7 +320,6 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 #delegate-form > button { margin-top: 24px; }
 #undelegate-note { margin-bottom: 0; }
 details.stake-block > summary { color: var(--text); }
-#become-fields > button { width: 100%; margin-top: 20px; }
 /* HF-4 chain-name registration, inside the NODUS receive block */
 .name-block { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); scroll-margin-top: 24px; }
 .name-block h4 { font-size: 12px; font-weight: 500; margin: 0 0 12px; color: var(--text); }

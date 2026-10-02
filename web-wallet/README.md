@@ -934,6 +934,16 @@ Decision: `docs/plans/decisions/2026-09-25-web-wallet-solana-kit.md` (operator,
   all JavaScript chunks 1,477,466 → 1,315,743 bytes. The default build's app
   chunk is 1,254,356 bytes.
 
+## "Become a validator" removed from the page (unreleased)
+
+Operator 2026-10-03: the "Become a validator" block of the Earn panel
+(0.1.29) is gone from the wallet and Nodus Connect pages (`index.html`,
+`connect-site/index.html`, its handlers in `src/app.js`). Delegate and
+undelegate stay. The STAKE builder behind it is kept unchanged
+(`src/adapters/nodus.js` `prepareStake` kind `'stake'`, the module's
+`stakeBuild` op `'stake'`, `crypto/nodus-send-wasm.c` STAKING, and its test
+in `test/nodus-send.test.js`); nothing on the page calls it now.
+
 ## Register a chain name (unreleased)
 
 Decision `docs/plans/decisions/2026-10-02-onchain-names.md` (items 2–6, 10,
