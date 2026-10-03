@@ -1459,7 +1459,7 @@ code `nodus-cli v2-envelope spend` used, moved out unchanged in behaviour (desig
   `res_max_total_units`, the two-pass signature with pass-2 preflight self-check, then a
   read-back (`nodus_v2_spend_decode`) refused if it differs from the request. Refuses tip 0 and
   an expiry outside `(tip, tip + NODUS_CMT_APP_MAX_EXPIRY_AHEAD]`.
-- Building blocks reused by nodus-cli's stake / delegate / token-create / multisig builders:
+- Building blocks reused by nodus-cli's stake / delegate / token-create builders and the shared multisig library (`nodus/src/client/nodus_v2_msig.c`):
   `nodus_v2_xfer_out_put`, `nodus_v2_env_sign_one_key`, `nodus_v2_spend_ceiling`,
   `nodus_v2_spend_pick`, `nodus_v2_spend_effect_decl`.
 
@@ -5039,7 +5039,22 @@ audited** (independent oracle `shared/dnac/tests/multisig_oracle.py`).
   own fingerprint), `msig sign` (offline, re-derives the digest and
   refuses a mismatch), `msig combine` (exactly the K signatures the
   export fixed — auth_len is signed — ascending, the chain's auth hook run
-  locally, then submitted over any session).
+  locally, then submitted over any session). **Since 2026-10-03** the
+  bodies of the four steps live in the shared client library
+  `nodus/src/client/nodus_v2_msig.{c,h}` (in libnodus; no I/O): descriptor
+  + address from keys in any order (`nodus_v2_msig_desc_from_keys`), the
+  unsigned build (`nodus_v2_msig_build`, the CLI's fee fixed point, the
+  caller's expiry and ruleset tuple), the export / signature texts
+  (`_export_encode/_parse`, `_sig_encode/_parse`, byte for byte the CLI's
+  files), the co-signer read-back (`nodus_v2_msig_review`), the
+  per-signature check and the ascending assembly (`_sig_check`,
+  `_assemble`, `_combine`). nodus-cli keeps argument parsing, files, the
+  session, the messages and the local auth-hook check; the web wallet's
+  `send.wasm` compiles the same file for its shared vaults
+  (`web-wallet/README.md` "Shared vaults"). Behaviour deltas on error paths
+  only: the export's `tip` / `signers` lines are read strictly (digits),
+  a read-back refuses more than 16 outputs (the SPEND ceiling). Test:
+  `test_v2_msig`.
 - **Rulesets:** CORE v4 is ONE bump for W-C + multisig (the allowlist is
   not a descriptor field, so the v4 preimage is the W-C one; digest still
   an ORACLE PLACEHOLDER). SYSTEM v6 unchanged (its comment no longer

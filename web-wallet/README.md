@@ -975,6 +975,112 @@ undelegate stay. The STAKE builder behind it is kept unchanged
 `stakeBuild` op `'stake'`, `crypto/nodus-send-wasm.c` STAKING, and its test
 in `test/nodus-send.test.js`); nothing on the page calls it now.
 
+## Shared vaults — general multisig (unreleased)
+
+Decision `docs/plans/decisions/2026-09-29-general-multisig.md` (M-of-N
+address, at most 7 keys per address, auth_kind 3, a payment valid until
+tip + 90 blocks; the Foundation 2-of-3) with design
+`docs/plans/2026-09-29-general-multisig-design.md` §7 rev 2, decision
+`2026-09-25-web-wallet-nodus-send-transport.md` (the wallet builds with the
+same C code as nodus-cli), and the operator's product note of 2026-10-03
+(create a vault in Connect by member names, the address computed by
+Connect, members told by message and adding it with one tap, the
+Foundation vault ready-made, anyone may open their own; a vault is listed
+only for its members — watching any other vault is the user's own choice).
+
+- **Where.** A "Shared vaults · NODUS" panel in the NODUS account area of
+  both pages (`index.html`, `connect-site/index.html`; shown while NODUS is
+  the selected network and the module is ready; nav link "Shared vaults").
+  Code: `src/vaults/ui.js` (panel + Messages cards, registered as a wallet
+  extension by `src/main.js` and `src/connect-main.js`), `src/vaults/core.js`
+  (message kinds, kept record, states — no DOM, no module),
+  `src/vaults/foundation.js` (the preset).
+- **Create.** Members by chain name, by ID (128 hex) or — in Connect — from
+  the contacts; this wallet is always a member; 2..7 members; approvals
+  needed 1..N. "Check members" reads each member's SIGNED profile in the
+  module (`nsw_msig_member_add` → `connect/nc_profile.c` `nc_profile_read`:
+  signature and SHA3-512(key) == ID checked) and computes the vault code
+  and address (`nodus_v2_msig_desc_from_keys`); the page shows the members
+  and the address before "Create vault". A member's key never passes
+  through JS.
+- **Members told by message (Connect).** "Share with members" sends each
+  member who is a contact an encrypted 1:1 Messages item (JSON, `"type":
+  "nodus_vault"`, kind `share`: the vault code, a name, the block its
+  history starts at). The receiver's chat shows a card; "Add vault" makes
+  the module derive the address and the member IDs FROM THE CODE (nothing
+  in the message names them), shows them with M of N, and a second tap
+  adds it — only if this wallet is a member. The DNA Connect app (frozen)
+  shows such items as raw text.
+- **The Foundation vault** (`src/vaults/foundation.js`): the 7794-byte
+  descriptor of `docs/plans/genesis-testnet/foundation_2of3.desc` (a local
+  file) as hex, beside the decision's address `9885…30c6`; the module
+  re-derives the address and the preset is listed only when it matches AND
+  this wallet's key is one of the three. Members are shown by the chain
+  name / short ID resolved for each key, never by a name written in this
+  file (operator note 2026-10-03: one key is not the person its directory
+  name suggests).
+- **Balance and history.** Balance = `dnac_balance` of the vault address
+  (public). Coins: no node lists an address's coins without its key
+  (`dnac_utxo` is gated to the session's own ID, C11 — nodus-cli's `--msig`
+  takes them by hand for the same reason), so the module FINDS them by
+  reading committed blocks (`dnac_v3_block`, public) from the vault's first
+  block: coins created for the vault, minus coins a later item consumed;
+  200 blocks per step, up to 10 000 per "Refresh", resumable from the kept
+  cursor. **Cost:** the first reading of a vault reads every block since it
+  was created. **Limit:** genesis outputs are in no block — the Foundation
+  vault's starting coins cannot be found this way; the page shows the
+  balance and says that payments can use only the coins found (the
+  ORCHESTRATOR has the open item).
+- **Propose (Connect).** Pay to (address or chain name) + amount → the
+  module builds nodus-cli's UNSIGNED vault spend (`nodus_v2_msig_build`:
+  found coins largest first, the fewest that cover amount + fee; change to
+  the vault; K = M; expiry tip + 90 via `nsw_expiry_for`; the generation the
+  node runs) and reads it back. "Approve and send to members" signs and
+  sends two items to every member contact: kind `request` (nodus-cli's
+  export minus the unsigned auth blob — K zero slots + the descriptor,
+  which the receiver rebuilds from its OWN copy of the vault code, so a
+  7-key request fits one stored Messages record; the export bytes are
+  nodus-cli's again on arrival) and kind `approval` (nodus-cli's signature
+  text).
+- **Approve.** A member opens the request: the module's read-back of the
+  bytes at the node's current tip (`nodus_v2_msig_review`: shape,
+  membership, the digest re-derived and EQUAL, call lengths; then the vault
+  the request carries must be the vault opened, every output native NODUS,
+  expired = tip + 1 > last valid block) — recipient, amount, change back to
+  the vault, network fee, last valid block, and whether every coin it
+  spends was found in this vault's history. The message carries no
+  description of the payment to show. "Approve" signs only if the request
+  is still the digest that was shown.
+- **Send.** With M approvals: "Send payment" — each approval checked on
+  arrival (`nodus_v2_msig_sig_check`), the first K combined
+  (`nodus_v2_msig_combine`, ascending keys, pass-2 self-check) and sent with
+  `dnac_spend`. The chain's own auth hook is witness code the browser
+  cannot link (nodus-cli runs it locally); the node judges the
+  authorization on arrival. **Expired:** after the last valid block the
+  request shows "Expired — propose again"; nothing can sign or send it.
+- **Kept.** In Connect with a saved wallet, one encrypted record per vault
+  in the Messages history (`src/connect/store.js` `state.vaults` →
+  record id `v` + 20 digits); otherwise for the session only. The wallet
+  page has no Messages: vaults there live for the session and proposing /
+  approving says to use Nodus Connect.
+- **Same C code as nodus-cli.** `nodus/src/client/nodus_v2_msig.{c,h}` is
+  the body of `msig address`, `v2-envelope spend --msig`, `msig sign` and
+  `msig combine`, moved out (nodus-cli calls it); `send.wasm` links it with
+  `shared/dnac/msig_wire.c` (`crypto/nodus-send-wasm.c` "VAULTS", the
+  `nsw_msig_*` exports; TEST-only `nsw_test_msig_*`). Module contract: the
+  optional `vault*` group (`src/nodus/client.js` `vaultable`).
+
+Tests (written, not run by the change author): nodus ctest
+`test_v2_msig` (the library vs the pre-move nodus-cli code byte for byte,
+refusals, the read-back refusing changed fields, the combine through the
+chain's auth hook) and `test/vaults.test.js` (message kinds and refusals,
+the Foundation bytes against the documented address, kept record, states,
+expiry, exports; with `NODUS_SEND_PARITY_OUT`: address / member parity with
+the C and the read-back refusals — else SKIP). **How they can lie:** the
+inputs are synthetic; no test talks to a node, reads blocks, or drives the
+browser UI (`src/vaults/ui.js` wiring is untested); nothing proves a node
+accepts a combined vault payment except `test_v2_msig`'s auth-hook check.
+
 ## Register a chain name (unreleased)
 
 Decision `docs/plans/decisions/2026-10-02-onchain-names.md` (items 2–6, 10,
