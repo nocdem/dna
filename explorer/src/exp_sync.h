@@ -5,6 +5,9 @@
  *   1. src->tip -> chain_id32 + committed tip height (+ supply figures),
  *      fed into the F4 chain-reset FSM (exp_chain.h). A confirmed reset
  *      archives the current index db aside and starts a fresh one.
+ *      On an accepted observation (FSM: no reset) the optional
+ *      src->stake read (the active stake, display only) follows; its
+ *      result — or "unknown" on a failure — is stored with the tip.
  *   2. Walk heights last_indexed_height+1 .. tip (at most
  *      EXP_SYNC_MAX_HEIGHTS_PER_TICK per tick). Per height: every
  *      dnac_v3_block page is fetched (exp_sync_collect_block), then the
@@ -69,6 +72,10 @@ typedef struct {
                  nodus_dnac_v3_block_result_t *out);
     int  (*server)(void *ctx);       /* current server index, for the FSM */
     void (*rotate)(void *ctx);
+    /* OPTIONAL (NULL = not read): the active stake (exp_chain.h), read
+     * after an accepted tip observation; a failure stores "unknown" and
+     * never stops indexing. */
+    int  (*stake)(void *ctx, exp_active_stake_t *out);
 } exp_sync_source_t;
 
 /* Fill `src` to read from `chain`. */

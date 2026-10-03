@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "nodus/nodus.h"
+#include "dnac/validator.h"            /* DNAC_VALIDATOR_ACTIVE, DNAC_MAX_VALIDATORS (dnac.h) */
 #include "crypto/nodus_identity.h"
 
 #include "crypto/utils/qgp_log.h"
@@ -354,6 +355,86 @@ int exp_supply_buckets_unpack(const uint8_t *buf, size_t len,
     out->unclaimed = get_u64_le(p);
     out->has = true;
     return 0;
+}
+
+/* ── Active stake: meta blob + summation + read ─────────────────────── */
+
+void exp_active_stake_pack(const exp_active_stake_t *s,
+                           uint8_t out[EXP_ACTIVE_STAKE_BLOB_LEN]) {
+    memset(out, 0, EXP_ACTIVE_STAKE_BLOB_LEN);
+    if (!s || !s->has) return;                 /* has 0, every u64 0 */
+    out[0] = 1;
+    put_u64_le(out + 1, s->stake);
+    put_u64_le(out + 9, s->validators);
+    put_u64_le(out + 17, s->at_tip);
+}
+
+int exp_active_stake_unpack(const uint8_t *buf, size_t len, exp_active_stake_t *out) {
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    if (!buf || len != EXP_ACTIVE_STAKE_BLOB_LEN || buf[0] > 1) return -1;
+    if (buf[0] == 0) return 0;
+    out->stake = get_u64_le(buf + 1);
+    out->validators = get_u64_le(buf + 9);
+    out->at_tip = get_u64_le(buf + 17);
+    out->has = 1;
+    return 0;
+}
+
+int exp_active_stake_add(exp_active_stake_t *acc,
+                         const nodus_dnac_validator_list_entry_t *e) {
+    if (!acc || !e) return -1;
+    if (e->status != (uint8_t)DNAC_VALIDATOR_ACTIVE) return 0;
+    uint64_t power_stake = e->self_stake + e->external_delegated;
+    if (power_stake < e->self_stake) return -1;
+    if (acc->stake + power_stake < acc->stake) return -1;
+    acc->stake += power_stake;
+    acc->validators++;
+    return 0;
+}
+
+int exp_chain_active_stake(exp_chain_t *c, exp_active_stake_t *out) {
+    if (!c || !c->nc || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    if (!nodus_client_is_ready(c->nc)) return -1;
+
+    exp_active_stake_t acc;
+    memset(&acc, 0, sizeof(acc));
+    int offset = 0;
+    for (int page = 0; page < EXP_ACTIVE_STAKE_MAX_PAGES; page++) {
+        nodus_dnac_validator_list_result_t res;
+        memset(&res, 0, sizeof(res));
+        int rc = nodus_client_dnac_validator_list(c->nc, (int)DNAC_VALIDATOR_ACTIVE, offset,
+                                                  DNAC_MAX_VALIDATORS, &res);
+        if (rc != 0) {
+            nodus_client_free_validator_list_result(&res);
+            QGP_LOG_WARN(LOG_TAG, "dnac_validator_list on %s:%u failed (rc=%d)",
+                         c->servers[c->current].host, (unsigned)c->servers[c->current].port, rc);
+            return rc;
+        }
+        int bad = (res.count > 0 && !res.entries);
+        for (int i = 0; !bad && i < res.count; i++) {
+            if (exp_active_stake_add(&acc, &res.entries[i]) != 0) bad = 1;
+        }
+        const int count = res.count, total = res.total;
+        nodus_client_free_validator_list_result(&res);
+        if (bad) {
+            QGP_LOG_WARN(LOG_TAG, "%s", "dnac_validator_list: malformed page or stake overflow");
+            return -1;
+        }
+        if (count <= 0 || offset + count >= total) {
+            if (count <= 0 && offset < total) {
+                QGP_LOG_WARN(LOG_TAG, "%s", "dnac_validator_list: empty page before the end");
+                return -1;
+            }
+            acc.has = 1;
+            *out = acc;
+            return 0;
+        }
+        offset += count;
+    }
+    QGP_LOG_WARN(LOG_TAG, "%s", "dnac_validator_list: page bound exceeded");
+    return -1;
 }
 
 int exp_supply_circulating(const nodus_dnac_supply_buckets_t *b,

@@ -3,6 +3,7 @@
 #include "exp_http.h"
 
 #include <errno.h>
+#include <math.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -673,10 +674,79 @@ static void emit_tps_fields(exp_json_t *j, const exp_tps_count_t *c, uint64_t se
     json_tps(j, c->tx, seconds);
 }
 
+/* ── APY estimate (/api/tps "apy") ──────────────────────────────────────
+ * The operator's formula, display only:
+ *   epochs_per_year = 31 557 600 s / (720 × avg_block_s over the last 24 h)
+ *   yearly_reward   = reward_pool × (1 − (1 − 1/65536)^epochs_per_year)
+ *   apy             = yearly_reward / active_stake
+ * 1/65536: each epoch boundary pays reward_pool >> 16
+ * (nodus_witness_v2_econ.c settlement_apply, NODUS_V2_GEN_REWARD_DIVISOR_LOG2
+ * = 16, nodus_witness_v2_gen.h). An upper bound: a member that misses the
+ * attendance bar leaves its share in the pool, fees that refill the pool
+ * are ignored, and validator commission is not deducted. */
+#define EXP_APY_YEAR_MS        31557600000.0     /* 365.25 days */
+#define EXP_APY_REWARD_DIVISOR 65536.0
+
+/* Two decimals of a finite, non-negative double; null otherwise. */
+static void json_fixed2(exp_json_t *j, double v) {
+    if (!isfinite(v) || v < 0.0) {
+        exp_json_raw(j, "null");
+        return;
+    }
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%.2f", v);
+    exp_json_str(j, buf);
+}
+
+/* "apy":{…} — every input as read (null when not known) and the result
+ * (null unless every input is known and the stake is non-zero). */
+static void emit_apy(exp_db_t *db, const exp_tps_t *t, exp_json_t *j) {
+    uint8_t blob[EXP_SUPPLY_BUCKETS_BLOB_LEN];
+    size_t len = 0;
+    nodus_dnac_supply_buckets_t bk;
+    int have_pool = exp_db_get_meta_blob(db, EXP_META_SUPPLY_BUCKETS, blob, sizeof(blob), &len) == 0 &&
+                    exp_supply_buckets_unpack(blob, len, &bk) == 0 && bk.has;
+
+    uint8_t sblob[EXP_ACTIVE_STAKE_BLOB_LEN];
+    size_t slen = 0;
+    exp_active_stake_t st;
+    int have_stake = exp_db_get_meta_blob(db, EXP_META_ACTIVE_STAKE, sblob, sizeof(sblob), &slen) == 0 &&
+                     exp_active_stake_unpack(sblob, slen, &st) == 0 && st.has;
+
+    int have_epy = t->have_day_pace && t->day_avg_block_ms > 0;
+    double epy = have_epy
+        ? EXP_APY_YEAR_MS / ((double)EXP_EPOCH_BLOCKS * (double)t->day_avg_block_ms) : 0.0;
+
+    exp_json_raw(j, "{\"reward_pool\":");
+    if (have_pool) exp_json_u64_str(j, bk.reward_pool); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"active_stake\":");
+    if (have_stake) exp_json_u64_str(j, st.stake); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"active_validators\":");
+    if (have_stake) exp_json_u64(j, st.validators); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"stake_at_tip\":");
+    if (have_stake) exp_json_u64(j, st.at_tip); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"avg_block_ms\":");
+    if (t->have_day_pace) exp_json_u64(j, t->day_avg_block_ms); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"epochs_per_year\":");
+    if (have_epy) json_fixed2(j, epy); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"apy\":");
+    if (have_pool && have_stake && st.stake > 0 && have_epy) {
+        double kept = exp(epy * log1p(-1.0 / EXP_APY_REWARD_DIVISOR));  /* (1 − 1/65536)^epy */
+        double yearly = (double)bk.reward_pool * (1.0 - kept);
+        json_fixed2(j, yearly / (double)st.stake * 100.0);
+    } else {
+        exp_json_raw(j, "null");
+    }
+    exp_json_raw(j, "}");
+}
+
 /* /api/tps — applied transactions per second over the last minute, the
- * last hour and the last 24 UTC hours (exp_db_query_tps). Every figure is
- * read off the index by block time: now_ms is the newest indexed block's
- * time, not this host's clock. An empty index answers nulls and []. */
+ * last hour and the last 24 UTC hours, the next payday estimate, the past
+ * paydays and the APY estimate (exp_db_query_tps, emit_apy). The
+ * throughput, payday and pace figures are read off the index by block
+ * time: now_ms is the newest indexed block's time, not this host's clock.
+ * The APY's pool and stake are the last accepted node observation (meta).
+ * An empty index answers nulls and []. */
 static void route_tps(exp_db_t *db, exp_json_t *j, int *status) {
     exp_tps_t t;
     if (exp_db_query_tps(db, &t) != 0) {
@@ -685,7 +755,8 @@ static void route_tps(exp_db_t *db, exp_json_t *j, int *status) {
         return;
     }
     if (!t.have) {
-        exp_json_raw(j, "{\"now_ms\":null,\"last_minute\":null,\"last_hour\":null,\"history\":[]}");
+        exp_json_raw(j, "{\"now_ms\":null,\"last_minute\":null,\"last_hour\":null,"
+                        "\"next_payday\":null,\"paydays\":[],\"apy\":null,\"history\":[]}");
         *status = 200;
         return;
     }
@@ -696,7 +767,29 @@ static void route_tps(exp_db_t *db, exp_json_t *j, int *status) {
     emit_tps_fields(j, &t.last_minute, 60);
     exp_json_raw(j, "},\"last_hour\":{");
     emit_tps_fields(j, &t.last_hour, EXP_TPS_HOUR_MS / 1000);
-    exp_json_raw(j, "},\"history\":[");
+    /* an estimate at the current block pace (exp_db.h exp_payday_t) */
+    exp_json_raw(j, "},\"next_payday\":{\"height\":");
+    exp_json_u64(j, t.payday.height);
+    exp_json_raw(j, ",\"blocks_left\":");
+    exp_json_u64(j, t.payday.blocks_left);
+    exp_json_raw(j, ",\"avg_block_ms\":");
+    if (t.payday.have_pace) exp_json_u64(j, t.payday.avg_block_ms); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"est_ms\":");
+    if (t.payday.have_pace) exp_json_u64(j, t.payday.est_ms); else exp_json_raw(j, "null");
+    /* past paydays, newest first: height + block time only (exp_db.h
+     * exp_payday_row_t — no source of a payday's total is readable) */
+    exp_json_raw(j, "},\"paydays\":[");
+    for (int i = 0; i < t.n_paydays; i++) {
+        if (i) exp_json_raw(j, ",");
+        exp_json_raw(j, "{\"height\":");
+        exp_json_u64(j, t.paydays[i].height);
+        exp_json_raw(j, ",\"time\":");
+        exp_json_u64(j, t.paydays[i].time_ms);
+        exp_json_raw(j, "}");
+    }
+    exp_json_raw(j, "],\"apy\":");
+    emit_apy(db, &t, j);
+    exp_json_raw(j, ",\"history\":[");
     for (int i = 0; i < t.n_history; i++) {
         const exp_tps_bucket_t *b = &t.history[i];
         if (i) exp_json_raw(j, ",");

@@ -219,8 +219,14 @@ static const char *QUERY_ADDRESS_SQL =
 /* /api/tps: blocks and applied transactions with a block time in
  * (?1, ?2] — a range scan of idx_blocks_time. */
 static const char *QUERY_TPS_SPAN_SQL =
-    "SELECT COUNT(*), IFNULL(SUM(applied_count), 0) FROM blocks "
-    "WHERE time_ms > ?1 AND time_ms <= ?2";
+    "SELECT COUNT(*), IFNULL(SUM(applied_count), 0), IFNULL(MIN(time_ms), 0), "
+    "IFNULL(MAX(time_ms), 0) FROM blocks WHERE time_ms > ?1 AND time_ms <= ?2";
+
+/* /api/tps payday pace fallback: blocks and their time range over the
+ * heights (?1, ?2] — a primary-key range. */
+static const char *QUERY_PACE_HEIGHTS_SQL =
+    "SELECT COUNT(*), IFNULL(MIN(time_ms), 0), IFNULL(MAX(time_ms), 0) FROM blocks "
+    "WHERE height > ?1 AND height <= ?2";
 
 /* /api/tps history: per hour bucket (0 = the hour starting at ?1), block
  * times in [?1, ?2]. */
@@ -253,6 +259,7 @@ struct exp_db {
     sqlite3_stmt *stmt_query_address;
     sqlite3_stmt *stmt_query_tps_span;
     sqlite3_stmt *stmt_query_tps_hours;
+    sqlite3_stmt *stmt_query_pace_heights;
 };
 
 /* ── Batch ───────────────────────────────────────────────────────────── */
@@ -499,7 +506,8 @@ int exp_db_open(const char *path, exp_db_t **db_out) {
         sqlite3_prepare_v2(db->conn, QUERY_IOS_SQL, -1, &db->stmt_query_ios, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, QUERY_ADDRESS_SQL, -1, &db->stmt_query_address, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, QUERY_TPS_SPAN_SQL, -1, &db->stmt_query_tps_span, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(db->conn, QUERY_TPS_HOURS_SQL, -1, &db->stmt_query_tps_hours, NULL) != SQLITE_OK) {
+        sqlite3_prepare_v2(db->conn, QUERY_TPS_HOURS_SQL, -1, &db->stmt_query_tps_hours, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db->conn, QUERY_PACE_HEIGHTS_SQL, -1, &db->stmt_query_pace_heights, NULL) != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "prepare failed: %s", sqlite3_errmsg(db->conn));
         exp_db_close(db);
         return -1;
@@ -520,7 +528,7 @@ void exp_db_close(exp_db_t *db) {
         db->stmt_query_items, db->stmt_query_item, db->stmt_query_item_by_id,
         db->stmt_query_item_by_name, db->stmt_query_records_by_kind,
         db->stmt_query_ios, db->stmt_query_address,
-        db->stmt_query_tps_span, db->stmt_query_tps_hours,
+        db->stmt_query_tps_span, db->stmt_query_tps_hours, db->stmt_query_pace_heights,
     };
     for (size_t i = 0; i < sizeof(stmts) / sizeof(stmts[0]); i++) {
         if (stmts[i]) sqlite3_finalize(stmts[i]);
@@ -1080,8 +1088,14 @@ int exp_db_query_address(exp_db_t *db, const char *fp,
 
 /* ── Throughput (/api/tps) ──────────────────────────────────────────── */
 
-/* Blocks / applied transactions with a block time in (now - span, now]. */
-static int tps_span(exp_db_t *db, sqlite3_int64 now, sqlite3_int64 span_ms, exp_tps_count_t *out) {
+uint64_t exp_next_payday_height(uint64_t height) {
+    return (height / EXP_PAYDAY_INTERVAL_BLOCKS + 1) * EXP_PAYDAY_INTERVAL_BLOCKS;
+}
+
+/* Blocks / applied transactions with a block time in (now - span, now],
+ * and the oldest / newest of those times (0 / 0 when there is none). */
+static int tps_span(exp_db_t *db, sqlite3_int64 now, sqlite3_int64 span_ms, exp_tps_count_t *out,
+                    uint64_t *min_ms, uint64_t *max_ms) {
     sqlite3_stmt *s = db->stmt_query_tps_span;
     sqlite3_reset(s);
     sqlite3_bind_int64(s, 1, now - span_ms);
@@ -1091,6 +1105,8 @@ static int tps_span(exp_db_t *db, sqlite3_int64 now, sqlite3_int64 span_ms, exp_
     if (sqlite3_step(s) == SQLITE_ROW) {
         out->blocks = (uint64_t)sqlite3_column_int64(s, 0);
         out->tx = (uint64_t)sqlite3_column_int64(s, 1);
+        *min_ms = (uint64_t)sqlite3_column_int64(s, 2);
+        *max_ms = (uint64_t)sqlite3_column_int64(s, 3);
         rc = 0;
     } else {
         QGP_LOG_ERROR(LOG_TAG, "query_tps span failed: %s", sqlite3_errmsg(db->conn));
@@ -1113,10 +1129,74 @@ int exp_db_query_tps(exp_db_t *db, exp_tps_t *out) {
     const uint64_t now = newest.time_ms;
     const sqlite3_int64 now_i = clamp_cursor(now);
     out->now_ms = now;
+    out->newest_height = newest.height;
 
-    if (tps_span(db, now_i, 60000, &out->last_minute) != 0 ||
-        tps_span(db, now_i, (sqlite3_int64)EXP_TPS_HOUR_MS, &out->last_hour) != 0) {
+    uint64_t min_ms = 0, max_ms = 0, hour_min_ms = 0, hour_max_ms = 0;
+    if (tps_span(db, now_i, 60000, &out->last_minute, &min_ms, &max_ms) != 0 ||
+        tps_span(db, now_i, (sqlite3_int64)EXP_TPS_HOUR_MS, &out->last_hour,
+                 &hour_min_ms, &hour_max_ms) != 0) {
         return -1;
+    }
+
+    /* Next payday: the pace is the last hour's mean block interval, else
+     * (fewer than 2 blocks in that hour — an idle chain) the last 100
+     * heights'. Integer floor division; no pace below 2 blocks. */
+    exp_payday_t *pd = &out->payday;
+    pd->height = exp_next_payday_height(newest.height);
+    pd->blocks_left = pd->height - newest.height;
+    uint64_t pace_n = out->last_hour.blocks, pace_min = hour_min_ms, pace_max = hour_max_ms;
+    if (pace_n < 2) {
+        sqlite3_stmt *s = db->stmt_query_pace_heights;
+        sqlite3_reset(s);
+        uint64_t from = newest.height > 100 ? newest.height - 100 : 0;
+        sqlite3_bind_int64(s, 1, clamp_cursor(from));
+        sqlite3_bind_int64(s, 2, clamp_cursor(newest.height));
+        if (sqlite3_step(s) != SQLITE_ROW) {
+            QGP_LOG_ERROR(LOG_TAG, "query_tps pace failed: %s", sqlite3_errmsg(db->conn));
+            sqlite3_reset(s);
+            return -1;
+        }
+        pace_n = (uint64_t)sqlite3_column_int64(s, 0);
+        pace_min = (uint64_t)sqlite3_column_int64(s, 1);
+        pace_max = (uint64_t)sqlite3_column_int64(s, 2);
+        sqlite3_reset(s);
+    }
+    if (pace_n >= 2 && pace_max >= pace_min) {
+        uint64_t avg = (pace_max - pace_min) / (pace_n - 1);
+        if (avg == 0 || pd->blocks_left <= (UINT64_MAX - now) / avg) {
+            pd->avg_block_ms = avg;
+            pd->est_ms = now + pd->blocks_left * avg;
+            pd->have_pace = 1;
+        }
+    }
+
+    /* The 24 h pace (the APY estimate's epochs per year). */
+    exp_tps_count_t day;
+    uint64_t day_min = 0, day_max = 0;
+    if (tps_span(db, now_i, (sqlite3_int64)(EXP_TPS_HOUR_MS * EXP_TPS_HISTORY_HOURS), &day,
+                 &day_min, &day_max) != 0) {
+        return -1;
+    }
+    out->day_blocks = day.blocks;
+    if (day.blocks >= 2 && day_max >= day_min) {
+        out->day_avg_block_ms = (day_max - day_min) / (day.blocks - 1);
+        out->have_day_pace = 1;
+    }
+
+    /* Past paydays, newest first: the multiples of the interval at or
+     * below the newest height, each a primary-key lookup (the index holds
+     * every height 1..newest — exp_db_write_height). */
+    for (uint64_t k = newest.height / EXP_PAYDAY_INTERVAL_BLOCKS;
+         k >= 1 && out->n_paydays < EXP_TPS_PAYDAYS_MAX; k--) {
+        exp_block_row_t row;
+        if (exp_db_query_block_by_height(db, k * EXP_PAYDAY_INTERVAL_BLOCKS, &row) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "query_tps: payday block %llu missing from the index",
+                          (unsigned long long)(k * EXP_PAYDAY_INTERVAL_BLOCKS));
+            return -1;
+        }
+        out->paydays[out->n_paydays].height = row.height;
+        out->paydays[out->n_paydays].time_ms = row.time_ms;
+        out->n_paydays++;
     }
 
     /* History: the hour containing now and the hours before it, at most

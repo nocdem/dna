@@ -12,7 +12,8 @@
  * the network query wrappers below (exp_chain_tip / exp_chain_v3_page) are
  * thin pass-throughs to the version-3 nodus_client_dnac_* calls, guarded
  * by nodus_client_is_ready() and retried once via exp_chain_rotate() on
- * failure before returning an error; exp_chain_balance tries every server.
+ * failure before returning an error; exp_chain_balance tries every server;
+ * exp_chain_active_stake makes one attempt on the current connection.
  *
  * One exp_chain_t is used by ONE thread: the sync thread owns the handle
  * main.c opens for it, the HTTP thread owns a second, separate handle
@@ -172,6 +173,54 @@ int exp_supply_buckets_unpack(const uint8_t *buf, size_t len,
  *         go below zero (never a wrapped number; *out untouched). */
 int exp_supply_circulating(const nodus_dnac_supply_buckets_t *b,
                            uint64_t *out);
+
+/* ── Active stake (the /api/tps APY estimate's denominator) ───────────
+ *
+ * The stake of the validators the node lists with status ACTIVE (0 — "in
+ * the active set of the current epoch", dnac/include/dnac/validator.h),
+ * summed as self_stake + external_delegated — the stake voting power is
+ * built from (validator.h, external_delegated). Read through the node's
+ * existing dnac_validator_list_query, status filter 0, paged. It is an
+ * observation of the node's current table (like the supply), not the
+ * frozen snapshot the epoch reward is computed from — display only.
+ *
+ * Stored in db meta as ONE blob (key EXP_META_ACTIVE_STAKE), rewritten on
+ * every accepted tip observation; a failed read stores has = 0, so the
+ * estimate is absent rather than stale. Layout,
+ * EXP_ACTIVE_STAKE_BLOB_LEN bytes:
+ *   [0]      has (0 or 1)
+ *   [1..]    3 × u64 little-endian: stake, validators, at_tip
+ * has == 0 stores every u64 as 0. */
+#define EXP_META_ACTIVE_STAKE     "active_stake"
+#define EXP_ACTIVE_STAKE_BLOB_LEN (1 + 8 * 3)
+
+typedef struct {
+    int      has;          /* 0: not read (failure / older source) */
+    uint64_t stake;        /* raw units (10^-8 NODUS) */
+    uint64_t validators;   /* ACTIVE rows summed */
+    uint64_t at_tip;       /* the tip height of the observation it was read with */
+} exp_active_stake_t;
+
+void exp_active_stake_pack(const exp_active_stake_t *s,
+                           uint8_t out[EXP_ACTIVE_STAKE_BLOB_LEN]);
+/* @return 0 (*out filled); -1 a wrong length or a flag byte other than
+ *         0 / 1 (*out zeroed, has 0). */
+int exp_active_stake_unpack(const uint8_t *buf, size_t len, exp_active_stake_t *out);
+
+/* Adds one validator-list entry to `acc` when its status is ACTIVE
+ * (pure; the network read's summation). @return 0; -1 on a u64 overflow
+ * (acc then unchanged). */
+int exp_active_stake_add(exp_active_stake_t *acc,
+                         const nodus_dnac_validator_list_entry_t *e);
+
+/* Read the active stake on the CURRENT connection — one attempt, no
+ * rotation (a failure must not move the sync's server between the tip
+ * observation and the height walk). Pages by offset until `total` is
+ * reached, at most EXP_ACTIVE_STAKE_MAX_PAGES pages. out->has = 1 on
+ * success; out->at_tip is left 0 (the caller sets it).
+ * @return 0; -1 / the NODUS_ERR_* code on failure (out zeroed). */
+#define EXP_ACTIVE_STAKE_MAX_PAGES 64
+int exp_chain_active_stake(exp_chain_t *c, exp_active_stake_t *out);
 
 /* One dnac_v3_block page (the node's maximum page budget). Free `out` with
  * nodus_client_free_v3_block_result. Walking a whole block is

@@ -27,15 +27,21 @@ first, then the explorer.
 - `src/exp_chain.{c,h}` — read-only wrapper around the Nodus client SDK
   (`nodus/include/nodus/nodus.h`). Owns an ephemeral Dilithium5 identity
   (generated at open, never persisted), rotates across the configured
-  witness server list on failure. Three queries:
+  witness server list on failure. Four queries:
   `exp_chain_tip` (one observation: `dnac_supply` figures + the 32-byte
   `chain_id32` + the committed `tip` height + the supply buckets — four
   round trips on one connection, all redone on the next server if any
   fails; a node that answers no `chain_id32`/`tip` is not a version-3 node
   and is a failure, never a tip of 0; a node that answers no buckets is an
   older node and is NOT a failure — the buckets show as `null`),
-  `exp_chain_v3_page` (one `dnac_v3_block` page) and
-  `exp_chain_balance` (one address's `dnac_balance`, trying every server).
+  `exp_chain_v3_page` (one `dnac_v3_block` page),
+  `exp_chain_balance` (one address's `dnac_balance`, trying every server) and
+  `exp_chain_active_stake` (the active validators' stake for the APY
+  estimate: `dnac_validator_list_query` with status 0 = ACTIVE, paged by
+  offset, at most 64 pages of 128, summing `self_stake +
+  external_delegated` — the stake voting power is built from,
+  `dnac/include/dnac/validator.h`; one attempt on the current connection,
+  no rotation).
   Also hosts the F4 chain-reset FSM (`exp_reset_fsm_feed`) that gates
   destructive index wipes behind multi-witness, multi-poll confirmation.
 - `src/exp_sync.{c,h}` — the sync loop (below). Reads the chain through an
@@ -72,6 +78,11 @@ One tick every `EXP_SYNC_POLL_SECONDS` (30 s):
    distinct servers over two polls it is CONFIRMED: the index file is
    renamed to `<db>.stale-<hex8>` and a fresh one is opened. Only a
    matching observation's tip and supply figures reach meta (`/api/stats`).
+   A matching observation is followed by the active-stake read
+   (`exp_chain_active_stake`, same server); its result is stored as the
+   `active_stake` meta blob stamped with the observation's tip, and a
+   failed read stores "unknown" (the APY estimate is then `null`) — it
+   never stops the height walk.
 2. **Walk heights** `last_indexed_height + 1 .. tip`, at most 256 per tick
    (a tick that stops at that bound is followed immediately by the next,
    without the poll sleep). Per height: every `dnac_v3_block` page is
@@ -102,7 +113,7 @@ half a height.
 | `item_io` | `(height, idx, dir, pos)` | `dir` 0 consumed / 1 created, `coin_id`, `address`, `token`, `amount`, `unlock_block` |
 | `item_records` | `(height, idx)` | the SYSTEM record an applied item wrote: `kind`, `validator`, `delegator`, `dest`, `amount`, `commission_bps`, `param_id`, `new_value`, `effective` |
 | `item_names` | `(height, idx)` | HF-4: the chain name an applied NAME_REGISTER item registered (`dnac_v3_block` keys `"nm"`/`"pr"`): `name`, `price` (paid into the reward pool — not a burn), `owner` (the resolved address of the item's first consumed coin — every input is the one signer's; NULL when that coin's creating item is not indexed). Created `IF NOT EXISTS` on every open, so a v2 index gains it without a rebuild; an index advanced past the HF-4 switch by a binary without it lacks those names until rebuilt |
-| `meta` | `key` | `schema_version` (2), `last_indexed_height`, `chain_id32`, `tip_height`, `supply_current`/`_burned`/`_genesis`, `supply_buckets` (one 97-byte blob: a has-flag byte, then 12 little-endian u64 — `current`, `reward_pool`, `treasury` pool 1..9, `unclaimed` — all from ONE `dnac_supply` reply; rewritten on every accepted observation, has = 0 for an older node; `exp_chain.h`) |
+| `meta` | `key` | `schema_version` (2), `last_indexed_height`, `chain_id32`, `tip_height`, `supply_current`/`_burned`/`_genesis`, `supply_buckets` (one 97-byte blob: a has-flag byte, then 12 little-endian u64 — `current`, `reward_pool`, `treasury` pool 1..9, `unclaimed` — all from ONE `dnac_supply` reply; rewritten on every accepted observation, has = 0 for an older node; `exp_chain.h`), `active_stake` (one 25-byte blob: a has-flag byte, then 3 little-endian u64 — `stake`, `validators`, `at_tip`; rewritten on every accepted observation, has = 0 when the read failed; `exp_chain.h`) |
 
 Records are a typed table, not a JSON column: the address history looks
 items up by a record's validator/delegator/destination fingerprint (an
@@ -223,7 +234,8 @@ addressed by its **position** `"<height>:<index>"`; send the `:` as it is
 | `/api/tx/<wire_id\|intent_id\|height:index>` | `{tx:{item…, record}, inputs:[{coin_id, address, token_id, amount}], outputs:[{coin_id, address, token_id, amount, unlock_block}]}`. An input's `address`/`token_id`/`amount` are `null` when the coin's creating item is not in the index. A refused envelope has no ids — its position is its only address. |
 | `/api/address/<fp>?before=<height:index>&limit=<n>` | `{address, balances:[{token_id, total, spendable, coins}] \| null, balance_status:"ok"\|"unavailable", items:[item], next_before}` — `balances` is the node's per-token list, token id ascending (`total`/`spendable` decimal strings, `coins` a number; see "Balance" above), `null` only with `"unavailable"`; `items` are the items touching the address (owner of a created or resolved consumed coin, or a record's validator/delegator/destination), newest first; `next_before` is the next page's cursor, `null` on a short page. |
 | `/api/governance` | `{tip, indexed_height, records:[{position, height, index, time, param_id, param_name, new_value, effective_height, wire_id, intent_id}], truncated}` — every **applied** `chain_config` vote in the index (refused items carry no record), `(height, index)` ascending. `param_name` is the `DNAC_CFG_*` name of `param_id` (`dnac/include/dnac/dnac.h`, without the prefix — e.g. `HF2_ACTIVE`, `RULESET_GEN2`, `NAME_PRICE_3P`), `null` for an id this build does not know; `new_value` is a decimal string; `effective_height` is the block from which the value is in force. `tip` is the node's last reported committed height (`/api/stats` `tip_height`), `indexed_height` the index watermark — both `null` until known; a vote between the two is not listed yet. A rule is active when `tip ≥ effective_height`. Not a page: a hard cap of 1000 records, `truncated:true` when the index holds more. A chain_config row written from the genesis document (height 0 — HF-1's `GAS_PRICE_RAW_PER_UNIT` and `TOKEN_CREATE_FEE_RAW`) is not a block item and never appears. |
-| `/api/tps` | `{now_ms, last_minute:{tx, blocks, seconds:60, tps}, last_hour:{tx, blocks, seconds:3600, tps}, history:[{start_ms, tx, blocks, seconds, tps}]}` — throughput of **applied** transactions (`applied_count`; refused items are not counted), read off the index by block time only (D4): `now_ms` is the time of the newest indexed block (highest height), never the explorer's clock, so the figures are reproducible from the index. The windows are half-open, `(now_ms − seconds·1000, now_ms]`: a block whose time is exactly `now_ms − 60000` is outside the last minute, one at `now_ms − 59999` inside. `history` is 24 hourly buckets, oldest first: `start_ms` is a UTC hour start (`start_ms % 3600000 == 0`), the newest bucket is the hour containing `now_ms`, a bucket holds the blocks with time in `[start_ms, start_ms + 1 h)` (up to `now_ms`), an hour with no block is a zero bucket. `seconds` is 3600, except the newest (in-progress) bucket: the seconds elapsed from its start to `now_ms`, rounded up, at least 1. `tps` = `tx / seconds` as a decimal **string** with exactly two decimals, rounded half up with integer arithmetic (`"0.35"`, `"3.00"`). An empty index answers `{now_ms:null, last_minute:null, last_hour:null, history:[]}`. Bounded cost: each span is a range scan of the covering index `idx_blocks_time` (`blocks(time_ms, applied_count)`, created on open — an existing index gains it without a rebuild) over at most 24 h of blocks. |
+| `/api/tps` | `{now_ms, last_minute:{tx, blocks, seconds:60, tps}, last_hour:{tx, blocks, seconds:3600, tps}, next_payday:{height, blocks_left, avg_block_ms, est_ms}, paydays:[{height, time}], apy:{reward_pool, active_stake, active_validators, stake_at_tip, avg_block_ms, epochs_per_year, apy}, history:[{start_ms, tx, blocks, seconds, tps}]}` — throughput, payday and APY figures (the payday and APY parts: next row). Throughput of **applied** transactions (`applied_count`; refused items are not counted), read off the index by block time only (D4): `now_ms` is the time of the newest indexed block (highest height), never the explorer's clock, so the figures are reproducible from the index. The windows are half-open, `(now_ms − seconds·1000, now_ms]`: a block whose time is exactly `now_ms − 60000` is outside the last minute, one at `now_ms − 59999` inside. `history` is 24 hourly buckets, oldest first: `start_ms` is a UTC hour start (`start_ms % 3600000 == 0`), the newest bucket is the hour containing `now_ms`, a bucket holds the blocks with time in `[start_ms, start_ms + 1 h)` (up to `now_ms`), an hour with no block is a zero bucket. `seconds` is 3600, except the newest (in-progress) bucket: the seconds elapsed from its start to `now_ms`, rounded up, at least 1. `tps` = `tx / seconds` as a decimal **string** with exactly two decimals, rounded half up with integer arithmetic (`"0.35"`, `"3.00"`). An empty index answers `{now_ms:null, last_minute:null, last_hour:null, next_payday:null, paydays:[], apy:null, history:[]}`. Bounded cost: each span is a range scan of the covering index `idx_blocks_time` (`blocks(time_ms, applied_count)`, created on open — an existing index gains it without a rebuild) over at most 24 h of blocks; the payday pace fallback reads at most 100 heights and the paydays list at most 100 blocks, by primary key. |
+| `/api/tps` — payday and APY | **Payday cadence**: rewards are paid at a block whose height is a multiple of **17 280** = `DNAC_EPOCH_LENGTH` 720 × `payout_interval_epochs` 24 (`nodus/src/witness/nodus_witness_v2_econ.c` `nodus_witness_v2_payday_apply`: `boundary_height % 720 == 0` and `(boundary_height / 720) % interval == 0`; the live genesis `payout_interval_epochs = 24`, `nodus/tools/genesis/testnet_v3.conf.template`) — the named constant `EXP_PAYDAY_INTERVAL_BLOCKS` (`exp_db.h`); the explorer does not read the genesis, so a different interval needs a new build. **`next_payday`**: `height` = the smallest multiple of 17 280 strictly above the newest indexed height, `blocks_left` = `height` − that height, `avg_block_ms` = the mean block interval over the last hour's indexed blocks ((newest − oldest time) / (count − 1), floored), or over the last 100 indexed heights when that hour holds fewer than 2 blocks, `est_ms` = `now_ms + blocks_left × avg_block_ms` — an estimate at the current block pace (blocks come every ~60 s when idle, faster when busy), `avg_block_ms`/`est_ms` `null` with fewer than 2 blocks indexed. **`paydays`**: past paydays, newest first, at most 100 — every multiple of 17 280 at or below the newest indexed height with its block `time`; `[]` before the first (block 17 280). No amount: the explorer reads no source of a payday's total — payouts are block-boundary rows, not block items; `dnac_addr_history` (which lists `payout` rows) answers only the session's own owner (`nodus.h`, C11); `reward_pool` is debited at every epoch boundary, not at the payday (`nodus_witness_v2_econ.c` `nodus_witness_v2_settlement_apply`), so its difference is not a payday total. **`apy`** (an estimate, display only): `epochs_per_year = 31 557 600 s / (720 × avg_block_s)`, `avg_block_s` = the mean block interval over the last 24 h of block time (`avg_block_ms` here); `yearly_reward = reward_pool × (1 − (1 − 1/65536)^epochs_per_year)` — each epoch boundary pays `reward_pool >> 16` (`nodus_witness_v2_econ.c` settlement, `NODUS_V2_GEN_REWARD_DIVISOR_LOG2 = 16`, `nodus_witness_v2_gen.h`); `apy = yearly_reward / active_stake × 100` (percent). `reward_pool` comes from the stored supply buckets (`/api/stats`), `active_stake`/`active_validators` from the last accepted `dnac_validator_list_query` read (status ACTIVE, `self_stake + external_delegated`), `stake_at_tip` the tip it was read at. `reward_pool`/`active_stake` are decimal strings, `epochs_per_year`/`apy` two-decimal strings; each input is `null` when not known and `apy` is `null` unless every input is known and the stake is non-zero. It is an upper bound before validator commission: a member that misses the attendance bar leaves its share in the pool (the pool is debited only by what was credited), fees that refill the pool are ignored, and the active stake is the node's current table, not the frozen snapshot the reward is split by (stake is weighted as `floor(total_stake / 10^8)` there). Unlike the throughput figures, the pool and stake are the latest node observation, not a function of the index alone. |
 | `/api/search?q=<term>` | `{matches:[{type, target}]}` — every match: a decimal height → `block`; a `height:index` → `tx`; a 128-hex → `tx` (wire or intent id), `block` (block id), `address` (has indexed history); a chain name (lower-case, the chain's byte rule) → `name`, target = the registering item's position. An all-digit name also matches as a height: both are listed. Empty for a term that matches nothing. |
 
 `item` = `{position, height, index, time, kind ("envelope"|"claim"|"empty"),
@@ -297,7 +309,9 @@ signs nothing, votes on nothing, and cannot cause a chain split.
   index's structural invariants.
 - **D4** — every displayed time is the block header's time; no wall-clock
   value is stored. `/api/tps` measures by block time too: its "now" is the
-  newest indexed block's time, not the host clock.
+  newest indexed block's time, not the host clock — its throughput, payday
+  and pace figures are a function of the index; its APY estimate also uses
+  the last node observation of the reward pool and the active stake.
 
 **Threat model (adversary: anonymous Internet client + a malicious or
 buggy witness):**
@@ -309,7 +323,9 @@ buggy witness):**
   read-only query (`dnac_balance`, the address balance): an Internet
   request can make the daemon ask the configured servers for one address's
   totals (at most one attempt per configured server per request, successful
-  answers cached 5 s) and nothing else.
+  answers cached 5 s) and nothing else. The sync thread's reads are
+  `dnac_supply`, `dnac_v3_block` and `dnac_validator_list_query` (status
+  ACTIVE, for the APY estimate) — all read-only.
 - **G3** — no single server drives a destructive action: an index reset
   needs the same new `chain_id32` from ≥ 2 distinct configured servers over
   ≥ 2 polls (F4 FSM in `exp_chain.c`). A server's block is taken only

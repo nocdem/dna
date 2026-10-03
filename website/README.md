@@ -86,7 +86,18 @@ uses SVG presentation attributes (no `style`, CSP `style-src 'self'`) with
 the `--lime` / `--line` colours read from `portal.css`. It loads with the
 other home figures (Refresh and the 30 s refresh on page 1) as its own
 request: a failing or missing `/api/tps` shows "—" and a message in the
-chart slot without affecting the rest of the page. The footer describes the indexer's trust
+chart slot without affecting the rest of the page. Below the cards, from the
+same response: "Next payday" — `block N — est. YYYY-MM-DD HH:MM UTC (≈ …)`
+(`next_payday`: the next multiple of 17 280 blocks, estimated at the current
+block pace from the newest indexed block; "no block pace yet" without one) —
+and "Estimated APY at the current block pace" (`apy.apy` with a `%`, "—"
+when the explorer could not compute it), each with a one-line note: the date
+moves later when the chain is idle; the APY is before validator commission,
+participation rules apply, fees are not counted. Then a "Paydays" table
+(`paydays`, newest first: block and UTC time) with an empty state ("No
+payday yet — the first is at block 17 280.") and a note that amounts are
+not listed — a payday pays at the block boundary, not as a transaction, so
+Scan's address pages do not show it. The footer describes the indexer's trust
 in witness responses. A successful HTTP request does not prove a chain is active;
 block timestamps and the reported index position remain visible.
 

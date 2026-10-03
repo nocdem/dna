@@ -16,6 +16,7 @@
 #include "exp_http.h"
 #include "nodus/nodus.h"
 #include <sqlite3.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -179,6 +180,9 @@ typedef struct {
     uint32_t fail_from;     /* the page (by first index) that fails */
     int      page_calls;
     nodus_dnac_supply_buckets_t buckets;  /* has == false: an older node */
+    int      stake_fail;    /* 1: the active stake read fails */
+    exp_active_stake_t stake;             /* answered when stake_fail == 0 */
+    int      stake_calls;
 } fake_src_t;
 
 static int fake_tip(void *ctx, exp_chain_tip_t *out) {
@@ -253,12 +257,22 @@ static void fake_rotate(void *ctx) {
     f->server++;
 }
 
+static int fake_stake(void *ctx, exp_active_stake_t *out) {
+    fake_src_t *f = ctx;
+    f->stake_calls++;
+    memset(out, 0, sizeof(*out));
+    if (f->stake_fail) return NODUS_ERR_TIMEOUT;
+    *out = f->stake;
+    return 0;
+}
+
 static void fake_source(exp_sync_source_t *src, fake_src_t *f) {
     src->ctx = f;
     src->tip = fake_tip;
     src->page = fake_page;
     src->server = fake_server;
     src->rotate = fake_rotate;
+    src->stake = fake_stake;
 }
 
 /* ── exp_db: schema v2 ─────────────────────────────────────────────── */
@@ -1900,6 +1914,16 @@ static void test_tps_bucketing(void) {
              t.n_history == EXP_TPS_HISTORY_HOURS;
     if (!ok) { FAIL("windows wrong"); exp_db_close(db); return; }
 
+    /* next payday: height 9 -> 17280; the pace = the last hour's 4 blocks
+     * over (now - H + 1 .. now): (H - 1) / 3 = 1199999 ms (floored).
+     * 24 h pace: blocks 2..9 (block 1 is older), (now - (T0 - 23 H)) / 7. */
+    ok = t.payday.height == 17280 && t.payday.blocks_left == 17271 && t.payday.have_pace &&
+         t.payday.avg_block_ms == 1199999 && t.payday.est_ms == now + 17271ULL * 1199999ULL &&
+         t.n_paydays == 0 && t.newest_height == 9 &&
+         t.day_blocks == 8 && t.have_day_pace &&
+         t.day_avg_block_ms == (now - (T0 - 23 * H)) / 7;
+    if (!ok) { FAIL("payday / 24 h pace wrong"); exp_db_close(db); return; }
+
     for (int i = 0; i < t.n_history; i++) {
         const exp_tps_bucket_t *b = &t.history[i];
         uint64_t want_blocks = 0, want_tx = 0, want_secs = 3600;
@@ -1956,7 +1980,8 @@ static void test_tps_rounding_and_empty(void) {
     if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
 
     static const char *const empty[] = {
-        "{\"now_ms\":null,\"last_minute\":null,\"last_hour\":null,\"history\":[]}", NULL };
+        "{\"now_ms\":null,\"last_minute\":null,\"last_hour\":null,\"next_payday\":null,"
+        "\"paydays\":[],\"apy\":null,\"history\":[]}", NULL };
     if (route_expect(db, "/api/tps", 200, empty) != 0) { FAIL("empty index"); exp_db_close(db); return; }
 
     const uint64_t H = EXP_TPS_HOUR_MS, T0 = tps_hour0();
@@ -1976,7 +2001,185 @@ static void test_tps_rounding_and_empty(void) {
         NULL };
     if (route_expect(db, "/api/tps", 200, needles) != 0) { FAIL("rounding"); exp_db_close(db); return; }
 
+    /* payday pace fallback: the last hour holds 1 block, so the pace is
+     * the last 100 heights' — both blocks: (now - (T0 - H + 10)) / 1 */
+    exp_tps_t t;
+    const uint64_t avg = now - (T0 - H + 10);
+    if (exp_db_query_tps(db, &t) != 0 || !t.have || t.payday.height != 17280 ||
+        t.payday.blocks_left != 17278 || !t.payday.have_pace || t.payday.avg_block_ms != avg ||
+        t.payday.est_ms != now + 17278ULL * avg) {
+        FAIL("payday fallback pace"); exp_db_close(db); return;
+    }
+
     exp_db_close(db);
+    PASS();
+}
+
+/* The payday cadence: the smallest multiple of 17280 strictly above. */
+static void test_next_payday_height(void) {
+    TEST("exp_db: next payday = smallest multiple of 17280 above height");
+    if (exp_next_payday_height(0) != 17280 || exp_next_payday_height(1) != 17280 ||
+        exp_next_payday_height(17279) != 17280 || exp_next_payday_height(17280) != 34560 ||
+        exp_next_payday_height(17281) != 34560) {
+        FAIL("cadence wrong");
+        return;
+    }
+    PASS();
+}
+
+/* Past paydays + the APY estimate over 17281 blocks 4 s apart: one payday
+ * (block 17280, its time), the next at 34560; the 24 h pace is exactly
+ * 4000 ms, so epochs_per_year = 31557600 / (720 × 4) = 10957.50. The APY
+ * is checked against (1 − 1/65536)^10957.5 computed by repeated
+ * multiplication (an independent method from the route's exp/log1p),
+ * within 0.01; missing stake answers apy null with the inputs shown. */
+static void test_tps_paydays_and_apy(void) {
+    TEST("route: /api/tps paydays list + APY estimate inputs and value");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+    const uint64_t base = tps_hour0();
+    for (uint64_t h = 1; h <= 17281; h++) {
+        if (write_tps_block(db, h, base + h * 4000, 1) != 0) { FAIL("seed failed"); exp_db_close(db); return; }
+    }
+
+    char payday_needle[96];
+    snprintf(payday_needle, sizeof(payday_needle), "\"paydays\":[{\"height\":17280,\"time\":%llu}]",
+             (unsigned long long)(base + 17280ULL * 4000));
+    const char *const no_stake[] = {
+        "\"next_payday\":{\"height\":34560,\"blocks_left\":17279,\"avg_block_ms\":4000,",
+        payday_needle,
+        "\"apy\":{\"reward_pool\":null,\"active_stake\":null,\"active_validators\":null,"
+        "\"stake_at_tip\":null,\"avg_block_ms\":4000,\"epochs_per_year\":\"10957.50\",\"apy\":null}",
+        NULL };
+    if (route_expect(db, "/api/tps", 200, no_stake) != 0) { FAIL("paydays / apy inputs"); exp_db_close(db); return; }
+
+    nodus_dnac_supply_buckets_t bk;
+    genesis_day_buckets(&bk);                       /* reward_pool 200M NODUS */
+    uint8_t blob[EXP_SUPPLY_BUCKETS_BLOB_LEN];
+    exp_supply_buckets_pack(&bk, blob);
+    exp_active_stake_t st = { 1, NODUS_RAW(70000000), 7, 17281 };
+    uint8_t sblob[EXP_ACTIVE_STAKE_BLOB_LEN];
+    exp_active_stake_pack(&st, sblob);
+    if (exp_db_set_meta_blob(db, EXP_META_SUPPLY_BUCKETS, blob, sizeof(blob)) != 0 ||
+        exp_db_set_meta_blob(db, EXP_META_ACTIVE_STAKE, sblob, sizeof(sblob)) != 0) {
+        FAIL("meta seed failed"); exp_db_close(db); return;
+    }
+
+    exp_http_ctx_t ctx = {0};
+    ctx.db = &db;
+    int stop = 0;
+    ctx.stop = &stop;
+    exp_json_t body;
+    int status = -1;
+    exp_http_route(&ctx, "GET", "/api/tps", &body, &status);
+    double got = -1.0;
+    const char *p = (status == 200 && body.buf) ? strstr(body.buf, ",\"apy\":\"") : NULL;
+    if (p) got = strtod(p + 8, NULL);
+    int inputs = status == 200 && body.buf &&
+                 strstr(body.buf, "\"reward_pool\":\"20000000000000000\",\"active_stake\":\"7000000000000000\","
+                                  "\"active_validators\":7,\"stake_at_tip\":17281,") != NULL;
+    exp_json_freebuf(&body);
+
+    double kept = 1.0;
+    for (int i = 0; i < 10957; i++) kept *= 1.0 - 1.0 / 65536.0;
+    kept *= sqrt(1.0 - 1.0 / 65536.0);              /* the half epoch */
+    double want = 20000000000000000.0 * (1.0 - kept) / 7000000000000000.0 * 100.0;
+    if (!inputs || got < 0.0 || fabs(got - want) > 0.01) {
+        printf("(apy %.4f want %.4f) ", got, want);
+        FAIL("apy value");
+        exp_db_close(db);
+        return;
+    }
+    exp_db_close(db);
+    PASS();
+}
+
+/* The sync stores the active stake read after an accepted observation,
+ * stamped with that observation's tip; a failed read stores "unknown"
+ * (has 0) — and indexing still proceeds. */
+static void test_sync_stores_active_stake(void) {
+    TEST("tick: active stake stored with its tip; a failed read -> unknown");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+
+    fake_src_t f;
+    memset(&f, 0, sizeof(f));
+    fill(f.chain_id32, 32, 0x42);
+    f.tip = 1;
+    f.n_items = 0;
+    f.page_size = 1;
+    f.stake.has = 1;
+    f.stake.stake = NODUS_RAW(20000000);
+    f.stake.validators = 2;
+    exp_sync_source_t src;
+    fake_source(&src, &f);
+
+    exp_reset_fsm_t fsm;
+    memset(&fsm, 0, sizeof(fsm));
+    uint8_t blob[EXP_ACTIVE_STAKE_BLOB_LEN];
+    size_t len = 0;
+    exp_active_stake_t u;
+    if (exp_sync_tick(&src, &db, ":memory:", &fsm, NULL) != 0 ||
+        exp_db_get_meta_blob(db, EXP_META_ACTIVE_STAKE, blob, sizeof(blob), &len) != 0 ||
+        exp_active_stake_unpack(blob, len, &u) != 0 || !u.has ||
+        u.stake != NODUS_RAW(20000000) || u.validators != 2 || u.at_tip != 1 || f.stake_calls != 1) {
+        FAIL("stake not stored");
+        exp_db_close(db);
+        return;
+    }
+
+    f.stake_fail = 1;
+    f.tip = 2;
+    uint64_t last = 0;
+    if (exp_sync_tick(&src, &db, ":memory:", &fsm, NULL) != 0 ||
+        exp_db_get_meta_blob(db, EXP_META_ACTIVE_STAKE, blob, sizeof(blob), &len) != 0 ||
+        exp_active_stake_unpack(blob, len, &u) != 0 || u.has ||
+        exp_db_get_meta_u64(db, "last_indexed_height", &last) != 0 || last != 2) {
+        FAIL("a failed read must store unknown and not stop indexing");
+        exp_db_close(db);
+        return;
+    }
+    exp_db_close(db);
+    PASS();
+}
+
+/* Summation: only status ACTIVE rows count, as self + external_delegated;
+ * an overflow is refused with the accumulator unchanged. */
+static void test_active_stake_add(void) {
+    TEST("exp_chain: active stake sums ACTIVE rows only, refuses overflow");
+
+    exp_active_stake_t acc;
+    memset(&acc, 0, sizeof(acc));
+    nodus_dnac_validator_list_entry_t *e = calloc(1, sizeof(*e));
+    if (!e) { FAIL("alloc"); return; }
+
+    e->status = 0;          /* DNAC_VALIDATOR_ACTIVE */
+    e->self_stake = 10;
+    e->external_delegated = 5;
+    e->total_delegated = 5;
+    int ok = exp_active_stake_add(&acc, e) == 0;
+    e->status = 4;          /* DNAC_VALIDATOR_ELIGIBLE: not in the active set */
+    ok = ok && exp_active_stake_add(&acc, e) == 0;
+    ok = ok && acc.stake == 15 && acc.validators == 1;
+
+    e->status = 0;
+    e->self_stake = UINT64_MAX;
+    e->external_delegated = 0;
+    ok = ok && exp_active_stake_add(&acc, e) == -1 && acc.stake == 15 && acc.validators == 1;
+
+    exp_active_stake_t round;
+    uint8_t blob[EXP_ACTIVE_STAKE_BLOB_LEN];
+    acc.has = 1;
+    acc.at_tip = 99;
+    exp_active_stake_pack(&acc, blob);
+    ok = ok && exp_active_stake_unpack(blob, sizeof(blob), &round) == 0 && round.has &&
+         round.stake == 15 && round.validators == 1 && round.at_tip == 99 &&
+         exp_active_stake_unpack(blob, sizeof(blob) - 1, &round) == -1;
+
+    free(e);
+    if (!ok) { FAIL("summation / blob wrong"); return; }
     PASS();
 }
 
@@ -2065,6 +2268,10 @@ int main(void) {
     test_tps_bucketing();
     test_tps_rounding_and_empty();
     test_tps_index_used();
+    test_next_payday_height();
+    test_tps_paydays_and_apy();
+    test_sync_stores_active_stake();
+    test_active_stake_add();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;

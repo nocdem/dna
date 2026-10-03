@@ -253,21 +253,75 @@ typedef struct {
     exp_tps_count_t count;
 } exp_tps_bucket_t;
 
+/* Payday cadence: rewards are paid at a block whose height is a multiple
+ * of DNAC_EPOCH_LENGTH (720) × payout_interval_epochs (24) = 17280 —
+ * nodus/src/witness/nodus_witness_v2_econ.c nodus_witness_v2_payday_apply
+ * (boundary_height % E == 0 and (boundary_height / E) % interval == 0) and
+ * the live chain's genesis payout_interval_epochs = 24
+ * (nodus/tools/genesis/testnet_v3.conf.template). A named constant here:
+ * the explorer displays an estimate, it does not read the genesis. */
+#define EXP_PAYDAY_INTERVAL_BLOCKS 17280ULL
+/* The epoch length the above is built from: DNAC_EPOCH_LENGTH (720,
+ * dnac/include/dnac/dnac.h) — the APY estimate's blocks per epoch. */
+#define EXP_EPOCH_BLOCKS 720ULL
+
+/* The next payday estimate. avg_block_ms = the mean block interval over the
+ * last hour's indexed blocks — (newest time − oldest time) / (count − 1),
+ * floored — or, when that hour holds fewer than 2 blocks, over the last 100
+ * indexed heights. est_ms = now_ms + blocks_left × avg_block_ms. */
+typedef struct {
+    uint64_t height;          /* the smallest multiple of 17280 > the newest indexed height */
+    uint64_t blocks_left;     /* height − the newest indexed height */
+    int      have_pace;       /* 0: fewer than 2 blocks indexed (or est_ms would overflow) */
+    uint64_t avg_block_ms;
+    uint64_t est_ms;
+} exp_payday_t;
+
+/* The smallest multiple of EXP_PAYDAY_INTERVAL_BLOCKS strictly greater
+ * than `height`. */
+uint64_t exp_next_payday_height(uint64_t height);
+
+/* A past payday: an indexed block whose height is a multiple of
+ * EXP_PAYDAY_INTERVAL_BLOCKS (the payout runs in that block's epoch
+ * boundary — nodus_witness_v2_epoch.h step 1c), and its block time. No
+ * amount: the explorer reads no source of a payday's total (payouts are
+ * boundary rows, not block items; dnac_addr_history is gated to the
+ * session's own owner; reward_pool is debited per epoch, not per payday). */
+typedef struct {
+    uint64_t height;
+    uint64_t time_ms;
+} exp_payday_row_t;
+
+/* Past paydays one reply lists at most, newest first. */
+#define EXP_TPS_PAYDAYS_MAX 100
+
 typedef struct {
     int              have;        /* 0 = empty index: nothing below is set */
     uint64_t         now_ms;      /* the time of the newest indexed block (highest height) */
+    uint64_t         newest_height;
+    exp_payday_t     payday;
+    exp_payday_row_t paydays[EXP_TPS_PAYDAYS_MAX];  /* newest first */
+    int              n_paydays;
+    /* the mean block interval over the last 24 h of block time,
+     * (now_ms − 24 h, now_ms] — (newest − oldest) / (count − 1), floored;
+     * have_day_pace 0 below 2 blocks (the APY estimate's pace) */
+    uint64_t         day_blocks;
+    int              have_day_pace;
+    uint64_t         day_avg_block_ms;
     exp_tps_count_t  last_minute; /* block times in (now_ms - 60 s, now_ms] */
     exp_tps_count_t  last_hour;   /* block times in (now_ms - 1 h, now_ms] */
     exp_tps_bucket_t history[EXP_TPS_HISTORY_HOURS]; /* oldest first */
     int              n_history;   /* 24; fewer only when now_ms is within 23 h of the Unix epoch */
 } exp_tps_t;
 
-/* Throughput figures, every one a function of the index alone: "now" is
+/* Throughput figures and the next payday estimate, every one a function of
+ * the index alone: "now" is
  * the newest indexed block's time, never the explorer's clock, and every
  * span is bounded above by it. History = the hour containing now_ms and
  * the 23 before it, oldest first, an hour with no block a zero bucket.
  * Bounded cost: each span is a range scan of the covering index
- * idx_blocks_time (time_ms, applied_count) over at most 24 h of blocks.
+ * idx_blocks_time (time_ms, applied_count) over at most 24 h of blocks;
+ * the payday pace fallback reads at most 100 heights by primary key.
  * 0 on success (out->have 0 on an empty index), -1 on a query failure. */
 int  exp_db_query_tps(exp_db_t *db, exp_tps_t *out);
 

@@ -180,17 +180,36 @@
   function tpsUnavailable(message) {
     $('tps-minute').textContent = '—'; $('tps-hour').textContent = '—';
     $('tps-chart').replaceChildren(el('div', message, 'muted'));
+    $('payday-next').textContent = '—'; $('apy-value').textContent = '—';
+    messageRow($('paydays-tbody'), message, 2);
   }
+  // Next payday (explorer next_payday): a multiple of 17 280 blocks; the date is an estimate at the
+  // current block pace, counted from the newest indexed block's time.
+  function paydayText(p, nowMs) {
+    if (!p || !Number.isSafeInteger(p.height)) return '—';
+    if (!Number.isSafeInteger(p.est_ms) || p.est_ms < nowMs) return t(`block ${p.height} — no block pace yet`, `blok ${p.height} — henüz blok hızı yok`);
+    const date = new Date(p.est_ms).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+    const left = duration((p.est_ms - nowMs) / 1000);
+    return t(`block ${p.height} — est. ${date} (≈ ${left})`, `blok ${p.height} — tahmini ${date} (≈ ${left})`);
+  }
+  // APY (explorer apy): the explorer's own figure, shown only when every input was known.
+  const apyText = a => a && tpsText(a.apy) !== null ? a.apy + ' %' : '—';
+  const paydayRow = p => row([link('block.html?h=' + encodeURIComponent(p.height), p.height), time(p.time)]);
   async function loadTps() {
     if (!$('tps-cards')) return;
     try {
       const data = await api('/tps');
       if (data.now_ms === null) { tpsUnavailable(t('No blocks indexed yet.', 'Henüz indekslenmiş blok yok.')); return; }
       const minute = tpsText(data.last_minute?.tps), hour = tpsText(data.last_hour?.tps);
-      if (minute === null || hour === null || !Array.isArray(data.history) || !data.history.length || !data.history.every(validBucket)) throw new Error(t('Unexpected index response.', 'Beklenmeyen indeks yanıtı.'));
+      if (minute === null || hour === null || !Number.isSafeInteger(data.now_ms) || !Array.isArray(data.history) || !data.history.length || !data.history.every(validBucket)) throw new Error(t('Unexpected index response.', 'Beklenmeyen indeks yanıtı.'));
       $('tps-minute').textContent = minute + ' TPS';
       $('tps-hour').textContent = hour + ' TPS';
       $('tps-chart').replaceChildren(tpsChart(data.history));
+      $('payday-next').textContent = paydayText(data.next_payday, data.now_ms);
+      $('apy-value').textContent = apyText(data.apy);
+      const paydays = Array.isArray(data.paydays) ? data.paydays.filter(p => p && Number.isSafeInteger(p.height) && Number.isSafeInteger(p.time)) : [];
+      $('paydays-tbody').replaceChildren(...paydays.map(paydayRow));
+      if (!paydays.length) messageRow($('paydays-tbody'), t('No payday yet — the first is at block 17 280.', 'Henüz ödeme günü yok — ilki 17 280. blokta.'), 2);
     } catch (error) { tpsUnavailable(error.message); }
   }
   async function loadBlocks(requested, fresh = false, providedStats) {

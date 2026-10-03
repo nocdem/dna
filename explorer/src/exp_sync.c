@@ -45,6 +45,10 @@ static void chain_src_rotate(void *ctx) {
     exp_chain_rotate((exp_chain_t *)ctx);
 }
 
+static int chain_src_stake(void *ctx, exp_active_stake_t *out) {
+    return exp_chain_active_stake((exp_chain_t *)ctx, out);
+}
+
 void exp_sync_source_chain(exp_sync_source_t *src, exp_chain_t *chain) {
     if (!src) return;
     src->ctx = chain;
@@ -52,6 +56,7 @@ void exp_sync_source_chain(exp_sync_source_t *src, exp_chain_t *chain) {
     src->page = chain_src_page;
     src->server = chain_src_server;
     src->rotate = chain_src_rotate;
+    src->stake = chain_src_stake;
 }
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
@@ -277,13 +282,31 @@ int exp_sync_tick(const exp_sync_source_t *src, exp_db_t **db_ptr, const char *d
      * node's "none" replaces the previous server's figures (exp_chain.h). */
     uint8_t buckets[EXP_SUPPLY_BUCKETS_BLOB_LEN];
     exp_supply_buckets_pack(&tip.buckets, buckets);
+    /* The active stake (display only): read now, on the server that gave
+     * the accepted observation, outside the lock (a network round trip);
+     * a failure is stored as "unknown" (has 0), never a stale or zero
+     * figure, and does not stop indexing. */
+    exp_active_stake_t stake;
+    memset(&stake, 0, sizeof(stake));
+    if (src->stake) {
+        if (src->stake(src->ctx, &stake) == 0 && stake.has) {
+            stake.at_tip = tip.tip;
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "%s", "active stake read failed — stored as unknown (display only)");
+            memset(&stake, 0, sizeof(stake));
+        }
+    }
+    uint8_t stake_blob[EXP_ACTIVE_STAKE_BLOB_LEN];
+    exp_active_stake_pack(&stake, stake_blob);
     if (db_lock) pthread_rwlock_wrlock(db_lock);
     if (exp_db_set_meta_u64(db, "tip_height", tip.tip) != 0 ||
         exp_db_set_meta_u64(db, "supply_current", tip.supply_current) != 0 ||
         exp_db_set_meta_u64(db, "supply_burned", tip.supply_burned) != 0 ||
         exp_db_set_meta_u64(db, "supply_genesis", tip.supply_genesis) != 0 ||
         exp_db_set_meta_blob(db, EXP_META_SUPPLY_BUCKETS, buckets,
-                             sizeof(buckets)) != 0) {
+                             sizeof(buckets)) != 0 ||
+        exp_db_set_meta_blob(db, EXP_META_ACTIVE_STAKE, stake_blob,
+                             sizeof(stake_blob)) != 0) {
         QGP_LOG_WARN(LOG_TAG, "failed to persist tip/supply meta (display only)");
     }
     if (exp_db_get_meta_u64(db, "last_indexed_height", &last) != 0) last = 0;
