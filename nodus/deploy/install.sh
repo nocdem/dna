@@ -43,30 +43,44 @@
 #                       /etc/nodus.conf this installer wrote is 0600)
 #
 # Order (nothing on the system is changed until every check has passed):
+#   0. Arguments: --layout and the --no-* flags; `readlink -m` must work
+#      (GNU coreutils — the symlink check needs it); --prefix a plain
+#      absolute path, not under /home, /root, /run/user, /tmp, /var/tmp
+#      (as typed and symlinks resolved); --config a file.
 #   1. SHA256SUMS of the payload verified. VERSION's arch must equal
 #      `uname -m`, and each packaged binary must run here: `<binary> -h`
 #      exits 0 and prints this package's version (a missing shared library
 #      or a too-old glibc fails here, before any unit is touched).
-#   2. Checks: root, config, layout. The current layout is what systemd has
-#      ENABLED (`systemctl is-enabled` printing exactly "enabled" — the
+#   2. Checks, in this order: root; systemctl; the config (/etc/nodus.conf,
+#      or --config when it does not exist; a --config that differs from an
+#      existing one); identity_path / data_path (present twice, or not a
+#      string; under /home etc. as for --prefix); "witness_external" /
+#      "storage_external": true in the file; either path outside the units'
+#      single, shared ReadWritePaths=; split without identity_path;
+#      nodus-debug.service (a deploy/build-nodus.sh --debug build) enabled
+#      or running; a drop-in
+#      (*.conf in <unit>.service.d/, nodus-.service.d/ or service.d/ under
+#      /etc, /run, /lib or /usr/lib systemd/system) for any nodus unit —
+#      the checks read the packaged unit, not what a drop-in turns it into;
+#      an installed nodus (in --prefix, or named by an installed unit's
+#      ExecStart=) newer than this package, or of a version that cannot be
+#      read, without --allow-downgrade; the current layout — what systemd
+#      has ENABLED (`systemctl is-enabled` printing exactly "enabled", the
 #      same rule as deploy/build-nodus.sh and tools/nodus-update.sh): both
 #      layouts enabled, or nodus-storage / nodus-witness enabled without
-#      nodus-core → refuse. A split host is never shrunk silently: a split
-#      unit that is enabled but not asked for → refuse. Also refused:
-#      nodus-debug.service (a deploy/build-nodus.sh --debug build) enabled
-#      or running; a drop-in (*.conf in /etc or /run systemd/system/
-#      <unit>.service.d/) for any nodus unit — the checks read the packaged
-#      unit, not what a drop-in turns it into; an installed nodus (in
-#      --prefix, or named by an installed unit's ExecStart=) newer than
-#      this package, or of a version that cannot be read, without
-#      --allow-downgrade.
+#      nodus-core; a split unit enabled but not asked for (a split host is
+#      never shrunk silently); nodus.addr_seq in both the identity and the
+#      data directory. Any of these → refuse.
 #   3. The five binaries and four units are staged as <dest>.new while the
 #      node still runs (a failed copy stops nothing, and the .new files are
-#      removed).
+#      removed; the failure message lists only what this run created — an
+#      installed /etc/nodus.conf, new directories).
 #   4. The running nodus units are stopped; units of the old layout that
 #      the new one does not use are disabled.
 #   5. All staged files are renamed over their destinations (mv -f), then
 #      daemon-reload — no mix of old and new binaries after a failed copy.
+#      Interrupted midway, the message says the binaries may be mixed and
+#      that running this same install.sh again completes the swap.
 #   6. nodus.addr_seq migration (item 21) when the split witness is about
 #      to run on this host for the first time.
 #   7. The wanted units are enabled and started: nodus-core first, then —
@@ -104,8 +118,15 @@ PREFIX="/usr/local/bin"
 CONFIG_ARG=""
 ALLOW_DOWNGRADE=0
 DRY=0
-CHANGED=0       # set once the first system change is made (rollback hint)
-SWAPPED=0       # set once the staged binaries are renamed into place
+# Progress, for the message on_exit prints on a failure or a signal:
+ACTING=0          # set just before the first change (config / directories)
+INTERRUPTED=0     # set by the INT / TERM / HUP trap
+CONF_INSTALLED=0  # /etc/nodus.conf was installed by this run
+MADE_DIRS=""      # top-most directory each mkdir -p of this run may create
+TOUCHED=0         # set just before the first nodus unit is stopped / disabled
+RENAME_STARTED=0  # set just before the first staged binary is renamed
+SWAPPED=0         # set once ALL staged binaries are renamed into place
+UNITS_SWAPPED=0   # set once ALL staged unit files are renamed into place
 STAGED=""       # <dest>.new files written so far (removed on failure)
 UNIT_TMP=""     # scratch dir for --prefix-rewritten units (removed on exit)
 OLD_SEQ=""
@@ -131,10 +152,100 @@ run() {
         echo "  [dry-run] $*"
     else
         echo "  + $*"
-        CHANGED=1
         "$@"
     fi
 }
+
+# On a failure or a signal: say what this run changed, per phase.
+#   before the first change      — nothing (only on a signal: say so)
+#   before any unit is stopped   — the running node is untouched; list
+#                                  what this run created; no rollback
+#   after a unit was stopped     — the way back to nodus.service
+on_exit() {
+    rc=$?
+    [ -z "$UNIT_TMP" ] || rm -rf "$UNIT_TMP"
+    [ "$rc" -ne 0 ] || return 0
+    if [ "$DRY" -eq 0 ] && [ -n "$STAGED" ]; then
+        # shellcheck disable=SC2086
+        rm -f $STAGED
+    fi
+    if [ "$DRY" -eq 1 ] || [ "$ACTING" -eq 0 ]; then
+        if [ "$INTERRUPTED" -eq 1 ]; then
+            echo "$PROG: interrupted before any change — nothing on this system was changed." >&2
+        fi
+        return 0
+    fi
+    echo "" >&2
+    if [ "$TOUCHED" -eq 0 ]; then
+        if [ "$INTERRUPTED" -eq 1 ]; then
+            echo "$PROG: INTERRUPTED before any nodus unit was stopped (exit $rc)." >&2
+        else
+            echo "$PROG: FAILED before any nodus unit was stopped (exit $rc)." >&2
+        fi
+        echo "$PROG: the running node (if any) was not touched: no unit was stopped, disabled or enabled," >&2
+        echo "$PROG: no binary and no unit file was replaced (still: $INSTALLED_DESC)." >&2
+        if [ -n "$STAGED" ]; then
+            echo "$PROG: the staged .new files were removed." >&2
+        fi
+        left=0
+        if [ "$CONF_INSTALLED" -eq 1 ]; then
+            echo "$PROG: left in place: $ETC_CONF (installed by this run from $CONFIG_ARG; remove it if you do not want it)." >&2
+            left=1
+        fi
+        for d in $MADE_DIRS; do
+            if [ -d "$d" ]; then
+                echo "$PROG: left in place: directory $d (created by this run)." >&2
+                left=1
+            fi
+        done
+        if [ "$left" -eq 0 ]; then
+            echo "$PROG: nothing else on this system was changed." >&2
+        fi
+        if [ "$INTERRUPTED" -eq 1 ]; then
+            echo "$PROG: run this install.sh again to complete the install." >&2
+        else
+            echo "$PROG: fix the cause printed above and run this install.sh again." >&2
+        fi
+        return 0
+    fi
+    if [ "$INTERRUPTED" -eq 1 ]; then
+        echo "$PROG: INTERRUPTED after the switch began (exit $rc) — stop asked for: ${TO_STOP:-none};" >&2
+    else
+        echo "$PROG: FAILED after the switch began (exit $rc) — stop asked for: ${TO_STOP:-none};" >&2
+    fi
+    echo "$PROG: disable asked for: ${TO_DISABLE:-none}." >&2
+    if [ "$RENAME_STARTED" -eq 1 ] && [ "$SWAPPED" -eq 0 ]; then
+        echo "$PROG: the rename of the staged binaries was interrupted: $PREFIX may hold a MIX" >&2
+        echo "$PROG: of old ($INSTALLED_DESC) and new ($PKG_VER) nodus binaries, and the remaining" >&2
+        echo "$PROG: staged .new files were removed. Run this same install.sh again with the same" >&2
+        echo "$PROG: arguments first — it stages every file again and completes the swap." >&2
+    fi
+    echo "$PROG: to return to the combined server (same config, same data directory):" >&2
+    echo "    systemctl disable --now nodus-core nodus-storage nodus-witness" >&2
+    echo "    systemctl enable --now nodus" >&2
+    if [ "$SWAPPED" -eq 1 ]; then
+        echo "$PROG: the binaries in $PREFIX are now $PKG_VER (were: $INSTALLED_DESC); for the previous" >&2
+        echo "$PROG: version run the previous release's install.sh --layout combined --allow-downgrade." >&2
+        echo "$PROG: WARNING: going back to an older release after this chain has voted a hard fork" >&2
+        echo "$PROG: that release lacks makes this node stop following the chain — hard forks are" >&2
+        echo "$PROG: height-activated (docs/DEPLOY_RUNBOOK.md §2.2, \"Live hard forks\")." >&2
+        if [ "$UNITS_SWAPPED" -eq 0 ]; then
+            echo "$PROG: the rename of the unit files was interrupted: $UNIT_DIR may hold a mix of" >&2
+            echo "$PROG: old and new nodus units; running this same install.sh again completes it." >&2
+        fi
+    elif [ "$RENAME_STARTED" -eq 0 ]; then
+        echo "$PROG: the binaries in $PREFIX were NOT replaced (still: $INSTALLED_DESC)." >&2
+    fi
+    echo "$PROG: Logs: journalctl -u <unit> -n 50" >&2
+    if [ "$MIGRATE" -eq 1 ] && [ -e "$NEW_SEQ" ] && [ ! -e "$OLD_SEQ" ]; then
+        echo "$PROG: $ADDR_SEQ was moved to $NEW_SEQ; the combined server reads $OLD_SEQ —" >&2
+        echo "$PROG: move it back (mv $NEW_SEQ $OLD_SEQ) before starting nodus.service." >&2
+    fi
+}
+# Installed before any check: harmless until the first change, and a
+# signal (Ctrl-C, kill, an SSH drop) exits through on_exit too.
+trap on_exit EXIT
+trap 'INTERRUPTED=1; exit 130' INT TERM HUP
 
 # --- arguments -----------------------------------------------------------
 while [ $# -gt 0 ]; do
@@ -196,7 +307,8 @@ check_path() {
 # service would see an empty or private directory. Checked as written
 # and, symlinks resolved, as it really is.
 check_service_path() {
-    for p in "$2" "$(readlink -m "$2" 2>/dev/null || true)"; do
+    rp=$(readlink -m "$2") || die "readlink -m $2 failed — cannot check where $1 really points. Nothing was changed."
+    for p in "$2" "$rp"; do
         r=""
         [ "$p" = "$2" ] || r=" (resolves to $p)"
         case "$p" in
@@ -207,6 +319,11 @@ check_service_path() {
         esac
     done
 }
+# `readlink -m` (resolve every symlink, missing components allowed) is GNU
+# coreutils; without it the symlink half of the check above would be
+# silently skipped — refuse instead.
+[ "$(readlink -m / 2>/dev/null || true)" = "/" ] ||
+    die "readlink -m does not work on this host (GNU coreutils readlink needed) — the --prefix / data_path / identity_path symlink check depends on it. Nothing was changed."
 check_path "--prefix" "$PREFIX"
 PREFIX=${PREFIX%/}
 [ -n "$PREFIX" ] || die "--prefix / is not a binary directory"
@@ -335,7 +452,7 @@ conf_flat() {
 # config, "" when the key is absent. More than one occurrence, or a value
 # that is not a plain string → refuse.
 conf_string() {
-    n=$(grep -o "\"$1\"[[:space:]]*:" "$CONF_SRC" | wc -l | tr -d ' ')
+    n=$(conf_flat | grep -o "\"$1\"[[:space:]]*:" | wc -l | tr -d ' ')
     [ "$n" -le 1 ] || die "$CONF_SRC has \"$1\" $n times — refusing to guess which one the services use"
     [ "$n" -eq 1 ] || return 0
     v=$(conf_flat |
@@ -418,12 +535,28 @@ case "$s" in
 esac
 
 # Drop-ins: every check here reads the PACKAGED unit (ReadWritePaths=,
-# ExecStart=); a drop-in can change what actually runs.
+# ExecStart=); a drop-in can change what actually runs. systemd reads
+# (man 5 systemd.unit, "drop-in"): <unit>.service.d/; for a name with
+# dashes, every truncation after a dash (nodus-core → nodus-.service.d/,
+# shared by nodus-core / -storage / -witness); the top-level service.d/
+# (every service); each under /etc, /run and /lib (Debian's name for
+# /usr/lib; both are checked) systemd/system.
+DROPIN_ROOTS="$UNIT_DIR /run/systemd/system /lib/systemd/system /usr/lib/systemd/system"
 for u in $UNITS; do
-    for d in "$UNIT_DIR/$u.service.d" "/run/systemd/system/$u.service.d"; do
-        for f in "$d"/*.conf; do
-            [ ! -e "$f" ] ||
-                die "drop-in $f exists — this installer checks the packaged $u.service, not what a drop-in turns it into. Fold it into the config or remove it, then run again. Nothing was changed."
+    names="$u.service.d service.d"
+    p=$u
+    while :; do
+        case "$p" in
+            *-*) p=${p%-*}; names="$names $p-.service.d" ;;
+            *) break ;;
+        esac
+    done
+    for root in $DROPIN_ROOTS; do
+        for n in $names; do
+            for f in "$root/$n"/*.conf; do
+                [ ! -e "$f" ] ||
+                    die "drop-in $f exists (systemd applies it to $u.service) — this installer checks the packaged $u.service, not what a drop-in turns it into. Fold it into the config or remove it, then run again. Nothing was changed."
+            done
         done
     done
 done
@@ -565,48 +698,29 @@ fi
 say "  enable + start, in order: $WANTED"
 [ -z "$SEQ_NOTE" ] || say "  $SEQ_NOTE"
 
-# On failure after the first change: how to get back to nodus.service.
-on_exit() {
-    rc=$?
-    [ -z "$UNIT_TMP" ] || rm -rf "$UNIT_TMP"
-    if [ "$rc" -ne 0 ] && [ "$DRY" -eq 0 ] && [ -n "$STAGED" ]; then
-        # shellcheck disable=SC2086
-        rm -f $STAGED
-    fi
-    if [ "$rc" -ne 0 ] && [ "$CHANGED" -eq 1 ]; then
-        echo "" >&2
-        echo "$PROG: FAILED after changing this system (exit $rc)." >&2
-        echo "$PROG: to return to the combined server (same config, same data directory):" >&2
-        echo "    systemctl disable --now nodus-core nodus-storage nodus-witness" >&2
-        echo "    systemctl enable --now nodus" >&2
-        if [ "$SWAPPED" -eq 1 ]; then
-            echo "$PROG: the binaries in $PREFIX are now $PKG_VER (were: $INSTALLED_DESC); for the previous" >&2
-            echo "$PROG: version run the previous release's install.sh --layout combined --allow-downgrade." >&2
-            echo "$PROG: WARNING: going back to an older release after this chain has voted a hard fork" >&2
-            echo "$PROG: that release lacks makes this node stop following the chain — hard forks are" >&2
-            echo "$PROG: height-activated (docs/DEPLOY_RUNBOOK.md §2.2, \"Live hard forks\")." >&2
-        else
-            echo "$PROG: the binaries in $PREFIX were NOT replaced (still: $INSTALLED_DESC)." >&2
-        fi
-        echo "$PROG: Logs: journalctl -u <unit> -n 50" >&2
-        if [ "$MIGRATE" -eq 1 ] && [ -e "$NEW_SEQ" ] && [ ! -e "$OLD_SEQ" ]; then
-            echo "$PROG: $ADDR_SEQ was moved to $NEW_SEQ; the combined server reads $OLD_SEQ —" >&2
-            echo "$PROG: move it back (mv $NEW_SEQ $OLD_SEQ) before starting nodus.service." >&2
-        fi
-    fi
-}
-trap on_exit EXIT
-# A signal (Ctrl-C, kill, an SSH drop) exits through on_exit too.
-trap 'exit 130' INT TERM HUP
-
 # --- 3-7. do it -------------------------------------------------------------
+# From here on a failure prints what this run changed (on_exit).
+ACTING=1
 if [ "$INSTALL_CONF" -eq 1 ]; then
+    [ "$DRY" -eq 1 ] || STAGED="$STAGED $ETC_CONF.new"
     run install -m 0600 "$CONFIG_ARG" "$ETC_CONF.new"
     run mv -f "$ETC_CONF.new" "$ETC_CONF"
+    [ "$DRY" -eq 1 ] || CONF_INSTALLED=1
 fi
-run mkdir -p "$DATA_PATH"
-[ -n "$IDENTITY_PATH" ] && run mkdir -p "$IDENTITY_PATH"
-run mkdir -p "$PREFIX"
+# make_dir DIR — mkdir -p DIR when it is missing; the top-most directory
+# it may create is recorded first, so a failure can name what is left.
+make_dir() {
+    [ ! -d "$1" ] || return 0
+    top=$1
+    while [ ! -e "$(dirname "$top")" ]; do
+        top=$(dirname "$top")
+    done
+    [ "$DRY" -eq 1 ] || MADE_DIRS="$MADE_DIRS $top"
+    run mkdir -p "$1"
+}
+make_dir "$DATA_PATH"
+[ -z "$IDENTITY_PATH" ] || make_dir "$IDENTITY_PATH"
+make_dir "$PREFIX"
 
 # 3. Stage every file next to its destination while the node runs.
 # stage SRC DEST MODE — install SRC as DEST.new (recorded for cleanup).
@@ -643,7 +757,8 @@ for u in $UNITS; do
     stage "$src" "$UNIT_DIR/$u.service" 0644
 done
 
-# 4. Stop, disable.
+# 4. Stop, disable. From here on a failure prints the way back.
+TOUCHED=1
 if [ -n "$TO_STOP" ]; then
     # shellcheck disable=SC2086
     run systemctl stop $TO_STOP
@@ -654,13 +769,15 @@ if [ -n "$TO_DISABLE" ]; then
 fi
 
 # 5. Every staged file renamed into place: binaries, then units.
+RENAME_STARTED=1
 for b in $BINARIES; do
     run mv -f "$PREFIX/$b.new" "$PREFIX/$b"
-    SWAPPED=1
 done
+SWAPPED=1
 for u in $UNITS; do
     run mv -f "$UNIT_DIR/$u.service.new" "$UNIT_DIR/$u.service"
 done
+UNITS_SWAPPED=1
 STAGED=""
 run systemctl daemon-reload
 

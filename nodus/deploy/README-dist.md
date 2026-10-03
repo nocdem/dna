@@ -41,25 +41,58 @@ readable — `/etc/nodus.conf` as this installer writes it is mode 0600, so use 
 only. A host installed with another `--prefix` must keep using `install.sh` for
 every update — those two would put the new binaries where the units do not look.
 
-The installer refuses — changing nothing — when:
-- the payload checksum fails;
-- `VERSION`'s arch is not this host's `uname -m`, or any packaged binary does not
-  run here (`<binary> -h` must exit 0 and print this package's version — a missing
-  shared library or too old a glibc stops it before any unit is touched);
-- both layouts are enabled, or a split service is enabled but not asked for;
+The installer refuses — changing nothing — when (in the order it checks):
+- the arguments are wrong: no `--layout`, `--no-storage` / `--no-witness` with
+  `--layout combined`, both of them together, a `--config` that is not a file;
+- `readlink -m` does not work on this host (GNU coreutils needed — the symlink
+  check below depends on it);
+- `--prefix` is not a plain absolute path, or lies under `/home`, `/root`,
+  `/run/user`, `/tmp` or `/var/tmp` (as typed or with symlinks resolved);
+- the payload checksum fails, or `SHA256SUMS` lists an unexpected file or misses one;
+- the package is malformed: `VERSION` has no `nodus X.Y.Z` line (checked with the
+  payload), or the four units do not carry one shared `ReadWritePaths=` line (checked
+  with the config);
+- `VERSION`'s arch is not this host's `uname -m`, `timeout` (coreutils) is missing, or
+  any packaged binary does not run here (`<binary> -h` must exit 0 and print this
+  package's version — a missing shared library or too old a glibc stops it before any
+  unit is touched);
+- it is not run as root (except `--dry-run`), or `systemctl` is missing;
+- `/etc/nodus.conf` does not exist and no `--config` is given, or `--config`
+  differs from an existing `/etc/nodus.conf`, or the config cannot be read;
+- the config has `identity_path` or `data_path` twice or not as a non-empty string,
+  or either path is not a plain absolute path or lies under `/home`, `/root`,
+  `/run/user`, `/tmp`, `/var/tmp`; or the config sets `"witness_external": true` /
+  `"storage_external": true`; or either path lies outside the units'
+  `ReadWritePaths=/var/lib/nodus` (a line break between a key, its colon and its
+  value hides neither the key nor a second copy of it);
+- `--layout split` and the config has no `identity_path`;
 - `nodus-debug.service` (a `build-nodus.sh --debug` build on the same config and
   data directory) is enabled or running;
-- a systemd drop-in (`*.conf` in `/etc/systemd/system/<unit>.service.d/` or
-  `/run/systemd/system/<unit>.service.d/`) exists for any nodus unit;
+- a systemd drop-in exists that applies to a nodus unit: `*.conf` in
+  `<unit>.service.d/`, `nodus-.service.d/` (shared by `nodus-core`, `nodus-storage`,
+  `nodus-witness`) or `service.d/` (every service), under `/etc/systemd/system`,
+  `/run/systemd/system`, `/lib/systemd/system` or `/usr/lib/systemd/system`;
 - the installed nodus (in the prefix, or named by an installed unit's
   `ExecStart=`) is NEWER than this package, or its version cannot be read —
   unless `--allow-downgrade` is given;
+- both layouts are enabled (`nodus` and a split unit), or `nodus-storage` /
+  `nodus-witness` is enabled without `nodus-core`;
+- a split service is enabled but not asked for (it never removes one);
 - `nodus.addr_seq` exists both in the identity and the data directory.
 
 It copies every binary and unit next to its destination as `<name>.new` while the
 node still runs, then stops the units and renames all of them into place. It
 starts `nodus-core` first, waits (bounded) for its identity files, then storage,
 then witness, and prints each unit's final state.
+
+One package check runs later, while staging: each unit must have exactly one
+`ExecStart=/usr/local/bin/` line (the `--prefix` rewrite needs it). If it fails before
+any unit is stopped (that check, or a full disk while copying, say), the
+running node is untouched: the `.new` files are removed and the message names only
+what the run created (an installed `/etc/nodus.conf`, new directories) — no
+rollback is needed. After a unit was stopped it prints the commands below. If the
+rename itself is interrupted, the binaries in the prefix may be a mix of old and new:
+run the same `install.sh` again with the same arguments to complete the swap.
 
 **Going back to an older release.** Hard forks are height-activated
 (`nodus/docs/DEPLOY_RUNBOOK.md` §2.2): once this chain has voted a hard fork, a
