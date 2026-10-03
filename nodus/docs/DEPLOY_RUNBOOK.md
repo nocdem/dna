@@ -20,8 +20,10 @@ Operational procedures for deploying, verifying and rolling back Nodus nodes.
 
 ## 0. How Nodus is actually deployed
 
-Deployment is **`git pull` + `make` on each node**. There is no package, no artifact
-registry, no installer. Consequently **rollback is also a git operation** — check out
+Deployment is **`git pull` + `make` on each node**. There is no package and no artifact
+registry; a tar.gz installer can be BUILT (component split S7, "tar.gz installer" below)
+but it is not the deploy method of the live cluster, and where a tarball is published and
+how it is signed is not decided. Consequently **rollback is also a git operation** — check out
 the previous commit and rebuild. Record the commit you are rolling back *to* before
 you start; after the fact it is guesswork.
 
@@ -127,8 +129,11 @@ wire are unchanged, so no hard fork is involved):
 1. `systemctl disable --now nodus` (the combined unit), and check `systemctl is-active
    nodus` prints `inactive` before step 3.
 2. `nodus.addr_seq`: the witness writes it under `data/`, never `identity/` (item 10); an
-   existing host's file in `identity/` is NOT moved by anything yet (item 21 — installer,
-   S7). nodus-witness only WARNs once at start when it sees the old file and no new one.
+   existing host's file in `identity/` is moved only by the S7 installer (item 21,
+   "tar.gz installer" below) — switching by hand, move it yourself while every unit is
+   stopped: `mv <identity_path>/nodus.addr_seq <data_path>/nodus.addr_seq`, only if the
+   data copy does not exist. nodus-witness only WARNs once at start when it sees the old
+   file and no new one.
 3. `systemctl enable --now nodus-core nodus-storage nodus-witness`.
 4. Verify: `journalctl -u nodus-core` shows `STORAGE: external` and `WITNESS: external`;
    `journalctl -u nodus-witness` shows `chain role: COMETBFT` and `cometbft lane LIVE`;
@@ -159,6 +164,98 @@ data migration in either direction (the `addr_seq` caveat above aside).
 - The harness proves the three-process layout on localhost only (`STAGEF_MODE=split` /
   `mixed`, stagef README "Harness modes"); OLD/NEW upgrade runs of split nodes are
   deferred (decision item 23).
+
+### tar.gz installer (`deploy/make-dist.sh` + `install.sh`) — component split S7
+
+Decision `2026-10-01-nodus-component-split.md` item 26: the installer artefact is a
+**tar.gz** (binaries + install script); a `.deb` is later work. **OPEN (decision file,
+"Açık kalanlar"): where the tarball is downloaded from and how it is signed.** Until that
+is decided the tarball is carried by hand, and its only integrity check is the SHA-256
+you compare yourself. Everything in "Three-process node" above still holds — the
+installer automates those steps, it does not make the split layout deployable.
+
+**1. Build the tarball** (on a build machine, from an existing build directory):
+```
+cmake -S nodus -B nodus/build -DCMAKE_BUILD_TYPE=Release
+cmake --build nodus/build -j$(nproc)
+nodus/deploy/make-dist.sh nodus/build /tmp/out
+```
+Output: `/tmp/out/nodus-<NODUS_VERSION_STRING>-linux-<uname -m>.tar.gz`, and its SHA-256
+printed on the last line — record it. The version comes from
+`include/nodus/nodus_types.h`. make-dist.sh refuses when any of the five binaries
+(`nodus-server`, `nodus-core`, `nodus-storage`, `nodus-witness`, `nodus-cli`) is missing,
+when a binary's `-h` banner reports a version other than the header's (a stale build
+directory), when the header's MAJOR.MINOR.PATCH disagree with its version string, when
+the build carries `-fsanitize`, or when the output file already exists. The payload is
+an explicit list — the five binaries, the four units, `install.sh`, `README`
+(`deploy/README-dist.md`), `VERSION` (version, arch, commit, whether `nodus/` had
+uncommitted changes, build type) and `SHA256SUMS`. No config (`deploy/nodus.conf.example`
+is never packaged), no identity, no addresses. Archive entries are sorted, owned 0:0 and
+stamped with the last commit's time. The binaries link the system's `libcrypto.so.3`,
+`libsqlite3.so.0`, `libjson-c.so.5` (`readelf -d`; nodus-cli has no json-c) — the target
+host needs those packages and a glibc no older than the build machine's.
+
+**2. Copy and verify** on the target: copy the tarball, `sha256sum` it and compare with
+the value from step 1, `tar -xzf` it, `cd` into the directory. `install.sh` verifies
+`SHA256SUMS` itself before anything else (an unexpected or unlisted file also refuses) —
+that proves the files match each other, not where they came from.
+
+**3. Install.** `/etc/nodus.conf` must exist, or pass `--config <file>` (installed as
+`/etc/nodus.conf` with mode 0600 only when no such file exists — an existing one is never
+overwritten; a `--config` that differs from it refuses). Always print the plan first:
+```
+sudo ./install.sh --layout split --dry-run      # prints every action, changes nothing
+sudo ./install.sh --layout split                # core + storage + witness
+sudo ./install.sh --layout split --no-witness   # core + storage   (decision item 12)
+sudo ./install.sh --layout split --no-storage   # core + witness
+sudo ./install.sh --layout combined             # nodus.service
+```
+`--prefix DIR` (default `/usr/local/bin`) moves the binaries and rewrites the units'
+`ExecStart=` to match. `--dry-run` needs no root; a real run refuses without it. What a
+run does, in order, after every check has passed:
+- reads `identity_path` / `data_path` from the config (a key present twice, a non-string
+  value, a path outside the units' `ReadWritePaths=/var/lib/nodus`, `"witness_external":
+  true` or `"storage_external": true` in the file → refuse; split without
+  `identity_path` → refuse);
+- decides the current layout by `systemctl is-enabled` (exactly `enabled`), the same rule
+  as `build-nodus.sh` / `nodus-update.sh`: both layouts enabled, or storage / witness
+  enabled without core → refuse. A split unit that is enabled but not asked for →
+  refuse (it never removes a split service — disable it yourself first);
+- stops every nodus unit that is running and the current layout's units; disables the
+  old layout's units the new one does not use;
+- installs all five binaries atomically (`dest.new` + `mv -f`), copies the four units the
+  same way, `systemctl daemon-reload`;
+- **`nodus.addr_seq` (item 21):** when the split witness is about to run on this host for
+  the first time (witness wanted, `nodus-witness` not enabled before), moves
+  `<identity_path>/nodus.addr_seq` to `<data_path>/nodus.addr_seq` if the data copy does
+  not exist; if BOTH exist it refuses before changing anything and prints both paths
+  (keep the current one, remove the other). No other identity file is touched; nothing
+  is wiped;
+- enables and starts the wanted units: `nodus-core` first, then waits — at most 60 × 1 s,
+  stopping early if core fails — until the six identity files core writes (`nodus.pk`,
+  `nodus.sk`, `nodus.kyber_pk`, `nodus.kyber_sk`, `nodus.mlkem_pk`, `nodus.mlkem_sk`) exist
+  in `identity_path`, then `nodus-storage`, then `nodus-witness`;
+- after a fixed 5 s prints `systemctl is-active` of each wanted unit and exits 1 if any
+  is not `active`. That is a snapshot, not a health check — run §3 afterwards.
+
+**4. Switch layout** = run `install.sh` with the other `--layout`. combined → split: stop +
+disable `nodus`, the `addr_seq` move, enable + start core → storage → witness. split →
+combined: stop + disable the split units, enable + start `nodus`; the `addr_seq` file is
+NOT moved back (item 21 names only the forward move) — the plan prints a note, and the
+combined server's own sequence lives in `<identity_path>/nodus.addr_seq`; move it back by
+hand while `nodus` is stopped if you want to keep the sequence. Never both layouts
+enabled at any step.
+
+**5. Rollback.** On any failure after the first change the installer prints:
+`systemctl disable --now nodus-core nodus-storage nodus-witness && systemctl enable --now
+nodus`, plus the `addr_seq` move-back when it had moved the file. The binaries in the
+prefix are by then the NEW version: to return to the previous version run the previous
+tarball's `install.sh --layout combined` (or the git rollback in §4).
+
+What the installer does NOT do: pick a restart order on a live validator beyond core →
+storage → witness at start (the "Restart order" item above stays OPEN), add a
+partial-wipe gate to the witness (OPEN above), publish or sign anything, or touch any
+node it is not run on.
 
 ---
 
