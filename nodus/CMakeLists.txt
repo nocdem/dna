@@ -159,6 +159,12 @@ set(NODUS_SOURCES
     # I/O-free like the two builders above; the web wallet's WASM module
     # compiles the same file (decision 2026-10-02-onchain-names.md).
     src/client/nodus_v2_name.c
+    # The shared general-multisig client library (decision
+    # 2026-09-29-general-multisig.md) — nodus-cli `msig address`,
+    # `v2-envelope spend --msig`, `msig sign` and `msig combine` moved out
+    # I/O-free like the builders above; the web wallet's WASM module
+    # compiles the same file (its vaults).
+    src/client/nodus_v2_msig.c
     # nodus_cc_client.c (the CLI's short-lived 4004 p2p peer) is DELETED:
     # governance approvals are collected by the proposer's own node
     # (decision docs/plans/decisions/2026-09-26-cc-approval-via-own-node.md,
@@ -2321,6 +2327,14 @@ register_witness_test(test_v2_stake_build)
 # refusals, and a library-built registration admitted by the CheckTx dry
 # run and applied on a seeded generation-2 chain.
 register_witness_test(test_v2_name_build)
+
+# The shared general-multisig client library (src/client/nodus_v2_msig.c,
+# decision 2026-09-29-general-multisig.md): the Foundation 2-of-3
+# descriptor and address as literal fixtures, the pre-move nodus-cli
+# unsigned build and export text restated and compared byte for byte, the
+# co-signer read-back and its refusals of every tampered field, the
+# signature text, the combine admitted by the chain's own auth hook.
+register_witness_test(test_v2_msig)
 
 # test_cc_client (nodus_client_cc_appr_send's guard paths) is DELETED with
 # the client it tested (decision docs/plans/decisions/2026-09-26-cc-

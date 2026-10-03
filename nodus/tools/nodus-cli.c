@@ -80,6 +80,7 @@
 #include "nodus/nodus_v2_spend.h"              /* the shared SPEND builder   */
 #include "client/nodus_v2_stake.h"             /* the shared stake builder   */
 #include "client/nodus_v2_name.h"              /* the shared name builder    */
+#include "client/nodus_v2_msig.h"              /* the shared msig library    */
 #endif
 
 /* CHECKTX-P1 round 3 — the expiry every envelope this CLI builds carries:
@@ -5602,8 +5603,15 @@ done:
  *      session identity) or writes the envelope.
  * ════════════════════════════════════════════════════════════════════ */
 
-#define MSIG_EXPORT_MAGIC "nodus-msig-export v1"
-#define MSIG_SIG_MAGIC    "nodus-msig-sig v1"
+/* The four steps' bodies — descriptor from keys, the unsigned build, the
+ * export / signature texts, the read-back, the per-signature checks and
+ * the assembly — live in the shared library nodus/src/client/
+ * nodus_v2_msig.{c,h} (the web wallet's WASM module compiles the same
+ * file). What stays here: argument parsing, file I/O, the session, the
+ * messages, and the chain's own auth hook run on the assembled envelope
+ * (witness code). */
+#define MSIG_EXPORT_MAGIC NODUS_V2_MSIG_EXPORT_MAGIC
+#define MSIG_SIG_MAGIC    NODUS_V2_MSIG_SIG_MAGIC
 
 /* Read a whole file (at most `max` bytes). @return 0 / -1. */
 static int msig_read_file(const char *path, uint8_t **out, size_t *len,
@@ -5626,57 +5634,20 @@ static int msig_read_file(const char *path, uint8_t **out, size_t *len,
     return 0;
 }
 
-static void msig_hex_line(FILE *f, const char *key, const uint8_t *b,
-                          size_t n) {
-    fprintf(f, "%s ", key);
-    for (size_t i = 0; i < n; i++) fprintf(f, "%02x", b[i]);
-    fputc('\n', f);
+/* Write `len` bytes of text to `path` (export / signature files).
+ * @return 0 / -1 (message printed). */
+static int msig_write_text(const char *path, const char *text, size_t len) {
+    FILE *f = fopen(path, "w");
+    if (!f) { fprintf(stderr, "cannot write %s\n", path); return -1; }
+    int ok = fwrite(text, 1, len, f) == len;
+    if (fclose(f) != 0) ok = 0;
+    if (!ok) fprintf(stderr, "cannot write %s\n", path);
+    return ok ? 0 : -1;
 }
 
-/* In a "key value\n" text file held in `txt` (NUL-terminated), find the
- * line starting with "key " and return a malloc'd copy of its value
- * (up to the newline). @return the copy or NULL. */
-static char *msig_kv(const char *txt, const char *key) {
-    size_t kl = strlen(key);
-    const char *p = txt;
-    while (p && *p) {
-        if (strncmp(p, key, kl) == 0 && p[kl] == ' ') {
-            const char *v = p + kl + 1;
-            const char *e = strchr(v, '\n');
-            size_t vl = e ? (size_t)(e - v) : strlen(v);
-            char *out = malloc(vl + 1);
-            if (!out) return NULL;
-            memcpy(out, v, vl);
-            out[vl] = '\0';
-            return out;
-        }
-        p = strchr(p, '\n');
-        if (p) p++;
-    }
-    return NULL;
-}
-
-/* A field of `n` raw bytes from its hex value. @return 0 / -1. */
-static int msig_kv_hex(const char *txt, const char *key, uint8_t *out,
-                       size_t n) {
-    char *v = msig_kv(txt, key);
-    int rc = (v && t6_hex_exact(v, out, n) == 0) ? 0 : -1;
-    if (rc != 0) fprintf(stderr, "missing or malformed '%s'\n", key);
-    free(v);
-    return rc;
-}
-
-/* The export file, parsed. `env` is heap (caller frees). */
-typedef struct {
-    uint8_t  chain32[DNA_CHAIN_ID_LEN];
-    uint64_t tip;
-    uint32_t signers;
-    uint8_t  digest[64];
-    uint8_t *env;
-    size_t   env_len;
-} msig_export_t;
-
-static int msig_export_read(const char *path, msig_export_t *x) {
+/* Read and parse an export file (nodus_v2_msig_export_parse). `x->env` is
+ * heap (nodus_v2_msig_export_free). @return 0 / -1 (message printed). */
+static int msig_export_read(const char *path, nodus_v2_msig_export_t *x) {
     memset(x, 0, sizeof(*x));
     uint8_t *raw = NULL;
     size_t rl = 0;
@@ -5685,110 +5656,60 @@ static int msig_export_read(const char *path, msig_export_t *x) {
                        2u * (size_t)DNA_ENV_MAX_TOTAL_LEN + 4096u) != 0)
         return -1;
     raw[rl] = '\0';
-    const char *txt = (const char *)raw;
     int rc = -1;
-    char *v = NULL;
-    if (strncmp(txt, MSIG_EXPORT_MAGIC "\n",
-                strlen(MSIG_EXPORT_MAGIC) + 1) != 0) {
+    if (strncmp((const char *)raw, MSIG_EXPORT_MAGIC "\n",
+                strlen(MSIG_EXPORT_MAGIC) + 1) != 0)
         fprintf(stderr, "%s is not a %s file\n", path, MSIG_EXPORT_MAGIC);
-        goto out;
-    }
-    if (msig_kv_hex(txt, "chain_id", x->chain32, DNA_CHAIN_ID_LEN) != 0 ||
-        msig_kv_hex(txt, "digest", x->digest, 64) != 0)
-        goto out;
-    v = msig_kv(txt, "tip");
-    if (!v) goto out;
-    x->tip = strtoull(v, NULL, 10);
-    free(v);
-    v = msig_kv(txt, "signers");
-    if (!v) goto out;
-    x->signers = (uint32_t)strtoul(v, NULL, 10);
-    free(v);
-    v = msig_kv(txt, "envelope");
-    if (!v || strlen(v) % 2 != 0 || strlen(v) == 0) goto out;
-    x->env_len = strlen(v) / 2;
-    x->env = malloc(x->env_len);
-    if (!x->env || t6_hex_exact(v, x->env, x->env_len) != 0) {
-        fprintf(stderr, "malformed envelope hex\n");
-        goto out;
-    }
-    rc = 0;
-out:
-    free(v);
+    else if (nodus_v2_msig_export_parse((const char *)raw, rl, x) !=
+             NODUS_V2_SPEND_OK)
+        fprintf(stderr, "%s: a missing or malformed chain_id, tip, signers, "
+                "digest or envelope line\n", path);
+    else
+        rc = 0;
     free(raw);
-    if (rc != 0) { free(x->env); x->env = NULL; }
     return rc;
 }
 
-/* The kind-3 leg of an exported envelope: exactly one CORE SPEND leg,
- * auth_kind 3, K signer slots, ONE descriptor. Fills the view, the
- * descriptor pointer/len and its (M, N, keys). @return 0 / -1. */
-static int msig_leg_open(const msig_export_t *x, dna_env_view_t *v,
-                         const uint8_t **desc, size_t *dlen, uint8_t *m,
-                         uint8_t *n, const uint8_t **keys) {
-    if (dna_env_decode(x->env, x->env_len, v) != 0 || v->leg_count != 1 ||
-        v->leg[0].domain_id != DNA_DOMAIN_CORE ||
-        v->leg[0].runtime_op != DNA_CORERULE_SPEND ||
-        v->leg[0].auth_kind != NODUS_RT_AUTHKIND_DSA87_MSIG_V1) {
+/* The kind-3 leg of an export (nodus_v2_msig_leg_open). `v` is heap.
+ * @return 0 / -1 (message printed). */
+static int msig_leg_open(const nodus_v2_msig_export_t *x, dna_env_view_t *v,
+                         nodus_v2_msig_leg_t *leg) {
+    int rc = nodus_v2_msig_leg_open(x, v, leg);
+    if (rc == NODUS_V2_MSIG_ERR_SHAPE)
         fprintf(stderr, "the export is not a one-leg CORE SPEND under "
-                "auth_kind 3\n");
-        return -1;
-    }
-    const uint8_t *a = v->buf + v->auth_off[0];
-    uint32_t alen = v->leg[0].auth_len;
-    uint64_t off = 1u + (uint64_t)x->signers * NODUS_RT_AUTH_SIGNER_LEN;
-    if (x->signers < 1 || x->signers > NODUS_RT_AUTH_MAX_SIGNERS ||
-        (uint64_t)alen < off + 3u || a[0] != x->signers || a[off] != 1) {
-        fprintf(stderr, "the auth blob does not carry %u signer slots and "
-                "ONE descriptor\n", (unsigned)x->signers);
-        return -1;
-    }
-    size_t dl = ((size_t)a[off + 1] << 8) | a[off + 2];
-    if ((uint64_t)alen != off + 3u + dl ||
-        dna_msig_desc_parse(a + off + 3, dl, m, n, keys) != 0) {
+                "auth_kind 3 carrying %u signer slots and ONE descriptor\n",
+                (unsigned)x->signers);
+    else if (rc != NODUS_V2_SPEND_OK)
         fprintf(stderr, "the carried descriptor is malformed\n");
-        return -1;
-    }
-    *desc = a + off + 3;
-    *dlen = dl;
-    return 0;
+    return rc == NODUS_V2_SPEND_OK ? 0 : -1;
 }
 
-/* The CORE leg digest of the exported envelope, re-derived. */
-static int msig_digest(const msig_export_t *x, dna_env_preflight_t *pf) {
-    /* HF-4: the export was built for ONE generation (cli_select_runtimes
-     * on the exporter's session); its CORE leg names that ruleset_version */
+/* HF-4: the export was built for ONE generation (cli_select_runtimes on
+ * the exporter's session); its CORE leg names that ruleset_version.
+ * @return the compiled CORE entry, or NULL (message printed). */
+static const nodus_domain_runtime_t *
+msig_core_rt(const nodus_v2_msig_export_t *x) {
     const nodus_domain_runtime_t *core_rt =
         cli_core_runtime_for_env(x->env, x->env_len);
-    if (!core_rt) {
+    if (!core_rt)
         fprintf(stderr, "the exported envelope's CORE leg names a ruleset "
                 "version this CLI does not carry\n");
-        return -1;
-    }
-    dna_env_leg_ctx_t lctx;
-    memset(&lctx, 0, sizeof(lctx));
-    lctx.domain_id       = DNA_DOMAIN_CORE;
-    lctx.ruleset_version = core_rt->ruleset_version;
-    memcpy(lctx.ruleset_hash, core_rt->ruleset_hash, 64);
-    if (dna_env_preflight(x->env, x->env_len, x->chain32, x->tip + 1, &lctx,
-                          1, pf) != DNA_ENV_PF_OK) {
+    return core_rt;
+}
+
+/* The CORE leg digest of the exported envelope, re-derived
+ * (nodus_v2_msig_digest). @return 0 / -1 (message printed). */
+static int msig_digest(const nodus_v2_msig_export_t *x,
+                       dna_env_preflight_t *pf) {
+    const nodus_domain_runtime_t *core_rt = msig_core_rt(x);
+    if (!core_rt) return -1;
+    if (nodus_v2_msig_digest(x, core_rt->ruleset_version,
+                             core_rt->ruleset_hash, pf) != NODUS_V2_SPEND_OK) {
         fprintf(stderr, "preflight of the exported envelope failed (wrong "
                 "chain id, expired, or a different CORE ruleset)\n");
         return -1;
     }
     return 0;
-}
-
-static int msig_key_in(const uint8_t *keys, uint8_t n, const uint8_t *pk) {
-    for (uint8_t i = 0; i < n; i++)
-        if (memcmp(keys + (size_t)i * DNA_MSIG_PUBKEY_LEN, pk,
-                   DNA_MSIG_PUBKEY_LEN) == 0)
-            return 1;
-    return 0;
-}
-
-static int msig_pk_cmp(const void *a, const void *b) {
-    return memcmp(a, b, DNA_MSIG_PUBKEY_LEN);
 }
 
 /* `msig address` — offline. */
@@ -5834,17 +5755,18 @@ static int cmd_msig_address(int argc, char **argv, int cmd_start) {
         memcpy(keys + (size_t)i * DNA_MSIG_PUBKEY_LEN, b, DNA_MSIG_PUBKEY_LEN);
         free(b);
     }
-    /* the one canonical order — the encoder refuses anything else */
-    qsort(keys, (size_t)n_pk, DNA_MSIG_PUBKEY_LEN, msig_pk_cmp);
+    /* sorted into the one canonical order, encoded, hashed — the shared
+     * library (the web wallet's vaults derive with the same call) */
     uint8_t desc[DNA_MSIG_MAX_DESC_LEN], addr[64];
     size_t dl = 0;
-    if (dna_msig_desc_encode((uint8_t)m, (uint8_t)n_pk, keys, desc,
-                             sizeof(desc), &dl) != 0) {
+    int drc = nodus_v2_msig_desc_from_keys((uint8_t)m, (uint8_t)n_pk, keys,
+                                           desc, sizeof(desc), &dl, addr);
+    if (drc == NODUS_V2_MSIG_ERR_DESC) {
         fprintf(stderr, "refused: a duplicate key, or a key whose first 32 "
                 "bytes are zero\n");
         return 1;
     }
-    if (dna_msig_address(desc, dl, addr) != 0) return 1;
+    if (drc != NODUS_V2_SPEND_OK) return 1;
     char hex[QGP_FP_HEX_BUFFER];
     qgp_fp_raw_to_hex(addr, hex);
     printf("msig %ld-of-%d address %s\n", m, n_pk, hex);
@@ -5909,9 +5831,11 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
     }
 
     int rc = 1;
-    uint8_t *dbuf = NULL, *call = NULL, *auth = NULL, *env_bytes = NULL;
+    uint8_t *dbuf = NULL;
+    char *export_text = NULL;
     nodus_identity_t *keys = NULL;
-    dna_env_preflight_t *pf = NULL;
+    nodus_v2_msig_built_t built;
+    memset(&built, 0, sizeof(built));
     nodus_client_t client;
     memset(&client, 0, sizeof(client));
     int connected = 0, utxos_valid = 0;
@@ -5920,31 +5844,33 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
 
     size_t dlen = 0;
     uint8_t m = 0, n = 0, addr[64];
-    const uint8_t *dkeys = NULL;
     if (msig_read_file(desc_path, &dbuf, &dlen, DNA_MSIG_MAX_DESC_LEN) != 0)
         goto done;
-    if (dna_msig_desc_parse(dbuf, dlen, &m, &n, &dkeys) != 0 ||
+    if (dna_msig_desc_parse(dbuf, dlen, &m, &n, NULL) != 0 ||
         dna_msig_address(dbuf, dlen, addr) != 0) {
         fprintf(stderr, "%s is not a valid multisig descriptor\n", desc_path);
         goto done;
     }
+    /* argv check before any session (the library refuses the same range,
+     * NODUS_V2_MSIG_ERR_SIGNERS) */
     if (k_signers == 0) k_signers = m;
     if (k_signers < m || k_signers > n) {
         fprintf(stderr, "--signers must be in [M=%u, N=%u]\n",
                 (unsigned)m, (unsigned)n);
         goto done;
     }
-    char addr_hex[QGP_FP_HEX_BUFFER], to_fp[QGP_FP_HEX_BUFFER];
+    char addr_hex[QGP_FP_HEX_BUFFER];
     qgp_fp_raw_to_hex(addr, addr_hex);
     uint8_t to_raw[64];
     if (qgp_fp_hex_to_raw(to_hex, to_raw) != 0) {
         fprintf(stderr, "--to must be exactly 128 lowercase hex chars\n");
         goto done;
     }
-    qgp_fp_raw_to_hex(to_raw, to_fp);
 
-    /* inputs: nullifier:amount, strictly ascending for the wire */
+    /* inputs: nullifier:amount (the library sorts them for the wire and
+     * refuses a duplicate) */
     nodus_v2_coin_t ins[NODUS_V2_SPEND_MAX_IN];
+    memset(ins, 0, sizeof(ins));
     uint64_t sum_in = 0;
     for (int i = 0; i < n_in; i++) {
         const char *c = strchr(in_arg[i], ':');
@@ -5967,21 +5893,9 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
         }
         sum_in += ins[i].amount;
     }
-    qsort(ins, (size_t)n_in, sizeof(ins[0]), nodus_v2_nul_cmp);
-    for (int i = 1; i < n_in; i++)
-        if (memcmp(ins[i - 1].nul, ins[i].nul, 64) == 0) {
-            fprintf(stderr, "duplicate --in nullifier\n");
-            goto done;
-        }
-
-    const uint64_t fee_floor = DNAC_MIN_FEE_RAW > NODUS_W_BASE_TX_FEE
-                             ? DNAC_MIN_FEE_RAW : NODUS_W_BASE_TX_FEE;
-    if (!have_fee) fee = fee_floor;
-    if (fee < fee_floor) {
-        fprintf(stderr, "--fee is below the chain's floor %llu\n",
-                (unsigned long long)fee_floor);
-        goto done;
-    }
+    /* the fee floor max(DNAC_MIN_FEE_RAW, NODUS_W_BASE_TX_FEE) and a
+     * duplicate --in are the library's refusals, reported after the build
+     * below */
 
     const nodus_domain_runtime_t *core_rt = cli_builtin_runtime(DNA_DOMAIN_CORE, NODUS_RT_GEN_1);
     const nodus_domain_runtime_t *sys_rt  = cli_builtin_runtime(DNA_DOMAIN_SYSTEM, NODUS_RT_GEN_1);
@@ -6045,137 +5959,91 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
         goto done;
     }
 
-    /* ── build (fee fixed-point, at most 3 passes) ────────────────────── */
-    const uint32_t tail_len = 1u + 2u + (uint32_t)dlen;
-    const uint32_t alen = 1u + (uint32_t)k_signers * NODUS_RT_AUTH_SIGNER_LEN +
-                          tail_len;
-    call = malloc(2 + (size_t)NODUS_V2_SPEND_MAX_IN * 64 + 2u * NODUS_V2_SPEND_OUT_LEN);
-    auth = calloc(1, alen);
-    pf   = calloc(1, sizeof(*pf));
-    if (!call || !auth || !pf) goto done;
-    auth[0] = (uint8_t)k_signers;
-    {
-        uint8_t *t = auth + 1 + (size_t)k_signers * NODUS_RT_AUTH_SIGNER_LEN;
-        t[0] = 1;                            /* dcount: one descriptor   */
-        t[1] = (uint8_t)(dlen >> 8);
-        t[2] = (uint8_t)dlen;
-        memcpy(t + 3, dbuf, dlen);
-    }
-    dna_env_leg_in_t leg;
-    dna_env_in_t env_in;
-    uint64_t change = 0, units = 0;
-    int n_out = 0;
-    for (int pass = 0; ; pass++) {
-        if (amount > sum_in || fee > sum_in - amount) {
+    /* ── build: the shared library (fee fixed point, at most 3 passes;
+     *    pass-1 digest) ─────────────────────────────────────────────────── */
+    uint64_t expiry = 0;
+    if (cli_env_expiry(tip, &expiry) != 0) goto done;
+    nodus_v2_ruleset_id_t rs;
+    cli_ruleset_id(core_rt, sys_rt, &rs);
+    nodus_v2_msig_build_req_t breq;
+    memset(&breq, 0, sizeof(breq));
+    breq.rs            = &rs;
+    breq.chain32       = chain32;
+    breq.tip           = tip;
+    breq.expiry_height = expiry;
+    breq.desc          = dbuf;
+    breq.desc_len      = dlen;
+    breq.coins         = ins;
+    breq.n_coins       = n_in;
+    breq.to_fp         = to_raw;
+    breq.amount        = amount;
+    breq.fee           = fee;
+    breq.fee_fixed     = have_fee;
+    breq.gas_price     = gas_price;
+    breq.signers       = (uint32_t)k_signers;
+    breq.rand          = cli_rand;
+    nodus_v2_spend_err_t berr;
+    int brc = nodus_v2_msig_build(&breq, &built, &berr);
+    if (brc != NODUS_V2_SPEND_OK) {
+        if (brc == NODUS_V2_SPEND_ERR_INSUFFICIENT)
             fprintf(stderr, "the inputs (%llu) do not cover amount %llu + "
                     "fee %llu\n", (unsigned long long)sum_in,
-                    (unsigned long long)amount, (unsigned long long)fee);
-            goto done;
-        }
-        change = sum_in - amount - fee;
-        size_t off = 0;
-        call[off++] = (uint8_t)n_in;
-        for (int i = 0; i < n_in; i++, off += 64)
-            memcpy(call + off, ins[i].nul, 64);
-        n_out = change > 0 ? 2 : 1;
-        call[off++] = (uint8_t)n_out;
-        for (int o = 0; o < n_out; o++) {
-            uint8_t seed[32];
-            if (nodus_random(seed, sizeof(seed)) != 0) goto done;
-            nodus_v2_xfer_out_put(call + off, o == 0 ? to_fp : addr_hex,
-                            o == 0 ? amount : change, NULL, seed);
-            off += NODUS_V2_SPEND_OUT_LEN;
-        }
-        memset(&leg, 0, sizeof(leg));
-        leg.hdr.domain_id       = DNA_DOMAIN_CORE;
-        leg.hdr.runtime_op      = DNA_CORERULE_SPEND;
-        leg.hdr.ruleset_version = core_rt->ruleset_version;
-        leg.hdr.access_mode     = DNA_ENV_ACCESS_INVOKE;
-        leg.hdr.auth_kind       = NODUS_RT_AUTHKIND_DSA87_MSIG_V1;
-        leg.hdr.call_len        = (uint32_t)off;
-        leg.hdr.auth_len        = alen;
-        nodus_v2_spend_effect_decl((uint32_t)n_in, (uint32_t)n_out,
-                             &leg.hdr.res_max_effects,
-                             &leg.hdr.res_max_effect_bytes);
-        leg.call_data = call;
-        leg.auth_data = auth;
-        memset(&env_in, 0, sizeof(env_in));
-        if (cli_env_expiry(tip, &env_in.expiry_height) != 0) goto done;
-        env_in.fee_amount    = fee;
-        env_in.leg_count     = 1;
-        env_in.legs          = &leg;
-        if (nodus_v2_spend_ceiling(&env_in, sys_rt->meter_policy,
-                             (uint32_t)n_in + 1u, &units) != 0) {
+                    (unsigned long long)amount, (unsigned long long)berr.fee);
+        else if (brc == NODUS_V2_MSIG_ERR_COIN)
+            fprintf(stderr, "duplicate --in nullifier\n");
+        else if (brc == NODUS_V2_MSIG_ERR_FEE_FLOOR)
+            fprintf(stderr, "--fee is below the chain's floor %llu\n",
+                    (unsigned long long)(DNAC_MIN_FEE_RAW > NODUS_W_BASE_TX_FEE
+                                         ? DNAC_MIN_FEE_RAW
+                                         : NODUS_W_BASE_TX_FEE));
+        else if (brc == NODUS_V2_MSIG_ERR_SIGNERS)
+            fprintf(stderr, "--signers must be in [M=%u, N=%u]\n",
+                    (unsigned)m, (unsigned)n);
+        else if (brc == NODUS_V2_SPEND_ERR_METER)
             fprintf(stderr, "could not size res_max_total_units\n");
-            goto done;
-        }
-        env_in.res_max_total_units = units;
-        uint64_t need = fee_floor;
-        if (gas_price != 0) {
-            if (units > UINT64_MAX / gas_price) goto done;
-            if (units * gas_price > need) need = units * gas_price;
-        }
-        if (fee >= need) break;
-        if (have_fee || pass >= 2) {
+        else if (brc == NODUS_V2_SPEND_ERR_FEE_BELOW_GAS)
             fprintf(stderr, "fee %llu is below the gas-price requirement "
-                    "%llu (%llu units x %llu)\n", (unsigned long long)fee,
-                    (unsigned long long)need, (unsigned long long)units,
+                    "%llu (%llu units x %llu)\n",
+                    (unsigned long long)berr.fee,
+                    (unsigned long long)berr.required,
+                    (unsigned long long)berr.units,
                     (unsigned long long)gas_price);
-            goto done;
-        }
-        fee = need;
+        else if (brc == NODUS_V2_SPEND_ERR_PREFLIGHT1)
+            fprintf(stderr, "preflight of the exported envelope failed (wrong "
+                    "chain id, expired, or a different CORE ruleset)\n");
+        else
+            fprintf(stderr, "building the multisig envelope failed (rc=%d)\n",
+                    brc);
+        goto done;
     }
 
-    /* ── pass 1: the unsigned envelope and its leg digest ──────────────── */
-    size_t env_len = 0, used = 0;
-    if (dna_env_encoded_size(env_in.legs, env_in.leg_count, &env_len) != 0)
+    size_t export_len = 0;
+    if (nodus_v2_msig_export_encode(chain32, tip, built.signers, built.digest,
+                                    built.env, built.env_len, &export_text,
+                                    &export_len) != NODUS_V2_SPEND_OK ||
+        msig_write_text(export_path, export_text, export_len) != 0)
         goto done;
-    env_bytes = malloc(env_len);
-    if (!env_bytes ||
-        dna_env_encode(&env_in, env_bytes, env_len, &used) != 0 ||
-        used != env_len)
-        goto done;
-    {
-        msig_export_t x;
-        memset(&x, 0, sizeof(x));
-        memcpy(x.chain32, chain32, DNA_CHAIN_ID_LEN);
-        x.tip = tip;
-        x.env = env_bytes;
-        x.env_len = env_len;
-        if (msig_digest(&x, pf) != 0) goto done;
-    }
-    FILE *f = fopen(export_path, "w");
-    if (!f) { fprintf(stderr, "cannot write %s\n", export_path); goto done; }
-    fprintf(f, "%s\n", MSIG_EXPORT_MAGIC);
-    msig_hex_line(f, "chain_id", chain32, DNA_CHAIN_ID_LEN);
-    fprintf(f, "tip %llu\n", (unsigned long long)tip);
-    fprintf(f, "signers %ld\n", k_signers);
-    msig_hex_line(f, "digest", pf->auth_digest[0], 64);
-    msig_hex_line(f, "envelope", env_bytes, env_len);
-    if (fclose(f) != 0) goto done;
 
     printf("v2-envelope spend --msig: %u-of-%u address %.16s... inputs=%d "
            "sum_in=%llu amount=%llu fee=%llu change=%llu units=%llu "
-           "signers=%ld expiry=%llu\n", (unsigned)m, (unsigned)n, addr_hex,
-           n_in, (unsigned long long)sum_in, (unsigned long long)amount,
-           (unsigned long long)fee, (unsigned long long)change,
-           (unsigned long long)units, k_signers,
-           (unsigned long long)env_in.expiry_height);
+           "signers=%ld expiry=%llu\n", (unsigned)built.m, (unsigned)built.n,
+           addr_hex, built.n_in, (unsigned long long)built.sum_in,
+           (unsigned long long)amount, (unsigned long long)built.fee,
+           (unsigned long long)built.change, (unsigned long long)built.units,
+           (long)built.signers, (unsigned long long)expiry);
     printf("  intent_id=");
-    for (int b = 0; b < 64; b++) printf("%02x", pf->intent_id[b]);
+    for (int b = 0; b < 64; b++) printf("%02x", built.intent_id[b]);
     printf("\n  digest=");
-    for (int b = 0; b < 64; b++) printf("%02x", pf->auth_digest[0][b]);
+    for (int b = 0; b < 64; b++) printf("%02x", built.digest[b]);
     printf("\n  export written to %s — next: `msig sign` by %ld co-signers, "
            "then `msig combine` before block %llu\n", export_path,
-           k_signers, (unsigned long long)env_in.expiry_height);
+           (long)built.signers, (unsigned long long)expiry);
     rc = 0;
 
 done:
     free(dbuf);
-    free(call);
-    free(auth);
-    free(env_bytes);
-    free(pf);
+    free(export_text);
+    nodus_v2_msig_built_free(&built);
     if (utxos_valid) nodus_client_free_utxo_result(&utxos);
     if (connected) nodus_client_close(&client);
     if (keys) {
@@ -6203,78 +6071,65 @@ static int cmd_msig_sign(int argc, char **argv, int cmd_start) {
     int rc = 1;
     nodus_identity_t *keys = calloc(4, sizeof(*keys));
     dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
-    msig_export_t x;
+    nodus_v2_msig_review_t *rv = calloc(1, sizeof(*rv));
+    nodus_v2_msig_export_t x;
     memset(&x, 0, sizeof(x));
-    if (!keys || !pf) goto done;
+    char *sig_text = NULL;
+    if (!keys || !pf || !rv) goto done;
     if (act_load_keys(keys_csv, keys, 4) != 1) {
         fprintf(stderr, "msig sign needs exactly one --keys identity\n");
         goto done;
     }
     if (msig_export_read(in_path, &x) != 0) goto done;
-    dna_env_view_t v;
-    const uint8_t *desc = NULL, *dkeys = NULL;
-    size_t dl = 0;
-    uint8_t m = 0, n = 0;
-    if (msig_leg_open(&x, &v, &desc, &dl, &m, &n, &dkeys) != 0) goto done;
-    if (!msig_key_in(dkeys, n, keys[0].pk.bytes)) {
-        fprintf(stderr, "this key is not one of the descriptor's %u keys\n",
-                (unsigned)n);
-        goto done;
-    }
-    /* never sign a digest you did not derive yourself */
-    if (msig_digest(&x, pf) != 0) goto done;
-    if (memcmp(pf->auth_digest[0], x.digest, 64) != 0) {
-        fprintf(stderr, "REFUSED: the exported digest is not the digest of "
-                "the exported envelope on this chain\n");
+    const nodus_domain_runtime_t *core_rt = msig_core_rt(&x);
+    if (!core_rt) goto done;
+    /* the read-back: shape, membership, the digest re-derived and EQUAL
+     * (never sign a digest you did not derive yourself), the call's
+     * lengths — the shared library, in the order this command had */
+    int vrc = nodus_v2_msig_review(&x, core_rt->ruleset_version,
+                                   core_rt->ruleset_hash, keys[0].pk.bytes,
+                                   pf, rv);
+    if (vrc != NODUS_V2_SPEND_OK) {
+        if (vrc == NODUS_V2_MSIG_ERR_SHAPE)
+            fprintf(stderr, "the export is not a one-leg CORE SPEND under "
+                    "auth_kind 3 carrying %u signer slots and ONE "
+                    "descriptor\n", (unsigned)x.signers);
+        else if (vrc == NODUS_V2_MSIG_ERR_DESC)
+            fprintf(stderr, "the carried descriptor is malformed\n");
+        else if (vrc == NODUS_V2_MSIG_ERR_NOT_MEMBER)
+            fprintf(stderr, "this key is not one of the descriptor's keys\n");
+        else if (vrc == NODUS_V2_SPEND_ERR_PREFLIGHT1)
+            fprintf(stderr, "preflight of the exported envelope failed (wrong "
+                    "chain id, expired, or a different CORE ruleset)\n");
+        else if (vrc == NODUS_V2_MSIG_ERR_DIGEST)
+            fprintf(stderr, "REFUSED: the exported digest is not the digest "
+                    "of the exported envelope on this chain\n");
+        else if (vrc == NODUS_V2_MSIG_ERR_CALL)
+            fprintf(stderr, "REFUSED: the exported CORE SPEND call is "
+                    "malformed (its length does not match its inputs and "
+                    "outputs, or an owner is not 128 lowercase hex)\n");
+        else
+            fprintf(stderr, "the export could not be read back (rc=%d)\n",
+                    vrc);
         goto done;
     }
     {
-        uint8_t addr[64];
         char ah[QGP_FP_HEX_BUFFER];
-        if (dna_msig_address(desc, dl, addr) != 0) goto done;
-        qgp_fp_raw_to_hex(addr, ah);
-        /* The SPEND call is nin u8 ‖ nin × nullifier[64] ‖ nout u8 ‖
-         * nout × NODUS_V2_SPEND_OUT_LEN (the build above, and the chain's
-         * rtn_spend_parse). Nothing is read before its length is proved
-         * against the leg's own call_len: a short or inconsistent call
-         * is REFUSED, never displayed. */
-        const uint8_t *c = v.buf + v.call_off[0];
-        const size_t clen = v.leg[0].call_len;
-        if (clen < 2 || c[0] < 1 || c[0] > NODUS_V2_SPEND_MAX_IN ||
-            clen < 2 + (size_t)c[0] * 64) {
-            fprintf(stderr, "REFUSED: the exported CORE SPEND call is "
-                    "malformed (length %zu)\n", clen);
-            goto done;
-        }
-        uint8_t nin = c[0];
-        uint8_t nout = c[1 + (size_t)nin * 64];
-        const uint8_t *outs = c + 1 + (size_t)nin * 64 + 1;
-        if (nout < 1 ||
-            clen != 2 + (size_t)nin * 64 + (size_t)nout * NODUS_V2_SPEND_OUT_LEN) {
-            fprintf(stderr, "REFUSED: the exported CORE SPEND call length "
-                    "%zu does not match its %u input(s) and %u output(s)\n",
-                    clen, (unsigned)nin, (unsigned)nout);
-            goto done;
-        }
+        qgp_fp_raw_to_hex(rv->addr, ah);
         printf("signing a CORE SPEND from %u-of-%u address %s: "
-               "%u input(s), fee %llu\n", (unsigned)m, (unsigned)n, ah,
-               (unsigned)nin, (unsigned long long)v.fee_amount);
-        for (uint8_t i = 0; i < nin; i++) {
+               "%u input(s), fee %llu\n", (unsigned)rv->m, (unsigned)rv->n,
+               ah, (unsigned)rv->n_in, (unsigned long long)rv->fee);
+        for (int i = 0; i < rv->n_in; i++) {
             char nh[129];
-            for (int b = 0; b < 64; b++)
-                snprintf(nh + 2 * b, 3, "%02x", c[1 + (size_t)i * 64 + b]);
+            qgp_fp_raw_to_hex(rv->in_nul[i], nh);
             printf("  in[%u]  nullifier %s\n", (unsigned)i, nh);
         }
-        for (uint8_t o = 0; o < nout; o++) {
-            const uint8_t *r = outs + (size_t)o * NODUS_V2_SPEND_OUT_LEN;
-            uint64_t amt = 0;
-            for (int b = 0; b < 8; b++) amt = (amt << 8) | r[128 + b];
+        for (int o = 0; o < rv->n_out; o++) {
             char th[129];
-            for (int b = 0; b < 64; b++)
-                snprintf(th + 2 * b, 3, "%02x", r[136 + b]);
+            qgp_fp_raw_to_hex(rv->out_token[o], th);
             printf("  out[%u] -> %.128s amount %llu token %s\n",
-                   (unsigned)o, (const char *)r, (unsigned long long)amt,
-                   th);
+                   (unsigned)o, rv->out_owner[o],
+                   (unsigned long long)rv->out_amount[o], th);
         }
         /* R1-5: the carried descriptor is not covered by the digest, and
          * no RPC answers a coin's owner for an address that has no
@@ -6292,17 +6147,17 @@ static int cmd_msig_sign(int argc, char **argv, int cmd_start) {
         fprintf(stderr, "signing failed\n");
         goto done;
     }
-    FILE *f = fopen(out_path, "w");
-    if (!f) { fprintf(stderr, "cannot write %s\n", out_path); goto done; }
-    fprintf(f, "%s\n", MSIG_SIG_MAGIC);
-    msig_hex_line(f, "digest", x.digest, 64);
-    msig_hex_line(f, "pubkey", keys[0].pk.bytes, DNAC_PUBKEY_SIZE);
-    msig_hex_line(f, "sig", sig, DNAC_SIGNATURE_SIZE);
-    if (fclose(f) != 0) goto done;
+    size_t sig_len = 0;
+    if (nodus_v2_msig_sig_encode(x.digest, keys[0].pk.bytes, sig, &sig_text,
+                                 &sig_len) != NODUS_V2_SPEND_OK ||
+        msig_write_text(out_path, sig_text, sig_len) != 0)
+        goto done;
     printf("signature written to %s\n", out_path);
     rc = 0;
 done:
-    free(x.env);
+    nodus_v2_msig_export_free(&x);
+    free(sig_text);
+    free(rv);
     free(pf);
     if (keys) {
         for (int i = 0; i < 4; i++) nodus_identity_clear(&keys[i]);
@@ -6339,10 +6194,11 @@ static int cmd_msig_combine(const char *server_ip, uint16_t server_port,
         return 1;
     }
     int rc = 1;
-    msig_export_t x;
+    nodus_v2_msig_export_t x;
     memset(&x, 0, sizeof(x));
     nodus_identity_t *keys = NULL;
     dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    dna_env_view_t *vp = calloc(1, sizeof(*vp));
     uint8_t (*spk)[DNAC_PUBKEY_SIZE] = calloc(NODUS_RT_AUTH_MAX_SIGNERS,
                                               DNAC_PUBKEY_SIZE);
     uint8_t (*ssig)[DNAC_SIGNATURE_SIZE] = calloc(NODUS_RT_AUTH_MAX_SIGNERS,
@@ -6350,13 +6206,11 @@ static int cmd_msig_combine(const char *server_ip, uint16_t server_port,
     nodus_client_t client;
     memset(&client, 0, sizeof(client));
     int connected = 0;
-    if (!pf || !spk || !ssig) goto done;
+    if (!pf || !vp || !spk || !ssig) goto done;
     if (msig_export_read(in_path, &x) != 0) goto done;
-    dna_env_view_t v;
-    const uint8_t *desc = NULL, *dkeys = NULL;
-    size_t dl = 0;
-    uint8_t m = 0, n = 0;
-    if (msig_leg_open(&x, &v, &desc, &dl, &m, &n, &dkeys) != 0) goto done;
+    nodus_v2_msig_leg_t leg;
+    if (msig_leg_open(&x, vp, &leg) != 0) goto done;
+    const uint8_t m = leg.m;
     if ((uint32_t)n_sig != x.signers) {
         fprintf(stderr, "the export fixed %u signers (auth_len is signed); "
                 "%d signature file(s) given\n", (unsigned)x.signers, n_sig);
@@ -6370,53 +6224,37 @@ static int cmd_msig_combine(const char *server_ip, uint16_t server_port,
     for (int i = 0; i < n_sig; i++) {
         uint8_t *raw = NULL;
         size_t rl = 0;
-        if (msig_read_file(sig_path[i], &raw, &rl, 32768) != 0) goto done;
-        raw[rl] = '\0';
-        const char *txt = (const char *)raw;
+        if (msig_read_file(sig_path[i], &raw, &rl,
+                           NODUS_V2_MSIG_SIG_TEXT_MAX) != 0)
+            goto done;
         uint8_t dg[64];
-        int ok = strncmp(txt, MSIG_SIG_MAGIC "\n",
-                         strlen(MSIG_SIG_MAGIC) + 1) == 0 &&
-                 msig_kv_hex(txt, "digest", dg, 64) == 0 &&
-                 msig_kv_hex(txt, "pubkey", spk[i], DNAC_PUBKEY_SIZE) == 0 &&
-                 msig_kv_hex(txt, "sig", ssig[i], DNAC_SIGNATURE_SIZE) == 0;
+        int ok = nodus_v2_msig_sig_parse((const char *)raw, rl, dg, spk[i],
+                                         ssig[i]) == NODUS_V2_SPEND_OK;
         free(raw);
         if (!ok) { fprintf(stderr, "%s is malformed\n", sig_path[i]); goto done; }
-        if (memcmp(dg, x.digest, 64) != 0) {
+        int src = nodus_v2_msig_sig_check(&x, &leg, dg, spk[i], ssig[i]);
+        if (src == NODUS_V2_MSIG_ERR_SIG_DIGEST) {
             fprintf(stderr, "%s signs another digest\n", sig_path[i]);
             goto done;
         }
-        if (!msig_key_in(dkeys, n, spk[i])) {
+        if (src == NODUS_V2_MSIG_ERR_NOT_MEMBER) {
             fprintf(stderr, "%s: key not in the descriptor\n", sig_path[i]);
             goto done;
         }
-        if (qgp_dsa87_verify(ssig[i], DNAC_SIGNATURE_SIZE, x.digest, 64,
-                             spk[i]) != 0) {
+        if (src != NODUS_V2_SPEND_OK) {
             fprintf(stderr, "%s: signature does not verify\n", sig_path[i]);
             goto done;
         }
     }
     /* ascending pubkey order (the ONE canonical signer encoding), no
-     * duplicate key — selection sort over <= 15 entries */
-    uint8_t *a = x.env + v.auth_off[0];
-    for (int i = 0; i < n_sig; i++) {
-        int best = -1;
-        for (int j = 0; j < n_sig; j++) {
-            int used = 0;
-            for (int t = 0; t < i; t++)
-                if (memcmp(a + 1 + (size_t)t * NODUS_RT_AUTH_SIGNER_LEN,
-                           spk[j], DNAC_PUBKEY_SIZE) == 0) used = 1;
-            if (used) continue;
-            if (best < 0 || memcmp(spk[j], spk[best], DNAC_PUBKEY_SIZE) < 0)
-                best = j;
-        }
-        if (best < 0) {
-            fprintf(stderr, "duplicate signer key among the signature "
-                    "files\n");
-            goto done;
-        }
-        uint8_t *slot = a + 1 + (size_t)i * NODUS_RT_AUTH_SIGNER_LEN;
-        memcpy(slot, spk[best], DNAC_PUBKEY_SIZE);
-        memcpy(slot + DNAC_PUBKEY_SIZE, ssig[best], DNAC_SIGNATURE_SIZE);
+     * duplicate key — the shared library */
+    if (nodus_v2_msig_assemble(&x, vp,
+                               (const uint8_t (*)[NODUS_V2_MSIG_PK_LEN])spk,
+                               (const uint8_t (*)[NODUS_V2_MSIG_SIG_LEN])ssig,
+                               n_sig) != NODUS_V2_SPEND_OK) {
+        fprintf(stderr, "duplicate signer key among the signature "
+                "files\n");
+        goto done;
     }
     /* the chain's OWN auth hook, locally: >= M keys must be satisfied */
     {
@@ -6428,8 +6266,8 @@ static int cmd_msig_combine(const char *server_ip, uint16_t server_port,
         ctx.chain_id = x.chain32;
         ctx.global_height = x.tip + 1;
         ctx.leg_auth_digest = x.digest;
-        if (!core_rt || dna_env_decode(x.env, x.env_len, &v) != 0 ||
-            nodus_rt_auth_dsa87_v1(core_rt, &v, 0, &ctx, &av) != 0 ||
+        if (!core_rt || dna_env_decode(x.env, x.env_len, vp) != 0 ||
+            nodus_rt_auth_dsa87_v1(core_rt, vp, 0, &ctx, &av) != 0 ||
             av.n_msig != 1 || !av.msig_satisfied[0]) {
             fprintf(stderr, "the assembled authorization does not satisfy "
                     "the descriptor (M=%u)\n", (unsigned)m);
@@ -6484,7 +6322,8 @@ static int cmd_msig_combine(const char *server_ip, uint16_t server_port,
     }
     rc = 0;
 done:
-    free(x.env);
+    nodus_v2_msig_export_free(&x);
+    free(vp);
     free(pf);
     free(spk);
     free(ssig);
