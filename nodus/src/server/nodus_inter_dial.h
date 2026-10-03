@@ -214,12 +214,15 @@ void nodus_inter_dial_conn_sync(const nodus_inter_dial_t *d,
                                 struct nodus_tcp_conn *conn);
 
 /**
- * Open a dialed conn's send gate when the handshake finished
+ * Open a 4002 conn's send gate when the handshake finished
  * (nodus_inter_dial_io_t.established): auth_state OK; plaintext (no Kyber
  * identity) → the auth queue is flushed; encrypted → every frame of the
  * auth queue (pre-framed plaintext, never written as it is) is RE-SENT
  * ENCRYPTED through nodus_tcp_send, in queue order (S5b fix round F2 —
  * it used to be discarded although its senders had been told "queued").
+ * Core's ACCEPTING side calls it too (encrypted = true) at key_init, once
+ * the channel key is set and only for an authenticated peer (split S5):
+ * it works on any 4002 conn, dialed or accepted.
  */
 void nodus_inter_dial_conn_open(struct nodus_tcp_conn *conn, bool encrypted);
 

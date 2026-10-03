@@ -1099,8 +1099,9 @@ static int inter_dial_send_raw_conn(void *ctx, const uint8_t *payload, size_t le
 static void inter_dial_established(void *ctx, bool encrypted) {
     nodus_inter_session_t *sess = (nodus_inter_session_t *)ctx;
     inter_dial_sync_out(sess);
-    /* auth_state OK; plaintext → flush the auth queue, encrypted → discard
-     * it (shared with nodus-storage's dialer). */
+    /* auth_state OK; plaintext → flush the auth queue, encrypted → re-send
+     * it encrypted, in order (shared with nodus-storage's dialer and with
+     * the accepting side's key_init). */
     nodus_inter_dial_conn_open(sess->conn, encrypted);
 }
 
@@ -1407,23 +1408,33 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     nodus_tcp_send_raw(sess->conn, ka_buf, ka_len);
                     /* B3 fix — init per-conn channel_crypto directly.
                      * We ACCEPTED this inter-node conn → responder. */
-                    nodus_channel_crypto_init(&sess->conn->channel_crypto,
-                                               ss_buf, msg.key_nonce, ns,
-                                               NODUS_CHANNEL_ROLE_RESPONDER);
+                    int cc_rc = nodus_channel_crypto_init(&sess->conn->channel_crypto,
+                                                          ss_buf, msg.key_nonce, ns,
+                                                          NODUS_CHANNEL_ROLE_RESPONDER);
                     qgp_secure_memzero(ss_buf, sizeof(ss_buf));
-                    /* Rev 2 item 7: open the send gate only now (and only
-                     * for an authenticated peer); DISCARD the auth queue —
-                     * it holds pre-framed plaintext, exactly as the dialing
-                     * side does on key_ack. */
-                    if (sess->authenticated) {
-                        sess->conn->auth_state = NODUS_CONN_AUTH_OK;
-                        if (sess->conn->pending_buf) {
-                            free(sess->conn->pending_buf);
-                            sess->conn->pending_buf = NULL;
-                            sess->conn->pending_len = 0;
-                            sess->conn->pending_cap = 0;
-                        }
+                    if (cc_rc != 0) {
+                        /* No session key: the gate stays closed — opening
+                         * it would let the queue out in plaintext. */
+                        fprintf(stderr,
+                                "CRYPTO: CHANNEL_INIT_FAIL slot=%d peer=%s:%u "
+                                "(send gate stays closed)\n",
+                                sess->conn->slot, sess->conn->ip,
+                                (unsigned)sess->conn->port);
+                        nodus_t2_msg_free(&msg);
+                        return;
                     }
+                    /* Rev 2 item 7: open the send gate only now (and only
+                     * for an authenticated peer). The auth queue holds
+                     * pre-framed plaintext; split S5 (as the dialing side
+                     * since S5b fix round F2): every queued frame is
+                     * RE-SENT ENCRYPTED, in queue order, by the same code
+                     * the dialer runs at key_ack — its senders were told
+                     * "queued". key_ack above went out raw before the key;
+                     * the replay goes through the same write buffer after
+                     * it, so the peer installs its key first. An
+                     * unauthenticated peer: gate closed, queue kept. */
+                    if (sess->authenticated)
+                        nodus_inter_dial_conn_open(sess->conn, true);
                     fprintf(stderr,
                             "CRYPTO: SET_INCOMING slot=%d peer=%s:%u (inter-node encrypted)\n",
                             sess->conn->slot, sess->conn->ip, (unsigned)sess->conn->port);

@@ -2257,8 +2257,9 @@ ACCEPTOR half. Core calls the module only on connections it dialed
 `dial.authenticated` before the call and `dial.authenticated` + the proven identity back
 to the session and the connection after it (`inter_dial_sync_out`, `:1236-1249`); on
 `REFUSED` it marks the connection `AUTH_FAILED` and disconnects; `established` opens the
-send gate — flushing the queue in plaintext (a node with no Kyber identity), discarding
-it when encrypted (`inter_dial_established`, `:1261-1283`). The module's log lines keep
+send gate — flushing the queue in plaintext (a node with no Kyber identity), re-sending
+every queued frame encrypted, in queue order, when encrypted (`inter_dial_established` →
+`nodus_inter_dial_conn_open`; since S5b fix round F2, see below). The module's log lines keep
 their text and go through `QGP_LOG_*` (tag `NODUS_DIAL`; in the standalone build the shim
 prints them to stderr with a `[WRN/NODUS_DIAL] ` style prefix,
 `src/nodus_log_shim.c:21-36`). `nodus_inter_session_t` holds the module state as `dial`
@@ -2552,9 +2553,16 @@ origin generation over sockets, the marker rule); `test_storage_linked` (nm gate
   queue ENCRYPTED, in queue order, through `nodus_tcp_send`, instead of freeing it while
   each sender had been told "queued" (a hinted retry deleted its row; a put's replication
   and a circuit's `ri_open` were lost). Same bound (`NODUS_TCP_PENDING_MAX`). Applies to
-  core's dials and storage's alike. NOT changed: the ACCEPTOR side's key_init still drops
-  its auth queue (`dispatch_inter`; replies queued on an accepted conn before the key).
-  Test: `test_inter_pending_replay`.
+  core's dials and storage's alike. The ACCEPTOR side followed in the S5 close-out: its
+  key_init branch in core's `dispatch_inter` used to free its auth queue (replies queued
+  on an accepted conn before the key); it now calls the same
+  `nodus_inter_dial_conn_open(conn, true)` — only after `nodus_channel_crypto_init`
+  returned 0 and only for an authenticated peer — so those frames are re-sent encrypted,
+  in queue order, after the raw `key_ack`. An unauthenticated peer: gate closed, queue
+  kept (unchanged). A failed channel-crypto init now leaves the gate closed (before, the
+  gate opened with no session key). Test: `test_inter_pending_replay` (dialer case, and
+  an accepted-conn case on the shared function; the `dispatch_inter` branch itself —
+  incl. the unauthenticated path — is not driven by it).
 - **F3 — nodus-storage runs the partial-wipe gate.** The check moved, unchanged, into
   `server/nodus_partial_wipe.{h,c}` (`nodus_server.h` includes it; core still calls it in
   `nodus_server_init`); `nodus_dht_ipc_open_storage` runs it before `nodus_dht_open` and

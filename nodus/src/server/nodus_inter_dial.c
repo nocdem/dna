@@ -582,8 +582,10 @@ void nodus_inter_dial_conn_open(nodus_tcp_conn_t *conn, bool encrypted) {
         off += (size_t)used;
     }
     free(q);
-    QGP_LOG_INFO(LOG_TAG, "INTER_CRYPTO: outgoing conn to %s:%d encrypted "
+    QGP_LOG_INFO(LOG_TAG, "INTER_CRYPTO: %s conn %s %s:%d encrypted "
                  "(%d queued frame(s) re-sent encrypted%s)",
+                 conn->auth_initiated_by_us ? "outgoing" : "accepted",
+                 conn->auth_initiated_by_us ? "to" : "from",
                  conn->ip, conn->port, resent, failed ? ", some FAILED" : "");
     if (failed)
         QGP_LOG_WARN(LOG_TAG, "INTER_CRYPTO: %s:%d — %d queued frame(s) could "

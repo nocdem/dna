@@ -22,6 +22,18 @@
  *     established, so a plaintext frame would fail its decryption and be
  *     skipped (decrypt_skip_count) — the test requires zero skips.
  *
+ * The ACCEPTING side (split S5): core's dispatch_inter key_init branch now
+ * calls the same nodus_inter_dial_conn_open(conn, true) for an
+ * authenticated peer instead of freeing its auth queue. Pinned here on the
+ * shared function directly: an accepted conn gated like on_inter_accept
+ * gates it (auth_required, not AUTH_OK) queues three payloads, nothing
+ * reaches the dialing end; after the key is set on both ends (accepted =
+ * RESPONDER, dialed = INITIATOR) and conn_open runs, the dialing end
+ * receives exactly those three, in order, with zero decryption skips.
+ * NOT driven here: dispatch_inter itself (needs a full server) — so its
+ * "unauthenticated peer → gate stays closed, queue kept" branch is not
+ * covered by this test.
+ *
  * The CRIT-1 handshake itself is not run here (test_inter_dial covers the
  * module); the key is set directly on both ends.
  *
@@ -65,6 +77,20 @@ static void acc_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         g_got[g_ngot][len] = '\0';
     }
     g_ngot++;
+}
+
+/* What the DIALING end receives (the acceptor-side case). */
+static char g_dgot[8][16];
+static int  g_dngot = 0;
+
+static void dial_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
+                          size_t len, void *ctx) {
+    (void)conn; (void)ctx;
+    if (g_dngot < 8 && len < sizeof(g_dgot[0])) {
+        memcpy(g_dgot[g_dngot], payload, len);
+        g_dgot[g_dngot][len] = '\0';
+    }
+    g_dngot++;
 }
 
 static void poll_both(void) {
@@ -145,8 +171,77 @@ static void test_replay(void) {
     PASS();
 }
 
+static void test_replay_acceptor(void) {
+    TEST("accepted conn: auth-queued frames re-sent encrypted at key_init");
+    g_acc_conn = NULL;
+    /* A plain connect, not the pool: nodus_inter_pool_find would hand back
+     * the first case's conn. */
+    nodus_tcp_conn_t *d = nodus_tcp_connect(&g_dial, "127.0.0.1", g_acc.port);
+    if (!d) { FAIL("dial"); return; }
+    for (int i = 0; i < 400 && (!g_acc_conn || d->state != NODUS_CONN_CONNECTED); i++)
+        poll_both();
+    if (!g_acc_conn || d->state != NODUS_CONN_CONNECTED) { FAIL("connect"); return; }
+    nodus_tcp_conn_t *a = g_acc_conn;
+    /* Gated as core's on_inter_accept gates an accepted 4002 conn. */
+    a->is_nodus = true;
+    a->auth_required = true;
+    if (a->auth_initiated_by_us || a->auth_state == NODUS_CONN_AUTH_OK) {
+        FAIL("the accepted conn is not gated by auth");
+        return;
+    }
+
+    /* Replies queued on the accepted conn before the key. */
+    const char *pl[3] = { "r-one", "r-two", "r-three" };
+    for (int i = 0; i < 3; i++) {
+        if (nodus_tcp_send(a, (const uint8_t *)pl[i], strlen(pl[i])) != 0) {
+            FAIL("queue a payload on the accepted conn");
+            return;
+        }
+    }
+    for (int i = 0; i < 40; i++) poll_both();
+    if (g_dngot != 0) { FAIL("a frame left before the key was set"); return; }
+    if (!a->pending_buf || a->pending_len == 0) { FAIL("nothing queued"); return; }
+
+    /* key_init's outcome: accepted = RESPONDER, dialed = INITIATOR. */
+    uint8_t ss[32], nc[32], ns[32];
+    nodus_random(ss, sizeof(ss));
+    nodus_random(nc, sizeof(nc));
+    nodus_random(ns, sizeof(ns));
+    if (nodus_channel_crypto_init(&d->channel_crypto, ss, nc, ns,
+                                  NODUS_CHANNEL_ROLE_INITIATOR) != 0 ||
+        nodus_channel_crypto_init(&a->channel_crypto, ss, nc, ns,
+                                  NODUS_CHANNEL_ROLE_RESPONDER) != 0) {
+        FAIL("crypto init");
+        return;
+    }
+    nodus_inter_dial_conn_open(a, true);
+    if (a->auth_state != NODUS_CONN_AUTH_OK) { FAIL("the gate was not opened"); return; }
+    if (a->pending_buf || a->pending_len != 0) {
+        FAIL("the auth queue was not emptied");
+        return;
+    }
+    for (int i = 0; i < 400 && g_dngot < 3; i++) poll_both();
+    if (g_dngot != 3) {
+        char m[96];
+        snprintf(m, sizeof(m), "%d of 3 queued frames arrived", g_dngot);
+        FAIL(m);
+        return;
+    }
+    for (int i = 0; i < 3; i++) {
+        if (strcmp(g_dgot[i], pl[i]) != 0) {
+            FAIL("frames out of order or changed");
+            return;
+        }
+    }
+    if (d->decrypt_skip_count != 0 || g_dial.decrypt_fail_total != 0) {
+        FAIL("a frame failed decryption (sent in plaintext?)");
+        return;
+    }
+    PASS();
+}
+
 int main(void) {
-    printf("test_inter_pending_replay (split S5b F2)\n");
+    printf("test_inter_pending_replay (split S5b F2, S5 acceptor)\n");
     if (nodus_tcp_init(&g_dial, -1) != 0 || nodus_tcp_init(&g_acc, -1) != 0) {
         printf("  setup FAILED\n");
         return 1;
@@ -154,12 +249,14 @@ int main(void) {
     g_dial.auth_required = true;
     g_acc.on_accept = acc_on_accept;
     g_acc.on_frame  = acc_on_frame;
+    g_dial.on_frame = dial_on_frame;
     if (nodus_tcp_listen(&g_acc, "127.0.0.1", 0) != 0 || g_acc.port == 0) {
         printf("  listen FAILED\n");
         return 1;
     }
 
     test_replay();
+    test_replay_acceptor();
 
     nodus_tcp_close(&g_dial);
     nodus_tcp_close(&g_acc);
