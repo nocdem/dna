@@ -625,8 +625,21 @@ static int test_m3(void) {
     CHECK(bad && nodus_v2_msig_export_parse(bad, tl, &x) ==
           NODUS_V2_MSIG_ERR_FORMAT, "M3: missing signers");
     free(bad);
-    bad = text_swap(t, tl, "\nenvelope 0", "\nenvelope A");
-    CHECK(bad && nodus_v2_msig_export_parse(bad, tl, &x) ==
+    /* Uppercase the envelope's first hex digit, whatever it is: the
+     * envelope's first byte is the wire-family marker, so its hex does not
+     * start with '0' (the first version swapped "\nenvelope 0", found
+     * nothing and failed on the NULL copy, not on the parser). */
+    bad = malloc(tl);
+    CHECK(bad != NULL, "M3: alloc");
+    memcpy(bad, t, tl);
+    {
+        size_t at = 0;
+        for (size_t i = 0; i + 10 < tl; i++)
+            if (memcmp(bad + i, "\nenvelope ", 10) == 0) { at = i + 10; break; }
+        CHECK(at != 0, "M3: envelope line");
+        bad[at] = 'A';
+    }
+    CHECK(nodus_v2_msig_export_parse(bad, tl, &x) ==
           NODUS_V2_MSIG_ERR_FORMAT && x.env == NULL, "M3: uppercase hex");
     free(bad);
     /* odd envelope hex: drop the final hex digit before the newline */
