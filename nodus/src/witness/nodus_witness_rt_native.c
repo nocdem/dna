@@ -4298,7 +4298,8 @@ static int rtn_delegate_exec(const dna_env_view_t *env, uint16_t leg_index,
      * own contract on THIS node — never a statement about committed
      * state, therefore never a verdict. (UNSTAKE's Rule A read had the
      * same shape; tokenomics-v3 P3-4 removed both the rule and the read.)
-     * The cap is 2048 since P3-6 (nodus_witness_delegation.h).
+     * The cap is 2048 since P3-6 (NODUS_MAX_DELEGATORS_PER_VALIDATOR,
+     * nodus/include/nodus/nodus_types.h).
      *
      * A TOP-UP is exempt: dr->present means this delegator ALREADY has a
      * row, so the count does not move. Only a CREATE — a delegator with no row yet — can push
