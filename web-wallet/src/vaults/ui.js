@@ -27,7 +27,7 @@
 import { FOUNDATION_VAULT } from './foundation.js';
 import {
   VAULT_MAX_MEMBERS, encodeShare, encodeRequest, encodeApproval, decodeVaultMessage, vaultCodeShape, vaultLabel,
-  makeVaultRecord, checkVaultRecord, recordForStorage, applyScan, foundTotal, collectVaultItems, approvalKey,
+  makeVaultRecord, checkVaultRecord, recordForStorage, applyScan, foundTotal, collectVaultItems,
   requestState, blocksLeft, listedFor
 } from './core.js';
 import { amountUnits, formatUnits } from '../core.js';
@@ -266,7 +266,8 @@ async function checkShare(item) {
   host?.setPayloadView(payloadView);
   try {
     const info = await client.vaultOpen({ descriptor: item.code });
-    if (!info.isMember) shareStates.set(item.code, { state: 'error', error: 'You are not a member of this vault, so it is not added. You can still watch it from the Shared vaults panel.' });
+    if (!info.members.includes(item.from)) shareStates.set(item.code, { state: 'error', error: 'This vault was shared by someone who is not one of its members, so it is not added.' });
+    else if (!info.isMember) shareStates.set(item.code, { state: 'error', error: 'You are not a member of this vault, so it is not added. You can still watch it from the Shared vaults panel.' });
     else shareStates.set(item.code, { state: 'confirm', info, item });
   } catch (error) { shareStates.set(item.code, { state: 'error', error: error.message || 'This vault could not be read.' }); }
   host?.setPayloadView(payloadView);
@@ -365,10 +366,13 @@ async function approve(record, request, { isNew }) {
   const gen = generation;
   busy = true; status = 'Approving…'; render();
   try {
-    const { signature, review } = await client.vaultApprove({ descriptor: record.code, coins: record.coins, request, digest: request.digest });
+    const { signature } = await client.vaultApprove({ descriptor: record.code, coins: record.coins, request, digest: request.digest });
+    if (gen !== generation) return;
+    ownApprovals.set(rkey(record.address, request.digest), signature);
+    // the count shown is the module's verified one, own approval included
+    const review = await client.vaultReview({ descriptor: record.code, coins: record.coins, request, approvals: approvalsFor(record.address, request.digest, itemsFor(record)) });
     if (gen !== generation) return;
     reviews.set(rkey(record.address, request.digest), review);
-    ownApprovals.set(rkey(record.address, request.digest), signature);
     const texts = [];
     if (isNew) texts.push(encodeRequest({ vault: record.address, request }));
     texts.push(encodeApproval({ vault: record.address, digest: request.digest, signature }));
@@ -386,7 +390,8 @@ async function review(record, request) {
   const gen = generation;
   busy = true; status = 'Reading the payment request…'; render();
   try {
-    reviews.set(rkey(record.address, request.digest), await client.vaultReview({ descriptor: record.code, coins: record.coins, request }));
+    const approvals = approvalsFor(record.address, request.digest, itemsFor(record));
+    reviews.set(rkey(record.address, request.digest), await client.vaultReview({ descriptor: record.code, coins: record.coins, request, approvals }));
     if (gen === generation) status = '';
   } catch (error) {
     if (gen === generation) status = error.message || 'This payment request could not be read.';
@@ -395,15 +400,17 @@ async function review(record, request) {
   }
 }
 
-// One approval per key (core.js approvalKey): the messages' ones and this
-// session's own.
+// The approval CANDIDATES for a request — the messages' ones (members only,
+// core.js collectVaultItems) and this session's own — each with the ID it
+// came from. The module verifies them (F2); only its verified count is
+// shown or used.
 function approvalsFor(address, digest, items) {
-  const byKey = new Map(), own = ownApprovals.get(rkey(address, digest));
-  for (const text of [...(items.approvals.get(digest) || []), ...(own ? [own] : [])]) {
-    const key = approvalKey(text);
-    if (key && !byKey.has(key)) byKey.set(key, text);
-  }
-  return [...byKey.values()];
+  const own = ownApprovals.get(rkey(address, digest));
+  return [...(own ? [{ text: own, sender: ownFp }] : []), ...(items.approvals.get(digest) || [])];
+}
+
+function itemsFor(record) {
+  return collectVaultItems(messagesOpen() ? host.messages() : [], record.address, record.members, ownFp);
 }
 
 async function sendPayment(record, request, items) {
@@ -411,7 +418,7 @@ async function sendPayment(record, request, items) {
   const gen = generation;
   busy = true; status = 'Sending the payment…'; render();
   try {
-    const result = await client.vaultSubmit({ descriptor: record.code, coins: record.coins, request, digest: request.digest, signatures: approvalsFor(record.address, request.digest, items) });
+    const result = await client.vaultSubmit({ descriptor: record.code, coins: record.coins, request, digest: request.digest, approvals: approvalsFor(record.address, request.digest, items) });
     if (gen !== generation) return;
     reviews.set(rkey(record.address, request.digest), result.review);
     if (result.accepted) {
@@ -586,7 +593,7 @@ function renderVault(record) {
   }
 
   // payment requests
-  const items = collectVaultItems(messagesOpen() ? host.messages() : [], record.address);
+  const items = itemsFor(record);
   if (draft && draft.address === record.address && !items.requests.has(draft.request.digest)) items.requests.set(draft.request.digest, { request: draft.request, from: '', at: Date.now(), draft: true });
   if (items.requests.size) {
     box.append(el('h4', { text: 'Payment requests' }));
@@ -618,13 +625,18 @@ function renderRequest(record, digest, item, items) {
     row.append(el('p', { text: `Payment request from ${from}.` }), el('div', { className: 'stake-actions' }, btn('Review', () => void review(record, item.request), '')));
     return row;
   }
-  const approvals = approvalsFor(record.address, digest, items);
-  const state = sent.has(key) && requestState({ review: rv, accepted: approvals.length, record }) !== 'paid' ? 'sent' : requestState({ review: rv, accepted: approvals.length, record });
+  // F2: only the approvals the module verified at the last check count
+  const verified = Array.isArray(rv.verifiedSigners) ? rv.verifiedSigners : [];
+  const plain = requestState({ review: rv, accepted: verified.length, record });
+  const state = sent.has(key) && plain !== 'paid' ? 'sent' : plain;
   const title = { paid: 'Paid', expired: 'Expired — propose again', ready: 'Approved — ready to send', waiting: 'Waiting for approvals', sent: 'Sent to the network' }[state];
-  row.append(el('p', { text: `${title} · request from ${from} · ${Math.min(approvals.length, rv.approvals)} of ${rv.approvals} approvals` }), renderReviewRows(record, rv));
+  const refused = rv.refused ? ` · ${rv.refused} approval item(s) did not check out and are not counted` : '';
+  row.append(el('p', { text: `${title} · request from ${from} · ${Math.min(verified.length, rv.approvals)} of ${rv.approvals} approvals checked${refused}` }),
+    el('p', { className: 'hint', text: verified.length ? `Approved by ${verified.map(who).join(', ')}. “Check again” counts approvals that arrived since.` : '“Check again” counts approvals that arrived since.' }),
+    renderReviewRows(record, rv));
   const actions = el('div', { className: 'stake-actions' });
   if (state !== 'paid' && state !== 'expired' && state !== 'sent') {
-    if (!ownApprovals.has(key) && !items.approvedHere.has(digest) && rv.member && !record.watch && messagesOpen()) actions.append(btn(item.draft ? 'Approve and send to members' : 'Approve', () => void approve(record, item.request, { isNew: !!item.draft }), ''));
+    if (!ownApprovals.has(key) && !items.approvedHere.has(digest) && !verified.includes(ownFp) && rv.member && !record.watch && messagesOpen()) actions.append(btn(item.draft ? 'Approve and send to members' : 'Approve', () => void approve(record, item.request, { isNew: !!item.draft }), ''));
     if (state === 'ready') actions.append(btn('Send payment', () => void sendPayment(record, item.request, items), ''));
     actions.append(btn('Check again', () => void review(record, item.request)));
   }
@@ -663,14 +675,18 @@ const payloadView = {
     if (!item) return null;
     const card = el('div', { className: 'message-text vault-card' });
     if (item.kind === 'invalid') { card.append(el('strong', { text: 'A vault item this page cannot read.' })); return card; }
-    if (item.kind === 'approval') {
-      card.append(el('strong', { text: 'Approval for a vault payment' }), el('p', { text: 'Open the vault in Shared vaults (NODUS) to see it.' }));
-      return card;
-    }
-    if (item.kind === 'request') {
+    if (item.kind === 'approval' || item.kind === 'request') {
       const record = vaults.get(item.vault);
-      card.append(el('strong', { text: 'Vault payment request' }), el('p', { text: record ? `For ${labelOf(record)}. Review it in Shared vaults (NODUS); it shows only what the request itself says.` : 'For a vault that is not in your list.' }));
-      if (record) card.append(openLink(record.address));
+      // F2: an item from someone who is not a member of the vault it names
+      // is ignored (collectVaultItems skips it too)
+      const stranger = record && message.dir !== 'out' && !record.members.includes(message.fp);
+      card.append(el('strong', { text: item.kind === 'approval' ? 'Approval for a vault payment' : 'Vault payment request' }));
+      if (!record) card.append(el('p', { text: 'For a vault that is not in your list.' }));
+      else if (stranger) card.append(el('p', { text: `For ${labelOf(record)}, but sent by someone who is not a member of it. It is ignored.` }));
+      else {
+        card.append(el('p', { text: item.kind === 'approval' ? `For ${labelOf(record)}. It counts only once the vault checks it.` : `For ${labelOf(record)}. Review it in Shared vaults (NODUS); it shows only what the request itself says.` }));
+        card.append(openLink(record.address));
+      }
       return card;
     }
     // share

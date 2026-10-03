@@ -3705,18 +3705,33 @@ void nsw_msig_sig_reset(void) {
     nsw_wipe(g_ms.sig_sig, sizeof(g_ms.sig_sig));
 }
 
-/* 0 = kept (or already held from this key), -1 = refused (reason in
- * nsw_error). */
-int nsw_msig_sig_add(const char *text) {
+/* F2: an approval counts only once it is VERIFIED here, against the request
+ * in use (digest equal, signer a member, ML-DSA-87 signature valid), and
+ * only when it came from its own signer: `sender_hex` (the ID the Messages
+ * item arrived from, or this wallet's own) must equal SHA3-512(its key).
+ * Only verified approvals are kept, one per key — a forged approval for
+ * key X is refused, it cannot shadow a later valid one from X. The cap
+ * (NSW_MS_MAX_SIGS) applies to verified approvals only.
+ * 0 = verified and kept, 1 = a verified approval from this key is already
+ * held, -1 = refused (reason in nsw_error). */
+int nsw_msig_sig_add(const char *text, const char *sender_hex) {
     if (!g_ms.has_export) return nsw_fail("There is no payment request.");
+    uint8_t sender[64];
+    if (nsw_parse_hex(sender_hex, sender, sizeof(sender)) != 0)
+        return nsw_fail("This approval has no sender.");
     size_t len = text ? strnlen(text, NODUS_V2_MSIG_SIG_TEXT_MAX + 1) : 0;
     if (len == 0 || len > NODUS_V2_MSIG_SIG_TEXT_MAX)
         return nsw_fail("This approval is damaged.");
     static uint8_t dg[64], pk[NSW_PK_LEN], sig[QGP_DSA87_SIGNATURE_BYTES];
     if (nodus_v2_msig_sig_parse(text, len, dg, pk, sig) != NODUS_V2_SPEND_OK)
         return nsw_fail("This approval is damaged.");
+    uint8_t fp[64];
+    if (qgp_sha3_512(pk, NSW_PK_LEN, fp) != 0) return nsw_fail("Hash failure.");
+    if (memcmp(fp, sender, 64) != 0)
+        return nsw_fail("This approval was sent by someone other than the "
+                        "member who signed it.");
     for (int i = 0; i < g_ms.n_sigs; i++)
-        if (memcmp(g_ms.sig_pk[i], pk, NSW_PK_LEN) == 0) return 0;
+        if (memcmp(g_ms.sig_pk[i], pk, NSW_PK_LEN) == 0) return 1;
     if (g_ms.n_sigs >= NSW_MS_MAX_SIGS) return nsw_fail("Too many approvals.");
     dna_env_view_t *v = calloc(1, sizeof(*v));
     nodus_v2_msig_leg_t leg;
@@ -3739,8 +3754,6 @@ int nsw_msig_sig_add(const char *text) {
     memcpy(g_ms.sig_dg[i], dg, 64);
     memcpy(g_ms.sig_pk[i], pk, NSW_PK_LEN);
     memcpy(g_ms.sig_sig[i], sig, sizeof(sig));
-    uint8_t fp[64];
-    if (qgp_sha3_512(pk, NSW_PK_LEN, fp) != 0) return nsw_fail("Hash failure.");
     qgp_fp_raw_to_hex(fp, g_ms.sig_fp[i]);
     g_ms.n_sigs++;
     return 0;
@@ -3896,6 +3909,46 @@ int nsw_test_msig_consume(const char *id_hex, const char *height_dec) {
     g_ms.n_events = 0;
     nsw_ms_apply_item(h, &it);
     return 0;
+}
+
+/* A member identity from a 32-byte seed (the wallet's own derivation,
+ * nodus_identity_from_seed), so the approval tests have real keys without
+ * a node: its public key as hex, and nodus-cli's signature text over the
+ * request in use's digest (hedged signature: the test randomness buffer
+ * must hold 32 bytes per call). */
+static char *g_test_out;
+
+const char *nsw_test_msig_seed_pk(const char *seed_hex) {
+    static nodus_identity_t id;
+    uint8_t seed[32];
+    free(g_test_out);
+    g_test_out = NULL;
+    if (nsw_parse_hex(seed_hex, seed, sizeof(seed)) != 0 ||
+        nodus_identity_from_seed(seed, &id) != 0)
+        return "";
+    g_test_out = malloc(2 * NSW_PK_LEN + 1);
+    if (!g_test_out) return "";
+    nsw_fmt_hex(id.pk.bytes, NSW_PK_LEN, g_test_out);
+    nsw_wipe(&id, sizeof(id));
+    return g_test_out;
+}
+
+const char *nsw_test_msig_seed_sign(const char *seed_hex) {
+    static nodus_identity_t id;
+    uint8_t seed[32], sig[QGP_DSA87_SIGNATURE_BYTES];
+    size_t sl = 0, tl = 0;
+    free(g_test_out);
+    g_test_out = NULL;
+    if (!g_ms.has_export || nsw_parse_hex(seed_hex, seed, sizeof(seed)) != 0 ||
+        nodus_identity_from_seed(seed, &id) != 0)
+        return "";
+    if (qgp_dsa87_sign(sig, &sl, g_ms.x.digest, 64, id.sk.bytes) != 0 ||
+        sl != sizeof(sig) ||
+        nodus_v2_msig_sig_encode(g_ms.x.digest, id.pk.bytes, sig, &g_test_out,
+                                 &tl) != NODUS_V2_SPEND_OK)
+        g_test_out = NULL;
+    nsw_wipe(&id, sizeof(id));
+    return g_test_out ? g_test_out : "";
 }
 
 int nsw_test_msig_review(const char *now_dec) {

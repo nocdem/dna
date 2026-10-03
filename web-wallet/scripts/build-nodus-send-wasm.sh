@@ -349,7 +349,7 @@ exports_common=(
 )
 exports_test=(nsw_test_random_buf nsw_test_random_load nsw_test_pins_tuple nsw_test_gen_match
   nsw_test_msig_member_add_pk nsw_test_msig_build nsw_test_msig_review
-  nsw_test_msig_consume)
+  nsw_test_msig_consume nsw_test_msig_seed_pk nsw_test_msig_seed_sign)
 
 join_exports() {
   local out="" name

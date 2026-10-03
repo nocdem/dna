@@ -42,7 +42,9 @@ const STAKE_OPS = Object.freeze({ stake: 1, delegate: 2, undelegate: 4 });
 // bytes, 64 found coins (NSW_MS_MAX_COINS), 15 approvals
 // (NODUS_RT_AUTH_MAX_SIGNERS), a request's envelope part at most 64 KiB
 // (NSW_MS_PREFIX_MAX).
-const VAULT_MAX_MEMBERS = 7, VAULT_MAX_COINS = 64, VAULT_MAX_SIGNATURES = 15, VAULT_ENV_MAX = 65536;
+// VAULT_MAX_APPROVAL_ATTEMPTS: approval texts handed in for one check (src/
+// vaults/core.js: at most 8 per member, newest first, 7 members + own).
+const VAULT_MAX_MEMBERS = 7, VAULT_MAX_COINS = 64, VAULT_MAX_APPROVAL_ATTEMPTS = 64, VAULT_ENV_MAX = 65536;
 const VAULT_CODE = /^4e44532e4d5349472e7631(00){5}[0-9a-f]{4}([0-9a-f]{5184}){2,7}$/;
 
 // Nodus testnet (chain born 2026-09-30, the final pre-testnet genesis). The
@@ -226,6 +228,19 @@ export async function createNodusSendModule(network, { claim = null, loadGlue = 
     if (typeof r.chain !== 'string' || !HEX64.test(r.chain) || typeof r.digest !== 'string' || !HEX128.test(r.digest) ||
         typeof r.env !== 'string' || !/^([0-9a-f]{2})+$/.test(r.env) || r.env.length > 2 * VAULT_ENV_MAX) throw new Error('This payment request is damaged.');
     check(num('nsw_msig_prop_in', ['string', 'string', 'string', 'string', 'string'], [r.chain, raw(r.tip, 'block height'), raw(r.signers, 'approval count'), r.digest, r.env]));
+  };
+  // F2: each approval verified by the module against the request in use;
+  // only verified ones are kept (one per key). Bounded by attempts, never by
+  // a count of unverified approvals shadowing a verified one.
+  const vaultApprovalsLoad = approvals => {
+    if (!Array.isArray(approvals) || approvals.length > VAULT_MAX_APPROVAL_ATTEMPTS ||
+        !approvals.every(a => a && typeof a.text === 'string' && typeof a.sender === 'string' && HEX128.test(a.sender))) throw new Error('Invalid approvals.');
+    num('nsw_msig_sig_reset');
+    let refused = 0;
+    for (const a of approvals) if (num('nsw_msig_sig_add', ['string', 'string'], [a.text, a.sender]) < 0) refused++;
+    const verifiedSigners = [];
+    for (let i = 0, n = num('nsw_msig_sig_count'); i < n; i++) verifiedSigners.push(str('nsw_msig_sig_signer', ['number'], [i]));
+    return { verifiedSigners, refused };
   };
   const vaultReviewRead = () => {
     const inputs = [], outputs = [];
@@ -551,12 +566,16 @@ export async function createNodusSendModule(network, { claim = null, loadGlue = 
     // vaultReview({ descriptor, coins, request }) -> review (at the node's
     // tip). coins: the vault's own coins (its record) — the review REFUSES a
     // request that spends any other coin (F1).
-    async vaultReview({ descriptor, coins = [], request } = {}) {
+    // approvals: [{ text (nodus-cli's signature text), sender (the ID it
+    // came from) }] — each VERIFIED in the module (F2: nsw_msig_sig_add);
+    // the answer's `verifiedSigners` lists the IDs whose approval verified
+    // (one per key) and `refused` how many did not.
+    async vaultReview({ descriptor, coins = [], request, approvals = [] } = {}) {
       vaultLoad(descriptor);
       vaultCoinsLoad(coins);
       vaultRequestLoad(request);
       check(await call('nsw_msig_review'));
-      return vaultReviewRead();
+      return { ...vaultReviewRead(), ...vaultApprovalsLoad(approvals) };
     },
     // vaultApprove({ descriptor, request, digest }) -> { signature (nodus-cli's
     // signature text), review }. Reviews again at the node's tip and signs
@@ -572,29 +591,21 @@ export async function createNodusSendModule(network, { claim = null, loadGlue = 
       check(num('nsw_msig_sign'));
       return { signature: str('nsw_msig_text'), review };
     },
-    // vaultSubmit({ descriptor, request, digest, signatures }) -> { accepted,
-    // message?, intentId, review, approvals: [{ signer, ok, message? }] }
-    async vaultSubmit({ descriptor, coins = [], request, digest, signatures = [] } = {}) {
+    // vaultSubmit({ descriptor, coins, request, digest, approvals: [{ text,
+    // sender }] }) -> { accepted, message?, intentId, review (with
+    // verifiedSigners / refused) }: only verified approvals are combined.
+    async vaultSubmit({ descriptor, coins = [], request, digest, approvals = [] } = {}) {
       if (typeof digest !== 'string' || !HEX128.test(digest)) throw new Error('Invalid payment request.');
-      if (!Array.isArray(signatures) || signatures.length > VAULT_MAX_SIGNATURES || !signatures.every(s => typeof s === 'string')) throw new Error('Invalid approvals.');
       vaultLoad(descriptor);
       vaultCoinsLoad(coins);
       vaultRequestLoad(request);
       check(await call('nsw_msig_review'));
       if (str('nsw_msig_prop_digest') !== digest) throw new Error('This payment request changed after it was shown. Nothing was sent.');
-      const review = vaultReviewRead();
-      num('nsw_msig_sig_reset');
-      const approvals = [];
-      for (const text of signatures) {
-        const ok = num('nsw_msig_sig_add', ['string'], [text]) === 0;
-        approvals.push(ok ? { ok } : { ok, message: str('nsw_error') });
-      }
-      const signers = [];
-      for (let i = 0, n = num('nsw_msig_sig_count'); i < n; i++) signers.push(str('nsw_msig_sig_signer', ['number'], [i]));
+      const review = { ...vaultReviewRead(), ...vaultApprovalsLoad(approvals) };
       const rc = await call('nsw_msig_submit');
       const intentId = str('nsw_msig_intent');
-      if (rc === 0) return { accepted: true, intentId, review, signers, approvals };
-      if (rc === 1) return { accepted: false, message: str('nsw_error'), intentId, review, signers, approvals };
+      if (rc === 0) return { accepted: true, intentId, review };
+      if (rc === 1) return { accepted: false, message: str('nsw_error'), intentId, review };
       throw failure();
     },
     // MESSAGES (NC-4b): the Nodus Connect exports (nc_*, connect/nc_wasm.c)

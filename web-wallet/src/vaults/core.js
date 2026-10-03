@@ -211,37 +211,55 @@ export function foundTotal(record) {
   return record.coins.reduce((sum, c) => sum + BigInt(c.amount), 0n);
 }
 
-// The "pubkey" line of a signature text (lowercase hex, 5184 characters),
-// or '' — used only to count one approval per key: the module checks every
-// approval itself (nodus_v2_msig_sig_check), and an ML-DSA-87 signature is
-// hedged, so one member approving twice gives two DIFFERENT texts.
-export function approvalKey(signature) {
-  const match = typeof signature === 'string' ? /\npubkey ([0-9a-f]{5184})\n/.exec(signature) : null;
-  return match ? match[1] : '';
-}
+// At most this many approval texts per sender are handed to the module for
+// one check (newest first): a member flooding junk approvals costs at most
+// this many signature checks, and only that member's own approval can be
+// pushed out by it (F2).
+export const VAULT_APPROVAL_TRIES_PER_SENDER = 8;
 
 // ── payment requests in the stored messages ─────────────────────────────
-// messages: [{ fp, dir, text, at }] (vaultHost.messages). Returns, for one
-// vault address, its requests by digest — { request, from (ID, or '' for
-// this wallet's own), at } —, the approval texts by digest (one per key,
-// approvalKey), and the digests this wallet already sent an approval for.
-export function collectVaultItems(messages, address) {
-  const requests = new Map(), approvals = new Map(), approvedHere = new Set();
-  for (const m of messages) {
+// messages: [{ fp, dir, text, at }] (vaultHost.messages); members: the
+// vault's member IDs; ownFp: this wallet's ID. Returns, for one vault
+// address:
+//   requests     by digest — { request, from (ID, or '' for this wallet's
+//                own), at }
+//   approvals    by digest — [{ text, sender }]: the CANDIDATES the module
+//                verifies (F2: nothing is counted here; one exact text per
+//                sender once; at most VAULT_APPROVAL_TRIES_PER_SENDER per
+//                sender, newest first)
+//   approvedHere the digests this wallet sent an approval for
+// An item received from someone who is NOT a member of the vault it names
+// is ignored (F2).
+export function collectVaultItems(messages, address, members = [], ownFp = '') {
+  const requests = new Map(), raw = new Map(), approvedHere = new Set();
+  const isMember = new Set(members);
+  for (const m of [...messages].sort((a, b) => b.at - a.at)) {
     const item = decodeVaultMessage(m.text);
     if (!item || item.kind === 'invalid' || item.vault !== address) continue;
+    const sender = m.dir === 'out' ? ownFp : m.fp;
+    if (m.dir !== 'out' && !isMember.has(sender)) continue;
     if (item.kind === 'request') {
       const digest = item.request.digest;
-      if (!requests.has(digest)) requests.set(digest, { request: item.request, from: m.dir === 'out' ? '' : m.fp, at: m.at });
+      const prev = requests.get(digest);
+      // the oldest item names who proposed it
+      if (!prev || m.at < prev.at) requests.set(digest, { request: item.request, from: m.dir === 'out' ? '' : m.fp, at: m.at });
     } else if (item.kind === 'approval') {
-      const key = approvalKey(item.signature);
-      if (!key) continue;
-      if (!approvals.has(item.digest)) approvals.set(item.digest, new Map());
-      if (!approvals.get(item.digest).has(key)) approvals.get(item.digest).set(key, item.signature);
       if (m.dir === 'out') approvedHere.add(item.digest);
+      if (!HEX128.test(sender ?? '')) continue;
+      if (!raw.has(item.digest)) raw.set(item.digest, new Map());
+      const bySender = raw.get(item.digest);
+      if (!bySender.has(sender)) bySender.set(sender, []);
+      const list = bySender.get(sender);
+      if (list.length < VAULT_APPROVAL_TRIES_PER_SENDER && !list.includes(item.signature)) list.push(item.signature);
     }
   }
-  return { requests, approvals: new Map([...approvals].map(([d, byKey]) => [d, [...byKey.values()]])), approvedHere };
+  const approvals = new Map();
+  for (const [digest, bySender] of raw) {
+    const out = [];
+    for (const [sender, texts] of bySender) for (const text of texts) out.push({ text, sender });
+    approvals.set(digest, out);
+  }
+  return { requests, approvals, approvedHere };
 }
 
 // A request's state for the page, from the module's read-back (`review`),

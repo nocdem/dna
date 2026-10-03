@@ -42,7 +42,7 @@ import { createHash } from 'node:crypto';
 import { FOUNDATION_VAULT } from '../src/vaults/foundation.js';
 import {
   encodeShare, encodeRequest, encodeApproval, decodeVaultMessage, vaultCodeShape, vaultLabel, makeVaultRecord,
-  checkVaultRecord, recordForStorage, applyScan, requestState, blocksLeft, listedFor, collectVaultItems, approvalKey,
+  checkVaultRecord, recordForStorage, applyScan, requestState, blocksLeft, listedFor, collectVaultItems, VAULT_APPROVAL_TRIES_PER_SENDER,
   VAULT_LABEL_MAX, VAULT_PAYLOAD_MAX
 } from '../src/vaults/core.js';
 import { emptyState, checkState } from '../src/connect/store.js';
@@ -204,23 +204,32 @@ test('requests and approvals are collected per vault from the stored messages', 
     { fp: 'bb'.repeat(64), dir: 'in', at: 4, text: encodeRequest({ vault: 'cc'.repeat(64), request: REQUEST }) },
     { fp: 'bb'.repeat(64), dir: 'in', at: 5, text: 'hello' }
   ];
-  const items = collectVaultItems(messages, DOCUMENTED_ADDRESS);
+  const MEMBERS = ['aa'.repeat(64), 'bb'.repeat(64)], OWN = 'ee'.repeat(64);
+  const items = collectVaultItems(messages, DOCUMENTED_ADDRESS, MEMBERS, OWN);
   assert.equal(items.requests.size, 1);
   assert.equal(items.requests.get(REQUEST.digest).from, 'aa'.repeat(64));
-  assert.deepEqual(items.approvals.get(REQUEST.digest), [SIG_TEXT], 'the same approval text counts once');
+  // candidates only — nothing is counted here (F2): one entry per (sender, text)
+  assert.deepEqual(items.approvals.get(REQUEST.digest), [{ text: SIG_TEXT, sender: 'bb'.repeat(64) }, { text: SIG_TEXT, sender: 'aa'.repeat(64) }]);
   assert.equal(items.approvedHere.has(REQUEST.digest), false);
-  // the same key approving again (a hedged signature: another text) still
-  // counts once; another key counts; an approval this wallet sent is noted
-  const again = SIG_TEXT.replace(`sig ${'ef'.repeat(4627)}`, `sig ${'0f'.repeat(4627)}`);
-  const other = SIG_TEXT.replace(`pubkey ${'cd'.repeat(2592)}`, `pubkey ${'ce'.repeat(2592)}`);
-  const more = collectVaultItems([...messages,
-    { fp: 'aa'.repeat(64), dir: 'out', at: 6, text: encodeApproval({ vault: DOCUMENTED_ADDRESS, digest: REQUEST.digest, signature: again }) },
-    { fp: 'bb'.repeat(64), dir: 'in', at: 7, text: encodeApproval({ vault: DOCUMENTED_ADDRESS, digest: REQUEST.digest, signature: other }) }
-  ], DOCUMENTED_ADDRESS);
-  assert.deepEqual(more.approvals.get(REQUEST.digest), [SIG_TEXT, other], 'one approval per key');
-  assert.equal(more.approvedHere.has(REQUEST.digest), true);
-  assert.equal(approvalKey(SIG_TEXT), 'cd'.repeat(2592));
-  assert.equal(approvalKey('nodus-msig-sig v1\n'), '');
+  // a sender who is not a member: its request and approval are ignored
+  const stranger = collectVaultItems([
+    { fp: 'dd'.repeat(64), dir: 'in', at: 1, text: encodeRequest({ vault: DOCUMENTED_ADDRESS, request: REQUEST }) },
+    { fp: 'dd'.repeat(64), dir: 'in', at: 2, text: encodeApproval({ vault: DOCUMENTED_ADDRESS, digest: REQUEST.digest, signature: SIG_TEXT }) }
+  ], DOCUMENTED_ADDRESS, MEMBERS, OWN);
+  assert.equal(stranger.requests.size, 0);
+  assert.equal(stranger.approvals.size, 0);
+  // an own approval is noted and handed in with this wallet's ID as sender
+  const own = collectVaultItems([{ fp: 'aa'.repeat(64), dir: 'out', at: 6, text: encodeApproval({ vault: DOCUMENTED_ADDRESS, digest: REQUEST.digest, signature: SIG_TEXT }) }], DOCUMENTED_ADDRESS, MEMBERS, OWN);
+  assert.equal(own.approvedHere.has(REQUEST.digest), true);
+  assert.deepEqual(own.approvals.get(REQUEST.digest), [{ text: SIG_TEXT, sender: OWN }]);
+  // a flood from one member: at most VAULT_APPROVAL_TRIES_PER_SENDER of its
+  // texts (newest first) reach the module; another member's is never pushed out
+  const flood = Array.from({ length: 50 }, (_, i) => ({ fp: 'aa'.repeat(64), dir: 'in', at: 100 + i,
+    text: encodeApproval({ vault: DOCUMENTED_ADDRESS, digest: REQUEST.digest, signature: SIG_TEXT.replace(`sig ${'ef'.repeat(4627)}`, `sig ${i.toString(16).padStart(2, '0').repeat(4627)}`) }) }));
+  const flooded = collectVaultItems([...flood, { fp: 'bb'.repeat(64), dir: 'in', at: 1, text: encodeApproval({ vault: DOCUMENTED_ADDRESS, digest: REQUEST.digest, signature: SIG_TEXT }) }], DOCUMENTED_ADDRESS, MEMBERS, OWN);
+  const got = flooded.approvals.get(REQUEST.digest);
+  assert.equal(got.filter(a => a.sender === 'aa'.repeat(64)).length, VAULT_APPROVAL_TRIES_PER_SENDER);
+  assert.equal(got.filter(a => a.sender === 'bb'.repeat(64)).length, 1);
 });
 
 test('the Messages state keeps a vault index (store.js state.vaults)', () => {
@@ -253,7 +262,7 @@ test('the shipped send.wasm exports the vault entry points and none of the vault
   const module = new WebAssembly.Module(readFileSync(new URL('../src/nodus/send.wasm', import.meta.url)));
   const exports = new Set(WebAssembly.Module.exports(module).map(({ name }) => name));
   for (const name of VAULT_ENTRY_POINTS) assert.ok(exports.has(name), `missing export ${name}`);
-  for (const name of ['nsw_test_msig_member_add_pk', 'nsw_test_msig_build', 'nsw_test_msig_review', 'nsw_test_msig_consume']) assert.ok(!exports.has(name), `${name} shipped`);
+  for (const name of ['nsw_test_msig_member_add_pk', 'nsw_test_msig_build', 'nsw_test_msig_review', 'nsw_test_msig_consume', 'nsw_test_msig_seed_pk', 'nsw_test_msig_seed_sign']) assert.ok(!exports.has(name), `${name} shipped`);
 });
 
 // ── parity with the C (TEST wasm) ───────────────────────────────────────
@@ -399,6 +408,48 @@ test('parity: the read-back refuses a request with any changed field', { skip: s
   assert.equal(propIn(recv, { ...parts, tip: '5090' }), 0);
   assert.notEqual(recv.num('nsw_test_msig_review', ['string'], ['5090']), 0, 'a tip at which it has expired is refused by the preflight');
   assert.notEqual(propIn(recv, { ...parts, signers: '4' }), 0, 'more approvals than members is refused');
+});
+
+test('parity: approvals count only once the module verified them, from their own signer (F2)', { skip: skipParity }, async () => {
+  const { M, num, str } = await loadTest();
+  const rand = Uint8Array.from({ length: 4096 }, (_, i) => (i * 7) & 255);
+  M.HEAPU8.set(rand, num('nsw_test_random_buf'));
+  assert.equal(num('nsw_test_random_load', ['number'], [rand.length]), 0);
+  const seed = b => b.repeat(32);
+  const [A, B, C, D] = ['a1', 'b2', 'c3', 'd4'].map(seed);
+  const pk = s => { const k = str('nsw_test_msig_seed_pk', ['string'], [s]); assert.equal(k.length, KEY_HEX); return k; };
+  const fpA = sha3(pk(A)), fpB = sha3(pk(B)), fpC = sha3(pk(C)), fpD = sha3(pk(D));
+  num('nsw_msig_member_reset');
+  for (const s of [A, B, C]) assert.equal(num('nsw_test_msig_member_add_pk', ['string'], [pk(s)]), 0, str('nsw_error'));
+  assert.equal(num('nsw_msig_create', ['number'], [2]), 0, str('nsw_error'));
+  assert.equal(num('nsw_net_set_chain', ['string'], [CHAIN]), 0);
+  loadCoins({ num, str }, COINS);
+  assert.equal(num('nsw_test_msig_build', ['string', 'string', 'string', 'number', 'string', 'string', 'string'], [CHAIN, '5000', '0', 1, TO, '100000000', '5090']), 0, str('nsw_error'));
+  const sigA = str('nsw_test_msig_seed_sign', ['string'], [A]), sigB = str('nsw_test_msig_seed_sign', ['string'], [B]), sigD = str('nsw_test_msig_seed_sign', ['string'], [D]);
+  assert.ok(sigA.startsWith('nodus-msig-sig v1\n') && sigB && sigD);
+  const add = (text, sender) => num('nsw_msig_sig_add', ['string', 'string'], [text, sender]);
+  const count = () => num('nsw_msig_sig_count');
+  num('nsw_msig_sig_reset');
+  // forged for key A (a signature byte changed), sent by A: refused, and it
+  // does not shadow A's valid approval that arrives after it
+  const forged = sigA.replace(/\nsig ([0-9a-f])/, (_, c) => `\nsig ${c === '0' ? '1' : '0'}`);
+  assert.equal(add(forged, fpA), -1, 'a forged approval is refused');
+  assert.equal(count(), 0);
+  assert.equal(add(sigA, fpA), 0, str('nsw_error'));
+  assert.equal(count(), 1);
+  // the same key again (another text: hedged) — held once
+  assert.equal(add(str('nsw_test_msig_seed_sign', ['string'], [A]), fpA), 1);
+  assert.equal(count(), 1);
+  // B's valid approval relayed by C: refused (sender is not its signer)
+  assert.equal(add(sigB, fpC), -1);
+  assert.match(str('nsw_error'), /someone other than the member who signed it/);
+  // a non-member's valid signature, sent by itself: refused
+  assert.equal(add(sigD, fpD), -1);
+  // a flood of junk from A after its valid one changes nothing
+  for (let i = 0; i < 20; i++) assert.equal(add(forged, fpA), 1, 'A already holds a verified approval');
+  assert.equal(add(sigB, fpB), 0, str('nsw_error'));
+  assert.equal(count(), 2);
+  assert.deepEqual([0, 1].map(i => str('nsw_msig_sig_signer', ['number'], [i])), [fpA, fpB]);
 });
 
 test('parity: the read-back refuses a request that never expires or stays valid too long (F3)', { skip: skipParity }, async () => {
