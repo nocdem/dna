@@ -112,8 +112,11 @@ files outside that allowlist. This server is for local previews.
 - `manifesto.html`: privacy, identity ownership, and why Nodus is being built,
   followed by the Team section.
 - `tokenomics.html`: the fixed NODUS supply, its eleven allocations, how the
-  testnet genesis holds them, validator rewards, and the circulating-supply
-  definition; current figures are linked on Scan. Linked from the top
+  testnet genesis holds them, validator rewards, a plain-language earning
+  guide (how to earn NODUS, epochs and paydays, how a reward is calculated,
+  running a validator, delegating, roles, and planned changes clearly marked
+  as not live), and the circulating-supply definition; current figures are
+  linked on Scan. Linked from the top
   navigation and every footer.
 - `terms.html`, `privacy.html`: the app's Terms of Service and Privacy Policy,
   linked from every footer, not from the top navigation.
