@@ -244,11 +244,24 @@ static int nc_end(int rc) {
     return rc;
 }
 
+/* The host's session check (crypto/nodus-send-wasm.c nc_host_session_ok =
+ * nsw_session_ok: connected, client ready, and the chain id checked again
+ * after a reconnect to another pinned server). Not in nc_core.h's Host
+ * list yet; declared here, defined by the host. */
+int nc_host_session_ok(void);
+
+/* Every export that SENDS. Messages unlocks on the identity alone (the
+ * wallet may not be connected yet), so the client is bound here, on each
+ * call: the host's one client exists only once its connect succeeded and
+ * its chain was checked (nc_host_client), and the same check the wallet's
+ * own exports run (nc_host_session_ok) gates every send. */
 static int session_ok(void) {
     if (!g_unlocked) return fail("Messages is not connected.");
-    if (!g_ctx.client || g_ctx.client != nc_host_client() ||
-        !nodus_client_is_ready(g_ctx.client))
+    if (nc_host_session_ok() != 0) return fail("%s", nc_host_error());
+    nodus_client_t *client = nc_host_client();
+    if (!client || !nodus_client_is_ready(client))
         return fail("Nodus connection is not ready. Try again shortly.");
+    g_ctx.client = client;
     return 0;
 }
 
@@ -298,19 +311,20 @@ static void words_drop(void) {
     g_words_len = 0;
 }
 
-/* Runs after the wallet's nsw_unlock, on ITS session: no client is created
- * and nothing is sent. Derives the Messages keys from the words and refuses
- * unless they belong to the session identity. Synchronous in practice
- * (PBKDF2 + key generation, no network wait), bracketed like the others. */
+/* Runs after the wallet's nsw_identify (or nsw_unlock), on ITS identity:
+ * no client is created and nothing is sent — the wallet need not be
+ * connected yet; the exports that send bind its client later (session_ok).
+ * Derives the Messages keys from the words and refuses unless they belong
+ * to the session identity. Synchronous in practice (PBKDF2 + key
+ * generation, no network wait), bracketed like the others. */
 int nc_unlock(int fresh) {
     if (nc_begin() != 0) { words_drop(); return -1; }
     if (g_used) { words_drop(); return nc_end(fail("This Messages connection was already used.")); }
     g_used = 1;
-    nodus_client_t *client = nc_host_client();
     const nodus_identity_t *session_id = nc_host_identity();
-    if (!client || !session_id) {
+    if (!session_id) {
         words_drop();
-        return nc_end(fail("Connect the wallet to Nodus first."));
+        return nc_end(fail("Open the wallet first."));
     }
     if (!g_words) return nc_end(fail("Recovery phrase is missing."));
     int rc = nc_keys_from_words(g_words, &g_keys);
@@ -321,7 +335,7 @@ int nc_unlock(int fresh) {
         return nc_end(fail("These words belong to another Nodus address. Nothing was connected."));
     }
 
-    g_ctx.client = client;
+    g_ctx.client = NULL;                    /* bound by session_ok          */
     g_ctx.keys = &g_keys;
     g_ctx.fresh = fresh ? true : false;
     g_ctx.cancel = nc_host_cancel();

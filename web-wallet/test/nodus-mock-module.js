@@ -35,7 +35,11 @@ export function createMockNodusModule() {
     // same list; a test sets it to model a price change between the quote
     // and the build), a tamper of the build's read-back, the last request.
     namePrices: { prices: ['100000000000', '50000000000', '10000000000', '100000000'], scheduled: [] },
-    buildPrices: null, nameTamper: null, lastNameBuild: null
+    buildPrices: null, nameTamper: null, lastNameBuild: null,
+    // The split unlock (identify / connectNetwork): the errors the next
+    // connectNetwork calls raise, one per call (an Error with `final: true`
+    // models a node of another chain); empty = connected.
+    connectErrors: [], connected: false
   };
   const bytes = () => new Uint8Array(memory.buffer);
   async function op(name, fn) {
@@ -50,7 +54,17 @@ export function createMockNodusModule() {
   }
   const module = {
     memory,
-    unlock: ({ seed }) => op('unlock', async () => { bytes().set(seed, SEED_AT); return { fingerprint: state.fingerprint, chainId: state.chainId }; }),
+    unlock: ({ seed }) => op('unlock', async () => { bytes().set(seed, SEED_AT); state.connected = true; return { fingerprint: state.fingerprint, chainId: state.chainId }; }),
+    identify: ({ seed }) => op('identify', async () => { bytes().set(seed, SEED_AT); return { fingerprint: state.fingerprint, chainId: state.chainId }; }),
+    connectNetwork: () => op('connectNetwork', async () => {
+      const error = state.connectErrors.shift();
+      if (error) throw error;
+      state.connected = true;
+    }),
+    // Messages (NC-4b) stand-ins: `run` gets an empty API (the tests only
+    // follow the queue and the state gates).
+    connect: run => op('connect', async () => run({})),
+    connectSync: run => run({}),
     balance: () => op('balance', async () => ({ total: state.total, spendable: state.spendable })),
     list: () => op('list', async () => ({ tip: state.tip, coins: state.coins, truncated: state.truncated })),
     buildAndSign: request => op('buildAndSign', async () => {

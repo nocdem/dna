@@ -1388,7 +1388,10 @@ static nodus_client_t   g_client;       /* static: large, and the pending
                                          * slots must outlive any wait     */
 static nodus_identity_t g_id;
 static int g_client_inited;             /* nodus_client_init succeeded     */
-static int g_used;                      /* unlock ran once (success or not)*/
+static int g_used;                      /* identify ran once (success or not)*/
+static int g_identified;                /* identity derived, nothing sent  */
+static int g_refused;                   /* a node served another chain:
+                                         * final, connect never runs again */
 static int g_unlocked;                  /* session open + chain checked    */
 static int g_locked;                    /* lock ran: terminal              */
 static volatile int g_cancel;           /* cancel ran: terminal            */
@@ -1497,20 +1500,30 @@ static int nsw_end(int rc) {
 
 /* The node's chain id must be the configured one (design §3 A3: "chain id
  * pinned in the build -> a different chain id = refusal"). Remembers which
- * server key it checked, so a reconnect to another pinned server re-checks. */
+ * server key it checked, so a reconnect to another pinned server re-checks.
+ * @return 0; -1 = the answer could not be read (a transport fault: the
+ *         connect step may try again); -2 = REFUSED — the node answered
+ *         and does not serve the configured chain, or its key is unknown
+ *         (nsw_connect makes that final). Every caller treats both as
+ *         failure (`!= 0`); the reason is in nsw_error. */
 static int nsw_check_chain(void) {
     bool has = false;
     uint8_t c[DNA_CHAIN_ID_LEN];
     int rc = nodus_client_dnac_chain_id32(&g_client, &has, c);
     if (rc != 0)
         return nsw_fail("Could not read the Nodus chain id (rc=%d).", rc);
-    if (!has)
-        return nsw_fail("This Nodus node does not serve the expected chain.");
-    if (memcmp(c, g_net.chain, sizeof(c)) != 0)
-        return nsw_fail("This Nodus node is on a different chain. Nothing "
-                        "was done.");
-    if (!g_client.has_server_dil_pk)
-        return nsw_fail("The Nodus server key is unknown.");
+    if (!has) {
+        nsw_fail("This Nodus node does not serve the expected chain.");
+        return -2;
+    }
+    if (memcmp(c, g_net.chain, sizeof(c)) != 0) {
+        nsw_fail("This Nodus node is on a different chain. Nothing was done.");
+        return -2;
+    }
+    if (!g_client.has_server_dil_pk) {
+        nsw_fail("The Nodus server key is unknown.");
+        return -2;
+    }
     memcpy(g_checked_server_pk, g_client.server_dil_pk.bytes,
            sizeof(g_checked_server_pk));
     return 0;
@@ -1559,20 +1572,37 @@ static int nsw_select_generation(nsw_gen_t *out) {
                     (unsigned)ri.generation);
 }
 
-/* ── unlock: identity from the seed, pinned session, chain check ── */
+/* ── unlock = IDENTIFY (local) + CONNECT (network) ──
+ *
+ * States (one module instance, terminal at lock/cancel):
+ *   fresh        nothing derived; nsw_identify or nsw_unlock may run once.
+ *   identified   g_identified: the identity is derived from the seed, its
+ *                fingerprint and the chain id are readable, nothing was
+ *                sent. nc_host_identity() answers (the Messages keys, the
+ *                history key, kept-profile checks); nc_host_client() does
+ *                not, and every network export refuses (nsw_session_ok:
+ *                !g_unlocked). nsw_connect may run, again after a failure.
+ *   connected    g_unlocked: the pinned session is open and the node's
+ *                chain id equals the configured one (nsw_check_chain).
+ *                Only here does any export send.
+ *   refused      g_refused: a node answered with another chain (or no
+ *                server key); nsw_connect refuses from then on. The page
+ *                locks.
+ * nsw_lock wipes the identity and closes the client in every state (a
+ * client exists only during / after a connect attempt that got as far as
+ * nodus_client_init; a failed attempt closes it again). */
 
-int nsw_unlock(void) {
-    if (nsw_begin() != 0) { nsw_wipe(g_seed, sizeof(g_seed)); return -1; }
-    int rc = -1;
+/* Identity from the seed; no client, no socket. Inside the op bracket. */
+static int nsw_identify_core(void) {
     if (g_used) {
         nsw_wipe(g_seed, sizeof(g_seed));
-        return nsw_end(nsw_fail("This Nodus connection was already used."));
+        return nsw_fail("This Nodus connection was already used.");
     }
     g_used = 1;
     g_cd.fixed = 1;                         /* the claim data is final too  */
     if (!g_net.has_chain || g_net.n_servers < 1 || g_net.n_pins < 1) {
         nsw_wipe(g_seed, sizeof(g_seed));
-        return nsw_end(nsw_fail("Nodus network settings are missing."));
+        return nsw_fail("Nodus network settings are missing.");
     }
     /* every pinned generation must rebuild its pinned policy digest before
      * anything connects (HF-4: the build picks one of them later) */
@@ -1581,15 +1611,32 @@ int nsw_unlock(void) {
         dna_meter_policy_t pol;
         if (nsw_ruleset(gen, &rs, &pol) != 0) {
             nsw_wipe(g_seed, sizeof(g_seed));
-            return nsw_end(-1);
+            return -1;
         }
     }
-    rc = nodus_identity_from_seed(g_seed, &g_id);
+    int rc = nodus_identity_from_seed(g_seed, &g_id);
     nsw_wipe(g_seed, sizeof(g_seed));
-    if (rc != 0) return nsw_end(nsw_fail("Nodus key derivation failed."));
+    if (rc != 0) return nsw_fail("Nodus key derivation failed.");
     qgp_fp_raw_to_hex(g_id.node_id.bytes, g_fp_hex);
     nsw_fmt_hex(g_net.chain, sizeof(g_net.chain), g_chain_hex);
+    g_identified = 1;
+    return 0;
+}
 
+/* A failed connect attempt leaves no client behind: the next attempt
+ * starts from nodus_client_init again. Never while lock/cancel ran (lock
+ * owns the client then — nsw_lock). */
+static void nsw_client_drop(void) {
+    if (!g_client_inited || g_locked || g_cancel) return;
+    nodus_client_close(&g_client);
+    nsw_wipe(&g_client.identity, sizeof(g_client.identity));
+    g_client_inited = 0;
+}
+
+/* The pinned session + the chain check. Inside the op bracket, identified.
+ * @return 0 connected; -1 failed, nsw_connect may try again; -2 refused
+ *         (final: g_refused). */
+static int nsw_connect_core(void) {
     nodus_client_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     memcpy(cfg.servers, g_net.servers, sizeof(cfg.servers));
@@ -1599,16 +1646,53 @@ int nsw_unlock(void) {
     cfg.pinned_server_fps      = g_net.pins;
     cfg.pinned_server_fp_count = g_net.n_pins;
     if (nodus_client_init(&g_client, &cfg, &g_id) != 0)
-        return nsw_end(nsw_fail("Nodus client setup failed."));
+        return nsw_fail("Nodus client setup failed.");
     g_client_inited = 1;
-    if (g_cancel) return nsw_end(-1);
-    if (nodus_client_connect(&g_client) != 0)
-        return nsw_end(nsw_fail("Could not open a verified connection to any "
-                                "Nodus node."));
-    if (g_cancel) return nsw_end(-1);
-    if (nsw_check_chain() != 0) return nsw_end(-1);
+    if (g_cancel) return -1;
+    if (nodus_client_connect(&g_client) != 0) {
+        nsw_client_drop();
+        return nsw_fail("Could not open a verified connection to any "
+                        "Nodus node.");
+    }
+    if (g_cancel) return -1;
+    int rc = nsw_check_chain();
+    if (rc != 0) {
+        if (rc == -2) g_refused = 1;
+        nsw_client_drop();                  /* the reason stays in g_error */
+        return rc == -2 ? -2 : -1;
+    }
     g_unlocked = 1;
-    return nsw_end(0);
+    return 0;
+}
+
+/* IDENTIFY, then CONNECT, in one export: the wallet's original unlock,
+ * unchanged for its callers (send-module.js unlock). -1 on any failure. */
+int nsw_unlock(void) {
+    if (nsw_begin() != 0) { nsw_wipe(g_seed, sizeof(g_seed)); return -1; }
+    if (nsw_identify_core() != 0) return nsw_end(-1);
+    return nsw_end(nsw_connect_core() == 0 ? 0 : -1);
+}
+
+/* IDENTIFY only: no client is created and nothing is sent. Afterwards
+ * nsw_fingerprint / nsw_chain_hex answer and the Messages exports that
+ * need only the identity run (nc_wasm.c). */
+int nsw_identify(void) {
+    if (nsw_begin() != 0) { nsw_wipe(g_seed, sizeof(g_seed)); return -1; }
+    return nsw_end(nsw_identify_core());
+}
+
+/* CONNECT after nsw_identify: 0 connected (also when already connected);
+ * -1 failed, may be called again; -2 refused — a node served another chain,
+ * final for this module (the page locks it). */
+int nsw_connect(void) {
+    if (nsw_begin() != 0) return -1;
+    if (!g_identified) return nsw_end(nsw_fail("The wallet identity is not ready."));
+    if (g_refused) {
+        nsw_fail("This Nodus node is on a different chain. Nothing was done.");
+        return nsw_end(-2);
+    }
+    if (g_unlocked) return nsw_end(0);
+    return nsw_end(nsw_connect_core());
 }
 
 /* ── balance: dnac_balance, the native row only ── */
@@ -4001,11 +4085,22 @@ int nsw_test_msig_review(const char *now_dec) {
 int nc_host_begin(void)            { return nsw_begin(); }
 int nc_host_end(void)              { g_busy = 0; return (g_locked || g_cancel) ? 1 : 0; }
 const char *nc_host_error(void)    { return g_error; }
+/* The client only once CONNECTED (session open, chain checked). */
 nodus_client_t *nc_host_client(void) {
     return (g_unlocked && !g_locked && !g_cancel) ? &g_client : NULL;
 }
+/* The identity already once IDENTIFIED (nsw_identify): the Messages keys,
+ * the history key and the kept-profile checks need no network. */
 const nodus_identity_t *nc_host_identity(void) {
-    return (g_unlocked && !g_locked && !g_cancel) ? &g_id : NULL;
+    return (g_identified && !g_locked && !g_cancel) ? &g_id : NULL;
+}
+/* The wallet's own session check for a Messages export about to send:
+ * connected, the client ready, and — after a reconnect to another pinned
+ * server — that server's chain id checked again (nsw_session_ok). Inside
+ * the op bracket (nc_begin); may wait on the network. 0, or -1 with the
+ * reason in nc_host_error(). Declared in nc_wasm.c. */
+int nc_host_session_ok(void) {
+    return nsw_session_ok() == 0 ? 0 : -1;
 }
 volatile const int *nc_host_cancel(void) { return &g_cancel; }
 
@@ -4063,5 +4158,6 @@ void nsw_lock(void) {
     nsw_msig_wipe();                        /* vaults (VAULTS)              */
     nc_session_wipe();                      /* the Messages keys and caches */
     g_unlocked = 0;
+    g_identified = 0;
 }
 #endif /* !NODUS_SEND_OFFLINE_ONLY */

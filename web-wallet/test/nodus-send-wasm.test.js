@@ -47,6 +47,8 @@ const ENTRY_POINTS = [
   'nsw_offline_build', 'nsw_built_env', 'nsw_built_env_len', 'nsw_built_intent', 'nsw_built_wire', 'nsw_built_chain',
   'nsw_built_recipient', 'nsw_built_amount', 'nsw_built_fee', 'nsw_built_change', 'nsw_built_expiry', 'nsw_built_n_in',
   'nsw_built_in', 'nsw_net_reset', 'nsw_net_set_chain', 'nsw_net_add_endpoint', 'nsw_net_add_pin', 'nsw_unlock',
+  // the split unlock: identify (local) and connect (network)
+  'nsw_identify', 'nsw_connect',
   'nsw_balance', 'nsw_list', 'nsw_build_and_sign', 'nsw_req_env_alloc', 'nsw_submit', 'nsw_scan', 'nsw_tick',
   'nsw_cancel', 'nsw_lock', 'nsw_fingerprint', 'nsw_chain_hex', 'nsw_bal_total', 'nsw_bal_spendable', 'nsw_list_tip',
   'nsw_list_truncated', 'nsw_list_count', 'nsw_list_nul', 'nsw_list_amount', 'nsw_scan_tip', 'nsw_scan_height',

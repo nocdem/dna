@@ -131,6 +131,107 @@ test('lock order: queue stopped -> cancel flag -> socket closed -> memory zeroed
   assert.deepEqual(slow.log, ['cancel', 'lock', 'release']); assert.equal(slow.state.zeroAtRelease, true);
 });
 
+// LOCAL FIRST (identify / connectNetwork): the client's state machine.
+// Against the mock module: proves the JS gates and the queue, not the C
+// side (nodus-send-wasm.c nsw_identify / nsw_connect, nc_wasm.c session_ok).
+test('local first: identify builds the identity only; network calls wait for connectNetwork; local Messages calls run at once', async () => {
+  const mock = createMockNodusModule(), states = [], timers = {};
+  const client = createNodusClient({
+    factory: mock.factory, onState: state => states.push(state),
+    setInterval: (fn, ms) => { timers.fn = fn; timers.ms = ms; return 7; }, clearInterval: () => {}
+  });
+  assert.equal(client.identified, false); assert.equal(client.localConnectable, false);
+  await assert.rejects(client.connectNetwork(), /not ready/);
+  const seed = new Uint8Array(32).fill(5);
+  assert.deepEqual(await client.identify({ seed, fingerprint: FINGERPRINT }), { fingerprint: FINGERPRINT, chainId: CHAIN_ID });
+  assert.deepEqual(states, ['identifying', 'identified']);
+  assert.ok(seed.every(b => b === 0), 'JS copy of the seed is zeroed after identify');
+  assert.equal(client.identified, true); assert.equal(client.localConnectable, true); assert.equal(client.connectable, false);
+  assert.equal(client.fingerprint, FINGERPRINT);
+  assert.equal(mock.state.connected, false, 'identify opens no session');
+  assert.equal(timers.fn, undefined, 'no keepalive before the session');
+  // Network operations (Messages' connect included) refuse before the session.
+  await assert.rejects(client.balance(), /not ready/);
+  await assert.rejects(client.connect(() => 'net'), /not ready/);
+  // The local Messages slot runs in the same queue.
+  assert.equal(await client.connectLocal(() => 'local'), 'local');
+  await assert.rejects(client.connectLocal('not a function'), /Invalid Messages operation/);
+  await client.connectNetwork();
+  assert.equal(client.state, 'ready'); assert.deepEqual(states, ['identifying', 'identified', 'connecting', 'ready']);
+  assert.equal(timers.ms, NODUS_TICK_MS);
+  assert.deepEqual(await client.balance(), { total: '450000000', spendable: '450000000' });
+  assert.equal(await client.connect(() => 'net'), 'net');
+  await client.connectNetwork(); // already ready: nothing more is sent
+  assert.equal(mock.log.filter(entry => entry === 'connectNetwork:start').length, 1);
+  // Used once: neither unlock nor identify runs again.
+  await assert.rejects(client.unlock({ seed: new Uint8Array(32).fill(1), fingerprint: FINGERPRINT }), /already used/);
+  await assert.rejects(client.identify({ seed: new Uint8Array(32).fill(1), fingerprint: FINGERPRINT }), /already used/);
+  client.lock();
+  assert.equal(client.identified, false); assert.equal(client.localConnectable, false);
+});
+
+test('local first: a failed connection keeps the identity and is tried again on the same client; a final refusal locks', async () => {
+  const mock = createMockNodusModule(), states = [];
+  mock.state.connectErrors.push(new Error('Could not open a verified connection to any Nodus node.'));
+  const client = createNodusClient({ factory: mock.factory, onState: state => states.push(state), setInterval: () => 1, clearInterval: () => {} });
+  await client.identify({ seed: new Uint8Array(32).fill(5), fingerprint: FINGERPRINT });
+  await assert.rejects(client.connectNetwork(), /verified connection/);
+  assert.equal(client.state, 'identified'); assert.equal(client.identified, true);
+  assert.ok(!mock.log.includes('lock') && !mock.log.includes('cancel'), 'a failure that may be retried wipes nothing');
+  assert.equal(await client.connectLocal(() => 'kept'), 'kept');
+  // Two callers during one attempt share it: one connectNetwork reaches the module.
+  const first = client.connectNetwork(), second = client.connectNetwork();
+  assert.equal(first, second);
+  await first;
+  assert.equal(client.state, 'ready');
+  assert.deepEqual(states, ['identifying', 'identified', 'connecting', 'identified', 'connecting', 'ready']);
+  assert.equal(mock.log.filter(entry => entry === 'connectNetwork:start').length, 2);
+  client.lock();
+
+  // A node of another chain: final — the client locks itself (wipe order as lock()).
+  const other = createMockNodusModule();
+  other.state.connectErrors.push(Object.assign(new Error('This Nodus node is on a different chain. Nothing was done.'), { final: true }));
+  const client2 = createNodusClient({ factory: other.factory, setInterval: () => 1, clearInterval: () => {} });
+  await client2.identify({ seed: new Uint8Array(32).fill(5), fingerprint: FINGERPRINT });
+  await assert.rejects(client2.connectNetwork(), /different chain/);
+  assert.equal(client2.state, 'error'); assert.equal(client2.identified, false);
+  assert.deepEqual(other.log.slice(-3), ['cancel', 'lock', 'release']); assert.equal(other.state.zeroAtRelease, true);
+  await assert.rejects(client2.connectNetwork(), /locked/);
+  await assert.rejects(client2.connectLocal(() => 1), /locked/);
+});
+
+test('local first: lock while identified or while connecting wipes the module; identify refuses a module without the split', async () => {
+  const mock = createMockNodusModule();
+  const client = createNodusClient({ factory: mock.factory, setInterval: () => 1, clearInterval: () => {} });
+  await client.identify({ seed: new Uint8Array(32).fill(5), fingerprint: FINGERPRINT });
+  mock.gate('connectNetwork'); // never opened: the attempt stays suspended
+  const attempt = client.connectNetwork(), local = client.connectLocal(() => 'queued');
+  await settle();
+  const before = mock.log.length;
+  client.lock();
+  assert.deepEqual(mock.log.slice(before), ['cancel', 'lock', 'release']);
+  assert.equal(mock.state.zeroAtRelease, true);
+  await assert.rejects(attempt, /locked/); await assert.rejects(local, /locked/);
+  assert.ok(!mock.log.includes('connect:start'), 'a queued local call never reaches the module');
+  assert.equal(client.state, 'locked'); assert.equal(client.identified, false);
+
+  // A module without identify / connectNetwork still unlocks (unlock()), but
+  // identify is refused and wiped.
+  const plain = createMockNodusModule();
+  delete plain.module.identify; delete plain.module.connectNetwork;
+  const client2 = createNodusClient({ factory: plain.factory, setInterval: () => 1, clearInterval: () => {} });
+  const seed = new Uint8Array(32).fill(3);
+  await assert.rejects(client2.identify({ seed, fingerprint: FINGERPRINT }), /does not match this wallet version/);
+  assert.equal(client2.state, 'error'); assert.ok(seed.every(b => b === 0));
+  assert.deepEqual(plain.log.slice(-3), ['cancel', 'lock', 'release']);
+  const plain2 = createMockNodusModule();
+  delete plain2.module.identify; delete plain2.module.connectNetwork;
+  const client3 = createNodusClient({ factory: plain2.factory, setInterval: () => 1, clearInterval: () => {} });
+  assert.deepEqual(await client3.unlock({ seed: new Uint8Array(32).fill(3), fingerprint: FINGERPRINT }), { fingerprint: FINGERPRINT, chainId: CHAIN_ID });
+  assert.equal(client3.state, 'ready');
+  client3.lock();
+});
+
 test('expiry = tip + 90; tip 0 or unknown refuses before anything is built', async () => {
   assert.equal(NODUS_EXPIRY_AHEAD, 90n);
   const gen1 = { generation: 1n, tip: 0n, gen2Height: 0n };

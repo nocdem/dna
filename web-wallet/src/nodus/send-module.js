@@ -265,6 +265,26 @@ export async function createNodusSendModule(network, { claim = null, loadGlue = 
       check(await call('nsw_unlock'));
       return { fingerprint: str('nsw_fingerprint'), chainId: str('nsw_chain_hex') };
     },
+    // The same unlock in two steps (./client.js identify / connectNetwork).
+    // identify({ seed }): the identity from the seed — no client, nothing
+    // sent (nodus-send-wasm.c nsw_identify); resolves as unlock() does.
+    async identify({ seed } = {}) {
+      if (!(seed instanceof Uint8Array) || seed.length !== 32) throw new Error('Nodus signing seed must be 32 bytes.');
+      // The C side wipes this copy on every path (nsw_identify).
+      M.HEAPU8.set(seed, num('nsw_seed_buf'));
+      check(await call('nsw_identify'));
+      return { fingerprint: str('nsw_fingerprint'), chainId: str('nsw_chain_hex') };
+    },
+    // connectNetwork(): the pinned session + the chain check (nsw_connect).
+    // A failure may be tried again, except one marked `final` (the node
+    // serves another chain: the module refuses to connect from then on).
+    async connectNetwork() {
+      const rc = await call('nsw_connect');
+      if (rc === 0) return;
+      const error = failure();
+      if (rc === -2) error.final = true;
+      throw error;
+    },
     async balance() {
       check(await call('nsw_balance'));
       return { total: str('nsw_bal_total'), spendable: str('nsw_bal_spendable') };

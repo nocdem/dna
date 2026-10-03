@@ -15,7 +15,9 @@
 //     (src/app.js raises the events of src/wallet-extensions.js; this file's
 //     `walletExtension` answers them). Messages opens on the wallet's one
 //     client (one send.wasm module, one tier-2 session — NC-4b) as soon as
-//     the wallet's NODUS client is ready; the wallet's Lock, idle lock,
+//     the wallet's NODUS client is IDENTIFIED (nodusIdentified): what this
+//     device keeps is shown first, the network phase follows once the
+//     client is ready (nodusReady); the wallet's Lock, idle lock,
 //     pagehide, single-tab and cross-site rules close it.
 //   - Messages preview page (/preview/, src/connect/ui/standalone.js): its
 //     own unlock screens are the host.
@@ -61,6 +63,11 @@ const WAITING_TEXT = 'Messages opens when your wallet is connected to the Nodus 
 // The wallet tries the connection again by itself (src/app.js RECONNECT)
 // and raises nodusReady again once it is made.
 const UNAVAILABLE_TEXT = 'Messages needs the Nodus network connection, which is unavailable right now. The wallet tries to connect again by itself; Messages opens as soon as it is connected.';
+const LOCAL_FAILED_TEXT = 'Your messages on this device could not be opened right now. Try again.';
+// The status line under Chats while the network phase has not finished.
+const CONNECTING_TEXT = 'Connecting to the network… Your messages on this device are shown; sending opens once connected.';
+const UPDATING_TEXT = 'Updating…';
+const OFFLINE_SEND_TEXT = 'Sending opens once Messages is connected to the network.';
 
 // ── session state (all dropped by close / reset) ───────────────────────
 let core, store, state, messages = [], ownFp, ownProfile, fresh = false, vaultId = null;
@@ -85,6 +92,13 @@ const chainAsked = new Set();            // IDs whose chain name lookup was answ
 const chainTried = new Map();            // fp -> page clock (ms) of its last chain name lookup, this session (spacing only)
 let ownNameConfirmed = false;            // the own name was confirmed by this session's lookup
 let nodusClient;                         // the wallet's client (nameOf), this session
+// LOCAL FIRST: Messages opens on the wallet's IDENTIFIED client from what
+// this device keeps (openLocal), then the NETWORK phase runs in the
+// background once the client is ready (goOnline -> sync).
+let netStarted = false;                  // the network phase started (client ready)
+let online = false;                      // own account checked on the network
+                                         // (read, or a fresh one published):
+                                         // nothing is sent before
 
 // ── view state ─────────────────────────────────────────────────────────
 // The screens follow the DNA Connect app (messenger/dna_messenger_flutter):
@@ -114,6 +128,7 @@ function wipe() {
   store = undefined; state = undefined; messages = []; ownFp = undefined; ownProfile = undefined;
   fresh = false; vaultId = null; requests = []; selectedFp = undefined; nodusClient = undefined;
   eraseArmed = false; profileTaken = false; ownNameConfirmed = false; removeArmed = undefined;
+  netStarted = false; online = false;
   for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, diags, chainNames, chainAsked, chainTried, vaultRecs]) set.clear();
   notifyVaultHost();
   if (!ui) return;
@@ -147,9 +162,10 @@ export function resetMessages(text = WAITING_TEXT) {
 // ── open ───────────────────────────────────────────────────────────────
 class Closed extends Error {}
 
-// client: an unlocked NODUS client (state 'ready', module with the Messages
-// exports); phrase: the normalised recovery phrase; vaultId: the saved
-// wallet's id or null (memory only: nothing is kept after lock and no
+// client: the wallet's NODUS client, identified (src/nodus/client.js
+// identify — the network may still be connecting) or ready, its module with
+// the Messages exports; phrase: the normalised recovery phrase; vaultId: the
+// saved wallet's id or null (memory only: nothing is kept after lock and no
 // delivery confirmation is sent); fresh: words generated in this tab (Q1).
 export async function openMessages({ client, phrase, vaultId: id = null, fresh: isFresh = false }) {
   wipe();
@@ -173,13 +189,13 @@ export async function openMessages({ client, phrase, vaultId: id = null, fresh: 
     const unlocked = await created.unlock({ words, fresh: isFresh === true });
     if (superseded()) return;
     ownFp = unlocked.fingerprint; fresh = unlocked.fresh === true; vaultId = id || null;
-    await finishOpen(gen);
+    await openLocal(gen);
   } catch (error) {
     if (superseded()) return;
     // Before the identity is open: Messages stays closed until the wallet is
-    // opened again (core.lock is terminal). After it: retry the reads.
+    // opened again (core.lock is terminal). After it: retry the local open.
     if (!ownFp) { closeMessages(explain(error, 'Messages could not open right now. Lock and open your wallet again to retry.')); return; }
-    closeMessages(explain(error, 'Messages could not connect to the network right now. Try again in a minute.'), { retry: true });
+    closeMessages(explain(error, LOCAL_FAILED_TEXT), { retry: true });
   } finally { words?.fill(0); }
 }
 
@@ -187,24 +203,18 @@ export async function openMessages({ client, phrase, vaultId: id = null, fresh: 
 // are; anything else gets the caller's plain-words fallback.
 function explain(error, fallback) { return error instanceof Closed || error instanceof StorageError ? error.message : fallback; }
 
-// Messages opens only after the own profile was read (or, for a fresh
-// account, created) and the history was loaded. Any failure keeps it closed
-// and writes nothing (design §1.7, §7 Q1 (iii)).
-async function finishOpen(gen) {
+// LOCAL phase: what this device keeps, before any network call — the
+// history store (a saved wallet's; typed words and a new account keep
+// nothing, memory only), the contacts and conversations, the kept profiles
+// and pictures, the kept chain names and the own ID. It writes nothing
+// anywhere. The full view is shown at its end; the NETWORK phase
+// (goOnline) starts as soon as the wallet's client is ready, and nothing is
+// sent before it has read this account's own profile (or, for a fresh
+// account, published it) — design §1.7, §7 Q1 (iii).
+async function openLocal(gen) {
   phase = 'opening';
-  showState('Opening Messages', 'Reading your account…', false);
-  const own = await core.profileGet(ownFp);
-  if (gen !== generation) return;
-  if (own.outcome === 'found') ownProfile = own.profile;
-  else if (own.outcome === 'empty' && fresh) {
-    const made = await core.profileUpdate({});
-    if (gen !== generation) return;
-    if (made.status !== 'published') throw new Closed(profileStatusText(made.status));
-    ownProfile = null;
-  } else throw new Closed('Your account could not be read from the network right now. Nothing was changed. Try again in a minute.');
-
+  showState('Opening Messages', 'Loading your messages…', false);
   if (!store) {
-    showState('Opening Messages', 'Loading your messages…', false);
     // A saved wallet keeps its history (S8); typed words and a new account
     // keep nothing.
     const opened = vaultId ? await openHistoryStore({ core, vaultId }) : memoryHistoryStore();
@@ -220,15 +230,19 @@ async function finishOpen(gen) {
     // History from earlier sessions is not "new".
     for (const contact of state.contacts) markRead(contact.fp);
   }
-  await mergeContactList(gen);
-  if (gen !== generation) return;
   // Kept profiles younger than 7 days are in place before the first screen
-  // (no network: core.profileLoad), so names and pictures show at once.
-  for (const contact of state.contacts) {
-    const entry = state.profileCache[contact.fp], row = kept.get(contact.fp);
-    if (profiles.has(contact.fp) || !entry || row?.id !== entry.id || !profileFresh(entry, nowSeconds())) continue;
-    try { profiles.set(contact.fp, (await core.profileLoad(contact.fp, row.record, entry.name)).profile); }
-    catch { /* read from the network by the first check */ }
+  // (no network: core.profileLoad checks the kept row's signature and
+  // fingerprint again), so names and pictures show at once. This wallet's
+  // own kept row (any age) only fills the view until the network phase
+  // reads the profile again; its keys are never used for sending.
+  for (const fp of [ownFp, ...state.contacts.map(c => c.fp)]) {
+    const own = fp === ownFp, entry = state.profileCache[fp], row = kept.get(fp);
+    if ((!own && profiles.has(fp)) || !entry || row?.id !== entry.id || (!own && !profileFresh(entry, nowSeconds()))) continue;
+    try {
+      const loaded = (await core.profileLoad(fp, row.record, entry.name)).profile;
+      if (gen !== generation) return;
+      if (own) { if (!online) ownProfile = loaded; } else profiles.set(fp, loaded);
+    } catch { /* read from the network by the first check */ }
     if (gen !== generation) return;
   }
   // Kept chain names, likewise (no network; a name is permanent, so a kept
@@ -241,11 +255,50 @@ async function finishOpen(gen) {
   fillProfile();
   phase = 'open';
   screen = 'list';
+  ui.sync.textContent = CONNECTING_TEXT;
   render();
+  notifyVaultHost();
+  if (nodusClient?.state === 'ready') goOnline(gen);
+}
+
+// NETWORK phase, in the background: the 30-second check starts; its first
+// round reads this account's own profile (a fresh account publishes it)
+// and merges the own contact list from the network before anything else
+// (sync). Until that succeeded nothing is sent (`online`); a failure keeps
+// the view and is tried again on the next round.
+function goOnline(gen) {
+  if (gen !== generation || !isOpen() || netStarted) return;
+  netStarted = true;
+  ui.sync.textContent = UPDATING_TEXT;
   clearInterval(syncTimer);
   syncTimer = setInterval(() => { void sync(); }, SYNC_MS);
-  notifyVaultHost();
   void sync();
+}
+
+// The own profile on the network (was the gate of opening Messages; now
+// the gate of sending). Throws Closed with plain words when it cannot be
+// read (nothing is written then — Q1) or a fresh account's could not be
+// published.
+async function checkOwnAccount(gen) {
+  const own = await core.profileGet(ownFp);
+  if (gen !== generation) return false;
+  const before = ownProfile;
+  if (own.outcome === 'found') {
+    ownProfile = own.profile;
+    await keepProfile(ownFp, own);
+    if (gen !== generation) return false;
+  } else if (own.outcome === 'empty' && fresh) {
+    const made = await core.profileUpdate({});
+    if (gen !== generation) return false;
+    if (made.status !== 'published') throw new Closed(profileStatusText(made.status));
+    ownProfile = null;
+  } else throw new Closed('Your account could not be read from the network right now. Nothing was changed. Checking again automatically.');
+  // The edit fields are refilled only if the user has not typed in them
+  // while the network was being read.
+  const was = before || {};
+  if (ui.bio.value === (was.bio || '') && ui.location.value === (was.location || '') && ui.website.value === (was.website || '')) fillProfile();
+  else { fillOwnAvatar(); fillNameLine(); }
+  return true;
 }
 
 // ── state helpers ──────────────────────────────────────────────────────
@@ -403,10 +456,20 @@ async function recheckChainNameOnOpen(fp) {
 
 // ── sync ───────────────────────────────────────────────────────────────
 async function sync() {
-  if (syncing || !isOpen()) return;
+  if (syncing || !isOpen() || !netStarted) return;
   syncing = true;
   const gen = generation;
   try {
+    // The first round of the network phase (goOnline): the own account,
+    // then the own contact list; only then may anything be sent.
+    if (!online) {
+      ui.sync.textContent = UPDATING_TEXT;
+      if (!await checkOwnAccount(gen) || gen !== generation) return;
+      await mergeContactList(gen);
+      if (gen !== generation) return;
+      online = true;
+      render();
+    }
     await syncRequests(gen);
     if (gen !== generation) return;
     await publishContacts(gen);
@@ -802,7 +865,7 @@ export function mountMessages(root, options = {}) {
   u.retry = button('Try again', () => {
     if (!core || !ownFp) return;
     const gen = generation;
-    finishOpen(gen).catch(error => { if (gen === generation) closeMessages(explain(error, 'Messages could not connect to the network right now. Try again in a minute.'), { retry: true }); });
+    openLocal(gen).catch(error => { if (gen === generation) closeMessages(explain(error, LOCAL_FAILED_TEXT), { retry: true }); });
   }, 'secondary small');
   u.stateView = el('div', { className: 'messenger-view messenger-state' }, el('span', { className: 'messenger-state-mark' }), u.stateTitle, u.stateText, u.retry);
   u.stateView.querySelector('.messenger-state-mark').setAttribute('aria-hidden', 'true');
@@ -865,7 +928,10 @@ export function mountMessages(root, options = {}) {
   u.sendButton.append(icon('send'));
   u.counter = el('small', { className: 'composer-counter' });
   u.sendStatus = statusLine('hint composer-status');
-  u.sendForm = el('form', { className: 'composer' }, el('div', { className: 'composer-row' }, u.composer, u.sendButton), el('div', { className: 'composer-foot' }, el('small', { className: 'composer-hint', text: 'Enter to send · Shift+Enter for a new line' }), u.counter), u.sendStatus);
+  // While the network phase has not finished (online): the composer keeps
+  // what is typed, Send waits.
+  u.offlineNote = el('p', { className: 'hint composer-status', text: OFFLINE_SEND_TEXT });
+  u.sendForm = el('form', { className: 'composer' }, el('div', { className: 'composer-row' }, u.composer, u.sendButton), el('div', { className: 'composer-foot' }, el('small', { className: 'composer-hint', text: 'Enter to send · Shift+Enter for a new line' }), u.counter), u.offlineNote, u.sendStatus);
   u.sendForm.id = 'nc-send-form';
   u.notReady = el('p', { className: 'hint composer-closed', text: 'Messaging with this contact is not ready yet. It is checked again automatically.' });
   u.conversationView = el('div', { className: 'messenger-view messenger-conversation' }, u.convHead, u.convNote, u.convDiag, u.messageList, u.sendForm, u.notReady);
@@ -1195,6 +1261,8 @@ function renderConversation(scroll) {
   ui.convDiag.hidden = !ui.convDiagText.textContent;
   ui.sendForm.hidden = !contact.salt;
   ui.notReady.hidden = !!contact.salt;
+  ui.sendButton.disabled = !online;
+  ui.offlineNote.hidden = online;
 
   const items = [];
   let day;
@@ -1259,6 +1327,7 @@ function fillNameLine() {
 // ── actions ────────────────────────────────────────────────────────────
 async function accept(request) {
   const gen = generation;
+  if (!online) { ui.requestsStatus.textContent = 'Requests can be answered once Messages is connected to the network.'; return; }
   ui.requestsStatus.textContent = 'Accepting…';
   try {
     if (!await ensureProfile(request.sender)) { if (gen === generation) ui.requestsStatus.textContent = "This person's account could not be read right now. Try again in a minute."; return; }
@@ -1286,6 +1355,7 @@ async function decline(request) {
 
 async function withdraw(fp) {
   const gen = generation;
+  if (!online) { ui.requestsStatus.textContent = 'A request can be withdrawn once Messages is connected to the network.'; return; }
   try {
     await core.requestCancel(fp);
     if (gen !== generation) return;
@@ -1336,6 +1406,7 @@ async function addContact(event) {
     if (fp === ownFp) throw new Error('That is your own ID.');
     if (contactOf(fp)) throw new Error('This person is already a contact.');
     if (state.outgoing.some(o => o.fp === fp)) throw new Error('You already sent this person a request.');
+    if (!online) throw new Error('Requests can be sent once Messages is connected to the network.');
     const note = ui.addNote.value;
     ui.addStatus.textContent = 'Sending request…';
     let result;
@@ -1357,6 +1428,7 @@ async function send(event) {
   const gen = generation, contact = selectedFp && contactOf(selectedFp);
   const text = ui.composer.value;
   if (!contact || !contact.salt || !text.trim()) return;
+  if (!online) { ui.sendStatus.textContent = OFFLINE_SEND_TEXT; return; }
   if (text.length > TEXT_MAX) { ui.sendStatus.textContent = `A message can be at most ${TEXT_MAX} characters.`; return; }
   try {
     const message = { seq: takeSeq(), fp: contact.fp, dir: 'out', text, ts: nowSeconds(), at: Date.now() };
@@ -1375,6 +1447,7 @@ async function saveProfile(event) {
   event.preventDefault();
   const gen = generation;
   if (profileTaken) return;
+  if (!online) { ui.profileStatus.textContent = 'Your profile can be saved once Messages is connected to the network.'; return; }
   try {
     const patch = profilePatch({ bio: ui.bio.value, location: ui.location.value, website: ui.website.value });
     ui.profileStatus.textContent = 'Saving…';
@@ -1431,6 +1504,7 @@ async function pickAvatar(file) {
 async function saveAvatar(b64) {
   const gen = generation;
   if (profileTaken || ui.avatarChange.disabled) return;
+  if (!online) { ui.avatarStatus.textContent = 'Your picture can be saved once Messages is connected to the network.'; return; }
   ui.avatarChange.disabled = ui.avatarRemove.disabled = true;
   try {
     const patch = avatarPatch(b64);
@@ -1479,6 +1553,7 @@ const VAULT_ADDRESS = /^[0-9a-f]{128}$/;
 
 async function sendPayload(fp, text) {
   if (!isOpen()) throw new Error('Messages is not open.');
+  if (!online) throw new Error(OFFLINE_SEND_TEXT);
   const gen = generation, contact = contactOf(fp);
   if (!contact) throw new Error('This person is not in your contacts.');
   if (!contact.salt) throw new Error('Messaging with this contact is not ready yet.');
@@ -1537,7 +1612,23 @@ export const vaultHost = {
 // ── the wallet as host (src/wallet-extensions.js events) ───────────────
 // Registered only by the Nodus Connect page (src/connect-main.js).
 export const walletExtension = {
-  nodusReady(detail) { void openMessages(detail); },
+  // LOCAL FIRST (src/app.js startNodusSend): the wallet's client is
+  // identified — Messages opens from what this device keeps. Asked with
+  // gather: the answer is the local open's promise, and the wallet connects
+  // only after it settled (one queue: the local steps are not held behind
+  // the connection's network waits). openMessages never rejects.
+  nodusIdentified(detail) { return [openMessages(detail)]; },
+  // The client is ready: the network phase of the Messages opened on THIS
+  // client starts (if its local open is still running, it starts at its
+  // end, openLocal); any other client opens Messages anew.
+  nodusReady(detail) {
+    if (core && nodusClient && nodusClient === detail?.client) { if (isOpen()) goOnline(generation); return; }
+    void openMessages(detail);
+  },
+  // A connection attempt of the identified client failed; the wallet tries
+  // again by itself on the same client. The view stays; the reason is shown
+  // in the status line (plain words from the wallet).
+  nodusConnectFailed({ reason } = {}) { if (ui && isOpen() && !netStarted && typeof reason === 'string' && reason) ui.sync.textContent = reason; },
   // reason: the connection was lost (Messages stays closed until the
   // wallet's reconnect raises nodusReady again); none: the wallet is
   // locking or reconnecting.

@@ -8,7 +8,7 @@
 // wasm.sh) and runs on that module's tier-2 session: two sessions of one
 // identity evict each other on a node (nodus_auth.c:95-116). This file
 // therefore never loads or instantiates a module. It is handed the wallet's
-// NODUS client (src/nodus/client.js createNodusClient, already unlocked) and
+// NODUS client (src/nodus/client.js createNodusClient, identified or ready) and
 // runs every waiting export through THAT client's one operation queue
 // (client.connect) — Asyncify keeps a single suspended-call state, a second
 // export entered while one is suspended corrupts it (design §1.1). What it
@@ -29,8 +29,14 @@
 // objects, u64 values are decimal strings, bytes are lowercase hex unless
 // said otherwise):
 //   createNodusConnectCore({ nodus }) -> core
-//     nodus: the wallet's NODUS client, state 'ready', whose module carries
-//     the Messages exports (nodus.connectable).
+//     nodus: the wallet's NODUS client, at least identified (src/nodus/
+//     client.js identify; nodus.localConnectable), whose module carries the
+//     Messages exports. LOCAL calls — unlock, profileLoad, historyKey,
+//     historyEncrypt, historyDecrypt — run once it is identified
+//     (nodus.connectLocal); every other async call needs it 'ready'
+//     (nodus.connect) and rejects before ("Nodus connection is not
+//     ready."); the module refuses them on its own too (nc_wasm.c
+//     session_ok).
 //   core.unlock({ words, fresh }) -> { fingerprint, fresh }
 //     words: Uint8Array of the NORMALISED phrase's UTF-8 bytes (wiped here
 //     after the copy; the C copy is wiped on every path). The Messages KEM
@@ -170,8 +176,8 @@ function recordBytes(value, what, { exact } = {}) {
 }
 
 export function createNodusConnectCore({ nodus } = {}) {
-  if (!nodus || typeof nodus.connect !== 'function' || typeof nodus.connectSync !== 'function') throw new Error('The Messages module is not available.');
-  if (!nodus.connectable) throw new Error('Messages is not available in this wallet version, or the wallet is not connected to Nodus.');
+  if (!nodus || typeof nodus.connect !== 'function' || typeof nodus.connectLocal !== 'function' || typeof nodus.connectSync !== 'function') throw new Error('The Messages module is not available.');
+  if (!nodus.localConnectable) throw new Error('Messages is not available in this wallet version, or the wallet is not open.');
 
   let state = 'idle', stopped = false, started = false, fingerprint;
   let generation = 0, nextRequestId = 1;
@@ -186,12 +192,15 @@ export function createNodusConnectCore({ nodus } = {}) {
 
   // Every waiting call: stamped, then queued in the WALLET'S queue. A call
   // that reaches the queue after lock() does not touch the module.
-  function enqueue(run) {
+  // `local`: an export that needs only the identity (no network), allowed
+  // once the wallet client is identified (nodus.connectLocal); every other
+  // one needs the client 'ready' (nodus.connect).
+  function enqueue(run, { local = false } = {}) {
     if (stopped) return Promise.reject(lockedError());
     const entry = { generation, requestId: nextRequestId++ };
     const promise = new Promise((resolve, reject) => { entry.resolve = resolve; entry.reject = reject; });
     pending.add(entry);
-    nodus.connect(async api => {
+    (local ? nodus.connectLocal : nodus.connect)(async api => {
       if (stopped || entry.generation !== generation) throw lockedError();
       return run(bridge(api));
     }).then(value => {
@@ -204,6 +213,7 @@ export function createNodusConnectCore({ nodus } = {}) {
   }
   const ready = () => { if (state !== 'ready') throw new Error('Messages is not connected.'); };
   const op = fn => (...args) => { try { ready(); } catch (error) { return Promise.reject(error); } return enqueue(b => fn(b, ...args)); };
+  const localOp = fn => (...args) => { try { ready(); } catch (error) { return Promise.reject(error); } return enqueue(b => fn(b, ...args), { local: true }); };
   const sync = fn => { if (stopped) throw lockedError(); return nodus.connectSync(api => fn(bridge(api))); };
 
   function lock() {
@@ -232,7 +242,7 @@ export function createNodusConnectCore({ nodus } = {}) {
         words.fill(0);
         b.check(await b.call('nc_unlock', ['number'], [fresh === true ? 1 : 0]));
         return b.result();
-      });
+      }, { local: true });
       if (typeof value.fingerprint !== 'string' || !HEX128.test(value.fingerprint)) throw new Error('The Messages module returned an invalid identity.');
       if (nodus.fingerprint !== undefined && value.fingerprint !== nodus.fingerprint) throw new Error('Messages derived a different address. Nothing was connected.');
       fingerprint = value.fingerprint;
@@ -250,7 +260,7 @@ export function createNodusConnectCore({ nodus } = {}) {
     get generation() { return generation; },
     unlock,
     profileGet: op(async (b, who) => { b.check(await b.call('nc_profile_get', ['string'], [fp(who)])); return b.result(); }),
-    profileLoad: op(async (b, who, record, name = '') => {
+    profileLoad: localOp(async (b, who, record, name = '') => {
       if (typeof record !== 'string' || record.length === 0 || record.length > 65536 || typeof name !== 'string') throw new Error('Invalid stored profile.');
       b.check(b.num('nc_profile_load', ['string', 'string', 'string'], [fp(who), record, name]));
       return b.result();
@@ -317,18 +327,18 @@ export function createNodusConnectCore({ nodus } = {}) {
       return {};
     }),
     ackGet: op(async (b, who, saltHex) => { b.check(await b.call('nc_ack_get', ['string', 'string'], [fp(who), salt(saltHex)])); return b.result(); }),
-    historyKey: op(async (b, vaultIdHex) => {
+    historyKey: localOp(async (b, vaultIdHex) => {
       if (typeof vaultIdHex !== 'string' || !HEX32.test(vaultIdHex)) throw new Error('Invalid vault id.');
       b.check(b.num('nc_hist_key', ['string'], [vaultIdHex]));
       return {};
     }),
-    historyEncrypt: op(async (b, { store, id, plaintext, counter } = {}) => {
+    historyEncrypt: localOp(async (b, { store, id, plaintext, counter } = {}) => {
       if (typeof counter !== 'string' || !U64.test(counter)) throw new Error('Invalid history counter.');
       b.check(b.num('nc_hist_encrypt', ['string', 'string', 'string', 'string'], [aadName(store, 'store'), aadName(id, 'id'), recordBytes(plaintext, 'record'), counter]));
       const r = b.result();
       return { nonce: hexToBytes(r.nonce), ct: hexToBytes(r.ct), tag: hexToBytes(r.tag), counter: r.counter };
     }),
-    historyDecrypt: op(async (b, { store, id, nonce, ct, tag } = {}) => {
+    historyDecrypt: localOp(async (b, { store, id, nonce, ct, tag } = {}) => {
       b.check(b.num('nc_hist_decrypt', ['string', 'string', 'string', 'string', 'string'],
         [aadName(store, 'store'), aadName(id, 'id'), recordBytes(nonce, 'nonce', { exact: 12 }), recordBytes(ct, 'record'), recordBytes(tag, 'tag', { exact: 16 })]));
       return { plaintext: hexToBytes(b.result().pt) };

@@ -17,6 +17,17 @@
 //                                wss:// and checks the chain id pinned in its
 //                                own build. Resolves { fingerprint: 128 lower-
 //                                case hex, chainId: 64 lowercase hex }.
+//     identify({ seed }) / connectNetwork()
+//                                OPTIONAL (local-first open): the same
+//                                unlock in two steps. identify builds the
+//                                identity only — no session, nothing sent —
+//                                and resolves like unlock; connectNetwork
+//                                opens the session and checks the chain id.
+//                                A connectNetwork failure may be retried;
+//                                one whose error has `final: true` (the node
+//                                serves another chain) may not. A module
+//                                without both still unlocks (unlock()); this
+//                                client then refuses identify().
 //     balance()                  Own native-token balance (dnac_balance).
 //                                Resolves { total, spendable } — raw-unit
 //                                decimal integer strings (1 NODUS = 10^8).
@@ -140,6 +151,22 @@ const NAME_REG_OPS = ['namePrices', 'nameBuild'];
 // src/nodus/send-module.js "SHARED VAULTS"): a module without all of them
 // still unlocks; this client then answers "Shared vaults are not available".
 const VAULT_OPS = ['vaultCreate', 'vaultOpen', 'vaultBalance', 'vaultScan', 'vaultPropose', 'vaultReview', 'vaultApprove', 'vaultSubmit'];
+// OPTIONAL (local-first open): the unlock in two steps.
+//
+// STATES of this client:
+//   idle -> 'connecting' (unlock) -> 'ready'
+//   idle -> 'identifying' (identify) -> 'identified'
+//        -> 'connecting' (connectNetwork) -> 'ready'
+//                                         -> 'identified' (failed: retry)
+//                                         -> 'error' + locked (final)
+//   'ready' -> 'error' (a keepalive failed; the caller locks it)
+//   any -> 'locked' (lock(); a failed unlock / identify locks too)
+// Once the identity is known (identified, 'connecting' after it, 'ready')
+// connectLocal runs the Messages exports that need only the identity;
+// every other operation, connect() included, needs 'ready'. The module
+// refuses every network call before its connect succeeded on its own as
+// well (nodus-send-wasm.c nsw_session_ok, connect/nc_wasm.c session_ok).
+const SPLIT_OPS = ['identify', 'connectNetwork'];
 const RAW_RULE = /^[1-9]\d{0,19}$/;
 function validRules(rules) {
   return !!rules && ['minDelegation', 'selfStake', 'commissionMaxBps', 'undelegateLockEpochs', 'epochLength', 'maxDelegators'].every(key => typeof rules[key] === 'string' && RAW_RULE.test(rules[key]) && BigInt(rules[key]) < 2n ** 64n);
@@ -148,7 +175,7 @@ const lockedError = () => new Error('Wallet is locked.');
 
 export function createNodusClient({ factory, onState, setInterval: every = globalThis.setInterval, clearInterval: stopEvery = globalThis.clearInterval } = {}) {
   if (typeof factory !== 'function') throw new Error('The Nodus send module is not available.');
-  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, connectable = false, nameable = false, registrable = false, vaultable = false;
+  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, connectable = false, nameable = false, registrable = false, vaultable = false, splittable = false, connecting;
   // ONE operation queue: Asyncify keeps a single global currData, so a second
   // export entered while the first is suspended corrupts the first. `tail`
   // settles only when the module call itself has returned, never merely when
@@ -203,37 +230,46 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
     }
     setState('locked');
   }
-  async function unlock({ seed, fingerprint: expected } = {}) {
-    // Refusals that touch no module: a used client (ready, failed or locked)
-    // stays exactly as it is.
+  // Refusals that touch no module: a used client (identified, ready, failed
+  // or locked) stays exactly as it is. Returns the checked seed.
+  function claimStart(seed, expected) {
     if (started || stopped) { if (seed instanceof Uint8Array) seed.fill(0); throw new Error('This Nodus connection was already used. Lock and reopen your wallet.'); }
     if (!(seed instanceof Uint8Array) || seed.length !== 32) { if (seed instanceof Uint8Array) seed.fill(0); throw new Error('Nodus signing seed must be 32 bytes.'); }
     if (typeof expected !== 'string' || !HEX128.test(expected)) { seed.fill(0); throw new Error('Nodus address is not available yet.'); }
     started = true;
+  }
+  async function load() {
+    const loaded = await factory();
+    if (stopped) {
+      // Locked while the module was loading: it is wiped and dropped unused.
+      module = loaded; lock(); throw lockedError();
+    }
+    if (!loaded || ![...ASYNC_OPS, ...SYNC_OPS].every(name => typeof loaded[name] === 'function') || !(loaded.memory?.buffer instanceof ArrayBuffer)) {
+      module = loaded; throw new Error('The Nodus send module does not match this wallet version.');
+    }
+    module = loaded;
+    claimable = CLAIM_OPS.every(name => typeof loaded[name] === 'function');
+    stakeable = STAKE_OPS.every(name => typeof loaded[name] === 'function') && validRules(loaded.stakingRules);
+    stakingRules = stakeable ? Object.freeze({ ...loaded.stakingRules }) : undefined;
+    connectable = CONNECT_OPS.every(name => typeof loaded[name] === 'function');
+    nameable = NAME_OPS.every(name => typeof loaded[name] === 'function');
+    registrable = nameable && NAME_REG_OPS.every(name => typeof loaded[name] === 'function');
+    vaultable = VAULT_OPS.every(name => typeof loaded[name] === 'function');
+    splittable = SPLIT_OPS.every(name => typeof loaded[name] === 'function');
+  }
+  function takeIdentity(info, expected) {
+    if (!info || typeof info.fingerprint !== 'string' || !HEX128.test(info.fingerprint) || typeof info.chainId !== 'string' || !HEX64.test(info.chainId)) throw new Error('The Nodus send module returned an invalid identity.');
+    // The module derives the identity from the seed on its own; it must be
+    // the same address this wallet derived and shows (src/nodus/derive.js).
+    if (info.fingerprint !== expected) throw new Error('The Nodus send module derived a different address. Nothing was connected.');
+    fingerprint = info.fingerprint; chainId = info.chainId;
+  }
+  async function unlock({ seed, fingerprint: expected } = {}) {
+    claimStart(seed, expected);
     try {
       setState('connecting');
-      const loaded = await factory();
-      if (stopped) {
-        // Locked while the module was loading: it is wiped and dropped unused.
-        module = loaded; lock(); throw lockedError();
-      }
-      if (!loaded || ![...ASYNC_OPS, ...SYNC_OPS].every(name => typeof loaded[name] === 'function') || !(loaded.memory?.buffer instanceof ArrayBuffer)) {
-        module = loaded; throw new Error('The Nodus send module does not match this wallet version.');
-      }
-      module = loaded;
-      claimable = CLAIM_OPS.every(name => typeof loaded[name] === 'function');
-      stakeable = STAKE_OPS.every(name => typeof loaded[name] === 'function') && validRules(loaded.stakingRules);
-      stakingRules = stakeable ? Object.freeze({ ...loaded.stakingRules }) : undefined;
-      connectable = CONNECT_OPS.every(name => typeof loaded[name] === 'function');
-      nameable = NAME_OPS.every(name => typeof loaded[name] === 'function');
-      registrable = nameable && NAME_REG_OPS.every(name => typeof loaded[name] === 'function');
-      vaultable = VAULT_OPS.every(name => typeof loaded[name] === 'function');
-      const info = await enqueue('unlock', { seed });
-      if (!info || typeof info.fingerprint !== 'string' || !HEX128.test(info.fingerprint) || typeof info.chainId !== 'string' || !HEX64.test(info.chainId)) throw new Error('The Nodus send module returned an invalid identity.');
-      // The module derives the identity from the seed on its own; it must be
-      // the same address this wallet derived and shows (src/nodus/derive.js).
-      if (info.fingerprint !== expected) throw new Error('The Nodus send module derived a different address. Nothing was connected.');
-      fingerprint = info.fingerprint; chainId = info.chainId;
+      await load();
+      takeIdentity(await enqueue('unlock', { seed }), expected);
       timer = every(tick, NODUS_TICK_MS);
       setState('ready');
       return { fingerprint, chainId };
@@ -242,6 +278,46 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
       throw error;
     } finally { seed.fill(0); }
   }
+  // The local half of unlock: the identity, no session. Afterwards the
+  // Messages exports that need only the identity run (connectLocal); the
+  // network waits for connectNetwork(). A failure locks, as unlock's does.
+  async function identify({ seed, fingerprint: expected } = {}) {
+    claimStart(seed, expected);
+    try {
+      setState('identifying');
+      await load();
+      if (!splittable) throw new Error('The Nodus send module does not match this wallet version.');
+      takeIdentity(await enqueue('identify', { seed }), expected);
+      setState('identified');
+      return { fingerprint, chainId };
+    } catch (error) {
+      if (!stopped) { lock(); setState('error'); }
+      throw error;
+    } finally { seed.fill(0); }
+  }
+  // The network half: one attempt, queued like every operation. A failed
+  // attempt returns to 'identified' and may be tried again (nothing is
+  // wiped); a `final` one (the node serves another chain) locks the client.
+  // Called again while an attempt runs: that attempt's promise.
+  function connectNetwork() {
+    if (stopped) return Promise.reject(lockedError());
+    if (state === 'ready') return Promise.resolve();
+    if (connecting) return connecting;
+    if (!module || state !== 'identified') return Promise.reject(new Error('Nodus connection is not ready.'));
+    setState('connecting');
+    connecting = enqueue('connectNetwork').then(() => {
+      if (stopped) throw lockedError();
+      timer = every(tick, NODUS_TICK_MS);
+      setState('ready');
+    }, error => {
+      if (stopped) throw lockedError();
+      if (error?.final === true) { lock(); setState('error'); }
+      else setState('identified');
+      throw error;
+    }).finally(() => { connecting = undefined; });
+    return connecting;
+  }
+  const identified = () => !stopped && !!module && fingerprint !== undefined && (state === 'identified' || state === 'connecting' || state === 'ready');
   const call = op => (args, options) => { try { ready(); } catch (error) { return Promise.reject(error); } return enqueue(op, args, options); };
   const claimCall = op => (args, options) => claimable ? call(op)(args, options) : Promise.reject(new Error('Claiming is not available in this wallet version.'));
   const stakeCall = op => (args, options) => stakeable ? call(op)(args, options) : Promise.reject(new Error('Staking is not available in this wallet version.'));
@@ -255,7 +331,12 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
     get chainId() { return chainId; },
     // Whether the loaded module offers the genesis claim (CLAIM_OPS).
     get claimable() { return claimable && state === 'ready'; },
+    // The identity is known (identify or unlock finished) and the client is
+    // not failed or locked: 'identified', 'connecting' after it, or 'ready'.
+    get identified() { return identified(); },
     unlock,
+    identify,
+    connectNetwork,
     balance: (options) => call('balance')(undefined, options),
     list: (options) => call('list')(undefined, options),
     buildAndSign: call('buildAndSign'),
@@ -302,6 +383,18 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
       if (!connectable) return Promise.reject(noMessages());
       if (typeof run !== 'function') return Promise.reject(new Error('Invalid Messages operation.'));
       return call('connect')(run, options);
+    },
+    // connectLocal(run): the same queue slot as connect(run), already once
+    // identified — for the Messages exports that need only the identity
+    // (keys, history key and records, kept-profile checks; src/connect/
+    // core.js). The module refuses any network call made through it before
+    // its connect succeeded.
+    get localConnectable() { return connectable && identified(); },
+    connectLocal: (run, options) => {
+      if (!connectable) return Promise.reject(noMessages());
+      if (typeof run !== 'function') return Promise.reject(new Error('Invalid Messages operation.'));
+      if (!identified()) return Promise.reject(new Error('Nodus connection is not ready.'));
+      return enqueue('connect', run, options);
     },
     connectSync(run) {
       if (stopped || !module) throw lockedError();

@@ -8,14 +8,16 @@
 // One page = one module = one session (NC-4b): this page creates the
 // wallet's own NODUS client (src/nodus/client.js createNodusClient with
 // src/nodus/send-module.js nodusSendModuleFactory — the module that also
-// carries the Messages exports), unlocks it with the signing seed and the
-// locally derived address exactly as src/app.js startNodusSend does, and
-// hands it to Messages (messages.js openMessages).
+// carries the Messages exports), identifies it with the signing seed and
+// the locally derived address as src/app.js startNodusSend does, hands it to
+// Messages (messages.js openMessages: what this device keeps is shown
+// first), then connects it (connectLoop: a failed attempt is retried on the
+// same client).
 //
 // Lifecycle (§1.8): the page opens only while this tab holds the wallet's
 // single-tab Web Lock `nodus.wallet.session` (src/app.js pattern); 10 minutes
 // without input, a manual Lock, `pagehide`, a change of the saved wallet, or
-// the client leaving 'ready' locks it. Lock order: Messages (resetMessages:
+// the client failing ('error' / 'locked') locks it. Lock order: Messages (resetMessages:
 // sync stops -> core.lock() -> history store closed -> data dropped) ->
 // client.lock() (queue stops, cancel, WebSocket closed, module memory
 // zeroed, instance released) -> THEN the Web Lock is released.
@@ -25,7 +27,7 @@ import { normalizePhrase, validateNodusPhrase } from '../../recovery.js';
 import { nodusSendModuleFactory } from '../../nodus/send-module.js';
 import { createNodusClient } from '../../nodus/client.js';
 import { deriveNodusAddress, nodusSigningSeed } from '../../nodus/derive.js';
-import { mountMessages, openMessages, resetMessages } from './messages.js';
+import { mountMessages, openMessages, resetMessages, walletExtension } from './messages.js';
 import { el } from './dom.js';
 
 const $ = id => document.getElementById(id);
@@ -116,12 +118,17 @@ async function open(getPhrase, { persistent, isFresh }) {
     if (superseded()) return;
     built = createNodusClient({
       factory: nodusSendModuleFactory,
-      // Once open, a session that leaves 'ready' (error, or locked from
-      // inside) ends the page; before that, the catch below reports.
-      onState: next => { if (built === client && next !== 'ready' && next !== 'connecting') lock('The connection to the network was lost. Unlock again to continue.'); }
+      // Once open, a client that fails ('error': its keepalive failed, or a
+      // node of another chain) or locks from inside ends the page. A failed
+      // connection attempt returns to 'identified' and is tried again
+      // (connectLoop); before the page opened, the catch below reports.
+      onState: next => { if (built === client && (next === 'error' || next === 'locked')) lock('The connection to the network was lost. Unlock again to continue.'); }
     });
     seed = nodusSigningSeed(phrase);
-    await built.unlock({ seed, fingerprint: address });
+    // LOCAL FIRST: the identity only (no session); Messages opens from what
+    // this device keeps, THEN the connection is made (one queue: a
+    // connection attempt queued first would hold the local steps).
+    await built.identify({ seed, fingerprint: address });
     if (superseded()) return;
     client = built;
     $('nc-lock').hidden = false;
@@ -129,11 +136,34 @@ async function open(getPhrase, { persistent, isFresh }) {
     activity();
     // Only words generated in this tab, this session, are "fresh" (Q1).
     await openMessages({ client, phrase, vaultId: persistent ? id : null, fresh: isFresh });
+    if (superseded()) return;
+    void connectLoop(run, built);
   } catch (error) {
     if (superseded()) return;
     // The identity never opened: back to the start, nothing kept.
     lock(error instanceof Closed || /password|phrase|words/i.test(error.message) ? error.message : 'Messages could not connect right now. Try again in a minute.');
   } finally { seed?.fill(0); }
+}
+
+// The connection of an identified client, tried again on the SAME client
+// after a fixed, growing wait (src/app.js RECONNECT) while this open is the
+// current one; Messages keeps what it shows meanwhile. Success: Messages'
+// network phase starts (messages.js walletExtension.nodusReady). A final
+// refusal locks the client, and onState above locks the page.
+const RETRY_MS = [5000, 10000, 20000, 40000, 60000];
+async function connectLoop(run, built) {
+  for (let attempt = 0; run === opening && built === client; attempt++) {
+    try {
+      await built.connectNetwork();
+      if (run === opening && built === client) walletExtension.nodusReady({ client: built });
+      return;
+    } catch {
+      if (run !== opening || built !== client || !built.identified) return;
+      const wait = RETRY_MS[Math.min(attempt, RETRY_MS.length - 1)];
+      walletExtension.nodusConnectFailed({ reason: `Not connected to the network right now; trying again in ${wait / 1000} seconds. Your messages on this device are shown.` });
+      await new Promise(resolve => { setTimeout(resolve, wait); });
+    }
+  }
 }
 
 // ── wiring ─────────────────────────────────────────────────────────────

@@ -651,26 +651,38 @@ function stopNodusSend(options) {
 const NODUS_RETRY_MS = [5000, 10000, 20000, 40000, 60000];
 let nodusRetryTimer, nodusRetries = 0;
 function clearNodusRetry() { clearTimeout(nodusRetryTimer); nodusRetryTimer = undefined; }
+// `again`: the step to retry (connectNodus on the same identified client);
+// none = a new client (startNodusSend).
 // @return the wait in seconds (for the status line).
-function scheduleNodusRetry(source, address) {
+function scheduleNodusRetry(source, address, again = () => startNodusSend(source, address)) {
   clearNodusRetry();
   const wait = NODUS_RETRY_MS[Math.min(nodusRetries, NODUS_RETRY_MS.length - 1)];
   nodusRetries++;
   nodusRetryTimer = setTimeout(() => {
     nodusRetryTimer = undefined;
-    if (source === wallet && !source.locked && source.addresses.nodus === address) void startNodusSend(source, address);
+    if (source === wallet && !source.locked && source.addresses.nodus === address) void again();
   }, wait);
   return wait / 1000;
 }
 // Started once the Nodus address is derived, so the module's own identity can
-// be checked against it (client.unlock). Never runs while no module exists.
+// be checked against it (client.identify). Never runs while no module exists.
+//
+// LOCAL FIRST (operator 2026-10-04: Connect must show what it keeps before
+// the network): the client is first IDENTIFIED (no session, nothing sent),
+// extensions are told at once (nodusIdentified — Messages opens from this
+// device's history), then the session is opened (connectNodus). A failed
+// connection attempt keeps the identified client and the extensions' view
+// and is tried again ON THE SAME CLIENT after the RECONNECT wait; only a
+// failed identify, a node of another chain (final — the client locks
+// itself) or a lost ready connection end the client.
 async function startNodusSend(source, address) {
   stopNodusSend();
   let wasReady = false;
   const client = createNodusClient({ factory: nodusSendModuleFactory, onState: state => {
     if (client !== nodusClient || state === 'ready') return;
-    // A failed first unlock is retried by the catch below; only a client
-    // that was ready and then failed is handled here.
+    // A failed identify or connection attempt is handled where it is made
+    // (startNodusSend, connectNodus); only a client that was ready and then
+    // failed is handled here.
     if (!wasReady) return;
     // The client failed after it was ready: extensions on it close too, and
     // a new connection is tried (RECONNECT above).
@@ -692,19 +704,8 @@ async function startNodusSend(source, address) {
     const { nodusSigningSeed } = await import('./nodus/derive.js');
     if (!current()) { client.lock(); return; }
     seed = nodusSigningSeed(source.recoveryPhrase);
-    await client.unlock({ seed, fingerprint: address });
+    await client.identify({ seed, fingerprint: address });
     if (!current()) { client.lock(); return; }
-    wasReady = true; nodusRetries = 0;
-    source.nodusClient = client;
-    $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
-    setNodusReady(true);
-    portfolio.setAddress(NODUS_ASSET.chain, address);
-    void refreshClaim();
-    void refreshStaking();
-    void refreshName();
-    // The saved wallet's id only when this wallet is the unlocked saved copy
-    // (activitySession is set by unlock or by saving it here).
-    raise('nodusReady', { client, phrase: source.recoveryPhrase, vaultId: activitySession?.id ?? null, fresh: walletFresh });
   } catch (error) {
     if (client === nodusClient) {
       const why = error?.message ? ` (${error.message})` : '';
@@ -714,7 +715,55 @@ async function startNodusSend(source, address) {
         $('nodus-address-status').textContent = `Derived locally from this wallet’s recovery phrase. Nodus balance and sending are unavailable right now${why}; trying again in ${seconds} seconds.`;
       }
     }
+    return;
   } finally { seed?.fill(0); }
+  // The saved wallet's id only when this wallet is the unlocked saved copy
+  // (activitySession is set by unlock or by saving it here).
+  // Asked with gather, not raise: an extension answers with the promise of
+  // its LOCAL open (Messages: history store, kept profiles — each a queue
+  // slot of this client), and the connection waits for it. The client runs
+  // one operation at a time; a connection attempt queued first would hold
+  // every local step behind its network waits.
+  const opening = gather('nodusIdentified', { client, phrase: source.recoveryPhrase, vaultId: activitySession?.id ?? null, fresh: walletFresh });
+  await Promise.allSettled(opening.filter(step => typeof step?.then === 'function'));
+  await connectNodus(source, address, client, () => { wasReady = true; });
+}
+// One connection attempt of an identified client (startNodusSend). Success:
+// exactly what the first open always did. A failure that may be retried
+// keeps the client and the extensions' view (nodusConnectFailed) and tries
+// again on the SAME client after the RECONNECT wait; a final one (the node
+// serves another chain: the client has locked itself) closes the
+// extensions and is not retried.
+async function connectNodus(source, address, client, markReady) {
+  const current = () => client === nodusClient && source === wallet && !source.locked;
+  if (!current()) return;
+  try {
+    await client.connectNetwork();
+    if (!current()) return;
+    markReady(); nodusRetries = 0;
+    source.nodusClient = client;
+    $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
+    setNodusReady(true);
+    portfolio.setAddress(NODUS_ASSET.chain, address);
+    void refreshClaim();
+    void refreshStaking();
+    void refreshName();
+    raise('nodusReady', { client, phrase: source.recoveryPhrase, vaultId: activitySession?.id ?? null, fresh: walletFresh });
+  } catch (error) {
+    if (!current()) return;
+    const why = error?.message ? ` (${error.message})` : '';
+    if (client.identified) {
+      const seconds = scheduleNodusRetry(source, address, () => connectNodus(source, address, client, markReady));
+      raise('nodusConnectFailed', { reason: `Not connected to the network right now; trying again in ${seconds} seconds. Your messages on this device are shown.` });
+      $('nodus-address-status').textContent = `Derived locally from this wallet’s recovery phrase. Nodus balance and sending are unavailable right now${why}; trying again in ${seconds} seconds.`;
+      return;
+    }
+    // Final: the client locked itself (it reached a node of another chain).
+    nodusClient = undefined;
+    raise('nodusClosing', { reason: 'The Nodus network could not be verified. Lock and open your wallet again to retry.' });
+    setNodusReady(false);
+    $('nodus-address-status').textContent = `Derived locally from this wallet’s recovery phrase. Nodus balance and sending are unavailable${why}. Lock and reopen your wallet to retry.`;
+  }
 }
 // "1234567.5" -> "1,234,567.5" (display only).
 function groupDigits(text) { const [whole, fraction] = text.split('.'); return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (fraction ? `.${fraction}` : ''); }
