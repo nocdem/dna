@@ -125,7 +125,14 @@ async function loadVaults(gen) {
       // they were carried, or trimmed by recordForStorage) is made again
       // below from the preset, with them, and read from block 1
       if (record.foundation && !record.genesis) continue;
-      if (record.address === kept.address && listedFor(record, ownFp)) vaults.set(record.address, record);
+      if (record.address !== kept.address || !listedFor(record, ownFp)) continue;
+      // the address and members are derived again from the kept code by the
+      // module; a record whose stored fields disagree is not listed
+      const info = await client.vaultOpen({ descriptor: record.code });
+      if (gen !== generation) return;
+      if (info.address !== record.address || info.m !== record.m || info.n !== record.n ||
+          info.members.length !== record.members.length || info.members.some((fp, i) => fp !== record.members[i])) continue;
+      vaults.set(record.address, record);
     } catch { /* a damaged record is not listed; it can be added again from its message */ }
   }
   if (!vaults.has(FOUNDATION_VAULT.address) && foundationChecked !== gen) {

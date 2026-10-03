@@ -173,8 +173,11 @@ export function makeVaultRecord({ info, label = '', created, watch = false, from
   };
 }
 
-// A kept record read back (store, memory): every field checked; a broken
-// one is refused (the caller drops it).
+// A kept record read back (store, memory): every field's SHAPE checked; a
+// broken one is refused (the caller drops it). The address and member IDs
+// are NOT re-derived here (no second copy of the derivation in JS):
+// src/vaults/ui.js loadVaults asks the module (vaultOpen) for the kept code
+// and drops a record whose address, M, N or members differ.
 export function checkVaultRecord(value) {
   const r = value || {};
   const shape = vaultCodeShape(r.code);
