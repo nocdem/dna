@@ -554,7 +554,9 @@ let stakeCheck = 0, stakeView;
 // 2026-10-03: clicking a validator opens its controls in that row — your
 // delegation with "add more" / "withdraw", or an amount and "delegate" —
 // instead of a separate form with a validator drop-down). Kept across the
-// re-reads of refreshStaking; one row at a time.
+// re-reads of refreshStaking, together with the amounts typed in it
+// (renderStaking); one row at a time. A submitted delegate / add-more /
+// withdraw closes it (closeStakeRow).
 let expandedValidator;
 const STAKE_KINDS = ['delegate', 'undelegate', 'stake'];
 const ACTION_WORD = { claim: 'Claiming', delegate: 'Delegating', undelegate: 'Undelegating', stake: 'Bonding', name: 'Registering a name' };
@@ -605,13 +607,30 @@ function renderStaking(view) {
   // header is one button that opens or closes the row's own delegation
   // controls below it.
   const el = (tag, className, text) => { const node = document.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node; };
-  const amountInput = (label, value = '') => {
-    const input = document.createElement('input'); input.inputMode = 'decimal'; input.autocomplete = 'off'; input.spellcheck = false; input.placeholder = '0.00';
-    input.value = value; input.setAttribute('aria-label', label); return input;
-  };
-  const actionButton = (text, run) => { const button = el('button', 'small', text); button.type = 'button'; button.onclick = () => void run(button); return button; };
   const mine = new Map(view.delegations.map(d => [d.validator, d]));
   if (expandedValidator && !view.validators.some(v => v.fingerprint === expandedValidator)) expandedValidator = undefined;
+  // What was typed in the open row survives this redraw (a background
+  // re-read, e.g. another transaction becoming final): only the amounts the
+  // person edited — the withdraw box's pre-filled amount follows the new
+  // figures — and only while the same row stays open. Keyboard focus and the
+  // cursor position in that box come back too. Closing the row, or opening
+  // another one, drops it.
+  const drafts = new Map(); let focused;
+  const shown = $('validator-list').querySelector('.stake-detail');
+  if (expandedValidator && shown?.dataset.validator === expandedValidator) {
+    for (const input of shown.querySelectorAll('input[data-field]')) {
+      if (input.dataset.edited) drafts.set(input.dataset.field, input.value);
+      if (input === document.activeElement) focused = { field: input.dataset.field, start: input.selectionStart, end: input.selectionEnd };
+    }
+  }
+  const amountInput = (label, field, value = '') => {
+    const input = document.createElement('input'); input.inputMode = 'decimal'; input.autocomplete = 'off'; input.spellcheck = false; input.placeholder = '0.00';
+    input.dataset.field = field;
+    if (drafts.has(field)) { input.value = drafts.get(field); input.dataset.edited = 'true'; } else input.value = value;
+    input.addEventListener('input', () => { input.dataset.edited = 'true'; });
+    input.setAttribute('aria-label', label); return input;
+  };
+  const actionButton = (text, run) => { const button = el('button', 'small', text); button.type = 'button'; button.onclick = () => void run(button); return button; };
   $('validator-list').replaceChildren(...(view.validators.length ? view.validators.map(v => {
     const short = adapters.nodus.shortKey(v.fingerprint), d = mine.get(v.fingerprint), open = expandedValidator === v.fingerprint;
     // Filled delegator places of the chain's per-validator cap; '?' when the
@@ -638,15 +657,16 @@ function renderStaking(view) {
     row.append(toggle);
     if (!open) return row;
     const detail = el('div', 'stake-detail');
+    detail.dataset.validator = v.fingerprint;
     if (d) {
       detail.append(el('p', 'hint', `You have ${nodusAmountText(d.amount)} NODUS delegated to this validator.`));
       if (v.acceptsDelegation) {
-        const more = amountInput(`Amount to add to your delegation with ${short}`);
+        const more = amountInput(`Amount to add to your delegation with ${short}`, 'more');
         const add = el('span', 'stake-actions');
         add.append(more, actionButton('Review adding more', button => startStake('delegate', { validator: v.fingerprint, amount: more.value }, button)));
         detail.append(add, el('p', 'hint', 'Adding to your delegation can be any amount. A network fee is paid on top.'));
       } else detail.append(el('p', 'hint', `This validator does not take more delegations now (${v.statusText}).`));
-      const back = amountInput(`Amount to withdraw from ${short}`, formatUnits(d.amount, NODUS_ASSET.decimals));
+      const back = amountInput(`Amount to withdraw from ${short}`, 'withdraw', formatUnits(d.amount, NODUS_ASSET.decimals));
       const withdraw = el('span', 'stake-actions');
       withdraw.append(back, actionButton('Review withdrawal', button => startStake('undelegate', { validator: v.fingerprint, amount: back.value }, button)));
       detail.append(withdraw, el('p', 'hint', `Withdrawing returns the NODUS to your address as a separate coin that stays locked for ${view.lockText} after the validator set next changes. Until then it cannot be sent or delegated again. Withdraw everything, or leave at least ${minText} NODUS delegated. The network fee is paid from your spendable NODUS.`));
@@ -655,7 +675,7 @@ function renderStaking(view) {
     } else if (full) {
       detail.append(el('p', 'hint', `All ${rules.maxDelegators} delegator places of this validator are taken. Choose another validator.`));
     } else {
-      const amount = amountInput(`Amount to delegate to ${short}`);
+      const amount = amountInput(`Amount to delegate to ${short}`, 'amount');
       const actions = el('span', 'stake-actions');
       actions.append(amount, actionButton('Review delegation', button => startStake('delegate', { validator: v.fingerprint, amount: amount.value }, button)));
       detail.append(actions, el('p', 'hint', `A new delegation is at least ${minText} NODUS. A network fee is paid on top. You review every detail before anything is sent.`));
@@ -663,6 +683,13 @@ function renderStaking(view) {
     row.append(detail);
     return row;
   }) : [el('p', 'stake-empty', 'No validators listed.')]));
+  if (focused) {
+    const input = $('validator-list').querySelector(`.stake-detail input[data-field="${focused.field}"]`);
+    if (input) {
+      input.focus({ preventScroll: true });
+      if (focused.start !== null && focused.end !== null) input.setSelectionRange(Math.min(focused.start, input.value.length), Math.min(focused.end, input.value.length));
+    }
+  }
   // A delegation whose validator is not in the list above has no row to
   // live on; it is listed here (it cannot be withdrawn from this page: the
   // module needs the validator's key from the list).
@@ -714,6 +741,18 @@ async function startStake(kind, params, button) {
   finally { busy = false; restore(); }
 }
 $('stake-refresh').onclick = () => void refreshStaking();
+// A delegate / add-more / withdraw that was submitted (or whose broadcast
+// outcome is uncertain) closes its validator row at once, dropping the
+// amount typed there, and the list is read again now; checkRow reads it once
+// more when the transaction's Activity record becomes final, so "Your
+// delegation", the totals and the delegator places follow without a reload
+// (operator 2026-10-03: after staking, the row stayed open and the page did
+// not refresh).
+function closeStakeRow() {
+  expandedValidator = undefined;
+  if (stakeView) renderStaking(stakeView);
+  void refreshStaking();
+}
 // Opens the review dialog for a transfer-shaped object (a send, a claim from
 // src/adapters/nodus.js prepareClaim, or a staking transaction from
 // prepareStake) with its own entries.
@@ -1196,9 +1235,9 @@ $('confirm-send').onclick = async () => {
     closeReview();
     // A submitted claim withdraws the offer while its record is unresolved.
     if (transfer.kind === 'claim') void refreshClaim();
-    if (STAKE_KINDS.includes(transfer.kind)) void refreshStaking();
+    if (STAKE_KINDS.includes(transfer.kind)) closeStakeRow();
     if (current !== revision) return;
-    // A staking row's amount fields are drawn again by refreshStaking above.
+    // A staking row and its amount fields were closed by closeStakeRow above.
     if (transfer.kind === 'name') { $('name-input').value = ''; clearNameQuote(); }
     else if (!STAKE_KINDS.includes(transfer.kind)) { $('recipient').value = ''; $('amount').value = ''; }
     if (transfer.kind) message(`${what} submitted; confirmation is pending. ${idLabel} ${hash}. Its status is tracked in Activity.`);
@@ -1212,7 +1251,10 @@ $('confirm-send').onclick = async () => {
     if (record) { record.status = 'unknown'; record.note = 'Broadcast outcome uncertain. Tracking the signed transaction; do not resend automatically.'; if (current === revision) trackActivity(); }
     closeReview();
     if (transfer.kind === 'claim') void refreshClaim();
-    if (STAKE_KINDS.includes(transfer.kind)) void refreshStaking();
+    // Something may have reached the network (a record exists): close the
+    // row as after a submission. Nothing was broadcast otherwise: the row
+    // and its amount stay for another try.
+    if (STAKE_KINDS.includes(transfer.kind)) { if (record) closeStakeRow(); else void refreshStaking(); }
     const uncertain = transfer.kind === 'claim'
       ? 'The outcome is tracked in Activity. An allocation is never paid out twice.'
       : transfer.chain === NODUS_ASSET.chain
