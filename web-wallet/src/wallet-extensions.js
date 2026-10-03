@@ -43,6 +43,13 @@
 //                               from this device (its Messages history goes
 //                               with it, src/app.js vault-delete).
 //   locked()                    the wallet was locked.
+// Questions app.js asks (gather: every extension's answer, arrays joined):
+//   recipients({ network })     recipients the send form may offer for that
+//                               network id besides the address book:
+//                               [{ label, address }]. Messages answers its
+//                               contacts for 'nodus' (src/connect/ui/
+//                               messages.js); the address is checked by the
+//                               wallet again before it is offered.
 // An extension that throws never breaks the wallet path that raised the event.
 const extensions = [];
 let site = 'wallet';
@@ -57,4 +64,14 @@ export function raise(event, detail) {
   for (const extension of extensions) {
     try { extension[event]?.(detail); } catch { /* the wallet path continues */ }
   }
+}
+export function gather(question, detail) {
+  const out = [];
+  for (const extension of extensions) {
+    try {
+      const answer = extension[question]?.(detail);
+      if (Array.isArray(answer)) out.push(...answer);
+    } catch { /* the other answers still count */ }
+  }
+  return out;
 }

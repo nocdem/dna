@@ -2,6 +2,7 @@ import { CHAINS } from './config.js';
 import { validHash, validNodusPending } from './activity.js';
 import { NODUS_ASSET } from './nodus/network.js';
 import { historySupported, checkHistoryRows } from './history.js';
+import { checkAddressBook, ADDRESS_BOOK_MAX } from './address-book.js';
 const encoder = new TextEncoder(), MAX_PLAIN = 150000;
 const context = 'nodus.wallet.activity.v2';
 function encode(bytes) {
@@ -78,6 +79,25 @@ export async function parseHistory(text, id, key, now = Date.now()) {
     out[chain] = { address: h.address, readAt: h.readAt, rows: checkHistoryRows(chain, h.rows) };
   }
   return out;
+}
+
+// The address book (src/address-book.js), saved only with a saved wallet,
+// under its own key: [{ id, label, network, address }]. Unlike the
+// balances and the history this is the user's own data, not a cache:
+// src/app.js reports a failed save.
+export const ADDRESS_BOOK_CONTEXT = 'nodus.wallet.addressbook.v1';
+const ADDRESS_BOOK_MAX_PLAIN = 60000;
+export const addressBookKeyFor = (phrase, id) => activityKeyFor(phrase, id, ADDRESS_BOOK_CONTEXT);
+export async function serializeAddressBook(id, entries, key) {
+  if (!Array.isArray(entries) || entries.length > ADDRESS_BOOK_MAX) throw new Error('The address book is too large to save.');
+  const value = entries.map(({ id: entryId, label, network, address }) => ({ id: entryId, label, network, address }));
+  return sealRecord(ADDRESS_BOOK_CONTEXT, id, value, key, ADDRESS_BOOK_MAX_PLAIN, 'address book entries');
+}
+// -> the checked list (src/address-book.js checkAddressBook, `validators`
+// as there); anything that does not authenticate or check out throws.
+export async function parseAddressBook(text, id, key, validators) {
+  if (!text) return [];
+  return checkAddressBook(await openRecord(ADDRESS_BOOK_CONTEXT, text, id, key, ADDRESS_BOOK_MAX_PLAIN, 'address book entries'), validators);
 }
 
 export async function serializeBalances(id, entries, key) {

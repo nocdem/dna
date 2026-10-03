@@ -321,3 +321,49 @@ export function compareLocal(a, b) {
 export function receivedKey(fp, message) {
   return JSON.stringify([fp, String(message.seq), String(message.senderTs), message.text]);
 }
+
+// The own contact list read from the network (core.contactsGet 'found')
+// merged into the local state: what it has and this device lacks is added;
+// a salt this device already holds is kept (design §1.4 R3). An ID the user
+// removed on this device (state.removed) is NOT added back: the list on the
+// network is merge-only (nc_core.h nc_contactlist_add) and still holds it.
+// @return true when the state changed (the caller saves).
+export function mergeListedContacts(state, entries, ownFp) {
+  const removed = new Set(state.removed);
+  let changed = false;
+  for (const entry of entries || []) {
+    if (!entry || !HEX128.test(entry.fp) || entry.fp === ownFp || removed.has(entry.fp)) continue;
+    const local = state.contacts.find(c => c.fp === entry.fp);
+    if (!local) { state.contacts.push({ fp: entry.fp, salt: entry.salt || null, listed: true }); changed = true; }
+    else {
+      if (!local.salt && entry.salt) { local.salt = entry.salt; changed = true; }
+      if (!local.listed) { local.listed = true; changed = true; }
+    }
+  }
+  return changed;
+}
+
+// Removes a contact on THIS device (the user's "Remove contact"): it leaves
+// the contact list, its ID goes on state.removed (so the network list does
+// not bring it back), and what was kept to check its messages goes too —
+// the check time, the kept profile row index and chain name (the app drops
+// its key cache on removal too, dna_engine_contacts.c:253). The messages
+// themselves stay on this device (shown again if the person is added again),
+// and so do the ACK values (no second ACK of messages already ACKed).
+// @return true when the contact was removed.
+export function removeContact(state, fp) {
+  const index = state.contacts.findIndex(c => c.fp === fp);
+  if (index < 0) return false;
+  state.contacts.splice(index, 1);
+  if (!state.removed.includes(fp)) state.removed.push(fp);
+  delete state.dmSync[fp];
+  delete state.profileCache[fp];
+  delete state.chainNames[fp];
+  return true;
+}
+
+// The person is a contact again (a request accepted either way): their ID
+// leaves state.removed.
+export function unremoveContact(state, fp) {
+  state.removed = state.removed.filter(r => r !== fp);
+}

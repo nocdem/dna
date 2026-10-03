@@ -1845,8 +1845,9 @@ One breakpoint, 900 px (the wallet's `SINGLE_COLUMN_DASHBOARD`).
   differs. While the wallet is open, "Delete saved wallet from this device"
   is moved into Device & settings (the same element, moved back on lock).
 - More (`screens/more/more_screen.dart`): Your ID & profile, Contacts,
-  Contact requests (count), Device & settings, Privacy & safety, Licenses,
-  and Lock (the wallet's `#lock`).
+  Contact requests (count), Address book (opens the Wallet screen at the
+  wallet's `#address-book-panel`), Device & settings, Privacy & safety,
+  Licenses, and Lock (the wallet's `#lock`).
 - Privacy & safety (`#about-screen`): the wallet page's privacy, storage
   and care texts as one screen with Back, reachable before and after unlock;
   in-page links to them (`#privacy`, `#storage-guide`) open it.
@@ -1881,8 +1882,9 @@ One breakpoint, 900 px (the wallet's `SINGLE_COLUMN_DASHBOARD`).
   4000 characters) and a round send button. From 900 px Chats stays on the
   left and the conversation opens on the right (no Back there).
 - Contacts (`screens/contacts/contacts_hub_screen.dart`): Back, Add contact,
-  tabs Contacts / Requests (count); Requests lists incoming (Accept / Decline)
-  and sent (Withdraw) requests.
+  tabs Contacts / Requests (count); each contact has "Remove contact" (asks
+  to confirm; see "Remove a contact and the address book" below); Requests
+  lists incoming (Accept / Decline) and sent (Withdraw) requests.
 - Your ID & profile: your ID (Copy), your picture (Change picture / Remove
   picture), the profile form, the not-saved note and "Delete message history
   on this device".
@@ -1956,6 +1958,97 @@ opens — the chips and list with real contacts, the conversation and its
 composer, Contacts, Your ID & profile and the add-contact dialog are not
 reached; sending, receiving, requests and profile editing need a live node.
 Not verified: nothing in this section has been run in a browser yet.
+
+## Remove a contact and the address book (unreleased)
+
+Operator 2026-10-03: contacts can be added and removed in Contacts; when
+sending, an address book like the DNA Connect app's — for every network the
+wallet sends on, not only NODUS.
+
+**Remove a contact (Nodus Connect, Contacts tab).** Each contact has "Remove
+contact"; the first press asks ("Remove this contact from this device? …"),
+"Confirm: remove this contact" removes it, "Keep" cancels. What happens
+(`src/connect/ui/messages.js` removeContactAction, `text.js` removeContact):
+- The contact leaves the list on THIS device; its conversation is no longer
+  shown and its messages are no longer checked.
+- **Messages are kept** on this device (hidden), and so are the ACK values
+  (no second delivery confirmation for messages already confirmed). If the
+  person becomes a contact again (a request accepted either way) the history
+  is there again. The kept profile row index, the chain name and the
+  message-check time of that contact are dropped (the app drops its key cache
+  on removal too, `dna_engine_contacts.c:253`).
+- **The own contact list on the network is NOT changed.** The core only adds
+  to it — `nc_contactlist_add` is merge-only by design (`connect/nc_core.h`,
+  "MERGE ONLY, never fewer entries") and there is no export that writes a
+  shorter list. So other devices and the DNA Connect app keep listing the
+  person, and this device must not take them back from that list: the removed
+  IDs are kept in the history state (`state.removed`, `src/connect/store.js`;
+  saved wallet only — an unsaved wallet forgets the removal on lock, and the
+  network list brings the contact back at the next open). Publishing a
+  removal needs a C change in `web-wallet/connect/` (an export that reads the
+  list in the same call, drops exactly the named IDs and writes it with
+  `nc_contactlist_build`, like the app's `messenger_sync_contacts_to_dht`) —
+  not made here.
+- The removed person can send a new request; it shows under Requests.
+Adding a contact is unchanged: Add contact in the Contacts bar (and on Chats).
+
+**Address book (wallet page and Nodus Connect, Wallet screen).** A panel
+"Address book" (section link and, in Nodus Connect, More → Address book)
+lists saved recipients `{ label, network, address }` — one entry per network
+and address (the same address on two networks is two entries) — with Edit and
+Delete (asks to confirm), and a form Name / Network / Address. Rules
+(`src/address-book.js`, pure; `test/address-book.test.js`):
+- Name: required, trimmed, at most 48 characters, no line breaks, no
+  invisible or direction-changing characters, no mixed alphabets — the vault
+  name rule (`src/vaults/core.js vaultLabel`, `connect/ui/text.js
+  inspectUntrusted`). It is the user's own text, shown through `textContent`.
+- Address: checked by that network's own check, the ones the send path uses
+  (`src/app.js` ADDRESS_CHECKS): Ethereum and BNB Smart Chain
+  `isRecipientAddress` + `getAddress` (a wrong mixed-case checksum is refused;
+  the checksummed form is saved), Solana and TRON `isRecipientAddress`, NODUS
+  `nodusRecipient` (128 hex, saved lower-case), Cellframe
+  `validateCellframeAddress` (structural only — Base58, 100–110 characters; no
+  checksum check exists in this tree). Cellframe entries can be saved, but
+  Cellframe sending is not available, so they are never offered. Ixios is not
+  in the list.
+- At most 200 entries; shown by name (letter case ignored), then network,
+  then address.
+- **Send form:** under the recipient field, "Or choose a saved recipient"
+  lists the entries of the selected network only (on Nodus Connect, also the
+  contacts for NODUS: a contact's ID is its NODUS address — `core.js` refuses
+  an identity whose fingerprint differs from the NODUS client's — labelled by
+  chain name or short ID, never a profile name). A choice only fills the
+  recipient field; the send is checked and reviewed exactly as if the address
+  had been typed. The wallet's own address is not offered.
+- **After a plain send** (not staking, a name registration or a claim), if
+  the recipient is not saved: "… is not in your address book" with "Save this
+  address", which fills the form (network and address fixed by the send; a
+  chain name the send went to is the suggested name).
+- **Storage** (decision `2026-10-02-device-cache-only-when-saved.md`): with
+  a SAVED wallet, encrypted in `localStorage['nodus.addressbook.v1']` — the
+  same envelope as the saved balances (AES-256-GCM, random 12-byte IV, header
+  as additional data) under its own key (HKDF info
+  `nodus.wallet.addressbook.v1`, `src/activity-storage.js`
+  serializeAddressBook / parseAddressBook); read back and checked again at
+  unlock. An unsaved wallet keeps it in memory until lock (the panel says so);
+  saving the wallet saves it. A saved book that does not authenticate is not
+  shown ("could not be read; saving an address replaces it") and is left as it
+  is until an address is saved. A failed write is reported, not hidden.
+  Deleting the saved wallet deletes it. Per origin: the wallet site and the
+  Nodus Connect site have separate address books (decision
+  `2026-10-01-connect-own-origin.md`). Not synced to other devices, and not
+  shared with the DNA Connect app's address book.
+- Extension question `recipients({ network })` (`src/wallet-extensions.js`
+  `gather`): how Messages offers contacts; every address is checked by the
+  wallet again before it is shown.
+
+Tests: `test/address-book.test.js` (`npm test`) — names, per-network
+address checks, add / edit / delete / duplicates / limit / order, the stored
+list re-check, the encrypted record (own key, vault id bound, tamper
+refused), and contact removal (not merged back from the network list, cleared
+when added again, the saved state's `removed` field). Not verified: nothing
+in this section has been run in a browser yet; `test/connect-smoke.js` does
+not reach Contacts (Messages never opens there).
 
 ## Validator delegator count (node side only, unreleased)
 

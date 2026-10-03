@@ -157,6 +157,12 @@ function wireShell({ messagesNavigate, shortId, nodusSymbol, initials, fillAvata
   $('more-profile').onclick = () => openFromMore('profile');
   $('more-contacts').onclick = () => openFromMore('contacts');
   $('more-requests').onclick = () => openFromMore('requests');
+  // The address book is part of the wallet (src/app.js, #address-book-panel).
+  $('more-address-book').onclick = () => {
+    setTab('wallet');
+    $('address-book-panel').scrollIntoView({ block: 'start' });
+    $('address-book-title').focus({ preventScroll: true });
+  };
   $('more-device').onclick = () => {
     setTab('wallet');
     $('device-panel').scrollIntoView({ block: 'start' });

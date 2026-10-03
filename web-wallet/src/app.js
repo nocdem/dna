@@ -1,7 +1,9 @@
 import { getAddress } from 'ethers';
-import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
+import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
 import { deleteVaultHistory, HistoryDeleteBlocked } from './connect/store.js';
-import { serializeActivity, parseActivity, activityKeyFor, serializeBalances, parseBalances, balancesKeyFor, serializeHistory, parseHistory, historyKeyFor } from './activity-storage.js';
+import { serializeActivity, parseActivity, activityKeyFor, serializeBalances, parseBalances, balancesKeyFor, serializeHistory, parseHistory, historyKeyFor, serializeAddressBook, parseAddressBook, addressBookKeyFor } from './activity-storage.js';
+import { addAddress, updateAddress, removeAddress, addressesFor, findAddress, checkAddress } from './address-book.js';
+import { validateCellframeAddress } from './cpunk-protocol.js';
 import { readHistory, mergeHistory, historySupported, HISTORY_SOURCES, HISTORY_LIMIT } from './history.js';
 import { recordActivity, watchActivity, checkActivity, terminal, submissionStatus } from './activity.js';
 import { CHAINS, CELLFRAME } from './config.js';
@@ -21,7 +23,7 @@ import { createPortfolio } from './portfolio-view.js';
 import { renderQr } from './qr.js';
 // Wallet-only page: no extension is registered and these are no-ops; the
 // Nodus Connect page registers Messages (src/connect-main.js).
-import { raise, siteName } from './wallet-extensions.js';
+import { raise, gather, siteName } from './wallet-extensions.js';
 import { createSiteLock } from './site-lock.js';
 const $ = id => document.getElementById(id);
 // Must equal the src/style.css media query that sets `.dashboard-grid` to one
@@ -357,6 +359,207 @@ const message = text => { submissionFollow = null; $('wallet-status').textConten
 function explorerLink(chain, hash) {
   const link = document.createElement('a'); link.href = CHAINS[chain].explorer + encodeURIComponent(hash); link.textContent = `View transaction ${hash}`; link.target = '_blank'; link.rel = 'noopener noreferrer';
   return link;
+}
+// ── Address book (src/address-book.js) ─────────────────────────────────
+// Saved recipients { label, network, address } for every network the wallet
+// sends on (operator 2026-10-03; the DNA Connect app's address book,
+// dna_engine_addressbook.c). Each address is checked by its own network's
+// check (ADDRESS_CHECKS, the same checks the send path uses: src/adapters
+// isRecipientAddress, nodusRecipient; Cellframe's is structural only,
+// src/cpunk-protocol.js). The send form of a network offers only that
+// network's entries (plus, on Nodus Connect, the contacts for NODUS —
+// wallet-extensions.js gather 'recipients'); a choice only fills the
+// recipient field, which prepareTransfer checks as if typed.
+// Kept with a SAVED wallet only, encrypted under its own key
+// (ADDRESS_BOOK_KEY, src/activity-storage.js serializeAddressBook; decision
+// 2026-10-02-device-cache-only-when-saved); an unsaved wallet keeps it in
+// memory until lock, and saving the wallet saves it too.
+function evmAddressCheck(name) {
+  return text => {
+    if (!adapters.ethereum.isRecipientAddress(text)) throw new Error(`Enter a ${name} address: 0x and 40 characters 0-9, a-f.`);
+    // A mixed-case address carries a checksum (EIP-55); getAddress refuses a
+    // wrong one and gives the checksummed form that is saved.
+    try { return getAddress(text); } catch { throw new Error(`This ${name} address does not match its own check (capital and small letters). Copy it again from your source.`); }
+  };
+}
+const ADDRESS_CHECKS = {
+  nodus: text => adapters.nodus.nodusRecipient(text),
+  ethereum: evmAddressCheck('Ethereum'),
+  bsc: evmAddressCheck('BNB Smart Chain'),
+  solana: text => { if (!adapters.solana.isRecipientAddress(text)) throw new Error('Enter a Solana address.'); return text; },
+  tron: text => { if (!adapters.tron.isRecipientAddress(text)) throw new Error('Enter a TRON address.'); return text; },
+  ...(CPUNK_ENABLED ? { cellframe: validateCellframeAddress } : {})
+};
+// The networks an address can be saved for, in the network selector's order.
+const ADDRESS_NETWORKS = [NODUS_ASSET.chain, ...Object.keys(CHAINS), ...(CPUNK_ENABLED ? ['cellframe'] : [])].filter(chain => ADDRESS_CHECKS[chain]);
+$('address-book-network').replaceChildren(...ADDRESS_NETWORKS.map(chain => new Option(networkFor(chain).name, chain)));
+let addressBook = [], addressBookEditing = null, addressBookDeleteArmed = null, addressBookNote = '', addressBookWrites = Promise.resolve();
+// The saved address book did not authenticate or check out at unlock: it is
+// left as it is until the user saves an address (commitAddressBook).
+let addressBookUnreadable = false;
+let recipientChoicesShown = [], lastSentRecipient = null;
+const shortAddress = address => address.length > 20 ? `${address.slice(0, 10)}…${address.slice(-6)}` : address;
+// Saved encrypted only while a SAVED wallet is open (activitySession with
+// its address book key). Resolves true when written, false when there is
+// nothing to write to (unsaved wallet, or the wallet changed meanwhile);
+// rejects when the browser refused the write.
+function persistAddressBook() {
+  const session = activitySession, source = wallet, entries = addressBook;
+  if (!session?.addressBookKey || !source) return Promise.resolve(false);
+  const write = addressBookWrites.catch(() => {}).then(async () => {
+    const encrypted = await serializeAddressBook(session.id, entries, session.addressBookKey);
+    if (session !== activitySession || source !== wallet || source.locked || localStorage.getItem(VAULT_KEY) !== session.vault) return false;
+    localStorage.setItem(ADDRESS_BOOK_KEY, encrypted);
+    return true;
+  });
+  addressBookWrites = write;
+  return write;
+}
+function addressBookStatus(text) { $('address-book-status').textContent = text; }
+function resetAddressForm() {
+  addressBookEditing = null;
+  $('address-book-label').value = ''; $('address-book-address').value = '';
+  $('address-book-form-title').textContent = 'Add an address';
+  $('address-book-save').textContent = 'Save address';
+  $('address-book-cancel').hidden = true;
+}
+function renderAddressBook() {
+  $('address-book-storage').textContent = !wallet ? ''
+    : [activitySession?.addressBookKey ? 'Saved encrypted with this wallet on this device.' : 'This wallet is not saved on this device: the address book is kept only until you lock. Save the wallet in Device & settings to keep it.', addressBookNote].filter(Boolean).join(' ');
+  const el = (tag, className, text) => { const node = document.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node; };
+  const small = (text, onClick) => { const node = el('button', 'secondary small', text); node.type = 'button'; node.onclick = onClick; return node; };
+  if (addressBookDeleteArmed && !addressBook.some(e => e.id === addressBookDeleteArmed)) addressBookDeleteArmed = null;
+  $('address-book-list').replaceChildren(...(wallet && addressBook.length ? addressBook.map(entry => {
+    const row = el('div', 'address-book-row'), main = el('span', 'address-book-main');
+    // The label is the user's own text, checked when saved (address-book.js
+    // addressLabel); shown as text only.
+    main.append(el('strong', '', entry.label), el('small', '', `${networkFor(entry.network)?.name ?? entry.network}${ADDRESS_CHECKS[entry.network] ? '' : ' · not available in this version'}`), el('code', 'address-book-address', entry.address));
+    const actions = el('span', 'address-book-row-actions');
+    const armed = addressBookDeleteArmed === entry.id;
+    actions.append(
+      small('Edit', () => editAddress(entry.id)),
+      small(armed ? 'Confirm delete' : 'Delete', () => void deleteAddress(entry.id)));
+    if (armed) actions.append(small('Keep', () => { addressBookDeleteArmed = null; renderAddressBook(); }));
+    row.append(main, actions);
+    return row;
+  }) : wallet ? [el('p', 'hint', 'No saved addresses yet. Add one below, or save a recipient after you send.')] : []));
+  renderRecipientBook();
+}
+// Every change: the list in memory first, then saved (a saved wallet).
+async function commitAddressBook(next, done) {
+  const source = wallet;
+  addressBook = next; addressBookNote = ''; addressBookUnreadable = false; renderAddressBook();
+  let saved;
+  try { saved = await persistAddressBook(); }
+  catch { if (wallet === source) addressBookStatus(`${done} It could not be saved on this device (the browser refused); it is kept until you lock.`); return; }
+  if (wallet !== source) return;
+  addressBookStatus(saved ? done : `${done} It is kept until you lock (this wallet is not saved on this device).`);
+}
+function editAddress(id) {
+  const entry = addressBook.find(e => e.id === id);
+  if (!entry) return;
+  addressBookEditing = id;
+  $('address-book-label').value = entry.label;
+  // A network this version cannot check is not in the selector: such an
+  // entry can be renamed only by deleting and saving it again.
+  if (!ADDRESS_CHECKS[entry.network]) { resetAddressForm(); addressBookStatus('This address is of a network this version does not offer; it can only be deleted here.'); return; }
+  $('address-book-network').value = entry.network; $('address-book-address').value = entry.address;
+  $('address-book-form-title').textContent = 'Change an address';
+  $('address-book-save').textContent = 'Save changes';
+  $('address-book-cancel').hidden = false;
+  addressBookStatus('');
+  $('address-book-label').focus();
+}
+async function deleteAddress(id) {
+  if (!wallet) return;
+  if (addressBookDeleteArmed !== id) { addressBookDeleteArmed = id; renderAddressBook(); return; }
+  addressBookDeleteArmed = null;
+  if (addressBookEditing === id) resetAddressForm();
+  await commitAddressBook(removeAddress(addressBook, id), 'Address deleted.');
+}
+$('address-book-form').onsubmit = async event => {
+  event.preventDefault();
+  if (!wallet) return;
+  try {
+    const fields = { label: $('address-book-label').value, network: $('address-book-network').value, address: $('address-book-address').value };
+    const editing = addressBookEditing;
+    const next = editing ? updateAddress(addressBook, editing, fields, ADDRESS_CHECKS) : addAddress(addressBook, fields, ADDRESS_CHECKS);
+    resetAddressForm();
+    await commitAddressBook(next, editing ? 'Address changed.' : 'Address saved.');
+    if (lastSentRecipient && findAddress(addressBook, lastSentRecipient.chain, lastSentRecipient.address)) hideSaveRecipient();
+  } catch (error) { addressBookStatus(error.message); }
+};
+$('address-book-cancel').onclick = () => { resetAddressForm(); addressBookStatus(''); };
+// The send form: the saved entries of the selected network, then (Nodus
+// Connect) the contacts for NODUS; each address checked again here, and the
+// wallet's own address left out.
+function recipientChoices(chain) {
+  if (!wallet || !ADDRESS_CHECKS[chain]) return [];
+  const saved = addressesFor(addressBook, chain).map(e => ({ label: e.label, address: e.address, group: 'Address book' }));
+  const extra = [];
+  for (const r of gather('recipients', { network: chain })) {
+    if (!r || typeof r.label !== 'string' || !r.label || r.label.length > 64) continue;
+    let address;
+    try { address = checkAddress(chain, r.address, ADDRESS_CHECKS); } catch { continue; }
+    if ([...saved, ...extra].some(c => c.address === address)) continue;
+    extra.push({ label: r.label, address, group: 'Contacts' });
+  }
+  return [...saved, ...extra].filter(c => c.address !== wallet.addresses[chain]);
+}
+function renderRecipientBook() {
+  const chain = $('chain').value, choices = recipientChoices(chain);
+  recipientChoicesShown = choices;
+  const select = $('recipient-saved'), groups = new Map();
+  choices.forEach((c, index) => {
+    if (!groups.has(c.group)) { const group = document.createElement('optgroup'); group.label = c.group; groups.set(c.group, group); }
+    groups.get(c.group).append(new Option(`${c.label} · ${shortAddress(c.address)}`, String(index)));
+  });
+  select.replaceChildren(new Option('Saved recipients…', ''), ...groups.values());
+  const current = choices.findIndex(c => c.address === $('recipient').value.trim());
+  select.value = current >= 0 ? String(current) : '';
+  $('recipient-book').hidden = choices.length === 0;
+}
+$('recipient-saved').onchange = () => {
+  const choice = recipientChoicesShown[Number($('recipient-saved').value)];
+  if ($('recipient-saved').value === '' || !choice) return;
+  $('recipient').value = choice.address;
+};
+// The list is read again when the recipient field is used (contacts can
+// change while the wallet is open); a typed address that differs from the
+// chosen one clears the choice.
+$('recipient').addEventListener('focus', renderRecipientBook);
+$('recipient').addEventListener('input', () => {
+  const choice = recipientChoicesShown[Number($('recipient-saved').value)];
+  if ($('recipient-saved').value !== '' && choice?.address !== $('recipient').value.trim()) $('recipient-saved').value = '';
+});
+// After a plain send: offer to save its recipient (the address the transfer
+// was built for — for a chain name, the address the name resolved to).
+function hideSaveRecipient() { lastSentRecipient = null; $('save-recipient-row').hidden = true; $('save-recipient-text').textContent = ''; }
+function offerSaveRecipient(chain, to, suggested) {
+  hideSaveRecipient();
+  if (!wallet || !ADDRESS_CHECKS[chain]) return;
+  let address;
+  try { address = checkAddress(chain, to, ADDRESS_CHECKS); } catch { return; }
+  if (findAddress(addressBook, chain, address) || address === wallet.addresses[chain]) return;
+  lastSentRecipient = { chain, address, suggested: typeof suggested === 'string' ? suggested : '' };
+  $('save-recipient-text').textContent = `${shortAddress(address)} is not in your address book.`;
+  $('save-recipient-row').hidden = false;
+}
+$('save-recipient').onclick = () => {
+  if (!wallet || !lastSentRecipient) return;
+  resetAddressForm();
+  $('address-book-network').value = lastSentRecipient.chain;
+  $('address-book-address').value = lastSentRecipient.address;
+  $('address-book-label').value = lastSentRecipient.suggested;
+  addressBookStatus('Give this address a name, then press Save address.');
+  $('address-book-panel').scrollIntoView({ block: 'start' });
+  $('address-book-label').focus({ preventScroll: true });
+};
+function clearAddressBook() {
+  addressBook = []; addressBookNote = ''; addressBookUnreadable = false; addressBookDeleteArmed = null; recipientChoicesShown = [];
+  resetAddressForm(); addressBookStatus(''); hideSaveRecipient();
+  $('recipient-saved').replaceChildren(new Option('Saved recipients…', '')); $('recipient-book').hidden = true;
+  $('address-book-list').replaceChildren(); $('address-book-storage').textContent = '';
 }
 function followSubmission() {
   const follow = submissionFollow;
@@ -892,7 +1095,7 @@ function lock() {
   cellframeDerivation?.abort(); cellframeDerivation = undefined;
   $('cellframe-address-status').textContent = '';
   stopIxiosAddress();
-  revision++; vaultOperation++; activitySession = null; activityBlocked = false; latestKept = null; clearHistory(); idleDeadline = 0; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined;
+  revision++; vaultOperation++; activitySession = null; activityBlocked = false; latestKept = null; clearHistory(); clearAddressBook(); idleDeadline = 0; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined;
   releaseSession(); $('session-conflict').hidden = true;
   $('discard-activity').hidden = true;
   $('phrase-form').hidden = true; $('wallet-open').hidden = true; $('welcome').hidden = false;
@@ -1092,6 +1295,7 @@ function selectChain() {
   $('send-fields').hidden = !!c.receiveOnly; $('send-disabled-note').hidden = !c.receiveOnly;
   $('send-disabled-note').textContent = c.sendNote || DEFAULT_SEND_DISABLED_NOTE;
   for (const [key, node] of Object.entries(addressStatus)) node.hidden = chain !== key;
+  hideSaveRecipient(); renderRecipientBook();
   showNameBlock();
   renderHistory(); void loadHistory(chain);
 }
@@ -1240,6 +1444,9 @@ $('confirm-send').onclick = async () => {
     // A staking row and its amount fields were closed by closeStakeRow above.
     if (transfer.kind === 'name') { $('name-input').value = ''; clearNameQuote(); }
     else if (!STAKE_KINDS.includes(transfer.kind)) { $('recipient').value = ''; $('amount').value = ''; }
+    // A plain transfer: offer to save its recipient (a chain name it was
+    // sent to is the suggested name).
+    if (!transfer.kind) offerSaveRecipient(transfer.chain, transfer.to, transfer.named?.name || transfer.recipientName);
     if (transfer.kind) message(`${what} submitted; confirmation is pending. ${idLabel} ${hash}. Its status is tracked in Activity.`);
     else {
       message('Broadcast submitted; confirmation is pending. ');
@@ -1277,7 +1484,7 @@ function updateVaultUI() {
   }
 }
 function focusOpenWallet(kept = {}) {
-  updateVaultUI();
+  updateVaultUI(); renderAddressBook();
   portfolio.open(wallet.addresses, endpoints, { kept });
   $('wallet-title').focus({ preventScroll: true });
   document.querySelector('.wallet-card').scrollIntoView({ block: 'start' });
@@ -1299,11 +1506,16 @@ $('unlock-form').onsubmit = async event => {
     if (session !== sessionRelease) return;
     const saved = await decryptVault(text, password);
     if (operation !== vaultOperation || session !== sessionRelease || text !== localStorage.getItem(VAULT_KEY)) return;
-    const restored = deriveWallet(saved.phrase); let key, balancesKey, historyKey, rows = [], kept = {}, keptHistory = {}, problem = '';
+    const restored = deriveWallet(saved.phrase); let key, balancesKey, historyKey, addressBookKey, rows = [], kept = {}, keptHistory = {}, keptBook = [], bookProblem = '', problem = '';
     try {
       key = await activityKeyFor(saved.phrase, saved.id);
       balancesKey = await balancesKeyFor(saved.phrase, saved.id);
       historyKey = await historyKeyFor(saved.phrase, saved.id);
+      addressBookKey = await addressBookKeyFor(saved.phrase, saved.id);
+      // A saved address book that does not authenticate or check out is not
+      // shown; the next saved address replaces it (said in the panel).
+      try { keptBook = await parseAddressBook(localStorage.getItem(ADDRESS_BOOK_KEY), saved.id, addressBookKey, ADDRESS_CHECKS); }
+      catch { keptBook = []; bookProblem = 'The address book saved on this device could not be read. Saving an address replaces it.'; }
       // Saved history that does not authenticate is simply not shown.
       try { keptHistory = await parseHistory(localStorage.getItem(HISTORY_KEY), saved.id, historyKey); }
       catch { keptHistory = {}; }
@@ -1314,8 +1526,9 @@ $('unlock-form').onsubmit = async event => {
       catch { kept = {}; }
       if (operation !== vaultOperation || session !== sessionRelease || text !== localStorage.getItem(VAULT_KEY)) { disposeWallet(restored); return; }
     } catch (error) { disposeWallet(restored); throw error; }
-    disposeWallet(wallet); wallet = restored; activitySession = { id: saved.id, key, balancesKey, historyKey, vault: text }; activityBlocked = !!problem;
+    disposeWallet(wallet); wallet = restored; activitySession = { id: saved.id, key, balancesKey, historyKey, addressBookKey, vault: text }; activityBlocked = !!problem;
     historyByChain = keptHistory;
+    addressBook = keptBook; addressBookNote = bookProblem; addressBookUnreadable = !!bookProblem;
     walletFresh = false; siteLock.start();
     history.length = 0; history.push(...rows);
     $('discard-activity').hidden = !problem; $('vault-status').textContent = problem || 'Saved activity authenticated.';
@@ -1384,10 +1597,11 @@ async function saveVault(change) {
     const encrypted = await encryptVault(source.recoveryPhrase, password, id);
     const newId = parseVault(encrypted).id, key = await activityKeyFor(source.recoveryPhrase, newId);
     const balancesKey = await balancesKeyFor(source.recoveryPhrase, newId), historyKey = await historyKeyFor(source.recoveryPhrase, newId);
+    const addressBookKey = await addressBookKeyFor(source.recoveryPhrase, newId);
     if (operation !== vaultOperation || wallet !== source || source.locked || localStorage.getItem(VAULT_KEY) !== previous) return;
     const stored = await withActivityLock(() => {
       if (operation !== vaultOperation || wallet !== source || source.locked || !$('vault-risk-confirm').checked || localStorage.getItem(VAULT_KEY) !== previous) return false;
-      localStorage.setItem(VAULT_KEY, encrypted); activitySession = { id: newId, key, balancesKey, historyKey, vault: encrypted }; return true;
+      localStorage.setItem(VAULT_KEY, encrypted); activitySession = { id: newId, key, balancesKey, historyKey, addressBookKey, vault: encrypted }; return true;
     });
     if (!stored) {
       if (operation === vaultOperation && wallet === source && !source.locked && !$('vault-risk-confirm').checked) saveResult('Save canceled. The storage risks were not accepted; no new copy was saved.');
@@ -1398,6 +1612,14 @@ async function saveVault(change) {
     // Balances read before the save are kept from now on as well.
     if (latestKept) persistBalances(latestKept);
     persistHistory();
+    // The address book of this session (kept in memory until now) is saved
+    // with the wallet from now on — unless the saved one could not be read
+    // at unlock (a password change then leaves it as it is).
+    if (!addressBookUnreadable) {
+      try { await persistAddressBook(); addressBookNote = ''; }
+      catch { addressBookNote = 'The address book could not be saved on this device; it is kept until you lock.'; }
+    }
+    renderAddressBook();
     if (operation !== vaultOperation || wallet !== source || source.locked) return;
     $('vault-risk-confirm').checked = false;
     saveResult(change
@@ -1440,7 +1662,7 @@ $('vault-delete').onclick = async () => {
     if (previous) raise('vaultDeleting');
     const messages = await withActivityLock(async () => {
       if (localStorage.getItem(VAULT_KEY) !== previous) throw new Error('Saved wallet changed before deletion.');
-      localStorage.removeItem(VAULT_KEY); localStorage.removeItem(ACTIVITY_KEY); localStorage.removeItem(BALANCES_KEY); localStorage.removeItem(HISTORY_KEY);
+      localStorage.removeItem(VAULT_KEY); localStorage.removeItem(ACTIVITY_KEY); localStorage.removeItem(BALANCES_KEY); localStorage.removeItem(HISTORY_KEY); localStorage.removeItem(ADDRESS_BOOK_KEY);
       if (!previous) return 'none';
       if (!vaultId) return 'unknown';
       try { await deleteVaultHistory(vaultId, localStorage); return 'deleted'; }
@@ -1453,7 +1675,7 @@ $('vault-delete').onclick = async () => {
       unknown: 'Saved wallet and saved activity deleted. The saved wallet was damaged, so its message history on this device could not be found and was not deleted.',
       failed: 'Saved wallet and saved activity deleted. Message history on this device could not be deleted.'
     }[messages];
-    updateVaultUI();
+    updateVaultUI(); renderAddressBook();
   }
   catch { $('vault-status').textContent = 'Device storage could not be deleted.'; }
   $('vault-delete-confirm').checked = false;

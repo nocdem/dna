@@ -20,7 +20,8 @@
 // Naming: database = the vault id as 32 lowercase hex characters (the same 16
 // bytes as the vault's base64 `id`). Object stores: 'messages' (one record per
 // message, id 'm' + 20-digit local sequence), 'state' (the record id 'state':
-// contacts, salts, pending requests, ACK times, the next local sequence,
+// contacts, salts, pending requests, the contacts removed on this device,
+// ACK times, the next local sequence,
 // the profile cache index and the message-check times; plus one record per
 // kept contact profile, id 'p' + 20-digit local sequence, and one per shared
 // vault, id 'v' + 20-digit local sequence — src/vaults/), 'meta' (the
@@ -194,9 +195,13 @@ export async function deleteVaultHistory(vaultId, storage) {
 // at `at` (unix seconds), kept like a profile (text.js profileFresh, 7
 // days); only a found name is kept (a name is permanent — decision
 // 2026-10-02-onchain-names.md item 4 — while "no name" can change any
-// block).
+// block). `removed`: IDs the user removed from the contacts on THIS device
+// (text.js removeContact); the own list on the network is merge-only
+// (nc_core.h nc_contactlist_add), so it still lists them and they must not
+// be added back from it (text.js mergeListedContacts). Adding the person
+// again (request accepted, theirs or ours) takes the ID off this list.
 export function emptyState() {
-  return { version: 1, nextSeq: '1', contacts: [], outgoing: [], declined: [], acks: {}, ackSent: {}, profileCache: {}, dmSync: {}, chainNames: {}, vaults: {} };
+  return { version: 1, nextSeq: '1', contacts: [], outgoing: [], declined: [], removed: [], acks: {}, ackSent: {}, profileCache: {}, dmSync: {}, chainNames: {}, vaults: {} };
 }
 const isMap = value => value && typeof value === 'object' && !Array.isArray(value);
 const HEX128_KEY = /^[0-9a-f]{128}$/;
@@ -211,8 +216,12 @@ export function checkState(value) {
   // A state saved before `ackSent`, `profileCache`, `dmSync`, `chainNames`
   // or `vaults` existed gets the default (same version).
   if (value && value.version === 1) for (const key of ['ackSent', 'profileCache', 'dmSync', 'chainNames', 'vaults']) if (value[key] === undefined) value[key] = {};
+  // … and before `removed` existed, likewise (an empty list).
+  if (value && value.version === 1 && value.removed === undefined) value.removed = [];
   if (!value || value.version !== 1 || !U64.test(String(value.nextSeq)) || !Array.isArray(value.contacts) ||
-      !Array.isArray(value.outgoing) || !Array.isArray(value.declined) || !value.acks || typeof value.acks !== 'object' ||
+      !Array.isArray(value.outgoing) || !Array.isArray(value.declined) ||
+      !Array.isArray(value.removed) || value.removed.some(fp => typeof fp !== 'string' || !HEX128_KEY.test(fp)) ||
+      !value.acks || typeof value.acks !== 'object' ||
       !isMap(value.ackSent) || !isMap(value.profileCache) || !isMap(value.dmSync) || !isMap(value.chainNames) || !isMap(value.vaults) ||
       Object.values(value.profileCache).some(e => !isMap(e) || typeof e.id !== 'string' || !PROFILE_RECORD_ID.test(e.id) ||
         !U64.test(String(e.at)) || typeof e.name !== 'string') ||

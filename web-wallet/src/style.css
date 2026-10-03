@@ -276,7 +276,27 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
    width the "form > button" rule no longer reaches at this depth. */
 #send-fields > button { width: 100%; }
 .send-footnote { font-size: 11px; text-align: center; margin: 12px 0 0; }
-.activity-panel, .device-panel { margin-top: 22px; }
+.activity-panel, .device-panel, .address-book-panel { margin-top: 22px; }
+/* Address book (src/app.js renderAddressBook) and the send form's saved recipients. */
+.address-book-panel { scroll-margin-top: 24px; }
+.address-book-panel > .hint { max-width: 740px; }
+.address-book-list { margin-top: 12px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.address-book-list:empty { display: none; }
+.address-book-list > .hint { margin: 0; padding: 16px; }
+.address-book-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; padding: 14px 16px; }
+.address-book-row + .address-book-row { border-top: 1px solid #d5f99814; }
+.address-book-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.address-book-main strong { font-size: 13px; font-weight: 500; color: var(--text); overflow-wrap: anywhere; }
+.address-book-main small { font-size: 10px; color: var(--muted); }
+.address-book-address { font-size: 11px; overflow-wrap: anywhere; }
+.address-book-row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.address-book-form { max-width: 740px; margin-top: 16px; border-top: 1px solid var(--line); padding-top: 16px; }
+.address-book-form input, .address-book-form select { width: 100%; box-sizing: border-box; }
+.address-book-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.recipient-book { margin-top: 4px; }
+.save-recipient { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.save-recipient .hint { margin: 0; overflow-wrap: anywhere; }
+.save-recipient[hidden], .recipient-book[hidden] { display: none; }
 .activity-panel .hint { max-width: 740px; }
 .activity-subhead { margin: 18px 0 6px; font-size: 13px; font-weight: 600; letter-spacing: .02em; color: var(--text); }
 .activity-subhead:first-of-type { margin-top: 4px; }

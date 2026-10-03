@@ -44,7 +44,7 @@ import {
   parseContactId, profilePatch, profileStatusText, contactListStatusText, senderClockLabel,
   recentDays, pendingOutbox, hasUndelivered, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus, avatarPatch, AVATAR_UPLOAD_MAX_B64,
-  needFullSync, fullDays, profileFresh, contactNames
+  needFullSync, fullDays, profileFresh, contactNames, mergeListedContacts, removeContact, unremoveContact
 } from './text.js';
 import { el, untrusted, button, website, fillAvatar } from './dom.js';
 import { parseNameOf } from '../../nodus/names.js';
@@ -65,6 +65,7 @@ const UNAVAILABLE_TEXT = 'Messages needs the Nodus network connection, which is 
 let core, store, state, messages = [], ownFp, ownProfile, fresh = false, vaultId = null;
 let generation = 0, syncTimer, syncing = false;
 let requests = [], selectedFp, eraseArmed = false, profileTaken = false;
+let removeArmed;                         // the contact whose "Remove" was pressed once (asks to confirm)
 const profiles = new Map();              // fp -> verified profile, this session
 const kept = new Map();                  // fp -> { id, record }: kept profile rows (saved wallet, state.profileCache)
 const blobs = new Map();                 // 'fp|day' -> { blob, other }: day buckets already stored, this session
@@ -111,13 +112,13 @@ function wipe() {
   try { store?.close(); } catch { /* same */ }
   store = undefined; state = undefined; messages = []; ownFp = undefined; ownProfile = undefined;
   fresh = false; vaultId = null; requests = []; selectedFp = undefined; nodusClient = undefined;
-  eraseArmed = false; profileTaken = false; ownNameConfirmed = false;
+  eraseArmed = false; profileTaken = false; ownNameConfirmed = false; removeArmed = undefined;
   for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, diags, chainNames, chainAsked, chainTried, vaultRecs]) set.clear();
   notifyVaultHost();
   if (!ui) return;
   for (const control of [ui.addId, ui.addNote, ui.composer, ui.bio, ui.location, ui.website]) control.value = '';
   ui.composer.rows = 1; ui.counter.textContent = '';
-  for (const line of [ui.addStatus, ui.sendStatus, ui.profileStatus, ui.copyStatus, ui.emptyCopyStatus, ui.requestsStatus, ui.sync, ui.ownId, ui.profileName, ui.avatarStatus, ui.ownAvatar]) line.textContent = '';
+  for (const line of [ui.addStatus, ui.sendStatus, ui.profileStatus, ui.copyStatus, ui.emptyCopyStatus, ui.requestsStatus, ui.contactsStatus, ui.sync, ui.ownId, ui.profileName, ui.avatarStatus, ui.ownAvatar]) line.textContent = '';
   ui.messageList.replaceChildren(); ui.requestList.replaceChildren(); ui.outgoingList.replaceChildren();
   ui.contactList.replaceChildren(); ui.hubList.replaceChildren(); ui.convTitle.textContent = ''; ui.convClaim.replaceChildren(); ui.convNote.textContent = '';
   ui.convDiagText.textContent = ''; ui.convDiag.open = false; ui.convDiag.hidden = true;
@@ -265,6 +266,7 @@ function addContactLocal(fp, salt) {
   let contact = contactOf(fp);
   if (!contact) { contact = { fp, salt: salt || null, listed: false }; state.contacts.push(contact); }
   else if (!contact.salt && salt) contact.salt = salt;
+  unremoveContact(state, fp);
   state.outgoing = state.outgoing.filter(o => o.fp !== fp);
   state.declined = state.declined.filter(d => d !== fp);
   return contact;
@@ -272,21 +274,12 @@ function addContactLocal(fp, salt) {
 
 // The own list on the network: add what it has and this device lacks. A
 // salt this device already holds is kept (the agreement comes first, the
-// list second — design §1.4 R3).
+// list second — design §1.4 R3). A contact removed on this device is not
+// added back (text.js mergeListedContacts).
 async function mergeContactList(gen) {
   const list = await core.contactsGet();
   if (gen !== generation || list.outcome !== 'found') return;
-  let changed = false;
-  for (const entry of list.contacts || []) {
-    if (!entry || !HEX128.test(entry.fp) || entry.fp === ownFp) continue;
-    const local = contactOf(entry.fp);
-    if (!local) { state.contacts.push({ fp: entry.fp, salt: entry.salt || null, listed: true }); changed = true; }
-    else {
-      if (!local.salt && entry.salt) { local.salt = entry.salt; changed = true; }
-      if (!local.listed) { local.listed = true; changed = true; }
-    }
-  }
-  if (changed) await persist();
+  if (mergeListedContacts(state, list.contacts, ownFp)) await persist();
 }
 
 // Contacts this device has that the network list may lack: merge-only add
@@ -444,6 +437,8 @@ async function sync() {
     let syncMoved = false, failed = 0, storageFailure;
     for (const contact of [...state.contacts]) {
       if (gen !== generation) return;
+      // Removed by the user while this check ran: not checked any more.
+      if (!contactOf(contact.fp)) continue;
       let complete;
       try { complete = await syncContact(contact, gen, days); }
       catch (error) {
@@ -454,7 +449,7 @@ async function sync() {
         if (diag) diag.error = errorText(error);
         continue;
       }
-      if (complete && gen === generation) {
+      if (complete && gen === generation && contactOf(contact.fp)) {
         const last = state.dmSync[contact.fp];
         if (!last || BigInt(startedAt) - BigInt(last) >= 3600n) syncMoved = true;
         state.dmSync[contact.fp] = startedAt;
@@ -890,7 +885,9 @@ export function mountMessages(root, options = {}) {
   u.hubRequestCount = el('span', { className: 'count-badge' }); u.hubTabRequests.append(u.hubRequestCount);
   u.hubTabs = setAttrs(el('div', { className: 'nc-tabs' }, u.hubTabContacts, u.hubTabRequests), { role: 'group', 'aria-label': 'Contacts sections' });
   u.hubList = setAttrs(el('ul', { className: 'contact-list' }), { 'aria-label': 'Contacts' });
-  u.hubContacts = el('div', { className: 'nc-scroll' }, u.hubList);
+  // A contact is removed on this device only (removeContactAction).
+  u.contactsStatus = statusLine('hint contacts-status');
+  u.hubContacts = el('div', { className: 'nc-scroll' }, u.contactsStatus, u.hubList);
   u.requestList = el('ul', { className: 'request-list' });
   u.outgoingList = el('ul', { className: 'request-list' });
   u.requestsStatus = statusLine();
@@ -984,6 +981,7 @@ function show(next, { tab } = {}) {
   if (!ui) return;
   if (!isOpen()) next = 'list';
   if (next !== 'conversation') selectedFp = undefined;
+  if (next !== 'contacts' && removeArmed) { removeArmed = undefined; ui.contactsStatus.textContent = ''; }
   if (next === 'contacts' && tab) { hubTab = tab; if (tab === 'requests') ui.requestsStatus.textContent = ''; }
   screen = next;
   render();
@@ -1113,13 +1111,21 @@ function renderContacts() {
   ui.hubContacts.hidden = hubTab !== 'contacts';
   ui.hubRequests.hidden = hubTab !== 'requests';
   if (hubTab === 'requests') { renderRequests(); return; }
+  if (removeArmed && !contactOf(removeArmed)) removeArmed = undefined;
   ui.hubList.replaceChildren(...(state.contacts.length ? state.contacts.map(c => {
     const row = el('button', { className: 'contact-row' });
     row.type = 'button';
+    row.dataset.fp = c.fp;
     const sub = el('span', { className: 'contact-preview', text: c.salt ? 'Open conversation' : 'Messaging is not ready yet' });
     row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, nameTitle(c.fp), nameHint(c.fp)), sub), icon('chevron'));
     row.onclick = () => selectContact(c.fp);
-    return el('li', {}, row);
+    // Remove asks once more before it acts (as "Delete message history").
+    const armed = removeArmed === c.fp;
+    const remove = button(armed ? 'Confirm: remove this contact' : 'Remove contact', () => void removeContactAction(c.fp), `secondary small contact-remove${armed ? ' contact-remove-armed' : ''}`);
+    remove.setAttribute('aria-label', armed ? `Confirm: remove ${displayName(c.fp)}` : `Remove ${displayName(c.fp)}`);
+    const actions = el('div', { className: 'contact-actions' }, remove);
+    if (armed) actions.append(button('Keep', () => { removeArmed = undefined; ui.contactsStatus.textContent = ''; render(); }, 'secondary small'));
+    return el('li', { className: 'contact-item' }, row, actions);
   }) : [el('li', { className: 'contact-empty', text: 'No contacts yet. Add one with their ID.' })]));
 }
 
@@ -1270,6 +1276,39 @@ async function withdraw(fp) {
     await persist();
     if (gen === generation) { ui.requestsStatus.textContent = 'Request withdrawn.'; render(); }
   } catch (error) { if (gen === generation) ui.requestsStatus.textContent = explain(error, 'Withdrawing failed. Try again in a minute.'); }
+}
+
+// "Remove contact" (the app's dna_handle_remove_contact, dna_engine_contacts.c:
+// 205-270, without its network half): pressed once it asks to confirm, the
+// second press removes the contact ON THIS DEVICE (text.js removeContact).
+// The messages with them stay on this device (hidden; shown again if they
+// are added again). The own contact list on the network is NOT rewritten:
+// the core only adds to it (nc_core.h nc_contactlist_add, merge-only), so
+// other devices and the DNA Connect app keep listing the person; this
+// device remembers the removal (state.removed) and does not take them back
+// from that list.
+async function removeContactAction(fp) {
+  if (!isOpen() || !contactOf(fp)) return;
+  if (removeArmed !== fp) {
+    removeArmed = fp;
+    ui.contactsStatus.textContent = 'Remove this contact from this device? Your messages with them stay on this device and come back if you add them again. Your other devices and the DNA Connect app still list them.';
+    render();
+    return;
+  }
+  removeArmed = undefined;
+  const name = displayName(fp);
+  removeContact(state, fp);
+  for (const map of [unpublished, saltChecked, dropped, others, lastRead, diags, chainNames, chainAsked, chainTried, kept, profiles]) map.delete(fp);
+  for (const key of [...blobs.keys()]) if (key.startsWith(`${fp}|`)) blobs.delete(key);
+  if (selectedFp === fp) selectedFp = undefined;
+  render();
+  notifyVaultHost();
+  try {
+    await persist();
+    if (isOpen()) ui.contactsStatus.textContent = `${name} was removed from your contacts on this device.`;
+  } catch (error) {
+    if (isOpen()) ui.contactsStatus.textContent = `${name} was removed for now, but this device could not save the change (${error instanceof StorageError ? error.message : 'storage failed'}). They may come back after you lock.`;
+  }
 }
 
 async function addContact(event) {
@@ -1490,5 +1529,17 @@ export const walletExtension = {
   // The saved wallet (and with it this history, src/app.js vault-delete) is
   // being deleted: the open store must not hold the database.
   vaultDeleting() { if (store?.persistent) closeMessages('The saved wallet and its message history were deleted from this device. Lock and open your wallet again to use Messages.'); },
-  locked() { resetMessages(); }
+  locked() { resetMessages(); },
+  // The wallet's send form asks for recipients it may offer (src/app.js,
+  // wallet-extensions.js gather): a contact's ID IS its NODUS address (the
+  // core refuses an identity whose fingerprint differs from the NODUS
+  // client's, core.js unlock; the NODUS adapter checks the address against
+  // that fingerprint, src/adapters/nodus.js balances), so contacts are
+  // offered for NODUS only. The label is the chain name or the short ID —
+  // never a profile name or a claim (an <option> cannot carry the
+  // unusual-characters marker).
+  recipients({ network } = {}) {
+    if (network !== 'nodus' || !isOpen()) return [];
+    return state.contacts.map(c => ({ label: displayName(c.fp), address: c.fp }));
+  }
 };
