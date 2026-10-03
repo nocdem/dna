@@ -67,6 +67,7 @@ const saltChecked = new Set();           // contacts whose salt was reconciled t
 const dropped = new Map();               // fp -> messages that did not verify, this session
 const others = new Map();                // fp -> authentic items that are not text (reactions, calls, …), last check
 const lastRead = new Map();              // fp -> highest local seq shown to the user (this session only)
+const vaultRecs = new Map();             // vault address -> { id, value }: shared vaults kept (state.vaults, src/vaults/)
 // HF-4 chain names: fp -> the chain name ('' = none, or not answered), this
 // session; kept across sessions only for a saved wallet (state.chainNames).
 const chainNames = new Map();
@@ -100,7 +101,8 @@ function wipe() {
   store = undefined; state = undefined; messages = []; ownFp = undefined; ownProfile = undefined;
   fresh = false; vaultId = null; requests = []; selectedFp = undefined; nodusClient = undefined;
   eraseArmed = false; profileTaken = false;
-  for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, chainNames]) set.clear();
+  for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, chainNames, vaultRecs]) set.clear();
+  notifyVaultHost();
   if (!ui) return;
   for (const control of [ui.addId, ui.addNote, ui.composer, ui.bio, ui.location, ui.website]) control.value = '';
   ui.composer.rows = 1; ui.counter.textContent = '';
@@ -197,6 +199,7 @@ async function finishOpen(gen) {
     state = structuredClone(store.state);
     messages = [...store.messages];
     for (const p of store.profiles) kept.set(p.fp, { id: p.id, record: p.record });
+    for (const v of store.vaults || []) vaultRecs.set(v.address, { id: v.id, value: v.value });
     for (const m of messages) if (m.dir === 'in') received.add(receivedKey(m.fp, { seq: m.remoteSeq, senderTs: m.senderTs, text: m.text }));
     const now = nowSeconds();
     for (const contact of state.contacts) if (hasUndelivered(messages, contact.fp, now)) unpublished.add(contact.fp);
@@ -226,6 +229,7 @@ async function finishOpen(gen) {
   render();
   clearInterval(syncTimer);
   syncTimer = setInterval(() => { void sync(); }, SYNC_MS);
+  notifyVaultHost();
   void sync();
 }
 
@@ -509,6 +513,7 @@ async function syncContact(contact, gen, days) {
     catch (error) { for (const m of arrived) received.delete(receivedKey(fp, { seq: m.remoteSeq, senderTs: m.senderTs, text: m.text })); throw error; }
     if (gen !== generation) return false;
     messages.push(...arrived);
+    notifyVaultHost();
   }
   for (const [key, value] of seen) blobs.set(key, value);
   // G11 + NC-RT2 A: ACK only what is durably stored (the save above resolved
@@ -1006,7 +1011,9 @@ function renderChats() {
     row.dataset.fp = c.fp;
     row.setAttribute('aria-current', String(screen === 'conversation' && c.fp === selectedFp));
     const preview = el('span', { className: 'contact-preview' });
-    if (last) preview.append(last.dir === 'out' ? 'You: ' : '', untrusted(last.text));
+    const label = last ? payloadPreview(last.text) : null;
+    if (last && label) preview.append(last.dir === 'out' ? 'You: ' : '', label);
+    else if (last) preview.append(last.dir === 'out' ? 'You: ' : '', untrusted(last.text));
     else preview.textContent = c.salt ? 'No messages yet' : 'Messaging is not ready yet';
     const side = el('span', { className: 'contact-side' });
     if (last) { const when = el('time', { text: shortWhen(last.at) }); when.dateTime = new Date(last.at).toISOString(); side.append(when); }
@@ -1096,8 +1103,11 @@ function renderConversation(scroll) {
     } else meta.append(el('span', { className: 'message-clock', text: senderClockLabel(m.senderTs) }));
     // The message body lives only inside the bubble (§1.9); time and status
     // sit small at the bubble's foot (chat_screen.dart message bubble).
+    // A shared-vault item (src/vaults/ui.js) is drawn as its card; any
+    // other text as text.
+    const card = payloadCard(m);
     items.push(el('li', { className: mine ? 'message message-out' : 'message message-in' },
-      el('div', { className: 'message-bubble' }, el('div', { className: 'message-text' }, untrusted(m.text)), meta)));
+      el('div', { className: 'message-bubble' }, card || el('div', { className: 'message-text' }, untrusted(m.text)), meta)));
   }
   if (!items.length) items.push(el('li', { className: 'message-none', text: contact.salt ? 'No messages yet. Say hello.' : 'No messages yet.' }));
   list.replaceChildren(...items);
@@ -1296,6 +1306,88 @@ async function erase() {
   try { await target.erase(); closeMessages('Message history deleted from this device. Lock and open your wallet again to use Messages.'); }
   catch (error) { closeMessages(error.message); }
 }
+
+// ── shared vaults' use of Messages (src/vaults/ui.js) ──────────────────
+// Vault items travel as 1:1 messages to the vault's members (a JSON text
+// whose "type" is "nodus_vault": nc_plaintext_is_chat counts it as chat
+// text, so it is stored, acknowledged and returned like any message; the
+// frozen DNA Connect app shows its raw text). What this file adds: sending
+// such a text programmatically, the list of stored messages, one kept
+// record per vault (state.vaults, store.js), and drawing a vault item as a
+// card (the vault module's renderer) instead of its raw text.
+// Larger than the composer's TEXT_MAX: a vault item carries up to a 7-key
+// vault code (36 KiB of hex); bounded below the 64 KiB a stored record may
+// hold (store.js PLAINTEXT_MAX) with room for the message's own fields.
+export const PAYLOAD_TEXT_MAX = 60000;
+let payloadView = null;                  // { preview(text), card(message) } | null
+const vaultListeners = new Set();
+function payloadPreview(text) {
+  try { return payloadView?.preview(text) || null; } catch { return null; }
+}
+function payloadCard(message) {
+  try { return payloadView?.card(message) || null; } catch { return null; }
+}
+function notifyVaultHost() {
+  for (const listener of vaultListeners) { try { listener(); } catch { /* the others still run */ } }
+}
+const VAULT_ADDRESS = /^[0-9a-f]{128}$/;
+
+async function sendPayload(fp, text) {
+  if (!isOpen()) throw new Error('Messages is not open.');
+  const gen = generation, contact = contactOf(fp);
+  if (!contact) throw new Error('This person is not in your contacts.');
+  if (!contact.salt) throw new Error('Messaging with this contact is not ready yet.');
+  if (typeof text !== 'string' || !text || new TextEncoder().encode(text).length > PAYLOAD_TEXT_MAX) throw new Error('This item is too large to send.');
+  const message = { seq: takeSeq(), fp, dir: 'out', text, ts: nowSeconds(), at: Date.now() };
+  await persist([message]);
+  if (gen !== generation) throw new Error('Messages is not open.');
+  messages.push(message); unpublished.add(fp);
+  render();
+  notifyVaultHost();
+  // Not published now: the 30-second check publishes it (unpublished).
+  try { await publishOutbox(contact, gen); } catch { /* retried by sync */ }
+  if (gen === generation) render();
+}
+
+async function keepVault(address, value) {
+  if (!isOpen()) throw new Error('Messages is not open.');
+  if (typeof address !== 'string' || !VAULT_ADDRESS.test(address) || !value || typeof value !== 'object') throw new Error('Invalid vault.');
+  const before = state.vaults[address];
+  const id = before?.id || `v${takeSeq().padStart(20, '0')}`;
+  state.vaults[address] = { id, at: nowSeconds() };
+  try {
+    await store.save(state, [], [], [{ id, address, value }]);
+  } catch (error) {
+    if (before) state.vaults[address] = before; else delete state.vaults[address];
+    throw error;
+  }
+  vaultRecs.set(address, { id, value });
+}
+
+async function dropVault(address) {
+  if (!isOpen() || !state.vaults[address]) return;
+  const before = state.vaults[address];
+  delete state.vaults[address];
+  try { await persist(); } catch (error) { state.vaults[address] = before; throw error; }
+  vaultRecs.delete(address);
+}
+
+export const vaultHost = {
+  isOpen: () => isOpen(),
+  ownFp: () => (isOpen() ? ownFp : undefined),
+  // true: a saved wallet (records survive a reload); false: memory only
+  persistent: () => isOpen() && !!store?.persistent,
+  contacts: () => (isOpen() ? state.contacts.map(c => ({ fp: c.fp, ready: !!c.salt, name: displayName(c.fp), verified: namesOf(c.fp).verified })) : []),
+  name: fp => (isOpen() && typeof fp === 'string' && VAULT_ADDRESS.test(fp) ? displayName(fp) : ''),
+  messages: () => (isOpen() ? messages.map(m => ({ fp: m.fp, dir: m.dir, text: m.text, at: m.at, seq: String(m.seq) })) : []),
+  send: sendPayload,
+  vaults: () => (isOpen() ? [...vaultRecs.entries()].map(([address, r]) => ({ address, value: r.value })) : []),
+  keepVault,
+  dropVault,
+  setPayloadView(view) { payloadView = view && typeof view.preview === 'function' && typeof view.card === 'function' ? view : null; if (isOpen()) render(); },
+  onChange(listener) { vaultListeners.add(listener); return () => vaultListeners.delete(listener); },
+  openConversation(fp) { if (isOpen() && contactOf(fp)) selectContact(fp); }
+};
 
 // ── the wallet as host (src/wallet-extensions.js events) ───────────────
 // Registered only by the Nodus Connect page (src/connect-main.js).

@@ -320,6 +320,17 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 #delegate-form > button { margin-top: 24px; }
 #undelegate-note { margin-bottom: 0; }
 details.stake-block > summary { color: var(--text); }
+/* Shared vaults (src/vaults/ui.js): the full width of the dashboard grid,
+   laid out with the Earn panel's rows and blocks. */
+.vault-panel { display: flex; flex-direction: column; grid-column: 1 / -1; scroll-margin-top: 24px; }
+.vault-panel .stake-list { margin-top: 12px; }
+.vault-panel .stake-actions { margin-top: 12px; }
+.vault-panel textarea { width: 100%; box-sizing: border-box; font-family: inherit; }
+.vault-address { display: block; overflow-wrap: anywhere; font-size: 11px; line-height: 1.5; }
+.vault-contacts { display: flex; flex-direction: column; gap: 4px; }
+.vault-request > p { margin: 0 0 8px; }
+.vault-card { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.vault-card p, .vault-card ul { margin: 0; }
 /* HF-4 chain-name registration, inside the NODUS receive block */
 .name-block { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); scroll-margin-top: 24px; }
 .name-block h4 { font-size: 12px; font-weight: 500; margin: 0 0 12px; color: var(--text); }

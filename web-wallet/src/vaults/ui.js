@@ -1,0 +1,712 @@
+// Shared vaults — the panel in the NODUS account area of the wallet and of
+// Nodus Connect, and the vault cards in Messages.
+//
+// Governing records: docs/plans/decisions/2026-09-29-general-multisig.md
+// (M-of-N address, at most 7 keys per address, validity tip + 90 blocks;
+// the Foundation 2-of-3), docs/plans/decisions/2026-09-25-web-wallet-nodus-
+// send-transport.md (the wallet builds with the SAME C code nodus-cli uses:
+// every address, payment and approval here comes from the module, src/
+// nodus/send-module.js "SHARED VAULTS"), operator 2026-10-03 ("Connect'te
+// kasa oluştur — üyeler isimle, adresi Connect hesaplar; üyelere mesajla
+// haber verilir, tek dokunuşla eklenir; Foundation kasası hazır gelir;
+// insanlar kendi kasalarını açabilsin"; a vault is listed only for its
+// members — watching one is the user's own choice).
+//
+// HOST-DRIVEN like Messages: registered as a wallet extension (src/
+// wallet-extensions.js) by both pages; it uses the wallet's ONE NODUS
+// client (its queue) and, on the Nodus Connect page, Messages' vaultHost
+// (src/connect/ui/messages.js) to tell members and to keep vaults with the
+// saved wallet. On the wallet page (no Messages) vaults live for the
+// session only, and proposing / approving says to use Nodus Connect.
+//
+// WHAT A MEMBER SEES IS READ BACK: a payment request is shown only from the
+// module's read-back of its bytes (recipient, amount, fee, change, last
+// valid block) — never from anyone's words; there are none in the message.
+// Rendering: every text through textContent; names from Messages or the
+// chain; no innerHTML.
+import { FOUNDATION_VAULT } from './foundation.js';
+import {
+  VAULT_MAX_MEMBERS, encodeShare, encodeRequest, encodeApproval, decodeVaultMessage, vaultCodeShape, vaultLabel,
+  makeVaultRecord, checkVaultRecord, recordForStorage, applyScan, foundTotal, collectVaultItems,
+  requestState, blocksLeft, listedFor
+} from './core.js';
+import { amountUnits, formatUnits } from '../core.js';
+import { chainName } from '../nodus/names.js';
+import { NODUS_ASSET } from '../nodus/network.js';
+
+const HEX128 = /^[0-9a-f]{128}$/;
+// Blocks read per step and steps per Refresh (nodus-send-wasm.c
+// NSW_MS_SCAN_BLOCKS = 200 per step): a Refresh reads at most 10 000 blocks
+// and offers to continue.
+const SCAN_STEPS_PER_REFRESH = 50;
+
+let client, ownFp, host = null, root, panel;
+let generation = 0, busy = false, current = null, view = 'list';
+const vaults = new Map();                // address -> record (core.js)
+const balances = new Map();              // address -> { total, spendable }
+const names = new Map();                 // ID -> chain name ('' none)
+const reviews = new Map();               // digest -> module read-back
+const ownApprovals = new Map();          // digest -> signature text (this session)
+const sent = new Map();                  // digest -> { intentId, at } submitted here
+const shareStates = new Map();           // vault code -> { state, info?, error? }
+let status = '', draft = null, createInfo = null, foundationChecked = -1;
+
+const $ = id => document.getElementById(id);
+function el(tag, { className, text } = {}, ...children) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  for (const child of children) if (child) node.append(child);
+  return node;
+}
+function btn(label, onClick, className = 'secondary small') {
+  const node = el('button', { className, text: label });
+  node.type = 'button';
+  node.onclick = onClick;
+  return node;
+}
+const nodus = units => `${formatUnits(BigInt(units), NODUS_ASSET.decimals)} NODUS`;
+const shortId = fp => `ID ${fp.slice(0, 8)}…${fp.slice(-4)}`;
+function who(fp) {
+  if (fp === ownFp) return 'you';
+  const chain = names.get(fp);
+  if (chain) return `${chain} · ${shortId(fp)}`;
+  const named = host?.name(fp);
+  return named || shortId(fp);
+}
+const labelOf = record => record.label || (record.foundation ? FOUNDATION_VAULT.label : `Shared vault ${record.address.slice(0, 8)}`);
+const messagesOpen = () => !!host && host.isOpen();
+
+// ── lifecycle (wallet extension events) ─────────────────────────────────
+
+function reset() {
+  generation++;
+  client = undefined; ownFp = undefined; busy = false; current = null; view = 'list';
+  for (const map of [vaults, balances, names, reviews, ownApprovals, sent, shareStates]) map.clear();
+  status = ''; draft = null; createInfo = null;
+  render();
+}
+
+async function start(detail) {
+  reset();
+  const c = detail?.client;
+  if (!c || !c.vaultable) return;
+  const gen = generation;
+  client = c; ownFp = c.fingerprint;
+  await loadVaults(gen);
+}
+
+// The listed vaults: the kept ones (Messages, saved wallet), the Foundation
+// preset when this wallet is one of its members, and those of this
+// session.
+async function loadVaults(gen) {
+  if (gen !== generation || !client) return;
+  for (const kept of messagesOpen() ? host.vaults() : []) {
+    if (vaults.has(kept.address)) continue;
+    try {
+      const record = checkVaultRecord(kept.value);
+      if (record.address === kept.address && listedFor(record, ownFp)) vaults.set(record.address, record);
+    } catch { /* a damaged record is not listed; it can be added again from its message */ }
+  }
+  if (!vaults.has(FOUNDATION_VAULT.address) && foundationChecked !== gen) {
+    foundationChecked = gen;
+    try {
+      const info = await client.vaultOpen({ descriptor: FOUNDATION_VAULT.descriptor });
+      if (gen !== generation) return;
+      // the module's own derivation must give the documented address
+      if (info.address === FOUNDATION_VAULT.address && info.isMember) {
+        vaults.set(info.address, makeVaultRecord({ info, label: FOUNDATION_VAULT.label, created: FOUNDATION_VAULT.created, foundation: true }));
+      }
+    } catch { /* not listed */ }
+  }
+  render();
+  for (const record of vaults.values()) await nameMembers(record, gen);
+}
+
+async function nameMembers(record, gen) {
+  for (const fp of record.members) {
+    if (names.has(fp) || gen !== generation || !client?.nameable) continue;
+    try {
+      const r = await client.nameOf({ owner: fp });
+      if (gen !== generation) return;
+      names.set(fp, r?.found && typeof r.name === 'string' ? r.name : '');
+    } catch { names.set(fp, ''); }
+  }
+  if (gen === generation) render();
+}
+
+async function keep(record) {
+  vaults.set(record.address, record);
+  if (messagesOpen()) {
+    try { await host.keepVault(record.address, recordForStorage(record)); }
+    catch { status = 'This vault could not be saved on this device; it stays listed until you lock.'; }
+  }
+}
+
+// ── reading a vault ──────────────────────────────────────────────────────
+
+async function refresh(address) {
+  const record = vaults.get(address);
+  if (!record || busy || !client) return;
+  const gen = generation;
+  busy = true; status = 'Reading the vault balance…'; render();
+  try {
+    balances.set(address, await client.vaultBalance({ descriptor: record.code }));
+    if (gen !== generation) return;
+    let r = vaults.get(address), steps = 0, tip = 0n;
+    for (; steps < SCAN_STEPS_PER_REFRESH; steps++) {
+      const result = await client.vaultScan({ descriptor: r.code, from: r.cursor, coins: r.coins });
+      if (gen !== generation) return;
+      r = applyScan(r, result);
+      tip = BigInt(result.tip);
+      status = `Reading the vault history: block ${r.cursor} of ${result.tip}…`;
+      render();
+      if (result.full) { status = 'This vault has more coins than this page can hold; payments can use only part of them.'; break; }
+      if (BigInt(r.cursor) > tip) break;
+    }
+    await keep(r);
+    if (gen !== generation) return;
+    status = BigInt(r.cursor) > tip ? '' : `The vault history is read up to block ${BigInt(r.cursor) - 1n}. Refresh again to continue.`;
+  } catch (error) {
+    if (gen === generation) status = error.message || 'The vault could not be read right now.';
+  } finally {
+    if (gen === generation) { busy = false; render(); }
+  }
+}
+
+// ── create ───────────────────────────────────────────────────────────────
+
+async function resolveMember(text) {
+  const value = text.replace(/\s+/g, '').toLowerCase();
+  if (HEX128.test(value)) return value;
+  const name = chainName(text);
+  if (!name) throw new Error(`"${text.trim()}" is neither a chain name nor an ID.`);
+  if (!client.nameable) throw new Error('Chain names cannot be looked up right now.');
+  const r = await client.nameLookup({ name });
+  if (!r?.found || !HEX128.test(r.owner ?? '')) throw new Error(`No one has registered the chain name "${name}".`);
+  names.set(r.owner, name);
+  return r.owner;
+}
+
+async function checkMembers(form) {
+  if (busy || !client) return;
+  const gen = generation;
+  busy = true; createInfo = null; status = 'Looking up the members…'; render();
+  try {
+    const typed = form.members.split('\n').map(s => s.trim()).filter(Boolean);
+    const ids = [];
+    for (const text of typed) { const fp = await resolveMember(text); if (gen !== generation) return; if (fp !== ownFp && !ids.includes(fp)) ids.push(fp); }
+    for (const fp of form.contacts) if (fp !== ownFp && !ids.includes(fp)) ids.push(fp);
+    if (ids.length + 1 > VAULT_MAX_MEMBERS) throw new Error(`A vault can have at most ${VAULT_MAX_MEMBERS} members, you included.`);
+    if (ids.length < 1) throw new Error('Add at least one other member.');
+    const m = Number(form.m);
+    if (!Number.isInteger(m) || m < 1 || m > ids.length + 1) throw new Error('Choose how many members must approve a payment.');
+    const label = vaultLabel(form.label);
+    status = 'Reading the members’ accounts…'; render();
+    const info = await client.vaultCreate({ members: ids, includeSelf: true, m });
+    if (gen !== generation) return;
+    createInfo = { info, label };
+    status = '';
+  } catch (error) {
+    if (gen === generation) status = error.message || 'The vault could not be prepared.';
+  } finally {
+    if (gen === generation) { busy = false; render(); }
+  }
+}
+
+async function createVault() {
+  if (!createInfo || busy || !client) return;
+  const gen = generation;
+  busy = true; render();
+  try {
+    const ri = await client.rulesetInfo();
+    if (gen !== generation) return;
+    // history starts at the block it was created in: nothing older can pay it
+    const created = ri?.tip && /^[1-9]\d*$/.test(ri.tip) ? ri.tip : '1';
+    const record = makeVaultRecord({ info: createInfo.info, label: createInfo.label, created });
+    await keep(record);
+    createInfo = null; draft = null; current = record.address; view = 'vault';
+    status = messagesOpen() ? 'Vault created. Tell the members with “Share with members” so they can add it.' : 'Vault created for this session. Open Nodus Connect to tell the members and keep it.';
+  } catch (error) {
+    if (gen === generation) status = error.message || 'The vault could not be created.';
+  } finally {
+    if (gen === generation) { busy = false; render(); }
+  }
+}
+
+// ── share / add ──────────────────────────────────────────────────────────
+
+async function shareVault(record) {
+  if (!messagesOpen() || busy) return;
+  busy = true; render();
+  const text = encodeShare({ code: record.code, label: record.label, created: record.created });
+  const results = [];
+  for (const fp of record.members) {
+    if (fp === ownFp) continue;
+    try { await host.send(fp, text); results.push(`${who(fp)}: sent`); }
+    catch (error) { results.push(`${who(fp)}: ${error.message}`); }
+  }
+  status = results.join(' · ') || 'There is no other member to tell.';
+  busy = false; render();
+}
+
+// A share message's "Add vault": first the module derives the address and
+// the members from the code (shown), then a second tap adds it.
+async function checkShare(item) {
+  if (!client || shareStates.get(item.code)?.state === 'checking') return;
+  shareStates.set(item.code, { state: 'checking' });
+  host?.setPayloadView(payloadView);
+  try {
+    const info = await client.vaultOpen({ descriptor: item.code });
+    if (!info.isMember) shareStates.set(item.code, { state: 'error', error: 'You are not a member of this vault, so it is not added. You can still watch it from the Shared vaults panel.' });
+    else shareStates.set(item.code, { state: 'confirm', info, item });
+  } catch (error) { shareStates.set(item.code, { state: 'error', error: error.message || 'This vault could not be read.' }); }
+  host?.setPayloadView(payloadView);
+}
+
+async function addShared(code) {
+  const s = shareStates.get(code);
+  if (!s || s.state !== 'confirm') return;
+  try {
+    const record = makeVaultRecord({ info: s.info, label: s.item.label, created: s.item.created, from: s.item.from });
+    await keep(record);
+    shareStates.set(code, { state: 'added' });
+    await nameMembers(record, generation);
+  } catch (error) { shareStates.set(code, { state: 'error', error: error.message || 'The vault could not be added.' }); }
+  host?.setPayloadView(payloadView);
+  render();
+}
+
+async function watchVault(form) {
+  if (busy || !client) return;
+  const gen = generation;
+  busy = true; render();
+  try {
+    const code = form.code.replace(/\s+/g, '').toLowerCase();
+    if (!vaultCodeShape(code)) throw new Error('This is not a vault code.');
+    const from = form.from.trim() || '1';
+    if (!/^[1-9]\d{0,19}$/.test(from)) throw new Error('Enter the block to start reading from (1 for the beginning).');
+    const info = await client.vaultOpen({ descriptor: code });
+    if (gen !== generation) return;
+    const record = makeVaultRecord({ info, label: form.label, created: from, watch: !info.isMember });
+    await keep(record);
+    current = record.address; view = 'vault'; status = info.isMember ? 'Vault added.' : 'Vault added to watch. You cannot approve its payments.';
+    await nameMembers(record, gen);
+  } catch (error) {
+    if (gen === generation) status = error.message || 'The vault could not be added.';
+  } finally {
+    if (gen === generation) { busy = false; render(); }
+  }
+}
+
+async function removeVault(record) {
+  vaults.delete(record.address);
+  if (messagesOpen()) { try { await host.dropVault(record.address); } catch { /* listed again after the next unlock */ } }
+  current = null; view = 'list'; status = 'The vault was removed from this list. Its coins are not affected.';
+  render();
+}
+
+// ── propose / review / approve / send ───────────────────────────────────
+
+// Coins already used by a request of this session that is neither paid nor
+// expired are not offered to a new one.
+function freeCoins(record) {
+  const held = new Set();
+  for (const [digest, review] of reviews) {
+    if (review.vault !== record.address || review.expired) continue;
+    if (requestState({ review, accepted: 0, record }) === 'paid') continue;
+    if (sent.has(digest) || ownApprovals.has(digest)) for (const id of review.inputs) held.add(id);
+  }
+  return record.coins.filter(c => !held.has(c.id));
+}
+
+async function prepareRequest(record, form) {
+  if (busy || !client) return;
+  const gen = generation;
+  busy = true; draft = null; status = 'Preparing the payment…'; render();
+  try {
+    const typed = form.to.trim();
+    const to = HEX128.test(typed.toLowerCase()) ? typed.toLowerCase() : await resolveMember(typed);
+    const amount = amountUnits(form.amount.trim(), NODUS_ASSET.decimals).toString();
+    const built = await client.vaultPropose({ descriptor: record.code, coins: freeCoins(record), to, amount });
+    if (gen !== generation) return;
+    reviews.set(built.request.digest, built.review);
+    draft = { address: record.address, request: built.request, review: built.review, to };
+    status = '';
+  } catch (error) {
+    if (gen === generation) status = error.message || 'The payment could not be prepared.';
+  } finally {
+    if (gen === generation) { busy = false; render(); }
+  }
+}
+
+async function sendToMembers(record, texts) {
+  const out = [];
+  for (const fp of record.members) {
+    if (fp === ownFp) continue;
+    try { for (const text of texts) await host.send(fp, text); out.push(`${who(fp)}: sent`); }
+    catch (error) { out.push(`${who(fp)}: ${error.message}`); }
+  }
+  return out.join(' · ');
+}
+
+// Approve a request this wallet reviewed (its own draft, or one received),
+// and tell the other members: the request (for a new one) and the approval.
+async function approve(record, request, { isNew }) {
+  if (busy || !client) return;
+  const gen = generation;
+  busy = true; status = 'Approving…'; render();
+  try {
+    const { signature, review } = await client.vaultApprove({ descriptor: record.code, request, digest: request.digest });
+    if (gen !== generation) return;
+    reviews.set(request.digest, review);
+    ownApprovals.set(request.digest, signature);
+    const texts = [];
+    if (isNew) texts.push(encodeRequest({ vault: record.address, request }));
+    texts.push(encodeApproval({ vault: record.address, digest: request.digest, signature }));
+    status = messagesOpen() ? `Approved. ${await sendToMembers(record, texts)}` : 'Approved for this session only: open Nodus Connect to send approvals to the members.';
+    if (isNew) draft = null;
+  } catch (error) {
+    if (gen === generation) status = error.message || 'The payment could not be approved.';
+  } finally {
+    if (gen === generation) { busy = false; render(); }
+  }
+}
+
+async function review(record, request) {
+  if (busy || !client) return;
+  const gen = generation;
+  busy = true; status = 'Reading the payment request…'; render();
+  try {
+    reviews.set(request.digest, await client.vaultReview({ descriptor: record.code, request }));
+    if (gen === generation) status = '';
+  } catch (error) {
+    if (gen === generation) status = error.message || 'This payment request could not be read.';
+  } finally {
+    if (gen === generation) { busy = false; render(); }
+  }
+}
+
+function approvalsFor(digest, items) {
+  const texts = new Set(items.approvals.get(digest) || []);
+  if (ownApprovals.has(digest)) texts.add(ownApprovals.get(digest));
+  return [...texts];
+}
+
+async function sendPayment(record, request, items) {
+  if (busy || !client) return;
+  const gen = generation;
+  busy = true; status = 'Sending the payment…'; render();
+  try {
+    const result = await client.vaultSubmit({ descriptor: record.code, request, digest: request.digest, signatures: approvalsFor(request.digest, items) });
+    if (gen !== generation) return;
+    reviews.set(request.digest, result.review);
+    if (result.accepted) {
+      sent.set(request.digest, { intentId: result.intentId, at: Date.now() });
+      status = 'The payment was sent to the network. It shows in the vault history once it is in a block (Refresh).';
+    } else status = result.message || 'The network refused this payment.';
+  } catch (error) {
+    if (gen === generation) status = error.message || 'The payment could not be sent.';
+  } finally {
+    if (gen === generation) { busy = false; render(); }
+  }
+}
+
+// ── rendering: the panel ─────────────────────────────────────────────────
+
+function showPanel() {
+  if (!panel) return;
+  const ready = !!client && client.state === 'ready' && client.vaultable;
+  const nodusSelected = $('chain')?.value === NODUS_ASSET.chain;
+  panel.hidden = !(ready && nodusSelected);
+  const nav = $('nav-vaults');
+  if (nav) nav.hidden = panel.hidden;
+}
+
+function render() {
+  showPanel();
+  if (!root) return;
+  if (!client) { root.replaceChildren(); return; }
+  const items = [el('p', { className: 'hint', text: 'A shared vault holds NODUS that can only be spent when enough of its members approve. Each member approves from their own wallet.' })];
+  const line = el('p', { className: 'hint', text: status });
+  line.setAttribute('role', 'status'); line.setAttribute('aria-live', 'polite');
+  items.push(line);
+  if (view === 'vault' && current && vaults.has(current)) items.push(renderVault(vaults.get(current)));
+  else if (view === 'create') items.push(renderCreate());
+  else if (view === 'watch') items.push(renderWatch());
+  else items.push(renderList());
+  root.replaceChildren(...items);
+  for (const b of root.querySelectorAll('button')) if (busy && !b.dataset.always) b.disabled = true;
+}
+
+function renderList() {
+  const list = el('div', { className: 'stake-list' });
+  const rows = [...vaults.values()];
+  if (!rows.length) list.append(el('p', { className: 'stake-empty', text: 'You are not a member of any shared vault yet.' }));
+  for (const record of rows) {
+    const row = el('div', { className: 'stake-row' });
+    const main = el('span', { className: 'stake-main' });
+    const bal = balances.get(record.address);
+    main.append(el('strong', { text: labelOf(record) }),
+      el('small', { text: `${record.m} of ${record.n} members must approve${record.watch ? ' · watching only' : ''}${bal ? ` · ${nodus(bal.total)}` : ''}` }));
+    row.append(main, el('span', { className: 'stake-actions' }, btn('Open', () => { current = record.address; view = 'vault'; status = ''; render(); void refresh(record.address); })));
+    list.append(row);
+  }
+  const actions = el('div', { className: 'stake-actions' },
+    btn('Create a shared vault', () => { view = 'create'; status = ''; createInfo = null; render(); }),
+    btn('Watch a vault', () => { view = 'watch'; status = ''; render(); }));
+  return el('div', {}, list, actions);
+}
+
+function field(labelText, control) {
+  const id = `vaults-f-${Math.random().toString(36).slice(2, 10)}`;
+  control.id = id;
+  const label = el('label', { text: labelText });
+  label.htmlFor = id;
+  return [label, control];
+}
+function input(value = '', attrs = {}) {
+  const node = document.createElement('input');
+  node.value = value; node.autocomplete = 'off'; node.spellcheck = false;
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  return node;
+}
+
+function renderCreate() {
+  const box = el('div', { className: 'stake-block' }, el('h4', { text: 'Create a shared vault' }));
+  const label = input('', { maxlength: '48', placeholder: 'Family savings' });
+  const members = document.createElement('textarea');
+  members.rows = 3; members.spellcheck = false; members.placeholder = 'one per line: a chain name, or an ID';
+  box.append(...field('Vault name (only for you and the members)', label));
+  box.append(el('p', { className: 'hint', text: `You are a member. Add up to ${VAULT_MAX_MEMBERS - 1} others by their chain name or their ID.` }));
+  box.append(...field('Other members', members));
+  const picked = new Set();
+  if (messagesOpen()) {
+    const contacts = host.contacts();
+    if (contacts.length) {
+      const list = el('div', { className: 'vault-contacts' });
+      for (const c of contacts) {
+        const check = document.createElement('input'); check.type = 'checkbox';
+        check.onchange = () => { if (check.checked) picked.add(c.fp); else picked.delete(c.fp); };
+        const row = el('label', { className: 'check' }, check, document.createTextNode(` ${c.name}`));
+        list.append(row);
+      }
+      box.append(el('p', { className: 'hint', text: 'Or pick from your contacts:' }), list);
+    }
+  }
+  const approvals = document.createElement('select');
+  for (let i = 1; i <= VAULT_MAX_MEMBERS; i++) approvals.append(new Option(String(i), String(i)));
+  approvals.value = '2';
+  box.append(...field('Approvals needed to spend', approvals));
+  box.append(el('p', { className: 'hint', text: 'For example, 2 means any two members together can spend. It cannot be changed later: a new vault would be needed.' }));
+  const actions = el('div', { className: 'stake-actions' },
+    btn('Back', () => { view = 'list'; createInfo = null; status = ''; render(); }),
+    btn('Check members', () => void checkMembers({ label: label.value, members: members.value, contacts: [...picked], m: approvals.value }), ''));
+  box.append(actions);
+  if (createInfo) {
+    const { info } = createInfo;
+    const preview = el('div', { className: 'stake-list' });
+    for (const fp of info.members) preview.append(el('div', { className: 'stake-row' }, el('span', { className: 'stake-main' }, el('strong', { text: who(fp) }), el('small', { text: fp }))));
+    box.append(el('h4', { text: `${info.m} of ${info.n} members must approve` }), preview,
+      el('p', { className: 'hint', text: 'Vault address (computed on this device from the members’ keys):' }),
+      el('code', { className: 'vault-address', text: info.address }),
+      el('div', { className: 'stake-actions' }, btn('Create vault', () => void createVault(), '')));
+  }
+  return box;
+}
+
+function renderWatch() {
+  const box = el('div', { className: 'stake-block' }, el('h4', { text: 'Watch a vault' }));
+  box.append(el('p', { className: 'hint', text: 'Paste a vault code a member gave you to see its balance and history. If you are not a member you can only watch it.' }));
+  const code = document.createElement('textarea'); code.rows = 3; code.spellcheck = false;
+  const label = input('', { maxlength: '48' });
+  const from = input('1', { inputmode: 'numeric' });
+  box.append(...field('Vault code', code), ...field('Name (optional)', label), ...field('Read its history from block', from));
+  box.append(el('div', { className: 'stake-actions' },
+    btn('Back', () => { view = 'list'; status = ''; render(); }),
+    btn('Add', () => void watchVault({ code: code.value, label: label.value, from: from.value }), '')));
+  return box;
+}
+
+function renderReviewRows(record, review) {
+  const list = el('div', { className: 'stake-list' });
+  const row = (title, text) => list.append(el('div', { className: 'stake-row' }, el('span', { className: 'stake-main' }, el('strong', { text: title }), el('small', { text }))));
+  for (const out of review.outputs) {
+    if (out.change) row(`${nodus(out.amount)} back to this vault`, 'change');
+    else row(`Pay ${nodus(out.amount)}`, `to ${HEX128.test(out.owner) ? who(out.owner) : out.owner} (${out.owner})`);
+  }
+  row(`Network fee ${nodus(review.fee)}`, 'paid from the vault');
+  const left = blocksLeft(review);
+  row(review.expired ? 'Expired' : `Valid until block ${review.expiryHeight}`, review.expired ? `The network passed block ${review.expiryHeight}. Propose it again.` : `${left} blocks from now; after that it must be proposed again.`);
+  // every coin it spends must be one this page found in the vault's history
+  const known = new Set(record.coins.map(c => c.id));
+  const unknown = review.inputs.filter(id => !known.has(id)).length;
+  row(unknown ? 'Check the coins' : 'Coins checked', unknown
+    ? `${unknown} of the ${review.inputs.length} coins it spends were not found in this vault’s history on this device. Refresh the vault; if it stays, do not approve unless you know why.`
+    : `All ${review.inputs.length} coins it spends belong to this vault.`);
+  return list;
+}
+
+function renderVault(record) {
+  const box = el('div', { className: 'stake-block' });
+  const bal = balances.get(record.address);
+  box.append(el('h4', { text: labelOf(record) }),
+    el('p', { className: 'hint', text: `${record.m} of ${record.n} members must approve a payment.${record.watch ? ' You are watching this vault; you cannot approve its payments.' : ''}` }));
+  const members = el('div', { className: 'stake-list' });
+  for (const fp of record.members) members.append(el('div', { className: 'stake-row' }, el('span', { className: 'stake-main' }, el('strong', { text: who(fp) }), el('small', { text: fp }))));
+  box.append(members);
+  box.append(el('p', { className: 'hint', text: 'Vault address (receive NODUS here):' }), el('code', { className: 'vault-address', text: record.address }));
+  const found = foundTotal(record);
+  if (bal) {
+    box.append(el('p', { className: 'hint', text: `Balance ${nodus(bal.total)} (${nodus(bal.spendable)} spendable now).` }));
+    if (found < BigInt(bal.spendable)) box.append(el('p', { className: 'notice', text: `This page has found ${nodus(found)} of it in the vault’s history so far. Payments can use only the part found${record.foundation ? '; the coins this vault received when the network started are not in any block, so this page cannot use them yet' : ''}.` }));
+  }
+  const top = el('div', { className: 'stake-actions' },
+    btn('Back', () => { view = 'list'; current = null; draft = null; status = ''; render(); }),
+    btn('Refresh', () => void refresh(record.address)));
+  if (messagesOpen() && !record.watch) top.append(btn('Share with members', () => void shareVault(record)));
+  if (!record.foundation) top.append(btn('Remove from this list', () => void removeVault(record)));
+  box.append(top);
+
+  // history
+  if (record.events.length) {
+    const hist = el('div', { className: 'stake-list' });
+    for (const e of [...record.events].reverse()) hist.append(el('div', { className: 'stake-row' }, el('span', { className: 'stake-main' }, el('strong', { text: `${e.received ? 'Received' : 'Sent'} ${nodus(e.amount)}` }), el('small', { text: `block ${e.height}` }))));
+    box.append(el('h4', { text: 'History' }), hist);
+  }
+
+  // payment requests
+  const items = collectVaultItems(messagesOpen() ? host.messages() : [], record.address);
+  if (draft && draft.address === record.address && !items.requests.has(draft.request.digest)) items.requests.set(draft.request.digest, { request: draft.request, from: '', at: Date.now(), draft: true });
+  if (items.requests.size) {
+    box.append(el('h4', { text: 'Payment requests' }));
+    for (const [digest, item] of items.requests) box.append(renderRequest(record, digest, item, items));
+  }
+
+  // propose
+  if (!record.watch) {
+    const form = el('div', { className: 'stake-block' }, el('h4', { text: 'Propose a payment' }));
+    if (!messagesOpen()) form.append(el('p', { className: 'hint', text: 'Proposing and approving vault payments works in Nodus Connect, where the members are told by message.' }));
+    else {
+      const to = input('', { placeholder: 'chain name or Nodus address' });
+      const amount = input('', { inputmode: 'decimal', placeholder: '0.00' });
+      form.append(...field('Pay to', to), ...field('Amount (NODUS)', amount),
+        el('p', { className: 'hint', text: `You approve it first; then ${Math.max(record.m - 1, 0)} more member(s) must approve before it can be sent. It must be completed within about 90 blocks.` }),
+        el('div', { className: 'stake-actions' }, btn('Prepare', () => void prepareRequest(record, { to: to.value, amount: amount.value }), '')));
+    }
+    box.append(form);
+  }
+  return box;
+}
+
+function renderRequest(record, digest, item, items) {
+  const rv = reviews.get(digest);
+  const row = el('div', { className: 'stake-block vault-request' });
+  const from = item.from ? who(item.from) : 'you';
+  if (!rv) {
+    row.append(el('p', { text: `Payment request from ${from}.` }), el('div', { className: 'stake-actions' }, btn('Review', () => void review(record, item.request), '')));
+    return row;
+  }
+  const approvals = approvalsFor(digest, items);
+  const state = sent.has(digest) && requestState({ review: rv, accepted: approvals.length, record }) !== 'paid' ? 'sent' : requestState({ review: rv, accepted: approvals.length, record });
+  const title = { paid: 'Paid', expired: 'Expired — propose again', ready: 'Approved — ready to send', waiting: 'Waiting for approvals', sent: 'Sent to the network' }[state];
+  row.append(el('p', { text: `${title} · request from ${from} · ${Math.min(approvals.length, rv.approvals)} of ${rv.approvals} approvals` }), renderReviewRows(record, rv));
+  const actions = el('div', { className: 'stake-actions' });
+  if (state !== 'paid' && state !== 'expired' && state !== 'sent') {
+    if (!ownApprovals.has(digest) && rv.member && !record.watch && messagesOpen()) actions.append(btn(item.draft ? 'Approve and send to members' : 'Approve', () => void approve(record, item.request, { isNew: !!item.draft }), ''));
+    if (state === 'ready') actions.append(btn('Send payment', () => void sendPayment(record, item.request, items), ''));
+    actions.append(btn('Check again', () => void review(record, item.request)));
+  }
+  if (item.draft) actions.append(btn('Discard', () => { draft = null; reviews.delete(digest); render(); }));
+  row.append(actions);
+  return row;
+}
+
+// ── rendering: the cards in Messages ────────────────────────────────────
+
+// "Open vault" from a card: an in-page link to the panel (the Nodus Connect
+// shell shows the screen holding it, src/connect-main.js); the panel lives
+// in the NODUS account area, so NODUS is selected first (the wallet's own
+// network selector, as a person would).
+function openLink(address) {
+  const link = el('a', { text: 'Open vault' });
+  link.href = '#vault-panel';
+  link.onclick = () => {
+    const select = $('chain');
+    if (select && select.value !== NODUS_ASSET.chain) { select.value = NODUS_ASSET.chain; select.dispatchEvent(new Event('change')); }
+    current = address; view = 'vault'; status = '';
+    render();
+    void refresh(address);
+  };
+  return link;
+}
+
+const payloadView = {
+  preview(text) {
+    const item = decodeVaultMessage(text);
+    if (!item) return null;
+    return { share: 'Shared vault', request: 'Vault payment request', approval: 'Vault payment approval', invalid: 'Vault item (unreadable)' }[item.kind];
+  },
+  card(message) {
+    const item = decodeVaultMessage(message.text);
+    if (!item) return null;
+    const card = el('div', { className: 'message-text vault-card' });
+    if (item.kind === 'invalid') { card.append(el('strong', { text: 'A vault item this page cannot read.' })); return card; }
+    if (item.kind === 'approval') {
+      card.append(el('strong', { text: 'Approval for a vault payment' }), el('p', { text: 'Open the vault in Shared vaults (NODUS) to see it.' }));
+      return card;
+    }
+    if (item.kind === 'request') {
+      const record = vaults.get(item.vault);
+      card.append(el('strong', { text: 'Vault payment request' }), el('p', { text: record ? `For ${labelOf(record)}. Review it in Shared vaults (NODUS); it shows only what the request itself says.` : 'For a vault that is not in your list.' }));
+      if (record) card.append(openLink(record.address));
+      return card;
+    }
+    // share
+    const shape = vaultCodeShape(item.code);
+    card.append(el('strong', { text: `Shared vault${item.label ? `: ${item.label}` : ''}` }), el('p', { text: `${shape.m} of ${shape.n} members must approve a payment.` }));
+    if (message.dir === 'out') { card.append(el('p', { text: 'You shared this vault.' })); return card; }
+    const s = shareStates.get(item.code);
+    const already = [...vaults.values()].some(r => r.code === item.code);
+    if (already || s?.state === 'added') card.append(el('p', { text: 'This vault is in your list.' }));
+    else if (!s) card.append(btn('Add vault', () => void checkShare({ ...item, from: message.fp })));
+    else if (s.state === 'checking') card.append(el('p', { text: 'Reading the vault…' }));
+    else if (s.state === 'error') card.append(el('p', { text: s.error }));
+    else if (s.state === 'confirm') {
+      const list = el('ul', {});
+      for (const fp of s.info.members) list.append(el('li', { text: who(fp) }));
+      card.append(el('p', { text: `Members (${s.info.m} of ${s.info.n} must approve):` }), list,
+        el('p', { text: 'Address:' }), el('code', { className: 'vault-address', text: s.info.address }),
+        btn('Add this vault', () => void addShared(item.code)));
+    }
+    return card;
+  }
+};
+
+// ── mount + extension ────────────────────────────────────────────────────
+
+// panelNode: #vault-panel; rootNode: #vaults-root; messagesHost: Messages'
+// vaultHost (Nodus Connect) or null (the wallet page).
+export function mountVaults({ panelNode, rootNode, messagesHost = null }) {
+  panel = panelNode; root = rootNode; host = messagesHost;
+  $('chain')?.addEventListener('change', showPanel);
+  if (host) {
+    host.setPayloadView(payloadView);
+    // Messages opened (its kept vaults load) or new items arrived (the
+    // panel's requests and approvals are drawn again).
+    host.onChange(() => {
+      if (!client) return;
+      const gen = generation;
+      void loadVaults(gen).then(() => { if (gen === generation) render(); });
+    });
+  }
+  render();
+}
+
+export const vaultExtension = {
+  nodusReady(detail) { void start(detail); },
+  nodusClosing() { reset(); },
+  nodusUnavailable() { reset(); },
+  vaultDeleting() { reset(); },
+  locked() { reset(); }
+};

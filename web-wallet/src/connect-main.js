@@ -196,13 +196,17 @@ function wireShell({ messagesNavigate, shortId, nodusSymbol, initials, fillAvata
 }
 
 try {
-  const [{ configureSite, registerExtension }, { mountMessages, messagesNavigate, walletExtension, initials }, { shortId }, { NODUS_ASSET }, { fillAvatar }] = await Promise.all([
-    import('./wallet-extensions.js'), import('./connect/ui/messages.js'), import('./connect/ui/text.js'), import('./nodus/network.js'), import('./connect/ui/dom.js')
+  const [{ configureSite, registerExtension }, { mountMessages, messagesNavigate, walletExtension, initials, vaultHost }, { shortId }, { NODUS_ASSET }, { fillAvatar }, { mountVaults, vaultExtension }] = await Promise.all([
+    import('./wallet-extensions.js'), import('./connect/ui/messages.js'), import('./connect/ui/text.js'), import('./nodus/network.js'), import('./connect/ui/dom.js'), import('./vaults/ui.js')
   ]);
   configureSite('connect');
   const host = wireShell({ messagesNavigate, shortId, nodusSymbol: NODUS_ASSET.symbol, initials, fillAvatar });
   mountMessages($('nc-root'), host);
   registerExtension(walletExtension);
+  // Shared vaults (src/vaults/ui.js) in the Wallet tab's NODUS area; they
+  // tell members and keep vaults through Messages (vaultHost).
+  mountVaults({ panelNode: $('vault-panel'), rootNode: $('vaults-root'), messagesHost: vaultHost });
+  registerExtension(vaultExtension);
   await import('./app.js');
   for (const id of ['create', 'restore', 'unlock-wallet']) $(id).disabled = false;
   $('wallet-boot-status').hidden = true;

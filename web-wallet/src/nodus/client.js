@@ -82,6 +82,11 @@
 //                                client then answers "registering is not
 //                                available". The registration envelope is
 //                                submitted with submit().
+//     vaultCreate / vaultOpen / vaultBalance / vaultScan / vaultPropose /
+//     vaultReview / vaultApprove / vaultSubmit
+//                                OPTIONAL (shared vaults, general multisig —
+//                                shapes in src/nodus/send-module.js), its own
+//                                group, same rule as the claim operations.
 //     tick()                   Keepalive ping (the thread-less stand-in for
 //                                nodus_client.c's 60 s read-thread ping; the
 //                                server drops an idle session at 180 s).
@@ -131,6 +136,10 @@ const NAME_OPS = ['nameLookup', 'nameOf', 'profileAddress'];
 // names but cannot register keeps send-to-name. Registering also needs the
 // name lookups above (the availability check).
 const NAME_REG_OPS = ['namePrices', 'nameBuild'];
+// OPTIONAL (shared vaults, general multisig — shapes in
+// src/nodus/send-module.js "SHARED VAULTS"): a module without all of them
+// still unlocks; this client then answers "Shared vaults are not available".
+const VAULT_OPS = ['vaultCreate', 'vaultOpen', 'vaultBalance', 'vaultScan', 'vaultPropose', 'vaultReview', 'vaultApprove', 'vaultSubmit'];
 const RAW_RULE = /^[1-9]\d{0,19}$/;
 function validRules(rules) {
   return !!rules && ['minDelegation', 'selfStake', 'commissionMaxBps', 'undelegateLockEpochs', 'epochLength'].every(key => typeof rules[key] === 'string' && RAW_RULE.test(rules[key]) && BigInt(rules[key]) < 2n ** 64n);
@@ -139,7 +148,7 @@ const lockedError = () => new Error('Wallet is locked.');
 
 export function createNodusClient({ factory, onState, setInterval: every = globalThis.setInterval, clearInterval: stopEvery = globalThis.clearInterval } = {}) {
   if (typeof factory !== 'function') throw new Error('The Nodus send module is not available.');
-  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, connectable = false, nameable = false, registrable = false;
+  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, connectable = false, nameable = false, registrable = false, vaultable = false;
   // ONE operation queue: Asyncify keeps a single global currData, so a second
   // export entered while the first is suspended corrupts the first. `tail`
   // settles only when the module call itself has returned, never merely when
@@ -218,6 +227,7 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
       connectable = CONNECT_OPS.every(name => typeof loaded[name] === 'function');
       nameable = NAME_OPS.every(name => typeof loaded[name] === 'function');
       registrable = nameable && NAME_REG_OPS.every(name => typeof loaded[name] === 'function');
+      vaultable = VAULT_OPS.every(name => typeof loaded[name] === 'function');
       const info = await enqueue('unlock', { seed });
       if (!info || typeof info.fingerprint !== 'string' || !HEX128.test(info.fingerprint) || typeof info.chainId !== 'string' || !HEX64.test(info.chainId)) throw new Error('The Nodus send module returned an invalid identity.');
       // The module derives the identity from the seed on its own; it must be
@@ -238,6 +248,7 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
   const noMessages = () => new Error('Messages is not available in this wallet version.');
   const nameCall = op => (args, options) => nameable ? call(op)(args, options) : Promise.reject(new Error('Chain names are not available in this wallet version.'));
   const registerCall = op => (args, options) => registrable ? call(op)(args, options) : Promise.reject(new Error('Registering a chain name is not available in this wallet version.'));
+  const vaultCall = op => (args, options) => vaultable ? call(op)(args, options) : Promise.reject(new Error('Shared vaults are not available in this wallet version.'));
   return {
     get state() { return state; },
     get fingerprint() { return fingerprint; },
@@ -267,6 +278,17 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
     // constants (raw decimal strings, from the module's own build).
     get stakeable() { return stakeable && state === 'ready'; },
     get stakingRules() { return stakeable && state === 'ready' ? stakingRules : undefined; },
+    // Shared vaults (VAULT_OPS): whether the loaded module offers them, and
+    // the operations (each one queue slot; shapes in send-module.js).
+    get vaultable() { return vaultable && state === 'ready'; },
+    vaultCreate: vaultCall('vaultCreate'),
+    vaultOpen: vaultCall('vaultOpen'),
+    vaultBalance: vaultCall('vaultBalance'),
+    vaultScan: vaultCall('vaultScan'),
+    vaultPropose: vaultCall('vaultPropose'),
+    vaultReview: vaultCall('vaultReview'),
+    vaultApprove: vaultCall('vaultApprove'),
+    vaultSubmit: vaultCall('vaultSubmit'),
     validators: (options) => stakeCall('validators')(undefined, options),
     delegations: (options) => stakeCall('delegations')(undefined, options),
     stakeBuild: stakeCall('stakeBuild'),

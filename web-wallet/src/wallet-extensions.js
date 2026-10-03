@@ -1,11 +1,11 @@
 // Extension points of src/app.js (decision 2026-10-01-connect-own-origin.md).
 //
-// The wallet page (src/main.js, wallet.nodusnetwork.io) registers nothing:
-// every call below is then a no-op and the site name is 'wallet'. The Nodus
+// The wallet page (src/main.js, wallet.nodusnetwork.io) registers only the
+// shared vaults (src/vaults/ui.js); the site name is 'wallet'. The Nodus
 // Connect page (src/connect-main.js, connect.nodusnetwork.io) calls
-// configureSite() BEFORE it imports src/app.js and registers Messages, so
-// Messages runs on the wallet's one unlock, one NODUS client (one send.wasm
-// module, one tier-2 session) and one lock.
+// configureSite() BEFORE it imports src/app.js and registers Messages and
+// the shared vaults, so both run on the wallet's one unlock, one NODUS
+// client (one send.wasm module, one tier-2 session) and one lock.
 //
 // Events app.js raises (an extension implements any subset):
 //   attach({ lock })            once, when app.js has loaded; lock(reason?)
