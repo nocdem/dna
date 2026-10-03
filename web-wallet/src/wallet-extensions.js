@@ -26,7 +26,15 @@
 //                               rev 5 §1.8). reason: plain words, or
 //                               undefined for a wallet lock.
 //   nodusUnavailable()          the Nodus address or client could not be
-//                               set up for the open wallet.
+//                               set up for the open wallet (app.js tries
+//                               again by itself and raises nodusReady
+//                               once a connection is made).
+//   ownName({ name })           the open wallet's own chain name, as the
+//                               reverse lookup (dnac_name_of for this
+//                               wallet's address, src/adapters/nodus.js
+//                               ownChainName) answered it; '' when there is
+//                               none, the lookup failed, or names are not
+//                               available / the wallet closed.
 //   vaultDeleting()             the saved wallet is about to be deleted
 //                               from this device (its Messages history goes
 //                               with it, src/app.js vault-delete).

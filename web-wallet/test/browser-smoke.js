@@ -87,7 +87,9 @@ try {
   assert.match(await page.locator('#nodus-address-status').innerText(), /Derived locally/);
   assert.equal(await page.locator('#cellframe-address-status').isVisible(), false);
   assert.equal(await page.locator('#send-fields').isVisible(), false);
-  assert.equal(await page.locator('#send-disabled-note').innerText(), 'Sending NODUS is not available in this release.');
+  // The build carries the send module, so until a node connection is ready
+  // (never, here: no node is reachable) NODUS says it is connecting.
+  assert.equal(await page.locator('#send-disabled-note').innerText(), 'Connecting to the Nodus network… Sending NODUS becomes available as soon as the connection is ready.');
   assert.equal(await page.locator('#account-explorer').isVisible(), false);
   assert.equal(await page.locator('#rpc-settings').isVisible(), false);
   assert.equal(await page.locator('#activity').innerText(), '');

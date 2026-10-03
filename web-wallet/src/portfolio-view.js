@@ -144,7 +144,9 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
       return [detail, ...chains.map(chain => {
         const block = el('div', 'asset-action notice'), action = rowActions[chain];
         const button = el('button', 'small', action.label); button.type = 'button'; button.dataset.rowAction = chain;
-        button.onclick = () => action.run();
+        // The button is handed to the action so it can show its own
+        // "Preparing…" state (src/app.js showPreparing).
+        button.onclick = () => action.run(button);
         block.append(el('p', '', action.note), button);
         return block;
       })];

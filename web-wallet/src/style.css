@@ -316,9 +316,16 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 #stake-status:empty { margin: 0; }
 .stake-block { margin: 24px 0 0; padding-top: 20px; border-top: 1px solid var(--line); scroll-margin-top: 24px; }
 .stake-block h4 { font-size: 12px; font-weight: 500; margin: 0 0 12px; color: var(--text); }
-#delegate-form label:first-child { margin-top: 0; }
-#delegate-form > button { margin-top: 24px; }
-#undelegate-note { margin-bottom: 0; }
+/* A validator row's header is one button that opens the row's own
+   delegation controls (src/app.js renderStaking); it looks like the row. */
+.stake-row-toggle { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; width: 100%; margin: 0; padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; color: inherit; font: inherit; font-weight: inherit; text-align: left; cursor: pointer; }
+.stake-row-toggle span { float: none; }
+.stake-main .stake-mine { color: var(--lime); }
+.stake-detail { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid #d5f99814; }
+.stake-detail .hint { margin: 0; }
+.stake-block > .hint { margin-top: 0; }
+/* An action button while its transaction is being prepared (src/app.js showPreparing). */
+button[aria-busy="true"] { cursor: wait; }
 details.stake-block > summary { color: var(--text); }
 /* Shared vaults (src/vaults/ui.js): the full width of the dashboard grid,
    laid out with the Earn panel's rows and blocks. */
@@ -328,6 +335,9 @@ details.stake-block > summary { color: var(--text); }
 .vault-panel textarea { width: 100%; box-sizing: border-box; font-family: inherit; }
 .vault-address { display: block; overflow-wrap: anywhere; font-size: 11px; line-height: 1.5; }
 .vault-contacts { display: flex; flex-direction: column; gap: 4px; }
+/* The result of saving the wallet, right under the save buttons (src/app.js saveVault). */
+.vault-save-status:empty { display: none; }
+.vault-save-status { margin: 14px 0 0; }
 .vault-request > p { margin: 0 0 8px; }
 .vault-card { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .vault-card p, .vault-card ul { margin: 0; }

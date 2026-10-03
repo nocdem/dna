@@ -52,7 +52,9 @@ const TEXT_MAX = 4000;                   // one message, characters (the compose
 const COMPOSER_ROWS = 5;                 // the composer grows up to this many lines
 const STATUS_MARK = { 'waiting to send': '○', sent: '✓', delivered: '✓✓' };
 const WAITING_TEXT = 'Messages opens when your wallet is connected to the Nodus network.';
-const UNAVAILABLE_TEXT = 'Messages needs the Nodus network connection, which is unavailable right now. Lock and open your wallet again to retry.';
+// The wallet tries the connection again by itself (src/app.js RECONNECT)
+// and raises nodusReady again once it is made.
+const UNAVAILABLE_TEXT = 'Messages needs the Nodus network connection, which is unavailable right now. The wallet tries to connect again by itself; Messages opens as soon as it is connected.';
 
 // ── session state (all dropped by close / reset) ───────────────────────
 let core, store, state, messages = [], ownFp, ownProfile, fresh = false, vaultId = null;
@@ -1393,8 +1395,9 @@ export const vaultHost = {
 // Registered only by the Nodus Connect page (src/connect-main.js).
 export const walletExtension = {
   nodusReady(detail) { void openMessages(detail); },
-  // reason: the connection was lost (Messages stays closed until the wallet
-  // is opened again); none: the wallet is locking or reconnecting.
+  // reason: the connection was lost (Messages stays closed until the
+  // wallet's reconnect raises nodusReady again); none: the wallet is
+  // locking or reconnecting.
   nodusClosing({ reason } = {}) { if (reason) closeMessages(reason); else resetMessages(); },
   nodusUnavailable() { closeMessages(UNAVAILABLE_TEXT); },
   // The saved wallet (and with it this history, src/app.js vault-delete) is

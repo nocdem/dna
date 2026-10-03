@@ -29,6 +29,12 @@ test('without a ready send module NODUS stays exactly as before: receive-only, n
   assert.equal(typeof nodusSendModuleFactory, 'function'); // shipped: testnet settings (send-module.js)
   assert.equal(nodusNetworkFor(false), NODUS_NETWORK);
   assert.equal(nodusNetworkFor(undefined), NODUS_NETWORK);
+  // with a send module in the build, the not-ready entry says it is connecting
+  const connecting = nodusNetworkFor(false, { module: true });
+  assert.equal(connecting.receiveOnly, true); assert.equal(connecting.balanceUnavailable, true);
+  assert.match(connecting.sendNote, /^Connecting to the Nodus network/);
+  assert.equal(nodusNetworkFor(false, { module: true }), connecting);
+  assert.equal(nodusNetworkFor(true, { module: true }), nodusNetworkFor(true));
   assert.equal(NODUS_NETWORK.receiveOnly, true); assert.equal(NODUS_NETWORK.balanceUnavailable, true);
   const ready = nodusNetworkFor(true);
   assert.equal(ready.receiveOnly, false); assert.equal(ready.balanceUnavailable, false); assert.equal(ready.sendNote, undefined);

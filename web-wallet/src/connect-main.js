@@ -53,6 +53,17 @@ function badge(id, count) {
   node.hidden = !count;
 }
 
+// The Home header's title (#home-name): the wallet's own chain name as the
+// reverse lookup answered it on open (src/app.js refreshName raises
+// ownName; decision 2026-10-02-onchain-names — a name is shown only when
+// the lookup for this ID confirms it), else "Your ID". A wallet extension
+// (src/wallet-extensions.js); it only writes this one header line.
+const YOUR_ID_TEXT = 'Your ID';
+const nameExtension = {
+  ownName({ name } = {}) { $('home-name').textContent = typeof name === 'string' && name ? name : YOUR_ID_TEXT; },
+  locked() { $('home-name').textContent = YOUR_ID_TEXT; }
+};
+
 function wireShell({ messagesNavigate, shortId, nodusSymbol, initials, fillAvatar }) {
   const navigate = target => messagesNavigate(target);
 
@@ -203,6 +214,7 @@ try {
   const host = wireShell({ messagesNavigate, shortId, nodusSymbol: NODUS_ASSET.symbol, initials, fillAvatar });
   mountMessages($('nc-root'), host);
   registerExtension(walletExtension);
+  registerExtension(nameExtension);
   // Shared vaults (src/vaults/ui.js) in the Wallet tab's NODUS area; they
   // tell members and keep vaults through Messages (vaultHost).
   mountVaults({ panelNode: $('vault-panel'), rootNode: $('vaults-root'), messagesHost: vaultHost });

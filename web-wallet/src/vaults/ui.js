@@ -63,10 +63,18 @@ function el(tag, { className, text } = {}, ...children) {
   for (const child of children) if (child) node.append(child);
   return node;
 }
+// The button pressed for the action now running ({ index among the panel's
+// buttons, label }): while `busy`, render() shows it as "Preparing…" (the
+// panel is drawn again during an action, so the pressed node itself may be
+// gone). Every button is disabled while busy, as before.
+let pressed = null;
 function btn(label, onClick, className = 'secondary small') {
   const node = el('button', { className, text: label });
   node.type = 'button';
-  node.onclick = onClick;
+  node.onclick = event => {
+    pressed = root?.contains(node) ? { index: [...root.querySelectorAll('button')].indexOf(node), label } : null;
+    return onClick(event);
+  };
   return node;
 }
 const nodus = units => `${formatUnits(BigInt(units), NODUS_ASSET.decimals)} NODUS`;
@@ -299,6 +307,9 @@ async function checkShare(item) {
 async function addShared(code) {
   const s = shareStates.get(code);
   if (!s || s.state !== 'confirm') return;
+  // the card shows "Adding the vault…" instead of its button until this ends
+  shareStates.set(code, { ...s, state: 'adding' });
+  host?.setPayloadView(payloadView);
   try {
     // F6: the block a share says its history starts at is never past the
     // node's tip (a later one would skip nothing real but stall the reading)
@@ -485,7 +496,11 @@ function render() {
   else if (view === 'watch') items.push(renderWatch());
   else items.push(renderList());
   root.replaceChildren(...items);
-  for (const b of root.querySelectorAll('button')) if (busy && !b.dataset.always) b.disabled = true;
+  const buttons = root.querySelectorAll('button');
+  for (const b of buttons) if (busy && !b.dataset.always) b.disabled = true;
+  if (!busy) { pressed = null; return; }
+  const shown = pressed && buttons[pressed.index];
+  if (shown && shown.textContent === pressed.label) { shown.textContent = 'Preparing…'; shown.setAttribute('aria-busy', 'true'); }
 }
 
 function renderList() {
@@ -727,6 +742,7 @@ const payloadView = {
     if (already || s?.state === 'added') card.append(el('p', { text: 'This vault is in your list.' }));
     else if (!s) card.append(btn('Add vault', () => void checkShare({ ...item, from: message.fp })));
     else if (s.state === 'checking') card.append(el('p', { text: 'Reading the vault…' }));
+    else if (s.state === 'adding') card.append(el('p', { text: 'Adding the vault…' }));
     else if (s.state === 'error') card.append(el('p', { text: s.error }));
     else if (s.state === 'confirm') {
       const list = el('ul', {});

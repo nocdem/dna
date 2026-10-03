@@ -9,7 +9,7 @@ import { CPUNK_ASSET, displayAmount } from './portfolio.js';
 // Pure data, referenced only inside `if (import.meta.env.VITE_ENABLE_IXIOS === 'true')`
 // blocks below, so a disabled build tree-shakes the whole module away.
 import { IXIOS_NETWORK, IXIOS_ASSET } from './ixios/network.js';
-import { NODUS_NETWORK, NODUS_ASSET, nodusNetworkFor } from './nodus/network.js';
+import { NODUS_ASSET, nodusNetworkFor } from './nodus/network.js';
 // null until package (c3) ships the module; see src/nodus/send-module.js.
 import { nodusSendModuleFactory } from './nodus/send-module.js';
 import { createNodusClient } from './nodus/client.js';
@@ -304,7 +304,10 @@ const endpoints = Object.fromEntries(Object.entries(CHAINS).map(([key, chain]) =
 // has no adapter for them. Nodus leads every list (and so is the network
 // selected when the page loads); Cellframe and Ixios follow CHAINS. Nodus has
 // no endpoint: nothing reads a balance for it (src/nodus/network.js).
-const leadingNetworks = [{ network: NODUS_NETWORK, asset: NODUS_ASSET }];
+// With a send module in the build, the receive-only entry is the
+// "connecting" one (src/nodus/network.js nodusNetworkFor).
+const NODUS_HAS_MODULE = nodusSendModuleFactory !== null;
+const leadingNetworks = [{ network: nodusNetworkFor(false, { module: NODUS_HAS_MODULE }), asset: NODUS_ASSET }];
 const extraNetworks = [];
 if (CPUNK_ENABLED) { endpoints.cellframe = CELLFRAME.endpoint; extraNetworks.push({ network: CELLFRAME, asset: CPUNK_ASSET }); }
 // Ixios: receive-only, like Cellframe (see src/ixios/network.js).
@@ -408,7 +411,7 @@ $('review-dialog').addEventListener('keydown', event => { if (event.key === 'Ent
 // NODUS leaves receive-only mode only while `ready` (a module client that
 // finished unlock for the open wallet); any other state restores it.
 function setNodusReady(ready, { reselect = true } = {}) {
-  const network = nodusNetworkFor(ready);
+  const network = nodusNetworkFor(ready, { module: NODUS_HAS_MODULE });
   if (receiveOnlyNetworks[NODUS_ASSET.chain] === network) return;
   receiveOnlyNetworks[NODUS_ASSET.chain] = network;
   if (!ready && wallet) wallet.nodusClient = undefined;
@@ -420,20 +423,63 @@ function setNodusReady(ready, { reselect = true } = {}) {
 // Lock order lives in the client (src/nodus/client.js lock): stop the queue ->
 // C cancel flag -> close the WebSocket -> zero module memory -> release.
 function stopNodusSend(options) {
+  clearNodusRetry();
   const client = nodusClient; nodusClient = undefined;
   // Extensions on this client (Messages) close first (design rev 5 §1.8).
   if (client) raise('nodusClosing', {});
   client?.lock();
   setNodusReady(false, options);
 }
+// RECONNECT (operator 2026-10-03: Nodus Connect sometimes showed no NODUS
+// balance, no Earn and "Sending NODUS is not available in this release"
+// until the page was reloaded). Cause: NODUS leaves receive-only mode only
+// when ONE client.unlock() succeeds (setNodusReady(true) below); a first
+// connection that failed — no pinned node answered in time
+// (nodus-send-wasm.c nsw_unlock -> nodus_client_connect, each step bounded
+// by the 5 s connect timeout of nodus_client.c), the module file did not
+// load, the chain check failed — ended in the catch below and nothing ever
+// tried again, and a client is single-use (src/nodus/client.js unlock), so
+// only a lock / reopen or a reload made a new one. Likewise a ready client
+// that later fell into 'error' (its keepalive failed) stayed down. Now a
+// failed or lost connection is tried again with a NEW client after a fixed,
+// growing wait (no randomness), for as long as the same wallet is open;
+// success restores the sendable network, the balance, Earn, the name and
+// the extensions (Messages, vaults) exactly as the first open does.
+const NODUS_RETRY_MS = [5000, 10000, 20000, 40000, 60000];
+let nodusRetryTimer, nodusRetries = 0;
+function clearNodusRetry() { clearTimeout(nodusRetryTimer); nodusRetryTimer = undefined; }
+// @return the wait in seconds (for the status line).
+function scheduleNodusRetry(source, address) {
+  clearNodusRetry();
+  const wait = NODUS_RETRY_MS[Math.min(nodusRetries, NODUS_RETRY_MS.length - 1)];
+  nodusRetries++;
+  nodusRetryTimer = setTimeout(() => {
+    nodusRetryTimer = undefined;
+    if (source === wallet && !source.locked && source.addresses.nodus === address) void startNodusSend(source, address);
+  }, wait);
+  return wait / 1000;
+}
 // Started once the Nodus address is derived, so the module's own identity can
 // be checked against it (client.unlock). Never runs while no module exists.
 async function startNodusSend(source, address) {
   stopNodusSend();
+  let wasReady = false;
   const client = createNodusClient({ factory: nodusSendModuleFactory, onState: state => {
     if (client !== nodusClient || state === 'ready') return;
-    // The client locked itself (error): extensions on it close too.
-    if (state === 'locked' || state === 'error') raise('nodusClosing', { reason: 'The connection to the Nodus network was lost. Lock and open your wallet again to reconnect.' });
+    // A failed first unlock is retried by the catch below; only a client
+    // that was ready and then failed is handled here.
+    if (!wasReady) return;
+    // The client failed after it was ready: extensions on it close too, and
+    // a new connection is tried (RECONNECT above).
+    if (state === 'locked' || state === 'error') {
+      raise('nodusClosing', { reason: 'The connection to the Nodus network was lost. Reconnecting by itself…' });
+      setNodusReady(false);
+      if (source === wallet && !source.locked) {
+        const seconds = scheduleNodusRetry(source, address);
+        $('nodus-address-status').textContent = `Derived locally from this wallet’s recovery phrase. The connection to the Nodus network was lost; trying again in ${seconds} seconds.`;
+      }
+      return;
+    }
     setNodusReady(false);
   } });
   nodusClient = client;
@@ -445,7 +491,9 @@ async function startNodusSend(source, address) {
     seed = nodusSigningSeed(source.recoveryPhrase);
     await client.unlock({ seed, fingerprint: address });
     if (!current()) { client.lock(); return; }
+    wasReady = true; nodusRetries = 0;
     source.nodusClient = client;
+    $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
     setNodusReady(true);
     portfolio.setAddress(NODUS_ASSET.chain, address);
     void refreshClaim();
@@ -454,10 +502,14 @@ async function startNodusSend(source, address) {
     // The saved wallet's id only when this wallet is the unlocked saved copy
     // (activitySession is set by unlock or by saving it here).
     raise('nodusReady', { client, phrase: source.recoveryPhrase, vaultId: activitySession?.id ?? null, fresh: walletFresh });
-  } catch {
+  } catch (error) {
     if (client === nodusClient) {
-      $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase. Nodus balance and sending are unavailable right now; lock and reopen your wallet to retry.';
+      const why = error?.message ? ` (${error.message})` : '';
       raise('nodusUnavailable');
+      if (source === wallet && !source.locked) {
+        const seconds = scheduleNodusRetry(source, address);
+        $('nodus-address-status').textContent = `Derived locally from this wallet’s recovery phrase. Nodus balance and sending are unavailable right now${why}; trying again in ${seconds} seconds.`;
+      }
     }
   } finally { seed?.fill(0); }
 }
@@ -480,7 +532,7 @@ async function refreshClaim() {
     portfolio.setAction(NODUS_ASSET.chain, {
       label: `Claim your allocation (${amount} NODUS)`,
       note: `An allocation of ${amount} NODUS is waiting for this wallet. Claiming it adds it to your NODUS balance.`,
-      run: () => void startClaim()
+      run: button => void startClaim(button)
     });
   } catch (error) {
     // Not silent (operator 2026-09-30 could not see the offer and had no way
@@ -498,6 +550,12 @@ async function refreshClaim() {
 // every build goes through src/adapters/nodus.js (stakingOverview,
 // prepareStake); a read started under an older stakeCheck is dropped.
 let stakeCheck = 0, stakeView;
+// The validator row whose delegation controls are open (operator
+// 2026-10-03: clicking a validator opens its controls in that row — your
+// delegation with "add more" / "withdraw", or an amount and "delegate" —
+// instead of a separate form with a validator drop-down). Kept across the
+// re-reads of refreshStaking; one row at a time.
+let expandedValidator;
 const STAKE_KINDS = ['delegate', 'undelegate', 'stake'];
 const ACTION_WORD = { claim: 'Claiming', delegate: 'Delegating', undelegate: 'Undelegating', stake: 'Bonding', name: 'Registering a name' };
 const CONFIRM_TEXT = { claim: 'Confirm & claim', delegate: 'Confirm & delegate', undelegate: 'Confirm & undelegate', stake: 'Confirm & bond', name: 'Confirm & register' };
@@ -519,9 +577,9 @@ function showEarn(on) {
   $('quick-earn').setAttribute('aria-pressed', String(earnMode));
 }
 function hideStaking() {
-  stakeCheck++; stakeView = undefined; setEarnAvailable(false);
-  showEarn(false); $('validator-list').replaceChildren(); $('delegation-list').replaceChildren();
-  $('delegate-validator').replaceChildren(); $('stake-status').textContent = ''; $('delegate-hint').textContent = ''; $('undelegate-note').textContent = '';
+  stakeCheck++; stakeView = undefined; expandedValidator = undefined; setEarnAvailable(false);
+  showEarn(false); $('validator-list').replaceChildren(); $('delegation-list').replaceChildren(); $('unlisted-delegations').hidden = true;
+  $('stake-status').textContent = '';
 }
 async function refreshStaking() {
   const client = nodusClient, source = wallet, check = ++stakeCheck;
@@ -541,58 +599,104 @@ async function refreshStaking() {
 function renderStaking(view) {
   const { rules } = view;
   const minText = nodusAmountText(rules.minDelegation);
+  const rate = bps => `${(bps / 100).toFixed(2).replace(/\.?0+$/, '')}%`;
   // Rows are laid out like portfolio holding rows (src/portfolio-view.js):
-  // identity and figures on the left, status on the right, the row's action
-  // right-aligned below.
+  // identity and figures on the left, status on the right. The whole row
+  // header is one button that opens or closes the row's own delegation
+  // controls below it.
   const el = (tag, className, text) => { const node = document.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node; };
+  const amountInput = (label, value = '') => {
+    const input = document.createElement('input'); input.inputMode = 'decimal'; input.autocomplete = 'off'; input.spellcheck = false; input.placeholder = '0.00';
+    input.value = value; input.setAttribute('aria-label', label); return input;
+  };
+  const actionButton = (text, run) => { const button = el('button', 'small', text); button.type = 'button'; button.onclick = () => void run(button); return button; };
+  const mine = new Map(view.delegations.map(d => [d.validator, d]));
+  if (expandedValidator && !view.validators.some(v => v.fingerprint === expandedValidator)) expandedValidator = undefined;
   $('validator-list').replaceChildren(...(view.validators.length ? view.validators.map(v => {
+    const short = adapters.nodus.shortKey(v.fingerprint), d = mine.get(v.fingerprint), open = expandedValidator === v.fingerprint;
+    // Filled delegator places of the chain's per-validator cap; '?' when the
+    // node's answer carries no count (an older node) — never shown as 0.
+    const slots = `${v.delegators === null ? '?' : v.delegators}/${rules.maxDelegators}`;
+    const full = v.delegators !== null && BigInt(v.delegators) >= rules.maxDelegators;
     const row = el('div', 'stake-row');
-    const name = el('span', 'stake-main');
-    name.append(el('strong', '', adapters.nodus.shortKey(v.fingerprint)),
-      el('small', '', `own stake ${nodusAmountText(v.selfStake)} NODUS · delegated ${nodusAmountText(v.delegated)} NODUS · commission ${(v.commissionBps / 100).toFixed(2).replace(/\.?0+$/, '')}%`));
-    const badge = el('span', 'status-badge', v.statusText); badge.dataset.status = v.status;
-    row.append(name, badge);
     row.title = v.fingerprint;
-    if (v.acceptsDelegation) {
-      const pick = document.createElement('button'); pick.type = 'button'; pick.className = 'secondary small'; pick.textContent = 'Delegate';
-      pick.setAttribute('aria-label', `Delegate to validator ${adapters.nodus.shortKey(v.fingerprint)}`);
-      pick.onclick = () => { $('delegate-validator').value = v.fingerprint; $('delegate-amount').focus(); };
-      const actions = el('span', 'stake-actions'); actions.append(pick); row.append(actions);
+    const toggle = el('button', 'stake-row-toggle'); toggle.type = 'button';
+    toggle.setAttribute('aria-expanded', String(open));
+    toggle.setAttribute('aria-label', `Validator ${short}${d ? `, your delegation ${nodusAmountText(d.amount)} NODUS` : ''}. ${open ? 'Close' : 'Open'} delegation controls`);
+    const name = el('span', 'stake-main');
+    name.append(el('strong', '', short),
+      el('small', '', `own stake ${nodusAmountText(v.selfStake)} NODUS · delegated ${nodusAmountText(v.delegated)} NODUS · commission ${rate(v.commissionBps)} · delegators ${slots}`));
+    if (d) name.append(el('small', 'stake-mine', `Your delegation: ${nodusAmountText(d.amount)} NODUS`));
+    const badge = el('span', 'status-badge', v.statusText); badge.dataset.status = v.status;
+    toggle.append(name, badge);
+    toggle.onclick = () => { expandedValidator = open ? undefined : v.fingerprint; renderStaking(view); };
+    row.append(toggle);
+    if (!open) return row;
+    const detail = el('div', 'stake-detail');
+    if (d) {
+      detail.append(el('p', 'hint', `You have ${nodusAmountText(d.amount)} NODUS delegated to this validator.`));
+      if (v.acceptsDelegation) {
+        const more = amountInput(`Amount to add to your delegation with ${short}`);
+        const add = el('span', 'stake-actions');
+        add.append(more, actionButton('Review adding more', button => startStake('delegate', { validator: v.fingerprint, amount: more.value }, button)));
+        detail.append(add, el('p', 'hint', 'Adding to your delegation can be any amount. A network fee is paid on top.'));
+      } else detail.append(el('p', 'hint', `This validator does not take more delegations now (${v.statusText}).`));
+      const back = amountInput(`Amount to withdraw from ${short}`, formatUnits(d.amount, NODUS_ASSET.decimals));
+      const withdraw = el('span', 'stake-actions');
+      withdraw.append(back, actionButton('Review withdrawal', button => startStake('undelegate', { validator: v.fingerprint, amount: back.value }, button)));
+      detail.append(withdraw, el('p', 'hint', `Withdrawing returns the NODUS to your address as a separate coin that stays locked for ${view.lockText} after the validator set next changes. Until then it cannot be sent or delegated again. Withdraw everything, or leave at least ${minText} NODUS delegated. The network fee is paid from your spendable NODUS.`));
+    } else if (!v.acceptsDelegation) {
+      detail.append(el('p', 'hint', `This validator does not take delegations now (${v.statusText}).`));
+    } else if (full) {
+      detail.append(el('p', 'hint', `All ${rules.maxDelegators} delegator places of this validator are taken. Choose another validator.`));
+    } else {
+      const amount = amountInput(`Amount to delegate to ${short}`);
+      const actions = el('span', 'stake-actions');
+      actions.append(amount, actionButton('Review delegation', button => startStake('delegate', { validator: v.fingerprint, amount: amount.value }, button)));
+      detail.append(actions, el('p', 'hint', `A new delegation is at least ${minText} NODUS. A network fee is paid on top. You review every detail before anything is sent.`));
     }
+    row.append(detail);
     return row;
   }) : [el('p', 'stake-empty', 'No validators listed.')]));
-  const open = view.validators.filter(v => v.acceptsDelegation);
-  $('delegate-validator').replaceChildren(...open.map(v => new Option(`${adapters.nodus.shortKey(v.fingerprint)} · ${v.statusText} · commission ${(v.commissionBps / 100).toFixed(2).replace(/\.?0+$/, '')}%`, v.fingerprint)));
-  $('delegate-review').disabled = open.length === 0;
-  $('delegate-hint').textContent = `A new delegation to a validator is at least ${minText} NODUS; adding to one you already have can be any amount. A network fee is paid on top.`;
-  $('delegation-list').replaceChildren(...(view.delegations.length ? view.delegations.map(d => {
+  // A delegation whose validator is not in the list above has no row to
+  // live on; it is listed here (it cannot be withdrawn from this page: the
+  // module needs the validator's key from the list).
+  const unlisted = view.delegations.filter(d => !d.canUndelegate);
+  $('unlisted-delegations').hidden = unlisted.length === 0;
+  $('delegation-list').replaceChildren(...unlisted.map(d => {
     const row = el('div', 'stake-row');
     const name = el('span', 'stake-main');
     name.append(el('strong', '', `${nodusAmountText(d.amount)} NODUS`), el('small', '', `with ${adapters.nodus.shortKey(d.validator)}`));
     row.append(name);
-    if (d.validatorInfo) { const badge = el('span', 'status-badge', d.validatorInfo.statusText); badge.dataset.status = d.validatorInfo.status; row.append(badge); }
     row.title = d.validator;
     const actions = el('span', 'stake-actions');
-    if (d.canUndelegate) {
-      const amount = document.createElement('input'); amount.inputMode = 'decimal'; amount.autocomplete = 'off'; amount.spellcheck = false;
-      amount.value = formatUnits(d.amount, NODUS_ASSET.decimals); amount.setAttribute('aria-label', `Amount to undelegate from ${adapters.nodus.shortKey(d.validator)}`);
-      const undo = document.createElement('button'); undo.type = 'button'; undo.className = 'secondary small'; undo.textContent = 'Review undelegation';
-      undo.onclick = () => void startStake('undelegate', { validator: d.validator, amount: amount.value });
-      actions.append(amount, undo);
-    } else actions.append(el('small', 'stake-note', '(this validator is not in the list above, so it cannot be undelegated from here)'));
+    actions.append(el('small', 'stake-note', '(this validator is not in the list above, so it cannot be withdrawn from here)'));
     row.append(actions);
     return row;
-  }) : [el('p', 'stake-empty', 'You have no delegations.')]));
-  $('undelegate-note').textContent = `Undelegating returns the NODUS to your address as a separate coin that stays locked for ${view.lockText} after the validator set next changes. Until then it cannot be sent or delegated again. Withdraw everything, or leave at least ${minText} NODUS delegated. The network fee is paid from your spendable NODUS.`;
+  }));
+}
+// An action button that starts preparing a transaction (Send's review,
+// Register, Delegate / Add more / Withdraw, Claim) shows "Preparing…" and
+// stays disabled from the press until the review or the result is shown
+// or the preparation fails (operator 2026-10-03: the button looked active
+// while the transaction was being prepared). The `busy` flag of each
+// action stays the real guard against a second press; this is what the
+// person sees. Returns the function that puts the button back; `enabled`
+// says whether it is usable again then (default: yes).
+function showPreparing(button, { text = 'Preparing…', enabled = () => true } = {}) {
+  if (!button) return () => {};
+  const saved = [...button.childNodes];
+  button.disabled = true; button.setAttribute('aria-busy', 'true'); button.textContent = text;
+  return () => { button.replaceChildren(...saved); button.removeAttribute('aria-busy'); button.disabled = !enabled(); };
 }
 // "Become a validator" was removed from the page (operator 2026-10-03); the
 // module / adapter STAKE builder (prepareStake kind 'stake') stays.
-async function startStake(kind, params) {
+async function startStake(kind, params, button) {
   if (busy || !wallet || !STAKE_KINDS.includes(kind)) return;
   // Activity lists the selected network's records: show NODUS, where the
   // transaction will be tracked. (selectChain closes any open review first.)
   if ($('chain').value !== NODUS_ASSET.chain) { $('chain').value = NODUS_ASSET.chain; selectChain(); }
-  busy = true; const current = revision, client = nodusClient;
+  busy = true; const current = revision, client = nodusClient, restore = showPreparing(button);
   message('Preparing the transaction and network fee…');
   try {
     const locked = adapters.nodus.lockedInputs(history.filter(row => row.address === wallet.addresses.nodus));
@@ -602,13 +706,9 @@ async function startStake(kind, params) {
     showReview(transfer, [...transfer.review, ['Review expires', new Date(transfer.expiresAt).toLocaleTimeString()]], title);
     message('Review every detail before confirming.');
   } catch (error) { if (current === revision) message(error.message); }
-  finally { busy = false; }
+  finally { busy = false; restore(); }
 }
 $('stake-refresh').onclick = () => void refreshStaking();
-$('delegate-form').onsubmit = event => {
-  event.preventDefault();
-  void startStake('delegate', { validator: $('delegate-validator').value, amount: $('delegate-amount').value });
-};
 // Opens the review dialog for a transfer-shaped object (a send, a claim from
 // src/adapters/nodus.js prepareClaim, or a staking transaction from
 // prepareStake) with its own entries.
@@ -625,12 +725,12 @@ function showReview(transfer, entries, title) {
   $('confirm-send').disabled = true; $('review-error').textContent = ''; $('review-dialog').showModal();
   clearTimeout(confirmEnableTimer); confirmEnableTimer = setTimeout(() => { $('confirm-send').disabled = false; }, 600);
 }
-async function startClaim() {
+async function startClaim(button) {
   if (busy || !wallet) return;
   // Activity lists the selected network's records: show NODUS, where the
   // claim will be tracked. (selectChain closes any open review first.)
   if ($('chain').value !== NODUS_ASSET.chain) { $('chain').value = NODUS_ASSET.chain; selectChain(); }
-  busy = true; const current = revision, client = nodusClient;
+  busy = true; const current = revision, client = nodusClient, restore = showPreparing(button);
   message('Preparing your claim…');
   try {
     const transfer = await adapters.nodus.prepareClaim({ client, from: wallet.addresses.nodus });
@@ -638,7 +738,7 @@ async function startClaim() {
     showReview(transfer, [...transfer.review, ['Review expires', new Date(transfer.expiresAt).toLocaleTimeString()]], 'Review claim');
     message('Review the claim before confirming.');
   } catch (error) { if (current === revision) message(error.message); }
-  finally { busy = false; }
+  finally { busy = false; restore(); }
 }
 // CHAIN NAME (HF-4): the "Chain name" block of the NODUS receive panel and
 // the "Register a name" action beside Send / Receive / Earn (a new coin is
@@ -655,7 +755,7 @@ function clearNameQuote() {
   $('name-review').disabled = true; $('name-quote').textContent = '';
 }
 function hideName() {
-  nameCheck++; nameReady = false; clearNameQuote();
+  nameCheck++; nameReady = false; clearNameQuote(); raise('ownName', { name: '' });
   $('quick-name').hidden = true; $('name-block').hidden = true; $('name-fields').hidden = true;
   $('own-name').textContent = ''; $('name-prices').textContent = ''; $('name-input').value = '';
 }
@@ -668,6 +768,9 @@ async function refreshName() {
   try {
     const own = await adapters.nodus.ownChainName({ client, from: source.addresses.nodus });
     if (!current()) return;
+    // The page header shows the name only as the reverse lookup confirmed it
+    // (decision 2026-10-02-onchain-names; Nodus Connect: src/connect-main.js).
+    raise('ownName', { name: own.found ? own.name : '' });
     if (own.found) {
       $('own-name').textContent = `Your chain name is "${own.name}". People can send NODUS to you by typing this name instead of your address.`;
       $('name-fields').hidden = true; $('quick-name').hidden = true; clearNameQuote();
@@ -689,6 +792,7 @@ async function refreshName() {
     }
   } catch (error) {
     if (!current()) return;
+    raise('ownName', { name: '' });
     $('own-name').textContent = `Could not read your chain name: ${error?.message || 'unknown error'} Lock and reopen your wallet to retry.`;
     $('name-fields').hidden = true; $('quick-name').hidden = true;
   }
@@ -715,6 +819,8 @@ async function startName() {
   if (busy || !wallet || !nameQuoted) return;
   if ($('chain').value !== NODUS_ASSET.chain) { $('chain').value = NODUS_ASSET.chain; selectChain(); }
   busy = true; const current = revision, client = nodusClient, name = nameQuoted;
+  // Usable again only while a checked name is still quoted (clearNameQuote).
+  const restore = showPreparing($('name-review'), { enabled: () => nameQuoted !== undefined });
   message('Preparing the name registration and network fee…');
   try {
     const locked = adapters.nodus.lockedInputs(history.filter(row => row.address === wallet.addresses.nodus));
@@ -723,7 +829,7 @@ async function startName() {
     showReview(transfer, [...transfer.review, ['Review expires', new Date(transfer.expiresAt).toLocaleTimeString()]], 'Review name registration');
     message('Review every detail before confirming.');
   } catch (error) { if (current === revision) message(error.message); }
-  finally { busy = false; }
+  finally { busy = false; restore(); }
 }
 $('name-input').addEventListener('input', clearNameQuote);
 // The block sits inside #send-form: Enter checks the name, never submits a send.
@@ -733,7 +839,7 @@ $('name-review').onclick = () => void startName();
 function lock() {
   // Extensions close before the NODUS client (stopNodusSend raises
   // nodusClosing first), then the cross-site mark is dropped.
-  stopNodusSend({ reselect: false });
+  stopNodusSend({ reselect: false }); nodusRetries = 0;
   siteLock.stop(); walletFresh = false;
   portfolio.clear();
   phraseFields.clear();
@@ -749,7 +855,7 @@ function lock() {
   history.length = 0; $('account-explorer').removeAttribute('href');
   $('activity').replaceChildren(); setReceiveAddress(''); $('balances').replaceChildren(); $('recipient').value = ''; $('amount').value = '';
   for (const id of ['unlock-password', 'vault-password', 'vault-old-password']) $(id).value = '';
-  $('vault-risk-confirm').checked = false;
+  $('vault-risk-confirm').checked = false; $('vault-save-status').textContent = '';
   updateVaultUI(); clearTimeout(lockTimer); message('Wallet locked. Restore your recovery phrase or unlock your saved wallet.');
   raise('locked');
 }
@@ -1032,7 +1138,7 @@ $('send-form').onsubmit = async event => {
     const blocking = history.find(row => row.chain === $('chain').value && row.address === address && !terminal(row.status));
     if (blocking) { message(`A previous send on this network has no final result yet (tx ${blocking.hash}). Wait for it to resolve, or mark it as abandoned in Activity.`); return; }
   }
-  busy = true; $('review-button').disabled = true; const current = revision;
+  busy = true; const current = revision, restore = showPreparing($('review-button'));
   message('Preparing transfer and network fee…');
   try {
     const chain = $('chain').value;
@@ -1061,7 +1167,7 @@ $('send-form').onsubmit = async event => {
     }
     showReview(transfer, entries, 'Review transfer'); message('Review every transfer detail before confirming.');
   } catch (error) { if (current === revision) message(error.message); }
-  finally { busy = false; $('review-button').disabled = false; }
+  finally { busy = false; restore(); }
 };
 $('cancel-send').onclick = closeReview;
 $('review-dialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); else closeReview(); });
@@ -1087,9 +1193,9 @@ $('confirm-send').onclick = async () => {
     if (transfer.kind === 'claim') void refreshClaim();
     if (STAKE_KINDS.includes(transfer.kind)) void refreshStaking();
     if (current !== revision) return;
-    if (STAKE_KINDS.includes(transfer.kind)) $('delegate-amount').value = '';
-    else if (transfer.kind === 'name') { $('name-input').value = ''; clearNameQuote(); }
-    else { $('recipient').value = ''; $('amount').value = ''; }
+    // A staking row's amount fields are drawn again by refreshStaking above.
+    if (transfer.kind === 'name') { $('name-input').value = ''; clearNameQuote(); }
+    else if (!STAKE_KINDS.includes(transfer.kind)) { $('recipient').value = ''; $('amount').value = ''; }
     if (transfer.kind) message(`${what} submitted; confirmation is pending. ${idLabel} ${hash}. Its status is tracked in Activity.`);
     else {
       message('Broadcast submitted; confirmation is pending. ');
@@ -1116,7 +1222,7 @@ function updateVaultUI() {
     $('unlock-form').hidden = !!wallet || !saved;
     $('wallet-storage-state').textContent = saved && activitySession?.vault === saved
       ? 'Encrypted copy saved in this browser.'
-      : saved ? 'Temporary session · the saved copy has not been unlocked here.' : 'Temporary session · this wallet has not been saved on this device.';
+      : saved ? 'Temporary session · the saved copy has not been unlocked here.' : 'Temporary session · this wallet has not been saved on this device. To keep it here, open “Save wallet on this device” below.';
   }
   catch {
     $('vault-status').textContent = 'Device storage is unavailable. Use a temporary wallet in this tab.';
@@ -1190,10 +1296,21 @@ $('session-takeover').onclick = async () => {
     }
   } catch (error) { if (operation === vaultOperation) message(error.message); }
 };
+// The outcome of saving (or of changing the password) is written in two
+// places: #vault-status at the top of the wallet, and #vault-save-status
+// right under the save buttons — where the person pressed (a tester saved
+// and saw nothing: #vault-status is far above the button on the wallet
+// page and, in Nodus Connect, sits on the start screen that is hidden
+// while the wallet is open).
+function saveResult(text, ok = false) {
+  $('vault-status').textContent = text;
+  $('vault-save-status').textContent = text;
+  $('vault-save-status').dataset.result = ok ? 'saved' : 'problem';
+}
 async function saveVault(change) {
   if (!wallet || wallet.locked) return;
   if (!$('vault-risk-confirm').checked) {
-    $('vault-status').textContent = 'Before saving, read and accept the risks of storing an encrypted wallet on this device.';
+    saveResult('Not saved yet: before saving, read and accept the risks of storing an encrypted wallet on this device — tick the box just above the button, then press it again.');
     $('vault-risk-confirm').reportValidity();
     return;
   }
@@ -1201,6 +1318,8 @@ async function saveVault(change) {
   const password = $('vault-password').value, oldPassword = $('vault-old-password').value;
   $('vault-password').value = ''; $('vault-old-password').value = '';
   $('vault-save').disabled = true; $('vault-change').disabled = true;
+  $('vault-save-status').textContent = '';
+  const restore = showPreparing($(change ? 'vault-change' : 'vault-save'), { text: 'Saving…' });
   try {
     const previous = localStorage.getItem(VAULT_KEY); let id;
     validateNewPassword(password);
@@ -1224,7 +1343,7 @@ async function saveVault(change) {
       localStorage.setItem(VAULT_KEY, encrypted); activitySession = { id: newId, key, balancesKey, historyKey, vault: encrypted }; return true;
     });
     if (!stored) {
-      if (operation === vaultOperation && wallet === source && !source.locked && !$('vault-risk-confirm').checked) $('vault-status').textContent = 'Save canceled. The storage risks were not accepted; no new copy was saved.';
+      if (operation === vaultOperation && wallet === source && !source.locked && !$('vault-risk-confirm').checked) saveResult('Save canceled. The storage risks were not accepted; no new copy was saved.');
       return;
     }
     updateVaultUI();
@@ -1234,9 +1353,11 @@ async function saveVault(change) {
     persistHistory();
     if (operation !== vaultOperation || wallet !== source || source.locked) return;
     $('vault-risk-confirm').checked = false;
-    $('vault-status').textContent = change ? 'Local password changed.' : 'Encrypted wallet saved on this device. Keep your recovery backup.';
-  } catch (error) { if (operation === vaultOperation) $('vault-status').textContent = error.message; }
-  finally { $('vault-save').disabled = false; $('vault-change').disabled = false; }
+    saveResult(change
+      ? 'Local password changed. From now on, open this wallet with the new password.'
+      : 'Encrypted wallet saved on this device. Next time, open this page in this browser and enter your password to unlock it. Keep your recovery words backed up as well.', true);
+  } catch (error) { if (operation === vaultOperation) saveResult(`Not saved: ${error.message}`); }
+  finally { restore(); $('vault-save').disabled = false; $('vault-change').disabled = false; }
 }
 $('vault-save').onclick = () => saveVault(false);
 $('vault-change').onclick = () => saveVault(true);

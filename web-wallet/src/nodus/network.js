@@ -26,7 +26,14 @@ export const NODUS_NETWORK = {
 // holds null until package (c3) lands) — keeps NODUS_NETWORK above unchanged.
 // Still no endpoint and no rpcOptions: the module reaches the chain itself.
 const NODUS_SEND_NETWORK = { ...NODUS_NETWORK, receiveOnly: false, balanceUnavailable: false, sendNote: undefined };
-export function nodusNetworkFor(ready) { return ready === true ? NODUS_SEND_NETWORK : NODUS_NETWORK; }
+// With a send module in the build (`module`), NODUS is receive-only only
+// while the connection is being made or made again (src/app.js
+// startNodusSend, RECONNECT), so its note says that instead of "not
+// available in this release".
+const NODUS_CONNECTING_NETWORK = { ...NODUS_NETWORK, sendNote: 'Connecting to the Nodus network… Sending NODUS becomes available as soon as the connection is ready.' };
+export function nodusNetworkFor(ready, { module = false } = {}) {
+  return ready === true ? NODUS_SEND_NETWORK : module === true ? NODUS_CONNECTING_NETWORK : NODUS_NETWORK;
+}
 // Unpriced like CPUNK_ASSET and IXIOS_ASSET: no priceId, so it never enters
 // PRICE_URL and never counts toward the USD total or its completeness.
 export const NODUS_ASSET = { chain: 'nodus', symbol: 'NODUS', decimals: 8, key: 'nodus:NODUS' };
