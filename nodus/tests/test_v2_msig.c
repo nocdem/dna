@@ -43,6 +43,9 @@
  *      the same length is NOT caught by the digest (it is not covered) —
  *      the review then names a DIFFERENT vault address, which is what a
  *      caller compares against the vault it expects (asserted).
+ *  M4b The read-back refuses an expiry of 0 ("never") and one beyond the
+ *      export's tip + 90 (NODUS_V2_MSIG_ERR_EXPIRY); tip + 90 and tip + 1
+ *      are accepted (fix round F3).
  *  M5  The signature text round-trips; malformed texts are refused.
  *  M6  The combine: two of three members sign; nodus_v2_msig_combine
  *      writes them ascending by key; the chain's OWN auth hook
@@ -841,6 +844,40 @@ static int test_m4(void) {
     return 0;
 }
 
+/* ══ M4b: the read-back refuses an expiry of 0 or beyond tip + 90 (F3) ═ */
+
+static int review_expiry(uint64_t expiry) {
+    nodus_v2_msig_build_req_t req;
+    nodus_v2_msig_built_t b;
+    nodus_v2_spend_err_t e;
+    ms_rand_t rnd = { 0xA0, 0, 0 };
+    base_req(&req, &rnd);
+    req.expiry_height = expiry;
+    if (nodus_v2_msig_build(&req, &b, &e) != NODUS_V2_SPEND_OK) return -999;
+    char *t = NULL;
+    size_t tl = 0;
+    int rc = nodus_v2_msig_export_encode(g_chain, MS_TIP, b.signers, b.digest,
+                                         b.env, b.env_len, &t, &tl);
+    nodus_v2_msig_built_free(&b);
+    if (rc != NODUS_V2_SPEND_OK) return -998;
+    nodus_v2_msig_review_t *rv = calloc(1, sizeof(*rv));
+    rc = rv ? review_text(t, tl, g_pk[1], rv) : -997;
+    free(rv);
+    free(t);
+    return rc;
+}
+
+static int test_m4b(void) {
+    CHECK(review_expiry(0) == NODUS_V2_MSIG_ERR_EXPIRY, "M4b: expiry 0 refused");
+    CHECK(review_expiry(MS_TIP + MS_AHEAD + 1) == NODUS_V2_MSIG_ERR_EXPIRY,
+          "M4b: expiry past tip + 90 refused");
+    CHECK(review_expiry(MS_TIP + MS_AHEAD) == NODUS_V2_SPEND_OK,
+          "M4b: expiry tip + 90 accepted");
+    CHECK(review_expiry(MS_TIP + 1) == NODUS_V2_SPEND_OK,
+          "M4b: expiry tip + 1 accepted");
+    return 0;
+}
+
 /* ══ M5: the signature text ══════════════════════════════════════════ */
 
 static int test_m5(void) {
@@ -1002,7 +1039,7 @@ static int test_m7(void) {
 int main(void) {
     if (keys_init() != 0) { fprintf(stderr, "key derivation failed\n"); return 1; }
     if (fixture_init() != 0) { fprintf(stderr, "fixture failed\n"); return 1; }
-    if (test_m0() || test_m1() || test_m2() || test_m3() || test_m4() ||
+    if (test_m0() || test_m1() || test_m2() || test_m3() || test_m4() || test_m4b() ||
         test_m5() || test_m6() || test_m7())
         return 1;
     printf("test_v2_msig: %d checks passed\n", g_checks);

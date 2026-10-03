@@ -369,3 +369,20 @@ test('parity: the read-back refuses a request with any changed field', { skip: s
   assert.notEqual(recv.num('nsw_test_msig_review', ['string'], ['5090']), 0, 'a tip at which it has expired is refused by the preflight');
   assert.notEqual(propIn(recv, { ...parts, signers: '4' }), 0, 'more approvals than members is refused');
 });
+
+test('parity: the read-back refuses a request that never expires or stays valid too long (F3)', { skip: skipParity }, async () => {
+  const { mod, parts } = await builtRequest();
+  // read at a node tip far below the one the proposer wrote: 5090 > 4000 + 90
+  assert.equal(propIn(mod, parts), 0);
+  assert.notEqual(mod.num('nsw_test_msig_review', ['string'], ['4000']), 0, 'beyond the node tip + 90');
+  assert.equal(mod.num('nsw_test_msig_review', ['string'], ['5000']), 0, mod.str('nsw_error'));
+  // built with expiry 0 ("never") or tip + 91: the read-back refuses
+  for (const expiry of ['0', '5091']) {
+    const seeds = Uint8Array.from({ length: 256 }, (_, i) => i);
+    mod.M.HEAPU8.set(seeds, mod.num('nsw_test_random_buf'));
+    assert.equal(mod.num('nsw_test_random_load', ['number'], [seeds.length]), 0);
+    assert.equal(mod.num('nsw_test_msig_build', ['string', 'string', 'string', 'number', 'string', 'string', 'string'],
+      [CHAIN, '5000', '0', 1, TO, '100000000', expiry]), 0, mod.str('nsw_error'));
+    assert.notEqual(mod.num('nsw_test_msig_review', ['string'], ['5000']), 0, `expiry ${expiry} refused`);
+  }
+});

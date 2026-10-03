@@ -81,6 +81,13 @@ extern "C" {
 /** The outputs a READ-BACK accepts: the chain's SPEND ceiling
  *  (rt_native.c RTN_SPEND_MAX_OUT). A call with more is refused. */
 #define NODUS_V2_MSIG_MAX_OUTS   16u
+/** The validity window a co-signer accepts: the decision's tip + 90 — the
+ *  mempool lifetime cap NODUS_CMT_APP_MAX_EXPIRY_AHEAD (100) minus the
+ *  10-block gossip margin every builder uses (nodus-cli
+ *  CLI_ENV_EXPIRY_AHEAD, the wallet's NSW_EXPIRY_AHEAD). An export whose
+ *  expiry is 0 ("never") or beyond its own tip + this is refused by the
+ *  read-back (fix round 2026-10-03, F3). */
+#define NODUS_V2_MSIG_EXPIRY_AHEAD 90u
 /** The largest signature text (3 magic/key lines + hex), with slack. */
 #define NODUS_V2_MSIG_SIG_TEXT_MAX 32768u
 
@@ -103,7 +110,9 @@ typedef enum {
     NODUS_V2_MSIG_ERR_SIG         = -70, /* a signature does not verify    */
     NODUS_V2_MSIG_ERR_COUNT       = -71, /* signatures != the export's K   */
     NODUS_V2_MSIG_ERR_DUP_SIGNER  = -72, /* one key signed twice           */
-    NODUS_V2_MSIG_ERR_RULESET     = -73  /* no CORE leg version to judge   */
+    NODUS_V2_MSIG_ERR_RULESET     = -73, /* no CORE leg version to judge   */
+    NODUS_V2_MSIG_ERR_EXPIRY      = -74  /* expiry 0, or past the export's
+                                          * tip + NODUS_V2_MSIG_EXPIRY_AHEAD*/
 } nodus_v2_msig_rc_t;
 
 /* ── 1. descriptor + address from keys (nodus-cli `msig address`) ────── */
@@ -277,7 +286,9 @@ typedef struct {
  * The checks `msig sign` makes before it signs, in its order: the leg
  * shape (nodus_v2_msig_leg_open); `signer_pk` (NULL = skip) is one of the
  * descriptor's keys; the digest re-derives (nodus_v2_msig_digest) and
- * EQUALS the exported one; the SPEND call is nin u8 (1..15) ‖ nin ×
+ * EQUALS the exported one; the expiry is not 0 and not beyond the export's
+ * tip + NODUS_V2_MSIG_EXPIRY_AHEAD (NODUS_V2_MSIG_ERR_EXPIRY); the SPEND
+ * call is nin u8 (1..15) ‖ nin ×
  * nullifier ‖ nout u8 (1..NODUS_V2_MSIG_MAX_OUTS) ‖ nout × 232-byte
  * records with call_len exactly that — nothing is read before its length
  * is proved; every output owner is 128 lowercase hex characters.

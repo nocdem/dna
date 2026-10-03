@@ -3380,6 +3380,9 @@ static int nsw_ms_review_now(uint64_t now_tip) {
                         "not know.");
     case NODUS_V2_MSIG_ERR_CALL:
         return nsw_fail("This payment request is damaged. Do not approve it.");
+    case NODUS_V2_MSIG_ERR_EXPIRY:
+        return nsw_fail("This payment request never expires, or stays valid "
+                        "longer than any wallet makes one. Do not approve it.");
     default:
         return nsw_fail("This payment request is not a vault payment this "
                         "page can read (rc=%d).", rc);
@@ -3396,6 +3399,14 @@ static int nsw_ms_review_now(uint64_t now_tip) {
             return nsw_fail("This payment request moves a token this page "
                             "cannot show. Do not approve it.");
         }
+    /* F3: the window is judged at the NODE's tip too, not only at the tip
+     * the proposer wrote — nsw_expiry_for's tip + NSW_EXPIRY_AHEAD */
+    if (now_tip > UINT64_MAX - NSW_EXPIRY_AHEAD ||
+        g_ms.rv.expiry_height > now_tip + NSW_EXPIRY_AHEAD) {
+        memset(&g_ms.rv, 0, sizeof(g_ms.rv));
+        return nsw_fail("This payment request stays valid longer than any "
+                        "wallet makes one. Do not approve it.");
+    }
     g_ms.now_tip = now_tip;
     g_ms.expired = now_tip >= g_ms.rv.expiry_height;   /* tip + 1 > expiry */
     g_ms.reviewed = 1;

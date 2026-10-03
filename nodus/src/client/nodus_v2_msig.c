@@ -35,6 +35,9 @@ _Static_assert(NODUS_V2_MSIG_PK_LEN == DNA_MSIG_PUBKEY_LEN,
 _Static_assert(NODUS_V2_MSIG_PK_LEN + NODUS_V2_MSIG_SIG_LEN ==
                NODUS_RT_AUTH_SIGNER_LEN,
                "a signer slot is pk ‖ sig");
+_Static_assert(NODUS_V2_MSIG_EXPIRY_AHEAD ==
+               (uint64_t)NODUS_CMT_APP_MAX_EXPIRY_AHEAD - 10u,
+               "the co-signer window is the builders' tip + 90");
 _Static_assert(NODUS_V2_MSIG_PK_LEN == QGP_DSA87_PUBLICKEYBYTES &&
                NODUS_V2_MSIG_SIG_LEN == QGP_DSA87_SIGNATURE_BYTES,
                "ML-DSA-87 sizes");
@@ -560,6 +563,14 @@ int nodus_v2_msig_review(const nodus_v2_msig_export_t *x,
     if (rc != NODUS_V2_SPEND_OK) goto done;
     if (memcmp(pf->auth_digest[0], x->digest, 64) != 0) {
         rc = NODUS_V2_MSIG_ERR_DIGEST;
+        goto done;
+    }
+    /* a request that never expires, or one valid longer than any builder
+     * makes it, is not signed (F3) */
+    if (v->expiry_height == 0 ||
+        x->tip > UINT64_MAX - NODUS_V2_MSIG_EXPIRY_AHEAD ||
+        v->expiry_height > x->tip + NODUS_V2_MSIG_EXPIRY_AHEAD) {
+        rc = NODUS_V2_MSIG_ERR_EXPIRY;
         goto done;
     }
     {

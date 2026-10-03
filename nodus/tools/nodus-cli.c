@@ -6108,6 +6108,11 @@ static int cmd_msig_sign(int argc, char **argv, int cmd_start) {
             fprintf(stderr, "REFUSED: the exported CORE SPEND call is "
                     "malformed (its length does not match its inputs and "
                     "outputs, or an owner is not 128 lowercase hex)\n");
+        else if (vrc == NODUS_V2_MSIG_ERR_EXPIRY)
+            fprintf(stderr, "REFUSED: the export never expires, or expires "
+                    "later than its tip %llu + %u blocks\n",
+                    (unsigned long long)x.tip,
+                    (unsigned)NODUS_V2_MSIG_EXPIRY_AHEAD);
         else
             fprintf(stderr, "the export could not be read back (rc=%d)\n",
                     vrc);
@@ -6119,6 +6124,9 @@ static int cmd_msig_sign(int argc, char **argv, int cmd_start) {
         printf("signing a CORE SPEND from %u-of-%u address %s: "
                "%u input(s), fee %llu\n", (unsigned)rv->m, (unsigned)rv->n,
                ah, (unsigned)rv->n_in, (unsigned long long)rv->fee);
+        printf("  valid until block %llu (built at tip %llu)\n",
+               (unsigned long long)rv->expiry_height,
+               (unsigned long long)rv->tip);
         for (int i = 0; i < rv->n_in; i++) {
             char nh[129];
             qgp_fp_raw_to_hex(rv->in_nul[i], nh);
