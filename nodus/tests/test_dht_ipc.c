@@ -465,7 +465,9 @@ static void case_client_put(void) {
     rand_key(&key);
     nodus_value_t *v = mk_value(&key, 100, 1, 1);
     if (!v) { FAIL("value"); return; }
-    uint8_t buf[4096];
+    /* A put carries the 4627-byte ML-DSA-87 signature: 4096 was too small
+     * and the encoder refused (the first sweep's "FAIL: encode put"). */
+    uint8_t buf[8192];
     size_t n = 0;
     if (nodus_t2_put(101, g_token, &key, v->data, v->data_len,
                      NODUS_VALUE_EPHEMERAL, NODUS_DEFAULT_TTL, 1, 1,
@@ -889,6 +891,15 @@ static void case_storage_bound(void) {
     if (!raw_ctl(0x44)) { FAIL("raw control"); nodus_tcp_close(&g_raw); return; }
     nodus_tcp_conn_t *c = raw_origin(slot, 500, 0x44);
     if (!c) { FAIL("conn"); nodus_tcp_close(&g_raw); return; }
+    /* Observe the open BEFORE any request (see case 11b): otherwise the
+     * open, the replies and the overflow close land in one storage poll. */
+    nodus_tcp_poll(&g_raw, 5);
+    bool opened = false;
+    for (int i = 0; i < POLL_ROUNDS && !opened; i++) {
+        nodus_dht_ipc_poll(S, 2);
+        nodus_dht_ipc_tick(S);
+        opened = D->sessions[slot].open;
+    }
     uint8_t buf[512];
     for (int i = 0; i < 14; i++) {
         size_t n = 0;
@@ -898,12 +909,6 @@ static void case_storage_bound(void) {
     /* Flush the requests out, then stop reading on the "core" side. */
     nodus_tcp_poll(&g_raw, 5);
     int disc = raw_disconnects;
-    bool opened = false;
-    for (int i = 0; i < POLL_ROUNDS && !opened; i++) {
-        nodus_dht_ipc_poll(S, 2);
-        nodus_dht_ipc_tick(S);
-        opened = D->sessions[slot].open;
-    }
     bool closed = false;
     for (int i = 0; i < POLL_ROUNDS && !closed; i++) {
         nodus_dht_ipc_poll(S, 2);
@@ -948,6 +953,18 @@ static void case_storage_bound_small(void) {
     if (!raw_ctl(0x55)) { FAIL("raw control"); nodus_tcp_close(&g_raw); return; }
     nodus_tcp_conn_t *c = raw_origin(slot, 1, 0x55);
     if (!c) { FAIL("conn"); nodus_tcp_close(&g_raw); return; }
+    /* Observe the open BEFORE any request is sent: sent together, preface,
+     * requests, replies and the overflow close are all handled inside one
+     * storage poll and the open state is never observable (the first sweep
+     * failed "the origin never opened" this way — an ordering hole in the
+     * test, not in the code). */
+    nodus_tcp_poll(&g_raw, 5);
+    bool opened = false;
+    for (int i = 0; i < POLL_ROUNDS && !opened; i++) {
+        nodus_dht_ipc_poll(S, 2);
+        nodus_dht_ipc_tick(S);
+        opened = D->sessions[slot].open;
+    }
     uint8_t buf[512];
     /* 400 gets ≈ 80 KB of requests (fits the socket at once); 400 × 32 KiB
      * ≈ 12.5 MiB of replies — more than the transport ceiling, less than
@@ -959,12 +976,6 @@ static void case_storage_bound_small(void) {
     }
     nodus_tcp_poll(&g_raw, 5);
     int disc = raw_disconnects;
-    bool opened = false;
-    for (int i = 0; i < POLL_ROUNDS && !opened; i++) {
-        nodus_dht_ipc_poll(S, 2);
-        nodus_dht_ipc_tick(S);
-        opened = D->sessions[slot].open;
-    }
     bool closed = false;
     for (int i = 0; i < POLL_ROUNDS * 2 && !closed; i++) {
         nodus_dht_ipc_poll(S, 2);
