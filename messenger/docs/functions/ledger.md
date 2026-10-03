@@ -410,7 +410,7 @@ I/O-free, like the SPEND (§11) and staking (§13) builders: nodus-cli `name reg
 
 ## 16. Validator list — the per-validator delegator count (`dnac_validator_list_query` "dlg")
 
-A read-only display field: how many of a validator's `NODUS_MAX_DELEGATORS_PER_VALIDATOR` (2048, `nodus/src/witness/nodus_witness_delegation.h`) delegation slots are filled. No consensus path reads it.
+A read-only display field: how many of a validator's `NODUS_MAX_DELEGATORS_PER_VALIDATOR` (2048, `nodus/include/nodus/nodus_types.h`) delegation slots are filled. No consensus path reads it.
 
 | Item | Description |
 |------|-------------|

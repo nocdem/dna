@@ -1817,9 +1817,8 @@ int dna_chain_cmd_genesis_prepare(dnac_context_t *ctx, const char *config_path) 
  * ========================================================================== */
 
 #include "dnac/validator.h"
-#include "witness/nodus_witness_delegation.h"   /* NODUS_MAX_DELEGATORS_PER_VALIDATOR
-                                                 * — the chain's own cap, the
-                                                 * one definition */
+#include "nodus/nodus_types.h"   /* NODUS_MAX_DELEGATORS_PER_VALIDATOR — the
+                                 * chain's own cap, the one definition */
 
 /**
  * Parse a lowercase-hex Dilithium5 pubkey (5184 chars = 2 * DNAC_PUBKEY_SIZE)

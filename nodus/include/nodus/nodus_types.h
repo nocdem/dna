@@ -893,6 +893,78 @@ typedef struct {
     nodus_dnac_committee_entry_t entries[NODUS_T3_MAX_WITNESSES];
 } nodus_dnac_committee_result_t;
 
+/**
+ * The ONE authority for how many DISTINCT delegators may reference a
+ * single validator (O15J Block 2 — the OPEN HIGH in nodus/BUGS.md).
+ * Defined here (not in src/witness/nodus_witness_delegation.h, where it
+ * lived until 2026-10-03) so a client (the CLI, the web wallet module)
+ * reads the chain's cap without including a witness header; the witness
+ * code reaches it through nodus_witness.h, which includes this file.
+ *
+ * ⚠ HISTORY — the snapshot blob below is GONE. tokenomics-v3 P2 deleted
+ * nodus_witness_epoch.c (the blob, NODUS_EPOCH_MAX_DELEGS_PER_VAL and
+ * nodus_delegation_list_by_validator with it); the P2 reward
+ * distribution reads every delegation through v2_balance_copy with no
+ * truncation (nodus_witness_v2_econ.c). The cap below stays a
+ * per-validator row bound enforced at admission; the paragraphs that
+ * follow record why it was introduced.
+ *
+ * WHY THIS EXISTS. nodus_witness_epoch.c serialized at most
+ * NODUS_EPOCH_MAX_DELEGS_PER_VAL delegators per committee member into
+ * the epoch snapshot blob, but nothing ever bounded the underlying row
+ * count. A validator with more delegators than the snapshot can hold
+ * had its FULL total_delegated written into the blob while only a
+ * SUBSET of its delegators appeared in it; settlement then divides by
+ * the full figure and the excluded delegators are never paid — their
+ * share falls into the inner-dust burn, permanently. The truncating
+ * query (delegation_list_by_hash) had no ORDER BY, so WHICH delegators
+ * were dropped was decided by SQLite's scan order, i.e. by physical row
+ * layout, which two witnesses need not share after a resync / VACUUM /
+ * table rebuild.
+ *
+ * ⚠ THAT SECOND HALF IS NO LONGER TRUE — O15O Faz 7 (v0.19.31) gave the
+ * query `ORDER BY <the pubkey column not pinned by the WHERE clause>
+ * ASC`, a stable total order (the PK makes the pubkey pair unique, and
+ * SQLite compares BLOBs by memcmp). Every witness now truncates to the
+ * SAME subset. What is unchanged, and is why the admission cap below is
+ * still the real fix: the excluded delegators are still excluded and
+ * still never paid. Determinism was the fork risk; it is not the whole
+ * defect.
+ *
+ * The fix is to make the bound REAL at admission rather than paper
+ * over it at snapshot time: a DELEGATE that would introduce a NEW
+ * delegator to an already-full validator is REJECTED, in both lanes
+ *   - legacy: apply_delegate (nodus_witness_bft.c)
+ *   - Ledger V2: rtn_delegate_exec (nodus_witness_rt_native.c)
+ * so the snapshot can never be ASKED to truncate.
+ *
+ * WHY NOT DNAC_MAX_DELEGATIONS_PER_DELEGATOR. That constant is also
+ * 64, which is exactly why the stale comment this replaces claimed the
+ * snapshot bound "matches STAKE rule G cap". It does not: rule G caps
+ * how many validators ONE DELEGATOR may back (see
+ * nodus_delegation_count_by_delegator, nodus_witness_delegation.h),
+ * which is the transposed relation and bounds nothing about a
+ * validator's delegator count. Reusing it here would re-encode the very
+ * misattribution that let this bug live. Numerically equal today,
+ * semantically unrelated, and either may move without the other.
+ *
+ * COUNTING IS FAIL-CLOSED. A count that cannot be read is never
+ * treated as "zero, therefore admit" — see the two enforcement sites.
+ *
+ * tokenomics-v3 P3-6: 64 -> 2048 (decision file docs/plans/decisions/
+ * 2026-09-22-nodus-tokenomics-v3-operator.md §1 "Validator başına
+ * delegator hedefi, uygulanabilir olması koşuluyla 2048 olacak"; design
+ * §8 P3-6). "Uygulanabilir olması koşuluyla" — the boundary cost at this
+ * cap (a 32 × 2048-row balance copy, the distribution over it, a payday
+ * over up to 65 536 accrual rows, a graduation releasing up to 2048
+ * delegations) is MEASURED by nodus/tests/test_v2_deleg_cap_bench.c and
+ * judged by the operator; nothing in this tree sizes an array or a stack
+ * buffer by this constant (every reader of the rows it bounds — the
+ * balance copy, the distribution, the graduation release — grows a heap
+ * buffer), so the value itself is only the admission bound.
+ */
+#define NODUS_MAX_DELEGATORS_PER_VALIDATOR 2048
+
 /** Validator list entry (Phase 14 / Task 63). The fields
  * dnac_validator_list_entry_t (dnac.h) also carries are copied into it
  * field by field (dnac/src/transaction/validator_queries.c) — the two
@@ -900,8 +972,8 @@ typedef struct {
  * delegator count) and nothing memcpy's one struct into the other.
  *
  * delegator_count: the reply's optional "dlg" key — how many of the
- * validator's NODUS_MAX_DELEGATORS_PER_VALIDATOR
- * (src/witness/nodus_witness_delegation.h) delegation slots are filled.
+ * validator's NODUS_MAX_DELEGATORS_PER_VALIDATOR (above) delegation
+ * slots are filled.
  * Valid ONLY when has_delegator_count is 1; a node that predates the key
  * leaves has_delegator_count 0 = "unknown", which is not the same as 0
  * delegators. */
