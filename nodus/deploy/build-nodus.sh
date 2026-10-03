@@ -1,7 +1,17 @@
 #!/bin/bash
 # Nodus Build & Deploy Script
 #
-# Builds the Nodus DHT server and installs it.
+# Builds the Nodus binaries and installs them.
+#
+# Split S6 (decision docs/plans/decisions/2026-10-01-nodus-component-split.md
+# item 8: the combined nodus-server stays): a Release build installs
+# nodus-server, nodus-core, nodus-storage, nodus-witness and nodus-cli, and
+# copies the three split units (nodus-core / nodus-storage / nodus-witness
+# .service) beside nodus.service WITHOUT enabling them. A first install
+# starts the combined nodus.service, as before. Switching a host to the
+# three-process layout is an operator step (docs/DEPLOY_RUNBOOK.md
+# "Three-process node"). An update restarts whichever layout is running.
+# A --debug build still builds and installs only nodus-server-debug.
 #
 # Usage:
 #   ./build-nodus.sh           # Build + install + restart service
@@ -18,6 +28,10 @@ INSTALL_DIR="/usr/local/bin"
 DATA_DIR="/var/lib/nodus"
 CONFIG_FILE="/etc/nodus.conf"
 SERVICE_NAME="nodus"
+# Release binaries (split S6). The combined nodus-server is the default
+# service; the three split binaries back the split units.
+RELEASE_BINARIES="nodus-server nodus-core nodus-storage nodus-witness nodus-cli"
+SPLIT_UNITS="nodus-core nodus-storage nodus-witness"
 
 # Parse arguments
 DEBUG_BUILD=0
@@ -42,13 +56,14 @@ for arg in "$@"; do
             echo "First-time install:"
             echo "  - Creates ${DATA_DIR}/{data,identity}"
             echo "  - Copies config to ${CONFIG_FILE}"
-            echo "  - Installs binary to ${INSTALL_DIR}/nodus-server"
-            echo "  - Installs and starts systemd service"
+            echo "  - Installs ${RELEASE_BINARIES} to ${INSTALL_DIR}/"
+            echo "  - Installs and starts the combined nodus.service"
+            echo "  - Copies the split units (${SPLIT_UNITS}) — NOT enabled"
             echo ""
             echo "Update:"
             echo "  - Pulls latest code"
-            echo "  - Rebuilds nodus-server"
-            echo "  - Restarts service"
+            echo "  - Rebuilds and reinstalls the binaries"
+            echo "  - Restarts the running layout (combined, or the three split units)"
             exit 0
             ;;
     esac
@@ -91,9 +106,9 @@ pull_latest() {
     echo ""
 }
 
-# Build nodus-server
+# Build the binaries
 build_nodus() {
-    echo -e "${YELLOW}Building nodus-server (${BUILD_TYPE})...${NC}"
+    echo -e "${YELLOW}Building nodus (${BUILD_TYPE})...${NC}"
 
     BUILD_DIR="$NODUS_DIR/build"
     mkdir -p "$BUILD_DIR"
@@ -108,28 +123,57 @@ build_nodus() {
         cmake -DCMAKE_BUILD_TYPE=Release "$NODUS_DIR"
     fi
 
-    make -j$(nproc) nodus-server
-
-    if [ ! -f "$BUILD_DIR/nodus-server" ]; then
-        echo -e "${RED}Build failed: nodus-server not found${NC}"
-        exit 1
+    if [ $DEBUG_BUILD -eq 1 ]; then
+        TARGETS="nodus-server"
+    else
+        TARGETS="$RELEASE_BINARIES"
     fi
+    # shellcheck disable=SC2086
+    make -j$(nproc) $TARGETS
+
+    for t in $TARGETS; do
+        if [ ! -f "$BUILD_DIR/$t" ]; then
+            echo -e "${RED}Build failed: $t not found${NC}"
+            exit 1
+        fi
+    done
 
     echo -e "${GREEN}Build successful${NC}"
     echo ""
 }
 
-# Install binary
+# Install the binaries
 install_binary() {
-    BINARY_NAME="nodus-server"
-    [ $DEBUG_BUILD -eq 1 ] && BINARY_NAME="nodus-server-debug"
+    if [ $DEBUG_BUILD -eq 1 ]; then
+        echo -e "${YELLOW}Installing nodus-server-debug to ${INSTALL_DIR}/${NC}"
+        sudo cp "$NODUS_DIR/build/nodus-server" "${INSTALL_DIR}/nodus-server-debug"
+        sudo chmod +x "${INSTALL_DIR}/nodus-server-debug"
+        SIZE=$(ls -lh "${INSTALL_DIR}/nodus-server-debug" | awk '{print $5}')
+        echo -e "${GREEN}Installed: ${INSTALL_DIR}/nodus-server-debug ($SIZE)${NC}"
+        echo ""
+        return
+    fi
+    for b in $RELEASE_BINARIES; do
+        echo -e "${YELLOW}Installing ${b} to ${INSTALL_DIR}/${NC}"
+        sudo cp "$NODUS_DIR/build/$b" "${INSTALL_DIR}/$b"
+        sudo chmod +x "${INSTALL_DIR}/$b"
+        SIZE=$(ls -lh "${INSTALL_DIR}/$b" | awk '{print $5}')
+        echo -e "${GREEN}Installed: ${INSTALL_DIR}/$b ($SIZE)${NC}"
+    done
+    echo ""
+}
 
-    echo -e "${YELLOW}Installing ${BINARY_NAME} to ${INSTALL_DIR}/${NC}"
-    sudo cp "$NODUS_DIR/build/nodus-server" "${INSTALL_DIR}/${BINARY_NAME}"
-    sudo chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
-
-    SIZE=$(ls -lh "${INSTALL_DIR}/${BINARY_NAME}" | awk '{print $5}')
-    echo -e "${GREEN}Installed: ${INSTALL_DIR}/${BINARY_NAME} ($SIZE)${NC}"
+# Split S6: copy the three split units beside nodus.service. Not enabled,
+# not started — the combined nodus.service stays the default (decision
+# item 8); switching a host is an operator step. Re-copied on every run so
+# an update carries unit changes too.
+install_split_units() {
+    [ $DEBUG_BUILD -eq 1 ] && return
+    for u in $SPLIT_UNITS; do
+        sudo cp "$SCRIPT_DIR/$u.service" "/etc/systemd/system/$u.service"
+    done
+    sudo systemctl daemon-reload
+    echo -e "${GREEN}Split units installed (not enabled): ${SPLIT_UNITS}${NC}"
     echo ""
 }
 
@@ -187,10 +231,26 @@ EOF
     echo ""
 }
 
+# Is this host running the three-process layout? (split S6: nodus-core
+# active; the units conflict with nodus.service, so at most one layout is.)
+split_layout_active() {
+    [ $DEBUG_BUILD -eq 0 ] && systemctl is-active --quiet nodus-core 2>/dev/null
+}
+
 # Update existing
 update_install() {
-    echo -e "${YELLOW}Restarting ${SERVICE_NAME}...${NC}"
-    sudo systemctl restart ${SERVICE_NAME}
+    if split_layout_active; then
+        # The three units together. systemd orders their STARTS by After=
+        # (core first); this script claims no restart order on a live
+        # validator beyond that — that order is an OPEN operator item
+        # (docs/DEPLOY_RUNBOOK.md "Three-process node").
+        echo -e "${YELLOW}Restarting ${SPLIT_UNITS}...${NC}"
+        # shellcheck disable=SC2086
+        sudo systemctl restart $SPLIT_UNITS
+    else
+        echo -e "${YELLOW}Restarting ${SERVICE_NAME}...${NC}"
+        sudo systemctl restart ${SERVICE_NAME}
+    fi
     sleep 2
     echo -e "${GREEN}Service restarted${NC}"
     echo ""
@@ -199,7 +259,13 @@ update_install() {
 # Show status
 show_status() {
     echo -e "${YELLOW}Service status:${NC}"
-    sudo systemctl status ${SERVICE_NAME} --no-pager -l 2>/dev/null | head -15 || true
+    if split_layout_active; then
+        for u in $SPLIT_UNITS; do
+            sudo systemctl status "$u" --no-pager -l 2>/dev/null | head -15 || true
+        done
+    else
+        sudo systemctl status ${SERVICE_NAME} --no-pager -l 2>/dev/null | head -15 || true
+    fi
 }
 
 # Main
@@ -207,6 +273,7 @@ check_deps
 pull_latest
 build_nodus
 install_binary
+install_split_units
 
 if [ ! -f /etc/systemd/system/${SERVICE_NAME}.service ]; then
     first_time_install

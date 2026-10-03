@@ -1,0 +1,51 @@
+# Nodus split S6 — the WITNESS of a three-process node (decision
+# docs/plans/decisions/2026-10-01-nodus-component-split.md items 5, 10, 11,
+# 19, 22): the 4004 p2p port and the Comet consensus lane, the chain
+# database; listens on <data_path>/witness.sock for core. Consensus runs
+# independently of core (item 5) — a core restart does not stop it.
+# Reads the identity core created and never writes it (item 10).
+#
+# Wants=/After= nodus-core.service only — never Requires=/BindsTo=: a core
+# stop must NOT stop the witness (item 5). Item 11: the witness exits on an
+# init failure and Restart=on-failure restarts it, limited. After= orders
+# STARTS only (Type=simple), so on a FIRST boot this unit can start before
+# core has written the identity; nodus-witness then exits 1 ("identity …
+# missing") and is retried every RestartSec=5 s. The start limit (10
+# starts / 300 s) is sized for that wait, not the combined unit's 3 / 300 s.
+# --witness-external on the command line (nodus-witness refuses without
+# it); Conflicts=nodus.service as in nodus-core.service.
+#
+# OPEN (operator decision pending, not a property of this unit): this
+# process runs no partial-wipe gate of its own — on a half-wiped host core
+# and storage refuse while the witness would open the surviving chain
+# database. See docs/DEPLOY_RUNBOOK.md "Three-process node".
+[Unit]
+Description=Nodus witness (split: 4004 p2p, consensus)
+Documentation=https://github.com/nocdem/dna
+After=network-online.target nodus-core.service
+Wants=network-online.target nodus-core.service
+Conflicts=nodus.service
+StartLimitBurst=10
+StartLimitIntervalSec=300
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/nodus-witness -c /etc/nodus.conf --witness-external
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/nodus
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nodus-witness
+LimitNOFILE=65535
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

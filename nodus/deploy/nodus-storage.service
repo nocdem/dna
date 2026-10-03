@@ -1,0 +1,46 @@
+# Nodus split S6 — the DHT / STORAGE of a three-process node (decision
+# docs/plans/decisions/2026-10-01-nodus-component-split.md items 7, 10, 16,
+# 19): nodus.db, channels.db, routing, replication and its own outbound
+# 4002 dials; listens only on <data_path>/storage.sock (no TCP/UDP port of
+# its own). Reads the identity core created and never writes it (item 10).
+#
+# Wants=/After= nodus-core.service only — never Requires=/BindsTo=: the
+# processes are separate failure domains, a core restart must not take
+# storage down with it. After= orders STARTS only (Type=simple), so on a
+# FIRST boot this unit can start before core has written the identity;
+# nodus-storage then exits 1 ("identity … missing") and Restart=on-failure
+# retries every RestartSec=5 s. The start limit (10 starts / 300 s) is
+# sized for that wait, not the combined unit's 3 / 300 s, which a fresh
+# host could exhaust before core finishes generating the identity.
+# --storage-external on the command line (nodus-storage refuses without
+# it); Conflicts=nodus.service as in nodus-core.service.
+[Unit]
+Description=Nodus storage (split: DHT databases, replication)
+Documentation=https://github.com/nocdem/dna
+After=network-online.target nodus-core.service
+Wants=network-online.target nodus-core.service
+Conflicts=nodus.service
+StartLimitBurst=10
+StartLimitIntervalSec=300
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/nodus-storage -c /etc/nodus.conf --storage-external
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/nodus
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nodus-storage
+LimitNOFILE=65535
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target
