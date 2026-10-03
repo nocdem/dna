@@ -338,6 +338,9 @@ int nodus_cmt_bs_load_seen_commit(nodus_cmt_store_t *s, int64_t height,
 /** :347-440 PruneBlocks. `*out_evidence_point` is the reference's second
  *  return; -1 on every error (:349, :354, :359). The 1000-block flushes
  *  (:425-432) and the final `flush` call (:435) are each one COMMIT.
+ *  ⚠ DEVIATION (decision 2026-10-03-block-pruning-7-paydays.md item 5):
+ *  block 1's BlockMeta row `H:1` is never deleted — the start-time V2
+ *  preflight (check 5) reads it; every other row of height 1 is pruned.
  *  @return CMT_OK; CMT_REJECT for the three argument errors; CMT_FAULT. */
 int nodus_cmt_bs_prune_blocks(nodus_cmt_store_t *s, int64_t height,
                               const cmt_state_t *state,
