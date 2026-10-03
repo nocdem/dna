@@ -23,6 +23,9 @@ import {
   hasUndelivered, DELIVERED_GRACE_SECONDS, avatarSource, AVATAR_MAX_B64, avatarPatch, AVATAR_UPLOAD_MAX_B64,
   needFullSync, fullDays, SMART_SYNC_FULL_SECONDS, profileFresh, PROFILE_CACHE_SECONDS
 } from '../src/connect/ui/text.js';
+import {
+  keptChainName, chainLookupNeeded, chainNameAfterLookup, shownOwnName, profileEntryText, PROFILE_ENTRY_TEXT
+} from '../src/connect/ui/chain-names.js';
 
 // A localStorage stand-in (getItem / setItem / removeItem).
 function memoryStorage() {
@@ -440,4 +443,60 @@ test('profile cache: a kept profile is used for 7 days', () => {
   assert.equal(profileFresh({ at: String(at) }, String(at + PROFILE_CACHE_SECONDS)), false);
   assert.equal(profileFresh({ at: String(at + 10) }, String(at)), false);
   assert.equal(profileFresh(undefined, String(at)), false);
+});
+
+// src/connect/ui/chain-names.js (2026-10-03): a chain name is permanent
+// (decision 2026-10-02-onchain-names.md item 4), so a kept one never expires.
+test('chain names: a kept name is used however old it is; anything malformed counts as none', () => {
+  assert.equal(keptChainName({ name: 'jarvis', at: '1' }), 'jarvis');
+  assert.equal(keptChainName({ name: 'jarvis', at: '1790000000' }), 'jarvis');
+  assert.equal(keptChainName(undefined), '');
+  assert.equal(keptChainName({ name: 'Jarvis', at: '1' }), '');           // uppercase is not a name byte
+  assert.equal(keptChainName({ name: 'jar vis', at: '1' }), '');     // a line separator is not a name byte
+  assert.equal(keptChainName({ name: 'deadbeef', at: '1' }), '');         // reads as an ID prefix
+  assert.equal(keptChainName({ name: 'ab', at: '1' }), '');
+  // The state checker refuses such an entry too (store.js checkState).
+  assert.throws(() => checkState({ ...emptyState(), chainNames: { [FP]: { name: 'jar\nvis', at: '1' } } }));
+  assert.doesNotThrow(() => checkState({ ...emptyState(), chainNames: { [FP]: { name: 'jarvis', at: '1' } } }));
+});
+
+test('chain names: a contact with a kept name is not asked again; the own ID is asked once per session', () => {
+  // contact, name kept or found: no lookup
+  assert.equal(chainLookupNeeded({ asked: false, known: true, recheck: false }), false);
+  // contact (or a request) without a name: asked once per session
+  assert.equal(chainLookupNeeded({ asked: false, known: false, recheck: false }), true);
+  assert.equal(chainLookupNeeded({ asked: true, known: false, recheck: false }), false);
+  // this wallet's own ID: asked once per session even with a kept name
+  assert.equal(chainLookupNeeded({ asked: false, known: true, recheck: true }), true);
+  assert.equal(chainLookupNeeded({ asked: true, known: true, recheck: true }), false);
+});
+
+test('chain names: a confirmed answer replaces, keeps or removes the kept entry', () => {
+  const now = '1790000000', before = { name: 'jarvis', at: '1700000000' };
+  // same name: the entry is kept as it is (no write on every open)
+  assert.deepEqual(chainNameAfterLookup(before, { found: true, name: 'jarvis' }, { keep: true, now }), { name: 'jarvis', entry: before, changed: false });
+  // another name: replaced
+  assert.deepEqual(chainNameAfterLookup(before, { found: true, name: 'other' }, { keep: true, now }), { name: 'other', entry: { name: 'other', at: now }, changed: true });
+  // first found: kept
+  assert.deepEqual(chainNameAfterLookup(undefined, { found: true, name: 'jarvis' }, { keep: true, now }), { name: 'jarvis', entry: { name: 'jarvis', at: now }, changed: true });
+  // confirmed no name: removed
+  assert.deepEqual(chainNameAfterLookup(before, { found: false }, { keep: true, now }), { name: '', entry: null, changed: true });
+  assert.deepEqual(chainNameAfterLookup(undefined, { found: false }, { keep: true, now }), { name: '', entry: null, changed: false });
+  // a stranger (keep false): shown this session, nothing kept
+  assert.deepEqual(chainNameAfterLookup(undefined, { found: true, name: 'jarvis' }, { keep: false, now }), { name: 'jarvis', entry: null, changed: false });
+  // a malformed answer is no answer: nothing moves
+  assert.deepEqual(chainNameAfterLookup(before, { found: true, name: 'BAD NAME' }, { keep: true, now }), { name: 'jarvis', entry: before, changed: false });
+  assert.deepEqual(chainNameAfterLookup(before, undefined, { keep: true, now }), { name: 'jarvis', entry: before, changed: false });
+});
+
+test('own name: the wallet\'s answered lookup wins; until then the name Messages knows; More entry text', () => {
+  assert.equal(shownOwnName(null, ''), '');
+  assert.equal(shownOwnName(null, 'jarvis'), 'jarvis');                    // kept on this device, before the wallet's lookup answered
+  assert.equal(shownOwnName({ name: 'other' }, 'jarvis'), 'other');        // the lookup confirmed another name
+  assert.equal(shownOwnName({ name: '' }, 'jarvis'), '');                  // the lookup confirmed no name
+  assert.equal(shownOwnName(null, 'jar‮vis'), '');                    // never anything but name bytes
+  assert.equal(profileEntryText(''), 'Your ID & profile');                // the exact no-name text (test/connect-smoke.js)
+  assert.equal(PROFILE_ENTRY_TEXT, 'Your ID & profile');
+  assert.equal(profileEntryText('jarvis'), 'jarvis — ID & profile');
+  assert.equal(profileEntryText('x\ny'), 'Your ID & profile');
 });

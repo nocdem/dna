@@ -29,12 +29,16 @@
 //                               set up for the open wallet (app.js tries
 //                               again by itself and raises nodusReady
 //                               once a connection is made).
-//   ownName({ name })           the open wallet's own chain name, as the
+//   ownName({ name, confirmed }) the open wallet's own chain name, as the
 //                               reverse lookup (dnac_name_of for this
 //                               wallet's address, src/adapters/nodus.js
 //                               ownChainName) answered it; '' when there is
 //                               none, the lookup failed, or names are not
-//                               available / the wallet closed.
+//                               available / the wallet closed. confirmed:
+//                               true only when the lookup answered (name
+//                               found, or '' = confirmed no name); absent
+//                               for a failed lookup, names unavailable or
+//                               the wallet closing.
 //   vaultDeleting()             the saved wallet is about to be deleted
 //                               from this device (its Messages history goes
 //                               with it, src/app.js vault-delete).

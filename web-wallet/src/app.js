@@ -814,7 +814,7 @@ async function refreshName() {
     if (!current()) return;
     // The page header shows the name only as the reverse lookup confirmed it
     // (decision 2026-10-02-onchain-names; Nodus Connect: src/connect-main.js).
-    raise('ownName', { name: own.found ? own.name : '' });
+    raise('ownName', { name: own.found ? own.name : '', confirmed: true });
     if (own.found) {
       $('own-name').textContent = `Your chain name is "${own.name}". People can send NODUS to you by typing this name instead of your address.`;
       $('name-fields').hidden = true; $('quick-name').hidden = true; clearNameQuote();

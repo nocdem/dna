@@ -44,7 +44,8 @@ import {
   needFullSync, fullDays, profileFresh, contactNames
 } from './text.js';
 import { el, untrusted, button, website, fillAvatar } from './dom.js';
-import { chainNameOk, parseNameOf } from '../../nodus/names.js';
+import { parseNameOf } from '../../nodus/names.js';
+import { keptChainName as keptNameOf, chainLookupNeeded, chainNameAfterLookup } from './chain-names.js';
 
 const SYNC_MS = 30000;                   // how often requests and messages are checked
 const HEX128 = /^[0-9a-f]{128}$/;
@@ -73,6 +74,8 @@ const vaultRecs = new Map();             // vault address -> { id, value }: shar
 // HF-4 chain names: fp -> the chain name ('' = none, or not answered), this
 // session; kept across sessions only for a saved wallet (state.chainNames).
 const chainNames = new Map();
+const chainAsked = new Set();            // IDs whose chain name was looked up this session
+let ownNameConfirmed = false;            // the own name was confirmed by this session's lookup
 let nodusClient;                         // the wallet's client (nameOf), this session
 
 // ── view state ─────────────────────────────────────────────────────────
@@ -102,8 +105,8 @@ function wipe() {
   try { store?.close(); } catch { /* same */ }
   store = undefined; state = undefined; messages = []; ownFp = undefined; ownProfile = undefined;
   fresh = false; vaultId = null; requests = []; selectedFp = undefined; nodusClient = undefined;
-  eraseArmed = false; profileTaken = false;
-  for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, chainNames, vaultRecs]) set.clear();
+  eraseArmed = false; profileTaken = false; ownNameConfirmed = false;
+  for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, chainNames, chainAsked, vaultRecs]) set.clear();
   notifyVaultHost();
   if (!ui) return;
   for (const control of [ui.addId, ui.addNote, ui.composer, ui.bio, ui.location, ui.website]) control.value = '';
@@ -219,7 +222,8 @@ async function finishOpen(gen) {
     catch { /* read from the network by the first check */ }
     if (gen !== generation) return;
   }
-  // Kept chain names younger than 7 days, likewise (no network).
+  // Kept chain names, likewise (no network; a name is permanent, so a kept
+  // one does not expire — chain-names.js).
   for (const fp of [ownFp, ...state.contacts.map(c => c.fp)]) keptChainName(fp);
 
   ui.ownId.textContent = ownFp;
@@ -345,28 +349,35 @@ async function forgetProfile(fp) {
 // HF-4 chain names (design docs/plans/2026-10-02-onchain-names-design.md
 // rev 4 §2 "Clients", R3/R6): the name an ID registered on the chain, from
 // ONE node's committed state (dnac_name_of; decision
-// 2026-10-02-onchain-names.md item 9). Asked once per session per ID; a
-// found name is kept for a saved wallet like a profile (state.chainNames,
-// 7 days — decision 2026-10-02-device-cache-only-when-saved: an unsaved
-// wallet's state lives in memory only). An older node, a failed read or a
-// module without names: no chain name is shown and nothing is kept.
+// 2026-10-02-onchain-names.md item 9). A found name of this ID or a contact
+// is kept (state.chainNames — decision 2026-10-02-device-cache-only-when-saved:
+// on the device only inside a saved wallet's encrypted history; an unsaved
+// wallet's state lives in memory only) and, a name being permanent (item 4),
+// does not expire: a contact's kept name is shown at once and not asked
+// again; this wallet's own kept name is shown at once and asked again once
+// per session (chain-names.js). An ID without a kept name is asked once per
+// session. An older node, a failed read or a module without names: nothing
+// changes (a kept name stays) and nothing new is kept.
 function keptChainName(fp) {
-  const entry = state.chainNames[fp];
-  if (!chainNames.has(fp) && entry && chainNameOk(entry.name) && profileFresh(entry, nowSeconds())) chainNames.set(fp, entry.name);
+  const name = keptNameOf(state.chainNames[fp]);
+  if (!chainNames.has(fp) && name) chainNames.set(fp, name);
 }
 // `keep`: this ID's or a contact's name (a stranger's request is not kept,
 // as ensureProfile). @return true when state.chainNames changed (the caller
 // saves once).
 async function ensureChainName(fp, keep = false) {
   keptChainName(fp);
-  if (chainNames.has(fp) || !nodusClient?.nameable) return false;
+  const own = fp === ownFp;
+  if (!chainLookupNeeded({ asked: chainAsked.has(fp), known: !!chainNameOf(fp), recheck: own }) || !nodusClient?.nameable) return false;
+  chainAsked.add(fp);
   let found;
   try { found = parseNameOf(await nodusClient.nameOf({ owner: fp })); }
-  catch { chainNames.set(fp, ''); return false; }
-  chainNames.set(fp, found.found ? found.name : '');
-  if (found.found && keep) { state.chainNames[fp] = { name: found.name, at: nowSeconds() }; return true; }
-  if (!found.found && state.chainNames[fp]) { delete state.chainNames[fp]; return true; }
-  return false;
+  catch { if (!chainNames.has(fp)) chainNames.set(fp, ''); return false; }
+  const after = chainNameAfterLookup(state.chainNames[fp], found, { keep, now: nowSeconds() });
+  chainNames.set(fp, after.name);
+  if (own) ownNameConfirmed = !!after.name;
+  if (after.entry) state.chainNames[fp] = after.entry; else delete state.chainNames[fp];
+  return after.changed;
 }
 
 // ── sync ───────────────────────────────────────────────────────────────
@@ -378,6 +389,19 @@ async function sync() {
     await syncRequests(gen);
     if (gen !== generation) return;
     await publishContacts(gen);
+    if (gen !== generation) return;
+    // Chain names (HF-4) of this ID, the contacts and the request screens,
+    // BEFORE the message check so they are in place on the first check:
+    // at most one read per ID per session, none for a contact whose name is
+    // kept (ensureChainName).
+    let namesMoved = false;
+    for (const fp of new Set([ownFp, ...state.contacts.map(c => c.fp), ...state.outgoing.map(o => o.fp), ...requests.map(r => r.sender)])) {
+      if (gen !== generation) return;
+      if (await ensureChainName(fp, fp === ownFp || !!contactOf(fp))) namesMoved = true;
+    }
+    if (namesMoved && gen === generation) await persist();
+    if (gen !== generation) return;
+    fillOwnAvatar(); fillNameLine(); render();
     // Smart sync (text.js needFullSync): 8 day buckets when any contact was
     // never checked or the oldest check is over 3 days old, else 3. The
     // check time of each contact whose buckets were all read is kept
@@ -402,14 +426,6 @@ async function sync() {
       if (gen !== generation) return;
       await ensureProfile(fp);
     }
-    // Chain names (HF-4) of this ID, the contacts and the request screens:
-    // one read per ID per session (ensureChainName).
-    let namesMoved = false;
-    for (const fp of new Set([ownFp, ...state.contacts.map(c => c.fp), ...state.outgoing.map(o => o.fp), ...requests.map(r => r.sender)])) {
-      if (gen !== generation) return;
-      if (await ensureChainName(fp, fp === ownFp || !!contactOf(fp))) namesMoved = true;
-    }
-    if (namesMoved && gen === generation) await persist();
     if (gen === generation) { fillOwnAvatar(); fillNameLine(); }
     if (gen === generation) { ui.sync.textContent = `Last checked ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. New messages are checked every 30 seconds.`; render(); }
   } catch (error) {
@@ -1138,8 +1154,12 @@ function fillNameLine() {
   line.replaceChildren();
   // HF-4 (design R6): the chain name and the profile name are two different
   // things and are labelled as such.
+  // A name kept on this device is shown at once, without the confirmed
+  // mark, until this session's lookup confirms it (ensureChainName).
   const chain = chainNameOf(ownFp);
-  line.append(chain ? el('span', {}, 'Your chain name: ', el('strong', { className: 'chain-name', text: chain })) : 'You have no chain name.', el('br'));
+  line.append(chain
+    ? el('span', {}, 'Your chain name: ', el('strong', { className: ownNameConfirmed ? 'chain-name' : '', text: chain }), ownNameConfirmed ? '' : ' (saved on this device)')
+    : 'You have no chain name.', el('br'));
   if (p.name) line.append('Your profile name (in the network directory, not on the chain): ', untrusted(p.name, undefined, { name: true }));
   else if (p.claimed_name) line.append('Name on your profile (not verified — its lookup record does not point to you): ', untrusted(p.claimed_name, undefined, { name: true }));
   else line.append('Your profile has no name.');
