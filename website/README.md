@@ -119,7 +119,7 @@ files outside that allowlist. This server is for local previews.
   longer distributed), with a button to the web wallet. Reached from the
   Products menu.
 - Header: the top navigation is grouped into four menus — Products (Web wallet
-  at `https://wallet.nodusnetwork.io/`, Nodus Connect "soon" → `connect-soon.html`,
+  at `https://wallet.nodusnetwork.io/`, Nodus Connect "preview" → `https://connect.nodusnetwork.io/`,
   All products → `ecosystem.html`), Network (`network.html`, `tokenomics.html`,
   `airdrop.html`, Scan), About (`manifesto.html`, `roadmap.html`) and Developers (`docs.html`,
   Wiki). Each menu is a button with `aria-expanded`; it opens on hover with a
@@ -460,3 +460,56 @@ pages. Not done in this change: the page is NOT yet registered in
 (`sitePages`) in `app.js`; both were outside the approved file list. The other
 pages' `<lastmod>` dates in `sitemap.xml` were not changed. Browser validation
 has not been run for this change.
+
+2026-10-03: At the operator's request ("update the Wiki and the Roadmap and
+everything with the things we built recently") the Wiki guides, the roadmap
+and the sentences on the product pages that the recent work made untrue were
+updated, in English and Turkish. Every item carries its status, grounded as
+follows: LIVE = deployed per the release commits and the deploy records
+(web wallet / Nodus Connect 0.1.45–0.1.52, the last 446e3c4c; explorer 0.2.1
+with `/api/tps`; the Scan hard forks page; the tokenomics earning guide; the
+airdrop page) and the "Live hard forks" table in
+`nodus/docs/DEPLOY_RUNBOOK.md` §2.2 (HF-1..HF-4, HF-4 effective at block
+3,151); BUILT-NOT-LIVE = the Nodus component split (nodus 0.23.17, merge
+b72c3de6, whose message says no live node runs it) and the airdrop
+registration/claim; PLANNED = the HF-5 decisions in
+`docs/plans/decisions/2026-10-03-role-stake-amounts.md` (2,000,000 bond,
+role stakes, 10% power cap, separate owner key). Name rules and prices are
+from `docs/plans/decisions/2026-10-02-onchain-names.md` items 4–6, 10, 11 and
+16 and `dnac/include/dnac/dnac.h` (`DNAC_NAME_PRICE_*_DEFAULT`; no price
+vote is in the runbook table).
+- `roadmap.html` / `app.js` (`history.*`): the multisig item moved from
+  planned to built (shared vaults, 3 October); new built items for Scan
+  (hard forks page, chain-name search, throughput, paydays, APY estimate)
+  and for the component split (labelled "built, not yet on the live nodes";
+  nodus-connect dropped from it — that component is still undecided); the
+  names item gained the prices; "Nodus in the browser" gained send-to-name,
+  the address book and chain names in Connect; a new in-progress airdrop
+  item (no amounts, no dates); the roles item gained the vote-changeable
+  amounts, the 10% power cap, the separate owner key and "only with a
+  voted hard fork".
+- `docs.html`, `chain.html`, `wallet.html`, `connect.html` / `app.js`:
+  "Nodus Connect is coming first to the web" → open on the web as a preview;
+  "Sending NODUS from Connect is not yet available" and "coin transfers are
+  built with nodus-cli; the wallet path is still in development" → NODUS is
+  sent from the web wallet and Nodus Connect (preview), or with nodus-cli
+  (keys `docs.transitionBody`, `product.connect.note`, `docs.walletBody`,
+  `everyday.networksBody`, `docs.chainBody`, `docs.engineCli`).
+- `wiki/content.mjs`: Getting started and Recovery point to Nodus Connect
+  as an open preview; Identity gains "Chain names"; Wallet gains "In the web
+  wallet and Nodus Connect" (send to a name, address book, Earn, shared
+  vaults, chain name) and loses the "cannot send NODUS" sentences; Chain &
+  NODUS gains "Hard forks on the testnet", "Earn NODUS" and "Planned, not
+  live"; The resource network gains "Running a node" (split built, not live);
+  Using Nodus Scan gains "Throughput and paydays", "Hard forks page", the
+  name search and the name on transaction pages; Build with Nodus lists
+  `/api/tps`. No new guide page: the Wiki still has 13 pages.
+- This file: the header line now names Nodus Connect "preview" →
+  `https://connect.nodusnetwork.io/` (it still said "soon" →
+  `connect-soon.html`). The roadmap change of the same morning (6e56cb39)
+  had no change record here.
+Not done (outside the approved files): `identity.html` still describes only
+the DHT name; `sitemap.xml` `<lastmod>` dates were not changed; `/airdrop.html`
+is still missing from `public-files.mjs` and from `sitePages` in `app.js`.
+`npm run check` and `npm run build:portals` were run; browser validation has
+not been run for this change.
