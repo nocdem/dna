@@ -619,6 +619,9 @@ test('history open: an aborted bound rejects with the plain text; a database tha
     await assert.rejects(opening, error => error instanceof StorageError && error.message === HISTORY_SLOW_TEXT);
     request.result = { close: () => closed.push('closed') };
     request.onsuccess();
+    // bounded() hands the late handle over inside the open promise's .then
+    // (a microtask later): let that turn run first.
+    await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(closed, ['closed'], 'the late handle is closed, never used');
     // Already expired before the open: refused at once.
     await assert.rejects(openHistoryStore({ core, vaultId, storage: memoryStorage(), signal: AbortSignal.abort() }), error => error.message === HISTORY_SLOW_TEXT);
