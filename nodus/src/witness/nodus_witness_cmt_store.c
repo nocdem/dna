@@ -1207,6 +1207,44 @@ static int save_block_to_batch(nodus_cmt_store_t *s, cmt_block_t *block,
     if (nodus_cmt_store_set(s, false, key, s->buf, n) != CMT_OK) {
         return CMT_FAULT;
     }
+    /* ⚠ DOCUMENTED DEVIATION from cometbft v0.38.26 (decision
+     * docs/plans/decisions/2026-10-03-block-pruning-7-paydays.md item 2).
+     * The reference keeps every historical SeenCommit and only comments
+     * that it could be deleted (store/store.go:574 "NOTE: we can delete
+     * this at a later height"); PruneBlocks and
+     * DeleteLatestBlock are its only deleters (store.go:406, :754). Here
+     * the batch that writes `C:h−1` (above) also deletes `SC:(h−1−W)`,
+     * W = `seen_commit_window` (the consensus config's
+     * `double_sign_check_height`, 0 by default). Every SC reader is
+     * served by what stays:
+     *   - LoadCommit(tip) reads SC:tip, LoadCommit(h < tip) reads C:h
+     *     (cmt_cs.c `cs_load_commit`, state.go:309-313);
+     *   - votesFromSeenCommit reads SC:tip, falling back to C:tip
+     *     (cmt_cs.c `cs_votes_from_seen_commit`, state.go:627-629);
+     *   - the startup double-sign check reads SC:tip … SC:tip−W+1
+     *     (cmt_cs.c `cmt_cs_check_double_signing_risk`, state.go:2494-
+     *     2495) — `h−1−W` keeps one row more than that, deliberately.
+     * The tip's own SC (`SC:h`, just written) is never the deleted key:
+     * h−1−W < h for every W ≥ 0. One transaction (`batch_begin`, BEGIN
+     * IMMEDIATE or the caller's), so no committed state has the SC gone
+     * and the C absent. Blocksync saves through this same function
+     * (cmt_bsync_reactor.c, `bs_save_block`). Node-local: no block, vote,
+     * app_hash or state root reads these rows. */
+    if (height - 1 - s->seen_commit_window >= 1) {
+        key_seen_commit(height - 1 - s->seen_commit_window, key);
+        if (nodus_cmt_store_delete(s, false, key) != CMT_OK) {
+            return CMT_FAULT;
+        }
+    }
+    return CMT_OK;
+}
+
+int nodus_cmt_bs_set_seen_commit_window(nodus_cmt_store_t *s, int64_t w)
+{
+    if (!s || w < 0) {
+        return CMT_FAULT;
+    }
+    s->seen_commit_window = w;
     return CMT_OK;
 }
 

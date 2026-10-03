@@ -370,6 +370,23 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg,
                                                                : false;
     }
 
+    /* Node-local block retention (nodus_witness.h nodus_witness_config_t
+     * retain_blocks; decision 2026-10-03-block-pruning-7-paydays.md).
+     * Default 0 = archive. A non-integer or negative value refuses the
+     * start; the floor against the chain's evidence window is checked
+     * where the chain's consensus params are loaded
+     * (nodus_cmt_node_init, nodus_cmt_node_check_retain_blocks). */
+    if (json_object_object_get_ex(root, "retain_blocks", &val)) {
+        int64_t rb = json_object_get_int64(val);
+        if (!json_object_is_type(val, json_type_int) || rb < 0) {
+            QGP_LOG_ERROR(LOG_TAG_CFG, "retain_blocks must be an integer "
+                          ">= 0 (0 = keep every block)");
+            json_object_put(root);
+            return -1;
+        }
+        cfg->witness.retain_blocks = rb;
+    }
+
     /* Component split S3 (nodus_server.h witness_external). Default
      * false = the in-process witness; a non-boolean value refuses the
      * start, like addr_history_index. nodus-witness requires it to be

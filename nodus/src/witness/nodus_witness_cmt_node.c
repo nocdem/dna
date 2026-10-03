@@ -108,6 +108,27 @@ int nodus_cmt_node_app_info(nodus_witness_t *w, nodus_cmt_app_info_t *out)
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
+ * Node-local block retention — decision 2026-10-03-block-pruning-7-
+ * paydays.md item 1 (no reference counterpart: cometbft leaves the
+ * retain height entirely to the application)
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+int nodus_cmt_node_check_retain_blocks(int64_t retain_blocks,
+                                       const cmt_evidence_params_t *ev)
+{
+    if (!ev) {
+        return CMT_FAULT;
+    }
+    if (retain_blocks == 0) {
+        return CMT_OK;                    /* archive: nothing is pruned */
+    }
+    if (retain_blocks < 0 || retain_blocks <= ev->max_age_num_blocks) {
+        return CMT_REJECT;
+    }
+    return CMT_OK;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
  * The mock application — consensus/replay_stubs.go:60-79
  * ═══════════════════════════════════════════════════════════════════════ */
 
@@ -1782,6 +1803,15 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
                       "invalid (ConsensusConfig.ValidateBasic)");
         goto fail;
     }
+    /* The store's SeenCommit window = this config's
+     * `double_sign_check_height` (decision 2026-10-03-block-pruning-7-
+     * paydays.md item 2; nodus_witness_cmt_store.c `save_block_to_batch`).
+     * Set here, after the config is final and before the handshake —
+     * the first point at which this node could save a block. */
+    if (nodus_cmt_bs_set_seen_commit_window(
+            &n->store, n->config.double_sign_check_height) != CMT_OK) {
+        goto fail;
+    }
 
     /* node.go:303's second product — `stateStore.LoadFromDBOrGenesisDoc`
      * (setup.go:581, state/store.go:136-151). */
@@ -1813,6 +1843,29 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
         QGP_LOG_ERROR(LOG_TAG, "the state could not be loaded or made from "
                       "the genesis document (rc %d)", rc);
         goto fail;
+    }
+    /* Node-local block retention floor (decision 2026-10-03-block-pruning-
+     * 7-paydays.md item 1), checked against the chain's STORED consensus
+     * params — the live ones: this application never returns a
+     * consensus-param update (nodus_witness_cmt_app.c, InitChain and
+     * FinalizeBlock both answer `has_consensus_param(_update)s = false`).
+     * Before the handshake, whose block replay already prunes. */
+    if (nodus_cmt_node_check_retain_blocks(
+            w->config.retain_blocks,
+            &n->state->consensus_params.evidence) != CMT_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "retain_blocks %" PRId64 " refused: it must "
+                      "be 0 (keep every block) or greater than this chain's "
+                      "evidence window max_age_num_blocks %" PRId64
+                      " — recommended 120960 (7 paydays)",
+                      w->config.retain_blocks,
+                      n->state->consensus_params.evidence.max_age_num_blocks);
+        goto fail;
+    }
+    if (w->config.retain_blocks > 0) {
+        QGP_LOG_INFO(LOG_TAG, "block retention: the last %" PRId64 " blocks "
+                     "are kept (evidence window %" PRId64 " blocks)",
+                     w->config.retain_blocks,
+                     n->state->consensus_params.evidence.max_age_num_blocks);
     }
 
     /* ── 3. node.go:311 — createAndStartProxyAppConns ─────────────────

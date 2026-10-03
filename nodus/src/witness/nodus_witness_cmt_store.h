@@ -240,6 +240,13 @@ typedef struct {
     cmt_pb_evidence_t         *pb_evidence;      /* PruneBlocks' meta loads
                                                     need none; kept NULL */
     bool                       own_txn;          /* this call opened it   */
+
+    /* SeenCommit window W (decision docs/plans/decisions/2026-10-03-
+     * block-pruning-7-paydays.md item 2): saving block h deletes
+     * `SC:(h−1−W)`, so `SC:h … SC:h−W` stay. W = the node's consensus
+     * config `double_sign_check_height` (cmt_config.h, 0 by default),
+     * set by `nodus_cmt_bs_set_seen_commit_window`; 0 after init. */
+    int64_t                    seen_commit_window;
 } nodus_cmt_store_t;
 
 /**
@@ -337,9 +344,20 @@ int nodus_cmt_bs_prune_blocks(nodus_cmt_store_t *s, int64_t height,
                               uint64_t *out_pruned,
                               int64_t *out_evidence_point);
 
+/** Set the SeenCommit window W (`seen_commit_window`): from the next
+ *  save on, saving block h deletes `SC:(h−1−W)` in the same batch.
+ *  Called by `nodus_cmt_node_init` with the consensus config's
+ *  `double_sign_check_height`, before any block is saved.
+ *  @return CMT_OK; CMT_FAULT on NULL or a negative W. */
+int nodus_cmt_bs_set_seen_commit_window(nodus_cmt_store_t *s, int64_t w);
+
 /** :449-473 SaveBlock. The reference panics on every failure inside;
  *  CMT_FAULT here. `scratch` is the marshal target for the parts, the
- *  meta and the commits — at least `cmt_block_size`'s need. */
+ *  meta and the commits — at least `cmt_block_size`'s need.
+ *  ⚠ DEVIATION (decision 2026-10-03-block-pruning-7-paydays.md item 2):
+ *  this save (and `..._with_extended_commit`) also deletes
+ *  `SC:(h−1−W)` inside its own batch; the reference keeps every
+ *  historical SeenCommit (store.go:574). */
 int nodus_cmt_bs_save_block(nodus_cmt_store_t *s, cmt_block_t *block,
                             const cmt_part_set_t *parts,
                             const cmt_commit_t *seen_commit,

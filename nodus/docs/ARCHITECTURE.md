@@ -6663,6 +6663,66 @@ peer), so a rolling upgrade takes two nodes back to back (decision record). Test
 (in the sweep, between `test_v2_rewards.sh` and `test_cmt_rule_n_retire.sh`; its
 distance is capped at epoch/2 − 2 so the stopped node is never Rule-N-retired).
 
+### Block retention (pruning) and the SeenCommit cleanup (2026-10-03)
+
+Decision `docs/plans/decisions/2026-10-03-block-pruning-7-paydays.md` (operator: "son 7
+payday tutsa"). Both halves are NODE-LOCAL: no block, vote, app_hash, state root or
+consensus byte depends on them, so nodes may run with different settings (no hard fork).
+
+**Retention — `retain_blocks` (nodus.json, default 0 = archive).** The cometbft
+pruning path was already ported and wired: the application's Commit returns
+`retain_height` → `applyBlock` (execution.go:340-347, `nodus_witness_cmt_host.c`) →
+`nodus_cmt_blockexec_prune_blocks` (execution.go:804-820) → `nodus_cmt_bs_prune_blocks`
+(store.go:347-440) + `nodus_cmt_ss_prune_states`. Until now the application always
+answered 0. It now answers `nodus_cmt_app_retain_height(H, N)`: 0 when N = 0 or H ≤ N,
+else **H − N + 1**. `PruneBlocks(R)` deletes heights [base, R) and sets base = R, so
+exactly N blocks [H − N + 1, H] remain (pinned by `test_cmt_node`
+`retain_blocks_prunes`: N 2, five blocks → base 4, size 2). Recommended N = **120960**
+(7 paydays × 17280 blocks). H is the height of the last successful FinalizeBlock
+(`nodus_cmt_app_ledger_t.fb_height`) — a pure function of the committed height and the
+node's setting, no clock.
+
+*Floor.* `nodus_cmt_node_init` refuses to start (`nodus_cmt_node_check_retain_blocks`)
+unless N = 0 or N > the chain's `evidence.max_age_num_blocks` (default 100 000,
+`shared/dnac/cmt_params.c:65`), read from the chain's STORED consensus params right
+after the state loads and before the handshake (whose replay already prunes). The stored
+params are the live ones: this application never returns a consensus-param update. Why
+the floor: with R = H − N + 1 the highest pruned height has age N, and `PruneBlocks`
+deletes its `H:`/`C:`/`EC:` only when `nodus_cmt_is_evidence_expired` (age >
+max_age_num_blocks AND older than max_age_duration, 48 h by default); a row not yet
+expired is left below the advancing base and no later pass revisits it
+(store.go:377, :435) — a permanent leak. The duration half is not checked at start (it
+depends on block times): at a block interval below ≈ 1.73 s, 100 001 blocks are younger
+than 48 h and the leak would return.
+
+*What a pruned node drops* below R: the block parts `P:`, `SC:`, `BH:`; the state
+store's `abciResponsesKey:` rows (the stored FinalizeBlock responses Scan's per-tx
+results read), and validator / consensus-param rows the reference does not keep. Meta
+`H:` and commits `C:`/`EC:` stay until the evidence window expires. A pruned node
+therefore cannot serve old blocks to block sync (`cmt_bsync_pool.c` skips a peer whose
+base is above the wanted height) or to consensus catch-up, nor old blocks / tx results
+to the explorer. Archive nodes (N = 0) keep everything; the runbook names them.
+
+**SeenCommit cleanup — every node, archive included.** ⚠ DOCUMENTED DEVIATION from
+cometbft v0.38.26, which keeps every historical SeenCommit (store.go:574 only comments
+"we can delete this at a later height"; PruneBlocks and DeleteLatestBlock are its only
+deleters, :406, :754). `save_block_to_batch` (`nodus_witness_cmt_store.c`), in the same
+batch that writes `C:h−1` and `SC:h`, deletes `SC:(h−1−W)`, W =
+`nodus_cmt_store_t.seen_commit_window` = the consensus config's
+`double_sign_check_height` (0 — `cmt_config.h:146`, never overridden), set by
+`nodus_cmt_node_init` through `nodus_cmt_bs_set_seen_commit_window`. One transaction, so
+no committed state has the SC gone and the C absent. Both save rows run it, so block
+sync (`cmt_bsync_reactor.c`, `bs_save_block`) is covered. Every SC reader is served by
+what stays: `LoadCommit` reads SC at the tip and C below it (`cmt_cs_load_commit`,
+state.go:309-313); `votesFromSeenCommit` reads SC:tip (falling back to C:tip,
+state.go:627-629); the startup double-sign check reads SC:tip … SC:tip−W+1 (state.go:2494).
+SC is ≈ 18 % of the blockstore per height (Kurultay #1 measurement). Rows written before
+this build are not swept by it (only by PruneBlocks on a pruned node). Pinned by
+`test_cmt_host` `store_seen_commit_cleanup`.
+
+*The SQLite file does not shrink*: deleted rows become free pages that later writes
+reuse; giving the space back to the filesystem needs a `VACUUM` with the node stopped.
+
 ### Consensus flow (cometbft @709fd12b, the only lane)
 
 ```

@@ -76,6 +76,16 @@ typedef struct {
      * from an older binary must still refuse a silent boot — but nothing
      * in this tree can set safety_halt or arm a new sentinel again. */
     char     _reserved;
+    /* Node-local block retention (decision docs/plans/decisions/
+     * 2026-10-03-block-pruning-7-paydays.md). nodus.json "retain_blocks";
+     * 0 (default) = archive, nothing pruned. N > 0: the application's
+     * Commit asks the block executor to keep the last N blocks
+     * (nodus_cmt_app_retain_height). Refused at start unless 0 or
+     * greater than the chain's evidence window `max_age_num_blocks`
+     * (nodus_cmt_node_check_retain_blocks). Recommended 120960 =
+     * 7 paydays × 17280 blocks. No consensus byte depends on it — the
+     * value may differ per node. */
+    int64_t  retain_blocks;
 } nodus_witness_config_t;
 
 /* P2P-PORT F5 — nodus_witness_roster_entry_t / nodus_witness_roster_t (the

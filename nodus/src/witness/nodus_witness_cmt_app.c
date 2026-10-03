@@ -2781,6 +2781,9 @@ int nodus_cmt_app_finalize_block(void *vctx,
     resp->has_consensus_param_updates = false;   /* none, D-23 rev 4 (3) */
     resp->events_len = 0;                        /* no events (YOK)      */
 
+    /* The height the NEXT Commit commits — its retain_height input
+     * (nodus_cmt_app_commit). Node-local; no response byte. */
+    ctx->fb_height = req->height;
     rc_out = CMT_OK;
 
 done:
@@ -2838,8 +2841,26 @@ int nodus_cmt_app_commit(void *vctx, nodus_abci_response_commit_t *resp)
      * `mem_recheck_txs`). The auth cache advances one generation. */
     pend_clear(ctx);
     acache_sweep(ctx);
-    /* `retain_height` 0: this application asks for no pruning in W2, so
-     * `pruneBlocks` (execution.go:340-347) is not entered. */
-    resp->retain_height = 0;
+    /* Node-local block retention (decision 2026-10-03-block-pruning-7-
+     * paydays.md): with `retain_blocks` N > 0 the block executor's
+     * `pruneBlocks` (execution.go:340-347; nodus_witness_cmt_host.c
+     * `nodus_cmt_blockexec_prune_blocks`) keeps the last N blocks; with 0
+     * (archive) it is not entered. A pure function of the committed
+     * height and this node's setting — no clock, no consensus byte. */
+    resp->retain_height = nodus_cmt_app_retain_height(
+        ctx->fb_height, ctx->w->config.retain_blocks);
     return CMT_OK;
+}
+
+int64_t nodus_cmt_app_retain_height(int64_t height, int64_t retain_blocks)
+{
+    /* `PruneBlocks(R)` deletes [base, R) and sets base = R
+     * (nodus_witness_cmt_store.c `nodus_cmt_bs_prune_blocks`, store.go
+     * :377, :435), so [R, height] = height − R + 1 blocks remain. For
+     * exactly `retain_blocks` of them R = height − retain_blocks + 1.
+     * At height ≤ retain_blocks there is nothing to drop: 0. */
+    if (retain_blocks <= 0 || height <= retain_blocks) {
+        return 0;
+    }
+    return height - retain_blocks + 1;
 }

@@ -367,6 +367,13 @@ typedef struct {
     size_t                          acache_cap;
     size_t                          acache_max;
     uint64_t                        acache_gen;
+
+    /* Node-local block retention (decision 2026-10-03-block-pruning-7-
+     * paydays.md): the height of the last SUCCESSFUL FinalizeBlock, i.e.
+     * the height the following Commit commits — `nodus_cmt_app_commit`'s
+     * input to `nodus_cmt_app_retain_height`. 0 before the first
+     * FinalizeBlock (Commit then asks for no pruning). */
+    int64_t                         fb_height;
 } nodus_cmt_app_ledger_t;
 
 /**
@@ -482,10 +489,25 @@ int nodus_cmt_app_finalize_block(void *ctx,
                                  nodus_abci_response_finalize_block_t *resp);
 
 /** abci/types/application.go's `Commit` — the COMMIT of the host's ONE
- *  transaction (D-23 rev 5 (5)). `retain_height` 0: no pruning in W2.
+ *  transaction (D-23 rev 5 (5)). `retain_height` =
+ *  `nodus_cmt_app_retain_height(fb_height, w->config.retain_blocks)` —
+ *  0 on an archive node (decision 2026-10-03-block-pruning-7-paydays.md).
  *  CHECKTX-P1: after the COMMIT, clears the pending conflict set and
  *  sweeps the verified-auth cache (node-local; see the context fields). */
 int nodus_cmt_app_commit(void *ctx, nodus_abci_response_commit_t *resp);
+
+/**
+ * The Commit response's `retain_height` for a node that keeps the last
+ * `retain_blocks` blocks (decision 2026-10-03-block-pruning-7-paydays.md).
+ * `PruneBlocks(R)` keeps [R, height], so R = height − retain_blocks + 1
+ * leaves exactly `retain_blocks` blocks. Pure: no clock, no state.
+ *
+ * @param height        the height being committed.
+ * @param retain_blocks this node's setting; 0 (or negative) = archive.
+ * @return 0 (no pruning) when `retain_blocks <= 0` or
+ *         `height <= retain_blocks`; else `height - retain_blocks + 1`.
+ */
+int64_t nodus_cmt_app_retain_height(int64_t height, int64_t retain_blocks);
 
 /** proxy/app_conn.go:33-34 — `CheckTx`, the ledger's ADMISSION check
  *  (D-23 rev 5 (9)).

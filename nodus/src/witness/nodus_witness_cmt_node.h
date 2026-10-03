@@ -203,6 +203,27 @@ typedef struct {
  */
 int nodus_cmt_node_app_info(nodus_witness_t *w, nodus_cmt_app_info_t *out);
 
+/**
+ * The start-time floor of the node-local `retain_blocks` setting
+ * (decision docs/plans/decisions/2026-10-03-block-pruning-7-paydays.md
+ * item 1). With `retain_height = H − N + 1` (nodus_cmt_app_retain_height)
+ * the highest pruned height is H − N, of age N; `PruneBlocks` deletes its
+ * `H:`/`C:` rows only once `nodus_cmt_is_evidence_expired` holds, which
+ * needs age > `max_age_num_blocks`. A smaller N leaves those rows below
+ * the advancing base, where no later pass revisits them
+ * (nodus_witness_cmt_store.c `nodus_cmt_bs_prune_blocks`). Hence N must
+ * be 0 (archive) or exceed `max_age_num_blocks`. The duration half of
+ * the expiry rule (`max_age_duration`) is not checked here: it depends
+ * on block times, not on this setting.
+ *
+ * @param retain_blocks this node's setting (nodus_witness_config_t).
+ * @param ev            the chain's evidence params (the loaded state's).
+ * @return CMT_OK for 0 or > `ev->max_age_num_blocks`; CMT_REJECT for a
+ *         negative value or 1..`max_age_num_blocks`; CMT_FAULT on NULL.
+ */
+int nodus_cmt_node_check_retain_blocks(int64_t retain_blocks,
+                                       const cmt_evidence_params_t *ev);
+
 /* ══ consensus/replay_stubs.go:60-79 — the mock application ═══════════ */
 
 /**

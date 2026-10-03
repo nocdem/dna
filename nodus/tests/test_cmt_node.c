@@ -2844,6 +2844,213 @@ static int t_mock_app_rows(void)
     return 0;
 }
 
+/* ══ node-local block retention — decision docs/plans/decisions/
+ * 2026-10-03-block-pruning-7-paydays.md item 1 ═════════════════════════ */
+
+/**
+ * `nodus_cmt_app_retain_height`, pure arithmetic. Pins: 0 (no pruning)
+ * for an archive node and for H ≤ N; above that R = H − N + 1, so the
+ * blocks [R, H] that `PruneBlocks(R)` leaves (it deletes [base, R),
+ * nodus_witness_cmt_store.c `nodus_cmt_bs_prune_blocks`) number exactly
+ * N. HOW IT CAN LIE: it checks the formula, not the prune; the case
+ * below drives the prune.
+ */
+static int t_retain_height_arith(void)
+{
+    static const int64_t ks[] = { 1, 2, 1000, 6307200 };
+    const int64_t n = 120960;          /* 7 paydays × 17280 */
+    size_t i;
+
+    CHECK(nodus_cmt_app_retain_height(1, 0) == 0 &&
+          nodus_cmt_app_retain_height(5000000, 0) == 0, "archive (N 0): 0");
+    CHECK(nodus_cmt_app_retain_height(5000000, -1) == 0, "negative N: 0");
+    CHECK(nodus_cmt_app_retain_height(0, n) == 0 &&
+          nodus_cmt_app_retain_height(1, n) == 0 &&
+          nodus_cmt_app_retain_height(n - 1, n) == 0 &&
+          nodus_cmt_app_retain_height(n, n) == 0, "H <= N: 0");
+    CHECK(nodus_cmt_app_retain_height(n + 1, n) == 2,
+          "H = N+1: R 2 — block 1 goes, 2..N+1 (N blocks) stay");
+    for (i = 0; i < sizeof(ks) / sizeof(ks[0]); i++) {
+        int64_t h = n + ks[i];
+        int64_t r = nodus_cmt_app_retain_height(h, n);
+
+        CHECK(r == ks[i] + 1, "H = N+k: R = k+1");
+        CHECK(h - r + 1 == n, "exactly N blocks retained");
+    }
+    CHECK(nodus_cmt_app_retain_height(3, 2) == 2 &&
+          nodus_cmt_app_retain_height(5, 2) == 4, "N 2: H 3 -> 2, H 5 -> 4");
+    return 0;
+}
+
+/**
+ * `nodus_cmt_node_check_retain_blocks`, the start-time floor. Pins: 0
+ * and anything above `max_age_num_blocks` are accepted; 1 ..
+ * `max_age_num_blocks` and negatives are refused (CMT_REJECT); NULL
+ * params is CMT_FAULT.
+ */
+static int t_retain_blocks_check(void)
+{
+    cmt_evidence_params_t ev;
+
+    memset(&ev, 0, sizeof(ev));
+    ev.max_age_num_blocks = 100000;     /* cmt_params.c's default */
+    CHECK(nodus_cmt_node_check_retain_blocks(0, &ev) == CMT_OK, "0 accepted");
+    CHECK(nodus_cmt_node_check_retain_blocks(1, &ev) == CMT_REJECT, "1 refused");
+    CHECK(nodus_cmt_node_check_retain_blocks(99999, &ev) == CMT_REJECT,
+          "below the window refused");
+    CHECK(nodus_cmt_node_check_retain_blocks(100000, &ev) == CMT_REJECT,
+          "equal to the window refused (age must EXCEED it)");
+    CHECK(nodus_cmt_node_check_retain_blocks(100001, &ev) == CMT_OK,
+          "window + 1 accepted");
+    CHECK(nodus_cmt_node_check_retain_blocks(120960, &ev) == CMT_OK,
+          "the recommended 120960 accepted");
+    CHECK(nodus_cmt_node_check_retain_blocks(-1, &ev) == CMT_REJECT,
+          "negative refused");
+    CHECK(nodus_cmt_node_check_retain_blocks(1, NULL) == CMT_FAULT,
+          "NULL params is a fault");
+    return 0;
+}
+
+/**
+ * The floor at `nodus_cmt_node_init`, against the chain's OWN stored
+ * evidence window (read from the stored document here, the same params
+ * the loaded state carries). Pins: 1 and `max_age_num_blocks` stop the
+ * node; `max_age_num_blocks + 1` and 0 start it.
+ */
+static int t_retain_blocks_node_init(void)
+{
+    gfx_t                  g;
+    nodus_cmt_node_opts_t  o;
+    nodus_cmt_node_t      *n;
+    cmt_genesis_doc_t      doc;
+    cmt_genesis_validator_t *gv;
+    int64_t                max_age;
+
+    CHECK(gfx_open(&g, "retain") == 0, "version-3 fixture");
+    n  = (nodus_cmt_node_t *)calloc(1, sizeof(*n));
+    gv = (cmt_genesis_validator_t *)calloc(NODUS_V2_GEN_MAX_VALIDATORS,
+                                           sizeof(*gv));
+    CHECK(n && gv, "alloc");
+    memset(&doc, 0, sizeof(doc));
+    CHECK(bx_doc(&g, &doc, gv) == 0, "the stored document");
+    max_age = doc.consensus_params.evidence.max_age_num_blocks;
+    CHECK(max_age > 0, "the chain has an evidence window");
+
+    g.w->config.retain_blocks = 1;
+    opts_default(&g, &o);
+    CHECK(nodus_cmt_node_init(n, g.w, &o) == CMT_FAULT, "retain_blocks 1 stops the node");
+    g.w->config.retain_blocks = max_age;
+    opts_default(&g, &o);
+    CHECK(nodus_cmt_node_init(n, g.w, &o) == CMT_FAULT,
+          "retain_blocks == max_age_num_blocks stops the node");
+    g.w->config.retain_blocks = max_age + 1;
+    opts_default(&g, &o);
+    CHECK(nodus_cmt_node_init(n, g.w, &o) == CMT_OK,
+          "retain_blocks == max_age_num_blocks + 1 starts");
+    nodus_cmt_node_release(n);
+    g.w->config.retain_blocks = 0;
+    opts_default(&g, &o);
+    CHECK(nodus_cmt_node_init(n, g.w, &o) == CMT_OK, "retain_blocks 0 (archive) starts");
+    nodus_cmt_node_release(n);
+
+    free(gv);
+    free(n);
+    gfx_close(&g);
+    return 0;
+}
+
+/* 1 when `table` holds `<prefix><h>`, 0 when not, -1 on error. */
+static int store_row_present(nodus_cmt_store_t *s, bool state_table,
+                             const char *prefix, int64_t h)
+{
+    char           key[NODUS_CMT_STORE_KEY_MAX];
+    const uint8_t *v = NULL;
+    size_t         len = 0;
+
+    snprintf(key, sizeof(key), "%s%" PRId64, prefix, h);
+    if (nodus_cmt_store_get(s, state_table, key, &v, &len) != CMT_OK) {
+        return -1;
+    }
+    return len > 0 ? 1 : 0;
+}
+
+/**
+ * End to end through the REAL application's Commit and the REAL host's
+ * `pruneBlocks`: `retain_blocks` 2, blocks 1..5 saved and applied.
+ * The floor is NOT applied here — it is `nodus_cmt_node_init`'s, and this
+ * fixture drives the executor directly — which is what lets a 2-block
+ * window be observed in five blocks. Pins: (1) the store keeps exactly
+ * 2 blocks (base 4, height 5) — the retained-count arithmetic against
+ * the port's own prune; (2) the pruned heights' parts are gone while
+ * their meta and commit stay (inside the evidence window — the
+ * reference's evidence point, store.go:387-405); (3) the FinalizeBlock
+ * responses below the retain height are gone and the kept ones remain —
+ * `nodus_cmt_ss_prune_states` ran (its failure is only logged by the
+ * host, so (1) alone could pass without it); (4) only the tip's SC
+ * remains. HOW IT CAN LIE: the evidence window here is the stored
+ * document's (not expired at 5 blocks), so the expired-meta branch is
+ * not exercised — t_store_prune_blocks in test_cmt_host.c covers it.
+ */
+static int t_retain_blocks_prunes(void)
+{
+    gfx_t   g;
+    bx_t    x;
+    int64_t h;
+
+    CHECK(gfx_open(&g, "retain_prune") == 0, "version-3 fixture");
+    CHECK(bx_init(&x, &g) == 0, "block fixture");
+    g.w->config.retain_blocks = 2;
+    for (h = 1; h <= 5; h++) {
+        CHECK(bx_advance(&x, h, true, true) == 0, "block saved and applied");
+    }
+    CHECK(x.state->last_block_height == 5, "state height 5");
+    /* (1) */
+    CHECK(nodus_cmt_bs_height(x.store) == 5 && nodus_cmt_bs_base(x.store) == 4 &&
+          nodus_cmt_bs_size(x.store) == 2,
+          "base 4, height 5: exactly retain_blocks (2) blocks kept");
+    /* (2) */
+    {
+        char           key[NODUS_CMT_STORE_KEY_MAX];
+        const uint8_t *v = NULL;
+        size_t         len = 0;
+
+        for (h = 1; h <= 3; h++) {
+            snprintf(key, sizeof(key), "P:%" PRId64 ":0", h);
+            CHECK(nodus_cmt_store_get(x.store, false, key, &v, &len) == CMT_OK &&
+                  len == 0, "a pruned height's part 0 is gone");
+        }
+        for (h = 4; h <= 5; h++) {
+            snprintf(key, sizeof(key), "P:%" PRId64 ":0", h);
+            CHECK(nodus_cmt_store_get(x.store, false, key, &v, &len) == CMT_OK &&
+                  len > 0, "a kept height's part 0 stays");
+        }
+    }
+    for (h = 1; h <= 3; h++) {
+        CHECK(store_row_present(x.store, false, "H:", h) == 1,
+              "a pruned height's meta stays (evidence window)");
+        CHECK(store_row_present(x.store, false, "C:", h) == 1,
+              "a pruned height's commit stays (evidence window)");
+    }
+    /* (3) */
+    for (h = 1; h <= 3; h++) {
+        CHECK(store_row_present(x.store, true, "abciResponsesKey:", h) == 0,
+              "a pruned height's FinalizeBlock response is gone");
+    }
+    for (h = 4; h <= 5; h++) {
+        CHECK(store_row_present(x.store, true, "abciResponsesKey:", h) == 1,
+              "a kept height's FinalizeBlock response stays");
+    }
+    /* (4) */
+    CHECK(store_row_present(x.store, false, "SC:", 5) == 1, "SC:tip stays");
+    for (h = 1; h <= 4; h++) {
+        CHECK(store_row_present(x.store, false, "SC:", h) == 0, "no SC below the tip");
+    }
+    g.w->config.retain_blocks = 0;
+    bx_free(&x);
+    gfx_close(&g);
+    return 0;
+}
+
 /* ══════════════════════════════════════════════════════════════════════ */
 
 int main(void)
@@ -2867,6 +3074,10 @@ int main(void)
         { "privval_load_or_gen",      t_privval_load_or_gen      },
         { "init_invariants",          t_init_invariants          },
         { "mock_app_rows",            t_mock_app_rows            },
+        { "retain_height_arith",      t_retain_height_arith      },
+        { "retain_blocks_check",      t_retain_blocks_check      },
+        { "retain_blocks_node_init",  t_retain_blocks_node_init  },
+        { "retain_blocks_prunes",     t_retain_blocks_prunes     },
     };
     size_t i;
 

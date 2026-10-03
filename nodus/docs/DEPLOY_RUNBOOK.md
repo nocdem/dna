@@ -1083,6 +1083,71 @@ opened and nothing else changes.
 
 ---
 
+## 2.5 Block retention — pruned validators and archive nodes — per node, no chain impact
+
+Decision: `docs/plans/decisions/2026-10-03-block-pruning-7-paydays.md` (operator: a
+validator keeps the last 7 paydays; two archive nodes keep everything). Design:
+`docs/ARCHITECTURE.md` "Block retention (pruning) and the SeenCommit cleanup". No
+consensus byte, block, app_hash or state root depends on it, so nodes may differ and
+no hard fork is involved; a rolling restart of one node at a time is enough. **Turning
+it on on any node needs the operator's explicit permission like every deploy.**
+
+**Two kinds of node.**
+
+| Kind | `retain_blocks` | Keeps | Who (default; the operator may change) |
+|---|---|---|---|
+| Archive | `0` (or absent) | every block, every FinalizeBlock response | **EU-6 and US-1** |
+| Pruned validator | `120960` (= 7 paydays × 17 280 blocks) | the last 120 960 blocks | every other node |
+
+**1. Config** — add to the pruned node's `/etc/nodus.conf` (nodus.json format), and
+make sure both archive nodes are in its witness-port `persistent_peers` (or in the
+network file's list) so block sync always has a peer that holds old blocks:
+
+```json
+{
+    "retain_blocks": 120960,
+    "persistent_peers": ["<EU-6 p2p id>@<EU-6 ip>:4004", "<US-1 p2p id>@<US-1 ip>:4004", "..."]
+}
+```
+
+A value that is not an integer ≥ 0 refuses the start (config load). A value from 1 up
+to the chain's evidence window `max_age_num_blocks` (100 000 unless the genesis set
+another) refuses the start too, with `retain_blocks <N> refused: it must be 0 (keep
+every block) or greater than this chain's evidence window …`. At start a pruned node
+logs `block retention: the last <N> blocks are kept (evidence window <M> blocks)`.
+
+**2. What happens.** Nothing until the chain is taller than N. From then on every
+Commit prunes the blocks below `tip − N + 1`: their parts, their FinalizeBlock
+responses and their seen commits. Block meta and commits stay until the evidence
+window has passed. The FIRST commit after enabling it on a node with long history
+walks every height from genesis up to `tip − N + 1` in one go (flushed every 1 000
+heights) — expect one slow block on that node. A prune error is logged
+(`failed to prune blocks: retain_height …`) and does not stop the node.
+
+**3. Consequences — read before choosing which nodes prune.**
+- **Joining / catching up needs an archive peer.** Block sync skips a peer whose
+  lowest stored block (its base) is above the height the joiner needs; consensus
+  catch-up cannot serve a block that is gone. A joiner whose only peers are pruned
+  nodes, and who is further behind than N blocks, never catches up. Keep the archive
+  nodes in every node's persistent peers, and keep them running.
+- **Scan / the explorer must read from an archive node.** A pruned node no longer
+  has old blocks or old FinalizeBlock responses (per-transaction results); history
+  queries against it for heights below its base find nothing.
+- **Disk does not shrink by itself.** SQLite reuses the freed pages for new blocks,
+  so the file stops growing at roughly the retained size; it gets SMALLER only after
+  `VACUUM` on the chain database with the node stopped (needs free space about the
+  size of the file). Whether and when to vacuum is an operator decision.
+- **SeenCommit cleanup runs on EVERY node, archive included** (independent of
+  `retain_blocks`): each new block deletes the previous height's seen commit. Rows
+  written before the build that carries it stay until that height is pruned (never,
+  on an archive node).
+
+**Rollback:** remove `retain_blocks` (or set it to 0) and restart. Blocks already
+pruned do not come back; the node simply stops pruning. There is no in-place way to
+restore full history on that node — history is read from the archive nodes.
+
+---
+
 ## 3. Post-deploy verification
 
 ```bash

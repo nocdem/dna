@@ -4879,6 +4879,181 @@ static int t_store_prune_blocks(void)
     return 0;
 }
 
+/* 1 when the block store holds `<prefix><h>`, 0 when not, -1 on error. */
+static int bs_row_present(nodus_cmt_store_t *s, const char *prefix, int64_t h)
+{
+    char           key[NODUS_CMT_STORE_KEY_MAX];
+    const uint8_t *v = NULL;
+    size_t         n = 0;
+
+    snprintf(key, sizeof(key), "%s%" PRId64, prefix, h);
+    if (nodus_cmt_store_get(s, false, key, &v, &n) != CMT_OK) {
+        return -1;
+    }
+    return n > 0 ? 1 : 0;
+}
+
+/* Save blocks `from`..`to` (contiguous) through BOTH save rows: an odd
+ * height through SaveBlock (the row blocksync uses,
+ * cmt_bsync_reactor.c `bs_save_block`), an even one through
+ * SaveBlockWithExtendedCommit — both run `save_block_to_batch`. The
+ * block shape is `env_save_n_blocks`'s. */
+static int env_save_blocks_both_rows(t_env_t *e, int64_t from, int64_t to,
+                                     cmt_commit_sig_t *sigs)
+{
+    cmt_block_t *b = (cmt_block_t *)calloc(1, sizeof(*b));
+    cmt_commit_t *empty = (cmt_commit_t *)calloc(1, sizeof(*empty));
+    cmt_part_set_t ps;
+    cmt_extended_commit_t ec;
+    cmt_extended_commit_sig_t ecs[1];
+    cmt_commit_t seen;
+    cmt_data_t data;
+    cmt_validator_t proposer;
+    int64_t h;
+    int rc = 0;
+
+    if (!b || !empty) {
+        free(b); free(empty);
+        return -1;
+    }
+    {
+        cmt_validator_set_t vals;
+        cmt_validator_t *vstor = (cmt_validator_t *)calloc(CMT_VALSET_MAX, sizeof(cmt_validator_t));
+
+        if (!vstor || cmt_validator_set_init(&vals, vstor, CMT_VALSET_MAX) != CMT_OK ||
+            cmt_validator_set_copy(&e->state->validators, &vals) != CMT_OK ||
+            cmt_validator_set_get_proposer(&vals, &proposer) != CMT_OK) {
+            free(vstor); free(b); free(empty);
+            return -1;
+        }
+        free(vstor);
+    }
+    for (h = from; h <= to && rc == 0; h++) {
+        cmt_time_t ts = g_now;
+
+        ts.seconds += h;
+        if (env_make_n_txs(e, h, 10, &data) != 0 ||
+            cmt_state_make_block(e->state, h, &data, empty, NULL, proposer.address,
+                                 proposer.address_len, e->bscratch, b) != CMT_OK ||
+            env_make_part_set(e, b, &ps) != 0) {
+            rc = -1;
+            break;
+        }
+        make_test_ext_commit(h, ts, 1, (unsigned)(0x10 + (h % 100)), ecs, &ec);
+        if (h % 2 == 1) {
+            memset(&seen, 0, sizeof(seen));
+            seen.signatures = sigs;
+            seen.signatures_cap = CMT_VALSET_MAX;
+            if (cmt_extended_commit_to_commit(&ec, sigs, CMT_VALSET_MAX, &seen) != CMT_OK ||
+                nodus_cmt_bs_save_block(e->store, b, &ps, &seen, e->size_scratch,
+                                        e->part_scratch_cap) != CMT_OK) {
+                rc = -1;
+            }
+        } else if (nodus_cmt_bs_save_block_with_extended_commit(e->store, b, &ps, &ec, sigs,
+                       CMT_VALSET_MAX, e->size_scratch, e->part_scratch_cap) != CMT_OK) {
+            rc = -1;
+        }
+    }
+    free(b); free(empty);
+    return rc;
+}
+
+/* Decision docs/plans/decisions/2026-10-03-block-pruning-7-paydays.md
+ * item 2 — the SeenCommit cleanup in the block save batch, a DOCUMENTED
+ * DEVIATION from cometbft v0.38.26 (store.go:574 keeps every historical
+ * SC). Real SQLite store. Pins: (1) with W = 0 saving block h deletes
+ * SC:h−1 and writes SC:h, on both save rows, so only the tip's SC
+ * remains while every C:h−1 stays; (2) LoadSeenCommit(tip) still loads,
+ * and for h < tip LoadSeenCommit is nil while LoadBlockCommit loads —
+ * the two rows `LoadCommit` (cmt_cs.c `cmt_cs_load_commit`: SC at the
+ * tip, C below it) and `votesFromSeenCommit` (SC:tip, falling back to
+ * C:tip) read; (3) the same holds through a SECOND store opened on the
+ * same database (a restart's NewBlockStore); (4) with W = 2 the rows
+ * SC:tip … SC:tip−2 stay; (5) a negative W is refused.
+ * HOW IT CAN LIE: it does not drive `cmt_cs_reconstruct_last_commit`
+ * itself — this fixture's commits carry filler signatures, which
+ * `cmt_commit_to_vote_set` would refuse regardless of this change; it
+ * pins the store rows that function reads. */
+static int t_store_seen_commit_cleanup(void)
+{
+    t_env_t e;
+    cmt_commit_sig_t *sigs;
+    nodus_cmt_store_t *s2;
+    cmt_commit_t commit;
+    bool found = false;
+    int64_t h;
+
+    CHECK(env_make_state(&e, 1, 1) == 0, "state");
+    sigs = (cmt_commit_sig_t *)calloc(CMT_VALSET_MAX, sizeof(*sigs));
+    s2 = (nodus_cmt_store_t *)calloc(1, sizeof(*s2));
+    CHECK(sigs && s2, "alloc");
+    CHECK(e.store->seen_commit_window == 0, "W is 0 after init");
+
+    /* (1) W = 0, block by block, both save rows */
+    for (h = 1; h <= 6; h++) {
+        CHECK(env_save_blocks_both_rows(&e, h, h, sigs) == 0, "save block h");
+        CHECK(bs_row_present(e.store, "SC:", h) == 1, "the tip's SC:h is written");
+        CHECK(bs_row_present(e.store, "C:", h - 1) == 1, "C:h-1 is written");
+        if (h > 1) {
+            CHECK(bs_row_present(e.store, "SC:", h - 1) == 0,
+                  "SC:h-1 is deleted by the same save");
+        }
+    }
+    CHECK(nodus_cmt_bs_height(e.store) == 6 && nodus_cmt_bs_base(e.store) == 1, "1..6");
+    for (h = 1; h < 6; h++) {
+        CHECK(bs_row_present(e.store, "SC:", h) == 0, "no SC below the tip");
+        CHECK(bs_row_present(e.store, "H:", h) == 1, "every block meta stays");
+    }
+    for (h = 0; h < 6; h++) {
+        CHECK(bs_row_present(e.store, "C:", h) == 1, "every C:h (h < tip) stays");
+    }
+
+    /* (2) the readers' rows */
+    CHECK(nodus_cmt_bs_load_seen_commit(e.store, 6, sigs, CMT_VALSET_MAX, &commit, &found)
+              == CMT_OK && found && commit.height == 6, "LoadSeenCommit(tip) loads");
+    for (h = 1; h < 6; h++) {
+        CHECK(nodus_cmt_bs_load_seen_commit(e.store, h, sigs, CMT_VALSET_MAX, &commit, &found)
+                  == CMT_OK && !found, "LoadSeenCommit(h < tip) is nil");
+        CHECK(nodus_cmt_bs_load_block_commit(e.store, h, sigs, CMT_VALSET_MAX, &commit, &found)
+                  == CMT_OK && found, "LoadBlockCommit(h < tip) loads (LoadCommit's row)");
+    }
+
+    /* (3) a restart: a second store on the same database */
+    CHECK(nodus_cmt_store_init(s2, e.fx.w->db, false) == CMT_OK, "second store opens");
+    CHECK(nodus_cmt_bs_height(s2) == 6 && nodus_cmt_bs_base(s2) == 1,
+          "the reopened store reloads base 1, height 6");
+    CHECK(nodus_cmt_bs_load_seen_commit(s2, 6, sigs, CMT_VALSET_MAX, &commit, &found)
+              == CMT_OK && found && commit.height == 6,
+          "after a restart LoadSeenCommit(tip) loads (votesFromSeenCommit's first read)");
+    for (h = 1; h < 6; h++) {
+        CHECK(nodus_cmt_bs_load_seen_commit(s2, h, sigs, CMT_VALSET_MAX, &commit, &found)
+                  == CMT_OK && !found, "after a restart SC below the tip is still nil");
+        CHECK(nodus_cmt_bs_load_block_commit(s2, h, sigs, CMT_VALSET_MAX, &commit, &found)
+                  == CMT_OK && found, "after a restart C below the tip still loads");
+    }
+    nodus_cmt_store_release(s2);
+
+    /* (4) W = 2: SC:tip … SC:tip-2 stay */
+    CHECK(nodus_cmt_bs_set_seen_commit_window(e.store, 2) == CMT_OK, "W = 2");
+    CHECK(env_save_blocks_both_rows(&e, 7, 10, sigs) == 0, "blocks 7..10");
+    CHECK(bs_row_present(e.store, "SC:", 10) == 1 && bs_row_present(e.store, "SC:", 9) == 1 &&
+          bs_row_present(e.store, "SC:", 8) == 1, "SC:10, SC:9, SC:8 stay");
+    CHECK(bs_row_present(e.store, "SC:", 7) == 0 && bs_row_present(e.store, "SC:", 6) == 0,
+          "SC:7 and SC:6 are deleted");
+    for (h = 6; h < 10; h++) {
+        CHECK(bs_row_present(e.store, "C:", h) == 1, "C:h stays under W = 2");
+    }
+
+    /* (5) */
+    CHECK(nodus_cmt_bs_set_seen_commit_window(e.store, -1) == CMT_FAULT, "negative W refused");
+    CHECK(nodus_cmt_bs_set_seen_commit_window(NULL, 0) == CMT_FAULT, "NULL store refused");
+    CHECK(e.store->seen_commit_window == 2, "a refused W changes nothing");
+
+    free(sigs); free(s2);
+    env_free(&e);
+    return 0;
+}
+
 /* store_test.go:654-693 TestLoadBlockMeta */
 static int t_store_load_block_meta(void)
 {
@@ -7348,6 +7523,7 @@ int main(void)
         { "store_load_base_meta",                  t_store_load_base_meta },
         { "store_load_block_part",                 t_store_load_block_part },
         { "store_prune_blocks",                    t_store_prune_blocks },
+        { "store_seen_commit_cleanup",             t_store_seen_commit_cleanup },
         { "store_load_block_meta",                 t_store_load_block_meta },
         { "store_load_block_meta_by_hash",         t_store_load_block_meta_by_hash },
         { "store_block_fetch_at_height",           t_store_block_fetch_at_height },
