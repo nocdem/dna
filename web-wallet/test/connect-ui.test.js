@@ -26,6 +26,7 @@ import {
 import {
   keptChainName, chainLookupNeeded, chainLookupSpaced, CHAIN_LOOKUP_SPACING_MS, chainNameAfterLookup, shownOwnName, profileEntryText, PROFILE_ENTRY_TEXT
 } from '../src/connect/ui/chain-names.js';
+import { newDiag, diagSalt, diagDay, errorText, diagText } from '../src/connect/ui/diag.js';
 
 // A localStorage stand-in (getItem / setItem / removeItem).
 function memoryStorage() {
@@ -531,4 +532,63 @@ test('own name: the wallet\'s answered lookup wins; until then the name Messages
   assert.equal(PROFILE_ENTRY_TEXT, 'Your ID & profile');
   assert.equal(profileEntryText('jarvis'), 'jarvis — ID & profile');
   assert.equal(profileEntryText('x\ny'), 'Your ID & profile');
+});
+
+// The conversation's "Details" line (src/connect/ui/diag.js): the last
+// message check of one contact, memory only, never a salt / blob / text.
+test('diagnostics: one short line per check; empty days folded; no salt, blob or text kept', () => {
+  const saltHex = 'c'.repeat(64), blobHex = 'ab'.repeat(32);
+  const empty = { outcome: 'empty', why: 'none', messages: [], dropped: '0', other: '0', unchanged: false };
+  const diag = newDiag(1000);
+  diag.profile = 'ok';
+  diag.salt = diagSalt({ result: { status: 'nothing_to_write', outcome: 'found', why: 'none', salt: saltHex } });
+  diag.days = [
+    diagDay('20728', empty),
+    diagDay('20729', { outcome: 'found', why: 'none', blob: blobHex, messages: [], dropped: '1', other: '0', unchanged: false }),
+    diagDay('20730', empty)
+  ];
+  assert.equal(diagText(diag, () => '08:31'),
+    'Last check 08:31 · profile ok · salt ok · day 20729: found, 0 read, 1 not checked, 0 other · 2 empty days');
+  const kept = JSON.stringify(diag);
+  assert.ok(!kept.includes(saltHex) && !kept.includes(blobHex));
+  // the message text is never kept, only the count
+  const withText = diagDay('20729', { outcome: 'found', why: 'none', messages: [{ seq: '1', senderTs: '5', text: 'secret words' }], dropped: '0', other: '2' });
+  assert.ok(!JSON.stringify(withText).includes('secret words'));
+  assert.deepEqual(withText, { day: '20729', outcome: 'found', why: 'none', count: 1, dropped: 0, other: 2, unchanged: false });
+  assert.equal(diagText(undefined), '');
+});
+
+test('diagnostics: profile, salt and day states in plain words; malformed fields shown as unknown', () => {
+  const at = () => '08:31';
+  const failed = newDiag(1); failed.profile = 'failed';
+  assert.equal(diagText(failed, at), 'Last check 08:31 · profile could not be read');
+  const wait = newDiag(1); wait.profile = 'ok';
+  wait.salt = diagSalt({ result: { status: 'wait', outcome: 'unreadable', why: 'timeout' } });
+  wait.noSalt = true;
+  assert.equal(diagText(wait, at), 'Last check 08:31 · profile ok · salt wait (unreadable, timeout) · no salt yet, messages not read');
+  const moved = newDiag(1); moved.profile = 'ok';
+  moved.salt = diagSalt({ result: { status: 'published', outcome: 'empty', why: 'none' }, changed: true });
+  moved.days = [diagDay('20729', { outcome: 'found', why: 'none', unchanged: true, dropped: '0', other: '0' }),
+    diagDay('20730', { outcome: 'unreadable', why: 'timeout' })];
+  assert.equal(diagText(moved, at),
+    'Last check 08:31 · profile ok · salt ok (changed) · day 20729: found, unchanged · day 20730: unreadable (timeout), 0 read, 0 not checked, 0 other');
+  const earlier = newDiag(1); earlier.profile = 'ok'; earlier.salt = diagSalt({ earlier: true });
+  assert.equal(diagText(earlier, at), 'Last check 08:31 · profile ok · salt ok');
+  assert.deepEqual(diagDay('x', { outcome: '<b>', why: 'Timeout!', dropped: '-1', other: 'many', messages: 'no' }),
+    { day: '?', outcome: 'unknown', why: 'unknown', count: 0, dropped: 0, other: 0, unchanged: false });
+});
+
+test('diagnostics: a failed check is shown with a bounded message that never carries hex', () => {
+  const diag = newDiag(1); diag.profile = 'ok';
+  diag.error = errorText(new Error("Load this contact's profile first."));
+  assert.equal(diagText(diag, () => '08:31'), "Last check 08:31 · profile ok\nLast check failed: Load this contact's profile first.");
+  assert.equal(errorText(new Error(`bad ${'a1'.repeat(32)} end`)), 'bad … end');
+  assert.equal(errorText(new SyntaxError(`Unexpected token in {"salt":"${'c'.repeat(64)}"}`)), 'the answer could not be read');
+  assert.equal(errorText(new Error('a\nb\u0007c')), 'a b c');
+  const long = errorText(new Error('x '.repeat(200)));
+  assert.equal(long.length, 120);
+  assert.ok(long.endsWith('…'));
+  assert.equal(errorText('plain'), 'plain');
+  assert.equal(errorText(undefined), 'unknown error');
+  assert.equal(errorText(new Error('')), 'unknown error');
 });

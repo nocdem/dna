@@ -46,6 +46,7 @@ import {
 import { el, untrusted, button, website, fillAvatar } from './dom.js';
 import { parseNameOf } from '../../nodus/names.js';
 import { keptChainName as keptNameOf, chainLookupNeeded, chainNameAfterLookup } from './chain-names.js';
+import { newDiag, diagSalt, diagDay, errorText, diagText } from './diag.js';
 
 const SYNC_MS = 30000;                   // how often requests and messages are checked
 const HEX128 = /^[0-9a-f]{128}$/;
@@ -70,6 +71,7 @@ const saltChecked = new Set();           // contacts whose salt was reconciled t
 const dropped = new Map();               // fp -> messages that did not verify, this session
 const others = new Map();                // fp -> authentic items that are not text (reactions, calls, …), last check
 const lastRead = new Map();              // fp -> highest local seq shown to the user (this session only)
+const diags = new Map();                 // fp -> the last message check's diagnostics (diag.js; memory only, never saved)
 const vaultRecs = new Map();             // vault address -> { id, value }: shared vaults kept (state.vaults, src/vaults/)
 // HF-4 chain names: fp -> the chain name ('' = none, or not answered), this
 // session; kept across sessions only for a saved wallet (state.chainNames).
@@ -107,7 +109,7 @@ function wipe() {
   store = undefined; state = undefined; messages = []; ownFp = undefined; ownProfile = undefined;
   fresh = false; vaultId = null; requests = []; selectedFp = undefined; nodusClient = undefined;
   eraseArmed = false; profileTaken = false; ownNameConfirmed = false;
-  for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, chainNames, chainAsked, chainTried, vaultRecs]) set.clear();
+  for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, diags, chainNames, chainAsked, chainTried, vaultRecs]) set.clear();
   notifyVaultHost();
   if (!ui) return;
   for (const control of [ui.addId, ui.addNote, ui.composer, ui.bio, ui.location, ui.website]) control.value = '';
@@ -115,6 +117,7 @@ function wipe() {
   for (const line of [ui.addStatus, ui.sendStatus, ui.profileStatus, ui.copyStatus, ui.emptyCopyStatus, ui.requestsStatus, ui.sync, ui.ownId, ui.profileName, ui.avatarStatus, ui.ownAvatar]) line.textContent = '';
   ui.messageList.replaceChildren(); ui.requestList.replaceChildren(); ui.outgoingList.replaceChildren();
   ui.contactList.replaceChildren(); ui.hubList.replaceChildren(); ui.convTitle.textContent = ''; ui.convClaim.replaceChildren(); ui.convNote.textContent = '';
+  ui.convDiagText.textContent = ''; ui.convDiag.open = false; ui.convDiag.hidden = true;
   ui.erase.textContent = 'Delete message history on this device';
   ui.avatarChange.disabled = ui.avatarRemove.disabled = false;
   if (ui.addDialog.open) ui.addDialog.close();
@@ -431,10 +434,24 @@ async function sync() {
     // 30-second check does not rewrite the state every time.
     const startedAt = nowSeconds(), today = core.dayToday();
     const days = needFullSync(state.contacts.map(c => c.fp), state.dmSync, startedAt) ? fullDays(today) : recentDays(today);
-    let syncMoved = false;
+    // One contact's failure is kept in that contact's Details line
+    // (diags) and the check goes on with the next contact: a failure must
+    // not leave every contact after it in the list unchecked, round after
+    // round. A close / reset meanwhile still ends the check.
+    let syncMoved = false, failed = 0, storageFailure;
     for (const contact of [...state.contacts]) {
       if (gen !== generation) return;
-      if (await syncContact(contact, gen, days) && gen === generation) {
+      let complete;
+      try { complete = await syncContact(contact, gen, days); }
+      catch (error) {
+        if (gen !== generation) return;
+        failed++;
+        if (error instanceof StorageError) storageFailure = error;
+        const diag = diags.get(contact.fp);
+        if (diag) diag.error = errorText(error);
+        continue;
+      }
+      if (complete && gen === generation) {
         const last = state.dmSync[contact.fp];
         if (!last || BigInt(startedAt) - BigInt(last) >= 3600n) syncMoved = true;
         state.dmSync[contact.fp] = startedAt;
@@ -449,7 +466,13 @@ async function sync() {
       await ensureProfile(fp);
     }
     if (gen === generation) { fillOwnAvatar(); fillNameLine(); }
-    if (gen === generation) { ui.sync.textContent = `Last checked ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. New messages are checked every 30 seconds.`; render(); }
+    if (gen === generation) {
+      const notChecked = failed ? ` ${failed} contact${failed === 1 ? '' : 's'} could not be checked (see Details in the conversation).` : '';
+      ui.sync.textContent = storageFailure
+        ? `${storageFailure.message}${notChecked}`
+        : `Last checked ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. New messages are checked every 30 seconds.${notChecked}`;
+      render();
+    }
   } catch (error) {
     if (gen === generation) ui.sync.textContent = explain(error, 'The network could not be reached. Checking again automatically.');
   } finally { if (gen === generation) syncing = false; }
@@ -485,19 +508,27 @@ async function completeOutgoing(request, gen) {
 }
 
 // True when every bucket of `days` was read (the contact's check time may
-// move, sync above).
+// move, sync above). Each step's result is written to this contact's
+// diagnostics record (diag.js) as it comes; an exception is added by sync().
 async function syncContact(contact, gen, days) {
   const fp = contact.fp;
-  if (!await ensureProfile(fp, true) || gen !== generation) return false;
+  const diag = newDiag(Date.now());
+  diags.set(fp, diag);
+  const profileOk = await ensureProfile(fp, true);
+  if (gen !== generation) return false;
+  diag.profile = profileOk ? 'ok' : 'failed';
+  if (!profileOk) return false;
   if (!saltChecked.has(fp)) {
     const result = await core.saltReconcile(fp, contact.salt || null);
     if (gen !== generation) return;
+    const changed = !!result.salt && result.salt !== contact.salt;
+    diag.salt = diagSalt({ result, changed: result.status !== 'wait' && changed });
     if (result.status !== 'wait') {
       saltChecked.add(fp);
-      if (result.salt && result.salt !== contact.salt) { contact.salt = result.salt; await persist(); unpublished.add(fp); }
+      if (changed) { contact.salt = result.salt; await persist(); unpublished.add(fp); }
     }
-  }
-  if (!contact.salt) return;
+  } else diag.salt = diagSalt({ earlier: true });
+  if (!contact.salt) { diag.noSalt = true; return; }
   const salt = contact.salt;
 
   // Delivery (NC-RT2 A, text.js markDelivered): which own messages were
@@ -531,6 +562,7 @@ async function syncContact(contact, gen, days) {
     const key = `${fp}|${day}`, before = blobs.get(key);
     const result = await core.outboxFetchDay(fp, salt, day, before?.blob || '');
     if (gen !== generation) return false;
+    diag.days.push(diagDay(day, result));
     if (result.outcome === 'unreadable') complete = false;
     if (result.unchanged && before) { other += before.other; continue; }
     const dayLost = Number(result.dropped || 0), dayOther = Number(result.other || 0);
@@ -805,6 +837,10 @@ export function mountMessages(root, options = {}) {
   u.convClaim = el('span', { className: 'contact-claim' });
   u.convHead = el('div', { className: 'nc-bar conversation-head' }, backButton(), u.convAvatar, el('div', { className: 'conversation-title' }, u.convTitle, u.convClaim));
   u.convNote = el('p', { className: 'notice conversation-note' });
+  // The last message check of this contact (diag.js), collapsed; plain text.
+  u.convDiagText = el('p', { className: 'conversation-diag-text' });
+  u.convDiag = el('details', { className: 'hint conversation-diag' }, el('summary', { text: 'Details' }), u.convDiagText);
+  u.convDiag.hidden = true;
   u.messageList = setAttrs(el('ol', { className: 'message-list' }), { 'aria-label': 'Messages', 'aria-live': 'polite' });
   u.composer = input('textarea', { id: 'nc-send-text', rows: '1', maxlength: String(TEXT_MAX), placeholder: 'Write a message', 'aria-label': 'Message', autocomplete: 'off' });
   u.sendButton = el('button', { className: 'composer-send' }); u.sendButton.type = 'submit';
@@ -815,7 +851,7 @@ export function mountMessages(root, options = {}) {
   u.sendForm = el('form', { className: 'composer' }, el('div', { className: 'composer-row' }, u.composer, u.sendButton), el('div', { className: 'composer-foot' }, el('small', { className: 'composer-hint', text: 'Enter to send · Shift+Enter for a new line' }), u.counter), u.sendStatus);
   u.sendForm.id = 'nc-send-form';
   u.notReady = el('p', { className: 'hint composer-closed', text: 'Messaging with this contact is not ready yet. It is checked again automatically.' });
-  u.conversationView = el('div', { className: 'messenger-view messenger-conversation' }, u.convHead, u.convNote, u.messageList, u.sendForm, u.notReady);
+  u.conversationView = el('div', { className: 'messenger-view messenger-conversation' }, u.convHead, u.convNote, u.convDiag, u.messageList, u.sendForm, u.notReady);
   u.pane = el('div', { className: 'messenger-pane' }, u.emptyView, u.conversationView);
 
   // Add contact (add_contact_dialog.dart): a modal dialog.
@@ -1126,6 +1162,8 @@ function renderConversation(scroll) {
     other ? 'This contact also sent items this page cannot show yet (for example reactions, pictures or calls).' : ''
   ].filter(Boolean).join(' ');
   ui.convNote.hidden = !ui.convNote.textContent;
+  ui.convDiagText.textContent = diagText(diags.get(contact.fp));
+  ui.convDiag.hidden = !ui.convDiagText.textContent;
   ui.sendForm.hidden = !contact.salt;
   ui.notReady.hidden = !!contact.salt;
 
