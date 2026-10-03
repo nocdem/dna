@@ -186,19 +186,30 @@ printed on the last line — record it. The version comes from
 (`nodus-server`, `nodus-core`, `nodus-storage`, `nodus-witness`, `nodus-cli`) is missing,
 when a binary's `-h` banner reports a version other than the header's (a stale build
 directory), when the header's MAJOR.MINOR.PATCH disagree with its version string, when
-the build carries `-fsanitize`, or when the output file already exists. The payload is
-an explicit list — the five binaries, the four units, `install.sh`, `README`
-(`deploy/README-dist.md`), `VERSION` (version, arch, commit, whether `nodus/` had
-uncommitted changes, build type) and `SHA256SUMS`. No config (`deploy/nodus.conf.example`
-is never packaged), no identity, no addresses. Archive entries are sorted, owned 0:0 and
-stamped with the last commit's time. The binaries link the system's `libcrypto.so.3`,
+the build carries `-fsanitize`, when the build directory's `CMAKE_BUILD_TYPE` is not
+exactly `Release` (an empty build type is an unoptimized build and refuses too), when the
+git tree has uncommitted or untracked changes under `nodus/` or `shared/` (both are
+compiled into the binaries — commit first), or when the output file already exists.
+The payload is an explicit list — the five binaries, the four units, `install.sh`,
+`README` (`deploy/README-dist.md`), `VERSION` (version, arch, commit, tree, build type)
+and `SHA256SUMS`. Tree is `clean`, or `unknown` (with commit `unknown`) when git could
+not be asked at all. No config (`deploy/nodus.conf.example` is never packaged), no
+identity, no addresses. Staged modes are set explicitly (directory, binaries and
+`install.sh` 0755, the rest 0644 — not the umask); archive entries are sorted, owned 0:0
+and stamped with the last commit's time; the archive is written to a `mktemp` file in
+the output directory and renamed into place. The binaries link the system's `libcrypto.so.3`,
 `libsqlite3.so.0`, `libjson-c.so.5` (`readelf -d`; nodus-cli has no json-c) — the target
 host needs those packages and a glibc no older than the build machine's.
 
 **2. Copy and verify** on the target: copy the tarball, `sha256sum` it and compare with
 the value from step 1, `tar -xzf` it, `cd` into the directory. `install.sh` verifies
 `SHA256SUMS` itself before anything else (an unexpected or unlisted file also refuses) —
-that proves the files match each other, not where they came from.
+that proves the files match each other, not where they came from. It then checks that
+the package runs on this host: `VERSION`'s arch must equal `uname -m`, and each of the
+five binaries is run with `-h` (it prints its banner and exits before any init —
+`tools/nodus_node_config.c` / `tools/nodus-cli.c` `usage()`), bounded by `timeout 10`;
+a non-zero exit (missing shared library, too old a glibc) or a banner version other than
+`VERSION`'s refuses, with the binary's error in the message, before any unit is touched.
 
 **3. Install.** `/etc/nodus.conf` must exist, or pass `--config <file>` (installed as
 `/etc/nodus.conf` with mode 0600 only when no such file exists — an existing one is never
@@ -210,23 +221,59 @@ sudo ./install.sh --layout split --no-witness   # core + storage   (decision ite
 sudo ./install.sh --layout split --no-storage   # core + witness
 sudo ./install.sh --layout combined             # nodus.service
 ```
+**Run it inside `tmux` (or `screen`) on a remote host.** The installer traps Ctrl-C,
+SIGTERM and SIGHUP and exits through the same path as a failure, so the rollback
+commands are printed — but after an SSH drop they go to a terminal that no longer
+exists; under tmux the run is not interrupted at all.
+
 `--prefix DIR` (default `/usr/local/bin`) moves the binaries and rewrites the units'
-`ExecStart=` to match. `--dry-run` does not require root but must read the config — an
-`/etc/nodus.conf` this installer wrote is 0600, so run it under `sudo` there; a real run
-refuses without root. What a
-run does, in order, after every check has passed:
+`ExecStart=` to match. A prefix under `/home`, `/root`, `/run/user` (the units'
+`ProtectHome=true` hides them) or `/tmp`, `/var/tmp` (`PrivateTmp=true` gives the service
+an empty private one) refuses — checked as typed and with symlinks resolved. The same
+check is applied to `data_path` / `identity_path`, which must in any case lie under the
+units' `ReadWritePaths=/var/lib/nodus`. **`deploy/build-nodus.sh` and
+`tools/nodus-update.sh` install to `/usr/local/bin` only:** on a host installed with
+another `--prefix` they would put the new binaries where the units do not look — keep
+updating that host with `install.sh`. `--dry-run` does not require root but must read
+the config — an `/etc/nodus.conf` this installer wrote is 0600, so run it under `sudo`
+there; a real run refuses without root.
+
+`--allow-downgrade`: the installer reads the installed version — `-h` of every nodus
+binary in the prefix and of every binary an installed nodus unit's `ExecStart=` names —
+and refuses when that version is NEWER than the package's, or when an installed binary's
+version cannot be read (its `-h` fails or prints no version, so a downgrade cannot be
+ruled out). An equal version (reinstall) proceeds. **Going back to an older release
+after this chain has voted a hard fork that release lacks makes this node stop following
+the chain:** hard forks are height-activated, and a binary older than the one that
+introduced a voted fork stops participating (§2.2 — "Why the order matters", and the
+"Live hard forks" table for which binary introduced each fork). Pass `--allow-downgrade`
+only for a release at or above every introducing binary in that table.
+
+What a run does, in order, after every check has passed:
 - reads `identity_path` / `data_path` from the config (a key present twice, a non-string
   value, a path outside the units' `ReadWritePaths=/var/lib/nodus`, `"witness_external":
-  true` or `"storage_external": true` in the file → refuse; split without
-  `identity_path` → refuse);
+  true` or `"storage_external": true` in the file — line breaks inside the key/value pair
+  do not hide it — → refuse; split without `identity_path` → refuse);
 - decides the current layout by `systemctl is-enabled` (exactly `enabled`), the same rule
   as `build-nodus.sh` / `nodus-update.sh`: both layouts enabled, or storage / witness
   enabled without core → refuse. A split unit that is enabled but not asked for →
   refuse (it never removes a split service — disable it yourself first);
+- refuses while `nodus-debug.service` (written by `build-nodus.sh --debug`: same
+  `/etc/nodus.conf`, same data directory, no `Conflicts=` with these units, not in the
+  installer's stop list) is enabled or running — `systemctl disable --now nodus-debug`
+  first;
+- refuses when a drop-in (`*.conf` under `/etc/systemd/system/<unit>.service.d/` or
+  `/run/systemd/system/<unit>.service.d/`) exists for `nodus`, `nodus-core`,
+  `nodus-storage` or `nodus-witness`: every check above reads the PACKAGED unit, not what
+  a drop-in turns it into;
+- copies the five binaries and the four units next to their destinations as
+  `<dest>.new` while the node still runs (a failed copy — full disk — stops nothing; the
+  `.new` files are removed);
 - stops every nodus unit that is running and the current layout's units; disables the
   old layout's units the new one does not use;
-- installs all five binaries atomically (`dest.new` + `mv -f`), copies the four units the
-  same way, `systemctl daemon-reload`;
+- renames every staged `.new` over its destination (`mv -f`; binaries, then units), then
+  `systemctl daemon-reload` — a failed copy can no longer leave old and new binaries
+  mixed;
 - **`nodus.addr_seq` (item 21):** when the split witness is about to run on this host for
   the first time (witness wanted, `nodus-witness` not enabled before), moves
   `<identity_path>/nodus.addr_seq` to `<data_path>/nodus.addr_seq` if the data copy does
@@ -248,11 +295,14 @@ combined server's own sequence lives in `<identity_path>/nodus.addr_seq`; move i
 hand while `nodus` is stopped if you want to keep the sequence. Never both layouts
 enabled at any step.
 
-**5. Rollback.** On any failure after the first change the installer prints:
-`systemctl disable --now nodus-core nodus-storage nodus-witness && systemctl enable --now
-nodus`, plus the `addr_seq` move-back when it had moved the file. The binaries in the
-prefix are by then the NEW version: to return to the previous version run the previous
-tarball's `install.sh --layout combined` (or the git rollback in §4).
+**5. Rollback.** On any failure after the first change — and on Ctrl-C, SIGTERM or
+SIGHUP — the installer prints: `systemctl disable --now nodus-core nodus-storage
+nodus-witness && systemctl enable --now nodus`, plus the `addr_seq` move-back when it had
+moved the file, and says whether the binaries were replaced. When they were, the prefix
+holds the NEW version: to return to the previous version run the previous tarball's
+`install.sh --layout combined --allow-downgrade` (or the git rollback in §4). **That is
+safe only while the chain has voted no hard fork the previous release lacks** — after
+such a vote the older binary stops following the chain (§2.2); the printed hint says so.
 
 What the installer does NOT do: pick a restart order on a live validator beyond core →
 storage → witness at start (the "Restart order" item above stays OPEN), add a
