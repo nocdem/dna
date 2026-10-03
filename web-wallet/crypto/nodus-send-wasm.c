@@ -45,6 +45,9 @@
  * STAKING (nsw_stake_*, nsw_validators, nsw_delegations, 0.1.29) is
  * nodus-cli's `v2-envelope stake | delegate | undelegate` over the shared
  * builder nodus/src/client/nodus_v2_stake.c — see "STAKING".
+ * VAULTS (nsw_msig_*) are nodus-cli's `msig address`, `v2-envelope spend
+ * --msig`, `msig sign` and `msig combine` over the shared library
+ * nodus/src/client/nodus_v2_msig.c — see "VAULTS".
  * MESSAGES (nc_*, package NC-4b of docs/plans/2026-09-24-web-connect-design
  * .md rev 5 §1.1): the Nodus Connect thin core (web-wallet/connect/, its
  * JSON exports in connect/nc_wasm.c) is linked into this module and runs on
@@ -105,6 +108,9 @@
                                              * builder (networked builds
                                              * only — see "CHAIN NAME
                                              * REGISTRATION")                */
+#include "client/nodus_v2_msig.h"          /* the shared multisig library
+                                             * (networked builds only — see
+                                             * "VAULTS")                     */
 #include "witness/nodus_witness_runtime.h"  /* NODUS_RT_GEN_2 — header
                                              * constants only, no witness
                                              * link (as nodus_v2_stake.c)    */
@@ -2807,6 +2813,968 @@ int nsw_name_build(const char *name, const char *expiry_dec) {
     return nsw_end(rc);
 }
 
+/* ═══ VAULTS — general multisig (M-of-N) ═════════════════════════════════
+ *
+ * Decision docs/plans/decisions/2026-09-29-general-multisig.md (M-of-N
+ * address, at most 7 keys per address, auth_kind 3, validity tip + 90
+ * blocks) with design docs/plans/2026-09-29-general-multisig-design.md §7
+ * rev 2; operator 2026-10-03 (vaults in Nodus Connect: members by name,
+ * the address computed here, members told by message, Foundation preset,
+ * a vault listed only for its members). Every byte rule is the shared
+ * library's (nodus/src/client/nodus_v2_msig.c — nodus-cli's `msig address`,
+ * `v2-envelope spend --msig`, `msig sign`, `msig combine` moved out); the
+ * descriptor codec and the address are shared/dnac/msig_wire.c. Nothing
+ * here restates them.
+ *
+ * WHAT IS HERE (one vault "in use" at a time; JS switches with
+ * nsw_msig_load):
+ *   members    nsw_msig_member_add(fp) reads the member's SIGNED profile
+ *              (connect/nc_profile.c nc_profile_read: signature checked,
+ *              SHA3-512(dilithium_pubkey) == fp) and keeps the 2592-byte
+ *              key HERE — JS never hands a public key in;
+ *              nsw_msig_member_add_self adds this wallet's own key.
+ *   create     nsw_msig_create(M) -> nodus_v2_msig_desc_from_keys.
+ *   load       nsw_msig_load(descriptor hex) -> dna_msig_desc_parse +
+ *              dna_msig_address; the member IDs are DERIVED here
+ *              (SHA3-512 of each key), never taken from a message.
+ *   balance    dnac_balance of the vault address (public, decision
+ *              2026-09-28-scan-v3-query.md 3a).
+ *   coins      NO node answers a coin list for an address without its
+ *              session key (dnac_utxo is gated to the session's own
+ *              fingerprint, C11; nodus-cli's `--msig` takes coins by
+ *              hand for the same reason). The vault's coins are FOUND
+ *              here by reading committed blocks (dnac_v3_block, public):
+ *              a created coin whose owner is the vault, minus every coin
+ *              a later item consumed — nsw_msig_scan, at most
+ *              NSW_MS_SCAN_BLOCKS blocks per call, resumed by JS from the
+ *              height it returns. Genesis outputs are not in any block:
+ *              a vault funded at genesis (the Foundation vault) has coins
+ *              this scan cannot find — the balance shows them, the build
+ *              cannot use them (the page says so).
+ *   build      nsw_msig_build(to, amount): the shared builder on coins of
+ *              the scan (largest first, the fewest that cover amount +
+ *              fee), K = M, expiry = nsw_expiry_for (tip + 90, the
+ *              decision's window), the generation the node runs.
+ *   transport  a proposal travels by Messages as the export's parts with
+ *              the UNSIGNED auth blob left out (nsw_msig_prop_*): that
+ *              blob is K zero slots + the descriptor, which every member
+ *              already holds — nsw_msig_prop_in rebuilds it from the
+ *              descriptor of the vault in use (nodus_v2_msig_unsigned_
+ *              auth), so the export bytes are nodus-cli's again and the
+ *              descriptor is the receiver's OWN copy. A stored Messages
+ *              record holds at most 64 KiB (src/connect/store.js
+ *              PLAINTEXT_MAX); a full export of a 7-key vault does not
+ *              fit, its parts do.
+ *   review     nsw_msig_review: nodus_v2_msig_review (shape, membership,
+ *              the digest re-derived and EQUAL, the call's lengths) at the
+ *              node's current tip; then the vault address the export
+ *              carries must be the vault in use, every output must be
+ *              native NODUS, and "expired" = tip + 1 > expiry. Every field
+ *              shown comes from the export bytes, never from a message's
+ *              words.
+ *   sign       nsw_msig_sign: only after a review in this module, not
+ *              expired, by a member; signs the digest (hedged ML-DSA-87)
+ *              and writes nodus-cli's signature text.
+ *   combine    nsw_msig_sig_add (each signature checked on arrival:
+ *              nodus_v2_msig_sig_check) and nsw_msig_submit
+ *              (nodus_v2_msig_combine with the first K, then dnac_spend
+ *              on this session). The chain's own auth hook is witness
+ *              code this module cannot link (nodus-cli runs it locally);
+ *              the node judges the authorization when the envelope
+ *              arrives.
+ */
+
+#define NSW_MS_MAX_COINS   64
+#define NSW_MS_MAX_EVENTS  32
+#define NSW_MS_SCAN_BLOCKS 200u
+#define NSW_MS_MAX_SIGS    ((int)NODUS_RT_AUTH_MAX_SIGNERS)
+/* the auth-less envelope a proposal message carries (see "transport") */
+#define NSW_MS_PREFIX_MAX  65536u
+
+typedef struct {
+    uint8_t  id[64];
+    uint64_t amount, unlock, height;
+} nsw_ms_coin_t;
+
+typedef struct {
+    uint64_t height;
+    int      dir;                         /* 1 received, -1 sent (+ fee)  */
+    uint64_t amount;
+    char     id_hex[129];
+} nsw_ms_event_t;
+
+static struct {
+    /* members collected for a new vault */
+    int      n_keys;
+    uint8_t  keys[DNA_MSIG_MAX_N][NSW_PK_LEN];
+    /* the vault in use */
+    int      has_desc;
+    uint8_t  desc[DNA_MSIG_MAX_DESC_LEN];
+    size_t   desc_len;
+    char     desc_hex[2 * DNA_MSIG_MAX_DESC_LEN + 1];
+    uint8_t  addr[64];
+    char     addr_hex[129];
+    uint8_t  m, n;
+    char     member_fp[DNA_MSIG_MAX_N][129];
+    char     bal_total[NSW_U64_DEC], bal_spendable[NSW_U64_DEC];
+    /* its coins and the items of the last scan */
+    int      n_coins, coins_full;
+    nsw_ms_coin_t coins[NSW_MS_MAX_COINS];
+    int      n_events;
+    nsw_ms_event_t events[NSW_MS_MAX_EVENTS];
+    char     scan_next[NSW_U64_DEC], scan_tip[NSW_U64_DEC];
+    /* the payment request in use */
+    int      has_export;
+    nodus_v2_msig_export_t x;
+    char     chain_hex[65], tip_dec[NSW_U64_DEC], signers_dec[NSW_U64_DEC],
+             digest_hex[129];
+    char    *prefix_hex;                  /* heap                          */
+    char    *text;                        /* heap: export or signature text*/
+    int      reviewed, expired;
+    uint64_t now_tip;
+    nodus_v2_msig_review_t rv;
+    /* signatures collected for it */
+    int      n_sigs;
+    uint8_t  sig_dg[NSW_MS_MAX_SIGS][64];
+    uint8_t  sig_pk[NSW_MS_MAX_SIGS][NSW_PK_LEN];
+    uint8_t  sig_sig[NSW_MS_MAX_SIGS][QGP_DSA87_SIGNATURE_BYTES];
+    char     sig_fp[NSW_MS_MAX_SIGS][129];
+    /* the last submission */
+    char     intent_hex[129], wire_hex[129];
+} g_ms;
+
+static char g_ms_num[NSW_U64_DEC];
+static const char *nsw_ms_u64(uint64_t v) { nsw_fmt_u64(v, g_ms_num); return g_ms_num; }
+
+static void nsw_ms_proposal_clear(void) {
+    if (g_ms.x.env) nsw_wipe(g_ms.x.env, g_ms.x.env_len);
+    nodus_v2_msig_export_free(&g_ms.x);
+    memset(&g_ms.x, 0, sizeof(g_ms.x));
+    free(g_ms.prefix_hex);
+    g_ms.prefix_hex = NULL;
+    free(g_ms.text);
+    g_ms.text = NULL;
+    g_ms.has_export = 0;
+    g_ms.reviewed = g_ms.expired = 0;
+    g_ms.now_tip = 0;
+    memset(&g_ms.rv, 0, sizeof(g_ms.rv));
+    g_ms.chain_hex[0] = g_ms.tip_dec[0] = g_ms.signers_dec[0] =
+        g_ms.digest_hex[0] = '\0';
+    g_ms.n_sigs = 0;
+    nsw_wipe(g_ms.sig_sig, sizeof(g_ms.sig_sig));
+    g_ms.intent_hex[0] = g_ms.wire_hex[0] = '\0';
+}
+
+static void nsw_msig_wipe(void) {
+    nsw_ms_proposal_clear();
+    memset(&g_ms, 0, sizeof(g_ms));
+}
+
+/* The vault in use := `desc` (validated). Everything tied to the previous
+ * vault (coins, items, balance, request, signatures) is dropped. */
+static int nsw_ms_set_desc(const uint8_t *desc, size_t len) {
+    uint8_t m = 0, n = 0, addr[64];
+    const uint8_t *keys = NULL;
+    if (dna_msig_desc_parse(desc, len, &m, &n, &keys) != 0 ||
+        dna_msig_address(desc, len, addr) != 0)
+        return nsw_fail("This is not a valid vault.");
+    nsw_ms_proposal_clear();
+    memmove(g_ms.desc, desc, len);
+    g_ms.desc_len = len;
+    nsw_fmt_hex(g_ms.desc, len, g_ms.desc_hex);
+    memcpy(g_ms.addr, addr, 64);
+    qgp_fp_raw_to_hex(addr, g_ms.addr_hex);
+    g_ms.m = m;
+    g_ms.n = n;
+    for (uint8_t i = 0; i < n; i++) {
+        uint8_t fp[64];
+        if (qgp_sha3_512(g_ms.desc + DNA_MSIG_HDR_LEN +
+                             (size_t)i * DNA_MSIG_PUBKEY_LEN,
+                         DNA_MSIG_PUBKEY_LEN, fp) != 0) {
+            g_ms.has_desc = 0;
+            return nsw_fail("This is not a valid vault.");
+        }
+        qgp_fp_raw_to_hex(fp, g_ms.member_fp[i]);
+    }
+    g_ms.bal_total[0] = g_ms.bal_spendable[0] = '\0';
+    g_ms.n_coins = g_ms.coins_full = 0;
+    g_ms.n_events = 0;
+    g_ms.scan_next[0] = g_ms.scan_tip[0] = '\0';
+    g_ms.has_desc = 1;
+    return 0;
+}
+
+static int nsw_ms_key_in_desc(const uint8_t *pk) {
+    if (!g_ms.has_desc) return 0;
+    for (uint8_t i = 0; i < g_ms.n; i++)
+        if (memcmp(g_ms.desc + DNA_MSIG_HDR_LEN +
+                       (size_t)i * DNA_MSIG_PUBKEY_LEN,
+                   pk, DNA_MSIG_PUBKEY_LEN) == 0)
+            return 1;
+    return 0;
+}
+
+static int nsw_ms_is_member(void) {
+    return g_unlocked && !g_locked && nsw_ms_key_in_desc(g_id.pk.bytes);
+}
+
+/* ── members of a new vault ── */
+
+void nsw_msig_member_reset(void) {
+    g_ms.n_keys = 0;
+    memset(g_ms.keys, 0, sizeof(g_ms.keys));
+}
+
+int nsw_msig_member_count(void) { return g_ms.n_keys; }
+
+static int nsw_ms_member_put(const uint8_t *pk) {
+    for (int i = 0; i < g_ms.n_keys; i++)
+        if (memcmp(g_ms.keys[i], pk, NSW_PK_LEN) == 0)
+            return nsw_fail("This person is already a member of the new "
+                            "vault.");
+    if (g_ms.n_keys >= (int)DNA_MSIG_MAX_N)
+        return nsw_fail("A vault can have at most %u members.",
+                        (unsigned)DNA_MSIG_MAX_N);
+    memcpy(g_ms.keys[g_ms.n_keys++], pk, NSW_PK_LEN);
+    return 0;
+}
+
+int nsw_msig_member_add_self(void) {
+    if (!g_unlocked || g_locked) return nsw_fail("Nodus connection is not ready.");
+    return nsw_ms_member_put(g_id.pk.bytes);
+}
+
+/* `fp_hex`: the member's ID. Its key comes from its signed profile. */
+int nsw_msig_member_add(const char *fp_hex) {
+    if (nsw_begin() != 0) return -1;
+    uint8_t fp[64];
+    if (nsw_parse_hex(fp_hex, fp, sizeof(fp)) != 0)
+        return nsw_end(nsw_fail("Invalid Nodus ID."));
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    nc_ctx_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.client = &g_client;
+    ctx.keys = NULL;                         /* a read: no Messages key used */
+    ctx.fresh = false;
+    ctx.cancel = &g_cancel;
+    nc_read_t raw;
+    dna_unified_identity_t *id = NULL;
+    nc_profile_read(&ctx, fp_hex, &raw, &id, NULL);
+    int rc;
+    uint8_t check[64];
+    if (raw.outcome != NC_FOUND || !id) {
+        rc = nsw_fail("This person's account could not be read, or did not "
+                      "pass its signature check. They were not added.");
+    } else if (qgp_sha3_512(id->dilithium_pubkey, NSW_PK_LEN, check) != 0 ||
+               memcmp(check, fp, 64) != 0) {
+        rc = nsw_fail("This person's account does not belong to this ID. "
+                      "They were not added.");
+    } else {
+        rc = nsw_ms_member_put(id->dilithium_pubkey);
+    }
+    dna_identity_free(id);
+    nc_read_clear(&raw);
+    return nsw_end(rc);
+}
+
+#ifdef NODUS_SEND_TEST_FIXED_RANDOM
+/* TEST-only (parity build, never shipped — build-nodus-send-wasm.sh
+ * exports_test): a member key given directly, so the descriptor parity
+ * runs without a node. */
+int nsw_test_msig_member_add_pk(const char *pk_hex) {
+    uint8_t pk[NSW_PK_LEN];
+    if (nsw_parse_hex(pk_hex, pk, sizeof(pk)) != 0) return nsw_fail("Invalid key.");
+    return nsw_ms_member_put(pk);
+}
+#endif
+
+/* ── create / load the vault in use ── */
+
+int nsw_msig_create(int m) {
+    if (g_ms.n_keys < (int)DNA_MSIG_MIN_N)
+        return nsw_fail("A vault needs %u to %u members.",
+                        (unsigned)DNA_MSIG_MIN_N, (unsigned)DNA_MSIG_MAX_N);
+    if (m < 1 || m > g_ms.n_keys)
+        return nsw_fail("The number of approvals must be between 1 and the "
+                        "number of members.");
+    static uint8_t desc[DNA_MSIG_MAX_DESC_LEN];
+    uint8_t addr[64];
+    size_t dl = 0;
+    int rc = nodus_v2_msig_desc_from_keys((uint8_t)m, (uint8_t)g_ms.n_keys,
+                                          &g_ms.keys[0][0], desc, sizeof(desc),
+                                          &dl, addr);
+    if (rc != NODUS_V2_SPEND_OK)
+        return nsw_fail("These members cannot form a vault (rc=%d).", rc);
+    return nsw_ms_set_desc(desc, dl);
+}
+
+int nsw_msig_load(const char *desc_hex) {
+    size_t h = desc_hex ? strnlen(desc_hex, 2 * DNA_MSIG_MAX_DESC_LEN + 1) : 0;
+    static uint8_t desc[DNA_MSIG_MAX_DESC_LEN];
+    if (h == 0 || h > 2 * DNA_MSIG_MAX_DESC_LEN || (h & 1u) ||
+        nsw_parse_hex(desc_hex, desc, h / 2) != 0)
+        return nsw_fail("This is not a valid vault.");
+    return nsw_ms_set_desc(desc, h / 2);
+}
+
+const char *nsw_msig_addr(void)     { return g_ms.has_desc ? g_ms.addr_hex : ""; }
+const char *nsw_msig_desc_hex(void) { return g_ms.has_desc ? g_ms.desc_hex : ""; }
+int nsw_msig_m(void)                { return g_ms.has_desc ? g_ms.m : 0; }
+int nsw_msig_n(void)                { return g_ms.has_desc ? g_ms.n : 0; }
+const char *nsw_msig_member(int i) {
+    return (g_ms.has_desc && i >= 0 && i < g_ms.n) ? g_ms.member_fp[i] : "";
+}
+int nsw_msig_is_member(void)        { return nsw_ms_is_member(); }
+
+/* ── balance: dnac_balance of the vault address, the native row ── */
+
+int nsw_msig_balance(void) {
+    if (nsw_begin() != 0) return -1;
+    if (!g_ms.has_desc) return nsw_end(nsw_fail("No vault is open."));
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    nodus_dnac_balance_result_t res;
+    memset(&res, 0, sizeof(res));
+    int rc = nodus_client_dnac_balance(&g_client, g_ms.addr_hex, &res);
+    if (rc != 0) return nsw_end(nsw_fail("The vault balance is unavailable (rc=%d).", rc));
+    static const uint8_t zero64[64] = {0};
+    uint64_t total = 0, spendable = 0;
+    for (size_t i = 0; i < res.count; i++)
+        if (memcmp(res.tokens[i].token_id, zero64, 64) == 0) {
+            total = res.tokens[i].total;
+            spendable = res.tokens[i].spendable;
+        }
+    nodus_client_free_balance_result(&res);
+    if (spendable > total) return nsw_end(nsw_fail("The vault balance is unavailable."));
+    nsw_fmt_u64(total, g_ms.bal_total);
+    nsw_fmt_u64(spendable, g_ms.bal_spendable);
+    return nsw_end(0);
+}
+
+const char *nsw_msig_bal_total(void)     { return g_ms.bal_total; }
+const char *nsw_msig_bal_spendable(void) { return g_ms.bal_spendable; }
+
+/* ── the vault's coins: JS hands back what an earlier scan found ── */
+
+void nsw_msig_coins_reset(void) {
+    g_ms.n_coins = g_ms.coins_full = 0;
+    g_ms.n_events = 0;
+}
+
+int nsw_msig_coin_add(const char *id_hex, const char *amount_dec,
+                      const char *unlock_dec, const char *height_dec) {
+    nsw_ms_coin_t c;
+    memset(&c, 0, sizeof(c));
+    if (nsw_parse_hex(id_hex, c.id, sizeof(c.id)) != 0 ||
+        nsw_parse_u64(amount_dec, &c.amount) != 0 || c.amount == 0 ||
+        nsw_parse_u64(unlock_dec, &c.unlock) != 0 ||
+        nsw_parse_u64(height_dec, &c.height) != 0)
+        return nsw_fail("Invalid vault coin.");
+    for (int i = 0; i < g_ms.n_coins; i++)
+        if (memcmp(g_ms.coins[i].id, c.id, 64) == 0)
+            return nsw_fail("The same vault coin was listed twice.");
+    if (g_ms.n_coins >= NSW_MS_MAX_COINS) {
+        g_ms.coins_full = 1;
+        return nsw_fail("This vault has more coins than this page can hold.");
+    }
+    g_ms.coins[g_ms.n_coins++] = c;
+    return 0;
+}
+
+static void nsw_ms_event(uint64_t h, const nodus_dnac_v3_item_t *it,
+                         uint64_t in_sum, uint64_t out_sum) {
+    if (g_ms.n_events >= NSW_MS_MAX_EVENTS) {
+        memmove(&g_ms.events[0], &g_ms.events[1],
+                sizeof(g_ms.events[0]) * (NSW_MS_MAX_EVENTS - 1));
+        g_ms.n_events = NSW_MS_MAX_EVENTS - 1;
+    }
+    nsw_ms_event_t *e = &g_ms.events[g_ms.n_events++];
+    memset(e, 0, sizeof(*e));
+    e->height = h;
+    e->dir = in_sum >= out_sum ? 1 : -1;
+    e->amount = in_sum >= out_sum ? in_sum - out_sum : out_sum - in_sum;
+    if (it->has_intent_id)          nsw_fmt_hex(it->intent_id, 64, e->id_hex);
+    else if (it->has_wire_id)       nsw_fmt_hex(it->wire_id, 64, e->id_hex);
+    else if (it->n_created > 0)     nsw_fmt_hex(it->created[0].id, 64, e->id_hex);
+}
+
+/* One applied item: coins it consumed leave the set, native coins it
+ * created for the vault join it. */
+static void nsw_ms_apply_item(uint64_t h, const nodus_dnac_v3_item_t *it) {
+    static const uint8_t zero64[64] = {0};
+    uint64_t in_sum = 0, out_sum = 0;
+    int touched = 0;
+    for (uint8_t k = 0; k < it->n_consumed && k < NODUS_DNAC_V3_ITEM_MAX_IN; k++)
+        for (int c = 0; c < g_ms.n_coins; c++)
+            if (memcmp(g_ms.coins[c].id, it->consumed[k], 64) == 0) {
+                if (out_sum <= UINT64_MAX - g_ms.coins[c].amount)
+                    out_sum += g_ms.coins[c].amount;
+                g_ms.coins[c] = g_ms.coins[--g_ms.n_coins];
+                touched = 1;
+                break;
+            }
+    for (uint8_t k = 0; k < it->n_created && k < NODUS_DNAC_V3_ITEM_MAX_OUT; k++) {
+        const nodus_dnac_v3_coin_t *cr = &it->created[k];
+        if (strncmp(cr->owner, g_ms.addr_hex, 128) != 0) continue;
+        touched = 1;
+        if (memcmp(cr->token_id, zero64, 64) != 0 || cr->amount == 0) continue;
+        if (in_sum <= UINT64_MAX - cr->amount) in_sum += cr->amount;
+        if (g_ms.n_coins >= NSW_MS_MAX_COINS) { g_ms.coins_full = 1; continue; }
+        nsw_ms_coin_t *c = &g_ms.coins[g_ms.n_coins++];
+        memcpy(c->id, cr->id, 64);
+        c->amount = cr->amount;
+        c->unlock = cr->unlock_block;
+        c->height = h;
+    }
+    if (touched) nsw_ms_event(h, it, in_sum, out_sum);
+}
+
+/* Read committed blocks `from` .. min(tip, from + NSW_MS_SCAN_BLOCKS - 1)
+ * completely (every page); nsw_msig_scan_next is the height to resume at.
+ * A partial read fails: nothing past the last complete block counts. */
+int nsw_msig_scan(const char *from_dec) {
+    if (nsw_begin() != 0) return -1;
+    uint64_t from = 0;
+    if (!g_ms.has_desc) return nsw_end(nsw_fail("No vault is open."));
+    if (nsw_parse_u64(from_dec, &from) != 0 || from == 0)
+        return nsw_end(nsw_fail("Invalid block height."));
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    bool has_tip = false;
+    uint64_t tip = 0;
+    int rc = nodus_client_dnac_supply_tip(&g_client, &has_tip, &tip);
+    if (rc != 0 || !has_tip || tip == 0)
+        return nsw_end(nsw_fail("The current Nodus block height is unknown "
+                                "(rc=%d).", rc));
+    g_ms.n_events = 0;
+    uint64_t last = from - 1;
+    if (from <= tip) {
+        last = tip;
+        if (tip - from >= NSW_MS_SCAN_BLOCKS) last = from + NSW_MS_SCAN_BLOCKS - 1u;
+    }
+    for (uint64_t h = from; h <= last; h++) {
+        uint32_t idx = 0;
+        for (;;) {
+            if (g_cancel) return nsw_end(-1);
+            nodus_dnac_v3_block_result_t page;
+            memset(&page, 0, sizeof(page));
+            rc = nodus_client_dnac_v3_block(&g_client, h, idx, 0, &page);
+            if (rc != 0)
+                return nsw_end(nsw_fail("Block %llu could not be read "
+                                        "(rc=%d).", (unsigned long long)h, rc));
+            int bad = page.height != h;
+            for (size_t i = 0; !bad && i < page.count; i++) {
+                const nodus_dnac_v3_item_t *it = &page.items[i];
+                if (it->code == 0 && it->has_effects) nsw_ms_apply_item(h, it);
+            }
+            int more = !bad && page.has_next;
+            uint32_t nidx = page.next_index;
+            nodus_client_free_v3_block_result(&page);
+            if (bad)
+                return nsw_end(nsw_fail("Block %llu: the node answered "
+                                        "another height.", (unsigned long long)h));
+            if (!more) break;
+            if (nidx <= idx)
+                return nsw_end(nsw_fail("Block %llu: the node's paging does "
+                                        "not advance.", (unsigned long long)h));
+            idx = nidx;
+        }
+    }
+    nsw_fmt_u64(last + 1, g_ms.scan_next);
+    nsw_fmt_u64(tip, g_ms.scan_tip);
+    return nsw_end(0);
+}
+
+const char *nsw_msig_scan_next(void) { return g_ms.scan_next; }
+const char *nsw_msig_scan_tip(void)  { return g_ms.scan_tip; }
+int nsw_msig_coins_full(void)        { return g_ms.coins_full; }
+int nsw_msig_coin_count(void)        { return g_ms.n_coins; }
+static int nsw_ms_coin_ok(int i)     { return i >= 0 && i < g_ms.n_coins; }
+const char *nsw_msig_coin_id(int i) {
+    static char hex[129];
+    hex[0] = '\0';
+    if (nsw_ms_coin_ok(i)) nsw_fmt_hex(g_ms.coins[i].id, 64, hex);
+    return hex;
+}
+const char *nsw_msig_coin_amount(int i) { return nsw_ms_coin_ok(i) ? nsw_ms_u64(g_ms.coins[i].amount) : ""; }
+const char *nsw_msig_coin_unlock(int i) { return nsw_ms_coin_ok(i) ? nsw_ms_u64(g_ms.coins[i].unlock) : ""; }
+const char *nsw_msig_coin_height(int i) { return nsw_ms_coin_ok(i) ? nsw_ms_u64(g_ms.coins[i].height) : ""; }
+int nsw_msig_event_count(void)        { return g_ms.n_events; }
+static int nsw_ms_ev_ok(int i)        { return i >= 0 && i < g_ms.n_events; }
+const char *nsw_msig_event_height(int i) { return nsw_ms_ev_ok(i) ? nsw_ms_u64(g_ms.events[i].height) : ""; }
+int nsw_msig_event_dir(int i)         { return nsw_ms_ev_ok(i) ? g_ms.events[i].dir : 0; }
+const char *nsw_msig_event_amount(int i) { return nsw_ms_ev_ok(i) ? nsw_ms_u64(g_ms.events[i].amount) : ""; }
+const char *nsw_msig_event_id(int i)  { return nsw_ms_ev_ok(i) ? g_ms.events[i].id_hex : ""; }
+
+/* ── the payment request in use: its parts, its review ── */
+
+/* After g_ms.x is set: the hex fields, the auth-less prefix, the export
+ * text (nodus-cli's file, byte for byte). */
+static int nsw_ms_export_fill(void) {
+    dna_env_view_t *v = calloc(1, sizeof(*v));
+    if (!v) return nsw_fail("Out of memory.");
+    int ok = dna_env_decode(g_ms.x.env, g_ms.x.env_len, v) == 0 &&
+             v->leg_count == 1 &&
+             (size_t)v->auth_off[0] + v->leg[0].auth_len == g_ms.x.env_len;
+    const size_t prefix_len = ok ? v->auth_off[0] : 0;
+    free(v);
+    if (!ok || prefix_len == 0 || prefix_len > NSW_MS_PREFIX_MAX)
+        return nsw_fail("This payment request is damaged.");
+    g_ms.prefix_hex = malloc(2 * prefix_len + 1);
+    if (!g_ms.prefix_hex) return nsw_fail("Out of memory.");
+    nsw_fmt_hex(g_ms.x.env, prefix_len, g_ms.prefix_hex);
+    nsw_fmt_hex(g_ms.x.chain32, sizeof(g_ms.x.chain32), g_ms.chain_hex);
+    nsw_fmt_u64(g_ms.x.tip, g_ms.tip_dec);
+    nsw_fmt_u64(g_ms.x.signers, g_ms.signers_dec);
+    nsw_fmt_hex(g_ms.x.digest, 64, g_ms.digest_hex);
+    size_t tl = 0;
+    if (nodus_v2_msig_export_encode(g_ms.x.chain32, g_ms.x.tip, g_ms.x.signers,
+                                    g_ms.x.digest, g_ms.x.env, g_ms.x.env_len,
+                                    &g_ms.text, &tl) != NODUS_V2_SPEND_OK)
+        return nsw_fail("Out of memory.");
+    g_ms.has_export = 1;
+    return 0;
+}
+
+/* The CORE tuple of the pinned generation whose CORE version the request's
+ * leg names (nodus-cli cli_core_runtime_for_env over the pins). */
+static int nsw_ms_core_tuple(uint32_t *cv_out, uint8_t ch_out[64]) {
+    uint32_t version = 0;
+    if (nodus_v2_msig_core_version(g_ms.x.env, g_ms.x.env_len, &version) !=
+        NODUS_V2_SPEND_OK)
+        return nsw_fail("This payment request is damaged.");
+    for (uint32_t gen = 1; gen <= nodus_v2_pins_generation_count(); gen++) {
+        uint32_t sv = 0, cv = 0;
+        uint8_t sh[64], ch[64];
+        if (nodus_v2_pins_tuples(gen, &sv, sh, &cv, ch) != NODUS_V2_SPEND_OK)
+            continue;
+        if (cv == version) {
+            *cv_out = cv;
+            memcpy(ch_out, ch, 64);
+            return 0;
+        }
+    }
+    return nsw_fail("This payment request was made for transaction rules "
+                    "this page does not know. Reload the page.");
+}
+
+/* The co-signer's read-back at the node's tip `now_tip` (see "review"). */
+static int nsw_ms_review_now(uint64_t now_tip) {
+    g_ms.reviewed = g_ms.expired = 0;
+    memset(&g_ms.rv, 0, sizeof(g_ms.rv));
+    if (!g_ms.has_export) return nsw_fail("There is no payment request to review.");
+    uint32_t cv = 0;
+    uint8_t ch[64];
+    if (nsw_ms_core_tuple(&cv, ch) != 0) return -1;
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    if (!pf) return nsw_fail("Out of memory.");
+    const uint8_t *signer = nsw_ms_is_member() ? g_id.pk.bytes : NULL;
+    int rc = nodus_v2_msig_review(&g_ms.x, cv, ch, signer, pf, &g_ms.rv);
+    free(pf);
+    switch (rc) {
+    case NODUS_V2_SPEND_OK: break;
+    case NODUS_V2_MSIG_ERR_DIGEST:
+        return nsw_fail("This payment request does not match its own "
+                        "contents. Do not approve it.");
+    case NODUS_V2_SPEND_ERR_PREFLIGHT1:
+        return nsw_fail("This payment request is for another network, has "
+                        "expired, or uses transaction rules this page does "
+                        "not know.");
+    case NODUS_V2_MSIG_ERR_CALL:
+        return nsw_fail("This payment request is damaged. Do not approve it.");
+    default:
+        return nsw_fail("This payment request is not a vault payment this "
+                        "page can read (rc=%d).", rc);
+    }
+    if (memcmp(g_ms.rv.addr, g_ms.addr, 64) != 0) {
+        memset(&g_ms.rv, 0, sizeof(g_ms.rv));
+        return nsw_fail("This payment request spends from a different vault "
+                        "than the one it was sent for. Do not approve it.");
+    }
+    static const uint8_t zero64[64] = {0};
+    for (int o = 0; o < g_ms.rv.n_out; o++)
+        if (memcmp(g_ms.rv.out_token[o], zero64, 64) != 0) {
+            memset(&g_ms.rv, 0, sizeof(g_ms.rv));
+            return nsw_fail("This payment request moves a token this page "
+                            "cannot show. Do not approve it.");
+        }
+    g_ms.now_tip = now_tip;
+    g_ms.expired = now_tip >= g_ms.rv.expiry_height;   /* tip + 1 > expiry */
+    g_ms.reviewed = 1;
+    return 0;
+}
+
+/* A request received by message: its parts + the vault in use's OWN
+ * descriptor (see "transport"). */
+int nsw_msig_prop_in(const char *chain_hex, const char *tip_dec,
+                     const char *signers_dec, const char *digest_hex,
+                     const char *prefix_hex) {
+    nsw_ms_proposal_clear();
+    if (!g_ms.has_desc) return nsw_fail("No vault is open.");
+    uint8_t chain[DNA_CHAIN_ID_LEN], digest[64];
+    uint64_t tip = 0, k = 0;
+    size_t ph = prefix_hex ? strnlen(prefix_hex, 2 * NSW_MS_PREFIX_MAX + 1) : 0;
+    if (nsw_parse_hex(chain_hex, chain, sizeof(chain)) != 0 ||
+        nsw_parse_u64(tip_dec, &tip) != 0 || tip == 0 ||
+        nsw_parse_u64(signers_dec, &k) != 0 || k < g_ms.m || k > g_ms.n ||
+        nsw_parse_hex(digest_hex, digest, sizeof(digest)) != 0 ||
+        ph == 0 || ph > 2 * NSW_MS_PREFIX_MAX || (ph & 1u))
+        return nsw_fail("This payment request is damaged.");
+    if (memcmp(chain, g_net.chain, sizeof(chain)) != 0)
+        return nsw_fail("This payment request is for another network.");
+    const size_t plen = ph / 2;
+    const size_t alen = 1u + (size_t)k * NODUS_RT_AUTH_SIGNER_LEN + 3u +
+                        g_ms.desc_len;
+    uint8_t *env = malloc(plen + alen);
+    if (!env) return nsw_fail("Out of memory.");
+    size_t al = 0;
+    if (nsw_parse_hex(prefix_hex, env, plen) != 0 ||
+        nodus_v2_msig_unsigned_auth((uint32_t)k, g_ms.desc, g_ms.desc_len,
+                                    env + plen, alen, &al) != NODUS_V2_SPEND_OK ||
+        al != alen) {
+        free(env);
+        return nsw_fail("This payment request is damaged.");
+    }
+    memcpy(g_ms.x.chain32, chain, sizeof(chain));
+    g_ms.x.tip = tip;
+    g_ms.x.signers = (uint32_t)k;
+    memcpy(g_ms.x.digest, digest, 64);
+    g_ms.x.env = env;
+    g_ms.x.env_len = plen + alen;
+    if (nsw_ms_export_fill() != 0) {
+        nsw_ms_proposal_clear();
+        return -1;
+    }
+    /* the rebuilt auth blob must be the one the envelope's own header
+     * declares (nsw_ms_export_fill checked the prefix length) */
+    dna_env_view_t *v = calloc(1, sizeof(*v));
+    nodus_v2_msig_leg_t leg;
+    int ok = v && nodus_v2_msig_leg_open(&g_ms.x, v, &leg) == NODUS_V2_SPEND_OK;
+    free(v);
+    if (!ok) {
+        nsw_ms_proposal_clear();
+        return nsw_fail("This payment request is not for this vault.");
+    }
+    return 0;
+}
+
+const char *nsw_msig_prop_chain(void)   { return g_ms.has_export ? g_ms.chain_hex : ""; }
+const char *nsw_msig_prop_tip(void)     { return g_ms.has_export ? g_ms.tip_dec : ""; }
+const char *nsw_msig_prop_signers(void) { return g_ms.has_export ? g_ms.signers_dec : ""; }
+const char *nsw_msig_prop_digest(void)  { return g_ms.has_export ? g_ms.digest_hex : ""; }
+const char *nsw_msig_prop_env(void)     { return (g_ms.has_export && g_ms.prefix_hex) ? g_ms.prefix_hex : ""; }
+/* nodus-cli's export text of the request in use, or the signature text of
+ * the last nsw_msig_sign. */
+const char *nsw_msig_text(void)         { return g_ms.text ? g_ms.text : ""; }
+
+/* ── build: a new request from the vault's found coins ── */
+
+int nsw_msig_build(const char *to_hex, const char *amount_dec) {
+    if (nsw_begin() != 0) return -1;
+    nsw_ms_proposal_clear();
+    uint8_t to_raw[64];
+    uint64_t amount = 0;
+    if (!g_ms.has_desc) return nsw_end(nsw_fail("No vault is open."));
+    if (qgp_fp_hex_to_raw(to_hex, to_raw) != 0)
+        return nsw_end(nsw_fail("Enter a Nodus address: 128 characters, 0-9 and a-f."));
+    if (nsw_parse_u64(amount_dec, &amount) != 0 || amount == 0)
+        return nsw_end(nsw_fail("Enter an amount above zero."));
+    if (!nsw_ms_is_member())
+        return nsw_end(nsw_fail("Only a member of this vault can propose a "
+                                "payment from it."));
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    if (nsw_check_chain() != 0) return nsw_end(-1);
+    nsw_gen_t gen;
+    if (nsw_select_generation(&gen) != 0) return nsw_end(-1);
+    nodus_dnac_fee_info_t fi;
+    memset(&fi, 0, sizeof(fi));
+    int rc = nodus_client_dnac_fee_info(&g_client, &fi);
+    if (rc != 0)
+        return nsw_end(nsw_fail("The network fee is unknown (rc=%d). Nothing "
+                                "was built.", rc));
+    bool has_tip = false;
+    uint64_t tip = 0;
+    rc = nodus_client_dnac_supply_tip(&g_client, &has_tip, &tip);
+    if (rc != 0 || !has_tip)
+        return nsw_end(nsw_fail("The current Nodus block height is unknown "
+                                "(rc=%d). Nothing was built.", rc));
+    uint64_t expiry = 0;
+    if (nsw_expiry_for(tip, &gen, &expiry) != 0) return nsw_end(-1);
+    if (g_cancel) return nsw_end(-1);
+    nodus_v2_ruleset_id_t rs;
+    dna_meter_policy_t pol;
+    if (nsw_ruleset(gen.gen, &rs, &pol) != 0) return nsw_end(-1);
+
+    /* candidates: the found coins spendable in the next block (unlock <=
+     * tip, the nsw_list filter), largest first (nodus-cli's only order) */
+    nodus_v2_coin_t cand[NSW_MS_MAX_COINS];
+    int n_cand = 0;
+    for (int i = 0; i < g_ms.n_coins; i++) {
+        if (g_ms.coins[i].unlock > tip) continue;
+        memset(&cand[n_cand], 0, sizeof(cand[n_cand]));
+        memcpy(cand[n_cand].nul, g_ms.coins[i].id, 64);
+        cand[n_cand].amount = g_ms.coins[i].amount;
+        n_cand++;
+    }
+    if (n_cand == 0 ||
+        nodus_v2_spend_sort_coins(cand, n_cand,
+                                  NODUS_V2_SPEND_ORDER_LARGEST_FIRST) != 0)
+        return nsw_end(nsw_fail("This vault has no coins this page can use "
+                                "yet. Nothing was built."));
+    nodus_v2_msig_build_req_t req;
+    nodus_v2_msig_built_t b;
+    nodus_v2_spend_err_t e;
+    memset(&b, 0, sizeof(b));
+    rc = NODUS_V2_SPEND_ERR_INSUFFICIENT;
+    uint64_t sum = 0;
+    const int max_take = n_cand < (int)NODUS_V2_SPEND_MAX_IN
+                       ? n_cand : (int)NODUS_V2_SPEND_MAX_IN;
+    for (int take = 1; take <= max_take; take++) {
+        if (sum > UINT64_MAX - cand[take - 1].amount) break;
+        sum += cand[take - 1].amount;
+        if (sum <= amount) continue;
+        memset(&req, 0, sizeof(req));
+        req.rs            = &rs;
+        req.chain32       = g_net.chain;
+        req.tip           = tip;
+        req.expiry_height = expiry;
+        req.desc          = g_ms.desc;
+        req.desc_len      = g_ms.desc_len;
+        req.coins         = cand;
+        req.n_coins       = take;
+        req.to_fp         = to_raw;
+        req.amount        = amount;
+        req.gas_price     = fi.gas_price;
+        req.signers       = 0;                  /* K = M */
+        req.rand          = nsw_rand_csprng;
+        rc = nodus_v2_msig_build(&req, &b, &e);
+        if (rc != NODUS_V2_SPEND_ERR_INSUFFICIENT) break;
+    }
+    if (rc == NODUS_V2_SPEND_ERR_INSUFFICIENT)
+        return nsw_end(nsw_fail("This vault does not have enough coins this "
+                                "page can use for that amount plus the "
+                                "network fee. Nothing was built."));
+    if (rc != NODUS_V2_SPEND_OK)
+        return nsw_end(nsw_fail("The vault payment could not be built "
+                                "(rc=%d). Nothing was built.", rc));
+    memcpy(g_ms.x.chain32, g_net.chain, DNA_CHAIN_ID_LEN);
+    g_ms.x.tip = tip;
+    g_ms.x.signers = b.signers;
+    memcpy(g_ms.x.digest, b.digest, 64);
+    g_ms.x.env = b.env;                         /* ownership moves here */
+    g_ms.x.env_len = b.env_len;
+    b.env = NULL;
+    nodus_v2_msig_built_free(&b);
+    if (nsw_ms_export_fill() != 0 || nsw_ms_review_now(tip) != 0) {
+        nsw_ms_proposal_clear();
+        return nsw_end(-1);
+    }
+    return nsw_end(0);
+}
+
+/* ── review: at the node's current tip ── */
+
+int nsw_msig_review(void) {
+    if (nsw_begin() != 0) return -1;
+    if (!g_ms.has_export) return nsw_end(nsw_fail("There is no payment request to review."));
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    bool has_tip = false;
+    uint64_t tip = 0;
+    int rc = nodus_client_dnac_supply_tip(&g_client, &has_tip, &tip);
+    if (rc != 0 || !has_tip || tip == 0)
+        return nsw_end(nsw_fail("The current Nodus block height is unknown "
+                                "(rc=%d).", rc));
+    return nsw_end(nsw_ms_review_now(tip));
+}
+
+int nsw_msig_rv_ok(void)                 { return g_ms.reviewed; }
+int nsw_msig_rv_expired(void)            { return g_ms.reviewed ? g_ms.expired : 0; }
+int nsw_msig_rv_member(void)             { return nsw_ms_is_member(); }
+const char *nsw_msig_rv_vault(void)      { return g_ms.reviewed ? g_ms.addr_hex : ""; }
+int nsw_msig_rv_m(void)                  { return g_ms.reviewed ? g_ms.rv.m : 0; }
+int nsw_msig_rv_n(void)                  { return g_ms.reviewed ? g_ms.rv.n : 0; }
+int nsw_msig_rv_k(void)                  { return g_ms.reviewed ? (int)g_ms.rv.signers : 0; }
+const char *nsw_msig_rv_fee(void)        { return g_ms.reviewed ? nsw_ms_u64(g_ms.rv.fee) : ""; }
+const char *nsw_msig_rv_expiry(void)     { return g_ms.reviewed ? nsw_ms_u64(g_ms.rv.expiry_height) : ""; }
+const char *nsw_msig_rv_now(void)        { return g_ms.reviewed ? nsw_ms_u64(g_ms.now_tip) : ""; }
+const char *nsw_msig_rv_intent(void) {
+    static char hex[129];
+    hex[0] = '\0';
+    if (g_ms.reviewed) nsw_fmt_hex(g_ms.rv.intent_id, 64, hex);
+    return hex;
+}
+int nsw_msig_rv_n_in(void)               { return g_ms.reviewed ? g_ms.rv.n_in : 0; }
+const char *nsw_msig_rv_in(int i) {
+    static char hex[129];
+    hex[0] = '\0';
+    if (g_ms.reviewed && i >= 0 && i < g_ms.rv.n_in)
+        nsw_fmt_hex(g_ms.rv.in_nul[i], 64, hex);
+    return hex;
+}
+int nsw_msig_rv_n_out(void)              { return g_ms.reviewed ? g_ms.rv.n_out : 0; }
+static int nsw_ms_out_ok(int i)          { return g_ms.reviewed && i >= 0 && i < g_ms.rv.n_out; }
+const char *nsw_msig_rv_out_owner(int i) { return nsw_ms_out_ok(i) ? g_ms.rv.out_owner[i] : ""; }
+const char *nsw_msig_rv_out_amount(int i){ return nsw_ms_out_ok(i) ? nsw_ms_u64(g_ms.rv.out_amount[i]) : ""; }
+/* 1 = this output returns to the vault itself (the change) */
+int nsw_msig_rv_out_change(int i) {
+    return nsw_ms_out_ok(i) && strncmp(g_ms.rv.out_owner[i], g_ms.addr_hex, 128) == 0;
+}
+
+/* ── sign: only what this module reviewed ── */
+
+int nsw_msig_sign(void) {
+    if (g_locked || g_cancel) return nsw_fail("Wallet is locked.");
+    if (!g_ms.has_export || !g_ms.reviewed)
+        return nsw_fail("Review the payment request first.");
+    if (g_ms.expired)
+        return nsw_fail("This payment request has expired. Ask for it to be "
+                        "proposed again.");
+    if (!nsw_ms_is_member())
+        return nsw_fail("Only a member of this vault can approve its payments.");
+    /* again, on the bytes about to be signed */
+    nodus_v2_msig_review_t *again = calloc(1, sizeof(*again));
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    uint32_t cv = 0;
+    uint8_t ch[64];
+    int ok = again && pf && nsw_ms_core_tuple(&cv, ch) == 0 &&
+             nodus_v2_msig_review(&g_ms.x, cv, ch, g_id.pk.bytes, pf, again) ==
+                 NODUS_V2_SPEND_OK &&
+             memcmp(again->digest, g_ms.rv.digest, 64) == 0 &&
+             memcmp(again->addr, g_ms.addr, 64) == 0;
+    free(again);
+    free(pf);
+    if (!ok) return nsw_fail("This payment request changed after it was "
+                             "reviewed. Nothing was signed.");
+    uint8_t sig[QGP_DSA87_SIGNATURE_BYTES];
+    size_t sl = 0;
+    if (qgp_dsa87_sign(sig, &sl, g_ms.x.digest, 64, g_id.sk.bytes) != 0 ||
+        sl != sizeof(sig))
+        return nsw_fail("Signing failed.");
+    free(g_ms.text);
+    g_ms.text = NULL;
+    size_t tl = 0;
+    int rc = nodus_v2_msig_sig_encode(g_ms.x.digest, g_id.pk.bytes, sig,
+                                      &g_ms.text, &tl);
+    nsw_wipe(sig, sizeof(sig));
+    return rc == NODUS_V2_SPEND_OK ? 0 : nsw_fail("Out of memory.");
+}
+
+/* ── signatures: each checked on arrival ── */
+
+void nsw_msig_sig_reset(void) {
+    g_ms.n_sigs = 0;
+    nsw_wipe(g_ms.sig_sig, sizeof(g_ms.sig_sig));
+}
+
+/* 0 = kept (or already held from this key), -1 = refused (reason in
+ * nsw_error). */
+int nsw_msig_sig_add(const char *text) {
+    if (!g_ms.has_export) return nsw_fail("There is no payment request.");
+    size_t len = text ? strnlen(text, NODUS_V2_MSIG_SIG_TEXT_MAX + 1) : 0;
+    if (len == 0 || len > NODUS_V2_MSIG_SIG_TEXT_MAX)
+        return nsw_fail("This approval is damaged.");
+    static uint8_t dg[64], pk[NSW_PK_LEN], sig[QGP_DSA87_SIGNATURE_BYTES];
+    if (nodus_v2_msig_sig_parse(text, len, dg, pk, sig) != NODUS_V2_SPEND_OK)
+        return nsw_fail("This approval is damaged.");
+    for (int i = 0; i < g_ms.n_sigs; i++)
+        if (memcmp(g_ms.sig_pk[i], pk, NSW_PK_LEN) == 0) return 0;
+    if (g_ms.n_sigs >= NSW_MS_MAX_SIGS) return nsw_fail("Too many approvals.");
+    dna_env_view_t *v = calloc(1, sizeof(*v));
+    nodus_v2_msig_leg_t leg;
+    int rc = v ? nodus_v2_msig_leg_open(&g_ms.x, v, &leg) : NODUS_V2_SPEND_ERR_ALLOC;
+    if (rc == NODUS_V2_SPEND_OK) rc = nodus_v2_msig_sig_check(&g_ms.x, &leg, dg, pk, sig);
+    free(v);
+    switch (rc) {
+    case NODUS_V2_SPEND_OK: break;
+    case NODUS_V2_MSIG_ERR_SIG_DIGEST:
+        return nsw_fail("This approval is for a different payment.");
+    case NODUS_V2_MSIG_ERR_NOT_MEMBER:
+        return nsw_fail("This approval comes from someone who is not a "
+                        "member of this vault.");
+    case NODUS_V2_MSIG_ERR_SIG:
+        return nsw_fail("This approval's signature is not valid.");
+    default:
+        return nsw_fail("This approval could not be checked (rc=%d).", rc);
+    }
+    const int i = g_ms.n_sigs;
+    memcpy(g_ms.sig_dg[i], dg, 64);
+    memcpy(g_ms.sig_pk[i], pk, NSW_PK_LEN);
+    memcpy(g_ms.sig_sig[i], sig, sizeof(sig));
+    uint8_t fp[64];
+    if (qgp_sha3_512(pk, NSW_PK_LEN, fp) != 0) return nsw_fail("Hash failure.");
+    qgp_fp_raw_to_hex(fp, g_ms.sig_fp[i]);
+    g_ms.n_sigs++;
+    return 0;
+}
+
+int nsw_msig_sig_count(void) { return g_ms.n_sigs; }
+const char *nsw_msig_sig_signer(int i) {
+    return (i >= 0 && i < g_ms.n_sigs) ? g_ms.sig_fp[i] : "";
+}
+
+/* ── submit: combine the first K approvals, then dnac_spend ──
+ * 0 = accepted by the node's mempool CheckTx, 1 = refused (message in
+ * nsw_error), -1 = not sent / no answer. */
+int nsw_msig_submit(void) {
+    if (nsw_begin() != 0) return -1;
+    if (!g_ms.has_export || !g_ms.reviewed)
+        return nsw_end(nsw_fail("Review the payment request first."));
+    if (g_ms.expired)
+        return nsw_end(nsw_fail("This payment request has expired. Ask for it "
+                                "to be proposed again."));
+    const int k = (int)g_ms.x.signers;
+    if (g_ms.n_sigs < k)
+        return nsw_end(nsw_fail("%d more approval(s) are needed.",
+                                k - g_ms.n_sigs));
+    uint32_t cv = 0;
+    uint8_t ch[64];
+    if (nsw_ms_core_tuple(&cv, ch) != 0) return nsw_end(-1);
+    /* combine a COPY: a refusal leaves the request as it was */
+    nodus_v2_msig_export_t xc = g_ms.x;
+    xc.env = malloc(g_ms.x.env_len);
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    if (!xc.env || !pf) {
+        free(xc.env);
+        free(pf);
+        return nsw_end(nsw_fail("Out of memory."));
+    }
+    memcpy(xc.env, g_ms.x.env, g_ms.x.env_len);
+    int bad = -1;
+    int rc = nodus_v2_msig_combine(
+        &xc, cv, ch, (const uint8_t (*)[64])g_ms.sig_dg,
+        (const uint8_t (*)[NODUS_V2_MSIG_PK_LEN])g_ms.sig_pk,
+        (const uint8_t (*)[NODUS_V2_MSIG_SIG_LEN])g_ms.sig_sig, k, pf, &bad);
+    if (rc != NODUS_V2_SPEND_OK) {
+        rc = nsw_fail("The approvals could not be combined (rc=%d).", rc);
+    } else if (nsw_session_ok() != 0) {
+        rc = -1;
+    } else {
+        int approved = 0;
+        nsw_fmt_hex(pf->intent_id, 64, g_ms.intent_hex);
+        nsw_fmt_hex(pf->wire_id, 64, g_ms.wire_hex);
+        int src = nsw_dnac_spend(pf->wire_id, xc.env, xc.env_len, &approved);
+        if (src < 0)
+            rc = -1;
+        else if (src == NODUS_ERR_PROTOCOL_ERROR)
+            rc = nsw_fail("The Nodus node refused this vault payment, or its "
+                          "answer could not be read (code %d). Check the "
+                          "vault history before sending again.", src);
+        else if (src != 0)
+            rc = nsw_fail("The Nodus node did not answer the submission "
+                          "(rc=%d).", src);
+        else if (!approved) {
+            nsw_fail("The Nodus network refused this vault payment.");
+            rc = 1;
+        } else
+            rc = 0;
+    }
+    nsw_wipe(xc.env, xc.env_len);
+    free(xc.env);
+    free(pf);
+    return nsw_end(rc);
+}
+
+const char *nsw_msig_intent(void) { return g_ms.intent_hex; }
+const char *nsw_msig_wire(void)   { return g_ms.wire_hex; }
+
 /* ── Messages host (package NC-4b; nc_core.h "Host") ──
  * The Messages exports (web-wallet/connect/nc_wasm.c, linked into this
  * module) run on THIS session, inside THIS op bracket, stopped by THIS
@@ -2875,6 +3843,7 @@ void nsw_lock(void) {
     memset(&g_nm, 0, sizeof(g_nm));
     memset(&g_np, 0, sizeof(g_np));
     nsw_wipe(g_paddr, sizeof(g_paddr));
+    nsw_msig_wipe();                        /* vaults (VAULTS)              */
     nc_session_wipe();                      /* the Messages keys and caches */
     g_unlocked = 0;
 }

@@ -115,6 +115,12 @@ mode="${1:-release}"
 # stack, not the unwind buffer), and the builder's large structs are
 # heap-allocated in nsw_name_core, which runs only after the last wait.
 # Expected to hold, not measured.
+# The vault exports (nsw_msig_member_add, _balance, _scan, _build, _review,
+# _submit) have the same shape: every wait runs in the export's own frame;
+# the profile read's nc_read_t and the answer structs have their address
+# taken (C stack), the vault state is static, and the builder / review /
+# combine structs are heap-allocated after the last wait. Expected to hold,
+# not measured.
 # There is no ASYNCIFY_ONLY / ASYNCIFY_ADD list: with ASYNCIFY=1 Binaryen
 # instruments every function that can reach emscripten_sleep (directly or,
 # with the default ASYNCIFY_IGNORE_INDIRECT=0, through an indirect call),
@@ -214,6 +220,12 @@ sources=(
   # HF-4). NOT in the native vector (build-nodus-send-native-vector.sh):
   # its section of nodus-send-wasm.c is networked-build only.
   $root/nodus/src/client/nodus_v2_name.c
+  # the shared general-multisig library (nodus-cli msig address / spend
+  # --msig / msig sign / msig combine) and the descriptor + address codec
+  # it calls — the wallet's vaults (nodus-send-wasm.c "VAULTS"). NOT in the
+  # native vector: that section is networked-build only.
+  $root/nodus/src/client/nodus_v2_msig.c
+  $root/shared/dnac/msig_wire.c
   $root/shared/dnac/env_wire.c
   $root/shared/dnac/env_preflight.c
   $root/shared/dnac/res_meter.c
@@ -297,6 +309,28 @@ exports_common=(
   nsw_built_name nsw_built_price nsw_name_offline_build
   nsw_name_prices nsw_np_price nsw_np_sched_count nsw_np_sched_param
   nsw_np_sched_value nsw_np_sched_effective nsw_name_build
+  # VAULTS — general multisig (nodus-send-wasm.c "VAULTS"). Waiting on the
+  # network (ccall { async: true }): nsw_msig_member_add, nsw_msig_balance,
+  # nsw_msig_scan, nsw_msig_build, nsw_msig_review, nsw_msig_submit. Every
+  # other one below never reaches emscripten_sleep.
+  nsw_msig_member_reset nsw_msig_member_count nsw_msig_member_add_self
+  nsw_msig_member_add nsw_msig_create nsw_msig_load nsw_msig_addr
+  nsw_msig_desc_hex nsw_msig_m nsw_msig_n nsw_msig_member nsw_msig_is_member
+  nsw_msig_balance nsw_msig_bal_total nsw_msig_bal_spendable
+  nsw_msig_coins_reset nsw_msig_coin_add nsw_msig_scan nsw_msig_scan_next
+  nsw_msig_scan_tip nsw_msig_coins_full nsw_msig_coin_count nsw_msig_coin_id
+  nsw_msig_coin_amount nsw_msig_coin_unlock nsw_msig_coin_height
+  nsw_msig_event_count nsw_msig_event_height nsw_msig_event_dir
+  nsw_msig_event_amount nsw_msig_event_id
+  nsw_msig_prop_in nsw_msig_prop_chain nsw_msig_prop_tip nsw_msig_prop_signers
+  nsw_msig_prop_digest nsw_msig_prop_env nsw_msig_text nsw_msig_build
+  nsw_msig_review nsw_msig_rv_ok nsw_msig_rv_expired nsw_msig_rv_member
+  nsw_msig_rv_vault nsw_msig_rv_m nsw_msig_rv_n nsw_msig_rv_k nsw_msig_rv_fee
+  nsw_msig_rv_expiry nsw_msig_rv_now nsw_msig_rv_intent nsw_msig_rv_n_in
+  nsw_msig_rv_in nsw_msig_rv_n_out nsw_msig_rv_out_owner
+  nsw_msig_rv_out_amount nsw_msig_rv_out_change
+  nsw_msig_sign nsw_msig_sig_reset nsw_msig_sig_add nsw_msig_sig_count
+  nsw_msig_sig_signer nsw_msig_submit nsw_msig_intent nsw_msig_wire
   # Messages (NC-4b, connect/nc_wasm.c), all run through the wallet's one
   # queue by src/connect/core.js. The ones that wait on the network (every
   # one below except nc_error, nc_result, nc_words_alloc, nc_salt_pick,
@@ -313,7 +347,8 @@ exports_common=(
   nc_hist_key nc_hist_encrypt nc_hist_decrypt
   nc_lock
 )
-exports_test=(nsw_test_random_buf nsw_test_random_load nsw_test_pins_tuple nsw_test_gen_match)
+exports_test=(nsw_test_random_buf nsw_test_random_load nsw_test_pins_tuple nsw_test_gen_match
+  nsw_test_msig_member_add_pk)
 
 join_exports() {
   local out="" name
