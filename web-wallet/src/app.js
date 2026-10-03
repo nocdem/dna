@@ -629,7 +629,12 @@ function renderStaking(view) {
     if (d) name.append(el('small', 'stake-mine', `Your delegation: ${nodusAmountText(d.amount)} NODUS`));
     const badge = el('span', 'status-badge', v.statusText); badge.dataset.status = v.status;
     toggle.append(name, badge);
-    toggle.onclick = () => { expandedValidator = open ? undefined : v.fingerprint; renderStaking(view); };
+    toggle.dataset.validator = v.fingerprint;
+    // The list is drawn again; keyboard focus returns to this row's header.
+    toggle.onclick = () => {
+      expandedValidator = open ? undefined : v.fingerprint; renderStaking(view);
+      $('validator-list').querySelector(`button[data-validator="${v.fingerprint}"]`)?.focus({ preventScroll: true });
+    };
     row.append(toggle);
     if (!open) return row;
     const detail = el('div', 'stake-detail');
@@ -1305,7 +1310,7 @@ $('session-takeover').onclick = async () => {
 function saveResult(text, ok = false) {
   $('vault-status').textContent = text;
   $('vault-save-status').textContent = text;
-  $('vault-save-status').dataset.result = ok ? 'saved' : 'problem';
+  $('vault-save-status').classList.toggle('vault-save-ok', ok);
 }
 async function saveVault(change) {
   if (!wallet || wallet.locked) return;

@@ -337,7 +337,8 @@ details.stake-block > summary { color: var(--text); }
 .vault-contacts { display: flex; flex-direction: column; gap: 4px; }
 /* The result of saving the wallet, right under the save buttons (src/app.js saveVault). */
 .vault-save-status:empty { display: none; }
-.vault-save-status { margin: 14px 0 0; }
+.vault-save-status { margin: 14px 0 0; border-left-color: #f2c896; }
+.vault-save-status.vault-save-ok { border-left-color: var(--lime); }
 .vault-request > p { margin: 0 0 8px; }
 .vault-card { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .vault-card p, .vault-card ul { margin: 0; }
