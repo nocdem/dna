@@ -116,8 +116,11 @@ make -j$(nproc)
 ```
 
 Produces:
-- `nodus-server` — the node binary (DHT + the in-process chain witness; with `witness_external` the DHT/client core only)
-- `nodus-witness` — the chain witness (4004 p2p + consensus) as its own process, beside a `nodus-server` started with `witness_external` (component split S3; opt-in, **not for production yet** — no unit file or installer). Same options and config file as `nodus-server`; refuses to start unless the config sets `witness_external`. See `docs/ARCHITECTURE.md` §10 "Component split".
+- `nodus-server` — the combined node binary (DHT + the in-process chain witness; with `witness_external` / `storage_external` it leaves that half to `nodus-witness` / `nodus-storage`)
+- `nodus-core` — the core of a three-process node (component split S6): UDP 4000, client TCP 4001, the 4002 listener, cluster, presence, circuits, the partial-wipe gate, identity creation; reaches `nodus-storage` and `nodus-witness` over Unix sockets only. Refuses to start unless both `storage_external` and `witness_external` are set; no `--derive-v2-genesis`.
+- `nodus-storage` — the DHT / storage half (`nodus.db`, `channels.db`, routing, replication) as its own process (component split S5b); refuses to start unless `storage_external` is set.
+- `nodus-witness` — the chain witness (4004 p2p + consensus) as its own process (component split S3); refuses to start unless the config sets `witness_external`.
+- Same options and config file for all four. Split layouts are opt-in and **not declared deployable yet** (`docs/DEPLOY_RUNBOOK.md` "Three-process node" — open items); systemd units for the three-process node are in `deploy/`. See `docs/ARCHITECTURE.md` §10 "Component split".
 - `nodus-cli` — CLI tool for testing and chain operations
 - `nodus-circ` — circuit relay test tool
 - `test_*` — Unit test binaries
@@ -158,6 +161,7 @@ ctest --output-on-failure    # count: see `ctest -N` (and `ctest -N -L bench`). 
 | Auth | `test_inter_auth`, `test_identity` (+ the read-only loader, split S2), `test_sign_domain_separation` |
 | Component split S2 — local IPC | `test_tcp_unix` (Unix domain socket entry: mode 0600, frames both ways, `SO_PEERCRED` refusal, stale / live / regular-file path handling, unlink on close) |
 | Component split S3 — `nodus-witness` + IPC chain backend | `test_witness_ipc` (core's IPC chain backend against the witness IPC listener over a real socket, test handlers in place of the witness: preface key/token reach the handler and `find_session_conn`, reply relayed unchanged, `dnac_cc_collect` routing, `session_closed` → no session, status snapshot round-trip, non-preface first frame closed, no witness / control connection down → the "witness module not enabled" error and no session dial, the per-session queue bound, `read_pending`); `test_split_linked` (an `nm` gate: the linked `nodus-witness` carries no `nodus_server_init` / `nodus_cluster_init` / `nodus_storage_open` / `nodus_presence_tick`, and does carry the witness's own entry points) |
+| Component split S6 — `nodus-core` | `test_core_linked` (an `nm` gate on the linked `nodus-core`: no `nodus_storage_open` / `nodus_routing_try_insert` / `nodus_witness_init` / `nodus_dht_backend_inproc_new` / `nodus_chain_backend_inproc_open`; carries `nodus_auth_handle_auth` / `nodus_presence_tick` / `nodus_cluster_tick` / `nodus_inter_circuit_table_init` / `nodus_dht_backend_ipc_open` / `nodus_chain_backend_ipc_open`) |
 | Component split S4 — core/DHT seam | `test_dht_linked` (an `nm` gate on the never-run `dht_link_probe`, which references only the core → DHT entry points of `dht/nodus_dht.h`: the DHT objects must reach no `nodus_server_init` / `nodus_server_dht_host` / `nodus_auth_handle_auth` / `nodus_presence_tick` / `nodus_cluster_init` / `nodus_cluster_tick` / `nodus_dht_backend_inproc_new`, and must carry `nodus_dht_init` / `nodus_dht_client_request` / `nodus_dht_tick` / `handle_t2_media_put` / `nodus_storage_open` / `nodus_routing_try_insert`); `test_bf_forward_frames` and `test_bf_recv_frame` call the renamed `nodus_dht_bf_*`; `test_bf_forward_frames`, `test_inter_preauth_gate`, `test_circuit_cross_live` (and `circuit_latency_probe`) reach the DHT state through `nodus_dht_backend_inproc_state` |
 | Channels | `test_channel_*` (channel system currently disabled in production) |
 | Circuits (VPN mesh) | `test_circuit_wire`, `test_circuit_table`, `test_circuit_live` |
@@ -202,7 +206,7 @@ in full first.
 
 ### Configuration
 
-`nodus-server -c <file>` (and `nodus-witness -c <file>`, the same loader) reads a **JSON** config (`nodus/tools/nodus_node_config.c`, `load_config_json`). The common keys:
+`nodus-server -c <file>` (and `nodus-witness`, `nodus-storage`, `nodus-core -c <file>` — the same loader; storage and core skip the witness-side keys) reads a **JSON** config (`nodus/tools/nodus_node_config.c`, `load_config_json`). The common keys:
 
 ```json
 {
@@ -218,7 +222,7 @@ in full first.
 }
 ```
 
-A `seed_nodes` entry `"ip:udp_port"` seeds the DHT. Written as `"id@ip:udp_port"` it also makes that node a persistent peer of the chain p2p layer on `udp_port + 4` — the 4004 layer never dials a peer whose ID is not pinned. Other keys the loader reads: `ws_port`, `ws_origins`, `require_peer_auth`, `addr_history_index`, `witness_external` (boolean, default false — see "Build" above for `nodus-witness`), `network_file`, `ch_port`, and the p2p tuning keys (`moniker`, `send_rate`, `recv_rate`, `dial_timeout`, `handshake_timeout`, …).
+A `seed_nodes` entry `"ip:udp_port"` seeds the DHT. Written as `"id@ip:udp_port"` it also makes that node a persistent peer of the chain p2p layer on `udp_port + 4` — the 4004 layer never dials a peer whose ID is not pinned. Other keys the loader reads: `ws_port`, `ws_origins`, `require_peer_auth`, `addr_history_index`, `witness_external` / `storage_external` (booleans, default false — see "Build" above), `network_file`, `ch_port`, and the p2p tuning keys (`moniker`, `send_rate`, `recv_rate`, `dial_timeout`, `handshake_timeout`, …).
 
 **WebSocket entry (browsers — web wallet / Nodus Connect), off by default.**
 `"ws_port": 4005` opens a plain WebSocket listener of the client port on
@@ -236,19 +240,12 @@ key — see `docs/DEPLOY_RUNBOOK.md` §1.5 and `tools/genesis/README.md`.
 
 ### Systemd
 
-```ini
-# /etc/systemd/system/nodus.service
-[Unit]
-Description=Nodus server
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/nodus-server -c /etc/nodus.conf
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
+The shipped units are in `deploy/`: `nodus.service` (the combined `nodus-server`,
+`Restart=on-failure` with a start limit of 3 per 300 s — reproduced and explained in
+`docs/ARCHITECTURE.md` §13 "Systemd Service") and, for a three-process node,
+`nodus-core.service`, `nodus-storage.service`, `nodus-witness.service` (split S6; they
+conflict with `nodus.service`; `docs/DEPLOY_RUNBOOK.md` "Three-process node").
+`deploy/build-nodus.sh` installs them.
 
 ---
 

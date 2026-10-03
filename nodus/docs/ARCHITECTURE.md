@@ -1452,7 +1452,7 @@ Data is stored in:
 - `<data_path>/channels.db` — Channel post storage (SQLite)
 - `<identity_path>/nodus.pk`, `nodus.sk`, `nodus.fp` — Node identity
 
-### Component split — S1 witness host seam, S2 local IPC primitives, S3 `nodus-witness` process, S4 core/DHT seam, S5a 4002 connection fixes, S5b `nodus-storage` process (2026-10-02 / 03)
+### Component split — S1 witness host seam, S2 local IPC primitives, S3 `nodus-witness` process, S4 core/DHT seam, S5a 4002 connection fixes, S5b `nodus-storage` process, S6 `nodus-core` process + units (2026-10-02 / 03)
 
 Governing record: decision `docs/plans/decisions/2026-10-01-nodus-component-split.md`
 (local; items 1-26 APPROVED; rev 4 items 27-29 APPROVED 2026-10-02, operator "ikisine de
@@ -1468,7 +1468,10 @@ and a DHT / storage half joined by a message-shaped seam, **inside the combined 
 stated as no behaviour change** (commit `b6bd6d3f`: "no wire, DB or log change"; the loop
 order is the same — "Event Loop" above); the `nodus-storage` process that uses the seam
 is S5 (S5b below; opt-in `storage_external`, the default leaves the combined binary as
-it was apart from the S5a / S5b changes stated there).
+it was apart from the S5a / S5b changes stated there). S6 adds the `nodus-core` binary
+(both externals, IPC only), the three-process harness modes `split` / `mixed`, and the
+three systemd units; the combined binary keeps its behaviour (its constructors moved
+behind a table, `nodus_server_init` unchanged — S6 below).
 
 #### S1 — the witness host seam (commit `da2d2dfa`)
 
@@ -1911,12 +1914,15 @@ above. Harness: `STAGEF_MODE=splitw` / `mixedw` (`tests/integration/stagef/READM
   not shortened for leftover IPC input, so IPC input can wait up to 50 ms extra
   (`nodus-witness.c:345-354`). Closing it needs a wait cap passed into
   `nodus_witness_tick`.
-- **Restart / kill / wipe / rejoin / block-sync / upgrade of a split node is untested:**
-  every harness scenario that spawns or stops nodes itself exits 99 (SKIP) when its node
-  is split, "not yet adapted (split S6)" (`stagef_env.sh:182-197`).
+- ~~Restart / kill / wipe / rejoin / block-sync of a split node is untested~~ — closed in
+  S6: the four sweep scenarios that start / stop nodes run in every mode through
+  `stagef_spawn_node` / `stagef_stop_node` (S6 below). **Upgrade** of a split node stays
+  untested: the OLD/NEW scenarios outside the sweep still SKIP (99) in every split mode,
+  "split upgrade pairs deferred (decision 23)" (`stagef_env.sh` `stagef_split_skip_if`).
 - **`nodus.addr_seq` migration** for an existing host is the installer's (item 21); there
   is no installer yet.
-- No systemd unit for `nodus-witness`, no installer (items 11, 26).
+- ~~No systemd unit for `nodus-witness`~~ — S6 ships `deploy/nodus-witness.service` (S6
+  below). No installer yet (item 26 — S7).
 
 #### S4 — core/DHT state split + seam, in the combined binary (commits `6185ff2b`, `b6bd6d3f`, `8eced563`)
 
@@ -2514,7 +2520,9 @@ same `nodus.db`) and holds `<data>/nodus-storage.lock` for its lifetime. Loop:
 BEFORE `nodus_dht_tick` (g10: core ran the evict sweep after its cluster tick, ahead of
 the DHT tick). It does NOT run the partial-wipe gate (item 9 keeps it in core): started
 BEFORE core on a host whose `nodus.db` was wiped, it would recreate the file before
-core's gate looks — the unit order (core first, S6) is what prevents that today.
+core's gate looks. (Superseded by F3 below: nodus-storage now runs the same gate itself
+before it opens anything. S6's units order only STARTS — `After=` — so they are not
+what protects this.)
 
 **Core in `storage_external` mode** (`nodus_server.c`): the IPC backend replaces the
 in-process one (init `:2639-2665`; no DHT database opened, "STORAGE: external" logged,
@@ -2582,7 +2590,93 @@ origin generation over sockets, the marker rule); `test_storage_linked` (nm gate
 **Not done in S5b:** core's `dht_send_stats_dump` covers core's pool only — the storage
 pool has no stats dump; no core-side `nm` probe proves the IPC backend TU pulls no DHT
 object into a core-only binary (deferred to S6's `nodus-core` gate; `nodus-server`
-links both halves by design).
+links both halves by design — closed by S6's `test_core_linked`, below).
+
+#### S6 — the `nodus-core` process, three-process harness modes, systemd units (decision items 2-4, 6, 8-12, 15, 23)
+
+**The constructor seam** (`src/server/nodus_server.h` `nodus_server_backends_t`,
+`nodus_server_init_ex`). Before S6, `nodus_server_init` called the in-process
+constructors by name — `nodus_chain_backend_inproc_check_pin`,
+`nodus_dht_backend_inproc_new` / `_open`, `nodus_chain_backend_inproc_open` — so every
+binary that linked `nodus_server.c` pulled `nodus_dht_server.c` (`nodus_storage_open`,
+`nodus_routing_try_insert`) and `nodus_witness.c` (`nodus_witness_init`) out of the static
+library. Now `nodus_server_init_ex(srv, cfg, be)` takes a table of five slots — `admit`,
+`check_pin`, `dht_new`, `dht_open`, `chain_open` — and names no in-process constructor
+(`nodus_server.c:2512-2523`, `:2556-2564`, `:2587-2596`, `:2626-2629`, `:2866-2876`).
+Two tables:
+- `nodus_server_backends_inproc` (`src/server/nodus_server_backends_inproc.c`) — the four
+  in-process constructors, `admit` NULL; this TU also holds `nodus_server_init` =
+  `nodus_server_init_ex(…, &nodus_server_backends_inproc)`. **`nodus_server_init`'s
+  signature and behaviour are unchanged**; nodus-server and every unit test call it as
+  before. It has to live there, not in `nodus_server.c`: if it stayed, the table would be
+  referenced from `nodus_server.c` and the gate below could not pass.
+- `nodus_server_backends_ipc` (`src/server/nodus_server_backends_ipc.c`) — every
+  in-process slot NULL; `admit` refuses (logged, `-1`) unless BOTH `storage_external` and
+  `witness_external` are set, before the partial-wipe gate touches anything.
+A NULL slot the config needs refuses the start (logged): `check_pin` NULL with a pin set,
+`dht_new`/`dht_open` NULL without `storage_external`, `chain_open` NULL without
+`witness_external` — the last one goes to `fail`, NOT to the "witness init failed, keep
+running degraded" path, which is for a witness that failed, not for a binary that has none.
+
+**The process** (`tools/nodus-core.c`). nodus-server's `main` with two differences: the
+config loader is `nodus_node_config_load_storage` (no 4004 p2p section, no network file
+and so no network-file pin, `--derive-v2-genesis` refused — `--v2-genesis-pin` is parsed
+and not used, the joiner is the witness), and it calls `nodus_server_init_ex` with the IPC
+table after refusing (exit 1) unless both flags are set. It keeps everything core owns:
+UDP 4000, TCP 4001 (+ the WebSocket entry), the 4002 listener, cluster, presence,
+circuits, the partial-wipe gate (item 9) and identity creation (item 10 — the only process
+that writes `identity/`). The network-file pin check is nodus-witness's in this layout
+(`tools/nodus-witness.c`), not core's. Target `nodus-core` (`CMakeLists.txt:2754-2765`):
+`tools/nodus-core.c` + `tools/nodus_node_config.c`, like nodus-storage.
+
+**`test_core_linked`** (`tests/core_linked.cmake`, registered `CMakeLists.txt:2787-2790`):
+`nm --defined-only` on the linked nodus-core, global text symbols only. FORBIDDEN
+`nodus_storage_open`, `nodus_routing_try_insert`, `nodus_witness_init`,
+`nodus_dht_backend_inproc_new`, `nodus_chain_backend_inproc_open`; REQUIRED
+`nodus_auth_handle_auth`, `nodus_presence_tick`, `nodus_cluster_tick`,
+`nodus_inter_circuit_table_init`, `nodus_dht_backend_ipc_open`,
+`nodus_chain_backend_ipc_open` (so a pass cannot come from an empty table or the wrong file).
+
+**Harness** (`tests/integration/stagef/`). Two modes, decision item 15's names: `split`
+(every node three processes) and `mixed` (nodes 1-3 three processes, 4-7 combined
+nodus-server, `STAGEF_MIXED_SPLIT_NODES=3`, same build — item 23); `combined`, `splitw`,
+`mixedw`, `splits`, `mixeds` unchanged. In split / mixed BOTH `stagef_node_is_split`
+(witness) and `stagef_node_is_storage_split` are true for a split node;
+`stagef_node_core_bin` names `STAGEF_NODUSCORE_BIN` for it and `stagef_node_core_pid`
+matches that executable. One core argv builder, `stagef_core_cmd`, feeds identity
+generation (a split node's identity is generated by its core binary with the mode's
+flags, so no combined server ever opens a split node's data directory), the bring-up core
+pass, and test_v2_partial_wipe.sh's core-only `try_boot`. For scenarios:
+`stagef_spawn_node N [EXTRA…]` (core, then nodus-witness, then nodus-storage as the mode
+splits them; EXTRA — e.g. `--v2-genesis-pin` — goes to the process that runs the witness;
+every pid appended to `pids.txt`; waits for the client port) and `stagef_stop_node N
+[SIG]` (every process found by its executable, attempt-bounded wait for exit, TERM → KILL
+escalation; never `pgrep | head -1`). `test_v2_join.sh`, `test_v2_partial_wipe.sh`,
+`test_v2_restart_convergence.sh`, `test_cmt_blocksync.sh` no longer SKIP on a split node.
+`pids.txt` lines 1..7 stay the cores (`bench_tps_v2.sh` unchanged). The derivation
+one-shot keeps `STAGEF_NODUS_BIN` (nodus-core has no `--derive-v2-genesis`).
+
+**Units** (`deploy/nodus-core.service`, `nodus-storage.service`, `nodus-witness.service`,
+beside `nodus.service`, which stays — item 8). §13 "Systemd Service" below.
+
+**Not done in S6 / open:**
+- **nodus-witness runs no partial-wipe gate** (`tools/nodus-witness.c` takes its lock,
+  checks the network-file pin and loads the identity, then `nodus_witness_init`). On a
+  half-wiped three-process host core and nodus-storage refuse while the witness opens the
+  surviving chain database and runs consensus alone. Decision item 9 gives the check to
+  core; it does not say the witness may proceed when core refuses. **Operator decision
+  pending — no gate added in S6.** Until it is decided the three-process layout is not
+  declared deployable. No harness scenario covers it (`try_boot` starts the core only).
+- **Restart order of the three units on a live validator** (witness first = a consensus
+  gap; core first = clients drop) is open; the units order STARTS by `After=` only.
+- OLD/NEW upgrade scenarios in a split mode (decision 23 defers them).
+- `ReadOnlyPaths=/var/lib/nodus/identity` for storage / witness (item 10 at OS level) is
+  NOT in the units: only `addr_seq` / lock / marker writes were checked
+  (`nodus-witness.c`), not every witness write (`cs.wal`, address book,
+  `priv_validator_state`); a blocked write would be a restart loop.
+- `deploy/nodus.conf.example` is recreated in the tree but ignored by git
+  (`.gitignore`, commit `fb45e940`); `build-nodus.sh` copies it on a first install.
+- `nodus.addr_seq` migration and the installer (items 21, 26) are S7.
 
 ---
 
@@ -3029,6 +3123,28 @@ witness's chain-database open **waits inside the process** instead of exiting
 pause), and why a witness that cannot start runs **degraded rather than
 fatal** (`nodus_server.c:3040-3102`). See §15, *Witness startup and
 chain-database faults*.
+
+**Split units (S6, decision `2026-10-01-nodus-component-split.md`).**
+`deploy/nodus-core.service`, `deploy/nodus-storage.service` and
+`deploy/nodus-witness.service` run a three-process node on the same
+`/etc/nodus.conf` and `/var/lib/nodus`. They differ from `nodus.service` in:
+- `ExecStart` = `nodus-core … --storage-external --witness-external`,
+  `nodus-storage … --storage-external`, `nodus-witness … --witness-external` — the flags
+  on the command line, so the same config file still starts `nodus.service` (rollback).
+- storage and witness: `After=` + `Wants=nodus-core.service` only — never `Requires=` /
+  `BindsTo=`: a core stop does not stop the witness (item 5) or storage.
+- storage and witness: `StartLimitBurst=10` / `StartLimitIntervalSec=300` (core keeps
+  3 / 300). `After=` orders starts only (`Type=simple`); on a FIRST boot storage and
+  witness can start before core has written the identity they only read (item 10), exit
+  1, and are retried every `RestartSec=5` — the combined unit's 3-in-300 budget could run
+  out before core finishes.
+- all three: `Conflicts=nodus.service` — the combined server and the split units never
+  run at once on one data directory (two DHTs, two signers with one validator key);
+  starting one side stops the other (systemd `Conflicts=` semantics; not exercised on a
+  host in S6).
+- No `ReadOnlyPaths=` on `identity/` (open, see "S6" in §10).
+`build-nodus.sh` installs all five binaries and copies the split units without enabling
+them; `tools/nodus-update.sh` restarts whichever layout is active.
 
 ### Ports
 

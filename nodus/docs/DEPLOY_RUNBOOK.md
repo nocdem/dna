@@ -53,20 +53,81 @@ in NodeInfo (`CompatibleWith`) — so a 0.19.x node cannot join a 0.20.x mesh �
 nodes on mixed versions is therefore **silently permitted**. The discipline is yours,
 not the binary's.
 
-### Split mode (`nodus-witness` + `witness_external`) — NOT for production yet
+### Three-process node (`nodus-core` + `nodus-storage` + `nodus-witness`) — NOT declared deployable yet
 
-Since component split S3 the build also produces `nodus-witness`, and `nodus-server`
-accepts `"witness_external": true` / `--witness-external` to leave the witness (4004 +
-consensus + chain DB) to that separate process over `<data_path>/witness.sock`
-(`docs/ARCHITECTURE.md` §10 "Component split"). **Do not deploy it.** There is no
-systemd unit for `nodus-witness` and no installer — `nodus/deploy/` holds only
-`nodus.service` (one `nodus-server` unit) and `build-nodus.sh`, and nothing in it or in
-`tools/nodus-update.sh` references `nodus-witness` — so none of this runbook's
-procedures cover a split node; the decision assigns each service its own unit (item 11)
-and the migration of an existing host's `nodus.addr_seq` to the installer (item 21),
-and neither exists yet. The harness also skips every restart / kill / wipe / rejoin
-scenario on a split node (stagef README, "Harness modes"). Keep production nodes on
-the combined `nodus-server` with `witness_external` unset (the default).
+Component split S6 (decision `2026-10-01-nodus-component-split.md`; `docs/ARCHITECTURE.md`
+§10 "Component split", S6) ships the pieces of a three-process node: the binaries
+`nodus-core`, `nodus-storage`, `nodus-witness` (beside the combined `nodus-server`, which
+stays — item 8) and three systemd units in `nodus/deploy/`. **Keep production nodes on
+the combined `nodus.service` until the two OPEN items below are decided.** This section
+describes what exists so a test host can be switched and switched back.
+
+**What runs.** `nodus-core.service` (`nodus-core -c /etc/nodus.conf --storage-external
+--witness-external`): UDP 4000, TCP 4001 (+ the WebSocket entry), the 4002 listener,
+cluster, presence, circuits, the partial-wipe gate, and the identity — it is the only
+process that creates or writes `identity/`. `nodus-storage.service` (`--storage-external`):
+`nodus.db`, `channels.db`, routing, replication, its own outbound 4002 dials; no port of
+its own, `<data_path>/storage.sock`. `nodus-witness.service` (`--witness-external`): 4004
+and consensus, the chain database, `<data_path>/witness.sock`. Same `/etc/nodus.conf`, same
+`/var/lib/nodus`. The `--*-external` flags are on the units' command lines, NOT in the
+config file — keep `witness_external` / `storage_external` false (or absent) in
+`/etc/nodus.conf`, so the same file still starts `nodus.service`.
+
+**Installed by** `deploy/build-nodus.sh` (Release): all five binaries to
+`/usr/local/bin`, the three units to `/etc/systemd/system/` — copied, **not enabled**.
+`tools/nodus-update.sh` installs every binary and restarts whichever layout is active
+(the three units if `nodus-core` is active, else `nodus.service`).
+
+**Start order and dependencies.** Storage and witness carry `After=` + `Wants=
+nodus-core.service` — never `Requires=` / `BindsTo=`. So `systemctl start nodus-witness`
+pulls core in and starts core first; **stopping core does NOT stop the witness** (item 5:
+consensus runs on; this node's clients drop until core is back). `After=` orders STARTS only (`Type=simple`, no readiness signal): on a
+FIRST boot storage and witness may start before core has written the identity, exit 1
+("identity … missing"), and are retried every 5 s within `StartLimitBurst=10` /
+`StartLimitIntervalSec=300` (core: 3 / 300, as `nodus.service`). If either unit hits the
+limit: `systemctl reset-failed <unit> && systemctl start <unit>` once core is up.
+
+**Never both layouts.** All three units carry `Conflicts=nodus.service`: starting the
+combined unit stops the split units and vice versa (systemd `Conflicts=` semantics — not
+exercised on a host in S6). Two layouts at once on one data directory would mean two DHTs
+on one `nodus.db` and two signers with one validator key.
+
+**Switch a host to three processes** (test host; consensus bytes, `app_hash` and the 4004
+wire are unchanged, so no hard fork is involved):
+1. `systemctl disable --now nodus` (the combined unit; `Conflicts=` would also stop it).
+2. `nodus.addr_seq`: the witness writes it under `data/`, never `identity/` (item 10); an
+   existing host's file in `identity/` is NOT moved by anything yet (item 21 — installer,
+   S7). nodus-witness only WARNs once at start when it sees the old file and no new one.
+3. `systemctl enable --now nodus-core nodus-storage nodus-witness`.
+4. Verify: `journalctl -u nodus-core` shows `STORAGE: external` and `WITNESS: external`;
+   `journalctl -u nodus-witness` shows `chain role: COMETBFT` and `cometbft lane LIVE`;
+   `<data_path>/storage.sock` and `witness.sock` exist; then §3 as for any node.
+
+**Rollback = the combined unit:** `systemctl disable --now nodus-core nodus-storage
+nodus-witness && systemctl enable --now nodus`. Same config, same data directory; no
+data migration in either direction (the `addr_seq` caveat above aside).
+
+**OPEN — decide before declaring this layout deployable:**
+- **nodus-witness runs no partial-wipe gate.** Core and nodus-storage both refuse a
+  half-wiped data directory; nodus-witness does not check (it takes its lock, checks the
+  network-file pin, loads the identity, then opens the chain). Under systemd, on a
+  half-wiped host core and storage would sit in their restart loops while the witness
+  opens the surviving chain database and keeps voting alone. Decision item 9 gives the
+  check to core; it does not say the witness may proceed when core refuses. Operator
+  decision pending; nothing was added in S6. Until it is decided, a host whose data
+  directory may have lost files must have **all three** units stopped by hand.
+- **Restart order on a live validator.** Restarting the witness first opens a consensus
+  gap for this validator; restarting core first drops its clients. The units order only
+  starts (`After=`); `nodus-update.sh` restarts the three together and claims no order
+  beyond that. Decision item 22 is the rollout order of the SPLIT itself (witness seam
+  before storage), not a restart rule.
+- `ReadOnlyPaths=/var/lib/nodus/identity` for storage / witness (item 10 enforced by the
+  OS) is NOT in the units: only the witness's `addr_seq` / lock / marker writes were
+  checked, not every write (`cs.wal`, address book, `priv_validator_state`); a blocked
+  write would be a restart loop.
+- The harness proves the three-process layout on localhost only (`STAGEF_MODE=split` /
+  `mixed`, stagef README "Harness modes"); OLD/NEW upgrade runs of split nodes are
+  deferred (decision item 23).
 
 ---
 
@@ -332,6 +393,12 @@ are opposite intents.
    ```bash
    sudo systemctl stop nodus
    systemctl is-active nodus           # must print "inactive" on every node
+   ```
+   On a three-process host ("Three-process node" above) the stop set is the three
+   units — the witness keeps running if only core is stopped:
+   ```bash
+   sudo systemctl stop nodus-core nodus-storage nodus-witness
+   systemctl is-active nodus-core nodus-storage nodus-witness   # all "inactive"
    ```
 3. Chain wipe only: archive per §1.
 4. On each node, build the new version:
@@ -883,6 +950,8 @@ Rollback is a git checkout plus a rebuild — the same mechanism as deploy.
    sudo systemctl stop nodus
    systemctl is-active nodus           # "inactive" on every node
    ```
+   Three-process host: `sudo systemctl stop nodus-core nodus-storage nodus-witness`
+   and check all three are inactive (stopping core alone leaves the witness voting).
 2. On each node, return to the commit recorded in §2 step 1:
    ```bash
    cd /opt/dna && git checkout <ROLLBACK_COMMIT>

@@ -134,7 +134,9 @@ typedef struct {
      * "witness_external": true / `--witness-external`; default false =
      * the in-process witness, unchanged. When true this server opens no
      * port 4004 and holds no chain database; the partial-wipe gate and
-     * the network-file pin check still run here. nodus-witness refuses
+     * (nodus-server only — nodus-core's loader applies no network file;
+     * nodus-witness runs that check itself) the network-file pin check
+     * still run here. nodus-witness refuses
      * to start unless its loaded config has it too
      * (tools/nodus-witness.c). */
     bool                witness_external;
