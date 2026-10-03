@@ -1,6 +1,6 @@
 // Entry of the Nodus Connect site (connect.nodusnetwork.io; decision
 // docs/plans/decisions/2026-10-01-connect-own-origin.md): the wallet page
-// (src/app.js, unchanged) plus Messages (src/connect/ui/messages.js) on the
+// (src/app.js, which only raises src/wallet-extensions.js events) plus Messages (src/connect/ui/messages.js) on the
 // wallet's ONE unlock, ONE NODUS client and ONE lock, presented in the shape
 // of the DNA Connect app (messenger/dna_messenger_flutter
 // screens/home_screen.dart): Home, Chats, Wallet, More.
