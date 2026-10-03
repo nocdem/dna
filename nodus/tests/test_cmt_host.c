@@ -5054,6 +5054,103 @@ static int t_store_seen_commit_cleanup(void)
     return 0;
 }
 
+/* Decision docs/plans/decisions/2026-10-03-block-pruning-7-paydays.md
+ * item 5 — PruneBlocks never deletes block 1's BlockMeta row `H:1`, a
+ * DOCUMENTED DEVIATION from cometbft v0.38.26 store/store.go:392-396
+ * (the start-time preflight, nodus_witness_v2_preflight.c check 5,
+ * reads H:1 on every open). Real SQLite store, 30 blocks, EVERY pruned
+ * height evidence-EXPIRED by both halves (height age > MaxAgeNumBlocks
+ * AND time age > MaxAgeDuration), proven by `evp == R` — so H:1 is kept
+ * by the deviation, not by the evidence window. Pins: (1) after
+ * prune(20): H:1 present and decodes as height 1, H:2..H:19 and
+ * C:1..C:19 absent, every other row of height 1 absent (BH: — via
+ * LoadBlockMetaByHash —, C:, SC:, EC:, P:1:0), LoadBlock(1) is nil,
+ * base 20, Size 11 and the base meta is height 20 (the kept row is not
+ * counted as held); (2) a second prune(25), base > 1, leaves H:1 and
+ * deletes H:20..H:24.
+ * HOW IT CAN LIE: it does not run the preflight; it pins the row the
+ * preflight reads. SC:1 exists before pruning only because W is set
+ * wide before the saves (W = 0 would have deleted it already). */
+static int t_store_prune_keeps_block1_meta(void)
+{
+    t_env_t e;
+    t_loader_t l;
+    cmt_commit_sig_t *sigs;
+    cmt_block_t *got;
+    nodus_cmt_block_meta_t *meta;
+    uint8_t  hash1[CMT_PB_HASH_MAX];
+    size_t   hash1_len;
+    uint64_t pruned = 0;
+    int64_t  evp = -1, h;
+    bool found = false;
+
+    CHECK(env_make_state(&e, 1, 1) == 0, "state");
+    CHECK(loader_alloc(&l, 64, 65536) == 0, "loader");
+    sigs = (cmt_commit_sig_t *)calloc(CMT_VALSET_MAX, sizeof(*sigs));
+    got = (cmt_block_t *)calloc(1, sizeof(*got));
+    meta = (nodus_cmt_block_meta_t *)calloc(1, sizeof(*meta));
+    CHECK(sigs && got && meta, "alloc");
+    CHECK(nodus_cmt_bs_set_seen_commit_window(e.store, 100) == CMT_OK, "W = 100: keep every SC");
+    CHECK(env_save_n_blocks(&e, 30, sigs) == 0, "30 blocks");
+    CHECK(nodus_cmt_bs_base(e.store) == 1 && nodus_cmt_bs_height(e.store) == 30, "1..30");
+
+    /* before: every row of height 1 is there */
+    CHECK(nodus_cmt_bs_load_block_meta(e.store, 1, meta, &found) == CMT_OK && found &&
+          meta->block_id.hash_len > 0 && meta->block_id.hash_len <= sizeof(hash1),
+          "meta 1 before");
+    hash1_len = meta->block_id.hash_len;
+    memcpy(hash1, meta->block_id.hash, hash1_len);
+    CHECK(bs_row_present(e.store, "H:", 1) == 1 && bs_row_present(e.store, "C:", 1) == 1 &&
+          bs_row_present(e.store, "SC:", 1) == 1 && bs_row_present(e.store, "EC:", 1) == 1 &&
+          bs_row_present(e.store, "P:1:", 0) == 1, "H:1, C:1, SC:1, EC:1, P:1:0 before");
+    CHECK(nodus_cmt_bs_load_block_meta_by_hash(e.store, hash1, hash1_len, meta, &found) == CMT_OK &&
+          found && meta->header.height == 1, "BH: of block 1 before");
+
+    /* Both expiry halves: block 1 carries the fixture's genesis time
+     * (g_now) and blocks 2..30 the zero time, all far older than
+     * LastBlockTime g_now + 10^6 s against a 1 s MaxAgeDuration; height
+     * age 30 − h > 5 for every h < 25. */
+    e.state->last_block_height = 30;
+    e.state->last_block_time = g_now;
+    e.state->last_block_time.seconds += 1000000LL;
+    e.state->consensus_params.evidence.max_age_num_blocks = 5;
+    e.state->consensus_params.evidence.max_age_duration_ns = 1000000000LL;
+
+    /* (1) */
+    CHECK(nodus_cmt_bs_prune_blocks(e.store, 20, e.state, &pruned, &evp) == CMT_OK, "prune 20");
+    CHECK(pruned == 19 && evp == 20 && nodus_cmt_bs_base(e.store) == 20 &&
+          nodus_cmt_bs_size(e.store) == 11,
+          "19 pruned, nothing evidence-preserved, base 20, size 11");
+    CHECK(nodus_cmt_bs_load_block_meta(e.store, 1, meta, &found) == CMT_OK && found &&
+          meta->header.height == 1, "H:1 kept and decodes as height 1");
+    for (h = 2; h < 20; h++) {
+        CHECK(bs_row_present(e.store, "H:", h) == 0, "H:2..H:19 gone");
+        CHECK(bs_row_present(e.store, "C:", h) == 0, "C:2..C:19 gone");
+    }
+    CHECK(bs_row_present(e.store, "C:", 1) == 0 && bs_row_present(e.store, "SC:", 1) == 0 &&
+          bs_row_present(e.store, "EC:", 1) == 0 && bs_row_present(e.store, "P:1:", 0) == 0,
+          "C:1, SC:1, EC:1, P:1:0 gone");
+    CHECK(nodus_cmt_bs_load_block_meta_by_hash(e.store, hash1, hash1_len, meta, &found) == CMT_OK &&
+          !found, "BH: of block 1 gone");
+    CHECK(bs_has_block(e.store, &l, 1, got) == 0, "LoadBlock(1) is nil");
+    CHECK(nodus_cmt_bs_load_base_meta(e.store, meta, &found) == CMT_OK && found &&
+          meta->header.height == 20, "base meta is height 20, not 1");
+
+    /* (2) a later pass, base > 1 */
+    CHECK(nodus_cmt_bs_prune_blocks(e.store, 25, e.state, &pruned, &evp) == CMT_OK &&
+          pruned == 5 && evp == 25 && nodus_cmt_bs_base(e.store) == 25, "prune 25: 5 pruned, base 25");
+    CHECK(bs_row_present(e.store, "H:", 1) == 1, "H:1 still kept");
+    for (h = 20; h < 25; h++) {
+        CHECK(bs_row_present(e.store, "H:", h) == 0, "H:20..H:24 gone");
+    }
+    CHECK(bs_has_block(e.store, &l, 25, got) == 1, "the new base loads");
+
+    free(sigs); free(got); free(meta);
+    loader_free(&l);
+    env_free(&e);
+    return 0;
+}
+
 /* store_test.go:654-693 TestLoadBlockMeta */
 static int t_store_load_block_meta(void)
 {
@@ -7524,6 +7621,7 @@ int main(void)
         { "store_load_block_part",                 t_store_load_block_part },
         { "store_prune_blocks",                    t_store_prune_blocks },
         { "store_seen_commit_cleanup",             t_store_seen_commit_cleanup },
+        { "store_prune_keeps_block1_meta",         t_store_prune_keeps_block1_meta },
         { "store_load_block_meta",                 t_store_load_block_meta },
         { "store_load_block_meta_by_hash",         t_store_load_block_meta_by_hash },
         { "store_block_fetch_at_height",           t_store_block_fetch_at_height },

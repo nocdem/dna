@@ -1110,7 +1110,13 @@ network file's list) so block sync always has a peer that holds old blocks:
 }
 ```
 
-A value that is not an integer ≥ 0 refuses the start (config load). A value from 1 up
+A value that is not an integer ≥ 0 refuses the start at config load — the parser is
+`load_config_json` in `tools/nodus_node_config.c` (:379-388, called at :526), the ONE
+file every binary links (`nodus/CMakeLists.txt`: nodus-server, nodus-witness,
+nodus-storage, nodus-core), so a malformed value refuses **nodus-core, nodus-storage,
+nodus-witness and nodus-server alike**. A valid value is used only by the process that
+runs the chain (nodus-server's in-process witness, or nodus-witness); nodus-core and
+nodus-storage link no witness object and ignore it. A value from 1 up
 to the chain's evidence window `max_age_num_blocks` (100 000 unless the genesis set
 another) refuses the start too, with `retain_blocks <N> refused: it must be 0 (keep
 every block) or greater than this chain's evidence window …`. At start a pruned node
@@ -1123,6 +1129,21 @@ window has passed. The FIRST commit after enabling it on a node with long histor
 walks every height from genesis up to `tip − N + 1` in one go (flushed every 1 000
 heights) — expect one slow block on that node. A prune error is logged
 (`failed to prune blocks: retain_height …`) and does not stop the node.
+
+**Exception: block 1's header row (`H:1`) is never pruned** (decision item 5). Every
+start runs a check (the V2 preflight) that compares the genesis document with block 1's
+header; without that row a pruned node would, after its next restart, refuse every
+transaction submitted to it (V2 ingress stays closed). So the node keeps that one row
+forever; everything else of block 1 is pruned as usual, and block 1 is not served to
+anyone (block sync answers "no block"). This is a deliberate deviation from cometbft's
+pruning; the design note is in `docs/ARCHITECTURE.md`.
+
+**Rollout order (decision item 5).** Enable pruning on **EU-5 first**. Let its chain
+pass height **120 961** (the first height at which `tip − 120 960 + 1` is above 1, so
+the first real prune has run), then **restart EU-5** and check that it still admits
+transactions (submit one through EU-5 and see it accepted; the start log must not say
+`Ledger V2 NOT ACTIVATED` or `Ledger V2 ingress remains CLOSED`). Only then enable it on
+the other pruned nodes, one at a time.
 
 **3. Consequences — read before choosing which nodes prune.**
 - **Joining / catching up needs an archive peer.** Block sync skips a peer whose
@@ -1142,9 +1163,10 @@ heights) — expect one slow block on that node. A prune error is logged
   written before the build that carries it stay until that height is pruned (never,
   on an archive node).
 
-**Rollback:** remove `retain_blocks` (or set it to 0) and restart. Blocks already
-pruned do not come back; the node simply stops pruning. There is no in-place way to
-restore full history on that node — history is read from the archive nodes.
+**Rollback:** remove `retain_blocks` (or set it to 0) and restart. That only **stops
+further pruning**; it does **not** restore any row already pruned — the node stays
+based at the height it last pruned to. There is no in-place way to restore full history
+on that node; history is read from the archive nodes.
 
 ---
 

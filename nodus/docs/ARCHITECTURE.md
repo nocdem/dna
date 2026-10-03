@@ -6703,6 +6703,28 @@ therefore cannot serve old blocks to block sync (`cmt_bsync_pool.c` skips a peer
 base is above the wanted height) or to consensus catch-up, nor old blocks / tx results
 to the explorer. Archive nodes (N = 0) keep everything; the runbook names them.
 
+*Exception — block 1's meta row `H:1` is never pruned* (decision item 5, operator
+2026-10-03). ⚠ DOCUMENTED DEVIATION from cometbft v0.38.26 `PruneBlocks`
+(store/store.go:347, which deletes `H:h` for every h below the evidence point,
+:392-396). Why: the start-time preflight (`nodus_witness_v2_preflight.c` check 5, the
+read at :341) compares the stored genesis document's app hash with block 1's header
+app hash on every open once `v2_blocks` is non-empty; a missing `H:1` is an
+INSPECTION_FAULT, V2 ingress stays disarmed (`nodus_witness.c` :918-938) and every
+CheckTx is refused (`nodus_witness_verify.c` :673-676) — so a pruned node that deleted
+`H:1` would stop admitting transactions at its next restart. `nodus_cmt_bs_prune_blocks`
+therefore skips the `H:` delete for h = 1 only; height 1's `BH:`, `C:`, `SC:`, `EC:` and
+parts are deleted as for any other height, it is still counted in `pruned`, and base
+moves past it. Block 1 is NOT held after that: `LoadBlock(1)` is nil (no parts),
+`LoadBlockMetaByHash` is nil (no `BH:`), `LoadBlockCommit(1)` is nil, `Size` and the
+base meta are computed from base. The readers that could reach height 1 either gate on
+base (Scan's v3 block read `v3b_load`, the consensus reactor's catch-up gossip
+`cmt_conr.c`, the handshake replay `nodus_witness_cmt_node.c`), read only recent heights
+(`cmt_cs.c` needProofBlock reads tip − 1; the committee seed reads e_start − 721), or
+fail on the missing parts (block sync's `respond_to_peer` loads `H:1`, then the parts
+read comes back empty and it answers NoBlockResponse — the same shape the reference
+already produces for evidence-window heights below base). Cost: one BlockMeta row kept
+forever. Pinned by `test_cmt_host` `store_prune_keeps_block1_meta`.
+
 **SeenCommit cleanup — every node, archive included.** ⚠ DOCUMENTED DEVIATION from
 cometbft v0.38.26, which keeps every historical SeenCommit (store.go:574 only comments
 "we can delete this at a later height"; PruneBlocks and DeleteLatestBlock are its only

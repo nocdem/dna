@@ -1421,7 +1421,22 @@ int nodus_cmt_bs_prune_blocks(nodus_cmt_store_t *s, int64_t height,
             evidence_point = h;
         }
         rc = CMT_OK;
-        if (h < evidence_point) {                                    /* :392-396 */
+        /* ⚠ DOCUMENTED DEVIATION from cometbft v0.38.26 (decision
+         * docs/plans/decisions/2026-10-03-block-pruning-7-paydays.md
+         * item 5): the reference deletes `H:h` for every h below the
+         * evidence point (store/store.go:392-396, PruneBlocks :347).
+         * Here block 1's BlockMeta row (`H:1`) is never deleted — the
+         * start-time preflight (nodus_witness_v2_preflight.c:341, check
+         * 5) compares the genesis document's app hash with block 1's
+         * header on every open, and without `H:1` a restarted pruned
+         * node keeps V2 ingress disarmed. Everything else of height 1
+         * (BH:, C:, SC:, EC:, P:) is deleted exactly as for any other
+         * height, and `base` moves past it as usual, so block 1 is NOT
+         * held: LoadBlock (no parts), LoadBlockMetaByHash (no BH:),
+         * LoadBlockCommit (no C:) all answer nil, and every reader that
+         * serves or reads a stored block gates on `base` or reads only
+         * recent heights. `pruned` still counts height 1. */
+        if (h < evidence_point && h != 1) {                          /* :392-396 */
             key_block_meta(h, key);
             rc = nodus_cmt_store_delete(s, false, key);
         }
