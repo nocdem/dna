@@ -1645,8 +1645,14 @@ static int nsw_connect_core(void) {
                                           * reconnect, nodus_client_tick */
     cfg.pinned_server_fps      = g_net.pins;
     cfg.pinned_server_fp_count = g_net.n_pins;
-    if (nodus_client_init(&g_client, &cfg, &g_id) != 0)
+    if (nodus_client_init(&g_client, &cfg, &g_id) != 0) {
+        /* init copies the identity into the client before an allocation
+         * that can fail (nodus_client.c nodus_client_init); with
+         * g_client_inited still 0 neither nsw_client_drop nor nsw_lock
+         * would wipe that copy */
+        nsw_wipe(&g_client.identity, sizeof(g_client.identity));
         return nsw_fail("Nodus client setup failed.");
+    }
     g_client_inited = 1;
     if (g_cancel) return -1;
     if (nodus_client_connect(&g_client) != 0) {
@@ -4098,7 +4104,7 @@ const nodus_identity_t *nc_host_identity(void) {
  * connected, the client ready, and — after a reconnect to another pinned
  * server — that server's chain id checked again (nsw_session_ok). Inside
  * the op bracket (nc_begin); may wait on the network. 0, or -1 with the
- * reason in nc_host_error(). Declared in nc_wasm.c. */
+ * reason in nc_host_error(). Declared in nc_core.h. */
 int nc_host_session_ok(void) {
     return nsw_session_ok() == 0 ? 0 : -1;
 }

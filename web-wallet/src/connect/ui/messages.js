@@ -55,6 +55,7 @@ import { keptChainName as keptNameOf, chainLookupNeeded, chainNameAfterLookup } 
 import { newDiag, diagSalt, diagDay, errorText, diagText } from './diag.js';
 
 const SYNC_MS = 30000;                   // how often requests and messages are checked
+const HISTORY_OPEN_MS = 15000;           // bound of the IndexedDB open + read (openLocal)
 const HEX128 = /^[0-9a-f]{128}$/;
 const TEXT_MAX = 4000;                   // one message, characters (the composer's maxlength)
 const COMPOSER_ROWS = 5;                 // the composer grows up to this many lines
@@ -216,8 +217,13 @@ async function openLocal(gen) {
   showState('Opening Messages', 'Loading your messages…', false);
   if (!store) {
     // A saved wallet keeps its history (S8); typed words and a new account
-    // keep nothing.
-    const opened = vaultId ? await openHistoryStore({ core, vaultId }) : memoryHistoryStore();
+    // keep nothing. The IndexedDB open and read are bounded (15 s, the
+    // page's request pattern): the wallet's connection waits for this local
+    // open (src/app.js startNodusSend), so a browser database that never
+    // answers must not hold it. On expiry Messages closes with
+    // HISTORY_SLOW_TEXT (retry offered), nothing half-loaded is kept and a
+    // late database handle is closed (store.js bounded).
+    const opened = vaultId ? await openHistoryStore({ core, vaultId, signal: AbortSignal.timeout(HISTORY_OPEN_MS) }) : memoryHistoryStore();
     if (gen !== generation) { opened.close(); return; }
     store = opened;
     state = structuredClone(store.state);

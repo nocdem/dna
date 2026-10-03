@@ -14,7 +14,8 @@ import {
   databaseNameForVault, messageRecordId, plaintextBytes, parsePlaintext, PLAINTEXT_MAX,
   encodeRecord, decodeRecord, encodeCounter, decodeCounter, nextCounter, budgetAllows, MAX_INVOCATIONS,
   COUNTER_ID, emptyState, checkState, memoryHistoryStore,
-  counterStorageKey, readStoredCounter, writeStoredCounter, openingCounter, deleteVaultHistory, HistoryDeleteBlocked
+  counterStorageKey, readStoredCounter, writeStoredCounter, openingCounter, deleteVaultHistory, HistoryDeleteBlocked,
+  openHistoryStore, StorageError, HISTORY_SLOW_TEXT
 } from '../src/connect/store.js';
 import {
   parseContactId, shortId, inspectUntrusted, httpsLink, profilePatch, profileStatusText, senderClockLabel,
@@ -595,4 +596,33 @@ test('diagnostics: a failed check is shown with a bounded message that never car
   assert.equal(errorText('plain'), 'plain');
   assert.equal(errorText(undefined), 'unknown error');
   assert.equal(errorText(new Error('')), 'unknown error');
+});
+
+// LOCAL FIRST: the wallet's connection waits for Messages' local open, so
+// the IndexedDB open of a saved wallet's history is bounded (messages.js
+// openLocal passes AbortSignal.timeout). Driven here by a manual
+// AbortController and a stub indexedDB whose open never answers until the
+// test says so — no clock.
+test('history open: an aborted bound rejects with the plain text; a database that answers later is closed', async () => {
+  const vaultId = btoa(String.fromCharCode(...Array.from({ length: 16 }, (_, i) => i * 17)));
+  const core = { historyKey: async () => ({}) };
+  const closed = [];
+  let request;
+  const before = globalThis.indexedDB;
+  globalThis.indexedDB = { open: () => (request = {}) };
+  try {
+    const controller = new AbortController();
+    const opening = openHistoryStore({ core, vaultId, storage: memoryStorage(), signal: controller.signal });
+    for (let i = 0; i < 10 && !request; i++) await new Promise(resolve => setImmediate(resolve));
+    assert.ok(request, 'the database open was requested');
+    controller.abort();
+    await assert.rejects(opening, error => error instanceof StorageError && error.message === HISTORY_SLOW_TEXT);
+    request.result = { close: () => closed.push('closed') };
+    request.onsuccess();
+    assert.deepEqual(closed, ['closed'], 'the late handle is closed, never used');
+    // Already expired before the open: refused at once.
+    await assert.rejects(openHistoryStore({ core, vaultId, storage: memoryStorage(), signal: AbortSignal.abort() }), error => error.message === HISTORY_SLOW_TEXT);
+  } finally {
+    if (before === undefined) delete globalThis.indexedDB; else globalThis.indexedDB = before;
+  }
 });

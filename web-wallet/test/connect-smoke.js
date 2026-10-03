@@ -9,19 +9,24 @@
 // bar on a narrow screen and a left rail on a wide one), with no second
 // unlock screen; the Wallet screen holds the wallet's sections and the
 // "Delete saved wallet" control moves into Device & settings while open and
-// back after lock; Chats is Messages (its Chats screen, status shown while
-// not open); the Lock in More is the wallet's lock and closes Messages too;
+// back after lock; Chats is Messages, open LOCALLY with no node (local
+// first: the own ID, the empty list and the add button at once, the status
+// line connecting / not connected, sending a contact request and saving the
+// profile refused offline); the Lock in More is the wallet's lock and
+// closes Messages too;
 // the other site's fresh cross-site mark refuses an unlock (src/site-lock.js,
 // through the real page wiring); no horizontal scroll at 390 px and 320 px;
 // the wallet build has no app shell, Messages navigation or Messages UI code.
 //
 // How it can lie / what it does NOT cover: every node WebSocket is closed
-// by the test (no network), so Messages never opens: Chats stays in its
-// status state (no chips, no list, no add-contact button) and the
-// conversation, contacts and profile screens and the add-contact dialog are
-// never reached. Sending, receiving, requests and profile editing need a live
-// node and are not covered here. Home's ID stays "Appears when Messages is
-// connected". Whether the browser stores the Secure cookie on
+// by the test (no network), so Messages only opens locally: a memory-only
+// wallet (typed words, not saved) with no history, so there is no contact,
+// no conversation and no request — the composer's and the requests' offline
+// refusals are not reached, and no kept history is shown. Whether the
+// failed connection attempt has already been reported is not asserted (the
+// status line may still say "Connecting…"). Sending, receiving, requests
+// and profile editing need a live node and are not covered here. Whether
+// the browser stores the Secure cookie on
 // http://127.0.0.1 is not asserted (the rule fails open); the refusal is
 // driven by a cookie the test adds.
 import assert from 'node:assert/strict';
@@ -105,18 +110,45 @@ try {
   assert.equal(await page.locator('#tab-home').isVisible(), false);
   assert.equal(await page.locator('#vault-delete-details').evaluate(node => node.parentElement.id), 'device-panel');
 
-  // Chats: Messages, not open (no node) — its status, no list or add button.
+  // Chats: Messages, open LOCALLY with no node (local first): the own ID,
+  // the (empty) list and the add button are there at once; the status line
+  // says the network is not connected; every action that sends is refused.
   await page.locator('.app-nav-item[data-tab="chats"]').click();
   await page.locator('.messenger').waitFor({ state: 'visible' });
+  await page.waitForFunction(() => document.querySelector('.messenger')?.dataset.open === 'true');
   assert.equal(await page.locator('.messenger-chats').isVisible(), true);
   assert.equal(await page.locator('.messenger-chats .nc-bar-title').innerText(), 'Chats');
   assert.equal(await page.locator('.messenger').getAttribute('data-screen'), 'list');
-  assert.equal(await page.locator('.messenger').getAttribute('data-open'), 'false');
-  assert.equal(await page.locator('.messenger-state').isVisible(), true);
-  assert.equal(await page.locator('.nc-chips').isVisible(), false);
-  assert.equal(await page.locator('.nc-fab').isVisible(), false);
-  for (const label of ['Contact requests', 'Your ID & profile']) assert.equal(await page.locator(`.messenger-chats .nc-icon-button[title="${label}"]`).isDisabled(), true, label);
-  // The composer exists only inside the conversation screen (hidden here).
+  assert.equal(await page.locator('.messenger-state').isVisible(), false);
+  assert.equal(await page.locator('.nc-chips').isVisible(), true);
+  assert.equal(await page.locator('.nc-fab').isVisible(), true);
+  assert.equal(await page.locator('#nc-own-id').textContent(), vectors[0].address);
+  assert.notEqual(await page.locator('#home-id').textContent(), 'Appears when Messages is connected');
+  // The status line: still connecting, or — once the first attempt failed
+  // (every WebSocket is closed) — the reason and the retry. How long the
+  // attempt takes is not asserted (no wait on it: a timing guess).
+  assert.match(await page.locator('.messenger-sync').textContent(), /^(Connecting to the network… Your messages on this device are shown; sending opens once connected\.|Not connected to the network right now; trying again in \d+ seconds\. Your messages on this device are shown\.)$/);
+  // Navigation is local and stays enabled.
+  for (const label of ['Contact requests', 'Your ID & profile']) assert.equal(await page.locator(`.messenger-chats .nc-icon-button[title="${label}"]`).isDisabled(), false, label);
+  // Add contact: the dialog opens; sending the request is refused offline.
+  await page.locator('.nc-fab').click();
+  await page.locator('#nc-add-dialog').waitFor({ state: 'visible' });
+  await page.locator('#nc-add-id').fill(vectors[1].address);
+  await page.locator('#nc-add-form button[type="submit"]').click();
+  await page.waitForFunction(() => document.querySelector('#nc-add-form [role="status"]')?.textContent.length > 0);
+  assert.equal(await page.locator('#nc-add-form [role="status"]').textContent(), 'Requests can be sent once Messages is connected to the network.');
+  await page.locator('#nc-add-form button', { hasText: 'Close' }).click();
+  // Your ID & profile: the own ID; saving the profile is refused offline.
+  await page.locator('.messenger-chats .nc-icon-button[title="Your ID & profile"]').click();
+  assert.equal(await page.locator('.messenger').getAttribute('data-screen'), 'profile');
+  assert.equal(await page.locator('#nc-own-id').isVisible(), true);
+  await page.locator('#nc-profile-form button[type="submit"]').click();
+  assert.equal(await page.locator('#nc-profile-form [role="status"]').textContent(), 'Your profile can be saved once Messages is connected to the network.');
+  await page.locator('.messenger-profile .nc-back').click();
+  assert.equal(await page.locator('.messenger').getAttribute('data-screen'), 'list');
+  // The composer exists only inside the conversation screen (hidden here;
+  // no contact, so no conversation offline — its offline Send gate is not
+  // reached by this test).
   assert.equal(await page.locator('#nc-send-text').count(), 1);
   assert.equal(await page.locator('#nc-send-text').isVisible(), false);
   assert.equal(await page.locator('#nc-send-text').getAttribute('maxlength'), '4000');
@@ -124,7 +156,8 @@ try {
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 844 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `horizontal scroll at ${width}px`);
-    assert.equal(await page.locator('.messenger-state').isVisible(), true);
+    assert.equal(await page.locator('.messenger-chats').isVisible(), true);
+    assert.equal(await page.locator('.messenger').getAttribute('data-open'), 'true');
     // Narrow: the four entries are a bottom bar.
     const bar = await page.locator('.app-nav').boundingBox();
     assert.ok(bar.width > bar.height && Math.abs(bar.y + bar.height - 844) < 2, `bottom bar at ${width}px: ${JSON.stringify(bar)}`);
@@ -150,7 +183,7 @@ try {
 
   assert.deepEqual(unexpected, []);
   assert.deepEqual(errors, []);
-  console.log(`Nodus Connect smoke test passed (${sockets.length} node WebSocket(s) refused by the test): one unlock opens wallet and Messages, cross-site refusal, one lock, no horizontal scroll at 390/320 px.`);
+  console.log(`Nodus Connect smoke test passed (${sockets.length} node WebSocket(s) refused by the test): one unlock opens wallet and Messages (locally, offline sends refused), cross-site refusal, one lock, no horizontal scroll at 390/320 px.`);
 } finally {
   await browser?.close();
   server?.stop();

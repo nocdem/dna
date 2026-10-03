@@ -38,7 +38,7 @@ For Caddy, `deploy/Caddyfile` serves the static files and supplies the response 
   - **Saving the wallet says what it does and whether it worked.** "Save wallet on this device" opens with a plain explanation (kept in this browser on this device, unlocked with your password; without saving you type your 24 words each time; the three steps). The result — saved, password changed, not saved and why — is written right under the buttons (`#vault-save-status`, `saveResult`) as well as in `#vault-status`; before, it went only to `#vault-status`, far above the button on the wallet page and, in Nodus Connect, on the start screen that is hidden while the wallet is open. The unsaved storage line points to the save section.
   - **NODUS connection is tried again by itself.** Before, NODUS left receive-only mode only if the first connection succeeded; a failed first connection (no pinned node answered in time, the module file did not load, the chain check failed) or a later lost one stayed down until lock / reopen or a reload — no balance, no Earn, and the send note. Now `startNodusSend` schedules a new client after 5, 10, 20, 40, then every 60 seconds (fixed, no randomness) while the same wallet is open (`src/app.js` RECONNECT, `scheduleNodusRetry`); success restores the sendable network, balance, Earn, the name and the extensions. With a send module in the build the not-yet-connected note reads "Connecting to the Nodus network… Sending NODUS becomes available as soon as the connection is ready." (`src/nodus/network.js` `nodusNetworkFor(ready, { module })`).
   - **Nodus Connect header shows your chain name.** Home's identity title shows the wallet's own chain name as the reverse lookup (`ownChainName`, `dnac_name_of` for this address) answered it on open, else "Your ID" (`src/app.js` `refreshName` raises the new `ownName` extension event; `src/connect-main.js` `nameExtension`). The wallet page has no "Your ID" label, so nothing changed there.
-  - **Nodus Connect shows names from this device's saved copy, without the 7-day limit.** A chain name is permanent (decision `2026-10-02-onchain-names.md` item 4), so a name found for this wallet or a contact and kept in the saved wallet's encrypted Messages history (`state.chainNames`, `src/connect/store.js`) no longer expires after 7 days (`src/connect/ui/chain-names.js` `keptChainName`). A contact's kept name is shown as soon as Messages opens and is not asked again; an ID without a kept name is asked once per session. This wallet's own kept name is shown at once on Home (title and identity line), in More (the entry reads "<name> — ID & profile", `#more-name`; "Your ID & profile" when no name is known) and on "Your ID & profile" (marked "saved on this device" until confirmed), and is asked again once per session: a confirmed other name replaces it, a confirmed "no name" removes it. The wallet's own lookup now says when it answered (`ownName({ name, confirmed: true })`, `src/app.js` `refreshName`); once it has answered, Home and More show its answer (`chain-names.js` `shownOwnName`). The name lookups now run before the message check of each round instead of after it, so names appear on the first check. An unsaved wallet keeps the names in memory only, as before. **Limit:** the saved copy can be read only after the Nodus connection is made — its key comes from the Messages core, which runs on the wallet's Nodus client, and that client connects as part of its unlock (`crypto/nodus-send-wasm.c` `nsw_unlock`); before the connection, Home shows "Your ID" as before.
+  - **Nodus Connect shows names from this device's saved copy, without the 7-day limit.** A chain name is permanent (decision `2026-10-02-onchain-names.md` item 4), so a name found for this wallet or a contact and kept in the saved wallet's encrypted Messages history (`state.chainNames`, `src/connect/store.js`) no longer expires after 7 days (`src/connect/ui/chain-names.js` `keptChainName`). A contact's kept name is shown as soon as Messages opens and is not asked again; an ID without a kept name is asked once per session. This wallet's own kept name is shown at once on Home (title and identity line), in More (the entry reads "<name> — ID & profile", `#more-name`; "Your ID & profile" when no name is known) and on "Your ID & profile" (marked "saved on this device" until confirmed), and is asked again once per session: a confirmed other name replaces it, a confirmed "no name" removes it. The wallet's own lookup now says when it answered (`ownName({ name, confirmed: true })`, `src/app.js` `refreshName`); once it has answered, Home and More show its answer (`chain-names.js` `shownOwnName`). The name lookups now run before the message check of each round instead of after it, so names appear on the first check. An unsaved wallet keeps the names in memory only, as before. **Limit:** the saved copy can be read only after the Nodus connection is made — its key comes from the Messages core, which runs on the wallet's Nodus client, and that client connects as part of its unlock (`crypto/nodus-send-wasm.c` `nsw_unlock`); before the connection, Home shows "Your ID" as before. (Lifted by the local-first open, 2026-10-04: the key needs only the identity — `nsw_identify` — so the saved copy is read before the connection; "Nodus Connect site" below.)
   - **Nodus Connect asks a contact's chain name again when you open the conversation.** Before, an ID was looked up at most once per session and a failed lookup counted as asked, so a contact who registered a name after the session began — or whose first lookup failed — stayed an ID until the next session. Now opening a conversation with a contact that has no known chain name looks the name up again right then (`src/connect/ui/messages.js` `recheckChainNameOnOpen`, from `selectContact`); a found name is shown in the conversation header and the lists at once and kept through the usual save (a saved wallet's encrypted Messages history, as before). A failed lookup no longer counts as asked: the next sync round tries again. No ID is looked up twice within 60 seconds, whichever path asks (`chain-names.js` `CHAIN_LOOKUP_SPACING_MS`, `chainLookupSpaced`; the times are held in memory only, never saved). Unchanged: a contact's kept name is not asked again, the own name is asked once per session (after a successful answer), a confirmed "no name" still counts as asked for the sync round, and names come only from the confirmed reverse lookup.
   - **One contact's failed check no longer stops the others; a conversation shows its last check under "Details".** Before, the message check walked the contact list with no per-contact error handling (`src/connect/ui/messages.js` `sync`): an exception from any step of one contact's check (profile read, salt step, delivery read, publish, a day read, saving) jumped to the round's single catch, which showed only "The network could not be reached…" — and every contact after it in the list was never checked, round after round, with no note in their conversations. Now each contact's check is caught on its own: the next contact is still checked, the status line adds "N contact(s) could not be checked (see Details in the conversation)", and the error is kept with that contact. Each conversation has a collapsed "Details" line (`src/connect/ui/diag.js` `diagText`) with the last check of that contact: its time, whether the profile was read, the salt step's status (and whether the salt changed — never the salt), and for each day read its outcome, how many messages it returned, how many could not be checked and how many were other items (empty days are folded into one count); a failed check adds "Last check failed: <message>" (bounded, any long hex run cut out). The diagnostics live in memory only, are never written to the encrypted history store (`src/connect/store.js`, decision `2026-09-30-connect-history-at-rest.md`), and are dropped with the rest of the session on lock (`messages.js` `wipe`).
 - **Claim a genesis allocation on the Nodus testnet (0.1.26).** When the open wallet's Nodus address holds an allocation in the chain's genesis distribution, a "Claim your allocation (… NODUS)" action appears under the NODUS asset; it opens a review (amount, paid to your own address, chain id, "can be claimed only once"), then submits and tracks the claim in Activity. The C side is nodus-cli `v2-claim` (`nodus/tools/nodus-cli.c` `cmd_v2_claim`) compiled into `send.wasm` (`crypto/nodus-send-wasm.c` "GENESIS CLAIM", over the shared codec `shared/dnac/manifest_wire.c`, now in both build scripts together with `ledger_roots_v2.c`).
@@ -1689,7 +1689,8 @@ NODUS send would knock each other off.
   Messages exports its client, its op bracket (one export of the module at a
   time), its identity and its cancel flag (`nc_core.h` "Host"). No Messages
   export creates a client or opens a connection.
-- Keys: `nc_unlock` (after the wallet's `nsw_unlock`) takes the words once,
+- Keys: `nc_unlock` (after the wallet's `nsw_identify` or `nsw_unlock` — it
+  needs the identity only, not the connection) takes the words once,
   derives the Messages KEM keys (`nc_keys_from_words`: Kyber round-3 from the
   encryption seed, ML-KEM-1024 from the master seed — the signing seed the
   send module holds cannot give them) and refuses unless the derived ML-DSA
@@ -1706,9 +1707,15 @@ NODUS send would knock each other off.
 - JS: `src/nodus/send-module.js` offers `connect(run)` (queued) and
   `connectSync(run)` (never suspends), limited to `nc_*` names;
   `src/nodus/client.js` runs `connect` in its ONE queue (optional ops, like
-  claim and staking). `src/connect/core.js` takes the wallet's unlocked
-  client (`createNodusConnectCore({ nodus })`) and never loads or
-  instantiates a module; API at the top of that file.
+  claim and staking). `src/connect/core.js` takes the wallet's client
+  (`createNodusConnectCore({ nodus })`) and never loads or instantiates a
+  module; API at the top of that file. Since the local-first open
+  (2026-10-04) the client may be only IDENTIFIED: `connectLocal(run)` (same
+  queue) runs the identity-only exports (`nc_unlock`, `nc_profile_load`,
+  `nc_hist_*`), `connect(run)` the rest once 'ready'; on the C side every
+  sending export binds the client per call and runs the wallet's own
+  session check (`nc_host_session_ok` = `nsw_session_ok`, which also checks
+  the chain id again after a reconnect to another pinned server).
 - Asyncify: there is no explicit function list; `ASYNCIFY=1` instruments
   every function that can reach `emscripten_sleep`. The waiting `nc_*`
   exports are called with `ccall { async: true }`. The 16 KiB unwind bound
@@ -1749,17 +1756,37 @@ delete text of 0.1.37, not Messages UI.) Ixios is a build flag in both:
 site.
 
 **One unlock, one session, one lock.** `src/wallet-extensions.js` is the only
-seam: `src/app.js` raises `attach`, `nodusReady`, `nodusClosing`,
-`nodusUnavailable`, `ownName` (2026-10-03: the own chain name from the
-reverse lookup, '' for none; `confirmed: true` only when the lookup
-answered), `vaultDeleting` and `locked`; the wallet page
+seam: `src/app.js` raises `attach`, `nodusReady`, `nodusConnectFailed`,
+`nodusClosing`, `nodusUnavailable`, `ownName` (2026-10-03: the own chain
+name from the reverse lookup, '' for none; `confirmed: true` only when the
+lookup answered), `vaultDeleting` and `locked`, and asks (gather)
+`nodusIdentified` (answered with promises it waits for) and `recipients`;
+the wallet page
 registers only the shared vaults. `src/connect-main.js` names the site (`configureSite
 ('connect')`), mounts Messages and registers `walletExtension` BEFORE it
 imports `src/app.js`.
-- Open: when the wallet's NODUS client is ready (`startNodusSend`), Messages
-  is opened on THAT client (`openMessages({ client, phrase, vaultId, fresh })`):
-  same words, same send.wasm module, same tier-2 session — no second unlock
-  screen and no second session. `vaultId` is the saved wallet's id when the
+- Open, LOCAL FIRST (operator 2026-10-04: "everything once cached must show
+  first, the network work runs in the background"): `startNodusSend` first
+  IDENTIFIES the wallet's NODUS client (`client.identify` →
+  `nsw_identify`: the identity from the seed, no session, nothing sent),
+  then asks the extensions `gather('nodusIdentified', …)`; Messages answers
+  with the promise of its local open on THAT client (`openMessages({ client,
+  phrase, vaultId, fresh })` → `openLocal`: history store, contacts,
+  conversations, kept profiles and pictures — the own one included — kept
+  chain names, own ID; shown at once). Only after that settles does the
+  wallet connect (`connectNodus` → `client.connectNetwork` → `nsw_connect`:
+  pinned session + chain check): the client runs one operation at a time, so
+  a connection queued first would hold the local steps. Then `nodusReady`
+  starts Messages' network phase in the background (`goOnline` → `sync`:
+  own profile read, or a fresh account's publish; the contact-list merge;
+  the usual check) with a status line ("Connecting…", "Updating…", or the
+  failure); nothing is sent before the own account was checked (`online`:
+  composer Send, add contact, accept / withdraw, profile and picture save,
+  vault items). A failed connection attempt keeps the client and the view
+  (`nodusConnectFailed`) and is tried again on the SAME client after the
+  RECONNECT wait; a node of another chain is final (the client locks itself,
+  `nodusClosing` with a reason). Same words, same send.wasm module, same
+  tier-2 session — no second unlock screen and no second session. `vaultId` is the saved wallet's id when the
   wallet was opened by unlocking its saved copy (or saved here before
   Messages opened): message history is then kept in IndexedDB (S8);
   otherwise memory only and no delivery confirmations (saving the wallet
@@ -1950,13 +1977,18 @@ Messages navigation or UI strings; one unlock opens the app on Home (no
 second unlock screen) with Home / Chats / Wallet / More as a left rail at
 1280 px and a bottom bar at 390 and 320 px; the Wallet screen shows the
 wallet's sections and holds "Delete saved wallet" while open (back on the
-start screen after lock); Chats shows Messages' status while it is not open;
-a fresh `wallet` mark refuses the unlock; no horizontal scroll at 390 and
-320 px on any screen; the Lock in More locks the wallet and Messages.
-NOT covered: every node WebSocket is closed by the test, so Messages never
-opens — the chips and list with real contacts, the conversation and its
-composer, Contacts, Your ID & profile and the add-contact dialog are not
-reached; sending, receiving, requests and profile editing need a live node.
+start screen after lock); Chats is Messages opened LOCALLY with no node
+(2026-10-04, local first: the own ID, the empty list and the add button at
+once; the status line "Connecting…" or the failed-attempt text; sending a
+contact request and saving the profile are refused offline); a fresh
+`wallet` mark refuses the unlock; no horizontal scroll at 390 and 320 px on
+any screen; the Lock in More locks the wallet and Messages.
+NOT covered: every node WebSocket is closed by the test, so Messages opens
+only locally, for an unsaved wallet with no history — no contact, no
+conversation, no request: the composer's and the requests' offline
+refusals, kept history and Contacts are not reached; whether the failed
+attempt was already reported is not asserted; sending, receiving, requests
+and profile editing need a live node.
 Not verified: nothing in this section has been run in a browser yet.
 
 ## Remove a contact and the address book (unreleased)
@@ -2048,7 +2080,7 @@ list re-check, the encrypted record (own key, vault id bound, tamper
 refused), and contact removal (not merged back from the network list, cleared
 when added again, the saved state's `removed` field). Not verified: nothing
 in this section has been run in a browser yet; `test/connect-smoke.js` does
-not reach Contacts (Messages never opens there).
+not reach Contacts (Messages opens there only locally, with no contact).
 
 ## Validator delegator count (node side only, unreleased)
 

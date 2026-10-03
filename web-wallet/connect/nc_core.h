@@ -821,10 +821,21 @@ int nc_host_begin(void);
 /** Leave it: 0, or 1 when lock / cancel ran meanwhile. */
 int nc_host_end(void);
 const char *nc_host_error(void);
-/** The session's client when the wallet's unlock succeeded, else NULL. */
+/** The session's client once the wallet is CONNECTED (nsw_connect /
+ *  nsw_unlock: the pinned session is open and the node's chain id was
+ *  checked), else NULL. */
 nodus_client_t *nc_host_client(void);
-/** The session identity (ML-DSA-87) when unlocked, else NULL. */
+/** The session identity (ML-DSA-87) once the wallet is IDENTIFIED
+ *  (nsw_identify / nsw_unlock — no session needed: the Messages keys, the
+ *  history key and kept-profile checks run before the network), else NULL
+ *  (also after lock / cancel). */
 const nodus_identity_t *nc_host_identity(void);
+/** The wallet's own session check for an export about to SEND
+ *  (nsw_session_ok): connected, the client ready, and after a reconnect to
+ *  another pinned server that server's chain id checked again. Inside the
+ *  op bracket; may wait on the network. 0, or -1 with the reason in
+ *  nc_host_error(). */
+int nc_host_session_ok(void);
 /** The module's cancel flag (set by its cancel and lock). */
 volatile const int *nc_host_cancel(void);
 /** Provided by nc_wasm.c; the host's lock calls it: wipes every Messages

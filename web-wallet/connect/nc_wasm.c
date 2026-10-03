@@ -244,12 +244,6 @@ static int nc_end(int rc) {
     return rc;
 }
 
-/* The host's session check (crypto/nodus-send-wasm.c nc_host_session_ok =
- * nsw_session_ok: connected, client ready, and the chain id checked again
- * after a reconnect to another pinned server). Not in nc_core.h's Host
- * list yet; declared here, defined by the host. */
-int nc_host_session_ok(void);
-
 /* Every export that SENDS. Messages unlocks on the identity alone (the
  * wallet may not be connected yet), so the client is bound here, on each
  * call: the host's one client exists only once its connect succeeded and

@@ -263,6 +263,26 @@ function openDatabase(name) {
   });
 }
 
+export const HISTORY_SLOW_TEXT = 'Your message history could not be opened on this device right now.';
+// `promise` until `signal` aborts, then a StorageError (HISTORY_SLOW_TEXT);
+// a value that settles after that is handed to `late` (to close it) and
+// dropped. No signal: `promise` itself.
+function bounded(promise, signal, late) {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const stop = () => { if (done) return; done = true; reject(new StorageError(HISTORY_SLOW_TEXT)); };
+    if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true });
+    promise.then(value => {
+      if (done) { try { late?.(value); } catch { /* dropped either way */ } return; }
+      done = true; signal.removeEventListener('abort', stop); resolve(value);
+    }, error => {
+      if (done) return;
+      done = true; signal.removeEventListener('abort', stop); reject(error);
+    });
+  });
+}
+
 // One read-only pass over the three stores; decryption happens after it.
 // (These IndexedDB paths have no automated test: test/connect-ui.test.js.)
 function readAll(db) {
@@ -297,14 +317,18 @@ function writeAll(db, puts) {
 // The persistent store of a saved wallet. Resolves once the whole history
 // has been read and decrypted; rejects (Messages stays closed) on any error.
 // Returns { persistent: true, state, messages, save(state, newMessages), close(), erase() }.
-export async function openHistoryStore({ core, vaultId, storage = globalThis.localStorage }) {
+// `signal` (optional): bounds the IndexedDB open and read, which resolve only
+// when the browser answers — once it aborts the open rejects with a
+// StorageError (HISTORY_SLOW_TEXT); a database handle that arrives later is
+// closed and dropped, nothing is written.
+export async function openHistoryStore({ core, vaultId, storage = globalThis.localStorage, signal }) {
   const name = databaseNameForVault(vaultId);
   await sealing(() => core.historyKey(name), 'The key for your message history could not be prepared.');
-  const db = await openDatabase(name);
+  const db = await bounded(openDatabase(name), signal, late => late.close());
   db.onversionchange = () => db.close();
   let counter, state, messages, profiles, vaults;
   try {
-    const raw = await readAll(db);
+    const raw = await bounded(readAll(db), signal);
     // The larger of the database record and the copy that survives a
     // history delete (counterStorageKey above).
     counter = openingCounter(decodeCounter(raw.counter), readStoredCounter(storage, name));
