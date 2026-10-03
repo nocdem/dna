@@ -293,7 +293,13 @@ async function addShared(code) {
   const s = shareStates.get(code);
   if (!s || s.state !== 'confirm') return;
   try {
-    const record = makeVaultRecord({ info: s.info, label: s.item.label, created: s.item.created, from: s.item.from });
+    // F6: the block a share says its history starts at is never past the
+    // node's tip (a later one would skip nothing real but stall the reading)
+    const ri = await client.rulesetInfo();
+    const tip = ri?.tip && /^[1-9]\d{0,19}$/.test(ri.tip) ? BigInt(ri.tip) : null;
+    if (tip === null) throw new Error('The current Nodus block height is unknown. Try again in a minute.');
+    const created = BigInt(s.item.created) > tip ? tip.toString() : s.item.created;
+    const record = makeVaultRecord({ info: s.info, label: s.item.label, created, from: s.item.from });
     await keep(record);
     shareStates.set(code, { state: 'added' });
     await nameMembers(record, generation);

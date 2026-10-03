@@ -2891,6 +2891,8 @@ int nsw_name_build(const char *name, const char *expiry_dec) {
 #define NSW_MS_MAX_COINS   64
 #define NSW_MS_MAX_EVENTS  32
 #define NSW_MS_SCAN_BLOCKS 200u
+#define NSW_MS_SCAN_PAGES  64u             /* pages of ONE block per read  */
+#define NSW_MS_SCAN_ITEMS  4096u           /* items per scan call (F6)     */
 #define NSW_MS_MAX_SIGS    ((int)NODUS_RT_AUTH_MAX_SIGNERS)
 /* the auth-less envelope a proposal message carries (see "transport") */
 #define NSW_MS_PREFIX_MAX  65536u
@@ -3221,6 +3223,12 @@ static void nsw_ms_apply_item(uint64_t h, const nodus_dnac_v3_item_t *it) {
         if (strncmp(cr->owner, g_ms.addr_hex, 128) != 0) continue;
         touched = 1;
         if (memcmp(cr->token_id, zero64, 64) != 0 || cr->amount == 0) continue;
+        /* F6: a coin id already held (a node repeating an item, or a page
+         * read twice) is not added twice */
+        int dup = 0;
+        for (int c = 0; c < g_ms.n_coins && !dup; c++)
+            if (memcmp(g_ms.coins[c].id, cr->id, 64) == 0) dup = 1;
+        if (dup) continue;
         if (in_sum <= UINT64_MAX - cr->amount) in_sum += cr->amount;
         if (g_ms.n_coins >= NSW_MS_MAX_COINS) { g_ms.coins_full = 1; continue; }
         nsw_ms_coin_t *c = &g_ms.coins[g_ms.n_coins++];
@@ -3254,10 +3262,18 @@ int nsw_msig_scan(const char *from_dec) {
         last = tip;
         if (tip - from >= NSW_MS_SCAN_BLOCKS) last = from + NSW_MS_SCAN_BLOCKS - 1u;
     }
+    /* F6: bounded work per call — at most NSW_MS_SCAN_PAGES pages of one
+     * block (a node whose paging never ends is refused) and, across the
+     * call, a stop after the block in which NSW_MS_SCAN_ITEMS items were
+     * passed (the next call resumes after it) */
+    uint64_t items = 0;
     for (uint64_t h = from; h <= last; h++) {
-        uint32_t idx = 0;
+        uint32_t idx = 0, pages = 0;
         for (;;) {
             if (g_cancel) return nsw_end(-1);
+            if (++pages > NSW_MS_SCAN_PAGES)
+                return nsw_end(nsw_fail("Block %llu has more pages than this "
+                                        "page reads.", (unsigned long long)h));
             nodus_dnac_v3_block_result_t page;
             memset(&page, 0, sizeof(page));
             rc = nodus_client_dnac_v3_block(&g_client, h, idx, 0, &page);
@@ -3265,6 +3281,7 @@ int nsw_msig_scan(const char *from_dec) {
                 return nsw_end(nsw_fail("Block %llu could not be read "
                                         "(rc=%d).", (unsigned long long)h, rc));
             int bad = page.height != h;
+            items += page.count;
             for (size_t i = 0; !bad && i < page.count; i++) {
                 const nodus_dnac_v3_item_t *it = &page.items[i];
                 if (it->code == 0 && it->has_effects) nsw_ms_apply_item(h, it);
@@ -3281,6 +3298,7 @@ int nsw_msig_scan(const char *from_dec) {
                                         "not advance.", (unsigned long long)h));
             idx = nidx;
         }
+        if (items >= NSW_MS_SCAN_ITEMS) { last = h; break; }
     }
     nsw_fmt_u64(last + 1, g_ms.scan_next);
     nsw_fmt_u64(tip, g_ms.scan_tip);
