@@ -525,7 +525,8 @@ Connect 0.1.53–0.1.54 (one name per contact: chain name, else profile
 name, ID underneath; Connect opens from what the device keeps and connects
 in the background, sending waits until connected — `web-wallet/README.md`
 "Nodus Connect"); PLANNED = the storage role reward (design approved
-2026-10-04, being built, switched on later by an on-chain vote: a 1,000,000
+2026-10-04, being built, switched on later by a hard fork that validators
+vote in: a 1,000,000
 NODUS storage-role stake, an equal share of the Storage pool when validators
 confirm the node serves stored data, no storage reward for validators, a
 storage node and a validator may be the same machine). No node is named and
