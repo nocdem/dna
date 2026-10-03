@@ -73,10 +73,36 @@ and consensus, the chain database, `<data_path>/witness.sock`. Same `/etc/nodus.
 config file — keep `witness_external` / `storage_external` false (or absent) in
 `/etc/nodus.conf`, so the same file still starts `nodus.service`.
 
-**Installed by** `deploy/build-nodus.sh` (Release): all five binaries to
-`/usr/local/bin`, the three units to `/etc/systemd/system/` — copied, **not enabled**.
-`tools/nodus-update.sh` installs every binary and restarts whichever layout is active
-(the three units if `nodus-core` is active, else `nodus.service`).
+**Installed by** `deploy/build-nodus.sh` (Release): all five binaries (`nodus-server`,
+`nodus-core`, `nodus-storage`, `nodus-witness`, `nodus-cli`) to `/usr/local/bin`, the
+three units to `/etc/systemd/system/` — copied, **not enabled**. `tools/nodus-update.sh`
+installs the same five binaries and re-copies the three unit files from `nodus/deploy/`
+(then `systemctl daemon-reload`), so a unit fix reaches hosts kept current with it.
+
+**Which layout an update touches — decided by `systemctl is-enabled`, never by
+`is-active`** (both scripts, before they pull or install anything):
+- `nodus.service` enabled → the combined server is stopped, updated, started.
+- `nodus-core` enabled → the split units that are enabled are stopped, updated, started
+  (core is in every layout; storage and witness are each optional — decision item 12).
+- Both enabled, neither enabled, or `nodus-storage` / `nodus-witness` enabled without
+  `nodus-core` → the script **refuses** with a message and changes nothing (no pull, no
+  install). It never guesses, and never starts `nodus.service` on a host whose split
+  units are enabled. A layout that is down at the moment is still the host's layout —
+  that is why `is-active` is not used.
+- Binaries are installed **atomically**: `install -m 0755 src dest.new && mv -f dest.new
+  dest`, after the layout's units are stopped — a running binary is never written in
+  place.
+- `build-nodus.sh --debug` refuses on a host where any split unit is enabled or active
+  (`nodus-debug` would be a second server on the same data directory); a first install
+  (no `nodus.service` file yet) refuses the same way rather than enable and start
+  `nodus.service` beside split units.
+
+**First install from a fresh clone needs `/etc/nodus.conf` written by hand.**
+`deploy/nodus.conf.example` is gitignored, so a fresh clone does not have it;
+`build-nodus.sh` then skips the config copy with a message and goes on to install and
+start `nodus.service`, which cannot start without a config (and stops after 3 failed
+starts in 300 s, `StartLimitBurst=3`). Write `/etc/nodus.conf` first — or after, then
+`systemctl reset-failed nodus && systemctl restart nodus`.
 
 **Start order and dependencies.** Storage and witness carry `After=` + `Wants=
 nodus-core.service` — never `Requires=` / `BindsTo=`. So `systemctl start nodus-witness`
@@ -123,8 +149,8 @@ data migration in either direction (the `addr_seq` caveat above aside).
   directory may have lost files must have **all three** units stopped by hand.
 - **Restart order on a live validator.** Restarting the witness first opens a consensus
   gap for this validator; restarting core first drops its clients. The units order only
-  starts (`After=`); `nodus-update.sh` restarts the three together and claims no order
-  beyond that. Decision item 22 is the rollout order of the SPLIT itself (witness seam
+  starts (`After=`); `nodus-update.sh` and `build-nodus.sh` stop the enabled split units
+  together and start them together, and claim no order beyond that. Decision item 22 is the rollout order of the SPLIT itself (witness seam
   before storage), not a restart rule.
 - `ReadOnlyPaths=/var/lib/nodus/identity` for storage / witness (item 10 enforced by the
   OS) is NOT in the units: only the witness's `addr_seq` / lock / marker writes were
