@@ -14,8 +14,11 @@
  * BOTH storage_external and witness_external are REQUIRED ("..._external":
  * true or --storage-external --witness-external): this binary carries
  * neither half in-process, so a config without them describes a node it
- * cannot be. The process refuses to start (exit 1). A combined or
- * half-split node runs nodus-server (decision item 8: it stays).
+ * cannot be. The process refuses to start (exit 1). The flags say only
+ * what is NOT in this process; which of nodus-storage / nodus-witness run
+ * beside it is the deployment's choice (decision item 12: core + storage,
+ * core + witness, all three). A node that keeps either half in-process
+ * runs nodus-server (decision item 8: it stays).
  *
  * Same command line and config file as nodus-server (nodus_node_config.c,
  * item 18), WITHOUT the witness-side parts (nodus_node_config_load_storage):
@@ -66,9 +69,12 @@ int main(int argc, char **argv) {
         QGP_LOG_ERROR(LOG_TAG, "the loaded config does not set both "
                       "storage_external and witness_external "
                       "(storage_external=%s, witness_external=%s). "
-                      "nodus-core runs only beside a nodus-storage and a "
-                      "nodus-witness on the same data directory; a combined "
-                      "or half-split node runs nodus-server. Not starting.",
+                      "This binary carries neither the DHT nor the witness "
+                      "in-process, so it needs both flags; which of "
+                      "nodus-storage / nodus-witness run beside it is the "
+                      "deployment's choice (decision item 12). A node that "
+                      "keeps either half in-process runs nodus-server. "
+                      "Not starting.",
                       config.storage_external ? "true" : "false",
                       config.witness_external ? "true" : "false");
         return 1;

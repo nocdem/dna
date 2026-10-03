@@ -223,8 +223,8 @@ int main(int argc, char **argv) {
      * reads them and refuses to start without them. */
     if (!config.identity_path[0]) {
         fprintf(stderr, "NODUS_WITNESS: no identity directory (-i / "
-                "\"identity_path\") — the witness never creates an "
-                "identity; start nodus-server first. Not starting.\n");
+                "\"identity_path\") — the witness never creates one; start "
+                "the core (nodus-core or nodus-server) first. Not starting.\n");
         return 1;
     }
 
@@ -257,8 +257,8 @@ int main(int argc, char **argv) {
     nodus_identity_t identity;
     if (nodus_identity_load_readonly(config.identity_path, &identity) != 0) {
         fprintf(stderr, "NODUS_WITNESS: identity at %s is missing or "
-                "incomplete — the witness only reads it (start nodus-server "
-                "first to create it). Not starting.\n", config.identity_path);
+                "incomplete — the witness only reads it; nodus-core or "
+                "nodus-server makes it. Not starting.\n", config.identity_path);
         return 1;
     }
 
@@ -312,8 +312,8 @@ int main(int argc, char **argv) {
             "ERROR:              gate, or an unmet bootstrap "
             "precondition.\n");
         fprintf(stderr,
-            "ERROR:   DHT / clients: unaffected — they run in nodus-server; "
-            "dnac_* requests are\n"
+            "ERROR:   DHT / clients: unaffected — other processes serve "
+            "them; dnac_* requests are\n"
             "ERROR:              answered \"" NODUS_CHAIN_NO_WITNESS_MSG
             "\" until this process is back.\n");
         nodus_witness_ipc_free(ipc);

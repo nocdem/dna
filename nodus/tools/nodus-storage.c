@@ -144,8 +144,8 @@ int main(int argc, char **argv) {
     /* Decision item 10: only core creates identity files. */
     if (!config.identity_path[0]) {
         fprintf(stderr, "NODUS_STORAGE: no identity directory (-i / "
-                "\"identity_path\") — the storage process never creates an "
-                "identity; start nodus-server first. Not starting.\n");
+                "\"identity_path\") — this process never creates one; start "
+                "the core (nodus-core or nodus-server) first. Not starting.\n");
         return 1;
     }
 
@@ -167,8 +167,8 @@ int main(int argc, char **argv) {
     nodus_identity_t identity;
     if (nodus_identity_load_readonly(config.identity_path, &identity) != 0) {
         fprintf(stderr, "NODUS_STORAGE: identity at %s is missing or "
-                "incomplete — the storage process only reads it (start "
-                "nodus-server first to create it). Not starting.\n",
+                "incomplete — this process only reads it (the core creates "
+                "it: start nodus-core or nodus-server first). Not starting.\n",
                 config.identity_path);
         return 1;
     }

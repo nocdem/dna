@@ -24,11 +24,13 @@
 static int ipc_admit(const nodus_server_config_t *config) {
     if (config->storage_external && config->witness_external)
         return 0;
-    QGP_LOG_ERROR(LOG_TAG, "nodus-core runs only with BOTH storage_external "
-                  "and witness_external set (storage_external=%s, "
-                  "witness_external=%s) — it carries no in-process DHT or "
-                  "witness. Use nodus-server for a combined node. Not "
-                  "starting.",
+    QGP_LOG_ERROR(LOG_TAG, "nodus-core needs BOTH storage_external and "
+                  "witness_external set (storage_external=%s, "
+                  "witness_external=%s) because this binary carries no "
+                  "in-process DHT or witness; which of nodus-storage / "
+                  "nodus-witness run beside it is the deployment's choice "
+                  "(decision item 12). A node that keeps either half "
+                  "in-process runs nodus-server. Not starting.",
                   config->storage_external ? "true" : "false",
                   config->witness_external ? "true" : "false");
     return -1;
