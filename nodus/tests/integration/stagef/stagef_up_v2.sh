@@ -1117,10 +1117,23 @@ for n in $(seq 1 "$C"); do
                 echo "[FAIL] node $n: its nodus-storage (pid ${sp:-none}) is not running" >&2
                 tail -10 "$slog" >&2
                 s_bad=1
-            elif ! grep -q 'Nodus storage v.* running' "$slog"; then
-                echo "[FAIL] node $n: nodus-storage never printed its running line" >&2
-                tail -10 "$slog" >&2
-                s_bad=1
+            else
+                # S6 spawns the storage pass after the witness pass, so the running line can still be pending (auto_vacuum migration) here.
+                run_ok=0
+                for _ in $(seq 1 60); do
+                    if grep -q 'Nodus storage v.* running' "$slog"; then run_ok=1; break; fi
+                    kill -0 "$sp" 2>/dev/null || break
+                    sleep 1
+                done
+                if [ "$run_ok" != 1 ]; then
+                    if kill -0 "$sp" 2>/dev/null; then
+                        echo "[FAIL] node $n: nodus-storage never printed its running line" >&2
+                    else
+                        echo "[FAIL] node $n: its nodus-storage (pid $sp) exited before printing its running line" >&2
+                    fi
+                    tail -10 "$slog" >&2
+                    s_bad=1
+                fi
             fi
             if ! grep -q 'STORAGE: external' "$nd/nodus.log"; then
                 echo "[FAIL] node $n: the core's nodus.log has no 'STORAGE: external' line — it ran the DHT in-process despite --storage-external" >&2
