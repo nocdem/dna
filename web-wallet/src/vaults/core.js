@@ -141,12 +141,21 @@ export function decodeVaultMessage(text) {
 // address / m / n / members come from the module (vaultOpen) — a record is
 // made only from its answer.
 
-export function makeVaultRecord({ info, label = '', created, watch = false, from = '', foundation = false }) {
+// `genesisCoins` (the Foundation preset's, src/vaults/foundation.js): coins
+// the vault holds from genesis — in no block, so they are the starting set
+// the block reading continues from (a block that consumes one removes it,
+// nodus-send-wasm.c nsw_ms_apply_item). The record is marked `genesis:
+// true` so a record kept before they existed is seeded again.
+export function makeVaultRecord({ info, label = '', created, watch = false, from = '', foundation = false, genesisCoins = [] }) {
   if (!info || !HEX128.test(info.address ?? '') || !vaultCodeShape(info.descriptor) || !Array.isArray(info.members) || !info.members.every(fp => HEX128.test(fp))) throw new Error('This is not a valid vault.');
   if (!u64ok(created, { min: 1n })) throw new Error('Invalid block height.');
+  if (!Array.isArray(genesisCoins) || genesisCoins.length > VAULT_MAX_COINS ||
+      !genesisCoins.every(c => c && HEX128.test(c.id ?? '') && u64ok(c.amount, { min: 1n }) && u64ok(c.unlock) && c.height === '0') ||
+      new Set(genesisCoins.map(c => c.id)).size !== genesisCoins.length) throw new Error('Invalid genesis coins.');
   return {
     v: 1, label: vaultLabel(label), code: info.descriptor, address: info.address, m: info.m, n: info.n, members: [...info.members],
-    created, cursor: created, coins: [], events: [], watch: watch === true, from: HEX128.test(from) ? from : '', foundation: foundation === true
+    created, cursor: created, coins: genesisCoins.map(c => ({ id: c.id, amount: c.amount, unlock: c.unlock, height: c.height })), events: [],
+    watch: watch === true, from: HEX128.test(from) ? from : '', foundation: foundation === true, genesis: genesisCoins.length > 0
   };
 }
 
@@ -161,8 +170,9 @@ export function checkVaultRecord(value) {
       !r.coins.every(c => c && HEX128.test(c.id ?? '') && u64ok(c.amount, { min: 1n }) && u64ok(c.unlock) && u64ok(c.height)) ||
       !Array.isArray(r.events) || r.events.length > VAULT_MAX_EVENTS ||
       !r.events.every(e => e && u64ok(e.height) && typeof e.received === 'boolean' && u64ok(e.amount) && (e.id === '' || HEX128.test(e.id ?? ''))) ||
-      typeof r.watch !== 'boolean' || typeof r.from !== 'string' || (r.from !== '' && !HEX128.test(r.from)) || typeof r.foundation !== 'boolean') throw new Error('A kept vault is damaged.');
-  return { ...r, label: vaultLabel(r.label ?? '') };
+      typeof r.watch !== 'boolean' || typeof r.from !== 'string' || (r.from !== '' && !HEX128.test(r.from)) || typeof r.foundation !== 'boolean' ||
+      (r.genesis !== undefined && typeof r.genesis !== 'boolean')) throw new Error('A kept vault is damaged.');
+  return { ...r, label: vaultLabel(r.label ?? ''), genesis: r.genesis === true };
 }
 
 // What is written to the store: within VAULT_RECORD_MAX bytes. The history
@@ -174,7 +184,9 @@ export function recordForStorage(record) {
   if (size(r) <= VAULT_RECORD_MAX) return r;
   r = { ...r, events: [] };
   if (size(r) <= VAULT_RECORD_MAX) return r;
-  return { ...r, coins: [], cursor: r.created };
+  // a vault seeded with genesis coins must not lose them: mark it unseeded,
+  // it is seeded again from the preset when it is loaded (src/vaults/ui.js)
+  return { ...r, coins: [], cursor: r.created, genesis: false };
 }
 
 // One block-reading step (the module's vaultScan answer) applied: the found

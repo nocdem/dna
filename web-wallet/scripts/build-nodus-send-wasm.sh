@@ -348,7 +348,8 @@ exports_common=(
   nc_lock
 )
 exports_test=(nsw_test_random_buf nsw_test_random_load nsw_test_pins_tuple nsw_test_gen_match
-  nsw_test_msig_member_add_pk nsw_test_msig_build nsw_test_msig_review)
+  nsw_test_msig_member_add_pk nsw_test_msig_build nsw_test_msig_review
+  nsw_test_msig_consume)
 
 join_exports() {
   local out="" name

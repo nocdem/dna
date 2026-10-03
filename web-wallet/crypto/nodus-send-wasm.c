@@ -3835,6 +3835,28 @@ int nsw_test_msig_build(const char *chain_hex, const char *tip_dec,
     return 0;
 }
 
+/* One applied block item that consumed coin `id_hex` (and created nothing),
+ * through the SAME bookkeeping a block read uses (nsw_ms_apply_item): a
+ * genesis coin handed in by nsw_msig_coin_add leaves the set exactly like
+ * a coin found in a block. */
+int nsw_test_msig_consume(const char *id_hex, const char *height_dec) {
+    static nodus_dnac_v3_item_t it;
+    uint64_t h = 0;
+    memset(&it, 0, sizeof(it));
+    if (!g_ms.has_desc || nsw_parse_hex(id_hex, it.consumed[0], 64) != 0 ||
+        nsw_parse_u64(height_dec, &h) != 0)
+        return nsw_fail("Invalid test item.");
+    it.kind = NODUS_DNAC_V3_KIND_ENVELOPE;
+    it.code = 0;
+    it.has_effects = true;
+    it.has_intent_id = true;
+    memset(it.intent_id, 0x77, 64);
+    it.n_consumed = 1;
+    g_ms.n_events = 0;
+    nsw_ms_apply_item(h, &it);
+    return 0;
+}
+
 int nsw_test_msig_review(const char *now_dec) {
     uint64_t now = 0;
     if (nsw_parse_u64(now_dec, &now) != 0) return nsw_fail("Invalid height.");

@@ -1027,10 +1027,16 @@ only for its members — watching any other vault is the user's own choice).
   block: coins created for the vault, minus coins a later item consumed;
   200 blocks per step, up to 10 000 per "Refresh", resumable from the kept
   cursor. **Cost:** the first reading of a vault reads every block since it
-  was created. **Limit:** genesis outputs are in no block — the Foundation
-  vault's starting coins cannot be found this way; the page shows the
-  balance and says that payments can use only the coins found (the
-  ORCHESTRATOR has the open item).
+  was created. **Genesis coins:** genesis outputs are in no block, so the
+  Foundation vault's 5 starting coins are carried as DATA in
+  `src/vaults/foundation.js` (`genesisCoins`: id = nullifier, amount; read
+  by the ORCHESTRATOR from the live `utxo_set` on EU-1 and US-1, identical,
+  2026-10-03). The vault's record starts from them (`genesis: true`) and
+  block reading from height 1 drops one when a block consumes it, exactly
+  like a found coin (`nsw_ms_apply_item`). They are NOT re-derived here:
+  the id is SHA3-512("NDS.GENOUT.v1" ‖ source_commit ‖ index) and no RPC or
+  build data carries `source_commit`; the chain checks each coin when it is
+  spent. The `dnac_utxo` owner gate (C11) is unchanged.
 - **Propose (Connect).** Pay to (address or chain name) + amount → the
   module builds nodus-cli's UNSIGNED vault spend (`nodus_v2_msig_build`:
   found coins largest first, the fewest that cover amount + fee; change to

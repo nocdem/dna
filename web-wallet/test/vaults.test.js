@@ -7,6 +7,10 @@
 // Governing records: docs/plans/decisions/2026-09-29-general-multisig.md,
 // docs/plans/decisions/2026-09-25-web-wallet-nodus-send-transport.md.
 //
+// Also: the Foundation preset carries exactly the 5 genesis coins the
+// ORCHESTRATOR read from two nodes (always), and — parity — a genesis coin
+// consumed by a block item leaves the module's coin set (the same
+// bookkeeping as a block read, via the TEST-only nsw_test_msig_consume).
 // Always run: the message kinds (encode / decode / every refusal), the
 // Foundation preset bytes against its documented address (SHA3-512 here,
 // node:crypto — an independent hash of the same bytes the C hashes), the
@@ -61,6 +65,53 @@ test('the Foundation preset: NDS.MSIG.v1, 2 of 3, its bytes hash to the document
   assert.equal(keys.length, 3);
   assert.ok(keys[0] < keys[1] && keys[1] < keys[2], 'keys strictly ascending (the one canonical order)');
   assert.equal(new Set(keys.map(sha3)).size, 3);
+});
+
+// The Foundation vault's genesis coins as read by the ORCHESTRATOR from the
+// live testnet's utxo_set on EU-1 and US-1 (identical), 2026-10-03 —
+// written out here a second time, so a changed id or amount in the preset
+// fails this test.
+const GENESIS_COINS = [
+  ['57abe83b720341b8d8cf2c55caa788034c4ca756b0df7dc123b32f14137a18c7d1c1a38c09a655e302fa2ed0034db52b168f987d002a3f1db692e1601e18916f', '5000000000000000'],
+  ['8d49668c2248ee00c37c37c1ac77913a9812056d93d92bafa74bab5772533b1e7ad84a69f1dca7f6659b4a214cde5a30fa73954e8033c8f7e4f9b587a8f461d1', '3000000000000000'],
+  ['b07f81742dbca98d5217aa76d8a4abdd66d9f62ca153bbdbb86b24ba8b352680955bfebcc09d712f91db6deba96721fe559aa1604ae0498b28ffc3845ac476d7', '5000000000000000'],
+  ['b46c9d5699fe156cde82a5cd608533f7a1b67cf543cee3ecd75673bed3b8643d7d268d8d665ec1a5904882d9d7f8ba7ee9142d6e2db9fb3da83134b10b8f701c', '15000000000000000'],
+  ['dcf4d387d346677d05350a52798cfee35a2447c8c4c32b09af6d332e08ac2e263d3922531f33bfee3b67f5c989caa2a198c1873a0d0e089e741cc6a1da424090', '10000000000000000']
+];
+
+test('the Foundation preset carries exactly its 5 genesis coins, and a vault record starts from them', () => {
+  assert.deepEqual(FOUNDATION_VAULT.genesisCoins.map(c => [c.id, c.amount]), GENESIS_COINS);
+  assert.ok(FOUNDATION_VAULT.genesisCoins.every(c => c.unlock === '0' && c.height === '0'));
+  assert.equal(GENESIS_COINS.reduce((s, [, a]) => s + BigInt(a), 0n), 38000000000000000n, '380 000 000 NODUS');
+  const info = { descriptor: FOUNDATION_VAULT.descriptor, address: DOCUMENTED_ADDRESS, m: 2, n: 3, members: keysOf(FOUNDATION_VAULT.descriptor).map(sha3) };
+  const record = makeVaultRecord({ info, label: FOUNDATION_VAULT.label, created: '1', foundation: true, genesisCoins: FOUNDATION_VAULT.genesisCoins });
+  assert.equal(record.genesis, true);
+  assert.equal(record.cursor, '1');
+  assert.deepEqual(record.coins.map(c => c.id), GENESIS_COINS.map(([id]) => id));
+  assert.deepEqual(checkVaultRecord(JSON.parse(JSON.stringify(record))), record);
+  assert.throws(() => makeVaultRecord({ info, created: '1', genesisCoins: [{ id: GENESIS_COINS[0][0], amount: '1', unlock: '0', height: '5' }] }), /genesis/);
+});
+
+test('parity: a genesis coin consumed by a block drops out of the vault\'s coins (the C bookkeeping)', { skip: !process.env.NODUS_SEND_PARITY_OUT ? 'set NODUS_SEND_PARITY_OUT (build-nodus-send-wasm.sh parity)' : false }, async () => {
+  const { num, str } = await loadTest();
+  assert.equal(num('nsw_msig_load', ['string'], [FOUNDATION_VAULT.descriptor]), 0, str('nsw_error'));
+  num('nsw_msig_coins_reset');
+  for (const c of FOUNDATION_VAULT.genesisCoins) assert.equal(num('nsw_msig_coin_add', ['string', 'string', 'string', 'string'], [c.id, c.amount, c.unlock, c.height]), 0, str('nsw_error'));
+  assert.equal(num('nsw_msig_coin_count'), 5);
+  const spent = GENESIS_COINS[3];
+  assert.equal(num('nsw_test_msig_consume', ['string', 'string'], [spent[0], '42']), 0, str('nsw_error'));
+  const left = [];
+  for (let i = 0; i < num('nsw_msig_coin_count'); i++) left.push(str('nsw_msig_coin_id', ['number'], [i]));
+  assert.equal(left.length, 4);
+  assert.ok(!left.includes(spent[0]), 'the spent genesis coin is gone');
+  assert.equal(num('nsw_msig_event_count'), 1);
+  assert.equal(num('nsw_msig_event_dir', ['number'], [0]), -1, 'a payment out of the vault');
+  assert.equal(str('nsw_msig_event_amount', ['number'], [0]), spent[1]);
+  assert.equal(str('nsw_msig_event_height', ['number'], [0]), '42');
+  // a coin the vault does not hold changes nothing
+  assert.equal(num('nsw_test_msig_consume', ['string', 'string'], ['99'.repeat(64), '43']), 0);
+  assert.equal(num('nsw_msig_coin_count'), 4);
+  assert.equal(num('nsw_msig_event_count'), 0);
 });
 
 // ── the message kinds ───────────────────────────────────────────────────
@@ -202,7 +253,7 @@ test('the shipped send.wasm exports the vault entry points and none of the vault
   const module = new WebAssembly.Module(readFileSync(new URL('../src/nodus/send.wasm', import.meta.url)));
   const exports = new Set(WebAssembly.Module.exports(module).map(({ name }) => name));
   for (const name of VAULT_ENTRY_POINTS) assert.ok(exports.has(name), `missing export ${name}`);
-  for (const name of ['nsw_test_msig_member_add_pk', 'nsw_test_msig_build', 'nsw_test_msig_review']) assert.ok(!exports.has(name), `${name} shipped`);
+  for (const name of ['nsw_test_msig_member_add_pk', 'nsw_test_msig_build', 'nsw_test_msig_review', 'nsw_test_msig_consume']) assert.ok(!exports.has(name), `${name} shipped`);
 });
 
 // ── parity with the C (TEST wasm) ───────────────────────────────────────

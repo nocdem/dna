@@ -105,6 +105,10 @@ async function loadVaults(gen) {
     if (vaults.has(kept.address)) continue;
     try {
       const record = checkVaultRecord(kept.value);
+      // the Foundation preset kept without its genesis coins (kept before
+      // they were carried, or trimmed by recordForStorage) is made again
+      // below from the preset, with them, and read from block 1
+      if (record.foundation && !record.genesis) continue;
       if (record.address === kept.address && listedFor(record, ownFp)) vaults.set(record.address, record);
     } catch { /* a damaged record is not listed; it can be added again from its message */ }
   }
@@ -115,7 +119,8 @@ async function loadVaults(gen) {
       if (gen !== generation) return;
       // the module's own derivation must give the documented address
       if (info.address === FOUNDATION_VAULT.address && info.isMember) {
-        vaults.set(info.address, makeVaultRecord({ info, label: FOUNDATION_VAULT.label, created: FOUNDATION_VAULT.created, foundation: true }));
+        // its genesis coins (src/vaults/foundation.js) are the starting set
+        await keep(makeVaultRecord({ info, label: FOUNDATION_VAULT.label, created: FOUNDATION_VAULT.created, foundation: true, genesisCoins: FOUNDATION_VAULT.genesisCoins }));
       }
     } catch { /* not listed */ }
   }
@@ -564,7 +569,7 @@ function renderVault(record) {
   const found = foundTotal(record);
   if (bal) {
     box.append(el('p', { className: 'hint', text: `Balance ${nodus(bal.total)} (${nodus(bal.spendable)} spendable now).` }));
-    if (found < BigInt(bal.spendable)) box.append(el('p', { className: 'notice', text: `This page has found ${nodus(found)} of it in the vault’s history so far. Payments can use only the part found${record.foundation ? '; the coins this vault received when the network started are not in any block, so this page cannot use them yet' : ''}.` }));
+    if (found < BigInt(bal.spendable)) box.append(el('p', { className: 'notice', text: `This page has found ${nodus(found)} of it in the vault’s history so far. Payments can use only the part found. Refresh to read more of its history.` }));
   }
   const top = el('div', { className: 'stake-actions' },
     btn('Back', () => { view = 'list'; current = null; draft = null; status = ''; render(); }),
