@@ -31,7 +31,7 @@ import {
   requestState, blocksLeft, listedFor
 } from './core.js';
 import { amountUnits, formatUnits } from '../core.js';
-import { chainName } from '../nodus/names.js';
+import { chainName, parseNameOf } from '../nodus/names.js';
 import { NODUS_ASSET } from '../nodus/network.js';
 
 const HEX128 = /^[0-9a-f]{128}$/;
@@ -44,7 +44,8 @@ let client, ownFp, host = null, root, panel;
 let generation = 0, busy = false, current = null, view = 'list';
 const vaults = new Map();                // address -> record (core.js)
 const balances = new Map();              // address -> { total, spendable }
-const names = new Map();                 // ID -> chain name ('' none)
+const names = new Map();                 // ID -> chain name confirmed by nameOf ('' none)
+const entered = new Map();               // ID -> the chain name this user typed (forward lookup only)
 // Keyed by (vault address, digest) — rkey: a digest is only meaningful for
 // the vault it was reviewed under (F1).
 const reviews = new Map();               // rkey -> module read-back
@@ -70,12 +71,18 @@ function btn(label, onClick, className = 'secondary small') {
 }
 const nodus = units => `${formatUnits(BigInt(units), NODUS_ASSET.decimals)} NODUS`;
 const shortId = fp => `ID ${fp.slice(0, 8)}…${fp.slice(-4)}`;
+// F5: a name is shown beside an ID only when the reverse lookup (nameOf,
+// `names`) confirmed it — or Messages' own name for it, which is that same
+// confirmed chain name or the short ID. A name only typed by this user
+// (`entered`, from a forward lookup) is labelled unconfirmed.
 function who(fp) {
   if (fp === ownFp) return 'you';
   const chain = names.get(fp);
   if (chain) return `${chain} · ${shortId(fp)}`;
   const named = host?.name(fp);
-  return named || shortId(fp);
+  if (named && named !== shortId(fp)) return named;
+  const typed = entered.get(fp);
+  return typed ? `${shortId(fp)} (entered as “${typed}”, name not confirmed)` : shortId(fp);
 }
 // F4: only the preset is called by its name alone; a name someone else
 // chose is shown with who shared it.
@@ -91,7 +98,7 @@ const messagesOpen = () => !!host && host.isOpen();
 function reset() {
   generation++;
   client = undefined; ownFp = undefined; busy = false; current = null; view = 'list';
-  for (const map of [vaults, balances, names, reviews, ownApprovals, sent, shareStates]) map.clear();
+  for (const map of [vaults, balances, names, entered, reviews, ownApprovals, sent, shareStates]) map.clear();
   status = ''; draft = null; createInfo = null;
   render();
 }
@@ -141,9 +148,9 @@ async function nameMembers(record, gen) {
   for (const fp of record.members) {
     if (names.has(fp) || gen !== generation || !client?.nameable) continue;
     try {
-      const r = await client.nameOf({ owner: fp });
+      const r = parseNameOf(await client.nameOf({ owner: fp }));
       if (gen !== generation) return;
-      names.set(fp, r?.found && typeof r.name === 'string' ? r.name : '');
+      names.set(fp, r.found ? r.name : '');
     } catch { names.set(fp, ''); }
   }
   if (gen === generation) render();
@@ -198,7 +205,7 @@ async function resolveMember(text) {
   if (!client.nameable) throw new Error('Chain names cannot be looked up right now.');
   const r = await client.nameLookup({ name });
   if (!r?.found || !HEX128.test(r.owner ?? '')) throw new Error(`No one has registered the chain name "${name}".`);
-  names.set(r.owner, name);
+  entered.set(r.owner, name);
   return r.owner;
 }
 
@@ -220,6 +227,9 @@ async function checkMembers(form) {
     const info = await client.vaultCreate({ members: ids, includeSelf: true, m });
     if (gen !== generation) return;
     createInfo = { info, label };
+    // confirm each member's name by the reverse lookup before it is shown
+    await nameMembers({ members: info.members }, gen);
+    if (gen !== generation) return;
     status = '';
   } catch (error) {
     if (gen === generation) status = error.message || 'The vault could not be prepared.';
