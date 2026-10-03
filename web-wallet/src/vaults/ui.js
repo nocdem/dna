@@ -27,7 +27,7 @@
 import { FOUNDATION_VAULT } from './foundation.js';
 import {
   VAULT_MAX_MEMBERS, encodeShare, encodeRequest, encodeApproval, decodeVaultMessage, vaultCodeShape, vaultLabel,
-  makeVaultRecord, checkVaultRecord, recordForStorage, applyScan, foundTotal, collectVaultItems,
+  makeVaultRecord, checkVaultRecord, recordForStorage, applyScan, foundTotal, collectVaultItems, approvalKey,
   requestState, blocksLeft, listedFor
 } from './core.js';
 import { amountUnits, formatUnits } from '../core.js';
@@ -100,7 +100,7 @@ async function start(detail) {
 // preset when this wallet is one of its members, and those of this
 // session.
 async function loadVaults(gen) {
-  if (gen !== generation || !client) return;
+  if (gen !== generation || !client || client.state !== 'ready') return;
   for (const kept of messagesOpen() ? host.vaults() : []) {
     if (vaults.has(kept.address)) continue;
     try {
@@ -387,10 +387,15 @@ async function review(record, request) {
   }
 }
 
+// One approval per key (core.js approvalKey): the messages' ones and this
+// session's own.
 function approvalsFor(digest, items) {
-  const texts = new Set(items.approvals.get(digest) || []);
-  if (ownApprovals.has(digest)) texts.add(ownApprovals.get(digest));
-  return [...texts];
+  const byKey = new Map();
+  for (const text of [...(items.approvals.get(digest) || []), ...(ownApprovals.has(digest) ? [ownApprovals.get(digest)] : [])]) {
+    const key = approvalKey(text);
+    if (key && !byKey.has(key)) byKey.set(key, text);
+  }
+  return [...byKey.values()];
 }
 
 async function sendPayment(record, request, items) {
@@ -613,7 +618,7 @@ function renderRequest(record, digest, item, items) {
   row.append(el('p', { text: `${title} · request from ${from} · ${Math.min(approvals.length, rv.approvals)} of ${rv.approvals} approvals` }), renderReviewRows(record, rv));
   const actions = el('div', { className: 'stake-actions' });
   if (state !== 'paid' && state !== 'expired' && state !== 'sent') {
-    if (!ownApprovals.has(digest) && rv.member && !record.watch && messagesOpen()) actions.append(btn(item.draft ? 'Approve and send to members' : 'Approve', () => void approve(record, item.request, { isNew: !!item.draft }), ''));
+    if (!ownApprovals.has(digest) && !items.approvedHere.has(digest) && rv.member && !record.watch && messagesOpen()) actions.append(btn(item.draft ? 'Approve and send to members' : 'Approve', () => void approve(record, item.request, { isNew: !!item.draft }), ''));
     if (state === 'ready') actions.append(btn('Send payment', () => void sendPayment(record, item.request, items), ''));
     actions.append(btn('Check again', () => void review(record, item.request)));
   }

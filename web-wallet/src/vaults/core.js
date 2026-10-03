@@ -198,13 +198,22 @@ export function foundTotal(record) {
   return record.coins.reduce((sum, c) => sum + BigInt(c.amount), 0n);
 }
 
+// The "pubkey" line of a signature text (lowercase hex, 5184 characters),
+// or '' — used only to count one approval per key: the module checks every
+// approval itself (nodus_v2_msig_sig_check), and an ML-DSA-87 signature is
+// hedged, so one member approving twice gives two DIFFERENT texts.
+export function approvalKey(signature) {
+  const match = typeof signature === 'string' ? /\npubkey ([0-9a-f]{5184})\n/.exec(signature) : null;
+  return match ? match[1] : '';
+}
+
 // ── payment requests in the stored messages ─────────────────────────────
 // messages: [{ fp, dir, text, at }] (vaultHost.messages). Returns, for one
 // vault address, its requests by digest — { request, from (ID, or '' for
-// this wallet's own), at } — and the approval texts by digest (distinct
-// texts; the module checks each one).
+// this wallet's own), at } —, the approval texts by digest (one per key,
+// approvalKey), and the digests this wallet already sent an approval for.
 export function collectVaultItems(messages, address) {
-  const requests = new Map(), approvals = new Map();
+  const requests = new Map(), approvals = new Map(), approvedHere = new Set();
   for (const m of messages) {
     const item = decodeVaultMessage(m.text);
     if (!item || item.kind === 'invalid' || item.vault !== address) continue;
@@ -212,11 +221,14 @@ export function collectVaultItems(messages, address) {
       const digest = item.request.digest;
       if (!requests.has(digest)) requests.set(digest, { request: item.request, from: m.dir === 'out' ? '' : m.fp, at: m.at });
     } else if (item.kind === 'approval') {
-      if (!approvals.has(item.digest)) approvals.set(item.digest, new Set());
-      approvals.get(item.digest).add(item.signature);
+      const key = approvalKey(item.signature);
+      if (!key) continue;
+      if (!approvals.has(item.digest)) approvals.set(item.digest, new Map());
+      if (!approvals.get(item.digest).has(key)) approvals.get(item.digest).set(key, item.signature);
+      if (m.dir === 'out') approvedHere.add(item.digest);
     }
   }
-  return { requests, approvals: new Map([...approvals].map(([d, s]) => [d, [...s]])) };
+  return { requests, approvals: new Map([...approvals].map(([d, byKey]) => [d, [...byKey.values()]])), approvedHere };
 }
 
 // A request's state for the page, from the module's read-back (`review`),

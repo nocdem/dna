@@ -38,7 +38,7 @@ import { createHash } from 'node:crypto';
 import { FOUNDATION_VAULT } from '../src/vaults/foundation.js';
 import {
   encodeShare, encodeRequest, encodeApproval, decodeVaultMessage, vaultCodeShape, vaultLabel, makeVaultRecord,
-  checkVaultRecord, recordForStorage, applyScan, requestState, blocksLeft, listedFor, collectVaultItems,
+  checkVaultRecord, recordForStorage, applyScan, requestState, blocksLeft, listedFor, collectVaultItems, approvalKey,
   VAULT_LABEL_MAX, VAULT_PAYLOAD_MAX
 } from '../src/vaults/core.js';
 import { emptyState, checkState } from '../src/connect/store.js';
@@ -157,6 +157,19 @@ test('requests and approvals are collected per vault from the stored messages', 
   assert.equal(items.requests.size, 1);
   assert.equal(items.requests.get(REQUEST.digest).from, 'aa'.repeat(64));
   assert.deepEqual(items.approvals.get(REQUEST.digest), [SIG_TEXT], 'the same approval text counts once');
+  assert.equal(items.approvedHere.has(REQUEST.digest), false);
+  // the same key approving again (a hedged signature: another text) still
+  // counts once; another key counts; an approval this wallet sent is noted
+  const again = SIG_TEXT.replace(`sig ${'ef'.repeat(4627)}`, `sig ${'0f'.repeat(4627)}`);
+  const other = SIG_TEXT.replace(`pubkey ${'cd'.repeat(2592)}`, `pubkey ${'ce'.repeat(2592)}`);
+  const more = collectVaultItems([...messages,
+    { fp: 'aa'.repeat(64), dir: 'out', at: 6, text: encodeApproval({ vault: DOCUMENTED_ADDRESS, digest: REQUEST.digest, signature: again }) },
+    { fp: 'bb'.repeat(64), dir: 'in', at: 7, text: encodeApproval({ vault: DOCUMENTED_ADDRESS, digest: REQUEST.digest, signature: other }) }
+  ], DOCUMENTED_ADDRESS);
+  assert.deepEqual(more.approvals.get(REQUEST.digest), [SIG_TEXT, other], 'one approval per key');
+  assert.equal(more.approvedHere.has(REQUEST.digest), true);
+  assert.equal(approvalKey(SIG_TEXT), 'cd'.repeat(2592));
+  assert.equal(approvalKey('nodus-msig-sig v1\n'), '');
 });
 
 test('the Messages state keeps a vault index (store.js state.vaults)', () => {

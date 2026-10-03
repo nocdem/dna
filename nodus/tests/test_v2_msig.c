@@ -492,8 +492,9 @@ static int m1_case(const char *what, uint64_t amount, int n_coins,
 static int test_m1(void) {
     /* 30e9 of 65e9: change -> two outputs */
     if (m1_case("M1: with change", 30000000000ULL, 3, 0, 0)) return 1;
-    /* exactly 20e9 + 5e9 - floor: no change -> one output */
-    if (m1_case("M1: without change", 25000000000ULL - MS_FLOOR, 2, 0, 0))
+    /* the first two coins (40e9 + 20e9) minus the floor: no change -> one
+     * output */
+    if (m1_case("M1: without change", 60000000000ULL - MS_FLOOR, 2, 0, 0))
         return 1;
     /* a gas price that lifts the fee above the floor */
     if (m1_case("M1: gas price pass", 30000000000ULL, 3, 100000ULL, 0))
