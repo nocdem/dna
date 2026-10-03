@@ -1964,6 +1964,10 @@ static int client_batch_ex_result(nodus_tier2_msg_t *resp,
                                   int *result_count_out, bool *unavail_out) {
     *results_out = NULL;
     *result_count_out = 0;
+    /* A negative count is a caller error (the request functions accept
+     * 1..NODUS_MAX_BATCH_KEYS): refused before any size_t conversion of it
+     * or of n, which equals it below. */
+    if (key_count < 0) return -1;
     memset(unavail_out, 0, (size_t)key_count * sizeof(bool));
     if (resp->type == 'e') return client_error_rc(resp);
 
@@ -2132,6 +2136,7 @@ int nodus_client_test_batch_reply(const uint8_t *raw, size_t raw_len,
                                   int *result_count_out, bool *unavail_out) {
     *results_out = NULL;
     *result_count_out = 0;
+    if (key_count < 0) return -1;
     memset(unavail_out, 0, (size_t)key_count * sizeof(bool));
     nodus_tier2_msg_t msg;
     memset(&msg, 0, sizeof(msg));
