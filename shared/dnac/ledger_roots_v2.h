@@ -89,6 +89,27 @@
  *   tags before adoption. SELF-CONSISTENT, not externally referenced —
  *   the P1 ATTEP / P2 ACLEAF precedent; the proof is an INDEPENDENT
  *   oracle KAT over this contract (author != auditor).
+ *   storage       "NDS.SYS.v5"      system_state_root v5 (9 legs, the
+ *   (storage      "NDS.STOR.v1"     storage_root APPENDED last) and the
+ *    reward v1)                     storage leg composition
+ *                 "NDS.STLEAF.v1"   storage registry leaf
+ *                 "NDS.STRNODE.v1"  storage registry Merkle inner node
+ *                 "NDS.STSET.v1"    frozen storage set hash S(H)
+ *                 "NDS.STSLEAF.v1"  frozen-sets leaf
+ *                 "NDS.STSNODE.v1"  frozen-sets Merkle inner node
+ *                 "NDS.STREP.v1"    storage report leaf
+ *                 "NDS.STRPNODE.v1" storage report Merkle inner node
+ *                 "NDS.STEXIT.v1"   storage exit release UTXO identity
+ *                 "NDS.E.STREG.v1"  registry_root of an EMPTY registry
+ *                 "NDS.E.STSET.v1"  sets_root with NO frozen set
+ *                 "NDS.E.STREP.v1"  reports_root with NO report
+ *   Storage tags: decision 2026-10-04-storage-reward-approved.md (bytes
+ *   doc docs/plans/2026-10-04-storage-reward-bytes.md items 1-6).
+ *   Collision scan 2026-10-04: `git grep -F` of each tag over the whole
+ *   tree and every branch — no prior use. SELF-CONSISTENT, not
+ *   externally referenced; proven by an INDEPENDENT oracle KAT before
+ *   merge (author != auditor). "NDS.STPROBE.v1" (bytes item 7) is an
+ *   OFF-CHAIN probe seed and is NOT defined here.
  *   (domains_root has NO empty tag: SYSTEM must always be present — an
  *    empty domain list is a hard error, not an empty tree.)
  *
@@ -182,6 +203,50 @@
  *       epoch_start(8 BE) ‖ digest[64])   — the leaf of `attendance_root`
  *     below, one per row of `v2_attendance_epoch`.
  *
+ *   ── storage reward v1 (bytes doc items 1-6; every tag 16 B padded) ──
+ *   system_state_root v5 = SHA3-512("NDS.SYS.v5" ‖ validator_root[64]
+ *       ‖ delegation_root[64] ‖ chain_config_root[64]
+ *       ‖ validator_set_root[64] ‖ domain_registry_root[64]
+ *       ‖ manifest_root[64] ‖ attendance_root[64]
+ *       ‖ treasury_root[64] ‖ storage_root[64])          — 9 legs
+ *     the 8 v4 legs in v4 order, storage_root APPENDED last (the W-A
+ *     precedent). Used from the storage activation height on; before it
+ *     "NDS.SYS.v4" above, unchanged. "NDS.SYSPAYL.v3" is unchanged —
+ *     storage is not seeded at genesis.
+ *   storage_root = SHA3-512("NDS.STOR.v1" ‖ registry_root[64]
+ *       ‖ sets_root[64] ‖ reports_root[64])
+ *   registry leaf = SHA3-512("NDS.STLEAF.v1" ‖ node_fp[64] ‖ payee_fp[64]
+ *       ‖ bond(8 BE) ‖ status(1) ‖ registered_height(8 BE)
+ *       ‖ exit_height(8 BE))   — status 1 ACTIVE, 2 EXITING, 3 RELEASED
+ *       (0 and > 3 invalid: refused, never hashed); 16 + 153 = 169 B.
+ *   registry_root = tagged Merkle over the registry leaves, STRICTLY
+ *       ascending node_fp (duplicates reject), inner "NDS.STRNODE.v1",
+ *       n == 0 -> DNA_V2_EMPTY_STORAGE_REG ("NDS.E.STREG.v1").
+ *   S(H) = SHA3-512("NDS.STSET.v1" ‖ epoch_start H(8 BE) ‖ count(4 BE)
+ *       ‖ node_fp[0] ‖ … ‖ node_fp[count−1])   — node_fp STRICTLY
+ *       ascending (duplicates reject); count 0 allowed (hashes over the
+ *       empty list, no special case); count > DNA_V2_STORAGE_SET_MAX
+ *       refused. A PLAIN hash, not a Merkle tree.
+ *   sets leaf = SHA3-512("NDS.STSLEAF.v1" ‖ H(8 BE) ‖ S(H)[64])
+ *   sets_root = tagged Merkle over the sets leaves, STRICTLY ascending H,
+ *       inner "NDS.STSNODE.v1", n == 0 -> DNA_V2_EMPTY_STORAGE_SETS
+ *       ("NDS.E.STSET.v1").
+ *   report leaf = SHA3-512("NDS.STREP.v1" ‖ epoch_start(8 BE) ‖ seat(4 BE)
+ *       ‖ S(H)[64] ‖ bitmap_len(2 BE) ‖ bitmap[bitmap_len])  — bitmap_len
+ *       == ceil(count/8) is the CALLER's check; this layer only refuses
+ *       bitmap_len > DNA_V2_STORAGE_BITMAP_MAX (32).
+ *   reports_root = tagged Merkle over the report leaves, STRICTLY
+ *       ascending (epoch_start, seat) (equal pair rejects), inner
+ *       "NDS.STRPNODE.v1", n == 0 -> DNA_V2_EMPTY_STORAGE_REPORTS
+ *       ("NDS.E.STREP.v1").
+ *   exit_id = SHA3-512("NDS.STEXIT.v1" ‖ chain_id[32]
+ *       ‖ DNA_DOMAIN_CORE(4 BE) ‖ release_height(8 BE) ‖ node_fp[64])
+ *   exit nullifier = SHA3-512(exit_id[64] ‖ 0x11 ‖ u32be(201))  — the
+ *       EPGRAD shape (nodus_witness_v2_epoch.c) with its own kind byte
+ *       DNA_V2_STORAGE_EXIT_KIND and output index
+ *       DNA_V2_STORAGE_EXIT_OUT_IDX. node_fp = SHA3-512(node_pk), taken
+ *       AS GIVEN (no 0x02 tree-tag prefix, unlike EPGRAD's pubkey_hash).
+ *
  * ── Merkle construction (RFC6962-style, per tree) ─────────────────────
  *   leaves  = the already-tagged 64-byte hashes (DomainHead / token leaf /
  *             vset / attendance / accrual / treasury leaf), in strictly
@@ -231,6 +296,10 @@ typedef enum {
     DNA_V2_EMPTY_ACCRUAL,      /* empty v2_reward_accrual    */
     /* final pre-testnet wipe, W-A — APPENDED. */
     DNA_V2_EMPTY_TREASURY,     /* empty v2_treasury          */
+    /* storage reward v1 (bytes doc items 1-3) — APPENDED. */
+    DNA_V2_EMPTY_STORAGE_REG,     /* "NDS.E.STREG.v1" registry   */
+    DNA_V2_EMPTY_STORAGE_SETS,    /* "NDS.E.STSET.v1" frozen sets */
+    DNA_V2_EMPTY_STORAGE_REPORTS, /* "NDS.E.STREP.v1" reports    */
     DNA_V2_EMPTY__COUNT
 } dna_v2_empty_kind_t;
 
@@ -432,6 +501,121 @@ int dna_v2_attendance_root(const uint64_t *epoch_starts,
                            const uint8_t (*digests)[DNA_V2_ROOT_LEN],
                            size_t n, uint8_t out[DNA_V2_ROOT_LEN]);
 
+/* ── storage_root (storage reward v1) ──────────────────────────────────
+ * Decision 2026-10-04-storage-reward-approved.md; exact bytes
+ * docs/plans/2026-10-04-storage-reward-bytes.md items 1-6 (copied in the
+ * "Composition preimages" block above). Three trees — the registry, the
+ * frozen storage sets, the reports — composed into ONE leg,
+ * storage_root, which is the 9th leg of system_state_root v5. Same
+ * Merkle rules as every other tree here. Pure; no database. */
+
+/** The storage set cap (design rev 2.2 F3: storage set max 256). */
+#define DNA_V2_STORAGE_SET_MAX     256u
+/** Longest report bitmap: ceil(DNA_V2_STORAGE_SET_MAX / 8). */
+#define DNA_V2_STORAGE_BITMAP_MAX  32u
+
+/** Registry row status byte (bytes doc item 1; 0 is invalid). */
+#define DNA_V2_STORAGE_ACTIVE      ((uint8_t)1)
+#define DNA_V2_STORAGE_EXITING     ((uint8_t)2)
+#define DNA_V2_STORAGE_RELEASED    ((uint8_t)3)
+
+/** The exit release UTXO's synthetic slot (bytes doc item 6). Kind 0x11
+ *  and index 201 were repo-scanned 2026-10-04: the kinds in use are 0x01
+ *  (UNDELEGATE release), 0x10 (graduation), 0x20/0x21 (retired), 0x22
+ *  (payday), 0x23 (graduation delegation release); the indices are
+ *  0..15 (wire outputs), 100, 200, 400 + i, [2^30, 2^31). */
+#define DNA_V2_STORAGE_EXIT_KIND     ((uint8_t)0x11)
+#define DNA_V2_STORAGE_EXIT_OUT_IDX  ((uint32_t)201)
+
+/** One storage registry row; canonical order = node_fp ASC. */
+typedef struct {
+    uint8_t  node_fp[DNA_V2_ROOT_LEN];   /* SHA3-512(node_pk)           */
+    uint8_t  payee_fp[DNA_V2_ROOT_LEN];
+    uint64_t bond;
+    uint8_t  status;                     /* DNA_V2_STORAGE_ACTIVE..     */
+    uint64_t registered_height;
+    uint64_t exit_height;
+} dna_v2_storage_node_row_t;
+
+/** leaf = SHA3-512("NDS.STLEAF.v1" ‖ node_fp[64] ‖ payee_fp[64] ‖
+ *  bond(8 BE) ‖ status(1) ‖ registered_height(8 BE) ‖ exit_height(8 BE)).
+ *  @return 0 / -1 (NULL, status outside 1..3). */
+int dna_v2_storage_node_leaf_hash(const dna_v2_storage_node_row_t *row,
+                                  uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** registry_root over rows STRICTLY ascending by node_fp (equal or
+ *  descending neighbours reject); inner "NDS.STRNODE.v1"; odd node
+ *  promoted; n == 1 the leaf; n == 0 -> DNA_V2_EMPTY_STORAGE_REG.
+ *  @return 0 / -1. */
+int dna_v2_storage_registry_root(const dna_v2_storage_node_row_t *rows,
+                                 size_t n, uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** S(H) = SHA3-512("NDS.STSET.v1" ‖ epoch_start(8 BE) ‖ count(4 BE) ‖
+ *  node_fps[0..count−1]). node_fps STRICTLY ascending (duplicates
+ *  reject); count 0 legal (node_fps may be NULL); count >
+ *  DNA_V2_STORAGE_SET_MAX refused. @return 0 / -1. */
+int dna_v2_storage_set_hash(uint64_t epoch_start,
+                            const uint8_t (*node_fps)[DNA_V2_ROOT_LEN],
+                            size_t count, uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** sets leaf = SHA3-512("NDS.STSLEAF.v1" ‖ epoch_start(8 BE) ‖
+ *  set_hash[64]). @return 0 / -1. */
+int dna_v2_storage_sets_leaf_hash(uint64_t epoch_start,
+                                  const uint8_t set_hash[DNA_V2_ROOT_LEN],
+                                  uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** sets_root over (epoch_start, S(H)) pairs, STRICTLY ascending
+ *  epoch_start; inner "NDS.STSNODE.v1"; n == 0 ->
+ *  DNA_V2_EMPTY_STORAGE_SETS. @return 0 / -1. */
+int dna_v2_storage_sets_root(const uint64_t *epoch_starts,
+                             const uint8_t (*set_hashes)[DNA_V2_ROOT_LEN],
+                             size_t n, uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** One committed storage report; canonical order = (epoch_start, seat)
+ *  ASC. bitmap[bitmap_len..] is not hashed. */
+typedef struct {
+    uint64_t epoch_start;
+    uint32_t seat;
+    uint8_t  set_hash[DNA_V2_ROOT_LEN];  /* S(H)                        */
+    uint16_t bitmap_len;                 /* 0..DNA_V2_STORAGE_BITMAP_MAX */
+    uint8_t  bitmap[DNA_V2_STORAGE_BITMAP_MAX];
+} dna_v2_storage_report_t;
+
+/** leaf = SHA3-512("NDS.STREP.v1" ‖ epoch_start(8 BE) ‖ seat(4 BE) ‖
+ *  set_hash[64] ‖ bitmap_len(2 BE) ‖ bitmap[bitmap_len]). Takes the
+ *  bytes as given: bitmap_len == ceil(count/8) and zero unused bits are
+ *  the CALLER's checks. @return 0 / -1 (NULL, bitmap_len >
+ *  DNA_V2_STORAGE_BITMAP_MAX). */
+int dna_v2_storage_report_leaf_hash(const dna_v2_storage_report_t *rep,
+                                    uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** reports_root over reports STRICTLY ascending by (epoch_start, seat)
+ *  (an equal pair or a descending neighbour rejects); inner
+ *  "NDS.STRPNODE.v1"; n == 0 -> DNA_V2_EMPTY_STORAGE_REPORTS.
+ *  @return 0 / -1. */
+int dna_v2_storage_reports_root(const dna_v2_storage_report_t *reps,
+                                size_t n, uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** storage_root = SHA3-512("NDS.STOR.v1" ‖ registry_root ‖ sets_root ‖
+ *  reports_root). @return 0 / -1. */
+int dna_v2_storage_root(const uint8_t registry_root[DNA_V2_ROOT_LEN],
+                        const uint8_t sets_root[DNA_V2_ROOT_LEN],
+                        const uint8_t reports_root[DNA_V2_ROOT_LEN],
+                        uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** exit_id = SHA3-512("NDS.STEXIT.v1" ‖ chain_id[32] ‖
+ *  u32be(DNA_DOMAIN_CORE) ‖ release_height(8 BE) ‖ node_fp[64]).
+ *  @return 0 / -1. */
+int dna_v2_storage_exit_id(const uint8_t chain_id[DNA_CHAIN_ID_LEN],
+                           uint64_t release_height,
+                           const uint8_t node_fp[DNA_V2_ROOT_LEN],
+                           uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** nullifier = SHA3-512(exit_id[64] ‖ DNA_V2_STORAGE_EXIT_KIND ‖
+ *  u32be(DNA_V2_STORAGE_EXIT_OUT_IDX)). @return 0 / -1. */
+int dna_v2_storage_exit_nullifier(const uint8_t exit_id[DNA_V2_ROOT_LEN],
+                                  uint8_t out[DNA_V2_ROOT_LEN]);
+
 /* ── DomainHead + domains_root ──────────────────────────────────────── */
 typedef struct {
     uint32_t domain_id;
@@ -474,6 +658,21 @@ int dna_v2_system_root(const uint8_t validator_root[64],
                        const uint8_t attendance_root[64],
                        const uint8_t treasury_root[64],
                        uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** storage reward v1: 9 legs under "NDS.SYS.v5" — the 8 legs of
+ *  dna_v2_system_root in the same order, storage_root APPENDED last.
+ *  A NEW function: dna_v2_system_root ("NDS.SYS.v4") is unchanged and
+ *  stays the composition before the storage activation height. */
+int dna_v2_system_root_v5(const uint8_t validator_root[64],
+                          const uint8_t delegation_root[64],
+                          const uint8_t chain_config_root[64],
+                          const uint8_t validator_set_root[64],
+                          const uint8_t domain_registry_root[64],
+                          const uint8_t manifest_root[64],
+                          const uint8_t attendance_root[64],
+                          const uint8_t treasury_root[64],
+                          const uint8_t storage_root[64],
+                          uint8_t out[DNA_V2_ROOT_LEN]);
 
 /** tokenomics-v3 P2 (P2-8): gained the 7th leg `accrual_root` and a new
  *  composition tag "NDS.CORE.v2" (was "NDS.CORE.v1"). */
