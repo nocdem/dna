@@ -23,7 +23,14 @@
 # the version in nodus/include/nodus/nodus_types.h is malformed or its
 # MAJOR/MINOR/PATCH disagree with NODUS_VERSION_STRING; any binary's `-h`
 # banner carries a version other than that one (a stale build directory);
-# the build was made with a sanitizer; the output file already exists.
+# the build was made with a sanitizer; the build directory's
+# CMAKE_BUILD_TYPE is not exactly Release (empty = unoptimized); the git
+# tree has uncommitted or untracked changes under nodus/ or shared/ (both
+# are compiled into the binaries); the output file already exists. When
+# git cannot be asked at all, VERSION records commit and tree "unknown".
+#
+# Staged files get explicit modes — 0755 for the directory, the binaries
+# and install.sh, 0644 for everything else — whatever the umask.
 #
 # Every payload file is named explicitly — nothing is globbed from
 # nodus/deploy/, so a local (gitignored) nodus.conf.example, an identity or
@@ -83,6 +90,8 @@ if grep -q -- '-fsanitize' "$CACHE"; then
     die "$CACHE carries -fsanitize — a sanitizer (debug) build is not packaged"
 fi
 BUILD_TYPE=$(sed -n 's/^CMAKE_BUILD_TYPE:[A-Z]*=//p' "$CACHE")
+[ "$BUILD_TYPE" = Release ] ||
+    die "$CACHE has CMAKE_BUILD_TYPE='$BUILD_TYPE' — only a Release build is packaged (configure with -DCMAKE_BUILD_TYPE=Release)"
 
 # --- the binaries: all five from this one build dir, one version --------
 for b in $BINARIES; do
@@ -106,19 +115,31 @@ for u in $UNITS install.sh README-dist.md; do
 done
 
 # --- provenance for VERSION ---------------------------------------------
-COMMIT=$(git -C "$NODUS_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
-TREE="clean"
-if [ "$COMMIT" != unknown ] &&
-   [ -n "$(git -C "$NODUS_DIR" status --porcelain -- . 2>/dev/null)" ]; then
-    TREE="modified (uncommitted changes under nodus/)"
+# nodus/ and shared/ are both compiled into the binaries: a change in
+# either, committed or not, must be in the commit VERSION names.
+COMMIT="unknown"
+TREE="unknown"
+MTIME=0
+if REPO=$(git -C "$NODUS_DIR" rev-parse --show-toplevel 2>/dev/null) &&
+   COMMIT=$(git -C "$REPO" rev-parse HEAD 2>/dev/null) &&
+   STATUS=$(git -C "$REPO" status --porcelain -- nodus shared 2>/dev/null); then
+    [ -z "$STATUS" ] ||
+        die "uncommitted or untracked changes under nodus/ or shared/ in $REPO — commit or remove them first; VERSION must name the source the binaries were built from:
+$STATUS"
+    TREE="clean"
+    MTIME=$(git -C "$REPO" log -1 --format=%ct 2>/dev/null || echo 0)
+else
+    COMMIT="unknown"
+    TREE="unknown"
 fi
-MTIME=$(git -C "$NODUS_DIR" log -1 --format=%ct 2>/dev/null || echo 0)
 
 # --- stage ---------------------------------------------------------------
 STAGE_ROOT=$(mktemp -d)
-trap 'rm -rf "$STAGE_ROOT"; rm -f "$TARBALL.tmp"' EXIT
+TMP_TAR=""
+trap 'rm -rf "$STAGE_ROOT"; [ -z "$TMP_TAR" ] || rm -f "$TMP_TAR"' EXIT
 STAGE="$STAGE_ROOT/$NAME"
 mkdir "$STAGE"
+chmod 0755 "$STAGE"
 
 for b in $BINARIES; do
     install -m 0755 "$BUILD_DIR/$b" "$STAGE/$b"
@@ -144,9 +165,14 @@ chmod 0644 "$STAGE/SHA256SUMS"
 
 # Deterministic archive: sorted names, numeric root owner, one mtime (the
 # last commit's), gzip without a timestamp.
+# The temporary file is made by mktemp in the output directory (same
+# filesystem, so the final mv is a rename); mktemp creates it 0600.
+TMP_TAR=$(mktemp "$OUT_DIR/.$NAME.tar.gz.XXXXXX")
 tar -C "$STAGE_ROOT" --sort=name --owner=0 --group=0 --numeric-owner \
-    --mtime="@$MTIME" -cf - "$NAME" | gzip -n -9 > "$TARBALL.tmp"
-mv -f "$TARBALL.tmp" "$TARBALL"
+    --mtime="@$MTIME" -cf - "$NAME" | gzip -n -9 > "$TMP_TAR"
+chmod 0644 "$TMP_TAR"
+mv -f "$TMP_TAR" "$TARBALL"
+TMP_TAR=""
 
 echo "$PROG: wrote $TARBALL"
 echo "$PROG: version $VER, commit $COMMIT, tree $TREE"
