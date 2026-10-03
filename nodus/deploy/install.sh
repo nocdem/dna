@@ -28,7 +28,9 @@
 #                       units' ExecStart= paths are rewritten to match
 #   --config FILE       installed as /etc/nodus.conf when that file does not
 #                       exist yet; never overwrites an existing one
-#   --dry-run           print every action, change nothing (no root needed)
+#   --dry-run           print every action, change nothing (root not
+#                       required, but the config must be readable — an
+#                       /etc/nodus.conf this installer wrote is 0600)
 #
 # Order (nothing is changed until every check has passed):
 #   1. SHA256SUMS of the payload verified.
@@ -76,6 +78,9 @@ PREFIX="/usr/local/bin"
 CONFIG_ARG=""
 DRY=0
 CHANGED=0       # set once the first system change is made (rollback hint)
+UNIT_TMP=""     # scratch dir for --prefix-rewritten units (removed on exit)
+OLD_SEQ=""
+NEW_SEQ=""
 
 say() { echo "$PROG: $*"; }
 die() {
@@ -84,7 +89,7 @@ die() {
 }
 
 usage() {
-    sed -n '/^# Usage:/,/^#   --dry-run/p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '/^# Usage:/,/^# Order/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
 }
 
 # run CMD... — do it, or in --dry-run print it. Every change goes through
@@ -165,6 +170,16 @@ in_list() {   # in_list WORD LIST...
 
 if [ "$DRY" -eq 1 ]; then
     say "DRY RUN — nothing on this system is changed"
+fi
+
+# A relative --config is relative to where the installer was started, not
+# to the package directory it changes into below.
+if [ -n "$CONFIG_ARG" ]; then
+    case "$CONFIG_ARG" in
+        /*) ;;
+        *) CONFIG_ARG="$PWD/$CONFIG_ARG" ;;
+    esac
+    [ -f "$CONFIG_ARG" ] || die "--config $CONFIG_ARG is not a file"
 fi
 
 # --- 1. payload integrity --------------------------------------------------
@@ -375,6 +390,7 @@ say "  enable + start, in order: $WANTED"
 # On failure after the first change: how to get back to nodus.service.
 on_exit() {
     rc=$?
+    [ -z "$UNIT_TMP" ] || rm -rf "$UNIT_TMP"
     if [ "$rc" -ne 0 ] && [ "$CHANGED" -eq 1 ]; then
         echo "" >&2
         echo "$PROG: FAILED after changing this system (exit $rc)." >&2

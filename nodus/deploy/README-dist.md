@@ -28,7 +28,8 @@ sudo ./install.sh --layout split --no-storage     # core + witness
 
 Options: `--prefix DIR` (default `/usr/local/bin`; the units' `ExecStart=` follows
 it), `--config FILE` (installed as `/etc/nodus.conf` only when that file does
-not exist), `--dry-run` (no change, no root needed).
+not exist), `--dry-run` (no change; root is not required, but the config must be
+readable — `/etc/nodus.conf` as this installer writes it is mode 0600, so use `sudo`).
 
 The installer refuses — changing nothing — when the payload checksum fails,
 when both layouts are enabled, when a split service is enabled but not asked

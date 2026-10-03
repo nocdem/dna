@@ -211,7 +211,9 @@ sudo ./install.sh --layout split --no-storage   # core + witness
 sudo ./install.sh --layout combined             # nodus.service
 ```
 `--prefix DIR` (default `/usr/local/bin`) moves the binaries and rewrites the units'
-`ExecStart=` to match. `--dry-run` needs no root; a real run refuses without it. What a
+`ExecStart=` to match. `--dry-run` does not require root but must read the config — an
+`/etc/nodus.conf` this installer wrote is 0600, so run it under `sudo` there; a real run
+refuses without root. What a
 run does, in order, after every check has passed:
 - reads `identity_path` / `data_path` from the config (a key present twice, a non-string
   value, a path outside the units' `ReadWritePaths=/var/lib/nodus`, `"witness_external":
