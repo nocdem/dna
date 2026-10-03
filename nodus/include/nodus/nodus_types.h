@@ -893,9 +893,18 @@ typedef struct {
     nodus_dnac_committee_entry_t entries[NODUS_T3_MAX_WITNESSES];
 } nodus_dnac_committee_result_t;
 
-/** Validator list entry (Phase 14 / Task 63). Same field layout as
- * dnac_validator_list_entry_t in dnac.h — kept separate so nodus doesn't
- * depend on dnac headers. */
+/** Validator list entry (Phase 14 / Task 63). The fields
+ * dnac_validator_list_entry_t (dnac.h) also carries are copied into it
+ * field by field (dnac/src/transaction/validator_queries.c) — the two
+ * layouts are NOT identical (this one also has external_delegated and the
+ * delegator count) and nothing memcpy's one struct into the other.
+ *
+ * delegator_count: the reply's optional "dlg" key — how many of the
+ * validator's NODUS_MAX_DELEGATORS_PER_VALIDATOR
+ * (src/witness/nodus_witness_delegation.h) delegation slots are filled.
+ * Valid ONLY when has_delegator_count is 1; a node that predates the key
+ * leaves has_delegator_count 0 = "unknown", which is not the same as 0
+ * delegators. */
 typedef struct {
     uint8_t  pubkey[2592];
     uint64_t self_stake;
@@ -904,6 +913,8 @@ typedef struct {
     uint16_t commission_bps;
     uint8_t  status;
     uint64_t active_since_block;
+    uint8_t  has_delegator_count;   /* 1 = delegator_count is the node's answer */
+    uint32_t delegator_count;
 } nodus_dnac_validator_list_entry_t;
 
 /** Validator list query result. entries is heap; caller frees via

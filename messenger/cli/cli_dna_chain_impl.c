@@ -1817,6 +1817,9 @@ int dna_chain_cmd_genesis_prepare(dnac_context_t *ctx, const char *config_path) 
  * ========================================================================== */
 
 #include "dnac/validator.h"
+#include "witness/nodus_witness_delegation.h"   /* NODUS_MAX_DELEGATORS_PER_VALIDATOR
+                                                 * — the chain's own cap, the
+                                                 * one definition */
 
 /**
  * Parse a lowercase-hex Dilithium5 pubkey (5184 chars = 2 * DNAC_PUBKEY_SIZE)
@@ -2127,11 +2130,12 @@ int dna_chain_cmd_validator_list(dnac_context_t *ctx, int filter_status) {
         printf(", status=%s", validator_status_str((uint8_t)filter_status));
     }
     printf(")\n");
-    printf("%-16s  %-14s  %-18s  %-18s  %-6s  %-12s  %s\n",
+    printf("%-16s  %-14s  %-18s  %-18s  %-6s  %-12s  %-12s  %s\n",
            "PUBKEY", "STATUS", "SELF_STAKE", "TOTAL_DELEGATED",
-           "COMM%", "EXT_DELEG", "ACTIVE_SINCE");
+           "COMM%", "EXT_DELEG", "ACTIVE_SINCE", "DELEGATORS");
     printf("----------------  --------------  ------------------"
-           "  ------------------  ------  ------------  ------------\n");
+           "  ------------------  ------  ------------  ------------"
+           "  ----------\n");
     for (int i = 0; i < res.count; i++) {
         const nodus_dnac_validator_list_entry_t *e = &res.entries[i];
         char pk_short[17];
@@ -2140,13 +2144,23 @@ int dna_chain_cmd_validator_list(dnac_context_t *ctx, int filter_status) {
         format_amount(e->self_stake, self_str, sizeof(self_str));
         format_amount(e->total_delegated, total_str, sizeof(total_str));
         format_amount(e->external_delegated, ext_str, sizeof(ext_str));
-        printf("%-16s  %-14s  %-18s  %-18s  %5.2f  %-12s  %" PRIu64 "\n",
+        /* filled delegation slots of the chain's per-validator cap; a node
+         * older than the reply's "dlg" key answers no count ("?"). */
+        char dlg_str[32];
+        if (e->has_delegator_count) {
+            snprintf(dlg_str, sizeof(dlg_str), "%" PRIu32 "/%d",
+                     e->delegator_count, NODUS_MAX_DELEGATORS_PER_VALIDATOR);
+        } else {
+            snprintf(dlg_str, sizeof(dlg_str), "?");
+        }
+        printf("%-16s  %-14s  %-18s  %-18s  %5.2f  %-12s  %-12" PRIu64 "  %s\n",
                pk_short,
                validator_status_str(e->status),
                self_str, total_str,
                (double)e->commission_bps / 100.0,
                ext_str,
-               e->active_since_block);
+               e->active_since_block,
+               dlg_str);
     }
     nodus_client_free_validator_list_result(&res);
     return 0;

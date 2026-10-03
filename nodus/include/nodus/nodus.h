@@ -1779,6 +1779,12 @@ void nodus_client_free_addr_history_result(nodus_dnac_addr_history_result_t *res
  *
  * Caller MUST free result_out with nodus_client_free_validator_list_result().
  *
+ * Each entry's delegator_count (filled delegation slots of
+ * NODUS_MAX_DELEGATORS_PER_VALIDATOR) is valid only when
+ * has_delegator_count is 1; a node that predates the reply's "dlg" key
+ * leaves it 0 = unknown (not "0 delegators"). A malformed or repeated
+ * "dlg" refuses the whole reply (NODUS_ERR_PROTOCOL_ERROR).
+ *
  * @param filter_status  -1 = all statuses, 0..3 = filter by status
  * @param offset         Page offset (0-based)
  * @param limit          Max entries to return (server-side cap applies)

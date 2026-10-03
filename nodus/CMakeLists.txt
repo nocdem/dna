@@ -1088,6 +1088,18 @@ target_compile_definitions(test_client_dup_array PRIVATE
                            NODUS_CLIENT_TEST_SEAM=1)
 add_test(NAME test_client_dup_array COMMAND test_client_dup_array)
 
+# dnac_validator_list_query reply decoder: the optional per-entry "dlg"
+# (delegator count) — present = known count, absent = unknown (older node),
+# malformed / repeated = refused. Same seam as test_client_dup_array
+# (nodus_client.c compiled into the test with NODUS_CLIENT_TEST_SEAM=1;
+# in-process, no sockets). Default build, no environment.
+add_executable(test_client_validator_list tests/test_client_validator_list.c
+               src/client/nodus_client.c)
+target_link_libraries(test_client_validator_list nodus dsa nodus)
+target_compile_definitions(test_client_validator_list PRIVATE
+                           NODUS_CLIENT_TEST_SEAM=1)
+add_test(NAME test_client_validator_list COMMAND test_client_validator_list)
+
 # DHT Package A (client): nodus_client_get_owner / nodus_client_get_all_page /
 # nodus_client_get_batch_ex reply handling — absent "more" = legacy
 # (completeness unknown; empty legacy = UNAVAILABLE), rows <= cursor / of

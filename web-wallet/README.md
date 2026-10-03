@@ -1810,3 +1810,12 @@ opens — the chips and list with real contacts, the conversation and its
 composer, Contacts, Your ID & profile and the add-contact dialog are not
 reached; sending, receiving, requests and profile editing need a live node.
 Not verified: nothing in this section has been run in a browser yet.
+
+## Validator delegator count (node side only, unreleased)
+
+The node's validator list reply now carries each validator's delegator count
+(`dlg`, of the chain's 2048-per-validator cap) and the shared client decodes
+it (`nodus_dnac_validator_list_entry_t.has_delegator_count` /
+`delegator_count`); the wallet does NOT show it yet — `send.wasm` has no
+getter for it, and the export list and `src/nodus/send-module.js` are not
+changed.

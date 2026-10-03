@@ -407,3 +407,15 @@ I/O-free, like the SPEND (§11) and staking (§13) builders: nodus-cli `name reg
 | `int nodus_v2_name_build(const nodus_v2_name_req_t *req, nodus_v2_name_built_t *out, nodus_v2_name_err_t *err)` | **NEW (the body of `cmd_name_register`).** Coins filtered (zero / non-native / locked at tip + 1), largest first, ≤ 13 inputs; fee = floor (or a fixed fee), raised to units × gas price in ≤ 8 passes, units = `nodus_v2_spend_ceiling` with inputs + 3 reads; one change seed from `req->rand` per pass that writes a change; two-pass signature; read-back and refusal on any difference. `NODUS_V2_SPEND_OK` or a refusal. |
 | `int nodus_v2_name_decode(const uint8_t *env, size_t env_len, nodus_v2_name_decoded_t *out)` | **NEW.** Strict decode of a registration built by this module (one CORE op-8 leg, kind-1 single signer, name rule, price > 0, ascending inputs ≤ 13, ≤ 1 native change, exact effect declaration). |
 | `void nodus_v2_name_built_free(nodus_v2_name_built_t *b)` | **NEW.** NULL-safe. |
+
+## 16. Validator list — the per-validator delegator count (`dnac_validator_list_query` "dlg")
+
+A read-only display field: how many of a validator's `NODUS_MAX_DELEGATORS_PER_VALIDATOR` (2048, `nodus/src/witness/nodus_witness_delegation.h`) delegation slots are filled. No consensus path reads it.
+
+| Item | Description |
+|------|-------------|
+| `nodus_dnac_validator_list_entry_t` (`nodus/include/nodus/nodus_types.h`) | **NEW fields, appended:** `uint8_t has_delegator_count` (1 = the node answered a count), `uint32_t delegator_count`. An older node's reply leaves `has_delegator_count` 0 = unknown (not 0 delegators). `dnac_validator_list_entry_t` (`dnac.h`) is unchanged — `dnac_validator_list` copies field by field. |
+| `int nodus_client_dnac_validator_list(nodus_client_t *client, int filter_status, int offset, int limit, nodus_dnac_validator_list_result_t *result_out)` (`nodus_client.c`) | **CHANGED (behaviour).** Decodes the optional per-entry `dlg`; a `dlg` that is not a uint, exceeds `UINT32_MAX` or repeats in one entry → `NODUS_ERR_PROTOCOL_ERROR` (result freed). Signature unchanged. The reply decoder is now the file-static `dnac_validator_list_parse(const uint8_t *raw, size_t raw_len, nodus_dnac_validator_list_result_t *result_out)`. |
+| `int nodus_client_test_parse_validator_list(const uint8_t *raw, size_t raw_len, nodus_dnac_validator_list_result_t *out)` (`nodus_client.c`, `NODUS_CLIENT_TEST_SEAM` only) | **NEW (test seam).** Zeroes `out`, then `dnac_validator_list_parse`. Never in libnodus. |
+| `static void handle_dnac_validator_list_query(...)` (`nodus_witness_handlers.c`) | **CHANGED (behaviour).** Each entry map gains `dlg` = `nodus_delegation_count_by_validator` (the same `COUNT(*) FROM delegations WHERE validator_hash = ?` as the chain's DELEGATE cap read, `rtn_sys_delegcnt_fetch`); all counts are read before encoding, and a failed count is an error reply, never 0. |
+| `int dna_chain_cmd_validator_list(dnac_context_t *ctx, int filter_status)` (`messenger/cli/cli_dna_chain_impl.c`) | **CHANGED (output).** New `DELEGATORS` column: `N/2048` when the node answered, `?` otherwise. Signature unchanged. |

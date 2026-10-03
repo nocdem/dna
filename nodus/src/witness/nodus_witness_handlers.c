@@ -3117,13 +3117,28 @@ static void handle_dnac_committee_query(nodus_witness_t *w,
  *                 "validators": [
  *                   {"pk":bstr(2592), "self":u64, "total":u64,
  *                    "ext":u64, "comm":u16, "status":u8,
- *                    "since":u64}, ... ]}
+ *                    "since":u64, "dlg":u32}, ... ]}
  *
  * Ordering: (self_stake + external_delegated) DESC, pubkey ASC. Same
  * ordering as top_n so rankings remain stable regardless of filter.
  *
  * `total` reports the total matching-filter row count (pre-pagination)
  * so clients can drive "next page" UIs.
+ *
+ * `dlg` (added after nodus 0.23.12) is how many of the validator's
+ * NODUS_MAX_DELEGATORS_PER_VALIDATOR slots are filled: the number of
+ * `delegations` rows whose validator_hash is this validator, read by
+ * nodus_delegation_count_by_validator — the same
+ * `SELECT COUNT(*) FROM delegations WHERE validator_hash = ?` the chain
+ * decides the cap from (nodus_witness_rt_native.c rtn_sys_delegcnt_fetch,
+ * gated in rtn_delegate_exec). Every count is read BEFORE encoding starts;
+ * a count that cannot be read fails the whole reply (a DB failure is
+ * never a value — never a 0). The counts are separate statements after
+ * the page read, the same discipline nodus_validator_list_paged already
+ * uses for its own COUNT and page (no wrapping transaction). This is a
+ * node-local read for display; nothing in consensus reads this reply.
+ * Older clients skip the unknown entry key
+ * (nodus_client.c entry loop `else cbor_decode_skip`).
  * ════════════════════════════════════════════════════════════════════ */
 
 static void handle_dnac_validator_list_query(nodus_witness_t *w,
@@ -3189,10 +3204,36 @@ static void handle_dnac_validator_list_query(nodus_witness_t *w,
         return;
     }
 
-    /* Each entry ships pubkey (2592B) + ~7 small ints. Budget 2700B. */
+    /* Delegator counts, all read before a byte is encoded (see the block
+     * comment: a failed count is an error reply, never a 0). */
+    int *dlg = NULL;
+    if (count > 0) {
+        dlg = calloc((size_t)count, sizeof(*dlg));
+        if (!dlg) {
+            free(vals);
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, "alloc failed");
+            return;
+        }
+    }
+    for (int i = 0; i < count; i++) {
+        if (nodus_delegation_count_by_validator(w, vals[i].pubkey,
+                                                &dlg[i]) != 0 ||
+            dlg[i] < 0) {
+            QGP_LOG_ERROR(LOG_TAG,
+                          "validator_list: delegator count read failed");
+            free(dlg);
+            free(vals);
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "delegator count query failed");
+            return;
+        }
+    }
+
+    /* Each entry ships pubkey (2592B) + 8 small ints. Budget 2800B. */
     size_t buf_size = 256 + (size_t)count * 2800;
     uint8_t *buf = malloc(buf_size);
     if (!buf) {
+        free(dlg);
         free(vals);
         send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, "alloc failed");
         return;
@@ -3210,7 +3251,7 @@ static void handle_dnac_validator_list_query(nodus_witness_t *w,
     cbor_encode_cstr(&enc, "validators");
     cbor_encode_array(&enc, (size_t)count);
     for (int i = 0; i < count; i++) {
-        cbor_encode_map(&enc, 7);
+        cbor_encode_map(&enc, 8);
         cbor_encode_cstr(&enc, "pk");
         cbor_encode_bstr(&enc, vals[i].pubkey, DNAC_PUBKEY_SIZE);
         cbor_encode_cstr(&enc, "self");
@@ -3225,6 +3266,8 @@ static void handle_dnac_validator_list_query(nodus_witness_t *w,
         cbor_encode_uint(&enc, vals[i].status);
         cbor_encode_cstr(&enc, "since");
         cbor_encode_uint(&enc, vals[i].active_since_block);
+        cbor_encode_cstr(&enc, "dlg");
+        cbor_encode_uint(&enc, (uint64_t)dlg[i]);
     }
 
     size_t rlen = cbor_encoder_len(&enc);
@@ -3236,6 +3279,7 @@ static void handle_dnac_validator_list_query(nodus_witness_t *w,
     }
 
     free(buf);
+    free(dlg);
     free(vals);
 }
 

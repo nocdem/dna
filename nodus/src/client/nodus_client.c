@@ -6749,6 +6749,9 @@ int nodus_client_dnac_addr_history(nodus_client_t *client,
     return drc == 0 ? 0 : NODUS_ERR_PROTOCOL_ERROR;
 }
 
+static int dnac_validator_list_parse(const uint8_t *raw, size_t raw_len,
+                                     nodus_dnac_validator_list_result_t *result_out);
+
 int nodus_client_dnac_validator_list(nodus_client_t *client,
                                        int filter_status,
                                        int offset,
@@ -6795,13 +6798,32 @@ int nodus_client_dnac_validator_list(nodus_client_t *client,
         int rc = resp->error_code; free_pending(client, req); return rc;
     }
 
+    int prc = dnac_validator_list_parse(req->raw_response,
+                                        req->raw_response_len, result_out);
+    free_pending(client, req);
+    return prc;
+}
+
+/* The dnac_validator_list_query reply decoder (split out of the request
+ * function so tests/test_client_validator_list.c can drive it through the
+ * NODUS_CLIENT_TEST_SEAM wrapper below). result_out is zeroed by the
+ * caller. On a refusal result_out is freed (entries NULL, count 0).
+ *
+ * Per entry, the optional "dlg" key (the validator's delegator count,
+ * nodus_witness_handlers.c handle_dnac_validator_list_query) sets
+ * has_delegator_count = 1 and delegator_count. Absent (a node that
+ * predates the key) leaves has_delegator_count 0 = unknown. A "dlg" that
+ * is not a uint, exceeds UINT32_MAX, or appears twice in one entry
+ * refuses the whole reply — a malformed count is never shown as a count
+ * and never silently folded into "unknown". Every other entry key keeps
+ * its existing lenient handling.
+ * @return 0 / NODUS_ERR_PROTOCOL_ERROR / NODUS_ERR_INTERNAL_ERROR. */
+static int dnac_validator_list_parse(const uint8_t *raw, size_t raw_len,
+                                     nodus_dnac_validator_list_result_t *result_out) {
     cbor_decoder_t dec;
     size_t mc;
-    if (find_response_map(req->raw_response, req->raw_response_len,
-                           &dec, &mc) != 0) {
-        free_pending(client, req);
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0)
         return NODUS_ERR_PROTOCOL_ERROR;
-    }
 
     /* P0-B (2026-09-28): every response key once; entry writes bounded by
      * the capacity allocated (see nodus_client_dnac_history). */
@@ -6813,7 +6835,6 @@ int nodus_client_dnac_validator_list(nodus_client_t *client,
         if (nodus_map_key_once(&ks, key.tstr.ptr, key.tstr.len) != 0) {
             QGP_LOG_WARN(LOG_TAG, "dnac_validator_list: repeated key in response — refused");
             nodus_client_free_validator_list_result(result_out);
-            free_pending(client, req);
             return NODUS_ERR_PROTOCOL_ERROR;
         }
 
@@ -6831,17 +6852,14 @@ int nodus_client_dnac_validator_list(nodus_client_t *client,
             if (cap > 0) {
                 result_out->entries =
                     calloc(cap, sizeof(nodus_dnac_validator_list_entry_t));
-                if (!result_out->entries) {
-                    free_pending(client, req);
+                if (!result_out->entries)
                     return NODUS_ERR_INTERNAL_ERROR;
-                }
             }
             for (size_t j = 0; j < arr.count; j++) {
                 cbor_item_t emap = cbor_decode_next(&dec);
                 if (emap.type != CBOR_ITEM_MAP) continue;
                 if ((size_t)result_out->count >= cap) {
                     nodus_client_free_validator_list_result(result_out);
-                    free_pending(client, req);
                     return NODUS_ERR_PROTOCOL_ERROR;
                 }
                 nodus_dnac_validator_list_entry_t *e =
@@ -6877,6 +6895,18 @@ int nodus_client_dnac_validator_list(nodus_client_t *client,
                     } else if (KEY_EQ(ek, "since")) {
                         cbor_item_t v = cbor_decode_next(&dec);
                         if (v.type == CBOR_ITEM_UINT) e->active_since_block = v.uint_val;
+                    } else if (KEY_EQ(ek, "dlg")) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (e->has_delegator_count ||
+                            v.type != CBOR_ITEM_UINT ||
+                            v.uint_val > UINT32_MAX) {
+                            QGP_LOG_WARN(LOG_TAG, "dnac_validator_list: "
+                                         "malformed or repeated \"dlg\" — refused");
+                            nodus_client_free_validator_list_result(result_out);
+                            return NODUS_ERR_PROTOCOL_ERROR;
+                        }
+                        e->delegator_count     = (uint32_t)v.uint_val;
+                        e->has_delegator_count = 1;
                     } else {
                         cbor_decode_skip(&dec);
                     }
@@ -6888,7 +6918,6 @@ int nodus_client_dnac_validator_list(nodus_client_t *client,
         }
     }
 
-    free_pending(client, req);
     return 0;
 }
 
@@ -6932,6 +6961,16 @@ int nodus_client_test_parse_block(const uint8_t *raw, size_t raw_len,
                                   nodus_dnac_block_result_t *out) {
     memset(out, 0, sizeof(*out));
     return dnac_block_parse(raw, raw_len, out);
+}
+
+/* tests/test_client_validator_list.c */
+int nodus_client_test_parse_validator_list(const uint8_t *raw, size_t raw_len,
+                                           nodus_dnac_validator_list_result_t *out);
+
+int nodus_client_test_parse_validator_list(const uint8_t *raw, size_t raw_len,
+                                           nodus_dnac_validator_list_result_t *out) {
+    memset(out, 0, sizeof(*out));
+    return dnac_validator_list_parse(raw, raw_len, out);
 }
 #endif /* NODUS_CLIENT_TEST_SEAM */
 
