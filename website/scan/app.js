@@ -150,6 +150,49 @@
     for (const id of ['height', 'total', 'circulating']) if ($('stat-' + id)) $('stat-' + id).textContent = '—';
     for (const id of ['reward', 'storage', 'compute', 'bandwidth', 'future', 'unclaimed']) if ($('bucket-' + id)) $('bucket-' + id).textContent = '—';
   }
+  // Throughput (explorer /api/tps): applied transactions per second by block time, "now" being the
+  // newest indexed block. tps is a decimal string with two decimals; history is 24 UTC hours,
+  // oldest first (the newest is the hour in progress). Its own request: a failure here leaves the
+  // rest of the home page alone.
+  const tpsText = value => typeof value === 'string' && /^\d+\.\d{2}$/.test(value) ? value : null;
+  const validBucket = b => b && typeof b === 'object' && Number.isSafeInteger(b.start_ms) && Number.isSafeInteger(b.tx) && tpsText(b.tps) !== null;
+  const cssColor = (name, fallback) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+  const hourLabel = ms => new Date(ms).toISOString().slice(11, 16) + ' UTC';
+  function tpsChart(history) {
+    const ns = 'http://www.w3.org/2000/svg', barWidth = 10, height = 64;
+    const values = history.map(b => Number(b.tps)), peak = Math.max(0, ...values);
+    const peakBucket = history[values.indexOf(peak)];
+    const svg = document.createElementNS(ns, 'svg');
+    const attrs = (node, values) => { for (const [k, v] of Object.entries(values)) node.setAttribute(k, String(v)); return node; };
+    attrs(svg, { viewBox: `0 0 ${history.length * barWidth} ${height}`, width: '100%', height, preserveAspectRatio: 'none', role: 'img' });
+    svg.setAttribute('aria-label', t(`Transactions per second in each of the last ${history.length} hours, oldest first. Peak ${peakBucket.tps} TPS at ${hourLabel(peakBucket.start_ms)}.`, `Son ${history.length} saatin her birinde saniyedeki işlem sayısı, en eskiden başlayarak. En yüksek ${peakBucket.tps} TPS, ${hourLabel(peakBucket.start_ms)}.`));
+    const lime = cssColor('--lime', '#d5f998'), line = cssColor('--line', '#353a30');
+    history.forEach((b, i) => {
+      // A zero hour is a 1-unit baseline tick so every hour keeps its tooltip.
+      const h = values[i] > 0 && peak > 0 ? Math.max(2, values[i] / peak * (height - 2)) : 1;
+      const bar = attrs(document.createElementNS(ns, 'rect'), { x: i * barWidth + 1, y: height - h, width: barWidth - 2, height: h, fill: values[i] > 0 ? lime : line });
+      const title = document.createElementNS(ns, 'title');
+      title.textContent = hourLabel(b.start_ms) + ' — ' + b.tps + ' TPS · ' + b.tx + t(' transactions', ' işlem');
+      bar.append(title); svg.append(bar);
+    });
+    return svg;
+  }
+  function tpsUnavailable(message) {
+    $('tps-minute').textContent = '—'; $('tps-hour').textContent = '—';
+    $('tps-chart').replaceChildren(el('div', message, 'muted'));
+  }
+  async function loadTps() {
+    if (!$('tps-cards')) return;
+    try {
+      const data = await api('/tps');
+      if (data.now_ms === null) { tpsUnavailable(t('No blocks indexed yet.', 'Henüz indekslenmiş blok yok.')); return; }
+      const minute = tpsText(data.last_minute?.tps), hour = tpsText(data.last_hour?.tps);
+      if (minute === null || hour === null || !Array.isArray(data.history) || !data.history.length || !data.history.every(validBucket)) throw new Error(t('Unexpected index response.', 'Beklenmeyen indeks yanıtı.'));
+      $('tps-minute').textContent = minute + ' TPS';
+      $('tps-hour').textContent = hour + ' TPS';
+      $('tps-chart').replaceChildren(tpsChart(data.history));
+    } catch (error) { tpsUnavailable(error.message); }
+  }
   async function loadBlocks(requested, fresh = false, providedStats) {
     const current = ++blockRequest, body = $('blocks-tbody');
     try {
@@ -343,7 +386,7 @@
   }
   async function refresh() {
     if(refreshing)return;refreshing=true;$('refresh-data').disabled=true;
-    const detail = page==='hardforks' ? loadGovernance() : page!=='index' ? loadDetail() : null;
+    const detail = page==='hardforks' ? loadGovernance() : page!=='index' ? loadDetail() : loadTps();
     try {
       const stats=await api('/stats');displayStats(stats);
       if(page==='index')await loadBlocks(pageNumber,pageNumber===1,stats);

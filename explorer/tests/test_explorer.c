@@ -1830,6 +1830,199 @@ out:
     exp_db_close(db);
 }
 
+/* ── /api/tps (throughput from block time) ─────────────────────────── */
+
+/* Index a synthetic itemless block: height h, block time `time_ms`,
+ * `applied` applied transactions (blocks.applied_count). */
+static int write_tps_block(exp_db_t *db, uint64_t h, uint64_t time_ms, uint64_t applied) {
+    exp_block_batch_t b;
+    exp_block_batch_init(&b);
+    b.have_header = 1;
+    b.block.height = h;
+    fill(b.block.block_id, 64, (uint8_t)(0x10 + h));
+    fill(b.block.prev_id, 64, (uint8_t)(0x10 + h - 1));
+    b.block.time_ms = time_ms;
+    fill(b.block.proposer, 32, 0xA0);
+    b.block.proposer_len = 32;
+    b.block.applied_count = applied;
+    b.block.n_items = 0;
+    int rc = exp_db_write_height(db, &b);
+    exp_block_batch_free(&b);
+    return rc;
+}
+
+/* UTC hour start used by the tps fixtures (a real-epoch time). */
+static uint64_t tps_hour0(void) {
+    const uint64_t t = 1700000000000ULL;
+    return t - t % EXP_TPS_HOUR_MS;
+}
+
+/* Bucketing over a synthetic index: now = the newest block's time (30 min
+ * + 0.5 s into an hour); the minute and hour windows are (now - span, now]
+ * — a block exactly at now - span is OUT, one ms later IN; history is 24
+ * UTC-aligned hours oldest first, empty hours zero, a block older than 23 h
+ * before the current hour absent, the hour in progress counted in its
+ * elapsed seconds (rounded up). */
+static void test_tps_bucketing(void) {
+    TEST("exp_db: tps windows (edges exclusive) + 24 hourly buckets");
+
+    const uint64_t H = EXP_TPS_HOUR_MS, T0 = tps_hour0();
+    const uint64_t now = T0 + 30 * 60000 + 500;
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+
+    exp_tps_t t;
+    if (exp_db_query_tps(db, &t) != 0 || t.have != 0) { FAIL("empty index must answer have=0"); exp_db_close(db); return; }
+
+    const struct { uint64_t time_ms, applied; } blocks[] = {
+        { T0 - 25 * H,          1000 },  /* before the history window */
+        { T0 - 23 * H,          7 },     /* bucket 0, its first ms */
+        { T0 - 22 * H - 1,      3 },     /* bucket 0, its last ms */
+        { T0 - 2 * H + 5,       0 },     /* bucket 21, a heartbeat */
+        { now - H,              11 },    /* bucket 22; last_hour edge: OUT */
+        { now - H + 1,          13 },    /* bucket 22; last_hour: IN */
+        { now - 60000,          17 },    /* bucket 23; last_minute edge: OUT */
+        { now - 59999,          19 },    /* last_minute: IN */
+        { now,                  2 },     /* the newest block = now */
+    };
+    for (size_t i = 0; i < sizeof(blocks) / sizeof(blocks[0]); i++) {
+        if (write_tps_block(db, i + 1, blocks[i].time_ms, blocks[i].applied) != 0) {
+            FAIL("seed failed"); exp_db_close(db); return;
+        }
+    }
+
+    if (exp_db_query_tps(db, &t) != 0 || !t.have) { FAIL("query failed"); exp_db_close(db); return; }
+
+    int ok = t.now_ms == now &&
+             t.last_minute.blocks == 2 && t.last_minute.tx == 21 &&
+             t.last_hour.blocks == 4 && t.last_hour.tx == 13 + 17 + 19 + 2 &&
+             t.n_history == EXP_TPS_HISTORY_HOURS;
+    if (!ok) { FAIL("windows wrong"); exp_db_close(db); return; }
+
+    for (int i = 0; i < t.n_history; i++) {
+        const exp_tps_bucket_t *b = &t.history[i];
+        uint64_t want_blocks = 0, want_tx = 0, want_secs = 3600;
+        if (i == 0)  { want_blocks = 2; want_tx = 10; }
+        if (i == 21) { want_blocks = 1; want_tx = 0; }
+        if (i == 22) { want_blocks = 2; want_tx = 24; }
+        if (i == 23) { want_blocks = 3; want_tx = 38; want_secs = 1801; }
+        if (b->start_ms != T0 - 23 * H + (uint64_t)i * H || b->start_ms % H != 0 ||
+            b->count.blocks != want_blocks || b->count.tx != want_tx || b->seconds != want_secs) {
+            printf("(bucket %d: start %llu blocks %llu tx %llu secs %llu) ", i,
+                   (unsigned long long)b->start_ms, (unsigned long long)b->count.blocks,
+                   (unsigned long long)b->count.tx, (unsigned long long)b->seconds);
+            FAIL("bucket wrong");
+            exp_db_close(db);
+            return;
+        }
+    }
+
+    /* the JSON shape: 24 buckets, decimal-string tps */
+    char now_needle[64], first_needle[96];
+    snprintf(now_needle, sizeof(now_needle), "{\"now_ms\":%llu,", (unsigned long long)now);
+    snprintf(first_needle, sizeof(first_needle),
+             "\"history\":[{\"start_ms\":%llu,\"tx\":10,\"blocks\":2,\"seconds\":3600,\"tps\":\"0.00\"}",
+             (unsigned long long)(T0 - 23 * H));
+    const char *const needles[] = {
+        now_needle, first_needle,
+        "\"last_minute\":{\"tx\":21,\"blocks\":2,\"seconds\":60,\"tps\":\"0.35\"}",
+        "\"last_hour\":{\"tx\":51,\"blocks\":4,\"seconds\":3600,\"tps\":\"0.01\"}",
+        "\"tx\":38,\"blocks\":3,\"seconds\":1801,\"tps\":\"0.02\"}]}",
+        NULL };
+    if (route_expect(db, "/api/tps", 200, needles) != 0) { FAIL("route shape"); exp_db_close(db); return; }
+
+    exp_http_ctx_t ctx = {0};
+    ctx.db = &db;
+    int stop = 0;
+    ctx.stop = &stop;
+    exp_json_t body;
+    int status = -1;
+    exp_http_route(&ctx, "GET", "/api/tps", &body, &status);
+    int n_buckets = (status == 200) ? count_substr(body.buf, "\"start_ms\":") : -1;
+    exp_json_freebuf(&body);
+    if (n_buckets != EXP_TPS_HISTORY_HOURS) { FAIL("history must hold 24 buckets"); exp_db_close(db); return; }
+
+    exp_db_close(db);
+    PASS();
+}
+
+/* tps strings: two decimals, half up, carried into the whole part; an
+ * empty index answers nulls and an empty history. */
+static void test_tps_rounding_and_empty(void) {
+    TEST("route: /api/tps rounding (half up, carry) + empty index");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+
+    static const char *const empty[] = {
+        "{\"now_ms\":null,\"last_minute\":null,\"last_hour\":null,\"history\":[]}", NULL };
+    if (route_expect(db, "/api/tps", 200, empty) != 0) { FAIL("empty index"); exp_db_close(db); return; }
+
+    const uint64_t H = EXP_TPS_HOUR_MS, T0 = tps_hour0();
+    const uint64_t now = T0 + 30 * 60000 + 500;          /* the hour in progress: 1801 s */
+    /* bucket 22: 18 / 3600 = 0.005 -> "0.01" (half up, not truncated);
+     * bucket 23: 5402 / 1801 = 2.9994 -> "3.00" (carry);
+     * minute 5402 / 60 = 90.033 -> "90.03"; hour 5402 / 3600 = 1.5006 -> "1.50" */
+    if (write_tps_block(db, 1, T0 - H + 10, 18) != 0 ||
+        write_tps_block(db, 2, now, 5402) != 0) {
+        FAIL("seed failed"); exp_db_close(db); return;
+    }
+    static const char *const needles[] = {
+        "\"last_minute\":{\"tx\":5402,\"blocks\":1,\"seconds\":60,\"tps\":\"90.03\"}",
+        "\"last_hour\":{\"tx\":5402,\"blocks\":1,\"seconds\":3600,\"tps\":\"1.50\"}",
+        "\"tx\":18,\"blocks\":1,\"seconds\":3600,\"tps\":\"0.01\"}",
+        "\"tx\":5402,\"blocks\":1,\"seconds\":1801,\"tps\":\"3.00\"}]}",
+        NULL };
+    if (route_expect(db, "/api/tps", 200, needles) != 0) { FAIL("rounding"); exp_db_close(db); return; }
+
+    exp_db_close(db);
+    PASS();
+}
+
+/* Bounded cost: the index file carries idx_blocks_time and sqlite plans
+ * the window aggregate as a range search of it. */
+static void test_tps_index_used(void) {
+    TEST("exp_db: idx_blocks_time exists and serves the tps span query");
+
+    char path[] = "/tmp/exp_db_tps_XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) { FAIL("mkstemp failed"); return; }
+    close(fd);
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(path, &db) != 0) { FAIL("open failed"); unlink_db_files(path); return; }
+    exp_db_close(db);
+
+    sqlite3 *raw = NULL;
+    if (sqlite3_open(path, &raw) != SQLITE_OK) { FAIL("raw open failed"); unlink_db_files(path); return; }
+    sqlite3_stmt *s = NULL;
+    int n_idx = -1;
+    if (sqlite3_prepare_v2(raw, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_blocks_time'",
+                           -1, &s, NULL) == SQLITE_OK && sqlite3_step(s) == SQLITE_ROW) {
+        n_idx = sqlite3_column_int(s, 0);
+    }
+    sqlite3_finalize(s);
+
+    int uses_index = 0;
+    s = NULL;
+    if (sqlite3_prepare_v2(raw, "EXPLAIN QUERY PLAN SELECT COUNT(*), IFNULL(SUM(applied_count), 0) "
+                                "FROM blocks WHERE time_ms > ?1 AND time_ms <= ?2",
+                           -1, &s, NULL) == SQLITE_OK) {
+        while (sqlite3_step(s) == SQLITE_ROW) {
+            const unsigned char *detail = sqlite3_column_text(s, 3);
+            if (detail && strstr((const char *)detail, "idx_blocks_time")) uses_index = 1;
+        }
+    }
+    sqlite3_finalize(s);
+    sqlite3_close(raw);
+    unlink_db_files(path);
+
+    if (n_idx != 1) { FAIL("idx_blocks_time missing"); return; }
+    if (!uses_index) { FAIL("span query does not use idx_blocks_time"); return; }
+    PASS();
+}
+
 int main(void) {
     printf("=== DNA Explorer Tests ===\n");
 
@@ -1869,6 +2062,9 @@ int main(void) {
     test_route_errors();
     test_route_null_db_503();
     test_route_address_balance();
+    test_tps_bucketing();
+    test_tps_rounding_and_empty();
+    test_tps_index_used();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;

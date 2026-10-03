@@ -75,7 +75,18 @@ Future services (`treasury` pools 1-4) and Unclaimed genesis allocation
 (`unclaimed`) — decision `2026-09-30-scan-supply-buckets`; circulating
 includes staked coins and the Foundation's coins. A `null` field (an older
 node) shows "—". Below the table a link leads to the main site's
-`tokenomics.html` for how the supply is allocated. The footer describes the indexer's trust
+`tokenomics.html` for how the supply is allocated. A "Throughput" section
+follows (explorer `/api/tps`): Last minute and Last hour TPS cards and a
+24-bar inline SVG chart of the last 24 UTC hours (oldest first, the newest
+bar the hour in progress; each bar has a tooltip with the hour, its TPS and
+its transaction count; the SVG carries an EN/TR `aria-label` naming the
+peak hour). TPS counts applied transactions only and is measured by block
+time up to the newest indexed block, not the visitor's clock. The chart
+uses SVG presentation attributes (no `style`, CSP `style-src 'self'`) with
+the `--lime` / `--line` colours read from `portal.css`. It loads with the
+other home figures (Refresh and the 30 s refresh on page 1) as its own
+request: a failing or missing `/api/tps` shows "—" and a message in the
+chart slot without affecting the rest of the page. The footer describes the indexer's trust
 in witness responses. A successful HTTP request does not prove a chain is active;
 block timestamps and the reported index position remain visible.
 

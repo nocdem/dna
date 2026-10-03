@@ -106,6 +106,8 @@ static const char *SCHEMA_SQL =
     "  PRIMARY KEY(height, idx)"
     ");"
     "CREATE INDEX IF NOT EXISTS idx_blocks_id ON blocks(block_id);"
+    /* /api/tps: covering — the time-span aggregates read the index only */
+    "CREATE INDEX IF NOT EXISTS idx_blocks_time ON blocks(time_ms, applied_count);"
     "CREATE INDEX IF NOT EXISTS idx_items_wire ON items(wire_id);"
     "CREATE INDEX IF NOT EXISTS idx_items_intent ON items(intent_id);"
     "CREATE INDEX IF NOT EXISTS idx_io_coin ON item_io(coin_id, dir);"
@@ -214,6 +216,18 @@ static const char *QUERY_ADDRESS_SQL =
     "WHERE i.height < ?2 OR (i.height = ?2 AND i.idx < ?3) "
     "ORDER BY i.height DESC, i.idx DESC LIMIT ?4";
 
+/* /api/tps: blocks and applied transactions with a block time in
+ * (?1, ?2] — a range scan of idx_blocks_time. */
+static const char *QUERY_TPS_SPAN_SQL =
+    "SELECT COUNT(*), IFNULL(SUM(applied_count), 0) FROM blocks "
+    "WHERE time_ms > ?1 AND time_ms <= ?2";
+
+/* /api/tps history: per hour bucket (0 = the hour starting at ?1), block
+ * times in [?1, ?2]. */
+static const char *QUERY_TPS_HOURS_SQL =
+    "SELECT (time_ms - ?1) / 3600000 AS bucket, COUNT(*), IFNULL(SUM(applied_count), 0) "
+    "FROM blocks WHERE time_ms >= ?1 AND time_ms <= ?2 GROUP BY bucket ORDER BY bucket ASC";
+
 /* ── DB handle ───────────────────────────────────────────────────────── */
 
 struct exp_db {
@@ -237,6 +251,8 @@ struct exp_db {
     sqlite3_stmt *stmt_query_records_by_kind;
     sqlite3_stmt *stmt_query_ios;
     sqlite3_stmt *stmt_query_address;
+    sqlite3_stmt *stmt_query_tps_span;
+    sqlite3_stmt *stmt_query_tps_hours;
 };
 
 /* ── Batch ───────────────────────────────────────────────────────────── */
@@ -481,7 +497,9 @@ int exp_db_open(const char *path, exp_db_t **db_out) {
         sqlite3_prepare_v2(db->conn, QUERY_ITEM_BY_NAME_SQL, -1, &db->stmt_query_item_by_name, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, QUERY_RECORDS_BY_KIND_SQL, -1, &db->stmt_query_records_by_kind, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, QUERY_IOS_SQL, -1, &db->stmt_query_ios, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(db->conn, QUERY_ADDRESS_SQL, -1, &db->stmt_query_address, NULL) != SQLITE_OK) {
+        sqlite3_prepare_v2(db->conn, QUERY_ADDRESS_SQL, -1, &db->stmt_query_address, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db->conn, QUERY_TPS_SPAN_SQL, -1, &db->stmt_query_tps_span, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db->conn, QUERY_TPS_HOURS_SQL, -1, &db->stmt_query_tps_hours, NULL) != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "prepare failed: %s", sqlite3_errmsg(db->conn));
         exp_db_close(db);
         return -1;
@@ -502,6 +520,7 @@ void exp_db_close(exp_db_t *db) {
         db->stmt_query_items, db->stmt_query_item, db->stmt_query_item_by_id,
         db->stmt_query_item_by_name, db->stmt_query_records_by_kind,
         db->stmt_query_ios, db->stmt_query_address,
+        db->stmt_query_tps_span, db->stmt_query_tps_hours,
     };
     for (size_t i = 0; i < sizeof(stmts) / sizeof(stmts[0]); i++) {
         if (stmts[i]) sqlite3_finalize(stmts[i]);
@@ -1057,4 +1076,91 @@ int exp_db_query_address(exp_db_t *db, const char *fp,
     sqlite3_bind_int64(s, 3, (sqlite3_int64)before_idx);
     sqlite3_bind_int(s, 4, limit);
     return query_items_list(db, s, limit, rows, count_out, "query_address");
+}
+
+/* ── Throughput (/api/tps) ──────────────────────────────────────────── */
+
+/* Blocks / applied transactions with a block time in (now - span, now]. */
+static int tps_span(exp_db_t *db, sqlite3_int64 now, sqlite3_int64 span_ms, exp_tps_count_t *out) {
+    sqlite3_stmt *s = db->stmt_query_tps_span;
+    sqlite3_reset(s);
+    sqlite3_bind_int64(s, 1, now - span_ms);
+    sqlite3_bind_int64(s, 2, now);
+
+    int rc = -1;
+    if (sqlite3_step(s) == SQLITE_ROW) {
+        out->blocks = (uint64_t)sqlite3_column_int64(s, 0);
+        out->tx = (uint64_t)sqlite3_column_int64(s, 1);
+        rc = 0;
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "query_tps span failed: %s", sqlite3_errmsg(db->conn));
+    }
+    sqlite3_reset(s);
+    return rc;
+}
+
+int exp_db_query_tps(exp_db_t *db, exp_tps_t *out) {
+    if (!db || !db->conn || !out) return -1;
+    memset(out, 0, sizeof(*out));
+
+    /* "now" = the newest indexed block's time (highest height) — the
+     * figures are reproducible from the index, never the local clock. */
+    exp_block_row_t newest;
+    int n = 0;
+    if (exp_db_query_blocks(db, UINT64_MAX, 1, &newest, &n) != 0) return -1;
+    if (n == 0) return 0;                       /* empty index: have = 0 */
+
+    const uint64_t now = newest.time_ms;
+    const sqlite3_int64 now_i = clamp_cursor(now);
+    out->now_ms = now;
+
+    if (tps_span(db, now_i, 60000, &out->last_minute) != 0 ||
+        tps_span(db, now_i, (sqlite3_int64)EXP_TPS_HOUR_MS, &out->last_hour) != 0) {
+        return -1;
+    }
+
+    /* History: the hour containing now and the hours before it, at most
+     * EXP_TPS_HISTORY_HOURS, oldest first. Bucket slots come from this
+     * loop; the query only fills the hours that hold a block. */
+    const uint64_t cur_start = now - (now % EXP_TPS_HOUR_MS);
+    const uint64_t hours_before = cur_start / EXP_TPS_HOUR_MS;  /* hours since the epoch */
+    int n_hist = (hours_before >= (uint64_t)(EXP_TPS_HISTORY_HOURS - 1))
+                     ? EXP_TPS_HISTORY_HOURS : (int)hours_before + 1;
+    const uint64_t first_start = cur_start - (uint64_t)(n_hist - 1) * EXP_TPS_HOUR_MS;
+
+    for (int i = 0; i < n_hist; i++) {
+        exp_tps_bucket_t *b = &out->history[i];
+        b->start_ms = first_start + (uint64_t)i * EXP_TPS_HOUR_MS;
+        b->seconds = EXP_TPS_HOUR_MS / 1000;
+    }
+    /* the hour in progress: the seconds elapsed up to now, rounded up,
+     * at least 1 (a block exactly on the hour boundary) */
+    uint64_t elapsed = (now - cur_start + 999) / 1000;
+    out->history[n_hist - 1].seconds = elapsed > 0 ? elapsed : 1;
+    out->n_history = n_hist;
+
+    sqlite3_stmt *s = db->stmt_query_tps_hours;
+    sqlite3_reset(s);
+    sqlite3_bind_int64(s, 1, clamp_cursor(first_start));
+    sqlite3_bind_int64(s, 2, now_i);
+
+    int rc = 0;
+    for (;;) {
+        int st = sqlite3_step(s);
+        if (st == SQLITE_DONE) break;
+        if (st != SQLITE_ROW) {
+            QGP_LOG_ERROR(LOG_TAG, "query_tps history step failed: %s", sqlite3_errmsg(db->conn));
+            rc = -1;
+            break;
+        }
+        sqlite3_int64 bucket = sqlite3_column_int64(s, 0);
+        if (bucket < 0 || bucket >= n_hist) continue;   /* unreachable: time_ms in [first_start, now] */
+        out->history[bucket].count.blocks = (uint64_t)sqlite3_column_int64(s, 1);
+        out->history[bucket].count.tx = (uint64_t)sqlite3_column_int64(s, 2);
+    }
+    sqlite3_reset(s);
+    if (rc != 0) return -1;
+
+    out->have = 1;
+    return 0;
 }

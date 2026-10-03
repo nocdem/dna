@@ -24,6 +24,10 @@
  * binary WITHOUT this table lacks those heights' names until it is rebuilt
  * (the design's rule: explorer decoders ship before the vote).
  *
+ * idx_blocks_time (blocks(time_ms, applied_count), /api/tps) is likewise
+ * created IF NOT EXISTS on every open: an existing v2 index gains it on
+ * the first open of a binary that has it, built from the stored rows.
+ *
  * Schema versioning: meta "schema_version" = EXP_DB_SCHEMA_VERSION, written
  * in the same transaction that creates the schema. exp_db_open on a file
  * whose schema_version is absent or different (the v1 ledger-sequence
@@ -227,6 +231,45 @@ int  exp_db_query_item_by_name(exp_db_t *db, const char *name, exp_item_row_t *r
  * record (exp_db_verify_index), so every row is an applied item. */
 int  exp_db_query_records_by_kind(exp_db_t *db, int rec_kind, int max,
                                   exp_item_row_t *rows, int *count_out);
+
+/* ── throughput (/api/tps) ─────────────────────────────────────────── */
+
+#define EXP_TPS_HOUR_MS       3600000ULL
+#define EXP_TPS_HISTORY_HOURS 24
+
+/* Applied transactions (blocks.applied_count) and blocks in a span of
+ * block time. */
+typedef struct {
+    uint64_t tx;
+    uint64_t blocks;
+} exp_tps_count_t;
+
+/* One hourly history bucket: block times in [start_ms, start_ms + 1 h).
+ * seconds = 3600, except the newest bucket (the hour in progress at
+ * now_ms): ceil((now_ms - start_ms) / 1000), at least 1. */
+typedef struct {
+    uint64_t        start_ms;   /* UTC-aligned: start_ms % EXP_TPS_HOUR_MS == 0 */
+    uint64_t        seconds;
+    exp_tps_count_t count;
+} exp_tps_bucket_t;
+
+typedef struct {
+    int              have;        /* 0 = empty index: nothing below is set */
+    uint64_t         now_ms;      /* the time of the newest indexed block (highest height) */
+    exp_tps_count_t  last_minute; /* block times in (now_ms - 60 s, now_ms] */
+    exp_tps_count_t  last_hour;   /* block times in (now_ms - 1 h, now_ms] */
+    exp_tps_bucket_t history[EXP_TPS_HISTORY_HOURS]; /* oldest first */
+    int              n_history;   /* 24; fewer only when now_ms is within 23 h of the Unix epoch */
+} exp_tps_t;
+
+/* Throughput figures, every one a function of the index alone: "now" is
+ * the newest indexed block's time, never the explorer's clock, and every
+ * span is bounded above by it. History = the hour containing now_ms and
+ * the 23 before it, oldest first, an hour with no block a zero bucket.
+ * Bounded cost: each span is a range scan of the covering index
+ * idx_blocks_time (time_ms, applied_count) over at most 24 h of blocks.
+ * 0 on success (out->have 0 on an empty index), -1 on a query failure. */
+int  exp_db_query_tps(exp_db_t *db, exp_tps_t *out);
 
 #ifdef __cplusplus
 }

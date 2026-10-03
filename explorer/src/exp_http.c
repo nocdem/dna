@@ -645,6 +645,71 @@ static void route_governance(exp_db_t *db, exp_json_t *j, int *status) {
     *status = 200;
 }
 
+/* tx / seconds as a decimal string with exactly two decimals, rounded half
+ * up, integer arithmetic only (no float reaches a reply). seconds >= 1. */
+static void json_tps(exp_json_t *j, uint64_t tx, uint64_t seconds) {
+    if (seconds == 0) seconds = 1;               /* unreachable: exp_db_query_tps */
+    uint64_t whole = tx / seconds;
+    uint64_t rem = tx % seconds;                 /* < seconds <= 3600: no overflow below */
+    uint64_t centi = (rem * 200 + seconds) / (2 * seconds);
+    if (centi == 100) {
+        whole++;
+        centi = 0;
+    }
+    char buf[48];
+    snprintf(buf, sizeof(buf), "%llu.%02llu", (unsigned long long)whole, (unsigned long long)centi);
+    exp_json_str(j, buf);
+}
+
+/* "tx":…,"blocks":…,"seconds":…,"tps":"…" (the caller adds the braces). */
+static void emit_tps_fields(exp_json_t *j, const exp_tps_count_t *c, uint64_t seconds) {
+    exp_json_raw(j, "\"tx\":");
+    exp_json_u64(j, c->tx);
+    exp_json_raw(j, ",\"blocks\":");
+    exp_json_u64(j, c->blocks);
+    exp_json_raw(j, ",\"seconds\":");
+    exp_json_u64(j, seconds);
+    exp_json_raw(j, ",\"tps\":");
+    json_tps(j, c->tx, seconds);
+}
+
+/* /api/tps — applied transactions per second over the last minute, the
+ * last hour and the last 24 UTC hours (exp_db_query_tps). Every figure is
+ * read off the index by block time: now_ms is the newest indexed block's
+ * time, not this host's clock. An empty index answers nulls and []. */
+static void route_tps(exp_db_t *db, exp_json_t *j, int *status) {
+    exp_tps_t t;
+    if (exp_db_query_tps(db, &t) != 0) {
+        json_error(j, "query failed");
+        *status = 500;
+        return;
+    }
+    if (!t.have) {
+        exp_json_raw(j, "{\"now_ms\":null,\"last_minute\":null,\"last_hour\":null,\"history\":[]}");
+        *status = 200;
+        return;
+    }
+
+    exp_json_raw(j, "{\"now_ms\":");
+    exp_json_u64(j, t.now_ms);
+    exp_json_raw(j, ",\"last_minute\":{");
+    emit_tps_fields(j, &t.last_minute, 60);
+    exp_json_raw(j, "},\"last_hour\":{");
+    emit_tps_fields(j, &t.last_hour, EXP_TPS_HOUR_MS / 1000);
+    exp_json_raw(j, "},\"history\":[");
+    for (int i = 0; i < t.n_history; i++) {
+        const exp_tps_bucket_t *b = &t.history[i];
+        if (i) exp_json_raw(j, ",");
+        exp_json_raw(j, "{\"start_ms\":");
+        exp_json_u64(j, b->start_ms);
+        exp_json_raw(j, ",");
+        emit_tps_fields(j, &b->count, b->seconds);
+        exp_json_raw(j, "}");
+    }
+    exp_json_raw(j, "]}");
+    *status = 200;
+}
+
 /* ── The chain-backed balance source (contract: exp_http.h) ─────────── */
 
 typedef struct {
@@ -1000,6 +1065,10 @@ static void route_index(exp_http_ctx_t *ctx, const char *path_only,
     }
     if (strcmp(path_only, "/api/governance") == 0) {
         route_governance(db, body_out, status_out);
+        return;
+    }
+    if (strcmp(path_only, "/api/tps") == 0) {
+        route_tps(db, body_out, status_out);
         return;
     }
 
