@@ -2505,10 +2505,20 @@ static void server_write_genesis_marker(const char *data_path) {
 
 /* ── Public API ──────────────────────────────────────────────────── */
 
-int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) {
-    if (!srv || !config) return -1;
+/* nodus_server_init itself is in server/nodus_server_backends_inproc.c
+ * (split S6): this file names no in-process constructor, so a binary that
+ * links the IPC table (nodus-core) does not pull the in-process DHT or
+ * witness objects (tests/core_linked.cmake). */
+int nodus_server_init_ex(nodus_server_t *srv, const nodus_server_config_t *config,
+                         const nodus_server_backends_t *be) {
+    if (!srv || !config || !be) return -1;
     memset(srv, 0, sizeof(*srv));
     srv->config = *config;
+
+    /* Split S6 — the table's own admission (nodus-core: both externals or
+     * nothing), before the partial-wipe gate opens or creates anything. */
+    if (be->admit && be->admit(config) != 0)
+        return -1;
     /* 2026-07-21 fd-leak fix: every resource acquired below is released on
      * ANY later init failure (goto fail). Before this, a mid-init failure
      * (e.g. a port bind lost to a concurrent process) leaked the already-
@@ -2543,8 +2553,13 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     if (config->has_network_pin) {
         /* the witness scans config->data_path as given (nodus_witness.c
          * init), so the same directory is checked here */
-        if (nodus_chain_backend_inproc_check_pin(config->data_path,
-                                                 config->network_pin) != 0) {
+        if (!be->check_pin) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "a network-file pin is set, but this "
+                          "binary holds no chain database to check it against "
+                          "(the pin is nodus-witness's check) — not starting");
+            return -1;
+        }
+        if (be->check_pin(config->data_path, config->network_pin) != 0) {
             return -1;
         }
     }
@@ -2569,10 +2584,15 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
                 fprintf(stderr, "storage_external: the storage socket path "
                         "under data_path \"%s\" is unusable (too long) — not "
                         "starting\n", config->data_path);
+        } else if (!be->dht_new || !be->dht_open) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "storage_external is not set, and "
+                          "this binary carries no in-process DHT — not "
+                          "starting");
+            drc = -1;
         } else {
             nodus_dht_host_t dhost;
             nodus_server_dht_host(srv, &dhost);
-            drc = nodus_dht_backend_inproc_new(&dhost, &srv->dht);
+            drc = be->dht_new(&dhost, &srv->dht);
         }
         if (drc == -2)
             fprintf(stderr, "Failed to allocate DHT state\n");
@@ -2603,8 +2623,9 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     } else {
         uint16_t self_peer_port = config->peer_port ? config->peer_port : NODUS_DEFAULT_PEER_PORT;
         const char *self_ip = config->external_ip[0] ? config->external_ip : config->bind_ip;
-        if (nodus_dht_backend_inproc_open(srv->dht, config->data_path,
-                                          self_ip, self_peer_port) != 0)
+        /* be->dht_open is non-NULL: checked with dht_new above */
+        if (be->dht_open(srv->dht, config->data_path,
+                         self_ip, self_peer_port) != 0)
             goto fail;
     }
 
@@ -2842,11 +2863,16 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
                     "process over %s/%s\n",
                     config->data_path[0] ? config->data_path : "/tmp",
                     NODUS_WITNESS_IPC_SOCK_NAME);
+    } else if (!be->chain_open) {
+        /* Refused, not degraded: the degraded path below is for a witness
+         * that failed to start, not for a binary that has none. */
+        QGP_LOG_ERROR(LOG_TAG, "%s", "witness_external is not set, and this "
+                      "binary carries no in-process witness — not starting");
+        goto fail;
     } else {
         nodus_witness_host_t whost;
         nodus_server_witness_host(srv, &whost);
-        wrc = nodus_chain_backend_inproc_open(&whost, &config->witness,
-                                              &srv->chain);
+        wrc = be->chain_open(&whost, &config->witness, &srv->chain);
     }
     if (wrc == -2) {
         fprintf(stderr, "Failed to allocate witness context\n");

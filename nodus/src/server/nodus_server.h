@@ -308,9 +308,59 @@ typedef struct nodus_server {
 } nodus_server_t;
 
 /**
+ * Split S6 — the in-process constructors nodus_server_init_ex calls, as a
+ * table (decision docs/plans/decisions/2026-10-01-nodus-component-split.md
+ * items 2, 12). nodus_server.c references no in-process DHT or witness
+ * object by name: nodus-core links the IPC table and nothing pulls
+ * nodus_dht_server.c / nodus_witness.c into it (tests/core_linked.cmake).
+ *
+ *   admit      NULL, or called first with the config: non-zero refuses the
+ *              start (logged by the callee) before anything is opened.
+ *   check_pin  the network file's pin-at-start check
+ *              (nodus_chain_backend_inproc_check_pin), run when
+ *              `has_network_pin`. NULL = this table holds no chain
+ *              database: a set pin refuses the start (logged).
+ *   dht_new /  the in-process DHT, phases one and two
+ *   dht_open   (nodus_dht_backend_inproc_new / _open), used when
+ *              !storage_external. NULL = refuse the start (logged).
+ *   chain_open the in-process witness (nodus_chain_backend_inproc_open),
+ *              used when !witness_external. NULL = refuse the start
+ *              (logged).
+ */
+typedef struct {
+    int (*admit)(const nodus_server_config_t *config);
+    int (*check_pin)(const char *data_path, const uint8_t pin[32]);
+    int (*dht_new)(const nodus_dht_host_t *host, nodus_dht_backend_t **out);
+    int (*dht_open)(nodus_dht_backend_t *b, const char *data_path,
+                    const char *self_ip, uint16_t self_peer_port);
+    int (*chain_open)(const nodus_witness_host_t *host,
+                      const nodus_witness_config_t *config,
+                      nodus_chain_backend_t **out);
+} nodus_server_backends_t;
+
+/** The in-process table (server/nodus_server_backends_inproc.c) —
+ *  nodus-server, and every unit test through nodus_server_init. */
+extern const nodus_server_backends_t nodus_server_backends_inproc;
+
+/** The IPC-only table (server/nodus_server_backends_ipc.c) — nodus-core.
+ *  Its `admit` refuses unless BOTH storage_external and witness_external
+ *  are set; every in-process slot is NULL. */
+extern const nodus_server_backends_t nodus_server_backends_ipc;
+
+/**
  * Initialize server with config. Loads identity, opens storage, binds ports.
+ * = nodus_server_init_ex(srv, config, &nodus_server_backends_inproc);
+ * defined in server/nodus_server_backends_inproc.c.
  */
 int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config);
+
+/**
+ * Split S6 — nodus_server_init with an explicit constructor table `be`
+ * (above). Same contract as nodus_server_init; -1 also when `be` is NULL
+ * or refuses (admit, or a NULL slot the config needs).
+ */
+int nodus_server_init_ex(nodus_server_t *srv, const nodus_server_config_t *config,
+                         const nodus_server_backends_t *be);
 
 /* nodus_server_check_partial_wipe (PR 3 / E5, H-10) is declared in
  * server/nodus_partial_wipe.h, included above — its own object since

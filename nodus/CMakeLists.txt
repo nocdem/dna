@@ -536,6 +536,13 @@ if(NOT WIN32)
         src/channel/nodus_channel_ring.c
         src/consensus/nodus_cluster.c
         src/server/nodus_server.c
+        # Split S6 — nodus_server_init_ex's constructor tables. The
+        # in-process table (with nodus_server_init) is the only server TU
+        # that names the in-process DHT / witness constructors; nodus-core
+        # links the IPC-only table and so neither of those objects
+        # (tests/core_linked.cmake).
+        src/server/nodus_server_backends_inproc.c
+        src/server/nodus_server_backends_ipc.c
         # Split S4 — the DHT / storage half: its handlers, ticks and state
         # (dht/nodus_dht.h), reached only through server/nodus_dht_backend.h.
         # No core-only symbol (auth, presence, cluster, sessions) is
@@ -2734,6 +2741,29 @@ if(JSONC_FOUND)
     target_link_libraries(nodus-storage ${JSONC_LIBRARIES})
 endif()
 
+# Split S6 — the core roles as their own process (decision
+# 2026-10-01-nodus-component-split items 2, 3, 4, 6, 9, 10, 12): UDP 4000,
+# TCP 4001 sessions, the 4002 listener, cluster, presence, circuits, the
+# partial-wipe gate, identity creation. Same command line and config file
+# as nodus-server WITHOUT the witness-side parts (like nodus-storage: no
+# nodus_node_config_witness.c, no nodus_v2_gen_config.c). It calls
+# nodus_server_init_ex with the IPC-only constructor table and refuses
+# unless both storage_external and witness_external are set; it must link
+# no in-process DHT or witness object: test_core_linked checks the symbol
+# table.
+add_executable(nodus-core
+    tools/nodus-core.c
+    tools/nodus_node_config.c)
+target_link_libraries(nodus-core nodus dsa nodus)
+target_compile_options(nodus-core PRIVATE -Wall -Wextra -Wno-unused-parameter)
+target_include_directories(nodus-core PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+if(JSONC_FOUND)
+    target_compile_definitions(nodus-core PRIVATE NODUS_HAS_JSONC)
+    target_include_directories(nodus-core PRIVATE ${JSONC_INCLUDE_DIRS})
+    target_link_libraries(nodus-core ${JSONC_LIBRARIES})
+endif()
+
 # Split S5b — LINK GATE for the storage binary (tests/storage_linked.cmake):
 # `nm` on the linked nodus-storage must find no server / auth / cluster /
 # presence / witness entry point and must find the DHT's own, the IPC
@@ -2750,6 +2780,14 @@ add_test(NAME test_split_linked
          COMMAND ${CMAKE_COMMAND}
                  -DNODUS_WITNESS=$<TARGET_FILE:nodus-witness>
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/split_linked.cmake)
+
+# Split S6 — LINK GATE for the core binary: `nm` on the linked nodus-core
+# must find no in-process DHT / storage / witness entry point and must find
+# core's own and the two IPC backends' (tests/core_linked.cmake).
+add_test(NAME test_core_linked
+         COMMAND ${CMAKE_COMMAND}
+                 -DNODUS_CORE=$<TARGET_FILE:nodus-core>
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/core_linked.cmake)
 
 # Split S4 — LINK GATE for the DHT / storage half: a never-run probe that
 # references only the core -> DHT entry points (dht/nodus_dht.h), so its
