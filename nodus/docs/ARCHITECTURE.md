@@ -1699,10 +1699,10 @@ loader does write when ML-KEM is missing).
 #### S3 — the `nodus-witness` process + the IPC chain backend (commits `2f85a5bf`, `546da3d1`, `1faf4d4f`; harness `6af3e600`, `2c71acf1`)
 
 The witness (the 4004 p2p host + the Comet consensus lane) can run as its own process
-(decision items 5, 7, 10, 11, 19, 20, 22). **Opt-in, not for production yet** — no
-systemd unit and no installer exist for it (`nodus/deploy/` holds only `nodus.service`
-and `build-nodus.sh`; see `DEPLOY_RUNBOOK.md` §0). The combined `nodus-server` with the
-default config is unchanged.
+(decision items 5, 7, 10, 11, 19, 20, 22). **Opt-in, not for production yet** — at S3
+no systemd unit existed for it; S6 added `deploy/nodus-witness.service` beside the core
+and storage units (§13 "Split units"); there is still no installer (S7). See
+`DEPLOY_RUNBOOK.md` §0. The combined `nodus-server` with the default config is unchanged.
 
 **The mode switch: `witness_external`.** `nodus_server_config_t.witness_external`
 (`nodus_server.h:127-138`), set by the JSON key `"witness_external": true`
@@ -1741,7 +1741,7 @@ Start sequence (`nodus-witness.c:196-358`):
    mismatch.
 6. Socket path `<data_path>/witness.sock` must fit `NODUS_TCP_UNIX_PATH_MAX` (`:248-255`).
 7. **Read-only identity** — `nodus_identity_load_readonly` (`:257-263`; item 10): a
-   missing or incomplete identity → exit 1 (`start nodus-server first to create it`).
+   missing or incomplete identity → exit 1 (`nodus-core or nodus-server makes it`).
 8. Host view (`:290-297`): `nodus_server_witness_host_config` (the same subset the
    combined binary gives its witness), then **`seq_dir` emptied** so the witness keeps
    `nodus.addr_seq` in `data_path`, never in the identity directory (items 10, 21);
@@ -2675,7 +2675,9 @@ beside `nodus.service`, which stays — item 8). §13 "Systemd Service" below.
   (`nodus-witness.c`), not every witness write (`cs.wal`, address book,
   `priv_validator_state`); a blocked write would be a restart loop.
 - `deploy/nodus.conf.example` is recreated in the tree but ignored by git
-  (`.gitignore`, commit `fb45e940`); `build-nodus.sh` copies it on a first install.
+  (`.gitignore`, commit `fb45e940`); `build-nodus.sh` copies it on a first install when
+  present, and otherwise skips the copy with a message (a fresh clone has none — write
+  `/etc/nodus.conf` by hand).
 - `nodus.addr_seq` migration and the installer (items 21, 26) are S7.
 
 ---
@@ -3118,10 +3120,13 @@ strategy in this deployment** — it is a budget of three attempts in five
 minutes, after which the node is down until an operator intervenes, and it
 would retire the node's DHT role along with its witness role. That is why the
 witness's chain-database open **waits inside the process** instead of exiting
-(O15L Faz 2, `nodus_witness.c:355-407`: `NODUS_W_DB_OPEN_ATTEMPTS = 3`, the
-`NODUS_W_DB_BUSY_TIMEOUT_MS` budget divided per attempt, plus a fixed 250 ms
-pause), and why a witness that cannot start runs **degraded rather than
-fatal** (`nodus_server.c:3040-3102`). See §15, *Witness startup and
+(O15L Faz 2, `nodus_witness.c:542-545` and `witness_db_open_path` `:753-804`:
+`NODUS_W_DB_OPEN_ATTEMPTS = 3`, the `NODUS_W_DB_BUSY_TIMEOUT_MS` budget divided
+per attempt, plus a fixed 250 ms pause), and why a witness that cannot start
+inside the combined `nodus-server` runs **degraded rather than fatal**
+(`nodus_server.c:2881-2943`, the `WITNESS MODULE INIT FAILED — THIS NODE IS
+RUNNING DEGRADED` block). The split `nodus-witness` is the opposite on purpose: it
+exits 1 and its unit restarts it (decision item 11). See §15, *Witness startup and
 chain-database faults*.
 
 **Split units (S6, decision `2026-10-01-nodus-component-split.md`).**
@@ -3138,13 +3143,19 @@ chain-database faults*.
   witness can start before core has written the identity they only read (item 10), exit
   1, and are retried every `RestartSec=5` — the combined unit's 3-in-300 budget could run
   out before core finishes.
-- all three: `Conflicts=nodus.service` — the combined server and the split units never
-  run at once on one data directory (two DHTs, two signers with one validator key);
-  starting one side stops the other (systemd `Conflicts=` semantics; not exercised on a
-  host in S6).
+- all three: `Conflicts=nodus.service` + `After=nodus.service` — the combined server and
+  the split units never run at once on one data directory (two DHTs, two signers with
+  one validator key); starting one side stops the other, and the `After=` orders that
+  stop before the start (`Conflicts=` alone implies no ordering, systemd.unit(5); not
+  exercised on a host in S6).
 - No `ReadOnlyPaths=` on `identity/` (open, see "S6" in §10).
 `build-nodus.sh` installs all five binaries and copies the split units without enabling
-them; `tools/nodus-update.sh` restarts whichever layout is active.
+them. On an update, `build-nodus.sh` and `tools/nodus-update.sh` (which installs the same
+five and re-copies the units + `daemon-reload`) pick the layout by `systemctl
+is-enabled`, never `is-active`: `nodus.service` enabled → combined; `nodus-core` enabled →
+the enabled split units (item 12); both, neither, or storage / witness without core →
+refuse, nothing changed. The layout's units are stopped, binaries installed atomically
+(`dest.new` + rename), units started (`DEPLOY_RUNBOOK.md` "Three-process node").
 
 ### Ports
 
