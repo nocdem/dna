@@ -171,6 +171,7 @@ nodus/
 │   ├── test_routing.c         # Routing table tests
 │   ├── test_storage.c         # SQLite storage tests
 │   ├── test_identity.c        # Identity generation tests
+│   ├── test_identity_load_or_create.c # Server identity start-up rule: create only when neither key file exists
 │   ├── test_hashring.c        # Hash ring tests
 │   ├── test_channel_store.c      # Channel storage tests
 │   ├── test_channel_server.c    # TCP 4003 session tests
@@ -1461,7 +1462,8 @@ decision record).
 Data is stored in:
 - `<data_path>/nodus.db` — DHT value storage (SQLite)
 - `<data_path>/channels.db` — Channel post storage (SQLite)
-- `<identity_path>/nodus.pk`, `nodus.sk`, `nodus.fp` — Node identity
+- `<identity_path>/nodus.pk`, `nodus.sk`, `nodus.fp` — Node identity (created only when
+  neither key file exists; an unloadable one refuses the start — §13 "Identity Management")
 
 ### Component split — S1 witness host seam, S2 local IPC primitives, S3 `nodus-witness` process, S4 core/DHT seam, S5a 4002 connection fixes, S5b `nodus-storage` process, S6 `nodus-core` process + units, S7 tar.gz installer (2026-10-02 / 03)
 
@@ -3292,6 +3294,29 @@ refuse, nothing changed. The layout's units are stopped, binaries installed atom
 On first start, if no identity exists at `identity_path`, the server generates a random
 Dilithium5 keypair and saves it. The identity persists across restarts — the node_id
 (SHA3-512 of the public key) is the node's permanent identifier in the DHT.
+
+**Load-or-create rule** (`nodus_server_identity_load_or_create`, `src/server/nodus_server.h`;
+called by `nodus_server_init_ex`, so by `nodus-server` and `nodus-core` — decision
+`2026-10-01-nodus-component-split` item 10, only core writes identity files):
+
+- `nodus_identity_load(identity_path)` succeeds → the stored identity is used (return 0).
+- It fails and **neither** `nodus.pk` **nor** `nodus.sk` exists (`lstat` → `ENOENT` for
+  both; a dangling symlink counts as present) → first start: generate, then
+  `nodus_identity_save`; WARN `no identity at <path> — created and saved a new one`
+  (return 1). If the save fails the start is refused (-1): an identity that is not on
+  disk would be replaced by yet another one on the next start.
+- It fails and either file exists — unreadable (permissions), truncated, or only one of
+  the two present (a half restore) — or `lstat` fails with anything but `ENOENT` →
+  ERROR `the identity at <path> could not be loaded … nothing was generated or
+  overwritten`, return -1. `nodus_server_init` then fails (`goto fail`, which releases the
+  DHT state already created) and the binary exits 1. **An existing identity is never
+  replaced automatically**; the operator fixes the permissions or restores both files.
+
+Before this rule, ANY load failure printed `Identity not found at <path>, generating new`
+and overwrote `nodus.pk` / `nodus.sk` with a new identity (and ignored a failed save).
+Out of scope, unchanged: `nodus_identity_load` itself still generates and saves a missing
+Kyber or ML-KEM pair next to a valid Dilithium pair; an empty `identity_path` still runs
+on an ephemeral in-memory identity. Test: `tests/test_identity_load_or_create.c`.
 
 ### Redeploy
 

@@ -350,7 +350,30 @@ extern const nodus_server_backends_t nodus_server_backends_inproc;
 extern const nodus_server_backends_t nodus_server_backends_ipc;
 
 /**
+ * Load this node's identity from directory `path`, or create it on a first
+ * start — never replace an existing one. nodus_server_init uses it for a
+ * non-empty identity_path (decision 2026-10-01-nodus-component-split item
+ * 10: only the core writes identity files).
+ *
+ *  - nodus_identity_load(path) succeeds → 0.
+ *  - It fails and NEITHER `<path>/nodus.pk` NOR `<path>/nodus.sk` exists
+ *    (lstat → ENOENT for both) → first start: generate, then
+ *    nodus_identity_save; 1 when both succeed. A failed save → -1: an
+ *    identity that is not on disk would be replaced on the next start.
+ *  - It fails and either file exists, or lstat fails with anything but
+ *    ENOENT (unreadable, truncated, half-restored) → -1, logged with the
+ *    path; nothing is generated and no file is written.
+ *
+ * @param path  identity directory (non-empty)
+ * @param out   the identity; securely cleared whenever -1 is returned
+ * @return 0 loaded, 1 created and saved, -1 refused or failed
+ */
+int nodus_server_identity_load_or_create(const char *path, nodus_identity_t *out);
+
+/**
  * Initialize server with config. Loads identity, opens storage, binds ports.
+ * -1 also when identity_path holds an identity that cannot be loaded
+ * (nodus_server_identity_load_or_create above).
  * = nodus_server_init_ex(srv, config, &nodus_server_backends_inproc);
  * defined in server/nodus_server_backends_inproc.c.
  */

@@ -2505,6 +2505,68 @@ static void server_write_genesis_marker(const char *data_path) {
 
 /* ── Public API ──────────────────────────────────────────────────── */
 
+/* Does `<dir>/<name>` exist as far as identity creation is concerned?
+ * lstat, not stat: a dangling symlink counts as present (a save would
+ * write through it). Only ENOENT means absent; any other lstat error
+ * (EACCES on the directory, ENOTDIR, …) is "cannot tell" and is treated
+ * as present, so the caller refuses instead of generating. */
+static bool identity_file_may_exist(const char *dir, const char *name) {
+    char filepath[1024];
+    int n = snprintf(filepath, sizeof(filepath), "%s/%s", dir, name);
+    if (n < 0 || (size_t)n >= sizeof(filepath))
+        return true;
+    struct stat st;
+    if (lstat(filepath, &st) == 0)
+        return true;
+    return errno != ENOENT;
+}
+
+int nodus_server_identity_load_or_create(const char *path, nodus_identity_t *out) {
+    if (!path || !path[0] || !out)
+        return -1;
+
+    if (nodus_identity_load(path, out) == 0)
+        return 0;
+    /* nodus_identity_load may have read part of a key into `out` */
+    nodus_identity_clear(out);
+
+    bool pk_present = identity_file_may_exist(path, "nodus.pk");
+    bool sk_present = identity_file_may_exist(path, "nodus.sk");
+    if (pk_present || sk_present) {
+        QGP_LOG_ERROR(LOG_TAG, "the identity at %s could not be loaded "
+                      "(nodus.pk %s, nodus.sk %s) — nothing was generated or "
+                      "overwritten; fix the files' permissions, or restore "
+                      "BOTH nodus.pk and nodus.sk (full size) from a backup, "
+                      "then start again",
+                      path,
+                      pk_present ? "present or unreadable" : "missing",
+                      sk_present ? "present or unreadable" : "missing");
+        return -1;
+    }
+
+    /* First start: neither key file exists. */
+    if (nodus_identity_generate(out) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "no identity at %s and generating a new one "
+                      "failed", path);
+        nodus_identity_clear(out);
+        return -1;
+    }
+    if (nodus_identity_save(out, path) != 0) {
+        /* An identity that is not on disk would be replaced by another one
+         * on the next start — do not run with it. */
+        QGP_LOG_ERROR(LOG_TAG, "no identity at %s; generated a new one but "
+                      "could not save it there — not starting (check that "
+                      "the directory exists and is writable; if nodus.pk was "
+                      "written before the failure, remove it before the next "
+                      "start)", path);
+        nodus_identity_clear(out);
+        return -1;
+    }
+    QGP_LOG_WARN(LOG_TAG, "no identity at %s — created and saved a new one "
+                 "(fingerprint %.16s…)", path, out->fingerprint);
+    return 1;
+}
+
 /* nodus_server_init itself is in server/nodus_server_backends_inproc.c
  * (split S6): this file names no in-process constructor, so a binary that
  * links the IPC table (nodus-core) does not pull the in-process DHT or
@@ -2600,14 +2662,14 @@ int nodus_server_init_ex(nodus_server_t *srv, const nodus_server_config_t *confi
             return -1;
     }
 
-    /* Load or generate identity */
+    /* Load the identity; create one only when neither key file exists
+     * (nodus_server_identity_load_or_create — an existing identity that
+     * cannot be loaded is never replaced). goto fail, as for dht_open just
+     * below: the DHT state from dht_new is the only thing held here. */
     if (config->identity_path[0]) {
-        if (nodus_identity_load(config->identity_path, &srv->identity) != 0) {
-            fprintf(stderr, "Identity not found at %s, generating new\n",
-                    config->identity_path);
-            nodus_identity_generate(&srv->identity);
-            nodus_identity_save(&srv->identity, config->identity_path);
-        }
+        if (nodus_server_identity_load_or_create(config->identity_path,
+                                                 &srv->identity) < 0)
+            goto fail;
     } else {
         nodus_identity_generate(&srv->identity);
     }

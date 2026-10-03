@@ -1001,6 +1001,15 @@ add_executable(test_identity tests/test_identity.c)
 target_link_libraries(test_identity nodus dsa nodus)
 add_test(NAME test_identity COMMAND test_identity)
 
+# Server identity start-up rule (nodus_server_identity_load_or_create;
+# decision 2026-10-01-nodus-component-split item 10): create only when
+# neither nodus.pk nor nodus.sk exists; an unloadable existing identity or a
+# first-start save failure is refused with nothing overwritten. mkdtemp
+# dirs under /tmp; the permission cases print SKIP under root.
+add_executable(test_identity_load_or_create tests/test_identity_load_or_create.c)
+target_link_libraries(test_identity_load_or_create nodus dsa kem nodus)
+add_test(NAME test_identity_load_or_create COMMAND test_identity_load_or_create)
+
 # Routing table test
 add_executable(test_routing tests/test_routing.c)
 target_link_libraries(test_routing nodus dsa nodus)
