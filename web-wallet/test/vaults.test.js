@@ -317,6 +317,35 @@ function readBack({ num, str }) {
   return { fee: str('nsw_msig_rv_fee'), expiry: str('nsw_msig_rv_expiry'), expired: num('nsw_msig_rv_expired'), k: num('nsw_msig_rv_k'), vault: str('nsw_msig_rv_vault'), outs, ins };
 }
 const propIn = ({ num }, p) => num('nsw_msig_prop_in', ['string', 'string', 'string', 'string', 'string'], [p.chain, p.tip, p.signers, p.digest, p.env]);
+function loadCoins({ num, str }, coins) {
+  num('nsw_msig_coins_reset');
+  for (const [id, amount] of coins) assert.equal(num('nsw_msig_coin_add', ['string', 'string', 'string', 'string'], [id, amount, '0', '7']), 0, str('nsw_error'));
+}
+
+test('parity: a request that spends coins the vault does not hold is refused (F1)', { skip: skipParity }, async () => {
+  // built over coins X; the receiver's record of the vault holds other coins
+  // (e.g. the request was made for vault A from vault B's coins, rebuilt
+  // under A's code): the read-back — and so Approve, which signs only a
+  // read-back made in the module and re-checks the coins on the bytes it
+  // signs (nsw_msig_sign) — refuses
+  const { parts } = await builtRequest();
+  const recv = await loadTest();
+  assert.equal(recv.num('nsw_net_set_chain', ['string'], [CHAIN]), 0);
+  assert.equal(recv.num('nsw_msig_load', ['string'], [FOUNDATION_VAULT.descriptor]), 0);
+  loadCoins(recv, [['99'.repeat(64), '500000000']]);
+  assert.equal(propIn(recv, parts), 0, recv.str('nsw_error'));
+  assert.notEqual(recv.num('nsw_test_msig_review', ['string'], ['5000']), 0);
+  assert.match(recv.str('nsw_error'), /spends coins this vault does not hold/);
+  assert.equal(recv.num('nsw_msig_rv_ok'), 0);
+  assert.notEqual(recv.num('nsw_msig_sign'), 0, 'nothing reviewed: nothing signed');
+  // one of the two inputs missing is enough
+  loadCoins(recv, [COINS[0]]);
+  assert.equal(propIn(recv, parts), 0);
+  assert.notEqual(recv.num('nsw_test_msig_review', ['string'], ['5000']), 0);
+  loadCoins(recv, COINS);
+  assert.equal(propIn(recv, parts), 0);
+  assert.equal(recv.num('nsw_test_msig_review', ['string'], ['5000']), 0, recv.str('nsw_error'));
+});
 
 test('parity: a request travels as its parts, is rebuilt from the receiver\'s own vault code, and reads back field by field', { skip: skipParity }, async () => {
   const { parts, exportText } = await builtRequest();
@@ -325,6 +354,7 @@ test('parity: a request travels as its parts, is rebuilt from the receiver\'s ow
   const recv = await loadTest();
   assert.equal(recv.num('nsw_net_set_chain', ['string'], [CHAIN]), 0);
   assert.equal(recv.num('nsw_msig_load', ['string'], [FOUNDATION_VAULT.descriptor]), 0);
+  loadCoins(recv, COINS);                 // the receiver's own record of the vault's coins (F1)
   assert.equal(propIn(recv, parts), 0, recv.str('nsw_error'));
   assert.equal(recv.str('nsw_msig_text'), exportText, 'the rebuilt export is byte-identical');
   assert.equal(recv.num('nsw_test_msig_review', ['string'], ['5000']), 0, recv.str('nsw_error'));
@@ -349,6 +379,7 @@ test('parity: the read-back refuses a request with any changed field', { skip: s
   const recv = await loadTest();
   assert.equal(recv.num('nsw_net_set_chain', ['string'], [CHAIN]), 0);
   assert.equal(recv.num('nsw_msig_load', ['string'], [FOUNDATION_VAULT.descriptor]), 0);
+  loadCoins(recv, COINS);                 // the receiver's own record of the vault's coins (F1)
   const flip = (hex, byte) => hex.slice(0, 2 * byte) + (hex[2 * byte] === '0' ? '1' : '0') + hex.slice(2 * byte + 1);
   // env layout (shared/dnac/env_wire.h): expiry u64 at 17..24, fee u64 at 25..32;
   // the first output's amount low byte: call starts at 43 + 30 (one leg),

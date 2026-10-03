@@ -548,9 +548,12 @@ export async function createNodusSendModule(network, { claim = null, loadGlue = 
       check(await call('nsw_msig_build', ['string', 'string'], [to, amount]));
       return { request: vaultRequest(), exportText: str('nsw_msig_text'), review: vaultReviewRead() };
     },
-    // vaultReview({ descriptor, request }) -> review (at the node's tip)
-    async vaultReview({ descriptor, request } = {}) {
+    // vaultReview({ descriptor, coins, request }) -> review (at the node's
+    // tip). coins: the vault's own coins (its record) — the review REFUSES a
+    // request that spends any other coin (F1).
+    async vaultReview({ descriptor, coins = [], request } = {}) {
       vaultLoad(descriptor);
+      vaultCoinsLoad(coins);
       vaultRequestLoad(request);
       check(await call('nsw_msig_review'));
       return vaultReviewRead();
@@ -558,9 +561,10 @@ export async function createNodusSendModule(network, { claim = null, loadGlue = 
     // vaultApprove({ descriptor, request, digest }) -> { signature (nodus-cli's
     // signature text), review }. Reviews again at the node's tip and signs
     // only if the request is still the one shown (`digest`).
-    async vaultApprove({ descriptor, request, digest } = {}) {
+    async vaultApprove({ descriptor, coins = [], request, digest } = {}) {
       if (typeof digest !== 'string' || !HEX128.test(digest)) throw new Error('Invalid payment request.');
       vaultLoad(descriptor);
+      vaultCoinsLoad(coins);
       vaultRequestLoad(request);
       check(await call('nsw_msig_review'));
       if (str('nsw_msig_prop_digest') !== digest) throw new Error('This payment request changed after it was shown. Nothing was signed.');
@@ -570,10 +574,11 @@ export async function createNodusSendModule(network, { claim = null, loadGlue = 
     },
     // vaultSubmit({ descriptor, request, digest, signatures }) -> { accepted,
     // message?, intentId, review, approvals: [{ signer, ok, message? }] }
-    async vaultSubmit({ descriptor, request, digest, signatures = [] } = {}) {
+    async vaultSubmit({ descriptor, coins = [], request, digest, signatures = [] } = {}) {
       if (typeof digest !== 'string' || !HEX128.test(digest)) throw new Error('Invalid payment request.');
       if (!Array.isArray(signatures) || signatures.length > VAULT_MAX_SIGNATURES || !signatures.every(s => typeof s === 'string')) throw new Error('Invalid approvals.');
       vaultLoad(descriptor);
+      vaultCoinsLoad(coins);
       vaultRequestLoad(request);
       check(await call('nsw_msig_review'));
       if (str('nsw_msig_prop_digest') !== digest) throw new Error('This payment request changed after it was shown. Nothing was sent.');

@@ -2867,9 +2867,13 @@ int nsw_name_build(const char *name, const char *expiry_dec) {
  *              fit, its parts do.
  *   review     nsw_msig_review: nodus_v2_msig_review (shape, membership,
  *              the digest re-derived and EQUAL, the call's lengths) at the
- *              node's current tip; then the vault address the export
- *              carries must be the vault in use, every output must be
- *              native NODUS, and "expired" = tip + 1 > expiry. Every field
+ *              node's current tip; then EVERY coin it spends must be one
+ *              of the vault's own coins this module holds (F1 — the only
+ *              binding of a request to its vault: the descriptor it
+ *              carries is rebuilt from the receiver's own code, so the
+ *              address check below is a backstop), every output must be
+ *              native NODUS, the expiry within the node's tip + 90 (F3),
+ *              and "expired" = tip + 1 > expiry. Every field
  *              shown comes from the export bytes, never from a message's
  *              words.
  *   sign       nsw_msig_sign: only after a review in this module, not
@@ -3356,6 +3360,25 @@ static int nsw_ms_core_tuple(uint32_t *cv_out, uint8_t ch_out[64]) {
                     "this page does not know. Reload the page.");
 }
 
+/* F1: every coin a request spends must be one of the vault's OWN coins —
+ * the set this module holds for the vault in use (found in its blocks, or
+ * its genesis coins), loaded by JS from the vault's record before a review.
+ * The request's descriptor cannot tell (the receiver rebuilds it from its
+ * own vault code, and the digest does not cover it), so this is what binds
+ * a request to the vault it is signed for. */
+static int nsw_ms_inputs_owned(const nodus_v2_msig_review_t *rv) {
+    for (int i = 0; i < rv->n_in; i++) {
+        int found = 0;
+        for (int c = 0; c < g_ms.n_coins && !found; c++)
+            if (memcmp(g_ms.coins[c].id, rv->in_nul[i], 64) == 0) found = 1;
+        if (!found) return 0;
+    }
+    return 1;
+}
+
+#define NSW_MS_NOT_OWNED "This request spends coins this vault does not " \
+    "hold — do not approve it. Refresh the vault if you think this is wrong."
+
 /* The co-signer's read-back at the node's tip `now_tip` (see "review"). */
 static int nsw_ms_review_now(uint64_t now_tip) {
     g_ms.reviewed = g_ms.expired = 0;
@@ -3391,6 +3414,10 @@ static int nsw_ms_review_now(uint64_t now_tip) {
         memset(&g_ms.rv, 0, sizeof(g_ms.rv));
         return nsw_fail("This payment request spends from a different vault "
                         "than the one it was sent for. Do not approve it.");
+    }
+    if (!nsw_ms_inputs_owned(&g_ms.rv)) {
+        memset(&g_ms.rv, 0, sizeof(g_ms.rv));
+        return nsw_fail(NSW_MS_NOT_OWNED);
     }
     static const uint8_t zero64[64] = {0};
     for (int o = 0; o < g_ms.rv.n_out; o++)
@@ -3650,10 +3677,13 @@ int nsw_msig_sign(void) {
                  NODUS_V2_SPEND_OK &&
              memcmp(again->digest, g_ms.rv.digest, 64) == 0 &&
              memcmp(again->addr, g_ms.addr, 64) == 0;
+    /* F1 again, on the bytes about to be signed */
+    const int owned = ok && nsw_ms_inputs_owned(again);
     free(again);
     free(pf);
     if (!ok) return nsw_fail("This payment request changed after it was "
                              "reviewed. Nothing was signed.");
+    if (!owned) return nsw_fail(NSW_MS_NOT_OWNED);
     uint8_t sig[QGP_DSA87_SIGNATURE_BYTES];
     size_t sl = 0;
     if (qgp_dsa87_sign(sig, &sl, g_ms.x.digest, 64, g_id.sk.bytes) != 0 ||

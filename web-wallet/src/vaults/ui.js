@@ -45,9 +45,12 @@ let generation = 0, busy = false, current = null, view = 'list';
 const vaults = new Map();                // address -> record (core.js)
 const balances = new Map();              // address -> { total, spendable }
 const names = new Map();                 // ID -> chain name ('' none)
-const reviews = new Map();               // digest -> module read-back
-const ownApprovals = new Map();          // digest -> signature text (this session)
-const sent = new Map();                  // digest -> { intentId, at } submitted here
+// Keyed by (vault address, digest) — rkey: a digest is only meaningful for
+// the vault it was reviewed under (F1).
+const reviews = new Map();               // rkey -> module read-back
+const ownApprovals = new Map();          // rkey -> signature text (this session)
+const sent = new Map();                  // rkey -> { intentId, at } submitted here
+const rkey = (address, digest) => `${address}|${digest}`;
 const shareStates = new Map();           // vault code -> { state, info?, error? }
 let status = '', draft = null, createInfo = null, foundationChecked = -1;
 
@@ -317,10 +320,10 @@ async function removeVault(record) {
 // expired are not offered to a new one.
 function freeCoins(record) {
   const held = new Set();
-  for (const [digest, review] of reviews) {
+  for (const [key, review] of reviews) {
     if (review.vault !== record.address || review.expired) continue;
     if (requestState({ review, accepted: 0, record }) === 'paid') continue;
-    if (sent.has(digest) || ownApprovals.has(digest)) for (const id of review.inputs) held.add(id);
+    if (sent.has(key) || ownApprovals.has(key)) for (const id of review.inputs) held.add(id);
   }
   return record.coins.filter(c => !held.has(c.id));
 }
@@ -335,7 +338,7 @@ async function prepareRequest(record, form) {
     const amount = amountUnits(form.amount.trim(), NODUS_ASSET.decimals).toString();
     const built = await client.vaultPropose({ descriptor: record.code, coins: freeCoins(record), to, amount });
     if (gen !== generation) return;
-    reviews.set(built.request.digest, built.review);
+    reviews.set(rkey(record.address, built.request.digest), built.review);
     draft = { address: record.address, request: built.request, review: built.review, to };
     status = '';
   } catch (error) {
@@ -362,10 +365,10 @@ async function approve(record, request, { isNew }) {
   const gen = generation;
   busy = true; status = 'Approving…'; render();
   try {
-    const { signature, review } = await client.vaultApprove({ descriptor: record.code, request, digest: request.digest });
+    const { signature, review } = await client.vaultApprove({ descriptor: record.code, coins: record.coins, request, digest: request.digest });
     if (gen !== generation) return;
-    reviews.set(request.digest, review);
-    ownApprovals.set(request.digest, signature);
+    reviews.set(rkey(record.address, request.digest), review);
+    ownApprovals.set(rkey(record.address, request.digest), signature);
     const texts = [];
     if (isNew) texts.push(encodeRequest({ vault: record.address, request }));
     texts.push(encodeApproval({ vault: record.address, digest: request.digest, signature }));
@@ -383,7 +386,7 @@ async function review(record, request) {
   const gen = generation;
   busy = true; status = 'Reading the payment request…'; render();
   try {
-    reviews.set(request.digest, await client.vaultReview({ descriptor: record.code, request }));
+    reviews.set(rkey(record.address, request.digest), await client.vaultReview({ descriptor: record.code, coins: record.coins, request }));
     if (gen === generation) status = '';
   } catch (error) {
     if (gen === generation) status = error.message || 'This payment request could not be read.';
@@ -394,9 +397,9 @@ async function review(record, request) {
 
 // One approval per key (core.js approvalKey): the messages' ones and this
 // session's own.
-function approvalsFor(digest, items) {
-  const byKey = new Map();
-  for (const text of [...(items.approvals.get(digest) || []), ...(ownApprovals.has(digest) ? [ownApprovals.get(digest)] : [])]) {
+function approvalsFor(address, digest, items) {
+  const byKey = new Map(), own = ownApprovals.get(rkey(address, digest));
+  for (const text of [...(items.approvals.get(digest) || []), ...(own ? [own] : [])]) {
     const key = approvalKey(text);
     if (key && !byKey.has(key)) byKey.set(key, text);
   }
@@ -408,11 +411,11 @@ async function sendPayment(record, request, items) {
   const gen = generation;
   busy = true; status = 'Sending the payment…'; render();
   try {
-    const result = await client.vaultSubmit({ descriptor: record.code, request, digest: request.digest, signatures: approvalsFor(request.digest, items) });
+    const result = await client.vaultSubmit({ descriptor: record.code, coins: record.coins, request, digest: request.digest, signatures: approvalsFor(record.address, request.digest, items) });
     if (gen !== generation) return;
-    reviews.set(request.digest, result.review);
+    reviews.set(rkey(record.address, request.digest), result.review);
     if (result.accepted) {
-      sent.set(request.digest, { intentId: result.intentId, at: Date.now() });
+      sent.set(rkey(record.address, request.digest), { intentId: result.intentId, at: Date.now() });
       status = 'The payment was sent to the network. It shows in the vault history once it is in a block (Refresh).';
     } else status = result.message || 'The network refused this payment.';
   } catch (error) {
@@ -548,12 +551,9 @@ function renderReviewRows(record, review) {
   row(`Network fee ${nodus(review.fee)}`, 'paid from the vault');
   const left = blocksLeft(review);
   row(review.expired ? 'Expired' : `Valid until block ${review.expiryHeight}`, review.expired ? `The network passed block ${review.expiryHeight}. Propose it again.` : `${left} blocks from now; after that it must be proposed again.`);
-  // every coin it spends must be one this page found in the vault's history
-  const known = new Set(record.coins.map(c => c.id));
-  const unknown = review.inputs.filter(id => !known.has(id)).length;
-  row(unknown ? 'Check the coins' : 'Coins checked', unknown
-    ? `${unknown} of the ${review.inputs.length} coins it spends were not found in this vault’s history on this device. Refresh the vault; if it stays, do not approve unless you know why.`
-    : `All ${review.inputs.length} coins it spends belong to this vault.`);
+  // F1: the module refused the review unless every coin it spends is one of
+  // this vault's own coins (nodus-send-wasm.c nsw_ms_inputs_owned)
+  row('Coins checked', `All ${review.inputs.length} coins it spends belong to this vault.`);
   return list;
 }
 
@@ -610,24 +610,25 @@ function renderVault(record) {
 }
 
 function renderRequest(record, digest, item, items) {
-  const rv = reviews.get(digest);
+  const key = rkey(record.address, digest);
+  const rv = reviews.get(key);
   const row = el('div', { className: 'stake-block vault-request' });
   const from = item.from ? who(item.from) : 'you';
   if (!rv) {
     row.append(el('p', { text: `Payment request from ${from}.` }), el('div', { className: 'stake-actions' }, btn('Review', () => void review(record, item.request), '')));
     return row;
   }
-  const approvals = approvalsFor(digest, items);
-  const state = sent.has(digest) && requestState({ review: rv, accepted: approvals.length, record }) !== 'paid' ? 'sent' : requestState({ review: rv, accepted: approvals.length, record });
+  const approvals = approvalsFor(record.address, digest, items);
+  const state = sent.has(key) && requestState({ review: rv, accepted: approvals.length, record }) !== 'paid' ? 'sent' : requestState({ review: rv, accepted: approvals.length, record });
   const title = { paid: 'Paid', expired: 'Expired — propose again', ready: 'Approved — ready to send', waiting: 'Waiting for approvals', sent: 'Sent to the network' }[state];
   row.append(el('p', { text: `${title} · request from ${from} · ${Math.min(approvals.length, rv.approvals)} of ${rv.approvals} approvals` }), renderReviewRows(record, rv));
   const actions = el('div', { className: 'stake-actions' });
   if (state !== 'paid' && state !== 'expired' && state !== 'sent') {
-    if (!ownApprovals.has(digest) && !items.approvedHere.has(digest) && rv.member && !record.watch && messagesOpen()) actions.append(btn(item.draft ? 'Approve and send to members' : 'Approve', () => void approve(record, item.request, { isNew: !!item.draft }), ''));
+    if (!ownApprovals.has(key) && !items.approvedHere.has(digest) && rv.member && !record.watch && messagesOpen()) actions.append(btn(item.draft ? 'Approve and send to members' : 'Approve', () => void approve(record, item.request, { isNew: !!item.draft }), ''));
     if (state === 'ready') actions.append(btn('Send payment', () => void sendPayment(record, item.request, items), ''));
     actions.append(btn('Check again', () => void review(record, item.request)));
   }
-  if (item.draft) actions.append(btn('Discard', () => { draft = null; reviews.delete(digest); render(); }));
+  if (item.draft) actions.append(btn('Discard', () => { draft = null; reviews.delete(key); render(); }));
   row.append(actions);
   return row;
 }
