@@ -1436,6 +1436,13 @@ add_test(NAME test_chain_params COMMAND test_chain_params)
 # witness loaders over real sqlite state, 7/7 determinism.
 add_executable(test_roots_v2 tests/test_roots_v2.c)
 target_link_libraries(test_roots_v2 nodus dsa nodus crypto)
+# Storage reward v1: the independent oracle's vectors, read at run time
+# with json-c (linked through nodus PUBLIC when found). Without json-c the
+# test FAILS (it does not skip) — see test_storage_kat.
+if(JSONC_FOUND)
+    target_compile_definitions(test_roots_v2 PRIVATE
+        STORAGE_REWARD_KAT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/storage_reward_kat.json")
+endif()
 add_test(NAME test_roots_v2 COMMAND test_roots_v2)
 
 # Ledger V2 S2 — BlockHeader V2 codec: oracle-pinned KATs, mutation sweep,

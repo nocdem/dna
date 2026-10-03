@@ -16,7 +16,10 @@
  *      state compute identical SYSTEM/CORE/domains/global roots.
  *   4. Storage reward v1 (test_storage_layer): the storage leg's three
  *      trees, storage_root, "NDS.SYS.v5" and the exit release identity —
- *      structural checks only; KATs pending the independent oracle.
+ *      structural checks.
+ *   5. Storage reward v1 (test_storage_kat): every vector of the
+ *      independent oracle's nodus/tests/vectors/storage_reward_kat.json
+ *      the C hashes, byte for byte (json-c; path from CMake).
  *
  * @file test_roots_v2.c
  */
@@ -31,6 +34,11 @@
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_v2_claims.h"
 #include "crypto/hash/qgp_sha3.h"
+
+#ifdef STORAGE_REWARD_KAT_PATH
+#include <json-c/json.h>
+#include <errno.h>
+#endif
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -91,15 +99,14 @@ static const char *EMPTY_KAT[DNA_V2_EMPTY__COUNT] = {
     /* TREAS  — W-A: SHA3-512 of the 16 bytes "NDS.E.TREAS.v1\0\0"
      * (shared/dnac/tests/ledger_roots_v2_treasury_oracle.py EMPTY_TREASURY). */
     /* TREAS  */ "2308f328a8f37b1b819426a3553163cf05208365f95fe50ffcabb332ab3a951a17c98d30f4f014a888548a268e637ef862f7a14610bc1d745a5d5b57074fbcab",
-    /* Storage reward v1 — "NDS.E.STREG.v1" / "NDS.E.STSET.v1" /
-     * "NDS.E.STREP.v1". NO literal yet: the KATs come from the
-     * INDEPENDENT oracle (author != auditor) and are pinned here before
-     * merge (decision 2026-10-04-storage-reward-approved.md). Until then
-     * the loop below checks these three only as nonzero and pairwise
-     * distinct from every other empty root. */
-    /* STREG  */ NULL,
-    /* STSET  */ NULL,
-    /* STREP  */ NULL,
+    /* Storage reward v1 — SHA3-512 of "NDS.E.STREG.v1" / "NDS.E.STSET.v1"
+     * / "NDS.E.STREP.v1" zero-padded to 16 bytes, pinned from the
+     * INDEPENDENT oracle (nodus/tests/vectors/storage_reward_kat.json
+     * "empty_roots", generator storage_reward_oracle.py; author !=
+     * auditor — the executor that wrote the C did NOT compute these). */
+    /* STREG  */ "e3baaef6bebc5af765294b1a22c723cb44df33001b7445decfce7ac78c425ee5fc4a9885b74988bcab1f709f490b8f05907c322490840a125cf8ceaa3559550f",
+    /* STSET  */ "28f2ffe6cdba270ae0be208e511f9a9e4bd0ff6722f25ea37f7bbe8083913a42d77e083decd60c2744ca5b1bae37c512243de3c7184dd06cfb78880476901586",
+    /* STREP  */ "6cfdc71da8dede41e5d32ba4cb13788d7a726d3cbec565aef0b470050bdf317718ffc5d255031ec441de63338252a3ccaa283f139ff59424d34c72e8e49d0982",
 };
 /* tokenomics-v3 P2 (P2-8) re-pin: the supply leaf gained reward_pool and
  * the tag "NDS.SUPPLY.v2"; the CORE composition gained a 7th leg
@@ -258,10 +265,7 @@ static int test_shared_layer(void) {
     for (int k = 0; k < DNA_V2_EMPTY__COUNT; k++) {
         CHECK(dna_v2_empty_root((dna_v2_empty_kind_t)k, empties[k]) == 0,
               "empty root");
-        if (EMPTY_KAT[k]) {          /* storage empties: oracle pending */
-            CHECK(hex_eq(empties[k], EMPTY_KAT[k], "empty tag"),
-                  "empty KAT"); OK();
-        }
+        CHECK(hex_eq(empties[k], EMPTY_KAT[k], "empty tag"), "empty KAT"); OK();
         CHECK(memcmp(empties[k], zero64, 64) != 0, "empty root is zero"); OK();
     }
     for (int a = 0; a < DNA_V2_EMPTY__COUNT; a++)
@@ -1427,9 +1431,497 @@ static int test_storage_layer(void) {
     return 0;
 }
 
+/* ── 5. Storage reward v1 — the INDEPENDENT oracle's vectors ──────────
+ * nodus/tests/vectors/storage_reward_kat.json (generator
+ * storage_reward_oracle.py, written from the bytes doc only by another
+ * agent; author != auditor; SELF-CONSISTENT, not an external reference).
+ * The path comes from CMake (STORAGE_REWARD_KAT_PATH, test_roots_v2
+ * only). EVERY vector the C code hashes is compared byte for byte; a
+ * mismatch prints the vector, the field, the expected and the computed
+ * value and fails the test. Sections the C here does not hash are named
+ * and not compared: "tags" (the 16-byte tag bytes are checked through
+ * the empty roots and every leaf/node they key), "register_exit_body"
+ * (call bodies — not hashed by ledger_roots_v2), "probe_seed" (off-chain,
+ * bytes item 7). Any OTHER section name fails the test, so a vector added
+ * to the file can never be skipped silently. */
+#ifdef STORAGE_REWARD_KAT_PATH
+
+#define KAT_NODE_PK_LEN 2592u        /* Dilithium5 public key (ML-DSA-87) */
+
+static char g_kv[96];                /* the vector being compared         */
+
+static json_object *kj(json_object *o, const char *key) {
+    json_object *v = NULL;
+    if (!o || !json_object_object_get_ex(o, key, &v)) return NULL;
+    return v;
+}
+
+static int kat_nib(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+
+/* Field `key` of `o` as exactly `len` bytes of lowercase hex. 0 / -1. */
+static int kat_hex(json_object *o, const char *key, uint8_t *out, size_t len) {
+    json_object *v = kj(o, key);
+    if (v && json_object_is_type(v, json_type_string)) {
+        const char *s = json_object_get_string(v);
+        if (strlen(s) == 2 * len) {
+            size_t i = 0;
+            for (; i < len; i++) {
+                int hi = kat_nib(s[2 * i]), lo = kat_nib(s[2 * i + 1]);
+                if (hi < 0 || lo < 0) break;
+                out[i] = (uint8_t)((hi << 4) | lo);
+            }
+            if (i == len) return 0;
+        }
+    }
+    fprintf(stderr, "KAT vector %s: field \"%s\" missing or not %zu hex "
+            "bytes\n", g_kv, key, len);
+    return -1;
+}
+
+/* Field `key` as an unsigned integer: a decimal string (the file's u64
+ * form) or a JSON integer >= 0; refused above `max`. 0 / -1. */
+static int kat_uint(json_object *o, const char *key, uint64_t max,
+                    uint64_t *out) {
+    json_object *v = kj(o, key);
+    int ok = 0;
+    if (v && json_object_is_type(v, json_type_string)) {
+        const char *s = json_object_get_string(v);
+        char *end = NULL;
+        errno = 0;
+        unsigned long long x = strtoull(s, &end, 10);
+        if (s[0] >= '0' && s[0] <= '9' && end && *end == 0 && errno == 0) {
+            *out = (uint64_t)x;
+            ok = 1;
+        }
+    } else if (v && json_object_is_type(v, json_type_int)) {
+        int64_t x = json_object_get_int64(v);
+        if (x >= 0) { *out = (uint64_t)x; ok = 1; }
+    }
+    if (ok && *out <= max) return 0;
+    fprintf(stderr, "KAT vector %s: field \"%s\" missing, not an unsigned "
+            "integer or above %llu\n", g_kv, key, (unsigned long long)max);
+    return -1;
+}
+
+/* Field `key` as an array of exactly `want` entries (want == SIZE_MAX:
+ * any length <= DNA_V2_STORAGE_SET_MAX). NULL on mismatch. */
+static json_object *kat_arr(json_object *o, const char *key, size_t want,
+                            size_t *n_out) {
+    json_object *v = kj(o, key);
+    if (v && json_object_is_type(v, json_type_array)) {
+        size_t n = json_object_array_length(v);
+        if ((want == SIZE_MAX && n <= DNA_V2_STORAGE_SET_MAX) || n == want) {
+            *n_out = n;
+            return v;
+        }
+    }
+    fprintf(stderr, "KAT vector %s: field \"%s\" missing or of the wrong "
+            "length\n", g_kv, key);
+    return NULL;
+}
+
+/* The computed 64-byte value against field `key`. 1 equal / 0 not. */
+static int kat_eq(const uint8_t got[64], json_object *o, const char *key) {
+    uint8_t exp[64];
+    if (kat_hex(o, key, exp, 64) != 0) return 0;
+    if (memcmp(got, exp, 64) == 0) { g_checks++; return 1; }
+    static const char *d = "0123456789abcdef";
+    char g[129];
+    for (int i = 0; i < 64; i++) {
+        g[2 * i] = d[got[i] >> 4]; g[2 * i + 1] = d[got[i] & 0xf];
+    }
+    g[128] = 0;
+    fprintf(stderr, "KAT MISMATCH vector %s field \"%s\":\n  expected: %s\n"
+            "  got:      %s\n", g_kv, key, json_object_get_string(kj(o, key)),
+            g);
+    return 0;
+}
+
+static int kat_row(json_object *r, dna_v2_storage_node_row_t *row) {
+    uint64_t st = 0;
+    memset(row, 0, sizeof(*row));
+    if (kat_hex(r, "node_fp", row->node_fp, 64) != 0 ||
+        kat_hex(r, "payee_fp", row->payee_fp, 64) != 0 ||
+        kat_uint(r, "bond", UINT64_MAX, &row->bond) != 0 ||
+        kat_uint(r, "status", 0xFF, &st) != 0 ||
+        kat_uint(r, "registered_height", UINT64_MAX,
+                 &row->registered_height) != 0 ||
+        kat_uint(r, "exit_height", UINT64_MAX, &row->exit_height) != 0)
+        return -1;
+    row->status = (uint8_t)st;
+    return 0;
+}
+
+static int kat_report(json_object *r, dna_v2_storage_report_t *rep) {
+    uint64_t seat = 0, bl = 0;
+    memset(rep, 0, sizeof(*rep));
+    if (kat_uint(r, "epoch_start", UINT64_MAX, &rep->epoch_start) != 0 ||
+        kat_uint(r, "seat", UINT32_MAX, &seat) != 0 ||
+        kat_hex(r, "S", rep->set_hash, 64) != 0 ||
+        kat_uint(r, "bitmap_len", DNA_V2_STORAGE_BITMAP_MAX, &bl) != 0 ||
+        kat_hex(r, "bitmap", rep->bitmap, (size_t)bl) != 0)
+        return -1;
+    rep->seat = (uint32_t)seat;
+    rep->bitmap_len = (uint16_t)bl;
+    return 0;
+}
+
+/* S(H) of entry `e` (epoch_start + members_sorted, count members). */
+static int kat_set(json_object *e, const char *count_key, uint64_t *h_out,
+                   uint8_t s_out[64]) {
+    static uint8_t fps[DNA_V2_STORAGE_SET_MAX][64];
+    uint64_t count = 0;
+    size_t n = 0;
+    json_object *m;
+    if (kat_uint(e, "epoch_start", UINT64_MAX, h_out) != 0 ||
+        kat_uint(e, count_key, DNA_V2_STORAGE_SET_MAX, &count) != 0 ||
+        !(m = kat_arr(e, "members_sorted", (size_t)count, &n)))
+        return -1;
+    for (size_t i = 0; i < n; i++) {
+        json_object *s = json_object_array_get_idx(m, i);
+        const char *x = json_object_is_type(s, json_type_string)
+                            ? json_object_get_string(s) : "";
+        int bad = strlen(x) != 128;
+        for (size_t j = 0; !bad && j < 64; j++) {
+            int hi = kat_nib(x[2 * j]), lo = kat_nib(x[2 * j + 1]);
+            if (hi < 0 || lo < 0) bad = 1;
+            else fps[i][j] = (uint8_t)((hi << 4) | lo);
+        }
+        if (bad) {
+            fprintf(stderr, "KAT vector %s: members_sorted[%zu] is not 64 "
+                    "hex bytes\n", g_kv, i);
+            return -1;
+        }
+    }
+    if (dna_v2_storage_set_hash(*h_out, (const uint8_t (*)[64])fps, n,
+                                s_out) != 0) {
+        fprintf(stderr, "KAT vector %s: dna_v2_storage_set_hash refused the "
+                "input\n", g_kv);
+        return -1;
+    }
+    return 0;
+}
+
+#define KCHECK(cond) do { if (!(cond)) { rc = 1; goto out; } } while (0)
+
+static int test_storage_kat(void) {
+    static dna_v2_storage_node_row_t rows[DNA_V2_STORAGE_SET_MAX];
+    static dna_v2_storage_report_t   reps[DNA_V2_STORAGE_SET_MAX];
+    static uint64_t                  hs[DNA_V2_STORAGE_SET_MAX];
+    static uint8_t                   ss[DNA_V2_STORAGE_SET_MAX][64];
+    uint8_t h[64];
+    int rc = 0, compared = 0;
+    const int checks0 = g_checks;
+
+    json_object *root = json_object_from_file(STORAGE_REWARD_KAT_PATH);
+    if (!root) {
+        fprintf(stderr, "KAT: cannot read %s\n", STORAGE_REWARD_KAT_PATH);
+        return 1;
+    }
+    json_object *vec = kj(root, "vectors");
+    snprintf(g_kv, sizeof(g_kv), "%s", "(file)");
+    KCHECK(vec && json_object_is_type(vec, json_type_object));
+
+    /* Every section is known: compared, or named as not hashed here. */
+    json_object_object_foreach(vec, sec, sval) {
+        (void)sval;
+        static const char *known[] = {
+            "tags", "empty_roots", "registry_leaf", "registry_root",
+            "set_hash", "sets_root", "report", "reports_root",
+            "storage_root", "system_v5", "register_exit_body",
+            "exit_release", "probe_seed"
+        };
+        int found = 0;
+        for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++)
+            if (strcmp(sec, known[i]) == 0) found = 1;
+        if (!found) {
+            fprintf(stderr, "KAT: unknown vector section \"%s\" — compare "
+                    "it or name it as not hashed here\n", sec);
+            KCHECK(0);
+        }
+    }
+
+    /* empty_roots */
+    {
+        static const struct { const char *tag; dna_v2_empty_kind_t k; } E[] = {
+            { "NDS.E.STREG.v1", DNA_V2_EMPTY_STORAGE_REG },
+            { "NDS.E.STSET.v1", DNA_V2_EMPTY_STORAGE_SETS },
+            { "NDS.E.STREP.v1", DNA_V2_EMPTY_STORAGE_REPORTS },
+        };
+        json_object *er = kj(vec, "empty_roots");
+        KCHECK(er && json_object_object_length(er) == 3);
+        for (size_t i = 0; i < 3; i++) {
+            snprintf(g_kv, sizeof(g_kv), "empty_roots[%s]", E[i].tag);
+            KCHECK(dna_v2_empty_root(E[i].k, h) == 0);
+            KCHECK(kat_eq(h, er, E[i].tag));
+            compared++;
+        }
+    }
+
+    /* registry_leaf */
+    {
+        size_t n = 0;
+        snprintf(g_kv, sizeof(g_kv), "%s", "registry_leaf");
+        json_object *a = kat_arr(vec, "registry_leaf", SIZE_MAX, &n);
+        KCHECK(a && n > 0);
+        for (size_t i = 0; i < n; i++) {
+            json_object *v = json_object_array_get_idx(a, i);
+            json_object *nm = kj(v, "name");
+            snprintf(g_kv, sizeof(g_kv), "registry_leaf[%s]",
+                     nm ? json_object_get_string(nm) : "?");
+            KCHECK(kat_row(v, &rows[0]) == 0);
+            KCHECK(dna_v2_storage_node_leaf_hash(&rows[0], h) == 0);
+            KCHECK(kat_eq(h, v, "leaf"));
+            compared++;
+        }
+    }
+
+    /* registry_root — every row's leaf, then the root */
+    {
+        size_t n = 0;
+        snprintf(g_kv, sizeof(g_kv), "%s", "registry_root");
+        json_object *a = kat_arr(vec, "registry_root", SIZE_MAX, &n);
+        KCHECK(a && n > 0);
+        for (size_t i = 0; i < n; i++) {
+            json_object *v = json_object_array_get_idx(a, i);
+            uint64_t want = 0;
+            size_t m = 0;
+            snprintf(g_kv, sizeof(g_kv), "registry_root[%zu]", i);
+            KCHECK(kat_uint(v, "n", DNA_V2_STORAGE_SET_MAX, &want) == 0);
+            snprintf(g_kv, sizeof(g_kv), "registry_root[n=%llu]",
+                     (unsigned long long)want);
+            json_object *rs = kat_arr(v, "rows_sorted", (size_t)want, &m);
+            KCHECK(rs);
+            for (size_t j = 0; j < m; j++) {
+                json_object *r = json_object_array_get_idx(rs, j);
+                KCHECK(kat_row(r, &rows[j]) == 0);
+                KCHECK(dna_v2_storage_node_leaf_hash(&rows[j], h) == 0);
+                KCHECK(kat_eq(h, r, "leaf"));
+            }
+            KCHECK(dna_v2_storage_registry_root(rows, m, h) == 0);
+            KCHECK(kat_eq(h, v, "root"));
+            compared++;
+        }
+    }
+
+    /* set_hash — S(H) */
+    {
+        size_t n = 0;
+        snprintf(g_kv, sizeof(g_kv), "%s", "set_hash");
+        json_object *a = kat_arr(vec, "set_hash", SIZE_MAX, &n);
+        KCHECK(a && n > 0);
+        for (size_t i = 0; i < n; i++) {
+            json_object *v = json_object_array_get_idx(a, i);
+            uint64_t hh = 0;
+            snprintf(g_kv, sizeof(g_kv), "set_hash[%zu]", i);
+            KCHECK(kat_set(v, "count", &hh, h) == 0);
+            KCHECK(kat_eq(h, v, "S"));
+            compared++;
+        }
+    }
+
+    /* sets_root — each entry's S(H) and leaf, then the root */
+    {
+        size_t n = 0;
+        snprintf(g_kv, sizeof(g_kv), "%s", "sets_root");
+        json_object *a = kat_arr(vec, "sets_root", SIZE_MAX, &n);
+        KCHECK(a && n > 0);
+        for (size_t i = 0; i < n; i++) {
+            json_object *v = json_object_array_get_idx(a, i);
+            uint64_t want = 0;
+            size_t m = 0;
+            snprintf(g_kv, sizeof(g_kv), "sets_root[%zu]", i);
+            KCHECK(kat_uint(v, "n", DNA_V2_STORAGE_SET_MAX, &want) == 0);
+            snprintf(g_kv, sizeof(g_kv), "sets_root[n=%llu]",
+                     (unsigned long long)want);
+            json_object *es = kat_arr(v, "entries", (size_t)want, &m);
+            KCHECK(es);
+            for (size_t j = 0; j < m; j++) {
+                json_object *e = json_object_array_get_idx(es, j);
+                KCHECK(kat_set(e, "count", &hs[j], ss[j]) == 0);
+                KCHECK(kat_eq(ss[j], e, "S"));
+                KCHECK(dna_v2_storage_sets_leaf_hash(hs[j], ss[j], h) == 0);
+                KCHECK(kat_eq(h, e, "leaf"));
+            }
+            KCHECK(dna_v2_storage_sets_root(hs, (const uint8_t (*)[64])ss, m,
+                                            h) == 0);
+            KCHECK(kat_eq(h, v, "root"));
+            compared++;
+        }
+    }
+
+    /* report — the committed leaf */
+    {
+        size_t n = 0;
+        snprintf(g_kv, sizeof(g_kv), "%s", "report");
+        json_object *a = kat_arr(vec, "report", SIZE_MAX, &n);
+        KCHECK(a && n > 0);
+        for (size_t i = 0; i < n; i++) {
+            json_object *v = json_object_array_get_idx(a, i);
+            json_object *nm = kj(v, "name");
+            snprintf(g_kv, sizeof(g_kv), "report[%s]",
+                     nm ? json_object_get_string(nm) : "?");
+            KCHECK(kat_report(v, &reps[0]) == 0);
+            KCHECK(dna_v2_storage_report_leaf_hash(&reps[0], h) == 0);
+            KCHECK(kat_eq(h, v, "leaf"));
+            compared++;
+        }
+    }
+
+    /* reports_root — every report's leaf, then the root */
+    {
+        size_t n = 0;
+        snprintf(g_kv, sizeof(g_kv), "%s", "reports_root");
+        json_object *a = kat_arr(vec, "reports_root", SIZE_MAX, &n);
+        KCHECK(a && n > 0);
+        for (size_t i = 0; i < n; i++) {
+            json_object *v = json_object_array_get_idx(a, i);
+            uint64_t want = 0;
+            size_t m = 0;
+            snprintf(g_kv, sizeof(g_kv), "reports_root[%zu]", i);
+            KCHECK(kat_uint(v, "n", DNA_V2_STORAGE_SET_MAX, &want) == 0);
+            snprintf(g_kv, sizeof(g_kv), "reports_root[n=%llu]",
+                     (unsigned long long)want);
+            json_object *rs = kat_arr(v, "reports_sorted", (size_t)want, &m);
+            KCHECK(rs);
+            for (size_t j = 0; j < m; j++) {
+                json_object *r = json_object_array_get_idx(rs, j);
+                KCHECK(kat_report(r, &reps[j]) == 0);
+                KCHECK(dna_v2_storage_report_leaf_hash(&reps[j], h) == 0);
+                KCHECK(kat_eq(h, r, "leaf"));
+            }
+            KCHECK(dna_v2_storage_reports_root(reps, m, h) == 0);
+            KCHECK(kat_eq(h, v, "root"));
+            compared++;
+        }
+    }
+
+    /* storage_root */
+    {
+        size_t n = 0;
+        snprintf(g_kv, sizeof(g_kv), "%s", "storage_root");
+        json_object *a = kat_arr(vec, "storage_root", SIZE_MAX, &n);
+        KCHECK(a && n > 0);
+        for (size_t i = 0; i < n; i++) {
+            json_object *v = json_object_array_get_idx(a, i);
+            json_object *nm = kj(v, "name");
+            uint8_t rr[64], sr[64], pr[64];
+            snprintf(g_kv, sizeof(g_kv), "storage_root[%s]",
+                     nm ? json_object_get_string(nm) : "?");
+            KCHECK(kat_hex(v, "registry_root", rr, 64) == 0 &&
+                   kat_hex(v, "sets_root", sr, 64) == 0 &&
+                   kat_hex(v, "reports_root", pr, 64) == 0);
+            KCHECK(dna_v2_storage_root(rr, sr, pr, h) == 0);
+            KCHECK(kat_eq(h, v, "storage_root"));
+            compared++;
+        }
+    }
+
+    /* system_v5 — the 8 v4 legs, named and in v4 order, then storage */
+    {
+        static const char *LEG[8] = {
+            "validator_root", "delegation_root", "chain_config_root",
+            "validator_set_root", "domain_registry_root", "manifest_root",
+            "attendance_root", "treasury_root"
+        };
+        size_t n = 0;
+        snprintf(g_kv, sizeof(g_kv), "%s", "system_v5");
+        json_object *a = kat_arr(vec, "system_v5", SIZE_MAX, &n);
+        KCHECK(a && n > 0);
+        for (size_t i = 0; i < n; i++) {
+            json_object *v = json_object_array_get_idx(a, i);
+            json_object *nm = kj(v, "name");
+            uint8_t legs[8][64], st[64];
+            size_t m = 0;
+            snprintf(g_kv, sizeof(g_kv), "system_v5[%s]",
+                     nm ? json_object_get_string(nm) : "?");
+            json_object *la = kat_arr(v, "v4_legs_in_order", 8, &m);
+            KCHECK(la);
+            for (size_t j = 0; j < 8; j++) {
+                json_object *l = json_object_array_get_idx(la, j);
+                json_object *ln = kj(l, "leg");
+                if (!ln || strcmp(json_object_get_string(ln), LEG[j]) != 0) {
+                    fprintf(stderr, "KAT vector %s: leg %zu is not %s\n",
+                            g_kv, j, LEG[j]);
+                    KCHECK(0);
+                }
+                KCHECK(kat_hex(l, "value", legs[j], 64) == 0);
+            }
+            KCHECK(kat_hex(v, "storage_root", st, 64) == 0);
+            KCHECK(dna_v2_system_root_v5(legs[0], legs[1], legs[2], legs[3],
+                                         legs[4], legs[5], legs[6], legs[7],
+                                         st, h) == 0);
+            KCHECK(kat_eq(h, v, "system_state_root"));
+            compared++;
+        }
+    }
+
+    /* exit_release — node_fp = SHA3-512(node_pk), exit_id, nullifier */
+    {
+        static uint8_t pk[KAT_NODE_PK_LEN];
+        size_t n = 0;
+        snprintf(g_kv, sizeof(g_kv), "%s", "exit_release");
+        json_object *a = kat_arr(vec, "exit_release", SIZE_MAX, &n);
+        KCHECK(a && n > 0);
+        for (size_t i = 0; i < n; i++) {
+            json_object *v = json_object_array_get_idx(a, i);
+            json_object *nm = kj(v, "name"), *kd = kj(v, "kind");
+            uint8_t cid[DNA_CHAIN_ID_LEN], fp[64], id[64];
+            uint64_t dom = 0, rh = 0, oi = 0;
+            snprintf(g_kv, sizeof(g_kv), "exit_release[%s]",
+                     nm ? json_object_get_string(nm) : "?");
+            KCHECK(kat_hex(v, "chain_id", cid, sizeof(cid)) == 0 &&
+                   kat_uint(v, "domain", UINT32_MAX, &dom) == 0 &&
+                   kat_uint(v, "release_height", UINT64_MAX, &rh) == 0 &&
+                   kat_hex(v, "node_pk", pk, sizeof(pk)) == 0 &&
+                   kat_uint(v, "out_index", UINT32_MAX, &oi) == 0);
+            if (dom != DNA_DOMAIN_CORE || oi != DNA_V2_STORAGE_EXIT_OUT_IDX ||
+                !kd || strcmp(json_object_get_string(kd), "0x11") != 0 ||
+                DNA_V2_STORAGE_EXIT_KIND != 0x11) {
+                fprintf(stderr, "KAT vector %s: domain / kind / out_index "
+                        "differ from DNA_DOMAIN_CORE / "
+                        "DNA_V2_STORAGE_EXIT_KIND / _OUT_IDX\n", g_kv);
+                KCHECK(0);
+            }
+            KCHECK(qgp_sha3_512(pk, sizeof(pk), fp) == 0);
+            KCHECK(kat_eq(fp, v, "node_fp"));
+            KCHECK(dna_v2_storage_exit_id(cid, rh, fp, id) == 0);
+            KCHECK(kat_eq(id, v, "exit_id"));
+            KCHECK(dna_v2_storage_exit_nullifier(id, h) == 0);
+            KCHECK(kat_eq(h, v, "nullifier"));
+            compared++;
+        }
+    }
+
+    printf("storage reward oracle: %d vectors compared, %d values equal "
+           "(not hashed here: tags, register_exit_body, probe_seed)\n",
+           compared, g_checks - checks0);
+out:
+    json_object_put(root);
+    return rc;
+}
+
+#else  /* !STORAGE_REWARD_KAT_PATH */
+
+static int test_storage_kat(void) {
+    /* A FAILURE, never a skip: without json-c the oracle vectors are not
+     * compared, and that coverage must not read as green. */
+    fprintf(stderr, "test_roots_v2 was built without json-c "
+            "(STORAGE_REWARD_KAT_PATH unset): the storage reward oracle "
+            "vectors were NOT compared\n");
+    return 1;
+}
+
+#endif /* STORAGE_REWARD_KAT_PATH */
+
 int main(void) {
     if (test_shared_layer() != 0) return 1;
     if (test_storage_layer() != 0) return 1;
+    if (test_storage_kat() != 0) return 1;
     if (test_loaders() != 0) return 1;
     if (test_7of7() != 0) return 1;
     printf("test_roots_v2: %d checks OK\n", g_checks);
