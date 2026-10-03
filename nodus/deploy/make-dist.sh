@@ -26,8 +26,9 @@
 # the build was made with a sanitizer; the build directory's
 # CMAKE_BUILD_TYPE is not exactly Release (empty = unoptimized); the git
 # tree has uncommitted or untracked changes under nodus/ or shared/ (both
-# are compiled into the binaries); the output file already exists. When
-# git cannot be asked at all, VERSION records commit and tree "unknown".
+# are compiled into the binaries); git cannot be asked at all (git missing,
+# not a checkout — the source's provenance cannot be verified); the output
+# file already exists.
 #
 # Staged files get explicit modes — 0755 for the directory, the binaries
 # and install.sh, 0644 for everything else — whatever the umask.
@@ -117,21 +118,21 @@ done
 # --- provenance for VERSION ---------------------------------------------
 # nodus/ and shared/ are both compiled into the binaries: a change in
 # either, committed or not, must be in the commit VERSION names.
-COMMIT="unknown"
-TREE="unknown"
-MTIME=0
-if REPO=$(git -C "$NODUS_DIR" rev-parse --show-toplevel 2>/dev/null) &&
-   COMMIT=$(git -C "$REPO" rev-parse HEAD 2>/dev/null) &&
-   STATUS=$(git -C "$REPO" status --porcelain -- nodus shared 2>/dev/null); then
-    [ -z "$STATUS" ] ||
-        die "uncommitted or untracked changes under nodus/ or shared/ in $REPO — commit or remove them first; VERSION must name the source the binaries were built from:
+# When git cannot be asked, neither the commit nor a clean tree can be
+# verified: refuse rather than ship a tarball of unknown source.
+NOPROV="— refusing: without the commit and the clean-tree check the tarball's provenance (which source the binaries were built from) cannot be verified"
+REPO=$(git -C "$NODUS_DIR" rev-parse --show-toplevel 2>/dev/null) ||
+    die "git cannot be asked about $NODUS_DIR (git missing, or not a git checkout) $NOPROV"
+COMMIT=$(git -C "$REPO" rev-parse HEAD 2>/dev/null) ||
+    die "git rev-parse HEAD failed in $REPO $NOPROV"
+STATUS=$(git -C "$REPO" status --porcelain -- nodus shared 2>/dev/null) ||
+    die "git status failed in $REPO $NOPROV"
+[ -z "$STATUS" ] ||
+    die "uncommitted or untracked changes under nodus/ or shared/ in $REPO — commit or remove them first; VERSION must name the source the binaries were built from:
 $STATUS"
-    TREE="clean"
-    MTIME=$(git -C "$REPO" log -1 --format=%ct 2>/dev/null || echo 0)
-else
-    COMMIT="unknown"
-    TREE="unknown"
-fi
+TREE="clean"
+MTIME=$(git -C "$REPO" log -1 --format=%ct 2>/dev/null) ||
+    die "git log failed in $REPO (the archive's mtime is the last commit's) $NOPROV"
 
 # --- stage ---------------------------------------------------------------
 STAGE_ROOT=$(mktemp -d)
