@@ -74,7 +74,8 @@ const vaultRecs = new Map();             // vault address -> { id, value }: shar
 // HF-4 chain names: fp -> the chain name ('' = none, or not answered), this
 // session; kept across sessions only for a saved wallet (state.chainNames).
 const chainNames = new Map();
-const chainAsked = new Set();            // IDs whose chain name was looked up this session
+const chainAsked = new Set();            // IDs whose chain name lookup was answered this session
+const chainTried = new Map();            // fp -> page clock (ms) of its last chain name lookup, this session (spacing only)
 let ownNameConfirmed = false;            // the own name was confirmed by this session's lookup
 let nodusClient;                         // the wallet's client (nameOf), this session
 
@@ -106,7 +107,7 @@ function wipe() {
   store = undefined; state = undefined; messages = []; ownFp = undefined; ownProfile = undefined;
   fresh = false; vaultId = null; requests = []; selectedFp = undefined; nodusClient = undefined;
   eraseArmed = false; profileTaken = false; ownNameConfirmed = false;
-  for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, chainNames, chainAsked, vaultRecs]) set.clear();
+  for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, chainNames, chainAsked, chainTried, vaultRecs]) set.clear();
   notifyVaultHost();
   if (!ui) return;
   for (const control of [ui.addId, ui.addNote, ui.composer, ui.bio, ui.location, ui.website]) control.value = '';
@@ -356,28 +357,48 @@ async function forgetProfile(fp) {
 // does not expire: a contact's kept name is shown at once and not asked
 // again; this wallet's own kept name is shown at once and asked again once
 // per session (chain-names.js). An ID without a kept name is asked once per
-// session. An older node, a failed read or a module without names: nothing
-// changes (a kept name stays) and nothing new is kept.
+// session by the sync round, and a contact without a known name again when
+// its conversation is opened (recheckChainNameOnOpen). An older node, a
+// failed read or a module without names: nothing changes (a kept name stays)
+// and nothing new is kept; a failed read does not count as asked, so a later
+// round tries again. No ID is asked twice within CHAIN_LOOKUP_SPACING_MS
+// (chainTried, in memory only).
 function keptChainName(fp) {
   const name = keptNameOf(state.chainNames[fp]);
   if (!chainNames.has(fp) && name) chainNames.set(fp, name);
 }
 // `keep`: this ID's or a contact's name (a stranger's request is not kept,
-// as ensureProfile). @return true when state.chainNames changed (the caller
-// saves once).
-async function ensureChainName(fp, keep = false) {
+// as ensureProfile). `opened`: the user just opened this contact's
+// conversation (chain-names.js chainLookupNeeded). @return true when
+// state.chainNames changed (the caller saves once).
+async function ensureChainName(fp, keep = false, opened = false) {
   keptChainName(fp);
-  const own = fp === ownFp;
-  if (!chainLookupNeeded({ asked: chainAsked.has(fp), known: !!chainNameOf(fp), recheck: own }) || !nodusClient?.nameable) return false;
-  chainAsked.add(fp);
+  const own = fp === ownFp, gen = generation, at = Date.now();
+  if (!nodusClient?.nameable || !chainLookupNeeded({ asked: chainAsked.has(fp), known: !!chainNameOf(fp), recheck: own, opened, lastTry: chainTried.get(fp), now: at })) return false;
+  chainTried.set(fp, at);
   let found;
   try { found = parseNameOf(await nodusClient.nameOf({ owner: fp })); }
-  catch { if (!chainNames.has(fp)) chainNames.set(fp, ''); return false; }
+  catch { if (gen === generation && !chainNames.has(fp)) chainNames.set(fp, ''); return false; }
+  if (gen !== generation) return false;
+  chainAsked.add(fp);
   const after = chainNameAfterLookup(state.chainNames[fp], found, { keep, now: nowSeconds() });
   chainNames.set(fp, after.name);
   if (own) ownNameConfirmed = !!after.name;
   if (after.entry) state.chainNames[fp] = after.entry; else delete state.chainNames[fp];
   return after.changed;
+}
+// Opening a contact's conversation: a contact without a known chain name is
+// asked again right then (it may have registered a name after this session
+// first asked); a found name is shown at once and kept through the usual
+// save. A kept name is not asked again (ensureChainName).
+async function recheckChainNameOnOpen(fp) {
+  if (!isOpen() || !contactOf(fp) || chainNameOf(fp)) return;
+  const gen = generation;
+  let moved;
+  try { moved = await ensureChainName(fp, true, true); } catch { return; }
+  if (gen !== generation || !isOpen() || !chainNameOf(fp)) return;
+  if (moved) { try { await persist(); } catch { /* shown this session; the next save keeps it */ } }
+  if (gen === generation && isOpen()) render();
 }
 
 // ── sync ───────────────────────────────────────────────────────────────
@@ -392,8 +413,9 @@ async function sync() {
     if (gen !== generation) return;
     // Chain names (HF-4) of this ID, the contacts and the request screens,
     // BEFORE the message check so they are in place on the first check:
-    // at most one read per ID per session, none for a contact whose name is
-    // kept (ensureChainName).
+    // at most one answered read per ID per session (a failed read is tried
+    // again on a later round, no sooner than CHAIN_LOOKUP_SPACING_MS), none
+    // for a contact whose name is kept (ensureChainName).
     let namesMoved = false;
     for (const fp of new Set([ownFp, ...state.contacts.map(c => c.fp), ...state.outgoing.map(o => o.fp), ...requests.map(r => r.sender)])) {
       if (gen !== generation) return;
@@ -950,6 +972,7 @@ function selectContact(fp) {
   markRead(fp);
   render({ scroll: true });
   (contactOf(fp)?.salt ? ui.composer : ui.convTitle).focus({ preventScroll: true });
+  void recheckChainNameOnOpen(fp);
 }
 
 function setCount(node, count) {

@@ -24,7 +24,7 @@ import {
   needFullSync, fullDays, SMART_SYNC_FULL_SECONDS, profileFresh, PROFILE_CACHE_SECONDS
 } from '../src/connect/ui/text.js';
 import {
-  keptChainName, chainLookupNeeded, chainNameAfterLookup, shownOwnName, profileEntryText, PROFILE_ENTRY_TEXT
+  keptChainName, chainLookupNeeded, chainLookupSpaced, CHAIN_LOOKUP_SPACING_MS, chainNameAfterLookup, shownOwnName, profileEntryText, PROFILE_ENTRY_TEXT
 } from '../src/connect/ui/chain-names.js';
 
 // A localStorage stand-in (getItem / setItem / removeItem).
@@ -469,6 +469,38 @@ test('chain names: a contact with a kept name is not asked again; the own ID is 
   // this wallet's own ID: asked once per session even with a kept name
   assert.equal(chainLookupNeeded({ asked: false, known: true, recheck: true }), true);
   assert.equal(chainLookupNeeded({ asked: true, known: true, recheck: true }), false);
+});
+
+test('chain names: opening a conversation asks again for a contact without a name, never sooner than the spacing', () => {
+  const t = 1790000000000;
+  assert.equal(CHAIN_LOOKUP_SPACING_MS, 60000);
+  // opened, no name known: asked again even though the sync round got "no name" earlier
+  assert.equal(chainLookupNeeded({ asked: true, known: false, recheck: false, opened: true }), true);
+  assert.equal(chainLookupNeeded({ asked: true, known: false, recheck: false, opened: true, lastTry: t - CHAIN_LOOKUP_SPACING_MS, now: t }), true);
+  // opened, but the same ID was looked up less than 60 s ago: not yet
+  assert.equal(chainLookupNeeded({ asked: true, known: false, recheck: false, opened: true, lastTry: t - CHAIN_LOOKUP_SPACING_MS + 1, now: t }), false);
+  // opened, a name kept or found: a contact's name is never asked again
+  assert.equal(chainLookupNeeded({ asked: false, known: true, recheck: false, opened: true }), false);
+  assert.equal(chainLookupNeeded({ asked: true, known: true, recheck: false, opened: true, lastTry: undefined, now: t }), false);
+});
+
+test('chain names: a failed lookup is not "asked" — the sync round tries again, spaced by 60 s', () => {
+  const t = 1790000000000;
+  // a failed lookup leaves asked false; only the spacing holds it back
+  assert.equal(chainLookupNeeded({ asked: false, known: false, recheck: false, lastTry: t, now: t + 1000 }), false);
+  assert.equal(chainLookupNeeded({ asked: false, known: false, recheck: false, lastTry: t, now: t + CHAIN_LOOKUP_SPACING_MS }), true);
+  // the own ID after a failed lookup: tried again after the spacing
+  assert.equal(chainLookupNeeded({ asked: false, known: true, recheck: true, lastTry: t, now: t + CHAIN_LOOKUP_SPACING_MS - 1 }), false);
+  assert.equal(chainLookupNeeded({ asked: false, known: true, recheck: true, lastTry: t, now: t + CHAIN_LOOKUP_SPACING_MS }), true);
+  // an answered "no name" stays answered for the sync round, however long ago
+  assert.equal(chainLookupNeeded({ asked: true, known: false, recheck: false, lastTry: t, now: t + 10 * CHAIN_LOOKUP_SPACING_MS }), false);
+  // spacing rule itself
+  assert.equal(chainLookupSpaced(undefined, t), true);                   // never looked up this session
+  assert.equal(chainLookupSpaced(t, t), false);
+  assert.equal(chainLookupSpaced(t, t + CHAIN_LOOKUP_SPACING_MS - 1), false);
+  assert.equal(chainLookupSpaced(t, t + CHAIN_LOOKUP_SPACING_MS), true);
+  assert.equal(chainLookupSpaced(t, t - 1), true);                       // the clock went back: not blocked for good
+  assert.equal(chainLookupSpaced(t, NaN), false);
 });
 
 test('chain names: a confirmed answer replaces, keeps or removes the kept entry', () => {

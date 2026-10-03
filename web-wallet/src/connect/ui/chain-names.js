@@ -14,7 +14,10 @@
 // found for that ID at `at` (unix seconds). Because a name is permanent, a
 // kept name does not expire: a contact's kept name is shown at once and not
 // asked again; this wallet's OWN kept name is shown at once and asked again
-// once per session (a confirmed "no name" or another name replaces it).
+// once per session (a confirmed "no name" or another name replaces it). A
+// contact without a known name is asked again when its conversation is
+// opened; a failed lookup is tried again on a later round; no ID is asked
+// twice within CHAIN_LOOKUP_SPACING_MS.
 import { chainNameOk } from '../../nodus/names.js';
 
 // The kept name of an entry, or '' (anything malformed counts as none).
@@ -22,10 +25,34 @@ export function keptChainName(entry) {
   return entry && typeof entry === 'object' && chainNameOk(entry.name) ? entry.name : '';
 }
 
-// Whether `fp` is looked up now. asked: already looked up this session;
-// known: a name is known (kept or found this session); recheck: this
-// wallet's own ID (asked once per session even when a name is kept).
-export function chainLookupNeeded({ asked, known, recheck }) {
+// The least time between two lookups of the same ID (milliseconds), whatever
+// asks (the sync round or opening a conversation) and whatever the outcome:
+// a node that fails is not asked again for that ID before it has passed.
+// Held in memory only (messages.js chainTried) — never in a kept state.
+export const CHAIN_LOOKUP_SPACING_MS = 60000;
+
+// Whether the spacing since the last lookup of an ID has passed.
+//   lastTry  the page clock (ms) when that ID was last looked up, or
+//            undefined (not looked up this session)
+//   now      the page clock (ms) now
+// A clock that went back (now < lastTry) does not block the ID for good.
+export function chainLookupSpaced(lastTry, now) {
+  if (typeof lastTry !== 'number' || !Number.isFinite(lastTry)) return true;
+  if (typeof now !== 'number' || !Number.isFinite(now)) return false;
+  return now < lastTry || now - lastTry >= CHAIN_LOOKUP_SPACING_MS;
+}
+
+// Whether `fp` is looked up now. asked: answered this session (a confirmed
+// name or a confirmed "no name"; a failed lookup does not count); known: a
+// name is known (kept or found this session); recheck: this wallet's own ID
+// (asked once per session even when a name is kept); opened: the user just
+// opened the conversation with this contact — an ID without a known name is
+// asked again then even if it was answered "no name" earlier this session
+// (the contact may have registered a name since). lastTry / now: the
+// spacing (chainLookupSpaced); both left out = no spacing applies.
+export function chainLookupNeeded({ asked, known, recheck, opened, lastTry, now }) {
+  if (!chainLookupSpaced(lastTry, now)) return false;
+  if (opened === true) return !known;
   return !asked && (recheck === true || !known);
 }
 
