@@ -28,7 +28,11 @@
 #     3063 before applying it at :3111; nodus_witness_cmt_host.c runs
 #     pruneBlocks after store.Save, :1762-1773); every height in
 #     [base, T] has its `P:` rows, `H:`, `BH:` (whose value is the height,
-#     nodus_witness_cmt_store.c:1180-1182); `C:` covers [base, T−1] (block
+#     nodus_witness_cmt_store.c:1180-1182), and nothing below base does —
+#     except block 1's meta `H:1`, which is NEVER pruned (decision item 5,
+#     fix f8ecb5ac): `H:` is exactly [base, T] ∪ {1}, `H:1` checked
+#     present and non-empty (the proto is not decoded), `BH:` of height 1
+#     absent; `C:` covers [base, T−1] (block
 #     h's save writes C:h−1, :1195), with `C:0` exempt (see HOW IT CAN
 #     LIE); `abciResponsesKey:` starts at base, or base−1 between the
 #     block-store prune and the state-store prune (two batches,
@@ -38,30 +42,34 @@
 #     at its block-store tip T (save_block_to_batch deletes SC:(h−1−W) in
 #     the batch that writes SC:h, W = double_sign_check_height = 0,
 #     shared/dnac/cmt_config.h:146 — never overridden in this tree).
-#   - a pruned node RESTARTED after block 1's meta (H:1) is gone still
-#     activates Ledger V2 at that start (no "Ledger V2 NOT ACTIVATED"
-#     line, nodus_witness.c:913-938) and ADMITS a spend submitted to its
-#     own client port, which lands (ledger effect).
+#   - a pruned node RESTARTED after height 1 is pruned (base > 1, its
+#     parts / BH: / C: gone, H:1 kept) still activates Ledger V2 at that
+#     start (no "Ledger V2 NOT ACTIVATED" line, nodus_witness.c:913-938)
+#     and ADMITS a spend submitted to its own client port, which lands
+#     (ledger effect).
 #   The property that would be false if it failed: *retention is
 #   node-local — a node may drop history without changing a byte any other
 #   node computes, keeps serving clients across a restart, and the chain
 #   stays joinable while archive nodes exist.*
 #
-# ⚠ EXPECTED RESULT ON 605b748b: FAIL at step f (ORCHESTRATOR, from an
-#   independent verifier). The Ledger V2 preflight run at every open
-#   loads block 1's META (check 5, nodus_witness_v2_preflight.c:334-349);
-#   on a pruned node it is gone, the preflight reports an inspection
-#   fault, the ingress stays disarmed (nodus_witness.c:913-938) and every
-#   CheckTx on that node is refused "successor chain not armed
-#   (activation gate closed)" (nodus_witness_verify.c:673-676) — while the
-#   node keeps producing blocks. Step f's two admission assertions exist
-#   to catch exactly that; they are NOT to be weakened to make this
-#   scenario pass. Steps g and h run only once step f passes.
+# EXPECTED RESULT: PASS on f8ecb5ac and later (decision item 5 keeps
+#   H:1); on 605b748b FAIL — first at step d (H:1 absent on a pruned
+#   node), and at step f if that check is bypassed. The Ledger V2
+#   preflight run at every open loads block 1's META (check 5,
+#   nodus_witness_v2_preflight.c:334-349); on 605b748b a pruned node has
+#   lost it, the preflight reports an inspection fault, the ingress stays
+#   disarmed (nodus_witness.c:913-938) and every CheckTx on that node is
+#   refused "successor chain not armed (activation gate closed)"
+#   (nodus_witness_verify.c:673-676) while the node keeps producing —
+#   MEASURED by the ORCHESTRATOR on 605b748b: "Ledger V2 NOT ACTIVATED …
+#   INSPECTION_FAULT", spend refused (CLI rc=7). Step f's two admission
+#   assertions are NOT to be weakened to make this scenario pass.
 #
 # WHAT IT REQUIRES
 #   Compile flags: NONE beyond a default build of a tree carrying the
 #   pruning commit (605b748b: `retain_blocks`, the floor, the SeenCommit
-#   cleanup) and the block sync port. Every mode (`STAGEF_MODE` combined /
+#   cleanup) AND its fix f8ecb5ac (H:1 kept, decision item 5) and the
+#   block sync port. Every mode (`STAGEF_MODE` combined /
 #   splitw / mixedw / splits / mixeds / split / mixed) — every stop and
 #   start goes through stagef_stop_node / stagef_spawn_* (stagef_env.sh).
 #   Environment, exported BEFORE `stagef_up_v2.sh` (both are in the hashed
@@ -263,6 +271,8 @@ wait_log() {
 #   S_SCCNT/S_SCMAX  SC: rows                  S_BHCNT/S_BHMIN  BH: values
 #   S_ARCNT/S_ARMIN/S_ARMAX  abciResponsesKey: rows (state store)
 #   S_C0    C:0 present (0/1)
+#   S_HMINX/S_HCNTX  H: rows above height 1    S_H1/S_H1LEN  H:1 rows / its
+#   value's byte length                        S_BH1  BH: rows whose height is 1
 snap() {
     local db out
     db=$(db_of "$1")
@@ -270,7 +280,7 @@ snap() {
     out=$(sqlite3 -cmd '.timeout 10000' "$db" "
 WITH k  AS (SELECT CAST(key AS TEXT) AS t, value AS v FROM cmt_blockstore),
      p  AS (SELECT DISTINCT CAST(substr(t, 3) AS INTEGER) AS h FROM k WHERE substr(t, 1, 2) = 'P:'),
-     hm AS (SELECT CAST(substr(t, 3) AS INTEGER) AS h FROM k WHERE substr(t, 1, 2) = 'H:'),
+     hm AS (SELECT CAST(substr(t, 3) AS INTEGER) AS h, v FROM k WHERE substr(t, 1, 2) = 'H:'),
      c  AS (SELECT CAST(substr(t, 3) AS INTEGER) AS h FROM k WHERE substr(t, 1, 2) = 'C:'),
      sc AS (SELECT CAST(substr(t, 4) AS INTEGER) AS h FROM k WHERE substr(t, 1, 3) = 'SC:'),
      bh AS (SELECT CAST(CAST(v AS TEXT) AS INTEGER) AS h FROM k WHERE substr(t, 1, 3) = 'BH:'),
@@ -285,16 +295,21 @@ SELECT (SELECT COALESCE(MAX(h), -1) FROM p), (SELECT COALESCE(MIN(h), -1) FROM p
        (SELECT COUNT(*) FROM bh), (SELECT COALESCE(MIN(h), -1) FROM bh),
        (SELECT COUNT(*) FROM ar), (SELECT COALESCE(MIN(h), -1) FROM ar),
        (SELECT COALESCE(MAX(h), -1) FROM ar),
-       (SELECT COUNT(*) FROM c WHERE h = 0);") \
+       (SELECT COUNT(*) FROM c WHERE h = 0),
+       (SELECT COALESCE(MIN(h), -1) FROM hm WHERE h > 1), (SELECT COUNT(*) FROM hm WHERE h > 1),
+       (SELECT COUNT(*) FROM hm WHERE h = 1),
+       (SELECT COALESCE(MAX(length(v)), 0) FROM hm WHERE h = 1),
+       (SELECT COUNT(*) FROM bh WHERE h = 1);") \
         || { echo "[FAIL] node$1: the block-store read failed ($db)" >&2; return 1; }
     IFS='|' read -r S_T S_PMIN S_PCNT S_HMIN S_HCNT S_CMIN S_CCNT S_CMAX \
-        S_SCCNT S_SCMAX S_BHCNT S_BHMIN S_ARCNT S_ARMIN S_ARMAX S_C0 <<< "$out"
-    case "$S_C0" in ''|*[!0-9]*) echo "[FAIL] node$1: unparsable block-store read '$out'" >&2; return 1 ;; esac
+        S_SCCNT S_SCMAX S_BHCNT S_BHMIN S_ARCNT S_ARMIN S_ARMAX S_C0 \
+        S_HMINX S_HCNTX S_H1 S_H1LEN S_BH1 <<< "$out"
+    case "$S_BH1" in ''|*[!0-9]*) echo "[FAIL] node$1: unparsable block-store read '$out'" >&2; return 1 ;; esac
     return 0
 }
 
 snap_line() {
-    echo "tip=$S_T P:[$S_PMIN..] x$S_PCNT H:[$S_HMIN..] x$S_HCNT C:[$S_CMIN..$S_CMAX] x$S_CCNT (C:0 $S_C0) SC x$S_SCCNT @$S_SCMAX BH:[$S_BHMIN..] x$S_BHCNT abciResponses:[$S_ARMIN..$S_ARMAX] x$S_ARCNT"
+    echo "tip=$S_T P:[$S_PMIN..] x$S_PCNT H:[$S_HMIN..] x$S_HCNT (H:1 x$S_H1, ${S_H1LEN}B; H>1 from $S_HMINX x$S_HCNTX) C:[$S_CMIN..$S_CMAX] x$S_CCNT (C:0 $S_C0) SC x$S_SCCNT @$S_SCMAX BH:[$S_BHMIN..] x$S_BHCNT abciResponses:[$S_ARMIN..$S_ARMAX] x$S_ARCNT"
 }
 
 # check_sc LABEL — exactly one SeenCommit, at the block-store tip.
@@ -334,8 +349,18 @@ check_pruned() {
         || die "$lbl: pruned node$n base $b, want $(( t - R + 1 )) (or $(( t - R )) before block $t's prune) — $(snap_line)"
     [ "$S_PCNT" = $(( t - b + 1 )) ] \
         || die "$lbl: pruned node$n block parts are not contiguous over [$b, $t] — $(snap_line)"
-    [ "$S_HMIN" = "$b" ] && [ "$S_HCNT" = "$S_PCNT" ] \
-        || die "$lbl: pruned node$n block metas are not exactly [$b, $t] (H: kept below the base = the evidence-window leak) — $(snap_line)"
+    # Decision item 5 (fix f8ecb5ac): block 1's meta H:1 is NEVER pruned —
+    # the Ledger V2 preflight reads it at every open
+    # (nodus_witness_v2_preflight.c:334-349); every other H: row below the
+    # base is. So H: = [base, T] ∪ {1}, exactly.
+    [ "$b" -gt 1 ] || die "$lbl: node$n pruned nothing"
+    [ "$S_HMINX" = "$b" ] && [ "$S_HCNTX" = "$S_PCNT" ] \
+        || die "$lbl: pruned node$n block metas above height 1 are not exactly [$b, $t] (H: kept below the base = the evidence-window leak) — $(snap_line)"
+    [ "$S_H1" = 1 ] && [ "$S_H1LEN" -gt 0 ] && [ "$S_HMIN" = 1 ] && [ "$S_HCNT" = $(( S_PCNT + 1 )) ] \
+        || die "$lbl: pruned node$n does not keep block 1's meta H:1 (decision item 5) beside [$b, $t] — $(snap_line)"
+    echo "[ok] $lbl: pruned node$n keeps H:1 ($S_H1LEN bytes) and no other H: row below base $b"
+    [ "$S_BH1" = 0 ] \
+        || die "$lbl: pruned node$n still holds block 1's BH: row (only H:1 is kept) — $(snap_line)"
     [ "$S_CMIN" = "$b" ] && [ "$S_CMAX" = $(( t - 1 )) ] && [ "$S_CCNT" = $(( t - b )) ] \
         || die "$lbl: pruned node$n commits are not exactly C:$b..C:$(( t - 1 )) — $(snap_line)"
     [ "$S_BHMIN" = "$b" ] && [ "$S_BHCNT" = "$S_PCNT" ] \
@@ -345,8 +370,7 @@ check_pruned() {
         && [ "$S_ARCNT" = $(( S_ARMAX - S_ARMIN + 1 )) ] \
         || die "$lbl: pruned node$n FinalizeBlock responses are not [$b (or $(( b - 1 ))), $t] — $(snap_line)"
     check_sc "$lbl: node$n"
-    [ "$b" -gt 1 ] || die "$lbl: node$n pruned nothing"
-    echo "[ok] $lbl: pruned node$n keeps the last $R heights — $(snap_line)"
+    echo "[ok] $lbl: pruned node$n keeps the last $R heights (+ H:1) — $(snap_line)"
 }
 
 # fleet_tip — node REF's v2 tip.
@@ -504,10 +528,14 @@ echo "[ok] block $hcmp has the same hash on pruned node4 and archive node1 (${bh
 # ── f. a pruned node survives kill -9 ───────────────────────────────
 snap "$RESTART" || die "node$RESTART unreadable"
 base_before="$S_PMIN"
-# Block 1's meta row is already gone (H: rows are exactly [base, T],
-# check_pruned) — the state the restart's Ledger V2 preflight reads.
-[ "$S_HMIN" -gt 1 ] || die "node$RESTART still holds H:1 (H: min $S_HMIN) — the restart would not exercise a pruned height 1"
-echo "[ok] node$RESTART no longer holds block 1's meta (H: from $S_HMIN)"
+# Height 1 is pruned (base > 1: its parts, BH:, C: are gone) while its meta
+# H:1 is kept (decision item 5) — the state the restart's Ledger V2
+# preflight reads (check 5, nodus_witness_v2_preflight.c:334-349).
+[ "$S_PMIN" -gt 1 ] && [ "$S_BH1" = 0 ] \
+    || die "node$RESTART has not pruned height 1 yet (base $S_PMIN, BH:1 x$S_BH1) — the restart would not exercise a pruned height 1"
+[ "$S_H1" = 1 ] && [ "$S_H1LEN" -gt 0 ] \
+    || die "node$RESTART lost block 1's meta H:1 (x$S_H1, ${S_H1LEN} bytes) — decision item 5 keeps it"
+echo "[ok] node$RESTART: height 1 pruned (base $S_PMIN, no BH:1) and H:1 kept ($S_H1LEN bytes)"
 lg4=$(stagef_node_log "$RESTART")
 src=0; stagef_stop_node "$RESTART" KILL || src=$?
 [ "$src" = 0 ] || die "killing node$RESTART failed (stagef_stop_node rc=$src)"
@@ -532,12 +560,14 @@ echo "[ok] node$RESTART restarted, produced to $vt, base $base_before -> $S_PMIN
 # blocks (above) is consensus; admission is the Ledger V2 ingress gate,
 # armed at open only when the preflight is ready (nodus_witness.c:913-
 # 938) — and preflight check 5 loads block 1's META
-# (nodus_witness_v2_preflight.c:334-349), which pruning removed. A
-# disarmed gate refuses every CheckTx with "successor chain not armed
-# (activation gate closed)" (nodus_witness_verify.c:673-676).
-# ⚠ EXPECTED TO FAIL ON 605b748b (ORCHESTRATOR, independent verifier
-# finding) — that is the point of these two assertions; they are not to
-# be weakened. Both are evaluated before the verdict, so the output says
+# (nodus_witness_v2_preflight.c:334-349). A disarmed gate refuses every
+# CheckTx with "successor chain not armed (activation gate closed)"
+# (nodus_witness_verify.c:673-676).
+# Expected: PASS on f8ecb5ac+ (decision item 5 keeps H:1); FAIL on
+# 605b748b, which pruned H:1 — MEASURED by the ORCHESTRATOR: "Ledger V2
+# NOT ACTIVATED … INSPECTION_FAULT" and the spend refused (CLI rc=7).
+# These two assertions are not to be weakened. Both are evaluated
+# before the verdict, so the output says
 # which half failed.
 f_bad=""
 if log_new_has "$lg4" "$off4" "Ledger V2 NOT ACTIVATED"; then

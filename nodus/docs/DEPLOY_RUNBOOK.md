@@ -1172,9 +1172,11 @@ on that node; history is read from the archive nodes.
 (not in the sweep; its own bring-up with `STAGEF_EVIDENCE_MAX_AGE_BLOCKS` /
 `STAGEF_EVIDENCE_MAX_AGE_DURATION_NS`, stagef README) — two pruned and five archive nodes,
 7/7 agreement, the start floor, kill -9 of a pruned node, a pin rejoin that block-syncs
-from height 1; written, not yet run, and expected to FAIL its restart step on 605b748b (a
-restarted pruned node no longer has block 1's meta, which the Ledger V2 preflight reads,
-so its ingress stays closed — `nodus_witness_v2_preflight.c:334-349`).
+from height 1, and that a restarted pruned node still admits transactions. Expected PASS
+on f8ecb5ac and later (decision item 5: block 1's meta `H:1` is never pruned, because the
+Ledger V2 preflight reads it at every open, `nodus_witness_v2_preflight.c:334-349`); on
+605b748b, which pruned it, a restarted pruned node logged `Ledger V2 NOT ACTIVATED …
+INSPECTION_FAULT` and refused transactions (measured).
 
 ---
 
