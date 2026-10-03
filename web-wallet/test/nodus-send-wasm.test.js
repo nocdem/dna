@@ -61,6 +61,7 @@ const ENTRY_POINTS = [
   'nsw_built_op', 'nsw_built_commission', 'nsw_stake_offline_build', 'nsw_const_min_delegation', 'nsw_const_self_stake',
   'nsw_const_commission_max', 'nsw_const_undelegate_lock_epochs', 'nsw_const_epoch_length', 'nsw_validators', 'nsw_val_count',
   'nsw_val_truncated', 'nsw_val_fp', 'nsw_val_self', 'nsw_val_delegated', 'nsw_val_commission', 'nsw_val_status',
+  'nsw_val_delegators', 'nsw_const_max_delegators',
   'nsw_delegations', 'nsw_del_count', 'nsw_del_fp', 'nsw_del_amount', 'nsw_del_block', 'nsw_stake_build',
   // HF-4: rule-set generation, chain names, a name owner's profile address
   'nsw_name_ok', 'nsw_ruleset_info', 'nsw_ri_gen', 'nsw_ri_tip', 'nsw_ri_h', 'nsw_name_lookup', 'nsw_name_of',
@@ -414,6 +415,10 @@ test('staking refusals in the module: a wrong bond, a commission above 50%, an U
   assert.equal(str('nsw_const_commission_max'), '5000');
   assert.equal(str('nsw_const_undelegate_lock_epochs'), '12');
   assert.equal(str('nsw_const_epoch_length'), '720');
+  // the per-validator delegator cap (nodus_types.h NODUS_MAX_DELEGATORS_PER_VALIDATOR)
+  assert.equal(str('nsw_const_max_delegators'), '2048');
+  // no listing yet: a row's delegator count is unknown (-1), never 0
+  assert.equal(num('nsw_val_delegators', ['number'], [0]), -1);
 });
 
 // ── chain-name registration parity (HF-4) ──────────────────────────────

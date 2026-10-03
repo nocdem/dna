@@ -291,6 +291,8 @@ exports_common=(
   nsw_const_undelegate_lock_epochs nsw_const_epoch_length
   nsw_validators nsw_val_count nsw_val_truncated nsw_val_fp nsw_val_self
   nsw_val_delegated nsw_val_commission nsw_val_status
+  # delegator slots per validator ("N/<cap>"; -1 = an older node, unknown)
+  nsw_val_delegators nsw_const_max_delegators
   nsw_delegations nsw_del_count nsw_del_fp nsw_del_amount nsw_del_block
   nsw_stake_build
   # HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.6,

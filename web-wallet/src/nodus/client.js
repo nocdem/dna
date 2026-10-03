@@ -142,7 +142,7 @@ const NAME_REG_OPS = ['namePrices', 'nameBuild'];
 const VAULT_OPS = ['vaultCreate', 'vaultOpen', 'vaultBalance', 'vaultScan', 'vaultPropose', 'vaultReview', 'vaultApprove', 'vaultSubmit'];
 const RAW_RULE = /^[1-9]\d{0,19}$/;
 function validRules(rules) {
-  return !!rules && ['minDelegation', 'selfStake', 'commissionMaxBps', 'undelegateLockEpochs', 'epochLength'].every(key => typeof rules[key] === 'string' && RAW_RULE.test(rules[key]) && BigInt(rules[key]) < 2n ** 64n);
+  return !!rules && ['minDelegation', 'selfStake', 'commissionMaxBps', 'undelegateLockEpochs', 'epochLength', 'maxDelegators'].every(key => typeof rules[key] === 'string' && RAW_RULE.test(rules[key]) && BigInt(rules[key]) < 2n ** 64n);
 }
 const lockedError = () => new Error('Wallet is locked.');
 

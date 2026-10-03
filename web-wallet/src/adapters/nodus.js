@@ -362,7 +362,7 @@ export function parseStakingRules(rules) {
   const invalid = () => new Error('Staking is not available in this wallet version.');
   if (!rules) throw invalid();
   const out = {};
-  for (const key of ['minDelegation', 'selfStake', 'commissionMaxBps', 'undelegateLockEpochs', 'epochLength']) {
+  for (const key of ['minDelegation', 'selfStake', 'commissionMaxBps', 'undelegateLockEpochs', 'epochLength', 'maxDelegators']) {
     out[key] = rawUnits(rules[key], 'staking rule');
     if (out[key] === 0n) throw invalid();
   }
@@ -375,9 +375,14 @@ export function parseValidators(result) {
   const seen = new Set();
   const validators = result.validators.map(v => {
     if (!v || typeof v.fingerprint !== 'string' || !HEX128.test(v.fingerprint) || seen.has(v.fingerprint) || !Number.isInteger(v.commissionBps) || v.commissionBps < 0 || v.commissionBps > 10000 || !Number.isInteger(v.status) || v.status < 0 || v.status >= VALIDATOR_STATUS.length) throw invalid();
+    // delegators: filled delegator slots, or null = unknown (an older node
+    // answers no count: the module reports -1, or the field is absent) —
+    // never shown as 0.
+    if (v.delegators !== undefined && v.delegators !== -1 && (!Number.isInteger(v.delegators) || v.delegators < 0)) throw invalid();
     seen.add(v.fingerprint);
     const status = VALIDATOR_STATUS[v.status];
-    return { fingerprint: v.fingerprint, selfStake: rawUnits(v.selfStake, 'validator stake'), delegated: rawUnits(v.delegated, 'validator stake'), commissionBps: v.commissionBps, status, statusText: STATUS_TEXT[status], acceptsDelegation: status === 'active' || status === 'eligible' };
+    const delegators = v.delegators === undefined || v.delegators === -1 ? null : v.delegators;
+    return { fingerprint: v.fingerprint, selfStake: rawUnits(v.selfStake, 'validator stake'), delegated: rawUnits(v.delegated, 'validator stake'), commissionBps: v.commissionBps, status, statusText: STATUS_TEXT[status], acceptsDelegation: status === 'active' || status === 'eligible', delegators };
   });
   return { truncated: result.truncated, validators };
 }
@@ -461,6 +466,11 @@ export async function prepareStake({ client, from, kind, validator, amount, comm
       if (!info) throw new Error('This validator is not in the current validator list.');
       if (!info.acceptsDelegation) throw new Error(`This validator does not accept delegations now (${info.statusText}).`);
       if (!existing && units < rules.minDelegation) throw new Error(`A new delegation must be at least ${formatUnits(rules.minDelegation, DECIMALS)} NODUS.`);
+      // The chain admits a NEW delegator only below the per-validator cap; a
+      // top-up of an existing delegation is exempt (nodus_witness_rt_native.c
+      // rtn_delegate_exec: `!dr->present && count >= cap` refuses). Checked
+      // only when the node reported the count (null = unknown: the chain decides).
+      if (!existing && info.delegators !== null && BigInt(info.delegators) >= rules.maxDelegators) throw new Error(`This validator already has the most delegators it can take (${info.delegators}/${rules.maxDelegators}). Choose another validator.`);
     } else {
       if (!existing) throw new Error('You have no delegation with this validator.');
       if (!info) throw new Error('This validator is not in the current validator list, so its delegation cannot be withdrawn from here.');

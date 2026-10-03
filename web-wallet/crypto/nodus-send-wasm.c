@@ -115,7 +115,8 @@
                                              * constants only, no witness
                                              * link (as nodus_v2_stake.c)    */
 #include "nodus/nodus_types.h"             /* NODUS_CMT_APP_MAX_EXPIRY_AHEAD,
-                                             * NODUS_W_BASE_TX_FEE           */
+                                             * NODUS_W_BASE_TX_FEE,
+                                             * NODUS_MAX_DELEGATORS_PER_VALIDATOR */
 #include "dnac/dnac.h"                      /* DNAC_MIN_FEE_RAW              */
 #include "dnac/manifest_wire.h"             /* genesis claim codec           */
 #include "crypto/hash/qgp_sha3.h"
@@ -782,6 +783,13 @@ const char *nsw_const_undelegate_lock_epochs(void) {
     return nsw_const((uint64_t)DNAC_UNDELEGATE_LOCK_EPOCHS);
 }
 const char *nsw_const_epoch_length(void)    { return nsw_const((uint64_t)DNAC_EPOCH_LENGTH); }
+/* The per-validator delegator cap the chain admits a NEW delegator under
+ * (nodus/include/nodus/nodus_types.h NODUS_MAX_DELEGATORS_PER_VALIDATOR;
+ * enforced in nodus_witness_rt_native.c rtn_delegate_exec) — shown as the
+ * "N/<cap>" delegator slots of a validator row. */
+const char *nsw_const_max_delegators(void) {
+    return nsw_const((uint64_t)NODUS_MAX_DELEGATORS_PER_VALIDATOR);
+}
 
 static const char *nsw_stake_reason(int rc, int op) {
     switch (rc) {
@@ -2069,6 +2077,9 @@ static struct {
     char     deleg_dec[NSW_MAX_VALIDATORS][NSW_U64_DEC];
     int      commission[NSW_MAX_VALIDATORS];
     int      status[NSW_MAX_VALIDATORS];
+    /* the reply's optional "dlg" (filled delegator slots); -1 = the node
+     * predates the key (has_delegator_count 0) = unknown, never 0 */
+    int      delegators[NSW_MAX_VALIDATORS];
 } g_vals;
 
 static struct {
@@ -2086,6 +2097,8 @@ const char *nsw_val_self(int i)      { return nsw_val_ok(i) ? g_vals.self_dec[i]
 const char *nsw_val_delegated(int i) { return nsw_val_ok(i) ? g_vals.deleg_dec[i] : ""; }
 int nsw_val_commission(int i)        { return nsw_val_ok(i) ? g_vals.commission[i] : -1; }
 int nsw_val_status(int i)            { return nsw_val_ok(i) ? g_vals.status[i] : -1; }
+/* -1: unknown (an older node's reply carries no count) */
+int nsw_val_delegators(int i)        { return nsw_val_ok(i) ? g_vals.delegators[i] : -1; }
 
 int nsw_del_count(void) { return g_dels.valid ? g_dels.n : 0; }
 static int nsw_del_ok(int i) { return g_dels.valid && i >= 0 && i < g_dels.n; }
@@ -2125,7 +2138,8 @@ int nsw_validators(void) {
         for (int i = 0; !bad && i < page.count; i++) {
             const nodus_dnac_validator_list_entry_t *e = &page.entries[i];
             if (memcmp(e->pubkey, zero_pk, NSW_PK_LEN) == 0 || e->status > 4 ||
-                e->commission_bps > DNAC_COMMISSION_BPS_MAX) { bad = 1; break; }
+                e->commission_bps > DNAC_COMMISSION_BPS_MAX ||
+                (e->has_delegator_count && e->delegator_count > INT32_MAX)) { bad = 1; break; }
             if (g_vals.n >= NSW_MAX_VALIDATORS) { g_vals.truncated = 1; break; }
             uint8_t fp[64];
             char fp_hex[129];
@@ -2141,6 +2155,8 @@ int nsw_validators(void) {
             nsw_fmt_u64(e->total_delegated, g_vals.deleg_dec[n]);
             g_vals.commission[n] = e->commission_bps;
             g_vals.status[n] = e->status;
+            g_vals.delegators[n] = e->has_delegator_count
+                                   ? (int)e->delegator_count : -1;
         }
         const int got = page.count;
         nodus_client_free_validator_list_result(&page);

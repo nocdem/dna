@@ -445,7 +445,7 @@ test('claim: record durable before submit, recognised as a claim after storage, 
 // something consistent to check — the real builder is pinned by
 // nodus/tests/test_v2_stake_build.c and the parity tests.
 const VAL_A = 'a1'.repeat(64), VAL_B = 'b2'.repeat(64), VAL_C = 'c3'.repeat(64);
-const RULES = { minDelegation: '10000000000', selfStake: '1000000000000000', commissionMaxBps: '5000', undelegateLockEpochs: '12', epochLength: '720' };
+const RULES = { minDelegation: '10000000000', selfStake: '1000000000000000', commissionMaxBps: '5000', undelegateLockEpochs: '12', epochLength: '720', maxDelegators: '2048' };
 function addStaking(mock) {
   const { module, state } = mock;
   state.validators = [
@@ -527,6 +527,41 @@ test('staking overview: validators and delegations parsed strictly and joined; l
   mock.state.delegations = [{ validator: VAL_A, amount: '1', block: '1' }, { validator: VAL_A, amount: '2', block: '1' }];
   await assert.rejects(stakingOverview({ client, from: FINGERPRINT }), /invalid delegation list/);
   await assert.rejects(stakingOverview({ client, from: RECIPIENT }), /does not match/);
+  client.lock();
+});
+
+test('staking overview: a validator\'s delegator slots — the count when the node reports it, null (unknown, never 0) when not', async () => {
+  const { mock, client } = await stakingClient();
+  assert.equal((await stakingOverview({ client, from: FINGERPRINT })).rules.maxDelegators, 2048n);
+  mock.state.validators = [
+    { ...mock.state.validators[0], delegators: 17 },
+    { ...mock.state.validators[1], delegators: -1 },
+    { ...mock.state.validators[2] }
+  ];
+  const view = await stakingOverview({ client, from: FINGERPRINT });
+  assert.deepEqual(view.validators.map(v => v.delegators), [17, null, null]);
+  mock.state.validators = [{ ...mock.state.validators[0], delegators: 0 }];
+  assert.equal((await stakingOverview({ client, from: FINGERPRINT })).validators[0].delegators, 0);
+  for (const bad of [-2, 1.5, '3']) {
+    mock.state.validators = [{ fingerprint: VAL_A, selfStake: RULES.selfStake, delegated: '0', commissionBps: 0, status: 0, delegators: bad }];
+    await assert.rejects(stakingOverview({ client, from: FINGERPRINT }), /invalid validator list/, String(bad));
+  }
+  client.lock();
+});
+
+test('delegate: a NEW delegation to a validator whose slots are full is refused before any build; a top-up is not', async () => {
+  const { mock, client } = await stakingClient();
+  mock.state.validators = [{ ...mock.state.validators[0], delegators: 2048 }, { ...mock.state.validators[2], delegators: -1 }];
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: VAL_A, amount: '100' }), /most delegators it can take \(2048\/2048\)/);
+  assert.equal(mock.state.lastStake, undefined, 'nothing was built');
+  // an unknown count (older node): the chain decides, the wallet does not refuse
+  const unknown = await prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: VAL_C, amount: '100' });
+  unknown.cancel();
+  // an existing delegator adding more: exempt, as on the chain
+  mock.state.delegations = [{ validator: VAL_A, amount: '10000000000', block: '5' }];
+  const topUp = await prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: VAL_A, amount: '1' });
+  assert.equal(topUp.to, VAL_A);
+  topUp.cancel();
   client.lock();
 });
 

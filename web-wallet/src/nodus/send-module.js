@@ -452,11 +452,16 @@ export async function createNodusSendModule(network, { claim = null, loadGlue = 
     stakingRules: Object.freeze({
       minDelegation: str('nsw_const_min_delegation'), selfStake: str('nsw_const_self_stake'),
       commissionMaxBps: str('nsw_const_commission_max'), undelegateLockEpochs: str('nsw_const_undelegate_lock_epochs'),
-      epochLength: str('nsw_const_epoch_length')
+      epochLength: str('nsw_const_epoch_length'),
+      // the per-validator delegator cap (nodus_types.h
+      // NODUS_MAX_DELEGATORS_PER_VALIDATOR), the "/2048" of a row's slots
+      maxDelegators: str('nsw_const_max_delegators')
     }),
     // validators() -> { truncated, validators: [{ fingerprint (derived by
     // the module from the key), selfStake, delegated (raw), commissionBps,
-    // status (0 active, 1 retiring, 2 unstaked, 3 auto-retired, 4 eligible) }] }
+    // status (0 active, 1 retiring, 2 unstaked, 3 auto-retired, 4 eligible),
+    // delegators (filled delegator slots; -1 = the node's answer carries no
+    // count — an older node — unknown, never 0) }] }
     async validators() {
       check(await call('nsw_validators'));
       const validators = [];
@@ -464,7 +469,7 @@ export async function createNodusSendModule(network, { claim = null, loadGlue = 
         validators.push({
           fingerprint: str('nsw_val_fp', ['number'], [i]), selfStake: str('nsw_val_self', ['number'], [i]),
           delegated: str('nsw_val_delegated', ['number'], [i]), commissionBps: num('nsw_val_commission', ['number'], [i]),
-          status: num('nsw_val_status', ['number'], [i])
+          status: num('nsw_val_status', ['number'], [i]), delegators: num('nsw_val_delegators', ['number'], [i])
         });
       }
       return { truncated: num('nsw_val_truncated') === 1, validators };
