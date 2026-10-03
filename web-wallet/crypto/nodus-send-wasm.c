@@ -3775,6 +3775,73 @@ int nsw_msig_submit(void) {
 const char *nsw_msig_intent(void) { return g_ms.intent_hex; }
 const char *nsw_msig_wire(void)   { return g_ms.wire_hex; }
 
+#ifdef NODUS_SEND_TEST_FIXED_RANDOM
+/* TEST-only (parity build, never shipped — build-nodus-send-wasm.sh
+ * exports_test): the build and the read-back WITHOUT a node, so the vault
+ * test (test/vaults.test.js) can pin them. The build is nsw_msig_build's
+ * builder call with every network fact given (chain id, tip, gas price,
+ * generation, expiry) and the output seeds from the test randomness
+ * buffer; the read-back is nsw_ms_review_now at `now_dec`. */
+int nsw_test_msig_build(const char *chain_hex, const char *tip_dec,
+                        const char *gas_dec, int gen, const char *to_hex,
+                        const char *amount_dec, const char *expiry_dec) {
+    nsw_ms_proposal_clear();
+    uint8_t chain[DNA_CHAIN_ID_LEN], to_raw[64];
+    uint64_t tip = 0, gas = 0, amount = 0, expiry = 0;
+    if (!g_ms.has_desc) return nsw_fail("No vault is open.");
+    if (nsw_parse_hex(chain_hex, chain, sizeof(chain)) != 0 ||
+        nsw_parse_u64(tip_dec, &tip) != 0 || tip == 0 ||
+        nsw_parse_u64(gas_dec, &gas) != 0 || gen < 1 ||
+        qgp_fp_hex_to_raw(to_hex, to_raw) != 0 ||
+        nsw_parse_u64(amount_dec, &amount) != 0 || amount == 0 ||
+        nsw_parse_u64(expiry_dec, &expiry) != 0)
+        return nsw_fail("Invalid test build request.");
+    nodus_v2_ruleset_id_t rs;
+    dna_meter_policy_t pol;
+    if (nsw_ruleset((uint32_t)gen, &rs, &pol) != 0) return -1;
+    nodus_v2_coin_t cand[NSW_MS_MAX_COINS];
+    for (int i = 0; i < g_ms.n_coins; i++) {
+        memset(&cand[i], 0, sizeof(cand[i]));
+        memcpy(cand[i].nul, g_ms.coins[i].id, 64);
+        cand[i].amount = g_ms.coins[i].amount;
+    }
+    nodus_v2_msig_build_req_t req;
+    memset(&req, 0, sizeof(req));
+    req.rs = &rs;
+    req.chain32 = chain;
+    req.tip = tip;
+    req.expiry_height = expiry;
+    req.desc = g_ms.desc;
+    req.desc_len = g_ms.desc_len;
+    req.coins = cand;
+    req.n_coins = g_ms.n_coins;
+    req.to_fp = to_raw;
+    req.amount = amount;
+    req.gas_price = gas;
+    req.rand = nsw_rand_csprng;            /* the test randomness buffer   */
+    nodus_v2_msig_built_t b;
+    nodus_v2_spend_err_t e;
+    int rc = nodus_v2_msig_build(&req, &b, &e);
+    if (rc != NODUS_V2_SPEND_OK) return nsw_fail("Test build refused (rc=%d).", rc);
+    memcpy(g_ms.x.chain32, chain, sizeof(chain));
+    g_ms.x.tip = tip;
+    g_ms.x.signers = b.signers;
+    memcpy(g_ms.x.digest, b.digest, 64);
+    g_ms.x.env = b.env;
+    g_ms.x.env_len = b.env_len;
+    b.env = NULL;
+    nodus_v2_msig_built_free(&b);
+    if (nsw_ms_export_fill() != 0) { nsw_ms_proposal_clear(); return -1; }
+    return 0;
+}
+
+int nsw_test_msig_review(const char *now_dec) {
+    uint64_t now = 0;
+    if (nsw_parse_u64(now_dec, &now) != 0) return nsw_fail("Invalid height.");
+    return nsw_ms_review_now(now);
+}
+#endif
+
 /* ── Messages host (package NC-4b; nc_core.h "Host") ──
  * The Messages exports (web-wallet/connect/nc_wasm.c, linked into this
  * module) run on THIS session, inside THIS op bracket, stopped by THIS
