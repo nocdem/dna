@@ -1614,8 +1614,9 @@ async function saveVault(change) {
     persistHistory();
     // The address book of this session (kept in memory until now) is saved
     // with the wallet from now on — unless the saved one could not be read
-    // at unlock (a password change then leaves it as it is).
-    if (!addressBookUnreadable) {
+    // at unlock (a password change then leaves it as it is). An empty book
+    // writes nothing here (each change is saved by commitAddressBook).
+    if (!addressBookUnreadable && addressBook.length) {
       try { await persistAddressBook(); addressBookNote = ''; }
       catch { addressBookNote = 'The address book could not be saved on this device; it is kept until you lock.'; }
     }
