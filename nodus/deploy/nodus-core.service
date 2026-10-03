@@ -11,11 +11,15 @@
 # nodus.service (rollback) unchanged. Conflicts=nodus.service: the
 # combined server and the split units must never run at once on one data
 # directory (two DHTs, two signers with one validator key) — starting one
-# side stops the other.
+# side stops the other. Conflicts= alone implies no ordering
+# (systemd.unit(5)); After=nodus.service makes systemd finish stopping the
+# combined server before this unit starts (a stop and a start of two
+# ordered units are always run stop-first, whichever direction the order
+# names).
 [Unit]
 Description=Nodus core (split: sessions, 4000/4001/4002, cluster)
 Documentation=https://github.com/nocdem/dna
-After=network-online.target
+After=network-online.target nodus.service
 Wants=network-online.target
 Conflicts=nodus.service
 StartLimitBurst=3

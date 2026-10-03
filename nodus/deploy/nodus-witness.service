@@ -13,7 +13,8 @@
 # missing") and is retried every RestartSec=5 s. The start limit (10
 # starts / 300 s) is sized for that wait, not the combined unit's 3 / 300 s.
 # --witness-external on the command line (nodus-witness refuses without
-# it); Conflicts=nodus.service as in nodus-core.service.
+# it); Conflicts=nodus.service + After=nodus.service as in
+# nodus-core.service (the combined server is stopped BEFORE this starts).
 #
 # OPEN (operator decision pending, not a property of this unit): this
 # process runs no partial-wipe gate of its own — on a half-wiped host core
@@ -22,7 +23,7 @@
 [Unit]
 Description=Nodus witness (split: 4004 p2p, consensus)
 Documentation=https://github.com/nocdem/dna
-After=network-online.target nodus-core.service
+After=network-online.target nodus-core.service nodus.service
 Wants=network-online.target nodus-core.service
 Conflicts=nodus.service
 StartLimitBurst=10

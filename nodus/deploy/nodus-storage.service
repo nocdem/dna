@@ -13,11 +13,12 @@
 # sized for that wait, not the combined unit's 3 / 300 s, which a fresh
 # host could exhaust before core finishes generating the identity.
 # --storage-external on the command line (nodus-storage refuses without
-# it); Conflicts=nodus.service as in nodus-core.service.
+# it); Conflicts=nodus.service + After=nodus.service as in
+# nodus-core.service (the combined server is stopped BEFORE this starts).
 [Unit]
 Description=Nodus storage (split: DHT databases, replication)
 Documentation=https://github.com/nocdem/dna
-After=network-online.target nodus-core.service
+After=network-online.target nodus-core.service nodus.service
 Wants=network-online.target nodus-core.service
 Conflicts=nodus.service
 StartLimitBurst=10

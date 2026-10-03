@@ -87,14 +87,19 @@ FIRST boot storage and witness may start before core has written the identity, e
 `StartLimitIntervalSec=300` (core: 3 / 300, as `nodus.service`). If either unit hits the
 limit: `systemctl reset-failed <unit> && systemctl start <unit>` once core is up.
 
-**Never both layouts.** All three units carry `Conflicts=nodus.service`: starting the
-combined unit stops the split units and vice versa (systemd `Conflicts=` semantics — not
-exercised on a host in S6). Two layouts at once on one data directory would mean two DHTs
-on one `nodus.db` and two signers with one validator key.
+**Never both layouts.** All three units carry `Conflicts=nodus.service` AND
+`After=nodus.service`: starting the combined unit stops the split units and vice versa,
+and the `After=` makes systemd finish the stop before the start (`Conflicts=` alone
+implies no ordering — systemd.unit(5); a stop job is always ordered before a start job
+whichever direction the order names). Not exercised on a host in S6 — do not rely on it
+as the switch procedure; the steps below stop one layout explicitly. Two layouts at once
+on one data directory would mean two DHTs on one `nodus.db` and two signers with one
+validator key.
 
 **Switch a host to three processes** (test host; consensus bytes, `app_hash` and the 4004
 wire are unchanged, so no hard fork is involved):
-1. `systemctl disable --now nodus` (the combined unit; `Conflicts=` would also stop it).
+1. `systemctl disable --now nodus` (the combined unit), and check `systemctl is-active
+   nodus` prints `inactive` before step 3.
 2. `nodus.addr_seq`: the witness writes it under `data/`, never `identity/` (item 10); an
    existing host's file in `identity/` is NOT moved by anything yet (item 21 — installer,
    S7). nodus-witness only WARNs once at start when it sees the old file and no new one.
