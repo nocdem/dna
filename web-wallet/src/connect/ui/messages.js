@@ -29,7 +29,10 @@
 // Network calls: each is awaited before the next one is queued (design §6.4
 // F7), so a wallet operation queued meanwhile waits at most one step.
 // An error text coming from the core is never shown: it can carry technical
-// terms; the page shows its own plain words.
+// terms; the page shows its own plain words (explain()). ONE exception: a
+// conversation's collapsed "Details" line shows the last check's error as
+// "Last check failed: <message>", bounded and with every long hex run cut
+// out (diag.js errorText) — a diagnostic the user opens on purpose.
 //
 // Rendering (design rev 5 §1.9): every text through textContent (dom.js el);
 // text written by someone else (names, notes, messages, profile fields) in a
@@ -512,7 +515,7 @@ async function completeOutgoing(request, gen) {
 // diagnostics record (diag.js) as it comes; an exception is added by sync().
 async function syncContact(contact, gen, days) {
   const fp = contact.fp;
-  const diag = newDiag(Date.now());
+  const previous = diags.get(fp), diag = newDiag(Date.now());
   diags.set(fp, diag);
   const profileOk = await ensureProfile(fp, true);
   if (gen !== generation) return false;
@@ -527,7 +530,10 @@ async function syncContact(contact, gen, days) {
       saltChecked.add(fp);
       if (changed) { contact.salt = result.salt; await persist(); unpublished.add(fp); }
     }
-  } else diag.salt = diagSalt({ earlier: true });
+  // Reconciled earlier this session (also after a 'failed' status, which
+  // is not retried): the status of that step is carried forward, so a
+  // failed step is not shown as "salt ok".
+  } else diag.salt = previous?.salt ?? diagSalt({ earlier: true });
   if (!contact.salt) { diag.noSalt = true; return; }
   const salt = contact.salt;
 

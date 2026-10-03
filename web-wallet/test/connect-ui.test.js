@@ -574,6 +574,10 @@ test('diagnostics: profile, salt and day states in plain words; malformed fields
     'Last check 08:31 · profile ok · salt ok (changed) · day 20729: found, unchanged · day 20730: unreadable (timeout), 0 read, 0 not checked, 0 other');
   const earlier = newDiag(1); earlier.profile = 'ok'; earlier.salt = diagSalt({ earlier: true });
   assert.equal(diagText(earlier, at), 'Last check 08:31 · profile ok · salt ok');
+  // a failed salt step carried into a later check keeps its status (messages.js syncContact)
+  const carried = newDiag(2); carried.profile = 'ok';
+  carried.salt = diagSalt({ result: { status: 'failed', outcome: 'unreadable', why: 'timeout' } });
+  assert.equal(diagText(carried, at), 'Last check 08:31 · profile ok · salt failed (unreadable, timeout)');
   assert.deepEqual(diagDay('x', { outcome: '<b>', why: 'Timeout!', dropped: '-1', other: 'many', messages: 'no' }),
     { day: '?', outcome: 'unknown', why: 'unknown', count: 0, dropped: 0, other: 0, unchanged: false });
 });
