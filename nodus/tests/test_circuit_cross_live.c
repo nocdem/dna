@@ -133,14 +133,15 @@ int main(void) {
     srv_b.cluster.peers[0].last_seen = (uint64_t)time(NULL);
 
     /* Also add to routing tables — presence p_sync broadcasts to routing peers,
-     * not cluster peers. tcp_port here is the inter-node port (UDP+2). */
+     * not cluster peers. tcp_port here is the inter-node port (UDP+2). The
+     * routing table is the in-process DHT's (split S4). */
     nodus_peer_t rp_b = {0};
     rp_b.node_id = srv_b.identity.node_id;
     snprintf(rp_b.ip, sizeof(rp_b.ip), "127.0.0.1");
     rp_b.udp_port = 17000;
     rp_b.tcp_port = 17002;
     rp_b.last_seen = (uint64_t)time(NULL);
-    nodus_routing_insert(&srv_a.routing, &rp_b);
+    nodus_routing_insert(&nodus_dht_backend_inproc_state(srv_a.dht)->routing, &rp_b);
 
     nodus_peer_t rp_a = {0};
     rp_a.node_id = srv_a.identity.node_id;
@@ -148,7 +149,7 @@ int main(void) {
     rp_a.udp_port = 16000;
     rp_a.tcp_port = 16002;
     rp_a.last_seen = (uint64_t)time(NULL);
-    nodus_routing_insert(&srv_b.routing, &rp_a);
+    nodus_routing_insert(&nodus_dht_backend_inproc_state(srv_b.dht)->routing, &rp_a);
 
     /* Two user identities */
     nodus_identity_t id_u1, id_u2;

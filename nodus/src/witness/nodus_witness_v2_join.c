@@ -25,7 +25,7 @@
 #include "witness/nodus_witness_v2_claims.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_p2p.h"   /* the 0x70 channel (P2P-PORT F5) */
-#include "server/nodus_server.h"
+#include "witness/nodus_witness_host.h" /* the pin (host config)          */
 #include "nodus/nodus_chain_config.h"
 
 #include <sqlite3.h>
@@ -86,14 +86,14 @@ static void join_scratch_clear(const char *dir) {
 }
 
 int nodus_witness_v2_join_arm(nodus_witness_t *w) {
-    if (!w || !w->server) return -1;
-    if (!w->server->config.has_v2_genesis_pin) return 0;   /* not a joiner */
+    if (!w || !w->host) return -1;
+    if (!w->host->config.has_v2_genesis_pin) return 0;     /* not a joiner */
 
     /* If a chain is already open (successor scan found one), this node is
      * NOT a fresh joiner — the pin is inert. */
     if (w->db) return 0;
 
-    memcpy(w->v2_join.pin, w->server->config.v2_genesis_pin, 32);
+    memcpy(w->v2_join.pin, w->host->config.v2_genesis_pin, 32);
     w->v2_join.active    = 1;
     w->v2_join.acc       = NULL;
     w->v2_join.acc_len   = 0;
@@ -204,13 +204,13 @@ static int join_adopt(nodus_witness_t *w) {
     nodus_witness_t *w2 = calloc(1, sizeof(*w2));
     if (!w2) return -1;
     w2->cached_committee_epoch_start = UINT64_MAX;
-    w2->server = w->server;               /* identity only; no signing here */
+    w2->host = w->host;                   /* identity only; no signing here */
 
     snprintf(w2->data_path, sizeof(w2->data_path), "%s/.v2join.tmp",
              w->data_path);
     join_scratch_clear(w2->data_path);
     if (mkdir(w2->data_path, 0700) != 0 && errno != EEXIST) {
-        w2->server = NULL; free(w2); return -1;
+        w2->host = NULL; free(w2); return -1;
     }
 
     /* Provisional deterministic name; renamed to the real chain id after
@@ -293,7 +293,7 @@ static int join_adopt(nodus_witness_t *w) {
 
     if (w2->db) { sqlite3_close(w2->db); w2->db = NULL; }
     join_scratch_clear(w2->data_path);
-    w2->server = NULL;
+    w2->host = NULL;
     free(w2);
 
     if (adopted != 0) return -1;
@@ -331,7 +331,7 @@ static int join_adopt(nodus_witness_t *w) {
      * has already run `witness_post_open_gate` on `w` (the SAME gate
      * `nodus_witness_create_chain_db` runs at process start), so
      * `w->v2_successor` is true and `w->v2_chain32` is populated —
-     * `nodus_cmt_live_init`'s own precondition. `w->server` and
+     * `nodus_cmt_live_init`'s own precondition. `w->host` and
      * `w->data_path` are the LIVE witness's, set once at process start;
      * `join_adopt` never touches either — it only set them on the
      * throwaway SCRATCH handle `w2` above (:114/:117), which is already

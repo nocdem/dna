@@ -547,10 +547,55 @@ if(NOT WIN32)
         src/channel/nodus_channel_ring.c
         src/consensus/nodus_cluster.c
         src/server/nodus_server.c
-        src/server/nodus_media_handler.c
+        # Split S6 — nodus_server_init_ex's constructor tables. The
+        # in-process table (with nodus_server_init) is the only server TU
+        # that names the in-process DHT / witness constructors; nodus-core
+        # links the IPC-only table and so neither of those objects
+        # (tests/core_linked.cmake).
+        src/server/nodus_server_backends_inproc.c
+        src/server/nodus_server_backends_ipc.c
+        # Split S4 — the DHT / storage half: its handlers, ticks and state
+        # (dht/nodus_dht.h), reached only through server/nodus_dht_backend.h.
+        # No core-only symbol (auth, presence, cluster, sessions) is
+        # referenced from these TUs (test_dht_linked).
+        src/dht/nodus_dht_server.c
+        src/dht/nodus_dht_media.c
         src/server/nodus_auth.c
         src/server/nodus_presence.c
+        # Split S5a (decision item 28): the DIALER side of the 4002
+        # handshake (challenge / auth_ok with the CRIT-1 pin / key_ack), one
+        # module core links now and the S5 storage process will link too.
+        # Knows no server, session or transport type.
+        src/server/nodus_inter_dial.c
+        # Split S4 (decision 2026-10-01-nodus-component-split.md): the
+        # server's one door to its DHT / storage half, in-process
+        # implementation (server/nodus_dht_backend.h).
+        src/server/nodus_dht_backend_inproc.c
+        # Split S5b — the IPC implementation of the same door (core side of
+        # <data_path>/storage.sock, "storage_external"), the storage side's
+        # runtime (listener, origin shadows, control connection, its own
+        # outbound 4002 pool — the nodus-storage process) and the frame
+        # codec both ends link. The two dht/ TUs include no server header
+        # but the shared dialer's (tests/storage_linked.cmake).
+        src/server/nodus_dht_backend_ipc.c
+        src/dht/nodus_dht_ipc.c
+        # Split S5b — the H-10 partial-wipe boot gate in its own object, so
+        # nodus-storage runs the same check as core before opening nodus.db.
+        src/server/nodus_partial_wipe.c
+        src/dht/nodus_dht_ipc_wire.c
+        # Split S1 (decision 2026-10-01-nodus-component-split.md): the
+        # server's one door to the witness, in-process implementation.
+        src/server/nodus_chain_backend_inproc.c
+        # Split S3 — the IPC implementation of the same door (core side of
+        # <data_path>/witness.sock, "witness_external") and the witness
+        # side's listener (nodus-witness process). The witness TU includes
+        # no server header (test_split_linked).
+        src/server/nodus_chain_backend_ipc.c
+        src/witness/nodus_witness_ipc.c
         src/witness/nodus_witness.c
+        # Split S1 — the published network file + the chain-pin start
+        # check, moved out of nodus_server.c (witness-side, no server).
+        src/witness/nodus_witness_network_file.c
         # R3 W4 — nodus_witness_fault.c (the QGP_FAULT_INJECT drop-predicate
         # installer), nodus_witness_o15h_diag.c, nodus_witness_bft.c,
         # nodus_witness_sync.c, nodus_witness_mempool.c, nodus_witness_cert.c
@@ -795,7 +840,7 @@ if(NOT WIN32)
     find_package(Threads REQUIRED)
     target_link_libraries(nodus PUBLIC Threads::Threads)
 endif()
-# P2P-PORT F6: the published network file (nodus_server.c
+# P2P-PORT F6: the published network file (nodus_witness_network_file.c
 # nodus_network_file_*) is parsed with json-c, as nodus-server's own
 # config is. Compiled in only when json-c is found (standalone: the
 # pkg_check_modules above; in the messenger tree: the parent's).
@@ -1044,13 +1089,34 @@ add_executable(test_get_unavailable tests/test_get_unavailable.c)
 target_link_libraries(test_get_unavailable nodus dsa kem nodus)
 add_test(NAME test_get_unavailable COMMAND test_get_unavailable)
 
+# Split item 29: a deferred DHT reply reaches only the session generation
+# that asked (DHT guard, core guard, both). In-process, no sockets, no store.
+add_executable(test_origin_gen tests/test_origin_gen.c)
+target_link_libraries(test_origin_gen nodus dsa kem nodus)
+add_test(NAME test_origin_gen COMMAND test_origin_gen)
+
+# Split S5a item 30: core's outbound 4002 dials (presence p_sync, circuits,
+# the DHT's inter_send) pin the expected peer identity; the routing
+# snapshot carries node_id. One loopback listener, no event loop run.
+# Split S5a item 28: the shared 4002 dialer handshake module against an
+# in-memory peer (correct pin, wrong / missing pin, bad kpk_sig, downgrade).
+add_executable(test_inter_dial tests/test_inter_dial.c)
+target_link_libraries(test_inter_dial nodus dsa kem nodus)
+add_test(NAME test_inter_dial COMMAND test_inter_dial)
+
+# Split S5a item 33: the 4002 pending-full hook parks only DHT replication
+# frames (sv / m_sv) in the hint table; p_sync, ri_*, replies are dropped.
+add_executable(test_pending_full_hint tests/test_pending_full_hint.c)
+target_link_libraries(test_pending_full_hint nodus dsa kem nodus)
+add_test(NAME test_pending_full_hint COMMAND test_pending_full_hint)
+
+add_executable(test_presence_dial_pin tests/test_presence_dial_pin.c)
+target_link_libraries(test_presence_dial_pin nodus dsa kem nodus)
+add_test(NAME test_presence_dial_pin COMMAND test_presence_dial_pin)
+
 add_executable(test_inter_circuit_uaf tests/test_inter_circuit_uaf.c)
 target_link_libraries(test_inter_circuit_uaf nodus dsa kem nodus)
 add_test(NAME test_inter_circuit_uaf COMMAND test_inter_circuit_uaf)
-
-add_executable(test_session_gen tests/test_session_gen.c)
-target_link_libraries(test_session_gen nodus dsa kem nodus)
-add_test(NAME test_session_gen COMMAND test_session_gen)
 
 add_executable(test_inter_preauth_gate tests/test_inter_preauth_gate.c)
 target_link_libraries(test_inter_preauth_gate nodus dsa kem nodus)
@@ -1254,6 +1320,49 @@ add_test(NAME test_tcp_deferred_close COMMAND test_tcp_deferred_close)
 add_executable(test_tcp_read_budget tests/test_tcp_read_budget.c)
 target_link_libraries(test_tcp_read_budget nodus dsa nodus)
 add_test(NAME test_tcp_read_budget COMMAND test_tcp_read_budget)
+
+# Component split S2: the transport's Unix domain socket entry (decision
+# 2026-10-01-nodus-component-split item 7) — socket file mode 0600, frame
+# round-trip both ways, SO_PEERCRED refusal of a wrong uid (real accept
+# path, listener configured for geteuid()+1, plus the decision function
+# with injected credentials), stale/live/regular-file handling at the
+# path, unlink on close. Uses its own mkdtemp dir under /tmp; no ports.
+add_executable(test_tcp_unix tests/test_tcp_unix.c)
+target_link_libraries(test_tcp_unix nodus dsa nodus)
+add_test(NAME test_tcp_unix COMMAND test_tcp_unix)
+
+# Component split S3: the witness IPC (witness/nodus_witness_ipc.c) against
+# the core's IPC chain backend (server/nodus_chain_backend_ipc.c) over a
+# real socket in a mkdtemp dir — preface + dnac_* request reach the witness
+# handler with the session's key/token and the reply reaches the client
+# unchanged; session_closed makes find_session_conn NULL; no witness →
+# the decision-20 error; a non-preface first frame is closed; the status
+# snapshot round-trips. Test handlers stand in for the witness; no ports.
+add_executable(test_witness_ipc tests/test_witness_ipc.c)
+target_link_libraries(test_witness_ipc nodus dsa nodus)
+add_test(NAME test_witness_ipc COMMAND test_witness_ipc)
+
+# Component split S5b: the DHT IPC (dht/nodus_dht_ipc.c, the nodus-storage
+# runtime, with a real DHT in a mkdtemp dir) against the core's IPC DHT
+# backend (server/nodus_dht_backend_ipc.c) over a real storage.sock —
+# routing / membership snapshots, preface fp+pk / fp+ip, replies and
+# cross-origin pushes addressed by generation, UDP relay and peer-event
+# order, decision 32 (storage closes an origin → core ends that session),
+# deterministic slot-reuse reorder with held connections, decision 31
+# (control down → the error at once, no dial), both queue bounds, full
+# snapshot re-push on reconnect, origin generation over sockets, and the
+# storage_external partial-wipe marker rule. One loopback listener on an
+# ephemeral port; no fixed port.
+add_executable(test_dht_ipc tests/test_dht_ipc.c)
+target_link_libraries(test_dht_ipc nodus dsa nodus)
+add_test(NAME test_dht_ipc COMMAND test_dht_ipc)
+
+# Split S5b fix round F2: frames queued in a 4002 dial's auth queue are
+# re-sent ENCRYPTED, in order, when the channel key is set
+# (nodus_inter_dial_conn_open) — two loopback transports, ephemeral port.
+add_executable(test_inter_pending_replay tests/test_inter_pending_replay.c)
+target_link_libraries(test_inter_pending_replay nodus dsa nodus)
+add_test(NAME test_inter_pending_replay COMMAND test_inter_pending_replay)
 
 # 2026-07-21 parallel-safety: every server-spawning test now uses a FULLY
 # explicit, test-unique port set (test_server 140xx, test_circuit_live
@@ -1594,7 +1703,7 @@ add_test(NAME test_p2p_pex COMMAND test_p2p_pex)
 # time gate with a real p2p peer admitted at go-live, CheckTx through the
 # live mempool, a restart reopening the same role.
 # P2P-PORT F6 — the published network file + the pin-at-start check
-# (nodus_server.c). Only with json-c, which the subject needs.
+# (nodus_witness_network_file.c). Only with json-c, which the subject needs.
 if(JSONC_FOUND)
     register_witness_test(test_network_file)
 endif()
@@ -2607,8 +2716,18 @@ target_compile_options(nodus-circ PRIVATE -Wall -Wextra -Wno-unused-parameter)
 # the SAME compiled DNAC_EPOCH_LENGTH / DNAC_BLOCKS_PER_YEAR /
 # DNAC_DECIMAL_UNIT as the node that will later run the chain, and a
 # second executable is a second place those can differ.
+#
+# Split S3: the command line, the JSON config and the derivation one-shot
+# live in tools/nodus_node_config.c, shared with nodus-witness — one
+# config file, one option set (decision 2026-10-01-nodus-component-split
+# item 18). Split S5b: the witness-side parts of that loader (the 4004 p2p
+# section, the network file, the derivation one-shot) are
+# tools/nodus_node_config_witness.c, linked by nodus-server and
+# nodus-witness only, so nodus-storage links no witness object.
 add_executable(nodus-server
     tools/nodus-server.c
+    tools/nodus_node_config.c
+    tools/nodus_node_config_witness.c
     tools/nodus_v2_gen_config.c)
 target_link_libraries(nodus-server nodus dsa nodus)
 target_compile_options(nodus-server PRIVATE -Wall -Wextra -Wno-unused-parameter)
@@ -2619,6 +2738,106 @@ if(JSONC_FOUND)
     target_include_directories(nodus-server PRIVATE ${JSONC_INCLUDE_DIRS})
     target_link_libraries(nodus-server ${JSONC_LIBRARIES})
 endif()
+
+# Split S3 — the witness as its own process (decision
+# 2026-10-01-nodus-component-split items 5, 10, 11, 19, 22). Same command
+# line and config file as nodus-server; --derive-v2-genesis works here too,
+# compiled with the same chain constants (the reason given above). It must
+# not link the server: test_split_linked checks the symbol table.
+add_executable(nodus-witness
+    tools/nodus-witness.c
+    tools/nodus_node_config.c
+    tools/nodus_node_config_witness.c
+    tools/nodus_v2_gen_config.c)
+target_link_libraries(nodus-witness nodus dsa nodus)
+target_compile_options(nodus-witness PRIVATE -Wall -Wextra -Wno-unused-parameter)
+target_include_directories(nodus-witness PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+if(JSONC_FOUND)
+    target_compile_definitions(nodus-witness PRIVATE NODUS_HAS_JSONC)
+    target_include_directories(nodus-witness PRIVATE ${JSONC_INCLUDE_DIRS})
+    target_link_libraries(nodus-witness ${JSONC_LIBRARIES})
+endif()
+
+# Split S5b — the DHT / storage half as its own process (decision
+# 2026-10-01-nodus-component-split items 7, 10, 16, 19). Same command line
+# and config file as nodus-server (tools/nodus_node_config.c, item 18 —
+# WITHOUT nodus_node_config_witness.c and nodus_v2_gen_config.c: no 4004
+# p2p section, no network file, no derivation one-shot). It must not link
+# the server, auth, cluster, presence or witness: test_storage_linked
+# checks the symbol table.
+add_executable(nodus-storage
+    tools/nodus-storage.c
+    tools/nodus_node_config.c)
+target_link_libraries(nodus-storage nodus dsa nodus)
+target_compile_options(nodus-storage PRIVATE -Wall -Wextra -Wno-unused-parameter)
+target_include_directories(nodus-storage PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+if(JSONC_FOUND)
+    target_compile_definitions(nodus-storage PRIVATE NODUS_HAS_JSONC)
+    target_include_directories(nodus-storage PRIVATE ${JSONC_INCLUDE_DIRS})
+    target_link_libraries(nodus-storage ${JSONC_LIBRARIES})
+endif()
+
+# Split S6 — the core roles as their own process (decision
+# 2026-10-01-nodus-component-split items 2, 3, 4, 6, 9, 10, 12): UDP 4000,
+# TCP 4001 sessions, the 4002 listener, cluster, presence, circuits, the
+# partial-wipe gate, identity creation. Same command line and config file
+# as nodus-server WITHOUT the witness-side parts (like nodus-storage: no
+# nodus_node_config_witness.c, no nodus_v2_gen_config.c). It calls
+# nodus_server_init_ex with the IPC-only constructor table and refuses
+# unless both storage_external and witness_external are set; it must link
+# no in-process DHT or witness object: test_core_linked checks the symbol
+# table.
+add_executable(nodus-core
+    tools/nodus-core.c
+    tools/nodus_node_config.c)
+target_link_libraries(nodus-core nodus dsa nodus)
+target_compile_options(nodus-core PRIVATE -Wall -Wextra -Wno-unused-parameter)
+target_include_directories(nodus-core PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+if(JSONC_FOUND)
+    target_compile_definitions(nodus-core PRIVATE NODUS_HAS_JSONC)
+    target_include_directories(nodus-core PRIVATE ${JSONC_INCLUDE_DIRS})
+    target_link_libraries(nodus-core ${JSONC_LIBRARIES})
+endif()
+
+# Split S5b — LINK GATE for the storage binary (tests/storage_linked.cmake):
+# `nm` on the linked nodus-storage must find no server / auth / cluster /
+# presence / witness entry point and must find the DHT's own, the IPC
+# runtime's and the shared 4002 dialer's.
+add_test(NAME test_storage_linked
+         COMMAND ${CMAKE_COMMAND}
+                 -DNODUS_STORAGE=$<TARGET_FILE:nodus-storage>
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/storage_linked.cmake)
+
+# Split S3 — LINK GATE for the witness binary: `nm` on the linked
+# nodus-witness must find no server/cluster/storage/presence entry point
+# and must find the witness's own (tests/split_linked.cmake).
+add_test(NAME test_split_linked
+         COMMAND ${CMAKE_COMMAND}
+                 -DNODUS_WITNESS=$<TARGET_FILE:nodus-witness>
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/split_linked.cmake)
+
+# Split S6 — LINK GATE for the core binary: `nm` on the linked nodus-core
+# must find no in-process DHT / storage / witness entry point and must find
+# core's own and the two IPC backends' (tests/core_linked.cmake).
+add_test(NAME test_core_linked
+         COMMAND ${CMAKE_COMMAND}
+                 -DNODUS_CORE=$<TARGET_FILE:nodus-core>
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/core_linked.cmake)
+
+# Split S4 — LINK GATE for the DHT / storage half: a never-run probe that
+# references only the core -> DHT entry points (dht/nodus_dht.h), so its
+# linked symbol table is the closure of the DHT objects; `nm` must find no
+# server / auth / presence / cluster entry point in it and must find the
+# DHT's own (tests/dht_linked.cmake).
+add_executable(dht_link_probe tests/dht_link_probe.c)
+target_link_libraries(dht_link_probe nodus dsa nodus crypto)
+add_test(NAME test_dht_linked
+         COMMAND ${CMAKE_COMMAND}
+                 -DDHT_PROBE=$<TARGET_FILE:dht_link_probe>
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/dht_linked.cmake)
 
 # Stake & delegation v1 — stake/committee/timing constants pin
 register_witness_test(test_stake_constants)

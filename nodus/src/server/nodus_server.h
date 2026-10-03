@@ -11,24 +11,27 @@
 #define NODUS_SERVER_H
 
 #include <signal.h>                /* sig_atomic_t — see stop_requested */
+#include <string.h>                /* the static inline config helpers */
 
 #include "nodus/nodus_types.h"
 #include "transport/nodus_tcp.h"
 #include "transport/nodus_udp.h"
-#include "core/nodus_routing.h"
-#include "core/nodus_storage.h"
-#include "core/nodus_media_storage.h"
-#include "channel/nodus_hashring.h"
-#include "channel/nodus_channel_store.h"
+#include "dht/nodus_dht.h"                  /* session slots, DHT types (S4) */
+#include "server/nodus_dht_backend.h"       /* srv->dht */
 #include "channel/nodus_channel_server.h"
 #include "channel/nodus_channel_replication.h"
 #include "channel/nodus_channel_ring.h"
 #include "consensus/nodus_cluster.h"
 #include "crypto/nodus_identity.h"
 #include "crypto/nodus_channel_crypto.h"
-#include "witness/nodus_witness.h"
+#include "witness/nodus_witness.h"          /* nodus_witness_config_t */
 #include "witness/nodus_witness_p2p.h"      /* nodus_p2p_config_t (P2P-PORT F5) */
+#include "witness/nodus_witness_host.h"     /* the witness's host view (S1) */
+#include "witness/nodus_witness_network_file.h" /* nodus_network_file_target_t */
+#include "server/nodus_chain_backend.h"     /* srv->chain */
 #include "server/nodus_presence.h"
+#include "server/nodus_inter_dial.h"       /* the 4002 dialer handshake (S5a) */
+#include "server/nodus_partial_wipe.h"     /* the H-10 boot gate (S5b) */
 #include "circuit/nodus_circuit.h"
 #include "circuit/nodus_inter_circuit.h"
 #include "crypto/nodus_channel_crypto.h"
@@ -38,28 +41,7 @@
 extern "C" {
 #endif
 
-#define NODUS_MAX_SESSIONS     NODUS_TCP_MAX_CONNS
-#define NODUS_MAX_LISTEN_KEYS  128    /* Per session */
 #define NODUS_MAX_SEED_NODES   16
-
-/* ── Listen Forwarding (Scribe pattern) ─────────────────────────── */
-
-#define NODUS_MAX_SUBSCRIPTIONS  4096
-#define NODUS_SUBSCRIPTION_TTL   900     /* 15 min — must be > 2x renewal interval */
-
-typedef struct {
-    bool            active;
-    nodus_key_t     key;                /* DHT key being listened */
-    nodus_key_t     subscriber_node_id; /* Node that has the listener */
-    char            subscriber_ip[64];
-    uint16_t        subscriber_port;    /* TCP 4002 */
-    uint64_t        expires_at;
-} nodus_subscription_t;
-
-typedef struct {
-    nodus_subscription_t entries[NODUS_MAX_SUBSCRIPTIONS];
-    int                  count;
-} nodus_subscription_table_t;
 
 /* ── Configuration ───────────────────────────────────────────────── */
 
@@ -143,12 +125,45 @@ typedef struct {
      * "addr_history_index": true; default OFF. Off = the writers write
      * nothing. It changes no root — the setting may differ per node. */
     bool                addr_history_index;
+
+    /* Component split S3 (decision docs/plans/decisions/2026-10-01-nodus-
+     * component-split.md items 5, 7, 19, 20): the witness runs as its own
+     * process (`nodus-witness`) and this server reaches it over the Unix
+     * socket <data_path>/witness.sock (server/nodus_chain_backend_ipc.c)
+     * instead of starting it in this process. nodus.json
+     * "witness_external": true / `--witness-external`; default false =
+     * the in-process witness, unchanged. When true this server opens no
+     * port 4004 and holds no chain database; the partial-wipe gate and
+     * (nodus-server only — nodus-core's loader applies no network file;
+     * nodus-witness runs that check itself) the network-file pin check
+     * still run here. nodus-witness refuses
+     * to start unless its loaded config has it too
+     * (tools/nodus-witness.c). */
+    bool                witness_external;
+
+    /* Component split S5b (decision docs/plans/decisions/2026-10-01-nodus-
+     * component-split.md items 7, 16, 19, 31, 32): the DHT / storage half
+     * runs as its own process (`nodus-storage`) and this server reaches it
+     * over the Unix socket <data_path>/storage.sock
+     * (server/nodus_dht_backend_ipc.c) instead of opening nodus.db and
+     * channels.db itself. nodus.json "storage_external": true /
+     * `--storage-external` (tools/nodus_node_config.c, beside
+     * witness_external); default false = the in-process DHT,
+     * unchanged. When true this server keeps 4000 / 4001 / 4002, sessions,
+     * cluster, presence and circuits; the partial-wipe gate still runs here
+     * (decision item 9). nodus-storage refuses to start unless its loaded
+     * config has it too (tools/nodus-storage.c). */
+    bool                storage_external;
 } nodus_server_config_t;
 
 /* ── Inter-node session (lightweight — rate limiting only, no auth) ── */
 
 typedef struct {
     nodus_tcp_conn_t   *conn;
+    /* Generation of this session as the DHT's origins name it
+     * (nodus_dht_origin_t): a fresh value from srv->next_session_gen where
+     * conn is set (connect / accept); 0 once cleared. */
+    uint64_t            dht_gen;
 
     /* C-01/C-02: Dilithium5 authentication (same as client sessions) */
     nodus_key_t         client_fp;
@@ -157,11 +172,8 @@ typedef struct {
     bool                nonce_pending;
     bool                authenticated;
 
-    /* Per-session rate limiting */
-    uint64_t            sv_window_start;
-    int                 sv_count;
-    uint64_t            fv_window_start;
-    int                 fv_count;
+    /* Per-session rate limiting (the DHT methods' sv / fv windows are the
+     * DHT's: nodus_dht_inter_session_t) */
     uint64_t            ps_window_start;
     int                 ps_count;
     uint64_t            cr_window_start;
@@ -172,37 +184,24 @@ typedef struct {
     /* Peer protocol version (from hello) */
     uint32_t            proto_version;
 
-    /* Channel encryption (Kyber handshake for inter-node).
-     * B3 fix — channel_crypto storage moved to nodus_tcp_conn_t.
-     * Read via sess->conn->channel_crypto. The pending_* fields stay
-     * here because they're per-handshake-attempt state, not session
-     * state — a new key_init can arrive before the previous handshake
-     * completes, and the conn's channel_crypto only becomes valid on
-     * key_ack/key_init completion. */
-    uint8_t             pending_ss[32];     /* shared secret awaiting key_ack */
-    uint8_t             pending_nc[32];     /* client nonce awaiting key_ack */
-    bool                pending_kyber;
-
-    /* CRIT-1: the auth challenge nonce we received and signed, retained so the
-     * dialer can reconstruct the signed message (kyber_pk || nonce) and verify
-     * the peer's kpk_sig at auth_ok time. Previously the nonce was signed and
-     * immediately discarded, so the binding could not be checked at all. */
-    uint8_t             challenge_nonce[NODUS_NONCE_LEN];
-    bool                has_challenge_nonce;
+    /* The DIALER side of the handshake on a conn we opened (split S5a,
+     * decision item 28: server/nodus_inter_dial.h — challenge nonce, the
+     * pending KEM secret between key_init and key_ack, the proven peer
+     * identity). Channel crypto itself lives on the conn (B3 fix:
+     * sess->conn->channel_crypto). On a dialed conn, `authenticated` above
+     * and dial.authenticated are carried both ways around each call
+     * (dispatch_inter). Unused on an accepted conn. */
+    nodus_inter_dial_t  dial;
 } nodus_inter_session_t;
-
-#define NODUS_MAX_INTER_SESSIONS  NODUS_TCP_MAX_CONNS
 
 /* ── Client session ──────────────────────────────────────────────── */
 
 typedef struct {
     nodus_tcp_conn_t   *conn;
-    /* Occupant generation: a fresh value from srv->next_session_gen at
-     * every accept into this slot (0 while the slot is free). A deferred
-     * reply records (slot, gen) and is sent only while both still match,
-     * so a client accepted into a reused slot never receives a reply to
-     * the previous occupant's request. */
-    uint64_t            gen;
+    /* Generation of this session as the DHT's origins name it
+     * (nodus_dht_origin_t): a fresh value from srv->next_session_gen where
+     * conn is set (accept); 0 once cleared. */
+    uint64_t            dht_gen;
     nodus_key_t         client_fp;
     nodus_pubkey_t      client_pk;
     uint8_t             token[NODUS_SESSION_TOKEN_LEN];
@@ -213,13 +212,8 @@ typedef struct {
     uint8_t             nonce[NODUS_NONCE_LEN];
     bool                nonce_pending;
 
-    /* LISTEN subscriptions (DHT keys) */
-    nodus_key_t         listen_keys[NODUS_MAX_LISTEN_KEYS];
-    int                 listen_count;
-
-    /* Rate limiting */
-    uint64_t            rate_window_start;
-    int                 puts_in_window;
+    /* The session's LISTEN keys and put-rate window are the DHT's
+     * (nodus_dht_session_t, same slot). */
 
     /* Circuit table (VPN mesh Faz 1) */
     nodus_circuit_table_t   circuits;
@@ -231,331 +225,6 @@ typedef struct {
      * B3 fix — channel_crypto storage moved to nodus_tcp_conn_t.
      * Read via sess->conn->channel_crypto. */
 } nodus_session_t;
-
-/* ── Iterative Kademlia FIND_NODE Lookup (UDP) ───────────────────── */
-
-/*
- * DESIGN NOTE: Only FIND_NODE is used. NOT FIND_VALUE.
- *
- * Nodus values are 1.5-6KB+ (Kyber1024 CT + Dilithium5 sig + envelope)
- * which exceed NODUS_MAX_FRAME_UDP (1400 bytes). nodus_udp_send() rejects
- * payloads > 1400 bytes, so most values can't be returned via UDP.
- *
- * Instead: FIND_NODE discovers K-closest nodes (small response, ~200-400B),
- * then BF forward over TCP 4002 fetches the actual value (no size limit).
- *
- * Used by: GET (find nodes → BF forward), PUT (find nodes → STORE),
- *          LISTEN (find nodes → SUBSCRIBE_FWD)
- */
-
-/** States for individual UDP queries within a lookup */
-typedef enum {
-    LOOKUP_QUERY_IDLE,       /**< Slot available */
-    LOOKUP_QUERY_SENT,       /**< UDP sent, waiting for response */
-    LOOKUP_QUERY_DONE        /**< Response received or timed out */
-} lookup_query_state_t;
-
-/** One outgoing UDP query to a peer */
-typedef struct {
-    lookup_query_state_t state;
-    nodus_key_t         node_id;        /**< Peer being queried */
-    char                ip[64];
-    uint16_t            udp_port;
-    uint32_t            txn;            /**< Transaction ID for matching response */
-    uint64_t            sent_at;        /**< For per-query timeout */
-    int                 retries;        /**< 0 = first attempt, 1 = retry */
-} lookup_query_t;
-
-/** One iterative FIND_NODE lookup */
-typedef struct {
-    bool                active;
-    nodus_key_t         target_key;         /**< Key being looked up */
-    uint32_t            client_txn_id;      /**< Client's T2 transaction ID */
-    int                 session_slot;       /**< Client session index (-1 internal) */
-    uint64_t            session_gen;        /**< That session's gen at start */
-    uint64_t            started_at;
-
-    /* Kademlia iterative state */
-    nodus_peer_t        shortlist[NODUS_LOOKUP_MAX_CANDIDATES];
-    int                 shortlist_count;
-    nodus_key_t         queried[NODUS_LOOKUP_MAX_QUERIED];
-    int                 queried_count;
-    nodus_peer_t        closest_k[NODUS_K];      /**< Current K-closest snapshot */
-    nodus_peer_t        prev_closest_k[NODUS_K]; /**< Previous round's K-closest */
-    int                 closest_k_count;
-    int                 stable_rounds;           /**< Rounds with unchanged closest_k */
-
-    /* Active outgoing UDP queries */
-    lookup_query_t      queries[NODUS_ALPHA];
-    int                 queries_pending;
-
-    /* Result: K-closest nodes (populated on convergence or timeout) */
-    nodus_peer_t        result_nodes[NODUS_K];
-    int                 result_node_count;
-
-    /* Callback for async completion */
-    void              (*on_complete)(struct nodus_server *srv,
-                                     nodus_peer_t *closest, int count,
-                                     void *user_data);
-    void               *cb_data;
-    void              (*cb_data_free)(void *);  /**< Cleanup cb_data on shutdown */
-} iterative_lookup_t;
-
-/** All in-flight iterative lookups */
-typedef struct {
-    iterative_lookup_t  lookups[NODUS_LOOKUP_MAX_INFLIGHT];
-    uint32_t            next_txn;       /**< Unique UDP txn IDs (single-threaded, no atomic) */
-} iterative_lookup_state_t;
-
-/* ── Batch forward limits ────────────────────────────────────────── */
-
-#define NODUS_BF_MAX_FORWARDS   8    /* Max concurrent forwards per batch */
-#define NODUS_BF_MAX_BATCHES    4    /* Max concurrent batch requests with forwards */
-#define NODUS_BF_TIMEOUT_MS     5000 /* Per-forward timeout */
-
-/* ── DHT Package A: forwarded-read candidate sets (S1/S3, rev 2) ─── */
-
-/** Signature verifications one forwarded read may spend (rev 2 item 11).
- *  A Dilithium5 verify costs ~0.1-0.2 ms; 1024 bounds one request to
- *  ~0.2 s of CPU. An honest read needs at most the rows it returns: a
- *  2 MiB page holds <= ~270 rows (NODUS_VALUE_SERIALIZED_EST >= ~7.6 KB),
- *  one forward reply <= NODUS_DHT_SRC_MAX_ROWS, and identical copies from
- *  several replicas are verified once. Failed verifies cost at most one per
- *  source (rev 3 R-b: a source whose row fails is discarded). Local rows
- *  (verified at put) are free. When the cap runs out (rev 3 R-a) the walk
- *  goes on and takes every row already settled valid (local rows, rows
- *  verified earlier); only rows still undecided are left out — an unpaged
- *  read skips them (logged), a paged read closes its page before the first
- *  PK with no settled row (more, next = last row kept: the rest comes on
- *  the next page, with a fresh budget). */
-#define NODUS_DHT_VERIFY_CAP    1024
-
-/** At most this many sources per key: the forwards + the local store. */
-#define NODUS_DHT_MAX_SOURCES   (NODUS_BF_MAX_FORWARDS + 1)
-
-/** Rev 3 R-e — unpaged per-source row bound. The originator receives one
- *  forward reply into a buffer of RESP_BUF_SIZE (NODUS_MAX_VALUE_SIZE +
- *  65536, nodus_server.c; bf_start_forward recv_cap), and every forwarded
- *  row that becomes a candidate carries an owner public key and a signature
- *  (R-c), so no honest reply holds more than RESP_BUF_SIZE /
- *  (NODUS_PK_BYTES + NODUS_SIG_BYTES) = 590 rows. Paged reads use the
- *  tighter bound of what the responder's page budget can hold. */
-#define NODUS_DHT_SRC_MAX_ROWS \
-    ((size_t)(NODUS_MAX_VALUE_SIZE + 65536) / (size_t)(NODUS_PK_BYTES + NODUS_SIG_BYTES))
-
-/** Verification state of one candidate row. */
-enum {
-    NODUS_DHT_V_UNKNOWN = 0,   /**< not verified (yet) */
-    NODUS_DHT_V_OK      = 1,   /**< nodus_value_verify passed, or a local row */
-    NODUS_DHT_V_BAD     = 2    /**< nodus_value_verify failed, or every source
-                                *   that sent it was discarded (R-b) */
-};
-
-/** One candidate row of a forwarded read. Every DISTINCT row a source sent
- *  for a (owner_fp, value_id) is kept until the read resolves — a newer
- *  row that later fails verification must not have evicted a valid older
- *  one. Exact copies (everything nodus_value_verify reads equal) are one
- *  candidate with the senders OR-ed into srcs. */
-typedef struct {
-    nodus_value_t *v;
-    uint8_t        hash[32];   /**< SHA3-256(data) (empty → zeros); for local
-                                *   rows the stored data_hash when present */
-    uint8_t        vstate;     /**< NODUS_DHT_V_* */
-    bool           trusted;    /**< a trusted source (the local store) sent it */
-    uint16_t       srcs;       /**< bit s: source id s sent this exact row */
-    uint32_t       order;      /**< arrival order (unpaged replies keep it) */
-} nodus_dht_cand_t;
-
-/** One source of a key: page outcome (paged reads) and bookkeeping. A
- *  source id is assigned by each nodus_dht_keyset_add call. */
-typedef struct {
-    bool              trusted;   /**< the local store */
-    bool              noted;     /**< nodus_dht_keyset_note_page ran for it */
-    bool              more;      /**< the source said rows remain (or R-e cut it) */
-    bool              bounds;    /**< more AND (trusted OR its rows filled
-                                  *   the responder's page budget) */
-    bool              has_last;  /**< last is set */
-    nodus_t2_cursor_t last;      /**< largest PK of its rows that passed the
-                                  *   key / owner / cursor filters */
-} nodus_dht_src_page_t;
-
-/** Every candidate and every source outcome for one key of a read. The
- *  candidates are kept sorted by (PK ASC, rank) at all times (the sorted
- *  dedup index of rev 3 R-e). */
-typedef struct {
-    nodus_dht_cand_t     *c;
-    size_t                n;
-    size_t                cap;
-    uint32_t              next_order;
-    int                   nsrc;                        /**< source ids assigned */
-    uint16_t              tainted;      /**< R-b: bit s = source s sent a row
-                                         *   that failed verification */
-    nodus_dht_src_page_t  src[NODUS_DHT_MAX_SOURCES];
-    int                   peers;        /**< peers this key was to be asked (S6) */
-    int                   answered;     /**< sources that LOOKED (an entry without "u") */
-    bool                  local_fault;  /**< the local store could not be read */
-} nodus_dht_keyset_t;
-
-/** What adding one source's rows to a keyset did. */
-typedef struct {
-    int               src;           /**< source id given to these rows (-1 = none) */
-    size_t            added;         /**< new distinct candidates */
-    size_t            dup;           /**< exact copies of a present candidate (dropped, not verified) */
-    size_t            bad;           /**< dropped: key mismatch / owner filter */
-    size_t            below_cursor;  /**< dropped: PK <= the request cursor */
-    size_t            refused;       /**< R-c: dropped, untrusted row without an
-                                      *   owner public key or a signature */
-    size_t            over_cap;      /**< R-e: dropped, past the source's row cap
-                                      *   (the rows with the LARGEST PKs) */
-    bool              truncated;     /**< over_cap > 0 */
-    size_t            est_bytes;     /**< R-d: sum of NODUS_VALUE_SERIALIZED_EST
-                                      *   over the rows kept from this source
-                                      *   (passed the filters, R-c and R-e) */
-    bool              has_last;      /**< last is set */
-    nodus_t2_cursor_t last;          /**< largest PK among the rows kept */
-} nodus_dht_merge_stats_t;
-
-/** S6: what a read answers once every source has been asked. */
-typedef enum {
-    NODUS_DHT_READ_ROWS        = 0,  /**< rows to return */
-    NODUS_DHT_READ_EMPTY       = 1,  /**< looked, nothing there: empty result */
-    NODUS_DHT_READ_UNAVAILABLE = 2   /**< could not look: NODUS_ERR_UNAVAILABLE */
-} nodus_dht_read_outcome_t;
-
-/* ── Batch forward (get_batch miss → forward to closest peer) ────── */
-
-/** Batch forward connection states */
-enum {
-    BF_CONNECTING      = 0,
-    BF_SEND_HELLO      = 1,
-    BF_RECV_CHALL      = 2,
-    BF_SEND_AUTH       = 3,
-    BF_RECV_AUTHOK     = 4,
-    BF_SEND_KEY_INIT   = 5,
-    BF_RECV_KEY_ACK    = 6,
-    BF_SEND_BATCH      = 7,
-    BF_RECV_RESULT     = 8,
-    BF_DONE            = 9,
-};
-
-/** One outgoing batch forward connection to a peer */
-typedef struct {
-    int         fd;              /**< Non-blocking socket (-1 if unused) */
-    int         state;           /**< BF_CONNECTING..BF_DONE */
-    char        ip[64];
-    uint16_t    port;
-    uint64_t    started_at;
-    uint8_t    *send_buf;        /**< Current send frame (reused for hello/auth/batch) */
-    size_t      send_len;
-    size_t      send_pos;
-    uint8_t    *recv_buf;        /**< Response buffer */
-    size_t      recv_cap;
-    size_t      recv_len;
-    /* Auth state */
-    uint8_t     token[NODUS_SESSION_TOKEN_LEN]; /**< Session token from auth_ok */
-    /* Kyber handshake state */
-    nodus_channel_crypto_t crypto;  /**< AES-256-GCM session (after Kyber handshake) */
-    bool        encrypted;          /**< true after successful Kyber key exchange */
-    uint8_t     pending_ss[32];     /**< Shared secret (cleared after key_ack) */
-    uint8_t     pending_nc[32];     /**< Local nonce (cleared after key_ack) */
-    /* CRIT-1: retained challenge nonce + EXPECTED peer identity, so the
-     * batch-forward dialer can verify the peer's kpk_sig over
-     * (kyber_pk || challenge_nonce) and pin fingerprint(server_pk) against the
-     * FIND_NODE peer it actually dialed, before Kyber-encapsulating to it. */
-    uint8_t     challenge_nonce[NODUS_NONCE_LEN];
-    bool        has_challenge_nonce;
-    nodus_key_t expected_node_id;   /**< the peer bf_start_forward dialed */
-    bool        has_expected_node_id;
-    /* Batch keys (stored for sending after auth) */
-    nodus_key_t *batch_keys;     /**< Keys to query (heap, freed on cleanup) */
-    int         batch_key_count;
-    /* Which keys this forward carries (indices into parent batch) */
-    int        *key_indices;     /**< Array of indices into batch's key array */
-    int         key_count;
-} dht_bf_conn_t;
-
-/** One batch request being forwarded (coordinates multiple forwards) */
-typedef struct {
-    bool            active;
-    uint32_t        txn_id;          /**< Client's transaction ID */
-    int             session_slot;    /**< Client session index */
-    uint64_t        session_gen;     /**< That session's gen at request time */
-    uint64_t        started_at;
-
-    /* All keys in the batch */
-    nodus_key_t    *keys;
-    int             key_count;
-
-    /* Per-key candidates (local + forwarded), resolved when the batch
-     * completes (heap array of key_count). */
-    nodus_dht_keyset_t *sets;
-
-    /* Active forwards */
-    dht_bf_conn_t   forwards[NODUS_BF_MAX_FORWARDS];
-    int             pending_forwards;  /**< Countdown: when 0 → send response */
-
-    bool            is_get_all;        /**< True if this BF serves a get_all request
-                                        *   (1 key, respond with result_multi not batch) */
-    bool            is_single_get;     /**< True if this BF serves a single-value GET
-                                        *   (1 key, respond with `result` (the newest
-                                        *   verified value) or `result_empty`).
-                                        *   Mutually exclusive with is_get_all. */
-
-    /* DHT Package A */
-    bool            has_own;           /**< S2 owner filter (forwarded + re-applied) */
-    nodus_key_t     own;
-    bool            paged;             /**< S3 paged get_all ("pg" or "after") */
-    bool            has_after;
-    nodus_t2_cursor_t after;           /**< S3 request cursor */
-    int             verify_left;       /**< NODUS_DHT_VERIFY_CAP budget left */
-} dht_bf_batch_t;
-
-/** Batch forward state (part of nodus_server_t) */
-typedef struct {
-    dht_bf_batch_t  batches[NODUS_BF_MAX_BATCHES];
-    int             bf_epoll_fd;     /**< Separate epoll for batch forward fds */
-} dht_bf_state_t;
-
-/** bf fd→batch index mapping */
-typedef struct {
-    int batch_idx;
-    int forward_idx;
-} dht_bf_fd_entry_t;
-
-#define NODUS_BF_FD_TABLE_SIZE  256
-
-/** Pending eviction entry for ping-before-evict (Kademlia spec) */
-#define NODUS_MAX_PENDING_EVICTIONS 32
-#define NODUS_EVICT_PING_TIMEOUT    10   /* seconds */
-
-typedef struct {
-    bool          active;
-    nodus_peer_t  new_peer;       /**< Peer wanting to join */
-    nodus_peer_t  lru_peer;       /**< Existing LRU peer being pinged */
-    uint64_t      ping_sent_at;   /**< Unix timestamp of ping */
-} nodus_pending_eviction_t;
-
-/** Republish state (persistent across ticks) */
-typedef struct {
-    nodus_key_t last_key;       /**< Bookmark: last key_hash processed */
-    nodus_key_t last_owner;     /**< Bookmark: last owner_fp (composite tie-break) */
-    uint64_t    last_vid;       /**< Bookmark: last value_id (composite tie-break) */
-    bool        active;         /**< Republish cycle in progress */
-    bool        first_batch;    /**< First batch of cycle (no bookmark yet) */
-    uint64_t    cycle_start;    /**< When current cycle began */
-} dht_republish_state_t;
-
-/** Media republish state (persistent across ticks) */
-typedef struct {
-    uint8_t     last_hash[64];  /**< Bookmark: last content_hash processed */
-    bool        active;         /**< Republish cycle in progress */
-    bool        first_batch;    /**< First batch of cycle (no bookmark yet) */
-    uint64_t    cycle_start;    /**< When current cycle began */
-    /* Per-chunk pacing (one chunk per tick to avoid pending-queue overflow) */
-    nodus_media_meta_t current_meta; /**< Entry currently being drained */
-    uint32_t    chunk_cursor;        /**< Next chunk index to send (0..chunk_count) */
-    bool        has_current;         /**< current_meta is valid */
-} dht_media_republish_state_t;
 
 /* ── Server ──────────────────────────────────────────────────────── */
 
@@ -574,18 +243,26 @@ typedef struct nodus_server {
      * (witness->p2p, nodus_witness_p2p.h). */
     nodus_udp_t             udp;
 
-    /* Storage */
-    nodus_storage_t         storage;
-    nodus_media_storage_t   media_storage;
-    nodus_channel_store_t   ch_store;
-    nodus_routing_t         routing;
-    nodus_hashring_t        ring;
+    /* The DHT / storage half (routing, lookups, replication, nodus.db,
+     * channels.db), behind the DHT backend (split S4,
+     * server/nodus_dht_backend.h). Set by nodus_server_init. */
+    nodus_dht_backend_t    *dht;
 
     /* Consensus */
     nodus_cluster_t         cluster;
 
-    /* Witness module (NULL when disabled) */
-    nodus_witness_t        *witness;
+    /* The witness module, behind the chain backend (NULL when its init
+     * failed — the node runs without consensus) */
+    nodus_chain_backend_t  *chain;
+    /* The partial-wipe marker has been written by this process: at the end
+     * of nodus_server_init, or (split S3 witness_external / S5b
+     * storage_external) by nodus_server_run once the chain is open and the
+     * DHT's databases exist (nodus_server_marker_dbs_ready). Read only in
+     * those two modes. */
+    bool                    genesis_marker_armed;
+    /* S5b: the second the run loop last asked nodus_server_marker_dbs_ready
+     * (it stats two files; once a second at most while waiting). */
+    uint64_t                last_marker_check;
 
     /* Presence tracking (connected clients, cluster-wide) */
     nodus_presence_table_t  presence;
@@ -602,39 +279,13 @@ typedef struct nodus_server {
     /* Sessions (indexed by conn->slot) */
     nodus_session_t         sessions[NODUS_MAX_SESSIONS];
     nodus_inter_session_t   inter_sessions[NODUS_MAX_INTER_SESSIONS];
-    uint64_t                next_session_gen; /* last nodus_session_t.gen handed out */
-
-    /* Iterative Kademlia FIND_NODE lookup engine (UDP-based) */
-    iterative_lookup_state_t lookup_state;
-
-    /* Listen forwarding: Scribe pub/sub subscriptions from remote nodes */
-    nodus_subscription_table_t  subscriptions;
-    uint64_t                    last_sub_cleanup;
-
-    /* Subscription renewal state (rate-limited across ticks) */
-    struct {
-        int      session_idx;    /* Current session being processed */
-        int      key_idx;        /* Current listen_keys index within session */
-        uint64_t last_renewal;   /* Last time renewal cycle started */
-    } sub_renewal;
-
-    /* Batch forward state machine (get_batch miss → forward to closest peer) */
-    dht_bf_state_t          bf_state;
-    dht_bf_fd_entry_t       bf_fd_table[NODUS_BF_FD_TABLE_SIZE];
-
-    /* Periodic republish */
-    dht_republish_state_t   republish;
-    dht_media_republish_state_t media_republish;
-
-    /* Ping-before-evict pending entries */
-    nodus_pending_eviction_t pending_evictions[NODUS_MAX_PENDING_EVICTIONS];
+    /* Last session generation handed out (client and 4002 sessions share
+     * it; only increases — the first is 1). Decision
+     * 2026-10-01-nodus-component-split.md item 29. */
+    uint64_t                next_session_gen;
 
     /* CRIT-4: TCP idle connection sweep (every 30s) */
     uint64_t                last_idle_sweep;
-
-    /* DB maintenance timers */
-    uint64_t                last_wal_checkpoint;
-    uint64_t                last_vacuum;
 
     /* Phase 1 visibility: send diagnostics dump timer */
     uint64_t                last_stats_dump;
@@ -659,132 +310,158 @@ typedef struct nodus_server {
 } nodus_server_t;
 
 /**
+ * Split S6 — the in-process constructors nodus_server_init_ex calls, as a
+ * table (decision docs/plans/decisions/2026-10-01-nodus-component-split.md
+ * items 2, 12). nodus_server.c references no in-process DHT or witness
+ * object by name: nodus-core links the IPC table and nothing pulls
+ * nodus_dht_server.c / nodus_witness.c into it (tests/core_linked.cmake).
+ *
+ *   admit      NULL, or called first with the config: non-zero refuses the
+ *              start (logged by the callee) before anything is opened.
+ *   check_pin  the network file's pin-at-start check
+ *              (nodus_chain_backend_inproc_check_pin), run when
+ *              `has_network_pin`. NULL = this table holds no chain
+ *              database: a set pin refuses the start (logged).
+ *   dht_new /  the in-process DHT, phases one and two
+ *   dht_open   (nodus_dht_backend_inproc_new / _open), used when
+ *              !storage_external. NULL = refuse the start (logged).
+ *   chain_open the in-process witness (nodus_chain_backend_inproc_open),
+ *              used when !witness_external. NULL = refuse the start
+ *              (logged).
+ */
+typedef struct {
+    int (*admit)(const nodus_server_config_t *config);
+    int (*check_pin)(const char *data_path, const uint8_t pin[32]);
+    int (*dht_new)(const nodus_dht_host_t *host, nodus_dht_backend_t **out);
+    int (*dht_open)(nodus_dht_backend_t *b, const char *data_path,
+                    const char *self_ip, uint16_t self_peer_port);
+    int (*chain_open)(const nodus_witness_host_t *host,
+                      const nodus_witness_config_t *config,
+                      nodus_chain_backend_t **out);
+} nodus_server_backends_t;
+
+/** The in-process table (server/nodus_server_backends_inproc.c) —
+ *  nodus-server, and every unit test through nodus_server_init. */
+extern const nodus_server_backends_t nodus_server_backends_inproc;
+
+/** The IPC-only table (server/nodus_server_backends_ipc.c) — nodus-core.
+ *  Its `admit` refuses unless BOTH storage_external and witness_external
+ *  are set; every in-process slot is NULL. */
+extern const nodus_server_backends_t nodus_server_backends_ipc;
+
+/**
  * Initialize server with config. Loads identity, opens storage, binds ports.
+ * = nodus_server_init_ex(srv, config, &nodus_server_backends_inproc);
+ * defined in server/nodus_server_backends_inproc.c.
  */
 int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config);
 
 /**
- * Marker file written by the witness module when the chain DB is first
- * created (nodus_witness_create_chain_db on genesis commit). Its
- * presence under <data_path> means "this node has crossed the genesis
- * boundary at least once" and is the signal that allows the
- * partial-wipe gate below to enforce its strict invariant.
- *
- * Without this marker, the gate cannot distinguish two file-level
- * indistinguishable states:
- *   - fresh node mid-bootstrap (storage opens populated nodus.db +
- *     channels.db before FETCH_GENESIS lands the first witness DB)
- *   - post-genesis node where the operator wiped only witness_*.db
- * Both look like (nodus=Y, channels=Y, witness=N) on disk.
- *
- * The marker is itself wipeable. Threat model: catches operator
- * MISTAKES (rm of one DB by accident), not a determined adversary
- * (who would just wipe everything → fresh state → bootstrap, the
- * intended recovery path).
+ * Split S6 — nodus_server_init with an explicit constructor table `be`
+ * (above). Same contract as nodus_server_init; -1 also when `be` is NULL
+ * or refuses (admit, or a NULL slot the config needs).
  */
-#define NODUS_PARTIAL_WIPE_GENESIS_MARKER  ".witness_db_seen"
+int nodus_server_init_ex(nodus_server_t *srv, const nodus_server_config_t *config,
+                         const nodus_server_backends_t *be);
+
+/* nodus_server_check_partial_wipe (PR 3 / E5, H-10) is declared in
+ * server/nodus_partial_wipe.h, included above — its own object since
+ * split S5b, so nodus-storage links it without this server. */
 
 /**
- * PR 3 / E5 — Partial-wipe XOR check (H-10 mitigation).
- *
- * The 3 SQLite DB files under <data_path> (nodus.db, channels.db,
- * any witness_<hex>.db) MUST be in a consistent state at boot, but
- * the invariant is gated on the genesis marker above:
- *
- *   - marker absent  -> pre-genesis (fresh node or mid-bootstrap),
- *                       any subset of the 3 DBs is allowed; pass
- *   - marker present + all 3 absent  -> someone wiped DBs but left
- *                                       the marker; treat as fresh
- *   - marker present + all 3 present -> normal running, pass
- *   - marker present + 1 or 2 present -> partial wipe, REFUSE START
- *
- * MUST be called BEFORE nodus_storage_open / nodus_channel_store_open
- * — those calls auto-create the missing files and defeat detection.
- *
- * Returns: 0 on consistent state (caller proceeds),
- *         -1 on partial-wipe detected (caller MUST refuse init).
+ * Split S5b — may this server arm the partial-wipe marker now, as far as the
+ * DHT's two databases go? The marker asserts "all three databases are real"
+ * (O16A, nodus_server_init). The in-process DHT has opened nodus.db and
+ * channels.db before the marker is armed, so: true. With
+ * `storage_external` this process opens neither — nodus-storage does, and
+ * may not have yet — so: true only when both files exist under data_path
+ * ("/tmp" when empty), the rule tools/nodus-witness.c (core_dbs_present)
+ * applies from the other side. Reads the file system only (stat).
  */
-int nodus_server_check_partial_wipe(const char *data_path);
+bool nodus_server_marker_dbs_ready(const nodus_server_config_t *cfg);
 
-/* ── P2P-PORT F6 — the published network file ─────────────────────────
+/* ── S1 witness seam ──────────────────────────────────────────────────
  *
- * Decision `docs/plans/decisions/2026-09-26-witness-port-session.md`
- * ("Ağ config dosyası (pin + seed'ler)", "Pin'i tören yazar"); design
- * `docs/plans/2026-09-26-p2p-port-design.md` §4. A JSON object, SEPARATE
- * from the node's own nodus.json, with exactly these keys:
- *
- *   {
- *     "v2_genesis_pin":   "<64 hex>" | "" | absent,
- *     "persistent_peers": ["<id>@<ip>:<port>", ...]  | absent
- *   }
- *
- * Any other key, a pin that is not 0 or 64 hex digits, a peer entry that
- * is not "id@ip:port" with a valid ID and an IP literal (R-P2P-24 /
- * R-P2P-33), a duplicate peer entry, or more than NODUS_P2P_MAX_PEER_LIST
- * peers makes the WHOLE file refused: a typo'd key would otherwise read
- * as "no pin" and silently change what the node does.
- *
- * Pin rules (operator): empty/absent → no join; set + no local chain →
- * join exactly like --v2-genesis-pin; set + local chain → must equal the
- * chain's 32-byte id or the node refuses to start; the offline
- * `--derive-v2-genesis` writes the derived id into an EMPTY pin (a pin
- * already there: equal → nothing written, different → refused, never
- * overwritten). A running node never writes the file.
- *
- * Built only with json-c (NODUS_HAS_JSONC), like nodus-server's own
- * config loader.
+ * Decision docs/plans/decisions/2026-10-01-nodus-component-split.md: the
+ * witness sees this server only through a nodus_witness_host_t
+ * (witness/nodus_witness_host.h), and the server reaches the witness only
+ * through `srv->chain` (server/nodus_chain_backend.h). The network file
+ * and the chain-pin check moved to witness/nodus_witness_network_file.h.
  */
+
+/**
+ * Fill the witness's host view from this server: `identity` points at
+ * `srv->identity`; the config subset is copied from `srv->config` (seq_dir
+ * = identity_path, where the p2p address-record sequence file lives);
+ * `find_session_conn` searches `srv->sessions[]` for an authenticated
+ * session with that client key and session token. nodus_server_init calls
+ * it after loading the identity; a caller that edits `srv->config`
+ * afterwards must fill again.
+ */
+void nodus_server_witness_host(nodus_server_t *srv, nodus_witness_host_t *out);
+
+_Static_assert(sizeof(((nodus_witness_host_config_t *)0)->bind_ip) ==
+               sizeof(((nodus_server_config_t *)0)->bind_ip),
+               "host bind_ip must hold the server's");
+_Static_assert(sizeof(((nodus_witness_host_config_t *)0)->external_ip) ==
+               sizeof(((nodus_server_config_t *)0)->external_ip),
+               "host external_ip must hold the server's");
+_Static_assert(sizeof(((nodus_witness_host_config_t *)0)->data_path) ==
+               sizeof(((nodus_server_config_t *)0)->data_path),
+               "host data_path must hold the server's");
+_Static_assert(sizeof(((nodus_witness_host_config_t *)0)->seq_dir) ==
+               sizeof(((nodus_server_config_t *)0)->identity_path),
+               "host seq_dir must hold the server's identity_path");
+
+/**
+ * The witness's configuration subset, copied from a node config — the ONE
+ * definition both hosts use: nodus_server_witness_host (the combined
+ * binary) and tools/nodus-witness.c (split S3), so the two processes give
+ * the witness byte-identical settings — with ONE exception: seq_dir.
+ * Here seq_dir = identity_path, where the combined binary has always kept
+ * the p2p address-record sequence file. nodus-witness clears it after
+ * this call (seq_dir "" → the witness uses data_path), because only core
+ * writes the identity directory (decision
+ * 2026-10-01-nodus-component-split items 10 and 21).
+ * `static inline` on purpose: the nodus-witness binary must not link
+ * nodus_server.c (test_split_linked).
+ */
+static inline void
+nodus_server_witness_host_config(const nodus_server_config_t *cfg,
+                                 nodus_witness_host_config_t *out) {
+    memset(out, 0, sizeof(*out));
+    memcpy(out->bind_ip, cfg->bind_ip, sizeof(out->bind_ip));
+    memcpy(out->external_ip, cfg->external_ip, sizeof(out->external_ip));
+    out->witness_port = cfg->witness_port;
+    memcpy(out->data_path, cfg->data_path, sizeof(out->data_path));
+    /* The combined binary's address-record sequence file stays where it
+     * has always been: the identity directory (empty → the witness uses
+     * data_path; nodus-witness empties it). */
+    memcpy(out->seq_dir, cfg->identity_path, sizeof(out->seq_dir));
+    out->p2p = cfg->p2p;
+    out->has_v2_genesis_pin = cfg->has_v2_genesis_pin;
+    memcpy(out->v2_genesis_pin, cfg->v2_genesis_pin,
+           sizeof(out->v2_genesis_pin));
+    out->addr_history_index = cfg->addr_history_index;
+}
+
 #ifdef NODUS_HAS_JSONC
-typedef struct {
-    bool    has_pin;
-    uint8_t pin[32];
-    int     n_peers;
-    char    peers[NODUS_P2P_MAX_PEER_LIST][CMT_P2P_NETADDR_STR_MAX];
-} nodus_network_file_t;
-
-/** Parse and validate `path` (rules above). @return 0; -1 refused (the
- *  reason is logged at ERROR). `out` is zeroed first. */
-int nodus_network_file_load(const char *path, nodus_network_file_t *out);
-
-/**
- * Apply a loaded file to a server config: the file's persistent peers are
- * merged into `cfg->p2p` (an entry already present — e.g. from `-s id@` or
- * nodus.json — is not added twice); a file pin arms the joiner
- * (`has_v2_genesis_pin`) and the start check (`has_network_pin`). A file
- * pin that differs from an already-given `--v2-genesis-pin` is refused.
- * @return 0; -1 refused (logged).
- */
-int nodus_network_file_apply(const nodus_network_file_t *nf,
-                             nodus_server_config_t *cfg);
-
-/**
- * The pin-auto write of the genesis ceremony: put `chain32` into the
- * file's EMPTY pin — temp file in the same directory, fsync, rename,
- * directory fsync; every other key kept, in its order.
- * @return 0 written; 1 the file already holds exactly this pin (nothing
- *         written); -1 refused — the file is malformed or holds a
- *         DIFFERENT pin (never overwritten) — or an I/O fault (logged).
- */
-int nodus_network_file_write_pin(const char *path, const uint8_t chain32[32]);
+/** The fields of `cfg` a network file sets (nodus_network_file_apply).
+ *  `static inline` so that tools/nodus_node_config.c (shared by
+ *  nodus-server and nodus-witness) does not pull nodus_server.c into the
+ *  witness binary. */
+static inline nodus_network_file_target_t
+nodus_server_network_file_target(nodus_server_config_t *cfg) {
+    nodus_network_file_target_t t = {
+        .p2p                = &cfg->p2p,
+        .has_v2_genesis_pin = &cfg->has_v2_genesis_pin,
+        .v2_genesis_pin     = cfg->v2_genesis_pin,
+        .has_network_pin    = &cfg->has_network_pin,
+        .network_pin        = cfg->network_pin,
+    };
+    return t;
+}
 #endif /* NODUS_HAS_JSONC */
-
-/**
- * The committed chain id (32 bytes) of the version-3 chain database at
- * `db_path`, read on a read-only handle through
- * nodus_witness_v2_gen_stored_chain_id. @return 0 / -1.
- */
-int nodus_server_read_chain_id(const char *db_path, uint8_t out[32]);
-
-/**
- * P2P-PORT F6 — the pin-at-start check. The chain database the witness
- * will open (nodus_witness_scan_chain_db's selection: the
- * lexicographically smallest canonical `witness_<32 lowercase hex>.db`)
- * must be a readable version-3 chain whose id equals `pin`.
- * @return 0 no chain database present, or it matches;
- *         -1 a chain with a different id, or one whose id cannot be read
- *         (logged at ERROR) — the caller refuses to start.
- */
-int nodus_server_check_chain_pin(const char *data_path, const uint8_t pin[32]);
 
 /**
  * Run the server event loop (blocks until stopped).
@@ -801,20 +478,62 @@ void nodus_server_stop(nodus_server_t *srv);
  */
 void nodus_server_close(nodus_server_t *srv);
 
-/**
- * Replicate a DHT value to K-closest Kademlia peers.
- * Used for channel node announcements and client PUT replication.
+/* ── S4 DHT seam ──────────────────────────────────────────────────────
+ *
+ * Decision 2026-10-01-nodus-component-split.md items 2-4, 16, 17: the DHT
+ * half sees this server only through a nodus_dht_host_t
+ * (dht/nodus_dht.h), and the server reaches the DHT only through
+ * `srv->dht` (server/nodus_dht_backend.h).
  */
-void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val);
 
 /**
- * Replicate a media chunk to K-closest Kademlia peers.
- * Used after storing each chunk from a client upload.
+ * Fill the DHT's host view from this server: `identity` points at
+ * `srv->identity`; send_to_origin writes to `srv->sessions[slot].conn` /
+ * `srv->inter_sessions[slot].conn` when that session's dht_gen equals the
+ * origin's generation (else nothing is sent, -1); udp_send uses `srv->udp`;
+ * inter_send
+ * is the inter-node pool send (`srv->inter_tcp`); hint_wanted asks
+ * `srv->cluster`.
  */
-void nodus_server_replicate_media_chunk(nodus_server_t *srv,
-                                         const nodus_media_meta_t *meta,
-                                         uint32_t chunk_index,
-                                         const uint8_t *data, size_t data_len);
+void nodus_server_dht_host(nodus_server_t *srv, nodus_dht_host_t *out);
+
+/**
+ * Core's outbound 4002 dial — find-or-dial on `srv->inter_tcp`, shared by
+ * every outbound site core has: the DHT host's inter_send (replication,
+ * republish, hinted retry), presence p_sync and circuits (decision
+ * 2026-10-01-nodus-component-split item 30).
+ *
+ * Find (nodus_server_inter_find): with `expected_node_id` NULL, the first
+ * pool entry for ip:port is returned as it is, whatever it is (unchanged
+ * behaviour). With a node_id, a pooled conn is returned only if WE dialed
+ * it (auth_initiated_by_us) and its identity is that node_id — its
+ * expected_peer_id (the pin recorded at dial) and/or its proven peer_id
+ * (set after auth_ok passed the pin) equal it, and neither, when set,
+ * differs. An accepted (inbound) conn, a dial pinned to another node_id,
+ * a conn proven for another node_id, or an unpinned dial is NOT reused:
+ * a fresh conn is dialed beside it (the pool allows several conns to one
+ * ip:port; the transport has no duplicate check). A pooled conn is never
+ * re-pinned.
+ *
+ * Dial: a new connection is opened, marked is_nodus, and — when
+ * `expected_node_id` is non-NULL — that identity is recorded as
+ * conn->expected_peer_id: the dialer's auth_ok handler pins
+ * fingerprint(server_pk) against it and refuses a connection without one
+ * (CRIT-1).
+ *
+ * @return the connection, or NULL if the dial could not be started.
+ */
+nodus_tcp_conn_t *nodus_server_inter_dial(nodus_server_t *srv, const char *ip,
+                                          uint16_t port,
+                                          const nodus_key_t *expected_node_id);
+
+/**
+ * The find half of nodus_server_inter_dial (the match rule above), without
+ * dialing. NULL when no pooled conn qualifies.
+ */
+nodus_tcp_conn_t *nodus_server_inter_find(nodus_server_t *srv, const char *ip,
+                                          uint16_t port,
+                                          const nodus_key_t *expected_node_id);
 
 /* ── Auth helpers (used by server) ───────────────────────────────── */
 
@@ -853,224 +572,11 @@ int nodus_auth_handle_key_init_alg(nodus_server_t *srv, nodus_session_t *sess,
                                     uint32_t txn_id);
 
 /* ════════════════════════════════════════════════════════════════════
- * INTERNAL — DHT Package A helpers. Exposed ONLY so unit tests can drive
- * them in-process (tests/test_bf_merge_pure.c, test_get_all_paging.c,
- * test_get_unavailable.c, test_inter_circuit_uaf.c,
- * test_inter_preauth_gate.c, test_bf_forward_frames.c,
- * test_inter_role_split.c, test_bf_recv_frame.c). Not an API: no other module calls these.
+ * INTERNAL — exposed ONLY so unit tests can drive them in-process
+ * (tests/test_inter_circuit_uaf.c, test_inter_preauth_gate.c,
+ * test_bf_forward_frames.c, test_inter_role_split.c). Not an API: no other
+ * module calls these. The DHT Package A helpers are in dht/nodus_dht.h.
  * ════════════════════════════════════════════════════════════════════ */
-
-/** Primary-key order of nodus_values: owner_fp bytewise, then value_id
- *  compared as SIGNED int64 (SQLite INTEGER) — nodus_storage_get_all_page.
- *  @return <0, 0, >0 */
-int nodus_dht_pk_cmp(const nodus_key_t *a_owner, uint64_t a_vid,
-                     const nodus_key_t *b_owner, uint64_t b_vid);
-
-/** The replica predicate (nodus_storage.c PUT_IF_NEWER_SQL): 1 when `in`
- *  replaces `ex` — (int64)seq greater, or seq equal and SHA3-256(data)
- *  greater (empty data = 32 zero bytes). 0 otherwise (incl. identical). */
-int nodus_dht_value_newer(const nodus_value_t *in, const nodus_value_t *ex);
-
-/** Free every candidate of a keyset (the candidate list is emptied; the
- *  source bookkeeping, peers, answered and local_fault stay). */
-void nodus_dht_keyset_clear(nodus_dht_keyset_t *ks);
-
-/**
- * S1 + F6, rev 2 item 11, rev 3 R-b/R-c/R-e/R-f/R-g: add one source's rows
- * for `key` to a keyset. Each call is ONE source and gets the next source
- * id (stats->src); at most NODUS_DHT_MAX_SOURCES per keyset.
- *
- * A src row is dropped (counted bad) when its key_hash != key or `own` is
- * set and its owner_fp != own; dropped (below_cursor) when `after` is set
- * and its PK <= after; dropped (refused, R-c) when the source is untrusted
- * and the row carries no owner public key or no signature (all-zero
- * owner_pk / signature: what nodus_value_deserialize leaves when "owner" /
- * "sig" is absent or not the exact length). When more than max_rows rows
- * pass (max_rows 0 = no cap), only the max_rows with the SMALLEST PKs are
- * kept (R-e; deterministic, and a page is filled from the low end) and the
- * source is marked truncated (its page note then says more and bounds).
- *
- * A row that is an EXACT copy of a present candidate — same PK, seq,
- * type, ttl, SHA3-256(data), signature and owner_pk, i.e. everything
- * nodus_value_verify reads — is collapsed into it as dup without being
- * verified (its sender is added to the candidate's srcs). Of exact copies
- * the one whose created_at / expires_at stand is (R-f) the trusted copy
- * when there is one (created_at is not signed: a forwarding peer must not
- * age a row this node holds), else the copy with the smallest created_at —
- * independent of arrival order. Every other row becomes a candidate;
- * NOTHING is verified here. `trusted` marks the rows verified already (the
- * local store: verified at put).
- *
- * The candidates stay sorted by (PK, rank): this source's rows are sorted
- * and merged in, O((n + m) + m log m) per source — no pairwise scan.
- *
- * hashes (may be NULL, R-g): the stored data_hash of each src row (the
- * local store's page read); a row whose hash is not present is hashed.
- *
- * Ownership: a row taken in is NULLed in src (a trusted copy replacing an
- * equal untrusted candidate hands the replaced object back in its place);
- * the caller frees what src holds afterwards.
- * stats (may be NULL): counts, src id, est_bytes and last over the rows kept.
- * @return 0, or -1 on allocation failure or a source past
- *         NODUS_DHT_MAX_SOURCES (keyset unchanged; rows left in src).
- */
-int nodus_dht_keyset_add_ex(nodus_dht_keyset_t *ks,
-                            nodus_value_t **src, size_t src_count,
-                            const nodus_key_t *key, const nodus_key_t *own,
-                            const nodus_t2_cursor_t *after, bool trusted,
-                            size_t max_rows,
-                            const nodus_storage_data_hash_t *hashes,
-                            nodus_dht_merge_stats_t *stats);
-
-/** nodus_dht_keyset_add_ex with no stored hashes and the default row cap:
- *  none for a trusted source (the local store bounds its own reads),
- *  NODUS_DHT_SRC_MAX_ROWS for an untrusted one. */
-int nodus_dht_keyset_add(nodus_dht_keyset_t *ks,
-                         nodus_value_t **src, size_t src_count,
-                         const nodus_key_t *key, const nodus_key_t *own,
-                         const nodus_t2_cursor_t *after, bool trusted,
-                         nodus_dht_merge_stats_t *stats);
-
-/**
- * S3, rev 2 item 12, rev 3 R-d: record the page outcome of the source
- * stats->src. A more=true source BOUNDS the page (rows past its last PK
- * may interleave with rows it has not sent) only when it is trusted (the
- * local store) or its rows filled a page:
- *   - nx given (the responder named the size of the row it stopped on):
- *     est_bytes + *nx > responder_budget — exactly the responder's own
- *     stop rule (nodus_storage_get_all_page), so an honest source that
- *     stopped on a LARGE next row bounds the page and none of its rows is
- *     skipped;
- *   - no nx (a peer that predates it): est_bytes +
- *     NODUS_VALUE_SERIALIZED_EST(0) > responder_budget — not even one more
- *     zero-byte row would have fit;
- *   - a source cut by its row cap (stats->truncated) bounds, more forced.
- * A source answering one small row with more=true therefore cannot hold
- * the page to that row. A source discarded under R-b loses its note at
- * resolution.
- */
-void nodus_dht_keyset_note_page(nodus_dht_keyset_t *ks, bool more, bool trusted,
-                                size_t responder_budget, const uint64_t *nx,
-                                const nodus_dht_merge_stats_t *stats);
-
-/**
- * Resolve a keyset into the rows a reply carries; ownership of the rows
- * moves to *rows_out (heap array, NULL when empty), every other candidate
- * is freed and the candidate list emptied.
- *
- * Candidates are grouped by PK; within a group they are tried in rank
- * order (seq DESC signed, SHA3-256(data) DESC, then type, ttl, signature,
- * owner_pk bytes — a total order) and the first that verifies (or is a
- * local row) is the group's row; a group with none is dropped. Each verify
- * spends one unit of *verify_left.
- *
- * R-b: the first failed verify of a row discards every source that sent
- * it — their still-undecided candidates are dropped without a verify
- * (unless another, not discarded source sent the same exact row) and their
- * page notes no longer count (bound, more). Rows already settled valid stay.
- *
- * R-a: with the budget spent the walk goes on; within a group a candidate
- * still undecided is passed over and the best already-valid one taken
- * (local rows are always valid, so a local row is never dropped); a group
- * with no valid candidate and an undecided one is "undecided".
- *
- * Paged (S3): groups in PK order; the bound is the smallest last PK of a
- * bounding, not discarded source (nodus_dht_keyset_note_page) whose group
- * resolves to a valid row — a bound at a PK with no valid row is discarded
- * and the next one taken. Exception (R-a): a bound PK left undecided by the
- * budget is KEPT as the bound (conservative: a smaller page, never a
- * skipped row). Rows past the bound are cut; rows are added while the
- * cumulative NODUS_VALUE_SERIALIZED_EST stays <= budget (the first row
- * always). A failed verify drops only that candidate (and R-b) and the
- * walk continues. The page closes before the first undecided group (the
- * cursor must not pass a row nobody could check). page_out: more = a row
- * was cut, the page closed undecided, or any not-discarded source said more
- * — and only when the page is not empty; next = last kept PK.
- *
- * Unpaged: every group is resolved; undecided groups are skipped; rows are
- * returned in the order their PK first arrived (local rows first, then
- * forwarded), the order these replies had before Package A. page_out may
- * be NULL.
- * *capped_out (may be NULL): the verify budget ran out with a group the
- * walk needed still undecided — with no row out, the read could not look.
- * @return 0, or -1 on allocation failure (candidates freed, nothing out).
- */
-int nodus_dht_keyset_resolve(nodus_dht_keyset_t *ks, bool paged, size_t budget,
-                             int *verify_left,
-                             nodus_value_t ***rows_out, size_t *count_out,
-                             nodus_t2_page_info_t *page_out, bool *capped_out);
-
-/** Single-GET rank: 1 when cand ranks above best. Order: (exclusive_first:
- *  EXCLUSIVE type first), seq DESC (signed), SHA3-256(data) DESC, owner_fp
- *  ASC, value_id ASC (signed). best == NULL → 1. */
-int nodus_dht_single_better(const nodus_value_t *cand, const nodus_value_t *best,
-                            bool exclusive_first);
-
-/** S1 single GET: the best-ranked candidate (nodus_dht_single_better, ties
- *  broken by type, ttl, signature, owner_pk bytes) that verifies (or is a
- *  local row), trying candidates in rank order and spending *verify_left
- *  (R-b discards apply as in nodus_dht_keyset_resolve). R-a: with the
- *  budget spent, undecided candidates are passed over and the best
- *  already-valid one (e.g. the local row) is returned.
- *  Ownership of the returned value moves to the caller; every other
- *  candidate is freed and the keyset emptied. NULL when none qualifies.
- *  *capped_out (may be NULL): an undecided candidate was passed over for
- *  lack of budget — with NULL returned, the read could not look. */
-nodus_value_t *nodus_dht_keyset_pick_best(nodus_dht_keyset_t *ks,
-                                          bool exclusive_first, int *verify_left,
-                                          bool *capped_out);
-
-/** S6, rev 2 item 13: rows > 0 → ROWS; answered > 0 → EMPTY (some source
- *  looked and found nothing); peers == 0 and the local store was read →
- *  EMPTY (nobody else holds the key: single-node truth); anything else →
- *  UNAVAILABLE (a local fault with no other answer, or peers to ask and
- *  none answered: no slot, alloc failure, every forward failed / timed out
- *  / answered "u"). */
-nodus_dht_read_outcome_t nodus_dht_read_outcome(size_t rows, int peers,
-                                                int answered, bool local_fault);
-
-/** Set up an idle batch slot for `n` keys (copied): zeroes it, forwards fd
- *  -1, allocates keys + one empty keyset per key, verify_left =
- *  NODUS_DHT_VERIFY_CAP, active. @return 0, -1 on alloc failure (slot
- *  left idle and zeroed). */
-int nodus_server_bf_batch_setup(dht_bf_batch_t *b, const nodus_key_t *keys, int n);
-
-/** Free everything a batch slot holds (forward sockets, keysets) and make
- *  it idle. */
-void nodus_server_bf_batch_cleanup(nodus_server_t *srv, dht_bf_batch_t *b);
-
-/**
- * Absorb one decrypted 4002 reply payload (T2 CBOR) of forward `c` into
- * batch `b`: each "batch" entry is matched to a key THIS forward asked for
- * by key AND position among identical keys (rev 2 item 16); an entry with
- * "u" counts as not looked (item 13/15); otherwise the key gains one
- * answered source, its rows go through nodus_dht_keyset_add_ex (+ the page
- * note for paged reads, responder budget NODUS_GET_ALL_PAGE_MAX_BYTES /
- * the forward's key count — the responder's own split — and the entry's
- * "nx" when sent). Row cap per source (R-e): paged, what the responder
- * budget can hold (budget / NODUS_VALUE_SERIALIZED_EST(0) + 1, the first
- * row always); unpaged, NODUS_DHT_SRC_MAX_ROWS.
- * @return 0 when the payload was a batch result, -1 otherwise (nothing
- *         absorbed: an error frame, garbage).
- */
-int nodus_server_bf_absorb_reply(dht_bf_batch_t *b, const dht_bf_conn_t *c,
-                                 const uint8_t *payload, size_t len);
-
-/** A3: header check of the batch-forward receive buffer (bf_recv_frame).
- *  Parses the frame header with the transport's decoder (nodus_frame_decode:
- *  magic, little-endian length) and nodus_frame_validate (version, TCP
- *  size limit). @return 1 when buf holds a complete frame, 0 when more bytes
- *  are needed, -1 on bad magic / version / size, or when the declared frame
- *  (header + payload) is larger than `cap` — the receive buffer could never
- *  hold it. */
-int nodus_server_bf_frame_status(const uint8_t *buf, size_t len, size_t cap);
-
-/** Resolve batch `b` and encode the frame its client gets (result /
- *  result_empty / result_multi / result_page / result batch with "u"
- *  markers / UNAVAILABLE error) into buf. Keysets are consumed. bf_send_result
- *  sends exactly this frame. @return 0, -1 on encode failure. */
-int nodus_server_bf_encode_result(dht_bf_batch_t *b, uint8_t *buf, size_t cap,
-                                  size_t *len_out);
 
 /** F1: a 4002 conn is going away — close every inter-circuit routed over
  *  it, tell the attached local client (circ_open_err while the open is
@@ -1094,24 +600,14 @@ void nodus_server_dispatch_inter_frame(nodus_server_t *srv,
  *  release + inter session clear), for in-process tests. */
 void nodus_server_inter_disconnected(nodus_server_t *srv, nodus_tcp_conn_t *conn);
 
-/** The client session in `slot` if it is still the occupant a deferred
- *  reply was recorded for: in range, connected, and its gen equal to
- *  `gen`. @return the session, or NULL (gone, or the slot was reused). */
-nodus_session_t *nodus_server_session_if_same(nodus_server_t *srv, int slot,
-                                              uint64_t gen);
-
-/** The body of the 4001 transport's on_accept callback (session cleared,
- *  bound to conn, a fresh gen assigned), for in-process tests. */
-void nodus_server_client_accepted(nodus_server_t *srv, nodus_tcp_conn_t *conn);
-
-/** The body of the 4001 transport's on_disconnect callback (circuits torn
- *  down, session cleared), for in-process tests. */
-void nodus_server_client_disconnected(nodus_server_t *srv, nodus_tcp_conn_t *conn);
-
-/** Send batch `b`'s reply to its client — only if the recorded
- *  (session_slot, session_gen) is still the occupant — and clean the
- *  batch up either way (bf_send_result), for in-process tests. */
-void nodus_server_bf_send_result(nodus_server_t *srv, dht_bf_batch_t *b);
+/** The 4002 transport's pending-full hook (`ctx` = the server): a frame to
+ *  an authenticated cluster member that neither wbuf nor the pending queue
+ *  could take is parked in the DHT hint table ONLY if it is a DHT
+ *  replication frame (T1 "sv" / T2 "m_sv" query); anything else is dropped
+ *  with a log line (split S5a, decision item 33). For in-process tests. */
+void nodus_server_on_pending_full(nodus_tcp_conn_t *conn,
+                                  const uint8_t *payload, size_t len,
+                                  void *ctx);
 
 #ifdef __cplusplus
 }

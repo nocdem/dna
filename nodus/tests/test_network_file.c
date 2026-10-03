@@ -3,9 +3,11 @@
  *
  * Decision docs/plans/decisions/2026-09-26-witness-port-session.md
  * ("Ağ config dosyası (pin + seed'ler)", "Pin'i tören yazar"); design
- * docs/plans/2026-09-26-p2p-port-design.md §4. Subject: nodus_server.c
- * nodus_network_file_load / _apply / _write_pin and
- * nodus_server_check_chain_pin (nodus_server.h).
+ * docs/plans/2026-09-26-p2p-port-design.md §4. Subject:
+ * nodus_witness_network_file.c nodus_network_file_load / _apply /
+ * _write_pin and nodus_witness_check_chain_pin
+ * (nodus_witness_network_file.h); _apply through the server's view of its
+ * config (nodus_server_network_file_target, nodus_server.h).
  *
  * ── WHAT IT PROVES ─────────────────────────────────────────────────────
  *  1. load: a valid file yields its pin and its peers in file order; an
@@ -241,6 +243,9 @@ static int t_apply(void) {
     uint8_t pin1[32], pin2[32];
 
     CHECK(cfg != NULL, "alloc");
+    /* the server's view of the fields a network file sets; the cases
+     * below re-zero *cfg in place, so this one view stays valid */
+    nodus_network_file_target_t t = nodus_server_network_file_target(cfg);
     hex_to32(PIN1, pin1);
     hex_to32(PIN2, pin2);
 
@@ -251,7 +256,7 @@ static int t_apply(void) {
     snprintf(nf.peers[1], sizeof(nf.peers[1]), "%s", PEER_B);
     nodus_p2p_config_default(&cfg->p2p);
     CHECK(nodus_p2p_config_add_persistent(&cfg->p2p, PEER_A) == 0, "seed");
-    CHECK(nodus_network_file_apply(&nf, cfg) == 0, "apply, no pin");
+    CHECK(nodus_network_file_apply(&nf, &t) == 0, "apply, no pin");
     CHECK(cfg->p2p.n_persistent_peers == 2 &&
           strcmp(cfg->p2p.persistent_peers[0], PEER_A) == 0 &&
           strcmp(cfg->p2p.persistent_peers[1], PEER_B) == 0,
@@ -264,7 +269,7 @@ static int t_apply(void) {
     nodus_p2p_config_default(&cfg->p2p);
     cfg->has_v2_genesis_pin = true;
     memcpy(cfg->v2_genesis_pin, pin2, 32);
-    CHECK(nodus_network_file_apply(&nf, cfg) == 0, "apply over a CLI pin");
+    CHECK(nodus_network_file_apply(&nf, &t) == 0, "apply over a CLI pin");
     CHECK(cfg->has_v2_genesis_pin &&
           memcmp(cfg->v2_genesis_pin, pin2, 32) == 0 &&
           !cfg->has_network_pin,
@@ -275,7 +280,7 @@ static int t_apply(void) {
     nodus_p2p_config_default(&cfg->p2p);
     nf.has_pin = true;
     memcpy(nf.pin, pin1, 32);
-    CHECK(nodus_network_file_apply(&nf, cfg) == 0, "apply with a pin");
+    CHECK(nodus_network_file_apply(&nf, &t) == 0, "apply with a pin");
     CHECK(cfg->has_v2_genesis_pin && cfg->has_network_pin &&
           memcmp(cfg->v2_genesis_pin, pin1, 32) == 0 &&
           memcmp(cfg->network_pin, pin1, 32) == 0,
@@ -286,13 +291,13 @@ static int t_apply(void) {
     nodus_p2p_config_default(&cfg->p2p);
     cfg->has_v2_genesis_pin = true;
     memcpy(cfg->v2_genesis_pin, pin1, 32);
-    CHECK(nodus_network_file_apply(&nf, cfg) == 0 && cfg->has_network_pin,
+    CHECK(nodus_network_file_apply(&nf, &t) == 0 && cfg->has_network_pin,
           "the same pin on both sides is accepted");
     memset(cfg, 0, sizeof(*cfg));
     nodus_p2p_config_default(&cfg->p2p);
     cfg->has_v2_genesis_pin = true;
     memcpy(cfg->v2_genesis_pin, pin2, 32);
-    CHECK(nodus_network_file_apply(&nf, cfg) == -1,
+    CHECK(nodus_network_file_apply(&nf, &t) == -1,
           "--v2-genesis-pin and the file's pin must agree");
 
     /* a full list refuses rather than drops */
@@ -304,7 +309,7 @@ static int t_apply(void) {
         CHECK(nodus_p2p_config_add_persistent(&cfg->p2p, s) == 0, "fill");
     }
     nf.has_pin = false;
-    CHECK(nodus_network_file_apply(&nf, cfg) == -1,
+    CHECK(nodus_network_file_apply(&nf, &t) == -1,
           "a merge that does not fit is refused, not silently dropped");
 
     free(cfg);
@@ -417,10 +422,10 @@ static int t_check_chain_pin(void) {
 
     snprintf(sub, sizeof(sub), "%s/empty", g_dir);
     CHECK(mkdir(sub, 0700) == 0, "mkdir");
-    CHECK(nodus_server_check_chain_pin(sub, pin2) == 0,
+    CHECK(nodus_witness_check_chain_pin(sub, pin2) == 0,
           "no chain database: the pin is a joiner's, nothing to compare");
     snprintf(sub, sizeof(sub), "%s/absent", g_dir);
-    CHECK(nodus_server_check_chain_pin(sub, pin2) == 0,
+    CHECK(nodus_witness_check_chain_pin(sub, pin2) == 0,
           "no data directory: no chain");
 
     CHECK(v2x_chain_open(&c, "netfile", 0x21) == 0,
@@ -429,8 +434,8 @@ static int t_check_chain_pin(void) {
     sqlite3_close(c.w->db);
     c.w->db = NULL;
     {
-        int eq  = nodus_server_check_chain_pin(c.dir, c.chain32);
-        int neq = nodus_server_check_chain_pin(c.dir, pin2);
+        int eq  = nodus_witness_check_chain_pin(c.dir, c.chain32);
+        int neq = nodus_witness_check_chain_pin(c.dir, pin2);
         uint8_t id[32];
         int rd = -1;
         DIR *d = opendir(c.dir);
@@ -441,7 +446,7 @@ static int t_check_chain_pin(void) {
                 strcmp(e->d_name + l - 3, ".db") == 0) {
                 char dp[400];
                 snprintf(dp, sizeof(dp), "%s/%s", c.dir, e->d_name);
-                rd = nodus_server_read_chain_id(dp, id);
+                rd = nodus_witness_read_chain_id(dp, id);
                 break;
             }
         }
@@ -451,15 +456,15 @@ static int t_check_chain_pin(void) {
          * and is not judged by the start check either */
         snprintf(junk, sizeof(junk), "%s/witness_00ff.db", c.dir);
         int wj1 = write_text(junk, "not a database");
-        int ign = nodus_server_check_chain_pin(c.dir, c.chain32);
+        int ign = nodus_witness_check_chain_pin(c.dir, c.chain32);
         /* a CANONICAL name that sorts first IS the file the scan opens
          * (lexicographically smallest) — unreadable, so refused */
         snprintf(junk, sizeof(junk),
                  "%s/witness_00000000000000000000000000000000.db", c.dir);
         int wj2 = write_text(junk, "not a database");
-        int bad = nodus_server_check_chain_pin(c.dir, c.chain32);
+        int bad = nodus_witness_check_chain_pin(c.dir, c.chain32);
         v2x_chain_close(&c);
-        CHECK(rd_ok, "nodus_server_read_chain_id reads the derived id");
+        CHECK(rd_ok, "nodus_witness_read_chain_id reads the derived id");
         CHECK(eq == 0, "the chain's own id passes");
         CHECK(neq == -1, "a different pin refuses the start");
         CHECK(wj1 == 0 && wj2 == 0, "write junk");

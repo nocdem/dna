@@ -270,6 +270,7 @@ static int cfg_make_v3_real(cfgbox_t *b)
 typedef struct {
     nodus_witness_t *w;
     nodus_server_t  *srv;
+    nodus_witness_host_t host;              /* w->host, filled from srv */
     cfgbox_t         box;
     char             dir[128];
     uint8_t          chain32[32];
@@ -312,7 +313,8 @@ static int gfx_open(gfx_t *g, const char *tag, bool flag_on)
     memcpy(g->srv->identity.sk.bytes, g_ks[0].sk, QGP_DSA87_SECRETKEYBYTES);
     memcpy(g->srv->identity.node_id.bytes, g_ks[0].voter, 32);
     g->srv->config.addr_history_index = flag_on;
-    g->w->server = g->srv;
+    nodus_server_witness_host(g->srv, &g->host);
+    g->w->host = &g->host;
     memcpy(g->w->my_id, g_ks[0].voter, 32);
     return nodus_witness_addr_index_migrate(g->w);
 }

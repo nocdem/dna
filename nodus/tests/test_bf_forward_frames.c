@@ -2,14 +2,15 @@
  * Nodus — DHT Package A rev 2 item 17: the forwarded-read path driven with
  * CRAFTED 4002 reply frames, asserting the frame its client gets.
  *
- * In-process: a batch slot set up with nodus_server_bf_batch_setup, one
+ * In-process: a batch slot set up with nodus_dht_bf_batch_setup, one
  * fake forward (dht_bf_conn_t, no socket) per answering peer, reply frames
  * built with nodus_t2_result_get_batch_ex and fed to
- * nodus_server_bf_absorb_reply (exactly what bf_handle_event feeds after
- * decryption), the client frame produced by nodus_server_bf_encode_result
+ * nodus_dht_bf_absorb_reply (exactly what bf_handle_event feeds after
+ * decryption), the client frame produced by nodus_dht_bf_encode_result
  * (exactly what bf_send_result sends) and decoded with nodus_t2_decode.
  * The responder side runs through nodus_server_dispatch_inter_frame on a
- * calloc'd server with a real (fixture) store; its reply is read back from
+ * calloc'd server with the in-process DHT attached (split S4) and a real
+ * (fixture) store, the 4002 session in slot 0; its reply is read back from
  * the fake conn's write buffer (fd -1: the bytes stay in wbuf).
  *
  * Pins down:
@@ -103,25 +104,49 @@ static int feed(const nodus_key_t *keys, int n, nodus_value_t ***vals,
     if (nodus_t2_result_get_batch_ex(77, keys, n, vals, counts, pages, unavail,
                                      reply_buf, sizeof(reply_buf), &len) != 0)
         return -1;
-    return nodus_server_bf_absorb_reply(&B, &C, reply_buf, len);
+    return nodus_dht_bf_absorb_reply(&B, &C, reply_buf, len);
 }
 
 /* What the client gets. */
 static int client_reply(nodus_tier2_msg_t *m) {
     size_t len = 0;
     memset(m, 0, sizeof(*m));
-    if (nodus_server_bf_encode_result(&B, client_buf, sizeof(client_buf), &len) != 0)
+    if (nodus_dht_bf_encode_result(&B, client_buf, sizeof(client_buf), &len) != 0)
         return -1;
     return nodus_t2_decode(client_buf, len, m);
 }
 
 static int setup(const nodus_key_t *keys, int n) {
-    if (nodus_server_bf_batch_setup(&B, keys, n) != 0) return -1;
+    if (nodus_dht_bf_batch_setup(&B, keys, n) != 0) return -1;
     B.txn_id = 9;
     return 0;
 }
 
-static void done(void) { nodus_server_bf_batch_cleanup(NULL, &B); }
+static void done(void) { nodus_dht_bf_batch_cleanup(NULL, &B); }
+
+/* The responder: a calloc'd server with the in-process DHT attached (its
+ * phase one only — the test opens the store itself) and one authenticated
+ * 4002 session in slot 0 on `conn`: the DHT answers origin (INTER, 0),
+ * which the server writes to inter_sessions[0].conn. */
+static nodus_server_t *responder_new(nodus_tcp_conn_t *conn) {
+    nodus_server_t *srv = calloc(1, sizeof(*srv));
+    if (!srv) return NULL;
+    nodus_dht_host_t host;
+    nodus_server_dht_host(srv, &host);
+    if (nodus_dht_backend_inproc_new(&host, &srv->dht) != 0) {
+        free(srv);
+        return NULL;
+    }
+    srv->inter_sessions[0].conn = conn;
+    srv->inter_sessions[0].authenticated = true;
+    return srv;
+}
+
+static void responder_free(nodus_server_t *srv) {
+    if (!srv) return;
+    srv->dht->ops->close(srv->dht);
+    free(srv);
+}
 
 static void test_forged_newer_frames(void) {
     TEST("item 11: forged newer from one peer, valid older from another");
@@ -355,24 +380,22 @@ static int break_stmt(nodus_storage_t *st, sqlite3_stmt **slot) {
 
 static void test_storage_fault(void) {
     TEST("items 13/15: responder fault → \"u\"; originator → UNAVAILABLE");
-    nodus_server_t *srv = calloc(1, sizeof(*srv));
     nodus_tcp_conn_t *conn = calloc(1, sizeof(*conn));
-    nodus_inter_session_t sess;
+    nodus_server_t *srv = conn ? responder_new(conn) : NULL;
+    nodus_dht_t *dht = NULL;
     nodus_tier2_msg_t m;
     memset(&m, 0, sizeof(m));
     bool opened = false;
     CHECK(srv && conn, "alloc");
-    test_storage_open(&srv->storage);
+    dht = nodus_dht_backend_inproc_state(srv->dht);
+    test_storage_open(&dht->storage);
     opened = true;
-    CHECK(break_stmt(&srv->storage, &srv->storage.stmt_get_all_page) == 0, "break");
+    CHECK(break_stmt(&dht->storage, &dht->storage.stmt_get_all_page) == 0, "break");
     srv->config.require_peer_auth = false;     /* isolate the responder */
     conn->fd = -1;
-    conn->slot = -1;
+    conn->slot = 0;                            /* inter_sessions[0] */
     conn->state = NODUS_CONN_CONNECTED;        /* send writes into wbuf */
     snprintf(conn->ip, sizeof(conn->ip), "%s", "10.0.0.8");
-    memset(&sess, 0, sizeof(sess));
-    sess.conn = conn;
-    sess.authenticated = true;
 
     /* a forwarded get_batch with "own" → the paged/owner read → FAULT */
     {
@@ -383,7 +406,7 @@ static void test_storage_fault(void) {
         nodus_t2_read_opts_t opts = { .own = &id_a.node_id, .page = false, .after = NULL };
         CHECK(nodus_t2_get_batch_ex(3, tok, &key_k, 1, &opts, q, sizeof(q), &qlen) == 0,
               "encode query");
-        nodus_server_dispatch_inter_frame(srv, &sess, q, qlen);
+        nodus_server_dispatch_inter_frame(srv, &srv->inter_sessions[0], q, qlen);
     }
     CHECK(conn->wlen > 7, "responder sent nothing");
     {
@@ -405,7 +428,7 @@ static void test_storage_fault(void) {
         B.sets[0].local_fault = true;
         int idx[1] = { 0 };
         fwd(idx, 1);
-        CHECK(nodus_server_bf_absorb_reply(&B, &C, conn->wbuf + 7, flen) == 0, "absorb");
+        CHECK(nodus_dht_bf_absorb_reply(&B, &C, conn->wbuf + 7, flen) == 0, "absorb");
         nodus_t2_msg_free(&m);
         CHECK(client_reply(&m) == 0 && m.type == 'e' &&
               m.error_code == NODUS_ERR_UNAVAILABLE, "expected UNAVAILABLE");
@@ -414,14 +437,14 @@ static void test_storage_fault(void) {
 out:
     nodus_t2_msg_free(&m);
     done();
-    if (opened) test_storage_close(&srv->storage);
+    if (opened) test_storage_close(&dht->storage);
     if (conn) {
         free(conn->wbuf);
         free(conn->rbuf);
         free(conn->pending_buf);
     }
     free(conn);
-    free(srv);
+    responder_free(srv);
 }
 
 /* Rev 3 R-d end to end. The responder's store holds a small row (vid 1)
@@ -433,9 +456,9 @@ out:
  * rule (EST(5) + EST(0) > 512 KiB) leaves the source not bounding. */
 static void test_nx_responder(void) {
     TEST("R-d: responder sends nx; originator counts the page full");
-    nodus_server_t *srv = calloc(1, sizeof(*srv));
     nodus_tcp_conn_t *conn = calloc(1, sizeof(*conn));
-    nodus_inter_session_t sess;
+    nodus_server_t *srv = conn ? responder_new(conn) : NULL;
+    nodus_dht_t *dht = NULL;
     nodus_tier2_msg_t m;
     memset(&m, 0, sizeof(m));
     bool opened = false;
@@ -448,18 +471,16 @@ static void test_nx_responder(void) {
     CHECK(nodus_value_create(&key_k, big_data, big_len, NODUS_VALUE_PERMANENT, 0, 2, 1,
                              &id_a.pk, &large) == 0 &&
           nodus_value_sign(large, &id_a.sk) == 0, "large value");
-    CHECK(test_storage_open(&srv->storage) == 0, "store");
+    dht = nodus_dht_backend_inproc_state(srv->dht);
+    CHECK(test_storage_open(&dht->storage) == 0, "store");
     opened = true;
-    CHECK(nodus_storage_put(&srv->storage, small) == 0 &&
-          nodus_storage_put(&srv->storage, large) == 0, "put");
+    CHECK(nodus_storage_put(&dht->storage, small) == 0 &&
+          nodus_storage_put(&dht->storage, large) == 0, "put");
     srv->config.require_peer_auth = false;     /* isolate the responder */
     conn->fd = -1;
-    conn->slot = -1;
+    conn->slot = 0;                            /* inter_sessions[0] */
     conn->state = NODUS_CONN_CONNECTED;        /* send writes into wbuf */
     snprintf(conn->ip, sizeof(conn->ip), "%s", "10.0.0.7");
-    memset(&sess, 0, sizeof(sess));
-    sess.conn = conn;
-    sess.authenticated = true;
     {
         uint8_t q[4096];
         size_t qlen = 0;
@@ -469,7 +490,7 @@ static void test_nx_responder(void) {
         nodus_t2_read_opts_t opts = { .own = NULL, .page = true, .after = NULL };
         CHECK(nodus_t2_get_batch_ex(4, tok, keys, 4, &opts, q, sizeof(q), &qlen) == 0,
               "encode query");
-        nodus_server_dispatch_inter_frame(srv, &sess, q, qlen);
+        nodus_server_dispatch_inter_frame(srv, &srv->inter_sessions[0], q, qlen);
     }
     CHECK(conn->wlen > 7, "responder sent nothing");
     {
@@ -493,7 +514,7 @@ static void test_nx_responder(void) {
         int idx[1] = { 0 };
         fwd(idx, 1);
         C.batch_key_count = 4;      /* the responder split its budget over 4 keys */
-        CHECK(nodus_server_bf_absorb_reply(&B, &C, conn->wbuf + NODUS_FRAME_HEADER_SIZE,
+        CHECK(nodus_dht_bf_absorb_reply(&B, &C, conn->wbuf + NODUS_FRAME_HEADER_SIZE,
                                            flen) == 0, "absorb");
         CHECK(B.sets[0].nsrc == 1 && B.sets[0].src[0].noted, "source noted");
         CHECK(B.sets[0].src[0].bounds, "a source that stopped on a large row must bound");
@@ -502,14 +523,14 @@ static void test_nx_responder(void) {
 out:
     nodus_t2_msg_free(&m);
     done();
-    if (opened) test_storage_close(&srv->storage);
+    if (opened) test_storage_close(&dht->storage);
     if (conn) {
         free(conn->wbuf);
         free(conn->rbuf);
         free(conn->pending_buf);
     }
     free(conn);
-    free(srv);
+    responder_free(srv);
     free(big_data);
     nodus_value_free(small);
     nodus_value_free(large);

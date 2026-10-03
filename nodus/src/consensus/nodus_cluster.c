@@ -9,7 +9,6 @@
 #include "consensus/nodus_cluster.h"
 #include "server/nodus_server.h"
 #include "protocol/nodus_tier1.h"
-#include "core/nodus_routing.h"
 #include "crypto/nodus_sign.h"     /* nodus_hash */
 
 #include <stdio.h>
@@ -181,9 +180,10 @@ void nodus_cluster_tick(nodus_cluster_t *cluster) {
             sync_ring(cluster, peer, old_state);
             state_changed = true;
 
-            /* Remove dead nodes from routing table to prevent stale replication */
+            /* Remove dead nodes from routing table to prevent stale
+             * replication (the routing table is the DHT's: split S4) */
             if (peer->state == NODUS_NODE_DEAD) {
-                nodus_routing_remove(&srv->routing, &peer->node_id);
+                srv->dht->ops->peer_dead(srv->dht, &peer->node_id);
             }
         }
     }
@@ -242,16 +242,11 @@ void nodus_cluster_on_pong(nodus_cluster_t *cluster,
 
         /* Inject into Kademlia routing table so replication can find this peer
          * immediately (otherwise routing table stays empty until UDP discovery
-         * completes, causing PUT replication to silently drop data) */
+         * completes, causing PUT replication to silently drop data). The
+         * routing table is the DHT's (split S4): a peer-seen ALIVE event. */
         nodus_server_t *s = (nodus_server_t *)cluster->srv;
-        nodus_peer_t rpeer;
-        memset(&rpeer, 0, sizeof(rpeer));
-        rpeer.node_id = peer->node_id;
-        snprintf(rpeer.ip, sizeof(rpeer.ip), "%s", peer->ip);
-        rpeer.udp_port = peer->udp_port;
-        rpeer.tcp_port = peer->tcp_port;
-        rpeer.last_seen = nodus_time_now();
-        nodus_routing_insert(&s->routing, &rpeer);
+        s->dht->ops->peer_seen(s->dht, NODUS_DHT_PEER_ALIVE, &peer->node_id,
+                               peer->ip, peer->udp_port, peer->tcp_port);
         fprintf(stderr, "CLUSTER: injected %s:%d into routing table\n",
                 peer->ip, peer->udp_port);
     }

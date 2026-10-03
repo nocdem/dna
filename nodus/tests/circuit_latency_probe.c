@@ -160,10 +160,12 @@ int main(void) {
     srv_b.cluster.peers[0].state = NODUS_NODE_ALIVE; srv_b.cluster.peers[0].last_seen = (uint64_t)time(NULL);
     nodus_peer_t rp_b = {0}; rp_b.node_id = srv_b.identity.node_id;
     snprintf(rp_b.ip, sizeof(rp_b.ip), "127.0.0.1"); rp_b.udp_port = 17000; rp_b.tcp_port = 17002;
-    rp_b.last_seen = (uint64_t)time(NULL); nodus_routing_insert(&srv_a.routing, &rp_b);
+    rp_b.last_seen = (uint64_t)time(NULL);
+    nodus_routing_insert(&nodus_dht_backend_inproc_state(srv_a.dht)->routing, &rp_b);
     nodus_peer_t rp_a = {0}; rp_a.node_id = srv_a.identity.node_id;
     snprintf(rp_a.ip, sizeof(rp_a.ip), "127.0.0.1"); rp_a.udp_port = 16000; rp_a.tcp_port = 16002;
-    rp_a.last_seen = (uint64_t)time(NULL); nodus_routing_insert(&srv_b.routing, &rp_a);
+    rp_a.last_seen = (uint64_t)time(NULL);
+    nodus_routing_insert(&nodus_dht_backend_inproc_state(srv_b.dht)->routing, &rp_a);
 
     nodus_identity_t id_u1, id_u2;
     uint8_t s1[32], s2[32]; memset(s1, 0x33, 32); memset(s2, 0x44, 32);

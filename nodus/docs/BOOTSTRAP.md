@@ -56,8 +56,17 @@ completed a normal boot with a chain".** That is the only state in which the
 invariant H-10 enforces is true, because the gate demands all three databases
 and only a completed `nodus_server_init` has created all three.
 
-It is therefore written in exactly one place: the success path at the bottom of
-`nodus_server_init`, guarded on `srv->witness->db` being non-NULL. A pre-genesis
+In the combined binary it is written in exactly one place: the success path at
+the bottom of `nodus_server_init`, guarded on
+`srv->chain && srv->chain->ops->chain_open(srv->chain)` (`server_write_genesis_marker`,
+`nodus_server.c`; the in-process chain backend answers `w->db != NULL`,
+`inproc_chain_open` in `nodus_chain_backend_inproc.c` — the S1 witness seam replaced
+the former `srv->witness->db` test with this, same condition). In split mode
+(`witness_external`, split S3) init cannot see the chain yet, so two more writers
+exist, both under the same "all three databases are real" rule: `nodus_server_run`
+writes it once when the witness first reports an open chain, and `nodus-witness`
+writes it only when its chain is open AND `nodus.db` and `channels.db` exist in the
+shared data directory (`tools/nodus-witness.c`). A pre-genesis
 node has no chain, has not crossed the boundary the marker records, and must not
 arm the gate — arming it would turn its legitimate two-of-three state into a
 refusal.

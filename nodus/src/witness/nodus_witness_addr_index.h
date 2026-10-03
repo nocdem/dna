@@ -148,7 +148,8 @@ extern "C" {
 #define NODUS_ADDR_KIND_FEE               "fee"
 
 /** true when this node was started with `addr_history_index: true`
- *  (nodus_server_config_t.addr_history_index). A witness with no server
+ *  (nodus_witness_host_config_t.addr_history_index, filled from
+ *  nodus_server_config_t.addr_history_index). A witness with no host
  *  (every engine unit test) is OFF. */
 bool nodus_witness_addr_index_enabled(const nodus_witness_t *w);
 

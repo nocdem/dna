@@ -28,7 +28,7 @@
 #include "protocol/nodus_tier2.h"
 #include "protocol/nodus_tier3.h"   /* nodus_t3_tx_size_limit (was via peer.h) */
 #include "transport/nodus_tcp.h"
-#include "server/nodus_server.h"
+#include "witness/nodus_witness_host.h"
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_identity.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -1180,13 +1180,13 @@ static int roster_row_cmp(const void *a, const void *b) {
 static void witness_reply_addr(nodus_witness_t *w, const uint8_t *pk,
                                char *out, size_t cap) {
     out[0] = '\0';
-    if (w->server &&
-        memcmp(pk, w->server->identity.pk.bytes, NODUS_PK_BYTES) == 0) {
-        const char *my_ip = w->server->config.external_ip[0]
-                          ? w->server->config.external_ip
-                          : w->server->config.bind_ip;
-        uint16_t my_wport = w->server->config.witness_port
-                          ? w->server->config.witness_port
+    if (w->host &&
+        memcmp(pk, w->host->identity->pk.bytes, NODUS_PK_BYTES) == 0) {
+        const char *my_ip = w->host->config.external_ip[0]
+                          ? w->host->config.external_ip
+                          : w->host->config.bind_ip;
+        uint16_t my_wport = w->host->config.witness_port
+                          ? w->host->config.witness_port
                           : NODUS_DEFAULT_WITNESS_PORT;
         snprintf(out, cap, "%s:%u", my_ip, (unsigned)my_wport);
         return;
@@ -1208,10 +1208,10 @@ static void handle_dnac_roster(nodus_witness_t *w,
         return;
     }
     /* This node, always. */
-    if (w->server) {
+    if (w->host) {
         uint8_t fp[64];
         roster_row_t *r = &rows[n_rows];
-        memcpy(r->pk, w->server->identity.pk.bytes, NODUS_PK_BYTES);
+        memcpy(r->pk, w->host->identity->pk.bytes, NODUS_PK_BYTES);
         if (qgp_sha3_512(r->pk, NODUS_PK_BYTES, fp) == 0) {
             memcpy(r->wid, fp, NODUS_T3_WITNESS_ID_LEN);
             witness_reply_addr(w, r->pk, r->addr, sizeof(r->addr));
@@ -1225,7 +1225,7 @@ static void handle_dnac_roster(nodus_witness_t *w,
             roster_row_t *r = &rows[n_rows];
             uint8_t fp[64];
             if (!nodus_witness_p2p_bonded_at(w->p2p, i, NULL, r->pk) ||
-                (w->server && memcmp(r->pk, w->server->identity.pk.bytes,
+                (w->host && memcmp(r->pk, w->host->identity->pk.bytes,
                                      NODUS_PK_BYTES) == 0) ||
                 qgp_sha3_512(r->pk, NODUS_PK_BYTES, fp) != 0)
                 continue;
@@ -1478,7 +1478,7 @@ static void handle_dnac_spend_replay(nodus_witness_t *w,
     uint64_t ts = (uint64_t)time(NULL);
 
     uint8_t wpk_hash[64];
-    qgp_sha3_512(w->server->identity.pk.bytes, NODUS_PK_BYTES, wpk_hash);
+    qgp_sha3_512(w->host->identity->pk.bytes, NODUS_PK_BYTES, wpk_hash);
 
     uint8_t preimage[DNAC_SPEND_RESULT_PREIMAGE_LEN];
     dnac_compute_spend_result_preimage(hash, w->my_id, wpk_hash,
@@ -1495,7 +1495,7 @@ static void handle_dnac_spend_replay(nodus_witness_t *w,
      * cross-repo migration. Deferred to a future lockstep nodus+dnac change.
      * Preimage is 221B (block_hash + voter_id + height + chain_id + tx_index
      * + status) — rich context, no overlap with other sign domains. */
-    nodus_sign(&sig, preimage, sizeof(preimage), &w->server->identity.sk);
+    nodus_sign(&sig, preimage, sizeof(preimage), &w->host->identity->sk);
 
     uint8_t buf[8192];
     cbor_encoder_t enc;
@@ -1512,7 +1512,7 @@ static void handle_dnac_spend_replay(nodus_witness_t *w,
     cbor_encode_bstr(&enc, w->my_id, NODUS_T3_WITNESS_ID_LEN);
 
     cbor_encode_cstr(&enc, "wpk");
-    cbor_encode_bstr(&enc, w->server->identity.pk.bytes, NODUS_PK_BYTES);
+    cbor_encode_bstr(&enc, w->host->identity->pk.bytes, NODUS_PK_BYTES);
 
     cbor_encode_cstr(&enc, "ts");
     cbor_encode_uint(&enc, ts);

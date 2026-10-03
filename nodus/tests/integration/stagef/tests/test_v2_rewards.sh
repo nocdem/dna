@@ -65,7 +65,13 @@
 #
 # HOW IT CAN LIE
 #   - **Pre and post reads are single SQLite statements**, so each is one
-#     consistent snapshot of (tip, pool, Σaccrual). The PRE read is taken
+#     consistent snapshot of (tip, pool, Σaccrual, accrual row count,
+#     accrual owners) — the owner list a payday is checked against comes
+#     from the SAME statement as the tip that says H has not landed yet,
+#     so a boundary cannot commit "between the pre reads"; there is one.
+#     (Until this was fixed the owners were a second read, and a boundary
+#     landing between the two FAILED the run asking for a re-run —
+#     measured in a mixedw sweep.) The PRE read is taken
 #     only after the last pump spend has LANDED; the pump is not driven
 #     again until the POST reads are done. The window between them is
 #     then checked to carry NO envelope (v2_blocks.tx_count) and to have
@@ -74,9 +80,15 @@
 #     reason that is not the boundary, and the scenario FAILS rather than
 #     mis-attributing it.
 #   - **A boundary the pump overshoots is not observed.** If the pre read
-#     already shows tip >= H, that boundary is skipped and the next one
-#     chosen; three misses FAIL the run (a chain that repeatedly lands a
-#     spend two or more heights late is itself the anomaly).
+#     already shows tip >= H (the pump can overshoot its H-2 target by a
+#     block, and H can then commit before the read), that boundary is
+#     skipped and the next one chosen; three misses FAIL the run (a chain
+#     that repeatedly lands a spend two or more heights late is itself the
+#     anomaly). A miss is never a "re-run".
+#   - **The payday coin reads (count/sum, then owners) are two statements**,
+#     both keyed to the fixed height Hp, not to the tip: rows written at Hp
+#     change only if a later envelope spends one, and the pump is idle
+#     until the post reads are done, so the two describe the same rows.
 #   - **A payday UTXO is recognised by position**, block_height = Hp and
 #     output_index >= 400 (the P2 payout index base); an ordinary spend
 #     with 400+ outputs landing at Hp would be counted too. The window
@@ -202,21 +214,46 @@ is_member() {   # is_member N "<voter_id lines>"
     [[ $'\n'"$2"$'\n' == *$'\n'"${FP[$1]:0:64}"$'\n'* ]]
 }
 
-# One consistent snapshot: "tip pool Σaccrual n_accrual" — ONE statement,
-# so SQLite answers it from one read snapshot. A failed or malformed read
-# is a FAIL, never a zero.
+# One consistent snapshot: "tip pool Σaccrual n_accrual owners" — ONE
+# statement, so SQLite answers all five from one read snapshot: the tip
+# that says whether boundary H has landed is the tip of the SAME state the
+# pool, the sum and the accrual owners come from. owners is the accrual
+# rows' lower-hex owner_fp joined by ',' ("-" when the table is empty);
+# owner_fp is the table's PRIMARY KEY, so the list must hold exactly
+# n_accrual entries. A failed or malformed read is a FAIL, never a zero.
+# (Before this was one statement, the owners were a second sqlite3 call;
+# a boundary committing between the two FAILED the run with "re-run" —
+# measured in a mixedw sweep, pump tip 104 >= 103, boundary 105.)
 snap() {
-    local out
+    local out tip pool acc nacc owners extra commas n_own
     out=$(sqlite3 -separator ' ' "$1" \
       "SELECT (SELECT COALESCE(MAX(global_height),-1) FROM v2_blocks),
               (SELECT reward_pool FROM supply_tracking WHERE id = 1),
               (SELECT COALESCE(SUM(amount),0) FROM v2_reward_accrual),
-              (SELECT COUNT(*) FROM v2_reward_accrual);") \
+              (SELECT COUNT(*) FROM v2_reward_accrual),
+              (SELECT COALESCE(group_concat(o, ','), '-')
+                 FROM (SELECT lower(hex(owner_fp)) AS o
+                         FROM v2_reward_accrual ORDER BY owner_fp));") \
         || die "snapshot read failed on $1"
-    case "$out" in
-        *[!0-9\ ]*|'') die "snapshot read on $1 returned '$out'" ;;
+    read -r tip pool acc nacc owners extra <<< "$out"
+    [ -n "$tip" ] && [ -n "$pool" ] && [ -n "$acc" ] && [ -n "$nacc" ] \
+        && [ -n "$owners" ] && [ -z "$extra" ] \
+        || die "snapshot read on $1 returned '$out'"
+    case "$tip$pool$acc$nacc" in
+        *[!0-9]*) die "snapshot read on $1 returned '$out'" ;;
     esac
-    printf '%s\n' "$out"
+    if [ "$owners" = "-" ]; then
+        n_own=0
+    else
+        case "$owners" in
+            *[!0-9a-f,]*) die "snapshot read on $1 returned owners '$owners'" ;;
+        esac
+        commas="${owners//[!,]/}"   # pure bash: no pipe (see is_member)
+        n_own=$(( ${#commas} + 1 ))
+    fi
+    [ "$n_own" -eq "$nacc" ] \
+        || die "snapshot read on $1: $n_own accrual owner(s) for $nacc row(s) in one statement"
+    printf '%s %s %s %s %s\n' "$tip" "$pool" "$acc" "$nacc" "$owners"
 }
 
 advance() {   # advance DB TARGET — pump/idle, the pump's rc distinguished
@@ -253,10 +290,17 @@ misses=0
 H="$H1"
 assert_run=0
 while [ "$H" -le "$HP" ]; do
-    # ── PRE: drive to H-2, then read (tip must still be below H) ─────
+    # ── PRE: drive to H-2, then ONE read (tip must still be below H) ─
+    # tip, pool, Σaccrual, the row count AND the accrual OWNERS (a payday
+    # pays exactly these plus this boundary's members) come from the one
+    # statement in snap(), so they all describe the same state. If that
+    # state is already at or past H — the pump may overshoot H-2 by a
+    # block, and H can then land before the read — the boundary is a
+    # MISS: observe the next one. There is no second pre read for H to
+    # land between.
     advance "$ref_db" $(( H - 2 )) >/dev/null
     s=$(snap "$ref_db") || exit 1      # snap's own die() names the cause
-    read -r t_pre pool_pre acc_pre nacc_pre <<< "$s"
+    read -r t_pre pool_pre acc_pre nacc_pre owners_pre <<< "$s"
     if [ "$t_pre" -ge "$H" ]; then
         misses=$(( misses + 1 ))
         [ "$misses" -lt 3 ] || die "three boundaries overshot by the pump before a pre-read — last at $H (tip $t_pre)"
@@ -265,14 +309,9 @@ while [ "$H" -le "$HP" ]; do
         H=$(( H + E_LEN ))
         continue
     fi
-    # the accrual OWNERS before H (a payday pays exactly these plus this
-    # boundary's members); rows move only at boundaries and the pump is
-    # idle, so this read belongs to the same pre-boundary state — checked
-    pre_owners=$(sqlite3 "$ref_db" "SELECT lower(hex(owner_fp))
-                                     FROM v2_reward_accrual ORDER BY owner_fp;") \
-        || die "accrual owner read failed"
-    [ "$(stagef_cmt_tip "$ref_db")" -lt "$H" ] \
-        || die "boundary $H landed between the pre reads — re-run"
+    # the pre-boundary accrual owners, one per line ("" when none)
+    if [ "$owners_pre" = "-" ]; then pre_owners=""
+    else pre_owners="${owners_pre//,/$'\n'}"; fi
     mem=$(members_of $(( H - E_LEN )))
     n_mem_nodes=0
     for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
@@ -285,7 +324,7 @@ while [ "$H" -le "$HP" ]; do
     stagef_cmt_wait_height "$ref_db" "$H" 3 >/dev/null \
         || die "the chain stalled short of boundary $H"
     s=$(snap "$ref_db") || exit 1
-    read -r t_post pool_post acc_post nacc_post <<< "$s"
+    read -r t_post pool_post acc_post nacc_post _ <<< "$s"
     [ "$t_post" -lt $(( H + E_LEN )) ] || die "tip $t_post already past the next boundary"
     echo "[ok] post H=$H: tip $t_post pool $pool_post accrued $acc_post ($nacc_post rows)"
 

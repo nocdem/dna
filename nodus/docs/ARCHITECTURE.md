@@ -94,12 +94,15 @@ nodus/
 │   │   ├── nodus_tier1.c      # T1 encode/decode (server ↔ server)
 │   │   └── nodus_tier2.c      # T2 encode/decode (client ↔ server)
 │   ├── transport/
-│   │   ├── nodus_tcp.c        # TCP transport (epoll, framing, connections; + the WS entry glue)
+│   │   ├── nodus_tcp.c        # TCP transport (epoll, framing, connections; + the WS entry glue;
+│   │   │                      #   + the AF_UNIX entry nodus_tcp_unix_* — split S2; used by the S3
+│   │   │                      #   witness IPC, both ends)
 │   │   ├── nodus_ws.c         # WebSocket entry codec (RFC 6455 handshake + frames; no sockets)
 │   │   └── nodus_udp.c        # UDP transport (non-blocking recvfrom)
 │   ├── crypto/
 │   │   ├── nodus_sign.c       # Dilithium5 sign/verify/hash wrappers
 │   │   └── nodus_identity.c   # Identity generation, save/load, seed derivation
+│   │                          #   (+ nodus_identity_load_readonly — split S2; called by nodus-witness, S3)
 │   ├── channel/
 │   │   ├── nodus_channel_store.c       # SQLite channel + post storage
 │   │   ├── nodus_hashring.c            # Consistent hash ring
@@ -115,8 +118,23 @@ nodus/
 │   │   (src/bft/ — the T1 Tendermint core of 2026-09-08 — was DELETED in R2,
 │   │    2026-09-11, as a second implementation of what the cometbft port
 │   │    under shared/dnac/cmt_*.c provides; see "cometbft literal port" below)
+│   ├── dht/                   # the DHT / storage half (split S4; includes no server header —
+│   │   │                      #   test_dht_linked)
+│   │   ├── nodus_dht.h        # its state (nodus_dht_t), its view of core (nodus_dht_host_t),
+│   │   │                      #   origins, session shadows, the core -> DHT entry points
+│   │   ├── nodus_dht_server.c # DHT handlers, lookup engine, batch forward, replication,
+│   │   │                      #   republish, hinted handoff, subscriptions, ticks, lifecycle
+│   │   │                      #   (moved out of nodus_server.c by split S4)
+│   │   └── nodus_dht_media.c/h # m_put / m_meta / m_chunk handlers (was server/nodus_media_handler.c/h)
 │   ├── server/
-│   │   ├── nodus_server.c     # Server event loop + message dispatch
+│   │   ├── nodus_server.c     # Server event loop, auth, sessions, presence, circuits, 4002
+│   │   │                      #   handshake, cluster heartbeat, status; the host side of the DHT seam
+│   │   ├── nodus_dht_backend.h          # the server's ONE door to the DHT (ops table; split S4)
+│   │   ├── nodus_dht_backend_inproc.c   # its in-process implementation (combined nodus-server)
+│   │   ├── nodus_chain_backend.h        # the server's ONE door to the witness (ops table; split S1)
+│   │   ├── nodus_chain_backend_inproc.c # its in-process implementation (combined nodus-server)
+│   │   ├── nodus_chain_backend_ipc.c    # its IPC implementation (core side of <data_path>/witness.sock;
+│   │   │                                #   "witness_external", split S3)
 │   │   └── nodus_auth.c       # Dilithium5 challenge-response auth
 │   ├── client/
 │   │   ├── nodus_client.c     # Client SDK (connect, auth, DHT, channels, DNAC)
@@ -127,6 +145,11 @@ nodus/
 │   │   └── nodus_v2_name.c/h  # Shared HF-4 NAME_REGISTER (chain name) envelope builder (no I/O)
 │   └── witness/               # DNAC BFT witness module (embedded)
 │       ├── nodus_witness.c          # Witness init, DB schema, lifecycle
+│       ├── nodus_witness_host.h     # the witness's ONE view of its host process (split S1)
+│       ├── nodus_witness_ipc.c/h    # the nodus-witness process's listener on <data_path>/witness.sock
+│       │                            #   (split S3; includes no server header)
+│       ├── nodus_witness_network_file.c/h # network file + chain-id read + chain-pin start check
+│       │                            #   (moved out of nodus_server.c by split S1)
 │       ├── nodus_witness_db.c/h     # SQLite ops (nullifiers, ledger, UTXOs, TXs, blocks)
 │       ├── nodus_witness_cmt_*.c/h  # the cometbft server binding: application (ABCI rows), host
 │       │                            #   (stores/WAL/privval/BlockExecutor), startup table, transport
@@ -194,7 +217,15 @@ nodus/
 │   ├── test_cmt_byzantine.c   # cometbft port R2-BYZ: TestByzantineConflictingProposalsWithPartition — 4 nodes, byzantine proposer, partition heals, all honest nodes commit the SAME block; + 2 C-only scenarios; + R3 W3 P0: the two part-set-bound OBLIGATION scenarios (atlas-dec-247e5c0e…): forged +2/3 prevotes for a BlockID the bound refuses → every honest node reaches setProposal / addVote / enterPrecommit, signs nil, commits an honest block later (parts_cap clause); forged precommits too → enterCommit parks the node with no block (MAX_PARTS clause)
 │   ├── test_cmt_app.c         # cometbft port R3-C1a: the application over a REAL version-3 chain — InitChain as a genesis check, FinalizeBlock with per-item SAVEPOINT isolation, both crash windows, Commit as the COMMIT, CheckTx (incl. the signature stage, the per-item dry run, the pending conflict set and the light recheck), PrepareProposal / ProcessProposal (incl. the envelope-byte trim, the seam's refusal-kind handling with a seam-run count, the refused-chain_config / refill / claims-past-the-window fixes, the mempool lifetime rule, row-identity conflict keys, the unit-aware pack and fee-per-unit ordering); 45 cases
 │   ├── test_cmt_node.c        # cometbft port R3-C1c: the startup table — genesis document loader (row / provider / refusals), the Handshaker's height cases and BOTH crash windows healed (real app / mock app), LoadOrGenFilePV, init/start/release; 14 cases
-│   └── test_cmt_net.c         # cometbft port R3 W3 C2b: the transport glue (nodus_witness_cmt_net) — peer-set scan over a hand-built witness peer table driving a REAL cmt_conr/cmt_memr pair, send refused for a down/quarantined slot, verb 35/39 receive routing, receive-before-tick, the 64 MiB receive-arena runway + latches, deferred close bookkeeping, scan waits for both reactors; 8 cases
+│   ├── test_cmt_net.c         # cometbft port R3 W3 C2b: the transport glue (nodus_witness_cmt_net) — peer-set scan over a hand-built witness peer table driving a REAL cmt_conr/cmt_memr pair, send refused for a down/quarantined slot, verb 35/39 receive routing, receive-before-tick, the 64 MiB receive-arena runway + latches, deferred close bookkeeping, scan waits for both reactors; 8 cases
+│   ├── test_witness_ipc.c     # split S3: the IPC chain backend against the witness IPC listener over a real socket (test handlers stand in for the witness)
+│   ├── split_linked.cmake     # split S3: `nm` link gate — nodus-witness links no core entry point (ctest `test_split_linked`)
+│   ├── dht_link_probe.c       # split S4: never-run probe referencing only the core -> DHT entry points
+│   └── dht_linked.cmake       # split S4: `nm` link gate — the DHT objects reach no core entry point (ctest `test_dht_linked`)
+├── tools/                     # (excerpt — the two node mains and their shared config only)
+│   ├── nodus-server.c         # nodus-server main (combined, or core with "witness_external")
+│   ├── nodus-witness.c        # nodus-witness main (split S3)
+│   └── nodus_node_config.c/h  # the shared command line + JSON config + --derive-v2-genesis (split S3)
 ├── CMakeLists.txt             # Build system
 └── docs/
     └── ARCHITECTURE.md        # This file
@@ -518,7 +549,7 @@ wire version bump:
      bootstrap-forward path): after the existing Kyber CRIT-1 bind/pin check
      passes, additionally verifies the peer's `mpk_sig` under the SAME pinned
      `server_pk`; uses ML-KEM only if that also verifies.
-  4. **Inter-node receive** (`nodus_server.c:4483-4487`, the INTER KEY_INIT
+  4. **Inter-node receive** (`nodus_server.c:1628-1630`, the INTER KEY_INIT
      receiver): decapsulates by the incoming `alg` (`msg.key_alg`) **inline**
      — `use_mlkem ? qgp_mlkem1024_decapsulate(...) : qgp_kem1024_decapsulate(...)`
      — both branches live directly in `dispatch_inter()`, neither calls out to a
@@ -1073,25 +1104,31 @@ The server uses a single-threaded, event-driven architecture based on Linux `epo
 (edge-triggered):
 
 ```c
-while (srv->running) {
-    nodus_tcp_poll(&srv->tcp, 100);              // TCP 4001 events (100ms timeout)
-    nodus_udp_poll(&srv->udp);                   // UDP 4000 datagrams (non-blocking)
-    nodus_channel_server_poll(&srv->ch_server, 50); // TCP 4003 channel events
-    nodus_cluster_tick(&srv->cluster);                 // Heartbeats + health checks
-    dht_find_value_tick(srv);                    // Async FIND_VALUE state machines
-    dht_republish(srv);                          // Periodic value republish (batch)
-    dht_republish_tick(srv);                     // Republish connection timeouts
-    dht_storage_cleanup(srv);                    // Expired value removal (hourly)
-    dht_bucket_refresh(srv);                     // Routing table refresh (15 min)
-    dht_hinted_retry(srv);                       // DHT hinted handoff retry
-    nodus_channel_server_tick(&srv->ch_server, now_ms); // Channel session timeouts
-    nodus_ch_replication_retry(&srv->ch_replication, now_ms); // Channel hinted handoff
-    nodus_ch_ring_tick(&srv->ch_ring, now_ms);   // Ring heartbeat + dead detection
+/* nodus_server_run (nodus_server.c:3212-3318), the channel server lines omitted */
+while (srv->running && !srv->stop_requested) {
+    nodus_tcp_poll(&srv->tcp, poll_ms);          // TCP 4001 + WebSocket entry
+    nodus_tcp_ws_sweep(&srv->tcp, now);          // only when the WS entry is enabled
+    nodus_tcp_poll(&srv->inter_tcp, poll_ms);    // TCP 4002
+    nodus_udp_poll(&srv->udp);                   // UDP 4000 (budgeted, non-blocking)
+    nodus_cluster_tick(&srv->cluster);           // heartbeats + health checks
+    srv->dht->ops->evict_tick(srv->dht);         // DHT: ping-before-evict sweep (split S4)
+    idle_timeout_sweep(srv);                     // CRIT-4 idle connections
+    srv->chain->ops->tick(srv->chain);           // witness: 4004 p2p host + consensus (if srv->chain)
+    /* split S3, witness_external only: arm the partial-wipe marker once */
+    nodus_presence_tick(srv);                    // presence expiry + p_sync
+    srv->dht->ops->tick(srv->dht);               // DHT periodic work (split S4, nodus_dht_tick)
+    dht_send_stats_dump(srv);                    // per-peer 4002 send counters (core)
 }
 ```
 
-> The sketch above is simplified and partly historical (the channel server is compiled out; the real loop is `nodus_server_run`). Read budgets as of 2026-09-30 (P2 hardening, branch `p2-dht-fix`):
-> - **TCP:** each `nodus_tcp_poll` waits 50 ms, or 0 ms when either TCP transport or the UDP socket still has queued input (`nodus_tcp_read_pending`, `nodus_udp_read_pending`).
+`nodus_dht_tick` runs, in this order: hinted-handoff retry, subscription cleanup (every
+60 s) and renewal, the iterative lookup engine, batch forward, bucket refresh, storage
+cleanup, republish, media republish, WAL checkpoint, incremental vacuum
+(`nodus_dht_server.c:4764-4806`). Before split S4 these were direct calls in the loop
+body; their order relative to each other and to the core ticks is unchanged.
+
+> Read budgets as of 2026-09-30 (P2 hardening, branch `p2-dht-fix`):
+> - **TCP:** each `nodus_tcp_poll` waits 50 ms, or 0 ms when either TCP transport or the UDP socket still has queued input (`nodus_tcp_read_pending`, `nodus_udp_read_pending`) — or, since split S3, when the chain backend's own transport does (`srv->chain->ops->read_pending`), or, since split S4, the DHT backend's (`srv->dht->ops->read_pending`) — `nodus_server.c:3225-3230` and `:3242-3247`. Both in-process backends always answer false, so the combined binary's timings are unchanged; the IPC chain backend answers for its Unix-socket transport ("Component split", S3).
 > - **UDP 4000:** the socket is not in any epoll the loop waits on; `nodus_udp_poll` runs once per iteration and reads at most `NODUS_UDP_POLL_BUDGET` (64) datagrams. When it stops at the budget it sets `budget_hit`, so the next iteration does not block its TCP polls — the cap bounds one call's work without a throughput ceiling.
 > - **Unauthenticated client connections** (4001 / WebSocket) are closed by `idle_timeout_sweep` either after 15 s idle or 30 s after `connected_at` (`IDLE_ABSOLUTE_UNAUTH`), whichever comes first; the sweep runs every 30 s.
 > - **Media `m_put`** refuses a chunk index ≥ the request's chunk count, a non-first chunk with no stored metadata or with an index ≥ the STORED chunk count, and `ttl == 0` (media rate limit intentionally not added — operator 2026-09-30). The `m_sv` replication receive path does not apply these checks yet.
@@ -1106,7 +1143,7 @@ Design `docs/plans/2026-10-01-dht-ownership-root-fix-design.md` §10 (local) and
 - Caps live inside `nodus_storage_put` / `nodus_storage_put_if_newer` (the server no longer pre-calls a quota check): per owner `NODUS_STORAGE_MAX_PER_OWNER` (1000) rows and `NODUS_STORAGE_OWNER_MAX_BYTES` (16 MiB), each row charged `NODUS_STORAGE_ROW_CHARGE(len)` = data + pk (2592) + signature (4627) + `NODUS_STORAGE_ROW_FIXED_BYTES` (1024); global `NODUS_STORAGE_MAX_BYTES` (500 MB, data bytes) and the global value count on the client path. Every STORED row counts, expired or not (an expiry chosen by the writer can never open a cap). A replace of an existing (key, owner, value_id) row is checked only for its growth.
 - Return codes: -2 `KEY_OWNED` (checked first, unchanged), -4 `STALE` (client put with a strictly lower seq than the stored row; equal seq replaces as before), -3 `QUOTA`, -5 `FAULT` (read error, distinct from "no row"), -6 `EXPIRED` (replica path only: a value already expired on arrival). The client put maps -3 → `NODUS_ERR_QUOTA_EXCEEDED` (14), -4 → `NODUS_ERR_STALE` (20).
 - Index `idx_nodus_values_owner` (built once at the first open of an existing DB).
-- Hinted handoff: per target node id 64 rows / 16 MiB, total 128 MiB (`dht_hint_totals` kept by triggers), TTL 24 h (was 7 days); hints are written only for cluster members, and `server_on_pending_full` only for authenticated members. Republish skips rows already expired.
+- Hinted handoff: per target node id 64 rows / 16 MiB, total 128 MiB (`dht_hint_totals` kept by triggers), TTL 24 h (was 7 days); hints are written only for cluster members, and `nodus_server_on_pending_full` only for authenticated members and (since split S5a, decision item 33) only for a DHT replication frame (`sv` / `m_sv` query) — any other overflowed 4002 frame is dropped. Republish skips rows already expired.
 
 **Reads**
 - `get` / `get_all` / 4002 `get_batch` accept an optional `own` (64-byte owner fingerprint) filter; `get_all` and `get_batch` accept opt-in paging (`pg`, `after` {o, v}) with replies `more` / `next` (and per batch entry `nx`, the size estimate of the row the responder stopped on). A request with none of these takes the pre-package path and reply shape. Page budget `NODUS_GET_ALL_PAGE_MAX_BYTES` (2 MiB) in `NODUS_VALUE_SERIALIZED_EST` units; order (owner_fp, value_id as signed int64).
@@ -1125,28 +1162,31 @@ Known open (not in this package): read rate limit; legacy unpaged `get_all` stil
 
 ### Session Management
 
-Each TCP 4001 connection is assigned a **session** (`nodus_session_t`) with:
+Each TCP 4001 connection is assigned a **session** (`nodus_session_t`,
+`nodus_server.h:186-210`) with:
 
 - Authentication state (nonce, public key, fingerprint, token)
-- Active DHT LISTEN subscriptions (up to 128 keys per session)
-- Rate limiting state (60 puts per minute window)
+- Circuit table, protocol version
+
+Since split S4 the DHT keeps its own **shadow** of the same slot
+(`nodus_dht_session_t`, `dht/nodus_dht.h:479-489`): an `open` flag, the active DHT
+LISTEN keys (up to `NODUS_MAX_LISTEN_KEYS` = 128 per session) and the put-rate window
+(`NODUS_RATE_PUTS_PER_MIN` = 60 per 60 s, `rate_check_put`,
+`nodus_dht_server.c:152-162`). Core opens the shadow where it sets `sess->conn` and
+empties it where it clears the session ("Component split", S4).
 
 Sessions are cleared on disconnect. The server supports up to `NODUS_MAX_SESSIONS`
-concurrent clients.
+(= `NODUS_TCP_MAX_CONNS`, `dht/nodus_dht.h:49`) concurrent clients.
 
-**Session generation (0.23.11).** Every accepted client session gets a fresh
-`nodus_session_t.gen` from the server-wide, only-increasing
-`nodus_server_t.next_session_gen` (assigned in `nodus_server_client_accepted`;
-`session_clear` resets the slot's `gen` to 0). A DHT reply that is sent LATER —
-iterative lookup completions (`iterative_lookup_t.session_gen`), the GET lookup
-context, and every batch-forward batch (`dht_bf_batch_t.session_gen`) — records the
-slot AND its generation, and is sent only through
-`nodus_server_session_if_same(srv, slot, gen)`: if the requester disconnected and
-another client was accepted into the same slot (the transport always hands out the
-lowest free slot), the reply is dropped and the work cleaned up exactly as for a
-plain disconnect. Before 0.23.11 a deferred reply checked only that the slot was
-occupied, so a reused slot received the previous client's reply (nodus/BUGS.md,
-2026-10-02). Test: `test_session_gen`.
+**Session generation.** A DHT reply that is sent LATER (iterative lookup
+completions, the GET lookup context, every batch-forward batch) goes only to the
+session that asked, never to a later occupant of the same slot. 0.23.11 shipped this
+for the single binary as `nodus_session_t.gen` + `nodus_server_session_if_same`
+(test `test_session_gen`); since the component split merge it is the DHT origin's
+generation instead — `nodus_dht_origin_t.gen`, per-session `dht_gen` from
+`srv->next_session_gen`, checked by the DHT (`dht_origin_live`) and by core's
+`send_to_origin` — described under "Component split", S4, decision item 29. Test:
+`test_origin_gen`.
 
 **Connection close (deferred inside a poll).** `nodus_tcp_disconnect()` — and every
 teardown inside the transport (bad frame, read/write error, `EPOLLERR`/`EPOLLHUP`,
@@ -1208,7 +1248,13 @@ TCP frames are dispatched through `dispatch_t2()`:
    (inter-node store, rate-limited: 200/s), and `fv` (inter-node FIND_VALUE, rate-limited: 100/s)
    are allowed. Channel operations (`ch_rep`, `ch_post`, etc.) go through TCP 4003, not 4001.
 3. **Token verification**: authenticated requests must carry a valid session token
-4. **Handler dispatch**: method name → handler function (`handle_t2_put`, `handle_t2_get`, etc.)
+4. **Handler dispatch**: method name → handler. Since split S4 the DHT methods (`put`,
+   `get`, `get_all`, `get_batch`, `cnt_batch`, `listen`, `unlisten`, `ch_list`,
+   `ch_search`, `ch_get`, `m_put`, `m_meta`, `m_chunk`) go to the DHT through
+   `srv->dht->ops->client_frame` with the session's slot and authenticated identity
+   (`nodus_server.c:2172-2187`; the DHT's `nodus_dht_client_request` then picks
+   `handle_t2_put`, `handle_t2_get`, …, `nodus_dht_server.c:4264-4304`); `ping`,
+   `servers`, `status` and `circ_*` stay in core (`nodus_server.c:2188-2199`).
 
 If T2 decode fails, a fallback T1 decode is attempted for inter-node `sv` (STORE_VALUE)
 messages that arrive on the TCP port.
@@ -1237,6 +1283,12 @@ Server configuration via JSON file (default: `/etc/nodus.conf`):
 - **TCP 4003** — Channel system: client posts + inter-node replication (dedicated)
 - **TCP `ws_port`, 127.0.0.1 only** — WebSocket entry of the client port (off by
   default; see below)
+
+**`"witness_external": true`** (or `--witness-external`; boolean, a non-boolean value
+refuses the start, `tools/nodus_node_config.c:678-686`; default false) makes
+`nodus-server` start no witness: TCP 4004 and the chain database then belong to the
+separate `nodus-witness` process, reached over `<data_path>/witness.sock`. Split S3,
+see "Component split" below; not for production yet.
 
 ### WebSocket entry (browser clients)
 
@@ -1366,7 +1418,11 @@ The acceptor authenticates the dialer via a Dilithium5 challenge/response. The
 encapsulating to it — otherwise an active MITM on the (plaintext) handshake could
 substitute its own key and own the resulting channel key, making every downstream
 AEAD property moot. Three gates, all **fail-closed**, on both dialer paths (the
-inter-node session and the DHT batch-forward):
+inter-node session — since split S5a the shared module `server/nodus_inter_dial.c`,
+see "Component split", S5a — and the DHT batch-forward's own copy). Every outbound
+dial core makes (replication / republish / hinted retry, presence `p_sync`, circuits)
+records the pin through `nodus_server_inter_dial`; before S5a the presence and circuit
+dials recorded none and were refused at gate 3's "no expected peer identity" check:
 
 1. **Downgrade-close** — if this node has a Kyber identity, an `auth_ok` missing
    `kyber_pk` / `kpk_sig` / `server_pk` is refused. It never falls through to the
@@ -1406,6 +1462,1234 @@ Data is stored in:
 - `<data_path>/nodus.db` — DHT value storage (SQLite)
 - `<data_path>/channels.db` — Channel post storage (SQLite)
 - `<identity_path>/nodus.pk`, `nodus.sk`, `nodus.fp` — Node identity
+
+### Component split — S1 witness host seam, S2 local IPC primitives, S3 `nodus-witness` process, S4 core/DHT seam, S5a 4002 connection fixes, S5b `nodus-storage` process, S6 `nodus-core` process + units (2026-10-02 / 03)
+
+Governing record: decision `docs/plans/decisions/2026-10-01-nodus-component-split.md`
+(local; items 1-26 APPROVED; rev 4 items 27-29 APPROVED 2026-10-02, operator "ikisine de
+evet" / "basitse düzelt"; rev 5 items 30-34 APPROVED 2026-10-02, operator "tamam"). Goal: `nodus-core` / `nodus-storage` / `nodus-witness` as separate
+processes talking over Unix domain sockets (items 2, 7), with the combined
+`nodus-server` binary kept through the transition (item 8). Order: witness first
+(item 22). S1 and S2 are the first two steps; **neither changes what the running
+combined binary does** — no wire, consensus byte, `app_hash` or file location moved.
+S3 adds the separate `nodus-witness` process as an **opt-in** mode
+(`witness_external`); with the default (`false`) the combined binary still runs the
+witness in-process exactly as before. S4 splits the server's own state into a core half
+and a DHT / storage half joined by a message-shaped seam, **inside the combined binary,
+stated as no behaviour change** (commit `b6bd6d3f`: "no wire, DB or log change"; the loop
+order is the same — "Event Loop" above); the `nodus-storage` process that uses the seam
+is S5 (S5b below; opt-in `storage_external`, the default leaves the combined binary as
+it was apart from the S5a / S5b changes stated there). S6 adds the `nodus-core` binary
+(both externals, IPC only), the three-process harness modes `split` / `mixed`, and the
+three systemd units; the combined binary keeps its behaviour (its constructors moved
+behind a table, `nodus_server_init` unchanged — S6 below).
+
+#### S1 — the witness host seam (commit `da2d2dfa`)
+
+Before S1 the witness held a `struct nodus_server *server` and read
+`w->server->identity`, `w->server->config.*` and `w->server->sessions[]`, and
+`nodus_server.c` called witness functions directly through `srv->witness`. Both
+directions now go through one narrow interface each.
+
+**Witness → host: `nodus_witness_host_t`** (`nodus/src/witness/nodus_witness_host.h`).
+The witness includes no server header (`nodus_witness.c` / `nodus_witness_chain_config.c`
+now include `witness/nodus_witness_host.h` in place of `server/nodus_server.h`) and holds
+`const struct nodus_witness_host *host` (`nodus_witness.h`, field `host` of
+`nodus_witness_t`, replacing `server`). The struct (`nodus_witness_host.h:91-96`):
+
+| Field | Meaning |
+|---|---|
+| `const nodus_identity_t *identity` | this node's identity, non-owning, must outlive the witness. Every former `w->server->identity.X` is now `w->host->identity->X` (signing in `nodus_witness.c:1677`, cc approvals `nodus_witness_chain_config.c:1440-1441`, the Comet privval pubkey `nodus_witness_cmt_node.c:1931`, …). |
+| `nodus_witness_host_config_t config` | the configuration subset the witness reads (`:63-78`): `bind_ip[64]`, `external_ip[64]`, `witness_port` (0 = `NODUS_DEFAULT_WITNESS_PORT`), `data_path[256]`, `seq_dir[256]`, `p2p` (`nodus_p2p_config_t`), `has_v2_genesis_pin` + `v2_genesis_pin[32]`, `addr_history_index`. Nothing else of `nodus_server_config_t` is visible to the witness. |
+| `nodus_witness_find_session_conn_fn find_session_conn` + `void *ctx` | `(ctx, pk, token) → struct nodus_tcp_conn *` — the connection of the client session authenticated as `pk` with session token `token`, or NULL when that session is gone, re-authenticated or never existed (`:80-89`). Used for the delayed `dnac_cc_collect` reply (`nodus_witness_chain_config.c:1576-1582`). |
+
+`NODUS_PARTIAL_WIPE_GENESIS_MARKER` (`".witness_db_seen"`) moved with its full comment
+from `nodus_server.h` to `nodus_witness_host.h:60`, because the witness writes it too;
+the name and value are unchanged and the server includes it from there.
+
+`nodus_witness_init(nodus_witness_t *witness, const struct nodus_witness_host *host,
+const nodus_witness_config_t *config)` (`nodus_witness.h:667-669`) replaces the
+`struct nodus_server *server` parameter and refuses (-1) a NULL `host` or a NULL
+`host->identity` (`nodus_witness.c:2493`).
+
+The combined binary fills the host view with `nodus_server_witness_host(srv, &host)`
+(`nodus_server.c:2639-2645`): `identity = &srv->identity`; the config subset copied
+from `srv->config` by `nodus_server_witness_host_config` (since S3 a `static inline`
+in `nodus_server.h:360-377`, shared with `nodus-witness`; array sizes pinned equal by
+the `_Static_assert`s at `nodus_server.h:334-345`);
+`find_session_conn = server_find_session_conn` with `ctx = srv` — the loop over
+`srv->sessions[]` matching `authenticated && conn != NULL && token && client_pk`
+(`nodus_server.c:2619-2634`), moved unchanged from the former
+`cc_collect_session_conn` body in `nodus_witness_chain_config.c`. The host struct is a
+copy taken at init; the header comment above `nodus_server_witness_host`
+(`nodus_server.h:323-331`) states that a caller editing `srv->config` afterwards must
+fill again.
+
+**`nodus.addr_seq` does not move in the combined binary.** The p2p address-record
+sequence file (`NODUS_P2P_ADDR_SEQ_FILE` = `"nodus.addr_seq"`,
+`nodus_witness_p2p.c:1775`) is written under `seq_dir`;
+`nodus_server_witness_host_config` fills `seq_dir = identity_path`
+(`nodus_server.h:371`) and the witness falls back to `data_path` only when `seq_dir`
+is empty (`nodus_witness.c:2696-2698`) — the same directory as before S1. The decision
+moves this file to the witness's data directory (item 10) and assigns the move of an
+existing file to the installer (item 21). Since S3 the separate `nodus-witness`
+process keeps it in its data directory (it empties `seq_dir`, see S3 below); the
+combined binary does not change.
+
+**Server → witness: `nodus_chain_backend_t`** (`nodus/src/server/nodus_chain_backend.h`).
+`nodus_server_t.witness` is gone; the server holds `nodus_chain_backend_t *chain`
+(`nodus_server.h:239`, NULL when the witness failed to initialise) and calls only
+through its ops table (`nodus_chain_backend.h:52-106`). S1 made one op per former
+direct call site; S3 added `read_pending` and `session_closed` and gave
+`dispatch_dnac` the session's key and token:
+
+| Op | Former direct call | Server call site | In-process (`_inproc.c`) | IPC (`_ipc.c`, S3) |
+|---|---|---|---|---|
+| `tick(b)` | `nodus_witness_tick` | main loop, `nodus_server.c:3271-3272` | `nodus_witness_tick` | control-connection dial / status query, then `nodus_tcp_poll(&ib->tcp, 0)` (`nodus_chain_backend_ipc.c:378-382`) |
+| `read_pending(b)` (S3) | — | both poll-wait computations, `:3225-3230`, `:3242-3247` | always `false` (`nodus_chain_backend_inproc.c:40-43`) | `nodus_tcp_read_pending` of its own transport (`:384-386`) |
+| `status(b, info)` | chain fields of the `status` reply | `handle_t2_status`, `:963-964` | `nodus_witness_status_fill` (`:48-51`) | the last `ipc_status` answer, if fresh (`:388-395`) |
+| `chain_open(b)` | `srv->witness->db != NULL` | genesis-marker write, `:3152`; S3 external-mode arming, `:3279-3280` | `w->db != NULL` | snapshot `co` (`:397-400`) |
+| `listen_port(b, &opened)` | the 4004 bound port | startup log, `:3202-3203` (not called in external mode, `:3196-3199`) | the witness's p2p port | snapshot `lp` / `po` (`:402-406`) |
+| `dispatch_dnac(b, conn, client_pk, token, payload, len, method, txn_id)` | `nodus_witness_dispatch_dnac` | post-auth `dnac_*`, `:2124-2127` (`sess->client_pk.bytes`, `sess->token`) | ignores `client_pk` / `token` (`:64-74`) | forwards on the session socket (`:408-416`) |
+| `cc_collect(b, conn, client_pk, token, payload, len, txn_id)` | `nodus_witness_handle_cc_collect` | `dnac_cc_collect`, `:2113-2116` | `nodus_witness_handle_cc_collect` | forwards on the session socket (`:418-425`) |
+| `session_closed(b, conn)` (S3) | — | `session_chain_closed` (`:2266-2269`), called from `on_tcp_accept` before a reused slot's `session_clear` (`:2287`) and from `on_tcp_disconnect` (`:2328`) | nothing (`:89-93`) — the witness looks sessions up in the server's own table | closes that session's socket (`:427-432`) |
+| `close(b)` | `nodus_witness_close` + free | shutdown, `:3339-3342` | `nodus_witness_close` + free | `nodus_tcp_close` + free (`:434-440`) |
+
+**Two implementations.** The in-process one, `nodus/src/server/nodus_chain_backend_inproc.c`
+(the combined binary, the default): `nodus_chain_backend_inproc_open(host, config, &out)`
+(`:120`) allocates the backend and the witness, **copies `*host` into the backend**
+(the witness points at that copy, so it lives exactly as long as the witness), and
+calls `nodus_witness_init`; it returns 0, -1 (the witness refused — nothing left
+allocated; a failed init is freed without `nodus_witness_close`, the witness stops its
+own p2p host on that path) or -2 (out of memory). Its `status` fill moved to the
+witness side in S3 (`nodus_witness_status_fill`, `nodus_witness_ipc.c:42-66`) so the
+`ipc_status` answer uses the same code. The IPC one,
+`nodus/src/server/nodus_chain_backend_ipc.c`, is S3's (below).
+`nodus_chain_backend_inproc_check_pin(data_path, pin)` (`nodus_chain_backend_inproc.c:115`)
+is the pin-at-start check, wrapping `nodus_witness_check_chain_pin`.
+`nodus_server_init` calls the pin check after the partial-wipe gate
+(`nodus_server.c:2761-2768`) **in both modes** — in external mode it inspects the
+chain database `nodus-witness` keeps in the same `data_path` — and opens the backend
+after cluster setup: IPC (`:3018`) when `witness_external`, otherwise in-process
+(`:3031-3034`). In-process: -2 → init fails (`goto fail`), -1 → the node runs degraded
+with the loud ERROR block, exactly as a failed witness init did before. IPC: -1 (socket
+path too long) → `goto fail` (`:3019-3024`), -2 → `goto fail`.
+
+**Witness-side file code moved out of `nodus_server.c`** to
+`nodus/src/witness/nodus_witness_network_file.{c,h}` (no server dependency):
+
+| Before (in `nodus_server.c` / `.h`) | After (`nodus_witness_network_file.h`) |
+|---|---|
+| `nodus_server_read_chain_id(db_path, out)` | `nodus_witness_read_chain_id(db_path, out)` (`:30`) |
+| `nodus_server_check_chain_pin(data_path, pin)` | `nodus_witness_check_chain_pin(data_path, pin)` (`:41`) |
+| `nodus_network_file_load(path, out)` | same name and signature (`:95`), new file |
+| `nodus_network_file_apply(nf, nodus_server_config_t *cfg)` | `nodus_network_file_apply(nf, const nodus_network_file_target_t *t)` (`:105-106`) |
+| `nodus_network_file_write_pin(path, chain32)` | same name and signature (`:116`), new file |
+
+`nodus_network_file_apply` no longer sees a server config: it writes through
+`nodus_network_file_target_t` (`:76-82`) — pointers to `p2p`, `has_v2_genesis_pin`,
+`v2_genesis_pin`, `has_network_pin`, `network_pin` — and refuses (-1) a target with
+any NULL pointer (`nodus_witness_network_file.c:260-264`). The server builds that view
+with `nodus_server_network_file_target(&config)` — since S3 a `static inline` in
+`nodus_server.h:384-394` (no longer defined in `nodus_server.c`), so the shared config
+loader does not pull `nodus_server.c` into `nodus-witness`; `nodus_node_config_load`
+(`tools/nodus_node_config.c:891-898`) does so before load + apply.
+The parse/validate rules, the pin rules and the write-pin procedure are unchanged
+(moved verbatim with their comments). The `--derive-v2-genesis` ceremony (since S3
+in `tools/nodus_node_config.c`, `run_derive_v2_genesis`; before S3 in
+`tools/nodus-server.c`) calls the renamed `nodus_witness_read_chain_id` (`:221`) and
+`nodus_witness_check_chain_pin` (`:356`).
+
+**`nodus_server_check_partial_wipe` stays in the server** (`nodus_server.h:312`,
+`nodus_server.c:2517`): it inspects all three DBs (`nodus.db`, `channels.db`,
+`witness_*.db`) and the decision gives the partial-wipe gate to core (item 9).
+
+CMake: `src/server/nodus_chain_backend_inproc.c` and
+`src/witness/nodus_witness_network_file.c` are added to the `nodus` library
+(`nodus/CMakeLists.txt:551-563`, which since S3 also lists
+`src/server/nodus_chain_backend_ipc.c` and `src/witness/nodus_witness_ipc.c`). Tests that construct a witness now pass a
+`nodus_witness_host_t` to `nodus_witness_init` (some fill it from a test server with
+`nodus_server_witness_host`, e.g. `test_cmt_live`): `test_addr_index`, `test_cc_appr`,
+`test_cc_collect`, `test_cmt_app`, `test_cmt_live`, `test_cmt_node`,
+`test_hf4_names_engine`, `test_v3_block_query`, `test_witness_p2p`; `test_network_file`
+follows the renames and the target view.
+
+#### S2 — local IPC primitives (commits `066cba69`, `11b8254e`)
+
+**Unix domain socket entry in the transport** (`nodus/src/transport/nodus_tcp.{h,c}`;
+decision item 7: socket file under `/var/lib/nodus`, mode 0600, the connecting process
+checked with `SO_PEERCRED`). It is a THIRD listening socket of a `nodus_tcp_t`
+(`unix_listen_fd`, -1 = off, set by `nodus_tcp_init` at `nodus_tcp.c:1732`), sharing
+the transport's pool, framing and callbacks. Linux only (`NODUS_TCP_EPOLL`; elsewhere
+listen returns -1 and connect NULL).
+
+- `int nodus_tcp_unix_listen(nodus_tcp_t *tcp, const char *path, uint32_t allowed_uid)`
+  (`nodus_tcp.h:439-440`, `nodus_tcp.c:1871-1989`), in this order:
+  1. `path` must be non-empty and shorter than `NODUS_TCP_UNIX_PATH_MAX` (108 =
+     `sizeof(sun_path)`, `_Static_assert` at `nodus_tcp.c:1681`); one entry per
+     transport (a second call → -1).
+  2. **Parent-directory rule, checked before anything at `path` is touched**
+     (`unix_parent_dir_ok`, `:1632-1669`): by `lstat` (a symlink is refused, not
+     followed) the parent must be a directory owned by this process's euid or by
+     root with `mode & 022 == 0`; otherwise an ERROR names the directory and -1.
+  3. An existing file at `path`: not a socket → -1, untouched; a socket with a live
+     listener (`connect` succeeds or `EAGAIN`) → -1, untouched; a stale socket
+     (`ECONNREFUSED`) → unlinked, then bound; any other probe result → -1
+     (`unix_path_probe`, `:1603-1614`).
+  4. **0600 via umask, no chmod:** `bind` runs under `umask(0177)` (`:1933-1936`), so
+     the socket file is 0600 from the moment it exists; `lstat` must then show a
+     socket with mode exactly `0600`, else the listener is closed and -1. There is
+     deliberately no `chmod` repair — `chmod` follows symlinks.
+  5. **dev/ino-guarded unlink:** the socket's `st_dev`/`st_ino` are recorded right
+     after bind; every later failure, and `nodus_tcp_close` (`:2944-2955`), removes
+     the file only if `lstat` still shows a socket with that dev/ino
+     (`unix_unlink_if_ours`, `:1674-1679`) — never a file another process bound later.
+  6. `allowed_uid = NODUS_TCP_UNIX_UID_SELF` (`UINT32_MAX`) resolves to `geteuid()`.
+- **Accept** (`accept_one_unix` / `handle_accept_unix`, `:1503-1597`): one listener
+  event accepts up to `NODUS_TCP_UNIX_ACCEPT_BURST` (64) queued peers (bounded loop; the
+  level-triggered listener fires again for the rest). Each peer is checked with
+  `SO_PEERCRED` **before a connection is allocated**: unreadable credentials or a uid
+  other than the allowed one → closed, `on_accept` never runs. A pool-full drop is a
+  WARN. Admitted connections record `peer_uid` / `peer_pid` (`peer_cred_set`).
+- `nodus_tcp_conn_t *nodus_tcp_unix_connect(nodus_tcp_t *tcp, const char *path,
+  uint32_t expected_uid)` (`nodus_tcp.h:457-458`, `nodus_tcp.c:2042-2119`): AF_UNIX
+  connect completes or fails at once (never `EINPROGRESS`), so the connect happens
+  before a connection is allocated and the returned connection is already CONNECTED
+  with `on_connect` run. **The server side is checked too:** `SO_PEERCRED` on the
+  dialing fd (the credentials of the process that listens on the socket) must show
+  `uid == expected_uid` (`UID_SELF` = this euid); unreadable or different → WARN,
+  NULL, no connection allocated. Inherits `tcp->auth_required` like
+  `nodus_tcp_connect`.
+- `bool nodus_tcp_unix_peercred_ok(uint32_t peer_uid, uint32_t allowed_uid)`
+  (`nodus_tcp.h:466`, `nodus_tcp.c:1863-1869`): the admission decision, exported for
+  tests with injected credentials; `allowed_uid == NODUS_TCP_UNIX_UID_SELF` (unresolved)
+  admits nobody.
+- **`is_unix` connections** (`nodus_tcp.h:212-227`): `ip = NODUS_TCP_UNIX_PEER_IP`
+  (`"unix"`, not an address — `inet_pton` fails on it), `port = 0`. They skip the
+  per-IP limit (`nodus_tcp.c:1090`; the pool cap `NODUS_TCP_MAX_CONNS` still bounds
+  them), TCP keepalive and `TCP_NODELAY` (accept `:1554`; the connect paths `:1030`, `:2018`), and are never returned by
+  `nodus_tcp_find_by_addr` (`:2889`). They stay **plaintext**: the transport encrypts
+  only when `channel_crypto.established`, which is zero in `conn_alloc` and set only by
+  the host's `key_init` handshake (`nodus_channel_crypto.c:77`); local traffic is
+  protected by the 0600 file and the uid check instead.
+
+**Read-only identity load** — `int nodus_identity_load_readonly(const char *path,
+nodus_identity_t *id_out)` (`nodus/src/crypto/nodus_identity.h:80`,
+`nodus_identity.c:596-642`; decision item 10: only core writes identity files, storage
+and witness only read them and refuse to start if one is missing). Reads the same six
+files as `nodus_identity_load` (`nodus.pk`, `nodus.sk`, `nodus.kyber_pk`,
+`nodus.kyber_sk`, `nodus.mlkem_pk`, `nodus.mlkem_sk`) with exact-length reads, derives
+`node_id` / fingerprint the same way and applies the same ML-KEM pair check
+(`mlkem_pk` == the copy at offset 1536 of `mlkem_sk`). Where `nodus_identity_load`
+would generate and save a missing Kyber or ML-KEM pair, or regenerate a mismatched
+ML-KEM pair, this returns -1: **it never creates, truncates, renames or modifies a
+file.** Files are opened `"rb"` and read **unbuffered** (`setvbuf(f, NULL, _IONBF, 0)`,
+`:571`) so no secret-key bytes remain in a stdio buffer that `fclose` frees without
+zeroing. On error `id_out` is cleared with `nodus_identity_clear`. On success
+`has_kyber` and `has_mlkem` are both true.
+
+**Callers since S3:** `nodus_tcp_unix_listen` — the witness IPC listener
+(`nodus_witness_ipc.c:377`); `nodus_tcp_unix_connect` — the IPC chain backend's
+control and session dials (`nodus_chain_backend_ipc.c:198`, `:267`);
+`nodus_identity_load_readonly` — `nodus-witness` (`tools/nodus-witness.c:258`). All
+three run only on their OWN `nodus_tcp_t` (never the client 4001 or inter-node 4002
+transport), and only in the opt-in `witness_external` mode. In the combined binary
+(the default) the hooks S2 put on every transport's path stay inert:
+`nodus_tcp_init` sets `unix_listen_fd = -1`, the poll dispatch's listener branch
+(`nodus_tcp.c:2768`) is never hit, `nodus_tcp_close` does nothing unless
+`unix_path` was set by a successful listen, and the `!is_unix` checks (`:1090`,
+`:2889`) never see an AF_UNIX connection.
+
+Tests: `test_tcp_unix` (new, `nodus/CMakeLists.txt:1252-1260`, unconditional — socket mode 0600, frame
+round-trip both ways, `SO_PEERCRED` refusal of a wrong uid on the real accept path plus
+the decision function with injected credentials, stale / live / regular-file handling at
+the path, unlink on close; own `mkdtemp` dir, no ports); `test_identity` gained the
+read-only cases (a full load leaves the directory unchanged; a control proving the OLD
+loader does write when ML-KEM is missing).
+
+#### S3 — the `nodus-witness` process + the IPC chain backend (commits `2f85a5bf`, `546da3d1`, `1faf4d4f`; harness `6af3e600`, `2c71acf1`)
+
+The witness (the 4004 p2p host + the Comet consensus lane) can run as its own process
+(decision items 5, 7, 10, 11, 19, 20, 22). **Opt-in, not for production yet** — at S3
+no systemd unit existed for it; S6 added `deploy/nodus-witness.service` beside the core
+and storage units (§13 "Split units"); there is still no installer (S7). See
+`DEPLOY_RUNBOOK.md` §0. The combined `nodus-server` with the default config is unchanged.
+
+**The mode switch: `witness_external`.** `nodus_server_config_t.witness_external`
+(`nodus_server.h:127-138`), set by the JSON key `"witness_external": true`
+(boolean; any other type refuses the start, `tools/nodus_node_config.c:678-686`) or
+the flag `--witness-external` (`:764`, re-applied after the file in the second option
+pass, `:834-837`). With it, `nodus_server_init` opens the IPC chain backend instead of
+the in-process witness (`nodus_server.c:3011-3029`): **core opens no port 4004 and no
+chain database**, dials nothing at init, and logs
+`WITNESS: external — served by the nodus-witness process over <data_path>/witness.sock`
+(`:3025-3029`); `nodus_server_run` logs `  Witness port: external (nodus-witness)`
+(`:3196-3199`). The partial-wipe gate (item 9) and the network-file pin check still run
+in core.
+
+**The `nodus-witness` binary** (`nodus/tools/nodus-witness.c`; CMake target
+`nodus/CMakeLists.txt:2634-2646`). Same command line and same config file as
+`nodus-server` — both mains call `nodus_node_config_load` (`tools/nodus_node_config.c:705`,
+item 18), so `--derive-v2-genesis` works here too, compiled with this binary's chain
+constants; the DHT/core-only settings are read and not used (`nodus-witness.c:12-16`).
+Start sequence (`nodus-witness.c:196-358`):
+
+1. `nodus_node_config_load`; a result ≥ 0 is the exit code (`-h` → 0, a refused option
+   or file → 1; `:200-203`).
+2. **Requires `witness_external`** (`:208-216`): without it the same config would make
+   the `nodus-server` beside it run its own in-process witness — a second witness with
+   the same validator key on the same `data_path`. ERROR `the loaded config does not set
+   witness_external (...) Not starting.`, exit 1.
+3. Requires `identity_path` (`:224-229`), exit 1 otherwise — the witness never creates an
+   identity.
+4. **One `nodus-witness` per data directory:** `flock(LOCK_EX | LOCK_NB)` on
+   `<data_path>/nodus-witness.lock` (`NODUS_WITNESS_LOCK_NAME`, `:71`; file created 0600,
+   `take_data_lock`, `:137-165`), held for the process lifetime; held by another →
+   ERROR `... is held by another nodus-witness on this data directory — not starting a
+   second witness with the same validator key`, exit 1. The combined binary does NOT
+   take this lock (`:24-26`).
+5. Network-file pin check against the chain it is about to open (`:240-246`), exit 1 on
+   mismatch.
+6. Socket path `<data_path>/witness.sock` must fit `NODUS_TCP_UNIX_PATH_MAX` (`:248-255`).
+7. **Read-only identity** — `nodus_identity_load_readonly` (`:257-263`; item 10): a
+   missing or incomplete identity → exit 1 (`nodus-core or nodus-server makes it`).
+8. Host view (`:290-297`): `nodus_server_witness_host_config` (the same subset the
+   combined binary gives its witness), then **`seq_dir` emptied** so the witness keeps
+   `nodus.addr_seq` in `data_path`, never in the identity directory (items 10, 21);
+   `find_session_conn = nodus_witness_ipc_find_session_conn`, `ctx` = the IPC listener.
+9. `nodus_witness_init`; failure → the `WITNESS MODULE INIT FAILED — nodus-witness EXITS
+   (code 1)` block, which states that DHT / clients are unaffected and `dnac_*` is
+   answered `"witness module not enabled"` until the process is back (`:299-323`;
+   item 11: exit non-zero, the unit restarts it).
+10. Partial-wipe marker, see below (`:325-326`).
+11. `nodus_witness_ipc_listen` (`:328-336`), exit 1 on failure.
+12. Startup lines to stderr: `Nodus witness v<NODUS_VERSION_STRING> running`,
+    `  Identity: <fp>`, `  Witness port: <port>` (` (not opened)` without a p2p host),
+    `  IPC socket: <path>` (`:338-343`).
+13. Loop (`:355-358`): `nodus_witness_tick(w)` then `nodus_witness_ipc_poll(ipc,
+    (w->running && w->p2p) ? 0 : 50)`; SIGINT/SIGTERM end it with
+    `Nodus witness: stopping`, exit 0.
+
+Exit codes: 0 clean stop (or `-h`); 1 every refusal above;
+`--derive-v2-genesis` returns its one-shot's own result (`nodus_node_config.c:882-883`).
+
+**`nodus.addr_seq` in external mode.** `nodus-witness` writes the address-record
+sequence file in its DATA directory. Moving an existing host's file out of the
+identity directory is the **installer's** step (item 21), not this process's: when
+`<identity_path>/nodus.addr_seq` exists and `<data_path>/nodus.addr_seq` does not, it
+logs ONE WARN at start (`warn_addr_seq_not_migrated`, `:172-194`: `... the address-record
+sequence file was not migrated to the data directory (installer step, decision
+2026-10-01-nodus-component-split item 21) ...`) and touches neither directory. Without
+the file the witness numbers its next own address record from the highest own record
+its address book (in the data directory) has seen (`:33-36`).
+
+**The IPC** — one Unix domain socket, `<data_path>/witness.sock`
+(`NODUS_WITNESS_IPC_SOCK_NAME`, `nodus_witness_ipc.h:65`; `"/tmp"` when `data_path` is
+empty, `nodus_witness_ipc_sock_path`, `:126-132`). Listener: `nodus_tcp_unix_listen`
+with `NODUS_TCP_UNIX_UID_SELF` (`nodus_witness_ipc.c:375-378`) — the S2 rules apply:
+file 0600, parent directory not group/other-writable, every peer's `SO_PEERCRED` uid =
+the witness's euid; core dials with `nodus_tcp_unix_connect(..., UID_SELF)`, which checks
+the listener's uid the same way. Frames are ordinary nodus wire frames, **plaintext**, no
+handshake method (`nodus_witness_ipc.h:9-10`). Each side runs the IPC on its OWN
+`nodus_tcp_t` — never the client or inter-node pool (`nodus_chain_backend_ipc.c:80`,
+`nodus_witness_ipc.c:125`). A connection's kind is decided by its FIRST frame
+(`nodus_witness_ipc.h:12-38`):
+
+| Connection | First frame | Then |
+|---|---|---|
+| session — one per core client session that has sent a `dnac_*` (item 19) | `{"q":"ipc_hello","pk":<bstr NODUS_PK_BYTES>,"tk":<bstr NODUS_SESSION_TOKEN_LEN>}` — the client session's key and session token | the client's tier-2 `dnac_*` payloads, unchanged; the witness's replies on the same socket, relayed to the client unchanged |
+| control — one per core | `{"q":"ipc_ctl"}` | `{"q":"ipc_status"}` queries, each answered `{"q":"ipc_status","co":bool chain open,"h":uint height,"sr":bstr 64 state root,"ci":bstr 32 chain id,"po":bool p2p host exists,"lp":uint 4004 port}` |
+
+Witness side (`nodus_witness_ipc.c`): control-plane frames are parsed strictly — a CBOR
+map of 1-3 entries, only `q` / `pk` / `tk`, exact sizes, no repeated key, no trailing
+bytes (`ipc_parse_ctl`, `:146-187`). An `ipc_hello` key is turned into a fingerprint
+and recorded on the connection as `peer_pk` / `peer_id` / `peer_id_set`, the fields
+`nodus_auth.c` sets on a client connection, because the witness's `dnac_*` handlers read
+the requester from `conn` (`:208-226`). **Every session frame** is decoded with
+`nodus_t2_decode` and must carry a token equal to the preface token (`:242-252`); then
+`dnac_cc_collect` goes to the `cc_collect` handler with the preface key and token, any
+other `dnac_*` to `dispatch_dnac`, and **any non-`dnac_*` method closes the connection**
+(`:253-262`). A first frame that is not a valid preface (`:204-206`, `:231`), a control
+frame that is not `ipc_status` (`:274-277`), a session frame that does not decode or
+carries another token — each closes the connection with a WARN `closing IPC connection
+slot=<n>: <why>`. No IPC frame reaches the server's `dispatch_t2` or its `key_init`
+handshake handlers: the core backend's `on_frame` only relays a session frame to its
+client or decodes an `ipc_status` answer (`nodus_chain_backend_ipc.c:329-352`).
+`nodus_witness_ipc_find_session_conn` (`:385-401`) returns the session connection whose
+preface named `pk` and `token` and that is not closing — the witness's
+`find_session_conn` in external mode, so once core closes a session's socket the
+delayed `dnac_cc_collect` reply finds no session and is dropped, as in the combined
+binary.
+
+Core side (`nodus_chain_backend_ipc.c`, `nodus_chain_backend_ipc_open`, `:454-483`;
+opens no socket):
+
+- **Control connection.** Dialled on the first `tick`; while down, re-dialled with
+  backoff `IPC_DIAL_BACKOFF_MIN` 250 ms doubling to `IPC_DIAL_BACKOFF_MAX` 5000 ms
+  (`:65-66`, `:193-221`). On connect it sends `ipc_ctl` + `ipc_status` and logs INFO
+  `control connection to the witness up (<path>)`; then an `ipc_status` query every
+  `IPC_STATUS_EVERY_MS` 1000 ms (`:63`). The answer is decoded strictly (all seven keys,
+  once each, exact types/sizes, `:108-169`); a malformed answer closes the control
+  connection (WARN `malformed ipc_status answer — closing the control connection`).
+  Losing it logs WARN `control connection to the witness lost (<path>) — chain status
+  unavailable until it is back` (`:364-365`).
+- **Status snapshot.** `status`, `chain_open` and `listen_port` report the last answer
+  only while the control connection is up AND the answer is younger than
+  `IPC_STATUS_STALE_MS` 5000 ms (`:64`, `ipc_snap` `:172-177`); otherwise core reports
+  no chain, as a witness-less server does.
+- **Session sockets.** A session's first `dnac_*` dials its socket and sends the
+  `ipc_hello` preface; later requests of that session use the same socket; a socket
+  belonging to another connection or token in that client slot is closed first
+  (`:234-291`). `session_closed` closes it (`:427-432`).
+- **`NODUS_CHAIN_NO_WITNESS_MSG`** (`"witness module not enabled"`,
+  `nodus_chain_backend.h:48`) — the same bytes a server without a chain backend sends
+  (`nodus_server.c:2128-2133`, item 20) — answers a `dnac_*` request at once, with code
+  `NODUS_ERR_PROTOCOL_ERROR` (`ipc_no_witness`, `:293-300`), when: the control
+  connection is down (**no session socket is dialled then** — the control backoff is the
+  only re-dial driver, `:249-254`); the session cap is reached; the session dial or the
+  preface send fails; the session socket already has `NODUS_WITNESS_IPC_QUEUE_MAX` or
+  more queued (the request is not queued and the socket stays open, `:311-318`); or the
+  forward send fails (a real transport fault — the socket is then closed, `:319-324`).
+  A request already forwarded when the witness goes away gets no answer; the client
+  times out (`:30-31`).
+- **Session cap** `NODUS_CHAIN_IPC_MAX_SESSION_CONNS = NODUS_TCP_MAX_CONNS - 64` = 960
+  (`nodus_chain_backend.h:146`; `NODUS_TCP_MAX_CONNS` 1024, `nodus_tcp.h:22`): the 64
+  kept slots hold the control connection and session sockets core has closed but the
+  witness has not yet seen close. Reaching it logs one WARN
+  (`<n> client sessions already hold a witness socket (the cap) ...`, `:256-265`).
+
+**Queue bounds** (`nodus_witness_ipc.h:75-120`; "queued" = `wlen - wpos + pending_bytes`,
+checked BEFORE a frame is queued, so one maximum-size frame still goes onto an idle
+connection):
+
+| Constant | Value | Side | Effect |
+|---|---|---|---|
+| `NODUS_WITNESS_IPC_QUEUE_MAX` | 4 MiB | core, per session socket toward the witness | the request is answered `NODUS_CHAIN_NO_WITNESS_MSG`, not queued; socket stays open |
+| `NODUS_WITNESS_IPC_REPLY_QUEUE_MAX` | 16 MiB | witness, per connection toward core | the next frame read on that connection closes it instead of being dispatched (`nodus_witness_ipc.c:337-343`); core forgets the session socket and the next `dnac_*` dials a new one |
+| `NODUS_WITNESS_IPC_CTL_FRAME_MAX` | 512 B | witness | the `ipc_status` answer buffer (`:284`) |
+
+**Poll fairness.** Core: the IPC backend's transport is polled with a 0 ms wait from
+`tick` once per loop pass, and `read_pending` makes the server's own polls wait 0 ms while
+it has input left (see the §10 "Event Loop" read-budget note). `nodus-witness`:
+see "Not done yet".
+
+**Partial-wipe marker in external mode** (commit `546da3d1`). The gate demands all
+three DBs or none (O16A), so the marker `NODUS_PARTIAL_WIPE_GENESIS_MARKER` may only be
+written once `nodus.db`, `channels.db` AND the chain DB are real. `nodus-witness` does
+not open the first two and may start before core has created them, so it writes the
+marker only when its chain is open AND both core DBs already exist (`core_dbs_present`,
+`nodus-witness.c:96-107`, `:325-326`). Otherwise core arms it: in `nodus_server_run`,
+once, the first time the witness reports an open chain (`witness_external &&
+!genesis_marker_armed && chain_open`, `nodus_server.c:3279-3283`; field
+`nodus_server_t.genesis_marker_armed`, `nodus_server.h:243`). Both writers log the
+combined binary's WARNING lines on failure (not fatal).
+
+**Operational requirements.**
+- `data_path` (the socket's parent directory) must NOT be group- or other-writable and
+  must be owned by the process's euid or root — `nodus_tcp_unix_listen` refuses it
+  otherwise (`unix_parent_dir_ok`, `nodus_tcp.c:1632-1669`; ERROR `unix: socket
+  directory <dir> is group/other-writable (mode <m>), refusing`), and `nodus-witness`
+  then exits 1. A directory made by `mkdir -p` under a 0002 umask is 0775 — the harness
+  `chmod 0700`s a split node's data directory for this reason
+  (`stagef_up_v2.sh:209-217`).
+- **`nodus-server` and `nodus-witness` run as the same uid**: both ends check the
+  other's `SO_PEERCRED` uid against their own euid (`NODUS_TCP_UNIX_UID_SELF`,
+  `nodus_witness_ipc.c:377`, `nodus_chain_backend_ipc.c:198-199`, `:267-268`).
+- Both use the same `data_path` (the socket, the lock, the chain DB, the marker and the
+  pin check all live there; item 9) and the same config (item 18), each with
+  `witness_external` set.
+
+**Link gate.** `test_split_linked` (`nodus/CMakeLists.txt:2648-2654`,
+`tests/split_linked.cmake`) runs `nm --defined-only` on the linked `nodus-witness`: no
+global text symbol `nodus_server_init`, `nodus_cluster_init`, `nodus_storage_open`,
+`nodus_presence_tick` may be present, and `nodus_witness_init`, `nodus_witness_p2p_new`,
+`nodus_witness_v2_gen_derive_v3` must be (so a pass cannot come from an empty table);
+a missing `nm` fails closed. That is why `nodus_server_witness_host_config` and
+`nodus_server_network_file_target` are `static inline` in `nodus_server.h` and why
+`nodus_witness_ipc.h` includes no server header.
+
+**Tests.** `test_witness_ipc` (`nodus/CMakeLists.txt:1262-1271`): the IPC backend against
+the witness listener over a real socket in a `mkdtemp` dir, test handlers standing in for
+the witness (it proves the IPC, not the chain) — preface key/token reach the handler and
+`find_session_conn`; the reply reaches the client unchanged; `cc_collect` routing;
+`session_closed` makes `find_session_conn` NULL; the status snapshot round-trips; a
+non-preface first frame is closed; no witness → the exact item-20 error bytes and no
+chain; control connection not up → the error and NO session dial; the per-session
+bound; `read_pending` (file header `tests/test_witness_ipc.c:1-59`). `test_split_linked`
+above. Harness: `STAGEF_MODE=splitw` / `mixedw` (`tests/integration/stagef/README.md`
+"Harness modes").
+
+**Not done yet** (S3 ships these open, on purpose):
+- **`nodus-witness`'s own poll fairness.** `nodus_witness_tick` waits up to 50 ms in its
+  4004 poll while it runs with a p2p host; that wait is computed inside the tick and is
+  not shortened for leftover IPC input, so IPC input can wait up to 50 ms extra
+  (`nodus-witness.c:345-354`). Closing it needs a wait cap passed into
+  `nodus_witness_tick`.
+- ~~Restart / kill / wipe / rejoin / block-sync of a split node is untested~~ — closed in
+  S6: the four sweep scenarios that start / stop nodes run in every mode through
+  `stagef_spawn_node` / `stagef_stop_node` (S6 below). **Upgrade** of a split node stays
+  untested: the OLD/NEW scenarios outside the sweep still SKIP (99) in every split mode,
+  "split upgrade pairs deferred (decision 23)" (`stagef_env.sh` `stagef_split_skip_if`).
+- **`nodus.addr_seq` migration** for an existing host is the installer's (item 21); there
+  is no installer yet.
+- ~~No systemd unit for `nodus-witness`~~ — S6 ships `deploy/nodus-witness.service` (S6
+  below). No installer yet (item 26 — S7).
+
+#### S4 — core/DHT state split + seam, in the combined binary (commits `6185ff2b`, `b6bd6d3f`, `8eced563`)
+
+Decision items 2-4, 16, 17. Before S4 the DHT / storage half — Kademlia routing, the
+iterative lookup engine, replication / republish / hinted handoff, listen subscriptions,
+batch forward (BF), `nodus.db` (values + media) and `channels.db` — was fields of
+`nodus_server_t` and code inside `nodus_server.c`, and core and DHT code read each
+other's fields freely. S4 gives the DHT half its own state and its own translation
+units and puts every crossing behind one interface per direction. Three commits:
+`6185ff2b` the state split + seam with the code still in `nodus_server.c`; `b6bd6d3f`
+the move of that code into `src/dht/` (bodies byte-identical, per the commit; log lines
+keep the `NODUS_SRV` tag, `nodus_dht_server.c:16-17`); `8eced563` the link gate.
+
+**Files.**
+
+| File | Holds |
+|---|---|
+| `src/dht/nodus_dht.h` | the DHT's state `nodus_dht_t`, its view of core `nodus_dht_host_t`, origins, session shadows, the core → DHT entry points, the DHT-internal types and constants that were in `nodus_server.h` (lookup, BF, Package A, republish, eviction, subscriptions) |
+| `src/dht/nodus_dht_server.c` | the DHT handlers (`put` / `get` / `get_all` / `get_batch` / `cnt_batch` / `listen` / `unlisten` / `ch_*`), the 4002 DHT frames, the UDP 4000 queries other than ping / pong, the lookup engine, BF, Package A read merge, replication, hinted handoff, republish, subscriptions, ping-before-evict, the UDP rate limiter, the entry points and the lifecycle (`:1-17`). Includes no server header. |
+| `src/dht/nodus_dht_media.c/.h` | `git mv` of `src/server/nodus_media_handler.c/.h`; the three media handlers now take `(nodus_dht_t *dht, int slot, …)` (`nodus_dht_media.h:24-30`) |
+| `src/server/nodus_dht_backend.h` | the server's one door to the DHT: `nodus_dht_backend_ops_t` + `struct nodus_dht_backend` (`:42-135`) |
+| `src/server/nodus_dht_backend_inproc.c` | the in-process implementation — each op calls the `nodus_dht.h` function directly (`:116-132`) |
+| `src/server/nodus_server.c` | keeps auth, sessions, presence, circuits, the 4002 handshake (since S5a the dialer half is the shared `server/nodus_inter_dial.c`, called from here), cluster heartbeat, status, the host side of the seam, the pending-full hook and the send-stats dump (`:1-9`) |
+
+**The DHT's state: `nodus_dht_t`** (`nodus_dht.h:554-601`): the host view; `storage`,
+`media_storage`, `ch_store`, `routing`, `ring` (+ `storage_open` / `media_open` /
+`ch_open`, so close releases exactly what opened); the session shadows
+`sessions[NODUS_MAX_SESSIONS]` and `inter_sessions[NODUS_MAX_INTER_SESSIONS]`;
+`lookup_state`; `subscriptions` + `last_sub_cleanup` + `sub_renewal`; `bf_state` +
+`bf_fd_table`; `republish` + `media_republish`; `pending_evictions`;
+`last_wal_checkpoint` + `last_vacuum`. `nodus_server_t` lost all of these and holds
+`nodus_dht_backend_t *dht` instead (`nodus_server.h:229-232`). `NODUS_MAX_SESSIONS`,
+`NODUS_MAX_INTER_SESSIONS` (both `NODUS_TCP_MAX_CONNS`) and `NODUS_MAX_LISTEN_KEYS`
+(128) moved to `nodus_dht.h:50-52`, because a slot number is the DHT's origin id.
+
+Lifecycle, in the order `nodus_server_init` had before the seam: `nodus_dht_init`
+(`nodus_dht.h:613`, phase one, BEFORE the identity is loaded — zero, copy the host,
+BF fds to -1, republish jitter, lookup txn counter, BF epoll; reached through
+`nodus_dht_backend_inproc_new`, `nodus_server.c:2639-2665` — with `storage_external`
+the same block opens the IPC backend instead), then after the identity
+`nodus_dht_open` (`nodus_dht.h:624-625` — `nodus.db` + media on the same handle,
+`channels.db` + default channels, routing table, hash ring with this node at its
+advertised address; through `nodus_dht_backend_inproc_open`, `nodus_server.c:2681-2692`,
+skipped with `storage_external`).
+`nodus_server_close` calls `ops->stop` (abandon lookups and BFs, close the BF epoll)
+first and `ops->close` (databases, free the backend) after the transports
+(`nodus_server.c:3250-3274`); a failed init calls `ops->close` (`:3075-3076`).
+
+**Origins: `{kind, slot, gen}`, no pointer** (`nodus_dht.h:62-93`). A request's origin
+and its replies' destination is `nodus_dht_origin_t { kind, slot, gen }`, `kind` =
+`NODUS_DHT_ORIGIN_CLIENT` (4001 / WebSocket) or `NODUS_DHT_ORIGIN_INTER` (4002), `slot`
+= core's session index (`conn->slot`), `gen` = the generation of the session that held
+the slot. As S4 first landed (`8eced563`) there was no `gen`: a reply the DHT sent later
+(a forwarded `get` / `get_all` / `get_batch`, an iterative lookup) went to whichever
+session held the slot when it was sent, so a client given a reused slot could receive the
+previous client's reply — pre-existing (live in nodus 0.23.10), `nodus/BUGS.md`
+("gecikmeli DHT cevabı yeniden kullanılan oturum yuvasına gider"). Decision item 29
+(**APPROVED** 2026-10-02) added the generation in commit `061f40ff`: core gives every
+session it opens (client accept, 4002 connect / accept) a fresh value from one
+server-wide counter (`srv->next_session_gen`, `nodus_server.h:263`; per-session
+`dht_gen`, `:149`, `:187`) and hands it over in `session_opened`; a deferred reply is
+dropped by the DHT unless the slot's shadow is open with that generation
+(`dht_origin_live`, `nodus_dht_server.c:79-84`), and core's `send_to_origin` writes only
+to a session of that generation (`server_dht_send_to_origin`, `nodus_server.c:2446-2460`).
+Test: `test_origin_gen`; over the S5b sockets, `test_dht_ipc` case 13.
+
+**Session shadows** (`nodus_dht.h:481-519`). Core keeps the session (connection,
+identity, token, circuits); the DHT keeps, per slot:
+- client: `nodus_dht_session_t { open, listen_keys[NODUS_MAX_LISTEN_KEYS], listen_count,
+  rate_window_start, puts_in_window }` — the fields removed from `nodus_session_t`
+  (`nodus_server.h:198-199`). `open` stands for "core's session in this slot has a
+  connection"; before the split the DHT read `sess->conn` and, for listeners, also
+  `sess->authenticated` — `open` alone answers the same because listen keys are only
+  added after the token check and every path that ends an authentication clears the slot
+  (the header's argument, `:485-494`).
+- 4002: `nodus_dht_inter_session_t { sv_window_start, sv_count, fv_window_start, fv_count }`
+  — removed from `nodus_inter_session_t` (`nodus_server.h:158-159`); `sv` and `m_sv`
+  share the sv window.
+
+Where core opens / closes them (`ops->session_opened` / `ops->session_closed`; the DHT
+side zeroes the shadow and, for a client, sets `open`, and records the generation,
+`nodus_dht_server.c:4245-4268`; line numbers in this S4 part are re-read at the S5b
+tree):
+
+| Event | Core site | Call |
+|---|---|---|
+| client accept (slot gets `sess->conn`) | `on_tcp_accept`, after `session_clear` + `sess->conn = conn` | `session_dht_opened` (`nodus_server.c:2062-2066`, call `:2082`) |
+| client disconnect | `on_tcp_disconnect`, after `session_clear` | `session_dht_closed` (`:2068-2072`, call `:2123`) |
+| 4002 dial connected | `on_inter_connect` | `inter_session_dht(…, true)` (`:1674-1681`, call `:1694`) |
+| 4002 accept | `on_inter_accept` | `inter_session_dht(…, true)` (call `:1729`) |
+| 4002 disconnect | `on_inter_disconnect`, after `inter_session_clear` | `inter_session_dht(…, false)` (call `:1817`) |
+
+With `storage_external` (S5b) the same calls reach the IPC backend, which sends nothing
+for them: `session_opened` records the generation and closes a connection left from the
+slot's previous session, `session_closed` closes the origin connection — its EOF is the
+storage process's "session closed" (see S5b below).
+
+**Core → DHT: `nodus_dht_backend_ops_t`** (`nodus_dht_backend.h:42-131`; HOT = per client
+put / get or per replicated value, COLD = periodic, per heartbeat, per session open /
+close, or on failure only — `:18-19`):
+
+| Op | HOT/COLD | Core call site (`nodus_server.c` unless named) | In-process → |
+|---|---|---|---|
+| `client_frame(b, slot, client_fp, client_pk, payload, len, msg)` | HOT | `dispatch_t2`, 13 methods, `:1960-1975` | `nodus_dht_client_request` |
+| `inter_frame(b, slot, peer_fp, peer_ip, payload, len, msg)` | HOT | `dispatch_inter`: `fv` `:1459`, `get_batch` `:1490`, `m_sv` `:1503` (`peer_fp` / `peer_ip` added in S5b for the IPC preface; in-process unused) | `nodus_dht_inter_request` |
+| `inter_t1(b, slot, peer_fp, peer_ip, payload, len, t1)` | HOT (sv = replication) | `dispatch_inter`, T1 `sv` / `sub` / `unsub` / `ntf` after the F2 gate, with `&sess->client_fp` and the conn's ip, `:1582-1585` | `nodus_dht_inter_t1` |
+| `udp_frame(b, from_ip, from_port, payload, len, msg)` | HOT in a large cluster, COLD at 7 nodes | `handle_udp_message`, `fn` / `fn_r` / `sv` / `fv`, `:2043` | `nodus_dht_udp_request` |
+| `peer_seen(b, kind, node_id, ip, udp_port, tcp_port)` | COLD | UDP ping `:2022`, pong `:2029` + `:2035`; cluster ALIVE `nodus_cluster.c:248-249` | `nodus_dht_peer_seen` |
+| `peer_dead(b, node_id)` | COLD | cluster DEAD, `nodus_cluster.c:186` | `nodus_dht_peer_dead` |
+| `session_opened(b, origin)` / `session_closed(b, origin)` | COLD | table above | `nodus_dht_session_opened` / `_closed` |
+| `hint_store(b, node_id, ip, port, frame, len)` | COLD | `nodus_server_on_pending_full`, `:390-392` — DHT replication frames only since S5a | `nodus_dht_hint_store` |
+| `routing_snapshot(b, out, max)` | COLD (every `NODUS_PRESENCE_SYNC_SEC`) | `nodus_presence_tick`, `nodus_presence.c:308-309` | `nodus_dht_routing_snapshot` |
+| `read_pending(b)` | — | both poll waits, `:3136`, `:3153` | always `false` |
+| `evict_tick(b)` | — | right after `nodus_cluster_tick`, `:3173` | `nodus_dht_evict_tick` |
+| `tick(b)` | — | right after `nodus_presence_tick`, `:3233` | `nodus_dht_tick` |
+| `stop(b)` / `close(b)` | — | `nodus_server_close` / init failure | `nodus_dht_stop` / `nodus_dht_close` + free |
+
+In-process the decoded message (`msg` / `t1`) is passed beside the frame bytes so the
+frame is not parsed twice; the in-process ops ignore `payload` / `len` except
+`inter_frame`, which hands them on because `fv` is re-read from the bytes as T1
+(`nodus_dht.h:612-618`, `:641-649`; `nodus_dht_backend_inproc.c:26-59`). An IPC
+implementation (S5) would carry only the bytes and decode them on the storage side.
+A `slot` out of range makes an entry point do nothing (`nodus_dht.h:617-618`).
+
+`nodus_dht_peer_seen_t` (`nodus_dht.h:504-520`) has four kinds so the routing updates
+keep the order they had around core's cluster update: `PING` (routing insert with
+ping-before-evict, then cancel that peer's pending eviction; core updates the cluster
+after), `PONG_TOUCH` (routing touch, BEFORE core's cluster update), `PONG` (AFTER it:
+cancel the pending eviction, then insert), `ALIVE` (cluster saw a member turn ALIVE:
+plain routing insert). Core passes `tcp_port = from_port + 2` for UDP events, as before
+(`nodus_server.c:2016-2037`).
+
+**DHT → core: `nodus_dht_host_t`** (`nodus_dht.h:427-463`), filled by
+`nodus_server_dht_host` (`nodus_server.c:2487-2495`) in-process; the nodus-storage
+process fills the same members itself (`nodus_dht_ipc_host`, S5b below):
+
+| Member | HOT/COLD | Core implementation |
+|---|---|---|
+| `const nodus_identity_t *identity` | configuration, not a crossing (`nodus_dht.h:443-447`) | `&srv->identity` — read for `node_id` (routing, self-skips) and `pk` / `sk` (the BF dialer's hello and auth signature, since S5b through the shared dialer module, `nodus_dht_server.c` `bf_dial_io` `:3293`) |
+| `send_to_origin(ctx, origin, frame, len)` | HOT | `server_dht_send_to_origin` (`:2446-2460`): `nodus_tcp_send(srv->sessions[slot].conn \| srv->inter_sessions[slot].conn, …)` when that session's `dht_gen` equals `origin.gen`; -1 for a slot out of range or another generation |
+| `udp_send(ctx, payload, len, ip, port)` | HOT in a large cluster, COLD at 7 nodes | `server_dht_udp_send` (`:2463-2467`): `nodus_udp_send(&srv->udp, …)` — T1 replies must leave from port 4000 |
+| `inter_send(ctx, ip, port, expected_peer_id, frame, flen)` | HOT (every put × R, every republished value, every remote listener notify) | `server_dht_inter_send` (`:2470-2475`) → `dht_republish_send` (`:434-440`) → `nodus_inter_pool_send_framed` on `srv->inter_tcp` (since S5b in the shared `server/nodus_inter_dial.c:355`, the same code nodus-storage runs on its own pool): find-or-dial (`expected_peer_id` pinned on a new conn, CRIT-1), pre-auth pending buffer. **Synchronous** 0 / -1 — the caller decides on a hint from it in the same call (`nodus_dht.h:463-471`) |
+| `hint_wanted(ctx, node_id)` | COLD (after a failed send) | `server_dht_hint_wanted` (`:2480-2485`): a cluster member (`cluster_knows_peer`) last seen less than `NODUS_HINT_OFFLINE_SKIP_SEC` ago — reads `srv->cluster` synchronously |
+
+**Where each crossing of the S4 plan went.** The rev 2 plan (`tasks/split-fable-plan-rev2.md`
+§1.1, local) listed nine crossings A-I; with today's code:
+
+- **Client DHT requests (A)** — `ops->client_frame`, see the table. The session fields
+  split as described under "Session shadows". Core still owns `ping`, `servers`,
+  `status`, `circ_*`, `pq`, `dnac_*`.
+- **Listener notifications (B)** — `notify_listeners` and subscription renewal run
+  over the DHT's shadow `listen_keys`; subscription cleanup
+  (`subscription_cleanup_expired`) runs over `dht->subscriptions`, the remote-subscriber
+  table; the notify frame leaves through `send_to_origin`.
+- **Inbound 4002 DHT frames (C)** — the handshake, `p_sync` and `ri_*` stay in core's
+  `dispatch_inter`; `fv` / `get_batch` / `m_sv` go to `inter_frame`, T1 `sv` / `sub` /
+  `unsub` / `ntf` (after core's F2 gate) to `inter_t1` with core's peer identity. The
+  `sv` / `fv` rate windows moved to the DHT shadow.
+- **Outbound 4002 (D)** — replication, republish, listen forwarding and hinted retry
+  call `host.inter_send` (core's pool, synchronous); the hint decision calls
+  `host.hint_wanted`; core's pending-full hook parks frames through `ops->hint_store`
+  (the authentication and cluster-member gates stay in core, `nodus_server.c:377-392`;
+  since S5a only DHT replication frames are parked, `:396-401` — see S5a below).
+  BF keeps its OWN sockets and epoll inside the DHT (`nodus_dht_t.bf_state`).
+- **UDP 4000 (E)** — the socket stays in core; ping / pong are answered by core
+  (`nodus_server.c:2184-2209`), `fn` / `fn_r` / `sv` / `fv` go to `udp_frame`, every
+  datagram the DHT sends goes through `host.udp_send`.
+- **Peer events (F)** — `peer_seen` (four kinds) and `peer_dead`; the cluster no longer
+  includes `core/nodus_routing.h` (`nodus_cluster.c:9-12`). The ping-before-evict sweep
+  is `ops->evict_tick`.
+- **Presence's routing read (G)** — `nodus_presence_tick` reads
+  `ops->routing_snapshot` into `nodus_dht_peer_addr_t { node_id, ip[64], tcp_port }`
+  (`nodus_dht.h:546-550`; `node_id` added in S5a, decision item 30) at the moment it read
+  the buckets before (`nodus_presence.c:234-242`); in-process it is read at the call.
+- **Status (H)** — no crossing: `handle_t2_status` reads only the chain backend, the
+  cluster, uptime and disk counters (`nodus_server.c:1016-1056`).
+- **Hash ring (I)** — `ring` moved into `nodus_dht_t`. Its only readers are under
+  `#ifndef NODUS_CHANNELS_DISABLED` (compiled out, see Ports) and reach it through
+  `nodus_dht_backend_inproc_state` (below); `nodus_cluster.c`'s `sync_ring` only logs
+  (`:62-72`).
+
+**What still crosses by pointer, and why.**
+- `host.identity` — a const pointer to `srv->identity` for the DHT's lifetime. The
+  header classes it as configuration; S5 loads the identity read-only in the storage
+  process (decision items 10, 16; `nodus_dht.h:443-447`).
+- The decoded `msg` / `t1` passed with each request — transient request data, in-process
+  only (see above).
+- `nodus_dht_t *nodus_dht_backend_inproc_state(b)` (`nodus_dht_backend.h:159-163`) —
+  the in-process state behind a backend, for tests that set up or inspect the DHT
+  directly (`circuit_latency_probe.c`, `test_bf_forward_frames.c`,
+  `test_circuit_cross_live.c`, `test_inter_preauth_gate.c`, `test_origin_gen.c`) and for
+  the channel-server code in `nodus_server.c`, all of it under
+  `#ifndef NODUS_CHANNELS_DISABLED` (calls at `:2336`, `:2366`, `:2874-2875`, `:3271`).
+  It does not check that `b` is an in-process backend.
+- `inter_send` and `hint_wanted` are callbacks, not pointers into core's state, but they
+  execute core code that reads core's inter-node pool and cluster table synchronously,
+  inside the DHT's call.
+
+**Link gate: `test_dht_linked`** (`nodus/CMakeLists.txt:2691-2696`,
+`tests/dht_link_probe.c`, `tests/dht_linked.cmake`). `dht_link_probe` is never run: it
+takes the address of every core → DHT entry point in `nodus_dht.h` (`nodus_dht_init`,
+`_open`, `_stop`, `_close`, `_session_opened`, `_session_closed`, `_client_request`,
+`_inter_request`, `_inter_t1`, `_udp_request`, `_peer_seen`, `_peer_dead`,
+`_hint_store`, `_routing_snapshot`, `_evict_tick`, `_tick`; `dht_link_probe.c:25-42`), so
+the linker pulls exactly the closure of the DHT objects out of `libnodus`.
+`dht_linked.cmake` runs `nm --defined-only` on it and matches global text symbols
+(`" T <name>"` at a line end): **forbidden** `nodus_server_init`, `nodus_server_dht_host`,
+`nodus_auth_handle_auth`, `nodus_presence_tick`, `nodus_cluster_init`,
+`nodus_cluster_tick`, `nodus_dht_backend_inproc_new` (`:34-41`); **required**
+`nodus_dht_init`, `nodus_dht_client_request`, `nodus_dht_tick`, `handle_t2_media_put`,
+`nodus_storage_open`, `nodus_routing_try_insert` (`:47-53`, so a pass cannot come from
+an empty table or the wrong file); a missing `nm` fails closed (`:55-61`). A direct
+call from a DHT file into a core object would make the S5 storage process carry core.
+
+**Tests that follow the split.** `test_bf_forward_frames`, `test_bf_recv_frame` use the
+renamed `nodus_dht_bf_*`; the fixtures that poke DHT state reach it through
+`nodus_dht_backend_inproc_state` (commit `6185ff2b`). Verification of S4 itself (no
+behaviour change) is the ctest suite and the Genesis Protocol harness, run by the
+orchestrator; not recorded here.
+
+**Open for S5** (the `nodus-storage` process) — S4 does not decide these; **each is
+answered by S5a / S5b below** (outbound 4002 from storage's own pool, the membership
+snapshot, the shared dialer incl. BF, the generation; the two cycles — the first stays
+inside nodus-storage, the second disappears because storage's dialed connections are no
+core sessions):
+- **Outbound 4002 from storage's own pool — decision item 16 (APPROVED).** Today
+  `inter_send` runs core's `dht_republish_send` on core's `inter_tcp` pool. Item 16 says
+  storage opens its outgoing 4002 itself (replication / republish / hinted handoff stay
+  synchronous inside storage; the rejected alternative was replication through core).
+  S5 must move this send into storage.
+- **`hint_wanted` needs cluster state in storage.** Today it reads core's cluster table
+  synchronously. Decision item 17 pushes only a routing snapshot; how storage gets
+  cluster membership + last-seen is item 27 — **APPROVED** 2026-10-02 (core pushes a
+  cluster membership + last-seen snapshot next to the routing snapshot, on change / ≤ 30 s;
+  storage decides locally). Not implemented yet.
+- **The pinned dialer handshake** — item 28, **APPROVED** 2026-10-02; done in S5a below
+  (`server/nodus_inter_dial.{h,c}`). BF still has its own dialer copy.
+- **Delayed replies to a reused slot** — item 29, **APPROVED** 2026-10-02; done in
+  `061f40ff`, see "Origins" above.
+- **Re-entrant DHT → core → DHT cycles.** Two are in the code today, synchronous and
+  nested in-process:
+  1. DHT → `host.inter_send` → `dht_republish_send` → `nodus_tcp_send_progress`
+     (`nodus_server.c:533`) → transport pending queue full → `tcp->on_pending_full`
+     (`nodus_tcp.c:2449-2450`) → `nodus_server_on_pending_full` → `ops->hint_store` → DHT
+     (since S5a only for a replication frame `sv` / `m_sv`; the listener `ntf` and
+     subscription `sub` frames the DHT also sends on this path are dropped there).
+  2. DHT → `host.inter_send` → `dht_republish_send` slow-consumer path →
+     `nodus_tcp_disconnect` (`nodus_server.c:540`, `:559`) → `on_disconnect`
+     (`nodus_tcp.c:2844-2845`) → `on_inter_disconnect` → `ops->session_closed`
+     (`nodus_server.c:1852`) → DHT.
+
+  What these become when the DHT is another process is not decided.
+
+#### S5a — 4002 connection fixes before the storage process (decision items 28, 30, 33)
+
+(`nodus_server.c` line numbers in this S5a part are those of commit `f1d48425`. S5b
+moved the find-or-dial bodies, `dht_republish_send`'s body, `pending_full_is_replication`
+and the dialer's host-side sync / gate opening into `server/nodus_inter_dial.c` — see
+S5b; the S5a behaviour of each is unchanged.)
+
+Three changes to how core uses port 4002, inside the combined binary, before the
+`nodus-storage` process (S5) takes its own outbound 4002 (item 16). No consensus,
+witness or 4004 code is touched. Every frame that is sent is built by the same encoder
+call with the same arguments as before; the behaviour changes are exactly (1) presence
+and circuit dials now pin the expected peer and are no longer refused, and (2) an
+overflowed 4002 frame that is not DHT replication is dropped instead of parked.
+
+**Every outbound 4002 dial from core pins the peer identity (item 30).** Before S5a only
+the DHT host's `inter_send` (replication, republish, hinted retry) recorded
+`conn->expected_peer_id` on a new dial; the presence `p_sync` dial
+(`nodus_presence.c`, before S5a `:256-263`) and the circuit dial (`nodus_server.c`,
+before S5a `:619-625`) opened connections without it, and the dialer's `auth_ok` handler
+refuses exactly those ("INTER CRIT-1: no expected peer identity for … — cannot pin,
+refusing" → `AUTH_FAILED` + disconnect; seen on the live EU-1 node, 6 times in 6 hours,
+masked because replication's own pinned connection carried the traffic). Now all three
+sites call one find-or-dial, `nodus_server_inter_dial(srv, ip, port, expected_node_id)`
+(`nodus_server.c:476-500`, declared `nodus_server.h:461-463`); its find half is
+`nodus_server_inter_find` (`nodus_server.c:447-474`, `nodus_server.h:469-471`). Which
+pooled connection is reused was tightened by the S5a connection review (below, "Review
+fixes", F2): with a pin, only a connection this node dialed for that same identity; with
+no pin (NULL), the first pool entry for `ip:port`, as before. A new connection is marked
+`is_nodus` and gets `expected_peer_id` when the caller passes one; a pooled connection is
+never re-pinned. The pin comes from:
+- replication / republish / hinted retry — the routing / roster `node_id` the DHT passes
+  to `inter_send` (unchanged, `dht_republish_send`, `:476-481`);
+- presence — the routing snapshot entry, which now carries `node_id`
+  (`nodus_dht_peer_addr_t`, `nodus_dht.h:546-550`, filled by
+  `nodus_dht_routing_snapshot`, `nodus_dht_server.c:4779-4796`; find / dial
+  `nodus_presence.c:332-358`, paced since the review — F5 below);
+- circuits — the cluster member's `node_id` (`nodus_server.c:719-720`). The member is
+  ALIVE (`find_cluster_peer_by_idx`). Its `node_id` is trusted discovery, the same class
+  as the republish pin — not a proof: `nodus_cluster_on_pong` writes it from an
+  unsigned UDP pong, replacing a seed's placeholder id by ip:port
+  (`nodus_cluster.c:216-229`). (Corrected in the S5a review, F3: this text and the
+  comment at `nodus_server.c:712-718` used to call it "the real one".)
+
+The pin is the routing / cluster `node_id` — the same trust reference replication already
+used (unsigned FIND_NODE data / unsigned UDP pong; adversarial injection on UDP 4000 is
+out of scope, as stated at the pin check). The pin binds the channel to that id; it does
+not prove the id belongs to the intended member.
+
+**The dialer handshake is one shared module (item 28).** `server/nodus_inter_dial.{h,c}`
+holds the DIALER half of the 4002 handshake that was inline in core: the hello
+(`on_inter_connect`), and `challenge` → `auth`, `auth_ok` → CRIT-1 checks → `key_init`,
+`key_ack` → channel crypto (`dispatch_inter`, `nodus_server.c` `:1267-1482` at
+`e1f906a5`). The code moved; it was not rewritten — same checks in the same order, same
+encoder calls with the same arguments:
+
+| Frame sent | Call (before and after) |
+|---|---|
+| hello | `nodus_t2_hello(0, &identity->pk, &identity->node_id, buf[8192])` |
+| auth | `nodus_t2_auth(<challenge's txn>, &sign_auth_challenge(nonce), buf[8192])` |
+| key_init | `nodus_t2_key_init(<auth_ok's txn>, ct, nc, alg, buf[4096])` — `alg` 1 when `mpk_sig` verifies under the pinned `server_pk`, else 0 |
+
+All three are written with `nodus_tcp_send_raw` (the send gate stays closed until the
+session key exists). The module knows no server, session or transport type:
+
+- `nodus_inter_dial_t` (`nodus_inter_dial.h:52-73`) — per-connection state: retained
+  challenge nonce, pending KEM secret + our nonce between `key_init` and `key_ack`,
+  `authenticated` (set on `auth_ok` receipt, before its checks, as the inline code did),
+  the proven peer `id` / `pk`.
+- `nodus_inter_dial_io_t` (`:76-100`) — per call: this node's identity, the expected
+  peer id (pointer, NULL = none; read from the connection at each call, because a
+  localhost connect completes — and runs `on_connect` — inside `nodus_tcp_connect`,
+  before the dialer records the pin), the connection's channel crypto, `ip` / `port` /
+  `slot` for log lines, and the callbacks `send_raw` and `established(encrypted)`.
+- `nodus_inter_dial_start(io)` (`:120`) — sends the hello; 0 / -1.
+- `nodus_inter_dial_on_frame(d, io, msg)` (`:127-129`) → `NOT_MINE` (not a dialer
+  handshake frame in this state — including `key_ack` with no key exchange pending, which
+  falls through to core's dispatch as before), `DONE`, or `REFUSED` (fail-closed CRIT-1:
+  missing `kyber_pk` / `kpk_sig` / `server_pk` with Kyber on, no retained nonce, invalid
+  `kpk_sig`, no expected id, fingerprint failure, pin mismatch).
+
+What stays in core: the role split (only a connection we dialed may receive `challenge` /
+`auth_ok` / `key_ack`), the pre-session-key gate (F3), `"error"` frames, and the whole
+ACCEPTOR half. Core calls the module only on connections it dialed
+(`conn->auth_initiated_by_us`, `nodus_server.c:1417`), carries `sess->authenticated` into
+`dial.authenticated` before the call and `dial.authenticated` + the proven identity back
+to the session and the connection after it (`inter_dial_sync_out`, `:1236-1249`); on
+`REFUSED` it marks the connection `AUTH_FAILED` and disconnects; `established` opens the
+send gate — flushing the queue in plaintext (a node with no Kyber identity), re-sending
+every queued frame encrypted, in queue order, when encrypted (`inter_dial_established` →
+`nodus_inter_dial_conn_open`; since S5b fix round F2, see below). The module's log lines keep
+their text and go through `QGP_LOG_*` (tag `NODUS_DIAL`; in the standalone build the shim
+prints them to stderr with a `[WRN/NODUS_DIAL] ` style prefix,
+`src/nodus_log_shim.c:21-36`). `nodus_inter_session_t` holds the module state as `dial`
+(`nodus_server.h:177`) instead of the five fields it had.
+
+**Closed in S5b:** batch forward (BF) had its own dialer copy inside the DHT at S5a
+(hello, challenge → `key_ack`, with the same CRIT-1 checks); S5b moved it onto the shared
+module (see S5b, "Batch forward on the shared dialer"). The S5a text said: moving it onto
+the shared module is the S5
+storage work.
+
+**Pending-full parks only DHT replication frames (item 33).** When a 4002 send fits
+neither the write buffer nor the pending queue, the transport calls
+`nodus_server_on_pending_full` (`nodus_server.c:365`, formerly the static
+`server_on_pending_full`). Before S5a it parked ANY frame for an authenticated cluster
+member in the DHT hint table — presence `p_sync`, circuit `ri_*`, relayed replies
+(`nodus/BUGS.md`, "hint only replication frames"). Now, after the unchanged
+authentication and cluster-member gates (`:377-392`), the frame is parked only if
+`pending_full_is_replication` (`:326-352`) holds: the plaintext payload is a CBOR map
+whose `"y"` is `"q"` (a query) and whose `"q"` (method) is `"sv"` or `"m_sv"` — exactly
+the frames the DHT builds with `nodus_t1_store_value` (replication on put, republish,
+hinted retry) and `nodus_t2_media_store_value` (media chunk replication); T1 and T2
+encode that envelope with the same bytes. Only the envelope keys are read. Everything
+else — `p_sync`, `ri_*`, the listener `ntf` and subscription `sub` frames the DHT also
+sends over 4002, every reply or error (`"y"` = `"r"` / `"e"`: `fv_r`, `sv_ack`,
+`get_batch` results …) and non-CBOR bytes — is dropped with "PENDING_FULL: … not a
+replication frame — frame DROPPED (no hint)" (`:396-401`). Rows already in the hint table
+from before S5a are still re-sent by the hinted-retry drain until their TTL.
+
+**Review fixes** (a connection-focused review of S5a, decision items 30 and 34; no wire
+format or crypto change):
+
+- **F2 — pinned find-or-dial reuses only a matching conn we dialed.** Before, a pinned
+  `nodus_server_inter_dial` returned whatever `nodus_tcp_find_by_addr(ip, port)` found
+  first: possibly an accepted (inbound) conn, a dial still in flight pinned to another
+  `node_id`, or a conn proven for another identity. Now (`nodus_server_inter_find`,
+  `nodus_server.c:447-474`) a pinned call returns a pooled conn only if
+  `auth_initiated_by_us` and its identity is the requested one: `expected_peer_id`
+  and/or the proven `peer_id` equal it, neither (when set) differs, at least one is set;
+  first in pool-slot order. Otherwise a fresh conn is dialed beside the existing ones —
+  the transport has no duplicate check, `nodus_tcp_connect` just takes another slot.
+  With a NULL pin the old rule stands (`nodus_tcp_find_by_addr`, no new dial). The
+  consequence: between two nodes there is now, in steady state, one conn each side
+  dialed (each side's p_sync / replication / circuits use their own pinned outbound
+  conn) where before one side could reuse the other's inbound conn; and
+  `find_by_addr`'s `FIND_DUP` line can now fire for an inter-node ip:port only on a
+  NULL-pin call.
+- **F4 — the dialer never sends a reply it could not build.** In the shared module
+  (`nodus_inter_dial.c`) the challenge signature is zero-initialised (`:76`); a
+  signing failure (`:77`), an `auth` encode failure (`:84`) or a `key_init` encode
+  failure (`:226`, the KEM secret and our nonce zeroed) returns `REFUSED` with nothing
+  sent and nothing retained; the hello's encode result was already checked
+  (`nodus_inter_dial_start` → -1). A challenge whose nonce is absent is refused
+  (`:70`): the T2 decoder has no presence flag for `nonce` (it zeroes the message and
+  copies the field only when it is a 32-byte bstr), so absent and malformed both arrive
+  as all zeros, and all zeros is refused (`nonce_all_zero`, `:51`). That cannot refuse
+  an honest acceptor in practice: its nonce is `nodus_random(…, 32)`
+  (`nodus_auth.c:48`, `nodus_server.c` acceptor path), all zeros with probability
+  2^-256, and a refused dial is redialed.
+- **F5 — presence p_sync dials are paced.** Before, every routing peer without a conn
+  was dialed every 30 s, with no backoff and no cap (routing table up to
+  `NODUS_BUCKETS * NODUS_K` peers vs a pool of `NODUS_TCP_MAX_CONNS` = 1024). Now
+  (`nodus_presence.c:332-358`, constants `nodus_presence.h:33-61`):
+  - per-key backoff, key = (ip, port, node_id): each fresh dial is recorded and that
+    key is not dialed again before `now + delay(fail_count)`, delay 30, 60, 120, 240,
+    480, then 900 s (15 min) for good; the first tick that finds the conn established
+    (`CONNECTED` and `AUTH_OK`, or no auth required) clears the key. Because the base
+    delay equals the 30 s sync interval, a dial that succeeds is never held back — no
+    change when dials succeed. A dial whose handshake is refused (CRIT-1 pin mismatch,
+    TCP refused) leaves no conn, so the next allowed tick redials at the next delay.
+  - at most `NODUS_PRESENCE_DIAL_CAP` = 16 fresh dials per tick (a dial returning NULL
+    counts); peers over the cap are skipped without penalty. 16 ≥ the 7-node cluster,
+    so a healthy cluster still connects fully on the first tick; at most 16 handshakes
+    (a Dilithium5 sign + a KEM each) and 16 pool slots per tick.
+  - the table holds 512 keys (`NODUS_PRESENCE_BACKOFF_SLOTS`): keys are created only
+    by dials (≤ 16 per tick) and a key is held at most 900 s = 30 ticks, so at most
+    16 × 30 = 480 keys are ever in backoff at once. When full (keys of peers that left
+    the routing table linger), the key with the smallest `next_try` is replaced, lowest
+    slot on a tie. The backoff functions are pure (`now` passed in,
+    `nodus_presence.c:25-85`); the tick passes the `nodus_time_now()` it already read.
+    Presence is not consensus state; nothing here reaches a block or a vote.
+- **F3 — comment only.** The circuit dial's pin was described as "the real one"; it is
+  trusted discovery from an unsigned UDP pong (see the circuits bullet above). Cluster
+  behaviour is unchanged.
+
+**Tests** (S5a; run by the orchestrator, not recorded here):
+- `test_inter_dial` — the module against an in-memory peer that plays the acceptor with
+  the public encoders: pinned exchange (ML-KEM and Kyber-only) ending in the same channel
+  key on both sides; wrong pin, no pin, bad `kpk_sig`, downgrade `auth_ok` → `REFUSED`
+  with no `key_init`; a repeated challenge is not signed; early `key_ack` is `NOT_MINE`;
+  a node without Kyber opens in plaintext; (review F4) a challenge with no nonce or an
+  all-zero nonce is `REFUSED` with nothing signed or sent. Byte identity with the
+  pre-move code is a property of the diff (sig, ct, nc are random per run), not of this
+  test. Not covered: the signing / encode failure paths of F4 — no input reaches them
+  (`qgp_dsa87_sign` fails only on NULL arguments, the buffers cannot overflow) and the
+  module has no injection seam.
+- `test_presence_dial_pin` — `nodus_presence_tick` dials the snapshot peer with its
+  `node_id` pinned; `nodus_server_inter_dial` (review F2) pins a new connection, reuses
+  it for the same identity, dials a second conn to the same ip:port for another
+  identity (the first keeps its pin), never returns an inbound conn, an unpinned conn
+  or a conn proven for another identity to a pinned call, reuses a conn proven for the
+  identity, and keeps the first-pool-entry rule for a NULL pin; (review F5) the backoff
+  delays, hold-until-`next_try`, clear and full-table eviction with literal
+  timestamps; a tick does not dial a key in backoff and opens exactly 16 conns for 19
+  new peers (loopback listeners, no event loop, no clock in an assertion). The circuit
+  dial and the tick's "established clears the backoff" branch are covered by reading
+  only.
+- `test_pending_full_hint` — `sv` and `m_sv` parked (framed as `nodus_frame_encode`
+  builds them, keyed on the peer); `p_sync`, `ri_close`, `ntf`, `sub`, `fv_r`, `sv_ack`,
+  an error and junk dropped; the authentication and member gates unchanged.
+- `test_inter_role_split` follows the field move (`sess.dial.pending_kem`).
+- `test_dht_linked` unchanged at S5a: no DHT object referenced the module then (since
+  S5b batch forward does — the module is no core object, so the gate is unaffected).
+
+#### S5b — the `nodus-storage` process + the IPC DHT backend (decision items 7, 16, 17, 19, 27, 28, 29, 31, 32, 34)
+
+The DHT / storage half can run as its own process, `nodus-storage`
+(`tools/nodus-storage.c`), beside a `nodus-server` started with **`storage_external`**
+(`nodus_server_config_t.storage_external`, `nodus_server.h`). Opt-in, like
+`witness_external`: with the default (`false`) the combined binary still runs both
+halves in-process. No wire byte on 4000 / 4001 / 4002 changes; the IPC is local and
+versioned in its preface. Nothing here reaches consensus state.
+
+**Config.** `"storage_external": true` / `--storage-external` is parsed by
+`tools/nodus_node_config.c` exactly as `witness_external` is (usage line, JSON key —
+a non-boolean refuses the start —, the long option in both getopt passes). The loader is
+two files since S5b: `nodus_node_config.c` (options, JSON keys, the two passes —
+`nodus_node_config_parse`, references no witness object) and
+`nodus_node_config_witness.c` (the 4004 p2p defaults / peer lists / the "id@" half of a
+seed, the network file, the `--derive-v2-genesis` one-shot moved verbatim), handed to the
+parse as `nodus_node_config_witness_t` by `nodus_node_config_load` — linked only by
+`nodus-server` and `nodus-witness`, which build the same configuration as before.
+`nodus-storage` uses `nodus_node_config_load_storage` (no witness parts: no p2p section,
+no network file, `--derive-v2-genesis` refused), so `test_storage_linked` holds by
+construction.
+
+| File | Role |
+|---|---|
+| `src/dht/nodus_dht_ipc.h` | the `storage.sock` contract: connection kinds, frames, bounds, the storage-side API |
+| `src/dht/nodus_dht_ipc_wire.c` | the encoders and the ONE strict decoder — both ends link it (pure) |
+| `src/dht/nodus_dht_ipc.c` | the storage side: listener, origin shadows, control connection, the process's own outbound 4002 pool |
+| `src/server/nodus_dht_backend_ipc.c` | core's door over the socket (`nodus_dht_backend_ipc_open`, `nodus_dht_backend.h`) |
+| `tools/nodus-storage.c` | the process: config (same loader and file), identity READ-ONLY, DHT init / open, loop |
+| `src/server/nodus_inter_dial.{h,c}` | gains the shared outbound-pool helpers (below) |
+
+**Connections on `<data>/storage.sock`** (mode 0600, SO_PEERCRED, the S2 parent-directory
+rule — `nodus_tcp_unix_listen`). Every frame is an ordinary nodus frame, plaintext.
+- **Origin** — one per core session (client 4001 / WebSocket, or 4002) that sent a DHT
+  frame (item 19). First frame `{"q":"ds_origin","v":1,"k":0|1,"s":slot,"g":gen,
+  "b":boot,"fp":…, CLIENT "pk":… | INTER "ip":…}` (ORCHESTRATOR ruling on Fable S5 g3:
+  CLIENT = slot, gen, fp, pk; INTER = slot, gen, peer fp, peer ip — `sub` records the
+  subscriber's address from it). Then the session's DHT payloads unchanged; the storage
+  side re-decodes them with the decoders core used (T2 for client requests and 4002 `fv`
+  / `get_batch` / `m_sv`; T1 for `sv` / `sub` / `unsub` / `ntf`) — same bytes, same
+  classification. Every frame the DHT writes for that origin (replies, and listener pushes
+  caused by ANY origin, e.g. a 4002 `sv` notifying a client) comes back on it; core
+  writes it to the session through `send_to_origin` (generation-checked, item 29).
+- **ONE carrier for a session's lifetime** (ruling on Fable S5 H2): the preface IS
+  "session opened" (the storage side calls `nodus_dht_session_opened`), the EOF IS
+  "session closed" — the storage side clears the shadow only while the slot still maps
+  to THAT connection. Nothing about open / close travels on the control connection.
+  Core's `session_opened` op sends nothing (it records the generation and closes a
+  connection left from the slot's previous session); `session_closed` closes the
+  connection. Slot reuse: a preface for a slot mapped to another, still-open connection
+  takes the slot when it is newer — another boot id (core restarted; generations start
+  at 1 again), or the same boot id and a larger generation — and is refused when older;
+  frames on a connection the slot no longer maps to are dropped. The boot id: 8 random
+  bytes core's backend draws at creation.
+- **Control** — one per core: `{"q":"ds_ctl","v":1,"b":boot}`, then core → storage in
+  call order UDP 4000 datagrams for the DHT (`ds_udp`), `peer_seen` (all four kinds,
+  `ds_seen`), `peer_dead` (`ds_dead`) and the membership snapshot (`ds_mbr`: node id +
+  offline seconds of every cluster member — item 27); storage → core datagrams to send
+  from UDP 4000 (`ds_udps`) and the routing snapshot (`ds_rt`: node id, ip, tcp port in
+  bucket order — item 17; presence pins the node id, item 30). A first frame of another
+  `q` or `v` — e.g. a core dialling `witness.sock` — closes the connection on both
+  listeners.
+
+**Snapshots** (Fable S5 g9 / g10). Routing: the storage side compares the PROJECTED set
+(node id, ip, tcp port) every 1 s (`NODUS_DHT_IPC_SNAPSHOT_CHECK_MS`) and pushes on a
+change, at least every 30 s (`NODUS_DHT_IPC_SNAPSHOT_MAX_SEC`), and in full on every new
+control connection; core keeps the last one while storage is away (presence keeps
+dialling the peers it knew) and logs `routing snapshot from nodus-storage: N peer(s)` on
+the first of each control connection and on a count change. Membership: core compares
+the member set and each member's "offline < `NODUS_HINT_OFFLINE_SKIP_SEC`" bit, pushes on
+a change, every 30 s and in full on every (re)connect; the storage side's `hint_wanted`
+= member AND reported offline seconds + time since the snapshot < the threshold; no
+snapshot → no hint (republish covers it). A joining peer is p_synced within ≤ 60 s
+instead of ≤ 30 s (snapshot age + presence tick); a NEW cluster member is un-hintable
+until the next push (≤ 1 s on a change).
+
+**Decision 31 — storage unavailable / cap → the error at once.** A client DHT request
+is answered `nodus_t2_error(txn, NODUS_ERR_UNAVAILABLE, "storage module not available")`
+(`NODUS_DHT_NO_STORAGE_MSG`, `nodus_dht_backend.h`) without dialling when the control
+connection is down (the control backoff 250 ms → 5 s is the only re-dial driver), when
+`NODUS_DHT_IPC_MAX_ORIGIN_CONNS` (= `NODUS_TCP_MAX_CONNS` − 64 = 960, client and 4002
+origins together, ONE IPC pool per side — g11) are open, or when that origin's queue to
+storage holds ≥ `NODUS_DHT_IPC_QUEUE_MAX` (4 MiB; the request is not queued, the
+connection stays). A 4002 DHT frame in those states is dropped (rate-limited WARN) — the
+remote batch forward then waits for its 5 s timeout, a replication is repeated by
+republish.
+
+**Decision 32 — storage closes an origin → core ends that session.** When an origin
+connection closes and core's backend did not close it — the storage side closed it (its
+reply queue reached `NODUS_DHT_IPC_REPLY_QUEUE_MAX` = 16 MiB: the close is deferred to the
+end of the pass, never under the DHT handler that was sending; a frame that does not
+decode) or the process went away — core calls `close_origin`, which disconnects that
+client (or 4002) session if it is still of that generation; the client reconnects and
+re-LISTENs. A send fault on an origin connection does the same. Consequence: killing
+`nodus-storage` disconnects every client session that had done a DHT request on its
+current connection — including a session that also did `dnac_*` on it. Never a silent
+re-dial.
+
+**Storage's own outbound 4002 (items 16, 28).** Replication, republish, hinted retry and
+listen forwarding go out on the storage process's pool through the SAME code core uses,
+moved out of `nodus_server.c` into `server/nodus_inter_dial.c` unchanged:
+`nodus_inter_pool_find` / `_dial` (`:298`, `:327`; core's `nodus_server_inter_find` /
+`_dial` are now wrappers), `nodus_inter_pool_send_framed` (`:355`, the former
+`dht_republish_send` body, log lines unchanged), `nodus_inter_pool_sweep` (`:465`, the
+4002 half of core's idle sweep), `nodus_inter_frame_is_replication` (`:496`, the S5a
+hint filter), `nodus_inter_dial_conn_sync` / `_conn_open` (`:525`, `:539`, the dialer's
+host side; the `INTER_CRYPTO … encrypted` line's tag is now `NODUS_DIAL`). The storage
+pool's hooks: `on_connect` sends the module's hello; `on_frame` feeds `challenge` /
+`auth_ok` / `key_ack` to the module (REFUSED → AUTH_FAILED + disconnect), drops `error`
+silently and **drops + WARNs every other frame** — this process serves no 4002 request
+(core's listener does, behind its F2 / F3 gates); `on_pending_full` parks a replication
+frame of an authenticated cluster member (membership snapshot, any state) in the hint
+table directly (S4 cycle 1 stays inside the process) and drops anything else. Hygiene
+core's presence tick and idle sweep did for the shared pool (Fable S5 b3 / g8): every
+30 s the idle / HELLO_SENT sweep, and every 30 s a close of dialed connections whose IP
+left the routing table. The S4 cycle 2 (slow consumer → `on_inter_disconnect` →
+`session_closed`) is gone: storage's dialed connections are no core sessions. Core's
+`hint_store` op over IPC logs and refuses (core's pool carries no DHT frame any more).
+Core keeps its own pinned dials for presence and circuits (S5a).
+
+**Batch forward on the shared dialer (decision 28 "no copy").** BF keeps its socket and
+send / receive state machine; its handshake now runs `nodus_inter_dial_start` /
+`nodus_inter_dial_on_frame` (`nodus_dht_server.c` `bf_dial_*`, `:3274-3335`) with the
+module's `send_raw` framing into BF's `send_buf`. Byte-visible on 4002: BF's hello txn
+is 0 (was 1) and its `auth` echoes the challenge's txn (was 2); format unchanged. An
+absent (all-zero) challenge nonce is now refused (the module's rule). A swallowed KEM
+encapsulation failure (`pending_kem` false after `auth_ok`) or a `key_ack` that did not
+establish the key fails the forward at once.
+
+**The process** (`tools/nodus-storage.c`). Same command line and config as nodus-server
+(item 18); reads `data_path`, `identity_path` (READ-ONLY load, refuses to start without
+it — item 10; never creates one), `require_peer_auth` (the dialed conns' handshake),
+`external_ip` / `bind_ip` / `peer_port` (its own hash-ring entry, as
+`nodus_server_init` gives the in-process DHT). Refuses to start without
+`storage_external` (the misconfiguration guard: a nodus-server without it would open the
+same `nodus.db`) and holds `<data>/nodus-storage.lock` for its lifetime. Loop:
+`nodus_dht_ipc_poll` (≤ 50 ms idle) → `nodus_dht_ipc_tick` → `nodus_dht_evict_tick`
+BEFORE `nodus_dht_tick` (g10: core ran the evict sweep after its cluster tick, ahead of
+the DHT tick). It does NOT run the partial-wipe gate (item 9 keeps it in core): started
+BEFORE core on a host whose `nodus.db` was wiped, it would recreate the file before
+core's gate looks. (Superseded by F3 below: nodus-storage now runs the same gate itself
+before it opens anything. S6's units order only STARTS — `After=` — so they are not
+what protects this.)
+
+**Core in `storage_external` mode** (`nodus_server.c`): the IPC backend replaces the
+in-process one (init `:2639-2665`; no DHT database opened, "STORAGE: external" logged,
+"Storage: external (nodus-storage)" in the run banner); `server_dht_close_origin`
+(`:2504`) and `server_dht_members` (`:2526`) are what core gives it, with the existing
+`send_to_origin` / `udp_send`. The channel server (compiled out,
+`NODUS_CHANNELS_DISABLED`) refuses to start in this mode — it reads the in-process DHT.
+**Partial-wipe marker (g5):** `nodus_server_marker_dbs_ready` (`:2548`) is true
+in-process and, with `storage_external`, only when `nodus.db` AND `channels.db` exist
+(the rule `tools/nodus-witness.c` applies from the other side); init arms the marker only
+then, and the run loop arms it once (looked at once a second) for `witness_external` OR
+`storage_external`.
+
+**Tests** (written, not run by the builder): `test_dht_ipc` (14 cases — routing /
+membership snapshots, preface identity, replies and cross-origin pushes by generation,
+UDP relay and peer-event order, decision 32, deterministic slot-reuse reorder with held
+connections, decision 31 with no dial, both bounds, snapshot re-push on reconnect,
+origin generation over sockets, the marker rule); `test_storage_linked` (nm gate on
+`nodus-storage`). Harness: `STAGEF_MODE` `splits` / `mixeds` and
+`tests/test_split_storage_restart.sh` (stagef README).
+
+**S5b fix round** (ORCHESTRATOR review of S5b; F1-F6):
+- **F1 — no silent reply loss.** On the storage side ANY failed send of a reply / push to
+  an origin connection, and any frame the IPC transport's pending-full hook reports lost
+  (`dipc_on_pending_full`, `nodus_dht_ipc.c`), marks the origin like the 16 MiB bound: it
+  is closed at the end of the pass and core ends that session (decision 32). Many SMALL
+  replies reach the transport's own ceiling (~5 MiB write buffer + 20 queued frames)
+  long before 16 MiB — before the fix they were dropped one by one with nothing told.
+  A lost control frame to core forces the routing snapshot again at the next check. On
+  core's side a control frame that cannot be sent is counted and WARNed (rate-limited);
+  a lost membership snapshot is re-sent at the next check, a lost `peer_dead` is kept and
+  re-sent once the control connection is confirmed (`ob_dead_retry_*`), `peer_seen` /
+  datagrams are repeated by the next heartbeat.
+- **F2 — frames queued during a 4002 dial's handshake are no longer discarded** (also
+  live on main before S5b). `nodus_inter_dial_conn_open` re-sends every frame of the auth
+  queue ENCRYPTED, in queue order, through `nodus_tcp_send`, instead of freeing it while
+  each sender had been told "queued" (a hinted retry deleted its row; a put's replication
+  and a circuit's `ri_open` were lost). Same bound (`NODUS_TCP_PENDING_MAX`). Applies to
+  core's dials and storage's alike. The ACCEPTOR side followed in the S5 close-out: its
+  key_init branch in core's `dispatch_inter` used to free its auth queue (replies queued
+  on an accepted conn before the key); it now calls the same
+  `nodus_inter_dial_conn_open(conn, true)` — only after `nodus_channel_crypto_init`
+  returned 0 and only for an authenticated peer — so those frames are re-sent encrypted,
+  in queue order, after the raw `key_ack`. An unauthenticated peer: gate closed, queue
+  kept (unchanged). A failed channel-crypto init now leaves the gate closed (before, the
+  gate opened with no session key). Test: `test_inter_pending_replay` (dialer case, and
+  an accepted-conn case on the shared function; the `dispatch_inter` branch itself —
+  incl. the unauthenticated path — is not driven by it).
+- **F3 — nodus-storage runs the partial-wipe gate.** The check moved, unchanged, into
+  `server/nodus_partial_wipe.{h,c}` (`nodus_server.h` includes it; core still calls it in
+  `nodus_server_init`); `nodus_dht_ipc_open_storage` runs it before `nodus_dht_open` and
+  refuses (-2, nothing opened or created) on a partial wipe.
+- **F4 — separate caps.** 128 origin connections for 4002 sessions, 832 for client
+  sessions (sum 960 = `NODUS_DHT_IPC_MAX_ORIGIN_CONNS`; reasons in `nodus_dht_backend.h`).
+- **F5 — a core restart cancels the old core's deferred replies.** The current boot id is
+  set by the control connection only; an origin of another boot id is refused; a NEW boot
+  id's control connection cancels every deferred lookup reply and batch forward
+  (`nodus_dht_cancel_deferred`), closes every shadow and every old origin connection —
+  before the new core's sessions (whose generations restart at 1) open.
+- **F6 — control connection confirmed by storage's first frame.** Until then no origin is
+  dialled (client requests get the decision-31 error) and the reconnect backoff is not
+  reset; a control connection closed before confirming counts as a failed dial.
+- `nodus_dht_ipc.c` logs through `QGP_LOG_*` only.
+
+**Not done in S5b:** core's `dht_send_stats_dump` covers core's pool only — the storage
+pool has no stats dump; no core-side `nm` probe proves the IPC backend TU pulls no DHT
+object into a core-only binary (deferred to S6's `nodus-core` gate; `nodus-server`
+links both halves by design — closed by S6's `test_core_linked`, below).
+
+#### S6 — the `nodus-core` process, three-process harness modes, systemd units (decision items 2-4, 6, 8-12, 15, 23)
+
+**The constructor seam** (`src/server/nodus_server.h` `nodus_server_backends_t`,
+`nodus_server_init_ex`). Before S6, `nodus_server_init` called the in-process
+constructors by name — `nodus_chain_backend_inproc_check_pin`,
+`nodus_dht_backend_inproc_new` / `_open`, `nodus_chain_backend_inproc_open` — so every
+binary that linked `nodus_server.c` pulled `nodus_dht_server.c` (`nodus_storage_open`,
+`nodus_routing_try_insert`) and `nodus_witness.c` (`nodus_witness_init`) out of the static
+library. Now `nodus_server_init_ex(srv, cfg, be)` takes a table of five slots — `admit`,
+`check_pin`, `dht_new`, `dht_open`, `chain_open` — and names no in-process constructor
+(`nodus_server.c:2512-2523`, `:2556-2564`, `:2587-2596`, `:2626-2629`, `:2866-2876`).
+Two tables:
+- `nodus_server_backends_inproc` (`src/server/nodus_server_backends_inproc.c`) — the four
+  in-process constructors, `admit` NULL; this TU also holds `nodus_server_init` =
+  `nodus_server_init_ex(…, &nodus_server_backends_inproc)`. **`nodus_server_init`'s
+  signature and behaviour are unchanged**; nodus-server and every unit test call it as
+  before. It has to live there, not in `nodus_server.c`: if it stayed, the table would be
+  referenced from `nodus_server.c` and the gate below could not pass.
+- `nodus_server_backends_ipc` (`src/server/nodus_server_backends_ipc.c`) — every
+  in-process slot NULL; `admit` refuses (logged, `-1`) unless BOTH `storage_external` and
+  `witness_external` are set, before the partial-wipe gate touches anything.
+A NULL slot the config needs refuses the start (logged): `check_pin` NULL with a pin set,
+`dht_new`/`dht_open` NULL without `storage_external`, `chain_open` NULL without
+`witness_external` — the last one goes to `fail`, NOT to the "witness init failed, keep
+running degraded" path, which is for a witness that failed, not for a binary that has none.
+
+**The process** (`tools/nodus-core.c`). nodus-server's `main` with two differences: the
+config loader is `nodus_node_config_load_storage` (no 4004 p2p section, no network file
+and so no network-file pin, `--derive-v2-genesis` refused — `--v2-genesis-pin` is parsed
+and not used, the joiner is the witness), and it calls `nodus_server_init_ex` with the IPC
+table after refusing (exit 1) unless both flags are set. It keeps everything core owns:
+UDP 4000, TCP 4001 (+ the WebSocket entry), the 4002 listener, cluster, presence,
+circuits, the partial-wipe gate (item 9) and identity creation (item 10 — the only process
+that writes `identity/`). The network-file pin check is nodus-witness's in this layout
+(`tools/nodus-witness.c`), not core's. Target `nodus-core` (`CMakeLists.txt:2754-2765`):
+`tools/nodus-core.c` + `tools/nodus_node_config.c`, like nodus-storage.
+
+**`test_core_linked`** (`tests/core_linked.cmake`, registered `CMakeLists.txt:2787-2790`):
+`nm --defined-only` on the linked nodus-core, global text symbols only. FORBIDDEN
+`nodus_storage_open`, `nodus_routing_try_insert`, `nodus_witness_init`,
+`nodus_dht_backend_inproc_new`, `nodus_chain_backend_inproc_open`; REQUIRED
+`nodus_auth_handle_auth`, `nodus_presence_tick`, `nodus_cluster_tick`,
+`nodus_inter_circuit_table_init`, `nodus_dht_backend_ipc_open`,
+`nodus_chain_backend_ipc_open` (so a pass cannot come from an empty table or the wrong file).
+
+**Harness** (`tests/integration/stagef/`). Two modes, decision item 15's names: `split`
+(every node three processes) and `mixed` (nodes 1-3 three processes, 4-7 combined
+nodus-server, `STAGEF_MIXED_SPLIT_NODES=3`, same build — item 23); `combined`, `splitw`,
+`mixedw`, `splits`, `mixeds` unchanged. In split / mixed BOTH `stagef_node_is_split`
+(witness) and `stagef_node_is_storage_split` are true for a split node;
+`stagef_node_core_bin` names `STAGEF_NODUSCORE_BIN` for it and `stagef_node_core_pid`
+matches that executable. One core argv builder, `stagef_core_cmd`, feeds identity
+generation (a split node's identity is generated by its core binary with the mode's
+flags, so no combined server ever opens a split node's data directory), the bring-up core
+pass, and test_v2_partial_wipe.sh's core-only `try_boot`. For scenarios:
+`stagef_spawn_node N [EXTRA…]` (core, then nodus-witness, then nodus-storage as the mode
+splits them; EXTRA — e.g. `--v2-genesis-pin` — goes to the process that runs the witness;
+every pid appended to `pids.txt`; waits for the client port) and `stagef_stop_node N
+[SIG]` (every process found by its executable, attempt-bounded wait for exit, TERM → KILL
+escalation; never `pgrep | head -1`). `test_v2_join.sh`, `test_v2_partial_wipe.sh`,
+`test_v2_restart_convergence.sh`, `test_cmt_blocksync.sh` no longer SKIP on a split node.
+`pids.txt` lines 1..7 stay the cores (`bench_tps_v2.sh` unchanged). The derivation
+one-shot keeps `STAGEF_NODUS_BIN` (nodus-core has no `--derive-v2-genesis`).
+
+**Units** (`deploy/nodus-core.service`, `nodus-storage.service`, `nodus-witness.service`,
+beside `nodus.service`, which stays — item 8). §13 "Systemd Service" below.
+
+**Not done in S6 / open:**
+- **nodus-witness runs no partial-wipe gate** (`tools/nodus-witness.c` takes its lock,
+  checks the network-file pin and loads the identity, then `nodus_witness_init`). On a
+  half-wiped three-process host core and nodus-storage refuse while the witness opens the
+  surviving chain database and runs consensus alone. Decision item 9 gives the check to
+  core; it does not say the witness may proceed when core refuses. **Operator decision
+  pending — no gate added in S6.** Until it is decided the three-process layout is not
+  declared deployable. No harness scenario covers it (`try_boot` starts the core only).
+- **Restart order of the three units on a live validator** (witness first = a consensus
+  gap; core first = clients drop) is open; the units order STARTS by `After=` only.
+- OLD/NEW upgrade scenarios in a split mode (decision 23 defers them).
+- `ReadOnlyPaths=/var/lib/nodus/identity` for storage / witness (item 10 at OS level) is
+  NOT in the units: only `addr_seq` / lock / marker writes were checked
+  (`nodus-witness.c`), not every witness write (`cs.wal`, address book,
+  `priv_validator_state`); a blocked write would be a restart loop.
+- `deploy/nodus.conf.example` is recreated in the tree but ignored by git
+  (`.gitignore`, commit `fb45e940`); `build-nodus.sh` copies it on a first install when
+  present, and otherwise skips the copy with a message (a fresh clone has none — write
+  `/etc/nodus.conf` by hand).
+- `nodus.addr_seq` migration and the installer (items 21, 26) are S7.
 
 ---
 
@@ -1908,11 +3192,42 @@ strategy in this deployment** — it is a budget of three attempts in five
 minutes, after which the node is down until an operator intervenes, and it
 would retire the node's DHT role along with its witness role. That is why the
 witness's chain-database open **waits inside the process** instead of exiting
-(O15L Faz 2, `nodus_witness.c:355-407`: `NODUS_W_DB_OPEN_ATTEMPTS = 3`, the
-`NODUS_W_DB_BUSY_TIMEOUT_MS` budget divided per attempt, plus a fixed 250 ms
-pause), and why a witness that cannot start runs **degraded rather than
-fatal** (`nodus_server.c:6114-6169`). See §15, *Witness startup and
+(O15L Faz 2, `nodus_witness.c:542-545` and `witness_db_open_path` `:753-804`:
+`NODUS_W_DB_OPEN_ATTEMPTS = 3`, the `NODUS_W_DB_BUSY_TIMEOUT_MS` budget divided
+per attempt, plus a fixed 250 ms pause), and why a witness that cannot start
+inside the combined `nodus-server` runs **degraded rather than fatal**
+(`nodus_server.c:2881-2943`, the `WITNESS MODULE INIT FAILED — THIS NODE IS
+RUNNING DEGRADED` block). The split `nodus-witness` is the opposite on purpose: it
+exits 1 and its unit restarts it (decision item 11). See §15, *Witness startup and
 chain-database faults*.
+
+**Split units (S6, decision `2026-10-01-nodus-component-split.md`).**
+`deploy/nodus-core.service`, `deploy/nodus-storage.service` and
+`deploy/nodus-witness.service` run a three-process node on the same
+`/etc/nodus.conf` and `/var/lib/nodus`. They differ from `nodus.service` in:
+- `ExecStart` = `nodus-core … --storage-external --witness-external`,
+  `nodus-storage … --storage-external`, `nodus-witness … --witness-external` — the flags
+  on the command line, so the same config file still starts `nodus.service` (rollback).
+- storage and witness: `After=` + `Wants=nodus-core.service` only — never `Requires=` /
+  `BindsTo=`: a core stop does not stop the witness (item 5) or storage.
+- storage and witness: `StartLimitBurst=10` / `StartLimitIntervalSec=300` (core keeps
+  3 / 300). `After=` orders starts only (`Type=simple`); on a FIRST boot storage and
+  witness can start before core has written the identity they only read (item 10), exit
+  1, and are retried every `RestartSec=5` — the combined unit's 3-in-300 budget could run
+  out before core finishes.
+- all three: `Conflicts=nodus.service` + `After=nodus.service` — the combined server and
+  the split units never run at once on one data directory (two DHTs, two signers with
+  one validator key); starting one side stops the other, and the `After=` orders that
+  stop before the start (`Conflicts=` alone implies no ordering, systemd.unit(5); not
+  exercised on a host in S6).
+- No `ReadOnlyPaths=` on `identity/` (open, see "S6" in §10).
+`build-nodus.sh` installs all five binaries and copies the split units without enabling
+them. On an update, `build-nodus.sh` and `tools/nodus-update.sh` (which installs the same
+five and re-copies the units + `daemon-reload`) pick the layout by `systemctl
+is-enabled`, never `is-active`: `nodus.service` enabled → combined; `nodus-core` enabled →
+the enabled split units (item 12); both, neither, or storage / witness without core →
+refuse, nothing changed. The layout's units are stopped, binaries installed atomically
+(`dest.new` + rename), units started (`DEPLOY_RUNBOOK.md` "Three-process node").
 
 ### Ports
 
@@ -5158,7 +6473,8 @@ numbered register row (R-P2P-n) in the local design doc
   `allow_duplicate_ip` (test only). The published **network file**
   (`network_file` key or `--network-file`) is
   `{"v2_genesis_pin": "<64 hex or empty>", "persistent_peers": ["id@ip:4004", …]}`
-  (`nodus_server.c` `NF_KEY_PIN`/`NF_KEY_PEERS`); a pin that differs from the
+  (`nodus_witness_network_file.c` `NF_KEY_PIN`/`NF_KEY_PEERS` — moved from
+  `nodus_server.c` by the split S1 seam, §10); a pin that differs from the
   chain the node holds refuses the start. A node's p2p ID is
   `nodus-cli whoami`'s `P2P ID:`. A chain-holding node with no connected peer
   logs an ERROR every 60 s (never refused). Peer addresses persist in
@@ -5373,21 +6689,30 @@ extended code such as `SQLITE_BUSY_RECOVERY` classifies as `SQLITE_BUSY`
   `SQLITE_AUTH` and anything the build does not recognise. **Never retried** —
   an unrecognised code fails closed rather than looping.
 
-**A failed witness init does not kill the process.** `nodus_server_init` frees
-the witness, NULLs it and continues (`nodus_server.c:6114-6169`) — nodus is
+**A failed witness init does not kill the process.** `nodus_server_init` opens
+the witness through `nodus_chain_backend_inproc_open` (`nodus_server.c:3030-3035`);
+when it returns -1 the backend has already freed the witness and left
+`srv->chain` NULL, and init continues (`:3036-3102`); only -2 (out of memory)
+fails init (`goto fail`) — nodus is
 dual-role, the DHT half is unaffected, and exiting would spend the
 `StartLimitBurst=3` budget described in §13 and retire the DHT role too. The
 node is therefore **degraded, and says so loudly**: a multi-line `ERROR:` block
 states that consensus is NOT PARTICIPATING (no block validated, no vote cast,
 no certificate signed, no block produced), that the DHT is unaffected, where
 the cause is named, and that the process is deliberately not exiting.
-Witness-less operation is a defined mode, not a latent crash — but the
-protection is layered, not uniform: `nodus_witness_dispatch_t3` returns
-immediately on a NULL witness (`nodus_witness.c:1975`), the tick
-(`nodus_server.c:6264`) and the post-auth T3 dispatch (`:5105`) are
-additionally guarded by `if (srv->witness)`, while the witness-port dispatch
-(`:5046`) passes the pointer unguarded and relies on that callee NULL check
-alone.
+Witness-less operation is a defined mode, not a latent crash: every server
+call into the chain goes through `srv->chain` (the S1 chain backend, §10
+"Component split") and each is guarded by `if (srv->chain)` — the loop tick
+(`nodus_server.c:3271-3272`), the `status` chain fields (`:963-964`),
+`dnac_cc_collect` (`:2113`), the genesis-marker write (`:3152`), the 4004 port
+log (`:3202-3203`) and close (`:3339-3342`); a post-auth `dnac_*` method on a
+node with no chain is answered with `NODUS_ERR_PROTOCOL_ERROR` "witness module
+not enabled" (`:2122-2137`). A witness-less node opens no port 4004 at all —
+the p2p host lives inside the witness (P2P-PORT F5 deleted the tier-3
+dispatcher `nodus_witness_dispatch_t3` and its two server call sites,
+`nodus_witness.c:2833-2843`). The witness entry points keep their own NULL
+checks (`nodus_witness_tick`, `nodus_witness.c:2767`;
+`nodus_witness_dispatch_dnac`, `:2849`).
 
 ---
 
