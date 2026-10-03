@@ -513,3 +513,37 @@ the DHT name; `sitemap.xml` `<lastmod>` dates were not changed; `/airdrop.html`
 is still missing from `public-files.mjs` and from `sitePages` in `app.js`.
 `npm run check` and `npm run build:portals` were run; browser validation has
 not been run for this change.
+
+2026-10-04: The roadmap, the tokenomics page and the Wiki were updated, in
+English and Turkish, with what changed since 7a8e33c8. Status grounding:
+LIVE = block pruning in nodus 0.23.18 on all seven testnet nodes (pruned
+validators keep the last 7 paydays, 120,960 blocks, plus the genesis link;
+archive nodes keep everything; every node drops the duplicate seen-commit
+copy; pruning switched on on one node first, the others after it is
+checked — `nodus/docs/DEPLOY_RUNBOOK.md` §2.5) and web wallet / Nodus
+Connect 0.1.53–0.1.54 (one name per contact: chain name, else profile
+name, ID underneath; Connect opens from what the device keeps and connects
+in the background, sending waits until connected — `web-wallet/README.md`
+"Nodus Connect"); PLANNED = the storage role reward (design approved
+2026-10-04, being built, switched on later by an on-chain vote: a 1,000,000
+NODUS storage-role stake, an equal share of the Storage pool when validators
+confirm the node serves stored data, no storage reward for validators, a
+storage node and a validator may be the same machine). No node is named and
+no address is published.
+- `roadmap.html` / `app.js` (`history.*`): "Pruning and a block archive"
+  moved from planned to implemented (4 October 2026) and rewritten — its old
+  text said storage nodes keep the archive; "Nodus in the browser" gained
+  the one-name rule and the local-first open; new planned item "Storage role
+  reward" (`history.storage_reward.*`) after the roles item.
+- `tokenomics.html` / `app.js` (`tok.plannedStorage`): the planned storage
+  reward no longer says it also goes to validators; it now states the
+  storage-role rule above.
+- `wiki/content.mjs`: Identity "Chain names" states the one-name rule;
+  Wallet "In the web wallet and Nodus Connect" gains the quick start; The
+  resource network "Running a node" gains "Block retention"; Chain & NODUS
+  "Planned, not live" gains the storage role reward. Generated wiki pages and
+  `wiki/search-index.json` rebuilt with `npm run build:portals`.
+- `sitemap.xml`: `<lastmod>` 2026-10-04 for `roadmap.html` and
+  `tokenomics.html`.
+`npm run check` and `npm run build:portals` were run; browser validation has
+not been run for this change.
