@@ -22,8 +22,9 @@
 //     source on the review; an unresolvable name, a refused (unsigned /
 //     unreadable) profile and a missing field are errors, never a fallback;
 //     an address always wins over a name;
-//   - Connect: only a chain name is the title / verified, the short ID is
-//     beside every chain name, a profile name is only labelled; the saved
+//   - Connect: the title is the chain name (verified), else the profile
+//     name (not verified), else the short ID; the short ID is under every
+//     name (decision 2026-10-03-connect-name-display.md); the saved
 //     state's chainNames is defaulted and checked.
 // What it does NOT prove: the real module's network paths (no node), the
 // browser UI wiring (src/app.js, src/connect/ui/messages.js DOM).
@@ -325,18 +326,19 @@ test('address-shaped text is never a chain name: TRON (34 x T/t, 41+40 hex) and 
   client.lock();
 });
 
-// ── Connect: chain names vs profile names (R3/R6) ────────────────────────
-test('Connect names: only a chain name is the title and verified; the short ID beside it; a profile name only labelled', () => {
+// ── Connect: one name per contact, ID underneath ─────────────────────────
+// Decision docs/plans/decisions/2026-10-03-connect-name-display.md.
+test('Connect names: chain name (verified), else profile name (not verified), else short ID; the short ID under any name', () => {
   const fp = RECIPIENT;
   assert.deepEqual(contactNames(fp, { chain: 'punk', profile: 'Punk Official', claimed: 'x' }),
-    { title: 'punk', verified: true, id: shortId(fp), profile: 'Punk Official', claimed: '' });
+    { title: 'punk', verified: true, fromProfile: false, id: shortId(fp), claimed: '' });    // no second name beside it
   assert.deepEqual(contactNames(fp, { chain: 'punk', profile: 'punk' }),
-    { title: 'punk', verified: true, id: shortId(fp), profile: '', claimed: '' });          // same text: shown once
-  assert.deepEqual(contactNames(fp, { profile: 'alice' }),
-    { title: shortId(fp), verified: false, id: '', profile: 'alice', claimed: '' });         // a DHT name is never the title
+    { title: 'punk', verified: true, fromProfile: false, id: shortId(fp), claimed: '' });
+  assert.deepEqual(contactNames(fp, { profile: 'alice', claimed: 'x' }),
+    { title: 'alice', verified: false, fromProfile: true, id: shortId(fp), claimed: '' });   // a profile name is the title, never verified
   assert.deepEqual(contactNames(fp, { claimed: 'bob' }),
-    { title: shortId(fp), verified: false, id: '', profile: '', claimed: 'bob' });
-  assert.deepEqual(contactNames(fp), { title: shortId(fp), verified: false, id: '', profile: '', claimed: '' });
+    { title: shortId(fp), verified: false, fromProfile: false, id: '', claimed: 'bob' });    // a claim only when nothing better is known
+  assert.deepEqual(contactNames(fp), { title: shortId(fp), verified: false, fromProfile: false, id: '', claimed: '' });
 });
 
 test('Connect store: chainNames defaults on an older state, keeps a valid entry, refuses a malformed one', () => {

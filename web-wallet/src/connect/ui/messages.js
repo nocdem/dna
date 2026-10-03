@@ -44,7 +44,8 @@ import {
   parseContactId, profilePatch, profileStatusText, contactListStatusText, senderClockLabel,
   recentDays, pendingOutbox, hasUndelivered, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus, avatarPatch, AVATAR_UPLOAD_MAX_B64,
-  needFullSync, fullDays, profileFresh, contactNames, mergeListedContacts, removeContact, unremoveContact
+  needFullSync, fullDays, profileFresh, contactNames, mergeListedContacts, removeContact, unremoveContact,
+  shortId, inspectUntrusted
 } from './text.js';
 import { el, untrusted, button, website, fillAvatar } from './dom.js';
 import { parseNameOf } from '../../nodus/names.js';
@@ -653,8 +654,8 @@ function statusLine(className = 'hint') { return setAttrs(el('p', { className })
 // keeps its colour; a claimed name is never used (it is unverified, G9).
 // A registered PROFILE name the core verified (nc_name_verify:
 // "<name>:lookup" written by this identity points back to it — design
-// §1.9 G9), else ''. Since HF-4 it is shown only labelled "profile name"
-// (text.js contactNames): the chain name is the one shown as THE name.
+// §1.9 G9), else ''. It is the title of a contact without a chain name
+// (text.js contactNames; decision 2026-10-03-connect-name-display.md).
 function profileName(fp) {
   const name = profiles.get(fp)?.name;
   return typeof name === 'string' ? name : '';
@@ -667,37 +668,52 @@ function chainNameOf(fp) {
 function namesOf(fp, claimed = profiles.get(fp)?.claimed_name) {
   return contactNames(fp, { chain: chainNameOf(fp), profile: profileName(fp), claimed: typeof claimed === 'string' ? claimed : '' });
 }
-// What a contact is called: the chain name, else the short ID.
-function displayName(fp) { return namesOf(fp).title; }
-// The bold line: a chain name gets the verified look (class chain-name and
-// a "chain name" label), anything else is the plain short ID.
+// A contact as plain text (aria labels, status lines, the vault host and
+// the NODUS send recipient list): the chain name, else the short ID — never
+// a profile name, which is someone else's text and needs the
+// unusual-characters marking that plain text (an <option>, an aria-label)
+// cannot carry (decision 2026-10-03-connect-name-display.md item 4).
+function displayName(fp) {
+  const chain = chainNameOf(fp);
+  return chain || shortId(fp);
+}
+// The bold line (decision 2026-10-03-connect-name-display.md): a chain name
+// gets the verified look (class chain-name), a profile name is plain text
+// with the unusual-characters marking (dom.js untrusted), the short ID is
+// plain.
+function titleContent(n) {
+  return n.fromProfile ? untrusted(n.title, undefined, { name: true }) : n.title;
+}
 function nameTitle(fp) {
   const n = namesOf(fp);
-  return n.verified
-    ? el('strong', { className: 'chain-name', text: n.title })
-    : el('strong', { text: n.title });
+  return el('strong', n.verified ? { className: 'chain-name' } : {}, titleContent(n));
 }
 
-// The two letters shown when there is no picture: of the chain name, else
+// The two letters shown when there is no picture: of the chain name or the
+// profile name (direction controls and invisible characters removed), else
 // of the ID.
 export function initials(fp, name) { return (name ? [...name].slice(0, 2).join('') : fp.slice(0, 2)).toUpperCase(); }
+function avatarName(fp) {
+  const n = namesOf(fp);
+  return n.verified ? n.title : n.fromProfile ? inspectUntrusted(n.title, { name: true }).text : '';
+}
 
 // The profile picture (avatar_base64 of the signature-checked profile,
 // dom.js fillAvatar), else the initials.
 function avatar(fp, extra = '') {
   const node = el('span', { className: `contact-avatar avatar-${parseInt(fp[0], 16) % 6}${extra}` });
   node.setAttribute('aria-hidden', 'true');
-  return fillAvatar(node, initials(fp, chainNameOf(fp)), profiles.get(fp)?.avatar_base64);
+  return fillAvatar(node, initials(fp, avatarName(fp)), profiles.get(fp)?.avatar_base64);
 }
 
-// The line beside the title (design R3/R6): under a chain name the label
-// "chain name" and the short ID; a profile name only as "profile name …";
-// an unverified claim only when nothing better is known. null = nothing.
+// The line under the title (decision 2026-10-03-connect-name-display.md):
+// the short ID in parentheses under a chain or profile name; an unverified
+// claim only when there is neither (the title is then the short ID itself,
+// so the two never appear together). null = nothing.
 function nameHint(fp, { claimed, prefix = 'claims the name ' } = {}) {
   const n = namesOf(fp, claimed);
   const parts = [];
-  if (n.verified) parts.push(el('span', { className: 'name-kind', text: 'chain name' }), ` ${n.id}`);
-  if (n.profile) parts.push(parts.length ? ' · profile name ' : 'profile name ', untrusted(n.profile, undefined, { name: true }));
+  if (n.id) parts.push(el('span', { className: 'contact-id', text: `(${n.id})` }));
   if (n.claimed) parts.push(prefix, untrusted(n.claimed, undefined, { name: true }));
   return parts.length ? el('span', { className: 'contact-claim' }, ...parts) : null;
 }
@@ -1099,7 +1115,7 @@ function renderChats() {
     const side = el('span', { className: 'contact-side' });
     if (last) { const when = el('time', { text: shortWhen(last.at) }); when.dateTime = new Date(last.at).toISOString(); side.append(when); }
     if (unread) side.append(setAttrs(el('span', { className: 'count-badge', text: String(unread) }), { 'aria-label': `${unread} new` }));
-    row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, nameTitle(c.fp), nameHint(c.fp)), preview), side, icon('chevron'));
+    row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, nameTitle(c.fp)), nameHint(c.fp), preview), side, icon('chevron'));
     row.onclick = () => selectContact(c.fp);
     return el('li', {}, row);
   }));
@@ -1117,7 +1133,7 @@ function renderContacts() {
     row.type = 'button';
     row.dataset.fp = c.fp;
     const sub = el('span', { className: 'contact-preview', text: c.salt ? 'Open conversation' : 'Messaging is not ready yet' });
-    row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, nameTitle(c.fp), nameHint(c.fp)), sub), icon('chevron'));
+    row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, nameTitle(c.fp)), nameHint(c.fp), sub), icon('chevron'));
     row.onclick = () => selectContact(c.fp);
     // Remove asks once more before it acts (as "Delete message history").
     const armed = removeArmed === c.fp;
@@ -1164,8 +1180,9 @@ function renderConversation(scroll) {
   const list = ui.messageList;
   const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
   ui.convAvatar.replaceWith(ui.convAvatar = avatar(contact.fp, ' conversation-avatar'));
-  ui.convTitle.textContent = displayName(contact.fp);
-  ui.convTitle.classList.toggle('chain-name', namesOf(contact.fp).verified);
+  const names = namesOf(contact.fp);
+  ui.convTitle.replaceChildren(titleContent(names));
+  ui.convTitle.classList.toggle('chain-name', names.verified);
   const claim = nameHint(contact.fp);
   ui.convClaim.replaceChildren(...(claim ? claim.childNodes : []));
   const lost = dropped.get(contact.fp), other = others.get(contact.fp);
