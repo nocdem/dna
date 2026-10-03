@@ -1050,15 +1050,34 @@ only for its members — watching any other vault is the user's own choice).
   text).
 - **Approve.** A member opens the request: the module's read-back of the
   bytes at the node's current tip (`nodus_v2_msig_review`: shape,
-  membership, the digest re-derived and EQUAL, call lengths; then the vault
-  the request carries must be the vault opened, every output native NODUS,
-  expired = tip + 1 > last valid block) — recipient, amount, change back to
-  the vault, network fee, last valid block, and whether every coin it
-  spends was found in this vault's history. The message carries no
-  description of the payment to show. "Approve" signs only if the request
-  is still the digest that was shown.
-- **Send.** With M approvals: "Send payment" — each approval checked on
-  arrival (`nodus_v2_msig_sig_check`), the first K combined
+  membership, the digest re-derived and EQUAL, call lengths, expiry not 0
+  and not past the export's tip + 90; then **every coin it spends must be
+  one of this vault's own coins** — the record's found + genesis coins,
+  handed to the module before every review, approve and send; otherwise it
+  is REFUSED, "this request spends coins this vault does not hold" (F1:
+  the descriptor a request carries is rebuilt from the receiver's own
+  vault code, so the coins are what binds it to the vault) —, every output
+  native NODUS, expiry not past the node's tip + 90, expired = tip + 1 >
+  last valid block) — recipient, amount, change back to the vault, network
+  fee, last valid block. The message carries no description of the
+  payment to show. "Approve" signs only if the request is still the digest
+  that was shown, re-checking the coins on the bytes it signs. Reviews are
+  kept per (vault, digest). nodus-cli `msig sign` also prints the last
+  valid block and refuses an expiry of 0 or past the export's tip + 90.
+- **Approvals count only when verified (F2).** Each approval is checked in
+  the module against the reviewed request (digest, member,
+  ML-DSA-87 signature) and only if the Messages item came from its own
+  signer (sender ID == SHA3-512 of its key); only verified approvals are
+  kept, one per key (a forged one cannot shadow a valid one), and the page
+  shows and acts on that verified count. Items (requests, approvals,
+  shares) from someone who is not a member of the named vault are ignored.
+  At most 8 approval texts per member (newest first) are checked per
+  review. Names beside IDs appear only when the chain's reverse lookup
+  confirms them (F5); vault names refuse direction / invisible characters
+  and mixed alphabets, and "Foundation vault" is reserved for the preset
+  (F4).
+- **Send.** With M verified approvals: "Send payment" — the first K
+  verified combined
   (`nodus_v2_msig_combine`, ascending keys, pass-2 self-check) and sent with
   `dnac_spend`. The chain's own auth hook is witness code the browser
   cannot link (nodus-cli runs it locally); the node judges the
