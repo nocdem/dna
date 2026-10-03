@@ -299,7 +299,9 @@ stagef_node_core_pid() {
 # the bring-up's arguments (stagef_up_v2.sh section 4c), appending to its
 # storage.log, and print its pid. The caller records the pid in pids.txt.
 # `--storage-external` on the command line, as for the core (the
-# misconfiguration guard: nodus-storage refuses without it).
+# misconfiguration guard: nodus-storage refuses without it). Config:
+# stagef_node_config (node N's own nodus.json when it has one, else the
+# shared file).
 stagef_spawn_storage() {
     local n="$1" nd seeds m
     nd="$(stagef_node_dir "$n")"
@@ -308,7 +310,7 @@ stagef_spawn_storage() {
         seeds="$seeds -s 127.0.0.1:$(stagef_udp_port "$m")"
     done
     # shellcheck disable=SC2086
-    "$STAGEF_NODUSSTORAGE_BIN" -c "$BASE_DIR/nodus.json" --storage-external -b 127.0.0.1 \
+    "$STAGEF_NODUSSTORAGE_BIN" -c "$(stagef_node_config "$n")" --storage-external -b 127.0.0.1 \
         -u "$(stagef_udp_port "$n")" -t "$(stagef_tcp_port "$n")" \
         -p "$(stagef_peer_port "$n")" -C "$(stagef_chan_port "$n")" \
         -W "$(stagef_witness_port "$n")" \
@@ -346,9 +348,14 @@ stagef_node_core_flags() {
 # core's argv is built — identity generation (stagef_up_v2.sh, before
 # nodus.json exists, so no CONFIG), stagef_spawn_core, and
 # test_v2_partial_wipe.sh's core-only try_boot.
+# A CONFIG equal to the shared $BASE_DIR/nodus.json is resolved through
+# stagef_node_config (node N's own $BASE_DIR/node<N>/nodus.json when one
+# exists — block pruning harness, test_cmt_prune.sh); with no per-node
+# file it is the same string, so the argv is exactly what it was before.
 stagef_core_cmd() {
     local n="$1" cfg="${2:-}" nd fl
     nd="$(stagef_node_dir "$n")"
+    [ "$cfg" = "$BASE_DIR/nodus.json" ] && cfg="$(stagef_node_config "$n")"
     STAGEF_CMD=("$(stagef_node_core_bin "$n")")
     [ -n "$cfg" ] && STAGEF_CMD+=(-c "$cfg")
     fl="$(stagef_node_core_flags "$n")"
@@ -372,7 +379,8 @@ stagef_seed_args() {
 }
 
 # stagef_spawn_core N [EXTRA…] — start node N's core (stagef_core_cmd with
-# $BASE_DIR/nodus.json, the seeds, then EXTRA), APPENDING to its nodus.log,
+# $BASE_DIR/nodus.json — node N's own config instead when it has one,
+# stagef_node_config — the seeds, then EXTRA), APPENDING to its nodus.log,
 # and print its pid. The caller records the pid in pids.txt.
 stagef_spawn_core() {
     local n="$1"; shift
@@ -387,12 +395,13 @@ stagef_spawn_core() {
 # node only) with the bring-up's arguments, `--witness-external` included
 # (nodus-witness refuses to start without it), then EXTRA, APPENDING to its
 # witness.log, and print its pid. The identity must already exist:
-# nodus-witness only reads it (decision item 10).
+# nodus-witness only reads it (decision item 10). Config: stagef_node_config
+# (node N's own nodus.json when it has one, else the shared file).
 stagef_spawn_witness() {
     local n="$1" nd; shift
     nd="$(stagef_node_dir "$n")"
     # shellcheck disable=SC2046
-    "$STAGEF_NODUSWITNESS_BIN" -c "$BASE_DIR/nodus.json" --witness-external -b 127.0.0.1 \
+    "$STAGEF_NODUSWITNESS_BIN" -c "$(stagef_node_config "$n")" --witness-external -b 127.0.0.1 \
         -u "$(stagef_udp_port "$n")" -t "$(stagef_tcp_port "$n")" \
         -p "$(stagef_peer_port "$n")" -C "$(stagef_chan_port "$n")" \
         -W "$(stagef_witness_port "$n")" \
@@ -1585,6 +1594,76 @@ stagef_write_nodus_json() {
 }
 NJ
 }
+
+# ──────────────────────────────────────────────────────────────────────
+# PER-NODE CONFIG (block pruning — decision 2026-10-03-block-pruning-7-
+# paydays.md; test_cmt_prune.sh)
+#
+# `retain_blocks` is a NODE-LOCAL nodus.json key (nodus_node_config.c,
+# default 0 = archive), so a mixed-retention cluster needs one config per
+# node. When $BASE_DIR/node<N>/nodus.json exists, EVERY spawn of node N
+# passes it with -c instead of the shared $BASE_DIR/nodus.json: the core
+# (stagef_core_cmd — so stagef_spawn_core and test_v2_partial_wipe.sh's
+# try_boot), nodus-witness (stagef_spawn_witness) and nodus-storage
+# (stagef_spawn_storage). Absent (the default — nothing but
+# stagef_write_node_config creates one) → the shared path, the exact
+# string every spawn passed before. The derivation ceremony
+# (stagef_up_v2.sh) keeps the shared file; a fresh BASE_DIR has no
+# per-node file anyway. Every binary reads the file through the same
+# loader (nodus_node_config.c load_config_json — nodus-server,
+# nodus-witness, nodus-core and nodus-storage alike): a valid
+# retain_blocks only matters where the witness runs, a malformed one
+# refuses the start of whichever process reads it.
+# ──────────────────────────────────────────────────────────────────────
+
+# stagef_node_config N — the config file node N's processes are started
+# with: $BASE_DIR/node<N>/nodus.json when it exists, else the shared
+# $BASE_DIR/nodus.json.
+stagef_node_config() {
+    local own="$BASE_DIR/node$1/nodus.json"
+    if [ -f "$own" ]; then
+        echo "$own"
+    else
+        echo "$BASE_DIR/nodus.json"
+    fi
+}
+
+# stagef_write_node_config N RETAIN — writes $BASE_DIR/node<N>/nodus.json
+# = the shared $BASE_DIR/nodus.json plus `"retain_blocks": RETAIN` (a bare
+# JSON integer — nodus_node_config.c refuses any other type). Temp file +
+# rename, so a starting process never reads half a file. Refuses (rc 1)
+# a non-integer RETAIN, a shared file that does not end in `}` or already
+# names retain_blocks (a second key would leave the winner to the JSON
+# parser). Takes effect at node N's NEXT start. RETAIN 0 writes an
+# explicit archive file; stagef_remove_node_config returns the node to
+# the shared file.
+stagef_write_node_config() {
+    local n="$1" rb="$2" shared out tmp body
+    shared="$BASE_DIR/nodus.json"
+    out="$BASE_DIR/node$n/nodus.json"
+    tmp="$out.tmp.$$"
+    case "$rb" in
+        ''|*[!0-9]*) echo "[FAIL] stagef_write_node_config: retain_blocks '$rb' is not a non-negative integer" >&2; return 1 ;;
+    esac
+    [ -f "$shared" ] || { echo "[FAIL] stagef_write_node_config: no $shared" >&2; return 1; }
+    body="$(cat "$shared")"
+    case "$body" in
+        *'"retain_blocks"'*) echo "[FAIL] stagef_write_node_config: $shared already names retain_blocks" >&2; return 1 ;;
+        *'}') ;;
+        *) echo "[FAIL] stagef_write_node_config: $shared does not end in '}'" >&2; return 1 ;;
+    esac
+    # Drop the closing brace and the newline(s) before it; the last key
+    # line stays as it was and gets the comma.
+    body="${body%\}}"
+    while [ "${body%$'\n'}" != "$body" ]; do body="${body%$'\n'}"; done
+    printf '%s,\n  "retain_blocks": %s\n}\n' "$body" "$rb" > "$tmp" \
+        || { rm -f "$tmp"; return 1; }
+    mv -f "$tmp" "$out"
+}
+
+# stagef_remove_node_config N — node N goes back to the shared config at
+# its next start.
+stagef_remove_node_config() { rm -f "$BASE_DIR/node$1/nodus.json"; }
 
 # stagef_network_file_pin — the pin currently in the network file ("" if
 # empty or the file is absent).

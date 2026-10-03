@@ -1168,6 +1168,14 @@ further pruning**; it does **not** restore any row already pruned — the node s
 based at the height it last pruned to. There is no in-place way to restore full history
 on that node; history is read from the archive nodes.
 
+**Harness proof (decision item 4, "no hard fork"):** `tests/integration/stagef/tests/test_cmt_prune.sh`
+(not in the sweep; its own bring-up with `STAGEF_EVIDENCE_MAX_AGE_BLOCKS` /
+`STAGEF_EVIDENCE_MAX_AGE_DURATION_NS`, stagef README) — two pruned and five archive nodes,
+7/7 agreement, the start floor, kill -9 of a pruned node, a pin rejoin that block-syncs
+from height 1; written, not yet run, and expected to FAIL its restart step on 605b748b (a
+restarted pruned node no longer has block 1's meta, which the Ledger V2 preflight reads,
+so its ingress stays closed — `nodus_witness_v2_preflight.c:334-349`).
+
 ---
 
 ## 3. Post-deploy verification

@@ -54,6 +54,14 @@
 #   this script wrote before the knob existed** (same inputs, same
 #   timestamps), so every sweep scenario's chain is unchanged. K > 1 is
 #   a DIFFERENT chain id (more leaves in the hashed document).
+#   STAGEF_EVIDENCE_MAX_AGE_BLOCKS / STAGEF_EVIDENCE_MAX_AGE_DURATION_NS
+#   (default unset; block pruning harness, decision
+#   2026-10-03-block-pruning-7-paydays.md) write the genesis config keys
+#   evidence_max_age_num_blocks / evidence_max_age_duration_ns — the
+#   chain's evidence window, which a pruning node's retain_blocks must
+#   exceed. Only test_cmt_prune.sh needs them. **Unset emits no line: the
+#   config is byte-for-byte the pre-knob config.** Set, a DIFFERENT chain
+#   id; export BEFORE bring-up. The production genesis is untouched.
 #
 #   P2P-PORT F6: on a server that reads the network file (its -h lists
 #   --network-file) the bring-up also needs a nodus-cli that prints
@@ -618,6 +626,33 @@ PAYOUT_INTERVAL="${STAGEF_PAYOUT_INTERVAL_EPOCHS:-24}"
 case "$PAYOUT_INTERVAL" in
     ''|*[!0-9]*|0) echo "[FAIL] STAGEF_PAYOUT_INTERVAL_EPOCHS='$PAYOUT_INTERVAL' — must be a positive integer" >&2; exit 2 ;;
 esac
+# ── Block pruning harness (decision 2026-10-03-block-pruning-7-paydays.md;
+# test_cmt_prune.sh): the chain's evidence window, OFF by default. A node
+# may prune (nodus.json retain_blocks N) only with N > the chain's
+# evidence.max_age_num_blocks (nodus_cmt_node_check_retain_blocks), whose
+# default is 100 000 (shared/dnac/cmt_params.c:65) — out of a harness
+# run's reach. STAGEF_EVIDENCE_MAX_AGE_BLOCKS / _DURATION_NS write the
+# builder's own keys `evidence_max_age_num_blocks` /
+# `evidence_max_age_duration_ns` (nodus_v2_gen_config.c:640-643). Each is
+# independent: a key the file does not name keeps the builder's default
+# (:1231-1235); the derivation refuses a value <= 0 (the reference's
+# ValidateBasic, cmt_params.c:176-181, through nodus_witness_v2_gen.c's
+# validate) — refused here first, exit 2, like the payday knob. **Unset
+# (the default) emits NO line: the config is byte-for-byte what this
+# script wrote before the knobs existed.** Set, it is part of the hashed
+# genesis document — a DIFFERENT chain id; export BEFORE bring-up.
+EV_MAX_AGE_BLOCKS="${STAGEF_EVIDENCE_MAX_AGE_BLOCKS:-}"
+EV_MAX_AGE_NS="${STAGEF_EVIDENCE_MAX_AGE_DURATION_NS:-}"
+for ev in "STAGEF_EVIDENCE_MAX_AGE_BLOCKS=$EV_MAX_AGE_BLOCKS" \
+          "STAGEF_EVIDENCE_MAX_AGE_DURATION_NS=$EV_MAX_AGE_NS"; do
+    case "${ev#*=}" in
+        '') ;;
+        *[!0-9]*|0*) echo "[FAIL] ${ev%%=*}='${ev#*=}' — must be a positive integer without leading zeros" >&2; exit 2 ;;
+    esac
+done
+if [ -n "$EV_MAX_AGE_BLOCKS" ] || [ -n "$EV_MAX_AGE_NS" ]; then
+    echo "[ok] evidence window (harness knob): max_age_num_blocks=${EV_MAX_AGE_BLOCKS:-builder default} max_age_duration_ns=${EV_MAX_AGE_NS:-builder default}"
+fi
 # ── General multisig (config_version 5, decision 2026-09-29-general-
 # multisig.md ONAY 2): ONE GENESIS OUTPUT to a 2-of-3 address over the
 # identities of nodes 2, 3 and 4 — the coin test_cmt_multisig.sh spends
@@ -668,7 +703,10 @@ CONF="$BASE_DIR/v2_genesis.conf"
     # timeouts) are NOT written here — they come from the BUILDER
     # (nodus_witness_v2_gen_v3_defaults, which installs
     # cmt_default_consensus_params — nodus_witness_v2_gen.c:2327-2340),
-    # never from a value typed in this file.
+    # never from a value typed in this file. ONE exception, off by
+    # default: the evidence window's two halves when
+    # STAGEF_EVIDENCE_MAX_AGE_BLOCKS / _DURATION_NS are set (block pruning
+    # harness, test_cmt_prune.sh — see the knobs above).
     echo "config_version        = 5"
     echo "genesis_time_ms       = $GENESIS_TIME_MS"
     echo "initial_height        = $INITIAL_HEIGHT"
@@ -691,6 +729,14 @@ CONF="$BASE_DIR/v2_genesis.conf"
     # gas-price rule is therefore ON from block 1 on every harness chain.
     echo "gas_price_raw_per_unit = 121"
     echo "token_create_fee_raw   = 100000000000"
+    # Block pruning harness knobs (above): a line ONLY when set — unset,
+    # nothing here changes a byte of the document.
+    if [ -n "$EV_MAX_AGE_BLOCKS" ]; then
+        echo "evidence_max_age_num_blocks = $EV_MAX_AGE_BLOCKS"
+    fi
+    if [ -n "$EV_MAX_AGE_NS" ]; then
+        echo "evidence_max_age_duration_ns = $EV_MAX_AGE_NS"
+    fi
     for n in $(seq 1 "$C"); do
         nd=$(stagef_node_dir "$n")
         pk=$(xxd -p -c 99999 "$nd/identity/nodus.pk")
