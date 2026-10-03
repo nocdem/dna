@@ -1,5 +1,12 @@
 import { writeFile, mkdir } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { guides } from './wiki/content.mjs';
+
+// Cache busting: the shared assets are served with a long max-age while the HTML is not cached, so a page must ask
+// for the exact asset version it was built with — otherwise a browser pairs new HTML with an old script.
+const assetVersion = path => createHash('sha256').update(readFileSync(new URL(path, import.meta.url))).digest('hex').slice(0, 12);
+const versioned = (href, path) => `${href}?v=${assetVersion(path)}`;
 
 const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 const text = (en, tr, tag = 'span', attrs = '') => `<${tag} ${attrs} data-tr="${escape(tr)}">${en}</${tag}>`;
@@ -21,8 +28,8 @@ function shell(site, slug, title, description, content) {
 <meta name="robots" content="${site === 'scan' && slug !== 'index' && slug !== 'hardforks' ? 'noindex, follow' : 'index, follow'}">
 <link rel="icon" href="../assets/nodus-mark.svg" type="image/svg+xml">
 <link rel="preload" href="../assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="../portal.css"><script src="../portal.js" defer></script>
-${site === 'wiki' ? (slug === 'index' ? '<script src="search.js" defer></script>' : '') : '<script src="app.js" defer></script>'}
+<link rel="stylesheet" href="${versioned('../portal.css', './portal.css')}"><script src="${versioned('../portal.js', './portal.js')}" defer></script>
+${site === 'wiki' ? (slug === 'index' ? `<script src="${versioned('search.js', './wiki/search.js')}" defer></script>` : '') : `<script src="${versioned('app.js', './scan/app.js')}" defer></script>`}
 </head><body class="${site}-site" data-page="${slug}" data-title-tr="${escape(title[1])} — Nodus ${suffix}">
 ${anchor('#main', 'Skip to content', 'İçeriğe geç', 'class="skip-link"')}
 <header class="portal-header"><div class="wrap"><a class="portal-brand" href="${site === 'scan' ? 'https://nodusnetwork.io/' : './'}" aria-label="${site === 'scan' ? 'Nodus home (nodusnetwork.io)' : `Nodus ${suffix}`}"><img src="../assets/nodus-mark.svg" alt="" width="34" height="34">nodus<span class="portal-name">${suffix.toLowerCase()}</span></a>
