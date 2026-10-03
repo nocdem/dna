@@ -51,6 +51,18 @@
 #   FIXED, not derived: there is no leader and no epoch-rank concept on
 #   this lane to derive one from, and this scenario is about identity and
 #   replay across a restart, not about who happens to be proposing.
+#   In a split mode EVERY process of node 4 (core, and nodus-witness /
+#   nodus-storage where the mode splits them) is killed and restarted, each
+#   under a new pid in pids.txt; the witness lines are counted in the log
+#   that carries them (stagef_node_log: witness.log when its witness is
+#   split), appended the same way.
+#
+# SPLIT S6 — RUNS IN EVERY MODE
+#   The victim is stopped with stagef_stop_node (every process, each found
+#   by its executable, the exit waited for) and restarted with
+#   stagef_spawn_node; `REFUSING START` is looked for in the core's
+#   nodus.log AND, when different, the witness log. It used to SKIP (99)
+#   on a split victim.
 #
 # R3 W3 (C2d) — WHAT FLIPPED, AND WHAT STAYED (DELTA 1 correction)
 #   The chain is NOT frozen at genesis on this lane. CreateEmptyBlocks
@@ -126,11 +138,6 @@ REF=1
 
 die() { echo "[FAIL] $*" >&2; exit 1; }
 
-# Split S3: this scenario kills and restarts the victim as ONE
-# nodus-server process — SKIP (99) when the victim is split (splitw);
-# runs unchanged when it is combined (combined, mixedw).
-stagef_split_skip_if "$VICTIM"
-
 db_of() { stagef_node_chain_db "$1"; }
 
 # ── Precondition: this MUST be a V2 cluster ─────────────────────────
@@ -166,7 +173,8 @@ stagef_cmt_diff_at_floor "pre-v2-restart" || exit 2
 chain_before=$(basename "$(db_of "$VICTIM")")
 [ -n "$chain_before" ] || die "node$VICTIM has no chain DB before the kill"
 
-vlog="$(stagef_node_dir "$VICTIM")/nodus.log"
+vlog=$(stagef_node_log "$VICTIM")   # the WITNESS lines: witness.log when split
+clog="$(stagef_node_dir "$VICTIM")/nodus.log"   # the core's (the partial-wipe gate)
 role_before=$(grep -c 'chain role: COMETBFT' "$vlog" || true)
 [ "$role_before" -ge 1 ] || die "node$VICTIM never reported the COMETBFT role before the kill"
 hs_before=$(grep -c 'ABCI replay blocks:' "$vlog" || true)
@@ -180,10 +188,12 @@ echo "[ok] node$VICTIM baseline: chain_db=$chain_before role_lines=$role_before 
 # The victim's own spawn line is reconstructed from stagef_env, not
 # scraped from ps: a scraped command line would carry whatever the
 # previous restart used and quietly drift.
-vpid=$(pgrep -f "node$VICTIM/data" | head -1 || true)
-[ -n "$vpid" ] || die "node$VICTIM is not running"
-kill -9 "$vpid"
-echo "[ok] node$VICTIM killed (pid $vpid)"
+src=0; stagef_stop_node "$VICTIM" KILL || src=$?
+[ "$src" != 1 ] || die "node$VICTIM is not running"
+[ "$src" = 0 ] || die "node$VICTIM did not exit after SIGKILL"
+echo "[ok] node$VICTIM killed (pids $STAGEF_STOPPED_PIDS)"
+# The pre-S6 post-kill pause, kept so the survivors' view of the outage is
+# unchanged; it decides no verdict (the exit was waited for above).
 sleep 3
 
 # The six survivors must still agree while it is down. Non-fatal by
@@ -198,28 +208,11 @@ stagef_cmt_diff_at_floor "victim-down" >/dev/null 2>&1 || {
 
 # ── Restart ─────────────────────────────────────────────────────────
 nd=$(stagef_node_dir "$VICTIM")
-SEEDS=""
-for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
-    SEEDS="$SEEDS -s 127.0.0.1:$(stagef_udp_port "$n")"
-done
-# shellcheck disable=SC2086
-"$STAGEF_NODUS_BIN" -c "$BASE_DIR/nodus.json" -b 127.0.0.1 \
-    -u "$(stagef_udp_port "$VICTIM")" -t "$(stagef_tcp_port "$VICTIM")" \
-    -p "$(stagef_peer_port "$VICTIM")" -C "$(stagef_chan_port "$VICTIM")" \
-    -W "$(stagef_witness_port "$VICTIM")" \
-    -i "$nd/identity" -d "$nd/data" $SEEDS \
-    >> "$nd/nodus.log" 2>&1 &
-newpid=$!
-echo "$newpid" >> "$BASE_DIR/pids.txt"
-echo "[ok] node$VICTIM restarted (pid $newpid)"
-
-tcp=$(stagef_tcp_port "$VICTIM")
-up=0
-for _ in $(seq 1 60); do
-    if ss -lt 2>/dev/null | grep -Eq "[:.]${tcp}\\b"; then up=1; break; fi
-    sleep 0.5
-done
-[ "$up" = 1 ] || die "node$VICTIM never listened again on $tcp"
+# Every process of the node in this mode, every pid appended to pids.txt;
+# returns once the core's client port listens (60 x 0.5 s).
+stagef_spawn_node "$VICTIM" \
+    || die "node$VICTIM never listened again on $(stagef_tcp_port "$VICTIM")"
+echo "[ok] node$VICTIM restarted (pids $STAGEF_NODE_PIDS)"
 
 # ── THE ASSERTIONS ──────────────────────────────────────────────────
 # 1. It came back IN ITS WITNESS ROLE. A delta, not a presence check:
@@ -270,11 +263,14 @@ done
 echo "[ok] node$VICTIM ran and completed the ABCI Handshake on restart ($hs_before -> $hs_after)"
 echo "     $(grep 'ABCI replay blocks:' "$vlog" | tail -1)"
 
-# 4. It refused nothing on the way up.
-if grep -q 'REFUSING START' "$vlog"; then
-    tail -20 "$vlog" >&2
-    die "node$VICTIM logged REFUSING START"
-fi
+# 4. It refused nothing on the way up — the core's log (the partial-wipe
+#    gate) and, when split, the witness's.
+for lg in "$clog" "$vlog"; do
+    if grep -q 'REFUSING START' "$lg"; then
+        tail -20 "$lg" >&2
+        die "node$VICTIM logged REFUSING START ($lg)"
+    fi
+done
 
 # 5. It is on the SAME chain — the same witness DB file was reopened,
 #    never a different one adopted from a peer (this scenario never

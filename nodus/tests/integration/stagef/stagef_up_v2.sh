@@ -94,6 +94,21 @@
 #   core's relayed peer events came back — both directions of the control
 #   connection carried data).
 #
+#   SPLIT S6 — `split` (every node) / `mixed` (nodes 1-3; 4-7 combined
+#   nodus-server) start a split node as THREE processes from the SAME
+#   build: STAGEF_NODUSCORE_BIN --storage-external --witness-external
+#   FIRST (it is also the identity-generation spawn of section 1 — no
+#   combined server ever opens a split node's data directory), then
+#   nodus-witness (section 4b), then nodus-storage (section 4c). Every
+#   spawn goes through the stagef_env.sh primitives (stagef_core_cmd /
+#   stagef_spawn_core / stagef_spawn_witness / stagef_spawn_storage), the
+#   same lines the scenarios' stagef_spawn_node uses. A three-process node
+#   must pass BOTH blocks of extra checks above (the witness block and the
+#   storage block). The derivation (section 3) still runs
+#   STAGEF_NODUS_BIN: nodus-core has no --derive-v2-genesis. Needs
+#   nodus-core, nodus-storage and nodus-witness executable (exit 2
+#   otherwise).
+#
 #   P2P-PORT F6 ALSO PROVES (p2p-aware server only): the 4004 mesh is
 #   formed from ONE published network file — every node started with its
 #   seven persistent peers (the "p2p on … 7 persistent peer(s)" line) —
@@ -111,11 +126,13 @@
 #   A full 7-node cluster running under $BASE_DIR, its path in
 #   /tmp/stagef_current, pids in $BASE_DIR/pids.txt — the same contract
 #   the now-deleted stagef_up.sh left, so stagef_down.sh tears this down
-#   unchanged. Lines 1..7 of pids.txt are node 1..7's nodus-server, in
-#   node order, in EVERY mode (bench_tps_v2.sh reads line N as node N);
-#   in a split mode each split node's nodus-witness pid is appended after
-#   them, in node order; in a storage-split mode (splits / mixeds) each
-#   storage-split node's nodus-storage pid likewise. Per storage-split
+#   unchanged. Lines 1..7 of pids.txt are node 1..7's CORE process
+#   (nodus-server; nodus-core for a split / mixed 1-3 node), in node
+#   order, in EVERY mode (bench_tps_v2.sh reads line N as node N); in a
+#   witness-split mode (splitw / mixedw / split / mixed) each split node's
+#   nodus-witness pid is appended after them, in node order; in a
+#   storage-split mode (splits / mixeds / split / mixed) each storage-split
+#   node's nodus-storage pid likewise, after the witnesses. Per storage-split
 #   node: node<N>/storage.log, node<N>/data/storage.sock and
 #   node<N>/data/nodus-storage.lock.
 #   $BASE_DIR/stagef_mode (every mode, `combined` included): the mode the
@@ -214,7 +231,25 @@ case "$MODE" in
             echo "[warn] nodus-server and nodus-storage are in DIFFERENT directories — a split run must use one build (decision 2026-10-01-nodus-component-split.md item 23)"
         fi
         ;;
-    *) echo "[FAIL] STAGEF_MODE='$MODE' — must be combined, splitw, mixedw, splits or mixeds" >&2; exit 2 ;;
+    split|mixed)
+        # Split S6 — three processes per split node: nodus-core, nodus-storage
+        # and nodus-witness, all from the SAME build as nodus-server (which
+        # still runs the derivation one-shot, and every combined node of
+        # `mixed`).
+        [ -x "$STAGEF_NODUSCORE_BIN" ] || { echo "[FAIL] STAGEF_MODE=$MODE needs nodus-core — none at $STAGEF_NODUSCORE_BIN (STAGEF_NODUSCORE_BIN)" >&2; exit 2; }
+        [ -x "$STAGEF_NODUSSTORAGE_BIN" ] || { echo "[FAIL] STAGEF_MODE=$MODE needs nodus-storage — none at $STAGEF_NODUSSTORAGE_BIN (STAGEF_NODUSSTORAGE_BIN)" >&2; exit 2; }
+        [ -x "$STAGEF_NODUSWITNESS_BIN" ] || { echo "[FAIL] STAGEF_MODE=$MODE needs nodus-witness — none at $STAGEF_NODUSWITNESS_BIN (STAGEF_NODUSWITNESS_BIN)" >&2; exit 2; }
+        echo "[ok] nodus-core: $STAGEF_NODUSCORE_BIN"
+        echo "[ok] nodus-storage: $STAGEF_NODUSSTORAGE_BIN"
+        echo "[ok] nodus-witness: $STAGEF_NODUSWITNESS_BIN"
+        srv_dir="$(dirname "$(readlink -f "$STAGEF_NODUS_BIN")")"
+        for b in "$STAGEF_NODUSCORE_BIN" "$STAGEF_NODUSSTORAGE_BIN" "$STAGEF_NODUSWITNESS_BIN"; do
+            if [ "$(dirname "$(readlink -f "$b")")" != "$srv_dir" ]; then
+                echo "[warn] nodus-server and $(basename "$b") are in DIFFERENT directories — a split run must use one build (decision 2026-10-01-nodus-component-split.md item 23)"
+            fi
+        done
+        ;;
+    *) echo "[FAIL] STAGEF_MODE='$MODE' — must be combined, splitw, mixedw, splits, mixeds, split or mixed" >&2; exit 2 ;;
 esac
 echo "[ok] mode: $MODE"
 
@@ -248,14 +283,19 @@ echo "[ok] dir layout created"
 # The same short-lived spawn the now-deleted stagef_up.sh used: the
 # server generates its Dilithium5 identity on first run, we wait for the
 # three files and kill it. Nothing is listening long enough to matter.
+# Split S6: the spawn is the node's CORE as the mode runs it
+# (stagef_core_cmd, no config file — nodus.json does not exist yet):
+# combined → nodus-server, unchanged; a split node → its core binary with
+# the mode's `--*-external` flags (nodus-core refuses without both), so no
+# combined server ever opens a split node's data directory. Consequence for
+# the split modes: an external half's databases are NOT created here
+# (splits / split: no nodus.db / channels.db; splitw / split: no witness
+# work) — the first start of nodus-storage creates them, and the
+# partial-wipe gate allows any subset before the marker exists.
 for n in $(seq 1 "$C"); do
     node_dir=$(stagef_node_dir "$n")
-    "$STAGEF_NODUS_BIN" -b 127.0.0.1 \
-        -u "$(stagef_udp_port "$n")" -t "$(stagef_tcp_port "$n")" \
-        -p "$(stagef_peer_port "$n")" -C "$(stagef_chan_port "$n")" \
-        -W "$(stagef_witness_port "$n")" \
-        -i "$node_dir/identity" -d "$node_dir/data" \
-        > "$node_dir/identity_gen.log" 2>&1 &
+    stagef_core_cmd "$n"
+    "${STAGEF_CMD[@]}" > "$node_dir/identity_gen.log" 2>&1 &
     ig=$!
     # P2P-PORT F6: also wait for nodus.mlkem_sk — nodus_identity_save
     # writes pk, sk, fp, kyber_*, mlkem_pk and mlkem_sk LAST
@@ -438,10 +478,15 @@ if [ "$PUMP_IDS" -gt 1 ]; then
 fi
 
 # The identity-generation spawn opened a data directory, so each node
-# now holds nodus.db / channels.db. The derivation refuses to run
-# beside a FOREIGN chain database but does not care about these, and
-# the partial-wipe gate wants all three present — which is exactly the
-# state a real host is in after its first start. Left alone on purpose.
+# whose DHT runs in its core (combined, splitw / mixedw, the combined
+# nodes of every mixed mode) now holds nodus.db / channels.db; a node
+# whose storage is external (splits, split, mixeds / mixed 1-3) holds
+# neither until its nodus-storage first starts. The derivation refuses to
+# run beside a FOREIGN chain database but does not care about these, and
+# the partial-wipe gate is armed only once all three exist (the marker
+# follows the first open chain plus both DHT databases) — which is
+# exactly the state a real host is in after its first start. Left alone
+# on purpose.
 
 # ── 1e. P2P-PORT F6 — nodus.json + the network file ─────────────────
 # nodus.json (require_peer_auth, "network_file", the two harness-only p2p
@@ -853,56 +898,29 @@ printf '%s\n' "$GENESIS_PIN" > "$BASE_DIR/v2_genesis_pin"
 # ── 4. spawn ────────────────────────────────────────────────────────
 # The -s seeds form the DHT cluster (4000/4002); without an "id@" prefix
 # they add no witness-port peer. The 4004 mesh comes from the network
-# file named in nodus.json (section 1e) on a p2p-aware server.
-SEEDS=""
-for n in $(seq 1 "$C"); do SEEDS="$SEEDS -s 127.0.0.1:$(stagef_udp_port "$n")"; done
+# file named in nodus.json (section 1e) on a p2p-aware server. Every spawn
+# primitive passes all $C seeds (stagef_env.sh stagef_seed_args).
 
 : > "$BASE_DIR/pids.txt"
 for n in $(seq 1 "$C"); do
-    nd=$(stagef_node_dir "$n")
-    if stagef_node_is_split "$n"; then
-        # Split S3: the CORE half — the SAME command as a combined node
-        # plus `--witness-external` on the command line. Not a nodus.json
-        # key: that one file is also read by the derive ceremony above,
-        # by every combined node (mixedw 4-7) and by every restart in
-        # tests/, none of which may run external. The witness is spawned
-        # in the second pass below, after every core.
-        # shellcheck disable=SC2086
-        "$STAGEF_NODUS_BIN" -c "$BASE_DIR/nodus.json" --witness-external -b 127.0.0.1 \
-            -u "$(stagef_udp_port "$n")" -t "$(stagef_tcp_port "$n")" \
-            -p "$(stagef_peer_port "$n")" -C "$(stagef_chan_port "$n")" \
-            -W "$(stagef_witness_port "$n")" \
-            -i "$nd/identity" -d "$nd/data" $SEEDS \
-            > "$nd/nodus.log" 2>&1 &
-        echo $! >> "$BASE_DIR/pids.txt"
-        echo "[ok] node $n core spawned pid=$! (--witness-external)"
-        continue
+    # The CORE of every node, through the one primitive (stagef_env.sh
+    # stagef_spawn_core): the node's core binary (nodus-core for a
+    # three-process node, nodus-server otherwise) with the SAME command a
+    # combined node gets plus the mode's `--*-external` flags — command
+    # line only, never a nodus.json key (that one file is also read by the
+    # derive ceremony above, by every combined node and by every restart
+    # in tests/, none of which may run external). The node's log is fresh
+    # (nothing wrote nodus.log before this point), so appending is the
+    # same as creating it. An external witness / storage is spawned in the
+    # passes below, after every core.
+    cpid=$(stagef_spawn_core "$n")
+    echo "$cpid" >> "$BASE_DIR/pids.txt"
+    fl=$(stagef_node_core_flags "$n")
+    if [ -n "$fl" ]; then
+        echo "[ok] node $n core spawned pid=$cpid ($(basename "$(stagef_node_core_bin "$n")") $fl)"
+    else
+        echo "[ok] node $n spawned pid=$cpid"
     fi
-    if stagef_node_is_storage_split "$n"; then
-        # Split S5b: the CORE half of a storage-split node — the same
-        # command as a combined node plus `--storage-external` (command
-        # line only, for the reason given above). Its witness runs
-        # in-process; its DHT is nodus-storage, spawned in section 4c.
-        # shellcheck disable=SC2086
-        "$STAGEF_NODUS_BIN" -c "$BASE_DIR/nodus.json" --storage-external -b 127.0.0.1 \
-            -u "$(stagef_udp_port "$n")" -t "$(stagef_tcp_port "$n")" \
-            -p "$(stagef_peer_port "$n")" -C "$(stagef_chan_port "$n")" \
-            -W "$(stagef_witness_port "$n")" \
-            -i "$nd/identity" -d "$nd/data" $SEEDS \
-            > "$nd/nodus.log" 2>&1 &
-        echo $! >> "$BASE_DIR/pids.txt"
-        echo "[ok] node $n core spawned pid=$! (--storage-external)"
-        continue
-    fi
-    # shellcheck disable=SC2086
-    "$STAGEF_NODUS_BIN" -c "$BASE_DIR/nodus.json" -b 127.0.0.1 \
-        -u "$(stagef_udp_port "$n")" -t "$(stagef_tcp_port "$n")" \
-        -p "$(stagef_peer_port "$n")" -C "$(stagef_chan_port "$n")" \
-        -W "$(stagef_witness_port "$n")" \
-        -i "$nd/identity" -d "$nd/data" $SEEDS \
-        > "$nd/nodus.log" 2>&1 &
-    echo $! >> "$BASE_DIR/pids.txt"
-    echo "[ok] node $n spawned pid=$!"
 done
 
 # ── 4b. split S3: the WITNESS half of every split node ──────────────
@@ -929,14 +947,9 @@ for n in $(seq 1 "$C"); do
         sleep 0.25
     done
     [ "$id_ok" = 1 ] || { echo "[FAIL] node $n: core identity files never appeared — nodus-witness cannot start" >&2; exit 7; }
-    # shellcheck disable=SC2086
-    "$STAGEF_NODUSWITNESS_BIN" -c "$BASE_DIR/nodus.json" --witness-external -b 127.0.0.1 \
-        -u "$(stagef_udp_port "$n")" -t "$(stagef_tcp_port "$n")" \
-        -p "$(stagef_peer_port "$n")" -C "$(stagef_chan_port "$n")" \
-        -W "$(stagef_witness_port "$n")" \
-        -i "$nd/identity" -d "$nd/data" $SEEDS \
-        > "$(stagef_node_witness_log "$n")" 2>&1 &
-    wpid=$!
+    # The shared spawn line (stagef_env.sh stagef_spawn_witness), which the
+    # scenarios' stagef_spawn_node reuses; witness.log is fresh here.
+    wpid=$(stagef_spawn_witness "$n")
     echo "$wpid" >> "$BASE_DIR/pids.txt"
     WPIDS="$WPIDS $n:$wpid"
     echo "[ok] node $n witness spawned pid=$wpid"
@@ -1065,7 +1078,7 @@ for n in $(seq 1 "$C"); do
                 split_bad=1
             fi
             if grep -q 'chain role: COMETBFT' "$nd/nodus.log"; then
-                echo "[FAIL] node $n: the core's nodus.log carries 'chain role: COMETBFT' — nodus-server ran a witness in-process despite --witness-external" >&2
+                echo "[FAIL] node $n: the core's nodus.log carries 'chain role: COMETBFT' — the core ran a witness in-process despite --witness-external" >&2
                 split_bad=1
             fi
             sock_ok=0

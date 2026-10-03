@@ -53,6 +53,18 @@
 #   pid appended to pids.txt. Its nodus.log is TRUNCATED, not appended —
 #   the scenario needs to distinguish this boot's lines from the original
 #   one's, and a delta over a wiped-and-readopted node is not meaningful.
+#   In a mode where node 6's witness is split (splitw, split) its
+#   witness.log — where the role / LIVE lines are read — is truncated too;
+#   every process of the node (core, and nodus-witness / nodus-storage
+#   where the mode splits them) gets a NEW pid in pids.txt.
+#
+# SPLIT S6 — RUNS IN EVERY MODE
+#   The victim is stopped with stagef_stop_node (every process of node 6,
+#   each found by its executable, attempt-bounded until all have exited)
+#   and restarted with stagef_spawn_node (core with the mode's flags, then
+#   nodus-witness / nodus-storage where split; the pin goes to the
+#   process that runs the witness). It used to SKIP (99) on a split
+#   victim.
 #
 # HOW IT CAN LIE
 #   - **"It came back up" is not "it rejoined".** A node that failed to
@@ -91,11 +103,6 @@ PINFILE="$BASE_DIR/v2_genesis_pin"
 
 die() { echo "[FAIL] $*" >&2; exit 1; }
 
-# Split S3: this scenario kills, wipes and restarts the victim as ONE
-# nodus-server process — SKIP (99) when the victim is split (splitw);
-# runs unchanged when it is combined (combined, mixedw).
-stagef_split_skip_if "$VICTIM"
-
 ref_db=$(stagef_node_chain_db "$REF")
 [ -n "$ref_db" ] && [ -s "$ref_db" ] || die "no chain DB for node$REF"
 has_v2=$(sqlite3 "$ref_db" \
@@ -117,9 +124,16 @@ stagef_cmt_diff_at_floor "pre-v2-join" || exit 2
 
 # ── Wipe ────────────────────────────────────────────────────────────
 nd=$(stagef_node_dir "$VICTIM")
-vpid=$(pgrep -f "node$VICTIM/data" | head -1 || true)
-[ -n "$vpid" ] || die "node$VICTIM is not running"
-kill -9 "$vpid"
+vlog=$(stagef_node_log "$VICTIM")   # the WITNESS lines: witness.log when split
+# Every process of the node, each by its executable, waited for until all
+# have exited — the exit is waited for, not assumed (no `pgrep | head -1`).
+src=0; stagef_stop_node "$VICTIM" KILL || src=$?
+[ "$src" != 1 ] || die "node$VICTIM is not running"
+[ "$src" = 0 ] || die "node$VICTIM did not exit after SIGKILL"
+echo "[ok] node$VICTIM stopped (pids $STAGEF_STOPPED_PIDS)"
+# The pre-S6 script slept 3 s after its kill; kept so the restart's timing
+# relative to the peers' view of the disconnect is unchanged. It decides
+# no verdict (the exit itself was waited for above).
 sleep 3
 
 # Everything except the identity. A fresh key would not be in the
@@ -130,6 +144,7 @@ rm -f "$nd/data/"*.db "$nd/data/"*.db-wal "$nd/data/"*.db-shm \
       "$nd/data/.recovery_in_progress"
 rm -rf "$nd/data/archive"
 : > "$nd/nodus.log"
+[ "$vlog" = "$nd/nodus.log" ] || : > "$vlog"
 
 # Verified, not assumed: without this, "it has a chain" afterwards could
 # just be the old file nobody removed.
@@ -137,21 +152,12 @@ ls "$nd/data/"witness_*.db >/dev/null 2>&1 && die "wipe did not remove the chain
 echo "[ok] node$VICTIM wiped (identity kept, databases gone)"
 
 # ── Rejoin, with nothing but the pin ────────────────────────────────
-SEEDS=""
-for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
-    SEEDS="$SEEDS -s 127.0.0.1:$(stagef_udp_port "$n")"
-done
-# shellcheck disable=SC2086
-"$STAGEF_NODUS_BIN" -c "$BASE_DIR/nodus.json" -b 127.0.0.1 \
-    -u "$(stagef_udp_port "$VICTIM")" -t "$(stagef_tcp_port "$VICTIM")" \
-    -p "$(stagef_peer_port "$VICTIM")" -C "$(stagef_chan_port "$VICTIM")" \
-    -W "$(stagef_witness_port "$VICTIM")" \
-    --v2-genesis-pin "$PIN" \
-    -i "$nd/identity" -d "$nd/data" $SEEDS \
-    >> "$nd/nodus.log" 2>&1 &
-newpid=$!
-echo "$newpid" >> "$BASE_DIR/pids.txt"
-echo "[ok] node$VICTIM restarted with ONLY the genesis pin (pid $newpid)"
+# stagef_spawn_node: every process of the node in this mode, every pid
+# appended to pids.txt, the pin handed to the process that runs the
+# witness; it returns once the core's client port listens.
+stagef_spawn_node "$VICTIM" --v2-genesis-pin "$PIN" \
+    || die "node$VICTIM never listened on its client port after the restart"
+echo "[ok] node$VICTIM restarted with ONLY the genesis pin (pids $STAGEF_NODE_PIDS)"
 
 # ── It must ADOPT, not merely start ─────────────────────────────────
 adopted=0
@@ -164,7 +170,7 @@ for _ in $(seq 1 120); do
 done
 [ "$adopted" = 1 ] || {
     echo "--- node$VICTIM log tail ---" >&2
-    tail -30 "$nd/nodus.log" >&2
+    tail -30 "$vlog" >&2
     die "node$VICTIM never adopted a chain — it is up and serving DHT with no witness role, which is exactly what 'it started' would have hidden"
 }
 [ "$gid" = "$fleet_gid" ] || die \
@@ -177,8 +183,8 @@ echo "[ok] node$VICTIM adopted the fleet's chain ($gid)"
 # with no less force to a joiner than to a fresh derivation).
 role_ok=0 live_ok=0
 for _ in $(seq 1 30); do
-    if grep -q 'chain role: COMETBFT' "$nd/nodus.log"; then role_ok=1; fi
-    if grep -q 'cometbft lane LIVE' "$nd/nodus.log"; then live_ok=1; fi
+    if grep -q 'chain role: COMETBFT' "$vlog"; then role_ok=1; fi
+    if grep -q 'cometbft lane LIVE' "$vlog"; then live_ok=1; fi
     if [ "$role_ok" = 1 ] && [ "$live_ok" = 1 ]; then break; fi
     sleep 1
 done

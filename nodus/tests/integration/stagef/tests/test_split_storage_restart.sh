@@ -6,12 +6,15 @@
 # WHAT IT PROVES (split S5b; decision docs/plans/decisions/2026-10-01-
 # nodus-component-split.md items 5, 17, 27, 31, 32, 34)
 #   On a storage-split node (core = nodus-server --storage-external with
-#   its witness in-process, DHT = nodus-storage):
+#   its witness in-process in splits / mixeds; split S6: core = nodus-core
+#   with the witness in its own nodus-witness process in split / mixed;
+#   DHT = nodus-storage in all four):
 #   1. Through the core, a DHT put + get works (the storage IPC carries a
 #      client request and its reply).
-#   2. kill -9 of nodus-storage leaves the core — and so its in-process
-#      witness — running: the process stays alive and the node's chain
-#      keeps committing (its own Comet tip passes the height it had).
+#   2. kill -9 of nodus-storage leaves the core — and the witness, in the
+#      core (splits / mixeds) or in nodus-witness (split / mixed) — running:
+#      the core process stays alive and the node's chain keeps committing
+#      (its own Comet tip passes the height it had).
 #   3. While storage is down a client DHT request is answered AT ONCE with
 #      the decision-31 error ("PUT error: [21] storage module not
 #      available") — not a timeout (nodus-cli waits 5 s and then prints
@@ -28,14 +31,16 @@
 #
 # WHAT IT REQUIRES
 #   Compile flags: NONE (a default nodus/build: nodus-server, nodus-storage,
-#   nodus-cli from ONE build).
+#   nodus-cli — plus nodus-core and nodus-witness for split / mixed — from
+#   ONE build).
 #   Environment: a cluster brought up by stagef_up_v2.sh in STAGEF_MODE
-#   `splits` or `mixeds` (README "Harness modes"); in any other mode no
-#   node is storage-split and it exits 99 (SKIP — coverage that did not
-#   happen). STAGEF_NODUSCLI_BIN executable (put / get). The scenario
-#   must see the bring-up's STAGEF_NODUS_BIN / STAGEF_NODUSSTORAGE_BIN:
-#   both processes are found by their executable (stagef_node_core_pid,
-#   stagef_node_storage_pid).
+#   `splits`, `mixeds`, `split` or `mixed` (README "Harness modes"); in
+#   any other mode no node is storage-split and it exits 99 (SKIP —
+#   coverage that did not happen). STAGEF_NODUSCLI_BIN executable (put /
+#   get). The scenario must see the bring-up's STAGEF_NODUS_BIN /
+#   STAGEF_NODUSCORE_BIN / STAGEF_NODUSSTORAGE_BIN: both processes are
+#   found by their executable (stagef_node_core_pid — nodus-core on a
+#   split / mixed 1-3 node — and stagef_node_storage_pid).
 #
 # WHAT IT LEAVES BEHIND
 #   The victim node's nodus-storage killed and restarted under a NEW pid,
@@ -59,8 +64,11 @@
 #   - **"Chain keeps committing" is the victim's OWN tip passing its
 #     pre-kill height** (stagef_cmt_wait_height, progress-bounded). In
 #     `splits` / `mixeds` the witness runs inside the core process, so a
-#     live core is the witness; that is what this shows, nothing about a
-#     three-process node (S6).
+#     live core is the witness. In `split` / `mixed` (three processes,
+#     S6) the witness is nodus-witness, which never talks to storage —
+#     committing there shows storage's death did not reach the witness,
+#     and the core's liveness is checked separately; the witness process
+#     itself is not pid-checked here.
 #   - **The put after the restart proves storage serves again, not that
 #     its pre-kill state survived** — the first value is read back too
 #     (it is in nodus.db), but a value the dead process had only in memory
@@ -79,7 +87,7 @@ for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
     if stagef_node_is_storage_split "$n"; then VICTIM="$n"; break; fi
 done
 if [ -z "$VICTIM" ]; then
-    echo "[SKIP] $(stagef_mode): no storage-split node — this scenario needs STAGEF_MODE=splits or mixeds"
+    echo "[SKIP] $(stagef_mode): no storage-split node — this scenario needs STAGEF_MODE=splits, mixeds, split or mixed"
     exit 99
 fi
 [ -x "$STAGEF_NODUSCLI_BIN" ] || { echo "[SKIP] no nodus-cli at $STAGEF_NODUSCLI_BIN"; exit 99; }

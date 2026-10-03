@@ -119,6 +119,10 @@
 #   STAGEF_MODE=splits|mixeds bash genesis_protocol_v2.sh
 #                                            # split S5b: the DHT in nodus-storage
 #                                            # (README "Harness modes")
+#   STAGEF_MODE=split|mixed bash genesis_protocol_v2.sh
+#                                            # split S6: nodus-core + nodus-storage
+#                                            # + nodus-witness per split node
+#                                            # (README "Harness modes")
 #
 # ════════════════════════════════════════════════════════════════════
 set -uo pipefail
@@ -132,9 +136,10 @@ SCENARIOS_ONLY=0
 # Split S3 — the harness mode (STAGEF_MODE, stagef_env.sh; decision
 # 2026-10-01-nodus-component-split.md items 15/22/23). A full run brings
 # the cluster up in $STAGEF_MODE; --scenarios reads the mode the running
-# cluster recorded (stagef_mode). A scenario that cannot handle a split
-# node exits 99 and is reported as SKIP — coverage that did not happen —
-# exactly like every other 99.
+# cluster recorded (stagef_mode). Split S6: every scenario in this list
+# runs in every mode (the ones that start / stop nodes use stagef_spawn_node
+# / stagef_stop_node); a scenario that still exits 99 is reported as SKIP —
+# coverage that did not happen — exactly like every other 99.
 echo "════ V2 Genesis Protocol — mode: $(if [ "$SCENARIOS_ONLY" = 1 ]; then stagef_mode; else echo "${STAGEF_MODE:-combined}"; fi) ════"
 
 # R3 W3 (C2d) — ORDER IS EXPLICIT AND NO LONGER ALPHABETICAL.
@@ -233,10 +238,11 @@ echo "════ V2 Genesis Protocol — mode: $(if [ "$SCENARIOS_ONLY" = 1 ];
 #     ACTIVE validators. The seam scan only READS logs, unaffected by
 #     which validators are still ACTIVE.
 #   test_split_storage_restart.sh (split S5b) — SKIPS (99) unless the
-#     cluster was born in `splits` / `mixeds`; then it kills and restarts
-#     the first storage-split node's nodus-storage (never a validator's
-#     witness — that runs in the core), spends no leaf, and needs only
-#     that the chain keeps committing. Placed after every scenario that
+#     cluster was born in `splits` / `mixeds` / `split` / `mixed`; then it
+#     kills and restarts the first storage-split node's nodus-storage
+#     (never a validator's witness — that runs in the core, or in its own
+#     nodus-witness in split / mixed), spends no leaf, and needs only that
+#     the chain keeps committing. Placed after every scenario that
 #     counts on a node's DHT being up, and before the seam scan, which
 #     reads logs only.
 #   test_p2p_seam_faults.sh    LAST, unconditionally: it reads every
@@ -405,8 +411,9 @@ if [ "$skip" -gt 0 ]; then
     echo "  ⚠ A SKIP IS NOT A PASS. The scenarios above declined to run and"
     echo "    their coverage is ABSENT from this result."
     if [ "$RUN_MODE" != "combined" ]; then
-        echo "    In mode $RUN_MODE a scenario that spawns/stops nodes itself SKIPs"
-        echo "    when its node is split (README \"Harness modes\")."
+        echo "    Mode $RUN_MODE: no scenario of this list SKIPs for a split node"
+        echo "    (split S6); test_split_storage_restart.sh SKIPs where no node's"
+        echo "    storage is split. Read the reasons above (README \"Harness modes\")."
     fi
 fi
 [ "$fail" -eq 0 ] || exit 1
