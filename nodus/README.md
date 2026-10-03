@@ -247,6 +247,31 @@ The shipped units are in `deploy/`: `nodus.service` (the combined `nodus-server`
 conflict with `nodus.service`; `docs/DEPLOY_RUNBOOK.md` "Three-process node").
 `deploy/build-nodus.sh` installs them.
 
+### Installer tarball (split S7)
+
+Build a self-contained tar.gz from an existing build directory, then install it on a
+host (decision `2026-10-01-nodus-component-split.md` item 26; where the tarball is
+published and how it is signed is not decided yet):
+
+```bash
+deploy/make-dist.sh build /tmp/out
+# -> /tmp/out/nodus-<version>-linux-<arch>.tar.gz (+ its SHA-256 printed)
+#    five binaries of that build, four units, install.sh, README, VERSION, SHA256SUMS;
+#    refuses on a missing binary or a version mismatch; no config, no identity
+
+tar -xzf nodus-<version>-linux-<arch>.tar.gz && cd nodus-<version>-linux-<arch>
+sudo ./install.sh --layout split --dry-run   # print the plan, change nothing
+sudo ./install.sh --layout split             # core + storage + witness
+sudo ./install.sh --layout split --no-witness   # core + storage (or --no-storage)
+sudo ./install.sh --layout combined          # nodus.service
+#   --prefix DIR (default /usr/local/bin), --config FILE (only if /etc/nodus.conf is absent)
+```
+
+`install.sh` verifies `SHA256SUMS`, refuses on two enabled layouts, installs binaries
+and units atomically, moves `nodus.addr_seq` into the data directory on the first split
+start, starts core → storage → witness and reports each unit's state. Full procedure and
+rollback: `docs/DEPLOY_RUNBOOK.md` "tar.gz installer".
+
 ---
 
 ## Client SDK

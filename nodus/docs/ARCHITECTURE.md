@@ -1463,7 +1463,7 @@ Data is stored in:
 - `<data_path>/channels.db` — Channel post storage (SQLite)
 - `<identity_path>/nodus.pk`, `nodus.sk`, `nodus.fp` — Node identity
 
-### Component split — S1 witness host seam, S2 local IPC primitives, S3 `nodus-witness` process, S4 core/DHT seam, S5a 4002 connection fixes, S5b `nodus-storage` process, S6 `nodus-core` process + units (2026-10-02 / 03)
+### Component split — S1 witness host seam, S2 local IPC primitives, S3 `nodus-witness` process, S4 core/DHT seam, S5a 4002 connection fixes, S5b `nodus-storage` process, S6 `nodus-core` process + units, S7 tar.gz installer (2026-10-02 / 03)
 
 Governing record: decision `docs/plans/decisions/2026-10-01-nodus-component-split.md`
 (local; items 1-26 APPROVED; rev 4 items 27-29 APPROVED 2026-10-02, operator "ikisine de
@@ -2689,7 +2689,55 @@ beside `nodus.service`, which stays — item 8). §13 "Systemd Service" below.
   (`.gitignore`, commit `fb45e940`); `build-nodus.sh` copies it on a first install when
   present, and otherwise skips the copy with a message (a fresh clone has none — write
   `/etc/nodus.conf` by hand).
-- `nodus.addr_seq` migration and the installer (items 21, 26) are S7.
+- `nodus.addr_seq` migration and the installer (items 21, 26) are S7 (below).
+
+#### S7 — the `nodus` installer: a tar.gz built by `deploy/make-dist.sh`, run by `deploy/install.sh` (decision items 8, 10-12, 18, 21, 26)
+
+**Artefact** (item 26: tar.gz; `.deb` later). `deploy/make-dist.sh <build-dir> [<out-dir>]`
+— a plain POSIX-sh script, no CMake target — packs `nodus-<NODUS_VERSION_STRING>-linux-<uname
+-m>.tar.gz`: the five binaries of ONE build directory (`nodus-server` stays in every
+tarball, item 8), the four units from `deploy/`, `install.sh`, `README`
+(`deploy/README-dist.md`), `VERSION`, `SHA256SUMS`. The version is read from
+`include/nodus/nodus_types.h`; the script refuses when the header disagrees with itself,
+when a binary's `-h` banner (`nodus_node_config.c` `usage()`, `nodus-cli.c` `usage()`)
+reports another version, on a `-fsanitize` build, or when the output exists. The payload
+list is explicit, so a local `deploy/nodus.conf.example` (gitignored) never enters it.
+Deterministic archive: `tar --sort=name --owner=0 --group=0 --mtime=@<last commit>`,
+`gzip -n`.
+
+**Installer** (`install.sh`, POSIX sh, `set -eu`): `--layout combined|split`,
+`--no-storage` / `--no-witness` (item 12: core always; refusing both), `--prefix`
+(units' `ExecStart=` rewritten to match), `--config` (item 18: one `/etc/nodus.conf`;
+installed only when absent, never overwritten), `--dry-run`. Every check runs before the
+first change: `SHA256SUMS` (and that it lists exactly the expected names), root, config
+(`identity_path` / `data_path` read from it, under the units' `ReadWritePaths=`; no
+`*_external: true` in the file — those flags live on the split units' command lines), the
+current layout by `systemctl is-enabled` = exactly `enabled` (same rule as
+`build-nodus.sh` / `tools/nodus-update.sh`; both layouts, or storage / witness without
+core → refuse; a split unit enabled but not asked for → refuse). Then: stop the running
+nodus units, disable the old layout's surplus units, install binaries and units
+atomically (`dest.new` + `mv -f`), `daemon-reload`, the `addr_seq` move, enable + start.
+
+**`nodus.addr_seq` (item 21).** The combined binary keeps it in `identity_path`
+(`src/server/nodus_server.h:440` — host `seq_dir` = `identity_path`); nodus-witness keeps it in its
+`data_path` (`tools/nodus-witness.c` empties `seq_dir`, `nodus_witness.c:2696-2698` falls
+back to `witness->data_path` = config `data_path`, `:2562`). The installer moves the old
+file to `<data_path>/nodus.addr_seq` when the split witness is about to run on the host
+for the first time and only if the data copy does not exist; both present → refuse, both
+paths printed. It never moves it back (split → combined prints a note), never touches
+another identity file, never wipes.
+
+**Start order (item 10).** `nodus-core` first; a bounded wait (60 × 1 s, early exit if
+core is `failed` / `inactive`) for the six files `nodus_identity_load_readonly` reads
+(`src/crypto/nodus_identity.c` — `nodus.pk`, `nodus.sk`, `nodus.kyber_pk`,
+`nodus.kyber_sk`, `nodus.mlkem_pk`, `nodus.mlkem_sk`); then storage, then witness. After
+a fixed 5 s settle, `systemctl is-active` per wanted unit; any not `active` → exit 1 and an
+`EXIT`-trap rollback hint (back to `nodus.service`). Procedure: `DEPLOY_RUNBOOK.md` §0
+"tar.gz installer".
+
+**Not done in S7 / open:** the distribution path and signing of the tarball (decision
+"Açık kalanlar"); no real install was run on a host in S7 (dry-run only); the S6 OPEN
+items (witness partial-wipe gate, live restart order, `ReadOnlyPaths=`) are unchanged.
 
 ---
 
