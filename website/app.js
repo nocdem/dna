@@ -267,7 +267,7 @@ const turkish = {
   "history.scan2.body": "Scan her hard fork’u oylandığı ve geçerli olduğu blokla listeler, bir işlemi zincir ismiyle bulur; zincirin son bir dakika ve son bir saatteki saniye başına işlem sayısını 24 saatlik grafikle, tahmini tarihiyle bir sonraki ödeme gününü, geçmiş ödeme günlerini ve mevcut blok hızına göre tahmini APY’yi gösterir.",
   "history.split.date": "EKİM 2026",
   "history.split.title": "Ayrı bileşenlerden oluşan düğüm — geliştirildi, canlı düğümlerde henüz yok",
-  "history.split.body": "Nodus sunucusu artık üç ayrı süreç olarak da çalışabiliyor: nodus-core, nodus-storage ve nodus-witness; hepsi kurulum betiği olan tek bir tar.gz paketinden kurulur. Tek parça birleşik sunucu varsayılan olarak kalıyor ve canlı testnet düğümleri hâlâ onu çalıştırıyor.",
+  "history.split.body": "Nodus sunucusu artık üç ayrı süreç olarak da çalışabiliyor: nodus-core, nodus-storage ve nodus-witness; hepsi kurulum betiği olan tek bir tar.gz paketinden kurulur. Tek parça birleşik sunucu varsayılan olarak kalıyor. Bir testnet düğümü üç süreçli düzeni deneme olarak çalıştırıyor; diğerleri birleşik sunucuyu çalıştırıyor.",
   "history.archive.date": "4 EKİM 2026",
   "history.archive.title": "Blok budama ve arşiv düğümleri — canlı, düğüm düğüm açılıyor",
   "history.archive.body": "Nodus 0.23.18 testnet’in yedi düğümünün hepsinde çalışıyor. Budanmış bir doğrulayıcı son 7 ödeme gününü (120.960 blok) ve genesis bağlantısını tutar; bir arşiv düğümü her bloğu tutar. Artık her düğüm yinelenen “seen commit” kopyasını siliyor, böylece zincir verisi daha yavaş büyüyor. Budama önce tek bir düğümde açıldı; diğerleri o düğüm denetlendikten sonra izleyecek.",
