@@ -411,10 +411,37 @@ stagef_spawn_witness() {
 # nodus-core parses and ignores it). The identity must already exist (a
 # scenario restarts a node that ran before). Sets STAGEF_NODE_PIDS to the
 # started pids ("core witness storage" order, the ones that apply).
-# Returns 1 (after starting what it could) if the client port never
-# listened.
+#
+# After the client port, the node's OTHER processes must be up too, each
+# attempt-bounded with the bring-up's own bounds (stagef_up_v2.sh), never
+# a bare sleep, and each wait broken early when its process has exited:
+#   - witness-split node: nodus-witness printed a NEW `Nodus witness v…
+#     running` line (90 x 1 s, the bring-up's witness-line bound), then
+#     <data>/witness.sock exists (40 x 0.25 s);
+#   - storage-split node: nodus-storage printed a NEW `Nodus storage v…
+#     running` line (60 x 1 s, the bring-up's storage bound), then
+#     <data>/storage.sock exists (40 x 0.25 s).
+# NEW = in the bytes the log gained after this spawn (its size is taken
+# before the process starts): witness.log / storage.log are appended to,
+# and the previous run's running line is still in them. The socket is
+# checked only AFTER the new running line — both binaries print it after
+# their listen (nodus-witness.c, nodus-storage.c), and nodus_tcp unlinks
+# and re-creates a stale socket file, so `-S` alone could be the dead
+# process's file. Finally every started pid must still be alive.
+#
+# Returns 1 (after starting what it could, with a [FAIL] line and the
+# tail of the right log on stderr) if any of that fails; 0 otherwise.
 stagef_spawn_node() {
-    local n="$1" cp wp sp tcp ok=0; shift
+    local n="$1" cp wp="" sp="" tcp ok=0 nd wlog slog woff=0 soff=0 p plog; shift
+    nd="$(stagef_node_dir "$n")"
+    wlog="$(stagef_node_witness_log "$n")"
+    slog="$(stagef_node_storage_log "$n")"
+    if stagef_node_is_split "$n"; then
+        woff=$(stat -c %s "$wlog" 2>/dev/null || echo 0)
+    fi
+    if stagef_node_is_storage_split "$n"; then
+        soff=$(stat -c %s "$slog" 2>/dev/null || echo 0)
+    fi
     STAGEF_NODE_PIDS=""
     if stagef_node_is_split "$n"; then
         cp=$(stagef_spawn_core "$n")
@@ -438,7 +465,81 @@ stagef_spawn_node() {
         if ss -lt 2>/dev/null | grep -Eq "[:.]${tcp}\\b"; then ok=1; break; fi
         sleep 0.5
     done
-    [ "$ok" = 1 ]
+    if [ "$ok" != 1 ]; then
+        echo "[FAIL] node$n: the core (pid $cp) never listened on its client port $tcp" >&2
+        tail -10 "$nd/nodus.log" >&2
+        return 1
+    fi
+    if [ -n "$wp" ]; then
+        _stagef_wait_up "$n" nodus-witness "$wp" "$wlog" "$woff" \
+            'Nodus witness v.* running' 90 "$nd/data/witness.sock" || return 1
+    fi
+    if [ -n "$sp" ]; then
+        _stagef_wait_up "$n" nodus-storage "$sp" "$slog" "$soff" \
+            'Nodus storage v.* running' 60 "$nd/data/storage.sock" || return 1
+    fi
+    for p in $STAGEF_NODE_PIDS; do
+        _stagef_pid_gone "$p" || continue
+        case "$p" in
+            "$wp") plog="$wlog" ;;
+            "$sp") plog="$slog" ;;
+            *)     plog="$nd/nodus.log" ;;
+        esac
+        echo "[FAIL] node$n: pid $p (started by this spawn) is no longer running" >&2
+        tail -10 "$plog" >&2
+        return 1
+    done
+    return 0
+}
+
+# _stagef_wait_up N NAME PID LOG OFFSET PATTERN ATTEMPTS SOCK — for
+# stagef_spawn_node: wait (ATTEMPTS x 1 s, broken early when PID exits) for
+# PATTERN in the bytes LOG gained after OFFSET, then (40 x 0.25 s) for the
+# Unix socket SOCK. Returns 1 with a [FAIL] line and LOG's tail on stderr.
+_stagef_wait_up() {
+    local n="$1" name="$2" pid="$3" log="$4" off="$5" pat="$6" att="$7" sock="$8"
+    local up=0 sock_ok=0
+    for _ in $(seq 1 "$att"); do
+        # No pipe into `grep -q`: under a scenario's `set -o pipefail` the
+        # SIGPIPE tail takes when grep stops early would fail the test on a
+        # MATCH once the new bytes outgrow the pipe buffer.
+        if grep -q -- "$pat" < <(tail -c +"$(( off + 1 ))" "$log" 2>/dev/null); then
+            up=1; break
+        fi
+        _stagef_pid_gone "$pid" && break
+        sleep 1
+    done
+    if [ "$up" != 1 ]; then
+        # (A process that printed the line and exited right after is
+        # caught by stagef_spawn_node's final liveness check.)
+        if _stagef_pid_gone "$pid"; then
+            echo "[FAIL] node$n: its $name (pid $pid) exited before printing a new running line" >&2
+        else
+            echo "[FAIL] node$n: its $name (pid $pid) printed no new running line within $att attempts (1 s each)" >&2
+        fi
+        tail -10 "$log" >&2
+        return 1
+    fi
+    for _ in $(seq 1 40); do
+        if [ -S "$sock" ]; then sock_ok=1; break; fi
+        sleep 0.25
+    done
+    if [ "$sock_ok" != 1 ]; then
+        echo "[FAIL] node$n: its $name (pid $pid) printed its running line but there is no Unix socket at $sock" >&2
+        tail -10 "$log" >&2
+        return 1
+    fi
+    return 0
+}
+
+# stagef_node_proc_count N — how many processes node N runs in the active
+# mode: 1 (its core), +1 when its witness is split, +1 when its storage is
+# split — combined 1, splitw / splits 2, split 3 (mixed* per node).
+stagef_node_proc_count() {
+    local c=1
+    stagef_node_is_split "$1" && c=$(( c + 1 ))
+    stagef_node_is_storage_split "$1" && c=$(( c + 1 ))
+    echo "$c"
 }
 
 # stagef_node_pids N — every running process of node N in the active mode,
@@ -475,31 +576,49 @@ _stagef_pid_gone() {
 # nodus_tcp.c nodus_tcp_unix_listen), so a respawn must come after this.
 # Never `wait`s (the pids are not this shell's children in general).
 # Sets STAGEF_STOPPED_PIDS. Returns 1 when node N had no process running,
-# 2 when one survived SIGKILL.
+# 2 when one survived SIGKILL, 3 when every process found has exited but
+# the NUMBER found differs from what node N's mode runs
+# (stagef_node_proc_count: combined 1, splitw / splits 2, split 3) — a
+# half-dead node (e.g. its nodus-storage had already died) is a failure
+# the scenario must see, not a clean stop. 2 takes precedence over 3; what
+# was found is always stopped first, so a caller that tolerates 3 never
+# moves files under a live process. A core that is ambiguous (more than
+# one match — stagef_node_core_pid prints nothing) counts as not found
+# and is NOT signalled; the count mismatch reports it.
 stagef_stop_node() {
-    local n="$1" sig="${2:-KILL}" pids p alive
+    local n="$1" sig="${2:-KILL}" pids p alive="" still want cnt=0 gone=0
     pids=$(stagef_node_pids "$n")
     STAGEF_STOPPED_PIDS="$pids"
     [ -n "$pids" ] || return 1
+    want=$(stagef_node_proc_count "$n")
+    for p in $pids; do cnt=$(( cnt + 1 )); done
     for p in $pids; do kill -s "$sig" "$p" 2>/dev/null || true; done
     for _ in $(seq 1 30); do
         alive=""
         for p in $pids; do _stagef_pid_gone "$p" || alive="$alive $p"; done
-        [ -z "$alive" ] && return 0
+        if [ -z "$alive" ]; then gone=1; break; fi
         sleep 0.5
     done
-    if [ "$sig" != KILL ] && [ "$sig" != 9 ]; then
+    if [ "$gone" != 1 ] && [ "$sig" != KILL ] && [ "$sig" != 9 ]; then
         echo "[info] node$n:${alive} did not exit on SIG$sig within 15 s — SIGKILLed"
         for p in $alive; do kill -9 "$p" 2>/dev/null || true; done
         for _ in $(seq 1 30); do
-            local still=""
+            still=""
             for p in $alive; do _stagef_pid_gone "$p" || still="$still $p"; done
-            [ -z "$still" ] && return 0
+            if [ -z "$still" ]; then gone=1; break; fi
             sleep 0.5
         done
+        [ "$gone" = 1 ] || alive="$still"
     fi
-    echo "[FAIL] node$n:${alive} still running after SIGKILL" >&2
-    return 2
+    if [ "$gone" != 1 ]; then
+        echo "[FAIL] node$n:${alive} still running after SIGKILL" >&2
+        return 2
+    fi
+    if [ "$cnt" -ne "$want" ]; then
+        echo "[FAIL] node$n: found $cnt process(es) (pids $pids) but its mode ($(stagef_mode)) runs $want — stopped what was found; the node was not whole" >&2
+        return 3
+    fi
+    return 0
 }
 
 # stagef_split_skip_if [--reason TEXT] NODE... — for a scenario outside the

@@ -147,7 +147,7 @@ echo "[ok] node$VICTIM baseline: tip=$tip_before blocksync_on_lines=$on_before b
 # alive is SIGKILLed (stagef_stop_node says so) and waited for again.
 src=0; stagef_stop_node "$VICTIM" TERM || src=$?
 [ "$src" != 1 ] || die "node$VICTIM is not running"
-[ "$src" = 0 ] || die "node$VICTIM did not exit even after SIGKILL"
+[ "$src" = 0 ] || die "stopping node$VICTIM failed (stagef_stop_node rc=$src: 2 = a process survived even SIGKILL, 3 = the node was not whole — the [FAIL] line above)"
 echo "[ok] node$VICTIM stopped (pids $STAGEF_STOPPED_PIDS)"
 
 # ── Let the fleet move on by a DISTANCE in blocks ───────────────────
@@ -165,7 +165,7 @@ echo "[ok] the fleet moved from $tip_before to $reached while node$VICTIM was do
 # Every process of the node in this mode, every pid appended to pids.txt;
 # returns once the core's client port listens (60 x 0.5 s).
 stagef_spawn_node "$VICTIM" \
-    || die "node$VICTIM never listened again on $(stagef_tcp_port "$VICTIM")"
+    || die "node$VICTIM did not come back after the restart (the [FAIL] line above names the process: core port $(stagef_tcp_port "$VICTIM"), nodus-witness or nodus-storage)"
 echo "[ok] node$VICTIM restarted (pids $STAGEF_NODE_PIDS)"
 for lg in "$clog" "$vlog"; do
     if grep -q 'REFUSING START' "$lg"; then

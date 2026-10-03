@@ -129,7 +129,7 @@ vlog=$(stagef_node_log "$VICTIM")   # the WITNESS lines: witness.log when split
 # have exited — the exit is waited for, not assumed (no `pgrep | head -1`).
 src=0; stagef_stop_node "$VICTIM" KILL || src=$?
 [ "$src" != 1 ] || die "node$VICTIM is not running"
-[ "$src" = 0 ] || die "node$VICTIM did not exit after SIGKILL"
+[ "$src" = 0 ] || die "stopping node$VICTIM failed (stagef_stop_node rc=$src: 2 = a process survived SIGKILL, 3 = the node was not whole — the [FAIL] line above)"
 echo "[ok] node$VICTIM stopped (pids $STAGEF_STOPPED_PIDS)"
 # The pre-S6 script slept 3 s after its kill; kept so the restart's timing
 # relative to the peers' view of the disconnect is unchanged. It decides
@@ -156,7 +156,7 @@ echo "[ok] node$VICTIM wiped (identity kept, databases gone)"
 # appended to pids.txt, the pin handed to the process that runs the
 # witness; it returns once the core's client port listens.
 stagef_spawn_node "$VICTIM" --v2-genesis-pin "$PIN" \
-    || die "node$VICTIM never listened on its client port after the restart"
+    || die "node$VICTIM did not come up after the restart (the [FAIL] line above names the process: core client port, nodus-witness or nodus-storage)"
 echo "[ok] node$VICTIM restarted with ONLY the genesis pin (pids $STAGEF_NODE_PIDS)"
 
 # ── It must ADOPT, not merely start ─────────────────────────────────

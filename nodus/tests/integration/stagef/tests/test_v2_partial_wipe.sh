@@ -135,8 +135,12 @@ vlog=$(stagef_node_log "$VICTIM")   # the WITNESS lines: witness.log when split
 
 # Every process of the victim (core, and nodus-witness / nodus-storage
 # where the mode splits them), each found by its executable, waited for
-# until all have exited. "Not running" is fine here (the trap may run
-# after the victim is already down); one that survives SIGKILL is not.
+# until all have exited. "Not running" (rc 1) is fine here: try_boot kills
+# its own core-only process, and the trap may run after the victim is
+# already down. A process that survives SIGKILL (rc 2) is not, and neither
+# is a node that was not whole (rc 3: fewer or more processes than its
+# mode runs — stagef_stop_node has still stopped every one it found, so
+# the trap's restore never moves files under a live process).
 # The 2 s pause after the exit is the pre-S6 script's post-kill sleep,
 # kept so the timing relative to the peers is unchanged; it decides no
 # verdict.
@@ -144,6 +148,7 @@ stop_victim() {
     local rc=0
     stagef_stop_node "$VICTIM" KILL || rc=$?
     [ "$rc" = 2 ] && return 1
+    [ "$rc" = 3 ] && return 1
     [ "$rc" = 0 ] && sleep 2
     return 0
 }
@@ -169,7 +174,7 @@ pw_cleanup() {
     [ "$rc" -ne 0 ] || return 0
     [ "$PW_DOWN" -eq 1 ] || return 0
     echo "[cleanup] rc=$rc with node$VICTIM down — restoring its files and restarting it" >&2
-    stop_victim || echo "[cleanup] a process of node$VICTIM survived SIGKILL — restoring anyway" >&2
+    stop_victim || echo "[cleanup] stopping node$VICTIM failed (the [FAIL] line above) — restoring anyway" >&2
     for b in "$BASE_DIR"/pw_backup_*; do
         [ -d "$b" ] || continue
         mv "$b"/* "$data"/ 2>/dev/null || true
@@ -187,7 +192,7 @@ pw_cleanup() {
     if stagef_spawn_node "$VICTIM" --v2-genesis-pin "$(cat "$PINFILE")"; then
         echo "[cleanup] node$VICTIM restarted (pids $STAGEF_NODE_PIDS); the next scenario's height wait covers its catch-up" >&2
     else
-        echo "[cleanup] node$VICTIM restarted (pids $STAGEF_NODE_PIDS) but its client port never listened" >&2
+        echo "[cleanup] node$VICTIM restarted (pids $STAGEF_NODE_PIDS) but did not come up (the [FAIL] line above)" >&2
     fi
 }
 trap pw_cleanup EXIT
@@ -247,7 +252,7 @@ try_boot() {
 
 stagef_cmt_diff_at_floor "pre-v2-partial-wipe" || exit 2
 PW_DOWN=1   # from here on, an abnormal exit must put node$VICTIM back
-stop_victim || die "a process of node$VICTIM survived SIGKILL"
+stop_victim || die "stopping node$VICTIM failed (a process survived SIGKILL, or the node was not whole — the [FAIL] line above)"
 
 # ── Each of the three, one at a time ────────────────────────────────
 # Found by different code: nodus.db and channels.db by name, the witness
@@ -292,7 +297,7 @@ echo "[ok] same half-wiped directory with NO marker -> boots ($r): the refusals 
 # ── Restore, the V2 way ─────────────────────────────────────────────
 # Not by re-bootstrapping from peers — that is the legacy path and does
 # not exist here. Wipe and rejoin on the pin.
-stop_victim || die "a process of node$VICTIM survived SIGKILL"
+stop_victim || die "stopping node$VICTIM failed (a process survived SIGKILL, or the node was not whole — the [FAIL] line above)"
 rm -f "$data"/*.db "$data"/*.db-wal "$data"/*.db-shm \
       "$data/.witness_db_seen" "$data/.bootstrap_in_progress"
 rm -rf "$data/archive"
@@ -301,7 +306,7 @@ rm -rf "$data/archive"
 PIN=$(cat "$PINFILE")
 # Every process of the node; the pin goes to the witness's process.
 stagef_spawn_node "$VICTIM" --v2-genesis-pin "$PIN" \
-    || die "node$VICTIM never listened on its client port after the restore"
+    || die "node$VICTIM did not come up after the restore (the [FAIL] line above names the process: core client port, nodus-witness or nodus-storage)"
 echo "[ok] node$VICTIM restarted for the pin rejoin (pids $STAGEF_NODE_PIDS)"
 
 fleet_tip=$(sqlite3 "$ref_db" "SELECT MAX(global_height) FROM v2_blocks;")
