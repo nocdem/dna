@@ -68,10 +68,11 @@ export function vaultCodeShape(code) {
 export function vaultLabel(value) {
   if (typeof value !== 'string') throw new Error('Invalid vault name.');
   const label = value.trim();
-  const chars = [...label];
-  // C0 / C1 control characters and the two Unicode line separators
+  // C0 / C1 control characters and the two Unicode line separators — checked
+  // on the value as given, before trimming: trim() also removes U+2028/U+2029,
+  // so a separator at an edge would otherwise pass silently.
   const control = c => { const p = c.codePointAt(0); return p < 0x20 || (p >= 0x7f && p <= 0x9f) || p === 0x2028 || p === 0x2029; };
-  if (chars.length > VAULT_LABEL_MAX || chars.some(control)) throw new Error(`A vault name can have at most ${VAULT_LABEL_MAX} characters, without line breaks.`);
+  if ([...label].length > VAULT_LABEL_MAX || [...value].some(control)) throw new Error(`A vault name can have at most ${VAULT_LABEL_MAX} characters, without line breaks.`);
   return label;
 }
 
