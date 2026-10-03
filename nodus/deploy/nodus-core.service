@@ -1,0 +1,48 @@
+# Nodus split S6 — the CORE of a three-process node (decision
+# docs/plans/decisions/2026-10-01-nodus-component-split.md items 2-4, 6,
+# 9-12): UDP 4000, client TCP 4001 (+ the WebSocket entry), the 4002
+# listener, cluster, presence, circuits, the partial-wipe gate, identity
+# creation. Runs beside nodus-storage.service and nodus-witness.service on
+# the same /etc/nodus.conf and /var/lib/nodus; reaches them over
+# <data_path>/storage.sock and <data_path>/witness.sock.
+#
+# The two `--*-external` flags are on the command line, not in
+# /etc/nodus.conf, so the same file still starts the combined
+# nodus.service (rollback) unchanged. Conflicts=nodus.service: the
+# combined server and the split units must never run at once on one data
+# directory (two DHTs, two signers with one validator key) — starting one
+# side stops the other. Conflicts= alone implies no ordering
+# (systemd.unit(5)); After=nodus.service makes systemd finish stopping the
+# combined server before this unit starts (a stop and a start of two
+# ordered units are always run stop-first, whichever direction the order
+# names).
+[Unit]
+Description=Nodus core (split: sessions, 4000/4001/4002, cluster)
+Documentation=https://github.com/nocdem/dna
+After=network-online.target nodus.service
+Wants=network-online.target
+Conflicts=nodus.service
+StartLimitBurst=3
+StartLimitIntervalSec=300
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/nodus-core -c /etc/nodus.conf --storage-external --witness-external
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/nodus
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nodus-core
+LimitNOFILE=65535
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

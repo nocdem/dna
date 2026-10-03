@@ -67,7 +67,8 @@
  *  2. The deadline is driven with explicit clock values; that the p2p
  *     host's poll feeds the monotonic clock to the tick is read in
  *     nodus_witness_p2p_poll, not run here.
- *  3. The 4001 routing (nodus_server.c → nodus_witness_handle_cc_collect,
+ *  3. The 4001 routing (nodus_server.c → the chain backend →
+ *     nodus_witness_handle_cc_collect,
  *     the session's key and token) is not exercised: this file calls
  *     `nodus_witness_cc_collect_start` with the values that routing
  *     passes. The Genesis Protocol scenario test_cmt_chain_config.sh
@@ -270,6 +271,7 @@ static int cfg_make_v3_real(cfgbox_t *b) {
 typedef struct {
     nodus_witness_t *w;
     nodus_server_t  *srv;
+    nodus_witness_host_t host;              /* w->host, filled from srv */
     cfgbox_t         box;
     char             dir[128];
     uint8_t          chain32[32];
@@ -300,7 +302,10 @@ static int gfx_open(gfx_t *g, int k) {
     g->w->v2_ingress_armed = true;
     memcpy(g->w->v2_chain32, g->chain32, 32);
     if (ident_make(&g->srv->identity, k) != 0) return -1;
-    g->w->server = g->srv;
+    /* The server's own host fill: identity by pointer, and the session
+     * lookup over g->srv->sessions[] that sess_open() populates. */
+    nodus_server_witness_host(g->srv, &g->host);
+    g->w->host = &g->host;
     memcpy(g->w->my_id, g_ks[k].voter, 32);
     return 0;
 }

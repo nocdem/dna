@@ -28,10 +28,11 @@
 #   everything and rejoin on the genesis pin.
 #
 # R3 W3 (C2d) — THE GATE ITSELF DID NOT MOVE
-#   `nodus_server_check_partial_wipe` (nodus_server.c:5700-5796) and the
-#   marker write after a successful open
-#   (nodus_server.c:6233-6252, gated only on `srv->witness &&
-#   srv->witness->db`) are lane-agnostic: file presence and an open chain
+#   `nodus_server_check_partial_wipe` (nodus_server.c) and the
+#   marker write after a successful open (nodus_server.c, gated only on
+#   `srv->chain && srv->chain->ops->chain_open(srv->chain)` since split
+#   S1 — the in-process backend's chain_open is `w->db != NULL`,
+#   nodus_chain_backend_inproc.c) are lane-agnostic: file presence and an open chain
 #   handle, nothing about which consensus runs on it. Read for this
 #   package and confirmed unchanged — this scenario's core mechanism
 #   needed NO rewrite. What changed is the RESTORE step below: it is
@@ -44,9 +45,29 @@
 #   Environment: none. Needs $BASE_DIR/v2_genesis_pin for the restore,
 #   which stagef_up_v2.sh writes.
 #
+# SPLIT S6 — RUNS IN EVERY MODE
+#   The gate's owner is the CORE (nodus_server_init_ex runs
+#   nodus_server_check_partial_wipe first, in nodus-server and nodus-core
+#   alike; decision 2026-10-01-nodus-component-split.md item 9), so
+#   `try_boot` starts the victim's core ONLY — its core binary with the
+#   mode's `--*-external` flags (stagef_core_cmd), never a bare
+#   nodus-server, which on a split node's data directory would be a
+#   combined server. Every other start / stop of the victim — the first
+#   stop, the EXIT trap's restore, the final pin rejoin — uses
+#   stagef_stop_node / stagef_spawn_node, i.e. ALL of the node's
+#   processes: a nodus-witness or nodus-storage left running would hold
+#   the very database files this scenario moves. It used to SKIP (99) on a
+#   split victim.
+#   NOT COVERED (open, operator decision pending): nodus-witness runs no
+#   partial-wipe gate of its own (tools/nodus-witness.c); on a half-wiped
+#   three-process host the core and nodus-storage refuse while the
+#   witness would open the surviving chain database. try_boot never starts
+#   a witness, so this scenario says nothing about that path.
+#
 # WHAT IT LEAVES BEHIND
 #   Node 5 with a rebuilt data directory (wiped and re-adopted) under a
-#   NEW pid, and a truncated nodus.log. Nothing else.
+#   NEW pid (every process of it, in a split mode), and a truncated
+#   nodus.log (and witness.log where its witness is split). Nothing else.
 #
 # HOW IT CAN LIE
 #   - **"It did not come up" is not "the gate refused it".** A node can
@@ -110,14 +131,25 @@ data="$nd/data"
   "node$VICTIM has no .witness_db_seen, so the H-10 gate is DISARMED on it — this is the pre-v0.19.37 state and every refusal below would be untestable"
 echo "[ok] the partial-wipe marker is present (the gate is armed)"
 
-SEEDS=""
-for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
-    SEEDS="$SEEDS -s 127.0.0.1:$(stagef_udp_port "$n")"
-done
+vlog=$(stagef_node_log "$VICTIM")   # the WITNESS lines: witness.log when split
 
+# Every process of the victim (core, and nodus-witness / nodus-storage
+# where the mode splits them), each found by its executable, waited for
+# until all have exited. "Not running" (rc 1) is fine here: try_boot kills
+# its own core-only process, and the trap may run after the victim is
+# already down. A process that survives SIGKILL (rc 2) is not, and neither
+# is a node that was not whole (rc 3: fewer or more processes than its
+# mode runs — stagef_stop_node has still stopped every one it found, so
+# the trap's restore never moves files under a live process).
+# The 2 s pause after the exit is the pre-S6 script's post-kill sleep,
+# kept so the timing relative to the peers is unchanged; it decides no
+# verdict.
 stop_victim() {
-    local p; p=$(pgrep -f "nodus-server.*node$VICTIM/data" | head -1 || true)
-    [ -n "$p" ] && { kill -9 "$p"; sleep 2; }
+    local rc=0
+    stagef_stop_node "$VICTIM" KILL || rc=$?
+    [ "$rc" = 2 ] && return 1
+    [ "$rc" = 3 ] && return 1
+    [ "$rc" = 0 ] && sleep 2
     return 0
 }
 
@@ -142,7 +174,7 @@ pw_cleanup() {
     [ "$rc" -ne 0 ] || return 0
     [ "$PW_DOWN" -eq 1 ] || return 0
     echo "[cleanup] rc=$rc with node$VICTIM down — restoring its files and restarting it" >&2
-    stop_victim
+    stop_victim || echo "[cleanup] stopping node$VICTIM failed (the [FAIL] line above) — restoring anyway" >&2
     for b in "$BASE_DIR"/pw_backup_*; do
         [ -d "$b" ] || continue
         mv "$b"/* "$data"/ 2>/dev/null || true
@@ -154,16 +186,14 @@ pw_cleanup() {
     # present it is inert (nodus_witness_v2_join_arm returns before
     # arming when `w->db` is open), and if the failure happened AFTER the
     # wipe below (the rejoin never completed) the directory is empty and
-    # the pin is exactly what lets the victim adopt again.
-    # shellcheck disable=SC2086
-    "$STAGEF_NODUS_BIN" -c "$BASE_DIR/nodus.json" -b 127.0.0.1 \
-        -u "$(stagef_udp_port "$VICTIM")" -t "$(stagef_tcp_port "$VICTIM")" \
-        -p "$(stagef_peer_port "$VICTIM")" -C "$(stagef_chan_port "$VICTIM")" \
-        -W "$(stagef_witness_port "$VICTIM")" --v2-genesis-pin "$(cat "$PINFILE")" \
-        -i "$nd/identity" -d "$data" $SEEDS \
-        >> "$nd/nodus.log" 2>&1 &
-    echo "$!" >> "$BASE_DIR/pids.txt"
-    echo "[cleanup] node$VICTIM restarted (pid $!); the next scenario's height wait covers its catch-up" >&2
+    # the pin is exactly what lets the victim adopt again. Every process
+    # of the node (stagef_spawn_node; the pin goes to the witness's
+    # process); every pid appended to pids.txt.
+    if stagef_spawn_node "$VICTIM" --v2-genesis-pin "$(cat "$PINFILE")"; then
+        echo "[cleanup] node$VICTIM restarted (pids $STAGEF_NODE_PIDS); the next scenario's height wait covers its catch-up" >&2
+    else
+        echo "[cleanup] node$VICTIM restarted (pids $STAGEF_NODE_PIDS) but did not come up (the [FAIL] line above)" >&2
+    fi
 }
 trap pw_cleanup EXIT
 
@@ -180,15 +210,16 @@ trap pw_cleanup EXIT
 # real outcome: the refusal line appearing, or the TCP port actually
 # accepting connections (not merely "the process is still alive", which
 # a hung boot could satisfy without ever becoming a witness).
+#
+# Split S6: the CORE only — the gate's owner (header). stagef_core_cmd
+# gives the victim's core binary with the mode's flags; no nodus-witness or
+# nodus-storage is started, so "booted" means the core passed the gate and
+# listens.
 try_boot() {
     : > "$nd/boot.log"
-    # shellcheck disable=SC2086
-    "$STAGEF_NODUS_BIN" -c "$BASE_DIR/nodus.json" -b 127.0.0.1 \
-        -u "$(stagef_udp_port "$VICTIM")" -t "$(stagef_tcp_port "$VICTIM")" \
-        -p "$(stagef_peer_port "$VICTIM")" -C "$(stagef_chan_port "$VICTIM")" \
-        -W "$(stagef_witness_port "$VICTIM")" \
-        -i "$nd/identity" -d "$data" $SEEDS \
-        > "$nd/boot.log" 2>&1 &
+    stagef_core_cmd "$VICTIM" "$BASE_DIR/nodus.json"
+    # shellcheck disable=SC2046
+    "${STAGEF_CMD[@]}" $(stagef_seed_args) > "$nd/boot.log" 2>&1 &
     local bp=$! tcp result=""
     tcp=$(stagef_tcp_port "$VICTIM")
     for _ in $(seq 1 60); do
@@ -220,8 +251,8 @@ try_boot() {
 }
 
 stagef_cmt_diff_at_floor "pre-v2-partial-wipe" || exit 2
-stop_victim
 PW_DOWN=1   # from here on, an abnormal exit must put node$VICTIM back
+stop_victim || die "stopping node$VICTIM failed (a process survived SIGKILL, or the node was not whole — the [FAIL] line above)"
 
 # ── Each of the three, one at a time ────────────────────────────────
 # Found by different code: nodus.db and channels.db by name, the witness
@@ -266,20 +297,17 @@ echo "[ok] same half-wiped directory with NO marker -> boots ($r): the refusals 
 # ── Restore, the V2 way ─────────────────────────────────────────────
 # Not by re-bootstrapping from peers — that is the legacy path and does
 # not exist here. Wipe and rejoin on the pin.
-stop_victim
+stop_victim || die "stopping node$VICTIM failed (a process survived SIGKILL, or the node was not whole — the [FAIL] line above)"
 rm -f "$data"/*.db "$data"/*.db-wal "$data"/*.db-shm \
       "$data/.witness_db_seen" "$data/.bootstrap_in_progress"
 rm -rf "$data/archive"
 : > "$nd/nodus.log"
+[ "$vlog" = "$nd/nodus.log" ] || : > "$vlog"
 PIN=$(cat "$PINFILE")
-# shellcheck disable=SC2086
-"$STAGEF_NODUS_BIN" -c "$BASE_DIR/nodus.json" -b 127.0.0.1 \
-    -u "$(stagef_udp_port "$VICTIM")" -t "$(stagef_tcp_port "$VICTIM")" \
-    -p "$(stagef_peer_port "$VICTIM")" -C "$(stagef_chan_port "$VICTIM")" \
-    -W "$(stagef_witness_port "$VICTIM")" --v2-genesis-pin "$PIN" \
-    -i "$nd/identity" -d "$data" $SEEDS \
-    >> "$nd/nodus.log" 2>&1 &
-echo "$!" >> "$BASE_DIR/pids.txt"
+# Every process of the node; the pin goes to the witness's process.
+stagef_spawn_node "$VICTIM" --v2-genesis-pin "$PIN" \
+    || die "node$VICTIM did not come up after the restore (the [FAIL] line above names the process: core client port, nodus-witness or nodus-storage)"
+echo "[ok] node$VICTIM restarted for the pin rejoin (pids $STAGEF_NODE_PIDS)"
 
 fleet_tip=$(sqlite3 "$ref_db" "SELECT MAX(global_height) FROM v2_blocks;")
 # stagef_cmt_wait_height takes a fixed DB PATH; the victim has none until
@@ -305,8 +333,8 @@ PW_DOWN=0   # the victim is back on its own; the EXIT trap has nothing to do
 # gate exists for exactly that reason; this restore path deserves no less).
 role_ok=0 live_ok=0
 for _ in $(seq 1 30); do
-    if grep -q 'chain role: COMETBFT' "$nd/nodus.log"; then role_ok=1; fi
-    if grep -q 'cometbft lane LIVE' "$nd/nodus.log"; then live_ok=1; fi
+    if grep -q 'chain role: COMETBFT' "$vlog"; then role_ok=1; fi
+    if grep -q 'cometbft lane LIVE' "$vlog"; then live_ok=1; fi
     if [ "$role_ok" = 1 ] && [ "$live_ok" = 1 ]; then break; fi
     sleep 1
 done

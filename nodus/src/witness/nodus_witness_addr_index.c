@@ -17,7 +17,7 @@
 #include "witness/nodus_witness_addr_index.h"
 #include "witness/nodus_witness_rt_native.h"
 #include "witness/nodus_witness_v2_produce.h"   /* nodus_witness_v2_tip_height */
-#include "server/nodus_server.h"                /* the node flag            */
+#include "witness/nodus_witness_host.h"        /* the node flag            */
 #include "protocol/nodus_cbor.h"
 #include "nodus/nodus.h"                        /* NODUS_DNAC_ADDR_HISTORY_* */
 #include "nodus/nodus_types.h"                  /* NODUS_ERR_*              */
@@ -74,7 +74,7 @@ static void ai_reason(char *reason, size_t cap, const char *fmt, ...)
 
 bool nodus_witness_addr_index_enabled(const nodus_witness_t *w)
 {
-    return w && w->server && w->server->config.addr_history_index;
+    return w && w->host && w->host->config.addr_history_index;
 }
 
 /* ══ schema ═══════════════════════════════════════════════════════════ */

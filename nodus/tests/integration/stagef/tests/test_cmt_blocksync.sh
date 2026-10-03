@@ -45,9 +45,19 @@
 #   A cluster brought up by stagef_up_v2.sh (a version-3 chain); on
 #   anything else it exits 99.
 #
+# SPLIT S6 — RUNS IN EVERY MODE
+#   The victim is stopped with stagef_stop_node TERM (every process of
+#   node 4 — core, and nodus-witness / nodus-storage where the mode splits
+#   them — each found by its executable; SIGKILL after 15 s for any that
+#   has not exited) and restarted with stagef_spawn_node. The block-sync
+#   lines are read from stagef_node_log (witness.log when its witness is
+#   split); `REFUSING START` from the core's nodus.log AND that log. It
+#   used to SKIP (99) on a split victim.
+#
 # WHAT IT LEAVES BEHIND
 #   Node 4 stopped (SIGTERM, SIGKILL after 15 s) and restarted under a NEW
-#   pid, appended to pids.txt; its nodus.log is APPENDED (every count is
+#   pid (every process of it, in a split mode), appended to pids.txt; its
+#   nodus.log (and witness.log where split) is APPENDED (every count is
 #   a before/after delta). The chain >= STAGEF_BLOCKSYNC_DISTANCE blocks
 #   further on. When pumped: node 3's genesis leaf claimed by the first
 #   pump step (unless an earlier pump already did) and one fee per pump
@@ -124,7 +134,8 @@ stagef_cmt_diff_at_floor "pre-blocksync" || exit 2
 vdb=$(db_of "$VICTIM")
 [ -n "$vdb" ] || die "node$VICTIM has no chain DB"
 chain_before=$(basename "$vdb")
-vlog="$(stagef_node_dir "$VICTIM")/nodus.log"
+vlog=$(stagef_node_log "$VICTIM")   # the WITNESS lines: witness.log when split
+clog="$(stagef_node_dir "$VICTIM")/nodus.log"   # the core's (the partial-wipe gate)
 on_before=$(grep -c 'block sync ON' "$vlog" || true)
 done_before=$(grep -c 'block sync done at height' "$vlog" || true)
 tip_before=$(stagef_cmt_tip "$vdb")
@@ -132,19 +143,12 @@ tip_before=$(stagef_cmt_tip "$vdb")
 echo "[ok] node$VICTIM baseline: tip=$tip_before blocksync_on_lines=$on_before blocksync_done_lines=$done_before"
 
 # ── Stop the victim ─────────────────────────────────────────────────
-vpid=$(pgrep -f "node$VICTIM/data" | head -1 || true)
-[ -n "$vpid" ] || die "node$VICTIM is not running"
-kill -TERM "$vpid"
-gone=0
-for _ in $(seq 1 30); do
-    if ! kill -0 "$vpid" 2>/dev/null; then gone=1; break; fi
-    sleep 0.5
-done
-if [ "$gone" != 1 ]; then
-    kill -9 "$vpid" 2>/dev/null || true
-    echo "[info] node$VICTIM did not exit on SIGTERM within 15 s — SIGKILLed"
-fi
-echo "[ok] node$VICTIM stopped (pid $vpid)"
+# SIGTERM to every process of the node, waited for (30 x 0.5 s); any still
+# alive is SIGKILLed (stagef_stop_node says so) and waited for again.
+src=0; stagef_stop_node "$VICTIM" TERM || src=$?
+[ "$src" != 1 ] || die "node$VICTIM is not running"
+[ "$src" = 0 ] || die "stopping node$VICTIM failed (stagef_stop_node rc=$src: 2 = a process survived even SIGKILL, 3 = the node was not whole — the [FAIL] line above)"
+echo "[ok] node$VICTIM stopped (pids $STAGEF_STOPPED_PIDS)"
 
 # ── Let the fleet move on by a DISTANCE in blocks ───────────────────
 pace="idle production (CreateEmptyBlocksInterval)"
@@ -158,33 +162,17 @@ reached=$(stagef_cmt_advance_to "$ref_db" "$target" 3) && arc=0 || arc=$?
 echo "[ok] the fleet moved from $tip_before to $reached while node$VICTIM was down"
 
 # ── Restart the victim on its own data directory ────────────────────
-nd=$(stagef_node_dir "$VICTIM")
-SEEDS=""
-for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
-    SEEDS="$SEEDS -s 127.0.0.1:$(stagef_udp_port "$n")"
+# Every process of the node in this mode, every pid appended to pids.txt;
+# returns once the core's client port listens (60 x 0.5 s).
+stagef_spawn_node "$VICTIM" \
+    || die "node$VICTIM did not come back after the restart (the [FAIL] line above names the process: core port $(stagef_tcp_port "$VICTIM"), nodus-witness or nodus-storage)"
+echo "[ok] node$VICTIM restarted (pids $STAGEF_NODE_PIDS)"
+for lg in "$clog" "$vlog"; do
+    if grep -q 'REFUSING START' "$lg"; then
+        tail -20 "$lg" >&2
+        die "node$VICTIM logged REFUSING START ($lg)"
+    fi
 done
-# shellcheck disable=SC2086
-"$STAGEF_NODUS_BIN" -c "$BASE_DIR/nodus.json" -b 127.0.0.1 \
-    -u "$(stagef_udp_port "$VICTIM")" -t "$(stagef_tcp_port "$VICTIM")" \
-    -p "$(stagef_peer_port "$VICTIM")" -C "$(stagef_chan_port "$VICTIM")" \
-    -W "$(stagef_witness_port "$VICTIM")" \
-    -i "$nd/identity" -d "$nd/data" $SEEDS \
-    >> "$nd/nodus.log" 2>&1 &
-newpid=$!
-echo "$newpid" >> "$BASE_DIR/pids.txt"
-echo "[ok] node$VICTIM restarted (pid $newpid)"
-
-tcp=$(stagef_tcp_port "$VICTIM")
-up=0
-for _ in $(seq 1 60); do
-    if ss -lt 2>/dev/null | grep -Eq "[:.]${tcp}\\b"; then up=1; break; fi
-    sleep 0.5
-done
-[ "$up" = 1 ] || die "node$VICTIM never listened again on $tcp"
-if grep -q 'REFUSING START' "$vlog"; then
-    tail -20 "$vlog" >&2
-    die "node$VICTIM logged REFUSING START"
-fi
 
 # ── THE ASSERTIONS ──────────────────────────────────────────────────
 # 1. blockSync was decided ON at construction (node.go:375). A delta.

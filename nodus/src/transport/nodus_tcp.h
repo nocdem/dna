@@ -38,6 +38,23 @@ extern "C" {
 #define NODUS_TCP_READ_BUDGET_FRAMES  256
 #define NODUS_TCP_READ_BUDGET_BYTES   (256 * 1024)
 
+/* Local IPC over a Unix domain socket (component split, decision
+ * docs/plans/decisions/2026-10-01-nodus-component-split.md item 7: socket
+ * file under /var/lib/nodus, mode 0600, the connecting process checked with
+ * SO_PEERCRED). Same transport, pool, framing and callbacks as TCP.
+ *
+ * NODUS_TCP_UNIX_PEER_IP: the text put in conn->ip of every AF_UNIX
+ * connection (conn->port = 0). It is not an IP address — inet_pton fails on
+ * it, so no code can dial it, and it can never equal an inet_ntop result,
+ * so it never matches a TCP peer in an ip comparison.
+ * NODUS_TCP_UNIX_UID_SELF: allowed_uid value meaning "this process's
+ * effective uid", resolved when nodus_tcp_unix_listen (allowed_uid) or
+ * nodus_tcp_unix_connect (expected_uid) runs. (uid_t)-1 is
+ * not a valid uid on Linux, so it cannot collide with a real one. */
+#define NODUS_TCP_UNIX_PEER_IP    "unix"
+#define NODUS_TCP_UNIX_UID_SELF   UINT32_MAX
+#define NODUS_TCP_UNIX_PATH_MAX   108   /* sizeof(sockaddr_un.sun_path) on Linux */
+
 /* ── Connection ──────────────────────────────────────────────────── */
 
 typedef enum {
@@ -192,6 +209,23 @@ typedef struct nodus_tcp_conn {
      * the Upgrade completes — compared instead of the text in `ip`. */
     nodus_ws_ip_bucket_t ws_bucket;
 
+    /* Unix domain socket entry (nodus_tcp_unix_listen / _unix_connect).
+     * is_unix: this connection is AF_UNIX — ip is NODUS_TCP_UNIX_PEER_IP,
+     *   port is 0; the per-IP limit, TCP keepalive and TCP_NODELAY do not
+     *   apply to it.
+     *   It stays PLAINTEXT: the transport encrypts/decrypts only when
+     *   channel_crypto.established is true (try_parse_frames, send path),
+     *   which is zero in conn_alloc and is never set by this file — only the
+     *   host's key_init handshake handlers set it. A host must not run that
+     *   handshake on an is_unix connection; local-only traffic is protected
+     *   by the 0600 socket file and the SO_PEERCRED uid check instead.
+     * peer_uid / peer_pid: SO_PEERCRED of the peer process, recorded on
+     *   accept (valid only when is_unix && peer_cred_set). */
+    bool                is_unix;
+    bool                peer_cred_set;
+    uint32_t            peer_uid;
+    int32_t             peer_pid;
+
     /* Deferred close (see "Connection close" in nodus/docs/ARCHITECTURE.md).
      * close_pending: the connection has been torn down — on_disconnect has
      * run, the socket is closed (fd = -1, state = CLOSED) and it has left
@@ -289,6 +323,18 @@ typedef struct nodus_tcp {
     uint16_t                  ws_port;
     const nodus_ws_origins_t *ws_origins;   /* owned by the caller; outlives tcp */
 
+    /* Unix domain socket entry: a THIRD listening socket of this transport
+     * (nodus_tcp_unix_listen). -1 = off. Its epoll data.ptr is
+     * &unix_listen_fd. unix_allowed_uid: the only uid accepted (SO_PEERCRED).
+     * unix_dev / unix_ino: the socket file this transport created, so
+     * nodus_tcp_close unlinks only that file and never one a later process
+     * bound at the same path. */
+    int                       unix_listen_fd;
+    uint32_t                  unix_allowed_uid;
+    char                      unix_path[NODUS_TCP_UNIX_PATH_MAX];
+    uint64_t                  unix_dev;
+    uint64_t                  unix_ino;
+
     /* Deferred close. poll_depth > 0 while nodus_tcp_poll is running on
      * this transport, and around the on_connect that nodus_tcp_connect
      * runs itself on an immediate connect (a depth, not a flag: a callback
@@ -359,6 +405,65 @@ int nodus_tcp_ws_sweep(nodus_tcp_t *tcp, uint64_t now);
 /** Connect to a remote peer (non-blocking). Returns connection or NULL. */
 nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
                                      const char *ip, uint16_t port);
+
+/**
+ * Open the Unix domain socket entry: a listening AF_UNIX stream socket at
+ * `path`, sharing this transport's pool, callbacks and slot space.
+ *
+ * - path must be shorter than NODUS_TCP_UNIX_PATH_MAX.
+ * - An existing file at path: a regular file / directory / anything that is
+ *   not a socket → -1, left untouched. A socket that accepts a connection
+ *   (a live listener) → -1, left untouched. A socket that refuses
+ *   (ECONNREFUSED: stale, its listener is gone) → unlinked, then bound.
+ * - Checked FIRST, before anything at path is touched: the parent
+ *   directory of path, by lstat (a symlink there is refused, not
+ *   followed), must be a directory owned by this process's euid or by
+ *   root, with no group/other write bit (mode & 022 == 0). Otherwise an
+ *   ERROR names the directory and -1 is returned; no file is created.
+ * - The socket file is created with mode 0600 (bind under umask 0177) and
+ *   verified with lstat; anything other than exactly 0600 → the listener
+ *   is closed and -1 returned (no chmod repair: chmod follows symlinks).
+ * - On every failure after bind the file is removed only if lstat still
+ *   shows the socket with the dev/ino this call bound.
+ * - Every accepted peer is checked with SO_PEERCRED: a peer whose uid is
+ *   not allowed_uid (NODUS_TCP_UNIX_UID_SELF = this process's euid), or
+ *   whose credentials cannot be read, is closed before a connection is
+ *   allocated — on_accept never runs for it.
+ * - One listener event accepts every queued peer, up to 64 per event (the
+ *   rest on the next poll); a peer dropped because the pool is full is
+ *   logged with a WARN.
+ * nodus_tcp_close closes the listener and unlinks the file if it is still
+ * the one this call created.
+ * One per transport (a second call returns -1). Linux only (-1 elsewhere).
+ */
+int nodus_tcp_unix_listen(nodus_tcp_t *tcp, const char *path,
+                          uint32_t allowed_uid);
+
+/**
+ * Connect to a Unix domain socket at `path`. AF_UNIX connect completes
+ * immediately or fails (it never reports EINPROGRESS), so the returned
+ * connection is already CONNECTED and on_connect has run; NULL on any
+ * failure (no listener, backlog full, permission, path too long) or if
+ * on_connect closed it. Inherits tcp->auth_required like nodus_tcp_connect.
+ * The connection is is_unix and plaintext (see nodus_tcp_conn_t.is_unix).
+ * The server is checked too: after connect, SO_PEERCRED on the dialing fd
+ * (the credentials of the process that listens on the socket) must show
+ * uid == expected_uid (NODUS_TCP_UNIX_UID_SELF = this process's euid,
+ * decided by nodus_tcp_unix_peercred_ok). Unreadable credentials or a
+ * different uid → WARN, socket closed, NULL; no connection is allocated
+ * and on_connect does not run.
+ * Linux only (NULL elsewhere).
+ */
+nodus_tcp_conn_t *nodus_tcp_unix_connect(nodus_tcp_t *tcp, const char *path,
+                                         uint32_t expected_uid);
+
+/**
+ * The SO_PEERCRED admission decision of the Unix listener, exposed so it
+ * can be tested with injected credentials. True iff peer_uid ==
+ * allowed_uid. allowed_uid must already be resolved (never
+ * NODUS_TCP_UNIX_UID_SELF): that value, being no valid uid, admits nobody.
+ */
+bool nodus_tcp_unix_peercred_ok(uint32_t peer_uid, uint32_t allowed_uid);
 
 /**
  * Progress callback for send operations.
@@ -446,7 +551,8 @@ uint64_t nodus_tcp_decrypt_fail_total(const nodus_tcp_t *tcp);
 nodus_tcp_conn_t *nodus_tcp_find_by_id(nodus_tcp_t *tcp,
                                         const nodus_key_t *peer_id);
 
-/** Find connection by IP:port. */
+/** Find connection by IP:port. Never returns an is_unix connection (its
+ *  NODUS_TCP_UNIX_PEER_IP / port 0 is a placeholder, not a network peer). */
 nodus_tcp_conn_t *nodus_tcp_find_by_addr(nodus_tcp_t *tcp,
                                           const char *ip, uint16_t port);
 

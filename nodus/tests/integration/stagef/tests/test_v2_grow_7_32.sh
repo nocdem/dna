@@ -229,6 +229,12 @@
 # ════════════════════════════════════════════════════════════════════
 set -euo pipefail
 . "$(dirname "$0")/../stagef_env.sh"
+# Split S3/S6: spawns candidates and SIGSTOPs/starts genesis nodes as one
+# nodus-server process each — SKIP (99) in every split mode (splitw,
+# mixedw, splits, mixeds, split, mixed). Not an OLD/NEW upgrade pair: its
+# own reason, printed as given.
+stagef_split_skip_if --reason "candidate spawns / SIGSTOP of genesis nodes not adapted to split nodes" \
+    $(seq 1 "$STAGEF_COMMITTEE_SIZE")
 
 die()  { echo "[FAIL] $*" >&2; exit 1; }
 ok()   { echo "[ok] $*"; }

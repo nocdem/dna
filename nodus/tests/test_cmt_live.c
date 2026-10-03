@@ -276,6 +276,8 @@ static void rmrf(const char *path) {
 
 typedef struct {
     nodus_server_t  *srv;
+    nodus_witness_host_t host;    /* w->host, filled from srv (the same
+                                   * fill nodus_server_init does) */
     nodus_witness_t *w;
     bool             w_inited;    /* nodus_witness_init succeeded and no
                                    * nodus_witness_close since */
@@ -338,7 +340,8 @@ static int live_open(live_t *L, const char *tag, uint64_t genesis_time_ms) {
     L->srv->config.p2p.allow_duplicate_ip = true;
 
     memset(&wcfg, 0, sizeof(wcfg));
-    if (nodus_witness_init(L->w, L->srv, &wcfg) != 0) goto fail;
+    nodus_server_witness_host(L->srv, &L->host);
+    if (nodus_witness_init(L->w, &L->host, &wcfg) != 0) goto fail;
     L->w_inited = true;
     if (memcmp(L->w->v2_chain32, L->chain32, 32) != 0) goto fail;
     return 0;
@@ -611,7 +614,7 @@ static int t_restart_reopens_same_role(void) {
     L.w_inited = false;
     CHECK(L.w->p2p == NULL, "close freed the 4004 host");
     memset(&wcfg, 0, sizeof(wcfg));
-    CHECK(nodus_witness_init(L.w, L.srv, &wcfg) == 0,
+    CHECK(nodus_witness_init(L.w, &L.host, &wcfg) == 0,
           "the SAME server, over the SAME data directory, re-inits");
     L.w_inited = true;
     CHECK(L.w->v2_successor, "the chain role is rediscovered");

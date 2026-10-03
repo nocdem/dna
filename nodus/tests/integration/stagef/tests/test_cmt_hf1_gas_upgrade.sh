@@ -262,6 +262,11 @@
 # ════════════════════════════════════════════════════════════════════
 set -euo pipefail
 . "$(dirname "$0")/../stagef_env.sh"
+# Split S3/S6: upgrades EVERY node by restarting it as one nodus-server
+# process (OLD/NEW binary pair) — SKIP (99) in every split mode (splitw,
+# mixedw, splits, mixeds, split, mixed): split upgrade pairs are deferred
+# (decision 2026-10-01-nodus-component-split.md item 23).
+stagef_split_skip_if $(seq 1 "$STAGEF_COMMITTEE_SIZE")
 
 die() { echo "[FAIL] $*" >&2; exit 1; }
 

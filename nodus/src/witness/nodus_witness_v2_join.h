@@ -30,7 +30,8 @@
  *      blocksync in this port (D-23 rev 7 item 18).
  *
  * THE PIN IS THE ONLY TRUST ANCHOR, and it is LOCAL: it arrives through
- * node configuration / CLI (nodus_server_config.v2_genesis_pin), never
+ * node configuration / CLI (nodus_server_config.v2_genesis_pin, handed
+ * to the witness as nodus_witness_host_config_t.v2_genesis_pin), never
  * over the wire. No pin → the joiner never adopts anything (fail-closed).
  * A network-supplied genesis that does not re-derive to the pin is
  * rejected. Neither peer majority nor first-seen peer is ever TOFU.

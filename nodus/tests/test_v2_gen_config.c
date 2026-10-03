@@ -104,7 +104,7 @@
 #include "witness/nodus_witness_v2_produce.h"
 #include "witness/nodus_witness_emission.h"  /* DNAC_BLOCKS_PER_YEAR,
                                               * DNAC_DECIMAL_UNIT       */
-#include "server/nodus_server.h"             /* the marker name itself —
+#include "witness/nodus_witness_host.h"     /* the marker name itself —
                                               * asserted through the
                                               * macro so a rename cannot
                                               * leave this test green    */
@@ -1393,7 +1393,7 @@ static int test_bootstrap_start_on_a_v2_chain(void) {
     OK();
     w->cached_committee_epoch_start = UINT64_MAX;
     snprintf(w->data_path, sizeof(w->data_path), "%s", dir);
-    /* w->server stays NULL — the restart path under test
+    /* w->host stays NULL — the restart path under test
      * (nodus_witness_scan_chain_db) does not read it. */
 
     CHECK(nodus_witness_scan_chain_db(w) == 0,

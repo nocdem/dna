@@ -45,13 +45,11 @@
 #include "crypto/utils/qgp_log.h"
 
 /* O16A / D3 — for NODUS_PARTIAL_WIPE_GENESIS_MARKER only. This is a
- * MACRO, not a handle: the module still takes no nodus_server_t and no
+ * MACRO, not a handle: the module still takes no host and no
  * nodus_witness_t from a caller, so the G1/G2 argument that nothing
  * network-supplied can reach a derived byte
- * (nodus_witness_v2_gen.h:362-364) is untouched. The joiner beside this
- * one includes the same header for the same reason
- * (nodus_witness_v2_join.c:20). */
-#include "server/nodus_server.h"
+ * (nodus_witness_v2_gen.h:362-364) is untouched. */
+#include "witness/nodus_witness_host.h"
 
 #include <sqlite3.h>
 #include <dirent.h>

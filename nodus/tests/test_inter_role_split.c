@@ -201,7 +201,7 @@ static void test_repeated_auth_ok_dropped(void) {
     CHECK(nodus_t2_auth_ok(4, tok, frame, sizeof(frame), &len) == 0, "enc");
     nodus_server_dispatch_inter_frame(srv, &sess, frame, len);
     CHECK(!c->close_pending, "right-role repeat disconnected");
-    CHECK(!sess.pending_kyber && c->wlen == 0, "a second key exchange was started");
+    CHECK(!sess.dial.pending_kem && c->wlen == 0, "a second key exchange was started");
     PASS();
 out:
     free_conn(c);

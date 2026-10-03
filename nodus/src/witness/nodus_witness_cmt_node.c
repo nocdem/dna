@@ -37,7 +37,7 @@
  * not built yet at this point in this function). */
 #include "dnac/env_wire.h"
 
-#include "server/nodus_server.h"                /* w->server->identity    */
+#include "witness/nodus_witness_host.h"        /* w->host->identity      */
 #include "witness/nodus_witness_v2_apply.h"    /* committed_global_root  */
 #include "witness/nodus_witness_v2_produce.h"  /* tip_height             */
 
@@ -1918,7 +1918,7 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
      * identity key, which is what the address is derived from
      * (types/validator.go:29). The server identity is the one the ledger
      * seams already sign with. */
-    if (!w->server) {
+    if (!w->host) {
         /* node.go:341-343 returns an error on `can't get pubkey`, so a
          * node with no identity to sign with does NOT come up. Leaving
          * `pub_key` zero and continuing would hand `cmt_cs` an all-zero
@@ -1928,7 +1928,7 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
                       "validator's public key cannot be taken (node.go:343)");
         goto fail;
     }
-    memcpy(n->pv->pub_key, w->server->identity.pk.bytes,
+    memcpy(n->pv->pub_key, w->host->identity->pk.bytes,
            (size_t)CMT_PB_PUBKEY_LEN);
     {
         cmt_pb_public_key_t pk;

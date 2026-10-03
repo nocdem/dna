@@ -1002,6 +1002,7 @@ static int cfg_make_v3_real(cfgbox_t *b) {
 typedef struct {
     nodus_witness_t *w;
     nodus_server_t  *srv;
+    nodus_witness_host_t host;              /* w->host, filled from srv */
     cfgbox_t         box;
     char             dir[128];
     uint8_t          chain32[32];
@@ -1033,7 +1034,8 @@ static int gfx_open(gfx_t *g, int k) {
     g->w->v2_ingress_armed = true;
     memcpy(g->w->v2_chain32, g->chain32, 32);
     if (ident_make(&g->srv->identity, k) != 0) return -1;
-    g->w->server = g->srv;
+    nodus_server_witness_host(g->srv, &g->host);
+    g->w->host = &g->host;
     memcpy(g->w->my_id, g_ks[k].voter, 32);
     return 0;
 }
@@ -1051,9 +1053,10 @@ static void gfx_close(gfx_t *g) {
 }
 
 /* (2d) — a second witness on the SAME chain database (its own handle),
- * identity key `k`: seat A's responder. */
+ * identity key `k`: seat A's responder. `h` (caller-owned, outlives the
+ * witness) receives its host view. */
 static int seat_witness_open(const gfx_t *g, int k, nodus_witness_t **w_out,
-                             nodus_server_t **s_out) {
+                             nodus_server_t **s_out, nodus_witness_host_t *h) {
     char path[600], hex[33];
     nodus_witness_t *w = calloc(1, sizeof(*w));
     nodus_server_t  *s = calloc(1, sizeof(*s));
@@ -1072,7 +1075,8 @@ static int seat_witness_open(const gfx_t *g, int k, nodus_witness_t **w_out,
     w->v2_ingress_armed = true;
     memcpy(w->v2_chain32, g->chain32, 32);
     if (ident_make(&s->identity, k) != 0) return -1;
-    w->server = s;
+    nodus_server_witness_host(s, h);
+    w->host = h;
     memcpy(w->my_id, g_ks[k].voter, 32);
     return 0;
 }
@@ -1145,6 +1149,7 @@ static int part2(void) {
     int rc = 0;
     gfx_t g;
     static nodus_identity_t idA, idC, idD, idE;
+    static nodus_witness_host_t hostA, hostJ;   /* wA->host, wJ->host */
     nodus_witness_p2p_t *A = NULL, *C = NULL, *D = NULL, *E = NULL, *B = NULL;
     nodus_witness_t *wJ = NULL, *wA = NULL;
     nodus_server_t *sJ = NULL, *sA = NULL;
@@ -1212,7 +1217,8 @@ static int part2(void) {
     cfg_local(&cfgX);
     /* A is seat key 0 WITH a witness on the same chain (a second
      * database handle): its responder answers B's 0x71 request in (2d). */
-    CHECK(seat_witness_open(&g, 0, &wA, &sA) == 0, "seat A's witness (key 0)");
+    CHECK(seat_witness_open(&g, 0, &wA, &sA, &hostA) == 0,
+          "seat A's witness (key 0)");
     A = host_new(wA, &sA->identity, g.chain32, &cfgX, dA, 0);
     if (A != NULL) wA->p2p = A;
     C = host_new(NULL, &idC, g.chain32, &cfgX, dC, 0);
@@ -1363,7 +1369,8 @@ static int part2(void) {
         CHECK(ident_make(&sJ->identity, 2) == 0, "joiner identity (key 2)");
         sJ->config.has_v2_genesis_pin = true;
         memcpy(sJ->config.v2_genesis_pin, g.chain32, 32);
-        wJ->server = sJ;
+        nodus_server_witness_host(sJ, &hostJ);
+        wJ->host = &hostJ;
         wJ->cached_committee_epoch_start = UINT64_MAX;
         snprintf(wJ->data_path, sizeof(wJ->data_path), "%s", dJ);
         memcpy(wJ->my_id, g_ks[2].voter, 32);

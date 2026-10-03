@@ -62,6 +62,24 @@ int nodus_identity_save(const nodus_identity_t *id, const char *path);
 int nodus_identity_load(const char *path, nodus_identity_t *id_out);
 
 /**
+ * Load identity from directory WITHOUT writing anything (component split,
+ * decision 2026-10-01-nodus-component-split item 10: only nodus-core writes
+ * identity files; storage and witness only read them).
+ *
+ * Reads exactly what nodus_identity_load() reads — nodus.pk, nodus.sk,
+ * nodus.kyber_pk, nodus.kyber_sk, nodus.mlkem_pk, nodus.mlkem_sk — and
+ * derives node_id / fingerprint the same way. Where nodus_identity_load()
+ * would generate and save a missing Kyber or ML-KEM keypair, or regenerate
+ * a mismatched ML-KEM pair, this returns an error instead. No file is ever
+ * created, truncated, renamed or modified. The failing file is logged.
+ *
+ * @param path    Directory path
+ * @param id_out  Output identity (securely zeroed on error)
+ * @return 0 on success (has_kyber and has_mlkem both true), -1 on error
+ */
+int nodus_identity_load_readonly(const char *path, nodus_identity_t *id_out);
+
+/**
  * Derive the 64-bit value_id from identity (for PUT operations).
  * Returns first 8 bytes of SHA3-512(pk) as little-endian uint64.
  *
