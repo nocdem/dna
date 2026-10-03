@@ -33,6 +33,8 @@
 // Every field is required and no other key is accepted; anything else is
 // { kind: 'invalid' } and shown as such.
 
+import { inspectUntrusted } from '../connect/ui/text.js';
+
 export const VAULT_MESSAGE_TYPE = 'nodus_vault';
 export const VAULT_MESSAGE_VERSION = 1;
 export const VAULT_MIN_MEMBERS = 2;            // shared/dnac/msig_wire.h DNA_MSIG_MIN_N
@@ -65,7 +67,12 @@ export function vaultCodeShape(code) {
 
 // A label someone typed: trimmed, no control characters, at most
 // VAULT_LABEL_MAX characters. '' is allowed (the page then shows a default).
-export function vaultLabel(value) {
+// The preset's name (src/vaults/foundation.js label): a shared vault may not
+// take it, in any letter case or spacing (F4).
+export const RESERVED_VAULT_LABEL = 'foundation vault';
+const reservedLabel = label => label.toLowerCase().replace(/\s+/g, ' ').trim() === RESERVED_VAULT_LABEL;
+
+export function vaultLabel(value, { reservedOk = false } = {}) {
   if (typeof value !== 'string') throw new Error('Invalid vault name.');
   const label = value.trim();
   // C0 / C1 control characters and the two Unicode line separators — checked
@@ -73,6 +80,12 @@ export function vaultLabel(value) {
   // so a separator at an edge would otherwise pass silently.
   const control = c => { const p = c.codePointAt(0); return p < 0x20 || (p >= 0x7f && p <= 0x9f) || p === 0x2028 || p === 0x2029; };
   if ([...label].length > VAULT_LABEL_MAX || [...value].some(control)) throw new Error(`A vault name can have at most ${VAULT_LABEL_MAX} characters, without line breaks.`);
+  // F4: the same untrusted-text rule Messages applies to names other people
+  // wrote (src/connect/ui/text.js inspectUntrusted): direction controls,
+  // invisible characters or mixed Latin / Cyrillic / Greek are refused, not
+  // shown.
+  if (inspectUntrusted(value, { name: true }).unusual) throw new Error('A vault name cannot contain invisible or direction-changing characters, or mix alphabets.');
+  if (!reservedOk && reservedLabel(label)) throw new Error('“Foundation vault” is the name of the Foundation’s own vault; choose another name.');
   return label;
 }
 
@@ -154,7 +167,7 @@ export function makeVaultRecord({ info, label = '', created, watch = false, from
       !genesisCoins.every(c => c && HEX128.test(c.id ?? '') && u64ok(c.amount, { min: 1n }) && u64ok(c.unlock) && c.height === '0') ||
       new Set(genesisCoins.map(c => c.id)).size !== genesisCoins.length) throw new Error('Invalid genesis coins.');
   return {
-    v: 1, label: vaultLabel(label), code: info.descriptor, address: info.address, m: info.m, n: info.n, members: [...info.members],
+    v: 1, label: vaultLabel(label, { reservedOk: foundation === true }), code: info.descriptor, address: info.address, m: info.m, n: info.n, members: [...info.members],
     created, cursor: created, coins: genesisCoins.map(c => ({ id: c.id, amount: c.amount, unlock: c.unlock, height: c.height })), events: [],
     watch: watch === true, from: HEX128.test(from) ? from : '', foundation: foundation === true, genesis: genesisCoins.length > 0
   };
@@ -173,7 +186,7 @@ export function checkVaultRecord(value) {
       !r.events.every(e => e && u64ok(e.height) && typeof e.received === 'boolean' && u64ok(e.amount) && (e.id === '' || HEX128.test(e.id ?? ''))) ||
       typeof r.watch !== 'boolean' || typeof r.from !== 'string' || (r.from !== '' && !HEX128.test(r.from)) || typeof r.foundation !== 'boolean' ||
       (r.genesis !== undefined && typeof r.genesis !== 'boolean')) throw new Error('A kept vault is damaged.');
-  return { ...r, label: vaultLabel(r.label ?? ''), genesis: r.genesis === true };
+  return { ...r, label: vaultLabel(r.label ?? '', { reservedOk: r.foundation === true }), genesis: r.genesis === true };
 }
 
 // What is written to the store: within VAULT_RECORD_MAX bytes. The history

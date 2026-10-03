@@ -152,6 +152,21 @@ test('a vault item with any field out of shape is invalid, never partly read', (
   assert.throws(() => encodeShare({ code: 'ab', label: '', created: '1' }));
 });
 
+test('vault names: no direction controls, invisible characters or mixed alphabets; the preset name is reserved (F4)', () => {
+  for (const bad of ['abc‮def', 'a​b', '⁦x⁩', 'pаypal', 'Foundation vault', 'foundation  VAULT', ' Foundation Vault ']) {
+    assert.throws(() => vaultLabel(bad), undefined, JSON.stringify(bad));
+  }
+  assert.equal(vaultLabel('Foundation vault', { reservedOk: true }), 'Foundation vault');
+  assert.equal(vaultLabel('Aile kasası'), 'Aile kasası');
+  assert.equal(vaultLabel('家族'), '家族');
+  const share = JSON.parse(encodeShare({ code: FOUNDATION_VAULT.descriptor, label: 'x', created: '1' }));
+  for (const label of ['Foundation vault', 'a‮b']) assert.deepEqual(decodeVaultMessage(JSON.stringify({ ...share, label })), { kind: 'invalid' });
+  const info = { descriptor: FOUNDATION_VAULT.descriptor, address: DOCUMENTED_ADDRESS, m: 2, n: 3, members: keysOf(FOUNDATION_VAULT.descriptor).map(sha3) };
+  assert.throws(() => makeVaultRecord({ info, label: 'Foundation vault', created: '1' }));
+  const preset = makeVaultRecord({ info, label: 'Foundation vault', created: '1', foundation: true });
+  assert.throws(() => checkVaultRecord({ ...preset, foundation: false }), undefined, 'a kept non-preset record may not carry the reserved name');
+});
+
 // ── the kept record, its history, a request's state ─────────────────────
 
 const INFO = { descriptor: FOUNDATION_VAULT.descriptor, address: DOCUMENTED_ADDRESS, m: 2, n: 3, members: keysOf(FOUNDATION_VAULT.descriptor).map(sha3) };

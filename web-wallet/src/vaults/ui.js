@@ -77,7 +77,13 @@ function who(fp) {
   const named = host?.name(fp);
   return named || shortId(fp);
 }
-const labelOf = record => record.label || (record.foundation ? FOUNDATION_VAULT.label : `Shared vault ${record.address.slice(0, 8)}`);
+// F4: only the preset is called by its name alone; a name someone else
+// chose is shown with who shared it.
+const labelOf = record => {
+  if (record.foundation) return FOUNDATION_VAULT.label;
+  const name = record.label || `Shared vault ${record.address.slice(0, 8)}`;
+  return record.from && record.from !== ownFp ? `${name} (shared by ${who(record.from)})` : name;
+};
 const messagesOpen = () => !!host && host.isOpen();
 
 // ── lifecycle (wallet extension events) ─────────────────────────────────
