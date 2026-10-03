@@ -391,6 +391,7 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
     // its connect succeeded.
     get localConnectable() { return connectable && identified(); },
     connectLocal: (run, options) => {
+      if (stopped) return Promise.reject(lockedError());
       if (!connectable) return Promise.reject(noMessages());
       if (typeof run !== 'function') return Promise.reject(new Error('Invalid Messages operation.'));
       if (!identified()) return Promise.reject(new Error('Nodus connection is not ready.'));

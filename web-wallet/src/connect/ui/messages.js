@@ -59,7 +59,7 @@ const HEX128 = /^[0-9a-f]{128}$/;
 const TEXT_MAX = 4000;                   // one message, characters (the composer's maxlength)
 const COMPOSER_ROWS = 5;                 // the composer grows up to this many lines
 const STATUS_MARK = { 'waiting to send': '○', sent: '✓', delivered: '✓✓' };
-const WAITING_TEXT = 'Messages opens when your wallet is connected to the Nodus network.';
+const WAITING_TEXT = 'Messages opens as soon as your wallet is open.';
 // The wallet tries the connection again by itself (src/app.js RECONNECT)
 // and raises nodusReady again once it is made.
 const UNAVAILABLE_TEXT = 'Messages needs the Nodus network connection, which is unavailable right now. The wallet tries to connect again by itself; Messages opens as soon as it is connected.';
@@ -1623,7 +1623,10 @@ export const walletExtension = {
   // end, openLocal); any other client opens Messages anew.
   nodusReady(detail) {
     if (core && nodusClient && nodusClient === detail?.client) { if (isOpen()) goOnline(generation); return; }
-    void openMessages(detail);
+    // Only a host that hands over the words opens anew (src/app.js does);
+    // a bare "ready" (the preview page's connectLoop) after Messages closed
+    // keeps the reason already shown.
+    if (typeof detail?.phrase === 'string') void openMessages(detail);
   },
   // A connection attempt of the identified client failed; the wallet tries
   // again by itself on the same client. The view stays; the reason is shown
