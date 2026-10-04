@@ -9,19 +9,21 @@
  * 6, 10, 16, 17.
  *
  * ── WHAT IT PROVES ──────────────────────────────────────────────────────
- *  1. ids: RULESET_GEN2 = 9, NAME_PRICE_3P..6P = 10..13, MAX_ID = 13, all
- *     five on the read list; D2 <= INT64_MAX; SWITCH_SPEC_VERSION 1.
+ *  1. ids: RULESET_GEN2 = 9, NAME_PRICE_3P..6P = 10..13 (MAX_ID 14 since
+ *     storage reward v1), all five on the read list; D2 <= INT64_MAX;
+ *     SWITCH_SPEC_VERSION 1.
  *  2. scalar rules: param 9 accepts EXACTLY D2 (D2 ± 1, UINT64_MAX
  *     refused; the shared window and int64 rules still apply); params
  *     10-13 accept [10^8, 10^15] inclusive, refuse one past either end;
- *     id 14 refused.
+ *     (storage reward v1: id 14 is now param 14, below; id 15 refused).
  *  3. grace: 9-13 ERGONOMIC (decision item 17), HF-3's class.
  *  4. nodus_chain_config_stateful_rules — the full matrix: param 9
  *     refused when a param-9 row exists (single use), when HF-2 is off,
  *     when effective-1 is a nonzero epoch-length multiple, when effective
  *     is 0; accepted otherwise (effective 1 included: height 0 is not a
  *     boundary). Params 10-13 refused under generation 0/1, accepted
- *     under 2. Ids 1-8 no stateful rule; 0, 14, 255 refused.
+ *     under 2. Ids 1-8 no stateful rule; 0, 15, 255 refused (14 is the
+ *     storage vote since storage reward v1).
  *  5. the SYSTEM CHAIN_CONFIG exec hook (nodus_rt_system_exec) applies
  *     the SAME rules from the engine-filled ctx facts and its own
  *     runtime's generation: one accepted param-9 leg produces exactly one
@@ -35,6 +37,31 @@
  *     accessor (no -1 from a missing slot), each in its own slot, and a
  *     far-future param-9 row (effective INT64_MAX - 1) is found by the
  *     engine's "any row" read at INT64_MAX.
+ *
+ *  STORAGE REWARD v1 (decision docs/plans/decisions/2026-10-04-storage-
+ *  reward-approved.md; design docs/plans/2026-10-04-storage-reward-v1-
+ *  design.md rev 2.2 §6 — param 14 RULESET_GEN_STORAGE, "voted like
+ *  RULESET_GEN2"), added to the sections above:
+ *   1. id 14 = RULESET_GEN_STORAGE, MAX_ID = 14, on the read list; 15 not;
+ *      its literal <= INT64_MAX and distinct from D2.
+ *   2. param 14 accepts EXACTLY its literal (±1, D2, UINT64_MAX refused;
+ *      the window rule binds); param 9 refuses the storage literal; id 15
+ *      refused.
+ *   3. grace 14 ERGONOMIC.
+ *   4. stateful: param 14 refused under generation 0/1 (rule d), accepted
+ *      under 2 and GEN_STORAGE with no row / HF-2 on / non-boundary;
+ *      refused with a param-14 row (a), HF-2 off (b), boundary (c),
+ *      effective 0; id 15 refused.
+ *   5. exec hook: a param-14 leg refused by the generation-1 and the NULL
+ *      runtime, accepted by generation 2 (one CREATE keyed 14 ‖ effective);
+ *      the param-9 fact does NOT gate it, the param-14 fact does, and the
+ *      param-14 fact does NOT gate a param-9 leg; the read plan is empty.
+ *   6. slot 14 readable; a far-future param-14 row found at INT64_MAX.
+ *  HOW IT CAN LIE (storage): DNAC_CFG_RULESET_GEN_STORAGE_D is NOT FILLED
+ *  yet (0, STORAGE-ORACLE marker in dnac.h) — every "exactly the literal"
+ *  check here holds for any literal value, so these pass with the marker;
+ *  the literal's correctness is test_hf4_table.c's selfcheck
+ *  re-derivation, which FAILS until the oracle fills it.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build (the grace / epoch tests
@@ -148,6 +175,10 @@ static void cc_leg_build(cc_leg_t *e, uint8_t param, uint64_t value,
     CHECK(dna_env_decode(e->bytes, e->len, &e->view) == 0);
 }
 
+/* Storage reward v1: the param-14 single-use fact the next run_exec hands
+ * the hook (ctx.ruleset_gen_storage_voted); 0 unless a section sets it. */
+static uint8_t g_svoted = 0;
+
 /* The engine facts the hook receives. The verdict meets BOTH approval
  * rules (7 of 7 seats; power 7 of 7) so only the rule under test can
  * refuse. */
@@ -178,6 +209,7 @@ static int run_exec(const nodus_domain_runtime_t *rt, const cc_leg_t *e,
     ctx.token_create_fee   = DNAC_CFG_MIN_TOKEN_CREATE_FEE;
     ctx.hf2_active         = hf2;
     ctx.ruleset_gen2_voted = voted;
+    ctx.ruleset_gen_storage_voted = g_svoted;
 
     static uint8_t res[DNA_EFFECT_MAX_TOTAL_LEN];
     size_t rl = 0;
@@ -242,11 +274,16 @@ int main(void) {
     CHECK(DNAC_CFG_RULESET_GEN2 == 9);
     CHECK(DNAC_CFG_NAME_PRICE_3P == 10 && DNAC_CFG_NAME_PRICE_4P == 11 &&
           DNAC_CFG_NAME_PRICE_5P == 12 && DNAC_CFG_NAME_PRICE_6P == 13);
-    CHECK(DNAC_CFG_PARAM_MAX_ID == 13);
-    for (unsigned id = 9; id <= 13; id++)
+    /* storage reward v1: id 14 RULESET_GEN_STORAGE is appended and is
+     * now the last id; 15 is the first unknown id */
+    CHECK(DNAC_CFG_RULESET_GEN_STORAGE == 14);
+    CHECK(DNAC_CFG_PARAM_MAX_ID == 14);
+    for (unsigned id = 9; id <= 14; id++)
         CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id));
-    CHECK(!dnac_cfg_param_read_by_consensus(14));
+    CHECK(!dnac_cfg_param_read_by_consensus(15));
     CHECK(DNAC_CFG_RULESET_GEN2_D2 <= (uint64_t)INT64_MAX);
+    CHECK(DNAC_CFG_RULESET_GEN_STORAGE_D <= (uint64_t)INT64_MAX);
+    CHECK(DNAC_CFG_RULESET_GEN_STORAGE_D != DNAC_CFG_RULESET_GEN2_D2);
     CHECK(DNAC_RULESET_SWITCH_SPEC_VERSION == 1u);
 
     /* ── 2. scalar rules (signed_at 1, valid_before 5000 > eff 4000) ─ */
@@ -282,12 +319,33 @@ int main(void) {
             CHECK(nodus_chain_config_scalar_rules(id, 0, 1, 5000, 4000, 7)
                   == -1);
         }
-        CHECK(nodus_chain_config_scalar_rules(14, DNAC_CFG_MIN_NAME_PRICE, 1,
+        /* storage reward v1: param 14 accepts EXACTLY the storage vote
+         * literal (the param-9 shape), refuses its neighbours, D2 and
+         * UINT64_MAX; id 15 is unknown */
+        {
+            const uint64_t DS = (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D;
+            CHECK(nodus_chain_config_scalar_rules(14, DS, 1, 5000, 4000, 7)
+                  == 0);
+            CHECK(nodus_chain_config_scalar_rules(14, DS + 1u, 1, 5000,
+                                                  4000, 7) == -1);
+            CHECK(nodus_chain_config_scalar_rules(14, DS - 1u, 1, 5000,
+                                                  4000, 7) == -1);
+            CHECK(nodus_chain_config_scalar_rules(14, D2, 1, 5000, 4000, 7)
+                  == -1);
+            CHECK(nodus_chain_config_scalar_rules(14, UINT64_MAX, 1, 5000,
+                                                  4000, 7) == -1);
+            CHECK(nodus_chain_config_scalar_rules(14, DS, 0, 5000, 4000, 7)
+                  == -1);               /* the shared window rule binds */
+            /* and param 9 does not accept the storage literal */
+            CHECK(nodus_chain_config_scalar_rules(9, DS, 1, 5000, 4000, 7)
+                  == -1);
+        }
+        CHECK(nodus_chain_config_scalar_rules(15, DNAC_CFG_MIN_NAME_PRICE, 1,
                                               5000, 4000, 7) == -1);
     }
 
-    /* ── 3. grace: ERGONOMIC, HF-3's class ────────────────────────── */
-    for (uint8_t id = 9; id <= 13; id++) {
+    /* ── 3. grace: ERGONOMIC, HF-3's class (14: param 9's class) ──── */
+    for (uint8_t id = 9; id <= 14; id++) {
         CHECK(nodus_chain_config_grace_for_param(id) == GRACE_E);
         CHECK(nodus_chain_config_grace_for_param(id) ==
               nodus_chain_config_grace_for_param(DNAC_CFG_HF3_ACTIVE));
@@ -326,8 +384,23 @@ int main(void) {
         for (uint8_t id = 1; id <= 8; id++)
             CHECK(nodus_chain_config_stateful_rules(id, E_LEN + 1u, 0, 1, 0)
                   == 0);
+        /* storage reward v1 — param 14: rule (d) generation 2 or later
+         * judges, then param 9's (a)-(c), (a) over the param-14 fact the
+         * caller hands in the same argument slot */
+        CHECK(nodus_chain_config_stateful_rules(14, ok_eff, 1, 0, 0) == -1);
+        CHECK(nodus_chain_config_stateful_rules(14, ok_eff, 1, 0, 1) == -1);
+        CHECK(nodus_chain_config_stateful_rules(14, ok_eff, 1, 0, 2) == 0);
+        CHECK(nodus_chain_config_stateful_rules(14, ok_eff, 1, 0,
+                                                NODUS_RT_GEN_STORAGE) == 0);
+        CHECK(nodus_chain_config_stateful_rules(14, ok_eff, 1, 1, 2) == -1);
+                                        /* (a) a param-14 row exists     */
+        CHECK(nodus_chain_config_stateful_rules(14, ok_eff, 0, 0, 2) == -1);
+                                        /* (b) HF-2 off                  */
+        CHECK(nodus_chain_config_stateful_rules(14, E_LEN + 1u, 1, 0, 2)
+              == -1);                   /* (c) H-1 = E                   */
+        CHECK(nodus_chain_config_stateful_rules(14, 0, 1, 0, 2) == -1);
         CHECK(nodus_chain_config_stateful_rules(0, ok_eff, 1, 0, 2) == -1);
-        CHECK(nodus_chain_config_stateful_rules(14, ok_eff, 1, 0, 2) == -1);
+        CHECK(nodus_chain_config_stateful_rules(15, ok_eff, 1, 0, 2) == -1);
         CHECK(nodus_chain_config_stateful_rules(255, ok_eff, 1, 0, 2) == -1);
     }
 
@@ -384,6 +457,49 @@ int main(void) {
             CHECK(ev.effect_count == 1);
             free(p[k].bytes);
         }
+
+        /* storage reward v1 — a param-14 leg through the same hook: the
+         * hook hands the stateful rules the PARAM-14 fact (never the
+         * param-9 one) and its own generation; the read plan stays
+         * empty (the fact is unmetered) */
+        {
+            const nodus_domain_runtime_t *sys3 =
+                nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE,
+                                             DNA_DOMAIN_SYSTEM);
+            CHECK(sys3 && sys3->generation == NODUS_RT_GEN_STORAGE);
+            cc_leg_t e14, e14b;
+            cc_leg_build(&e14, 14,
+                         (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D, ok_eff,
+                         ok_eff + 1000u);
+            cc_leg_build(&e14b, 14,
+                         (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D, bd_eff,
+                         bd_eff + 1000u);
+            check_no_reads(sys2, &e14);
+            g_svoted = 0;
+            CHECK(run_exec(sys1, &e14, H, 1, 0, NULL) == -1);  /* (d) gen 1 */
+            CHECK(run_exec(NULL, &e14, H, 1, 0, NULL) == -1);  /* (d) NULL  */
+            memset(&ev, 0, sizeof(ev));
+            CHECK(run_exec(sys2, &e14, H, 1, 0, &ev) == 0);
+            CHECK(ev.effect_count == 1);
+            CHECK(ev.eff[0].effect_kind == DNA_EFFECT_CREATE);
+            {
+                const uint8_t *k = ev.buf + ev.key_off[0];
+                uint8_t want[12] = { 0, 0, 0, 14 };
+                put64(want + 4, ok_eff);
+                CHECK(memcmp(k, want, 12) == 0);
+            }
+            /* the param-9 fact does NOT gate param 14 … */
+            CHECK(run_exec(sys2, &e14, H, 1, 1, NULL) == 0);
+            CHECK(run_exec(sys2, &e14, H, 0, 0, NULL) == -1);  /* (b)      */
+            CHECK(run_exec(sys2, &e14b, H, 1, 0, NULL) == -1); /* (c)      */
+            g_svoted = 1;
+            CHECK(run_exec(sys2, &e14, H, 1, 0, NULL) == -1);  /* (a)      */
+            /* … and the param-14 fact does NOT gate param 9 */
+            CHECK(run_exec(sys1, &e9, H, 1, 0, NULL) == 0);
+            g_svoted = 0;
+            free(e14.bytes);
+            free(e14b.bytes);
+        }
         free(e9.bytes);
         free(e9b.bytes);
     }
@@ -401,8 +517,9 @@ int main(void) {
         CHECK(nodus_witness_create_chain_db(w, cid) == 0 && w->db);
 
         uint64_t v = 0;
-        /* no row anywhere: genuinely absent, never a missing-slot -1 */
-        for (uint8_t id = 9; id <= 13; id++) {
+        /* no row anywhere: genuinely absent, never a missing-slot -1
+         * (storage reward v1: slot 14 too) */
+        for (uint8_t id = 9; id <= 14; id++) {
             CHECK(nodus_chain_config_get_u64(w, id, 1000, 77, &v) == 1);
             CHECK(v == 77);
         }
@@ -428,6 +545,17 @@ int main(void) {
         w->chain_config_cache_warm = false;
         CHECK(nodus_chain_config_get_u64(w, 9, (uint64_t)INT64_MAX, 0, &v)
               == 0);
+        /* storage reward v1: a param-14 row lands in ITS slot and the
+         * single-use read finds it the same way */
+        CHECK(nodus_chain_config_get_u64(w, 14, (uint64_t)INT64_MAX, 0, &v)
+              == 1);
+        direct_insert(w, 14, (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D,
+                      (uint64_t)INT64_MAX - 2u);
+        CHECK(nodus_chain_config_get_u64(w, 14, 1000000, 0, &v) == 1);
+        CHECK(nodus_chain_config_get_u64(w, 14, (uint64_t)INT64_MAX, 0, &v)
+              == 0 && v == (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D);
+        CHECK(w->chain_config_cache_count[14] == 1);
+        CHECK(w->chain_config_cache_count[9] == 1);
 
         sqlite3_close(w->db);
         free(w);

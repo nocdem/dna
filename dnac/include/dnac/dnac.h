@@ -136,6 +136,16 @@ extern "C" {
  * — explicitly deferred, no unverified runtime fallback introduced. */
 #define DNAC_SELF_STAKE_AMOUNT       (10000000ULL * 100000000ULL)   /* 10M × 10^8 raw */
 
+/** Storage reward v1 — the storage-node registration bond, EXACTLY this
+ *  amount (design docs/plans/2026-10-04-storage-reward-v1-design.md rev
+ *  2.2 §1 "bond = STORAGE_STAKE_MIN = 1M NODUS"; role ladder decision
+ *  docs/plans/decisions/2026-10-03-role-stake-amounts.md "storage 1M";
+ *  bytes doc clarification: 1,000,000 NODUS = 10^14 raw). The SYSTEM
+ *  STORAGE_REGISTER exec refuses any other bond (rtn_storage_register_exec,
+ *  nodus/src/witness/nodus_witness_rt_native.c) — the W-B exact-bond
+ *  shape of DNAC_SELF_STAKE_AMOUNT. Not a chain_config parameter. */
+#define DNAC_STORAGE_STAKE_MIN       (1000000ULL * 100000000ULL)    /* 1M × 10^8 raw */
+
 /** Minimum TX fee enforced at verify time (v0.17.1+).
  *  All non-GENESIS TXs must have `committed_fee >= DNAC_MIN_FEE_RAW`.
  *  Value is 0.01 DNAC = 10^6 raw units. Raise/lower via future release
@@ -658,7 +668,39 @@ typedef enum {
                                           *   DNAC_NAME_PRICE_6P_DEFAULT
                                           *   (decision item 10: 1
                                           *   NODUS). */
-    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_NAME_PRICE_6P
+    DNAC_CFG_RULESET_GEN_STORAGE   = 14, /**< Storage reward v1 (design
+                                          *   docs/plans/2026-10-04-
+                                          *   storage-reward-v1-design.md
+                                          *   rev 2.2 §6 — "voted like
+                                          *   RULESET_GEN2 (param 9
+                                          *   mechanism)"; decision docs/
+                                          *   plans/decisions/2026-10-04-
+                                          *   storage-reward-approved.md):
+                                          *   the rule-set upgrade vote to
+                                          *   the compiled GEN_STORAGE
+                                          *   generation. Its effective
+                                          *   block H is the first block
+                                          *   judged under it; the engine
+                                          *   rewrites the SYSTEM and CORE
+                                          *   registry records from
+                                          *   generation 2 at the end of
+                                          *   block H-1 (phase 6b').
+                                          *   Value domain EXACTLY
+                                          *   DNAC_CFG_RULESET_GEN_
+                                          *   STORAGE_D. Single use; HF-2
+                                          *   active; H-1 not an epoch
+                                          *   boundary; and the vote must
+                                          *   be judged under generation
+                                          *   2 or later (the switch is
+                                          *   2 -> GEN_STORAGE) — witness-
+                                          *   side stateful rules the
+                                          *   client mirror cannot apply.
+                                          *   Grace class ERGONOMIC (the
+                                          *   param-9 class). The id is
+                                          *   the next free one TODAY;
+                                          *   the design assigns final
+                                          *   ids in main merge order. */
+    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_RULESET_GEN_STORAGE
 } dnac_chain_config_param_id_t;
 
 /** The chain-config parameters the RUNNING consensus reads — the one list
@@ -698,7 +740,12 @@ typedef enum {
  *      the scalar rules accept them, but every vote for them is refused
  *      by nodus_chain_config_stateful_rules until generation 2 judges
  *      the vote (design §1.2: "refused unless the judging runtime is
- *      gen >= 2").
+ *      gen >= 2");
+ *    - RULESET_GEN_STORAGE (14, storage reward v1): nodus_witness_v2_
+ *      apply.c phase 6b' (the second edge trigger — generation 2 ->
+ *      GEN_STORAGE at the end of block H-1) and env_ruleset_gen_storage_
+ *      voted (nodus_rt_exec_ctx_t.ruleset_gen_storage_voted — the
+ *      single-use vote rule).
  *  No other governed id has a reader: 1 and 3 are RETIRED (above), and 2
  *  (BLOCK_INTERVAL_SEC) is not read on this lane.
  *
@@ -722,7 +769,8 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
            param_id == (uint8_t)DNAC_CFG_NAME_PRICE_3P ||
            param_id == (uint8_t)DNAC_CFG_NAME_PRICE_4P ||
            param_id == (uint8_t)DNAC_CFG_NAME_PRICE_5P ||
-           param_id == (uint8_t)DNAC_CFG_NAME_PRICE_6P;
+           param_id == (uint8_t)DNAC_CFG_NAME_PRICE_6P ||
+           param_id == (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE;
 }
 
 /** Value range bounds — consensus-critical (client + witness reject out-of-range).
@@ -860,6 +908,27 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  mirror's (dnac/src/transaction/verify.c). */
 #define DNAC_CFG_RULESET_GEN2_D2            0x44dfbe7ad3c75adfULL /* G4 of shared/dnac/tests/hf4_oracle.py (4962894749133920991) */
 
+/** RULESET_GEN_STORAGE value domain (storage reward v1, param_id 14):
+ *  EXACTLY this literal — the D2 construction above with the storage
+ *  generation's inputs:
+ *    SHA3-512( TAG16("NDS.RSGEN.v1") ‖ u32 BE NODUS_RT_GEN_STORAGE (3)
+ *              ‖ GEN_STORAGE SYSTEM (v8) ruleset_hash[64]
+ *              ‖ GEN_STORAGE CORE (v6) ruleset_hash[64]
+ *              ‖ u32 BE DNAC_RULESET_SWITCH_SPEC_VERSION (1) )
+ *  first 8 bytes big-endian, top bit cleared. The switch procedure is
+ *  the HF-4 one unchanged (the same fields copied / replaced, SYSTEM and
+ *  CORE touched), so the spec version stays 1; the generation number in
+ *  the preimage keeps this value distinct from D2.
+ *
+ *  ⚠ STORAGE-ORACLE: NOT FILLED. The literal must come from the
+ *  INDEPENDENT oracle (the hf4_oracle.py procedure over the GEN_STORAGE
+ *  preimages listed at nodus_witness_runtime.c SYS_RULESET_HASH_G3) —
+ *  never this build's encoder. Until it is filled,
+ *  nodus_witness_runtime_selfcheck fails (the GEN_STORAGE pins are
+ *  unfilled too) and the node REFUSES TO START — the HF-4 A1 precedent
+ *  (commit 53243195, filled in 89f9da09). */
+#define DNAC_CFG_RULESET_GEN_STORAGE_D      0x0000000000000000ULL /* STORAGE-ORACLE: filled by ORCHESTRATOR */
+
 /** HF-4 NAME_REGISTER price range (params 10-13), both inclusive:
  *  [10^8, 10^15] raw = [1 NODUS, 10 000 000 NODUS] (design §2 Price). */
 #define DNAC_CFG_MIN_NAME_PRICE             100000000ULL
@@ -923,6 +992,12 @@ static inline uint64_t dnac_name_price_for_len(const uint64_t p[4],
 #ifndef __cplusplus
 _Static_assert(DNAC_CFG_RULESET_GEN2_D2 <= 0x7FFFFFFFFFFFFFFFULL,
                "D2 must fit SQLite int64 (top bit cleared by construction)");
+_Static_assert(DNAC_CFG_RULESET_GEN_STORAGE_D <= 0x7FFFFFFFFFFFFFFFULL,
+               "the storage vote literal must fit SQLite int64");
+_Static_assert(DNAC_STORAGE_STAKE_MIN == 100000000000000ULL,
+               "storage bond = 1M NODUS = 10^14 raw (design rev 2.2 §1)");
+_Static_assert(DNAC_STORAGE_STAKE_MIN <= 0x7FFFFFFFFFFFFFFFULL,
+               "the storage bond fits the SQLite INTEGER bond column");
 _Static_assert(DNAC_NAME_PRICE_3P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&
                DNAC_NAME_PRICE_3P_DEFAULT <= DNAC_CFG_MAX_NAME_PRICE &&
                DNAC_NAME_PRICE_4P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&

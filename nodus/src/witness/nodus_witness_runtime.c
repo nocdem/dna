@@ -44,6 +44,15 @@
  * dnac.h); selfcheck re-derives them and the D2 vote literal on every
  * start.
  *
+ * Storage reward v1 (decision docs/plans/decisions/2026-10-04-storage-
+ * reward-approved.md; design docs/plans/2026-10-04-storage-reward-v1-
+ * design.md rev 2.2 §6): a third generation, GEN_STORAGE (SYSTEM v8 —
+ * ops 7..9 STORAGE_REGISTER / STORAGE_EXIT / STORAGE_REPORT appended,
+ * policy ops 1..9 — / CORE v6), reached from generation 2 by the same
+ * phase-6b' switch on the chain_config param-14 vote. ⚠ ITS PINS ARE NOT
+ * FILLED (STORAGE-ORACLE markers): until the independent oracle supplies
+ * them, selfcheck fails and the node refuses to start.
+ *
  * @file nodus_witness_runtime.c
  */
 
@@ -101,6 +110,21 @@ static const uint32_t CORE_RULES_G2[8] = {
     DNA_CORERULE_SHIELDED_C3_REJECT, DNA_CORERULE_SHIELD_C3_REJECT,
     DNA_CORERULE_UNSHIELD_C3_REJECT, DNA_CORERULE_SYSFUND,
     DNA_CORERULE_NAME_REGISTER
+};
+/* Storage reward v1 (design docs/plans/2026-10-04-storage-reward-v1-
+ * design.md rev 2.2 §1, §4, §6): the GEN_STORAGE SYSTEM (v8) owns rules
+ * {1..9} — generation 2's six ops with STORAGE_REGISTER (7), STORAGE_EXIT
+ * (8) and STORAGE_REPORT (9) appended. Its tx_type list is the SAME
+ * SYS_TYPES (the storage ops carry no legacy tx type — op and tx_type are
+ * different axes). Its CORE (v6) reuses CORE_RULES_G2 unchanged: the
+ * version advances because SYSFUND (rule 7) now also pairs with the two
+ * storage record ops (rtn_sysfund_shape) — a hook-side semantics change,
+ * the W-C / general-multisig precedent (CORE_RULESET_HASH block below). */
+static const uint32_t SYS_RULES_G3[9] = {
+    DNA_SYSRULE_STAKE, DNA_SYSRULE_DELEGATE, DNA_SYSRULE_UNSTAKE,
+    DNA_SYSRULE_UNDELEGATE, DNA_SYSRULE_VALIDATOR_UPDATE,
+    DNA_SYSRULE_CHAIN_CONFIG, DNA_SYSRULE_STORAGE_REGISTER,
+    DNA_SYSRULE_STORAGE_EXIT, DNA_SYSRULE_STORAGE_REPORT
 };
 /* ASCENDING is load-bearing twice over: rt_owns_type() stops at the first
  * greater element, and dna_ruleset_desc_hash() refuses a non-ascending
@@ -172,11 +196,35 @@ static const uint8_t SYS_METER_POLICY_DIGEST_G2[DNA_DOM_HASH_LEN] = {
     0xa7, 0x17, 0x2a, 0x6f, 0x19, 0xce, 0xec, 0x87
 };
 
+/* Storage reward v1 — the GEN_STORAGE SYSTEM (v8) metering policy: the
+ * SAME shape v2 (seven scalar weights 1, the 2 MiB max_block_env_bytes
+ * field kept), the authoritative op set grown to 1..9 so the three
+ * storage ops are priced (weight 1 — the placeholder-economics class of
+ * every other weight here). Ops 7 and 8 already had a row in generation
+ * 2 (CORE SYSFUND / NAME_REGISTER — w_op is keyed by runtime_op across
+ * domains), so op 9 is the one new row; the identity digest commits w_op
+ * and the presence bitmap, so it differs from generation 2's.
+ *
+ * ⚠ STORAGE-ORACLE: NOT FILLED — 64 zero bytes. The literal must come
+ * from the INDEPENDENT oracle ("NDS.METPOLID.v1" preimage, the
+ * hf4_oracle.py G1 procedure with ops 1..9 weight 1), never this build's
+ * serializer. Until it is filled the selfcheck fails at the policy
+ * coupling check and the node REFUSES TO START (the HF-4 A1 precedent). */
+static dna_meter_policy_t g_sys_policy_g3;
+static int g_sys_policy_g3_ready = 0;
+
+static const uint8_t SYS_METER_POLICY_DIGEST_G3[DNA_DOM_HASH_LEN] = {
+    /* STORAGE-ORACLE: filled by ORCHESTRATOR */
+    0
+};
+
 /* The highest authoritative runtime op of each generation's SYSTEM policy:
  * the union of that generation's two descriptors' rule-id ranges
- * (generation 1: CORE 1..7 / SYSTEM 1..6; generation 2: CORE 1..8). */
+ * (generation 1: CORE 1..7 / SYSTEM 1..6; generation 2: CORE 1..8;
+ * GEN_STORAGE: SYSTEM 1..9 / CORE 1..8). */
 #define SYS_POLICY_MAX_OP_G1  7u
 #define SYS_POLICY_MAX_OP_G2  8u
+#define SYS_POLICY_MAX_OP_G3  9u
 
 static int sys_policy_build(dna_meter_policy_t *p, uint32_t max_op) {
     memset(p, 0, sizeof(*p));
@@ -365,6 +413,40 @@ static const uint8_t CORE_RULESET_HASH_G2[DNA_DOM_HASH_LEN] = {
     0xc7, 0x33, 0x65, 0xbe, 0x6c, 0xfe, 0x65, 0xf0,
     0xfb, 0x9a, 0xd5, 0x33, 0x57, 0xdb, 0x2d, 0x53,
     0x9a, 0x1c, 0x69, 0xd9, 0x3d, 0x81, 0xca, 0xe5
+};
+
+/* Storage reward v1 — the GEN_STORAGE pins (design docs/plans/2026-10-04-
+ * storage-reward-v1-design.md rev 2.2 §6; bytes doc item 8: "its
+ * descriptor digest and the SYSTEM/CORE version numbers are computed by
+ * the existing registry code, not chosen by hand"). Preimages (the
+ * RulesetDescriptor v2 layout, shared/dnac/domain_wire.h):
+ *   SYSTEM v8: version 2, domain 0, "SYSTEM", abi 1, ruleset_version 8,
+ *              rules {1,2,3,4,5,6,7,8,9}, types {4,5,6,7,9,10},
+ *              meter_policy_digest = SYS_METER_POLICY_DIGEST_G3
+ *              (policy v2, seven scalar weights 1, max_block_env_bytes
+ *              2 * DNA_ENV_MAX_TOTAL_LEN, ops 1..9 weight 1);
+ *   CORE v6:   version 2, domain 1, "DNA_CORE", abi 1, ruleset_version 6,
+ *              rules {1..8}, types {1,2,3,11,12,13},
+ *              meter_policy_digest = 64 zero bytes.
+ * Vote literal (dnac.h DNAC_CFG_RULESET_GEN_STORAGE_D) =
+ *   dna_ruleset_gen_digest(3, SYSTEM v8 hash, CORE v6 hash, spec 1).
+ *
+ * ⚠ STORAGE-ORACLE: NOT FILLED — 64 zero bytes each. They must come from
+ * the INDEPENDENT oracle over the preimages above (the hf4_oracle.py
+ * procedure, whose control legs reproduce the generation-1 and -2 pins
+ * first), never from this build's encoder. Until they are filled the
+ * selfcheck fails ("ruleset_hash does not re-derive") and the node
+ * REFUSES TO START; selfcheck re-derives all of them on every start once
+ * filled. */
+static const uint8_t SYS_RULESET_HASH_G3[DNA_DOM_HASH_LEN] = {
+    /* STORAGE-ORACLE: GEN_STORAGE SYSTEM v8 ruleset_hash — filled by
+     * ORCHESTRATOR */
+    0
+};
+static const uint8_t CORE_RULESET_HASH_G3[DNA_DOM_HASH_LEN] = {
+    /* STORAGE-ORACLE: GEN_STORAGE CORE v6 ruleset_hash — filled by
+     * ORCHESTRATOR */
+    0
 };
 
 /* ── Function tables ────────────────────────────────────────────────── */
@@ -648,6 +730,90 @@ static const nodus_domain_runtime_t BUILTIN[] = {
         .state_init  = nodus_rt_core_state_init,
         .adapter     = &NODUS_RT_CORE_ADAPTER,
         .meter_policy = NULL     /* CORE declares no policy (zero digest)*/
+    },
+    /* ── Storage reward v1 — GEN_STORAGE (design docs/plans/2026-10-04-
+     * storage-reward-v1-design.md rev 2.2 §6). Never seeded at genesis;
+     * it starts judging blocks when the engine's phase 6b' rewrites the
+     * SYSTEM and CORE registry records FROM GENERATION 2 at the end of
+     * block H-1 (H = the committed chain_config param-14 row's effective
+     * height). Same hooks, adapters, auth implementation and allowlists
+     * as generations 1 and 2 — the generation differs in the descriptor
+     * (versions, the SYSTEM rule list, the SYSTEM policy digest) and in
+     * what the hooks do under it: the storage record ops execute, SYSFUND
+     * pairs with them, and the SYSTEM state root is "NDS.SYS.v5"
+     * (nodus_rt_system_state_root — the hook reads rt->generation). */
+    {
+        .domain_id       = DNA_DOMAIN_SYSTEM,
+        .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
+        /* ruleset_version 8 — the rule list GREW (ops 7..9 appended),
+         * the policy digest moved (op 9 priced) and the state root
+         * composition changed (v5) */
+        .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
+        .ruleset_version = 8,
+        .generation      = NODUS_RT_GEN_STORAGE,
+        .ruleset_hash    = { 0 },   /* SYS_RULESET_HASH_G3 via table_get */
+        .descriptor = {
+            .descriptor_version = DNA_RULESET_DESC_VERSION,
+            .domain_id = DNA_DOMAIN_SYSTEM,
+            .name = "SYSTEM",
+            .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
+            .ruleset_version = 8,
+            .rule_count = 9, .rule_ids = SYS_RULES_G3,
+            .tx_type_count = 6, .tx_types = SYS_TYPES
+        },
+        .admit = rt_admit_common,
+        .tx_cost = sys_cost,
+        .auth      = nodus_rt_auth_dsa87_v1,
+        .allowed_auth_kinds =
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_CC_V1),
+        .read_plan = nodus_rt_system_read_plan,
+        .exec      = nodus_rt_system_exec,
+        .state_root   = nodus_rt_system_state_root,
+        .payload_root = nodus_rt_system_payload_root,
+        .asset_check = NULL,
+        .claim_apply = NULL,
+        .invariant   = NULL,
+        .state_init  = NULL,
+        .adapter     = &NODUS_RT_SYSTEM_ADAPTER,
+        .meter_policy = NULL     /* &g_sys_policy_g3 — bound in table_get */
+    },
+    {
+        .domain_id       = DNA_DOMAIN_CORE,
+        .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
+        /* ruleset_version 6 — rule list {1..8}, tx_type list and the
+         * all-zero "no policy declared" field UNCHANGED from v5; the
+         * version advances because SYSFUND's pairing rule widened (the
+         * exact-tuple identity IS the activation mechanism) */
+        .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
+        .ruleset_version = 6,
+        .generation      = NODUS_RT_GEN_STORAGE,
+        .ruleset_hash    = { 0 },   /* CORE_RULESET_HASH_G3 via table_get */
+        .descriptor = {
+            .descriptor_version = DNA_RULESET_DESC_VERSION,
+            .domain_id = DNA_DOMAIN_CORE,
+            .name = "DNA_CORE",
+            .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
+            .ruleset_version = 6,
+            .rule_count = 8, .rule_ids = CORE_RULES_G2,
+            .tx_type_count = 6, .tx_types = CORE_TYPES
+        },
+        .admit = rt_admit_common,
+        .tx_cost = core_cost,
+        .auth      = nodus_rt_auth_dsa87_v1,
+        .allowed_auth_kinds =
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MSIG_V1),
+        .read_plan = nodus_rt_core_read_plan,
+        .exec      = nodus_rt_core_exec,
+        .state_root   = nodus_rt_core_state_root,
+        .payload_root = NULL,
+        .asset_check = nodus_rt_core_asset_check,
+        .claim_apply = nodus_rt_core_claim_apply,
+        .invariant   = nodus_rt_core_invariant,
+        .state_init  = nodus_rt_core_state_init,
+        .adapter     = &NODUS_RT_CORE_ADAPTER,
+        .meter_policy = NULL     /* CORE declares no policy (zero digest)*/
     }
 };
 #define BUILTIN_COUNT (sizeof(BUILTIN) / sizeof(BUILTIN[0]))
@@ -663,7 +829,8 @@ _Static_assert(BUILTIN_COUNT / BUILTIN_PER_GEN == NODUS_RT_GEN_MAX,
 /* The pinned digest for each builtin slot (parallel to BUILTIN). */
 static const uint8_t *const BUILTIN_PINNED_HASH[] = {
     SYS_RULESET_HASH, CORE_RULESET_HASH,          /* generation 1 */
-    SYS_RULESET_HASH_G2, CORE_RULESET_HASH_G2     /* generation 2 */
+    SYS_RULESET_HASH_G2, CORE_RULESET_HASH_G2,    /* generation 2 */
+    SYS_RULESET_HASH_G3, CORE_RULESET_HASH_G3     /* GEN_STORAGE  */
 };
 _Static_assert(sizeof(BUILTIN_PINNED_HASH) / sizeof(BUILTIN_PINNED_HASH[0])
                    == BUILTIN_COUNT, "one pinned digest per builtin slot");
@@ -675,16 +842,17 @@ static const uint8_t *builtin_pinned_hash(size_t i) {
 /* The SYSTEM policy object, its pinned identity digest and its op bound,
  * per generation (index = generation - 1). */
 static dna_meter_policy_t *const GEN_SYS_POLICY[] = {
-    &g_sys_policy, &g_sys_policy_g2
+    &g_sys_policy, &g_sys_policy_g2, &g_sys_policy_g3
 };
 static int *const GEN_SYS_POLICY_READY[] = {
-    &g_sys_policy_ready, &g_sys_policy_g2_ready
+    &g_sys_policy_ready, &g_sys_policy_g2_ready, &g_sys_policy_g3_ready
 };
 static const uint8_t *const GEN_SYS_POLICY_DIGEST[] = {
-    SYS_METER_POLICY_DIGEST, SYS_METER_POLICY_DIGEST_G2
+    SYS_METER_POLICY_DIGEST, SYS_METER_POLICY_DIGEST_G2,
+    SYS_METER_POLICY_DIGEST_G3
 };
 static const uint32_t GEN_SYS_POLICY_MAX_OP[] = {
-    SYS_POLICY_MAX_OP_G1, SYS_POLICY_MAX_OP_G2
+    SYS_POLICY_MAX_OP_G1, SYS_POLICY_MAX_OP_G2, SYS_POLICY_MAX_OP_G3
 };
 _Static_assert(sizeof(GEN_SYS_POLICY_MAX_OP) /
                    sizeof(GEN_SYS_POLICY_MAX_OP[0]) == BUILTIN_GENS,
@@ -959,26 +1127,37 @@ int nodus_witness_runtime_selfcheck(void) {
         }
     }
 
-    /* the compiled vote literal re-derives from the generation-2 pins
-     * (dnac.h DNAC_CFG_RULESET_GEN2_D2 — no hashing in the vote path) */
+    /* each compiled vote literal re-derives from its generation's pins
+     * (dnac.h DNAC_CFG_RULESET_GEN2_D2 and — storage reward v1 —
+     * DNAC_CFG_RULESET_GEN_STORAGE_D; no hashing in the vote path) */
     {
-        const nodus_domain_runtime_t *s2 =
-            nodus_runtime_for_generation(NODUS_RT_GEN_2, DNA_DOMAIN_SYSTEM);
-        const nodus_domain_runtime_t *c2 =
-            nodus_runtime_for_generation(NODUS_RT_GEN_2, DNA_DOMAIN_CORE);
-        uint64_t d2 = 0;
-        if (!s2 || !c2 ||
-            dna_ruleset_gen_digest(NODUS_RT_GEN_2, s2->ruleset_hash,
-                                   c2->ruleset_hash,
-                                   DNAC_RULESET_SWITCH_SPEC_VERSION,
-                                   &d2) != 0)
-            SC_FAIL("selfcheck: the generation-2 vote digest could not be "
-                    "derived");
-        if (d2 != (uint64_t)DNAC_CFG_RULESET_GEN2_D2)
-            SC_FAIL("selfcheck: the compiled D2 literal 0x%016llx does not "
-                    "re-derive (0x%016llx) from the generation-2 pins",
-                    (unsigned long long)DNAC_CFG_RULESET_GEN2_D2,
-                    (unsigned long long)d2);
+        static const struct { uint32_t gen; uint64_t lit; } VOTES[] = {
+            { NODUS_RT_GEN_2,       (uint64_t)DNAC_CFG_RULESET_GEN2_D2 },
+            { NODUS_RT_GEN_STORAGE,
+              (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D }
+        };
+        for (size_t v = 0; v < sizeof(VOTES) / sizeof(VOTES[0]); v++) {
+            const nodus_domain_runtime_t *sg =
+                nodus_runtime_for_generation(VOTES[v].gen,
+                                             DNA_DOMAIN_SYSTEM);
+            const nodus_domain_runtime_t *cg =
+                nodus_runtime_for_generation(VOTES[v].gen, DNA_DOMAIN_CORE);
+            uint64_t d = 0;
+            if (!sg || !cg ||
+                dna_ruleset_gen_digest(VOTES[v].gen, sg->ruleset_hash,
+                                       cg->ruleset_hash,
+                                       DNAC_RULESET_SWITCH_SPEC_VERSION,
+                                       &d) != 0)
+                SC_FAIL("selfcheck: the generation-%u vote digest could "
+                        "not be derived", (unsigned)VOTES[v].gen);
+            if (d != VOTES[v].lit)
+                SC_FAIL("selfcheck: the compiled generation-%u vote "
+                        "literal 0x%016llx does not re-derive (0x%016llx) "
+                        "from that generation's pins",
+                        (unsigned)VOTES[v].gen,
+                        (unsigned long long)VOTES[v].lit,
+                        (unsigned long long)d);
+        }
     }
     return 0;
 }

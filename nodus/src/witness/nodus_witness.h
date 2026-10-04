@@ -192,7 +192,7 @@ typedef struct {
  * database of any rung gets it on open; user_version stays 16 — no
  * migration rung, no pre-H root moves (an empty table is the name leg's
  * existing tagged-empty root). The column shape is checked on EVERY open
- * against this same text (nodus_witness.c witness_v2_names_ddl_check —
+ * against this same text (nodus_witness.c witness_ddl_shape_check —
  * the stored sqlite_master.sql must equal what this build's SQLite
  * stores for this exact statement); a mismatch refuses this node's open.
  * The body is shared so the CREATE and the check can never disagree. */
@@ -204,6 +204,41 @@ typedef struct {
     "registered_height >= 1)) WITHOUT ROWID"
 #define NODUS_V2_NAMES_DDL                                                \
     "CREATE TABLE IF NOT EXISTS " NODUS_V2_NAMES_DDL_BODY
+
+/* Storage reward v1 (decision docs/plans/decisions/2026-10-04-storage-
+ * reward-approved.md; design docs/plans/2026-10-04-storage-reward-v1-
+ * design.md rev 2.2 §1; leaf docs/plans/2026-10-04-storage-reward-
+ * bytes.md item 1) — the storage registry, one row per node:
+ *   node_fp            SHA3-512(node_pk), the row key (64 B)
+ *   node_pk            the node's ML-DSA-87 key (DNAC_PUBKEY_SIZE B)
+ *   payee_fp           where the storage reward accrues (64 B; equal to
+ *                      node_fp until HF-5 re-keys it — the exec rule)
+ *   bond               DNAC_STORAGE_STAKE_MIN while counted in supply
+ *   status             1 ACTIVE / 2 EXITING / 3 RELEASED
+ *   registered_height  the height of the (re-)registration (>= 1)
+ *   exit_height        the height of the STORAGE_EXIT (0 = none)
+ * The v2_names discipline: typed CHECKs on every column (one storage
+ * class, BINARY order), WITHOUT ROWID, in the BASE schema (an empty table
+ * on every chain before the storage activation — no migration rung,
+ * user_version unchanged), its exact shape checked on EVERY open
+ * (nodus_witness.c witness_ddl_shape_check over this same text). The
+ * registry leaf hashes every column except node_pk (bytes doc item 1);
+ * node_pk is kept so the node's identity is recoverable from state. */
+#define NODUS_V2_STORAGE_DDL_BODY                                         \
+    "v2_storage_nodes(node_fp BLOB NOT NULL PRIMARY KEY CHECK("           \
+    "typeof(node_fp)='blob' AND length(node_fp)=64), node_pk BLOB NOT "   \
+    "NULL CHECK(typeof(node_pk)='blob' AND length(node_pk)=2592), "       \
+    "payee_fp BLOB NOT NULL CHECK(typeof(payee_fp)='blob' AND "           \
+    "length(payee_fp)=64), bond INTEGER NOT NULL CHECK(typeof(bond)="     \
+    "'integer' AND bond >= 0), status INTEGER NOT NULL CHECK(typeof("     \
+    "status)='integer' AND status IN (1, 2, 3)), registered_height "      \
+    "INTEGER NOT NULL CHECK(typeof(registered_height)='integer' AND "     \
+    "registered_height >= 1), exit_height INTEGER NOT NULL CHECK(typeof(" \
+    "exit_height)='integer' AND exit_height >= 0)) WITHOUT ROWID"
+#define NODUS_V2_STORAGE_DDL                                              \
+    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STORAGE_DDL_BODY
+_Static_assert(DNAC_PUBKEY_SIZE == 2592,
+               "NODUS_V2_STORAGE_DDL spells the node_pk length 2592");
 _Static_assert(NODUS_V2_ACTIVE_SET_MAX <= DNAC_MAX_ACTIVE_VALIDATORS,
                "successor active-set max exceeds resource ceiling");
 _Static_assert(DNAC_TARGET_ACTIVE_DEFAULT == NODUS_V2_ACTIVE_SET_MAX,

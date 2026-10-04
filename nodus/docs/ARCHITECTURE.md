@@ -5451,7 +5451,8 @@ registered_height >= 1)) WITHOUT ROWID` — BINARY order, one storage class per 
 the BASE schema (`WITNESS_DB_SCHEMA`, `CREATE TABLE IF NOT EXISTS`), so a database of any rung
 gets it on open; `user_version` stays 16 (no migration rung) and the table joins the preflight
 `required[]` list. Because `IF NOT EXISTS` would silently keep a same-named table of another
-shape, `witness_v2_names_ddl_check` (`nodus_witness.c`) runs on EVERY open: it executes the same
+shape, `witness_ddl_shape_check(db, "v2_names", NODUS_V2_NAMES_DDL)` (`nodus_witness.c`; named
+`witness_v2_names_ddl_check` until storage reward v1 generalized it) runs on EVERY open: it executes the same
 statement in a private `:memory:` database and requires the stored `sqlite_master.sql` to be
 byte-identical; a mismatch refuses THIS node's open (`SQLITE_CORRUPT`, permanent class). (The
 existing `table_cols_exact` compares column names only and runs only in migration rungs.)
@@ -5613,6 +5614,114 @@ the synthetic owner key and the node's generation-1 refusal are proven only by t
 rule (a) is proven at the approval responder only, rules (b) and (c) not as refusals; the expiry
 cap is not asserted; it runs at the short-epoch / short-grace build (15 / 15) — the LOGIC only,
 nothing about the production 720-block grace.
+
+### Storage reward v1, package B1 — storage-node registry, the GEN_STORAGE rule-set generation and the `NDS.SYS.v5` SYSTEM root (2026-10-04, branch only — not versioned, not voted)
+
+Decision `docs/plans/decisions/2026-10-04-storage-reward-approved.md` (the operator approved design
+rev 2.2 and the byte layouts, "Tamam, approved."); design `docs/plans/2026-10-04-storage-reward-v1-design.md`
+rev 2.2 §1 (registration / exit) and §6 (activation); bytes `docs/plans/2026-10-04-storage-reward-bytes.md`
+items 1, 4, 5, 6 and its Clarifications; who earns `docs/plans/decisions/2026-10-04-storage-reward-who-earns.md`.
+Package A (the pure root functions, `shared/dnac/ledger_roots_v2.{h,c}`) and its independent-oracle
+KAT came first; B1 wires them. The frozen storage set, the report (op 9) and the boundary settlement /
+exit release are package **B2** — not here.
+
+**Numbers are provisional.** Generation, op ids and the param id are the next free ones in this branch
+(generation 3, SYSTEM ops 7/8/9, param 14); design §6 assigns them in main merge order (HF-5 and QEVM
+also want a generation). Code names the generation `NODUS_RT_GEN_STORAGE`, never "3".
+
+**The generation (`nodus_witness_runtime.{h,c}`).** A third compiled generation, reached from
+generation 2: SYSTEM v8 — rules {1..9} (ops 7 `DNA_SYSRULE_STORAGE_REGISTER`, 8 `_EXIT`, 9 `_REPORT`
+appended; tx types unchanged) with a policy pricing ops 1..9 (weight 1; `w_op` is keyed by
+`runtime_op` across both domains, so ops 7 and 8 already had rows as CORE SYSFUND / NAME_REGISTER —
+op 9 is the one new row); CORE v6 — rules {1..8} unchanged, version bumped because SYSFUND now also
+pairs with the storage record ops. Same hooks, adapters and allowlists as generations 1 and 2.
+Selfcheck re-derives the generation's pins and the new vote literal. **⚠ The pins
+(`SYS_RULESET_HASH_G3`, `CORE_RULESET_HASH_G3`, `SYS_METER_POLICY_DIGEST_G3`) and
+`DNAC_CFG_RULESET_GEN_STORAGE_D` are NOT FILLED (STORAGE-ORACLE markers): until the independent oracle
+fills them the selfcheck fails and the node refuses to start** — the HF-4 A1 precedent (`53243195`,
+filled in `89f9da09`). The preimages are listed at the pins in `nodus_witness_runtime.c`. The
+generated `nodus/include/nodus/nodus_ruleset_pins.h` must be regenerated after the fill
+(`regen_ruleset_pins`; `test_ruleset_pins` byte-compares it).
+
+**The vote (chain_config param 14 `DNAC_CFG_RULESET_GEN_STORAGE`, `dnac.h`).** Value EXACTLY the
+compiled literal (`dna_ruleset_gen_digest(3, SYSTEM v8 hash, CORE v6 hash, spec 1)` — the switch
+procedure is HF-4's, so `DNAC_RULESET_SWITCH_SPEC_VERSION` stays 1); grace ERGONOMIC. Stateful rules
+(`nodus_chain_config_stateful_rules`, the ONE authority the exec and the 0x71 responder share): (d)
+refused unless generation 2 or later judges the vote (the switch is 2 → GEN_STORAGE — a vote under
+generation 1 would schedule an edge the registry could not take), then param 9's (a) single use
+(over the param-14 fact: `nodus_rt_exec_ctx_t.ruleset_gen_storage_voted`, an UNMETERED engine fact
+read once per item like `ruleset_gen2_voted`; the hook hands the fact MATCHING the voted param), (b)
+HF-2 active, (c) H−1 not an epoch boundary. The client mirror (`dnac/src/transaction/verify.c`) does
+not know param 14 yet (it refuses it in its `default:`) — outside this package's file set.
+
+**The switch (engine phase 6b', `nodus_witness_v2_apply.c`).** Table-driven over two edges in fixed
+order — param 9 (generation 1 → 2, byte-for-byte HF-4's reads, refusals and log text) and param 14
+(generation 2 → GEN_STORAGE). The edge, the registry rewrite (`nodus_witness_domreg_generation_switch`),
+the SYSTEM + CORE touch and the FAULTs ("registry is not generation 2") are HF-4's. Two more unmetered
+chain_config reads per block, no effect when no edge fires.
+
+**The SYSTEM root (`nodus_rt_system_state_root`, `nodus_witness_roots_v2.c`).** Chosen by the RESOLVED
+runtime's generation: GEN_STORAGE or later composes `NDS.SYS.v5` = the 8 v4 legs in v4 order +
+`storage_root = dna_v2_storage_root(registry_root, sets_root, reports_root)`
+(`nodus_witness_system_root_v5`); every earlier generation `NDS.SYS.v4` exactly as before (the v4
+function only had its leg reads factored into a shared helper). Because 6b' rewrites the registry
+before the 6c re-scan reloads the runtimes, the first v5 root is H−1's own post-state, committed in
+H−1's app_hash (design D5). B1 has no frozen-set or report tables: `sets_root` / `reports_root` are the
+tagged empty roots (what B2's tables give while empty). `nodus_witness_global_root_v2`'s `out_system`
+stays the v4 composition (test-only assembly; its `out_global` comes from the committed heads).
+`NDS.SYSPAYL.v3` (genesis payload) is unchanged.
+
+**The registry (`v2_storage_nodes`, `nodus_witness.h` `NODUS_V2_STORAGE_DDL`).** `node_fp` (PK,
+SHA3-512(node_pk), 64 B) · `node_pk` (2592 B) · `payee_fp` (64 B) · `bond` · `status` (1 ACTIVE /
+2 EXITING / 3 RELEASED) · `registered_height` (≥ 1) · `exit_height`; typed CHECKs on every column,
+WITHOUT ROWID, in the base schema (empty on every chain before activation; no rung, user_version
+unchanged), its shape checked on EVERY open (`witness_ddl_shape_check`, generalized from the v2_names
+check), required by the S14 preflight. One scan (`storage_scan`) feeds both the registry root (leaf
+`NDS.STLEAF.v1`, bytes item 1; every row checked — types, lengths, node_fp == SHA3-512(node_pk), status,
+non-negative integers) and the supply term.
+
+**The ops (`nodus_witness_rt_native.c`, the STAKE pattern).** Both are 2-leg envelopes — leg 0 the
+SYSTEM record leg, leg 1 the CORE SYSFUND funding leg (`rtn_sys_stake_shape`; `rtn_sysfund_shape` accepts
+the pairing only when its caller passes `rtn_gen_storage(rt)`) — under the authority rule
+`rtn_sys_stake_auth` (exactly one kind-1 signer whose fp == SHA3-512(node_pk); that signature is the
+node's consent). New SYSTEM adapter ops: 8 `RTN_SYS_OP_STOR` (the row; CREATE|SET, ABSENT|EXISTS_VHASH;
+the 2681-byte record node_pk ‖ payee ‖ bond ‖ status ‖ registered_height ‖ exit_height, key node_fp)
+and 9 `RTN_SYS_OP_STORCNT` (read-only live count, selector 1 = ACTIVE + EXITING).
+- `STORAGE_REGISTER` (call node_pk ‖ bond u64 ‖ payee_fp = 2664 B): bond EXACTLY
+  `DNAC_STORAGE_STAKE_MIN` (10^14 raw); **payee_fp must equal node_fp** (design §1 "payee_fp (=
+  SHA3-512(node_pk) until HF-5 re-keys it)", read fail-closed — the call carries the field, this
+  release accepts only the node's own fingerprint); refused when the live count already equals
+  `NODUS_STORAGE_SET_MAX` (256); an absent row is CREATEd, a RELEASED row REVIVED (SET bound to the
+  observed record), an ACTIVE / EXITING row refused. SYSFUND locks the bond (utxo → the storage bond
+  bucket).
+- `STORAGE_EXIT` (call node_pk = 2592 B): the row must be ACTIVE; it becomes EXITING with
+  exit_height = the executing height (a repeated exit refuses). Fee-only funding — no value moves;
+  the bond's release as one locked UTXO at the next boundary (identity `dna_v2_storage_exit_id`, kind
+  0x11, out index 201 — `_Static_assert`ed between 200 and 400 in `rt_native.c` and `v2_econ.c`) and
+  the RELEASED status are **package B2** (TODO-B2 at `rtn_storage_exit_exec`).
+- `STORAGE_REPORT` (op 9): owned and priced, **refused (-1) by its read plan and exec until B2**.
+- The scan-v3 describer describes applied register / exit legs with record kind NONE (no wire kind
+  yet), so the address index and `dnac_v3_block` stay byte-unchanged and never fail on them.
+
+**Supply (`nodus_rt_core_invariant`).** New term `storage_bonds` = Σ bond over ACTIVE + EXITING rows
+(`nodus_witness_storage_bond_total`, the registry loader's own checks); 0 before activation.
+
+**Pre-activation byte-identity.** Before the param-14 edge the registry names generation 1 or 2, so
+`rt->generation < GEN_STORAGE`: the SYSTEM root is the unchanged v4 function, the storage ops are
+refused by the descriptor gate (`rt_owns_runtime_op`) and again by the hooks (`rtn_gen_storage`),
+SYSFUND refuses the storage pairing, `v2_storage_nodes` stays empty so the supply term is 0, and a
+CHAIN_CONFIG leg reads nothing new (the param-14 fact is unmetered — no `gas_used` moves). Param 14 was
+REFUSED by the previous binary's range gate (14 > MAX_ID 13) and is ACCEPTED (subject to the rules) by
+this one: a param-14 leg committed before the rollout would replay differently — the same exposure
+HF-4 accepted for param 9 (§2.2: 7/7 on the new binary before any vote).
+
+**Tests (written, not run by the builder).** `test_hf4_table` (GEN_STORAGE shape, the storage ops
+owned by GEN_STORAGE only, refused by older generations' hooks, the literal re-derivation),
+`test_hf4_params` (param 14 scalar / grace / stateful / exec / slot), `test_hf4_switch` cases F / F2
+(v4 roots before the edge, the switch and the v5 root at H−1, the not-generation-2 FAULT; case E's
+out-of-range stand-in moved from 14 to 15), `test_storage_reg` (hook matrix + engine twin: register,
+refusals, exit, duplicate exit, supply conservation), `test_v2_gas_price` (id 14 is the last id).
+Every engine case FAILS until the STORAGE-ORACLE pins are filled.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
@@ -6804,6 +6913,7 @@ SQLite tables managed by the witness module (`nodus_witness_db.c`):
 | `v2_treasury` | final pre-testnet wipe W-A: the nine keyless, locked treasury pools (pool_id 1..9 → balance), seeded from the genesis document; a leg of `system_state_root` and `system_payload_root`; a term of the supply equation; no exit rule (parked) |
 | `v2_balance_copy` | tokenomics-v3 P2/P3: the stake frozen at each boundary (three copies kept since P3: H−2E, H−E, H); read by the selection (okuma B) and the reward split; out of every root. PK `(epoch_start, validator_fp, owner_fp, kind)` — `kind` 0 the bond, 1 a delegation (W-B: a self-delegation shares its owner with the bond) |
 | `v2_names` | HF-4: the on-chain names (`name` BLOB PK 3..36, `owner` BLOB UNIQUE 64, `registered_height` INTEGER ≥ 1, `WITHOUT ROWID`); in the BASE schema, its DDL checked byte-for-byte on every open; written only by CORE op 8 NAME_REGISTER (generation 2); the 5th leg of `core_state_root` (`name_root`, empty = `NDS.E.NAMES.v1`) |
+| `v2_storage_nodes` | storage reward v1 (package B1, branch only): the storage-node registry (`node_fp` BLOB PK 64 = SHA3-512(node_pk), `node_pk` BLOB 2592, `payee_fp` BLOB 64, `bond`, `status` 1 ACTIVE / 2 EXITING / 3 RELEASED, `registered_height` ≥ 1, `exit_height`; typed CHECKs, `WITHOUT ROWID`); in the BASE schema, its DDL checked on every open; written only by the GEN_STORAGE SYSTEM ops STORAGE_REGISTER / STORAGE_EXIT (and, from B2, the boundary release); its registry root is part of `storage_root`, the 9th leg of `system_state_root` under `NDS.SYS.v5`; Σ bond over ACTIVE + EXITING is a term of the supply equation |
 | `committed_transactions` | Full serialized TX data (hub/spoke queries) |
 | `addr_history` | Node-local address history index (decision 2026-10-01): one row per owner effect (h, i, seq, raw owner, kind, amount, token, fee, peer, wire, ts), written in the block transaction only while `addr_history_index` is on; out of every root; read by `dnac_addr_history`. Created rung-free by `nodus_witness_addr_index_migrate` |
 | `addr_history_mark` | Its one marker row: `from_height` (first height of the current gap-free indexed run) and `last_height` |

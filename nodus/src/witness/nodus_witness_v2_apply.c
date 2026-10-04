@@ -884,6 +884,31 @@ static int env_ruleset_gen2_voted(nodus_witness_t *w, uint8_t *voted,
     return 0;
 }
 
+/* Storage reward v1 (design docs/plans/2026-10-04-storage-reward-v1-
+ * design.md rev 2.2 §6 — "voted like RULESET_GEN2"): has ANY chain_config
+ * param-14 (RULESET_GEN_STORAGE) row been committed, at any effective
+ * height? env_ruleset_gen2_voted's contract verbatim (the INT64_MAX
+ * current_block, the three-valued accessor, a read fault = node FAULT,
+ * UNMETERED, once per item) — into ctx.ruleset_gen_storage_voted.
+ * @return 0 (*voted = 0/1) / -2. */
+static int env_ruleset_gen_storage_voted(nodus_witness_t *w, uint8_t *voted,
+                                         char *reason, size_t reason_size)
+{
+    uint64_t v = 0;
+    int rc = nodus_chain_config_get_u64(w,
+                                        (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE,
+                                        (uint64_t)INT64_MAX, 0ULL, &v);
+
+    if (rc < 0) {
+        V2AP_ENV_FAULT("%s", "storage reward: the RULESET_GEN_STORAGE "
+                       "history is unreadable on this node - refusing to "
+                       "judge a vote's single-use rule against a guess");
+        return -2;
+    }
+    *voted = (rc == 0) ? 1u : 0u;
+    return 0;
+}
+
 /* HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §2
  * Price): the four NAME_REGISTER price tiers at `height` — chain_config
  * params 10..13 (NAME_PRICE_3P..6P), each the committed row active at
@@ -1239,6 +1264,11 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
     uint8_t gen2_voted = 0;
     if (env_ruleset_gen2_voted(w, &gen2_voted, reason, reason_size) != 0)
         return -2;
+    /* storage reward v1: "any param-14 row", the same discipline */
+    uint8_t gen_storage_voted = 0;
+    if (env_ruleset_gen_storage_voted(w, &gen_storage_voted, reason,
+                                      reason_size) != 0)
+        return -2;
     /* HF-4: the name price tiers at this block's height, once per item */
     uint64_t name_price[4];
     if (env_name_prices(w, blk->global_height, name_price, reason,
@@ -1288,6 +1318,7 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
         ctx.token_create_fee    = tc_fee;
         ctx.hf2_active          = hf2;
         ctx.ruleset_gen2_voted  = gen2_voted;
+        ctx.ruleset_gen_storage_voted = gen_storage_voted;
         memcpy(ctx.name_price, name_price, sizeof(ctx.name_price));
 
         /* ── mediated reads: request phase → engine-charged execution ─
@@ -2087,6 +2118,7 @@ static int env_authorize_legs(nodus_witness_t *w,
     uint64_t tc_fee = 0;
     uint8_t  hf2 = 0;
     uint8_t  gen2_voted = 0;
+    uint8_t  gen_storage_voted = 0;
     uint64_t name_price[4];
 
     /* W-C: every ctx the engine builds carries the committed
@@ -2094,13 +2126,17 @@ static int env_authorize_legs(nodus_witness_t *w,
      * today, but a hook must never see a ctx whose engine facts are
      * partly zero. Same read, same fault rule as exec_one_env. HF-2's
      * switch rides along for the same reason (the auth hook computes the
-     * power sums unconditionally and does not read it), and so does
-     * HF-4's single-use fact (no auth hook reads it either). */
+     * power sums unconditionally and does not read it), and so do
+     * HF-4's and the storage vote's single-use facts (no auth hook reads
+     * either). */
     if (env_token_create_fee(w, height, &tc_fee, reason, reason_size) != 0)
         return -2;
     if (env_hf2_active(w, height, &hf2, reason, reason_size) != 0)
         return -2;
     if (env_ruleset_gen2_voted(w, &gen2_voted, reason, reason_size) != 0)
+        return -2;
+    if (env_ruleset_gen_storage_voted(w, &gen_storage_voted, reason,
+                                      reason_size) != 0)
         return -2;
     if (env_name_prices(w, height, name_price, reason, reason_size) != 0)
         return -2;
@@ -2151,6 +2187,7 @@ static int env_authorize_legs(nodus_witness_t *w,
         actx.token_create_fee    = tc_fee;
         actx.hf2_active          = hf2;
         actx.ruleset_gen2_voted  = gen2_voted;
+        actx.ruleset_gen_storage_voted = gen_storage_voted;
         memcpy(actx.name_price, name_price, sizeof(actx.name_price));
         /* the resolved snapshot view, ONLY for the kind that consumes it
          * (runtime.h's ctx contract) */
@@ -2878,10 +2915,46 @@ static int cmt_item_index(nodus_witness_t *w, uint64_t global_height,
  * although h's items ran under generation 1 — outside the app hash,
  * stated in the design (§1.3) for explorers.
  *
+ * STORAGE REWARD v1 (design docs/plans/2026-10-04-storage-reward-v1-
+ * design.md rev 2.2 §6 / D5; decision docs/plans/decisions/2026-10-04-
+ * storage-reward-approved.md): a SECOND edge, the same procedure — param
+ * 14 (RULESET_GEN_STORAGE, value DNAC_CFG_RULESET_GEN_STORAGE_D) switches
+ * the registry from generation 2 to GEN_STORAGE at the end of block H-1.
+ * The vote's stateful rule (d) (judged under generation 2 or later) is
+ * what makes "the registry is generation 2" true at that edge; the
+ * param-9 edge necessarily lies at an earlier height (the param-14 vote
+ * cannot be committed before generation 2 judges blocks, and its H is
+ * later than its vote block). The two edges are checked in this fixed
+ * order, each with HF-4's exact reads, refusals and log text; the
+ * param-9 edge's behaviour (and its log/fault wording) is byte-for-byte
+ * the HF-4 one. Two more unmetered chain_config reads per block, no
+ * state effect when no edge fires.
+ *
  * @return 0 (switched or nothing to do) / -2 node FAULT (reason written).
  */
-static int phase_6b_ruleset_switch(nodus_witness_t *w, nodus_v2_block_t *blk,
-                                   dom_ctx_t *doms, size_t n_dom) {
+typedef struct {
+    uint8_t     param_id;       /* the upgrade vote's chain_config id   */
+    const char *param_name;     /* its name in fault text               */
+    uint64_t    literal;        /* the compiled vote literal            */
+    const char *literal_name;   /* the literal's name in fault/log text */
+    uint32_t    from_gen;       /* the registry before the edge         */
+    uint32_t    to_gen;         /* the registry after the edge          */
+    const char *log_label;      /* the INFO line's prefix               */
+} ruleset_edge_t;
+
+static const ruleset_edge_t RULESET_EDGES[] = {
+    { (uint8_t)DNAC_CFG_RULESET_GEN2, "RULESET_GEN2",
+      (uint64_t)DNAC_CFG_RULESET_GEN2_D2, "D2",
+      NODUS_RT_GEN_1, NODUS_RT_GEN_2, "HF-4" },
+    { (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE, "RULESET_GEN_STORAGE",
+      (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D, "storage vote literal",
+      NODUS_RT_GEN_2, NODUS_RT_GEN_STORAGE, "storage reward" }
+};
+
+/* One edge: 0 (switched or not this edge) / -2 node FAULT. */
+static int phase_6b_one_edge(nodus_witness_t *w, nodus_v2_block_t *blk,
+                             dom_ctx_t *doms, size_t n_dom,
+                             const ruleset_edge_t *e) {
     const uint64_t h = blk->global_height;
     uint64_t h_next = 0, v_next = 0, v_h = 0;
     int at_next, at_h, src;
@@ -2893,40 +2966,39 @@ static int phase_6b_ruleset_switch(nodus_witness_t *w, nodus_v2_block_t *blk,
                    (unsigned long long)h);
         return -2;
     }
-    at_next = nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_RULESET_GEN2,
-                                         h_next, 0ULL, &v_next);
-    at_h = nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_RULESET_GEN2, h,
-                                      0ULL, &v_h);
+    at_next = nodus_chain_config_get_u64(w, e->param_id, h_next, 0ULL,
+                                         &v_next);
+    at_h = nodus_chain_config_get_u64(w, e->param_id, h, 0ULL, &v_h);
     if (at_next < 0 || at_h < 0) {
-        V2AP_FAULT("phase 6b': RULESET_GEN2 at heights %llu/%llu is "
+        V2AP_FAULT("phase 6b': %s at heights %llu/%llu is "
                    "unreadable on this node - refusing to decide the "
-                   "generation switch on a guess",
+                   "generation switch on a guess", e->param_name,
                    (unsigned long long)h_next, (unsigned long long)h);
         return -2;
     }
     if (!(at_next == 0 && at_h == 1))
         return 0;                       /* not the H-1 edge: nothing     */
-    if (v_next != (uint64_t)DNAC_CFG_RULESET_GEN2_D2) {
-        V2AP_FAULT("phase 6b': the RULESET_GEN2 row effective at %llu reads "
-                   "0x%016llx, not this build's D2 0x%016llx - a value no "
-                   "committed row can hold here",
+    if (v_next != e->literal) {
+        V2AP_FAULT("phase 6b': the %s row effective at %llu reads "
+                   "0x%016llx, not this build's %s 0x%016llx - a value no "
+                   "committed row can hold here", e->param_name,
                    (unsigned long long)h_next, (unsigned long long)v_next,
-                   (unsigned long long)DNAC_CFG_RULESET_GEN2_D2);
+                   e->literal_name, (unsigned long long)e->literal);
         return -2;
     }
 
-    src = nodus_witness_domreg_generation_switch(w, NODUS_RT_GEN_1,
-                                                 NODUS_RT_GEN_2);
+    src = nodus_witness_domreg_generation_switch(w, e->from_gen, e->to_gen);
     if (src == 1) {
-        V2AP_FAULT("phase 6b': the generation-2 vote reaches its edge at "
-                   "height %llu but the registry is not generation 1",
-                   (unsigned long long)h);
+        V2AP_FAULT("phase 6b': the generation-%u vote reaches its edge at "
+                   "height %llu but the registry is not generation %u",
+                   (unsigned)e->to_gen, (unsigned long long)h,
+                   (unsigned)e->from_gen);
         return -2;
     }
     if (src != 0) {
-        V2AP_FAULT("phase 6b': the registry rewrite to generation 2 failed "
+        V2AP_FAULT("phase 6b': the registry rewrite to generation %u failed "
                    "on this node at height %llu (read, precondition or "
-                   "write)", (unsigned long long)h);
+                   "write)", (unsigned)e->to_gen, (unsigned long long)h);
         return -2;
     }
 
@@ -2942,11 +3014,21 @@ static int phase_6b_ruleset_switch(nodus_witness_t *w, nodus_v2_block_t *blk,
         dsys->touched = 1;
         dcore->touched = 1;
     }
-    QGP_LOG_INFO(LOG_TAG, "HF-4: rule-set generation 1 -> 2 at the end of "
-                 "height %llu (D2 0x%016llx); height %llu is judged under "
-                 "generation 2", (unsigned long long)h,
-                 (unsigned long long)DNAC_CFG_RULESET_GEN2_D2,
-                 (unsigned long long)h_next);
+    QGP_LOG_INFO(LOG_TAG, "%s: rule-set generation %u -> %u at the end of "
+                 "height %llu (%s 0x%016llx); height %llu is judged under "
+                 "generation %u", e->log_label, (unsigned)e->from_gen,
+                 (unsigned)e->to_gen, (unsigned long long)h,
+                 e->literal_name, (unsigned long long)e->literal,
+                 (unsigned long long)h_next, (unsigned)e->to_gen);
+    return 0;
+}
+
+static int phase_6b_ruleset_switch(nodus_witness_t *w, nodus_v2_block_t *blk,
+                                   dom_ctx_t *doms, size_t n_dom) {
+    for (size_t i = 0; i < sizeof(RULESET_EDGES) / sizeof(RULESET_EDGES[0]);
+         i++)
+        if (phase_6b_one_edge(w, blk, doms, n_dom, &RULESET_EDGES[i]) != 0)
+            return -2;
     return 0;
 }
 

@@ -425,7 +425,8 @@ static int t_scalar_rule_matrix(void)
     /* W-C appended id 6 (TOKEN_CREATE_FEE_RAW) after id 5; HF-2 appended
      * id 7 (HF2_ACTIVE) after id 6; HF-3 appended id 8 (HF3_ACTIVE) after
      * id 7; HF-4 appended ids 9-13 (RULESET_GEN2, NAME_PRICE_3P..6P)
-     * after id 8, NAME_PRICE_6P being the allowlist's last id. */
+     * after id 8; storage reward v1 appended id 14 (RULESET_GEN_STORAGE)
+     * after NAME_PRICE_6P, and it is now the allowlist's last id. */
     CHECK(DNAC_CFG_GAS_PRICE_RAW_PER_UNIT + 1 ==
               DNAC_CFG_TOKEN_CREATE_FEE_RAW,
           "id 5 is followed by W-C's id 6");
@@ -434,9 +435,13 @@ static int t_scalar_rule_matrix(void)
     CHECK(DNAC_CFG_HF2_ACTIVE + 1 == DNAC_CFG_HF3_ACTIVE,
           "id 7 is followed by HF-3's id 8");
     CHECK(DNAC_CFG_HF3_ACTIVE + 1 == DNAC_CFG_RULESET_GEN2 &&
-              DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_NAME_PRICE_6P &&
               DNAC_CFG_NAME_PRICE_6P == 13,
-          "id 8 is followed by HF-4's ids 9-13; 13 is the last id");
+          "id 8 is followed by HF-4's ids 9-13");
+    CHECK(DNAC_CFG_NAME_PRICE_6P + 1 == DNAC_CFG_RULESET_GEN_STORAGE &&
+              DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_RULESET_GEN_STORAGE &&
+              DNAC_CFG_RULESET_GEN_STORAGE == 14,
+          "id 13 is followed by the storage vote's id 14; 14 is the last "
+          "id");
     return 0;
 }
 

@@ -637,3 +637,60 @@ Node-local: none of these changes a consensus byte, block, app_hash or state roo
 | `int nodus_cmt_bs_set_seen_commit_window(nodus_cmt_store_t *s, int64_t w)` | **NEW.** Sets W. CMT_OK; CMT_FAULT on NULL or `w < 0` (W unchanged). |
 | `int nodus_cmt_bs_prune_blocks(nodus_cmt_store_t *s, int64_t height, const cmt_state_t *state, uint64_t *out_pruned, int64_t *out_evidence_point)` (`nodus_witness_cmt_store.h`) | **CHANGED (behaviour) — documented deviation from cometbft v0.38.26 store/store.go:392-396 (decision item 5).** Never deletes block 1's BlockMeta row `H:1`, which the start-time V2 preflight (`nodus_witness_v2_preflight.c` check 5) reads on every open; height 1's `BH:`, `C:`, `SC:`, `EC:` and parts are deleted as before, height 1 still counts in `*out_pruned`, base still moves to `height`. Every other height unchanged (evidence-point rule as the reference). Signature and return codes unchanged. |
 | `int nodus_cmt_bs_save_block(...)`, `int nodus_cmt_bs_save_block_with_extended_commit(...)` (via `static int save_block_to_batch(...)`, `nodus_witness_cmt_store.c`) | **CHANGED (behaviour) — documented deviation from cometbft v0.38.26 store.go:574.** In the same batch that writes `C:h−1` and `SC:h`, deletes `SC:(h−1−W)` when that height is ≥ 1; a failed delete is CMT_FAULT and aborts the batch like every other write. Signatures unchanged. |
+
+## 23. Storage reward v1, package B1 — storage registry, GEN_STORAGE, `NDS.SYS.v5` (decision `docs/plans/decisions/2026-10-04-storage-reward-approved.md`; design `docs/plans/2026-10-04-storage-reward-v1-design.md` rev 2.2 §1, §6)
+
+Branch only — not versioned, not voted. Generation, op and param numbers are the next free ones in the branch (design §6: assigned in main merge order). **⚠ The GEN_STORAGE pins and `DNAC_CFG_RULESET_GEN_STORAGE_D` are not filled (STORAGE-ORACLE markers): until they are, `nodus_witness_runtime_selfcheck` fails and the node refuses to start.** Narrative: `nodus/docs/ARCHITECTURE.md` "Storage reward v1, package B1".
+
+### 23.1 Constants and parameters (`dnac/include/dnac/dnac.h`, `nodus/src/witness/nodus_witness_runtime.h`, `nodus/src/witness/nodus_witness_roots_v2.h`)
+
+| Item | Description |
+|------|-------------|
+| `DNAC_STORAGE_STAKE_MIN` (10^14 raw = 1M NODUS) | **NEW.** The storage registration bond, EXACTLY (the STORAGE_REGISTER exec refuses any other). |
+| `DNAC_CFG_RULESET_GEN_STORAGE` (14), `DNAC_CFG_PARAM_MAX_ID` (= 14) | **NEW / CHANGED.** The rule-set upgrade vote to GEN_STORAGE; on `dnac_cfg_param_read_by_consensus`. `chain_config_cache` grows to 15 rows through its `DNAC_CFG_PARAM_MAX_ID` derivation. |
+| `DNAC_CFG_RULESET_GEN_STORAGE_D` | **NEW.** The vote's only legal value: `dna_ruleset_gen_digest(3, GEN_STORAGE SYSTEM hash, GEN_STORAGE CORE hash, DNAC_RULESET_SWITCH_SPEC_VERSION)`; **0 until the oracle fills it**. |
+| `NODUS_RT_GEN_STORAGE` ((uint32_t)3), `NODUS_RT_GEN_MAX` (= `NODUS_RT_GEN_STORAGE`) | **NEW / CHANGED.** The third compiled generation (SYSTEM v8 rules {1..9} / CORE v6 rules {1..8}, policy ops 1..9). |
+| `DNA_SYSRULE_STORAGE_REGISTER` (7), `DNA_SYSRULE_STORAGE_EXIT` (8), `DNA_SYSRULE_STORAGE_REPORT` (9) | **NEW.** SYSTEM rule ids owned by GEN_STORAGE only. Op 9 is refused by the hooks until package B2. |
+| `NODUS_STORAGE_SET_MAX` (= `DNA_V2_STORAGE_SET_MAX`, 256) | **NEW.** The cap STORAGE_REGISTER admits against (live rows = ACTIVE + EXITING). |
+| `nodus_rt_exec_ctx_t.ruleset_gen_storage_voted` | **NEW field.** `uint8_t`, 1 when ANY param-14 row exists; filled by the engine per item (`env_ruleset_gen_storage_voted`), UNMETERED. One consumer: the SYSTEM CHAIN_CONFIG exec (param-14 single use). |
+| `NODUS_V2_STORAGE_DDL_BODY`, `NODUS_V2_STORAGE_DDL` (`nodus_witness.h`) | **NEW.** The `v2_storage_nodes` table (base schema, typed CHECKs, WITHOUT ROWID), shape-checked on every open. |
+
+### 23.2 Rule authorities and engine (`nodus_witness_chain_config.c`, `nodus_witness_v2_apply.c`, `nodus_witness_runtime.c`)
+
+| Item | Description |
+|------|-------------|
+| `int nodus_chain_config_scalar_rules(...)` | **CHANGED (behaviour):** id 14 accepted with value exactly `DNAC_CFG_RULESET_GEN_STORAGE_D`. Signature unchanged. |
+| `uint64_t nodus_chain_config_grace_for_param(uint8_t param_id)` | **CHANGED (behaviour):** id 14 → ERGONOMIC (explicit `case`). |
+| `int nodus_chain_config_stateful_rules(uint8_t param_id, uint64_t effective_block_height, uint8_t hf2_active, uint8_t ruleset_gen2_voted, uint32_t judging_generation)` | **CHANGED (behaviour; prototype in `nodus_chain_config.h` unchanged, its doc comment NOT yet updated — outside B1's file set):** id 14: -1 if `judging_generation < NODUS_RT_GEN_2` (rule d), then id 9's rules (a)-(c) with the 4th argument read as the single-use fact OF THE VOTED PARAM (callers pass the param-14 fact for id 14). The definition names that argument `upgrade_voted`. |
+| `static int cc_appr_rules_chain_config(...)` | **CHANGED (internal behaviour):** also reads "any param-14 row" (param 14 at `INT64_MAX`) and passes the fact matching the proposal's param. |
+| `int nodus_rt_system_exec(...)` (CHAIN_CONFIG branch) | **CHANGED (behaviour):** a param-14 leg hands `ctx->ruleset_gen_storage_voted` to the stateful rules; every other id `ctx->ruleset_gen2_voted` as before. |
+| `static int env_ruleset_gen_storage_voted(nodus_witness_t *w, uint8_t *voted, char *reason, size_t reason_size)` | **NEW (internal).** `nodus_chain_config_get_u64(w, 14, INT64_MAX, 0, &v)`; 0 / -2 FAULT. Called by `exec_one_env` and `env_authorize_legs`. |
+| `static int phase_6b_ruleset_switch(nodus_witness_t *w, nodus_v2_block_t *blk, dom_ctx_t *doms, size_t n_dom)` | **CHANGED (internal behaviour):** loops `RULESET_EDGES` in fixed order — param 9 (1 → 2, HF-4's exact behaviour and text) then param 14 (2 → GEN_STORAGE) — through `static int phase_6b_one_edge(..., const ruleset_edge_t *e)` (**NEW, internal**). FAULT "registry is not generation 2" at the storage edge on any other registry. |
+| `int nodus_witness_runtime_selfcheck(void)` | **CHANGED (behaviour):** also re-derives `DNAC_CFG_RULESET_GEN_STORAGE_D` from the GEN_STORAGE pins. |
+| `static int witness_ddl_shape_check(sqlite3 *db, const char *table, const char *ddl)` (`nodus_witness.c`) | **NEW (internal), replaces `witness_v2_names_ddl_check(sqlite3 *db)`:** the per-open shape check over any (table, DDL); called for `v2_names` and `v2_storage_nodes`. |
+
+### 23.3 Roots and supply (`nodus/src/witness/nodus_witness_roots_v2.{h,c}`, `nodus_witness_v2_claims.c`)
+
+| Function | Description |
+|----------|-------------|
+| `int nodus_witness_storage_registry_root(nodus_witness_t *w, uint8_t out[64])` | **NEW.** `dna_v2_storage_registry_root` over `v2_storage_nodes` (node_fp ASC); fails closed on an absent table, a non-typed column, a wrong length, node_fp ≠ SHA3-512(node_pk), a negative integer, a status outside 1..3 or a scan fault; empty → `DNA_V2_EMPTY_STORAGE_REG`. |
+| `int nodus_witness_storage_bond_total(nodus_witness_t *w, uint64_t *out)` | **NEW.** Σ bond over ACTIVE + EXITING rows through the same scan, checked add — the supply equation's storage-bond term. |
+| `int nodus_witness_storage_root_v2(nodus_witness_t *w, uint8_t out[64])` | **NEW.** `dna_v2_storage_root(registry_root, sets_root, reports_root)`; B1 passes the tagged empty sets / reports roots (their tables are package B2's). |
+| `int nodus_witness_system_root_v5(nodus_witness_t *w, uint8_t out[64])` | **NEW.** `dna_v2_system_root_v5` over the 8 v4 legs + `nodus_witness_storage_root_v2`. |
+| `int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64])` | **CHANGED (internal structure only):** the 8 leg reads moved into `static int system_legs_v4(...)`, shared with v5; same bytes. |
+| `int nodus_rt_system_state_root(const nodus_domain_runtime_t *rt, struct nodus_witness *w, uint8_t out[64])` | **CHANGED (behaviour):** `rt->generation >= NODUS_RT_GEN_STORAGE` → v5, otherwise v4 exactly as before. |
+| `int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt, struct nodus_witness *w)` | **CHANGED (behaviour):** observed supply + `storage_bonds` (0 before activation); the violation log names it. |
+
+### 23.4 SYSTEM storage ops (`nodus/src/witness/nodus_witness_rt_native.c`, all `static`)
+
+| Item | Description |
+|------|-------------|
+| `rtn_sys_is_storage_op(op)`, `rtn_gen_storage(rt)` | **NEW.** Ops 7 / 8; `rt && rt->generation >= NODUS_RT_GEN_STORAGE`. |
+| `rtn_streg_parse(p, len, c)` | **NEW.** STORAGE_REGISTER call node_pk[2592] ‖ bond u64 ‖ payee_fp[64] (exact 2664 B). |
+| `rtn_sys_call_identity`, `rtn_sys_call_flow`, `rtn_sys_stake_shape` | **CHANGED:** know ops 7 / 8 (identity = node_pk; REGISTER lock = bond, EXIT fee-only). |
+| `rtn_sysfund_shape(env, leg_index, allow_storage)` | **CHANGED (signature):** + `allow_storage`; exec / read plan pass `rtn_gen_storage(rt)`, the describer 1. |
+| `rtn_storage_read_plan`, `rtn_storage_register_exec`, `rtn_storage_exit_exec` | **NEW.** Rules in ARCHITECTURE.md; the exit's boundary release is TODO-B2. |
+| `rtn_sys_stor_fetch`, `rtn_sys_storcnt_fetch`, `rtn_stor_rec_ok` | **NEW.** Adapter row / live-count access and the record validator. |
+| `NODUS_RT_SYSTEM_ADAPTER` | **CHANGED:** + op 8 `RTN_SYS_OP_STOR` (CREATE|SET, ABSENT|EXISTS_VHASH, key 64, value 2681) and op 9 `RTN_SYS_OP_STORCNT` (read-only, key 1, value 8); `n_ops` 5 → 7. |
+| `nodus_rt_system_read_plan`, `nodus_rt_system_exec` | **CHANGED (behaviour):** dispatch ops 7 / 8 under GEN_STORAGE; op 9 refused (-1) until B2. |
+| `nodus_rt_native_describe_leg` (`rtn_desc_system`) | **CHANGED (behaviour):** describes applied ops 7 / 8 with `rec = NODUS_RT_DESC_REC_NONE`. |

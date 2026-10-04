@@ -67,7 +67,7 @@
 #define CC_MAX_ACTIVE               DNA_MAX_ACTIVE_VALIDATORS
 
 #define CC_PURPOSE_TAG_LEN          16
-#define CC_PARAM_MAX_ID            13
+#define CC_PARAM_MAX_ID            14
 #define CC_PARAM_MAX_TXS            1
 #define CC_PARAM_BLOCK_INTERVAL     2
 #define CC_PARAM_INFLATION_START    3
@@ -81,11 +81,14 @@
 #define CC_PARAM_NAME_PRICE_4P      11    /* HF-4 — DNAC_CFG_NAME_PRICE_4P */
 #define CC_PARAM_NAME_PRICE_5P      12    /* HF-4 — DNAC_CFG_NAME_PRICE_5P */
 #define CC_PARAM_NAME_PRICE_6P      13    /* HF-4 — DNAC_CFG_NAME_PRICE_6P */
+#define CC_PARAM_RULESET_GEN_STORAGE 14   /* storage reward v1 —
+                                           * DNAC_CFG_RULESET_GEN_STORAGE */
 /* Number of per-param cache rows dimensions: param ids are 1..CC_PARAM_MAX_ID
  * and index 0 is unused, so the arrays are CC_PARAM_MAX_ID + 1 wide.
  * HF-4 grew it 9 -> 14 (design 2026-10-02-onchain-names-design.md rev 4
  * §1.1): without the slots nodus_chain_config_get_u64 answers -1 for ids
- * 9-13 and every read of them would FAULT on every node. */
+ * 9-13 and every read of them would FAULT on every node. Storage reward
+ * v1 grows it 14 -> 15 (id 14) through the same derivation. */
 #define CC_PARAM_SLOTS              (CC_PARAM_MAX_ID + 1)
 /* CC_MAX_TXS_HARD_CAP RETIRED (R3 W4-C delta 2) with CC_PARAM_MAX_TXS —
  * no live consumer; the id space stays 1..CC_PARAM_MAX_ID unchanged. */
@@ -164,6 +167,8 @@ _Static_assert(CC_PARAM_NAME_PRICE_3P == DNAC_CFG_NAME_PRICE_3P &&
 _Static_assert(CC_MIN_NAME_PRICE == DNAC_CFG_MIN_NAME_PRICE &&
                CC_MAX_NAME_PRICE == DNAC_CFG_MAX_NAME_PRICE,
                "NAME_PRICE range drift vs dnac");
+_Static_assert(CC_PARAM_RULESET_GEN_STORAGE == DNAC_CFG_RULESET_GEN_STORAGE,
+               "CC_PARAM_RULESET_GEN_STORAGE drift vs dnac param id");
 /* nodus_chain_config.h keeps this as a bare literal so it stays free of
  * shared/ includes — pin it here, the one TU that sees both. */
 _Static_assert(NODUS_CC_RATE_LIMIT_MAX_PROPOSERS == CC_MAX_ACTIVE,
@@ -658,6 +663,15 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
              * nodus_chain_config_stateful_rules. */
             if (new_value != (uint64_t)DNAC_CFG_RULESET_GEN2_D2) return -1;
             break;
+        case CC_PARAM_RULESET_GEN_STORAGE:
+            /* storage reward v1 (design 2026-10-04-storage-reward-v1-
+             * design.md rev 2.2 §6 — "voted like RULESET_GEN2"): EXACTLY
+             * the compiled GEN_STORAGE vote literal, the param-9 shape.
+             * Its stateful rules live in nodus_chain_config_stateful_
+             * rules. */
+            if (new_value != (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D)
+                return -1;
+            break;
         case CC_PARAM_NAME_PRICE_3P:
         case CC_PARAM_NAME_PRICE_4P:
         case CC_PARAM_NAME_PRICE_5P:
@@ -738,6 +752,10 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
              * 17: "Param 9 bekleme süresi ERGONOMIC 720 blok"). Its own
              * return, the HF-3 shape: never the default: branch. */
             return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
+        case CC_PARAM_RULESET_GEN_STORAGE:
+            /* storage reward v1 — ERGONOMIC, param 9's class ("voted like
+             * RULESET_GEN2", design rev 2.2 §6). Its own return. */
+            return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
         case CC_PARAM_NAME_PRICE_3P:
         case CC_PARAM_NAME_PRICE_4P:
         case CC_PARAM_NAME_PRICE_5P:
@@ -767,19 +785,40 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
  * SYSTEM CHAIN_CONFIG exec (nodus_witness_rt_native.c) passes the
  * engine-filled ctx facts and its own runtime's generation, the 0x71
  * approval responder (cc_appr_rules_chain_config below) derives the same
- * three facts at its candidate height — so the two sites cannot fork. */
+ * three facts at its candidate height — so the two sites cannot fork.
+ *
+ * Storage reward v1 (design 2026-10-04-storage-reward-v1-design.md rev
+ * 2.2 §6 — param 14 "voted like RULESET_GEN2"): the 4th argument is the
+ * SINGLE-USE fact OF THE PARAM BEING VOTED — "any committed param-9 row"
+ * for a param-9 vote, "any committed param-14 row" for a param-14 vote
+ * (both callers pick the matching fact: nodus_rt_system_exec from
+ * ctx->ruleset_gen2_voted / ctx->ruleset_gen_storage_voted, the 0x71
+ * responder from its own two reads). The prototype keeps the HF-4 name
+ * `ruleset_gen2_voted` (nodus_chain_config.h was outside this package's
+ * file set); the definition names it for what it carries. */
 int nodus_chain_config_stateful_rules(uint8_t param_id,
                                       uint64_t effective_block_height,
                                       uint8_t hf2_active,
-                                      uint8_t ruleset_gen2_voted,
+                                      uint8_t upgrade_voted,
                                       uint32_t judging_generation) {
     switch (param_id) {
+        case CC_PARAM_RULESET_GEN_STORAGE:
+            /* (d) the switch this vote schedules is generation 2 ->
+             * GEN_STORAGE (nodus_witness_v2_apply.c phase 6b'), so it is
+             * votable only while generation 2 or later judges the vote: a
+             * vote judged under generation 1 would schedule an edge the
+             * registry could not take (6b' would FAULT on a generation-1
+             * registry, every node at once). Then rules (a)-(c) exactly
+             * as param 9 below, (a) over the param-14 fact. A synthetic or
+             * unresolved runtime reads 0 here. */
+            if (judging_generation < NODUS_RT_GEN_2) return -1;
+            /* fall through */
         case CC_PARAM_RULESET_GEN2: {
-            /* (a) single use: any committed param-9 row — at any
+            /* (a) single use: any committed row OF THIS PARAM — at any
              * effective height, the far-future one included (design §1.2:
              * "a far-future effective retires param 9 for good") —
              * refuses every further vote. */
-            if (ruleset_gen2_voted) return -1;
+            if (upgrade_voted) return -1;
             /* (b) HF-2 must be active at the vote height: the switch
              * leaves CORE's root unchanged at H-1, which phase 9 accepts
              * only while HF-2 is on (HF-2 has no off vote, so on at the
@@ -1089,15 +1128,22 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
      *     the DB path binds an int64 (exec: ctx.ruleset_gen2_voted);
      *   - the judging generation: the runtime the committed SYSTEM
      *     manifest resolves — the registry after the tip names the
-     *     generation that judges tip + 1 = h (exec: rt->generation). */
+     *     generation that judges tip + 1 = h (exec: rt->generation).
+     * Storage reward v1: "any param-14 row" is read the param-9 way
+     * (exec: ctx.ruleset_gen_storage_voted), and the single-use fact
+     * handed to the stateful rules is the one MATCHING the proposal's
+     * param — the exec's own selection. */
     {
-        uint64_t v7 = 0, v9 = 0;
+        uint64_t v7 = 0, v9 = 0, v14 = 0;
         int r7 = nodus_chain_config_get_u64(w, (uint8_t)CC_PARAM_HF2_ACTIVE,
                                             h, 0ULL, &v7);
         int r9 = nodus_chain_config_get_u64(w, (uint8_t)CC_PARAM_RULESET_GEN2,
                                             (uint64_t)INT64_MAX, 0ULL, &v9);
+        int r14 = nodus_chain_config_get_u64(
+                      w, (uint8_t)CC_PARAM_RULESET_GEN_STORAGE,
+                      (uint64_t)INT64_MAX, 0ULL, &v14);
         const nodus_domain_runtime_t *sys_rt = NULL;
-        if (r7 < 0 || r9 < 0 ||
+        if (r7 < 0 || r9 < 0 || r14 < 0 ||
             (v7 != 0ULL && v7 != CC_HF2_ACTIVE_ON)) {
             snprintf(reason, reason_size,
                      "chain_config state unreadable on this node");
@@ -1112,7 +1158,9 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
         if (nodus_chain_config_stateful_rules(
                 c.param_id, c.effective,
                 (uint8_t)(v7 == CC_HF2_ACTIVE_ON ? 1u : 0u),
-                (uint8_t)(r9 == 0 ? 1u : 0u),
+                (uint8_t)(c.param_id == CC_PARAM_RULESET_GEN_STORAGE
+                              ? (r14 == 0 ? 1u : 0u)
+                              : (r9 == 0 ? 1u : 0u)),
                 sys_rt->generation) != 0) {
             snprintf(reason, reason_size, "stateful rules rejected");
             return -1;

@@ -2431,6 +2431,21 @@ register_witness_test(test_hf4_genesis)
 register_witness_test(test_hf4_names)
 register_witness_test(test_hf4_names_engine)
 
+# Storage reward v1, package B1 (decision docs/plans/decisions/2026-10-04-
+# storage-reward-approved.md; design docs/plans/2026-10-04-storage-reward-
+# v1-design.md rev 2.2 §1, §6) — STORAGE_REGISTER / STORAGE_EXIT: the
+# hook-level rule matrix (read plans, happy path, every refusal, revive
+# from RELEASED, exit, the generation gate of SYSFUND's pairing) and
+# registrations applied end to end on a twin GEN_STORAGE chain (rows,
+# supply conservation, the v5 SYSTEM root, refusals). A new file: no
+# existing test owns a chain that crosses both rule-set edges with real
+# 2-leg storage envelopes. The generation switch 2 -> GEN_STORAGE and the
+# v4 -> v5 root edge live in test_hf4_switch (cases F / F2); param 14 in
+# test_hf4_params; the GEN_STORAGE table in test_hf4_table. ⚠ Until the
+# STORAGE-ORACLE pins are filled the engine halves of these tests FAIL at
+# the seeded genesis (selfcheck) — expected, the HF-4 A1 precedent.
+register_witness_test(test_storage_reg)
+
 # Web wallet package (c2) — the shared CORE SPEND builder
 # (src/client/nodus_v2_spend.c): the pins ruleset == the compiled table,
 # a pins-built envelope admitted by the CheckTx dry run on a seeded

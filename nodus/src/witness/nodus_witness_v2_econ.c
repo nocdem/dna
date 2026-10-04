@@ -70,6 +70,7 @@
 #include "dnac/dnac.h"
 #include "dnac/effect_wire.h"
 #include "dnac/ledger_ids.h"
+#include "dnac/ledger_roots_v2.h" /* DNA_V2_STORAGE_EXIT_OUT_IDX (ladder) */
 #include "dnac/res_meter.h"      /* dna_ck_add_u64                      */
 #include "dnac/validator.h"
 #include "dnac/vset_wire.h"
@@ -93,6 +94,14 @@ _Static_assert(NODUS_V2_EPGRAD_OUT_IDX < NODUS_V2_SETTLE_OUT_IDX_BASE,
 _Static_assert(NODUS_V2_SETTLE_OUT_IDX_BASE <
                    NODUS_V2_GRAD_DELEG_OUT_IDX_BASE,
                "the payday base must sit below the delegation band");
+/* Storage reward v1 (bytes doc docs/plans/2026-10-04-storage-reward-
+ * bytes.md item 6): the storage exit release index 201 (written at the
+ * boundary by package B2) sits between the bond release and the payday
+ * base: 200 < 201 < 400. */
+_Static_assert(NODUS_V2_EPGRAD_OUT_IDX < DNA_V2_STORAGE_EXIT_OUT_IDX &&
+                   DNA_V2_STORAGE_EXIT_OUT_IDX < NODUS_V2_SETTLE_OUT_IDX_BASE,
+               "the storage exit release index must sit between the bond "
+               "release index and the payday base");
 
 /* The stored SQLite INTEGER bound. Anything above it round-trips
  * NEGATIVE and would poison every later read — the V2EP_STORE_MAX rule

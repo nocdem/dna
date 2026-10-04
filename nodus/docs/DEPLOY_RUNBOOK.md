@@ -698,12 +698,26 @@ on every node). Read it on any node:
 | HF-2 | governance approvals weighed by voting power (> 2/3); a touched domain that nets to zero applies | 7 `HF2_ACTIVE` | 1 | 724 | 1500 | 0.23.2 | `477E05BD7C62EE4A` |
 | HF-3 | block bounded by cometbft's limits only (no 2 MiB / 2 097 152-unit bound); ProcessProposal checks gas price, committed replay, units ≤ INT64_MAX | 8 `HF3_ACTIVE` | 1 | 2206 | 2926 | 0.23.9 | `4CE838897C4F853B` |
 | HF-4 | rule-set generation 2 (SYSTEM v7 / CORE v5): the registry switches at the end of H−1; CORE op 8 NAME_REGISTER (on-chain names) and the name-price params 10-13 are in force from H | 9 `RULESET_GEN2` | 4962894749133920991 (D2 = 0x44dfbe7ad3c75adf) | 2431 | 3151 | 0.23.10 | `BD84A28A3D3EE5B1` |
+| HF-? storage (**not voted** — placeholder) | rule-set generation GEN_STORAGE (SYSTEM v8 / CORE v6, from generation 2): the registry switches at the end of H−1 and the SYSTEM root becomes `NDS.SYS.v5` (storage leg) in H−1's own app_hash; SYSTEM ops 7 STORAGE_REGISTER / 8 STORAGE_EXIT in force from H, op 9 STORAGE_REPORT owned but refused until package B2 | 14 `RULESET_GEN_STORAGE` (numbers assigned in main merge order — design rev 2.2 §6) | the compiled storage vote literal — **not filled yet** (STORAGE-ORACLE) | — | — | not released | — |
 
 Read 2026-10-02: the HF-4 row on 7/7 (identical; proposed from EU-5, 7/7 approvals; the
 seven nodes on 0.23.10 with identical D2/commit/consensus-constants startup lines, the web
 wallet, Connect, explorer and Scan released before the vote). The HF-3 row on 7/7 (identical; proposed from EU-5, 7/7 approvals); the
 HF-1 and HF-2 rows on EU-5 (the HF-2 row was read on 7/7 when it was voted, 2026-09-30). A node that was not on the introducing binary when a vote committed
 diverges at that block — recovery at the end of this section.
+
+The storage row is a PLACEHOLDER (storage reward v1, package B1 — decision
+`docs/plans/decisions/2026-10-04-storage-reward-approved.md`, design
+`docs/plans/2026-10-04-storage-reward-v1-design.md` rev 2.2 §6): nothing is voted, no binary
+is released, the generation / param / op numbers are the next free ones in the B1 branch and
+are re-assigned in main merge order (HF-5 and QEVM want a generation too). Its vote follows
+the HF-4 procedure below with param 14 in place of param 9 and one more stateful rule: the
+vote is refused unless generation 2 (or later) judges it, because the switch it schedules is
+generation 2 → GEN_STORAGE. The binary's startup log carries a second line,
+`storage rule-set generation 3 vote 0x… (param 14, switch spec v1), built from git commit …`,
+compared on 7/7 before that vote exactly as the D2 line is before param 9. Before the vote:
+the B2 package (the boundary settlement and the report), the oracle-filled pins and literal,
+the harness scenario, and every client that builds storage envelopes.
 
 ### Procedure
 

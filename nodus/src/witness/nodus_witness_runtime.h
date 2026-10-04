@@ -80,6 +80,22 @@ extern "C" {
 #define DNA_SYSRULE_UNDELEGATE       ((uint32_t)4)
 #define DNA_SYSRULE_VALIDATOR_UPDATE ((uint32_t)5)
 #define DNA_SYSRULE_CHAIN_CONFIG     ((uint32_t)6)
+/* Storage reward v1 (decision docs/plans/decisions/2026-10-04-storage-
+ * reward-approved.md; design docs/plans/2026-10-04-storage-reward-v1-
+ * design.md rev 2.2 §1, §4, §6): the three storage-role SYSTEM ops, owned
+ * by the GEN_STORAGE SYSTEM descriptor only (earlier generations do not
+ * own them, so admission refuses them there — nodus_witness_v2_apply.c
+ * rt_owns_runtime_op). The ids are the next free SYSTEM rule ids TODAY;
+ * the design (§6) assigns final numbers in main merge order, coordinated
+ * with HF-5 and QEVM. runtime_op is also the meter-policy key, shared
+ * across domains (shared/dnac/res_meter.h w_op[runtime_op]): ids 7 and 8
+ * are already priced in generation 2 as CORE SYSFUND / NAME_REGISTER, so
+ * a later re-pricing of either id re-prices both domains' op. */
+#define DNA_SYSRULE_STORAGE_REGISTER ((uint32_t)7)
+#define DNA_SYSRULE_STORAGE_EXIT     ((uint32_t)8)
+/** Owned and priced, NOT executable in this package: its read plan and
+ *  exec refuse it (-1) until package B2 implements the report rule. */
+#define DNA_SYSRULE_STORAGE_REPORT   ((uint32_t)9)
 
 #define DNA_CORERULE_SPEND           ((uint32_t)1)
 #define DNA_CORERULE_BURN            ((uint32_t)2)
@@ -121,8 +137,18 @@ extern "C" {
  * tuple); the switch from 1 to 2 is phase 6b' of the engine. */
 #define NODUS_RT_GEN_1               ((uint32_t)1)
 #define NODUS_RT_GEN_2               ((uint32_t)2)
+/** Storage reward v1 (design 2026-10-04-storage-reward-v1-design.md rev
+ *  2.2 §6): the generation after generation 2 — SYSTEM v8 (ops 1..6 +
+ *  STORAGE_REGISTER / STORAGE_EXIT / STORAGE_REPORT, SYSTEM state root
+ *  "NDS.SYS.v5") / CORE v6 (rules unchanged, SYSFUND pairs with the two
+ *  storage record ops). Its NUMBER is the next free one today (3); the
+ *  design assigns the final number in main merge order (HF-5 and QEVM
+ *  want a generation too), so code names it GEN_STORAGE, never "3". The
+ *  switch to it is phase 6b' of the engine at the end of block H-1 of the
+ *  RULESET_GEN_STORAGE vote (chain_config param 14), from generation 2. */
+#define NODUS_RT_GEN_STORAGE         ((uint32_t)3)
 /** The newest compiled generation. */
-#define NODUS_RT_GEN_MAX             NODUS_RT_GEN_2
+#define NODUS_RT_GEN_MAX             NODUS_RT_GEN_STORAGE
 
 struct nodus_domain_runtime;
 
@@ -450,6 +476,15 @@ typedef struct {
      * gas_used moves. One consumer: the SYSTEM CHAIN_CONFIG exec's
      * single-use rule (nodus_chain_config_stateful_rules). */
     uint8_t        ruleset_gen2_voted;
+    /* Storage reward v1 (design 2026-10-04-storage-reward-v1-design.md
+     * rev 2.2 §6 — "voted like RULESET_GEN2"): 1 when ANY chain_config
+     * param-14 (RULESET_GEN_STORAGE) row exists, at any effective height,
+     * else 0 — the ruleset_gen2_voted contract above, verbatim, for the
+     * storage vote (nodus_witness_v2_apply.c env_ruleset_gen_storage_
+     * voted). UNMETERED for the same reason. One consumer: the SYSTEM
+     * CHAIN_CONFIG exec, which hands the fact MATCHING the voted param
+     * to the single-use rule (nodus_chain_config_stateful_rules). */
+    uint8_t        ruleset_gen_storage_voted;
     /* HF-4 (design §2 Price): the four NAME_REGISTER price tiers at
      * `global_height` — [0] = chain_config param 10 (NAME_PRICE_3P) …
      * [3] = param 13 (NAME_PRICE_6P), each the committed row active at
@@ -745,7 +780,9 @@ nodus_runtime_for_generation(uint32_t generation, uint32_t domain_id);
  *     SYSTEM policy prices every rule id of that generation's SYSTEM AND
  *     CORE descriptors;
  *   - the compiled vote literal DNAC_CFG_RULESET_GEN2_D2 re-derives from
- *     the generation-2 pins (dna_ruleset_gen_digest).
+ *     the generation-2 pins (dna_ruleset_gen_digest);
+ *   - storage reward v1: the compiled vote literal
+ *     DNAC_CFG_RULESET_GEN_STORAGE_D re-derives from the GEN_STORAGE pins.
  * @return 0 healthy, -1 on the first violation.
  */
 int nodus_witness_runtime_selfcheck(void);
