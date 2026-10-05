@@ -285,6 +285,33 @@ nodus_stprobe_code_t nodus_stprobe_answer_build(
         const uint64_t h[DNA_V2_STORAGE_SAMPLES], uint64_t B,
         uint8_t *out, size_t cap, size_t *len_out);
 
+/* The answer builder's pieces (package B2b-2: a sample is read from the
+ * block store or, once the store has pruned the block, from the segment
+ * file — nodus_seg_probe_sample, nodus_witness_storage_segment.h). The
+ * bytes they produce are the OK ANSWER above, unchanged. */
+
+/** kind ‖ rq ‖ code 0 into `out`; *off = NODUS_STPROBE_REFUSAL_LEN.
+ *  @return 0 / -1. */
+int nodus_stprobe_answer_begin(const uint8_t rq[64], uint8_t *out,
+                               size_t cap, size_t *off);
+
+/** Append one SAMPLE (hdr_len ‖ header ‖ part_len ‖ part ‖ proof_len ‖
+ *  proof) at *off, within the wire bounds. @return 0 / -1 (bounds,
+ *  does not fit). */
+int nodus_stprobe_sample_put(uint8_t *out, size_t cap, size_t *off,
+                             const uint8_t *hdr, size_t hdr_len,
+                             const uint8_t *part, size_t part_len,
+                             const uint8_t *proof, size_t proof_len);
+
+/** One sample from the block store (the loop body of
+ *  nodus_stprobe_answer_build): header(h+1) from the meta of h+1, the part
+ *  index from `x` and that header's part count, part P:h:index and its
+ *  proof, appended at *off. @return NODUS_STPROBE_OK, _REF_NOT_HELD (the
+ *  meta or the part is not in the store), _REF_FAULT. */
+nodus_stprobe_code_t nodus_stprobe_sample_from_store(
+        nodus_cmt_store_t *store, const uint8_t x[64], uint64_t B,
+        uint64_t h, uint8_t *out, size_t cap, size_t *off);
+
 /* ── the reporter's verification chain ─────────────────────────────── */
 
 typedef enum {

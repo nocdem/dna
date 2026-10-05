@@ -338,6 +338,47 @@ nodus_seg_v_t nodus_seg_build_put_commit(nodus_seg_build_t *b,
  *  @return 0 / -1 (not complete, I/O — the build stays open). */
 int nodus_seg_build_finish(nodus_seg_build_t *b);
 
+/* ── export from this node's block store ────────────────────────────── */
+
+/** Whether `store` holds everything segment k needs: blocks (k−1)·P+1 …
+ *  k·P (their parts), the metas up to k·P+1 (the successor headers) and
+ *  C:k·P — base <= (k−1)·P+1 and height >= k·P+1 (store.go Base /
+ *  Height; pruning only ever advances base, so the range is contiguous).
+ *  Never inferred from one row: H:1 survives pruning (decision 2026-10-
+ *  03-block-pruning-7-paydays.md item 5). */
+bool nodus_seg_store_has(const nodus_cmt_store_t *store, uint64_t k);
+
+/**
+ * One bounded export step: up to `max_heights` heights of `b` read from
+ * `store` — header(h+1) marshalled from the block meta of h+1, the parts
+ * as the RAW stored P:h:i values — and, after the last height, the raw
+ * C:k·P as the terminal commit (signatures checked against `store`'s
+ * validators when it still has them). Every piece goes through the
+ * build's verification before it is written.
+ * @return 1 the build is complete (nodus_seg_build_finish), 0 more to
+ *         do, -1 a piece is missing or failed (*why_out, may be NULL;
+ *         NODUS_SEG_V_OK for a store read fault) — the caller drops the
+ *         export (a store that disagrees with v2_blocks is a node fault,
+ *         logged).
+ */
+int nodus_seg_export_step(nodus_seg_build_t *b, nodus_cmt_store_t *store,
+                          uint32_t max_heights, nodus_seg_v_t *why_out);
+
+/* ── the archive probe from a file (0x72, package B2b-1's answer) ───── */
+
+/**
+ * One 0x72 SAMPLE for height h from the held segment of h in `dir`:
+ * header(h+1) and part index (x mod B, mod the part count — bytes doc §6)
+ * with its proof, appended at *off exactly as
+ * nodus_stprobe_sample_from_store would. @return NODUS_STPROBE_OK,
+ * NODUS_STPROBE_REF_NOT_HELD (the segment is not held here),
+ * NODUS_STPROBE_REF_FAULT.
+ */
+nodus_stprobe_code_t nodus_seg_probe_sample(const char *dir,
+                                            const uint8_t x[64], uint64_t B,
+                                            uint64_t h, uint8_t *out,
+                                            size_t cap, size_t *off);
+
 /* ── reading a held segment ─────────────────────────────────────────── */
 
 typedef struct nodus_seg_reader nodus_seg_reader_t;

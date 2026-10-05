@@ -659,6 +659,7 @@ if(NOT WIN32)
         # file I/O; node-local, never a consensus input (design rev 4 §3,
         # §7 D4).
         src/witness/nodus_witness_storage_segment.c
+        src/witness/nodus_witness_storage_fetch.c
     )
 
     # ── Phase-C C1 (2026-07-21): shielded-pool ZK verify stack ─────────

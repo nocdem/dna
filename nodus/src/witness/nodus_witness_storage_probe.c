@@ -219,6 +219,98 @@ int nodus_stprobe_ans_decode(const uint8_t *msg, size_t len,
     return off == len ? 0 : -1;              /* no trailing byte */
 }
 
+int nodus_stprobe_answer_begin(const uint8_t rq[64], uint8_t *out,
+                               size_t cap, size_t *off) {
+    if (!rq || !out || !off || cap < NODUS_STPROBE_REFUSAL_LEN) return -1;
+    out[0] = NODUS_STPROBE_KIND_ANS;
+    memcpy(out + 1, rq, 64);
+    out[65] = NODUS_STPROBE_OK;
+    *off = NODUS_STPROBE_REFUSAL_LEN;
+    return 0;
+}
+
+int nodus_stprobe_sample_put(uint8_t *out, size_t cap, size_t *off,
+                             const uint8_t *hdr, size_t hdr_len,
+                             const uint8_t *part, size_t part_len,
+                             const uint8_t *proof, size_t proof_len) {
+    if (!out || !off || !hdr || !proof || (!part && part_len) ||
+        *off > cap || hdr_len == 0 || hdr_len > NODUS_STPROBE_HEADER_MAX ||
+        part_len > CMT_BLOCK_PART_SIZE_BYTES || proof_len == 0 ||
+        proof_len > NODUS_STPROBE_PROOF_MAX)
+        return -1;
+    if (cap - *off < 12u + hdr_len + part_len + proof_len) return -1;
+    size_t o = *off;
+    put32(out + o, (uint32_t)hdr_len);    o += 4;
+    memcpy(out + o, hdr, hdr_len);         o += hdr_len;
+    put32(out + o, (uint32_t)part_len);   o += 4;
+    if (part_len) memcpy(out + o, part, part_len);
+    o += part_len;
+    put32(out + o, (uint32_t)proof_len);  o += 4;
+    memcpy(out + o, proof, proof_len);     o += proof_len;
+    *off = o;
+    return 0;
+}
+
+nodus_stprobe_code_t nodus_stprobe_sample_from_store(
+        nodus_cmt_store_t *store, const uint8_t x[64], uint64_t B,
+        uint64_t h, uint8_t *out, size_t cap, size_t *off) {
+    if (!store || !x || !out || !off || B == 0 || *off > cap)
+        return NODUS_STPROBE_REF_FAULT;
+    if (h == 0 || h >= (uint64_t)INT64_MAX) return NODUS_STPROBE_REF_FAULT;
+
+    nodus_stprobe_code_t ret = NODUS_STPROBE_REF_FAULT;
+    nodus_cmt_block_meta_t *meta = malloc(sizeof(*meta));
+    cmt_part_t *part = malloc(sizeof(*part));
+    uint8_t *pbuf = malloc(CMT_BLOCK_PART_SIZE_BYTES);
+    uint8_t *hbuf = malloc(NODUS_STPROBE_HEADER_MAX);
+    uint8_t *prf = malloc(NODUS_STPROBE_PROOF_MAX);
+    if (!meta || !part || !pbuf || !hbuf || !prf) goto done;
+
+    bool found = false;
+    /* header(h+1): its last_block_id IS block_id(h) with the parts root
+     * (cmt_pb.h header field 5) */
+    if (nodus_cmt_bs_load_block_meta(store, (int64_t)(h + 1), meta,
+                                     &found) != CMT_OK)
+        goto done;
+    if (!found) { ret = NODUS_STPROBE_REF_NOT_HELD; goto done; }
+    const uint32_t total = meta->header.last_block_id.part_set_header.total;
+    if (total == 0 || total > CMT_PART_SET_MAX_PARTS) {
+        ret = NODUS_STPROBE_REF_NOT_HELD;
+        goto done;
+    }
+    uint32_t pi = 0;
+    if (dna_v2_storage_sample_index(x, B, total, NULL, &pi) != 0) goto done;
+
+    /* header(h+1) proto */
+    size_t hl = 0;
+    if (cmt_pb_header_marshal(&meta->header, hbuf, NODUS_STPROBE_HEADER_MAX,
+                              &hl) != CMT_OK || hl == 0)
+        goto done;
+
+    /* the part and its proof, as stored */
+    cmt_pb_arena_t arena = { pbuf, CMT_BLOCK_PART_SIZE_BYTES, 0 };
+    if (nodus_cmt_bs_load_block_part(store, (int64_t)h, (int)pi, &arena,
+                                     part, &found) != CMT_OK)
+        goto done;
+    if (!found) { ret = NODUS_STPROBE_REF_NOT_HELD; goto done; }
+    if (part->bytes.len > CMT_BLOCK_PART_SIZE_BYTES) goto done;
+    size_t pl = 0;
+    if (cmt_pb_proof_marshal(&part->proof, prf, NODUS_STPROBE_PROOF_MAX,
+                             &pl) != CMT_OK || pl == 0)
+        goto done;
+    if (nodus_stprobe_sample_put(out, cap, off, hbuf, hl, part->bytes.data,
+                                 part->bytes.len, prf, pl) != 0)
+        goto done;
+    ret = NODUS_STPROBE_OK;
+done:
+    free(prf);
+    free(hbuf);
+    free(pbuf);
+    free(part);
+    free(meta);
+    return ret;
+}
+
 nodus_stprobe_code_t nodus_stprobe_answer_build(
         nodus_cmt_store_t *store, const uint8_t rq[64],
         const uint8_t x[DNA_V2_STORAGE_SAMPLES][64],
@@ -228,76 +320,16 @@ nodus_stprobe_code_t nodus_stprobe_answer_build(
         cap < NODUS_STPROBE_REFUSAL_LEN)
         return NODUS_STPROBE_REF_FAULT;
     *len_out = 0;
-
-    nodus_stprobe_code_t ret = NODUS_STPROBE_REF_FAULT;
-    nodus_cmt_block_meta_t *meta = malloc(sizeof(*meta));
-    cmt_part_t *part = malloc(sizeof(*part));
-    uint8_t *pbuf = malloc(CMT_BLOCK_PART_SIZE_BYTES);
-    if (!meta || !part || !pbuf) goto done;
-
-    out[0] = NODUS_STPROBE_KIND_ANS;
-    memcpy(out + 1, rq, 64);
-    out[65] = NODUS_STPROBE_OK;
-    size_t off = NODUS_STPROBE_REFUSAL_LEN;
-
+    size_t off = 0;
+    if (nodus_stprobe_answer_begin(rq, out, cap, &off) != 0)
+        return NODUS_STPROBE_REF_FAULT;
     for (uint32_t i = 0; i < DNA_V2_STORAGE_SAMPLES; i++) {
-        bool found = false;
-        if (h[i] == 0 || h[i] >= (uint64_t)INT64_MAX) goto done;
-        /* header(h+1): its last_block_id IS block_id(h) with the parts
-         * root (cmt_pb.h header field 5) */
-        if (nodus_cmt_bs_load_block_meta(store, (int64_t)(h[i] + 1), meta,
-                                         &found) != CMT_OK)
-            goto done;
-        if (!found) { ret = NODUS_STPROBE_REF_NOT_HELD; goto done; }
-        const uint32_t total = meta->header.last_block_id.part_set_header.total;
-        if (total == 0 || total > CMT_PART_SET_MAX_PARTS) {
-            ret = NODUS_STPROBE_REF_NOT_HELD;
-            goto done;
-        }
-        uint32_t pi = 0;
-        if (dna_v2_storage_sample_index(x[i], B, total, NULL, &pi) != 0)
-            goto done;
-
-        /* header(h+1) proto */
-        if (cap - off < 4 + NODUS_STPROBE_HEADER_MAX) goto done;
-        size_t hl = 0;
-        if (cmt_pb_header_marshal(&meta->header, out + off + 4,
-                                  NODUS_STPROBE_HEADER_MAX, &hl) != CMT_OK ||
-            hl == 0)
-            goto done;
-        put32(out + off, (uint32_t)hl);
-        off += 4 + hl;
-
-        /* the part and its proof, as stored */
-        cmt_pb_arena_t arena = { pbuf, CMT_BLOCK_PART_SIZE_BYTES, 0 };
-        if (nodus_cmt_bs_load_block_part(store, (int64_t)h[i], (int)pi,
-                                         &arena, part, &found) != CMT_OK)
-            goto done;
-        if (!found) { ret = NODUS_STPROBE_REF_NOT_HELD; goto done; }
-        if (part->bytes.len > CMT_BLOCK_PART_SIZE_BYTES) goto done;
-        if (cap - off < 4 + part->bytes.len) goto done;
-        put32(out + off, (uint32_t)part->bytes.len);
-        off += 4;
-        if (part->bytes.len > 0)
-            memcpy(out + off, part->bytes.data, part->bytes.len);
-        off += part->bytes.len;
-
-        if (cap - off < 4 + NODUS_STPROBE_PROOF_MAX) goto done;
-        size_t pl = 0;
-        if (cmt_pb_proof_marshal(&part->proof, out + off + 4,
-                                 NODUS_STPROBE_PROOF_MAX, &pl) != CMT_OK ||
-            pl == 0)
-            goto done;
-        put32(out + off, (uint32_t)pl);
-        off += 4 + pl;
+        nodus_stprobe_code_t c = nodus_stprobe_sample_from_store(
+            store, x[i], B, h[i], out, cap, &off);
+        if (c != NODUS_STPROBE_OK) return c;
     }
     *len_out = off;
-    ret = NODUS_STPROBE_OK;
-done:
-    free(pbuf);
-    free(part);
-    free(meta);
-    return ret;
+    return NODUS_STPROBE_OK;
 }
 
 /* ══════════════════════════════════════════════════════════════════════

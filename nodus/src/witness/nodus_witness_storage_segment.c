@@ -878,6 +878,154 @@ int nodus_seg_build_finish(nodus_seg_build_t *b) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+ * Export from the block store
+ * ════════════════════════════════════════════════════════════════════ */
+
+bool nodus_seg_store_has(const nodus_cmt_store_t *store, uint64_t k) {
+    if (!store || k == 0 || k > ((uint64_t)INT64_MAX - 1u) / SEG_P - 1u)
+        return false;
+    const int64_t base = nodus_cmt_bs_base(store);
+    const int64_t height = nodus_cmt_bs_height(store);
+    return base >= 1 && (uint64_t)base <= (k - 1u) * SEG_P + 1u &&
+           height >= 1 && (uint64_t)height >= k * SEG_P + 1u;
+}
+
+/* A raw block-store value (the store's own key strings, store.go:632-640
+ * as nodus_witness_cmt_store.h maps them). *v valid until the next get on
+ * that table. @return 0 found / 1 absent / -1 */
+static int store_raw(nodus_cmt_store_t *s, const char *key,
+                     const uint8_t **v, size_t *n) {
+    if (nodus_cmt_store_get(s, false, key, v, n) != CMT_OK) return -1;
+    return *n == 0 ? 1 : 0;
+}
+
+int nodus_seg_export_step(nodus_seg_build_t *b, nodus_cmt_store_t *store,
+                          uint32_t max_heights, nodus_seg_v_t *why_out) {
+    if (why_out) *why_out = NODUS_SEG_V_OK;
+    if (!b || !store || b->scanning) return -1;
+    nodus_cmt_block_meta_t *meta = malloc(sizeof(*meta));
+    uint8_t *hb = malloc(NODUS_SEG_HEADER_MAX);
+    int ret = -1;
+    nodus_seg_v_t v = NODUS_SEG_V_OK;
+    char key[NODUS_CMT_STORE_KEY_MAX];
+    if (!meta || !hb) goto done;
+
+    for (uint32_t n = 0; n < max_heights && b->h <= b->last; n++) {
+        const uint64_t h = b->h;
+        if (!b->have_hdr) {
+            bool found = false;
+            size_t hl = 0;
+            if (nodus_cmt_bs_load_block_meta(store, (int64_t)(h + 1u), meta,
+                                             &found) != CMT_OK)
+                goto done;
+            if (!found) {
+                QGP_LOG_WARN(LOG_TAG, "segment %" PRIu64 ": block meta %"
+                             PRIu64 " not in the block store", b->k, h + 1u);
+                goto done;
+            }
+            if (cmt_pb_header_marshal(&meta->header, hb, NODUS_SEG_HEADER_MAX,
+                                      &hl) != CMT_OK || hl == 0)
+                goto done;
+            v = nodus_seg_build_put_header(b, h, hb, hl);
+            if (v != NODUS_SEG_V_OK) goto done;
+        }
+        while (b->h == h) {
+            const uint8_t *val = NULL;
+            size_t vl = 0;
+            snprintf(key, sizeof(key), "P:%" PRId64 ":%d", (int64_t)h,
+                     (int)b->next_part);
+            int r = store_raw(store, key, &val, &vl);
+            if (r < 0) goto done;
+            if (r > 0) {
+                QGP_LOG_WARN(LOG_TAG, "segment %" PRIu64 ": %s not in the "
+                             "block store", b->k, key);
+                goto done;
+            }
+            /* put copies the value into the build before any other get */
+            v = nodus_seg_build_put_part_proto(b, h, b->next_part, val, vl);
+            if (v != NODUS_SEG_V_OK) goto done;
+        }
+    }
+    if (b->h <= b->last) { ret = 0; goto done; }
+    if (!b->commit_done) {
+        const uint8_t *val = NULL;
+        size_t vl = 0;
+        snprintf(key, sizeof(key), "C:%" PRId64, (int64_t)b->last);
+        int r = store_raw(store, key, &val, &vl);
+        if (r < 0) goto done;
+        if (r > 0) {
+            QGP_LOG_WARN(LOG_TAG, "segment %" PRIu64 ": %s not in the block "
+                         "store", b->k, key);
+            goto done;
+        }
+        /* `val` points into the store's block-table copy buffer, valid
+         * until the next block-table get; the signature check reads the
+         * STATE table (its own buffer). Copied into the build's scratch
+         * all the same, so no store call can ever move it (put_commit
+         * does not use the scratch). */
+        if (vl > SEG_IO_CAP) { v = NODUS_SEG_V_BOUNDS; goto done; }
+        memcpy(b->io, val, vl);
+        v = nodus_seg_build_put_commit(b, b->io, vl, store);
+        if (v != NODUS_SEG_V_OK) goto done;
+    }
+    ret = 1;
+done:
+    if (ret < 0 && v != NODUS_SEG_V_OK)
+        QGP_LOG_ERROR(LOG_TAG, "segment %" PRIu64 ": export refused at "
+                      "height %" PRIu64 " (%s) — this node's block store "
+                      "disagrees with its v2_blocks", b->k, b->h,
+                      nodus_seg_v_str(v));
+    if (why_out) *why_out = v;
+    free(hb);
+    free(meta);
+    return ret;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * The archive probe from a file
+ * ════════════════════════════════════════════════════════════════════ */
+
+nodus_stprobe_code_t nodus_seg_probe_sample(const char *dir,
+                                            const uint8_t x[64], uint64_t B,
+                                            uint64_t h, uint8_t *out,
+                                            size_t cap, size_t *off) {
+    if (!dir || !x || !out || !off || B == 0 || h == 0)
+        return NODUS_STPROBE_REF_FAULT;
+    nodus_seg_reader_t *r = NULL;
+    int rc = nodus_seg_reader_open(dir, nodus_seg_of_height(h), &r);
+    if (rc == 1) return NODUS_STPROBE_REF_NOT_HELD;
+    if (rc != 0) return NODUS_STPROBE_REF_FAULT;
+
+    nodus_stprobe_code_t ret = NODUS_STPROBE_REF_FAULT;
+    uint8_t *hdr = malloc(NODUS_SEG_HEADER_MAX);
+    uint8_t *proto = malloc(NODUS_SEG_PART_PROTO_MAX);
+    uint8_t *part = malloc(CMT_BLOCK_PART_SIZE_BYTES);
+    uint8_t *proof = malloc(NODUS_STPROBE_PROOF_MAX);
+    size_t hl = 0, pl = 0, bl = 0, prl = 0;
+    uint32_t n = 0, pi = 0;
+    if (!hdr || !proto || !part || !proof) goto done;
+    /* the part count first (the index needs it), then the part */
+    if (nodus_seg_reader_get(r, h, NULL, NULL, &n, 0, NULL, NULL) != 0)
+        goto done;
+    if (dna_v2_storage_sample_index(x, B, n, NULL, &pi) != 0) goto done;
+    if (nodus_seg_reader_get(r, h, hdr, &hl, &n, pi, proto, &pl) != 0)
+        goto done;
+    if (nodus_seg_part_split(proto, pl, part, &bl, proof, &prl, NULL) != 0)
+        goto done;
+    if (nodus_stprobe_sample_put(out, cap, off, hdr, hl, part, bl, proof,
+                                 prl) != 0)
+        goto done;
+    ret = NODUS_STPROBE_OK;
+done:
+    free(proof);
+    free(part);
+    free(proto);
+    free(hdr);
+    nodus_seg_reader_close(r);
+    return ret;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
  * Reading
  * ════════════════════════════════════════════════════════════════════ */
 
