@@ -137,14 +137,15 @@
   }
   // Every payout list owns its cursor and in-flight request. Loading block transactions or
   // address transactions cannot alter it, and refreshing invalidates an older page request.
+  // Totals and coverage stay at the first-page snapshot while immutable older rows load.
   function payoutPager({ body, button, status, columns, empty, path, validate, items, cursor, render, summary }) {
-    let next = null, busy = false, request = 0, expanded = false;
+    let next = null, busy = false, request = 0, expanded = false, snapshot = null;
     async function load(append = false) {
       if (append && (busy || next === null)) return;
       const current = ++request;
       busy = true; button.disabled = true; status.replaceChildren();
       if (!append) {
-        next = null; expanded = false; button.hidden = true;
+        next = null; expanded = false; snapshot = null; button.hidden = true;
         messageRow(body, t('Loading payouts…', 'Ödemeler yükleniyor…'), columns);
       }
       body.setAttribute('aria-busy', 'true');
@@ -152,12 +153,18 @@
         const data = await api(path(append ? next : null));
         if (current !== request) return;
         if (!validate(data)) throw new Error(t('Unexpected payout response.', 'Beklenmeyen ödeme yanıtı.'));
+        if (append && (!snapshot || data.from_height !== snapshot.from_height || data.at_height < snapshot.at_height)) {
+          throw new Error(t('Payout records changed. Refresh to load current history.', 'Ödeme kayıtları değişti. Güncel geçmişi yüklemek için yenile.'));
+        }
         const records = items(data), rows = records.map(render), following = cursor(data);
         if (append && following !== null && following === next) throw new Error(t('Unexpected payout cursor.', 'Beklenmeyen ödeme sayfası sınırı.'));
         if (append) { body.append(...rows); expanded = true; }
         else if (rows.length) body.replaceChildren(...rows);
         else messageRow(body, empty, columns);
-        summary(data);
+        if (!append) {
+          summary(data);
+          snapshot = { from_height: data.from_height, at_height: data.at_height };
+        }
         next = following; button.hidden = next === null;
       } catch (error) {
         if (current !== request) return;

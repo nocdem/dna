@@ -115,6 +115,13 @@ source height of pending rewards on address pages (which can be ahead of the
 transaction index). Payout list and block-detail responses are bounded by the
 indexed height. Loading, empty results and unavailable sources have distinct
 states; a failed subsequent page preserves already displayed records.
+Each payout pager keeps the first page's totals, pending rewards and coverage
+stamp while loading older records. Later pages must have the same
+`from_height` and an `at_height` at least as recent as that first page; otherwise
+the page asks for Refresh and leaves the existing rows and summary intact.
+A newer source tip does not replace the initial summary with figures for
+paydays missing from the top of the displayed history. Refresh starts a new
+snapshot.
 
 Payouts occur at the block boundary and remain separate from transactions.
 The footer describes the indexer's trust
