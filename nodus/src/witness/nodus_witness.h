@@ -47,6 +47,8 @@ typedef struct nodus_cc_collect nodus_cc_collect_t;
 
 /* The archive probe's runtime, opaque — nodus_witness_storage_reporter.c. */
 struct nodus_stprobe_rt;
+/* The archive holder's runtime, opaque — nodus_witness_storage_holder.c. */
+struct nodus_sthold_rt;
 
 /** How long one approval collection waits for the seats it asked, from
  *  its start, in milliseconds of the MONOTONIC clock (nodus_p2p_mono_ns).
@@ -495,6 +497,15 @@ typedef struct nodus_witness {
      * a consensus input: it reaches state only through this node's own
      * signed STORAGE_REPORT (design rev 4 §7 D3). */
     struct nodus_stprobe_rt     *stprobe;
+
+    /* The archive holder's runtime (storage reward package B2b-2,
+     * nodus_witness_storage_holder.h): the must-hold list, the open
+     * segment build (export / fetch), the 0x73 fetch client and the
+     * serving side's per-requester budgets. Heap, created on first use,
+     * freed by nodus_witness_close (nodus_witness_sthold_free). RUNTIME
+     * ONLY — never a consensus input: it decides which files this node
+     * keeps in its segment directory (design rev 4 §7 D4). */
+    struct nodus_sthold_rt      *sthold;
 
     /* CC-OPS-004 / Q16 — chain_config_history lookup cache.
      *

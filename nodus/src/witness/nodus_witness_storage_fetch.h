@@ -208,6 +208,38 @@ int nodus_stfetch_ans_decode(const uint8_t *msg, size_t len,
 bool nodus_stfetch_ans_shape_ok(const nodus_stfetch_req_t *req,
                                 const nodus_stfetch_ans_view_t *a);
 
+/* ── the per-requester byte budget (serving side, per epoch) ────────── */
+
+/** Bytes one requester may be served per epoch. ⚠ NOT GROUNDED — local
+ *  policy (design rev 4 §9 leaves "fetch budgets (no capacity measurement
+ *  yet)" open): 4 GiB ≈ two segments at today's ≈ 1.7 GB each, and an
+ *  epoch (720 blocks, ≈ 1 h) at the 4004 send rate (5 120 000 B/s)
+ *  carries ≈ 18 GB at most. */
+#define NODUS_STFETCH_EPOCH_BUDGET   (4ULL * 1024ULL * 1024ULL * 1024ULL)
+/** Every answered request costs at least this much of the budget, a
+ *  refusal after admission included, so tiny requests cannot spin the
+ *  serving node's database for free. ⚠ NOT GROUNDED — local policy. */
+#define NODUS_STFETCH_COST_MIN       4096u
+
+typedef struct {
+    bool     used;
+    uint8_t  fp[64];
+    uint64_t epoch;          /* the H the counter belongs to             */
+    uint64_t bytes;
+} nodus_stfetch_budget_t;
+
+/** Whether `fp`'s budget for epoch `H` is spent (read-only: no slot is
+ *  taken). */
+bool nodus_stfetch_budget_spent(const nodus_stfetch_budget_t *slots,
+                                size_t n, const uint8_t fp[64], uint64_t H);
+
+/** Charge `cost` bytes to `fp` in epoch `H` (a slot of another epoch is
+ *  reset; a new requester takes a free slot, or one of an older epoch).
+ *  @return 0 charged / 1 refused (already spent, or no slot). */
+int nodus_stfetch_budget_take(nodus_stfetch_budget_t *slots, size_t n,
+                              const uint8_t fp[64], uint64_t H,
+                              uint64_t cost);
+
 /* ── the serving side ───────────────────────────────────────────────── */
 
 /**

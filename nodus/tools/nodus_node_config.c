@@ -387,6 +387,27 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg,
         cfg->witness.retain_blocks = rb;
     }
 
+    /* Storage reward package B2b-2 — the archive segment directory under
+     * the witness data path (nodus_witness.h nodus_witness_config_t
+     * segment_dir; nodus_witness_storage_holder.h). Optional; default
+     * NODUS_SEG_DIR_DEFAULT. One plain path component: anything that
+     * could leave the data directory refuses the start. */
+    if (json_object_object_get_ex(root, "segment_dir", &val)) {
+        const char *sd = json_object_is_type(val, json_type_string)
+                             ? json_object_get_string(val) : NULL;
+        if (!sd || !sd[0] || strchr(sd, '/') || strcmp(sd, ".") == 0 ||
+            strcmp(sd, "..") == 0 ||
+            strlen(sd) >= sizeof(cfg->witness.segment_dir)) {
+            QGP_LOG_ERROR(LOG_TAG_CFG, "segment_dir must be one directory "
+                          "name under the data directory (no '/', not "
+                          "\".\" or \"..\", under %zu bytes)",
+                          sizeof(cfg->witness.segment_dir));
+            json_object_put(root);
+            return -1;
+        }
+        memcpy(cfg->witness.segment_dir, sd, strlen(sd) + 1);
+    }
+
     /* Component split S3 (nodus_server.h witness_external). Default
      * false = the in-process witness; a non-boolean value refuses the
      * start, like addr_history_index. nodus-witness requires it to be

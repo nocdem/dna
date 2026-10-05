@@ -20,6 +20,7 @@
 #include "witness/nodus_witness_v2_join.h"
 #include "witness/nodus_witness_v2_sync2.h"
 #include "witness/nodus_witness_storage_reporter.h"  /* channel 0x72 */
+#include "witness/nodus_witness_storage_holder.h"    /* channel 0x73 */
 #include "protocol/nodus_tier3.h"
 #include "crypto/nodus_sign.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -948,6 +949,7 @@ typedef struct {
 #define NODUS_P2P_STOP_DECODE_0X70  420   /* peer.go:418-429               */
 #define NODUS_P2P_STOP_DECODE_0X71  421
 #define NODUS_P2P_STOP_DECODE_0X72  422
+#define NODUS_P2P_STOP_DECODE_0X73  423
 #define NODUS_P2P_STOP_BSYNC_BASE   430   /* + cmt_bsync_stop_reason_t     */
 
 struct nodus_witness_p2p {
@@ -978,6 +980,7 @@ struct nodus_witness_p2p {
     cmt_p2p_ch_desc_t           gb_desc[1];
     cmt_p2p_ch_desc_t           cc_desc[1];
     cmt_p2p_ch_desc_t           sp_desc[1];      /* 0x72 archive probe */
+    cmt_p2p_ch_desc_t           sf_desc[1];      /* 0x73 segment fetch */
 
     /* the worker */
     pthread_mutex_t             mu;
@@ -2755,6 +2758,35 @@ static void sp_receive(void *ctx, cmt_p2p_peer_t *src, uint8_t ch_id,
     }
 }
 
+/* 0x73 — the segment fetch (package B2b-2; nodus_witness_storage_
+ * holder.h). No reference counterpart (R-P2P-5). As 0x72: the sender's
+ * identity handed on is the FULL SHA3-512 of its authenticated key — the
+ * serving side admits only a registered ACTIVE storage member, keyed by
+ * that 64-byte node_fp. A message that does not decode stops the peer. */
+static const cmt_p2p_ch_desc_t *sf_channels(void *ctx, int *n)
+{
+    *n = 1;
+    return ((nodus_witness_p2p_t *)ctx)->sf_desc;
+}
+
+static void sf_receive(void *ctx, cmt_p2p_peer_t *src, uint8_t ch_id,
+                       const uint8_t *msg, size_t len)
+{
+    nodus_witness_p2p_t *p = (nodus_witness_p2p_t *)ctx;
+    uint8_t fp[QGP_SHA3_512_DIGEST_LENGTH];
+
+    (void)ch_id;
+    if (p->w == NULL || !peer_fp(src, fp)) {
+        return;
+    }
+    if (nodus_witness_sthold_on_msg(p->w, cmt_p2p_peer_id(src), fp, msg,
+                                    len) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "undecodable 0x73 message from %s",
+                     cmt_p2p_peer_id(src));
+        cmt_p2p_switch_stop_peer_for_error(&p->sw, src, NODUS_P2P_STOP_DECODE_0X73);
+    }
+}
+
 /* ── the lane's host rows (cmt_conr_host_t, cmt_memr_host_t) ────────── */
 
 /* peer.go:258-268 Send / TrySend (R-P2P-19: Send ≡ TrySend). */
@@ -3263,6 +3295,14 @@ static void fill_descs(nodus_witness_p2p_t *p)
     p->sp_desc[0].send_queue_capacity = NODUS_P2P_STPROBE_SEND_QUEUE;
     p->sp_desc[0].recv_buffer_capacity = 0;
     p->sp_desc[0].recv_message_capacity = (int)NODUS_STPROBE_MSG_MAX;
+    /* 0x73 — the segment fetch (nodus_witness_p2p.h; ⚠ NOT GROUNDED, the
+     * byte awaits the operator's approval). Its largest message is an
+     * answer carrying a terminal commit (NODUS_STFETCH_MSG_MAX). */
+    p->sf_desc[0].id = NODUS_P2P_CH_STFETCH;
+    p->sf_desc[0].priority = NODUS_P2P_STFETCH_PRIORITY;
+    p->sf_desc[0].send_queue_capacity = NODUS_P2P_STFETCH_SEND_QUEUE;
+    p->sf_desc[0].recv_buffer_capacity = 0;
+    p->sf_desc[0].recv_message_capacity = (int)NODUS_STFETCH_MSG_MAX;
 }
 
 static int add_reactor(nodus_witness_p2p_t *p, const char *name,
@@ -3405,6 +3445,7 @@ nodus_witness_p2p_t *nodus_witness_p2p_new(struct nodus_witness *w,
     chans[n_chans++] = NODUS_P2P_CH_GBUNDLE;
     chans[n_chans++] = NODUS_P2P_CH_CC_APPR;
     chans[n_chans++] = NODUS_P2P_CH_STPROBE;
+    chans[n_chans++] = NODUS_P2P_CH_STFETCH;
     if (p->cfg.pex) {
         chans[n_chans++] = CMT_P2P_PEX_CHANNEL;
     }
@@ -3501,7 +3542,9 @@ nodus_witness_p2p_t *nodus_witness_p2p_new(struct nodus_witness *w,
         add_reactor(p, "CCAPPR", cc_channels, noop_peer, noop_peer, noop_remove,
                     cc_receive) != CMT_OK ||
         add_reactor(p, "STPROBE", sp_channels, noop_peer, noop_peer, noop_remove,
-                    sp_receive) != CMT_OK) {
+                    sp_receive) != CMT_OK ||
+        add_reactor(p, "STFETCH", sf_channels, noop_peer, noop_peer, noop_remove,
+                    sf_receive) != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "reactor registration failed");
         goto fail;
     }

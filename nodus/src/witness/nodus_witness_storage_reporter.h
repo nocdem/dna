@@ -61,8 +61,10 @@
  * epoch_start a boundary, deadline not passed by this node's wall clock),
  * storage_set(H) known here with the request's S(H), this node a member
  * with B > 0, and the requester seated in snapshot(H) — then the three
- * samples from its own block store (header(h+1) meta, the part and its
- * proof). Any refusal is answered with its code.
+ * samples, each from its own block store (header(h+1) meta, the part and
+ * its proof) while the store still has that block, else from its held
+ * segment file (package B2b-2, nodus_seg_probe_sample — the same bytes).
+ * Any refusal is answered with its code.
  *
  * ── DETERMINISM ───────────────────────────────────────────────────────
  * Nothing here writes state. Clocks (wall: the deadline; monotonic: the
@@ -100,8 +102,11 @@ extern "C" {
  * The serving side's whole decision for one decoded request from the
  * peer whose authenticated node key hashes to `sender_fp`: the checks in
  * the header's order (the rate limit is the caller's), then the answer
- * read from `store`. `out` / `cap` receive the OK answer (cap >=
- * NODUS_STPROBE_MSG_MAX); a refusal writes nothing. `E` the epoch length.
+ * read from `store` (may be NULL); a sample the store does not hold is
+ * read from the held segment file under the witness data path
+ * (nodus_witness_sthold_dir; package B2b-2). `out` / `cap` receive the OK
+ * answer (cap >= NODUS_STPROBE_MSG_MAX); a refusal sets no length. `E`
+ * the epoch length.
  * Exported for the unit tests; the runtime calls it with the live store.
  * @return NODUS_STPROBE_OK (*len_out set) or the refusal code.
  */

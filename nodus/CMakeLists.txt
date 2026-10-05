@@ -660,6 +660,7 @@ if(NOT WIN32)
         # §7 D4).
         src/witness/nodus_witness_storage_segment.c
         src/witness/nodus_witness_storage_fetch.c
+        src/witness/nodus_witness_storage_holder.c
     )
 
     # ── Phase-C C1 (2026-07-21): shielded-pool ZK verify stack ─────────

@@ -9,6 +9,7 @@
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_p2p.h"      /* the 4004 p2p host (P2P-PORT F5) */
 #include "witness/nodus_witness_storage_reporter.h" /* archive probe (B2b-1) */
+#include "witness/nodus_witness_storage_holder.h"   /* segment files (B2b-2) */
 #include "witness/nodus_witness_handlers.h"
 #include "witness/nodus_witness_v2_pools.h"  /* S7 startup check      */
 #include "witness/nodus_witness_v2_gate.h"      /* O15B activation gate  */
@@ -2886,6 +2887,12 @@ void nodus_witness_tick(nodus_witness_t *witness) {
          * NODUS_STPROBE_TICK_MS inside. Off-chain — it reaches state only
          * through this node's own signed STORAGE_REPORT. */
         nodus_witness_stprobe_tick(witness);
+        /* The archive holder (storage reward package B2b-2): export /
+         * fetch / delete this node's segment files. A no-op until the
+         * lane is live and caught up; rate-limited and bounded per pass
+         * inside (NODUS_STHOLD_TICK_MS, _EXPORT_HEIGHTS). Node-local — it
+         * never writes the database. */
+        nodus_witness_sthold_tick(witness);
     } else {
         /* O15E Faz D — pinned-genesis joiner: pull the genesis bundle
          * while a fresh node has a pin but no successor chain yet.
@@ -2966,6 +2973,9 @@ void nodus_witness_close(nodus_witness_t *witness) {
     /* The archive probe's runtime holds no p2p or database handle — only
      * its own heap; freed before the host that delivered its messages. */
     nodus_witness_stprobe_free(witness);
+    /* The archive holder's runtime: its open segment build is closed
+     * (the partial file stays and is resumed at the next start). */
+    nodus_witness_sthold_free(witness);
 
     nodus_witness_p2p_free(witness->p2p);
     witness->p2p = NULL;

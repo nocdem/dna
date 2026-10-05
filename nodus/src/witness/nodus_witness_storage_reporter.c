@@ -15,6 +15,8 @@
 
 #include "witness/nodus_witness_storage_reporter.h"
 #include "witness/nodus_witness_storage_probe.h"
+#include "witness/nodus_witness_storage_segment.h" /* probe from a file  */
+#include "witness/nodus_witness_storage_holder.h"  /* the segment dir    */
 #include "witness/nodus_witness_v2_storage.h"
 #include "witness/nodus_witness_v2_epoch.h"     /* snapshot authority      */
 #include "witness/nodus_witness_v2_claims.h"    /* nodus_witness_v2_chain_id */
@@ -251,21 +253,37 @@ nodus_stprobe_code_t nodus_witness_stprobe_serve(
     if (rc == 1) { c = NODUS_STPROBE_REF_NOT_SEATED; goto done; }
     if (rc != 0) { c = NODUS_STPROBE_REF_FAULT; goto done; }
 
-    /* 5. the samples, from this node's block store */
+    /* 5. the samples: each from this node's block store while it still
+     *    has the block, else from its held segment file (package B2b-2 —
+     *    the store prunes from its base upward, a pruned block's meta or
+     *    part reads as not found, nodus_stprobe_sample_from_store's
+     *    NOT_HELD) */
     {
         uint8_t x[DNA_V2_STORAGE_SAMPLES][64];
         uint64_t h[DNA_V2_STORAGE_SAMPLES];
         uint8_t rq[64];
-        if (!store ||
+        char dir[NODUS_SEG_PATH_MAX];
+        const bool have_dir =
+            nodus_witness_sthold_dir(w, dir, sizeof(dir)) == 0;
+        const uint64_t B = (uint64_t)n * DNA_V2_SEGMENT_BLOCKS;
+        size_t off = 0;
+        if ((!store && !have_dir) ||
             nodus_stprobe_samples(req->nonce, me, ks, n, x, h) != 0 ||
-            nodus_stprobe_req_id(req, rq) != 0) {
+            nodus_stprobe_req_id(req, rq) != 0 ||
+            nodus_stprobe_answer_begin(rq, out, cap, &off) != 0) {
             c = NODUS_STPROBE_REF_FAULT;
             goto done;
         }
-        c = nodus_stprobe_answer_build(store, rq,
-                                       (const uint8_t (*)[64])x, h,
-                                       (uint64_t)n * DNA_V2_SEGMENT_BLOCKS,
-                                       out, cap, len_out);
+        for (uint32_t i = 0; i < DNA_V2_STORAGE_SAMPLES; i++) {
+            c = store ? nodus_stprobe_sample_from_store(store, x[i], B, h[i],
+                                                        out, cap, &off)
+                      : NODUS_STPROBE_REF_NOT_HELD;
+            if (c == NODUS_STPROBE_REF_NOT_HELD && have_dir)
+                c = nodus_seg_probe_sample(dir, x[i], B, h[i], out, cap,
+                                           &off);
+            if (c != NODUS_STPROBE_OK) goto done;
+        }
+        *len_out = off;
     }
 done:
     free(ks);

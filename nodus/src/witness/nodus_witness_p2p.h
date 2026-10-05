@@ -54,7 +54,7 @@
  *     the 32-byte version-3 chain id in hex (a joiner that has not adopted
  *     yet puts its genesis pin there — the same 32 bytes), P2P version 8,
  *     channels 0x40 (first, as node/node.go:948-954 lists
- *     BlocksyncChannel first), 0x20-0x23, 0x30, 0x70, 0x71, 0x72 and 0x00 when
+ *     BlocksyncChannel first), 0x20-0x23, 0x30, 0x70, 0x71, 0x72, 0x73 and 0x00 when
  *     PEX is on, a non-empty moniker, an IP-literal listen address. A peer
  *     of an older build does not list 0x40; nothing is ever sent to it on
  *     that channel (cmt_p2p_peer.c peer_has_channel, peer.go:309-325).
@@ -73,11 +73,13 @@
  *   · the REACTORS: PEX (0x00), the consensus reactor cmt_conr
  *     (0x20-0x23), the mempool reactor cmt_memr (0x30), the block sync
  *     reactor cmt_bsync (0x40; decision 2026-09-29-blocksync-before-
- *     testnet.md), and three nodus reactors — 0x70 the genesis bundle (the
+ *     testnet.md), and four nodus reactors — 0x70 the genesis bundle (the
  *     former tier-3 verbs 24/25), 0x71 the governance approval (the
- *     former verbs 40/41) and 0x72 the archive probe (storage reward
- *     package B2b-1, nodus_witness_storage_reporter.h; the byte awaits
- *     operator approval). Registration order is CONSENSUS, MEMPOOL,
+ *     former verbs 40/41), 0x72 the archive probe (storage reward
+ *     package B2b-1, nodus_witness_storage_reporter.h; decision K6) and
+ *     0x73 the segment fetch (package B2b-2,
+ *     nodus_witness_storage_holder.h; the byte awaits operator
+ *     approval). Registration order is CONSENSUS, MEMPOOL,
  *     BLOCKSYNC: the consensus shim's InitPeer assigns the peer's index,
  *     so it must run first. The reference registers MEMPOOL, BLOCKSYNC,
  *     CONSENSUS (setup.go:432-435) but runs InitPeer / AddPeer by ranging
@@ -211,6 +213,24 @@ struct nodus_witness;
 /** 4 messages: a reporter sends at most NODUS_STPROBE_SENDS_PER_TICK
  *  requests per pass, a server one answer per request. ⚠ NOT GROUNDED. */
 #define NODUS_P2P_STPROBE_SEND_QUEUE   4
+
+/** Segment fetch — a storage holder fetches an archive segment it must
+ *  hold, one part per request (package B2b-2; design docs/plans/2026-10-
+ *  05-archive-reward-design.md rev 4 §3; message layout
+ *  nodus_witness_storage_fetch.h). ⚠ NOT IN THE OPERATOR-APPROVED
+ *  CHANNEL LIST (decision 2026-09-26-witness-port-session.md item 3 names
+ *  0x70 / 0x71; decision 2026-10-05-storage-reward-is-for-archive.md K6
+ *  adds 0x72): 0x73 is this package's choice, PENDING the operator's
+ *  approval of the byte. It collides with no reference channel (the same
+ *  list as 0x72). A peer of an older build does not list it and is never
+ *  sent to on it (cmt_p2p_peer.c peer_has_channel). */
+#define NODUS_P2P_CH_STFETCH  0x73
+/** 1, as the other nodus channels: an answer (≤ ~610 KB) must never
+ *  starve votes. */
+#define NODUS_P2P_STFETCH_PRIORITY     1
+/** 4 messages: a fetching node keeps ONE request outstanding, a server
+ *  one answer per request. ⚠ NOT GROUNDED. */
+#define NODUS_P2P_STFETCH_SEND_QUEUE   4
 
 /* ══ config (reference config.go:562-639 names; nodus.json keys) ══════ */
 
