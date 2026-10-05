@@ -117,6 +117,38 @@
 //     plaintext: Uint8Array; rejects when the record does not authenticate.
 //   core.lock()                synchronous; see LOCK above
 //
+// GROUPS (packages G2 + G3; connect/nc_wasm.c "groups codec" and "groups
+// (package G3)", rules in connect/nc_group.h). Bytes are lowercase hex,
+// versions / days / millisecond times decimal strings, fingerprints 128 hex.
+// No member's, owner's or sender's key is ever passed from here: the module
+// takes them from the profiles it verified (profileGet / profileLoad).
+//   synchronous (no session key, never suspends):
+//     core.groupRandom() -> { group_id, group_key, addr_secret }
+//     core.groupSalt(gid, key, v) -> salt_v (hex)
+//     core.groupAcceptJson(gid, inviteId) / core.groupLeaveJson(gid) -> json
+//     core.groupJsonRead(text) -> { status: 'ok' | 'refused', type, … }
+//     core.groupRecordRead({ record, key, gid, v, digest, count, owner })
+//   local (the session's keys, no network):
+//     core.groupKpNew / groupKpRead / groupRecordNew / groupHeadNew /
+//     groupHeadRead / groupMsgNew / groupInvite / groupWelcome
+//   network (ONE gated step each; the writes read the own row first, in the
+//   same call — nc_wasm.c nc_group_put / nc_group_bucket_send):
+//     core.groupGet({ purpose, gid, secret, x, owner }) -> { outcome, why,
+//       foreign, data? }   purpose 'head' | 'packet' | 'record'
+//     core.groupPut({ purpose, gid, secret, x, value: Uint8Array }) ->
+//       { status: 'published' | 'unchanged' | 'wait' | 'stale' |
+//         'conflict' | 'taken' | 'failed', outcome, why, putRc }
+//     core.groupBucketSend({ gid, salt, v, day, items: [itemHex] }) ->
+//       { status: 'published' | 'unchanged' | 'wait' | 'refused' | 'full' |
+//         'failed', ids: [message_id] }   items: EVERY own item this device
+//       keeps for that bucket
+//     core.groupBucketFetch({ gid, salt, v, day, key }) -> { outcome, why,
+//       truncated, dropped, buckets: [{ owner, status, sender?, messages:
+//       [{ messageId, timestampMs, status, text? }] }] }
+//   Large inputs (a packet, a bucket's items) cross through the module's
+//   heap input buffer (nc_group_in_alloc), filled and consumed in ONE queue
+//   slot.
+//
 // Queue slots (design §6.4 F7): every async call is ONE bounded network
 // step in C (one GET, one GET_ALL or one PUT) — except the gated writes
 // profileUpdate, saltReconcile and contactsAdd: a read then at most one
@@ -173,6 +205,48 @@ function aadName(value, what) {
 function recordBytes(value, what, { exact } = {}) {
   if (!(value instanceof Uint8Array) || value.length === 0 || value.length > HISTORY_MAX_BYTES || (exact !== undefined && value.length !== exact)) throw new Error(`Invalid history ${what}.`);
   return bytesToHex(value);
+}
+
+// ── groups (G2 + G3) ───────────────────────────────────────────────────
+const GROUP_PURPOSE = { head: 1, packet: 2, record: 3 };
+const GROUP_IN_MAX = 1048576;              // connect/nc_wasm.c nc_group_in_alloc (NC_GROUP_BUCKET_MAX)
+const GROUP_JSON_MAX = 2048;               // connect/nc_group.h NC_GROUP_JSON_MAX
+const HEX = /^[0-9a-f]*$/;
+function hexN(value, n, what) {
+  if (typeof value !== 'string' || value.length !== n || !HEX.test(value)) throw new Error(`Invalid ${what}.`);
+  return value;
+}
+function hexAny(value, what) {
+  if (typeof value !== 'string' || value.length === 0 || value.length % 2 !== 0 || !HEX.test(value)) throw new Error(`Invalid ${what}.`);
+  return value;
+}
+// A decimal u32 (versions, days); `min` 1 for a version.
+function dec32(value, what, min = 0) {
+  const s = String(value);
+  if (!U64.test(s) || BigInt(s) < BigInt(min) || BigInt(s) > 4294967295n) throw new Error(`Invalid ${what}.`);
+  return s;
+}
+function dec64(value, what) {
+  const s = String(value);
+  if (!U64.test(s)) throw new Error(`Invalid ${what}.`);
+  return s;
+}
+function memberList(list) {
+  if (!Array.isArray(list) || list.length === 0 || list.length > 64) throw new Error('Invalid member list.');
+  return JSON.stringify(list.map(fp));
+}
+// Bytes into the module's heap input buffer; consumed by the next export
+// called in the same queue slot.
+function putIn(b, bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length === 0 || bytes.length > GROUP_IN_MAX) throw new Error('Invalid group data.');
+  const at = b.num('nc_group_in_alloc', ['number'], [bytes.length]);
+  if (!at) throw new Error('Out of memory.');
+  b.heap().set(bytes, at);
+}
+function purposeOf(name) {
+  const p = GROUP_PURPOSE[name];
+  if (!p) throw new Error('Invalid group address.');
+  return p;
 }
 
 export function createNodusConnectCore({ nodus } = {}) {
@@ -342,6 +416,106 @@ export function createNodusConnectCore({ nodus } = {}) {
       b.check(b.num('nc_hist_decrypt', ['string', 'string', 'string', 'string', 'string'],
         [aadName(store, 'store'), aadName(id, 'id'), recordBytes(nonce, 'nonce', { exact: 12 }), recordBytes(ct, 'record'), recordBytes(tag, 'tag', { exact: 16 })]));
       return { plaintext: hexToBytes(b.result().pt) };
+    }),
+    // ── groups: synchronous ──
+    groupRandom() { return sync(b => { b.check(b.num('nc_group_random')); return b.result(); }); },
+    groupSalt(gid, key, v) {
+      return sync(b => {
+        b.check(b.num('nc_group_salt', ['string', 'string', 'string'], [hexN(gid, 64, 'group id'), hexN(key, 64, 'group key'), dec32(v, 'key version', 1)]));
+        return b.result().salt;
+      });
+    },
+    groupAcceptJson(gid, inviteId) {
+      return sync(b => { b.check(b.num('nc_group_accept', ['string', 'string'], [hexN(gid, 64, 'group id'), hexN(inviteId, 32, 'invite')])); return b.result().json; });
+    },
+    groupLeaveJson(gid) { return sync(b => { b.check(b.num('nc_group_leave', ['string'], [hexN(gid, 64, 'group id')])); return b.result().json; }); },
+    // A text that is not a group message (too long, a NUL inside — the C
+    // string would end there) is answered 'refused' without the module.
+    groupJsonRead(text) {
+      if (typeof text !== 'string' || text.includes('\u0000') || new TextEncoder().encode(text).length > GROUP_JSON_MAX) return { status: 'refused' };
+      return sync(b => { b.check(b.num('nc_group_json_read', ['string'], [text])); return b.result(); });
+    },
+    groupRecordRead({ record, key, gid, v, digest, count, owner } = {}) {
+      return sync(b => {
+        b.check(b.num('nc_group_record_read', ['string', 'string', 'string', 'string', 'string', 'string', 'string'],
+          [hexAny(record, 'group record'), hexN(key, 64, 'group key'), hexN(gid, 64, 'group id'), dec32(v, 'key version', 1), hexN(digest, 128, 'record digest'), dec32(count, 'member count', 1), fp(owner)]));
+        return b.result();
+      });
+    },
+    // ── groups: local (session keys, no network) ──
+    groupKpNew: localOp(async (b, { gid, v, prev = '', rdigest, issued, key, members } = {}) => {
+      b.check(b.num('nc_group_kp_new', ['string', 'string', 'string', 'string', 'string', 'string', 'string'],
+        [hexN(gid, 64, 'group id'), dec32(v, 'key version', 1), prev === '' ? '' : hexN(prev, 128, 'digest'), hexN(rdigest, 128, 'record digest'), dec64(issued, 'time'), hexN(key, 64, 'group key'), memberList(members)]));
+      return b.result();
+    }),
+    groupKpRead: localOp(async (b, { packet, owner, gid, v, prev = '', pinned = '' } = {}) => {
+      b.check(b.num('nc_group_kp_read', ['string', 'string', 'string', 'string', 'string', 'string'],
+        [hexAny(packet, 'key packet'), fp(owner), hexN(gid, 64, 'group id'), dec32(v, 'key version', 1), prev === '' ? '' : hexN(prev, 128, 'digest'), pinned === '' ? '' : hexN(pinned, 128, 'digest')]));
+      return b.result();
+    }),
+    groupRecordNew: localOp(async (b, { gid, v, key, name, members, created } = {}) => {
+      if (typeof name !== 'string' || name.includes('\u0000') || new TextEncoder().encode(name).length > 64) throw new Error('A group name is at most 64 bytes.');
+      b.check(b.num('nc_group_record_new', ['string', 'string', 'string', 'string', 'string', 'string'],
+        [hexN(gid, 64, 'group id'), dec32(v, 'key version', 1), hexN(key, 64, 'group key'), name, memberList(members), dec64(created, 'time')]));
+      return b.result();
+    }),
+    groupHeadNew: localOp(async (b, { gid, v, digest, issued } = {}) => {
+      b.check(b.num('nc_group_head_new', ['string', 'string', 'string', 'string'], [hexN(gid, 64, 'group id'), dec32(v, 'key version', 1), hexN(digest, 128, 'digest'), dec64(issued, 'time')]));
+      return b.result();
+    }),
+    groupHeadRead: localOp(async (b, { head, owner, gid } = {}) => {
+      b.check(b.num('nc_group_head_read', ['string', 'string', 'string'], [hexAny(head, 'group head'), fp(owner), hexN(gid, 64, 'group id')]));
+      return b.result();
+    }),
+    groupMsgNew: localOp(async (b, { key, gid, v, ts, text } = {}) => {
+      if (typeof text !== 'string' || text.includes('\u0000')) throw new Error('Invalid message.');
+      b.check(b.num('nc_group_msg_new', ['string', 'string', 'string', 'string', 'string'], [hexN(key, 64, 'group key'), hexN(gid, 64, 'group id'), dec32(v, 'key version', 1), dec64(ts, 'time'), text]));
+      return b.result();
+    }),
+    groupInvite: localOp(async (b, gid, name) => {
+      if (typeof name !== 'string' || name.includes('\u0000')) throw new Error('Invalid group name.');
+      b.check(b.num('nc_group_invite', ['string', 'string'], [hexN(gid, 64, 'group id'), name]));
+      return b.result();
+    }),
+    groupWelcome: localOp(async (b, { gid, addr, v, digest, inviteId } = {}) => {
+      b.check(b.num('nc_group_welcome', ['string', 'string', 'string', 'string', 'string'],
+        [hexN(gid, 64, 'group id'), hexN(addr, 64, 'group address secret'), dec32(v, 'key version', 1), hexN(digest, 128, 'digest'), hexN(inviteId, 32, 'invite')]));
+      return b.result().json;
+    }),
+    // ── groups: network ──
+    groupGet: op(async (b, { purpose, gid, secret, x, owner } = {}) => {
+      b.check(await b.call('nc_group_get', ['number', 'string', 'string', 'string', 'string'],
+        [purposeOf(purpose), hexN(gid, 64, 'group id'), hexN(secret, 64, 'group secret'), dec64(x, 'group address'), fp(owner)]));
+      return b.result();
+    }),
+    groupPut: op(async (b, { purpose, gid, secret, x, value } = {}) => {
+      const args = [purposeOf(purpose), hexN(gid, 64, 'group id'), hexN(secret, 64, 'group secret'), dec64(x, 'group address')];
+      putIn(b, value);
+      b.check(await b.call('nc_group_put', ['number', 'string', 'string', 'string'], args));
+      const r = b.result();
+      return { status: r.status, outcome: r.outcome, why: r.why, foreign: r.foreign, putRc: r.put_rc };
+    }),
+    groupBucketSend: op(async (b, { gid, salt: saltV, v, day, items } = {}) => {
+      if (!Array.isArray(items) || items.length === 0 || items.length > 100) throw new Error('Invalid group message list.');
+      const args = [hexN(gid, 64, 'group id'), hexN(saltV, 64, 'group salt'), dec32(v, 'key version', 1), dec32(day, 'day')];
+      const parts = items.map(item => hexToBytes(hexAny(item, 'group message')));
+      const all = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+      let at = 0;
+      for (const p of parts) { all.set(p, at); at += p.length; }
+      putIn(b, all);
+      b.check(await b.call('nc_group_bucket_send', ['string', 'string', 'string', 'string'], args));
+      const r = b.result();
+      return { status: r.status, outcome: r.outcome, why: r.why, count: r.count, putRc: r.put_rc, ids: Array.isArray(r.ids) ? r.ids : [] };
+    }),
+    groupBucketFetch: op(async (b, { gid, salt: saltV, v, day, key } = {}) => {
+      b.check(await b.call('nc_group_bucket_fetch', ['string', 'string', 'string', 'string', 'string'],
+        [hexN(gid, 64, 'group id'), hexN(saltV, 64, 'group salt'), dec32(v, 'key version', 1), dec32(day, 'day'), hexN(key, 64, 'group key')]));
+      const r = b.result();
+      const buckets = (r.buckets || []).map(e => ({
+        owner: e.owner, status: e.status, sender: e.sender,
+        messages: (e.messages || []).map(m => ({ messageId: m.message_id, timestampMs: m.timestamp_ms, status: m.status, text: m.status === 'ok' && typeof m.text_hex === 'string' ? hexToText(m.text_hex) : undefined }))
+      }));
+      return { outcome: r.outcome, why: r.why, truncated: r.truncated === true, dropped: r.dropped, buckets };
     }),
     lock
   };
