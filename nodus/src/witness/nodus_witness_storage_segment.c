@@ -7,8 +7,8 @@
  *
  * Nothing here reads a clock, draws randomness or writes the database:
  * the ledger is READ (v2_blocks.block_id), the cmt state store is READ
- * (validators at k·17280, for the terminal commit's signatures), and the
- * only writes are this node's own files in its segment directory.
+ * (validators at k·17280, by the export only — the set record, K8a), and
+ * the only writes are this node's own files in its segment directory.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -40,7 +40,8 @@
 #define SEG_IO_CAP  ((size_t)NODUS_SEG_COMMIT_MAX)
 
 _Static_assert(NODUS_SEG_COMMIT_MAX >= NODUS_SEG_PART_PROTO_MAX &&
-               NODUS_SEG_COMMIT_MAX >= NODUS_SEG_HEADER_MAX + 16u,
+               NODUS_SEG_COMMIT_MAX >= NODUS_SEG_HEADER_MAX + 16u &&
+               NODUS_SEG_COMMIT_MAX >= NODUS_SEG_VALSET_MAX,
                "the I/O scratch holds every record piece");
 _Static_assert(sizeof(NODUS_SEG_FILE_TAG) - 1 <= NODUS_SEG_TAG_LEN &&
                sizeof(NODUS_SEG_INDEX_TAG) - 1 <= NODUS_SEG_TAG_LEN &&
@@ -147,8 +148,10 @@ const char *nodus_seg_v_str(nodus_seg_v_t v) {
         "header-hash", "header-height", "block-id", "part-total",
         "part-decode", "part-index", "proof-total", "part-basic", "proof",
         "commit-decode", "commit-height", "commit-block-id", "commit-hash",
-        "commit-valset", "commit-sigs", "io", "fault"
+        "commit-valset", "commit-sigs", "valset-decode", "io", "fault"
     };
+    _Static_assert(sizeof(names) / sizeof(names[0]) ==
+                   (size_t)NODUS_SEG_V_FAULT + 1u, "one name per code");
     if ((unsigned)v >= sizeof(names) / sizeof(names[0])) return "?";
     return names[v];
 }
@@ -254,10 +257,18 @@ struct nodus_seg_build {
     bool      have_term;                /* header(k·P+1) held             */
     cmt_pb_header_t *term;              /* header(k·P+1), decoded         */
 
-    bool      commit_done;
+    /* validators(k·P), verified against vals_hash (K8a) */
+    bool      vs_held;
+    uint8_t  *vs_proto;                 /* NODUS_SEG_VALSET_MAX           */
+    uint32_t  vs_len;
+    cmt_validator_t    *vs_storage;     /* CMT_VALSET_MAX                 */
+    cmt_validator_set_t vs;             /* decoded, over vs_storage       */
+
+    bool      commit_done;              /* commit + set records written   */
     uint64_t  commit_off;
     uint32_t  commit_len;
-    uint8_t   flags;
+    uint64_t  valset_off;
+    uint32_t  valset_len;
 
     uint8_t  *idx;                      /* NODUS_SEG_INDEX_LEN            */
     /* scratch */
@@ -279,6 +290,8 @@ static void build_close(nodus_seg_build_t *b) {
     free(b->part);
     free(b->hdec);
     free(b->term);
+    free(b->vs_storage);
+    free(b->vs_proto);
     free(b->idx);
     free(b);
 }
@@ -365,7 +378,10 @@ int nodus_seg_build_open(const char *dir, uint64_t k, sqlite3 *ledger,
     b->part = malloc(sizeof(*b->part));
     b->arena = malloc(CMT_BLOCK_PART_SIZE_BYTES);
     b->io = malloc(SEG_IO_CAP);
-    if (!b->idx || !b->hdec || !b->term || !b->part || !b->arena || !b->io)
+    b->vs_proto = malloc(NODUS_SEG_VALSET_MAX);
+    b->vs_storage = calloc(CMT_VALSET_MAX, sizeof(*b->vs_storage));
+    if (!b->idx || !b->hdec || !b->term || !b->part || !b->arena || !b->io ||
+        !b->vs_proto || !b->vs_storage)
         goto fail;
 
     b->fd = open(tmp, O_RDWR | O_CREAT, 0600);
@@ -477,13 +493,68 @@ static nodus_seg_v_t check_part_proto(nodus_seg_build_t *b, uint32_t i,
     return check_part_decoded(b, i);
 }
 
-/* The terminal commit; on OK *flags gets NODUS_SEG_FLAG_SIGS when the
- * signatures were verified. */
-static nodus_seg_v_t check_commit(nodus_seg_build_t *b, const uint8_t *cb,
-                                  size_t len, nodus_cmt_store_t *state,
-                                  uint8_t *flags) {
-    *flags = 0;
+/* validators(k·P) (K8a): decodes, ValidatorSetFromProto (ValidateBasic),
+ * and hashes to header(k·P).validators_hash. On OK the build holds the
+ * proto bytes and the decoded set; on anything else it holds no set. */
+static nodus_seg_v_t check_valset(nodus_seg_build_t *b, const uint8_t *vb,
+                                  size_t len) {
+    b->vs_held = false;
     if (!b->have_term) return NODUS_SEG_V_ORDER;
+    if (len == 0 || len > NODUS_SEG_VALSET_MAX) return NODUS_SEG_V_BOUNDS;
+
+    nodus_seg_v_t ret = NODUS_SEG_V_FAULT;
+    cmt_pb_validator_set_t *pb = calloc(1, sizeof(*pb));
+    cmt_pb_validator_t     *pbv = calloc(CMT_VALSET_MAX, sizeof(*pbv));
+    uint8_t                *scratch = NULL;
+    cmt_merkle_item_t      *items = NULL;
+    if (!pb || !pbv) goto done;
+    pb->validators = pbv;
+    pb->validators_cap = CMT_VALSET_MAX;
+    if (cmt_pb_validator_set_unmarshal(vb, len, pb) != CMT_OK) {
+        ret = NODUS_SEG_V_VALSET_DECODE;
+        goto done;
+    }
+    if (cmt_validator_set_init(&b->vs, b->vs_storage, CMT_VALSET_MAX)
+            != CMT_OK)
+        goto done;
+    int rc = cmt_validator_set_from_proto(pb, &b->vs);
+    if (rc == CMT_FAULT) goto done;
+    if (rc != CMT_OK || b->vs.validators_len == 0) {
+        ret = NODUS_SEG_V_VALSET_DECODE;
+        goto done;
+    }
+    {
+        uint8_t vh[CMT_TMHASH_SIZE];
+        const size_t n = b->vs.validators_len;
+        scratch = malloc(n * CMT_VALIDATOR_BYTES_MAX);
+        items = calloc(n, sizeof(*items));
+        if (!scratch || !items) goto done;
+        rc = cmt_validator_set_hash(&b->vs, scratch,
+                                    n * CMT_VALIDATOR_BYTES_MAX, items, n, vh);
+        if (rc == CMT_FAULT) goto done;
+        if (rc != CMT_OK || b->vals_hash_len != CMT_TMHASH_SIZE ||
+            memcmp(vh, b->vals_hash, CMT_TMHASH_SIZE) != 0) {
+            ret = NODUS_SEG_V_COMMIT_VALSET;
+            goto done;
+        }
+    }
+    memcpy(b->vs_proto, vb, len);
+    b->vs_len = (uint32_t)len;
+    b->vs_held = true;
+    ret = NODUS_SEG_V_OK;
+done:
+    free(items);
+    free(scratch);
+    free(pbv);
+    free(pb);
+    return ret;
+}
+
+/* The terminal commit, against the held set: the hash binding, then the
+ * signatures (always — K8a). */
+static nodus_seg_v_t check_commit(nodus_seg_build_t *b, const uint8_t *cb,
+                                  size_t len) {
+    if (!b->have_term || !b->vs_held) return NODUS_SEG_V_ORDER;
     if (len == 0 || len > NODUS_SEG_COMMIT_MAX) return NODUS_SEG_V_BOUNDS;
 
     nodus_seg_v_t ret = NODUS_SEG_V_FAULT;
@@ -491,9 +562,6 @@ static nodus_seg_v_t check_commit(nodus_seg_build_t *b, const uint8_t *cb,
     cmt_commit_t     *c = calloc(1, sizeof(*c));
     cmt_pb_commit_sig_t *pbs = calloc(CMT_VALSET_MAX, sizeof(*pbs));
     cmt_commit_sig_t    *sigs = calloc(CMT_VALSET_MAX, sizeof(*sigs));
-    cmt_validator_t     *vals = NULL;
-    uint8_t             *scratch = NULL;
-    cmt_merkle_item_t   *items = NULL;
     if (!pb || !c || !pbs || !sigs) goto done;
 
     pb->signatures = pbs;
@@ -531,57 +599,21 @@ static nodus_seg_v_t check_commit(nodus_seg_build_t *b, const uint8_t *cb,
         }
     }
 
-    /* the signatures, when this node still holds validators(k·P) */
-    if (state) {
-        cmt_validator_set_t vs;
-        vals = calloc(CMT_VALSET_MAX, sizeof(*vals));
-        if (!vals || cmt_validator_set_init(&vs, vals, CMT_VALSET_MAX)
-                         != CMT_OK)
-            goto done;
-        int rc = nodus_cmt_ss_load_validators(state, (int64_t)b->last, &vs);
-        if (rc == CMT_FAULT) goto done;
-        if (rc == CMT_OK) {
-            uint8_t vh[CMT_TMHASH_SIZE];
-            size_t n = vs.validators_len ? vs.validators_len : 1;
-            scratch = malloc(n * CMT_VALIDATOR_BYTES_MAX);
-            items = calloc(n, sizeof(*items));
-            if (!scratch || !items) goto done;
-            rc = cmt_validator_set_hash(&vs, scratch,
-                                        n * CMT_VALIDATOR_BYTES_MAX, items, n,
-                                        vh);
-            if (rc == CMT_FAULT) goto done;
-            if (rc != CMT_OK || b->vals_hash_len != CMT_TMHASH_SIZE ||
-                memcmp(vh, b->vals_hash, CMT_TMHASH_SIZE) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "segment %" PRIu64 ": this node's "
-                              "validators(%" PRIu64 ") do not hash to "
-                              "header(%" PRIu64 ").validators_hash", b->k,
-                              b->last, b->last);
-                ret = NODUS_SEG_V_COMMIT_VALSET;
-                goto done;
-            }
-            cmt_vs_error_t err;
-            memset(&err, 0, sizeof(err));
-            rc = cmt_verify_commit(b->term->chain_id, b->term->chain_id_len,
-                                   &vs, &b->term->last_block_id,
+    /* the signatures, against validators(k·P) verified above (K8a) */
+    {
+        cmt_vs_error_t err;
+        memset(&err, 0, sizeof(err));
+        int rc = cmt_verify_commit(b->term->chain_id, b->term->chain_id_len,
+                                   &b->vs, &b->term->last_block_id,
                                    (int64_t)b->last, c, &err);
-            if (rc == CMT_FAULT) goto done;
-            if (rc != CMT_OK) {
-                ret = NODUS_SEG_V_COMMIT_SIGS;
-                goto done;
-            }
-            *flags = NODUS_SEG_FLAG_SIGS;
+        if (rc == CMT_FAULT) goto done;
+        if (rc != CMT_OK) {
+            ret = NODUS_SEG_V_COMMIT_SIGS;
+            goto done;
         }
     }
-    if (!(*flags & NODUS_SEG_FLAG_SIGS))
-        QGP_LOG_WARN(LOG_TAG, "segment %" PRIu64 ": terminal commit bound "
-                     "by its hash only — validators(%" PRIu64 ") are not in "
-                     "this node's state store, signatures NOT verified",
-                     b->k, b->last);
     ret = NODUS_SEG_V_OK;
 done:
-    free(items);
-    free(scratch);
-    free(vals);
     free(sigs);
     free(pbs);
     free(c);
@@ -610,23 +642,77 @@ static void scan_cut(nodus_seg_build_t *b, uint64_t at, const char *why) {
     b->size = at;
     b->have_hdr = false;
     b->next_part = 0;
+    b->vs_held = false;
     b->scanning = false;
+}
+
+/* After the last height: the commit record and the set record, verified
+ * as one unit (they are written as one). @return 1 the scan is over / -1
+ * fault (the node, not the file). */
+static int resume_tail(nodus_seg_build_t *b) {
+    const uint64_t at = b->size;
+    struct stat st;
+    if (fstat(b->fd, &st) != 0) return -1;
+    if ((uint64_t)st.st_size <= at) {   /* nothing after the heights */
+        b->scanning = false;
+        return 1;
+    }
+    uint64_t off = at;
+    uint8_t pre[4];
+    int r = pread_all(b->fd, pre, 4, off);
+    if (r < 0) return -1;
+    const uint32_t clen = r == 0 ? get32(pre) : 0;
+    if (r > 0 || clen == 0 || clen > NODUS_SEG_COMMIT_MAX) {
+        scan_cut(b, at, "commit length");
+        return 1;
+    }
+    off += 4;
+    r = pread_all(b->fd, b->io, clen, off);
+    if (r < 0) return -1;
+    if (r > 0) { scan_cut(b, at, "short commit"); return 1; }
+    off += clen;
+    r = pread_all(b->fd, pre, 4, off);
+    if (r < 0) return -1;
+    const uint32_t vlen = r == 0 ? get32(pre) : 0;
+    if (r > 0 || vlen == 0 || vlen > NODUS_SEG_VALSET_MAX) {
+        scan_cut(b, at, "validator-set length");
+        return 1;
+    }
+    off += 4;
+    uint8_t *vb = malloc(vlen);
+    if (!vb) return -1;
+    r = pread_all(b->fd, vb, vlen, off);
+    if (r < 0) { free(vb); return -1; }
+    if (r > 0) { free(vb); scan_cut(b, at, "short validator set"); return 1; }
+    nodus_seg_v_t v = check_valset(b, vb, vlen);
+    free(vb);
+    if (v == NODUS_SEG_V_OK) v = check_commit(b, b->io, clen);
+    if (v == NODUS_SEG_V_FAULT) return -1;
+    if (v != NODUS_SEG_V_OK) {
+        scan_cut(b, at, nodus_seg_v_str(v));
+        return 1;
+    }
+    b->commit_off = at + 4u;
+    b->commit_len = clen;
+    b->valset_off = at + 4u + clen + 4u;
+    b->valset_len = vlen;
+    b->size = off + vlen;
+    b->commit_done = true;
+    if ((uint64_t)st.st_size > b->size) {
+        QGP_LOG_WARN(LOG_TAG, "segment %" PRIu64 ": %" PRIu64 " bytes after "
+                     "the validator-set record cut", b->k,
+                     (uint64_t)st.st_size - b->size);
+        if (ftruncate(b->fd, (off_t)b->size) != 0) return -1;
+    }
+    b->scanning = false;
+    return 1;
 }
 
 int nodus_seg_build_resume_step(nodus_seg_build_t *b, uint32_t max_heights) {
     if (!b) return -1;
     if (!b->scanning) return 1;
     for (uint32_t n = 0; n < max_heights; n++) {
-        if (b->h > b->last) {
-            /* the commit record (if any) is NOT resumed: it is checked
-             * against this node's state store, which the scan does not
-             * hold — cut and re-added by the source */
-            struct stat st;
-            if (fstat(b->fd, &st) == 0 && (uint64_t)st.st_size > b->size)
-                scan_cut(b, b->size, "terminal commit re-added");
-            b->scanning = false;
-            return 1;
-        }
+        if (b->h > b->last) return resume_tail(b);
         const uint64_t at = b->size;
         uint64_t off = at;
         uint8_t pre[12];
@@ -704,8 +790,10 @@ int nodus_seg_build_next(const nodus_seg_build_t *b, uint64_t *h_out,
         return 0;
     }
     if (!b->commit_done) {
+        /* the set first: the commit is verified against it (K8a) */
         *h_out = b->last;
-        *part_out = NODUS_SEG_PART_COMMIT;
+        *part_out = b->vs_held ? NODUS_SEG_PART_COMMIT
+                               : NODUS_SEG_PART_VALSET;
         *header_needed = !b->have_term;
         return 0;
     }
@@ -799,24 +887,44 @@ nodus_seg_v_t nodus_seg_build_put_part(nodus_seg_build_t *b, uint64_t h,
     return write_part(b, n);
 }
 
-nodus_seg_v_t nodus_seg_build_put_commit(nodus_seg_build_t *b,
-                                         const uint8_t *commit, size_t len,
-                                         nodus_cmt_store_t *state) {
-    if (!b || !commit) return NODUS_SEG_V_FAULT;
-    if (b->scanning || b->h != b->last + 1u || b->commit_done)
+nodus_seg_v_t nodus_seg_build_put_valset(nodus_seg_build_t *b,
+                                         const uint8_t *vs, size_t len) {
+    if (!b || !vs) return NODUS_SEG_V_FAULT;
+    if (b->scanning || b->h != b->last + 1u || b->vs_held || b->commit_done)
         return NODUS_SEG_V_ORDER;
-    uint8_t flags = 0;
-    nodus_seg_v_t v = check_commit(b, commit, len, state, &flags);
+    nodus_seg_v_t v = check_valset(b, vs, len);
+    if (v == NODUS_SEG_V_COMMIT_VALSET)
+        QGP_LOG_WARN(LOG_TAG, "segment %" PRIu64 ": a validator set that "
+                     "does not hash to header(%" PRIu64 ").validators_hash "
+                     "refused", b->k, b->last);
+    return v;
+}
+
+nodus_seg_v_t nodus_seg_build_put_commit(nodus_seg_build_t *b,
+                                         const uint8_t *commit, size_t len) {
+    if (!b || !commit) return NODUS_SEG_V_FAULT;
+    if (b->scanning || b->h != b->last + 1u || b->commit_done ||
+        !b->vs_held)
+        return NODUS_SEG_V_ORDER;
+    nodus_seg_v_t v = check_commit(b, commit, len);
     if (v != NODUS_SEG_V_OK) return v;
+    /* clen u32 ‖ commit ‖ vlen u32 ‖ set — one unit, the size advances
+     * only once all of it is written */
     uint8_t pre[4];
+    const uint64_t at = b->size;
     put32(pre, (uint32_t)len);
-    if (pwrite_all(b->fd, pre, 4, b->size) != 0 ||
-        pwrite_all(b->fd, commit, len, b->size + 4u) != 0)
+    if (pwrite_all(b->fd, pre, 4, at) != 0 ||
+        pwrite_all(b->fd, commit, len, at + 4u) != 0)
         return NODUS_SEG_V_IO;
-    b->commit_off = b->size + 4u;
+    put32(pre, b->vs_len);
+    if (pwrite_all(b->fd, pre, 4, at + 4u + len) != 0 ||
+        pwrite_all(b->fd, b->vs_proto, b->vs_len, at + 8u + len) != 0)
+        return NODUS_SEG_V_IO;
+    b->commit_off = at + 4u;
     b->commit_len = (uint32_t)len;
-    b->size += 4u + len;
-    b->flags = flags;
+    b->valset_off = at + 8u + len;
+    b->valset_len = b->vs_len;
+    b->size = at + 8u + len + b->vs_len;
     b->commit_done = true;
     return NODUS_SEG_V_OK;
 }
@@ -848,14 +956,17 @@ int nodus_seg_build_finish(nodus_seg_build_t *b) {
                                 NODUS_SEG_INDEX_ENTRY_LEN;
         put64(t, b->commit_off);
         put32(t + 8, b->commit_len);
-        put64(t + 12, b->size);
+        put64(t + 12, b->valset_off);
+        put32(t + 20, b->valset_len);
+        put64(t + 24, b->size);
     }
     uint8_t mark[NODUS_SEG_DONE_LEN];
     tag16(NODUS_SEG_DONE_TAG, mark);
     put64(mark + 16, b->k);
     put64(mark + 24, b->size);
     put64(mark + 32, (uint64_t)NODUS_SEG_INDEX_LEN);
-    mark[40] = b->flags;
+    /* commit_done means the set and the signatures verified (K8a) */
+    mark[40] = NODUS_SEG_FLAG_SIGS;
     if (qgp_sha3_512(x, NODUS_SEG_INDEX_LEN, mark + 41) != 0) return -1;
 
     if (ftruncate(b->fd, (off_t)b->size) != 0 || fsync(b->fd) != 0 ||
@@ -869,10 +980,9 @@ int nodus_seg_build_finish(nodus_seg_build_t *b) {
         return -1;
     }
     QGP_LOG_INFO(LOG_TAG, "segment %" PRIu64 " complete and published: %"
-                 PRIu64 " bytes, terminal commit %s", b->k, b->size,
-                 (b->flags & NODUS_SEG_FLAG_SIGS)
-                     ? "signatures verified"
-                     : "hash-bound only (signatures NOT verified)");
+                 PRIu64 " bytes, terminal commit signatures verified against "
+                 "validators(%" PRIu64 ") (%" PRIu32 "-byte set record)",
+                 b->k, b->size, b->last, b->valset_len);
     build_close(b);
     return 0;
 }
@@ -947,6 +1057,23 @@ int nodus_seg_export_step(nodus_seg_build_t *b, nodus_cmt_store_t *store,
         }
     }
     if (b->h <= b->last) { ret = 0; goto done; }
+    if (!b->commit_done && !b->vs_held) {
+        /* validators(k·P) from the state table (K8a); a pruned state store
+         * cannot finish the export — the holder fetches the set */
+        size_t vl = 0;
+        int r = nodus_seg_valset_from_store(store, b->last, b->io, SEG_IO_CAP,
+                                            &vl);
+        if (r < 0) goto done;
+        if (r > 0) {
+            QGP_LOG_WARN(LOG_TAG, "segment %" PRIu64 ": validators(%" PRIu64
+                         ") not in this node's state store — the export "
+                         "cannot verify the terminal commit, the set is "
+                         "fetched", b->k, b->last);
+            goto done;
+        }
+        v = nodus_seg_build_put_valset(b, b->io, vl);
+        if (v != NODUS_SEG_V_OK) goto done;
+    }
     if (!b->commit_done) {
         const uint8_t *val = NULL;
         size_t vl = 0;
@@ -959,13 +1086,13 @@ int nodus_seg_export_step(nodus_seg_build_t *b, nodus_cmt_store_t *store,
             goto done;
         }
         /* `val` points into the store's block-table copy buffer, valid
-         * until the next block-table get; the signature check reads the
-         * STATE table (its own buffer). Copied into the build's scratch
+         * until the next block-table get. Copied into the build's scratch
          * all the same, so no store call can ever move it (put_commit
-         * does not use the scratch). */
+         * does not use the scratch; the set is already held in the
+         * build's own buffer). */
         if (vl > SEG_IO_CAP) { v = NODUS_SEG_V_BOUNDS; goto done; }
         memcpy(b->io, val, vl);
-        v = nodus_seg_build_put_commit(b, b->io, vl, store);
+        v = nodus_seg_build_put_commit(b, b->io, vl);
         if (v != NODUS_SEG_V_OK) goto done;
     }
     ret = 1;
@@ -1036,6 +1163,8 @@ struct nodus_seg_reader {
     uint8_t  flags;
     uint64_t commit_off;
     uint32_t commit_len;
+    uint64_t valset_off;
+    uint32_t valset_len;
     uint8_t *idx;                        /* the whole index               */
 };
 
@@ -1070,7 +1199,7 @@ int nodus_seg_reader_open(const char *dir, uint64_t k,
         memcmp(mark, want_tag, NODUS_SEG_TAG_LEN) != 0 ||
         get64(mark + 16) != k ||
         get64(mark + 32) != (uint64_t)NODUS_SEG_INDEX_LEN ||
-        (mark[40] & (uint8_t)~NODUS_SEG_FLAG_SIGS) != 0)
+        mark[40] != NODUS_SEG_FLAG_SIGS)       /* K8a: always verified */
         return 1;
 
     nodus_seg_reader_t *r = calloc(1, sizeof(*r));
@@ -1109,13 +1238,18 @@ int nodus_seg_reader_open(const char *dir, uint64_t k,
                                           NODUS_SEG_INDEX_ENTRY_LEN;
         if (memcmp(r->idx, want_tag, NODUS_SEG_TAG_LEN) != 0 ||
             get64(r->idx + 16) != k || get32(r->idx + 24) != NODUS_SEG_COUNT ||
-            get64(t + 12) != r->data_size)
+            get64(t + 24) != r->data_size)
             goto bad;
         r->commit_off = get64(t);
         r->commit_len = get32(t + 8);
+        r->valset_off = get64(t + 12);
+        r->valset_len = get32(t + 20);
+        /* the commit record then the set record end the data file */
         if (r->commit_len == 0 || r->commit_len > NODUS_SEG_COMMIT_MAX ||
-            r->commit_off > r->data_size ||
-            r->data_size - r->commit_off != r->commit_len)
+            r->valset_len == 0 || r->valset_len > NODUS_SEG_VALSET_MAX ||
+            r->commit_off > r->data_size || r->valset_off > r->data_size ||
+            r->commit_off + r->commit_len + 4u != r->valset_off ||
+            r->data_size - r->valset_off != r->valset_len)
             goto bad;
     }
     r->fd = open(datp, O_RDONLY);
@@ -1197,6 +1331,19 @@ int nodus_seg_reader_commit(nodus_seg_reader_t *r, uint8_t *out, size_t cap,
     return 0;
 }
 
+int nodus_seg_reader_valset(nodus_seg_reader_t *r, uint8_t *out, size_t cap,
+                            size_t *len) {
+    if (!r || !out || !len || cap < r->valset_len) return -1;
+    uint8_t pre[4];
+    /* the record's own prefix must agree with the index */
+    if (pread_all(r->fd, pre, 4, r->valset_off - 4u) != 0 ||
+        get32(pre) != r->valset_len ||
+        pread_all(r->fd, out, r->valset_len, r->valset_off) != 0)
+        return -1;
+    *len = r->valset_len;
+    return 0;
+}
+
 /* ══════════════════════════════════════════════════════════════════════
  * Helpers
  * ════════════════════════════════════════════════════════════════════ */
@@ -1228,6 +1375,40 @@ int nodus_seg_part_split(const uint8_t *proto, size_t len,
 done:
     free(ab);
     free(pt);
+    return ret;
+}
+
+int nodus_seg_valset_from_store(nodus_cmt_store_t *store, uint64_t height,
+                                uint8_t *out, size_t cap, size_t *len) {
+    if (!store || !out || !len || height == 0 ||
+        height > (uint64_t)INT64_MAX)
+        return -1;
+    int ret = -1;
+    cmt_validator_t        *vals = calloc(CMT_VALSET_MAX, sizeof(*vals));
+    cmt_pb_validator_t     *pbv = calloc(CMT_VALSET_MAX, sizeof(*pbv));
+    cmt_pb_validator_set_t *pb = calloc(1, sizeof(*pb));
+    cmt_validator_set_t vs;
+    if (!vals || !pbv || !pb ||
+        cmt_validator_set_init(&vs, vals, CMT_VALSET_MAX) != CMT_OK)
+        goto done;
+    /* LoadValidators (the port in nodus_witness_cmt_store.c): the set at
+     * `height`, also when its row is not a checkpoint */
+    int rc = nodus_cmt_ss_load_validators(store, (int64_t)height, &vs);
+    if (rc == CMT_FAULT) goto done;
+    if (rc != CMT_OK) { ret = 1; goto done; }
+    pb->validators = pbv;
+    pb->validators_cap = CMT_VALSET_MAX;
+    size_t n = 0;
+    if (cmt_validator_set_to_proto(&vs, pb) != CMT_OK ||
+        cmt_pb_validator_set_marshal(pb, out, cap, &n) != CMT_OK ||
+        n == 0 || n > NODUS_SEG_VALSET_MAX)
+        goto done;
+    *len = n;
+    ret = 0;
+done:
+    free(pb);
+    free(pbv);
+    free(vals);
     return ret;
 }
 

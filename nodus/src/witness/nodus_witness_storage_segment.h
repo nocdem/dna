@@ -10,7 +10,9 @@
  *        longer has the blocks.
  *
  * Decisions: docs/plans/decisions/2026-10-05-storage-reward-is-for-
- * archive.md (reward = the block archive; R = 3; G = 1), 2026-10-05-
+ * archive.md (reward = the block archive; R = 3; G = 1; K8a: every file
+ * carries validators(k·P) and its terminal commit's signatures are always
+ * verified — replaces K8), 2026-10-05-
  * archive-reward-bytes-approved.md (bytes doc §6 chain, §7 file),
  * 2026-10-05-kurultay-7-archive-reward-summary.md (items 2, 4, 5: the
  * successor-header chain; segments are exported FILES and block-store
@@ -53,6 +55,16 @@
  *     then the TERMINAL COMMIT RECORD:
  *       clen u32 ‖ the commit of k·17280 as a cmt_pb_commit proto [clen]
  *       (block k·17280+1's LastCommit = the block store's C:k·17280).
+ *     then the VALIDATOR-SET RECORD (decision K8a, 2026-10-05):
+ *       vlen u32 ‖ validators(k·17280) as a cometbft ValidatorSet proto
+ *       (cmt_pb_validator_set) [vlen] — the set that signed the terminal
+ *       commit: the state store's LoadValidators(k·17280) (the set
+ *       reconstructed from its ValidatorsInfo rows, NOT the raw row)
+ *       through cmt_validator_set_to_proto, marshalled. vlen 1 …
+ *       NODUS_SEG_VALSET_MAX.
+ *     The commit record and the set record are written together, in one
+ *     step, after both verified (below) — a commit record never sits on
+ *     disk without its set.
  *     Each commit is stored once: the commits of the other heights travel
  *     inside the parts of their successor block (its LastCommit), never
  *     separately.
@@ -70,7 +82,11 @@
  *     "NDS.SEGINDEX.v1" padded to 16 ‖ k u64 ‖ count u32 (17280) ‖
  *     count × ( offset u64 ‖ n_parts u32 )  — offset of height record i
  *                                              in the data file ‖
- *     commit_off u64 ‖ commit_len u32 ‖ data_size u64
+ *     commit_off u64 ‖ commit_len u32 ‖ valset_off u64 ‖ valset_len u32 ‖
+ *     data_size u64
+ *     commit_off / valset_off are the offsets of the commit / set PROTO
+ *     (after their u32 length prefix): commit_off + commit_len + 4 ==
+ *     valset_off and valset_off + valset_len == data_size.
  *     One part is read without scanning the file: the entry gives the
  *     record, the record's own length prefixes give the part (at most
  *     n_parts four-byte reads).
@@ -79,7 +95,9 @@
  *     "NDS.SEGDONE.v1" padded to 16 ‖ k u64 ‖ data_size u64 ‖
  *     index_size u64 ‖ flags u8 ‖ SHA3-512(the index file bytes) [64]
  *     flags bit 0 (NODUS_SEG_FLAG_SIGS): the terminal commit's signatures
- *     were verified (below); every other bit 0.
+ *     were verified against the file's own validator-set record (below)
+ *     — ALWAYS 1 since K8a: a marker whose flags byte is not exactly 0x01
+ *     is not valid and the segment is not held. Every other bit 0.
  *
  * ── WHAT IS VERIFIED BEFORE ANY BYTE IS WRITTEN (bytes doc §6 chain, the
  *    0x72 reporter's checks, nodus_witness_storage_probe.h "THE CHECKS")
@@ -89,27 +107,28 @@
  *   part i of h: decodes; part.index == proof.index == i; proof.total ==
  *     the header's total; the reference's Part.ValidateBasic; and
  *     cmt_proof_verify against that part-set hash.
- *   the terminal commit: decodes (CommitFromProto, which ends in
- *     ValidateBasic); height == k·17280; block_id ==
+ *   the validator set (decision K8a — replaces K8), BEFORE the commit:
+ *     1 … NODUS_SEG_VALSET_MAX bytes; decodes (cmt_pb_validator_set);
+ *     ValidatorSetFromProto (cmt_validator_set_from_proto, which ends in
+ *     ValidateBasic: a non-empty set, every address matching its key, the
+ *     proposer a member); then its cmt_validator_set_hash must equal
+ *     header(k·17280).validators_hash — header(k·17280) is record
+ *     k·17280−1's successor header, authenticated against
+ *     v2_blocks[k·17280] above. Held in memory, not written yet.
+ *   the terminal commit: needs the verified set; decodes (CommitFromProto,
+ *     which ends in ValidateBasic); height == k·17280; block_id ==
  *     header(k·17280+1).last_block_id; cmt_commit_hash ==
- *     header(k·17280+1).last_commit_hash — the HASH BINDING; then the
- *     SIGNATURES (Kurultay #7 item 2: "plus signature verification against
- *     the historical validator set") when this node's state store still
- *     has validators(k·17280): its cmt_validator_set_hash must equal
- *     header(k·17280).validators_hash (header(k·17280) is record k·17280−1's
- *     successor header) and cmt_verify_commit must accept the commit.
- *   ⚠ LIMIT (recorded): a node whose state store has pruned
- *     validators(k·17280) (nodus_cmt_ss_prune_states runs with block
- *     pruning, nodus_witness_cmt_host.c) cannot verify the signatures —
- *     the function exists, the authenticated validator set does not. Such
- *     a file completes on the hash binding alone and its marker carries
- *     flags bit 0 = 0, logged. Commit.Hash covers the signatures only
- *     (Kurultay #7 item 2): the hash binding fixes every signature byte,
- *     and height / block_id are checked above, but the commit's `round`
- *     is bound by nothing but the signatures.
- *   COMPLETE = every height verified and written, the terminal commit
- *     verified and written; only then the index and the marker
- *     (bytes doc §7 "Completeness").
+ *     header(k·17280+1).last_commit_hash — the hash binding; then the
+ *     SIGNATURES, ALWAYS (Kurultay #7 item 2: "plus signature verification
+ *     against the historical validator set"): cmt_verify_commit against
+ *     the verified set, the chain id of header(k·17280+1), block_id
+ *     header(k·17280+1).last_block_id, height k·17280. The signatures bind
+ *     the commit's `round` (which Commit.Hash does not cover). A commit
+ *     that fails is not written; the held set stays (it is authentic).
+ *   COMPLETE = every height verified and written, the set and the
+ *     terminal commit verified and written (flags bit 0 = 1); only then
+ *     the index and the marker (bytes doc §7 "Completeness", K8a: "a file
+ *     without a verified set and signatures is not complete").
  *
  * ── ATOMIC PUBLISH ─────────────────────────────────────────────────────
  *   fsync(seg-<k>.dat.tmp); write + fsync seg-<k>.idx.tmp;
@@ -124,7 +143,12 @@
  *   start in bounded steps, verifying every record exactly as it was
  *   verified when written; the first short, torn or failing record and
  *   everything after it is cut off (ftruncate) and the build continues
- *   from that height. Nothing is trusted because it is on disk.
+ *   from that height. After the last height the commit record and the set
+ *   record are read and verified as ONE unit (the set first, then the
+ *   commit against it — neither depends on this node's state store): a
+ *   short, torn or failing byte in either cuts the file at the START of
+ *   the commit record and both are added again; bytes after a good pair
+ *   are cut off. Nothing is trusted because it is on disk.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -163,13 +187,16 @@ extern "C" {
 #define NODUS_SEG_DATA_HDR_LEN   (16u + 8u + 4u)
 /** One index entry: offset u64 ‖ n_parts u32. */
 #define NODUS_SEG_INDEX_ENTRY_LEN 12u
-/** tag ‖ k ‖ count ‖ entries ‖ commit_off ‖ commit_len ‖ data_size. */
+/** tag ‖ k ‖ count ‖ entries ‖ commit_off ‖ commit_len ‖ valset_off ‖
+ *  valset_len ‖ data_size. */
 #define NODUS_SEG_INDEX_LEN      (16u + 8u + 4u +                            \
                                   NODUS_SEG_COUNT * NODUS_SEG_INDEX_ENTRY_LEN \
-                                  + 8u + 4u + 8u)
+                                  + 8u + 4u + 8u + 4u + 8u)
 /** tag ‖ k ‖ data_size ‖ index_size ‖ flags ‖ SHA3-512(index). */
 #define NODUS_SEG_DONE_LEN       (16u + 8u + 8u + 8u + 1u + 64u)
-/** Marker flag: the terminal commit's signatures were verified. */
+/** Marker flag: the terminal commit's signatures were verified against
+ *  the file's validator-set record. Since K8a every complete file has it
+ *  and the marker's flags byte is exactly this value. */
 #define NODUS_SEG_FLAG_SIGS      0x01u
 
 /** The widest header(h+1) proto (the 0x72 bound). */
@@ -187,12 +214,33 @@ extern "C" {
                                   (int64_t)CMT_VALSET_MAX *                  \
                                   CMT_MAX_COMMIT_SIG_BYTES))
 
+/** The widest Validator message inside a ValidatorSet proto, framed
+ *  (cmt_pb.c validator_wr / validator_set_wr): address 1 + 1 + 32 = 34;
+ *  pub_key 1 + uvarint(2595) 2 + 2595 = 2598 (the PublicKey body is tag
+ *  0x4a + uvarint(2592) + the 2592-byte ML-DSA-87 key, cmt_validator_set.h
+ *  CMT_VALIDATOR_BYTES_MAX); voting_power and proposer_priority each tag
+ *  + a varint of at most 10 bytes = 11 — 2654; as field 1 or 2 of the set:
+ *  tag 1 + uvarint(2654) 2 + 2654 = 2657. */
+#define NODUS_SEG_VALIDATOR_PB_MAX 2657u
+/** The widest validator-set record (K8a): CMT_VALSET_MAX validators and
+ *  the proposer, each NODUS_SEG_VALIDATOR_PB_MAX, and total_voting_power
+ *  (tag + a 10-byte varint = 11; cmt_validator_set_to_proto zeroes it, a
+ *  peer may still send it) — 129 × 2657 + 11 = 342 764 bytes. At 7
+ *  validators an honest set is 8 × 2657 + 11 = 21 267 at most (the
+ *  ≈ 21 KB the decision measured on EU-6). */
+#define NODUS_SEG_VALSET_MAX     ((uint32_t)((CMT_VALSET_MAX + 1u) *          \
+                                  NODUS_SEG_VALIDATOR_PB_MAX + 11u))
+
 /** The segment directory's file name length bound. */
 #define NODUS_SEG_PATH_MAX       512u
 
-_Static_assert(NODUS_SEG_INDEX_LEN == 207408u, "index layout");
+_Static_assert(NODUS_SEG_INDEX_LEN == 207420u, "index layout");
 _Static_assert(NODUS_SEG_DONE_LEN == 105u, "marker layout");
 _Static_assert(NODUS_SEG_COMMIT_MAX == 599839u, "MaxCommitBytes(128)");
+_Static_assert(NODUS_SEG_VALSET_MAX == 342764u, "ValidatorSet bound (128)");
+_Static_assert(NODUS_SEG_COMMIT_MAX >= NODUS_SEG_VALSET_MAX,
+               "the commit bound covers the set record (I/O scratch, 0x73 "
+               "body bound)");
 
 /* ── what a piece's verification says ───────────────────────────────── */
 
@@ -215,9 +263,11 @@ typedef enum {
     NODUS_SEG_V_COMMIT_HEIGHT,  /* != k·17280                             */
     NODUS_SEG_V_COMMIT_BLOCK_ID,/* != header(k·P+1).last_block_id         */
     NODUS_SEG_V_COMMIT_HASH,    /* != header(k·P+1).last_commit_hash      */
-    NODUS_SEG_V_COMMIT_VALSET,  /* stored validators(k·P) do not hash to
+    NODUS_SEG_V_COMMIT_VALSET,  /* the validator set does not hash to
                                  * header(k·P).validators_hash            */
     NODUS_SEG_V_COMMIT_SIGS,    /* cmt_verify_commit refused              */
+    NODUS_SEG_V_VALSET_DECODE,  /* the set proto does not decode /
+                                 * ValidatorSetFromProto refused          */
     NODUS_SEG_V_IO,             /* the file could not be written / read   */
     NODUS_SEG_V_FAULT           /* allocation / hash backend / NULL       */
 } nodus_seg_v_t;
@@ -280,21 +330,25 @@ uint64_t nodus_seg_build_k(const nodus_seg_build_t *b);
 
 /**
  * One bounded step of the resume scan: verifies up to `max_heights`
- * height records of the existing .dat.tmp (and the commit record after
- * the last height), cutting the file at the first record that is short
- * or fails. @return 1 the scan is over (pieces may be added), 0 more to
+ * height records of the existing .dat.tmp (and the commit and set records
+ * after the last height, as one unit), cutting the file at the first
+ * record that is short or fails. @return 1 the scan is over (pieces may
+ * be added), 0 more to
  * scan, -1 fault (I/O, a ledger read fault). A build opened over no
  * temporary returns 1 at once.
  */
 int nodus_seg_build_resume_step(nodus_seg_build_t *b, uint32_t max_heights);
 
 /** What the build needs next. `*h_out` the height; `*part_out` the part
- *  index, or NODUS_SEG_PART_COMMIT for the terminal commit (then *h_out
- *  = k·17280); `*header_needed` true when header(h+1) is not yet held
- *  for that height (a part can only be added after its header).
+ *  index, or after the last height NODUS_SEG_PART_VALSET (the validator
+ *  set, first) and then NODUS_SEG_PART_COMMIT (the terminal commit) —
+ *  both with *h_out = k·17280; `*header_needed` true when header(h+1) is
+ *  not yet held for that height (a part can only be added after its
+ *  header).
  *  @return 0 something is needed / 1 the build is complete (call
  *  nodus_seg_build_finish) / -1 the resume scan is not over or NULL. */
 #define NODUS_SEG_PART_COMMIT    0xFFFFFFFFu
+#define NODUS_SEG_PART_VALSET    0xFFFFFFFEu
 int nodus_seg_build_next(const nodus_seg_build_t *b, uint64_t *h_out,
                          uint32_t *part_out, bool *header_needed);
 
@@ -324,14 +378,23 @@ nodus_seg_v_t nodus_seg_build_put_part(nodus_seg_build_t *b, uint64_t h,
                                        size_t proof_len);
 
 /**
- * Add the terminal commit (a cmt_pb_commit proto). `state` is this
- * node's cmt store for the signature check (header "WHAT IS VERIFIED");
- * NULL, or a store without validators(k·17280), completes on the hash
- * binding alone (flags bit 0 = 0, logged).
+ * Add validators(k·17280) as a cometbft ValidatorSet proto (K8a; header
+ * "WHAT IS VERIFIED"): accepted only after every height, verified against
+ * header(k·17280).validators_hash and HELD in the build — nothing is
+ * written until the commit verifies against it. A second set after one
+ * was accepted is V_ORDER.
+ */
+nodus_seg_v_t nodus_seg_build_put_valset(nodus_seg_build_t *b,
+                                         const uint8_t *vs, size_t len);
+
+/**
+ * Add the terminal commit (a cmt_pb_commit proto). Needs the verified
+ * set (V_ORDER before it); its signatures are ALWAYS verified against
+ * that set (header "WHAT IS VERIFIED"). On OK the commit record and the
+ * set record are written together.
  */
 nodus_seg_v_t nodus_seg_build_put_commit(nodus_seg_build_t *b,
-                                         const uint8_t *commit, size_t len,
-                                         nodus_cmt_store_t *state);
+                                         const uint8_t *commit, size_t len);
 
 /** Publish a complete build atomically (header "ATOMIC PUBLISH") and
  *  close it. On success the build is freed and the segment is held.
@@ -351,15 +414,19 @@ bool nodus_seg_store_has(const nodus_cmt_store_t *store, uint64_t k);
 /**
  * One bounded export step: up to `max_heights` heights of `b` read from
  * `store` — header(h+1) marshalled from the block meta of h+1, the parts
- * as the RAW stored P:h:i values — and, after the last height, the raw
- * C:k·P as the terminal commit (signatures checked against `store`'s
- * validators when it still has them). Every piece goes through the
- * build's verification before it is written.
+ * as the RAW stored P:h:i values — and, after the last height,
+ * validators(k·P) from `store`'s STATE table (nodus_seg_valset_from_store)
+ * and then the raw C:k·P as the terminal commit, its signatures checked
+ * against that set. Every piece goes through the build's verification
+ * before it is written. A store that no longer has validators(k·P)
+ * (pruned) cannot complete the export: -1 with *why_out NODUS_SEG_V_OK,
+ * logged — the holder fetches the rest (the set over 0x73,
+ * NODUS_SEG_PART_VALSET).
  * @return 1 the build is complete (nodus_seg_build_finish), 0 more to
  *         do, -1 a piece is missing or failed (*why_out, may be NULL;
- *         NODUS_SEG_V_OK for a store read fault) — the caller drops the
- *         export (a store that disagrees with v2_blocks is a node fault,
- *         logged).
+ *         NODUS_SEG_V_OK for a missing piece or a store read fault) — the
+ *         caller drops the export (a store that disagrees with v2_blocks
+ *         is a node fault, logged).
  */
 int nodus_seg_export_step(nodus_seg_build_t *b, nodus_cmt_store_t *store,
                           uint32_t max_heights, nodus_seg_v_t *why_out);
@@ -385,8 +452,11 @@ typedef struct nodus_seg_reader nodus_seg_reader_t;
 
 /**
  * Open the HELD segment k of `dir`: the marker parses, names k, matches
- * the .dat and .idx sizes, and SHA3-512 of the index equals the marker's;
- * the index names k, 17280 heights and the data size. *out is heap.
+ * the .dat and .idx sizes, its flags byte is exactly NODUS_SEG_FLAG_SIGS,
+ * and SHA3-512 of the index equals the marker's; the index names k, 17280
+ * heights and the data size, and its commit / set offsets and lengths are
+ * in bounds and tile the end of the data file (commit_off + commit_len +
+ * 4 == valset_off, valset_off + valset_len == data_size). *out is heap.
  * @return 0 held / 1 not held (no marker, or a marker that does not
  *         agree — the segment is treated as absent) / -1 fault.
  */
@@ -418,7 +488,20 @@ int nodus_seg_reader_get(nodus_seg_reader_t *r, uint64_t h,
 int nodus_seg_reader_commit(nodus_seg_reader_t *r, uint8_t *out, size_t cap,
                             size_t *len);
 
+/** The validator-set record's proto into `out` (cap >=
+ *  NODUS_SEG_VALSET_MAX). @return 0 / -1. */
+int nodus_seg_reader_valset(nodus_seg_reader_t *r, uint8_t *out, size_t cap,
+                            size_t *len);
+
 /* ── helpers shared with the wire ───────────────────────────────────── */
+
+/** validators(`height`) from `store`'s state table
+ *  (nodus_cmt_ss_load_validators — the set LoadValidators reconstructs)
+ *  through cmt_validator_set_to_proto, marshalled into `out` (cap >=
+ *  NODUS_SEG_VALSET_MAX) — the bytes of the K8a set record.
+ *  @return 0 (*len) / 1 the store does not have it (pruned) / -1 fault. */
+int nodus_seg_valset_from_store(nodus_cmt_store_t *store, uint64_t height,
+                                uint8_t *out, size_t cap, size_t *len);
 
 /** Split a stored part proto into the part bytes and its marshalled
  *  proof (the 0x72 / 0x73 wire form). `part_out` cap >=

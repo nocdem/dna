@@ -68,7 +68,7 @@ static bool req_valid(const nodus_stfetch_req_t *r) {
         return false;
     const uint64_t first = (r->k - 1u) * SF_P + 1u, last = r->k * SF_P;
     if (r->h < first || r->h > last) return false;
-    if (r->part == NODUS_SEG_PART_COMMIT) {
+    if (r->part == NODUS_SEG_PART_COMMIT || r->part == NODUS_SEG_PART_VALSET) {
         if (r->h != last) return false;
     } else if (r->part >= CMT_PART_SET_MAX_PARTS) {
         return false;
@@ -201,6 +201,9 @@ bool nodus_stfetch_ans_shape_ok(const nodus_stfetch_req_t *req,
         return false;
     if (req->part == NODUS_SEG_PART_COMMIT)
         return a->body_len > 0 && a->proof_len == 0;
+    if (req->part == NODUS_SEG_PART_VALSET)
+        return a->body_len > 0 && a->body_len <= NODUS_SEG_VALSET_MAX &&
+               a->proof_len == 0;
     return a->body_len <= CMT_BLOCK_PART_SIZE_BYTES && a->proof_len > 0;
 }
 
@@ -282,6 +285,49 @@ done:
     return ret;
 }
 
+/* The set piece from the STATE table (K8a): validators(k·P) when this node
+ * still has them — not gated on the block store's base, the state table
+ * is pruned on its own schedule — with header(k·P+1) from the block store
+ * when cont == 0. @return OK / NOT_HELD (anything missing) / FAULT. */
+static nodus_stfetch_code_t valset_from_store(nodus_cmt_store_t *s,
+                                              const nodus_stfetch_req_t *r,
+                                              uint8_t *out, size_t cap,
+                                              size_t *len_out) {
+    nodus_stfetch_code_t ret = NODUS_STFETCH_REF_FAULT;
+    nodus_cmt_block_meta_t *meta = NULL;
+    uint8_t *hbuf = NULL;
+    uint8_t *vb = malloc(NODUS_SEG_VALSET_MAX);
+    uint8_t rq[64];
+    size_t hl = 0, vl = 0;
+    if (!vb || nodus_stfetch_req_id(r, rq) != 0) goto done;
+    int rc = nodus_seg_valset_from_store(s, r->h, vb, NODUS_SEG_VALSET_MAX,
+                                         &vl);
+    if (rc < 0) goto done;
+    if (rc > 0) { ret = NODUS_STFETCH_REF_NOT_HELD; goto done; }
+    if (r->cont == NODUS_STFETCH_CONT_FIRST) {
+        bool found = false;
+        meta = malloc(sizeof(*meta));
+        hbuf = malloc(NODUS_SEG_HEADER_MAX);
+        if (!meta || !hbuf ||
+            nodus_cmt_bs_load_block_meta(s, (int64_t)(r->h + 1u), meta,
+                                         &found) != CMT_OK)
+            goto done;
+        if (!found) { ret = NODUS_STFETCH_REF_NOT_HELD; goto done; }
+        if (cmt_pb_header_marshal(&meta->header, hbuf, NODUS_SEG_HEADER_MAX,
+                                  &hl) != CMT_OK || hl == 0)
+            goto done;
+    }
+    if (nodus_stfetch_ans_encode(rq, hl ? hbuf : NULL, hl, vb, vl, NULL, 0,
+                                 out, cap, len_out) != 0)
+        goto done;
+    ret = NODUS_STFETCH_OK;
+done:
+    free(hbuf);
+    free(meta);
+    free(vb);
+    return ret;
+}
+
 /* From the held segment file. @return OK / NOT_HELD / FAULT. */
 static nodus_stfetch_code_t piece_from_file(const char *dir,
                                             const nodus_stfetch_req_t *r,
@@ -304,11 +350,15 @@ static nodus_stfetch_code_t piece_from_file(const char *dir,
         goto done;
     const bool want_hdr = r->cont == NODUS_STFETCH_CONT_FIRST;
 
-    if (r->part == NODUS_SEG_PART_COMMIT) {
+    if (r->part == NODUS_SEG_PART_COMMIT || r->part == NODUS_SEG_PART_VALSET) {
         if (nodus_seg_reader_get(rd, r->h, want_hdr ? hbuf : NULL, &hl, &n, 0,
-                                 NULL, NULL) != 0 ||
-            nodus_seg_reader_commit(rd, body, NODUS_STFETCH_BODY_MAX, &bl)
-                != 0)
+                                 NULL, NULL) != 0)
+            goto done;
+        if ((r->part == NODUS_SEG_PART_COMMIT
+                 ? nodus_seg_reader_commit(rd, body, NODUS_STFETCH_BODY_MAX,
+                                           &bl)
+                 : nodus_seg_reader_valset(rd, body, NODUS_STFETCH_BODY_MAX,
+                                           &bl)) != 0)
             goto done;
         if (nodus_stfetch_ans_encode(rq, want_hdr ? hbuf : NULL,
                                      want_hdr ? hl : 0, body, bl, NULL, 0,
@@ -345,7 +395,10 @@ nodus_stfetch_code_t nodus_stfetch_answer_build(
         return NODUS_STFETCH_REF_FAULT;
     *len_out = 0;
     nodus_stfetch_code_t c = NODUS_STFETCH_REF_NOT_HELD;
-    if (store) c = piece_from_store(store, req, out, cap, len_out);
+    if (store)
+        c = req->part == NODUS_SEG_PART_VALSET
+                ? valset_from_store(store, req, out, cap, len_out)
+                : piece_from_store(store, req, out, cap, len_out);
     if (c == NODUS_STFETCH_REF_NOT_HELD && seg_dir && seg_dir[0])
         c = piece_from_file(seg_dir, req, out, cap, len_out);
     if (c != NODUS_STFETCH_OK) *len_out = 0;

@@ -20,7 +20,10 @@
  * ⚠ PENDING OPERATOR APPROVAL — NEW WIRE. The channel byte 0x73, the
  * request and answer layouts, the codes and the bounds below are this
  * package's choices; no approved record names them (the approved list
- * names 0x70 / 0x71; K6 adds 0x72).
+ * names 0x70 / 0x71; K6 adds 0x72). The part selector 0xFFFFFFFE (the
+ * validator set, added for decision K8a) is part of this same pending
+ * wire: K8a approved that the file carries the set, not how 0x73 moves
+ * it.
  *
  * ── DETERMINISM (design rev 4 §7 D3, D4) ──────────────────────────────
  * Nothing here writes state or is read by the state machine. What a peer
@@ -38,7 +41,10 @@
  *     h     the height, (k−1)·17280 < h <= k·17280;
  *     part  the part index of block h (0-based), or 0xFFFFFFFF
  *           (NODUS_SEG_PART_COMMIT) = the segment's terminal commit,
- *           then h == k·17280;
+ *           then h == k·17280, or 0xFFFFFFFE (NODUS_SEG_PART_VALSET) =
+ *           validators(k·17280), the set that signed that commit
+ *           (decision K8a — ⚠ this selector is part of the same pending
+ *           wire), then h == k·17280;
  *     cont  the CONTINUATION flag: 0 = this is the first request of
  *           block h — send header(h+1) with the piece; 1 = the requester
  *           continues block h and already holds a verified header(h+1)
@@ -55,9 +61,12 @@
  *             kind ‖ rq ‖ code, NODUS_STFETCH_REFUSAL_LEN bytes);
  *     hdr   = header(h+1) proto, present (1 … 2048 bytes) iff cont == 0;
  *     body  = a part: the part bytes (0 … 65536); the commit: the
- *             commit proto of k·17280 (1 … NODUS_SEG_COMMIT_MAX);
- *     proof = a part: its Merkle proof proto (1 … 8192); the commit: none
- *             (proof_len 0).
+ *             commit proto of k·17280 (1 … NODUS_SEG_COMMIT_MAX); the
+ *             set: the cometbft ValidatorSet proto of validators(k·17280)
+ *             (1 … NODUS_SEG_VALSET_MAX = 342 764) — exactly the bytes of
+ *             the segment file's set record;
+ *     proof = a part: its Merkle proof proto (1 … 8192); the commit and
+ *             the set: none (proof_len 0).
  *   No trailing byte. The widest answer is NODUS_STFETCH_MSG_MAX
  *   (~610 KB, a commit at 128 validators), under the 5 MiB frame — the
  *   commit travels whole because its hash (the binding) is over the
@@ -65,10 +74,12 @@
  *
  * ── THE CLIENT'S CHECKS (per chunk, before it is written) ─────────────
  *   The answer must answer the ONE outstanding request (same rq, same
- *   peer). header(h+1), part and commit then go through the segment
+ *   peer). header(h+1), part, set and commit then go through the segment
  *   build's verification (nodus_witness_storage_segment.h "WHAT IS
  *   VERIFIED") — the bytes doc §6 chain against this node's own
- *   v2_blocks. A peer's bytes reach the disk only after that.
+ *   v2_blocks; the set against header(k·17280).validators_hash, the
+ *   commit's signatures against the set. A peer's bytes reach the disk
+ *   only after that.
  *
  * ── THE SERVING SIDE (nodus_witness_stfetch_serve) ────────────────────
  *   In order: the request decodes (else the peer is stopped, as on
@@ -81,7 +92,11 @@
  *   published (a v2_storage_segments row); the per-requester byte budget
  *   of the epoch is not spent (the holder runtime's table); then the
  *   piece is read from this node's block store when it still has the
- *   block, else from its held segment file, else NOT_HELD.
+ *   block, else from its held segment file, else NOT_HELD. The SET piece
+ *   is read from this node's STATE table (LoadValidators(k·17280), which
+ *   is pruned on its own schedule, not with the block store's base) —
+ *   with header(k·17280+1) from the block store when cont == 0 — else
+ *   from the held segment file.
  *   ONE BLOCK IN FLIGHT PER PEER: the server answers each request at
  *   once (nothing is queued per requester), and the client keeps at most
  *   one request outstanding (nodus_witness_storage_holder.h).
@@ -122,7 +137,7 @@ extern "C" {
 #define NODUS_STFETCH_CONT_FIRST     ((uint8_t)0)
 #define NODUS_STFETCH_CONT_HAVE_HDR  ((uint8_t)1)
 
-/** The widest body: the terminal commit (>= one part). */
+/** The widest body: the terminal commit (>= one part, >= the set). */
 #define NODUS_STFETCH_BODY_MAX       NODUS_SEG_COMMIT_MAX
 /** The widest ANSWER — the 0x73 channel's receive capacity. */
 #define NODUS_STFETCH_MSG_MAX        (NODUS_STFETCH_REFUSAL_LEN + 4u +       \
@@ -133,6 +148,8 @@ extern "C" {
 _Static_assert(NODUS_STFETCH_REQ_LEN == 37u, "request layout");
 _Static_assert(NODUS_STFETCH_BODY_MAX >= CMT_BLOCK_PART_SIZE_BYTES,
                "a part fits the body bound");
+_Static_assert(NODUS_STFETCH_BODY_MAX >= NODUS_SEG_VALSET_MAX,
+               "the validator set fits the body bound");
 _Static_assert(NODUS_STFETCH_MSG_MAX < 5u * 1024u * 1024u,
                "the answer must fit the 5 MiB frame bound");
 
@@ -165,7 +182,8 @@ int nodus_stfetch_req_encode(const nodus_stfetch_req_t *req,
 
 /** Decode a REQUEST message: exactly NODUS_STFETCH_REQ_MSG_LEN bytes,
  *  kind 0x01, the padded tag, k >= 1 with k·17280 + 1 inside int64, h in
- *  segment k, part == COMMIT only with h == k·17280, cont 0 or 1.
+ *  segment k, part == COMMIT or VALSET only with h == k·17280, cont 0 or
+ *  1.
  *  @return 0 / -1. */
 int nodus_stfetch_req_decode(const uint8_t *msg, size_t len,
                              nodus_stfetch_req_t *out);
@@ -189,7 +207,8 @@ int nodus_stfetch_ans_refusal(const uint8_t rq[64], uint8_t code,
                               uint8_t out[NODUS_STFETCH_REFUSAL_LEN]);
 
 /** An OK answer into `out` (cap >= NODUS_STFETCH_MSG_MAX always enough).
- *  `hdr` may be NULL with hdr_len 0; a commit has proof NULL / 0.
+ *  `hdr` may be NULL with hdr_len 0; a commit or a set has proof NULL /
+ *  0.
  *  @return 0 / -1 (a bound, does not fit). */
 int nodus_stfetch_ans_encode(const uint8_t rq[64],
                              const uint8_t *hdr, size_t hdr_len,
@@ -204,7 +223,8 @@ int nodus_stfetch_ans_decode(const uint8_t *msg, size_t len,
 
 /** Whether a decoded OK answer has the shape `req` asks for: header iff
  *  cont == 0; a part: body <= 65536 and a proof; the commit: a body and
- *  no proof. @return true / false. */
+ *  no proof; the set: a body of at most NODUS_SEG_VALSET_MAX and no
+ *  proof. @return true / false. */
 bool nodus_stfetch_ans_shape_ok(const nodus_stfetch_req_t *req,
                                 const nodus_stfetch_ans_view_t *a);
 
@@ -258,7 +278,9 @@ nodus_stfetch_code_t nodus_witness_stfetch_serve(
 
 /** The piece alone (no admission): from `store` when it has block h
  *  (and, for a part, header(h+1); for the commit, C:k·17280 and
- *  header(k·17280+1)), else from the held segment file in `seg_dir`.
+ *  header(k·17280+1)), for the set when its state table still has
+ *  validators(k·17280) (and header(k·17280+1) when cont == 0), else from
+ *  the held segment file in `seg_dir`.
  *  Exported for the unit tests. @return OK / NOT_HELD / FAULT. */
 nodus_stfetch_code_t nodus_stfetch_answer_build(
         nodus_cmt_store_t *store, const char *seg_dir,

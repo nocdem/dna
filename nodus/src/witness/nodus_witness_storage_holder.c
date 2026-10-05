@@ -503,11 +503,10 @@ static void take_answer(nodus_witness_t *w, struct nodus_sthold_rt *rt,
     if (a->hdr_len > 0)
         v = nodus_seg_build_put_header(rt->job, rt->req.h, a->hdr, a->hdr_len);
     if (v == NODUS_SEG_V_OK) {
-        if (rt->req.part == NODUS_SEG_PART_COMMIT) {
-            nodus_cmt_node_t *node = (nodus_cmt_node_t *)w->cmt_node;
-            v = nodus_seg_build_put_commit(
-                rt->job, a->body, a->body_len,
-                (node && node->store_ready) ? &node->store : NULL);
+        if (rt->req.part == NODUS_SEG_PART_VALSET) {
+            v = nodus_seg_build_put_valset(rt->job, a->body, a->body_len);
+        } else if (rt->req.part == NODUS_SEG_PART_COMMIT) {
+            v = nodus_seg_build_put_commit(rt->job, a->body, a->body_len);
         } else {
             v = nodus_seg_build_put_part(rt->job, rt->req.h, rt->req.part,
                                          a->body, a->body_len, a->proof,
@@ -515,10 +514,10 @@ static void take_answer(nodus_witness_t *w, struct nodus_sthold_rt *rt,
         }
     }
     if (v == NODUS_SEG_V_IO || v == NODUS_SEG_V_FAULT ||
-        v == NODUS_SEG_V_NO_LEDGER || v == NODUS_SEG_V_ORDER ||
-        v == NODUS_SEG_V_COMMIT_VALSET) {
-        /* this node, not the peer (its disk, its ledger, its own
-         * validator set): close — the partial file stays — and back off */
+        v == NODUS_SEG_V_NO_LEDGER || v == NODUS_SEG_V_ORDER) {
+        /* this node, not the peer (its disk, its ledger): close — the
+         * partial file stays — and back off. A validator set or commit
+         * that does not verify (K8a) is the PEER's: next peer, below. */
         QGP_LOG_ERROR(LOG_TAG, "segment %" PRIu64 ": %s while writing a "
                       "fetched piece — job closed, resumed later",
                       nodus_seg_build_k(rt->job), nodus_seg_v_str(v));

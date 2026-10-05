@@ -5942,7 +5942,9 @@ decoder's rules. Not covered: admission (descriptor, meter, units), the handler 
 ### Storage reward v1 rev 4, package B2b-2 — segment FILES and the 0x73 FETCH (2026-10-05, branch only — not versioned, not voted)
 
 Decisions `docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md` (R = 3, G = 1, K6 the 0x72
-framing this channel follows), `2026-10-05-archive-reward-bytes-approved.md` (bytes doc §6 chain, §7 file),
+framing this channel follows, K8a — replaces K8 — every file carries the validator set that signed its
+terminal commit and the signatures are always verified), `2026-10-05-archive-reward-bytes-approved.md`
+(bytes doc §6 chain, §7 file, §7 Clarifications K8a),
 `2026-10-05-kurultay-7-archive-reward-summary.md` (items 2, 4, 5, 7), `2026-10-03-block-pruning-7-paydays.md`
 (the 2026-10-05 rollout change: storage nodes prune only once this package is live). Design
 `docs/plans/2026-10-05-archive-reward-design.md` rev 4 §2 (handoff), §3. Code:
@@ -5957,35 +5959,49 @@ against the consensus-fixed `v2_blocks.block_id`. The block-store prune loop is 
 default `segments`; all integers big-endian; ⚠ node-local layout, bytes doc §7 says only WHAT is held):
 - `seg-<k>.dat` — `"NDS.SEGFILE.v1"` padded to 16 ‖ k u64 ‖ count u32 (17280); then per height h, in
   order, `h u64 ‖ hdr_len u32 ‖ header(h+1) proto ‖ n_parts u32 ‖ n_parts × (plen u32 ‖ the stored part
-  proto P:h:i)`; then `clen u32 ‖ the commit of k·17280` (block k·17280+1's LastCommit = C:k·17280). Each
-  commit is stored once (the others travel inside their successor block's parts).
+  proto P:h:i)`; then `clen u32 ‖ the commit of k·17280` (block k·17280+1's LastCommit = C:k·17280); then
+  (K8a) `vlen u32 ‖ validators(k·17280) as a cometbft ValidatorSet proto` — the set LoadValidators(k·17280)
+  reconstructs from the state store's ValidatorsInfo rows (not the raw row), through
+  `cmt_validator_set_to_proto`, marshalled; vlen 1 … `NODUS_SEG_VALSET_MAX` = 342 764 B = (128 + 1) ×
+  2657 + 11 (a framed Validator is at most address 34 + pub_key 2598 + power 11 + priority 11 + tag and
+  2-byte length; 128 members plus the proposer; total_voting_power 11); 7 validators ≤ 21 267 B. The
+  commit record and the set record are written together, after both verified. Each commit is stored once
+  (the others travel inside their successor block's parts).
   ⚠ DEVIATION from bytes §7: each height record also carries header(h+1), the SUCCESSOR header — the §6
   chain authenticates block h's parts only through it, the 0x72 answer sends it, and the terminal commit
   is checked against header(k·17280+1); a pruned store no longer has any of them. Each header stored once.
-- `seg-<k>.idx` (207 408 B) — `"NDS.SEGINDEX.v1"` ‖ k u64 ‖ count u32 ‖ 17280 × (offset u64 ‖ n_parts u32)
-  ‖ commit_off u64 ‖ commit_len u32 ‖ data_size u64. One part is read with the record's own length
-  prefixes, never a file scan.
+- `seg-<k>.idx` (207 420 B) — `"NDS.SEGINDEX.v1"` ‖ k u64 ‖ count u32 ‖ 17280 × (offset u64 ‖ n_parts u32)
+  ‖ commit_off u64 ‖ commit_len u32 ‖ valset_off u64 ‖ valset_len u32 ‖ data_size u64 (the offsets point
+  past each record's u32 prefix; commit_off + commit_len + 4 = valset_off, valset_off + valset_len =
+  data_size). One part is read with the record's own length prefixes, never a file scan. The tags stay
+  `v1` (the package is branch-only): a published file of the pre-K8a layout is not held — its index is
+  207 408 B and the marker check requires 207 420; a pre-K8a partial `.dat.tmp` resumes its heights and
+  has its commit record cut (no set record follows it).
 - `seg-<k>.ok` (105 B, the completeness marker) — `"NDS.SEGDONE.v1"` ‖ k u64 ‖ data_size u64 ‖ index_size
   u64 ‖ flags u8 ‖ SHA3-512(index). A segment is HELD iff the marker agrees with both files. Flags bit 0 =
-  the terminal commit's signatures were verified.
+  the terminal commit's signatures were verified against the file's set record — since K8a ALWAYS 1: a
+  marker whose flags byte is not exactly 0x01 is not valid (not held).
 
 **Verification before any byte is written** (bytes §6 chain): header(h+1) decodes, hashes to v2_blocks[h+1],
 height h+1, last_block_id.hash = v2_blocks[h], part total 1 … 1601 with a 64-byte root; part i: part.index =
-proof.index = i, proof.total = the total, Part.ValidateBasic, `cmt_proof_verify`; the terminal commit:
-CommitFromProto, height k·17280, block_id = header(k·17280+1).last_block_id, `cmt_commit_hash` =
-header(k·17280+1).last_commit_hash (the HASH BINDING), then — when this node's state store still has
-validators(k·17280) — their `cmt_validator_set_hash` = header(k·17280).validators_hash and
-`cmt_verify_commit` accepts it (flag bit 0 = 1). ⚠ LIMIT: `nodus_cmt_ss_prune_states` runs with block pruning,
-so a pruned node (or a fetch of an old segment) has no validators(k·17280): the file completes on the hash
-binding alone, flag 0, logged. Commit.Hash covers the signatures only — the binding fixes every signature
-byte (height and block_id are checked separately) but not `round`. Kurultay #7 item 2 asks for the
-signatures; this is a recorded deviation.
+proof.index = i, proof.total = the total, Part.ValidateBasic, `cmt_proof_verify`; then (K8a) the
+validator set, BEFORE the commit: 1 … 342 764 B, `cmt_pb_validator_set_unmarshal`,
+`cmt_validator_set_from_proto` (ValidateBasic: non-empty, every address matching its key, the proposer a
+member by address), `cmt_validator_set_hash` = header(k·17280).validators_hash (header(k·17280) is record
+k·17280−1's successor header, already authenticated against v2_blocks[k·17280]) — held, not written; then
+the terminal commit: CommitFromProto, height k·17280, block_id = header(k·17280+1).last_block_id,
+`cmt_commit_hash` = header(k·17280+1).last_commit_hash (the hash binding), then ALWAYS `cmt_verify_commit`
+against the held set (chain id of header(k·17280+1)). The signatures bind the commit's `round`, which
+Commit.Hash does not cover — the gap the earlier hash-only rule (K8, replaced) accepted. A set or commit
+that fails writes nothing; a file without a verified set and verified signatures is never complete.
 
 **Atomic publish / resume.** fsync(.dat.tmp); write + fsync .idx.tmp; rename both; fsync(dir); write +
 fsync .ok.tmp; rename; fsync(dir). A .dat without a valid marker goes back to `.dat.tmp`. Opening a build
 over an existing `.dat.tmp` re-verifies every record from the start (32 per pass) and cuts the file at the
-first short, torn or failing record; the terminal commit record is always re-added (the scan does not
-hold the state store).
+first short, torn or failing record. After the last height the commit and set records are re-verified
+from the file as ONE unit (the set's hash, then the signatures against it — no state store involved): a
+short, torn or failing byte in either cuts the file at the START of the commit record (both are added
+again); bytes after a good pair are cut.
 
 **Must hold / deletion (holder runtime, `nodus_witness_sthold_tick`, every 200 ms while the lane is live
 and not block-syncing).** At H = ⌊tip/E⌋·E this node must hold k iff me ∈ holders(k, H), or
@@ -5996,8 +6012,11 @@ overlap epoch (H, H+E] while it is still probed and paid, and deletes it at the 
 that list; nothing is deleted when storage_set(H) is absent or a read faults (an absent set(H−E) counts
 as empty). One job at a time, smallest k first: EXPORT when the block store's base ≤ (k−1)·17280+1 and
 height ≥ k·17280+1 (`nodus_seg_store_has`; never inferred from one row — H:1 survives pruning), 32
-heights per pass, the raw P:h:i / C:k·17280 values through the verification; else (or when the export
-stops because the store pruned meanwhile) FETCH. **retain_blocks warning:** at every assignment (start,
+heights per pass, the raw P:h:i values, then validators(k·17280) from the STATE table
+(`nodus_seg_valset_from_store`), then the raw C:k·17280, all through the verification; else (or when the
+export stops because the store pruned meanwhile — including a state table that no longer has
+validators(k·17280): `nodus_cmt_ss_prune_states` runs with block pruning) FETCH the rest, the set
+included. **retain_blocks warning:** at every assignment (start,
 then once per epoch) `retain_blocks > 0` while an assigned segment is incomplete logs a WARN.
 
 **Channel 0x73 — the fetch (⚠ NEW WIRE, PENDING OPERATOR APPROVAL: the byte, the layouts, the codes and
@@ -6006,13 +6025,16 @@ the bounds are this package's; the approved list is 0x70 / 0x71, K6 adds 0x72).*
 `NODUS_SEG_COMMIT_MAX` = 159 + 128 × 4685 = 599 839 B, travels whole because its hash binding is over the
 whole). An undecodable message stops the peer (stop reason 423).
 - kind `0x01` REQUEST (37-byte body): `"NDS.STFETCH.v1"` padded to 16 ‖ k u64 ‖ h u64 ‖ part u32 ‖ cont u8.
-  h ∈ segment k; part = the part index, or 0xFFFFFFFF = the terminal commit (then h = k·17280); cont 0 =
-  first request of block h (send header(h+1)), 1 = the requester continues block h and holds a verified
-  header(h+1) (omit it); anything else is malformed.
+  h ∈ segment k; part = the part index, or 0xFFFFFFFF = the terminal commit, or 0xFFFFFFFE = the validator
+  set validators(k·17280) (K8a; ⚠ this selector is part of the same PENDING wire — K8a approved that the
+  file carries the set, not how 0x73 moves it), both with h = k·17280; cont 0 = first request of block h
+  (send header(h+1)), 1 = the requester continues block h and holds a verified header(h+1) (omit it);
+  anything else is malformed.
 - kind `0x02` ANSWER: `rq[64] ‖ code(1)` and, when 0, `hdr_len u32 ‖ header(h+1) ‖ body_len u32 ‖ body ‖
   proof_len u32 ‖ proof`; rq = SHA3-512(the 37 body bytes); header present (≤ 2048) iff cont = 0; body = the
-  part bytes (≤ 65536) with its proof (1 … 8192), or the commit proto (1 … 599 839) with no proof; no
-  trailing byte. Codes: 0 OK, 1 NOT_MEMBER, 2 UNKNOWN_SET, 3 NOT_PUBLISHED, 4 NOT_HELD, 5 BUDGET, 6 FAULT.
+  part bytes (≤ 65536) with its proof (1 … 8192), or the commit proto (1 … 599 839) with no proof, or the
+  ValidatorSet proto — exactly the file's set record bytes — (1 … 342 764) with no proof; no trailing byte.
+  Codes: 0 OK, 1 NOT_MEMBER, 2 UNKNOWN_SET, 3 NOT_PUBLISHED, 4 NOT_HELD, 5 BUDGET, 6 FAULT.
 - Serving side: decode → the requester's epoch budget (4 GiB per requester per epoch, every admitted
   request costs at least 4096 B; ⚠ NOT GROUNDED, design §9 leaves fetch budgets open) → the requester's
   authenticated 64-byte fingerprint is a member of the CURRENT frozen set S(H) (committed; `st_freeze`
@@ -6020,14 +6042,16 @@ whole). An undecodable message stops the peer (stop reason 423).
   connection authenticated its ML-DSA-87 key and the registry's node_fp must be SHA3-512 of it (design §3
   cites `nodus_inter_dial.c:150` for this pin; that file is core's 4002 dialer — on 4004 the pin is the
   secret connection's key, as 0x72) → segment k published → the piece from the block store, else from the
-  held file, else NOT_HELD. One block in flight per peer: answers are immediate, and the client keeps one
-  request outstanding.
+  held file, else NOT_HELD; the SET piece from the STATE table (LoadValidators(k·17280) — not gated on the
+  block store's base; header(k·17280+1) from the block store when cont = 0), else from the held file. One
+  block in flight per peer: answers are immediate, and the client keeps one request outstanding.
 - Client: holders of k (set(H), then set(H−E); p2p ID = hex(registered node_fp[0..31])) that are
   connected, then every other connected peer (a full archive node, or any node whose store still has the
-  blocks); an answer is taken only from that peer for that rq; header, part and commit go through the
-  build's verification before they are written; a refusal, a bad piece or 10 s of silence moves to the
-  next peer; a round without progress waits 30 s; a node-side fault (disk, own ledger, own validator set)
-  closes the job and retries after 30 s. Restart resumes the partial file.
+  blocks); an answer is taken only from that peer for that rq; header, part, set and commit go through the
+  build's verification before they are written (the set first, then the commit); a refusal, a bad piece —
+  a set that does not hash to header(k·17280).validators_hash or a commit whose signatures fail included —
+  or 10 s of silence moves to the next peer; a round without progress waits 30 s; a node-side fault (disk,
+  own ledger) closes the job and retries after 30 s. Restart resumes the partial file.
 
 **Probe from a file.** `nodus_witness_stprobe_serve` (0x72) reads each sample from the block store and,
 when the store answers NOT_HELD (pruned), from the held segment file (`nodus_seg_probe_sample`) — the same
@@ -6044,9 +6068,15 @@ every malformed request, refusal / OK framing and bounds, the shape rule, the pe
 whole segment fetched piece by piece byte-identical to the export (a corrupted answer refused); resume
 after a torn tail and a cut at a tampered record; the serving side's refusals; must-hold and deletion
 across the overlap (held at H, H+E, deleted at H+2E, nothing deleted without set(H), unpublished files
-kept); the 0x72 answer from the file after pruning equals the store's and verifies. Not covered: the
-commit SIGNATURE path (no validator set in the fixture), the live 0x73 transport (rotation, timeouts),
-the tick and the retain_blocks warning, the budget through the message handler.
+kept); the 0x72 answer from the file after pruning equals the store's and verifies. K8a: the fixture's
+validators(17280) is a real set of four ML-DSA-87 keys (fixed seeds) that signs C:17280, stored as a
+checkpoint ValidatorsInfo row; the set record round trip; tampered sets refused (a power, the order, a key
+byte, truncated / empty / past the bound); the same commit with round 1 (same Commit.Hash) refused by the
+signatures; markers with flags 0 or an unknown bit not held; the 0xFFFFFFFE selector, its shape rule, the
+set from store and file; a torn or on-disk-tampered set record cut at the commit record; an export
+without validators(17280) finished by fetching the set. Not covered: a set at the 128 cap, a non-checkpoint
+ValidatorsInfo row, the live 0x73 transport (rotation, timeouts), the tick and the retain_blocks warning,
+the budget through the message handler.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
