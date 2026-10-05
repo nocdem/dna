@@ -5,12 +5,13 @@
  *        must hold, exporting them from its own block store, fetching
  *        them over channel 0x73 when it cannot, deleting them once the
  *        handoff overlap has passed, the retain_blocks warning, and the
- *        0x73 serving side's message handling and budget.
+ *        0x73 serving side's message handling.
  *        File layout: nodus_witness_storage_segment.h; the 0x73 wire and
  *        admission: nodus_witness_storage_fetch.h.
  *
  * Decisions: docs/plans/decisions/2026-10-05-storage-reward-is-for-
- * archive.md (R = 3, G = 1), 2026-10-05-kurultay-7-archive-reward-
+ * archive.md (R = 3; K9 grace = new segments × E; K6a no fetch byte
+ * budget), 2026-10-05-kurultay-7-archive-reward-
  * summary.md (items 4, 5, 7: exported files; bounded, verified fetch;
  * the outgoing holder keeps serving for an overlap epoch), 2026-10-03-
  * block-pruning-7-paydays.md (the 2026-10-05 rollout change). Design
@@ -22,16 +23,19 @@
  *   must hold segment k iff
  *       me ∈ holders(k, H)                         (assigned now — a NEW
  *                                                   holder fetches during
- *                                                   its grace epoch)
+ *                                                   its K9 grace: n new
+ *                                                   segments, n epochs)
  *    or published_height(k) <= H − E  and  me ∈ holders(k, H − E)
  *                                                  (displaced at H: still
  *                                                   probed and paid
  *                                                   through (H, H+E] —
  *                                                   the overlap epoch)
  *   holders(k, X) = bytes item 3 over storage_set(X) with the
- *   fail_streaks frozen at X (nodus_witness_storage_holders). The second
- *   line is exactly the probe's eligibility rule, so a file is never
- *   deleted while a reporter can still sample it.
+ *   fail_streaks frozen at X (nodus_witness_storage_holders). These two
+ *   lines are the probe's eligibility rule (nodus_witness_v2_storage.h
+ *   "ELIGIBILITY") WITHOUT its grace gate: a member in grace is not
+ *   probed but must still fetch and keep its segments, so a file is
+ *   never deleted while a reporter can still sample it.
  *   DELETE segment k's files iff k is a published segment and this node
  *   must not hold it — i.e. no longer a holder AND the overlap epoch has
  *   passed (at H + E the displaced holder is in neither line). Fail-safe:
@@ -61,10 +65,13 @@
  *   request leaves at once. Restart: the partial file is resumed (above).
  *
  * ── THE SERVING SIDE (0x73) ────────────────────────────────────────────
- *   decode (an undecodable message stops the peer) → the requester's
- *   epoch budget not spent → nodus_witness_stfetch_serve (admission, the
- *   piece) → the answer's size (at least NODUS_STFETCH_COST_MIN) charged
- *   to the requester; an admitted refusal costs NODUS_STFETCH_COST_MIN.
+ *   decode (an undecodable message stops the peer) →
+ *   nodus_witness_stfetch_serve (admission, the piece) → the answer or
+ *   the refusal. No per-requester byte budget (K6a, decision 2026-10-05-
+ *   storage-reward-is-for-archive.md): the load is bounded by the
+ *   admission (only ACTIVE members of the current frozen set), the
+ *   client's one request in flight and the connection's send / recv
+ *   rate limit.
  *
  * ── THE retain_blocks WARNING ─────────────────────────────────────────
  *   At every assignment (the first pass after start, then once per
@@ -112,8 +119,6 @@ extern "C" {
 #define NODUS_STFETCH_RETRY_MS       30000
 /** The most must-hold segments computed (the probe's bound). */
 #define NODUS_STHOLD_MAX_SEGS        NODUS_STPROBE_MAX_SEGS
-/** The serving side's budget table: one slot per member of a set. */
-#define NODUS_STFETCH_SERVE_SLOTS    DNA_V2_STORAGE_SET_MAX
 
 /** This node's segment directory: <data_path>/<segment_dir or
  *  NODUS_SEG_DIR_DEFAULT>. @return 0 / -1 (no data path, a segment_dir

@@ -1396,14 +1396,17 @@ int nodus_dnac_name_prices_decode(const uint8_t *raw, size_t raw_len,
  *     "st"    u8   1 ACTIVE / 2 EXITING / 3 RELEASED
  *     "bond"  u64  raw
  *     "fs"    u32  fail_streak (live registry value)
+ *     "gu"    u64  grace_until (live registry value; K9 — epoch (H, H+E]
+ *                  is in grace while H < gu: not probed, earns nothing)
  *     "rh"    u64  registered_height (>= 1)
  *     "xh"    u64  exit_height (0 = no exit)
  *     "payee" tstr 128 lowercase hex
  *   "set"   bool  storage_set(H) exists
  *   "sc"    u32   its member count (0..NODUS_DNAC_STORAGE_SET_MAX)
  *   "mem"   bool  the node is a member of storage_set(H)
- *   "ns"    u64   segments ELIGIBLE for the node in (H, H+E] (past grace,
- *                 assigned; K1 weight = ns × 17280 blocks)
+ *   "ns"    u64   segments ELIGIBLE for the node in (H, H+E] (assigned or
+ *                 in the handoff overlap, 0 while in grace; K1 weight =
+ *                 ns × 17280 blocks)
  *   "segs"  array of u64: the first min(ns, NODUS_DNAC_STORAGE_SEG_MAX)
  *                 of them, k strictly ascending
  * Rules the decoder enforces: every key above present exactly once (the
@@ -1427,6 +1430,7 @@ typedef struct {
     uint8_t  status;                   /* "st": 1..3 when found          */
     uint64_t bond;
     uint32_t fail_streak;
+    uint64_t grace_until;              /* "gu" (K9)                      */
     uint64_t registered_height;
     uint64_t exit_height;
     char     payee[129];               /* 128 hex + NUL                  */

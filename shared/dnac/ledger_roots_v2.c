@@ -464,8 +464,10 @@ int dna_v2_storage_node_leaf_hash(const dna_v2_storage_node_row_t *row,
     if (row->status < DNA_V2_STORAGE_ACTIVE ||
         row->status > DNA_V2_STORAGE_RELEASED)
         return -1;                         /* 0 / unknown: never hashed  */
-    /* archive bytes item 4: the v1 preimage + fail_streak(4 BE), last */
-    uint8_t pre[TAG_LEN + 2 * DNA_V2_ROOT_LEN + 8 + 1 + 8 + 8 + 4];
+    /* archive bytes item 4: the v1 preimage + fail_streak(4 BE), then
+     * (K9, decision 2026-10-05-storage-reward-is-for-archive.md)
+     * grace_until(8 BE), last — 181 bytes */
+    uint8_t pre[TAG_LEN + 2 * DNA_V2_ROOT_LEN + 8 + 1 + 8 + 8 + 4 + 8];
     size_t off = 0;
     memcpy(pre + off, TAG_STLEAF, TAG_LEN);              off += TAG_LEN;
     memcpy(pre + off, row->node_fp, DNA_V2_ROOT_LEN);    off += DNA_V2_ROOT_LEN;
@@ -475,6 +477,7 @@ int dna_v2_storage_node_leaf_hash(const dna_v2_storage_node_row_t *row,
     put_be64(row->registered_height, pre + off);         off += 8;
     put_be64(row->exit_height, pre + off);               off += 8;
     put_be32(row->fail_streak, pre + off);               off += 4;
+    put_be64(row->grace_until, pre + off);               off += 8;
     return qgp_sha3_512(pre, off, out) == 0 ? 0 : -1;
 }
 

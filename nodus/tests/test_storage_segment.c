@@ -74,9 +74,8 @@
  *                   decodes only within its bounds, without a trailing
  *                   byte; the shape rule (header iff cont 0, commit has
  *                   no proof, a part has one, the set: a body of 1 …
- *                   NODUS_SEG_VALSET_MAX and no proof); the per-requester
- *                   budget (spent / take, reset at a new epoch, table
- *                   full).
+ *                   NODUS_SEG_VALSET_MAX and no proof). (The per-requester
+ *                   byte budget is gone — K6a.)
  *  fetch_e2e        a whole segment FETCHED piece by piece from a held
  *                   file (answers encoded, decoded, shape-checked, every
  *                   piece verified by the build) is byte-identical to the
@@ -122,9 +121,9 @@
  * exercised, only a checkpoint row; the 4004 transport (0x73 on a live
  * host, peer rotation, timeouts), the holder's tick (its export → fetch
  * switch, its rotate on a refused set) and the retain_blocks warning run
- * only on a live node (no harness scenario in this package); the serving
- * side's budget is proven as a function, not through
- * nodus_witness_sthold_on_msg.
+ * only on a live node (no harness scenario in this package);
+ * nodus_witness_sthold_on_msg itself (the serving side's message entry)
+ * is not driven here.
  *
  * Requirements: a default build; no environment. Writes under a fresh
  * mkdtemp directory in $TMPDIR (or /tmp) and removes it at the end; the
@@ -1169,11 +1168,12 @@ static int t_fetch_wire(void) {
     fill(rq, 64, 0x31);
     CHECK(nodus_stfetch_ans_refusal(rq, NODUS_STFETCH_OK, ref) != 0,
           "OK is never a refusal");
-    CHECK(nodus_stfetch_ans_refusal(rq, NODUS_STFETCH_REF_BUDGET, ref) == 0 &&
-          ref[0] == NODUS_STFETCH_KIND_ANS && memcmp(ref + 1, rq, 64) == 0 &&
-          ref[65] == NODUS_STFETCH_REF_BUDGET, "kind ‖ rq ‖ code");
+    CHECK(nodus_stfetch_ans_refusal(rq, NODUS_STFETCH_REF_NOT_HELD, ref)
+          == 0 && ref[0] == NODUS_STFETCH_KIND_ANS &&
+          memcmp(ref + 1, rq, 64) == 0 &&
+          ref[65] == NODUS_STFETCH_REF_NOT_HELD, "kind ‖ rq ‖ code");
     CHECK(nodus_stfetch_ans_decode(ref, sizeof(ref), &a) == 0 &&
-          a.code == NODUS_STFETCH_REF_BUDGET, "refusal decodes");
+          a.code == NODUS_STFETCH_REF_NOT_HELD, "refusal decodes");
     {
         uint8_t l[NODUS_STFETCH_REFUSAL_LEN + 1];
         memcpy(l, ref, sizeof(ref));
@@ -1245,37 +1245,6 @@ static int t_fetch_wire(void) {
         }
         v.code = NODUS_STFETCH_REF_NOT_HELD;
         CHECK(!nodus_stfetch_ans_shape_ok(&cr, &v), "a refusal has no shape");
-    }
-
-    /* the budget */
-    {
-        nodus_stfetch_budget_t *s = calloc(2, sizeof(*s));
-        uint8_t a1[64], a2[64], a3[64];
-        fill(a1, 64, 0xA1);
-        fill(a2, 64, 0xA2);
-        fill(a3, 64, 0xA3);
-        const uint64_t H = 5 * E_LEN;
-        CHECK(s != NULL, "alloc");
-        CHECK(!nodus_stfetch_budget_spent(s, 2, a1, H), "fresh: not spent");
-        CHECK(nodus_stfetch_budget_take(s, 2, a1, H,
-                                        NODUS_STFETCH_EPOCH_BUDGET - 1) == 0,
-              "charge all but one byte");
-        CHECK(!nodus_stfetch_budget_spent(s, 2, a1, H), "one byte left");
-        CHECK(nodus_stfetch_budget_take(s, 2, a1, H, 4096) == 0,
-              "the last answer may overrun");
-        CHECK(nodus_stfetch_budget_spent(s, 2, a1, H) &&
-              nodus_stfetch_budget_take(s, 2, a1, H, 1) == 1,
-              "spent: refused");
-        CHECK(nodus_stfetch_budget_take(s, 2, a2, H, 10) == 0, "a second "
-              "requester has its own budget");
-        CHECK(nodus_stfetch_budget_take(s, 2, a3, H, 10) == 1,
-              "table full of this epoch's requesters: refused");
-        CHECK(!nodus_stfetch_budget_spent(s, 2, a1, H + E_LEN) &&
-              nodus_stfetch_budget_take(s, 2, a1, H + E_LEN, 10) == 0,
-              "a new epoch resets the budget");
-        CHECK(nodus_stfetch_budget_take(s, 2, a3, H + E_LEN, 10) == 0,
-              "a slot of an older epoch is reused");
-        free(s);
     }
     free(out);
     return 0;
@@ -1678,8 +1647,8 @@ static int w_set(nodus_witness_t *w, uint64_t H, uint8_t (*fps)[64],
                64, n) != 0)
         return -1;
     for (size_t i = 0; i < n; i++)
-        if (w_exec(w, "INSERT INTO v2_storage_set_members VALUES (?1, ?2, ?3)",
-                   H, fps[i], 64, streak[i]) != 0)
+        if (w_exec(w, "INSERT INTO v2_storage_set_members VALUES (?1, ?2, ?3, "
+                   "0)", H, fps[i], 64, streak[i]) != 0)
             return -1;
     return 0;
 }
@@ -1690,7 +1659,7 @@ static int w_registry(nodus_witness_t *w, const uint8_t fp[64], int status) {
     int ret = -1;
     if (!pk) return -1;
     if (sqlite3_prepare_v2(w->db, "INSERT OR REPLACE INTO v2_storage_nodes "
-                           "VALUES (?1, ?2, ?1, 1000000, ?3, 1, 0, 0)", -1,
+                           "VALUES (?1, ?2, ?1, 1000000, ?3, 1, 0, 0, 0)", -1,
                            &st, NULL) == SQLITE_OK) {
         sqlite3_bind_blob(st, 1, fp, 64, SQLITE_TRANSIENT);
         sqlite3_bind_blob(st, 2, pk, 2592, SQLITE_TRANSIENT);

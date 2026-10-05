@@ -46,8 +46,10 @@
  *     flipped (the pre-HF-5 payee rule) and accepts the untouched bytes.
  *  C5 nodus_dnac_storage_status_decode: a found member with segments, a
  *     not-found node with no set, a full 64-entry list for ns = 100 are
- *     accepted with every field; refused: a missing required key, a
- *     duplicate key, a found row missing a row key, row keys on a not-found
+ *     accepted with every field (K9: "gu" grace_until read back, a full
+ *     u64 accepted); refused: a missing required key, a duplicate key, a
+ *     found row missing a row key ("payee", "gu"), a duplicate "gu", row
+ *     keys on a not-found
  *     reply, st 0 / 4, rh 0, fs above u32, sc 257, an uppercase payee,
  *     es > ch, set false with sc 1, set false with mem true, mem true with
  *     found false, ns > 0 without membership, a list shorter than
@@ -125,7 +127,7 @@ static int g_checks = 0;
 #define OP_UTXO        1u
 #define OP_SUPPLY      3u
 #define SEL_POOL       3u
-#define STOR_REC_LEN   2685u
+#define STOR_REC_LEN   2693u   /* + fail_streak u32, + grace_until u64 (K9) */
 #define STOR_PAYEE_OFF 2592u
 #define STOR_BOND_OFF  2656u
 #define STOR_STAT_OFF  2664u
@@ -528,7 +530,7 @@ static int t_refusals(void) {
 /* ══ C5 — the status reply decoder ═══════════════════════════════════ */
 
 typedef struct {
-    uint64_t ch, es, st, bond, fs, rh, xh, sc, ns;
+    uint64_t ch, es, st, bond, fs, gu, rh, xh, sc, ns;
     int found, set, mem;
     const char *payee;
     size_t nsegs;
@@ -545,6 +547,7 @@ static void sr_member(sr_t *s) {
     memset(s, 0, sizeof(*s));
     s->ch = 1500; s->es = 1440; s->found = 1;
     s->st = DNA_V2_STORAGE_ACTIVE; s->bond = BOND; s->fs = 1; s->rh = 20;
+    s->gu = 2160;
     s->xh = 0; s->payee = g_payee; s->set = 1; s->sc = 5; s->mem = 1;
     s->ns = 2; s->nsegs = 2; s->segs[0] = 3; s->segs[1] = 7;
     s->row = -1;
@@ -588,6 +591,7 @@ static size_t sr_emit(const sr_t *s, cbor_encoder_t *enc) {
             SR_U("st", s->st)
             SR_U("bond", s->bond)
             SR_U("fs", s->fs)
+            SR_U("gu", s->gu)
             SR_U("rh", s->rh)
             SR_U("xh", s->xh)
             if ((!dup && (!s->omit || strcmp(s->omit, "payee"))) ||
@@ -645,7 +649,8 @@ static int t_status_decoder(void) {
     CHECK(sr_decode(&s, &o) == 0, "a found member decodes");
     CHECK(o.committed_height == 1500 && o.epoch_start == 1440 && o.found &&
           o.status == DNA_V2_STORAGE_ACTIVE && o.bond == BOND &&
-          o.fail_streak == 1 && o.registered_height == 20 &&
+          o.fail_streak == 1 && o.grace_until == 2160 &&
+          o.registered_height == 20 &&
           o.exit_height == 0 && strcmp(o.payee, g_payee) == 0 &&
           o.set_exists && o.set_count == 5 && o.member &&
           o.n_segments == 2 && o.n_listed == 2 && o.segments[0] == 3 &&
@@ -672,6 +677,14 @@ static int t_status_decoder(void) {
     CHECK(sr_decode(&s, &o) == -1, "a duplicate key refused");
     sr_member(&s); s.omit = "payee";
     CHECK(sr_decode(&s, &o) == -1, "a found row missing a key refused");
+    sr_member(&s); s.omit = "gu";
+    CHECK(sr_decode(&s, &o) == -1, "a found row without grace_until "
+          "refused");
+    sr_member(&s); s.dup = "gu";
+    CHECK(sr_decode(&s, &o) == -1, "a duplicate grace_until refused");
+    sr_member(&s); s.gu = UINT64_MAX;
+    CHECK(sr_decode(&s, &o) == 0 && o.grace_until == UINT64_MAX,
+          "grace_until is a full u64 on the wire");
     sr_absent(&s); s.row = 1;
     CHECK(sr_decode(&s, &o) == -1, "row keys on a not-found reply refused");
     sr_member(&s); s.st = 0;

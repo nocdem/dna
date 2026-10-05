@@ -97,8 +97,9 @@
  *                                   activation and is retired, never
  *                                   reused)
  *                 "NDS.STLEAF.v2"   storage registry leaf (fail_streak
- *                                   appended; "NDS.STLEAF.v1" retired
- *                                   the same way)
+ *                                   and, K9, grace_until appended;
+ *                                   "NDS.STLEAF.v1" retired the same
+ *                                   way)
  *                 "NDS.STRNODE.v1"  storage registry Merkle inner node
  *                 "NDS.STSET.v1"    frozen storage set hash S(H)
  *                 "NDS.STSLEAF.v1"  frozen-sets leaf
@@ -242,9 +243,11 @@
  *       (archive bytes item 5 — replaces the 3-leg "NDS.STOR.v1")
  *   registry leaf = SHA3-512("NDS.STLEAF.v2" ‖ node_fp[64] ‖ payee_fp[64]
  *       ‖ bond(8 BE) ‖ status(1) ‖ registered_height(8 BE)
- *       ‖ exit_height(8 BE) ‖ fail_streak(4 BE))   — status 1 ACTIVE,
- *       2 EXITING, 3 RELEASED (0 and > 3 invalid: refused, never
- *       hashed); 16 + 157 = 173 B (archive bytes item 4).
+ *       ‖ exit_height(8 BE) ‖ fail_streak(4 BE) ‖ grace_until(8 BE))
+ *       — status 1 ACTIVE, 2 EXITING, 3 RELEASED (0 and > 3 invalid:
+ *       refused, never hashed); 16 + 165 = 181 B (archive bytes item 4;
+ *       grace_until appended by K9 before any activation, the tag
+ *       stays "NDS.STLEAF.v2").
  *   ── archive reward (bytes doc 2026-10-05 items 1-3, §6) ──
  *   Root(k) = SHA3-512("NDS.STSEG.v1" ‖ k(8 BE) ‖ count(4 BE) = 17280
  *       ‖ hash[(k−1)·17280 + 1] ‖ … ‖ hash[k·17280])  — hash[h] the
@@ -585,11 +588,15 @@ typedef struct {
     uint64_t registered_height;
     uint64_t exit_height;
     uint32_t fail_streak;                /* archive bytes item 4        */
+    uint64_t grace_until;                /* K9: no probe / no pay while
+                                          * the epoch start < this     */
 } dna_v2_storage_node_row_t;
 
 /** leaf = SHA3-512("NDS.STLEAF.v2" ‖ node_fp[64] ‖ payee_fp[64] ‖
  *  bond(8 BE) ‖ status(1) ‖ registered_height(8 BE) ‖ exit_height(8 BE)
- *  ‖ fail_streak(4 BE)) — archive bytes item 4 (replaces the v1 leaf).
+ *  ‖ fail_streak(4 BE) ‖ grace_until(8 BE)) — archive bytes item 4
+ *  (replaces the v1 leaf; grace_until per K9, decision 2026-10-05-
+ *  storage-reward-is-for-archive.md, any u64 encoded as given).
  *  @return 0 / -1 (NULL, status outside 1..3). */
 int dna_v2_storage_node_leaf_hash(const dna_v2_storage_node_row_t *row,
                                   uint8_t out[DNA_V2_ROOT_LEN]);

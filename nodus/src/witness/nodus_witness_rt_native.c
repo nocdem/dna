@@ -3699,7 +3699,7 @@ _Static_assert(RTN_DEL_KEY_LEN <= (uint32_t)DNA_EFFECT_MAX_KEY_LEN,
 #define RTN_CC_VAL_LEN   88u
 #define RTN_CC_KEY_LEN   12u     /* param_id u32 BE ‖ effective u64 BE  */
 
-/* Storage reward v1 — the canonical storage registry record (exact 2685
+/* Storage reward v1 — the canonical storage registry record (exact 2693
  * bytes): every v2_storage_nodes column except the key, in table order.
  *   [0..2591]     node_pk             DNAC_PUBKEY_SIZE
  *   [2592..2655]  payee_fp            64 B raw
@@ -3711,11 +3711,16 @@ _Static_assert(RTN_DEL_KEY_LEN <= (uint32_t)DNA_EFFECT_MAX_KEY_LEN,
  *                                     2026-10-05 item 4 — written by the
  *                                     storage boundary only; REGISTER
  *                                     writes 0, EXIT copies it)
+ *   [2685..2692]  grace_until         u64 BE (K9, decision 2026-10-05-
+ *                                     storage-reward-is-for-archive.md
+ *                                     — written by the storage boundary
+ *                                     only; REGISTER writes 0, EXIT
+ *                                     copies it; <= INT64_MAX)
  * The KEY is node_fp = SHA3-512(node_pk) (64 B, untagged — the bytes doc
  * clarification "node_fp = SHA3-512(node_pk) with NO prefix"), a pure
  * function of the value's node_pk, so key and value cannot disagree
- * (rtn_stor_rec_ok). The registry LEAF (v2) hashes node_fp and the six
- * scalar columns — the roots loader, not this record. */
+ * (rtn_stor_rec_ok). The registry LEAF (v2) hashes node_fp, payee_fp
+ * and the six scalar columns — the roots loader, not this record. */
 #define RTN_STOR_PK_OFF      0u
 #define RTN_STOR_PAYEE_OFF   ((uint32_t)DNAC_PUBKEY_SIZE)
 #define RTN_STOR_BOND_OFF    (RTN_STOR_PAYEE_OFF + 64u)
@@ -3723,9 +3728,10 @@ _Static_assert(RTN_DEL_KEY_LEN <= (uint32_t)DNA_EFFECT_MAX_KEY_LEN,
 #define RTN_STOR_REGH_OFF    (RTN_STOR_STATUS_OFF + 1u)
 #define RTN_STOR_EXITH_OFF   (RTN_STOR_REGH_OFF + 8u)
 #define RTN_STOR_FAIL_OFF    (RTN_STOR_EXITH_OFF + 8u)
-#define RTN_STOR_REC_LEN     (RTN_STOR_FAIL_OFF + 4u)
+#define RTN_STOR_GRACE_OFF   (RTN_STOR_FAIL_OFF + 4u)
+#define RTN_STOR_REC_LEN     (RTN_STOR_GRACE_OFF + 8u)
 #define RTN_STOR_KEY_LEN     64u
-_Static_assert(RTN_STOR_REC_LEN == 2685u, "storage record layout drifted");
+_Static_assert(RTN_STOR_REC_LEN == 2693u, "storage record layout drifted");
 _Static_assert(RTN_STOR_REC_LEN <= (uint32_t)DNA_EFFECT_MAX_VALUE_LEN,
                "storage record no longer fits one typed effect value");
 /** STORCNT selector: 1 = the LIVE rows (status ACTIVE or EXITING) — the
@@ -4149,12 +4155,10 @@ static int rtn_storage_register_exec(const dna_env_view_t *env,
     rtn_put64(rec + RTN_STOR_BOND_OFF, c.bond);
     rec[RTN_STOR_STATUS_OFF] = DNA_V2_STORAGE_ACTIVE;
     rtn_put64(rec + RTN_STOR_REGH_OFF, ctx->global_height);
-    /* exit_height stays 0; fail_streak stays 0 — a (re-)registration is a
-     * fresh record (archive reward reading: a member skipped at
-     * fail_streak >= 3 never gets a new eligible block, so its streak
-     * never moves again; exit + re-registration, with its 12-epoch bond
-     * lock, is the one way back — reported as an open reading, design
-     * rev 4 §2 does not state it) */
+    /* exit_height stays 0; fail_streak stays 0; grace_until stays 0 — a
+     * (re-)registration is a fresh record (a revived node's first
+     * segments are all new to it, so the K9 grace of the next storage
+     * boundary covers it; K5 returns a skipped member on its own) */
     if (!rtn_stor_rec_ok(rec, node_fp)) return -1;   /* e.g. a height
                                           * past the INTEGER bound: the
                                           * VERDICT class, never first the
@@ -4199,8 +4203,8 @@ static int rtn_storage_register_exec(const dna_env_view_t *env,
  * 12·E (F3), identity dna_v2_storage_exit_id(chain_id, B, node_fp) /
  * dna_v2_storage_exit_nullifier (kind 0x11, out index 201), and sets the
  * row RELEASED — which removes the bond from the supply term (claims.c
- * storage_bonds) exactly as the UTXO adds it back. fail_streak is copied
- * unchanged.
+ * storage_bonds) exactly as the UTXO adds it back. fail_streak and
+ * grace_until are copied unchanged.
  * @return 0 / -1 verdict / -2 node fault.
  */
 static int rtn_storage_exit_exec(const dna_env_view_t *env,
@@ -5879,7 +5883,7 @@ static int rtn_sys_stor_fetch(nodus_witness_t *w, const uint8_t *key,
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
             "SELECT node_pk, payee_fp, bond, status, registered_height, "
-            "exit_height, fail_streak FROM v2_storage_nodes "
+            "exit_height, fail_streak, grace_until FROM v2_storage_nodes "
             "WHERE node_fp = ?1", -1, &st, NULL) != SQLITE_OK)
         return -1;
     sqlite3_bind_blob(st, 1, key, RTN_STOR_KEY_LEN, SQLITE_TRANSIENT);
@@ -5893,10 +5897,11 @@ static int rtn_sys_stor_fetch(nodus_witness_t *w, const uint8_t *key,
         sqlite3_int64 rh   = sqlite3_column_int64(st, 4);
         sqlite3_int64 eh   = sqlite3_column_int64(st, 5);
         sqlite3_int64 fs   = sqlite3_column_int64(st, 6);
+        sqlite3_int64 gu   = sqlite3_column_int64(st, 7);
         if (pk && sqlite3_column_bytes(st, 0) == DNAC_PUBKEY_SIZE &&
             py && sqlite3_column_bytes(st, 1) == 64 &&
             bond >= 0 && rh >= 1 && eh >= 0 &&
-            fs >= 0 && fs <= (sqlite3_int64)UINT32_MAX &&
+            fs >= 0 && fs <= (sqlite3_int64)UINT32_MAX && gu >= 0 &&
             stat >= (sqlite3_int64)DNA_V2_STORAGE_ACTIVE &&
             stat <= (sqlite3_int64)DNA_V2_STORAGE_RELEASED) {
             memset(rec, 0, RTN_STOR_REC_LEN);
@@ -5907,6 +5912,7 @@ static int rtn_sys_stor_fetch(nodus_witness_t *w, const uint8_t *key,
             rtn_put64(rec + RTN_STOR_REGH_OFF, (uint64_t)rh);
             rtn_put64(rec + RTN_STOR_EXITH_OFF, (uint64_t)eh);
             rtn_put32(rec + RTN_STOR_FAIL_OFF, (uint32_t)fs);
+            rtn_put64(rec + RTN_STOR_GRACE_OFF, (uint64_t)gu);
             out = 0;
         }
     } else if (rc == SQLITE_DONE) {
@@ -5956,6 +5962,7 @@ static int rtn_stor_rec_ok(const uint8_t *v, const uint8_t *key) {
         rtn_get64(v + RTN_STOR_REGH_OFF) > (uint64_t)INT64_MAX)
         return 0;
     if (rtn_get64(v + RTN_STOR_EXITH_OFF) > (uint64_t)INT64_MAX) return 0;
+    if (rtn_get64(v + RTN_STOR_GRACE_OFF) > (uint64_t)INT64_MAX) return 0;
     return 1;
 }
 
@@ -6478,8 +6485,8 @@ static nodus_adapter_status_t rtn_sys_mutate(
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         if (sqlite3_prepare_v2(w->db,
                 "INSERT INTO v2_storage_nodes (node_fp, node_pk, payee_fp, "
-                "bond, status, registered_height, exit_height, fail_streak) "
-                "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "bond, status, registered_height, exit_height, fail_streak, "
+                "grace_until) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 -1, &st, NULL) != SQLITE_OK)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         sqlite3_bind_blob(st, 1, key, RTN_STOR_KEY_LEN, SQLITE_TRANSIENT);
@@ -6496,6 +6503,8 @@ static nodus_adapter_status_t rtn_sys_mutate(
             (sqlite3_int64)rtn_get64(value + RTN_STOR_EXITH_OFF));
         sqlite3_bind_int64(st, 8,
             (sqlite3_int64)rtn_get32(value + RTN_STOR_FAIL_OFF));
+        sqlite3_bind_int64(st, 9,
+            (sqlite3_int64)rtn_get64(value + RTN_STOR_GRACE_OFF));
     } else if (op->op_id == RTN_SYS_OP_STOR && kind == DNA_EFFECT_SET) {
         /* node_pk is NOT updatable: it is what the key hashes, and
          * rtn_stor_rec_ok already proved the two agree */
@@ -6505,7 +6514,8 @@ static nodus_adapter_status_t rtn_sys_mutate(
         if (sqlite3_prepare_v2(w->db,
                 "UPDATE v2_storage_nodes SET payee_fp = ?1, bond = ?2, "
                 "status = ?3, registered_height = ?4, exit_height = ?5, "
-                "fail_streak = ?7 WHERE node_fp = ?6", -1, &st, NULL)
+                "fail_streak = ?7, grace_until = ?8 WHERE node_fp = ?6",
+                -1, &st, NULL)
             != SQLITE_OK)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         sqlite3_bind_blob(st, 1, value + RTN_STOR_PAYEE_OFF, 64,
@@ -6520,6 +6530,8 @@ static nodus_adapter_status_t rtn_sys_mutate(
         sqlite3_bind_blob(st, 6, key, RTN_STOR_KEY_LEN, SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 7,
             (sqlite3_int64)rtn_get32(value + RTN_STOR_FAIL_OFF));
+        sqlite3_bind_int64(st, 8,
+            (sqlite3_int64)rtn_get64(value + RTN_STOR_GRACE_OFF));
     } else if (op->op_id == RTN_SYS_OP_STREP && kind == DNA_EFFECT_CREATE) {
         /* archive reward: the committed STORAGE_REPORT row — STRICT
          * insert (the ABSENT precondition already ruled). The value is

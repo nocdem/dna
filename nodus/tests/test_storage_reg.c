@@ -18,8 +18,8 @@
  *          live count (op 9, selector 1)]; EXIT = [row]; a malformed
  *          REPORT refused (the report rule itself: test_storage_b2).
  *       A2 REGISTER happy path: one CREATE / ABSENT on op 8 keyed node_fp,
- *          the 2685-byte record = node_pk ‖ payee ‖ bond ‖ ACTIVE ‖ h ‖ 0
- *          ‖ fail_streak 0 (archive reward, leaf v2).
+ *          the 2693-byte record = node_pk ‖ payee ‖ bond ‖ ACTIVE ‖ h ‖ 0
+ *          ‖ fail_streak 0 (archive reward, leaf v2) ‖ grace_until 0 (K9).
  *       A3 refusals, each -1 (a verdict, never -2): signer fp != SHA3-512
  *          (node_pk); two signers; auth_kind 2; bond one under and one
  *          over DNAC_STORAGE_STAKE_MIN; payee_fp != node_fp; live count
@@ -28,9 +28,11 @@
  *          envelope; a CORE sibling that is not SYSFUND; generation 1 /
  *          generation 2 / NULL runtime.
  *       A4 re-registration from RELEASED: one SET / EXISTS_VHASH bound to
- *          the observed record's value hash, a fresh ACTIVE record.
+ *          the observed record's value hash, a fresh ACTIVE record (the
+ *          observed fail_streak 2 and grace_until reset to 0).
  *       A5 EXIT: from ACTIVE one SET / EXISTS_VHASH, status EXITING,
- *          exit_height = h, every other column unchanged; from EXITING
+ *          exit_height = h, every other column unchanged (fail_streak and
+ *          grace_until included); from EXITING
  *          (the duplicate exit) and RELEASED refused; no row refused;
  *          wrong signer refused.
  *       A6 the CORE SYSFUND leg pairs with a storage op only under
@@ -152,12 +154,15 @@ static int g_checks = 0;
 /* restated from nodus_witness_rt_native.c (static there) */
 #define OP_STOR        8u
 #define OP_STORCNT     9u
-#define STOR_REC_LEN   2685u   /* archive reward: + fail_streak u32 BE */
+#define STOR_REC_LEN   2693u   /* archive reward: + fail_streak u32 BE,
+                                * K9: + grace_until u64 BE            */
 #define STOR_PAYEE_OFF 2592u
 #define STOR_BOND_OFF  2656u
 #define STOR_STAT_OFF  2664u
 #define STOR_REGH_OFF  2665u
 #define STOR_EXITH_OFF 2673u
+#define STOR_FAIL_OFF  2681u
+#define STOR_GRACE_OFF 2685u
 #define STREG_LEN      (2592u + 8u + 64u)
 
 static void put64(uint8_t *p, uint64_t v) {
@@ -332,6 +337,10 @@ static void reads_set(int node, uint8_t status, uint64_t count) {
         g_reads[0].value_len = STOR_REC_LEN;
         rec_make(g_reads[0].value, node, g_k[node].fp, BOND, status, 2,
                  status == DNA_V2_STORAGE_ACTIVE ? 0 : 3);
+        /* a lived-in row: fail_streak 2, grace_until set (K9) — EXIT must
+         * copy both, a re-registration must start from 0 */
+        g_reads[0].value[STOR_FAIL_OFF + 3] = 2;
+        put64(g_reads[0].value + STOR_GRACE_OFF, 0x0000000000ABCDEFULL);
     }
     g_reads[1].present = 1;
     g_reads[1].value_len = 8;
@@ -499,7 +508,8 @@ static int t_hooks(void) {
         uint8_t want[STOR_REC_LEN];
         rec_make(want, KA, g_k[KA].fp, BOND, DNA_V2_STORAGE_ACTIVE, H, 0);
         CHECK(memcmp(ev.buf + ev.val_off[0], want, STOR_REC_LEN) == 0,
-              "a fresh ACTIVE record (registered_height h, exit 0)");
+              "a fresh ACTIVE record (registered_height h, exit 0, "
+              "fail_streak 0, grace_until 0)");
     }
 
     /* ── A5. EXIT ─────────────────────────────────────────────────── */
@@ -520,7 +530,10 @@ static int t_hooks(void) {
         want[STOR_STAT_OFF] = DNA_V2_STORAGE_EXITING;
         put64(want + STOR_EXITH_OFF, H);
         CHECK(memcmp(ev.buf + ev.val_off[0], want, STOR_REC_LEN) == 0,
-              "EXITING, exit_height = h, every other column unchanged");
+              "EXITING, exit_height = h, every other column unchanged "
+              "(fail_streak and grace_until copied)");
+        CHECK(get64(ev.buf + ev.val_off[0] + STOR_GRACE_OFF) ==
+              0x0000000000ABCDEFULL, "grace_until copied by EXIT");
         CHECK(get64(ev.buf + ev.val_off[0] + STOR_BOND_OFF) == BOND,
               "the bond stays on the row (released by B2)");
         reads_set(KA, DNA_V2_STORAGE_EXITING, 0);

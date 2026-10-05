@@ -63,8 +63,6 @@ struct nodus_sthold_rt {
     size_t    cand;                     /* the next candidate index      */
     bool      progressed;               /* a verified piece this round   */
     int64_t   retry_at_ms;
-    /* the serving side */
-    nodus_stfetch_budget_t budget[NODUS_STFETCH_SERVE_SLOTS];
 };
 
 static int64_t mono_ms(void) {
@@ -551,44 +549,28 @@ static void take_answer(nodus_witness_t *w, struct nodus_sthold_rt *rt,
 
 /* ── the serving side ────────────────────────────────────────────────── */
 
-static void serve_request(nodus_witness_t *w, struct nodus_sthold_rt *rt,
-                          const char *peer_id, const uint8_t sender_fp[64],
+/* K6a (decision 2026-10-05-storage-reward-is-for-archive.md): no
+ * per-requester byte budget — a request is bounded by the admission
+ * (an ACTIVE member of the current frozen set), the requester's one
+ * request in flight and the connection's send / recv rate. */
+static void serve_request(nodus_witness_t *w, const char *peer_id,
+                          const uint8_t sender_fp[64],
                           const nodus_stfetch_req_t *req) {
     uint8_t rq[64], refusal[NODUS_STFETCH_REFUSAL_LEN];
-    uint64_t tip = 0, H = 0;
     char dir[NODUS_SEG_PATH_MAX];
     if (nodus_stfetch_req_id(req, rq) != 0) return;
     const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
-    const bool have_H = nodus_witness_v2_tip_height(w, &tip) == 0 &&
-                        nodus_stprobe_epoch_for_tip(tip, E, &H) == 0;
 
-    nodus_stfetch_code_t c;
-    uint8_t *ans = NULL;
+    nodus_cmt_node_t *node = (nodus_cmt_node_t *)w->cmt_node;
     size_t len = 0;
-    if (have_H && nodus_stfetch_budget_spent(rt->budget,
-                                             NODUS_STFETCH_SERVE_SLOTS,
-                                             sender_fp, H)) {
-        c = NODUS_STFETCH_REF_BUDGET;
-    } else {
-        nodus_cmt_node_t *node = (nodus_cmt_node_t *)w->cmt_node;
-        ans = malloc(NODUS_STFETCH_MSG_MAX);
-        c = !ans ? NODUS_STFETCH_REF_FAULT
-                 : nodus_witness_stfetch_serve(
-                       w, (node && node->store_ready) ? &node->store : NULL,
-                       nodus_witness_sthold_dir(w, dir, sizeof(dir)) == 0
-                           ? dir : NULL,
-                       sender_fp, req, E, ans, NODUS_STFETCH_MSG_MAX, &len);
-        /* charge an admitted requester (a non-member never takes a slot) */
-        if (have_H && c != NODUS_STFETCH_REF_NOT_MEMBER &&
-            c != NODUS_STFETCH_REF_UNKNOWN_SET) {
-            uint64_t cost = c == NODUS_STFETCH_OK && len > NODUS_STFETCH_COST_MIN
-                                ? (uint64_t)len : NODUS_STFETCH_COST_MIN;
-            if (nodus_stfetch_budget_take(rt->budget,
-                                          NODUS_STFETCH_SERVE_SLOTS,
-                                          sender_fp, H, cost) != 0)
-                c = NODUS_STFETCH_REF_BUDGET;
-        }
-    }
+    uint8_t *ans = malloc(NODUS_STFETCH_MSG_MAX);
+    nodus_stfetch_code_t c =
+        !ans ? NODUS_STFETCH_REF_FAULT
+             : nodus_witness_stfetch_serve(
+                   w, (node && node->store_ready) ? &node->store : NULL,
+                   nodus_witness_sthold_dir(w, dir, sizeof(dir)) == 0
+                       ? dir : NULL,
+                   sender_fp, req, E, ans, NODUS_STFETCH_MSG_MAX, &len);
     if (c == NODUS_STFETCH_OK) {
         if (!nodus_witness_p2p_send(w->p2p, peer_id, NODUS_P2P_CH_STFETCH,
                                     ans, len))
@@ -615,7 +597,7 @@ int nodus_witness_sthold_on_msg(nodus_witness_t *w, const char *peer_id,
         nodus_stfetch_req_t req;
         if (nodus_stfetch_req_decode(msg, len, &req) != 0) return -1;
         if (!w->v2_successor || !w->db) return 0;    /* no chain: dropped */
-        serve_request(w, rt, peer_id, sender_fp, &req);
+        serve_request(w, peer_id, sender_fp, &req);
         return 0;
     }
     if (msg[0] == NODUS_STFETCH_KIND_ANS) {

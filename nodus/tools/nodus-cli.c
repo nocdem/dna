@@ -3954,6 +3954,24 @@ static void cli_storage_status_print(const char *fp_hex,
             printf(", exit requested at %llu",
                    (unsigned long long)s->exit_height);
         printf("\n  payee: %s\n", s->payee);
+        if (s->grace_until == 0)
+            printf("  grace_until: 0 (never in grace)\n");
+        else
+            printf("  grace_until: %llu — an epoch starting below it is a "
+                   "grace epoch: the node fetches its new segments, is not "
+                   "probed and earns nothing\n",
+                   (unsigned long long)s->grace_until);
+        if (s->epoch_start != 0 && s->epoch_start < s->grace_until)
+            printf("  NOTE: IN GRACE this epoch (%llu < %llu) — not "
+                   "probed, earns nothing, fail_streak unchanged; %llu "
+                   "grace epoch(s) left, this one included\n",
+                   (unsigned long long)s->epoch_start,
+                   (unsigned long long)s->grace_until,
+                   (unsigned long long)(
+                       (s->grace_until - s->epoch_start) /
+                           (uint64_t)DNAC_EPOCH_LENGTH +
+                       ((s->grace_until - s->epoch_start) %
+                            (uint64_t)DNAC_EPOCH_LENGTH != 0)));
         if (s->fail_streak >= DNA_V2_STORAGE_FAIL_LIMIT)
             printf("  NOTE: fail_streak >= %u — skipped for segment "
                    "placement until it recovers\n",

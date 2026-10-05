@@ -106,7 +106,8 @@ int nodus_witness_treasury_total(nodus_witness_t *w, uint64_t *out);
  * fail_streak update, nodus_witness_v2_storage.c); empty on every chain
  * before the storage activation. The leaf is v2 ("NDS.STLEAF.v2",
  * fail_streak appended — bytes doc docs/plans/2026-10-05-archive-reward-
- * bytes.md item 4). */
+ * bytes.md item 4; grace_until appended after it — K9, decision
+ * 2026-10-05-storage-reward-is-for-archive.md). */
 
 /** The storage set cap (design rev 2.2 F3) — the ONE number the cap
  *  admission (STORAGE_REGISTER) and the frozen set share. */
@@ -117,7 +118,8 @@ int nodus_witness_treasury_total(nodus_witness_t *w, uint64_t *out);
  *  the base schema, so an absent table is a FAULT (prepare fails), never
  *  the empty state; a malformed row (non-BLOB fp / pk, a length other
  *  than 64 / DNAC_PUBKEY_SIZE, node_fp != SHA3-512(node_pk), a negative
- *  integer, a fail_streak above UINT32_MAX, a status outside 1..3) or a
+ *  integer, a fail_streak above UINT32_MAX, a negative grace_until, a
+ *  status outside 1..3) or a
  *  scan fault fails the whole computation. An empty table is
  *  DNA_V2_EMPTY_STORAGE_REG.
  *  @return 0 / -1. */

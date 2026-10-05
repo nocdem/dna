@@ -44,8 +44,11 @@
  *                   report window's both edges and the expiry cap.
  *  serve_refusals   with a minimal chain database: unknown set, S(H)
  *                   mismatch, this node not a member, no eligible block
- *                   (B == 0), and the pure refusals reached through the
- *                   full serving path.
+ *                   (B == 0), K9: a held, published segment in a grace
+ *                   epoch (H < the frozen grace_until) is no eligible
+ *                   block either, and the same holding at H >=
+ *                   grace_until passes the eligibility step; and the
+ *                   pure refusals reached through the full serving path.
  *
  * WHAT IT DOES NOT COVER (how it can lie): the requester-not-seated
  * refusal and the serving path's OK answer through
@@ -912,7 +915,7 @@ static int sw_set(sw_t *s, uint64_t H, uint8_t (*fps)[64], size_t n,
     if (rc != SQLITE_DONE) return -1;
     for (size_t i = 0; i < n; i++) {
         if (sqlite3_prepare_v2(s->w->db, "INSERT INTO v2_storage_set_members "
-                               "VALUES (?1, ?2, 0)", -1, &st, NULL) !=
+                               "VALUES (?1, ?2, 0, 0)", -1, &st, NULL) !=
                 SQLITE_OK)
             return -1;
         sqlite3_bind_int64(st, 1, (sqlite3_int64)H);
@@ -975,8 +978,8 @@ static int t_serve_refusals(void) {
         r.set_hash[0] ^= 1;
         CHECK(SERVE(&r) == NODUS_STPROBE_REF_SET_MISMATCH, "S(H) differs");
     }
-    /* storage_set(H + E) WITH this node, no set at H (no grace passed)
-     * and no published segment: B == 0 */
+    /* storage_set(H + E) WITH this node, no set at H and no published
+     * segment: B == 0 */
     {
         uint8_t m[2][64];
         memcpy(m[0], other, 64);
@@ -987,6 +990,53 @@ static int t_serve_refusals(void) {
         memcpy(q.set_hash, sh, 64);
         CHECK(SERVE(&q) == NODUS_STPROBE_REF_NO_BLOCKS,
               "no eligible block: B == 0");
+    }
+    /* K9 (decision 2026-10-05-storage-reward-is-for-archive.md): one
+     * published segment, held by this node (two members, R = 3), frozen
+     * in storage_set(H + 2E) with grace_until = H + 3E — the epoch is in
+     * grace, so the holder's side of the ONE eligibility rule finds no
+     * block (the reporter, reading the same rule, sends no probe); the
+     * same holding with grace_until = H + 2E is past grace and passes the
+     * eligibility step (it then stops at the seat check, which needs a
+     * snapshot table this database does not have) */
+    {
+        sqlite3_stmt *st = NULL;
+        uint8_t root[64];
+        fill(root, 64, 0x5E);
+        CHECK(sqlite3_prepare_v2(s.w->db, "INSERT INTO v2_storage_segments "
+              "(k, root, published_height) VALUES (1, ?1, 1)", -1, &st,
+              NULL) == SQLITE_OK, "prepare segment");
+        sqlite3_bind_blob(st, 1, root, 64, SQLITE_TRANSIENT);
+        CHECK(sqlite3_step(st) == SQLITE_DONE, "segment 1 published");
+        sqlite3_finalize(st);
+        for (int pass = 0; pass < 2; pass++) {
+            const uint64_t Hg = H + (uint64_t)(2 + pass) * E_LEN;
+            const uint64_t gu = pass == 0 ? H + 3 * E_LEN : Hg;
+            uint8_t m[2][64];
+            memcpy(m[0], other, 64);
+            memcpy(m[1], s.fp, 64);
+            CHECK(sw_set(&s, Hg, m, 2, sh) == 0, "set with this node");
+            st = NULL;
+            CHECK(sqlite3_prepare_v2(s.w->db, "UPDATE v2_storage_set_members "
+                  "SET grace_until = ?1 WHERE epoch_start = ?2 AND "
+                  "node_fp = ?3", -1, &st, NULL) == SQLITE_OK, "prepare");
+            sqlite3_bind_int64(st, 1, (sqlite3_int64)gu);
+            sqlite3_bind_int64(st, 2, (sqlite3_int64)Hg);
+            sqlite3_bind_blob(st, 3, s.fp, 64, SQLITE_TRANSIENT);
+            CHECK(sqlite3_step(st) == SQLITE_DONE &&
+                  sqlite3_changes(s.w->db) == 1, "grace_until frozen");
+            sqlite3_finalize(st);
+            nodus_stprobe_req_t q = r;
+            q.epoch_start = Hg;
+            memcpy(q.set_hash, sh, 64);
+            if (pass == 0)
+                CHECK(SERVE(&q) == NODUS_STPROBE_REF_NO_BLOCKS,
+                      "in grace (H < grace_until): no eligible block");
+            else
+                CHECK(SERVE(&q) != NODUS_STPROBE_REF_NO_BLOCKS,
+                      "past grace (H >= grace_until): the held segment is "
+                      "eligible");
+        }
     }
 #undef SERVE
     CHECK(len == 0, "a refusal writes no answer");

@@ -152,22 +152,24 @@ int nodus_witness_storage_set_get(nodus_witness_t *w, uint64_t epoch_start,
 
     st = NULL;
     if (sqlite3_prepare_v2(w->db,
-            "SELECT node_fp, fail_streak FROM v2_storage_set_members "
-            "WHERE epoch_start = ?1 ORDER BY node_fp ASC",
-            -1, &st, NULL) != SQLITE_OK)
+            "SELECT node_fp, fail_streak, grace_until FROM "
+            "v2_storage_set_members WHERE epoch_start = ?1 "
+            "ORDER BY node_fp ASC", -1, &st, NULL) != SQLITE_OK)
         return -1;
     sqlite3_bind_int64(st, 1, (sqlite3_int64)epoch_start);
     uint32_t n = 0;
     int bad = 0;
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
-        sqlite3_int64 fs = 0;
+        sqlite3_int64 fs = 0, gu = 0;
         if (n >= out->count || !col_blob_len(st, 0, 64) ||
-            !col_int(st, 1, 0, (sqlite3_int64)UINT32_MAX, &fs)) {
+            !col_int(st, 1, 0, (sqlite3_int64)UINT32_MAX, &fs) ||
+            !col_int(st, 2, 0, INT64_MAX, &gu)) {
             bad = 1;
             break;
         }
         memcpy(out->fps[n], sqlite3_column_blob(st, 0), 64);
         out->fail_streak[n] = (uint32_t)fs;
+        out->grace_until[n] = (uint64_t)gu;
         n++;
     }
     sqlite3_finalize(st);
@@ -484,57 +486,138 @@ int nodus_witness_storage_holders(const nodus_storage_set_t *set,
     return 0;
 }
 
-/* Per-member eligible-segment marks for epoch (H, H+E] (header
- * "ELIGIBILITY"): for each segment published at or before H−E, its
- * holders over storage_set(H−E) that are members of storage_set(H).
- * `cur` = set(H); `prev` = set(H−E) (count 0 when absent); `segs` the
- * segments with published_height <= H−E. Calls `mark(ud, member_index,
- * k)` once per (member, eligible segment), k ascending.
- * @return 0 / -1. */
-typedef int (*st_mark_fn)(void *ud, size_t member, uint64_t k);
+/* ── the grace rule and the eligibility rule (header "GRACE" and
+ *    "ELIGIBILITY") ─────────────────────────────────────────────────── */
 
-static int st_eligible_walk(const nodus_storage_set_t *cur,
-                            const nodus_storage_set_t *prev,
-                            const st_seg_t *segs, size_t n_segs,
-                            st_mark_fn mark, void *ud) {
-    if (prev->count == 0 || cur->count == 0) return 0;
+int nodus_storage_grace_next(uint64_t prev, uint64_t H, uint64_t n,
+                             uint64_t E, uint64_t *out) {
+    if (!out) return -1;
+    if (n == 0) { *out = prev; return 0; }
+    uint64_t span = 0, g = 0;
+    if (dna_ck_mul_u64(n, E, &span) != 0 ||
+        dna_ck_add_u64(H, span, &g) != 0)
+        return -1;                        /* H + n·E past u64: a fault   */
+    *out = g > prev ? g : prev;
+    return 0;
+}
+
+int nodus_storage_in_grace(uint64_t H, uint64_t grace_until) {
+    return H < grace_until ? 1 : 0;
+}
+
+int nodus_storage_member_eligible(uint64_t H, uint64_t grace_until,
+                                  int in_cur, int in_prev) {
+    if (nodus_storage_in_grace(H, grace_until)) return 0;
+    return (in_cur || in_prev) ? 1 : 0;
+}
+
+/* The member ↔ segment relation of epoch (H, H+E] — the ONE walk every
+ * consumer reads (the grace count at the freeze, the settlement weights,
+ * the probe's eligible list). For each published segment k (k ascending)
+ * of `segs` (published_height <= H) and each member m of `cur` =
+ * storage_set(H):
+ *     in_cur  = m ∈ holders(k, set(H))
+ *     in_prev = published_height(k) <= H − E  and  m ∈ holders(k, set(H−E))
+ * `rel(ud, m, k, in_cur, in_prev)` is called once per (m, k) with at
+ * least one of the two set; a holder of set(H−E) that is not a member of
+ * set(H) has no index and is skipped (no bit, no pay). `prev` =
+ * set(H−E), count 0 when absent. Within one member the calls come in k
+ * ascending order. @return 0 / -1. */
+typedef int (*st_rel_fn)(void *ud, size_t member, uint64_t k, int in_cur,
+                         int in_prev);
+
+static int st_member_walk(const nodus_storage_set_t *cur,
+                          const nodus_storage_set_t *prev, uint64_t H,
+                          const st_seg_t *segs, size_t n_segs,
+                          st_rel_fn rel, void *ud) {
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    if (cur->count == 0) return 0;
+    if (H < E) return -1;                 /* H is a positive multiple of E */
     for (size_t s = 0; s < n_segs; s++) {
-        uint8_t hf[DNA_V2_STORAGE_HOLDERS][64];
-        size_t nh = 0;
-        if (nodus_witness_storage_holders(prev, segs[s].root, hf, &nh) != 0)
+        if (segs[s].published_height > H) return -1;   /* caller's bound */
+        uint8_t hc[DNA_V2_STORAGE_HOLDERS][64], hp[DNA_V2_STORAGE_HOLDERS][64];
+        size_t nc = 0, np = 0;
+        if (nodus_witness_storage_holders(cur, segs[s].root, hc, &nc) != 0)
             return -1;
-        for (size_t j = 0; j < nh; j++) {
+        if (prev->count > 0 && segs[s].published_height <= H - E &&
+            nodus_witness_storage_holders(prev, segs[s].root, hp, &np) != 0)
+            return -1;
+        /* the (at most 2R) members involved, each once, with both flags */
+        size_t m_of[2 * DNA_V2_STORAGE_HOLDERS];
+        int fc[2 * DNA_V2_STORAGE_HOLDERS], fpv[2 * DNA_V2_STORAGE_HOLDERS];
+        size_t nm = 0;
+        for (size_t j = 0; j < nc + np; j++) {
+            const int from_cur = j < nc;
             long m = st_find_fp((const uint8_t (*)[64])cur->fps, cur->count,
-                                hf[j]);
-            if (m < 0) continue;          /* left the set: no bit, no pay */
-            if (mark(ud, (size_t)m, segs[s].k) != 0) return -1;
+                                from_cur ? hc[j] : hp[j - nc]);
+            if (m < 0) {
+                if (from_cur) return -1;  /* a holder of set(H) is in it */
+                continue;                 /* left the set: no bit, no pay */
+            }
+            size_t q = 0;
+            while (q < nm && m_of[q] != (size_t)m) q++;
+            if (q == nm) { m_of[nm] = (size_t)m; fc[nm] = 0; fpv[nm] = 0;
+                           nm++; }
+            if (from_cur) fc[q] = 1;
+            else fpv[q] = 1;
         }
+        for (size_t q = 0; q < nm; q++)
+            if (rel(ud, m_of[q], segs[s].k, fc[q], fpv[q]) != 0) return -1;
     }
     return 0;
 }
 
+/* Settlement weights: P blocks per ELIGIBLE segment (K1). */
 typedef struct {
+    const nodus_storage_set_t *cur;
+    uint64_t H;
     uint64_t weight[DNA_V2_STORAGE_SET_MAX];
 } st_weights_t;
 
-static int st_mark_weight(void *ud, size_t member, uint64_t k) {
+static int st_rel_weight(void *ud, size_t member, uint64_t k, int in_cur,
+                         int in_prev) {
     (void)k;
     st_weights_t *wt = ud;
+    if (!nodus_storage_member_eligible(wt->H, wt->cur->grace_until[member],
+                                       in_cur, in_prev))
+        return 0;
     return dna_ck_add_u64(wt->weight[member], ST_P, &wt->weight[member]) == 0
                ? 0 : -1;
 }
 
+/* One member's ELIGIBLE segments, k ascending. */
 typedef struct {
+    const nodus_storage_set_t *cur;
+    uint64_t  H;
     size_t    target;
     uint64_t *ks;
     size_t    cap, n;
 } st_collect_t;
 
-static int st_mark_collect(void *ud, size_t member, uint64_t k) {
+static int st_rel_collect(void *ud, size_t member, uint64_t k, int in_cur,
+                          int in_prev) {
     st_collect_t *c = ud;
     if (member != c->target) return 0;
+    if (!nodus_storage_member_eligible(c->H, c->cur->grace_until[member],
+                                       in_cur, in_prev))
+        return 0;
     if (c->n < c->cap && c->ks) c->ks[c->n] = k;
     c->n++;
+    return 0;
+}
+
+/* The freeze's grace count: n(m) = segments m holds at H that it did not
+ * hold at H − E (a segment published at H counts: in_prev is 0). */
+typedef struct {
+    uint64_t n_new[DNA_V2_STORAGE_SET_MAX];
+} st_newcount_t;
+
+static int st_rel_new(void *ud, size_t member, uint64_t k, int in_cur,
+                      int in_prev) {
+    (void)k;
+    st_newcount_t *nc = ud;
+    if (!in_cur || in_prev) return 0;
+    nc->n_new[member]++;                  /* <= the segment count: no wrap */
     return 0;
 }
 
@@ -561,10 +644,16 @@ int nodus_witness_storage_eligible_segments(nodus_witness_t *w,
     long me = st_find_fp((const uint8_t (*)[64])cur->fps, cur->count,
                          node_fp);
     if (me < 0) { ret = 0; goto done; }
-    if (st_segments_load(w, epoch_start - E, &segs, &n_segs) != 0)
+    /* in grace: nothing is eligible (the walk below would say the same) */
+    if (nodus_storage_in_grace(epoch_start, cur->grace_until[me])) {
+        ret = 0;
         goto done;
-    st_collect_t c = { (size_t)me, ks_out, cap, 0 };
-    if (st_eligible_walk(cur, prev, segs, n_segs, st_mark_collect, &c) != 0)
+    }
+    if (st_segments_load(w, epoch_start, &segs, &n_segs) != 0)
+        goto done;
+    st_collect_t c = { cur, epoch_start, (size_t)me, ks_out, cap, 0 };
+    if (st_member_walk(cur, prev, epoch_start, segs, n_segs, st_rel_collect,
+                       &c) != 0)
         goto done;
     *n_out = c.n;
     ret = c.n <= cap ? 0 : -1;
@@ -690,11 +779,15 @@ static int st_settle(nodus_witness_t *w, uint64_t B,
     if (rc != 0) goto done;
     rc = nodus_witness_storage_set_get(w, H - E, prev);
     if (rc < 0) goto done;
-    if (rc == 1) prev->count = 0;         /* no set(H−E): all in grace   */
+    if (rc == 1) prev->count = 0;         /* no set(H−E): nothing held
+                                           * before H (the freeze at H
+                                           * gave every holder grace)    */
 
-    /* ── weights (K1 block count) ─────────────────────────────────── */
-    if (st_segments_load(w, H - E, &segs, &n_segs) != 0) goto done;
-    if (st_eligible_walk(cur, prev, segs, n_segs, st_mark_weight, wt) != 0)
+    /* ── weights (K1 block count; the eligibility rule, header) ───── */
+    if (st_segments_load(w, H, &segs, &n_segs) != 0) goto done;
+    wt->cur = cur;
+    wt->H = H;
+    if (st_member_walk(cur, prev, H, segs, n_segs, st_rel_weight, wt) != 0)
         goto done;
     uint64_t W = 0;
     for (uint32_t i = 0; i < cur->count; i++)
@@ -821,8 +914,11 @@ static int st_settle(nodus_witness_t *w, uint64_t B,
     /* ── fail_streak (bytes item 4 + K5 + K5a) — an eligible block and
      *    OK resets to 0 whatever the old value; else at 3 or more every
      *    member adds one (14 + 1 written as 0); else below 3 an eligible
-     *    block and NOT OK adds one, no eligible block leaves it ────────── */
+     *    block and NOT OK adds one, no eligible block leaves it. A member
+     *    in grace for (H, H+E] (K9) is left unchanged, whatever its value
+     *    — the K9 text "fail_streak unchanged" (header "SETTLEMENT") ── */
     for (uint32_t i = 0; i < cur->count; i++) {
+        if (nodus_storage_in_grace(H, cur->grace_until[i])) continue;
         const uint32_t old = rows[row_of[i]].fail_streak;
         const uint32_t nv = nodus_storage_fail_streak_next(
                                 old, wt->weight[i] > 0, ok[i]);
@@ -967,7 +1063,72 @@ int nodus_witness_storage_publish_due(nodus_witness_t *w,
     return 0;
 }
 
-/* STEP 5 — freeze storage_set(B). @return 0 / -2. */
+/* grace_until := nv, bound to the observed value. */
+static int st_grace_write(nodus_witness_t *w, const uint8_t fp[64],
+                          uint64_t old, uint64_t nv) {
+    if (old == nv) return 0;
+    if (old > ST_STORE_MAX || nv > ST_STORE_MAX) return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "UPDATE v2_storage_nodes SET grace_until = ?1 "
+            "WHERE node_fp = ?2 AND grace_until = ?3", -1, &st, NULL)
+        != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)nv);
+    sqlite3_bind_blob(st, 2, fp, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)old);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return (rc == SQLITE_DONE && sqlite3_changes(w->db) == 1) ? 0 : -1;
+}
+
+/* STEP 5a — the K9 grace update over the set being frozen (header
+ * "GRACE"): for each member m of `set` = storage_set(B), n(m) = the
+ * segments published at or before B that m holds in set(B) and did not
+ * hold in set(B−E); n > 0 → grace_until = max(grace_until, B + n·E)
+ * (checked; past the stored INTEGER bound = fault), written to the
+ * registry row AND to set->grace_until (the frozen copy). Runs after
+ * STEP 4, so a segment published at B counts. @return 0 / -2. */
+static int st_grace_update(nodus_witness_t *w, uint64_t B,
+                           nodus_storage_set_t *set) {
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    if (set->count == 0) return 0;
+    int ret = -2;
+    nodus_storage_set_t *prev = calloc(1, sizeof(*prev));
+    st_newcount_t *nc = calloc(1, sizeof(*nc));
+    st_seg_t *segs = NULL;
+    size_t n_segs = 0;
+    if (!prev || !nc) goto done;
+    int rc = B > E ? nodus_witness_storage_set_get(w, B - E, prev) : 1;
+    if (rc < 0) goto done;
+    if (rc == 1) prev->count = 0;         /* nothing held before B       */
+    if (st_segments_load(w, B, &segs, &n_segs) != 0) goto done;
+    if (st_member_walk(set, prev, B, segs, n_segs, st_rel_new, nc) != 0)
+        goto done;
+    for (uint32_t i = 0; i < set->count; i++) {   /* node_fp ASC */
+        const uint64_t old = set->grace_until[i];
+        uint64_t nv = 0;
+        if (nodus_storage_grace_next(old, B, nc->n_new[i], E, &nv) != 0 ||
+            nv > ST_STORE_MAX) {
+            QGP_LOG_ERROR(LOG_TAG, "storage boundary %llu: grace_until "
+                          "overflow (%llu new segments)",
+                          (unsigned long long)B,
+                          (unsigned long long)nc->n_new[i]);
+            goto done;
+        }
+        if (st_grace_write(w, set->fps[i], old, nv) != 0) goto done;
+        set->grace_until[i] = nv;
+    }
+    ret = 0;
+done:
+    free(segs);
+    free(nc);
+    free(prev);
+    return ret;
+}
+
+/* STEP 5 — freeze storage_set(B), with the K9 grace update (5a) applied
+ * before the member rows are written. @return 0 / -2. */
 static int st_freeze(nodus_witness_t *w, uint64_t B,
                      nodus_storage_boundary_t *out) {
     if (B > ST_STORE_MAX) return -2;
@@ -982,11 +1143,13 @@ static int st_freeze(nodus_witness_t *w, uint64_t B,
         if (set->count >= DNA_V2_STORAGE_SET_MAX) goto done;   /* cap */
         memcpy(set->fps[set->count], rows[i].node_fp, 64);
         set->fail_streak[set->count] = rows[i].fail_streak;
+        set->grace_until[set->count] = rows[i].grace_until;
         set->count++;
     }
     if (dna_v2_storage_set_hash(B, (const uint8_t (*)[64])set->fps,
                                 set->count, set->set_hash) != 0)
         goto done;
+    if (st_grace_update(w, B, set) != 0) goto done;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
             "INSERT INTO v2_storage_sets (epoch_start, set_hash, "
@@ -1002,12 +1165,14 @@ static int st_freeze(nodus_witness_t *w, uint64_t B,
         st = NULL;
         if (sqlite3_prepare_v2(w->db,
                 "INSERT INTO v2_storage_set_members (epoch_start, node_fp, "
-                "fail_streak) VALUES (?1, ?2, ?3)", -1, &st, NULL)
+                "fail_streak, grace_until) VALUES (?1, ?2, ?3, ?4)", -1, &st,
+                NULL)
             != SQLITE_OK)
             goto done;
         sqlite3_bind_int64(st, 1, (sqlite3_int64)B);
         sqlite3_bind_blob(st, 2, set->fps[i], 64, SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 3, (sqlite3_int64)set->fail_streak[i]);
+        sqlite3_bind_int64(st, 4, (sqlite3_int64)set->grace_until[i]);
         rc = sqlite3_step(st);
         sqlite3_finalize(st);
         if (rc != SQLITE_DONE) goto done;

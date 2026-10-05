@@ -2912,6 +2912,7 @@ static void handle_dnac_name_of(nodus_witness_t *w,
  *   frozen storage_set(H) governs epoch (H, H+E] (0: none yet);
  *   "found" bool — the registry row exists; when found: "st" u8 status
  *   (1 ACTIVE / 2 EXITING / 3 RELEASED), "bond" u64, "fs" u32 fail_streak,
+ *   "gu" u64 grace_until (K9: epoch (H, H+E] is in grace while H < gu),
  *   "rh" u64 registered_height, "xh" u64 exit_height, "payee" tstr128;
  *   "set" bool storage_set(H) exists; "sc" u32 its member count; "mem"
  *   bool the node is a member; "ns" u64 how many segments are ELIGIBLE for
@@ -2934,7 +2935,8 @@ static int st_status_row(nodus_witness_t *w, const uint8_t fp[64],
     int ret = -1;
     if (sqlite3_prepare_v2(w->db,
             "SELECT payee_fp, bond, status, registered_height, exit_height, "
-            "fail_streak FROM v2_storage_nodes WHERE node_fp = ?1",
+            "fail_streak, grace_until FROM v2_storage_nodes "
+            "WHERE node_fp = ?1",
             -1, &st, NULL) != SQLITE_OK) {
         sqlite3_finalize(st);
         return -1;
@@ -2948,25 +2950,27 @@ static int st_status_row(nodus_witness_t *w, const uint8_t fp[64],
                sqlite3_column_bytes(st, 0) == 64 &&
                sqlite3_column_blob(st, 0) != NULL) {
         int ok = 1;
-        for (int c = 1; c <= 5; c++)
+        for (int c = 1; c <= 6; c++)
             if (sqlite3_column_type(st, c) != SQLITE_INTEGER) ok = 0;
-        sqlite3_int64 bond = 0, stv = 0, rh = 0, xh = 0, fs = 0;
+        sqlite3_int64 bond = 0, stv = 0, rh = 0, xh = 0, fs = 0, gu = 0;
         if (ok) {
             bond = sqlite3_column_int64(st, 1);
             stv  = sqlite3_column_int64(st, 2);
             rh   = sqlite3_column_int64(st, 3);
             xh   = sqlite3_column_int64(st, 4);
             fs   = sqlite3_column_int64(st, 5);
+            gu   = sqlite3_column_int64(st, 6);
         }
         if (ok && bond >= 0 && stv >= DNA_V2_STORAGE_ACTIVE &&
             stv <= DNA_V2_STORAGE_RELEASED && rh >= 1 && xh >= 0 &&
-            fs >= 0 && fs <= (sqlite3_int64)UINT32_MAX) {
+            fs >= 0 && fs <= (sqlite3_int64)UINT32_MAX && gu >= 0) {
             hf4_hex128(sqlite3_column_blob(st, 0), o->payee);
             o->bond = (uint64_t)bond;
             o->status = (uint8_t)stv;
             o->registered_height = (uint64_t)rh;
             o->exit_height = (uint64_t)xh;
             o->fail_streak = (uint32_t)fs;
+            o->grace_until = (uint64_t)gu;
             ret = 1;
         }
     }
@@ -3065,7 +3069,7 @@ static void handle_dnac_storage_status(nodus_witness_t *w,
         cbor_encoder_t enc;
         cbor_encoder_init(&enc, buf, cap);
         enc_dnac_response(&enc, txn_id, "dnac_storage_status",
-                          o->found ? 14 : 8);
+                          o->found ? 15 : 8);
         cbor_encode_cstr(&enc, "ch");    cbor_encode_uint(&enc, tip);
         cbor_encode_cstr(&enc, "es");    cbor_encode_uint(&enc, o->epoch_start);
         cbor_encode_cstr(&enc, "found"); cbor_encode_bool(&enc, o->found);
@@ -3074,6 +3078,8 @@ static void handle_dnac_storage_status(nodus_witness_t *w,
             cbor_encode_cstr(&enc, "bond");  cbor_encode_uint(&enc, o->bond);
             cbor_encode_cstr(&enc, "fs");
             cbor_encode_uint(&enc, o->fail_streak);
+            cbor_encode_cstr(&enc, "gu");
+            cbor_encode_uint(&enc, o->grace_until);
             cbor_encode_cstr(&enc, "rh");
             cbor_encode_uint(&enc, o->registered_height);
             cbor_encode_cstr(&enc, "xh");

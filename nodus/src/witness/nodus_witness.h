@@ -239,6 +239,13 @@ typedef struct {
  *                      settled epochs NOT OK while the member had >= 1
  *                      eligible block; 0 on OK; >= 3 skips the member
  *                      for placement (u32 range)
+ *   grace_until        K9 (decision docs/plans/decisions/2026-10-05-
+ *                      storage-reward-is-for-archive.md): an epoch whose
+ *                      start H is < grace_until is not probed and not
+ *                      paid for this node; raised at a storage boundary
+ *                      H to max(grace_until, H + n·E) when the node
+ *                      gains n > 0 segments (0..INT64_MAX: a u64 above
+ *                      it is a fault, the stored-INTEGER rule)
  * The v2_names discipline: typed CHECKs on every column (one storage
  * class, BINARY order), WITHOUT ROWID, in the BASE schema (an empty table
  * on every chain before the storage activation — no migration rung,
@@ -248,8 +255,8 @@ typedef struct {
  * bytes item 4); node_pk is kept so the node's identity is recoverable
  * from state. B1's 7-column shape was never on any main-line database
  * (branch p1-storage-reward only), so the column is part of the base
- * shape, not a migration. */
-#define NODUS_V2_STORAGE_DDL_BODY                                         \
+ * shape, not a migration; grace_until (K9) joins it the same way. */
+#define NODUS_V2_STORAGE_DDL_BODY                                        \
     "v2_storage_nodes(node_fp BLOB NOT NULL PRIMARY KEY CHECK("           \
     "typeof(node_fp)='blob' AND length(node_fp)=64), node_pk BLOB NOT "   \
     "NULL CHECK(typeof(node_pk)='blob' AND length(node_pk)=2592), "       \
@@ -261,7 +268,8 @@ typedef struct {
     "registered_height >= 1), exit_height INTEGER NOT NULL CHECK(typeof(" \
     "exit_height)='integer' AND exit_height >= 0), fail_streak INTEGER "  \
     "NOT NULL CHECK(typeof(fail_streak)='integer' AND fail_streak "       \
-    "BETWEEN 0 AND 4294967295)) WITHOUT ROWID"
+    "BETWEEN 0 AND 4294967295), grace_until INTEGER NOT NULL CHECK("      \
+    "typeof(grace_until)='integer' AND grace_until >= 0)) WITHOUT ROWID"
 #define NODUS_V2_STORAGE_DDL                                              \
     "CREATE TABLE IF NOT EXISTS " NODUS_V2_STORAGE_DDL_BODY
 
@@ -301,14 +309,22 @@ typedef struct {
  *                         rev 4 §2). NOT hashed by S(H) (bytes item 2 is
  *                         node_fp only): it is a deterministic copy of
  *                         the registry leaf v2 committed at H (the
- *                         v2_balance_copy class). */
+ *                         v2_balance_copy class).
+ *   grace_until           K9: the member's registry grace_until AFTER
+ *                         the grace update of boundary epoch_start (the
+ *                         value the registry leaf commits at that
+ *                         boundary) — the epoch (H, H+E] is in grace for
+ *                         this member iff H < grace_until (nodus_witness_
+ *                         v2_storage.h "ELIGIBILITY"). Same copy class
+ *                         as fail_streak, not hashed by S(H). */
 #define NODUS_V2_STMEMB_DDL_BODY                                          \
     "v2_storage_set_members(epoch_start INTEGER NOT NULL CHECK(typeof("   \
     "epoch_start)='integer' AND epoch_start >= 1), node_fp BLOB NOT NULL "\
     "CHECK(typeof(node_fp)='blob' AND length(node_fp)=64), fail_streak "  \
     "INTEGER NOT NULL CHECK(typeof(fail_streak)='integer' AND "           \
-    "fail_streak BETWEEN 0 AND 4294967295), PRIMARY KEY (epoch_start, "   \
-    "node_fp)) WITHOUT ROWID"
+    "fail_streak BETWEEN 0 AND 4294967295), grace_until INTEGER NOT "     \
+    "NULL CHECK(typeof(grace_until)='integer' AND grace_until >= 0), "    \
+    "PRIMARY KEY (epoch_start, node_fp)) WITHOUT ROWID"
 #define NODUS_V2_STMEMB_DDL                                               \
     "CREATE TABLE IF NOT EXISTS " NODUS_V2_STMEMB_DDL_BODY
 

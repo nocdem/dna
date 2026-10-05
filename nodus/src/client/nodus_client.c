@@ -6125,7 +6125,7 @@ int nodus_dnac_storage_status_decode(const uint8_t *raw, size_t raw_len,
     cbor_item_t    k, it;
     uint64_t       v;
     unsigned       have = 0;            /* the 8 keys of every reply      */
-    unsigned       row = 0;             /* the 6 keys of a found row      */
+    unsigned       row = 0;             /* the 7 keys of a found row      */
 
     if (!raw || !out) return -1;
     memset(out, 0, sizeof(*out));
@@ -6187,6 +6187,9 @@ int nodus_dnac_storage_status_decode(const uint8_t *raw, size_t raw_len,
             if (v3d_u64(&dec, UINT32_MAX, &v) != 0) goto bad;
             out->fail_streak = (uint32_t)v;
             row |= 4u;
+        } else if (KEY_EQ(k, "gu")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->grace_until) != 0) goto bad;
+            row |= 64u;
         } else if (KEY_EQ(k, "rh")) {
             if (v3d_u64(&dec, UINT64_MAX, &out->registered_height) != 0 ||
                 out->registered_height == 0)
@@ -6204,7 +6207,7 @@ int nodus_dnac_storage_status_decode(const uint8_t *raw, size_t raw_len,
     }
     if (dec.error || have != 255u) goto bad;    /* every key is required */
     /* found ⇔ the reply carries the whole row */
-    if (out->found ? row != 63u : row != 0u) goto bad;
+    if (out->found ? row != 127u : row != 0u) goto bad;
     if (out->epoch_start > out->committed_height) goto bad;
     if (!out->set_exists && (out->set_count != 0 || out->member)) goto bad;
     if (out->member && !out->found) goto bad;   /* rows never vanish     */

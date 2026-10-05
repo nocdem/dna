@@ -7,10 +7,11 @@
  *        archive-era loaders.
  *
  * Decisions: docs/plans/decisions/2026-10-05-storage-reward-is-for-
- * archive.md (reward = block archive; R = 3; G = 1; amount = block count;
+ * archive.md (reward = block archive; R = 3; amount = block count;
  * 3 failed epochs → skipped; 3 samples; full archives keep all; K5 a
  * skipped member returns after 12 settled epochs; K5a an OK epoch with
- * eligible blocks resets fail_streak to 0 even at 3 or more),
+ * eligible blocks resets fail_streak to 0 even at 3 or more; K9 the grace
+ * scales with the number of newly assigned segments — replaces G = 1),
  * 2026-10-05-archive-reward-bytes-approved.md (bytes), 2026-10-05-
  * kurultay-7-archive-reward-summary.md, 2026-10-04-storage-reward-
  * approved.md (kept parts), 2026-10-04-storage-reward-who-earns.md (only
@@ -47,24 +48,49 @@
  *      ascending from the last published + 1 (one rule = the activation
  *      backfill AND the schedule; never an immature segment).
  *   5. FREEZE storage_set(B) = the ACTIVE rows (node_fp ASC, S(B)), each
- *      member's fail_streak copied (the input of holders(·, B)).
+ *      member's fail_streak copied (the input of holders(·, B)); then
+ *      the K9 GRACE update (below) over that set, written to the
+ *      registry and copied, AFTER the update, into the member rows.
  * Fixed order; every iteration over rows is an explicit ORDER BY on a
  * unique key; integer math only; no clock. Any failure is a node FAULT
  * (-2) — a boundary has no verdict class (nodus_witness_v2_epoch.h).
  *
- * ── ELIGIBILITY (design rev 4 §2, G = 1, one-epoch handoff) ───────────
- *   member m of storage_set(H) holds an ELIGIBLE (past-grace) segment k
- *   in epoch (H, H+E] iff
- *       published_height(k) <= H − E   and   m ∈ holders(k, H − E)
+ * ── GRACE (K9, decision 2026-10-05-storage-reward-is-for-archive.md;
+ *    replaces G = 1) ──────────────────────────────────────────────────
+ *   At boundary H, for each member m of storage_set(H):
+ *       n(m) = |{k : published_height(k) <= H ∧ m ∈ holders(k, H)}
+ *               \ {k : published_height(k) <= H − E ∧ m ∈ holders(k, H−E)}|
+ *   — the segments m holds now that it did not hold one epoch ago; a
+ *   segment published at H counts (STEP 4 runs first). n(m) > 0 →
+ *       grace_until(m) = max(grace_until(m), H + n(m)·E)
+ *   (nodus_storage_grace_next; checked u64, a result past INT64_MAX — the
+ *   stored INTEGER bound — is a FAULT). The registry row (leaf v2 field
+ *   grace_until) and the frozen member row of set(H) carry the value
+ *   AFTER this update. Epoch (H, H+E] is IN GRACE for m iff
+ *   H < grace_until (oracle reading: the value after the update at H —
+ *   so any n > 0 puts the epoch starting at H in grace). In grace: m is
+ *   not probed (bit 0, not counted against it), weight 0 (earns
+ *   nothing), fail_streak unchanged at that epoch's settlement.
  *   holders(k, X) = bytes item 3 over storage_set(X) with each member's
- *   fail_streak AS FROZEN at X. This one formula is the design's three
- *   cases: a continuing holder (in holders(k,H−E) and holders(k,H)) is
- *   eligible; a holder displaced at H (in holders(k,H−E), not in
- *   holders(k,H)) stays assigned and paid through (H, H+E] — the overlap
- *   epoch — and may delete k after H + E; a NEW holder (in holders(k,H),
- *   not in holders(k,H−E)) is not probed and earns nothing for k in that
- *   epoch. weight(m) = DNA_V2_SEGMENT_BLOCKS × |eligible segments of m|
- *   (K1: block count). A member must be in storage_set(H) to have a bit.
+ *   fail_streak AS FROZEN at X; an absent set(H−E) (the first storage
+ *   boundary) holds nothing, so every assigned segment is new there.
+ *
+ * ── ELIGIBILITY (nodus_storage_member_eligible — the one rule) ───────
+ *   member m of storage_set(H) holds an ELIGIBLE segment k in epoch
+ *   (H, H+E] iff m is NOT in grace for (H, H+E] and
+ *       (published_height(k) <= H   and m ∈ holders(k, H))       assigned
+ *    or (published_height(k) <= H−E and m ∈ holders(k, H − E))  overlap
+ *   The first line is "every assigned segment counts" once the grace is
+ *   over; the second keeps the one-epoch handoff: a holder DISPLACED at H
+ *   (in holders(k,H−E), not in holders(k,H)) is still probed and paid for
+ *   k through (H, H+E] and may delete k after H + E. (When m is not in
+ *   grace, n(m) at H was 0, so every assigned k was also held at H−E.)
+ *   weight(m) = DNA_V2_SEGMENT_BLOCKS × |eligible segments of m| (K1:
+ *   block count). A member must be in storage_set(H) to have a bit. The
+ *   settlement, the reporter's probe list and the probed node's answer
+ *   read the same rule (nodus_witness_storage_eligible_segments); the
+ *   holder's must-hold list (nodus_witness_storage_holder.h) is the same
+ *   two lines WITHOUT the grace gate — a member in grace still fetches.
  *
  * ── SETTLEMENT (rev 2.2 §5 + rev 4 §5) ────────────────────────────────
  *   P_total = Σ power of snapshot(H) (total_stake / DNAC_DECIMAL_UNIT —
@@ -93,6 +119,10 @@
  *               after 3 new failures;
  *     w > 0 and NOT OK:  +1;
  *     otherwise (w == 0, old < 3):  unchanged.
+ *   A member IN GRACE for (H, H+E] (K9) is skipped by this step — its
+ *   fail_streak is unchanged even when it is 3 or more (K9's "fail_streak
+ *   unchanged" read over K5's "+1 every settled epoch"; a long grace thus
+ *   also pauses a skipped member's K5 return count).
  *   Under a failed F1 floor nothing is settled, so fail_streak is
  *   unchanged for every member (reading of "nothing moves for that
  *   epoch").
@@ -123,13 +153,15 @@ extern "C" {
  *  epochs). The stored value never reaches it: 14 + 1 is written as 0. */
 #define NODUS_STORAGE_FAIL_RETURN      15u
 
-/** One frozen storage set, as committed. Heap-allocate it (16.9 KB). */
+/** One frozen storage set, as committed. Heap-allocate it (19.5 KB). */
 typedef struct {
     uint64_t epoch_start;
     uint8_t  set_hash[64];                           /* S(H)              */
     uint32_t count;                                  /* 0..256            */
     uint8_t  fps[DNA_V2_STORAGE_SET_MAX][64];        /* node_fp ASC       */
     uint32_t fail_streak[DNA_V2_STORAGE_SET_MAX];    /* frozen at H       */
+    uint64_t grace_until[DNA_V2_STORAGE_SET_MAX];    /* frozen at H, AFTER
+                                                      * the K9 update     */
 } nodus_storage_set_t;
 
 /** What the storage boundary did (the caller's touched input). */
@@ -213,6 +245,28 @@ int nodus_witness_storage_eligible_segments(nodus_witness_t *w,
                                             const uint8_t node_fp[64],
                                             uint64_t *ks_out, size_t cap,
                                             size_t *n_out);
+
+/** The K9 grace update (pure; header "GRACE"): n == 0 → prev; else
+ *  max(prev, H + n·E). @return 0 / -1 (H + n·E past UINT64_MAX — the
+ *  boundary treats it, and any value above INT64_MAX, as a FAULT). */
+int nodus_storage_grace_next(uint64_t prev, uint64_t H, uint64_t n,
+                             uint64_t E, uint64_t *out);
+
+/** 1 iff epoch (H, H+E] is in grace for a member whose grace_until (the
+ *  value frozen with storage_set(H), i.e. AFTER the update at H) is
+ *  `grace_until`: H < grace_until. Pure. */
+int nodus_storage_in_grace(uint64_t H, uint64_t grace_until);
+
+/** THE eligibility rule (pure; header "ELIGIBILITY"): segment k is
+ *  eligible for member m of storage_set(H) in epoch (H, H+E] iff m is not
+ *  in grace (nodus_storage_in_grace(H, grace_until) == 0) and (in_cur or
+ *  in_prev), where in_cur = m ∈ holders(k, set(H)) and in_prev =
+ *  published_height(k) <= H − E ∧ m ∈ holders(k, set(H−E)). The
+ *  settlement weights, the reporter's probe list and the probed node's
+ *  answer all go through it (nodus_witness_storage_eligible_segments).
+ *  @return 1 eligible / 0 not. */
+int nodus_storage_member_eligible(uint64_t H, uint64_t grace_until,
+                                  int in_cur, int in_prev);
 
 /** fail_streak after one SETTLED epoch (pure; header "SETTLEMENT",
  *  bytes item 4 + K5 + K5a). `old` the live value, `had_eligible` 1 iff

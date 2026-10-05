@@ -15,7 +15,8 @@
  *   3. 7/7 determinism: seven independent witness instances with identical
  *      state compute identical SYSTEM/CORE/domains/global roots.
  *   4. Storage reward v1 (test_storage_layer): the registry (leaf v2 with
- *      fail_streak), sets and reports trees, the 4-leg storage_root
+ *      fail_streak and, K9, grace_until — the 181-byte preimage restated),
+ *      sets and reports trees, the 4-leg storage_root
  *      ("NDS.STOR.v2", archive reward), "NDS.SYS.v5" and the exit release
  *      identity — structural checks (the segment trees and the archive
  *      KATs: test_storage_b2).
@@ -1182,6 +1183,43 @@ static int test_storage_layer(void) {
         m = r[0]; m.fail_streak = 1;
         CHECK(dna_v2_storage_node_leaf_hash(&m, h) == 0 &&
               memcmp(h, lf[0], 64) != 0, "fail_streak not bound"); OK();
+        /* K9 (decision 2026-10-05-storage-reward-is-for-archive.md): the
+         * leaf v2 binds grace_until, appended last */
+        m = r[0]; m.grace_until = 1;
+        CHECK(dna_v2_storage_node_leaf_hash(&m, h) == 0 &&
+              memcmp(h, lf[0], 64) != 0, "grace_until not bound"); OK();
+        m = r[0]; m.grace_until = UINT64_MAX;
+        CHECK(dna_v2_storage_node_leaf_hash(&m, h) == 0 &&
+              memcmp(h, lf[0], 64) != 0, "grace_until (u64 max) not bound"); OK();
+        /* the preimage restated: tag ‖ node_fp ‖ payee_fp ‖ bond(8) ‖
+         * status(1) ‖ registered_height(8) ‖ exit_height(8) ‖
+         * fail_streak(4) ‖ grace_until(8), 181 bytes, all big-endian */
+        {
+            uint8_t pre[16 + 64 + 64 + 8 + 1 + 8 + 8 + 4 + 8];
+            size_t o = 0;
+            m = r[1];
+            m.fail_streak = 0x01020304u;
+            m.grace_until = 0x1112131415161718ULL;
+            memset(pre, 0, 16);
+            memcpy(pre, "NDS.STLEAF.v2", 13);              o = 16;
+            memcpy(pre + o, m.node_fp, 64);                o += 64;
+            memcpy(pre + o, m.payee_fp, 64);               o += 64;
+            for (int b = 0; b < 8; b++)
+                pre[o++] = (uint8_t)(m.bond >> (56 - 8 * b));
+            pre[o++] = m.status;
+            for (int b = 0; b < 8; b++)
+                pre[o++] = (uint8_t)(m.registered_height >> (56 - 8 * b));
+            for (int b = 0; b < 8; b++)
+                pre[o++] = (uint8_t)(m.exit_height >> (56 - 8 * b));
+            for (int b = 0; b < 4; b++)
+                pre[o++] = (uint8_t)(m.fail_streak >> (24 - 8 * b));
+            for (int b = 0; b < 8; b++)
+                pre[o++] = (uint8_t)(m.grace_until >> (56 - 8 * b));
+            CHECK(o == 181u && qgp_sha3_512(pre, o, e) == 0 &&
+                  dna_v2_storage_node_leaf_hash(&m, h) == 0 &&
+                  memcmp(h, e, 64) == 0,
+                  "leaf v2 preimage (181 B, grace_until last)"); OK();
+        }
     }
 
     /* S(H): count 0 legal, count > 0, order, bound. */

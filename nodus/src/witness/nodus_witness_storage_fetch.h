@@ -89,9 +89,7 @@
  *   registry row is ACTIVE now — the session pin is this: the 4004 secret
  *   connection authenticated the requester's ML-DSA-87 key and the
  *   registry's node_fp must equal SHA3-512 of it in full; segment k is
- *   published (a v2_storage_segments row); the per-requester byte budget
- *   of the epoch is not spent (the holder runtime's table); then the
- *   piece is read from this node's block store when it still has the
+ *   published (a v2_storage_segments row); then the piece is read from this node's block store when it still has the
  *   block, else from its held segment file, else NOT_HELD. The SET piece
  *   is read from this node's STATE table (LoadValidators(k·17280), which
  *   is pruned on its own schedule, not with the block store's base) —
@@ -100,6 +98,11 @@
  *   ONE BLOCK IN FLIGHT PER PEER: the server answers each request at
  *   once (nothing is queued per requester), and the client keeps at most
  *   one request outstanding (nodus_witness_storage_holder.h).
+ *   NO BYTE BUDGET (K6a, decision 2026-10-05-storage-reward-is-for-
+ *   archive.md, operator "bayt sınırını kaldıralım"): what one requester
+ *   may draw is bounded by the admission above, its one request in
+ *   flight and the 4004 connection's per-peer send / recv rate limit —
+ *   not by a count of bytes per epoch.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -161,8 +164,8 @@ typedef enum {
     NODUS_STFETCH_REF_UNKNOWN_SET  = 2,  /* no frozen set at this tip     */
     NODUS_STFETCH_REF_NOT_PUBLISHED= 3,  /* segment k not published here  */
     NODUS_STFETCH_REF_NOT_HELD     = 4,  /* neither store nor file has it */
-    NODUS_STFETCH_REF_BUDGET       = 5,  /* the requester's epoch budget
-                                          * is spent                      */
+    /* 5 — retired: the per-requester byte budget (removed by K6a); never
+     *     sent, never reused */
     NODUS_STFETCH_REF_FAULT        = 6   /* this node could not answer    */
 } nodus_stfetch_code_t;
 
@@ -228,46 +231,13 @@ int nodus_stfetch_ans_decode(const uint8_t *msg, size_t len,
 bool nodus_stfetch_ans_shape_ok(const nodus_stfetch_req_t *req,
                                 const nodus_stfetch_ans_view_t *a);
 
-/* ── the per-requester byte budget (serving side, per epoch) ────────── */
-
-/** Bytes one requester may be served per epoch. ⚠ NOT GROUNDED — local
- *  policy (design rev 4 §9 leaves "fetch budgets (no capacity measurement
- *  yet)" open): 4 GiB ≈ two segments at today's ≈ 1.7 GB each, and an
- *  epoch (720 blocks, ≈ 1 h) at the 4004 send rate (5 120 000 B/s)
- *  carries ≈ 18 GB at most. */
-#define NODUS_STFETCH_EPOCH_BUDGET   (4ULL * 1024ULL * 1024ULL * 1024ULL)
-/** Every answered request costs at least this much of the budget, a
- *  refusal after admission included, so tiny requests cannot spin the
- *  serving node's database for free. ⚠ NOT GROUNDED — local policy. */
-#define NODUS_STFETCH_COST_MIN       4096u
-
-typedef struct {
-    bool     used;
-    uint8_t  fp[64];
-    uint64_t epoch;          /* the H the counter belongs to             */
-    uint64_t bytes;
-} nodus_stfetch_budget_t;
-
-/** Whether `fp`'s budget for epoch `H` is spent (read-only: no slot is
- *  taken). */
-bool nodus_stfetch_budget_spent(const nodus_stfetch_budget_t *slots,
-                                size_t n, const uint8_t fp[64], uint64_t H);
-
-/** Charge `cost` bytes to `fp` in epoch `H` (a slot of another epoch is
- *  reset; a new requester takes a free slot, or one of an older epoch).
- *  @return 0 charged / 1 refused (already spent, or no slot). */
-int nodus_stfetch_budget_take(nodus_stfetch_budget_t *slots, size_t n,
-                              const uint8_t fp[64], uint64_t H,
-                              uint64_t cost);
-
 /* ── the serving side ───────────────────────────────────────────────── */
 
 /**
  * The serving side's whole decision for one decoded request from the
  * peer whose authenticated node key hashes to `sender_fp` (header "THE
- * SERVING SIDE"), the budget excepted (the caller's): admission, then the
- * piece from `store` (may be NULL) or the held file in `seg_dir` (may be
- * NULL). `E` the epoch length. `out` / `cap` receive the OK answer;
+ * SERVING SIDE"): admission, then the piece from `store` (may be NULL)
+ * or the held file in `seg_dir` (may be NULL). `E` the epoch length. `out` / `cap` receive the OK answer;
  * a refusal writes nothing.
  * @return NODUS_STFETCH_OK (*len_out) or the refusal code.
  */

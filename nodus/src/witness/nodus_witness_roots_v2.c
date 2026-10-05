@@ -432,22 +432,25 @@ int nodus_witness_treasury_total(nodus_witness_t *w, uint64_t *out) {
 /* Scan every row. On success *rows is malloc'd (NULL when n == 0) and
  * the caller frees it. @return 0 / -1.
  * Archive reward (bytes 2026-10-05 item 4): the 8th column fail_streak
- * (u32 range), read with the same typed-column discipline. */
+ * (u32 range) and the 9th grace_until (K9; 0..INT64_MAX, the stored
+ * INTEGER bound every u64 column here follows), read with the same
+ * typed-column discipline. */
+#define STORAGE_SCAN_COLS 9
 static int storage_scan(nodus_witness_t *w, dna_v2_storage_node_row_t **rows,
                         size_t *n_out) {
-    static const char *const want_type[8] = {
+    static const char *const want_type[STORAGE_SCAN_COLS] = {
         "blob", "blob", "blob", "integer", "integer", "integer", "integer",
-        "integer"
+        "integer", "integer"
     };
     *rows = NULL;
     *n_out = 0;
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(w->db,
         "SELECT node_fp, node_pk, payee_fp, bond, status, "
-        "registered_height, exit_height, fail_streak, typeof(node_fp), "
-        "typeof(node_pk), typeof(payee_fp), typeof(bond), typeof(status), "
-        "typeof(registered_height), typeof(exit_height), "
-        "typeof(fail_streak) "
+        "registered_height, exit_height, fail_streak, grace_until, "
+        "typeof(node_fp), typeof(node_pk), typeof(payee_fp), typeof(bond), "
+        "typeof(status), typeof(registered_height), typeof(exit_height), "
+        "typeof(fail_streak), typeof(grace_until) "
         "FROM v2_storage_nodes ORDER BY node_fp ASC", -1, &st, NULL);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "storage registry scan prepare failed: %s",
@@ -466,8 +469,9 @@ static int storage_scan(nodus_witness_t *w, dna_v2_storage_node_row_t **rows,
             cap *= 2;
         }
         int ok = 1;
-        for (int c = 0; c < 8 && ok; c++) {
-            const char *t = (const char *)sqlite3_column_text(st, 8 + c);
+        for (int c = 0; c < STORAGE_SCAN_COLS && ok; c++) {
+            const char *t = (const char *)sqlite3_column_text(
+                                st, STORAGE_SCAN_COLS + c);
             ok = t && strcmp(t, want_type[c]) == 0;
         }
         const uint8_t *fp = sqlite3_column_blob(st, 0);
@@ -478,12 +482,13 @@ static int storage_scan(nodus_witness_t *w, dna_v2_storage_node_row_t **rows,
         sqlite3_int64 rh   = sqlite3_column_int64(st, 5);
         sqlite3_int64 eh   = sqlite3_column_int64(st, 6);
         sqlite3_int64 fs   = sqlite3_column_int64(st, 7);
+        sqlite3_int64 gu   = sqlite3_column_int64(st, 8);
         ok = ok && fp && pk && py &&
              sqlite3_column_bytes(st, 0) == 64 &&
              sqlite3_column_bytes(st, 1) == DNAC_PUBKEY_SIZE &&
              sqlite3_column_bytes(st, 2) == 64 &&
              bond >= 0 && rh >= 1 && eh >= 0 &&
-             fs >= 0 && fs <= (sqlite3_int64)UINT32_MAX &&
+             fs >= 0 && fs <= (sqlite3_int64)UINT32_MAX && gu >= 0 &&
              stat >= (sqlite3_int64)DNA_V2_STORAGE_ACTIVE &&
              stat <= (sqlite3_int64)DNA_V2_STORAGE_RELEASED;
         if (ok) {
@@ -510,6 +515,7 @@ static int storage_scan(nodus_witness_t *w, dna_v2_storage_node_row_t **rows,
         r[n].registered_height = (uint64_t)rh;
         r[n].exit_height = (uint64_t)eh;
         r[n].fail_streak = (uint32_t)fs;
+        r[n].grace_until = (uint64_t)gu;
         n++;
     }
     if (!fail && rc != SQLITE_DONE) {

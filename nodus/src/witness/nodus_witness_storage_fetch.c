@@ -406,52 +406,6 @@ nodus_stfetch_code_t nodus_stfetch_answer_build(
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * The per-requester budget
- * ════════════════════════════════════════════════════════════════════ */
-
-bool nodus_stfetch_budget_spent(const nodus_stfetch_budget_t *slots,
-                                size_t n, const uint8_t fp[64], uint64_t H) {
-    if (!slots || !fp) return true;
-    for (size_t i = 0; i < n; i++) {
-        if (slots[i].used && memcmp(slots[i].fp, fp, 64) == 0)
-            return slots[i].epoch == H &&
-                   slots[i].bytes >= NODUS_STFETCH_EPOCH_BUDGET;
-    }
-    return false;
-}
-
-int nodus_stfetch_budget_take(nodus_stfetch_budget_t *slots, size_t n,
-                              const uint8_t fp[64], uint64_t H,
-                              uint64_t cost) {
-    if (!slots || !fp) return 1;
-    long hit = -1, free_i = -1, stale_i = -1;
-    for (size_t i = 0; i < n; i++) {
-        if (!slots[i].used) {
-            if (free_i < 0) free_i = (long)i;
-            continue;
-        }
-        if (memcmp(slots[i].fp, fp, 64) == 0) { hit = (long)i; break; }
-        if (slots[i].epoch != H && stale_i < 0) stale_i = (long)i;
-    }
-    if (hit < 0) {
-        hit = free_i >= 0 ? free_i : stale_i;
-        if (hit < 0) return 1;              /* every slot is this epoch's */
-        slots[hit].used = true;
-        memcpy(slots[hit].fp, fp, 64);
-        slots[hit].epoch = H;
-        slots[hit].bytes = 0;
-    }
-    nodus_stfetch_budget_t *s = &slots[hit];
-    if (s->epoch != H) {
-        s->epoch = H;
-        s->bytes = 0;
-    }
-    if (s->bytes >= NODUS_STFETCH_EPOCH_BUDGET) return 1;
-    s->bytes = cost > UINT64_MAX - s->bytes ? UINT64_MAX : s->bytes + cost;
-    return 0;
-}
-
-/* ══════════════════════════════════════════════════════════════════════
  * Admission
  * ════════════════════════════════════════════════════════════════════ */
 

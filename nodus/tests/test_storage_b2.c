@@ -7,9 +7,10 @@
  *        fail_streak / handoff / exit release.
  *
  * Decisions: docs/plans/decisions/2026-10-05-storage-reward-is-for-
- * archive.md (R = 3, G = 1, amount = block count, 3 failed epochs →
- * skipped, K5 return after 12 settled epochs, K5a an OK epoch with
- * eligible blocks resets to 0 even at 3 or more), 2026-10-05-archive-
+ * archive.md (R = 3, amount = block count, 3 failed epochs → skipped, K5
+ * return after 12 settled epochs, K5a an OK epoch with eligible blocks
+ * resets to 0 even at 3 or more, K9 grace = n new segments × E — replaces
+ * G = 1), 2026-10-05-archive-
  * reward-bytes-approved.md, 2026-10-05-
  * kurultay-7-archive-reward-summary.md, 2026-10-04-storage-reward-
  * approved.md (kept parts), 2026-10-04-storage-reward-who-earns.md.
@@ -25,8 +26,12 @@
  *     (first / last hash, the concatenation checksum, the root) for k =
  *     1..5, 1000 and 2^32+7, the segment leaf, segments_root (each entry's
  *     leaf), A(k), holders (each member's node hash and distance, the
- *     eligible count, the holders by rank), registry leaf v2 and root v2,
- *     storage_root v2, and the §6 sample derivation (x_i, the two integer
+ *     eligible count, the holders by rank), registry leaf v2 (181-byte
+ *     preimage, grace_until last — K9) and root v2, the K9 grace rule
+ *     (both epoch lengths, 36 cases: nodus_storage_grace_next == the new
+ *     grace_until, the eligibility rule's probed bit == H >= the value
+ *     AFTER the update; the refused u64 overflow), storage_root v2, and
+ *     the §6 sample derivation (x_i, the two integer
  *     reads, block index for every B, part index for every parts_total).
  *     The tag section is checked against the padded names. Any unknown
  *     section FAILS (a new vector is never skipped silently).
@@ -53,45 +58,65 @@
  *     param 9 at 2, param 14 at 4, eight segments PRE-SEEDED (k = 1..8,
  *     published_height 1 — see HOW IT CAN LIE). A, B, C and D (= validator
  *     0's key: the dual-role node) register at 4; X at E + 5.
- *       boundary E    first storage boundary: set(E) = {A,B,C,D}, no
- *                     settlement, no publication (k = 9 is not due);
- *       boundary 2E   set(2E) = {A,B,C,D,X};
- *       2E + 1        three seats report for H = E (F1 floor not met);
- *       boundary 3E   settle H = E: nothing eligible yet (W == 0) — no
- *                     credit, pool 1 and every fail_streak unchanged;
- *       3E + 1        all seven report for H = 2E: only N (the always-OK
+ *     THE K9 MODEL runs at EVERY boundary B (apply_both → model_boundary):
+ *     n(m) = |segments m holds over set(B) \ those it held over set(B−E)|
+ *     from the pure holders layer, grace = max(grace, B + n·E) in plain
+ *     arithmetic; the frozen member row of set(B) AND the registry row
+ *     must both equal it. Before every settlement the engine's eligible
+ *     list of every member (nodus_witness_storage_eligible_segments —
+ *     the reporter's and the probed node's one rule) must equal the
+ *     model's: 0 while H < grace, else the union of holders over set(H)
+ *     and set(H−E).
+ *       boundary E    first storage boundary: set(E) = {A,B,C,D}; every
+ *                     member is NEW to all it holds: grace = E + n·E, some
+ *                     member has n >= 2 ("several files"); none is
+ *                     probed (eligible list empty); no publication (k = 9
+ *                     is not due);
+ *       boundary 2E   set(2E) = {A,B,C,D,X}; X alone gains (a joining
+ *                     member only displaces): X's grace 2E + n·E, the
+ *                     others' unchanged;
+ *       2E + 1        all seven seats report for H = E with EVERY bit 0;
+ *       boundary 3E   settle H = E (F1 met): every member in grace or
+ *                     without a segment — W == 0, no credit, pool 1 and
+ *                     every fail_streak unchanged (a 0 bit in grace is not
+ *                     counted against the member);
+ *       T             = the largest grace_until of set(2E) (>= 2E): from
+ *                     T nobody is in grace; idle up to T + E;
+ *       T + E + 1     all seven report for H = T: only N (the always-OK
  *                     member) has every other bit; D sets only its own
  *                     bit (F2: ignored → D NOT OK); a duplicate (H, seat)
- *                     at 3E + 2 and reports at 3E and 3E + E/2 + 1 are
- *                     refused;
- *       boundary 4E   settle H = 2E ("one OK"): weights = block count of
- *                     holders(k, set(E)) ∩ set(2E) (X is new: weight 0 —
- *                     G = 1); N alone credited floor(budget·w/W); pool 1
- *                     debited exactly Σ credited (the remainder stays);
- *                     fail_streak +1 for every NOT OK member with weight
- *                     (every streak checked by the rule incl. K5, K5a);
- *       4E + 3        B exits;
- *       boundary 5E   settle H = 3E (all OK except M); the HANDOFF: the
- *                     eligible lists for H = 2E and H = 3E equal the
- *                     test's own holders(k, set(H−E)) ∩ set(H) — a holder
- *                     X displaced keeps its segment through the overlap
- *                     epoch, X earns nothing for it until H = 3E; B's
- *                     bond RELEASED as one locked UTXO (identity, owner,
- *                     amount, unlock 5E + 12E), storage bonds − BOND,
- *                     utxo + BOND, the CORE invariant holds; set(5E)
- *                     excludes B;
- *       boundary 6E   settle H = 4E (all OK except M): M's fail_streak is
- *                     3 and set(6E) freezes it at 3 — holders over set(6E)
- *                     never name M;
- *       boundary 7E   settle H = 5E (all OK except M; M with weight from
- *                     set(4E), where M was frozen at 1): M at 3, NOT OK,
- *                     adds one, 4 (the skipped branch, K5);
- *       boundary 8E   settle H = 6E ("all OK", M included; M with weight
- *                     from set(5E), where M was frozen at 2): K5a — M at
- *                     4, with weight and OK, resets to 0;
- *       boundary 9E   no report for H = 7E: F1 not met — every
- *                     fail_streak (M's 0 included) and pool 1 unchanged;
- *                     M, frozen at 3 in set(6E), has weight 0 in H = 7E.
+ *                     and a report past the window are refused;
+ *       boundary T+2E settle H = T ("one OK"): a member that had grace
+ *                     now has weight (then counts); N alone credited
+ *                     floor(budget·w/W); pool 1 debited exactly Σ
+ *                     credited; fail_streak +1 for every NOT OK member
+ *                     with weight (every streak checked by the rule incl.
+ *                     K5, K5a, K9); M at 1;
+ *       boundary T+3E settle H = T+E (all OK but M): M at 2;
+ *       boundary T+4E settle H = T+2E (all OK but M): M at 3, set(T+4E)
+ *                     freezes it at 3 — holders never name M; M's
+ *                     segments go to other members: a GAINER that already
+ *                     held a segment gets grace T+4E + n·E, is not probed
+ *                     (eligible list empty, old segments included), and
+ *                     the pure rule pauses it exactly n epochs;
+ *       boundary T+5E settle H = T+3E (all OK but M; M with weight from
+ *                     set(T+3E), frozen at 2): M at 3, NOT OK, adds one,
+ *                     4 (K5);
+ *       boundary T+6E settle H = T+4E ("all OK"): M's weight is the
+ *                     handoff OVERLAP (held at T+3E, displaced at T+4E)
+ *                     → K5a resets M to 0; the gainer, in grace, has
+ *                     weight 0 — its fail_streak and storage credit
+ *                     unchanged; M is placed again and is new to its
+ *                     segments: grace T+6E + n·E;
+ *       boundary T+7E no report for H = T+5E: F1 not met — every
+ *                     fail_streak and pool 1 unchanged; M (skipped in
+ *                     set(T+4E) and set(T+5E)) has weight 0;
+ *       T+7E + 3      B exits; boundary T+8E: B's bond RELEASED as one
+ *                     locked UTXO (identity, owner, amount, unlock T+8E +
+ *                     12E), storage bonds − BOND, utxo + BOND, the CORE
+ *                     invariant holds; set(T+8E) excludes B (whoever takes
+ *                     B's segments gets its grace — the model); B's row
+ *                     keeps its grace_until.
  *  D0. FAIL_STREAK RULE, pure (nodus_storage_fail_streak_next + holders
  *     over a hand-built 4-member frozen set): below 3 the old rule; at 3
  *     .. 14 weight and OK → 0 (K5a); at 3 .. 13 +1 for the other three
@@ -109,10 +134,12 @@
  * section A — built without it, section A FAILS (never skips). Any
  * DNAC_EPOCH_LENGTH that divides nothing in particular works (every
  * height is derived from it); it must be >= 8 so heights 1..7 hold no
- * boundary. Environment: none. Cost: section D applies 9E blocks to
- * each of two fixtures (≈ 13,000 block applications at the production
- * E = 720, each followed by a SYSTEM-root recomputation) and section B
- * inserts ≈ 120,000 synthetic v2_blocks rows — minutes, not seconds.
+ * boundary. Environment: none. Cost: section D applies T + 8E blocks to
+ * each of two fixtures, T = the longest grace of set(2E) (2E .. 10E with
+ * 8 segments) — up to ≈ 18E, ≈ 26,000 block applications at the
+ * production E = 720, each followed by a SYSTEM-root recomputation — and
+ * section B inserts ≈ 120,000 synthetic v2_blocks rows: minutes, not
+ * seconds.
  *
  * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
  * One /tmp/test_storage_b2_* directory per fixture, removed at the end
@@ -133,9 +160,15 @@
  *  - Section C fabricates the reads and the verdict; section D drives the
  *    real engine with real signatures.
  *  - Which member is M (the always-failing one) and which is N is chosen
- *    at run time from the eligible lists (the first of A, C with weight in
- *    all three settled epochs); with eight segments the absence of such a
- *    member is improbable but would FAIL the test, never pass it.
+ *    at run time (the first of A, C holding a segment over set(2E)); the
+ *    gainer is chosen at run time too (a member that takes one of M's
+ *    segments at T + 4E and already held one at T + 3E). With eight
+ *    segments the absence of either is improbable but would FAIL the
+ *    test, never pass it.
+ *  - The K9 model shares the holders layer (dna_v2_segment_holders) with
+ *    the engine; what it restates independently is n, the max rule, the
+ *    grace gate and the union of the two holder sets. The grace
+ *    arithmetic itself is also pinned by section A's oracle vectors.
  *  - D's accrual row also receives its validator distribution (the
  *    merged-accrual design rev 2.2 §5.4), so D's storage credit is proven
  *    only through the pool-1 debit, never per row.
@@ -352,7 +385,8 @@ static int kat_row_v2(json_object *r, dna_v2_storage_node_row_t *row) {
         kat_uint(r, "registered_height", UINT64_MAX,
                  &row->registered_height) != 0 ||
         kat_uint(r, "exit_height", UINT64_MAX, &row->exit_height) != 0 ||
-        kat_uint(r, "fail_streak", UINT32_MAX, &fs) != 0)
+        kat_uint(r, "fail_streak", UINT32_MAX, &fs) != 0 ||
+        kat_uint(r, "grace_until", UINT64_MAX, &row->grace_until) != 0)
         return -1;
     row->status = (uint8_t)st;
     row->fail_streak = (uint32_t)fs;
@@ -393,8 +427,8 @@ static int t_kat(void) {
         static const char *known[] = {
             "tags", "empty_roots", "synthetic_hash", "segment_root",
             "segment_leaf", "segments_root", "assignment_key", "holders",
-            "registry_leaf_v2", "registry_root_v2", "storage_root_v2",
-            "sample_derivation"
+            "registry_leaf_v2", "registry_root_v2", "grace_rule",
+            "storage_root_v2", "sample_derivation"
         };
         int found = 0;
         for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++)
@@ -622,9 +656,83 @@ static int t_kat(void) {
             json_object *v = json_object_array_get_idx(a, i);
             kat_name("registry_leaf_v2", v, i);
             KCHECK(kat_row_v2(v, &rows[0]) == 0);
+            {
+                uint64_t plen = 0;       /* K9: 181 bytes, grace_until last */
+                KCHECK(kat_uint(v, "preimage_len", UINT64_MAX, &plen) == 0 &&
+                       plen == 181u);
+            }
             KCHECK(dna_v2_storage_node_leaf_hash(&rows[0], h) == 0);
             KCHECK(kat_eq(h, v, "leaf"));
             compared++;
+        }
+    }
+
+    /* grace_rule (K9) — per epoch length: new_grace_until =
+     * nodus_storage_grace_next(prev, H, n, E); probed = H >= new (the
+     * oracle's reading: the value AFTER the update at H) through the one
+     * eligibility rule for an assigned segment; probed_vs_prev is the
+     * oracle's comparison column, checked as H >= prev */
+    {
+        size_t n = 0, total = 0;
+        snprintf(g_kv, sizeof(g_kv), "%s", "grace_rule");
+        json_object *a = kat_arr(vec, "grace_rule", &n);
+        KCHECK(a && n > 0);
+        for (size_t i = 0; i < n; i++) {
+            json_object *grp = json_object_array_get_idx(a, i);
+            uint64_t ge = 0;
+            size_t m = 0;
+            snprintf(g_kv, sizeof(g_kv), "grace_rule[%zu]", i);
+            KCHECK(kat_uint(grp, "E", UINT64_MAX, &ge) == 0 && ge > 0);
+            json_object *cs = kat_arr(grp, "cases", &m);
+            KCHECK(cs && m > 0);
+            for (size_t j = 0; j < m; j++) {
+                json_object *c = json_object_array_get_idx(cs, j);
+                uint64_t prev = 0, H = 0, nn = 0, ce = 0, want = 0, got = 0;
+                json_object *pb = NULL, *pp = NULL;
+                kat_name("grace_rule", c, j);
+                KCHECK(kat_uint(c, "prev_grace_until", UINT64_MAX,
+                                &prev) == 0 &&
+                       kat_uint(c, "H", UINT64_MAX, &H) == 0 &&
+                       kat_uint(c, "n", UINT64_MAX, &nn) == 0 &&
+                       kat_uint(c, "E", UINT64_MAX, &ce) == 0 && ce == ge &&
+                       kat_uint(c, "new_grace_until", UINT64_MAX,
+                                &want) == 0);
+                pb = kj(c, "probed");
+                pp = kj(c, "probed_vs_prev");
+                KCHECK(pb && json_object_is_type(pb, json_type_boolean) &&
+                       pp && json_object_is_type(pp, json_type_boolean));
+                KCHECK(nodus_storage_grace_next(prev, H, nn, ce, &got) == 0);
+                if (got != want) {
+                    fprintf(stderr, "KAT MISMATCH %s: grace_until %llu, "
+                            "expected %llu\n", g_kv,
+                            (unsigned long long)got,
+                            (unsigned long long)want);
+                    KCHECK(0);
+                }
+                g_checks++;
+                KCHECK(nodus_storage_member_eligible(H, got, 1, 0) ==
+                       (json_object_get_boolean(pb) ? 1 : 0));
+                KCHECK(nodus_storage_in_grace(H, got) ==
+                       (json_object_get_boolean(pb) ? 0 : 1));
+                KCHECK((H >= prev) == (json_object_get_boolean(pp) != 0));
+                g_checks += 3;
+                compared++;
+                total++;
+            }
+        }
+        /* E = 720 and E = 15, 18 cases each (the oracle's 36) */
+        snprintf(g_kv, sizeof(g_kv), "%s", "grace_rule");
+        KCHECK(n == 2 && total == 36);
+        /* the refused overflow (the oracle emits no vector for it) */
+        {
+            uint64_t o = 0;
+            KCHECK(nodus_storage_grace_next(0, UINT64_MAX - 5, 1, 15, &o)
+                   != 0);
+            KCHECK(nodus_storage_grace_next(0, 0, UINT64_MAX, 720, &o)
+                   != 0);
+            KCHECK(nodus_storage_grace_next(UINT64_MAX, 72000, 1, 720, &o)
+                   == 0 && o == UINT64_MAX);
+            g_checks += 3;
         }
     }
 
@@ -1397,6 +1505,9 @@ static int sys_head_recomputes(nodus_witness_t *w) {
     return memcmp(committed, now, 64) == 0 ? 0 : -1;
 }
 
+static int model_boundary(nodus_witness_t *w, uint64_t B);
+static int g_model_on;
+
 static int apply_both(fixture_t *a, fixture_t *b, uint64_t h,
                       const nodus_v2_envelope_t *envs, size_t n,
                       uint32_t *codes) {
@@ -1426,6 +1537,10 @@ static int apply_both(fixture_t *a, fixture_t *b, uint64_t h,
         memcmp(ca, cb, 64) != 0)
         return -1;
     if (sys_head_recomputes(a->w) != 0 || sys_head_recomputes(b->w) != 0)
+        return -1;
+    /* the K9 model follows EVERY storage boundary (twin roots are equal,
+     * so fixture A speaks for both) */
+    if (g_model_on && h % E_LEN == 0 && model_boundary(a->w, h) != 0)
         return -1;
     return 0;
 }
@@ -1648,33 +1763,127 @@ static int key_of_fp(const uint8_t fp[64]) {
     return -1;
 }
 
-/* the test's OWN eligibility: for each member of set(H), the eligible
- * block count = P × |{k : m ∈ holders(k, set(H−E))}| over the N_SEGS
- * pre-seeded segments (all published at 1 <= H−E), computed with the
- * pure layer only */
+/* ── the test's OWN K9 model (pure layer only: dna_v2_segment_holders
+ *    over the engine's frozen sets; the grace arithmetic restated) ──── */
+
+/* Does `fp` hold segment k (one of the N_SEGS pre-seeded, all published
+ * at height 1) over the frozen `set`? `set` NULL or empty: no. */
+static int m_holds_in(const nodus_storage_set_t *set, uint64_t k,
+                      const uint8_t fp[64], int *holds) {
+    *holds = 0;
+    if (!set || set->count == 0) return 0;
+    uint8_t r[64], A[64];
+    size_t idx[3], nh = 0;
+    if (seg_root(k, r) != 0 || dna_v2_segment_assign_key(r, A) != 0 ||
+        dna_v2_segment_holders(A, (const uint8_t (*)[64])set->fps,
+                               set->fail_streak, set->count, idx, &nh) != 0)
+        return -1;
+    for (size_t j = 0; j < nh; j++)
+        if (memcmp(set->fps[idx[j]], fp, 64) == 0) *holds = 1;
+    return 0;
+}
+
+/* The model's registry grace_until per key, and its value AFTER the
+ * update at each boundary j·E (j < MODEL_EPOCHS) — what set(j·E) froze. */
+#define MODEL_EPOCHS 64u
+static uint64_t g_grace[N_KEYS];
+static uint64_t g_grace_at[MODEL_EPOCHS][N_KEYS];
+static uint64_t g_newn_at[MODEL_EPOCHS][N_KEYS];   /* n(m) at j·E      */
+
+/* the test's OWN eligibility for epoch (H, H+E]: for each member m of
+ * cur = set(H), the eligible block count = P × |{k : (m ∈ holders(k,
+ * set(H)) or m ∈ holders(k, set(H−E))) }| — 0 while H < the model's
+ * grace_until at H (K9). The pre-seeded segments are published at 1, so
+ * "published <= H − E" holds for every H >= 2E; at H = E there is no
+ * set(0) (prev NULL). */
 static int expect_weights(const nodus_storage_set_t *cur,
-                          const nodus_storage_set_t *prev,
+                          const nodus_storage_set_t *prev, uint64_t H,
                           uint64_t w_out[DNA_V2_STORAGE_SET_MAX]) {
     memset(w_out, 0, DNA_V2_STORAGE_SET_MAX * sizeof(uint64_t));
-    if (!prev || prev->count == 0) return 0;
-    for (uint64_t k = 1; k <= N_SEGS; k++) {
-        uint8_t r[64], A[64];
-        size_t idx[3], nh = 0;
-        if (seg_root(k, r) != 0 || dna_v2_segment_assign_key(r, A) != 0)
-            return -1;
-        if (dna_v2_segment_holders(A, (const uint8_t (*)[64])prev->fps,
-                                   prev->fail_streak, prev->count, idx,
-                                   &nh) != 0)
-            return -1;
-        for (size_t j = 0; j < nh; j++)
-            for (uint32_t m = 0; m < cur->count; m++)
-                if (memcmp(cur->fps[m], prev->fps[idx[j]], 64) == 0)
-                    w_out[m] += P_LEN;
+    if (H % E_LEN != 0 || H / E_LEN >= MODEL_EPOCHS) return -1;
+    for (uint32_t m = 0; m < cur->count; m++) {
+        const int key = key_of_fp(cur->fps[m]);
+        if (key < 0) return -1;
+        if (H < g_grace_at[H / E_LEN][key]) continue;     /* in grace */
+        for (uint64_t k = 1; k <= N_SEGS; k++) {
+            int hc = 0, hp = 0;
+            if (m_holds_in(cur, k, cur->fps[m], &hc) != 0 ||
+                m_holds_in(prev, k, cur->fps[m], &hp) != 0)
+                return -1;
+            if (hc || hp) w_out[m] += P_LEN;
+        }
     }
     return 0;
 }
 
-static nodus_storage_set_t g_set_a, g_set_b;   /* scratch (17 KB each) */
+static nodus_storage_set_t g_set_a, g_set_b;   /* scratch (19.5 KB each) */
+static nodus_storage_set_t g_set_m, g_set_mp;  /* the model hook's        */
+
+static int grace_of(nodus_witness_t *w, const uint8_t fp[64],
+                    uint64_t *out) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, "SELECT grace_until FROM v2_storage_nodes "
+                           "WHERE node_fp = ?1", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, fp, 64, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    int ret = -1;
+    if (rc == SQLITE_ROW &&
+        sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
+        sqlite3_column_int64(st, 0) >= 0) {
+        *out = (uint64_t)sqlite3_column_int64(st, 0);
+        ret = 0;
+    }
+    sqlite3_finalize(st);
+    return ret;
+}
+
+/* The model at a storage boundary B (called on fixture A right after the
+ * block B applied): n(m) = segments m holds in set(B) that it did not
+ * hold in set(B−E); n > 0 → grace = max(grace, B + n·E) — restated here
+ * with plain arithmetic, NOT through nodus_storage_grace_next. Then the
+ * engine must agree twice: the member row of set(B) and the registry. */
+static int model_boundary(nodus_witness_t *w, uint64_t B) {
+    if (B / E_LEN >= MODEL_EPOCHS) return -1;
+    int rc = nodus_witness_storage_set_get(w, B, &g_set_m);
+    if (rc == 1) return 0;                 /* storage not active at B    */
+    if (rc != 0) return -1;
+    rc = B > E_LEN ? nodus_witness_storage_set_get(w, B - E_LEN, &g_set_mp)
+                   : 1;
+    if (rc < 0) return -1;
+    const nodus_storage_set_t *prev = rc == 0 ? &g_set_mp : NULL;
+    const uint64_t j = B / E_LEN;
+    for (uint32_t i = 0; i < g_set_m.count; i++) {
+        const int key = key_of_fp(g_set_m.fps[i]);
+        if (key < 0) return -1;
+        uint64_t n = 0;
+        for (uint64_t k = 1; k <= N_SEGS; k++) {
+            int hc = 0, hp = 0;
+            if (m_holds_in(&g_set_m, k, g_set_m.fps[i], &hc) != 0 ||
+                m_holds_in(prev, k, g_set_m.fps[i], &hp) != 0)
+                return -1;
+            if (hc && !hp) n++;
+        }
+        g_newn_at[j][key] = n;
+        if (n > 0 && B + n * E_LEN > g_grace[key])
+            g_grace[key] = B + n * E_LEN;
+        g_grace_at[j][key] = g_grace[key];
+        uint64_t reg = 0;
+        if (grace_of(w, g_set_m.fps[i], &reg) != 0) return -1;
+        if (g_set_m.grace_until[i] != g_grace[key] || reg != g_grace[key]) {
+            fprintf(stderr, "boundary %llu, key %d: grace_until frozen "
+                    "%llu / registry %llu, model %llu (n = %llu)\n",
+                    (unsigned long long)B, key,
+                    (unsigned long long)g_set_m.grace_until[i],
+                    (unsigned long long)reg,
+                    (unsigned long long)g_grace[key],
+                    (unsigned long long)n);
+            return -1;
+        }
+        g_checks += 2;
+    }
+    return 0;
+}
 
 /* Build every seat's report for epoch H at height `h`: bit i of seat s
  * is set iff ok_from(s, member i). Returns the n envelopes. */
@@ -1713,22 +1922,27 @@ static int reports_for(fixture_t *fx, uint64_t h, uint64_t H,
 
 static int g_M = -1, g_N = -1;    /* the failing / the always-OK member */
 
-/* 4E (H = 2E): only N has every other bit; D's own report sets D's bit
- * only (F2: ignored) */
+/* H = T: only N has every other bit; D's own report sets D's bit only
+ * (F2: ignored) */
 static int bit_one_ok(int seat_key, int member) {
     if (member == g_N) return 1;
     if (member == KD && seat_key == KD) return 1;
     return 0;
 }
-/* 5E, 6E: everyone except M */
+/* H = T+E, T+2E, T+3E: everyone except M */
 static int bit_all_but_m(int seat_key, int member) {
     (void)seat_key;
     return member != g_M;
 }
-/* 7E: everyone */
+/* T + 5E: everyone */
 static int bit_all(int seat_key, int member) {
     (void)seat_key; (void)member;
     return 1;
+}
+/* 2E + 1 (H = E, every member in grace): nobody */
+static int bit_none(int seat_key, int member) {
+    (void)seat_key; (void)member;
+    return 0;
 }
 
 /* Settlement check for epoch H at boundary B on fixture A: weights from
@@ -1755,16 +1969,48 @@ static int take(nodus_witness_t *w, snap_t *s) {
  * so they cannot be recomputed after it. */
 typedef struct {
     nodus_storage_set_t cur;                      /* set(H)             */
+    uint64_t H;
     uint64_t wt[DNA_V2_STORAGE_SET_MAX];          /* per member of cur  */
+    uint8_t  in_grace[DNA_V2_STORAGE_SET_MAX];    /* the model's, at H  */
 } expect_t;
 static expect_t g_ex;
 
+/* The model's weights for epoch H, and the ENGINE's eligibility read for
+ * every member of set(H) checked against them (the one rule the reporter
+ * and the probed node use: nodus_witness_storage_eligible_segments — a
+ * member in grace has none, so it is not probed). */
 static int prep_expect(nodus_witness_t *w, uint64_t H, expect_t *ex) {
     memset(ex, 0, sizeof(*ex));
+    ex->H = H;
     if (nodus_witness_storage_set_get(w, H, &ex->cur) != 0) return -1;
-    int prc = nodus_witness_storage_set_get(w, H - E_LEN, &g_set_b);
+    int prc = H > E_LEN ? nodus_witness_storage_set_get(w, H - E_LEN,
+                                                        &g_set_b) : 1;
     if (prc < 0) return -1;
-    return expect_weights(&ex->cur, prc == 0 ? &g_set_b : NULL, ex->wt);
+    if (expect_weights(&ex->cur, prc == 0 ? &g_set_b : NULL, H, ex->wt)
+        != 0)
+        return -1;
+    for (uint32_t i = 0; i < ex->cur.count; i++) {
+        const int key = key_of_fp(ex->cur.fps[i]);
+        if (key < 0) return -1;
+        ex->in_grace[i] = H < g_grace_at[H / E_LEN][key] ? 1u : 0u;
+        if (ex->in_grace[i] !=
+            (uint8_t)nodus_storage_in_grace(H, ex->cur.grace_until[i]))
+            return -1;
+        uint64_t ks[N_SEGS];
+        size_t nk = 0;
+        uint8_t fp[64];
+        memcpy(fp, ex->cur.fps[i], 64);
+        if (nodus_witness_storage_eligible_segments(w, H, fp, ks, N_SEGS,
+                                                    &nk) != 0 ||
+            (uint64_t)nk * P_LEN != ex->wt[i]) {
+            fprintf(stderr, "H=%llu key %d: engine eligible %zu segment(s), "
+                    "model weight %llu\n", (unsigned long long)H, key, nk,
+                    (unsigned long long)ex->wt[i]);
+            return -1;
+        }
+        g_checks += 2;
+    }
+    return 0;
 }
 
 static int check_settle(const expect_t *ex, const snap_t *b0,
@@ -1793,10 +2039,12 @@ static int check_settle(const expect_t *ex, const snap_t *b0,
             return -1;
         }
         /* the rule restated (bytes item 4 + K5 + K5a) — a SETTLED epoch
-         * only: weight and OK → 0 whatever the old value; else at 3 or
-         * more +1, 14 → 0; else weight (NOT OK) +1; else unchanged */
+         * only: in grace (K9) unchanged whatever the value; weight and
+         * OK → 0 whatever the old value; else at 3 or more +1, 14 → 0;
+         * else weight (NOT OK) +1; else unchanged */
         uint32_t want = b0->streak[k];
-        if (wt[i] > 0 && ok) want = 0u;
+        if (ex->in_grace[i]) { /* unchanged */ }
+        else if (wt[i] > 0 && ok) want = 0u;
         else if (want >= 3u) want = (want + 1u >= 15u) ? 0u : want + 1u;
         else if (wt[i] > 0)  want = want + 1u;
         if (b1->streak[k] != want) {
@@ -1818,6 +2066,7 @@ static int check_settle(const expect_t *ex, const snap_t *b0,
 static int ok_one(int m)      { return m == g_N; }
 static int ok_all_but_m(int m){ return m != g_M; }
 static int ok_all(int m)      { (void)m; return 1; }
+static int ok_none(int m)     { (void)m; return 0; }
 
 static int submit(fixture_t *A, fixture_t *B, uint64_t h, uint8_t **envs,
                   size_t *lens, size_t n, uint32_t *codes) {
@@ -1938,6 +2187,10 @@ static int t_engine(void) {
         CHECK(coin_nul(c, g_nul[c]) == 0, "coin nullifier");
     CHECK(fx_open(&A, "a") == 0 && fx_open(&B, "b") == 0,
           "twin seeded chains (real committee, pool 1, segments 1..8)");
+    memset(g_grace, 0, sizeof(g_grace));
+    memset(g_grace_at, 0, sizeof(g_grace_at));
+    memset(g_newn_at, 0, sizeof(g_newn_at));
+    g_model_on = 1;                     /* every boundary from here on   */
 
     CHECK(run_idle(&A, &B, &h, H14 - 1) == 0, "blocks 1..3 (both edges)");
 
@@ -1960,12 +2213,35 @@ static int t_engine(void) {
     }
     CHECK(core_invariant(A.w) == 0, "invariant after registrations");
 
-    /* boundary E: the first storage boundary */
-    CHECK(run_idle(&A, &B, &h, E_LEN) == 0, "to E");
+    /* boundary E: the first storage boundary — every member is NEW to
+     * every segment it holds (no set(0)), so K9 gives each E + n·E */
+    CHECK(run_idle(&A, &B, &h, E_LEN) == 0, "to E (the model checks the "
+          "grace of every boundary)");
     CHECK(nodus_witness_storage_set_get(A.w, E_LEN, &g_set_a) == 0 &&
           g_set_a.count == 4, "set(E) = {A, B, C, D}");
     CHECK(q_u64(A.w, "SELECT COUNT(*) FROM v2_storage_segments", &n) == 0 &&
           n == N_SEGS, "no publication at E (k = 9 not due)");
+    {
+        uint64_t nmax = 0;
+        for (uint32_t i = 0; i < g_set_a.count; i++) {
+            const int key = key_of_fp(g_set_a.fps[i]);
+            CHECK(key >= 0, "member key");
+            const uint64_t nn = g_newn_at[1][key];
+            CHECK(g_grace[key] == (nn ? E_LEN + nn * E_LEN : 0),
+                  "K9 at E: grace_until = E + n·E");
+            if (nn > nmax) nmax = nn;
+            uint64_t ks[N_SEGS];
+            size_t nk = 1;
+            uint8_t fp[64];
+            memcpy(fp, g_set_a.fps[i], 64);
+            CHECK(nodus_witness_storage_eligible_segments(A.w, E_LEN, fp, ks,
+                                                          N_SEGS, &nk) == 0
+                  && nk == 0, "in grace at E: no eligible segment — the "
+                  "member is not probed");
+        }
+        CHECK(nmax >= 2, "a new member with several segments (8 segments × "
+              "3 copies over 4 members): grace n·E with n >= 2");
+    }
 
     /* E + 5: X registers */
     CHECK(run_idle(&A, &B, &h, E_LEN + 4) == 0, "to E+4");
@@ -1978,152 +2254,352 @@ static int t_engine(void) {
           codes[0] == NODUS_V2_TX_OK, "X registers at E+5");
     h = E_LEN + 5;
 
-    /* boundary 2E */
+    /* boundary 2E — X joins: a new member only DISPLACES (holders are the
+     * three nearest), so X alone gains; everyone else keeps its grace */
     CHECK(run_idle(&A, &B, &h, 2 * E_LEN) == 0, "to 2E");
     CHECK(nodus_witness_storage_set_get(A.w, 2 * E_LEN, &g_set_a) == 0 &&
           g_set_a.count == 5, "set(2E) = {A, B, C, D, X}");
-
-    /* choose M and N: of A, C, the first with weight in H = 2E, 3E, 4E
-     * (set(3E), set(4E) have the same members as set(2E) — X joined
-     * before 2E, B leaves after 4E) */
-    {
-        uint64_t w2[DNA_V2_STORAGE_SET_MAX], w3[DNA_V2_STORAGE_SET_MAX];
-        CHECK(nodus_witness_storage_set_get(A.w, E_LEN, &g_set_b) == 0,
-              "set(E)");
-        CHECK(expect_weights(&g_set_a, &g_set_b, w2) == 0, "w(2E)");
-        CHECK(expect_weights(&g_set_a, &g_set_a, w3) == 0, "w(3E)");
-        const int cand[2] = { KA, KC };
-        for (int c = 0; c < 2 && g_M < 0; c++) {
-            for (uint32_t i = 0; i < g_set_a.count; i++)
-                if (key_of_fp(g_set_a.fps[i]) == cand[c] && w2[i] > 0 &&
-                    w3[i] > 0)
-                    g_M = cand[c];
+    for (uint32_t i = 0; i < g_set_a.count; i++) {
+        const int key = key_of_fp(g_set_a.fps[i]);
+        CHECK(key >= 0, "member key");
+        if (key == KX) {
+            const uint64_t nx = g_newn_at[2][KX];
+            CHECK(g_grace[KX] == (nx ? 2 * E_LEN + nx * E_LEN : 0),
+                  "X, new at 2E: grace_until = 2E + n·E");
+        } else {
+            CHECK(g_newn_at[2][key] == 0 &&
+                  g_grace_at[2][key] == g_grace_at[1][key],
+                  "a member that only loses segments gains no grace");
         }
-        CHECK(g_M >= 0, "a member of {A, C} holds a segment in every "
-              "settled epoch (re-seed the fixture keys otherwise)");
-        g_N = (g_M == KA) ? KC : KA;
     }
 
-    /* 2E + 1: three seats report for H = E (F1 not met) */
-    {
-        const int three[3] = { V1, V2, V3 };
-        CHECK(reports_for(&A, 2 * E_LEN + 1, E_LEN, three, 3, bit_all, e,
-                          l) == 0, "three reports for H = E");
-        CHECK(submit(&A, &B, 2 * E_LEN + 1, e, l, 3, codes) == 0, "2E+1");
-        for (int i = 0; i < 3; i++)
-            CHECK(codes[i] == NODUS_V2_TX_OK, "report applies");
-        h = 2 * E_LEN + 1;
-        CHECK(q_u64(A.w, "SELECT COUNT(*) FROM v2_storage_reports", &n) == 0
-              && n == 3, "three committed reports");
+    /* T = the first epoch start no member of set(2E) is in grace at. The
+     * members, their fail_streaks and so their holdings stay those of
+     * set(2E) until M is skipped at T + 4E. */
+    uint64_t T = 2 * E_LEN;
+    for (uint32_t i = 0; i < g_set_a.count; i++) {
+        const int key = key_of_fp(g_set_a.fps[i]);
+        if (g_grace_at[2][key] > T) T = g_grace_at[2][key];
     }
+    CHECK(T % E_LEN == 0 && T / E_LEN + 9 < MODEL_EPOCHS,
+          "T on a boundary, the run within the model's table");
 
-    /* boundary 3E: settle H = E — nothing eligible (W == 0) */
+    /* choose M and N: of A, C, the first that holds a segment over
+     * set(2E) — so it has weight in every settled epoch from T on until
+     * it is skipped */
+    for (int c = 0; c < 2 && g_M < 0; c++) {
+        const int cand = c == 0 ? KA : KC;
+        for (uint64_t k = 1; k <= N_SEGS; k++) {
+            int hold = 0;
+            CHECK(m_holds_in(&g_set_a, k, g_k[cand].fp, &hold) == 0,
+                  "holders over set(2E)");
+            if (hold) g_M = cand;
+        }
+    }
+    CHECK(g_M >= 0, "a member of {A, C} holds a segment (re-seed the "
+          "fixture keys otherwise)");
+    g_N = (g_M == KA) ? KC : KA;
+
+    /* 2E + 1: all seven seats report for H = E with NO bit set */
+    CHECK(reports_for(&A, 2 * E_LEN + 1, E_LEN, all_seats, N_VAL, bit_none,
+                      e, l) == 0, "seven reports for H = E, every bit 0");
+    CHECK(submit(&A, &B, 2 * E_LEN + 1, e, l, N_VAL, codes) == 0, "2E+1");
+    for (int i = 0; i < N_VAL; i++)
+        CHECK(codes[i] == NODUS_V2_TX_OK, "report applies");
+    h = 2 * E_LEN + 1;
+    CHECK(q_u64(A.w, "SELECT COUNT(*) FROM v2_storage_reports", &n) == 0 &&
+          n == N_VAL, "seven committed reports");
+
+    /* boundary 3E: settle H = E (F1 met) — every member is in grace or
+     * holds nothing: W == 0, nothing paid, and the 0 bits are NOT counted
+     * against anyone (fail_streak unchanged) */
     snap_t s0, s1;
     CHECK(run_idle(&A, &B, &h, 3 * E_LEN - 1) == 0, "to 3E-1");
     CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, E_LEN, &g_ex) == 0,
-          "before 3E");
+          "before 3E (engine eligibility == the model's)");
     CHECK(run_idle(&A, &B, &h, 3 * E_LEN) == 0, "boundary 3E");
     CHECK(take(A.w, &s1) == 0, "after 3E");
     {
         uint64_t W = 0;
-        CHECK(check_settle(&g_ex, &s0, &s1, ok_all, &W) == 0 && W == 0,
-              "H = E: W == 0 — no credit, pool and streaks unchanged");
+        CHECK(check_settle(&g_ex, &s0, &s1, ok_none, &W) == 0 && W == 0,
+              "H = E: in grace — W == 0, no credit");
         CHECK(s0.pool1 == s1.pool1, "pool 1 untouched");
+        for (int k = 0; k < N_KEYS; k++)
+            CHECK(s1.streak[k] == s0.streak[k], "a member in grace: its 0 "
+                  "bit is not counted, fail_streak unchanged");
         CHECK(q_u64(A.w, "SELECT COUNT(*) FROM v2_storage_reports", &n) == 0
               && n == 0, "the reports for H = E are pruned");
     }
 
-    /* 3E: a report for H = 2E is refused (the epoch is not over) */
-    /* (the window opens at 3E + 1) — built at 3E + 1's height but the
-     * check is the exec's; covered in section C. 3E + 1: all seven. */
-    CHECK(reports_for(&A, 3 * E_LEN + 1, 2 * E_LEN, all_seats, N_VAL,
-                      bit_one_ok, e, l) == 0, "seven reports for H = 2E");
-    CHECK(submit(&A, &B, 3 * E_LEN + 1, e, l, N_VAL, codes) == 0, "3E+1");
+    /* to T + E: idle (no report, F1 not met at every settlement) */
+    CHECK(run_idle(&A, &B, &h, T + E_LEN) == 0, "to T + E");
+
+    /* T + E + 1: all seven report for H = T ("one OK"); a duplicate and
+     * a late report are refused */
+    CHECK(reports_for(&A, T + E_LEN + 1, T, all_seats, N_VAL, bit_one_ok, e,
+                      l) == 0, "seven reports for H = T");
+    CHECK(submit(&A, &B, T + E_LEN + 1, e, l, N_VAL, codes) == 0, "T+E+1");
     for (int i = 0; i < N_VAL; i++)
         CHECK(codes[i] == NODUS_V2_TX_OK, "report applies");
-    h = 3 * E_LEN + 1;
+    h = T + E_LEN + 1;
     {
         const int one[1] = { V2 };
-        CHECK(reports_for(&A, 3 * E_LEN + 2, 2 * E_LEN, one, 1, bit_all, e,
-                          l) == 0, "a duplicate (H, seat)");
-        CHECK(submit(&A, &B, 3 * E_LEN + 2, e, l, 1, codes) == 0 &&
+        CHECK(reports_for(&A, T + E_LEN + 2, T, one, 1, bit_all, e, l) == 0,
+              "a duplicate (H, seat)");
+        CHECK(submit(&A, &B, T + E_LEN + 2, e, l, 1, codes) == 0 &&
               codes[0] != NODUS_V2_TX_OK, "the duplicate is refused");
-        h = 3 * E_LEN + 2;
-        CHECK(run_idle(&A, &B, &h, 3 * E_LEN + E_LEN / 2) == 0,
+        h = T + E_LEN + 2;
+        CHECK(run_idle(&A, &B, &h, T + E_LEN + E_LEN / 2) == 0,
               "to the window's end");
-        CHECK(reports_for(&A, h + 1, 2 * E_LEN, one, 1, bit_all, e, l) == 0,
+        CHECK(reports_for(&A, h + 1, T, one, 1, bit_all, e, l) == 0,
               "a late report");
         CHECK(submit(&A, &B, h + 1, e, l, 1, codes) == 0 &&
               codes[0] != NODUS_V2_TX_OK, "a report past the window refused");
         h++;
     }
 
-    /* boundary 4E: settle H = 2E ("one OK") */
-    CHECK(run_idle(&A, &B, &h, 4 * E_LEN - 1) == 0, "to 4E-1");
-    /* the HANDOFF, at 4E − 1 (sets E, 2E, 3E all still retained): the
-     * engine's eligible lists equal the test's own */
-    for (uint64_t H = 2 * E_LEN; H <= 3 * E_LEN; H += E_LEN) {
-        CHECK(nodus_witness_storage_set_get(A.w, H, &g_set_a) == 0 &&
-              nodus_witness_storage_set_get(A.w, H - E_LEN, &g_set_b) == 0,
-              "sets");
-        uint64_t wt[DNA_V2_STORAGE_SET_MAX];
-        CHECK(expect_weights(&g_set_a, &g_set_b, wt) == 0, "weights");
-        for (uint32_t i = 0; i < g_set_a.count; i++) {
-            uint64_t ks[N_SEGS];
-            size_t nk = 0;
-            uint8_t fp[64];
-            memcpy(fp, g_set_a.fps[i], 64);
-            CHECK(nodus_witness_storage_eligible_segments(A.w, H, fp, ks,
-                                                          N_SEGS, &nk) == 0,
-                  "eligible segments");
-            CHECK((uint64_t)nk * P_LEN == wt[i],
-                  "engine eligibility == holders(k, set(H−E)) ∩ set(H)");
+    /* boundary T + 2E: settle H = T ("one OK") — nobody is in grace any
+     * more; every assigned segment counts */
+    CHECK(run_idle(&A, &B, &h, T + 2 * E_LEN - 1) == 0, "to T+2E-1");
+    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, T, &g_ex) == 0,
+          "before T+2E (engine eligibility == the model's)");
+    {
+        int counted = 0;
+        for (uint32_t i = 0; i < g_ex.cur.count; i++) {
+            const int key = key_of_fp(g_ex.cur.fps[i]);
+            CHECK(!g_ex.in_grace[i], "no member in grace at T");
+            if (g_ex.wt[i] > 0 &&
+                (g_grace_at[1][key] > 0 || g_grace_at[2][key] > 0))
+                counted = 1;
         }
+        CHECK(counted, "a member that was in grace now counts: its "
+              "assigned segments are eligible once H >= grace_until");
     }
-    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, 2 * E_LEN, &g_ex) == 0,
-          "before 4E");
-    CHECK(run_idle(&A, &B, &h, 4 * E_LEN) == 0, "boundary 4E");
-    CHECK(take(A.w, &s1) == 0, "after 4E");
+    CHECK(run_idle(&A, &B, &h, T + 2 * E_LEN) == 0, "boundary T+2E");
+    CHECK(take(A.w, &s1) == 0, "after T+2E");
     {
         uint64_t W = 0;
         CHECK(check_settle(&g_ex, &s0, &s1, ok_one, &W) == 0 && W > 0,
-              "H = 2E: weighted pay to N alone, remainder stays, "
+              "H = T: weighted pay to N alone, remainder stays, "
               "fail_streak +1 for every failing member with weight");
-        CHECK(s1.streak[KX] == 0, "X (new at 2E) has weight 0: unchanged");
         CHECK(s1.streak[g_M] == 1, "M failed once");
     }
 
-    /* 4E + 1: all report for H = 3E (all OK but M); 4E + 3: B exits */
-    CHECK(reports_for(&A, 4 * E_LEN + 1, 3 * E_LEN, all_seats, N_VAL,
-                      bit_all_but_m, e, l) == 0, "reports for H = 3E");
-    CHECK(submit(&A, &B, 4 * E_LEN + 1, e, l, N_VAL, codes) == 0, "4E+1");
-    h = 4 * E_LEN + 1;
-    CHECK(run_idle(&A, &B, &h, 4 * E_LEN + 2) == 0, "to 4E+2");
-    CHECK(st_env(A.w, 4 * E_LEN + 3, DNA_SYSRULE_STORAGE_EXIT, g_k[KB].pk,
-                 (uint32_t)PK_LEN, CBX, KB, &e[0], &l[0]) == 0, "B exit");
-    CHECK(submit(&A, &B, 4 * E_LEN + 3, e, l, 1, codes) == 0 &&
-          codes[0] == NODUS_V2_TX_OK, "B exits at 4E+3");
-    h = 4 * E_LEN + 3;
+    /* T + 2E + 1: reports for H = T + E (all OK but M) */
+    CHECK(reports_for(&A, T + 2 * E_LEN + 1, T + E_LEN, all_seats, N_VAL,
+                      bit_all_but_m, e, l) == 0, "reports for H = T+E");
+    CHECK(submit(&A, &B, T + 2 * E_LEN + 1, e, l, N_VAL, codes) == 0,
+          "T+2E+1");
+    h = T + 2 * E_LEN + 1;
 
-    /* boundary 5E: settle H = 3E; B released */
-    uint64_t bonds0 = 0, bonds1 = 0, utxo0 = 0, utxo1 = 0;
-    CHECK(run_idle(&A, &B, &h, 5 * E_LEN - 1) == 0, "to 5E-1");
-    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, 3 * E_LEN, &g_ex) == 0,
-          "before 5E");
-    CHECK(nodus_witness_storage_bond_total(A.w, &bonds0) == 0 &&
-          q_u64(A.w, "SELECT COALESCE(SUM(amount),0) FROM utxo_set",
-                &utxo0) == 0, "buckets before 5E");
-    CHECK(run_idle(&A, &B, &h, 5 * E_LEN) == 0, "boundary 5E");
-    CHECK(take(A.w, &s1) == 0, "after 5E");
+    /* boundary T + 3E: settle H = T + E */
+    CHECK(run_idle(&A, &B, &h, T + 3 * E_LEN - 1) == 0, "to T+3E-1");
+    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, T + E_LEN, &g_ex) == 0,
+          "before T+3E");
+    CHECK(run_idle(&A, &B, &h, T + 3 * E_LEN) == 0, "boundary T+3E");
+    CHECK(take(A.w, &s1) == 0, "after T+3E");
     {
         uint64_t W = 0;
         CHECK(check_settle(&g_ex, &s0, &s1, ok_all_but_m, &W) == 0 && W > 0,
-              "H = 3E: all OK but M");
+              "H = T+E: all OK but M");
         CHECK(s1.streak[g_M] == 2, "M failed twice");
     }
+
+    /* T + 3E + 1: reports for H = T + 2E (all OK but M) */
+    CHECK(reports_for(&A, T + 3 * E_LEN + 1, T + 2 * E_LEN, all_seats, N_VAL,
+                      bit_all_but_m, e, l) == 0, "reports for H = T+2E");
+    CHECK(submit(&A, &B, T + 3 * E_LEN + 1, e, l, N_VAL, codes) == 0,
+          "T+3E+1");
+    h = T + 3 * E_LEN + 1;
+
+    /* boundary T + 4E: settle H = T + 2E — M reaches 3, set(T+4E) skips
+     * it, and its segments go to other members: each GAINER is an
+     * existing holder that now pauses for n epochs (K9) */
+    int gainer = -1;
+    uint64_t n_gain = 0;
+    CHECK(run_idle(&A, &B, &h, T + 4 * E_LEN - 1) == 0, "to T+4E-1");
+    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, T + 2 * E_LEN, &g_ex) == 0,
+          "before T+4E");
+    CHECK(run_idle(&A, &B, &h, T + 4 * E_LEN) == 0, "boundary T+4E");
+    CHECK(take(A.w, &s1) == 0, "after T+4E");
+    {
+        uint64_t W = 0;
+        CHECK(check_settle(&g_ex, &s0, &s1, ok_all_but_m, &W) == 0 && W > 0,
+              "H = T+2E: all OK but M");
+        CHECK(s1.streak[g_M] == 3, "M failed three settled epochs");
+        CHECK(nodus_witness_storage_set_get(A.w, T + 4 * E_LEN, &g_set_a)
+              == 0 && nodus_witness_storage_set_get(A.w, T + 3 * E_LEN,
+                                                    &g_set_b) == 0,
+              "set(T+4E), set(T+3E)");
+        int seen = 0;
+        for (uint32_t i = 0; i < g_set_a.count; i++)
+            if (key_of_fp(g_set_a.fps[i]) == g_M) {
+                seen = 1;
+                CHECK(g_set_a.fail_streak[i] == 3,
+                      "set(T+4E) freezes M's fail_streak 3");
+            }
+        CHECK(seen, "M stays in the set (registered, bonded)");
+        for (uint64_t k = 1; k <= N_SEGS; k++) {
+            uint8_t r[64], hf[3][64];
+            size_t nh = 0;
+            CHECK(seg_root(k, r) == 0 &&
+                  nodus_witness_storage_holders(&g_set_a, r, hf, &nh) == 0,
+                  "holders over set(T+4E)");
+            for (size_t j = 0; j < nh; j++)
+                CHECK(key_of_fp(hf[j]) != g_M,
+                      "M (fail_streak 3) is skipped for placement");
+        }
+        /* a gainer that already held a segment at T + 3E */
+        const uint64_t j4 = (T + 4 * E_LEN) / E_LEN;
+        for (uint32_t i = 0; i < g_set_a.count && gainer < 0; i++) {
+            const int key = key_of_fp(g_set_a.fps[i]);
+            if (key == g_M || g_newn_at[j4][key] == 0) continue;
+            int held_before = 0;
+            for (uint64_t k = 1; k <= N_SEGS && !held_before; k++)
+                CHECK(m_holds_in(&g_set_b, k, g_set_a.fps[i],
+                                 &held_before) == 0, "holders at T+3E");
+            if (held_before) {
+                gainer = key;
+                n_gain = g_newn_at[j4][key];
+            }
+        }
+        CHECK(gainer >= 0, "M's segments went to a member that already "
+              "held one (re-seed the fixture keys otherwise)");
+        CHECK(g_grace[gainer] == T + 4 * E_LEN + n_gain * E_LEN,
+              "the gainer: grace_until = T+4E + n·E");
+        uint64_t ks[N_SEGS];
+        size_t nk = 1;
+        CHECK(nodus_witness_storage_eligible_segments(
+                  A.w, T + 4 * E_LEN, g_k[gainer].fp, ks, N_SEGS, &nk) == 0
+              && nk == 0, "the gainer is not probed in (T+4E, T+5E] — on "
+              "NONE of its segments, old ones included");
+        for (uint64_t x = 0; x < n_gain; x++)
+            CHECK(nodus_storage_in_grace(T + 4 * E_LEN + x * E_LEN,
+                                         g_grace[gainer]) == 1,
+                  "the pause lasts n epochs");
+        CHECK(nodus_storage_in_grace(T + 4 * E_LEN + n_gain * E_LEN,
+                                     g_grace[gainer]) == 0,
+              "and ends after them");
+    }
+
+    /* T + 4E + 1: reports for H = T + 3E (all OK but M) */
+    CHECK(reports_for(&A, T + 4 * E_LEN + 1, T + 3 * E_LEN, all_seats, N_VAL,
+                      bit_all_but_m, e, l) == 0, "reports for H = T+3E");
+    CHECK(submit(&A, &B, T + 4 * E_LEN + 1, e, l, N_VAL, codes) == 0,
+          "T+4E+1");
+    h = T + 4 * E_LEN + 1;
+
+    /* boundary T + 5E: settle H = T + 3E — K5 */
+    CHECK(run_idle(&A, &B, &h, T + 5 * E_LEN - 1) == 0, "to T+5E-1");
+    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, T + 3 * E_LEN, &g_ex) == 0,
+          "before T+5E");
+    CHECK(run_idle(&A, &B, &h, T + 5 * E_LEN) == 0, "boundary T+5E");
+    CHECK(take(A.w, &s1) == 0, "after T+5E");
+    {
+        uint64_t W = 0;
+        CHECK(check_settle(&g_ex, &s0, &s1, ok_all_but_m, &W) == 0 && W > 0,
+              "H = T+3E: all OK but M");
+        int mw = 0;
+        for (uint32_t i = 0; i < g_ex.cur.count; i++)
+            if (key_of_fp(g_ex.cur.fps[i]) == g_M && g_ex.wt[i] > 0) mw = 1;
+        CHECK(mw, "M has weight in H = T+3E (set(T+3E) froze M at 2)");
+        CHECK(s1.streak[g_M] == 4, "K5: M at 3, with weight and NOT OK, "
+              "adds one");
+    }
+
+    /* T + 5E + 1: reports for H = T + 4E ("all OK", M too) */
+    CHECK(reports_for(&A, T + 5 * E_LEN + 1, T + 4 * E_LEN, all_seats, N_VAL,
+                      bit_all, e, l) == 0, "reports for H = T+4E");
+    CHECK(submit(&A, &B, T + 5 * E_LEN + 1, e, l, N_VAL, codes) == 0,
+          "T+5E+1");
+    h = T + 5 * E_LEN + 1;
+
+    /* boundary T + 6E: settle H = T + 4E — M's weight is the handoff
+     * OVERLAP (displaced at T+4E, held at T+3E), M is not in grace: K5a.
+     * The gainer is in grace: weight 0 although it holds segments, every
+     * bit 1 changes nothing for it. M is placed again at T + 6E and is
+     * NEW to its segments: grace for M. */
+    CHECK(run_idle(&A, &B, &h, T + 6 * E_LEN - 1) == 0, "to T+6E-1");
+    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, T + 4 * E_LEN, &g_ex) == 0,
+          "before T+6E");
+    CHECK(s0.streak[g_M] == 4, "M at 4 before T+6E");
+    {
+        int mw = 0, gw = 1, gs = 0;
+        for (uint32_t i = 0; i < g_ex.cur.count; i++) {
+            const int key = key_of_fp(g_ex.cur.fps[i]);
+            if (key == g_M && g_ex.wt[i] > 0 && !g_ex.in_grace[i]) mw = 1;
+            if (key == gainer) {
+                gs = 1;
+                gw = g_ex.in_grace[i] && g_ex.wt[i] == 0;
+            }
+        }
+        CHECK(mw, "M has weight in H = T+4E through the overlap epoch");
+        CHECK(gs && gw, "the gainer, in grace at T+4E, has weight 0 — it "
+              "earns nothing on any of its segments");
+    }
+    CHECK(run_idle(&A, &B, &h, T + 6 * E_LEN) == 0, "boundary T+6E");
+    CHECK(take(A.w, &s1) == 0, "after T+6E");
+    {
+        uint64_t W = 0;
+        CHECK(check_settle(&g_ex, &s0, &s1, ok_all, &W) == 0 && W > 0,
+              "H = T+4E: all OK");
+        CHECK(s1.streak[g_M] == 0, "K5a: M at 4, with weight and OK, "
+              "resets to 0");
+        CHECK(s1.streak[gainer] == s0.streak[gainer],
+              "the gainer in grace: fail_streak unchanged");
+        if (gainer >= N_VAL)              /* D's row also takes its
+                                           * validator distribution */
+            CHECK(s1.acc[gainer] == s0.acc[gainer],
+                  "the gainer in grace: no storage credit");
+        const uint64_t j6 = (T + 6 * E_LEN) / E_LEN;
+        CHECK(g_newn_at[j6][g_M] > 0 &&
+              g_grace[g_M] == T + 6 * E_LEN + g_newn_at[j6][g_M] * E_LEN,
+              "M placed again: new to its segments, grace T+6E + n·E");
+    }
+
+    /* boundary T + 7E: no report for H = T + 5E — F1 not met, nothing
+     * moves. M, frozen at 4 in set(T+5E) and at 3 in set(T+4E), has no
+     * eligible block in (T+5E, T+6E] */
+    CHECK(run_idle(&A, &B, &h, T + 7 * E_LEN - 1) == 0, "to T+7E-1");
+    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, T + 5 * E_LEN, &g_ex) == 0,
+          "before T+7E");
+    {
+        int in_cur = 0;
+        for (uint32_t i = 0; i < g_ex.cur.count; i++)
+            if (key_of_fp(g_ex.cur.fps[i]) == g_M) {
+                in_cur = 1;
+                CHECK(g_ex.wt[i] == 0, "M (skipped in set(T+4E) and "
+                      "set(T+5E)) has weight 0 in H = T+5E");
+            }
+        CHECK(in_cur, "M is a member of set(T+5E)");
+    }
+    CHECK(run_idle(&A, &B, &h, T + 7 * E_LEN) == 0, "boundary T+7E");
+    CHECK(take(A.w, &s1) == 0, "after T+7E");
+    for (int k = 0; k < N_KEYS; k++)
+        CHECK(s1.streak[k] == s0.streak[k],
+              "F1 not met: every fail_streak unchanged (M's at 0 included)");
+    CHECK(s1.pool1 == s0.pool1, "F1 not met: pool 1 untouched");
+    CHECK(s1.streak[g_M] == 0, "M stays at 0");
+
+    /* T + 7E + 3: B exits; boundary T + 8E releases it (and whoever
+     * takes B's segments gets its grace — the model checks it) */
+    CHECK(run_idle(&A, &B, &h, T + 7 * E_LEN + 2) == 0, "to T+7E+2");
+    CHECK(st_env(A.w, T + 7 * E_LEN + 3, DNA_SYSRULE_STORAGE_EXIT,
+                 g_k[KB].pk, (uint32_t)PK_LEN, CBX, KB, &e[0], &l[0]) == 0,
+          "B exit");
+    CHECK(submit(&A, &B, T + 7 * E_LEN + 3, e, l, 1, codes) == 0 &&
+          codes[0] == NODUS_V2_TX_OK, "B exits at T+7E+3");
+    h = T + 7 * E_LEN + 3;
+    const uint64_t BR = T + 8 * E_LEN;
+    uint64_t bonds0 = 0, bonds1 = 0, utxo0 = 0, utxo1 = 0;
+    CHECK(run_idle(&A, &B, &h, BR - 1) == 0, "to T+8E-1");
+    CHECK(nodus_witness_storage_bond_total(A.w, &bonds0) == 0 &&
+          q_u64(A.w, "SELECT COALESCE(SUM(amount),0) FROM utxo_set",
+                &utxo0) == 0, "buckets before T+8E");
+    CHECK(run_idle(&A, &B, &h, BR) == 0, "boundary T+8E");
     {
         uint8_t id[64], nul[64];
-        CHECK(dna_v2_storage_exit_id(A.chain32, 5 * E_LEN, g_k[KB].fp, id)
+        CHECK(dna_v2_storage_exit_id(A.chain32, BR, g_k[KB].fp, id)
               == 0 && dna_v2_storage_exit_nullifier(id, nul) == 0, "exit id");
         sqlite3_stmt *st = NULL;
         CHECK(sqlite3_prepare_v2(A.w->db, "SELECT owner, amount, tx_hash, "
@@ -2138,134 +2614,27 @@ static int t_engine(void) {
             sqlite3_column_bytes(st, 2) == 64 &&
             memcmp(sqlite3_column_blob(st, 2), id, 64) == 0 &&
             sqlite3_column_int64(st, 3) == 201 &&
-            (uint64_t)sqlite3_column_int64(st, 4) == 5 * E_LEN &&
+            (uint64_t)sqlite3_column_int64(st, 4) == BR &&
             (uint64_t)sqlite3_column_int64(st, 5) ==
-                5 * E_LEN + (uint64_t)DNAC_STORAGE_EXIT_LOCK_EPOCHS * E_LEN;
+                BR + (uint64_t)DNAC_STORAGE_EXIT_LOCK_EPOCHS * E_LEN;
         sqlite3_finalize(st);
         CHECK(good, "B's bond is ONE locked UTXO: identity, owner, amount, "
-              "index 201, unlock 5E + 12E");
+              "index 201, unlock T+8E + 12E");
         CHECK(q_u64(A.w, "SELECT COUNT(*) FROM v2_storage_nodes WHERE "
                     "status = 3", &n) == 0 && n == 1, "B RELEASED");
         CHECK(nodus_witness_storage_bond_total(A.w, &bonds1) == 0 &&
               q_u64(A.w, "SELECT COALESCE(SUM(amount),0) FROM utxo_set",
-                    &utxo1) == 0, "buckets after 5E");
+                    &utxo1) == 0, "buckets after T+8E");
         CHECK(bonds1 == bonds0 - BOND && utxo1 == utxo0 + BOND,
               "the bond moved storage bonds -> utxo");
         CHECK(core_invariant(A.w) == 0 && core_invariant(B.w) == 0,
               "the CORE invariant holds on both twins");
-        CHECK(nodus_witness_storage_set_get(A.w, 5 * E_LEN, &g_set_a) == 0
-              && g_set_a.count == 4, "set(5E) excludes B");
+        CHECK(nodus_witness_storage_set_get(A.w, BR, &g_set_a) == 0
+              && g_set_a.count == 4, "set(T+8E) excludes B");
+        uint64_t gb = 0;
+        CHECK(grace_of(A.w, g_k[KB].fp, &gb) == 0 && gb == g_grace[KB],
+              "B's row keeps its grace_until through exit and release");
     }
-
-    /* 5E + 1: reports for H = 4E (all OK but M) */
-    CHECK(reports_for(&A, 5 * E_LEN + 1, 4 * E_LEN, all_seats, N_VAL,
-                      bit_all_but_m, e, l) == 0, "reports for H = 4E");
-    CHECK(submit(&A, &B, 5 * E_LEN + 1, e, l, N_VAL, codes) == 0, "5E+1");
-    h = 5 * E_LEN + 1;
-    CHECK(run_idle(&A, &B, &h, 6 * E_LEN - 1) == 0, "to 6E-1");
-    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, 4 * E_LEN, &g_ex) == 0,
-          "before 6E");
-    CHECK(run_idle(&A, &B, &h, 6 * E_LEN) == 0, "boundary 6E");
-    CHECK(take(A.w, &s1) == 0, "after 6E");
-    {
-        uint64_t W = 0;
-        CHECK(check_settle(&g_ex, &s0, &s1, ok_all_but_m, &W) == 0 && W > 0,
-              "H = 4E: all OK but M");
-        CHECK(s1.streak[g_M] == 3, "M failed three settled epochs");
-        CHECK(nodus_witness_storage_set_get(A.w, 6 * E_LEN, &g_set_a) == 0,
-              "set(6E)");
-        int seen = 0;
-        for (uint32_t i = 0; i < g_set_a.count; i++)
-            if (key_of_fp(g_set_a.fps[i]) == g_M) {
-                seen = 1;
-                CHECK(g_set_a.fail_streak[i] == 3,
-                      "set(6E) freezes M's fail_streak 3");
-            }
-        CHECK(seen, "M stays in the set (registered, bonded)");
-        for (uint64_t k = 1; k <= N_SEGS; k++) {
-            uint8_t r[64], hf[3][64];
-            size_t nh = 0;
-            CHECK(seg_root(k, r) == 0 &&
-                  nodus_witness_storage_holders(&g_set_a, r, hf, &nh) == 0,
-                  "holders over set(6E)");
-            for (size_t j = 0; j < nh; j++)
-                CHECK(key_of_fp(hf[j]) != g_M,
-                      "M (fail_streak 3) is skipped for placement");
-        }
-    }
-
-    /* 6E + 1: reports for H = 5E (all OK but M) */
-    CHECK(reports_for(&A, 6 * E_LEN + 1, 5 * E_LEN, all_seats, N_VAL,
-                      bit_all_but_m, e, l) == 0, "reports for H = 5E");
-    CHECK(submit(&A, &B, 6 * E_LEN + 1, e, l, N_VAL, codes) == 0, "6E+1");
-    h = 6 * E_LEN + 1;
-    CHECK(run_idle(&A, &B, &h, 7 * E_LEN - 1) == 0, "to 7E-1");
-    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, 5 * E_LEN, &g_ex) == 0,
-          "before 7E");
-    CHECK(run_idle(&A, &B, &h, 7 * E_LEN) == 0, "boundary 7E");
-    CHECK(take(A.w, &s1) == 0, "after 7E");
-    {
-        uint64_t W = 0;
-        CHECK(check_settle(&g_ex, &s0, &s1, ok_all_but_m, &W) == 0 && W > 0,
-              "H = 5E: all OK but M");
-        int mw = 0;
-        for (uint32_t i = 0; i < g_ex.cur.count; i++)
-            if (key_of_fp(g_ex.cur.fps[i]) == g_M && g_ex.wt[i] > 0) mw = 1;
-        CHECK(mw, "M has weight in H = 5E (eligibility from set(4E), "
-              "where M was frozen at 1)");
-        CHECK(s1.streak[g_M] == 4, "K5: M at 3, with weight and NOT OK, "
-              "adds one");
-    }
-
-    /* 7E + 1: reports for H = 6E ("all OK", M too); M's weight comes from
-     * set(5E), where M was frozen at 2 (below 3, so placed) */
-    CHECK(reports_for(&A, 7 * E_LEN + 1, 6 * E_LEN, all_seats, N_VAL,
-                      bit_all, e, l) == 0, "reports for H = 6E");
-    CHECK(submit(&A, &B, 7 * E_LEN + 1, e, l, N_VAL, codes) == 0, "7E+1");
-    h = 7 * E_LEN + 1;
-    CHECK(run_idle(&A, &B, &h, 8 * E_LEN - 1) == 0, "to 8E-1");
-    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, 6 * E_LEN, &g_ex) == 0,
-          "before 8E");
-    CHECK(s0.streak[g_M] == 4, "M at 4 before 8E");
-    {
-        int mw = 0;
-        for (uint32_t i = 0; i < g_ex.cur.count; i++)
-            if (key_of_fp(g_ex.cur.fps[i]) == g_M && g_ex.wt[i] > 0) mw = 1;
-        CHECK(mw, "M has weight in H = 6E (eligibility from set(5E), "
-              "where M was frozen at 2)");
-    }
-    CHECK(run_idle(&A, &B, &h, 8 * E_LEN) == 0, "boundary 8E");
-    CHECK(take(A.w, &s1) == 0, "after 8E");
-    {
-        uint64_t W = 0;
-        CHECK(check_settle(&g_ex, &s0, &s1, ok_all, &W) == 0 && W > 0,
-              "H = 6E: all OK");
-        CHECK(s1.streak[g_M] == 0, "K5a: M at 4, with weight and OK, "
-              "resets to 0");
-    }
-
-    /* boundary 9E: no report for H = 7E — F1 not met, nothing moves. M,
-     * frozen at 3 in set(6E), has no eligible block in (7E, 8E] */
-    CHECK(run_idle(&A, &B, &h, 9 * E_LEN - 1) == 0, "to 9E-1");
-    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, 7 * E_LEN, &g_ex) == 0,
-          "before 9E");
-    {
-        int in_cur = 0;
-        for (uint32_t i = 0; i < g_ex.cur.count; i++)
-            if (key_of_fp(g_ex.cur.fps[i]) == g_M) {
-                in_cur = 1;
-                CHECK(g_ex.wt[i] == 0, "M (skipped in set(6E)) has weight 0 "
-                      "in H = 7E");
-            }
-        CHECK(in_cur, "M is a member of set(7E)");
-    }
-    CHECK(run_idle(&A, &B, &h, 9 * E_LEN) == 0, "boundary 9E");
-    CHECK(take(A.w, &s1) == 0, "after 9E");
-    for (int k = 0; k < N_KEYS; k++)
-        CHECK(s1.streak[k] == s0.streak[k],
-              "F1 not met: every fail_streak unchanged (M's at 0 included)");
-    CHECK(s1.pool1 == s0.pool1, "F1 not met: pool 1 untouched");
-    CHECK(s1.streak[g_M] == 0, "M stays at 0");
     CHECK(core_invariant(A.w) == 0, "the invariant holds at the end");
 
     fx_close(&A);
