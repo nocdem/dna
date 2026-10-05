@@ -638,3 +638,14 @@ HF-6), and the storage role reward, which takes the next number when ready.
 The Nodus EVM text rests on the `qevm` branch's Prague state-test run
 (17,265 pass, 0 fail, 9 documented EIP-7823 modexp deviations; blob and
 set-code transactions excluded by design) — built, not released, not voted.
+
+2026-10-05, correction (operator: "hard forks diye bir bölüm vardı"): the
+roadmap "Hard forks" section above duplicated the Scan Hard forks page and the
+Wiki's "Hard forks on the testnet" / "Planned, not live" sections, and was
+removed. Instead: Scan `hardforks.html` gains a static "Planned hard forks"
+list under the live table (`build-portals.mjs`, `planned`), the Wiki's
+"Planned, not live" names HF-5 (Nodus EVM, new item) and HF-6 (the four
+role-stake items) and says the storage reward takes the next number, and the
+roadmap keeps one planned item `history.evm.*` ("NEXT · HF-5") with the roles
+item dated "LATER · HF-6". Numbering per
+`docs/plans/decisions/2026-10-05-hf-numbering-evm-hf5.md`.
