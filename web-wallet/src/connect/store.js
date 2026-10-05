@@ -23,8 +23,9 @@
 // contacts, salts, pending requests, the contacts removed on this device,
 // ACK times, the next local sequence,
 // the profile cache index and the message-check times; plus one record per
-// kept contact profile, id 'p' + 20-digit local sequence, and one per shared
-// vault, id 'v' + 20-digit local sequence — src/vaults/), 'meta' (the
+// kept contact profile, id 'p' + 20-digit local sequence, one per shared
+// vault, id 'v' + 20-digit local sequence — src/vaults/ — and the group
+// records 'g' / 'k' / 'x' + 20 digits — src/connect/groups/), 'meta' (the
 // counter record). Record ids are opaque on purpose: who you talk
 // to is inside the ciphertext, not in an id or the AAD. The counter is also
 // kept in localStorage ('nodus.connect.counter.v1.<database name>', a
@@ -200,8 +201,18 @@ export async function deleteVaultHistory(vaultId, storage) {
 // (nc_core.h nc_contactlist_add), so it still lists them and they must not
 // be added back from it (text.js mergeListedContacts). Adding the person
 // again (request accepted, theirs or ours) takes the ID off this list.
+// `groups` (package G3): group id (64 hex) -> { id: 'g' + 20 digits, at }
+// — the group's own record in the 'state' store (src/connect/groups/
+// model.js checkGroup), like state.vaults. A group record points to its key
+// version records ('k' + 20 digits, one per version — decision 14 keeps
+// every old key, and one version of 64 members is ~8.5 KB) and, while an
+// owner's rotation is staged, to the staged key packet split in pieces
+// ('x' + 20 digits — R2-2: the owner keeps the exact bytes, 107,795 B at
+// 64 members, more than one record holds). Group messages are records of
+// the 'messages' store with a `group` field (openHistoryStore returns them
+// apart from the 1:1 messages).
 export function emptyState() {
-  return { version: 1, nextSeq: '1', contacts: [], outgoing: [], declined: [], removed: [], acks: {}, ackSent: {}, profileCache: {}, dmSync: {}, chainNames: {}, vaults: {} };
+  return { version: 1, nextSeq: '1', contacts: [], outgoing: [], declined: [], removed: [], acks: {}, ackSent: {}, profileCache: {}, dmSync: {}, chainNames: {}, vaults: {}, groups: {} };
 }
 const isMap = value => value && typeof value === 'object' && !Array.isArray(value);
 const HEX128_KEY = /^[0-9a-f]{128}$/;
@@ -212,17 +223,22 @@ export const PROFILE_RECORD_ID = /^p\d{20}$/;
 // checkVaultRecord accepts. Record ids stay opaque (the address is inside
 // the ciphertext and the state, never in an id or the AAD).
 export const VAULT_RECORD_ID = /^v\d{20}$/;
+// Group records (state.groups above): 'g' group, 'k' key version, 'x' a
+// piece of a staged key packet.
+export const GROUP_RECORD_ID = /^[gkx]\d{20}$/;
+const HEX64_KEY = /^[0-9a-f]{64}$/;
 export function checkState(value) {
-  // A state saved before `ackSent`, `profileCache`, `dmSync`, `chainNames`
-  // or `vaults` existed gets the default (same version).
-  if (value && value.version === 1) for (const key of ['ackSent', 'profileCache', 'dmSync', 'chainNames', 'vaults']) if (value[key] === undefined) value[key] = {};
+  // A state saved before `ackSent`, `profileCache`, `dmSync`, `chainNames`,
+  // `vaults` or `groups` existed gets the default (same version).
+  if (value && value.version === 1) for (const key of ['ackSent', 'profileCache', 'dmSync', 'chainNames', 'vaults', 'groups']) if (value[key] === undefined) value[key] = {};
   // … and before `removed` existed, likewise (an empty list).
   if (value && value.version === 1 && value.removed === undefined) value.removed = [];
   if (!value || value.version !== 1 || !U64.test(String(value.nextSeq)) || !Array.isArray(value.contacts) ||
       !Array.isArray(value.outgoing) || !Array.isArray(value.declined) ||
       !Array.isArray(value.removed) || value.removed.some(fp => typeof fp !== 'string' || !HEX128_KEY.test(fp)) ||
       !value.acks || typeof value.acks !== 'object' ||
-      !isMap(value.ackSent) || !isMap(value.profileCache) || !isMap(value.dmSync) || !isMap(value.chainNames) || !isMap(value.vaults) ||
+      !isMap(value.ackSent) || !isMap(value.profileCache) || !isMap(value.dmSync) || !isMap(value.chainNames) || !isMap(value.vaults) || !isMap(value.groups) ||
+      Object.entries(value.groups).some(([gid, e]) => !HEX64_KEY.test(gid) || !isMap(e) || typeof e.id !== 'string' || !/^g\d{20}$/.test(e.id) || !U64.test(String(e.at))) ||
       Object.values(value.profileCache).some(e => !isMap(e) || typeof e.id !== 'string' || !PROFILE_RECORD_ID.test(e.id) ||
         !U64.test(String(e.at)) || typeof e.name !== 'string') ||
       Object.values(value.dmSync).some(t => !U64.test(String(t))) ||
@@ -326,7 +342,7 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
   await sealing(() => core.historyKey(name), 'The key for your message history could not be prepared.');
   const db = await bounded(openDatabase(name), signal, late => late.close());
   db.onversionchange = () => db.close();
-  let counter, state, messages, profiles, vaults;
+  let counter, state, messages, profiles, vaults, groupRecords, groupMessages;
   try {
     const raw = await bounded(readAll(db), signal);
     // The larger of the database record and the copy that survives a
@@ -364,11 +380,26 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
         if (kept.address === wantedVaults.get(record.id)) vaults.push({ id: record.id, address: kept.address, value: kept.value });
       } catch { /* not used */ }
     }
+    // Group records (state.groups): every 'g' / 'k' / 'x' record that opens
+    // is handed over; the groups module keeps those its group records point
+    // to and checks their shape (src/connect/groups/model.js). One that
+    // fails to open is dropped here; it does not keep Messages closed.
+    groupRecords = [];
+    for (const record of stateRecords) {
+      if (!record || typeof record.id !== 'string' || !GROUP_RECORD_ID.test(record.id)) continue;
+      try {
+        const kept = await open(STORE_STATE, record);
+        if (isMap(kept)) groupRecords.push({ id: record.id, value: kept });
+      } catch { /* not used */ }
+    }
     messages = [];
+    groupMessages = [];
     for (const record of raw.messages || []) {
       const message = await open(STORE_MESSAGES, record);
       if (!message || messageRecordId(String(message.seq)) !== record.id) throw new StorageError('A stored message record is damaged.');
-      messages.push(message);
+      // A group message never joins the 1:1 list: every 1:1 helper
+      // (src/connect/ui/text.js) selects by `fp` and `dir` alone.
+      if (message.group !== undefined) groupMessages.push(message); else messages.push(message);
     }
   } catch (error) { db.close(); throw error; }
 
@@ -384,7 +415,9 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
   // `keptProfiles`: [{ id, fp, record }] written to the 'state' store next
   // to the state that points to them (state.profileCache).
   // `keptVaults`: [{ id, address, value }] likewise (state.vaults).
-  function save(nextState, newMessages = [], keptProfiles = [], keptVaults = []) {
+  // `keptGroups`: [{ id, value }] group / key version / staged packet piece
+  // records (GROUP_RECORD_ID; state.groups, src/connect/groups/).
+  function save(nextState, newMessages = [], keptProfiles = [], keptVaults = [], keptGroups = []) {
     const run = async () => {
       if (closed) throw new StorageError('Message history is closed.');
       const entries = [
@@ -396,6 +429,10 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
         ...keptVaults.map(v => {
           if (typeof v?.id !== 'string' || !VAULT_RECORD_ID.test(v.id)) throw new StorageError('Invalid vault record.');
           return { store: STORE_STATE, id: v.id, value: checkVaultRecord({ address: v.address, value: v.value }) };
+        }),
+        ...keptGroups.map(g => {
+          if (typeof g?.id !== 'string' || !GROUP_RECORD_ID.test(g.id) || !isMap(g.value)) throw new StorageError('Invalid group record.');
+          return { store: STORE_STATE, id: g.id, value: g.value };
         }),
         { store: STORE_STATE, id: STATE_ID, value: checkState(nextState) }
       ];
@@ -432,7 +469,7 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
     if (!navigator.locks) throw new StorageError('This browser cannot safely delete saved data.');
     await navigator.locks.request('nodus.wallet.storage', () => deleteDatabase(name));
   }
-  return { persistent: true, state, messages, profiles, vaults, save, close, erase };
+  return { persistent: true, state, messages, profiles, vaults, groupRecords, groupMessages, save, close, erase };
 }
 
 // An unsaved wallet (words typed in, or a new account): nothing is written
@@ -440,7 +477,7 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
 export function memoryHistoryStore() {
   let closed = false;
   return {
-    persistent: false, state: emptyState(), messages: [], profiles: [], vaults: [],
+    persistent: false, state: emptyState(), messages: [], profiles: [], vaults: [], groupRecords: [], groupMessages: [],
     async save(nextState) { if (closed) throw new StorageError('Message history is closed.'); checkState(nextState); },
     close() { closed = true; },
     async erase() { closed = true; }

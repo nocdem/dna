@@ -28,7 +28,9 @@
 // refusals are not reached, and no kept history is shown. Whether the
 // failed connection attempt has already been reported is not asserted (the
 // status line may still say "Connecting…"). Sending, receiving, requests
-// and profile editing need a live node and are not covered here. Whether
+// and profile editing need a live node and are not covered here. Groups:
+// only the offline part of Chats (the Groups heading, "New group" disabled,
+// the hidden group conversation) — no group flow runs without a node. Whether
 // the browser stores the Secure cookie on
 // http://127.0.0.1 is not asserted (the rule fails open); the refusal is
 // driven by a cookie the test adds.
@@ -160,6 +162,18 @@ try {
   assert.equal(await page.locator('#nc-send-text').count(), 1);
   assert.equal(await page.locator('#nc-send-text').isVisible(), false);
   assert.equal(await page.locator('#nc-send-text').getAttribute('maxlength'), '4000');
+  // Groups (package G3), offline: the Groups part of Chats is there with no
+  // group and no invitation (an empty device), "New group" is refused until
+  // Messages is connected (the button is disabled), and the group
+  // conversation and its composer exist but are hidden. Creating, inviting,
+  // joining, sending and reading need a live node and are not covered here.
+  assert.equal(await page.locator('.nc-groups').isVisible(), true);
+  assert.equal(await page.locator('.nc-groups-head h3').textContent(), 'Groups');
+  assert.equal(await page.locator('.nc-groups-head button', { hasText: 'New group' }).isDisabled(), true);
+  assert.equal(await page.locator('.nc-groups .contact-row').count(), 0);
+  assert.equal(await page.locator('.messenger-group').isVisible(), false);
+  assert.equal(await page.locator('#nc-group-text').count(), 1);
+  assert.equal(await page.locator('#nc-group-text').isVisible(), false);
 
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 844 });
