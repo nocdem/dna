@@ -70,6 +70,12 @@ struct nodus_stprobe_rt;
 
 /* ── Witness configuration ───────────────────────────────────────── */
 
+/** The segment directory's name bound (nodus_witness_config_t
+ *  segment_dir, NUL included) and its default name under the witness
+ *  data path (storage reward package B2b-2). */
+#define NODUS_SEG_DIR_NAME_MAX      64
+#define NODUS_SEG_DIR_DEFAULT       "segments"
+
 typedef struct {
     /* R3 W4 — halt_auto_recover (and the halt_recovery_check it gated)
      * is deleted with the closed consensus lane: the legacy safety_halt
@@ -89,6 +95,12 @@ typedef struct {
      * 7 paydays × 17280 blocks. No consensus byte depends on it — the
      * value may differ per node. */
     int64_t  retain_blocks;
+    /* Storage reward package B2b-2 — the directory, UNDER the witness
+     * data path, that holds this node's archive segment files
+     * (nodus_witness_storage_segment.h). nodus.json "segment_dir": one
+     * path component (no '/', not "." or ".."); "" (the default) =
+     * NODUS_SEG_DIR_DEFAULT. Node-local; never a consensus input. */
+    char     segment_dir[NODUS_SEG_DIR_NAME_MAX];
 } nodus_witness_config_t;
 
 /* P2P-PORT F5 — nodus_witness_roster_entry_t / nodus_witness_roster_t (the

@@ -651,6 +651,14 @@ if(NOT WIN32)
         # store). Here, beside nodus_witness_p2p.c, because it sends on
         # the 4004 host.
         src/witness/nodus_witness_storage_reporter.c
+        # Archive reward, package B2b-2 — the segment FILE (one file per
+        # payday segment k with its index and completeness marker, built
+        # from verified pieces only, published atomically, resumable) and
+        # the holder's runtime (assignment, export from the block store,
+        # the channel 0x73 fetch, deletion after the overlap epoch). POSIX
+        # file I/O; node-local, never a consensus input (design rev 4 §3,
+        # §7 D4).
+        src/witness/nodus_witness_storage_segment.c
     )
 
     # ── Phase-C C1 (2026-07-21): shielded-pool ZK verify stack ─────────
