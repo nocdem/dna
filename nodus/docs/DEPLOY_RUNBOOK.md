@@ -691,6 +691,11 @@ The chain's own record is `chain_config_history` (one row per vote; the row is t
 on every node). Read it on any node:
 `sqlite3 /var/lib/nodus/data/witness_*.db "SELECT param_id,new_value,effective_block,commit_block,hex(tx_hash) FROM chain_config_history ORDER BY param_id;"`.
 **Add a row here in the same push as every new vote**, read back from 7/7.
+**And give every fork its own dated roadmap item** (operator 2026-10-05: "bundan sonra da
+ekleyelim"): `website/roadmap.html` + its Turkish keys in `website/app.js`
+(`history.hf<N>.*`, date = the day the effective block was committed, read from Scan's block
+time; text names the vote block and the effective block), plus the Wiki fork list in
+`website/wiki/content.mjs`; then rebuild (`npm run build:portals`) and publish the site.
 
 | Fork | Rule from the effective height | Param | Value | Voted in block | Effective block | Binary that introduced it | tx_hash (first 8 bytes) |
 |---|---|---|---|---|---|---|---|

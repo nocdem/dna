@@ -649,3 +649,13 @@ role-stake items) and says the storage reward takes the next number, and the
 roadmap keeps one planned item `history.evm.*` ("NEXT · HF-5") with the roles
 item dated "LATER · HF-6". Numbering per
 `docs/plans/decisions/2026-10-05-hf-numbering-evm-hf5.md`.
+
+2026-10-05, one roadmap item per hard fork (operator: "git geçmişinden HF'leri
+bul. her birini yaz o zaman roadmap'e. bundan sonra da ekleyelim"): the single
+"Four hard forks active on the testnet" item (`history.forks.*`) is replaced by
+`history.hf1..hf4.*`, each dated by the commit time of its effective block
+(Scan `/api/block/<h>`: block 1 2026-09-30 10:00 UTC, 724 2026-09-30 23:00,
+1,500 2026-10-01 12:47, 2,206 2026-10-02 01:31, 2,926 2026-10-02 15:54,
+2,431 2026-10-02 05:34, 3,151 2026-10-02 19:56) and naming the vote and
+effective blocks from `nodus/docs/DEPLOY_RUNBOOK.md` §2.2. The runbook now
+requires a roadmap item with every future fork.
