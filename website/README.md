@@ -624,3 +624,17 @@ their horizontal scroll area on narrow screens.
 section, its sidebar link and repeated budget summary from `airdrop.html`.
 The first content section is now the CPUNK campaign overview. Tokenomics
 retains the budget figures and links directly to `airdrop.html#overview`.
+
+2026-10-05, hard forks section: `roadmap.html` gains a "Hard forks: live and
+planned" section (`#hardforks`, `forks.*` keys; Turkish in `app.js`), at the
+operator's request ("bu paketleri internete siteye koymak lazım, planlananları
+da"; placement chosen: the roadmap). LIVE rows HF-1..HF-4 are copied from the
+"Live hard forks" table in `nodus/docs/DEPLOY_RUNBOOK.md` §2.2 (vote and
+effective blocks 0/0, 724/1,500, 2,206/2,926, 2,431/3,151). PLANNED: HF-5 =
+Nodus EVM and HF-6 = the role-stake package (operator numbering decision
+`docs/plans/decisions/2026-10-05-hf-numbering-evm-hf5.md`; the earlier "HF-5"
+name of the role-stake decisions in `2026-10-03-role-stake-amounts.md` is now
+HF-6), and the storage role reward, which takes the next number when ready.
+The Nodus EVM text rests on the `qevm` branch's Prague state-test run
+(17,265 pass, 0 fail, 9 documented EIP-7823 modexp deviations; blob and
+set-code transactions excluded by design) — built, not released, not voted.
