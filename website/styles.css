@@ -1362,6 +1362,7 @@ h2 {
 }
 
 .docs-content {
+  min-width: 0;
   max-width: 740px
 }
 
@@ -1423,7 +1424,7 @@ h2 {
   margin-top: 23px
 }
 
-/* Tokenomics allocation table (tokenomics.html). */
+/* Tokenomics and Airdrop tables scroll within the document column. */
 .docs-content .table-scroll {
   overflow-x: auto;
   margin-top: 23px

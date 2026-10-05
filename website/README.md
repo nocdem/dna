@@ -600,3 +600,5 @@ Tokenomics retains eleven allocations totalling 1 billion NODUS / 100%; the
 Roadmap entry stays in progress and retains its start-to-be-announced wording.
 Also corrected Tokenomics' Current figures link and instructions to use Scan
 Statistics and its five-row Details list after the requested Scan page split.
+The document column can shrink within its grid, keeping wide tables inside
+their horizontal scroll area on narrow screens.

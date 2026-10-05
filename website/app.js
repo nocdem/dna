@@ -504,7 +504,7 @@ const turkish = {
   "air.budgetCpunk": "CPUNK Community Airdrop (ilk kampanya)",
   "air.budgetFuture": "Gelecekteki airdrop’lar",
   "air.budgetTotal": "Toplam airdrop bütçesi",
-  "air.budgetNote": "Tüm oranlar toplam NODUS arzının paylarıdır. CPUNK kampanyası airdrop bütçesinin %1’ini değil, toplam arzın %1’ini kullanır.",
+  "air.budgetNote": "Tüm oranlar toplam NODUS arzının paylarıdır.",
   "air.label": "AIRDROP / TESTNET",
   "air.title": "Airdrop.",
   "air.intro": "Nodus, sabit arzının bir bölümünü airdrop kampanyalarına ayırır. İlki CPUNK Community Airdrop; ardından başka airdrop’lar da yapılacak. Bu sayfa toplam bütçeyi ve ilk kampanyaya nasıl katılacağını anlatır.",
