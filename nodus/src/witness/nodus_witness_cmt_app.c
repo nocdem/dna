@@ -35,6 +35,8 @@
 #include "witness/nodus_witness_v2_produce.h"
 #include "witness/nodus_witness_roots_v2.h"
 #include "witness/nodus_witness_runtime.h"
+#include "witness/nodus_witness_v2_apply.h"  /* Nodus EVM: the EVM block gas
+                                              * limit (CheckTx max-gas)  */
 #include "witness/nodus_witness_verify.h"
 #include "witness/nodus_witness_vset.h"
 #include "witness/nodus_witness_v2_claims.h"
@@ -771,6 +773,8 @@ _Static_assert(NODUS_CMT_APP_CODE_GENERATION != NODUS_CMT_APP_CODE_REJECTED &&
                NODUS_CMT_APP_CODE_GENERATION >
                    (uint32_t)NODUS_V2_TX_ERR_FEE,
                "the CheckTx generation code collides with another code");
+/* Nodus EVM: no time-windowed CheckTx EVM budget — the reference has no such
+ * clock read (docs/plans/decisions/2026-09-25-consensus-clock-scope-correction.md). */
 
 /** HF-4 — is a REFUSED envelope a "generation not in force" case (the
  *  code above)? Pure classification of an already-refused entry: decode
@@ -829,6 +833,45 @@ static void app_key_row(app_key_t *k, const nodus_v2_dry_run_row_t *r)
     k->len = (uint16_t)(11u + r->key_len);
 }
 
+/** Red-team 1 F1 — the NON-MUTATING probe the dry run calls for an ABI-2
+ *  leg's synthetic keys after authorization, before anything executes
+ *  (nodus_v2_conflict_probe_fn). Exactly pend_admit's verdict step 1: a
+ *  key held by ANOTHER entry is a conflict; one held by this same entry
+ *  (`owner`) is not, so a recheck of an admitted entry still passes.
+ *  Nothing is inserted — app_pend_admit inserts every key of the entry
+ *  after the whole dry run succeeded. */
+typedef struct {
+    const nodus_cmt_app_ledger_t *ctx;
+    const uint8_t                *owner;      /* the entry identity [64]  */
+} app_probe_ctx_t;
+
+static int app_pend_probe(void *pctx, const nodus_v2_dry_run_row_t *rows,
+                          size_t n)
+{
+    const app_probe_ctx_t *p = (const app_probe_ctx_t *)pctx;
+    size_t                 i;
+
+    if (!p || !p->ctx || !p->owner || (n && !rows)) {
+        return -2;
+    }
+    for (i = 0; i < n && p->ctx->pend_cap; i++) {
+        app_key_t k;
+        uint64_t  h;
+        int       found;
+        size_t    at;
+
+        app_key_row(&k, &rows[i]);
+        if (app_key_hash(k.b, k.len, &h) != 0) {
+            return -2;
+        }
+        at = pend_slot(p->ctx, h, k.b, k.len, &found);
+        if (found && memcmp(p->ctx->pend[at]->owner, p->owner, 64) != 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /** Admit `keys` for the entry `owner` into the pending conflict set and
  *  turn the answer into CheckTx's: CMT_OK with `*refused` set on a
  *  conflict or a full set, CMT_FAULT on an allocation failure. */
@@ -857,8 +900,11 @@ static int app_pend_admit(nodus_cmt_app_ledger_t *ctx,
 
 /**
  * CHECKTX-P1 — the ENVELOPE half after the admission lane: the per-item
- * lifetime rule, the dry run, then the conflict keys (intent + every
- * row-identity row), then the auth cache. On RECHECK the cached kind-1
+ * lifetime rule, the dry run (VM-less for an EVM leg, NEW and RECHECK —
+ * red-team 1 F1 — with the non-mutating pending-conflict probe of its
+ * synthetic keys after authorization), then the conflict keys (intent +
+ * every row-identity row) inserted, then the auth cache. On RECHECK the
+ * cached kind-1
  * and kind-3 (general multisig) verdicts of this wire_id are
  * offered to the dry run, which takes one only where the leg digest it
  * derives again matches — and re-runs every state-dependent stage.
@@ -912,6 +958,45 @@ static int app_check_envelope(nodus_cmt_app_ledger_t *ctx,
             *refused = true;
             return CMT_OK;
         }
+
+        /* ── Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-
+         * design.md rev 3 §8) — the MAX-GAS rule, new AND recheck: an
+         * envelope whose EVM block-gas share (a CALL / CREATE leg's
+         * DECLARED gas_limit, a bridge op's 21 000 —
+         * nodus_rt_evm_env_block_gas, the ONE function the proposal seam
+         * and FinalizeBlock sum) exceeds the EVM_BLOCK_GAS_LIMIT in force
+         * for the next block (chain_config param 15 at tip + 1) can never
+         * fit any block, so it is refused here instead of waiting in the
+         * mempool until it expires. The reference's behaviour: cometbft
+         * v0.38.26 mempool/mempool.go PostCheckMaxGas refuses a tx whose
+         * gas_wanted > the consensus MaxGas. Placement differs (ours is
+         * the application's CheckTx verdict, the reference's the
+         * mempool's post-check on gas_wanted, which stays 0 here — see
+         * nodus_cmt_app_check_tx); the effect is the same refusal. Pure
+         * bytes + one committed chain_config read — no clock. */
+        {
+            uint64_t share = nodus_rt_evm_env_block_gas(&view,
+                                                        DNA_DOMAIN_EVM);
+            if (share > 0) {
+                uint64_t lim = 0;
+                char     greason[160];
+
+                greason[0] = '\0';
+                if (nodus_witness_v2_evm_block_gas_limit(
+                        ctx->w, tip + 1, &lim, greason,
+                        sizeof(greason)) != 0) {
+                    QGP_LOG_ERROR(LOG_TAG, "check_tx: %s", greason);
+                    return CMT_FAULT;
+                }
+                if (share > lim) {
+                    QGP_LOG_DEBUG(LOG_TAG, "check_tx refused: EVM gas %"
+                                  PRIu64 " exceeds the block gas limit %"
+                                  PRIu64, share, lim);
+                    *refused = true;
+                    return CMT_OK;
+                }
+            }
+        }
     }
 
     dry = (nodus_v2_env_dry_run_t *)calloc(1, sizeof(*dry));   /* ~100 KB:
@@ -938,8 +1023,25 @@ static int app_check_envelope(nodus_cmt_app_ledger_t *ctx,
         }
     }
     reason[0] = '\0';
-    drc = nodus_witness_v2_env_dry_run(ctx->w, tx, tx_len, reuse_p, dry,
-                                       reason, sizeof(reason));
+    /* Nodus EVM, red-team 1 F1: a NEW entry and its RECHECK both run the
+     * VM-less mode — an EVM leg's shared pre-validation only (auth shape,
+     * pairing, decode, nonce, balance, intrinsic gas, the gas declaration
+     * and read caps), never the VM: an EVM execution outcome never
+     * changes admission (a failed execution is applied and paid), so
+     * executing at admission bought nothing but unpaid, unbudgeted work
+     * (the reference's mempool validates, it does not execute). The
+     * pending-conflict PROBE runs inside the dry run right after
+     * authorization, before any leg executes; it only looks — the keys
+     * are inserted below, after the whole run succeeded. */
+    {
+        app_probe_ctx_t pc;
+
+        pc.ctx   = ctx;
+        pc.owner = id;
+        drc = nodus_witness_v2_env_dry_run_ex(ctx->w, tx, tx_len, reuse_p,
+                                              1, app_pend_probe, &pc, dry,
+                                              reason, sizeof(reason));
+    }
     if (drc == -2) {
         QGP_LOG_ERROR(LOG_TAG, "check_tx: the dry run could not be computed "
                       "on this node: %s", reason);
@@ -1027,7 +1129,9 @@ int nodus_cmt_app_check_tx(void *vctx, const cmt_mem_request_check_tx_t *req,
     }
     /* `gas_wanted` stays 0: `PostCheckMaxGas` is nil while MaxGas is −1
      * (mempool.go:132-134), which is the value D-4 rev 3 (2) writes into
-     * the genesis document, so the mempool never reads it. */
+     * the genesis document, so the mempool never reads it. Nodus EVM: the EVM
+     * gas bound that post-check would enforce is the application's own
+     * refusal instead (app_check_envelope, "the MAX-GAS rule"). */
     rc = nodus_cmt_app_entry_identity(ctx, req->tx, req->tx_len, id, &cls);
     if (rc == CMT_FAULT) {
         return CMT_FAULT;                       /* node-local: the panic
@@ -1078,7 +1182,11 @@ int nodus_cmt_app_check_tx(void *vctx, const cmt_mem_request_check_tx_t *req,
      * DRY RUN (nodus_witness_v2_env_dry_run), the authorization stage
      * among them — the SAME helper the item loop uses, so D-4 rev 3 (1)'s
      * "including the signature" is still met by one source. Then every
-     * entry's conflict keys meet the pending conflict set. */
+     * entry's conflict keys meet the pending conflict set. Nodus EVM (red-team
+     * 1 F1): an EVM leg is NOT executed here — the dry run's no-VM mode
+     * runs its shared pre-validation only, and its synthetic (sender,
+     * nonce) / ticket key is probed against the pending set right after
+     * authorization, before that pre-validation. */
     if (cls == NODUS_W_TX_V2_ENVELOPE) {
         rc = app_check_envelope(ctx, req->tx, req->tx_len, id,
                                 req->type == CMT_MEM_CHECK_TX_TYPE_RECHECK,
@@ -1395,6 +1503,10 @@ typedef struct {
     uint16_t                  quota[DNA_METER_MAX_DOMAINS]; /* 0 = none  */
     dna_env_view_t           *view;                 /* heap scratch      */
     dna_meter_t              *meter;                /* heap scratch      */
+    /* Nodus EVM: the block context's EVM facts (evm_active / evm_domain_id /
+     * evm_block_gas_limit) — the streamed leg of each reservation and the
+     * block gas sum, the seam's own rules (nodus_witness_v2_produce.c) */
+    nodus_witness_v2_block_ctx_t evm_ctx;           /* EVM fields only   */
 } app_prep_units_t;
 
 /** Index of `domain_id` in the quota table, or -1. */
@@ -1511,6 +1623,7 @@ static size_t app_prep_pack(const nodus_cmt_app_ledger_t *ctx,
     uint64_t env_total = 0;
     dna_meter_budget_t budget;                   /* the scratch remainder */
     uint32_t n_tx[DNA_METER_MAX_DOMAINS];        /* packed per quota dom  */
+    uint64_t gas_sum = 0;                        /* Nodus EVM: packed EVM gas */
 
     memset(&budget, 0, sizeof(budget));
     memset(n_tx, 0, sizeof(n_tx));
@@ -1566,8 +1679,23 @@ static size_t app_prep_pack(const nodus_cmt_app_ledger_t *ctx,
             if (quota_full) {
                 continue;                    /* the domain's block quota  */
             }
+            /* Nodus EVM (design §8): the block gas sum — an envelope whose EVM
+             * share does not fit what is left is SKIPPED (a smaller later
+             * one may still fit), the seam's own rule; a share that alone
+             * exceeds the limit fits no block. A no-op before the EVM
+             * edge (evm_active 0). */
+            uint64_t gas_try = gas_sum;
+            if (nodus_witness_v2_ctx_block_gas_add(&u->evm_ctx, v,
+                                                   &gas_try) != 0) {
+                continue;
+            }
             memset(u->meter, 0, sizeof(*u->meter));
-            ms = dna_meter_reserve(u->meter, u->policy, v, &budget);
+            /* Nodus EVM: an EVM leg is the plan's streamed leg (the seam's and
+             * the item loop's rule; 0 before the EVM edge = the
+             * dna_meter_reserve of before) — F3-C1's noted gap */
+            ms = dna_meter_reserve_ex(
+                u->meter, u->policy, v, &budget,
+                nodus_witness_v2_ctx_stream_leg(&u->evm_ctx, v));
             if (ms == DNA_METER_ERR_GLOBAL_BUDGET ||
                 ms == DNA_METER_ERR_DOMAIN_BUDGET) {
                 continue;                    /* the unit budget: skip     */
@@ -1576,6 +1704,7 @@ static size_t app_prep_pack(const nodus_cmt_app_ledger_t *ctx,
                 excluded[idx] = true;        /* the plan itself refused   */
                 continue;
             }
+            gas_sum = gas_try;
             for (l = 0; l < v->leg_count; l++) {
                 n_tx[app_prep_quota_ix(u, v->leg[l].domain_id)]++;
             }
@@ -1836,6 +1965,10 @@ int nodus_cmt_app_prepare_proposal(
             pu->policy  = bctx->policy;
             pu->budget  = bctx->budget;
             pu->n_quota = bctx->budget.n_domains;
+            /* Nodus EVM: the EVM facts of the same context */
+            pu->evm_ctx.evm_active          = bctx->evm_active;
+            pu->evm_ctx.evm_domain_id       = bctx->evm_domain_id;
+            pu->evm_ctx.evm_block_gas_limit = bctx->evm_block_gas_limit;
             for (i = 0; i < pu->n_quota && bcrc == 0; i++) {
                 dna_domain_manifest_t man;
 
@@ -2273,6 +2406,10 @@ int nodus_cmt_app_finalize_block(void *vctx,
      * ownership rule keeps valid until the NEXT call to this method. */
     uint8_t                        *class_arr = NULL;
     size_t                         *of_arr    = NULL;
+    /* Nodus EVM red-team 1 F12 — of_arr's inverse for envelopes: the block
+     * position of envelope slot k (blk->env_block_pos; node-local receipt
+     * index data only) */
+    size_t                         *env_pos_arr = NULL;
     nodus_v2_envelope_t            *env_arr   = NULL;
     dna_claim_t                    *claim_arr = NULL;
     nodus_v2_tx_result_t           *results_arr = NULL;
@@ -2374,6 +2511,7 @@ int nodus_cmt_app_finalize_block(void *vctx,
 
         class_arr   = (uint8_t *)calloc(req->txs_len, sizeof(*class_arr));
         of_arr      = (size_t *)calloc(req->txs_len, sizeof(*of_arr));
+        env_pos_arr = (size_t *)calloc(req->txs_len, sizeof(*env_pos_arr));
         env_arr     = (nodus_v2_envelope_t *)calloc(req->txs_len,
                                                     sizeof(*env_arr));
         /* results_arr is already allocated above, unconditionally
@@ -2381,7 +2519,7 @@ int nodus_cmt_app_finalize_block(void *vctx,
         claim_arr   = claim_alloc
             ? (dna_claim_t *)calloc(claim_alloc, sizeof(*claim_arr))
             : NULL;
-        if (!class_arr || !of_arr || !env_arr ||
+        if (!class_arr || !of_arr || !env_pos_arr || !env_arr ||
             (claim_alloc && !claim_arr)) {
             rc_out = CMT_FAULT;
             goto done;
@@ -2409,6 +2547,7 @@ int nodus_cmt_app_finalize_block(void *vctx,
         if (class_arr[i] == NODUS_W_TX_V2_ENVELOPE) {
             env_arr[n_env].env_bytes = t->data;
             env_arr[n_env].env_len   = t->len;
+            env_pos_arr[n_env] = i;          /* its block position     */
             of_arr[i] = n_env;
             n_env++;
         } else if (class_arr[i] == NODUS_W_TX_V2_CLAIM) {
@@ -2453,6 +2592,7 @@ int nodus_cmt_app_finalize_block(void *vctx,
     blk->timestamp = (uint64_t)req->time.seconds;
     blk->envs = n_env ? env_arr : NULL;
     blk->n_envs = n_env;
+    blk->env_block_pos = n_env ? env_pos_arr : NULL;
     blk->claims = n_claim ? claim_arr : NULL;
     blk->n_claims = n_claim;
     blk->cmt.on = true;
@@ -2555,9 +2695,17 @@ int nodus_cmt_app_finalize_block(void *vctx,
 
     /* ── the RESPONSE buffer: ctx-owned past this return, sized to
      * req->txs_len (one result per block position), never to env_bound. */
+    /* Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md
+     * rev 3 §7): the same allocation carries, after the txs_len results,
+     * txs_len × 64 bytes of RESPONSE-OWNED storage for ExecTxResult.Data
+     * — an applied EVM leg's receipt digest is copied there, never
+     * pointed at in the engine's results array (which is engine scratch).
+     * calloc(n, S + 64) = n·S + n·64 bytes, overflow-checked by calloc;
+     * it is freed with fb_pb, so no new ownership exists. Items without
+     * Data never touch it. */
     if (req->txs_len > 0) {
         new_fb_pb = (cmt_pb_stored_exec_tx_result_t *)
-            calloc(req->txs_len, sizeof(*new_fb_pb));
+            calloc(req->txs_len, sizeof(*new_fb_pb) + 64u);
         if (!new_fb_pb) {
             rc_out = CMT_FAULT;
             goto done;
@@ -2584,6 +2732,23 @@ int nodus_cmt_app_finalize_block(void *vctx,
             r->det.code       = e->code;
             r->det.gas_wanted = (int64_t)e->gas_wanted;
             r->det.gas_used   = (int64_t)e->gas_used;
+            /* Nodus EVM §7: an applied EVM leg's receipt digest, COPIED into
+             * the response-owned tail (block position i). data_len 0 —
+             * every non-EVM and every refused item — leaves `data`
+             * empty, which is not marshalled: those results, and the
+             * LastResultsHash of a block without an EVM leg, are
+             * byte-identical to before. */
+            if (e->data_len == 64) {
+                uint8_t *tail = (uint8_t *)(new_fb_pb + req->txs_len) +
+                                (size_t)i * 64u;
+                memcpy(tail, e->data, 64);
+                r->det.data.data = tail;
+                r->det.data.len  = 64;
+            } else if (e->data_len != 0) {
+                free(new_fb_pb);         /* not yet handed to ctx      */
+                rc_out = CMT_FAULT;      /* engine contract: 0 or 64 */
+                goto done;
+            }
         } else {
             /* bytes the engine never saw: a claim that does not decode,
              * or an empty item. The classification boundary's own code
@@ -2790,6 +2955,7 @@ done:
     free(blk);
     free(class_arr);
     free(of_arr);
+    free(env_pos_arr);
     free(env_arr);
     free(claim_arr);
     free(results_arr);

@@ -58,6 +58,11 @@ void exp_json_u64_str(exp_json_t *j, uint64_t v);
  * empty string `""`. */
 void exp_json_hex(exp_json_t *j, const uint8_t *b, size_t n);
 
+/* Nodus EVM P4-C: a 256-bit big-endian unsigned integer (an EVM wei amount) as
+ * a JSON string of its decimal digits (`"10000000000"`; zero = `"0"`).
+ * be == NULL emits `"0"`. */
+void exp_json_u256_str(exp_json_t *j, const uint8_t be[32]);
+
 #ifdef __cplusplus
 }
 #endif

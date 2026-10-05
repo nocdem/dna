@@ -254,8 +254,10 @@ static int join_adopt(nodus_witness_t *w) {
          * own version-3 branch also migrates to S16 before storing the
          * document, so this call is not load-bearing for that path — but
          * the chain_config table it plants IS needed before that branch
-         * runs, so it stays here. */
-        if (nodus_witness_db_migrate_v2s16(w2) != 0) break;
+         * runs, so it stays here. Nodus EVM: the live rung is S17 (the EVM
+         * tables, empty, and the CORE EVM reserve row at 0 — no root
+         * reads either before the EVM vote), cascading through S16. */
+        if (nodus_witness_db_migrate_v2s17(w2) != 0) break;
         if (nodus_chain_config_db_migrate(w2) != 0) break;
 
         if (nodus_witness_v2_bundle_apply(w2, bytes, len,

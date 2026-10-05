@@ -643,7 +643,9 @@ int nodus_witness_v2_bundle_apply(nodus_witness_t *w2,
      * (:2924-2947, D-17 rev 10 (8)). Each step manages its own
      * transaction; a failure leaves the scratch DB for the caller to
      * discard. */
-    if (nodus_witness_db_migrate_v2s16(w2) != 0) { free(doc); return -1; }
+    /* Nodus EVM: the live rung is S17 (cascades through S16; the EVM tables
+     * empty, the CORE EVM reserve row at 0 — the genesis is unchanged). */
+    if (nodus_witness_db_migrate_v2s17(w2) != 0) { free(doc); return -1; }
     {
         nodus_cmt_store_t s;
         if (nodus_cmt_store_init(&s, w2->db, false) != CMT_OK) {

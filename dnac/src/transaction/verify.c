@@ -453,6 +453,10 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *                                 DNAC_CFG_MAX_NAME_PRICE=10^15] (HF-4;
  *                                "generation 2 judges the vote" is
  *                                witness-side only)
+ *       EVM_ACTIVE             : exactly DNAC_CFG_EVM_ACTIVE_D (Nodus EVM; the
+ *                                stateful rules are witness-side only)
+ *       EVM_BLOCK_GAS_LIMIT    : [DNAC_CFG_MIN_EVM_BLOCK_GAS,
+ *                                 DNAC_CFG_MAX_EVM_BLOCK_GAS] (Nodus EVM)
  *   - signed_at_block > 0             (CC-AUDIT-008)
  *   - valid_before_block > effective_block_height
  *   - valid_before_block > signed_at_block
@@ -597,6 +601,36 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
                               (unsigned long long)cc->new_value,
                               (unsigned long long)DNAC_CFG_MIN_NAME_PRICE,
                               (unsigned long long)DNAC_CFG_MAX_NAME_PRICE);
+                return DNAC_ERROR_INVALID_PARAM;
+            }
+            break;
+        case DNAC_CFG_EVM_ACTIVE:
+            /* Nodus EVM (design 2026-10-04-nodus-evm-chain-integration-design.md
+             * rev 3 §9), mirroring the witness scalar rules: EXACTLY the
+             * compiled vote literal (the vote names its target
+             * generation). The witness's stateful rules — single use,
+             * HF-2 / HF-3 / a non-zero gas price active, the registry at
+             * the base generation, H-1 not an epoch boundary — need chain
+             * state this mirror does not have (the HF-4 divergence). */
+            if (cc->new_value != (uint64_t)DNAC_CFG_EVM_ACTIVE_D) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "CHAIN_CONFIG: EVM_ACTIVE=0x%016llx, only "
+                              "D=0x%016llx is a legal value",
+                              (unsigned long long)cc->new_value,
+                              (unsigned long long)DNAC_CFG_EVM_ACTIVE_D);
+                return DNAC_ERROR_INVALID_PARAM;
+            }
+            break;
+        case DNAC_CFG_EVM_BLOCK_GAS_LIMIT:
+            /* Nodus EVM (design §8), mirroring the witness scalar rules. */
+            if (cc->new_value < DNAC_CFG_MIN_EVM_BLOCK_GAS ||
+                cc->new_value > DNAC_CFG_MAX_EVM_BLOCK_GAS) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "CHAIN_CONFIG: EVM_BLOCK_GAS_LIMIT=%llu out of "
+                              "[%llu,%llu]",
+                              (unsigned long long)cc->new_value,
+                              (unsigned long long)DNAC_CFG_MIN_EVM_BLOCK_GAS,
+                              (unsigned long long)DNAC_CFG_MAX_EVM_BLOCK_GAS);
                 return DNAC_ERROR_INVALID_PARAM;
             }
             break;

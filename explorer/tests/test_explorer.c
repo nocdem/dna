@@ -1483,6 +1483,351 @@ static void test_name_register_indexed(void) {
     PASS();
 }
 
+/* ── Nodus EVM P4-C: item_evm, /api/tx's "evm", /api/evm/{address,contract} */
+
+/* Nodus EVM fixture (height 1), every EVM fact a distinct byte pattern:
+ *   item 0: applied evm_deposit — consumes coin K (never indexed), change
+ *           to A (990), "ri" 10, ev {s 1, gu 21000, fr 0x11.., nl 0,
+ *           wd 0, dg 0xD0..}
+ *   item 1: applied evm_create — ev {s 1, fr 0x11.., ca 0x22.., v = 10^10
+ *           wei, nl 2, 32 tickets 0x5n.. + tkm}
+ *   item 2: applied evm_call — ev {s 0 (a paid failure), fr 0x11..,
+ *           to 0x22.., v 0}
+ *   item 3: refused evm_withdraw — code 7, no ev */
+static void evm_fixture_page(nodus_dnac_v3_block_result_t *p) {
+    page_header(p, 1, 4, 3, 1);
+    p->count = 4;
+    p->items = calloc(4, sizeof(nodus_dnac_v3_item_t));
+
+    for (uint32_t k = 0; k < 4; k++) {
+        nodus_dnac_v3_item_t *it = &p->items[k];
+        it->index = k;
+        it->kind = NODUS_DNAC_V3_KIND_ENVELOPE;
+        it->has_fee = true;
+        it->fee = 1000;
+        if (k < 3) {
+            it->has_wire_id = true;   fill(it->wire_id, 64, (uint8_t)(0x71 + k));
+            it->has_intent_id = true; fill(it->intent_id, 64, (uint8_t)(0x81 + k));
+            it->has_effects = true;
+            it->has_evm = true;
+            it->evm_status = 1;
+            it->evm_gas_used = 21000;
+            fill(it->evm_from, 32, 0x11);
+            fill(it->evm_digest, 64, (uint8_t)(0xD0 + k));
+        }
+    }
+    nodus_dnac_v3_item_t *it = &p->items[0];
+    strcpy(it->op, "evm_deposit");
+    it->n_consumed = 1;
+    fill(it->consumed[0], 64, 0xEA);
+    it->n_created = 1;
+    fill(it->created[0].id, 64, 0xEB);
+    set_test_fp(it->created[0].owner, 'a');
+    it->created[0].amount = 990;
+    it->reserve_in = 10;
+
+    it = &p->items[1];
+    strcpy(it->op, "evm_create");
+    it->evm_has_created = true;
+    fill(it->evm_created, 32, 0x22);
+    it->evm_has_value = true;
+    it->evm_value[27] = 0x02;            /* 10^10 = 0x02540BE400 */
+    it->evm_value[28] = 0x54;
+    it->evm_value[29] = 0x0B;
+    it->evm_value[30] = 0xE4;
+    it->evm_value[31] = 0x00;
+    it->evm_n_logs = 2;
+    it->evm_n_tickets = NODUS_DNAC_V3_EVM_MAX_TICKETS;
+    for (uint32_t t = 0; t < NODUS_DNAC_V3_EVM_MAX_TICKETS; t++)
+        fill(it->evm_tickets[t], 64, (uint8_t)(0x50 + t));
+    it->evm_tickets_more = true;
+
+    it = &p->items[2];
+    strcpy(it->op, "evm_call");
+    it->evm_status = 0;
+    it->evm_has_to = true;
+    fill(it->evm_to, 32, 0x22);
+    it->evm_has_value = true;
+
+    it = &p->items[3];
+    strcpy(it->op, "evm_withdraw");
+    it->code = 7;
+}
+
+static int seed_evm(exp_db_t *db) {
+    nodus_dnac_v3_block_result_t p;
+    evm_fixture_page(&p);
+    exp_block_batch_t b;
+    exp_block_batch_init(&b);
+    int rc = exp_extract_page(&p, &b);
+    if (rc == 0) rc = exp_db_write_height(db, &b);
+    exp_block_batch_free(&b);
+    nodus_client_free_v3_block_result(&p);
+    return rc;
+}
+
+/* A fake EVM source: one account, two logs, or a failure. */
+typedef struct {
+    int fail;
+    int busy;         /* answer EXP_EVM_LOGS_BUSY when logs are asked */
+    int calls;
+    int saw_logs;     /* the route asked for logs */
+    int saw_cursor;   /* the route passed a logs cursor ... */
+    nodus_evm_logs_cursor_t cursor;   /* ... this one */
+} fake_evm_t;
+
+static int fake_evm_get(void *vctx, const uint8_t addr[32],
+                        const nodus_evm_logs_cursor_t *cursor, nodus_evm_account_t *acct,
+                        nodus_evm_logs_res_t *logs, uint64_t *logs_from, uint64_t *logs_to) {
+    fake_evm_t *f = (fake_evm_t *)vctx;
+    (void)addr;
+    f->calls++;
+    memset(acct, 0, sizeof(*acct));
+    if (logs) memset(logs, 0, sizeof(*logs));
+    f->saw_cursor = cursor != NULL;
+    if (cursor) f->cursor = *cursor;
+    if (f->fail) return -1;
+    if (f->busy && logs) {
+        acct->nonce = 3;
+        acct->height = 1200;
+        return EXP_EVM_LOGS_BUSY;
+    }
+    acct->nonce = 3;
+    acct->balance_wei[31] = 0x01;        /* 257 wei */
+    acct->balance_wei[30] = 0x01;
+    fill(acct->code_hash, 32, 0xCC);
+    acct->code_size = 4;
+    acct->height = 1200;
+    if (logs) {
+        f->saw_logs = 1;
+        logs->logs = calloc(2, sizeof(*logs->logs));
+        if (!logs->logs) return -1;
+        logs->n = 2;
+        for (size_t i = 0; i < 2; i++) {
+            nodus_evm_log_t *g = &logs->logs[i];
+            fill(g->addr, 32, 0x22);
+            g->n_topics = 1;
+            fill(g->topics[0], 32, (uint8_t)(0x90 + i));
+            g->data = malloc(2);
+            if (!g->data) return -1;
+            g->data[0] = 0xAB;
+            g->data[1] = (uint8_t)i;
+            g->data_len = 2;
+            g->height = 1;
+            g->item = 1;
+            g->log_index = (uint32_t)i;
+            fill(g->intent_id, 64, 0x82);
+        }
+        logs->more = true;
+        logs->has_cursor = true;
+        logs->cursor.height = 7;
+        logs->cursor.item = 2;
+        logs->cursor.log_index = 0;
+        if (logs_from) *logs_from = 201;
+        if (logs_to) *logs_to = 1200;
+    }
+    return 0;
+}
+
+static int route_expect_evm(exp_db_t *db, const exp_evm_source_t *src,
+                            const char *path, int want, const char *const *needles) {
+    exp_http_ctx_t ctx = {0};
+    ctx.db = &db;
+    int stop = 0;
+    ctx.stop = &stop;
+    ctx.evm = src;
+    exp_json_t body;
+    int status = -1;
+    if (exp_http_route(&ctx, "GET", path, &body, &status) != 0) return -1;
+    int ok = (status == want);
+    for (int i = 0; ok && needles && needles[i]; i++)
+        if (!strstr(body.buf, needles[i])) ok = 0;
+    if (!ok) printf("(%s -> %d: %s) ", path, status, body.buf ? body.buf : "(null)");
+    exp_json_freebuf(&body);
+    return ok ? 0 : -1;
+}
+
+/* EVM items are indexed into item_evm field by field; /api/tx carries the
+ * "evm" section (null on a refused or non-EVM item); the index verifies. */
+static void test_evm_items_indexed(void) {
+    TEST("Nodus EVM: ev/ri items -> item_evm + /api/tx \"evm\"");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+    if (seed_evm(db) != 0) { FAIL("seed failed"); exp_db_close(db); return; }
+
+    exp_evm_row_t e;
+    if (exp_db_query_item_evm(db, 1, 1, &e) != 1 || e.status != 1 || !e.has_created ||
+        e.created[0] != 0x22 || e.n_tickets != 32 || !e.tickets_more ||
+        e.tickets[31][0] != (uint8_t)(0x50 + 31) || e.n_logs != 2 || e.digest[0] != 0xD1) {
+        FAIL("item_evm row of the CREATE"); exp_db_close(db); return;
+    }
+    if (exp_db_query_item_evm(db, 1, 3, &e) != 0) { FAIL("refused item has an EVM row"); exp_db_close(db); return; }
+
+    static const char *const dep[] = { "\"op\":\"evm_deposit\"", "\"evm\":{\"status\":\"success\"",
+        "\"gas_used\":21000", "\"from\":\"1111111111111111111111111111111111111111111111111111111111111111\"",
+        "\"to\":null", "\"created\":null", "\"value_wei\":null", "\"reserve_in\":\"10\"",
+        "\"reserve_out\":null", "\"wei_destroyed\":\"0\"", NULL };
+    if (route_expect(db, "/api/tx/1:0", 200, dep) != 0) { FAIL("deposit tx"); exp_db_close(db); return; }
+
+    static const char *const cre[] = { "\"op\":\"evm_create\"",
+        "\"created\":\"2222222222222222222222222222222222222222222222222222222222222222\"",
+        "\"value_wei\":\"10000000000\"", "\"logs\":2", "\"tickets_more\":true", NULL };
+    if (route_expect(db, "/api/tx/1:1", 200, cre) != 0) { FAIL("create tx"); exp_db_close(db); return; }
+
+    static const char *const call[] = { "\"status\":\"failed\"",
+        "\"to\":\"2222222222222222222222222222222222222222222222222222222222222222\"",
+        "\"value_wei\":\"0\"", NULL };
+    if (route_expect(db, "/api/tx/1:2", 200, call) != 0) { FAIL("failed call tx"); exp_db_close(db); return; }
+
+    static const char *const refused[] = { "\"op\":\"evm_withdraw\"", "\"refused\":true", "\"evm\":null", NULL };
+    if (route_expect(db, "/api/tx/1:3", 200, refused) != 0) { FAIL("refused tx"); exp_db_close(db); return; }
+
+    if (exp_db_verify_index(db) != 0) { FAIL("verify_index"); exp_db_close(db); return; }
+    exp_db_close(db);
+    PASS();
+}
+
+/* /api/evm/address lists the items naming the address (sender, target or
+ * created) with the source's account; /api/evm/contract adds the creating
+ * item and the logs; a failed source answers "unavailable" (never a zero
+ * account); a bad address is 400. */
+static void test_route_evm(void) {
+    TEST("Nodus EVM: /api/evm/address + /api/evm/contract");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+    if (seed_evm(db) != 0) { FAIL("seed failed"); exp_db_close(db); return; }
+
+    fake_evm_t f;
+    memset(&f, 0, sizeof(f));
+    exp_evm_source_t src = { &f, fake_evm_get };
+    char path[200];
+    const char *sender = "1111111111111111111111111111111111111111111111111111111111111111";
+    const char *contract = "2222222222222222222222222222222222222222222222222222222222222222";
+
+    snprintf(path, sizeof(path), "/api/evm/address/%s", sender);
+    static const char *const addr[] = { "\"account\":{\"nonce\":3,\"balance_wei\":\"257\",\"code_size\":4",
+        "\"account_status\":\"ok\"", "\"position\":\"1:2\"", "\"position\":\"1:1\"",
+        "\"position\":\"1:0\"", "\"next_before\":null", NULL };
+    if (route_expect_evm(db, &src, path, 200, addr) != 0 || f.saw_logs) {
+        FAIL("sender page"); exp_db_close(db); return;
+    }
+
+    snprintf(path, sizeof(path), "/api/evm/contract/%s", contract);
+    static const char *const ct[] = { "\"created_by\":{\"position\":\"1:1\"",
+        "\"logs\":{\"from_height\":201,\"to_height\":1200,\"items\":[{\"height\":1,\"item\":1,\"log_index\":0",
+        "\"data\":\"ab00\"", "\"more\":true,\"next\":\"7:2:0\"}", "\"logs_status\":\"ok\"",
+        "\"position\":\"1:2\"", NULL };
+    if (route_expect_evm(db, &src, path, 200, ct) != 0 || !f.saw_logs || f.saw_cursor) {
+        FAIL("contract page"); exp_db_close(db); return;
+    }
+
+    /* red-team 1 F4: the node's cursor resumes the logs page */
+    snprintf(path, sizeof(path), "/api/evm/contract/%s?logs_cursor=7:2:0", contract);
+    if (route_expect_evm(db, &src, path, 200, ct) != 0 || !f.saw_cursor ||
+        f.cursor.height != 7 || f.cursor.item != 2 || f.cursor.log_index != 0) {
+        FAIL("contract page with logs_cursor"); exp_db_close(db); return;
+    }
+    static const char *const badcur[] = { "\"error\"", NULL };
+    snprintf(path, sizeof(path), "/api/evm/contract/%s?logs_cursor=7:2", contract);
+    if (route_expect_evm(db, &src, path, 400, badcur) != 0) {
+        FAIL("a two-part logs_cursor is refused"); exp_db_close(db); return;
+    }
+    snprintf(path, sizeof(path), "/api/evm/contract/%s?logs_cursor=7:4294967297:0", contract);
+    if (route_expect_evm(db, &src, path, 400, badcur) != 0) {
+        FAIL("a cursor item past 2^32 is refused"); exp_db_close(db); return;
+    }
+    snprintf(path, sizeof(path), "/api/evm/address/%s?logs_cursor=7:2:0", sender);
+    if (route_expect_evm(db, &src, path, 400, badcur) != 0) {
+        FAIL("logs_cursor on an address page is refused"); exp_db_close(db); return;
+    }
+
+    /* over the node-work cap: the account, logs null + "busy" (never an
+     * empty list) */
+    f.busy = 1;
+    snprintf(path, sizeof(path), "/api/evm/contract/%s", contract);
+    static const char *const busy[] = { "\"account_status\":\"ok\"",
+        "\"logs\":null,\"logs_status\":\"busy\"", NULL };
+    if (route_expect_evm(db, &src, path, 200, busy) != 0) {
+        FAIL("busy logs"); exp_db_close(db); return;
+    }
+    f.busy = 0;
+
+    f.fail = 1;
+    static const char *const down[] = { "\"account\":null,\"account_status\":\"unavailable\"",
+        "\"logs\":null,\"logs_status\":\"unavailable\"", NULL };
+    if (route_expect_evm(db, &src, path, 200, down) != 0) { FAIL("failed source"); exp_db_close(db); return; }
+    if (route_expect_evm(db, NULL, path, 200, down) != 0) { FAIL("no source"); exp_db_close(db); return; }
+
+    static const char *const bad[] = { "\"error\"", NULL };
+    if (route_expect_evm(db, &src, "/api/evm/address/1111", 400, bad) != 0 ||
+        route_expect_evm(db, &src, "/api/evm/contract/ZZ11111111111111111111111111111111111111111111111111111111111111", 400, bad) != 0) {
+        FAIL("bad address"); exp_db_close(db); return;
+    }
+    exp_db_close(db);
+    PASS();
+}
+
+/* The extractor refuses EVM keys outside their rules (the node never
+ * sends them; a hostile server might): ev on a refused item, a reserve
+ * move without ev, both directions, "ca" on a failed item, "tkm" beside a
+ * short list. The batch stays untouched. */
+static void test_extract_refuses_bad_evm(void) {
+    TEST("Nodus EVM: extract refuses malformed ev / ri / ro");
+    for (int c = 0; c < 5; c++) {
+        nodus_dnac_v3_block_result_t p;
+        evm_fixture_page(&p);
+        nodus_dnac_v3_item_t *it = &p.items[c == 0 ? 3 : 1];
+        switch (c) {
+        case 0: it->has_evm = true; break;                     /* refused item */
+        case 1: it->has_evm = false; it->reserve_in = 5; break;
+        case 2: it->reserve_in = 1; it->reserve_out = 1; break;
+        case 3: it->evm_status = 0; break;                     /* ca on failure */
+        case 4: it->evm_n_tickets = 3; break;                  /* tkm, short */
+        }
+        exp_block_batch_t b;
+        exp_block_batch_init(&b);
+        int rc = exp_extract_page(&p, &b);
+        int clean = (b.n_items == 0 && b.n_evms == 0);
+        exp_block_batch_free(&b);
+        nodus_client_free_v3_block_result(&p);
+        if (rc != -1 || !clean) {
+            char msg[64];
+            snprintf(msg, sizeof(msg), "case %d accepted", c);
+            FAIL(msg);
+            return;
+        }
+    }
+    PASS();
+}
+
+static void test_json_u256(void) {
+    TEST("Nodus EVM: exp_json_u256_str (0, 10^10, 2^256-1)");
+    uint8_t v[32];
+    exp_json_t j;
+
+    memset(v, 0, 32);
+    exp_json_init(&j);
+    exp_json_u256_str(&j, v);
+    int ok = strcmp(j.buf, "\"0\"") == 0;
+    exp_json_freebuf(&j);
+
+    v[27] = 0x02; v[28] = 0x54; v[29] = 0x0B; v[30] = 0xE4; v[31] = 0x00;
+    exp_json_init(&j);
+    exp_json_u256_str(&j, v);
+    ok = ok && strcmp(j.buf, "\"10000000000\"") == 0;
+    exp_json_freebuf(&j);
+
+    memset(v, 0xFF, 32);
+    exp_json_init(&j);
+    exp_json_u256_str(&j, v);
+    ok = ok && strcmp(j.buf, "\"115792089237316195423570985008687907853269984665640564039457584007913129639935\"") == 0;
+    exp_json_freebuf(&j);
+
+    if (ok) PASS(); else FAIL("wrong decimal");
+}
+
 /* One applied chain_config vote item at (h, index). */
 static void cc_item(nodus_dnac_v3_item_t *it, uint32_t index, uint8_t tag,
                     uint8_t param_id, uint64_t new_value, uint64_t effective) {
@@ -2260,6 +2605,10 @@ int main(void) {
     test_route_block_tx_address();
     test_route_search();
     test_name_register_indexed();
+    test_evm_items_indexed();
+    test_route_evm();
+    test_extract_refuses_bad_evm();
+    test_json_u256();
     test_route_governance();
     test_extract_refuses_bad_name();
     test_route_errors();

@@ -292,7 +292,41 @@ typedef struct {
      * res_max_total_units <= INT64_MAX rule and the seam's fee check.
      * No consumer re-reads the switch. */
     uint8_t            hf3_active;
+    /* Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md
+     * rev 3 §8): the block-start EVM facts, resolved ONCE by the builder
+     * from the same ACTIVE-domain walk as the ruleset table:
+     *   evm_active          1 when an ACTIVE domain's runtime is ABI 2
+     *                       (the EVM domain) — 0 on every chain before the
+     *                       EVM edge, which keeps every consumer below
+     *                       byte-inert there;
+     *   evm_domain_id       that domain (meaningful when evm_active);
+     *   evm_block_gas_limit chain_config param 15 at the context's
+     *                       height, or DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT
+     *                       (read only when evm_active).
+     * Consumers: the streamed leg of every reservation (PrepareProposal's
+     * pack, the seam) and the block gas sum (the pack, the seam that
+     * PrepareProposal's drop loop and ProcessProposal share, and the
+     * FinalizeBlock re-check). */
+    uint8_t            evm_active;
+    uint32_t           evm_domain_id;
+    uint64_t           evm_block_gas_limit;
 } nodus_witness_v2_block_ctx_t;
+
+/** Nodus EVM: the streamed leg of `v` under `ctx` for dna_meter_reserve_ex — 0
+ *  unless ctx->evm_active and a leg names ctx->evm_domain_id, then 1 +
+ *  that leg's index (one leg per domain, env_wire.c). The engine's own
+ *  item loop derives the same value from its working set
+ *  (nodus_witness_v2_apply.c env_stream_leg). */
+uint16_t nodus_witness_v2_ctx_stream_leg(
+    const nodus_witness_v2_block_ctx_t *ctx, const dna_env_view_t *v);
+
+/** Nodus EVM: add `v`'s EVM block-gas share (nodus_rt_evm_env_block_gas) to
+ *  *sum under `ctx` — a no-op unless ctx->evm_active.
+ *  @return 0 the running sum still fits ctx->evm_block_gas_limit,
+ *          -1 it does not (or the checked add overflowed). */
+int nodus_witness_v2_ctx_block_gas_add(
+    const nodus_witness_v2_block_ctx_t *ctx, const dna_env_view_t *v,
+    uint64_t *sum);
 
 /**
  * Build the block-start execution context from COMMITTED state alone.
@@ -519,6 +553,28 @@ nodus_v2_env_status_t nodus_witness_v2_env_preflight_reserve_batch(
     const dna_meter_policy_t *policy,
     dna_meter_budget_t *budget,
     int skip_byte_bound,
+    const nodus_v2_envelope_t *envs, size_t n_envs,
+    dna_env_preflight_t *out,
+    dna_meter_t *meters_out,
+    size_t *fail_index_out,
+    dna_env_preflight_status_t *pf_status_out,
+    dna_meter_status_t *meter_status_out);
+
+/** Nodus EVM: nodus_witness_v2_env_preflight_reserve_batch with every
+ *  envelope's leg naming `stream_domain` reserved as the plan's STREAMED
+ *  leg (dna_meter_reserve_ex) when `stream_on` — the item loop's own rule
+ *  (nodus_witness_v2_apply.c env_stream_leg), so the seam never refuses an
+ *  EVM envelope the engine would reserve. `stream_on` 0 is exactly the
+ *  function above (its body). Callers pass ctx->evm_active /
+ *  ctx->evm_domain_id. */
+nodus_v2_env_status_t nodus_witness_v2_env_preflight_reserve_batch_ex(
+    nodus_witness_t *w,
+    uint64_t proposed_global_height,
+    const dna_env_leg_ctx_t *rulesets, size_t n_rulesets,
+    const dna_meter_policy_t *policy,
+    dna_meter_budget_t *budget,
+    int skip_byte_bound,
+    int stream_on, uint32_t stream_domain,
     const nodus_v2_envelope_t *envs, size_t n_envs,
     dna_env_preflight_t *out,
     dna_meter_t *meters_out,

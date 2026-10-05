@@ -56,7 +56,24 @@ static uint64_t now_ns(void) {
 
 /* ── Server threads (mirror test_circuit_cross_live) ────────────── */
 static nodus_server_t srv_a, srv_b;
-static volatile bool srv_a_ready = false, srv_b_ready = false;
+/* srv_*_done: that server's nodus_server_init has RETURNED, success or
+ * failure; srv_*_ready: it succeeded. main waits for both outcomes, not for
+ * a time budget: init runs the witness start checks (the EVM precompile
+ * self-test loads the KZG setup), whose duration depends on the host — the
+ * old 5000 ms budget could expire with init still running (2026-10-05,
+ * Nodus EVM red-team 1 F2). Flags are touched only under init_lock. */
+static pthread_mutex_t init_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  init_cond = PTHREAD_COND_INITIALIZER;
+static bool srv_a_ready = false, srv_a_done = false;
+static bool srv_b_ready = false, srv_b_done = false;
+
+static void srv_init_outcome(bool *done, bool *ready_flag, bool ready) {
+    pthread_mutex_lock(&init_lock);
+    *ready_flag = ready;
+    *done = true;
+    pthread_cond_broadcast(&init_cond);
+    pthread_mutex_unlock(&init_lock);
+}
 
 static void *srv_a_thread(void *arg) {
     (void)arg;
@@ -66,8 +83,12 @@ static void *srv_a_thread(void *arg) {
     cfg.ch_port = 16003; cfg.witness_port = 16004; cfg.require_peer_auth = false;
     snprintf(cfg.data_path, sizeof(cfg.data_path), "/tmp/nodus_lat_a_%d", getpid());
     char cmd[256]; snprintf(cmd, sizeof(cmd), "mkdir -p %s", cfg.data_path); if (system(cmd)) {}
-    if (nodus_server_init(&srv_a, &cfg) != 0) { fprintf(stderr, "srv_a init failed\n"); return NULL; }
-    srv_a_ready = true;
+    if (nodus_server_init(&srv_a, &cfg) != 0) {
+        fprintf(stderr, "srv_a init failed\n");
+        srv_init_outcome(&srv_a_done, &srv_a_ready, false);
+        return NULL;
+    }
+    srv_init_outcome(&srv_a_done, &srv_a_ready, true);
     nodus_server_run(&srv_a);
     nodus_server_close(&srv_a);
     snprintf(cmd, sizeof(cmd), "rm -rf %s", cfg.data_path); if (system(cmd)) {}
@@ -81,8 +102,12 @@ static void *srv_b_thread(void *arg) {
     cfg.ch_port = 17003; cfg.witness_port = 17004; cfg.require_peer_auth = false;
     snprintf(cfg.data_path, sizeof(cfg.data_path), "/tmp/nodus_lat_b_%d", getpid());
     char cmd[256]; snprintf(cmd, sizeof(cmd), "mkdir -p %s", cfg.data_path); if (system(cmd)) {}
-    if (nodus_server_init(&srv_b, &cfg) != 0) { fprintf(stderr, "srv_b init failed\n"); return NULL; }
-    srv_b_ready = true;
+    if (nodus_server_init(&srv_b, &cfg) != 0) {
+        fprintf(stderr, "srv_b init failed\n");
+        srv_init_outcome(&srv_b_done, &srv_b_ready, false);
+        return NULL;
+    }
+    srv_init_outcome(&srv_b_done, &srv_b_ready, true);
     nodus_server_run(&srv_b);
     nodus_server_close(&srv_b);
     snprintf(cmd, sizeof(cmd), "rm -rf %s", cfg.data_path); if (system(cmd)) {}
@@ -144,13 +169,17 @@ int main(void) {
            frames, interval, fbytes, KILL_P95_MS);
 
     pthread_t tid_a, tid_b;
-    pthread_create(&tid_a, NULL, srv_a_thread, NULL);
-    pthread_create(&tid_b, NULL, srv_b_thread, NULL);
-    int waited = 0;
-    while ((!srv_a_ready || !srv_b_ready) && waited < 5000) {
-        struct timespec t = {0, 10*1000*1000}; nanosleep(&t, NULL); waited += 10;
-    }
-    if (!srv_a_ready || !srv_b_ready) { fprintf(stderr, "servers not ready\n"); return 2; }
+    int prc = pthread_create(&tid_a, NULL, srv_a_thread, NULL);
+    if (prc != 0) { fprintf(stderr, "pthread_create (srv_a) failed: %s\n", strerror(prc)); return 2; }
+    prc = pthread_create(&tid_b, NULL, srv_b_thread, NULL);
+    if (prc != 0) { fprintf(stderr, "pthread_create (srv_b) failed: %s\n", strerror(prc)); return 2; }
+    /* Wait for BOTH servers' init outcomes (see srv_a_done) */
+    pthread_mutex_lock(&init_lock);
+    while (!srv_a_done || !srv_b_done)
+        pthread_cond_wait(&init_cond, &init_lock);
+    bool srv_ok = srv_a_ready && srv_b_ready;
+    pthread_mutex_unlock(&init_lock);
+    if (!srv_ok) { fprintf(stderr, "servers not ready\n"); return 2; }
     struct timespec settle = {0, 200*1000*1000}; nanosleep(&settle, NULL);
 
     /* Cluster-peer + routing (same as cross-live harness) */

@@ -11,6 +11,7 @@
 #include <sqlite3.h>
 #include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "crypto/utils/qgp_log.h"
@@ -137,6 +138,23 @@ static int table_exists(nodus_witness_t *w, const char *name) {
             -1, &st, NULL) != SQLITE_OK)
         return -1;
     sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc == SQLITE_ROW) return 1;
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+/* 1 = index `name` exists ON table `table`, 0 = not, -1 = fault. */
+static int index_exists(nodus_witness_t *w, const char *name,
+                        const char *table) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1 "
+            "AND tbl_name=?2",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, table, -1, SQLITE_TRANSIENT);
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     if (rc == SQLITE_ROW) return 1;
@@ -1872,4 +1890,557 @@ int nodus_witness_db_migrate_v2s16_ex(nodus_witness_t *w,
 
 int nodus_witness_db_migrate_v2s16(nodus_witness_t *w) {
     return nodus_witness_db_migrate_v2s16_ex(w, V2S16MIG_FAIL_NONE);
+}
+
+/* ── S17 migration: Nodus EVM, the EVM domain's state ───────────────────────
+ * Contract: nodus_witness_v2_schema.h. Every table is created EMPTY; the
+ * one evm_meta row is the EVM runtime's state_init's (activation), never
+ * this rung's. */
+
+static const char *V2_S17_EVM_DDL =
+    "CREATE TABLE IF NOT EXISTS evm_accounts ("
+    "  addr BLOB PRIMARY KEY,"
+    "  nonce INTEGER NOT NULL,"
+    "  balance BLOB NOT NULL,"
+    "  code_hash BLOB NOT NULL,"
+    "  code_size INTEGER NOT NULL,"
+    "  code_digest BLOB NOT NULL,"
+    "  storage_count INTEGER NOT NULL,"
+    "  storage_root BLOB NOT NULL"
+    ");"
+    "CREATE TABLE IF NOT EXISTS evm_slots ("
+    "  addr BLOB NOT NULL,"
+    "  slot BLOB NOT NULL,"
+    "  value BLOB NOT NULL,"
+    "  PRIMARY KEY (addr, slot)"
+    ");"
+    "CREATE TABLE IF NOT EXISTS evm_code ("
+    "  digest BLOB NOT NULL,"
+    "  chunk INTEGER NOT NULL,"
+    "  bytes BLOB NOT NULL,"
+    "  PRIMARY KEY (digest, chunk)"
+    ");"
+    "CREATE TABLE IF NOT EXISTS evm_code_refs ("
+    "  digest BLOB PRIMARY KEY,"
+    "  refs INTEGER NOT NULL,"
+    "  code_size INTEGER NOT NULL"
+    ");"
+    "CREATE TABLE IF NOT EXISTS evm_tickets ("
+    "  ticket_id BLOB PRIMARY KEY,"
+    "  amount_raw INTEGER NOT NULL,"
+    "  dest_fp BLOB NOT NULL"
+    ");"
+    "CREATE TABLE IF NOT EXISTS evm_meta ("
+    "  id INTEGER PRIMARY KEY CHECK (id = 1),"
+    "  wei_live BLOB NOT NULL,"
+    "  wei_tickets BLOB NOT NULL,"
+    "  wei_lost BLOB NOT NULL,"
+    "  account_trie_root BLOB NOT NULL,"
+    "  tickets_root BLOB NOT NULL"
+    ");"
+    /* the CORE EVM reserve bucket (design §5) — CORE state, one row */
+    "CREATE TABLE IF NOT EXISTS v2_evm_reserve ("
+    "  id INTEGER PRIMARY KEY CHECK (id = 1),"
+    "  reserve_raw INTEGER NOT NULL CHECK (reserve_raw >= 0)"
+    ");"
+    "INSERT INTO v2_evm_reserve (id, reserve_raw) VALUES (1, 0);"
+    "CREATE TABLE IF NOT EXISTS evm_trie_nodes ("
+    "  digest BLOB PRIMARY KEY,"
+    "  rlp BLOB NOT NULL"
+    ");"
+    "CREATE TABLE IF NOT EXISTS evm_receipts ("
+    "  intent_id BLOB PRIMARY KEY,"
+    "  global_height INTEGER NOT NULL,"
+    "  item_index INTEGER NOT NULL,"
+    "  receipt BLOB NOT NULL,"
+    "  digest BLOB NOT NULL"
+    ");"
+    "CREATE TABLE IF NOT EXISTS evm_logs ("
+    "  intent_id BLOB NOT NULL,"
+    "  log_index INTEGER NOT NULL,"
+    "  global_height INTEGER NOT NULL,"
+    "  addr BLOB NOT NULL,"
+    "  topics BLOB NOT NULL,"
+    "  data BLOB NOT NULL,"
+    "  PRIMARY KEY (intent_id, log_index)"
+    ");"
+    /* the first §18 evm_logs range index (kept: an S17 database built
+     * before the cursor scan carries it, and dropping it would be a
+     * shape change; the cursor scan below does not read it) */
+    "CREATE INDEX IF NOT EXISTS evm_logs_by_height "
+    "ON evm_logs(global_height);"
+    /* the cursor-order scan's two indexes (S17_LOG_INDEXES_DDL below —
+     * also ensured at open on a database already at S17) */
+    "CREATE INDEX IF NOT EXISTS evm_receipts_by_pos "
+    "ON evm_receipts(global_height, item_index);"
+    "CREATE INDEX IF NOT EXISTS evm_logs_by_addr "
+    "ON evm_logs(addr, global_height, intent_id, log_index);";
+
+/* The node-local §18 evm_logs scan indexes (red-team 1 F4) — the same two
+ * statements as the tail of V2_S17_EVM_DDL, run alone by the at-open
+ * ensure step (nodus_witness_db_ensure_v2s17_indexes) on a database that
+ * reached S17 before they existed. Indexes only: no table, column or
+ * row changes, nothing any root reads. */
+static const char *S17_LOG_INDEXES_DDL =
+    "CREATE INDEX IF NOT EXISTS evm_receipts_by_pos "
+    "ON evm_receipts(global_height, item_index);"
+    "CREATE INDEX IF NOT EXISTS evm_logs_by_addr "
+    "ON evm_logs(addr, global_height, intent_id, log_index);";
+
+/* 1 = index `name` exists on `table` with EXACTLY the key columns `cols`
+ * in order, 0 = absent or another shape, -1 = fault. */
+static int index_cols_exact(nodus_witness_t *w, const char *name,
+                            const char *table, const char *const *cols,
+                            size_t n_cols) {
+    int ex = index_exists(w, name, table);
+    if (ex != 1) return ex;
+    char sql[160];
+    snprintf(sql, sizeof(sql), "PRAGMA index_info(\"%s\")", name);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    /* index_info rows come in key order (seqno 0, 1, …): column 2 is the
+     * table column name */
+    size_t ci = 0;
+    int rc, ok = 1;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const unsigned char *nm = sqlite3_column_text(st, 2);
+        if (ci >= n_cols || sqlite3_column_int64(st, 0) != (sqlite3_int64)ci ||
+            !nm || strcmp((const char *)nm, cols[ci]) != 0) {
+            ok = 0;
+            break;
+        }
+        ci++;
+    }
+    sqlite3_finalize(st);
+    if (!ok) return 0;
+    if (rc != SQLITE_DONE) return -1;
+    return ci == n_cols ? 1 : 0;
+}
+
+/* 1 = both scan indexes exist with their exact key columns, 0 = not,
+ * -1 = fault. */
+static int s17_log_indexes_ok(nodus_witness_t *w) {
+    static const char *const pos_cols[] = { "global_height", "item_index" };
+    static const char *const addr_cols[] = { "addr", "global_height",
+                                             "intent_id", "log_index" };
+    int a = index_cols_exact(w, "evm_receipts_by_pos", "evm_receipts",
+                             pos_cols, 2);
+    if (a != 1) return a;
+    return index_cols_exact(w, "evm_logs_by_addr", "evm_logs", addr_cols, 4);
+}
+
+int nodus_witness_db_migrate_v2s17_ex(nodus_witness_t *w,
+                                      nodus_v2s17_mig_fail_t fail_at) {
+    if (!w || !w->db) return -1;
+
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
+    if (ver == NODUS_V2_SCHEMA_VERSION_S17) return 0;    /* idempotent    */
+    if (ver != NODUS_V2_SCHEMA_VERSION_S16) {
+        /* the S9…S16 chain; an unknown version (18+) fails closed there */
+        if (nodus_witness_db_migrate_v2s16(w) != 0) return -1;
+        ver = NODUS_V2_SCHEMA_VERSION_S16;
+    }
+
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
+
+    int ok = 0;
+    int already = 0;
+    do {
+        if (fail_at == V2S17MIG_FAIL_AFTER_BEGIN) break;
+
+        /* O15B discipline: the pre-BEGIN read decided nothing. */
+        int rv = mig_revalidate_version(w, NODUS_V2_SCHEMA_VERSION_S16,
+                                        NODUS_V2_SCHEMA_VERSION_S17, "S17");
+        if (rv < 0) break;
+        if (rv == 0) { already = 1; break; }
+        if (fail_at == V2S17MIG_FAIL_AFTER_REVALIDATE) break;
+
+        if (exec_sql(w, V2_S17_EVM_DDL) != 0) break;
+        if (fail_at == V2S17MIG_FAIL_AFTER_TABLES) break;
+
+        /* Verify: every table exists with its exact shape, and the
+         * evm_logs height index exists — a DDL that silently did nothing,
+         * or a pre-existing table of another shape, is not a migrated
+         * schema. */
+        static const char *const acct_cols[] = {
+            "addr", "nonce", "balance", "code_hash", "code_size",
+            "code_digest", "storage_count", "storage_root" };
+        static const char *const slot_cols[] = { "addr", "slot", "value" };
+        static const char *const code_cols[] = { "digest", "chunk", "bytes" };
+        static const char *const ref_cols[] = { "digest", "refs",
+                                                "code_size" };
+        static const char *const tkt_cols[] = { "ticket_id", "amount_raw",
+                                                "dest_fp" };
+        static const char *const meta_cols[] = {
+            "id", "wei_live", "wei_tickets", "wei_lost",
+            "account_trie_root", "tickets_root" };
+        static const char *const rsv_cols[] = { "id", "reserve_raw" };
+        static const char *const node_cols[] = { "digest", "rlp" };
+        static const char *const rcpt_cols[] = {
+            "intent_id", "global_height", "item_index", "receipt",
+            "digest" };
+        static const char *const log_cols[] = {
+            "intent_id", "log_index", "global_height", "addr", "topics",
+            "data" };
+#define S17_COLS(t, c) table_cols_exact(w, t, c, sizeof(c) / sizeof(c[0]))
+        if (S17_COLS("evm_accounts", acct_cols) != 1 ||
+            S17_COLS("evm_slots", slot_cols) != 1 ||
+            S17_COLS("evm_code", code_cols) != 1 ||
+            S17_COLS("evm_code_refs", ref_cols) != 1 ||
+            S17_COLS("evm_tickets", tkt_cols) != 1 ||
+            S17_COLS("evm_meta", meta_cols) != 1 ||
+            S17_COLS("evm_trie_nodes", node_cols) != 1 ||
+            S17_COLS("evm_receipts", rcpt_cols) != 1 ||
+            S17_COLS("evm_logs", log_cols) != 1 ||
+            S17_COLS("v2_evm_reserve", rsv_cols) != 1 ||
+            index_exists(w, "evm_logs_by_height", "evm_logs") != 1 ||
+            s17_log_indexes_ok(w) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s",
+                          "S17 EVM schema shape drift — refusing");
+            break;
+        }
+#undef S17_COLS
+        /* the reserve row exists, exactly one, at 0: nothing writes it
+         * before the EVM generation's CORE does (design §5) */
+        {
+            sqlite3_stmt *rs = NULL;
+            int one = 0;
+            if (sqlite3_prepare_v2(w->db,
+                    "SELECT COUNT(*), COALESCE(SUM(reserve_raw), -1) "
+                    "FROM v2_evm_reserve", -1, &rs, NULL) == SQLITE_OK &&
+                sqlite3_step(rs) == SQLITE_ROW &&
+                sqlite3_column_int64(rs, 0) == 1 &&
+                sqlite3_column_int64(rs, 1) == 0)
+                one = 1;
+            sqlite3_finalize(rs);
+            if (!one) {
+                QGP_LOG_ERROR(LOG_TAG, "%s",
+                              "S17 reserve row is not exactly (1, 0) — "
+                              "refusing");
+                break;
+            }
+        }
+        if (fail_at == V2S17MIG_FAIL_AFTER_VERIFY) break;
+
+        if (exec_sql(w, "PRAGMA user_version = 17") != 0) break;
+        if (fail_at == V2S17MIG_FAIL_BEFORE_COMMIT) break;
+
+        ok = 1;
+    } while (0);
+
+    if (already) {
+        (void)exec_sql(w, "ROLLBACK");
+        return 0;
+    }
+    if (!ok) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    if (exec_sql(w, "COMMIT") != 0) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_db_migrate_v2s17(nodus_witness_t *w) {
+    return nodus_witness_db_migrate_v2s17_ex(w, V2S17MIG_FAIL_NONE);
+}
+
+int nodus_witness_db_ensure_v2s17_indexes(nodus_witness_t *w) {
+    if (!w || !w->db) return -1;
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
+    if (ver != NODUS_V2_SCHEMA_VERSION_S17) return 0;   /* not this rung */
+    int have = s17_log_indexes_ok(w);
+    if (have < 0) return -1;
+    if (have == 1) return 0;                            /* idempotent    */
+
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
+    int ok = 0;
+    do {
+        /* the version is re-read inside the transaction (O15B: the
+         * pre-BEGIN read decided nothing) */
+        uint32_t v2 = 0;
+        if (nodus_witness_db_schema_version(w, &v2) != 0 ||
+            v2 != NODUS_V2_SCHEMA_VERSION_S17)
+            break;
+        if (exec_sql(w, S17_LOG_INDEXES_DDL) != 0) break;
+        /* an index of the same name and another shape is not ours:
+         * refuse rather than read through it */
+        if (s17_log_indexes_ok(w) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s",
+                          "S17 EVM log scan index shape drift — refusing");
+            break;
+        }
+        ok = 1;
+    } while (0);
+    if (!ok) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    if (exec_sql(w, "COMMIT") != 0) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    QGP_LOG_INFO(LOG_TAG, "%s",
+                 "S17: the EVM log scan indexes were created (node-local; "
+                 "no root reads them)");
+    return 0;
+}
+
+/* ── the §18 evm_logs cursor scan (red-team 1 F4) ──────────────────────
+ * Contract: nodus_witness_v2_schema.h. Every statement is served by an
+ * index in the scan's own order — no full scan, no sort (pinned by
+ * test_v2_schema.c over EXPLAIN QUERY PLAN of these exact texts). */
+
+enum {
+    EVL_SQL_H_ANY = 0,  /* the next height ≥ pos.h holding any receipt  */
+    EVL_SQL_H_ADDR,     /* the next height ≥ pos.h holding a log of addr */
+    EVL_SQL_R,          /* the receipts of one height, item order        */
+    EVL_SQL_L_ANY,      /* the logs of one receipt, log order            */
+    EVL_SQL_L_ADDR,     /* the logs of one receipt from addr, log order  */
+    EVL_SQL_DATA,       /* one MATCHING log's data, by rowid             */
+    EVL_SQL_N
+};
+
+const char *const nodus_evm_logs_scan_sql[NODUS_EVM_LOGS_SCAN_SQL_N] = {
+    [EVL_SQL_H_ANY] =
+        "SELECT global_height FROM evm_receipts "
+        "WHERE global_height >= ?1 AND global_height <= ?2 "
+        "ORDER BY global_height LIMIT 1",
+    [EVL_SQL_H_ADDR] =
+        "SELECT global_height FROM evm_logs "
+        "WHERE addr = ?3 AND global_height >= ?1 AND global_height <= ?2 "
+        "ORDER BY global_height LIMIT 1",
+    [EVL_SQL_R] =
+        "SELECT item_index, intent_id FROM evm_receipts "
+        "WHERE global_height = ?1 AND item_index >= ?2 "
+        "ORDER BY item_index",
+    /* length(data), not data: an examined log that does not match never
+     * loads its data (SQLite's OP_Column with OPFLAG_LENGTHARG does not
+     * load the content of a blob — READ in the 3.47.2 amalgamation
+     * source, OP_Column comment "The content of large blobs is not
+     * loaded"; the nodus build links the system SQLite 3.40.1 (CMakeCache
+     * FIND_PACKAGE_MESSAGE_DETAILS_SQLite3), whose source was not read);
+     * a match reads it by rowid, one more examined row */
+    [EVL_SQL_L_ANY] =
+        "SELECT log_index, addr, topics, length(data), global_height, rowid "
+        "FROM evm_logs WHERE intent_id = ?1 AND log_index >= ?2 "
+        "ORDER BY log_index",
+    [EVL_SQL_L_ADDR] =
+        "SELECT log_index, addr, topics, length(data), global_height, rowid "
+        "FROM evm_logs WHERE addr = ?3 AND global_height = ?4 "
+        "AND intent_id = ?1 AND log_index >= ?2 ORDER BY log_index",
+    [EVL_SQL_DATA] =
+        "SELECT data FROM evm_logs WHERE rowid = ?1",
+};
+
+typedef char evl_sql_n_matches[(EVL_SQL_N == NODUS_EVM_LOGS_SCAN_SQL_N)
+                               ? 1 : -1];
+
+/* What one returned log adds to the reply estimate: its data and topics,
+ * the 32-byte address, the 64-byte intent id and 96 bytes of keys / CBOR
+ * heads (the estimate the handler used before the cursor). */
+static size_t evl_row_est(size_t data_len, size_t topics_len) {
+    return data_len + topics_len + 32 + 64 + 96;
+}
+
+static uint64_t evl_gas(uint64_t examined, size_t bytes) {
+    return examined * NODUS_EVM_RPC_GAS_PER_ROW +
+           (uint64_t)bytes * NODUS_EVM_RPC_GAS_PER_BYTE;
+}
+
+void nodus_witness_evm_logs_page_free(nodus_evm_logs_page_t *p) {
+    if (!p) return;
+    if (p->rows)
+        for (size_t k = 0; k < p->n; k++) free(p->rows[k].data);
+    free(p->rows);
+    p->rows = NULL;
+    p->n = 0;
+}
+
+int nodus_witness_evm_logs_scan(nodus_witness_t *w,
+                                const nodus_evm_logs_scan_t *q,
+                                nodus_evm_logs_page_t *out) {
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    if (!w || !w->db || !q || q->lim < 1 ||
+        q->lim > NODUS_EVM_LOGS_SCAN_MAX_LIM ||
+        q->th > (uint64_t)INT64_MAX || q->from.h > q->th ||
+        q->from.x > NODUS_EVM_LOG_POS_MAX ||
+        q->from.li > NODUS_EVM_LOG_POS_MAX)
+        return -1;
+    out->rows = calloc(q->lim, sizeof(*out->rows));
+    if (!out->rows) return -1;
+
+    sqlite3_stmt *st[EVL_SQL_N] = { NULL };
+    for (int k = 0; k < EVL_SQL_N; k++)
+        if (sqlite3_prepare_v2(w->db, nodus_evm_logs_scan_sql[k], -1, &st[k],
+                               NULL) != SQLITE_OK) {
+            for (int j = 0; j < k; j++) sqlite3_finalize(st[j]);
+            nodus_witness_evm_logs_page_free(out);
+            return -1;
+        }
+
+    /* pos = the first position not yet processed: every log before it was
+     * examined and either returned or did not match; every unreturned
+     * match is at or after it. The cursor a truncated page returns. */
+    nodus_evm_log_pos_t pos = q->from;
+    uint64_t examined = 0;
+    size_t bytes = 0;
+    int ret = -1, stop = 0, done = 0;
+
+/* one more examined row: the step may run only if it is affordable */
+#define EVL_CAN_STEP() \
+    (examined + 1 <= q->max_examined && \
+     evl_gas(examined + 1, bytes) <= q->gas_cap)
+
+    while (!stop && !done) {
+        /* ── the next height at or after pos.h that can hold a match ── */
+        if (!EVL_CAN_STEP()) { stop = 1; break; }
+        sqlite3_stmt *sh = st[q->addr ? EVL_SQL_H_ADDR : EVL_SQL_H_ANY];
+        sqlite3_reset(sh);
+        sqlite3_bind_int64(sh, 1, (sqlite3_int64)pos.h);
+        sqlite3_bind_int64(sh, 2, (sqlite3_int64)q->th);
+        if (q->addr) sqlite3_bind_blob(sh, 3, q->addr, 32, SQLITE_TRANSIENT);
+        examined++;
+        int rc = sqlite3_step(sh);
+        if (rc == SQLITE_DONE) { done = 1; break; }
+        if (rc != SQLITE_ROW) goto out;
+        sqlite3_int64 hh = sqlite3_column_int64(sh, 0);
+        if (hh < 0 || (uint64_t)hh < pos.h || (uint64_t)hh > q->th) goto out;
+        if ((uint64_t)hh > pos.h) {
+            pos.h = (uint64_t)hh;
+            pos.x = 0;
+            pos.li = 0;
+        }
+        sqlite3_reset(sh);
+
+        /* ── the receipts of height pos.h from pos.x, item order ───── */
+        sqlite3_stmt *sr = st[EVL_SQL_R];
+        sqlite3_reset(sr);
+        sqlite3_bind_int64(sr, 1, (sqlite3_int64)pos.h);
+        sqlite3_bind_int64(sr, 2, (sqlite3_int64)pos.x);
+        for (;;) {
+            if (!EVL_CAN_STEP()) { stop = 1; break; }
+            examined++;
+            rc = sqlite3_step(sr);
+            if (rc == SQLITE_DONE) break;
+            if (rc != SQLITE_ROW) goto out;
+            sqlite3_int64 xi = sqlite3_column_int64(sr, 0);
+            if (xi < 0 || xi > (sqlite3_int64)UINT32_MAX ||
+                (uint64_t)xi < pos.x || sqlite3_column_bytes(sr, 1) != 64)
+                goto out;
+            uint8_t intent[64];
+            memcpy(intent, sqlite3_column_blob(sr, 1), 64);
+            if ((uint64_t)xi > pos.x) {
+                pos.x = (uint64_t)xi;
+                pos.li = 0;
+            }
+
+            /* ── its logs from pos.li, log order ─────────────────── */
+            sqlite3_stmt *sl = st[q->addr ? EVL_SQL_L_ADDR : EVL_SQL_L_ANY];
+            sqlite3_reset(sl);
+            sqlite3_bind_blob(sl, 1, intent, 64, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(sl, 2, (sqlite3_int64)pos.li);
+            if (q->addr) {
+                sqlite3_bind_blob(sl, 3, q->addr, 32, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(sl, 4, (sqlite3_int64)pos.h);
+            }
+            for (;;) {
+                if (!EVL_CAN_STEP()) { stop = 1; break; }
+                examined++;
+                rc = sqlite3_step(sl);
+                if (rc == SQLITE_DONE) break;
+                if (rc != SQLITE_ROW) goto out;
+                sqlite3_int64 li = sqlite3_column_int64(sl, 0);
+                int tl = sqlite3_column_bytes(sl, 2);
+                sqlite3_int64 dl = sqlite3_column_int64(sl, 3);
+                if (li < 0 || li > (sqlite3_int64)UINT32_MAX ||
+                    (uint64_t)li < pos.li ||
+                    sqlite3_column_type(sl, 3) != SQLITE_INTEGER ||
+                    sqlite3_column_bytes(sl, 1) != 32 ||
+                    tl < 0 || tl % 32 != 0 || tl > 4 * 32 || dl < 0 ||
+                    dl > INT_MAX ||
+                    sqlite3_column_int64(sl, 4) != (sqlite3_int64)pos.h)
+                    goto out;
+                pos.li = (uint64_t)li;
+                const uint8_t *la = sqlite3_column_blob(sl, 1);
+                const uint8_t *lt = sqlite3_column_blob(sl, 2);
+                int match = !q->addr || memcmp(la, q->addr, 32) == 0;
+                for (int t = 0; t < 4 && match; t++)
+                    if (q->topic[t] &&
+                        (tl < (t + 1) * 32 ||
+                         memcmp(lt + (size_t)t * 32, q->topic[t], 32) != 0))
+                        match = 0;
+                if (match) {
+                    size_t est = evl_row_est((size_t)dl, (size_t)tl);
+                    /* a match that does not fit — the page is full, the
+                     * reply byte budget, or the data read plus its bytes
+                     * are not affordable — stays unreturned AT pos */
+                    if (out->n == q->lim ||
+                        (out->n > 0 && bytes + est > q->max_bytes) ||
+                        examined + 1 > q->max_examined ||
+                        evl_gas(examined + 1, bytes + est) > q->gas_cap) {
+                        stop = 1;
+                        break;
+                    }
+                    nodus_evm_log_row_t *e = &out->rows[out->n];
+                    e->h = pos.h;
+                    e->x = pos.x;
+                    e->li = pos.li;
+                    memcpy(e->addr, la, 32);
+                    memcpy(e->intent_id, intent, 64);
+                    e->n_topics = (uint8_t)(tl / 32);
+                    if (tl) memcpy(e->topics, lt, (size_t)tl);
+                    if (dl) {
+                        /* the data, by rowid — exactly length(data) */
+                        sqlite3_stmt *sd = st[EVL_SQL_DATA];
+                        sqlite3_reset(sd);
+                        sqlite3_bind_int64(sd, 1,
+                                           sqlite3_column_int64(sl, 5));
+                        examined++;
+                        if (sqlite3_step(sd) != SQLITE_ROW ||
+                            sqlite3_column_bytes(sd, 0) != (int)dl)
+                            goto out;
+                        e->data = malloc((size_t)dl);
+                        if (!e->data) goto out;
+                        memcpy(e->data, sqlite3_column_blob(sd, 0),
+                               (size_t)dl);
+                        sqlite3_reset(sd);
+                    }
+                    e->data_len = (size_t)dl;
+                    out->n++;
+                    bytes += est;
+                }
+                pos.li++;                   /* this log is processed     */
+            }
+            sqlite3_reset(sl);
+            if (stop) break;
+            pos.x++;                        /* this receipt is processed */
+            pos.li = 0;
+        }
+        sqlite3_reset(sr);
+        if (stop) break;
+        /* this height is processed */
+        if (pos.h == q->th) { done = 1; break; }
+        pos.h++;
+        pos.x = 0;
+        pos.li = 0;
+    }
+#undef EVL_CAN_STEP
+
+    out->truncated = stop && !done;
+    if (out->truncated) out->next = pos;
+    ret = 0;
+out:
+    out->examined = examined;
+    out->bytes = bytes;
+    out->gas = evl_gas(examined, bytes);
+    for (int k = 0; k < EVL_SQL_N; k++) sqlite3_finalize(st[k]);
+    if (ret != 0) nodus_witness_evm_logs_page_free(out);
+    return ret;
 }

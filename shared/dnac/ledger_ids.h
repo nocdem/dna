@@ -51,6 +51,13 @@ extern "C" {
  *    a compile-time constant. ── */
 #define DNA_DOMAIN_SYSTEM   ((uint32_t)0)
 #define DNA_DOMAIN_CORE     ((uint32_t)1)
+/** Nodus EVM — the EVM execution domain (decision 2026-10-04-nodus-evm-domain.md
+ *  item 2: "Ana zincir, 3. domain"; design docs/plans/2026-10-04-nodus-evm-
+ *  chain-integration-design.md rev 3 §1). Its runtime is
+ *  nodus/src/witness/nodus_witness_rt_evm.c; NO chain registers it until
+ *  the height-activated vote of the activation package (design §9), so the
+ *  constant alone changes nothing on any chain. */
+#define DNA_DOMAIN_EVM      ((uint32_t)2)
 
 /* ── Pool identifiers ──────────────────────────────────────────────── */
 /** No shielded pool (every non-pool transaction). */

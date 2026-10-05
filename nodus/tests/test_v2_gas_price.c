@@ -434,9 +434,14 @@ static int t_scalar_rule_matrix(void)
     CHECK(DNAC_CFG_HF2_ACTIVE + 1 == DNAC_CFG_HF3_ACTIVE,
           "id 7 is followed by HF-3's id 8");
     CHECK(DNAC_CFG_HF3_ACTIVE + 1 == DNAC_CFG_RULESET_GEN2 &&
-              DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_NAME_PRICE_6P &&
               DNAC_CFG_NAME_PRICE_6P == 13,
-          "id 8 is followed by HF-4's ids 9-13; 13 is the last id");
+          "id 8 is followed by HF-4's ids 9-13");
+    /* Nodus EVM (design 2026-10-04-nodus-evm-chain-integration-design.md §9) appends
+     * EVM_ACTIVE 14 and EVM_BLOCK_GAS_LIMIT 15; 15 is the last id. */
+    CHECK(DNAC_CFG_NAME_PRICE_6P + 1 == DNAC_CFG_EVM_ACTIVE &&
+              DNAC_CFG_EVM_ACTIVE + 1 == DNAC_CFG_EVM_BLOCK_GAS_LIMIT &&
+              DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_EVM_BLOCK_GAS_LIMIT,
+          "id 13 is followed by Nodus EVM's ids 14-15; 15 is the last id");
     return 0;
 }
 

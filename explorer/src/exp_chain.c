@@ -314,6 +314,70 @@ int exp_chain_balance(exp_chain_t *c, const char *owner_hex,
     return rc != 0 ? rc : -1;
 }
 
+int exp_chain_evm_account(exp_chain_t *c, const uint8_t addr[32],
+                          const nodus_evm_logs_cursor_t *cursor,
+                          nodus_evm_account_t *acct,
+                          nodus_evm_logs_res_t *logs,
+                          uint64_t *logs_from_out, uint64_t *logs_to_out) {
+    if (!c || !c->nc || !addr || !acct || c->count <= 0) return -1;
+    memset(acct, 0, sizeof(*acct));
+    if (logs) memset(logs, 0, sizeof(*logs));
+    if (logs_from_out) *logs_from_out = 0;
+    if (logs_to_out) *logs_to_out = 0;
+
+    int rc = -1;
+    for (int attempt = 0; attempt < c->count; attempt++) {
+        /* the exp_chain_balance rotation: every server at most once */
+        if (attempt > 0 || !nodus_client_is_ready(c->nc)) {
+            if (exp_chain_rotate(c) != 0) {
+                rc = -1;
+                continue;
+            }
+        }
+        rc = nodus_client_evm_account(c->nc, addr, acct);
+        if (rc == 0 && logs && cursor && cursor->height > acct->height) {
+            /* nothing past the tip yet: an empty, complete page, no read */
+            if (logs_from_out) *logs_from_out = cursor->height;
+            if (logs_to_out) *logs_to_out = acct->height;
+        } else if (rc == 0 && logs) {
+            nodus_evm_logs_req_t req;
+            memset(&req, 0, sizeof(req));
+            if (cursor) {
+                /* the window follows the cursor (see exp_chain.h) */
+                req.from_height = cursor->height;
+                req.to_height = acct->height - cursor->height <
+                                        EXP_EVM_LOGS_WINDOW
+                                    ? acct->height
+                                    : cursor->height + EXP_EVM_LOGS_WINDOW - 1;
+                req.cursor = cursor;
+            } else {
+                req.to_height = acct->height;
+                req.from_height = acct->height >= EXP_EVM_LOGS_WINDOW
+                                      ? acct->height - EXP_EVM_LOGS_WINDOW + 1
+                                      : 1;
+                if (req.from_height > req.to_height)
+                    req.from_height = req.to_height;
+            }
+            req.addr = addr;
+            req.limit = EXP_EVM_LOGS_LIMIT;
+            rc = nodus_client_evm_logs(c->nc, &req, logs);
+            if (rc == 0) {
+                if (logs_from_out) *logs_from_out = req.from_height;
+                if (logs_to_out) *logs_to_out = req.to_height;
+            } else {
+                nodus_evm_logs_free(logs);
+                memset(logs, 0, sizeof(*logs));
+            }
+        }
+        if (rc == 0) return 0;
+        memset(acct, 0, sizeof(*acct));
+        QGP_LOG_WARN(LOG_TAG, "evm_account/evm_logs on %s:%u failed (rc=%d)",
+                     c->servers[c->current].host,
+                     (unsigned)c->servers[c->current].port, rc);
+    }
+    return rc != 0 ? rc : -1;
+}
+
 /* ── Supply buckets: meta blob + circulating ────────────────────────── */
 
 static void put_u64_le(uint8_t *p, uint64_t v) {

@@ -32,7 +32,28 @@ static int tests_passed = 0;
 /* ── Server thread ──────────────────────────────────────────────── */
 
 static nodus_server_t server;
-static volatile bool server_ready = false;
+/* server_init_done: set by the server thread once nodus_server_init has
+ * RETURNED, success or failure; server_ready: it succeeded. main waits for
+ * this outcome, not for a time budget: init runs the witness start checks
+ * (the EVM precompile self-test loads the KZG setup), whose duration
+ * depends on the host — the old 5000 ms budget could expire with init still
+ * running (2026-10-05, Nodus EVM red-team 1 F2). A FAILED init signals too,
+ * so it cannot hang this wait; an init that never returns does
+ * (nodus/CMakeLists.txt sets no per-test TIMEOUT — bound it with
+ * `ctest --timeout`), never a guessed number here. Both flags are read and
+ * written only under init_lock; main sleeps on init_cond. */
+static pthread_mutex_t init_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  init_cond = PTHREAD_COND_INITIALIZER;
+static bool server_ready = false;
+static bool server_init_done = false;
+
+static void server_init_outcome(bool ready) {
+    pthread_mutex_lock(&init_lock);
+    server_ready = ready;
+    server_init_done = true;
+    pthread_cond_broadcast(&init_cond);
+    pthread_mutex_unlock(&init_lock);
+}
 
 static void *server_thread(void *arg) {
     (void)arg;
@@ -55,9 +76,10 @@ static void *server_thread(void *arg) {
 
     if (nodus_server_init(&server, &config) != 0) {
         fprintf(stderr, "server init failed\n");
+        server_init_outcome(false);
         return NULL;
     }
-    server_ready = true;
+    server_init_outcome(true);
     nodus_server_run(&server);
     nodus_server_close(&server);
 
@@ -121,15 +143,19 @@ int main(void) {
     printf("=== Circuit Live Integration Test (Same-Nodus) ===\n");
 
     pthread_t srv_tid;
-    pthread_create(&srv_tid, NULL, server_thread, NULL);
-
-    /* Wait for server ready */
-    int waited = 0;
-    while (!server_ready && waited < 5000) {
-        struct timespec ts = {0, 10 * 1000 * 1000}; nanosleep(&ts, NULL);
-        waited += 10;
+    int prc = pthread_create(&srv_tid, NULL, server_thread, NULL);
+    if (prc != 0) {
+        fprintf(stderr, "FATAL: pthread_create failed: %s\n", strerror(prc));
+        return 1;
     }
-    if (!server_ready) { fprintf(stderr, "FATAL: server didn't start\n"); return 1; }
+
+    /* Wait for init's OUTCOME (see server_init_done) */
+    pthread_mutex_lock(&init_lock);
+    while (!server_init_done)
+        pthread_cond_wait(&init_cond, &init_lock);
+    bool ready = server_ready;
+    pthread_mutex_unlock(&init_lock);
+    if (!ready) { fprintf(stderr, "FATAL: server didn't start\n"); return 1; }
     /* Give it a moment to start accepting */
     struct timespec ts_init = {0, 200 * 1000 * 1000}; nanosleep(&ts_init, NULL);
 

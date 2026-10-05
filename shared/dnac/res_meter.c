@@ -180,6 +180,13 @@ static int budget_dom_index(const dna_meter_budget_t *b, uint32_t domain_id) {
 dna_meter_status_t dna_meter_plan_build(const dna_meter_policy_t *pol,
                                         const dna_env_view_t *view,
                                         dna_meter_plan_t *out) {
+    return dna_meter_plan_build_ex(pol, view, 0, out);
+}
+
+dna_meter_status_t dna_meter_plan_build_ex(const dna_meter_policy_t *pol,
+                                           const dna_env_view_t *view,
+                                           uint16_t stream_leg,
+                                           dna_meter_plan_t *out) {
     if (!out) return DNA_METER_ERR_ARG;
     memset(out, 0, sizeof(*out));
 
@@ -188,6 +195,9 @@ dna_meter_status_t dna_meter_plan_build(const dna_meter_policy_t *pol,
      * outside the wire bounds cannot come from a strict decode. */
     if (!view->buf || view->leg_count == 0 ||
         view->leg_count > DNA_ENV_MAX_LEGS)
+        goto fail_arg;
+    /* Nodus EVM: the streamed leg (1-based, 0 = none) must name a real leg */
+    if (stream_leg > view->leg_count)
         goto fail_arg;
 
     if (dna_meter_policy_check(pol) != 0) {
@@ -222,9 +232,16 @@ dna_meter_status_t dna_meter_plan_build(const dna_meter_policy_t *pol,
         /* Declared effect ceilings must fit the effect codec's versioned
          * caps — a declaration the codec could never encode is rejected
          * here, not discovered at charge time. */
-        if (lh->res_max_effects > DNA_EFFECT_MAX_COUNT ||
-            lh->res_max_effect_bytes > DNA_EFFECT_MAX_TOTAL_LEN)
+        if (stream_leg != 0 && i == (uint16_t)(stream_leg - 1u)) {
+            /* Nodus EVM streamed leg: the stream caps, not the one-result
+             * codec caps (res_meter.h DNA_METER_STREAM_*) */
+            if (lh->res_max_effects > DNA_METER_STREAM_MAX_EFFECTS ||
+                lh->res_max_effect_bytes > DNA_METER_STREAM_MAX_EFFECT_BYTES)
+                goto fail_decl;
+        } else if (lh->res_max_effects > DNA_EFFECT_MAX_COUNT ||
+                   lh->res_max_effect_bytes > DNA_EFFECT_MAX_TOTAL_LEN) {
             goto fail_decl;
+        }
 
         uint64_t w_op;
         if (dna_meter_op_weight(pol, lh->runtime_op, &w_op) != 0)
@@ -264,6 +281,7 @@ dna_meter_status_t dna_meter_plan_build(const dna_meter_policy_t *pol,
     }
 
     out->static_total = total;
+    out->stream_leg   = stream_leg;
 
     /* The signed ceiling bounds the whole static reservation. */
     if (total > out->total_ceiling) {
@@ -284,6 +302,14 @@ dna_meter_status_t dna_meter_reserve(dna_meter_t *m,
                                      const dna_meter_policy_t *pol,
                                      const dna_env_view_t *view,
                                      dna_meter_budget_t *bud) {
+    return dna_meter_reserve_ex(m, pol, view, bud, 0);
+}
+
+dna_meter_status_t dna_meter_reserve_ex(dna_meter_t *m,
+                                        const dna_meter_policy_t *pol,
+                                        const dna_env_view_t *view,
+                                        dna_meter_budget_t *bud,
+                                        uint16_t stream_leg) {
     if (!m) return DNA_METER_ERR_ARG;
     if (m->state != DNA_METER_ST_ZERO) return DNA_METER_ERR_STATE;
     /* From here every reject re-zeroes the meter (it was ZERO-state, so
@@ -293,7 +319,8 @@ dna_meter_status_t dna_meter_reserve(dna_meter_t *m,
         return DNA_METER_ERR_ARG;
     }
 
-    dna_meter_status_t st = dna_meter_plan_build(pol, view, &m->plan);
+    dna_meter_status_t st = dna_meter_plan_build_ex(pol, view, stream_leg,
+                                                    &m->plan);
     if (st != DNA_METER_OK) {
         memset(m, 0, sizeof(*m));
         return st;
@@ -367,8 +394,19 @@ static int plan_leg_index(const dna_meter_plan_t *p, uint32_t domain_id) {
  * from the domain's remaining block budget, bound the total by the
  * global ceiling. Nothing commits before every checked step succeeded.
  */
+static dna_meter_status_t meter_charge_commit(dna_meter_t *m, int li,
+                                              uint64_t amount, int commit);
+
 static dna_meter_status_t meter_charge(dna_meter_t *m, int li,
                                        uint64_t amount) {
+    return meter_charge_commit(m, li, amount, 1);
+}
+
+/* `commit == 0`: run every check of a charge of `amount` and change
+ * nothing — the Nodus EVM begin's "does amount + extra fit" question, asked
+ * through the SAME arithmetic the real charge uses. */
+static dna_meter_status_t meter_charge_commit(dna_meter_t *m, int li,
+                                              uint64_t amount, int commit) {
     /* global: consumed never crosses the reserved ceiling */
     uint64_t new_gc;
     if (dna_ck_add_u64(m->g_consumed, amount, &new_gc) != 0)
@@ -404,6 +442,8 @@ static dna_meter_status_t meter_charge(dna_meter_t *m, int li,
             return DNA_METER_ERR_OVERFLOW;
         need_budget_write = di + 1;      /* remember di, 0 = none */
     }
+
+    if (!commit) return DNA_METER_OK;    /* Nodus EVM fit check: nothing moves */
 
     /* Commit. */
     m->g_consumed = new_gc;
@@ -526,6 +566,131 @@ dna_meter_status_t dna_meter_charge_read(dna_meter_t *m, uint32_t domain_id) {
 
 dna_meter_status_t dna_meter_charge_write(dna_meter_t *m, uint32_t domain_id) {
     return charge_rw(m, domain_id, m ? m->plan.w_write : 0);
+}
+
+/* ── Nodus EVM: the paged effect charge (contract: res_meter.h) ──────────── */
+
+dna_meter_status_t dna_meter_charge_effects_begin(dna_meter_t *m,
+                                                  uint32_t domain_id,
+                                                  uint64_t count,
+                                                  uint64_t bytes,
+                                                  uint64_t extra_units,
+                                                  dna_meter_stream_t *s) {
+    if (!m || !s) return DNA_METER_ERR_ARG;
+    if (m->state != DNA_METER_ST_ACTIVE) return DNA_METER_ERR_STATE;
+    if (!m->budget) return DNA_METER_ERR_FAULT;
+    if (s->open) return DNA_METER_ERR_STATE;
+
+    int li = plan_leg_index(&m->plan, domain_id);
+    if (li < 0) return DNA_METER_ERR_DOMAIN;
+    if (m->plan.stream_leg == 0 || li != (int)m->plan.stream_leg - 1)
+        return DNA_METER_ERR_ARG;
+    if (m->effects_charged[li]) return DNA_METER_ERR_STATE;
+
+    /* the smallest canonical length `count` effects can have: one head +
+     * one fixed record each (key/value lengths add on top) */
+    uint64_t floor_len;
+    if (dna_ck_mul_u64(count, DNA_EFFECT_RECORD_LEN, &floor_len) != 0 ||
+        dna_ck_add_u64(floor_len, DNA_EFFECT_FIXED_HEAD, &floor_len) != 0)
+        return DNA_METER_ERR_ARG;
+    if (bytes < floor_len) return DNA_METER_ERR_ARG;
+
+    /* ACTUAL vs DECLARED, and the compiled stream caps */
+    if (count > m->plan.leg[li].res_max_effects ||
+        bytes > (uint64_t)m->plan.leg[li].res_max_effect_bytes ||
+        count > DNA_METER_STREAM_MAX_EFFECTS ||
+        bytes > DNA_METER_STREAM_MAX_EFFECT_BYTES)
+        return DNA_METER_ERR_LIMIT;
+
+    uint64_t t_cnt, t_len, amount, with_extra;
+    if (dna_ck_mul_u64(m->plan.w_effect, count, &t_cnt) != 0 ||
+        dna_ck_mul_u64(m->plan.w_effectbyte, bytes, &t_len) != 0 ||
+        dna_ck_add_u64(t_cnt, t_len, &amount) != 0 ||
+        dna_ck_add_u64(amount, extra_units, &with_extra) != 0)
+        return DNA_METER_ERR_OVERFLOW;
+
+    /* the charge AND the units the engine charges next must fit */
+    dna_meter_status_t st = meter_charge_commit(m, li, with_extra, 0);
+    if (st != DNA_METER_OK) return st;
+    st = meter_charge(m, li, amount);
+    if (st != DNA_METER_OK) return st;
+
+    m->effects_charged[li] = 1;
+    memset(s, 0, sizeof(*s));
+    s->open = 1;
+    s->leg = (uint16_t)li;
+    s->expect_count = count;
+    s->expect_bytes = bytes;
+    return DNA_METER_OK;
+}
+
+dna_meter_status_t dna_meter_charge_effects_page(const dna_meter_t *m,
+                                                 dna_meter_stream_t *s,
+                                                 const dna_effect_view_t *v) {
+    if (!m || !s) return DNA_METER_ERR_ARG;
+    if (m->state != DNA_METER_ST_ACTIVE) return DNA_METER_ERR_STATE;
+    if (!s->open) return DNA_METER_ERR_STATE;
+    if (s->leg >= m->plan.n_legs || !m->effects_charged[s->leg])
+        return DNA_METER_ERR_FAULT;
+
+    /* the charge_effects view discipline: a decoded, non-rejected page
+     * whose res_len is its exact canonical length */
+    if (!v || !v->buf ||
+        v->result_version != DNA_EFFECT_RESULT_VERSION ||
+        v->effect_count > DNA_EFFECT_MAX_COUNT ||
+        v->res_len > DNA_EFFECT_MAX_TOTAL_LEN ||
+        v->res_len < DNA_EFFECT_FIXED_HEAD)
+        return DNA_METER_ERR_ARG;
+    {
+        uint64_t want = (uint64_t)DNA_EFFECT_FIXED_HEAD +
+                        (uint64_t)v->effect_count * DNA_EFFECT_RECORD_LEN;
+        for (uint16_t i = 0; i < v->effect_count; i++)
+            want += (uint64_t)v->eff[i].key_len +
+                    (uint64_t)v->eff[i].value_len;
+        if ((uint64_t)v->res_len != want)
+            return DNA_METER_ERR_ARG;
+    }
+
+    uint64_t new_cnt, new_body;
+    if (dna_ck_add_u64(s->seen_count, v->effect_count, &new_cnt) != 0 ||
+        dna_ck_add_u64(s->seen_body,
+                       (uint64_t)v->res_len - DNA_EFFECT_FIXED_HEAD,
+                       &new_body) != 0)
+        return DNA_METER_ERR_FAULT;
+    /* more than begin charged for is the ENGINE's bookkeeping breaking
+     * (begin proved expect_bytes >= the 23-byte head) */
+    if (new_cnt > s->expect_count ||
+        new_body > s->expect_bytes - DNA_EFFECT_FIXED_HEAD)
+        return DNA_METER_ERR_FAULT;
+    s->seen_count = new_cnt;
+    s->seen_body = new_body;
+    return DNA_METER_OK;
+}
+
+dna_meter_status_t dna_meter_charge_effects_finish(const dna_meter_t *m,
+                                                   dna_meter_stream_t *s) {
+    if (!m || !s) return DNA_METER_ERR_ARG;
+    if (m->state != DNA_METER_ST_ACTIVE) return DNA_METER_ERR_STATE;
+    if (!s->open) return DNA_METER_ERR_STATE;
+    if (s->seen_count != s->expect_count ||
+        s->seen_body + DNA_EFFECT_FIXED_HEAD != s->expect_bytes)
+        return DNA_METER_ERR_FAULT;
+    s->open = 0;
+    return DNA_METER_OK;
+}
+
+dna_meter_status_t dna_meter_charge_evm_gas(dna_meter_t *m,
+                                            uint32_t domain_id,
+                                            uint64_t gas) {
+    if (!m) return DNA_METER_ERR_ARG;
+    if (m->state != DNA_METER_ST_ACTIVE) return DNA_METER_ERR_STATE;
+    if (!m->budget) return DNA_METER_ERR_FAULT;
+    int li = plan_leg_index(&m->plan, domain_id);
+    if (li < 0) return DNA_METER_ERR_DOMAIN;
+    uint64_t amount;
+    if (dna_ck_mul_u64(gas, DNA_METER_EVM_W_GAS, &amount) != 0)
+        return DNA_METER_ERR_OVERFLOW;
+    return meter_charge(m, li, amount);
 }
 
 dna_meter_status_t dna_meter_finalize(dna_meter_t *m) {

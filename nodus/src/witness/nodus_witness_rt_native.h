@@ -44,7 +44,8 @@ extern "C" {
  *  three parsers' bounds; TOKEN_CREATE's is 14). */
 #define NODUS_RT_DESC_MAX_IN   15u
 /** Coins one CORE leg can create: RTN_SPEND_MAX_OUT (16) wire outputs
- *  plus the SYSFUND UNDELEGATE release coin. */
+ *  plus ONE release coin — the SYSFUND UNDELEGATE release or (Nodus EVM) the
+ *  EVMFUND WITHDRAW / REDEEM release; a leg carries at most one. */
 #define NODUS_RT_DESC_MAX_OUT  17u
 
 /** The SYSTEM record a leg writes (none for a CORE leg). */
@@ -86,6 +87,14 @@ typedef struct {
     uint8_t  name_len;
     uint8_t  name[36];            /* name_len bytes, NOT NUL-terminated    */
     uint64_t name_price;
+    /* Nodus EVM CORE EVMFUND (design 2026-10-04-nodus-evm-chain-integration §2,
+     * §5): the funding role (NODUS_RT_EVMFUND_ROLE_*, 0 = not an EVMFUND
+     * leg) and the CORE EVM reserve move in raw units — DEPOSIT locks
+     * `reserve_in`, RELEASE (WITHDRAW / REDEEM) pays `reserve_out` out
+     * as the release coin in `created`; FEE moves neither. */
+    uint8_t  evm_role;
+    uint64_t reserve_in;
+    uint64_t reserve_out;
 
     /* SYSTEM record — only the fields its kind names are meaningful.
      * Fingerprints are the RAW SHA3-512 of the call-carried pubkey (the
@@ -118,6 +127,20 @@ typedef struct {
  *                     rtn_sys_stake_shape + rtn_stake_parse /
  *                     rtn_deleg_parse / rtn_vupd_parse
  *   SYSTEM CHAIN_CONFIG rtn_cc_parse
+ *   CORE EVMFUND      nodus_rt_evm_pair_check (leg 0 of exactly [CORE
+ *                     EVMFUND] + [EVM op]) + rtn_evmfund_parse +
+ *                     rtn_out_ids, the sibling EVM leg's head through
+ *                     nodus_rt_evm_call_head (amount, recipient) and —
+ *                     for RELEASE — rtn_evmfund_release_coin (the helper
+ *                     rtn_evmfund_exec itself calls); fills evm_role and
+ *                     reserve_in / reserve_out
+ *   EVM (domain 2)    any op whose call head decodes
+ *                     (nodus_rt_evm_call_head): a descriptor with NO
+ *                     native-coin effects (n_consumed = n_created = 0,
+ *                     rec NONE) — the EVM leg moves no UTXO; its value
+ *                     movement is the CORE sibling's. What the EVM leg
+ *                     did is the stored receipt (evm_receipts), not
+ *                     something this describer derives.
  *
  * @param global_height the height the envelope was APPLIED at (the
  *        release coin's lock is derived from it, as in exec).
@@ -134,6 +157,26 @@ int nodus_rt_native_describe_leg(const dna_env_view_t *env,
                                  uint64_t global_height,
                                  const uint8_t *intent_id,
                                  nodus_rt_leg_desc_t *out);
+
+/**
+ * Nodus EVM P4-C (scan): the signer fingerprint of leg `leg_index` of a
+ * COMMITTED item — SHA3-512 of the first submitter pubkey of a kind-1
+ * (NODUS_RT_AUTHKIND_DSA87_MULTI_V1) auth blob, through the auth hook's
+ * OWN framing parser (rtn_auth_submitters) with signature verification
+ * OFF. The apply verified the signatures when it applied the item; this
+ * reads no clock, no state and verifies nothing, so it is meaningful
+ * ONLY for an item whose stored result code is 0 (the caller's duty —
+ * the same contract as nodus_rt_native_describe_leg). The EVM sender of
+ * an EVM leg is bytes [0..32] of this fingerprint (design §2; the
+ * runtime's `signer_fp[0][0..32]`, nodus_witness_rt_evm.c).
+ * @param n_signers_out the submitter count (may be NULL).
+ * @return 0; -1 not a kind-1 leg or its framing does not parse; -2 a
+ *         hash-backend fault or bad arguments.
+ */
+int nodus_rt_native_committed_signer_fp(const dna_env_view_t *env,
+                                        uint16_t leg_index,
+                                        uint8_t fp_out[64],
+                                        uint16_t *n_signers_out);
 
 /**
  * HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §2

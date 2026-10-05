@@ -9,13 +9,18 @@ randomBytes.lock(); pbkdf2.lock();
 // The release shown on the page (package.json version, vite.config.js define).
 for (const node of document.querySelectorAll('.app-version')) node.textContent = `Version ${__APP_VERSION__}`;
 try {
-  // Shared vaults (src/vaults/ui.js): the wallet page's one extension —
-  // registered before src/app.js loads, so it hears the first unlock. No
+  // Shared vaults (src/vaults/ui.js) and smart contracts (src/evm/ui.js):
+  // the wallet page's extensions — registered before src/app.js loads, so
+  // they hear the first unlock. No
   // Messages here: vaults live for the session and members are told from
   // Nodus Connect.
-  const [{ registerExtension }, { mountVaults, vaultExtension }] = await Promise.all([import('./wallet-extensions.js'), import('./vaults/ui.js')]);
+  const [{ registerExtension }, { mountVaults, vaultExtension }, { mountSmartContracts, smartContractExtension }] = await Promise.all([import('./wallet-extensions.js'), import('./vaults/ui.js'), import('./evm/ui.js')]);
   mountVaults({ panelNode: document.getElementById('vault-panel'), rootNode: document.getElementById('vaults-root') });
   registerExtension(vaultExtension);
+  // Smart contracts (src/evm/ui.js): hidden unless the loaded module can
+  // build or read smart-contract transactions (not in this release).
+  mountSmartContracts({ panelNode: document.getElementById('evm-panel'), rootNode: document.getElementById('evm-root') });
+  registerExtension(smartContractExtension);
   await import('./app.js');
   for (const id of ['create', 'restore', 'unlock-wallet']) document.getElementById(id).disabled = false;
   document.getElementById('wallet-boot-status').hidden = true;

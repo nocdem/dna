@@ -555,6 +555,16 @@ typedef struct nodus_witness {
     bool        v2_successor;
     uint8_t     v2_chain32[32];
     bool        v2_chain32_valid;
+    /* Red-team 1 F5 — the chain's FIRST block height (the stored genesis
+     * document's initial_height, completed 0 → 1), computed ONCE per open
+     * by witness_post_open_gate right where v2_chain32 becomes valid,
+     * through nodus_witness_v2_chain_initial_height (the ONE derivation).
+     * Read ONLY while v2_chain32_valid is true — the SAME handle lifecycle
+     * as v2_chain32, so every clear of that flag retires this value too;
+     * 0 = not derived (the accessor then derives from the document, and an
+     * underivable value refuses the EVM_ACTIVE vote — fail closed). A pure
+     * function of the pinned genesis document: equal on every node. */
+    uint64_t    v2_initial_height;
 
     /* O15E Faz B — the successor sync driver's RUNTIME state (never
      * persisted; LOCAL policy only, nothing here is consensus). R3 W4 —

@@ -19,7 +19,11 @@
 //                               the saved copy, else null; fresh: true only
 //                               for words generated in this tab and verified
 //                               (decision 2026-09-30-nodus-connect-thin-core
-//                               Q1). Raised on the same client that
+//                               Q1). lockedInputs(): the coins of the open
+//                               wallet's pending NODUS transactions (a Set
+//                               of nullifiers) — an extension that builds
+//                               from the wallet's coins never offers them.
+//                               Raised on the same client that
 //                               nodusIdentified (below) named, once its
 //                               connection succeeds.
 //   nodusConnectFailed({ reason })

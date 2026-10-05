@@ -120,6 +120,19 @@ int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]);
  *  tokenomics-v3 P2: 7 legs incl. accrual_root, tag "NDS.CORE.v2"). */
 int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]);
 
+/** Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md
+ *  rev 3 §5, §9): the core_state_root of the EVM generation's CORE
+ *  runtime — the SAME seven legs under the SAME "NDS.CORE.v2"
+ *  composition, except the supply leg, which is
+ *  dna_v2_supply_root_evm ("NDS.SUPPLY.v3": + the CORE EVM reserve bucket,
+ *  read through nodus_witness_core_evm_reserve_get). Selected ONLY by a
+ *  CORE runtime of generation >= NODUS_RT_GEN_EVM
+ *  (nodus_rt_core_state_root); every older generation's root is
+ *  nodus_witness_core_root_v2, byte-identical. An absent reserve table
+ *  or row is a fault here (the EVM generation never runs below S17).
+ *  @return 0 / -1. */
+int nodus_witness_core_root_v2_evm(nodus_witness_t *w, uint8_t out[64]);
+
 /** S5 — SYSTEM runtime-owned genesis PAYLOAD root ("NDS.SYSPAYL.v3",
  *  W-A): the five runtime legs validator ‖ delegation ‖ chain_config ‖
  *  validator_set ‖ treasury, WITHOUT the container-lifetime legs

@@ -334,6 +334,41 @@ int dna_ruleset_gen_digest(uint32_t generation,
                            uint32_t switch_spec_version,
                            uint64_t *out);
 
+/**
+ * Nodus EVM — the EVM activation vote digest (design docs/plans/2026-10-04-
+ * nodus-evm-chain-integration-design.md rev 3 §9: "the EVM generation's three
+ * runtime tuples + policy + manifest + initial root + this design's
+ * identifier"):
+ *
+ *   SHA3-512( DNA_EVM_ACT_TAG (16 bytes, zero-padded)
+ *             ‖ evm_generation u32 BE ‖ base_generation u32 BE
+ *             ‖ sys_ruleset_hash[64]   (commits the SYSTEM meter policy)
+ *             ‖ core_ruleset_hash[64]
+ *             ‖ evm_ruleset_hash[64]
+ *             ‖ evm_manifest_hash[64]  (commits the EVM genesis root,
+ *                                       quotas, name, tuple)
+ *             ‖ spec_version u32 BE    (the 6b'' procedure)
+ *             ‖ n_consts u32 BE ‖ n_consts × u64 BE (the compiled EVM
+ *                                       constants — the order is the
+ *                                       caller's, nodus_witness_runtime.c
+ *                                       evm_act_consts) )
+ *
+ * *out = the first 8 digest bytes read big-endian, top bit cleared. The
+ * tag is ONE definition, PROPOSED (NDS.* precedent; collision scan: no
+ * other "NDS.EVMACT" in the tree); operator approval pending.
+ * @return 0 / -1 (NULL argument, n_consts > 64, hash backend failure).
+ */
+#define DNA_EVM_ACT_TAG "NDS.EVMACT.v1"
+int dna_evm_activation_digest(uint32_t evm_generation,
+                              uint32_t base_generation,
+                              const uint8_t sys_ruleset_hash[DNA_DOM_HASH_LEN],
+                              const uint8_t core_ruleset_hash[DNA_DOM_HASH_LEN],
+                              const uint8_t evm_ruleset_hash[DNA_DOM_HASH_LEN],
+                              const uint8_t evm_manifest_hash[DNA_DOM_HASH_LEN],
+                              uint32_t spec_version,
+                              const uint64_t *consts, uint32_t n_consts,
+                              uint64_t *out);
+
 /* ══════════════════════════════════════════════════════════════════════
  * 3. DomainRegistryRecord v1
  * ════════════════════════════════════════════════════════════════════ */

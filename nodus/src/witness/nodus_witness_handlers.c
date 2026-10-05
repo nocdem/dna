@@ -51,6 +51,19 @@
 #include "dnac/env_wire.h"
 #include "dnac/manifest_wire.h"
 #include "dnac/ledger_ids.h"
+/* Nodus EVM P4-C — dnac_v3_block's "ev": the shared call / receipt codec
+ * (always compiled, nodus/CMakeLists.txt — no EVM engine needed) */
+#include "dnac/evm_call_wire.h"
+#ifdef NODUS_EVM_ENABLED
+/* Nodus EVM §18 — the EVM read RPC (the "Nodus EVM §18" section below) */
+#include "witness/nodus_witness_rt_evm.h"
+#include "client/nodus_v2_evm.h"
+#include "dnac/evm_call_wire.h"
+#include "evm/evm.h"
+#include "evm/evm_gas.h"                     /* the rows/bytes → gas pins */
+#include "crypto/hash/keccak256.h"
+#include "witness/nodus_witness_v2_schema.h" /* the evm_logs cursor scan  */
+#endif
 
 #include <stdio.h>
 #include <string.h>
@@ -3323,6 +3336,14 @@ static void handle_dnac_validator_list_query(nodus_witness_t *w,
  *                    from its v2_claims_spent row (output_id, amount),
  *                    the id re-derived by dna_claim_utxo_id and the owner
  *                    = the claim's dest_binding (nodus_rt_core_claim_apply)
+ *   Nodus EVM ri / ro     the CORE EVMFUND leg's describer (reserve_in /
+ *                    reserve_out, from the sibling EVM call head)
+ *   Nodus EVM ev          applied EVM items: evm_receipts (intent_id) at this
+ *                    height, its SHA3-512 equal to the row's digest AND
+ *                    the stored response's tx_results[i].data; decoded by
+ *                    dna_evm_rcpt_decode; to / v / dst from
+ *                    dna_evm_call_decode; fr = the EVM leg's committed
+ *                    signer fp [0..32] (nodus_rt_native_committed_signer_fp)
  *
  * PURE READ (G1): no write, no transaction, no clock, no cache — the
  * answer is a function of the committed stores at `h`. FAIL-CLOSED: any
@@ -3339,8 +3360,10 @@ static void handle_dnac_validator_list_query(nodus_witness_t *w,
 
 /* The largest one encoded item can be: 15 consumed ids (15 × 67 B),
  * 17 created coins (17 × ~300 B), the record map (~560 B) and the fixed
- * keys (~250 B) come to ~6.9 KB; 16 KiB leaves headroom and an item that
- * does not fit is a node-local invariant broken → INTERNAL. */
+ * keys (~250 B) come to ~6.9 KB; a Nodus EVM item adds "ri"/"ro" (~20 B) and
+ * "ev" (~420 B + NODUS_DNAC_V3_EVM_MAX_TICKETS × 67 B ≈ 2.6 KB) and
+ * carries no record map, so ~9.5 KB at most; 16 KiB leaves headroom and
+ * an item that does not fit is a node-local invariant broken → INTERNAL. */
 #define NODUS_V3_BLOCK_ITEM_MAX_BYTES  16384u
 /* The header keys, the "r" framing and the T2 envelope (~420 B). */
 #define NODUS_V3_BLOCK_HDR_MAX_BYTES   1024u
@@ -3387,10 +3410,13 @@ typedef struct {
     dna_claim_t                   *claim;
     nodus_rt_leg_desc_t           *desc_core;
     nodus_rt_leg_desc_t           *desc_sys;
+    nodus_rt_leg_desc_t           *desc_evm;    /* Nodus EVM: the EVM leg */
     /* prepared reads, finalized by v3b_free */
     sqlite3_stmt                  *st_ids;
     sqlite3_stmt                  *st_claim;
     sqlite3_stmt                  *st_cbytes;
+    sqlite3_stmt                  *st_rcpt;     /* Nodus EVM: prepared on the
+                                                 * first EVM item       */
     /* the outcome of a refusal */
     int                            err_code;
     char                           err_msg[128];
@@ -3401,6 +3427,7 @@ static void v3b_free(v3b_ctx_t *c)
     if (c->st_ids)    sqlite3_finalize(c->st_ids);
     if (c->st_claim)  sqlite3_finalize(c->st_claim);
     if (c->st_cbytes) sqlite3_finalize(c->st_cbytes);
+    if (c->st_rcpt)   sqlite3_finalize(c->st_rcpt);
     free(c->meta);
     free(c->dec_buf);
     free(c->dec_arena.buf);
@@ -3420,6 +3447,7 @@ static void v3b_free(v3b_ctx_t *c)
     free(c->claim);
     free(c->desc_core);
     free(c->desc_sys);
+    free(c->desc_evm);
     memset(c, 0, sizeof(*c));
 }
 
@@ -3453,13 +3481,23 @@ static void v3b_hex64(const uint8_t raw[64], char out[129])
 
 /* The op name an envelope's legs name — a mapping of the (domain,
  * runtime_op) constants of nodus_witness_runtime.h, no call byte read.
- * A SYSTEM leg names the envelope (its CORE sibling is the funding leg);
- * otherwise the CORE leg does. NULL = no name this build knows. */
+ * A SYSTEM or EVM leg names the envelope (its CORE sibling is the funding
+ * leg); otherwise the CORE leg does. NULL = no name this build knows. */
 static const char *v3b_op_name(const dna_env_view_t *v)
 {
     const char *core = NULL;
     for (uint16_t l = 0; l < v->leg_count; l++) {
         uint32_t d = v->leg[l].domain_id, op = v->leg[l].runtime_op;
+        if (d == DNA_DOMAIN_EVM) {
+            switch (op) {
+            case NODUS_RT_EVM_CALL:     return "evm_call";
+            case NODUS_RT_EVM_CREATE:   return "evm_create";
+            case NODUS_RT_EVM_DEPOSIT:  return "evm_deposit";
+            case NODUS_RT_EVM_WITHDRAW: return "evm_withdraw";
+            case NODUS_RT_EVM_REDEEM:   return "evm_redeem";
+            default:                    return NULL;
+            }
+        }
         if (d == DNA_DOMAIN_SYSTEM) {
             switch (op) {
             case DNA_SYSRULE_STAKE:            return "stake";
@@ -3682,6 +3720,158 @@ static void v3b_enc_record(cbor_encoder_t *e, const nodus_rt_leg_desc_t *d)
     }
 }
 
+/* Nodus EVM P4-C — the facts of one APPLIED EVM item, all from stored bytes:
+ * the receipt row (evm_receipts, written in the item's savepoint by
+ * apply.c v2evm_index), the decoded call and the committed signer. */
+typedef struct {
+    uint8_t  status;
+    uint64_t gas_used;
+    uint8_t  from[32];
+    bool     has_to, has_ca, has_v, has_dst;
+    uint8_t  to[32];
+    uint8_t  ca[32];
+    uint8_t  value[32];
+    uint8_t  dst[64];
+    uint32_t n_logs;
+    uint8_t  n_tk;
+    bool     tk_more;
+    uint8_t  tk[NODUS_DNAC_V3_EVM_MAX_TICKETS][64];
+    uint8_t  wd[32];
+    uint8_t  dg[64];
+} v3b_evm_t;
+
+/**
+ * Read the EVM facts of block item `i`, whose EVM leg is leg `l` of
+ * c->view and whose intent id is `intent`. FAIL-CLOSED: an applied EVM
+ * item without a receipt row at this height, a receipt whose SHA3-512 is
+ * not both the row's digest and the block's committed ExecTxResult.Data,
+ * a receipt or call that does not decode, or a receipt naming another op
+ * is a node-local invariant broken → INTERNAL, never a partial item.
+ * @return 0 / -1 (the refusal recorded in `c`).
+ */
+static int v3b_evm_facts(v3b_ctx_t *c, uint32_t i, uint16_t l,
+                         const uint8_t intent[64], v3b_evm_t *ev)
+{
+    const dna_env_view_t *v = c->view;
+    const cmt_pb_bytes_t *data = &c->resp->tx_results[i].det.data;
+    dna_evm_call_t call;
+    dna_evm_rcpt_t r;
+    uint8_t  fp[64], dg[64];
+    uint16_t ns = 0;
+    const uint8_t *blob;
+    int      blen, rc;
+
+    memset(ev, 0, sizeof(*ev));
+    if (dna_evm_call_decode(v->leg[l].runtime_op, v->buf + v->call_off[l],
+                            v->leg[l].call_len, &call) != 0)
+        return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                        "an applied EVM leg's call does not decode");
+    rc = nodus_rt_native_committed_signer_fp(v, l, fp, &ns);
+    if (rc != 0 || ns != 1)
+        return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                        rc == -2 ? "hash backend failed" :
+                        "an applied EVM leg has no single signer");
+    memcpy(ev->from, fp, 32);            /* design §2: fp[0..32]          */
+
+    if (!c->st_rcpt &&
+        sqlite3_prepare_v2(c->w->db,
+            "SELECT global_height, receipt, digest, item_index "
+            "FROM evm_receipts WHERE intent_id = ?1", -1, &c->st_rcpt, NULL)
+            != SQLITE_OK)
+        return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                        "receipt index unreadable");
+    sqlite3_reset(c->st_rcpt);
+    sqlite3_bind_blob(c->st_rcpt, 1, intent, 64, SQLITE_TRANSIENT);
+    rc = sqlite3_step(c->st_rcpt);
+    /* red-team 1 F12: the row's item_index is THIS block position i
+     * (FinalizeBlock's env_block_pos) — the RPC's "x" names the same
+     * item this page does */
+    if (rc != SQLITE_ROW ||
+        (uint64_t)sqlite3_column_int64(c->st_rcpt, 0) != c->height ||
+        sqlite3_column_int64(c->st_rcpt, 3) != (sqlite3_int64)i ||
+        sqlite3_column_bytes(c->st_rcpt, 2) != 64) {
+        sqlite3_reset(c->st_rcpt);
+        return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                        "an applied EVM item has no receipt at this height "
+                        "and block position");
+    }
+    blob = sqlite3_column_blob(c->st_rcpt, 1);
+    blen = sqlite3_column_bytes(c->st_rcpt, 1);
+    if (!blob || blen <= 0 ||
+        qgp_sha3_512(blob, (size_t)blen, dg) != 0 ||
+        memcmp(dg, sqlite3_column_blob(c->st_rcpt, 2), 64) != 0 ||
+        data->len != 64 || !data->data || memcmp(dg, data->data, 64) != 0 ||
+        dna_evm_rcpt_decode(blob, (size_t)blen, &r) != 0 ||
+        (uint32_t)r.op != v->leg[l].runtime_op) {
+        sqlite3_reset(c->st_rcpt);
+        return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                        "a stored EVM receipt is not the block's committed "
+                        "receipt");
+    }
+    /* copy every fact out before the row is released */
+    ev->status   = r.status;
+    ev->gas_used = r.gas_used;
+    ev->n_logs   = r.n_logs;
+    memcpy(ev->wd, r.wei_destroyed, 32);
+    memcpy(ev->dg, dg, 64);
+    if (r.status == 1 && call.op == NODUS_RT_EVM_CREATE) {
+        ev->has_ca = true;
+        memcpy(ev->ca, r.created, 32);
+    }
+    ev->n_tk = (uint8_t)(r.n_tickets > NODUS_DNAC_V3_EVM_MAX_TICKETS
+                             ? NODUS_DNAC_V3_EVM_MAX_TICKETS : r.n_tickets);
+    ev->tk_more = r.n_tickets > NODUS_DNAC_V3_EVM_MAX_TICKETS;
+    if (ev->n_tk) memcpy(ev->tk, r.tickets, (size_t)ev->n_tk * 64);
+    sqlite3_reset(c->st_rcpt);
+
+    if (call.op == NODUS_RT_EVM_CALL) {
+        ev->has_to = true;
+        memcpy(ev->to, call.to, 32);
+    }
+    if (call.op == NODUS_RT_EVM_CALL || call.op == NODUS_RT_EVM_CREATE) {
+        ev->has_v = true;
+        memcpy(ev->value, call.value_wei, 32);
+    }
+    if (call.op == NODUS_RT_EVM_WITHDRAW || call.op == NODUS_RT_EVM_REDEEM) {
+        ev->has_dst = true;
+        memcpy(ev->dst, call.dest_fp, 64);
+    }
+    return 0;
+}
+
+static void v3b_enc_evm(cbor_encoder_t *e, const v3b_evm_t *ev)
+{
+    size_t n = 6;                                 /* s gu fr nl wd dg     */
+    n += ev->has_to ? 1 : 0;
+    n += ev->has_ca ? 1 : 0;
+    n += ev->has_v ? 1 : 0;
+    n += ev->has_dst ? 1 : 0;
+    n += ev->n_tk ? 1 : 0;
+    n += ev->tk_more ? 1 : 0;
+    cbor_encode_map(e, n);
+    cbor_encode_cstr(e, "s");  cbor_encode_uint(e, ev->status);
+    cbor_encode_cstr(e, "gu"); cbor_encode_uint(e, ev->gas_used);
+    cbor_encode_cstr(e, "fr"); cbor_encode_bstr(e, ev->from, 32);
+    if (ev->has_to)  { cbor_encode_cstr(e, "to");
+                       cbor_encode_bstr(e, ev->to, 32); }
+    if (ev->has_ca)  { cbor_encode_cstr(e, "ca");
+                       cbor_encode_bstr(e, ev->ca, 32); }
+    if (ev->has_v)   { cbor_encode_cstr(e, "v");
+                       cbor_encode_bstr(e, ev->value, 32); }
+    if (ev->has_dst) { cbor_encode_cstr(e, "dst");
+                       cbor_encode_bstr(e, ev->dst, 64); }
+    cbor_encode_cstr(e, "nl"); cbor_encode_uint(e, ev->n_logs);
+    if (ev->n_tk) {
+        cbor_encode_cstr(e, "tk");
+        cbor_encode_array(e, ev->n_tk);
+        for (uint8_t k = 0; k < ev->n_tk; k++)
+            cbor_encode_bstr(e, ev->tk[k], 64);
+    }
+    if (ev->tk_more) { cbor_encode_cstr(e, "tkm"); cbor_encode_bool(e, true); }
+    cbor_encode_cstr(e, "wd"); cbor_encode_bstr(e, ev->wd, 32);
+    cbor_encode_cstr(e, "dg"); cbor_encode_bstr(e, ev->dg, 64);
+}
+
 /**
  * Encode item `i` into `e`. `*gidx` is the global index the NEXT applied
  * envelope holds; it advances when this item is one.
@@ -3700,7 +3890,9 @@ static int v3b_item(v3b_ctx_t *c, uint32_t i, uint32_t *gidx,
     const char *op = NULL;
     /* effects (applied items only) */
     bool     eff = false;
-    const nodus_rt_leg_desc_t *core = NULL, *sys = NULL;
+    const nodus_rt_leg_desc_t *core = NULL, *sys = NULL, *evm = NULL;
+    v3b_evm_t evf;                      /* Nodus EVM: an applied EVM item's */
+    bool     has_ev = false;            /* facts ("ev")                  */
     uint8_t  cl_id[64], cl_owner[128];
     uint64_t cl_amount = 0;
     bool     cl_coin = false;
@@ -3731,10 +3923,12 @@ static int v3b_item(v3b_ctx_t *c, uint32_t i, uint32_t *gidx,
             has_w = has_in = true;
             (*gidx)++;
             for (uint16_t l = 0; l < c->view->leg_count; l++) {
+                uint32_t dom = c->view->leg[l].domain_id;
                 nodus_rt_leg_desc_t *d =
-                    c->view->leg[l].domain_id == DNA_DOMAIN_CORE
-                        ? c->desc_core : c->desc_sys;
-                if ((d == c->desc_core && core) || (d == c->desc_sys && sys))
+                    dom == DNA_DOMAIN_CORE ? c->desc_core :
+                    dom == DNA_DOMAIN_EVM  ? c->desc_evm  : c->desc_sys;
+                if ((d == c->desc_core && core) || (d == c->desc_sys && sys) ||
+                    (d == c->desc_evm && evm))
                     return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
                                     "an applied envelope repeats a domain");
                 int drc = nodus_rt_native_describe_leg(c->view, l, c->height,
@@ -3746,7 +3940,15 @@ static int v3b_item(v3b_ctx_t *c, uint32_t i, uint32_t *gidx,
                                           "an applied envelope"
                                         : "this build cannot describe an "
                                           "applied envelope");
-                if (d == c->desc_core) core = d; else sys = d;
+                if (d == c->desc_core) core = d;
+                else if (d == c->desc_evm) {
+                    /* Nodus EVM: the EVM leg moves no native coin; its facts
+                     * are the stored receipt's */
+                    evm = d;
+                    if (v3b_evm_facts(c, i, l, intent, &evf) != 0)
+                        return -1;
+                    has_ev = true;
+                } else sys = d;
             }
             eff = true;
         }
@@ -3831,6 +4033,9 @@ static int v3b_item(v3b_ctx_t *c, uint32_t i, uint32_t *gidx,
         n_keys += (core && core->burned) ? 1 : 0;
         n_keys += (sys && sys->rec != NODUS_RT_DESC_REC_NONE) ? 1 : 0;
         n_keys += (core && core->name_len) ? 2 : 0;   /* HF-4: nm pr  */
+        n_keys += (core && core->reserve_in) ? 1 : 0;  /* Nodus EVM: ri    */
+        n_keys += (core && core->reserve_out) ? 1 : 0; /* Nodus EVM: ro    */
+        n_keys += has_ev ? 1 : 0;                      /* Nodus EVM: ev    */
     }
     cbor_encode_map(e, n_keys);
     cbor_encode_cstr(e, "i"); cbor_encode_uint(e, i);
@@ -3869,6 +4074,18 @@ static int v3b_item(v3b_ctx_t *c, uint32_t i, uint32_t *gidx,
             cbor_encode_cstr(e, "nm");
             cbor_encode_tstr(e, (const char *)core->name, core->name_len);
             cbor_encode_cstr(e, "pr"); cbor_encode_uint(e, core->name_price);
+        }
+        /* Nodus EVM (P4-C): the CORE EVMFUND reserve move and the EVM facts —
+         * OPTIONAL keys, an older decoder skips them */
+        if (core && core->reserve_in) {
+            cbor_encode_cstr(e, "ri"); cbor_encode_uint(e, core->reserve_in);
+        }
+        if (core && core->reserve_out) {
+            cbor_encode_cstr(e, "ro"); cbor_encode_uint(e, core->reserve_out);
+        }
+        if (has_ev) {
+            cbor_encode_cstr(e, "ev");
+            v3b_enc_evm(e, &evf);
         }
         if (sys && sys->rec != NODUS_RT_DESC_REC_NONE) {
             cbor_encode_cstr(e, "rc");
@@ -3986,10 +4203,11 @@ int nodus_witness_v3_block_build(nodus_witness_t *w, nodus_cmt_store_t *store,
     c.claim     = calloc(1, sizeof(*c.claim));
     c.desc_core = calloc(1, sizeof(*c.desc_core));
     c.desc_sys  = calloc(1, sizeof(*c.desc_sys));
+    c.desc_evm  = calloc(1, sizeof(*c.desc_evm));
     items       = malloc((size_t)budget + NODUS_V3_BLOCK_ITEM_MAX_BYTES);
     scratch     = malloc(NODUS_V3_BLOCK_ITEM_MAX_BYTES);
-    if (!c.view || !c.claim || !c.desc_core || !c.desc_sys || !items ||
-        !scratch) {
+    if (!c.view || !c.claim || !c.desc_core || !c.desc_sys || !c.desc_evm ||
+        !items || !scratch) {
         v3b_fail(&c, NODUS_ERR_INTERNAL_ERROR, "allocation failed");
         goto done;
     }
@@ -4244,6 +4462,1087 @@ void nodus_witness_handle_cc_collect(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * Nodus EVM §18 — the EVM read RPC (design docs/plans/2026-10-04-nodus-evm-chain-
+ * integration-design.md rev 3 §18; §8 rev 4 for the simulation bound).
+ *
+ * Every method answers from THIS node's COMMITTED tip state, read-only;
+ * every reply's "h" is the committed tip EXCEPT evm_receipt's and each
+ * evm_logs entry's, which are the INCLUSION height (the receipt's item
+ * index "x" — the item's position in the decided block's tx list, claims
+ * and undecodable items counted (red-team 1 F12) — and its digest "dg"
+ * are meaningful only against the block
+ * that holds them, and "dg" is bound by the NEXT block's
+ * LastResultsHash — §7). Node-local; nothing here enters block validity.
+ * The EVM domain must be ACTIVE in the registry (nodus_witness_v2_
+ * runtime_for, require_active) — otherwise NOT_FOUND "the EVM domain is
+ * not active". A build without the EVM runtime (the messenger tree,
+ * Windows) answers every evm_* "not compiled into this build".
+ *
+ *   evm_account {a:addr32} → {n, b:bstr32, ch:bstr32, cs, h}
+ *       (no account: n 0, b 0, ch keccak256(""), cs 0)
+ *   evm_code    {a}        → {c:bstr, h}
+ *   evm_storage {a, k:bstr32} → {v:bstr32, h}
+ *   evm_call    {f:addr32, t?:addr32 (absent = CREATE), v?:bstr32,
+ *                d:bstr, g?:u64 (absent = NODUS_RT_EVM_TX_GAS_CAP)}
+ *                          → {s:0/1, o:bstr, gu, h}
+ *       o = return data, or the REVERT data when s = 0 (a stored
+ *       receipt of a failed transaction carries no output — §4 — so this
+ *       is where a revert reason is read); gu = what a receipt would say
+ *       (the engine's gas on success, the gas limit on failure — §4).
+ *       A call refused BEFORE execution (nonce / value > balance /
+ *       intrinsic gas / EIP-3607) is a PROTOCOL_ERROR reply, not s = 0.
+ *   evm_estimate = evm_call + {ge, ue, fe}:
+ *       ge — the smallest gas_limit that succeeds, by BINARY SEARCH over
+ *            [engine gas used, g]: the engine's own figure is tried first;
+ *            otherwise at most EVM_EST_MAX_PROBES further simulations,
+ *            stopping when the interval is within 1/64 of its upper end
+ *            (the EIP-150 63/64 retention is the usual reason the engine
+ *            figure alone fails) — ge is the smallest SUCCESSFUL limit
+ *            seen. On a failure at g, ge = g (nothing succeeds to search).
+ *       ue — res_max_total_units for the REFERENCE SHAPE
+ *            (client/nodus_v2_evm.h nodus_v2_evm_ref_units: one funding
+ *            input, one change output, the default effect declaration, no
+ *            access list) at ge, + the logical reads the run at ge made ×
+ *            w_read of the generation's SYSTEM policy. A client building
+ *            another shape takes the read units as ue − ref_units(same op,
+ *            data length, ge) and adds them to its own minimum.
+ *       fe — max(floor, ue × GAS_PRICE_RAW_PER_UNIT at tip + 1), floor =
+ *            max(DNAC_MIN_FEE_RAW, NODUS_W_BASE_TX_FEE) (rtn_evmfund_exec).
+ *       NOT modelled: a success stream over the envelope's effect
+ *       declaration (the paid failure path, §4) — a call has none.
+ *   evm_receipt {i:bstr64 intent_id} → {h (inclusion), x, s, op, gu,
+ *       cr? (a successful CREATE), o, logs:[{a, t:[bstr32], d}],
+ *       wd:bstr32, tk:[bstr64], dg:bstr64} — or {} when this node has no
+ *       receipt for it. The stored bytes are re-hashed and must equal the
+ *       stored digest (a mismatch is an INTERNAL_ERROR, never an answer).
+ *   evm_logs {fh, th, a?, t0..t3?, lim, c?:[h, x, li]} →
+ *       {logs:[{h, x, li, a, t, d, i}], more:bool, c?:[h, x, li]};
+ *       th >= fh, th − fh < 10 000 (at most 10 000 blocks),
+ *       1 <= lim <= 1000; ordered (height, item index, log index). The
+ *       request's "c" resumes a scan (fh <= c.h <= th; the cursor a
+ *       previous reply returned); without it the scan starts at (fh, 0,
+ *       0). A CURSOR SCAN (nodus_witness_evm_logs_scan, v2_schema.h):
+ *       index-ordered, at most EVM_LOGS_MAX_EXAMINED rows EXAMINED per
+ *       request (matches or not), the reply estimate stops at
+ *       EVM_LOGS_REPLY_BUDGET bytes past the first log, every examined
+ *       row and returned byte charged to the work budget below. A reply
+ *       that stops before th (lim reached, a bound, the budget) carries
+ *       more = true AND "c" — the first position not yet examined; a
+ *       reply with more = true may hold no log (the bound was spent on
+ *       non-matching rows) — ask again from "c". Resuming from "c" skips
+ *       no match and repeats none.
+ *   evm_ticket {id:bstr64} → {p:bool, amt, dst:bstr64} (p false: no such
+ *       pending ticket — never existed or already redeemed; amt 0, dst 0).
+ *
+ * WORK BOUND (§8 rev 4 / §18 rev 5, red-team 1 F4: no clock is read): the
+ * handlers run INLINE on the witness's one event loop (dnac_spend's
+ * CheckTx is inline too) — a request runs to completion before the loop
+ * serves anything else, consensus messages included. ONE per-HEIGHT gas
+ * budget (NODUS_RT_EVM_SIM_GAS_PER_HEIGHT) covers EVERY evm_* read: it
+ * belongs to the committed tip height and resets when the tip moves.
+ *   - every request that passes the gate pays EVM_RPC_BASE_GAS (one
+ *     examined row) — a miss, an absent account, a refusal included;
+ *   - evm_code pays its chunk rows and code bytes, evm_receipt its row
+ *     and the stored receipt's bytes — BEFORE either is copied or hashed;
+ *   - evm_logs pays every examined row and returned byte (gas(e, b) of
+ *     the scan), within what the budget has left;
+ *   - a simulation (the ONE funnel, evm_sim_once) charges its gas_limit
+ *     up front (a run cannot be pre-empted) and keeps the engine's
+ *     PRE-refund work (engine_work_gas — a refund lowers what a sender
+ *     pays, not what this node ran); a refusal before execution keeps its
+ *     reads × NODUS_EVM_RPC_GAS_PER_ROW, a fault one row — never zero.
+ * Rows → gas is NODUS_EVM_RPC_GAS_PER_ROW, bytes → gas
+ * NODUS_EVM_RPC_GAS_PER_BYTE (both nodus_witness_v2_schema.h, with their
+ * reference). What does not fit is not run: RATE_LIMITED until the next
+ * block (evm_logs: a shorter page with its cursor). So between two blocks
+ * this node spends at most that much work, whatever the number of
+ * sessions or requests. evm_estimate runs at most 2 + EVM_EST_MAX_PROBES
+ * simulations, each through the funnel; a probe refused for budget
+ * refuses the whole request (no partial estimate). The budget is
+ * node-local — no block, vote or root reads it. Committed state only:
+ * refused while the witness's database holds an open transaction.
+ *
+ * REPLY SIZE: a reply over EVM_REPLY_MAX (the transport's frame bound
+ * less the channel overhead) is answered TOO_LARGE, never dropped; a send
+ * that fails for any other reason (a closed connection) is logged.
+ * ════════════════════════════════════════════════════════════════════ */
+
+#ifdef NODUS_EVM_ENABLED
+
+#define EVM_EST_MAX_PROBES       16
+#define EVM_LOGS_MAX_SPAN        10000u
+#define EVM_LOGS_MAX_LIM         NODUS_EVM_LOGS_SCAN_MAX_LIM
+#define EVM_LOGS_REPLY_BUDGET    ((size_t)1024 * 1024)
+/* examined rows per evm_logs request (red-team 1 F4): at
+ * NODUS_EVM_RPC_GAS_PER_ROW each, 21 M of the 60 M per-height budget */
+#define EVM_LOGS_MAX_EXAMINED    10000u
+/* a request pays at least one examined row (red-team 1 F4: misses and
+ * refusals are never free) */
+#define EVM_RPC_BASE_GAS         ((uint64_t)NODUS_EVM_RPC_GAS_PER_ROW)
+/* the largest reply sent: the transport refuses a payload over
+ * NODUS_MAX_FRAME_TCP (nodus_tcp.c send_progress_locked) and an
+ * established channel adds NODUS_CHANNEL_OVERHEAD (28 bytes,
+ * nodus_channel_crypto.h:28) — 64 bytes of margin cover it */
+#define EVM_REPLY_MAX            ((size_t)NODUS_MAX_FRAME_TCP - 64u)
+#define EVM_SIM_BUDGET_MSG \
+    "the node's EVM read budget for this block is used; ask again " \
+    "after the next block"
+
+_Static_assert(NODUS_EVM_RPC_GAS_PER_ROW == EVM_G_COLD_STORAGE_ACCESS,
+               "rows -> gas is the cold storage read (v2_schema.h)");
+_Static_assert(NODUS_EVM_RPC_GAS_PER_BYTE == EVM_G_OPCODE_LOG_DATA_PER_BYTE,
+               "bytes -> gas is the log data byte (v2_schema.h)");
+_Static_assert((uint64_t)EVM_LOGS_MAX_EXAMINED * NODUS_EVM_RPC_GAS_PER_ROW +
+               (uint64_t)EVM_LOGS_REPLY_BUDGET * NODUS_EVM_RPC_GAS_PER_BYTE <
+               NODUS_RT_EVM_SIM_GAS_PER_HEIGHT,
+               "one full evm_logs page fits the per-height budget");
+
+/* The per-height work budget (WORK BOUND above): the committed tip height
+ * it belongs to and the gas charged against it so far. File-static and
+ * unlocked because the witness is single-threaded — every evm_* handler
+ * runs on its one event loop. Node-local. */
+static uint64_t g_evm_work_tip = 0;
+static uint64_t g_evm_work_charged = 0;
+
+/* The budget left at `tip` (a new tip: a new budget). */
+static uint64_t evm_work_left(uint64_t tip) {
+    if (tip != g_evm_work_tip) {
+        g_evm_work_tip = tip;
+        g_evm_work_charged = 0;
+    }
+    return NODUS_RT_EVM_SIM_GAS_PER_HEIGHT - g_evm_work_charged;
+}
+
+/* Charge `gas` at `tip`. @return 0 charged / 1 it does not fit (nothing
+ * charged). */
+static int evm_work_charge(uint64_t tip, uint64_t gas) {
+    if (gas > evm_work_left(tip)) return 1;
+    g_evm_work_charged += gas;
+    return 0;
+}
+
+/* The arguments every evm_* method may carry (§18 keys). Unknown keys are
+ * skipped; a repeated key or a wrong type refuses the request. */
+typedef struct {
+    const uint8_t *a, *k, *f, *t, *v, *d, *i, *id;
+    size_t         d_len;
+    int            has_d, has_g, has_fh, has_th, has_lim, has_c;
+    uint64_t       g, fh, th, lim;
+    uint64_t       c[3];               /* evm_logs cursor (h, x, li)      */
+    const uint8_t *tp[4];
+} evm_args_t;
+
+static int evm_bstr_arg(cbor_decoder_t *dec, const uint8_t **slot,
+                        size_t want) {
+    cbor_item_t val = cbor_decode_next(dec);
+    if (*slot || val.type != CBOR_ITEM_BSTR || val.bstr.len != want)
+        return -1;
+    *slot = val.bstr.ptr;
+    return 0;
+}
+
+static int evm_uint_arg(cbor_decoder_t *dec, int *has, uint64_t *slot) {
+    cbor_item_t val = cbor_decode_next(dec);
+    if (*has || val.type != CBOR_ITEM_UINT) return -1;
+    *slot = val.uint_val;
+    *has = 1;
+    return 0;
+}
+
+/** @return 0 / -1 (malformed). */
+static int evm_args_parse(const uint8_t *payload, size_t len,
+                          evm_args_t *x) {
+    cbor_decoder_t dec;
+    size_t n = 0;
+    memset(x, 0, sizeof(*x));
+    if (decode_args(payload, len, &dec, &n) != 0) return -1;
+    for (size_t i = 0; i < n; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        int rc = 0;
+        if (key_match(&key, "a"))        rc = evm_bstr_arg(&dec, &x->a, 32);
+        else if (key_match(&key, "k"))   rc = evm_bstr_arg(&dec, &x->k, 32);
+        else if (key_match(&key, "f"))   rc = evm_bstr_arg(&dec, &x->f, 32);
+        else if (key_match(&key, "t"))   rc = evm_bstr_arg(&dec, &x->t, 32);
+        else if (key_match(&key, "v"))   rc = evm_bstr_arg(&dec, &x->v, 32);
+        else if (key_match(&key, "i"))   rc = evm_bstr_arg(&dec, &x->i, 64);
+        else if (key_match(&key, "id"))  rc = evm_bstr_arg(&dec, &x->id, 64);
+        else if (key_match(&key, "t0"))  rc = evm_bstr_arg(&dec, &x->tp[0], 32);
+        else if (key_match(&key, "t1"))  rc = evm_bstr_arg(&dec, &x->tp[1], 32);
+        else if (key_match(&key, "t2"))  rc = evm_bstr_arg(&dec, &x->tp[2], 32);
+        else if (key_match(&key, "t3"))  rc = evm_bstr_arg(&dec, &x->tp[3], 32);
+        else if (key_match(&key, "g"))   rc = evm_uint_arg(&dec, &x->has_g, &x->g);
+        else if (key_match(&key, "fh"))  rc = evm_uint_arg(&dec, &x->has_fh, &x->fh);
+        else if (key_match(&key, "th"))  rc = evm_uint_arg(&dec, &x->has_th, &x->th);
+        else if (key_match(&key, "lim")) rc = evm_uint_arg(&dec, &x->has_lim, &x->lim);
+        else if (key_match(&key, "c")) {
+            /* the evm_logs cursor: exactly [h, x, li], three uints */
+            cbor_item_t arr = cbor_decode_next(&dec);
+            if (x->has_c || arr.type != CBOR_ITEM_ARRAY || arr.count != 3) {
+                rc = -1;
+            } else {
+                for (int k = 0; k < 3 && rc == 0; k++) {
+                    cbor_item_t u = cbor_decode_next(&dec);
+                    if (u.type != CBOR_ITEM_UINT) rc = -1;
+                    else x->c[k] = u.uint_val;
+                }
+                x->has_c = 1;
+            }
+        } else if (key_match(&key, "d")) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (x->has_d || val.type != CBOR_ITEM_BSTR ||
+                val.bstr.len > (size_t)DNA_ENV_MAX_TOTAL_LEN)
+                rc = -1;
+            else {
+                x->d = val.bstr.ptr;
+                x->d_len = val.bstr.len;
+                x->has_d = 1;
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+        if (rc != 0 || dec.error) return -1;
+    }
+    return 0;
+}
+
+/* The gate of every evm_* method: a version-3 chain, its committed tip,
+ * committed state only, the EVM domain ACTIVE — then EVM_RPC_BASE_GAS
+ * from the work budget (WORK BOUND above: a miss is never free).
+ * @return 0 / -1 (an error reply was sent). */
+static int evm_gate(nodus_witness_t *w, struct nodus_tcp_conn *conn,
+                    uint32_t txn_id, uint64_t *tip,
+                    const nodus_domain_runtime_t **evm_rt) {
+    if (hf4_tip(w, tip) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_FOUND,
+                   "no version-3 chain on this node");
+        return -1;
+    }
+    if (!sqlite3_get_autocommit(w->db)) {
+        send_error(conn, txn_id, NODUS_ERR_RATE_LIMITED,
+                   "a block is being applied; ask again");
+        return -1;
+    }
+    if (nodus_witness_v2_runtime_for(w, DNA_DOMAIN_EVM, 1, evm_rt) != 0 ||
+        !*evm_rt) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_FOUND,
+                   "the EVM domain is not active on this chain");
+        return -1;
+    }
+    if (evm_work_charge(*tip, EVM_RPC_BASE_GAS) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_RATE_LIMITED, EVM_SIM_BUDGET_MSG);
+        return -1;
+    }
+    return 0;
+}
+
+/* Send one encoded reply. An encoder overflow is INTERNAL_ERROR; a reply
+ * over EVM_REPLY_MAX is TOO_LARGE (an answer the client can act on —
+ * narrow the request — never a silently missing reply); any other send
+ * failure is a connection that cannot take a frame (closed, upgrading)
+ * and is logged: there is nobody to answer. */
+static void evm_send(struct nodus_tcp_conn *conn, uint32_t txn_id,
+                     const cbor_encoder_t *enc, const uint8_t *buf) {
+    size_t rlen = cbor_encoder_len(enc);
+    if (rlen == 0) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "response buffer overflow");
+        return;
+    }
+    if (rlen > EVM_REPLY_MAX) {
+        send_error(conn, txn_id, NODUS_ERR_TOO_LARGE,
+                   "the reply is over the frame bound; narrow the request");
+        return;
+    }
+    /* nodus_tcp_send answers 0 for a written, buffered or queued frame
+     * (nodus_tcp.c send_progress_locked) and -1 only when the frame was
+     * not taken: a closed or failed connection, or a full pending queue */
+    if (nodus_tcp_send(conn, buf, rlen) != 0)
+        QGP_LOG_WARN(LOG_TAG, "evm reply (txn %u, %zu bytes) not sent: the "
+                     "connection is closed / failed or its queue is full",
+                     (unsigned)txn_id, rlen);
+}
+
+/* ── evm_account / evm_code / evm_storage / evm_ticket ────────────── */
+
+/* The evm_accounts row of `addr`. @return 1 found / 0 absent / -1 fault. */
+static int evm_acct_row(nodus_witness_t *w, const uint8_t addr[32],
+                        uint64_t *nonce, uint8_t bal[32], uint8_t ch[32],
+                        uint32_t *cs, uint8_t digest[64]) {
+    sqlite3_stmt *st = NULL;
+    int ret = -1;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT nonce, balance, code_hash, code_size, code_digest "
+            "FROM evm_accounts WHERE addr = ?1", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, addr, 32, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    if (rc == SQLITE_DONE) {
+        ret = 0;
+    } else if (rc == SQLITE_ROW && sqlite3_column_bytes(st, 1) == 32 &&
+               sqlite3_column_bytes(st, 2) == 32 &&
+               sqlite3_column_bytes(st, 4) == 64 &&
+               sqlite3_column_int64(st, 3) >= 0 &&
+               sqlite3_column_int64(st, 3) <= (sqlite3_int64)EVM_MAX_CODE_SIZE) {
+        *nonce = (uint64_t)sqlite3_column_int64(st, 0);
+        memcpy(bal, sqlite3_column_blob(st, 1), 32);
+        memcpy(ch, sqlite3_column_blob(st, 2), 32);
+        *cs = (uint32_t)sqlite3_column_int64(st, 3);
+        memcpy(digest, sqlite3_column_blob(st, 4), 64);
+        ret = 1;
+    }
+    sqlite3_finalize(st);
+    return ret;
+}
+
+static void handle_evm_account(nodus_witness_t *w, struct nodus_tcp_conn *conn,
+                               const uint8_t *payload, size_t len,
+                               uint32_t txn_id) {
+    evm_args_t x;
+    uint64_t tip = 0;
+    const nodus_domain_runtime_t *ert = NULL;
+    if (evm_args_parse(payload, len, &x) != 0 || !x.a) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing or invalid a (32-byte address)");
+        return;
+    }
+    if (evm_gate(w, conn, txn_id, &tip, &ert) != 0) return;
+    uint64_t nonce = 0;
+    uint8_t bal[32] = { 0 }, ch[32], digest[64];
+    uint32_t cs = 0;
+    int f = evm_acct_row(w, x.a, &nonce, bal, ch, &cs, digest);
+    if (f < 0) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "EVM account store unreadable");
+        return;
+    }
+    if (f == 0) {
+        static const uint8_t none[1] = { 0 };
+        if (keccak256(none, 0, ch) != 0) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, "hash");
+            return;
+        }
+    }
+    uint8_t buf[256];
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+    enc_dnac_response(&enc, txn_id, "evm_account", 5);
+    cbor_encode_cstr(&enc, "n");  cbor_encode_uint(&enc, nonce);
+    cbor_encode_cstr(&enc, "b");  cbor_encode_bstr(&enc, bal, 32);
+    cbor_encode_cstr(&enc, "ch"); cbor_encode_bstr(&enc, ch, 32);
+    cbor_encode_cstr(&enc, "cs"); cbor_encode_uint(&enc, cs);
+    cbor_encode_cstr(&enc, "h");  cbor_encode_uint(&enc, tip);
+    evm_send(conn, txn_id, &enc, buf);
+}
+
+static void handle_evm_code(nodus_witness_t *w, struct nodus_tcp_conn *conn,
+                            const uint8_t *payload, size_t len,
+                            uint32_t txn_id) {
+    evm_args_t x;
+    uint64_t tip = 0;
+    const nodus_domain_runtime_t *ert = NULL;
+    if (evm_args_parse(payload, len, &x) != 0 || !x.a) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing or invalid a (32-byte address)");
+        return;
+    }
+    if (evm_gate(w, conn, txn_id, &tip, &ert) != 0) return;
+    uint64_t nonce = 0;
+    uint8_t bal[32], ch[32], digest[64];
+    uint32_t cs = 0;
+    int f = evm_acct_row(w, x.a, &nonce, bal, ch, &cs, digest);
+    if (f < 0) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "EVM account store unreadable");
+        return;
+    }
+    uint8_t *code = NULL;
+    size_t off = 0;
+    if (f == 1 && cs > 0) {
+        /* the work before it is done: its chunk rows and code bytes
+         * (cs <= EVM_MAX_CODE_SIZE, evm_acct_row) */
+        uint64_t rows = ((uint64_t)cs + NODUS_RT_EVM_CODE_CHUNK - 1) /
+                        NODUS_RT_EVM_CODE_CHUNK;
+        if (evm_work_charge(tip, rows * NODUS_EVM_RPC_GAS_PER_ROW +
+                                 (uint64_t)cs * NODUS_EVM_RPC_GAS_PER_BYTE)
+            != 0) {
+            send_error(conn, txn_id, NODUS_ERR_RATE_LIMITED,
+                       EVM_SIM_BUDGET_MSG);
+            return;
+        }
+        code = malloc(cs);
+        if (!code) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, "allocation");
+            return;
+        }
+        /* the chunks of the digest, in order, exactly code_size bytes,
+         * checked against both digests (the runtime's be_get_code rule) */
+        sqlite3_stmt *st = NULL;
+        int ok = 0;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT chunk, bytes FROM evm_code WHERE digest = ?1 "
+                "ORDER BY chunk", -1, &st, NULL) == SQLITE_OK) {
+            sqlite3_bind_blob(st, 1, digest, 64, SQLITE_TRANSIENT);
+            uint32_t want_chunk = 0;
+            ok = 1;
+            int rc = SQLITE_ERROR;
+            while (ok && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+                int n = sqlite3_column_bytes(st, 1);
+                if (sqlite3_column_int64(st, 0) != (sqlite3_int64)want_chunk ||
+                    n <= 0 || (size_t)n > cs - off)
+                    ok = 0;
+                else {
+                    memcpy(code + off, sqlite3_column_blob(st, 1), (size_t)n);
+                    off += (size_t)n;
+                    want_chunk++;
+                }
+            }
+            if (ok && rc != SQLITE_DONE) ok = 0;
+        }
+        sqlite3_finalize(st);
+        uint8_t d[64], k[32];
+        if (!ok || off != cs || qgp_sha3_512(code, off, d) != 0 ||
+            keccak256(code, off, k) != 0 || memcmp(d, digest, 64) != 0 ||
+            memcmp(k, ch, 32) != 0) {
+            free(code);
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                       "stored contract code does not match its digests");
+            return;
+        }
+    }
+    size_t cap = off + 128;
+    uint8_t *buf = malloc(cap);
+    if (!buf) {
+        free(code);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, "allocation");
+        return;
+    }
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_dnac_response(&enc, txn_id, "evm_code", 2);
+    cbor_encode_cstr(&enc, "c"); cbor_encode_bstr(&enc, code, off);
+    cbor_encode_cstr(&enc, "h"); cbor_encode_uint(&enc, tip);
+    evm_send(conn, txn_id, &enc, buf);
+    free(buf);
+    free(code);
+}
+
+static void handle_evm_storage(nodus_witness_t *w,
+                               struct nodus_tcp_conn *conn,
+                               const uint8_t *payload, size_t len,
+                               uint32_t txn_id) {
+    evm_args_t x;
+    uint64_t tip = 0;
+    const nodus_domain_runtime_t *ert = NULL;
+    if (evm_args_parse(payload, len, &x) != 0 || !x.a || !x.k) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing or invalid a / k (32 bytes each)");
+        return;
+    }
+    if (evm_gate(w, conn, txn_id, &tip, &ert) != 0) return;
+    uint8_t v[32] = { 0 };
+    sqlite3_stmt *st = NULL;
+    int ok = 0;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT value FROM evm_slots WHERE addr = ?1 AND slot = ?2",
+            -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_blob(st, 1, x.a, 32, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 2, x.k, 32, SQLITE_TRANSIENT);
+        int rc = sqlite3_step(st);
+        if (rc == SQLITE_DONE) {
+            ok = 1;                         /* zero = no row (design §6) */
+        } else if (rc == SQLITE_ROW && sqlite3_column_bytes(st, 0) == 32) {
+            memcpy(v, sqlite3_column_blob(st, 0), 32);
+            ok = 1;
+        }
+    }
+    sqlite3_finalize(st);
+    if (!ok) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "EVM storage unreadable");
+        return;
+    }
+    uint8_t buf[128];
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+    enc_dnac_response(&enc, txn_id, "evm_storage", 2);
+    cbor_encode_cstr(&enc, "v"); cbor_encode_bstr(&enc, v, 32);
+    cbor_encode_cstr(&enc, "h"); cbor_encode_uint(&enc, tip);
+    evm_send(conn, txn_id, &enc, buf);
+}
+
+static void handle_evm_ticket(nodus_witness_t *w,
+                              struct nodus_tcp_conn *conn,
+                              const uint8_t *payload, size_t len,
+                              uint32_t txn_id) {
+    evm_args_t x;
+    uint64_t tip = 0;
+    const nodus_domain_runtime_t *ert = NULL;
+    if (evm_args_parse(payload, len, &x) != 0 || !x.id) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing or invalid id (64-byte ticket id)");
+        return;
+    }
+    if (evm_gate(w, conn, txn_id, &tip, &ert) != 0) return;
+    uint8_t dst[64] = { 0 };
+    uint64_t amt = 0;
+    int present = 0, ok = 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT amount_raw, dest_fp FROM evm_tickets WHERE ticket_id = ?1",
+            -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_blob(st, 1, x.id, 64, SQLITE_TRANSIENT);
+        int rc = sqlite3_step(st);
+        if (rc == SQLITE_DONE) {
+            ok = 1;
+        } else if (rc == SQLITE_ROW && sqlite3_column_int64(st, 0) > 0 &&
+                   sqlite3_column_bytes(st, 1) == 64) {
+            amt = (uint64_t)sqlite3_column_int64(st, 0);
+            memcpy(dst, sqlite3_column_blob(st, 1), 64);
+            present = ok = 1;
+        }
+    }
+    sqlite3_finalize(st);
+    if (!ok) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "EVM ticket store unreadable");
+        return;
+    }
+    uint8_t buf[192];
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+    enc_dnac_response(&enc, txn_id, "evm_ticket", 3);
+    cbor_encode_cstr(&enc, "p");   cbor_encode_bool(&enc, present != 0);
+    cbor_encode_cstr(&enc, "amt"); cbor_encode_uint(&enc, amt);
+    cbor_encode_cstr(&enc, "dst"); cbor_encode_bstr(&enc, dst, 64);
+    evm_send(conn, txn_id, &enc, buf);
+}
+
+/* ── evm_call / evm_estimate ─────────────────────────────────────────── */
+
+/* One simulation through the per-height budget — THE funnel every
+ * evm_call / evm_estimate simulation goes through (WORK BOUND above).
+ * `tip` is the committed tip the request was gated at.
+ * @return as nodus_rt_evm_simulate, or 1 when the budget refused it (it
+ * did not run; *res untouched). */
+static int evm_sim_once(nodus_witness_t *w, const nodus_domain_runtime_t *ert,
+                        uint64_t tip, nodus_rt_evm_sim_req_t *rq,
+                        uint64_t gas, nodus_rt_evm_sim_res_t *res) {
+    /* gas <= NODUS_RT_EVM_TX_GAS_CAP (the caller's bound), charged <=
+     * the budget: no overflow */
+    if (evm_work_charge(tip, gas) != 0) return 1;   /* up front: no pre-
+                                                     * emption           */
+    rq->gas_limit = gas;
+    int rc = nodus_rt_evm_simulate(ert, (struct nodus_witness *)w, rq, res);
+    /* keep the work it did, refund the rest:
+     *   ran        — the engine's PRE-refund work (engine_work_gas; the
+     *                calldata floor when that is higher): an EIP-3529
+     *                refund lowers the sender's bill, not this node's run;
+     *   refused before execution — its reads, one row each (the sender's
+     *                account at least);
+     *   out of bounds (-1, it did not run) — one row;
+     *   a node fault (-2) — ALL of it: a fault may come after the
+     *                engine ran (the output copy's malloc,
+     *                nodus_witness_rt_evm.c simulate) and the result,
+     *                work counters included, is cleared on that exit, so
+     *                nothing tells how much ran (red-team 2, Astra #3).
+     * Never zero (red-team 1 F4 / F12); never above what was charged. */
+    uint64_t used;
+    if (rc == 0 && res->executed)
+        used = res->engine_work_gas > res->engine_gas_used
+                   ? res->engine_work_gas : res->engine_gas_used;
+    else if (rc == 0)
+        used = res->reads > gas / NODUS_EVM_RPC_GAS_PER_ROW
+                   ? gas : res->reads * NODUS_EVM_RPC_GAS_PER_ROW;
+    else if (rc == -1)
+        used = NODUS_EVM_RPC_GAS_PER_ROW;
+    else
+        used = gas;
+    if (used == 0) used = NODUS_EVM_RPC_GAS_PER_ROW;
+    if (used > gas) used = gas;
+    g_evm_work_charged -= gas - used;
+    return rc;
+}
+
+static void handle_evm_call(nodus_witness_t *w, struct nodus_tcp_conn *conn,
+                            const uint8_t *payload, size_t len,
+                            uint32_t txn_id, int estimate) {
+    const char *method = estimate ? "evm_estimate" : "evm_call";
+    evm_args_t x;
+    uint64_t tip = 0;
+    const nodus_domain_runtime_t *ert = NULL;
+    if (evm_args_parse(payload, len, &x) != 0 || !x.f || !x.has_d) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing or invalid f (32-byte sender) / d (data)");
+        return;
+    }
+    const uint64_t gas = x.has_g ? x.g : NODUS_RT_EVM_TX_GAS_CAP;
+    if (gas == 0 || gas > NODUS_RT_EVM_TX_GAS_CAP) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "g must be between 1 and the per-transaction gas cap");
+        return;
+    }
+    if (!x.t && x.d_len > EVM_MAX_INITCODE_SIZE) {
+        send_error(conn, txn_id, NODUS_ERR_TOO_LARGE,
+                   "initcode over 49152 bytes (EIP-3860)");
+        return;
+    }
+    if (evm_gate(w, conn, txn_id, &tip, &ert) != 0) return;
+    /* red-team 1 D1 (decision 2026-10-05-nodus-evm-redteam1-operator.md):
+     * while the price at tip + 1 is 0 the chain refuses every CALL /
+     * CREATE (nodus_witness_v2_gas_price_judge), so no fee is estimated
+     * for one — refused before any simulation budget is spent */
+    if (estimate) {
+        uint64_t p0 = 0;
+        char why[160];
+        why[0] = '\0';
+        if (nodus_witness_v2_gas_price_at(w, tip + 1, &p0, why,
+                                          sizeof(why)) != 0) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                       "the gas price is unreadable on this node");
+            return;
+        }
+        if (p0 == 0) {
+            send_error(conn, txn_id, NODUS_ERR_UNAVAILABLE,
+                       "the gas price is 0: EVM CALL / CREATE are stopped "
+                       "on this chain until a non-zero price is voted");
+            return;
+        }
+    }
+
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    uint64_t btime = 0, gas_lim = 0;
+    char reason[160];
+    reason[0] = '\0';
+    if (nodus_witness_v2_chain_id(w, chain32) != 0 ||
+        nodus_witness_v2_tip_block_time(w, tip, &btime) != 0 ||
+        nodus_witness_v2_evm_block_gas_limit(w, tip + 1, &gas_lim, reason,
+                                             sizeof(reason)) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "the block environment is unreadable on this node");
+        return;
+    }
+    nodus_rt_evm_sim_req_t rq;
+    memset(&rq, 0, sizeof(rq));
+    rq.from = x.f;
+    rq.to = x.t;
+    rq.value = x.v;
+    rq.data = x.d;
+    rq.data_len = (uint32_t)x.d_len;
+    rq.chain_id = chain32;
+    rq.global_height = tip + 1;
+    rq.block_time_s = btime;
+    rq.evm_block_gas_limit = gas_lim;
+
+    nodus_rt_evm_sim_res_t at_g, best;
+    memset(&best, 0, sizeof(best));
+    int rc = evm_sim_once(w, ert, tip, &rq, gas, &at_g);
+    if (rc == 1) {
+        send_error(conn, txn_id, NODUS_ERR_RATE_LIMITED, EVM_SIM_BUDGET_MSG);
+        return;
+    }
+    if (rc == -1 || (rc == 0 && !at_g.executed)) {
+        nodus_rt_evm_sim_res_free(&at_g);
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "refused before execution (value above the balance, "
+                   "intrinsic gas above the limit, a sender with code, or "
+                   "a read budget)");
+        return;
+    }
+    if (rc != 0) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "the simulation faulted on this node");
+        return;
+    }
+
+    /* evm_estimate: the binary search for the smallest successful limit */
+    uint64_t ge = gas, ue = 0, fe = 0;
+    const nodus_rt_evm_sim_res_t *rep = &at_g;
+    if (estimate && at_g.success) {
+        uint64_t lo = 0, hi = gas;          /* lo fails (or untried), hi ok */
+        uint64_t first = at_g.engine_gas_used;
+        /* fault: 1 the simulation faulted; 2 the per-height budget refused
+         * a probe — the whole request is refused (no partial estimate) */
+        int probes = 0, fault = 0;
+        if (first > 0 && first < gas) {
+            nodus_rt_evm_sim_res_t r;
+            int prc = evm_sim_once(w, ert, tip, &rq, first, &r);
+            probes++;
+            if (prc == 1) {
+                fault = 2;                  /* did not run: r untouched  */
+            } else if (prc == 0 && r.executed && r.success) {
+                hi = first;
+                best = r;
+            } else {
+                if (prc == 0) nodus_rt_evm_sim_res_free(&r);
+                else if (prc != -1) fault = 1;
+                lo = first;
+            }
+        }
+        while (!fault && hi != first && probes < EVM_EST_MAX_PROBES &&
+               hi - lo > (hi / 64 > 1 ? hi / 64 : 1)) {
+            uint64_t mid = lo + (hi - lo) / 2;
+            nodus_rt_evm_sim_res_t r;
+            int prc = evm_sim_once(w, ert, tip, &rq, mid, &r);
+            probes++;
+            if (prc == 1) { fault = 2; break; }
+            if (prc == 0 && r.executed && r.success) {
+                hi = mid;
+                nodus_rt_evm_sim_res_free(&best);
+                best = r;
+            } else {
+                if (prc == 0) nodus_rt_evm_sim_res_free(&r);
+                else if (prc != -1) { fault = 1; break; }
+                lo = mid;
+            }
+        }
+        if (fault) {
+            nodus_rt_evm_sim_res_free(&best);
+            nodus_rt_evm_sim_res_free(&at_g);
+            if (fault == 2)
+                send_error(conn, txn_id, NODUS_ERR_RATE_LIMITED,
+                           EVM_SIM_BUDGET_MSG);
+            else
+                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                           "the simulation faulted on this node");
+            return;
+        }
+        ge = hi;
+        if (hi != gas) rep = &best;
+    }
+    if (estimate) {
+        const nodus_domain_runtime_t *srt = NULL, *crt = NULL;
+        uint64_t price = 0, ref = 0, ru = 0;
+        uint64_t floor_fee = DNAC_MIN_FEE_RAW > NODUS_W_BASE_TX_FEE
+                                 ? DNAC_MIN_FEE_RAW : NODUS_W_BASE_TX_FEE;
+        int ok =
+            nodus_witness_v2_runtime_for(w, DNA_DOMAIN_SYSTEM, 1, &srt) == 0 &&
+            nodus_witness_v2_runtime_for(w, DNA_DOMAIN_CORE, 1, &crt) == 0 &&
+            srt && crt && srt->meter_policy &&
+            nodus_witness_v2_gas_price_at(w, tip + 1, &price, reason,
+                                          sizeof(reason)) == 0 &&
+            nodus_v2_evm_ref_units(srt->meter_policy, crt->ruleset_version,
+                                   x.t ? DNA_EVM_OP_CALL : DNA_EVM_OP_CREATE,
+                                   (uint32_t)x.d_len, ge, &ref) ==
+                NODUS_V2_SPEND_OK &&
+            dna_ck_mul_u64(rep->reads, srt->meter_policy->w_read, &ru) == 0 &&
+            dna_ck_add_u64(ref, ru, &ue) == 0;
+        if (ok) {
+            fe = floor_fee;
+            uint64_t g = 0;
+            if (price != 0) {
+                if (dna_ck_mul_u64(ue, price, &g) != 0) ok = 0;
+                else if (g > fe) fe = g;
+            }
+        }
+        if (!ok) {
+            nodus_rt_evm_sim_res_free(&best);
+            nodus_rt_evm_sim_res_free(&at_g);
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                       "the units / fee could not be priced on this node");
+            return;
+        }
+    }
+
+    size_t cap = rep->output_len + 256;
+    uint8_t *buf = malloc(cap);
+    if (!buf) {
+        nodus_rt_evm_sim_res_free(&best);
+        nodus_rt_evm_sim_res_free(&at_g);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, "allocation");
+        return;
+    }
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_dnac_response(&enc, txn_id, method, estimate ? 7 : 4);
+    cbor_encode_cstr(&enc, "s");  cbor_encode_uint(&enc, rep->success ? 1 : 0);
+    cbor_encode_cstr(&enc, "o");
+    cbor_encode_bstr(&enc, rep->output, rep->output_len);
+    cbor_encode_cstr(&enc, "gu"); cbor_encode_uint(&enc, rep->gas_used);
+    cbor_encode_cstr(&enc, "h");  cbor_encode_uint(&enc, tip);
+    if (estimate) {
+        cbor_encode_cstr(&enc, "ge"); cbor_encode_uint(&enc, ge);
+        cbor_encode_cstr(&enc, "ue"); cbor_encode_uint(&enc, ue);
+        cbor_encode_cstr(&enc, "fe"); cbor_encode_uint(&enc, fe);
+    }
+    evm_send(conn, txn_id, &enc, buf);
+    free(buf);
+    nodus_rt_evm_sim_res_free(&best);
+    nodus_rt_evm_sim_res_free(&at_g);
+}
+
+/* ── evm_receipt ─────────────────────────────────────────────────────── */
+
+static void handle_evm_receipt(nodus_witness_t *w,
+                               struct nodus_tcp_conn *conn,
+                               const uint8_t *payload, size_t len,
+                               uint32_t txn_id) {
+    evm_args_t x;
+    uint64_t tip = 0;
+    const nodus_domain_runtime_t *ert = NULL;
+    if (evm_args_parse(payload, len, &x) != 0 || !x.i) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing or invalid i (64-byte intent id)");
+        return;
+    }
+    if (evm_gate(w, conn, txn_id, &tip, &ert) != 0) return;
+    sqlite3_stmt *st = NULL;
+    int found = 0, ok = 0, over = 0;
+    uint64_t gh = 0, item = 0;
+    uint8_t *rc_bytes = NULL, dg[64];
+    size_t rc_len = 0;
+    /* length(receipt) first — SQLite does not load a blob's content for
+     * length() (v2_schema.h, the evm_logs scan) — so the receipt's bytes
+     * are charged to the work budget BEFORE a second statement reads,
+     * copies or hashes them */
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT global_height, item_index, length(receipt), digest "
+            "FROM evm_receipts WHERE intent_id = ?1",
+            -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_blob(st, 1, x.i, 64, SQLITE_TRANSIENT);
+        int rc = sqlite3_step(st);
+        if (rc == SQLITE_DONE) {
+            ok = 1;
+        } else if (rc == SQLITE_ROW && sqlite3_column_int64(st, 0) >= 0 &&
+                   sqlite3_column_int64(st, 1) >= 0 &&
+                   sqlite3_column_int64(st, 1) <= (sqlite3_int64)UINT32_MAX &&
+                   sqlite3_column_type(st, 2) == SQLITE_INTEGER &&
+                   sqlite3_column_int64(st, 2) > 0 &&
+                   sqlite3_column_int64(st, 2) <= (sqlite3_int64)INT32_MAX &&
+                   sqlite3_column_bytes(st, 3) == 64) {
+            gh = (uint64_t)sqlite3_column_int64(st, 0);
+            item = (uint64_t)sqlite3_column_int64(st, 1);
+            rc_len = (size_t)sqlite3_column_int64(st, 2);
+            memcpy(dg, sqlite3_column_blob(st, 3), 64);
+            if (evm_work_charge(tip, (uint64_t)rc_len *
+                                     NODUS_EVM_RPC_GAS_PER_BYTE) != 0)
+                over = 1;
+            else
+                found = 1;
+        }
+    }
+    sqlite3_finalize(st);
+    st = NULL;
+    if (found) {
+        /* the charged bytes: exactly rc_len of them */
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT receipt FROM evm_receipts WHERE intent_id = ?1",
+                -1, &st, NULL) == SQLITE_OK) {
+            sqlite3_bind_blob(st, 1, x.i, 64, SQLITE_TRANSIENT);
+            if (sqlite3_step(st) == SQLITE_ROW &&
+                sqlite3_column_bytes(st, 0) == (int)rc_len &&
+                (rc_bytes = malloc(rc_len)) != NULL) {
+                memcpy(rc_bytes, sqlite3_column_blob(st, 0), rc_len);
+                ok = 1;
+            }
+        }
+        sqlite3_finalize(st);
+    }
+    if (over) {
+        send_error(conn, txn_id, NODUS_ERR_RATE_LIMITED, EVM_SIM_BUDGET_MSG);
+        return;
+    }
+    if (!ok) {
+        free(rc_bytes);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "EVM receipt store unreadable");
+        return;
+    }
+    if (!found) {
+        uint8_t buf[96];
+        cbor_encoder_t enc;
+        cbor_encoder_init(&enc, buf, sizeof(buf));
+        enc_dnac_response(&enc, txn_id, "evm_receipt", 0);
+        evm_send(conn, txn_id, &enc, buf);
+        return;
+    }
+    dna_evm_rcpt_t r;
+    uint8_t d2[64];
+    if (dna_evm_rcpt_decode(rc_bytes, rc_len, &r) != 0 ||
+        qgp_sha3_512(rc_bytes, rc_len, d2) != 0 || memcmp(d2, dg, 64) != 0) {
+        free(rc_bytes);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "a stored receipt does not match its digest");
+        return;
+    }
+    const int has_cr = (r.status == 1 && r.op == DNA_EVM_OP_CREATE);
+    size_t cap = 2 * rc_len + 1024;
+    uint8_t *buf = malloc(cap);
+    if (!buf) {
+        free(rc_bytes);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, "allocation");
+        return;
+    }
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    /* h x s op gu [cr] o logs wd tk dg — 10 entries, 11 with "cr" (the
+     * count was one high until harness run 4: every client refused the
+     * reply, nodus_client.c evm_reply_map) */
+    enc_dnac_response(&enc, txn_id, "evm_receipt", has_cr ? 11 : 10);
+    cbor_encode_cstr(&enc, "h");  cbor_encode_uint(&enc, gh);
+    cbor_encode_cstr(&enc, "x");  cbor_encode_uint(&enc, item);
+    cbor_encode_cstr(&enc, "s");  cbor_encode_uint(&enc, r.status);
+    cbor_encode_cstr(&enc, "op"); cbor_encode_uint(&enc, r.op);
+    cbor_encode_cstr(&enc, "gu"); cbor_encode_uint(&enc, r.gas_used);
+    if (has_cr) {
+        cbor_encode_cstr(&enc, "cr"); cbor_encode_bstr(&enc, r.created, 32);
+    }
+    cbor_encode_cstr(&enc, "o");
+    cbor_encode_bstr(&enc, r.output, r.output_len);
+    cbor_encode_cstr(&enc, "logs");
+    cbor_encode_array(&enc, r.n_logs);
+    size_t cur = 0;
+    int bad = 0;
+    for (uint32_t i = 0; i < r.n_logs && !bad; i++) {
+        const uint8_t *addr = NULL, *tp = NULL, *data = NULL;
+        uint8_t nt = 0;
+        uint32_t dl = 0;
+        if (dna_evm_rcpt_log_next(&r, &cur, &addr, &nt, &tp, &data,
+                                  &dl) != 0) {
+            bad = 1;
+            break;
+        }
+        cbor_encode_map(&enc, 3);
+        cbor_encode_cstr(&enc, "a"); cbor_encode_bstr(&enc, addr, 32);
+        cbor_encode_cstr(&enc, "t"); cbor_encode_array(&enc, nt);
+        for (uint8_t k = 0; k < nt; k++)
+            cbor_encode_bstr(&enc, tp + (size_t)k * 32, 32);
+        cbor_encode_cstr(&enc, "d"); cbor_encode_bstr(&enc, data, dl);
+    }
+    cbor_encode_cstr(&enc, "wd"); cbor_encode_bstr(&enc, r.wei_destroyed, 32);
+    cbor_encode_cstr(&enc, "tk"); cbor_encode_array(&enc, r.n_tickets);
+    for (uint16_t k = 0; k < r.n_tickets; k++)
+        cbor_encode_bstr(&enc, r.tickets + (size_t)k * 64, 64);
+    cbor_encode_cstr(&enc, "dg"); cbor_encode_bstr(&enc, dg, 64);
+    if (bad)
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "a stored receipt's log section is malformed");
+    else
+        evm_send(conn, txn_id, &enc, buf);
+    free(buf);
+    free(rc_bytes);
+}
+
+/* ── evm_logs ────────────────────────────────────────────────────────── */
+
+static void handle_evm_logs(nodus_witness_t *w, struct nodus_tcp_conn *conn,
+                            const uint8_t *payload, size_t len,
+                            uint32_t txn_id) {
+    evm_args_t x;
+    uint64_t tip = 0;
+    const nodus_domain_runtime_t *ert = NULL;
+    if (evm_args_parse(payload, len, &x) != 0 || !x.has_fh || !x.has_th ||
+        !x.has_lim || x.th < x.fh || x.th - x.fh >= EVM_LOGS_MAX_SPAN ||
+        x.lim < 1 || x.lim > EVM_LOGS_MAX_LIM ||
+        x.fh > (uint64_t)INT64_MAX || x.th > (uint64_t)INT64_MAX ||
+        (x.has_c && (x.c[0] < x.fh || x.c[0] > x.th ||
+                     x.c[1] > NODUS_EVM_LOG_POS_MAX ||
+                     x.c[2] > NODUS_EVM_LOG_POS_MAX))) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "fh <= th, th - fh < 10000, 1 <= lim <= 1000, "
+                   "fh <= c.h <= th required");
+        return;
+    }
+    if (evm_gate(w, conn, txn_id, &tip, &ert) != 0) return;
+
+    /* the scan may spend what the budget has left, at most one full page
+     * (EVM_LOGS_MAX_EXAMINED rows + EVM_LOGS_REPLY_BUDGET bytes); below
+     * a minimal page (one height seek, one receipt, one log, its data
+     * read) nothing is scanned */
+    const uint64_t left = evm_work_left(tip);
+    if (left < 4u * (uint64_t)NODUS_EVM_RPC_GAS_PER_ROW) {
+        send_error(conn, txn_id, NODUS_ERR_RATE_LIMITED, EVM_SIM_BUDGET_MSG);
+        return;
+    }
+    nodus_evm_logs_scan_t q;
+    memset(&q, 0, sizeof(q));
+    q.from.h = x.has_c ? x.c[0] : x.fh;
+    q.from.x = x.has_c ? x.c[1] : 0;
+    q.from.li = x.has_c ? x.c[2] : 0;
+    q.th = x.th;
+    q.addr = x.a;
+    for (int k = 0; k < 4; k++) q.topic[k] = x.tp[k];
+    q.lim = (uint32_t)x.lim;
+    q.max_examined = EVM_LOGS_MAX_EXAMINED;
+    q.max_bytes = EVM_LOGS_REPLY_BUDGET;
+    q.gas_cap = left;
+    nodus_evm_logs_page_t pg;
+    int src = nodus_witness_evm_logs_scan(w, &q, &pg);
+    /* the work is charged whatever the outcome (gas <= left by the scan's
+     * own bound) */
+    (void)evm_work_charge(tip, pg.gas <= left ? pg.gas : left);
+    if (src != 0) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "EVM log index unreadable");
+        return;
+    }
+    size_t cap = pg.bytes + 384;
+    uint8_t *buf = malloc(cap);
+    if (!buf) {
+        nodus_witness_evm_logs_page_free(&pg);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, "allocation");
+        return;
+    }
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    /* logs more [c] — "c" exactly when the scan stopped before th */
+    enc_dnac_response(&enc, txn_id, "evm_logs", pg.truncated ? 3 : 2);
+    cbor_encode_cstr(&enc, "logs");
+    cbor_encode_array(&enc, pg.n);
+    for (size_t k = 0; k < pg.n; k++) {
+        const nodus_evm_log_row_t *e = &pg.rows[k];
+        cbor_encode_map(&enc, 7);
+        cbor_encode_cstr(&enc, "h");  cbor_encode_uint(&enc, e->h);
+        cbor_encode_cstr(&enc, "x");  cbor_encode_uint(&enc, e->x);
+        cbor_encode_cstr(&enc, "li"); cbor_encode_uint(&enc, e->li);
+        cbor_encode_cstr(&enc, "a");  cbor_encode_bstr(&enc, e->addr, 32);
+        cbor_encode_cstr(&enc, "t");  cbor_encode_array(&enc, e->n_topics);
+        for (uint8_t t = 0; t < e->n_topics; t++)
+            cbor_encode_bstr(&enc, e->topics[t], 32);
+        cbor_encode_cstr(&enc, "d");
+        cbor_encode_bstr(&enc, e->data, e->data_len);
+        cbor_encode_cstr(&enc, "i");  cbor_encode_bstr(&enc, e->intent_id, 64);
+    }
+    cbor_encode_cstr(&enc, "more"); cbor_encode_bool(&enc, pg.truncated != 0);
+    if (pg.truncated) {
+        cbor_encode_cstr(&enc, "c");
+        cbor_encode_array(&enc, 3);
+        cbor_encode_uint(&enc, pg.next.h);
+        cbor_encode_uint(&enc, pg.next.x);
+        cbor_encode_uint(&enc, pg.next.li);
+    }
+    evm_send(conn, txn_id, &enc, buf);
+    free(buf);
+    nodus_witness_evm_logs_page_free(&pg);
+}
+
+/** Route one evm_* method. @return 1 handled / 0 not an evm_* method. */
+static int evm_dispatch(nodus_witness_t *w, struct nodus_tcp_conn *conn,
+                        const uint8_t *payload, size_t len,
+                        const char *method, uint32_t txn_id) {
+    if (strcmp(method, "evm_account") == 0)
+        handle_evm_account(w, conn, payload, len, txn_id);
+    else if (strcmp(method, "evm_code") == 0)
+        handle_evm_code(w, conn, payload, len, txn_id);
+    else if (strcmp(method, "evm_storage") == 0)
+        handle_evm_storage(w, conn, payload, len, txn_id);
+    else if (strcmp(method, "evm_call") == 0)
+        handle_evm_call(w, conn, payload, len, txn_id, 0);
+    else if (strcmp(method, "evm_estimate") == 0)
+        handle_evm_call(w, conn, payload, len, txn_id, 1);
+    else if (strcmp(method, "evm_receipt") == 0)
+        handle_evm_receipt(w, conn, payload, len, txn_id);
+    else if (strcmp(method, "evm_logs") == 0)
+        handle_evm_logs(w, conn, payload, len, txn_id);
+    else if (strcmp(method, "evm_ticket") == 0)
+        handle_evm_ticket(w, conn, payload, len, txn_id);
+    else
+        return 0;
+    return 1;
+}
+
+#endif /* NODUS_EVM_ENABLED */
+
+/* ════════════════════════════════════════════════════════════════════
  * Dispatch router
  * ════════════════════════════════════════════════════════════════════ */
 
@@ -4303,6 +5602,16 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_committee_query(w, conn, txn_id);
     } else if (strcmp(method, "dnac_validator_list_query") == 0) {
         handle_dnac_validator_list_query(w, conn, payload, len, txn_id);
+    } else if (strncmp(method, "evm_", 4) == 0) {
+        /* Nodus EVM §18 — routed here by nodus_chain_method_routed */
+#ifdef NODUS_EVM_ENABLED
+        if (!evm_dispatch(w, conn, payload, len, method, txn_id))
+            send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                       "unknown EVM method");
+#else
+        send_error(conn, txn_id, NODUS_ERR_NOT_FOUND,
+                   "the EVM is not compiled into this build");
+#endif
     } else {
         send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
                     "unknown DNAC method");

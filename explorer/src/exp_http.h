@@ -16,6 +16,12 @@
  * when no source is wired or every server failed — never a zero on an
  * error, never a locally replayed sum.
  *
+ * Nodus EVM P4-C: /api/evm/address and /api/evm/contract read the EVM account
+ * (and a contract's recent logs) from the node the same way — through an
+ * exp_evm_source_t (ctx->evm; production exp_evm_chain_* over the SAME
+ * HTTP-only chain handle, same cache rule), before the index lock is
+ * taken; "account_status" "unavailable" with "account": null on failure.
+ *
  * `exp_http_route` is the unit-tested seam: given a method + path (path may
  * include a "?query=string" suffix — parsed internally), it dispatches to
  * the matching endpoint handler and fills a JSON body + HTTP status. It does
@@ -82,6 +88,46 @@ void exp_balance_chain_close(exp_balance_chain_t *b);   /* NULL-safe */
 void exp_balance_source_chain(exp_balance_source_t *src,
                               exp_balance_chain_t *b);
 
+/* Nodus EVM P4-C — where /api/evm/address and /api/evm/contract read the EVM
+ * account (and, for a contract, its logs) from. `get` fills `acct` (and,
+ * when `logs` is non-NULL, `logs` + `*logs_from` / `*logs_to` — the page
+ * resumes at `logs_cursor` when non-NULL, exp_chain_evm_account; freed by
+ * the caller with nodus_evm_logs_free) and returns 0; returns
+ * EXP_EVM_LOGS_BUSY with the account filled and the logs NOT read (the
+ * node-work cap below); or returns -1 with the outputs empty. */
+#define EXP_EVM_LOGS_BUSY 1
+typedef struct {
+    void *ctx;
+    int  (*get)(void *ctx, const uint8_t addr[32],
+                const nodus_evm_logs_cursor_t *logs_cursor,
+                nodus_evm_account_t *acct, nodus_evm_logs_res_t *logs,
+                uint64_t *logs_from, uint64_t *logs_to);
+} exp_evm_source_t;
+
+/* Red-team 1 F4 — the anonymous node work an Internet client can cause
+ * through /api/evm/contract: at most EXP_EVM_LOGS_NODE_READS uncached
+ * evm_logs reads per EXP_EVM_LOGS_NODE_WINDOW_MS (CLOCK_MONOTONIC, a
+ * fixed window; display path, no consensus), whatever the number of
+ * clients — one node logs page examines at most 10 000 rows of the
+ * node's per-block work budget (nodus_witness_handlers.c WORK BOUND). A
+ * request over the cap still gets the account (one row) and answers
+ * "logs_status":"busy" — never an empty log list. Cached answers do not
+ * count. */
+#define EXP_EVM_LOGS_NODE_READS      10u
+#define EXP_EVM_LOGS_NODE_WINDOW_MS  10000u
+
+/* The production EVM source: exp_chain_evm_account over the SAME HTTP-only
+ * chain handle as the balance source, with the balance cache's rule — the
+ * last EXP_BALANCE_CACHE_SLOTS successful answers (keyed by address,
+ * "with logs" and the logs cursor), each reused for at most
+ * EXP_BALANCE_CACHE_TTL_MS (CLOCK_MONOTONIC); a failure or a "busy" answer
+ * is never cached. Same single-thread contract as exp_balance_chain_t. */
+typedef struct exp_evm_chain exp_evm_chain_t;
+
+int  exp_evm_chain_open(exp_evm_chain_t **out, exp_chain_t *chain);
+void exp_evm_chain_close(exp_evm_chain_t *e);            /* NULL-safe */
+void exp_evm_source_chain(exp_evm_source_t *src, exp_evm_chain_t *e);
+
 typedef struct {
     /* index db (required). Fix round 1, C1: this is exp_db_t** — a pointer
      * to the SAME location the sync thread's handle_confirmed_reset swaps
@@ -115,6 +161,11 @@ typedef struct {
     /* The address balance source (see exp_balance_source_t). NULL = no
      * source: every address answers "balance_status": "unavailable". */
     const exp_balance_source_t *balance;
+
+    /* Nodus EVM: the EVM account source (see exp_evm_source_t). NULL = no
+     * source: the /api/evm routes answer "account_status": "unavailable". Like the
+     * balance, it is read with NO lock held. */
+    const exp_evm_source_t *evm;
 
     /* Optional co-located Nodus database. Opened read-only for each rewards
      * request, outside db_lock; NULL disables only the rewards endpoints. */

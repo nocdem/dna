@@ -246,6 +246,28 @@ int dna_v2_supply_root(uint64_t genesis_supply_raw,
                        uint64_t reward_pool_raw,
                        uint8_t out[DNA_V2_ROOT_LEN]);
 
+/** Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md
+ *  rev 3 §5): the supply leaf of the EVM generation's CORE runtime —
+ *    SHA3-512( DNA_V2_SUPPLY_TAG_EVM (16 bytes, zero-padded)
+ *              ‖ genesis ‖ minted ‖ burned ‖ reward_pool
+ *              ‖ evm_reserve_raw )                 (u64 BE each)
+ *  The leaf GAINS the CORE EVM reserve bucket, so it is hashed under a NEW
+ *  tag (a changed preimage is never hashed under the old one). Selected
+ *  ONLY by a CORE runtime of generation >= the EVM generation
+ *  (nodus_rt_core_state_root): every older generation keeps
+ *  dna_v2_supply_root, byte-identical. The tag string is ONE definition
+ *  (renumber at merge with another root change) — PROPOSED here, by the
+ *  NDS.SUPPLY.vN precedent; collision scan: no other "NDS.SUPPLY.v3" in
+ *  the tree. Operator approval of the tag is pending (the decision
+ *  2026-10-02-onchain-names.md item 18 precedent). @return 0 / -1. */
+#define DNA_V2_SUPPLY_TAG_EVM "NDS.SUPPLY.v3"
+int dna_v2_supply_root_evm(uint64_t genesis_supply_raw,
+                           uint64_t total_minted_raw,
+                           uint64_t total_burned_raw,
+                           uint64_t reward_pool_raw,
+                           uint64_t evm_reserve_raw,
+                           uint8_t out[DNA_V2_ROOT_LEN]);
+
 /* ── accrual_root (tokenomics-v3 P2, P2-8) ─────────────────────────────
  * The per-recipient reward accrual (`v2_reward_accrual`): what each
  * owner has earned at past epoch boundaries and not yet been paid. A leg

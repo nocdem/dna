@@ -99,9 +99,27 @@ static int failed = 0;
 typedef struct {
     nodus_server_config_t config;
     pthread_t             tid;
-    volatile bool         ready;
+    /* init_done: the server thread's nodus_server_init has RETURNED,
+     * success or failure; ready: it succeeded. Both are read and written
+     * only under g_init_lock (see start_test_server). */
+    bool                  init_done;
+    bool                  ready;
     bool                  disable_mlkem;
 } test_server_ctx_t;
+
+/* One lock/cond for every ctx: static initialisers, so start_test_server's
+ * memset of the ctx never touches a live mutex. D5 runs two servers; each
+ * waiter re-checks its own ctx->init_done after every broadcast. */
+static pthread_mutex_t g_init_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_init_cond = PTHREAD_COND_INITIALIZER;
+
+static void server_init_outcome(test_server_ctx_t *ctx, bool ready) {
+    pthread_mutex_lock(&g_init_lock);
+    ctx->ready = ready;
+    ctx->init_done = true;
+    pthread_cond_broadcast(&g_init_cond);
+    pthread_mutex_unlock(&g_init_lock);
+}
 
 /* Passed by pointer to the thread; bundles the ctx with the caller-owned
  * nodus_server_t (kept `static` inside the test function, per D1 — NOT a
@@ -124,6 +142,7 @@ static void *server_thread_fn(void *arg_) {
     if (nodus_server_init(arg->server, &ctx->config) != 0) {
         fprintf(stderr, "test_mlkem_handshake: server init failed\n");
         free(arg);
+        server_init_outcome(ctx, false);
         return NULL;
     }
 
@@ -138,7 +157,7 @@ static void *server_thread_fn(void *arg_) {
         arg->server->identity.has_mlkem = false;
     }
 
-    ctx->ready = true;
+    server_init_outcome(ctx, true);
     nodus_server_run(arg->server);
     nodus_server_close(arg->server);
 
@@ -148,8 +167,14 @@ static void *server_thread_fn(void *arg_) {
     return NULL;
 }
 
-/* Bounded wait (see test_client.c 2026-07-21 comment): an unbounded
- * `while (!ready)` turns a port-bind race into a silent infinite hang. */
+/* Waits for the init OUTCOME, with no time budget. History: an unbounded
+ * `while (!ready)` turned a port-bind race into a silent infinite hang, so
+ * this was a 5000 ms bounded wait (see test_client.c); that budget could
+ * then expire with init still running once the witness start checks grew
+ * (EVM precompile self-test, 2026-10-05, Nodus EVM red-team 1 F2). A failed
+ * init now signals its outcome too, so both causes are closed. An init that
+ * never returns still hangs this wait (nodus/CMakeLists.txt sets no per-test
+ * TIMEOUT — bound it with `ctest --timeout`). */
 static int start_test_server(test_server_ctx_t *ctx, nodus_server_t *server,
                               uint16_t base_port, bool disable_mlkem) {
     memset(ctx, 0, sizeof(*ctx));
@@ -174,12 +199,12 @@ static int start_test_server(test_server_ctx_t *ctx, nodus_server_t *server,
         return -1;
     }
 
-    int waited_ms = 0;
-    while (!ctx->ready && waited_ms < 5000) {
-        usleep(10000);
-        waited_ms += 10;
-    }
-    return ctx->ready ? 0 : -1;
+    pthread_mutex_lock(&g_init_lock);
+    while (!ctx->init_done)
+        pthread_cond_wait(&g_init_cond, &g_init_lock);
+    bool ready = ctx->ready;
+    pthread_mutex_unlock(&g_init_lock);
+    return ready ? 0 : -1;
 }
 
 static void stop_test_server(test_server_ctx_t *ctx, nodus_server_t *server) {
@@ -253,7 +278,7 @@ static void test_drive_a_new_client_new_server(void) {
      * (0.4% of an 8 MB stack) — checked the same way, safe as a local. */
     static nodus_server_t server;
     if (start_test_server(&sctx, &server, 18100, false) != 0) {
-        FAIL("server did not come up within 5s");
+        FAIL("server did not come up (start-up failed)");
         return;
     }
     usleep(100000); /* let the server settle, same margin as test_client.c */
@@ -282,7 +307,7 @@ static void test_drive_c_new_client_server_without_mlkem(void) {
      * fix, static storage duration, not a stack local. */
     static nodus_server_t server;
     if (start_test_server(&sctx, &server, 18120, true /* disable_mlkem */) != 0) {
-        FAIL("server did not come up within 5s");
+        FAIL("server did not come up (start-up failed)");
         return;
     }
     usleep(100000);
@@ -318,7 +343,7 @@ static void test_d4_inbound_e2e_no_key_refused(void) {
     test_server_ctx_t sctx;
     static nodus_server_t server;
     if (start_test_server(&sctx, &server, 18130, false) != 0) {
-        FAIL("server did not come up within 5s");
+        FAIL("server did not come up (start-up failed)");
         return;
     }
     usleep(100000);
@@ -413,11 +438,11 @@ static void test_d5_mlkem_cache_cleared_on_rollback(void) {
     test_server_ctx_t sctx_a, sctx_b;
     static nodus_server_t server_a, server_b;
     if (start_test_server(&sctx_a, &server_a, 18140, false) != 0) {
-        FAIL("server A did not come up within 5s");
+        FAIL("server A did not come up (start-up failed)");
         return;
     }
     if (start_test_server(&sctx_b, &server_b, 18150, true /* disable_mlkem */) != 0) {
-        FAIL("server B did not come up within 5s");
+        FAIL("server B did not come up (start-up failed)");
         stop_test_server(&sctx_a, &server_a);
         return;
     }
@@ -511,7 +536,7 @@ static void test_drive_b_legacy_client_new_server(void) {
      * fix, static storage duration, not a stack local. */
     static nodus_server_t server;
     if (start_test_server(&sctx, &server, 18110, false) != 0) {
-        FAIL("server did not come up within 5s");
+        FAIL("server did not come up (start-up failed)");
         return;
     }
     usleep(100000);
@@ -631,7 +656,7 @@ static void test_d7_key_init_mlkem_at_server_without_mlkem_answers(void) {
     test_server_ctx_t sctx;
     static nodus_server_t server;
     if (start_test_server(&sctx, &server, 18160, true /* disable_mlkem */) != 0) {
-        FAIL("server did not come up within 5s");
+        FAIL("server did not come up (start-up failed)");
         return;
     }
     usleep(100000);

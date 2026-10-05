@@ -8,7 +8,9 @@
  * decision docs/plans/decisions/2026-10-02-onchain-names.md items 12, 18.
  *
  * ── WHAT IT PROVES ──────────────────────────────────────────────────────
- *  1. Shape: 2 generations; the full table is generation-major (gen 1
+ *  1. Shape: 2 generations (3 in an EVM-enabled build — the Nodus EVM EVM
+ *     generation follows, pinned by test_v2_evm.c); generations 1 and 2
+ *     are generation-major (gen 1
  *     SYSTEM, gen 1 CORE, gen 2 SYSTEM, gen 2 CORE); generation ids are
  *     filled; nodus_runtime_builtin_table is EXACTLY generation 1 (the
  *     two entries every pre-HF-4 consumer saw — genesis seeding reads
@@ -98,8 +100,19 @@ int main(void) {
     static const uint8_t zero64[64] = { 0 };
 
     /* ── 1. shape ──────────────────────────────────────────────────── */
+    /* Nodus EVM: an EVM-enabled build (NODUS_EVM_ENABLED — the standalone
+     * non-Windows nodus) carries a third generation, the EVM one: three
+     * slots (SYSTEM, CORE, EVM) after generations 1 and 2, which stay
+     * the four slots they were (test_v2_evm.c pins the third). */
+#ifdef NODUS_EVM_ENABLED
+    CHECK(nodus_runtime_generation_count() == 3);
+    CHECK(NODUS_RT_GEN_MAX == NODUS_RT_GEN_EVM);
+    const size_t n_all_want = 7;
+#else
     CHECK(nodus_runtime_generation_count() == 2);
     CHECK(NODUS_RT_GEN_MAX == NODUS_RT_GEN_2);
+    const size_t n_all_want = 4;
+#endif
     size_t n_all = 0, n1 = 0, n2 = 0, nb = 0;
     const nodus_domain_runtime_t *all = nodus_runtime_all_table(&n_all);
     const nodus_domain_runtime_t *g1  =
@@ -107,11 +120,11 @@ int main(void) {
     const nodus_domain_runtime_t *g2  =
         nodus_runtime_generation_table(NODUS_RT_GEN_2, &n2);
     const nodus_domain_runtime_t *bt  = nodus_runtime_builtin_table(&nb);
-    CHECK(all && n_all == 4);
+    CHECK(all && n_all == n_all_want);
     CHECK(g1 && n1 == 2 && g1 == &all[0]);
     CHECK(g2 && n2 == 2 && g2 == &all[2]);
     CHECK(bt == g1 && nb == 2);                  /* genesis generation */
-    for (size_t i = 0; i < n_all; i++) {
+    for (size_t i = 0; i < 4; i++) {             /* generations 1 and 2 */
         CHECK(all[i].generation == (uint32_t)(i / 2u) + 1u);
         CHECK(all[i].domain_id == ((i % 2u) == 0 ? DNA_DOMAIN_SYSTEM
                                                  : DNA_DOMAIN_CORE));
@@ -119,10 +132,13 @@ int main(void) {
     {
         size_t nz = 99;
         CHECK(nodus_runtime_generation_table(0, &nz) == NULL && nz == 0);
-        CHECK(nodus_runtime_generation_table(3, &nz) == NULL && nz == 0);
-        CHECK(nodus_runtime_for_generation(3, DNA_DOMAIN_SYSTEM) == NULL);
+        CHECK(nodus_runtime_generation_table(NODUS_RT_GEN_MAX + 1u, &nz)
+                  == NULL && nz == 0);
+        CHECK(nodus_runtime_for_generation(NODUS_RT_GEN_MAX + 1u,
+                                           DNA_DOMAIN_SYSTEM) == NULL);
         CHECK(nodus_runtime_for_generation(1, 7) == NULL);
         CHECK(nodus_runtime_for_generation(2, DNA_DOMAIN_CORE) == &all[3]);
+        CHECK(nodus_runtime_for_generation(2, DNA_DOMAIN_EVM) == NULL);
     }
 
     /* ── 2. generation 1 = today ───────────────────────────────────── */

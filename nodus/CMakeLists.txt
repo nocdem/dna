@@ -159,6 +159,12 @@ set(NODUS_SOURCES
     # I/O-free like the two builders above; the web wallet's WASM module
     # compiles the same file (decision 2026-10-02-onchain-names.md).
     src/client/nodus_v2_name.c
+    # Nodus EVM Faz 4 — the shared EVM envelope builder ([CORE EVMFUND] + [EVM
+    # op]: units, funding, signature, read-back) — the web wallet's
+    # nsw_evm_core moved out I/O-free; nodus-cli `evm`, the wallet's WASM
+    # module and the node's evm_estimate (the reference-shape units)
+    # compile the same file.
+    src/client/nodus_v2_evm.c
     # The shared general-multisig client library (decision
     # 2026-09-29-general-multisig.md) — nodus-cli `msig address`,
     # `v2-envelope spend --msig`, `msig sign` and `msig combine` moved out
@@ -189,6 +195,14 @@ set(NODUS_SOURCES
     # descriptor). Pure SHA3, no nodus dependency; consumed by the CORE
     # auth_kind 3 parser (nodus_witness_rt_native.c) and nodus-cli.
     ${SHARED_DIR}/dnac/msig_wire.c
+
+    # Nodus EVM Faz 4 — the ONE EVM call / CORE EVMFUND codec (+ the §7 receipt
+    # decoder): the node's call-head decoder, the EVM runtime's full
+    # decode and the CORE EVMFUND parse all go through it, and the web
+    # wallet's WASM module and nodus-cli build with the same file. Pure
+    # (no allocation, clock or nodus header); always compiled — the head
+    # decoder is consensus code in every witness build.
+    ${SHARED_DIR}/dnac/evm_call_wire.c
 
     # Ledger V2 — INACTIVE generic TYPED-EFFECT RESULT codec: the canonical,
     # bounded representation of the state mutations one leg proposes
@@ -742,7 +756,225 @@ if(NODUS_STANDALONE)
     list(APPEND NODUS_SOURCES src/nodus_log_shim.c)
 endif()
 
+# ── Nodus EVM package 1 — the EVM domain runtime (design docs/plans/2026-10-04-
+# nodus-evm-chain-integration-design.md rev 3; decisions 2026-10-04-nodus-evm-
+# domain.md, -kurultay-k1.md #5, -kurultay-k2-summary.md). The production
+# runtime table carries the EVM generation's entries (nodus_witness_runtime.c,
+# the ABI-2 EVM entry under NODUS_EVM_ENABLED), but the domain is INERT until
+# the height-activated EVM_ACTIVE vote (chain_config param 14) registers it:
+# before that edge no chain resolves it.
+#
+# BUILD SCOPE: the standalone nodus build on non-Windows hosts ONLY. The
+# messenger tree (NODUS_STANDALONE=OFF, messenger/CMakeLists.txt adds this
+# directory) does NOT compile the runtime or the engine, so libdna.so gains
+# no C++ (mcl), gmp or secp256k1 dependency. The generic engine
+# (nodus_witness_v2_apply.c) names no EVM symbol — it reaches the runtime
+# only through the runtime table's function pointers — so it links in both
+# builds. The production table entry in nodus_witness_runtime.c names
+# nodus_rt_evm_* (under NODUS_EVM_ENABLED), so every standalone witness
+# build links the engine and its C++ dependency (mcl).
+set(NODUS_EVM_ENABLED OFF)
+if(NODUS_STANDALONE AND NOT WIN32)
+    set(NODUS_EVM_ENABLED ON)
+    list(APPEND NODUS_SOURCES src/witness/nodus_witness_rt_evm.c)
+endif()
+
 add_library(nodus STATIC ${NODUS_SOURCES})
+
+if(NODUS_EVM_ENABLED)
+    enable_language(CXX)
+    enable_language(ASM)
+    set(EVM_DIR  ${SHARED_DIR}/evm)
+    set(EVM_BLST ${EVM_DIR}/third_party/blst)
+    set(EVM_CKZG ${EVM_DIR}/third_party/c-kzg-4844)
+    set(EVM_MCL  ${EVM_DIR}/third_party/mcl)
+    set(EVM_SECP ${EVM_DIR}/third_party/secp256k1)
+    set(EVM_GMP  ${EVM_DIR}/third_party/gmp)
+    set(EVM_RMD  ${EVM_DIR}/third_party/ripemd160)
+
+    # The vendored precompile libraries (third_party/*/PINNED.md), each
+    # compiled with EXACTLY the flags shared/evm/Makefile gives it — never
+    # with nodus's. mcl is the ONE C++ dependency (decision k1 #5).
+    find_program(NODUS_XXD xxd)
+    if(NOT NODUS_XXD)
+        message(FATAL_ERROR "xxd is required to embed the KZG trusted "
+                            "setup (shared/evm/Makefile does the same)")
+    endif()
+    set(EVM_KZG_SETUP_C ${CMAKE_CURRENT_BINARY_DIR}/evm_deps/kzg_trusted_setup.c)
+    add_custom_command(
+        OUTPUT ${EVM_KZG_SETUP_C}
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+                ${CMAKE_CURRENT_BINARY_DIR}/evm_deps
+        COMMAND ${NODUS_XXD} -i -n evm_kzg_trusted_setup_txt
+                ${EVM_CKZG}/src/trusted_setup.txt ${EVM_KZG_SETUP_C}
+        DEPENDS ${EVM_CKZG}/src/trusted_setup.txt
+        COMMENT "Embedding the mainnet KZG trusted setup"
+        VERBATIM)
+    add_library(nodus_evm_deps STATIC
+        ${EVM_BLST}/src/server.c
+        ${EVM_BLST}/build/assembly.S
+        ${EVM_CKZG}/src/ckzg.c
+        ${EVM_MCL}/src/fp.cpp
+        ${EVM_MCL}/src/bn_c256.cpp
+        ${EVM_SECP}/src/secp256k1.c
+        ${EVM_SECP}/src/precomputed_ecmult.c
+        ${EVM_SECP}/src/precomputed_ecmult_gen.c
+        ${EVM_RMD}/ripemd160.c
+        ${EVM_RMD}/memzero.c
+        ${EVM_KZG_SETUP_C})
+    set_source_files_properties(
+        ${EVM_BLST}/src/server.c ${EVM_BLST}/build/assembly.S
+        PROPERTIES COMPILE_OPTIONS
+        "-O2;-fno-builtin;-fPIC;-Wall;-Wextra;-D__BLST_PORTABLE__")
+    set_source_files_properties(${EVM_CKZG}/src/ckzg.c
+        PROPERTIES COMPILE_OPTIONS
+        "-O2;-fPIC;-Wall;-Wextra;-I${EVM_CKZG}/src;-I${EVM_BLST}/bindings")
+    set_source_files_properties(
+        ${EVM_MCL}/src/fp.cpp ${EVM_MCL}/src/bn_c256.cpp
+        PROPERTIES COMPILE_OPTIONS
+        "-O3;-fPIC;-DNDEBUG;-Wall;-Wextra;-I${EVM_MCL}/include;-DMCL_FP_BIT=256;-DMCL_FR_BIT=256;-DMCL_DONT_USE_XBYAK;-DMCL_BINT_ASM=0;-DMCL_MSM=0")
+    set_source_files_properties(${EVM_KZG_SETUP_C}
+        PROPERTIES COMPILE_OPTIONS "-O0;-fPIC")
+    # libsecp256k1 v0.8.0 (third_party/secp256k1/PINNED.md, operator
+    # decision D2 2026-10-05): the Makefile's SECP_CFLAGS exactly.
+    set_source_files_properties(
+        ${EVM_SECP}/src/secp256k1.c
+        ${EVM_SECP}/src/precomputed_ecmult.c
+        ${EVM_SECP}/src/precomputed_ecmult_gen.c
+        PROPERTIES COMPILE_OPTIONS
+        "-O2;-fPIC;-Wall;-Wextra;-Wno-unused-function;-I${EVM_SECP}/include;-I${EVM_SECP}/src;-DENABLE_MODULE_RECOVERY=1;-DECMULT_WINDOW_SIZE=15;-DCOMB_BLOCKS=43;-DCOMB_TEETH=6;-DSECP256K1_NO_API_VISIBILITY_ATTRIBUTES")
+    # RIPEMD-160 from trezor-crypto (third_party/ripemd160/PINNED.md,
+    # precompile 0x03, operator decision 2026-10-05 extending D2): the
+    # Makefile's RMD_CFLAGS exactly.
+    set_source_files_properties(${EVM_RMD}/ripemd160.c ${EVM_RMD}/memzero.c
+        PROPERTIES COMPILE_OPTIONS
+        "-O2;-fPIC;-std=gnu11;-Wall;-Wextra;-I${EVM_RMD}")
+    # the Makefile passes no -std to these: unset the C_STANDARD this
+    # project's CMAKE_C_STANDARD 11 gave the target (no -std flag at all)
+    set_property(TARGET nodus_evm_deps PROPERTY C_STANDARD)
+    set_property(TARGET nodus_evm_deps PROPERTY C_STANDARD_REQUIRED)
+
+    # GMP 6.3.0 (third_party/gmp/PINNED.md, operator decision D2
+    # 2026-10-05): the signed upstream release tarball, sha256-checked by
+    # ExternalProject before extraction, configured exactly as
+    # shared/evm/Makefile does (generic triple; x86-64 --enable-fat, else
+    # --disable-assembly), installed inside this build tree. Replaces the
+    # unversioned find_library(gmp) / find_library(secp256k1).
+    include(ExternalProject)
+    set(EVM_GMP_VERSION 6.3.0)
+    set(EVM_GMP_SHA256
+        a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898)
+    set(EVM_GMP_PREFIX ${CMAKE_CURRENT_BINARY_DIR}/evm_gmp/install)
+    set(EVM_GMP_LIB ${EVM_GMP_PREFIX}/lib/libgmp.a)
+    if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+        set(EVM_GMP_CPU_OPT --enable-fat)
+    else()
+        set(EVM_GMP_CPU_OPT --disable-assembly)
+    endif()
+    set(EVM_GMP_TRIPLE ${CMAKE_SYSTEM_PROCESSOR}-unknown-linux-gnu)
+    # Extracted files KEEP the tarball's timestamps. With CMP0135 NEW they
+    # all get the extraction time and their order becomes arbitrary, so
+    # GMP's make may judge doc/gmp.info older than gmp.texi and call
+    # makeinfo (absent on build hosts) — a build that passes or fails by
+    # extraction order (measured 2026-10-05: Error 127 on doc/gmp.info).
+    # A changed tarball still rebuilds: its URL_HASH is a different line.
+    # Before 3.24 archive timestamps are the only behaviour.
+    set(EVM_GMP_EXTRACT_TS)
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
+        set(EVM_GMP_EXTRACT_TS DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    endif()
+    # `$(MAKE)` expands only inside a Makefile generator's rules (and joins
+    # its jobserver); any other generator (Ninja, ...) would run the
+    # literal text. There GMP's own Makefiles are driven by a make found
+    # on the host.
+    if(CMAKE_GENERATOR MATCHES "Make")
+        set(EVM_GMP_MAKE "$(MAKE)")
+    else()
+        find_program(EVM_GMP_MAKE NAMES gmake make)
+        if(NOT EVM_GMP_MAKE)
+            message(FATAL_ERROR "GMP is built with its own Makefiles: no "
+                                "gmake or make found for the "
+                                "${CMAKE_GENERATOR} generator")
+        endif()
+    endif()
+    ExternalProject_Add(nodus_evm_gmp_build
+        ${EVM_GMP_EXTRACT_TS}
+        URL ${EVM_GMP}/gmp-${EVM_GMP_VERSION}.tar.xz
+        URL_HASH SHA256=${EVM_GMP_SHA256}
+        PREFIX ${CMAKE_CURRENT_BINARY_DIR}/evm_gmp
+        INSTALL_DIR ${EVM_GMP_PREFIX}
+        CONFIGURE_COMMAND <SOURCE_DIR>/configure --prefix=<INSTALL_DIR>
+            CC=${CMAKE_C_COMPILER}
+            --build=${EVM_GMP_TRIPLE} --host=${EVM_GMP_TRIPLE}
+            --enable-static --disable-shared --with-pic --disable-cxx
+            ${EVM_GMP_CPU_OPT}
+        BUILD_COMMAND ${EVM_GMP_MAKE}
+        INSTALL_COMMAND ${EVM_GMP_MAKE} install
+        BUILD_BYPRODUCTS ${EVM_GMP_LIB})
+    # the include dir must exist at configure time for an IMPORTED target
+    file(MAKE_DIRECTORY ${EVM_GMP_PREFIX}/include)
+    add_library(nodus_evm_gmp STATIC IMPORTED GLOBAL)
+    set_target_properties(nodus_evm_gmp PROPERTIES
+        IMPORTED_LOCATION ${EVM_GMP_LIB}
+        INTERFACE_INCLUDE_DIRECTORIES ${EVM_GMP_PREFIX}/include)
+    add_dependencies(nodus_evm_gmp nodus_evm_gmp_build)
+
+    # The engine (shared/evm) + its state trie, with the Makefile's
+    # CFLAGS: -std=c11 -Wall -Wextra -Wpedantic -O2 -I. -I.. + the vendored
+    # public headers. keccak256.c is shared code that uses GNU
+    # `##__VA_ARGS__` in its log macros, so it is built apart with GNU C
+    # (the Makefile's KECCAK_CFLAGS: -std=gnu11 -Wall -Wextra -O2 -I..).
+    add_library(nodus_evm_keccak OBJECT ${SHARED_DIR}/crypto/hash/keccak256.c)
+    target_compile_options(nodus_evm_keccak PRIVATE -Wall -Wextra -O2)
+    target_include_directories(nodus_evm_keccak PRIVATE ${SHARED_DIR})
+    set_target_properties(nodus_evm_keccak PROPERTIES
+        C_STANDARD 11 C_EXTENSIONS ON POSITION_INDEPENDENT_CODE ON)
+
+    add_library(nodus_evm STATIC
+        ${EVM_DIR}/evm_u256.c
+        ${EVM_DIR}/evm_state.c
+        ${EVM_DIR}/evm_interp.c
+        ${EVM_DIR}/evm_tx.c
+        ${EVM_DIR}/evm_precompile.c
+        ${EVM_DIR}/trie/evm_trie.c
+        ${EVM_DIR}/trie/evm_trie_rlp.c
+        $<TARGET_OBJECTS:nodus_evm_keccak>)
+    target_compile_options(nodus_evm PRIVATE -Wall -Wextra -Wpedantic -O2)
+    set_target_properties(nodus_evm PROPERTIES
+        C_STANDARD 11 C_EXTENSIONS OFF POSITION_INDEPENDENT_CODE ON)
+    # The vendored secp256k1.h / gmp.h are found before the system
+    # /usr/include copies of a different version (CMake emits the GMP dir
+    # as -isystem because the IMPORTED target also carries it; -isystem
+    # dirs are still searched before the standard system directories).
+    target_include_directories(nodus_evm PRIVATE
+        ${EVM_DIR} ${SHARED_DIR}
+        ${EVM_BLST}/bindings ${EVM_CKZG}/src ${EVM_MCL}/include
+        ${EVM_SECP}/include ${EVM_RMD} ${EVM_GMP_PREFIX}/include)
+    add_dependencies(nodus_evm nodus_evm_gmp_build)
+    # The 0x02 / 0x03 digests come from blst's blst_sha256 and the vendored
+    # RIPEMD-160, not from OpenSSL (operator decision 2026-10-05, extending
+    # D2), so the EVM no longer needs OpenSSL >= 3.0.7. OpenSSL stays linked
+    # for the shared SHA3-512 (crypto/hash/qgp_sha3.c).
+    # libevm.a's consumer link order (shared/evm/Makefile): libevm.a
+    # libevm_deps.a (blst, c-kzg, mcl, secp256k1, ripemd160) libgmp.a -lcrypto
+    # -lstdc++ -lpthread. The engine's SHA3-512 / log / platform symbols
+    # come from libnodus itself (a static-library cycle CMake repeats on
+    # the link line).
+    target_link_libraries(nodus_evm PUBLIC
+        nodus_evm_deps nodus_evm_gmp
+        OpenSSL::Crypto stdc++ Threads::Threads)
+    target_link_libraries(nodus_evm PRIVATE nodus)
+    target_link_libraries(nodus PUBLIC nodus_evm)
+    # Nodus EVM activation package: the switch that adds the EVM GENERATION to
+    # the compiled runtime table (nodus_witness_runtime.{h,c}
+    # NODUS_RT_GEN_MAX, the generation-3 slots, the EVM_ACTIVE selfcheck).
+    # PUBLIC so every target linking libnodus sees the same
+    # NODUS_RT_GEN_MAX the library was built with. The messenger tree and
+    # a Windows nodus never define it: their libnodus carries generations
+    # 1 and 2 only, with no C++ (mcl), gmp or secp256k1 dependency — a
+    # witness built there fails closed at the EVM edge (unknown tuple).
+    target_compile_definitions(nodus PUBLIC NODUS_EVM_ENABLED=1)
+endif()
 
 # HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.5):
 # the witness prints the git commit it was built from at startup, next to
@@ -2032,6 +2264,14 @@ register_witness_test(test_v2_capacity)
 # pasted placeholders until then — the test fails by design).
 register_witness_test(test_msig_wire)
 
+# Nodus EVM Faz 4 — the ONE EVM call / EVMFUND codec (shared/dnac/
+# evm_call_wire.c) decoded by the node path: fixed per-op vectors through
+# nodus_rt_evm_call_head + the full decode, the refusals, head-vs-full on
+# a malformed tail, EVMFUND roles 1/2/3 through the pairing rule, 16/17
+# change outputs, the per-role read count and the block gas share. Needs
+# no EVM engine (pure codec + the always-compiled runtime module).
+register_witness_test(test_evm_call_wire)
+
 # Ledger V2 S6 — generic manifest/snapshot/claim codec: round-trips,
 # per-field root sensitivity, strict-decode negatives, deterministic
 # mutant fuzz, snapshot ordering/duplicates, shape-derived inclusion
@@ -2056,6 +2296,34 @@ add_test(NAME test_manifest_wire COMMAND test_manifest_wire)
 # has to defend.
 register_witness_test(test_v2_claims)
 register_witness_test(test_v2_pools)
+
+# Nodus EVM package 1 — the EVM domain (runtime ABI 2) through the cometbft lane:
+# deploy/call, applied failures (REVERT, OOG, over-ceiling, BUDGET), the
+# bridge ops and tickets, the storage trie against the independent full
+# rebuild (shared/evm/trie/evm_trie_full.c — test-only, never in a library),
+# restart, a determinism twin and the inertness twin. Built only where the
+# EVM runtime is (NODUS_EVM_ENABLED). Live invariant (no supply bypass).
+if(NODUS_EVM_ENABLED)
+    add_executable(test_v2_evm tests/test_v2_evm.c
+                   ${SHARED_DIR}/evm/trie/evm_trie_full.c)
+    target_include_directories(test_v2_evm PRIVATE ${SHARED_DIR}/evm/trie)
+    target_link_libraries(test_v2_evm nodus dsa nodus)
+    target_compile_definitions(test_v2_evm PRIVATE NODUS_WITNESS_INTERNAL_API)
+    # -Wall -Wextra on this test's own code; the shared fixture headers
+    # define helpers this test does not call (unused static functions)
+    target_compile_options(test_v2_evm PRIVATE -Wall -Wextra
+                           -Wno-unused-function)
+    add_test(NAME test_v2_evm COMMAND test_v2_evm)
+
+    # Keccak-256 known answers against the keccak object libnodus links
+    # (nodus_evm_keccak, the XKCP Keccak-f[1600] of red-team 1): "", "abc"
+    # and the 135/136/137/272/1000-byte oracle pattern inputs
+    # (shared/evm/tests/addr32_oracle.py). Built only where that object is.
+    add_executable(test_keccak256 tests/test_keccak256.c)
+    target_link_libraries(test_keccak256 nodus)
+    target_compile_options(test_keccak256 PRIVATE -Wall -Wextra)
+    add_test(NAME test_keccak256 COMMAND test_keccak256)
+endif()
 
 # Ledger V2 O12 S2 — the engine-mandatory epoch boundary: the derivation
 # matrix (fires exactly at H % E == 0, H > 0), RETIRING graduation

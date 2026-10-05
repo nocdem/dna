@@ -554,10 +554,16 @@ int nodus_rt_cc_approval_digest(const uint8_t leg_auth_digest[64],
  * leading section). Fills the verdict's signer fields.
  * @param exact  non-zero = the section must consume alen EXACTLY
  *               (kind 1); zero = a tail may follow (kind 2).
+ * @param verify non-zero = every signature is checked against `digest`
+ *               (the auth hook — ALWAYS 1 there); zero = framing only,
+ *               `digest` unused — ONLY for an item the chain already
+ *               APPLIED (nodus_rt_native_committed_signer_fp, scan),
+ *               whose signatures the apply verified.
  * @return 0 with *consumed_out set / -1 reject / -2 node fault.
  */
 static int rtn_auth_submitters(const uint8_t *a, uint32_t alen,
                                const uint8_t digest[64], int exact,
+                               int verify,
                                nodus_rt_auth_verdict_t *out,
                                uint64_t *consumed_out) {
     if (alen < 1) return -1;
@@ -586,7 +592,8 @@ static int rtn_auth_submitters(const uint8_t *a, uint32_t alen,
         if (prev_pk && memcmp(prev_pk, pk, NODUS_CC_PUBKEY_SIZE) >= 0)
             return -1;
         prev_pk = pk;
-        if (qgp_dsa87_verify(sig, NODUS_CC_SIG_SIZE, digest, 64, pk) != 0)
+        if (verify &&
+            qgp_dsa87_verify(sig, NODUS_CC_SIG_SIZE, digest, 64, pk) != 0)
             return -1;                   /* invalid signature: reject    */
         if (qgp_sha3_512(pk, NODUS_CC_PUBKEY_SIZE,
                          out->signer_fp[i]) != 0)
@@ -677,7 +684,8 @@ int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
     if (h->auth_kind == NODUS_RT_AUTHKIND_DSA87_MULTI_V1) {
         uint64_t consumed = 0;
         int rc = rtn_auth_submitters(a, alen, ctx->leg_auth_digest,
-                                     /*exact=*/1, out, &consumed);
+                                     /*exact=*/1, /*verify=*/1, out,
+                                     &consumed);
         if (rc != 0) { memset(out, 0, sizeof(*out)); return rc; }
         return 0;
     }
@@ -687,7 +695,8 @@ int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
          * same leg digest — no new preimage), then the descriptors */
         uint64_t consumed = 0;
         int rc = rtn_auth_submitters(a, alen, ctx->leg_auth_digest,
-                                     /*exact=*/0, out, &consumed);
+                                     /*exact=*/0, /*verify=*/1, out,
+                                     &consumed);
         if (rc == 0) rc = rtn_auth_msig(a, alen, consumed, out);
         if (rc != 0) { memset(out, 0, sizeof(*out)); return rc; }
         return 0;
@@ -712,7 +721,8 @@ int nodus_rt_auth_dsa87_v1(const nodus_domain_runtime_t *rt,
 
         uint64_t consumed = 0;
         int rc = rtn_auth_submitters(a, alen, ctx->leg_auth_digest,
-                                     /*exact=*/0, out, &consumed);
+                                     /*exact=*/0, /*verify=*/1, out,
+                                     &consumed);
         if (rc != 0) { memset(out, 0, sizeof(*out)); return rc; }
 
         /* approval section: count u16 BE ‖ count × (idx u16 ‖ sig) —
@@ -1247,6 +1257,12 @@ _Static_assert(NODUS_RT_CORE_UTXO_REC_LEN == RTN_UTXO_REC_LEN,
  * the effect codec's canonical key order for two SETs on op 3. */
 #define RTN_SUPPLY_SEL_BURNED 2u
 #define RTN_SUPPLY_SEL_POOL   3u
+/* Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md rev
+ * 3 §5): selector 4 = the CORE EVM RESERVE bucket (v2_evm_reserve,
+ * schema S17). Named ONLY by the EVM generation's EVMFUND (rtn_evmfund_*);
+ * no older CORE hook emits it, so the adapter's new selector changes no
+ * older generation's reads or writes. */
+#define RTN_SUPPLY_SEL_EVM_RESERVE 4u
 
 /* The canonical token-registry record value (exact 188 bytes — burn
  * season). Exactly the `tokens` columns the token merkle leaf consumes
@@ -1587,6 +1603,76 @@ static int rtn_sysfund_shape(const dna_env_view_t *env, uint16_t leg_index) {
     return 0;
 }
 
+/* ── DNA_CORERULE_EVMFUND (Nodus EVM) — the CORE half of an EVM envelope ────
+ *
+ * Design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md rev 3
+ * §2, §5; decision 2026-10-04-nodus-evm-kurultay-k1.md operator items 1
+ * (the fee is a CORE-funded declared ceiling, to the reward pool, never
+ * burned), 3 (q = 10^10 — on the EVM side; CORE moves raw units only) and
+ * 4 (explicit 64-byte recipient + tickets).
+ *
+ * call v1:  ver u8 (= NODUS_RT_EVMFUND_CALL_VER) ‖ role u8
+ *           ‖ the SYSFUND transfer section (in_count 1..15 ‖ nullifiers
+ *             strictly ascending ‖ out_count 0..16 ‖ change outputs,
+ *             every output NATIVE)
+ * EXACT length. NO amount, NO recipient: both come from the SIBLING EVM
+ * leg's call bytes through the ONE call-head decoder
+ * (nodus_rt_evm_call_head, nodus_witness_runtime.c) — the bytes the EVM
+ * runtime itself decodes, and, for REDEEM, matches EXACTLY against the
+ * ticket row (a mismatch refuses the EVM leg, and the item rolls back
+ * with this leg's release in it).
+ *
+ *   role FEE      (EVM CALL / CREATE):  Σin == Σchange + fee
+ *   role DEPOSIT  (EVM DEPOSIT):        Σin == Σchange + fee + amount;
+ *                                       reserve += amount
+ *   role RELEASE  (EVM WITHDRAW/REDEEM): Σin == Σchange + fee;
+ *                                       a UTXO of amount to dest_fp,
+ *                                       reserve -= amount
+ * The fee — and only the fee — is credited to the reward pool (the
+ * SYSFUND rule). Generation >= NODUS_RT_GEN_EVM only; older generations
+ * do not own op 9 (admission refuses it) and the hooks refuse it too. */
+typedef struct {
+    uint8_t          role;
+    rtn_spend_call_t xfer;
+} rtn_evmfund_call_t;
+
+/* ONE CODEC (Nodus EVM Faz 4): the EVMFUND call is decoded by the shared codec
+ * (shared/dnac/evm_call_wire.c dna_evmfund_decode) the wallet and
+ * nodus-cli encode with — ver 1, role 1..3, the SPEND transfer section
+ * with 1..15 strictly ascending inputs and 0..16 NATIVE change outputs
+ * (lowercase-hex owner, amount > 0), EXACT length. Its bounds are this
+ * file's own, pinned here. */
+_Static_assert(DNA_EVMFUND_MAX_IN == RTN_SPEND_MAX_IN &&
+               DNA_EVMFUND_MAX_OUT == RTN_SPEND_MAX_OUT &&
+               DNA_EVMFUND_OUT_LEN == RTN_SPEND_OUT_LEN,
+               "the shared EVMFUND codec's transfer bounds drifted");
+
+static int rtn_evmfund_parse(const dna_env_view_t *env, uint16_t leg,
+                             rtn_evmfund_call_t *f) {
+    dna_evmfund_call_t d;
+    if (dna_evmfund_decode(env->buf + env->call_off[leg],
+                           env->leg[leg].call_len, &d) != 0)
+        return -1;
+    memset(f, 0, sizeof(*f));
+    f->role = d.role;
+    f->xfer.in_count = d.n_in;
+    f->xfer.out_count = d.n_out;
+    f->xfer.ins = d.in_nul;
+    f->xfer.outs = d.outs;
+    return 0;
+}
+
+/* The pairing rule from the CORE side (the EVM runtime applies the SAME
+ * function from its side): this leg is leg 0, the envelope is exactly
+ * [CORE EVMFUND] + [EVM op] and the role matches the EVM op; and only a
+ * runtime of the EVM generation executes op 9. @return 0 / -1. */
+static int rtn_evmfund_shape(const nodus_domain_runtime_t *rt,
+                             const dna_env_view_t *env, uint16_t leg_index) {
+    if (!rt || rt->generation < NODUS_RT_GEN_EVM) return -1;
+    if (leg_index != 0) return -1;
+    return nodus_rt_evm_pair_check(env);
+}
+
 /* Emit the shared transfer-read prefix: one UTXO read per input (keys
  * already strictly ascending by the parse) then the supply counter
  * reads — ascending (op_id, key), the engine's canonical order.
@@ -1677,6 +1763,27 @@ int nodus_rt_core_read_plan(const nodus_domain_runtime_t *rt,
         uint16_t need = (uint16_t)(c.in_count + 1);
         if (need > max_reqs) return -1;
         (void)rtn_xfer_reads(&c, 0, reqs_out);
+        *n_out = need;
+        return 0;
+    }
+    case DNA_CORERULE_EVMFUND: {
+        /* Nodus EVM: inputs + the pool (the fee's destination) + — DEPOSIT /
+         * RELEASE only — the reserve (selector 4 > 3: ascending (op,
+         * key), the canonical order). FEE reads no reserve. */
+        rtn_evmfund_call_t f;
+        if (rtn_evmfund_shape(rt, env, leg_index) != 0) return -1;
+        if (rtn_evmfund_parse(env, leg_index, &f) != 0) return -1;
+        int with_rsv = (f.role != NODUS_RT_EVMFUND_ROLE_FEE);
+        uint16_t need = (uint16_t)(f.xfer.in_count + 1 + (with_rsv ? 1 : 0));
+        if (need > max_reqs) return -1;
+        (void)rtn_xfer_reads(&f.xfer, 0, reqs_out);
+        if (with_rsv) {
+            nodus_rt_read_req_t *rr = &reqs_out[f.xfer.in_count + 1];
+            memset(rr, 0, sizeof(*rr));
+            rr->op_id = RTN_CORE_OP_SUPPLY;
+            rr->key_len = 1;
+            rr->key[0] = RTN_SUPPLY_SEL_EVM_RESERVE;
+        }
         *n_out = need;
         return 0;
     }
@@ -2777,6 +2884,229 @@ static int rtn_sysfund_exec(const rtn_spend_call_t *c,
     return 0;
 }
 
+/* The EVM RELEASE UTXO's provenance constants (Nodus EVM): kind byte 0x02 =
+ * "EVM release", output_index 101 — above every wire output index
+ * (0 .. RTN_SPEND_MAX_OUT-1) of the same intent and distinct from the
+ * UNDELEGATE release (0x01 / 100, which never shares an intent with an
+ * EVM envelope: the shapes are disjoint), below the graduation band. */
+#define RTN_EVMFUND_REL_KIND   ((uint8_t)0x02)
+#define RTN_EVMFUND_REL_INDEX  ((uint32_t)101)
+_Static_assert(RTN_EVMFUND_REL_INDEX >= RTN_SPEND_MAX_OUT &&
+               RTN_EVMFUND_REL_INDEX != RTN_SYSFUND_REL_INDEX &&
+               RTN_EVMFUND_REL_INDEX < NODUS_V2_EPGRAD_OUT_IDX,
+               "the EVM release index collides with another output band");
+
+/* The EVMFUND RELEASE coin — its identity and record. The ONE derivation,
+ * called by rtn_evmfund_exec (which creates the row) and by the scan
+ * describer (rtn_desc_core, which reports it) — the
+ * rtn_sysfund_release_coin discipline, so the two can never disagree
+ * about which coin a WITHDRAW / REDEEM released.
+ * Identity = SHA3-512(intent ‖ 0x02 ‖ u32be(101)) — the SYSFUND
+ * synthetic-UTXO shape; owner = `dest_fp` (128 hex), amount = `release`,
+ * unlocked; the token window stays the native zeros the caller set and
+ * the seed window is unused (explicit id).
+ * @return 0 / -2 hash-backend fault. */
+static int rtn_evmfund_release_coin(const uint8_t intent_id[64],
+                                    const uint8_t dest_fp[64],
+                                    uint64_t release,
+                                    uint8_t rel_id[64],
+                                    uint8_t rel_rec[RTN_SPEND_OUT_LEN]) {
+    uint8_t pre[64 + 1 + 4];
+    memcpy(pre, intent_id, 64);
+    pre[64] = RTN_EVMFUND_REL_KIND;
+    rtn_put32(pre + 65, RTN_EVMFUND_REL_INDEX);
+    if (qgp_sha3_512(pre, sizeof(pre), rel_id) != 0) return -2;
+    rtn_fp_hex(dest_fp, rel_rec);                     /* owner (128 hex) */
+    rtn_put64(rel_rec + 128, release);                /* amount          */
+    return 0;
+}
+
+/* The EVMFUND executor (Nodus EVM — the header block at rtn_evmfund_parse).
+ * @return 0 / -1 verdict / -2 node fault. */
+static int rtn_evmfund_exec(const rtn_evmfund_call_t *f,
+                            const dna_env_view_t *env,
+                            const nodus_rt_exec_ctx_t *ctx,
+                            rtn_owners_t *own,
+                            const nodus_rt_read_res_t *reads,
+                            uint16_t n_reads,
+                            uint8_t *res_out, size_t res_cap,
+                            size_t *res_len_out) {
+    const rtn_spend_call_t *c = &f->xfer;
+    const int with_rsv = (f->role != NODUS_RT_EVMFUND_ROLE_FEE);
+    if (!reads ||
+        n_reads != (uint16_t)(c->in_count + 1 + (with_rsv ? 1 : 0)))
+        return -2;
+    const nodus_rt_read_res_t *r_pool = &reads[c->in_count];
+    const nodus_rt_read_res_t *r_rsv = with_rsv ? &reads[c->in_count + 1]
+                                                : NULL;
+
+    /* ── the SIBLING EVM leg (leg 1) decides amount and recipient ───── */
+    nodus_rt_evm_head_t hd;
+    if (nodus_rt_evm_call_head(env->leg[1].runtime_op,
+                               env->buf + env->call_off[1],
+                               env->leg[1].call_len, &hd) != 0)
+        return -1;                       /* the EVM leg refuses it too   */
+    uint64_t lock = 0, release = 0;
+    if (f->role == NODUS_RT_EVMFUND_ROLE_DEPOSIT) {
+        if (hd.amount_raw == 0) return -1;
+        lock = hd.amount_raw;
+    } else if (f->role == NODUS_RT_EVMFUND_ROLE_RELEASE) {
+        if (hd.amount_raw == 0 || !hd.dest_fp) return -1;
+        release = hd.amount_raw;
+    }
+
+    static const uint8_t native_token[64] = { 0 };
+
+    /* ── inputs: exist, unlocked, OWNED, NATIVE (the SYSFUND gates) ─── */
+    uint64_t native_in = 0;
+    for (uint8_t i = 0; i < c->in_count; i++) {
+        const nodus_rt_read_res_t *r = &reads[i];
+        if (!r->present) return -1;
+        if (r->value_len != RTN_UTXO_REC_LEN) return -2;
+        const uint8_t *rec = r->value;
+        if (rtn_get64(rec + RTN_UTXO_UNLOCK_OFF) >= ctx->global_height)
+            return -1;
+        if (!rtn_input_owned(own, rec + RTN_UTXO_OWNER_OFF)) return -1;
+        if (memcmp(rec + RTN_UTXO_TOKEN_OFF, native_token, 64) != 0)
+            return -1;
+        if (dna_ck_add_u64(native_in, rtn_get64(rec + RTN_UTXO_AMOUNT_OFF),
+                           &native_in) != 0)
+            return -1;
+    }
+    if (!rtn_owners_all_used(own)) return -1;
+
+    /* ── fee floors (BOTH shipped, as a conjunction) ────────────────── */
+    uint64_t fee = env->fee_amount;
+    if (fee < DNAC_MIN_FEE_RAW || fee < NODUS_W_BASE_TX_FEE) return -1;
+
+    /* ── conservation: Σin == Σchange + fee + lock (release is NOT
+     *    netted — it leaves the reserve, the SYSFUND release rule) ──── */
+    {
+        uint64_t rhs = 0;
+        for (uint8_t o = 0; o < c->out_count; o++)
+            if (dna_ck_add_u64(rhs, rtn_get64(c->outs +
+                                   (size_t)o * RTN_SPEND_OUT_LEN + 128),
+                               &rhs) != 0)
+                return -1;
+        if (dna_ck_add_u64(rhs, fee, &rhs) != 0) return -1;
+        if (dna_ck_add_u64(rhs, lock, &rhs) != 0) return -1;
+        if (native_in != rhs) return -1;
+    }
+
+    /* ── the reserve move (DEPOSIT +lock / RELEASE -release) ────────── */
+    uint64_t rsv_old = 0, rsv_new = 0;
+    if (with_rsv) {
+        if (!r_rsv->present) return -2;  /* S17 wrote the row: absence is
+                                          * this node's state            */
+        if (r_rsv->value_len != 8) return -2;
+        rsv_old = rtn_get64(r_rsv->value);
+        if (f->role == NODUS_RT_EVMFUND_ROLE_DEPOSIT) {
+            if (dna_ck_add_u64(rsv_old, lock, &rsv_new) != 0 ||
+                rsv_new > (uint64_t)INT64_MAX)
+                return -1;               /* the INTEGER column's bound   */
+        } else {
+            if (rsv_old < release) return -1;   /* more than is locked   */
+            rsv_new = rsv_old - release;
+        }
+    }
+
+    /* ── the release UTXO (RELEASE only): owner = dest_fp, amount =
+     *    the sibling's amount_raw, unlocked; identity = SHA3-512(intent
+     *    ‖ 0x02 ‖ u32be(101)) — the SYSFUND synthetic-UTXO shape ────── */
+    uint8_t rel_id[64];
+    uint8_t rel_rec[RTN_SPEND_OUT_LEN];
+    memset(rel_id, 0, sizeof(rel_id));
+    memset(rel_rec, 0, sizeof(rel_rec));
+    if (release > 0) {
+        int rrc = rtn_evmfund_release_coin(ctx->intent_id, hd.dest_fp,
+                                           release, rel_id, rel_rec);
+        if (rrc != 0) return rrc;
+    }
+
+    /* ── the CREATE run: change outputs and the release, one key-sorted
+     *    run (the SYSFUND discipline) ──────────────────────────────── */
+    uint8_t        nul[RTN_SPEND_MAX_OUT + 1][64];
+    const uint8_t *crec[RTN_SPEND_MAX_OUT + 1];
+    uint8_t        cidx[RTN_SPEND_MAX_OUT + 1];
+    uint8_t        order[RTN_SPEND_MAX_OUT + 1];
+    uint8_t        nc = 0;
+    for (uint8_t o = 0; o < c->out_count; o++) {
+        const uint8_t *rec = c->outs + (size_t)o * RTN_SPEND_OUT_LEN;
+        uint8_t pre[160];
+        memcpy(pre, rec, 128);
+        memcpy(pre + 128, rec + 200, 32);
+        if (qgp_sha3_512(pre, sizeof(pre), nul[nc]) != 0) return -2;
+        crec[nc] = rec;
+        cidx[nc] = o;
+        order[nc] = nc;
+        nc++;
+    }
+    if (release > 0) {
+        memcpy(nul[nc], rel_id, 64);
+        crec[nc] = rel_rec;
+        cidx[nc] = (uint8_t)RTN_EVMFUND_REL_INDEX;
+        order[nc] = nc;
+        nc++;
+    }
+    for (uint8_t a = 1; a < nc; a++) {               /* insertion sort   */
+        uint8_t key = order[a];
+        int b = a - 1;
+        while (b >= 0 && memcmp(nul[order[b]], nul[key], 64) > 0) {
+            order[b + 1] = order[b];
+            b--;
+        }
+        order[b + 1] = key;
+    }
+    for (uint8_t a = 1; a < nc; a++)
+        if (memcmp(nul[order[a - 1]], nul[order[a]], 64) == 0)
+            return -1;                   /* duplicate output identity    */
+
+    /* ── canonical typed-effect result ──────────────────────────────── */
+    static const uint8_t sel_rsv[1] = { RTN_SUPPLY_SEL_EVM_RESERVE };
+    dna_effect_in_t effs[RTN_SPEND_MAX_OUT + 3 + RTN_SPEND_MAX_IN];
+    uint8_t crv[RTN_SPEND_MAX_OUT + 1][RTN_UTXO_REC_LEN];
+    uint8_t dvh[RTN_SPEND_MAX_IN][64];
+    uint8_t supv[8], rsvv[8];
+    uint16_t ne = 0;
+    memset(effs, 0, sizeof(effs));
+
+    for (uint8_t a = 0; a < nc; a++) {               /* CREATEs (kind 1) */
+        uint8_t s = order[a];
+        rtn_utxo_create_eff(&effs[ne], crv[a], crec[s], cidx[s], nul[s],
+                            ctx, 0);
+        ne++;
+    }
+    /* SETs (kind 2), op SUPPLY, selector 3 (the fee) then 4 (reserve) */
+    {
+        int rc = rtn_supply_add_eff(&effs[ne], supv, r_pool, fee,
+                                    RTN_SUPPLY_SEL_POOL);
+        if (rc != 0) return rc;
+        ne++;
+    }
+    if (with_rsv) {
+        rtn_put64(rsvv, rsv_new);
+        dna_effect_in_t *e = &effs[ne++];
+        e->hdr.op_id = RTN_CORE_OP_SUPPLY;
+        e->hdr.effect_kind = DNA_EFFECT_SET;
+        e->hdr.precond_tag = DNA_EFFECT_PRE_EXISTS_VERSION;
+        e->hdr.expected_version = rsv_old;   /* bound to the observed row */
+        e->hdr.key_len = 1;
+        e->hdr.value_len = 8;
+        e->key = sel_rsv;
+        e->value = rsvv;
+    }
+    for (uint8_t i = 0; i < c->in_count; i++) {      /* DELETEs (kind 3) */
+        if (rtn_utxo_delete_eff(&effs[ne], dvh[i], &reads[i],
+                                c->ins + (size_t)i * 64) != 0)
+            return -2;
+        ne++;
+    }
+    if (dna_effect_result_encode(effs, ne, res_out, res_cap,
+                                 res_len_out) != 0)
+        return -2;
+    return 0;
+}
+
 int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
                        const dna_env_view_t *env, uint16_t leg_index,
                        const nodus_rt_exec_ctx_t *ctx,
@@ -2844,6 +3174,15 @@ int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
         /* gen, owner and parse decided above (before the verdict check) */
         return rtn_name_exec(&nc, name_owner, env, ctx, &own, reads,
                              n_reads, res_out, res_cap, res_len_out);
+    case DNA_CORERULE_EVMFUND: {
+        /* Nodus EVM: the EVM generation only; exactly [CORE EVMFUND] + [EVM
+         * op] with the matching role (the pairing rule, both sides) */
+        rtn_evmfund_call_t f;
+        if (rtn_evmfund_shape(rt, env, leg_index) != 0) return -1;
+        if (rtn_evmfund_parse(env, leg_index, &f) != 0) return -1;
+        return rtn_evmfund_exec(&f, env, ctx, &own, reads, n_reads,
+                                res_out, res_cap, res_len_out);
+    }
     default:
         return -1;                       /* un-migrated op: fail closed  */
     }
@@ -3032,6 +3371,8 @@ static int rtn_core_supply_fetch(nodus_witness_t *w, uint8_t sel,
         sql = "SELECT total_burned FROM supply_tracking WHERE id = 1";
     else if (sel == RTN_SUPPLY_SEL_POOL)
         sql = "SELECT reward_pool FROM supply_tracking WHERE id = 1";
+    else if (sel == RTN_SUPPLY_SEL_EVM_RESERVE)   /* Nodus EVM, S17 */
+        sql = "SELECT reserve_raw FROM v2_evm_reserve WHERE id = 1";
     else
         return -1;
     sqlite3_stmt *st = NULL;
@@ -3323,6 +3664,11 @@ static nodus_adapter_status_t rtn_core_mutate(
              * (genesis + minted − burned) does not move. */
             sql = "UPDATE supply_tracking SET reward_pool = ?1, "
                   "last_sequence = last_sequence + 1 WHERE id = 1";
+        } else if (key[0] == RTN_SUPPLY_SEL_EVM_RESERVE) {
+            /* Nodus EVM: the CORE EVM reserve, absolute. A lock moves value
+             * utxo -> reserve and a release back; neither destroys
+             * anything, so current_supply does not move. */
+            sql = "UPDATE v2_evm_reserve SET reserve_raw = ?1 WHERE id = 1";
         } else {
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         }
@@ -4919,11 +5265,23 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
      * runtime's own generation; 0 for a synthetic runtime). A refusal
      * here is the same verdict class, at the same point (no reads, no
      * effect charged), as the scalar refusal above. */
-    if (nodus_chain_config_stateful_rules(c.param_id, c.effective,
-                                          ctx->hf2_active,
-                                          ctx->ruleset_gen2_voted,
-                                          rt ? rt->generation : 0u) != 0)
-        return -1;
+    {
+        /* Nodus EVM: + the EVM_ACTIVE facts (hf3_active / gas_price_on /
+         * evm_active_voted — UNMETERED engine facts like the two above);
+         * ids 1..13 read none of them and answer exactly as before. */
+        nodus_cc_state_facts_t facts;
+        memset(&facts, 0, sizeof(facts));
+        facts.hf2_active = ctx->hf2_active;
+        facts.hf3_active = ctx->hf3_active;
+        facts.gas_price_on = ctx->gas_price_on;
+        facts.ruleset_gen2_voted = ctx->ruleset_gen2_voted;
+        facts.evm_active_voted = ctx->evm_active_voted;
+        facts.chain_initial_height = ctx->chain_initial_height; /* F5 */
+        facts.judging_generation = rt ? rt->generation : 0u;
+        if (nodus_chain_config_stateful_rules_ex(c.param_id, c.effective,
+                                                 &facts) != 0)
+            return -1;
+    }
 
     /* tokenomics-v3 P2 (P2-4): the read plan emits nothing for a
      * chain-config leg since the INFLATION_START monotonicity rule left
@@ -5741,6 +6099,52 @@ static int rtn_desc_core(const dna_env_view_t *env, uint16_t leg,
         }
         return 0;
     }
+    case DNA_CORERULE_EVMFUND: {
+        /* Nodus EVM: the CORE half of [CORE EVMFUND] + [EVM op] — the
+         * pairing rule, the parse and the sibling head rtn_evmfund_exec
+         * runs (rtn_evmfund_shape's generation gate needs a runtime this
+         * read-only path does not hold: an APPLIED op-9 leg was executed
+         * by an EVM-generation runtime, which is the caller's premise) */
+        rtn_evmfund_call_t f;
+        nodus_rt_evm_head_t hd;
+        if (leg != 0 || nodus_rt_evm_pair_check(env) != 0) return -1;
+        if (rtn_evmfund_parse(env, leg, &f) != 0) return -1;
+        if (nodus_rt_evm_call_head(env->leg[1].runtime_op,
+                                   env->buf + env->call_off[1],
+                                   env->leg[1].call_len, &hd) != 0)
+            return -1;
+        int rc = rtn_desc_xfer(&f.xfer, out);
+        if (rc != 0) return rc;
+        out->evm_role = f.role;
+        if (f.role == NODUS_RT_EVMFUND_ROLE_DEPOSIT) {
+            if (hd.amount_raw == 0) return -1;
+            out->reserve_in = hd.amount_raw;
+        } else if (f.role == NODUS_RT_EVMFUND_ROLE_RELEASE) {
+            uint8_t rel_id[64];
+            uint8_t rel_rec[RTN_SPEND_OUT_LEN];
+            if (hd.amount_raw == 0 || !hd.dest_fp) return -1;
+            if (!intent_id) return -2;   /* the caller must supply it    */
+            memset(rel_id, 0, sizeof(rel_id));
+            memset(rel_rec, 0, sizeof(rel_rec));
+            rc = rtn_evmfund_release_coin(intent_id, hd.dest_fp,
+                                          hd.amount_raw, rel_id, rel_rec);
+            if (rc != 0) return rc;
+            /* rtn_evmfund_exec refuses a release id equal to a change id
+             * (one key-sorted CREATE run); an applied leg never has one */
+            for (uint8_t k = 0; k < out->n_created; k++)
+                if (memcmp(out->created[k].id, rel_id, 64) == 0)
+                    return -1;
+            if (out->n_created >= NODUS_RT_DESC_MAX_OUT) return -1;
+            nodus_rt_desc_coin_t *k = &out->created[out->n_created++];
+            memcpy(k->id, rel_id, 64);
+            memcpy(k->owner_hex, rel_rec, 128);
+            k->amount = rtn_get64(rel_rec + 128);
+            memset(k->token_id, 0, 64);  /* native                        */
+            k->unlock_block = 0;         /* born unlocked (exec passes 0) */
+            out->reserve_out = hd.amount_raw;
+        }
+        return 0;
+    }
     default:
         return -1;                       /* not an op this file executes */
     }
@@ -5830,5 +6234,38 @@ int nodus_rt_native_describe_leg(const dna_env_view_t *env,
         return rtn_desc_core(env, leg_index, global_height, intent_id, out);
     if (out->domain_id == DNA_DOMAIN_SYSTEM)
         return rtn_desc_system(env, leg_index, out);
+    if (out->domain_id == DNA_DOMAIN_EVM) {
+        /* Nodus EVM: an EVM leg moves no native coin (its value movement is
+         * the CORE EVMFUND sibling's) — a descriptor with no effects, for
+         * any op whose head this build decodes */
+        nodus_rt_evm_head_t hd;
+        if (nodus_rt_evm_call_head(out->runtime_op,
+                                   env->buf + env->call_off[leg_index],
+                                   env->leg[leg_index].call_len, &hd) != 0)
+            return -1;
+        return 0;
+    }
     return -1;                           /* no compiled native runtime   */
+}
+
+int nodus_rt_native_committed_signer_fp(const dna_env_view_t *env,
+                                        uint16_t leg_index,
+                                        uint8_t fp_out[64],
+                                        uint16_t *n_signers_out) {
+    nodus_rt_auth_verdict_t v;
+    uint64_t consumed = 0;
+    int rc;
+
+    if (!env || !env->buf || !fp_out || leg_index >= env->leg_count)
+        return -2;
+    if (env->leg[leg_index].auth_kind != NODUS_RT_AUTHKIND_DSA87_MULTI_V1)
+        return -1;
+    memset(&v, 0, sizeof(v));
+    rc = rtn_auth_submitters(env->buf + env->auth_off[leg_index],
+                             env->leg[leg_index].auth_len, NULL,
+                             /*exact=*/1, /*verify=*/0, &v, &consumed);
+    if (rc != 0) return rc;
+    memcpy(fp_out, v.signer_fp[0], 64);
+    if (n_signers_out) *n_signers_out = v.n_signers;
+    return 0;
 }

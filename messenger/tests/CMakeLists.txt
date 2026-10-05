@@ -128,6 +128,14 @@ target_link_libraries(test_aes256_gcm ${TEST_LIBS})
 add_test(NAME test_aes256_gcm COMMAND test_aes256_gcm)
 
 # =============================================================================
+# Test: Keccak-256 known answers (libdna's keccak256: "", "abc" and the
+# 135/136/137/272/1000-byte oracle pattern inputs — the XKCP Keccak-f[1600])
+# =============================================================================
+add_executable(test_keccak256 test_keccak256.c)
+target_link_libraries(test_keccak256 ${TEST_LIBS})
+add_test(NAME test_keccak256 COMMAND test_keccak256)
+
+# =============================================================================
 # Test: Seal sender authentication (dna_verify_seal_authorship, C2/C3 Phase 1)
 # =============================================================================
 add_executable(test_seal_authorship test_seal_authorship.c)

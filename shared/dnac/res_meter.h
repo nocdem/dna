@@ -405,8 +405,54 @@ typedef struct {
     uint64_t base_units;           /* w_base                             */
     uint64_t w_effect, w_effectbyte, w_read, w_write; /* pinned          */
     uint16_t n_legs;               /* 1 .. DNA_ENV_MAX_LEGS              */
+    /* Nodus EVM (chain integration design rev 3 §4): 0 = no streamed leg;
+     * otherwise 1 + the index of THE one STREAMED leg (a runtime-ABI-2
+     * leg whose effects arrive as a paged stream,
+     * dna_meter_charge_effects_begin/page/finish). Its declared ceilings
+     * are judged against DNA_METER_STREAM_MAX_EFFECTS /
+     * DNA_METER_STREAM_MAX_EFFECT_BYTES instead of the one-result codec
+     * caps. 0 for every plan dna_meter_plan_build / dna_meter_reserve
+     * build — the ABI-1 behaviour, byte for byte. It sits in what was the
+     * padding after n_legs, so neither this struct nor dna_meter_t
+     * changed size (the per-envelope scratch cost pinned in
+     * nodus_witness_v2_apply.h reads sizeof(dna_meter_t)). One streamed
+     * leg per envelope: legs are one per domain and the EVM domain is the
+     * only ABI-2 runtime. */
+    uint16_t stream_leg;
     dna_meter_leg_plan_t leg[DNA_ENV_MAX_LEGS];
 } dna_meter_plan_t;
+
+/* ── Nodus EVM streamed-leg bounds (chain integration design rev 3 §4, §8) ──
+ * VALUES PENDING THE MEASUREMENT GATE (design §8 "Faz 3 kapısı"): every
+ * number in this block is a compiled placeholder chosen so the shapes the
+ * engine must carry fit (a 24 576-byte contract = 3 CODE chunks; one
+ * 30 000 000-gas transaction can change at most ~14 000 storage slots at
+ * the Prague 2 100-gas cold-read floor), not a measured worst case. They
+ * move only with the meter-policy generation of the activation package. */
+/** Largest declared effect COUNT of one streamed leg. */
+#define DNA_METER_STREAM_MAX_EFFECTS        16384u
+/** Largest declared canonical effect BYTES of one streamed leg (the
+ *  one-result encoding length of the whole stream: ONE 23-byte head +
+ *  Σ (84 + key + value)). */
+#define DNA_METER_STREAM_MAX_EFFECT_BYTES   (4u * 1024u * 1024u)
+/** Units per unit of EVM gas (design §8 `w_gas`). Compiled constant until
+ *  the EVM generation's SYSTEM meter policy carries it (the activation
+ *  package). */
+#define DNA_METER_EVM_W_GAS                 1u
+/** Units kept back for the fixed failure-result effects of a CALL/CREATE
+ *  leg (design §4/§8 FAIL_RESERVE): one ACCT effect (23 + 84 + 32 + 148 =
+ *  287 canonical bytes) prices at 288 units under the weight-1 policy; the
+ *  constant leaves room for heavier weights. The engine checks the real
+ *  charge against it and fails the node closed if it ever exceeds it. */
+#define DNA_METER_EVM_FAIL_RESERVE          4096u
+/** The fixed failure result's shape (design §4): ONE effect of at most
+ *  this many canonical result bytes (23 head + 84 record + 32 key + 148
+ *  ACCT value = 287). A CALL/CREATE leg must DECLARE ceilings that admit
+ *  it — otherwise its failure path could not be charged and a failed
+ *  execution would be refused instead of paid (design S1); the engine
+ *  refuses such a leg before it executes. */
+#define DNA_METER_EVM_FAIL_EFFECTS          1u
+#define DNA_METER_EVM_FAIL_BYTES            287u
 
 /**
  * PURE reservation calculation: policy x decoded view -> plan. Touches
@@ -450,6 +496,22 @@ typedef struct {
     uint8_t  effects_charged[DNA_ENV_MAX_LEGS];
 } dna_meter_t;
 
+/**
+ * Nodus EVM: the bookkeeping of ONE open effect stream (dna_meter_charge_
+ * effects_begin / page / finish). Caller-owned and kept OUTSIDE the meter
+ * on purpose: sizeof(dna_meter_t) is part of the per-envelope scratch cost
+ * pinned in nodus_witness_v2_apply.h (a consensus-read derivation), and a
+ * stream lives for one leg only. Zero it before begin.
+ */
+typedef struct {
+    uint8_t  open;
+    uint16_t leg;                  /* plan leg index of the stream        */
+    uint64_t expect_count;         /* declared at begin                   */
+    uint64_t expect_bytes;         /* one-result canonical length         */
+    uint64_t seen_count;           /* Σ page effect counts                */
+    uint64_t seen_body;            /* Σ page (res_len - 23)               */
+} dna_meter_stream_t;
+
 /* Tripwire on careless growth (the env_preflight.h discipline). */
 _Static_assert(sizeof(dna_meter_t) <= 4096,
                "dna_meter_t grew past its audited size ceiling");
@@ -485,6 +547,30 @@ dna_meter_status_t dna_meter_reserve(dna_meter_t *m,
                                      const dna_env_view_t *view,
                                      dna_meter_budget_t *bud);
 
+/**
+ * Nodus EVM: dna_meter_reserve with ONE STREAMED leg (plan.stream_leg).
+ * `stream_leg` is 0 for none, otherwise 1 + the index of a runtime-ABI-2
+ * leg: its declared res_max_effects / res_max_effect_bytes are judged
+ * against DNA_METER_STREAM_MAX_EFFECTS / DNA_METER_STREAM_MAX_EFFECT_BYTES
+ * instead of DNA_EFFECT_MAX_COUNT / DNA_EFFECT_MAX_TOTAL_LEN (still
+ * ERR_DECL above them). Every other rule, formula and reject is
+ * dna_meter_reserve's; a stream_leg beyond view->leg_count is ERR_ARG.
+ * dna_meter_reserve is this with 0 — byte-identical to the pre-Nodus-EVM
+ * behaviour.
+ */
+dna_meter_status_t dna_meter_reserve_ex(dna_meter_t *m,
+                                        const dna_meter_policy_t *pol,
+                                        const dna_env_view_t *view,
+                                        dna_meter_budget_t *bud,
+                                        uint16_t stream_leg);
+
+/** Nodus EVM: the plan build behind dna_meter_reserve_ex (pure; 0 =
+ *  dna_meter_plan_build). */
+dna_meter_status_t dna_meter_plan_build_ex(const dna_meter_policy_t *pol,
+                                           const dna_env_view_t *view,
+                                           uint16_t stream_leg,
+                                           dna_meter_plan_t *out);
+
 /** RESERVED -> ACTIVE; charges the fixed work (header block above),
  *  fully in temporaries. Fits inside the static reservation by
  *  construction; an arithmetic failure is therefore ERR_FAULT, commits
@@ -515,6 +601,51 @@ dna_meter_status_t dna_meter_charge_effects(dna_meter_t *m,
  *  hook this season. */
 dna_meter_status_t dna_meter_charge_read(dna_meter_t *m, uint32_t domain_id);
 dna_meter_status_t dna_meter_charge_write(dna_meter_t *m, uint32_t domain_id);
+
+/* ── Nodus EVM: the PAGED effect charge of a streamed leg (design §4) ───────
+ *
+ * A streamed leg's effects are one canonical stream, ordered and unique
+ * over the whole stream, applied in pages of at most DNA_EFFECT_MAX_COUNT
+ * effects / DNA_EFFECT_MAX_TOTAL_LEN bytes. The charge is the one-result
+ * charge of the WHOLE stream — w_effect × count + w_effectbyte × (ONE
+ * 23-byte head + Σ (84 + key + value)) — so how the stream is cut into
+ * pages never changes the price (design I3).
+ *
+ *   begin(count, bytes, extra, s)  ACTIVE, leg streamed (plan.stream_leg),
+ *       `s` zeroed, the leg's effects not yet charged. `bytes` is the
+ *       stream's one-result canonical length and must be at least
+ *       23 + 84 × count (ERR_ARG otherwise). count / bytes above the
+ *       leg's declared ceilings or the stream caps -> ERR_LIMIT. The
+ *       charge must fit TOGETHER with `extra_units` (the units the engine
+ *       charges next for the same leg, e.g. EVM gas): if amount + extra
+ *       would cross the global ceiling -> ERR_CEILING, or the domain
+ *       budget -> ERR_DOMAIN_BUDGET. Only `amount` is committed; `s` is
+ *       opened. Every failure leaves meter, budget AND `s` unchanged.
+ *   page(s, view)  a strictly-decoded page of the open stream: its count
+ *       and body (res_len - 23) accumulate in `s`; exceeding what begin
+ *       declared is ERR_FAULT (the engine handed more than it charged).
+ *   finish(s)  the accumulated count and 23 + body must equal what begin
+ *       declared, exactly — anything else is ERR_FAULT. Closes `s`.
+ * The meter cannot see key ORDER across pages — the engine checks the
+ * stream's order/uniqueness (nodus_witness_v2_apply.c exec_evm_leg). */
+dna_meter_status_t dna_meter_charge_effects_begin(dna_meter_t *m,
+                                                  uint32_t domain_id,
+                                                  uint64_t count,
+                                                  uint64_t bytes,
+                                                  uint64_t extra_units,
+                                                  dna_meter_stream_t *s);
+dna_meter_status_t dna_meter_charge_effects_page(const dna_meter_t *m,
+                                                 dna_meter_stream_t *s,
+                                                 const dna_effect_view_t *v);
+dna_meter_status_t dna_meter_charge_effects_finish(const dna_meter_t *m,
+                                                   dna_meter_stream_t *s);
+
+/** Nodus EVM: charge `gas` units of EVM gas × DNA_METER_EVM_W_GAS to the leg of
+ *  `domain_id` (the gas figure is engine-derived from the EVM result,
+ *  never a caller price). ACTIVE only; charge_effects' failure semantics. */
+dna_meter_status_t dna_meter_charge_evm_gas(dna_meter_t *m,
+                                            uint32_t domain_id,
+                                            uint64_t gas);
 
 /** ACTIVE -> FINALIZED; releases unused units (header block above).
  *  g_released / dom_released are set for every slot; a remainder

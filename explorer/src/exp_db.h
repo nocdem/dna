@@ -16,7 +16,17 @@
  *                input of a NAME_REGISTER is owned by its one signer, the
  *                name's owner: rtn_name_exec, nodus_witness_rt_native.c),
  *                NULL when that coin's creating item is not indexed
+ *   item_evm     Nodus EVM: the EVM facts of an applied EVM item (dnac_v3_block
+ *                optional keys "ev"/"ri"/"ro"): status, gas, sender,
+ *                target / created / value, recipient, log count, opened
+ *                tickets (<= 32 + a "more" flag), wei destroyed, receipt
+ *                digest, the CORE EVM reserve move
  *   meta         key/value (watermark, chain_id32 reference, tip, supply)
+ *
+ * item_evm follows the item_names rule: CREATE TABLE IF NOT EXISTS on
+ * every open, no schema bump. An index advanced past the EVM activation
+ * height by a binary WITHOUT it lacks those items' EVM rows until it is
+ * rebuilt (delete the index file; the next start re-indexes from 1).
  *
  * item_names is created with CREATE TABLE IF NOT EXISTS on every open, so
  * an existing v2 index gains it without a rebuild (no name can exist
@@ -138,9 +148,40 @@ typedef struct {
     uint64_t unlock_block;       /* created only; 0 = unlocked */
 } exp_io_row_t;
 
+/* Nodus EVM P4-C: the EVM facts of one APPLIED EVM item (dnac_v3_block "ev",
+ * "ri", "ro" — nodus/include/nodus/nodus.h), stored in item_evm. Every
+ * field is the node's answer copied as-is: the node read it from its
+ * stored receipt (evm_receipts) and the decoded call; nothing is derived
+ * here. Byte strings are big-endian as on the wire. */
+#define EXP_EVM_MAX_TICKETS 32   /* == NODUS_DNAC_V3_EVM_MAX_TICKETS (checked in exp_extract.c) */
+
+typedef struct {
+    uint64_t height;
+    uint32_t idx;
+    int      status;             /* 1 success, 0 failed (a paid failure) */
+    uint64_t gas_used;           /* EVM gas, not ledger units */
+    uint8_t  sender[32];
+    int      has_target;         /* CALL */
+    uint8_t  target[32];
+    int      has_created;        /* successful CREATE */
+    uint8_t  created[32];
+    int      has_value;          /* CALL / CREATE */
+    uint8_t  value_wei[32];
+    char     dest[129];          /* WITHDRAW / REDEEM recipient fp; "" = none */
+    uint32_t n_logs;
+    uint32_t n_tickets;          /* <= EXP_EVM_MAX_TICKETS */
+    int      tickets_more;       /* the receipt holds more than n_tickets */
+    uint8_t  tickets[EXP_EVM_MAX_TICKETS][64];
+    uint8_t  wei_destroyed[32];
+    uint8_t  digest[64];         /* the receipt digest = ExecTxResult.Data */
+    uint64_t reserve_in;         /* raw units into the CORE EVM reserve (DEPOSIT) */
+    uint64_t reserve_out;        /* raw units out of it (WITHDRAW / REDEEM) */
+} exp_evm_row_t;
+
 /* One whole height, as exp_extract builds it from the dnac_v3_block pages.
  * items[] is index-ascending (items[i].idx == i); ios[] holds every item's
- * rows grouped by item, consumed before created, each in call order.
+ * rows grouped by item, consumed before created, each in call order;
+ * evms[] (Nodus EVM) one row per applied EVM item, idx strictly ascending.
  * Heap arrays — exp_block_batch_free releases them. */
 typedef struct {
     int              have_header;
@@ -151,6 +192,9 @@ typedef struct {
     exp_io_row_t    *ios;
     size_t           n_ios;
     size_t           cap_ios;
+    exp_evm_row_t   *evms;
+    size_t           n_evms;
+    size_t           cap_evms;
 } exp_block_batch_t;
 
 void exp_block_batch_init(exp_block_batch_t *b);
@@ -184,8 +228,8 @@ int  exp_db_set_meta_blob(exp_db_t *db, const char *key, const uint8_t *buf, siz
  * Checks: the blocks are exactly heights 1..last_indexed_height; every
  * block's item count equals its n_items and its applied envelope count
  * (kind 1, code 0) equals applied_count; every item has a block row; every
- * io row, record row and name row belongs to an applied item; no refused
- * item has effects; no chain name is registered twice. 0 = consistent,
+ * io row, record row, name row and EVM row belongs to an applied item; no
+ * refused item has effects; no chain name is registered twice. 0 = consistent,
  * -1 = inconsistent or query failure. */
 int  exp_db_verify_index(exp_db_t *db);
 
@@ -231,6 +275,27 @@ int  exp_db_query_item_by_name(exp_db_t *db, const char *name, exp_item_row_t *r
  * record (exp_db_verify_index), so every row is an applied item. */
 int  exp_db_query_records_by_kind(exp_db_t *db, int rec_kind, int max,
                                   exp_item_row_t *rows, int *count_out);
+
+/* ── Nodus EVM (item_evm) ───────────────────────────────────────────────── */
+
+/* The EVM row of item (height, idx). @return 1 found (*out filled), 0 the
+ * item has none, -1 query failure. */
+int  exp_db_query_item_evm(exp_db_t *db, uint64_t height, uint32_t idx,
+                           exp_evm_row_t *out);
+
+/* Items whose EVM row names the 32-byte address `addr` as sender, CALL
+ * target or created contract, strictly before (before_height,
+ * before_idx), (height, idx) descending, at most `limit` — the
+ * exp_db_query_address cursor contract. */
+int  exp_db_query_evm_address(exp_db_t *db, const uint8_t addr[32],
+                              uint64_t before_height, uint32_t before_idx,
+                              int limit, exp_item_row_t *rows, int *count_out);
+
+/* The item that CREATED contract `addr` (a successful CREATE; lowest
+ * (height, idx) if the index ever held two). @return 1 found, 0 none,
+ * -1 query failure. */
+int  exp_db_query_evm_creation(exp_db_t *db, const uint8_t addr[32],
+                               exp_item_row_t *out);
 
 /* ── throughput (/api/tps) ─────────────────────────────────────────── */
 

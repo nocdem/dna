@@ -410,6 +410,22 @@ int nodus_witness_domreg_generation_switch(nodus_witness_t *w,
                                            uint32_t from_gen,
                                            uint32_t to_gen);
 
+/**
+ * Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md
+ * rev 3 §9, Fable NEW-1): write ONE new registry record DIRECTLY ACTIVE —
+ * the domreg_init_genesis record shape (every pending / proposal /
+ * scheduling field empty), with NO head. Phase 6b'' registers the EVM
+ * domain with it at the end of block H-1; the SAME block's 6c lifecycle
+ * re-scan sees an ACTIVE domain without a head and activates it through
+ * head_activate (state_init + the root against the manifest's
+ * genesis_state_root + the height-0 history row). Inside the caller's
+ * transaction.
+ * @return 0 written / 1 the domain is already registered (the engine
+ *         FAULTs) / -1 an invalid manifest, a read or a write fault.
+ */
+int nodus_witness_domreg_register_active(nodus_witness_t *w,
+                                         const dna_domain_manifest_t *m);
+
 #ifdef __cplusplus
 }
 #endif

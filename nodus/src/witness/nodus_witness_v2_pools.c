@@ -914,7 +914,8 @@ int nodus_witness_v2_pools_startup_check(nodus_witness_t *w) {
         ver != NODUS_V2_SCHEMA_VERSION_S10 &&
         ver != NODUS_V2_SCHEMA_VERSION_S11 &&
         ver != NODUS_V2_SCHEMA_VERSION_S12 &&
-        ver != NODUS_V2_SCHEMA_VERSION_S16)
+        ver != NODUS_V2_SCHEMA_VERSION_S16 &&
+        ver != NODUS_V2_SCHEMA_VERSION_S17)   /* Nodus EVM: the live rung */
         return 0;                        /* pre-v7: no pool state (the
                                           * S8 intent schema CONTAINS the
                                           * S7 pool tables — the check
@@ -1202,7 +1203,8 @@ int nodus_rt_core_state_init(const nodus_domain_runtime_t *rt,
          ver != NODUS_V2_SCHEMA_VERSION_S10 &&
          ver != NODUS_V2_SCHEMA_VERSION_S11 &&
          ver != NODUS_V2_SCHEMA_VERSION_S12 &&
-         ver != NODUS_V2_SCHEMA_VERSION_S16))
+         ver != NODUS_V2_SCHEMA_VERSION_S16 &&
+         ver != NODUS_V2_SCHEMA_VERSION_S17))   /* Nodus EVM: the live rung */
         return -1;
 
     for (size_t i = 0;

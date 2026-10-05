@@ -1,7 +1,7 @@
 import { getAddress } from 'ethers';
 import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
 import { deleteVaultHistory, HistoryDeleteBlocked } from './connect/store.js';
-import { serializeActivity, parseActivity, activityKeyFor, serializeBalances, parseBalances, balancesKeyFor, serializeHistory, parseHistory, historyKeyFor, serializeAddressBook, parseAddressBook, addressBookKeyFor } from './activity-storage.js';
+import { serializeActivity, parseActivity, requireSavedForEvm, activityKeyFor, serializeBalances, parseBalances, balancesKeyFor, serializeHistory, parseHistory, historyKeyFor, serializeAddressBook, parseAddressBook, addressBookKeyFor } from './activity-storage.js';
 import { addAddress, updateAddress, removeAddress, addressesFor, findAddress, checkAddress } from './address-book.js';
 import { validateCellframeAddress } from './cpunk-protocol.js';
 import { readHistory, mergeHistory, historySupported, HISTORY_SOURCES, HISTORY_LIMIT } from './history.js';
@@ -248,6 +248,7 @@ function renderActivity(save = true) {
       : row.kind === 'undelegate' ? ['Undelegation', `back from validator ${row.to} (returned locked)`]
       : row.kind === 'stake' ? ['Validator bond']
       : row.kind === 'name' ? ['Chain name registration', row.name ? `"${row.name}"` : 'for your address']
+      : row.kind === 'evm' ? ['Smart contracts', row.evmTitle || 'transaction']
       : [`→ ${row.to}`];
     const main = el('span', 'activity-main');
     main.append(el('strong', '', `${row.amount} ${row.symbol}`), el('small', '', what.join(' · ')));
@@ -748,7 +749,17 @@ async function connectNodus(source, address, client, markReady) {
     void refreshClaim();
     void refreshStaking();
     void refreshName();
-    raise('nodusReady', { client, phrase: source.recoveryPhrase, vaultId: activitySession?.id ?? null, fresh: walletFresh });
+    // lockedInputs(): coins of this wallet's pending NODUS transactions
+    // (src/adapters/nodus.js lockedInputs) — an extension that builds from
+    // the wallet's coins (smart contracts, src/evm/ui.js) never offers them.
+    // evmRecord / evmPending: the smart-contract panel's Activity row and
+    // its one-pending reservation (recordEvmActivity / evmPendingRows).
+    raise('nodusReady', {
+      client, phrase: source.recoveryPhrase, vaultId: activitySession?.id ?? null, fresh: walletFresh,
+      lockedInputs: () => (wallet === source ? adapters.nodus.lockedInputs(history.filter(row => row.address === source.addresses.nodus)) : new Set()),
+      evmRecord: (details, what) => recordEvmActivity(source, details, what),
+      evmPending: () => evmPendingRows(source)
+    });
   } catch (error) {
     if (!current()) return;
     const why = error?.message ? ` (${error.message})` : '';
@@ -764,6 +775,56 @@ async function connectNodus(source, address, client, markReady) {
     setNodusReady(false);
     $('nodus-address-status').textContent = `Derived locally from this wallet’s recovery phrase. Nodus balance and sending are unavailable${why}. Lock and reopen your wallet to retry.`;
   }
+}
+// SMART CONTRACTS (src/evm/ui.js, red-team 1 F8): an EVM transaction is
+// recorded in Activity exactly like a NODUS send — recordActivity's NODUS
+// row (hash = intent id, expiryHeight, fromHeight, inputs), so
+// adapters.nodus.lockedInputs holds its coins against every other send and
+// the tracker (checkRow) resolves it by block scan — and made durable
+// BEFORE its envelope leaves the browser (the confirm-send rule). `to` is
+// this wallet's own address: the EVM account is bound to it, and it is the
+// marker evmPendingRows reads after a reload (src/activity-storage.js does
+// not keep `kind`; a reloaded row reads as a NODUS transfer to this wallet's
+// own address, like a staking or name row). `what`: { title, amount } —
+// the panel's action and the NODUS leaving the coins (amount + fee).
+async function recordEvmActivity(source, details, { title, amount } = {}) {
+  if (wallet !== source || source.locked) throw new Error('The wallet was locked. Nothing was sent.');
+  // An unsaved wallet keeps no Activity (persistActivity saves nothing
+  // without activitySession), so the record could not be durable: refuse
+  // before any row exists (red-team 2; the NODUS send path is unchanged).
+  requireSavedForEvm(!!activitySession);
+  // the saved Activity refuses a row whose amount is not this decimal form
+  // (src/activity-storage.js) — never write one that would make it unreadable
+  if (typeof amount !== 'string' || !/^\d{1,78}(\.\d{1,18})?$/.test(amount)) throw new Error('Invalid smart-contract record. Nothing was sent.');
+  const own = source.addresses.nodus;
+  const record = recordActivity({ chain: NODUS_ASSET.chain, from: own, to: own, symbol: NODUS_ASSET.symbol, amount }, details);
+  record.kind = 'evm'; record.evmTitle = typeof title === 'string' ? title : '';
+  record.note = 'Smart-contract transaction signed; sending.';
+  history.push(record); renderActivity(false);
+  // The signed hash must be durable before the first network submission.
+  // If it cannot be saved nothing is sent (src/evm/contract.js confirm
+  // submits only after this resolves), so the row is withdrawn again.
+  try { await persistActivity({ required: true }); }
+  catch (error) {
+    const at = history.indexOf(record);
+    if (at >= 0) history.splice(at, 1);
+    renderActivity(false);
+    throw error;
+  }
+  trackActivity();
+}
+// The one-pending reservation of the smart-contract account (operator
+// decision 2026-10-04-nodus-evm-kurultay-k2-summary.md #2), read from Activity:
+// every unresolved NODUS row of this wallet that may be an EVM transaction
+// — marked 'evm' in this tab, or (after a reload, `kind` not kept) any row
+// to this wallet's own address. It over-matches self-transfers and name
+// registrations (the next smart-contract transaction then waits for them
+// too); it never misses an EVM row. A claim row is never one.
+function evmPendingRows(source) {
+  if (wallet !== source || source.locked) return [];
+  const own = source.addresses.nodus;
+  return history.filter(row => row.chain === NODUS_ASSET.chain && row.address === own && !terminal(row.status) && !adapters.nodus.isClaimRow(row)
+    && (row.kind === 'evm' || (row.kind === undefined && row.to === own))).map(row => ({ hash: row.hash, expiryHeight: row.expiryHeight }));
 }
 // "1234567.5" -> "1,234,567.5" (display only).
 function groupDigits(text) { const [whole, fraction] = text.split('.'); return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (fraction ? `.${fraction}` : ''); }

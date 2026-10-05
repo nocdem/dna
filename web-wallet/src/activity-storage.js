@@ -1,5 +1,5 @@
 import { CHAINS } from './config.js';
-import { validHash, validNodusPending } from './activity.js';
+import { validHash, validNodusPending, terminal } from './activity.js';
 import { NODUS_ASSET } from './nodus/network.js';
 import { historySupported, checkHistoryRows } from './history.js';
 import { checkAddressBook, ADDRESS_BOOK_MAX } from './address-book.js';
@@ -120,11 +120,57 @@ export async function parseBalances(text, id, key, now = Date.now()) {
   return out;
 }
 const header = data => ({ version: data.version, id: data.id, cipher: data.cipher, iv: data.iv });
+// A smart-contract transaction's Activity row must be DURABLE before its
+// envelope is sent (red-team 1 F8), and Activity is saved only for a wallet
+// saved in this browser (src/app.js persistActivity resolves without saving
+// when there is no saved session). The EVM record callback (src/app.js
+// recordEvmActivity) calls this first (red-team 2): an unsaved wallet is
+// refused there, so src/evm/contract.js confirm sends nothing. The NODUS
+// send path does not use it.
+export function requireSavedForEvm(saved) {
+  if (saved !== true) throw new Error('Smart-contract transactions need this wallet to be saved in this browser first. Save it in Device & settings, then try again. Nothing was sent.');
+}
+const ACTIVITY_MAX_ROWS = 100;
+// A row read back by parseActivity carries `savedStatus`, the status it was
+// SAVED with (its live `status` is reset to 'pending' until the tracker
+// re-verifies it). A row made in this session has none.
+// - unresolvedForRetention: the live status is not terminal() AND the row
+//   was not saved as terminal — a row saved confirmed / failed / expired /
+//   replaced / abandoned and not re-verified yet counts as resolved here.
+// - savedForm: the status written. The live one, except a parsed row still
+//   at its reset 'pending' whose saved status is terminal: that keeps its
+//   saved status, so a re-save before the tracker runs does not turn a
+//   confirmed row into a saved 'pending'.
+// What holds or releases coins (src/adapters/nodus.js lockedInputs) reads
+// the live status only; neither rule changes it.
+const unresolvedForRetention = row => !terminal(row.status) && (row.savedStatus === undefined || !terminal(row.savedStatus));
+const savedForm = row => (row.status === 'pending' && row.savedStatus !== undefined && terminal(row.savedStatus) ? row.savedStatus : row.status);
+// The rows kept in the saved Activity, in their given (time) order: EVERY
+// unresolved row (a pending NODUS send or EVM reservation holds coins and
+// must survive any number of newer rows), then the newest resolved rows up
+// to ACTIVITY_MAX_ROWS in total. More unresolved rows than that cannot be
+// saved (parseActivity reads at most ACTIVITY_MAX_ROWS) and are refused as
+// too large, never dropped.
+function keptActivity(rows) {
+  const open = rows.filter(unresolvedForRetention).length;
+  if (open > ACTIVITY_MAX_ROWS) throw new Error('Saved activity is too large.');
+  let room = ACTIVITY_MAX_ROWS - open;
+  const keep = new Array(rows.length).fill(false);
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (unresolvedForRetention(rows[i])) keep[i] = true;
+    else if (room > 0) { keep[i] = true; room--; }
+  }
+  return rows.filter((_, i) => keep[i]);
+}
 export async function serializeActivity(id, rows, key) {
   const data = { version: 2, id, cipher: 'AES-256-GCM', iv: encode(crypto.getRandomValues(new Uint8Array(12))) };
   // expiryHeight / fromHeight / inputs exist only on NODUS rows; JSON drops
   // them (undefined) for every other network, whose saved form is unchanged.
-  const selected = rows.slice(-100).map(({ chain, address, to, symbol, amount, hash, lastValidBlockHeight, expiration, nonce, createdAt, status, expiryHeight, fromHeight, inputs }) => ({ chain, address, to, symbol, amount, hash, lastValidBlockHeight, expiration, nonce, createdAt, status, expiryHeight, fromHeight, inputs }));
+  // `status` is written as savedForm (above); `savedStatus` is never written.
+  const selected = keptActivity(rows).map(row => {
+    const { chain, address, to, symbol, amount, hash, lastValidBlockHeight, expiration, nonce, createdAt, expiryHeight, fromHeight, inputs } = row;
+    return { chain, address, to, symbol, amount, hash, lastValidBlockHeight, expiration, nonce, createdAt, status: savedForm(row), expiryHeight, fromHeight, inputs };
+  });
   const bytes = encoder.encode(JSON.stringify(selected));
   try {
     if (bytes.length > MAX_PLAIN) throw new Error('Saved activity is too large.');
@@ -156,7 +202,9 @@ export async function parseActivity(text, id, addresses, key) {
     if (row.lastValidBlockHeight !== undefined && (!Number.isSafeInteger(row.lastValidBlockHeight) || row.lastValidBlockHeight < 0)) throw new Error('Invalid saved expiry.');
     if (row.expiration !== undefined && (!Number.isSafeInteger(row.expiration) || row.expiration < 0)) throw new Error('Invalid saved expiry.');
     // Every saved status is re-verified from the network (NODUS included: an
-    // 'expired' row locks its coins again until a fresh scan says so).
-    return { chain: row.chain, address: row.address, to: row.to, symbol: row.symbol, amount: row.amount, endpoint: nodus ? undefined : CHAINS[row.chain].endpoint, hash: row.hash, createdAt: row.createdAt, lastValidBlockHeight: row.lastValidBlockHeight, expiration: row.expiration, nonce: row.nonce, ...(nodus ? { expiryHeight: row.expiryHeight, fromHeight: row.fromHeight, inputs: [...row.inputs] } : {}), ...(row.status === 'abandoned' ? { status: 'abandoned', note: 'Marked abandoned by you; the network may still include it. Check the explorer.' } : { status: 'pending', note: 'Authenticated local record; verifying network status.' }) };
+    // 'expired' row locks its coins again until a fresh scan says so). The
+    // status it was saved with stays in memory as `savedStatus`, for
+    // serializeActivity's retention and re-save only (keptActivity / savedForm).
+    return { savedStatus: row.status, chain: row.chain, address: row.address, to: row.to, symbol: row.symbol, amount: row.amount, endpoint: nodus ? undefined : CHAINS[row.chain].endpoint, hash: row.hash, createdAt: row.createdAt, lastValidBlockHeight: row.lastValidBlockHeight, expiration: row.expiration, nonce: row.nonce, ...(nodus ? { expiryHeight: row.expiryHeight, fromHeight: row.fromHeight, inputs: [...row.inputs] } : {}), ...(row.status === 'abandoned' ? { status: 'abandoned', note: 'Marked abandoned by you; the network may still include it. Check the explorer.' } : { status: 'pending', note: 'Authenticated local record; verifying network status.' }) };
   });
 }

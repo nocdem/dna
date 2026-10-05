@@ -460,8 +460,10 @@ static int run_s12_apply_matrix(void) {
         CHECK(s12_open_dist(&fx, chain, mh) == 0,
               "present-distribution genesis"); OK();
         uint32_t sv = 0;
-        CHECK(nodus_witness_db_schema_version(fx.w, &sv) == 0 && sv == 16,
-              "fixture DB at the live rung S16"); OK();
+        /* Nodus EVM F3-C2 made S17 (empty EVM tables) the live rung; S17
+         * still carries the S12 claim tables this section checks. */
+        CHECK(nodus_witness_db_schema_version(fx.w, &sv) == 0 && sv == 17,
+              "fixture DB at the live rung S17"); OK();
         CHECK(has_table(fx.w->db, "v2_claim_bytes") == 1 &&
               has_table(fx.w->db, "v2_claim_counts") == 1,
               "S12 claim tables present"); OK();
@@ -571,6 +573,419 @@ static int run_s12_apply_matrix(void) {
 
         fx_close(&fx);
     }
+    return 0;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Nodus EVM red-team 1 F4 — the §18 evm_logs CURSOR SCAN and its indexes
+ * (nodus_witness_v2_schema.h): a fresh DB climbed to S17, receipts and
+ * logs INSERTED by this test (the node-local index; the apply writer is
+ * test_v2_evm.c's), in an order that differs from the block order and
+ * with intent ids that sort AGAINST the item order — so every order the
+ * scan returns comes from its indexes, not from insertion or the key.
+ * ════════════════════════════════════════════════════════════════════════ */
+
+#define LS_A 0xA1
+#define LS_B 0xB2
+#define LS_C 0xC3
+#define LS_T1 0x71
+#define LS_T2 0x72
+#define LS_T3 0x73
+
+static int ls_rcpt(sqlite3 *db, uint8_t intent_b, uint64_t h, uint64_t x) {
+    uint8_t id[64], dg[64];
+    memset(id, intent_b, 64);
+    memset(dg, 0, 64);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT INTO evm_receipts (intent_id, global_height, item_index, "
+            "receipt, digest) VALUES (?1, ?2, ?3, x'01', ?4)", -1, &st, NULL)
+        != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, id, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)h);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)x);
+    sqlite3_bind_blob(st, 4, dg, 64, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+/* data bytes: (k + li) & 0xff for k = 0 .. dl-1 */
+static int ls_log(sqlite3 *db, uint8_t intent_b, uint64_t li, uint64_t h,
+                  uint8_t addr_b, const uint8_t *topic_b, int nt, int dl) {
+    uint8_t id[64], a[32], tp[128];
+    static uint8_t data[2048];
+    memset(id, intent_b, 64);
+    memset(a, addr_b, 32);
+    for (int t = 0; t < nt; t++) memset(tp + t * 32, topic_b[t], 32);
+    for (int k = 0; k < dl; k++) data[k] = (uint8_t)((k + (int)li) & 0xff);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT INTO evm_logs (intent_id, log_index, global_height, addr, "
+            "topics, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", -1, &st, NULL)
+        != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, id, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)li);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)h);
+    sqlite3_bind_blob(st, 4, a, 32, SQLITE_TRANSIENT);
+    if (nt) sqlite3_bind_blob(st, 5, tp, nt * 32, SQLITE_TRANSIENT);
+    else sqlite3_bind_zeroblob(st, 5, 0);
+    if (dl) sqlite3_bind_blob(st, 6, data, dl, SQLITE_TRANSIENT);
+    else sqlite3_bind_zeroblob(st, 6, 0);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+typedef struct {
+    uint64_t h, x, li;
+    uint8_t  addr_b, t0_b;
+    int      nt, dl;
+} ls_exp_t;
+
+/* the block order of every log above */
+static const ls_exp_t LS_ALL[] = {
+    { 10, 0, 0, LS_A, LS_T1, 1, 2 },
+    { 10, 0, 1, LS_B, LS_T2, 1, 0 },
+    { 10, 0, 2, LS_A, LS_T2, 1, 3 },
+    { 10, 5, 0, LS_B, LS_T1, 1, 1 },
+    { 11, 1, 0, LS_A, 0,     0, 0 },
+    { 11, 1, 1, LS_A, LS_T1, 2, 4 },
+    { 13, 0, 0, LS_C, LS_T1, 1, 1000 },
+};
+#define LS_N (sizeof(LS_ALL) / sizeof(LS_ALL[0]))
+
+static int ls_seed(sqlite3 *db) {
+    static const uint8_t t1[] = { LS_T1 }, t2[] = { LS_T2 },
+                         t13[] = { LS_T1, LS_T3 };
+    /* insertion order deliberately NOT the block order; intent ids sort
+     * against the item order (0x50 at item 0 … 0x10 at height 13) */
+    if (ls_rcpt(db, 0x10, 13, 0) || ls_log(db, 0x10, 0, 13, LS_C, t1, 1, 1000))
+        return -1;
+    if (ls_rcpt(db, 0x20, 11, 1) || ls_log(db, 0x20, 1, 11, LS_A, t13, 2, 4) ||
+        ls_log(db, 0x20, 0, 11, LS_A, NULL, 0, 0))
+        return -1;
+    if (ls_rcpt(db, 0x30, 10, 5) || ls_log(db, 0x30, 0, 10, LS_B, t1, 1, 1))
+        return -1;
+    if (ls_rcpt(db, 0x50, 10, 0) || ls_log(db, 0x50, 2, 10, LS_A, t2, 1, 3) ||
+        ls_log(db, 0x50, 1, 10, LS_B, t2, 1, 0) ||
+        ls_log(db, 0x50, 0, 10, LS_A, t1, 1, 2))
+        return -1;
+    if (ls_rcpt(db, 0x40, 10, 2)) return -1;           /* no logs        */
+    return 0;
+}
+
+static int ls_row_is(const nodus_evm_log_row_t *r, const ls_exp_t *e) {
+    uint8_t a[32], ib[64];
+    memset(a, e->addr_b, 32);
+    if (r->h != e->h || r->x != e->x || r->li != e->li ||
+        memcmp(r->addr, a, 32) != 0 || r->n_topics != e->nt ||
+        r->data_len != (size_t)e->dl)
+        return 0;
+    if (e->nt && (r->topics[0][0] != e->t0_b || r->topics[0][31] != e->t0_b))
+        return 0;
+    for (int k = 0; k < e->dl; k++)
+        if (r->data[k] != (uint8_t)((k + (int)e->li) & 0xff)) return 0;
+    /* the intent id is the receipt's: 0x50 / 0x30 / 0x20 / 0x10 */
+    uint8_t want_i = e->h == 13 ? 0x10 : e->h == 11 ? 0x20
+                     : e->x == 5 ? 0x30 : 0x50;
+    memset(ib, want_i, 64);
+    return memcmp(r->intent_id, ib, 64) == 0;
+}
+
+/* Page through [fh, th] with the given bounds until a page reaches th;
+ * every page checked against the scan's own contract. Returns the
+ * concatenated positions in got[] (count in *n), the number of pages in
+ * *pages. @return 0 / -1. */
+static int ls_page_all(nodus_witness_t *w, uint64_t fh, uint64_t th,
+                       const uint8_t *addr, const uint8_t *const topic[4],
+                       uint32_t lim, uint64_t max_ex, size_t max_bytes,
+                       uint64_t gas_cap, ls_exp_t *got, size_t cap,
+                       size_t *n, int *pages) {
+    nodus_evm_logs_scan_t q;
+    memset(&q, 0, sizeof(q));
+    q.from.h = fh;
+    q.th = th;
+    q.addr = addr;
+    for (int t = 0; t < 4; t++) q.topic[t] = topic ? topic[t] : NULL;
+    q.lim = lim;
+    q.max_examined = max_ex;
+    q.max_bytes = max_bytes;
+    q.gas_cap = gas_cap;
+    *n = 0;
+    *pages = 0;
+    for (int it = 0; it < 200; it++) {
+        nodus_evm_logs_page_t pg;
+        if (nodus_witness_evm_logs_scan(w, &q, &pg) != 0) return -1;
+        (*pages)++;
+        int bad = pg.examined > max_ex || pg.gas > gas_cap ||
+                  pg.gas != pg.examined * NODUS_EVM_RPC_GAS_PER_ROW +
+                                (uint64_t)pg.bytes * NODUS_EVM_RPC_GAS_PER_BYTE ||
+                  pg.n > lim;
+        for (size_t k = 0; k < pg.n && !bad; k++) {
+            const nodus_evm_log_row_t *r = &pg.rows[k];
+            if (*n >= cap) { bad = 1; break; }
+            /* the row as the seed wrote it */
+            const ls_exp_t *e = NULL;
+            for (size_t j = 0; j < LS_N; j++)
+                if (LS_ALL[j].h == r->h && LS_ALL[j].x == r->x &&
+                    LS_ALL[j].li == r->li)
+                    e = &LS_ALL[j];
+            if (!e || !ls_row_is(r, e)) { bad = 1; break; }
+            got[(*n)++] = *e;
+        }
+        if (!bad && pg.truncated) {
+            /* progress: the cursor is strictly past the page's start */
+            const nodus_evm_log_pos_t *a = &q.from, *b = &pg.next;
+            int fwd = b->h > a->h || (b->h == a->h && (b->x > a->x ||
+                      (b->x == a->x && b->li > a->li)));
+            if (!fwd || b->h > th) bad = 1;
+            q.from = pg.next;
+        }
+        int more = pg.truncated;
+        nodus_witness_evm_logs_page_free(&pg);
+        if (bad) return -1;
+        if (!more) return 0;
+    }
+    return -1;                                   /* no end in 200 pages */
+}
+
+/* got[0..n) == the LS_ALL entries selected by `keep`, in order */
+static int ls_same(const ls_exp_t *got, size_t n, const int *keep) {
+    size_t j = 0;
+    for (size_t k = 0; k < LS_N; k++) {
+        if (!keep[k]) continue;
+        if (j >= n || got[j].h != LS_ALL[k].h || got[j].x != LS_ALL[k].x ||
+            got[j].li != LS_ALL[k].li)
+            return 0;
+        j++;
+    }
+    return j == n;
+}
+
+static int run_s17_log_scan(void) {
+    fixture_t fx;
+    CHECK(fx_open(&fx) == 0, "s17 scan fixture"); OK();
+    CHECK(nodus_witness_db_migrate_v2s17(fx.w) == 0, "0->17"); OK();
+    uint32_t ver = 0;
+    CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 17,
+          "version != 17"); OK();
+    int n = -1;
+    CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                  "type='index' AND name IN ('evm_receipts_by_pos', "
+                  "'evm_logs_by_addr', 'evm_logs_by_height')", &n) == 0 &&
+          n == 3, "the S17 rung's three log indexes"); OK();
+
+    /* ── every scan statement is index-served: no full scan, no sort ── */
+    for (int k = 0; k < NODUS_EVM_LOGS_SCAN_SQL_N; k++) {
+        char sql[640];
+        snprintf(sql, sizeof(sql), "EXPLAIN QUERY PLAN %s",
+                 nodus_evm_logs_scan_sql[k]);
+        sqlite3_stmt *st = NULL;
+        CHECK(sqlite3_prepare_v2(fx.w->db, sql, -1, &st, NULL) == SQLITE_OK,
+              "explain");
+        int rows = 0, bad = 0, rc;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            const char *d = (const char *)sqlite3_column_text(st, 3);
+            rows++;
+            if (!d || strncmp(d, "SEARCH ", 7) != 0 ||
+                strstr(d, "TEMP B-TREE") != NULL) {
+                fprintf(stderr, "plan of scan statement %d: %s\n", k,
+                        d ? d : "(null)");
+                bad = 1;
+            }
+        }
+        sqlite3_finalize(st);
+        CHECK(rc == SQLITE_DONE && rows > 0 && !bad,
+              "a scan statement is not a pure index SEARCH");
+    }
+    OK();
+
+    /* ── the upgrade path for a DB already at S17 ───────────────────── */
+    CHECK(run_sql(fx.w->db, "DROP INDEX evm_receipts_by_pos;"
+                            "DROP INDEX evm_logs_by_addr") == 0, "drop");
+    CHECK(nodus_witness_db_ensure_v2s17_indexes(fx.w) == 0, "ensure"); OK();
+    CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                  "type='index' AND name IN ('evm_receipts_by_pos', "
+                  "'evm_logs_by_addr')", &n) == 0 && n == 2,
+          "ensure recreated both"); OK();
+    CHECK(nodus_witness_db_ensure_v2s17_indexes(fx.w) == 0 &&
+          nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 17,
+          "ensure is idempotent, the version untouched"); OK();
+    CHECK(run_sql(fx.w->db, "DROP INDEX evm_receipts_by_pos;"
+                  "CREATE INDEX evm_receipts_by_pos ON "
+                  "evm_receipts(item_index, global_height)") == 0,
+          "same name, other key order");
+    CHECK(nodus_witness_db_ensure_v2s17_indexes(fx.w) == -1,
+          "another shape is refused"); OK();
+    CHECK(run_sql(fx.w->db, "DROP INDEX evm_receipts_by_pos") == 0 &&
+          nodus_witness_db_ensure_v2s17_indexes(fx.w) == 0,
+          "restored"); OK();
+    {
+        fixture_t f0;
+        CHECK(fx_open(&f0) == 0, "a version-0 DB");
+        CHECK(nodus_witness_db_ensure_v2s17_indexes(f0.w) == 0 &&
+              has_table(f0.w->db, "evm_logs") == 0 &&
+              count_q(f0.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                      "type='index' AND name LIKE 'evm_%'", &n) == 0 && n == 0,
+              "not S17: ensure does nothing"); OK();
+        fx_close(&f0);
+    }
+
+    /* ── the scan ───────────────────────────────────────────────────── */
+    CHECK(ls_seed(fx.w->db) == 0, "seed receipts + logs"); OK();
+    ls_exp_t got[64];
+    size_t gn = 0;
+    int pages = 0;
+    const uint64_t BIG = UINT64_MAX / 4;
+    static const int keep_all[LS_N] = { 1, 1, 1, 1, 1, 1, 1 };
+
+    CHECK(ls_page_all(fx.w, 10, 13, NULL, NULL, 1000, 10000, 1u << 20, BIG,
+                      got, 64, &gn, &pages) == 0 &&
+          pages == 1 && ls_same(got, gn, keep_all),
+          "one page: every log in (h, x, li) order"); OK();
+    /* lim paging: the concatenation is the one-page answer */
+    for (uint32_t lim = 1; lim <= 3; lim++) {
+        CHECK(ls_page_all(fx.w, 10, 13, NULL, NULL, lim, 10000, 1u << 20, BIG,
+                          got, 64, &gn, &pages) == 0 &&
+              ls_same(got, gn, keep_all) && pages >= (int)(LS_N / lim),
+              "lim paging skips nothing, repeats nothing");
+    }
+    OK();
+    /* examined-row paging: 4 steps (seek, receipt, log, data) always
+     * progress; every bound 4..9 yields the same logs */
+    for (uint64_t mx = 4; mx <= 9; mx++) {
+        CHECK(ls_page_all(fx.w, 10, 13, NULL, NULL, 1000, mx, 1u << 20, BIG,
+                          got, 64, &gn, &pages) == 0 &&
+              ls_same(got, gn, keep_all) && pages > 1,
+              "examined-row paging skips nothing, repeats nothing");
+    }
+    OK();
+    /* the reply byte budget: the first log always fits, then a page
+     * stops — the 1000-byte log comes alone */
+    CHECK(ls_page_all(fx.w, 10, 13, NULL, NULL, 1000, 10000, 1, BIG,
+                      got, 64, &gn, &pages) == 0 &&
+          ls_same(got, gn, keep_all) && pages == (int)LS_N,
+          "byte-budget paging: one log per page"); OK();
+    /* the gas cap: a handful of rows per page, and just enough bytes for
+     * the 1000-byte log's reply estimate (1224) beside four rows */
+    CHECK(ls_page_all(fx.w, 10, 13, NULL, NULL, 1000, 10000, 1u << 20,
+                      6u * NODUS_EVM_RPC_GAS_PER_ROW +
+                          1300u * NODUS_EVM_RPC_GAS_PER_BYTE,
+                      got, 64, &gn, &pages) == 0 &&
+          ls_same(got, gn, keep_all) && pages > 1,
+          "gas-cap paging skips nothing, repeats nothing"); OK();
+
+    /* filters */
+    uint8_t A[32], C[32], T1[32], T2[32], T3[32];
+    memset(A, LS_A, 32); memset(C, LS_C, 32);
+    memset(T1, LS_T1, 32); memset(T2, LS_T2, 32); memset(T3, LS_T3, 32);
+    static const int keep_a[LS_N] = { 1, 0, 1, 0, 1, 1, 0 };
+    CHECK(ls_page_all(fx.w, 10, 13, A, NULL, 1000, 10000, 1u << 20, BIG,
+                      got, 64, &gn, &pages) == 0 && ls_same(got, gn, keep_a),
+          "address A"); OK();
+    CHECK(ls_page_all(fx.w, 10, 13, A, NULL, 1, 10000, 1u << 20, BIG,
+                      got, 64, &gn, &pages) == 0 && ls_same(got, gn, keep_a),
+          "address A, one per page"); OK();
+    {
+        const uint8_t *tp[4] = { T1, NULL, NULL, NULL };
+        static const int keep_t1[LS_N] = { 1, 0, 0, 1, 0, 1, 1 };
+        CHECK(ls_page_all(fx.w, 10, 13, NULL, tp, 1000, 10000, 1u << 20, BIG,
+                          got, 64, &gn, &pages) == 0 &&
+              ls_same(got, gn, keep_t1), "topic0 T1"); OK();
+        const uint8_t *tp1[4] = { NULL, T3, NULL, NULL };
+        static const int keep_t3[LS_N] = { 0, 0, 0, 0, 0, 1, 0 };
+        CHECK(ls_page_all(fx.w, 10, 13, NULL, tp1, 1000, 10000, 1u << 20, BIG,
+                          got, 64, &gn, &pages) == 0 &&
+              ls_same(got, gn, keep_t3), "topic1 T3"); OK();
+        const uint8_t *tp2[4] = { T2, NULL, NULL, NULL };
+        static const int keep_at2[LS_N] = { 0, 0, 1, 0, 0, 0, 0 };
+        CHECK(ls_page_all(fx.w, 10, 13, A, tp2, 1000, 10000, 1u << 20, BIG,
+                          got, 64, &gn, &pages) == 0 &&
+              ls_same(got, gn, keep_at2), "address A + topic0 T2"); OK();
+    }
+    /* the address index skips heights without a log of the address:
+     * address C's one log at 13 costs a handful of rows, while the
+     * unfiltered scan of the same range examines every receipt and log */
+    {
+        nodus_evm_logs_scan_t q;
+        memset(&q, 0, sizeof(q));
+        q.from.h = 10;
+        q.th = 13;
+        q.lim = 1000;
+        q.max_examined = 10000;
+        q.max_bytes = 1u << 20;
+        q.gas_cap = BIG;
+        nodus_evm_logs_page_t all, onlyc;
+        CHECK(nodus_witness_evm_logs_scan(fx.w, &q, &all) == 0, "all");
+        q.addr = C;
+        CHECK(nodus_witness_evm_logs_scan(fx.w, &q, &onlyc) == 0, "C");
+        CHECK(onlyc.n == 1 && onlyc.rows[0].h == 13 && !onlyc.truncated &&
+              onlyc.examined <= 6 && all.examined > onlyc.examined + 6,
+              "the address seek skips the heights of other addresses"); OK();
+        nodus_witness_evm_logs_page_free(&all);
+        nodus_witness_evm_logs_page_free(&onlyc);
+    }
+    /* ranges and a cursor in the middle */
+    static const int keep_11[LS_N] = { 0, 0, 0, 0, 1, 1, 0 };
+    CHECK(ls_page_all(fx.w, 11, 11, NULL, NULL, 1000, 10000, 1u << 20, BIG,
+                      got, 64, &gn, &pages) == 0 && ls_same(got, gn, keep_11),
+          "the range [11, 11]"); OK();
+    static const int keep_none[LS_N] = { 0, 0, 0, 0, 0, 0, 0 };
+    CHECK(ls_page_all(fx.w, 12, 12, NULL, NULL, 1000, 10000, 1u << 20, BIG,
+                      got, 64, &gn, &pages) == 0 && pages == 1 &&
+          ls_same(got, gn, keep_none), "an empty height, complete"); OK();
+    {
+        nodus_evm_logs_scan_t q;
+        memset(&q, 0, sizeof(q));
+        q.from.h = 10;
+        q.from.x = 0;
+        q.from.li = 1;
+        q.th = 10;
+        q.lim = 1000;
+        q.max_examined = 10000;
+        q.max_bytes = 1u << 20;
+        q.gas_cap = BIG;
+        nodus_evm_logs_page_t pg;
+        CHECK(nodus_witness_evm_logs_scan(fx.w, &q, &pg) == 0 && pg.n == 3 &&
+              pg.rows[0].li == 1 && pg.rows[1].li == 2 &&
+              pg.rows[2].x == 5 && !pg.truncated,
+              "a cursor (10, 0, 1) resumes exactly there"); OK();
+        nodus_witness_evm_logs_page_free(&pg);
+        /* determinism: the same arguments, the same page */
+        nodus_evm_logs_page_t p1, p2;
+        q.from.li = 0;
+        q.th = 13;
+        q.lim = 4;
+        CHECK(nodus_witness_evm_logs_scan(fx.w, &q, &p1) == 0 &&
+              nodus_witness_evm_logs_scan(fx.w, &q, &p2) == 0 &&
+              p1.n == p2.n && p1.examined == p2.examined &&
+              p1.gas == p2.gas && p1.truncated == p2.truncated &&
+              p1.next.h == p2.next.h && p1.next.x == p2.next.x &&
+              p1.next.li == p2.next.li, "two scans, one answer"); OK();
+        nodus_witness_evm_logs_page_free(&p1);
+        nodus_witness_evm_logs_page_free(&p2);
+        /* refused arguments */
+        q.lim = 0;
+        CHECK(nodus_witness_evm_logs_scan(fx.w, &q, &pg) == -1, "lim 0");
+        q.lim = 1;
+        q.from.h = 14;
+        CHECK(nodus_witness_evm_logs_scan(fx.w, &q, &pg) == -1,
+              "a start past th"); OK();
+        /* fail closed: a log whose height is not its receipt's */
+        q.from.h = 10;
+        CHECK(run_sql(fx.w->db, "UPDATE evm_logs SET global_height = 12 "
+                      "WHERE log_index = 1 AND global_height = 11") == 0,
+              "corrupt one log row");
+        q.lim = 1000;
+        CHECK(nodus_witness_evm_logs_scan(fx.w, &q, &pg) == -1 &&
+              pg.rows == NULL && pg.gas > 0,
+              "a row outside its shape is a fault, the work still "
+              "reported"); OK();
+    }
+    fx_close(&fx);
     return 0;
 }
 
@@ -1063,6 +1478,9 @@ int main(void) {
 
     /* apply-side: phase 12c persistence + F49 rollback. */
     if (run_s12_apply_matrix() != 0) return 1;
+
+    /* Nodus EVM red-team 1 F4: the evm_logs scan indexes + cursor scan. */
+    if (run_s17_log_scan() != 0) return 1;
 
     printf("test_v2_schema: ALL %d checks passed\n", g_checks);
     return 0;

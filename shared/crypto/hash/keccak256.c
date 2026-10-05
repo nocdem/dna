@@ -21,10 +21,31 @@
 
 /* Keccak parameters for 256-bit output */
 #define KECCAK256_RATE 136   /* (1600 - 2*256) / 8 = 136 bytes */
-#define KECCAK_ROUNDS 24
 
-/* Keccak round constants */
-static const uint64_t keccak_round_constants[KECCAK_ROUNDS] = {
+/* ── Keccak-f[1600]: XKCP's generic 64-bit implementation ─────────────
+ *
+ * Source (pinned): XKCP commit 4affab454735d54e78156880b3b44e38dcbf765c,
+ * lib/low/KeccakP-1600/plain-64bits/KeccakP-1600-opt64.c
+ * (KeccakP1600_plain64_Permute_24rounds, lines 332-343, and the round
+ * constants KeccakF1600RoundConstants, lines 58-82) over the two macro
+ * files copied byte-identical into crypto/hash/third_party/xkcp/ (see its
+ * PINNED.md). Configuration = that file's default
+ * (KeccakP-1600-plain64.h: KeccakP1600_plain64_fullUnrolling, no lane
+ * complementing): all 24 rounds unrolled, the 25 lanes in locals. It
+ * replaces the loop with modulo indexing that ran at about 43 MB/s on the
+ * red-team 1 bench host. The API, the sponge and the padding below are
+ * unchanged; the permutation acts on a uint64_t[25] lane array, so it is
+ * byte-order independent — load64_le / store64_le keep the byte <-> lane
+ * mapping little-endian on every platform. */
+#define ROL64(a, offset) \
+    ((((uint64_t)a) << offset) ^ (((uint64_t)a) >> (64 - offset)))
+#include "crypto/hash/third_party/xkcp/KeccakP-1600-64.macros"
+#define FullUnrolling
+#include "crypto/hash/third_party/xkcp/KeccakP-1600-unrolling.macros"
+
+/* Keccak round constants (XKCP KeccakP-1600-opt64.c:58-82; the macros
+ * above read them under this name) */
+static const uint64_t KeccakF1600RoundConstants[24] = {
     0x0000000000000001ULL, 0x0000000000008082ULL,
     0x800000000000808aULL, 0x8000000080008000ULL,
     0x000000000000808bULL, 0x0000000080000001ULL,
@@ -38,25 +59,6 @@ static const uint64_t keccak_round_constants[KECCAK_ROUNDS] = {
     0x8000000080008081ULL, 0x8000000000008080ULL,
     0x0000000080000001ULL, 0x8000000080008008ULL
 };
-
-/* Rotation offsets */
-static const int keccak_rotation_offsets[24] = {
-    1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 2, 14,
-    27, 41, 56, 8, 25, 43, 62, 18, 39, 61, 20, 44
-};
-
-/* Pi permutation indices */
-static const int keccak_pi_indices[24] = {
-    10, 7, 11, 17, 18, 3, 5, 16, 8, 21, 24, 4,
-    15, 23, 19, 13, 12, 2, 20, 14, 22, 9, 6, 1
-};
-
-/**
- * 64-bit rotation left
- */
-static inline uint64_t rotl64(uint64_t x, int n) {
-    return (x << n) | (x >> (64 - n));
-}
 
 /**
  * Load 64-bit little-endian value
@@ -79,40 +81,17 @@ static inline void store64_le(uint8_t *p, uint64_t x) {
 }
 
 /**
- * Keccak-f[1600] permutation
+ * Keccak-f[1600] permutation — XKCP KeccakP-1600-opt64.c:332-343
+ * (KeccakP1600_plain64_Permute_24rounds, full unrolling: no loop counter)
+ * on a plain lane array.
  */
 static void keccak_f1600(uint64_t state[25]) {
-    uint64_t C[5], D[5], B[25];
+    declareABCDE
+    uint64_t *stateAsLanes = state;
 
-    for (int round = 0; round < KECCAK_ROUNDS; round++) {
-        /* Theta step */
-        for (int x = 0; x < 5; x++) {
-            C[x] = state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20];
-        }
-        for (int x = 0; x < 5; x++) {
-            D[x] = C[(x + 4) % 5] ^ rotl64(C[(x + 1) % 5], 1);
-        }
-        for (int i = 0; i < 25; i++) {
-            state[i] ^= D[i % 5];
-        }
-
-        /* Rho and Pi steps */
-        B[0] = state[0];
-        for (int i = 0; i < 24; i++) {
-            B[keccak_pi_indices[i]] = rotl64(state[(i == 0) ? 1 : keccak_pi_indices[i - 1]],
-                                              keccak_rotation_offsets[i]);
-        }
-
-        /* Chi step */
-        for (int y = 0; y < 5; y++) {
-            for (int x = 0; x < 5; x++) {
-                state[y * 5 + x] = B[y * 5 + x] ^ ((~B[y * 5 + ((x + 1) % 5)]) & B[y * 5 + ((x + 2) % 5)]);
-            }
-        }
-
-        /* Iota step */
-        state[0] ^= keccak_round_constants[round];
-    }
+    copyFromState(A, stateAsLanes)
+    rounds24
+    copyToState(stateAsLanes, A)
 }
 
 /**

@@ -55,6 +55,11 @@
                                          * witness/db dependencies       */
 #include "dnac/dnac.h"                  /* HF-4: DNAC_CFG_RULESET_GEN2_D2,
                                          * DNAC_RULESET_SWITCH_SPEC_VERSION */
+#ifdef NODUS_EVM_ENABLED
+#include "nodus_witness_rt_evm.h"       /* Nodus EVM: the EVM generation's hooks
+                                         * (compiled only where the EVM
+                                         * runtime is — nodus/CMakeLists.txt) */
+#endif
 #include "crypto/utils/qgp_log.h"
 
 #include <string.h>
@@ -102,6 +107,19 @@ static const uint32_t CORE_RULES_G2[8] = {
     DNA_CORERULE_UNSHIELD_C3_REJECT, DNA_CORERULE_SYSFUND,
     DNA_CORERULE_NAME_REGISTER
 };
+/* Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md rev
+ * 3 §9): the EVM generation's CORE (v6) owns rules {1..9} — generation 2's
+ * list with DNA_CORERULE_EVMFUND appended. Same tx_type list. The EVM
+ * generation's SYSTEM (v8) reuses SYS_RULES / SYS_TYPES unchanged; its
+ * EVM entry's rule list is nodus_witness_rt_evm.c NODUS_RT_EVM_RULES. */
+#ifdef NODUS_EVM_ENABLED
+static const uint32_t CORE_RULES_GEVM[9] = {
+    DNA_CORERULE_SPEND, DNA_CORERULE_BURN, DNA_CORERULE_TOKEN_CREATE,
+    DNA_CORERULE_SHIELDED_C3_REJECT, DNA_CORERULE_SHIELD_C3_REJECT,
+    DNA_CORERULE_UNSHIELD_C3_REJECT, DNA_CORERULE_SYSFUND,
+    DNA_CORERULE_NAME_REGISTER, DNA_CORERULE_EVMFUND
+};
+#endif
 /* ASCENDING is load-bearing twice over: rt_owns_type() stops at the first
  * greater element, and dna_ruleset_desc_hash() refuses a non-ascending
  * list outright (shared/dnac/domain_wire.c:207-208). */
@@ -177,6 +195,38 @@ static const uint8_t SYS_METER_POLICY_DIGEST_G2[DNA_DOM_HASH_LEN] = {
  * (generation 1: CORE 1..7 / SYSTEM 1..6; generation 2: CORE 1..8). */
 #define SYS_POLICY_MAX_OP_G1  7u
 #define SYS_POLICY_MAX_OP_G2  8u
+
+#ifdef NODUS_EVM_ENABLED
+/* Nodus EVM — the EVM generation's SYSTEM (v8) metering policy: the SAME shape
+ * v2 (seven scalar weights 1, the 2 MiB max_block_env_bytes) with the
+ * authoritative op set grown to 1..9 so CORE rule 9 (EVMFUND) has a
+ * weight; the EVM descriptor's rules {1..5} are inside it. w_gas,
+ * FAIL_RESERVE and the stream caps STAY compiled constants
+ * (shared/dnac/res_meter.h DNA_METER_EVM_*): the policy codec accepts ONE
+ * version (DNA_METER_POLICY_VERSION 2, "a v1 struct no longer seals"),
+ * so carrying them in the policy needs a codec v3 with dual-version
+ * acceptance — the reinterpretation surface the codec header forbids. They
+ * are bound to the vote instead (evm_act_consts, the D literal).
+ * ⚠ SELF-DERIVED digest (shared/dnac/tests/nodus_evm_activation_oracle.py, the
+ * implementing agent's; control legs reproduce the shipped pins first) —
+ * NOT an independent pin; re-derivation by an agent that has not read
+ * this C is required before any vote. Selfcheck re-derives it on every
+ * start. */
+#define SYS_POLICY_MAX_OP_GEVM 9u
+static dna_meter_policy_t g_sys_policy_gevm;
+static int g_sys_policy_gevm_ready = 0;
+static const uint8_t SYS_METER_POLICY_DIGEST_GEVM[DNA_DOM_HASH_LEN] = {
+    /* E1 of nodus_evm_activation_oracle.py (ops 1..9 weight 1) */
+    0x0a, 0xa4, 0xc6, 0x90, 0xa0, 0x5a, 0xf8, 0x82,
+    0x7a, 0x32, 0x29, 0x12, 0xa4, 0x02, 0xd8, 0x7b,
+    0x26, 0x42, 0xc9, 0x9e, 0xdc, 0x1d, 0xb8, 0x3f,
+    0x28, 0x71, 0xaf, 0x64, 0xda, 0x18, 0xc3, 0xf8,
+    0xb7, 0x4a, 0x6e, 0x5c, 0x87, 0x0e, 0xdc, 0x34,
+    0x50, 0xae, 0x04, 0x74, 0xa3, 0xc8, 0xd7, 0x27,
+    0x9e, 0xfb, 0x88, 0x4d, 0xf8, 0xb2, 0x85, 0xc8,
+    0x84, 0x8b, 0xef, 0xfb, 0x25, 0x92, 0x27, 0x66
+};
+#endif
 
 static int sys_policy_build(dna_meter_policy_t *p, uint32_t max_op) {
     memset(p, 0, sizeof(*p));
@@ -366,6 +416,48 @@ static const uint8_t CORE_RULESET_HASH_G2[DNA_DOM_HASH_LEN] = {
     0xfb, 0x9a, 0xd5, 0x33, 0x57, 0xdb, 0x2d, 0x53,
     0x9a, 0x1c, 0x69, 0xd9, 0x3d, 0x81, 0xca, 0xe5
 };
+
+#ifdef NODUS_EVM_ENABLED
+/* Nodus EVM — the EVM GENERATION pins (design docs/plans/2026-10-04-nodus-evm-chain-
+ * integration-design.md rev 3 §9). Preimages:
+ *   SYSTEM v8: version 2, domain 0, "SYSTEM", abi 1, ruleset_version 8,
+ *              rules {1..6}, types {4,5,6,7,9,10},
+ *              meter_policy_digest = SYS_METER_POLICY_DIGEST_GEVM;
+ *   CORE v6:   version 2, domain 1, "DNA_CORE", abi 1, ruleset_version 6,
+ *              rules {1..9}, types {1,2,3,11,12,13}, policy 64 zeros;
+ *   EVM v1:    version 2, domain 2, "EVM", abi 2, ruleset_version 1,
+ *              rules {1..5}, no types, policy 64 zeros.
+ * ⚠ SELF-DERIVED (E2..E4 of shared/dnac/tests/nodus_evm_activation_oracle.py,
+ * written by the implementing agent; its control legs reproduce every
+ * shipped generation-1/2 pin and D2 first) — NOT independent pins. An
+ * agent that has not read this C must re-derive them before the vote.
+ * Selfcheck re-derives them through the C encoder on every start. */
+static const uint8_t SYS_RULESET_HASH_GEVM[DNA_DOM_HASH_LEN] = {
+    0xfe, 0x4a, 0xc5, 0x85, 0xfb, 0xa5, 0x70, 0x28,
+    0x0b, 0x87, 0xec, 0x10, 0xce, 0xa8, 0x19, 0x5a,
+    0xca, 0xfb, 0xe1, 0x62, 0x4c, 0x38, 0xe1, 0xef,
+    0xe4, 0x76, 0xaf, 0xc9, 0x7c, 0x88, 0x64, 0x57,
+    0x45, 0x56, 0x7d, 0x29, 0x17, 0x96, 0xcb, 0xdb,
+    0x12, 0xa8, 0x05, 0xed, 0xe4, 0x76, 0xef, 0xc3,
+    0x37, 0x8d, 0x3c, 0x22, 0xd1, 0xc7, 0x33, 0x4b,
+    0x18, 0x23, 0x20, 0x0a, 0xc7, 0x40, 0x51, 0x6b
+};
+static const uint8_t CORE_RULESET_HASH_GEVM[DNA_DOM_HASH_LEN] = {
+    0xdd, 0xde, 0x5a, 0xcb, 0xd8, 0x11, 0xaa, 0xd6,
+    0x24, 0xcd, 0xdb, 0xf6, 0xd6, 0xd0, 0xd3, 0xd4,
+    0xc1, 0x45, 0x2e, 0x02, 0xce, 0x83, 0x50, 0x7b,
+    0x5e, 0xdc, 0xe9, 0x4e, 0x6a, 0x43, 0xf9, 0xef,
+    0xe6, 0xd7, 0x9b, 0x7b, 0x35, 0xc0, 0x0a, 0x34,
+    0xf5, 0x88, 0x91, 0x60, 0xb5, 0xa0, 0x99, 0x2a,
+    0xf6, 0x7c, 0x69, 0x9c, 0xd6, 0x09, 0xbb, 0xe2,
+    0x18, 0x64, 0x47, 0x6c, 0xcf, 0x6d, 0x1f, 0xc8
+};
+/* Nodus EVM Faz 4: the bytes live in nodus_witness_runtime.h
+ * (NODUS_RT_EVM_RULESET_HASH_GEVM_INIT) — ONE definition, which the web
+ * wallet's send.wasm (no witness link) builds its EVM leg against. */
+static const uint8_t EVM_RULESET_HASH_GEVM[DNA_DOM_HASH_LEN] =
+    NODUS_RT_EVM_RULESET_HASH_GEVM_INIT;
+#endif
 
 /* ── Function tables ────────────────────────────────────────────────── */
 
@@ -649,21 +741,163 @@ static const nodus_domain_runtime_t BUILTIN[] = {
         .adapter     = &NODUS_RT_CORE_ADAPTER,
         .meter_policy = NULL     /* CORE declares no policy (zero digest)*/
     }
+#ifdef NODUS_EVM_ENABLED
+    ,
+    /* ── Nodus EVM — THE EVM GENERATION (design docs/plans/2026-10-04-nodus-evm-
+     * chain-integration-design.md rev 3 §9). Never seeded at genesis; it
+     * starts judging blocks when the engine's phase 6b'' (the EVM_ACTIVE
+     * edge, end of block H-1) registers the EVM domain ACTIVE and
+     * rewrites SYSTEM and CORE from the BASE generation
+     * (NODUS_RT_GEN_EVM_BASE) to this one. SYSTEM differs from the base
+     * only in its version and policy (ops 1..9 priced); CORE in its
+     * version, rule list (+9 EVMFUND) and — by its generation — its root
+     * and invariant (the reserve bucket, nodus_witness_v2_claims.c);
+     * EVM is the third domain, runtime ABI 2. */
+    {
+        .domain_id       = DNA_DOMAIN_SYSTEM,
+        .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
+        .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
+        .ruleset_version = 8,
+        .generation      = NODUS_RT_GEN_EVM,
+        .ruleset_hash    = { 0 },   /* SYS_RULESET_HASH_GEVM via table_get */
+        .descriptor = {
+            .descriptor_version = DNA_RULESET_DESC_VERSION,
+            .domain_id = DNA_DOMAIN_SYSTEM,
+            .name = "SYSTEM",
+            .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
+            .ruleset_version = 8,
+            .rule_count = 6, .rule_ids = SYS_RULES,
+            .tx_type_count = 6, .tx_types = SYS_TYPES
+        },
+        .admit = rt_admit_common,
+        .tx_cost = sys_cost,
+        .auth      = nodus_rt_auth_dsa87_v1,
+        .allowed_auth_kinds =
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_CC_V1),
+        .read_plan = nodus_rt_system_read_plan,
+        .exec      = nodus_rt_system_exec,
+        .state_root   = nodus_rt_system_state_root,
+        .payload_root = nodus_rt_system_payload_root,
+        .asset_check = NULL,
+        .claim_apply = NULL,
+        .invariant   = NULL,
+        .state_init  = NULL,
+        .adapter     = &NODUS_RT_SYSTEM_ADAPTER,
+        .meter_policy = NULL     /* &g_sys_policy_gevm — bound in table_get */
+    },
+    {
+        .domain_id       = DNA_DOMAIN_CORE,
+        .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
+        .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
+        .ruleset_version = 6,
+        .generation      = NODUS_RT_GEN_EVM,
+        .ruleset_hash    = { 0 },   /* CORE_RULESET_HASH_GEVM via table_get */
+        .descriptor = {
+            .descriptor_version = DNA_RULESET_DESC_VERSION,
+            .domain_id = DNA_DOMAIN_CORE,
+            .name = "DNA_CORE",
+            .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
+            .ruleset_version = 6,
+            .rule_count = 9, .rule_ids = CORE_RULES_GEVM,
+            .tx_type_count = 6, .tx_types = CORE_TYPES
+        },
+        .admit = rt_admit_common,
+        .tx_cost = core_cost,
+        .auth      = nodus_rt_auth_dsa87_v1,
+        .allowed_auth_kinds =
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MSIG_V1),
+        .read_plan = nodus_rt_core_read_plan,
+        .exec      = nodus_rt_core_exec,
+        .state_root   = nodus_rt_core_state_root,  /* by generation: the
+                                                    * reserved supply leaf */
+        .payload_root = NULL,
+        .asset_check = nodus_rt_core_asset_check,
+        .claim_apply = nodus_rt_core_claim_apply,
+        .invariant   = nodus_rt_core_invariant,    /* + evm_reserve       */
+        .state_init  = nodus_rt_core_state_init,
+        .adapter     = &NODUS_RT_CORE_ADAPTER,
+        .meter_policy = NULL
+    },
+    {
+        .domain_id       = DNA_DOMAIN_EVM,
+        .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
+        .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V2,
+        .ruleset_version = NODUS_RT_EVM_RULESET_VERSION_GEVM,
+        .generation      = NODUS_RT_GEN_EVM,
+        .ruleset_hash    = { 0 },   /* EVM_RULESET_HASH_GEVM via table_get */
+        .descriptor = {
+            .descriptor_version = DNA_RULESET_DESC_VERSION,
+            .domain_id = DNA_DOMAIN_EVM,
+            .name = "EVM",
+            .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V2,
+            .ruleset_version = NODUS_RT_EVM_RULESET_VERSION_GEVM,
+            .rule_count = NODUS_RT_EVM_N_RULES,
+            .rule_ids = NODUS_RT_EVM_RULES,
+            .tx_type_count = 0, .tx_types = NULL
+        },
+        .admit = nodus_rt_evm_admit,
+        .tx_cost = nodus_rt_evm_tx_cost,
+        .auth      = nodus_rt_auth_dsa87_v1,
+        /* design §2: one ML-DSA-87 signer — the EVM sender */
+        .allowed_auth_kinds =
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1),
+        .read_plan = NULL,
+        .exec      = NULL,
+        .exec_evm  = nodus_rt_evm_exec,
+        .prevalidate_evm = nodus_rt_evm_prevalidate,
+        .state_root   = nodus_rt_evm_state_root,
+        .payload_root = NULL,
+        .asset_check = NULL,
+        .claim_apply = NULL,
+        .invariant   = nodus_rt_evm_invariant,
+        .state_init  = nodus_rt_evm_state_init,
+        .adapter     = &NODUS_RT_EVM_ADAPTER,
+        .meter_policy = NULL
+    }
+#endif
 };
 #define BUILTIN_COUNT (sizeof(BUILTIN) / sizeof(BUILTIN[0]))
-/* Two domains per generation, SYSTEM then CORE, generation-major — the
- * order selfcheck pins and nodus_runtime_generation_table slices by. */
-#define BUILTIN_PER_GEN 2u
-#define BUILTIN_GENS    ((uint32_t)(BUILTIN_COUNT / BUILTIN_PER_GEN))
-_Static_assert(BUILTIN_COUNT % BUILTIN_PER_GEN == 0,
-               "every generation carries exactly SYSTEM and CORE");
-_Static_assert(BUILTIN_COUNT / BUILTIN_PER_GEN == NODUS_RT_GEN_MAX,
+
+/* Nodus EVM: the table is generation-major; each generation is one contiguous
+ * SLICE whose first two slots are SYSTEM then CORE (the protocol domains
+ * every generation carries) followed by any further domains in ascending
+ * id (the EVM generation adds DNA_DOMAIN_EVM). Generations 1 and 2 are
+ * exactly the two-slot slices they were before Nodus EVM (slots 0-3 unmoved);
+ * nodus_runtime_generation_table and selfcheck slice by this list. */
+typedef struct {
+    size_t first;
+    size_t count;
+} rt_gen_slice_t;
+static const rt_gen_slice_t GEN_SLICES[] = {
+    { 0, 2 },                                     /* generation 1          */
+    { 2, 2 }                                      /* generation 2          */
+#ifdef NODUS_EVM_ENABLED
+    , { 4, 3 }                                    /* the EVM generation    */
+#endif
+};
+#define BUILTIN_GENS ((uint32_t)(sizeof(GEN_SLICES) / sizeof(GEN_SLICES[0])))
+_Static_assert(sizeof(GEN_SLICES) / sizeof(GEN_SLICES[0]) ==
+                   NODUS_RT_GEN_MAX,
                "NODUS_RT_GEN_MAX names the newest compiled generation");
+#ifdef NODUS_EVM_ENABLED
+_Static_assert(NODUS_RT_GEN_EVM == 3u && NODUS_RT_GEN_EVM_BASE == 2u,
+               "the EVM slice above is generation 3 on base 2 — a merge "
+               "that renumbers the EVM generation reorders the slices");
+_Static_assert(BUILTIN_COUNT == 7u, "two 2-slot generations + the EVM one");
+#else
+_Static_assert(BUILTIN_COUNT == 4u, "two 2-slot generations");
+#endif
 
 /* The pinned digest for each builtin slot (parallel to BUILTIN). */
 static const uint8_t *const BUILTIN_PINNED_HASH[] = {
     SYS_RULESET_HASH, CORE_RULESET_HASH,          /* generation 1 */
     SYS_RULESET_HASH_G2, CORE_RULESET_HASH_G2     /* generation 2 */
+#ifdef NODUS_EVM_ENABLED
+    , SYS_RULESET_HASH_GEVM, CORE_RULESET_HASH_GEVM,
+    EVM_RULESET_HASH_GEVM                         /* the EVM generation */
+#endif
 };
 _Static_assert(sizeof(BUILTIN_PINNED_HASH) / sizeof(BUILTIN_PINNED_HASH[0])
                    == BUILTIN_COUNT, "one pinned digest per builtin slot");
@@ -676,15 +910,27 @@ static const uint8_t *builtin_pinned_hash(size_t i) {
  * per generation (index = generation - 1). */
 static dna_meter_policy_t *const GEN_SYS_POLICY[] = {
     &g_sys_policy, &g_sys_policy_g2
+#ifdef NODUS_EVM_ENABLED
+    , &g_sys_policy_gevm
+#endif
 };
 static int *const GEN_SYS_POLICY_READY[] = {
     &g_sys_policy_ready, &g_sys_policy_g2_ready
+#ifdef NODUS_EVM_ENABLED
+    , &g_sys_policy_gevm_ready
+#endif
 };
 static const uint8_t *const GEN_SYS_POLICY_DIGEST[] = {
     SYS_METER_POLICY_DIGEST, SYS_METER_POLICY_DIGEST_G2
+#ifdef NODUS_EVM_ENABLED
+    , SYS_METER_POLICY_DIGEST_GEVM
+#endif
 };
 static const uint32_t GEN_SYS_POLICY_MAX_OP[] = {
     SYS_POLICY_MAX_OP_G1, SYS_POLICY_MAX_OP_G2
+#ifdef NODUS_EVM_ENABLED
+    , SYS_POLICY_MAX_OP_GEVM
+#endif
 };
 _Static_assert(sizeof(GEN_SYS_POLICY_MAX_OP) /
                    sizeof(GEN_SYS_POLICY_MAX_OP[0]) == BUILTIN_GENS,
@@ -710,9 +956,9 @@ static const nodus_domain_runtime_t *table_get(size_t *n_out) {
          * 0 and meter_policy NULL — selfcheck and every engine consumer
          * then fail closed (an unsealed policy prices nothing). HF-4: one
          * policy per generation, bound to that generation's SYSTEM slot
-         * (slot BUILTIN_PER_GEN * (generation - 1)). */
+         * (the first slot of its slice, GEN_SLICES). */
         for (uint32_t g = 0; g < BUILTIN_GENS; g++) {
-            size_t sys = (size_t)g * BUILTIN_PER_GEN;
+            size_t sys = GEN_SLICES[g].first;
             *GEN_SYS_POLICY_READY[g] =
                 (sys_policy_build(GEN_SYS_POLICY[g],
                                   GEN_SYS_POLICY_MAX_OP[g]) == 0);
@@ -780,8 +1026,9 @@ nodus_runtime_generation_table(uint32_t generation, size_t *n_out) {
     if (generation < NODUS_RT_GEN_1 || generation > BUILTIN_GENS)
         return NULL;
     const nodus_domain_runtime_t *t = table_get(NULL);
-    if (n_out) *n_out = BUILTIN_PER_GEN;
-    return &t[(size_t)(generation - 1u) * BUILTIN_PER_GEN];
+    const rt_gen_slice_t *s = &GEN_SLICES[generation - 1u];
+    if (n_out) *n_out = s->count;
+    return &t[s->first];
 }
 
 const nodus_domain_runtime_t *
@@ -805,22 +1052,165 @@ nodus_runtime_for_generation(uint32_t generation, uint32_t domain_id) {
         return -1;                                                      \
     } while (0)
 
+/* Nodus EVM — contract: nodus_witness_runtime.h. */
+int nodus_runtime_hooks_check(const nodus_domain_runtime_t *rt) {
+    if (!rt) return -1;
+    if (!rt->auth) return -1;
+    switch (rt->runtime_abi) {
+        case NODUS_DOMAIN_RUNTIME_ABI_V1:
+            /* the native auth season's rule, unchanged */
+            if (!rt->read_plan || !rt->exec || rt->exec_evm ||
+                rt->prevalidate_evm)
+                return -1;
+            break;
+        case NODUS_DOMAIN_RUNTIME_ABI_V2:
+            /* design §3: run-time mediated reads — no plan, no ABI-1 exec;
+             * design §8: the shared pre-validation the recheck runs */
+            if (rt->read_plan || rt->exec || !rt->exec_evm ||
+                !rt->prevalidate_evm)
+                return -1;
+            break;
+        default:
+            return -1;
+    }
+    if (!rt->adapter) return -1;
+    if (nodus_adapter_selfcheck(rt->adapter) != 0) return -1;
+    if (!rt->state_root) return -1;
+    return 0;
+}
+
+/* ── Nodus EVM: the call-head decoder and the pairing rule (contract:
+ *    nodus_witness_runtime.h). ─────────────────────────────────────────── */
+
+/* ONE CODEC (Nodus EVM Faz 4): the node decodes EVM call bytes and the CORE
+ * EVMFUND call through shared/dnac/evm_call_wire.c — the codec the wallet
+ * and nodus-cli build with. Every constant that codec restates is pinned
+ * to the node's own here. */
+_Static_assert(DNA_EVM_OP_CALL == NODUS_RT_EVM_CALL &&
+               DNA_EVM_OP_CREATE == NODUS_RT_EVM_CREATE &&
+               DNA_EVM_OP_DEPOSIT == NODUS_RT_EVM_DEPOSIT &&
+               DNA_EVM_OP_WITHDRAW == NODUS_RT_EVM_WITHDRAW &&
+               DNA_EVM_OP_REDEEM == NODUS_RT_EVM_REDEEM,
+               "the shared codec's EVM op ids drifted from the node's");
+_Static_assert(DNA_EVM_CALL_VER == NODUS_RT_EVM_CALL_VER,
+               "the shared codec's EVM call ver drifted");
+_Static_assert(DNA_EVMFUND_CORE_OP == DNA_CORERULE_EVMFUND &&
+               DNA_EVMFUND_VER == NODUS_RT_EVMFUND_CALL_VER &&
+               DNA_EVMFUND_ROLE_FEE == NODUS_RT_EVMFUND_ROLE_FEE &&
+               DNA_EVMFUND_ROLE_DEPOSIT == NODUS_RT_EVMFUND_ROLE_DEPOSIT &&
+               DNA_EVMFUND_ROLE_RELEASE == NODUS_RT_EVMFUND_ROLE_RELEASE,
+               "the shared codec's EVMFUND op / ver / roles drifted");
+
+int nodus_rt_evm_call_head(uint32_t op, const uint8_t *c, size_t len,
+                           nodus_rt_evm_head_t *k) {
+    return dna_evm_call_head(op, c, len, k);
+}
+
+uint8_t nodus_rt_evm_role_for_op(uint32_t evm_op) {
+    return dna_evmfund_role_for_op(evm_op);
+}
+
+int nodus_rt_evm_pair_check(const dna_env_view_t *env) {
+    if (!env || !env->buf || env->leg_count != 2) return -1;
+    if (env->leg[0].domain_id != DNA_DOMAIN_CORE ||
+        env->leg[0].runtime_op != DNA_CORERULE_EVMFUND)
+        return -1;
+    if (env->leg[1].domain_id != DNA_DOMAIN_EVM) return -1;
+    uint8_t want = nodus_rt_evm_role_for_op(env->leg[1].runtime_op);
+    if (want == 0) return -1;
+    if (env->leg[0].call_len < 2) return -1;
+    const uint8_t *cc = env->buf + env->call_off[0];
+    if (cc[0] != NODUS_RT_EVMFUND_CALL_VER || cc[1] != want) return -1;
+    return 0;
+}
+
+int nodus_rt_evm_conflict_keys(const dna_env_view_t *env, uint16_t leg,
+                               const nodus_rt_auth_verdict_t *verdict,
+                               nodus_rt_v2_keys_t *keys) {
+    if (!keys) return -1;
+    memset(keys, 0, sizeof(*keys));
+    if (!env || !env->buf || leg >= env->leg_count || !verdict ||
+        verdict->n_signers != 1)
+        return -1;
+    nodus_rt_evm_head_t h;
+    if (nodus_rt_evm_call_head(env->leg[leg].runtime_op,
+                               env->buf + env->call_off[leg],
+                               env->leg[leg].call_len, &h) != 0)
+        return -1;
+    if (h.op == NODUS_RT_EVM_REDEEM) {
+        keys->k[0].op_id = NODUS_RT_EVM_KEY_TICKET;
+        keys->k[0].key_len = 64;
+        memcpy(keys->k[0].key, h.ticket_id, 64);
+    } else {
+        keys->k[0].op_id = NODUS_RT_EVM_KEY_SENDER_NONCE;
+        keys->k[0].key_len = 40;
+        memcpy(keys->k[0].key, verdict->signer_fp[0], 32);
+        for (int i = 0; i < 8; i++)
+            keys->k[0].key[32 + i] = (uint8_t)(h.nonce >> (56 - 8 * i));
+    }
+    keys->n = 1;
+    return 0;
+}
+
+uint64_t nodus_rt_evm_env_block_gas(const dna_env_view_t *env,
+                                    uint32_t evm_domain) {
+    if (!env || !env->buf) return 0;
+    for (uint16_t l = 0; l < env->leg_count; l++) {
+        if (env->leg[l].domain_id != evm_domain) continue;
+        uint32_t op = env->leg[l].runtime_op;
+        if (op == NODUS_RT_EVM_DEPOSIT || op == NODUS_RT_EVM_WITHDRAW ||
+            op == NODUS_RT_EVM_REDEEM)
+            return NODUS_RT_EVM_BRIDGE_GAS;
+        if (op == NODUS_RT_EVM_CALL || op == NODUS_RT_EVM_CREATE) {
+            nodus_rt_evm_head_t h;
+            if (nodus_rt_evm_call_head(op, env->buf + env->call_off[l],
+                                       env->leg[l].call_len, &h) != 0)
+                return 0;
+            return h.gas_limit;
+        }
+        return 0;                 /* domain-strict legs: one per domain */
+    }
+    return 0;
+}
+
 int nodus_witness_runtime_selfcheck(void) {
     size_t n = 0;
     const nodus_domain_runtime_t *t = table_get(&n);
-    /* HF-4 shape: generation-major, SYSTEM then CORE in each generation,
-     * generation ids 1..BUILTIN_GENS with no gap. */
-    if (n != BUILTIN_COUNT || n == 0 || n % BUILTIN_PER_GEN != 0)
+    /* HF-4 shape: generation-major, generation ids 1..BUILTIN_GENS with no
+     * gap. Nodus EVM: per generation ONE contiguous slice (GEN_SLICES) whose
+     * slots 0 and 1 are SYSTEM and CORE, every further slot a domain id
+     * strictly above the previous slot's; the slices tile the table. */
+    if (n != BUILTIN_COUNT || n == 0)
         SC_FAIL("selfcheck: table holds %zu entries", n);
-    for (size_t i = 0; i < n; i++) {
-        uint32_t want_gen = (uint32_t)(i / BUILTIN_PER_GEN) + 1u;
-        uint32_t want_dom = (i % BUILTIN_PER_GEN) == 0 ? DNA_DOMAIN_SYSTEM
-                                                       : DNA_DOMAIN_CORE;
-        if (t[i].generation != want_gen || t[i].domain_id != want_dom)
-            SC_FAIL("selfcheck: slot %zu is (generation %u, domain %u), "
-                    "expected (%u, %u)", i, (unsigned)t[i].generation,
-                    (unsigned)t[i].domain_id, (unsigned)want_gen,
-                    (unsigned)want_dom);
+    {
+        size_t at = 0;
+        for (uint32_t g = 0; g < BUILTIN_GENS; g++) {
+            const rt_gen_slice_t *s = &GEN_SLICES[g];
+            if (s->first != at || s->count < 2)
+                SC_FAIL("selfcheck: generation %u's slice (%zu, %zu) does "
+                        "not tile the table at %zu", (unsigned)(g + 1u),
+                        s->first, s->count, at);
+            for (size_t k = 0; k < s->count; k++) {
+                size_t i = s->first + k;
+                if (i >= n)
+                    SC_FAIL("selfcheck: generation %u's slice leaves the "
+                            "table", (unsigned)(g + 1u));
+                int dom_ok = (k == 0) ? t[i].domain_id == DNA_DOMAIN_SYSTEM
+                           : (k == 1) ? t[i].domain_id == DNA_DOMAIN_CORE
+                                      : t[i].domain_id > t[i - 1].domain_id;
+                if (t[i].generation != g + 1u || !dom_ok)
+                    SC_FAIL("selfcheck: slot %zu is (generation %u, domain "
+                            "%u) — not slot %zu of generation %u's "
+                            "SYSTEM, CORE, ascending list", i,
+                            (unsigned)t[i].generation,
+                            (unsigned)t[i].domain_id, k,
+                            (unsigned)(g + 1u));
+            }
+            at += s->count;
+        }
+        if (at != n)
+            SC_FAIL("selfcheck: the generation slices cover %zu of %zu "
+                    "slots", at, n);
     }
 
     for (size_t i = 0; i < n; i++) {
@@ -831,8 +1221,11 @@ int nodus_witness_runtime_selfcheck(void) {
         /* Native auth season: both production runtimes own executable
          * operations, so the FULL execution surface must be present and
          * healthy — a missing authorization/read/exec hook or a broken
-         * compiled adapter is a broken table, never a soft skip. */
-        if (!rt->auth || !rt->read_plan || !rt->exec) return -1;
+         * compiled adapter is a broken table, never a soft skip. Nodus EVM:
+         * the presence rule is the ABI's (nodus_runtime_hooks_check) —
+         * for these ABI-1 entries exactly the rule it replaces, and it
+         * repeats the adapter + state_root checks below. */
+        if (nodus_runtime_hooks_check(rt) != 0) return -1;
         /* capacity season: the auth-kind allowlist is part of the
          * table's health — a runtime accepting no kind cannot authorize
          * anything (broken), and a bit naming an uncompiled kind would
@@ -886,10 +1279,21 @@ int nodus_witness_runtime_selfcheck(void) {
                 (NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
                  NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_CC_V1)))
             return -1;
-        if (!is_sys && rt->allowed_auth_kinds !=
+        if (rt->domain_id == DNA_DOMAIN_CORE && rt->allowed_auth_kinds !=
                 (NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
                  NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MSIG_V1)))
             return -1;
+        /* Nodus EVM: the EVM domain — exactly kind 1 (one ML-DSA-87 signer,
+         * the EVM sender; design §2) and the ABI-2 surface */
+        if (!is_sys && rt->domain_id != DNA_DOMAIN_CORE) {
+            if (rt->domain_id != DNA_DOMAIN_EVM ||
+                rt->runtime_abi != NODUS_DOMAIN_RUNTIME_ABI_V2 ||
+                rt->allowed_auth_kinds !=
+                    NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1))
+                SC_FAIL("selfcheck: generation %u carries domain %u, not "
+                        "the EVM domain's configured shape",
+                        (unsigned)rt->generation, (unsigned)rt->domain_id);
+        }
         /* pinned digest must equal a FRESH recomputation */
         uint8_t fresh[DNA_DOM_HASH_LEN];
         if (dna_ruleset_desc_hash(&rt->descriptor, fresh) != 0) return -1;
@@ -916,9 +1320,15 @@ int nodus_witness_runtime_selfcheck(void) {
                         "exact tuple", i, j);
 
     /* per domain: versions strictly increase with the generation, and
-     * kind / abi never change (the switch copies them, §1.4) */
-    for (size_t i = BUILTIN_PER_GEN; i < n; i++) {
-        const nodus_domain_runtime_t *prev = &t[i - BUILTIN_PER_GEN];
+     * kind / abi never change (the switch copies them, §1.4). Nodus EVM: the
+     * predecessor is the SAME domain's entry in the previous generation; a
+     * domain a generation introduces (EVM) has none. */
+    for (size_t i = 0; i < n; i++) {
+        if (t[i].generation <= NODUS_RT_GEN_1) continue;
+        const nodus_domain_runtime_t *prev =
+            nodus_runtime_for_generation(t[i].generation - 1u,
+                                         t[i].domain_id);
+        if (!prev) continue;              /* introduced by this generation */
         if (t[i].ruleset_version <= prev->ruleset_version)
             SC_FAIL("selfcheck: domain %u ruleset_version %u in generation "
                     "%u does not exceed %u", (unsigned)t[i].domain_id,
@@ -946,9 +1356,10 @@ int nodus_witness_runtime_selfcheck(void) {
      * generation's SYSTEM and CORE descriptors — an unpriced op is an
      * "absent op weight" refusal at reservation for every leg naming it */
     for (size_t g = 0; g < BUILTIN_GENS; g++) {
-        const dna_meter_policy_t *p = t[g * BUILTIN_PER_GEN].meter_policy;
-        for (size_t k = 0; k < BUILTIN_PER_GEN; k++) {
-            const dna_ruleset_desc_t *d = &t[g * BUILTIN_PER_GEN + k].descriptor;
+        const dna_meter_policy_t *p = t[GEN_SLICES[g].first].meter_policy;
+        for (size_t k = 0; k < GEN_SLICES[g].count; k++) {
+            const dna_ruleset_desc_t *d =
+                &t[GEN_SLICES[g].first + k].descriptor;
             for (size_t r = 0; r < d->rule_count; r++) {
                 uint64_t w = 0;
                 if (!p || dna_meter_op_weight(p, d->rule_ids[r], &w) != 0)
@@ -980,5 +1391,105 @@ int nodus_witness_runtime_selfcheck(void) {
                     (unsigned long long)DNAC_CFG_RULESET_GEN2_D2,
                     (unsigned long long)d2);
     }
+#ifdef NODUS_EVM_ENABLED
+    /* Nodus EVM: the compiled EVM_ACTIVE literal re-derives from the EVM
+     * generation (its pins, the manifest phase 6b'' registers, the spec
+     * version and the compiled EVM constants) — dnac.h
+     * DNAC_CFG_EVM_ACTIVE_D, the vote path compares only against it */
+    {
+        uint64_t d = 0;
+        if (nodus_runtime_evm_activation_digest(&d, NULL) != 0)
+            SC_FAIL("selfcheck: the EVM activation digest could not be "
+                    "derived");
+        if (d != (uint64_t)DNAC_CFG_EVM_ACTIVE_D)
+            SC_FAIL("selfcheck: the compiled EVM_ACTIVE literal 0x%016llx "
+                    "does not re-derive (0x%016llx) from the EVM generation",
+                    (unsigned long long)DNAC_CFG_EVM_ACTIVE_D,
+                    (unsigned long long)d);
+    }
+#endif
     return 0;
 }
+
+/* ── Nodus EVM: the manifest builder and the activation digest ────────── */
+
+void nodus_runtime_manifest_init(const nodus_domain_runtime_t *rt,
+                                 const uint8_t genesis_payload_root[64],
+                                 dna_domain_manifest_t *m) {
+    memset(m, 0, sizeof(*m));
+    m->manifest_version = DNA_DOMMAN_VERSION;
+    m->domain_id = rt->domain_id;
+    memcpy(m->name, rt->descriptor.name, DNA_DOM_NAME_LEN);
+    m->runtime_kind = rt->runtime_kind;
+    m->runtime_abi = rt->runtime_abi;
+    m->ruleset_version = rt->ruleset_version;
+    memcpy(m->ruleset_hash, rt->ruleset_hash, DNA_DOM_HASH_LEN);
+    memcpy(m->genesis_state_root, genesis_payload_root, DNA_DOM_HASH_LEN);
+    m->tx_type_count = rt->descriptor.tx_type_count;
+    if (rt->descriptor.tx_type_count)
+        memcpy(m->tx_types, rt->descriptor.tx_types,
+               rt->descriptor.tx_type_count);
+    m->fee_policy = DNA_FEEPOL_GLOBAL_BURN;
+    m->quota_tx_per_block = 0;
+    m->quota_verify_cost = 0;
+    m->upgrade_authority = DNA_UPGAUTH_CHAIN_CONFIG;
+    m->activation_epoch = 0;
+    m->readiness_policy = DNA_RDYPOL_STAGED_V1;
+}
+
+#ifdef NODUS_EVM_ENABLED
+/* The compiled EVM constants the vote binds (dna_evm_activation_digest's
+ * `consts`), in THIS order — shared/dnac/tests/nodus_evm_activation_oracle.py
+ * EVM_CONSTS lists the same. A change to any of them changes D: two
+ * binaries that price or bound EVM work differently cannot share a vote
+ * value. */
+static const uint64_t EVM_ACT_CONSTS[] = {
+    NODUS_RT_EVM_Q,
+    NODUS_RT_EVM_TICKET_GAS,
+    NODUS_RT_EVM_TX_GAS_CAP,
+    NODUS_RT_EVM_READS_BASE,
+    NODUS_RT_EVM_MAX_READ_BYTES,
+    DNA_METER_EVM_W_GAS,
+    DNA_METER_EVM_FAIL_RESERVE,
+    DNA_METER_EVM_FAIL_EFFECTS,
+    DNA_METER_EVM_FAIL_BYTES,
+    DNA_METER_STREAM_MAX_EFFECTS,
+    DNA_METER_STREAM_MAX_EFFECT_BYTES,
+    NODUS_RT_EVM_BRIDGE_GAS,
+    DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT,
+    DNAC_CFG_MIN_EVM_BLOCK_GAS,
+    DNAC_CFG_MAX_EVM_BLOCK_GAS
+};
+_Static_assert(NODUS_RT_EVM_BLOCK_GAS_LIMIT ==
+                   DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT,
+               "the runtime's block gas default drifted from dnac.h's");
+
+int nodus_runtime_evm_activation_digest(uint64_t *d_out,
+                                        dna_domain_manifest_t *evm_man_out) {
+    if (!d_out) return -1;
+    const nodus_domain_runtime_t *s =
+        nodus_runtime_for_generation(NODUS_RT_GEN_EVM, DNA_DOMAIN_SYSTEM);
+    const nodus_domain_runtime_t *c =
+        nodus_runtime_for_generation(NODUS_RT_GEN_EVM, DNA_DOMAIN_CORE);
+    const nodus_domain_runtime_t *e =
+        nodus_runtime_for_generation(NODUS_RT_GEN_EVM, DNA_DOMAIN_EVM);
+    if (!s || !c || !e) return -1;
+    uint8_t root[64], mh[DNA_DOM_HASH_LEN];
+    dna_domain_manifest_t m;
+    if (nodus_rt_evm_empty_state_root(root) != 0) return -1;
+    nodus_runtime_manifest_init(e, root, &m);
+    if (dna_domman_validate(&m) != 0 || dna_domman_hash(&m, mh) != 0)
+        return -1;
+    if (dna_evm_activation_digest(NODUS_RT_GEN_EVM, NODUS_RT_GEN_EVM_BASE,
+                                  s->ruleset_hash, c->ruleset_hash,
+                                  e->ruleset_hash, mh,
+                                  DNAC_EVM_ACTIVATION_SPEC_VERSION,
+                                  EVM_ACT_CONSTS,
+                                  (uint32_t)(sizeof(EVM_ACT_CONSTS) /
+                                             sizeof(EVM_ACT_CONSTS[0])),
+                                  d_out) != 0)
+        return -1;
+    if (evm_man_out) *evm_man_out = m;
+    return 0;
+}
+#endif

@@ -8,6 +8,12 @@
  * (exp_db.h exp_block_batch_t) and checks that consecutive pages form ONE
  * block — no second implementation of any consensus encoding lives here.
  *
+ * Nodus EVM P4-C: an applied EVM item's "ev"/"ri"/"ro" (nodus.h) become one
+ * exp_evm_row_t in batch->evms, copied as-is; keys outside their rules
+ * (on a refused item, a reserve move without "ev", both directions, a
+ * created address on a failed item, a cut-short flag beside a short
+ * ticket list) refuse the page.
+ *
  * Determinism (index reproducibility): the rows are a pure function of the
  * page content; items keep the block's own index order, io rows keep the
  * node's call order (consumed, then created, per item).

@@ -25,6 +25,7 @@ This directory provides a function-level reference for the DNA Connect codebase.
 | **Database** | [database.md](database.md) | SQLite databases (contacts, cache, profiles) |
 | **Blockchain** | [blockchain.md](blockchain.md) | Multi-chain wallet (Cellframe, ETH, Solana, TRON) |
 | **DNA Chain ledger** | [ledger.md](ledger.md) | Tagged state-root hashing (`shared/dnac/ledger_roots_v2.h`, in libdna) + the nodus witness treasury / genesis entries it covers |
+| **Nodus EVM** | [evm.md](evm.md) | EVM engine (`shared/evm/evm.h`, `evm_precompile.h`), node EVM runtime (`nodus_witness_rt_evm.h`), call wire codec (`shared/dnac/evm_call_wire.h`), envelope builder (`nodus_v2_evm.h`), S17 storage / log scan, apply-side EVM checks, client SDK `nodus_client_evm_*` |
 | **Engine** | [engine.md](engine.md) | Internal engine implementation |
 | **Calls** | [calls.md](calls.md) | PQ VoIP call subsystem (signaling, key agreement, FSM, orchestrator) |
 | **Key Sizes** | [key-sizes.md](key-sizes.md) | Cryptographic key size reference |
@@ -115,6 +116,16 @@ Quick reference for cryptographic algorithm sizes.
 - Hash functions (SHA3)
 - Key derivation (BIP39)
 - Classical (Ed25519, secp256k1)
+
+### 11. Nodus EVM ([evm.md](evm.md))
+The Ethereum (Prague) execution engine and its integration into the version-3 chain as the third domain. Engine and node runtime are nodus-only (standalone nodus build, non-Windows, `NODUS_EVM_ENABLED`); the call wire codec is pure C shared with `nodus-cli` and the web wallet.
+- Engine public API (`shared/evm/evm.h`) and the precompile self-test (`evm_precompile.h`)
+- Node EVM runtime: descriptor, hooks, §18 simulation, per-leg trie batch (`nodus_witness_rt_evm.h`)
+- Call-head decoder, pairing rule, conflict keys, block gas share (`nodus_witness_runtime.h`)
+- EVM / EVMFUND call bytes and canonical receipt codec (`shared/dnac/evm_call_wire.h`)
+- `[CORE EVMFUND] + [EVM op]` envelope builder (`nodus/src/client/nodus_v2_evm.h`)
+- Schema S17, `evm_logs` cursor scan, apply-side checks (VM-less dry run, price-0 judge, block facts), CORE EVM reserve
+- Client SDK §18 read RPC (`nodus_client_evm_*`, `nodus_client_dnac_query_raw`)
 
 ---
 

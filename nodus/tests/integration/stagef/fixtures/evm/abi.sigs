@@ -1,0 +1,17 @@
+# solc --hashes output for the two fixtures (selector: signature).
+# The scenario passes the SIGNATURES to `nodus-cli evm send/call`, which
+# computes the selector itself (keccak-256 of the canonical signature);
+# this list is the compiler's record of the same values. The event topic0
+# of Incremented is asserted by the scenario against evm_logs.
+
+# Counter.sol:Counter
+a169ce09: boom()
+06661abd: count()
+1ba046a5: gasLimitNow()
+6d4ce63c: get()
+d09de08a: increment()
+event 38ac789ed44572701765277c4d0970f2db1c1a571ed39e84358095ae4eaa5420: Incremented(address,uint256)
+
+# Ticketer.sol:Ticketer
+cbaf5697: openTicket(address,bytes)
+event b871e08e1975bf447b3ac22720b72a3064088fe14a5e9a38540fc563cf809a26: TicketOpened(bytes)

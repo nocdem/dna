@@ -253,12 +253,14 @@ static void ipc_on_session_frame(nodus_witness_ipc_t *ipc, ipc_slot_t *s,
     if (strcmp(msg.method, "dnac_cc_collect") == 0) {
         ipc->h.cc_collect(ipc->h.ctx, conn, s->pk, s->token,
                           payload, len, msg.txn_id);
-    } else if (strncmp(msg.method, "dnac_", 5) == 0) {
+    } else if (nodus_chain_method_routed(msg.method)) {
+        /* dnac_* and the Nodus EVM evm_* read RPC (nodus_witness_ipc.h) */
         ipc->h.dispatch_dnac(ipc->h.ctx, conn, payload, len,
                              msg.method, msg.txn_id);
     } else {
         nodus_t2_msg_free(&msg);
-        ipc_refuse(ipc, conn, "session frame is not a dnac_* method");
+        ipc_refuse(ipc, conn, "session frame is not a dnac_* / evm_* "
+                   "method");
         return;
     }
     nodus_t2_msg_free(&msg);

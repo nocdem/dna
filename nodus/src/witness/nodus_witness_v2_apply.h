@@ -883,11 +883,23 @@ typedef enum {
  * would mean changing `exec_one_env`'s contract. Reported as a gap; the
  * caller writes an EMPTY `data`, which is one of the two values rev 4
  * allows ("canonical runtime effect bytes in leg order OR EMPTY").
+ *
+ * Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md
+ * rev 3 §7): `data[0..data_len)` is the item's ExecTxResult.Data. It is
+ * EMPTY (data_len 0) for every item that carries no applied EVM leg and
+ * for every refused item — so every non-EVM result, and therefore the
+ * LastResultsHash of every block without an EVM leg, is byte-identical
+ * to before (an empty Data is not marshalled, cmt_pb_wire.h). An applied
+ * EVM leg sets it to the 64-byte SHA3-512 of the leg's canonical receipt.
+ * The engine owns this array only while the block applies: FinalizeBlock
+ * copies it into response-owned memory (nodus_witness_cmt_app.c).
  */
 typedef struct {
     uint32_t code;         /* nodus_v2_tx_code_t                        */
     uint64_t gas_wanted;   /* reserved units                            */
     uint64_t gas_used;     /* consumed units                            */
+    uint32_t data_len;     /* 0 or 64                                   */
+    uint8_t  data[64];     /* SHA3-512(canonical EVM receipt)           */
 } nodus_v2_tx_result_t;
 
 /**
@@ -1039,6 +1051,13 @@ typedef struct {
      * execution order). NULL/0 = none. */
     const nodus_v2_envelope_t *envs;
     size_t   n_envs;
+    /* Nodus EVM red-team 1 F12 — env_block_pos[k] is envelope k's index in the
+     * decided block's tx list as FinalizeBlock received it (claims and
+     * undecodable items count). NODE-LOCAL: it is written only into the
+     * node-local receipt index (evm_receipts.item_index, design §7) — no
+     * root, receipt digest, tx_root, result or hash reads it. NULL (every
+     * non-cometbft caller) = the envelope ordinal k. n_envs entries. */
+    const size_t *env_block_pos;
     /* S6 generic claims (routed to each claim's COMMITTED target
      * runtime; each processed as an item inside its own SAVEPOINT).
      * NULL/0 = none. */
@@ -1334,6 +1353,55 @@ int nodus_witness_v2_env_dry_run(nodus_witness_t *w, const uint8_t *bytes,
                                  nodus_v2_env_dry_run_t *out,
                                  char *reason, size_t reason_size);
 
+/**
+ * Red-team 1 F1 — the mempool's NON-MUTATING pending-conflict probe: is
+ * any of these `n` conflict rows (an ABI-2 leg's synthetic keys, built by
+ * the ONE derivation nodus_rt_evm_conflict_keys) already held by ANOTHER
+ * pending entry? The callee only looks: nothing is inserted (the caller
+ * inserts every key of the entry after the whole dry run succeeded).
+ * @return 0 no conflict / 1 conflict / -2 node-local failure.
+ */
+typedef int (*nodus_v2_conflict_probe_fn)(void *ctx,
+                                          const nodus_v2_dry_run_row_t *rows,
+                                          size_t n);
+
+/**
+ * Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md rev
+ * 3 §4, §8): the dry run with its CheckTx MODE. `novm` 0 is exactly
+ * nodus_witness_v2_env_dry_run (which is this with 0 and no probe): an
+ * ABI-2 (EVM) leg EXECUTES probe-only on a fresh overlay — no savepoint,
+ * every page and the failure effects probed, never applied, no receipt
+ * index. `novm` 1 — what CheckTx runs for a NEW entry AND its RECHECK
+ * since red-team 1 F1 (an Ethereum mempool validates, it does not
+ * execute: an EVM leg's execution outcome never changes admission, a
+ * failed execution is applied and paid): an ABI-2 leg runs ONLY the
+ * runtime's shared pre-validation (prevalidate_evm — authorization shape,
+ * pairing, decode, nonce == the committed nonce, value <= balance,
+ * intrinsic gas, ticket present, the gas declaration and the read caps …)
+ * — NO VM. Every other stage (preflight = expiry / activation context,
+ * replay, admission, the gas price, the reservation = policy,
+ * authorization, the ABI-1 legs' execution = CORE inputs unspent) runs in
+ * both modes. In both, an ABI-2 leg's conflict keys are its SYNTHETIC keys
+ * (nodus_rt_evm_conflict_keys) and never its effect rows.
+ *
+ * `probe` (optional, NULL = none; red-team 1 F1): right AFTER the
+ * authorization stage — the keys need the leg's VERIFIED signer — and
+ * BEFORE any leg executes or pre-validates, every ABI-2 leg's synthetic
+ * keys are offered to `probe(probe_ctx, …)`; a conflict is a -1 verdict
+ * (code NODUS_V2_TX_ERR_EXEC, the class an ABI-2 leg's refusal records)
+ * and nothing after it runs; a key that does not derive is the same -1
+ * the pre-validation would give (its decoder refuses the same head); a
+ * probe failure is -2. Returns as the function above.
+ */
+int nodus_witness_v2_env_dry_run_ex(nodus_witness_t *w, const uint8_t *bytes,
+                                    size_t len,
+                                    const nodus_v2_auth_reuse_t *reuse,
+                                    int novm,
+                                    nodus_v2_conflict_probe_fn probe,
+                                    void *probe_ctx,
+                                    nodus_v2_env_dry_run_t *out,
+                                    char *reason, size_t reason_size);
+
 /** Free what nodus_witness_v2_env_dry_run allocated inside `out`
  *  (not `out` itself). NULL-safe. */
 void nodus_witness_v2_env_dry_run_free(nodus_v2_env_dry_run_t *out);
@@ -1355,12 +1423,21 @@ void nodus_witness_v2_env_dry_run_free(nodus_v2_env_dry_run_t *out);
  *         FAULT, never a verdict; reason written into (reason,
  *         reason_size).
  *
- * nodus_witness_v2_gas_price_judge: PURE. price 0 → the rule is off
- * (return 0 before any other test); every leg SYSTEM → exempt; otherwise
- * refuse when fee_amount < max(res_max_total_units × price, the flat
- * floor) — a u64 overflow of the product is a refusal (no u64 fee can pay
- * it). @return 0 pass / -1 refused with *code = NODUS_V2_TX_ERR_FEE
- * (reason written).
+ * nodus_witness_v2_gas_price_judge: PURE. price 0 → the fee rule is off,
+ * with ONE exception (operator decision D1, docs/plans/decisions/
+ * 2026-10-05-nodus-evm-redteam1-operator.md, "Fiyat 0 iken EVM durur" +
+ * scope "Çıkışlar açık kalsın"): an envelope with an EVM-domain
+ * (DNA_DOMAIN_EVM) leg whose runtime op is CALL, CREATE or DEPOSIT is
+ * REFUSED while the price is 0 — gas would be unpriced; WITHDRAW and
+ * REDEEM (fixed 21 000 gas, no code runs) stay open. Every other envelope
+ * passes at price 0 exactly as before (no EVM leg reaches this judge on a
+ * chain without the EVM domain: per-leg admission refuses an unregistered
+ * domain first — env_admit_legs in the item loop and the dry run, the
+ * context table in the proposal seam's preflight). Price > 0: every leg
+ * SYSTEM → exempt; otherwise refuse when fee_amount <
+ * max(res_max_total_units × price, the flat floor) — a u64 overflow of
+ * the product is a refusal (no u64 fee can pay it). @return 0 pass / -1
+ * refused with *code = NODUS_V2_TX_ERR_FEE (reason written).
  */
 int nodus_witness_v2_gas_price_at(nodus_witness_t *w, uint64_t height,
                                   uint64_t *price_out,
@@ -1368,6 +1445,68 @@ int nodus_witness_v2_gas_price_at(nodus_witness_t *w, uint64_t height,
 int nodus_witness_v2_gas_price_judge(const dna_env_view_t *v, uint64_t price,
                                      uint32_t *code,
                                      char *reason, size_t reason_size);
+
+/**
+ * Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md rev 3
+ * §8, §10): the EVM block gas limit in force at `height` — chain_config
+ * param 15 (EVM_BLOCK_GAS_LIMIT), or the compiled
+ * DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT when no row is active — the SAME read
+ * the engine's block context uses (env_evm_block_gas_limit: an unreadable
+ * row or a stored value outside the votable range is a FAULT, never a
+ * default). Exported for the CheckTx max-gas refusal (the reference's
+ * PostCheckMaxGas, nodus_witness_cmt_app.c) and the §18 RPC simulation.
+ * No clock. @return 0 / -2 (reason written).
+ */
+int nodus_witness_v2_evm_block_gas_limit(nodus_witness_t *w, uint64_t height,
+                                         uint64_t *out,
+                                         char *reason, size_t reason_size);
+
+/**
+ * Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md §10
+ * "CheckTx simülasyonu tip bloğunun zamanını kullanır"): the committed tip
+ * block's Comet header seconds — the TIMESTAMP every node-local EVM
+ * simulation at tip + 1 sees. Read from the consensus block store over
+ * the witness's own database (a transient store, the committee seed's
+ * pattern — nodus_witness_committee.c v2_seed_block_id). The ONE read
+ * both the CheckTx dry run of an EVM envelope and the §18 RPC
+ * simulation use. ADMISSION ONLY: FinalizeBlock uses the decided block's
+ * own header time (blk->timestamp), never this. No clock.
+ * @return 0 (*out_secs set) / -1 the tip has no readable block meta, or
+ *         its time is negative (a node-local fault for every caller).
+ */
+int nodus_witness_v2_tip_block_time(nodus_witness_t *w, uint64_t tip,
+                                    uint64_t *out_secs);
+
+/**
+ * Nodus EVM (design §3, §10): BLOCKHASH(n) as the block at `height` sees it —
+ * the engine reader's own rule (window [height-256, height-1] from
+ * v2_blocks.block_id[0..32]; outside the window present = 0; a window
+ * height without its row is a node FAULT). Exported for the §18 RPC
+ * simulation (nodus_witness_rt_evm.c nodus_rt_evm_simulate), which reads
+ * committed state through its own non-metering reader.
+ * @return 0 (*res filled) / -2.
+ */
+int nodus_witness_v2_evm_blockhash(nodus_witness_t *w, uint64_t height,
+                                   uint64_t n, nodus_rt_read_res_t *res);
+
+/**
+ * Red-team 1 F5: the chain's FIRST block height, GENESIS-DERIVED — the
+ * stored genesis document's initial_height (nodus_witness_v2_gen_stored_doc,
+ * all four of its checks), completed 0 → 1 as the reference completes it
+ * (types/genesis.go:79-81; nodus_witness_v2_gen.h initial_height). NEVER
+ * the node's oldest v2_blocks / block-store row (retention moves those).
+ * The fact `chain_initial_height` the EVM_ACTIVE stateful rule reads
+ * (nodus_chain_config.h nodus_chain_config_stateful_rules_ex (g)); every
+ * site that judges that vote derives it through THIS function.
+ * CACHE: on a handle the post-open gate accepted (w->v2_chain32_valid)
+ * the gate stored this function's answer in w->v2_initial_height once per
+ * open, and a call answers from it. Otherwise (scratch / test handles)
+ * it reads the document: one canonical-strict read (~240 KB heap,
+ * re-hash) per call — the same value.
+ * @return 0 (*out >= 1) / -2 the document does not read back on this node
+ *         (a FAULT, never a default).
+ */
+int nodus_witness_v2_chain_initial_height(nodus_witness_t *w, uint64_t *out);
 
 /**
  * HF-3 rule 5 (decision docs/plans/decisions/2026-10-01-hf3-comet-only-

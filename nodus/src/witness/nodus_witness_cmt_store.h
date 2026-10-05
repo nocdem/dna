@@ -254,10 +254,11 @@ typedef struct {
  * with its `Height > 0 && Base == 0 → Base = 1` compatibility rule
  * :712-714) and `NewStore(db, options)` (state/store.go:112-114) on the
  * same borrowed connection. Tables must exist (schema S14; a chain
- * opened by this build is at S16, the live rung as of tokenomics-v3 P2
- * — neither S15 nor S16 touches these tables: S15 changed `validators`
- * and added the attendance tables, S16 added the reward pool column
- * and the reward tables).
+ * opened by this build is at S17, the live rung as of the Nodus EVM activation
+ * package — none of S15, S16 or S17 touches these tables: S15 changed
+ * `validators` and added the attendance tables, S16 added the reward pool
+ * column and the reward tables, S17 the empty EVM tables and the CORE
+ * EVM reserve row).
  * @return CMT_OK, CMT_FAULT.
  */
 int nodus_cmt_store_init(nodus_cmt_store_t *s, sqlite3 *db,

@@ -47,7 +47,10 @@ first, then the explorer.
   and is a failure, never a tip of 0; a node that answers no buckets is an
   older node and is NOT a failure — the buckets show as `null`),
   `exp_chain_v3_page` (one `dnac_v3_block` page),
-  `exp_chain_balance` (one address's `dnac_balance`, trying every server) and
+  `exp_chain_balance` (one address's `dnac_balance`, trying every server),
+  `exp_chain_evm_account` (Nodus EVM: one EVM account through the §18
+  `evm_account` query and, for a contract, its recent logs through
+  `evm_logs` on the SAME server — trying every server) and
   `exp_chain_active_stake` (the active validators' stake for the APY
   estimate: `dnac_validator_list_query` with status 0 = ACTIVE, paged by
   offset, at most 64 pages of 128, summing `self_stake +
@@ -70,7 +73,9 @@ first, then the explorer.
   `127.0.0.1` only. Answers from the index, except `/api/address`'s
   balance, which it reads from the node through its own chain handle and
   a 5 s cache (`exp_balance_chain_*`; see "Balance" below), and the
-  optional rewards endpoints below.
+  `/api/evm/*` account and logs, read the same way (`exp_evm_chain_*`,
+  same handle, same cache rule; see "EVM" below), and the optional rewards
+  endpoints below.
 - `src/exp_rewards.{c,h}` — request-scoped, read-only SQLite snapshots of
   recorded payout and stake-release rows and current accrual from a
   co-located Nodus DB.
@@ -131,6 +136,7 @@ half a height.
 | `item_io` | `(height, idx, dir, pos)` | `dir` 0 consumed / 1 created, `coin_id`, `address`, `token`, `amount`, `unlock_block` |
 | `item_records` | `(height, idx)` | the SYSTEM record an applied item wrote: `kind`, `validator`, `delegator`, `dest`, `amount`, `commission_bps`, `param_id`, `new_value`, `effective` |
 | `item_names` | `(height, idx)` | HF-4: the chain name an applied NAME_REGISTER item registered (`dnac_v3_block` keys `"nm"`/`"pr"`): `name`, `price` (paid into the reward pool — not a burn), `owner` (the resolved address of the item's first consumed coin — every input is the one signer's; NULL when that coin's creating item is not indexed). Created `IF NOT EXISTS` on every open, so a v2 index gains it without a rebuild; an index advanced past the HF-4 switch by a binary without it lacks those names until rebuilt |
+| `item_evm` | `(height, idx)` | Nodus EVM: the EVM facts of an APPLIED EVM item (`dnac_v3_block` OPTIONAL keys `"ev"`, `"ri"`, `"ro"` — wire in `nodus/include/nodus/nodus.h`): `status` (1 success / 0 a paid failure), `gas_used` (EVM gas), `sender` (32 B), `target` (CALL), `created` (successful CREATE), `value_wei` (32 B big-endian, CALL / CREATE), `dest` (WITHDRAW / REDEEM recipient fingerprint), `n_logs`, `tickets` (the ids the item opened, at most 32 × 64 B) + `tickets_more`, `wei_destroyed`, `digest` (the receipt digest = the item's committed `ExecTxResult.Data`), `reserve_in` / `reserve_out` (raw units into / out of the CORE EVM reserve). Copied as the node sent them — the node read them from its stored receipt. Indexes on `sender`, `target`, `created`. Created `IF NOT EXISTS` on every open (the `item_names` rule, no schema bump) |
 | `meta` | `key` | `schema_version` (2), `last_indexed_height`, `chain_id32`, `tip_height`, `supply_current`/`_burned`/`_genesis`, `supply_buckets` (one 97-byte blob: a has-flag byte, then 12 little-endian u64 — `current`, `reward_pool`, `treasury` pool 1..9, `unclaimed` — all from ONE `dnac_supply` reply; rewritten on every accepted observation, has = 0 for an older node; `exp_chain.h`), `active_stake` (one 25-byte blob: a has-flag byte, then 3 little-endian u64 — `stake`, `validators`, `at_tip`; rewritten on every accepted observation, has = 0 when the read failed; `exp_chain.h`) |
 
 Records are a typed table, not a JSON column: the address history looks
@@ -174,6 +180,56 @@ decision and never covers a shielded pool.
   server failed — never a zero on an error. A node answers an error (seen
   here as `"unavailable"`) when the address holds more than 256 distinct
   tokens (`NODUS_DNAC_BALANCE_MAX_TOKENS`).
+
+**EVM (Nodus EVM P4-C).** Design `docs/plans/2026-10-04-nodus-evm-chain-integration-design.md`
+§2 (the `[CORE EVMFUND] + [EVM op]` envelope), §5 (the reserve), §7 (the
+receipt), §18 (the read RPC).
+
+- *What the index holds.* An EVM envelope is one item named by its EVM op
+  (`evm_call`, `evm_create`, `evm_deposit`, `evm_withdraw`, `evm_redeem`).
+  Its consumed / created coins are the CORE funding leg's (funding coins,
+  change, and for WITHDRAW / REDEEM the released coin to the recipient), so
+  the native-address history finds it like any spend. Its EVM facts go to
+  `item_evm` — every one as the node read it from its stored receipt; the
+  explorer executes and recomputes nothing.
+- *What it costs operators.* No rebuild: `item_evm` is created on the first
+  open of this binary. An index that a binary WITHOUT `item_evm` advanced
+  past the first applied EVM item lacks those items' EVM facts until it is
+  rebuilt (stop the daemon, delete the index file, start: it re-indexes
+  from height 1, `/api/stats` shows the climb). Before EVM is activated on
+  the chain there is nothing to miss. The node must be the one that sends
+  `"ev"` (Nodus with P4-C) — an older node answered an EVM block with an
+  error, so the walk would stop at that height and retry it.
+- *Accounts and logs are read from the node*, like the balance: the
+  account (nonce, balance in wei, code size, code hash, the node's tip)
+  through §18 `evm_account`; a contract's recent logs through §18
+  `evm_logs` over the heights `(tip − 1000, tip]`, at most 100, oldest
+  first (`EXP_EVM_LOGS_WINDOW` / `EXP_EVM_LOGS_LIMIT`, `exp_chain.h`).
+  The logs are read for any address on the contract page — there is no
+  code-size condition, so a contract whose constructor logged and
+  returned empty runtime code keeps its logs reachable. The node's
+  `evm_logs` is a CURSOR scan (red-team 1 F4): a page can stop before the
+  window's end — at the 100-log limit, at the node's examined-row or
+  reply-byte bound, or when the node's per-block work budget runs out —
+  and then carries `more:true` and `next:"height:item:log"`; the same
+  contract page with `?logs_cursor=<next>` resumes exactly there (the
+  window follows the cursor: `[cursor height, min(tip, cursor height +
+  999)]`). A page with `more:true` may hold no log (the node spent its
+  bound on rows that did not match). Both reads go to the same server;
+  every configured server is tried; the last 32 successful answers
+  (keyed by address and cursor) are cached ≤ 5 s; a failure is never
+  cached and shows as `"account_status":"unavailable"` with
+  `account`/`logs` null — never as an empty account. A node whose EVM is
+  not active answers NOT_FOUND, which is that same "unavailable".
+- *Node work an anonymous client can cause.* At most
+  `EXP_EVM_LOGS_NODE_READS` (10) uncached `evm_logs` reads per
+  `EXP_EVM_LOGS_NODE_WINDOW_MS` (10 s, a fixed CLOCK_MONOTONIC window,
+  `exp_http.h`) across all clients; cached answers do not count. Over
+  the cap the contract page still carries the account (one node row)
+  and answers `"logs":null,"logs_status":"busy"` — never an empty list.
+- *Units.* `value_wei`, `balance_wei` and `wei_destroyed` are decimal
+  strings of wei (256-bit). 1 raw unit (10^-8 NODUS) = 10^10 wei, so
+  NODUS = wei / 10^18. `reserve_in` / `reserve_out` are raw units.
 
 ## Build
 
@@ -227,8 +283,8 @@ Usage: dna-explorerd [--config PATH] [--db PATH] [--rewards-db PATH] [--port N] 
                     OK/INCONSISTENT, exit 0/1: blocks are exactly heights
                     1..last_indexed_height; each block's item count equals
                     n_items and its applied envelopes equal applied_count;
-                    every item has a block; every io/record row belongs to an
-                    applied item; no refused item has effects.
+                    every item has a block; every io/record/name/EVM row
+                    belongs to an applied item; no refused item has effects.
   --version        print version and exit
 ```
 
@@ -270,7 +326,9 @@ addressed by its **position** `"<height>:<index>"`; send the `:` as it is
 | `/api/stats` | `{indexed_height, tip_height, chain_id, supply_current, supply_burned, supply_genesis, reward_pool, treasury, unclaimed, circulating}` — any field not yet known is `null`. `chain_id` is the 32-byte `chain_id32`. `supply_genesis` is the fixed total supply. The supply buckets (decision `2026-09-30-scan-supply-buckets`): `reward_pool` (validator reward reserve left), `treasury` (array of 9 decimal strings, pool 1..9 in order: 1 Storage, 2 Compute, 3 Bandwidth, 4 Future services; 5-9 hold 0 on the live chain), `unclaimed` (genesis allocation not yet claimed) and `circulating` = `current − reward_pool − Σ treasury − unclaimed`, computed here from the SAME stored reply as the buckets (staked and Foundation coins count as circulating). All four are `null` when the node sends no buckets (an older node); `circulating` alone is `null` when a subtraction would go below zero — never a wrapped number. |
 | `/api/blocks?before=<height>&limit=<n>` | `{blocks:[{height, block_id, time, proposer, applied_count, n_items}]}`, newest first (`limit` 1-100, default 25). |
 | `/api/block/<height\|block_id>?from=<index>&limit=<n>` | `{block:{…, prev_id, global_root}, items:[item], next_from}` — one page of the block's items, index-ascending from `from` (default 0; `limit` default and max 100); `next_from` is the next page's first index, `null` on the last page. |
-| `/api/tx/<wire_id\|intent_id\|height:index>` | `{tx:{item…, record}, inputs:[{coin_id, address, token_id, amount}], outputs:[{coin_id, address, token_id, amount, unlock_block}]}`. An input's `address`/`token_id`/`amount` are `null` when the coin's creating item is not in the index. A refused envelope has no ids — its position is its only address. |
+| `/api/tx/<wire_id\|intent_id\|height:index>` | `{tx:{item…, record}, inputs:[{coin_id, address, token_id, amount}], outputs:[{coin_id, address, token_id, amount, unlock_block}], evm}`. An input's `address`/`token_id`/`amount` are `null` when the coin's creating item is not in the index. A refused envelope has no ids — its position is its only address. `evm` (Nodus EVM) is `null` unless the item is an applied EVM item: `{status:"success"\|"failed", gas_used, from, to, created, value_wei, recipient, reserve_in, reserve_out, logs, tickets:[hex128], tickets_more, wei_destroyed, receipt_digest}` — `from`/`to`/`created` 64-hex EVM addresses (`to` CALL only, `created` a successful CREATE only, else `null`), `value_wei` decimal wei string (CALL / CREATE, else `null`), `recipient` the WITHDRAW / REDEEM fingerprint (else `null`), `reserve_in`/`reserve_out` raw-unit decimal strings or `null`, `logs` the receipt's log count, `tickets` the ticket ids it opened (at most 32; `tickets_more:true` = more), `wei_destroyed` decimal wei string, `receipt_digest` 128-hex. A `failed` item is APPLIED (its fee is paid, its nonce used); a refused one is listed with `refused:true` and `evm:null`. |
+| `/api/evm/address/<64 hex>?before=<height:index>&limit=<n>` | Nodus EVM. `{address, account:{nonce, balance_wei, code_size, code_hash, height} \| null, account_status:"ok"\|"unavailable", items:[item], next_before}` — `account` is the node's committed state (`height` = the node's tip; see "EVM" above); `items` are the indexed EVM items naming the address as sender, CALL target or created contract, newest first, the `/api/address` cursor. The address is 64 LOWERCASE hex. |
+| `/api/evm/contract/<64 hex>?before=…&limit=…&logs_cursor=<h:x:li>` | Nodus EVM. `/api/evm/address`'s object plus `created_by` (the item that created the contract, `null` when not indexed), `logs:{from_height, to_height, items:[{height, item, log_index, topics:[hex64], data, intent_id}], more, next} \| null` and `logs_status:"ok"\|"unavailable"\|"busy"` (the node's `evm_logs` page, see "EVM" above: `next` is the node's cursor `"height:item:log"` when `more` is true, else `null`; `?logs_cursor=` resumes there — a malformed cursor, or one on `/api/evm/address`, is 400; `logs` is `null` with an unavailable account (`"unavailable"`) or over the node-work cap (`"busy"`, the account still present)). |
 | `/api/address/<fp>?before=<height:index>&limit=<n>` | `{address, balances:[{token_id, total, spendable, coins}] \| null, balance_status:"ok"\|"unavailable", items:[item], next_before}` — `balances` is the node's per-token list, token id ascending (`total`/`spendable` decimal strings, `coins` a number; see "Balance" above), `null` only with `"unavailable"`; `items` are the items touching the address (owner of a created or resolved consumed coin, or a record's validator/delegator/destination), newest first; `next_before` is the next page's cursor, `null` on a short page. |
 | `/api/governance` | `{tip, indexed_height, records:[{position, height, index, time, param_id, param_name, new_value, effective_height, wire_id, intent_id}], truncated}` — every **applied** `chain_config` vote in the index (refused items carry no record), `(height, index)` ascending. `param_name` is the `DNAC_CFG_*` name of `param_id` (`dnac/include/dnac/dnac.h`, without the prefix — e.g. `HF2_ACTIVE`, `RULESET_GEN2`, `NAME_PRICE_3P`), `null` for an id this build does not know; `new_value` is a decimal string; `effective_height` is the block from which the value is in force. `tip` is the node's last reported committed height (`/api/stats` `tip_height`), `indexed_height` the index watermark — both `null` until known; a vote between the two is not listed yet. A rule is active when `tip ≥ effective_height`. Not a page: a hard cap of 1000 records, `truncated:true` when the index holds more. A chain_config row written from the genesis document (height 0 — HF-1's `GAS_PRICE_RAW_PER_UNIT` and `TOKEN_CREATE_FEE_RAW`) is not a block item and never appears. |
 | `/api/tps` | `{now_ms, last_minute:{tx, blocks, seconds:60, tps}, last_hour:{tx, blocks, seconds:3600, tps}, next_payday:{height, blocks_left, avg_block_ms, est_ms}, paydays:[{height, time}], apy:{reward_pool, active_stake, active_validators, stake_at_tip, avg_block_ms, epochs_per_year, apy}, history:[{start_ms, tx, blocks, seconds, tps}]}` — throughput, payday and APY figures (the payday and APY parts: next row). Throughput of **applied** transactions (`applied_count`; refused items are not counted), read off the index by block time only (D4): `now_ms` is the time of the newest indexed block (highest height), never the explorer's clock, so the figures are reproducible from the index. The windows are half-open, `(now_ms − seconds·1000, now_ms]`: a block whose time is exactly `now_ms − 60000` is outside the last minute, one at `now_ms − 59999` inside. `history` is 24 hourly buckets, oldest first: `start_ms` is a UTC hour start (`start_ms % 3600000 == 0`), the newest bucket is the hour containing `now_ms`, a bucket holds the blocks with time in `[start_ms, start_ms + 1 h)` (up to `now_ms`), an hour with no block is a zero bucket. `seconds` is 3600, except the newest (in-progress) bucket: the seconds elapsed from its start to `now_ms`, rounded up, at least 1. `tps` = `tx / seconds` as a decimal **string** with exactly two decimals, rounded half up with integer arithmetic (`"0.35"`, `"3.00"`). An empty index answers `{now_ms:null, last_minute:null, last_hour:null, next_payday:null, paydays:[], apy:null, history:[]}`. Bounded cost: each span is a range scan of the covering index `idx_blocks_time` (`blocks(time_ms, applied_count)`, created on open — an existing index gains it without a rebuild) over at most 24 h of blocks; the payday pace fallback reads at most 100 heights and the paydays list at most 100 blocks, by primary key. |
@@ -284,7 +342,8 @@ addressed by its **position** `"<height>:<index>"`; send the `:` as it is
 `item` = `{position, height, index, time, kind ("envelope"|"claim"|"empty"),
 op ("spend", "burn", "token_create", "sysfund", "stake", "delegate",
 "unstake", "undelegate", "validator_update", "chain_config", "claim",
-"name_register" or null), code, refused (code ≠ 0), wire_id, intent_id,
+"name_register", "evm_call", "evm_create", "evm_deposit", "evm_withdraw",
+"evm_redeem" or null), code, refused (code ≠ 0), wire_id, intent_id,
 fee, burned, name, name_price, name_owner}` — `name`/`name_price` (decimal
 string)/`name_owner` are set on an applied name registration only, `null`
 otherwise (`name_owner` also `null` when the owner is not in the index).
@@ -427,11 +486,17 @@ buggy witness):**
   Nodus API, enforced by a grep gate (`grep -rn "dnac_spend\|nodus_client_put\|nodus_client_dnac_spend\|dnac_send\|dnac_tx_submit" explorer/src/` must be empty).
 - **G2** — witness cluster not exposed: public HTTP terminates at nginx;
   the daemon speaks outbound-only Nodus T2, no inbound path to any witness.
-  The HTTP thread holds ONE chain client of its own, used for exactly one
-  read-only query (`dnac_balance`, the address balance): an Internet
-  request can make the daemon ask the configured servers for one address's
-  totals (at most one attempt per configured server per request, successful
-  answers cached 5 s) and nothing else. The sync thread's reads are
+  The HTTP thread holds ONE chain client of its own, used for read-only
+  queries only: `dnac_balance` (the address balance) and, Nodus EVM, §18
+  `evm_account` + `evm_logs` (the `/api/evm/*` account and a contract's
+  logs, ≤ 100 logs over ≤ 1000 blocks): an Internet request can make the
+  daemon ask the configured servers for one address's totals or one EVM
+  account (+ logs) — at most one attempt per configured server per
+  request, successful answers cached 5 s, at most 10 uncached logs reads
+  per 10 s across all clients — and nothing else. The node bounds
+  `evm_logs` itself (≤ 10 000 blocks, ≤ 1000 logs, ≤ 10 000 examined rows
+  and a reply byte budget per request, all charged to its per-block work
+  budget). The sync thread's reads are
   `dnac_supply`, `dnac_v3_block` and `dnac_validator_list_query` (status
   ACTIVE, for the APY estimate) — all read-only.
 - **G3** — no single server drives a destructive action: an index reset

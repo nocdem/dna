@@ -127,7 +127,11 @@ int nodus_witness_v2_preflight(nodus_witness_t *w,
      * loss of coverage — it is the coverage this build actually has.
      * tokenomics-v3 P1: the ONE accepted value moved S14 -> S15;
      * tokenomics-v3 P2 moves it S15 -> S16. */
-    if (ver != NODUS_V2_SCHEMA_VERSION_S16)
+    /* Nodus EVM: the live rung is S17 (every builder and the at-open rung
+     * migrate there); S16 — S17 minus the empty EVM tables — stays
+     * accepted for a database this build did not open itself. */
+    if (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
+        ver != NODUS_V2_SCHEMA_VERSION_S17)
         pf_add(out, NODUS_V2_PF_SCHEMA_UNSUPPORTED);
 
     /* ── 2. REQUIRED TABLES ───────────────────────────────────────── */

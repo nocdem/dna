@@ -239,6 +239,37 @@ int exp_chain_v3_page(exp_chain_t *c, uint64_t height, uint32_t from_index,
 int exp_chain_balance(exp_chain_t *c, const char *owner_hex,
                       nodus_dnac_balance_result_t *out);
 
+/* Nodus EVM P4-C — one EVM account's committed state (§18 evm_account:
+ * nonce, balance in wei, code hash, code size, the node's tip) and,
+ * optionally, the contract's recent logs (§18 evm_logs over the heights
+ * (tip − EXP_EVM_LOGS_WINDOW, tip], at most EXP_EVM_LOGS_LIMIT, ascending
+ * (height, item, log) — the node's order). Both reads go to the SAME
+ * server so the logs window ends at the tip the account was read at;
+ * every configured server is tried (the exp_chain_balance rule). `logs`
+ * NULL = the account only. Free `logs` with nodus_evm_logs_free.
+ * @return 0; the last attempt's error otherwise (outputs then empty).
+ * A node whose EVM domain is not active answers NODUS_ERR_NOT_FOUND —
+ * a failure, never an empty account.
+ *
+ * Red-team 1 F4 — the node's evm_logs is a CURSOR scan: a page that
+ * stops early (its 100-log limit, the node's examined-row / byte bounds
+ * or its per-block work budget) carries logs->has_cursor. `cursor` NULL =
+ * the first page over (tip − EXP_EVM_LOGS_WINDOW, tip]; a cursor resumes
+ * at cursor->height over [cursor->height, min(tip, cursor->height +
+ * EXP_EVM_LOGS_WINDOW − 1)] — the window follows the cursor, so a cursor
+ * from an older page stays valid after the tip moved. A cursor above the
+ * tip reads no logs (an empty, complete page). The logs are read for ANY
+ * address — no code-size condition: a contract whose constructor logged
+ * and returned empty runtime code keeps its logs reachable.
+ * *logs_from_out / *logs_to_out: the heights the logs page covers. */
+#define EXP_EVM_LOGS_WINDOW 1000u    /* blocks; < NODUS_EVM_LOGS_MAX_SPAN */
+#define EXP_EVM_LOGS_LIMIT  100u     /* <= NODUS_EVM_LOGS_MAX_LIMIT */
+int exp_chain_evm_account(exp_chain_t *c, const uint8_t addr[32],
+                          const nodus_evm_logs_cursor_t *cursor,
+                          nodus_evm_account_t *acct,
+                          nodus_evm_logs_res_t *logs,
+                          uint64_t *logs_from_out, uint64_t *logs_to_out);
+
 /* ── F4 chain-reset FSM ──────────────────────────────────────────────
  *
  * Pure logic, no I/O, no globals. Detects a chain reset (witness set

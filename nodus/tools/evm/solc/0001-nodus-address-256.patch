@@ -1,0 +1,840 @@
+From 91ae915140d2fd1db10b039e3c2cf2d57096f3f4 Mon Sep 17 00:00:00 2001
+From: nocdem <nocdem@cpunk.io>
+Date: Sun, 4 Oct 2026 00:00:00 +0000
+Subject: [PATCH] Nodus EVM: 256-bit (32-byte) address type
+
+- address/address payable/contract values are full 256-bit words (ABI size 32, storage 32, no packing)
+- address cleanup is the identity in legacy and Yul IR codegen; no 160-bit masks
+- explicit conversions only via uint256/bytes32; uint160/bytes20 conversions are errors
+- address literals: 64 hex digits, mixed case, EIP-55 rule over 64 digits; 40-digit literals are errors
+- removed optimizer rule AND(ADDRESS|CALLER|ORIGIN|COINBASE, 2**160-1) -> opcode
+- external function types may only live on the stack (ABI/storage/memory packing does not fit)
+- library linking (20-byte link references) refused; library deploy-time address is PUSH32
+- SMTChecker models addresses as uint256
+- version build tag nodus.addr256
+---
+ cmake/scripts/buildinfo.cmake              |   6 +-
+ libevmasm/Assembly.cpp                     |  13 ++-
+ libevmasm/AssemblyItem.cpp                 |   3 +-
+ libevmasm/RuleList.h                       |  21 +---
+ libsolidity/analysis/TypeChecker.cpp       | 116 ++++++++++++++++++---
+ libsolidity/ast/AST.cpp                    |  32 ++++++
+ libsolidity/ast/AST.h                      |  10 ++
+ libsolidity/ast/Types.cpp                  |  49 +++++++--
+ libsolidity/ast/Types.h                    |   9 +-
+ libsolidity/codegen/CompilerUtils.cpp      |  50 ++++-----
+ libsolidity/codegen/ContractCompiler.cpp   |  19 ++--
+ libsolidity/codegen/ExpressionCompiler.cpp |   3 +-
+ libsolidity/codegen/YulUtilFunctions.cpp   |  52 ++++-----
+ libsolidity/formal/SymbolicTypes.cpp       |   3 +-
+ libsolidity/formal/SymbolicVariables.cpp   |   3 +-
+ libsolutil/CommonData.cpp                  |  40 +++++++
+ libsolutil/CommonData.h                    |  10 ++
+ 17 files changed, 311 insertions(+), 128 deletions(-)
+
+diff --git a/cmake/scripts/buildinfo.cmake b/cmake/scripts/buildinfo.cmake
+index a4e40e8..f01163e 100644
+--- a/cmake/scripts/buildinfo.cmake
++++ b/cmake/scripts/buildinfo.cmake
+@@ -60,9 +60,11 @@ if (SOL_COMMIT_HASH AND SOL_LOCAL_CHANGES)
+ 	set(SOL_COMMIT_HASH "${SOL_COMMIT_HASH}.mod")
+ endif()
+ 
+-set(SOL_VERSION_COMMIT "commit.${SOL_COMMIT_HASH}")
++# Nodus EVM (32-byte addresses): the "nodus.addr256" build tag marks every version string
++# (solc --version and the metadata "compiler.version") so artifacts are distinguishable.
++set(SOL_VERSION_COMMIT "nodus.addr256.commit.${SOL_COMMIT_HASH}")
+ set(SOL_VERSION_PLATFORM ETH_BUILD_PLATFORM)
+-set(SOL_VERSION_BUILDINFO "commit.${SOL_COMMIT_HASH}.${ETH_BUILD_PLATFORM}")
++set(SOL_VERSION_BUILDINFO "nodus.addr256.commit.${SOL_COMMIT_HASH}.${ETH_BUILD_PLATFORM}")
+ 
+ set(TMPFILE "${ETH_DST_DIR}/BuildInfo.h.tmp")
+ set(OUTFILE "${ETH_DST_DIR}/BuildInfo.h")
+diff --git a/libevmasm/Assembly.cpp b/libevmasm/Assembly.cpp
+index 9dd203a..447fd8d 100644
+--- a/libevmasm/Assembly.cpp
++++ b/libevmasm/Assembly.cpp
+@@ -1164,6 +1164,15 @@ LinkerObject const& Assembly::assemble() const
+ 
+ [[nodiscard]] std::pair<bytes, Assembly::LinkRef> Assembly::assemblePushLibraryAddress(AssemblyItem const& _item, size_t _pos) const
+ {
++	// Nodus EVM: addresses are 32 bytes, but the linker (placeholders, link references,
++	// --libraries, standard-json "libraries") is built around 20-byte addresses. A library
++	// link reference that reaches the final bytecode (an external library call, address(L),
++	// a Yul linkersymbol) is refused instead of emitting a 20-byte address slot. References
++	// that the optimizer removes as unused never get here.
++	solUnimplemented(
++		"Nodus EVM addresses are 32 bytes: linking library \"" + m_libraries.at(_item.data()) + "\" is not supported. "
++		"Make the library functions internal, or deploy the library as a contract and call it through an interface."
++	);
+ 	return {
+ 		// solidity::evmasm::Instructions underlying type is uint8_t
+ 		// TODO: Change to std::to_underlying since C++23
+@@ -1179,9 +1188,11 @@ LinkerObject const& Assembly::assemble() const
+ 
+ [[nodiscard]] bytes Assembly::assemblePushDeployTimeAddress() const
+ {
++	// Nodus EVM: the deploy-time (library self) address is 32 bytes: PUSH32 00...00,
++	// filled in by the library constructor (ContractCompiler::deployLibrary).
+ 	// solidity::evmasm::Instructions underlying type is uint8_t
+ 	// TODO: Change to std::to_underlying since C++23
+-	return bytes(1, static_cast<uint8_t>(Instruction::PUSH20)) + bytes(20);
++	return bytes(1, static_cast<uint8_t>(Instruction::PUSH32)) + bytes(32);
+ }
+ 
+ [[nodiscard]] bytes Assembly::assembleTag(AssemblyItem const& _item, size_t _pos, bool _addJumpDest) const
+diff --git a/libevmasm/AssemblyItem.cpp b/libevmasm/AssemblyItem.cpp
+index 8a91798..fdb1af5 100644
+--- a/libevmasm/AssemblyItem.cpp
++++ b/libevmasm/AssemblyItem.cpp
+@@ -161,7 +161,8 @@ size_t AssemblyItem::bytesRequired(size_t _addressLength, langutil::EVMVersion _
+ 		return 1 + _addressLength;
+ 	case PushLibraryAddress:
+ 	case PushDeployTimeAddress:
+-		return 1 + 20;
++		// Nodus EVM: addresses are 32 bytes (PUSH32).
++		return 1 + 32;
+ 	case PushImmutable:
+ 		return 1 + 32;
+ 	case AssignImmutable:
+diff --git a/libevmasm/RuleList.h b/libevmasm/RuleList.h
+index 34fe499..7bcff58 100644
+--- a/libevmasm/RuleList.h
++++ b/libevmasm/RuleList.h
+@@ -366,24 +366,9 @@ std::vector<SimplificationRule<Pattern>> simplificationRuleListPart5(
+ 		}
+ 	});
+ 
+-	for (auto instr: {
+-		Instruction::ADDRESS,
+-		Instruction::CALLER,
+-		Instruction::ORIGIN,
+-		Instruction::COINBASE
+-	})
+-	{
+-		assertThrow(Pattern::WordSize > 160, OptimizerException, "");
+-		Word const mask = (Word(1) << 160) - 1;
+-		rules.push_back({
+-			Builtins::AND(Pattern{instr}, mask),
+-			[=]() -> Pattern { return {instr}; }
+-		});
+-		rules.push_back({
+-			Builtins::AND(mask, Pattern{instr}),
+-			[=]() -> Pattern { return {instr}; }
+-		});
+-	}
++	// Nodus EVM: ADDRESS, CALLER, ORIGIN and COINBASE push 32-byte addresses, so
++	// AND(<instr>, 2**160 - 1) is NOT equal to <instr>. The upstream rule that dropped
++	// that mask is removed.
+ 
+ 	return rules;
+ }
+diff --git a/libsolidity/analysis/TypeChecker.cpp b/libsolidity/analysis/TypeChecker.cpp
+index e56ee15..190bd03 100644
+--- a/libsolidity/analysis/TypeChecker.cpp
++++ b/libsolidity/analysis/TypeChecker.cpp
+@@ -49,6 +49,7 @@
+ #include <range/v3/view/zip.hpp>
+ 
+ #include <memory>
++#include <set>
+ #include <vector>
+ 
+ using namespace solidity;
+@@ -56,6 +57,47 @@ using namespace solidity::util;
+ using namespace solidity::langutil;
+ using namespace solidity::frontend;
+ 
++namespace
++{
++
++/// Nodus EVM: addresses are 32 bytes. An external function value is an address plus a 4-byte
++/// selector (36 bytes), which no longer fits the single word that ABI encoding, storage and
++/// memory use for it. Such values may only live on the stack.
++std::string const nodusExternalFunctionTypeMessage =
++	"Nodus EVM addresses are 32 bytes: an external function value (32-byte address + 4-byte selector) "
++	"does not fit the single 32-byte word used to ABI-encode it or to keep it in storage, memory or calldata. "
++	"External function types may only be used for local variables and parameters of internal functions; "
++	"pass the address and the selector separately instead.";
++
++bool containsExternalFunctionType(Type const* _type, std::set<StructDefinition const*>& _visitedStructs)
++{
++	if (!_type)
++		return false;
++	if (auto const* functionType = dynamic_cast<FunctionType const*>(_type))
++		return functionType->kind() == FunctionType::Kind::External;
++	if (auto const* arrayType = dynamic_cast<ArrayType const*>(_type))
++		return containsExternalFunctionType(arrayType->baseType(), _visitedStructs);
++	if (auto const* mappingType = dynamic_cast<MappingType const*>(_type))
++		return containsExternalFunctionType(mappingType->valueType(), _visitedStructs);
++	if (auto const* structType = dynamic_cast<StructType const*>(_type))
++	{
++		if (!_visitedStructs.insert(&structType->structDefinition()).second)
++			return false;
++		for (auto const& member: structType->structDefinition().members())
++			if (containsExternalFunctionType(member->annotation().type, _visitedStructs))
++				return true;
++	}
++	return false;
++}
++
++bool containsExternalFunctionType(Type const* _type)
++{
++	std::set<StructDefinition const*> visitedStructs;
++	return containsExternalFunctionType(_type, visitedStructs);
++}
++
++}
++
+ bool TypeChecker::typeSupportedByOldABIEncoder(Type const& _type, bool _isLibraryCall)
+ {
+ 	if (_isLibraryCall && _type.dataStoredIn(DataLocation::Storage))
+@@ -159,7 +201,13 @@ TypePointers TypeChecker::typeCheckABIDecodeAndRetrieveReturnType(FunctionCall c
+ 				!actualType->dataStoredIn(DataLocation::Storage),
+ 				""
+ 			);
+-			if (!actualType->fullEncodingType(false, _abiEncoderV2, false))
++			if (containsExternalFunctionType(actualType))
++				m_errorReporter.typeError(
++					7215_error,
++					typeArgument->location(),
++					nodusExternalFunctionTypeMessage
++				);
++			else if (!actualType->fullEncodingType(false, _abiEncoderV2, false))
+ 				m_errorReporter.typeError(
+ 					9611_error,
+ 					typeArgument->location(),
+@@ -481,6 +529,20 @@ bool TypeChecker::visit(VariableDeclaration const& _variable)
+ 	Type const* varType = _variable.annotation().type;
+ 	solAssert(!!varType, "Variable type not provided.");
+ 
++	// Nodus EVM: an external function value may only live on the stack, i.e. as a plain local
++	// variable or as a parameter / return variable of an internal function or internal function type.
++	if (containsExternalFunctionType(varType))
++	{
++		bool const stackOnly =
++			varType->category() == Type::Category::Function &&
++			_variable.isLocalVariable() &&
++			!_variable.isTryCatchParameter() &&
++			!_variable.isEventOrErrorParameter() &&
++			(!_variable.isCallableOrCatchParameter() || _variable.isInternalCallableParameter());
++		if (!stackOnly)
++			m_errorReporter.typeError(6259_error, _variable.location(), nodusExternalFunctionTypeMessage);
++	}
++
+ 	if (_variable.value())
+ 	{
+ 		if (_variable.isStateVariable() && varType->containsNestedMapping())
+@@ -1589,6 +1651,8 @@ bool TypeChecker::visit(TupleExpression const& _tuple)
+ 					_tuple.location(),
+ 					"Type " + inlineArrayType->humanReadableName() + " is only valid in storage."
+ 				);
++			else if (containsExternalFunctionType(inlineArrayType))
++				m_errorReporter.typeError(2318_error, _tuple.location(), nodusExternalFunctionTypeMessage);
+ 
+ 			_tuple.annotation().type = TypeProvider::array(DataLocation::Memory, inlineArrayType, types.size());
+ 		}
+@@ -2158,6 +2222,12 @@ void TypeChecker::typeCheckABIEncodeFunctions(
+ 			}
+ 		}
+ 
++		if (containsExternalFunctionType(argType))
++		{
++			m_errorReporter.typeError(4831_error, arguments[i]->location(), nodusExternalFunctionTypeMessage);
++			continue;
++		}
++
+ 		if (isPacked && !typeSupportedByOldABIEncoder(*argType, false /* isLibrary */))
+ 		{
+ 			m_errorReporter.typeError(
+@@ -3026,6 +3096,12 @@ void TypeChecker::endVisit(NewExpression const& _newExpression)
+ 				_newExpression.typeName().location(),
+ 				"Array containing a (nested) mapping cannot be constructed in memory."
+ 			);
++		if (containsExternalFunctionType(type))
++			m_errorReporter.typeError(
++				5562_error,
++				_newExpression.typeName().location(),
++				nodusExternalFunctionTypeMessage
++			);
+ 		if (!type->isDynamicallySized())
+ 			m_errorReporter.typeError(
+ 				3904_error,
+@@ -3736,28 +3812,34 @@ void TypeChecker::endVisit(Literal const& _literal)
+ 		// Assign type here if it even looks like an address. This prevents double errors for invalid addresses
+ 		_literal.annotation().type = TypeProvider::address();
+ 
+-		std::string msg;
+-		if (_literal.valueWithoutUnderscores().length() != 42) // "0x" + 40 hex digits
+-			// looksLikeAddress enforces that it is a hex literal starting with "0x"
+-			msg =
+-				"This looks like an address but is not exactly 40 hex digits. It is " +
+-				std::to_string(_literal.valueWithoutUnderscores().length() - 2) +
+-				" hex digits.";
+-		else if (!_literal.passesAddressChecksum())
+-		{
+-			msg = "This looks like an address but has an invalid checksum.";
+-			if (!_literal.getChecksummedAddress().empty())
+-				msg += " Correct checksummed address: \"" + _literal.getChecksummedAddress() + "\".";
+-		}
++		// Nodus EVM: addresses are 32 bytes. A 20-byte (40 hex digit) Ethereum-style address literal
++		// is always an error, whether or not its checksum is valid.
++		m_errorReporter.syntaxError(
++			7631_error,
++			_literal.location(),
++			"This looks like a 20-byte Ethereum address literal (" +
++			std::to_string(_literal.valueWithoutUnderscores().length() - 2) +
++			" hex digits). Nodus EVM addresses are 32 bytes: write the address as a checksummed "
++			"literal of exactly 64 hex digits. If this is not used as an address, please prepend '00'."
++		);
++	}
++	else if (_literal.looksLikeAddress32())
++	{
++		// Assign type here if it even looks like an address. This prevents double errors for invalid addresses
++		_literal.annotation().type = TypeProvider::address();
+ 
+-		if (!msg.empty())
++		if (!_literal.passesAddress32Checksum())
++		{
++			std::string msg = "This looks like a 32-byte address (64 hex digits, mixed case) but has an invalid checksum.";
++			if (!_literal.getChecksummedAddress32().empty())
++				msg += " Correct checksummed address: \"" + _literal.getChecksummedAddress32() + "\".";
+ 			m_errorReporter.syntaxError(
+ 				9429_error,
+ 				_literal.location(),
+ 				msg +
+-				" If this is not used as an address, please prepend '00'. " +
+-				"For more information please see https://docs.soliditylang.org/en/develop/types.html#address-literals"
++				" If this is not used as an address, write all hex letters in the same case."
+ 			);
++		}
+ 	}
+ 
+ 	if (_literal.isHexNumber() && _literal.subDenomination() != Literal::SubDenomination::None)
+diff --git a/libsolidity/ast/AST.cpp b/libsolidity/ast/AST.cpp
+index b59273b..0d4c4d9 100644
+--- a/libsolidity/ast/AST.cpp
++++ b/libsolidity/ast/AST.cpp
+@@ -1063,6 +1063,38 @@ std::string Literal::getChecksummedAddress() const
+ 	return util::getChecksummedAddress(address);
+ }
+ 
++bool Literal::looksLikeAddress32() const
++{
++	if (subDenomination() != SubDenomination::None)
++		return false;
++
++	if (!isHexNumber())
++		return false;
++
++	std::string const value = valueWithoutUnderscores();
++	if (value.length() != 66) // "0x" + 64 hex digits
++		return false;
++
++	return
++		value.find_first_of("abcdef", 2) != std::string::npos &&
++		value.find_first_of("ABCDEF", 2) != std::string::npos;
++}
++
++bool Literal::passesAddress32Checksum() const
++{
++	solAssert(isHexNumber(), "Expected hex number");
++	return util::passesAddress32Checksum(valueWithoutUnderscores(), true);
++}
++
++std::string Literal::getChecksummedAddress32() const
++{
++	solAssert(isHexNumber(), "Expected hex number");
++	std::string const address = valueWithoutUnderscores().substr(2);
++	if (address.length() != 64)
++		return std::string();
++	return util::getChecksummedAddress32(address);
++}
++
+ TryCatchClause const* TryStatement::successClause() const
+ {
+ 	solAssert(m_clauses.size() > 0, "");
+diff --git a/libsolidity/ast/AST.h b/libsolidity/ast/AST.h
+index 9c7cbbd..1282a37 100644
+--- a/libsolidity/ast/AST.h
++++ b/libsolidity/ast/AST.h
+@@ -2494,6 +2494,16 @@ public:
+ 	/// @returns the checksummed version of an address (or empty string if not valid)
+ 	std::string getChecksummedAddress() const;
+ 
++	/// Nodus EVM (32-byte addresses):
++	/// @returns true if this is a hex literal of exactly 64 hex digits containing both lowercase
++	/// and uppercase letters, i.e. it is meant as a checksummed 32-byte address literal.
++	/// All-lowercase / all-uppercase 64-digit literals stay ordinary number literals.
++	bool looksLikeAddress32() const;
++	/// @returns true if it passes the 64-digit address checksum test.
++	bool passesAddress32Checksum() const;
++	/// @returns the checksummed version of a 64-digit address literal (or empty string if not valid)
++	std::string getChecksummedAddress32() const;
++
+ private:
+ 	Token m_token;
+ 	ASTPointer<ASTString> m_value;
+diff --git a/libsolidity/ast/Types.cpp b/libsolidity/ast/Types.cpp
+index 02df22d..5c3c4e6 100644
+--- a/libsolidity/ast/Types.cpp
++++ b/libsolidity/ast/Types.cpp
+@@ -62,6 +62,18 @@ using namespace solidity::frontend;
+ namespace
+ {
+ 
++/// Nodus EVM: an address is the whole 256-bit word. A conversion between "address" and an
++/// integer or fixed-bytes type narrower than 256 bits would silently truncate the address,
++/// so it is a compile error carrying this explanation.
++BoolResult nodusAddressWidthError(Type const& _other)
++{
++	return BoolResult::err(
++		"Nodus EVM addresses are 32 bytes (256 bits): \"address\" converts explicitly only to and from "
++		"\"uint256\" and \"bytes32\"; a conversion involving \"" + _other.humanReadableName() +
++		"\" would silently truncate the address."
++	);
++}
++
+ /// Checks whether _mantissa * (10 ** _expBase10) fits into 4096 bits.
+ bool fitsPrecisionBase10(bigint const& _mantissa, uint32_t _expBase10)
+ {
+@@ -501,9 +513,19 @@ BoolResult AddressType::isExplicitlyConvertibleTo(Type const& _convertTo) const
+ 	else if (m_stateMutability == StateMutability::NonPayable)
+ 	{
+ 		if (auto integerType = dynamic_cast<IntegerType const*>(&_convertTo))
+-			return (!integerType->isSigned() && integerType->numBits() == 160);
++		{
++			if (integerType->isSigned())
++				return false;
++			if (integerType->numBits() != 256)
++				return nodusAddressWidthError(_convertTo);
++			return true;
++		}
+ 		else if (auto fixedBytesType = dynamic_cast<FixedBytesType const*>(&_convertTo))
+-			return (fixedBytesType->numBytes() == 20);
++		{
++			if (fixedBytesType->numBytes() != 32)
++				return nodusAddressWidthError(_convertTo);
++			return true;
++		}
+ 	}
+ 
+ 	return false;
+@@ -631,10 +653,13 @@ BoolResult IntegerType::isExplicitlyConvertibleTo(Type const& _convertTo) const
+ 	else if (auto integerType = dynamic_cast<IntegerType const*>(&_convertTo))
+ 		return (numBits() == integerType->numBits()) || (isSigned() == integerType->isSigned());
+ 	else if (auto addressType = dynamic_cast<AddressType const*>(&_convertTo))
+-		return
+-			(addressType->stateMutability() != StateMutability::Payable) &&
+-			!isSigned() &&
+-			(numBits() == 160);
++	{
++		if (addressType->stateMutability() == StateMutability::Payable || isSigned())
++			return false;
++		if (numBits() != 256)
++			return nodusAddressWidthError(*this);
++		return true;
++	}
+ 	else if (auto fixedBytesType = dynamic_cast<FixedBytesType const*>(&_convertTo))
+ 		return (!isSigned() && (numBits() == fixedBytesType->numBytes() * 8));
+ 	else if (dynamic_cast<EnumType const*>(&_convertTo))
+@@ -1053,7 +1078,7 @@ BoolResult RationalNumberType::isExplicitlyConvertibleTo(Type const& _convertTo)
+ 			!isNegative() &&
+ 			!isFractional() &&
+ 			integerType() &&
+-			(integerType()->numBits() <= 160));
++			(integerType()->numBits() <= 256));
+ 	else if (category == Category::Integer)
+ 		return false;
+ 	else if (auto enumType = dynamic_cast<EnumType const*>(&_convertTo))
+@@ -1364,9 +1389,13 @@ BoolResult FixedBytesType::isExplicitlyConvertibleTo(Type const& _convertTo) con
+ 	else if (auto integerType = dynamic_cast<IntegerType const*>(&_convertTo))
+ 		return (!integerType->isSigned() && integerType->numBits() == numBytes() * 8);
+ 	else if (auto addressType = dynamic_cast<AddressType const*>(&_convertTo))
+-		return
+-			(addressType->stateMutability() != StateMutability::Payable) &&
+-			(numBytes() == 20);
++	{
++		if (addressType->stateMutability() == StateMutability::Payable)
++			return false;
++		if (numBytes() != 32)
++			return nodusAddressWidthError(*this);
++		return true;
++	}
+ 	else if (auto fixedPointType = dynamic_cast<FixedPointType const*>(&_convertTo))
+ 		return fixedPointType->numBits() == numBytes() * 8;
+ 
+diff --git a/libsolidity/ast/Types.h b/libsolidity/ast/Types.h
+index 8d2453d..5fcc096 100644
+--- a/libsolidity/ast/Types.h
++++ b/libsolidity/ast/Types.h
+@@ -455,8 +455,10 @@ public:
+ 
+ 	bool operator==(Type const& _other) const override;
+ 
+-	unsigned calldataEncodedSize(bool _padded = true) const override { return _padded ? 32 : 160 / 8; }
+-	unsigned storageBytes() const override { return 160 / 8; }
++	/// Nodus EVM: addresses are 32 bytes (the whole 256-bit word), padded or not.
++	unsigned calldataEncodedSize(bool /*_padded*/ = true) const override { return 32; }
++	/// Nodus EVM: an address fills a whole storage slot; it never packs with other variables.
++	unsigned storageBytes() const override { return 32; }
+ 	bool leftAligned() const override { return false; }
+ 	bool isValueType() const override { return true; }
+ 	bool nameable() const override { return true; }
+@@ -975,7 +977,8 @@ public:
+ 		solAssert(!isSuper(), "");
+ 		return encodingType()->calldataEncodedSize(_padded);
+ 	}
+-	unsigned storageBytes() const override { solAssert(!isSuper(), ""); return 20; }
++	/// Nodus EVM: a contract value is a 32-byte address.
++	unsigned storageBytes() const override { solAssert(!isSuper(), ""); return 32; }
+ 	bool leftAligned() const override { solAssert(!isSuper(), ""); return false; }
+ 	bool isValueType() const override { return !isSuper(); }
+ 	bool nameable() const override { return !isSuper(); }
+diff --git a/libsolidity/codegen/CompilerUtils.cpp b/libsolidity/codegen/CompilerUtils.cpp
+index 822d9d3..96ad6d8 100644
+--- a/libsolidity/codegen/CompilerUtils.cpp
++++ b/libsolidity/codegen/CompilerUtils.cpp
+@@ -707,37 +707,23 @@ void CompilerUtils::memoryCopy()
+ 	m_context << Instruction::POP << Instruction::POP << Instruction::POP;
+ }
+ 
+-void CompilerUtils::splitExternalFunctionType(bool _leftAligned)
++void CompilerUtils::splitExternalFunctionType(bool /*_leftAligned*/)
+ {
+-	// We have to split the left-aligned <address><function identifier> into two stack slots:
+-	// address (right aligned), function identifier (right aligned)
+-	if (_leftAligned)
+-	{
+-		m_context << Instruction::DUP1;
+-		rightShiftNumberOnStack(64 + 32);
+-		// <input> <address>
+-		m_context << Instruction::SWAP1;
+-		rightShiftNumberOnStack(64);
+-	}
+-	else
+-	{
+-		m_context << Instruction::DUP1;
+-		rightShiftNumberOnStack(32);
+-		m_context << ((u256(1) << 160) - 1) << Instruction::AND << Instruction::SWAP1;
+-	}
+-	m_context << u256(0xffffffffUL) << Instruction::AND;
++	// Nodus EVM: a 32-byte address plus a 4-byte selector cannot be packed into one word.
++	// The TypeChecker rejects every use that needs the packed form; reaching this is a missed path.
++	solUnimplemented(
++		"Nodus EVM addresses are 32 bytes: external function values cannot be packed into one word "
++		"(ABI encoding, storage, memory or calldata)."
++	);
+ }
+ 
+-void CompilerUtils::combineExternalFunctionType(bool _leftAligned)
++void CompilerUtils::combineExternalFunctionType(bool /*_leftAligned*/)
+ {
+-	// <address> <function_id>
+-	m_context << u256(0xffffffffUL) << Instruction::AND << Instruction::SWAP1;
+-	if (!_leftAligned)
+-		m_context << ((u256(1) << 160) - 1) << Instruction::AND;
+-	leftShiftNumberOnStack(32);
+-	m_context << Instruction::OR;
+-	if (_leftAligned)
+-		leftShiftNumberOnStack(64);
++	// Nodus EVM: see splitExternalFunctionType.
++	solUnimplemented(
++		"Nodus EVM addresses are 32 bytes: external function values cannot be packed into one word "
++		"(ABI encoding, storage, memory or calldata)."
++	);
+ }
+ 
+ void CompilerUtils::pushCombinedFunctionEntryLabel(Declaration const& _function, bool _runtimeOnly)
+@@ -829,8 +815,8 @@ void CompilerUtils::convertType(
+ 		}
+ 		else if (targetTypeCategory == Type::Category::Address)
+ 		{
+-			solAssert(typeOnStack.numBytes() * 8 == 160);
+-			rightShiftNumberOnStack(256 - 160);
++			// Nodus EVM: only bytes32 converts to a (32-byte) address; the whole word is the address.
++			solAssert(typeOnStack.numBytes() == 32);
+ 		}
+ 		else
+ 		{
+@@ -885,7 +871,8 @@ void CompilerUtils::convertType(
+ 					cleanHigherOrderBits(*typeOnStack);
+ 			}
+ 			else if (stackTypeCategory == Type::Category::Address)
+-				solAssert(targetBytesType.numBytes() * 8 == 160);
++				// Nodus EVM: a 32-byte address converts only to bytes32.
++				solAssert(targetBytesType.numBytes() == 32);
+ 			leftShiftNumberOnStack(256 - targetBytesType.numBytes() * 8);
+ 		}
+ 		else if (targetTypeCategory == Type::Category::Enum)
+@@ -923,7 +910,8 @@ void CompilerUtils::convertType(
+ 				targetTypeCategory == Type::Category::Address,
+ 				""
+ 			);
+-			IntegerType addressType(160);
++			// Nodus EVM: an address (and a contract value) is a full 256-bit word.
++			IntegerType addressType(256);
+ 			IntegerType const& targetType = targetTypeCategory == Type::Category::Integer
+ 				? dynamic_cast<IntegerType const&>(_targetType) : addressType;
+ 			if (stackTypeCategory == Type::Category::RationalNumber)
+diff --git a/libsolidity/codegen/ContractCompiler.cpp b/libsolidity/codegen/ContractCompiler.cpp
+index 3a4dca0..d0c108f 100644
+--- a/libsolidity/codegen/ContractCompiler.cpp
++++ b/libsolidity/codegen/ContractCompiler.cpp
+@@ -237,19 +237,18 @@ size_t ContractCompiler::deployLibrary(ContractDefinition const& _contract)
+ 	m_context.appendInlineAssembly(
+ 		util::Whiskers(R"(
+ 		{
+-			// If code starts at 11, an mstore(0) writes to the full PUSH20 plus data
+-			// without the need for a shift.
+-			let codepos := 11
+-			codecopy(codepos, subOffset, subSize)
+-			// Check that the first opcode is a PUSH20
+-			if iszero(eq(0x73, byte(0, mload(codepos)))) {
++			// Nodus EVM: addresses are 32 bytes. The runtime code starts with
++			// PUSH32 00...00; mstore(1, address()) writes the full 32-byte address
++			// right after the PUSH32 opcode at position 0.
++			codecopy(0, subOffset, subSize)
++			// Check that the first opcode is a PUSH32
++			if iszero(eq(0x7f, byte(0, mload(0)))) {
+ 				mstore(0, <panicSelector>)
+ 				mstore(4, <panicCode>)
+ 				revert(0, 0x24)
+ 			}
+-			mstore(0, address())
+-			mstore8(codepos, 0x73)
+-			return(codepos, subSize)
++			mstore(1, address())
++			return(0, subSize)
+ 		}
+ 		)")
+ 		("panicSelector", util::selectorFromSignatureU256("Panic(uint256)").str())
+@@ -315,7 +314,7 @@ void ContractCompiler::appendConstructor(FunctionDefinition const& _constructor)
+ void ContractCompiler::appendDelegatecallCheck()
+ {
+ 	// Special constant that will be replaced by the address at deploy time.
+-	// At compilation time, this is just "PUSH20 00...000".
++	// At compilation time, this is just "PUSH32 00...000" (Nodus EVM: 32-byte addresses).
+ 	m_context.appendDeployTimeAddress();
+ 	m_context << Instruction::ADDRESS << Instruction::EQ;
+ 	// The result on the stack is
+diff --git a/libsolidity/codegen/ExpressionCompiler.cpp b/libsolidity/codegen/ExpressionCompiler.cpp
+index 8563490..c688527 100644
+--- a/libsolidity/codegen/ExpressionCompiler.cpp
++++ b/libsolidity/codegen/ExpressionCompiler.cpp
+@@ -2443,9 +2443,8 @@ void ExpressionCompiler::appendCompareOperatorCode(Token _operator, Type const&
+ 			solUnimplementedAssert(functionType->sizeOnStack() == 2, "");
+ 			m_context << Instruction::SWAP3;
+ 
+-			m_context << ((u256(1) << 160) - 1) << Instruction::AND;
++			// Nodus EVM: addresses are full 256-bit words; compare them without masking.
+ 			m_context << Instruction::SWAP1;
+-			m_context << ((u256(1) << 160) - 1) << Instruction::AND;
+ 			m_context << Instruction::EQ;
+ 			m_context << Instruction::SWAP2;
+ 			m_context << ((u256(1) << 32) - 1) << Instruction::AND;
+diff --git a/libsolidity/codegen/YulUtilFunctions.cpp b/libsolidity/codegen/YulUtilFunctions.cpp
+index ffeaa79..89d90ce 100644
+--- a/libsolidity/codegen/YulUtilFunctions.cpp
++++ b/libsolidity/codegen/YulUtilFunctions.cpp
+@@ -68,36 +68,21 @@ std::string YulUtilFunctions::identityFunction()
+ 
+ std::string YulUtilFunctions::combineExternalFunctionIdFunction()
+ {
+-	std::string functionName = "combine_external_function_id";
+-	return m_functionCollector.createFunction(functionName, [&]() {
+-		return Whiskers(R"(
+-			function <functionName>(addr, selector) -> combined {
+-				combined := <shl64>(or(<shl32>(addr), and(selector, 0xffffffff)))
+-			}
+-		)")
+-		("functionName", functionName)
+-		("shl32", shiftLeftFunction(32))
+-		("shl64", shiftLeftFunction(64))
+-		.render();
+-	});
++	// Nodus EVM: a 32-byte address plus a 4-byte selector cannot be packed into one word.
++	// The TypeChecker rejects every use that needs the packed form; reaching this is a missed path.
++	solUnimplemented(
++		"Nodus EVM addresses are 32 bytes: external function values cannot be packed into one word "
++		"(ABI encoding, storage, memory or calldata)."
++	);
+ }
+ 
+ std::string YulUtilFunctions::splitExternalFunctionIdFunction()
+ {
+-	std::string functionName = "split_external_function_id";
+-	return m_functionCollector.createFunction(functionName, [&]() {
+-		return Whiskers(R"(
+-			function <functionName>(combined) -> addr, selector {
+-				combined := <shr64>(combined)
+-				selector := and(combined, 0xffffffff)
+-				addr := <shr32>(combined)
+-			}
+-		)")
+-		("functionName", functionName)
+-		("shr32", shiftRightFunction(32))
+-		("shr64", shiftRightFunction(64))
+-		.render();
+-	});
++	// Nodus EVM: see combineExternalFunctionIdFunction.
++	solUnimplemented(
++		"Nodus EVM addresses are 32 bytes: external function values cannot be packed into one word "
++		"(ABI encoding, storage, memory or calldata)."
++	);
+ }
+ 
+ std::string YulUtilFunctions::copyToMemoryFunction(bool _fromCalldata, bool _cleanup)
+@@ -380,7 +365,8 @@ std::string YulUtilFunctions::leftAlignFunction(Type const& _type)
+ 		switch (_type.category())
+ 		{
+ 		case Type::Category::Address:
+-			templ("body", "aligned := " + leftAlignFunction(IntegerType(160)) + "(value)");
++			// Nodus EVM: a 32-byte address fills the whole word.
++			templ("body", "aligned := " + leftAlignFunction(IntegerType(256)) + "(value)");
+ 			break;
+ 		case Type::Category::Integer:
+ 		{
+@@ -3500,7 +3486,8 @@ std::string YulUtilFunctions::conversionFunction(Type const& _from, Type const&
+ 		case Type::Category::Contract:
+ 			body =
+ 				Whiskers("converted := <convert>(value)")
+-					("convert", conversionFunction(IntegerType(160), _to))
++					// Nodus EVM: an address / contract value is a full 256-bit word.
++					("convert", conversionFunction(IntegerType(256), _to))
+ 					.render();
+ 			break;
+ 		case Type::Category::Integer:
+@@ -3514,7 +3501,8 @@ std::string YulUtilFunctions::conversionFunction(Type const& _from, Type const&
+ 			if (toCategory == Type::Category::Address || toCategory == Type::Category::Contract)
+ 				body =
+ 					Whiskers("converted := <convert>(value)")
+-					("convert", conversionFunction(_from, IntegerType(160)))
++					// Nodus EVM: an address / contract value is a full 256-bit word.
++					("convert", conversionFunction(_from, IntegerType(256)))
+ 					.render();
+ 			else
+ 			{
+@@ -3609,7 +3597,8 @@ std::string YulUtilFunctions::conversionFunction(Type const& _from, Type const&
+ 			else if (toCategory == Type::Category::Address)
+ 				body =
+ 					Whiskers("converted := <convert>(value)")
+-						("convert", conversionFunction(_from, IntegerType(160)))
++						// Nodus EVM: only bytes32 converts to a 32-byte address (TypeChecker); identity.
++						("convert", conversionFunction(_from, IntegerType(256)))
+ 						.render();
+ 			else
+ 			{
+@@ -3942,7 +3931,8 @@ std::string YulUtilFunctions::cleanupFunction(Type const& _type)
+ 		switch (_type.category())
+ 		{
+ 		case Type::Category::Address:
+-			templ("body", "cleaned := " + cleanupFunction(IntegerType(160)) + "(value)");
++			// Nodus EVM: every 256-bit value is a valid 32-byte address; cleanup is the identity.
++			templ("body", "cleaned := " + cleanupFunction(IntegerType(256)) + "(value)");
+ 			break;
+ 		case Type::Category::Integer:
+ 		{
+diff --git a/libsolidity/formal/SymbolicTypes.cpp b/libsolidity/formal/SymbolicTypes.cpp
+index 11c92a8..28aaf00 100644
+--- a/libsolidity/formal/SymbolicTypes.cpp
++++ b/libsolidity/formal/SymbolicTypes.cpp
+@@ -476,7 +476,8 @@ smtutil::Expression maxValue(frontend::Type const* _type)
+ 		dynamic_cast<AddressType const*>(_type) ||
+ 		dynamic_cast<ContractType const*>(_type)
+ 	)
+-		return TypeProvider::uint(160)->maxValue();
++		// Nodus EVM: addresses are 32 bytes.
++		return TypeProvider::uint(256)->maxValue();
+ 	if (auto const* enumType = dynamic_cast<EnumType const*>(_type))
+ 		return enumType->numberOfMembers() - 1;
+ 	if (auto const* bytesType = dynamic_cast<FixedBytesType const*>(_type))
+diff --git a/libsolidity/formal/SymbolicVariables.cpp b/libsolidity/formal/SymbolicVariables.cpp
+index 29301d0..b863460 100644
+--- a/libsolidity/formal/SymbolicVariables.cpp
++++ b/libsolidity/formal/SymbolicVariables.cpp
+@@ -129,7 +129,8 @@ SymbolicAddressVariable::SymbolicAddressVariable(
+ 	std::string _uniqueName,
+ 	EncodingContext& _context
+ ):
+-	SymbolicIntVariable(TypeProvider::uint(160), TypeProvider::uint(160), std::move(_uniqueName), _context)
++	// Nodus EVM: addresses are 32 bytes.
++	SymbolicIntVariable(TypeProvider::uint(256), TypeProvider::uint(256), std::move(_uniqueName), _context)
+ {
+ }
+ 
+diff --git a/libsolutil/CommonData.cpp b/libsolutil/CommonData.cpp
+index 7b86bae..0d76fb1 100644
+--- a/libsolutil/CommonData.cpp
++++ b/libsolutil/CommonData.cpp
+@@ -161,6 +161,46 @@ std::string solidity::util::getChecksummedAddress(std::string const& _addr)
+ 	return ret;
+ }
+ 
++bool solidity::util::passesAddress32Checksum(std::string const& _str, bool _strict)
++{
++	std::string s = _str.substr(0, 2) == "0x" ? _str : "0x" + _str;
++
++	if (s.length() != 66)
++		return false;
++
++	if (s.find_first_not_of("0123456789abcdefABCDEF", 2) != std::string::npos)
++		return false;
++
++	if (!_strict && (
++		s.find_first_of("abcdef", 2) == std::string::npos ||
++		s.find_first_of("ABCDEF", 2) == std::string::npos
++	))
++		return true;
++
++	return s == solidity::util::getChecksummedAddress32(s);
++}
++
++std::string solidity::util::getChecksummedAddress32(std::string const& _addr)
++{
++	std::string s = _addr.substr(0, 2) == "0x" ? _addr.substr(2) : _addr;
++	assertThrow(s.length() == 64, InvalidAddress, "");
++	assertThrow(s.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos, InvalidAddress, "");
++
++	h256 hash = keccak256(boost::algorithm::to_lower_copy(s, std::locale::classic()));
++
++	std::string ret = "0x";
++	for (unsigned i = 0; i < 64; ++i)
++	{
++		char addressCharacter = s[i];
++		uint8_t nibble = hash[i / 2u] >> (4u * (1u - (i % 2u))) & 0xf;
++		if (nibble >= 8)
++			ret += toUpper(addressCharacter);
++		else
++			ret += toLower(addressCharacter);
++	}
++	return ret;
++}
++
+ bool solidity::util::isValidHex(std::string_view const _string)
+ {
+ 	if (_string.substr(0, 2) != "0x")
+diff --git a/libsolutil/CommonData.h b/libsolutil/CommonData.h
+index ee3a6eb..f815b1a 100644
+--- a/libsolutil/CommonData.h
++++ b/libsolutil/CommonData.h
+@@ -601,6 +601,16 @@ bool passesAddressChecksum(std::string const& _str, bool _strict);
+ /// @param hex strings that look like an address
+ std::string getChecksummedAddress(std::string const& _addr);
+ 
++/// Nodus EVM (32-byte addresses): the EIP-55 rule applied to 64 hex digits — keccak256 of the
++/// 64 lowercase ASCII hex characters; a letter is uppercase iff the hash nibble at its position is >= 8.
++/// @returns true iff @a _str (64 hex digits, optional "0x" prefix) passes this checksum test.
++/// @param _strict if false, hex strings with only uppercase or only lowercase letters
++/// are considered valid.
++bool passesAddress32Checksum(std::string const& _str, bool _strict);
++
++/// @returns the checksummed version of a 64-hex-digit (32-byte) address, with "0x" prefix.
++std::string getChecksummedAddress32(std::string const& _addr);
++
+ bool isValidHex(std::string_view _string);
+ bool isValidDecimal(std::string_view _string);
+ 
+-- 
+2.39.5
+

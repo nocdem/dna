@@ -32,7 +32,29 @@ static int tests_passed = 0;
 /* ── Server thread ──────────────────────────────────────────────── */
 
 static nodus_server_t server;
-static volatile bool server_ready = false;
+/* server_init_done: set by the server thread once nodus_server_init has
+ * RETURNED, success or failure; server_ready: it succeeded. main waits for
+ * this outcome, not for a time budget: init runs the witness start checks
+ * (the EVM precompile self-test loads the KZG setup), whose duration
+ * depends on the host — a 2 s budget failed with init still running
+ * (2026-10-05, Nodus EVM red-team 1 F2). An init that never returns
+ * still hangs this wait — no per-test TIMEOUT is set in nodus/CMakeLists.txt;
+ * bound a run with `ctest --timeout`. A FAILED init signals and the test
+ * fails; no guessed number decides it here. Both flags are read and
+ * written only under init_lock; main sleeps on init_cond (red-team 2: a
+ * volatile flag is not a synchronisation between threads). */
+static pthread_mutex_t init_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  init_cond = PTHREAD_COND_INITIALIZER;
+static bool server_ready = false;
+static bool server_init_done = false;
+
+static void server_init_outcome(bool ready) {
+    pthread_mutex_lock(&init_lock);
+    server_ready = ready;
+    server_init_done = true;
+    pthread_cond_broadcast(&init_cond);
+    pthread_mutex_unlock(&init_lock);
+}
 
 /* O15H D6 — these ports MUST stay outside the Stage F harness range.
  *
@@ -77,10 +99,11 @@ static void *server_thread(void *arg) {
 
     if (nodus_server_init(&server, &config) != 0) {
         fprintf(stderr, "server init failed\n");
+        server_init_outcome(false);
         return NULL;
     }
 
-    server_ready = true;
+    server_init_outcome(true);
     nodus_server_run(&server);
     nodus_server_close(&server);
 
@@ -909,13 +932,20 @@ int main(void) {
 
     /* Start server in background thread */
     pthread_t tid;
-    pthread_create(&tid, NULL, server_thread, NULL);
+    int rc = pthread_create(&tid, NULL, server_thread, NULL);
+    if (rc != 0) {
+        fprintf(stderr, "FATAL: pthread_create failed: %s\n", strerror(rc));
+        return 1;
+    }
 
-    /* Wait for server to be ready */
-    for (int i = 0; i < 200 && !server_ready; i++)
-        usleep(10000);  /* 10ms */
+    /* Wait for init's OUTCOME (see server_init_done) */
+    pthread_mutex_lock(&init_lock);
+    while (!server_init_done)
+        pthread_cond_wait(&init_cond, &init_lock);
+    bool ready = server_ready;
+    pthread_mutex_unlock(&init_lock);
 
-    if (!server_ready) {
+    if (!ready) {
         fprintf(stderr, "FATAL: server failed to start\n");
         return 1;
     }

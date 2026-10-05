@@ -41,6 +41,31 @@ nodus_add_bench(bench_hf4_name_root)
 target_compile_definitions(bench_hf4_name_root PRIVATE
                            NODUS_WITNESS_INTERNAL_API)
 
+# Nodus EVM measurement gate, part (b) (design 2026-10-04-nodus-evm-chain-integration
+# §8 "Faz 3 kapısı"): EVM blocks of worst-case workloads through
+# nodus_witness_v2_apply_block, the FinalizeBlock entry. The workloads are
+# the bare-engine bench's (shared/evm/bench/evm_bench_wl.c, compiled in);
+# the chain fixture is tests/v2_genesis_fixture.h. Built only where the EVM
+# runtime is (NODUS_EVM_ENABLED). Minutes at its defaults — the `bench`
+# label keeps it out of `ctest -LE bench`. -Wno-unused-function: the
+# fixture header defines helpers this bench does not call.
+if(NODUS_EVM_ENABLED)
+    add_executable(bench_evm_apply bench_evm_apply.c
+                   ${SHARED_DIR}/evm/bench/evm_bench_wl.c)
+    target_include_directories(bench_evm_apply PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/tests
+        ${SHARED_DIR}
+        ${SHARED_DIR}/evm)
+    target_link_libraries(bench_evm_apply nodus dsa nodus)
+    target_compile_definitions(bench_evm_apply PRIVATE
+                               NODUS_WITNESS_INTERNAL_API)
+    target_compile_options(bench_evm_apply PRIVATE -Wall -Wextra
+                           -Wno-unused-function)
+    add_test(NAME bench_evm_apply COMMAND bench_evm_apply)
+    set_tests_properties(bench_evm_apply PROPERTIES LABELS "bench")
+endif()
+
 # Cluster TPS bench — uses pthreads + fork/exec. Not run via ctest
 # (requires a running cluster); built for manual invocation by
 # tests/bench_run.sh (Phase 5 orchestrator).

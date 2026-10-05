@@ -25,7 +25,12 @@ built from the ground up for post-quantum security.
 
 **What Nodus provides:**
 
-- Pure C implementation — zero C++ dependencies, compiles with any C11 compiler
+- Pure C implementation — zero C++ dependencies, compiles with any C11 compiler. One
+  exception since Nodus EVM (v0.24.0): the standalone non-Windows build compiles the EVM
+  engine, whose bn254 precompiles use the vendored C++ library mcl behind its C API and link
+  `libstdc++` (`nodus/CMakeLists.txt:775-779`, `:784`, `:956-958`; operator decision
+  `2026-10-04-nodus-evm-kurultay-k1.md` item 5); the messenger tree's libnodus and a Windows build
+  stay C-only
 - Kademlia DHT with 512-bit key space (SHA3-512)
 - Dilithium5 (ML-DSA-87) authentication and value signing throughout
 - CBOR wire protocol with custom encoder/decoder (no external CBOR library)
@@ -5220,7 +5225,9 @@ meter-policy digest did (op 8 needs a weight — an op with no committed weight 
 reservation), and the version bump makes a generation-1 SYSTEM envelope fail preflight
 cheaply after the switch. Descriptor names, runtime kind and ABI, hooks and auth allowlists
 are the same in both generations. `nodus_domain_runtime_t.generation` says which generation
-an entry is (`NODUS_RT_GEN_1`, `NODUS_RT_GEN_2`, `NODUS_RT_GEN_MAX` = 2); it is not hashed and
+an entry is (`NODUS_RT_GEN_1`, `NODUS_RT_GEN_2`, `NODUS_RT_GEN_MAX` = 2 at HF-4; since Nodus EVM
+`NODUS_RT_GEN_MAX` is 3 = `NODUS_RT_GEN_EVM` in a build with `NODUS_EVM_ENABLED` and stays 2
+otherwise, `nodus_witness_runtime.h:211-215` — see "Nodus EVM (HF-5, v0.24.0)"); it is not hashed and
 not an identity axis, and a synthetic test runtime leaves it 0, which every "generation ≥ 2"
 gate reads as "not generation 2" (the fail-closed direction). Lookups:
 - `nodus_runtime_builtin_table` = generation 1 ONLY (SYSTEM then CORE, exactly the two
@@ -5270,9 +5277,10 @@ names the switch procedure (which registry fields are copied, which are replaced
 domains are touched): two binaries with the same generation-2 tuples but a different switch
 cannot share a vote value; changing the switch bumps it, and with it D2 and the switch KAT
 (`test_hf4_switch.c` holds a static assert on version 1). `DNAC_CFG_PARAM_MAX_ID` /
-`CC_PARAM_MAX_ID` 8 → 13; ids 9-13 are on `dnac_cfg_param_read_by_consensus` (the read list is
-now {4, 5, 6, 7, 8, 9, 10, 11, 12, 13}); `chain_config_cache` and `CC_PARAM_SLOTS` grow with
-`DNAC_CFG_PARAM_MAX_ID` to 14 rows (without the slots `nodus_chain_config_get_u64` answers -1 for
+`CC_PARAM_MAX_ID` 8 → 13; ids 9-13 are on `dnac_cfg_param_read_by_consensus` (the read list
+became {4, 5, 6, 7, 8, 9, 10, 11, 12, 13}; Nodus EVM adds 14 and 15 — see "Nodus EVM (HF-5,
+v0.24.0)"); `chain_config_cache` and `CC_PARAM_SLOTS` grow with
+`DNAC_CFG_PARAM_MAX_ID` to 14 rows (16 since Nodus EVM) (without the slots `nodus_chain_config_get_u64` answers -1 for
 9-13 and every read of them would FAULT on every node). Grace class ERGONOMIC
 (`DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS`, 720 in a default build; decision item 17) through its
 OWN `case` in `nodus_chain_config_grace_for_param`. Voted like every parameter
@@ -5614,6 +5622,404 @@ rule (a) is proven at the approval responder only, rules (b) and (c) not as refu
 cap is not asserted; it runs at the short-epoch / short-grace build (15 / 15) — the LOGIC only,
 nothing about the production 720-block grace.
 
+### Nodus EVM (HF-5, v0.24.0) — smart contracts as a third domain, rule-set generation 3 (nodus 0.24.0 / dnac 0.20.0 — no EVM_ACTIVE vote yet)
+
+**Governing records** (all local, `docs/plans/`): design `2026-10-04-nodus-evm-engine-design.md`
+(the engine) and `2026-10-04-nodus-evm-chain-integration-design.md` rev 3 + the rev 4-6 notes (the
+chain integration and the §18 RPC); decisions `decisions/2026-10-04-nodus-evm-domain.md` (the
+EVM enters the main chain as its THIRD domain; 32-byte addresses; the product is named "Nodus
+EVM"), `decisions/2026-10-04-nodus-evm-kurultay-k1.md` (operator items 1-5: the fee is a CORE-funded
+declared ceiling that goes to the reward pool, the full Prague precompile set, 1 raw unit =
+10^10 wei, an explicit 64-byte withdrawal recipient + contract tickets, mcl as the one C++
+dependency), `decisions/2026-10-04-nodus-evm-kurultay-k2-summary.md` (operator: MPT + SHA3-512 as the
+state commitment, one pending EVM transaction per sender, the EVM gas sum as the one block-work
+limit), `decisions/2026-10-05-nodus-evm-redteam1-operator.md` (D1 price 0 stops the EVM, D2
+vendored secp256k1 + GMP) with the red-team 1 / 2 Kurultay summaries, and
+`decisions/2026-10-05-hf-numbering-evm-hf5.md` (this fork is **HF-5**; the role-stake package
+is HF-6). **Status:** in the tree, ctest + harness green at the ORCHESTRATOR's last run (see
+Tests); no `EVM_ACTIVE` row exists on any chain. Without one the EVM path is inert: the
+activation phase 6b″ does nothing on a chain with no param-14 row (below), no registry names
+domain 2, admission refuses CORE op 9 under generations 1-2, and every `evm_*` query answers
+"not active" — evidence `test_v2_evm`'s inertness twin and the harness's mixed OLD/NEW fleet
+carrying real spends 7/7 (`test_cmt_evm.sh` step 3). The binary's first open does change the
+database (schema S17, below).
+The deploy / vote procedure is not written yet (`DEPLOY_RUNBOOK.md` has the host requirements
+at its top and §4.1 for the schema step; there is no HF-5 entry in §2.2).
+
+**The engine — `shared/evm/`** (C11; README `shared/evm/README.md`). An EVM interpreter written
+for this project against the pinned reference `ethereum/execution-specs @a87891f7`, fork
+**Prague** (`shared/evm/evm.h:6-8`); no existing EVM implementation is wrapped. Committed state
+is PULLED through read-only backend callbacks, every write goes into a journaled overlay, and
+the caller reads one canonical, totally ordered change set (`evm.h:10-19`); return convention
+0 / -1 deterministic refusal / -2 node FAULT / -3 `EVM_BUDGET` (`evm.h:21-30`). The interpreter
+is iterative (explicit frame stack — 1 024 call depth cannot overflow the C stack; engine design
+§3). Address width is a configuration value: 20 bytes (Ethereum, the conformance mode) or 32
+bytes (Nodus: every address-taking opcode uses the whole word, CREATE / CREATE2 keep all 32
+hash bytes; engine design §2). **Conformance** (execution-spec-tests v5.4.0 `fixtures_stable`,
+Prague state tests, 20-byte mode; `make conformance FIXTURES=<dir>`): **PASS 17 265, FAIL 0,
+FAULT 0, ERROR 0, PENDING 0, DEVIATION 9, EXCLUDED 1 595** (985 type-3 blob + 610 type-4
+set-code transactions), identical under ASan + UBSan + LSan — measured at commit `165c2f73`
+(its message), reported unchanged after the red-team 1 engine fixes in the ORCHESTRATOR's
+ledger. The 9 DEVIATIONs are the Prague modexp cases whose expected result differs only by the
+EIP-7823 input bound (lengths ≤ 1 024) this engine adopts to bound modexp work; each is matched
+by exact name and never counted as a pass (`shared/evm/tests/statetest.c:180-206`;
+`evm_precompile.c:323`, `:362`). EXCLUDED = blob (EIP-4844) and set-code (EIP-7702)
+transactions, which have no Nodus counterpart (`statetest.c:131`, `:1265-1276`; engine design §1).
+The **Nodus profile** (`nodus_profile == 1`) has exactly two deviations, both about the ticket
+system address: a CALL into it runs the ticket hook instead of a message call, and a valued
+CALL into it is not charged the `NEW_ACCOUNT` surcharge whether or not the address is alive
+(`evm.h:110-121`; a SELFDESTRUCT to it keeps the reference rule).
+
+**The third domain and its runtime.** `DNA_DOMAIN_EVM` = 2 (`shared/dnac/ledger_ids.h:60`).
+Its runtime `nodus_witness_rt_evm.{c,h}` speaks the new **runtime ABI 2**
+(`NODUS_DOMAIN_RUNTIME_ABI_V2`, `nodus_witness_runtime.h:82`): no read plan and no `exec`, but
+`exec_evm` over an engine-owned READER that charges every logical read before it happens — the
+first request of an (op, key) charges `w_read` and caches the answer, a repeat in the same leg
+is free (`runtime.h:625-647`); every leg gets a fresh overlay. The descriptor's rules are the
+five EVM ops (`runtime.h:150-154`): **1 CALL, 2 CREATE, 3 DEPOSIT, 4 WITHDRAW, 5 REDEEM**; auth
+kind 1 (ML-DSA-87) only, exactly one signer, and the EVM sender is that signer's fingerprint
+[0..32] (design §2). Adapter ops / reader ops (`nodus_witness_rt_evm.h:68-73`): ACCT (148-byte
+account record: nonce, balance in wei, keccak code hash, code size, SHA3-512 code digest,
+storage count), SLOT, CODE (8 192-byte chunks shared by digest), TICKET, META (`wei_live`,
+`wei_tickets`, `wei_lost`, 96 bytes), HAS_STORAGE (read-only). BLOCKHASH(n) is served by the
+engine itself from `v2_blocks.block_id[0..32]` over the window [H−256, H−1]; outside it the
+answer is 0, a missing row inside it is a node FAULT (`runtime.h:614-620`). The block
+environment is the Nodus profile: TIMESTAMP = the Comet header seconds, GASLIMIT = param 15 at
+the height, BASEFEE = GASPRICE = 0, COINBASE = 0, PREVRANDAO = 0 (not randomness), CHAINID =
+the 32-byte chain id (design §10).
+
+**Build scope.** The runtime and the engine compile ONLY into the standalone nodus build on
+non-Windows hosts (`nodus/CMakeLists.txt:775-779`, which also defines `NODUS_EVM_ENABLED`,
+`:969`); the messenger tree's libnodus and a Windows nodus carry generations 1 and 2 only and
+would FAULT at the EVM edge rather than mis-execute (`runtime.h:205-215`). The EVM build makes
+nodus C++-linked for the first time (mcl, `enable_language(CXX)`, `CMakeLists.txt:784`, linked
+with `stdc++`, `:956-958`) — the one C++ exception, k1 operator item 5.
+
+**Activation — rule-set generation 3 and two chain-config ids.**
+- *The generation.* `NODUS_RT_GEN_EVM` = 3 = SYSTEM v8 (a meter policy that prices ops 1..9),
+  CORE v6 (rule 9 EVMFUND, the reserve in the supply leaf and the invariant), EVM v1
+  (`runtime.h:172-179`); it is built on `NODUS_RT_GEN_EVM_BASE` = generation 2
+  (`runtime.h:200-204`); `NODUS_RT_GEN_MAX` is 3 under `NODUS_EVM_ENABLED`, else 2
+  (`runtime.h:211-215`). The EVM ruleset identity (version 1 + the 64-byte hash a client
+  binds) is a header constant, re-derived by `nodus_witness_runtime_selfcheck` on every start
+  (`runtime.h:180-199`).
+- *Param 14 `EVM_ACTIVE`* (`DNAC_CFG_EVM_ACTIVE`, `dnac/include/dnac/dnac.h:661`): value domain
+  EXACTLY `DNAC_CFG_EVM_ACTIVE_D` = `0x5a10af78d85302e6` (decimal 6489879996601139942,
+  `dnac.h:1000`). **D** is the first 8 bytes, big-endian, top bit cleared, of
+  `SHA3-512("NDS.EVMACT.v1" (16 B, zero-padded) ‖ evm_generation u32 ‖ base_generation u32 ‖
+  SYSTEM / CORE / EVM ruleset hashes ‖ the EVM manifest hash ‖ spec_version u32 ‖ n_consts u32 ‖
+  n × u64)` (`shared/dnac/domain_wire.h:338-371`); the constants are the compiled EVM numbers
+  (q, ticket gas, per-tx gas cap, read caps, `w_gas`, FAIL_RESERVE, the failure-effect shape,
+  the stream caps, the bridge gas, the param-15 default and range — `EVM_ACT_CONSTS`,
+  `nodus_witness_runtime.c:1441-1465`), so two binaries that price or bound EVM work
+  differently cannot share a vote value; `DNAC_EVM_ACTIVATION_SPEC_VERSION` = 1 names the
+  switch procedure (`dnac.h:982`). ⚠ **D is SELF-DERIVED by the implementing agent**
+  (`shared/dnac/tests/nodus_evm_activation_oracle.py`, built on `ruleset_desc_oracle.py`'s helpers)
+  — **not an independent pin** like HF-4's D2 (`dnac.h:993-999`); selfcheck re-derives it
+  through the C encoder on every start of an EVM build (`nodus_witness_runtime.c:1395-1408`).
+  Grace class SAFETY (`nodus_witness_chain_config.c:766-769`).
+- *Param 15 `EVM_BLOCK_GAS_LIMIT`* (`dnac.h:687`): the bound on a block's summed DECLARED EVM
+  gas and the block environment's GASLIMIT; no row = `DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT` =
+  30 000 000, votable range [`DNAC_CFG_MIN_EVM_BLOCK_GAS` = 10^6, `DNAC_CFG_MAX_EVM_BLOCK_GAS` =
+  10^9] (`dnac.h:1007-1009`); grace SAFETY (`chain_config.c:770-773`); no stateful rule.
+  `DNAC_CFG_PARAM_MAX_ID` 13 → 15, both ids on `dnac_cfg_param_read_by_consensus`
+  (`dnac.h:777-778`), the chain-config cache 14 → 16 rows (`chain_config.c:86-92`).
+- *The stateful rules of param 14* (`nodus_chain_config_stateful_rules_ex`,
+  `chain_config.c:822-871`; contract `include/nodus/nodus_chain_config.h:311-332`): refused when
+  (a) any param-14 row exists at any effective height (single use); (b) HF-2 is not active;
+  (c) HF-3 is not active (without it the EVM domain's unit budget is bounded and the gas sum is
+  not the one block limit); (d) no NON-ZERO gas price (param 5) is active; (e) the judging
+  SYSTEM runtime is not at generation 2 — an addition of the code, not in the design text
+  (`:838-843`); (f) `effective` is 0 or `effective − 1` is an epoch boundary; (g) red-team 1 F5:
+  `effective < chain_initial_height + 256` (`NODUS_CC_EVM_BLOCKHASH_WINDOW`,
+  `nodus_chain_config.h:309`; checked add; `chain_initial_height` 0 = not derived = refused) —
+  the first EVM block's BLOCKHASH window must lie wholly on the chain, or every node would FAULT
+  there. Equality is accepted (the fix plan said "≤ refused"; the window at equality is
+  `[initial, initial + 255]`, every height present). `chain_initial_height` is the stored
+  genesis DOCUMENT's `initial_height` completed 0 → 1, never the node's oldest row (pruning
+  moves that): `nodus_witness_v2_chain_initial_height` (`nodus_witness_v2_apply.c:1051`),
+  cached once per open (`nodus_witness.c:1116-1129`). The same facts reach the SYSTEM exec
+  (engine-filled, unmetered — `nodus_rt_exec_ctx_t`, `runtime.h:564-585`) and the 0x71 approval
+  responder (`chain_config.c:1192-1245`). The client mirror applies only the scalar half
+  (`dnac/src/transaction/verify.c:607-635`).
+- *The switch — engine phase 6b″* (`phase_6b_evm_activation`, `nodus_witness_v2_apply.c:4201-4331`,
+  called after 6b′ and before the 6c lifecycle re-scan, `:5384-5389`). Edge trigger at block h:
+  param 14 present at h+1 and absent at h (H = h+1). Then, inside the block's transaction:
+  (1) the row's value must equal this build's D and this build must carry the EVM generation —
+  else FAULT; (2) the schema must be S17 — else FAULT; (3) SYSTEM and CORE switch from
+  generation 2 to 3 (`nodus_witness_domreg_generation_switch`, the HF-4 procedure; "not at the
+  base" = FAULT); (4) the EVM domain's record is written DIRECTLY ACTIVE with no head, its
+  manifest exactly the one D hashed (genesis_state_root = the empty EVM root); an already
+  registered domain 2 = FAULT; (5) SYSTEM and CORE are marked touched (CORE's root moves:
+  its supply leaf now commits the reserve). The 6c re-scan then activates the EVM domain
+  through `head_activate` (`state_init` = empty tries, zero META, the height-0 history row), so
+  block H starts with three domains under generation 3. Not the edge → nothing, byte-inert on
+  every block of a chain without a param-14 row. Log line: `Nodus EVM: rule-set generation 2 ->
+  3 and the EVM domain registered ACTIVE at the end of height <H-1> (D 0x…)`.
+
+**The CORE half — EVMFUND (CORE op 9) and the supply invariant.** Every EVM envelope is EXACTLY
+`[CORE EVMFUND] + [EVM op]`; a lone leg, a wrong role/op pairing or any other sibling is a
+deterministic refusal, checked by both runtimes (`nodus_rt_evm_pair_check`;
+`nodus_witness_rt_evm.h:22-29`). `DNA_CORERULE_EVMFUND` = 9 is owned only by the generation-3
+CORE descriptor (`runtime.h:122-131`). Its call is `ver ‖ role ‖ the SYSFUND transfer section`
+and carries NO amount and NO recipient — both come from the sibling EVM leg's call bytes
+through the one call-head decoder (`nodus_witness_rt_native.c:1606-1631`). Roles
+(`runtime.h:133-145`):
+
+| Role | Sibling | CORE conservation | Reserve |
+|---|---|---|---|
+| 1 FEE | CALL / CREATE | Σin == Σchange + fee | — |
+| 2 DEPOSIT | DEPOSIT | Σin == Σchange + fee + amount | += amount |
+| 3 RELEASE | WITHDRAW / REDEEM | Σin == Σchange + fee; a UTXO of `amount` to `dest_fp` | −= amount |
+
+Only the fee goes to the reward pool (the SYSFUND rule; k1 operator item 1 — never burned). The
+CORE EVM reserve is CORE state (`v2_evm_reserve`, one row, schema S17), and the generation-3
+CORE supply leaf gains it under a new tag: `SHA3-512("NDS.SUPPLY.v3" ‖ genesis ‖ minted ‖ burned
+‖ reward_pool ‖ evm_reserve_raw)` (`shared/dnac/ledger_roots_v2.h:250-270`); every older
+generation keeps the v2 leaf byte for byte. `q` = `NODUS_RT_EVM_Q` = 10^10 wei per raw unit
+(`nodus_witness_rt_evm.h:90-91`; 1 NODUS = 10^8 raw = 10^18 wei). The EVM domain invariant,
+checked at block start and end (`nodus_rt_evm_invariant`, `nodus_witness_rt_evm.c:2718-2755`):
+
+    wei_live + wei_tickets + wei_lost == q × reserve_raw
+
+`wei_lost` counts value the EVM destroys (a same-transaction-created account's SELFDESTRUCT
+balance, and the balance of an account deleted at transaction end), journaled at the moment it
+happens (design §5 rev 3). A contract opens a withdrawal TICKET by a valued CALL to the ticket
+system address `SHA3-512("NDS.EVMWITHDRAW.v1")[0..32]` with exactly 64 bytes of calldata (the
+destination fingerprint) — value a multiple of q, gas 25 000 (`NODUS_RT_EVM_TICKET_GAS`,
+`nodus_witness_rt_evm.h:92-93`) on top of the CALL's own access + CALL_VALUE + memory; a later
+REDEEM pays it out through a RELEASE leg (design §5). Value sent to that address any other way
+stays there, locked, and counts in `wei_live`.
+
+**Execution — two savepoints, an applied failure, FAIL_RESERVE** (`exec_evm_leg`,
+`nodus_witness_v2_apply.c:1805-2213`).
+- *Pre-validation before anything runs* (the ONE shared function,
+  `nodus_rt_evm_prevalidate`, `nodus_witness_rt_evm.c:1362`): call decode, pairing, the gas
+  declaration, nonce == the committed nonce, value ≤ balance, intrinsic gas, EIP-3607, chain
+  id. A refusal here is -1: the whole item rolls back and nothing is paid.
+- *After execution starts there is no -1 for a CALL / CREATE*, only FAULT (-2). On success the
+  WHOLE effect stream's count and canonical bytes are checked against the leg's declared
+  ceilings, the stream caps and the unit budget BEFORE any page is applied, so page boundaries
+  never enter the outcome (`:1959-1996`); then an INNER savepoint (`cmt_evm_<env>`) opens inside
+  the item's, the pages are applied (each ≤ 64 effects / ≤ 64 KiB), `evm_gas_used × w_gas` is
+  charged and the inner savepoint released (`:2000-2073`). If execution REVERTs, runs out of
+  gas, halts exceptionally, hits the read BUDGET, or the success stream is over a ceiling, only
+  the FIXED failure effect is applied — sender nonce + 1 (CREATE included) — and
+  `gas_limit × w_gas` is charged: the item is APPLIED, the fee is paid, the receipt says failed
+  (`:2077-2151`). The bridge ops (3-5) run no code; every failure of theirs is a pre-validation
+  refusal of the whole item (both legs together — the principal moves atomically).
+- *FAIL_RESERVE.* A VM leg's declared ceiling must satisfy `res_max_total_units ≥ static units +
+  gas_limit × w_gas + FAIL_RESERVE` (`v2rd_declare_gas`, `:1598-1611`) and its declared effect
+  ceilings must admit the failure result (`:1612-1625`); while it runs, a read is refused with
+  BUDGET rather than eat into `FAIL_RESERVE + gas_limit × w_gas` (`v2rd_read`, `:1519-1543` —
+  bridge ops reserve nothing beyond the read). So the failure path can never run out of units.
+  `DNA_METER_EVM_W_GAS` = 1, `DNA_METER_EVM_FAIL_RESERVE` = 4 096 units, the failure result = 1
+  effect of ≤ 287 bytes, stream caps 16 384 effects / 4 MiB (`shared/dnac/res_meter.h:425-455`)
+  — **all compiled placeholders pending the measurement gate**. On a bounded per-domain budget
+  (impossible for the EVM domain from HF-3 on) a failure path that does not fit is a refusal of
+  the item (`:2125-2139`, the code's own "HONEST LABEL").
+- *Receipts.* The receipt of the applied outcome is hashed — `SHA3-512` over `"NDS.EVMRCPT.v1\0\0"
+  ‖ status ‖ op ‖ evm_gas_used ‖ created[32] ‖ output ‖ logs ‖ wei_destroyed ‖ ticket ids`
+  (`rcpt_build`, `nodus_witness_rt_evm.c:442-446`) — into the item's `ExecTxResult.Data`
+  (64 bytes, `:2167-2192`), which enters the next block's `LastResultsHash`; a non-EVM result
+  keeps an empty Data, byte-identical to before. The receipt bytes and logs go to the
+  NODE-LOCAL index (`evm_receipts`, `evm_logs`) in the same transaction; its item index is the
+  item's position in the decided block's tx list (red-team 1 F12) and no root reads it.
+
+**The state commitment — SHA3-512 MPT with a per-leg trie batch.** The trie code is
+`shared/evm/trie/evm_trie.{c,h}` (consensus code, compiled into `nodus_evm`,
+`CMakeLists.txt:923-931`). Root DEFINITION pinned to `execution-specs @a87891f7
+src/ethereum/merkle_patricia_trie.py` with exactly these substitutions (operator decision
+k2 #1; `evm_trie.h` header): node digest keccak-256 → SHA3-512; inline threshold < 32 → < 64
+bytes; secure key = SHA3-512(key), 128-nibble paths; empty root = SHA3-512(0x80); leaf values
+supplied by the caller (the account leaf adds `storage_root`(64), `code_digest_sha3`(64),
+`code_size` and `storage_count` to Ethereum's fields — design §6). The incremental persistent
+update algorithm is OURS; its claim (I4: incremental root == independent full recomputation)
+is checked by `trie/test_trie.c` against `trie/trie_oracle.py` and the separate full-rebuild
+port `trie/evm_trie_full.c`. Every loaded node is verified against its digest key and must
+re-encode canonically (`evm_trie.c:364-372`). The EVM
+domain root is `SHA3-512("NDS.EVMROOT.v1\0\0" ‖ account_trie_root ‖ tickets_root ‖
+SHA3-512("NDS.EVMMETA.v1\0\0" ‖ wei_live ‖ wei_tickets ‖ wei_lost))` (`evm_root_of`,
+`nodus_witness_rt_evm.c:2645-2661`). The node's code backend re-checks every code read against
+BOTH the SHA3-512 digest and the keccak hash and FAULTs on a mismatch; the engine no longer
+re-hashes code (`be_get_code`, `:319`; contract `evm.h:144-153`). **Per-leg trie batch
+(red-team 1 F6):** inside the success path's inner savepoint `nodus_rt_evm_leg_begin` opens a
+batch; every mutation writes its ROWS at once but applies trie changes to in-memory tries;
+`nodus_rt_evm_leg_flush` (after the gas charge, before RELEASE) commits each touched storage
+trie, then the account leaves, then the account and ticket tries, ONCE, in ascending address
+order; every FAULT exit calls `nodus_rt_evm_leg_discard` (`nodus_witness_v2_apply.c:2008-2020`,
+`:2055-2066`, `:2196-2202`; API `nodus_witness_rt_evm.h:190-213`; `batch_flush`,
+`nodus_witness_rt_evm.c:2119`). While a batch is open `nodus_rt_evm_state_root` refuses
+(`:2689-2700`). A root depends only on the final key set, so the roots equal the per-effect
+commits byte for byte (claim; `test_v2_evm` section 12 applies the same effects both ways
+against the full-rebuild oracle). No hash table: open tries and marked addresses are
+address-sorted arrays.
+
+**Schema S17.** One rung, every table created empty (`nodus_witness_v2_schema.h:731-779`):
+`evm_accounts`, `evm_slots`, `evm_code`, `evm_code_refs`, `evm_tickets`, `evm_meta` (one row,
+written by `state_init` at activation), `v2_evm_reserve` (written (1, 0) by the rung — no
+generation-1/2 root, invariant or hook reads it), `evm_trie_nodes`, and the node-local
+`evm_receipts` / `evm_logs`. An S16 version-3 chain database is migrated in place at OPEN
+(`witness_open_migrate_s17`, `nodus_witness.c:912`, called first in `witness_post_open_gate`);
+no root moves. The two `evm_logs` scan indexes (`evm_receipts_by_pos`, `evm_logs_by_addr`) are
+in the S17 DDL and added at open to a database that reached S17 without them, indexes only
+(`nodus_witness_db_ensure_v2s17_indexes`, `nodus_witness.c:937`; `v2_schema.h:801-820`).
+Version 18+ fails closed. **The previous binary (0.23.18) cannot open an S17 database:** its
+S16 rung treats any version other than 16 as "migrate from below" and hands it to the S15 rung
+(`git show main:nodus/src/witness/nodus_witness_v2_schema.c`, `migrate_v2s16_ex`), whose rungs
+refuse an unknown version — so for this rollout a binary swap DOES touch the database and a
+rollback needs the pre-S17 copy (`DEPLOY_RUNBOOK.md` §4.1, red-team 1 F7).
+
+**Mempool — VM-less CheckTx, the conflict probe, the price-0 rule.**
+- *No VM at admission* (red-team 1 F1): CheckTx runs the dry run in `novm` mode for a NEW entry
+  and its RECHECK alike (`nodus_witness_cmt_app.c:1025-1043`); an EVM leg gets only the shared
+  pre-validation, its reads charged on the dry run's meter (`exec_evm_leg`, `:1893-1924`). An
+  execution outcome never changes admission (a failed execution is applied and paid).
+- *Conflict keys* are synthetic — `(EVM sender, nonce)` and, for REDEEM, the ticket id — from
+  the one derivation `nodus_rt_evm_conflict_keys` (`nodus_witness_runtime.c:1127`), never the
+  leg's effect rows. Right after authorization and before anything pre-validates, the dry run
+  PROBES them against the pending set without inserting (`dry_run_probe_evm`,
+  `nodus_witness_v2_apply.c:3500-3554`, called `:3693-3706`; `app_pend_probe`,
+  `nodus_witness_cmt_app.c:836-873`): a key held by another entry refuses with
+  `NODUS_V2_TX_ERR_EXEC`, one held by the same entry passes (recheck); the keys are inserted
+  only after the whole run succeeded. With nonce == the committed nonce this is "one pending
+  EVM transaction per sender" (operator k2 #2).
+- *Block gas.* CheckTx refuses an envelope whose EVM block-gas share (a CALL / CREATE leg's
+  declared `gas_limit`, a bridge op's 21 000 — `NODUS_RT_EVM_BRIDGE_GAS`, `runtime.h:157-159`)
+  exceeds param 15 at tip + 1 (`nodus_witness_cmt_app.c:962-997`, the reference's
+  `PostCheckMaxGas` effect); PrepareProposal packs under the limit
+  (`nodus_witness_v2_produce.c:284-303`); FinalizeBlock re-sums it with the same function and
+  FAULTs over the limit (phase 0c, `nodus_witness_v2_apply.c:4739-4767`) — ProcessProposal
+  refuses such a block, so a decided one means honest validators did not decide it.
+- *Price 0 stops the EVM (operator D1).* While the gas price in force is 0, an envelope with an
+  EVM CALL, CREATE or DEPOSIT leg is refused with `NODUS_V2_TX_ERR_FEE`; WITHDRAW and REDEEM
+  stay open; every other envelope passes as before (`nodus_witness_v2_gas_price_judge`,
+  `nodus_witness_v2_apply.c:3064-3095`) — the same pure rule in the CheckTx dry run (`:3633`),
+  the FinalizeBlock item loop (`:5003`) and the proposal (`nodus_witness_v2_produce.c:364`).
+  The 2026-09-25 gas-price decision (0 = rule off) is unchanged for NODUS transfers.
+- *No admission rate limit.* There is no per-sender or per-peer CheckTx rate limit; admission
+  work is bounded by the VM-less path + read caps, the mempool's own size / byte bounds and
+  one pending EVM transaction per sender (design §8 "Oran sınırı — durum").
+
+**The §18 read RPC** (`dnac_*` style, CBOR on TCP 4001; contract comment
+`nodus_witness_handlers.c:4464-4568`). Every method answers from THIS node's committed tip,
+read-only, and refuses with NOT_FOUND "the EVM domain is not active on this chain" until the
+edge (`evm_gate`, `:4712-4736`); a build without the EVM runtime answers "not compiled into
+this build".
+
+| Method | Request → reply |
+|---|---|
+| `evm_account` | `{a}` → `{n, b, ch, cs, h}` (no account: 0, 0, keccak(""), 0) |
+| `evm_code` | `{a}` → `{c, h}` |
+| `evm_storage` | `{a, k}` → `{v, h}` |
+| `evm_call` | `{f, t? (absent = CREATE), v?, d, g? (absent = the per-tx cap)}` → `{s, o, gu, h}` — `o` is the return data or the REVERT data; a refusal before execution is a PROTOCOL_ERROR, not `s = 0` |
+| `evm_estimate` | `evm_call` + `{ge, ue, fe}` — `ge` by binary search (engine figure first, then ≤ 16 probes, stop within 1/64); `ue` = the reference shape's units (`nodus_v2_evm_ref_units`) + reads × `w_read`; `fe = max(floor, ue × gas price at tip + 1)`; refused UNAVAILABLE while that price is 0 (D1, `:5089-5108`) |
+| `evm_receipt` | `{i}` → `{h (inclusion height), x, s, op, gu, cr?, o, logs, wd, tk, dg}` or `{}`; the stored bytes are re-hashed and must equal the stored digest |
+| `evm_logs` | `{fh, th, a?, t0..t3?, lim, c?:[h, x, li]}` → `{logs:[{h, x, li, a, t, d, i}], more, c?}` — span ≤ 10 000 blocks, `1 ≤ lim ≤ 1000`, ordered (height, item, log) |
+| `evm_ticket` | `{id}` → `{p, amt, dst}` |
+
+`evm_logs` is a CURSOR scan over the two S17 indexes (`nodus_witness_evm_logs_scan`,
+`nodus_witness_v2_schema.h:822-914`): at most `EVM_LOGS_MAX_EXAMINED` = 10 000 rows EXAMINED
+per request, matches or not (`handlers.c:4578`); a reply that stops before `th` carries
+`more = true` and `c` = the first position not yet examined — it may hold no log; resuming from
+`c` skips no match and repeats none. **One per-height work budget for every `evm_*` read**
+(red-team 1 F4; no clock): `NODUS_RT_EVM_SIM_GAS_PER_HEIGHT` = 2 × the per-tx cap = 60 000 000
+gas per committed tip height, reset when the tip moves (`runtime.h:598-604`; `evm_work_left` /
+`evm_work_charge`, `handlers.c:4600-4622`). Every request that passes the gate pays one row
+(`EVM_RPC_BASE_GAS` = `NODUS_EVM_RPC_GAS_PER_ROW` = 2 100 gas — the cold storage read); bytes
+cost `NODUS_EVM_RPC_GAS_PER_BYTE` = 8 gas (the log data byte), statically asserted
+(`handlers.c:4579-4598`); `evm_code` / `evm_receipt` pay their rows and bytes BEFORE copying or
+hashing; a simulation charges its `gas_limit` up front and keeps the engine's PRE-refund work
+(`gas_used_pre_refund`, `evm.h:270-277`). What does not fit is answered `RATE_LIMITED` until
+the next block; `evm_estimate` runs at most 2 + 16 simulations, a probe refused for budget
+refuses the whole request. A reply over `EVM_REPLY_MAX` = `NODUS_MAX_FRAME_TCP − 64` is answered
+`TOO_LARGE`, never dropped (`handlers.c:4586`). The budget is node-local: no block, vote or root
+reads it. **Proof boundary (red-team 1 F11):** every answer is ONE node's word. A client can
+check that a receipt's fields and its `dg` agree, and that a CREATE address equals the one
+computed from the signed sender and nonce (`nodus_v2_evm_create_address`,
+`nodus/src/client/nodus_v2_evm.h:226`); binding `dg` to the chain's `LastResultsHash` is NOT
+implemented — the CLI and the wallet label receipts "as reported by the connected node".
+Client SDK: `nodus_client_evm_account` … `nodus_client_evm_ticket` (`include/nodus/nodus.h:1880-2022`);
+the shared envelope builder `nodus/src/client/nodus_v2_evm.{c,h}` (nodus-cli `evm`, the web
+wallet's WASM and the node's `evm_estimate` reference units use the same code); function
+reference `messenger/docs/functions/evm.md`.
+
+**The start-up precompile self-test and the host requirements.** On every start of an EVM
+build, before any vote, `nodus_witness_init` calls `evm_precompile_selftest_report` and, on a
+failure, logs `REFUSING START — the EVM precompile self-test failed: <capability>` and returns
+-1 (`nodus_witness.c:2616-2639`; red-team 1 F2 — in the start path, not in
+`nodus_witness_runtime_selfcheck`, which the genesis derivation also calls). It checks, in
+order (`shared/evm/evm_precompile.c:1672-1720`): OpenSSL ≥ 3.0.7 actually loaded, SHA-256 and
+RIPEMD-160 from its default provider, mcl's bn254 initialisation — **on x86-64 mcl refuses a
+CPU without AVX + BMI2 + ADX** (`shared/evm/third_party/mcl/PINNED.md`, local patch 2) —, the
+KZG trusted setup (loaded here, eagerly), then the known-answer vectors. The vectors cover 11 of
+the 17 precompiles — 0x01, 0x02, 0x03, 0x05, 0x06, 0x08, 0x09, 0x0a, 0x0b, 0x0f, 0x11
+(`PC_KATS`, `evm_precompile.c:1491-1626`) — at least one per library family; the success log
+line's "0x01-0x11" names the set initialised, not the set vector-tested. OpenSSL is checked
+against its headers at build time (`#error`, `evm_precompile.c:202-203`; CMake
+`CMakeLists.txt:947-950`) and against the loaded libcrypto at run time (`:224`). It is a
+MINIMUM version, not a pinned one (an open operator question, red-team 2 summary item 1).
+**Host requirements** (`DEPLOY_RUNBOOK.md` top): to RUN, x86-64 AVX + BMI2 + ADX and OpenSSL ≥
+3.0.7; to BUILD, `m4` and `xz` (GMP's configure and the tarball extraction), `sha256sum`, and
+`xxd` (the KZG trusted setup is embedded, `CMakeLists.txt:796-810`).
+
+**Vendored libraries** (`shared/evm/third_party/*/PINNED.md`; operator k1 item 2 and D2): blst
+`v0.3.17` (BLS12-381, 0x0b-0x11), c-kzg-4844 `v2.1.8` (point evaluation 0x0a, compiled against
+blst v0.3.17, not its own submodule pin — recorded), mcl `v4.20` (bn254 0x06-0x08, the one C++
+dependency; one local patch removes the `MCL_CPU` environment override), **libsecp256k1
+`v0.8.0`** (ecrecover 0x01, recovery module; commit `6e2c8bc4…`; the annotated tag's PGP
+signature VERIFIED 2026-10-05 with `git verify-tag`, key `6A8F9C26…CB716EA7` cross-checked
+against `bitcoin-core/guix.sigs`, all 57 vendored files `cmp`-identical), **GMP `6.3.0`**
+(modexp 0x05; the signed release tarball, sha256 `a3c2b802…38898` checked before every
+extraction — `shared/evm/Makefile`, `CMakeLists.txt:854-903` — `gpg --verify` good; statically
+linked, dual LGPLv3+ / GPLv2+), and **XKCP** commit `4affab45…` (Keccak-f[1600] for
+`shared/crypto/hash/keccak256.c`, `shared/crypto/hash/third_party/xkcp/PINNED.md`; the sponge,
+padding and API are unchanged; `test_keccak256` pins known answers). Each library is compiled
+with exactly the flags `shared/evm/Makefile` gives it, never nodus's (`CMakeLists.txt:793-845`).
+
+**Domain separators.** Seven new tags — `NDS.EVMROOT.v1`, `NDS.EVMMETA.v1`, `NDS.EVMRCPT.v1`,
+`NDS.EVMWITHDRAW.v1`, `NDS.EVMTKT.v1`, `NDS.SUPPLY.v3`, `NDS.EVMACT.v1` — are **PROPOSED, operator
+approval pending** (`decisions/2026-10-04-nodus-evm-domain-tags.md`; `domain_wire.h:358`,
+`ledger_roots_v2.h:259-262`). None is live (no chain has the EVM active); after activation a
+change is a hard fork.
+
+**What is NOT done.**
+- **The gas values.** `NODUS_RT_EVM_TX_GAS_CAP` = 30 000 000, the param-15 default and range,
+  the read caps (`NODUS_RT_EVM_READS_BASE`, `NODUS_RT_EVM_MAX_READ_BYTES` = 32 MiB), `w_gas`,
+  FAIL_RESERVE, the stream caps, the ticket gas and the RPC budget are compiled placeholders
+  (`runtime.h:588-612`, `res_meter.h:425-455`); the voted `EVM_BLOCK_GAS_LIMIT` and the per-tx
+  cap are chosen by the operator from the measurement gate at the vote (design §8, §15 item 3;
+  red-team 2 summary items 2-3 — a receipt over the 5 MiB frame becomes reachable around
+  50-55 M gas per transaction, an unverified estimate there). Since the per-tx cap is part of
+  D, changing it changes the vote value.
+- **No admission rate limit** per sender or peer (above); the only implemented rate limit is
+  the RPC's per-height work budget.
+- **No trie garbage collection.** Nothing deletes from `evm_trie_nodes`; unreferenced nodes
+  accumulate (node-local, no root effect); a mark-and-sweep over the account, ticket and storage
+  roots is a separate package after the measurement gate (design §6).
+- **No receipt proof** against `LastResultsHash` (above).
+- **No HF-5 runbook entry**; the at-open S17 migration needs the pre-rollout copy of §4.1.
+
+**Tests.** `test_v2_evm` (EVM build only: deploy / call, applied failures — REVERT, OOG,
+over-ceiling, BUDGET —, the bridge ops and tickets, the storage trie against the full-rebuild
+oracle, restart, a determinism twin and an inertness twin; `CMakeLists.txt:2293-2309`),
+`test_evm_call_wire` (the call / EVMFUND codec through the node path, no engine needed,
+`:2260-2266`), `test_keccak256` (XKCP known answers, `:2311-2318`), the updated `test_v2_schema`,
+`test_hf4_table`, `test_hf4_params`, `test_v2_gas_price`, `test_v2_gen`, `test_server`,
+`test_v3_block_query`, and dnac `test_chain_config_verify` (`DNAC_CFG_PARAM_MAX_ID + 1` = 16);
+the engine's own suite (`cd shared/evm && make test`) and the Prague conformance run above;
+the measurement-gate benches `bench_evm_apply` (EVM build only, ctest label `bench` —
+`ctest -LE bench` leaves it out; `nodus/tests/bench/CMakeLists.txt:44-66`) and `shared/evm`'s
+`make bench` (built, never run by `make test`). Oracle: `shared/dnac/tests/nodus_evm_activation_oracle.py` (D —
+self-derived, above). Harness `test_cmt_evm.sh` (standalone, two binaries —
+`nodus/tests/integration/stagef/README.md`): OLD → NEW rolling upgrade with HF-2 / HF-3 /
+generation 2 first, the EVM_ACTIVE vote and its single-use refusal, the crossing of H 7/7,
+deposit, deploy, calls, logs, receipts, a paid revert, withdraw, a contract ticket + redeem, the
+supply invariant 7/7 at every step, a kill -9 restart and a wipe + pin replay across H. The
+ORCHESTRATOR's last run before this document: PASS (rc 0) at the Nodus EVM branch's `3238390e`, with nodus ctest
+241/241 there — at E = 15 / BPY 20 / grace 15 / 15, which proves the LOGIC, nothing about the
+production 720 / 17 280.
+
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
 **Records:** `docs/plans/2026-09-28-scan-v3-design.md`, decision
@@ -5638,6 +6044,24 @@ version-3 lane never writes (`ledger_entries` has no writer).
   Wire keys: `nodus.h` (the `dnac_v3_block` comment). Since HF-4 an applied
   NAME_REGISTER (op `"name_register"`) also carries the OPTIONAL pair `"nm"`
   (name) / `"pr"` (price paid into the reward pool, never `"bu"`) — see "HF-4".
+  **Nodus EVM (P4-C):** an `[CORE EVMFUND] + [EVM op]` envelope is named by its EVM
+  leg (`"evm_call"`, `"evm_create"`, `"evm_deposit"`, `"evm_withdraw"`,
+  `"evm_redeem"`). Its `"sp"`/`"cr"` are the CORE EVMFUND leg's (funding coins,
+  change, and for WITHDRAW / REDEEM the release coin LAST — the describer and
+  the exec share `rtn_evmfund_release_coin`), plus OPTIONAL `"ri"` / `"ro"`
+  (raw units into / out of the CORE EVM reserve, non-zero only) and, on an
+  applied EVM item, the OPTIONAL `"ev"` map: status, EVM gas used, sender
+  (`"fr"` = the EVM leg's committed signer fingerprint [0..32],
+  `nodus_rt_native_committed_signer_fp` — the auth hook's framing parser
+  without re-verifying), CALL target / CREATE address (success only) / value
+  wei, WITHDRAW / REDEEM recipient (`"dst"`, 64 B), log count, up to 32 opened
+  ticket ids (`"tkm"` = more), wei destroyed and the receipt digest. Every
+  `"ev"` field is read from the stored receipt (`evm_receipts`), whose
+  SHA3-512 must equal both the row's digest and the block's committed
+  `ExecTxResult.Data` (else INTERNAL), and from the decoded call — nothing is
+  executed. An older decoder skips all three keys. Before this an applied EVM
+  item made the whole block answer INTERNAL (the describer refused op 9 and
+  domain 2).
 - **`dnac_balance` {owner}** — PUBLIC, TRANSPARENT coins only: per token the
   total, the spendable part (`unlock_block < tip + 1`, the spend exec's lock
   rule) and the coin count, summed in C with overflow checks (SQL SUM switches
@@ -5730,7 +6154,13 @@ writes, so a wallet had no history of its own address from a node.
   `unstake` / `validator_update` (chain_config: none); a CORE NAME_REGISTER
   (HF-4) gives its owner — the payer, its one signer — a `name` row with
   amount = the price paid into the reward pool; the fee rides on the
-  payer's first row, or a `fee` row when the payer has none. Claims (CORE target)
+  payer's first row, or a `fee` row when the payer has none. Nodus EVM: an EVM
+  envelope's CORE EVMFUND leg follows the coin rules (change: nothing); its
+  WITHDRAW / REDEEM release coin gives the recipient a `release` row (even when
+  the recipient is the signer — it comes from the EVM reserve, not the payer);
+  a DEPOSIT's locked amount has no row (only the fee row); the EVM leg gives
+  none. (Before this the index refused domain 2 and the node FAULTed at its
+  first applied EVM envelope.) Claims (CORE target)
   give the claimant a `claim` row; paydays `payout`; graduations `release`. No
   sender is invented for claims, payouts or releases. The PAYER (first satisfied
   multisig address, else `signer_fp[0]`, of the CORE leg) is a convention — a

@@ -843,10 +843,44 @@ int nodus_rt_system_payload_root(const nodus_domain_runtime_t *rt,
     return nodus_witness_system_payload_root_v2((nodus_witness_t *)w, out);
 }
 
+/* Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md
+ * rev 3 §5, §9): the CORE root FUNCTION is chosen by the runtime's
+ * GENERATION — a CORE runtime of the EVM generation (or later) commits
+ * the reserve bucket in its supply leaf; every older generation (and a
+ * synthetic runtime, generation 0) keeps the pre-Nodus-EVM root, so replay of
+ * a generation-1/2 history is byte-identical. */
 int nodus_rt_core_state_root(const nodus_domain_runtime_t *rt,
                              struct nodus_witness *w, uint8_t out[64]) {
-    (void)rt;
+    if (rt && rt->generation >= NODUS_RT_GEN_EVM)
+        return nodus_witness_core_root_v2_evm((nodus_witness_t *)w, out);
     return nodus_witness_core_root_v2((nodus_witness_t *)w, out);
+}
+
+/* Nodus EVM — contract: nodus_witness_v2_claims.h. */
+int nodus_witness_core_evm_reserve_get(nodus_witness_t *w, uint64_t *out) {
+    if (!w || !w->db || !out) return -1;
+    *out = 0;
+    int has = table_exists(w, "v2_evm_reserve");
+    if (has < 0) return -1;
+    if (has == 0) return 1;              /* pre-S17: no reserve exists   */
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT reserve_raw FROM v2_evm_reserve WHERE id = 1",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    int rc = sqlite3_step(st);
+    int ret = -1;
+    if (rc == SQLITE_ROW) {
+        sqlite3_int64 v = sqlite3_column_int64(st, 0);
+        if (v >= 0 && sqlite3_column_type(st, 0) == SQLITE_INTEGER) {
+            *out = (uint64_t)v;
+            ret = 0;
+        }
+    }
+    /* SQLITE_DONE: the S17 rung wrote the row — its absence is a broken
+     * database, never "zero" */
+    sqlite3_finalize(st);
+    return ret;
 }
 
 /* The CORE asset namespace IS the existing 64-byte token_id namespace.
@@ -1189,16 +1223,34 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
     if (treasury > UINT64_MAX - observed) return -1;
     observed += treasury;
 
+    /* Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md
+     * rev 3 §5, §9): the EVM generation's CORE counts its EVM RESERVE
+     * bucket (+ evm_reserve) — a DEPOSIT moves value utxo -> reserve, a
+     * RELEASE reserve -> utxo, the equation closes at every step. ONLY
+     * under that generation (rt-selected): an older CORE runtime never
+     * reads the table, so every pre-edge block judges byte-identically.
+     * The EVM generation never runs below S17, so an absent table is a
+     * fault there. */
+    uint64_t evm_reserve = 0;
+    if (rt->generation >= NODUS_RT_GEN_EVM) {
+        if (nodus_witness_core_evm_reserve_get(w, &evm_reserve) != 0)
+            return -1;
+        if (evm_reserve > UINT64_MAX - observed) return -1;
+        observed += evm_reserve;
+    }
+
     if (expected != observed) {
         QGP_LOG_ERROR(LOG_TAG,
             "CORE INVARIANT VIOLATION: expected=%llu observed=%llu "
             "(utxo=%llu bonds=%llu delegated=%llu reward_pool=%llu "
-            "accrued=%llu unclaimed=%llu shielded=%llu treasury=%llu)",
+            "accrued=%llu unclaimed=%llu shielded=%llu treasury=%llu "
+            "evm_reserve=%llu)",
             (unsigned long long)expected, (unsigned long long)observed,
             (unsigned long long)utxo, (unsigned long long)bonds,
             (unsigned long long)delegated, (unsigned long long)pool,
             (unsigned long long)accrued, (unsigned long long)unclaimed,
-            (unsigned long long)shielded, (unsigned long long)treasury);
+            (unsigned long long)shielded, (unsigned long long)treasury,
+            (unsigned long long)evm_reserve);
         return -1;
     }
     return 0;

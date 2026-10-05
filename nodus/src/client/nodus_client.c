@@ -21,6 +21,7 @@
 #include "core/nodus_value.h"
 #include "client/nodus_client_strict.h"
 #include "dnac/dnac.h"                /* HF-4: dnac_name_bytes_ok         */
+#include "crypto/hash/qgp_sha3.h"     /* Nodus EVM §18: the receipt digest */
 
 #include <stdlib.h>
 #include <string.h>
@@ -5670,6 +5671,88 @@ static int v3d_record(cbor_decoder_t *d, nodus_dnac_v3_item_t *it)
     return it->rec_kind != NODUS_DNAC_V3_REC_NONE ? 0 : -1;
 }
 
+static int v3d_b32(cbor_decoder_t *d, uint8_t out[32])
+{
+    cbor_item_t v;
+    if (v3d_next(d, &v) != 0 || v.type != CBOR_ITEM_BSTR ||
+        v.bstr.len != 32)
+        return -1;
+    memcpy(out, v.bstr.ptr, 32);
+    return 0;
+}
+
+/* Nodus EVM "ev" (nodus.h): s, gu, fr, nl, wd, dg required; "ca" only with
+ * s = 1; "tk" at most NODUS_DNAC_V3_EVM_MAX_TICKETS; "tkm" only true and
+ * only beside a FULL "tk". */
+static int v3d_evm(cbor_decoder_t *d, nodus_dnac_v3_item_t *it)
+{
+    cbor_item_t m, k, a;
+    v3d_keys_t  ks;
+    uint64_t    v;
+    unsigned    have = 0;            /* 1 s, 2 gu, 4 fr, 8 nl, 16 wd, 32 dg */
+
+    memset(&ks, 0, sizeof(ks));
+    if (v3d_next(d, &m) != 0 || m.type != CBOR_ITEM_MAP) return -1;
+    for (size_t j = 0; j < m.count; j++) {
+        if (v3d_key(d, &ks, &k) != 0) return -1;
+        if (KEY_EQ(k, "s")) {
+            if (v3d_u64(d, 1, &v) != 0) return -1;
+            it->evm_status = (uint8_t)v;
+            have |= 1u;
+        } else if (KEY_EQ(k, "gu")) {
+            if (v3d_u64(d, UINT64_MAX, &it->evm_gas_used) != 0) return -1;
+            have |= 2u;
+        } else if (KEY_EQ(k, "fr")) {
+            if (v3d_b32(d, it->evm_from) != 0) return -1;
+            have |= 4u;
+        } else if (KEY_EQ(k, "to")) {
+            if (v3d_b32(d, it->evm_to) != 0) return -1;
+            it->evm_has_to = true;
+        } else if (KEY_EQ(k, "ca")) {
+            if (v3d_b32(d, it->evm_created) != 0) return -1;
+            it->evm_has_created = true;
+        } else if (KEY_EQ(k, "v")) {
+            if (v3d_b32(d, it->evm_value) != 0) return -1;
+            it->evm_has_value = true;
+        } else if (KEY_EQ(k, "dst")) {
+            if (v3d_b64(d, it->evm_dest) != 0) return -1;
+            it->evm_has_dest = true;
+        } else if (KEY_EQ(k, "nl")) {
+            if (v3d_u64(d, UINT32_MAX, &v) != 0) return -1;
+            it->evm_n_logs = (uint32_t)v;
+            have |= 8u;
+        } else if (KEY_EQ(k, "tk")) {
+            if (v3d_next(d, &a) != 0 || a.type != CBOR_ITEM_ARRAY ||
+                a.count == 0 || a.count > NODUS_DNAC_V3_EVM_MAX_TICKETS)
+                return -1;
+            for (size_t c = 0; c < a.count; c++)
+                if (v3d_b64(d, it->evm_tickets[c]) != 0) return -1;
+            it->evm_n_tickets = (uint8_t)a.count;
+        } else if (KEY_EQ(k, "tkm")) {
+            cbor_item_t b;
+            if (v3d_next(d, &b) != 0 || b.type != CBOR_ITEM_BOOL ||
+                !b.bool_val)
+                return -1;
+            it->evm_tickets_more = true;
+        } else if (KEY_EQ(k, "wd")) {
+            if (v3d_b32(d, it->evm_wei_destroyed) != 0) return -1;
+            have |= 16u;
+        } else if (KEY_EQ(k, "dg")) {
+            if (v3d_b64(d, it->evm_digest) != 0) return -1;
+            have |= 32u;
+        } else if (v3d_skip(d, 0) != 0) {
+            return -1;
+        }
+    }
+    if (have != 63u) return -1;
+    if (it->evm_has_created && it->evm_status != 1) return -1;
+    if (it->evm_tickets_more &&
+        it->evm_n_tickets != NODUS_DNAC_V3_EVM_MAX_TICKETS)
+        return -1;
+    it->has_evm = true;
+    return 0;
+}
+
 static int v3d_item(cbor_decoder_t *d, nodus_dnac_v3_item_t *it)
 {
     cbor_item_t m, k, a;
@@ -5750,6 +5833,17 @@ static int v3d_item(cbor_decoder_t *d, nodus_dnac_v3_item_t *it)
             have |= 64u;
         } else if (KEY_EQ(k, "rc")) {
             if (v3d_record(d, it) != 0) return -1;
+        } else if (KEY_EQ(k, "ri")) {
+            /* Nodus EVM: present only when non-zero */
+            if (v3d_u64(d, UINT64_MAX, &it->reserve_in) != 0 ||
+                it->reserve_in == 0)
+                return -1;
+        } else if (KEY_EQ(k, "ro")) {
+            if (v3d_u64(d, UINT64_MAX, &it->reserve_out) != 0 ||
+                it->reserve_out == 0)
+                return -1;
+        } else if (KEY_EQ(k, "ev")) {
+            if (v3d_evm(d, it) != 0) return -1;
         } else if (v3d_skip(d, 0) != 0) {
             return -1;
         }
@@ -5760,8 +5854,11 @@ static int v3d_item(cbor_decoder_t *d, nodus_dnac_v3_item_t *it)
     if ((have & 24u) != 0 && (!it->has_effects || it->code != 0))
         return -1;
     if (!it->has_effects &&
-        (it->burned != 0 || it->rec_kind != NODUS_DNAC_V3_REC_NONE))
-        return -1;
+        (it->burned != 0 || it->rec_kind != NODUS_DNAC_V3_REC_NONE ||
+         it->reserve_in != 0 || it->reserve_out != 0 || it->has_evm))
+        return -1;                     /* Nodus EVM keys: applied items only */
+    if (it->reserve_in != 0 && it->reserve_out != 0)
+        return -1;                     /* one reserve direction per item */
     /* HF-4: "nm" and "pr" come as a pair, and only on an applied item */
     if ((have & 96u) != 0 && ((have & 96u) != 96u || !it->has_effects))
         return -1;
@@ -6978,6 +7075,767 @@ int nodus_client_test_parse_validator_list(const uint8_t *raw, size_t raw_len,
     return dnac_validator_list_parse(raw, raw_len, out);
 }
 #endif /* NODUS_CLIENT_TEST_SEAM */
+
+/* ── Nodus EVM §18 — the EVM read RPC (wire: nodus.h; the node:
+ *    nodus_witness_handlers.c "Nodus EVM §18"). The v3d hostile-reply
+ *    discipline: every documented key required and typed, a duplicate key
+ *    refused, unknown keys skipped by a walker that refuses truncation. ─ */
+
+/* The bytes of the response frame's "r" value (one complete CBOR map),
+ * copied to the heap. @return 0 / -1. */
+static int evm_reply_map(const uint8_t *raw, size_t raw_len, uint8_t **out,
+                         size_t *out_len) {
+    cbor_decoder_t d;
+    cbor_item_t top, k;
+    cbor_decoder_init(&d, raw, raw_len);
+    if (v3d_next(&d, &top) != 0 || top.type != CBOR_ITEM_MAP) return -1;
+    for (size_t i = 0; i < top.count; i++) {
+        if (v3d_next(&d, &k) != 0) return -1;
+        if (k.type == CBOR_ITEM_TSTR && k.tstr.len == 1 &&
+            k.tstr.ptr[0] == 'r') {
+            const size_t start = d.pos;
+            if (start >= raw_len || (raw[start] >> 5) != 5)  /* a map */
+                return -1;
+            if (v3d_skip(&d, 0) != 0 || d.error) return -1;
+            const size_t n = d.pos - start;
+            uint8_t *c = malloc(n ? n : 1);
+            if (!c) return -1;
+            memcpy(c, raw + start, n);
+            *out = c;
+            *out_len = n;
+            return 0;
+        }
+        if (v3d_skip(&d, 0) != 0) return -1;
+    }
+    return -1;
+}
+
+int nodus_client_dnac_query_raw(nodus_client_t *client, const char *method,
+                                const uint8_t *args, size_t args_len,
+                                size_t n_args, uint8_t **reply_out,
+                                size_t *reply_len_out) {
+    if (!reply_out || !reply_len_out) return -1;
+    *reply_out = NULL;
+    *reply_len_out = 0;
+    if (!nodus_client_is_ready(client) || !method || strlen(method) >= 64 ||
+        (args_len && !args) || args_len > SIZE_MAX - 512)
+        return -1;
+    const size_t cap = args_len + 512;
+    uint8_t *buf = malloc(cap);
+    if (!buf) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+    enc_dnac_query(&enc, txn, client->token, method, n_args);
+    size_t len = cbor_encoder_len(&enc);
+    if (len == 0 || cap - len < args_len) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    if (args_len) memcpy(buf + len, args, args_len);   /* the map entries */
+    len += args_len;
+    if (send_request(client, buf, len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    free(buf);
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        free_pending(client, req); return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        int rc = resp->error_code; free_pending(client, req); return rc;
+    }
+    int drc = evm_reply_map(req->raw_response, req->raw_response_len,
+                            reply_out, reply_len_out);
+    free_pending(client, req);
+    return drc == 0 ? 0 : NODUS_ERR_PROTOCOL_ERROR;
+}
+
+static int evm_b32(cbor_decoder_t *d, uint8_t out[32]) {
+    cbor_item_t v;
+    if (v3d_next(d, &v) != 0 || v.type != CBOR_ITEM_BSTR || v.bstr.len != 32)
+        return -1;
+    memcpy(out, v.bstr.ptr, 32);
+    return 0;
+}
+
+/* A byte string of any length, copied to the heap (NULL when empty). */
+static int evm_bvar(cbor_decoder_t *d, uint8_t **out, size_t *len) {
+    cbor_item_t v;
+    if (v3d_next(d, &v) != 0 || v.type != CBOR_ITEM_BSTR) return -1;
+    *out = NULL;
+    *len = 0;
+    if (v.bstr.len) {
+        *out = malloc(v.bstr.len);
+        if (!*out) return -1;
+        memcpy(*out, v.bstr.ptr, v.bstr.len);
+        *len = v.bstr.len;
+    }
+    return 0;
+}
+
+/* Open the reply map. @return its entry count, or -1. */
+static long evm_open(cbor_decoder_t *d, const uint8_t *r, size_t rl) {
+    cbor_item_t m;
+    cbor_decoder_init(d, r, rl);
+    if (v3d_next(d, &m) != 0 || m.type != CBOR_ITEM_MAP ||
+        m.count > V3D_MAX_KEYS)
+        return -1;
+    return (long)m.count;
+}
+
+/* Run one typed §18 query: `args` holds n_args encoded entries. The reply
+ * map is decoded by `decode`; a decode refusal is PROTOCOL_ERROR. */
+static int evm_typed(nodus_client_t *client, const char *method,
+                     const cbor_encoder_t *args, size_t n_args,
+                     int (*decode)(const uint8_t *, size_t, void *),
+                     void *out) {
+    size_t al = cbor_encoder_len(args);
+    if (n_args && al == 0) return -1;
+    uint8_t *r = NULL;
+    size_t rl = 0;
+    int rc = nodus_client_dnac_query_raw(client, method, args->buf, al,
+                                         n_args, &r, &rl);
+    if (rc != 0) return rc;
+    int drc = decode(r, rl, out);
+    free(r);
+    return drc == 0 ? 0 : NODUS_ERR_PROTOCOL_ERROR;
+}
+
+static int evm_dec_account(const uint8_t *r, size_t rl, void *o) {
+    nodus_evm_account_t *a = (nodus_evm_account_t *)o;
+    cbor_decoder_t d;
+    v3d_keys_t ks;
+    cbor_item_t k;
+    uint64_t v;
+    unsigned have = 0;
+    memset(&ks, 0, sizeof(ks));
+    long n = evm_open(&d, r, rl);
+    if (n < 0) return -1;
+    for (long i = 0; i < n; i++) {
+        if (v3d_key(&d, &ks, &k) != 0) return -1;
+        if (KEY_EQ(k, "n")) {
+            if (v3d_u64(&d, UINT64_MAX, &a->nonce) != 0) return -1;
+            have |= 1u;
+        } else if (KEY_EQ(k, "b")) {
+            if (evm_b32(&d, a->balance_wei) != 0) return -1;
+            have |= 2u;
+        } else if (KEY_EQ(k, "ch")) {
+            if (evm_b32(&d, a->code_hash) != 0) return -1;
+            have |= 4u;
+        } else if (KEY_EQ(k, "cs")) {
+            if (v3d_u64(&d, UINT32_MAX, &v) != 0) return -1;
+            a->code_size = (uint32_t)v;
+            have |= 8u;
+        } else if (KEY_EQ(k, "h")) {
+            if (v3d_u64(&d, UINT64_MAX, &a->height) != 0) return -1;
+            have |= 16u;
+        } else if (v3d_skip(&d, 0) != 0) {
+            return -1;
+        }
+    }
+    return (have == 31u && !d.error) ? 0 : -1;
+}
+
+int nodus_client_evm_account(nodus_client_t *client, const uint8_t addr[32],
+                             nodus_evm_account_t *out) {
+    if (!addr || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    uint8_t ab[64];
+    cbor_encoder_t a;
+    cbor_encoder_init(&a, ab, sizeof(ab));
+    cbor_encode_cstr(&a, "a"); cbor_encode_bstr(&a, addr, 32);
+    return evm_typed(client, "evm_account", &a, 1, evm_dec_account, out);
+}
+
+typedef struct { uint8_t **code; size_t *len; uint64_t *h; } evm_code_out_t;
+
+static int evm_dec_code(const uint8_t *r, size_t rl, void *o) {
+    evm_code_out_t *c = (evm_code_out_t *)o;
+    cbor_decoder_t d;
+    v3d_keys_t ks;
+    cbor_item_t k;
+    unsigned have = 0;
+    memset(&ks, 0, sizeof(ks));
+    long n = evm_open(&d, r, rl);
+    if (n < 0) return -1;
+    for (long i = 0; i < n; i++) {
+        if (v3d_key(&d, &ks, &k) != 0) goto bad;
+        if (KEY_EQ(k, "c")) {
+            if (evm_bvar(&d, c->code, c->len) != 0) goto bad;
+            have |= 1u;
+        } else if (KEY_EQ(k, "h")) {
+            if (v3d_u64(&d, UINT64_MAX, c->h) != 0) goto bad;
+            have |= 2u;
+        } else if (v3d_skip(&d, 0) != 0) {
+            goto bad;
+        }
+    }
+    if (have == 3u && !d.error) return 0;
+bad:
+    free(*c->code);
+    *c->code = NULL;
+    *c->len = 0;
+    return -1;
+}
+
+int nodus_client_evm_code(nodus_client_t *client, const uint8_t addr[32],
+                          uint8_t **code_out, size_t *code_len_out,
+                          uint64_t *height_out) {
+    if (!addr || !code_out || !code_len_out || !height_out) return -1;
+    *code_out = NULL;
+    *code_len_out = 0;
+    *height_out = 0;
+    uint8_t ab[64];
+    cbor_encoder_t a;
+    cbor_encoder_init(&a, ab, sizeof(ab));
+    cbor_encode_cstr(&a, "a"); cbor_encode_bstr(&a, addr, 32);
+    evm_code_out_t o = { code_out, code_len_out, height_out };
+    return evm_typed(client, "evm_code", &a, 1, evm_dec_code, &o);
+}
+
+typedef struct { uint8_t *v; uint64_t *h; } evm_storage_out_t;
+
+static int evm_dec_storage(const uint8_t *r, size_t rl, void *o) {
+    evm_storage_out_t *s = (evm_storage_out_t *)o;
+    cbor_decoder_t d;
+    v3d_keys_t ks;
+    cbor_item_t k;
+    unsigned have = 0;
+    memset(&ks, 0, sizeof(ks));
+    long n = evm_open(&d, r, rl);
+    if (n < 0) return -1;
+    for (long i = 0; i < n; i++) {
+        if (v3d_key(&d, &ks, &k) != 0) return -1;
+        if (KEY_EQ(k, "v")) {
+            if (evm_b32(&d, s->v) != 0) return -1;
+            have |= 1u;
+        } else if (KEY_EQ(k, "h")) {
+            if (v3d_u64(&d, UINT64_MAX, s->h) != 0) return -1;
+            have |= 2u;
+        } else if (v3d_skip(&d, 0) != 0) {
+            return -1;
+        }
+    }
+    return (have == 3u && !d.error) ? 0 : -1;
+}
+
+int nodus_client_evm_storage(nodus_client_t *client, const uint8_t addr[32],
+                             const uint8_t key[32], uint8_t value_out[32],
+                             uint64_t *height_out) {
+    if (!addr || !key || !value_out || !height_out) return -1;
+    memset(value_out, 0, 32);
+    *height_out = 0;
+    uint8_t ab[128];
+    cbor_encoder_t a;
+    cbor_encoder_init(&a, ab, sizeof(ab));
+    cbor_encode_cstr(&a, "a"); cbor_encode_bstr(&a, addr, 32);
+    cbor_encode_cstr(&a, "k"); cbor_encode_bstr(&a, key, 32);
+    evm_storage_out_t o = { value_out, height_out };
+    return evm_typed(client, "evm_storage", &a, 2, evm_dec_storage, &o);
+}
+
+void nodus_evm_call_res_free(nodus_evm_call_res_t *r) {
+    if (!r) return;
+    free(r->output);
+    memset(r, 0, sizeof(*r));
+}
+
+typedef struct { nodus_evm_call_res_t *r; int estimate; } evm_call_out_t;
+
+static int evm_dec_call(const uint8_t *raw, size_t rl, void *o) {
+    evm_call_out_t *co = (evm_call_out_t *)o;
+    nodus_evm_call_res_t *r = co->r;
+    cbor_decoder_t d;
+    v3d_keys_t ks;
+    cbor_item_t k;
+    uint64_t v;
+    unsigned have = 0;
+    memset(&ks, 0, sizeof(ks));
+    long n = evm_open(&d, raw, rl);
+    if (n < 0) return -1;
+    for (long i = 0; i < n; i++) {
+        if (v3d_key(&d, &ks, &k) != 0) goto bad;
+        if (KEY_EQ(k, "s")) {
+            if (v3d_u64(&d, 1, &v) != 0) goto bad;
+            r->success = (int)v;
+            have |= 1u;
+        } else if (KEY_EQ(k, "o")) {
+            if (evm_bvar(&d, &r->output, &r->output_len) != 0) goto bad;
+            have |= 2u;
+        } else if (KEY_EQ(k, "gu")) {
+            if (v3d_u64(&d, UINT64_MAX, &r->gas_used) != 0) goto bad;
+            have |= 4u;
+        } else if (KEY_EQ(k, "h")) {
+            if (v3d_u64(&d, UINT64_MAX, &r->height) != 0) goto bad;
+            have |= 8u;
+        } else if (co->estimate && KEY_EQ(k, "ge")) {
+            if (v3d_u64(&d, UINT64_MAX, &r->gas_limit) != 0) goto bad;
+            have |= 16u;
+        } else if (co->estimate && KEY_EQ(k, "ue")) {
+            if (v3d_u64(&d, UINT64_MAX, &r->units) != 0) goto bad;
+            have |= 32u;
+        } else if (co->estimate && KEY_EQ(k, "fe")) {
+            if (v3d_u64(&d, UINT64_MAX, &r->fee) != 0) goto bad;
+            have |= 64u;
+        } else if (v3d_skip(&d, 0) != 0) {
+            goto bad;
+        }
+    }
+    if (have == (co->estimate ? 127u : 15u) && !d.error) return 0;
+bad:
+    nodus_evm_call_res_free(r);
+    return -1;
+}
+
+static int evm_call_common(nodus_client_t *client,
+                           const nodus_evm_call_req_t *q,
+                           nodus_evm_call_res_t *out, int estimate) {
+    if (!q || !out || !q->from || (q->data_len && !q->data) ||
+        q->data_len > SIZE_MAX - 512)
+        return -1;
+    memset(out, 0, sizeof(*out));
+    const size_t cap = q->data_len + 256;
+    uint8_t *ab = malloc(cap);
+    if (!ab) return -1;
+    cbor_encoder_t a;
+    cbor_encoder_init(&a, ab, cap);
+    size_t n = 2;
+    cbor_encode_cstr(&a, "f"); cbor_encode_bstr(&a, q->from, 32);
+    if (q->to)    { cbor_encode_cstr(&a, "t"); cbor_encode_bstr(&a, q->to, 32); n++; }
+    if (q->value) { cbor_encode_cstr(&a, "v"); cbor_encode_bstr(&a, q->value, 32); n++; }
+    cbor_encode_cstr(&a, "d"); cbor_encode_bstr(&a, q->data, q->data_len);
+    if (q->gas)   { cbor_encode_cstr(&a, "g"); cbor_encode_uint(&a, q->gas); n++; }
+    evm_call_out_t o = { out, estimate };
+    int rc = evm_typed(client, estimate ? "evm_estimate" : "evm_call", &a, n,
+                       evm_dec_call, &o);
+    free(ab);
+    return rc;
+}
+
+int nodus_client_evm_call(nodus_client_t *client,
+                          const nodus_evm_call_req_t *req,
+                          nodus_evm_call_res_t *out) {
+    return evm_call_common(client, req, out, 0);
+}
+
+int nodus_client_evm_estimate(nodus_client_t *client,
+                              const nodus_evm_call_req_t *req,
+                              nodus_evm_call_res_t *out) {
+    return evm_call_common(client, req, out, 1);
+}
+
+static void evm_logs_array_free(nodus_evm_log_t *l, size_t n) {
+    if (!l) return;
+    for (size_t i = 0; i < n; i++) free(l[i].data);
+    free(l);
+}
+
+/* One log map: {a, t, d} (+ {h, x, li, i} when `full`). */
+static int evm_dec_log(cbor_decoder_t *d, nodus_evm_log_t *l, int full) {
+    cbor_item_t m, k, arr;
+    v3d_keys_t ks;
+    uint64_t v;
+    unsigned have = 0;
+    memset(&ks, 0, sizeof(ks));
+    if (v3d_next(d, &m) != 0 || m.type != CBOR_ITEM_MAP ||
+        m.count > V3D_MAX_KEYS)
+        return -1;
+    for (size_t i = 0; i < m.count; i++) {
+        if (v3d_key(d, &ks, &k) != 0) return -1;
+        if (KEY_EQ(k, "a")) {
+            if (evm_b32(d, l->addr) != 0) return -1;
+            have |= 1u;
+        } else if (KEY_EQ(k, "t")) {
+            if (v3d_next(d, &arr) != 0 || arr.type != CBOR_ITEM_ARRAY ||
+                arr.count > 4)
+                return -1;
+            l->n_topics = (uint8_t)arr.count;
+            for (size_t t = 0; t < arr.count; t++)
+                if (evm_b32(d, l->topics[t]) != 0) return -1;
+            have |= 2u;
+        } else if (KEY_EQ(k, "d")) {
+            if (evm_bvar(d, &l->data, &l->data_len) != 0) return -1;
+            have |= 4u;
+        } else if (full && KEY_EQ(k, "h")) {
+            if (v3d_u64(d, UINT64_MAX, &l->height) != 0) return -1;
+            have |= 8u;
+        } else if (full && KEY_EQ(k, "x")) {
+            if (v3d_u64(d, UINT32_MAX, &v) != 0) return -1;
+            l->item = (uint32_t)v;
+            have |= 16u;
+        } else if (full && KEY_EQ(k, "li")) {
+            if (v3d_u64(d, UINT32_MAX, &v) != 0) return -1;
+            l->log_index = (uint32_t)v;
+            have |= 32u;
+        } else if (full && KEY_EQ(k, "i")) {
+            if (v3d_b64(d, l->intent_id) != 0) return -1;
+            have |= 64u;
+        } else if (v3d_skip(d, 0) != 0) {
+            return -1;
+        }
+    }
+    return have == (full ? 127u : 7u) ? 0 : -1;
+}
+
+void nodus_evm_receipt_free(nodus_evm_receipt_t *r) {
+    if (!r) return;
+    free(r->output);
+    evm_logs_array_free(r->logs, r->n_logs);
+    free(r->tickets);
+    memset(r, 0, sizeof(*r));
+}
+
+/* The §7 canonical receipt bytes re-encoded from a decoded receipt, and
+ * their SHA3-512 compared with "dg" (rpc.js receiptDigest, the same
+ * check): proves the fields and the digest agree. @return 0 / -1. */
+static int evm_rcpt_digest_ok(const nodus_evm_receipt_t *r) {
+    static const uint8_t tag[16] = {
+        'N', 'D', 'S', '.', 'E', 'V', 'M', 'R', 'C', 'P', 'T', '.', 'v', '1',
+        0, 0
+    };
+    static const uint8_t zero32[32] = { 0 };
+    size_t n = 16 + 1 + 1 + 8 + 32 + 4 + r->output_len + 4 + 32 + 2 +
+               r->n_tickets * 64;
+    for (size_t i = 0; i < r->n_logs; i++)
+        n += 32 + 1 + (size_t)r->logs[i].n_topics * 32 + 4 +
+             r->logs[i].data_len;
+    if (r->output_len > UINT32_MAX || r->n_logs > UINT32_MAX ||
+        r->n_tickets > 0xFFFF)
+        return -1;
+    uint8_t *b = malloc(n);
+    if (!b) return -1;
+    size_t o = 0;
+    memcpy(b + o, tag, 16); o += 16;
+    b[o++] = r->status;
+    b[o++] = r->op;
+    for (int i = 7; i >= 0; i--) b[o++] = (uint8_t)(r->gas_used >> (8 * i));
+    memcpy(b + o, r->has_created ? r->created : zero32, 32); o += 32;
+    for (int i = 3; i >= 0; i--)
+        b[o++] = (uint8_t)((uint32_t)r->output_len >> (8 * i));
+    if (r->output_len) memcpy(b + o, r->output, r->output_len);
+    o += r->output_len;
+    for (int i = 3; i >= 0; i--)
+        b[o++] = (uint8_t)((uint32_t)r->n_logs >> (8 * i));
+    for (size_t l = 0; l < r->n_logs; l++) {
+        const nodus_evm_log_t *g = &r->logs[l];
+        memcpy(b + o, g->addr, 32); o += 32;
+        b[o++] = g->n_topics;
+        for (uint8_t t = 0; t < g->n_topics; t++) {
+            memcpy(b + o, g->topics[t], 32);
+            o += 32;
+        }
+        for (int i = 3; i >= 0; i--)
+            b[o++] = (uint8_t)((uint32_t)g->data_len >> (8 * i));
+        if (g->data_len) memcpy(b + o, g->data, g->data_len);
+        o += g->data_len;
+    }
+    memcpy(b + o, r->wei_destroyed, 32); o += 32;
+    b[o++] = (uint8_t)(r->n_tickets >> 8);
+    b[o++] = (uint8_t)r->n_tickets;
+    for (size_t t = 0; t < r->n_tickets; t++) {
+        memcpy(b + o, r->tickets[t], 64);
+        o += 64;
+    }
+    uint8_t d[64];
+    int ok = o == n && qgp_sha3_512(b, n, d) == 0 &&
+             memcmp(d, r->digest, 64) == 0;
+    free(b);
+    return ok ? 0 : -1;
+}
+
+static int evm_dec_receipt(const uint8_t *raw, size_t rl, void *o) {
+    nodus_evm_receipt_t *r = (nodus_evm_receipt_t *)o;
+    cbor_decoder_t d;
+    v3d_keys_t ks;
+    cbor_item_t k, arr;
+    uint64_t v;
+    unsigned have = 0;
+    memset(&ks, 0, sizeof(ks));
+    long n = evm_open(&d, raw, rl);
+    if (n < 0) return -1;
+    if (n == 0) {                        /* {}: no receipt on this node */
+        r->found = false;
+        return d.error ? -1 : 0;
+    }
+    for (long i = 0; i < n; i++) {
+        if (v3d_key(&d, &ks, &k) != 0) goto bad;
+        if (KEY_EQ(k, "h")) {
+            if (v3d_u64(&d, UINT64_MAX, &r->height) != 0) goto bad;
+            have |= 1u;
+        } else if (KEY_EQ(k, "x")) {
+            if (v3d_u64(&d, UINT32_MAX, &v) != 0) goto bad;
+            r->item = (uint32_t)v;
+            have |= 2u;
+        } else if (KEY_EQ(k, "s")) {
+            if (v3d_u64(&d, 1, &v) != 0) goto bad;
+            r->status = (uint8_t)v;
+            have |= 4u;
+        } else if (KEY_EQ(k, "op")) {
+            if (v3d_u64(&d, 5, &v) != 0 || v == 0) goto bad;
+            r->op = (uint8_t)v;
+            have |= 8u;
+        } else if (KEY_EQ(k, "gu")) {
+            if (v3d_u64(&d, UINT64_MAX, &r->gas_used) != 0) goto bad;
+            have |= 16u;
+        } else if (KEY_EQ(k, "cr")) {
+            if (evm_b32(&d, r->created) != 0) goto bad;
+            r->has_created = true;
+        } else if (KEY_EQ(k, "o")) {
+            if (evm_bvar(&d, &r->output, &r->output_len) != 0) goto bad;
+            have |= 32u;
+        } else if (KEY_EQ(k, "logs")) {
+            if (v3d_next(&d, &arr) != 0 || arr.type != CBOR_ITEM_ARRAY)
+                goto bad;
+            if (arr.count) {
+                r->logs = calloc(arr.count, sizeof(*r->logs));
+                if (!r->logs) goto bad;
+            }
+            for (size_t l = 0; l < arr.count; l++) {
+                r->n_logs = l + 1;
+                if (evm_dec_log(&d, &r->logs[l], 0) != 0) goto bad;
+            }
+            have |= 64u;
+        } else if (KEY_EQ(k, "wd")) {
+            if (evm_b32(&d, r->wei_destroyed) != 0) goto bad;
+            have |= 128u;
+        } else if (KEY_EQ(k, "tk")) {
+            if (v3d_next(&d, &arr) != 0 || arr.type != CBOR_ITEM_ARRAY ||
+                arr.count > 0xFFFF)
+                goto bad;
+            if (arr.count) {
+                r->tickets = calloc(arr.count, 64);
+                if (!r->tickets) goto bad;
+            }
+            for (size_t t = 0; t < arr.count; t++) {
+                r->n_tickets = t + 1;
+                if (v3d_b64(&d, r->tickets[t]) != 0) goto bad;
+            }
+            have |= 256u;
+        } else if (KEY_EQ(k, "dg")) {
+            if (v3d_b64(&d, r->digest) != 0) goto bad;
+            have |= 512u;
+        } else if (v3d_skip(&d, 0) != 0) {
+            goto bad;
+        }
+    }
+    /* "cr" only on a successful CREATE (rpc.js parseReceipt, the same) */
+    if (have != 1023u || d.error ||
+        (r->has_created && !(r->status == 1 && r->op == 2)))
+        goto bad;
+    r->found = true;
+    if (evm_rcpt_digest_ok(r) != 0) goto bad;
+    return 0;
+bad:
+    nodus_evm_receipt_free(r);
+    return -1;
+}
+
+int nodus_client_evm_receipt(nodus_client_t *client,
+                             const uint8_t intent_id[64],
+                             nodus_evm_receipt_t *out) {
+    if (!intent_id || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    uint8_t ab[96];
+    cbor_encoder_t a;
+    cbor_encoder_init(&a, ab, sizeof(ab));
+    cbor_encode_cstr(&a, "i"); cbor_encode_bstr(&a, intent_id, 64);
+    return evm_typed(client, "evm_receipt", &a, 1, evm_dec_receipt, out);
+}
+
+void nodus_evm_logs_free(nodus_evm_logs_res_t *r) {
+    if (!r) return;
+    evm_logs_array_free(r->logs, r->n);
+    memset(r, 0, sizeof(*r));
+}
+
+static int evm_dec_logs(const uint8_t *raw, size_t rl, void *o) {
+    nodus_evm_logs_res_t *r = (nodus_evm_logs_res_t *)o;
+    cbor_decoder_t d;
+    v3d_keys_t ks;
+    cbor_item_t k, arr;
+    unsigned have = 0;
+    memset(&ks, 0, sizeof(ks));
+    long n = evm_open(&d, raw, rl);
+    if (n < 0) return -1;
+    for (long i = 0; i < n; i++) {
+        if (v3d_key(&d, &ks, &k) != 0) goto bad;
+        if (KEY_EQ(k, "logs")) {
+            if (v3d_next(&d, &arr) != 0 || arr.type != CBOR_ITEM_ARRAY ||
+                arr.count > NODUS_EVM_LOGS_MAX_LIMIT)
+                goto bad;
+            if (arr.count) {
+                r->logs = calloc(arr.count, sizeof(*r->logs));
+                if (!r->logs) goto bad;
+            }
+            for (size_t l = 0; l < arr.count; l++) {
+                r->n = l + 1;
+                if (evm_dec_log(&d, &r->logs[l], 1) != 0) goto bad;
+            }
+            have |= 1u;
+        } else if (KEY_EQ(k, "more")) {
+            cbor_item_t b;
+            if (v3d_next(&d, &b) != 0 || b.type != CBOR_ITEM_BOOL) goto bad;
+            r->more = b.bool_val;
+            have |= 2u;
+        } else if (KEY_EQ(k, "c")) {
+            /* the cursor: exactly [h, x, li] */
+            uint64_t *slot[3] = { &r->cursor.height, &r->cursor.item,
+                                  &r->cursor.log_index };
+            if (v3d_next(&d, &arr) != 0 || arr.type != CBOR_ITEM_ARRAY ||
+                arr.count != 3)
+                goto bad;
+            if (v3d_u64(&d, UINT64_MAX, slot[0]) != 0 ||
+                v3d_u64(&d, NODUS_EVM_LOGS_CURSOR_POS_MAX, slot[1]) != 0 ||
+                v3d_u64(&d, NODUS_EVM_LOGS_CURSOR_POS_MAX, slot[2]) != 0)
+                goto bad;
+            r->has_cursor = true;
+            have |= 4u;
+        } else if (v3d_skip(&d, 0) != 0) {
+            goto bad;
+        }
+    }
+    /* "c" exactly when more */
+    if ((have & 3u) == 3u && r->has_cursor == r->more && !d.error) return 0;
+bad:
+    nodus_evm_logs_free(r);
+    return -1;
+}
+
+/* (h, x, li) order: <0 / 0 / >0. */
+static int evm_log_pos_cmp(uint64_t ah, uint64_t ax, uint64_t al,
+                           uint64_t bh, uint64_t bx, uint64_t bl) {
+    if (ah != bh) return ah < bh ? -1 : 1;
+    if (ax != bx) return ax < bx ? -1 : 1;
+    if (al != bl) return al < bl ? -1 : 1;
+    return 0;
+}
+
+/* The page against its request (nodus.h nodus_client_evm_logs: the
+ * paging invariants). @return 0 / -1. */
+static int evm_logs_page_check(const nodus_evm_logs_req_t *q,
+                               const nodus_evm_logs_res_t *r) {
+    uint64_t sh = q->cursor ? q->cursor->height : q->from_height;
+    uint64_t sx = q->cursor ? q->cursor->item : 0;
+    uint64_t sl = q->cursor ? q->cursor->log_index : 0;
+    if (r->n > q->limit) return -1;
+    for (size_t i = 0; i < r->n; i++) {
+        const nodus_evm_log_t *g = &r->logs[i];
+        if (g->height < q->from_height || g->height > q->to_height) return -1;
+        if (evm_log_pos_cmp(g->height, g->item, g->log_index,
+                            sh, sx, sl) < 0)
+            return -1;
+        if (i > 0) {
+            const nodus_evm_log_t *p = &r->logs[i - 1];
+            if (evm_log_pos_cmp(p->height, p->item, p->log_index,
+                                g->height, g->item, g->log_index) >= 0)
+                return -1;
+        }
+    }
+    if (r->has_cursor) {
+        const nodus_evm_logs_cursor_t *c = &r->cursor;
+        if (c->height < q->from_height || c->height > q->to_height)
+            return -1;
+        /* never behind the start; past every returned log */
+        if (evm_log_pos_cmp(c->height, c->item, c->log_index,
+                            sh, sx, sl) < 0)
+            return -1;
+        if (r->n > 0) {
+            const nodus_evm_log_t *g = &r->logs[r->n - 1];
+            if (evm_log_pos_cmp(g->height, g->item, g->log_index,
+                                c->height, c->item, c->log_index) >= 0)
+                return -1;
+        }
+    }
+    return 0;
+}
+
+int nodus_client_evm_logs(nodus_client_t *client,
+                          const nodus_evm_logs_req_t *req,
+                          nodus_evm_logs_res_t *out) {
+    if (!req || !out || req->to_height < req->from_height ||
+        req->to_height - req->from_height >= NODUS_EVM_LOGS_MAX_SPAN ||
+        req->limit < 1 || req->limit > NODUS_EVM_LOGS_MAX_LIMIT ||
+        (req->cursor &&
+         (req->cursor->height < req->from_height ||
+          req->cursor->height > req->to_height ||
+          req->cursor->item > NODUS_EVM_LOGS_CURSOR_POS_MAX ||
+          req->cursor->log_index > NODUS_EVM_LOGS_CURSOR_POS_MAX)))
+        return -1;
+    memset(out, 0, sizeof(*out));
+    uint8_t ab[512];
+    cbor_encoder_t a;
+    cbor_encoder_init(&a, ab, sizeof(ab));
+    size_t n = 3;
+    static const char *const tk[4] = { "t0", "t1", "t2", "t3" };
+    cbor_encode_cstr(&a, "fh");  cbor_encode_uint(&a, req->from_height);
+    cbor_encode_cstr(&a, "th");  cbor_encode_uint(&a, req->to_height);
+    cbor_encode_cstr(&a, "lim"); cbor_encode_uint(&a, req->limit);
+    if (req->addr) {
+        cbor_encode_cstr(&a, "a"); cbor_encode_bstr(&a, req->addr, 32);
+        n++;
+    }
+    for (int t = 0; t < 4; t++)
+        if (req->topic[t]) {
+            cbor_encode_cstr(&a, tk[t]);
+            cbor_encode_bstr(&a, req->topic[t], 32);
+            n++;
+        }
+    if (req->cursor) {
+        cbor_encode_cstr(&a, "c");
+        cbor_encode_array(&a, 3);
+        cbor_encode_uint(&a, req->cursor->height);
+        cbor_encode_uint(&a, req->cursor->item);
+        cbor_encode_uint(&a, req->cursor->log_index);
+        n++;
+    }
+    int rc = evm_typed(client, "evm_logs", &a, n, evm_dec_logs, out);
+    if (rc == 0 && evm_logs_page_check(req, out) != 0) {
+        nodus_evm_logs_free(out);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+    return rc;
+}
+
+static int evm_dec_ticket(const uint8_t *raw, size_t rl, void *o) {
+    nodus_evm_ticket_t *t = (nodus_evm_ticket_t *)o;
+    cbor_decoder_t d;
+    v3d_keys_t ks;
+    cbor_item_t k, b;
+    unsigned have = 0;
+    memset(&ks, 0, sizeof(ks));
+    long n = evm_open(&d, raw, rl);
+    if (n < 0) return -1;
+    for (long i = 0; i < n; i++) {
+        if (v3d_key(&d, &ks, &k) != 0) return -1;
+        if (KEY_EQ(k, "p")) {
+            if (v3d_next(&d, &b) != 0 || b.type != CBOR_ITEM_BOOL) return -1;
+            t->pending = b.bool_val;
+            have |= 1u;
+        } else if (KEY_EQ(k, "amt")) {
+            if (v3d_u64(&d, UINT64_MAX, &t->amount_raw) != 0) return -1;
+            have |= 2u;
+        } else if (KEY_EQ(k, "dst")) {
+            if (v3d_b64(&d, t->dest_fp) != 0) return -1;
+            have |= 4u;
+        } else if (v3d_skip(&d, 0) != 0) {
+            return -1;
+        }
+    }
+    return (have == 7u && !d.error) ? 0 : -1;
+}
+
+int nodus_client_evm_ticket(nodus_client_t *client, const uint8_t id[64],
+                            nodus_evm_ticket_t *out) {
+    if (!id || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    uint8_t ab[96];
+    cbor_encoder_t a;
+    cbor_encoder_init(&a, ab, sizeof(ab));
+    cbor_encode_cstr(&a, "id"); cbor_encode_bstr(&a, id, 64);
+    return evm_typed(client, "evm_ticket", &a, 1, evm_dec_ticket, out);
+}
 
 #undef KEY_EQ
 

@@ -1,6 +1,8 @@
 // Nodus Scan. Wire fields and base units follow explorer/src/exp_http.c (index schema v2,
 // version-3 chain: blocks carry items, an item is addressed by "height:index").
 // Amounts stay decimal strings / BigInt. API data is never rendered as HTML.
+// Nodus EVM P4-C: a transaction's "evm" section, and a 64-hex EVM address on the address page
+// (explorer /api/evm/contract: account, contract creation, recent events, EVM transactions).
 (() => {
   'use strict';
   const tr = window.nodusLanguage === 'tr';
@@ -10,7 +12,9 @@
   const page = document.body.dataset.page;
   const query = new URLSearchParams(location.search);
   const rawIdentifier = query.get(page === 'block' ? 'h' : page === 'tx' ? 'hash' : 'fp');
-  const identifier = rawIdentifier && /^[a-fA-F0-9]{128}$/.test(rawIdentifier) ? rawIdentifier.toLowerCase() : rawIdentifier;
+  // A 128-hex id / fingerprint, or (Nodus EVM) a 64-hex EVM address, is used lower-case.
+  const identifier = rawIdentifier && /^(?:[a-fA-F0-9]{128}|[a-fA-F0-9]{64})$/.test(rawIdentifier) ? rawIdentifier.toLowerCase() : rawIdentifier;
+  const isEvmAddress = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
   let pageNumber = 1, snapshotTip = null, lastPage = 1, blockRequest = 0, searchRequest = 0;
   let nextCursor = null, historyLoading = false, refreshing = false;
   let paydayPager;
@@ -31,6 +35,17 @@
     return (negative ? '-' : '') + (magnitude / 100000000n) + (fraction ? '.' + fraction : '');
   }
   const money = raw => amount(raw) === '—' ? '—' : amount(raw) + ' NODUS';
+  // EVM amounts are wei (a decimal string, up to 256 bits). 1 raw unit (10^-8 NODUS) = 10^10 wei,
+  // so NODUS = wei / 10^18 — the same conversion as web-wallet/src/evm/units.js (formatUnits(wei,
+  // 18): trailing zeros removed) and nodus-cli `evm balance` (nodus/tools/nodus-cli.c
+  // evm_wei_to_nodus). BigInt only.
+  function weiMoney(wei) {
+    if (typeof wei !== 'string' || !/^(0|[1-9]\d{0,77})$/.test(wei)) return '—';
+    const v = BigInt(wei), base = 10n ** 18n, whole = v / base, frac = v % base;
+    const text = frac === 0n ? whole.toString() : whole + '.' + frac.toString().padStart(18, '0').replace(/0+$/, '');
+    return text + ' NODUS';
+  }
+  const weiDetail = wei => weiMoney(wei) === '—' ? '—' : weiMoney(wei) + ' (' + wei + ' wei)';
   const short = value => value.length > 28 ? value.slice(0, 14) + '…' + value.slice(-10) : value;
   function hash(value, destination) {
     if (typeof value !== 'string' || !value) return el('span', '—', 'muted');
@@ -446,6 +461,34 @@
     else { entries.push([t('Amount','Tutar'), money(record.amount)]); if (record.kind === 'validator_update' || record.kind === 'stake') entries.push([t('Commission','Komisyon'), (Number(record.commission_bps) / 100) + ' %']); }
     return fields(entries);
   }
+  // Nodus EVM (explorer /api/tx "evm"): what an applied EVM transaction did, as the node's stored
+  // receipt says. A failed one is still applied: its fee is paid and its nonce used.
+  const evmAddressLink = a => isEvmAddress(a) ? hash(a, 'address.html?fp=' + encodeURIComponent(a)) : el('span', '—', 'muted');
+  const evmOpNames = { evm_call: t('Contract call','Sözleşme çağrısı'), evm_create: t('Contract creation','Sözleşme oluşturma'), evm_deposit: t('Deposit into the EVM','EVM’e yatırma'), evm_withdraw: t('Withdrawal from the EVM','EVM’den çekme'), evm_redeem: t('Ticket redemption','Bilet bozdurma') };
+  function renderEvm(evm, op) {
+    const entries = [[t('Action','İşlem'), evmOpNames[op] ?? (typeof op === 'string' ? op : '—')],
+      [t('Result','Sonuç'), evm.status === 'success' ? t('Succeeded','Başarılı') : t('Failed — the fee was still paid','Başarısız — ücret yine de ödendi')],
+      [t('Gas used','Kullanılan gas'), Number.isSafeInteger(evm.gas_used) ? evm.gas_used : '—'],
+      [t('From (EVM address)','Gönderen (EVM adresi)'), evmAddressLink(evm.from)]];
+    if (evm.to !== null && evm.to !== undefined) entries.push([t('To (EVM address)','Alıcı (EVM adresi)'), evmAddressLink(evm.to)]);
+    if (evm.created !== null && evm.created !== undefined) entries.push([t('Contract created','Oluşturulan sözleşme'), evmAddressLink(evm.created)]);
+    if (evm.value_wei !== null && evm.value_wei !== undefined) entries.push([t('Value sent','Gönderilen değer'), weiDetail(evm.value_wei)]);
+    if (typeof evm.recipient === 'string') entries.push([t('Paid out to','Ödendiği adres'), hash(evm.recipient, 'address.html?fp=' + encodeURIComponent(evm.recipient))]);
+    if (evm.reserve_in !== null && evm.reserve_in !== undefined) entries.push([t('Moved into the EVM','EVM’e aktarılan'), money(evm.reserve_in)]);
+    if (evm.reserve_out !== null && evm.reserve_out !== undefined) entries.push([t('Moved out of the EVM','EVM’den çıkan'), money(evm.reserve_out)]);
+    entries.push([t('Events (logs)','Olaylar (log)'), Number.isSafeInteger(evm.logs) ? evm.logs : '—']);
+    if (typeof evm.wei_destroyed === 'string' && evm.wei_destroyed !== '0') entries.push([t('Value lost','Kaybolan değer'), weiDetail(evm.wei_destroyed)]);
+    entries.push([t('Receipt digest','Makbuz özeti'), hash(evm.receipt_digest)]);
+    const out = [fields(entries)];
+    const tickets = Array.isArray(evm.tickets) ? evm.tickets.filter(x => typeof x === 'string') : [];
+    if (tickets.length) {
+      out.push(el('h3', t('Withdrawal tickets opened','Açılan çekim biletleri') + ' (' + tickets.length + (evm.tickets_more === true ? '+' : '') + ')'),
+        table([t('Ticket','Bilet')], tickets.map(x => row([hash(x)])), t('None','Yok')));
+      if (evm.tickets_more === true) out.push(el('p', t('More tickets were opened than are listed here.','Burada listelenenden daha fazla bilet açıldı.'), 'muted'));
+    }
+    out.push(el('p', t('The inputs and outputs below are the NODUS coins that paid for this transaction (and, for a withdrawal, the coin paid out).','Aşağıdaki girdiler ve çıktılar bu işlemi ödeyen NODUS coin’leridir (çekimde ayrıca ödenen coin).'), 'muted'));
+    return out;
+  }
   function renderTx(data, content) {
     if (!data.tx || !Array.isArray(data.inputs) || !Array.isArray(data.outputs)) throw new Error(t('Unexpected transaction response.', 'Beklenmeyen işlem yanıtı.'));
     const tx = data.tx;
@@ -463,6 +506,7 @@
     content.replaceChildren(opBadges(tx), fields(entries));
     if (tx.refused) content.append(el('p', t('A refused transaction stays in the block but changes nothing: no coins are spent or created.', 'Reddedilen işlem blokta kalır ama hiçbir şeyi değiştirmez: coin harcanmaz, oluşturulmaz.'), 'muted'));
     if (tx.record) content.append(el('h2', t('Recorded change','Kaydedilen değişiklik')), renderRecord(tx.record));
+    if (data.evm && typeof data.evm === 'object') content.append(el('h2', t('Smart contract (EVM)','Akıllı sözleşme (EVM)')), ...renderEvm(data.evm, tx.op));
     content.append(el('h2', t('Inputs','Girdiler') + ' (' + data.inputs.length + ')'), table([t('Coin','Coin'),t('Address','Adres'),t('Amount','Tutar'),t('Token','Token')], data.inputs.map(inputRow), t('None','Yok')));
     content.append(el('h2', t('Outputs','Çıktılar') + ' (' + data.outputs.length + ')'), table([t('Coin','Coin'),t('Address','Adres'),t('Amount','Tutar'),t('Token','Token'),t('Unlock block','Kilit açılış bloğu')], data.outputs.map(outputRow), t('None','Yok')));
   }
@@ -487,6 +531,34 @@
     content.append(...moreButton(() => loadMore('/address/' + apiValue(identifier) + '?limit=25&before=', 'address-history-tbody', 'items', historyRow, d => typeof d.next_before === 'string' ? d.next_before : null)));
     return Promise.all([rewards, releases]);
   }
+  // Nodus EVM (explorer /api/evm/contract — an EVM address): the account as the network reports it
+  // (nonce, balance in wei, code size; "unavailable" is shown as such, never as zero), the
+  // contract's creating transaction and its recent events when it has code, and the indexed EVM
+  // transactions naming the address.
+  const logRow = g => row([link('block.html?h=' + encodeURIComponent(g.height), g.height), Array.isArray(g.topics) && g.topics.length ? el('span', short(String(g.topics[0])), 'mono') : el('span', '—', 'muted'), el('span', typeof g.data === 'string' && g.data ? short(g.data) : '—', 'mono'), typeof g.intent_id === 'string' ? hash(g.intent_id, 'tx.html?hash=' + encodeURIComponent(g.intent_id)) : '—']);
+  function renderEvmAddress(data, content) {
+    if (!Array.isArray(data.items)) throw new Error(t('Unexpected address response.', 'Beklenmeyen adres yanıtı.'));
+    const acct = data.account_status === 'ok' && data.account && typeof data.account === 'object' ? data.account : null;
+    const isContract = (acct && Number(acct.code_size) > 0) || (data.created_by && typeof data.created_by === 'object');
+    const entries = [[t('EVM address','EVM adresi'), hash(identifier)], [t('Kind','Tür'), isContract ? t('Smart contract','Akıllı sözleşme') : t('Account','Hesap')]];
+    if (acct) {
+      entries.push([t('Balance','Bakiye'), weiDetail(acct.balance_wei)], [t('Transactions sent (nonce)','Gönderilen işlem (nonce)'), Number.isSafeInteger(acct.nonce) ? acct.nonce : '—'],
+        [t('Code size','Kod boyutu'), Number.isSafeInteger(acct.code_size) ? acct.code_size + t(' bytes',' bayt') : '—'], [t('As of block','Şu bloğa göre'), Number.isSafeInteger(acct.height) ? acct.height : '—']);
+    } else {
+      entries.push([t('Balance','Bakiye'), el('span', t('Unavailable right now — the network did not answer. Try refreshing shortly.', 'Şu an alınamıyor — ağ yanıt vermedi. Biraz sonra yenilemeyi dene.'), 'muted')]);
+    }
+    if (data.created_by && typeof data.created_by === 'object') entries.push([t('Created in','Oluşturulduğu işlem'), link(txHref(data.created_by), position(data.created_by))]);
+    content.replaceChildren(fields(entries));
+    if (isContract && data.logs && typeof data.logs === 'object' && Array.isArray(data.logs.items)) {
+      const logs = data.logs.items.filter(g => g && typeof g === 'object').slice().reverse();   // newest first
+      content.append(el('h2', t('Recent events','Son olaylar')),
+        el('p', t(`Events of blocks ${data.logs.from_height}–${data.logs.to_height}` + (data.logs.more === true ? ' (only the first 100 of that span are listed)' : ''), `${data.logs.from_height}–${data.logs.to_height} bloklarındaki olaylar` + (data.logs.more === true ? ' (o aralığın yalnız ilk 100’ü listelenir)' : '')), 'muted'),
+        table([t('Block','Blok'), t('First topic','İlk konu'), t('Data','Veri'), t('Transaction','İşlem')], logs.map(logRow), t('No events in this span.', 'Bu aralıkta olay yok.')));
+    }
+    nextCursor = typeof data.next_before === 'string' ? data.next_before : null;
+    content.append(el('h2', t('EVM transactions','EVM işlemleri')), table([t('Position','Konum'),t('Type','Tür'),t('Height','Yükseklik'),t('Time','Zaman'),t('Fee','Ücret')], data.items.map(historyRow), t('No EVM transactions for this address.','Bu adres için EVM işlemi yok.'), 'address-history-tbody'));
+    content.append(...moreButton(() => loadMore('/evm/contract/' + apiValue(identifier) + '?limit=25&before=', 'address-history-tbody', 'items', historyRow, d => typeof d.next_before === 'string' ? d.next_before : null)));
+  }
   async function loadMore(prefix, tbodyId, key, render, cursorOf) {
     if (historyLoading || nextCursor === null) return;
     historyLoading=true;const button=$('load-more-btn');button.disabled=true;$('history-error').replaceChildren();
@@ -501,12 +573,14 @@
   }
   async function loadDetail() {
     const content=$(page+'-content');
-    const valid = identifier && (page==='block' ? /^(?:[1-9]\d*|[a-f0-9]{128})$/.test(identifier) : page==='tx' ? /^(?:[a-f0-9]{128}|[1-9]\d*:\d+)$/.test(identifier) : /^[a-f0-9]{128}$/.test(identifier));
+    const valid = identifier && (page==='block' ? /^(?:[1-9]\d*|[a-f0-9]{128})$/.test(identifier) : page==='tx' ? /^(?:[a-f0-9]{128}|[1-9]\d*:\d+)$/.test(identifier) : /^(?:[a-f0-9]{128}|[a-f0-9]{64})$/.test(identifier));
     if (!valid) {errorBox(content,new Error(t('Use the search above to choose a valid record.','Geçerli bir kayıt seçmek için yukarıdaki aramayı kullan.')));return;}
     content.replaceChildren(el('div',t('Loading…','Yükleniyor…'),'loading'));
     try {
-      const data=await api('/'+page+'/'+apiValue(identifier)+(page==='address'?'?limit=25':''));
-      if(page==='block')await renderBlock(data,content);else if(page==='tx')renderTx(data,content);else await renderAddress(data,content);
+      // Nodus EVM: a 64-hex address is an EVM account or contract (explorer /api/evm/contract)
+      const evm=page==='address'&&isEvmAddress(identifier);
+      const data=await api(evm?'/evm/contract/'+apiValue(identifier)+'?limit=25':'/'+page+'/'+apiValue(identifier)+(page==='address'?'?limit=25':''));
+      if(page==='block')await renderBlock(data,content);else if(page==='tx')renderTx(data,content);else if(evm)renderEvmAddress(data,content);else await renderAddress(data,content);
     } catch(error){errorBox(content,error);}
   }
   // Hard forks (explorer /api/governance: every applied chain_config vote, (height, index)
@@ -586,6 +660,10 @@
   }
   $('search-form').addEventListener('submit',async event=>{
     event.preventDefault();const typed=$('search-input').value.trim();if(!typed)return;
+    // Nodus EVM: a 64-hex EVM address (an optional 0x) opens its address page directly — the index
+    // search does not take EVM addresses.
+    const evmTyped=typed.replace(/^0x/i,'');
+    if(/^[a-fA-F0-9]{64}$/.test(evmTyped)){location.assign(window.nodusLink('address.html?fp='+evmTyped.toLowerCase()));return;}
     // A 128-hex id, or a chain name (HF-4: the chain stores names lower-case; A-Z is mapped with
     // an ASCII-only table, never a locale's lower-casing), is sent lower-case.
     const asciiLower=s=>s.replace(/[A-Z]/g,c=>String.fromCharCode(c.charCodeAt(0)+32));

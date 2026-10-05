@@ -94,19 +94,42 @@ static int failed = 0;
 static nodus_server_t g_server;
 static nodus_server_config_t g_server_cfg;
 static pthread_t g_server_tid;
-static volatile bool g_server_ready = false;
+/* g_server_init_done: set by the server thread once its start-up has
+ * finished, success or failure (mkdir or nodus_server_init); g_server_ready:
+ * it succeeded. start_real_server waits for this outcome, not for a time
+ * budget: init runs the witness start checks (the EVM precompile self-test
+ * loads the KZG setup), whose duration depends on the host — the old
+ * 5000 ms budget could expire with init still running (2026-10-05, Nodus
+ * EVM red-team 1 F2). Both flags are read and written only under
+ * g_init_lock; the waiter sleeps on g_init_cond. */
+static pthread_mutex_t g_init_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_init_cond = PTHREAD_COND_INITIALIZER;
+static bool g_server_ready = false;
+static bool g_server_init_done = false;
+
+static void server_init_outcome(bool ready) {
+    pthread_mutex_lock(&g_init_lock);
+    g_server_ready = ready;
+    g_server_init_done = true;
+    pthread_cond_broadcast(&g_init_cond);
+    pthread_mutex_unlock(&g_init_lock);
+}
 
 static void *real_server_thread(void *arg) {
     (void)arg;
     char cmd[320];
     snprintf(cmd, sizeof(cmd), "mkdir -p %s", g_server_cfg.data_path);
-    if (system(cmd) != 0) return NULL;
+    if (system(cmd) != 0) {
+        server_init_outcome(false);
+        return NULL;
+    }
 
     if (nodus_server_init(&g_server, &g_server_cfg) != 0) {
         fprintf(stderr, "test_client_pin: server init failed\n");
+        server_init_outcome(false);
         return NULL;
     }
-    g_server_ready = true;
+    server_init_outcome(true);
     nodus_server_run(&g_server);
     nodus_server_close(&g_server);
 
@@ -128,10 +151,16 @@ static int start_real_server(void) {
 
     if (pthread_create(&g_server_tid, NULL, real_server_thread, NULL) != 0)
         return -1;
-    /* Bounded wait: an unbounded one turns a bind failure into a hang. */
-    for (int waited = 0; !g_server_ready && waited < 5000; waited += 10)
-        usleep(10000);
-    return g_server_ready ? 0 : -1;
+    /* Wait for the start-up OUTCOME. This used to be a 5000 ms bounded
+     * wait because a bare `while (!ready)` turned a bind failure into a
+     * hang; a failed start now signals its outcome too, so the wait needs
+     * no time budget (see g_server_init_done). */
+    pthread_mutex_lock(&g_init_lock);
+    while (!g_server_init_done)
+        pthread_cond_wait(&g_init_cond, &g_init_lock);
+    bool ready = g_server_ready;
+    pthread_mutex_unlock(&g_init_lock);
+    return ready ? 0 : -1;
 }
 
 static void stop_real_server(void) {

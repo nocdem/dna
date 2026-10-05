@@ -597,7 +597,13 @@ int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
                               attendance, treasury, out);
 }
 
-int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]) {
+/* The body of both CORE root variants: `with_evm_reserve` 0 = every
+ * generation before the EVM one (the supply leg exactly
+ * nodus_witness_supply_root_v2 — byte-identical to before Nodus EVM), 1 = the
+ * EVM generation (the supply leg gains the CORE EVM reserve under
+ * "NDS.SUPPLY.v3"). Every other leg and the composition are shared. */
+static int core_root_impl(nodus_witness_t *w, int with_evm_reserve,
+                          uint8_t out[64]) {
     if (!w || !out) return -1;
     uint8_t utxo_root[64], token_root[64], pools[64], claims[64], names[64];
     uint8_t supply[64], accrual[64];
@@ -627,9 +633,24 @@ int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     if (names_root_v2(w, names) != 0)
         return -1;
     /* Native issuance (genesis/minted/burned) is the CORE runtime's OWN
-     * asset commitment — the supply leg lives HERE (locked ownership). */
-    if (nodus_witness_supply_root_v2(w, supply) != 0)
-        return -1;
+     * asset commitment — the supply leg lives HERE (locked ownership).
+     * Nodus EVM: the EVM generation's leaf also commits the reserve bucket. */
+    if (!with_evm_reserve) {
+        if (nodus_witness_supply_root_v2(w, supply) != 0)
+            return -1;
+    } else {
+        nodus_witness_supply_t sup;
+        uint64_t reserve = 0;
+        memset(&sup, 0, sizeof(sup));
+        if (nodus_witness_supply_get(w, &sup) < 0) return -1;
+        /* the EVM generation never runs below S17: the row is there */
+        if (nodus_witness_core_evm_reserve_get(w, &reserve) != 0)
+            return -1;
+        if (dna_v2_supply_root_evm(sup.genesis_supply, sup.total_minted,
+                                   sup.total_burned, sup.reward_pool,
+                                   reserve, supply) != 0)
+            return -1;
+    }
     /* tokenomics-v3 P2 (P2-8): the 7th leg — the per-recipient reward
      * accrual, under the new composition tag "NDS.CORE.v2". An empty
      * table (every chain before its first paying boundary, and right
@@ -638,6 +659,15 @@ int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]) {
         return -1;
     return dna_v2_core_root(utxo_root, token_root, pools, claims, names,
                             supply, accrual, out);
+}
+
+int nodus_witness_core_root_v2(nodus_witness_t *w, uint8_t out[64]) {
+    return core_root_impl(w, 0, out);
+}
+
+/* Nodus EVM — contract: nodus_witness_roots_v2.h. */
+int nodus_witness_core_root_v2_evm(nodus_witness_t *w, uint8_t out[64]) {
+    return core_root_impl(w, 1, out);
 }
 
 /* Decode the 89-byte canonical head blob (layout: ledger_roots_v2.h). */

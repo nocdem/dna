@@ -69,6 +69,23 @@ struct nodus_witness;
 #define NODUS_WITNESS_IPC_Q_CTL       "ipc_ctl"
 #define NODUS_WITNESS_IPC_Q_STATUS    "ipc_status"
 
+/**
+ * The ONE routing rule for client tier-2 methods the chain serves: the
+ * `dnac_*` family and — Nodus EVM Faz 4 (design docs/plans/2026-10-04-nodus-evm-
+ * chain-integration-design.md rev 3 §18) — the `evm_*` read RPC. The core
+ * server (nodus_server.c dispatch_t2), the witness IPC session reader
+ * (nodus_witness_ipc.c) and the witness dispatcher
+ * (nodus_witness_handlers.c) all test THIS predicate, so a method family
+ * cannot be routed by one hop and refused by the next.
+ */
+static inline bool nodus_chain_method_routed(const char *method) {
+    if (!method) return false;
+    return (method[0] == 'd' && method[1] == 'n' && method[2] == 'a' &&
+            method[3] == 'c' && method[4] == '_') ||
+           (method[0] == 'e' && method[1] == 'v' && method[2] == 'm' &&
+            method[3] == '_');
+}
+
 /** Largest control frame either side builds (status answer ≈ 150 B). */
 #define NODUS_WITNESS_IPC_CTL_FRAME_MAX  512
 

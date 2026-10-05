@@ -261,6 +261,44 @@ int dna_ruleset_gen_digest(uint32_t generation,
     return 0;
 }
 
+/* Nodus EVM — the EVM activation vote digest (layout: domain_wire.h). */
+int dna_evm_activation_digest(uint32_t evm_generation,
+                              uint32_t base_generation,
+                              const uint8_t sys_ruleset_hash[DNA_DOM_HASH_LEN],
+                              const uint8_t core_ruleset_hash[DNA_DOM_HASH_LEN],
+                              const uint8_t evm_ruleset_hash[DNA_DOM_HASH_LEN],
+                              const uint8_t evm_manifest_hash[DNA_DOM_HASH_LEN],
+                              uint32_t spec_version,
+                              const uint64_t *consts, uint32_t n_consts,
+                              uint64_t *out) {
+    static const char tag_src[] = DNA_EVM_ACT_TAG;
+    _Static_assert(sizeof(tag_src) - 1 < TAG_LEN,
+                   "the EVM activation tag must fit 16 bytes with padding");
+    if (!sys_ruleset_hash || !core_ruleset_hash || !evm_ruleset_hash ||
+        !evm_manifest_hash || !out || n_consts > 64 ||
+        (n_consts > 0 && !consts))
+        return -1;
+    uint8_t pre[TAG_LEN + 4 + 4 + 4 * DNA_DOM_HASH_LEN + 4 + 4 + 64 * 8];
+    uint8_t *p = pre;
+    memset(p, 0, TAG_LEN);
+    memcpy(p, tag_src, sizeof(tag_src) - 1);       p += TAG_LEN;
+    put_be32(evm_generation, p);                   p += 4;
+    put_be32(base_generation, p);                  p += 4;
+    memcpy(p, sys_ruleset_hash, DNA_DOM_HASH_LEN);  p += DNA_DOM_HASH_LEN;
+    memcpy(p, core_ruleset_hash, DNA_DOM_HASH_LEN); p += DNA_DOM_HASH_LEN;
+    memcpy(p, evm_ruleset_hash, DNA_DOM_HASH_LEN);  p += DNA_DOM_HASH_LEN;
+    memcpy(p, evm_manifest_hash, DNA_DOM_HASH_LEN); p += DNA_DOM_HASH_LEN;
+    put_be32(spec_version, p);                     p += 4;
+    put_be32(n_consts, p);                         p += 4;
+    for (uint32_t i = 0; i < n_consts; i++) {
+        put_be64(consts[i], p);                    p += 8;
+    }
+    uint8_t h[DNA_DOM_HASH_LEN];
+    if (qgp_sha3_512(pre, (size_t)(p - pre), h) != 0) return -1;
+    *out = get_be64(h) & 0x7FFFFFFFFFFFFFFFULL;
+    return 0;
+}
+
 /* ══════════════════════════════════════════════════════════════════════
  * 3. DomainRegistryRecord v1
  * ════════════════════════════════════════════════════════════════════ */

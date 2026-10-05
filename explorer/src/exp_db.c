@@ -28,6 +28,7 @@ static const char *DROP_ALL_SQL =
     "DROP TABLE IF EXISTS addr_stats;"
     "DROP TABLE IF EXISTS tx_io;"
     "DROP TABLE IF EXISTS txs;"
+    "DROP TABLE IF EXISTS item_evm;"
     "DROP TABLE IF EXISTS item_names;"
     "DROP TABLE IF EXISTS item_records;"
     "DROP TABLE IF EXISTS item_io;"
@@ -105,6 +106,31 @@ static const char *SCHEMA_SQL =
     "  owner  TEXT,"                       /* NULL = first input's creator not indexed */
     "  PRIMARY KEY(height, idx)"
     ");"
+    /* Nodus EVM P4-C (exp_db.h): one row per applied EVM item. Created IF NOT
+     * EXISTS on every open — an existing v2 index gains it unchanged (the
+     * item_names rule). */
+    "CREATE TABLE IF NOT EXISTS item_evm ("
+    "  height        INTEGER NOT NULL,"
+    "  idx           INTEGER NOT NULL,"
+    "  status        INTEGER NOT NULL,"
+    "  gas_used      INTEGER NOT NULL,"
+    "  sender        BLOB NOT NULL,"      /* 32 */
+    "  target        BLOB,"               /* 32, CALL only */
+    "  created       BLOB,"               /* 32, successful CREATE only */
+    "  value_wei     BLOB,"               /* 32 BE, CALL / CREATE only */
+    "  dest          TEXT,"               /* fp, WITHDRAW / REDEEM only */
+    "  n_logs        INTEGER NOT NULL,"
+    "  tickets       BLOB,"               /* n × 64, NULL = none */
+    "  tickets_more  INTEGER NOT NULL,"
+    "  wei_destroyed BLOB NOT NULL,"      /* 32 BE */
+    "  digest        BLOB NOT NULL,"      /* 64 */
+    "  reserve_in    INTEGER NOT NULL,"
+    "  reserve_out   INTEGER NOT NULL,"
+    "  PRIMARY KEY(height, idx)"
+    ");"
+    "CREATE INDEX IF NOT EXISTS idx_evm_sender ON item_evm(sender);"
+    "CREATE INDEX IF NOT EXISTS idx_evm_target ON item_evm(target);"
+    "CREATE INDEX IF NOT EXISTS idx_evm_created ON item_evm(created);"
     "CREATE INDEX IF NOT EXISTS idx_blocks_id ON blocks(block_id);"
     /* /api/tps: covering — the time-span aggregates read the index only */
     "CREATE INDEX IF NOT EXISTS idx_blocks_time ON blocks(time_ms, applied_count);"
@@ -140,6 +166,19 @@ static const char *INSERT_IO_SQL =
 static const char *INSERT_NAME_SQL =
     "INSERT INTO item_names (height, idx, name, price, owner) VALUES (?1, ?2, ?3, ?4, "
     "(SELECT address FROM item_io WHERE height = ?1 AND idx = ?2 AND dir = 0 AND pos = 0))";
+
+/* Nodus EVM P4-C: the item_evm row of an applied EVM item. */
+static const char *INSERT_EVM_SQL =
+    "INSERT INTO item_evm (height, idx, status, gas_used, sender, target, created, "
+    "value_wei, dest, n_logs, tickets, tickets_more, wei_destroyed, digest, "
+    "reserve_in, reserve_out) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+
+#define EVM_COLS \
+    "height, idx, status, gas_used, sender, target, created, value_wei, dest, " \
+    "n_logs, tickets, tickets_more, wei_destroyed, digest, reserve_in, reserve_out"
+
+static const char *QUERY_ITEM_EVM_SQL =
+    "SELECT " EVM_COLS " FROM item_evm WHERE height = ? AND idx = ?";
 
 /* The creating row of a coin. A coin id is created once (the utxo_set
  * key); ORDER BY + LIMIT 1 keeps a (never expected) duplicate
@@ -216,6 +255,24 @@ static const char *QUERY_ADDRESS_SQL =
     "WHERE i.height < ?2 OR (i.height = ?2 AND i.idx < ?3) "
     "ORDER BY i.height DESC, i.idx DESC LIMIT ?4";
 
+/* Nodus EVM P4-C: items whose EVM row names a 32-byte address (sender, CALL
+ * target or created contract) — each column has its own index; UNION
+ * de-duplicates an item naming it twice. */
+static const char *QUERY_EVM_ADDRESS_SQL =
+    "SELECT " ITEM_COLS " FROM ("
+    "  SELECT height, idx FROM item_evm WHERE sender = ?1 "
+    "  UNION SELECT height, idx FROM item_evm WHERE target = ?1 "
+    "  UNION SELECT height, idx FROM item_evm WHERE created = ?1"
+    ") t JOIN items i ON i.height = t.height AND i.idx = t.idx "
+    ITEM_JOINS
+    "WHERE i.height < ?2 OR (i.height = ?2 AND i.idx < ?3) "
+    "ORDER BY i.height DESC, i.idx DESC LIMIT ?4";
+
+static const char *QUERY_EVM_CREATION_SQL =
+    "SELECT " ITEM_COLS " FROM item_evm e JOIN items i ON i.height = e.height "
+    "AND i.idx = e.idx " ITEM_JOINS
+    "WHERE e.created = ?1 ORDER BY i.height ASC, i.idx ASC LIMIT 1";
+
 /* /api/tps: blocks and applied transactions with a block time in
  * (?1, ?2] — a range scan of idx_blocks_time. */
 static const char *QUERY_TPS_SPAN_SQL =
@@ -260,6 +317,10 @@ struct exp_db {
     sqlite3_stmt *stmt_query_tps_span;
     sqlite3_stmt *stmt_query_tps_hours;
     sqlite3_stmt *stmt_query_pace_heights;
+    sqlite3_stmt *stmt_insert_evm;
+    sqlite3_stmt *stmt_query_item_evm;
+    sqlite3_stmt *stmt_query_evm_address;
+    sqlite3_stmt *stmt_query_evm_creation;
 };
 
 /* ── Batch ───────────────────────────────────────────────────────────── */
@@ -273,6 +334,7 @@ void exp_block_batch_free(exp_block_batch_t *b) {
     if (!b) return;
     free(b->items);
     free(b->ios);
+    free(b->evms);
     memset(b, 0, sizeof(*b));
 }
 
@@ -507,7 +569,11 @@ int exp_db_open(const char *path, exp_db_t **db_out) {
         sqlite3_prepare_v2(db->conn, QUERY_ADDRESS_SQL, -1, &db->stmt_query_address, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, QUERY_TPS_SPAN_SQL, -1, &db->stmt_query_tps_span, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db->conn, QUERY_TPS_HOURS_SQL, -1, &db->stmt_query_tps_hours, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(db->conn, QUERY_PACE_HEIGHTS_SQL, -1, &db->stmt_query_pace_heights, NULL) != SQLITE_OK) {
+        sqlite3_prepare_v2(db->conn, QUERY_PACE_HEIGHTS_SQL, -1, &db->stmt_query_pace_heights, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db->conn, INSERT_EVM_SQL, -1, &db->stmt_insert_evm, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db->conn, QUERY_ITEM_EVM_SQL, -1, &db->stmt_query_item_evm, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db->conn, QUERY_EVM_ADDRESS_SQL, -1, &db->stmt_query_evm_address, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db->conn, QUERY_EVM_CREATION_SQL, -1, &db->stmt_query_evm_creation, NULL) != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "prepare failed: %s", sqlite3_errmsg(db->conn));
         exp_db_close(db);
         return -1;
@@ -529,6 +595,8 @@ void exp_db_close(exp_db_t *db) {
         db->stmt_query_item_by_name, db->stmt_query_records_by_kind,
         db->stmt_query_ios, db->stmt_query_address,
         db->stmt_query_tps_span, db->stmt_query_tps_hours, db->stmt_query_pace_heights,
+        db->stmt_insert_evm, db->stmt_query_item_evm, db->stmt_query_evm_address,
+        db->stmt_query_evm_creation,
     };
     for (size_t i = 0; i < sizeof(stmts) / sizeof(stmts[0]); i++) {
         if (stmts[i]) sqlite3_finalize(stmts[i]);
@@ -575,6 +643,19 @@ static int batch_valid(const exp_block_batch_t *b) {
                           (io->idx == p->idx && io->dir == p->dir && io->pos > p->pos);
             if (!ordered) return 0;
         }
+    }
+    /* Nodus EVM: one row per applied item, idx strictly ascending, bounded */
+    if (b->n_evms > 0 && !b->evms) return 0;
+    for (size_t k = 0; k < b->n_evms; k++) {
+        const exp_evm_row_t *e = &b->evms[k];
+        if (e->height != b->block.height || e->idx >= b->n_items) return 0;
+        if (!b->items[e->idx].has_effects || b->items[e->idx].code != 0) return 0;
+        if (k > 0 && e->idx <= b->evms[k - 1].idx) return 0;
+        if (e->n_tickets > EXP_EVM_MAX_TICKETS) return 0;
+        if (memchr(e->dest, '\0', sizeof(e->dest)) == NULL) return 0;
+        if (e->reserve_in > (uint64_t)INT64_MAX || e->reserve_out > (uint64_t)INT64_MAX ||
+            e->gas_used > (uint64_t)INT64_MAX)
+            return 0;
     }
     return 1;
 }
@@ -700,6 +781,35 @@ static int insert_name(exp_db_t *db, const exp_item_row_t *it) {
     return step_done(db, s, "insert item_names");
 }
 
+/* Nodus EVM P4-C: the item_evm row of an applied EVM item. */
+static int insert_evm(exp_db_t *db, const exp_evm_row_t *e) {
+    sqlite3_stmt *s = db->stmt_insert_evm;
+    sqlite3_reset(s);
+    sqlite3_bind_int64(s, 1, (sqlite3_int64)e->height);
+    sqlite3_bind_int64(s, 2, (sqlite3_int64)e->idx);
+    sqlite3_bind_int(s, 3, e->status);
+    sqlite3_bind_int64(s, 4, (sqlite3_int64)e->gas_used);
+    sqlite3_bind_blob(s, 5, e->sender, 32, SQLITE_STATIC);
+    if (e->has_target) sqlite3_bind_blob(s, 6, e->target, 32, SQLITE_STATIC);
+    else sqlite3_bind_null(s, 6);
+    if (e->has_created) sqlite3_bind_blob(s, 7, e->created, 32, SQLITE_STATIC);
+    else sqlite3_bind_null(s, 7);
+    if (e->has_value) sqlite3_bind_blob(s, 8, e->value_wei, 32, SQLITE_STATIC);
+    else sqlite3_bind_null(s, 8);
+    bind_text_or_null(s, 9, e->dest);
+    sqlite3_bind_int64(s, 10, (sqlite3_int64)e->n_logs);
+    if (e->n_tickets > 0)
+        sqlite3_bind_blob(s, 11, e->tickets, (int)(e->n_tickets * 64u), SQLITE_STATIC);
+    else
+        sqlite3_bind_null(s, 11);
+    sqlite3_bind_int(s, 12, e->tickets_more ? 1 : 0);
+    sqlite3_bind_blob(s, 13, e->wei_destroyed, 32, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 14, e->digest, 64, SQLITE_STATIC);
+    sqlite3_bind_int64(s, 15, (sqlite3_int64)e->reserve_in);
+    sqlite3_bind_int64(s, 16, (sqlite3_int64)e->reserve_out);
+    return step_done(db, s, "insert item_evm");
+}
+
 int exp_db_write_height(exp_db_t *db, const exp_block_batch_t *b) {
     if (!db || !db->conn || !b) return -1;
     if (!batch_valid(b)) {
@@ -744,7 +854,7 @@ int exp_db_write_height(exp_db_t *db, const exp_block_batch_t *b) {
     /* Items, then each item's io rows in batch order (grouped by item,
      * consumed before created) — so a consumption in item j resolves a
      * creation in item i < j of this same block. */
-    size_t k = 0;
+    size_t k = 0, ke = 0;
     for (size_t i = 0; i < b->n_items; i++) {
         if (insert_item(db, &b->items[i]) != 0) goto fail;
         while (k < b->n_ios && b->ios[k].idx == (uint32_t)i) {
@@ -752,8 +862,12 @@ int exp_db_write_height(exp_db_t *db, const exp_block_batch_t *b) {
             k++;
         }
         if (b->items[i].name[0] && insert_name(db, &b->items[i]) != 0) goto fail;
+        if (ke < b->n_evms && b->evms[ke].idx == (uint32_t)i) {
+            if (insert_evm(db, &b->evms[ke]) != 0) goto fail;
+            ke++;
+        }
     }
-    if (k != b->n_ios) goto fail;   /* unreachable after batch_valid */
+    if (k != b->n_ios || ke != b->n_evms) goto fail;   /* unreachable after batch_valid */
 
     if (exp_db_set_meta_u64(db, "last_indexed_height", bl->height) != 0) goto fail;
 
@@ -901,6 +1015,10 @@ int exp_db_verify_index(exp_db_t *db) {
           " AND i.code = 0 AND i.has_effects = 1)" },
         { "chain name registered twice",
           "SELECT COUNT(*) FROM (SELECT name FROM item_names GROUP BY name HAVING COUNT(*) > 1)" },
+        { "EVM row without an applied item",
+          "SELECT COUNT(*) FROM item_evm e WHERE NOT EXISTS "
+          "(SELECT 1 FROM items i WHERE i.height = e.height AND i.idx = e.idx "
+          " AND i.code = 0 AND i.has_effects = 1)" },
     };
 
     for (size_t c = 0; c < sizeof(checks) / sizeof(checks[0]); c++) {
@@ -1084,6 +1202,102 @@ int exp_db_query_address(exp_db_t *db, const char *fp,
     sqlite3_bind_int64(s, 3, (sqlite3_int64)before_idx);
     sqlite3_bind_int(s, 4, limit);
     return query_items_list(db, s, limit, rows, count_out, "query_address");
+}
+
+/* ── Nodus EVM (item_evm) ───────────────────────────────────────────────── */
+
+static int col_blob32(sqlite3_stmt *s, int col, uint8_t out[32]) {
+    const void *p = sqlite3_column_blob(s, col);
+    if (p && sqlite3_column_bytes(s, col) == 32) {
+        memcpy(out, p, 32);
+        return 1;
+    }
+    return 0;
+}
+
+/* The EVM_COLS projection (16 columns). @return 0 / -1 a malformed row. */
+static int row_to_evm(sqlite3_stmt *s, exp_evm_row_t *e) {
+    memset(e, 0, sizeof(*e));
+    e->height = (uint64_t)sqlite3_column_int64(s, 0);
+    e->idx = (uint32_t)sqlite3_column_int64(s, 1);
+    e->status = sqlite3_column_int(s, 2);
+    e->gas_used = (uint64_t)sqlite3_column_int64(s, 3);
+    if (!col_blob32(s, 4, e->sender)) return -1;
+    e->has_target = col_blob32(s, 5, e->target);
+    e->has_created = col_blob32(s, 6, e->created);
+    e->has_value = col_blob32(s, 7, e->value_wei);
+    col_text129(s, 8, e->dest);
+    e->n_logs = (uint32_t)sqlite3_column_int64(s, 9);
+    if (sqlite3_column_type(s, 10) != SQLITE_NULL) {
+        const void *p = sqlite3_column_blob(s, 10);
+        int n = sqlite3_column_bytes(s, 10);
+        if (!p || n <= 0 || n % 64 != 0 || n / 64 > EXP_EVM_MAX_TICKETS) return -1;
+        memcpy(e->tickets, p, (size_t)n);
+        e->n_tickets = (uint32_t)(n / 64);
+    }
+    e->tickets_more = sqlite3_column_int(s, 11);
+    if (!col_blob32(s, 12, e->wei_destroyed)) return -1;
+    if (!col_blob64(s, 13, e->digest)) return -1;
+    e->reserve_in = (uint64_t)sqlite3_column_int64(s, 14);
+    e->reserve_out = (uint64_t)sqlite3_column_int64(s, 15);
+    return 0;
+}
+
+int exp_db_query_item_evm(exp_db_t *db, uint64_t height, uint32_t idx,
+                          exp_evm_row_t *out) {
+    if (!db || !db->conn || !out) return -1;
+    sqlite3_stmt *s = db->stmt_query_item_evm;
+    sqlite3_reset(s);
+    sqlite3_bind_int64(s, 1, clamp_cursor(height));
+    sqlite3_bind_int64(s, 2, (sqlite3_int64)idx);
+    int rc;
+    int st = sqlite3_step(s);
+    if (st == SQLITE_DONE) {
+        rc = 0;
+    } else if (st == SQLITE_ROW) {
+        rc = row_to_evm(s, out) == 0 ? 1 : -1;
+        if (rc < 0) QGP_LOG_ERROR(LOG_TAG, "item_evm (%llu, %u) is malformed",
+                                  (unsigned long long)height, (unsigned)idx);
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "query_item_evm step failed: %s", sqlite3_errmsg(db->conn));
+        rc = -1;
+    }
+    sqlite3_reset(s);
+    return rc;
+}
+
+int exp_db_query_evm_address(exp_db_t *db, const uint8_t addr[32],
+                             uint64_t before_height, uint32_t before_idx,
+                             int limit, exp_item_row_t *rows, int *count_out) {
+    if (!db || !db->conn || !addr || !rows || !count_out || limit <= 0) return -1;
+    sqlite3_stmt *s = db->stmt_query_evm_address;
+    sqlite3_reset(s);
+    sqlite3_bind_blob(s, 1, addr, 32, SQLITE_STATIC);
+    sqlite3_bind_int64(s, 2, clamp_cursor(before_height));
+    sqlite3_bind_int64(s, 3, (sqlite3_int64)before_idx);
+    sqlite3_bind_int(s, 4, limit);
+    return query_items_list(db, s, limit, rows, count_out, "query_evm_address");
+}
+
+int exp_db_query_evm_creation(exp_db_t *db, const uint8_t addr[32],
+                              exp_item_row_t *out) {
+    if (!db || !db->conn || !addr || !out) return -1;
+    sqlite3_stmt *s = db->stmt_query_evm_creation;
+    sqlite3_reset(s);
+    sqlite3_bind_blob(s, 1, addr, 32, SQLITE_STATIC);
+    int rc;
+    int st = sqlite3_step(s);
+    if (st == SQLITE_ROW) {
+        row_to_item(s, out);
+        rc = 1;
+    } else if (st == SQLITE_DONE) {
+        rc = 0;
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "query_evm_creation step failed: %s", sqlite3_errmsg(db->conn));
+        rc = -1;
+    }
+    sqlite3_reset(s);
+    return rc;
 }
 
 /* ── Throughput (/api/tps) ──────────────────────────────────────────── */

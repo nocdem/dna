@@ -658,7 +658,50 @@ typedef enum {
                                           *   DNAC_NAME_PRICE_6P_DEFAULT
                                           *   (decision item 10: 1
                                           *   NODUS). */
-    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_NAME_PRICE_6P
+    DNAC_CFG_EVM_ACTIVE            = 14, /**< Nodus EVM (design docs/plans/
+                                          *   2026-10-04-nodus-evm-chain-
+                                          *   integration-design.md rev
+                                          *   3 §9): the EVM activation
+                                          *   vote. Its effective_block
+                                          *   H is the first block
+                                          *   judged under the compiled
+                                          *   EVM generation; at the
+                                          *   end of block H-1 the
+                                          *   engine (phase 6b'')
+                                          *   registers the EVM domain
+                                          *   ACTIVE and switches SYSTEM
+                                          *   / CORE to that generation.
+                                          *   Value domain EXACTLY
+                                          *   DNAC_CFG_EVM_ACTIVE_D.
+                                          *   Single use; HF-2 and HF-3
+                                          *   active, a non-zero param-5
+                                          *   row active, the registry
+                                          *   at the EVM base generation,
+                                          *   H-1 not an epoch boundary
+                                          *   (witness-side stateful
+                                          *   rules). Grace class SAFETY
+                                          *   (design §9: a new domain).
+                                          *   NEXT FREE id in this tree —
+                                          *   renumber at merge if
+                                          *   another hard fork took it. */
+    DNAC_CFG_EVM_BLOCK_GAS_LIMIT   = 15, /**< Nodus EVM (design §8, §10): the
+                                          *   EVM BLOCK GAS LIMIT — the
+                                          *   bound on the summed
+                                          *   DECLARED gas of a block's
+                                          *   EVM legs (bridge ops count
+                                          *   NODUS_RT_EVM_BRIDGE_GAS),
+                                          *   and the block environment's
+                                          *   GASLIMIT. Read at the
+                                          *   block's height while the
+                                          *   EVM domain is ACTIVE; no
+                                          *   row = DNAC_EVM_BLOCK_GAS_
+                                          *   LIMIT_DEFAULT. Range
+                                          *   [DNAC_CFG_MIN_EVM_BLOCK_
+                                          *   GAS, DNAC_CFG_MAX_EVM_
+                                          *   BLOCK_GAS]; grace SAFETY.
+                                          *   NEXT FREE id in this
+                                          *   tree. */
+    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_EVM_BLOCK_GAS_LIMIT
 } dnac_chain_config_param_id_t;
 
 /** The chain-config parameters the RUNNING consensus reads — the one list
@@ -699,6 +742,14 @@ typedef enum {
  *      by nodus_chain_config_stateful_rules until generation 2 judges
  *      the vote (design §1.2: "refused unless the judging runtime is
  *      gen >= 2").
+ *    - EVM_ACTIVE (14, Nodus EVM): nodus_witness_v2_apply.c phase 6b'' (the
+ *      edge trigger that registers the EVM domain and switches SYSTEM /
+ *      CORE to the EVM generation at the end of block H-1) and the
+ *      engine's "any param-14 row" read (the single-use rule);
+ *    - EVM_BLOCK_GAS_LIMIT (15, Nodus EVM): nodus_witness_v2_apply.c
+ *      block_ctx_from_doms (the block gas sum of Prepare / Process /
+ *      FinalizeBlock and the EVM block environment's GASLIMIT), read only
+ *      while the EVM domain is ACTIVE.
  *  No other governed id has a reader: 1 and 3 are RETIRED (above), and 2
  *  (BLOCK_INTERVAL_SEC) is not read on this lane.
  *
@@ -722,7 +773,9 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
            param_id == (uint8_t)DNAC_CFG_NAME_PRICE_3P ||
            param_id == (uint8_t)DNAC_CFG_NAME_PRICE_4P ||
            param_id == (uint8_t)DNAC_CFG_NAME_PRICE_5P ||
-           param_id == (uint8_t)DNAC_CFG_NAME_PRICE_6P;
+           param_id == (uint8_t)DNAC_CFG_NAME_PRICE_6P ||
+           param_id == (uint8_t)DNAC_CFG_EVM_ACTIVE ||
+           param_id == (uint8_t)DNAC_CFG_EVM_BLOCK_GAS_LIMIT;
 }
 
 /** Value range bounds — consensus-critical (client + witness reject out-of-range).
@@ -920,9 +973,49 @@ static inline uint64_t dnac_name_price_for_len(const uint64_t p[4],
     return m;
 }
 
+/** Nodus EVM — the EVM activation procedure version (design §9): names WHAT
+ *  phase 6b'' does at the end of block H-1 (register the EVM domain
+ *  ACTIVE with no head, manifest genesis root = the empty EVM root; switch
+ *  SYSTEM and CORE from the base generation to the EVM generation; 6c
+ *  then activates the EVM domain through head_activate). Hashed into
+ *  DNAC_CFG_EVM_ACTIVE_D; any change to the procedure bumps it. */
+#define DNAC_EVM_ACTIVATION_SPEC_VERSION    1u
+
+/** EVM_ACTIVE value domain (Nodus EVM, param_id 14): EXACTLY this literal.
+ *
+ *  D = the first 8 bytes, big-endian, of dna_evm_activation_digest
+ *  (shared/dnac/domain_wire.h) over the EVM generation (number and base),
+ *  its SYSTEM / CORE / EVM ruleset hashes, the EVM manifest hash, this
+ *  spec version and the compiled EVM constants
+ *  (nodus_witness_runtime.c evm_act_consts), top bit cleared.
+ *
+ *  ⚠ SELF-DERIVED BY THE IMPLEMENTING AGENT (shared/dnac/tests/
+ *  nodus_evm_activation_oracle.py, built on ruleset_desc_oracle.py's helpers
+ *  whose control legs reproduce the shipped pins first) — NOT an
+ *  independent pin. An agent that has not read this C must re-derive it
+ *  before any vote. nodus_witness_runtime_selfcheck re-derives it
+ *  through the C encoder on every start of an EVM-enabled build (a node
+ *  whose tables disagree refuses to start). The same literal is the client
+ *  mirror's (dnac/src/transaction/verify.c). */
+#define DNAC_CFG_EVM_ACTIVE_D               0x5a10af78d85302e6ULL /* E7 of shared/dnac/tests/nodus_evm_activation_oracle.py (6489879996601139942) — SELF-DERIVED */
+
+/** EVM_BLOCK_GAS_LIMIT (Nodus EVM, param_id 15): the no-row value and the
+ *  votable range, both inclusive. VALUES PENDING THE MEASUREMENT GATE
+ *  (design §8 "Faz 3 kapısı", §15 item 3): placeholders chosen so the
+ *  largest single leg (NODUS_RT_EVM_TX_GAS_CAP = 30 000 000) fits the
+ *  default; the operator picks the voted value from the measurement. */
+#define DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT    30000000ULL
+#define DNAC_CFG_MIN_EVM_BLOCK_GAS          1000000ULL
+#define DNAC_CFG_MAX_EVM_BLOCK_GAS          1000000000ULL
+
 #ifndef __cplusplus
 _Static_assert(DNAC_CFG_RULESET_GEN2_D2 <= 0x7FFFFFFFFFFFFFFFULL,
                "D2 must fit SQLite int64 (top bit cleared by construction)");
+_Static_assert(DNAC_CFG_EVM_ACTIVE_D <= 0x7FFFFFFFFFFFFFFFULL,
+               "the EVM_ACTIVE literal must fit SQLite int64");
+_Static_assert(DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT >= DNAC_CFG_MIN_EVM_BLOCK_GAS &&
+               DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT <= DNAC_CFG_MAX_EVM_BLOCK_GAS,
+               "the EVM block gas default must be a votable value");
 _Static_assert(DNAC_NAME_PRICE_3P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&
                DNAC_NAME_PRICE_3P_DEFAULT <= DNAC_CFG_MAX_NAME_PRICE &&
                DNAC_NAME_PRICE_4P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&

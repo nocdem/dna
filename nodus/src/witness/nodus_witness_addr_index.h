@@ -89,7 +89,18 @@
  *                                  spend_in, c.amount, c.token, peer =
  *                                  payer)
  *   CORE BURN                      → (payer, burn, burn_amount, native)
- *   SYSTEM STAKE                   → (validator, stake, bond)
+ *   CORE EVMFUND (Nodus EVM)            → the change outputs by the coin rules
+ *                                  above; RELEASE (WITHDRAW / REDEEM): the
+ *                                  release coin (the describer's LAST
+ *                                  created coin) → (recipient, release,
+ *                                  amount, native), even when the
+ *                                  recipient is a signer — its value
+ *                                  leaves the EVM reserve, not the payer.
+ *                                  DEPOSIT's locked amount writes NO row
+ *                                  (no kind names a reserve lock; only
+ *                                  the fee row shows the item)
+ *   EVM leg (domain 2)             → no row (no native coin moves)
+ *   SYSTEM STAKE                  → (validator, stake, bond)
  *          DELEGATE / UNDELEGATE   → (delegator, delegate|undelegate,
  *                                  amount, peer = validator)
  *          UNSTAKE                 → (validator, unstake, 0)

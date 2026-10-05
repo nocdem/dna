@@ -1270,7 +1270,11 @@ int nodus_dnac_cc_collect_decode(const uint8_t *raw, size_t raw_len,
  *     "f"  u64     declared fee (an envelope that decodes)
  *     "op" tstr    "spend" "burn" "token_create" "sysfund" "stake"
  *                  "delegate" "unstake" "undelegate" "validator_update"
- *                  "chain_config" "claim" "name_register" (HF-4) —
+ *                  "chain_config" "claim" "name_register" (HF-4)
+ *                  "evm_call" "evm_create" "evm_deposit" "evm_withdraw"
+ *                  "evm_redeem" (Nodus EVM — named by the EVM leg's runtime op
+ *                  1..5 of an [CORE EVMFUND] + [EVM op] envelope; an
+ *                  older client shows them as unknown names) —
  *                  absent when unnamed
  *     EFFECTS — present on APPLIED items only (a refused item has none):
  *     "sp" array   consumed coin ids (bstr64), call order
@@ -1285,6 +1289,39 @@ int nodus_dnac_cc_collect_decode(const uint8_t *raw, size_t raw_len,
  *                  skips it): the registered name, 3..36 of a-z0-9
  *     "pr" u64     HF-4 NAME_REGISTER only (OPTIONAL): the price paid
  *                  into the reward pool — NOT a burn, never in "bu"
+ *     Nodus EVM (OPTIONAL keys — an older decoder skips them; design
+ *     docs/plans/2026-10-04-nodus-evm-chain-integration-design.md §2, §5, §7).
+ *     An EVM envelope's "sp"/"cr" are its CORE EVMFUND leg's: the funding
+ *     coins consumed, the change created and — WITHDRAW / REDEEM — the
+ *     release coin LAST (owner = the recipient, unlocked). The CORE EVM
+ *     reserve move, raw units, present only when non-zero:
+ *     "ri" u64     DEPOSIT: raw units locked INTO the reserve
+ *     "ro" u64     WITHDRAW / REDEEM: raw units paid OUT of the reserve
+ *                  (the release coin's amount)
+ *     "ev" map     an APPLIED EVM item's facts — every field read from the
+ *                  STORED receipt (evm_receipts, the §7 bytes, decoded by
+ *                  dna_evm_rcpt_decode; its SHA3-512 checked against the
+ *                  stored row's digest AND the block's committed
+ *                  ExecTxResult.Data) and from the decoded call
+ *                  (dna_evm_call_decode); nothing is executed. A refused
+ *                  item carries no "ev" (it has no receipt).
+ *        "s"   u8      status (1 success, 0 failed — a paid failure)
+ *        "gu"  u64     EVM gas used (not the ledger units)
+ *        "fr"  bstr32  EVM sender = the EVM leg's signer fingerprint
+ *                      [0..32] (nodus_rt_native_committed_signer_fp)
+ *        "to"  bstr32  CALL: the target address
+ *        "ca"  bstr32  CREATE, status 1 only: the created address
+ *        "v"   bstr32  CALL / CREATE: value in wei (big-endian)
+ *        "dst" bstr64  WITHDRAW / REDEEM: the recipient fingerprint (the
+ *                      design's 64-byte dest_fp — the "withdraw target")
+ *        "nl"  u32     number of logs the receipt holds
+ *        "tk"  array   ticket ids (bstr64) the item OPENED, receipt order,
+ *                      at most NODUS_DNAC_V3_EVM_MAX_TICKETS; absent when
+ *                      none
+ *        "tkm" bool    true = the receipt holds MORE tickets than "tk"
+ *                      carries (cut short); absent otherwise
+ *        "wd"  bstr32  wei destroyed (big-endian)
+ *        "dg"  bstr64  the receipt digest = the item's ExecTxResult.Data
  *     "rc" map     the SYSTEM record written:
  *                  {"k" u8 NODUS_DNAC_V3_REC_*,
  *                   "v" tstr128 validator fp, "d" tstr128 delegator fp,
@@ -1392,6 +1429,8 @@ int nodus_dnac_name_prices_decode(const uint8_t *raw, size_t raw_len,
 #define NODUS_DNAC_V3_ITEM_MAX_IN           15u
 #define NODUS_DNAC_V3_ITEM_MAX_OUT          17u
 #define NODUS_DNAC_V3_OP_MAX                24u
+/** Nodus EVM: ticket ids one item's "ev" carries at most ("tkm" = more). */
+#define NODUS_DNAC_V3_EVM_MAX_TICKETS       32u
 
 #define NODUS_DNAC_V3_KIND_EMPTY            0
 #define NODUS_DNAC_V3_KIND_ENVELOPE         1
@@ -1414,7 +1453,7 @@ typedef struct {
     uint64_t unlock_block;
 } nodus_dnac_v3_coin_t;
 
-/** One item of a `dnac_v3_block` page (~6 KB). */
+/** One item of a `dnac_v3_block` page (~8.5 KB). */
 typedef struct {
     uint32_t index;
     uint8_t  kind;                    /* NODUS_DNAC_V3_KIND_*             */
@@ -1447,6 +1486,29 @@ typedef struct {
      * burn, so it is not `burned`. */
     char     name[37];
     uint64_t name_price;
+    /* Nodus EVM (optional keys "ri" / "ro" / "ev", applied items only):
+     * the CORE EVM reserve move in raw units (0 = absent) and the EVM
+     * facts of the stored receipt (has_evm false = no "ev"). */
+    uint64_t reserve_in;
+    uint64_t reserve_out;
+    bool     has_evm;
+    uint8_t  evm_status;
+    uint64_t evm_gas_used;
+    uint8_t  evm_from[32];
+    bool     evm_has_to;
+    uint8_t  evm_to[32];
+    bool     evm_has_created;
+    uint8_t  evm_created[32];
+    bool     evm_has_value;
+    uint8_t  evm_value[32];
+    bool     evm_has_dest;
+    uint8_t  evm_dest[64];
+    uint32_t evm_n_logs;
+    uint8_t  evm_n_tickets;           /* entries in evm_tickets           */
+    bool     evm_tickets_more;        /* "tkm": the receipt holds more    */
+    uint8_t  evm_tickets[NODUS_DNAC_V3_EVM_MAX_TICKETS][64];
+    uint8_t  evm_wei_destroyed[32];
+    uint8_t  evm_digest[64];
 } nodus_dnac_v3_item_t;
 
 /** One `dnac_v3_block` page. `items` is heap (count entries) — free with
@@ -1773,6 +1835,192 @@ int nodus_dnac_addr_history_decode(const uint8_t *raw, size_t raw_len,
 
 /** Free a `dnac_addr_history` result's entries (NULL-safe; zeroed). */
 void nodus_client_free_addr_history_result(nodus_dnac_addr_history_result_t *result);
+
+/* ── Nodus EVM §18 — the EVM read RPC (design docs/plans/2026-10-04-nodus-evm-
+ *    chain-integration-design.md rev 3 §18; the node side and its exact
+ *    key list: nodus_witness_handlers.c "Nodus EVM §18") ─────────────────────
+ *
+ * Every answer is ONE node's COMMITTED tip state, read-only. "h" is the
+ * committed tip, except a receipt's and a log's, which carry their
+ * INCLUSION height. A node whose EVM domain is not active answers
+ * NODUS_ERR_NOT_FOUND; a node too old to know the method answers
+ * NODUS_ERR_PROTOCOL_ERROR ("unknown DNAC method") — fail closed.
+ *
+ * Every typed reader below is STRICT (the v3d discipline of this file):
+ * every documented key required and typed, a duplicate key refused, an
+ * unknown key skipped by a walker that refuses truncation. */
+
+#define NODUS_EVM_LOGS_MAX_LIMIT  1000u    /* evm_logs lim                */
+#define NODUS_EVM_LOGS_MAX_SPAN   10000u   /* th - fh < this              */
+
+/**
+ * The GENERIC §18 call: `method` (any evm_* name) with `n_args` key/value
+ * pairs already CBOR-encoded in `args` (`args_len` bytes: the map's
+ * ENTRIES, without the map header). On 0, *reply_out is a heap copy of
+ * the reply's "r" value — one complete CBOR map (free()); the caller
+ * decodes it. The web wallet's evmQuery uses this.
+ * @return 0; the NODUS_ERR_* the node answered; NODUS_ERR_TIMEOUT;
+ *         NODUS_ERR_PROTOCOL_ERROR for a reply without an "r" map; -1 on
+ *         invalid arguments / encode / transport failure.
+ */
+int nodus_client_dnac_query_raw(nodus_client_t *client, const char *method,
+                                const uint8_t *args, size_t args_len,
+                                size_t n_args, uint8_t **reply_out,
+                                size_t *reply_len_out);
+
+typedef struct {
+    uint64_t nonce;
+    uint8_t  balance_wei[32];          /* big-endian                      */
+    uint8_t  code_hash[32];            /* keccak256(code)                 */
+    uint32_t code_size;
+    uint64_t height;                   /* the committed tip               */
+} nodus_evm_account_t;
+
+/** evm_account. Same returns as nodus_client_dnac_query_raw. */
+int nodus_client_evm_account(nodus_client_t *client, const uint8_t addr[32],
+                             nodus_evm_account_t *out);
+
+/** evm_code: *code_out heap (NULL when the account has no code; free()). */
+int nodus_client_evm_code(nodus_client_t *client, const uint8_t addr[32],
+                          uint8_t **code_out, size_t *code_len_out,
+                          uint64_t *height_out);
+
+/** evm_storage: the 32-byte slot value (zero = no row). */
+int nodus_client_evm_storage(nodus_client_t *client, const uint8_t addr[32],
+                             const uint8_t key[32], uint8_t value_out[32],
+                             uint64_t *height_out);
+
+typedef struct {
+    const uint8_t *from;               /* 32: the EVM sender              */
+    const uint8_t *to;                 /* 32, NULL = CREATE               */
+    const uint8_t *value;              /* 32 BE wei, NULL = none          */
+    const uint8_t *data;               /* call data / initcode            */
+    size_t         data_len;
+    uint64_t       gas;                /* 0 = the node's per-tx gas cap   */
+} nodus_evm_call_req_t;
+
+typedef struct {
+    int      success;                  /* "s"                             */
+    uint8_t *output;                   /* "o", heap (return / revert data)*/
+    size_t   output_len;
+    uint64_t gas_used;                 /* "gu"                            */
+    uint64_t height;                   /* "h"                             */
+    /* evm_estimate only */
+    uint64_t gas_limit;                /* "ge" suggested gas_limit        */
+    uint64_t units;                    /* "ue" suggested res_max_total_
+                                        * units (the REFERENCE shape —
+                                        * client/nodus_v2_evm.h "UNITS")  */
+    uint64_t fee;                      /* "fe" suggested fee, raw units   */
+} nodus_evm_call_res_t;
+
+/** evm_call / evm_estimate. Free with nodus_evm_call_res_free. A call the
+ *  node refuses before execution comes back as NODUS_ERR_PROTOCOL_ERROR
+ *  (never as success = 0). */
+int nodus_client_evm_call(nodus_client_t *client,
+                          const nodus_evm_call_req_t *req,
+                          nodus_evm_call_res_t *out);
+int nodus_client_evm_estimate(nodus_client_t *client,
+                              const nodus_evm_call_req_t *req,
+                              nodus_evm_call_res_t *out);
+void nodus_evm_call_res_free(nodus_evm_call_res_t *r);
+
+typedef struct {
+    uint8_t  addr[32];
+    uint8_t  n_topics;
+    uint8_t  topics[4][32];
+    uint8_t *data;                     /* heap                            */
+    size_t   data_len;
+    /* evm_logs only (zero inside a receipt) */
+    uint64_t height;                   /* "h" inclusion height            */
+    uint32_t item;                     /* "x" item index in that block    */
+    uint32_t log_index;                /* "li"                            */
+    uint8_t  intent_id[64];            /* "i"                             */
+} nodus_evm_log_t;
+
+typedef struct {
+    bool     found;                    /* false: the node answered {}     */
+    uint64_t height;                   /* "h" inclusion height            */
+    uint32_t item;                     /* "x"                             */
+    uint8_t  status;                   /* 1 success / 0 applied failure   */
+    uint8_t  op;                       /* EVM op 1..5                     */
+    uint64_t gas_used;                 /* "gu" EVM gas                    */
+    bool     has_created;
+    uint8_t  created[32];              /* "cr" (successful CREATE)        */
+    uint8_t *output;                   /* heap                            */
+    size_t   output_len;
+    nodus_evm_log_t *logs;             /* heap                            */
+    size_t   n_logs;
+    uint8_t  wei_destroyed[32];
+    uint8_t (*tickets)[64];            /* heap                            */
+    size_t   n_tickets;
+    uint8_t  digest[64];               /* "dg" = SHA3-512(§7 bytes) — the
+                                        * decoder re-encodes the §7 bytes
+                                        * from the fields and REFUSES a
+                                        * reply whose digest differs      */
+} nodus_evm_receipt_t;
+
+/** evm_receipt. Free with nodus_evm_receipt_free. */
+int nodus_client_evm_receipt(nodus_client_t *client,
+                             const uint8_t intent_id[64],
+                             nodus_evm_receipt_t *out);
+void nodus_evm_receipt_free(nodus_evm_receipt_t *r);
+
+/* An evm_logs CURSOR "c": the first (height, item index, log index) the
+ * node has not examined yet. x / li may be one past the u32 range. */
+typedef struct {
+    uint64_t height;
+    uint64_t item;
+    uint64_t log_index;
+} nodus_evm_logs_cursor_t;
+
+#define NODUS_EVM_LOGS_CURSOR_POS_MAX  ((uint64_t)UINT32_MAX + 1u)
+
+typedef struct {
+    uint64_t       from_height, to_height;   /* to - from < 10 000      */
+    const uint8_t *addr;                     /* 32 or NULL              */
+    const uint8_t *topic[4];                 /* 32 each or NULL         */
+    uint32_t       limit;                    /* 1..1000                 */
+    /* NULL = start at (from_height, 0, 0); else resume where a previous
+     * reply's cursor points (from_height <= cursor->height <= to_height;
+     * send the SAME from/to/addr/topics as that request) */
+    const nodus_evm_logs_cursor_t *cursor;
+} nodus_evm_logs_req_t;
+
+typedef struct {
+    nodus_evm_log_t *logs;             /* heap                            */
+    size_t           n;
+    /* more = the node stopped before to_height (the limit, its examined-
+     * row bound, its reply byte bound or its per-block work budget);
+     * then — and only then — `cursor` is where to resume. A page with
+     * more = true may hold no log at all: ask again from the cursor. */
+    bool             more;
+    bool             has_cursor;
+    nodus_evm_logs_cursor_t cursor;
+} nodus_evm_logs_res_t;
+
+/** evm_logs. Free with nodus_evm_logs_free. STRICT beyond the reader
+ *  discipline above: "c" present exactly when more is true; every log
+ *  inside [from_height, to_height], at or after the request's start
+ *  position, strictly increasing in (h, x, li), and before the returned
+ *  cursor; the cursor itself inside the range and strictly after the
+ *  request's start when the page holds a log, never before it — a reply
+ *  breaking any of these is refused (NODUS_ERR_PROTOCOL_ERROR), so a
+ *  paging loop cannot be walked backwards or skipped forward past a
+ *  returned log. */
+int nodus_client_evm_logs(nodus_client_t *client,
+                          const nodus_evm_logs_req_t *req,
+                          nodus_evm_logs_res_t *out);
+void nodus_evm_logs_free(nodus_evm_logs_res_t *r);
+
+typedef struct {
+    bool     pending;                  /* "p"                             */
+    uint64_t amount_raw;               /* "amt"                           */
+    uint8_t  dest_fp[64];              /* "dst"                           */
+} nodus_evm_ticket_t;
+
+/** evm_ticket. */
+int nodus_client_evm_ticket(nodus_client_t *client, const uint8_t id[64],
+                            nodus_evm_ticket_t *out);
 
 /**
  * Page through the full validator table on the witness (all statuses).

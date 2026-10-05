@@ -12,6 +12,7 @@
 
 #include "witness/nodus_witness_v2_env.h"
 #include "witness/nodus_witness_v2_claims.h"
+#include "witness/nodus_witness_runtime.h"   /* Nodus EVM: the block-gas share */
 #include "witness/nodus_witness_v2_apply.h"   /* R3 W4-C delta 2:
                                                * NODUS_V2_ENV_BATCH_MAX,
                                                * now derived here        */
@@ -288,6 +289,26 @@ int nodus_witness_v2_block_bytes_check(const size_t *lens, size_t n,
     return sum <= max_block_env_bytes ? 0 : -1;
 }
 
+/* Nodus EVM — contract: nodus_witness_v2_env.h. */
+uint16_t nodus_witness_v2_ctx_stream_leg(
+        const nodus_witness_v2_block_ctx_t *ctx, const dna_env_view_t *v) {
+    if (!ctx || !v || !ctx->evm_active) return 0;
+    for (uint16_t l = 0; l < v->leg_count; l++)
+        if (v->leg[l].domain_id == ctx->evm_domain_id)
+            return (uint16_t)(l + 1u);
+    return 0;
+}
+
+int nodus_witness_v2_ctx_block_gas_add(
+        const nodus_witness_v2_block_ctx_t *ctx, const dna_env_view_t *v,
+        uint64_t *sum) {
+    if (!ctx || !v || !sum) return -1;
+    if (!ctx->evm_active) return 0;            /* pre-EVM: no gas bound   */
+    uint64_t g = nodus_rt_evm_env_block_gas(v, ctx->evm_domain_id);
+    if (dna_ck_add_u64(*sum, g, sum) != 0) return -1;
+    return *sum <= ctx->evm_block_gas_limit ? 0 : -1;
+}
+
 nodus_v2_env_status_t nodus_witness_v2_env_preflight_reserve_batch(
         nodus_witness_t *w,
         uint64_t proposed_global_height,
@@ -295,6 +316,26 @@ nodus_v2_env_status_t nodus_witness_v2_env_preflight_reserve_batch(
         const dna_meter_policy_t *policy,
         dna_meter_budget_t *budget,
         int skip_byte_bound,
+        const nodus_v2_envelope_t *envs, size_t n_envs,
+        dna_env_preflight_t *out,
+        dna_meter_t *meters_out,
+        size_t *fail_index_out,
+        dna_env_preflight_status_t *pf_status_out,
+        dna_meter_status_t *meter_status_out) {
+    return nodus_witness_v2_env_preflight_reserve_batch_ex(
+        w, proposed_global_height, rulesets, n_rulesets, policy, budget,
+        skip_byte_bound, 0, 0, envs, n_envs, out, meters_out,
+        fail_index_out, pf_status_out, meter_status_out);
+}
+
+nodus_v2_env_status_t nodus_witness_v2_env_preflight_reserve_batch_ex(
+        nodus_witness_t *w,
+        uint64_t proposed_global_height,
+        const dna_env_leg_ctx_t *rulesets, size_t n_rulesets,
+        const dna_meter_policy_t *policy,
+        dna_meter_budget_t *budget,
+        int skip_byte_bound,
+        int stream_on, uint32_t stream_domain,
         const nodus_v2_envelope_t *envs, size_t n_envs,
         dna_env_preflight_t *out,
         dna_meter_t *meters_out,
@@ -390,8 +431,18 @@ nodus_v2_env_status_t nodus_witness_v2_env_preflight_reserve_batch(
      * and publishes nothing. ~1 KB automatic, no recursion. */
     dna_meter_budget_t snapshot = *budget;
     for (size_t i = 0; i < n_envs; i++) {
-        dna_meter_status_t ms = dna_meter_reserve(&meters_out[i], policy,
-                                                  &out[i].view, budget);
+        /* Nodus EVM: the streamed leg (0 = none — every envelope on a chain
+         * without an EVM domain, so this is dna_meter_reserve there) */
+        uint16_t sl = 0;
+        if (stream_on)
+            for (uint16_t l = 0; l < out[i].view.leg_count; l++)
+                if (out[i].view.leg[l].domain_id == stream_domain) {
+                    sl = (uint16_t)(l + 1u);
+                    break;
+                }
+        dna_meter_status_t ms = dna_meter_reserve_ex(&meters_out[i], policy,
+                                                     &out[i].view, budget,
+                                                     sl);
         if (ms != DNA_METER_OK) {
             QGP_LOG_ERROR(LOG_TAG, "reservation rejected at batch index "
                           "%zu (meter status %d)", i, (int)ms);

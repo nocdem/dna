@@ -110,6 +110,28 @@ int dna_v2_supply_root(uint64_t genesis_supply_raw,
     return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
 }
 
+/* Nodus EVM — the EVM generation's supply leaf (contract: ledger_roots_v2.h). */
+int dna_v2_supply_root_evm(uint64_t genesis_supply_raw,
+                           uint64_t total_minted_raw,
+                           uint64_t total_burned_raw,
+                           uint64_t reward_pool_raw,
+                           uint64_t evm_reserve_raw,
+                           uint8_t out[DNA_V2_ROOT_LEN]) {
+    static const char tag_src[] = DNA_V2_SUPPLY_TAG_EVM;
+    _Static_assert(sizeof(tag_src) - 1 < TAG_LEN,
+                   "the EVM supply tag must fit 16 bytes with padding");
+    if (!out) return -1;
+    uint8_t pre[TAG_LEN + 40];
+    memset(pre, 0, TAG_LEN);
+    memcpy(pre, tag_src, sizeof(tag_src) - 1);
+    put_be64(genesis_supply_raw, pre + TAG_LEN);
+    put_be64(total_minted_raw,   pre + TAG_LEN + 8);
+    put_be64(total_burned_raw,   pre + TAG_LEN + 16);
+    put_be64(reward_pool_raw,    pre + TAG_LEN + 24);
+    put_be64(evm_reserve_raw,    pre + TAG_LEN + 32);
+    return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
+}
+
 /* ── Generic RFC6962-style tree over already-tagged 64-byte leaves ────
  * inner = SHA3-512(node_tag ‖ L ‖ R); odd node PROMOTED (never
  * duplicated); n==1 → the leaf itself. Caller guarantees n >= 1. */

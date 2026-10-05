@@ -1,6 +1,6 @@
 # DNAC — Nodus Chain Client Library
 
-**Version:** v0.19.5 (`dnac/include/dnac/version.h`)
+**Version:** v0.20.0 (`dnac/include/dnac/version.h`)
 
 DNAC is the **client side** of **Nodus Chain** (formerly "DNA Chain") — the
 post-quantum UTXO blockchain whose coin is NODUS, a public testnet since
@@ -51,7 +51,7 @@ The chain is implemented in three layers of the monorepo:
   proposal is accepted only for a parameter the RUNNING consensus reads
   — the one list is `dnac_cfg_param_read_by_consensus`
   (`dnac/include/dnac/dnac.h`), consumed by both the witness's scalar
-  rules and this library's mirror: ids 4 and 5 at 0.20.3 (4 through 13
+  rules and this library's mirror: ids 4 and 5 at 0.20.3 (4 through 15
   today — below). Id 2
   (`BLOCK_INTERVAL_SEC`) is refused — the Comet lane's block pace is a
   compile-time node setting and never reads it — but it is NOT retired:
@@ -121,8 +121,38 @@ The chain is implemented in three layers of the monorepo:
   `dnac_name_price_for_len(p[4], len)` (the monotonic fold of the four
   tiers: 3 = max(P3..P6), 4 = max(P4..P6), 5 = max(P5, P6), 6+ = P6; 0
   outside 3..36). Nothing under `dnac/` builds a NAME_REGISTER — it is a
-  version-3 envelope (`nodus-cli name register`, `nodus/README.md`). The
-  read list is therefore ids 4 through 13), GENESIS
+  version-3 envelope (`nodus-cli name register`, `nodus/README.md`).
+  **Nodus EVM / HF-5 (dnac 0.20.0 / nodus 0.24.0, design
+  `docs/plans/2026-10-04-nodus-evm-chain-integration-design.md` rev 3 §8-§9;
+  decisions `docs/plans/decisions/2026-10-04-nodus-evm-domain.md`,
+  `2026-10-05-hf-numbering-evm-hf5.md`):** id 14 `EVM_ACTIVE`
+  (`DNAC_CFG_EVM_ACTIVE`) — the vote that registers the EVM domain and
+  switches SYSTEM / CORE to rule-set generation 3 at the end of block
+  H−1; its value domain is EXACTLY `DNAC_CFG_EVM_ACTIVE_D`
+  (`0x5a10af78d85302e6` = 6489879996601139942 — the first 8 bytes of a
+  SHA3-512 over the tag `NDS.EVMACT.v1`, the EVM generation and its base,
+  the generation-3 SYSTEM / CORE / EVM ruleset hashes, the EVM manifest
+  hash, `DNAC_EVM_ACTIVATION_SPEC_VERSION` = 1 and the compiled EVM
+  constants, top bit cleared). ⚠ That literal is SELF-DERIVED by the
+  implementing agent (`shared/dnac/tests/nodus_evm_activation_oracle.py`), not an
+  independent pin (`dnac.h` comment above the define); the validator
+  re-derives it on every start of an EVM build. SAFETY grace. Id 15
+  `EVM_BLOCK_GAS_LIMIT` (`DNAC_CFG_EVM_BLOCK_GAS_LIMIT`) — the bound on a
+  block's summed declared EVM gas and the EVM block environment's
+  GASLIMIT: range [`DNAC_CFG_MIN_EVM_BLOCK_GAS`,
+  `DNAC_CFG_MAX_EVM_BLOCK_GAS`] = [10^6, 10^9], no-row default
+  `DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT` = 30 000 000 — all three PLACEHOLDERS
+  until the measurement gate; SAFETY grace. `DNAC_CFG_PARAM_MAX_ID` 13 →
+  15. The `verify.c` mirror (`verify_chain_config_rules`, cases
+  `DNAC_CFG_EVM_ACTIVE` / `DNAC_CFG_EVM_BLOCK_GAS_LIMIT`) applies only the
+  SCALAR half — id 14 = exactly D, id 15 the range; the witness's stateful
+  rules (id 14 single use, HF-2 and HF-3 active, a non-zero gas price
+  active, the registry at generation 2, H−1 not an epoch boundary, H ≥
+  the chain's initial height + 256) need chain state this library does
+  not have. Nothing under `dnac/` builds an EVM transaction — it is a
+  version-3 envelope (`nodus-cli evm`, `nodus/README.md`; the web wallet's
+  smart-contract panel, `web-wallet/README.md` "Smart contracts").
+  The read list is therefore ids 4 through 15), GENESIS
 - **Explicit committed fee** on the wire (v2 header) with a min-fee
   gate. **Since tokenomics-v3 P2 every fee goes to the chain's REWARD
   POOL** (`supply_tracking.reward_pool`) — it is neither burned nor paid

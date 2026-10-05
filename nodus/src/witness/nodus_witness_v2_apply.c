@@ -28,6 +28,8 @@
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_roots_v2.h"
 #include "witness/nodus_witness_db.h"
+#include "witness/nodus_witness_cmt_store.h"   /* Nodus EVM §10: the tip block's
+                                                * header time (CheckTx) */
 #include "witness/nodus_witness_v2_gen.h"      /* the cometbft lane's
                                                 * chain identity: the
                                                 * STORED genesis document
@@ -48,6 +50,10 @@
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_types.h"         /* NODUS_W_BASE_TX_FEE,
                                         * NODUS_W_TOKEN_CREATE_FEE       */
+#ifdef NODUS_EVM_ENABLED
+#include "witness/nodus_witness_rt_evm.h"  /* red-team-1 F6: the per-leg
+                                        * trie batch (exec_evm_leg)      */
+#endif
 
 #include "dnac/dnac.h"                 /* DNAC_EPOCH_LENGTH (via apply.h,
                                         * kept explicit here too),
@@ -564,6 +570,9 @@ static dom_ctx_t *dom_for(dom_ctx_t *doms, size_t n, uint32_t id) {
  */
 static int env_hf3_active(nodus_witness_t *w, uint64_t height,
                           uint8_t *on, char *reason, size_t reason_size);
+static int env_evm_block_gas_limit(nodus_witness_t *w, uint64_t height,
+                                   uint64_t *out, char *reason,
+                                   size_t reason_size);
 
 static int block_ctx_from_doms(nodus_witness_t *w, uint64_t height,
                                dom_ctx_t *doms, size_t n_dom,
@@ -619,6 +628,27 @@ static int block_ctx_from_doms(nodus_witness_t *w, uint64_t height,
             (ctx->hf3_active && doms[i].man.quota_verify_cost == 0) ? 1u
                                                                     : 0u;
         ctx->budget.n_domains++;
+        /* Nodus EVM: the ONE ABI-2 (EVM) domain — the streamed leg and the
+         * block gas sum key on it; a second would be a compiled table
+         * this engine cannot meter (one streamed leg per envelope) */
+        if (doms[i].rt->runtime_abi == NODUS_DOMAIN_RUNTIME_ABI_V2) {
+            if (ctx->evm_active) return -2;
+            ctx->evm_active = 1;
+            ctx->evm_domain_id = doms[i].domain_id;
+        }
+    }
+    /* Nodus EVM: the block gas limit at this height — read ONLY while the EVM
+     * domain is ACTIVE, so a context built on any chain before the EVM
+     * edge reads nothing it did not read before */
+    if (ctx->evm_active) {
+        char why[192];
+        why[0] = '\0';
+        if (env_evm_block_gas_limit(w, height, &ctx->evm_block_gas_limit,
+                                    why, sizeof why) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "block context: %s", why);
+            memset(ctx, 0, sizeof(*ctx));
+            return -2;
+        }
     }
 
     /* THE block metering policy: the resolved SYSTEM runtime's compiled
@@ -927,6 +957,157 @@ static int env_name_prices(nodus_witness_t *w, uint64_t height,
     return 0;
 }
 
+/* Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md
+ * rev 3 §8-§10): the EVM block gas limit in force at `height` — chain_config
+ * param 15 (EVM_BLOCK_GAS_LIMIT), or the compiled
+ * DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT when no row is active. The
+ * env_token_create_fee discipline: an unreadable row, or a stored value
+ * outside the votable range (no committed row can hold one), is a node
+ * FAULT, never a default. @return 0 / -2 (reason written). */
+static int env_evm_block_gas_limit(nodus_witness_t *w, uint64_t height,
+                                   uint64_t *out, char *reason,
+                                   size_t reason_size)
+{
+    if (nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_EVM_BLOCK_GAS_LIMIT,
+                                   height, DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT,
+                                   out) < 0) {
+        V2AP_ENV_FAULT("Nodus EVM: EVM_BLOCK_GAS_LIMIT at height %llu is "
+                       "unreadable on this node",
+                       (unsigned long long)height);
+        return -2;
+    }
+    if (*out < DNAC_CFG_MIN_EVM_BLOCK_GAS ||
+        *out > DNAC_CFG_MAX_EVM_BLOCK_GAS) {
+        V2AP_ENV_FAULT("Nodus EVM: EVM_BLOCK_GAS_LIMIT at height %llu reads %llu, "
+                       "a value no committed row can hold",
+                       (unsigned long long)height,
+                       (unsigned long long)*out);
+        return -2;
+    }
+    return 0;
+}
+
+/* Nodus EVM — the engine facts of the EVM_ACTIVE vote's stateful rules
+ * (runtime.h nodus_rt_exec_ctx_t hf3_active / gas_price_on /
+ * evm_active_voted) and the EVM block gas limit, filled on EVERY ctx the
+ * engine builds (both sites — the HF-4 discipline: a hook never sees a
+ * ctx whose engine facts are partly zero). UNMETERED: none is a mediated
+ * read, so no committed block's gas_used moves. Every unreadable answer
+ * is a node FAULT. "Any param-14 row" is read at INT64_MAX (the
+ * env_ruleset_gen2_voted reasoning). @return 0 / -2. */
+static int env_evm_facts(nodus_witness_t *w, uint64_t height,
+                         nodus_rt_exec_ctx_t *ctx, char *reason,
+                         size_t reason_size)
+{
+    uint64_t price = 0, v14 = 0;
+    int      r14;
+
+    if (env_hf3_active(w, height, &ctx->hf3_active, reason,
+                       reason_size) != 0)
+        return -2;
+    if (nodus_witness_v2_gas_price_at(w, height, &price, reason,
+                                      reason_size) != 0)
+        return -2;
+    ctx->gas_price_on = (price != 0) ? 1u : 0u;
+    r14 = nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_EVM_ACTIVE,
+                                     (uint64_t)INT64_MAX, 0ULL, &v14);
+    if (r14 < 0) {
+        V2AP_ENV_FAULT("%s", "Nodus EVM: the EVM_ACTIVE history is unreadable on "
+                       "this node - refusing to judge a vote's single-use "
+                       "rule against a guess");
+        return -2;
+    }
+    ctx->evm_active_voted = (r14 == 0) ? 1u : 0u;
+    /* red-team 1 F5: the chain's first height — the once-per-open cache
+     * (nodus_witness.h v2_initial_height) on every gate-accepted handle,
+     * so no per-item document read there; the same function derives it
+     * from the document on a handle without the cache. Unreadable = FAULT
+     * like every fact here. */
+    if (nodus_witness_v2_chain_initial_height(w,
+                                              &ctx->chain_initial_height)
+            != 0) {
+        V2AP_ENV_FAULT("%s", "Nodus EVM: the chain's initial height is "
+                       "underivable on this node");
+        return -2;
+    }
+    return env_evm_block_gas_limit(w, height, &ctx->evm_block_gas_limit,
+                                   reason, reason_size);
+}
+
+/* Nodus EVM — contract: nodus_witness_v2_apply.h (the one read above). */
+int nodus_witness_v2_evm_block_gas_limit(nodus_witness_t *w, uint64_t height,
+                                         uint64_t *out,
+                                         char *reason, size_t reason_size)
+{
+    if (!w || !out) return -2;
+    return env_evm_block_gas_limit(w, height, out, reason, reason_size);
+}
+
+/* Red-team 1 F5 — contract: nodus_witness_v2_apply.h. The stored
+ * genesis DOCUMENT is the one source (never the node's oldest row): its
+ * initial_height as written, completed 0 → 1 the way the reference
+ * completes a document (types/genesis.go:79-81) — the height the chain's
+ * first block carries (nodus_witness_v2_gen.h initial_height). */
+int nodus_witness_v2_chain_initial_height(nodus_witness_t *w, uint64_t *out)
+{
+    nodus_v2_gen_config_t *cfg;
+    nodus_v2_gen_alloc_t  *allocs = NULL;
+    uint64_t               ih;
+    int                    rc;
+
+    if (!w || !w->db || !out) return -2;
+    *out = 0;
+    /* the once-per-open cache (nodus_witness.h v2_initial_height): filled
+     * by the post-open gate through THIS function from the same document,
+     * so a hit answers what the derivation below would (cache symmetry) */
+    if (w->v2_chain32_valid && w->v2_initial_height != 0) {
+        *out = w->v2_initial_height;
+        return 0;
+    }
+    cfg = calloc(1, sizeof(*cfg));                         /* ~240 KB    */
+    if (!cfg) return -2;
+    rc = nodus_witness_v2_gen_stored_doc(w, cfg, &allocs);
+    ih = cfg->initial_height;
+    free(allocs);
+    free(cfg);
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "Nodus EVM: the stored genesis document does "
+                      "not read back - the chain's initial height is "
+                      "underivable on this node");
+        return -2;
+    }
+    *out = ih == 0 ? 1u : ih;
+    return 0;
+}
+
+/* Contract: nodus_witness_v2_apply.h. */
+int nodus_witness_v2_tip_block_time(nodus_witness_t *w, uint64_t tip,
+                                    uint64_t *out_secs)
+{
+    if (!w || !w->db || !out_secs || tip == 0 ||
+        tip > (uint64_t)INT64_MAX)
+        return -1;
+    nodus_cmt_store_t      s;
+    nodus_cmt_block_meta_t *meta = calloc(1, sizeof(*meta));
+    bool                   found = false;
+    int                    ret = -1;
+    if (!meta) return -1;
+    if (nodus_cmt_store_init(&s, w->db, false) != CMT_OK) {
+        free(meta);
+        return -1;
+    }
+    if (nodus_cmt_bs_load_block_meta(&s, (int64_t)tip, meta, &found) ==
+            CMT_OK &&
+        found && meta->header.height == (int64_t)tip &&
+        meta->header.time.seconds >= 0) {
+        *out_secs = (uint64_t)meta->header.time.seconds;
+        ret = 0;
+    }
+    nodus_cmt_store_release(&s);
+    free(meta);
+    return ret;
+}
+
 /* A fault-injection point firing is a TEST harness event, not a real
  * defect — it says so in its own words rather than borrowing the words
  * of the check it stands in for. */
@@ -1056,6 +1237,37 @@ static int rt_owns_runtime_op(const nodus_domain_runtime_t *rt,
     return 0;
 }
 
+/** Nodus EVM (design §3): can this runtime execute envelope legs at all? An
+ *  ABI-1 runtime needs its exec hook, an ABI-2 runtime its exec_evm hook;
+ *  any other ABI executes nothing (fail-closed). For every ABI-1 runtime
+ *  this is exactly the `rt->exec != NULL` test it replaces. */
+static int rt_can_execute(const nodus_domain_runtime_t *rt) {
+    if (rt->runtime_abi == NODUS_DOMAIN_RUNTIME_ABI_V1)
+        return rt->exec != NULL;
+    if (rt->runtime_abi == NODUS_DOMAIN_RUNTIME_ABI_V2)
+        return rt->exec_evm != NULL;
+    return 0;
+}
+
+/** Nodus EVM: the streamed leg of an envelope for dna_meter_reserve_ex — 0
+ *  when no leg's runtime is ABI 2 (every envelope on every chain today:
+ *  no compiled production table carries an ABI-2 entry), else 1 + the
+ *  index of the FIRST such leg (env_admit_legs refuses a second one). A
+ *  leg whose domain has no resolvable runtime is not streamed; admission
+ *  refuses it anyway. */
+static uint16_t env_stream_leg(const dna_env_view_t *v, dom_ctx_t *doms,
+                               size_t n_dom) {
+    /* (Nodus EVM activation: the block context's evm_active / evm_domain_id
+     * — nodus_witness_v2_ctx_stream_leg, the seam's and the pack's — are
+     * built from the SAME doms walk, so both derive the same index.) */
+    for (uint16_t l = 0; l < v->leg_count; l++) {
+        dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
+        if (d && d->rt && d->rt->runtime_abi == NODUS_DOMAIN_RUNTIME_ABI_V2)
+            return (uint16_t)(l + 1u);
+    }
+    return 0;
+}
+
 /** Canonical mediated-read request order: op_id ascending, then key
  *  bytes lexicographic (memcmp over the common prefix; shorter first;
  *  full equality = duplicate). Mirrors the effect-wire record order so
@@ -1158,6 +1370,848 @@ static int dry_run_note_rows(nodus_v2_env_dry_run_t *dry,
     return 0;
 }
 
+/* ══ Nodus EVM: THE RUNTIME-ABI-2 LEG (design docs/plans/2026-10-04-nodus-evm-chain-
+ * integration-design.md rev 3 §3, §4, §7) ══════════════════════════════
+ *
+ * An ABI-2 runtime reads committed state WHILE it executes, through the
+ * engine-owned reader below, and hands back one canonical effect stream
+ * (or, on a failed execution, its fixed failure effects). Everything here
+ * is engine code: the runtime never sees this witness, the database or
+ * the meter. Nothing here runs on a chain without an ABI-2 runtime — the
+ * only caller is exec_one_env's ABI-2 branch, reached only for a leg whose
+ * resolved runtime has runtime_abi == NODUS_DOMAIN_RUNTIME_ABI_V2, and no
+ * compiled production table carries one in this release. */
+
+static int cmt_savepoint_release(nodus_witness_t *w, const char *name);
+
+/** One cached logical read: (op, key) → the answer, for the life of ONE
+ *  leg (design §3 I11: the overlay — and so this cache — is fresh per
+ *  leg; nothing survives into the next leg, item or block). */
+typedef struct {
+    uint32_t op;
+    uint16_t key_len;
+    uint8_t  key[DNA_EFFECT_MAX_KEY_LEN];
+    uint8_t  present;
+    uint32_t value_len;
+    uint8_t *value;                     /* heap, value_len bytes          */
+} v2rd_entry_t;
+
+/** The engine side of nodus_rt_v2_reader_t. */
+typedef struct {
+    nodus_witness_t              *w;
+    const nodus_domain_runtime_t *rt;
+    dna_meter_t                  *m;
+    uint32_t                      domain_id;
+    uint64_t                      global_height;
+    int                           vm_leg;           /* 0 only for an EVM
+                                                     * bridge op (no VM, no
+                                                     * paid failure path);
+                                                     * set from the leg's
+                                                     * domain + runtime_op
+                                                     * when the reader is
+                                                     * created           */
+    int                           gas_declared;
+    uint64_t                      gas_limit;        /* declared          */
+    uint64_t                      max_reads;        /* logical-read cap  */
+    uint64_t                      n_reads;          /* charged reads     */
+    uint64_t                      read_bytes;
+    v2rd_entry_t                **ents;             /* sorted (op, key)  */
+    size_t                        n_ents, cap_ents;
+} v2rd_ctx_t;
+
+static void v2rd_free(v2rd_ctx_t *c) {
+    for (size_t i = 0; i < c->n_ents; i++) {
+        free(c->ents[i]->value);
+        free(c->ents[i]);
+    }
+    free(c->ents);
+    c->ents = NULL;
+    c->n_ents = c->cap_ents = 0;
+}
+
+/** (op, key) order — op first, then key bytes, shorter first (the
+ *  mediated-read request order, read_req_cmp). */
+static int v2rd_cmp(uint32_t op_a, const uint8_t *ka, uint16_t la,
+                    uint32_t op_b, const uint8_t *kb, uint16_t lb) {
+    if (op_a != op_b) return op_a < op_b ? -1 : 1;
+    uint16_t mn = la < lb ? la : lb;
+    int c = mn ? memcmp(ka, kb, mn) : 0;
+    if (c != 0) return c;
+    if (la != lb) return la < lb ? -1 : 1;
+    return 0;
+}
+
+/** Binary search: *pos = the entry's index (return 1) or its insertion
+ *  point (return 0). Lookup only — what is cached never changes WHAT is
+ *  charged (design §3: one charge per logical key per leg). */
+static int v2rd_find(const v2rd_ctx_t *c, uint32_t op, const uint8_t *key,
+                     uint16_t key_len, size_t *pos) {
+    size_t lo = 0, hi = c->n_ents;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        const v2rd_entry_t *e = c->ents[mid];
+        int r = v2rd_cmp(e->op, e->key, e->key_len, op, key, key_len);
+        if (r == 0) { *pos = mid; return 1; }
+        if (r < 0) lo = mid + 1; else hi = mid;
+    }
+    *pos = lo;
+    return 0;
+}
+
+/** BLOCKHASH(n) for the block at `height` (design §3, §10): window
+ *  [H-256, H-1]; outside it present = 0; a window height whose v2_blocks
+ *  row is missing (or malformed) is a node FAULT — the reference always
+ *  holds those 256 hashes. @return 0 / -2. */
+static int v2rd_blockhash(nodus_witness_t *w, uint64_t height, uint64_t n,
+                          nodus_rt_read_res_t *res) {
+    memset(res, 0, sizeof(*res));
+    if (n >= height || height - n > 256) return 0;       /* outside      */
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT block_id FROM v2_blocks WHERE global_height = ?1",
+            -1, &st, NULL) != SQLITE_OK)
+        return -2;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)n);
+    int rc = sqlite3_step(st);
+    int ret = -2;
+    if (rc == SQLITE_ROW && sqlite3_column_bytes(st, 0) >= 32 &&
+        sqlite3_column_blob(st, 0)) {
+        memcpy(res->value, sqlite3_column_blob(st, 0), 32);
+        res->present = 1;
+        res->value_len = 32;
+        ret = 0;
+    } else if (rc == SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Nodus EVM BLOCKHASH: height %llu is inside the "
+                      "256-block window of %llu but has no v2_blocks row",
+                      (unsigned long long)n, (unsigned long long)height);
+    }
+    sqlite3_finalize(st);
+    return ret;
+}
+
+/* Nodus EVM — contract: nodus_witness_v2_apply.h (the §18 RPC simulation's
+ * BLOCKHASH: the SAME window and FAULT rule as the engine's reader). */
+int nodus_witness_v2_evm_blockhash(nodus_witness_t *w, uint64_t height,
+                                   uint64_t n, nodus_rt_read_res_t *res) {
+    if (!w || !w->db || !res) return -2;
+    return v2rd_blockhash(w, height, n, res);
+}
+
+/* nodus_rt_v2_reader_t.read — contract: nodus_witness_runtime.h. */
+static int v2rd_read(void *ctxp, uint32_t op, const uint8_t *key,
+                     uint16_t key_len, nodus_rt_read_res_t *res) {
+    v2rd_ctx_t *c = (v2rd_ctx_t *)ctxp;
+    if (!c || !key || !res || key_len < 1 ||
+        key_len > DNA_EFFECT_MAX_KEY_LEN)
+        return -2;                       /* a compiled runtime's misuse  */
+    memset(res, 0, sizeof(*res));
+
+    size_t pos = 0;
+    if (v2rd_find(c, op, key, key_len, &pos)) {
+        const v2rd_entry_t *e = c->ents[pos];   /* repeat: free (§3 I2) */
+        res->present = e->present;
+        res->value_len = e->value_len;
+        if (e->value_len) memcpy(res->value, e->value, e->value_len);
+        return 0;
+    }
+
+    /* ── a NEW logical read: the caps, then the charge, THEN the read ─ */
+    if (c->n_reads + 1 > c->max_reads) return NODUS_RT_V2_READ_BUDGET;
+    if (c->vm_leg) {
+        /* A VM leg (CALL / CREATE) keeps FAIL_RESERVE and the declared gas
+         * units free: a read may never eat the units the failure path and
+         * the gas charge need (design §4 — the failure path can never run
+         * out; §8 "CALL/CREATE kabulü: res_max_total_units ≥ statik +
+         * gas_limit × w_gas + FAIL_RESERVE"). A bridge op (DEPOSIT /
+         * WITHDRAW / REDEEM) reserves nothing beyond the read itself: it
+         * runs no code, has no paid failure path and declares no gas —
+         * its failure is a refusal of the whole item (§4 "Köprü op'ları
+         * (3-5) kod yürütmez: hepsi ön doğrulamadır; başarısızlık → -1"),
+         * and its ceiling is the one the shared builder prices
+         * (client/nodus_v2_evm.c nodus_v2_evm_min_units: static + reads ×
+         * w_read). The meter charge below bounds its reads by the ceiling
+         * either way. */
+        uint64_t gas_units = 0, need = 0, room = 0;
+        if (dna_ck_mul_u64(c->gas_limit, DNA_METER_EVM_W_GAS,
+                           &gas_units) != 0 ||
+            dna_ck_add_u64(c->m->plan.w_read, DNA_METER_EVM_FAIL_RESERVE,
+                           &need) != 0 ||
+            dna_ck_add_u64(need, gas_units, &need) != 0 ||
+            dna_ck_sub_u64(c->m->g_reserved, c->m->g_consumed, &room) != 0)
+            return NODUS_RT_V2_READ_BUDGET;
+        if (need > room) return NODUS_RT_V2_READ_BUDGET;
+    }
+    dna_meter_status_t ms = dna_meter_charge_read(c->m, c->domain_id);
+    if (ms == DNA_METER_ERR_FAULT) return -2;
+    if (ms != DNA_METER_OK) return NODUS_RT_V2_READ_BUDGET;
+    c->n_reads++;
+
+    if (op == NODUS_RT_V2_OP_BLOCKHASH) {
+        uint64_t n = 0;
+        if (key_len != 8) return -2;
+        for (int i = 0; i < 8; i++) n = (n << 8) | key[i];
+        if (v2rd_blockhash(c->w, c->global_height, n, res) != 0) return -2;
+    } else {
+        nodus_rt_read_req_t req;
+        memset(&req, 0, sizeof(req));
+        req.op_id = op;
+        req.key_len = key_len;
+        memcpy(req.key, key, key_len);
+        nodus_adapter_status_t ast =
+            nodus_witness_v2_read_one(c->w, c->rt, &req, res);
+        /* every non-OK answer is this node or a compiled runtime asking
+         * for a key its own adapter cannot shape — never a verdict */
+        if (ast != NODUS_ADAPTER_OK) return -2;
+    }
+
+    if (dna_ck_add_u64(c->read_bytes, res->value_len, &c->read_bytes) != 0 ||
+        c->read_bytes > NODUS_RT_EVM_MAX_READ_BYTES)
+        return NODUS_RT_V2_READ_BUDGET;
+
+    /* cache it — the next request for (op, key) in this leg is free */
+    if (c->n_ents == c->cap_ents) {
+        size_t nc = c->cap_ents ? c->cap_ents * 2 : 64;
+        v2rd_entry_t **g = realloc(c->ents, nc * sizeof(*g));
+        if (!g) return -2;
+        c->ents = g;
+        c->cap_ents = nc;
+    }
+    v2rd_entry_t *e = calloc(1, sizeof(*e));
+    if (!e) return -2;
+    e->op = op;
+    e->key_len = key_len;
+    memcpy(e->key, key, key_len);
+    e->present = res->present;
+    e->value_len = res->value_len;
+    if (res->value_len) {
+        e->value = malloc(res->value_len);
+        if (!e->value) { free(e); return -2; }
+        memcpy(e->value, res->value, res->value_len);
+    }
+    memmove(&c->ents[pos + 1], &c->ents[pos],
+            (c->n_ents - pos) * sizeof(*c->ents));
+    c->ents[pos] = e;
+    c->n_ents++;
+    return 0;
+}
+
+/* nodus_rt_v2_reader_t.declare_gas — contract: nodus_witness_runtime.h. */
+static int v2rd_declare_gas(void *ctxp, uint64_t gas_limit,
+                            uint64_t n_access_keys) {
+    v2rd_ctx_t *c = (v2rd_ctx_t *)ctxp;
+    if (!c || c->gas_declared) return -2;   /* once per leg              */
+    if (gas_limit > NODUS_RT_EVM_TX_GAS_CAP) return -1;
+    /* design §8: res_max_total_units >= static + gas_limit × w_gas +
+     * FAIL_RESERVE — the declared ceiling prices the gas */
+    uint64_t gas_units = 0, need = 0;
+    if (dna_ck_mul_u64(gas_limit, DNA_METER_EVM_W_GAS, &gas_units) != 0 ||
+        dna_ck_add_u64(c->m->plan.static_total, gas_units, &need) != 0 ||
+        dna_ck_add_u64(need, DNA_METER_EVM_FAIL_RESERVE, &need) != 0)
+        return -1;
+    if (need > c->m->plan.total_ceiling) return -1;
+    /* the leg's declared effect ceilings must admit the fixed failure
+     * result — a failed execution is always APPLIED and paid (design §4,
+     * S1), so a declaration that could not carry it is refused here,
+     * before anything executes */
+    {
+        int li = -1;
+        for (uint16_t i = 0; i < c->m->plan.n_legs; i++)
+            if (c->m->plan.leg[i].domain_id == c->domain_id) li = (int)i;
+        if (li < 0) return -2;
+        if (c->m->plan.leg[li].res_max_effects < DNA_METER_EVM_FAIL_EFFECTS ||
+            c->m->plan.leg[li].res_max_effect_bytes < DNA_METER_EVM_FAIL_BYTES)
+            return -1;
+    }
+    /* design §3 EVM_MAX_READS = ceil(cap / 2100) + 2 × keys + 2048 */
+    uint64_t kk = 0, mr = 0;
+    if (dna_ck_mul_u64(n_access_keys, 2, &kk) != 0 ||
+        dna_ck_add_u64(NODUS_RT_EVM_READS_BASE, kk, &mr) != 0)
+        return -1;
+    c->gas_limit = gas_limit;
+    c->max_reads = mr;
+    c->gas_declared = 1;
+    return 0;
+}
+
+/** The canonical length of ONE effect inside a result (record + blobs). */
+static uint64_t v2evm_eff_len(const dna_effect_in_t *e) {
+    return (uint64_t)DNA_EFFECT_RECORD_LEN + e->hdr.key_len +
+           e->hdr.value_len;
+}
+
+/** The effect codec's total order (effect_wire.c eff_order_cmp): kind,
+ *  then op, then key bytes (shorter first). */
+static int v2evm_eff_cmp(const dna_effect_in_t *a, const dna_effect_in_t *b) {
+    if (a->hdr.effect_kind != b->hdr.effect_kind)
+        return a->hdr.effect_kind < b->hdr.effect_kind ? -1 : 1;
+    return v2rd_cmp(a->hdr.op_id, a->key, a->hdr.key_len,
+                    b->hdr.op_id, b->key, b->hdr.key_len);
+}
+
+/** qsort comparator over effect POINTERS by LOGICAL key (op, key) — the
+ *  stream-wide uniqueness check sorts a pointer copy; the stream itself is
+ *  never reordered. Keys are compared fully, so equal elements are true
+ *  duplicates and the comparator is a total order. */
+static int v2evm_logical_cmp(const void *pa, const void *pb) {
+    const dna_effect_in_t *a = *(const dna_effect_in_t *const *)pa;
+    const dna_effect_in_t *b = *(const dna_effect_in_t *const *)pb;
+    return v2rd_cmp(a->hdr.op_id, a->key, a->hdr.key_len,
+                    b->hdr.op_id, b->key, b->hdr.key_len);
+}
+
+/**
+ * The stream the runtime handed back must be ONE canonical result cut in
+ * pages: every effect inside the codec's per-effect caps, strictly
+ * ascending under the codec's order across the WHOLE stream, every
+ * logical key once. The runtime promises it; the engine checks it, and a
+ * broken promise is a compiled-runtime defect on this node — a FAULT.
+ * Also returns the stream's one-result canonical length.
+ * @return 0 / -1 (broken).
+ */
+static int v2evm_stream_check(const dna_effect_in_t *e, uint32_t n,
+                              uint64_t *bytes_out) {
+    uint64_t bytes = DNA_EFFECT_FIXED_HEAD;
+    for (uint32_t k = 0; k < n; k++) {
+        if (e[k].hdr.key_len < 1 ||
+            e[k].hdr.key_len > DNA_EFFECT_MAX_KEY_LEN ||
+            e[k].hdr.value_len > DNA_EFFECT_MAX_VALUE_LEN ||
+            !e[k].key || (e[k].hdr.value_len && !e[k].value))
+            return -1;
+        if (k > 0 && v2evm_eff_cmp(&e[k - 1], &e[k]) >= 0) return -1;
+        bytes += v2evm_eff_len(&e[k]);   /* ≤ 2^32 × ~8.4 KB: no wrap   */
+    }
+    if (n > 1) {
+        const dna_effect_in_t **p = malloc((size_t)n * sizeof(*p));
+        if (!p) return -1;
+        for (uint32_t k = 0; k < n; k++) p[k] = &e[k];
+        qsort(p, n, sizeof(*p), v2evm_logical_cmp);
+        int dup = 0;
+        for (uint32_t k = 1; k < n && !dup; k++)
+            if (v2evm_logical_cmp(&p[k - 1], &p[k]) == 0) dup = 1;
+        free(p);
+        if (dup) return -1;
+    }
+    *bytes_out = bytes;
+    return 0;
+}
+
+/**
+ * Apply effects [from, from + cnt) as ONE page: encode, strictly decode,
+ * hand the page to the open stream (if any), then the adapter. Every
+ * failure is a FAULT: the runtime's own output that its own adapter
+ * refuses after the charge cannot happen on a healthy node (design §4,
+ * "sayfa uygulaması başladıktan sonra … FAULT").
+ * @return 0 / -2.
+ */
+static int v2evm_apply_page(nodus_witness_t *w,
+                            const nodus_domain_runtime_t *rt,
+                            const dna_meter_t *m, dna_meter_stream_t *s,
+                            const dna_effect_in_t *e, uint16_t cnt,
+                            uint8_t *resbuf, int probe_only,
+                            char *reason, size_t reason_size) {
+    size_t rl = 0;
+    dna_effect_view_t *ev = calloc(1, sizeof(*ev));
+    if (!ev) {
+        V2AP_ENV_FAULT("%s", "Nodus EVM: page view allocation failed");
+        return -2;
+    }
+    int ret = -2;
+    do {
+        if (dna_effect_result_encode(e, cnt, resbuf, DNA_EFFECT_MAX_TOTAL_LEN,
+                                     &rl) != 0 ||
+            dna_effect_result_decode(resbuf, rl, ev) != 0) {
+            V2AP_ENV_FAULT("Nodus EVM: a %u-effect page of the runtime's stream "
+                           "is not a canonical result", (unsigned)cnt);
+            break;
+        }
+        if (s && dna_meter_charge_effects_page(m, s, ev) != DNA_METER_OK) {
+            V2AP_ENV_FAULT("%s", "Nodus EVM: the meter refused a page of the "
+                           "charged stream (engine bookkeeping)");
+            break;
+        }
+        uint16_t fidx = 0;
+        /* Nodus EVM activation — the CheckTx dry run (design §4 "CheckTx
+         * dry-run ... yalnız YOKLAR"): the SAME decision, no mutation */
+        nodus_adapter_status_t ast = probe_only
+            ? effects_probe_only(w, rt, ev, &fidx)
+            : nodus_witness_v2_effects_apply_ex(w, rt, ev, &fidx,
+                                                UINT32_MAX);
+        if (ast != NODUS_ADAPTER_OK) {
+            V2AP_ENV_FAULT("Nodus EVM: the EVM adapter refused effect %u of a "
+                           "charged page (status %d) - the runtime's state "
+                           "view and this node's storage disagree",
+                           (unsigned)fidx, (int)ast);
+            break;
+        }
+        ret = 0;
+    } while (0);
+    free(ev);
+    return ret;
+}
+
+/** Write the node-local receipt / log index rows of one applied EVM leg
+ *  (design §7: no root reads them; they go with the item's savepoint).
+ *  @return 0 / -2. */
+static int v2evm_index(nodus_witness_t *w, uint64_t height, size_t item,
+                       const uint8_t intent_id[64], const uint8_t *rcpt,
+                       size_t rcpt_len, const uint8_t digest[64],
+                       const nodus_rt_v2_log_t *logs, uint32_t n_logs) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO evm_receipts (intent_id, global_height, item_index,"
+            " receipt, digest) VALUES (?1, ?2, ?3, ?4, ?5)",
+            -1, &st, NULL) != SQLITE_OK)
+        return -2;
+    sqlite3_bind_blob(st, 1, intent_id, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)height);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)item);
+    sqlite3_bind_blob(st, 4, rcpt, (int)rcpt_len, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 5, digest, 64, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) return -2;
+    for (uint32_t k = 0; k < n_logs; k++) {
+        if (!logs[k].addr || logs[k].n_topics > 4 ||
+            (logs[k].n_topics && !logs[k].topics) ||
+            (logs[k].data_len && !logs[k].data))
+            return -2;
+        st = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "INSERT INTO evm_logs (intent_id, log_index, global_height,"
+                " addr, topics, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                -1, &st, NULL) != SQLITE_OK)
+            return -2;
+        sqlite3_bind_blob(st, 1, intent_id, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 2, (sqlite3_int64)k);
+        sqlite3_bind_int64(st, 3, (sqlite3_int64)height);
+        sqlite3_bind_blob(st, 4, logs[k].addr, 32, SQLITE_TRANSIENT);
+        if (logs[k].n_topics)
+            sqlite3_bind_blob(st, 5, logs[k].topics,
+                              (int)logs[k].n_topics * 32, SQLITE_TRANSIENT);
+        else
+            sqlite3_bind_zeroblob(st, 5, 0);
+        if (logs[k].data_len)
+            sqlite3_bind_blob(st, 6, logs[k].data, (int)logs[k].data_len,
+                              SQLITE_TRANSIENT);
+        else
+            sqlite3_bind_zeroblob(st, 6, 0);
+        rc = sqlite3_step(st);
+        sqlite3_finalize(st);
+        if (rc != SQLITE_DONE) return -2;
+    }
+    return 0;
+}
+
+/**
+ * Execute ONE runtime-ABI-2 leg (design §3, §4, §7) inside the item's
+ * savepoint. Order:
+ *   1. the runtime runs over a fresh reader (pre-validation inside it:
+ *      a refusal before anything executed is -1, the item rolls back);
+ *   2. success: the WHOLE stream's count / canonical bytes are checked
+ *      against the leg's declared ceilings, the stream caps and the unit
+ *      budget (the gas units included) BEFORE any page — over is the
+ *      deterministic failure path (or -1 for a non-failable leg), so page
+ *      boundaries can never enter the outcome (§4 N2); within budget the
+ *      stream is charged once, applied in pages inside an INNER savepoint
+ *      nested in the item's, the gas units charged, the inner released;
+ *   3. failure (execution failed, or the over-ceiling case): only the
+ *      fixed failure effects are applied and gas_limit × w_gas charged;
+ *   4. the receipt digest becomes the item's Data; the receipt and the
+ *      logs go to the node-local index.
+ * After step 1 there is no -1 for an executing leg: every check that can
+ * fail after it is a FAULT (-2), except the documented bounded-budget
+ * case below.
+ * @return 0 applied / -1 refused (verdict) / -2 node fault.
+ */
+/* Nodus EVM activation — file one ABI-2 leg's conflict keys (design §8: the
+ * synthetic (sender, nonce) / ticket keys, NEVER the leg's effect rows)
+ * into the dry run's row list, under the leg's domain. The ONE derivation
+ * (nodus_rt_evm_conflict_keys). @return 0 / -2 (alloc, or an underivable
+ * key for a leg that already ran). */
+_Static_assert(NODUS_RT_V2_KEY_MAX_LEN <= DNA_EFFECT_MAX_KEY_LEN,
+               "an ABI-2 conflict key must fit a dry-run row");
+static int dry_run_note_evm_keys(nodus_v2_env_dry_run_t *dry,
+                                 uint32_t domain_id,
+                                 const dna_env_view_t *v, uint16_t l,
+                                 const nodus_rt_auth_verdict_t *av) {
+    nodus_rt_v2_keys_t keys;
+    if (nodus_rt_evm_conflict_keys(v, l, av, &keys) != 0) return -2;
+    if (keys.n == 0) return 0;
+    nodus_v2_dry_run_row_t *grown =
+        realloc(dry->rows, (dry->n_rows + keys.n) * sizeof(*grown));
+    if (!grown) return -2;
+    dry->rows = grown;
+    for (uint8_t k = 0; k < keys.n; k++) {
+        nodus_v2_dry_run_row_t *r = &dry->rows[dry->n_rows++];
+        memset(r, 0, sizeof(*r));
+        r->domain_id = domain_id;
+        r->op_id     = keys.k[k].op_id;
+        r->key_len   = keys.k[k].key_len;
+        memcpy(r->key, keys.k[k].key, keys.k[k].key_len);
+    }
+    return 0;
+}
+
+static int exec_evm_leg(nodus_witness_t *w, const nodus_v2_block_t *blk,
+                        size_t env_index, uint16_t l, dom_ctx_t *d,
+                        const nodus_rt_exec_ctx_t *ctx,
+                        const dna_env_preflight_t *pf, dna_meter_t *m,
+                        uint8_t *resbuf, nodus_v2_tx_result_t *res_out,
+                        nodus_v2_env_dry_run_t *dry, int dry_novm,
+                        char *reason, size_t reason_size) {
+    const nodus_domain_runtime_t *rt = d->rt;
+    const dna_env_view_t *v = &pf->view;
+    v2rd_ctx_t rc;
+    memset(&rc, 0, sizeof(rc));
+    rc.w = w;
+    rc.rt = rt;
+    rc.m = m;
+    rc.domain_id = d->domain_id;
+    /* the headroom rule of v2rd_read is decided by the leg's own op, once,
+     * here — the SAME for FinalizeBlock, the CheckTx dry run and its
+     * VM-less recheck (all three create the reader here). Only an EVM
+     * bridge op (3-5) is exempt; every other ABI-2 leg keeps the reserve
+     * (the stricter rule is the default for an op this code does not
+     * name). */
+    rc.vm_leg = !(d->domain_id == DNA_DOMAIN_EVM &&
+                  (v->leg[l].runtime_op == NODUS_RT_EVM_DEPOSIT ||
+                   v->leg[l].runtime_op == NODUS_RT_EVM_WITHDRAW ||
+                   v->leg[l].runtime_op == NODUS_RT_EVM_REDEEM));
+    rc.global_height = blk->global_height;
+    rc.max_reads = NODUS_RT_EVM_READS_BASE;   /* until declare_gas       */
+    nodus_rt_v2_reader_t rdr = { &rc, v2rd_read, v2rd_declare_gas };
+
+    nodus_rt_v2_out_t out;
+    memset(&out, 0, sizeof(out));
+    char sp[48];
+    int inner_open = 0;
+#ifdef NODUS_EVM_ENABLED
+    int batch_open = 0;            /* the EVM adapter's per-leg trie batch */
+#endif
+    int ret = -2;
+
+    /* ── Nodus EVM activation — the CheckTx admission, NEW and RECHECK alike
+     * since red-team 1 F1 (design §8 "Recheck: VM YÜRÜTÜLMEZ", extended to
+     * the new entry): ONLY the shared pre-validation (the same function
+     * exec runs first), the reads it does charged on the dry run's meter,
+     * then the conflict keys. Nothing executes, nothing is probed. */
+    if (dry && dry_novm) {
+        int prc = rt->prevalidate_evm
+                      ? rt->prevalidate_evm(rt, v, l, ctx, &rdr, NULL)
+                      : -2;
+        if (prc == -2) {
+            V2AP_ENV_FAULT("env %u leg %u domain %u: the ABI-2 pre-"
+                           "validation backend failed", (unsigned)env_index,
+                           (unsigned)l, (unsigned)d->domain_id);
+        } else if (prc != 0) {
+            V2AP_ENV_VERDICT("env %u leg %u domain %u op %u: the ABI-2 "
+                             "pre-validation refused the leg (no-VM "
+                             "admission)",
+                             (unsigned)env_index, (unsigned)l,
+                             (unsigned)d->domain_id,
+                             (unsigned)v->leg[l].runtime_op);
+            ret = -1;
+        } else if (dry_run_note_evm_keys(dry, d->domain_id, v, l,
+                                         ctx->auth) != 0) {
+            V2AP_ENV_FAULT("env %u leg %u: the conflict keys of a "
+                           "pre-validated EVM leg could not be filed",
+                           (unsigned)env_index, (unsigned)l);
+        } else {
+            ret = 0;
+        }
+        v2rd_free(&rc);
+        return ret;
+    }
+
+    int xrc = rt->exec_evm(rt, v, l, ctx, &rdr, &out);
+    if (xrc == -2) {
+        V2AP_ENV_FAULT("env %u leg %u domain %u op %u: exec_evm backend "
+                       "failure", (unsigned)env_index, (unsigned)l,
+                       (unsigned)d->domain_id,
+                       (unsigned)v->leg[l].runtime_op);
+        goto done;
+    }
+    if (xrc != 0) {
+        V2AP_ENV_VERDICT("env %u leg %u domain %u op %u: the ABI-2 runtime "
+                         "refused the leg before execution (rc %d)",
+                         (unsigned)env_index, (unsigned)l,
+                         (unsigned)d->domain_id,
+                         (unsigned)v->leg[l].runtime_op, xrc);
+        ret = -1;
+        goto done;
+    }
+    if ((out.success != 0 && out.success != 1) ||
+        (out.n_effects && !out.effects) ||
+        (out.n_fail_effects && !out.fail_effects) ||
+        !out.receipt || out.receipt_len == 0 ||
+        (out.failable && (!out.fail_receipt || out.fail_receipt_len == 0 ||
+                          out.n_fail_effects == 0)) ||
+        (!out.success && !out.failable) ||
+        out.gas_used > out.gas_limit ||
+        out.gas_limit > NODUS_RT_EVM_TX_GAS_CAP ||
+        (out.n_logs && !out.logs)) {
+        V2AP_ENV_FAULT("env %u leg %u: the ABI-2 runtime returned an "
+                       "out-of-contract result", (unsigned)env_index,
+                       (unsigned)l);
+        goto done;
+    }
+
+    int take_failure = !out.success;
+    if (out.success) {
+        uint64_t bytes = 0, extra = 0;
+        if (v2evm_stream_check(out.effects, out.n_effects, &bytes) != 0) {
+            V2AP_ENV_FAULT("env %u leg %u: the runtime's effect stream is "
+                           "not canonical (order, uniqueness or caps)",
+                           (unsigned)env_index, (unsigned)l);
+            goto done;
+        }
+        if (dna_ck_mul_u64(out.gas_used, DNA_METER_EVM_W_GAS, &extra) != 0) {
+            V2AP_ENV_FAULT("%s", "Nodus EVM: gas units overflow");
+            goto done;
+        }
+        dna_meter_stream_t s;
+        memset(&s, 0, sizeof(s));
+        dna_meter_status_t ms = dna_meter_charge_effects_begin(
+            m, d->domain_id, out.n_effects, bytes, extra, &s);
+        if (ms == DNA_METER_ERR_FAULT || ms == DNA_METER_ERR_ARG ||
+            ms == DNA_METER_ERR_STATE || ms == DNA_METER_ERR_DOMAIN) {
+            V2AP_ENV_FAULT("env %u leg %u: the meter refused to open the "
+                           "stream (status %d)", (unsigned)env_index,
+                           (unsigned)l, (int)ms);
+            goto done;
+        }
+        if (ms != DNA_METER_OK) {
+            /* LIMIT / CEILING / DOMAIN_BUDGET / OVERFLOW: deterministic —
+             * decided over the WHOLE stream before any page (§4 N2) */
+            if (!out.failable) {
+                V2AP_ENV_VERDICT("env %u leg %u: %u effects / %llu bytes "
+                                 "exceed the declared ceilings or the unit "
+                                 "budget (meter status %d)",
+                                 (unsigned)env_index, (unsigned)l,
+                                 (unsigned)out.n_effects,
+                                 (unsigned long long)bytes, (int)ms);
+                ret = -1;
+                goto done;
+            }
+            take_failure = 1;
+        } else {
+            /* the CheckTx dry run opens no savepoint (design §4 "CheckTx'te
+             * savepoint açılmaz"): its pages are probed, never applied */
+            if (!dry) {
+                snprintf(sp, sizeof(sp), "cmt_evm_%llu",
+                         (unsigned long long)env_index);
+                if (nodus_witness_db_savepoint(w, sp) != 0) {
+                    V2AP_ENV_FAULT("%s", "Nodus EVM: inner SAVEPOINT failed");
+                    goto done;
+                }
+                inner_open = 1;
+#ifdef NODUS_EVM_ENABLED
+                /* red-team-1 F6: the pages' trie changes go to in-memory
+                 * tries, committed once below (rt_evm.h leg batch) */
+                if (rt->adapter == &NODUS_RT_EVM_ADAPTER) {
+                    if (nodus_rt_evm_leg_begin((struct nodus_witness *)w)
+                            != 0) {
+                        V2AP_ENV_FAULT("%s", "Nodus EVM: the leg's trie batch "
+                                       "could not be opened");
+                        goto done;
+                    }
+                    batch_open = 1;
+                }
+#endif
+            }
+            uint32_t k = 0;
+            while (k < out.n_effects) {
+                uint16_t cnt = 0;
+                uint64_t plen = DNA_EFFECT_FIXED_HEAD;
+                while (k + cnt < out.n_effects && cnt < DNA_EFFECT_MAX_COUNT &&
+                       plen + v2evm_eff_len(&out.effects[k + cnt]) <=
+                           DNA_EFFECT_MAX_TOTAL_LEN) {
+                    plen += v2evm_eff_len(&out.effects[k + cnt]);
+                    cnt++;
+                }
+                if (cnt == 0) {             /* one effect never fits: the
+                                             * per-effect caps say it does */
+                    V2AP_ENV_FAULT("%s", "Nodus EVM: an effect fits no page");
+                    goto done;
+                }
+                if (v2evm_apply_page(w, rt, m, &s, &out.effects[k], cnt,
+                                     resbuf, dry != NULL, reason,
+                                     reason_size) != 0)
+                    goto done;
+                k += cnt;
+            }
+            if (dna_meter_charge_effects_finish(m, &s) != DNA_METER_OK) {
+                V2AP_ENV_FAULT("%s", "Nodus EVM: the applied pages do not add up "
+                               "to the charged stream");
+                goto done;
+            }
+            /* begin proved effects + this charge fit together */
+            if (dna_meter_charge_evm_gas(m, d->domain_id, out.gas_used) !=
+                    DNA_METER_OK) {
+                V2AP_ENV_FAULT("%s", "Nodus EVM: the gas charge the stream begin "
+                               "reserved did not fit");
+                goto done;
+            }
+#ifdef NODUS_EVM_ENABLED
+            if (batch_open) {
+                /* every touched trie committed ONCE, inside the inner
+                 * savepoint; the batch is closed whatever the result */
+                batch_open = 0;
+                if (nodus_rt_evm_leg_flush((struct nodus_witness *)w) != 0) {
+                    V2AP_ENV_FAULT("%s", "Nodus EVM: the leg's trie batch could "
+                                   "not be committed");
+                    goto done;
+                }
+            }
+#endif
+            if (inner_open) {
+                if (cmt_savepoint_release(w, sp) != 0) {
+                    V2AP_ENV_FAULT("%s", "Nodus EVM: inner RELEASE failed");
+                    goto done;
+                }
+                inner_open = 0;
+            }
+        }
+    }
+
+    if (take_failure) {
+        /* design §4: the fixed failure effects only — sender nonce + 1 —
+         * and gas_limit × w_gas. No page of the success stream was
+         * applied (the over-ceiling decision came before any). */
+        uint16_t nf = (uint16_t)out.n_fail_effects;
+        uint64_t fbytes = 0;
+        if (out.n_fail_effects > DNA_METER_EVM_FAIL_EFFECTS ||
+            v2evm_stream_check(out.fail_effects, out.n_fail_effects,
+                               &fbytes) != 0 ||
+            fbytes > DNA_METER_EVM_FAIL_BYTES) {
+            V2AP_ENV_FAULT("%s", "Nodus EVM: the failure effects are not one "
+                           "canonical result");
+            goto done;
+        }
+        {
+            /* the reserve the reads were kept away from must cover them */
+            uint64_t fu = 0, t1 = 0, t2 = 0;
+            if (dna_ck_mul_u64(m->plan.w_effect, nf, &t1) != 0 ||
+                dna_ck_mul_u64(m->plan.w_effectbyte, fbytes, &t2) != 0 ||
+                dna_ck_add_u64(t1, t2, &fu) != 0 ||
+                fu > DNA_METER_EVM_FAIL_RESERVE) {
+                V2AP_ENV_FAULT("Nodus EVM: the failure effects price above "
+                               "FAIL_RESERVE (%u units)",
+                               (unsigned)DNA_METER_EVM_FAIL_RESERVE);
+                goto done;
+            }
+        }
+        size_t rl = 0;
+        dna_effect_view_t *ev = calloc(1, sizeof(*ev));
+        if (!ev) {
+            V2AP_ENV_FAULT("%s", "Nodus EVM: failure view allocation failed");
+            goto done;
+        }
+        if (dna_effect_result_encode(out.fail_effects, nf, resbuf,
+                                     DNA_EFFECT_MAX_TOTAL_LEN, &rl) != 0 ||
+            dna_effect_result_decode(resbuf, rl, ev) != 0) {
+            free(ev);
+            V2AP_ENV_FAULT("%s", "Nodus EVM: failure effects do not encode");
+            goto done;
+        }
+        dna_meter_status_t ms = dna_meter_charge_effects(m, d->domain_id, ev);
+        if (ms == DNA_METER_OK)
+            ms = dna_meter_charge_evm_gas(m, d->domain_id, out.gas_limit);
+        if (ms == DNA_METER_ERR_FAULT) {
+            free(ev);
+            V2AP_ENV_FAULT("%s", "Nodus EVM: meter fault on the failure path");
+            goto done;
+        }
+        if (ms != DNA_METER_OK) {
+            /* HONEST LABEL: reads keep FAIL_RESERVE and the gas units free
+             * of the GLOBAL ceiling, but a BOUNDED per-domain budget (a
+             * non-zero quota, or any domain before HF-3) can still be
+             * spent by earlier items of the block. Design §8 makes the
+             * EVM domain's budget unbounded (HF-3), where this cannot
+             * happen; on a bounded one the item is refused whole —
+             * deterministic, the same on every node. */
+            free(ev);
+            V2AP_ENV_VERDICT("env %u leg %u: the failure path does not fit "
+                             "the domain's block budget (meter status %d)",
+                             (unsigned)env_index, (unsigned)l, (int)ms);
+            ret = -1;
+            goto done;
+        }
+        uint16_t fidx = 0;
+        nodus_adapter_status_t ast = dry
+            ? effects_probe_only(w, rt, ev, &fidx)       /* CheckTx      */
+            : nodus_witness_v2_effects_apply_ex(w, rt, ev, &fidx,
+                                                UINT32_MAX);
+        free(ev);
+        if (ast != NODUS_ADAPTER_OK) {
+            V2AP_ENV_FAULT("Nodus EVM: the EVM adapter refused failure effect %u "
+                           "(status %d)", (unsigned)fidx, (int)ast);
+            goto done;
+        }
+    }
+
+    /* Nodus EVM activation — the CheckTx dry run ends here: no receipt index,
+     * no Data; the conflict keys are the synthetic ones (design §8 —
+     * the EVM effect rows are NOT keys) */
+    if (dry) {
+        if (dry_run_note_evm_keys(dry, d->domain_id, v, l, ctx->auth) != 0) {
+            V2AP_ENV_FAULT("env %u leg %u: the conflict keys of an executed "
+                           "EVM leg could not be filed", (unsigned)env_index,
+                           (unsigned)l);
+            goto done;
+        }
+        ret = 0;
+        goto done;
+    }
+
+    /* the receipt of the outcome that was applied (design §7) */
+    {
+        const uint8_t *rcpt = take_failure ? out.fail_receipt : out.receipt;
+        size_t rlen = take_failure ? out.fail_receipt_len : out.receipt_len;
+        uint8_t dg[64];
+        if (qgp_sha3_512(rcpt, rlen, dg) != 0) {
+            V2AP_ENV_FAULT("%s", "Nodus EVM: receipt hash backend failed");
+            goto done;
+        }
+        /* item_index = the item's BLOCK position (red-team 1 F12; the
+         * envelope ordinal when the caller supplied no map) — node-local
+         * index data only */
+        size_t item_pos = blk->env_block_pos
+                              ? blk->env_block_pos[env_index] : env_index;
+        if (v2evm_index(w, blk->global_height, item_pos, pf->intent_id,
+                        rcpt, rlen, dg,
+                        take_failure ? NULL : out.logs,
+                        take_failure ? 0 : out.n_logs) != 0) {
+            V2AP_ENV_FAULT("%s", "Nodus EVM: the node-local receipt index could "
+                           "not be written");
+            goto done;
+        }
+        if (res_out) {
+            memcpy(res_out->data, dg, 64);
+            res_out->data_len = 64;
+        }
+    }
+    ret = 0;
+
+done:
+#ifdef NODUS_EVM_ENABLED
+    /* a FAULT between begin and flush: the in-memory trie changes go;
+     * nothing of them reached the database (the rows go with the inner
+     * savepoint below) */
+    if (batch_open) nodus_rt_evm_leg_discard((struct nodus_witness *)w);
+#endif
+    if (inner_open) {
+        /* only a FAULT leaves it open; the item's own rollback discards
+         * it too — undone here so the transaction's savepoint stack is
+         * what the item loop expects */
+        (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+        (void)cmt_savepoint_release(w, sp);
+    }
+    if (out.release) out.release(&out);
+    v2rd_free(&rc);
+    return ret;
+}
+
 /* Fires a native-auth-season per-leg fault point for THIS envelope. */
 #define ENV_FAIL_POINT(pt)                                              \
     do {                                                                \
@@ -1195,6 +2249,11 @@ static int dry_run_note_rows(nodus_v2_env_dry_run_t *dry,
  * (every DELETE and every PRE_ABSENT CREATE — `dry_run_row_claim`) is
  * recorded into `dry->rows`. The apply path's behaviour is byte-identical:
  * with `dry == NULL` the only new code is the branch that selects it.
+ * Nodus EVM activation: an ABI-2 leg in the dry run runs probe-only (its
+ * effect rows are NOT recorded; its synthetic conflict keys are), and
+ * with `dry_novm` (CheckTx, NEW and RECHECK — red-team 1 F1) only its
+ * shared pre-validation runs — no VM. `dry_novm` is ignored when `dry`
+ * is NULL.
  *
  * @return 0 / -1 verdict / -2 node fault. On a verdict the caller rolls
  * the item's SAVEPOINT back (item code EXEC); on a fault it aborts the
@@ -1208,7 +2267,8 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
                         const dna_env_preflight_t *pf, dna_meter_t *m,
                         const nodus_rt_auth_verdict_t *auths,
                         nodus_rt_read_res_t *reads, uint8_t *resbuf,
-                        nodus_v2_env_dry_run_t *dry,
+                        nodus_v2_env_dry_run_t *dry, int dry_novm,
+                        nodus_v2_tx_result_t *res_out,
                         char *reason, size_t reason_size) {
     /* RESERVED → ACTIVE. The reservation covered the fixed work by
      * construction, so any failure here is an accounting invariant
@@ -1244,9 +2304,16 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
     if (env_name_prices(w, blk->global_height, name_price, reason,
                         reason_size) != 0)
         return -2;
+    /* Nodus EVM: the EVM_ACTIVE vote facts and the EVM block gas limit, once
+     * per item (an earlier item's vote row counts — the HF-4 rule) */
+    nodus_rt_exec_ctx_t evm_facts;
+    memset(&evm_facts, 0, sizeof(evm_facts));
+    if (env_evm_facts(w, blk->global_height, &evm_facts, reason,
+                      reason_size) != 0)
+        return -2;
     for (uint16_t l = 0; l < v->leg_count; l++) {
         dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
-        if (!d || !d->rt || !d->rt->exec) {          /* admission-scan
+        if (!d || !d->rt || !rt_can_execute(d->rt)) { /* admission-scan
                                          * invariant — defensive        */
             V2AP_ENV_FAULT("env %u leg %u domain %u: runtime/exec hook "
                            "absent inside the txn (admission-scan "
@@ -1289,6 +2356,31 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
         ctx.hf2_active          = hf2;
         ctx.ruleset_gen2_voted  = gen2_voted;
         memcpy(ctx.name_price, name_price, sizeof(ctx.name_price));
+        /* Nodus EVM (design §10): the block environment an ABI-2 runtime
+         * reads — the Comet header seconds and the EVM block gas limit
+         * (chain_config param 15 at this height, the compiled default
+         * without a row). No ABI-1 hook reads either. */
+        ctx.block_time_s        = blk->timestamp;
+        ctx.evm_block_gas_limit = evm_facts.evm_block_gas_limit;
+        ctx.hf3_active          = evm_facts.hf3_active;
+        ctx.gas_price_on        = evm_facts.gas_price_on;
+        ctx.evm_active_voted    = evm_facts.evm_active_voted;
+        ctx.chain_initial_height = evm_facts.chain_initial_height; /* F5 */
+
+        /* ── Nodus EVM: a runtime-ABI-2 leg reads at RUN TIME through the
+         * engine's reader and returns an effect STREAM (design §3/§4) —
+         * its own path, exec_evm_leg. The executing dry run (`dry`,
+         * novm 0) runs the SAME path probe-only on a fresh overlay with
+         * no savepoint (design §4); the `dry_novm` form — what CheckTx
+         * runs for every entry since red-team 1 F1 — runs only the shared
+         * pre-validation (design §8 — no VM). */
+        if (rt->runtime_abi == NODUS_DOMAIN_RUNTIME_ABI_V2) {
+            int erc = exec_evm_leg(w, blk, env_index, l, d, &ctx, pf, m,
+                                   resbuf, res_out, dry, dry_novm,
+                                   reason, reason_size);
+            if (erc != 0) return erc;
+            continue;
+        }
 
         /* ── mediated reads: request phase → engine-charged execution ─
          * TRUST NOTE: the count/length rejects below detect a hook that
@@ -1851,12 +2943,21 @@ static int env_admit_legs(const dna_env_view_t *v, dom_ctx_t *doms,
                           uint32_t *code, char *reason, size_t reason_size)
 {
     uint16_t l;
+    unsigned n_abi2 = 0;
 
     for (l = 0; l < v->leg_count; l++) {
         dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
         uint8_t ak = v->leg[l].auth_kind;
 
-        if (!d || !d->rt || !d->rt->exec || !d->rt->auth ||
+        /* Nodus EVM: at most ONE runtime-ABI-2 leg per envelope — the meter
+         * carries one streamed leg (res_meter.h plan.stream_leg). Only
+         * the EVM domain speaks ABI 2, and legs are one per domain, so a
+         * second one cannot occur today; the check keeps it a refusal,
+         * never an unmetered leg. */
+        if (d && d->rt && d->rt->runtime_abi == NODUS_DOMAIN_RUNTIME_ABI_V2)
+            n_abi2++;
+        if (!d || !d->rt || !rt_can_execute(d->rt) || !d->rt->auth ||
+            n_abi2 > 1 ||
             v->leg[l].access_mode != DNA_ENV_ACCESS_INVOKE ||
             !rt_owns_runtime_op(d->rt, v->leg[l].runtime_op) ||
             ak >= 32 ||
@@ -1969,6 +3070,28 @@ int nodus_witness_v2_gas_price_judge(const dna_env_view_t *v, uint64_t price,
     int      all_system = 1;
 
     if (price == 0) {
+        /* Operator decision D1 (docs/plans/decisions/2026-10-05-nodus-evm-
+         * redteam1-operator.md): while the price in force is 0 the EVM
+         * stops — a CALL, CREATE or DEPOSIT leg would buy gas for nothing
+         * (w_gas units unpriced). The exits stay open: WITHDRAW and
+         * REDEEM (fixed 21 000 gas, no code runs). Every other envelope
+         * passes exactly as before; an EVM-domain leg never reaches this
+         * judge on a chain without the EVM domain (admission / the
+         * context table refuse it first — contract: apply.h). */
+        for (l = 0; l < v->leg_count; l++) {
+            uint32_t op = v->leg[l].runtime_op;
+
+            if (v->leg[l].domain_id == DNA_DOMAIN_EVM &&
+                (op == NODUS_RT_EVM_CALL || op == NODUS_RT_EVM_CREATE ||
+                 op == NODUS_RT_EVM_DEPOSIT)) {
+                V2AP_ENV_VERDICT("gas price: 0 in force - EVM leg %u op %u "
+                                 "(CALL / CREATE / DEPOSIT) is refused while "
+                                 "gas is unpriced (decision D1)",
+                                 (unsigned)l, (unsigned)op);
+                *code = NODUS_V2_TX_ERR_FEE;
+                return -1;
+            }
+        }
         return 0;                        /* rule OFF: nothing else runs  */
     }
     for (l = 0; l < v->leg_count; l++) {
@@ -2104,6 +3227,12 @@ static int env_authorize_legs(nodus_witness_t *w,
         return -2;
     if (env_name_prices(w, height, name_price, reason, reason_size) != 0)
         return -2;
+    /* Nodus EVM: the EVM_ACTIVE facts and the EVM block gas limit ride along
+     * like the facts above (no auth hook reads them) */
+    nodus_rt_exec_ctx_t evm_facts;
+    memset(&evm_facts, 0, sizeof(evm_facts));
+    if (env_evm_facts(w, height, &evm_facts, reason, reason_size) != 0)
+        return -2;
     for (l = 0; l < v->leg_count; l++) {
         dom_ctx_t          *d = dom_for(doms, n_dom, v->leg[l].domain_id);
         nodus_rt_exec_ctx_t actx;
@@ -2152,6 +3281,14 @@ static int env_authorize_legs(nodus_witness_t *w,
         actx.hf2_active          = hf2;
         actx.ruleset_gen2_voted  = gen2_voted;
         memcpy(actx.name_price, name_price, sizeof(actx.name_price));
+        /* Nodus EVM: the gas limit rides along like the facts above; the auth
+         * stage has no block time (the dry run has no header) and no auth
+         * hook reads either — block_time_s stays 0 here (runtime.h) */
+        actx.evm_block_gas_limit = evm_facts.evm_block_gas_limit;
+        actx.hf3_active          = evm_facts.hf3_active;
+        actx.gas_price_on        = evm_facts.gas_price_on;
+        actx.evm_active_voted    = evm_facts.evm_active_voted;
+        actx.chain_initial_height = evm_facts.chain_initial_height;
         /* the resolved snapshot view, ONLY for the kind that consumes it
          * (runtime.h's ctx contract) */
         actx.committee =
@@ -2355,6 +3492,78 @@ int nodus_witness_v2_env_dry_run(nodus_witness_t *w, const uint8_t *bytes,
                                  nodus_v2_env_dry_run_t *out,
                                  char *reason, size_t reason_size)
 {
+    return nodus_witness_v2_env_dry_run_ex(w, bytes, len, reuse, 0, NULL,
+                                           NULL, out, reason, reason_size);
+}
+
+/* Red-team 1 F1 — the pending-conflict probe of every ABI-2 leg, after
+ * the authorization stage (the keys need the VERIFIED signer) and before
+ * anything executes. The keys come from the ONE derivation
+ * (nodus_rt_evm_conflict_keys) and are filed under the leg's domain the
+ * way dry_run_note_evm_keys files them, so the probe sees exactly the
+ * rows the caller later inserts. @return 0 / -1 verdict / -2 fault. */
+static int dry_run_probe_evm(const dna_env_view_t *v, dom_ctx_t *doms,
+                             size_t n_dom,
+                             const nodus_rt_auth_verdict_t *verdicts,
+                             nodus_v2_conflict_probe_fn probe,
+                             void *probe_ctx,
+                             char *reason, size_t reason_size)
+{
+    for (uint16_t l = 0; l < v->leg_count; l++) {
+        dom_ctx_t *d = dom_for(doms, n_dom, v->leg[l].domain_id);
+        nodus_rt_v2_keys_t keys;
+        nodus_v2_dry_run_row_t rows[NODUS_RT_V2_MAX_KEYS];
+        int prc;
+
+        if (!d || !d->rt || d->rt->runtime_abi != NODUS_DOMAIN_RUNTIME_ABI_V2)
+            continue;
+        if (nodus_rt_evm_conflict_keys(v, l, &verdicts[l], &keys) != 0) {
+            /* the pre-validation's prologue refuses the same head / the
+             * same signer count (rtevm_prologue: one codec) */
+            V2AP_ENV_VERDICT("dry run: env leg %u: the EVM call head or its "
+                             "signer does not yield conflict keys",
+                             (unsigned)l);
+            return -1;
+        }
+        if (keys.n > NODUS_RT_V2_MAX_KEYS) {
+            V2AP_ENV_FAULT("dry run: leg %u: %u conflict keys exceed the "
+                           "bound", (unsigned)l, (unsigned)keys.n);
+            return -2;
+        }
+        for (uint8_t k = 0; k < keys.n; k++) {
+            memset(&rows[k], 0, sizeof(rows[k]));
+            rows[k].domain_id = d->domain_id;
+            rows[k].op_id     = keys.k[k].op_id;
+            rows[k].key_len   = keys.k[k].key_len;
+            memcpy(rows[k].key, keys.k[k].key, keys.k[k].key_len);
+        }
+        prc = probe(probe_ctx, rows, keys.n);
+        if (prc == -2) {
+            V2AP_ENV_FAULT("dry run: leg %u: the pending-conflict probe "
+                           "failed on this node", (unsigned)l);
+            return -2;
+        }
+        if (prc != 0) {
+            V2AP_ENV_VERDICT("dry run: leg %u: a pending mempool entry "
+                             "already holds this EVM sender's nonce / this "
+                             "ticket", (unsigned)l);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* Contract: nodus_witness_v2_apply.h (Nodus EVM: `novm`; red-team 1 F1:
+ * `probe`). */
+int nodus_witness_v2_env_dry_run_ex(nodus_witness_t *w, const uint8_t *bytes,
+                                    size_t len,
+                                    const nodus_v2_auth_reuse_t *reuse,
+                                    int novm,
+                                    nodus_v2_conflict_probe_fn probe,
+                                    void *probe_ctx,
+                                    nodus_v2_env_dry_run_t *out,
+                                    char *reason, size_t reason_size)
+{
     env_item_setup_t     s;
     nodus_v2_block_t    *blk    = NULL;
     dna_meter_t         *meter  = NULL;
@@ -2446,8 +3655,12 @@ int nodus_witness_v2_env_dry_run(nodus_witness_t *w, const uint8_t *bytes,
         goto done;
     }
     {
-        dna_meter_status_t mst = dna_meter_reserve(meter, s.bctx->policy, v,
-                                                   &s.bctx->budget);
+        /* Nodus EVM: an ABI-2 leg is reserved as a streamed leg — the item
+         * loop's own rule (env_stream_leg is 0 on every chain without an
+         * ABI-2 runtime, so this is dna_meter_reserve there) */
+        dna_meter_status_t mst = dna_meter_reserve_ex(
+            meter, s.bctx->policy, v, &s.bctx->budget,
+            env_stream_leg(v, s.doms, s.n_dom));
 
         if (mst == DNA_METER_ERR_FAULT) {
             V2AP_ENV_FAULT("%s", "dry run: the meter reported an accounting "
@@ -2477,6 +3690,21 @@ int nodus_witness_v2_env_dry_run(nodus_witness_t *w, const uint8_t *bytes,
         goto done;
     }
 
+    /* ── red-team 1 F1: the pending-conflict PROBE (non-mutating) of
+     * every ABI-2 leg — after the authorization stage, before anything
+     * executes or pre-validates; the caller inserts the keys only after
+     * this whole run succeeded ─────────────────────────────────────── */
+    if (probe) {
+        ret = dry_run_probe_evm(v, s.doms, s.n_dom, out->verdict, probe,
+                                probe_ctx, reason, reason_size);
+        if (ret == -1) {
+            code = NODUS_V2_TX_ERR_EXEC;
+        }
+        if (ret != 0) {
+            goto done;
+        }
+    }
+
     /* ── execute: the per-envelope body, probe-only ─────────────────── */
     blk    = calloc(1, sizeof(*blk));
     reads  = calloc(NODUS_RT_MAX_READS, sizeof(*reads));
@@ -2490,9 +3718,28 @@ int nodus_witness_v2_env_dry_run(nodus_witness_t *w, const uint8_t *bytes,
     blk->global_height = s.height;
     blk->epoch         = nodus_v2_epoch_for_height(s.height);
     blk->fail_at       = V2AP_FAIL_NONE;
+    /* Nodus EVM (design §10 "CheckTx simülasyonu tip bloğunun zamanını
+     * kullanır"): an ABI-2 (EVM) leg that EXECUTES sees TIMESTAMP = the
+     * committed tip block's header seconds — the same read the §18 RPC
+     * simulation uses. Only then: an ordinary envelope reads no block
+     * store, and the `novm` mode runs no VM (its shared pre-validation
+     * reads no block time — evm_tx.c tx_validate). Since red-team 1 F1
+     * CheckTx runs `novm` for every entry, so this read serves only the
+     * executing mode (novm 0 — nodus_witness_v2_env_dry_run's callers).
+     * Unreadable = FAULT, like the other unreadable-tip paths here.
+     * FinalizeBlock runs on the decided block's own header time. */
+    if (!novm && env_stream_leg(v, s.doms, s.n_dom) != 0 &&
+        nodus_witness_v2_tip_block_time(w, s.height - 1,
+                                        &blk->timestamp) != 0) {
+        V2AP_ENV_FAULT("dry run: the tip block's (height %llu) header "
+                       "time is unreadable on this node",
+                       (unsigned long long)(s.height - 1));
+        ret = -2;
+        goto done;
+    }
     ret = exec_one_env(w, blk, 0, s.chain_id, blk->epoch, s.doms, s.n_dom,
                        s.pf, meter, out->verdict, reads, resbuf, out,
-                       reason, reason_size);
+                       novm ? 1 : 0, NULL, reason, reason_size);
     if (ret == -1) {
         code = NODUS_V2_TX_ERR_EXEC;
     }
@@ -2950,6 +4197,144 @@ static int phase_6b_ruleset_switch(nodus_witness_t *w, nodus_v2_block_t *blk,
     return 0;
 }
 
+/*
+ * PHASE 6b'' — Nodus EVM: THE EVM ACTIVATION EDGE (design docs/plans/2026-10-
+ * 04-nodus-evm-chain-integration-design.md rev 3 §9; operator decisions
+ * 2026-10-04-nodus-evm-kurultay-k1.md / -k2-summary.md).
+ *
+ * EDGE TRIGGER at block h, the phase-6b' shape: chain_config param 14
+ * (EVM_ACTIVE) present at h+1 AND absent at h — the committed row's
+ * effective height H is h+1. Then, in this order, inside the block's
+ * transaction:
+ *   1. the row's value must be this build's DNAC_CFG_EVM_ACTIVE_D (the
+ *      scalar rules admit nothing else; another value is this node's
+ *      storage) and this build must carry the EVM generation — else FAULT;
+ *   2. the schema must be S17 (the EVM tables, the CORE reserve row) —
+ *      a node-local shape, so FAULT, never a verdict;
+ *   3. SYSTEM and CORE switch from NODUS_RT_GEN_EVM_BASE to
+ *      NODUS_RT_GEN_EVM (nodus_witness_domreg_generation_switch — the
+ *      HF-4 procedure); "not at the base" is a FAULT (the vote's stateful
+ *      rule refused every vote cast away from the base);
+ *   4. the EVM domain's record is written DIRECTLY ACTIVE with NO head
+ *      (nodus_witness_domreg_register_active), its manifest exactly the one
+ *      the D literal hashed (genesis_state_root = the empty EVM root);
+ *      an already-registered domain 2 is a FAULT;
+ *   5. SYSTEM and CORE are declared touched (CORE's root moves: its supply
+ *      leaf now commits the reserve, "NDS.SUPPLY.v3"; HF-2 is on by the
+ *      vote's rule, so an unchanged root would be accepted too).
+ * The 6c lifecycle re-scan right after then sees an ACTIVE domain with no
+ * head and activates it through head_activate (state_init = the empty
+ * tries and zero META, the root checked against the manifest's genesis
+ * root, the height-0 history row) — so block H starts with three domains
+ * under the EVM generation. Either chain_config read unanswerable → FAULT.
+ * Not the edge → nothing (byte-inert on every block of every chain that
+ * has no param-14 row).
+ * @return 0 / -2 node FAULT (reason written).
+ */
+static int phase_6b_evm_activation(nodus_witness_t *w, nodus_v2_block_t *blk,
+                                   dom_ctx_t *doms, size_t n_dom) {
+    const uint64_t h = blk->global_height;
+    uint64_t h_next = 0, v_next = 0, v_h = 0;
+    int at_next, at_h;
+
+    if (dna_ck_add_u64(h, 1u, &h_next) != 0 ||
+        h_next > (uint64_t)INT64_MAX) {
+        V2AP_FAULT("phase 6b'': height %llu + 1 leaves the int64 range of "
+                   "chain_config effective heights", (unsigned long long)h);
+        return -2;
+    }
+    at_next = nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_EVM_ACTIVE,
+                                         h_next, 0ULL, &v_next);
+    at_h = nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_EVM_ACTIVE, h,
+                                      0ULL, &v_h);
+    if (at_next < 0 || at_h < 0) {
+        V2AP_FAULT("phase 6b'': EVM_ACTIVE at heights %llu/%llu is "
+                   "unreadable on this node - refusing to decide the EVM "
+                   "edge on a guess", (unsigned long long)h_next,
+                   (unsigned long long)h);
+        return -2;
+    }
+    if (!(at_next == 0 && at_h == 1))
+        return 0;                       /* not the H-1 edge: nothing     */
+    if (v_next != (uint64_t)DNAC_CFG_EVM_ACTIVE_D) {
+        V2AP_FAULT("phase 6b'': the EVM_ACTIVE row effective at %llu reads "
+                   "0x%016llx, not this build's D 0x%016llx",
+                   (unsigned long long)h_next, (unsigned long long)v_next,
+                   (unsigned long long)DNAC_CFG_EVM_ACTIVE_D);
+        return -2;
+    }
+#ifndef NODUS_EVM_ENABLED
+    (void)doms;
+    (void)n_dom;
+    V2AP_FAULT("phase 6b'': the EVM activation edge is at height %llu but "
+               "this build does not carry the EVM generation (built "
+               "without NODUS_EVM_ENABLED)", (unsigned long long)h);
+    return -2;
+#else
+    {
+        uint32_t ver = 0;
+        if (nodus_witness_db_schema_version(w, &ver) != 0 ||
+            ver != NODUS_V2_SCHEMA_VERSION_S17) {
+            V2AP_FAULT("phase 6b'': the EVM edge needs schema S17; this "
+                       "node's database is at %u", (unsigned)ver);
+            return -2;
+        }
+    }
+    dna_domain_manifest_t evm_man;
+    {
+        uint64_t d = 0;
+        if (nodus_runtime_evm_activation_digest(&d, &evm_man) != 0 ||
+            d != (uint64_t)DNAC_CFG_EVM_ACTIVE_D) {
+            V2AP_FAULT("%s", "phase 6b'': the compiled EVM generation does "
+                       "not re-derive this build's EVM_ACTIVE literal");
+            return -2;
+        }
+    }
+    int src = nodus_witness_domreg_generation_switch(w, NODUS_RT_GEN_EVM_BASE,
+                                                     NODUS_RT_GEN_EVM);
+    if (src == 1) {
+        V2AP_FAULT("phase 6b'': the EVM vote reaches its edge at height "
+                   "%llu but the registry is not at the base generation %u",
+                   (unsigned long long)h, (unsigned)NODUS_RT_GEN_EVM_BASE);
+        return -2;
+    }
+    if (src != 0) {
+        V2AP_FAULT("phase 6b'': the registry rewrite to the EVM generation "
+                   "failed on this node at height %llu",
+                   (unsigned long long)h);
+        return -2;
+    }
+    int rrc = nodus_witness_domreg_register_active(w, &evm_man);
+    if (rrc != 0) {
+        V2AP_FAULT("phase 6b'': the EVM domain record could not be written "
+                   "at height %llu (%s)", (unsigned long long)h,
+                   rrc == 1 ? "domain 2 is already registered"
+                            : "invalid manifest or storage fault");
+        return -2;
+    }
+    {
+        dom_ctx_t *dsys = dom_for(doms, n_dom, DNA_DOMAIN_SYSTEM);
+        dom_ctx_t *dcore = dom_for(doms, n_dom, DNA_DOMAIN_CORE);
+        if (!dsys || !dcore) {
+            V2AP_FAULT("phase 6b'': SYSTEM or CORE is absent from the "
+                       "block-start working set at height %llu",
+                       (unsigned long long)h);
+            return -2;
+        }
+        dsys->touched = 1;
+        dcore->touched = 1;
+    }
+    QGP_LOG_INFO(LOG_TAG, "Nodus EVM: rule-set generation %u -> %u and the EVM "
+                 "domain registered ACTIVE at the end of height %llu (D "
+                 "0x%016llx); height %llu is judged under the EVM "
+                 "generation", (unsigned)NODUS_RT_GEN_EVM_BASE,
+                 (unsigned)NODUS_RT_GEN_EVM, (unsigned long long)h,
+                 (unsigned long long)DNAC_CFG_EVM_ACTIVE_D,
+                 (unsigned long long)h_next);
+    return 0;
+#endif
+}
+
 static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
     /* A NULL/misused argument is a LOCAL programming fault, not a
      * statement about a block — there is no block here to judge.
@@ -3008,14 +4393,21 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
          * is NOT NULL, so the insert could not even be expressed; below
          * S16 the reward tables the boundary writes are not guaranteed.
          * Nothing about the block is judged by either refusal — both are
-         * this node's shape. */
+         * this node's shape. Nodus EVM: S17 = S16 + the EVM domain's EMPTY
+         * tables and the CORE EVM reserve row at 0
+         * (nodus_witness_v2_schema.h), so the lane writes the same rows
+         * at either rung; S17 is the live rung (every builder and the
+         * at-open rung, nodus_witness.c, migrate to it). The EVM edge
+         * itself (phase 6b'') FAULTs below S17. */
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-            ver != NODUS_V2_SCHEMA_VERSION_S16) {
+            (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
+             ver != NODUS_V2_SCHEMA_VERSION_S17)) {
             V2AP_FAULT("cometbft lane: this node's schema version is %u, "
-                       "not %u - the Comet block row cannot be written "
-                       "here; nothing about the block was judged",
+                       "not %u or %u - the Comet block row cannot be "
+                       "written here; nothing about the block was judged",
                        (unsigned)ver,
-                       (unsigned)NODUS_V2_SCHEMA_VERSION_S16);
+                       (unsigned)NODUS_V2_SCHEMA_VERSION_S16,
+                       (unsigned)NODUS_V2_SCHEMA_VERSION_S17);
             return -2;
         }
         /* The HOST owns the transaction (D-23 rev 5 (5)): this entry
@@ -3344,6 +4736,36 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
         }
     }
 
+    /* ── 0c. Nodus EVM: THE EVM BLOCK GAS SUM, re-checked (design §8: "apply
+     * aynı ayrıştırıcıyla FAULT olarak denetler"). The summed DECLARED gas
+     * of every envelope's EVM leg (bridge ops count 21 000) — through the
+     * ONE decoder and the ONE share rule ProcessProposal's seam and
+     * PrepareProposal's pack apply (nodus_witness_v2_ctx_block_gas_add);
+     * a refused or failing item keeps its share, an undecodable envelope
+     * has none. ProcessProposal REJECTs a block over the limit, so a
+     * decided one over it means honest validators did not decide it: this
+     * node stops (FAULT), never a verdict. Inert before the EVM edge
+     * (bctx.evm_active 0: the add is a no-op). */
+    if (bctx.evm_active) {
+        uint64_t gas_sum = 0;
+        for (size_t i = 0; i < blk->n_envs; i++) {
+            dna_env_view_t gv;
+            memset(&gv, 0, sizeof(gv));
+            if (dna_env_decode(blk->envs[i].env_bytes, blk->envs[i].env_len,
+                               &gv) != 0)
+                continue;                /* no declared share            */
+            if (nodus_witness_v2_ctx_block_gas_add(&bctx, &gv,
+                                                   &gas_sum) != 0) {
+                V2AP_FAULT("phase 0c: the block's declared EVM gas exceeds "
+                           "EVM_BLOCK_GAS_LIMIT %llu at envelope %llu - "
+                           "ProcessProposal refuses such a block",
+                           (unsigned long long)bctx.evm_block_gas_limit,
+                           (unsigned long long)i);
+                goto fail_fault_pre;
+            }
+        }
+    }
+
     /* ── 1. THE transaction ─────────────────────────────────────────
      * The HOST owns it (D-23 rev 5 (5)): `apply_verified_block` opened
      * one before `FinalizeBlock` and `app.commit` will close it, so this
@@ -3447,6 +4869,8 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
             res->code = NODUS_V2_TX_OK;
             res->gas_wanted = 0;
             res->gas_used = 0;
+            res->data_len = 0;          /* Nodus EVM: set only by an applied */
+            memset(res->data, 0, sizeof(res->data));   /* EVM leg       */
 
             snprintf(sp, sizeof(sp), "cmt_item_%llu",
                      (unsigned long long)i);
@@ -3603,11 +5027,15 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                 goto cmt_item_failed;
             }
 
-            /* ── RESERVE against what is LEFT of the block's budget ── */
+            /* ── RESERVE against what is LEFT of the block's budget ──
+             * Nodus EVM: an ABI-2 leg is the plan's streamed leg
+             * (env_stream_leg — 0 on every chain without an ABI-2
+             * runtime, which makes this dna_meter_reserve exactly). */
             {
                 dna_meter_status_t mst =
-                    dna_meter_reserve(&meters[i], bctx.policy, v,
-                                      &bctx.budget);
+                    dna_meter_reserve_ex(&meters[i], bctx.policy, v,
+                                         &bctx.budget,
+                                         env_stream_leg(v, doms, n_dom));
 
                 if (mst == DNA_METER_ERR_FAULT) {
                     V2AP_FAULT("cometbft item %llu: the meter reported an "
@@ -3647,7 +5075,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
             {
                 int rc = exec_one_env(w, blk, i, chain_id, blk->epoch,
                                       doms, n_dom, &pf[i], &meters[i],
-                                      auths, reads, resbuf, NULL,
+                                      auths, reads, resbuf, NULL, 0, res,
                                       blk->out_reason,
                                       sizeof blk->out_reason);
                 if (rc == -2) {
@@ -3740,6 +5168,10 @@ cmt_item_failed:
                 (void)dna_meter_abort(&meters[i]);
             }
             res->code = code;
+            /* Nodus EVM: a refused item has no receipt — whatever an EVM leg
+             * of it wrote here went away with its savepoint */
+            res->data_len = 0;
+            memset(res->data, 0, sizeof(res->data));
             blk->cmt.results_len = i + 1;
             blk->out_reason[0] = '\0';
             if (nodus_witness_db_rollback_to_savepoint(w, sp) != 0 ||
@@ -3822,6 +5254,8 @@ cmt_item_failed:
             res->code = NODUS_V2_TX_OK;
             res->gas_wanted = 0;
             res->gas_used   = 0;
+            res->data_len   = 0;        /* Nodus EVM: a claim carries no Data */
+            memset(res->data, 0, sizeof(res->data));
             snprintf(sp, sizeof(sp), "cmt_claim_%llu",
                      (unsigned long long)i);
             if (nodus_witness_db_savepoint(w, sp) != 0) {
@@ -3945,6 +5379,14 @@ cmt_claim_failed:
      * SYSTEM + CORE declared touched). BEFORE 6c, so the re-scan below
      * reloads the generation-2 manifests and runtimes. */
     if (phase_6b_ruleset_switch(w, blk, doms, n_dom) != 0)
+        goto fail_fault;               /* the helper wrote the reason     */
+
+    /* 6b''. Nodus EVM — the EVM ACTIVATION EDGE, at the end of block H-1 of the
+     * EVM_ACTIVE vote only (phase_6b_evm_activation above): SYSTEM / CORE
+     * to the EVM generation, the EVM record ACTIVE with no head. After 6b'
+     * and BEFORE 6c, so the re-scan activates the EVM domain through
+     * head_activate in this same block. */
+    if (phase_6b_evm_activation(w, blk, doms, n_dom) != 0)
         goto fail_fault;               /* the helper wrote the reason     */
 
     /* 6c. LIFECYCLE re-scan (unchanged from S5/S6: canonical DomainHead
@@ -5096,12 +6538,19 @@ int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
      * tokenomics-v3 P1 moves this gate's accepted value S14 -> S15 (the
      * derivation now migrates to S15 before this point); tokenomics-v3
      * P2 moves it S15 -> S16 (the reward pool column and the two reward
-     * tables; the derivation migrates to S16 first). */
+     * tables; the derivation migrates to S16 first). Nodus EVM: every live
+     * builder migrates to S17 first (the EVM tables, empty, and the CORE
+     * EVM reserve row at 0 — nothing a generation-1 genesis reads), so the
+     * gate accepts S17; S16 stays accepted because S17 is a pure
+     * superset whose additions no genesis step touches (the S16 test
+     * fixtures and an S16 scratch database produce the identical
+     * genesis). */
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-        ver != NODUS_V2_SCHEMA_VERSION_S16) {
-        QGP_LOG_ERROR(LOG_TAG, "cometbft genesis needs schema S16, the "
-                      "database is at %u — refusing", (unsigned)ver);
+        (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
+         ver != NODUS_V2_SCHEMA_VERSION_S17)) {
+        QGP_LOG_ERROR(LOG_TAG, "cometbft genesis needs schema S16 or S17, "
+                      "the database is at %u — refusing", (unsigned)ver);
         return -1;
     }
 

@@ -242,10 +242,13 @@ int main(void) {
     CHECK(DNAC_CFG_RULESET_GEN2 == 9);
     CHECK(DNAC_CFG_NAME_PRICE_3P == 10 && DNAC_CFG_NAME_PRICE_4P == 11 &&
           DNAC_CFG_NAME_PRICE_5P == 12 && DNAC_CFG_NAME_PRICE_6P == 13);
-    CHECK(DNAC_CFG_PARAM_MAX_ID == 13);
-    for (unsigned id = 9; id <= 13; id++)
+    /* Nodus EVM (design 2026-10-04-nodus-evm-chain-integration-design.md §9) appends
+     * params 14 EVM_ACTIVE and 15 EVM_BLOCK_GAS_LIMIT after HF-4's 9-13;
+     * HF-4's own ids are unchanged and still read by consensus. */
+    CHECK(DNAC_CFG_PARAM_MAX_ID == 15);
+    for (unsigned id = 9; id <= 15; id++)
         CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id));
-    CHECK(!dnac_cfg_param_read_by_consensus(14));
+    CHECK(!dnac_cfg_param_read_by_consensus(16));
     CHECK(DNAC_CFG_RULESET_GEN2_D2 <= (uint64_t)INT64_MAX);
     CHECK(DNAC_RULESET_SWITCH_SPEC_VERSION == 1u);
 

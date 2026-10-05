@@ -119,6 +119,15 @@
                                              * NODUS_MAX_DELEGATORS_PER_VALIDATOR */
 #include "dnac/dnac.h"                      /* DNAC_MIN_FEE_RAW              */
 #include "dnac/manifest_wire.h"             /* genesis claim codec           */
+#include "dnac/evm_call_wire.h"             /* EVM leg + EVMFUND call bytes  */
+#include "client/nodus_v2_evm.h"           /* the shared EVM builder
+                                             * (networked builds only — see
+                                             * "SMART CONTRACTS")            */
+#include "witness/nodus_witness_rt_evm.h"   /* NODUS_RT_EVM_* — header
+                                             * constants only, no witness
+                                             * link                          */
+#include "evm/evm.h"                        /* EVM_MAX_INITCODE_SIZE — header
+                                             * constant only, no engine link */
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
 #include "crypto/utils/qgp_fingerprint.h"
@@ -126,6 +135,7 @@
 
 #ifndef NODUS_SEND_OFFLINE_ONLY
 #include "nodus/nodus.h"
+#include "protocol/nodus_cbor.h"           /* §18 reads: args + reply JSON  */
 #include "crypto/nodus_identity.h"
 #include "crypto/nodus_sign.h"
 #include "nc_core.h"                        /* Messages host (NC-4b)         */
@@ -4082,6 +4092,1097 @@ int nsw_test_msig_review(const char *now_dec) {
 }
 #endif
 
+/* ═══ SMART CONTRACTS — the EVM domain (Nodus EVM) ════════════════════════
+ *
+ * Design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md rev 3 §2
+ * (envelope = [CORE EVMFUND leg, op 9] + [EVM leg, domain 2, ops 1-5];
+ * EVM sender = SHA3-512(ML-DSA-87 pk)[0..32]; the fee is a CORE-funded
+ * DECLARED ceiling: res_max_total_units >= static units + gas_limit × w_gas
+ * + FAIL_RESERVE for CALL/CREATE, fee >= units × gas price), §5 (q = 10^10),
+ * §16 (wallet). Decisions 2026-10-04-nodus-evm-kurultay-k1.md (operator 1, 3,
+ * 4) and 2026-10-04-nodus-evm-kurultay-k2-summary.md (operator 2: one pending
+ * EVM transaction per sender — the wallet's queue, src/evm/contract.js).
+ *
+ * The envelope is built by the SHARED builder nodus-cli `evm` uses
+ * (nodus/src/client/nodus_v2_evm.c, Nodus EVM Faz 4 — this file's former
+ * nsw_evm_core / nsw_evm_min_units moved there): a transfer section
+ * funded by this wallet's listed coins (ascending by nullifier until the
+ * sum covers lock + fee, change seeded from the input nullifiers), the
+ * EXACT funding / bridge effect declarations and the per-role read count
+ * of the node (CORE EVMFUND reads in_count + 1, + the reserve for DEPOSIT /
+ * RELEASE), two kind-1 legs signed by this ONE key, then the bytes are
+ * decoded back and compared with the request before anything is kept.
+ * The call bytes are shared/dnac/evm_call_wire.c — the codec the node
+ * itself decodes with.
+ *
+ * THE EVM LEG'S RULESET IDENTITY is the compiled EVM generation's
+ * (nodus_witness_runtime.h NODUS_RT_EVM_RULESET_VERSION_GEVM /
+ * NODUS_RT_EVM_RULESET_HASH_GEVM_INIT — the bytes the node's table pins);
+ * the network setting (nsw_evm_net_set, src/nodus/send-module.js
+ * NODUS_EVM_NETWORK) must equal it, or smart contracts stay off. The
+ * rule-set generation is the node's answer (nsw_select_generation): the
+ * EVM generation's pinned SYSTEM policy weighs CORE op 9
+ * (nodus_ruleset_pins.h G3); an older generation does not, and the meter
+ * plan refuses (DNA_METER_ERR_OP_WEIGHT) — fail closed, no default weight.
+ * READS (design §18): nsw_evm_query — one evm_* request on this session,
+ * the reply map as JSON (nodus_client_dnac_query_raw).
+ * Networked builds only (not in the native vector). */
+
+/* EVM op ids and widths: the shared codec restates the node's constants
+ * (nodus_witness_rt_evm.h) — pinned equal here, where both are visible. */
+_Static_assert(DNA_EVM_OP_CALL == NODUS_RT_EVM_CALL &&
+               DNA_EVM_OP_CREATE == NODUS_RT_EVM_CREATE &&
+               DNA_EVM_OP_DEPOSIT == NODUS_RT_EVM_DEPOSIT &&
+               DNA_EVM_OP_WITHDRAW == NODUS_RT_EVM_WITHDRAW &&
+               DNA_EVM_OP_REDEEM == NODUS_RT_EVM_REDEEM,
+               "EVM runtime op ids");
+_Static_assert(DNA_EVM_CALL_VER == NODUS_RT_EVM_CALL_VER, "EVM call ver");
+_Static_assert(DNA_EVM_Q == NODUS_RT_EVM_Q, "wei per raw unit");
+_Static_assert(DNA_EVM_MAX_INITCODE == EVM_MAX_INITCODE_SIZE,
+               "the EIP-3860 initcode cap of the engine");
+_Static_assert(DNA_EVMFUND_OUT_LEN == NODUS_V2_SPEND_OUT_LEN &&
+               DNA_EVMFUND_MAX_IN == NODUS_V2_SPEND_MAX_IN,
+               "the funding section is a transfer section");
+
+#define NSW_EVM_ACCESS_MAX        16384u
+#define NSW_EVM_DATA_MAX          ((uint32_t)DNA_ENV_MAX_TOTAL_LEN)
+
+/* the EVM leg's ruleset identity (a network setting — see above; it must
+ * equal the compiled EVM generation's) */
+static struct {
+    int      has;
+    uint32_t version;
+    uint8_t  hash[64];
+} g_evm_rs;
+
+static const uint8_t NSW_EVM_RS_HASH[64] = NODUS_RT_EVM_RULESET_HASH_GEVM_INIT;
+
+/* the request: contract data / initcode, access list, declaration, and
+ * the node's evm_estimate answer (ue at ge) the read units come from */
+static struct {
+    uint8_t *data;
+    uint32_t data_len;
+    uint8_t  access[NSW_EVM_ACCESS_MAX];
+    size_t   access_len;
+    uint16_t n_access;
+    uint64_t n_access_keys;              /* storage keys over all entries */
+    uint32_t effects, effect_bytes;      /* 0 = the builder's default */
+    uint64_t est_units, est_gas;         /* 0 = none                   */
+} g_evm_req;
+
+/* what was read back from the last EVM envelope (valid only while it is
+ * g_built's envelope — nsw_evm_built_ok) */
+static struct {
+    int      valid;
+    uint8_t  intent[64];
+    int      op;
+    char     to[65], value[65], ticket[129], dest[129];
+    char     gas[NSW_U64_DEC], nonce[NSW_U64_DEC], units[NSW_U64_DEC],
+             amount[NSW_U64_DEC];
+    char     created[65];                /* CREATE: the address it deploys */
+    uint32_t data_len;
+} g_evm_built;
+
+static int nsw_evm_built_ok(void) {
+    return g_evm_built.valid && g_built.env &&
+           memcmp(g_evm_built.intent, g_built.intent_id, 64) == 0;
+}
+int nsw_evm_built_op(void)            { return nsw_evm_built_ok() ? g_evm_built.op : 0; }
+const char *nsw_evm_built_to(void)    { return nsw_evm_built_ok() ? g_evm_built.to : ""; }
+const char *nsw_evm_built_value(void) { return nsw_evm_built_ok() ? g_evm_built.value : ""; }
+const char *nsw_evm_built_gas(void)   { return nsw_evm_built_ok() ? g_evm_built.gas : ""; }
+const char *nsw_evm_built_nonce(void) { return nsw_evm_built_ok() ? g_evm_built.nonce : ""; }
+const char *nsw_evm_built_units(void) { return nsw_evm_built_ok() ? g_evm_built.units : ""; }
+const char *nsw_evm_built_amount(void){ return nsw_evm_built_ok() ? g_evm_built.amount : ""; }
+const char *nsw_evm_built_dest(void)  { return nsw_evm_built_ok() ? g_evm_built.dest : ""; }
+const char *nsw_evm_built_ticket(void){ return nsw_evm_built_ok() ? g_evm_built.ticket : ""; }
+int nsw_evm_built_data_len(void) {
+    return nsw_evm_built_ok() ? (int)g_evm_built.data_len : -1;
+}
+/* A CREATE: the 32-byte address (64 hex) it deploys to, derived from the
+ * SIGNED envelope's EVM sender (SHA3-512(pk)[0..32]) and its read-back
+ * nonce with the shared rule (nodus_v2_evm_create_address — the engine's
+ * evm_compute_contract_address in 32-byte mode). A receipt's "cr" that
+ * differs from it is the connected node's error, not this transaction's
+ * contract (red-team 1 F11). "" for every other op. */
+const char *nsw_evm_built_created(void) {
+    return nsw_evm_built_ok() ? g_evm_built.created : "";
+}
+
+/* ── settings and request ── */
+
+/* The EVM leg's ruleset identity: version (decimal) and its 64-byte hash
+ * (128 lowercase hex). Set once, before unlock (like the network
+ * settings). It must equal the compiled EVM generation's identity
+ * (nodus_witness_runtime.h NODUS_RT_EVM_RULESET_*_GEVM) — a page whose
+ * setting differs from the rules it was built with offers no smart
+ * contracts. */
+int nsw_evm_net_set(const char *version_dec, const char *hash_hex) {
+    uint64_t v = 0;
+    uint8_t h[64];
+    if (g_used) return nsw_fail("Settings are fixed once the wallet is open.");
+    if (nsw_parse_u64(version_dec, &v) != 0 || v == 0 || v > UINT32_MAX ||
+        nsw_parse_hex(hash_hex, h, sizeof(h)) != 0)
+        return nsw_fail("Invalid smart-contract network setting.");
+    if (v != NODUS_RT_EVM_RULESET_VERSION_GEVM ||
+        memcmp(h, NSW_EVM_RS_HASH, 64) != 0)
+        return nsw_fail("The smart-contract setting does not match the "
+                        "rules this page was built with.");
+    g_evm_rs.version = (uint32_t)v;
+    memcpy(g_evm_rs.hash, h, 64);
+    g_evm_rs.has = 1;
+    return 0;
+}
+
+int nsw_evm_available(void) { return g_evm_rs.has; }
+
+/* The rule-set generation that carries the EVM (nodus_witness_runtime.h
+ * NODUS_RT_GEN_EVM): a node whose dnac_ruleset_info names an older one has
+ * not voted the EVM in (src/nodus/client.js hides the panel then). */
+int nsw_evm_generation(void) { return (int)NODUS_RT_GEN_EVM; }
+
+/* The node's evm_estimate answer for the NEXT CALL / CREATE build: its
+ * `ue` and `ge` (decimal; "0", "0" = none). The build adds the read units
+ * it implies (ue − the reference shape's units at ge, client/nodus_v2_evm.h
+ * "UNITS") to the minimum of its own shape. The answer is ONE node's: a
+ * ge outside 1..EVM_TX_GAS_CAP is refused here, and the read units it
+ * implies are checked against the engine's read cap in nsw_evm_core
+ * (red-team 1 F9 — refused, never clamped). `gu` ≤ ge is checked by the
+ * caller, which holds the reply (src/evm/contract.js). */
+int nsw_evm_set_estimate(const char *units_dec, const char *gas_dec) {
+    uint64_t u = 0, g = 0;
+    if (nsw_parse_u64(units_dec, &u) != 0 || nsw_parse_u64(gas_dec, &g) != 0 ||
+        (u != 0 && (g == 0 || g > NODUS_RT_EVM_TX_GAS_CAP)))
+        return nsw_fail("Invalid smart-contract estimate.");
+    g_evm_req.est_units = u;
+    g_evm_req.est_gas = g;
+    return 0;
+}
+
+/* The contract data (CALL) or initcode (CREATE) of the next build: a
+ * buffer of `len` bytes the caller fills; len 0 = none. NULL on refusal
+ * (or for len 0). */
+uint8_t *nsw_evm_data_alloc(int len) {
+    if (g_evm_req.data) {
+        nsw_wipe(g_evm_req.data, g_evm_req.data_len);
+        free(g_evm_req.data);
+    }
+    g_evm_req.data = NULL;
+    g_evm_req.data_len = 0;
+    if (len <= 0 || (uint32_t)len > NSW_EVM_DATA_MAX) return NULL;
+    g_evm_req.data = calloc(1, (size_t)len);
+    if (g_evm_req.data) g_evm_req.data_len = (uint32_t)len;
+    return g_evm_req.data;
+}
+
+void nsw_evm_access_reset(void) {
+    memset(g_evm_req.access, 0, sizeof(g_evm_req.access));
+    g_evm_req.access_len = 0;
+    g_evm_req.n_access = 0;
+    g_evm_req.n_access_keys = 0;
+}
+
+/* One access-list entry: a 32-byte address (64 hex) and its storage keys
+ * as concatenated 64-hex words ("" for none). */
+int nsw_evm_access_add(const char *addr_hex, const char *keys_hex) {
+    uint8_t addr[32];
+    static uint8_t keys[NSW_EVM_ACCESS_MAX];
+    size_t klen = 0;
+    if (nsw_parse_hex(addr_hex, addr, sizeof(addr)) != 0)
+        return nsw_fail("Invalid address in the access list.");
+    if (keys_hex && keys_hex[0] &&
+        (nsw_parse_hex_var(keys_hex, keys, sizeof(keys), &klen) != 0 ||
+         klen % 32 != 0 || klen / 32 > 0xFFFFu))
+        return nsw_fail("Invalid storage key in the access list.");
+    if (g_evm_req.n_access == 0xFFFFu ||
+        dna_evm_access_put(g_evm_req.access, sizeof(g_evm_req.access),
+                           &g_evm_req.access_len, addr, (uint16_t)(klen / 32),
+                           keys) != 0)
+        return nsw_fail("The access list is too long.");
+    g_evm_req.n_access++;
+    g_evm_req.n_access_keys += klen / 32;
+    return 0;
+}
+
+/* The EVM leg's declared effect ceilings for CALL / CREATE (0, 0 = the
+ * default). They must carry the fixed failure result and stay within the
+ * streamed-leg caps (res_meter.h DNA_METER_EVM_FAIL_*, DNA_METER_STREAM_*);
+ * every declared effect and byte is paid for in the fee ceiling. */
+int nsw_evm_set_decl(int effects, int effect_bytes) {
+    if (effects == 0 && effect_bytes == 0) {
+        g_evm_req.effects = g_evm_req.effect_bytes = 0;
+        return 0;
+    }
+    if (effects < (int)DNA_METER_EVM_FAIL_EFFECTS ||
+        (uint32_t)effects > DNA_METER_STREAM_MAX_EFFECTS ||
+        effect_bytes < (int)DNA_METER_EVM_FAIL_BYTES ||
+        (uint32_t)effect_bytes > DNA_METER_STREAM_MAX_EFFECT_BYTES)
+        return nsw_fail("Invalid effect ceiling for a smart-contract call.");
+    g_evm_req.effects = (uint32_t)effects;
+    g_evm_req.effect_bytes = (uint32_t)effect_bytes;
+    return 0;
+}
+
+/* ── the build ── */
+
+/*
+ * Build + sign + read back ONE EVM envelope from g_req_coins through the
+ * shared builder (nodus_v2_evm_build). `call`: the EVM leg (op and its
+ * scalars; data and access list come from g_evm_req). `units_req`: the
+ * declared unit ceiling — 0 = the smallest the node accepts for THIS
+ * envelope's shape plus, for a CALL / CREATE, the read units the node's
+ * evm_estimate implies (nsw_evm_set_estimate). `expiry` is checked by the
+ * caller (nsw_expiry_check). On success g_built + g_evm_built hold the
+ * envelope and the fields read back from its bytes. Large structs are
+ * heap; this runs after every network wait.
+ */
+static int nsw_evm_core(const uint8_t *pk, const uint8_t *sk,
+                        const uint8_t chain32[DNA_CHAIN_ID_LEN],
+                        uint64_t tip, uint64_t gas_price,
+                        const nodus_v2_ruleset_id_t *rs, uint32_t evm_version,
+                        const uint8_t evm_hash[64], dna_evm_call_t *call,
+                        uint64_t units_req, uint64_t expiry) {
+    nsw_built_clear();
+    memset(&g_evm_built, 0, sizeof(g_evm_built));
+    const uint32_t op = call->op;
+    const int is_vm = op == DNA_EVM_OP_CALL || op == DNA_EVM_OP_CREATE;
+    if (is_vm) {
+        call->data = g_evm_req.data;
+        call->data_len = g_evm_req.data_len;
+        call->access = g_evm_req.access_len ? g_evm_req.access : NULL;
+        call->access_len = g_evm_req.access_len;
+        call->n_access = g_evm_req.n_access;
+    } else if (g_evm_req.data_len || g_evm_req.n_access) {
+        return nsw_fail("Contract data was given for a transfer; nothing "
+                        "was built.");
+    }
+    if (g_req_n < 1) return nsw_fail("Insufficient NODUS balance.");
+
+    /* the read units of a CALL / CREATE: the node's evm_estimate `ue` minus
+     * the reference shape's units at its `ge` (client/nodus_v2_evm.h
+     * "UNITS") — the same function the node priced `ue` with. `ue` is ONE
+     * node's answer, so it is REFUSED (never clamped — red-team 1 F9) unless
+     *   0 <= ue − ref <= (EVM_READS_BASE + 2 × access-list keys) × w_read
+     * — the engine's logical-read cap of one leg (nodus_witness_runtime.h
+     * NODUS_RT_EVM_READS_BASE; nodus_witness_rt_evm.c fixes max_reads =
+     * READS_BASE + 2 × n_access_keys), each read charged w_read of the
+     * generation's SYSTEM policy (the node's estimate multiplies by the same
+     * weight, nodus_witness_handlers.c evm_estimate). A node that answers
+     * more reads than any leg may make is asking for a fee no execution can
+     * use. */
+    uint64_t read_units = 0;
+    if (is_vm && units_req == 0 && g_evm_req.est_units != 0) {
+        uint64_t ref = 0, cap_reads = 0, cap_units = 0;
+        if (nodus_v2_evm_ref_units(rs->meter_policy, rs->core_ruleset_version,
+                                   op, call->data_len, g_evm_req.est_gas,
+                                   &ref) != NODUS_V2_SPEND_OK)
+            return nsw_fail("Smart contracts are not available under the "
+                            "network's current transaction rules. Nothing "
+                            "was built.");
+        if (g_evm_req.est_units < ref)
+            return nsw_fail("The network's estimate for this transaction is "
+                            "malformed (its resource ceiling is below the "
+                            "smallest one possible). Nothing was built.");
+        read_units = g_evm_req.est_units - ref;
+        if (dna_ck_mul_u64(2u, g_evm_req.n_access_keys, &cap_reads) != 0 ||
+            dna_ck_add_u64(NODUS_RT_EVM_READS_BASE, cap_reads,
+                           &cap_reads) != 0 ||
+            dna_ck_mul_u64(cap_reads, rs->meter_policy->w_read,
+                           &cap_units) != 0 ||
+            read_units > cap_units)
+            return nsw_fail("The network's estimate for this transaction is "
+                            "malformed (it asks for more reads than a "
+                            "transaction may make). Nothing was built.");
+    }
+
+    nodus_v2_evm_req_t req;
+    memset(&req, 0, sizeof(req));
+    req.rs                  = rs;
+    req.evm_ruleset_version = evm_version;
+    req.evm_ruleset_hash    = evm_hash;
+    req.chain32             = chain32;
+    req.tip                 = tip;
+    req.expiry_height       = expiry;
+    req.gas_price           = gas_price;
+    req.pk                  = pk;
+    req.sk                  = sk;
+    req.call                = *call;
+    req.effects             = g_evm_req.effects;
+    req.effect_bytes        = g_evm_req.effect_bytes;
+    req.units               = units_req;
+    req.evm_read_units      = read_units;
+    req.coins               = g_req_coins;
+    req.n_coins             = g_req_n;
+    nodus_v2_evm_built_t *b = calloc(1, sizeof(*b));
+    if (!b) return nsw_fail("Out of memory.");
+    nodus_v2_evm_err_t err;
+    int brc = nodus_v2_evm_build(&req, b, &err);
+    if (brc != NODUS_V2_SPEND_OK) {
+        int rc;
+        switch (brc) {
+        case NODUS_V2_EVM_ERR_GAS:
+            rc = nsw_fail("The gas limit must be between 1 and %llu.",
+                          (unsigned long long)NODUS_RT_EVM_TX_GAS_CAP);
+            break;
+        case NODUS_V2_EVM_ERR_NO_CODE:
+            rc = nsw_fail("A contract deployment needs its bytecode.");
+            break;
+        case NODUS_V2_EVM_ERR_AMOUNT:
+            rc = nsw_fail("Enter an amount above zero.");
+            break;
+        case NODUS_V2_EVM_ERR_BRIDGE_DATA:
+            rc = nsw_fail("Contract data was given for a transfer; nothing "
+                          "was built.");
+            break;
+        case NODUS_V2_EVM_ERR_DECL:
+            rc = nsw_fail("Invalid effect ceiling for a smart-contract call.");
+            break;
+        case NODUS_V2_EVM_ERR_OP_WEIGHT:
+            rc = nsw_fail("Smart contracts are not available under the "
+                          "network's current transaction rules. Nothing was "
+                          "built.");
+            break;
+        case NODUS_V2_SPEND_ERR_METER:
+            rc = nsw_fail("The smart-contract transaction could not be priced "
+                          "(meter %d).", err.meter_status);
+            break;
+        case NODUS_V2_EVM_ERR_UNITS_LOW:
+            rc = nsw_fail("The declared resource ceiling %llu is below this "
+                          "transaction's minimum of %llu. Nothing was built.",
+                          (unsigned long long)err.units,
+                          (unsigned long long)err.min_units);
+            break;
+        case NODUS_V2_SPEND_ERR_INSUFFICIENT:
+            rc = nsw_fail("Insufficient NODUS balance.");
+            break;
+        case NODUS_V2_SPEND_ERR_MAX_INPUTS:
+            rc = nsw_fail("This amount needs more than 15 coins; send less or "
+                          "combine coins first.");
+            break;
+        case NODUS_V2_SPEND_ERR_OVERFLOW:
+        case NODUS_V2_SPEND_ERR_INPUT_SUM:
+            rc = nsw_fail("Amount is out of range.");
+            break;
+        case NODUS_V2_SPEND_ERR_GAS_OVERFLOW:
+            rc = nsw_fail("The network fee is out of range.");
+            break;
+        case NODUS_V2_SPEND_ERR_FEE_UNSETTLED:
+            rc = nsw_fail("The network fee could not be settled.");
+            break;
+        case NODUS_V2_SPEND_ERR_ENCODE:
+            rc = nsw_fail("The smart-contract call could not be encoded.");
+            break;
+        case NODUS_V2_SPEND_ERR_SIGN:
+        case NODUS_V2_SPEND_ERR_PREFLIGHT1:
+        case NODUS_V2_SPEND_ERR_PREFLIGHT2:
+            rc = nsw_fail("The transaction could not be signed (rc=%d, leg "
+                          "%d).", brc, err.leg);
+            break;
+        case NODUS_V2_EVM_ERR_MISMATCH:
+            rc = nsw_fail("The built transaction does not match the request; "
+                          "nothing was signed for sending.");
+            break;
+        default:
+            rc = nsw_fail("The smart-contract transaction could not be built "
+                          "(rc=%d).", brc);
+            break;
+        }
+        free(b);
+        return rc;
+    }
+
+    /* ── keep what was BUILT (read back from its bytes by the builder) ── */
+    const dna_evm_call_t *dec = &b->dec;
+    uint8_t own_raw[64];
+    char own_hex[129];
+    if (qgp_sha3_512(pk, NSW_PK_LEN, own_raw) != 0) {
+        nodus_v2_evm_built_free(b);
+        free(b);
+        return nsw_fail("The transaction could not be built (hash).");
+    }
+    nsw_fmt_hex(own_raw, 64, own_hex);
+    g_built.env = b->env;                    /* ownership moves here */
+    g_built.env_len = b->env_len;
+    b->env = NULL;
+    memcpy(g_built.wire_id, b->wire_id, 64);
+    memcpy(g_built.intent_id, b->intent_id, 64);
+    nsw_fmt_hex(b->intent_id, 64, g_built.intent_hex);
+    nsw_fmt_hex(b->wire_id, 64, g_built.wire_hex);
+    nsw_fmt_hex(chain32, DNA_CHAIN_ID_LEN, g_built.chain_hex);
+    nsw_fmt_u64(b->fee, g_built.fee);
+    nsw_fmt_u64(b->change, g_built.change);
+    nsw_fmt_u64(expiry, g_built.expiry);
+    g_built.n_in = b->n_in;
+    for (int i = 0; i < b->n_in; i++)
+        nsw_fmt_hex(b->in_nul[i], 64, g_built.in_hex[i]);
+    g_built.op = 0;
+    /* recipient: the fingerprint value leaves to (WITHDRAW / REDEEM), or
+     * this wallet's own (DEPOSIT: the EVM address is derived from it);
+     * "" for a contract call / deployment (its target is evm_built_to) */
+    if (op == DNA_EVM_OP_WITHDRAW || op == DNA_EVM_OP_REDEEM)
+        nsw_fmt_hex(dec->dest_fp, 64, g_built.recipient);
+    else if (op == DNA_EVM_OP_DEPOSIT)
+        memcpy(g_built.recipient, own_hex, 129);
+    nsw_fmt_u64(is_vm ? 0 : dec->amount_raw, g_built.amount);
+
+    memcpy(g_evm_built.intent, b->intent_id, 64);
+    g_evm_built.op = (int)op;
+    /* `dec` points into the envelope bytes, which g_built now owns */
+    if (op == DNA_EVM_OP_CALL) nsw_fmt_hex(dec->to, 32, g_evm_built.to);
+    if (is_vm) {
+        nsw_fmt_hex(dec->value_wei, 32, g_evm_built.value);
+        nsw_fmt_u64(dec->gas_limit, g_evm_built.gas);
+        g_evm_built.data_len = dec->data_len;
+    }
+    if (op != DNA_EVM_OP_REDEEM) nsw_fmt_u64(dec->nonce, g_evm_built.nonce);
+    if (op == DNA_EVM_OP_CREATE) {
+        /* the EVM sender is SHA3-512(pk)[0..32] (design §2), the nonce the
+         * one read back from the signed bytes */
+        uint8_t created[32];
+        if (nodus_v2_evm_create_address(own_raw, dec->nonce, created) != 0) {
+            memset(&g_evm_built, 0, sizeof(g_evm_built));
+            nsw_built_clear();
+            nodus_v2_evm_built_free(b);
+            free(b);
+            return nsw_fail("The transaction could not be built (hash).");
+        }
+        nsw_fmt_hex(created, 32, g_evm_built.created);
+    }
+    if (!is_vm) nsw_fmt_u64(dec->amount_raw, g_evm_built.amount);
+    if (op == DNA_EVM_OP_WITHDRAW || op == DNA_EVM_OP_REDEEM)
+        nsw_fmt_hex(dec->dest_fp, 64, g_evm_built.dest);
+    if (op == DNA_EVM_OP_REDEEM) nsw_fmt_hex(dec->ticket_id, 64, g_evm_built.ticket);
+    nsw_fmt_u64(b->units, g_evm_built.units);
+    g_evm_built.valid = 1;
+    nodus_v2_evm_built_free(b);              /* env already moved: NULL  */
+    free(b);
+    return 0;
+}
+/* The networked build of every EVM op: the candidates must come from the
+ * LAST listing; chain id, rule-set generation and gas price are read on
+ * this session (as nsw_build_and_sign). */
+static int nsw_evm_net(dna_evm_call_t *call, const char *units_dec,
+                       const char *expiry_dec) {
+    if (nsw_begin() != 0) return -1;
+    nsw_built_clear();
+    uint64_t units = 0, expiry = 0;
+    if (nsw_parse_u64(units_dec, &units) != 0)
+        return nsw_end(nsw_fail("Invalid resource ceiling."));
+    if (nsw_parse_u64(expiry_dec, &expiry) != 0)
+        return nsw_end(nsw_fail("Invalid validity height."));
+    if (!g_evm_rs.has)
+        return nsw_end(nsw_fail("Smart contracts are not available on this "
+                                "network yet. Nothing was built."));
+    if (!g_list.valid || g_list.tip == 0)
+        return nsw_end(nsw_fail("The current Nodus block height is unknown. "
+                                "Nothing was sent; try again later."));
+    for (int i = 0; i < g_req_n; i++) {
+        int found = 0;
+        for (int k = 0; k < g_list.n && !found; k++)
+            if (memcmp(g_list.nul[k], g_req_coins[i].nul, 64) == 0 &&
+                g_list.amount[k] == g_req_coins[i].amount)
+                found = 1;
+        if (!found)
+            return nsw_end(nsw_fail("The request names a coin that is not "
+                                    "in your current coin list."));
+    }
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    if (nsw_check_chain() != 0) return nsw_end(-1);
+    nsw_gen_t gen;
+    if (nsw_select_generation(&gen) != 0) return nsw_end(-1);
+    nodus_dnac_fee_info_t fi;
+    memset(&fi, 0, sizeof(fi));
+    int rc = nodus_client_dnac_fee_info(&g_client, &fi);
+    if (rc != 0)
+        return nsw_end(nsw_fail("The network fee is unknown (rc=%d). Nothing "
+                                "was built.", rc));
+    if (g_cancel) return nsw_end(-1);
+    if (nsw_expiry_check(g_list.tip, &gen, expiry) != 0) return nsw_end(-1);
+    nodus_v2_ruleset_id_t rs;
+    dna_meter_policy_t *pol = calloc(1, sizeof(*pol));
+    if (!pol) return nsw_end(nsw_fail("Out of memory."));
+    rc = nsw_ruleset(gen.gen, &rs, pol);
+    if (rc == 0)
+        rc = nsw_evm_core(g_id.pk.bytes, g_id.sk.bytes, g_net.chain,
+                          g_list.tip, fi.gas_price, &rs, g_evm_rs.version,
+                          g_evm_rs.hash, call, units, expiry);
+    free(pol);
+    return nsw_end(rc);
+}
+
+/* The five operations (design §2). value_hex: 64 lowercase hex (u256 wei,
+ * big-endian); addresses 64 hex; fingerprints / ticket ids 128 hex;
+ * amounts, gas, nonce, units and expiry decimal. */
+int nsw_evm_call(const char *to_hex, const char *value_hex,
+                 const char *gas_dec, const char *nonce_dec,
+                 const char *units_dec, const char *expiry_dec) {
+    dna_evm_call_t c;
+    memset(&c, 0, sizeof(c));
+    c.op = DNA_EVM_OP_CALL;
+    if (nsw_parse_hex(to_hex, c.to, 32) != 0)
+        return nsw_fail("Enter a contract address: 64 characters, 0-9 and a-f.");
+    if (nsw_parse_hex(value_hex, c.value_wei, 32) != 0 ||
+        nsw_parse_u64(gas_dec, &c.gas_limit) != 0 ||
+        nsw_parse_u64(nonce_dec, &c.nonce) != 0)
+        return nsw_fail("Invalid smart-contract call.");
+    return nsw_evm_net(&c, units_dec, expiry_dec);
+}
+
+int nsw_evm_create(const char *value_hex, const char *gas_dec,
+                   const char *nonce_dec, const char *units_dec,
+                   const char *expiry_dec) {
+    dna_evm_call_t c;
+    memset(&c, 0, sizeof(c));
+    c.op = DNA_EVM_OP_CREATE;
+    if (nsw_parse_hex(value_hex, c.value_wei, 32) != 0 ||
+        nsw_parse_u64(gas_dec, &c.gas_limit) != 0 ||
+        nsw_parse_u64(nonce_dec, &c.nonce) != 0)
+        return nsw_fail("Invalid contract deployment.");
+    return nsw_evm_net(&c, units_dec, expiry_dec);
+}
+
+int nsw_evm_deposit(const char *amount_dec, const char *nonce_dec,
+                    const char *units_dec, const char *expiry_dec) {
+    dna_evm_call_t c;
+    memset(&c, 0, sizeof(c));
+    c.op = DNA_EVM_OP_DEPOSIT;
+    if (nsw_parse_u64(amount_dec, &c.amount_raw) != 0 ||
+        nsw_parse_u64(nonce_dec, &c.nonce) != 0)
+        return nsw_fail("Invalid amount.");
+    return nsw_evm_net(&c, units_dec, expiry_dec);
+}
+
+int nsw_evm_withdraw(const char *amount_dec, const char *nonce_dec,
+                     const char *dest_hex, const char *units_dec,
+                     const char *expiry_dec) {
+    dna_evm_call_t c;
+    memset(&c, 0, sizeof(c));
+    c.op = DNA_EVM_OP_WITHDRAW;
+    if (qgp_fp_hex_to_raw(dest_hex, c.dest_fp) != 0)
+        return nsw_fail("Enter a Nodus address: 128 characters, 0-9 and a-f.");
+    if (nsw_parse_u64(amount_dec, &c.amount_raw) != 0 ||
+        nsw_parse_u64(nonce_dec, &c.nonce) != 0)
+        return nsw_fail("Invalid amount.");
+    return nsw_evm_net(&c, units_dec, expiry_dec);
+}
+
+int nsw_evm_redeem(const char *ticket_hex, const char *amount_dec,
+                   const char *dest_hex, const char *units_dec,
+                   const char *expiry_dec) {
+    dna_evm_call_t c;
+    memset(&c, 0, sizeof(c));
+    c.op = DNA_EVM_OP_REDEEM;
+    if (nsw_parse_hex(ticket_hex, c.ticket_id, 64) != 0)
+        return nsw_fail("Invalid withdrawal ticket.");
+    if (qgp_fp_hex_to_raw(dest_hex, c.dest_fp) != 0)
+        return nsw_fail("Enter a Nodus address: 128 characters, 0-9 and a-f.");
+    if (nsw_parse_u64(amount_dec, &c.amount_raw) != 0)
+        return nsw_fail("Invalid amount.");
+    return nsw_evm_net(&c, units_dec, expiry_dec);
+}
+
+/* ── the §18 reads (design docs/plans/2026-10-04-nodus-evm-chain-integration-
+ *    design.md rev 3 §18): ONE evm_* request on this session, its reply
+ *    map handed to JS as JSON (src/evm/rpc.js checks it) ─────────────────
+ *
+ * The request's arguments cross as TEXT in module memory (nsw_evm_query_buf
+ * — call data can be far larger than a ccall string argument's stack copy):
+ *   key=t:value[;key=t:value...]   key [a-z0-9]{1,4}; t "b" (value =
+ *   lowercase hex bytes), "u" (value = a decimal u64) or "U" (value = 1..3
+ *   decimal u64 joined by ",", each under the "u" rules → a CBOR array of
+ *   uints; the evm_logs cursor "c" = [h, x, li], red-team 1 F4).
+ * The reply map → JSON: unsigned integer → decimal string, byte string →
+ * lowercase hex string, text → JSON string, bool, null, array, map →
+ * object (text keys only). Nesting is bounded (NSW_EVM_JSON_DEPTH). */
+
+#define NSW_EVM_QUERY_MAX   ((size_t)4 * 1024 * 1024)   /* args text     */
+#define NSW_EVM_JSON_DEPTH  8
+#define NSW_EVM_ARG_ARRAY_MAX 3                         /* "U" elements  */
+
+static char  *g_eq_args;
+static size_t g_eq_args_cap;
+static char  *g_eq_json;
+
+typedef struct { char *p; size_t len, cap; int bad; } nsw_jb_t;
+
+static void nsw_jb_put(nsw_jb_t *b, const char *s, size_t n) {
+    if (b->bad) return;
+    if (b->len + n + 1 > b->cap) {
+        size_t nc = b->cap ? b->cap : 1024;
+        while (nc < b->len + n + 1) {
+            if (nc > ((size_t)1 << 30)) { b->bad = 1; return; }
+            nc *= 2;
+        }
+        char *g = realloc(b->p, nc);
+        if (!g) { b->bad = 1; return; }
+        b->p = g;
+        b->cap = nc;
+    }
+    memcpy(b->p + b->len, s, n);
+    b->len += n;
+    b->p[b->len] = '\0';
+}
+
+static void nsw_jb_str(nsw_jb_t *b, const char *s, size_t n) {
+    static const char hx[] = "0123456789abcdef";
+    nsw_jb_put(b, "\"", 1);
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '"' || c == '\\') {
+            char e[2] = { '\\', (char)c };
+            nsw_jb_put(b, e, 2);
+        } else if (c < 0x20 || c == 0x7f) {
+            char e[6] = { '\\', 'u', '0', '0', hx[c >> 4], hx[c & 15] };
+            nsw_jb_put(b, e, 6);
+        } else {
+            nsw_jb_put(b, (const char *)&c, 1);
+        }
+    }
+    nsw_jb_put(b, "\"", 1);
+}
+
+/* One CBOR value at the decoder → JSON. @return 0 / -1. */
+static int nsw_cbor_json(cbor_decoder_t *d, nsw_jb_t *b, int depth) {
+    if (depth > NSW_EVM_JSON_DEPTH) return -1;
+    cbor_item_t it = cbor_decode_next(d);
+    if (d->error) return -1;
+    const size_t left = d->pos < d->len ? d->len - d->pos : 0;
+    switch (it.type) {
+    case CBOR_ITEM_UINT: {
+        char n[NSW_U64_DEC];
+        nsw_fmt_u64(it.uint_val, n);
+        nsw_jb_put(b, "\"", 1);
+        nsw_jb_put(b, n, strlen(n));
+        nsw_jb_put(b, "\"", 1);
+        return 0;
+    }
+    case CBOR_ITEM_BSTR: {
+        static const char hx[] = "0123456789abcdef";
+        nsw_jb_put(b, "\"", 1);
+        for (size_t i = 0; i < it.bstr.len; i++) {
+            char e[2] = { hx[it.bstr.ptr[i] >> 4], hx[it.bstr.ptr[i] & 15] };
+            nsw_jb_put(b, e, 2);
+        }
+        nsw_jb_put(b, "\"", 1);
+        return 0;
+    }
+    case CBOR_ITEM_TSTR:
+        nsw_jb_str(b, it.tstr.ptr, it.tstr.len);
+        return 0;
+    case CBOR_ITEM_BOOL:
+        nsw_jb_put(b, it.bool_val ? "true" : "false", it.bool_val ? 4 : 5);
+        return 0;
+    case CBOR_ITEM_NULL:
+        nsw_jb_put(b, "null", 4);
+        return 0;
+    case CBOR_ITEM_ARRAY:
+        if (it.count > left) return -1;
+        nsw_jb_put(b, "[", 1);
+        for (size_t i = 0; i < it.count; i++) {
+            if (i) nsw_jb_put(b, ",", 1);
+            if (nsw_cbor_json(d, b, depth + 1) != 0) return -1;
+        }
+        nsw_jb_put(b, "]", 1);
+        return 0;
+    case CBOR_ITEM_MAP:
+        if (it.count > left / 2) return -1;
+        nsw_jb_put(b, "{", 1);
+        for (size_t i = 0; i < it.count; i++) {
+            cbor_item_t k = cbor_decode_next(d);
+            if (d->error || k.type != CBOR_ITEM_TSTR) return -1;
+            if (i) nsw_jb_put(b, ",", 1);
+            nsw_jb_str(b, k.tstr.ptr, k.tstr.len);
+            nsw_jb_put(b, ":", 1);
+            if (nsw_cbor_json(d, b, depth + 1) != 0) return -1;
+        }
+        nsw_jb_put(b, "}", 1);
+        return 0;
+    default:
+        return -1;
+    }
+}
+
+/* A buffer of `len` bytes for the next query's argument text (the caller
+ * writes UTF-8 into it; no terminator needed). NULL on refusal. */
+char *nsw_evm_query_buf(int len) {
+    if (len < 0 || (size_t)len > NSW_EVM_QUERY_MAX) return NULL;
+    if ((size_t)len + 1 > g_eq_args_cap) {
+        char *g = realloc(g_eq_args, (size_t)len + 1);
+        if (!g) return NULL;
+        g_eq_args = g;
+        g_eq_args_cap = (size_t)len + 1;
+    }
+    return g_eq_args;
+}
+
+/* The JSON of the last successful nsw_evm_query ("" otherwise). */
+const char *nsw_evm_query_json(void) { return g_eq_json ? g_eq_json : ""; }
+
+static int nsw_evm_method_ok(const char *m) {
+    static const char *const names[] = {
+        "evm_account", "evm_code", "evm_storage", "evm_call", "evm_estimate",
+        "evm_receipt", "evm_logs", "evm_ticket"
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+        if (m && strcmp(m, names[i]) == 0) return 1;
+    return 0;
+}
+
+/* The argument text (`len` bytes in the query buffer) → CBOR map entries.
+ * @return the entry count, or -1. */
+static long nsw_evm_args_cbor(size_t len, cbor_encoder_t *enc) {
+    long n = 0;
+    size_t i = 0;
+    while (i < len) {
+        size_t j = i;
+        while (j < len && g_eq_args[j] != ';') j++;
+        /* key=t:value */
+        size_t k = i;
+        while (k < j && g_eq_args[k] != '=') k++;
+        if (k == i || k - i > 4 || k + 2 >= j || g_eq_args[k + 2] != ':')
+            return -1;
+        for (size_t q = i; q < k; q++) {
+            char c = g_eq_args[q];
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) return -1;
+        }
+        const char t = g_eq_args[k + 1];
+        const char *v = g_eq_args + k + 3;
+        const size_t vl = j - (k + 3);
+        cbor_encode_tstr(enc, g_eq_args + i, k - i);
+        if (t == 'u') {
+            char dec[NSW_U64_DEC];
+            uint64_t u = 0;
+            if (vl == 0 || vl >= sizeof(dec)) return -1;
+            memcpy(dec, v, vl);
+            dec[vl] = '\0';
+            if (nsw_parse_u64(dec, &u) != 0) return -1;
+            cbor_encode_uint(enc, u);
+        } else if (t == 'U') {
+            /* every element parsed before the array head (its count) */
+            uint64_t el[NSW_EVM_ARG_ARRAY_MAX];
+            size_t ne = 0, s = 0;
+            for (;;) {
+                size_t e = s;
+                while (e < vl && v[e] != ',') e++;
+                char dec[NSW_U64_DEC];
+                if (ne == NSW_EVM_ARG_ARRAY_MAX || e == s ||
+                    e - s >= sizeof(dec))
+                    return -1;
+                memcpy(dec, v + s, e - s);
+                dec[e - s] = '\0';
+                if (nsw_parse_u64(dec, &el[ne]) != 0) return -1;
+                ne++;
+                if (e == vl) break;
+                s = e + 1;
+            }
+            cbor_encode_array(enc, ne);
+            for (size_t q = 0; q < ne; q++) cbor_encode_uint(enc, el[q]);
+        } else if (t == 'b') {
+            if (vl % 2) return -1;
+            uint8_t *raw = malloc(vl / 2 + 1);
+            if (!raw) return -1;
+            for (size_t q = 0; q < vl / 2; q++) {
+                int h = v[2 * q], l = v[2 * q + 1];
+                int hv = h >= '0' && h <= '9' ? h - '0' : h >= 'a' && h <= 'f' ? h - 'a' + 10 : -1;
+                int lv = l >= '0' && l <= '9' ? l - '0' : l >= 'a' && l <= 'f' ? l - 'a' + 10 : -1;
+                if (hv < 0 || lv < 0) { free(raw); return -1; }
+                raw[q] = (uint8_t)(hv << 4 | lv);
+            }
+            cbor_encode_bstr(enc, raw, vl / 2);
+            free(raw);
+        } else {
+            return -1;
+        }
+        n++;
+        i = j + 1;
+    }
+    return enc->error ? -1 : n;
+}
+
+/* ONE §18 read: `method` (one of the eight evm_* names) with the argument
+ * text the caller placed in nsw_evm_query_buf (`len` bytes). Waits on the
+ * network (ccall { async: true }). @return 0 (nsw_evm_query_json) / -1. */
+int nsw_evm_query(const char *method, int len) {
+    if (nsw_begin() != 0) return -1;
+    free(g_eq_json);
+    g_eq_json = NULL;
+    if (!nsw_evm_method_ok(method))
+        return nsw_end(nsw_fail("Unknown smart-contract request."));
+    if (len < 0 || (size_t)len > NSW_EVM_QUERY_MAX ||
+        (len > 0 && (!g_eq_args || (size_t)len >= g_eq_args_cap)))
+        return nsw_end(nsw_fail("Invalid smart-contract request."));
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    const size_t cap = (size_t)len + 1024;
+    uint8_t *ab = malloc(cap);
+    if (!ab) return nsw_end(nsw_fail("Out of memory."));
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, ab, cap);
+    long n = nsw_evm_args_cbor((size_t)len, &enc);
+    if (n < 0) {
+        free(ab);
+        return nsw_end(nsw_fail("Invalid smart-contract request."));
+    }
+    uint8_t *reply = NULL;
+    size_t rlen = 0;
+    int rc = nodus_client_dnac_query_raw(&g_client, method, ab,
+                                         cbor_encoder_len(&enc), (size_t)n,
+                                         &reply, &rlen);
+    free(ab);
+    if (g_cancel) { free(reply); return nsw_end(-1); }
+    if (rc != 0) {
+        free(reply);
+        if (rc == NODUS_ERR_NOT_FOUND)
+            return nsw_end(nsw_fail("Smart contracts are not active on this "
+                                    "Nodus network yet."));
+        if (rc == NODUS_ERR_RATE_LIMITED)
+            return nsw_end(nsw_fail("The Nodus node is busy; try again in a "
+                                    "moment."));
+        return nsw_end(nsw_fail("The smart-contract request failed (an older "
+                                "node, a refused request, or no readable "
+                                "answer; rc=%d).", rc));
+    }
+    nsw_jb_t jb;
+    memset(&jb, 0, sizeof(jb));
+    cbor_decoder_t d;
+    cbor_decoder_init(&d, reply, rlen);
+    int jrc = nsw_cbor_json(&d, &jb, 0);
+    free(reply);
+    if (jrc != 0 || jb.bad || d.pos != rlen) {
+        free(jb.p);
+        return nsw_end(nsw_fail("The Nodus node's smart-contract answer is "
+                                "malformed."));
+    }
+    g_eq_json = jb.p;
+    return nsw_end(0);
+}
+
+#ifdef NODUS_SEND_TEST_FIXED_RANDOM
+/* TEST-only (parity build, exports_test): the codec through the module,
+ * and an offline EVM build. */
+
+static char *g_test_evm_hex;
+
+static const char *nsw_test_evm_keep(const uint8_t *b, size_t n) {
+    free(g_test_evm_hex);
+    g_test_evm_hex = malloc(2 * n + 1);
+    if (!g_test_evm_hex) return "";
+    nsw_fmt_hex(b, n, g_test_evm_hex);
+    return g_test_evm_hex;
+}
+
+/* The §18 query argument text (`len` bytes in nsw_evm_query_buf) through
+ * the parser nsw_evm_query uses → "<entry count>:<CBOR map entries hex>",
+ * "" on refusal. */
+const char *nsw_test_evm_args_hex(int len) {
+    if (len < 0 || (size_t)len > NSW_EVM_QUERY_MAX ||
+        (len > 0 && (!g_eq_args || (size_t)len >= g_eq_args_cap)))
+        return "";
+    const size_t cap = (size_t)len + 1024;
+    uint8_t *ab = malloc(cap);
+    if (!ab) return "";
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, ab, cap);
+    long n = nsw_evm_args_cbor((size_t)len, &enc);
+    const char *out = "";
+    if (n >= 0) {
+        const size_t w = cbor_encoder_len(&enc);
+        char cnt[NSW_U64_DEC];
+        nsw_fmt_u64((uint64_t)n, cnt);
+        const size_t cl = strlen(cnt);
+        free(g_test_evm_hex);
+        g_test_evm_hex = malloc(cl + 1 + 2 * w + 1);
+        if (g_test_evm_hex) {
+            memcpy(g_test_evm_hex, cnt, cl);
+            g_test_evm_hex[cl] = ':';
+            nsw_fmt_hex(ab, w, g_test_evm_hex + cl + 1);
+            out = g_test_evm_hex;
+        }
+    }
+    free(ab);
+    return out;
+}
+
+/* Encode an EVM call (data / access list from the request) → hex, "" on
+ * refusal. Bridge fields are ignored by ops that do not carry them. */
+const char *nsw_test_evm_call_hex(int op, const char *to_hex,
+                                  const char *value_hex, const char *gas_dec,
+                                  const char *nonce_dec, const char *amount_dec,
+                                  const char *dest_hex, const char *ticket_hex) {
+    dna_evm_call_t c;
+    memset(&c, 0, sizeof(c));
+    c.op = (uint32_t)op;
+    if ((to_hex[0] && nsw_parse_hex(to_hex, c.to, 32) != 0) ||
+        (value_hex[0] && nsw_parse_hex(value_hex, c.value_wei, 32) != 0) ||
+        nsw_parse_u64(gas_dec, &c.gas_limit) != 0 ||
+        nsw_parse_u64(nonce_dec, &c.nonce) != 0 ||
+        nsw_parse_u64(amount_dec, &c.amount_raw) != 0 ||
+        (dest_hex[0] && nsw_parse_hex(dest_hex, c.dest_fp, 64) != 0) ||
+        (ticket_hex[0] && nsw_parse_hex(ticket_hex, c.ticket_id, 64) != 0))
+        return "";
+    c.data = g_evm_req.data;
+    c.data_len = g_evm_req.data_len;
+    c.access = g_evm_req.access_len ? g_evm_req.access : NULL;
+    c.access_len = g_evm_req.access_len;
+    c.n_access = g_evm_req.n_access;
+    size_t n = 0, w = 0;
+    if (dna_evm_call_encoded_size(&c, &n) != 0) return "";
+    uint8_t *b = malloc(n ? n : 1);
+    const char *out = "";
+    if (b && dna_evm_call_encode(&c, b, n, &w) == 0 && w == n)
+        out = nsw_test_evm_keep(b, n);
+    free(b);
+    return out;
+}
+
+/* Strict decode of `hex` as op `op`, then re-encode → hex ("" = refused). */
+const char *nsw_test_evm_call_roundtrip(int op, const char *hex) {
+    size_t n = strlen(hex);
+    if (n % 2) return "";
+    uint8_t *b = malloc(n / 2 + 1), *r = malloc(n / 2 + 1);
+    const char *out = "";
+    dna_evm_call_t c;
+    size_t w = 0;
+    if (b && r && (n == 0 || nsw_parse_hex(hex, b, n / 2) == 0) &&
+        dna_evm_call_decode((uint32_t)op, b, n / 2, &c) == 0 &&
+        dna_evm_call_encode(&c, r, n / 2, &w) == 0 && w == n / 2)
+        out = nsw_test_evm_keep(r, w);
+    free(b);
+    free(r);
+    return out;
+}
+
+/* Strict decode of an EVMFUND call, then re-encode → hex ("" = refused). */
+const char *nsw_test_evmfund_roundtrip(const char *hex) {
+    size_t n = strlen(hex);
+    if (n % 2 || n == 0) return "";
+    uint8_t *b = malloc(n / 2), *r = malloc(n / 2);
+    const char *out = "";
+    dna_evmfund_call_t c;
+    size_t w = 0;
+    if (b && r && nsw_parse_hex(hex, b, n / 2) == 0 &&
+        dna_evmfund_decode(b, n / 2, &c) == 0 &&
+        dna_evmfund_encode(&c, r, n / 2, &w) == 0 && w == n / 2)
+        out = nsw_test_evm_keep(r, w);
+    free(b);
+    free(r);
+    return out;
+}
+
+/* The shared CREATE-address rule (nodus_v2_evm_create_address) on a given
+ * 32-byte sender (64 hex) and nonce (decimal) → 64 hex, "" on refusal.
+ * The test pins it to the engine's oracle vectors. */
+const char *nsw_test_evm_create_address(const char *sender_hex,
+                                        const char *nonce_dec) {
+    uint8_t sender[32], out[32];
+    uint64_t nonce = 0;
+    if (nsw_parse_hex(sender_hex, sender, sizeof(sender)) != 0 ||
+        nsw_parse_u64(nonce_dec, &nonce) != 0 ||
+        nodus_v2_evm_create_address(sender, nonce, out) != 0)
+        return "";
+    return nsw_test_evm_keep(out, sizeof(out));
+}
+
+/* Extra meter-policy op weights an offline EVM build adds on top of the
+ * pinned generation's policy (none of 1-2 weighs CORE op 9). TEST input,
+ * never a pin. */
+#define NSW_TEST_EVM_OPS 8
+static struct { uint32_t op; uint64_t w; } g_test_evm_ops[NSW_TEST_EVM_OPS];
+static int g_test_evm_nops;
+
+int nsw_test_evm_op_weight(int op, const char *w_dec) {
+    uint64_t w = 0;
+    if (op < 0 || op > (int)DNA_ENV_MAX_RUNTIME_OP ||
+        g_test_evm_nops >= NSW_TEST_EVM_OPS || nsw_parse_u64(w_dec, &w) != 0)
+        return -1;
+    g_test_evm_ops[g_test_evm_nops].op = (uint32_t)op;
+    g_test_evm_ops[g_test_evm_nops].w = w;
+    g_test_evm_nops++;
+    return 0;
+}
+
+/* OFFLINE EVM build: the identity from nsw_seed_buf (wiped), the
+ * candidate coins (nsw_req_*), data / access list (nsw_evm_*), pinned
+ * generation `gen` for the CORE tuple and the policy (plus the test op
+ * weights), the CORE leg's version / hash and the EVM leg's version /
+ * hash given EXPLICITLY (no pin exists), chain id, tip and gas price as a
+ * node would report them; no vote height, so the expiry is tip + 90. */
+int nsw_test_evm_build(int gen, int op, const char *chain_hex,
+                       const char *tip_dec, const char *gas_price_dec,
+                       const char *core_ver_dec, const char *core_hash_hex,
+                       const char *evm_ver_dec, const char *evm_hash_hex,
+                       const char *to_hex, const char *value_hex,
+                       const char *gas_dec, const char *nonce_dec,
+                       const char *amount_dec, const char *dest_hex,
+                       const char *ticket_hex, const char *units_dec,
+                       const char *expiry_dec) {
+    uint8_t chain32[DNA_CHAIN_ID_LEN], evm_hash[64];
+    uint64_t tip = 0, gp = 0, cv = 0, ev = 0, units = 0, expiry = 0;
+    uint8_t *pk = NULL, *sk = NULL;
+    dna_meter_policy_t *pol = calloc(1, sizeof(*pol));
+    nodus_v2_ruleset_id_t rs;
+    dna_evm_call_t c;
+    memset(&c, 0, sizeof(c));
+    c.op = (uint32_t)op;
+    int rc = -1;
+    if (!pol || gen < 1 || (uint32_t)gen > nodus_v2_pins_generation_count() ||
+        nsw_parse_hex(chain_hex, chain32, sizeof(chain32)) != 0 ||
+        nsw_parse_u64(tip_dec, &tip) != 0 ||
+        nsw_parse_u64(gas_price_dec, &gp) != 0 ||
+        nsw_parse_u64(core_ver_dec, &cv) != 0 || cv > UINT32_MAX ||
+        nsw_parse_u64(evm_ver_dec, &ev) != 0 || ev > UINT32_MAX ||
+        nsw_parse_hex(evm_hash_hex, evm_hash, 64) != 0 ||
+        nsw_parse_u64(units_dec, &units) != 0 ||
+        nsw_parse_u64(expiry_dec, &expiry) != 0 ||
+        (to_hex[0] && nsw_parse_hex(to_hex, c.to, 32) != 0) ||
+        (value_hex[0] && nsw_parse_hex(value_hex, c.value_wei, 32) != 0) ||
+        nsw_parse_u64(gas_dec, &c.gas_limit) != 0 ||
+        nsw_parse_u64(nonce_dec, &c.nonce) != 0 ||
+        nsw_parse_u64(amount_dec, &c.amount_raw) != 0 ||
+        (dest_hex[0] && nsw_parse_hex(dest_hex, c.dest_fp, 64) != 0) ||
+        (ticket_hex[0] && nsw_parse_hex(ticket_hex, c.ticket_id, 64) != 0)) {
+        rc = nsw_fail("Invalid offline EVM input.");
+        goto done;
+    }
+    if (nsw_ruleset((uint32_t)gen, &rs, pol) != 0) goto done;
+    for (int i = 0; i < g_test_evm_nops; i++)
+        if (dna_meter_op_set(pol, g_test_evm_ops[i].op,
+                             g_test_evm_ops[i].w) != 0) {
+            rc = nsw_fail("Invalid test op weight.");
+            goto done;
+        }
+    if (dna_meter_policy_seal(pol) != 0) {
+        rc = nsw_fail("The test policy could not be sealed.");
+        goto done;
+    }
+    rs.meter_policy = pol;
+    rs.core_ruleset_version = (uint32_t)cv;
+    if (nsw_parse_hex(core_hash_hex, rs.core_ruleset_hash, 64) != 0) {
+        rc = nsw_fail("Invalid offline EVM input.");
+        goto done;
+    }
+    {
+        const nsw_gen_t g = { (uint32_t)gen, 0u, 0u };
+        if (nsw_expiry_check(tip, &g, expiry) != 0) goto done;
+    }
+    pk = malloc(NSW_PK_LEN);
+    sk = malloc(NSW_SK_LEN);
+    if (!pk || !sk) {
+        rc = nsw_fail("Out of memory.");
+    } else if (qgp_dsa87_keypair_derand(pk, sk, g_seed) != 0) {
+        rc = nsw_fail("Key derivation failed.");
+    } else {
+        rc = nsw_evm_core(pk, sk, chain32, tip, gp, &rs, (uint32_t)ev,
+                          evm_hash, &c, units, expiry);
+    }
+done:
+    nsw_wipe(g_seed, sizeof(g_seed));
+    if (sk) { nsw_wipe(sk, NSW_SK_LEN); free(sk); }
+    free(pk);
+    free(pol);
+    return rc;
+}
+#endif
+
 /* ── Messages host (package NC-4b; nc_core.h "Host") ──
  * The Messages exports (web-wallet/connect/nc_wasm.c, linked into this
  * module) run on THIS session, inside THIS op bracket, stopped by THIS
@@ -4162,6 +5263,18 @@ void nsw_lock(void) {
     memset(&g_np, 0, sizeof(g_np));
     nsw_wipe(g_paddr, sizeof(g_paddr));
     nsw_msig_wipe();                        /* vaults (VAULTS)              */
+    if (g_busy) {                           /* smart contracts: the request */
+        if (g_evm_req.data) nsw_wipe(g_evm_req.data, g_evm_req.data_len);
+    } else {
+        nsw_evm_data_alloc(0);
+    }
+    nsw_evm_access_reset();
+    g_evm_req.est_units = g_evm_req.est_gas = 0;
+    memset(&g_evm_built, 0, sizeof(g_evm_built));
+    if (!g_busy) {                          /* smart contracts: the reads   */
+        free(g_eq_json);
+        g_eq_json = NULL;
+    }
     nc_session_wipe();                      /* the Messages keys and caches */
     g_unlocked = 0;
     g_identified = 0;

@@ -370,6 +370,7 @@ The browser test starts its own preview server and intercepts **all external HTT
 - `src/vault.js`: optional authenticated local encryption.
 - `src/app.js`, `index.html`, `src/style.css`: accountless responsive UI.
 - `src/wallet-extensions.js`, `src/site-lock.js`, `src/connect-main.js`, `connect-site/index.html`, `vite.connect.config.js`, `src/connect/ui/`: the Nodus Connect site build and the cross-site rule (section "Nodus Connect site" below).
+- `src/evm/` (unreleased): smart contracts on the Nodus EVM domain — `address.js`, `abi.js`, `units.js`, `rpc.js`, `contract.js`, `ui.js`; the C side is `crypto/nodus-send-wasm.c` "SMART CONTRACTS" over `../shared/dnac/evm_call_wire.c` (section "Smart contracts" at the end).
 - `src/qr.js` (0.1.22): draws the receive-address QR code as SVG DOM nodes with `qrcode-generator`; `src/app.js` `setReceiveAddress()` is the only writer of the address text and its QR.
 - `scripts/third-party-licenses.mjs`, `vite.config.js` (0.1.22): collect the license notice of every npm package rendered into the bundle and write `dist/THIRD-PARTY-LICENSES.txt`; the build fails for a bundled package with no license field and no license file.
 - `test/`: offline and fully intercepted browser verification.
@@ -2096,3 +2097,139 @@ it (`nodus_dnac_validator_list_entry_t.has_delegator_count` /
 `delegator_count`); the wallet does NOT show it yet — `send.wasm` has no
 getter for it, and the export list and `src/nodus/send-module.js` are not
 changed.
+
+## Smart contracts — the Nodus EVM domain (unreleased, wired, not run in a browser)
+
+Design: `docs/plans/2026-10-04-nodus-evm-chain-integration-design.md` rev 3 §2
+(envelope = `[CORE EVMFUND leg, op 9]` + `[EVM leg, domain 2, ops 1 CALL /
+2 CREATE / 3 DEPOSIT / 4 WITHDRAW / 5 REDEEM]`; the EVM sender is
+SHA3-512(ML-DSA-87 public key)[0..32]; the fee is a CORE-funded DECLARED
+ceiling), §5 (1 raw unit = 10^10 wei; withdrawal tickets), §7 (receipt
+encoding), §16 (wallet), §18 (the read RPC). Decisions
+`2026-10-04-nodus-evm-kurultay-k1.md` (operator 1, 3, 4) and
+`2026-10-04-nodus-evm-kurultay-k2-summary.md` (operator 2: one pending EVM
+transaction per sender — the SDK waits for inclusion before it builds the
+next).
+
+**The panel is wired:** `NODUS_EVM_NETWORK` in `src/nodus/send-module.js`
+carries the EVM ruleset identity, the module exports `evmBuild` and
+`evmQuery`, and the nodus client has the §18 requests
+(`nodus/src/client/nodus_client.c` `nodus_client_evm_*`). The panel is shown
+when the connected node's `dnac_ruleset_info` names the EVM generation (the
+`EVM_ACTIVE` vote) — on a chain without it, it stays hidden. **It has not
+been run in a browser** — every statement below is from the code and the
+Node tests, not from a page.
+
+What exists:
+
+- **Call bytes** — `../shared/dnac/evm_call_wire.{h,c}`: encode + strict
+  decode of the five EVM ops (big-endian, exact length, trailing bytes
+  refused, CREATE initcode ≤ 49 152) — the same byte strings the node's
+  `nodus_witness_rt_evm.c rtevm_decode` accepts — and of the CORE EVMFUND
+  call `ver ‖ role ‖ in_count ‖ nullifiers ascending ‖ out_count ‖ 232-byte
+  change`. The node decodes CORE op 9 with this same codec
+  (`nodus/src/witness/nodus_witness_rt_native.c` `rtn_evmfund_parse` →
+  `dna_evmfund_decode`); roles FEE 1, DEPOSIT 2, RELEASE 3.
+- **Build + sign** — `crypto/nodus-send-wasm.c` "SMART CONTRACTS":
+  `nsw_evm_call / _create / _deposit / _withdraw / _redeem` on the staking
+  builder's path (listed coins, ascending by nullifier until lock + fee,
+  deterministic change seed, one key signs both legs with
+  `nodus_v2_env_sign_one_key`, read-back of both legs before anything is
+  kept) — since Nodus EVM Faz 4 through the shared builder
+  `nodus/src/client/nodus_v2_evm.c` (nodus-cli `evm` uses the same).
+  Units (`nodus_v2_evm.h` "UNITS"): the static units of both legs
+  (`dna_meter_plan_build_ex`, the EVM leg streamed) + the funding leg's
+  reads (in_count + 1 for FEE, + 2 for DEPOSIT / RELEASE) + for CALL/CREATE
+  `gas_limit × w_gas + FAIL_RESERVE`, for a bridge op its two reads; `0` =
+  that minimum plus, for CALL/CREATE, the read units the node's
+  `evm_estimate` implies (`ue − ref`, checked below); an explicit ceiling
+  below the minimum is refused. Fee = max(floor, units × gas price). The
+  leg declarations: the funding leg EXACT from its shape
+  (`nodus_v2_evm_fund_decl`), a CALL/CREATE leg 256 / 65 536 by default,
+  a bridge leg EXACT (`nodus_v2_evm_bridge_decl`: 2 effects, 468 or 352
+  bytes).
+  The node's `evm_estimate` answer (one node's) is REFUSED, never clamped,
+  when malformed (red-team 1 F9): `ue` below the reference shape's units,
+  or read units `ue − ref` above `(EVM_READS_BASE + 2 × access-list keys) ×
+  w_read` (`nsw_evm_core`); `gu > ge` or `ge` above the 30 000 000 cap
+  (`src/evm/contract.js`). A built fee above the local bound
+  `EVM_MAX_FEE_RAW` (50 NODUS — a placeholder; ≈ 36 NODUS is a full-cap call
+  at the genesis price of 121 raw / unit) is refused before review, because
+  both the units and the gas price come from the node.
+  A deployment's address is computed from the SIGNED envelope's sender and
+  nonce (`nsw_evm_built_created`, the shared rule
+  `nodus/src/client/nodus_v2_evm.c nodus_v2_evm_create_address` = the
+  engine's `evm_compute_contract_address` in 32-byte mode) and compared
+  with the receipt's `cr`.
+- **SDK** — `src/evm/`: `address.js` (32-byte addresses, the 64-digit
+  EIP-55 checksum of the Nodus solc, 20-byte addresses refused, the ticket
+  system address), `abi.js` (Solidity ABI with `address` = the full word,
+  strict decoding, selectors, event topics, revert reasons), `units.js`
+  (raw ↔ wei, 18 decimals), `rpc.js` (the §18 reply checks and the §7
+  receipt digest re-computed from the fields), `contract.js` (`EvmAccount`:
+  nonce from `evm_account`, one pending transaction at a time, receipt
+  polling 2 s ×1.5 up to 15 s until the receipt or the expiry block;
+  `Contract`: read, estimate, write, deploy, log decoding).
+- **Client** — `src/nodus/client.js`: `evmBuild` (group EVM_BUILD_OPS) and
+  one method per §18 query over the module's `evmQuery({ method, args })`
+  (group EVM_QUERY_OPS) — arguments checked and tagged, replies checked.
+- **Panel** — `src/evm/ui.js` (wallet extension, `src/main.js`): the
+  smart-contract address and balance, move NODUS in / back (the recipient
+  defaults to this wallet's own address), withdrawal tickets + collect,
+  open a contract (address + ABI: read and write functions) or deploy one
+  (bytecode + ABI), a review dialog filled from the module's read-back
+  (destination, value, fee ceiling, resource ceiling, chain id), and each
+  transaction's outcome: done / ran but failed (fee charged) / not included
+  (nothing charged), the inclusion block (a receipt's `h`, design §18
+  rev 5), gas used, events, new contract address — every receipt line is
+  labelled as reported by the connected node (its digest matches its
+  fields; binding it to the chain's `LastResultsHash` is not implemented).
+  The extension receives with `nodusReady` (`src/app.js`):
+  `lockedInputs()` (coins of pending NODUS sends are never offered),
+  `evmRecord(details, { title, amount })` and `evmPending()`.
+- **Activity + the one-pending reservation (red-team 1 F8).** Confirming
+  writes the transaction's Activity row — the same NODUS row a send writes
+  (intent id, expiry block, first scanned block, input coins), so
+  `lockedInputs` holds its coins against every other send — and saves it
+  BEFORE the envelope leaves the browser; if it cannot be saved nothing is
+  sent. The row is the account's reservation: the next smart-contract
+  transaction is refused while an unresolved row may be this account's
+  (`evmPending`: marked `evm` in this tab; after a reload — the saved
+  Activity does not keep the mark — any unresolved row to this wallet's
+  own address, which over-matches self-transfers and name registrations).
+  A submission whose outcome is uncertain, and a receipt-polling error, do
+  NOT release it: only a receipt, the chain passing the expiry block, or
+  the Activity tracker resolving the row does. Restored with the saved
+  Activity on unlock, before the panel opens.
+
+Missing before anyone can use it:
+
+- A browser run: nothing here has been run in a browser.
+
+(`src/nodus/send-module.js` reads `nsw_evm_built_created` into
+`decoded.created` since `b50b9c9a` — `send-module.js` `evmBuild`, exported by
+`scripts/build-nodus-send-wasm.sh`; a deployment's receipt address is then
+checked against it (`createdCheck`). "as reported by the node; not checked"
+remains only for a receipt `cr` with no locally computed address,
+`src/evm/ui.js:390-391`.)
+
+Tests (written; how they can lie is in each file's header):
+`test/evm-units.test.js`, `test/evm-address.test.js` (checksums against the
+Nodus solc's own diagnostics), `test/evm-abi.test.js` (selectors / topics
+against `solc --hashes` of `test/fixtures/evm-sample.sol`, encodings against
+ethers 6 with `address` as `uint256`), `test/evm-client.test.js` (§18
+argument tagging, reply checks, §7 digest assembled independently, the
+one-pending queue — on the TEST-ONLY mock module),
+`test/evm-call-wire-wasm.test.js` (the C codec and an offline DEPOSIT build
+through the parity wasm — skipped without `NODUS_SEND_PARITY_OUT`; a skip is
+not a pass). Red-team 1 (F8–F11) added: the ABI decode budgets with
+aliased-offset bombs and the parse-time type bounds (`evm-abi.test.js`);
+the record-before-submit order, the row shape `lockedInputs` holds, the
+reservation kept on a refused submission / a polling error / a restored
+row, the malformed-estimate and fee-limit refusals, `createdCheck`
+(`evm-client.test.js`); the CREATE-address rule against the engine's oracle
+vectors read from `shared/evm/tests/addr32_vectors.h`, an offline CREATE's
+`nsw_evm_built_created`, and the offline CALL estimate bounds
+(`evm-call-wire-wasm.test.js`, parity — skipped without
+`NODUS_SEND_PARITY_OUT`). Vectors: `test/fixtures/evm-solc-vectors.json` (generator line
+inside).

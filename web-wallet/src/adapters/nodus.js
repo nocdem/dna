@@ -164,7 +164,7 @@ export async function resolveNodusRecipient(client, value) {
   const found = await resolveChainName(client, name);
   return { recipient: found.owner, resolved: { ...found, name } };
 }
-function parseTip(value) {
+export function parseTip(value) {
   if (value === undefined || value === null) return expiryHeightFor(undefined);
   return rawUnits(value, 'block height');
 }
@@ -199,7 +199,7 @@ export function resendInputs(row) {
   if (row.status === 'expired') return null;
   return [...row.inputs];
 }
-function parseCoins(listing) {
+export function parseCoins(listing) {
   if (!listing || !Array.isArray(listing.coins) || listing.coins.length > MAX_LISTED_COINS) throw new Error('The Nodus module returned an invalid coin list.');
   const seen = new Set();
   return listing.coins.map(coin => {
@@ -210,7 +210,7 @@ function parseCoins(listing) {
     return { nullifier: coin.nullifier, amount: coin.amount };
   });
 }
-function parseBalance(result) {
+export function parseBalance(result) {
   if (!result) throw new Error('The Nodus module returned an invalid balance.');
   const total = rawUnits(result.total, 'balance'), spendable = rawUnits(result.spendable, 'balance');
   if (spendable > total) throw new Error('The Nodus module returned an invalid balance.');

@@ -27,6 +27,26 @@ how it is signed is not decided. Consequently **rollback is also a git operation
 the previous commit and rebuild. Record the commit you are rolling back *to* before
 you start; after the fact it is guesswork.
 
+**Host CPU requirement (EVM-capable builds, Nodus EVM red-team 1 F2):** an x86-64 witness host
+must have **AVX + BMI2 + ADX** (Intel Broadwell 2014+, AMD Zen 2017+; check
+`grep -wo -e avx -e bmi2 -e adx /proc/cpuinfo | sort -u` shows all three) — the bn254
+library mcl refuses to initialise without them (`shared/evm/third_party/mcl/PINNED.md`), and
+`nodus_witness_init` runs the EVM precompile self-test on every start and REFUSES TO START,
+naming the missing capability, before any vote. Verify it on every host BEFORE rolling out a
+binary built with `NODUS_EVM_ENABLED`. (No OpenSSL version requirement comes from the EVM: the
+SHA-256 / RIPEMD-160 precompiles use vendored, pinned code — blst and trezor-crypto,
+`shared/evm/third_party/{blst,ripemd160}/PINNED.md` — not the host's libcrypto.)
+
+**Host build requirement (EVM-capable builds, Nodus EVM red-team 1 D2):** GMP 6.3.0 is vendored
+as its signed upstream tarball and built from it on the host, so every host that builds
+nodus with `NODUS_EVM_ENABLED` needs **`m4`** (GMP's configure stops with "No usable m4 in
+$PATH" without it — `gmp-6.3.0/configure:25644`) and **`xz`** (`tar -xJf`,
+`shared/evm/Makefile:241`), plus `sha256sum` (the tarball hash is checked before
+extraction, `:240`) and **`xxd`** (it embeds the KZG trusted setup into the build;
+`nodus/CMakeLists.txt` stops with "xxd is required to embed the KZG trusted setup"
+without it, as `shared/evm/Makefile:210` needs it too). Install them before the first
+`git pull && make` of such a build: `apt install m4 xz-utils xxd`.
+
 Deploy is **ORCHESTRATOR/operator-only and always requires explicit permission.**
 One node at a time for a rolling deploy; all nodes at once for a stop-all.
 
@@ -38,6 +58,7 @@ One node at a time for a rolling deploy; all nodes at once for a stop-all.
 | `state_root` format / wire format / DB schema | **STOP-ALL + chain wipe** |
 | Any consensus change (the cometbft port's `cmt_*`, the application's ABCI rows, the genesis document) | **STOP-ALL + fresh chain** — a version-3 chain has no migration; §2.1 explains why there is no `pbft_state` step any more |
 | A **height-activated** rule that is inert until a chain-config vote turns it on (HF-1 gas price, nodus 0.19.80; HF-2 param 7; HF-3 param 8; HF-4 param 9 — the rule-set generation switch, nodus 0.23.10) | **Rolling** binary upgrade (the rule is byte-identical to the old binary while no row exists) — then the vote, ONLY after 7/7 run the new binary. §2.2 |
+| HF-5 Nodus EVM (nodus 0.24.0; param 14 `EVM_ACTIVE`, rule-set generation 3) — a release that also migrates the witness DB to schema **S17** at its first open | **Rolling**, one node at a time, but every node through **§4.1** (stop it, copy its data directory, only then start the new binary — the previous binary cannot open an S17 database). The `EVM_ACTIVE` vote is a §2.2 procedure, ONLY after 7/7 run the new binary |
 | Logging, metrics, non-consensus tooling | Rolling, one node at a time |
 
 **Why stop-all for validity changes:** during a rolling window the cluster runs mixed
@@ -1285,6 +1306,39 @@ Rollback is a git checkout plus a rebuild — the same mechanism as deploy.
    ```
 4. Start all nodes, then run §3. Every node must return to the same height and
    `state_root` as before the failed deploy.
+
+### 4.1 Rolling out a schema-migrating build (the first Nodus EVM build, S16 → S17)
+
+The first build with the EVM domain migrates the witness database to schema **S17**
+at its first open (`nodus_witness_db_migrate_v2s17`, called from
+`witness_post_open_gate`). The previous binary does not open an S17 database: its
+S16 rung does not take 17 as "already done" — it hands any version other than 16
+down the S15 → … chain (`nodus_witness_v2_schema.c` on the previous release,
+`migrate_v2s16_ex`), whose rungs refuse a version they do not know
+(red-team 1 F7, Kurultay 2026-10-05: Astra's objection accepted). So for THIS rollout
+"a binary swap never touches the DB" (§4 step 3) is false, and §1 (which MOVES the
+live databases away — it is for wipe deploys) is the wrong procedure. Instead:
+
+1. **Before** the new binary starts on a node, stop that node and take a **copy** of its
+   data directory — the node stopped, so the copy is consistent:
+   ```bash
+   sudo systemctl stop nodus            # three-process host: all three units
+   TS=$(date +%s); sudo mkdir -p "$DATA_DIR/archive/pre-s17-$TS"
+   sudo cp -a "$DATA_DIR"/witness_* "$DATA_DIR"/cs.wal* "$DATA_DIR/archive/pre-s17-$TS/" 2>/dev/null
+   ls -l "$DATA_DIR/archive/pre-s17-$TS"
+   ```
+   Do NOT copy or touch `priv_validator_state.json` into the archive for later
+   restore — see 3.
+2. A restore + downgrade to the previous binary is valid **only while the previous
+   binary can replay every block the chain has committed since**: no block carrying
+   an EVM vote, and no other committed history the previous binary cannot apply.
+   After the EVM activation vote is committed there is no way back by restore;
+   recovery from then on is **forward** (a fixed new binary), never a rewind.
+3. **Never rewind finalized history or the last-sign state.** A restored database
+   is behind the node's `priv_validator_state.json`; the signer refuses to sign any
+   lower height (`shared/dnac/cmt_privval.c:117-118`) — leave that file as it is,
+   so the node catches up and never signs a height twice. Restoring an old copy of
+   `priv_validator_state.json` would let a validator double-sign.
 
 If a step fails, stop and diagnose. Do not improvise a partial cluster.
 

@@ -98,6 +98,33 @@
 //                                OPTIONAL (shared vaults, general multisig —
 //                                shapes in src/nodus/send-module.js), its own
 //                                group, same rule as the claim operations.
+//     evmBuild({ op, ... })      OPTIONAL (smart contracts, the EVM domain —
+//                                shapes in src/nodus/send-module.js "SMART
+//                                CONTRACTS"), its own group: builds and signs
+//                                one [CORE EVMFUND] + [EVM op] envelope
+//                                (design docs/plans/2026-10-04-nodus-evm-chain-
+//                                integration-design.md rev 3 §2), submitted
+//                                with submit().
+//     evmQuery({ method, args }) OPTIONAL (smart contracts, design §18): one
+//                                read RPC on this session. `method` is one of
+//                                EVM_QUERY_METHODS; `args` maps each CBOR key
+//                                to a tagged value ['b', lowercase hex] (byte
+//                                string) or ['u', decimal] (unsigned). Resolves
+//                                the node's reply map decoded into plain JS
+//                                (uint -> decimal string, bstr -> lowercase
+//                                hex, bool, array, map -> object); this client
+//                                checks it (src/evm/rpc.js). The module's
+//                                nsw_evm_query over the nodus client's
+//                                nodus_client_dnac_query_raw (Nodus EVM Faz 4).
+//     evmGeneration              number — REQUIRED beside evmBuild /
+//                                evmQuery: the rule-set generation that
+//                                carries the EVM (nodus_witness_runtime.h
+//                                NODUS_RT_GEN_EVM). Once the session is open
+//                                (unlock, or connectNetwork's success) this
+//                                client asks rulesetInfo(); a node whose generation
+//                                is below it has not voted the EVM in, and
+//                                neither group is offered (the panel stays
+//                                hidden) for this session.
 //     tick()                   Keepalive ping (the thread-less stand-in for
 //                                nodus_client.c's 60 s read-thread ping; the
 //                                server drops an idle session at 180 s).
@@ -121,6 +148,8 @@
 // zero the whole linear memory (src/nodus/derive.js deriveNodusAddress pattern)
 // -> release(). Each step runs even if an earlier one throws, so a failing
 // export can never skip the wipe.
+import { parseAccount, parseCode, parseStorage, parseCall, parseEstimate, parseReceipt, parseLogs, parseTicket } from '../evm/rpc.js';
+
 const HEX128 = /^[0-9a-f]{128}$/, HEX64 = /^[0-9a-f]{64}$/;
 export const NODUS_TICK_MS = 60000;
 const ASYNC_OPS = ['unlock', 'balance', 'list', 'buildAndSign', 'submit', 'scanConfirm', 'tick', 'rulesetInfo'];
@@ -151,6 +180,52 @@ const NAME_REG_OPS = ['namePrices', 'nameBuild'];
 // src/nodus/send-module.js "SHARED VAULTS"): a module without all of them
 // still unlocks; this client then answers "Shared vaults are not available".
 const VAULT_OPS = ['vaultCreate', 'vaultOpen', 'vaultBalance', 'vaultScan', 'vaultPropose', 'vaultReview', 'vaultApprove', 'vaultSubmit'];
+// OPTIONAL (smart contracts): building / signing, and the §18 reads, each a
+// group of its own — a module that can build but not read (or the reverse)
+// offers only what it has.
+const EVM_BUILD_OPS = ['evmBuild'];
+const EVM_QUERY_OPS = ['evmQuery'];
+export const EVM_QUERY_METHODS = Object.freeze(['evm_account', 'evm_code', 'evm_storage', 'evm_call', 'evm_estimate', 'evm_receipt', 'evm_logs', 'evm_ticket']);
+const HEX32B = /^[0-9a-f]{64}$/, EVEN_HEX = /^([0-9a-f]{2})*$/, U64DEC = /^(0|[1-9]\d{0,19})$/;
+function evmArgs(method, args) {
+  const a = args || {};
+  const bad = what => { throw new Error(`Invalid ${what}.`); };
+  const addr = (v, what = 'address') => (typeof v === 'string' && HEX32B.test(v) ? ['b', v] : bad(what));
+  const u64 = (v, what) => (typeof v === 'string' && U64DEC.test(v) && BigInt(v) < 2n ** 64n ? ['u', v] : bad(what));
+  switch (method) {
+    case 'evm_account': case 'evm_code': return { a: addr(a.address) };
+    case 'evm_storage': return { a: addr(a.address), k: addr(a.key, 'storage key') };
+    case 'evm_call': case 'evm_estimate': {
+      const out = { f: addr(a.from, 'sender'), d: typeof a.data === 'string' && EVEN_HEX.test(a.data) ? ['b', a.data] : bad('call data') };
+      if (a.to !== undefined) out.t = addr(a.to, 'contract address');
+      if (a.value !== undefined) out.v = addr(a.value, 'value');
+      if (a.gas !== undefined) out.g = u64(a.gas, 'gas limit');
+      return out;
+    }
+    case 'evm_receipt': return { i: typeof a.intentId === 'string' && HEX128.test(a.intentId) ? ['b', a.intentId] : bad('transaction id') };
+    case 'evm_logs': {
+      const out = { fh: u64(a.fromHeight, 'block height'), th: u64(a.toHeight, 'block height'), lim: u64(a.limit ?? '1000', 'limit') };
+      if (BigInt(out.th[1]) < BigInt(out.fh[1]) || BigInt(out.th[1]) - BigInt(out.fh[1]) >= 10000n) bad('block range (at most 10,000 blocks)');
+      if (BigInt(out.lim[1]) < 1n || BigInt(out.lim[1]) > 1000n) bad('limit');
+      if (a.address !== undefined) out.a = addr(a.address);
+      (a.topics || []).forEach((t, i) => { if (i > 3) bad('topics'); if (t !== null && t !== undefined) out[`t${i}`] = addr(t, 'topic'); });
+      // red-team 1 F4: resume where a previous reply's cursor points (send
+      // the SAME range / address / topics as that request). As the C SDK
+      // (nodus_client.c nodus_client_evm_logs): fh <= height <= th, index /
+      // logIndex <= 2^32 (nodus.h NODUS_EVM_LOGS_CURSOR_POS_MAX).
+      if (a.cursor !== undefined) {
+        const c = a.cursor;
+        if (!c || typeof c !== 'object' || Array.isArray(c)) bad('cursor');
+        const pos = [c.height, c.index, c.logIndex].map(v => u64(v, 'cursor')[1]);
+        if (BigInt(pos[0]) < BigInt(out.fh[1]) || BigInt(pos[0]) > BigInt(out.th[1]) || BigInt(pos[1]) > 2n ** 32n || BigInt(pos[2]) > 2n ** 32n) bad('cursor');
+        out.c = ['U', pos];
+      }
+      return out;
+    }
+    case 'evm_ticket': return { id: typeof a.id === 'string' && HEX128.test(a.id) ? ['b', a.id] : bad('ticket') };
+    default: return bad('smart-contract request');
+  }
+}
 // OPTIONAL (local-first open): the unlock in two steps.
 //
 // STATES of this client:
@@ -175,7 +250,7 @@ const lockedError = () => new Error('Wallet is locked.');
 
 export function createNodusClient({ factory, onState, setInterval: every = globalThis.setInterval, clearInterval: stopEvery = globalThis.clearInterval } = {}) {
   if (typeof factory !== 'function') throw new Error('The Nodus send module is not available.');
-  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, connectable = false, nameable = false, registrable = false, vaultable = false, splittable = false, connecting;
+  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, connectable = false, nameable = false, registrable = false, vaultable = false, splittable = false, connecting, evmGen = 0, evmBuildable = false, evmReadable = false;
   // ONE operation queue: Asyncify keeps a single global currData, so a second
   // export entered while the first is suspended corrupts the first. `tail`
   // settles only when the module call itself has returned, never merely when
@@ -256,6 +331,24 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
     registrable = nameable && NAME_REG_OPS.every(name => typeof loaded[name] === 'function');
     vaultable = VAULT_OPS.every(name => typeof loaded[name] === 'function');
     splittable = SPLIT_OPS.every(name => typeof loaded[name] === 'function');
+    evmGen = Number.isSafeInteger(loaded.evmGeneration) && loaded.evmGeneration > 0 ? loaded.evmGeneration : 0;
+    evmBuildable = evmGen > 0 && EVM_BUILD_OPS.every(name => typeof loaded[name] === 'function');
+    evmReadable = evmGen > 0 && EVM_QUERY_OPS.every(name => typeof loaded[name] === 'function');
+  }
+  // Smart contracts only where the node runs the EVM generation: a node
+  // that has not voted the EVM in (or does not say) offers neither group
+  // for this session — the panel stays hidden. Never fails the connection.
+  // Runs once the session is open (unlock, or connectNetwork's success),
+  // before the client reports 'ready'.
+  async function evmGate() {
+    if (!evmBuildable && !evmReadable) return;
+    let active = false;
+    try {
+      const ri = await enqueue('rulesetInfo');
+      active = typeof ri?.generation === 'string' && /^[1-9]\d{0,9}$/.test(ri.generation) && Number(ri.generation) >= evmGen;
+    } catch { active = false; }
+    if (stopped) throw lockedError();
+    if (!active) { evmBuildable = false; evmReadable = false; }
   }
   function takeIdentity(info, expected) {
     if (!info || typeof info.fingerprint !== 'string' || !HEX128.test(info.fingerprint) || typeof info.chainId !== 'string' || !HEX64.test(info.chainId)) throw new Error('The Nodus send module returned an invalid identity.');
@@ -270,6 +363,7 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
       setState('connecting');
       await load();
       takeIdentity(await enqueue('unlock', { seed }), expected);
+      await evmGate();
       timer = every(tick, NODUS_TICK_MS);
       setState('ready');
       return { fingerprint, chainId };
@@ -305,8 +399,9 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
     if (connecting) return connecting;
     if (!module || state !== 'identified') return Promise.reject(new Error('Nodus connection is not ready.'));
     setState('connecting');
-    connecting = enqueue('connectNetwork').then(() => {
+    connecting = enqueue('connectNetwork').then(async () => {
       if (stopped) throw lockedError();
+      await evmGate();
       timer = every(tick, NODUS_TICK_MS);
       setState('ready');
     }, error => {
@@ -325,6 +420,15 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
   const nameCall = op => (args, options) => nameable ? call(op)(args, options) : Promise.reject(new Error('Chain names are not available in this wallet version.'));
   const registerCall = op => (args, options) => registrable ? call(op)(args, options) : Promise.reject(new Error('Registering a chain name is not available in this wallet version.'));
   const vaultCall = op => (args, options) => vaultable ? call(op)(args, options) : Promise.reject(new Error('Shared vaults are not available in this wallet version.'));
+  const evmBuildCall = op => (args, options) => evmBuildable ? call(op)(args, options) : Promise.reject(new Error('Smart contracts are not available in this wallet version.'));
+  // One §18 read: arguments checked and tagged here, the reply checked by
+  // `parse` (src/evm/rpc.js) before anyone sees it — against the tagged
+  // request it answers (parseLogs needs the range, limit and cursor).
+  const evmRead = (method, parse) => async (args, options) => {
+    if (!evmReadable) throw new Error('Reading smart contracts from the network is not available in this wallet version.');
+    const tagged = evmArgs(method, args);
+    return parse(await call('evmQuery')({ method, args: tagged }, options), tagged);
+  };
   return {
     get state() { return state; },
     get fingerprint() { return fingerprint; },
@@ -370,6 +474,21 @@ export function createNodusClient({ factory, onState, setInterval: every = globa
     vaultReview: vaultCall('vaultReview'),
     vaultApprove: vaultCall('vaultApprove'),
     vaultSubmit: vaultCall('vaultSubmit'),
+    // Smart contracts (the EVM domain): whether the loaded module builds EVM
+    // envelopes (EVM_BUILD_OPS) and whether it reads EVM state (§18,
+    // EVM_QUERY_OPS); the build, and one method per §18 query. Every
+    // answer is ONE node's committed tip state.
+    get evmBuildable() { return evmBuildable && state === 'ready'; },
+    get evmReadable() { return evmReadable && state === 'ready'; },
+    evmBuild: evmBuildCall('evmBuild'),
+    evmAccount: evmRead('evm_account', parseAccount),       // { address }
+    evmCode: evmRead('evm_code', parseCode),                // { address }
+    evmStorage: evmRead('evm_storage', parseStorage),       // { address, key }
+    evmCall: evmRead('evm_call', parseCall),                // { from, to?, value?, data, gas? }
+    evmEstimate: evmRead('evm_estimate', parseEstimate),    // same as evmCall
+    evmReceipt: evmRead('evm_receipt', parseReceipt),       // { intentId } -> receipt | null
+    evmLogs: evmRead('evm_logs', parseLogs),                // { fromHeight, toHeight, address?, topics?, limit?, cursor? } -> { logs, more, cursor }
+    evmTicket: evmRead('evm_ticket', parseTicket),          // { id }
     validators: (options) => stakeCall('validators')(undefined, options),
     delegations: (options) => stakeCall('delegations')(undefined, options),
     stakeBuild: stakeCall('stakeBuild'),

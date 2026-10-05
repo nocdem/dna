@@ -281,7 +281,7 @@ int nodus_witness_addr_index_env(nodus_witness_t *w, uint64_t height,
 {
     const dna_env_view_t *v;
     nodus_rt_leg_desc_t  *desc = NULL;
-    const nodus_rt_leg_desc_t *core = NULL, *sys = NULL;
+    const nodus_rt_leg_desc_t *core = NULL, *sys = NULL, *evm = NULL;
     const nodus_rt_auth_verdict_t *pav;
     const uint8_t *payer;
     ai_row_t *rows = NULL;
@@ -298,14 +298,15 @@ int nodus_witness_addr_index_env(nodus_witness_t *w, uint64_t height,
     }
     v = &pf->view;
     if (v->leg_count == 0 || v->leg_count > 2) {
-        /* describe_leg's CORE / SYSTEM pairing is at most one of each */
+        /* describe_leg's pairings are at most one CORE leg and one
+         * SYSTEM or EVM leg */
         ai_reason(reason, reason_size, "addr index: item %u at height %llu "
                   "carries %u legs; this build describes at most one CORE "
-                  "and one SYSTEM leg", (unsigned)item_pos,
+                  "and one SYSTEM or EVM leg", (unsigned)item_pos,
                   (unsigned long long)height, (unsigned)v->leg_count);
         return -1;
     }
-    desc = calloc(2, sizeof(*desc));
+    desc = calloc(3, sizeof(*desc));
     rows = calloc(AI_MAX_ROWS, sizeof(*rows));
     if (!desc || !rows) {
         ai_reason(reason, reason_size, "addr index: allocation failed at "
@@ -325,6 +326,13 @@ int nodus_witness_addr_index_env(nodus_witness_t *w, uint64_t height,
         } else if (d == DNA_DOMAIN_SYSTEM) {
             if (sys) goto repeated;
             slot = &desc[1];
+        } else if (d == DNA_DOMAIN_EVM) {
+            /* Nodus EVM: the EVM leg moves no native coin — its value
+             * movement is the CORE EVMFUND sibling's, indexed below.
+             * Described only so a leg this build cannot read still
+             * fails closed; it contributes no row. */
+            if (evm) goto repeated;
+            slot = &desc[2];
         } else {
             ai_reason(reason, reason_size, "addr index: item %u leg %u "
                       "names domain %u, which this build cannot describe",
@@ -344,8 +352,10 @@ int nodus_witness_addr_index_env(nodus_witness_t *w, uint64_t height,
         if (d == DNA_DOMAIN_CORE) {
             core = slot;
             core_leg = (int)l;
-        } else {
+        } else if (d == DNA_DOMAIN_SYSTEM) {
             sys = slot;
+        } else {
+            evm = slot;
         }
         continue;
 repeated:
@@ -370,6 +380,17 @@ repeated:
                           "owner is not 128 lowercase hex",
                           (unsigned)item_pos, (unsigned)c);
                 goto done;
+            }
+            /* Nodus EVM EVMFUND RELEASE (WITHDRAW / REDEEM): the describer
+             * appends the release coin LAST; its value leaves the CORE
+             * EVM reserve, not the payer — a (recipient, release) row,
+             * the graduation-release shape, written even when the
+             * recipient is the signer (it is not change) */
+            if (core->evm_role == NODUS_RT_EVMFUND_ROLE_RELEASE &&
+                c + 1 == core->n_created) {
+                ai_row(&rows[n++], owner, NODUS_ADDR_KIND_RELEASE,
+                       coin->amount, coin->token_id, NULL);
+                continue;
             }
             if (tc && memcmp(coin->token_id, AI_NATIVE, 64) != 0) {
                 const uint8_t *peer =

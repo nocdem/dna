@@ -635,7 +635,7 @@ Nodus EVM and HF-6 = the role-stake package (operator numbering decision
 `docs/plans/decisions/2026-10-05-hf-numbering-evm-hf5.md`; the earlier "HF-5"
 name of the role-stake decisions in `2026-10-03-role-stake-amounts.md` is now
 HF-6), and the storage role reward, which takes the next number when ready.
-The Nodus EVM text rests on the `qevm` branch's Prague state-test run
+The Nodus EVM text rests on the Nodus EVM branch's Prague state-test run
 (17,265 pass, 0 fail, 9 documented EIP-7823 modexp deviations; blob and
 set-code transactions excluded by design) — built, not released, not voted.
 

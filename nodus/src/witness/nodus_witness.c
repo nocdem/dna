@@ -10,6 +10,8 @@
 #include "witness/nodus_witness_p2p.h"      /* the 4004 p2p host (P2P-PORT F5) */
 #include "witness/nodus_witness_handlers.h"
 #include "witness/nodus_witness_v2_pools.h"  /* S7 startup check      */
+#include "witness/nodus_witness_v2_schema.h" /* Nodus EVM: the at-open S17
+                                              * rung                  */
 #include "witness/nodus_witness_v2_gate.h"      /* O15B activation gate  */
 #include "witness/nodus_witness_v2_preflight.h" /* O15A readiness report */
 /* O15J Faz 3 — chain-role derivation is what makes a Ledger V2 database
@@ -17,6 +19,7 @@
  * exactly ONE way a V2 chain comes into being, and exactly one probe for
  * it: nodus_witness_v2_gen_is_pure. */
 #include "witness/nodus_witness_v2_gen.h"       /* O15J pure-V2 chain role   */
+#include "witness/nodus_witness_v2_apply.h"     /* F5 initial-height cache   */
 /* ORCHESTRATOR delta 1, FIX A: RESTORED. This agent's earlier removal
  * was wrong — the O15K reaper (below, the P3(c) nullifier-spent check)
  * still calls nodus_witness_v2_claim_nullifier_spent, which this header
@@ -37,6 +40,9 @@
 #include "witness/nodus_witness_v2_produce.h"   /* classify_entry / tip  */
 #include "witness/nodus_witness_domreg.h"       /* contextual rulesets   */
 #include "witness/nodus_witness_runtime.h"      /* start-time selfcheck  */
+#ifdef NODUS_EVM_ENABLED
+#include "evm/evm_precompile.h"                 /* Nodus EVM F2: start KAT */
+#endif
 #include "dnac/dnac.h"                          /* HF-4: D2 + switch spec */
 #include "witness/nodus_witness_emission.h"    /* DNAC_BLOCKS_PER_YEAR    */
 #include "nodus_build_commit.h"                 /* HF-4: NODUS_BUILD_GIT_
@@ -861,8 +867,82 @@ static int witness_gate_table_has_rows(sqlite3 *db, const char *count_sql) {
  * On failure the database is CLOSED and refused — never repaired.
  * Returns 0 when the database may be used, -1 when it must not be.
  */
+/* Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md
+ * rev 3 §9; the activation package's schema item) — the IN-PLACE S16 ->
+ * S17 migration of a version-3 chain database at open. S17 adds the EVM
+ * domain's tables EMPTY and the CORE reserve row (1, 0)
+ * (nodus_witness_v2_schema.h): no generation-1/2 root, invariant or
+ * verdict reads any of it, so a chain's roots do not move, and a binary
+ * upgrade on a live testnet node (no wipe) reaches the schema the EVM
+ * edge needs before any vote can exist.
+ *
+ * Runs ONLY on an established version-3 chain at exactly S16 (the Comet
+ * stores present AND a canonical stored genesis document): never on a
+ * pre-genesis or ceremony scratch database (their builders migrate
+ * themselves), never on any other version (S17 is a no-op; anything else
+ * is the gates' to refuse). Outside every transaction (the rung opens
+ * its own BEGIN IMMEDIATE), BEFORE the S7 startup check. A failed rung
+ * rolls back whole and the database is refused (fail closed).
+ * @return 0 (migrated, or nothing to do) / -1 refuse the database. */
+static int witness_open_migrate_s17(nodus_witness_t *witness,
+                                    const char *db_path) {
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(witness, &ver) != 0) {
+        fprintf(stderr, "%s: schema version unreadable for %s — refusing "
+                "the database (fail closed)\n", LOG_TAG, db_path);
+        return -1;
+    }
+    if (ver != NODUS_V2_SCHEMA_VERSION_S16) return 0;
+    int st = witness_gate_table_exists(witness->db,
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cmt_state'");
+    int bs = witness_gate_table_exists(witness->db,
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND "
+        "name='cmt_blockstore'");
+    if (st < 0 || bs < 0) {
+        fprintf(stderr, "%s: S14 store catalogue unreadable for %s — "
+                "refusing the database (fail closed)\n", LOG_TAG, db_path);
+        return -1;
+    }
+    if (st != 1 || bs != 1) return 0;   /* not a version-3 chain: the
+                                         * role gate below decides       */
+    uint8_t id[NODUS_V2_GEN_CHAIN_ID_LEN];
+    if (nodus_witness_v2_gen_stored_chain_id(witness, id) != 0)
+        return 0;                       /* no stored document: the role
+                                         * gate below refuses it         */
+    if (nodus_witness_db_migrate_v2s17(witness) != 0) {
+        fprintf(stderr, "%s: the S16 -> S17 migration (Nodus EVM, empty EVM "
+                "tables) FAILED for %s — rolled back, refusing the "
+                "database (fail closed)\n", LOG_TAG, db_path);
+        return -1;
+    }
+    fprintf(stderr, "%s: schema S16 -> S17 (Nodus EVM: EVM tables created "
+            "empty, CORE EVM reserve 0; no root moves) for %s\n",
+            LOG_TAG, db_path);
+    return 0;
+}
+
 static int witness_post_open_gate(nodus_witness_t *witness,
                                   const char *db_path) {
+    /* Nodus EVM: the at-open S16 -> S17 rung (witness_open_migrate_s17 above),
+     * FIRST — the S7 check and every later gate see the live rung. */
+    if (witness_open_migrate_s17(witness, db_path) != 0) {
+        sqlite3_close(witness->db);
+        witness->db = NULL;
+        return -1;
+    }
+    /* Nodus EVM red-team 1 F4: a database that reached S17 before the §18
+     * evm_logs scan indexes existed gets them here — indexes only, no
+     * shape or version change, nothing a root reads (any other version:
+     * nothing). A failure refuses the database like the rung above. */
+    if (nodus_witness_db_ensure_v2s17_indexes(witness) != 0) {
+        fprintf(stderr, "%s: the S17 EVM log scan indexes could not be "
+                "ensured for %s — refusing the database (fail closed)\n",
+                LOG_TAG, db_path);
+        sqlite3_close(witness->db);
+        witness->db = NULL;
+        return -1;
+    }
+
     /* Ledger V2 S7 — fail-closed pool-state startup verification:
      * full ordered nullifier-log replay + derived note-table shape,
      * BEFORE the witness may validate or apply any Ledger V2 block. */
@@ -999,6 +1079,7 @@ static int witness_post_open_gate(nodus_witness_t *witness,
     witness->v2_successor = false;
     memset(witness->v2_chain32, 0, sizeof(witness->v2_chain32));
     witness->v2_chain32_valid = false;   /* the chain-id cache (nodus_witness.h) */
+    witness->v2_initial_height = 0;      /* and the initial-height cache */
 
     int cmt_state_present = witness_gate_table_exists(witness->db,
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cmt_state'");
@@ -1032,6 +1113,20 @@ static int witness_post_open_gate(nodus_witness_t *witness,
          * canonical-strict just above. nodus_witness_v2_chain_id answers
          * from it from here on (contract: nodus_witness.h). */
         witness->v2_chain32_valid = true;
+        /* Red-team 1 F5: the initial-height cache, once per open, from the
+         * same stored document (nodus_witness.h v2_initial_height). The
+         * accessor derives from the document because the cache is still
+         * 0 here. Not derivable → stays 0: the EVM_ACTIVE vote is refused
+         * (fail closed); nothing else reads it. */
+        {
+            uint64_t ih = 0;
+            if (nodus_witness_v2_chain_initial_height(witness, &ih) == 0)
+                witness->v2_initial_height = ih;
+            else
+                fprintf(stderr, "%s: the chain's initial height is not "
+                        "derivable from %s's genesis document — EVM_ACTIVE "
+                        "votes will be refused\n", LOG_TAG, db_path);
+        }
         fprintf(stderr, "%s: chain role: COMETBFT (version 3; the legacy "
                 "and pre-Comet lanes are closed)\n", LOG_TAG);
         return 0;
@@ -2518,6 +2613,34 @@ int nodus_witness_init(nodus_witness_t *witness,
                 "This build is broken; do not run it.\n", LOG_TAG);
         return -1;
     }
+#ifdef NODUS_EVM_ENABLED
+    /* Nodus EVM red-team 1 F2: the precompile set is part of the consensus
+     * ruleset (decision 2026-10-04-nodus-evm-kurultay-k1, operator item #2).
+     * Its known-answer test runs on EVERY start, before any vote, in this
+     * start path only (not in nodus_witness_runtime_selfcheck, which the
+     * genesis derivation also calls). It initialises every precompile
+     * library now — the KZG trusted setup included — and runs one known
+     * answer per library (evm_precompile.c PC_KATS: 0x01-0x03, 0x05, 0x06,
+     * 0x08-0x0b, 0x0f, 0x11; SHA-256 and RIPEMD-160 are pinned code, blst
+     * and trezor-crypto, not a system library), so a host that cannot run
+     * one (an x86-64 CPU without AVX + BMI2 + ADX for mcl; an embedded KZG
+     * setup that fails its pinned SHA-256 or does not load) refuses to
+     * start instead of faulting at the first such call in FinalizeBlock. */
+    {
+        const char *missing = NULL;
+        if (evm_precompile_selftest_report(&missing) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "REFUSING START — the EVM precompile "
+                          "self-test failed: %s is not available on this "
+                          "host/build. A witness that cannot execute every "
+                          "precompile must not join consensus.",
+                          missing ? missing : "(unnamed capability)");
+            return -1;
+        }
+        QGP_LOG_INFO(LOG_TAG, "EVM precompile self-test passed "
+                     "(one known answer per library: 0x01-0x03, 0x05, "
+                     "0x06, 0x08-0x0b, 0x0f, 0x11; KZG setup loaded)");
+    }
+#endif
     /* HF-4 (design 2026-10-02-onchain-names-design.md rev 4 §1.5): the
      * generation-2 vote literal this binary will accept — selfcheck just
      * re-derived it from the compiled generation-2 pins — and the git

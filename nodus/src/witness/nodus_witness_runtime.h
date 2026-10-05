@@ -63,6 +63,7 @@
 #include "dnac/domain_wire.h"
 #include "dnac/res_meter.h"     /* dna_meter_policy_t + the env/effect
                                  * codec views the execution hooks borrow */
+#include "dnac/evm_call_wire.h" /* Nodus EVM: the ONE EVM call / EVMFUND codec */
 
 #ifdef __cplusplus
 extern "C" {
@@ -70,6 +71,16 @@ extern "C" {
 
 /** This release's native runtime ABI. */
 #define NODUS_DOMAIN_RUNTIME_ABI_V1  ((uint32_t)1)
+/** Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md
+ *  rev 3 §3): the runtime ABI with ENGINE-MEDIATED READS AT RUN TIME. An
+ *  ABI-2 runtime has no read_plan and no exec; it executes a leg through
+ *  `exec_evm`, pulling committed state through an engine-owned reader that
+ *  charges every logical read before it happens. Only the EVM runtime
+ *  (nodus_witness_rt_evm.c) speaks it; the compiled production table
+ *  carries it as the generation-3 EVM slice (nodus_witness_runtime.c, the
+ *  ABI-2 entries), which a chain resolves only after the EVM_ACTIVE vote
+ *  (param 14) switches the rule-set generation. */
+#define NODUS_DOMAIN_RUNTIME_ABI_V2  ((uint32_t)2)
 
 /* Semantic rule identifiers named in the checked-in ruleset descriptors.
  * Opaque, stable, strictly-ascending per descriptor — bumping a domain's
@@ -109,6 +120,44 @@ extern "C" {
  *  refuse it under a generation-1 or NULL runtime as a deterministic
  *  verdict (-1), never a fault. */
 #define DNA_CORERULE_NAME_REGISTER   ((uint32_t)8)
+/** Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md
+ *  rev 3 §2, §5): EVMFUND — the CORE half of every EVM envelope, which is
+ *  EXACTLY [CORE EVMFUND] + [EVM op]. Owned by the EVM generation's CORE
+ *  descriptor only (NODUS_RT_GEN_EVM below); every older generation does
+ *  not own it, so admission refuses op 9 there exactly as before. Its
+ *  call carries NO amount and NO recipient — those come from the sibling
+ *  EVM leg's call bytes (the SYSFUND discipline). Declared HERE because
+ *  the CORE hook and the EVM hook both name it when they check their
+ *  sibling (nodus_rt_evm_pair_check below). */
+#define DNA_CORERULE_EVMFUND         ((uint32_t)9)
+
+/** EVMFUND call: ver u8 ‖ role u8 ‖ the SYSFUND transfer section
+ *  (in_count u8 1..15 ‖ nullifiers ‖ out_count u8 0..16 ‖ outputs). */
+#define NODUS_RT_EVMFUND_CALL_VER     1u
+/** role FEE (EVM CALL / CREATE): the inputs pay the envelope fee, to the
+ *  reward pool; nothing is locked. */
+#define NODUS_RT_EVMFUND_ROLE_FEE     1u
+/** role DEPOSIT (EVM DEPOSIT): the inputs also LOCK the sibling's
+ *  amount_raw into the CORE EVM reserve. */
+#define NODUS_RT_EVMFUND_ROLE_DEPOSIT 2u
+/** role RELEASE (EVM WITHDRAW / REDEEM): a UTXO of the sibling's
+ *  amount_raw is created to the sibling's dest_fp and the reserve is
+ *  debited by it. */
+#define NODUS_RT_EVMFUND_ROLE_RELEASE 3u
+
+/* ── Nodus EVM runtime ops (design §2) — the EVM descriptor's rule ids. Here,
+ *    not only in nodus_witness_rt_evm.h, because the pure call-head
+ *    decoder below (always compiled) and the CORE hook read them. ─────── */
+#define NODUS_RT_EVM_CALL       1u
+#define NODUS_RT_EVM_CREATE     2u
+#define NODUS_RT_EVM_DEPOSIT    3u
+#define NODUS_RT_EVM_WITHDRAW   4u
+#define NODUS_RT_EVM_REDEEM     5u
+/** The one call-bytes version this release decodes (design §2 `ver`). */
+#define NODUS_RT_EVM_CALL_VER   1u
+/** The block-gas share of one bridge op (design §8: "köprü op'ları sabit
+ *  21 000 sayılır"). */
+#define NODUS_RT_EVM_BRIDGE_GAS 21000u
 
 /* ── HF-4 rule-set GENERATIONS (design §1.1) ───────────────────────────
  * The compiled table is an ordered list of generations since genesis:
@@ -121,8 +170,50 @@ extern "C" {
  * tuple); the switch from 1 to 2 is phase 6b' of the engine. */
 #define NODUS_RT_GEN_1               ((uint32_t)1)
 #define NODUS_RT_GEN_2               ((uint32_t)2)
-/** The newest compiled generation. */
+/** Nodus EVM (design §9): the EVM GENERATION — SYSTEM v8 (the policy pricing
+ *  ops 1..9), CORE v6 (rule 9 EVMFUND, the reserved supply leaf and
+ *  invariant), EVM v1 (the third domain, registered ACTIVE by phase 6b''
+ *  at the end of block H-1 of the EVM_ACTIVE vote). The NEXT FREE number
+ *  in this tree; ONE definition so a merge with another generation (HF-5)
+ *  renumbers it here only — the D literal (dnac.h DNAC_CFG_EVM_ACTIVE_D)
+ *  commits it and must be re-derived with it. */
+#define NODUS_RT_GEN_EVM             ((uint32_t)3)
+/** Nodus EVM Faz 4: the EVM generation's EVM-domain RULESET IDENTITY — the
+ *  (version, hash) every EVM leg's call commitment binds (env_wire.h
+ *  "ruleset_hash is CONTEXTUAL"). Header constants (no code), ONE
+ *  definition: the compiled table's EVM entry and its pinned digest
+ *  (nodus_witness_runtime.c EVM_RULESET_HASH_GEVM) initialise from them,
+ *  and so does a client that cannot link the witness (the web wallet's
+ *  send.wasm, nodus-send-wasm.c "SMART CONTRACTS"). The digest is
+ *  re-derived from the descriptor by nodus_witness_runtime_selfcheck on
+ *  every start of an EVM-enabled build, so a drift here refuses to start. */
+#define NODUS_RT_EVM_RULESET_VERSION_GEVM  1u
+#define NODUS_RT_EVM_RULESET_HASH_GEVM_INIT { \
+    0x41, 0x5e, 0x6f, 0x97, 0xf5, 0x81, 0x43, 0xf4, \
+    0x36, 0xbb, 0x3e, 0xae, 0x73, 0x58, 0x2e, 0xff, \
+    0x45, 0x07, 0x8d, 0xcc, 0x23, 0xcb, 0x04, 0x97, \
+    0x00, 0x88, 0x38, 0xe4, 0x94, 0x06, 0x55, 0x33, \
+    0xc2, 0xff, 0x1a, 0xcf, 0x27, 0x1d, 0xb7, 0xaa, \
+    0x71, 0xa4, 0x7c, 0x6c, 0x9a, 0x36, 0xfc, 0x22, \
+    0xce, 0x8b, 0x0c, 0x6e, 0x5e, 0x35, 0x85, 0x92, \
+    0x2c, 0x59, 0x19, 0xe4, 0x34, 0x9f, 0x11, 0xae  \
+}
+/** The generation the EVM generation is built on and switches FROM (its
+ *  SYSTEM/CORE tuples are this one's plus the EVM changes). ONE definition;
+ *  committed by the D literal; a vote is refused unless the registry is at
+ *  this generation (nodus_chain_config_stateful_rules). */
+#define NODUS_RT_GEN_EVM_BASE        NODUS_RT_GEN_2
+/** The newest compiled generation. The EVM generation needs the EVM
+ *  runtime, which only the standalone non-Windows nodus build compiles
+ *  (nodus/CMakeLists.txt NODUS_EVM_ENABLED); every other build of this
+ *  file (the messenger tree's libnodus, a Windows nodus) carries
+ *  generations 1 and 2 only — a node of such a build fails closed at the
+ *  EVM edge (the tuple is unknown), it never mis-executes. */
+#ifdef NODUS_EVM_ENABLED
+#define NODUS_RT_GEN_MAX             NODUS_RT_GEN_EVM
+#else
 #define NODUS_RT_GEN_MAX             NODUS_RT_GEN_2
+#endif
 
 struct nodus_domain_runtime;
 
@@ -460,7 +551,152 @@ typedef struct {
      * node FAULT, never a default). One consumer: the CORE NAME_REGISTER
      * exec. A hook never chooses it. */
     uint64_t       name_price[4];
+    /* Nodus EVM (design §10): the block being applied's Comet header time in
+     * SECONDS (`blk->timestamp`, nodus_witness_cmt_app.c FinalizeBlock)
+     * and the EVM block gas limit in force at `global_height` (chain_config
+     * param 15 EVM_BLOCK_GAS_LIMIT, nodus_witness_v2_evm_block_gas_limit
+     * in nodus_witness_v2_apply.c). Filled by the ENGINE on the
+     * execution ctx (exec_one_env); the authorization stage's ctx carries
+     * the gas limit and block_time_s 0 (no auth hook reads either).
+     * Consumed only by an ABI-2 runtime's block environment (TIMESTAMP /
+     * GASLIMIT). A hook never chooses them. */
+    uint64_t       block_time_s;
+    uint64_t       evm_block_gas_limit;
+    /* Nodus EVM activation (design §9): three more UNMETERED engine facts the
+     * SYSTEM CHAIN_CONFIG exec's stateful rules read for the EVM_ACTIVE
+     * vote (nodus_chain_config_stateful_rules_ex) — the HF-2 shape:
+     *   hf3_active       1 when chain_config param 8 is active at
+     *                    global_height (nodus_witness_v2_apply.c
+     *                    env_hf3_active);
+     *   gas_price_on     1 when a NON-ZERO param-5 (GAS_PRICE_RAW_PER_UNIT)
+     *                    row is active at global_height;
+     *   evm_active_voted 1 when ANY param-14 (EVM_ACTIVE) row exists, at
+     *                    any effective height (the param-9 single-use read).
+     * Filled by the engine on every ctx it builds; an unreadable answer is
+     * a node FAULT, never a default. No other hook reads them. */
+    uint8_t        hf3_active;
+    uint8_t        gas_price_on;
+    uint8_t        evm_active_voted;
+    /* Red-team 1 F5: the chain's FIRST block height (the genesis document's
+     * initial_height, completed 0 → 1 — nodus_witness_v2_chain_initial_
+     * height, cached once per open), the fact the EVM_ACTIVE stateful rule
+     * (g) reads. Filled by the engine like the three above; 0 = not
+     * derived, which refuses the EVM_ACTIVE vote (fail closed). Read only
+     * by the SYSTEM CHAIN_CONFIG exec. */
+    uint64_t       chain_initial_height;
 } nodus_rt_exec_ctx_t;
+
+/* ── Nodus EVM: the runtime-ABI-2 execution boundary (design §3, §4, §7) ────
+ *
+ * VALUES PENDING THE MEASUREMENT GATE (design §8): the two gas bounds
+ * below are compiled placeholders until the Faz 3 measurement derives
+ * them; the activation package replaces the block limit by chain_config
+ * param 15 (EVM_BLOCK_GAS_LIMIT). */
+/** Largest gas_limit one EVM leg may declare (design §4 EVM_TX_GAS_CAP). */
+#define NODUS_RT_EVM_TX_GAS_CAP          30000000ull
+/** The block environment's GASLIMIT until param 15 exists. */
+#define NODUS_RT_EVM_BLOCK_GAS_LIMIT     30000000ull
+/** NODE-LOCAL, NOT a consensus value (design §18 rev 5, §8): the gas the
+ *  §18 RPC simulations (evm_call / evm_estimate) of ONE node may spend per
+ *  committed tip height — the budget resets when the tip moves; no clock.
+ *  It never enters the activation digest's constant list (evm_act_consts,
+ *  the D literal) and no block, vote or root reads it. A compiled
+ *  placeholder pending the measurement gate. */
+#define NODUS_RT_EVM_SIM_GAS_PER_HEIGHT  (2ull * NODUS_RT_EVM_TX_GAS_CAP)
+/** Logical-read cap of one leg (design §3 EVM_MAX_READS):
+ *  ceil(EVM_TX_GAS_CAP / 2100) + 2 × access-list keys + 2048. The engine
+ *  evaluates it with the leg's own access-list key count. */
+#define NODUS_RT_EVM_READS_BASE \
+    ((NODUS_RT_EVM_TX_GAS_CAP + 2099ull) / 2100ull + 2048ull)
+/** Read-byte cap of one leg (design §3 EVM_MAX_READ_BYTES) — a compiled
+ *  placeholder pending the measurement gate. */
+#define NODUS_RT_EVM_MAX_READ_BYTES      (32ull * 1024ull * 1024ull)
+
+/** The reader op the ENGINE serves itself (never the runtime's adapter):
+ *  BLOCKHASH(n), key = n as u64 BE. Window [H-256, H-1] of the block H
+ *  being applied, from v2_blocks.block_id[0..32]; outside the window the
+ *  answer is present = 0; a window height with no row is a node FAULT.
+ *  Every other op id is a compiled adapter op of the leg's runtime and is
+ *  served through nodus_witness_v2_read_one. */
+#define NODUS_RT_V2_OP_BLOCKHASH         0x80000001u
+
+/** Reader status: the deterministic host-work verdict (design §3 BUDGET). */
+#define NODUS_RT_V2_READ_BUDGET          (-3)
+
+/**
+ * The engine-owned READER an ABI-2 runtime pulls committed state through.
+ * Every logical (op, key) is charged ONCE per leg, BEFORE it is read
+ * (design §3 I2): the first request charges w_read and caches the answer,
+ * every repeat of the same (op, key) in the same leg is served from the
+ * cache for free. The runtime never sees the witness handle, the database
+ * or the meter.
+ */
+typedef struct nodus_rt_v2_reader {
+    void *ctx;
+    /** @return 0 with *res filled (present 0/1, a MISSING row is a
+     *  successful read with present 0), NODUS_RT_V2_READ_BUDGET (-3, the
+     *  deterministic budget verdict: the read count / byte caps or the
+     *  leg's units are exhausted — nothing was read), or -2 node FAULT. */
+    int (*read)(void *ctx, uint32_t op, const uint8_t *key, uint16_t key_len,
+                nodus_rt_read_res_t *res);
+    /** Declare the leg's EVM gas before anything executes (design §4
+     *  pre-validation): gas_limit <= NODUS_RT_EVM_TX_GAS_CAP and
+     *  res_max_total_units >= static units + gas_limit × w_gas +
+     *  FAIL_RESERVE. Fixes the leg's read cap from `n_access_keys`.
+     *  @return 0 accepted, -1 refused (deterministic), -2 fault. */
+    int (*declare_gas)(void *ctx, uint64_t gas_limit, uint64_t n_access_keys);
+} nodus_rt_v2_reader_t;
+
+/** One EVM log of a successful leg, for the node-local log index (design
+ *  §7). Every pointer is runtime-owned (released with the out). */
+typedef struct {
+    const uint8_t *addr;                  /* 32 bytes                     */
+    uint8_t        n_topics;              /* 0..4                         */
+    const uint8_t *topics;                /* n_topics × 32 bytes          */
+    const uint8_t *data;
+    uint32_t       data_len;
+} nodus_rt_v2_log_t;
+
+/**
+ * What an ABI-2 leg hands back (design §4). Every pointer is
+ * RUNTIME-OWNED and stays valid until `release(out)`; the engine calls
+ * release exactly once whatever the leg's return code.
+ *
+ *   success == 1: `effects` is the leg's whole change set as ONE canonical
+ *     stream — strictly ascending by (op_id, key) over the whole stream,
+ *     every logical key once — which the engine applies in pages.
+ *   success == 0: execution failed (REVERT / out of gas / any exceptional
+ *     halt / BUDGET): only `fail_effects` (the fixed failure-result
+ *     effects, sender nonce + 1) are applied.
+ *   failable: 1 when a deterministic over-ceiling of the success stream
+ *     takes the failure path (CALL / CREATE — the leg executed, so it is
+ *     applied and pays); 0 when it is a refusal (-1) instead (the bridge
+ *     ops, which execute no code — design §4).
+ *   gas_limit / gas_used: EVM gas, the units the engine charges
+ *     (× DNA_METER_EVM_W_GAS) — gas_used on success, gas_limit on the
+ *     failure path. 0 / 0 for the bridge ops.
+ *   receipt / fail_receipt: the canonical receipt encodings of the two
+ *     outcomes (design §7); the engine hashes the one it applies into
+ *     ExecTxResult.Data and keeps the bytes in its node-local index.
+ */
+typedef struct nodus_rt_v2_out {
+    uint8_t                  success;
+    uint8_t                  failable;
+    const dna_effect_in_t   *effects;
+    uint32_t                 n_effects;
+    const dna_effect_in_t   *fail_effects;
+    uint32_t                 n_fail_effects;
+    uint64_t                 gas_limit;
+    uint64_t                 gas_used;
+    const uint8_t           *receipt;
+    size_t                   receipt_len;
+    const uint8_t           *fail_receipt;
+    size_t                   fail_receipt_len;
+    const nodus_rt_v2_log_t *logs;
+    uint32_t                 n_logs;
+    void                    *priv;
+    void                   (*release)(struct nodus_rt_v2_out *out);
+} nodus_rt_v2_out_t;
 
 /**
  * Verified authorization of one leg. Parses the leg's auth_data under
@@ -519,6 +755,57 @@ typedef int (*nodus_rt_exec_fn)(const struct nodus_domain_runtime *rt,
                                 uint16_t n_reads,
                                 uint8_t *res_out, size_t res_cap,
                                 size_t *res_len_out);
+
+/**
+ * Nodus EVM — runtime-ABI-2 execution of one preflighted leg (design §3/§4).
+ * Pure like exec: no witness, no database, no clock, no RNG — committed
+ * state arrives ONLY through `reader`, every read engine-charged.
+ * @return 0 with *out filled (an APPLIED outcome: success or the fixed
+ * failure path), -1 the leg is refused BEFORE anything executed (call
+ * decode, pre-validation, a bridge-op rule — the whole item rolls back,
+ * nothing is paid), -2 node FAULT (a reader fault, an engine invariant —
+ * never a verdict). On every return the engine calls out->release when it
+ * is set.
+ */
+typedef int (*nodus_rt_exec_evm_fn)(const struct nodus_domain_runtime *rt,
+                                    const dna_env_view_t *env,
+                                    uint16_t leg_index,
+                                    const nodus_rt_exec_ctx_t *ctx,
+                                    const nodus_rt_v2_reader_t *reader,
+                                    nodus_rt_v2_out_t *out);
+
+/** Nodus EVM (design §8 "Recheck: VM YÜRÜTÜLMEZ"): the mempool CONFLICT KEYS
+ *  of one ABI-2 leg — synthetic row identities, never the leg's effect
+ *  rows. At most two; each (op_id, key) is in the runtime's own
+ *  namespace and the dry run files it under the leg's domain. */
+#define NODUS_RT_V2_MAX_KEYS     2u
+#define NODUS_RT_V2_KEY_MAX_LEN  72u
+typedef struct {
+    uint8_t n;
+    struct {
+        uint32_t op_id;
+        uint16_t key_len;
+        uint8_t  key[NODUS_RT_V2_KEY_MAX_LEN];
+    } k[NODUS_RT_V2_MAX_KEYS];
+} nodus_rt_v2_keys_t;
+
+/**
+ * Nodus EVM — the ONE shared PRE-VALIDATION of a runtime-ABI-2 leg (design §4
+ * "Ön doğrulama", §8 recheck): the call decode, the envelope pairing, the
+ * gas declaration and every cheap state-dependent check (nonce == the
+ * committed nonce, value <= balance, intrinsic gas, ticket present, …) —
+ * NOTHING executes. exec_evm runs exactly this function first; CheckTx
+ * (a NEW entry and its RECHECK alike — red-team 1 F1) runs only this.
+ * Pure like exec_evm (reads only through
+ * `reader`). `keys` (may be NULL) receives the leg's conflict keys.
+ * @return 0 valid, -1 refused (deterministic), -2 node fault.
+ */
+typedef int (*nodus_rt_prevalidate_fn)(const struct nodus_domain_runtime *rt,
+                                       const dna_env_view_t *env,
+                                       uint16_t leg_index,
+                                       const nodus_rt_exec_ctx_t *ctx,
+                                       const nodus_rt_v2_reader_t *reader,
+                                       nodus_rt_v2_keys_t *keys);
 
 /** Domain state root — the runtime OWNS its state-root composition; the
  *  generic executor consumes the 64-byte result as an OPAQUE value.
@@ -623,6 +910,15 @@ typedef struct nodus_domain_runtime {
      * closed); NULL read_plan = it reads nothing. */
     nodus_rt_read_plan_fn read_plan;
     nodus_rt_exec_fn      exec;
+    /* Nodus EVM: the runtime-ABI-2 execution hook (typedef above). Present
+     * exactly when runtime_abi == NODUS_DOMAIN_RUNTIME_ABI_V2, and then
+     * read_plan and exec are NULL (nodus_runtime_hooks_check). NULL in
+     * every ABI-1 entry — the generation-1/2 tables leave it zero. */
+    nodus_rt_exec_evm_fn  exec_evm;
+    /* Nodus EVM: the ABI-2 shared pre-validation (typedef above). Present
+     * exactly when runtime_abi == NODUS_DOMAIN_RUNTIME_ABI_V2
+     * (nodus_runtime_hooks_check); NULL in every ABI-1 entry. */
+    nodus_rt_prevalidate_fn prevalidate_evm;
     nodus_rt_root_fn      state_root;    /* domain state root (S5/S6)     */
     /* OPTIONAL activation payload root: the value compared against the
      * registry-committed genesis_state_root when this domain's
@@ -749,6 +1045,119 @@ nodus_runtime_for_generation(uint32_t generation, uint32_t domain_id);
  * @return 0 healthy, -1 on the first violation.
  */
 int nodus_witness_runtime_selfcheck(void);
+
+/**
+ * Nodus EVM (design §3): the execution-surface shape of ONE entry, by its
+ * runtime ABI — the check nodus_witness_runtime_selfcheck runs on every
+ * production entry, exported so a test table's entries (the EVM runtime)
+ * are held to the same rule:
+ *   ABI 1: auth, read_plan and exec present, exec_evm and
+ *          prevalidate_evm NULL;
+ *   ABI 2: auth, exec_evm and prevalidate_evm present, read_plan and
+ *          exec NULL;
+ *   both:  a compiled adapter that passes nodus_adapter_selfcheck, and a
+ *          state_root hook;
+ *   any other ABI: refused.
+ * For the generation-1/2 entries (ABI 1, exec_evm NULL by omission) this
+ * is exactly the presence check selfcheck ran before Nodus EVM.
+ * @return 0 healthy, -1 broken.
+ */
+int nodus_runtime_hooks_check(const nodus_domain_runtime_t *rt);
+
+/**
+ * The initial DomainManifest of one compiled entry (pure): version 1, the
+ * entry's domain / name / kind / abi / ruleset version + hash / tx types,
+ * genesis_state_root = `genesis_payload_root`, fee policy GLOBAL_BURN,
+ * quotas 0, upgrade authority CHAIN_CONFIG, activation_epoch 0, readiness
+ * STAGED_V1. The ONE builder: the genesis registry (domreg_init_genesis),
+ * the EVM edge (phase 6b'') and the EVM activation digest (selfcheck)
+ * all use it. (Moved here verbatim from nodus_witness_domreg.c's
+ * manifest_from_runtime by the Nodus EVM activation package.)
+ */
+void nodus_runtime_manifest_init(const nodus_domain_runtime_t *rt,
+                                 const uint8_t genesis_payload_root[64],
+                                 dna_domain_manifest_t *m);
+
+#ifdef NODUS_EVM_ENABLED
+/**
+ * Nodus EVM (design §9): the EVM GENERATION's activation digest — what the
+ * EVM_ACTIVE vote must name (dnac.h DNAC_CFG_EVM_ACTIVE_D) — re-derived
+ * from the compiled generation: its SYSTEM / CORE / EVM ruleset hashes,
+ * the EVM manifest (genesis root = the empty EVM root), the activation
+ * spec version and the compiled EVM constants. Selfcheck compares it with
+ * the literal; phase 6b'' registers exactly the manifest it hashed.
+ * `evm_man_out` (may be NULL) receives that manifest.
+ * @return 0 / -1.
+ */
+int nodus_runtime_evm_activation_digest(uint64_t *d_out,
+                                        dna_domain_manifest_t *evm_man_out);
+#endif
+
+/* ── Nodus EVM: the ONE call-head decoder and the ONE pairing rule ──────────
+ * Pure, always compiled (this module), so every consumer reads the SAME
+ * bytes the SAME way: the EVM runtime's full decoder, the CORE EVMFUND
+ * hook (amount / recipient of the sibling leg), and the block gas sum of
+ * PrepareProposal / ProcessProposal / FinalizeBlock (design §8 "aynı
+ * ayrıştırıcı"). Design §2 call bytes, all big-endian:
+ *   CALL     ver ‖ to[32] ‖ value[32] ‖ gas_limit u64 ‖ nonce u64 ‖ …
+ *   CREATE   ver ‖ value[32] ‖ gas_limit u64 ‖ nonce u64 ‖ …
+ *   DEPOSIT  ver ‖ amount_raw u64 ‖ nonce u64                (exact 17)
+ *   WITHDRAW ver ‖ amount_raw u64 ‖ nonce u64 ‖ dest_fp[64]  (exact 81)
+ *   REDEEM   ver ‖ ticket_id[64] ‖ amount_raw u64 ‖ dest_fp[64] (exact 137)
+ * ONE CODEC (Nodus EVM Faz 4): the head IS shared/dnac/evm_call_wire.h's
+ * dna_evm_head_t, decoded by dna_evm_call_head — the same function the
+ * wallet and nodus-cli build with, so no client can disagree with the
+ * node about these bytes.
+ */
+typedef dna_evm_head_t nodus_rt_evm_head_t;
+
+/** Decode the fixed head of an EVM call (dna_evm_call_head). CALL /
+ *  CREATE: `ver` and every field up to and including nonce present (the
+ *  rest — access list, data — is the full decoder's); bridge ops: EXACT
+ *  length. @return 0 / -1 malformed (unknown op, wrong ver, short / long). */
+int nodus_rt_evm_call_head(uint32_t op, const uint8_t *call, size_t len,
+                           nodus_rt_evm_head_t *out);
+
+/** The role an EVM op's CORE sibling must declare: FEE for CALL /
+ *  CREATE, DEPOSIT for DEPOSIT, RELEASE for WITHDRAW / REDEEM; 0 for any
+ *  other op. */
+uint8_t nodus_rt_evm_role_for_op(uint32_t evm_op);
+
+/** THE pairing rule (design §2), checked by BOTH runtimes: the envelope
+ *  is exactly two legs — leg 0 CORE (DNA_DOMAIN_CORE) runtime_op
+ *  DNA_CORERULE_EVMFUND, leg 1 EVM (DNA_DOMAIN_EVM) — and the CORE call's
+ *  `ver` is NODUS_RT_EVMFUND_CALL_VER and its role byte is
+ *  nodus_rt_evm_role_for_op(leg 1's op) != 0. Anything else — an orphan
+ *  leg, a third leg, a mismatched role — is -1.
+ *  @return 0 paired / -1 refused. */
+int nodus_rt_evm_pair_check(const dna_env_view_t *env);
+
+/** Nodus EVM (design §8 mempool): the SYNTHETIC conflict-key ops of an EVM leg
+ *  — never adapter ops, never rows (outside the adapter's op space, so a
+ *  key can never alias an effect row's): (sender32 ‖ nonce u64 BE) for
+ *  every nonce'd op — with the tip-nonce rule, two pending transactions of
+ *  one sender carry the same nonce and collide: ONE pending per sender —
+ *  and the ticket id for REDEEM. */
+#define NODUS_RT_EVM_KEY_SENDER_NONCE 0x80000010u
+#define NODUS_RT_EVM_KEY_TICKET       0x80000011u
+
+/** The ONE derivation of an EVM leg's conflict keys (the dry run's full
+ *  mode and its VM-less recheck, and the EVM runtime's prevalidate hook,
+ *  all call it): from the call head and the leg's VERIFIED verdict
+ *  (sender = signer_fp[0][0..32]). @return 0 / -1 (the head does not
+ *  decode, or the verdict is not one signer). */
+int nodus_rt_evm_conflict_keys(const dna_env_view_t *env, uint16_t leg,
+                               const nodus_rt_auth_verdict_t *verdict,
+                               nodus_rt_v2_keys_t *keys);
+
+/** One envelope's share of the EVM BLOCK GAS SUM (design §8): for a leg
+ *  naming `evm_domain` — CALL / CREATE whose head decodes: the DECLARED
+ *  gas_limit; DEPOSIT / WITHDRAW / REDEEM: NODUS_RT_EVM_BRIDGE_GAS;
+ *  anything else (another op, a head that does not decode): 0. Other
+ *  domains' legs count 0. A failed or refused item keeps its share: the
+ *  value depends on the bytes alone. Pure. */
+uint64_t nodus_rt_evm_env_block_gas(const dna_env_view_t *env,
+                                    uint32_t evm_domain);
 
 /* ── Native-runtime hook implementations (witness tree) ───────────────
  * Referenced by the compiled table; implemented in

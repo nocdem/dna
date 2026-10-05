@@ -110,6 +110,20 @@ int nodus_witness_v2_runtime_for(nodus_witness_t *w, uint32_t domain_id,
                                  const nodus_domain_runtime_t **out);
 
 /**
+ * Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md
+ * rev 3 §5): the CORE EVM RESERVE bucket — the raw units locked behind
+ * every wei the EVM domain holds (v2_evm_reserve, schema S17). CORE
+ * state: written ONLY by the EVM generation's CORE EVMFUND (adapter
+ * supply selector 4); read by the EVM generation's CORE root and
+ * invariant and by the EVM domain's invariant (wei_live + wei_tickets +
+ * wei_lost == 10^10 × reserve).
+ * @return 0 with *out set / 1 the table does not exist (pre-S17: no
+ *         reserve, *out = 0) / -1 fault (incl. a missing or malformed
+ *         row in an S17 database).
+ */
+int nodus_witness_core_evm_reserve_get(nodus_witness_t *w, uint64_t *out);
+
+/**
  * Commit one canonical GenesisManifest v1 (runs INSIDE the caller's
  * transaction — never commits on its own). Fail-closed checks:
  *   - strict decode + full validation of `bytes`;

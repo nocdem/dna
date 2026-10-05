@@ -1917,8 +1917,10 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
-    /* DNAC client methods (post-auth, requires witness module) */
-    if (strncmp(msg.method, "dnac_", 5) == 0) {
+    /* DNAC client methods and the Nodus EVM `evm_*` read RPC (post-auth,
+     * requires witness module) — the one routing predicate,
+     * witness/nodus_witness_ipc.h nodus_chain_method_routed */
+    if (nodus_chain_method_routed(msg.method)) {
         if (srv->chain) {
             srv->chain->ops->dispatch_dnac(srv->chain, sess->conn,
                                            sess->client_pk.bytes, sess->token,

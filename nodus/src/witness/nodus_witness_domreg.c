@@ -296,24 +296,10 @@ int nodus_witness_domreg_root(nodus_witness_t *w, uint8_t out[64]) {
 static void manifest_from_runtime(const nodus_domain_runtime_t *rt,
                                   const uint8_t genesis_payload_root[64],
                                   dna_domain_manifest_t *m) {
-    memset(m, 0, sizeof(*m));
-    m->manifest_version = DNA_DOMMAN_VERSION;
-    m->domain_id = rt->domain_id;
-    memcpy(m->name, rt->descriptor.name, DNA_DOM_NAME_LEN);
-    m->runtime_kind = rt->runtime_kind;
-    m->runtime_abi = rt->runtime_abi;
-    m->ruleset_version = rt->ruleset_version;
-    memcpy(m->ruleset_hash, rt->ruleset_hash, DNA_DOM_HASH_LEN);
-    memcpy(m->genesis_state_root, genesis_payload_root, DNA_DOM_HASH_LEN);
-    m->tx_type_count = rt->descriptor.tx_type_count;
-    memcpy(m->tx_types, rt->descriptor.tx_types,
-           rt->descriptor.tx_type_count);
-    m->fee_policy = DNA_FEEPOL_GLOBAL_BURN;
-    m->quota_tx_per_block = 0;
-    m->quota_verify_cost = 0;
-    m->upgrade_authority = DNA_UPGAUTH_CHAIN_CONFIG;
-    m->activation_epoch = 0;
-    m->readiness_policy = DNA_RDYPOL_STAGED_V1;
+    /* Nodus EVM: the ONE builder lives in nodus_witness_runtime.c (pure) so the
+     * EVM activation digest's manifest and the one phase 6b'' registers
+     * are the same bytes — moved there statement for statement. */
+    nodus_runtime_manifest_init(rt, genesis_payload_root, m);
 }
 
 int nodus_witness_domreg_init_genesis(nodus_witness_t *w) {
@@ -526,6 +512,25 @@ int nodus_witness_domreg_op_register(nodus_witness_t *w,
     rec.record_version = DNA_DOMREG_REC_VERSION;
     rec.domain_id = m->domain_id;
     rec.status = DNA_DOMST_REGISTERED;
+    if (dna_domman_hash(m, rec.current_manifest_hash) != 0) return -1;
+    return row_store(w, &rec, m, NULL);
+}
+
+/* Nodus EVM — contract: nodus_witness_domreg.h. The init_genesis record shape
+ * (ACTIVE, every pending / proposal / scheduling field empty), for ONE
+ * domain the registry does not hold yet. */
+int nodus_witness_domreg_register_active(nodus_witness_t *w,
+                                         const dna_domain_manifest_t *m) {
+    if (!w || !w->db || !m || dna_domman_validate(m) != 0) return -1;
+    dna_domreg_record_t existing;
+    int rc = row_load(w, m->domain_id, &existing, NULL, NULL, NULL);
+    if (rc == 0) return 1;                       /* already registered     */
+    if (rc != 1) return -1;
+    dna_domreg_record_t rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.record_version = DNA_DOMREG_REC_VERSION;
+    rec.domain_id = m->domain_id;
+    rec.status = DNA_DOMST_ACTIVE;
     if (dna_domman_hash(m, rec.current_manifest_hash) != 0) return -1;
     return row_store(w, &rec, m, NULL);
 }

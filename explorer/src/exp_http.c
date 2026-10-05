@@ -109,6 +109,30 @@ static int parse_position(const char *s, uint64_t *h_out, uint32_t *i_out) {
     return 1;
 }
 
+/* "h:x:li" — a node evm_logs cursor (decimal; x and li at most
+ * NODUS_EVM_LOGS_CURSOR_POS_MAX). @return 0 / -1. */
+static int parse_logs_cursor(const char *s, nodus_evm_logs_cursor_t *out) {
+    if (!s) return -1;
+    uint64_t v[3];
+    for (int k = 0; k < 3; k++) {
+        const char *end = (k < 2) ? strchr(s, ':') : s + strlen(s);
+        if (!end || end == s) return -1;
+        char buf[24];
+        size_t n = (size_t)(end - s);
+        if (n >= sizeof(buf)) return -1;
+        memcpy(buf, s, n);
+        buf[n] = '\0';
+        if (!parse_u64_strict(buf, &v[k])) return -1;
+        s = (k < 2) ? end + 1 : end;
+    }
+    if (v[1] > NODUS_EVM_LOGS_CURSOR_POS_MAX || v[2] > NODUS_EVM_LOGS_CURSOR_POS_MAX)
+        return -1;
+    out->height = v[0];
+    out->item = v[1];
+    out->log_index = v[2];
+    return 0;
+}
+
 /* Splits "path?query" into path_out/query_out (both NUL-terminated,
  * truncated defensively if they don't fit). No query string ('?' absent)
  * leaves query_out empty. */
@@ -350,6 +374,61 @@ static void emit_output(exp_json_t *j, const exp_io_row_t *io) {
     exp_json_raw(j, "}");
 }
 
+/* Exactly 64 lowercase-hex chars (a 32-byte EVM address). */
+static int is_hex64(const char *s) {
+    if (!s || strlen(s) != 64) return 0;
+    for (size_t i = 0; i < 64; i++) {
+        if (!is_lower_hex_char(s[i])) return 0;
+    }
+    return 1;
+}
+
+/* Caller guarantees is_hex64(hexstr). */
+static void hex64_decode(const char *hexstr, uint8_t out[32]) {
+    for (size_t i = 0; i < 32; i++) {
+        char hi = hexstr[i * 2];
+        char lo = hexstr[i * 2 + 1];
+        uint8_t hv = (uint8_t)((hi <= '9') ? (hi - '0') : (hi - 'a' + 10));
+        uint8_t lv = (uint8_t)((lo <= '9') ? (lo - '0') : (lo - 'a' + 10));
+        out[i] = (uint8_t)((hv << 4) | lv);
+    }
+}
+
+/* Nodus EVM P4-C: an applied EVM item's facts (item_evm) — README "HTTP API". */
+static void emit_evm(exp_json_t *j, const exp_evm_row_t *e) {
+    exp_json_raw(j, "{\"status\":");
+    exp_json_raw(j, e->status == 1 ? "\"success\"" : "\"failed\"");
+    exp_json_raw(j, ",\"gas_used\":");
+    exp_json_u64(j, e->gas_used);
+    exp_json_raw(j, ",\"from\":");
+    exp_json_hex(j, e->sender, 32);
+    exp_json_raw(j, ",\"to\":");
+    if (e->has_target) exp_json_hex(j, e->target, 32); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"created\":");
+    if (e->has_created) exp_json_hex(j, e->created, 32); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"value_wei\":");
+    if (e->has_value) exp_json_u256_str(j, e->value_wei); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"recipient\":");
+    emit_fp_or_null(j, e->dest);
+    exp_json_raw(j, ",\"reserve_in\":");
+    if (e->reserve_in) exp_json_u64_str(j, e->reserve_in); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"reserve_out\":");
+    if (e->reserve_out) exp_json_u64_str(j, e->reserve_out); else exp_json_raw(j, "null");
+    exp_json_raw(j, ",\"logs\":");
+    exp_json_u64(j, e->n_logs);
+    exp_json_raw(j, ",\"tickets\":[");
+    for (uint32_t t = 0; t < e->n_tickets && t < EXP_EVM_MAX_TICKETS; t++) {
+        if (t) exp_json_raw(j, ",");
+        exp_json_hex(j, e->tickets[t], 64);
+    }
+    exp_json_raw(j, e->tickets_more ? "],\"tickets_more\":true" : "],\"tickets_more\":false");
+    exp_json_raw(j, ",\"wei_destroyed\":");
+    exp_json_u256_str(j, e->wei_destroyed);
+    exp_json_raw(j, ",\"receipt_digest\":");
+    exp_json_hex(j, e->digest, 64);
+    exp_json_raw(j, "}");
+}
+
 /* ── Endpoint handlers ───────────────────────────────────────────────── */
 
 static void route_stats(exp_db_t *db, exp_json_t *j, int *status) {
@@ -556,6 +635,20 @@ static void route_tx(exp_db_t *db, const char *ident, exp_json_t *j, int *status
         *status = 500;
         return;
     }
+    /* Nodus EVM: the item's EVM row, if it is an applied EVM item */
+    exp_evm_row_t *evm = malloc(sizeof(*evm));
+    if (!evm) {
+        json_error(j, "out of memory");
+        *status = 500;
+        return;
+    }
+    int evm_rc = exp_db_query_item_evm(db, it.height, it.idx, evm);
+    if (evm_rc < 0) {
+        free(evm);
+        json_error(j, "query failed");
+        *status = 500;
+        return;
+    }
 
     exp_json_raw(j, "{\"tx\":");
     emit_item_fields(j, &it);
@@ -577,7 +670,10 @@ static void route_tx(exp_db_t *db, const char *ident, exp_json_t *j, int *status
         emit_output(j, &ios[i]);
         first = 0;
     }
-    exp_json_raw(j, "]}");
+    exp_json_raw(j, "],\"evm\":");
+    if (evm_rc == 1) emit_evm(j, evm); else exp_json_raw(j, "null");
+    exp_json_raw(j, "}");
+    free(evm);
     *status = 200;
 }
 
@@ -1016,6 +1112,368 @@ static void route_address(exp_http_ctx_t *ctx, const char *fp, const char *query
     *status = 200;
 }
 
+/* ── Nodus EVM P4-C: the chain-backed EVM source (contract: exp_http.h) ──── */
+
+typedef struct {
+    int                  used;
+    uint8_t              addr[32];
+    int                  with_logs;
+    int                  has_cursor;     /* the logs page's cursor key   */
+    nodus_evm_logs_cursor_t cursor;
+    uint64_t             at_ms;
+    nodus_evm_account_t  acct;
+    nodus_evm_logs_res_t logs;
+    uint64_t             logs_from;
+    uint64_t             logs_to;
+} exp_evm_slot_t;
+
+struct exp_evm_chain {
+    exp_chain_t    *chain;
+    exp_evm_slot_t  slots[EXP_BALANCE_CACHE_SLOTS];
+    /* the node-work cap (exp_http.h EXP_EVM_LOGS_NODE_READS) */
+    uint64_t        logs_window_ms;
+    uint32_t        logs_window_reads;
+    int             logs_window_open;
+};
+
+/* One slot key: address, with/without logs, and the logs cursor. */
+static int evm_slot_matches(const exp_evm_slot_t *s, const uint8_t addr[32],
+                            int want_logs, const nodus_evm_logs_cursor_t *cur) {
+    if (!s->used || s->with_logs != want_logs || memcmp(s->addr, addr, 32) != 0)
+        return 0;
+    if (!want_logs) return 1;
+    if (s->has_cursor != (cur != NULL)) return 0;
+    return !cur || (s->cursor.height == cur->height && s->cursor.item == cur->item &&
+                    s->cursor.log_index == cur->log_index);
+}
+
+/* Take one uncached node logs read from the cap. @return 1 allowed / 0
+ * over the cap (or no clock: fail closed). */
+static int evm_logs_cap_take(exp_evm_chain_t *e, int have_now, uint64_t now) {
+    if (!have_now) return 0;
+    if (!e->logs_window_open || now < e->logs_window_ms ||
+        now - e->logs_window_ms >= EXP_EVM_LOGS_NODE_WINDOW_MS) {
+        e->logs_window_open = 1;
+        e->logs_window_ms = now;
+        e->logs_window_reads = 0;
+    }
+    if (e->logs_window_reads >= EXP_EVM_LOGS_NODE_READS) return 0;
+    e->logs_window_reads++;
+    return 1;
+}
+
+/* Deep copy (the log list and each log's data are heap). @return 0 / -1
+ * (dst left empty). */
+static int evm_logs_copy(nodus_evm_logs_res_t *dst, const nodus_evm_logs_res_t *src) {
+    memset(dst, 0, sizeof(*dst));
+    dst->more = src->more;
+    dst->has_cursor = src->has_cursor;
+    dst->cursor = src->cursor;
+    if (src->n == 0) return 0;
+    if (!src->logs || src->n > NODUS_EVM_LOGS_MAX_LIMIT) return -1;
+    dst->logs = calloc(src->n, sizeof(*dst->logs));
+    if (!dst->logs) return -1;
+    for (size_t i = 0; i < src->n; i++) {
+        dst->logs[i] = src->logs[i];
+        dst->logs[i].data = NULL;
+        if (src->logs[i].data_len > 0) {
+            dst->logs[i].data = malloc(src->logs[i].data_len);
+            if (!dst->logs[i].data) {
+                dst->n = i;
+                nodus_evm_logs_free(dst);
+                memset(dst, 0, sizeof(*dst));
+                return -1;
+            }
+            memcpy(dst->logs[i].data, src->logs[i].data, src->logs[i].data_len);
+        } else {
+            dst->logs[i].data_len = 0;
+        }
+        dst->n = i + 1;
+    }
+    return 0;
+}
+
+static int evm_chain_get(void *vctx, const uint8_t addr[32],
+                         const nodus_evm_logs_cursor_t *cursor,
+                         nodus_evm_account_t *acct, nodus_evm_logs_res_t *logs,
+                         uint64_t *logs_from, uint64_t *logs_to) {
+    exp_evm_chain_t *e = (exp_evm_chain_t *)vctx;
+    if (!e || !addr || !acct) return -1;
+    memset(acct, 0, sizeof(*acct));
+    if (logs) memset(logs, 0, sizeof(*logs));
+    if (logs_from) *logs_from = 0;
+    if (logs_to) *logs_to = 0;
+    const int want_logs = logs != NULL;
+    if (!want_logs) cursor = NULL;
+
+    uint64_t now = 0;
+    int have_now = (mono_ms(&now) == 0);
+    if (have_now) {
+        for (int i = 0; i < EXP_BALANCE_CACHE_SLOTS; i++) {
+            exp_evm_slot_t *s = &e->slots[i];
+            if (evm_slot_matches(s, addr, want_logs, cursor) &&
+                now >= s->at_ms && now - s->at_ms <= EXP_BALANCE_CACHE_TTL_MS) {
+                if (want_logs && evm_logs_copy(logs, &s->logs) != 0) break;   /* ask the node */
+                *acct = s->acct;
+                if (logs_from) *logs_from = s->logs_from;
+                if (logs_to) *logs_to = s->logs_to;
+                return 0;
+            }
+        }
+    }
+
+    /* an uncached logs read is node work an anonymous client causes:
+     * over the cap, the account alone (one row) and "busy" */
+    if (want_logs && !evm_logs_cap_take(e, have_now, now)) {
+        if (exp_chain_evm_account(e->chain, addr, NULL, acct, NULL, NULL, NULL) != 0) {
+            memset(acct, 0, sizeof(*acct));
+            return -1;
+        }
+        return EXP_EVM_LOGS_BUSY;          /* never cached */
+    }
+
+    uint64_t from = 0, to = 0;
+    if (exp_chain_evm_account(e->chain, addr, cursor, acct, logs, &from, &to) != 0) {
+        memset(acct, 0, sizeof(*acct));
+        return -1;                         /* a failure is never cached */
+    }
+    if (logs_from) *logs_from = from;
+    if (logs_to) *logs_to = to;
+
+    if (have_now) {
+        /* the key's own slot, else a free one, else the oldest */
+        exp_evm_slot_t *slot = NULL;
+        for (int i = 0; i < EXP_BALANCE_CACHE_SLOTS && !slot; i++)
+            if (evm_slot_matches(&e->slots[i], addr, want_logs, cursor))
+                slot = &e->slots[i];
+        for (int i = 0; i < EXP_BALANCE_CACHE_SLOTS && !slot; i++)
+            if (!e->slots[i].used) slot = &e->slots[i];
+        if (!slot) {
+            slot = &e->slots[0];
+            for (int i = 1; i < EXP_BALANCE_CACHE_SLOTS; i++)
+                if (e->slots[i].at_ms < slot->at_ms) slot = &e->slots[i];
+        }
+        nodus_evm_logs_free(&slot->logs);
+        memset(slot, 0, sizeof(*slot));
+        if (!want_logs || evm_logs_copy(&slot->logs, logs) == 0) {
+            memcpy(slot->addr, addr, 32);
+            slot->with_logs = want_logs;
+            slot->has_cursor = cursor != NULL;
+            if (cursor) slot->cursor = *cursor;
+            slot->acct = *acct;
+            slot->logs_from = from;
+            slot->logs_to = to;
+            slot->at_ms = now;
+            slot->used = 1;
+        }
+    }
+    return 0;
+}
+
+int exp_evm_chain_open(exp_evm_chain_t **out, exp_chain_t *chain) {
+    if (!out) return -1;
+    *out = NULL;
+    if (!chain) return -1;
+    exp_evm_chain_t *e = calloc(1, sizeof(*e));
+    if (!e) return -1;
+    e->chain = chain;
+    *out = e;
+    return 0;
+}
+
+void exp_evm_chain_close(exp_evm_chain_t *e) {
+    if (!e) return;
+    for (int i = 0; i < EXP_BALANCE_CACHE_SLOTS; i++)
+        nodus_evm_logs_free(&e->slots[i].logs);
+    free(e);
+}
+
+void exp_evm_source_chain(exp_evm_source_t *src, exp_evm_chain_t *e) {
+    if (!src) return;
+    src->ctx = e;
+    src->get = evm_chain_get;
+}
+
+/* "account" + "account_status" (the leading comma included). */
+static void emit_evm_account(exp_json_t *j, int have, const nodus_evm_account_t *a) {
+    if (!have) {
+        exp_json_raw(j, ",\"account\":null,\"account_status\":\"unavailable\"");
+        return;
+    }
+    exp_json_raw(j, ",\"account\":{\"nonce\":");
+    exp_json_u64(j, a->nonce);
+    exp_json_raw(j, ",\"balance_wei\":");
+    exp_json_u256_str(j, a->balance_wei);
+    exp_json_raw(j, ",\"code_size\":");
+    exp_json_u64(j, a->code_size);
+    exp_json_raw(j, ",\"code_hash\":");
+    exp_json_hex(j, a->code_hash, 32);
+    exp_json_raw(j, ",\"height\":");
+    exp_json_u64(j, a->height);
+    exp_json_raw(j, "},\"account_status\":\"ok\"");
+}
+
+/* "logs" + "logs_status" (the leading comma included): the node's
+ * evm_logs page for the contract over [from, to] (exp_chain_evm_account:
+ * the first page's window or the cursor's), or null — "unavailable" (no
+ * server answered) or "busy" (the node-work cap, exp_http.h). "next" is
+ * the node's cursor as "h:x:li" (?logs_cursor= resumes there), null when
+ * the page reached `to`. */
+static void emit_evm_logs(exp_json_t *j, int have, int busy, const nodus_evm_logs_res_t *l,
+                          uint64_t from, uint64_t to) {
+    if (!have) {
+        exp_json_raw(j, busy ? ",\"logs\":null,\"logs_status\":\"busy\""
+                             : ",\"logs\":null,\"logs_status\":\"unavailable\"");
+        return;
+    }
+    exp_json_raw(j, ",\"logs\":{\"from_height\":");
+    exp_json_u64(j, from);
+    exp_json_raw(j, ",\"to_height\":");
+    exp_json_u64(j, to);
+    exp_json_raw(j, ",\"items\":[");
+    for (size_t i = 0; i < l->n; i++) {
+        const nodus_evm_log_t *g = &l->logs[i];
+        if (i) exp_json_raw(j, ",");
+        exp_json_raw(j, "{\"height\":");
+        exp_json_u64(j, g->height);
+        exp_json_raw(j, ",\"item\":");
+        exp_json_u64(j, g->item);
+        exp_json_raw(j, ",\"log_index\":");
+        exp_json_u64(j, g->log_index);
+        exp_json_raw(j, ",\"topics\":[");
+        for (uint8_t t = 0; t < g->n_topics && t < 4; t++) {
+            if (t) exp_json_raw(j, ",");
+            exp_json_hex(j, g->topics[t], 32);
+        }
+        exp_json_raw(j, "],\"data\":");
+        exp_json_hex(j, g->data, g->data_len);
+        exp_json_raw(j, ",\"intent_id\":");
+        exp_json_hex(j, g->intent_id, 64);
+        exp_json_raw(j, "}");
+    }
+    exp_json_raw(j, l->more ? "],\"more\":true,\"next\":" : "],\"more\":false,\"next\":");
+    if (l->more && l->has_cursor) {
+        char nx[72];
+        snprintf(nx, sizeof(nx), "%llu:%llu:%llu", (unsigned long long)l->cursor.height,
+                 (unsigned long long)l->cursor.item, (unsigned long long)l->cursor.log_index);
+        exp_json_str(j, nx);
+    } else {
+        exp_json_raw(j, "null");
+    }
+    exp_json_raw(j, "},\"logs_status\":\"ok\"");
+}
+
+/* /api/evm/address/<64 hex> and /api/evm/contract/<64 hex>
+ * (?before=<height:index>&limit=<n>): the node's EVM account (and, for a
+ * contract, its recent logs), read through ctx->evm BEFORE the index read
+ * lock is taken, then the indexed EVM items naming the address, newest
+ * first; a contract also gets the item that created it. */
+static void route_evm(exp_http_ctx_t *ctx, const char *hex, const char *query,
+                      int contract, exp_json_t *j, int *status) {
+    if (!is_hex64(hex)) {
+        json_error(j, "invalid EVM address (expected 64 lowercase hex)");
+        *status = 400;
+        return;
+    }
+    uint8_t addr[32];
+    hex64_decode(hex, addr);
+
+    uint64_t before_h = UINT64_MAX;
+    uint32_t before_i = UINT32_MAX;
+    int limit;
+    char val[48];
+    if (query_get(query, "before", val, sizeof(val)) && !parse_position(val, &before_h, &before_i)) {
+        json_error(j, "invalid 'before' (expected height:index)");
+        *status = 400;
+        return;
+    }
+    if (parse_limit(query, EXP_HTTP_LIMIT_DEFAULT, &limit) != 0) {
+        json_error(j, "invalid 'limit'");
+        *status = 400;
+        return;
+    }
+    /* ?logs_cursor=h:x:li — a contract's logs page resumes at the node's
+     * cursor (the previous page's "next") */
+    nodus_evm_logs_cursor_t lcur;
+    int has_lcur = 0;
+    if (query_get(query, "logs_cursor", val, sizeof(val))) {
+        if (!contract || parse_logs_cursor(val, &lcur) != 0) {
+            json_error(j, "invalid 'logs_cursor' (expected height:item:log on a contract)");
+            *status = 400;
+            return;
+        }
+        has_lcur = 1;
+    }
+
+    exp_item_row_t *rows = malloc(sizeof(exp_item_row_t) * (EXP_HTTP_LIMIT_MAX + 1));
+    if (!rows) {
+        json_error(j, "out of memory");
+        *status = 500;
+        return;
+    }
+    exp_item_row_t *creator = &rows[EXP_HTTP_LIMIT_MAX];
+
+    /* the node: no lock held (exp_http.h, db_lock) */
+    nodus_evm_account_t acct;
+    nodus_evm_logs_res_t logs;
+    uint64_t logs_from = 0, logs_to = 0;
+    memset(&acct, 0, sizeof(acct));
+    memset(&logs, 0, sizeof(logs));
+    int grc = (ctx->evm && ctx->evm->get)
+                  ? ctx->evm->get(ctx->evm->ctx, addr, has_lcur ? &lcur : NULL, &acct,
+                                  contract ? &logs : NULL, &logs_from, &logs_to)
+                  : -1;
+    int have_acct = (grc == 0 || grc == EXP_EVM_LOGS_BUSY);
+    int have_logs = (grc == 0);
+    int logs_busy = (grc == EXP_EVM_LOGS_BUSY);
+    if (!have_logs) {
+        nodus_evm_logs_free(&logs);
+        memset(&logs, 0, sizeof(logs));
+    }
+    if (!have_acct) memset(&acct, 0, sizeof(acct));
+
+    /* the index: under the read lock, one *db deref */
+    int count = 0, db_rc, cr_rc = 0;
+    if (ctx->db_lock) pthread_rwlock_rdlock(ctx->db_lock);
+    exp_db_t *db = ctx->db ? *ctx->db : NULL;
+    db_rc = db ? exp_db_query_evm_address(db, addr, before_h, before_i, limit, rows, &count) : 1;
+    if (db_rc == 0 && contract) {
+        cr_rc = exp_db_query_evm_creation(db, addr, creator);
+        if (cr_rc < 0) db_rc = -1;
+    }
+    if (ctx->db_lock) pthread_rwlock_unlock(ctx->db_lock);
+
+    if (db_rc != 0) {
+        free(rows);
+        nodus_evm_logs_free(&logs);
+        json_error(j, db ? "query failed" : "index unavailable");
+        *status = db ? 500 : 503;
+        return;
+    }
+
+    exp_json_raw(j, "{\"address\":");
+    exp_json_str(j, hex);
+    emit_evm_account(j, have_acct, &acct);
+    if (contract) {
+        exp_json_raw(j, ",\"created_by\":");
+        if (cr_rc == 1) emit_item_summary(j, creator); else exp_json_raw(j, "null");
+        emit_evm_logs(j, have_logs, logs_busy, &logs, logs_from, logs_to);
+    }
+    exp_json_raw(j, ",\"items\":[");
+    for (int i = 0; i < count; i++) {
+        if (i) exp_json_raw(j, ",");
+        emit_item_summary(j, &rows[i]);
+    }
+    exp_json_raw(j, "],\"next_before\":");
+    if (count == limit) json_position(j, rows[count - 1].height, rows[count - 1].idx);
+    else exp_json_raw(j, "null");
+    exp_json_raw(j, "}");
+
+    free(rows);
+    nodus_evm_logs_free(&logs);
+    *status = 200;
+}
+
 static void emit_match(exp_json_t *j, int *wrote, const char *type, const char *target) {
     if (*wrote) exp_json_raw(j, ",");
     exp_json_raw(j, "{\"type\":");
@@ -1342,6 +1800,15 @@ int exp_http_route(exp_http_ctx_t *ctx, const char *method, const char *path,
      * trip (route_address) — a witness query never runs under db_lock. */
     if (strncmp(path_only, "/api/address/", 13) == 0) {
         route_address(ctx, path_only + 13, query, body_out, status_out);
+        return 0;
+    }
+    /* Nodus EVM: the same rule — the EVM account round trip runs unlocked */
+    if (strncmp(path_only, "/api/evm/address/", 17) == 0) {
+        route_evm(ctx, path_only + 17, query, 0, body_out, status_out);
+        return 0;
+    }
+    if (strncmp(path_only, "/api/evm/contract/", 18) == 0) {
+        route_evm(ctx, path_only + 18, query, 1, body_out, status_out);
         return 0;
     }
 

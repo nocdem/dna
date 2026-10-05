@@ -49,10 +49,33 @@ static int name_ok(const nodus_dnac_v3_item_t *it) {
            dnac_name_bytes_ok((const uint8_t *)it->name, len);
 }
 
+_Static_assert(EXP_EVM_MAX_TICKETS == NODUS_DNAC_V3_EVM_MAX_TICKETS,
+               "the index's ticket bound is the wire's");
+
+/* Nodus EVM ("ev"/"ri"/"ro", nodus.h dnac_v3_block): applied items only; the
+ * reserve move only beside "ev" (an EVMFUND leg is always paired with an
+ * EVM leg, and the node sends "ev" for every applied EVM item), one
+ * direction, within the index's INTEGER columns; the ticket list bounded. */
+static int evm_ok(const nodus_dnac_v3_item_t *it) {
+    if (!it->has_evm)
+        return it->reserve_in == 0 && it->reserve_out == 0;
+    if (!it->has_effects || it->code != 0) return 0;
+    if (it->reserve_in != 0 && it->reserve_out != 0) return 0;
+    if (it->reserve_in > (uint64_t)INT64_MAX || it->reserve_out > (uint64_t)INT64_MAX ||
+        it->evm_gas_used > (uint64_t)INT64_MAX)
+        return 0;
+    if (it->evm_status > 1) return 0;
+    if (it->evm_has_created && it->evm_status != 1) return 0;
+    if (it->evm_n_tickets > NODUS_DNAC_V3_EVM_MAX_TICKETS) return 0;
+    if (it->evm_tickets_more && it->evm_n_tickets != NODUS_DNAC_V3_EVM_MAX_TICKETS) return 0;
+    return 1;
+}
+
 static int item_ok(const nodus_dnac_v3_item_t *it) {
     if (it->kind > NODUS_DNAC_V3_KIND_CLAIM) return 0;
     if (!op_ok(it->op)) return 0;
     if (!name_ok(it)) return 0;
+    if (!evm_ok(it)) return 0;
     if (!it->has_effects) {
         return it->burned == 0 && it->rec_kind == NODUS_DNAC_V3_REC_NONE &&
                it->n_consumed == 0 && it->n_created == 0;
@@ -106,7 +129,7 @@ int exp_extract_page(const nodus_dnac_v3_block_result_t *page, exp_block_batch_t
     size_t base = batch->n_items;
     if (base + page->count > (size_t)page->total_items) return -1;
 
-    size_t new_ios = 0;
+    size_t new_ios = 0, new_evms = 0;
     for (size_t j = 0; j < page->count; j++) {
         const nodus_dnac_v3_item_t *it = &page->items[j];
         if ((size_t)it->index != base + j) {
@@ -120,10 +143,14 @@ int exp_extract_page(const nodus_dnac_v3_block_result_t *page, exp_block_batch_t
             return -1;
         }
         new_ios += (size_t)it->n_consumed + (size_t)it->n_created;
+        new_evms += it->has_evm ? 1u : 0u;
     }
 
     if (grow((void **)&batch->items, &batch->cap_items, base + page->count, sizeof(exp_item_row_t)) != 0 ||
-        grow((void **)&batch->ios, &batch->cap_ios, batch->n_ios + new_ios, sizeof(exp_io_row_t)) != 0) {
+        grow((void **)&batch->ios, &batch->cap_ios, batch->n_ios + new_ios, sizeof(exp_io_row_t)) != 0 ||
+        (new_evms > 0 &&
+         grow((void **)&batch->evms, &batch->cap_evms, batch->n_evms + new_evms,
+              sizeof(exp_evm_row_t)) != 0)) {
         QGP_LOG_ERROR(LOG_TAG, "out of memory collecting height %llu", (unsigned long long)page->height);
         return -1;
     }
@@ -178,6 +205,39 @@ int exp_extract_page(const nodus_dnac_v3_block_result_t *page, exp_block_batch_t
         }
 
         if (!it->has_effects) continue;
+
+        /* Nodus EVM: the node's EVM facts, copied as-is (evm_ok checked them) */
+        if (it->has_evm) {
+            static const char hexd[] = "0123456789abcdef";
+            exp_evm_row_t *e = &batch->evms[batch->n_evms++];
+            memset(e, 0, sizeof(*e));
+            e->height = page->height;
+            e->idx = it->index;
+            e->status = it->evm_status;
+            e->gas_used = it->evm_gas_used;
+            memcpy(e->sender, it->evm_from, 32);
+            e->has_target = it->evm_has_to ? 1 : 0;
+            memcpy(e->target, it->evm_to, 32);
+            e->has_created = it->evm_has_created ? 1 : 0;
+            memcpy(e->created, it->evm_created, 32);
+            e->has_value = it->evm_has_value ? 1 : 0;
+            memcpy(e->value_wei, it->evm_value, 32);
+            if (it->evm_has_dest) {
+                for (int b = 0; b < 64; b++) {
+                    e->dest[2 * b] = hexd[it->evm_dest[b] >> 4];
+                    e->dest[2 * b + 1] = hexd[it->evm_dest[b] & 0x0F];
+                }
+                e->dest[128] = '\0';
+            }
+            e->n_logs = it->evm_n_logs;
+            e->n_tickets = it->evm_n_tickets;
+            e->tickets_more = it->evm_tickets_more ? 1 : 0;
+            memcpy(e->tickets, it->evm_tickets, (size_t)it->evm_n_tickets * 64u);
+            memcpy(e->wei_destroyed, it->evm_wei_destroyed, 32);
+            memcpy(e->digest, it->evm_digest, 64);
+            e->reserve_in = it->reserve_in;
+            e->reserve_out = it->reserve_out;
+        }
 
         for (uint8_t c = 0; c < it->n_consumed; c++) {
             exp_io_row_t *io = &batch->ios[batch->n_ios++];

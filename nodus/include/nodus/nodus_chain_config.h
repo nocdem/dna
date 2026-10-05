@@ -282,6 +282,58 @@ int nodus_chain_config_stateful_rules(uint8_t param_id,
                                       uint32_t judging_generation);
 
 /**
+ * Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md rev
+ * 3 §9) — the chain-state FACTS the stateful rules read. Every member is
+ * derived by the caller from committed state at the vote's height, with
+ * the engine's read discipline (an unanswerable read refuses, never
+ * defaults).
+ */
+typedef struct {
+    uint8_t  hf2_active;          /* param 7 active at the vote height    */
+    uint8_t  hf3_active;          /* param 8 active at the vote height    */
+    uint8_t  gas_price_on;        /* a NON-ZERO param-5 row active there  */
+    uint8_t  ruleset_gen2_voted;  /* any param-9 row, any height          */
+    uint8_t  evm_active_voted;    /* any param-14 row, any height         */
+    uint32_t judging_generation;  /* the SYSTEM runtime judging the vote
+                                   * (0 = synthetic / unresolved)         */
+    /* red-team 1 F5: the chain's FIRST block height, derived from the
+     * stored genesis DOCUMENT (its initial_height, completed 0 → 1 the
+     * way the reference completes it) — never the node's oldest block
+     * row, which retention may move. 0 = not derived: the EVM_ACTIVE
+     * rule refuses (fail closed). Read only for param 14. */
+    uint64_t chain_initial_height;
+} nodus_cc_state_facts_t;
+
+/** The BLOCKHASH window of an EVM block (design §3, §10): the 256 heights
+ *  below it — nodus_witness_v2_apply.c v2rd_blockhash, [H-256, H-1]. */
+#define NODUS_CC_EVM_BLOCKHASH_WINDOW 256u
+
+/**
+ * The stateful rules over the full fact set. For ids 1..13 the answer is
+ * EXACTLY nodus_chain_config_stateful_rules's (the new facts are not
+ * read); in addition:
+ *   - param 14 EVM_ACTIVE: refused if `evm_active_voted` (single use — a
+ *     far-future effective retires it for good), !`hf2_active`,
+ *     !`hf3_active`, !`gas_price_on`, `judging_generation` is not
+ *     NODUS_RT_GEN_EVM_BASE (the switch at H-1 moves the registry FROM
+ *     that generation — any other one would FAULT every node there),
+ *     effective - 1 is an epoch boundary / effective == 0, or (red-team 1
+ *     F5) the FIRST execution window is not wholly on the chain:
+ *     `chain_initial_height` is 0 (not derived) or effective <
+ *     chain_initial_height + NODUS_CC_EVM_BLOCKHASH_WINDOW — the first EVM
+ *     block is `effective` (the registry switches at the end of
+ *     effective - 1), its BLOCKHASH window is [effective - 256,
+ *     effective - 1], and every height of it must have a block, or every
+ *     node FAULTs there (v2rd_blockhash); later windows only move up;
+ *   - param 15 EVM_BLOCK_GAS_LIMIT: no stateful rule (0).
+ * The 5-argument function above is this with hf3 / gas price / EVM-voted
+ * all 0 (so it refuses every EVM_ACTIVE vote). Pure. @return 0 / -1.
+ */
+int nodus_chain_config_stateful_rules_ex(uint8_t param_id,
+                                         uint64_t effective_block_height,
+                                         const nodus_cc_state_facts_t *facts);
+
+/**
  * Per-param grace minimum in blocks (Q4 Option B tiers): the earliest
  * legal effective_block_height for a proposal committed at height H is
  * H + nodus_chain_config_grace_for_param(param_id). Pure function,

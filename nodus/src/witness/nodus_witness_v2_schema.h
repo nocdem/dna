@@ -728,6 +728,192 @@ int nodus_witness_db_migrate_v2s16(nodus_witness_t *w);
 int nodus_witness_db_migrate_v2s16_ex(nodus_witness_t *w,
                                       nodus_v2s16_mig_fail_t fail_at);
 
+/* ── S17 migration: Nodus EVM — the EVM domain's state (design docs/plans/
+ *    2026-10-04-nodus-evm-chain-integration-design.md rev 3 §4-§7) ─────────
+ *
+ * One rung, every table CREATED EMPTY:
+ *
+ *   evm_accounts   (addr BLOB PK [32], nonce, balance [32 BE],
+ *                   code_hash [32 keccak], code_size, code_digest [64
+ *                   SHA3-512], storage_count, storage_root [64]) — one
+ *                   row per existing EVM account; the account-trie leaf
+ *                   is derived from it (design §6 substitution 5).
+ *   evm_slots      (addr, slot, value [32]) PK (addr, slot) — non-zero
+ *                   storage only (zero = no row).
+ *   evm_code       (digest [64], chunk, bytes ≤ 8 192) PK (digest, chunk)
+ *                   — contract code, shared by digest.
+ *   evm_code_refs  (digest PK, refs, code_size) — the reference count
+ *                   that keeps a shared code alive.
+ *   evm_tickets    (ticket_id PK [64], amount_raw, dest_fp [64]).
+ *   evm_meta       (id PK = 1, wei_live, wei_tickets, wei_lost [32 BE
+ *                   each], account_trie_root, tickets_root [64 each]) —
+ *                   one row, created by the EVM runtime's state_init at
+ *                   activation, not by this rung. (The activation package
+ *                   removed the C1 `reserve_raw` mirror column: the
+ *                   reserve is CORE state, below.)
+ *   v2_evm_reserve (id PK = 1, reserve_raw >= 0) — the CORE EVM RESERVE
+ *                   bucket (design §5): ONE row, written (1, 0) by THIS
+ *                   rung, moved only by the EVM generation's CORE EVMFUND
+ *                   (CORE adapter supply selector 4). No generation-1/2
+ *                   root, invariant or hook reads it, so its existence
+ *                   moves nothing on a chain that has not voted the EVM
+ *                   generation in.
+ *   evm_trie_nodes (digest PK [64], rlp) — the SHA3-512 MPT node store.
+ *   evm_receipts   (intent_id PK [64], global_height, item_index,
+ *                   receipt, digest [64]) and
+ *   evm_logs       (intent_id, log_index PK, global_height, addr, topics,
+ *                   data) — the NODE-LOCAL receipt/log index (design §7):
+ *                   no root reads them.
+ *
+ * REACHABILITY (Nodus EVM activation package): S17 is THE LIVE RUNG. Every
+ * builder migrates to it (join, bundle, the genesis derivation), and an
+ * S16 version-3 chain DB is migrated in place at OPEN
+ * (nodus_witness.c witness_post_open_gate, before the S7 startup check)
+ * — every table above is created empty and the reserve row is (1, 0), so
+ * no root, invariant or block verdict of a chain that has not voted the
+ * EVM generation in moves. The cometbft apply gate keeps accepting 16 or
+ * 17 (a node opened by an older build mid-upgrade is still S16 until its
+ * next open); every other gate (preflight, pools, the genesis gate)
+ * accepts 17 — the one-rung precedent of S15 -> S16. Version 18+ fails
+ * closed. */
+#define NODUS_V2_SCHEMA_VERSION_S17  17u
+
+typedef enum {
+    V2S17MIG_FAIL_NONE = 0,
+    V2S17MIG_FAIL_AFTER_BEGIN,      /* after BEGIN, before any DDL        */
+    V2S17MIG_FAIL_AFTER_REVALIDATE, /* in-txn version re-read passed      */
+    V2S17MIG_FAIL_AFTER_TABLES,     /* the EVM tables created             */
+    V2S17MIG_FAIL_AFTER_VERIFY,     /* schema-shape verification passed   */
+    V2S17MIG_FAIL_BEFORE_COMMIT     /* user_version written, pre-COMMIT   */
+} nodus_v2s17_mig_fail_t;
+
+/** Atomic S17 migration. Versions below 16 run the S9…S16 chain first,
+ *  then 16 → 17 atomically with the in-transaction revalidation.
+ *  @return 0 migrated or already at 17 (idempotent); -1 failure (full
+ *  rollback of the running stage) — including an UNKNOWN user_version
+ *  (18+): fail closed. */
+int nodus_witness_db_migrate_v2s17(nodus_witness_t *w);
+
+/** Test variant: deterministic abort inside the 16 → 17 transaction. */
+int nodus_witness_db_migrate_v2s17_ex(nodus_witness_t *w,
+                                      nodus_v2s17_mig_fail_t fail_at);
+
+/* ── S17 — the §18 evm_logs scan indexes (Nodus EVM red-team 1 F4) ─────────
+ *
+ *   evm_receipts_by_pos  evm_receipts(global_height, item_index)
+ *   evm_logs_by_addr     evm_logs(addr, global_height, intent_id,
+ *                                 log_index)
+ *
+ * NODE-LOCAL (design §7: no root, vote or block verdict reads the receipt
+ * / log index). The S17 DDL creates them on every new S17 database; a
+ * database that reached S17 before they existed gets them from the
+ * at-open ensure step below — indexes only, NEVER a table, column, row or
+ * user_version change. (The first S17 index, evm_logs_by_height, stays:
+ * dropping it would be a shape change; the cursor scan does not read it.)
+ */
+
+/** Create the two scan indexes on a database AT S17 when they are absent
+ *  (one BEGIN IMMEDIATE, the version re-read inside it). Any other
+ *  version: nothing (0). Called at open (nodus_witness.c, after the S17
+ *  rung). @return 0 present / created / not S17; -1 fault, or an index of
+ *  the same name with other key columns (refused, rolled back). */
+int nodus_witness_db_ensure_v2s17_indexes(nodus_witness_t *w);
+
+/* ── the §18 evm_logs CURSOR SCAN (Nodus EVM red-team 1 F4) ─────────────────
+ *
+ * ORDER: (global_height, item_index, log_index) — the block's own order.
+ * Every step walks an index in that order (no full scan, no sort):
+ *   1. the next height ≥ pos.h holding a receipt (evm_receipts_by_pos) —
+ *      or, with an address, a log of that address (evm_logs_by_addr);
+ *   2. that height's receipts from pos.x, item order (evm_receipts_by_pos);
+ *   3. each receipt's logs from pos.li, log order (the evm_logs primary
+ *      key; with an address, evm_logs_by_addr — matches only);
+ *   4. a MATCHING log's data, by rowid (a non-matching log's data is never
+ *      loaded: the log rows select length(data)).
+ * Topic filters are compared in C on the examined row (no topic index:
+ * every examined row is charged, so a topic-only query is bounded by the
+ * same examined-row cap — an expression index on topic0 would add a write
+ * per log to block apply for a read the cap already bounds).
+ *
+ * WORK BOUND: every sqlite3_step is ONE EXAMINED ROW (a step answering
+ * "no more rows" included). A step runs only when examined + 1 ≤
+ * max_examined AND gas(examined + 1, bytes) ≤ gas_cap, where
+ *   gas(e, b) = e × NODUS_EVM_RPC_GAS_PER_ROW + b × NODUS_EVM_RPC_GAS_PER_BYTE
+ * and b is the reply-byte estimate of the RETURNED rows. A returned row
+ * also needs the page below lim and, past the first row, the reply byte
+ * budget max_bytes.
+ *
+ * CURSOR: pos is the first position not yet processed — every log before
+ * it was examined and either returned or did not match; every unreturned
+ * match is at or after it. A scan that stops before th (any bound above)
+ * returns truncated = 1 and next = pos; resuming from next skips no match
+ * and repeats none. A scan that reaches th returns truncated = 0.
+ *
+ * PURE READ of the node-local index: no write, no clock; the answer is a
+ * function of the committed rows and the arguments. FAIL-CLOSED: a row
+ * outside its shape (lengths, ranges, a log whose height is not its
+ * receipt's) is -1, never a partial page. */
+#define NODUS_EVM_RPC_GAS_PER_ROW   2100u  /* = EVM_G_COLD_STORAGE_ACCESS
+                                            * (shared/evm/evm_gas.h:27):
+                                            * one examined row costs one
+                                            * cold storage read           */
+#define NODUS_EVM_RPC_GAS_PER_BYTE  8u     /* = EVM_G_OPCODE_LOG_DATA_PER_
+                                            * BYTE (evm_gas.h:126): a byte
+                                            * served costs what writing it
+                                            * into a log cost             */
+#define NODUS_EVM_LOGS_SCAN_MAX_LIM 1000u  /* = §18 evm_logs lim cap      */
+#define NODUS_EVM_LOG_POS_MAX       ((uint64_t)UINT32_MAX + 1u)
+                                           /* x / li of a cursor (an index
+                                            * one past the u32 range)     */
+#define NODUS_EVM_LOGS_SCAN_SQL_N   6
+
+/** The scan's statement texts (index plans pinned by test_v2_schema.c). */
+extern const char *const nodus_evm_logs_scan_sql[NODUS_EVM_LOGS_SCAN_SQL_N];
+
+typedef struct {
+    uint64_t h, x, li;                 /* (height, item index, log index) */
+} nodus_evm_log_pos_t;
+
+typedef struct {
+    uint64_t h, x, li;
+    uint8_t  addr[32];
+    uint8_t  intent_id[64];
+    uint8_t  n_topics;
+    uint8_t  topics[4][32];
+    uint8_t *data;                     /* heap, data_len bytes            */
+    size_t   data_len;
+} nodus_evm_log_row_t;
+
+typedef struct {
+    nodus_evm_log_pos_t from;          /* first position examined: (fh, 0,
+                                        * 0) or a cursor                  */
+    uint64_t       th;                 /* last height, inclusive          */
+    const uint8_t *addr;               /* 32 or NULL                      */
+    const uint8_t *topic[4];           /* 32 each or NULL                 */
+    uint32_t       lim;                /* 1 .. NODUS_EVM_LOGS_SCAN_MAX_LIM */
+    uint64_t       max_examined;       /* examined-row cap                */
+    size_t         max_bytes;          /* reply estimate past row one     */
+    uint64_t       gas_cap;            /* gas(examined, bytes) ≤ this     */
+} nodus_evm_logs_scan_t;
+
+typedef struct {
+    nodus_evm_log_row_t *rows;         /* heap, n of them                 */
+    size_t               n;
+    uint64_t             examined;     /* also on -1: the work done       */
+    size_t               bytes;        /* reply estimate of rows          */
+    uint64_t             gas;          /* gas(examined, bytes)            */
+    int                  truncated;    /* stopped before th               */
+    nodus_evm_log_pos_t  next;         /* truncated: where to resume      */
+} nodus_evm_logs_page_t;
+
+/** @return 0 (*out filled; free with nodus_witness_evm_logs_page_free) /
+ *  -1 invalid arguments, a store fault or a row outside its shape (rows
+ *  freed; examined / gas still report the work done). */
+int nodus_witness_evm_logs_scan(nodus_witness_t *w,
+                                const nodus_evm_logs_scan_t *q,
+                                nodus_evm_logs_page_t *out);
+void nodus_witness_evm_logs_page_free(nodus_evm_logs_page_t *p);
+
 #ifdef __cplusplus
 }
 #endif

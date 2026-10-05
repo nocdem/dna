@@ -353,6 +353,13 @@ details.stake-block > summary { color: var(--text); }
 .vault-panel .stake-list { margin-top: 12px; }
 .vault-panel .stake-actions { margin-top: 12px; }
 .vault-panel textarea { width: 100%; box-sizing: border-box; font-family: inherit; }
+.evm-panel { display: flex; flex-direction: column; grid-column: 1 / -1; scroll-margin-top: 24px; }
+.evm-panel .stake-block { margin-top: 16px; }
+.evm-panel .stake-list { margin-top: 12px; }
+.evm-panel textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: 12px; }
+.evm-panel .evm-fn .stake-actions { justify-content: start; }
+.evm-mono { font-family: ui-monospace, monospace; font-size: 12px; }
+dialog.evm-review dd { font-family: ui-monospace, monospace; font-size: 12px; }
 .vault-address { display: block; overflow-wrap: anywhere; font-size: 11px; line-height: 1.5; }
 .vault-contacts { display: flex; flex-direction: column; gap: 4px; }
 /* The result of saving the wallet, right under the save buttons (src/app.js saveVault). */

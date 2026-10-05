@@ -32,7 +32,22 @@ static int tests_passed = 0;
 /* ── Server thread ──────────────────────────────────────────────── */
 
 static nodus_server_t server;
-static volatile bool server_ready = false;
+/* server_init_done: set by the server thread once nodus_server_init has
+ * RETURNED, success or failure; server_ready: it succeeded. main waits for
+ * this outcome, not for a time budget (see the history in main). Both flags
+ * are read and written only under init_lock; main sleeps on init_cond. */
+static pthread_mutex_t init_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  init_cond = PTHREAD_COND_INITIALIZER;
+static bool server_ready = false;
+static bool server_init_done = false;
+
+static void server_init_outcome(bool ready) {
+    pthread_mutex_lock(&init_lock);
+    server_ready = ready;
+    server_init_done = true;
+    pthread_cond_broadcast(&init_cond);
+    pthread_mutex_unlock(&init_lock);
+}
 
 static void *server_thread(void *arg) {
     (void)arg;
@@ -44,7 +59,7 @@ static void *server_thread(void *arg) {
      * (4002/4004) — every server-spawning test that did that collided under
      * `ctest -j` (test_client vs test_circuit_live vs test_server), and the
      * loser's init failure turned into a silent infinite hang (see the
-     * bounded wait in main). 151xx is unique to THIS test. */
+     * init-outcome wait in main). 151xx is unique to THIS test. */
     config.udp_port = 15100;
     config.tcp_port = 15101;
     config.peer_port = 15102;
@@ -59,10 +74,11 @@ static void *server_thread(void *arg) {
 
     if (nodus_server_init(&server, &config) != 0) {
         fprintf(stderr, "server init failed\n");
+        server_init_outcome(false);
         return NULL;
     }
 
-    server_ready = true;
+    server_init_outcome(true);
     nodus_server_run(&server);
     nodus_server_close(&server);
 
@@ -454,21 +470,33 @@ static void test_failover_bad_server(void) {
 int main(void) {
     printf("=== Nodus Client SDK Test ===\n\n");
 
-    /* Start server. BOUNDED wait (2026-07-21): the old unbounded
-     * `while (!server_ready)` loop turned any server-init failure into a
-     * silent infinite hang (observed: 25+ min under `ctest -j` when a port
-     * bind lost a race). Mirror test_circuit_live: 5 s, then FAIL loudly. */
+    /* Start server and wait for init's OUTCOME.
+     * History: the original unbounded `while (!server_ready)` loop turned
+     * any server-init failure into a silent infinite hang (observed: 25+ min
+     * under `ctest -j` when a port bind lost a race), so 2026-07-21 bounded
+     * it at 5 s. That budget then expired with init still RUNNING once the
+     * witness start checks grew (the EVM precompile self-test loads the KZG
+     * setup; 2026-10-05, Nodus EVM red-team 1 F2). Both causes are closed by
+     * waiting for the outcome instead: a failed init signals too, so it
+     * fails loudly here, and a slow init is simply waited for. An init that
+     * never returns still hangs this wait (nodus/CMakeLists.txt sets no
+     * per-test TIMEOUT — bound it with `ctest --timeout`), never a guessed
+     * number here. */
     pthread_t srv_tid;
-    pthread_create(&srv_tid, NULL, server_thread, NULL);
+    int prc = pthread_create(&srv_tid, NULL, server_thread, NULL);
+    if (prc != 0) {
+        fprintf(stderr, "FATAL: pthread_create failed: %s\n", strerror(prc));
+        return 1;
+    }
     {
-        int waited_ms = 0;
-        while (!server_ready && waited_ms < 5000) {
-            usleep(10000);
-            waited_ms += 10;
-        }
-        if (!server_ready) {
+        pthread_mutex_lock(&init_lock);
+        while (!server_init_done)
+            pthread_cond_wait(&init_cond, &init_lock);
+        bool ready = server_ready;
+        pthread_mutex_unlock(&init_lock);
+        if (!ready) {
             fprintf(stderr,
-                    "FATAL: test server did not come up within 5 s "
+                    "FATAL: test server did not come up "
                     "(server init failed — see stderr above)\n");
             return 1;
         }

@@ -1,0 +1,1493 @@
+/**
+ * @file statetest.c
+ * @brief Official Ethereum state-test runner for the Nodus EVM engine
+ *        (Nodus EVM phase 1) — TEST-ONLY.
+ *
+ * Usage:
+ *   statetest [--fork Prague] [--addr-bytes 20] [--filter SUBSTR] [--verbose]
+ *             <file-or-dir>...
+ *   statetest --list-forks <file-or-dir>...
+ *   statetest --verify-fixture-roots [--fork F] [--filter S] <file-or-dir>...
+ *
+ * Design: docs/plans/2026-10-04-nodus-evm-engine-design.md (local) §1, §3.
+ * Decision: docs/plans/decisions/2026-10-04-nodus-evm-domain.md (local).
+ * Fixtures: execution-spec-tests v5.4.0 fixtures_stable, state_tests/.
+ * Reference: ethereum/execution-specs @a87891f7e69eab1f903233c61c5514d8c94bd5d1.
+ *
+ * ======================================================================
+ * FINDINGS — how the reference runs a state test (read, not recalled).
+ * Paths are relative to the execution-specs checkout; "statetest/" is
+ * packages/testing/src/execution_testing/evm_tools/statetest/, "t8n/" is
+ * packages/testing/src/execution_testing/evm_tools/t8n/.
+ *
+ * Runner shape. statetest/__init__.py:99-176 turns one fixture post entry
+ * into a t8n run: data/gasLimit/value are taken at indexes.{data,gas,value}
+ * (:120-131); accessLists[d] is used only when non-null (:132-134); the run
+ * is t8n with --state-test (:152-163) -> T8N.run_state_test
+ * (t8n/__init__.py:341-370): build the block environment, process exactly
+ * one transaction, NO system operations (no beacon root / history
+ * contract call, no withdrawals, no block reward). The reference runner
+ * passes when the post state root equals post.hash (statetest/:289); it
+ * does not itself compare `logs` — this runner compares both.
+ *
+ * (a) BLOCKHASH. statetest/__init__.py:111-114 builds env.blockHashes as
+ *     {"0": previousHash} if the fixture env has `previousHash`, else {}.
+ *     t8n/block_environment.py:205-223 turns that into the list of the
+ *     last min(256, number) hashes, None for unknown heights, [] when no
+ *     hashes are given. Prague BLOCKHASH
+ *     (src/ethereum/forks/prague/vm/instructions/block.py:46-61) returns 0
+ *     when number >= current or current > number + 256, else indexes that
+ *     list from the end. With an empty list (or a None entry) that index
+ *     is a Python IndexError / TypeError — not an EthereumException, so a
+ *     fill that reached it would have crashed; no stable fixture can
+ *     depend on it. Measured over all 18 869 Prague cases of the pinned
+ *     fixtures: no env carries `previousHash`, and currentNumber is 0x01
+ *     in every one. => the in-memory backend serves block 0's hash only
+ *     when `previousHash` is present, and reports `available = 0` for
+ *     every other height (evm_membackend.c mb_get_block_hash). What the
+ *     ENGINE pushes for available = 0 is the engine's contract, not ours.
+ *
+ * (b) Logs hash. t8n/result.py:98: logs_hash =
+ *     keccak256(rlp.encode(block_output.block_logs)); block_logs gets the
+ *     transaction's logs (src/ethereum/forks/prague/fork.py:958). A Log is
+ *     the dataclass (address, topics, data)
+ *     (src/ethereum/forks/prague/blocks.py:307-331). Encoding it as the RLP
+ *     list [address (20 bytes), [topic (32 bytes)...], data] is what
+ *     `ethereum_rlp` does with a dataclass — UNVERIFIED FROM SOURCE: the
+ *     ethereum_rlp package (pyproject.toml: ethereum-rlp>=0.1.6,<0.2) is
+ *     not in the local checkout. The empty case is grounded:
+ *     keccak256(rlp([])) = 1dcc4de8...9347 (src/ethereum/forks/london/
+ *     fork.py:79 EMPTY_OMMER_HASH; value in packages/testing/src/
+ *     execution_testing/base_types/constants.py:19-21), and every fixture
+ *     entry without logs carries exactly that `logs` value.
+ *
+ * (c) expectException. process_transaction
+ *     (src/ethereum/forks/prague/fork.py:843-875) runs validate_transaction
+ *     and check_transaction BEFORE the first state write
+ *     (increment_nonce, :875); check_transaction only raises (no write).
+ *     On an exception the T8N catches it and records a rejected tx
+ *     (t8n/__init__.py:351-361); incorporate_tx_into_block (fork.py:960) is
+ *     never reached, so the block diff is empty and the root is the
+ *     PRE-state root (t8n/result.py:82-92); block_logs stays empty, so
+ *     logs = keccak256(rlp([])). Measured on the pinned fixtures: in all
+ *     759 Prague expectException entries post.state equals pre (zero
+ *     slots ignored) and logs = 1dcc4de8...9347. => expectException passes iff
+ *     evm_tx_apply returns -1, the overlay holds no change, and the
+ *     root/logs equal the fixture values.
+ *
+ * (d) Block environment (t8n/block_environment.py; JSON aliases
+ *     packages/testing/src/execution_testing/test_types/block_types.py:
+ *     106-128 and fixtures/state.py FixtureEnvironment):
+ *       currentCoinbase      -> coinbase                     (:54)
+ *       currentNumber        -> number                       (:51)
+ *       currentTimestamp     -> time                         (:53)
+ *       currentGasLimit      -> block_gas_limit              (:52)
+ *       currentBaseFee       -> base_fee_per_gas, as given   (:105-106);
+ *                               absent -> derived from parent fields: NOT
+ *                               supported here (ERROR)
+ *       currentRandom        -> prev_randao = int -> 32 bytes big-endian
+ *                               (:197-202), absent -> zero; used because
+ *                               Prague is PoS (:72-73)
+ *       currentDifficulty    -> ignored for a PoS fork (:72-77)
+ *       currentExcessBlobGas -> excess_blob_gas, as given    (:123-124);
+ *                               absent -> derived: NOT supported (ERROR)
+ *       parent_beacon_block_root = None in a state test       (:79-81)
+ *     chain id: fixtures/state.py FixtureConfig.chain_id (`config.chainid`,
+ *     default 1). The reference runner itself ignores `config` and uses the
+ *     t8n CLI default --state.chainid = 1 (t8n/cli.py:73, :366); the two
+ *     agree on every Prague case (measured: config.chainid = 0x01 in all
+ *     18 869). This runner uses config.chainid, default 1.
+ *
+ * Transaction chain id. The fixture carries no chainId field (measured:
+ * 0/18 869 Prague cases), so it is read from `txbytes`: a typed tx is
+ * type || rlp([chain_id, ...]) (src/ethereum/forks/prague/transactions.py
+ * decode_transaction :519-539, AccessListTransaction :134-145,
+ * FeeMarketTransaction :207-217); a legacy tx is rlp([nonce, gas_price,
+ * gas, to, value, data, v, r, s]) and its chain id is None for v in
+ * {27, 28}, else (v - 35) >> 1; v < 35 is refused (transactions.py:
+ * 660-675). The engine checks has_chain_id/chain_id against the config.
+ * Both chain ids are evm_u256 in the API (evm.h, commit 072a5a76); the
+ * reference types the tx chain id as U64 (transactions.py:145, :217), so
+ * a txbytes chain id above 64 bits is an ERROR here, not a truncation.
+ *
+ * Post-state root (state_mpt.py:82-120): pre accounts, then the engine's
+ * change set applied in the reference diff order — storage clears, account
+ * changes (None = removed), storage changes (zero = removed); state trie
+ * key = address (20 bytes in Ethereum mode), value rlp([nonce, balance,
+ * storage_root, code_hash]) (merkle_patricia_trie.py:193-210). Pre-state
+ * accounts are all inserted (empty ones too) and zero pre-storage values
+ * dropped (packages/testing/src/execution_testing/test_types/
+ * account_types.py:464-503). EIP-161 empty-account handling is taken from
+ * the engine's change set, never re-implemented here.
+ * ======================================================================
+ *
+ * CLASSES (a skip is never a pass):
+ *   PASS      root and logs equal the fixture (and, for expectException,
+ *             the tx was refused)
+ *   FAIL      anything else the engine decided
+ *   FAULT     evm_tx_apply / evm_state_new / visit_changes returned -2
+ *   ERROR     the harness could not represent the case (bad hex, missing
+ *             env field, undecodable txbytes, ...) — not an engine verdict
+ *   EXCLUDED  type-3 blob or type-4 set-code tx (design §1)
+ * (Every Prague precompile is built in: there is no "precompile
+ * unavailable" outcome and no PENDING class.)
+ * Exit: 0 iff FAIL == FAULT == ERROR == 0 and at least one case ran;
+ * 1 otherwise; 2 usage; 3 no case of the selected fork was found.
+ *
+ * Output goes to stdout/stderr through stdio: the report IS this test
+ * tool's product (same practice as shared/crypto/zk/tests).
+ */
+#define _POSIX_C_SOURCE 200809L
+
+#include "evm.h"
+#include "evm_u256.h"
+#include "evm_rlp.h"
+#include "evm_mpt.h"
+#include "evm_membackend.h"
+#include "crypto/hash/keccak256.h"
+
+#include <json-c/json.h>
+
+#include <dirent.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+
+/* ── options / counters ─────────────────────────────────────────────── */
+
+typedef struct {
+    const char *fork;
+    unsigned    addr_bytes;
+    const char *filter;
+    int         verbose;
+    int         list_forks;
+    int         verify_roots;
+} opts_t;
+
+typedef struct {
+    unsigned long pass, fail, fault, error;
+    unsigned long excl_blob, excl_setcode;
+    unsigned long deviation;
+} counts_t;
+
+/* DOCUMENTED NODUS DEVIATIONS from Prague — cases whose expected Prague
+ * result differs ONLY because Nodus adopted a rule Prague does not have.
+ * Each entry is matched by exact test name AND data index, and is counted
+ * as DEVIATION (never PASS) only when the case would otherwise FAIL.
+ * EIP-7823 (modexp lengths <= 1024, Ethereum Osaka; adopted to bound modexp
+ * work and GMP memory — decision in the engine design §3 / ledger
+ * 2026-10-04): verified by decoding each case's modexp length words —
+ *   modexp d29: exp_len 0x40000000000 (4 398 046 511 104),
+ *   modexp d30: exp_len 2^255,
+ *   randomStatetest650: MSTORE(0x20, 0x10000000) -> exp_len 268 435 456,
+ *     then STATICCALL 0x05. */
+static const struct { const char *name; long d; const char *why; } DEVIATIONS[] = {
+    { "tests/static/state_tests/stPreCompiledContracts/modexpFiller.json::"
+      "modexp[fork_Prague-state_test-d29-g0]", 0, "EIP-7823 modexp bound" },
+    { "tests/static/state_tests/stPreCompiledContracts/modexpFiller.json::"
+      "modexp[fork_Prague-state_test-d29-g1]", 0, "EIP-7823 modexp bound" },
+    { "tests/static/state_tests/stPreCompiledContracts/modexpFiller.json::"
+      "modexp[fork_Prague-state_test-d29-g2]", 0, "EIP-7823 modexp bound" },
+    { "tests/static/state_tests/stPreCompiledContracts/modexpFiller.json::"
+      "modexp[fork_Prague-state_test-d29-g3]", 0, "EIP-7823 modexp bound" },
+    { "tests/static/state_tests/stPreCompiledContracts/modexpFiller.json::"
+      "modexp[fork_Prague-state_test-d30-g0]", 0, "EIP-7823 modexp bound" },
+    { "tests/static/state_tests/stPreCompiledContracts/modexpFiller.json::"
+      "modexp[fork_Prague-state_test-d30-g1]", 0, "EIP-7823 modexp bound" },
+    { "tests/static/state_tests/stPreCompiledContracts/modexpFiller.json::"
+      "modexp[fork_Prague-state_test-d30-g2]", 0, "EIP-7823 modexp bound" },
+    { "tests/static/state_tests/stPreCompiledContracts/modexpFiller.json::"
+      "modexp[fork_Prague-state_test-d30-g3]", 0, "EIP-7823 modexp bound" },
+    { "tests/static/state_tests/stRandom2/randomStatetest650Filler.json::"
+      "randomStatetest650[fork_Prague-state_test-]", 0,
+      "EIP-7823 modexp bound" },
+};
+
+static opts_t   g_opt;
+static counts_t g_cnt;
+
+/* ── small helpers ──────────────────────────────────────────────────── */
+
+static int hexval(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static const char *strip0x(const char *s)
+{
+    return (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) ? s + 2 : s;
+}
+
+/* Number (any digit count) -> 32-byte big-endian, right-aligned.
+ * @return 0, -1 not hex / does not fit 256 bits. */
+static int hex_be32(const char *s, uint8_t out[32])
+{
+    s = strip0x(s);
+    size_t len = strlen(s);
+    while (len > 0 && *s == '0') { s++; len--; }
+    if (len > 64) return -1;
+    memset(out, 0, 32);
+    size_t o = 32 - (len + 1) / 2;
+    size_t i = 0;
+    if (len % 2) {
+        int v = hexval(s[0]);
+        if (v < 0) return -1;
+        out[o++] = (uint8_t)v;
+        i = 1;
+    }
+    for (; i < len; i += 2) {
+        int hi = hexval(s[i]), lo = hexval(s[i + 1]);
+        if (hi < 0 || lo < 0) return -1;
+        out[o++] = (uint8_t)(hi * 16 + lo);
+    }
+    return 0;
+}
+
+static int hex_u64(const char *s, uint64_t *out)
+{
+    uint8_t b[32];
+    if (hex_be32(s, b) != 0) return -1;
+    for (int i = 0; i < 24; i++) if (b[i]) return -1;
+    uint64_t v = 0;
+    for (int i = 24; i < 32; i++) v = (v << 8) | b[i];
+    *out = v;
+    return 0;
+}
+
+/* Byte string (even digit count). *out malloc'd (NULL when empty). */
+static int hex_bytes(const char *s, uint8_t **out, size_t *len)
+{
+    s = strip0x(s);
+    size_t n = strlen(s);
+    *out = NULL;
+    *len = 0;
+    if (n % 2) return -1;
+    if (n == 0) return 0;
+    uint8_t *p = malloc(n / 2);
+    if (!p) return -2;
+    for (size_t i = 0; i < n; i += 2) {
+        int hi = hexval(s[i]), lo = hexval(s[i + 1]);
+        if (hi < 0 || lo < 0) { free(p); return -1; }
+        p[i / 2] = (uint8_t)(hi * 16 + lo);
+    }
+    *out = p;
+    *len = n / 2;
+    return 0;
+}
+
+/* Address (<= 20 significant bytes) -> right-aligned 32-byte word. */
+static int hex_addr(const char *s, evm_addr *a)
+{
+    if (hex_be32(s, a->b) != 0) return -1;
+    for (int i = 0; i < 12; i++) if (a->b[i]) return -1;
+    return 0;
+}
+
+static void hex_print(FILE *f, const uint8_t *b, size_t n)
+{
+    for (size_t i = 0; i < n; i++) fprintf(f, "%02x", b[i]);
+}
+
+static json_object *jget(json_object *o, const char *key)
+{
+    json_object *v = NULL;
+    if (!o || !json_object_is_type(o, json_type_object)) return NULL;
+    if (!json_object_object_get_ex(o, key, &v)) return NULL;
+    return v;
+}
+
+static const char *jstr(json_object *o, const char *key)
+{
+    json_object *v = jget(o, key);
+    if (!v || !json_object_is_type(v, json_type_string)) return NULL;
+    return json_object_get_string(v);
+}
+
+/* Element idx of array field `key` as a string. */
+static const char *jarr_str(json_object *o, const char *key, size_t idx)
+{
+    json_object *a = jget(o, key);
+    if (!a || !json_object_is_type(a, json_type_array)) return NULL;
+    if (idx >= json_object_array_length(a)) return NULL;
+    json_object *v = json_object_array_get_idx(a, idx);
+    if (!v || !json_object_is_type(v, json_type_string)) return NULL;
+    return json_object_get_string(v);
+}
+
+static const char *tx_error_name(evm_tx_error_t e)
+{
+    switch (e) {
+    case EVM_TXERR_NONE:                return "NONE";
+    case EVM_TXERR_TYPE_UNSUPPORTED:    return "TYPE_UNSUPPORTED";
+    case EVM_TXERR_NONCE_TOO_LOW:       return "NONCE_TOO_LOW";
+    case EVM_TXERR_NONCE_TOO_HIGH:      return "NONCE_TOO_HIGH";
+    case EVM_TXERR_NONCE_MAX:           return "NONCE_MAX";
+    case EVM_TXERR_INSUFFICIENT_FUNDS:  return "INSUFFICIENT_FUNDS";
+    case EVM_TXERR_INTRINSIC_GAS:       return "INTRINSIC_GAS";
+    case EVM_TXERR_GAS_ALLOWANCE:       return "GAS_ALLOWANCE";
+    case EVM_TXERR_FEE_CAP_BELOW_BASE:  return "FEE_CAP_BELOW_BASE";
+    case EVM_TXERR_PRIORITY_ABOVE_CAP:  return "PRIORITY_ABOVE_CAP";
+    case EVM_TXERR_SENDER_NOT_EOA:      return "SENDER_NOT_EOA";
+    case EVM_TXERR_INITCODE_TOO_LARGE:  return "INITCODE_TOO_LARGE";
+    case EVM_TXERR_CHAIN_ID:            return "CHAIN_ID";
+    case EVM_TXERR_OTHER:               return "OTHER";
+    }
+    return "?";
+}
+
+static const char *status_name(evm_exec_status_t s)
+{
+    switch (s) {
+    case EVM_EXEC_SUCCESS:                return "SUCCESS";
+    case EVM_EXEC_REVERT:                 return "REVERT";
+    case EVM_EXEC_OUT_OF_GAS:             return "OUT_OF_GAS";
+    case EVM_EXEC_INVALID_OPCODE:         return "INVALID_OPCODE";
+    case EVM_EXEC_STACK_UNDERFLOW:        return "STACK_UNDERFLOW";
+    case EVM_EXEC_STACK_OVERFLOW:         return "STACK_OVERFLOW";
+    case EVM_EXEC_BAD_JUMP:               return "BAD_JUMP";
+    case EVM_EXEC_STATIC_VIOLATION:       return "STATIC_VIOLATION";
+    case EVM_EXEC_RETURNDATA_OOB:         return "RETURNDATA_OOB";
+    case EVM_EXEC_CREATE_COLLISION:       return "CREATE_COLLISION";
+    case EVM_EXEC_CODE_TOO_LARGE:         return "CODE_TOO_LARGE";
+    case EVM_EXEC_INVALID_CODE_PREFIX:    return "INVALID_CODE_PREFIX";
+    case EVM_EXEC_PRECOMPILE_FAILURE:     return "PRECOMPILE_FAILURE";
+    case EVM_EXEC_BUDGET:                 return "BUDGET";
+    }
+    return "?";
+}
+
+/* ── per-case reporting ─────────────────────────────────────────────── */
+
+typedef struct {
+    const char *file;
+    const char *name;
+    size_t      post_idx;
+    long        d, g, v;
+} case_id_t;
+
+static void report(const char *cls, const case_id_t *c, const char *fmt, ...)
+#if defined(__GNUC__)
+    __attribute__((format(printf, 3, 4)))
+#endif
+    ;
+
+static void report(const char *cls, const case_id_t *c, const char *fmt, ...)
+{
+    va_list ap;
+    printf("%-8s %s :: %s [post %zu d=%ld g=%ld v=%ld]: ", cls, c->file,
+           c->name, c->post_idx, c->d, c->g, c->v);
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
+    putchar('\n');
+}
+
+/* ── fixture alloc -> account set ───────────────────────────────────── */
+
+static int load_alloc(json_object *alloc, evm_membackend *mb,
+                      char *err, size_t errlen)
+{
+    if (!alloc || !json_object_is_type(alloc, json_type_object)) {
+        snprintf(err, errlen, "alloc is not an object");
+        return -1;
+    }
+    json_object_object_foreach(alloc, akey, aval) {
+        evm_addr addr;
+        uint64_t nonce;
+        uint8_t bal[32];
+        uint8_t *code = NULL;
+        size_t code_len = 0;
+        const char *sn = jstr(aval, "nonce"), *sb = jstr(aval, "balance");
+        const char *sc = jstr(aval, "code");
+        json_object *st = jget(aval, "storage");
+        if (hex_addr(akey, &addr) != 0 || !sn || !sb || !sc ||
+            hex_u64(sn, &nonce) != 0 || hex_be32(sb, bal) != 0 ||
+            hex_bytes(sc, &code, &code_len) != 0 ||
+            (st && !json_object_is_type(st, json_type_object))) {
+            free(code);
+            snprintf(err, errlen, "bad account %s", akey);
+            return -1;
+        }
+        evm_mem_account *a = NULL;
+        int rc = evm_membackend_add_account(mb, &addr, nonce, bal, code,
+                                            code_len, NULL, &a);
+        free(code);
+        if (rc != 0) { snprintf(err, errlen, "out of memory"); return -2; }
+        if (st) {
+            json_object_object_foreach(st, skey, sval) {
+                evm_bytes32 k, v;
+                if (!json_object_is_type(sval, json_type_string) ||
+                    hex_be32(skey, k.b) != 0 ||
+                    hex_be32(json_object_get_string(sval), v.b) != 0) {
+                    snprintf(err, errlen, "bad storage in %s", akey);
+                    return -1;
+                }
+                if (evm_mem_account_add_slot(a, &k, &v) != 0) {
+                    snprintf(err, errlen, "out of memory");
+                    return -2;
+                }
+            }
+        }
+    }
+    if (evm_membackend_finalize(mb) != 0) {
+        snprintf(err, errlen, "duplicate address or storage key");
+        return -1;
+    }
+    return 0;
+}
+
+/* ── engine change set -> collected list ────────────────────────────── */
+
+typedef struct {
+    evm_bytes32 key, val;
+} kv32_t;
+
+typedef struct {
+    evm_addr    addr;
+    int         deleted;
+    uint64_t    nonce;
+    uint8_t     balance[32];
+    int         code_changed;
+    uint8_t    *code;
+    size_t      code_len;
+    evm_bytes32 code_hash;
+    int         storage_cleared;
+    kv32_t     *slots;
+    size_t      n_slots, cap_slots;
+} change_t;
+
+typedef struct {
+    change_t *v;
+    size_t    n, cap;
+    char      why[200];
+} changes_t;
+
+enum { VISIT_ORDER = 1, VISIT_OOM = 2 };
+
+static void changes_free(changes_t *cs)
+{
+    for (size_t i = 0; i < cs->n; i++) {
+        free(cs->v[i].code);
+        free(cs->v[i].slots);
+    }
+    free(cs->v);
+    memset(cs, 0, sizeof(*cs));
+}
+
+static int visit_account(void *ctx, const evm_account_change_t *c)
+{
+    changes_t *cs = ctx;
+    if (cs->n > 0 && memcmp(cs->v[cs->n - 1].addr.b, c->addr.b, 32) >= 0) {
+        snprintf(cs->why, sizeof(cs->why),
+                 "change set: account order not strictly ascending");
+        return VISIT_ORDER;
+    }
+    if (cs->n == cs->cap) {
+        size_t ncap = cs->cap ? cs->cap * 2 : 16;
+        change_t *nv = realloc(cs->v, ncap * sizeof(*nv));
+        if (!nv) return VISIT_OOM;
+        cs->v = nv;
+        cs->cap = ncap;
+    }
+    change_t *d = &cs->v[cs->n];
+    memset(d, 0, sizeof(*d));
+    d->addr = c->addr;
+    d->deleted = c->deleted;
+    d->nonce = c->nonce;
+    evm_u256_to_be(d->balance, &c->balance);
+    d->code_changed = c->code_changed;
+    d->code_hash = c->code_hash;
+    d->storage_cleared = c->storage_cleared;
+    if (c->code_changed && c->code_len) {
+        d->code = malloc(c->code_len);
+        if (!d->code) return VISIT_OOM;
+        memcpy(d->code, c->code, c->code_len);
+        d->code_len = c->code_len;
+    }
+    cs->n++;
+    return 0;
+}
+
+static int visit_storage(void *ctx, const evm_addr *addr,
+                         const evm_bytes32 *key, const evm_bytes32 *value)
+{
+    changes_t *cs = ctx;
+    if (cs->n == 0 || memcmp(cs->v[cs->n - 1].addr.b, addr->b, 32) != 0) {
+        snprintf(cs->why, sizeof(cs->why),
+                 "change set: storage slot not after its account");
+        return VISIT_ORDER;
+    }
+    change_t *d = &cs->v[cs->n - 1];
+    if (d->n_slots > 0 &&
+        memcmp(d->slots[d->n_slots - 1].key.b, key->b, 32) >= 0) {
+        snprintf(cs->why, sizeof(cs->why),
+                 "change set: storage key order not strictly ascending");
+        return VISIT_ORDER;
+    }
+    if (d->n_slots == d->cap_slots) {
+        size_t ncap = d->cap_slots ? d->cap_slots * 2 : 4;
+        kv32_t *ns = realloc(d->slots, ncap * sizeof(*ns));
+        if (!ns) return VISIT_OOM;
+        d->slots = ns;
+        d->cap_slots = ncap;
+    }
+    d->slots[d->n_slots].key = *key;
+    d->slots[d->n_slots].val = *value;
+    d->n_slots++;
+    return 0;
+}
+
+/* Merge pre + change list into `post` (state_mpt.py:82-120 order).
+ * @return 0, -1 inconsistent change set (why filled), -2 OOM. */
+static int build_post(const evm_membackend *pre, const changes_t *cs,
+                      evm_membackend *post, char *why, size_t whylen)
+{
+    static const uint8_t empty_code_hash[32] = {
+        0xc5, 0xd2, 0x46, 0x01, 0x86, 0xf7, 0x23, 0x3c, 0x92, 0x7e, 0x7d,
+        0xb2, 0xdc, 0xc7, 0x03, 0xc0, 0xe5, 0x00, 0xb6, 0x53, 0xca, 0x82,
+        0x27, 0x3b, 0x7b, 0xfa, 0xd8, 0x04, 0x5d, 0x85, 0xa4, 0x70
+    };  /* keccak256(b"") — EMPTY_CODE_HASH */
+    size_t i = 0, j = 0;
+    while (i < pre->n || j < cs->n) {
+        const evm_mem_account *p = NULL;
+        const change_t *c = NULL;
+        if (j >= cs->n) {
+            p = &pre->acc[i++];
+        } else if (i >= pre->n) {
+            c = &cs->v[j++];
+        } else {
+            int cmp = memcmp(pre->acc[i].addr.b, cs->v[j].addr.b, 32);
+            if (cmp < 0) p = &pre->acc[i++];
+            else if (cmp > 0) c = &cs->v[j++];
+            else { p = &pre->acc[i++]; c = &cs->v[j++]; }
+        }
+
+        evm_mem_account *a = NULL;
+        if (!c) {                                   /* untouched pre account */
+            if (evm_membackend_add_account(post, &p->addr, p->nonce,
+                                           p->balance, p->code, p->code_len,
+                                           &p->code_hash, &a) != 0)
+                return -2;
+            for (size_t k = 0; k < p->n_slots; k++)
+                if (evm_mem_account_add_slot(a, &p->slots[k].key,
+                                             &p->slots[k].val) != 0)
+                    return -2;
+            continue;
+        }
+        if (c->deleted) continue;                   /* removed (and its slots) */
+
+        const uint8_t *code = NULL;
+        size_t code_len = 0;
+        if (c->code_changed) {
+            uint8_t h[32];
+            code = c->code;
+            code_len = c->code_len;
+            if (keccak256(code_len ? code : (const uint8_t *)"", code_len,
+                          h) != 0)
+                return -2;
+            if (memcmp(h, c->code_hash.b, 32) != 0) {
+                snprintf(why, whylen, "change set: code_hash != keccak(code)");
+                return -1;
+            }
+        } else if (p) {
+            code = p->code;
+            code_len = p->code_len;
+            if (memcmp(p->code_hash.b, c->code_hash.b, 32) != 0) {
+                snprintf(why, whylen,
+                         "change set: code_hash changed without code_changed");
+                return -1;
+            }
+        } else if (memcmp(c->code_hash.b, empty_code_hash, 32) != 0) {
+            snprintf(why, whylen,
+                     "change set: new account with code_hash but no code");
+            return -1;
+        }
+        if (evm_membackend_add_account(post, &c->addr, c->nonce, c->balance,
+                                       code, code_len, &c->code_hash, &a) != 0)
+            return -2;
+
+        /* storage: base (pre unless cleared) merged with the changed slots;
+         * a zero changed value removes the slot (add_slot drops zeros). */
+        size_t bn = (p && !c->storage_cleared) ? p->n_slots : 0;
+        size_t x = 0, y = 0;
+        while (x < bn || y < c->n_slots) {
+            int cmp;
+            if (y >= c->n_slots) cmp = -1;
+            else if (x >= bn) cmp = 1;
+            else cmp = memcmp(p->slots[x].key.b, c->slots[y].key.b, 32);
+            const evm_bytes32 *k, *v;
+            if (cmp < 0) { k = &p->slots[x].key; v = &p->slots[x].val; x++; }
+            else {
+                k = &c->slots[y].key; v = &c->slots[y].val; y++;
+                if (cmp == 0) x++;
+            }
+            if (evm_mem_account_add_slot(a, k, v) != 0) return -2;
+        }
+    }
+    return evm_membackend_finalize(post) == 0 ? 0 : -2;
+}
+
+/* keccak256(rlp([[address, [topics...], data], ...])) — finding (b). */
+static int logs_hash(const evm_tx_result_t *res, int applied,
+                     unsigned addr_bytes, uint8_t out[32])
+{
+    evm_rlp_buf b = {0};
+    int rc = 0;
+    if (applied) {
+        for (size_t i = 0; i < res->n_logs && rc == 0; i++) {
+            const evm_log_t *l = &res->logs[i];
+            size_t ls = b.len;
+            rc = evm_rlp_put_bytes(&b, l->addr.b + (32 - addr_bytes),
+                                   addr_bytes);
+            size_t ts = b.len;
+            for (unsigned t = 0; t < l->n_topics && t < 4 && rc == 0; t++)
+                rc = evm_rlp_put_bytes(&b, l->topics[t].b, 32);
+            if (rc == 0) rc = evm_rlp_wrap_list(&b, ts);
+            if (rc == 0) rc = evm_rlp_put_bytes(&b, l->data, l->data_len);
+            if (rc == 0) rc = evm_rlp_wrap_list(&b, ls);
+            if (rc == 0 && l->n_topics > 4) rc = -1;
+        }
+    }
+    if (rc == 0) rc = evm_rlp_wrap_list(&b, 0);
+    if (rc == 0 && keccak256(b.p, b.len, out) != 0) rc = -2;
+    evm_rlp_buf_free(&b);
+    return rc;
+}
+
+/* Verbose: difference between the computed post-state and the fixture's
+ * post.state (bounded output). */
+static void print_state_diff(const evm_membackend *got,
+                             const evm_membackend *want)
+{
+    int lines = 0;
+    const int max_lines = 24;
+    size_t i = 0, j = 0;
+    while ((i < got->n || j < want->n) && lines < max_lines) {
+        int cmp;
+        if (j >= want->n) cmp = -1;
+        else if (i >= got->n) cmp = 1;
+        else cmp = memcmp(got->acc[i].addr.b, want->acc[j].addr.b, 32);
+        if (cmp < 0) {
+            printf("    + unexpected account 0x");
+            hex_print(stdout, got->acc[i].addr.b + 12, 20);
+            putchar('\n');
+            lines++; i++;
+            continue;
+        }
+        if (cmp > 0) {
+            printf("    - missing account    0x");
+            hex_print(stdout, want->acc[j].addr.b + 12, 20);
+            putchar('\n');
+            lines++; j++;
+            continue;
+        }
+        const evm_mem_account *g = &got->acc[i++], *w = &want->acc[j++];
+        if (g->nonce != w->nonce) {
+            printf("    ~ 0x"); hex_print(stdout, g->addr.b + 12, 20);
+            printf(" nonce got %llu want %llu\n",
+                   (unsigned long long)g->nonce, (unsigned long long)w->nonce);
+            lines++;
+        }
+        if (memcmp(g->balance, w->balance, 32) != 0) {
+            printf("    ~ 0x"); hex_print(stdout, g->addr.b + 12, 20);
+            printf(" balance got 0x"); hex_print(stdout, g->balance, 32);
+            printf(" want 0x"); hex_print(stdout, w->balance, 32);
+            putchar('\n');
+            lines++;
+        }
+        if (memcmp(g->code_hash.b, w->code_hash.b, 32) != 0) {
+            printf("    ~ 0x"); hex_print(stdout, g->addr.b + 12, 20);
+            printf(" code_hash got "); hex_print(stdout, g->code_hash.b, 32);
+            printf(" want "); hex_print(stdout, w->code_hash.b, 32);
+            putchar('\n');
+            lines++;
+        }
+        size_t x = 0, y = 0;
+        while ((x < g->n_slots || y < w->n_slots) && lines < max_lines) {
+            int c2;
+            if (y >= w->n_slots) c2 = -1;
+            else if (x >= g->n_slots) c2 = 1;
+            else c2 = memcmp(g->slots[x].key.b, w->slots[y].key.b, 32);
+            if (c2 == 0 &&
+                memcmp(g->slots[x].val.b, w->slots[y].val.b, 32) == 0) {
+                x++; y++;
+                continue;
+            }
+            printf("    ~ 0x"); hex_print(stdout, g->addr.b + 12, 20);
+            printf(" slot ");
+            hex_print(stdout, (c2 <= 0 ? g->slots[x].key.b
+                                       : w->slots[y].key.b), 32);
+            printf(" got ");
+            if (c2 <= 0) hex_print(stdout, g->slots[x].val.b, 32);
+            else printf("0");
+            printf(" want ");
+            if (c2 >= 0) hex_print(stdout, w->slots[y].val.b, 32);
+            else printf("0");
+            putchar('\n');
+            lines++;
+            if (c2 <= 0) x++;
+            if (c2 >= 0) y++;
+        }
+    }
+    if (lines >= max_lines) printf("    ... (diff truncated)\n");
+}
+
+/* ── per-test parsed inputs ─────────────────────────────────────────── */
+
+typedef struct {
+    evm_block_env_t env;
+    evm_u256        chain_id;           /* full word (evm.h, 072a5a76) */
+    int             has_prev_hash;
+    evm_bytes32     prev_hash;
+} test_env_t;
+
+static int parse_env(json_object *test, test_env_t *te, char *err,
+                     size_t errlen)
+{
+    json_object *env = jget(test, "env");
+    memset(te, 0, sizeof(*te));
+    if (!env) { snprintf(err, errlen, "no env"); return -1; }
+    const char *s;
+    uint8_t b[32];
+
+    if (!(s = jstr(env, "currentCoinbase")) || hex_addr(s, &te->env.coinbase))
+        { snprintf(err, errlen, "env.currentCoinbase"); return -1; }
+    if (!(s = jstr(env, "currentNumber")) || hex_u64(s, &te->env.number))
+        { snprintf(err, errlen, "env.currentNumber"); return -1; }
+    if (!(s = jstr(env, "currentTimestamp")) ||
+        hex_u64(s, &te->env.timestamp))
+        { snprintf(err, errlen, "env.currentTimestamp"); return -1; }
+    if (!(s = jstr(env, "currentGasLimit")) ||
+        hex_u64(s, &te->env.gas_limit))
+        { snprintf(err, errlen, "env.currentGasLimit"); return -1; }
+    if (!(s = jstr(env, "currentBaseFee")) || hex_be32(s, b))
+        { snprintf(err, errlen, "env.currentBaseFee missing/invalid "
+                   "(parent derivation not supported)"); return -1; }
+    evm_u256_from_be(&te->env.base_fee, b);
+    if ((s = jstr(env, "currentRandom")) != NULL) {
+        if (hex_be32(s, te->env.prev_randao.b))
+            { snprintf(err, errlen, "env.currentRandom"); return -1; }
+    }
+    if (!(s = jstr(env, "currentExcessBlobGas")) ||
+        hex_u64(s, &te->env.excess_blob_gas))
+        { snprintf(err, errlen, "env.currentExcessBlobGas missing/invalid "
+                   "(parent derivation not supported)"); return -1; }
+    if ((s = jstr(env, "previousHash")) != NULL) {
+        if (hex_be32(s, te->prev_hash.b))
+            { snprintf(err, errlen, "env.previousHash"); return -1; }
+        te->has_prev_hash = 1;
+    }
+    evm_u256_from_u64(&te->chain_id, 1);    /* FixtureConfig default */
+    json_object *cfg = jget(test, "config");
+    if (cfg && (s = jstr(cfg, "chainid")) != NULL) {
+        if (hex_be32(s, b))
+            { snprintf(err, errlen, "config.chainid"); return -1; }
+        evm_u256_from_be(&te->chain_id, b);
+    }
+    return 0;
+}
+
+/* Owned buffers of one built transaction. */
+typedef struct {
+    evm_tx_t            tx;
+    uint8_t            *data;
+    evm_access_entry_t *access;
+    evm_bytes32        *keys;
+} built_tx_t;
+
+static void built_tx_free(built_tx_t *bt)
+{
+    free(bt->data);
+    free(bt->access);
+    free(bt->keys);
+    memset(bt, 0, sizeof(*bt));
+}
+
+/* Chain id from txbytes (see header: transactions.py:519-539, 660-675).
+ * Also cross-checks the tx type. */
+static int txbytes_chain_id(const char *txhex, uint8_t type, evm_tx_t *tx,
+                            char *err, size_t errlen)
+{
+    uint8_t *raw = NULL;
+    size_t n = 0;
+    int rc = -1;
+    evm_rlp_item list, it;
+    uint64_t v;
+    if (hex_bytes(txhex, &raw, &n) != 0 || n == 0) {
+        snprintf(err, errlen, "txbytes not decodable");
+        goto out;
+    }
+    if (raw[0] >= 0xc0) {                                  /* legacy */
+        if (type != 0) {
+            snprintf(err, errlen, "txbytes legacy but fields say type %u",
+                     type);
+            goto out;
+        }
+        if (evm_rlp_decode_item(raw, n, &list) != 0 || list.total != n ||
+            evm_rlp_list_get(&list, 6, &it) != 0 ||
+            evm_rlp_item_to_u64(&it, &v) != 0) {
+            snprintf(err, errlen, "txbytes legacy v not decodable");
+            goto out;
+        }
+        if (v == 27 || v == 28) {
+            tx->has_chain_id = 0;
+            evm_u256_zero(&tx->chain_id);
+        } else if (v < 35) {
+            snprintf(err, errlen, "legacy v=%llu is refused by the reference "
+                     "(InvalidSignatureError) and has no engine input form",
+                     (unsigned long long)v);
+            goto out;
+        } else {
+            tx->has_chain_id = 1;
+            evm_u256_from_u64(&tx->chain_id, (v - 35) >> 1);
+        }
+    } else {
+        if (raw[0] != type) {
+            snprintf(err, errlen, "txbytes type %u but fields say type %u",
+                     raw[0], type);
+            goto out;
+        }
+        if (evm_rlp_decode_item(raw + 1, n - 1, &list) != 0 ||
+            list.total != n - 1 ||
+            evm_rlp_list_get(&list, 0, &it) != 0 ||
+            evm_rlp_item_to_u64(&it, &v) != 0) {
+            snprintf(err, errlen, "txbytes typed chain_id not decodable");
+            goto out;
+        }
+        tx->has_chain_id = 1;
+        evm_u256_from_u64(&tx->chain_id, v);
+    }
+    rc = 0;
+out:
+    free(raw);
+    return rc;
+}
+
+static int build_tx(json_object *jtx, json_object *post, long d, long g,
+                    long vi, built_tx_t *bt, char *err, size_t errlen)
+{
+    evm_tx_t *tx = &bt->tx;
+    const char *s;
+    uint8_t b[32];
+    memset(bt, 0, sizeof(*bt));
+
+    json_object *al_all = jget(jtx, "accessLists");
+    if (jget(jtx, "maxFeePerGas")) tx->type = 2;
+    else if (al_all) tx->type = 1;
+    else tx->type = 0;
+
+    if (!(s = jstr(jtx, "sender")) || hex_addr(s, &tx->sender))
+        { snprintf(err, errlen, "transaction.sender"); return -1; }
+    if (!(s = jstr(jtx, "to")))
+        { snprintf(err, errlen, "transaction.to"); return -1; }
+    if (strip0x(s)[0] == '\0') {
+        tx->is_create = 1;
+    } else if (hex_addr(s, &tx->to)) {
+        snprintf(err, errlen, "transaction.to");
+        return -1;
+    }
+    if (!(s = jstr(jtx, "nonce")) || hex_u64(s, &tx->nonce))
+        { snprintf(err, errlen, "transaction.nonce"); return -1; }
+    if (!(s = jarr_str(jtx, "gasLimit", (size_t)g)) ||
+        hex_u64(s, &tx->gas_limit))
+        { snprintf(err, errlen, "transaction.gasLimit[%ld]", g); return -1; }
+    if (!(s = jarr_str(jtx, "value", (size_t)vi)) || hex_be32(s, b))
+        { snprintf(err, errlen, "transaction.value[%ld]", vi); return -1; }
+    evm_u256_from_be(&tx->value, b);
+    if (!(s = jarr_str(jtx, "data", (size_t)d)) ||
+        hex_bytes(s, &bt->data, &tx->data_len))
+        { snprintf(err, errlen, "transaction.data[%ld]", d); return -1; }
+    tx->data = bt->data;
+
+    if (tx->type == 2) {
+        if (!(s = jstr(jtx, "maxFeePerGas")) || hex_be32(s, b))
+            { snprintf(err, errlen, "transaction.maxFeePerGas"); return -1; }
+        evm_u256_from_be(&tx->max_fee_per_gas, b);
+        if (!(s = jstr(jtx, "maxPriorityFeePerGas")) || hex_be32(s, b))
+            { snprintf(err, errlen, "transaction.maxPriorityFeePerGas");
+              return -1; }
+        evm_u256_from_be(&tx->max_priority_fee_per_gas, b);
+    } else {
+        if (!(s = jstr(jtx, "gasPrice")) || hex_be32(s, b))
+            { snprintf(err, errlen, "transaction.gasPrice"); return -1; }
+        evm_u256_from_be(&tx->gas_price, b);
+    }
+
+    /* access list: accessLists[d], null = none (statetest/:132-134) */
+    if (al_all) {
+        if (!json_object_is_type(al_all, json_type_array) ||
+            (size_t)d >= json_object_array_length(al_all))
+            { snprintf(err, errlen, "transaction.accessLists[%ld]", d);
+              return -1; }
+        json_object *al = json_object_array_get_idx(al_all, (size_t)d);
+        if (al && !json_object_is_type(al, json_type_null)) {
+            if (!json_object_is_type(al, json_type_array))
+                { snprintf(err, errlen, "accessLists[%ld] not array", d);
+                  return -1; }
+            size_t na = json_object_array_length(al), nk = 0;
+            for (size_t i = 0; i < na; i++) {
+                json_object *ks = jget(json_object_array_get_idx(al, i),
+                                       "storageKeys");
+                if (!ks || !json_object_is_type(ks, json_type_array))
+                    { snprintf(err, errlen, "accessLists entry"); return -1; }
+                nk += json_object_array_length(ks);
+            }
+            if (na > UINT32_MAX || nk > UINT32_MAX)
+                { snprintf(err, errlen, "access list too large"); return -1; }
+            bt->access = na ? calloc(na, sizeof(*bt->access)) : NULL;
+            bt->keys = nk ? calloc(nk, sizeof(*bt->keys)) : NULL;
+            if ((na && !bt->access) || (nk && !bt->keys))
+                { snprintf(err, errlen, "out of memory"); return -2; }
+            size_t kpos = 0;
+            for (size_t i = 0; i < na; i++) {
+                json_object *e = json_object_array_get_idx(al, i);
+                json_object *ks = jget(e, "storageKeys");
+                if (!(s = jstr(e, "address")) ||
+                    hex_addr(s, &bt->access[i].addr))
+                    { snprintf(err, errlen, "accessLists address"); return -1; }
+                size_t nki = json_object_array_length(ks);
+                bt->access[i].n_keys = (uint32_t)nki;
+                bt->access[i].keys = nki ? &bt->keys[kpos] : NULL;
+                for (size_t k = 0; k < nki; k++) {
+                    json_object *kj = json_object_array_get_idx(ks, k);
+                    if (!kj || !json_object_is_type(kj, json_type_string) ||
+                        hex_be32(json_object_get_string(kj),
+                                 bt->keys[kpos].b))
+                        { snprintf(err, errlen, "accessLists key"); return -1; }
+                    kpos++;
+                }
+            }
+            tx->n_access = (uint32_t)na;
+            tx->access = bt->access;
+        }
+    }
+
+    if (!(s = jstr(post, "txbytes")))
+        { snprintf(err, errlen, "post.txbytes"); return -1; }
+    return txbytes_chain_id(s, tx->type, tx, err, errlen);
+}
+
+/* ── one case ───────────────────────────────────────────────────────── */
+
+static void run_case(const case_id_t *cid, json_object *test, json_object *post,
+                     const evm_membackend *pre, const test_env_t *te)
+{
+    char err[256] = "";
+    uint8_t want_root[32], want_logs[32], got_root[32], got_logs[32];
+    const char *s;
+    json_object *jtx = jget(test, "transaction");
+
+    if (!(s = jstr(post, "hash")) || hex_be32(s, want_root) ||
+        !(s = jstr(post, "logs")) || hex_be32(s, want_logs)) {
+        report("ERROR", cid, "post.hash / post.logs");
+        g_cnt.error++;
+        return;
+    }
+    const char *expect_exc = jstr(post, "expectException");
+
+    built_tx_t bt;
+    int brc = build_tx(jtx, post, cid->d, cid->g, cid->v, &bt, err,
+                       sizeof(err));
+    if (brc != 0) {
+        report("ERROR", cid, "%s", err);
+        g_cnt.error++;
+        built_tx_free(&bt);
+        return;
+    }
+
+    evm_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.fork = EVM_FORK_PRAGUE;
+    cfg.addr_bytes = (uint8_t)g_opt.addr_bytes;
+    cfg.chain_id = te->chain_id;
+    cfg.precompile_mask = EVM_PRECOMPILES_PRAGUE;   /* Prague: 0x01..0x11 */
+
+    evm_backend_t be;
+    evm_membackend_bind(pre, &be);
+
+    evm_state_t *st = evm_state_new(&cfg, &be);
+    if (!st) {
+        report("FAULT", cid, "evm_state_new returned NULL");
+        g_cnt.fault++;
+        built_tx_free(&bt);
+        return;
+    }
+
+    evm_tx_result_t res;
+    memset(&res, 0, sizeof(res));
+    int rc = evm_tx_apply(st, &te->env, &bt.tx, &res);
+
+    changes_t cs;
+    memset(&cs, 0, sizeof(cs));
+    evm_membackend got;
+    evm_membackend_init(&got);
+
+    if (rc == -2) {
+        report("FAULT", cid, "evm_tx_apply returned -2");
+        g_cnt.fault++;
+        goto done;
+    }
+    if (rc != 0 && rc != -1) {
+        /* -3 (EVM_BUDGET) cannot come from the in-memory backend; any
+         * value other than 0 / -1 is a fault for the conformance run */
+        report("FAULT", cid, "evm_tx_apply returned %d", rc);
+        g_cnt.fault++;
+        goto done;
+    }
+    if (expect_exc && rc == 0) {
+        report("FAIL", cid, "expected %s, tx applied (status %s)", expect_exc,
+               status_name(res.status));
+        g_cnt.fail++;
+        goto done;
+    }
+    if (!expect_exc && rc == -1) {
+        report("FAIL", cid, "tx refused: %s", tx_error_name(res.tx_error));
+        g_cnt.fail++;
+        goto done;
+    }
+
+    {
+        evm_change_visitor_t vis;
+        vis.account = visit_account;
+        vis.storage = visit_storage;
+        vis.ctx = &cs;
+        int vrc = evm_state_visit_changes(st, &vis);
+        if (vrc == -2) {
+            report("FAULT", cid, "evm_state_visit_changes returned -2");
+            g_cnt.fault++;
+            goto done;
+        }
+        if (vrc == VISIT_OOM) {
+            report("ERROR", cid, "harness out of memory");
+            g_cnt.error++;
+            goto done;
+        }
+        if (vrc != 0) {
+            report("FAIL", cid, "%s", cs.why[0] ? cs.why
+                   : "evm_state_visit_changes returned an unexpected value");
+            g_cnt.fail++;
+            goto done;
+        }
+    }
+    if (rc == -1 && cs.n != 0) {
+        report("FAIL", cid, "tx refused (%s) but overlay holds %zu changed "
+               "account(s)", tx_error_name(res.tx_error), cs.n);
+        g_cnt.fail++;
+        goto done;
+    }
+
+    {
+        int prc = build_post(pre, &cs, &got, err, sizeof(err));
+        if (prc == -1) {
+            report("FAIL", cid, "%s", err);
+            g_cnt.fail++;
+            goto done;
+        }
+        if (prc != 0 ||
+            evm_membackend_state_root(&got, g_opt.addr_bytes, got_root) != 0 ||
+            logs_hash(&res, rc == 0, g_opt.addr_bytes, got_logs) != 0) {
+            report("ERROR", cid, "harness could not compute root/logs");
+            g_cnt.error++;
+            goto done;
+        }
+    }
+
+    {
+        int root_ok = memcmp(got_root, want_root, 32) == 0;
+        int logs_ok = memcmp(got_logs, want_logs, 32) == 0;
+        if (root_ok && logs_ok) {
+            g_cnt.pass++;
+            if (g_opt.verbose) report("PASS", cid, "%s",
+                                      expect_exc ? "refused as expected" : "");
+            goto done;
+        }
+        for (size_t di = 0; di < sizeof(DEVIATIONS) / sizeof(DEVIATIONS[0]);
+             di++) {
+            if (strcmp(cid->name, DEVIATIONS[di].name) == 0 &&
+                cid->d == DEVIATIONS[di].d) {
+                report("DEVIATION", cid, "%s (documented Nodus rule; NOT a "
+                       "pass)", DEVIATIONS[di].why);
+                g_cnt.deviation++;
+                goto done;
+            }
+        }
+        report("FAIL", cid, "%s%s%s (rc %d, %s, gas_used %llu)",
+               root_ok ? "" : "state root mismatch",
+               (!root_ok && !logs_ok) ? ", " : "",
+               logs_ok ? "" : "logs hash mismatch", rc,
+               rc == 0 ? status_name(res.status) : tx_error_name(res.tx_error),
+               (unsigned long long)res.gas_used);
+        g_cnt.fail++;
+        if (g_opt.verbose) {
+            printf("    root got  "); hex_print(stdout, got_root, 32);
+            printf("\n    root want "); hex_print(stdout, want_root, 32);
+            printf("\n    logs got  "); hex_print(stdout, got_logs, 32);
+            printf("\n    logs want "); hex_print(stdout, want_logs, 32);
+            printf("\n    n_logs %zu\n", rc == 0 ? res.n_logs : (size_t)0);
+            evm_membackend want;
+            evm_membackend_init(&want);
+            if (load_alloc(jget(post, "state"), &want, err, sizeof(err)) == 0)
+                print_state_diff(&got, &want);
+            else
+                printf("    (post.state not loadable: %s)\n", err);
+            evm_membackend_free(&want);
+        }
+    }
+
+done:
+    evm_membackend_free(&got);
+    changes_free(&cs);
+    evm_tx_result_free(&res);
+    evm_state_free(st);
+    built_tx_free(&bt);
+}
+
+/* --verify-fixture-roots: root(post.state) must equal post.hash. Checks
+ * the harness's RLP/MPT/account encoding against official values; the
+ * engine is not called. */
+static void verify_fixture_root(const case_id_t *cid, json_object *post)
+{
+    char err[256];
+    uint8_t want[32], got[32];
+    const char *s = jstr(post, "hash");
+    evm_membackend mb;
+    evm_membackend_init(&mb);
+    if (!s || hex_be32(s, want) != 0) {
+        report("ERROR", cid, "post.hash");
+        g_cnt.error++;
+    } else if (load_alloc(jget(post, "state"), &mb, err, sizeof(err)) != 0) {
+        report("ERROR", cid, "post.state: %s", err);
+        g_cnt.error++;
+    } else if (evm_membackend_state_root(&mb, 20, got) != 0) {
+        report("ERROR", cid, "root computation failed");
+        g_cnt.error++;
+    } else if (memcmp(got, want, 32) != 0) {
+        report("FAIL", cid, "root(post.state) != post.hash");
+        g_cnt.fail++;
+    } else {
+        g_cnt.pass++;
+    }
+    evm_membackend_free(&mb);
+}
+
+/* ── per-file driver ────────────────────────────────────────────────── */
+
+typedef struct {
+    char         *name;
+    unsigned long n;
+} fork_count_t;
+
+static fork_count_t *g_forks;
+static size_t        g_nforks, g_capforks;
+static unsigned long g_cases_seen;
+
+static void fork_count_add(const char *name, unsigned long n)
+{
+    for (size_t i = 0; i < g_nforks; i++)
+        if (strcmp(g_forks[i].name, name) == 0) { g_forks[i].n += n; return; }
+    if (g_nforks == g_capforks) {
+        size_t ncap = g_capforks ? g_capforks * 2 : 16;
+        fork_count_t *nf = realloc(g_forks, ncap * sizeof(*nf));
+        if (!nf) { fprintf(stderr, "out of memory\n"); exit(1); }
+        g_forks = nf;
+        g_capforks = ncap;
+    }
+    size_t l = strlen(name);
+    char *copy = malloc(l + 1);
+    if (!copy) { fprintf(stderr, "out of memory\n"); exit(1); }
+    memcpy(copy, name, l + 1);
+    g_forks[g_nforks].name = copy;
+    g_forks[g_nforks].n = n;
+    g_nforks++;
+}
+
+static int index_of(json_object *post, const char *which, long *out)
+{
+    json_object *ix = jget(post, "indexes");
+    json_object *v = jget(ix, which);
+    if (!v || !json_object_is_type(v, json_type_int)) return -1;
+    int64_t x = json_object_get_int64(v);
+    if (x < 0 || x > 0x7fffffff) return -1;
+    *out = (long)x;
+    return 0;
+}
+
+static void run_file(const char *path)
+{
+    json_object *root = json_object_from_file(path);
+    if (!root || !json_object_is_type(root, json_type_object)) {
+        printf("ERROR    %s: not a JSON object file\n", path);
+        g_cnt.error++;
+        if (root) json_object_put(root);
+        return;
+    }
+    json_object_object_foreach(root, tname, test) {
+        json_object *postmap = jget(test, "post");
+        if (!postmap || !json_object_is_type(postmap, json_type_object))
+            continue;
+        if (g_opt.list_forks) {
+            json_object_object_foreach(postmap, fname, farr) {
+                if (json_object_is_type(farr, json_type_array))
+                    fork_count_add(fname,
+                                   (unsigned long)json_object_array_length(farr));
+            }
+            continue;
+        }
+        if (g_opt.filter && !strstr(tname, g_opt.filter)) continue;
+        json_object *farr = jget(postmap, g_opt.fork);
+        if (!farr || !json_object_is_type(farr, json_type_array)) continue;
+        size_t nposts = json_object_array_length(farr);
+        if (nposts == 0) continue;
+        g_cases_seen += nposts;
+
+        case_id_t cid = { path, tname, 0, -1, -1, -1 };
+
+        if (g_opt.verify_roots) {
+            for (size_t k = 0; k < nposts; k++) {
+                json_object *post = json_object_array_get_idx(farr, k);
+                cid.post_idx = k;
+                if (index_of(post, "data", &cid.d) ||
+                    index_of(post, "gas", &cid.g) ||
+                    index_of(post, "value", &cid.v)) {
+                    cid.d = cid.g = cid.v = -1;
+                }
+                verify_fixture_root(&cid, post);
+            }
+            continue;
+        }
+
+        /* EXCLUDED (design §1): decided by the transaction's fields. */
+        json_object *jtx = jget(test, "transaction");
+        int is_blob = jget(jtx, "blobVersionedHashes") != NULL ||
+                      jget(jtx, "maxFeePerBlobGas") != NULL;
+        int is_setcode = jget(jtx, "authorizationList") != NULL;
+        if (is_blob || is_setcode) {
+            if (is_blob) g_cnt.excl_blob += nposts;
+            else g_cnt.excl_setcode += nposts;
+            if (g_opt.verbose) {
+                cid.post_idx = 0;
+                report("EXCLUDED", &cid, "%zu case(s): %s", nposts,
+                       is_blob ? "type-3 blob tx" : "type-4 set-code tx");
+            }
+            continue;
+        }
+
+        char err[256];
+        test_env_t te;
+        evm_membackend pre;
+        evm_membackend_init(&pre);
+        int prc = parse_env(test, &te, err, sizeof(err));
+        if (prc == 0) prc = load_alloc(jget(test, "pre"), &pre, err,
+                                       sizeof(err));
+        if (prc != 0) {
+            cid.post_idx = 0;
+            report("ERROR", &cid, "%zu case(s): %s", nposts, err);
+            g_cnt.error += nposts;
+            evm_membackend_free(&pre);
+            continue;
+        }
+        pre.has_block0_hash = te.has_prev_hash;
+        pre.block0_hash = te.prev_hash;
+
+        for (size_t k = 0; k < nposts; k++) {
+            json_object *post = json_object_array_get_idx(farr, k);
+            cid.post_idx = k;
+            cid.d = cid.g = cid.v = -1;
+            if (index_of(post, "data", &cid.d) ||
+                index_of(post, "gas", &cid.g) ||
+                index_of(post, "value", &cid.v)) {
+                report("ERROR", &cid, "post.indexes");
+                g_cnt.error++;
+                continue;
+            }
+            run_case(&cid, test, post, &pre, &te);
+        }
+        evm_membackend_free(&pre);
+    }
+    json_object_put(root);
+}
+
+/* ── path collection (sorted, deterministic) ────────────────────────── */
+
+typedef struct {
+    char  **v;
+    size_t  n, cap;
+} paths_t;
+
+static int paths_add(paths_t *p, const char *s)
+{
+    if (p->n == p->cap) {
+        size_t ncap = p->cap ? p->cap * 2 : 64;
+        char **nv = realloc(p->v, ncap * sizeof(*nv));
+        if (!nv) return -2;
+        p->v = nv;
+        p->cap = ncap;
+    }
+    size_t l = strlen(s);
+    char *c = malloc(l + 1);
+    if (!c) return -2;
+    memcpy(c, s, l + 1);
+    p->v[p->n++] = c;
+    return 0;
+}
+
+static int ends_with_json(const char *s)
+{
+    size_t l = strlen(s);
+    return l >= 5 && strcmp(s + l - 5, ".json") == 0;
+}
+
+static int collect_dir(const char *dir, paths_t *p)
+{
+    DIR *d = opendir(dir);
+    if (!d) {
+        fprintf(stderr, "cannot open directory %s\n", dir);
+        return -1;
+    }
+    struct dirent *e;
+    int rc = 0;
+    while (rc == 0 && (e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+            continue;
+        size_t l = strlen(dir) + 1 + strlen(e->d_name) + 1;
+        char *full = malloc(l);
+        if (!full) { rc = -2; break; }
+        snprintf(full, l, "%s/%s", dir, e->d_name);
+        struct stat sb;
+        if (stat(full, &sb) == 0) {
+            if (S_ISDIR(sb.st_mode)) rc = collect_dir(full, p);
+            else if (S_ISREG(sb.st_mode) && ends_with_json(full))
+                rc = paths_add(p, full);
+        }
+        free(full);
+    }
+    closedir(d);
+    return rc;
+}
+
+static int cmp_str(const void *a, const void *b)
+{
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+static int cmp_fork(const void *a, const void *b)
+{
+    return strcmp(((const fork_count_t *)a)->name,
+                  ((const fork_count_t *)b)->name);
+}
+
+static int usage(const char *argv0)
+{
+    fprintf(stderr,
+            "usage: %s [--fork Prague] [--addr-bytes 20|32] [--filter S]\n"
+            "          [--verbose] <file-or-dir>...\n"
+            "       %s --list-forks <file-or-dir>...\n"
+            "       %s --verify-fixture-roots [--fork F] [--filter S] "
+            "<file-or-dir>...\n", argv0, argv0, argv0);
+    return 2;
+}
+
+int main(int argc, char **argv)
+{
+    g_opt.fork = "Prague";
+    g_opt.addr_bytes = 20;
+    int first_path = -1;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--fork") == 0 && i + 1 < argc) {
+            g_opt.fork = argv[++i];
+        } else if (strcmp(argv[i], "--addr-bytes") == 0 && i + 1 < argc) {
+            const char *a = argv[++i];
+            if (strcmp(a, "20") == 0) g_opt.addr_bytes = 20;
+            else if (strcmp(a, "32") == 0) g_opt.addr_bytes = 32;
+            else return usage(argv[0]);
+        } else if (strcmp(argv[i], "--filter") == 0 && i + 1 < argc) {
+            g_opt.filter = argv[++i];
+        } else if (strcmp(argv[i], "--verbose") == 0) {
+            g_opt.verbose = 1;
+        } else if (strcmp(argv[i], "--list-forks") == 0) {
+            g_opt.list_forks = 1;
+        } else if (strcmp(argv[i], "--verify-fixture-roots") == 0) {
+            g_opt.verify_roots = 1;
+        } else if (argv[i][0] == '-' && argv[i][1] == '-') {
+            return usage(argv[0]);
+        } else {
+            first_path = i;
+            break;
+        }
+    }
+    if (first_path < 0) return usage(argv[0]);
+    if (!g_opt.list_forks && !g_opt.verify_roots &&
+        strcmp(g_opt.fork, "Prague") != 0) {
+        fprintf(stderr, "the engine implements only Prague (EVM_FORK_PRAGUE); "
+                "use --list-forks to see what the fixtures contain\n");
+        return 2;
+    }
+
+    paths_t paths = { NULL, 0, 0 };
+    for (int i = first_path; i < argc; i++) {
+        struct stat sb;
+        if (stat(argv[i], &sb) != 0) {
+            fprintf(stderr, "cannot stat %s\n", argv[i]);
+            return 2;
+        }
+        if (S_ISDIR(sb.st_mode)) {
+            size_t start = paths.n;
+            if (collect_dir(argv[i], &paths) != 0) return 2;
+            qsort(paths.v + start, paths.n - start, sizeof(char *), cmp_str);
+        } else if (paths_add(&paths, argv[i]) != 0) {
+            return 2;
+        }
+    }
+
+    for (size_t i = 0; i < paths.n; i++) run_file(paths.v[i]);
+
+    int exit_code;
+    if (g_opt.list_forks) {
+        qsort(g_forks, g_nforks, sizeof(fork_count_t), cmp_fork);
+        printf("fork cases (post entries) in %zu file(s):\n", paths.n);
+        for (size_t i = 0; i < g_nforks; i++)
+            printf("  %-28s %lu\n", g_forks[i].name, g_forks[i].n);
+        exit_code = 0;
+    } else {
+        unsigned long excl = g_cnt.excl_blob + g_cnt.excl_setcode;
+        unsigned long total = g_cnt.pass + g_cnt.fail + g_cnt.fault +
+                              g_cnt.error + excl +
+                              g_cnt.deviation;
+        printf("=== %s summary: fork %s, addr_bytes %u, %zu file(s)%s%s ===\n",
+               g_opt.verify_roots ? "fixture-root self-check" : "statetest",
+               g_opt.fork, g_opt.addr_bytes, paths.n,
+               g_opt.filter ? ", filter " : "",
+               g_opt.filter ? g_opt.filter : "");
+        printf("PASS      %lu\n", g_cnt.pass);
+        printf("FAIL      %lu\n", g_cnt.fail);
+        printf("FAULT     %lu\n", g_cnt.fault);
+        printf("ERROR     %lu   (harness could not represent the case)\n",
+               g_cnt.error);
+        if (!g_opt.verify_roots) {
+            printf("DEVIATION %lu   (documented Nodus rule, listed in "
+                   "statetest.c — NOT a pass)\n", g_cnt.deviation);
+            printf("EXCLUDED  %lu   (design §1 — NOT a pass)\n", excl);
+            printf("  type-3 blob (blobVersionedHashes/maxFeePerBlobGas) %lu\n",
+                   g_cnt.excl_blob);
+            printf("  type-4 set-code (authorizationList)                %lu\n",
+                   g_cnt.excl_setcode);
+        }
+        printf("TOTAL     %lu   (post entries of fork %s seen: %lu)\n", total,
+               g_opt.fork, g_cases_seen);
+        if (g_cases_seen == 0) exit_code = 3;
+        else if (g_cnt.fail || g_cnt.fault || g_cnt.error) exit_code = 1;
+        else exit_code = 0;
+    }
+
+    for (size_t i = 0; i < paths.n; i++) free(paths.v[i]);
+    free(paths.v);
+    for (size_t i = 0; i < g_nforks; i++) free(g_forks[i].name);
+    free(g_forks);
+    return exit_code;
+}

@@ -2947,8 +2947,11 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
          * tokenomics-v3 P2 moves the live rung S15 -> S16 (the reward
          * pool column and the two reward tables);
          * `nodus_witness_db_migrate_v2s16` cascades through S15 the same
-         * way. */
-        if (nodus_witness_db_migrate_v2s16(w2) != 0) break;
+         * way. Nodus EVM moves it S16 -> S17 (the EVM tables, empty, and the
+         * CORE EVM reserve row at 0 — nothing a generation-1 genesis
+         * root reads, so the genesis is byte-identical); the S17 rung
+         * cascades through S16. */
+        if (nodus_witness_db_migrate_v2s17(w2) != 0) break;
         if (nodus_chain_config_db_migrate(w2) != 0) break;
 
         /* ── 5. SYSTEM state, from the config — the SAME seeder. ────── */

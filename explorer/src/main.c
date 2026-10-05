@@ -169,9 +169,12 @@ int main(int argc, char **argv) {
      * every address would hide a broken configuration. */
     exp_chain_t *http_chain = NULL;
     exp_balance_chain_t *balance_chain = NULL;
+    exp_evm_chain_t *evm_chain = NULL;     /* Nodus EVM: /api/evm accounts, same handle */
     if (exp_chain_open(&http_chain, servers, server_count) != 0 ||
-        exp_balance_chain_open(&balance_chain, http_chain) != 0) {
+        exp_balance_chain_open(&balance_chain, http_chain) != 0 ||
+        exp_evm_chain_open(&evm_chain, http_chain) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "failed to open the HTTP thread's chain handle");
+        exp_balance_chain_close(balance_chain);
         exp_chain_close(http_chain);
         pthread_rwlock_destroy(&db_lock);
         exp_db_close(db);
@@ -180,6 +183,8 @@ int main(int argc, char **argv) {
     }
     exp_balance_source_t balance_src;
     exp_balance_source_chain(&balance_src, balance_chain);
+    exp_evm_source_t evm_src;
+    exp_evm_source_chain(&evm_src, evm_chain);
 
     exp_sync_args_t sync_args;
     sync_args.chain = chain;
@@ -191,6 +196,7 @@ int main(int argc, char **argv) {
     pthread_t sync_tid;
     if (pthread_create(&sync_tid, NULL, exp_sync_thread, &sync_args) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "failed to spawn sync thread");
+        exp_evm_chain_close(evm_chain);
         exp_balance_chain_close(balance_chain);
         exp_chain_close(http_chain);
         pthread_rwlock_destroy(&db_lock);
@@ -200,6 +206,7 @@ int main(int argc, char **argv) {
     }
 
     exp_http_ctx_t http_ctx;
+    memset(&http_ctx, 0, sizeof(http_ctx));   /* every source not set below is NULL */
     /* Fix round 1, C1: &db, not db — the same location sync_args.db points
      * at, so the HTTP thread observes handle_confirmed_reset's swap
      * instead of dereferencing a copy that goes stale the moment the swap
@@ -209,6 +216,7 @@ int main(int argc, char **argv) {
     http_ctx.stop = &g_stop;
     http_ctx.db_lock = &db_lock;
     http_ctx.balance = &balance_src;
+    http_ctx.evm = &evm_src;
     http_ctx.rewards_db_path = rewards_db_path;
 
     if (exp_http_serve(&http_ctx) != 0) {
@@ -218,6 +226,7 @@ int main(int argc, char **argv) {
 
     pthread_join(sync_tid, NULL);
 
+    exp_evm_chain_close(evm_chain);
     exp_balance_chain_close(balance_chain);
     exp_chain_close(http_chain);
 

@@ -121,6 +121,13 @@ mode="${1:-release}"
 # taken (C stack), the vault state is static, and the builder / review /
 # combine structs are heap-allocated after the last wait. Expected to hold,
 # not measured.
+# The smart-contract exports (nsw_evm_call / _create / _deposit /
+# _withdraw / _redeem) have the same shape as nsw_build_and_sign: every
+# wait (chain id, dnac_ruleset_info, dnac_fee_info) runs in nsw_evm_net's
+# own frame with scalar locals and address-taken answer structs (C stack);
+# the meter policy, the builder's buffers and structs are heap-allocated
+# in nsw_evm_core, which runs only after the last wait. Expected to hold,
+# not measured.
 # There is no ASYNCIFY_ONLY / ASYNCIFY_ADD list: with ASYNCIFY=1 Binaryen
 # instruments every function that can reach emscripten_sleep (directly or,
 # with the default ASYNCIFY_IGNORE_INDIRECT=0, through an indirect call),
@@ -226,6 +233,13 @@ sources=(
   # native vector: that section is networked-build only.
   $root/nodus/src/client/nodus_v2_msig.c
   $root/shared/dnac/msig_wire.c
+  # the EVM leg + CORE EVMFUND call bytes (smart contracts, Nodus EVM;
+  # nodus-send-wasm.c "SMART CONTRACTS"). NOT in the native vector: that
+  # section is networked-build only.
+  $root/shared/dnac/evm_call_wire.c
+  # the shared EVM envelope builder (nodus-cli evm's; Nodus EVM Faz 4) — NOT in
+  # the native vector either
+  $root/nodus/src/client/nodus_v2_evm.c
   $root/shared/dnac/env_wire.c
   $root/shared/dnac/env_preflight.c
   $root/shared/dnac/res_meter.c
@@ -237,6 +251,9 @@ sources=(
   # shared crypto (qgp_platform_<os>.c is NOT linked: nodus-send-wasm.c
   # defines qgp_platform_random and qgp_secure_memzero)
   $root/shared/crypto/hash/qgp_sha3.c
+  # Keccak-256: nodus_v2_evm.c nodus_v2_evm_create_address (the CREATE
+  # address a receipt's "cr" is checked against, nsw_evm_built_created)
+  $root/shared/crypto/hash/keccak256.c
   $root/shared/crypto/hash/hkdf_sha3.c
   $root/shared/crypto/utils/qgp_random.c
   $root/shared/crypto/utils/qgp_fingerprint.c
@@ -334,6 +351,21 @@ exports_common=(
   nsw_msig_rv_out_amount nsw_msig_rv_out_change
   nsw_msig_sign nsw_msig_sig_reset nsw_msig_sig_add nsw_msig_sig_count
   nsw_msig_sig_signer nsw_msig_submit nsw_msig_intent nsw_msig_wire
+  # SMART CONTRACTS — the EVM domain (nodus-send-wasm.c "SMART CONTRACTS").
+  # Waiting on the network (ccall { async: true }): nsw_evm_call,
+  # nsw_evm_create, nsw_evm_deposit, nsw_evm_withdraw, nsw_evm_redeem and
+  # the §18 read nsw_evm_query. The settings, request, query buffer / JSON
+  # and getters never reach emscripten_sleep.
+  nsw_evm_net_set nsw_evm_available nsw_evm_data_alloc nsw_evm_access_reset
+  nsw_evm_access_add nsw_evm_set_decl nsw_evm_set_estimate nsw_evm_generation
+  nsw_evm_query_buf nsw_evm_query nsw_evm_query_json
+  nsw_evm_call nsw_evm_create nsw_evm_deposit nsw_evm_withdraw nsw_evm_redeem
+  nsw_evm_built_op nsw_evm_built_to nsw_evm_built_value nsw_evm_built_gas
+  nsw_evm_built_nonce nsw_evm_built_units nsw_evm_built_amount
+  nsw_evm_built_dest nsw_evm_built_ticket nsw_evm_built_data_len
+  # the CREATE address of the signed deployment (red-team 1 F11): the
+  # receipt's "cr" is compared with it
+  nsw_evm_built_created
   # Messages (NC-4b, connect/nc_wasm.c), all run through the wallet's one
   # queue by src/connect/core.js. The ones that wait on the network (every
   # one below except nc_error, nc_result, nc_words_alloc, nc_salt_pick,
@@ -352,7 +384,10 @@ exports_common=(
 )
 exports_test=(nsw_test_random_buf nsw_test_random_load nsw_test_pins_tuple nsw_test_gen_match
   nsw_test_msig_member_add_pk nsw_test_msig_build nsw_test_msig_review
-  nsw_test_msig_consume nsw_test_msig_seed_pk nsw_test_msig_seed_sign)
+  nsw_test_msig_consume nsw_test_msig_seed_pk nsw_test_msig_seed_sign
+  nsw_test_evm_call_hex nsw_test_evm_call_roundtrip nsw_test_evmfund_roundtrip
+  nsw_test_evm_op_weight nsw_test_evm_build nsw_test_evm_create_address
+  nsw_test_evm_args_hex)
 
 join_exports() {
   local out="" name

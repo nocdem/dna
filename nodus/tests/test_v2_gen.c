@@ -2672,10 +2672,11 @@ static int test_v3_derive(void) {
 
     CHECK(memcmp(id16, chain32, 16) == 0,
           "the file name is the first 16 bytes of the chain id");
-    CHECK(q1(db, "PRAGMA user_version") == (int64_t)NODUS_V2_SCHEMA_VERSION_S16,
-          "the chain is at schema S16 — the Comet stores, the "
-          "out-of-root attendance tables (tokenomics-v3 P1) and the "
-          "reward tables (P2) exist");
+    CHECK(q1(db, "PRAGMA user_version") == (int64_t)NODUS_V2_SCHEMA_VERSION_S17,
+          "the chain is at schema S17 — the Comet stores, the "
+          "out-of-root attendance tables (tokenomics-v3 P1), the "
+          "reward tables (P2) and the empty EVM tables + the CORE EVM "
+          "reserve row (Nodus EVM, the live rung) exist");
     CHECK(q1(db, "SELECT COUNT(*) FROM v2_blocks") == 0,
           "there is NO genesis block row — of any height (D-19 rev 6)");
     /* ⚠ THE KEY COLUMN IS A BLOB (schema S14: `key BLOB PRIMARY KEY`)

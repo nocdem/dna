@@ -39,6 +39,16 @@
  *    the same reply with a duplicate key, truncated at several lengths,
  *    with an oversize item array, an oversize consumed array, a
  *    non-contiguous item index, or an inconsistent "nx" is REFUSED.
+ *    Nodus EVM P4-C: a full "ev" (32 tickets + "tkm") with "ri" decodes field
+ *    by field and is refused when truncated anywhere; "ca" on a failed
+ *    item, 33 tickets, "tkm" beside a short list, "ev" on a refused item,
+ *    "ri" with "ro", "ri" = 0 and an "ev" without "dg" are REFUSED; an
+ *    UNKNOWN key carrying a whole map is skipped (the shape an older
+ *    decoder meets "ev" in). The node side of "ev" (a real applied EVM
+ *    item through nodus_witness_v3_block_build) is NOT driven here — this
+ *    fixture's genesis has no EVM generation; the describer and receipt
+ *    reads it relies on are driven in test_v2_evm.c section 11, the
+ *    builder's ev encoding is not.
  *  t_balance — `dnac_balance` (decision 3a; nodus_witness_dnac_balance_
  *    build + nodus_dnac_balance_decode) over the same REAL chain: after
  *    the claim commits, g_ks[0]'s answer equals an independent row-by-row
@@ -1412,7 +1422,53 @@ typedef struct {
     int      gap;            /* item 1 skips an index                   */
     uint32_t sp_n;
     int64_t  nx;
+    int      evm;            /* Nodus EVM keys — HS_EVM_* below         */
 } hostile_t;
+
+/* Nodus EVM P4-C cases of `evm` (the keys on item 0 unless said otherwise) */
+#define HS_EVM_NONE        0
+#define HS_EVM_VALID       1  /* ri + a full ev (32 tickets + tkm)      */
+#define HS_EVM_CA_FAILED   2  /* "ca" with s = 0                        */
+#define HS_EVM_TK_OVER     3  /* 33 tickets                             */
+#define HS_EVM_TKM_SHORT   4  /* "tkm" beside a 1-ticket "tk"           */
+#define HS_EVM_ON_REFUSED  5  /* a valid ev on item 1 (code 7)          */
+#define HS_EVM_RI_RO       6  /* both reserve directions                */
+#define HS_EVM_RI_ZERO     7  /* "ri" = 0                               */
+#define HS_EVM_UNKNOWN     8  /* an unknown key carrying a map — the
+                               * shape an OLDER decoder sees "ev" in    */
+#define HS_EVM_NO_DG       9  /* ev without "dg"                        */
+
+/* one "ev" map per the case */
+static void enc_ev(cbor_encoder_t *e, int mode)
+{
+    uint8_t  b32[32], b64[64];
+    uint32_t ntk = mode == HS_EVM_TK_OVER   ? 33u :
+                   mode == HS_EVM_TKM_SHORT ? 1u  : 32u;
+    bool     tkm = mode != HS_EVM_TK_OVER;
+    size_t   n = 9 + (tkm ? 1 : 0) + (mode == HS_EVM_CA_FAILED ? 1 : 0) -
+                 (mode == HS_EVM_NO_DG ? 1 : 0);
+
+    memset(b32, 0x22, sizeof(b32));
+    memset(b64, 0x33, sizeof(b64));
+    cbor_encode_map(e, n);
+    cbor_encode_cstr(e, "s");  cbor_encode_uint(e,
+                                    mode == HS_EVM_CA_FAILED ? 0 : 1);
+    cbor_encode_cstr(e, "gu"); cbor_encode_uint(e, 21000);
+    cbor_encode_cstr(e, "fr"); cbor_encode_bstr(e, b32, 32);
+    cbor_encode_cstr(e, "to"); cbor_encode_bstr(e, b32, 32);
+    if (mode == HS_EVM_CA_FAILED) {
+        cbor_encode_cstr(e, "ca"); cbor_encode_bstr(e, b32, 32);
+    }
+    cbor_encode_cstr(e, "v");  cbor_encode_bstr(e, b32, 32);
+    cbor_encode_cstr(e, "nl"); cbor_encode_uint(e, 2);
+    cbor_encode_cstr(e, "tk"); cbor_encode_array(e, ntk);
+    for (uint32_t t = 0; t < ntk; t++) cbor_encode_bstr(e, b64, 64);
+    if (tkm) { cbor_encode_cstr(e, "tkm"); cbor_encode_bool(e, true); }
+    cbor_encode_cstr(e, "wd"); cbor_encode_bstr(e, b32, 32);
+    if (mode != HS_EVM_NO_DG) {
+        cbor_encode_cstr(e, "dg"); cbor_encode_bstr(e, b64, 64);
+    }
+}
 
 static size_t build_reply(const hostile_t *hs, uint8_t *buf, size_t cap)
 {
@@ -1445,8 +1501,23 @@ static size_t build_reply(const hostile_t *hs, uint8_t *buf, size_t cap)
     for (uint32_t j = 0; j < hs->n_items; j++) {
         uint32_t idx = hs->first_index + j + ((hs->gap && j > 0) ? 1 : 0);
         bool     eff = (j == 0 && hs->sp_n > 0);
+        /* the Nodus EVM keys this item carries */
+        int      ev  = 0, ri = 0, ro = 0, unk = 0;
+        uint64_t riv = 10;
 
-        cbor_encode_map(&e, eff ? 5 : 3);
+        if (hs->evm == HS_EVM_ON_REFUSED) {
+            ev = (j == 1);
+        } else if (j == 0 && hs->evm != HS_EVM_NONE) {
+            ev  = hs->evm != HS_EVM_RI_ZERO && hs->evm != HS_EVM_RI_RO &&
+                  hs->evm != HS_EVM_UNKNOWN;
+            ri  = hs->evm == HS_EVM_VALID || hs->evm == HS_EVM_RI_RO ||
+                  hs->evm == HS_EVM_RI_ZERO;
+            ro  = hs->evm == HS_EVM_RI_RO;
+            unk = hs->evm == HS_EVM_UNKNOWN;
+            if (hs->evm == HS_EVM_RI_ZERO) riv = 0;
+        }
+
+        cbor_encode_map(&e, (eff ? 5 : 3) + (size_t)(ev + ri + ro + unk));
         cbor_encode_cstr(&e, "i"); cbor_encode_uint(&e, idx);
         cbor_encode_cstr(&e, "k"); cbor_encode_uint(&e, 1);
         cbor_encode_cstr(&e, "c"); cbor_encode_uint(&e, eff ? 0 : 7);
@@ -1457,6 +1528,15 @@ static size_t build_reply(const hostile_t *hs, uint8_t *buf, size_t cap)
                 cbor_encode_bstr(&e, z64, 64);
             cbor_encode_cstr(&e, "cr");
             cbor_encode_array(&e, 0);
+        }
+        if (ri) { cbor_encode_cstr(&e, "ri"); cbor_encode_uint(&e, riv); }
+        if (ro) { cbor_encode_cstr(&e, "ro"); cbor_encode_uint(&e, 3); }
+        if (ev) { cbor_encode_cstr(&e, "ev"); enc_ev(&e, hs->evm); }
+        if (unk) {
+            /* a key this decoder does not know, carrying a map — what an
+             * older client meets in "ev" */
+            cbor_encode_cstr(&e, "zq");
+            enc_ev(&e, HS_EVM_VALID);
         }
     }
     return cbor_encoder_len(&e);
@@ -1545,6 +1625,54 @@ static int t_decoder_hostile(void)
           r.has_next && r.next_index == 2,
           "control: the same short page WITH a consistent nx decodes");
     nodus_client_free_v3_block_result(&r);
+    hs.n = 2; hs.nx = -1;
+
+    /* Nodus EVM P4-C: the optional "ri" / "ro" / "ev" keys */
+    hs.evm = HS_EVM_VALID;
+    len = build_reply(&hs, buf, sizeof(buf));
+    CHECK(len > 0 && nodus_dnac_v3_block_decode(buf, len, &r) == 0 &&
+          r.items[0].has_evm && r.items[0].reserve_in == 10 &&
+          r.items[0].reserve_out == 0 && r.items[0].evm_status == 1 &&
+          r.items[0].evm_gas_used == 21000 && r.items[0].evm_n_logs == 2 &&
+          r.items[0].evm_has_to && r.items[0].evm_has_value &&
+          !r.items[0].evm_has_created && !r.items[0].evm_has_dest &&
+          r.items[0].evm_n_tickets == NODUS_DNAC_V3_EVM_MAX_TICKETS &&
+          r.items[0].evm_tickets_more &&
+          r.items[0].evm_from[0] == 0x22 &&
+          r.items[0].evm_tickets[31][63] == 0x33 &&
+          r.items[0].evm_digest[0] == 0x33 && !r.items[1].has_evm,
+          "control: a full ev (32 tickets + tkm) and ri decode");
+    nodus_client_free_v3_block_result(&r);
+    for (size_t cut = 1; cut < len; cut++)
+        CHECK(nodus_dnac_v3_block_decode(buf, len - cut, &r) == -1 &&
+              r.items == NULL,
+              "an ev reply truncated anywhere is refused");
+    {
+        static const struct { int mode; const char *what; } bad[] = {
+            { HS_EVM_CA_FAILED,  "a created address on a failed item" },
+            { HS_EVM_TK_OVER,    "33 tickets (above the bound)" },
+            { HS_EVM_TKM_SHORT,  "tkm beside a ticket list that is not full" },
+            { HS_EVM_ON_REFUSED, "ev on a refused item" },
+            { HS_EVM_RI_RO,      "both reserve directions" },
+            { HS_EVM_RI_ZERO,    "a zero ri" },
+            { HS_EVM_NO_DG,      "ev without its digest" },
+        };
+        for (size_t b = 0; b < sizeof(bad) / sizeof(bad[0]); b++) {
+            hs.evm = bad[b].mode;
+            len = build_reply(&hs, buf, sizeof(buf));
+            CHECK(len > 0 && nodus_dnac_v3_block_decode(buf, len, &r) == -1,
+                  bad[b].what);
+        }
+    }
+    /* the older-decoder shape: an UNKNOWN key carrying a whole ev map is
+     * skipped and the item decodes without it */
+    hs.evm = HS_EVM_UNKNOWN;
+    len = build_reply(&hs, buf, sizeof(buf));
+    CHECK(len > 0 && nodus_dnac_v3_block_decode(buf, len, &r) == 0 &&
+          r.items[0].has_effects && !r.items[0].has_evm,
+          "an unknown optional key (a map) is skipped");
+    nodus_client_free_v3_block_result(&r);
+    hs.evm = HS_EVM_NONE;
     return 0;
 }
 

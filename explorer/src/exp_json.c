@@ -128,3 +128,35 @@ void exp_json_hex(exp_json_t *j, const uint8_t *b, size_t n) {
     }
     exp_json_raw(j, "\"");
 }
+
+void exp_json_u256_str(exp_json_t *j, const uint8_t be[32]) {
+    if (!j) return;
+    if (!be) {
+        exp_json_str(j, "0");
+        return;
+    }
+    /* schoolbook long division by 10 over the 32 big-endian bytes: at most
+     * 78 decimal digits (2^256 - 1 has 78) */
+    uint8_t num[32];
+    char    digits[80];
+    size_t  nd = 0;
+    int     zero;
+
+    memcpy(num, be, 32);
+    do {
+        unsigned rem = 0;
+        zero = 1;
+        for (int i = 0; i < 32; i++) {
+            unsigned cur = (rem << 8) | num[i];
+            num[i] = (uint8_t)(cur / 10u);
+            rem = cur % 10u;
+            if (num[i]) zero = 0;
+        }
+        digits[nd++] = (char)('0' + rem);
+    } while (!zero && nd < sizeof(digits) - 1);
+
+    char out[80];
+    for (size_t k = 0; k < nd; k++) out[k] = digits[nd - 1 - k];
+    out[nd] = '\0';
+    exp_json_str(j, out);
+}

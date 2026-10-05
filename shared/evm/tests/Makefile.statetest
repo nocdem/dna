@@ -1,0 +1,140 @@
+# shared/evm/tests/Makefile.statetest
+#
+# Standalone build of the Nodus EVM state-test harness (TEST-ONLY code):
+#   evm_rlp.c, evm_mpt.c       RLP + Merkle Patricia Trie root (verification)
+#   evm_membackend.c           in-memory evm_backend_t over a fixture `pre`
+#   statetest.c                official state-test runner (json-c)
+#   test_rlp_mpt.c             known-answer checks for RLP/MPT (no engine)
+#   evm_test_qgp_shim.c        link support for crypto/hash/keccak256.c
+#
+# Design: docs/plans/2026-10-04-nodus-evm-engine-design.md §3 (tests/).
+# Exists until shared/evm/Makefile absorbs these targets.
+#
+# Targets:
+#   make -f Makefile.statetest objs          compile every object (no link)
+#   make -f Makefile.statetest test_rlp_mpt  link the standalone KAT binary
+#   make -f Makefile.statetest statetest     link the runner against the
+#                                            engine library $(EVM_LIB); fails
+#                                            until that library exists
+#   make -f Makefile.statetest test_precompile
+#                                            link the precompile KAT binary
+#                                            (test_precompile.c) against
+#                                            $(EVM_LIB) + $(EVM_DEPS_LIB)
+#   make -f Makefile.statetest clean
+#
+# Running is not done here. test_precompile usage:
+#   $(BUILD)/test_precompile [<execution-specs checkout>/tests]
+# Runner usage:
+#   $(BUILD)/statetest [--fork Prague] [--addr-bytes 20] [--filter S]
+#                      [--verbose] <fixtures/state_tests dir or file>...
+#   $(BUILD)/statetest --verify-fixture-roots <dir>   (harness self-check)
+#   $(BUILD)/statetest --list-forks <dir>
+#
+# keccak256.c is shared code this harness does not own. It uses GNU
+# `##__VA_ARGS__` in the QGP_LOG macros, which -Wpedantic flags under ISO C,
+# so it is compiled with KECCAK_CFLAGS (no -Wpedantic). If the engine
+# library already provides keccak256 and/or the qgp shim symbols, override
+#   KECCAK_OBJ=  QGP_SHIM_OBJ=
+# to drop ours from the link.
+
+CC            ?= gcc
+CFLAGS        ?= -std=c11 -Wall -Wextra -Wpedantic -O2
+KECCAK_CFLAGS ?= -std=gnu11 -Wall -Wextra -O2
+
+SHARED   := ../..
+BUILD    ?= ../build/statetest
+EVM_LIB  ?= ../build/libevm.a
+# Vendored precompile libraries (blst, c-kzg-4844, mcl, libsecp256k1,
+# RIPEMD-160 + the embedded KZG trusted setup) and the vendored GMP, built by `make deps` in
+# shared/evm; see third_party/*/PINNED.md (operator decision D2,
+# 2026-10-05).
+EVM_DEPS_LIB ?= ../build/libevm_deps.a
+GMP_LIB      ?= ../build/gmp/install/lib/libgmp.a
+
+JSONC_CFLAGS := $(shell pkg-config --cflags json-c)
+JSONC_LIBS   := $(shell pkg-config --libs json-c)
+# The engine links these; -lcrypto is the system OpenSSL for the shared
+# SHA3-512 (qgp_sha3.c; the 0x02 / 0x03 digests do not use OpenSSL),
+# -lstdc++ is for mcl (the one C++ dependency,
+# decision 2026-10-04-nodus-evm-kurultay-k1 #5), -lpthread for the one-time
+# library initialisation.
+EVM_SYSLIBS  ?= -lcrypto -lstdc++ -lpthread
+
+INCLUDES := -I. -I.. -I$(SHARED)
+
+KECCAK_OBJ   ?= $(BUILD)/keccak256.o
+QGP_SHIM_OBJ ?= $(BUILD)/evm_test_qgp_shim.o
+# shared SHA3-512 (OpenSSL EVP): libevm.a's ticket ids need it
+# (evm_state.c evm_st_add_ticket); same shared-code rule as keccak256.c.
+SHA3_OBJ     ?= $(BUILD)/qgp_sha3.o
+
+HARNESS_OBJS := $(BUILD)/evm_rlp.o $(BUILD)/evm_mpt.o \
+                $(BUILD)/evm_membackend.o $(BUILD)/statetest.o
+KAT_OBJS     := $(BUILD)/test_rlp_mpt.o $(BUILD)/evm_rlp.o $(BUILD)/evm_mpt.o
+
+.PHONY: all objs test_rlp_mpt statetest test_precompile clean
+
+all: objs test_rlp_mpt
+
+objs: $(HARNESS_OBJS) $(BUILD)/test_rlp_mpt.o $(BUILD)/keccak256.o \
+      $(BUILD)/evm_test_qgp_shim.o $(BUILD)/qgp_sha3.o
+
+test_rlp_mpt: $(BUILD)/test_rlp_mpt
+statetest: $(BUILD)/statetest
+test_precompile: $(BUILD)/test_precompile
+
+$(BUILD):
+	mkdir -p $(BUILD)
+
+$(BUILD)/evm_rlp.o: evm_rlp.c evm_rlp.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/evm_mpt.o: evm_mpt.c evm_mpt.h evm_rlp.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/evm_membackend.o: evm_membackend.c evm_membackend.h evm_mpt.h \
+                           evm_rlp.h ../evm.h ../evm_u256.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/statetest.o: statetest.c evm_membackend.h evm_mpt.h evm_rlp.h \
+                      ../evm.h ../evm_u256.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) $(JSONC_CFLAGS) -c $< -o $@
+
+$(BUILD)/test_rlp_mpt.o: test_rlp_mpt.c evm_mpt.h evm_rlp.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/evm_test_qgp_shim.o: evm_test_qgp_shim.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/keccak256.o: $(SHARED)/crypto/hash/keccak256.c | $(BUILD)
+	$(CC) $(KECCAK_CFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/qgp_sha3.o: $(SHARED)/crypto/hash/qgp_sha3.c | $(BUILD)
+	$(CC) $(KECCAK_CFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/test_rlp_mpt: $(KAT_OBJS) $(KECCAK_OBJ) $(QGP_SHIM_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^
+
+$(BUILD)/statetest: $(HARNESS_OBJS) $(KECCAK_OBJ) $(QGP_SHIM_OBJ) $(SHA3_OBJ) \
+                    $(EVM_LIB) $(EVM_DEPS_LIB) $(GMP_LIB)
+	$(CC) $(CFLAGS) -o $@ $(HARNESS_OBJS) $(KECCAK_OBJ) $(QGP_SHIM_OBJ) \
+	      $(SHA3_OBJ) $(EVM_LIB) $(EVM_DEPS_LIB) $(GMP_LIB) $(JSONC_LIBS) \
+	      $(EVM_SYSLIBS)
+
+$(BUILD)/test_precompile.o: test_precompile.c ../evm_internal.h \
+                            ../evm_precompile.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) $(JSONC_CFLAGS) -c $< -o $@
+
+$(BUILD)/test_precompile: $(BUILD)/test_precompile.o $(KECCAK_OBJ) \
+                          $(QGP_SHIM_OBJ) $(SHA3_OBJ) $(EVM_LIB) $(EVM_DEPS_LIB) \
+                          $(GMP_LIB)
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/test_precompile.o $(KECCAK_OBJ) \
+	      $(QGP_SHIM_OBJ) $(SHA3_OBJ) $(EVM_LIB) $(EVM_DEPS_LIB) $(GMP_LIB) \
+	      $(JSONC_LIBS) $(EVM_SYSLIBS)
+
+clean:
+	rm -f $(HARNESS_OBJS) $(BUILD)/test_rlp_mpt.o $(BUILD)/keccak256.o \
+	      $(BUILD)/qgp_sha3.o \
+	      $(BUILD)/evm_test_qgp_shim.o $(BUILD)/test_rlp_mpt \
+	      $(BUILD)/statetest $(BUILD)/test_precompile.o \
+	      $(BUILD)/test_precompile

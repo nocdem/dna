@@ -269,11 +269,44 @@ static int produce_batch_check_impl(
         size_t fail_i = 0;
         dna_env_preflight_status_t pst = DNA_ENV_PF_OK;
         dna_meter_status_t mst = DNA_METER_OK;
+        /* Nodus EVM: an EVM leg is reserved as the plan's streamed leg — the
+         * item loop's own rule (stream_on 0 on every chain before the EVM
+         * edge: exactly the pre-Nodus-EVM reservation) */
         nodus_v2_env_status_t est =
-            nodus_witness_v2_env_preflight_reserve_batch(
+            nodus_witness_v2_env_preflight_reserve_batch_ex(
                 w, candidate, bctx->rulesets, bctx->n_rulesets,
                 bctx->policy, &bctx->budget, (int)bctx->hf3_active,
+                (int)bctx->evm_active, bctx->evm_domain_id,
                 envs, (size_t)n_env, pf, meters, &fail_i, &pst, &mst);
+
+        /* ── Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-
+         * design.md rev 3 §8): the EVM BLOCK GAS SUM — the summed DECLARED
+         * gas of the batch's EVM legs must fit EVM_BLOCK_GAS_LIMIT at
+         * `candidate`. The path PrepareProposal's drop loop and
+         * ProcessProposal share, so the two cannot disagree; FinalizeBlock
+         * re-checks with the same function (a FAULT there). The first
+         * envelope whose share crosses the limit is named as a
+         * CAPACITY_UNITS failure (the block is full at that position —
+         * the drop loop excludes it and repacks; ProcessProposal REJECTs).
+         * Inert before the EVM edge (evm_active 0). ─────────────────── */
+        int gas_rc = 0;
+        size_t gas_i = 0;
+        if (est == NODUS_V2_ENV_OK && bctx->evm_active) {
+            uint64_t gas_sum = 0;
+            for (size_t i = 0; i < (size_t)n_env; i++) {
+                if (nodus_witness_v2_ctx_block_gas_add(bctx, &pf[i].view,
+                                                       &gas_sum) != 0) {
+                    QGP_LOG_WARN(LOG_TAG, "batch pre-check: envelope %zu "
+                                 "takes the block's declared EVM gas past "
+                                 "EVM_BLOCK_GAS_LIMIT %llu", i,
+                                 (unsigned long long)
+                                     bctx->evm_block_gas_limit);
+                    gas_rc = -1;
+                    gas_i = i;
+                    break;
+                }
+            }
+        }
 
         /* ── HF-3 (design 2026-10-01-hf3-comet-block-bounds-design.md
          * §0.2, decision answers 6 and 10): from the HF-3 height the
@@ -300,7 +333,7 @@ static int produce_batch_check_impl(
          * duplicates are already refused by the seam's own dedup. ───── */
         int hf3_rc = 0;                  /* 0 / -1 verdict / -2 fault     */
         size_t hf3_i = 0;
-        if (est == NODUS_V2_ENV_OK && bctx->hf3_active) {
+        if (est == NODUS_V2_ENV_OK && gas_rc == 0 && bctx->hf3_active) {
             char     why[256];
             uint64_t price = 0;
             uint32_t code = 0;
@@ -356,6 +389,18 @@ static int produce_batch_check_impl(
              * no verdict */
             if (result_out) result_out->kind = NODUS_V2_BATCH_FAIL_FAULT;
             rc_out = -2;
+            goto done;
+        }
+        if (gas_rc == -1) {
+            /* Nodus EVM: the block is full at that position (the gas sum) */
+            if (fail_index_out) *fail_index_out = env_idx[gas_i];
+            if (result_out) {
+                result_out->kind         = NODUS_V2_BATCH_FAIL_CAPACITY_UNITS;
+                result_out->env_status   = NODUS_V2_ENV_OK;
+                result_out->pf_status    = DNA_ENV_PF_OK;
+                result_out->meter_status = DNA_METER_OK;
+            }
+            rc_out = -1;
             goto done;
         }
         if (hf3_rc == -1) {

@@ -116,6 +116,47 @@ export const NODUS_CLAIM_DATA = {
   ],
 };
 
+// SMART CONTRACTS (the EVM domain, design docs/plans/2026-10-04-nodus-evm-chain-
+// integration-design.md rev 3 §2) — the EVM leg's ruleset identity, which
+// every envelope's call commitment binds (shared/dnac/env_wire.h
+// "ruleset_hash is CONTEXTUAL"): the EVM generation's EVM runtime, version 1
+// and the digest the node's compiled table pins
+// (nodus/src/witness/nodus_witness_runtime.h NODUS_RT_EVM_RULESET_VERSION_GEVM
+// / NODUS_RT_EVM_RULESET_HASH_GEVM_INIT). The module refuses any other value
+// (nsw_evm_net_set compares it with the bytes it was compiled with), so a
+// stale copy here turns smart contracts off rather than signing for the wrong
+// rules; `null` = smart contracts are not offered.
+//
+//   {
+//     evmRulesetVersion: 1..2^32-1
+//     evmRulesetHash:    128 lowercase hex — the EVM runtime's ruleset digest
+//   }
+//
+// Building also needs the node to run the EVM generation (its pinned SYSTEM
+// policy weighs CORE op 9 — nodus_ruleset_pins.h G3); ./client.js asks the
+// node at unlock and offers nothing on a node that has not voted it in.
+export const NODUS_EVM_NETWORK = Object.freeze({
+  evmRulesetVersion: 1,
+  evmRulesetHash: '415e6f97f58143f436bb3eae73582eff45078dcc23cb0497008838e494065533c2ff1acf271db7aa71a47c6c9a36fc22ce8b0c6e5e3585922c5919e4349f11ae'
+});
+
+export function validateNodusEvmNetwork(evm) {
+  const bad = what => new Error(`Smart-contract settings: ${what}.`);
+  if (!evm || typeof evm !== 'object') throw bad('missing');
+  const { evmRulesetVersion, evmRulesetHash } = evm;
+  if (!Number.isInteger(evmRulesetVersion) || evmRulesetVersion < 1 || evmRulesetVersion > 0xffffffff) throw bad('evmRulesetVersion must be 1 to 4294967295');
+  if (typeof evmRulesetHash !== 'string' || !HEX128.test(evmRulesetHash)) throw bad('evmRulesetHash must be 128 lowercase hex characters');
+  return Object.freeze({ evmRulesetVersion, evmRulesetHash });
+}
+
+// The five EVM operations and their runtime_op (design §2;
+// shared/dnac/evm_call_wire.h DNA_EVM_OP_*).
+const EVM_OPS = Object.freeze({ call: 1, create: 2, deposit: 3, withdraw: 4, redeem: 5 });
+// The §18 read methods (design rev 3 §18; ./client.js EVM_QUERY_METHODS).
+const EVM_QUERY_NAMES = new Set(['evm_account', 'evm_code', 'evm_storage', 'evm_call', 'evm_estimate', 'evm_receipt', 'evm_logs', 'evm_ticket']);
+const EVM_DATA_MAX = 1048576;          // nodus-send-wasm.c NSW_EVM_DATA_MAX
+const EVM_INITCODE_MAX = 49152;        // evm_call_wire.h DNA_EVM_MAX_INITCODE (EIP-3860)
+
 // A checked, frozen copy of claim data; throws on anything outside the
 // shape documented above (the cryptographic checks are the module's).
 export function validateNodusClaimData(data) {
@@ -162,8 +203,12 @@ function raw(value, what) {
 // Instantiates the module and returns the object ./client.js expects.
 // `loadGlue` exists for tests (a node build of the same C, see
 // test/nodus-send-wasm.test.js); the wallet always uses ./send.js.
-export async function createNodusSendModule(network, { claim = null, loadGlue = () => import('./send.js') } = {}) {
+export async function createNodusSendModule(network, { claim = null, evm = null, loadGlue = () => import('./send.js') } = {}) {
   const net = validateNodusSendNetwork(network);
+  // Smart-contract settings refused by the shape check leave smart
+  // contracts off (evmError) and change nothing else.
+  let evmNet = null, evmError = evm ? null : 'Smart contracts are not available on this network yet.';
+  if (evm) { try { evmNet = validateNodusEvmNetwork(evm); } catch (error) { evmError = error.message; } }
   // Claim data refused by the shape check or by the module leaves claiming
   // off (claimError) and changes nothing else.
   let claimData = null, claimError = claim ? null : 'Claiming is not available in this wallet build.';
@@ -193,6 +238,19 @@ export async function createNodusSendModule(network, { claim = null, loadGlue = 
     } catch (error) { claimError = error.message; }
   }
   const claimReady = () => { if (claimError) throw new Error(claimError); };
+  if (evmNet) {
+    try { check(num('nsw_evm_net_set', ['string', 'string'], [String(evmNet.evmRulesetVersion), evmNet.evmRulesetHash])); }
+    catch (error) { evmError = error.message; }
+  }
+  const evmReady = () => { if (evmError) throw new Error(evmError); };
+  const loadCoins = coins => {
+    if (!Array.isArray(coins) || coins.length > MAX_COINS) throw new Error('Invalid coin list.');
+    num('nsw_req_reset');
+    for (const coin of coins) {
+      if (!coin || typeof coin.nullifier !== 'string' || !HEX128.test(coin.nullifier)) throw new Error('Invalid coin list.');
+      check(num('nsw_req_add_coin', ['string', 'string'], [coin.nullifier, raw(coin.amount, 'coin amount')]));
+    }
+  };
   // Messages bridge (NC-4b): only nc_* entry points; the async form only
   // inside the queue (connect()), never from connectSync().
   const ncName = name => { if (typeof name !== 'string' || !name.startsWith('nc_')) throw new Error('Not a Messages entry point.'); return name; };
@@ -256,7 +314,7 @@ export async function createNodusSendModule(network, { claim = null, loadGlue = 
     };
   };
 
-  return {
+  const api = {
     async unlock({ seed } = {}) {
       if (!(seed instanceof Uint8Array) || seed.length !== 32) throw new Error('Nodus signing seed must be 32 bytes.');
       // The C side wipes this copy on every path (nsw_unlock); the caller
@@ -633,6 +691,115 @@ export async function createNodusSendModule(network, { claim = null, loadGlue = 
       if (rc === 1) return { accepted: false, message: str('nsw_error'), intentId, review };
       throw failure();
     },
+    // SMART CONTRACTS — the EVM domain (nodus-send-wasm.c "SMART
+    // CONTRACTS"; design docs/plans/2026-10-04-nodus-evm-chain-integration-
+    // design.md rev 3 §2). evmBuild({ op: 'call' | 'create' | 'deposit' |
+    // 'withdraw' | 'redeem', to (64 hex, call), valueWei (64 hex u256,
+    // call / create), gasLimit, nonce (not redeem), data (Uint8Array: call
+    // data / initcode), accessList ([{ address: 64 hex, storageKeys: [64
+    // hex] }]), amount (raw, bridge ops), dest (128 hex, withdraw / redeem),
+    // ticketId (128 hex, redeem), units (the declared resource ceiling; '0'
+    // = the smallest the node accepts — give evm_estimate's for a call),
+    // effects / effectBytes (call / create; 0 = default), expiryHeight,
+    // coins }) -> { envelope, intentId, decoded: { op, to, valueWei,
+    // gasLimit, nonce, units, amount, dest, ticketId, dataLength, recipient,
+    // fee, change, expiryHeight, chainId, inputs } }, `decoded` read back
+    // from the signed bytes by the C side. Submitted with submit().
+    // Offered only when the smart-contract settings were accepted (removed
+    // below otherwise; ./client.js then reports evmBuildable false).
+    // estimateUnits / estimateGas: the node's evm_estimate `ue` / `ge` for a
+    // call / create built with units '0' — the module adds the read units
+    // they imply to its own shape's minimum (client/nodus_v2_evm.h "UNITS").
+    async evmBuild({ op, to = '', valueWei = '0'.repeat(64), gasLimit = '0', nonce = '0', data = new Uint8Array(0), accessList = [], amount = '0', dest = '', ticketId = '', units = '0', estimateUnits = '0', estimateGas = '0', effects = 0, effectBytes = 0, expiryHeight, coins } = {}) {
+      evmReady();
+      const code = typeof op === 'string' && Object.hasOwn(EVM_OPS, op) ? EVM_OPS[op] : 0;
+      if (!code) throw new Error('Unknown smart-contract action.');
+      if (op === 'call' && (typeof to !== 'string' || !HEX64.test(to))) throw new Error('Enter a contract address: 64 characters, 0-9 and a-f.');
+      if ((op === 'call' || op === 'create') && (typeof valueWei !== 'string' || !HEX64.test(valueWei))) throw new Error('Invalid value.');
+      if ((op === 'withdraw' || op === 'redeem') && (typeof dest !== 'string' || !HEX128.test(dest))) throw new Error('Enter a Nodus address: 128 characters, 0-9 and a-f.');
+      if (op === 'redeem' && (typeof ticketId !== 'string' || !HEX128.test(ticketId))) throw new Error('Invalid withdrawal ticket.');
+      if (!(data instanceof Uint8Array) || data.length > (op === 'create' ? EVM_INITCODE_MAX : EVM_DATA_MAX)) throw new Error('The contract data is too large.');
+      if (!Array.isArray(accessList)) throw new Error('Invalid access list.');
+      if (!Number.isInteger(effects) || !Number.isInteger(effectBytes)) throw new Error('Invalid effect ceiling.');
+      raw(gasLimit, 'gas limit'); raw(nonce, 'nonce'); raw(amount, 'amount'); raw(units, 'resource ceiling'); raw(expiryHeight, 'validity height');
+      raw(estimateUnits, 'estimate'); raw(estimateGas, 'estimate');
+      loadCoins(coins);
+      check(num('nsw_evm_set_estimate', ['string', 'string'], [estimateUnits, estimateGas]));
+      // the request's data and access list live in module memory until the
+      // build; a bridge op gets neither (the module refuses them)
+      num('nsw_evm_access_reset');
+      if (data.length) {
+        const at = num('nsw_evm_data_alloc', ['number'], [data.length]);
+        if (!at) throw new Error('Out of memory.');
+        M.HEAPU8.set(data, at);
+      } else {
+        num('nsw_evm_data_alloc', ['number'], [0]);
+      }
+      for (const entry of accessList) {
+        if (!entry || typeof entry.address !== 'string' || !HEX64.test(entry.address) || !Array.isArray(entry.storageKeys) || !entry.storageKeys.every(k => typeof k === 'string' && HEX64.test(k))) throw new Error('Invalid access list.');
+        check(num('nsw_evm_access_add', ['string', 'string'], [entry.address, entry.storageKeys.join('')]));
+      }
+      check(num('nsw_evm_set_decl', ['number', 'number'], [effects, effectBytes]));
+      let rc;
+      if (op === 'call') rc = await call('nsw_evm_call', ['string', 'string', 'string', 'string', 'string', 'string'], [to, valueWei, gasLimit, nonce, units, expiryHeight]);
+      else if (op === 'create') rc = await call('nsw_evm_create', ['string', 'string', 'string', 'string', 'string'], [valueWei, gasLimit, nonce, units, expiryHeight]);
+      else if (op === 'deposit') rc = await call('nsw_evm_deposit', ['string', 'string', 'string', 'string'], [amount, nonce, units, expiryHeight]);
+      else if (op === 'withdraw') rc = await call('nsw_evm_withdraw', ['string', 'string', 'string', 'string', 'string'], [amount, nonce, dest, units, expiryHeight]);
+      else rc = await call('nsw_evm_redeem', ['string', 'string', 'string', 'string', 'string'], [ticketId, amount, dest, units, expiryHeight]);
+      check(rc);
+      const at = num('nsw_built_env'), length = num('nsw_built_env_len');
+      const inputs = [];
+      for (let i = 0, n = num('nsw_built_n_in'); i < n; i++) inputs.push(str('nsw_built_in', ['number'], [i]));
+      const opName = Object.keys(EVM_OPS).find(name => EVM_OPS[name] === num('nsw_evm_built_op'));
+      if (opName !== op) throw new Error('The built transaction does not match the request.');
+      return {
+        envelope: M.HEAPU8.slice(at, at + length),
+        intentId: str('nsw_built_intent'),
+        decoded: {
+          op: opName, to: str('nsw_evm_built_to'), valueWei: str('nsw_evm_built_value'), gasLimit: str('nsw_evm_built_gas'),
+          nonce: str('nsw_evm_built_nonce'), units: str('nsw_evm_built_units'), amount: str('nsw_evm_built_amount'),
+          dest: str('nsw_evm_built_dest'), ticketId: str('nsw_evm_built_ticket'), dataLength: num('nsw_evm_built_data_len'),
+          // CREATE only: the new contract's address from the signed sender
+          // and nonce (red-team 1 F11; '' for every other op)
+          created: str('nsw_evm_built_created'),
+          recipient: str('nsw_built_recipient'), fee: str('nsw_built_fee'), change: str('nsw_built_change'),
+          expiryHeight: str('nsw_built_expiry'), chainId: str('nsw_built_chain'), inputs
+        }
+      };
+    },
+    // SMART CONTRACTS — the §18 reads (nodus-send-wasm.c nsw_evm_query):
+    // evmQuery({ method, args }) where `method` is one of the eight evm_*
+    // names and `args` maps each CBOR key to ['b', lowercase hex], ['u',
+    // decimal] or ['U', [1..3 decimals]] (a CBOR array of u64 — the
+    // evm_logs cursor "c" = [h, x, li], red-team 1 F4; written as
+    // `key=U:a,b,c`, nodus-send-wasm.c nsw_evm_args_cbor) (./client.js
+    // evmArgs builds it). The argument text goes into
+    // module memory (call data can exceed a ccall string's stack copy); the
+    // reply map comes back as JSON (uint and bstr as strings) and is checked
+    // by src/evm/rpc.js before anyone sees it.
+    async evmQuery({ method, args = {} } = {}) {
+      if (typeof method !== 'string' || !EVM_QUERY_NAMES.has(method)) throw new Error('Unknown smart-contract request.');
+      if (!args || typeof args !== 'object') throw new Error('Invalid smart-contract request.');
+      const parts = [];
+      const u64 = v => typeof v === 'string' && /^(0|[1-9]\d{0,19})$/.test(v) && BigInt(v) < 2n ** 64n;
+      for (const [key, tagged] of Object.entries(args)) {
+        if (!/^[a-z0-9]{1,4}$/.test(key) || !Array.isArray(tagged) || tagged.length !== 2) throw new Error('Invalid smart-contract request.');
+        const [tag, value] = tagged;
+        if (tag === 'b' && typeof value === 'string' && /^([0-9a-f]{2})*$/.test(value)) parts.push(`${key}=b:${value}`);
+        else if (tag === 'u' && u64(value)) parts.push(`${key}=u:${value}`);
+        else if (tag === 'U' && Array.isArray(value) && value.length >= 1 && value.length <= 3 && [...value].every(u64)) parts.push(`${key}=U:${value.join(',')}`);
+        else throw new Error('Invalid smart-contract request.');
+      }
+      const text = new TextEncoder().encode(parts.join(';'));
+      const at = num('nsw_evm_query_buf', ['number'], [text.length]);
+      if (!at) throw new Error('The smart-contract request is too large.');
+      M.HEAPU8.set(text, at);
+      check(await call('nsw_evm_query', ['string', 'number'], [method, text.length]));
+      return JSON.parse(str('nsw_evm_query_json'));
+    },
+    // The rule-set generation that carries the EVM (./client.js offers
+    // smart contracts only where the node runs it).
+    evmGeneration: num('nsw_evm_generation'),
     // MESSAGES (NC-4b): the Nodus Connect exports (nc_*, connect/nc_wasm.c)
     // linked into THIS module and running on its one session. `connect(run)`
     // is an asynchronous operation like the others (./client.js runs it in
@@ -654,8 +821,10 @@ export async function createNodusSendModule(network, { claim = null, loadGlue = 
     release() { try { M.abort('Nodus send module released'); } catch { /* aborted */ } },
     memory: { get buffer() { return M.HEAPU8.buffer; } }
   };
+  if (evmError) delete api.evmBuild;
+  return api;
 }
 
 // Registration point read by src/app.js: null while the network settings
 // above are null (NODUS stays receive-only, src/nodus/network.js).
-export const nodusSendModuleFactory = NODUS_SEND_NETWORK ? () => createNodusSendModule(NODUS_SEND_NETWORK, { claim: NODUS_CLAIM_DATA }) : null;
+export const nodusSendModuleFactory = NODUS_SEND_NETWORK ? () => createNodusSendModule(NODUS_SEND_NETWORK, { claim: NODUS_CLAIM_DATA, evm: NODUS_EVM_NETWORK }) : null;

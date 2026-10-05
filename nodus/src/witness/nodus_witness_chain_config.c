@@ -67,7 +67,7 @@
 #define CC_MAX_ACTIVE               DNA_MAX_ACTIVE_VALIDATORS
 
 #define CC_PURPOSE_TAG_LEN          16
-#define CC_PARAM_MAX_ID            13
+#define CC_PARAM_MAX_ID            15
 #define CC_PARAM_MAX_TXS            1
 #define CC_PARAM_BLOCK_INTERVAL     2
 #define CC_PARAM_INFLATION_START    3
@@ -81,11 +81,14 @@
 #define CC_PARAM_NAME_PRICE_4P      11    /* HF-4 — DNAC_CFG_NAME_PRICE_4P */
 #define CC_PARAM_NAME_PRICE_5P      12    /* HF-4 — DNAC_CFG_NAME_PRICE_5P */
 #define CC_PARAM_NAME_PRICE_6P      13    /* HF-4 — DNAC_CFG_NAME_PRICE_6P */
+#define CC_PARAM_EVM_ACTIVE         DNAC_CFG_EVM_ACTIVE          /* Nodus EVM */
+#define CC_PARAM_EVM_BLOCK_GAS      DNAC_CFG_EVM_BLOCK_GAS_LIMIT /* Nodus EVM */
 /* Number of per-param cache rows dimensions: param ids are 1..CC_PARAM_MAX_ID
  * and index 0 is unused, so the arrays are CC_PARAM_MAX_ID + 1 wide.
  * HF-4 grew it 9 -> 14 (design 2026-10-02-onchain-names-design.md rev 4
  * §1.1): without the slots nodus_chain_config_get_u64 answers -1 for ids
- * 9-13 and every read of them would FAULT on every node. */
+ * 9-13 and every read of them would FAULT on every node. Nodus EVM grew it
+ * 14 -> 16 for the same reason (ids 14 EVM_ACTIVE, 15 EVM_BLOCK_GAS). */
 #define CC_PARAM_SLOTS              (CC_PARAM_MAX_ID + 1)
 /* CC_MAX_TXS_HARD_CAP RETIRED (R3 W4-C delta 2) with CC_PARAM_MAX_TXS —
  * no live consumer; the id space stays 1..CC_PARAM_MAX_ID unchanged. */
@@ -668,6 +671,22 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
             if (new_value < CC_MIN_NAME_PRICE ||
                 new_value > CC_MAX_NAME_PRICE) return -1;
             break;
+        case CC_PARAM_EVM_ACTIVE:
+            /* Nodus EVM (design 2026-10-04-nodus-evm-chain-integration-design.md
+             * rev 3 §9): EXACTLY the compiled vote literal — the vote
+             * names its target (the EVM generation's tuples, manifest,
+             * procedure and constants). A binary whose EVM generation
+             * differs refuses here, at the vote block. The single-use /
+             * HF-2 / HF-3 / gas-price / base-generation / epoch-boundary
+             * rules need chain state: nodus_chain_config_stateful_rules_ex. */
+            if (new_value != (uint64_t)DNAC_CFG_EVM_ACTIVE_D) return -1;
+            break;
+        case CC_PARAM_EVM_BLOCK_GAS:
+            /* Nodus EVM (design §8): [MIN, MAX], placeholders pending the
+             * measurement gate (dnac.h). */
+            if (new_value < DNAC_CFG_MIN_EVM_BLOCK_GAS ||
+                new_value > DNAC_CFG_MAX_EVM_BLOCK_GAS) return -1;
+            break;
         default:
             return -1;
     }
@@ -744,6 +763,14 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
         case CC_PARAM_NAME_PRICE_6P:
             /* HF-4 — ERGONOMIC (decision item 17: "10–13 de ERGONOMIC"). */
             return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
+        case CC_PARAM_EVM_ACTIVE:
+            /* Nodus EVM — SAFETY (design §9: "SAFETY grace (bilinçli seçim:
+             * yeni domain)"). Its own return, never the default: branch. */
+            return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS;
+        case CC_PARAM_EVM_BLOCK_GAS:
+            /* Nodus EVM — SAFETY (the dispatch of the activation package: the
+             * block gas bound is a block-work limit). */
+            return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS;
         case CC_PARAM_GAS_PRICE:
             /* HF-1 — ERGONOMIC by decision (2026-09-25-gas-price.md,
              * detail decision 3: "bekleme süresi 720 blok"). Named
@@ -773,7 +800,77 @@ int nodus_chain_config_stateful_rules(uint8_t param_id,
                                       uint8_t hf2_active,
                                       uint8_t ruleset_gen2_voted,
                                       uint32_t judging_generation) {
+    nodus_cc_state_facts_t f;
+    memset(&f, 0, sizeof(f));
+    f.hf2_active = hf2_active;
+    f.ruleset_gen2_voted = ruleset_gen2_voted;
+    f.judging_generation = judging_generation;
+    return nodus_chain_config_stateful_rules_ex(param_id,
+                                                effective_block_height, &f);
+}
+
+/* Nodus EVM — contract: nodus_chain_config.h. Ids 1..13 read exactly the facts
+ * the 5-argument form had (and answer exactly as before). */
+int nodus_chain_config_stateful_rules_ex(uint8_t param_id,
+                                         uint64_t effective_block_height,
+                                         const nodus_cc_state_facts_t *facts) {
+    if (!facts) return -1;
+    const uint8_t  hf2_active         = facts->hf2_active;
+    const uint8_t  ruleset_gen2_voted = facts->ruleset_gen2_voted;
+    const uint32_t judging_generation = facts->judging_generation;
     switch (param_id) {
+        case CC_PARAM_EVM_ACTIVE: {
+            /* Nodus EVM (design 2026-10-04-nodus-evm-chain-integration-design.md
+             * rev 3 §9, "Oy ön koşulları"): */
+            /* (a) single use — the param-9 rule (a), verbatim in intent */
+            if (facts->evm_active_voted) return -1;
+            /* (b) HF-2 active: phase 9 must accept a touched domain whose
+             * root nets to zero at the edge (the HF-4 rule (b)) */
+            if (!hf2_active) return -1;
+            /* (c) HF-3 active: the EVM domain's quota-0 unit budget is
+             * unbounded only from HF-3 on (apply.c block_ctx_from_doms);
+             * without it the domain is bound to the 2 097 152-unit
+             * literal and the block gas sum is not the one block limit */
+            if (!facts->hf3_active) return -1;
+            /* (d) a non-zero gas price active: w_gas prices nothing
+             * without one (apply.c env_gas_price_check) */
+            if (!facts->gas_price_on) return -1;
+            /* (e) ADDITION of this package (not in the design text): the
+             * registry must be at the EVM generation's BASE — phase 6b''
+             * switches SYSTEM / CORE FROM that generation; at any other
+             * one the switch returns "not at generation" and every node
+             * FAULTs at H-1. */
+            if (judging_generation != NODUS_RT_GEN_EVM_BASE) return -1;
+            /* (f) H-1 must not be an epoch boundary (the param-9 rule (c)) */
+            if (effective_block_height == 0) return -1;
+            {
+                uint64_t h1 = effective_block_height - 1u;
+                if (h1 != 0 && (h1 % (uint64_t)DNAC_EPOCH_LENGTH) == 0)
+                    return -1;
+            }
+            /* (g) red-team 1 F5: every height of the FIRST execution
+             * window exists. The first EVM block is `effective`; its
+             * BLOCKHASH window [effective - 256, effective - 1] must lie
+             * at or above the chain's first block (the genesis document's
+             * completed initial_height — the caller derives it, never
+             * from the node's oldest row). Below it the window names a
+             * height no node has a block for, and v2rd_blockhash FAULTs
+             * every node (BLOCKHASH semantics stay the reference's: no
+             * zero is invented for a missing height). Later windows only
+             * move up. 0 = the caller could not derive it: refuse. */
+            {
+                uint64_t first_ok = 0;
+                if (facts->chain_initial_height == 0) return -1;
+                if (dna_ck_add_u64(facts->chain_initial_height,
+                                   (uint64_t)NODUS_CC_EVM_BLOCKHASH_WINDOW,
+                                   &first_ok) != 0)
+                    return -1;
+                if (effective_block_height < first_ok) return -1;
+            }
+            return 0;
+        }
+        case CC_PARAM_EVM_BLOCK_GAS:
+            return 0;              /* the scalar rules decide it alone   */
         case CC_PARAM_RULESET_GEN2: {
             /* (a) single use: any committed param-9 row — at any
              * effective height, the far-future one included (design §1.2:
@@ -1091,14 +1188,26 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
      *     manifest resolves — the registry after the tip names the
      *     generation that judges tip + 1 = h (exec: rt->generation). */
     {
-        uint64_t v7 = 0, v9 = 0;
+        /* Nodus EVM: + HF-3 at h (param 8), a non-zero gas price at h
+         * (param 5) and "any param-14 row" — the EVM_ACTIVE facts the
+         * exec reads from ctx (hf3_active / gas_price_on /
+         * evm_active_voted), derived here with the same discipline; and
+         * (red-team 1 F5) the chain's initial height for param 14. */
+        uint64_t v7 = 0, v9 = 0, v8 = 0, v5 = 0, v14 = 0;
         int r7 = nodus_chain_config_get_u64(w, (uint8_t)CC_PARAM_HF2_ACTIVE,
                                             h, 0ULL, &v7);
         int r9 = nodus_chain_config_get_u64(w, (uint8_t)CC_PARAM_RULESET_GEN2,
                                             (uint64_t)INT64_MAX, 0ULL, &v9);
+        int r8 = nodus_chain_config_get_u64(w, (uint8_t)CC_PARAM_HF3_ACTIVE,
+                                            h, 0ULL, &v8);
+        int r5 = nodus_chain_config_get_u64(w, (uint8_t)CC_PARAM_GAS_PRICE,
+                                            h, 0ULL, &v5);
+        int r14 = nodus_chain_config_get_u64(w, (uint8_t)CC_PARAM_EVM_ACTIVE,
+                                             (uint64_t)INT64_MAX, 0ULL, &v14);
         const nodus_domain_runtime_t *sys_rt = NULL;
-        if (r7 < 0 || r9 < 0 ||
-            (v7 != 0ULL && v7 != CC_HF2_ACTIVE_ON)) {
+        if (r7 < 0 || r9 < 0 || r8 < 0 || r5 < 0 || r14 < 0 ||
+            (v7 != 0ULL && v7 != CC_HF2_ACTIVE_ON) ||
+            (v8 != 0ULL && v8 != CC_HF3_ACTIVE_ON)) {
             snprintf(reason, reason_size,
                      "chain_config state unreadable on this node");
             return -2;
@@ -1109,11 +1218,27 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
                      "the SYSTEM runtime does not resolve on this node");
             return -2;
         }
-        if (nodus_chain_config_stateful_rules(
-                c.param_id, c.effective,
-                (uint8_t)(v7 == CC_HF2_ACTIVE_ON ? 1u : 0u),
-                (uint8_t)(r9 == 0 ? 1u : 0u),
-                sys_rt->generation) != 0) {
+        nodus_cc_state_facts_t facts;
+        memset(&facts, 0, sizeof(facts));
+        facts.hf2_active = (uint8_t)(v7 == CC_HF2_ACTIVE_ON ? 1u : 0u);
+        facts.hf3_active = (uint8_t)(v8 == CC_HF3_ACTIVE_ON ? 1u : 0u);
+        facts.gas_price_on = (uint8_t)(v5 != 0ULL ? 1u : 0u);
+        facts.ruleset_gen2_voted = (uint8_t)(r9 == 0 ? 1u : 0u);
+        facts.evm_active_voted = (uint8_t)(r14 == 0 ? 1u : 0u);
+        facts.judging_generation = sys_rt->generation;
+        /* red-team 1 F5: the chain's first block height, from the stored
+         * genesis document (nodus_witness_v2_chain_initial_height — the
+         * ONE derivation; never the oldest row). Read only for the vote
+         * that judges it (a whole-document read). */
+        if (c.param_id == CC_PARAM_EVM_ACTIVE &&
+            nodus_witness_v2_chain_initial_height(
+                w, &facts.chain_initial_height) != 0) {
+            snprintf(reason, reason_size,
+                     "the chain's initial height is unreadable on this node");
+            return -2;
+        }
+        if (nodus_chain_config_stateful_rules_ex(c.param_id, c.effective,
+                                                 &facts) != 0) {
             snprintf(reason, reason_size, "stateful rules rejected");
             return -1;
         }
