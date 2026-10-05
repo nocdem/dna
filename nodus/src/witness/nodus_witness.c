@@ -8,6 +8,8 @@
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_p2p.h"      /* the 4004 p2p host (P2P-PORT F5) */
+#include "witness/nodus_witness_storage_reporter.h" /* archive probe (B2b-1) */
+#include "witness/nodus_witness_storage_holder.h"   /* segment files (B2b-2) */
 #include "witness/nodus_witness_handlers.h"
 #include "witness/nodus_witness_v2_pools.h"  /* S7 startup check      */
 #include "witness/nodus_witness_v2_schema.h" /* Nodus EVM: the at-open S17
@@ -353,6 +355,18 @@ static const char *WITNESS_DB_SCHEMA =
      * why it lives in the base schema: nodus_witness.h
      * NODUS_V2_NAMES_DDL_BODY. */
     NODUS_V2_NAMES_DDL ";"
+    /* Storage reward v1 — the storage registry (SYSTEM storage leg,
+     * "NDS.SYS.v5" from the storage activation). The exact DDL and why it
+     * lives in the base schema: nodus_witness.h NODUS_V2_STORAGE_DDL_BODY. */
+    NODUS_V2_STORAGE_DDL ";"
+    /* Archive reward (storage reward v1 rev 4) — the frozen sets, their
+     * members, the reports and the segment list: the storage leg's other
+     * four trees. DDLs and why they live in the base schema:
+     * nodus_witness.h NODUS_V2_STSETS_DDL_BODY and the three after it. */
+    NODUS_V2_STSETS_DDL ";"
+    NODUS_V2_STMEMB_DDL ";"
+    NODUS_V2_STREPS_DDL ";"
+    NODUS_V2_STSEGS_DDL ";"
     "CREATE TABLE IF NOT EXISTS v2_balance_copy ("
     "  epoch_start INTEGER NOT NULL,"
     "  validator_fp BLOB NOT NULL,"
@@ -601,11 +615,16 @@ static int witness_db_open_fail(nodus_witness_t *witness) {
  * IF NOT EXISTS above would silently keep it — therefore refuses THIS
  * node's open (node-local; every other node's table is its own).
  * @return SQLITE_OK, or SQLITE_CORRUPT (a PERMANENT class — the open
- *         refuses, waiting cannot fix a wrong table) / the failing rc. */
-static int witness_v2_names_ddl_check(sqlite3 *db) {
+ *         refuses, waiting cannot fix a wrong table) / the failing rc.
+ *
+ * Storage reward v1: generalized from the v2_names-only check to
+ * (table name, its DDL) so `v2_storage_nodes` (NODUS_V2_STORAGE_DDL) gets
+ * the SAME per-open check; for v2_names the comparison is the former one
+ * (the same reference statement, the table name now a bound parameter). */
+static int witness_ddl_shape_check(sqlite3 *db, const char *table,
+                                   const char *ddl) {
     static const char *const q =
-        "SELECT sql FROM sqlite_master WHERE type='table' AND "
-        "name='v2_names'";
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1";
     sqlite3 *mem = NULL;
     sqlite3_stmt *a = NULL, *b = NULL;
     int rc = sqlite3_open(":memory:", &mem);
@@ -613,11 +632,15 @@ static int witness_v2_names_ddl_check(sqlite3 *db) {
         if (mem) sqlite3_close(mem);
         return rc;
     }
-    rc = sqlite3_exec(mem, NODUS_V2_NAMES_DDL, NULL, NULL, NULL);
+    rc = sqlite3_exec(mem, ddl, NULL, NULL, NULL);
     if (rc == SQLITE_OK)
         rc = sqlite3_prepare_v2(mem, q, -1, &a, NULL);
     if (rc == SQLITE_OK)
+        rc = sqlite3_bind_text(a, 1, table, -1, SQLITE_STATIC);
+    if (rc == SQLITE_OK)
         rc = sqlite3_prepare_v2(db, q, -1, &b, NULL);
+    if (rc == SQLITE_OK)
+        rc = sqlite3_bind_text(b, 1, table, -1, SQLITE_STATIC);
     if (rc == SQLITE_OK) {
         int ra = sqlite3_step(a);
         int rb = sqlite3_step(b);
@@ -632,9 +655,9 @@ static int witness_v2_names_ddl_check(sqlite3 *db) {
             int la = sqlite3_column_bytes(a, 0);
             int lb = sqlite3_column_bytes(b, 0);
             if (!sa || !sb || la != lb || memcmp(sa, sb, (size_t)la) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "%s", "v2_names exists with a shape "
-                              "this build did not create (sqlite_master.sql "
-                              "differs) — refusing to open this database");
+                QGP_LOG_ERROR(LOG_TAG, "%s exists with a shape this build "
+                              "did not create (sqlite_master.sql differs) — "
+                              "refusing to open this database", table);
                 rc = SQLITE_CORRUPT;
             }
         }
@@ -729,10 +752,36 @@ static int witness_db_open_attempt(nodus_witness_t *witness,
     }
 
     /* HF-4: the exact shape of v2_names, on every open (helper above) */
-    rc = witness_v2_names_ddl_check(witness->db);
+    rc = witness_ddl_shape_check(witness->db, "v2_names",
+                                 NODUS_V2_NAMES_DDL);
     if (rc != SQLITE_OK) {
         witness_db_open_fail(witness);
         return rc;
+    }
+    /* storage reward v1: the exact shape of v2_storage_nodes, the same
+     * per-open check */
+    rc = witness_ddl_shape_check(witness->db, "v2_storage_nodes",
+                                 NODUS_V2_STORAGE_DDL);
+    if (rc != SQLITE_OK) {
+        witness_db_open_fail(witness);
+        return rc;
+    }
+    /* archive reward: the four storage-leg tables, the same check, in a
+     * fixed order */
+    {
+        static const struct { const char *t; const char *ddl; } ST[] = {
+            { "v2_storage_sets",        NODUS_V2_STSETS_DDL },
+            { "v2_storage_set_members", NODUS_V2_STMEMB_DDL },
+            { "v2_storage_reports",     NODUS_V2_STREPS_DDL },
+            { "v2_storage_segments",    NODUS_V2_STSEGS_DDL }
+        };
+        for (size_t i = 0; i < sizeof(ST) / sizeof(ST[0]); i++) {
+            rc = witness_ddl_shape_check(witness->db, ST[i].t, ST[i].ddl);
+            if (rc != SQLITE_OK) {
+                witness_db_open_fail(witness);
+                return rc;
+            }
+        }
     }
 
     /* Schema v12 migration (Phase 1 / Task 1.1). Idempotent; aborts on
@@ -2653,6 +2702,17 @@ int nodus_witness_init(nodus_witness_t *witness,
                  (unsigned long long)DNAC_CFG_RULESET_GEN2_D2,
                  (unsigned)DNAC_RULESET_SWITCH_SPEC_VERSION,
                  NODUS_BUILD_GIT_COMMIT);
+    /* Storage reward v1 (design 2026-10-04-storage-reward-v1-design.md
+     * rev 2.2 §6): the GEN_STORAGE vote literal (chain_config param 16)
+     * for the same 7/7 comparison before THAT vote — its own line, so the
+     * HF-4 line above keeps the exact text test_cmt_hf4_names.sh greps. */
+    QGP_LOG_INFO(LOG_TAG, "storage rule-set generation %u vote 0x%016llx "
+                 "(param %u, switch spec v%u), built from git commit %s",
+                 (unsigned)NODUS_RT_GEN_STORAGE,
+                 (unsigned long long)DNAC_CFG_RULESET_GEN_STORAGE_D,
+                 (unsigned)DNAC_CFG_RULESET_GEN_STORAGE,
+                 (unsigned)DNAC_RULESET_SWITCH_SPEC_VERSION,
+                 NODUS_BUILD_GIT_COMMIT);
     /* HF-4 review (L1 F2): the compile-time constants consensus depends
      * on and that a harness build overrides (#ifndef in dnac.h /
      * nodus_witness_emission.h), plus whether the fault-injection hooks
@@ -2945,6 +3005,17 @@ void nodus_witness_tick(nodus_witness_t *witness) {
      * refuses every chain that is not version-3 at open. */
     if (witness->v2_successor) {
         witness->cmt_next_deadline_ns = witness_cmt_tick(witness);
+        /* The archive probe's reporter (storage reward package B2b-1):
+         * a no-op until the lane is live and caught up; rate-limited to
+         * NODUS_STPROBE_TICK_MS inside. Off-chain — it reaches state only
+         * through this node's own signed STORAGE_REPORT. */
+        nodus_witness_stprobe_tick(witness);
+        /* The archive holder (storage reward package B2b-2): export /
+         * fetch / delete this node's segment files. A no-op until the
+         * lane is live and caught up; rate-limited and bounded per pass
+         * inside (NODUS_STHOLD_TICK_MS, _EXPORT_HEIGHTS). Node-local — it
+         * never writes the database. */
+        nodus_witness_sthold_tick(witness);
     } else {
         /* O15E Faz D — pinned-genesis joiner: pull the genesis bundle
          * while a fresh node has a pin but no successor chain yet.
@@ -3022,6 +3093,13 @@ void nodus_witness_close(nodus_witness_t *witness) {
      * is saved), every worker job is finished or dropped, every socket is
      * closed. After the reactors (above), before the database (below):
      * nothing of it reads the database once stopped. */
+    /* The archive probe's runtime holds no p2p or database handle — only
+     * its own heap; freed before the host that delivered its messages. */
+    nodus_witness_stprobe_free(witness);
+    /* The archive holder's runtime: its open segment build is closed
+     * (the partial file stays and is resumed at the next start). */
+    nodus_witness_sthold_free(witness);
+
     nodus_witness_p2p_free(witness->p2p);
     witness->p2p = NULL;
 

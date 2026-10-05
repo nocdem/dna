@@ -45,6 +45,14 @@
  *      against the snapshot entry (P2 revision 2, design §7.1),
  *      credited to `v2_reward_accrual`, reward_pool debited by exactly
  *      what was credited. Contract: nodus_witness_v2_econ.h.
+ *   1b'. THE STORAGE BOUNDARY (archive reward — storage reward v1 rev 4,
+ *      package B2a) — nodus_witness_storage_boundary_apply(w, H): inert
+ *      unless chain_config param 16 is in effect at H (and the registry
+ *      then resolves GEN_STORAGE — else FAULT); settles the storage
+ *      epoch (H−2E, H−E] from treasury pool 1, updates fail_streak,
+ *      prunes, releases EXITING storage bonds as locked UTXOs, publishes
+ *      due archive segments, freezes storage_set(H). Contract:
+ *      nodus_witness_v2_storage.h.
  *   1c. PAYDAY (P2-7) — nodus_witness_v2_payday_apply(w, H, interval):
  *      at (H / E) % payout_interval_epochs == 0 every accrual row
  *      becomes one CORE UTXO and is deleted; a no-op otherwise. Runs
@@ -583,6 +591,16 @@ typedef struct {
      * decides a declaration. */
     uint64_t dist_accrued;  /* Σ credited to v2_reward_accrual          */
     uint32_t n_payday_utxos;/* payday UTXOs emitted at this boundary    */
+    /* Archive reward (storage reward v1 rev 4, package B2a — the storage
+     * boundary, nodus_witness_v2_storage.c, step 1b' below): the storage
+     * settlement credits `v2_reward_accrual` and the exit release writes
+     * `utxo_set` — both CORE legs — so CORE is touched also when
+     * (storage_accrued > 0 || n_storage_releases > 0). Its other writes
+     * (registry fail_streak / status, the treasury pool 1 debit, the
+     * frozen sets, the reports prune, the segment list) are SYSTEM legs,
+     * and SYSTEM is declared on every boundary. */
+    uint64_t storage_accrued;    /* Σ storage credits to accrual         */
+    uint32_t n_storage_releases; /* storage exit release UTXOs written    */
 } nodus_v2_epoch_result_t;
 
 /**
@@ -612,6 +630,26 @@ int nodus_witness_v2_epoch_boundary_apply(nodus_witness_t *w,
                                           nodus_v2_epoch_fault_fn fault,
                                           void *fault_ud,
                                           nodus_v2_epoch_result_t *out);
+
+/**
+ * The boundary's ONE release-UTXO writer (the graduation bond release and
+ * delegation releases use it; archive reward: the storage exit release
+ * too). Column set, order and encodings are exactly the CORE adapter's
+ * UTXO CREATE insert; created_at 0, native token id, domain_id
+ * DNA_DOMAIN_CORE; `owner_fp128` = 128 lowercase-hex chars; the node-
+ * local address-index RELEASE row rides along (out of every root). A
+ * colliding nullifier, any value above the SQLite INTEGER bound or a
+ * DB error is a fault. Runs inside the caller's transaction.
+ * @return 0 / -2 NODE-LOCAL FAULT.
+ */
+int nodus_witness_v2_epoch_release_utxo(nodus_witness_t *w,
+                                        const uint8_t nullifier[64],
+                                        const uint8_t tx_hash[64],
+                                        uint32_t output_index,
+                                        const uint8_t *owner_fp128,
+                                        uint64_t amount,
+                                        uint64_t block_height,
+                                        uint64_t unlock_block);
 
 /**
  * tokenomics-v3 P1 (D-2, D-4, Q1) — the V2 attendance writer. REPLACES

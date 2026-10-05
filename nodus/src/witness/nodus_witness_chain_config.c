@@ -67,7 +67,7 @@
 #define CC_MAX_ACTIVE               DNA_MAX_ACTIVE_VALIDATORS
 
 #define CC_PURPOSE_TAG_LEN          16
-#define CC_PARAM_MAX_ID            15
+#define CC_PARAM_MAX_ID            16
 #define CC_PARAM_MAX_TXS            1
 #define CC_PARAM_BLOCK_INTERVAL     2
 #define CC_PARAM_INFLATION_START    3
@@ -83,12 +83,16 @@
 #define CC_PARAM_NAME_PRICE_6P      13    /* HF-4 — DNAC_CFG_NAME_PRICE_6P */
 #define CC_PARAM_EVM_ACTIVE         DNAC_CFG_EVM_ACTIVE          /* Nodus EVM */
 #define CC_PARAM_EVM_BLOCK_GAS      DNAC_CFG_EVM_BLOCK_GAS_LIMIT /* Nodus EVM */
+#define CC_PARAM_RULESET_GEN_STORAGE 16   /* storage reward v1 —
+                                           * DNAC_CFG_RULESET_GEN_STORAGE */
 /* Number of per-param cache rows dimensions: param ids are 1..CC_PARAM_MAX_ID
  * and index 0 is unused, so the arrays are CC_PARAM_MAX_ID + 1 wide.
  * HF-4 grew it 9 -> 14 (design 2026-10-02-onchain-names-design.md rev 4
  * §1.1): without the slots nodus_chain_config_get_u64 answers -1 for ids
  * 9-13 and every read of them would FAULT on every node. Nodus EVM grew it
- * 14 -> 16 for the same reason (ids 14 EVM_ACTIVE, 15 EVM_BLOCK_GAS). */
+ * 14 -> 16 for the same reason (ids 14 EVM_ACTIVE, 15 EVM_BLOCK_GAS);
+ * storage reward v1 grows it 16 -> 17 (id 16) through the same
+ * derivation. */
 #define CC_PARAM_SLOTS              (CC_PARAM_MAX_ID + 1)
 /* CC_MAX_TXS_HARD_CAP RETIRED (R3 W4-C delta 2) with CC_PARAM_MAX_TXS —
  * no live consumer; the id space stays 1..CC_PARAM_MAX_ID unchanged. */
@@ -167,6 +171,8 @@ _Static_assert(CC_PARAM_NAME_PRICE_3P == DNAC_CFG_NAME_PRICE_3P &&
 _Static_assert(CC_MIN_NAME_PRICE == DNAC_CFG_MIN_NAME_PRICE &&
                CC_MAX_NAME_PRICE == DNAC_CFG_MAX_NAME_PRICE,
                "NAME_PRICE range drift vs dnac");
+_Static_assert(CC_PARAM_RULESET_GEN_STORAGE == DNAC_CFG_RULESET_GEN_STORAGE,
+               "CC_PARAM_RULESET_GEN_STORAGE drift vs dnac param id");
 /* nodus_chain_config.h keeps this as a bare literal so it stays free of
  * shared/ includes — pin it here, the one TU that sees both. */
 _Static_assert(NODUS_CC_RATE_LIMIT_MAX_PROPOSERS == CC_MAX_ACTIVE,
@@ -661,6 +667,15 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
              * nodus_chain_config_stateful_rules. */
             if (new_value != (uint64_t)DNAC_CFG_RULESET_GEN2_D2) return -1;
             break;
+        case CC_PARAM_RULESET_GEN_STORAGE:
+            /* storage reward v1 (design 2026-10-04-storage-reward-v1-
+             * design.md rev 2.2 §6 — "voted like RULESET_GEN2"): EXACTLY
+             * the compiled GEN_STORAGE vote literal, the param-9 shape.
+             * Its stateful rules live in nodus_chain_config_stateful_
+             * rules. */
+            if (new_value != (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D)
+                return -1;
+            break;
         case CC_PARAM_NAME_PRICE_3P:
         case CC_PARAM_NAME_PRICE_4P:
         case CC_PARAM_NAME_PRICE_5P:
@@ -757,6 +772,10 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
              * 17: "Param 9 bekleme süresi ERGONOMIC 720 blok"). Its own
              * return, the HF-3 shape: never the default: branch. */
             return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
+        case CC_PARAM_RULESET_GEN_STORAGE:
+            /* storage reward v1 — ERGONOMIC, param 9's class ("voted like
+             * RULESET_GEN2", design rev 2.2 §6). Its own return. */
+            return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
         case CC_PARAM_NAME_PRICE_3P:
         case CC_PARAM_NAME_PRICE_4P:
         case CC_PARAM_NAME_PRICE_5P:
@@ -794,7 +813,15 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
  * SYSTEM CHAIN_CONFIG exec (nodus_witness_rt_native.c) passes the
  * engine-filled ctx facts and its own runtime's generation, the 0x71
  * approval responder (cc_appr_rules_chain_config below) derives the same
- * three facts at its candidate height — so the two sites cannot fork. */
+ * three facts at its candidate height — so the two sites cannot fork.
+ *
+ * Storage reward v1 (design 2026-10-04-storage-reward-v1-design.md rev
+ * 2.2 §6 — param 16 "voted like RULESET_GEN2"): the 4th argument is the
+ * SINGLE-USE fact OF THE PARAM BEING VOTED — "any committed param-9 row"
+ * for a param-9 vote, "any committed param-16 row" for a param-16 vote —
+ * so this form sets BOTH single-use facts from it (the _ex form reads
+ * only the one matching param_id). The production callers use the _ex
+ * form with each fact read separately. */
 int nodus_chain_config_stateful_rules(uint8_t param_id,
                                       uint64_t effective_block_height,
                                       uint8_t hf2_active,
@@ -804,6 +831,7 @@ int nodus_chain_config_stateful_rules(uint8_t param_id,
     memset(&f, 0, sizeof(f));
     f.hf2_active = hf2_active;
     f.ruleset_gen2_voted = ruleset_gen2_voted;
+    f.ruleset_gen_storage_voted = ruleset_gen2_voted;
     f.judging_generation = judging_generation;
     return nodus_chain_config_stateful_rules_ex(param_id,
                                                 effective_block_height, &f);
@@ -871,12 +899,29 @@ int nodus_chain_config_stateful_rules_ex(uint8_t param_id,
         }
         case CC_PARAM_EVM_BLOCK_GAS:
             return 0;              /* the scalar rules decide it alone   */
+        case CC_PARAM_RULESET_GEN_STORAGE:
+            /* (d) the switch this vote schedules is the EVM generation ->
+             * GEN_STORAGE (nodus_witness_v2_apply.c phase 6b'), so it is
+             * votable only while the EVM generation (NODUS_RT_GEN_STORAGE_
+             * BASE) judges the vote: under any other generation it would
+             * schedule an edge the registry could not take (6b' would
+             * FAULT, every node at once). It also keeps the storage edge
+             * out of the EVM edge's block: a vote judged at the EVM
+             * generation is committed at or after the EVM edge's H, so its
+             * own H-1 lies strictly above the EVM edge block. Then rules
+             * (a)-(c) exactly as param 9 below, (a) over the param-16
+             * fact. A synthetic or unresolved runtime reads 0 here. */
+            if (judging_generation != NODUS_RT_GEN_STORAGE_BASE) return -1;
+            /* fall through */
         case CC_PARAM_RULESET_GEN2: {
-            /* (a) single use: any committed param-9 row — at any
+            /* (a) single use: any committed row OF THIS PARAM — at any
              * effective height, the far-future one included (design §1.2:
              * "a far-future effective retires param 9 for good") —
              * refuses every further vote. */
-            if (ruleset_gen2_voted) return -1;
+            if (param_id == CC_PARAM_RULESET_GEN_STORAGE
+                    ? facts->ruleset_gen_storage_voted != 0
+                    : ruleset_gen2_voted != 0)
+                return -1;
             /* (b) HF-2 must be active at the vote height: the switch
              * leaves CORE's root unchanged at H-1, which phase 9 accepts
              * only while HF-2 is on (HF-2 has no off vote, so on at the
@@ -1186,14 +1231,16 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
      *     the DB path binds an int64 (exec: ctx.ruleset_gen2_voted);
      *   - the judging generation: the runtime the committed SYSTEM
      *     manifest resolves — the registry after the tip names the
-     *     generation that judges tip + 1 = h (exec: rt->generation). */
+     *     generation that judges tip + 1 = h (exec: rt->generation).
+     * Storage reward v1: "any param-16 row" is read the param-9 way
+     * (exec: ctx.ruleset_gen_storage_voted) into its own fact. */
     {
         /* Nodus EVM: + HF-3 at h (param 8), a non-zero gas price at h
          * (param 5) and "any param-14 row" — the EVM_ACTIVE facts the
          * exec reads from ctx (hf3_active / gas_price_on /
          * evm_active_voted), derived here with the same discipline; and
          * (red-team 1 F5) the chain's initial height for param 14. */
-        uint64_t v7 = 0, v9 = 0, v8 = 0, v5 = 0, v14 = 0;
+        uint64_t v7 = 0, v9 = 0, v8 = 0, v5 = 0, v14 = 0, v16 = 0;
         int r7 = nodus_chain_config_get_u64(w, (uint8_t)CC_PARAM_HF2_ACTIVE,
                                             h, 0ULL, &v7);
         int r9 = nodus_chain_config_get_u64(w, (uint8_t)CC_PARAM_RULESET_GEN2,
@@ -1204,8 +1251,11 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
                                             h, 0ULL, &v5);
         int r14 = nodus_chain_config_get_u64(w, (uint8_t)CC_PARAM_EVM_ACTIVE,
                                              (uint64_t)INT64_MAX, 0ULL, &v14);
+        int r16 = nodus_chain_config_get_u64(
+                      w, (uint8_t)CC_PARAM_RULESET_GEN_STORAGE,
+                      (uint64_t)INT64_MAX, 0ULL, &v16);
         const nodus_domain_runtime_t *sys_rt = NULL;
-        if (r7 < 0 || r9 < 0 || r8 < 0 || r5 < 0 || r14 < 0 ||
+        if (r7 < 0 || r9 < 0 || r8 < 0 || r5 < 0 || r14 < 0 || r16 < 0 ||
             (v7 != 0ULL && v7 != CC_HF2_ACTIVE_ON) ||
             (v8 != 0ULL && v8 != CC_HF3_ACTIVE_ON)) {
             snprintf(reason, reason_size,
@@ -1225,6 +1275,7 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
         facts.gas_price_on = (uint8_t)(v5 != 0ULL ? 1u : 0u);
         facts.ruleset_gen2_voted = (uint8_t)(r9 == 0 ? 1u : 0u);
         facts.evm_active_voted = (uint8_t)(r14 == 0 ? 1u : 0u);
+        facts.ruleset_gen_storage_voted = (uint8_t)(r16 == 0 ? 1u : 0u);
         facts.judging_generation = sys_rt->generation;
         /* red-team 1 F5: the chain's first block height, from the stored
          * genesis document (nodus_witness_v2_chain_initial_height — the

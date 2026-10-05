@@ -87,6 +87,7 @@
 #include "crypto/hash/keccak256.h"             /* Nodus EVM: ABI selectors  */
 #include <sys/wait.h>                          /* Nodus EVM: --solc         */
 #endif
+#include "dnac/ledger_roots_v2.h"              /* storage status / segment   */
 #endif
 
 /* CHECKTX-P1 round 3 — the expiry every envelope this CLI builds carries:
@@ -1148,10 +1149,21 @@ static void cc_appr_envelope_free(cc_appr_envelope_t *b) {
  * which generation it runs (cli_select_runtimes below — dnac_ruleset_info,
  * design §1.6) and builds with THAT generation; the lookups made before
  * the session exists use generation 1 only as a "the table is present"
- * check and are replaced after connect. @return the runtime, or NULL. */
+ * check and are replaced after connect.
+ * Storage reward v1: a generation need not carry every domain — GEN_STORAGE
+ * has no EVM slot (the EVM domain's v1 entry stays the EVM generation's,
+ * its registry record untouched by the switch) — so the answer is the
+ * entry of the NEWEST generation <= `generation` that carries the domain;
+ * SYSTEM and CORE are in every generation, so their answer is unchanged.
+ * @return the runtime, or NULL. */
 static const nodus_domain_runtime_t *cli_builtin_runtime(uint32_t domain_id,
                                                          uint32_t generation) {
-    return nodus_runtime_for_generation(generation, domain_id);
+    for (uint32_t g = generation; g >= NODUS_RT_GEN_1; g--) {
+        const nodus_domain_runtime_t *rt =
+            nodus_runtime_for_generation(g, domain_id);
+        if (rt) return rt;
+    }
+    return NULL;
 }
 
 /* HF-4 — the node's last dnac_ruleset_info answer on this process's
@@ -1380,6 +1392,12 @@ static int cc_param_name_to_id(const char *name, uint8_t *out_id) {
         { "evm_active",           DNAC_CFG_EVM_ACTIVE },
         { "EVM_BLOCK_GAS_LIMIT",  DNAC_CFG_EVM_BLOCK_GAS_LIMIT },
         { "evm_block_gas_limit",  DNAC_CFG_EVM_BLOCK_GAS_LIMIT },
+        /* storage reward v1 (design docs/plans/2026-10-04-storage-reward-
+         * v1-design.md rev 2.2 §6, "voted like RULESET_GEN2") — param id
+         * 16, value exactly DNAC_CFG_RULESET_GEN_STORAGE_D; votable only
+         * while the EVM generation judges the vote */
+        { "RULESET_GEN_STORAGE",  DNAC_CFG_RULESET_GEN_STORAGE },
+        { "ruleset_gen_storage",  DNAC_CFG_RULESET_GEN_STORAGE },
     };
     for (size_t i = 0; i < sizeof(map)/sizeof(map[0]); i++) {
         if (strcmp(name, map[i].n) == 0) { *out_id = map[i].id; return 0; }
@@ -1622,6 +1640,10 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             "only; HF-2, HF-3 and a non-zero gas price active)\n"
             "  EVM_BLOCK_GAS_LIMIT    [%llu, %llu]   "
             "(Nodus EVM: the summed declared EVM gas one block may hold)\n"
+            "  RULESET_GEN_STORAGE    exactly %llu   "
+            "(storage-reward rule-set generation from --effective on; "
+            "once only; the EVM generation must be in force; HF-2 must "
+            "be active; --effective - 1 not an epoch boundary)\n"
             "BLOCK_INTERVAL_SEC is not read by the running consensus "
             "and is refused.\n",
             (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
@@ -1636,7 +1658,8 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             (unsigned long long)DNAC_CFG_MAX_NAME_PRICE,
             (unsigned long long)DNAC_CFG_EVM_ACTIVE_D,
             (unsigned long long)DNAC_CFG_MIN_EVM_BLOCK_GAS,
-            (unsigned long long)DNAC_CFG_MAX_EVM_BLOCK_GAS);
+            (unsigned long long)DNAC_CFG_MAX_EVM_BLOCK_GAS,
+            (unsigned long long)DNAC_CFG_RULESET_GEN_STORAGE_D);
         return 1;
     }
     uint8_t param_id = 0;
@@ -1646,7 +1669,7 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
                 "TOKEN_CREATE_FEE_RAW | HF2_ACTIVE | HF3_ACTIVE | "
                 "RULESET_GEN2 | NAME_PRICE_3P | NAME_PRICE_4P | "
                 "NAME_PRICE_5P | NAME_PRICE_6P | EVM_ACTIVE | "
-                "EVM_BLOCK_GAS_LIMIT "
+                "EVM_BLOCK_GAS_LIMIT | RULESET_GEN_STORAGE "
                 "(the parameters the running consensus reads)\n",
                 param_name);
         return 1;
@@ -3878,6 +3901,469 @@ done:
         for (int i = 0; i < 4; i++) nodus_identity_clear(&keys[i]);
         free(keys);
     }
+    return rc;
+}
+
+/* ── `storage register | exit | status` — storage reward v1, package
+ *    B2b-CLI ─────────────────────────────────────────────────────────
+ *
+ * Decision docs/plans/decisions/2026-10-05-storage-reward-is-for-
+ * archive.md (registration, the 1M bond and node-key authority STAY);
+ * call bytes docs/plans/2026-10-04-storage-reward-bytes.md item 5.
+ *
+ * `register` / `exit` act for THIS NODE's identity (-i dir) — the key the
+ * storage node runs with, as the validator-side `stake` verb does: the
+ * exec binds the record to the single signer (rtn_sys_stake_auth, fp ==
+ * SHA3-512(node_pk)), so the envelope is signed by the node key and is
+ * funded from coins that key owns. They build through the shared builder
+ * (nodus_v2_stake_build, ops 7 / 8 — decision 2026-09-25-web-wallet-nodus-
+ * send-transport.md "İşlem kurucu": one C builder for CLI and wallet) and,
+ * like every `v2-envelope` builder, need an explicit `--dry-run` (build
+ * and self-check, submit nothing) or `--submit ip:port`.
+ *   register: SYSTEM STORAGE_REGISTER (call node_pk ‖ bond ‖ payee_fp,
+ *             bond EXACTLY DNAC_STORAGE_STAKE_MIN, payee = the node's own
+ *             fp — the exec's pre-HF-5 rule) + a SYSFUND leg locking the
+ *             bond and paying the fee;
+ *   exit:     SYSTEM STORAGE_EXIT (call = the node key) + a fee-only
+ *             SYSFUND leg; the bond comes back at the next epoch boundary
+ *             as one coin to payee_fp, locked DNAC_STORAGE_EXIT_LOCK_EPOCHS
+ *             epochs (nodus_witness_v2_storage.c step 3).
+ * Both exist only from the GEN_STORAGE rule-set generation; the CLI builds
+ * for the generation the node names and refuses below it. Before building
+ * it reads the node's registry row (dnac_storage_status) and refuses only
+ * what the chain would refuse (register: a row ACTIVE or EXITING; exit: no
+ * row, or not ACTIVE); a failed query is a warning — the chain decides.
+ *
+ * `status [--fp <hex128>]` prints the dnac_storage_status answer for this
+ * node's fp (or --fp): the registry row, the frozen-set membership for the
+ * current epoch and the eligible segments. The last SETTLED outcome is not
+ * recorded on chain (only its fail_streak trace) and is said so. */
+
+static const char *cli_storage_status_name(uint8_t s) {
+    return s == DNA_V2_STORAGE_ACTIVE   ? "ACTIVE"
+         : s == DNA_V2_STORAGE_EXITING  ? "EXITING"
+         : s == DNA_V2_STORAGE_RELEASED ? "RELEASED" : "UNKNOWN";
+}
+
+/* One authenticated session as THIS identity on `submit` (or -s).
+ * @return 0 (*connected set: close owed) / -1 (reason printed). */
+static int cli_storage_session(nodus_client_t *client, int *connected,
+                               const char *submit, const char *server_ip,
+                               uint16_t server_port) {
+    char sip[64];
+    uint16_t sport = 0;
+    if (t6_resolve_target(submit, server_ip, server_port, sip, &sport) != 0) {
+        fprintf(stderr, "invalid --submit target (and no -s server)\n");
+        return -1;
+    }
+    nodus_client_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", sip);
+    cfg.servers[0].port = sport;
+    cfg.server_count    = 1;
+    cfg.auto_reconnect  = false;
+    if (nodus_client_init(client, &cfg, &identity) != 0) {
+        fprintf(stderr, "client_init failed\n");
+        return -1;
+    }
+    *connected = 1;
+    if (nodus_client_connect(client) != 0) {
+        fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
+        return -1;
+    }
+    return 0;
+}
+
+static void cli_storage_status_print(const char *fp_hex,
+                                     const nodus_dnac_storage_status_t *s) {
+    printf("storage node %s\n", fp_hex);
+    printf("  committed height %llu\n",
+           (unsigned long long)s->committed_height);
+    if (!s->found) {
+        printf("  registry: not registered\n");
+    } else {
+        printf("  registry: %s, bond %llu raw, fail_streak %u, registered at "
+               "%llu", cli_storage_status_name(s->status),
+               (unsigned long long)s->bond, (unsigned)s->fail_streak,
+               (unsigned long long)s->registered_height);
+        if (s->exit_height != 0)
+            printf(", exit requested at %llu",
+                   (unsigned long long)s->exit_height);
+        printf("\n  payee: %s\n", s->payee);
+        if (s->grace_until == 0)
+            printf("  grace_until: 0 (never in grace)\n");
+        else
+            printf("  grace_until: %llu — an epoch starting below it is a "
+                   "grace epoch: the node fetches its new segments, is not "
+                   "probed and earns nothing\n",
+                   (unsigned long long)s->grace_until);
+        if (s->epoch_start != 0 && s->epoch_start < s->grace_until)
+            printf("  NOTE: IN GRACE this epoch (%llu < %llu) — not "
+                   "probed, earns nothing, fail_streak unchanged; %llu "
+                   "grace epoch(s) left, this one included\n",
+                   (unsigned long long)s->epoch_start,
+                   (unsigned long long)s->grace_until,
+                   (unsigned long long)(
+                       (s->grace_until - s->epoch_start) /
+                           (uint64_t)DNAC_EPOCH_LENGTH +
+                       ((s->grace_until - s->epoch_start) %
+                            (uint64_t)DNAC_EPOCH_LENGTH != 0)));
+        if (s->fail_streak >= DNA_V2_STORAGE_FAIL_LIMIT)
+            printf("  NOTE: fail_streak >= %u — skipped for segment "
+                   "placement until it recovers\n",
+                   (unsigned)DNA_V2_STORAGE_FAIL_LIMIT);
+    }
+    if (s->epoch_start == 0) {
+        printf("  frozen storage set: none yet (no epoch boundary)\n");
+    } else if (!s->set_exists) {
+        printf("  frozen storage set for epoch (%llu, %llu]: none (storage "
+               "not active at that boundary)\n",
+               (unsigned long long)s->epoch_start,
+               (unsigned long long)(s->epoch_start +
+                                    (uint64_t)DNAC_EPOCH_LENGTH));
+    } else {
+        printf("  frozen storage set for epoch (%llu, %llu]: %u member(s), "
+               "this node %s\n", (unsigned long long)s->epoch_start,
+               (unsigned long long)(s->epoch_start +
+                                    (uint64_t)DNAC_EPOCH_LENGTH),
+               (unsigned)s->set_count, s->member ? "IS a member"
+                                                 : "is NOT a member");
+    }
+    if (s->member) {
+        printf("  eligible segments this epoch: %llu (%llu blocks)",
+               (unsigned long long)s->n_segments,
+               (unsigned long long)(s->n_segments *
+                                    (uint64_t)DNA_V2_SEGMENT_BLOCKS));
+        for (size_t i = 0; i < s->n_listed; i++)
+            printf("%s%llu", i == 0 ? ": " : ", ",
+                   (unsigned long long)s->segments[i]);
+        if (s->n_listed < s->n_segments) printf(", …");
+        printf("\n");
+    }
+    printf("  last settled outcome: not recorded on chain — the settlement "
+           "keeps no per-node verdict; fail_streak above is its only "
+           "trace\n");
+}
+
+static int cmd_storage_status(const char *server_ip, uint16_t server_port,
+                              int argc, char **argv, int cmd_start,
+                              int have_identity) {
+    const char *fp_arg = NULL;
+    for (int i = cmd_start + 2; i < argc; i++) {
+        if (!strcmp(argv[i], "--fp") && i + 1 < argc) fp_arg = argv[++i];
+        else {
+            fprintf(stderr, "Usage: storage status [--fp <hex128>]\n");
+            return 1;
+        }
+    }
+    char fp_hex[129];
+    if (fp_arg) {
+        uint8_t raw[64];
+        if (strlen(fp_arg) != 128 || qgp_fp_hex_to_raw(fp_arg, raw) != 0) {
+            fprintf(stderr, "--fp must be exactly 128 lowercase hex chars\n");
+            return 1;
+        }
+        qgp_fp_raw_to_hex(raw, fp_hex);
+    } else if (have_identity) {
+        snprintf(fp_hex, sizeof(fp_hex), "%s", identity.fingerprint);
+    } else {
+        fprintf(stderr, "storage status needs the node identity (-i <dir>) "
+                "or --fp <hex128>\n");
+        return 1;
+    }
+
+    int rc = 1, connected = 0;
+    nodus_client_t client;
+    memset(&client, 0, sizeof(client));
+    if (cli_storage_session(&client, &connected, NULL, server_ip,
+                            server_port) != 0)
+        goto done;
+    {
+        nodus_dnac_ruleset_info_t ri;
+        memset(&ri, 0, sizeof(ri));
+        if (nodus_client_dnac_ruleset_info(&client, &ri) == 0)
+            printf("rule-set generation %u (storage ops from generation "
+                   "%u)\n", (unsigned)ri.generation,
+                   (unsigned)NODUS_RT_GEN_STORAGE);
+    }
+    nodus_dnac_storage_status_t st;
+    int qrc = nodus_client_dnac_storage_status(&client, fp_hex, &st);
+    if (qrc != 0) {
+        fprintf(stderr, "dnac_storage_status failed (rc=%d) — an older node "
+                "does not answer it\n", qrc);
+        goto done;
+    }
+    cli_storage_status_print(fp_hex, &st);
+    rc = 0;
+done:
+    if (connected) nodus_client_close(&client);
+    return rc;
+}
+
+static int cmd_storage_tx(const char *server_ip, uint16_t server_port,
+                          int argc, char **argv, int cmd_start,
+                          int is_exit) {
+    const char *verb = is_exit ? "exit" : "register";
+    const char *submit = NULL;
+    int dry_run = 0;
+    for (int i = cmd_start + 2; i < argc; i++) {
+        if (!strcmp(argv[i], "--submit") && i + 1 < argc) submit = argv[++i];
+        else if (!strcmp(argv[i], "--dry-run")) dry_run = 1;
+        else { submit = NULL; dry_run = 0; break; }
+    }
+    if (dry_run == (submit != NULL)) {
+        fprintf(stderr,
+            "Usage: -i <node identity dir> storage %s "
+            "(--dry-run | --submit ip:port)\n"
+            "  register: bonds exactly %llu raw (1 000 000 NODUS) from coins "
+            "the node key owns,\n"
+            "            plus the fee; the reward is paid to the node's own "
+            "fingerprint.\n"
+            "  exit:     the bond comes back at the next epoch boundary, "
+            "locked %d epochs.\n"
+            "  --dry-run builds and self-checks, submits nothing.\n",
+            verb, (unsigned long long)DNAC_STORAGE_STAKE_MIN,
+            (int)DNAC_STORAGE_EXIT_LOCK_EPOCHS);
+        return 1;
+    }
+
+    int rc = 1, connected = 0, utxos_valid = 0;
+    nodus_client_t client;
+    memset(&client, 0, sizeof(client));
+    nodus_v2_stake_coin_t *coins = NULL;
+    nodus_v2_stake_built_t built;
+    memset(&built, 0, sizeof(built));
+    nodus_dnac_utxo_result_t utxos;
+    memset(&utxos, 0, sizeof(utxos));
+
+    /* the node fingerprint: the registry key, the payee (until HF-5) and
+     * the owner of the funding coins */
+    uint8_t node_fp[64];
+    char node_fp_hex[QGP_FP_HEX_BUFFER];
+    if (qgp_sha3_512(identity.pk.bytes, DNAC_PUBKEY_SIZE, node_fp) != 0)
+        return 1;
+    qgp_fp_raw_to_hex(node_fp, node_fp_hex);
+
+    if (cli_storage_session(&client, &connected, submit, server_ip,
+                            server_port) != 0)
+        goto done;
+
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    {
+        bool has_chain32 = false;
+        if (nodus_client_dnac_chain_id32(&client, &has_chain32, chain32) != 0 ||
+            !has_chain32) {
+            fprintf(stderr, "this node is not on a version-3 chain (no "
+                    "chain_id32 in its dnac_supply reply)\n");
+            goto done;
+        }
+    }
+    /* build for the generation the node names; the storage ops exist only
+     * from GEN_STORAGE (rtn_gen_storage) */
+    const nodus_domain_runtime_t *sys_rt = NULL, *core_rt = NULL;
+    if (cli_select_runtimes(&client, &sys_rt, &core_rt) != 0) goto done;
+    if (g_cli_sel_gen < NODUS_RT_GEN_STORAGE) {
+        fprintf(stderr, "the node runs rule-set generation %u — storage "
+                "registration exists only from generation %u (the storage "
+                "vote has not taken effect); nothing built\n",
+                (unsigned)g_cli_sel_gen, (unsigned)NODUS_RT_GEN_STORAGE);
+        goto done;
+    }
+
+    /* the registry row: refuse only what the chain refuses */
+    {
+        nodus_dnac_storage_status_t st;
+        int qrc = nodus_client_dnac_storage_status(&client, node_fp_hex, &st);
+        if (qrc != 0) {
+            fprintf(stderr, "warning: dnac_storage_status failed (rc=%d) — "
+                    "the registry row is not checked here; the chain "
+                    "decides\n", qrc);
+        } else if (!is_exit && st.found &&
+                   (st.status == DNA_V2_STORAGE_ACTIVE ||
+                    st.status == DNA_V2_STORAGE_EXITING)) {
+            fprintf(stderr, "this node is already registered (%s) — the "
+                    "chain accepts a registration only for a new node or "
+                    "one whose bond was RELEASED; nothing built\n",
+                    cli_storage_status_name(st.status));
+            goto done;
+        } else if (is_exit && !st.found) {
+            fprintf(stderr, "this node is not registered — nothing to exit; "
+                    "nothing built\n");
+            goto done;
+        } else if (is_exit && st.status != DNA_V2_STORAGE_ACTIVE) {
+            fprintf(stderr, "this node is %s — the chain accepts an exit "
+                    "only from ACTIVE (a repeated exit is rejected); "
+                    "nothing built\n", cli_storage_status_name(st.status));
+            goto done;
+        } else if (is_exit) {
+            printf("storage node ACTIVE, bond %llu raw\n",
+                   (unsigned long long)st.bond);
+        }
+    }
+
+    /* HF-1 gas price (dnac_fee_info) — a failed query is not "price 0" */
+    uint64_t gas_price = 0;
+    {
+        nodus_dnac_fee_info_t fi;
+        memset(&fi, 0, sizeof(fi));
+        int frc = nodus_client_dnac_fee_info(&client, &fi);
+        if (frc != 0) {
+            fprintf(stderr, "dnac_fee_info query failed (rc=%d) — the gas "
+                    "price is unknown, refusing to size a fee\n", frc);
+            goto done;
+        }
+        gas_price = fi.gas_price;
+    }
+
+    /* the node key's CORE coins and the committed tip */
+    {
+        int urc = nodus_client_dnac_utxo(&client, node_fp_hex,
+                                         NODUS_DNAC_MAX_UTXO_RESULTS, &utxos);
+        if (urc != 0) {
+            fprintf(stderr, "dnac_utxo query failed (rc=%d)\n", urc);
+            goto done;
+        }
+        utxos_valid = 1;
+    }
+    const uint64_t tip = utxos.block_height;
+    if (tip == 0) {
+        fprintf(stderr, "the node reported tip 0 (its height read may have "
+                "faulted) — refusing to build an envelope whose expiry "
+                "would be wrong\n");
+        goto done;
+    }
+    if (utxos.count >= (int)NODUS_DNAC_MAX_UTXO_RESULTS)
+        fprintf(stderr, "warning: the coin listing is capped at %d rows and "
+                "came back full — coins beyond it are invisible to this "
+                "selection\n", (int)NODUS_DNAC_MAX_UTXO_RESULTS);
+    coins = calloc((size_t)(utxos.count > 0 ? utxos.count : 1),
+                   sizeof(*coins));
+    if (!coins) goto done;
+    for (int i = 0; i < utxos.count; i++) {
+        const nodus_dnac_utxo_entry_t *e = &utxos.entries[i];
+        memcpy(coins[i].nul, e->nullifier, 64);
+        coins[i].amount = e->amount;
+        memcpy(coins[i].token, e->token_id, 64);
+        coins[i].unlock_block = e->unlock_block;
+    }
+
+    nodus_v2_stake_ruleset_t rs;
+    memset(&rs, 0, sizeof(rs));
+    rs.sys_ruleset_version  = sys_rt->ruleset_version;
+    memcpy(rs.sys_ruleset_hash, sys_rt->ruleset_hash, 64);
+    rs.core_ruleset_version = core_rt->ruleset_version;
+    memcpy(rs.core_ruleset_hash, core_rt->ruleset_hash, 64);
+
+    nodus_v2_stake_req_t sreq;
+    memset(&sreq, 0, sizeof(sreq));
+    sreq.rs        = &rs;
+    sreq.op        = is_exit ? NODUS_V2_STAKE_OP_STORAGE_EXIT
+                             : NODUS_V2_STAKE_OP_STORAGE_REGISTER;
+    sreq.chain32   = chain32;
+    sreq.tip       = tip;
+    if (cli_env_expiry(tip, &sreq.expiry_height) != 0) goto done;
+    sreq.pk        = identity.pk.bytes;
+    sreq.sk        = identity.sk.bytes;
+    sreq.amount    = is_exit ? 0 : DNAC_STORAGE_STAKE_MIN;
+    sreq.dest_fp   = is_exit ? NULL : node_fp;   /* payee = own fp */
+    sreq.gas_price = gas_price;
+    sreq.coins     = coins;
+    sreq.n_coins   = utxos.count;
+    {
+        nodus_v2_stake_err_t se;
+        memset(&se, 0, sizeof(se));
+        int brc = nodus_v2_stake_build(&sreq, &built, &se);
+        if (brc == NODUS_V2_SPEND_ERR_INSUFFICIENT) {
+            if (is_exit)
+                fprintf(stderr, "insufficient native funding for the fee on "
+                        "the node key: have %llu, need %llu over %d "
+                        "input(s)\n", (unsigned long long)se.sum_in,
+                        (unsigned long long)se.need, se.n_in);
+            else
+                fprintf(stderr, "insufficient native funding on the node key "
+                        "%.16s…: have %llu, need %llu (bond %llu + fee %llu) "
+                        "over %d input(s) — fund it first\n", node_fp_hex,
+                        (unsigned long long)se.sum_in,
+                        (unsigned long long)se.need,
+                        (unsigned long long)DNAC_STORAGE_STAKE_MIN,
+                        (unsigned long long)se.fee, se.n_in);
+            goto done;
+        }
+        if (brc == NODUS_V2_SPEND_ERR_GAS_OVERFLOW) {
+            fprintf(stderr, "units %llu x gas price %llu overflows u64 — "
+                    "no fee can pay it\n", (unsigned long long)se.units,
+                    (unsigned long long)se.gas_price);
+            goto done;
+        }
+        if (brc != NODUS_V2_SPEND_OK) {
+            const char *why =
+                brc == NODUS_V2_SPEND_ERR_OVERFLOW   ? "bond+fee overflow"
+              : brc == NODUS_V2_SPEND_ERR_INPUT_SUM  ? "the funding input sum "
+                                                       "overflows u64"
+              : brc == NODUS_V2_SPEND_ERR_PREFLIGHT1 ? "pass-1 preflight failed"
+              : brc == NODUS_V2_SPEND_ERR_SIGN       ? "signature failed"
+              : brc == NODUS_V2_SPEND_ERR_PREFLIGHT2 ? "pass-2 preflight "
+                                                       "(self-check) failed"
+              : brc == NODUS_V2_SPEND_ERR_DECODE     ? "the built envelope did "
+                                                       "not read back as "
+                                                       "requested"
+              : brc == NODUS_V2_SPEND_ERR_EXPIRY     ? "expiry outside the "
+                                                       "mempool window"
+              : brc == NODUS_V2_STAKE_ERR_STORAGE_BOND ? "the bond is not the "
+                                                       "storage bond"
+              : brc == NODUS_V2_STAKE_ERR_PAYEE      ? "the payee is not the "
+                                                       "node's own fingerprint"
+                                                     : "build failed";
+            if (brc == NODUS_V2_SPEND_ERR_SIGN)
+                fprintf(stderr, "leg %d %s\n", se.leg, why);
+            else
+                fprintf(stderr, "%s (rc=%d)\n", why, brc);
+            goto done;
+        }
+    }
+
+    /* what will be sent */
+    printf("storage %s for node %s\n", verb, node_fp_hex);
+    if (is_exit) {
+        printf("  - the node leaves the storage set at the next epoch "
+               "boundary and earns nothing after it\n");
+        printf("  - the bond is returned to the payee at that boundary as one "
+               "coin, locked %d epochs\n", (int)DNAC_STORAGE_EXIT_LOCK_EPOCHS);
+    } else {
+        printf("  - bond: %llu raw (1 000 000 NODUS), locked until an exit "
+               "is released\n", (unsigned long long)DNAC_STORAGE_STAKE_MIN);
+        printf("  - payee: %s (the node's own fingerprint — the only payee "
+               "the chain accepts before HF-5)\n", node_fp_hex);
+        printf("  - the node joins the storage set frozen at the next epoch "
+               "boundary; keep the archive (retain_blocks 0) and the 4004 "
+               "connections to the validators\n");
+    }
+    printf("v2-envelope storage-%s: %zu bytes, inputs=%d sum_in=%llu "
+           "fee=%llu change=%llu tip=%llu\n", verb, built.env_len,
+           built.n_in, (unsigned long long)built.sum_in,
+           (unsigned long long)built.fee, (unsigned long long)built.change,
+           (unsigned long long)tip);
+    printf("  wire_id=");
+    for (int b = 0; b < 64; b++) printf("%02x", built.wire_id[b]);
+    printf("\n  intent_id=");
+    for (int b = 0; b < 64; b++) printf("%02x", built.intent_id[b]);
+    printf("\n");
+    fflush(stdout);
+    if (dry_run) {
+        printf("  PREFLIGHT SELF-CHECK: OK (2 legs SYSTEM %s + CORE "
+               "SYSFUND) — not submitted (--dry-run)\n",
+               is_exit ? "STORAGE_EXIT" : "STORAGE_REGISTER");
+    } else if (t6_submit_on(&client, &identity, built.wire_id, built.env,
+                            (uint32_t)built.env_len) != 0) {
+        goto done;
+    }
+    rc = 0;
+
+done:
+    if (utxos_valid) nodus_client_free_utxo_result(&utxos);
+    if (connected) nodus_client_close(&client);
+    free(coins);
+    nodus_v2_stake_built_free(&built);
     return rc;
 }
 
@@ -8154,6 +8640,11 @@ static void usage(const char *prog) {
     fprintf(stderr, "                        EVM_ACTIVE | EVM_BLOCK_GAS_LIMIT\n");
     fprintf(stderr, "                        (the parameters the running consensus reads)\n");
     fprintf(stderr, "                  run without --value for per-param ranges\n");
+    fprintf(stderr, "  storage register (--dry-run | --submit ip:port)   Register THIS node (-i) as a storage node\n");
+    fprintf(stderr, "                                   (bond exactly 1M NODUS from the node key's coins)\n");
+    fprintf(stderr, "  storage exit (--dry-run | --submit ip:port)       Exit; bond back next boundary, locked %d epochs\n",
+            (int)DNAC_STORAGE_EXIT_LOCK_EPOCHS);
+    fprintf(stderr, "  storage status [--fp <hex128>]   Registry row, storage-set membership, eligible segments\n");
     fprintf(stderr, "  v2-claim --legacy-db <t.db> --db <s.db> --keys <dir>\n");
     fprintf(stderr, "           (--dry-run | --submit ip:port)   Successor GENESIS_CLAIM\n");
     fprintf(stderr, "  v2-envelope stake --keys <dir> --bond <raw = exactly 10M NODUS>\n");
@@ -8342,6 +8833,36 @@ int main(int argc, char **argv) {
     /* S3 — stake: bond THIS node identity as a validator. */
     if (strcmp(command, "stake") == 0) {
         int rc = cmd_stake(server_ip, server_port, argc, argv, optind);
+        nodus_identity_clear(&identity);
+        return rc;
+    }
+
+    /* storage reward v1 (B2b-CLI) — register / exit THIS node identity as
+     * a storage node, or show a storage node's status. register / exit
+     * sign with the node key: without -i the identity above is a random
+     * key that owns no coin and no registry row, so they refuse. */
+    if (strcmp(command, "storage") == 0) {
+        int rc;
+        const char *sub = optind + 1 < argc ? argv[optind + 1] : NULL;
+        if (sub && (strcmp(sub, "register") == 0 ||
+                    strcmp(sub, "exit") == 0)) {
+            if (!identity_dir) {
+                fprintf(stderr, "storage %s signs with the node identity: "
+                        "give -i <node identity dir>\n", sub);
+                rc = 1;
+            } else {
+                rc = cmd_storage_tx(server_ip, server_port, argc, argv,
+                                    optind, strcmp(sub, "exit") == 0);
+            }
+        } else if (sub && strcmp(sub, "status") == 0) {
+            rc = cmd_storage_status(server_ip, server_port, argc, argv,
+                                    optind, identity_dir != NULL);
+        } else {
+            fprintf(stderr, "Usage: -i <node identity dir> storage "
+                    "(register | exit) (--dry-run | --submit ip:port)\n"
+                    "       storage status [--fp <hex128>]\n");
+            rc = 1;
+        }
         nodus_identity_clear(&identity);
         return rc;
     }

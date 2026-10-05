@@ -1420,6 +1420,77 @@ int nodus_dnac_name_result_decode(const uint8_t *raw, size_t raw_len,
 int nodus_dnac_name_prices_decode(const uint8_t *raw, size_t raw_len,
                                   nodus_dnac_name_prices_t *out);
 
+/* ── Storage reward v1 — dnac_storage_status (package B2b-CLI; decision
+ *    docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md) ──
+ *
+ * READ-ONLY, committed tables only. Request "a": {"fp": tstr, exactly 128
+ * lowercase hex = SHA3-512(node_pk)}. Response "r":
+ *   "ch"    u64   the node's committed tip
+ *   "es"    u64   H = ch − (ch mod E): the boundary whose frozen
+ *                 storage_set(H) governs epoch (H, H+E]; 0 = none yet
+ *   "found" bool  the storage registry row exists; when (and only when)
+ *                 true also:
+ *     "st"    u8   1 ACTIVE / 2 EXITING / 3 RELEASED
+ *     "bond"  u64  raw
+ *     "fs"    u32  fail_streak (live registry value)
+ *     "gu"    u64  grace_until (live registry value; K9 — epoch (H, H+E]
+ *                  is in grace while H < gu: not probed, earns nothing)
+ *     "rh"    u64  registered_height (>= 1)
+ *     "xh"    u64  exit_height (0 = no exit)
+ *     "payee" tstr 128 lowercase hex
+ *   "set"   bool  storage_set(H) exists
+ *   "sc"    u32   its member count (0..NODUS_DNAC_STORAGE_SET_MAX)
+ *   "mem"   bool  the node is a member of storage_set(H)
+ *   "ns"    u64   segments ELIGIBLE for the node in (H, H+E] (assigned or
+ *                 in the handoff overlap, 0 while in grace; K1 weight =
+ *                 ns × 17280 blocks)
+ *   "segs"  array of u64: the first min(ns, NODUS_DNAC_STORAGE_SEG_MAX)
+ *                 of them, k strictly ascending
+ * Rules the decoder enforces: every key above present exactly once (the
+ * row keys iff found; a duplicate refuses, an unknown key is skipped as in
+ * every v3d_* decoder); es <= ch; !set ⇒ sc 0 ∧ !mem;
+ * mem ⇒ found ∧ set; !mem ⇒ ns 0; |segs| = min(ns, SEG_MAX); k >= 1.
+ * The last SETTLED outcome is NOT in the reply — the chain records no
+ * per-member verdict (fail_streak is its only committed trace). An older
+ * node answers "unknown DNAC method". One node is trusted for the answer
+ * (as every dnac_* query). */
+
+/** Members of one frozen storage set at most (DNA_V2_STORAGE_SET_MAX). */
+#define NODUS_DNAC_STORAGE_SET_MAX  256u
+/** Eligible segment numbers one dnac_storage_status reply lists. */
+#define NODUS_DNAC_STORAGE_SEG_MAX  64u
+
+typedef struct {
+    uint64_t committed_height;         /* "ch"                           */
+    uint64_t epoch_start;              /* "es"                           */
+    bool     found;
+    uint8_t  status;                   /* "st": 1..3 when found          */
+    uint64_t bond;
+    uint32_t fail_streak;
+    uint64_t grace_until;              /* "gu" (K9)                      */
+    uint64_t registered_height;
+    uint64_t exit_height;
+    char     payee[129];               /* 128 hex + NUL                  */
+    bool     set_exists;               /* "set"                          */
+    uint32_t set_count;                /* "sc"                           */
+    bool     member;                   /* "mem"                          */
+    uint64_t n_segments;               /* "ns"                           */
+    size_t   n_listed;                 /* entries of segments[]          */
+    uint64_t segments[NODUS_DNAC_STORAGE_SEG_MAX];
+} nodus_dnac_storage_status_t;
+
+/** dnac_storage_status for `node_fp_hex` (128 lowercase hex). @return 0;
+ *  a NODUS_ERR_* the node answered (an older node: "unknown DNAC
+ *  method"); NODUS_ERR_PROTOCOL_ERROR for a reply the decoder refuses;
+ *  NODUS_ERR_TIMEOUT; -1 on invalid args / transport failure. */
+int nodus_client_dnac_storage_status(nodus_client_t *client,
+                                     const char *node_fp_hex,
+                                     nodus_dnac_storage_status_t *out);
+/** Its raw-reply decoder, exported for tests (no network).
+ *  @return 0 / -1 malformed (the rules above). */
+int nodus_dnac_storage_status_decode(const uint8_t *raw, size_t raw_len,
+                                     nodus_dnac_storage_status_t *out);
+
 #define NODUS_DNAC_V3_BLOCK_BUDGET_MIN      1024u
 #define NODUS_DNAC_V3_BLOCK_BUDGET_MAX      (1024u * 1024u)
 /** Items one page may carry — bounds the client's allocation. */

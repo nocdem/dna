@@ -45,6 +45,11 @@ struct nodus_witness_p2p;
  * opaque — nodus_witness_chain_config.c. */
 typedef struct nodus_cc_collect nodus_cc_collect_t;
 
+/* The archive probe's runtime, opaque — nodus_witness_storage_reporter.c. */
+struct nodus_stprobe_rt;
+/* The archive holder's runtime, opaque — nodus_witness_storage_holder.c. */
+struct nodus_sthold_rt;
+
 /** How long one approval collection waits for the seats it asked, from
  *  its start, in milliseconds of the MONOTONIC clock (nodus_p2p_mono_ns).
  *  The per-seat budget the CLI used when it dialed each seat itself
@@ -67,6 +72,12 @@ typedef struct nodus_cc_collect nodus_cc_collect_t;
 
 /* ── Witness configuration ───────────────────────────────────────── */
 
+/** The segment directory's name bound (nodus_witness_config_t
+ *  segment_dir, NUL included) and its default name under the witness
+ *  data path (storage reward package B2b-2). */
+#define NODUS_SEG_DIR_NAME_MAX      64
+#define NODUS_SEG_DIR_DEFAULT       "segments"
+
 typedef struct {
     /* R3 W4 — halt_auto_recover (and the halt_recovery_check it gated)
      * is deleted with the closed consensus lane: the legacy safety_halt
@@ -86,6 +97,12 @@ typedef struct {
      * 7 paydays × 17280 blocks. No consensus byte depends on it — the
      * value may differ per node. */
     int64_t  retain_blocks;
+    /* Storage reward package B2b-2 — the directory, UNDER the witness
+     * data path, that holds this node's archive segment files
+     * (nodus_witness_storage_segment.h). nodus.json "segment_dir": one
+     * path component (no '/', not "." or ".."); "" (the default) =
+     * NODUS_SEG_DIR_DEFAULT. Node-local; never a consensus input. */
+    char     segment_dir[NODUS_SEG_DIR_NAME_MAX];
 } nodus_witness_config_t;
 
 /* P2P-PORT F5 — nodus_witness_roster_entry_t / nodus_witness_roster_t (the
@@ -192,7 +209,7 @@ typedef struct {
  * database of any rung gets it on open; user_version stays 16 — no
  * migration rung, no pre-H root moves (an empty table is the name leg's
  * existing tagged-empty root). The column shape is checked on EVERY open
- * against this same text (nodus_witness.c witness_v2_names_ddl_check —
+ * against this same text (nodus_witness.c witness_ddl_shape_check —
  * the stored sqlite_master.sql must equal what this build's SQLite
  * stores for this exact statement); a mismatch refuses this node's open.
  * The body is shared so the CREATE and the check can never disagree. */
@@ -204,6 +221,149 @@ typedef struct {
     "registered_height >= 1)) WITHOUT ROWID"
 #define NODUS_V2_NAMES_DDL                                                \
     "CREATE TABLE IF NOT EXISTS " NODUS_V2_NAMES_DDL_BODY
+
+/* Storage reward v1 (decision docs/plans/decisions/2026-10-04-storage-
+ * reward-approved.md; design docs/plans/2026-10-04-storage-reward-v1-
+ * design.md rev 2.2 §1; leaf docs/plans/2026-10-04-storage-reward-
+ * bytes.md item 1) — the storage registry, one row per node:
+ *   node_fp            SHA3-512(node_pk), the row key (64 B)
+ *   node_pk            the node's ML-DSA-87 key (DNAC_PUBKEY_SIZE B)
+ *   payee_fp           where the storage reward accrues (64 B; equal to
+ *                      node_fp until HF-5 re-keys it — the exec rule)
+ *   bond               DNAC_STORAGE_STAKE_MIN while counted in supply
+ *   status             1 ACTIVE / 2 EXITING / 3 RELEASED
+ *   registered_height  the height of the (re-)registration (>= 1)
+ *   exit_height        the height of the STORAGE_EXIT (0 = none)
+ *   fail_streak        archive reward (bytes doc docs/plans/2026-10-05-
+ *                      archive-reward-bytes.md item 4): consecutive
+ *                      settled epochs NOT OK while the member had >= 1
+ *                      eligible block; 0 on OK; >= 3 skips the member
+ *                      for placement (u32 range)
+ *   grace_until        K9 (decision docs/plans/decisions/2026-10-05-
+ *                      storage-reward-is-for-archive.md): an epoch whose
+ *                      start H is < grace_until is not probed and not
+ *                      paid for this node; raised at a storage boundary
+ *                      H to max(grace_until, H + n·E) when the node
+ *                      gains n > 0 segments (0..INT64_MAX: a u64 above
+ *                      it is a fault, the stored-INTEGER rule)
+ * The v2_names discipline: typed CHECKs on every column (one storage
+ * class, BINARY order), WITHOUT ROWID, in the BASE schema (an empty table
+ * on every chain before the storage activation — no migration rung,
+ * user_version unchanged), its exact shape checked on EVERY open
+ * (nodus_witness.c witness_ddl_shape_check over this same text). The
+ * registry leaf hashes every column except node_pk (leaf v2, archive
+ * bytes item 4); node_pk is kept so the node's identity is recoverable
+ * from state. B1's 7-column shape was never on any main-line database
+ * (branch p1-storage-reward only), so the column is part of the base
+ * shape, not a migration; grace_until (K9) joins it the same way. */
+#define NODUS_V2_STORAGE_DDL_BODY                                        \
+    "v2_storage_nodes(node_fp BLOB NOT NULL PRIMARY KEY CHECK("           \
+    "typeof(node_fp)='blob' AND length(node_fp)=64), node_pk BLOB NOT "   \
+    "NULL CHECK(typeof(node_pk)='blob' AND length(node_pk)=2592), "       \
+    "payee_fp BLOB NOT NULL CHECK(typeof(payee_fp)='blob' AND "           \
+    "length(payee_fp)=64), bond INTEGER NOT NULL CHECK(typeof(bond)="     \
+    "'integer' AND bond >= 0), status INTEGER NOT NULL CHECK(typeof("     \
+    "status)='integer' AND status IN (1, 2, 3)), registered_height "      \
+    "INTEGER NOT NULL CHECK(typeof(registered_height)='integer' AND "     \
+    "registered_height >= 1), exit_height INTEGER NOT NULL CHECK(typeof(" \
+    "exit_height)='integer' AND exit_height >= 0), fail_streak INTEGER "  \
+    "NOT NULL CHECK(typeof(fail_streak)='integer' AND fail_streak "       \
+    "BETWEEN 0 AND 4294967295), grace_until INTEGER NOT NULL CHECK("      \
+    "typeof(grace_until)='integer' AND grace_until >= 0)) WITHOUT ROWID"
+#define NODUS_V2_STORAGE_DDL                                              \
+    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STORAGE_DDL_BODY
+
+/* Archive reward (decision docs/plans/decisions/2026-10-05-archive-
+ * reward-bytes-approved.md; design docs/plans/2026-10-05-archive-reward-
+ * design.md rev 4 §1-§5, rev 2.2 §2/§4/§5) — the four tables of the
+ * storage leg beside the registry, same discipline (typed CHECKs, WITHOUT
+ * ROWID, base schema, exact shape checked on EVERY open, preflight-
+ * required). Written ONLY by the GEN_STORAGE STORAGE_REPORT exec (reports)
+ * and the storage epoch boundary (nodus_witness_v2_storage.c: sets,
+ * members, segments, report pruning). Empty on every chain before the
+ * storage activation (their tagged-empty roots).
+ *
+ * v2_storage_sets — one row per frozen storage set S(H) (rev 2.2 §2,
+ * bytes 2026-10-04 item 2), INCLUDING an empty set (count 0 is a real
+ * sets leaf, so it needs a row of its own):
+ *   epoch_start   the boundary H the set was frozen at
+ *   set_hash      S(H) as frozen; the sets_root loader re-derives it from
+ *                 the member rows and fails on any difference
+ *   member_count  |storage_set(H)|, 0..256 */
+#define NODUS_V2_STSETS_DDL_BODY                                          \
+    "v2_storage_sets(epoch_start INTEGER NOT NULL PRIMARY KEY CHECK("     \
+    "typeof(epoch_start)='integer' AND epoch_start >= 1), set_hash BLOB " \
+    "NOT NULL CHECK(typeof(set_hash)='blob' AND length(set_hash)=64), "   \
+    "member_count INTEGER NOT NULL CHECK(typeof(member_count)='integer' " \
+    "AND member_count BETWEEN 0 AND 256)) WITHOUT ROWID"
+#define NODUS_V2_STSETS_DDL                                               \
+    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STSETS_DDL_BODY
+
+/* v2_storage_set_members — the members of each frozen set, node_fp ASC
+ * is the bitmap order (bit i = member i):
+ *   epoch_start, node_fp  the key (node_fp = SHA3-512(node_pk))
+ *   fail_streak           the member's registry fail_streak AS FROZEN at
+ *                         epoch_start — the input of holders(k, H)
+ *                         (bytes item 3 "fail_streak < 3") for the grace
+ *                         and handoff rule two boundaries later (design
+ *                         rev 4 §2). NOT hashed by S(H) (bytes item 2 is
+ *                         node_fp only): it is a deterministic copy of
+ *                         the registry leaf v2 committed at H (the
+ *                         v2_balance_copy class).
+ *   grace_until           K9: the member's registry grace_until AFTER
+ *                         the grace update of boundary epoch_start (the
+ *                         value the registry leaf commits at that
+ *                         boundary) — the epoch (H, H+E] is in grace for
+ *                         this member iff H < grace_until (nodus_witness_
+ *                         v2_storage.h "ELIGIBILITY"). Same copy class
+ *                         as fail_streak, not hashed by S(H). */
+#define NODUS_V2_STMEMB_DDL_BODY                                          \
+    "v2_storage_set_members(epoch_start INTEGER NOT NULL CHECK(typeof("   \
+    "epoch_start)='integer' AND epoch_start >= 1), node_fp BLOB NOT NULL "\
+    "CHECK(typeof(node_fp)='blob' AND length(node_fp)=64), fail_streak "  \
+    "INTEGER NOT NULL CHECK(typeof(fail_streak)='integer' AND "           \
+    "fail_streak BETWEEN 0 AND 4294967295), grace_until INTEGER NOT "     \
+    "NULL CHECK(typeof(grace_until)='integer' AND grace_until >= 0), "    \
+    "PRIMARY KEY (epoch_start, node_fp)) WITHOUT ROWID"
+#define NODUS_V2_STMEMB_DDL                                               \
+    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STMEMB_DDL_BODY
+
+/* v2_storage_reports — the committed STORAGE_REPORTs (rev 2.2 §4, bytes
+ * 2026-10-04 item 3), first applied (epoch_start, seat) wins:
+ *   epoch_start, seat  the key (seat = index in snapshot(epoch_start))
+ *   set_hash           S(H) the report was made against (== the frozen)
+ *   bitmap             bitmap_len = ceil(count/8) bytes, 0..32 (LSB-first
+ *                      bit i = member i) */
+#define NODUS_V2_STREPS_DDL_BODY                                          \
+    "v2_storage_reports(epoch_start INTEGER NOT NULL CHECK(typeof("       \
+    "epoch_start)='integer' AND epoch_start >= 1), seat INTEGER NOT NULL "\
+    "CHECK(typeof(seat)='integer' AND seat BETWEEN 0 AND 4294967295), "   \
+    "set_hash BLOB NOT NULL CHECK(typeof(set_hash)='blob' AND "           \
+    "length(set_hash)=64), bitmap BLOB NOT NULL CHECK(typeof(bitmap)="    \
+    "'blob' AND length(bitmap) <= 32), PRIMARY KEY (epoch_start, seat)) " \
+    "WITHOUT ROWID"
+#define NODUS_V2_STREPS_DDL                                               \
+    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STREPS_DDL_BODY
+
+/* v2_storage_segments — the published segment list (archive bytes items
+ * 1-2), never pruned:
+ *   k                 the segment number (heights ((k−1)·17280, k·17280])
+ *   root              Root(k) from v2_blocks.block_id
+ *   published_height  the storage boundary that published it — NOT in the
+ *                     leaf (bytes item 2 is (k, Root(k))); implied by the
+ *                     committed segments_root history, and the input of
+ *                     the grace rule (a segment is eligible in epoch
+ *                     (H, H+E] only when published at or before H−E) */
+#define NODUS_V2_STSEGS_DDL_BODY                                          \
+    "v2_storage_segments(k INTEGER NOT NULL PRIMARY KEY CHECK(typeof(k)=" \
+    "'integer' AND k >= 1), root BLOB NOT NULL CHECK(typeof(root)='blob' "\
+    "AND length(root)=64), published_height INTEGER NOT NULL CHECK("      \
+    "typeof(published_height)='integer' AND published_height >= 1)) "     \
+    "WITHOUT ROWID"
+#define NODUS_V2_STSEGS_DDL                                               \
+    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STSEGS_DDL_BODY
+_Static_assert(DNAC_PUBKEY_SIZE == 2592,
+               "NODUS_V2_STORAGE_DDL spells the node_pk length 2592");
 _Static_assert(NODUS_V2_ACTIVE_SET_MAX <= DNAC_MAX_ACTIVE_VALIDATORS,
                "successor active-set max exceeds resource ceiling");
 _Static_assert(DNAC_TARGET_ACTIVE_DEFAULT == NODUS_V2_ACTIVE_SET_MAX,
@@ -344,6 +504,24 @@ typedef struct nodus_witness {
      * nodus_witness_cc_collect_abort). RUNTIME ONLY — never persisted,
      * never a consensus input. */
     nodus_cc_collect_t          *cc_collect;
+
+    /* The archive probe's runtime (storage reward package B2b-1,
+     * nodus_witness_storage_reporter.h): the reporter's probing and
+     * reporting epochs and the serving side's requester gaps. Heap,
+     * created on first use, freed by nodus_witness_close
+     * (nodus_witness_stprobe_free). RUNTIME ONLY — never persisted, never
+     * a consensus input: it reaches state only through this node's own
+     * signed STORAGE_REPORT (design rev 4 §7 D3). */
+    struct nodus_stprobe_rt     *stprobe;
+
+    /* The archive holder's runtime (storage reward package B2b-2,
+     * nodus_witness_storage_holder.h): the must-hold list, the open
+     * segment build (export / fetch), the 0x73 fetch client and the
+     * serving side's per-requester budgets. Heap, created on first use,
+     * freed by nodus_witness_close (nodus_witness_sthold_free). RUNTIME
+     * ONLY — never a consensus input: it decides which files this node
+     * keeps in its segment directory (design rev 4 §7 D4). */
+    struct nodus_sthold_rt      *sthold;
 
     /* CC-OPS-004 / Q16 — chain_config_history lookup cache.
      *

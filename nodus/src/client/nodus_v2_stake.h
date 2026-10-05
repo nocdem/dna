@@ -1,7 +1,8 @@
 /**
  * @file nodus/src/client/nodus_v2_stake.h
  * @brief The shared version-3 staking envelope builder — STAKE, DELEGATE,
- *        UNSTAKE, UNDELEGATE — build + read back, no I/O.
+ *        UNSTAKE, UNDELEGATE, STORAGE_REGISTER, STORAGE_EXIT — build + read
+ *        back, no I/O.
  *
  * Governing records: docs/plans/decisions/2026-09-25-web-wallet-nodus-send-
  * transport.md ("İşlem kurucu": the wallet builds with the SAME C code
@@ -36,11 +37,24 @@
  *                       must be that key — rtn_sys_stake_auth)
  *     UNDELEGATE (op 4) the DELEGATE layout (rtn_deleg_parse,
  *                       RTN_SYS_UNDELEGATE_CALL_LEN)
+ *     STORAGE_REGISTER (op 7) node_pk[2592] ‖ bond u64 BE
+ *                       ‖ payee_fp[64 raw]                   = 2664 bytes
+ *                       (RTN_SYS_STREG_CALL_LEN, rtn_streg_parse; bytes doc
+ *                       docs/plans/2026-10-04-storage-reward-bytes.md item 5)
+ *     STORAGE_EXIT     (op 8) node_pk[2592]                  = 2592 bytes
+ *                       (RTN_SYS_STEXIT_CALL_LEN; rtn_sys_call_identity:
+ *                       the call IS the node key, the signer must be it)
+ *     Both storage ops exist only under the GEN_STORAGE rule set
+ *     (rtn_gen_storage): the caller passes that generation's tuples.
  *   leg1 CORE SYSFUND (op 7) = a SPEND transfer section (rtn_sysfund_parse):
  *     in_count ‖ nullifiers ascending ‖ out_count (0/1) ‖ native change.
  *   Conservation (rtn_sysfund_exec): Σnative_in == Σchange + fee + lock,
- *   where rtn_sys_call_flow derives lock = bond (STAKE) / amount (DELEGATE)
- *   / 0 (UNSTAKE, UNDELEGATE). UNDELEGATE's funding leg therefore pays the
+ *   where rtn_sys_call_flow derives lock = bond (STAKE, STORAGE_REGISTER) /
+ *   amount (DELEGATE) / 0 (UNSTAKE, UNDELEGATE, STORAGE_EXIT). STORAGE_EXIT
+ *   moves no value in its block: the exec marks the row EXITING
+ *   (rtn_storage_exit_exec) and the storage boundary releases the bond as
+ *   one UTXO to payee_fp locked DNAC_STORAGE_EXIT_LOCK_EPOCHS epochs
+ *   (nodus_witness_v2_storage.c step 3). UNDELEGATE's funding leg pays the
  *   FEE ONLY; its principal comes back as a release coin the CHAIN creates
  *   in the same block (rtn_sysfund_release_coin), LOCKED until L(h) +
  *   DNAC_UNDELEGATE_LOCK_EPOCHS · E — this builder writes no release output.
@@ -62,13 +76,21 @@
  *   UNDELEGATE 1 <= amount <= DNAC_DEFAULT_TOTAL_SUPPLY
  *   UNSTAKE    nothing — the call is the signer's own key; `amount`,
  *              `commission_bps`, `dest_fp` and `validator_pk` are ignored
+ *   STORAGE_REGISTER
+ *              bond == DNAC_STORAGE_STAKE_MIN and payee (`dest_fp`) ==
+ *              SHA3-512(pk) (rtn_storage_register_exec: the payee is the
+ *              node's own fingerprint until HF-5 re-keys it)
+ *   STORAGE_EXIT
+ *              nothing — the UNSTAKE shape (call = the node key)
  * Everything that needs committed state is the chain's, at CheckTx:
  * DELEGATE — a bonded target, DNAC_MIN_DELEGATION for a NEW row, the
  * per-validator delegator cap; UNDELEGATE — the row exists, amount <= its
  * amount, a partial withdrawal leaves 0 or >= DNAC_MIN_DELEGATION
  * (rtn_undelegate_exec); UNSTAKE — the validator row exists and is ACTIVE
  * or ELIGIBLE (a repeated UNSTAKE finds it RETIRING and is rejected,
- * rtn_unstake_exec).
+ * rtn_unstake_exec); STORAGE_REGISTER — no ACTIVE / EXITING row for the
+ * node, fewer than NODUS_STORAGE_SET_MAX live rows; STORAGE_EXIT — the row
+ * exists and is ACTIVE (rtn_storage_register_exec / _exit_exec).
  *
  * RULESET IDENTITY: leg0 is built against the SYSTEM ruleset tuple and leg1
  * against the CORE one; both hashes enter the digests the signature covers
@@ -107,10 +129,13 @@ extern "C" {
 #define NODUS_V2_STAKE_FUND_EFFECT_BYTES  16384u
 
 /** SYSTEM call lengths (rtn_stake_parse / rtn_deleg_parse /
- *  RTN_SYS_UNSTAKE_CALL_LEN). */
+ *  RTN_SYS_UNSTAKE_CALL_LEN / RTN_SYS_STREG_CALL_LEN /
+ *  RTN_SYS_STEXIT_CALL_LEN). */
 #define NODUS_V2_STAKE_CALL_LEN           2666u
 #define NODUS_V2_DELEG_CALL_LEN           5192u
 #define NODUS_V2_UNSTAKE_CALL_LEN         2592u
+#define NODUS_V2_STREG_CALL_LEN           2664u
+#define NODUS_V2_STEXIT_CALL_LEN          2592u
 
 /** Refusals of this module beyond the shared nodus_v2_spend_rc_t values it
  *  also returns (ERR_ARG, ERR_ALLOC, ERR_OVERFLOW, ERR_INPUT_SUM,
@@ -120,17 +145,24 @@ typedef enum {
     NODUS_V2_STAKE_ERR_BOND       = -40,  /* STAKE bond != the self-bond   */
     NODUS_V2_STAKE_ERR_COMMISSION = -41,  /* > DNAC_COMMISSION_BPS_MAX     */
     NODUS_V2_STAKE_ERR_AMOUNT     = -42,  /* outside 1..total supply       */
-    NODUS_V2_STAKE_ERR_OP         = -43   /* not STAKE/DELEGATE/UNSTAKE/
-                                           * UNDELEGATE                   */
+    NODUS_V2_STAKE_ERR_OP         = -43,  /* not STAKE/DELEGATE/UNSTAKE/
+                                           * UNDELEGATE/STORAGE_REGISTER/
+                                           * STORAGE_EXIT                 */
+    NODUS_V2_STAKE_ERR_STORAGE_BOND = -44,  /* STORAGE_REGISTER bond !=
+                                             * DNAC_STORAGE_STAKE_MIN     */
+    NODUS_V2_STAKE_ERR_PAYEE      = -45   /* STORAGE_REGISTER payee !=
+                                           * SHA3-512(pk) (until HF-5)    */
 } nodus_v2_stake_rc_t;
 
 /** Which SYSTEM record leg — the value IS the runtime_op on the wire
  *  (nodus_witness_runtime.h DNA_SYSRULE_*). */
 typedef enum {
-    NODUS_V2_STAKE_OP_STAKE      = 1,
-    NODUS_V2_STAKE_OP_DELEGATE   = 2,
-    NODUS_V2_STAKE_OP_UNSTAKE    = 3,
-    NODUS_V2_STAKE_OP_UNDELEGATE = 4
+    NODUS_V2_STAKE_OP_STAKE            = 1,
+    NODUS_V2_STAKE_OP_DELEGATE         = 2,
+    NODUS_V2_STAKE_OP_UNSTAKE          = 3,
+    NODUS_V2_STAKE_OP_UNDELEGATE       = 4,
+    NODUS_V2_STAKE_OP_STORAGE_REGISTER = 7,
+    NODUS_V2_STAKE_OP_STORAGE_EXIT     = 8
 } nodus_v2_stake_op_t;
 
 /** The two ruleset tuples a staking envelope is built against. */
@@ -160,15 +192,18 @@ typedef struct {
                                       * EXPIRY_AHEAD]                       */
     const uint8_t *pk;               /* ML-DSA-87 pk 2592 B: the record
                                       * identity (staker / delegator /
-                                      * the retiring validator), the
-                                      * signer of both legs and the owner of
-                                      * every funding coin                  */
+                                      * the retiring validator / the
+                                      * storage node), the signer of both
+                                      * legs and the owner of every
+                                      * funding coin                        */
     const uint8_t *sk;               /* 4896 B                              */
-    uint64_t       amount;           /* STAKE: the bond; DELEGATE /
-                                      * UNDELEGATE: the amount; UNSTAKE:
-                                      * ignored                             */
+    uint64_t       amount;           /* STAKE / STORAGE_REGISTER: the bond;
+                                      * DELEGATE / UNDELEGATE: the amount;
+                                      * UNSTAKE / STORAGE_EXIT: ignored     */
     uint32_t       commission_bps;   /* STAKE only                          */
-    const uint8_t *dest_fp;          /* STAKE only: 64 raw bytes            */
+    const uint8_t *dest_fp;          /* STAKE: the unstake destination;
+                                      * STORAGE_REGISTER: the payee_fp
+                                      * (must be SHA3-512(pk)); 64 raw B    */
     const uint8_t *validator_pk;     /* DELEGATE / UNDELEGATE: 2592 B       */
     uint64_t       gas_price;        /* 0 = rule off (the flat floor)       */
     const nodus_v2_stake_coin_t *coins;
@@ -203,12 +238,15 @@ typedef struct {
     uint64_t expiry_height, fee, units;
     uint32_t sys_ruleset_version, core_ruleset_version;
     uint8_t  identity_pk[2592];          /* staker / delegator / the
-                                          * retiring validator (UNSTAKE)    */
+                                          * retiring validator (UNSTAKE) /
+                                          * the storage node (ops 7, 8)     */
     uint8_t  validator_pk[2592];         /* DELEGATE / UNDELEGATE; zero
-                                          * for STAKE and UNSTAKE           */
-    uint64_t amount;                     /* bond / amount; 0 for UNSTAKE    */
+                                          * for every other op              */
+    uint64_t amount;                     /* bond / amount; 0 for UNSTAKE
+                                          * and STORAGE_EXIT                */
     uint32_t commission_bps;             /* STAKE                           */
-    uint8_t  dest_fp[64];                /* STAKE                           */
+    uint8_t  dest_fp[64];                /* STAKE: unstake destination;
+                                          * STORAGE_REGISTER: payee_fp      */
     int      n_in;
     uint8_t  in_nul[NODUS_V2_SPEND_MAX_IN][64];
     int      n_out;                      /* 0 or 1                          */
@@ -232,8 +270,8 @@ typedef struct {
  * back and refuse if any decoded field differs from the request.
  *   fee    = max(DNAC_MIN_FEE_RAW, NODUS_W_BASE_TX_FEE), raised to
  *            NODUS_V2_STAKE_UNITS × gas_price when that is larger;
- *   need   = lock + fee (lock = amount for STAKE/DELEGATE, 0 for
- *            UNSTAKE and UNDELEGATE);
+ *   need   = lock + fee (lock = amount for STAKE / DELEGATE /
+ *            STORAGE_REGISTER, 0 for UNSTAKE / UNDELEGATE / STORAGE_EXIT);
  *   inputs = eligible coins ascending by nullifier, taken until their sum
  *            covers `need`, at most NODUS_V2_SPEND_MAX_IN;
  *   change = sum − need, one native output to the signer when > 0.
@@ -247,7 +285,8 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
  *  other shape (leg count, domains, ops, access modes, auth kind / length,
  *  effect declarations, call lengths, input order, change owner hex, a
  *  non-native or zero change, an auth blob not carrying exactly one signer
- *  whose key is the record identity).
+ *  whose key is the record identity, a STORAGE_REGISTER whose payee_fp is
+ *  not SHA3-512 of the node key — the pre-HF-5 exec rule).
  *  @return NODUS_V2_SPEND_OK / _ERR_ARG / _ERR_ALLOC / _ERR_DECODE /
  *  _ERR_HASH. */
 int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,

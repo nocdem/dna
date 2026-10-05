@@ -14,6 +14,16 @@
  *      pre-genesis empty states.
  *   3. 7/7 determinism: seven independent witness instances with identical
  *      state compute identical SYSTEM/CORE/domains/global roots.
+ *   4. Storage reward v1 (test_storage_layer): the registry (leaf v2 with
+ *      fail_streak and, K9, grace_until — the 181-byte preimage restated),
+ *      sets and reports trees, the 4-leg storage_root
+ *      ("NDS.STOR.v2", archive reward), "NDS.SYS.v5" and the exit release
+ *      identity — structural checks (the segment trees and the archive
+ *      KATs: test_storage_b2).
+ *   5. Storage reward v1 (test_storage_kat): every vector of the
+ *      independent oracle's nodus/tests/vectors/storage_reward_kat.json
+ *      the C still hashes, byte for byte (json-c; path from CMake); the
+ *      leaf v1 / STOR.v1 sections are named SUPERSEDED.
  *
  * @file test_roots_v2.c
  */
@@ -27,6 +37,12 @@
 #include "witness/nodus_witness_vset.h"
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_v2_claims.h"
+#include "crypto/hash/qgp_sha3.h"
+
+#ifdef STORAGE_REWARD_KAT_PATH
+#include <json-c/json.h>
+#include <errno.h>
+#endif
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -87,6 +103,19 @@ static const char *EMPTY_KAT[DNA_V2_EMPTY__COUNT] = {
     /* TREAS  — W-A: SHA3-512 of the 16 bytes "NDS.E.TREAS.v1\0\0"
      * (shared/dnac/tests/ledger_roots_v2_treasury_oracle.py EMPTY_TREASURY). */
     /* TREAS  */ "2308f328a8f37b1b819426a3553163cf05208365f95fe50ffcabb332ab3a951a17c98d30f4f014a888548a268e637ef862f7a14610bc1d745a5d5b57074fbcab",
+    /* Storage reward v1 — SHA3-512 of "NDS.E.STREG.v1" / "NDS.E.STSET.v1"
+     * / "NDS.E.STREP.v1" zero-padded to 16 bytes, pinned from the
+     * INDEPENDENT oracle (nodus/tests/vectors/storage_reward_kat.json
+     * "empty_roots", generator storage_reward_oracle.py; author !=
+     * auditor — the executor that wrote the C did NOT compute these). */
+    /* STREG  */ "e3baaef6bebc5af765294b1a22c723cb44df33001b7445decfce7ac78c425ee5fc4a9885b74988bcab1f709f490b8f05907c322490840a125cf8ceaa3559550f",
+    /* STSET  */ "28f2ffe6cdba270ae0be208e511f9a9e4bd0ff6722f25ea37f7bbe8083913a42d77e083decd60c2744ca5b1bae37c512243de3c7184dd06cfb78880476901586",
+    /* STREP  */ "6cfdc71da8dede41e5d32ba4cb13788d7a726d3cbec565aef0b470050bdf317718ffc5d255031ec441de63338252a3ccaa283f139ff59424d34c72e8e49d0982",
+    /* Archive reward — SHA3-512 of "NDS.E.STSEG.v1" zero-padded to 16
+     * bytes, pinned from the INDEPENDENT oracle
+     * (nodus/tests/vectors/archive_reward_kat.json "empty_roots",
+     * generator archive_reward_oracle.py; author != auditor). */
+    /* STSEG  */ "d50e4a36ac95b3e6101193f47fc7b362b5e1706ef259aba91f4d08f8e7b4846341df6ff0c0f2452554cba06a75dc1c943696ec8fe49600717bb1a11fb03801fe",
 };
 /* tokenomics-v3 P2 (P2-8) re-pin: the supply leaf gained reward_pool and
  * the tag "NDS.SUPPLY.v2"; the CORE composition gained a 7th leg
@@ -1043,8 +1072,838 @@ static int test_7of7(void) {
     return 0;
 }
 
+/* ── 4. Storage reward v1 — the storage leg and "NDS.SYS.v5" ──────────
+ * Decision 2026-10-04-storage-reward-approved.md; bytes
+ * docs/plans/2026-10-04-storage-reward-bytes.md items 1-6. STRUCTURAL
+ * checks only — empty roots, single/multi-leaf shape (the n == 2 / n == 3
+ * trees are rebuilt here from the leaf hashes with the node tag, so the
+ * promotion rule is pinned), canonical-order refusal, field binding,
+ * bounds, v5 != v4, exit identity determinism. NO hex literal: the KATs
+ * come from the INDEPENDENT oracle before merge (author != auditor). */
+
+/* SHA3-512(tag16 ‖ l ‖ r) with the tag written out here. */
+static int node_hash(const char *tag, const uint8_t l[64], const uint8_t r[64],
+                     uint8_t out[64]) {
+    uint8_t pre[16 + 128];
+    memset(pre, 0, 16);
+    memcpy(pre, tag, strlen(tag));
+    memcpy(pre + 16, l, 64);
+    memcpy(pre + 80, r, 64);
+    return qgp_sha3_512(pre, sizeof(pre), out);
+}
+
+static void make_storage_rows(dna_v2_storage_node_row_t r[3]) {
+    memset(r, 0, 3 * sizeof(*r));
+    for (int i = 0; i < 3; i++) {
+        fill(r[i].node_fp, 64, (uint8_t)(0x10 * (i + 1)));  /* ascending */
+        fill(r[i].payee_fp, 64, (uint8_t)(0x80 + i));
+        r[i].bond = 100000000000000ULL;                      /* 1M × 10^8 */
+        r[i].status = (uint8_t)(DNA_V2_STORAGE_ACTIVE + i);  /* 1, 2, 3   */
+        r[i].registered_height = 1000u + (uint64_t)i;
+        r[i].exit_height = (i == 0) ? 0u : 5000u + (uint64_t)i;
+    }
+}
+
+static int test_storage_layer(void) {
+    uint8_t h[64], h2[64], e[64];
+
+    /* Empty trees are the tagged empty roots (and distinct — the
+     * test_shared_layer loop covers nonzero + pairwise distinct). */
+    CHECK(dna_v2_storage_registry_root(NULL, 0, h) == 0 &&
+          dna_v2_empty_root(DNA_V2_EMPTY_STORAGE_REG, e) == 0 &&
+          memcmp(h, e, 64) == 0, "empty registry root"); OK();
+    CHECK(dna_v2_storage_sets_root(NULL, NULL, 0, h) == 0 &&
+          dna_v2_empty_root(DNA_V2_EMPTY_STORAGE_SETS, e) == 0 &&
+          memcmp(h, e, 64) == 0, "empty sets root"); OK();
+    CHECK(dna_v2_storage_reports_root(NULL, 0, h) == 0 &&
+          dna_v2_empty_root(DNA_V2_EMPTY_STORAGE_REPORTS, e) == 0 &&
+          memcmp(h, e, 64) == 0, "empty reports root"); OK();
+
+    /* Registry: leaves, shape, order, status, field binding. */
+    {
+        dna_v2_storage_node_row_t r[3];
+        make_storage_rows(r);
+        uint8_t lf[3][64];
+        for (int i = 0; i < 3; i++) {
+            CHECK(dna_v2_storage_node_leaf_hash(&r[i], lf[i]) == 0,
+                  "registry leaf"); OK();
+        }
+        CHECK(dna_v2_storage_registry_root(r, 1, h) == 0 &&
+              memcmp(h, lf[0], 64) == 0, "registry n==1 != leaf"); OK();
+        uint8_t n01[64];
+        CHECK(node_hash("NDS.STRNODE.v1", lf[0], lf[1], n01) == 0 &&
+              dna_v2_storage_registry_root(r, 2, h) == 0 &&
+              memcmp(h, n01, 64) == 0, "registry n==2 shape"); OK();
+        CHECK(node_hash("NDS.STRNODE.v1", n01, lf[2], e) == 0 &&
+              dna_v2_storage_registry_root(r, 3, h) == 0 &&
+              memcmp(h, e, 64) == 0, "registry n==3 promotion"); OK();
+
+        dna_v2_storage_node_row_t bad[2] = { r[1], r[0] };
+        CHECK(dna_v2_storage_registry_root(bad, 2, h) != 0,
+              "registry descending accepted"); OK();
+        dna_v2_storage_node_row_t dup[2] = { r[0], r[0] };
+        dup[1].bond = 7;                    /* same key, other content  */
+        CHECK(dna_v2_storage_registry_root(dup, 2, h) != 0,
+              "registry duplicate accepted"); OK();
+        CHECK(dna_v2_storage_registry_root(NULL, 1, h) != 0,
+              "registry NULL rows accepted"); OK();
+
+        dna_v2_storage_node_row_t m = r[0];
+        m.status = 0;
+        CHECK(dna_v2_storage_node_leaf_hash(&m, h) != 0,
+              "status 0 accepted"); OK();
+        m.status = 4;
+        CHECK(dna_v2_storage_node_leaf_hash(&m, h) != 0,
+              "status 4 accepted"); OK();
+        dna_v2_storage_node_row_t bad_st[2] = { r[0], r[1] };
+        bad_st[1].status = 0;
+        CHECK(dna_v2_storage_registry_root(bad_st, 2, h) != 0,
+              "registry root hashed an invalid status"); OK();
+
+        /* Every field is bound into the leaf. */
+        m = r[0]; m.node_fp[63] ^= 1;
+        CHECK(dna_v2_storage_node_leaf_hash(&m, h) == 0 &&
+              memcmp(h, lf[0], 64) != 0, "node_fp not bound"); OK();
+        m = r[0]; m.payee_fp[0] ^= 1;
+        CHECK(dna_v2_storage_node_leaf_hash(&m, h) == 0 &&
+              memcmp(h, lf[0], 64) != 0, "payee_fp not bound"); OK();
+        m = r[0]; m.bond++;
+        CHECK(dna_v2_storage_node_leaf_hash(&m, h) == 0 &&
+              memcmp(h, lf[0], 64) != 0, "bond not bound"); OK();
+        m = r[0]; m.status = DNA_V2_STORAGE_EXITING;
+        CHECK(dna_v2_storage_node_leaf_hash(&m, h) == 0 &&
+              memcmp(h, lf[0], 64) != 0, "status not bound"); OK();
+        m = r[0]; m.registered_height++;
+        CHECK(dna_v2_storage_node_leaf_hash(&m, h) == 0 &&
+              memcmp(h, lf[0], 64) != 0, "registered_height not bound"); OK();
+        m = r[0]; m.exit_height++;
+        CHECK(dna_v2_storage_node_leaf_hash(&m, h) == 0 &&
+              memcmp(h, lf[0], 64) != 0, "exit_height not bound"); OK();
+        /* archive reward: the leaf v2 binds fail_streak (bytes item 4) */
+        m = r[0]; m.fail_streak = 1;
+        CHECK(dna_v2_storage_node_leaf_hash(&m, h) == 0 &&
+              memcmp(h, lf[0], 64) != 0, "fail_streak not bound"); OK();
+        /* K9 (decision 2026-10-05-storage-reward-is-for-archive.md): the
+         * leaf v2 binds grace_until, appended last */
+        m = r[0]; m.grace_until = 1;
+        CHECK(dna_v2_storage_node_leaf_hash(&m, h) == 0 &&
+              memcmp(h, lf[0], 64) != 0, "grace_until not bound"); OK();
+        m = r[0]; m.grace_until = UINT64_MAX;
+        CHECK(dna_v2_storage_node_leaf_hash(&m, h) == 0 &&
+              memcmp(h, lf[0], 64) != 0, "grace_until (u64 max) not bound"); OK();
+        /* the preimage restated: tag ‖ node_fp ‖ payee_fp ‖ bond(8) ‖
+         * status(1) ‖ registered_height(8) ‖ exit_height(8) ‖
+         * fail_streak(4) ‖ grace_until(8), 181 bytes, all big-endian */
+        {
+            uint8_t pre[16 + 64 + 64 + 8 + 1 + 8 + 8 + 4 + 8];
+            size_t o = 0;
+            m = r[1];
+            m.fail_streak = 0x01020304u;
+            m.grace_until = 0x1112131415161718ULL;
+            memset(pre, 0, 16);
+            memcpy(pre, "NDS.STLEAF.v2", 13);              o = 16;
+            memcpy(pre + o, m.node_fp, 64);                o += 64;
+            memcpy(pre + o, m.payee_fp, 64);               o += 64;
+            for (int b = 0; b < 8; b++)
+                pre[o++] = (uint8_t)(m.bond >> (56 - 8 * b));
+            pre[o++] = m.status;
+            for (int b = 0; b < 8; b++)
+                pre[o++] = (uint8_t)(m.registered_height >> (56 - 8 * b));
+            for (int b = 0; b < 8; b++)
+                pre[o++] = (uint8_t)(m.exit_height >> (56 - 8 * b));
+            for (int b = 0; b < 4; b++)
+                pre[o++] = (uint8_t)(m.fail_streak >> (24 - 8 * b));
+            for (int b = 0; b < 8; b++)
+                pre[o++] = (uint8_t)(m.grace_until >> (56 - 8 * b));
+            CHECK(o == 181u && qgp_sha3_512(pre, o, e) == 0 &&
+                  dna_v2_storage_node_leaf_hash(&m, h) == 0 &&
+                  memcmp(h, e, 64) == 0,
+                  "leaf v2 preimage (181 B, grace_until last)"); OK();
+        }
+    }
+
+    /* S(H): count 0 legal, count > 0, order, bound. */
+    {
+        uint8_t s0[64], s0b[64];
+        CHECK(dna_v2_storage_set_hash(720, NULL, 0, s0) == 0,
+              "S(H) count 0 refused"); OK();
+        CHECK(dna_v2_storage_set_hash(1440, NULL, 0, s0b) == 0 &&
+              memcmp(s0, s0b, 64) != 0, "S(H) epoch_start not bound"); OK();
+        /* count 0: the preimage is exactly tag ‖ H ‖ 0x00000000. */
+        uint8_t pre[16 + 8 + 4] = { 0 };
+        memcpy(pre, "NDS.STSET.v1", 12);
+        pre[16 + 6] = 0x02; pre[16 + 7] = 0xD0;            /* 720 BE   */
+        CHECK(qgp_sha3_512(pre, sizeof(pre), e) == 0 &&
+              memcmp(s0, e, 64) == 0, "S(H) count 0 preimage"); OK();
+
+        uint8_t fps[3][64];
+        for (int i = 0; i < 3; i++) fill(fps[i], 64, (uint8_t)(0x10 * (i + 1)));
+        uint8_t s2[64], s3[64];
+        CHECK(dna_v2_storage_set_hash(720, (const uint8_t (*)[64])fps, 2,
+                                      s2) == 0 && memcmp(s2, s0, 64) != 0,
+              "S(H) count 2"); OK();
+        CHECK(dna_v2_storage_set_hash(720, (const uint8_t (*)[64])fps, 3,
+                                      s3) == 0 && memcmp(s3, s2, 64) != 0,
+              "S(H) count not bound"); OK();
+        CHECK(dna_v2_storage_set_hash(720, (const uint8_t (*)[64])fps, 2,
+                                      h) == 0 && memcmp(h, s2, 64) == 0,
+              "S(H) not deterministic"); OK();
+        uint8_t sw[2][64];
+        memcpy(sw[0], fps[1], 64); memcpy(sw[1], fps[0], 64);
+        CHECK(dna_v2_storage_set_hash(720, (const uint8_t (*)[64])sw, 2,
+                                      h) != 0, "S(H) descending accepted"); OK();
+        memcpy(sw[1], fps[1], 64);
+        CHECK(dna_v2_storage_set_hash(720, (const uint8_t (*)[64])sw, 2,
+                                      h) != 0, "S(H) duplicate accepted"); OK();
+        CHECK(dna_v2_storage_set_hash(720, NULL, 1, h) != 0,
+              "S(H) NULL list accepted"); OK();
+
+        /* The cap: 256 members accepted, 257 refused. */
+        uint8_t (*big)[64] = calloc(DNA_V2_STORAGE_SET_MAX + 1, 64);
+        CHECK(big != NULL, "alloc");
+        for (unsigned i = 0; i <= DNA_V2_STORAGE_SET_MAX; i++) {
+            big[i][0] = (uint8_t)(i >> 8);
+            big[i][1] = (uint8_t)i;
+        }
+        int rc_max = dna_v2_storage_set_hash(720, (const uint8_t (*)[64])big,
+                                             DNA_V2_STORAGE_SET_MAX, h);
+        int rc_over = dna_v2_storage_set_hash(720, (const uint8_t (*)[64])big,
+                                              DNA_V2_STORAGE_SET_MAX + 1, h);
+        free(big);
+        CHECK(rc_max == 0, "S(H) 256 members refused"); OK();
+        CHECK(rc_over != 0, "S(H) 257 members accepted"); OK();
+
+        /* Sets root over (H, S(H)). */
+        uint64_t hs[3] = { 720, 1440, 2160 };
+        uint8_t sh[3][64];
+        memcpy(sh[0], s0, 64); memcpy(sh[1], s2, 64); memcpy(sh[2], s3, 64);
+        uint8_t sl[3][64];
+        for (int i = 0; i < 3; i++) {
+            CHECK(dna_v2_storage_sets_leaf_hash(hs[i], sh[i], sl[i]) == 0,
+                  "sets leaf"); OK();
+        }
+        CHECK(dna_v2_storage_sets_leaf_hash(hs[1], sh[0], h) == 0 &&
+              memcmp(h, sl[0], 64) != 0, "sets leaf H not bound"); OK();
+        CHECK(dna_v2_storage_sets_root(hs, (const uint8_t (*)[64])sh, 1,
+                                       h) == 0 && memcmp(h, sl[0], 64) == 0,
+              "sets n==1 != leaf"); OK();
+        uint8_t n01[64];
+        CHECK(node_hash("NDS.STSNODE.v1", sl[0], sl[1], n01) == 0 &&
+              dna_v2_storage_sets_root(hs, (const uint8_t (*)[64])sh, 2,
+                                       h) == 0 && memcmp(h, n01, 64) == 0,
+              "sets n==2 shape"); OK();
+        CHECK(node_hash("NDS.STSNODE.v1", n01, sl[2], e) == 0 &&
+              dna_v2_storage_sets_root(hs, (const uint8_t (*)[64])sh, 3,
+                                       h) == 0 && memcmp(h, e, 64) == 0,
+              "sets n==3 promotion"); OK();
+        uint64_t hd[2] = { 1440, 720 }, hq[2] = { 720, 720 };
+        CHECK(dna_v2_storage_sets_root(hd, (const uint8_t (*)[64])sh, 2,
+                                       h) != 0, "sets descending accepted"); OK();
+        CHECK(dna_v2_storage_sets_root(hq, (const uint8_t (*)[64])sh, 2,
+                                       h) != 0, "sets duplicate accepted"); OK();
+    }
+
+    /* Reports: leaf bound + bitmap bounds, root order by (H, seat). */
+    {
+        dna_v2_storage_report_t rp[3];
+        memset(rp, 0, sizeof(rp));
+        const uint64_t eh[3] = { 720, 720, 1440 };
+        const uint32_t st[3] = { 0, 1, 0 };
+        for (int i = 0; i < 3; i++) {
+            rp[i].epoch_start = eh[i];
+            rp[i].seat = st[i];
+            fill(rp[i].set_hash, 64, (uint8_t)(0x40 + i));
+            rp[i].bitmap_len = 1;
+            rp[i].bitmap[0] = (uint8_t)(0x05 + i);
+        }
+        uint8_t lf[3][64];
+        for (int i = 0; i < 3; i++) {
+            CHECK(dna_v2_storage_report_leaf_hash(&rp[i], lf[i]) == 0,
+                  "report leaf"); OK();
+        }
+        dna_v2_storage_report_t m = rp[0];
+        m.bitmap[5] = 0xFF;                 /* past bitmap_len: not hashed */
+        CHECK(dna_v2_storage_report_leaf_hash(&m, h) == 0 &&
+              memcmp(h, lf[0], 64) == 0, "bytes past bitmap_len hashed"); OK();
+        m = rp[0]; m.epoch_start++;
+        CHECK(dna_v2_storage_report_leaf_hash(&m, h) == 0 &&
+              memcmp(h, lf[0], 64) != 0, "report epoch not bound"); OK();
+        m = rp[0]; m.seat++;
+        CHECK(dna_v2_storage_report_leaf_hash(&m, h) == 0 &&
+              memcmp(h, lf[0], 64) != 0, "report seat not bound"); OK();
+        m = rp[0]; m.set_hash[10] ^= 1;
+        CHECK(dna_v2_storage_report_leaf_hash(&m, h) == 0 &&
+              memcmp(h, lf[0], 64) != 0, "report S(H) not bound"); OK();
+        m = rp[0]; m.bitmap[0] ^= 1;
+        CHECK(dna_v2_storage_report_leaf_hash(&m, h) == 0 &&
+              memcmp(h, lf[0], 64) != 0, "report bitmap not bound"); OK();
+        m = rp[0]; m.bitmap_len = 2;        /* bitmap[1] == 0              */
+        CHECK(dna_v2_storage_report_leaf_hash(&m, h) == 0 &&
+              memcmp(h, lf[0], 64) != 0, "report bitmap_len not bound"); OK();
+        m = rp[0]; m.bitmap_len = 0;
+        CHECK(dna_v2_storage_report_leaf_hash(&m, h) == 0,
+              "bitmap_len 0 refused"); OK();
+        m = rp[0]; m.bitmap_len = DNA_V2_STORAGE_BITMAP_MAX;
+        CHECK(dna_v2_storage_report_leaf_hash(&m, h) == 0,
+              "bitmap_len 32 refused"); OK();
+        m = rp[0]; m.bitmap_len = DNA_V2_STORAGE_BITMAP_MAX + 1;
+        CHECK(dna_v2_storage_report_leaf_hash(&m, h) != 0,
+              "bitmap_len 33 accepted"); OK();
+
+        CHECK(dna_v2_storage_reports_root(rp, 1, h) == 0 &&
+              memcmp(h, lf[0], 64) == 0, "reports n==1 != leaf"); OK();
+        uint8_t n01[64];
+        CHECK(node_hash("NDS.STRPNODE.v1", lf[0], lf[1], n01) == 0 &&
+              dna_v2_storage_reports_root(rp, 2, h) == 0 &&
+              memcmp(h, n01, 64) == 0, "reports n==2 shape"); OK();
+        CHECK(node_hash("NDS.STRPNODE.v1", n01, lf[2], e) == 0 &&
+              dna_v2_storage_reports_root(rp, 3, h) == 0 &&
+              memcmp(h, e, 64) == 0, "reports n==3 promotion"); OK();
+
+        dna_v2_storage_report_t o[2];
+        o[0] = rp[1]; o[1] = rp[0];         /* (720,1) then (720,0)       */
+        CHECK(dna_v2_storage_reports_root(o, 2, h) != 0,
+              "reports seat descending accepted"); OK();
+        o[0] = rp[1]; o[1] = rp[1]; o[1].bitmap[0] ^= 1;
+        CHECK(dna_v2_storage_reports_root(o, 2, h) != 0,
+              "reports duplicate (H, seat) accepted"); OK();
+        o[0] = rp[2]; o[1] = rp[0]; o[1].seat = 9;   /* (1440,0),(720,9)  */
+        CHECK(dna_v2_storage_reports_root(o, 2, h) != 0,
+              "reports epoch descending accepted"); OK();
+        o[0] = rp[0]; o[1] = rp[2]; o[0].seat = 9;   /* (720,9),(1440,0)  */
+        CHECK(dna_v2_storage_reports_root(o, 2, h) == 0,
+              "reports (H, seat) lexicographic order refused"); OK();
+        o[0] = rp[0]; o[1] = rp[1]; o[1].bitmap_len = 33;
+        CHECK(dna_v2_storage_reports_root(o, 2, h) != 0,
+              "reports root hashed an over-long bitmap"); OK();
+    }
+
+    /* storage_root (archive reward: "NDS.STOR.v2", FOUR legs — bytes
+     * item 5): each bound, order bound, NULL refused. */
+    uint8_t sr[64];
+    {
+        uint8_t l[4][64];
+        for (int i = 0; i < 4; i++) fill(l[i], 64, (uint8_t)(0xC0 + i));
+        CHECK(dna_v2_storage_root(l[0], l[1], l[2], l[3], sr) == 0,
+              "storage root");
+        OK();
+        for (int i = 0; i < 4; i++) {
+            l[i][0] ^= 1;
+            CHECK(dna_v2_storage_root(l[0], l[1], l[2], l[3], h) == 0 &&
+                  memcmp(h, sr, 64) != 0, "storage leg not bound"); OK();
+            l[i][0] ^= 1;
+        }
+        CHECK(dna_v2_storage_root(l[1], l[0], l[2], l[3], h) == 0 &&
+              memcmp(h, sr, 64) != 0, "storage leg order not bound"); OK();
+        CHECK(dna_v2_storage_root(l[0], l[1], l[2], l[2], h) == 0 &&
+              memcmp(h, sr, 64) != 0, "segments leg not bound"); OK();
+        CHECK(dna_v2_storage_root(l[0], l[1], l[2], NULL, h) != 0,
+              "storage root accepted a NULL leg"); OK();
+    }
+
+    /* system_state_root v5: 9 legs; differs from v4 over the same 8. */
+    {
+        uint8_t legs[8][64];
+        for (int i = 0; i < 8; i++) fill(legs[i], 64, (uint8_t)(0x90 + i));
+        uint8_t v4[64], v5[64];
+        CHECK(dna_v2_system_root(legs[0], legs[1], legs[2], legs[3], legs[4],
+                                 legs[5], legs[6], legs[7], v4) == 0, "v4");
+        CHECK(hex_eq(v4, KAT_SYSTEM_8LEG_V4, "system v4 unchanged"),
+              "v4 KAT moved"); OK();
+        CHECK(dna_v2_system_root_v5(legs[0], legs[1], legs[2], legs[3],
+                                    legs[4], legs[5], legs[6], legs[7], sr,
+                                    v5) == 0, "v5"); OK();
+        CHECK(memcmp(v4, v5, 64) != 0, "v5 == v4 over the same legs"); OK();
+        /* Not v4 under another name even with an all-zero storage leg. */
+        uint8_t z[64] = { 0 };
+        CHECK(dna_v2_system_root_v5(legs[0], legs[1], legs[2], legs[3],
+                                    legs[4], legs[5], legs[6], legs[7], z,
+                                    h) == 0 && memcmp(h, v4, 64) != 0,
+              "v5(zero storage) == v4"); OK();
+        for (int i = 0; i < 8; i++) {
+            legs[i][0] ^= 1;
+            CHECK(dna_v2_system_root_v5(legs[0], legs[1], legs[2], legs[3],
+                                        legs[4], legs[5], legs[6], legs[7],
+                                        sr, h) == 0 && memcmp(h, v5, 64) != 0,
+                  "v5 leg not bound"); OK();
+            legs[i][0] ^= 1;
+        }
+        uint8_t sr2[64];
+        memcpy(sr2, sr, 64); sr2[63] ^= 1;
+        CHECK(dna_v2_system_root_v5(legs[0], legs[1], legs[2], legs[3],
+                                    legs[4], legs[5], legs[6], legs[7], sr2,
+                                    h) == 0 && memcmp(h, v5, 64) != 0,
+              "v5 storage leg not bound"); OK();
+        CHECK(dna_v2_system_root_v5(legs[0], legs[1], legs[2], legs[3],
+                                    legs[4], legs[5], legs[6], sr, legs[7],
+                                    h) == 0 && memcmp(h, v5, 64) != 0,
+              "v5 treasury/storage order not bound"); OK();
+        CHECK(dna_v2_system_root_v5(legs[0], legs[1], legs[2], legs[3],
+                                    legs[4], legs[5], legs[6], legs[7], NULL,
+                                    h) != 0,
+              "v5 accepted a NULL storage leg"); OK();
+    }
+
+    /* Exit release identity: deterministic, every input bound, the
+     * nullifier is exit_id ‖ 0x11 ‖ u32be(201) and differs from the
+     * EPGRAD slot (0x10 ‖ 200) over the same id. */
+    {
+        uint8_t cid[DNA_CHAIN_ID_LEN], fp[64];
+        fill(cid, sizeof(cid), 0x33);
+        fill(fp, 64, 0x44);
+        uint8_t id[64], id2[64], nul[64], nul2[64];
+        CHECK(dna_v2_storage_exit_id(cid, 10080, fp, id) == 0 &&
+              dna_v2_storage_exit_id(cid, 10080, fp, id2) == 0 &&
+              memcmp(id, id2, 64) == 0, "exit_id not deterministic"); OK();
+        CHECK(dna_v2_storage_exit_id(cid, 10081, fp, h) == 0 &&
+              memcmp(h, id, 64) != 0, "exit height not bound"); OK();
+        cid[31] ^= 1;
+        CHECK(dna_v2_storage_exit_id(cid, 10080, fp, h) == 0 &&
+              memcmp(h, id, 64) != 0, "exit chain_id not bound"); OK();
+        cid[31] ^= 1;
+        fp[0] ^= 1;
+        CHECK(dna_v2_storage_exit_id(cid, 10080, fp, h) == 0 &&
+              memcmp(h, id, 64) != 0, "exit node_fp not bound"); OK();
+        fp[0] ^= 1;
+        CHECK(dna_v2_storage_exit_id(NULL, 10080, fp, h) != 0,
+              "exit_id accepted NULL chain_id"); OK();
+
+        CHECK(dna_v2_storage_exit_nullifier(id, nul) == 0 &&
+              dna_v2_storage_exit_nullifier(id2, nul2) == 0 &&
+              memcmp(nul, nul2, 64) == 0, "exit nullifier not deterministic");
+        OK();
+        CHECK(memcmp(nul, id, 64) != 0, "nullifier == exit_id"); OK();
+        uint8_t pre[69];
+        memcpy(pre, id, 64);
+        pre[64] = 0x11; pre[65] = 0; pre[66] = 0; pre[67] = 0; pre[68] = 0xC9;
+        CHECK(qgp_sha3_512(pre, sizeof(pre), h) == 0 &&
+              memcmp(h, nul, 64) == 0, "exit nullifier preimage"); OK();
+        pre[64] = 0x10; pre[68] = 0xC8;     /* the EPGRAD slot            */
+        CHECK(qgp_sha3_512(pre, sizeof(pre), h2) == 0 &&
+              memcmp(h2, nul, 64) != 0, "exit slot == EPGRAD slot"); OK();
+    }
+    return 0;
+}
+
+/* ── 5. Storage reward v1 — the INDEPENDENT oracle's vectors ──────────
+ * nodus/tests/vectors/storage_reward_kat.json (generator
+ * storage_reward_oracle.py, written from the bytes doc only by another
+ * agent; author != auditor; SELF-CONSISTENT, not an external reference).
+ * The path comes from CMake (STORAGE_REWARD_KAT_PATH, test_roots_v2
+ * only). EVERY vector the C code hashes is compared byte for byte; a
+ * mismatch prints the vector, the field, the expected and the computed
+ * value and fails the test. Sections the C here does not hash are named
+ * and not compared: "tags" (the 16-byte tag bytes are checked through
+ * the empty roots and every leaf/node they key), "register_exit_body"
+ * (call bodies — not hashed by ledger_roots_v2), "probe_seed" (off-chain,
+ * bytes item 7). Any OTHER section name fails the test, so a vector added
+ * to the file can never be skipped silently. */
+#ifdef STORAGE_REWARD_KAT_PATH
+
+#define KAT_NODE_PK_LEN 2592u        /* Dilithium5 public key (ML-DSA-87) */
+
+static char g_kv[96];                /* the vector being compared         */
+
+static json_object *kj(json_object *o, const char *key) {
+    json_object *v = NULL;
+    if (!o || !json_object_object_get_ex(o, key, &v)) return NULL;
+    return v;
+}
+
+static int kat_nib(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+
+/* Field `key` of `o` as exactly `len` bytes of lowercase hex. 0 / -1. */
+static int kat_hex(json_object *o, const char *key, uint8_t *out, size_t len) {
+    json_object *v = kj(o, key);
+    if (v && json_object_is_type(v, json_type_string)) {
+        const char *s = json_object_get_string(v);
+        if (strlen(s) == 2 * len) {
+            size_t i = 0;
+            for (; i < len; i++) {
+                int hi = kat_nib(s[2 * i]), lo = kat_nib(s[2 * i + 1]);
+                if (hi < 0 || lo < 0) break;
+                out[i] = (uint8_t)((hi << 4) | lo);
+            }
+            if (i == len) return 0;
+        }
+    }
+    fprintf(stderr, "KAT vector %s: field \"%s\" missing or not %zu hex "
+            "bytes\n", g_kv, key, len);
+    return -1;
+}
+
+/* Field `key` as an unsigned integer: a decimal string (the file's u64
+ * form) or a JSON integer >= 0; refused above `max`. 0 / -1. */
+static int kat_uint(json_object *o, const char *key, uint64_t max,
+                    uint64_t *out) {
+    json_object *v = kj(o, key);
+    int ok = 0;
+    if (v && json_object_is_type(v, json_type_string)) {
+        const char *s = json_object_get_string(v);
+        char *end = NULL;
+        errno = 0;
+        unsigned long long x = strtoull(s, &end, 10);
+        if (s[0] >= '0' && s[0] <= '9' && end && *end == 0 && errno == 0) {
+            *out = (uint64_t)x;
+            ok = 1;
+        }
+    } else if (v && json_object_is_type(v, json_type_int)) {
+        int64_t x = json_object_get_int64(v);
+        if (x >= 0) { *out = (uint64_t)x; ok = 1; }
+    }
+    if (ok && *out <= max) return 0;
+    fprintf(stderr, "KAT vector %s: field \"%s\" missing, not an unsigned "
+            "integer or above %llu\n", g_kv, key, (unsigned long long)max);
+    return -1;
+}
+
+/* Field `key` as an array of exactly `want` entries (want == SIZE_MAX:
+ * any length <= DNA_V2_STORAGE_SET_MAX). NULL on mismatch. */
+static json_object *kat_arr(json_object *o, const char *key, size_t want,
+                            size_t *n_out) {
+    json_object *v = kj(o, key);
+    if (v && json_object_is_type(v, json_type_array)) {
+        size_t n = json_object_array_length(v);
+        if ((want == SIZE_MAX && n <= DNA_V2_STORAGE_SET_MAX) || n == want) {
+            *n_out = n;
+            return v;
+        }
+    }
+    fprintf(stderr, "KAT vector %s: field \"%s\" missing or of the wrong "
+            "length\n", g_kv, key);
+    return NULL;
+}
+
+/* The computed 64-byte value against field `key`. 1 equal / 0 not. */
+static int kat_eq(const uint8_t got[64], json_object *o, const char *key) {
+    uint8_t exp[64];
+    if (kat_hex(o, key, exp, 64) != 0) return 0;
+    if (memcmp(got, exp, 64) == 0) { g_checks++; return 1; }
+    static const char *d = "0123456789abcdef";
+    char g[129];
+    for (int i = 0; i < 64; i++) {
+        g[2 * i] = d[got[i] >> 4]; g[2 * i + 1] = d[got[i] & 0xf];
+    }
+    g[128] = 0;
+    fprintf(stderr, "KAT MISMATCH vector %s field \"%s\":\n  expected: %s\n"
+            "  got:      %s\n", g_kv, key, json_object_get_string(kj(o, key)),
+            g);
+    return 0;
+}
+
+static int kat_report(json_object *r, dna_v2_storage_report_t *rep) {
+    uint64_t seat = 0, bl = 0;
+    memset(rep, 0, sizeof(*rep));
+    if (kat_uint(r, "epoch_start", UINT64_MAX, &rep->epoch_start) != 0 ||
+        kat_uint(r, "seat", UINT32_MAX, &seat) != 0 ||
+        kat_hex(r, "S", rep->set_hash, 64) != 0 ||
+        kat_uint(r, "bitmap_len", DNA_V2_STORAGE_BITMAP_MAX, &bl) != 0 ||
+        kat_hex(r, "bitmap", rep->bitmap, (size_t)bl) != 0)
+        return -1;
+    rep->seat = (uint32_t)seat;
+    rep->bitmap_len = (uint16_t)bl;
+    return 0;
+}
+
+/* S(H) of entry `e` (epoch_start + members_sorted, count members). */
+static int kat_set(json_object *e, const char *count_key, uint64_t *h_out,
+                   uint8_t s_out[64]) {
+    static uint8_t fps[DNA_V2_STORAGE_SET_MAX][64];
+    uint64_t count = 0;
+    size_t n = 0;
+    json_object *m;
+    if (kat_uint(e, "epoch_start", UINT64_MAX, h_out) != 0 ||
+        kat_uint(e, count_key, DNA_V2_STORAGE_SET_MAX, &count) != 0 ||
+        !(m = kat_arr(e, "members_sorted", (size_t)count, &n)))
+        return -1;
+    for (size_t i = 0; i < n; i++) {
+        json_object *s = json_object_array_get_idx(m, i);
+        const char *x = json_object_is_type(s, json_type_string)
+                            ? json_object_get_string(s) : "";
+        int bad = strlen(x) != 128;
+        for (size_t j = 0; !bad && j < 64; j++) {
+            int hi = kat_nib(x[2 * j]), lo = kat_nib(x[2 * j + 1]);
+            if (hi < 0 || lo < 0) bad = 1;
+            else fps[i][j] = (uint8_t)((hi << 4) | lo);
+        }
+        if (bad) {
+            fprintf(stderr, "KAT vector %s: members_sorted[%zu] is not 64 "
+                    "hex bytes\n", g_kv, i);
+            return -1;
+        }
+    }
+    if (dna_v2_storage_set_hash(*h_out, (const uint8_t (*)[64])fps, n,
+                                s_out) != 0) {
+        fprintf(stderr, "KAT vector %s: dna_v2_storage_set_hash refused the "
+                "input\n", g_kv);
+        return -1;
+    }
+    return 0;
+}
+
+#define KCHECK(cond) do { if (!(cond)) { rc = 1; goto out; } } while (0)
+
+static int test_storage_kat(void) {
+    static dna_v2_storage_report_t   reps[DNA_V2_STORAGE_SET_MAX];
+    static uint64_t                  hs[DNA_V2_STORAGE_SET_MAX];
+    static uint8_t                   ss[DNA_V2_STORAGE_SET_MAX][64];
+    uint8_t h[64];
+    int rc = 0, compared = 0;
+    const int checks0 = g_checks;
+
+    json_object *root = json_object_from_file(STORAGE_REWARD_KAT_PATH);
+    if (!root) {
+        fprintf(stderr, "KAT: cannot read %s\n", STORAGE_REWARD_KAT_PATH);
+        return 1;
+    }
+    json_object *vec = kj(root, "vectors");
+    snprintf(g_kv, sizeof(g_kv), "%s", "(file)");
+    KCHECK(vec && json_object_is_type(vec, json_type_object));
+
+    /* Every section is known: compared, or named as not hashed here.
+     * Archive reward (decision 2026-10-05-archive-reward-bytes-approved.md,
+     * bytes doc 2026-10-05 items 4-5): "registry_leaf" / "registry_root"
+     * ("NDS.STLEAF.v1", no fail_streak) and "storage_root" ("NDS.STOR.v1",
+     * 3 legs) are SUPERSEDED — those forms were replaced before any
+     * activation, so this build no longer hashes them; their v2 forms are
+     * compared against archive_reward_kat.json in test_storage_b2. */
+    json_object_object_foreach(vec, sec, sval) {
+        (void)sval;
+        static const char *known[] = {
+            "tags", "empty_roots", "registry_leaf", "registry_root",
+            "set_hash", "sets_root", "report", "reports_root",
+            "storage_root", "system_v5", "register_exit_body",
+            "exit_release", "probe_seed"
+        };
+        int found = 0;
+        for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++)
+            if (strcmp(sec, known[i]) == 0) found = 1;
+        if (!found) {
+            fprintf(stderr, "KAT: unknown vector section \"%s\" — compare "
+                    "it or name it as not hashed here\n", sec);
+            KCHECK(0);
+        }
+    }
+
+    /* empty_roots */
+    {
+        static const struct { const char *tag; dna_v2_empty_kind_t k; } E[] = {
+            { "NDS.E.STREG.v1", DNA_V2_EMPTY_STORAGE_REG },
+            { "NDS.E.STSET.v1", DNA_V2_EMPTY_STORAGE_SETS },
+            { "NDS.E.STREP.v1", DNA_V2_EMPTY_STORAGE_REPORTS },
+        };
+        json_object *er = kj(vec, "empty_roots");
+        KCHECK(er && json_object_object_length(er) == 3);
+        for (size_t i = 0; i < 3; i++) {
+            snprintf(g_kv, sizeof(g_kv), "empty_roots[%s]", E[i].tag);
+            KCHECK(dna_v2_empty_root(E[i].k, h) == 0);
+            KCHECK(kat_eq(h, er, E[i].tag));
+            compared++;
+        }
+    }
+
+    /* registry_leaf / registry_root — SUPERSEDED (leaf v1), see above */
+
+    /* set_hash — S(H) */
+    {
+        size_t n = 0;
+        snprintf(g_kv, sizeof(g_kv), "%s", "set_hash");
+        json_object *a = kat_arr(vec, "set_hash", SIZE_MAX, &n);
+        KCHECK(a && n > 0);
+        for (size_t i = 0; i < n; i++) {
+            json_object *v = json_object_array_get_idx(a, i);
+            uint64_t hh = 0;
+            snprintf(g_kv, sizeof(g_kv), "set_hash[%zu]", i);
+            KCHECK(kat_set(v, "count", &hh, h) == 0);
+            KCHECK(kat_eq(h, v, "S"));
+            compared++;
+        }
+    }
+
+    /* sets_root — each entry's S(H) and leaf, then the root */
+    {
+        size_t n = 0;
+        snprintf(g_kv, sizeof(g_kv), "%s", "sets_root");
+        json_object *a = kat_arr(vec, "sets_root", SIZE_MAX, &n);
+        KCHECK(a && n > 0);
+        for (size_t i = 0; i < n; i++) {
+            json_object *v = json_object_array_get_idx(a, i);
+            uint64_t want = 0;
+            size_t m = 0;
+            snprintf(g_kv, sizeof(g_kv), "sets_root[%zu]", i);
+            KCHECK(kat_uint(v, "n", DNA_V2_STORAGE_SET_MAX, &want) == 0);
+            snprintf(g_kv, sizeof(g_kv), "sets_root[n=%llu]",
+                     (unsigned long long)want);
+            json_object *es = kat_arr(v, "entries", (size_t)want, &m);
+            KCHECK(es);
+            for (size_t j = 0; j < m; j++) {
+                json_object *e = json_object_array_get_idx(es, j);
+                KCHECK(kat_set(e, "count", &hs[j], ss[j]) == 0);
+                KCHECK(kat_eq(ss[j], e, "S"));
+                KCHECK(dna_v2_storage_sets_leaf_hash(hs[j], ss[j], h) == 0);
+                KCHECK(kat_eq(h, e, "leaf"));
+            }
+            KCHECK(dna_v2_storage_sets_root(hs, (const uint8_t (*)[64])ss, m,
+                                            h) == 0);
+            KCHECK(kat_eq(h, v, "root"));
+            compared++;
+        }
+    }
+
+    /* report — the committed leaf */
+    {
+        size_t n = 0;
+        snprintf(g_kv, sizeof(g_kv), "%s", "report");
+        json_object *a = kat_arr(vec, "report", SIZE_MAX, &n);
+        KCHECK(a && n > 0);
+        for (size_t i = 0; i < n; i++) {
+            json_object *v = json_object_array_get_idx(a, i);
+            json_object *nm = kj(v, "name");
+            snprintf(g_kv, sizeof(g_kv), "report[%s]",
+                     nm ? json_object_get_string(nm) : "?");
+            KCHECK(kat_report(v, &reps[0]) == 0);
+            KCHECK(dna_v2_storage_report_leaf_hash(&reps[0], h) == 0);
+            KCHECK(kat_eq(h, v, "leaf"));
+            compared++;
+        }
+    }
+
+    /* reports_root — every report's leaf, then the root */
+    {
+        size_t n = 0;
+        snprintf(g_kv, sizeof(g_kv), "%s", "reports_root");
+        json_object *a = kat_arr(vec, "reports_root", SIZE_MAX, &n);
+        KCHECK(a && n > 0);
+        for (size_t i = 0; i < n; i++) {
+            json_object *v = json_object_array_get_idx(a, i);
+            uint64_t want = 0;
+            size_t m = 0;
+            snprintf(g_kv, sizeof(g_kv), "reports_root[%zu]", i);
+            KCHECK(kat_uint(v, "n", DNA_V2_STORAGE_SET_MAX, &want) == 0);
+            snprintf(g_kv, sizeof(g_kv), "reports_root[n=%llu]",
+                     (unsigned long long)want);
+            json_object *rs = kat_arr(v, "reports_sorted", (size_t)want, &m);
+            KCHECK(rs);
+            for (size_t j = 0; j < m; j++) {
+                json_object *r = json_object_array_get_idx(rs, j);
+                KCHECK(kat_report(r, &reps[j]) == 0);
+                KCHECK(dna_v2_storage_report_leaf_hash(&reps[j], h) == 0);
+                KCHECK(kat_eq(h, r, "leaf"));
+            }
+            KCHECK(dna_v2_storage_reports_root(reps, m, h) == 0);
+            KCHECK(kat_eq(h, v, "root"));
+            compared++;
+        }
+    }
+
+    /* storage_root — SUPERSEDED ("NDS.STOR.v1", 3 legs), see above */
+
+    /* system_v5 — the 8 v4 legs, named and in v4 order, then storage */
+    {
+        static const char *LEG[8] = {
+            "validator_root", "delegation_root", "chain_config_root",
+            "validator_set_root", "domain_registry_root", "manifest_root",
+            "attendance_root", "treasury_root"
+        };
+        size_t n = 0;
+        snprintf(g_kv, sizeof(g_kv), "%s", "system_v5");
+        json_object *a = kat_arr(vec, "system_v5", SIZE_MAX, &n);
+        KCHECK(a && n > 0);
+        for (size_t i = 0; i < n; i++) {
+            json_object *v = json_object_array_get_idx(a, i);
+            json_object *nm = kj(v, "name");
+            uint8_t legs[8][64], st[64];
+            size_t m = 0;
+            snprintf(g_kv, sizeof(g_kv), "system_v5[%s]",
+                     nm ? json_object_get_string(nm) : "?");
+            json_object *la = kat_arr(v, "v4_legs_in_order", 8, &m);
+            KCHECK(la);
+            for (size_t j = 0; j < 8; j++) {
+                json_object *l = json_object_array_get_idx(la, j);
+                json_object *ln = kj(l, "leg");
+                if (!ln || strcmp(json_object_get_string(ln), LEG[j]) != 0) {
+                    fprintf(stderr, "KAT vector %s: leg %zu is not %s\n",
+                            g_kv, j, LEG[j]);
+                    KCHECK(0);
+                }
+                KCHECK(kat_hex(l, "value", legs[j], 64) == 0);
+            }
+            KCHECK(kat_hex(v, "storage_root", st, 64) == 0);
+            KCHECK(dna_v2_system_root_v5(legs[0], legs[1], legs[2], legs[3],
+                                         legs[4], legs[5], legs[6], legs[7],
+                                         st, h) == 0);
+            KCHECK(kat_eq(h, v, "system_state_root"));
+            compared++;
+        }
+    }
+
+    /* exit_release — node_fp = SHA3-512(node_pk), exit_id, nullifier */
+    {
+        static uint8_t pk[KAT_NODE_PK_LEN];
+        size_t n = 0;
+        snprintf(g_kv, sizeof(g_kv), "%s", "exit_release");
+        json_object *a = kat_arr(vec, "exit_release", SIZE_MAX, &n);
+        KCHECK(a && n > 0);
+        for (size_t i = 0; i < n; i++) {
+            json_object *v = json_object_array_get_idx(a, i);
+            json_object *nm = kj(v, "name"), *kd = kj(v, "kind");
+            uint8_t cid[DNA_CHAIN_ID_LEN], fp[64], id[64];
+            uint64_t dom = 0, rh = 0, oi = 0;
+            snprintf(g_kv, sizeof(g_kv), "exit_release[%s]",
+                     nm ? json_object_get_string(nm) : "?");
+            KCHECK(kat_hex(v, "chain_id", cid, sizeof(cid)) == 0 &&
+                   kat_uint(v, "domain", UINT32_MAX, &dom) == 0 &&
+                   kat_uint(v, "release_height", UINT64_MAX, &rh) == 0 &&
+                   kat_hex(v, "node_pk", pk, sizeof(pk)) == 0 &&
+                   kat_uint(v, "out_index", UINT32_MAX, &oi) == 0);
+            if (dom != DNA_DOMAIN_CORE || oi != DNA_V2_STORAGE_EXIT_OUT_IDX ||
+                !kd || strcmp(json_object_get_string(kd), "0x11") != 0 ||
+                DNA_V2_STORAGE_EXIT_KIND != 0x11) {
+                fprintf(stderr, "KAT vector %s: domain / kind / out_index "
+                        "differ from DNA_DOMAIN_CORE / "
+                        "DNA_V2_STORAGE_EXIT_KIND / _OUT_IDX\n", g_kv);
+                KCHECK(0);
+            }
+            KCHECK(qgp_sha3_512(pk, sizeof(pk), fp) == 0);
+            KCHECK(kat_eq(fp, v, "node_fp"));
+            KCHECK(dna_v2_storage_exit_id(cid, rh, fp, id) == 0);
+            KCHECK(kat_eq(id, v, "exit_id"));
+            KCHECK(dna_v2_storage_exit_nullifier(id, h) == 0);
+            KCHECK(kat_eq(h, v, "nullifier"));
+            compared++;
+        }
+    }
+
+    printf("storage reward oracle: %d vectors compared, %d values equal "
+           "(not hashed here: tags, register_exit_body, probe_seed; "
+           "superseded by the archive bytes: registry_leaf, registry_root, "
+           "storage_root)\n", compared, g_checks - checks0);
+out:
+    json_object_put(root);
+    return rc;
+}
+
+#else  /* !STORAGE_REWARD_KAT_PATH */
+
+static int test_storage_kat(void) {
+    /* A FAILURE, never a skip: without json-c the oracle vectors are not
+     * compared, and that coverage must not read as green. */
+    fprintf(stderr, "test_roots_v2 was built without json-c "
+            "(STORAGE_REWARD_KAT_PATH unset): the storage reward oracle "
+            "vectors were NOT compared\n");
+    return 1;
+}
+
+#endif /* STORAGE_REWARD_KAT_PATH */
+
 int main(void) {
     if (test_shared_layer() != 0) return 1;
+    if (test_storage_layer() != 0) return 1;
+    if (test_storage_kat() != 0) return 1;
     if (test_loaders() != 0) return 1;
     if (test_7of7() != 0) return 1;
     printf("test_roots_v2: %d checks OK\n", g_checks);

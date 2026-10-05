@@ -113,9 +113,9 @@ int main(void) {
      * case checks accepts a valid value. */
     build_valid_chain_config(&tx, 0, 5);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 16 (Nodus EVM) */
+    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 17 (Nodus EVM 14-15, storage reward v1 16) */
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    CHECK(DNAC_CFG_PARAM_MAX_ID + 1 == 16);
+    CHECK(DNAC_CFG_PARAM_MAX_ID + 1 == 17);
     build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
 
@@ -157,6 +157,43 @@ int main(void) {
     CHECK(DNAC_CFG_RULESET_GEN2_D2 <= (uint64_t)INT64_MAX);
     CHECK(DNAC_RULESET_SWITCH_SPEC_VERSION == 1u);
 
+    /* 5a'''. RULESET_GEN_STORAGE (id 16, storage reward v1 — "voted like
+     * RULESET_GEN2"; id assigned in main merge order after Nodus EVM's 14
+     * and 15): EXACTLY the dnac.h literal D — the 5a' shape. D ± 1, 0, D2
+     * (the other generation's literal) and UINT64_MAX refuse. The
+     * witness's stateful rules are NOT mirrored. MUTANT KILLED: dropping
+     * the case (default refuses D), comparing against D2. NOTE: while D is
+     * the unfilled oracle placeholder 0 (STORAGE-ORACLE: NOT FILLED), the
+     * "0 refuses" probe is skipped by its own guard and D - 1 wraps to
+     * UINT64_MAX (still refused) — the 5a' precedent. */
+    CHECK(DNAC_CFG_RULESET_GEN_STORAGE == 16);
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE,
+                             DNAC_CFG_RULESET_GEN_STORAGE_D);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE,
+                             DNAC_CFG_RULESET_GEN_STORAGE_D + 1u);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE,
+                             DNAC_CFG_RULESET_GEN_STORAGE_D - 1u);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    if (DNAC_CFG_RULESET_GEN_STORAGE_D != 0u) {
+        build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE,
+                                 0);
+        CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    }
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE,
+                             DNAC_CFG_RULESET_GEN2_D2);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE,
+                             UINT64_MAX);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    /* and param 9 refuses the storage literal */
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN2,
+                             DNAC_CFG_RULESET_GEN_STORAGE_D);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    CHECK(DNAC_CFG_RULESET_GEN_STORAGE_D != DNAC_CFG_RULESET_GEN2_D2);
+    CHECK(DNAC_CFG_RULESET_GEN_STORAGE_D <= (uint64_t)INT64_MAX);
+
     /* 5a''. NAME_PRICE_3P..6P (ids 10-13, HF-4): [10^8, 10^15] — both
      * ends inclusive, one past either end refuses; and the compiled
      * no-row defaults are 10^11 / 5*10^10 / 10^10 / 10^8 (decision
@@ -189,7 +226,7 @@ int main(void) {
         CHECK(DNAC_NAME_PRICE_6P_DEFAULT == 100000000ULL);
     }
 
-    /* 5b. The read list itself: exactly {4, 5, 6, 7, 8, 9..13} of the governed
+    /* 5b. The read list itself: exactly {4, 5, 6, 7, 8, 9..13, 14, 15, 16} of the governed
      * id space are read by the running consensus (id 8 = HF3_ACTIVE, read
      * by the engine's env_hf3_active — HF-3, 2026-10-02; id 7 =
      * HF2_ACTIVE, read by the engine's env_hf2_active, 2026-09-30).
@@ -217,7 +254,14 @@ int main(void) {
                            id == DNAC_CFG_NAME_PRICE_3P ||
                            id == DNAC_CFG_NAME_PRICE_4P ||
                            id == DNAC_CFG_NAME_PRICE_5P ||
-                           id == DNAC_CFG_NAME_PRICE_6P);
+                           id == DNAC_CFG_NAME_PRICE_6P ||
+                           /* Nodus EVM: 14 read by phase 6b'' and the
+                            * single-use read, 15 by block_ctx_from_doms */
+                           id == DNAC_CFG_EVM_ACTIVE ||
+                           id == DNAC_CFG_EVM_BLOCK_GAS_LIMIT ||
+                           /* storage reward v1: 16 read by phase 6b'
+                            * and env_ruleset_gen_storage_voted */
+                           id == DNAC_CFG_RULESET_GEN_STORAGE);
         CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id) == want);
     }
 

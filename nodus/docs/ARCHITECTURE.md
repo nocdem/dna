@@ -5459,7 +5459,8 @@ registered_height >= 1)) WITHOUT ROWID` — BINARY order, one storage class per 
 the BASE schema (`WITNESS_DB_SCHEMA`, `CREATE TABLE IF NOT EXISTS`), so a database of any rung
 gets it on open; `user_version` stays 16 (no migration rung) and the table joins the preflight
 `required[]` list. Because `IF NOT EXISTS` would silently keep a same-named table of another
-shape, `witness_v2_names_ddl_check` (`nodus_witness.c`) runs on EVERY open: it executes the same
+shape, `witness_ddl_shape_check(db, "v2_names", NODUS_V2_NAMES_DDL)` (`nodus_witness.c`; named
+`witness_v2_names_ddl_check` until storage reward v1 generalized it) runs on EVERY open: it executes the same
 statement in a private `:memory:` database and requires the stored `sqlite_master.sql` to be
 byte-identical; a mismatch refuses THIS node's open (`SQLITE_CORRUPT`, permanent class). (The
 existing `table_cols_exact` compares column names only and runs only in migration rungs.)
@@ -6019,6 +6020,552 @@ supply invariant 7/7 at every step, a kill -9 restart and a wipe + pin replay ac
 ORCHESTRATOR's last run before this document: PASS (rc 0) at the Nodus EVM branch's `3238390e`, with nodus ctest
 241/241 there — at E = 15 / BPY 20 / grace 15 / 15, which proves the LOGIC, nothing about the
 production 720 / 17 280.
+
+### Storage reward v1, package B1 — storage-node registry, the GEN_STORAGE rule-set generation and the `NDS.SYS.v5` SYSTEM root (2026-10-04, branch only — not versioned, not voted)
+
+**Renumbered onto main (2026-10-06, main merge order — decision
+`docs/plans/decisions/2026-10-04-storage-reward-approved.md`; Nodus EVM merged first; K10 in
+`2026-10-05-storage-reward-is-for-archive.md`).** Where the text below says generation 3, param 14,
+SYSTEM v8 / CORE v6 or "the switch from generation 2", read: GEN_STORAGE = **generation 4**, built ON
+the EVM generation (`NODUS_RT_GEN_STORAGE_BASE` = `NODUS_RT_GEN_EVM` = 3); the vote is chain_config
+**param 16** (`DNAC_CFG_RULESET_GEN_STORAGE`; `DNAC_CFG_PARAM_MAX_ID` = 16, after the EVM's 14 / 15);
+**SYSTEM v9** (the EVM generation's rules {1..6} + 7 STORAGE_REGISTER / 8 STORAGE_EXIT / 9
+STORAGE_REPORT), **CORE v7** (the EVM generation's rules {1..9} incl. 9 EVMFUND, SYSFUND paired with
+the storage ops too), the EVM domain unchanged (v1; GEN_STORAGE has no EVM slot — exact-tuple
+uniqueness — so the EVM record keeps resolving the EVM generation's entry); the SYSTEM meter policy is
+the EVM generation's (ops 1..9 at weight 1 — the storage ops' ids are already priced by CORE's
+SYSFUND / NAME_REGISTER / EVMFUND rows, `w_op` being keyed by op id across domains). The edge is 3 → 4
+in phase 6b' (`RULESET_EDGES`: param 9 1 → 2, then param 16 3 → 4); the EVM edge 2 → 3 stays Nodus
+EVM's own phase 6b'' (it also registers the EVM domain). Vote rule (d): judged under EXACTLY the EVM
+generation — which also keeps the storage edge out of the EVM edge's block (every block up to and
+including the EVM edge block is judged under the EVM base). **EVM-only**: the generation-4 slice, its
+pins, policy and edge row compile only under `NODUS_EVM_ENABLED` (`NODUS_RT_GEN_MAX` = 4 there, 2
+otherwise); the chain-config rules for param 16 are unconditional (as param 14's are), the client pins
+count is 4 unconditionally. The SYSTEM root composition is unchanged by the renumbering: main's SYSTEM
+root was still `NDS.SYS.v4` (Nodus EVM changed only CORE's supply leg, `NDS.SUPPLY.v3`), so storage's
+`NDS.SYS.v5` with the `NDS.STOR.v2` leg appended last stands. **Every storage pin is zero again
+("STORAGE-ORACLE: NOT FILLED")**: the GEN_STORAGE SYSTEM / CORE ruleset hashes, its meter-policy
+digest and `DNAC_CFG_RULESET_GEN_STORAGE_D`; the generation-4 entry of `nodus_ruleset_pins.h` is a
+hand-written zero placeholder. Until the independent oracle fills them, `nodus_witness_runtime_selfcheck`
+fails in an EVM-enabled build — the node refuses to start and every test that seeds a genesis fails.
+
+Decision `docs/plans/decisions/2026-10-04-storage-reward-approved.md` (the operator approved design
+rev 2.2 and the byte layouts, "Tamam, approved."); design `docs/plans/2026-10-04-storage-reward-v1-design.md`
+rev 2.2 §1 (registration / exit) and §6 (activation); bytes `docs/plans/2026-10-04-storage-reward-bytes.md`
+items 1, 4, 5, 6 and its Clarifications; who earns `docs/plans/decisions/2026-10-04-storage-reward-who-earns.md`.
+Package A (the pure root functions, `shared/dnac/ledger_roots_v2.{h,c}`) and its independent-oracle
+KAT came first; B1 wires them. The frozen storage set, the report (op 9) and the boundary settlement /
+exit release are package **B2a** (next section), which also replaced B1's leaf v1 / storage leg v1
+with the archive-reward forms before any activation.
+
+**Numbers are provisional.** Generation, op ids and the param id are the next free ones in this branch
+(generation 3, SYSTEM ops 7/8/9, param 14); design §6 assigns them in main merge order (HF-5 and QEVM
+also want a generation). Code names the generation `NODUS_RT_GEN_STORAGE`, never "3".
+
+**The generation (`nodus_witness_runtime.{h,c}`).** A third compiled generation, reached from
+generation 2: SYSTEM v8 — rules {1..9} (ops 7 `DNA_SYSRULE_STORAGE_REGISTER`, 8 `_EXIT`, 9 `_REPORT`
+appended; tx types unchanged) with a policy pricing ops 1..9 (weight 1; `w_op` is keyed by
+`runtime_op` across both domains, so ops 7 and 8 already had rows as CORE SYSFUND / NAME_REGISTER —
+op 9 is the one new row); CORE v6 — rules {1..8} unchanged, version bumped because SYSFUND now also
+pairs with the storage record ops. Same hooks, adapters and allowlists as generations 1 and 2.
+Selfcheck re-derives the generation's pins and the new vote literal. **⚠ The pins
+(`SYS_RULESET_HASH_G3`, `CORE_RULESET_HASH_G3`, `SYS_METER_POLICY_DIGEST_G3`) and
+`DNAC_CFG_RULESET_GEN_STORAGE_D` are NOT FILLED (STORAGE-ORACLE markers): until the independent oracle
+fills them the selfcheck fails and the node refuses to start** — the HF-4 A1 precedent (`53243195`,
+filled in `89f9da09`). The preimages are listed at the pins in `nodus_witness_runtime.c`. The
+generated `nodus/include/nodus/nodus_ruleset_pins.h` must be regenerated after the fill
+(`regen_ruleset_pins`; `test_ruleset_pins` byte-compares it).
+
+**The vote (chain_config param 14 `DNAC_CFG_RULESET_GEN_STORAGE`, `dnac.h`).** Value EXACTLY the
+compiled literal (`dna_ruleset_gen_digest(3, SYSTEM v8 hash, CORE v6 hash, spec 1)` — the switch
+procedure is HF-4's, so `DNAC_RULESET_SWITCH_SPEC_VERSION` stays 1); grace ERGONOMIC. Stateful rules
+(`nodus_chain_config_stateful_rules`, the ONE authority the exec and the 0x71 responder share): (d)
+refused unless generation 2 or later judges the vote (the switch is 2 → GEN_STORAGE — a vote under
+generation 1 would schedule an edge the registry could not take), then param 9's (a) single use
+(over the param-14 fact: `nodus_rt_exec_ctx_t.ruleset_gen_storage_voted`, an UNMETERED engine fact
+read once per item like `ruleset_gen2_voted`; the hook hands the fact MATCHING the voted param), (b)
+HF-2 active, (c) H−1 not an epoch boundary. The client mirror (`dnac/src/transaction/verify.c`) does
+not know param 14 yet (it refuses it in its `default:`) — outside this package's file set.
+
+**The switch (engine phase 6b', `nodus_witness_v2_apply.c`).** Table-driven over two edges in fixed
+order — param 9 (generation 1 → 2, byte-for-byte HF-4's reads, refusals and log text) and param 14
+(generation 2 → GEN_STORAGE). The edge, the registry rewrite (`nodus_witness_domreg_generation_switch`),
+the SYSTEM + CORE touch and the FAULTs ("registry is not generation 2") are HF-4's. Two more unmetered
+chain_config reads per block, no effect when no edge fires.
+
+**The SYSTEM root (`nodus_rt_system_state_root`, `nodus_witness_roots_v2.c`).** Chosen by the RESOLVED
+runtime's generation: GEN_STORAGE or later composes `NDS.SYS.v5` = the 8 v4 legs in v4 order +
+`storage_root` (`nodus_witness_system_root_v5`; since B2a the 4-leg `NDS.STOR.v2`, next section);
+every earlier generation `NDS.SYS.v4` exactly as before (the v4
+function only had its leg reads factored into a shared helper). Because 6b' rewrites the registry
+before the 6c re-scan reloads the runtimes, the first v5 root is H−1's own post-state, committed in
+H−1's app_hash (design D5). `nodus_witness_global_root_v2`'s `out_system`
+stays the v4 composition (test-only assembly; its `out_global` comes from the committed heads).
+`NDS.SYSPAYL.v3` (genesis payload) is unchanged.
+
+**The registry (`v2_storage_nodes`, `nodus_witness.h` `NODUS_V2_STORAGE_DDL`).** `node_fp` (PK,
+SHA3-512(node_pk), 64 B) · `node_pk` (2592 B) · `payee_fp` (64 B) · `bond` · `status` (1 ACTIVE /
+2 EXITING / 3 RELEASED) · `registered_height` (≥ 1) · `exit_height`; typed CHECKs on every column,
+WITHOUT ROWID, in the base schema (empty on every chain before activation; no rung, user_version
+unchanged), its shape checked on EVERY open (`witness_ddl_shape_check`, generalized from the v2_names
+check), required by the S14 preflight. One scan (`storage_scan`) feeds both the registry root (every
+row checked — types, lengths, node_fp == SHA3-512(node_pk), status, non-negative integers) and the
+supply term. B2a added the `fail_streak` column and the leaf v2 (`NDS.STLEAF.v2`).
+
+**The ops (`nodus_witness_rt_native.c`, the STAKE pattern).** Both are 2-leg envelopes — leg 0 the
+SYSTEM record leg, leg 1 the CORE SYSFUND funding leg (`rtn_sys_stake_shape`; `rtn_sysfund_shape` accepts
+the pairing only when its caller passes `rtn_gen_storage(rt)`) — under the authority rule
+`rtn_sys_stake_auth` (exactly one kind-1 signer whose fp == SHA3-512(node_pk); that signature is the
+node's consent). New SYSTEM adapter ops: 8 `RTN_SYS_OP_STOR` (the row; CREATE|SET, ABSENT|EXISTS_VHASH;
+the record node_pk ‖ payee ‖ bond ‖ status ‖ registered_height ‖ exit_height — 2685 bytes since B2a
+with fail_streak u32 appended, 2693 since K9 with grace_until u64 appended — key node_fp) and 9 `RTN_SYS_OP_STORCNT` (read-only live count,
+selector 1 = ACTIVE + EXITING).
+- `STORAGE_REGISTER` (call node_pk ‖ bond u64 ‖ payee_fp = 2664 B): bond EXACTLY
+  `DNAC_STORAGE_STAKE_MIN` (10^14 raw); **payee_fp must equal node_fp** (design §1 "payee_fp (=
+  SHA3-512(node_pk) until HF-5 re-keys it)", read fail-closed — the call carries the field, this
+  release accepts only the node's own fingerprint); refused when the live count already equals
+  `NODUS_STORAGE_SET_MAX` (256); an absent row is CREATEd, a RELEASED row REVIVED (SET bound to the
+  observed record), an ACTIVE / EXITING row refused. SYSFUND locks the bond (utxo → the storage bond
+  bucket).
+- `STORAGE_EXIT` (call node_pk = 2592 B): the row must be ACTIVE; it becomes EXITING with
+  exit_height = the executing height (a repeated exit refuses). Fee-only funding — no value moves;
+  the bond's release as one locked UTXO at the next boundary (identity `dna_v2_storage_exit_id`, kind
+  0x11, out index 201 — `_Static_assert`ed between 200 and 400 in `rt_native.c` and `v2_econ.c`) and
+  the RELEASED status are the storage boundary's (B2a, next section).
+- `STORAGE_REPORT` (op 9): owned and priced; executable since B2a (next section).
+- The scan-v3 describer describes applied register / exit legs with record kind NONE (no wire kind
+  yet), so the address index and `dnac_v3_block` stay byte-unchanged and never fail on them.
+
+**Supply (`nodus_rt_core_invariant`).** New term `storage_bonds` = Σ bond over ACTIVE + EXITING rows
+(`nodus_witness_storage_bond_total`, the registry loader's own checks); 0 before activation.
+
+**Pre-activation byte-identity.** Before the param-14 edge the registry names generation 1 or 2, so
+`rt->generation < GEN_STORAGE`: the SYSTEM root is the unchanged v4 function, the storage ops are
+refused by the descriptor gate (`rt_owns_runtime_op`) and again by the hooks (`rtn_gen_storage`),
+SYSFUND refuses the storage pairing, `v2_storage_nodes` stays empty so the supply term is 0, and a
+CHAIN_CONFIG leg reads nothing new (the param-14 fact is unmetered — no `gas_used` moves). Param 14 was
+REFUSED by the previous binary's range gate (14 > MAX_ID 13) and is ACCEPTED (subject to the rules) by
+this one: a param-14 leg committed before the rollout would replay differently — the same exposure
+HF-4 accepted for param 9 (§2.2: 7/7 on the new binary before any vote).
+
+**Tests (written, not run by the builder).** `test_hf4_table` (GEN_STORAGE shape, the storage ops
+owned by GEN_STORAGE only, refused by older generations' hooks, the literal re-derivation),
+`test_hf4_params` (param 14 scalar / grace / stateful / exec / slot), `test_hf4_switch` cases F / F2
+(v4 roots before the edge, the switch and the v5 root at H−1, the not-generation-2 FAULT; case E's
+out-of-range stand-in moved from 14 to 15), `test_storage_reg` (hook matrix + engine twin: register,
+refusals, exit, duplicate exit, supply conservation), `test_v2_gas_price` (id 14 is the last id).
+Every engine case FAILS until the STORAGE-ORACLE pins are filled.
+
+### Storage reward v1 rev 4 (the ARCHIVE reward), package B2a — segment roots, frozen storage sets, reports, settlement, exit release (2026-10-05, branch only — not versioned, not voted)
+
+Decisions `docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md` (reward = block archive; R = 3;
+amount = block count; 3 failed epochs → skipped; 3 samples; full archives keep all; G = 1 at B2a,
+replaced by K9 — the grace subsection below),
+`2026-10-05-archive-reward-bytes-approved.md` (bytes), `2026-10-05-kurultay-7-archive-reward-summary.md`,
+the kept parts of `2026-10-04-storage-reward-approved.md` and `2026-10-04-storage-reward-who-earns.md`.
+Design `docs/plans/2026-10-05-archive-reward-design.md` rev 4 + rev 2.2 §1, §2, §4, §5; bytes
+`docs/plans/2026-10-05-archive-reward-bytes.md` items 1-5, §6 and the 2026-10-04 bytes items 2, 3, 6. Code:
+`nodus_witness_v2_storage.{h,c}` (new), `shared/dnac/ledger_roots_v2.{h,c}`, `nodus_witness_rt_native.c`,
+`nodus_witness_v2_epoch.c` (step 1b'), `nodus_witness_roots_v2.c`. Inert until the param-14 vote (B1's
+generation switch); the probe client, segment files, the fetch protocol and the CLI are package B2b.
+
+**Pure layer (`ledger_roots_v2`).** `NDS.STLEAF.v2` (leaf v1 + `fail_streak` u32 BE, then `grace_until`
+u64 BE last since K9 — 181-byte preimage; the tag did not change because the leaf was never activated),
+`NDS.STOR.v2` (registry ‖ sets ‖ reports ‖ segments — replaces the 3-leg `NDS.STOR.v1`; `NDS.SYS.v5`
+unchanged), `Root(k)` = SHA3-512(`NDS.STSEG.v1` ‖ k ‖ 17280 ‖ hash[(k−1)·17280+1 .. k·17280]) — a plain
+hash, `dna_v2_segment_root`; segment leaf `NDS.STSGLEAF.v1` ‖ k ‖ Root(k), node `NDS.STSGNODE.v1`, empty
+`NDS.E.STSEG.v1` (`DNA_V2_EMPTY_STORAGE_SEGS`, appended); A(k) = SHA3-512(`NDS.STASGN.v1` ‖ Root(k));
+`dna_v2_segment_holders` — the ≤ 3 members with fail_streak < 3 of smallest A(k) XOR node_fp (big-endian,
+memcmp order), ascending distance, duplicates refused; the OFF-CHAIN §6 sample derivation
+`dna_v2_storage_sample_x` / `dna_v2_storage_sample_index` (block index = position mod B, part index mod
+parts_total; B = 0 / parts_total = 0 refused) — one implementation for the probe client and the KAT.
+Constants `DNA_V2_SEGMENT_BLOCKS` 17280, `DNA_V2_STORAGE_HOLDERS` 3, `DNA_V2_STORAGE_FAIL_LIMIT` 3,
+`DNA_V2_STORAGE_SAMPLES` 3; `dnac.h` `DNAC_STORAGE_EXIT_LOCK_EPOCHS` 12, `DNAC_STORAGE_SEGMENT_DELAY_EPOCHS` 2.
+
+**Tables (base schema, typed CHECKs, WITHOUT ROWID, shape checked on every open, preflight-required).**
+`v2_storage_nodes` gains `fail_streak` (0..2^32−1) and `grace_until` (K9; 0..INT64_MAX — the stored-INTEGER
+bound of every u64 column; a computed value above it is a FAULT). `v2_storage_sets` (epoch_start PK, set_hash,
+member_count 0..256 — one row per frozen set, an empty set included); `v2_storage_set_members` (epoch_start,
+node_fp PK; `fail_streak` as frozen at epoch_start and `grace_until` as it stands AFTER the K9 update of that
+boundary — NOT hashed by S(H), copies of the registry leaf v2 committed at H, the `v2_balance_copy` class); `v2_storage_reports` ((epoch_start, seat) PK, set_hash, bitmap 0..32 bytes);
+`v2_storage_segments` (k PK, root, published_height — not in the leaf; contiguous 1..max). Loaders:
+`nodus_witness_storage_sets_root` (re-derives every S(H) from its members and refuses an orphan member
+row), `_reports_root`, `_segments_root`; `nodus_witness_storage_root_v2` composes the four legs.
+
+**`STORAGE_REPORT` (op 9, `rtn_strep_*`).** Call epoch_start ‖ seat ‖ S(H) ‖ bitmap_len ‖ bitmap (78..110
+bytes). One SYSTEM leg, fee 0, kind 1 with exactly one signer whose fp = SHA3-512(snapshot(H) seat
+pubkey); H a boundary; applying height in (H+E, H+E+⌊E/2⌋]; storage_set(H) exists and its S(H) matches;
+bitmap_len = ⌈count/8⌉, unused high bits zero; first (H, seat) wins. Reads: `RTN_SYS_OP_STSET` (10,
+S(H) ‖ count), `RTN_SYS_OP_SNAPSEAT` (11, the seat pubkey through
+`nodus_witness_v2_epoch_authority_for_epoch`; a non-canonical H / absent snapshot / seat past the count
+is ABSENT, a verdict), `RTN_SYS_OP_STREP` (12, the row; CREATE / ABSENT). The reporter's own bit is
+accepted and ignored at settlement (F2). Described with record kind NONE.
+
+**The storage boundary (step 1b' of `nodus_witness_v2_epoch_boundary_apply`, after the validator
+distribution, before payday).** Gate: param 14 in effect at B (read first) and the SYSTEM runtime
+GEN_STORAGE (else FAULT). Then, in this order: (1) settle the epoch (H, H+E], H = B − 2E — eligibility
+per the K9 rule (subsection below: nothing while H < grace_until, else every segment held over set(H)
+plus the handoff overlap of set(H−E); m ∈ set(H)), weight = 17280 × eligible segments, W over all members; F1 `P_rep·2 > P_total` else nothing moves; F2; OK iff Σ others' power
+with the bit ·3 > P_rep(m)·2; budget = pool 1 >> 16; each OK member `floor(budget·w/W)` (128-bit) through
+`nodus_witness_v2_accrue` (the exported `v2ec_accrue`) to its payee_fp; pool 1 debited exactly Σ credited,
+bound to the observed balance; fail_streak (`nodus_storage_fail_streak_next`, every member of set(H),
+node_fp ASC), first matching line: weight > 0 and OK → 0, also at 3 or more (decision K5a: placement
+trails the live counter by one epoch, so a member can still hold segments of epoch H while its live value
+is ≥ 3, and a recovered member is not kept out for 12 epochs); else at 3 or more (skipped for placement)
++1, and 14 + 1 is written as 0 (decision K5: automatic return after 12 skipped epochs — the reset is
+frozen into set(B) in step 5 of the same boundary, so the member is placed again and is skipped again
+after 3 new failures); else weight > 0 and NOT OK → +1; else unchanged — and a member IN GRACE for (H, H+E]
+is skipped by this step (K9: fail_streak unchanged); (2) prune reports ≤ H and sets < H; (3) release every EXITING row — one locked UTXO through
+`nodus_witness_v2_epoch_release_utxo` (the exported graduation writer): tx_hash = exit_id(chain, B,
+node_fp), index 201, owner payee_fp, unlock B + 12·E, status RELEASED; (4) publish every k with
+k·17280 + 2E ≤ B from the last published + 1 (`nodus_witness_storage_publish_due` — the activation
+backfill and the schedule in one rule; Root(k) from `v2_blocks.block_id`, a missing / malformed row is a
+FAULT); (5) freeze storage_set(B) = the ACTIVE rows with their fail_streak, then the K9 grace update over
+that set (written to the registry and into the member rows). Engine phase 6e declares CORE
+touched also when the storage settlement credited or a release UTXO was written
+(`nodus_v2_epoch_result_t.storage_accrued` / `n_storage_releases`).
+
+**Readings recorded in code (not stated by the design).** A failed F1 floor leaves fail_streak unchanged
+for every member (a skipped member's count does not advance in an unsettled epoch); a (re-)registration
+writes fail_streak 0 and grace_until 0 (a revived node takes over every older segment at its next
+boundary, so K9/K9a give it its grace there); EXIT copies both;
+every EXITING row is released at the next boundary, an exit in the boundary block itself included.
+
+**K9 — the grace scales with the newly assigned segments (decision 2026-10-05-storage-reward-is-for-
+archive.md K9, operator "1" then "onaylıyorum"; replaces G = 1; pre-activation).** At every storage
+boundary H, after the publication step, for each member m of the set being frozen, counted as **K9a**
+(operator "tamam"; refines K9, no byte change):
+`n(m) = 0` when set(H−E) does not exist (the first storage boundary after activation — nobody gets grace);
+otherwise `n(m) = |{k : published ≤ H−E ∧ m ∈ holders(k, set(H)) ∧ m ∉ holders(k, set(H−E))}|`
+— the segments that already existed one epoch ago and that m TAKES OVER (registration, another holder's
+exit or skip, a set change). A segment published in (H−E, H] — at H itself included — is not counted
+(every node still has those blocks in its block store); an existing but EMPTY set(H−E) is a set. Each
+(m, k) is decided by the pure `nodus_storage_grace_counts(H, E, published, prev_exists, in_cur, in_prev)`.
+(K9 before K9a counted every k held over set(H) and not over set(H−E): a segment published at H counted,
+and an absent set(H−E) held nothing, so the first boundary gave every member n = all its segments.)
+n > 0 → `grace_until = max(grace_until, H + n·E)`
+(`nodus_storage_grace_next`, checked u64; above INT64_MAX = FAULT); the registry row and the frozen member
+row carry the value AFTER the update. **In grace** for epoch (H, H+E] iff `H < grace_until`
+(`nodus_storage_in_grace`) — the oracle's reading 4: any n > 0 puts the epoch that starts at H in grace.
+In grace the member is not probed (bit 0, not counted against it), has weight 0 (earns nothing on ANY of
+its segments, old ones included — the accepted cost), and its fail_streak is unchanged at that epoch's
+settlement. **The one eligibility rule** (`nodus_storage_member_eligible`, through
+`nodus_witness_storage_eligible_segments` — the settlement weights, the reporter's probe list and the
+probed node's answer): segment k is eligible for member m of set(H) in (H, H+E] iff m is not in grace and
+(m ∈ holders(k, set(H)) with published ≤ H — "every assigned segment counts" — or m ∈ holders(k, set(H−E))
+with published ≤ H−E — the one-epoch handoff overlap of a DISPLACED holder). One walk
+(`st_member_walk` in `nodus_witness_v2_storage.c`) emits (member, k, published, in_cur, in_prev) for all
+three consumers: the grace count (`nodus_storage_grace_counts`), the weights and the eligible list. The holder's must-hold
+list (`nodus_witness_sthold_must_hold`) is the same two lines WITHOUT the grace gate — a member in grace
+still fetches and keeps its segments. Consequences to know: a member joining only displaces others (holders
+are the three nearest), so only the joiner gains; when a member is skipped (fail_streak 3) or exits, the
+members taking its segments each pause n epochs; a publication (one segment per 17280 blocks ≈ 24
+epochs) gives its holders NO grace (K9a); at the activation boundary nobody gets grace, so every member is
+probed and paid for its assigned segments from the first epoch on (answered from its own block store
+while it still has the blocks). The K5 interaction is a READING: a member in
+grace with fail_streak ≥ 3 keeps its value (K9's "unchanged" over K5's "+1 every settled epoch"), so a long
+grace also delays its K5 return. Status wire: `dnac_storage_status` adds `"gu"` (live grace_until).
+Tests (written, not run by the builder): `test_storage_b2` section A — leaf v2 181 bytes and the 36
+`grace_rule` vectors (E = 720 and 15; new grace_until and the probed bit) against the regenerated oracle
+KAT; section D — a K9a model checked at every boundary (frozen and registry grace_until), the engine's
+eligible list checked against it before every settlement, NO grace at the first storage boundary E (every
+member's eligible list = its holdings over set(E); H = E settles all OK with W = 24·P and pays), a joiner
+taking over alone with n·E grace at 2E, a gainer of a skipped member's segments pausing exactly n epochs
+with weight 0; section D1 — `nodus_storage_grace_counts` pure (a segment published at H, H−1 or H−E+1
+gives no grace, one published at H−E does; no set(H−E) → 0), because section D cannot reach a
+publication (k = 9 is due at 9·P + 2E blocks); `test_roots_v2` (grace_until bound, the 181-byte
+preimage restated); `test_storage_reg` (record 2693; EXIT copies grace_until, a revival resets it);
+`test_storage_probe` (in grace → NO_BLOCKS, past grace → eligible); `test_storage_cli` ("gu").
+
+**Tests (written, not run by the builder).** `test_storage_b2` — the archive KAT byte for byte (json-c),
+publication / backfill / faults over synthetic `v2_blocks`, the STORAGE_REPORT hook matrix, twin engine
+chains through freeze / report / W = 0 / one OK / all OK / remainder / fail_streak 3 and skip / K5 +1
+at 3 with weight and NOT OK / K5a reset at 4 with weight and OK / F1 not met leaves every streak
+unchanged / handoff / exit release / conservation; the pure table (K5a: 3..14 with weight and OK → 0;
+the other pairs +1 at 3..13, 0 at 14) and the pure fail_streak arc (3 → 14 → 0 → placed again → skipped
+again after 3 failures → an OK epoch with weight → 0 and placed, over `nodus_witness_storage_holders`;
+the "≥ 3 with no eligible block adds one" branch is proven only there); `test_roots_v2` (leaf v2 binding, 4-leg storage_root, the STSEG empty root;
+the 2026-10-04 KAT's registry_leaf / registry_root / storage_root sections named SUPERSEDED);
+`test_storage_reg` (record 2693 since K9, its roots check through the runtime hook); `test_hf4_switch` (the empty
+4-leg storage leg). Engine cases FAIL until the STORAGE-ORACLE pins are filled.
+
+### Storage reward v1 rev 4 (the ARCHIVE reward), package B2b-1 — the archive probe's node side (2026-10-05, branch only — not versioned, not voted)
+
+Decisions `docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md` (K3: 3 samples),
+`2026-10-05-archive-reward-bytes-approved.md` (bytes doc §6: the request and the sample derivation),
+`2026-10-05-kurultay-7-archive-reward-summary.md` (verification through the authenticated successor header;
+fresh nonce + deadline), `2026-10-04-storage-reward-who-earns.md`. Design
+`docs/plans/2026-10-05-archive-reward-design.md` rev 4 §4, rev 2.2 §4 (report window, expiry ≤ tip + 100).
+Code: `nodus_witness_storage_probe.{h,c}` (wire, checks, answer builder, verification chain, report
+builder — transport-independent), `nodus_witness_storage_reporter.{h,c}` (the runtime), channel 0x72 in
+`nodus_witness_p2p.{h,c}`, the tick / close hooks in `nodus_witness.c`. OFF-CHAIN: nothing here writes
+state; the probe reaches state only through the reporter's own signed STORAGE_REPORT (design §7 D3) —
+two honest reporters may sign different bits for one target, the > 2/3 rule over reporting power settles.
+NOT in this package: segment file export, the fetch protocol, pruning interaction (B2b-2); the
+`nodus-cli storage register|exit|status` commands (package B2b-CLI, next section) and a config switch
+(see "Open" below).
+
+**Transport — channel 0x72 on 4004 (⚠ the byte is NOT in the operator-approved channel list of decision
+`2026-09-26-witness-port-session.md` "bayt/biçim onayları" item 3, which names 0x70 / 0x71 — pending
+approval).** The archive lives in the witness's block store, and the witness owns 4004 and no 4002
+(component-split decision items 12, 23: a witness runs without core's DHT / 4002 and may be its own
+process), so the probe travels witness-to-witness over the EXISTING authenticated 4004 connection — the
+0x71 approval collection's model: no dial, a target not connected (or not listing 0x72) at its slot is
+retried later in the epoch and is NOT OK if never reached. Descriptor: priority 1, send queue 4, receive
+capacity `NODUS_STPROBE_MSG_MAX` (≈ 227 KB). An undecodable message stops the peer (as 0x70 / 0x71). The
+PIN: the target's p2p ID is hex(registered node_fp[0..31]); an answer is taken only when SHA3-512 of the
+SENDER's authenticated ML-DSA-87 key equals the registered node_fp in all 64 bytes, and the serving side
+refuses a request whose reporter_fp is not SHA3-512 of the sender's authenticated key.
+
+**Wire (all integers big-endian; `kind(1) ‖ body`).**
+- kind `0x01` REQUEST — exactly the bytes doc §6 request, 288 bytes: `"NDS.STPROBE.v2"` padded to 16 ‖
+  chain_id[32] ‖ epoch_start u64 ‖ S(H)[64] ‖ target_fp[64] ‖ reporter_fp[64] ‖ nonce[32] ‖ deadline_ms u64.
+- kind `0x02` ANSWER — `rq[64] ‖ code(1)` and, when code = 0, three samples
+  `hdr_len u32 ‖ header(h+1) proto ‖ part_len u32 ‖ part bytes ‖ proof_len u32 ‖ part proof proto`;
+  rq = SHA3-512(the 288 request bytes); hdr_len ≤ 2048, part_len ≤ 65536, proof_len ≤ 8192, no trailing byte.
+  Codes: 0 OK, 1 MALFORMED, 2 NOT_ADDRESSED, 3 WRONG_CHAIN, 4 LATE, 5 NOT_REPORTER, 6 UNKNOWN_SET,
+  7 SET_MISMATCH, 8 NOT_MEMBER, 9 NO_BLOCKS, 10 NOT_HELD, 11 RATE, 12 NOT_SEATED, 13 FAULT.
+  ⚠ The kind byte, rq, code and sample framing are this package's choice (bytes §6 fixes the request and
+  names the three answer items only) — pending approval with the channel byte.
+
+**Samples (bytes §6).** x_i = `dna_v2_storage_sample_x(nonce, target_fp, i)`; B = 17280 × the target's
+eligible segments (`nodus_witness_storage_eligible_segments` at H); block position = x_i[0..8) mod B →
+height h (ascending); part = x_i[8..12) mod the part count in header(h+1).last_block_id. B = 0 → no probe,
+bit 0.
+
+**Serving side (any node that is a member of storage_set(H)).** In order: per-requester gap 2 s
+(monotonic; a 64-slot table), decode, chain / addressed / reporter = sender / boundary / this node's wall
+clock ≤ deadline_ms, storage_set(H) known with the request's S(H), this node a member with B > 0 — the
+samples are drawn over ITS OWN eligible blocks, so a peer cannot make it read any other block — and the
+requester holds a seat in snapshot(H); then header(h+1) from the block meta of h+1, the part P:h:i and its
+proof, each refusal answered with its code. A pruned or missing block answers NOT_HELD — since package
+B2b-2 (below) only when the node's held segment file does not have it either: each sample is read from the
+block store while the store has the block, else from the segment file, with the same bytes.
+
+**Reporter (a node seated in snapshot(H)), `nodus_witness_stprobe_tick`, at most every 500 ms, only while
+the version-3 lane is live and NOT block-syncing.** Probing epoch H = ⌊tip/E⌋·E (set(H) is committed in
+block H), opened once per H; targets = every member but itself (F2), each first tried at
+H + ⌊j·⌊3E/4⌋/n⌋ (order rotated by the own seat, ≤ 4 sends per pass). A probe: nonce from the OS CSPRNG
+(`nodus_random`), deadline_ms = wall clock + 10 s; the three heights and this node's OWN
+`v2_blocks.block_id` at h and h+1 are read before the request leaves; the answer is judged by
+`nodus_stprobe_answer_ok` against a monotonic deadline of the same 10 s: header hash = hash[h+1], height
+h+1, last_block_id.hash = hash[h], part count 1..1601, proof.index = sampled part, proof.total = part
+count, Part.ValidateBasic, `cmt_proof_verify` against the part-set root. Late or any failing link = NOT OK.
+At tip ≥ H+E the epoch closes (unsent targets NOT OK); once no answer is outstanding, inside
+(H+E, H+E+⌊E/2⌋] the report (bit i LSB-first = member i OK) is built and signed by the node identity —
+the seat key (`witness_cmt_raw_sign` signs consensus with the same key) — and handed to the own mempool
+through `cmt_mem_check_tx` (the `dnac_spend` path), expiry = min(tip + 100, window close). Resubmitted
+when its expiry passed with no committed (H, seat) row, or 10 blocks after a refused CheckTx; given up at
+window close. A report is sent even when every bit is 0 (members at fail_streak ≥ 3 need settled epochs
+to return, K5); none when set(H) is empty. A restart loses the epoch's results: no report for an epoch
+this process did not probe.
+
+**Report priority — NOT implemented (decision needed).** STORAGE_REPORT carries fee 0, so
+PrepareProposal's fee-per-unit order (`nodus_witness_cmt_app.c`, decision
+`2026-09-25-mempool-policy.md` item 2) places it last; only CHAIN_CONFIG has its own lane. A report class
+ahead of paying envelopes would change that recorded ordering rule, so it is left to the operator. Today's
+exposure: the window is 360 blocks at E = 720, reports are ≤ 32 per epoch at 78..110-byte calls, an
+envelope skipped by a full block stays in the mempool, and the reporter resubmits after expiry.
+
+**Open.** `nodus-cli storage register|exit|status` — landed in package B2b-CLI (next section). No config key: the reporter runs when seated, the serving side answers when a
+member (the node config parser `nodus/tools/nodus_node_config.c` was outside the list; package B2b-2 adds
+only `segment_dir`, the segment files' directory — no on/off switch).
+
+**Tests (written, not run by the builder).** `test_storage_probe` — request bytes = the §6 layout and
+rq; answer framing and bounds; the pure and the database refusals (wrong chain, not addressed, reporter ≠
+sender, not a boundary, late, unknown set, S(H) mismatch, not a member, B = 0); the answer built from a
+fixture block store for nonce-derived samples verifies; late, foreign-rq and refusal answers are NOT OK;
+NOT_HELD for a missing part / missing header(h+1); every link of the verification chain refuses on its
+own; the report call layout and the signed envelope (op 9, fee 0, expiry, one signer whose signature
+verifies over the auth digest); the epoch / window arithmetic at E = 720 and 15. Not covered: the
+NOT_SEATED refusal and the serving path's OK answer through `nodus_witness_stprobe_serve` (need a
+validator snapshot), the live channel, pacing and mempool submission (no harness scenario yet).
+
+### Storage reward v1 rev 4, package B2b-CLI — `nodus-cli storage register|exit|status` and `dnac_storage_status` (2026-10-05, branch only — not versioned, not voted)
+
+Decisions `docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md` (registration, the 1M bond and
+node-key authority stay), `2026-09-25-web-wallet-nodus-send-transport.md` ("İşlem kurucu": the CLI and the
+wallet build with ONE C builder). Call bytes `docs/plans/2026-10-04-storage-reward-bytes.md` item 5.
+
+**Builder.** `nodus/src/client/nodus_v2_stake.c` builds SYSTEM ops 7 and 8 in the same 2-leg shape as the
+stake ops (leg 0 SYSTEM record leg, leg 1 CORE SYSFUND, one kind-1 signer on both): STORAGE_REGISTER call
+= node_pk[2592] ‖ bond u64 BE ‖ payee_fp[64] (2664 B, `RTN_SYS_STREG_CALL_LEN`), funding lock = bond;
+STORAGE_EXIT call = node_pk (2592 B, `RTN_SYS_STEXIT_CALL_LEN`), fee-only funding. The builder refuses a
+bond other than `DNAC_STORAGE_STAKE_MIN` and a payee other than SHA3-512(node_pk) (the exec's pre-HF-5
+rule, `rtn_storage_register_exec`); the decoder refuses such a payee too. The tuples the caller passes
+must be the GEN_STORAGE generation's — the ops do not exist below it (`rtn_gen_storage`). The web
+wallet does not build storage ops (its WASM refuses every op but 1, 2, 4 before calling the builder).
+
+**Query `dnac_storage_status`** (`handle_dnac_storage_status`, `nodus_witness_handlers.c`; reaches the
+witness through the generic `dnac_` prefix route of core and the IPC backend — no protocol change).
+Request `"a": {"fp": tstr128 lowercase hex}`. Read-only over committed tables: the `v2_storage_nodes`
+row, storage_set(H) with H = tip − tip mod E (the set governing (H, H+E]), and the node's eligible
+segments in that epoch (`nodus_witness_storage_eligible_segments`). Response `"r"`: `ch` tip, `es` H
+(0 = none yet), `found`; iff found `st` (1 ACTIVE / 2 EXITING / 3 RELEASED), `bond`, `fs` fail_streak,
+`gu` grace_until (K9; epoch (H, H+E] is in grace while H < gu — `ns` is then 0), `rh`, `xh`, `payee`
+(hex128); `set`, `sc` member count, `mem`, `ns` eligible-segment count, `segs` the first min(ns, 64) k
+ascending. Bounded: at most 15 keys and 64 list entries (one 4 KB reply buffer). The CLI's `status`
+prints grace_until and, while `es < gu`, that the node is in grace (not probed, earns nothing, how many
+grace epochs are left).
+A store fault (a malformed row, an unreadable set, a member without a registry row) is an
+`INTERNAL_ERROR` reply, never a partial answer. **The last settled outcome is NOT available:**
+`st_settle` (`nodus_witness_v2_storage.c`) writes only fail_streak and the payee's accrual, and `st_prune`
+deletes that epoch's reports at the same boundary — no committed per-member verdict exists to read.
+Client: `nodus_client_dnac_storage_status` + the strict `nodus_dnac_storage_status_decode` (`nodus.h`).
+
+**CLI.** `nodus-cli -s <node> -i <node identity dir> storage register|exit (--dry-run | --submit ip:port)`
+signs and funds with the node identity (`-i` required), builds for the generation the node names
+(refused below `NODUS_RT_GEN_STORAGE`), checks the registry row first (register refused when ACTIVE /
+EXITING, exit when absent or not ACTIVE; a failed query only warns), prints what is sent, and submits only
+with `--submit`. `storage status [--fp <hex128>]` prints the generation and the query answer. Operator
+steps: `DEPLOY_RUNBOOK.md` §2.6 step 4.
+
+**Tests (written, not run by the builder).** `test_storage_cli` — builder-made REGISTER / EXIT envelopes
+through the GEN_STORAGE SYSTEM and CORE hooks over fabricated engine facts (read plans, the CREATE / SET
+records, Σin = change + fee + lock with lock = bond / 0), builder and decoder refusals, the status
+decoder's rules. Not covered: admission (descriptor, meter, units), the handler over a real frozen set.
+
+### Storage reward v1 rev 4, package B2b-2 — segment FILES and the 0x73 FETCH (2026-10-05, branch only — not versioned, not voted)
+
+Decisions `docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md` (R = 3, K9 the grace — a
+member in grace still fetches, K6 the 0x72 framing this channel follows, K6a no per-requester byte
+budget, K8a — replaces K8 — every file carries the validator set that signed its
+terminal commit and the signatures are always verified), `2026-10-05-archive-reward-bytes-approved.md`
+(bytes doc §6 chain, §7 file, §7 Clarifications K8a),
+`2026-10-05-kurultay-7-archive-reward-summary.md` (items 2, 4, 5, 7), `2026-10-03-block-pruning-7-paydays.md`
+(the 2026-10-05 rollout change: storage nodes prune only once this package is live). Design
+`docs/plans/2026-10-05-archive-reward-design.md` rev 4 §2 (handoff), §3. Code:
+`nodus_witness_storage_segment.{h,c}` (the file), `nodus_witness_storage_fetch.{h,c}` (the 0x73 wire and
+serving side), `nodus_witness_storage_holder.{h,c}` (the runtime), channel 0x73 in
+`nodus_witness_p2p.{h,c}`, the tick / close hooks in `nodus_witness.c`, the 0x72 serving side's file
+fallback in `nodus_witness_storage_reporter.c`, config key `segment_dir`. NODE-LOCAL: no file, no fetch
+and no clock here is ever a consensus input (design §7 D3, D4); every byte written is first verified
+against the consensus-fixed `v2_blocks.block_id`. The block-store prune loop is NOT changed.
+
+**The segment file** (one per segment k = heights (k−1)·17280+1 … k·17280; `<data_path>/<segment_dir>`,
+default `segments`; all integers big-endian; ⚠ node-local layout, bytes doc §7 says only WHAT is held):
+- `seg-<k>.dat` — `"NDS.SEGFILE.v1"` padded to 16 ‖ k u64 ‖ count u32 (17280); then per height h, in
+  order, `h u64 ‖ hdr_len u32 ‖ header(h+1) proto ‖ n_parts u32 ‖ n_parts × (plen u32 ‖ the stored part
+  proto P:h:i)`; then `clen u32 ‖ the commit of k·17280` (block k·17280+1's LastCommit = C:k·17280); then
+  (K8a) `vlen u32 ‖ validators(k·17280) as a cometbft ValidatorSet proto` — the set LoadValidators(k·17280)
+  reconstructs from the state store's ValidatorsInfo rows (not the raw row), through
+  `cmt_validator_set_to_proto`, marshalled; vlen 1 … `NODUS_SEG_VALSET_MAX` = 342 764 B = (128 + 1) ×
+  2657 + 11 (a framed Validator is at most address 34 + pub_key 2598 + power 11 + priority 11 + tag and
+  2-byte length; 128 members plus the proposer; total_voting_power 11); 7 validators ≤ 21 267 B. The
+  commit record and the set record are written together, after both verified. Each commit is stored once
+  (the others travel inside their successor block's parts).
+  ⚠ DEVIATION from bytes §7: each height record also carries header(h+1), the SUCCESSOR header — the §6
+  chain authenticates block h's parts only through it, the 0x72 answer sends it, and the terminal commit
+  is checked against header(k·17280+1); a pruned store no longer has any of them. Each header stored once.
+- `seg-<k>.idx` (207 420 B) — `"NDS.SEGINDEX.v1"` ‖ k u64 ‖ count u32 ‖ 17280 × (offset u64 ‖ n_parts u32)
+  ‖ commit_off u64 ‖ commit_len u32 ‖ valset_off u64 ‖ valset_len u32 ‖ data_size u64 (the offsets point
+  past each record's u32 prefix; commit_off + commit_len + 4 = valset_off, valset_off + valset_len =
+  data_size). One part is read with the record's own length prefixes, never a file scan. The tags stay
+  `v1` (the package is branch-only): a published file of the pre-K8a layout is not held — its index is
+  207 408 B and the marker check requires 207 420; a pre-K8a partial `.dat.tmp` resumes its heights and
+  has its commit record cut (no set record follows it).
+- `seg-<k>.ok` (105 B, the completeness marker) — `"NDS.SEGDONE.v1"` ‖ k u64 ‖ data_size u64 ‖ index_size
+  u64 ‖ flags u8 ‖ SHA3-512(index). A segment is HELD iff the marker agrees with both files. Flags bit 0 =
+  the terminal commit's signatures were verified against the file's set record — since K8a ALWAYS 1: a
+  marker whose flags byte is not exactly 0x01 is not valid (not held).
+
+**Verification before any byte is written** (bytes §6 chain): header(h+1) decodes, hashes to v2_blocks[h+1],
+height h+1, last_block_id.hash = v2_blocks[h], part total 1 … 1601 with a 64-byte root; part i: part.index =
+proof.index = i, proof.total = the total, Part.ValidateBasic, `cmt_proof_verify`; then (K8a) the
+validator set, BEFORE the commit: 1 … 342 764 B, `cmt_pb_validator_set_unmarshal`,
+`cmt_validator_set_from_proto` (ValidateBasic: non-empty, every address matching its key, the proposer a
+member by address), `cmt_validator_set_hash` = header(k·17280).validators_hash (header(k·17280) is record
+k·17280−1's successor header, already authenticated against v2_blocks[k·17280]) — held, not written; then
+the terminal commit: CommitFromProto, height k·17280, block_id = header(k·17280+1).last_block_id,
+`cmt_commit_hash` = header(k·17280+1).last_commit_hash (the hash binding), then ALWAYS `cmt_verify_commit`
+against the held set (chain id of header(k·17280+1)). The signatures bind the commit's `round`, which
+Commit.Hash does not cover — the gap the earlier hash-only rule (K8, replaced) accepted. A set or commit
+that fails writes nothing; a file without a verified set and verified signatures is never complete.
+
+**Atomic publish / resume.** fsync(.dat.tmp); write + fsync .idx.tmp; rename both; fsync(dir); write +
+fsync .ok.tmp; rename; fsync(dir). A .dat without a valid marker goes back to `.dat.tmp`. Opening a build
+over an existing `.dat.tmp` re-verifies every record from the start (32 per pass) and cuts the file at the
+first short, torn or failing record. After the last height the commit and set records are re-verified
+from the file as ONE unit (the set's hash, then the signatures against it — no state store involved): a
+short, torn or failing byte in either cuts the file at the START of the commit record (both are added
+again); bytes after a good pair are cut.
+
+**Must hold / deletion (holder runtime, `nodus_witness_sthold_tick`, every 200 ms while the lane is live
+and not block-syncing).** At H = ⌊tip/E⌋·E this node must hold k iff me ∈ holders(k, H), or
+published_height(k) ≤ H−E and me ∈ holders(k, H−E) — the two lines are the probe's eligibility rule
+(`nodus_witness_v2_storage.h` "ELIGIBILITY") WITHOUT its K9 grace gate: a member in grace is not probed
+but fetches and keeps its new segments; a displaced holder keeps its file through the overlap epoch
+(H, H+E] while it is still probed and paid, and deletes it at the next epoch. Deletion
+(once per epoch, marker first, then the files, then fsync(dir)) touches only PUBLISHED segments outside
+that list; nothing is deleted when storage_set(H) is absent or a read faults (an absent set(H−E) counts
+as empty). One job at a time, smallest k first: EXPORT when the block store's base ≤ (k−1)·17280+1 and
+height ≥ k·17280+1 (`nodus_seg_store_has`; never inferred from one row — H:1 survives pruning), 32
+heights per pass, the raw P:h:i values, then validators(k·17280) from the STATE table
+(`nodus_seg_valset_from_store`), then the raw C:k·17280, all through the verification; else (or when the
+export stops because the store pruned meanwhile — including a state table that no longer has
+validators(k·17280): `nodus_cmt_ss_prune_states` runs with block pruning) FETCH the rest, the set
+included. **retain_blocks warning:** at every assignment (start,
+then once per epoch) `retain_blocks > 0` while an assigned segment is incomplete logs a WARN.
+
+**Channel 0x73 — the fetch (⚠ NEW WIRE, PENDING OPERATOR APPROVAL: the byte, the layouts, the codes and
+the bounds are this package's; the approved list is 0x70 / 0x71, K6 adds 0x72).** Descriptor: priority
+1, send queue 4, receive capacity `NODUS_STFETCH_MSG_MAX` (≈ 610 KB: a terminal commit at 128 validators,
+`NODUS_SEG_COMMIT_MAX` = 159 + 128 × 4685 = 599 839 B, travels whole because its hash binding is over the
+whole). An undecodable message stops the peer (stop reason 423).
+- kind `0x01` REQUEST (37-byte body): `"NDS.STFETCH.v1"` padded to 16 ‖ k u64 ‖ h u64 ‖ part u32 ‖ cont u8.
+  h ∈ segment k; part = the part index, or 0xFFFFFFFF = the terminal commit, or 0xFFFFFFFE = the validator
+  set validators(k·17280) (K8a; ⚠ this selector is part of the same PENDING wire — K8a approved that the
+  file carries the set, not how 0x73 moves it), both with h = k·17280; cont 0 = first request of block h
+  (send header(h+1)), 1 = the requester continues block h and holds a verified header(h+1) (omit it);
+  anything else is malformed.
+- kind `0x02` ANSWER: `rq[64] ‖ code(1)` and, when 0, `hdr_len u32 ‖ header(h+1) ‖ body_len u32 ‖ body ‖
+  proof_len u32 ‖ proof`; rq = SHA3-512(the 37 body bytes); header present (≤ 2048) iff cont = 0; body = the
+  part bytes (≤ 65536) with its proof (1 … 8192), or the commit proto (1 … 599 839) with no proof, or the
+  ValidatorSet proto — exactly the file's set record bytes — (1 … 342 764) with no proof; no trailing byte.
+  Codes: 0 OK, 1 NOT_MEMBER, 2 UNKNOWN_SET, 3 NOT_PUBLISHED, 4 NOT_HELD, 6 FAULT; 5 (the former
+  per-requester byte budget) is retired by K6a — never sent, never reused.
+- Serving side: decode → (K6a, operator "bayt sınırını kaldıralım": NO per-requester byte budget; what one
+  requester draws is bounded by the admission below, its one request in flight and the 4004 connection's
+  per-peer send / recv rate) → the requester's authenticated 64-byte fingerprint is a member of the CURRENT frozen set S(H) (committed; `st_freeze`
+  copies only ACTIVE rows) and its registry row is ACTIVE now — the session pin: the 4004 secret
+  connection authenticated its ML-DSA-87 key and the registry's node_fp must be SHA3-512 of it (design §3
+  cites `nodus_inter_dial.c:150` for this pin; that file is core's 4002 dialer — on 4004 the pin is the
+  secret connection's key, as 0x72) → segment k published → the piece from the block store, else from the
+  held file, else NOT_HELD; the SET piece from the STATE table (LoadValidators(k·17280) — not gated on the
+  block store's base; header(k·17280+1) from the block store when cont = 0), else from the held file. One
+  block in flight per peer: answers are immediate, and the client keeps one request outstanding.
+- Client: holders of k (set(H), then set(H−E); p2p ID = hex(registered node_fp[0..31])) that are
+  connected, then every other connected peer (a full archive node, or any node whose store still has the
+  blocks); an answer is taken only from that peer for that rq; header, part, set and commit go through the
+  build's verification before they are written (the set first, then the commit); a refusal, a bad piece —
+  a set that does not hash to header(k·17280).validators_hash or a commit whose signatures fail included —
+  or 10 s of silence moves to the next peer; a round without progress waits 30 s; a node-side fault (disk,
+  own ledger) closes the job and retries after 30 s. Restart resumes the partial file.
+
+**Probe from a file.** `nodus_witness_stprobe_serve` (0x72) reads each sample from the block store and,
+when the store answers NOT_HELD (pruned), from the held segment file (`nodus_seg_probe_sample`) — the same
+bytes, so the reporter's chain is unchanged.
+
+**When a storage node may prune:** `DEPLOY_RUNBOOK.md` §2.6.
+
+**Tests (written, not run by the builder).** `test_storage_segment` — over a fixture store holding a real
+17 280-block chain: export → publish → read back (data / index / marker layout, every part equal to the
+store's P:h:i, the commit); every bad piece refused before it is written (tampered part, another block's
+part, wrong header, flipped commit byte, out of order), finish refused when incomplete, a mismatching
+marker not held, a markerless .dat re-verified and republished byte-identical; the 0x73 request bytes,
+every malformed request, refusal / OK framing and bounds, the shape rule (the budget cases went with K6a); a
+whole segment fetched piece by piece byte-identical to the export (a corrupted answer refused); resume
+after a torn tail and a cut at a tampered record; the serving side's refusals; must-hold and deletion
+across the overlap (held at H, H+E, deleted at H+2E, nothing deleted without set(H), unpublished files
+kept); the 0x72 answer from the file after pruning equals the store's and verifies. K8a: the fixture's
+validators(17280) is a real set of four ML-DSA-87 keys (fixed seeds) that signs C:17280, stored as a
+checkpoint ValidatorsInfo row; the set record round trip; tampered sets refused (a power, the order, a key
+byte, truncated / empty / past the bound); the same commit with round 1 (same Commit.Hash) refused by the
+signatures; markers with flags 0 or an unknown bit not held; the 0xFFFFFFFE selector, its shape rule, the
+set from store and file; a torn or on-disk-tampered set record cut at the commit record; an export
+without validators(17280) finished by fetching the set. Not covered: a set at the 128 cap, a non-checkpoint
+ValidatorsInfo row, the live 0x73 transport (rotation, timeouts), the tick and the retain_blocks warning,
+the message handler `nodus_witness_sthold_on_msg` itself.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
@@ -7234,6 +7781,10 @@ SQLite tables managed by the witness module (`nodus_witness_db.c`):
 | `v2_treasury` | final pre-testnet wipe W-A: the nine keyless, locked treasury pools (pool_id 1..9 → balance), seeded from the genesis document; a leg of `system_state_root` and `system_payload_root`; a term of the supply equation; no exit rule (parked) |
 | `v2_balance_copy` | tokenomics-v3 P2/P3: the stake frozen at each boundary (three copies kept since P3: H−2E, H−E, H); read by the selection (okuma B) and the reward split; out of every root. PK `(epoch_start, validator_fp, owner_fp, kind)` — `kind` 0 the bond, 1 a delegation (W-B: a self-delegation shares its owner with the bond) |
 | `v2_names` | HF-4: the on-chain names (`name` BLOB PK 3..36, `owner` BLOB UNIQUE 64, `registered_height` INTEGER ≥ 1, `WITHOUT ROWID`); in the BASE schema, its DDL checked byte-for-byte on every open; written only by CORE op 8 NAME_REGISTER (generation 2); the 5th leg of `core_state_root` (`name_root`, empty = `NDS.E.NAMES.v1`) |
+| `v2_storage_nodes` | storage reward v1 (package B1, branch only): the storage-node registry (`node_fp` BLOB PK 64 = SHA3-512(node_pk), `node_pk` BLOB 2592, `payee_fp` BLOB 64, `bond`, `status` 1 ACTIVE / 2 EXITING / 3 RELEASED, `registered_height` ≥ 1, `exit_height`, `fail_streak` 0..2^32−1 (B2a); typed CHECKs, `WITHOUT ROWID`); in the BASE schema, its DDL checked on every open; written only by the GEN_STORAGE SYSTEM ops STORAGE_REGISTER / STORAGE_EXIT and the storage epoch boundary (B2a: exit release, fail_streak); its registry root (leaf `NDS.STLEAF.v2`) is part of `storage_root`, the 9th leg of `system_state_root` under `NDS.SYS.v5`; Σ bond over ACTIVE + EXITING is a term of the supply equation |
+| `v2_storage_sets` / `v2_storage_set_members` | archive reward (package B2a, branch only): the frozen storage sets S(H) — header (`epoch_start` PK, `set_hash`, `member_count` 0..256) and members (`epoch_start`, `node_fp`; `fail_streak` as frozen at H, not hashed by S(H)); written by the storage boundary (freeze at every storage boundary, prune below B−2E); `sets_root` leg of `storage_root` |
+| `v2_storage_reports` | archive reward (B2a): committed STORAGE_REPORTs (`epoch_start`, `seat` PK; `set_hash`; `bitmap` 0..32 B); written by the STORAGE_REPORT exec, pruned by the storage boundary after settlement; `reports_root` leg |
+| `v2_storage_segments` | archive reward (B2a): the published segment list (`k` PK, `root` = Root(k) from `v2_blocks.block_id`, `published_height`); written by the storage boundary, never pruned; `segments_root` leg |
 | `committed_transactions` | Full serialized TX data (hub/spoke queries) |
 | `addr_history` | Node-local address history index (decision 2026-10-01): one row per owner effect (h, i, seq, raw owner, kind, amount, token, fee, peer, wire, ts), written in the block transaction only while `addr_history_index` is on; out of every root; read by `dnac_addr_history`. Created rung-free by `nodus_witness_addr_index_migrate` |
 | `addr_history_mark` | Its one marker row: `from_height` (first height of the current gap-free indexed run) and `last_height` |

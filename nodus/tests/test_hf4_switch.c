@@ -38,14 +38,39 @@
  *     verdict and records ctx.ruleset_gen2_voted): the first item sees 0
  *     and applies, the second sees 1 — the row the first wrote in the
  *     SAME block — and is refused (code EXEC).
- *  E. ENGINE, replay invariance — a param-14 leg (refused by the scalar
+ *  E. ENGINE, replay invariance — a param-15 leg (refused by the scalar
  *     rules' range gate: the exact path a param-9 leg took on the pre-
  *     HF-4 build, where 9 > MAX_ID), a param-9 leg with a wrong value
  *     (scalar refusal under HF-4) and a param-9 leg refused by a stateful
  *     rule (epoch-boundary H-1) are all code EXEC with the SAME gas_wanted
  *     and gas_used: the HF-4 rules added no read and no charge to a
  *     refused CHAIN_CONFIG leg, so an old block's results hash replays
- *     unchanged.
+ *     unchanged. (The stand-in is now param 17 — ids 14-15 became Nodus
+ *     EVM's and 16 the storage vote.)
+ *  F. STORAGE REWARD v1 (decision docs/plans/decisions/2026-10-04-
+ *     storage-reward-approved.md; design docs/plans/2026-10-04-storage-
+ *     reward-v1-design.md rev 2.2 §6 / D5; numbering in main merge order,
+ *     K10 in 2026-10-05-storage-reward-is-for-archive.md) — the storage
+ *     edge, production runtimes, EVM-enabled build, HF-2 on from 1,
+ *     param 9 at H9 = 3, param 14 (EVM_ACTIVE) at HE = 5 and param 16
+ *     (the storage vote literal) at H14 = 8 committed at genesis, idle
+ *     blocks: at blocks 1..6 (generation 1, 2 from the end of block 2,
+ *     the EVM generation from the end of block 4) the committed SYSTEM
+ *     root equals nodus_witness_system_root_v2 ("NDS.SYS.v4") and
+ *     differs from the v5 composition — PRE-ACTIVATION the storage code
+ *     adds nothing to the root; block 7 (= H14-1) switches the EVM
+ *     generation -> GEN_STORAGE (SYSTEM v9 / CORE v7 with the compiled
+ *     hashes, the registry root moved, both runtimes resolve GEN_STORAGE,
+ *     the EVM domain's record still the EVM generation's v1) and its
+ *     committed SYSTEM root is ALREADY v5 — the DomainUpdate's pre_root
+ *     the v4 root before the edge, its post_root the v5 root, CORE
+ *     unmoved, both updates naming GEN_STORAGE; the v5 storage leg over
+ *     the empty registry equals the empty storage leg (four tagged-empty
+ *     trees); block 8 (= H14, idle) does not switch again and stays v5.
+ *  F2. the storage edge with a registry still at generation 2 (param 9
+ *     at 3, no EVM_ACTIVE row, param 16 at 6): block 5 is a node FAULT
+ *     ("registry is not generation 3"), the DB byte-unchanged — the
+ *     state the vote's rule (d) keeps out of reach of transactions.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build; the effective heights are
@@ -69,11 +94,22 @@
  *  - D and E fabricate the committee verdict inside the probe (quorum
  *    met) because the fixture's validators have no secret keys; the auth
  *    hook itself still verifies the real submitter signature. E's
- *    "pre-HF-4 path" is a stand-in (param 14 through the same range
+ *    "pre-HF-4 path" is a stand-in (param 15 through the same range
  *    gate), not a replay of a block committed by the base binary.
  *  - The "unreadable param-9 history → FAULT" branch of 6b' and of the
  *    ctx fill is not induced here (no fault-injection hook reaches the
  *    chain_config read).
+ *  - F / F2 (storage): the GEN_STORAGE pins and the storage vote literal
+ *    are independent-oracle literals — "STORAGE-ORACLE: NOT FILLED" (zero)
+ *    since the renumbering onto the EVM generation, until the oracle
+ *    re-runs; they do not run in a build without NODUS_EVM_ENABLED;
+ *    if they ever stop re-deriving, the runtime selfcheck fails, the
+ *    seeded genesis refuses, and EVERY engine case in this file fails at
+ *    fx_open — not a pass, not a skip. F pins the v4 / v5 roots by
+ *    SELF-CONSISTENCY (committed == recomputed through the two loader functions), not by an oracle
+ *    literal; the v5 composition bytes are pinned by package A's KAT
+ *    (test_roots_v2.c). No storage row exists here — the register / exit
+ *    path is test_storage_reg.c.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -820,8 +856,10 @@ static int t_refused_leg_gas_invariant(void) {
         ((h + GRACE_E - 1u) / E_LEN + 1u) * E_LEN + 1u;   /* H-1 = k·E */
     CHECK(((bd_eff - 1u) % E_LEN) == 0 && bd_eff >= h + GRACE_E,
           "a boundary effective past the grace floor");
-    /* x: id 14 — the scalar range gate (the pre-HF-4 path of id 9) */
-    CHECK(cc_env_build(fx.w, h, 14, 0, ok_eff, 1, &x) == 0, "param 14");
+    /* x: id 17 — the scalar range gate (the pre-HF-4 path of id 9; ids
+     * 14-15 became Nodus EVM's and 16 the storage vote, so the first
+     * unknown id is now 17) */
+    CHECK(cc_env_build(fx.w, h, 17, 0, ok_eff, 1, &x) == 0, "param 17");
     /* y: id 9, wrong value — the HF-4 scalar rule */
     CHECK(cc_env_build(fx.w, h, DNAC_CFG_RULESET_GEN2, D2 + 1u, ok_eff, 2,
                        &y) == 0, "param 9, value D2 + 1");
@@ -851,6 +889,218 @@ static int t_refused_leg_gas_invariant(void) {
     return 0;
 }
 
+/* ══ F. storage reward v1 — the second edge: the EVM generation ->
+ *       GEN_STORAGE at H14-1 (param 16; H14 names the storage edge), and
+ *       the SYSTEM root composition v4 -> v5 with it. EVM-enabled build
+ *       only (K10: GEN_STORAGE is compiled only there) ════════════════ */
+#ifdef NODUS_EVM_ENABLED
+
+/* the COMMITTED domain state root of `dom` (the head blob's bytes 4..67:
+ * id4 ‖ root64 ‖ …) */
+static int head_root(nodus_witness_t *w, uint32_t dom, uint8_t out[64]) {
+    sqlite3_stmt *st = NULL;
+    int ok = -1;
+    if (sqlite3_prepare_v2(w->db, "SELECT head FROM v2_domain_heads WHERE "
+                           "domain_id = ?1", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)dom);
+    if (sqlite3_step(st) == SQLITE_ROW &&
+        sqlite3_column_bytes(st, 0) == DNA_V2_DOMHEAD_ENC_LEN) {
+        memcpy(out, (const uint8_t *)sqlite3_column_blob(st, 0) + 4, 64);
+        ok = 0;
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* HF-2 on from 1; param 9 at `h9` (0 = none); param 14 (the EVM_ACTIVE
+ * literal) at `he` (0 = none); param 16 (the storage vote literal) at
+ * `hs` — all before the engine genesis (fx_open's shape with the extra
+ * rows). */
+static int fx_open_storage(fixture_t *fx, const char *tag, uint64_t h9,
+                           uint64_t he, uint64_t hs) {
+    memset(fx, 0, sizeof(*fx));
+    fx->w = calloc(1, sizeof(*fx->w));
+    if (!fx->w) return -1;
+    snprintf(fx->dir, sizeof(fx->dir), "/tmp/test_hf4_switch_%s_XXXXXX",
+             tag);
+    if (!mkdtemp(fx->dir)) { free(fx->w); fx->w = NULL; return -1; }
+    snprintf(fx->w->data_path, sizeof(fx->w->data_path), "%s", fx->dir);
+    memset(fx->chain16, 0x34, sizeof(fx->chain16));
+    if (v2x_seed_prepare(fx->w, fx->chain16, 0) != 0) return -1;
+    if (cc_row(fx->w, DNAC_CFG_HF2_ACTIVE, DNAC_CFG_HF2_ACTIVE_ON, 1, 11)
+        != 0)
+        return -1;
+    if (h9 && cc_row(fx->w, DNAC_CFG_RULESET_GEN2, D2, h9, 12) != 0)
+        return -1;
+    if (he && cc_row(fx->w, DNAC_CFG_EVM_ACTIVE,
+                     (uint64_t)DNAC_CFG_EVM_ACTIVE_D, he, 14) != 0)
+        return -1;
+    if (cc_row(fx->w, DNAC_CFG_RULESET_GEN_STORAGE,
+               (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D, hs, 13) != 0)
+        return -1;
+    return v2x_seed_genesis(fx->w, fx->chain16, 0, NULL, 0, NULL);
+}
+
+static int t_storage_switch(void) {
+    fixture_t fx;
+    nodus_v2_block_t b;
+    const uint64_t H9 = 3, HE = 5, H14 = 8;    /* H14: the param-16 edge */
+    const nodus_domain_runtime_t *gEs =
+        nodus_runtime_for_generation(NODUS_RT_GEN_EVM, DNA_DOMAIN_SYSTEM);
+    const nodus_domain_runtime_t *gEc =
+        nodus_runtime_for_generation(NODUS_RT_GEN_EVM, DNA_DOMAIN_CORE);
+    const nodus_domain_runtime_t *g3s =
+        nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE, DNA_DOMAIN_SYSTEM);
+    const nodus_domain_runtime_t *g3c =
+        nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE, DNA_DOMAIN_CORE);
+    CHECK(gEs && gEc && g3s && g3c, "compiled generations");
+    CHECK(E_LEN > H14, "no epoch boundary among heights 1..H14");
+
+    CHECK(fx_open_storage(&fx, "stor", H9, HE, H14) == 0,
+          "seeded chain (HF-2 on, param 9 at 3, param 14 at 5, param 16 "
+          "at 8)");
+
+    /* blocks 1..6: generation 1, generation 2 (end of 2), the EVM
+     * generation (end of 4) — and at every one of them the committed
+     * SYSTEM root IS the v4 composition: the storage machinery adds
+     * nothing before its edge (empty v2_storage_nodes, "NDS.SYS.v4") */
+    for (uint64_t h = 1; h <= H14 - 2u; h++) {
+        uint8_t committed[64], v4[64], v5[64];
+        mk_block(&b, h, NULL, 0);
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "idle block before H14-1");
+        CHECK(head_root(fx.w, DNA_DOMAIN_SYSTEM, committed) == 0,
+              "committed SYSTEM root");
+        CHECK(nodus_witness_system_root_v2(fx.w, v4) == 0 &&
+              nodus_witness_system_root_v5(fx.w, v5) == 0, "v4 / v5");
+        CHECK(memcmp(committed, v4, 64) == 0,
+              "pre-activation: the committed SYSTEM root is NDS.SYS.v4");
+        CHECK(memcmp(committed, v5, 64) != 0,
+              "pre-activation: NOT the v5 composition");
+    }
+    {
+        const nodus_domain_runtime_t *rs = NULL;
+        CHECK(nodus_witness_v2_runtime_for(fx.w, DNA_DOMAIN_SYSTEM, 1, &rs)
+                  == 0 && rs == gEs,
+              "the EVM generation before the storage edge");
+    }
+    uint8_t v4_before[64], dr0[64], dr[64];
+    CHECK(nodus_witness_system_root_v2(fx.w, v4_before) == 0, "v4 at H14-2");
+    CHECK(reg_digest(fx.w, dr0) == 0, "registry root before the edge");
+
+    /* block H14-1: THE STORAGE SWITCH */
+    mk_block(&b, H14 - 1u, NULL, 0);
+    CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "the H14-1 block commits");
+    {
+        dna_domreg_record_t rs1, rc1;
+        dna_domain_manifest_t ms1, mc1;
+        CHECK(reg_get(fx.w, DNA_DOMAIN_SYSTEM, &rs1, &ms1) == 0 &&
+              reg_get(fx.w, DNA_DOMAIN_CORE, &rc1, &mc1) == 0, "registry");
+        CHECK(ms1.ruleset_version == 9 && mc1.ruleset_version == 7,
+              "SYSTEM v9 / CORE v7");
+        /* the EVM domain's record is untouched: still the EVM
+         * generation's v1 tuple */
+        dna_domreg_record_t re1;
+        dna_domain_manifest_t me1;
+        const nodus_domain_runtime_t *gEe =
+            nodus_runtime_for_generation(NODUS_RT_GEN_EVM, DNA_DOMAIN_EVM);
+        CHECK(gEe && reg_get(fx.w, DNA_DOMAIN_EVM, &re1, &me1) == 0 &&
+              me1.ruleset_version == gEe->ruleset_version &&
+              memcmp(me1.ruleset_hash, gEe->ruleset_hash, 64) == 0,
+              "EVM v1 unchanged by the storage edge");
+        CHECK(memcmp(ms1.ruleset_hash, g3s->ruleset_hash, 64) == 0 &&
+              memcmp(mc1.ruleset_hash, g3c->ruleset_hash, 64) == 0,
+              "GEN_STORAGE hashes");
+        CHECK(reg_digest(fx.w, dr) == 0 && memcmp(dr, dr0, 64) != 0,
+              "the registry root moved");
+        const nodus_domain_runtime_t *rs = NULL, *rc = NULL;
+        CHECK(nodus_witness_v2_runtime_for(fx.w, DNA_DOMAIN_SYSTEM, 1, &rs)
+                  == 0 && rs == g3s, "SYSTEM resolves GEN_STORAGE");
+        CHECK(nodus_witness_v2_runtime_for(fx.w, DNA_DOMAIN_CORE, 1, &rc)
+                  == 0 && rc == g3c, "CORE resolves GEN_STORAGE");
+    }
+    /* the composition switches AT THE EDGE: H14-1's committed SYSTEM root
+     * is already v5 (D5 — the transition is committed in H14-1), its
+     * DomainUpdate pre_root is the v4 root of H14-2's post-state */
+    {
+        uint8_t committed[64], v4[64], v5[64];
+        CHECK(head_root(fx.w, DNA_DOMAIN_SYSTEM, committed) == 0,
+              "committed SYSTEM root at H14-1");
+        CHECK(nodus_witness_system_root_v2(fx.w, v4) == 0 &&
+              nodus_witness_system_root_v5(fx.w, v5) == 0, "v4 / v5");
+        CHECK(memcmp(committed, v5, 64) == 0,
+              "at H14-1 the committed SYSTEM root is NDS.SYS.v5");
+        CHECK(memcmp(committed, v4, 64) != 0, "and no longer v4");
+        dna_domain_update_t us, uc;
+        CHECK(upd_at(fx.w, H14 - 1u, DNA_DOMAIN_SYSTEM, &us) == 0 &&
+              upd_at(fx.w, H14 - 1u, DNA_DOMAIN_CORE, &uc) == 0,
+              "a DomainUpdate for BOTH domains at H14-1");
+        CHECK(memcmp(us.pre_root, v4_before, 64) == 0,
+              "SYSTEM pre_root = the v4 root before the edge");
+        CHECK(memcmp(us.post_root, v5, 64) == 0,
+              "SYSTEM post_root = the v5 root");
+        CHECK(memcmp(uc.pre_root, uc.post_root, 64) == 0,
+              "CORE's root did not move");
+        CHECK(us.ruleset_version == 9 && uc.ruleset_version == 7,
+              "the H14-1 updates name GEN_STORAGE");
+        /* the v5 storage leg over the EMPTY registry: storage_root
+         * ("NDS.STOR.v2", archive bytes item 5) of four tagged-empty
+         * trees — no set is frozen and no segment published before the
+         * first storage boundary */
+        uint8_t st_root[64], reg[64], sets[64], reps[64], segs[64];
+        uint8_t want[64];
+        CHECK(nodus_witness_storage_root_v2(fx.w, st_root) == 0,
+              "storage_root");
+        CHECK(dna_v2_storage_registry_root(NULL, 0, reg) == 0 &&
+              dna_v2_storage_sets_root(NULL, NULL, 0, sets) == 0 &&
+              dna_v2_storage_reports_root(NULL, 0, reps) == 0 &&
+              dna_v2_segments_root(NULL, NULL, 0, segs) == 0 &&
+              dna_v2_storage_root(reg, sets, reps, segs, want) == 0,
+              "the empty storage leg");
+        CHECK(memcmp(st_root, want, 64) == 0,
+              "an empty registry = the empty storage leg");
+    }
+
+    /* block H14, idle: no second switch, still v5 */
+    {
+        uint8_t before[64], committed[64], v5[64];
+        CHECK(reg_digest(fx.w, before) == 0, "registry before H14");
+        mk_block(&b, H14, NULL, 0);
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+              "the idle H14 block applies under GEN_STORAGE");
+        CHECK(reg_digest(fx.w, dr) == 0 && memcmp(dr, before, 64) == 0,
+              "no second switch (edge trigger)");
+        CHECK(head_root(fx.w, DNA_DOMAIN_SYSTEM, committed) == 0 &&
+              nodus_witness_system_root_v5(fx.w, v5) == 0 &&
+              memcmp(committed, v5, 64) == 0, "still NDS.SYS.v5");
+    }
+    fx_close(&fx);
+    return 0;
+}
+
+/* F2 — the storage edge reached while the registry is still generation 2
+ * (param 9 at 3, NO EVM_ACTIVE row): a node FAULT. The vote's rule (d)
+ * (judged under exactly the EVM generation) makes this state unreachable
+ * through transactions; the row here is inserted by hand. */
+static int t_storage_switch_not_evm_faults(void) {
+    fixture_t fx;
+    nodus_v2_block_t b;
+    CHECK(fx_open_storage(&fx, "stnev", 3, 0, 6) == 0,
+          "seeded chain (param 9 at 3, no param 14, param 16 at 6)");
+    for (uint64_t h = 1; h <= 4; h++) {
+        mk_block(&b, h, NULL, 0);
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "idle block");
+    }
+    mk_block(&b, 5, NULL, 0);
+    CHECK(v2x_cmt_fault_why(fx.w, &b, V2X_FAULT,
+                            "registry is not generation 3") == 0,
+          "the storage edge on a generation-2 registry is a node FAULT, "
+          "DB byte-unchanged");
+    fx_close(&fx);
+    return 0;
+}
+#endif
+
 int main(void) {
     static const struct {
         const char *name;
@@ -861,6 +1111,10 @@ int main(void) {
         { "switch_not_gen1_faults",   t_switch_not_gen1_faults },
         { "same_block_single_use",    t_same_block_single_use },
         { "refused_leg_gas_invariant", t_refused_leg_gas_invariant },
+#ifdef NODUS_EVM_ENABLED
+        { "storage_switch_v4_to_v5",  t_storage_switch },
+        { "storage_switch_not_evm",   t_storage_switch_not_evm_faults },
+#endif
     };
     size_t failed = 0, n = sizeof(cases) / sizeof(cases[0]);
     {

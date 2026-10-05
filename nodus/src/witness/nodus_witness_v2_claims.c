@@ -828,9 +828,21 @@ int nodus_witness_v2_claim_state_update(nodus_witness_t *w,
  * UTXO / token / DNAC supply rules inside its own module.
  * ═══════════════════════════════════════════════════════════════════ */
 
+/* Storage reward v1 (design docs/plans/2026-10-04-storage-reward-v1-
+ * design.md rev 2.2 §6 / D5; bytes doc item 4): the SYSTEM composition is
+ * chosen by the RESOLVED runtime's generation — GEN_STORAGE or later
+ * composes "NDS.SYS.v5" (the 8 v4 legs + storage_root), every earlier
+ * generation "NDS.SYS.v4" exactly as before (the same function, the same
+ * bytes). The registry decides the generation (exact-tuple lookup), and
+ * the phase-6b' switch rewrites the registry at the end of block H-1
+ * BEFORE the 6c re-scan reloads the runtimes — so the first root composed
+ * as v5 is H-1's own post-state, committed in H-1's app_hash: the HF-4
+ * edge. A NULL runtime is a caller fault (the engine never passes one);
+ * it keeps the v4 answer rather than guessing a newer composition. */
 int nodus_rt_system_state_root(const nodus_domain_runtime_t *rt,
                                struct nodus_witness *w, uint8_t out[64]) {
-    (void)rt;
+    if (rt && rt->generation >= NODUS_RT_GEN_STORAGE)
+        return nodus_witness_system_root_v5((nodus_witness_t *)w, out);
     return nodus_witness_system_root_v2((nodus_witness_t *)w, out);
 }
 
@@ -987,6 +999,8 @@ static int sum_q(nodus_witness_t *w, const char *sql, uint64_t *out) {
  *       zero until then.)
  *     + Σ v2_treasury.balance (final pre-testnet wipe, W-A — the keyless,
  *       locked treasury pools, seeded from the genesis document)
+ *     + Σ v2_storage_nodes.bond over ACTIVE + EXITING rows (storage
+ *       reward v1 — the storage-node bonds; 0 before the activation)
  *
  * Foreign-domain rows in utxo_set FAIL the invariant (fail-closed): the
  * v1 UTXO table is this runtime's domain-local state; another runtime's
@@ -1176,8 +1190,19 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
      * row checks
      * (nodus_witness_treasury_total), never a bare SQL SUM: a malformed
      * row is a fault here exactly as it is in treasury_root. */
+    /* Storage reward v1 (design docs/plans/2026-10-04-storage-reward-v1-
+     * design.md rev 2.2 §1 "Supply: new term Σ bond over ACTIVE+EXITING
+     * rows in the invariant (claims.c), moving utxo → bond → utxo"):
+     * + storage_bonds = Σ v2_storage_nodes.bond over status ACTIVE /
+     * EXITING, through the registry loader's own row checks
+     * (nodus_witness_storage_bond_total — the treasury discipline, never
+     * a bare SQL SUM). STORAGE_REGISTER moves the bond from utxo into
+     * this bucket (its SYSFUND leg locks it); the boundary release
+     * (package B2) moves it back as a UTXO and marks the row RELEASED,
+     * which leaves the term. Zero on every chain before the storage
+     * activation (the table is empty). */
     uint64_t utxo = 0, bonds = 0, delegated = 0, accrued = 0, unclaimed = 0;
-    uint64_t treasury = 0;
+    uint64_t treasury = 0, storage_bonds = 0;
     const uint64_t pool = sup.reward_pool;
     /* the production helper OWNS the native-token representation rule —
      * one authority, never a parallel SQL mirror */
@@ -1189,6 +1214,7 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
     if (sum_q(w, "SELECT COALESCE(SUM(amount),0) FROM v2_reward_accrual",
               &accrued) != 0) return -1;
     if (nodus_witness_treasury_total(w, &treasury) != 0) return -1;
+    if (nodus_witness_storage_bond_total(w, &storage_bonds) != 0) return -1;
     /* Unclaimed distribution value TARGETING THIS RUNTIME'S NATIVE
      * ASSET only — a distribution targeting another domain/asset is
      * that runtime's invariant, never summed here. */
@@ -1222,6 +1248,8 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
     observed += shielded;
     if (treasury > UINT64_MAX - observed) return -1;
     observed += treasury;
+    if (storage_bonds > UINT64_MAX - observed) return -1;
+    observed += storage_bonds;
 
     /* Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md
      * rev 3 §5, §9): the EVM generation's CORE counts its EVM RESERVE
@@ -1244,12 +1272,13 @@ int nodus_rt_core_invariant(const nodus_domain_runtime_t *rt,
             "CORE INVARIANT VIOLATION: expected=%llu observed=%llu "
             "(utxo=%llu bonds=%llu delegated=%llu reward_pool=%llu "
             "accrued=%llu unclaimed=%llu shielded=%llu treasury=%llu "
-            "evm_reserve=%llu)",
+            "storage_bonds=%llu evm_reserve=%llu)",
             (unsigned long long)expected, (unsigned long long)observed,
             (unsigned long long)utxo, (unsigned long long)bonds,
             (unsigned long long)delegated, (unsigned long long)pool,
             (unsigned long long)accrued, (unsigned long long)unclaimed,
             (unsigned long long)shielded, (unsigned long long)treasury,
+            (unsigned long long)storage_bonds,
             (unsigned long long)evm_reserve);
         return -1;
     }

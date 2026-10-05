@@ -44,6 +44,20 @@
  * dnac.h); selfcheck re-derives them and the D2 vote literal on every
  * start.
  *
+ * Storage reward v1 (decision docs/plans/decisions/2026-10-04-storage-
+ * reward-approved.md; design docs/plans/2026-10-04-storage-reward-v1-
+ * design.md rev 2.2 §6): generation 4, GEN_STORAGE (SYSTEM v9 — ops
+ * 7..9 STORAGE_REGISTER / STORAGE_EXIT / STORAGE_REPORT appended to the
+ * EVM generation's, policy ops 1..9 — / CORE v7 / no EVM slot), reached
+ * from the EVM generation by the phase-6b' switch on the chain_config
+ * param-16 vote. Numbers assigned in main merge order (decision
+ * 2026-10-04-storage-reward-approved.md; QEVM merged first). EVM-only
+ * like the EVM generation (decision 2026-10-05-storage-reward-is-for-
+ * archive.md K10). Its pins (and the vote literal in dnac.h) are
+ * INDEPENDENT-oracle literals — "STORAGE-ORACLE: NOT FILLED" (zero) until
+ * the oracle re-runs over the generation-4 preimages; selfcheck
+ * re-derives them on every start.
+ *
  * @file nodus_witness_runtime.c
  */
 
@@ -119,6 +133,22 @@ static const uint32_t CORE_RULES_GEVM[9] = {
     DNA_CORERULE_UNSHIELD_C3_REJECT, DNA_CORERULE_SYSFUND,
     DNA_CORERULE_NAME_REGISTER, DNA_CORERULE_EVMFUND
 };
+/* Storage reward v1 (design docs/plans/2026-10-04-storage-reward-v1-
+ * design.md rev 2.2 §1, §4, §6): the GEN_STORAGE SYSTEM (v9) owns rules
+ * {1..9} — the EVM generation's six ops with STORAGE_REGISTER (7),
+ * STORAGE_EXIT (8) and STORAGE_REPORT (9) appended. Its tx_type list is
+ * the SAME SYS_TYPES (the storage ops carry no legacy tx type — op and
+ * tx_type are different axes). Its CORE (v7) reuses CORE_RULES_GEVM
+ * unchanged: the version advances because SYSFUND (rule 7) now also pairs
+ * with the two storage record ops (rtn_sysfund_shape) — a hook-side
+ * semantics change, the W-C / general-multisig precedent
+ * (CORE_RULESET_HASH block below). EVM-only like the EVM generation. */
+static const uint32_t SYS_RULES_GST[9] = {
+    DNA_SYSRULE_STAKE, DNA_SYSRULE_DELEGATE, DNA_SYSRULE_UNSTAKE,
+    DNA_SYSRULE_UNDELEGATE, DNA_SYSRULE_VALIDATOR_UPDATE,
+    DNA_SYSRULE_CHAIN_CONFIG, DNA_SYSRULE_STORAGE_REGISTER,
+    DNA_SYSRULE_STORAGE_EXIT, DNA_SYSRULE_STORAGE_REPORT
+};
 #endif
 /* ASCENDING is load-bearing twice over: rt_owns_type() stops at the first
  * greater element, and dna_ruleset_desc_hash() refuses a non-ascending
@@ -192,7 +222,8 @@ static const uint8_t SYS_METER_POLICY_DIGEST_G2[DNA_DOM_HASH_LEN] = {
 
 /* The highest authoritative runtime op of each generation's SYSTEM policy:
  * the union of that generation's two descriptors' rule-id ranges
- * (generation 1: CORE 1..7 / SYSTEM 1..6; generation 2: CORE 1..8). */
+ * (generation 1: CORE 1..7 / SYSTEM 1..6; generation 2: CORE 1..8;
+ * the EVM generation and GEN_STORAGE: below). */
 #define SYS_POLICY_MAX_OP_G1  7u
 #define SYS_POLICY_MAX_OP_G2  8u
 
@@ -225,6 +256,35 @@ static const uint8_t SYS_METER_POLICY_DIGEST_GEVM[DNA_DOM_HASH_LEN] = {
     0x50, 0xae, 0x04, 0x74, 0xa3, 0xc8, 0xd7, 0x27,
     0x9e, 0xfb, 0x88, 0x4d, 0xf8, 0xb2, 0x85, 0xc8,
     0x84, 0x8b, 0xef, 0xfb, 0x25, 0x92, 0x27, 0x66
+};
+
+/* Storage reward v1 — the GEN_STORAGE SYSTEM (v9) metering policy: the
+ * EVM generation's policy — the SAME shape v2 (seven scalar weights 1, the
+ * 2 MiB max_block_env_bytes field kept) and the SAME authoritative op set
+ * 1..9 at weight 1: SYSTEM 1..9 / CORE 1..9 / EVM 1..5. The three storage
+ * ops 7..9 are priced by the rows CORE SYSFUND / NAME_REGISTER / EVMFUND
+ * already own (w_op is keyed by runtime_op across domains), so no row is
+ * added. The policy is built by the same sys_policy_build(p, 9) as the EVM
+ * generation's; its identity digest is pinned separately (one literal per
+ * generation) and filled by the INDEPENDENT oracle, never this build's
+ * serializer — it is expected to EQUAL SYS_METER_POLICY_DIGEST_GEVM, and
+ * the oracle confirms that. Selfcheck re-derives it on every start. */
+#define SYS_POLICY_MAX_OP_GST 9u
+static dna_meter_policy_t g_sys_policy_gst;
+static int g_sys_policy_gst_ready = 0;
+static const uint8_t SYS_METER_POLICY_DIGEST_GST[DNA_DOM_HASH_LEN] = {
+    /* STORAGE-ORACLE: NOT FILLED — GEN_STORAGE SYSTEM meter-policy
+     * identity digest ("NDS.METPOLID.v1", ops 1..9 weight 1). Zero until
+     * the independent oracle fills it; selfcheck refuses to start an
+     * EVM-enabled build until then. */
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
 #endif
 
@@ -457,6 +517,51 @@ static const uint8_t CORE_RULESET_HASH_GEVM[DNA_DOM_HASH_LEN] = {
  * wallet's send.wasm (no witness link) builds its EVM leg against. */
 static const uint8_t EVM_RULESET_HASH_GEVM[DNA_DOM_HASH_LEN] =
     NODUS_RT_EVM_RULESET_HASH_GEVM_INIT;
+
+/* Storage reward v1 — the GEN_STORAGE pins (design docs/plans/2026-10-04-
+ * storage-reward-v1-design.md rev 2.2 §6; bytes doc item 8: "its
+ * descriptor digest and the SYSTEM/CORE version numbers are computed by
+ * the existing registry code, not chosen by hand"). Numbering in main
+ * merge order (decision 2026-10-04-storage-reward-approved.md; QEVM merged
+ * first): generation 4 on the EVM generation. Preimages (the
+ * RulesetDescriptor v2 layout, shared/dnac/domain_wire.h):
+ *   SYSTEM v9: version 2, domain 0, "SYSTEM", abi 1, ruleset_version 9,
+ *              rules {1,2,3,4,5,6,7,8,9}, types {4,5,6,7,9,10},
+ *              meter_policy_digest = SYS_METER_POLICY_DIGEST_GST
+ *              (policy v2, seven scalar weights 1, max_block_env_bytes
+ *              2 * DNA_ENV_MAX_TOTAL_LEN, ops 1..9 weight 1);
+ *   CORE v7:   version 2, domain 1, "DNA_CORE", abi 1, ruleset_version 7,
+ *              rules {1..9}, types {1,2,3,11,12,13},
+ *              meter_policy_digest = 64 zero bytes.
+ * Vote literal (dnac.h DNAC_CFG_RULESET_GEN_STORAGE_D) =
+ *   dna_ruleset_gen_digest(4, SYSTEM v9 hash, CORE v7 hash, spec 1).
+ * The EVM domain has no GEN_STORAGE entry (EVM v1 unchanged).
+ *
+ * Both are filled by the INDEPENDENT oracle over the preimages above,
+ * never from this build's encoder; selfcheck re-derives them on every
+ * start, so until they are filled an EVM-enabled build refuses to start. */
+static const uint8_t SYS_RULESET_HASH_GST[DNA_DOM_HASH_LEN] = {
+    /* STORAGE-ORACLE: NOT FILLED — GEN_STORAGE SYSTEM v9 ruleset_hash. */
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+static const uint8_t CORE_RULESET_HASH_GST[DNA_DOM_HASH_LEN] = {
+    /* STORAGE-ORACLE: NOT FILLED — GEN_STORAGE CORE v7 ruleset_hash. */
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+};
 #endif
 
 /* ── Function tables ────────────────────────────────────────────────── */
@@ -855,6 +960,97 @@ static const nodus_domain_runtime_t BUILTIN[] = {
         .state_init  = nodus_rt_evm_state_init,
         .adapter     = &NODUS_RT_EVM_ADAPTER,
         .meter_policy = NULL
+    },
+    /* ── Storage reward v1 — GEN_STORAGE (design docs/plans/2026-10-04-
+     * storage-reward-v1-design.md rev 2.2 §6). Never seeded at genesis;
+     * it starts judging blocks when the engine's phase 6b' rewrites the
+     * SYSTEM and CORE registry records FROM THE EVM GENERATION
+     * (NODUS_RT_GEN_STORAGE_BASE) at the end of block H-1 (H = the
+     * committed chain_config param-16 row's effective height). Same hooks,
+     * adapters, auth implementation and allowlists as the EVM generation —
+     * the generation differs in the descriptor (versions, the SYSTEM rule
+     * list, the SYSTEM policy digest) and in what the hooks do under it:
+     * the storage record ops execute, SYSFUND pairs with them, and the
+     * SYSTEM state root is "NDS.SYS.v5" (nodus_rt_system_state_root — the
+     * hook reads rt->generation). CORE keeps every EVM-generation
+     * behaviour (the reserved supply leaf, EVMFUND, the reserve invariant
+     * — all `generation >= NODUS_RT_GEN_EVM`). The EVM domain has NO slot
+     * here: its v1 entry above stays the one tuple its registry record
+     * resolves (exact-tuple uniqueness and strictly increasing versions,
+     * selfcheck), so the EVM domain is unchanged by this generation. */
+    {
+        .domain_id       = DNA_DOMAIN_SYSTEM,
+        .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
+        /* ruleset_version 9 — the rule list GREW (ops 7..9 appended) and
+         * the state root composition changed (v5); the policy is the EVM
+         * generation's (ops 1..9 already priced) */
+        .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
+        .ruleset_version = 9,
+        .generation      = NODUS_RT_GEN_STORAGE,
+        .ruleset_hash    = { 0 },   /* SYS_RULESET_HASH_GST via table_get */
+        .descriptor = {
+            .descriptor_version = DNA_RULESET_DESC_VERSION,
+            .domain_id = DNA_DOMAIN_SYSTEM,
+            .name = "SYSTEM",
+            .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
+            .ruleset_version = 9,
+            .rule_count = 9, .rule_ids = SYS_RULES_GST,
+            .tx_type_count = 6, .tx_types = SYS_TYPES
+        },
+        .admit = rt_admit_common,
+        .tx_cost = sys_cost,
+        .auth      = nodus_rt_auth_dsa87_v1,
+        .allowed_auth_kinds =
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_CC_V1),
+        .read_plan = nodus_rt_system_read_plan,
+        .exec      = nodus_rt_system_exec,
+        .state_root   = nodus_rt_system_state_root,
+        .payload_root = nodus_rt_system_payload_root,
+        .asset_check = NULL,
+        .claim_apply = NULL,
+        .invariant   = NULL,
+        .state_init  = NULL,
+        .adapter     = &NODUS_RT_SYSTEM_ADAPTER,
+        .meter_policy = NULL     /* &g_sys_policy_gst — bound in table_get */
+    },
+    {
+        .domain_id       = DNA_DOMAIN_CORE,
+        .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
+        /* ruleset_version 7 — rule list {1..9}, tx_type list and the
+         * all-zero "no policy declared" field UNCHANGED from v6; the
+         * version advances because SYSFUND's pairing rule widened (the
+         * exact-tuple identity IS the activation mechanism) */
+        .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
+        .ruleset_version = 7,
+        .generation      = NODUS_RT_GEN_STORAGE,
+        .ruleset_hash    = { 0 },   /* CORE_RULESET_HASH_GST via table_get */
+        .descriptor = {
+            .descriptor_version = DNA_RULESET_DESC_VERSION,
+            .domain_id = DNA_DOMAIN_CORE,
+            .name = "DNA_CORE",
+            .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
+            .ruleset_version = 7,
+            .rule_count = 9, .rule_ids = CORE_RULES_GEVM,
+            .tx_type_count = 6, .tx_types = CORE_TYPES
+        },
+        .admit = rt_admit_common,
+        .tx_cost = core_cost,
+        .auth      = nodus_rt_auth_dsa87_v1,
+        .allowed_auth_kinds =
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MSIG_V1),
+        .read_plan = nodus_rt_core_read_plan,
+        .exec      = nodus_rt_core_exec,
+        .state_root   = nodus_rt_core_state_root,  /* by generation: the
+                                                    * reserved supply leaf */
+        .payload_root = NULL,
+        .asset_check = nodus_rt_core_asset_check,
+        .claim_apply = nodus_rt_core_claim_apply,
+        .invariant   = nodus_rt_core_invariant,    /* + evm_reserve       */
+        .state_init  = nodus_rt_core_state_init,
+        .adapter     = &NODUS_RT_CORE_ADAPTER,
+        .meter_policy = NULL
     }
 #endif
 };
@@ -875,6 +1071,8 @@ static const rt_gen_slice_t GEN_SLICES[] = {
     { 2, 2 }                                      /* generation 2          */
 #ifdef NODUS_EVM_ENABLED
     , { 4, 3 }                                    /* the EVM generation    */
+    , { 7, 2 }                                    /* GEN_STORAGE (no EVM
+                                                   * slot: EVM v1 unchanged) */
 #endif
 };
 #define BUILTIN_GENS ((uint32_t)(sizeof(GEN_SLICES) / sizeof(GEN_SLICES[0])))
@@ -885,7 +1083,12 @@ _Static_assert(sizeof(GEN_SLICES) / sizeof(GEN_SLICES[0]) ==
 _Static_assert(NODUS_RT_GEN_EVM == 3u && NODUS_RT_GEN_EVM_BASE == 2u,
                "the EVM slice above is generation 3 on base 2 — a merge "
                "that renumbers the EVM generation reorders the slices");
-_Static_assert(BUILTIN_COUNT == 7u, "two 2-slot generations + the EVM one");
+_Static_assert(NODUS_RT_GEN_STORAGE == 4u &&
+                   NODUS_RT_GEN_STORAGE_BASE == NODUS_RT_GEN_EVM,
+               "the GEN_STORAGE slice above is generation 4 on the EVM "
+               "generation — a merge that renumbers it reorders the slices");
+_Static_assert(BUILTIN_COUNT == 9u,
+               "two 2-slot generations + the EVM one + GEN_STORAGE");
 #else
 _Static_assert(BUILTIN_COUNT == 4u, "two 2-slot generations");
 #endif
@@ -897,6 +1100,7 @@ static const uint8_t *const BUILTIN_PINNED_HASH[] = {
 #ifdef NODUS_EVM_ENABLED
     , SYS_RULESET_HASH_GEVM, CORE_RULESET_HASH_GEVM,
     EVM_RULESET_HASH_GEVM                         /* the EVM generation */
+    , SYS_RULESET_HASH_GST, CORE_RULESET_HASH_GST /* GEN_STORAGE        */
 #endif
 };
 _Static_assert(sizeof(BUILTIN_PINNED_HASH) / sizeof(BUILTIN_PINNED_HASH[0])
@@ -911,25 +1115,25 @@ static const uint8_t *builtin_pinned_hash(size_t i) {
 static dna_meter_policy_t *const GEN_SYS_POLICY[] = {
     &g_sys_policy, &g_sys_policy_g2
 #ifdef NODUS_EVM_ENABLED
-    , &g_sys_policy_gevm
+    , &g_sys_policy_gevm, &g_sys_policy_gst
 #endif
 };
 static int *const GEN_SYS_POLICY_READY[] = {
     &g_sys_policy_ready, &g_sys_policy_g2_ready
 #ifdef NODUS_EVM_ENABLED
-    , &g_sys_policy_gevm_ready
+    , &g_sys_policy_gevm_ready, &g_sys_policy_gst_ready
 #endif
 };
 static const uint8_t *const GEN_SYS_POLICY_DIGEST[] = {
     SYS_METER_POLICY_DIGEST, SYS_METER_POLICY_DIGEST_G2
 #ifdef NODUS_EVM_ENABLED
-    , SYS_METER_POLICY_DIGEST_GEVM
+    , SYS_METER_POLICY_DIGEST_GEVM, SYS_METER_POLICY_DIGEST_GST
 #endif
 };
 static const uint32_t GEN_SYS_POLICY_MAX_OP[] = {
     SYS_POLICY_MAX_OP_G1, SYS_POLICY_MAX_OP_G2
 #ifdef NODUS_EVM_ENABLED
-    , SYS_POLICY_MAX_OP_GEVM
+    , SYS_POLICY_MAX_OP_GEVM, SYS_POLICY_MAX_OP_GST
 #endif
 };
 _Static_assert(sizeof(GEN_SYS_POLICY_MAX_OP) /
@@ -1370,26 +1574,40 @@ int nodus_witness_runtime_selfcheck(void) {
         }
     }
 
-    /* the compiled vote literal re-derives from the generation-2 pins
-     * (dnac.h DNAC_CFG_RULESET_GEN2_D2 — no hashing in the vote path) */
+    /* each compiled vote literal re-derives from its generation's pins
+     * (dnac.h DNAC_CFG_RULESET_GEN2_D2 and — storage reward v1 —
+     * DNAC_CFG_RULESET_GEN_STORAGE_D, compiled where GEN_STORAGE is — an
+     * EVM-enabled build; no hashing in the vote path) */
     {
-        const nodus_domain_runtime_t *s2 =
-            nodus_runtime_for_generation(NODUS_RT_GEN_2, DNA_DOMAIN_SYSTEM);
-        const nodus_domain_runtime_t *c2 =
-            nodus_runtime_for_generation(NODUS_RT_GEN_2, DNA_DOMAIN_CORE);
-        uint64_t d2 = 0;
-        if (!s2 || !c2 ||
-            dna_ruleset_gen_digest(NODUS_RT_GEN_2, s2->ruleset_hash,
-                                   c2->ruleset_hash,
-                                   DNAC_RULESET_SWITCH_SPEC_VERSION,
-                                   &d2) != 0)
-            SC_FAIL("selfcheck: the generation-2 vote digest could not be "
-                    "derived");
-        if (d2 != (uint64_t)DNAC_CFG_RULESET_GEN2_D2)
-            SC_FAIL("selfcheck: the compiled D2 literal 0x%016llx does not "
-                    "re-derive (0x%016llx) from the generation-2 pins",
-                    (unsigned long long)DNAC_CFG_RULESET_GEN2_D2,
-                    (unsigned long long)d2);
+        static const struct { uint32_t gen; uint64_t lit; } VOTES[] = {
+            { NODUS_RT_GEN_2,       (uint64_t)DNAC_CFG_RULESET_GEN2_D2 }
+#ifdef NODUS_EVM_ENABLED
+            , { NODUS_RT_GEN_STORAGE,
+                (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D }
+#endif
+        };
+        for (size_t v = 0; v < sizeof(VOTES) / sizeof(VOTES[0]); v++) {
+            const nodus_domain_runtime_t *sg =
+                nodus_runtime_for_generation(VOTES[v].gen,
+                                             DNA_DOMAIN_SYSTEM);
+            const nodus_domain_runtime_t *cg =
+                nodus_runtime_for_generation(VOTES[v].gen, DNA_DOMAIN_CORE);
+            uint64_t d = 0;
+            if (!sg || !cg ||
+                dna_ruleset_gen_digest(VOTES[v].gen, sg->ruleset_hash,
+                                       cg->ruleset_hash,
+                                       DNAC_RULESET_SWITCH_SPEC_VERSION,
+                                       &d) != 0)
+                SC_FAIL("selfcheck: the generation-%u vote digest could "
+                        "not be derived", (unsigned)VOTES[v].gen);
+            if (d != VOTES[v].lit)
+                SC_FAIL("selfcheck: the compiled generation-%u vote "
+                        "literal 0x%016llx does not re-derive (0x%016llx) "
+                        "from that generation's pins",
+                        (unsigned)VOTES[v].gen,
+                        (unsigned long long)VOTES[v].lit,
+                        (unsigned long long)d);
+        }
     }
 #ifdef NODUS_EVM_ENABLED
     /* Nodus EVM: the compiled EVM_ACTIVE literal re-derives from the EVM

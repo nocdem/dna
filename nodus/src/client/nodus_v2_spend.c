@@ -378,6 +378,17 @@ static const uint32_t PG3_OPS[NODUS_PIN_G3_SYS_METER_OP_COUNT] =
 static const uint64_t PG3_WTS[NODUS_PIN_G3_SYS_METER_OP_COUNT] =
     NODUS_PIN_G3_SYS_METER_OP_WEIGHTS_INIT;
 static const uint8_t PG3_DIG[64] = NODUS_PIN_G3_SYS_METER_POLICY_DIGEST_INIT;
+/* Storage reward v1 — GEN_STORAGE (SYSTEM v9 / CORE v7), the same reason.
+ * STORAGE-ORACLE: NOT FILLED in nodus_ruleset_pins.h (zero hashes and
+ * policy digest): a pins client refuses to build there until filled
+ * (its policy digest check fails closed). */
+static const uint8_t PG4_CORE[64] = NODUS_PIN_G4_CORE_RULESET_HASH_INIT;
+static const uint8_t PG4_SYS[64]  = NODUS_PIN_G4_SYS_RULESET_HASH_INIT;
+static const uint32_t PG4_OPS[NODUS_PIN_G4_SYS_METER_OP_COUNT] =
+    NODUS_PIN_G4_SYS_METER_OPS_INIT;
+static const uint64_t PG4_WTS[NODUS_PIN_G4_SYS_METER_OP_COUNT] =
+    NODUS_PIN_G4_SYS_METER_OP_WEIGHTS_INIT;
+static const uint8_t PG4_DIG[64] = NODUS_PIN_G4_SYS_METER_POLICY_DIGEST_INIT;
 
 static const pins_gen_t PINS_GEN[] = {
     { NODUS_PIN_CORE_RULESET_VERSION, PG1_CORE,
@@ -407,6 +418,15 @@ static const pins_gen_t PINS_GEN[] = {
         NODUS_PIN_G3_SYS_METER_W_WRITE },
       NODUS_PIN_G3_SYS_METER_MAX_BLOCK_ENV_BYTES,
       NODUS_PIN_G3_SYS_METER_OP_COUNT, PG3_OPS, PG3_WTS, PG3_DIG },
+    { NODUS_PIN_G4_CORE_RULESET_VERSION, PG4_CORE,
+      NODUS_PIN_G4_SYS_RULESET_VERSION, PG4_SYS,
+      NODUS_PIN_G4_SYS_METER_POLICY_VERSION,
+      { NODUS_PIN_G4_SYS_METER_W_BASE, NODUS_PIN_G4_SYS_METER_W_CALLBYTE,
+        NODUS_PIN_G4_SYS_METER_W_AUTHBYTE, NODUS_PIN_G4_SYS_METER_W_EFFECT,
+        NODUS_PIN_G4_SYS_METER_W_EFFECTBYTE, NODUS_PIN_G4_SYS_METER_W_READ,
+        NODUS_PIN_G4_SYS_METER_W_WRITE },
+      NODUS_PIN_G4_SYS_METER_MAX_BLOCK_ENV_BYTES,
+      NODUS_PIN_G4_SYS_METER_OP_COUNT, PG4_OPS, PG4_WTS, PG4_DIG },
 };
 _Static_assert(sizeof(PINS_GEN) / sizeof(PINS_GEN[0]) == NODUS_PIN_GEN_COUNT,
                "one pins entry per generation in nodus_ruleset_pins.h");

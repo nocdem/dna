@@ -11,7 +11,8 @@
  * tokenomics-v3-operator.md.
  *
  * ── WHAT IT PROVES ──────────────────────────────────────────────────────
- *  A. DDL check (nodus_witness.c witness_v2_names_ddl_check, reached by
+ *  A. DDL check (nodus_witness.c witness_ddl_shape_check over v2_names —
+ *     witness_v2_names_ddl_check before storage reward v1 — reached by
  *     nodus_witness_create_chain_db's production open path): a fresh
  *     chain DB opens and carries v2_names; a v2_names of the same name
  *     but another shape (no CHECKs, no UNIQUE) makes the open REFUSE (-1,

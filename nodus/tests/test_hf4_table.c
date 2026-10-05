@@ -38,6 +38,32 @@
  *     a generation-1 or NULL runtime (its execution under generation 2:
  *     test_hf4_names.c).
  *
+ *  STORAGE REWARD v1 (decision docs/plans/decisions/2026-10-04-storage-
+ *  reward-approved.md; design docs/plans/2026-10-04-storage-reward-v1-
+ *  design.md rev 2.2 §6) — the table grows a third generation,
+ *  GEN_STORAGE:
+ *   1'. 3 generations, 6 entries, generation-major; GEN_STORAGE =
+ *       generation 2 + 1 = NODUS_RT_GEN_MAX; generation_table(4) NULL.
+ *   3b. GEN_STORAGE: SYSTEM v8 (rules {1..9}: ops 7/8/9 = STORAGE_
+ *       REGISTER / EXIT / REPORT, owned by no earlier generation), CORE v6
+ *       (rules {1..8}), types unchanged, same kind / abi / names / hooks /
+ *       adapters / allowlists; policy v2 pricing ops 1..9 with weight 1.
+ *   6'. the storage vote literal re-derives from the GEN_STORAGE pins.
+ *   8.  the storage ops are refused (-1, never -2) by the generation-1,
+ *       generation-2 and NULL SYSTEM hooks (read_plan and exec); with no
+ *       call bytes GEN_STORAGE refuses them too (op 9 unconditionally —
+ *       package B2); the generation-2 and NULL CORE read_plan refuse a
+ *       SYSFUND leg paired with a storage op.
+ *  HOW IT CAN LIE (storage): the GEN_STORAGE pins and the storage vote
+ *  literal are independent-oracle literals (shared/dnac/tests/
+ *  storage_oracle.py, nodus_witness_runtime.c / dnac.h); section 5
+ *  (selfcheck) and the 6' re-derivation prove the C encoders agree with
+ *  that oracle, not that the PROVISIONAL generation number / op ids /
+ *  versions (main merge order) are final. Section 8 feeds views without
+ *  call bytes, so its GEN_STORAGE case proves only the parse / B2
+ *  refusals; the register /
+ *  exit execution matrix is test_storage_reg.c.
+ *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none. Environment: none. No database.
  *
@@ -103,11 +129,16 @@ int main(void) {
     /* Nodus EVM: an EVM-enabled build (NODUS_EVM_ENABLED — the standalone
      * non-Windows nodus) carries a third generation, the EVM one: three
      * slots (SYSTEM, CORE, EVM) after generations 1 and 2, which stay
-     * the four slots they were (test_v2_evm.c pins the third). */
+     * the four slots they were (test_v2_evm.c pins the third). Storage
+     * reward v1 (K10, EVM-only too): a fourth, GEN_STORAGE, on the EVM
+     * generation — two slots (SYSTEM, CORE; no EVM slot, EVM v1 is
+     * unchanged). */
+    CHECK(NODUS_RT_GEN_STORAGE == NODUS_RT_GEN_EVM + 1u);
+    CHECK(NODUS_RT_GEN_STORAGE_BASE == NODUS_RT_GEN_EVM);
 #ifdef NODUS_EVM_ENABLED
-    CHECK(nodus_runtime_generation_count() == 3);
-    CHECK(NODUS_RT_GEN_MAX == NODUS_RT_GEN_EVM);
-    const size_t n_all_want = 7;
+    CHECK(nodus_runtime_generation_count() == 4);
+    CHECK(NODUS_RT_GEN_MAX == NODUS_RT_GEN_STORAGE);
+    const size_t n_all_want = 9;
 #else
     CHECK(nodus_runtime_generation_count() == 2);
     CHECK(NODUS_RT_GEN_MAX == NODUS_RT_GEN_2);
@@ -123,6 +154,23 @@ int main(void) {
     CHECK(all && n_all == n_all_want);
     CHECK(g1 && n1 == 2 && g1 == &all[0]);
     CHECK(g2 && n2 == 2 && g2 == &all[2]);
+#ifdef NODUS_EVM_ENABLED
+    size_t nE = 0, nS = 0;
+    const nodus_domain_runtime_t *gE  =
+        nodus_runtime_generation_table(NODUS_RT_GEN_EVM, &nE);
+    const nodus_domain_runtime_t *gS  =
+        nodus_runtime_generation_table(NODUS_RT_GEN_STORAGE, &nS);
+    CHECK(gE && nE == 3 && gE == &all[4]);
+    CHECK(gS && nS == 2 && gS == &all[7]);
+    CHECK(gS[0].domain_id == DNA_DOMAIN_SYSTEM &&
+          gS[1].domain_id == DNA_DOMAIN_CORE);
+    /* no EVM slot in GEN_STORAGE: the EVM domain's entry is the EVM
+     * generation's */
+    CHECK(nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE,
+                                       DNA_DOMAIN_EVM) == NULL);
+    CHECK(nodus_runtime_for_generation(NODUS_RT_GEN_EVM,
+                                       DNA_DOMAIN_EVM) == &all[6]);
+#endif
     CHECK(bt == g1 && nb == 2);                  /* genesis generation */
     for (size_t i = 0; i < 4; i++) {             /* generations 1 and 2 */
         CHECK(all[i].generation == (uint32_t)(i / 2u) + 1u);
@@ -139,6 +187,14 @@ int main(void) {
         CHECK(nodus_runtime_for_generation(1, 7) == NULL);
         CHECK(nodus_runtime_for_generation(2, DNA_DOMAIN_CORE) == &all[3]);
         CHECK(nodus_runtime_for_generation(2, DNA_DOMAIN_EVM) == NULL);
+#ifdef NODUS_EVM_ENABLED
+        CHECK(nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE,
+                                           DNA_DOMAIN_SYSTEM) == &all[7]);
+#else
+        /* an EVM-off build carries no GEN_STORAGE (K10) */
+        CHECK(nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE,
+                                           DNA_DOMAIN_SYSTEM) == NULL);
+#endif
     }
 
     /* ── 2. generation 1 = today ───────────────────────────────────── */
@@ -197,6 +253,74 @@ int main(void) {
                      g2[0].descriptor.meter_policy_digest, 64) != 0);
     }
 
+    /* ── 3b. storage reward v1 — GEN_STORAGE (EVM-enabled build, K10):
+     *        SYSTEM v9 (rules {1..9} — the EVM generation's {1..6} + ops
+     *        7..9 the storage ops, types unchanged), CORE v7 (the EVM
+     *        generation's rules {1..9}, types unchanged), same kind / abi /
+     *        names / hooks / adapters / allowlists / root and invariant
+     *        hooks as the EVM generation; policy = the EVM generation's,
+     *        shape v2, ops 1..9 weight 1 ─ */
+    CHECK(DNA_SYSRULE_STORAGE_REGISTER == 7 && DNA_SYSRULE_STORAGE_EXIT == 8 &&
+          DNA_SYSRULE_STORAGE_REPORT == 9);
+#ifdef NODUS_EVM_ENABLED
+    CHECK(gE[0].ruleset_version == 8 && gE[1].ruleset_version == 6);
+    CHECK(gS[0].ruleset_version == 9 && gS[1].ruleset_version == 7);
+    CHECK(rules_are(&gE[0].descriptor, 6));
+    CHECK(rules_are(&gS[0].descriptor, 9));
+    CHECK(rules_are(&gE[1].descriptor, 9));
+    CHECK(rules_are(&gS[1].descriptor, 9));
+    CHECK(gS[1].descriptor.rule_ids[8] == DNA_CORERULE_EVMFUND);
+    CHECK(types_are(&gS[0].descriptor, SYS_T, 6));
+    CHECK(types_are(&gS[1].descriptor, CORE_T, 6));
+    for (int k = 0; k < 2; k++) {
+        CHECK(gS[k].generation == NODUS_RT_GEN_STORAGE);
+        CHECK(gS[k].runtime_kind == gE[k].runtime_kind);
+        CHECK(gS[k].runtime_abi == gE[k].runtime_abi);
+        CHECK(memcmp(gS[k].descriptor.name, gE[k].descriptor.name,
+                     DNA_DOM_NAME_LEN) == 0);
+        CHECK(gS[k].allowed_auth_kinds == gE[k].allowed_auth_kinds);
+        CHECK(gS[k].auth == gE[k].auth && gS[k].read_plan == gE[k].read_plan &&
+              gS[k].exec == gE[k].exec && gS[k].adapter == gE[k].adapter &&
+              gS[k].state_root == gE[k].state_root &&
+              gS[k].invariant == gE[k].invariant &&
+              gS[k].claim_apply == gE[k].claim_apply);
+    }
+    /* the storage ops are owned by GEN_STORAGE's SYSTEM only */
+    for (uint32_t op = DNA_SYSRULE_STORAGE_REGISTER;
+         op <= DNA_SYSRULE_STORAGE_REPORT; op++) {
+        int o1 = 0, o2 = 0, oE = 0, oS = 0;
+        for (size_t i = 0; i < g1[0].descriptor.rule_count; i++)
+            if (g1[0].descriptor.rule_ids[i] == op) o1 = 1;
+        for (size_t i = 0; i < g2[0].descriptor.rule_count; i++)
+            if (g2[0].descriptor.rule_ids[i] == op) o2 = 1;
+        for (size_t i = 0; i < gE[0].descriptor.rule_count; i++)
+            if (gE[0].descriptor.rule_ids[i] == op) oE = 1;
+        for (size_t i = 0; i < gS[0].descriptor.rule_count; i++)
+            if (gS[0].descriptor.rule_ids[i] == op) oS = 1;
+        CHECK(!o1 && !o2 && !oE && oS);
+    }
+    CHECK(gS[1].meter_policy == NULL);
+    CHECK(memcmp(gS[1].descriptor.meter_policy_digest, zero64, 64) == 0);
+    {
+        const dna_meter_policy_t *pE = gE[0].meter_policy;
+        const dna_meter_policy_t *pS = gS[0].meter_policy;
+        CHECK(pS != NULL && pS != pE);
+        CHECK(pS->policy_version == DNA_METER_POLICY_VERSION);
+        CHECK(pS->w_base == 1 && pS->w_callbyte == 1 && pS->w_authbyte == 1 &&
+              pS->w_effect == 1 && pS->w_effectbyte == 1 && pS->w_read == 1 &&
+              pS->w_write == 1);
+        CHECK(pS->max_block_env_bytes == 2u * DNA_ENV_MAX_TOTAL_LEN);
+        for (uint32_t op = 0; op < DNA_METER_OP_SPACE; op++) {
+            uint64_t w = 0, wE = 0;
+            int has = dna_meter_op_weight(pS, op, &w) == 0;
+            int hasE = dna_meter_op_weight(pE, op, &wE) == 0;
+            CHECK(has == (op >= 1u && op <= 9u));
+            CHECK(has == hasE);          /* the EVM generation's op set */
+            if (has) CHECK(w == 1u && wE == 1u);
+        }
+    }
+#endif
+
     /* ── 4. exact-tuple lookup over every generation ───────────────── */
     for (size_t i = 0; i < n_all; i++) {
         const nodus_domain_runtime_t *r = &all[i];
@@ -238,7 +362,82 @@ int main(void) {
                                      DNAC_RULESET_SWITCH_SPEC_VERSION,
                                      &d) == 0);
         CHECK(d == (uint64_t)DNAC_CFG_RULESET_GEN2_D2);
+#ifdef NODUS_EVM_ENABLED
+        /* storage reward v1: the storage vote literal re-derives from the
+         * compiled GEN_STORAGE pins (both oracle-filled — header "HOW IT
+         * CAN LIE"; STORAGE-ORACLE: NOT FILLED until the oracle re-runs) */
+        CHECK(dna_ruleset_gen_digest(NODUS_RT_GEN_STORAGE,
+                                     gS[0].ruleset_hash, gS[1].ruleset_hash,
+                                     DNAC_RULESET_SWITCH_SPEC_VERSION,
+                                     &d) == 0);
+        CHECK(d == (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D);
+#endif
     }
+
+    /* ── 8. storage reward v1: the storage ops are refused as a VERDICT
+     *       (-1), never a fault, by the SYSTEM hooks of generations 1, 2
+     *       and the EVM one and a NULL runtime; with no call bytes
+     *       GEN_STORAGE refuses them too; SYSFUND paired with a storage op
+     *       is refused by the generation-2 and EVM-generation CORE hooks
+     *       (EVM-enabled build: GEN_STORAGE exists only there) ──────── */
+#ifdef NODUS_EVM_ENABLED
+    {
+        static uint8_t chain_id[DNA_CHAIN_ID_LEN], intent[64];
+        nodus_rt_auth_verdict_t av;
+        memset(&av, 0, sizeof(av));
+        av.n_signers = 1;
+        memset(av.signer_fp[0], 0x3C, 64);
+        nodus_rt_exec_ctx_t ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.chain_id = chain_id;
+        ctx.intent_id = intent;
+        ctx.global_height = 10;
+        ctx.auth = &av;
+        nodus_rt_read_req_t reqs[NODUS_RT_MAX_READS];
+        uint16_t nr = 0;
+        static uint8_t res[DNA_EFFECT_MAX_TOTAL_LEN];
+        size_t rl = 0;
+
+        for (uint32_t op = DNA_SYSRULE_STORAGE_REGISTER;
+             op <= DNA_SYSRULE_STORAGE_REPORT; op++) {
+            dna_env_view_t v;
+            memset(&v, 0, sizeof(v));
+            v.leg_count = 2;
+            v.leg[0].domain_id   = DNA_DOMAIN_SYSTEM;
+            v.leg[0].runtime_op  = op;
+            v.leg[0].auth_kind   = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+            v.leg[0].access_mode = DNA_ENV_ACCESS_INVOKE;
+            v.leg[1].domain_id   = DNA_DOMAIN_CORE;
+            v.leg[1].runtime_op  = DNA_CORERULE_SYSFUND;
+            v.leg[1].auth_kind   = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+            v.leg[1].access_mode = DNA_ENV_ACCESS_INVOKE;
+            const nodus_domain_runtime_t *sys[4] = { &g1[0], &g2[0], &gE[0],
+                                                     NULL };
+            for (int s = 0; s < 4; s++) {
+                CHECK(nodus_rt_system_read_plan(sys[s], &v, 0, &ctx, reqs,
+                                                NODUS_RT_MAX_READS, &nr)
+                      == -1);
+                CHECK(nodus_rt_system_exec(sys[s], &v, 0, &ctx, NULL, 0,
+                                           res, sizeof(res), &rl) == -1);
+            }
+            /* GEN_STORAGE: no call bytes → refused at the parse — a
+             * verdict */
+            CHECK(nodus_rt_system_read_plan(&gS[0], &v, 0, &ctx, reqs,
+                                            NODUS_RT_MAX_READS, &nr) == -1);
+            CHECK(nodus_rt_system_exec(&gS[0], &v, 0, &ctx, NULL, 0, res,
+                                       sizeof(res), &rl) == -1);
+            /* the CORE funding leg of a storage envelope: the
+             * generation-2 and EVM-generation CORE refuse the pairing
+             * (shape), as does a NULL runtime */
+            CHECK(nodus_rt_core_read_plan(&g2[1], &v, 1, &ctx, reqs,
+                                          NODUS_RT_MAX_READS, &nr) == -1);
+            CHECK(nodus_rt_core_read_plan(&gE[1], &v, 1, &ctx, reqs,
+                                          NODUS_RT_MAX_READS, &nr) == -1);
+            CHECK(nodus_rt_core_read_plan(NULL, &v, 1, &ctx, reqs,
+                                          NODUS_RT_MAX_READS, &nr) == -1);
+        }
+    }
+#endif
 
     /* ── 7. CORE rule 8: owned by gen 2 only, refused as a verdict ─── */
     {

@@ -136,6 +136,33 @@ extern "C" {
  * — explicitly deferred, no unverified runtime fallback introduced. */
 #define DNAC_SELF_STAKE_AMOUNT       (10000000ULL * 100000000ULL)   /* 10M × 10^8 raw */
 
+/** Storage reward v1 — the storage-node registration bond, EXACTLY this
+ *  amount (design docs/plans/2026-10-04-storage-reward-v1-design.md rev
+ *  2.2 §1 "bond = STORAGE_STAKE_MIN = 1M NODUS"; role ladder decision
+ *  docs/plans/decisions/2026-10-03-role-stake-amounts.md "storage 1M";
+ *  bytes doc clarification: 1,000,000 NODUS = 10^14 raw). The SYSTEM
+ *  STORAGE_REGISTER exec refuses any other bond (rtn_storage_register_exec,
+ *  nodus/src/witness/nodus_witness_rt_native.c) — the W-B exact-bond
+ *  shape of DNAC_SELF_STAKE_AMOUNT. Not a chain_config parameter. */
+#define DNAC_STORAGE_STAKE_MIN       (1000000ULL * 100000000ULL)    /* 1M × 10^8 raw */
+
+/** Storage reward v1 — the exit lock: a STORAGE_EXIT's bond is released
+ *  at the next epoch boundary B as ONE locked UTXO with unlock_block =
+ *  B + DNAC_STORAGE_EXIT_LOCK_EPOCHS × DNAC_EPOCH_LENGTH (design
+ *  docs/plans/2026-10-04-storage-reward-v1-design.md rev 2.2 §1 / F3
+ *  "exit lock 12 epochs"; the witness boundary writes it,
+ *  nodus/src/witness/nodus_witness_v2_storage.c). Not a chain_config
+ *  parameter. */
+#define DNAC_STORAGE_EXIT_LOCK_EPOCHS        12
+
+/** Archive reward — the publication delay: segment k (heights
+ *  ((k−1)·17280, k·17280]) is published in the storage leg at the first
+ *  storage epoch boundary B >= k·17280 + DNAC_STORAGE_SEGMENT_DELAY_EPOCHS
+ *  × DNAC_EPOCH_LENGTH (design docs/plans/2026-10-05-archive-reward-
+ *  design.md rev 4 §1 "published … at boundary k·P + 2E"; bytes doc
+ *  2026-10-05 item 1). Not a chain_config parameter. */
+#define DNAC_STORAGE_SEGMENT_DELAY_EPOCHS    2
+
 /** Minimum TX fee enforced at verify time (v0.17.1+).
  *  All non-GENESIS TXs must have `committed_fee >= DNAC_MIN_FEE_RAW`.
  *  Value is 0.01 DNAC = 10^6 raw units. Raise/lower via future release
@@ -701,7 +728,39 @@ typedef enum {
                                           *   BLOCK_GAS]; grace SAFETY.
                                           *   NEXT FREE id in this
                                           *   tree. */
-    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_EVM_BLOCK_GAS_LIMIT
+    DNAC_CFG_RULESET_GEN_STORAGE   = 16, /**< Storage reward v1 (design
+                                          *   docs/plans/2026-10-04-
+                                          *   storage-reward-v1-design.md
+                                          *   rev 2.2 §6 — "voted like
+                                          *   RULESET_GEN2 (param 9
+                                          *   mechanism)"; decision docs/
+                                          *   plans/decisions/2026-10-04-
+                                          *   storage-reward-approved.md):
+                                          *   the rule-set upgrade vote to
+                                          *   the compiled GEN_STORAGE
+                                          *   generation. Its effective
+                                          *   block H is the first block
+                                          *   judged under it; the engine
+                                          *   rewrites the SYSTEM and CORE
+                                          *   registry records from
+                                          *   the EVM generation at the
+                                          *   end of block H-1 (phase
+                                          *   6b'). Value domain EXACTLY
+                                          *   DNAC_CFG_RULESET_GEN_
+                                          *   STORAGE_D. Single use; HF-2
+                                          *   active; H-1 not an epoch
+                                          *   boundary; and the vote must
+                                          *   be judged under the EVM
+                                          *   generation (the switch is
+                                          *   GEN_EVM -> GEN_STORAGE) —
+                                          *   witness-side stateful rules
+                                          *   the client mirror cannot
+                                          *   apply. Grace class
+                                          *   ERGONOMIC (the param-9
+                                          *   class). Id assigned in main
+                                          *   merge order (QEVM took 14
+                                          *   and 15). */
+    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_RULESET_GEN_STORAGE
 } dnac_chain_config_param_id_t;
 
 /** The chain-config parameters the RUNNING consensus reads — the one list
@@ -749,7 +808,12 @@ typedef enum {
  *    - EVM_BLOCK_GAS_LIMIT (15, Nodus EVM): nodus_witness_v2_apply.c
  *      block_ctx_from_doms (the block gas sum of Prepare / Process /
  *      FinalizeBlock and the EVM block environment's GASLIMIT), read only
- *      while the EVM domain is ACTIVE.
+ *      while the EVM domain is ACTIVE;
+ *    - RULESET_GEN_STORAGE (16, storage reward v1): nodus_witness_v2_
+ *      apply.c phase 6b' (the second edge trigger — the EVM generation ->
+ *      GEN_STORAGE at the end of block H-1) and env_ruleset_gen_storage_
+ *      voted (nodus_rt_exec_ctx_t.ruleset_gen_storage_voted — the
+ *      single-use vote rule).
  *  No other governed id has a reader: 1 and 3 are RETIRED (above), and 2
  *  (BLOCK_INTERVAL_SEC) is not read on this lane.
  *
@@ -775,7 +839,8 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
            param_id == (uint8_t)DNAC_CFG_NAME_PRICE_5P ||
            param_id == (uint8_t)DNAC_CFG_NAME_PRICE_6P ||
            param_id == (uint8_t)DNAC_CFG_EVM_ACTIVE ||
-           param_id == (uint8_t)DNAC_CFG_EVM_BLOCK_GAS_LIMIT;
+           param_id == (uint8_t)DNAC_CFG_EVM_BLOCK_GAS_LIMIT ||
+           param_id == (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE;
 }
 
 /** Value range bounds — consensus-critical (client + witness reject out-of-range).
@@ -913,6 +978,30 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  mirror's (dnac/src/transaction/verify.c). */
 #define DNAC_CFG_RULESET_GEN2_D2            0x44dfbe7ad3c75adfULL /* G4 of shared/dnac/tests/hf4_oracle.py (4962894749133920991) */
 
+/** RULESET_GEN_STORAGE value domain (storage reward v1, param_id 16):
+ *  EXACTLY this literal — the D2 construction above with the storage
+ *  generation's inputs:
+ *    SHA3-512( TAG16("NDS.RSGEN.v1") ‖ u32 BE NODUS_RT_GEN_STORAGE (4)
+ *              ‖ GEN_STORAGE SYSTEM (v9) ruleset_hash[64]
+ *              ‖ GEN_STORAGE CORE (v7) ruleset_hash[64]
+ *              ‖ u32 BE DNAC_RULESET_SWITCH_SPEC_VERSION (1) )
+ *  first 8 bytes big-endian, top bit cleared. The switch procedure is
+ *  the HF-4 one unchanged (the same fields copied / replaced, SYSTEM and
+ *  CORE touched; the EVM domain's record is not rewritten), so the spec
+ *  version stays 1; the generation number in the preimage keeps this
+ *  value distinct from D2.
+ *
+ *  The value is a literal from the INDEPENDENT oracle (the hf4_oracle.py
+ *  procedure over the GEN_STORAGE preimages listed at
+ *  nodus_witness_runtime.c SYS_RULESET_HASH_GST) — never this build's
+ *  encoder. nodus_witness_runtime_selfcheck re-derives it on every start
+ *  of an EVM-enabled build. Numbers assigned in main merge order
+ *  (decision 2026-10-04-storage-reward-approved.md; QEVM merged first).
+ *  STORAGE-ORACLE: NOT FILLED — zero until the oracle re-runs over the
+ *  generation-4 preimages (the earlier generation-3 value 0x14bb86ad…
+ *  is dead). */
+#define DNAC_CFG_RULESET_GEN_STORAGE_D      0x0000000000000000ULL /* STORAGE-ORACLE: NOT FILLED */
+
 /** HF-4 NAME_REGISTER price range (params 10-13), both inclusive:
  *  [10^8, 10^15] raw = [1 NODUS, 10 000 000 NODUS] (design §2 Price). */
 #define DNAC_CFG_MIN_NAME_PRICE             100000000ULL
@@ -1016,6 +1105,12 @@ _Static_assert(DNAC_CFG_EVM_ACTIVE_D <= 0x7FFFFFFFFFFFFFFFULL,
 _Static_assert(DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT >= DNAC_CFG_MIN_EVM_BLOCK_GAS &&
                DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT <= DNAC_CFG_MAX_EVM_BLOCK_GAS,
                "the EVM block gas default must be a votable value");
+_Static_assert(DNAC_CFG_RULESET_GEN_STORAGE_D <= 0x7FFFFFFFFFFFFFFFULL,
+               "the storage vote literal must fit SQLite int64");
+_Static_assert(DNAC_STORAGE_STAKE_MIN == 100000000000000ULL,
+               "storage bond = 1M NODUS = 10^14 raw (design rev 2.2 §1)");
+_Static_assert(DNAC_STORAGE_STAKE_MIN <= 0x7FFFFFFFFFFFFFFFULL,
+               "the storage bond fits the SQLite INTEGER bond column");
 _Static_assert(DNAC_NAME_PRICE_3P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&
                DNAC_NAME_PRICE_3P_DEFAULT <= DNAC_CFG_MAX_NAME_PRICE &&
                DNAC_NAME_PRICE_4P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&

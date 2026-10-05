@@ -724,12 +724,32 @@ time; text names the vote block and the effective block), plus the Wiki fork lis
 | HF-2 | governance approvals weighed by voting power (> 2/3); a touched domain that nets to zero applies | 7 `HF2_ACTIVE` | 1 | 724 | 1500 | 0.23.2 | `477E05BD7C62EE4A` |
 | HF-3 | block bounded by cometbft's limits only (no 2 MiB / 2 097 152-unit bound); ProcessProposal checks gas price, committed replay, units ≤ INT64_MAX | 8 `HF3_ACTIVE` | 1 | 2206 | 2926 | 0.23.9 | `4CE838897C4F853B` |
 | HF-4 | rule-set generation 2 (SYSTEM v7 / CORE v5): the registry switches at the end of H−1; CORE op 8 NAME_REGISTER (on-chain names) and the name-price params 10-13 are in force from H | 9 `RULESET_GEN2` | 4962894749133920991 (D2 = 0x44dfbe7ad3c75adf) | 2431 | 3151 | 0.23.10 | `BD84A28A3D3EE5B1` |
+| HF-? storage, the fork AFTER HF-5 (**not voted** — placeholder) | rule-set generation 4 GEN_STORAGE (SYSTEM v9 / CORE v7, from the EVM generation 3 — only after HF-5 is in force; EVM v1 unchanged): the registry switches at the end of H−1 and the SYSTEM root becomes `NDS.SYS.v5` (storage leg) in H−1's own app_hash; SYSTEM ops 7 STORAGE_REGISTER / 8 STORAGE_EXIT / 9 STORAGE_REPORT in force from H | 16 `RULESET_GEN_STORAGE` (numbers assigned in main merge order — design rev 2.2 §6; Nodus EVM took generation 3 and params 14 / 15) | the compiled storage vote literal — **not filled yet** (STORAGE-ORACLE) | — | — | not released | — |
 
 Read 2026-10-02: the HF-4 row on 7/7 (identical; proposed from EU-5, 7/7 approvals; the
 seven nodes on 0.23.10 with identical D2/commit/consensus-constants startup lines, the web
 wallet, Connect, explorer and Scan released before the vote). The HF-3 row on 7/7 (identical; proposed from EU-5, 7/7 approvals); the
 HF-1 and HF-2 rows on EU-5 (the HF-2 row was read on 7/7 when it was voted, 2026-09-30). A node that was not on the introducing binary when a vote committed
 diverges at that block — recovery at the end of this section.
+
+The storage row is a PLACEHOLDER (storage reward v1, package B1 — decision
+`docs/plans/decisions/2026-10-04-storage-reward-approved.md`, design
+`docs/plans/2026-10-04-storage-reward-v1-design.md` rev 2.2 §6): nothing is voted, no binary
+is released. Its numbers were assigned in main merge order after Nodus EVM (HF-5) merged
+first: generation 4 on the EVM generation, param 16, SYSTEM v9 / CORE v7. Its fork number
+follows the order the forks land (decision `2026-10-05-hf-numbering-evm-hf5.md`; the
+role-stake package is named HF-6). Its vote follows the HF-4 procedure below with param 16
+in place of param 9 and one more stateful rule: the vote is refused unless EXACTLY the EVM
+generation judges it, because the switch it schedules is generation 3 → 4 — so HF-5's
+EVM_ACTIVE edge must have passed first, and the storage edge can never fall in the EVM edge's
+block. EVM-only (decision `2026-10-05-storage-reward-is-for-archive.md` K10): a binary built
+without `NODUS_EVM_ENABLED` (the messenger tree, Windows) carries neither generation 3 nor 4
+and stops at the EVM edge. The binary's startup log carries a second line,
+`storage rule-set generation 4 vote 0x… (param 16, switch spec v1), built from git commit …`,
+compared on 7/7 before that vote exactly as the D2 line is before param 9. Before the vote:
+the oracle-filled pins and literal (all zero now — "STORAGE-ORACLE: NOT FILLED"; an
+EVM-enabled binary refuses to start until they are filled), the harness scenario, and every
+client that builds storage envelopes.
 
 ### Procedure
 
@@ -1203,6 +1223,163 @@ on f8ecb5ac and later (decision item 5: block 1's meta `H:1` is never pruned, be
 Ledger V2 preflight reads it at every open, `nodus_witness_v2_preflight.c:334-349`); on
 605b748b, which pruned it, a restarted pruned node logged `Ledger V2 NOT ACTIVATED …
 INSPECTION_FAULT` and refused transactions (measured).
+
+## 2.6 Storage node (archive reward) — operator steps — branch only, NOT voted, NOT deployable yet
+
+Storage reward v1 rev 4 (decision `docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md`:
+the reward pays registered storage nodes for holding the block ARCHIVE). Package B2b-1 (design
+`docs/plans/2026-10-05-archive-reward-design.md` rev 4 §4; `docs/ARCHITECTURE.md` "package B2b-1")
+makes validators probe storage nodes and storage nodes answer; package B2b-2 (rev 4 §3; "package
+B2b-2") keeps the assigned segments as files and fetches missing ones. Nothing here applies before the
+storage rule-set generation is voted (§2.2 table, the storage placeholder row) — every step below is
+for a node on a chain where it is in force. **Deploying any of it needs the operator's word like every
+deploy.**
+
+**What a storage node is.** A node with a chain database (nodus-server with its in-process witness, or
+nodus-witness) whose node key is registered in the storage registry (SYSTEM op 7 STORAGE_REGISTER, a
+bond of exactly 1 000 000 NODUS = 10^14 raw locked from coins owned by that same key, plus the fee).
+It may also be a validator (a both-roles node earns both rewards).
+
+**1. Keep the archive — until the node's segment files are complete.** A probe is answered from the
+node's own block store (the header of h+1, the sampled part and its proof) while the store has the
+block, and — package B2b-2 (`docs/ARCHITECTURE.md` "package B2b-2") — from the node's SEGMENT FILE once
+the store no longer has it. A storage node keeps one file per assigned payday segment in
+`<data dir>/segments` (nodus.json `"segment_dir"`: one directory name under the data dir, default
+`segments`), exported from its own block store when the segment is published, or fetched over channel
+0x73 from other holders / any node that still has the blocks. Without B2b-2 (or before its files are
+complete) a pruned node answers `NOT_HELD` for every block below its base and is NOT OK for that epoch.
+
+**1a. When a storage node may enable pruning (`retain_blocks`, §2.5).** Only when ALL of these hold
+(decision `2026-10-03-block-pruning-7-paydays.md`, rollout change 2026-10-05: EU-1 and EU-4 do not
+prune until this package is live):
+- every node in the storage role AND the full archives EU-6 / US-1 run a build with package B2b-2 (0x72
+  serving from files, the 0x73 channel — an older peer neither serves nor fetches files, and the full
+  archives are the fetch source of last resort for a newly assigned segment);
+- this node's log shows, for the CURRENT epoch, `W_STHOLD epoch H=<H>: <N> segment(s) to hold, 0 not
+  complete yet` (logged once per epoch; the count of incomplete segments falls only at the next
+  epoch's line — `W_STSEG segment <k> complete and published` marks each one as it finishes), and `ls <data dir>/segments` lists `seg-<k>.ok` for every assigned k (a segment is held
+  only with its `.ok` marker);
+- the node has run at least one full epoch after that line without `W_STHOLD` / `W_STSEG` errors.
+Then set `retain_blocks` 120960 (§2.5) and restart. **A startup warning tells you when this is not the
+case:** with `retain_blocks` > 0 and an assigned segment not complete the node logs
+`W_STHOLD retain_blocks=… is set while N assigned segment(s) are not complete (first: k)` at start and
+at every epoch — revert to `retain_blocks` 0 or wait for the fetch to finish. The prune loop itself is
+unchanged; it does not consult the segment files. A segment newly assigned to a pruned node (a holder
+displaced elsewhere, a new member) is FETCHED during its grace (1b) — over 0x73 from the other holders
+or from the full archives (EU-6, US-1), which keep everything in v1. **Pruning on EU-6 / US-1 stays
+forbidden** (Kurultay #7: no history-replay path for v1).
+
+**1b. The grace — why a node earns nothing for a while after it takes over segments (decisions K9,
+K9a).** At every epoch boundary the chain looks at which segments each storage node holds now and which
+it held one epoch ago. It counts `n` = the segments the node now holds that **already existed one epoch
+ago** (published at or before this boundary − 720) and that it did not hold then — segments it has to
+**fetch** from someone else. The chain gives it `n` epochs to do that: it sets the node's `grace_until`
+to (this boundary + n × 720 blocks), or keeps the old value if that is later. A segment published
+during the last epoch — at this boundary itself included — is **not** counted: every node still has
+those blocks in its own block store, so there is nothing to fetch (K9a). While the epoch start is below `grace_until` the node is **in grace**: no validator
+probes it, it earns **nothing — on any of its segments, the old ones too**, and a failed epoch is not
+counted against it (fail_streak does not move). After the grace every segment it holds counts again.
+What starts a grace, in plain terms:
+- **Registering.** A node that registers after storage is active takes over every older segment it is
+  given, so it waits (number of those segments) epochs — at ≈ 1 h per epoch, e.g. 6 segments ≈ 6 hours
+  before it can earn.
+- **Another node leaving or being skipped.** When a node exits, or fails 3 epochs in a row and is
+  skipped, its segments go to other members; each of them pauses for as many epochs as segments it took
+  over (the accepted cost of K9). A node joining does NOT pause the others — it only takes segments
+  away from them.
+- **A skipped node returning** (after 12 epochs, or at once after a good epoch) gets its segments back
+  and has its own grace again.
+What does NOT start a grace (K9a):
+- **The storage activation itself.** At the first storage boundary there is no earlier set to compare
+  with, so nobody gets a grace: every member is probed and paid for the segments it holds from the
+  first epoch on. A probe is answered from the node's own block store while it has the block (step 1),
+  so **a node registered for the first storage boundary must still have the whole archive then** — not
+  pruned (step 1a) — or it is NOT OK for the blocks it lacks from the first epoch on.
+- **A new segment.** A segment is published every 17 280 blocks (≈ 24 epochs); its three holders have
+  its blocks in their own block store, so they get no grace for it and keep earning on everything.
+The node must still fetch and keep its new segments while in grace — the grace is the time to do it.
+`storage status` (step 4) shows `grace_until` and says when the node is in grace and how many grace
+epochs are left. Note: a node in grace whose fail_streak is already 3 or more keeps that value through
+the grace, so a long grace also delays its automatic return.
+**Disk:** one segment is ≈ 17280 × ≈ 100 KB ≈ 1.7 GB at today's block size (design rev 4 §0); a node
+holds about 3 / (number of storage members) of all published segments (R = 3), plus up to one overlap
+epoch of a segment it is handing off. Files of segments this node no longer holds are deleted one epoch
+after the handoff (`W_STHOLD segment k deleted …`).
+**Terminal commit signatures:** since decision K8a every segment file carries the validator set that
+signed its last commit, and the commit's signatures are always checked against it before the segment is
+complete — pruned or not (a marker without that check is not a held segment).
+
+**2. Be connected to the validators on 4004.** Probes travel on channel 0x72 over the EXISTING 4004
+connection between a validator and the storage node; no new connection is dialed for a probe. Put the
+validators in the storage node's `persistent_peers` (and/or the network file), so each validator has a
+live connection to it. A storage node that is not connected to a validator when that validator's
+probe slot comes (and through the rest of the epoch) is NOT OK in that validator's report. Both ends
+must run a build that lists channel 0x72 (an older peer is never sent to on it). The segment fetch
+(channel 0x73, package B2b-2 — ⚠ the byte is pending operator approval) also uses EXISTING 4004
+connections only: a storage node fetches from the other holders of a segment it is connected to, then
+from any connected peer (keep EU-6 / US-1 in `persistent_peers`). Serving nodes answer only a requester
+that is an ACTIVE member of the current frozen storage set. There is no byte limit per requester
+(decision K6a): a requester has one request in flight at a time, and the 4004 connection's send / receive
+rate limit bounds what it can draw.
+
+**3. Keep the clock in sync (NTP).** A probe carries the validator's wall-clock deadline (10 s ahead);
+the storage node refuses a request whose deadline its own clock has passed (`LATE`). Node NTP is
+already an operational obligation (the 60 s block-time tolerance of block validation); for probes a
+skew of several seconds already starts costing answers.
+
+**4. Register / exit / status — `nodus-cli storage register|exit|status` (package B2b-CLI).** Both
+transactions are signed by the NODE key — the key the storage node runs with, not a wallet key: the
+registry row is the key's own (the chain accepts exactly one signer whose fingerprint is SHA3-512 of the
+node key in the call) and the bond is paid from coins that key owns. So, on the storage node:
+
+```bash
+# 0. the node key's fingerprint (send it 1 000 000 NODUS + the fee first)
+nodus-cli -i /var/lib/nodus/identity whoami
+# 1. what the chain says about this node (works for any node with --fp <hex128>)
+nodus-cli -s 127.0.0.1:4001 -i /var/lib/nodus/identity storage status
+# 2. build and self-check without sending, then send
+nodus-cli -s 127.0.0.1:4001 -i /var/lib/nodus/identity storage register --dry-run
+nodus-cli -s 127.0.0.1:4001 -i /var/lib/nodus/identity storage register --submit 127.0.0.1:4001
+```
+
+- **`-i` is required** for `register` / `exit` (without it the CLI would use a random key; it refuses).
+  The identity directory is the node's own (`identity_path` in its config; the path above is an
+  example — use the node's).
+- **Explicit confirmation**, as every `v2-envelope` builder: `--dry-run` builds, self-checks and prints
+  everything without sending; only `--submit ip:port` sends. Before the wire id the CLI prints what is
+  sent: the node fingerprint, the bond (exactly 10^14 raw = 1 000 000 NODUS — the chain accepts no other
+  amount), the payee (the node's own fingerprint — the only payee the chain accepts before HF-5), the
+  fee, inputs and change.
+- **Generation gate.** The CLI builds for the rule-set generation the node names and refuses with a
+  plain message while it is below the storage generation (the vote has not taken effect).
+- **What it refuses on its own** (from the node's `dnac_storage_status` answer): `register` when the
+  node is already ACTIVE or EXITING; `exit` when it is not registered or not ACTIVE. If that query fails
+  it warns and lets the chain decide.
+- **Exit:** `storage exit (--dry-run | --submit ip:port)` pays only the fee. The node leaves the storage
+  set at the next epoch boundary and earns nothing after it; the bond comes back at that boundary as one
+  coin to the payee, locked 12 epochs (`DNAC_STORAGE_EXIT_LOCK_EPOCHS`). Re-registering is possible only
+  after the bond was released (row RELEASED).
+- **Status** prints the registry row (status, bond, fail_streak, registered / exit height, payee,
+  grace_until — and, while the epoch start is below it, `IN GRACE this epoch … N grace epoch(s) left`,
+  see 1b), the frozen storage set for the current epoch (H, H+E] and whether this node is in it, and
+  the segments that count for it this epoch (number and blocks = number × 17280; at most the first 64
+  are listed; 0 while in grace).
+  **The last settled outcome is not available**: the settlement records no per-node verdict on chain
+  (it writes only fail_streak and the payee's reward accrual, and deletes the epoch's reports), so
+  fail_streak is its only trace — 0 after a good epoch with segments, growing after failed ones;
+  at 3 or more the node is skipped for placement.
+
+**5. Validators need nothing.** A node seated in snapshot(H) probes every other storage member once per
+epoch and submits its STORAGE_REPORT in the report window (H+E, H+E+⌊E/2⌋] by itself — there is no
+config switch (the reporter runs when seated; the serving side answers when the node is a member of
+storage_set(H)). Log lines to look for (tag `W_STPROBE`): `probing epoch H=… seat …`,
+`probe of … OK` / `NOT OK`, `report for H=… submitted` / `committed`, and the warnings
+`… was never reachable on 0x72` and `report window for H=… closed with no committed report`.
+
+**6. Report ordering in full blocks (open decision).** A STORAGE_REPORT pays fee 0 and PrepareProposal
+orders by fee per unit (decision `2026-09-25-mempool-policy.md` item 2), so in a run of full blocks it
+waits; the reporter resubmits after its expiry and the window is 360 blocks at E = 720. No priority
+lane exists for it (only CHAIN_CONFIG has one); adding one is an operator decision.
 
 ---
 

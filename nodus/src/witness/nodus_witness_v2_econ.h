@@ -341,6 +341,21 @@ int nodus_witness_v2_settlement_apply(nodus_witness_t *w,
                                       uint64_t *accrued_out);
 
 /**
+ * v2_reward_accrual[owner_fp] += x — THE accrual writer (the distribution
+ * above credits through it): the row is READ first and the write is
+ * bound to the observed value (an absolute write, never a blind relative
+ * UPDATE); x == 0 writes nothing (a zero accrual row is never created);
+ * a new total above the SQLite INTEGER bound or an existing row <= 0 is
+ * a fault. Exported for the archive-reward storage settlement
+ * (nodus_witness_v2_storage.c, design docs/plans/2026-10-05-archive-
+ * reward-design.md rev 4 §5) so storage credits take the SAME path.
+ * Runs inside the caller's transaction.
+ * @return 0 / -2 NODE-LOCAL FAULT.
+ */
+int nodus_witness_v2_accrue(nodus_witness_t *w, const uint8_t owner_fp[64],
+                            uint64_t x);
+
+/**
  * PAYDAY (tokenomics-v3 P2, design §7 P2-7). At boundary H with
  * (H / DNAC_EPOCH_LENGTH) % payout_interval_epochs == 0, every
  * `v2_reward_accrual` row (owner_fp ASC) becomes ONE CORE UTXO — owner =

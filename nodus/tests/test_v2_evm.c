@@ -1269,7 +1269,10 @@ static int view_of(uint8_t *buf, size_t cap, uint32_t core_op,
 static int test_shape(void) {
     CHECK(nodus_witness_runtime_selfcheck() == 0,
           "selfcheck (generations 1-3, the D literal)"); OK();
-    CHECK(nodus_runtime_generation_count() == NODUS_RT_GEN_EVM &&
+    /* storage reward v1 (main merge order, QEVM first): GEN_STORAGE (4)
+     * is built on the EVM generation and is the newest compiled one */
+    CHECK(nodus_runtime_generation_count() == NODUS_RT_GEN_STORAGE &&
+          NODUS_RT_GEN_STORAGE == NODUS_RT_GEN_EVM + 1u &&
           NODUS_RT_GEN_EVM == 3u && NODUS_RT_GEN_EVM_BASE == NODUS_RT_GEN_2,
           "the EVM generation is 3 on base 2 in this tree"); OK();
     size_t n = 0;

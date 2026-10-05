@@ -70,6 +70,7 @@
 #include "dnac/dnac.h"
 #include "dnac/effect_wire.h"
 #include "dnac/ledger_ids.h"
+#include "dnac/ledger_roots_v2.h" /* DNA_V2_STORAGE_EXIT_OUT_IDX (ladder) */
 #include "dnac/res_meter.h"      /* dna_ck_add_u64                      */
 #include "dnac/validator.h"
 #include "dnac/vset_wire.h"
@@ -93,6 +94,14 @@ _Static_assert(NODUS_V2_EPGRAD_OUT_IDX < NODUS_V2_SETTLE_OUT_IDX_BASE,
 _Static_assert(NODUS_V2_SETTLE_OUT_IDX_BASE <
                    NODUS_V2_GRAD_DELEG_OUT_IDX_BASE,
                "the payday base must sit below the delegation band");
+/* Storage reward v1 (bytes doc docs/plans/2026-10-04-storage-reward-
+ * bytes.md item 6): the storage exit release index 201 (written at the
+ * boundary by package B2) sits between the bond release and the payday
+ * base: 200 < 201 < 400. */
+_Static_assert(NODUS_V2_EPGRAD_OUT_IDX < DNA_V2_STORAGE_EXIT_OUT_IDX &&
+                   DNA_V2_STORAGE_EXIT_OUT_IDX < NODUS_V2_SETTLE_OUT_IDX_BASE,
+               "the storage exit release index must sit between the bond "
+               "release index and the payday base");
 
 /* The stored SQLite INTEGER bound. Anything above it round-trips
  * NEGATIVE and would poison every later read — the V2EP_STORE_MAX rule
@@ -773,6 +782,17 @@ static int v2ec_accrue(nodus_witness_t *w, const uint8_t owner_fp[64],
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE || sqlite3_changes(w->db) != 1) return -2;
     return 0;
+}
+
+/* Archive reward (design docs/plans/2026-10-05-archive-reward-design.md
+ * rev 4 §5 "each OK member accrues …"): the storage settlement
+ * (nodus_witness_v2_storage.c) credits through THIS path — the same
+ * read-first, value-bound write, the same zero rule, the same bound —
+ * never a second accrual writer. Contract: nodus_witness_v2_econ.h. */
+int nodus_witness_v2_accrue(nodus_witness_t *w, const uint8_t owner_fp[64],
+                            uint64_t x) {
+    if (!w || !w->db || !owner_fp) return -2;
+    return v2ec_accrue(w, owner_fp, x);
 }
 
 /* One (owner, amount) row this module reads: a copy(src) row of a

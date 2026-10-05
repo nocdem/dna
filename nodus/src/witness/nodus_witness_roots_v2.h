@@ -95,6 +95,68 @@ int nodus_witness_treasury_root_v2(nodus_witness_t *w, uint8_t out[64]);
  *  (nodus_witness_v2_claims.c). @return 0 / -1 (never a partial sum). */
 int nodus_witness_treasury_total(nodus_witness_t *w, uint64_t *out);
 
+/* ── Storage reward v1 — the storage registry (package B1) ─────────────
+ * Decision docs/plans/decisions/2026-10-04-storage-reward-approved.md;
+ * design docs/plans/2026-10-04-storage-reward-v1-design.md rev 2.2 §1;
+ * leaf bytes docs/plans/2026-10-04-storage-reward-bytes.md item 1.
+ * `v2_storage_nodes` (nodus_witness.h NODUS_V2_STORAGE_DDL, base schema)
+ * holds one row per node_fp = SHA3-512(node_pk). Written ONLY by the
+ * GEN_STORAGE SYSTEM ops STORAGE_REGISTER / STORAGE_EXIT and the storage
+ * epoch boundary (archive reward, package B2a — exit release and the
+ * fail_streak update, nodus_witness_v2_storage.c); empty on every chain
+ * before the storage activation. The leaf is v2 ("NDS.STLEAF.v2",
+ * fail_streak appended — bytes doc docs/plans/2026-10-05-archive-reward-
+ * bytes.md item 4; grace_until appended after it — K9, decision
+ * 2026-10-05-storage-reward-is-for-archive.md). */
+
+/** The storage set cap (design rev 2.2 F3) — the ONE number the cap
+ *  admission (STORAGE_REGISTER) and the frozen set share. */
+#define NODUS_STORAGE_SET_MAX           DNA_V2_STORAGE_SET_MAX
+
+/** registry_root (bytes doc item 1) over `v2_storage_nodes`, node_fp
+ *  ASC, every row through dna_v2_storage_registry_root. The table is in
+ *  the base schema, so an absent table is a FAULT (prepare fails), never
+ *  the empty state; a malformed row (non-BLOB fp / pk, a length other
+ *  than 64 / DNAC_PUBKEY_SIZE, node_fp != SHA3-512(node_pk), a negative
+ *  integer, a fail_streak above UINT32_MAX, a negative grace_until, a
+ *  status outside 1..3) or a
+ *  scan fault fails the whole computation. An empty table is
+ *  DNA_V2_EMPTY_STORAGE_REG.
+ *  @return 0 / -1. */
+int nodus_witness_storage_registry_root(nodus_witness_t *w,
+                                        uint8_t out[64]);
+
+/** Every `v2_storage_nodes` row, node_fp ASC, through the SAME scan and
+ *  row checks as the registry root (one loader for the root, the supply
+ *  term and the storage boundary — they can never disagree on which rows
+ *  are well-formed). *rows is malloc'd (NULL when *n_out == 0); the
+ *  caller frees it. @return 0 / -1. */
+int nodus_witness_storage_registry_load(nodus_witness_t *w,
+                                        dna_v2_storage_node_row_t **rows,
+                                        size_t *n_out);
+
+/** Σ bond over the ACTIVE + EXITING rows of `v2_storage_nodes`, with the
+ *  registry root's own row checks (ONE scan for both — the treasury
+ *  pattern) and a checked add: the supply equation's storage-bond term
+ *  (nodus_witness_v2_claims.c nodus_rt_core_invariant). RELEASED rows
+ *  are excluded: their bond already left as the release UTXO (the
+ *  storage boundary, nodus_witness_v2_storage.c).
+ *  @return 0 / -1 (never a partial sum). */
+int nodus_witness_storage_bond_total(nodus_witness_t *w, uint64_t *out);
+
+/** storage_root = dna_v2_storage_root(registry_root, sets_root,
+ *  reports_root, segments_root) — "NDS.STOR.v2" (archive bytes item 5),
+ *  each leg from its own table (sets / reports / segments loaders:
+ *  nodus_witness_v2_storage.h). @return 0 / -1. */
+int nodus_witness_storage_root_v2(nodus_witness_t *w, uint8_t out[64]);
+
+/** system_state_root v5 ("NDS.SYS.v5", bytes doc item 4): the 8 legs of
+ *  nodus_witness_system_root_v2 in the same order + storage_root. The
+ *  SYSTEM state-root hook selects it when the resolved runtime is
+ *  GEN_STORAGE or later (nodus_rt_system_state_root) — before the
+ *  storage activation the v4 composition above, unchanged. */
+int nodus_witness_system_root_v5(nodus_witness_t *w, uint8_t out[64]);
+
 /** attendance_root (tokenomics-v3 P1, D-4 / S-2) over `v2_attendance_epoch`
  *  rows, epoch_start ASC. Fail-closed: a
  *  missing table is the honest empty state (a pre-P1 database, or before
@@ -143,7 +205,13 @@ int nodus_witness_system_payload_root_v2(nodus_witness_t *w,
                                          uint8_t out[64]);
 
 /** Full assembly: SYSTEM + CORE DomainHeads → domains_root →
- *  global_state_root. Optional component outputs (any may be NULL). */
+ *  global_state_root. Optional component outputs (any may be NULL).
+ *  ⚠ Storage reward v1: out_system is ALWAYS the v4 composition
+ *  (nodus_witness_system_root_v2) — this assembly does not resolve the
+ *  registry's generation. On a chain past the storage activation it is
+ *  therefore NOT the committed SYSTEM root; the committed one comes from
+ *  the runtime hook (nodus_rt_system_state_root). No consensus path calls
+ *  this function (tests compare it on pre-activation chains). */
 int nodus_witness_global_root_v2(nodus_witness_t *w,
                                  uint8_t out_global[64],
                                  uint8_t out_domains[64],

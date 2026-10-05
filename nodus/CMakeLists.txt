@@ -302,6 +302,19 @@ set(NODUS_SOURCES
     # (the O15J red-team's L2-F5). The spec is the shipped V1
     # implementation, cited line by line in the source.
     src/witness/nodus_witness_v2_econ.c
+    # Storage reward v1 rev 4 (the archive reward), package B2a — frozen
+    # storage sets, segment roots + publication, assignment, the storage
+    # boundary (settlement, fail_streak, exit release), the storage leg's
+    # archive-era loaders (decision docs/plans/decisions/2026-10-05-
+    # archive-reward-bytes-approved.md).
+    src/witness/nodus_witness_v2_storage.c
+    # Archive reward, package B2b-1 — the transport-independent half of the
+    # archive probe: the channel 0x72 wire, the serving side's checks and
+    # answer builder, the reporter's verification chain against its own
+    # v2_blocks, the STORAGE_REPORT builder (design docs/plans/2026-10-05-
+    # archive-reward-design.md rev 4 §4; bytes doc §6). Off-chain: nothing
+    # here is a consensus input.
+    src/witness/nodus_witness_storage_probe.c
     src/witness/nodus_witness_v2_preflight.c
     # R3 W4 — nodus_witness_v2_qc.c and nodus_witness_v2_finalize.c are
     # DELETED with the closed consensus lane: QC assembly and the legacy
@@ -645,6 +658,23 @@ if(NOT WIN32)
         src/witness/nodus_witness_vset.c
         src/witness/nodus_witness_genesis_seed.c
         src/witness/nodus_witness_chain_config.c
+        # Archive reward, package B2b-1 — the archive probe's runtime: the
+        # reporter (a seated validator probes every other storage member
+        # once per epoch over channel 0x72 and submits its STORAGE_REPORT)
+        # and the serving side (a storage member answers from its block
+        # store). Here, beside nodus_witness_p2p.c, because it sends on
+        # the 4004 host.
+        src/witness/nodus_witness_storage_reporter.c
+        # Archive reward, package B2b-2 — the segment FILE (one file per
+        # payday segment k with its index and completeness marker, built
+        # from verified pieces only, published atomically, resumable) and
+        # the holder's runtime (assignment, export from the block store,
+        # the channel 0x73 fetch, deletion after the overlap epoch). POSIX
+        # file I/O; node-local, never a consensus input (design rev 4 §3,
+        # §7 D4).
+        src/witness/nodus_witness_storage_segment.c
+        src/witness/nodus_witness_storage_fetch.c
+        src/witness/nodus_witness_storage_holder.c
     )
 
     # ── Phase-C C1 (2026-07-21): shielded-pool ZK verify stack ─────────
@@ -1668,6 +1698,13 @@ add_test(NAME test_chain_params COMMAND test_chain_params)
 # witness loaders over real sqlite state, 7/7 determinism.
 add_executable(test_roots_v2 tests/test_roots_v2.c)
 target_link_libraries(test_roots_v2 nodus dsa nodus crypto)
+# Storage reward v1: the independent oracle's vectors, read at run time
+# with json-c (linked through nodus PUBLIC when found). Without json-c the
+# test FAILS (it does not skip) — see test_storage_kat.
+if(JSONC_FOUND)
+    target_compile_definitions(test_roots_v2 PRIVATE
+        STORAGE_REWARD_KAT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/storage_reward_kat.json")
+endif()
 add_test(NAME test_roots_v2 COMMAND test_roots_v2)
 
 # Ledger V2 S2 — BlockHeader V2 codec: oracle-pinned KATs, mutation sweep,
@@ -2691,6 +2728,72 @@ register_witness_test(test_hf4_genesis)
 # name_root, twin determinism, refusals, dry-run owner key, address index).
 register_witness_test(test_hf4_names)
 register_witness_test(test_hf4_names_engine)
+
+# Storage reward v1, package B1 (decision docs/plans/decisions/2026-10-04-
+# storage-reward-approved.md; design docs/plans/2026-10-04-storage-reward-
+# v1-design.md rev 2.2 §1, §6) — STORAGE_REGISTER / STORAGE_EXIT: the
+# hook-level rule matrix (read plans, happy path, every refusal, revive
+# from RELEASED, exit, the generation gate of SYSFUND's pairing) and
+# registrations applied end to end on a twin GEN_STORAGE chain (rows,
+# supply conservation, the v5 SYSTEM root, refusals). A new file: no
+# existing test owns a chain that crosses both rule-set edges with real
+# 2-leg storage envelopes. The generation switch 2 -> GEN_STORAGE and the
+# v4 -> v5 root edge live in test_hf4_switch (cases F / F2); param 14 in
+# test_hf4_params; the GEN_STORAGE table in test_hf4_table. The engine
+# halves seed genesis through the runtime selfcheck, which needs the
+# STORAGE-ORACLE pins (shared/dnac/tests/storage_oracle.py, filled in
+# nodus_witness_runtime.c and dnac.h DNAC_CFG_RULESET_GEN_STORAGE_D).
+register_witness_test(test_storage_reg)
+
+# Storage reward v1 rev 4 (the archive reward), package B2a (decisions
+# docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md,
+# 2026-10-05-archive-reward-bytes-approved.md): the C byte layouts against
+# the independent oracle's nodus/tests/vectors/archive_reward_kat.json
+# (items 1-5 and the §6 sample derivation, json-c at run time — without
+# json-c the KAT case FAILS, it does not skip), segment publication and
+# backfill over synthetic v2_blocks rows, and twin GEN_STORAGE chains
+# through freeze / report / settlement / fail_streak / handoff / exit
+# release. The engine cases seed genesis through the runtime selfcheck
+# over the filled STORAGE-ORACLE pins (the test_storage_reg note above).
+register_witness_test(test_storage_b2)
+if(JSONC_FOUND)
+    target_compile_definitions(test_storage_b2 PRIVATE
+        ARCHIVE_REWARD_KAT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/archive_reward_kat.json")
+endif()
+
+# Archive reward, package B2b-1 — the archive probe's node side
+# (src/witness/nodus_witness_storage_probe.c / _reporter.c): the channel
+# 0x72 request (the approved bytes doc §6 layout) and answer codecs, the
+# serving side's refusals, the answer built from a fixture block store,
+# every link of the reporter's verification chain (wrong header, wrong
+# block, wrong part index / total, tampered part, late), the
+# STORAGE_REPORT call and envelope, the epoch / window arithmetic. In-memory
+# databases only; no environment.
+register_witness_test(test_storage_probe)
+
+# Storage reward v1, package B2b-2 — the archive segment FILE and the
+# channel 0x73 FETCH (src/witness/nodus_witness_storage_segment.c,
+# _fetch.c, _holder.c): export from a fixture block store holding a real
+# 17 280-block chain → publish → read back (layout, index, marker); every
+# piece refused before it is written (tampered part / header / commit,
+# order); the 0x73 request / answer bytes, every malformed message, the
+# shape rule, the per-requester budget; a whole segment fetched piece by
+# piece byte-identical to the export; resume after a torn partial file
+# and cut at a tampered record; the serving side's refusals; must-hold and
+# deletion over the one-epoch overlap; the 0x72 probe answered from the
+# file after the store is pruned. Writes under a mkdtemp directory in
+# $TMPDIR (removed at the end); in-memory databases; no environment.
+register_witness_test(test_storage_segment)
+
+# Storage reward v1, package B2b-CLI — `nodus-cli storage register | exit
+# | status`: the shared builder's STORAGE_REGISTER / STORAGE_EXIT envelopes
+# (src/client/nodus_v2_stake.c ops 7 / 8, decision 2026-09-25-web-wallet-
+# nodus-send-transport.md "İşlem kurucu") fed to the GEN_STORAGE SYSTEM and
+# CORE hooks over fabricated engine facts (read plans, the CREATE / SET
+# records, the funding equation with lock = bond / fee only), the builder
+# and decoder refusals, and the dnac_storage_status reply decoder's strict
+# rules. No database, no network, no environment.
+register_witness_test(test_storage_cli)
 
 # Web wallet package (c2) — the shared CORE SPEND builder
 # (src/client/nodus_v2_spend.c): the pins ruleset == the compiled table,
