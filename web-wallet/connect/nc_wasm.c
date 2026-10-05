@@ -25,6 +25,12 @@
  *   - nc_lock, nc_salt_pick and nc_day_today are synchronous and never
  *     reach emscripten_sleep, so JS may call them while another export is
  *     suspended; the module's cancel / lock are nsw_cancel / nsw_lock;
+ *   - the groups codec exports (nc_group_*, package G2) are synchronous and
+ *     pure (no network). Those that hold no session material
+ *     (nc_group_addr_str, nc_group_salt, nc_group_record_read,
+ *     nc_group_accept, nc_group_json_read) run outside the bracket, like
+ *     nc_salt_pick; every one that uses the session's keys or the verified
+ *     peer cache runs inside it, like nc_hist_*;
  *   - each async export does ONE bounded network step (one GET, one GET_ALL
  *     or one PUT, each bounded by the client's request timeout) so the JS
  *     queue can put a wallet operation between two sync steps (design §6.4
@@ -51,6 +57,7 @@
 #endif
 
 #include "nc_core.h"
+#include "nc_group.h"
 #include "nc_history.h"
 
 #include "dht/shared/dht_dm_outbox.h"
@@ -906,6 +913,690 @@ int nc_hist_decrypt(const char *store, const char *id, const char *nonce_hex,
     nc_wipe(pt, ct_len);
     free(pt);
     return nc_end(set_result(o));
+}
+
+/* ── groups codec (package G2): synchronous, pure, no network ───────────
+ *
+ * The codec and every rule: nc_group.h. Governing records:
+ * docs/plans/2026-10-05-connect-groups-bytes.md items 1-7 + REV 2
+ * (approved, decisions/2026-10-05-groups-apt-bytes-approved.md);
+ * decisions/2026-10-04-connect-groups.md items 1-11 (item 11: message text
+ * >= 1 byte).
+ *
+ * Crossing: bytes as lowercase hex; v, day, count, key_version and the
+ * millisecond timestamps as decimal strings; fingerprints in the 128-hex
+ * form. A group key, addr_secret or salt_v crosses as hex like the 1:1
+ * salts — the page holds them; every copy this file makes is wiped.
+ *
+ * KEY BINDING (nc_group.h): no signer's or member's key is ever taken from
+ * the page. The own fingerprint uses the session's Messages keys (g_keys:
+ * ML-DSA-87 signs and verifies, ML-KEM-1024 decapsulates); every other
+ * fingerprint resolves through the peer cache above, which only
+ * nc_profile_get / nc_profile_load fill (nc_profile_read / nc_profile_check:
+ * SHA3-512(pk) == fp on the owner-filtered profile). A fingerprint not in it
+ * is refused ("Load this contact's profile first.").
+ *
+ * Readers (kp_read, record_read, head_read, bucket_read, json_read) answer 0
+ * with a "status" — the codec's verdict on the bytes; a bad argument, a
+ * value over its size cap or a fault is an error (-1, nc_error()), and the
+ * page treats such a value as refused. Writers (the *_new exports, invite,
+ * accept, welcome) answer the bytes or an error.
+ *
+ * Hex inputs are copied onto the 1 MiB C stack by ccall (NC_HIST_PT_MAX
+ * above). Caps: a key packet of 64 members is 107,795 B (215,590 hex); a
+ * record <= 4,255 B; a HEAD 4,817 B; a bucket is read up to
+ * NC_GROUP_BKT_IN_MAX — see there. */
+
+_Static_assert(sizeof(((nc_keys_t *)0)->id.pk.bytes) == NC_GROUP_DSA_PK_LEN, "ML-DSA-87 pk");
+_Static_assert(sizeof(((nc_keys_t *)0)->id.sk.bytes) == NC_GROUP_DSA_SK_LEN, "ML-DSA-87 sk");
+_Static_assert(sizeof(((nc_keys_t *)0)->id.node_id.bytes) == NC_GROUP_FP_LEN, "fingerprint");
+_Static_assert(sizeof(((nc_keys_t *)0)->mlkem_pk) == NC_GROUP_KEM_PK_LEN, "ML-KEM-1024 ek");
+_Static_assert(sizeof(((nc_keys_t *)0)->mlkem_sk) == NC_GROUP_KEM_SK_LEN, "ML-KEM-1024 dk");
+_Static_assert(sizeof(((nc_peer_t *)0)->dsa_pk) == NC_GROUP_DSA_PK_LEN, "peer ML-DSA-87 pk");
+_Static_assert(sizeof(((nc_peer_t *)0)->mlkem_pk) == NC_GROUP_KEM_PK_LEN, "peer ML-KEM-1024 ek");
+_Static_assert(NC_FP_HEX_LEN == 2 * NC_GROUP_FP_LEN, "fingerprint hex");
+
+#define NC_GROUP_KP_MAX  (NC_GROUP_KP_HEADER_LEN + NC_GROUP_MAX_MEMBERS * NC_GROUP_ENTRY_LEN + \
+                          2 + NC_GROUP_SIG_LEN)
+#define NC_GROUP_REC_MAX (NC_GROUP_REC_HEADER_LEN + NC_GROUP_RECORD_PT_MAX + NC_GROUP_GCM_TAG_LEN)
+/* A bucket may hold up to 1 MiB (NC_GROUP_BUCKET_MAX) = 2 MiB of hex, more
+ * than the whole C stack ccall copies it onto. Read here: up to 256 KiB
+ * (512 KiB of hex, leaving half the stack for the frames below — the deepest
+ * is the ML-DSA-87 verify; its peak is not measured, the signing peak is
+ * ~121 KB per scripts/build-mldsa87-sign-wasm.sh). A larger bucket is an
+ * error, never a partial read. Full-size buckets need a heap input buffer
+ * export (the nsw_req_env_alloc form) — not part of this package. */
+#define NC_GROUP_BKT_IN_MAX (256u * 1024u)
+
+static int parse_u32_dec(const char *s, uint32_t *out) {
+    uint64_t v;
+    if (parse_u64(s, &v) != 0 || v > UINT32_MAX) return -1;
+    *out = (uint32_t)v;
+    return 0;
+}
+
+static int own_fp_is(const char *fp) {
+    return fp && strcmp(fp, g_keys.fp) == 0;
+}
+
+/* The ML-DSA-87 key (and ML-KEM-1024 key, NULL when the profile carries
+ * none) of `fp`: the session's own, or the verified peer cache's. The
+ * pointers stay valid for the export (no group export stores a peer). */
+static int group_keys_of(const char *fp, uint8_t fp_out[NC_GROUP_FP_LEN],
+                         const uint8_t **dsa_pk, const uint8_t **kem_pk) {
+    nodus_key_t k;
+    if (nc_fp_parse(fp, &k) != 0) return fail("Invalid Nodus address.");
+    memcpy(fp_out, k.bytes, NC_GROUP_FP_LEN);
+    if (own_fp_is(fp)) {
+        if (dsa_pk) *dsa_pk = g_keys.id.pk.bytes;
+        if (kem_pk) *kem_pk = g_keys.mlkem_pk;
+        return 0;
+    }
+    const nc_peer_t *p = peer_need(fp);
+    if (!p) return -1;
+    if (dsa_pk) *dsa_pk = p->dsa_pk;
+    if (kem_pk) *kem_pk = p->has_mlkem ? p->mlkem_pk : NULL;
+    return 0;
+}
+
+typedef struct {
+    uint8_t fp[NC_GROUP_FP_LEN];
+    char    hex[NC_FP_HEX_LEN + 1];
+} group_member_t;
+
+static int member_cmp(const void *a, const void *b) {
+    return memcmp(((const group_member_t *)a)->fp, ((const group_member_t *)b)->fp,
+                  NC_GROUP_FP_LEN);
+}
+
+/* members_json: ["<128 hex>", ...], 1..64 entries. Sorted here into the
+ * codec's order (fingerprints ascending, memcmp — nc_group.h); a duplicate
+ * or a list without the owner is then refused by the codec. */
+static int parse_members(const char *members_json, group_member_t m[NC_GROUP_MAX_MEMBERS],
+                         size_t *n) {
+    *n = 0;
+    json_object *arr = members_json ? json_tokener_parse(members_json) : NULL;
+    size_t c = arr && json_object_is_type(arr, json_type_array) ? json_object_array_length(arr) : 0;
+    if (c == 0 || c > NC_GROUP_MAX_MEMBERS) {
+        if (arr) json_object_put(arr);
+        return fail("Invalid member list (1 to 64 Nodus addresses).");
+    }
+    for (size_t i = 0; i < c; i++) {
+        json_object *e = json_object_array_get_idx(arr, i);
+        const char *fp = e && json_object_is_type(e, json_type_string)
+                             ? json_object_get_string(e) : NULL;
+        nodus_key_t k;
+        if (!fp || nc_fp_parse(fp, &k) != 0) {     /* exactly 128 lowercase hex */
+            json_object_put(arr);
+            return fail("Invalid member list (1 to 64 Nodus addresses).");
+        }
+        memcpy(m[i].fp, k.bytes, NC_GROUP_FP_LEN);
+        memcpy(m[i].hex, fp, NC_FP_HEX_LEN);
+        m[i].hex[NC_FP_HEX_LEN] = '\0';
+    }
+    json_object_put(arr);
+    qsort(m, c, sizeof(*m), member_cmp);
+    *n = c;
+    return 0;
+}
+
+/* K for (purpose 1 HEAD | 2 KEY PACKET | 3 RECORD | 4 OUTBOX, group_id,
+ * secret = addr_secret (1, 2) or salt_v (3, 4), x = 0 | v | v | day).
+ * Result { key: "ncg:" + 128 hex } — the DHT layer hashes that string once
+ * more (nc_key_str), not done here. */
+int nc_group_addr_str(int purpose, const char *group_id_hex, const char *secret_hex,
+                      const char *x_dec) {
+    uint8_t gid[NC_GROUP_ID_LEN], sec[NC_GROUP_SECRET_LEN], k[NC_GROUP_DIGEST_LEN];
+    char s[NC_GROUP_ADDR_STR_LEN + 1];
+    uint64_t x;
+    if (purpose < NC_GROUP_PURPOSE_HEAD || purpose > NC_GROUP_PURPOSE_OUTBOX ||
+        parse_hex_fixed(group_id_hex, gid, sizeof(gid)) != 0 ||
+        parse_hex_fixed(secret_hex, sec, sizeof(sec)) != 0 || parse_u64(x_dec, &x) != 0) {
+        nc_wipe(sec, sizeof(sec));
+        return fail("Invalid group address input.");
+    }
+    int rc = nc_group_addr((nc_group_purpose_t)purpose, gid, sec, x, k, s);
+    nc_wipe(sec, sizeof(sec));
+    if (rc != NC_GROUP_OK)
+        return fail(rc == NC_GROUP_REFUSED
+                    ? "Group address input refused (version or day out of range)."
+                    : "Group address could not be derived.");
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "key", json_object_new_string(s));
+    return set_result(o);
+}
+
+/* Result { salt: 64 hex } = salt_v of (group_id, group_key_v, v). */
+int nc_group_salt(const char *group_id_hex, const char *group_key_hex, const char *v_dec) {
+    uint8_t gid[NC_GROUP_ID_LEN], gk[NC_GROUP_KEY_LEN], salt[NC_GROUP_SECRET_LEN];
+    uint32_t v;
+    if (parse_hex_fixed(group_id_hex, gid, sizeof(gid)) != 0 ||
+        parse_hex_fixed(group_key_hex, gk, sizeof(gk)) != 0 || parse_u32_dec(v_dec, &v) != 0) {
+        nc_wipe(gk, sizeof(gk));
+        return fail("Invalid group key input.");
+    }
+    int rc = nc_group_salt_v(gid, gk, v, salt);
+    nc_wipe(gk, sizeof(gk));
+    if (rc != NC_GROUP_OK) {
+        nc_wipe(salt, sizeof(salt));
+        return fail(rc == NC_GROUP_REFUSED ? "Group key version must be at least 1."
+                                           : "Group salt could not be derived.");
+    }
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "salt", jhex(salt, sizeof(salt)));
+    nc_wipe(salt, sizeof(salt));
+    return set_result(o);
+}
+
+/* The owner's key packet for version v: owner = the session; members_json
+ * as parse_members (must include the own fingerprint); each member's
+ * ML-KEM-1024 key from the verified peer cache (the own from g_keys) — a
+ * member without one fails the whole build, as a key failing ek_check does
+ * (design §3: never skipped). prev_digest_hex: "" for v = 1, required for
+ * v > 1 (digest of packet v-1). Result { packet, digest (hex), count }. */
+int nc_group_kp_new(const char *group_id_hex, const char *v_dec, const char *prev_digest_hex,
+                    const char *record_digest_hex, const char *issued_at_dec,
+                    const char *group_key_hex, const char *members_json) {
+    if (nc_begin() != 0) return -1;
+    if (!g_unlocked) return nc_end(fail("Messages is not connected."));
+    nc_group_kp_hdr_t h;
+    memset(&h, 0, sizeof(h));
+    bool has_prev = prev_digest_hex && prev_digest_hex[0];
+    if (parse_hex_fixed(group_id_hex, h.group_id, sizeof(h.group_id)) != 0 ||
+        parse_u32_dec(v_dec, &h.v) != 0 || h.v == 0 ||
+        (h.v == 1 && has_prev) || (h.v > 1 && !has_prev) ||
+        (has_prev && parse_hex_fixed(prev_digest_hex, h.prev_digest, sizeof(h.prev_digest)) != 0) ||
+        parse_hex_fixed(record_digest_hex, h.record_digest, sizeof(h.record_digest)) != 0 ||
+        parse_u64(issued_at_dec, &h.issued_at_ms) != 0)
+        return nc_end(fail("Invalid key packet input (version 1 has no previous digest, "
+                           "a later version needs one)."));
+    memcpy(h.owner_fp, g_keys.id.node_id.bytes, NC_GROUP_FP_LEN);
+    uint8_t gk[NC_GROUP_KEY_LEN];
+    if (parse_hex_fixed(group_key_hex, gk, sizeof(gk)) != 0)
+        return nc_end(fail("Invalid group key."));
+    group_member_t m[NC_GROUP_MAX_MEMBERS];
+    uint8_t fps[NC_GROUP_MAX_MEMBERS][NC_GROUP_FP_LEN];
+    size_t n = 0;
+    if (parse_members(members_json, m, &n) != 0) {
+        nc_wipe(gk, sizeof(gk));
+        return nc_end(-1);
+    }
+    uint8_t (*eks)[NC_GROUP_KEM_PK_LEN] = malloc(n * NC_GROUP_KEM_PK_LEN);
+    if (!eks) {
+        nc_wipe(gk, sizeof(gk));
+        return nc_end(fail("Out of memory."));
+    }
+    for (size_t i = 0; i < n; i++) {
+        const uint8_t *kem = NULL;
+        int krc = group_keys_of(m[i].hex, fps[i], NULL, &kem);
+        if (krc == 0 && !kem)
+            krc = fail("A member's profile has no ML-KEM-1024 key: nothing was built.");
+        if (krc != 0) {
+            free(eks);
+            nc_wipe(gk, sizeof(gk));
+            return nc_end(-1);
+        }
+        memcpy(eks[i], kem, NC_GROUP_KEM_PK_LEN);
+    }
+    uint8_t *pkt = NULL, dig[NC_GROUP_DIGEST_LEN];
+    size_t pl = 0;
+    int rc = nc_group_kp_build(&h, gk, (const uint8_t (*)[NC_GROUP_FP_LEN])fps,
+                               (const uint8_t (*)[NC_GROUP_KEM_PK_LEN])eks, n,
+                               g_keys.id.pk.bytes, g_keys.id.sk.bytes, &pkt, &pl, dig);
+    nc_wipe(gk, sizeof(gk));
+    free(eks);
+    if (rc != NC_GROUP_OK)
+        return nc_end(rc == NC_GROUP_REFUSED
+                      ? fail("Key packet refused: the members must be distinct and include "
+                             "you, and every member's ML-KEM-1024 key must pass its check.")
+                      : fail("Key packet could not be built."));
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "packet", jhex(pkt, pl));
+    json_object_object_add(o, "digest", jhex(dig, sizeof(dig)));
+    json_object_object_add(o, "count", jstr_u64(n));
+    free(pkt);                                 /* ciphertexts and wraps only */
+    return nc_end(set_result(o));
+}
+
+/* A member reads the key packet of version v (nc_group_kp_open order:
+ * structure, owner signature FIRST, group / version / owner, prev_digest,
+ * trial unwrap with the session's ML-KEM-1024 key). owner_fp: the pinned
+ * owner (own or verified peer cache). prev_digest_hex: the stored digest of
+ * packet v-1, "" when not held (v > 1 then answers "prev_unavailable").
+ * Result { status: ok | bad_structure | bad_sig | mismatch | prev_conflict
+ * | prev_unavailable | no_entry } and, once the signature verified, v,
+ * count, digest, prev_digest, record_digest, issued_at_ms; group_key only
+ * on ok. */
+int nc_group_kp_read(const char *packet_hex, const char *owner_fp, const char *group_id_hex,
+                     const char *v_dec, const char *prev_digest_hex) {
+    if (nc_begin() != 0) return -1;
+    if (!g_unlocked) return nc_end(fail("Messages is not connected."));
+    uint8_t gid[NC_GROUP_ID_LEN], ofp[NC_GROUP_FP_LEN], prev[NC_GROUP_DIGEST_LEN];
+    uint32_t v;
+    bool has_prev = prev_digest_hex && prev_digest_hex[0];
+    if (parse_hex_fixed(group_id_hex, gid, sizeof(gid)) != 0 || parse_u32_dec(v_dec, &v) != 0 ||
+        (has_prev && parse_hex_fixed(prev_digest_hex, prev, sizeof(prev)) != 0))
+        return nc_end(fail("Invalid key packet input."));
+    const uint8_t *opk = NULL;
+    if (group_keys_of(owner_fp, ofp, &opk, NULL) != 0) return nc_end(-1);
+    uint8_t *pkt;
+    size_t pl;
+    if (parse_hex_var(packet_hex, NC_GROUP_KP_MAX, &pkt, &pl) != 0)
+        return nc_end(fail("Invalid key packet (not hex, or over %u bytes).",
+                           (unsigned)NC_GROUP_KP_MAX));
+    nc_group_kp_open_t r;
+    nc_group_kp_status_t st = nc_group_kp_open(pkt, pl, opk, gid, ofp, v,
+                                               has_prev ? prev : NULL,
+                                               g_keys.id.node_id.bytes,
+                                               nc_group_decap_mlkem, g_keys.mlkem_sk, &r);
+    free(pkt);                                 /* public bytes */
+    static const char *const ST[] = { "ok", "bad_structure", "bad_sig", "mismatch",
+                                      "prev_conflict", "prev_unavailable", "no_entry" };
+    if ((unsigned)st >= sizeof(ST) / sizeof(ST[0])) {
+        nc_wipe(&r, sizeof(r));
+        return nc_end(fail("Key packet could not be read (fault)."));
+    }
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "status", json_object_new_string(ST[st]));
+    if (st != NC_GROUP_KP_BAD_STRUCTURE && st != NC_GROUP_KP_BAD_SIG) {
+        json_object_object_add(o, "v", jstr_u64(r.hdr.v));
+        json_object_object_add(o, "count", jstr_u64(r.count));
+        json_object_object_add(o, "digest", jhex(r.digest, sizeof(r.digest)));
+        json_object_object_add(o, "prev_digest", jhex(r.hdr.prev_digest, sizeof(r.hdr.prev_digest)));
+        json_object_object_add(o, "record_digest",
+                               jhex(r.hdr.record_digest, sizeof(r.hdr.record_digest)));
+        json_object_object_add(o, "issued_at_ms", jstr_u64(r.hdr.issued_at_ms));
+    }
+    if (st == NC_GROUP_KP_OK)
+        json_object_object_add(o, "group_key", jhex(r.group_key, sizeof(r.group_key)));
+    nc_wipe(&r, sizeof(r));
+    return nc_end(set_result(o));
+}
+
+/* The owner's member record for version v: owner = the session; name: the
+ * group name, UTF-8, <= 64 bytes ("" allowed); members_json as
+ * parse_members (must include the own fingerprint). Result { record,
+ * digest (hex) } — digest = the record_digest the key packet carries. */
+int nc_group_record_new(const char *group_id_hex, const char *v_dec, const char *group_key_hex,
+                        const char *name, const char *members_json, const char *created_at_dec) {
+    if (nc_begin() != 0) return -1;
+    if (!g_unlocked) return nc_end(fail("Messages is not connected."));
+    uint8_t gid[NC_GROUP_ID_LEN], gk[NC_GROUP_KEY_LEN];
+    uint32_t v;
+    uint64_t created;
+    size_t name_len = name ? strnlen(name, NC_GROUP_NAME_MAX + 1) : 0;
+    if (!name || name_len > NC_GROUP_NAME_MAX)
+        return nc_end(fail("Group name must be at most 64 bytes."));
+    if (parse_hex_fixed(group_id_hex, gid, sizeof(gid)) != 0 || parse_u32_dec(v_dec, &v) != 0 ||
+        parse_u64(created_at_dec, &created) != 0)
+        return nc_end(fail("Invalid group record input."));
+    if (parse_hex_fixed(group_key_hex, gk, sizeof(gk)) != 0)
+        return nc_end(fail("Invalid group key."));
+    group_member_t m[NC_GROUP_MAX_MEMBERS];
+    uint8_t fps[NC_GROUP_MAX_MEMBERS][NC_GROUP_FP_LEN];
+    size_t n = 0;
+    if (parse_members(members_json, m, &n) != 0) {
+        nc_wipe(gk, sizeof(gk));
+        return nc_end(-1);
+    }
+    for (size_t i = 0; i < n; i++) memcpy(fps[i], m[i].fp, NC_GROUP_FP_LEN);
+    uint8_t *rec = NULL, dig[NC_GROUP_DIGEST_LEN];
+    size_t rl = 0;
+    int rc = nc_group_record_seal(gid, v, gk, g_keys.id.node_id.bytes,
+                                  (const uint8_t *)name, name_len,
+                                  (const uint8_t (*)[NC_GROUP_FP_LEN])fps, n, created,
+                                  &rec, &rl, dig);
+    nc_wipe(gk, sizeof(gk));
+    if (rc != NC_GROUP_OK)
+        return nc_end(rc == NC_GROUP_REFUSED
+                      ? fail("Group record refused: version 1 or later, members distinct "
+                             "and including you.")
+                      : fail("Group record could not be sealed."));
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "record", jhex(rec, rl));
+    json_object_object_add(o, "digest", jhex(dig, sizeof(dig)));
+    free(rec);                                 /* ciphertext only */
+    return nc_end(set_result(o));
+}
+
+/* Open the record read at RECORD(v) (nc_group_record_open order).
+ * digest_hex / count_dec: the record_digest and count of the key packet of
+ * v that passed nc_group_kp_read; owner_fp: the group's owner. No session
+ * key is used. Result { status: ok | bad_structure | mismatch | bad_digest
+ * | bad_auth | bad_plaintext | count | no_owner } and, on ok, name_hex (the
+ * raw name bytes — not validated as UTF-8, nc_group.h), members (128 hex
+ * each, ascending) and created_at_ms. */
+int nc_group_record_read(const char *record_hex, const char *group_key_hex,
+                         const char *group_id_hex, const char *v_dec, const char *digest_hex,
+                         const char *count_dec, const char *owner_fp) {
+    uint8_t gk[NC_GROUP_KEY_LEN], gid[NC_GROUP_ID_LEN], dig[NC_GROUP_DIGEST_LEN];
+    uint32_t v;
+    uint64_t count;
+    nodus_key_t ofp;
+    if (parse_hex_fixed(group_id_hex, gid, sizeof(gid)) != 0 || parse_u32_dec(v_dec, &v) != 0 ||
+        parse_hex_fixed(digest_hex, dig, sizeof(dig)) != 0 || parse_u64(count_dec, &count) != 0 ||
+        count < 1 || count > NC_GROUP_MAX_MEMBERS || nc_fp_parse(owner_fp, &ofp) != 0)
+        return fail("Invalid group record input.");
+    if (parse_hex_fixed(group_key_hex, gk, sizeof(gk)) != 0) return fail("Invalid group key.");
+    uint8_t *rec;
+    size_t rl;
+    if (parse_hex_var(record_hex, NC_GROUP_REC_MAX, &rec, &rl) != 0) {
+        nc_wipe(gk, sizeof(gk));
+        return fail("Invalid group record (not hex, or over %u bytes).",
+                    (unsigned)NC_GROUP_REC_MAX);
+    }
+    nc_group_record_t r;
+    nc_group_rec_status_t st = nc_group_record_open(rec, rl, gk, gid, v, dig, (size_t)count,
+                                                    ofp.bytes, &r);
+    nc_wipe(gk, sizeof(gk));
+    free(rec);                                 /* ciphertext */
+    static const char *const ST[] = { "ok", "bad_structure", "mismatch", "bad_digest",
+                                      "bad_auth", "bad_plaintext", "count", "no_owner" };
+    if ((unsigned)st >= sizeof(ST) / sizeof(ST[0])) {
+        nc_wipe(&r, sizeof(r));
+        return fail("Group record could not be read (fault).");
+    }
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "status", json_object_new_string(ST[st]));
+    if (st == NC_GROUP_REC_OK) {
+        json_object_object_add(o, "name_hex", jhex(r.name, r.name_len));
+        json_object *a = json_object_new_array();
+        for (size_t i = 0; i < r.count; i++) json_object_array_add(a, jhex(r.members[i], NC_GROUP_FP_LEN));
+        json_object_object_add(o, "members", a);
+        json_object_object_add(o, "created_at_ms", jstr_u64(r.created_at_ms));
+    }
+    nc_wipe(&r, sizeof(r));
+    return set_result(o);
+}
+
+/* The owner's HEAD: owner = the session. Result { head (hex, 4,817 B) }. */
+int nc_group_head_new(const char *group_id_hex, const char *v_dec, const char *kp_digest_hex,
+                      const char *issued_at_dec) {
+    if (nc_begin() != 0) return -1;
+    if (!g_unlocked) return nc_end(fail("Messages is not connected."));
+    nc_group_head_t h;
+    memset(&h, 0, sizeof(h));
+    if (parse_hex_fixed(group_id_hex, h.group_id, sizeof(h.group_id)) != 0 ||
+        parse_u32_dec(v_dec, &h.v) != 0 ||
+        parse_hex_fixed(kp_digest_hex, h.kp_digest, sizeof(h.kp_digest)) != 0 ||
+        parse_u64(issued_at_dec, &h.issued_at_ms) != 0)
+        return nc_end(fail("Invalid group head input."));
+    memcpy(h.owner_fp, g_keys.id.node_id.bytes, NC_GROUP_FP_LEN);
+    uint8_t *out = malloc(NC_GROUP_HEAD_LEN);
+    if (!out) return nc_end(fail("Out of memory."));
+    int rc = nc_group_head_build(&h, g_keys.id.pk.bytes, g_keys.id.sk.bytes, out);
+    if (rc != NC_GROUP_OK) {
+        free(out);
+        return nc_end(rc == NC_GROUP_REFUSED ? fail("Group head refused: version must be at least 1.")
+                                             : fail("Group head could not be signed."));
+    }
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "head", jhex(out, NC_GROUP_HEAD_LEN));
+    free(out);
+    return nc_end(set_result(o));
+}
+
+/* Verify a HEAD under the pinned owner (own or verified peer cache).
+ * Result { status: ok | bad_structure | bad_sig | mismatch } and, on ok,
+ * v, kp_digest, issued_at_ms. The forward-only rule (v above the stored
+ * high-water mark, kp_digest == the digest of packet v) is the page's: it
+ * holds that state (nc_group.h nc_group_head_verify). */
+int nc_group_head_read(const char *head_hex, const char *owner_fp, const char *group_id_hex) {
+    if (nc_begin() != 0) return -1;
+    if (!g_unlocked) return nc_end(fail("Messages is not connected."));
+    uint8_t gid[NC_GROUP_ID_LEN], ofp[NC_GROUP_FP_LEN];
+    if (parse_hex_fixed(group_id_hex, gid, sizeof(gid)) != 0)
+        return nc_end(fail("Invalid group head input."));
+    const uint8_t *opk = NULL;
+    if (group_keys_of(owner_fp, ofp, &opk, NULL) != 0) return nc_end(-1);
+    uint8_t *hb;
+    size_t hl;
+    if (parse_hex_var(head_hex, NC_GROUP_HEAD_LEN + 1, &hb, &hl) != 0)
+        return nc_end(fail("Invalid group head (not hex, or too long)."));
+    nc_group_head_t h;
+    nc_group_head_status_t st = nc_group_head_verify(hb, hl, opk, gid, ofp, &h);
+    free(hb);
+    static const char *const ST[] = { "ok", "bad_structure", "bad_sig", "mismatch" };
+    if ((unsigned)st >= sizeof(ST) / sizeof(ST[0]))
+        return nc_end(fail("Group head could not be read (fault)."));
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "status", json_object_new_string(ST[st]));
+    if (st == NC_GROUP_HEAD_OK) {
+        json_object_object_add(o, "v", jstr_u64(h.v));
+        json_object_object_add(o, "kp_digest", jhex(h.kp_digest, sizeof(h.kp_digest)));
+        json_object_object_add(o, "issued_at_ms", jstr_u64(h.issued_at_ms));
+    }
+    return nc_end(set_result(o));
+}
+
+/* Seal and sign one group message: sender = the session; text: UTF-8,
+ * 1..4,000 bytes (decision 11: >= 1). The day bucket is not built here.
+ * Result { item (hex), message_id (32 hex), day }. */
+int nc_group_msg_new(const char *group_key_hex, const char *group_id_hex, const char *v_dec,
+                     const char *timestamp_dec, const char *text) {
+    if (nc_begin() != 0) return -1;
+    if (!g_unlocked) return nc_end(fail("Messages is not connected."));
+    size_t tl = text ? strnlen(text, NC_GROUP_TEXT_MAX + 1) : 0;
+    if (tl == 0) return nc_end(fail("Message text must be at least 1 byte."));
+    if (tl > NC_GROUP_TEXT_MAX) return nc_end(fail("Message text is over 4,000 bytes."));
+    uint8_t gid[NC_GROUP_ID_LEN], gk[NC_GROUP_KEY_LEN], mid[NC_GROUP_MSG_ID_LEN];
+    uint32_t v, day;
+    uint64_t ts;
+    if (parse_hex_fixed(group_id_hex, gid, sizeof(gid)) != 0 || parse_u32_dec(v_dec, &v) != 0 ||
+        parse_u64(timestamp_dec, &ts) != 0 || nc_group_day(ts, &day) != NC_GROUP_OK)
+        return nc_end(fail("Invalid group message input."));
+    if (parse_hex_fixed(group_key_hex, gk, sizeof(gk)) != 0)
+        return nc_end(fail("Invalid group key."));
+    uint8_t *item = NULL;
+    size_t il = 0;
+    int rc = nc_group_msg_seal(gk, gid, v, g_keys.id.node_id.bytes, ts,
+                               (const uint8_t *)text, tl,
+                               g_keys.id.pk.bytes, g_keys.id.sk.bytes, mid, &item, &il);
+    nc_wipe(gk, sizeof(gk));
+    if (rc != NC_GROUP_OK)
+        return nc_end(rc == NC_GROUP_REFUSED ? fail("Group message refused (version must be "
+                                                    "at least 1).")
+                                             : fail("Group message could not be sealed."));
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "item", jhex(item, il));
+    json_object_object_add(o, "message_id", jhex(mid, sizeof(mid)));
+    json_object_object_add(o, "day", jstr_u64(day));
+    free(item);                                /* ciphertext only */
+    return nc_end(set_result(o));
+}
+
+/* Decode a day bucket read at OUTBOX(salt_v, day) and open every item with
+ * the sender's key (own or verified peer cache) and group_key_v.
+ * Result { status: ok | bad_structure | sender_unknown, sender (128 hex,
+ * when items exist), messages: [{ message_id, timestamp_ms, status: ok |
+ * bad_sig | bad_auth | refused, text_hex (ok only) }] }. "sender_unknown":
+ * load that profile (nc_profile_get), then read again. NOT checked here, the
+ * page's (nc_group.h nc_group_bucket_decode): the DHT value's owner ==
+ * sender, and the membership rule (nc_group_msg_accept, decision 6). */
+int nc_group_bucket_read(const char *bucket_hex, const char *group_id_hex, const char *v_dec,
+                         const char *day_dec, const char *group_key_hex) {
+    if (nc_begin() != 0) return -1;
+    if (!g_unlocked) return nc_end(fail("Messages is not connected."));
+    uint8_t gid[NC_GROUP_ID_LEN], gk[NC_GROUP_KEY_LEN];
+    uint32_t v, day;
+    if (parse_hex_fixed(group_id_hex, gid, sizeof(gid)) != 0 || parse_u32_dec(v_dec, &v) != 0 ||
+        parse_u32_dec(day_dec, &day) != 0)
+        return nc_end(fail("Invalid group bucket input."));
+    uint8_t *b;
+    size_t bl;
+    if (parse_hex_var(bucket_hex, NC_GROUP_BKT_IN_MAX, &b, &bl) != 0)
+        return nc_end(fail("Invalid group bucket (not hex, or over %u bytes).",
+                           (unsigned)NC_GROUP_BKT_IN_MAX));
+    if (parse_hex_fixed(group_key_hex, gk, sizeof(gk)) != 0) {
+        free(b);
+        return nc_end(fail("Invalid group key."));
+    }
+    nc_group_msg_t *items = NULL;
+    size_t n = 0;
+    int rc = nc_group_bucket_decode(b, bl, gid, v, day, &items, &n);
+    if (rc == NC_GROUP_FAULT) {
+        nc_wipe(gk, sizeof(gk));
+        free(b);
+        return nc_end(fail("Group bucket could not be read (fault)."));
+    }
+    json_object *o = json_object_new_object();
+    json_object *a = json_object_new_array();
+    const char *status = rc == NC_GROUP_OK ? "ok" : "bad_structure";
+    if (rc == NC_GROUP_OK && n > 0) {
+        char sender[NC_FP_HEX_LEN + 1];
+        static const char d[] = "0123456789abcdef";
+        for (size_t i = 0; i < NC_GROUP_FP_LEN; i++) {
+            sender[2 * i] = d[items[0].sender_fp[i] >> 4];
+            sender[2 * i + 1] = d[items[0].sender_fp[i] & 15];
+        }
+        sender[NC_FP_HEX_LEN] = '\0';
+        json_object_object_add(o, "sender", json_object_new_string(sender));
+        const uint8_t *spk = NULL;
+        if (own_fp_is(sender)) {
+            spk = g_keys.id.pk.bytes;
+        } else {
+            const nc_peer_t *p = peer_find(sender);
+            if (p) spk = p->dsa_pk;
+        }
+        if (!spk) {
+            status = "sender_unknown";
+        } else {
+            static const char *const ST[] = { "ok", "bad_sig", "bad_auth", "refused", "fault" };
+            uint8_t text[NC_GROUP_TEXT_MAX];
+            for (size_t i = 0; i < n; i++) {
+                size_t tl = 0;
+                nc_group_msg_status_t st = nc_group_msg_open(&items[i], gk, spk, text, &tl);
+                json_object *e = json_object_new_object();
+                json_object_object_add(e, "message_id",
+                                       jhex(items[i].message_id, NC_GROUP_MSG_ID_LEN));
+                json_object_object_add(e, "timestamp_ms", jstr_u64(items[i].timestamp_ms));
+                json_object_object_add(e, "status", json_object_new_string(
+                    (unsigned)st < sizeof(ST) / sizeof(ST[0]) ? ST[st] : "fault"));
+                if (st == NC_GROUP_MSG_OK)
+                    json_object_object_add(e, "text_hex", jhex(text, tl));
+                json_object_array_add(a, e);
+                nc_wipe(text, sizeof(text));
+            }
+        }
+    }
+    json_object_object_add(o, "status", json_object_new_string(status));
+    json_object_object_add(o, "messages", a);
+    free(items);                               /* pointers into b */
+    free(b);
+    nc_wipe(gk, sizeof(gk));
+    return nc_end(set_result(o));
+}
+
+/* The owner's invite (1:1 plaintext, contacts only — decision 8): owner =
+ * the session; invite_id = 16 fresh bytes (the module's one random source).
+ * name: UTF-8, <= 64 bytes. Result { json, invite_id (32 hex) } — the page
+ * keeps invite_id as pending for that contact. */
+int nc_group_invite(const char *group_id_hex, const char *name) {
+    if (nc_begin() != 0) return -1;
+    if (!g_unlocked) return nc_end(fail("Messages is not connected."));
+    uint8_t gid[NC_GROUP_ID_LEN], iid[NC_GROUP_INVITE_ID_LEN];
+    size_t name_len = name ? strnlen(name, NC_GROUP_NAME_MAX + 1) : 0;
+    if (!name || name_len > NC_GROUP_NAME_MAX)
+        return nc_end(fail("Group name must be at most 64 bytes."));
+    if (parse_hex_fixed(group_id_hex, gid, sizeof(gid)) != 0)
+        return nc_end(fail("Invalid group id."));
+    if (qgp_platform_random(iid, sizeof(iid)) != 0)
+        return nc_end(fail("No randomness available."));
+    char *js = NULL;
+    size_t jl = 0;
+    int rc = nc_group_invite_encode(gid, g_keys.id.node_id.bytes, name, name_len, iid, &js, &jl);
+    if (rc != NC_GROUP_OK)
+        return nc_end(rc == NC_GROUP_REFUSED ? fail("Group invite refused (the name must be "
+                                                    "valid UTF-8).")
+                                             : fail("Group invite could not be written."));
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "json", json_object_new_string_len(js, (int)jl));
+    json_object_object_add(o, "invite_id", jhex(iid, sizeof(iid)));
+    free(js);
+    return nc_end(set_result(o));
+}
+
+/* A member's answer to an invite. No session key. Result { json }. */
+int nc_group_accept(const char *group_id_hex, const char *invite_id_hex) {
+    uint8_t gid[NC_GROUP_ID_LEN], iid[NC_GROUP_INVITE_ID_LEN];
+    if (parse_hex_fixed(group_id_hex, gid, sizeof(gid)) != 0 ||
+        parse_hex_fixed(invite_id_hex, iid, sizeof(iid)) != 0)
+        return fail("Invalid group accept input.");
+    char *js = NULL;
+    size_t jl = 0;
+    if (nc_group_accept_encode(gid, iid, &js, &jl) != NC_GROUP_OK)
+        return fail("Group accept could not be written.");
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "json", json_object_new_string_len(js, (int)jl));
+    free(js);
+    return set_result(o);
+}
+
+/* The owner's welcome (carries addr_secret: SECRET): owner = the session.
+ * key_version: the current v (>= 1); kp_digest: digest of packet v.
+ * Result { json }. */
+int nc_group_welcome(const char *group_id_hex, const char *addr_secret_hex,
+                     const char *key_version_dec, const char *kp_digest_hex,
+                     const char *invite_id_hex) {
+    if (nc_begin() != 0) return -1;
+    if (!g_unlocked) return nc_end(fail("Messages is not connected."));
+    uint8_t gid[NC_GROUP_ID_LEN], sec[NC_GROUP_SECRET_LEN], dig[NC_GROUP_DIGEST_LEN];
+    uint8_t iid[NC_GROUP_INVITE_ID_LEN];
+    uint32_t kv;
+    if (parse_hex_fixed(group_id_hex, gid, sizeof(gid)) != 0 ||
+        parse_u32_dec(key_version_dec, &kv) != 0 || kv == 0 ||
+        parse_hex_fixed(kp_digest_hex, dig, sizeof(dig)) != 0 ||
+        parse_hex_fixed(invite_id_hex, iid, sizeof(iid)) != 0)
+        return nc_end(fail("Invalid group welcome input."));
+    if (parse_hex_fixed(addr_secret_hex, sec, sizeof(sec)) != 0)
+        return nc_end(fail("Invalid group address secret."));
+    char *js = NULL;
+    size_t jl = 0;
+    int rc = nc_group_welcome_encode(gid, g_keys.id.node_id.bytes, sec, kv, dig, iid, &js, &jl);
+    nc_wipe(sec, sizeof(sec));
+    if (rc != NC_GROUP_OK) return nc_end(fail("Group welcome could not be written."));
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "json", json_object_new_string_len(js, (int)jl));
+    nc_wipe(js, jl);
+    free(js);
+    return nc_end(set_result(o));
+}
+
+/* Strict parse of one decrypted 1:1 plaintext (nc_group_json_parse). No
+ * session key. Result { status: ok | refused } and, on ok, type (invite |
+ * accept | welcome), group_id, invite_id; invite / welcome: owner; invite:
+ * name (UTF-8 checked by the parser); welcome: addr_secret, key_version,
+ * kp_digest. Who may send which (invite / welcome only from the pinned
+ * owner == the authenticated 1:1 sender; accept only for a pending
+ * invite_id of that contact, consumed once) is the page's. */
+int nc_group_json_read(const char *json) {
+    if (!json) return fail("Invalid group message.");
+    size_t len = strnlen(json, NC_GROUP_JSON_MAX + 1);   /* over the cap: refused */
+    nc_group_json_t j;
+    int rc = nc_group_json_parse(json, len, &j);
+    if (rc == NC_GROUP_FAULT) {
+        nc_wipe(&j, sizeof(j));
+        return fail("Group message could not be read (fault).");
+    }
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "status", json_object_new_string(rc == NC_GROUP_OK ? "ok" : "refused"));
+    if (rc == NC_GROUP_OK) {
+        static const char *const TY[] = { "", "invite", "accept", "welcome" };
+        json_object_object_add(o, "type", json_object_new_string(TY[j.type]));
+        json_object_object_add(o, "group_id", jhex(j.group_id, sizeof(j.group_id)));
+        json_object_object_add(o, "invite_id", jhex(j.invite_id, sizeof(j.invite_id)));
+        if (j.type != NC_GROUP_JSON_ACCEPT)
+            json_object_object_add(o, "owner", jhex(j.owner_fp, sizeof(j.owner_fp)));
+        if (j.type == NC_GROUP_JSON_INVITE)
+            json_object_object_add(o, "name", json_object_new_string_len(j.name, (int)j.name_len));
+        if (j.type == NC_GROUP_JSON_WELCOME) {
+            json_object_object_add(o, "addr_secret", jhex(j.addr_secret, sizeof(j.addr_secret)));
+            json_object_object_add(o, "key_version", jstr_u64(j.key_version));
+            json_object_object_add(o, "kp_digest", jhex(j.kp_digest, sizeof(j.kp_digest)));
+        }
+    }
+    nc_wipe(&j, sizeof(j));
+    return set_result(o);
 }
 
 /* ── lock: synchronous, never reaches emscripten_sleep ───────────────── */

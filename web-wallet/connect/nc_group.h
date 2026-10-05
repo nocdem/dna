@@ -9,7 +9,7 @@
  *     its REV 2 (R2-1 ... R2-12; REV 2 wins on conflict) — APPROVED,
  *     docs/plans/decisions/2026-10-05-groups-apt-bytes-approved.md.
  *   docs/plans/2026-10-04-connect-groups-design.md rev 1.
- *   docs/plans/decisions/2026-10-04-connect-groups.md items 1-10.
+ *   docs/plans/decisions/2026-10-04-connect-groups.md items 1-11.
  *   Vectors: web-wallet/test/fixtures/groups_oracle.py -> groups_kat.json
  *     (independent oracle; this file implements its 18 "readings").
  *
@@ -57,14 +57,16 @@
  * placed into the bytes (record: after the 52-byte AAD; message: the last
  * 12 bytes of H). Opening takes the nonce from the bytes.
  *
- * EMPTY TEXT. qgp_aes256_encrypt refuses an empty plaintext
- * (qgp_aes.c:49-52) and qgp_aes256_decrypt an empty ciphertext
- * (qgp_aes.c:135-138). The oracle's reading 13 calls an empty message text
- * valid (messages[1] of groups_kat.json). Here the LAYOUT with ct_len 0 is
- * accepted (nc_group_msg_parse, bucket encode / decode), but
- * nc_group_msg_seal and nc_group_msg_open REFUSE an empty text: the
- * prescribed primitive cannot produce or check it (fail closed). Open
- * question for the orchestrator / operator.
+ * EMPTY TEXT — decision 11 (docs/plans/decisions/2026-10-04-connect-groups.md
+ * item 11, operator 2026-10-05): a group message text is >= 1 byte; empty
+ * text is refused at seal AND at parse (bytes item 5 lower bound = 1).
+ * The rule is checked explicitly on the ct_len field: nc_group_msg_seal
+ * refuses text_len 0, nc_group_msg_parse refuses ct_len 0 (so bucket encode
+ * / decode refuse an item that carries one) and nc_group_msg_open refuses it
+ * again. qgp_aes256_encrypt / _decrypt would refuse it too
+ * (qgp_aes.c:49-52, :135-138) — not relied upon. The oracle's reading 13
+ * (messages[1] of groups_kat.json, written before the decision) calls an
+ * empty text valid; this codec refuses it.
  *
  * KEY BINDING (stated): the verify functions take the signer's ML-DSA-87
  * public key AND the expected fingerprint as SEPARATE inputs; they do not
@@ -466,8 +468,8 @@ int nc_group_msg_aad(const uint8_t group_id[NC_GROUP_ID_LEN], uint32_t v,
  * (written to message_id_out); AAD = nc_group_msg_aad; (ct, tag) =
  * qgp_aes256_encrypt(group_key, text, AAD); the produced nonce is placed
  * into H; sig = ML-DSA-87(sender_sk) over H || ct_len || ct || tag, checked
- * under sender_pk before return. text: 1..4,000 bytes (empty refused — see
- * EMPTY TEXT). *item_out malloc'd.
+ * under sender_pk before return. text: 1..4,000 bytes (empty refused,
+ * decision 11 — see EMPTY TEXT). *item_out malloc'd.
  */
 int nc_group_msg_seal(const uint8_t group_key[NC_GROUP_KEY_LEN],
                       const uint8_t group_id[NC_GROUP_ID_LEN], uint32_t v,
@@ -498,10 +500,10 @@ typedef struct {
 
 /**
  * Parse ONE item at the start of data[0..len): tag; v >= 1; day ==
- * nc_group_day(timestamp_ms); ct_len <= 4,000 (checked on the field before
- * anything else reads ct — R2-8; 0 is a valid LAYOUT, reading 13, but
- * nc_group_msg_open refuses it, see EMPTY TEXT); sig_len == 4627; the item
- * fits. `exact`: true = the item must consume all of len.
+ * nc_group_day(timestamp_ms); ct_len in 1..4,000 (checked on the field
+ * before anything else reads ct — R2-8; 0 refused, decision 11, see EMPTY
+ * TEXT); sig_len == 4627; the item fits. `exact`: true = the item must
+ * consume all of len.
  */
 int nc_group_msg_parse(const uint8_t *data, size_t len, bool exact,
                        nc_group_msg_t *out);

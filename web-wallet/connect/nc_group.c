@@ -3,7 +3,7 @@
  * docs/plans/2026-10-05-connect-groups-bytes.md items 1-7 + REV 2
  * (approved, docs/plans/decisions/2026-10-05-groups-apt-bytes-approved.md),
  * docs/plans/2026-10-04-connect-groups-design.md rev 1,
- * docs/plans/decisions/2026-10-04-connect-groups.md items 1-10.
+ * docs/plans/decisions/2026-10-04-connect-groups.md items 1-11.
  *
  * Pure: no network, no clock, no global state. The only randomness is the
  * ML-KEM encapsulation, the GCM nonce (both drawn inside the primitives),
@@ -816,6 +816,12 @@ int nc_group_msg_parse(const uint8_t *data, size_t len, bool exact, nc_group_msg
         return NC_GROUP_REFUSED;
     m.ct_len = get_u32(data + NC_GROUP_MSG_H_LEN);
     if (m.ct_len > NC_GROUP_TEXT_MAX) return NC_GROUP_REFUSED;      /* R2-8 */
+    /* Decision 11 (nc_group.h EMPTY TEXT): text >= 1 byte, refused on the
+     * field here, not left to qgp_aes at open. */
+    if (m.ct_len == 0) {
+        QGP_LOG_WARN(LOG_TAG, "msg_parse: empty message text refused (decision 11)");
+        return NC_GROUP_REFUSED;
+    }
     m.signed_len = NC_GROUP_MSG_H_LEN + 4 + m.ct_len + NC_GROUP_GCM_TAG_LEN;
     if (len < m.signed_len + 2) return NC_GROUP_REFUSED;
     if (get_u16(data + m.signed_len) != NC_GROUP_SIG_LEN) return NC_GROUP_REFUSED;
@@ -844,8 +850,12 @@ int nc_group_msg_seal(const uint8_t group_key[NC_GROUP_KEY_LEN],
     memset(message_id_out, 0, NC_GROUP_MSG_ID_LEN);
     if (!group_key || !group_id || !sender_fp || !text || !sender_pk || !sender_sk)
         return NC_GROUP_REFUSED;
-    /* EMPTY TEXT (nc_group.h): qgp_aes refuses it (qgp_aes.c:49-52). */
-    if (text_len == 0 || text_len > NC_GROUP_TEXT_MAX) return NC_GROUP_REFUSED;
+    /* Decision 11 (nc_group.h EMPTY TEXT): text >= 1 byte. */
+    if (text_len == 0) {
+        QGP_LOG_WARN(LOG_TAG, "msg_seal: empty message text refused (decision 11)");
+        return NC_GROUP_REFUSED;
+    }
+    if (text_len > NC_GROUP_TEXT_MAX) return NC_GROUP_REFUSED;
 
     uint8_t mid[NC_GROUP_MSG_ID_LEN];
     if (qgp_randombytes(mid, sizeof(mid)) != 0) return NC_GROUP_FAULT;
@@ -899,8 +909,9 @@ nc_group_msg_status_t nc_group_msg_open(const nc_group_msg_t *m,
     if (m->ct_len > NC_GROUP_TEXT_MAX ||
         m->signed_len != NC_GROUP_MSG_H_LEN + 4 + m->ct_len + NC_GROUP_GCM_TAG_LEN)
         return NC_GROUP_MSG_REFUSED;
-    /* EMPTY TEXT (nc_group.h): qgp_aes256_decrypt refuses ct_len 0
-     * (qgp_aes.c:135-138); refused here before the signature check. */
+    /* Decision 11 (nc_group.h EMPTY TEXT): nc_group_msg_parse already
+     * refuses ct_len 0; checked again for a hand-filled struct, before the
+     * signature check. */
     if (m->ct_len == 0) return NC_GROUP_MSG_REFUSED;
 
     if (qgp_dsa87_verify(m->sig, NC_GROUP_SIG_LEN, m->h, m->signed_len, sender_pk) != 0)

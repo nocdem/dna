@@ -30,9 +30,12 @@
  *   K8  messages: nc_group_msg_aad == the oracle's AAD (144 B), H = AAD ||
  *       nonce, the item parses and its signed span == the oracle's
  *       signed_preimage; messages[0] re-signed with a test key verifies
- *       and opens to the oracle's text.
- *   K9  bucket bytes (1 and 2 items) from nc_group_bucket_encode equal the
- *       oracle's; both decode against (group_id, v, day).
+ *       and opens to the oracle's text. messages[1] (empty text) is REFUSED
+ *       at parse — decision 11 (see "How it can lie").
+ *   K9  bucket bytes of 1 item from nc_group_bucket_encode equal the
+ *       oracle's and decode against (group_id, v, day); the 2-item bucket
+ *       carries the empty-text item: its layout is byte-checked by hand and
+ *       encode / decode REFUSE it (decision 11).
  *   K10 day edges from timestamp_be64: day / refusal as the oracle.
  *   K11 invite / accept / welcome encode to the oracle's exact strings and
  *       parse back to the same fields.
@@ -52,7 +55,8 @@
  *       encapsulation per member) opened by each member with
  *       nc_group_decap_mlkem; a non-member's key gets NO_ENTRY; a member
  *       key failing ek_check fails the whole build; record seal/open;
- *       message seal/open; HEAD build/verify; empty text refused.
+ *       message seal/open; HEAD build/verify; empty text refused on seal
+ *       (decision 11).
  *
  * What it requires: the native build of web-wallet/connect/tests (OpenSSL,
  * json-c); the vector file at the path compiled in (GROUPS_KAT, set by
@@ -73,9 +77,14 @@
  *   - Seals draw their own nonce (qgp_aes), so record and message seals are
  *     covered by round trip only; the byte vectors are checked on the open
  *     side.
- *   - messages[1] (empty text) is NOT opened: nc_group_msg_open refuses
- *     ct_len 0 because qgp_aes256_decrypt does (qgp_aes.c:135-138) — a
- *     known deviation from the oracle's reading 13, asserted as a refusal.
+ *   - Decision 11 (docs/plans/decisions/2026-10-04-connect-groups.md item
+ *     11, operator 2026-10-05: group message text >= 1 byte, refused at seal
+ *     and parse) overrides the oracle's reading 13, which calls an empty
+ *     text valid (messages[1], and the 2-item bucket that carries it). The
+ *     oracle file is unchanged; those vectors are asserted as REFUSED at
+ *     parse / bucket encode / decode, and only their layout is compared.
+ *     The oracle has no non-empty 2-item bucket, so a 2-item bucket is
+ *     byte-compared against the oracle nowhere.
  */
 
 #include "nc_group.h"
@@ -620,11 +629,39 @@ static void test_messages(json_object *J) {
         uint8_t *text = jhexdup(e, "text_utf8", &tl);
         nc_group_msg_t m;
         int prc = nc_group_msg_parse(MSG_ITEM[i], MSG_ITEM_LEN[i], true, &m);
+        if (tl == 0) {
+            /* DECISION 11 (docs/plans/decisions/2026-10-04-connect-groups.md
+             * item 11, operator 2026-10-05: group message text >= 1 byte,
+             * refused at seal AND parse). The oracle's reading 13 — written
+             * before the decision — calls this empty-text item valid; the
+             * oracle file is not changed. The item is refused at PARSE (the
+             * ct_len field), so it is never opened; its signed span is
+             * checked by hand against the oracle's layout instead. */
+            snprintf(nm, sizeof(nm), "message %zu (empty text) REFUSED at parse (decision 11)", i);
+            CHECK(prc == NC_GROUP_REFUSED && m.h == NULL, nm);
+            snprintf(nm, sizeof(nm), "message %zu (empty text) layout: H || ct_len 0 || tag", i);
+            CHECK(spl == NC_GROUP_MSG_H_LEN + 4 + NC_GROUP_GCM_TAG_LEN &&
+                  memcmp(sp, H_w, NC_GROUP_MSG_H_LEN) == 0 &&
+                  sp[NC_GROUP_MSG_H_LEN] == 0 && sp[NC_GROUP_MSG_H_LEN + 1] == 0 &&
+                  sp[NC_GROUP_MSG_H_LEN + 2] == 0 && sp[NC_GROUP_MSG_H_LEN + 3] == 0 &&
+                  MSG_ITEM_LEN[i] == spl + 2 + NC_GROUP_SIG_LEN &&
+                  memcmp(MSG_ITEM[i], sp, spl) == 0, nm);
+            size_t sl0;
+            uint8_t *item0 = sign_append(sp, spl, OWN_SK, &sl0);
+            nc_group_msg_t m0;
+            snprintf(nm, sizeof(nm), "message %zu (empty text) with a real signature REFUSED at parse", i);
+            CHECK(nc_group_msg_parse(item0, sl0, true, &m0) == NC_GROUP_REFUSED &&
+                  nc_group_msg_parse(item0, sl0, false, &m0) == NC_GROUP_REFUSED, nm);
+            free(item0);
+            free(sp);
+            free(text);
+            continue;
+        }
         snprintf(nm, sizeof(nm), "message %zu item parses, signed span == oracle", i);
         CHECK(prc == 0 && m.signed_len == spl && memcmp(MSG_ITEM[i], sp, spl) == 0 &&
               m.v == v && m.day == (uint32_t)jint(e, "day") && m.timestamp_ms == ts &&
               memcmp(m.sender_fp, sender, 64) == 0 && m.ct_len == tl, nm);
-        MSG_DAY = m.day;
+        if (prc == 0) MSG_DAY = m.day;
 
         size_t sl;
         uint8_t *item = sign_append(sp, spl, OWN_SK, &sl);
@@ -633,25 +670,17 @@ static void test_messages(json_object *J) {
         size_t ol = 0;
         nc_group_msg_parse(item, sl, true, &ms2);
         nc_group_msg_status_t st = nc_group_msg_open(&ms2, G_KEY[v], OWN_PK, out, &ol);
-        if (tl > 0) {
-            snprintf(nm, sizeof(nm), "message %zu re-signed verifies and opens to the oracle text", i);
-            CHECK(st == NC_GROUP_MSG_OK && ol == tl && memcmp(out, text, tl) == 0, nm);
-            CHECK(nc_group_msg_open(&ms2, G_KEY[1], OWN_PK, out, &ol) == NC_GROUP_MSG_BAD_AUTH,
-                  "N1 message: key of another version -> BAD_AUTH");
-            CHECK(nc_group_msg_open(&ms2, G_KEY[v], OTH_PK, out, &ol) == NC_GROUP_MSG_BAD_SIG,
-                  "N1 message: another sender key -> BAD_SIG");
-            item[NC_GROUP_MSG_H_LEN + 4] ^= 1;                /* first ct byte */
-            CHECK(nc_group_msg_open(&ms2, G_KEY[v], OWN_PK, out, &ol) == NC_GROUP_MSG_BAD_SIG,
-                  "N1 message: tampered ct -> BAD_SIG (signature first)");
-            CHECK(nc_group_msg_open(&m, G_KEY[v], OWN_PK, out, &ol) == NC_GROUP_MSG_BAD_SIG,
-                  "message with the oracle's dummy signature -> BAD_SIG");
-        } else {
-            /* DEVIATION (nc_group.h EMPTY TEXT): reading 13 calls this item
-             * valid; the layout parses above, opening is refused because
-             * qgp_aes256_decrypt refuses ct_len 0 (qgp_aes.c:135-138). */
-            snprintf(nm, sizeof(nm), "message %zu (empty text) layout parses, open REFUSED", i);
-            CHECK(prc == 0 && st == NC_GROUP_MSG_REFUSED, nm);
-        }
+        snprintf(nm, sizeof(nm), "message %zu re-signed verifies and opens to the oracle text", i);
+        CHECK(st == NC_GROUP_MSG_OK && ol == tl && memcmp(out, text, tl) == 0, nm);
+        CHECK(nc_group_msg_open(&ms2, G_KEY[1], OWN_PK, out, &ol) == NC_GROUP_MSG_BAD_AUTH,
+              "N1 message: key of another version -> BAD_AUTH");
+        CHECK(nc_group_msg_open(&ms2, G_KEY[v], OTH_PK, out, &ol) == NC_GROUP_MSG_BAD_SIG,
+              "N1 message: another sender key -> BAD_SIG");
+        item[NC_GROUP_MSG_H_LEN + 4] ^= 1;                    /* first ct byte */
+        CHECK(nc_group_msg_open(&ms2, G_KEY[v], OWN_PK, out, &ol) == NC_GROUP_MSG_BAD_SIG,
+              "N1 message: tampered ct -> BAD_SIG (signature first)");
+        CHECK(nc_group_msg_open(&m, G_KEY[v], OWN_PK, out, &ol) == NC_GROUP_MSG_BAD_SIG,
+              "message with the oracle's dummy signature -> BAD_SIG");
         free(item);
         free(sp);
         free(text);
@@ -669,16 +698,50 @@ static void test_buckets(json_object *J) {
         size_t n = json_object_array_length(its);
         const uint8_t *items[2];
         size_t lens[2];
+        int has_empty = 0;
         for (size_t j = 0; j < n; j++) {
             int which = json_object_get_int(json_object_array_get_idx(its, j));
             items[j] = MSG_ITEM[which];
             lens[j] = MSG_ITEM_LEN[which];
+            const uint8_t *cl = items[j] + NC_GROUP_MSG_H_LEN;      /* ct_len field */
+            if (lens[j] > NC_GROUP_MSG_H_LEN + 4 && (cl[0] | cl[1] | cl[2] | cl[3]) == 0)
+                has_empty = 1;
         }
         size_t wl;
         uint8_t *want = jhexdup(e, "bytes", &wl);
         uint8_t *got = NULL;
         size_t gl = 0;
         char nm[96];
+        if (has_empty) {
+            /* DECISION 11 (2026-10-04-connect-groups.md item 11): this oracle
+             * bucket carries messages[1], the empty-text item (reading 13,
+             * written before the decision). Its layout is checked by hand
+             * (tag || count || items in order); encode and decode REFUSE it. */
+            size_t o = 18;
+            int layout = wl >= 18 && memcmp(want, nc_group_tag(NC_GROUP_TAG_GBKT), 16) == 0 &&
+                         want[16] == (uint8_t)(n >> 8) && want[17] == (uint8_t)n;
+            for (size_t j = 0; layout && j < n; j++) {
+                layout = o + lens[j] <= wl && memcmp(want + o, items[j], lens[j]) == 0;
+                o += lens[j];
+            }
+            snprintf(nm, sizeof(nm), "bucket of %zu item(s) with empty text: layout == oracle", n);
+            CHECK(layout && o == wl, nm);
+            snprintf(nm, sizeof(nm), "bucket of %zu item(s) with empty text: encode REFUSED (decision 11)", n);
+            CHECK(nc_group_bucket_encode(items, lens, n, &got, &gl) == NC_GROUP_REFUSED &&
+                  got == NULL, nm);
+            nc_group_msg_t *dec = NULL;
+            size_t dc = 0;
+            snprintf(nm, sizeof(nm), "bucket of %zu item(s) with empty text: decode REFUSED (decision 11)", n);
+            CHECK(nc_group_bucket_decode(want, wl, G_GID, 2, MSG_DAY, &dec, &dc) ==
+                  NC_GROUP_REFUSED && dec == NULL && dc == 0, nm);
+            char gs0[NC_GROUP_ADDR_STR_LEN + 1];
+            uint8_t k0[64];
+            snprintf(nm, sizeof(nm), "bucket %zu address == oracle", i);
+            CHECK(nc_group_addr(NC_GROUP_PURPOSE_OUTBOX, G_GID, salt2, MSG_DAY, k0, gs0) == 0 &&
+                  strcmp(gs0, jstr(e, "address_key_string")) == 0, nm);
+            free(want);
+            continue;
+        }
         snprintf(nm, sizeof(nm), "bucket of %zu item(s) == oracle", n);
         CHECK(nc_group_bucket_encode(items, lens, n, &got, &gl) == 0 && gl == wl &&
               memcmp(got, want, wl) == 0, nm);
@@ -1109,7 +1172,7 @@ static void test_round_trips(void) {
     item = NULL;
     CHECK(nc_group_msg_seal(gk, gid, 1, owner_fp, 0, (const uint8_t *)"", 0, OWN_PK, OWN_SK, mid,
                             &item, &il) == NC_GROUP_REFUSED,
-          "empty text refused on seal (qgp_aes, see EMPTY TEXT)");
+          "empty text refused on seal (decision 11)");
     uint8_t *longtext = calloc(1, NC_GROUP_TEXT_MAX + 1);
     memset(longtext, 'a', NC_GROUP_TEXT_MAX + 1);
     CHECK(nc_group_msg_seal(gk, gid, 1, owner_fp, 0, longtext, NC_GROUP_TEXT_MAX + 1, OWN_PK,

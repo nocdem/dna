@@ -1562,12 +1562,12 @@ at-rest storage (Q4, NC-4). The json-c version of the frozen app build is not
 established (host 0.16, wasm 0.17); the profile signature is over json-c's
 output, so this is checked before release (NC-3).
 
-## Nodus Connect groups codec — G1 (unreleased, no UI, not wired)
+## Nodus Connect groups codec — G1 + G2 exports (unreleased, no UI)
 
 Byte layer of Connect groups (design `docs/plans/2026-10-04-connect-groups-design.md`
 rev 1; bytes `docs/plans/2026-10-05-connect-groups-bytes.md` items 1-7 + REV 2,
-approved 2026-10-05; decisions `2026-10-04-connect-groups.md` items 1-10).
-Pure C, no network, no clock, no storage; nothing calls it yet.
+approved 2026-10-05; decisions `2026-10-04-connect-groups.md` items 1-11).
+Pure C, no network, no clock, no storage; no page calls it yet.
 
 - `connect/nc_group.h` / `nc_group.c` — tags, `salt_v`, DHT addresses
   (`"ncg:"` + hex, purposes HEAD / KEY PACKET / RECORD / OUTBOX), the key
@@ -1586,12 +1586,31 @@ Pure C, no network, no clock, no storage; nothing calls it yet.
   byte-compared, ML-DSA signing is randomized); the oracle's `kem_ct` are
   not ML-KEM ciphertexts, so the packet vectors inject its shared secrets and
   the real ML-KEM path is a round trip; every reject case refused.
+- `connect/nc_wasm.c` "groups codec" (G2) — the module's exports, linked into
+  the wallet's one module by `scripts/build-nodus-send-wasm.sh` (source
+  `connect/nc_group.c`): `nc_group_addr_str`, `nc_group_salt`,
+  `nc_group_kp_new` / `_kp_read`, `nc_group_record_new` / `_record_read`,
+  `nc_group_head_new` / `_head_read`, `nc_group_msg_new`,
+  `nc_group_bucket_read`, `nc_group_invite`, `nc_group_accept`,
+  `nc_group_welcome`, `nc_group_json_read`. All synchronous and pure (no
+  network); results are one JSON object (`nc_result()`), bytes as lowercase
+  hex, numbers as decimal strings; readers answer a `status`. Signing,
+  decapsulation and the own fingerprint use the session's Messages keys;
+  every other member's / owner's / sender's key comes from the verified
+  profile cache (`nc_profile_get` / `nc_profile_load`), never from the page.
+  The committed `src/nodus/send.wasm` is not rebuilt with them yet.
 
-Known deviation: the oracle accepts an empty message text; `qgp_aes256_*`
-refuses an empty plaintext / ciphertext, so the codec parses that layout but
-refuses to seal or open it (open question). The JSON exports in
-`connect/nc_wasm.c` are not added yet: the module's source list and export
-list live in `scripts/build-nodus-send-wasm.sh`.
+Group message text is at least 1 byte (decision 11, operator 2026-10-05):
+seal, parse, bucket encode / decode and open all refuse an empty text. The
+oracle's vectors predate the decision (reading 13 calls an empty text
+valid); the test asserts that item, and the 2-item bucket that carries it,
+as refused, and compares only their layout.
+
+Not in G2: a bucket encoder export (sending a day bucket), group key /
+group id / `addr_secret` generation, and the membership accept rule as an
+export (the page applies it). `nc_group_bucket_read` reads buckets up to
+256 KiB (the hex argument is copied onto the 1 MiB C stack); a full 1 MiB
+bucket needs a heap input buffer export.
 
 ## Nodus Connect Messages preview — NC-4c (unreleased, separate build)
 
