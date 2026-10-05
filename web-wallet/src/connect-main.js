@@ -26,7 +26,7 @@ for (const node of document.querySelectorAll('.app-version')) node.textContent =
 
 const $ = id => document.getElementById(id);
 const TABS = ['home', 'chats', 'wallet', 'more'];
-const NO_ID_TEXT = 'Appears when Messages is connected';
+const NO_ID_TEXT = 'Appears when your wallet is open';
 
 // ── app shell ──────────────────────────────────────────────────────────
 // tab: the screen shown; origin 'more' while Chats shows a screen opened

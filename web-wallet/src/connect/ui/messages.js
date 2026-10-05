@@ -73,6 +73,7 @@ const OFFLINE_SEND_TEXT = 'Sending opens once Messages is connected to the netwo
 // ── session state (all dropped by close / reset) ───────────────────────
 let core, store, state, messages = [], ownFp, ownProfile, fresh = false, vaultId = null;
 let generation = 0, syncTimer, syncing = false;
+let sending = false;                     // a composer send is being kept on this device (send)
 let requests = [], selectedFp, eraseArmed = false, profileTaken = false;
 let removeArmed;                         // the contact whose "Remove" was pressed once (asks to confirm)
 const profiles = new Map();              // fp -> verified profile, this session
@@ -122,7 +123,7 @@ function isOpen() { return !!core && !!state && phase === 'open'; }
 // touches the NODUS client (the host locks it afterwards).
 function wipe() {
   generation++;
-  clearInterval(syncTimer); syncTimer = undefined; syncing = false;
+  clearInterval(syncTimer); syncTimer = undefined; syncing = false; sending = false;
   const c = core; core = undefined;
   try { c?.lock(); } catch { /* the rest must still run */ }
   try { store?.close(); } catch { /* same */ }
@@ -1267,7 +1268,7 @@ function renderConversation(scroll) {
   ui.convDiag.hidden = !ui.convDiagText.textContent;
   ui.sendForm.hidden = !contact.salt;
   ui.notReady.hidden = !!contact.salt;
-  ui.sendButton.disabled = !online;
+  ui.sendButton.disabled = !online || sending;
   ui.offlineNote.hidden = online;
 
   const items = [];
@@ -1431,22 +1432,31 @@ async function addContact(event) {
 
 async function send(event) {
   event.preventDefault();
+  // One send at a time: the text is taken from the composer, which is
+  // cleared only once the message is kept on this device (persist). A second
+  // Enter or click meanwhile would take the same text again and send it twice.
+  if (sending) return;
   const gen = generation, contact = selectedFp && contactOf(selectedFp);
   const text = ui.composer.value;
   if (!contact || !contact.salt || !text.trim()) return;
   if (!online) { ui.sendStatus.textContent = OFFLINE_SEND_TEXT; return; }
   if (text.length > TEXT_MAX) { ui.sendStatus.textContent = `A message can be at most ${TEXT_MAX} characters.`; return; }
+  sending = true; ui.sendButton.disabled = true;
   try {
     const message = { seq: takeSeq(), fp: contact.fp, dir: 'out', text, ts: nowSeconds(), at: Date.now() };
     await persist([message]);
     if (gen !== generation) return;
     messages.push(message); unpublished.add(contact.fp);
     ui.composer.value = ''; growComposer();
+    // Kept and the composer is empty: the next message may be written and
+    // sent while this one is published (retried by sync if it fails).
+    sending = false;
     render({ scroll: true });
     try { await publishOutbox(contact, gen); if (gen === generation) ui.sendStatus.textContent = ''; }
     catch { if (gen === generation) ui.sendStatus.textContent = 'Not sent yet. It is tried again automatically.'; }
     if (gen === generation) render();
   } catch (error) { if (gen === generation) ui.sendStatus.textContent = error.message; }
+  finally { if (gen === generation && sending) { sending = false; ui.sendButton.disabled = !online; } }
 }
 
 async function saveProfile(event) {

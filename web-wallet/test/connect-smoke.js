@@ -123,7 +123,7 @@ try {
   assert.equal(await page.locator('.nc-chips').isVisible(), true);
   assert.equal(await page.locator('.nc-fab').isVisible(), true);
   assert.equal(await page.locator('#nc-own-id').textContent(), vectors[0].address);
-  assert.notEqual(await page.locator('#home-id').textContent(), 'Appears when Messages is connected');
+  assert.notEqual(await page.locator('#home-id').textContent(), 'Appears when your wallet is open');
   // The status line: still connecting, or — once the first attempt failed
   // (every WebSocket is closed) — the reason and the retry. How long the
   // attempt takes is not asserted (no wait on it: a timing guess).
