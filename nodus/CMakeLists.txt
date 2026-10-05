@@ -2447,9 +2447,10 @@ register_witness_test(test_hf4_names_engine)
 # existing test owns a chain that crosses both rule-set edges with real
 # 2-leg storage envelopes. The generation switch 2 -> GEN_STORAGE and the
 # v4 -> v5 root edge live in test_hf4_switch (cases F / F2); param 14 in
-# test_hf4_params; the GEN_STORAGE table in test_hf4_table. ⚠ Until the
-# STORAGE-ORACLE pins are filled the engine halves of these tests FAIL at
-# the seeded genesis (selfcheck) — expected, the HF-4 A1 precedent.
+# test_hf4_params; the GEN_STORAGE table in test_hf4_table. The engine
+# halves seed genesis through the runtime selfcheck, which needs the
+# STORAGE-ORACLE pins (shared/dnac/tests/storage_oracle.py, filled in
+# nodus_witness_runtime.c and dnac.h DNAC_CFG_RULESET_GEN_STORAGE_D).
 register_witness_test(test_storage_reg)
 
 # Storage reward v1 rev 4 (the archive reward), package B2a (decisions
@@ -2460,8 +2461,8 @@ register_witness_test(test_storage_reg)
 # json-c the KAT case FAILS, it does not skip), segment publication and
 # backfill over synthetic v2_blocks rows, and twin GEN_STORAGE chains
 # through freeze / report / settlement / fail_streak / handoff / exit
-# release. ⚠ The engine cases FAIL at the seeded genesis until the
-# STORAGE-ORACLE pins are filled (the test_storage_reg precedent).
+# release. The engine cases seed genesis through the runtime selfcheck
+# over the filled STORAGE-ORACLE pins (the test_storage_reg note above).
 register_witness_test(test_storage_b2)
 if(JSONC_FOUND)
     target_compile_definitions(test_storage_b2 PRIVATE

@@ -220,6 +220,7 @@ static const char *param_name(uint32_t id) {
     case DNAC_CFG_NAME_PRICE_4P:          return "NAME_PRICE_4P";
     case DNAC_CFG_NAME_PRICE_5P:          return "NAME_PRICE_5P";
     case DNAC_CFG_NAME_PRICE_6P:          return "NAME_PRICE_6P";
+    case DNAC_CFG_RULESET_GEN_STORAGE:    return "RULESET_GEN_STORAGE";
     default:                              return NULL;
     }
 }

@@ -453,6 +453,10 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *                                 DNAC_CFG_MAX_NAME_PRICE=10^15] (HF-4;
  *                                "generation 2 judges the vote" is
  *                                witness-side only)
+ *       RULESET_GEN_STORAGE    : exactly DNAC_CFG_RULESET_GEN_STORAGE_D
+ *                                (storage reward v1; the RULESET_GEN2
+ *                                shape — the witness's stateful rules
+ *                                are not mirrored)
  *   - signed_at_block > 0             (CC-AUDIT-008)
  *   - valid_before_block > effective_block_height
  *   - valid_before_block > signed_at_block
@@ -578,6 +582,25 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
                               "D2=0x%016llx is a legal value",
                               (unsigned long long)cc->new_value,
                               (unsigned long long)DNAC_CFG_RULESET_GEN2_D2);
+                return DNAC_ERROR_INVALID_PARAM;
+            }
+            break;
+        case DNAC_CFG_RULESET_GEN_STORAGE:
+            /* Storage reward v1 (design 2026-10-04-storage-reward-v1-
+             * design.md rev 2.2 §6, "voted like RULESET_GEN2"),
+             * mirroring nodus_witness_chain_config.c's scalar_rules:
+             * EXACTLY the compiled vote literal (the same dnac.h literal
+             * the witness compares against). The witness's stateful
+             * rules — single use, HF-2 active, H-1 not an epoch
+             * boundary, judged under generation 2 or later — need chain
+             * state this mirror does not have (the param-9 divergence). */
+            if (cc->new_value != (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "CHAIN_CONFIG: RULESET_GEN_STORAGE=0x%016llx, "
+                              "only D=0x%016llx is a legal value",
+                              (unsigned long long)cc->new_value,
+                              (unsigned long long)
+                                  DNAC_CFG_RULESET_GEN_STORAGE_D);
                 return DNAC_ERROR_INVALID_PARAM;
             }
             break;

@@ -1364,6 +1364,12 @@ static int cc_param_name_to_id(const char *name, uint8_t *out_id) {
         { "name_price_5p",        DNAC_CFG_NAME_PRICE_5P },
         { "NAME_PRICE_6P",        DNAC_CFG_NAME_PRICE_6P },
         { "name_price_6p",        DNAC_CFG_NAME_PRICE_6P },
+        /* storage reward v1 (design docs/plans/2026-10-04-storage-reward-
+         * v1-design.md rev 2.2 §6, "voted like RULESET_GEN2") — param id
+         * 14, value exactly DNAC_CFG_RULESET_GEN_STORAGE_D; votable once
+         * generation 2 judges the vote */
+        { "RULESET_GEN_STORAGE",  DNAC_CFG_RULESET_GEN_STORAGE },
+        { "ruleset_gen_storage",  DNAC_CFG_RULESET_GEN_STORAGE },
     };
     for (size_t i = 0; i < sizeof(map)/sizeof(map[0]); i++) {
         if (strcmp(name, map[i].n) == 0) { *out_id = map[i].id; return 0; }
@@ -1601,6 +1607,10 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             "  NAME_PRICE_3P..6P      [%llu, %llu]   "
             "(raw price of a 3/4/5/6+ character name; votable once "
             "generation 2 is in force)\n"
+            "  RULESET_GEN_STORAGE    exactly %llu   "
+            "(storage-reward rule-set generation from --effective on; "
+            "once only; generation 2 must be in force; HF-2 must be "
+            "active; --effective - 1 not an epoch boundary)\n"
             "BLOCK_INTERVAL_SEC is not read by the running consensus "
             "and is refused.\n",
             (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
@@ -1612,7 +1622,8 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             (unsigned long long)DNAC_CFG_HF3_ACTIVE_ON,
             (unsigned long long)DNAC_CFG_RULESET_GEN2_D2,
             (unsigned long long)DNAC_CFG_MIN_NAME_PRICE,
-            (unsigned long long)DNAC_CFG_MAX_NAME_PRICE);
+            (unsigned long long)DNAC_CFG_MAX_NAME_PRICE,
+            (unsigned long long)DNAC_CFG_RULESET_GEN_STORAGE_D);
         return 1;
     }
     uint8_t param_id = 0;
@@ -1621,7 +1632,7 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
                 "TARGET_ACTIVE_COUNT | GAS_PRICE_RAW_PER_UNIT | "
                 "TOKEN_CREATE_FEE_RAW | HF2_ACTIVE | HF3_ACTIVE | "
                 "RULESET_GEN2 | NAME_PRICE_3P | NAME_PRICE_4P | "
-                "NAME_PRICE_5P | NAME_PRICE_6P "
+                "NAME_PRICE_5P | NAME_PRICE_6P | RULESET_GEN_STORAGE "
                 "(the parameters the running consensus reads)\n",
                 param_name);
         return 1;

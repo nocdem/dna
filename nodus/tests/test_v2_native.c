@@ -6703,7 +6703,12 @@ static int test_o11_hook_pins(void) {
         for (int i = 0; i < 8; i++)
             CHECK(rr.value[i] == 0, "P9 count == 0");
         OK();
-        rq.op_id = 8;                    /* not in the compiled table    */
+        /* "unknown" = one past the highest compiled SYSTEM op id. The
+         * table is STRICTLY ascending (adapter selfcheck), so its last
+         * entry is the maximum; deriving the id keeps this probe unknown
+         * when later packages append ops (B1/B2a took ids 8-12). */
+        rq.op_id = NODUS_RT_SYSTEM_ADAPTER.ops[
+                       NODUS_RT_SYSTEM_ADAPTER.n_ops - 1u].op_id + 1u;
         CHECK(nodus_witness_v2_read_one(fx.w, sys, &rq, &rr)
                   == NODUS_ADAPTER_ERR_UNKNOWN_OP,
               "P9 an unknown SYSTEM op must not resolve"); OK();

@@ -72,10 +72,11 @@ typedef struct nodus_witness nodus_witness_t;
  * checked on every block, nodus_witness_v2_econ_params_load.)
  *
  * WHY 200+. The band must never collide with a future
- * DNAC_CFG_* allocation, which grows upward from 1 (currently 13 — HF-4's
- * RULESET_GEN2 = 9 and NAME_PRICE_3P..6P = 10-13, after HF-3's
+ * DNAC_CFG_* allocation, which grows upward from 1 (currently 14 —
+ * storage reward v1's RULESET_GEN_STORAGE = 14, after HF-4's
+ * RULESET_GEN2 = 9 and NAME_PRICE_3P..6P = 10-13, HF-3's
  * HF3_ACTIVE = 8, HF-2's HF2_ACTIVE = 7, W-C's TOKEN_CREATE_FEE_RAW = 6
- * and HF-1's GAS_PRICE_RAW_PER_UNIT = 5). Starting at 200 leaves 186 free
+ * and HF-1's GAS_PRICE_RAW_PER_UNIT = 5). Starting at 200 leaves 185 free
  * governance ids; a future allocation that reaches
  * this band collides with THIS COMMENT rather than silently overwriting a
  * committed economic parameter. The ids fit uint8_t, which is what the
@@ -257,20 +258,32 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
  * HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.2)
  * — the STATEFUL half of the CHAIN_CONFIG rules, over facts the caller
  * derives from committed state (the pure half is
- * nodus_chain_config_scalar_rules, which the caller runs first):
- *   - param 9 RULESET_GEN2: refused if (a) `ruleset_gen2_voted` (any
+ * nodus_chain_config_scalar_rules, which the caller runs first).
+ *
+ * The 4th argument is the SINGLE-USE fact OF THE PARAM BEING VOTED: "any
+ * committed param-9 row" for a param-9 vote, "any committed param-14 row"
+ * for a param-14 vote (storage reward v1, design 2026-10-04-storage-
+ * reward-v1-design.md rev 2.2 §6). The prototype keeps its HF-4 name
+ * `ruleset_gen2_voted`; the definition names it `upgrade_voted`. The
+ * caller passes the fact matching `param_id`:
+ *   - param 9 RULESET_GEN2: refused if (a) the 4th argument is set (any
  *     param-9 row is committed — single use), (b) !`hf2_active` (HF-2
  *     not active at the vote height), or (c) effective - 1 is an epoch
  *     boundary (nonzero multiple of DNAC_EPOCH_LENGTH);
+ *   - param 14 RULESET_GEN_STORAGE: refused if (d) `judging_generation`
+ *     < 2 (the switch it schedules is generation 2 -> GEN_STORAGE), then
+ *     (a)-(c) exactly as param 9, (a) over the param-14 fact;
  *   - params 10-13 NAME_PRICE_*: refused unless `judging_generation` >= 2
  *     (the runtime that judges the vote; 0 for a synthetic or unresolved
  *     runtime);
  *   - ids 1-8: no stateful rule (0);
  *   - any other id: -1.
  * THREE sites apply it with the same facts: the SYSTEM CHAIN_CONFIG exec
- * (engine-filled ctx.hf2_active / ctx.ruleset_gen2_voted and the
- * resolved runtime's generation — CheckTx reaches it through the dry
- * run's exec), and the 0x71 approval responder at its candidate height.
+ * (engine-filled ctx.hf2_active, ctx.ruleset_gen2_voted (param 9) /
+ * ctx.ruleset_gen_storage_voted (param 14) and the resolved runtime's
+ * generation — CheckTx reaches it through the dry run's exec), and the
+ * 0x71 approval responder at its candidate height (its own reads of the
+ * same facts).
  * The client mirror (dnac verify.c) has no chain state and cannot apply
  * it — the documented divergence from decision 2026-09-23 item 1's "same
  * list". Pure function. @return 0 legal / -1.
