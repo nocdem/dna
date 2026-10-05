@@ -2483,6 +2483,16 @@ if(JSONC_FOUND)
         ARCHIVE_REWARD_KAT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/archive_reward_kat.json")
 endif()
 
+# Archive reward, package B2b-1 — the archive probe's node side
+# (src/witness/nodus_witness_storage_probe.c / _reporter.c): the channel
+# 0x72 request (the approved bytes doc §6 layout) and answer codecs, the
+# serving side's refusals, the answer built from a fixture block store,
+# every link of the reporter's verification chain (wrong header, wrong
+# block, wrong part index / total, tampered part, late), the
+# STORAGE_REPORT call and envelope, the epoch / window arithmetic. In-memory
+# databases only; no environment.
+register_witness_test(test_storage_probe)
+
 # Web wallet package (c2) — the shared CORE SPEND builder
 # (src/client/nodus_v2_spend.c): the pins ruleset == the compiled table,
 # a pins-built envelope admitted by the CheckTx dry run on a seeded
