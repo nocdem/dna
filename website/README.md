@@ -177,18 +177,18 @@ files outside that allowlist. This server is for local previews.
   as not live), and the circulating-supply definition; current figures are
   linked on Scan. Linked from the top
   navigation and every footer.
-- `airdrop.html`: the general Airdrop page, with a 50,000,000 NODUS budget
-  (5% of total supply): 10,000,000 (1%) for the first CPUNK Community Airdrop
-  and 40,000,000 (4%) for future airdrops. The page and menu remain "Airdrop".
+- `airdrop.html`: the general Airdrop page, whose content begins with
+  "First airdrop: CPUNK community." The page and menu remain "Airdrop";
+  the introduction mentions that other campaigns will follow.
   CPUNK-specific sections explain what the first campaign is (paid daily over
   365 days, start to be announced), which CPUNK
   counts (only the CPUNK address of the holder's own Nodus Connect wallet),
   how a share is worked out (whole units of 1,000,000 CPUNK, the day's lowest
   balance), the six steps from creating a Nodus Connect account to claiming
   every day, how registrations and payouts are checked, and a safety note.
-  Links to `tokenomics.html#allocation` and to Nodus Connect. The operator
-  explicitly authorized these public budget amounts and percentages on
-  5 October 2026. Future campaign dates and eligibility are not specified.
+  The first campaign's 10,000,000 NODUS amount remains visible. The overall
+  airdrop budget is on `tokenomics.html#allocation`, linked from More.
+  Future campaign dates and eligibility are not specified.
   Linked from the Network menu (after Tokenomics) and every footer.
 - `terms.html`, `privacy.html`: the app's Terms of Service and Privacy Policy,
   linked from every footer, not from the top navigation.
@@ -602,3 +602,8 @@ Also corrected Tokenomics' Current figures link and instructions to use Scan
 Statistics and its five-row Details list after the requested Scan page split.
 The document column can shrink within its grid, keeping wide tables inside
 their horizontal scroll area on narrow screens.
+
+2026-10-05 follow-up: At the operator's request, removed the Airdrop budget
+section, its sidebar link and repeated budget summary from `airdrop.html`.
+The first content section is now the CPUNK campaign overview. Tokenomics
+retains the budget figures and links directly to `airdrop.html#overview`.
