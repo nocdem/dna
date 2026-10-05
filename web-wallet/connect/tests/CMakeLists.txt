@@ -26,6 +26,10 @@
 #   test_nc_history      NC-4a at-rest history crypto: NIST HMAC-SHA3-256
 #                        KAT, root = app SQLCipher derivation, HKDF key,
 #                        AES-GCM records, AAD framing, invocation budget
+#   test_nc_group        G1 groups codec: every preimage / digest / address /
+#                        KEK / wrapped key / record / bucket of the oracle's
+#                        groups_kat.json byte-compared, signatures verified,
+#                        KEM round trip, every reject case refused
 cmake_minimum_required(VERSION 3.16)
 project(nodus_connect_tests C)
 
@@ -51,6 +55,7 @@ set(NC_SOURCES
   ${CONNECT_DIR}/nc_outbox.c
   ${CONNECT_DIR}/nc_history.c
   ${CONNECT_DIR}/nc_contactlist.c
+  ${CONNECT_DIR}/nc_group.c
   ${ROOT}/messenger/codec/contact_request_codec.c
   ${ROOT}/messenger/codec/contactlist_codec.c
   ${ROOT}/messenger/codec/dm_outbox_codec.c
@@ -119,6 +124,9 @@ target_include_directories(nc_core PUBLIC
   ${CONNECT_DIR}
   ${ROOT}/nodus/include ${ROOT}/nodus/src
   ${ROOT}/shared
+  # nodus_client.c includes dnac/dnac.h (HF-4 name check); the wasm build
+  # has -I$root/dnac/include (scripts/build-nodus-send-wasm.sh)
+  ${ROOT}/dnac/include
   ${ROOT}/messenger ${ROOT}/messenger/include
   ${OPENSSL_INCLUDE_DIR} ${JSONC_INCLUDE_DIRS} ${SQLITE3_INCLUDE})
 target_compile_options(nc_core PRIVATE -Wall -Wextra -Wno-unused-parameter -Werror)
@@ -144,6 +152,15 @@ add_executable(test_nc_history test_nc_history.c
 target_link_libraries(test_nc_history nc_core)
 target_compile_options(test_nc_history PRIVATE -Wall -Wextra -Wno-unused-parameter -Werror)
 add_test(NAME test_nc_history COMMAND test_nc_history)
+
+# G1: the groups codec against the independent oracle's vectors
+# (web-wallet/test/fixtures/groups_kat.json, read at run time).
+add_executable(test_nc_group test_nc_group.c)
+target_link_libraries(test_nc_group nc_core)
+target_compile_options(test_nc_group PRIVATE -Wall -Wextra -Wno-unused-parameter -Werror)
+target_compile_definitions(test_nc_group PRIVATE
+  GROUPS_KAT="${ROOT}/web-wallet/test/fixtures/groups_kat.json")
+add_test(NAME test_nc_group COMMAND test_nc_group)
 
 # NC-3a: live READ-ONLY probe against a real node (not a ctest: it needs a
 # words file and a live server; see its file header).

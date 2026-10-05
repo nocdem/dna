@@ -1562,6 +1562,37 @@ at-rest storage (Q4, NC-4). The json-c version of the frozen app build is not
 established (host 0.16, wasm 0.17); the profile signature is over json-c's
 output, so this is checked before release (NC-3).
 
+## Nodus Connect groups codec — G1 (unreleased, no UI, not wired)
+
+Byte layer of Connect groups (design `docs/plans/2026-10-04-connect-groups-design.md`
+rev 1; bytes `docs/plans/2026-10-05-connect-groups-bytes.md` items 1-7 + REV 2,
+approved 2026-10-05; decisions `2026-10-04-connect-groups.md` items 1-10).
+Pure C, no network, no clock, no storage; nothing calls it yet.
+
+- `connect/nc_group.h` / `nc_group.c` — tags, `salt_v`, DHT addresses
+  (`"ncg:"` + hex, purposes HEAD / KEY PACKET / RECORD / OUTBOX), the key
+  packet (fresh ML-KEM-1024 encapsulation per member after `ek_check`, KEK by
+  HKDF-SHA3-256, RFC 3394 wrap, entries by `kem_ct`, owner ML-DSA-87
+  signature; reader: structure, signature FIRST, group / version / owner,
+  `prev_digest` conflict / unavailable, trial unwrap), the encrypted member
+  record, HEAD, the signed group message and its accept rule, the per-sender
+  day bucket (≤ 100 items, ≤ 1 MiB, text ≤ 4,000 B) and the invite / accept /
+  welcome JSON (exact field set, `invite_id`). Every parser checks lengths
+  before allocating, consumes exactly and refuses duplicates; secrets are
+  wiped. `nc_group.h` documents every layout and rule.
+- `connect/tests/test_nc_group.c` — every preimage, digest, address, KEK,
+  wrapped key, record and bucket of the independent oracle's
+  `test/fixtures/groups_kat.json` byte-compared; signatures verified (never
+  byte-compared, ML-DSA signing is randomized); the oracle's `kem_ct` are
+  not ML-KEM ciphertexts, so the packet vectors inject its shared secrets and
+  the real ML-KEM path is a round trip; every reject case refused.
+
+Known deviation: the oracle accepts an empty message text; `qgp_aes256_*`
+refuses an empty plaintext / ciphertext, so the codec parses that layout but
+refuses to seal or open it (open question). The JSON exports in
+`connect/nc_wasm.c` are not added yet: the module's source list and export
+list live in `scripts/build-nodus-send-wasm.sh`.
+
 ## Nodus Connect Messages preview — NC-4c (unreleased, separate build)
 
 The Messages page under `/preview/` (design `docs/plans/2026-09-24-web-connect-design.md`
