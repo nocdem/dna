@@ -2503,6 +2503,20 @@ endif()
 # databases only; no environment.
 register_witness_test(test_storage_probe)
 
+# Storage reward v1, package B2b-2 — the archive segment FILE and the
+# channel 0x73 FETCH (src/witness/nodus_witness_storage_segment.c,
+# _fetch.c, _holder.c): export from a fixture block store holding a real
+# 17 280-block chain → publish → read back (layout, index, marker); every
+# piece refused before it is written (tampered part / header / commit,
+# order); the 0x73 request / answer bytes, every malformed message, the
+# shape rule, the per-requester budget; a whole segment fetched piece by
+# piece byte-identical to the export; resume after a torn partial file
+# and cut at a tampered record; the serving side's refusals; must-hold and
+# deletion over the one-epoch overlap; the 0x72 probe answered from the
+# file after the store is pruned. Writes under a mkdtemp directory in
+# $TMPDIR (removed at the end); in-memory databases; no environment.
+register_witness_test(test_storage_segment)
+
 # Storage reward v1, package B2b-CLI — `nodus-cli storage register | exit
 # | status`: the shared builder's STORAGE_REGISTER / STORAGE_EXIT envelopes
 # (src/client/nodus_v2_stake.c ops 7 / 8, decision 2026-09-25-web-wallet-
