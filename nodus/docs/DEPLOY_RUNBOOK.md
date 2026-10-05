@@ -1255,6 +1255,10 @@ What starts a grace, in plain terms:
   away from them.
 - **A skipped node returning** (after 12 epochs, or at once after a good epoch) gets its segments back
   and has its own grace again.
+- **Every new segment.** A segment is published every 17 280 blocks (≈ 24 epochs); its three holders
+  are new to it, so each of them is in grace for one epoch then and earns nothing on any of its
+  segments in that epoch. With only a handful of storage nodes that is most of them, once per
+  publication.
 The node must still fetch and keep its new segments while in grace — the grace is the time to do it.
 `storage status` (step 4) shows `grace_until` and says when the node is in grace and how many grace
 epochs are left. Note: a node in grace whose fail_streak is already 3 or more keeps that value through

@@ -5737,8 +5737,8 @@ Design `docs/plans/2026-10-05-archive-reward-design.md` rev 4 + rev 2.2 §1, §2
 `nodus_witness_v2_epoch.c` (step 1b'), `nodus_witness_roots_v2.c`. Inert until the param-14 vote (B1's
 generation switch); the probe client, segment files, the fetch protocol and the CLI are package B2b.
 
-**Pure layer (`ledger_roots_v2`).** `NDS.STLEAF.v2` (leaf v1 + `fail_streak` u32 BE + — K9 — `grace_until`
-u64 BE last, 181-byte preimage; the tag did not change because the leaf was never activated),
+**Pure layer (`ledger_roots_v2`).** `NDS.STLEAF.v2` (leaf v1 + `fail_streak` u32 BE, then `grace_until`
+u64 BE last since K9 — 181-byte preimage; the tag did not change because the leaf was never activated),
 `NDS.STOR.v2` (registry ‖ sets ‖ reports ‖ segments — replaces the 3-leg `NDS.STOR.v1`; `NDS.SYS.v5`
 unchanged), `Root(k)` = SHA3-512(`NDS.STSEG.v1` ‖ k ‖ 17280 ‖ hash[(k−1)·17280+1 .. k·17280]) — a plain
 hash, `dna_v2_segment_root`; segment leaf `NDS.STSGLEAF.v1` ‖ k ‖ Root(k), node `NDS.STSGNODE.v1`, empty
@@ -5820,8 +5820,10 @@ consumers: the grace count (in_cur ∧ ¬in_prev), the weights and the eligible 
 list (`nodus_witness_sthold_must_hold`) is the same two lines WITHOUT the grace gate — a member in grace
 still fetches and keeps its segments. Consequences to know: a member joining only displaces others (holders
 are the three nearest), so only the joiner gains; when a member is skipped (fail_streak 3) or exits, the
-members taking its segments each pause n epochs; at the activation boundary every holder is new, so the
-first grace is (number of segments it holds) epochs, not one. The K5 interaction is a READING: a member in
+members taking its segments each pause n epochs; every publication (one segment per 17280 blocks ≈ 24
+epochs) gives its three holders n = 1 — one epoch in which they earn nothing on ANY segment, with few
+storage members most of the set; at the activation boundary every holder is new, so the first grace is
+(number of segments it holds) epochs, not one. The K5 interaction is a READING: a member in
 grace with fail_streak ≥ 3 keeps its value (K9's "unchanged" over K5's "+1 every settled epoch"), so a long
 grace also delays its K5 return. Status wire: `dnac_storage_status` adds `"gu"` (live grace_until).
 Tests (written, not run by the builder): `test_storage_b2` section A — leaf v2 181 bytes and the 36

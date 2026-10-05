@@ -214,8 +214,9 @@ int nodus_witness_storage_reports_root(nodus_witness_t *w, uint8_t out[64]);
 int nodus_witness_storage_segments_root(nodus_witness_t *w,
                                         uint8_t out[64]);
 
-/** storage_set(epoch_start) with its members and frozen fail_streaks
- *  (the stored set_hash re-checked against the members).
+/** storage_set(epoch_start) with its members, their frozen fail_streaks
+ *  and grace_until values (the latter as after the K9 update at
+ *  epoch_start; the stored set_hash re-checked against the members).
  *  @return 0 found / 1 no such set / -1 fault (malformed or unreadable). */
 int nodus_witness_storage_set_get(nodus_witness_t *w, uint64_t epoch_start,
                                   nodus_storage_set_t *out);
