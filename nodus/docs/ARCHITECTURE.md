@@ -5806,6 +5806,98 @@ the 2026-10-04 KAT's registry_leaf / registry_root / storage_root sections named
 `test_storage_reg` (record 2685, its roots check through the runtime hook); `test_hf4_switch` (the empty
 4-leg storage leg). Engine cases FAIL until the STORAGE-ORACLE pins are filled.
 
+### Storage reward v1 rev 4 (the ARCHIVE reward), package B2b-1 — the archive probe's node side (2026-10-05, branch only — not versioned, not voted)
+
+Decisions `docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md` (K3: 3 samples),
+`2026-10-05-archive-reward-bytes-approved.md` (bytes doc §6: the request and the sample derivation),
+`2026-10-05-kurultay-7-archive-reward-summary.md` (verification through the authenticated successor header;
+fresh nonce + deadline), `2026-10-04-storage-reward-who-earns.md`. Design
+`docs/plans/2026-10-05-archive-reward-design.md` rev 4 §4, rev 2.2 §4 (report window, expiry ≤ tip + 100).
+Code: `nodus_witness_storage_probe.{h,c}` (wire, checks, answer builder, verification chain, report
+builder — transport-independent), `nodus_witness_storage_reporter.{h,c}` (the runtime), channel 0x72 in
+`nodus_witness_p2p.{h,c}`, the tick / close hooks in `nodus_witness.c`. OFF-CHAIN: nothing here writes
+state; the probe reaches state only through the reporter's own signed STORAGE_REPORT (design §7 D3) —
+two honest reporters may sign different bits for one target, the > 2/3 rule over reporting power settles.
+NOT in this package: segment file export, the fetch protocol, pruning interaction (B2b-2); the
+`nodus-cli storage register|exit|status` commands and a config switch (see "Open" below).
+
+**Transport — channel 0x72 on 4004 (⚠ the byte is NOT in the operator-approved channel list of decision
+`2026-09-26-witness-port-session.md` "bayt/biçim onayları" item 3, which names 0x70 / 0x71 — pending
+approval).** The archive lives in the witness's block store, and the witness owns 4004 and no 4002
+(component-split decision items 12, 23: a witness runs without core's DHT / 4002 and may be its own
+process), so the probe travels witness-to-witness over the EXISTING authenticated 4004 connection — the
+0x71 approval collection's model: no dial, a target not connected (or not listing 0x72) at its slot is
+retried later in the epoch and is NOT OK if never reached. Descriptor: priority 1, send queue 4, receive
+capacity `NODUS_STPROBE_MSG_MAX` (≈ 227 KB). An undecodable message stops the peer (as 0x70 / 0x71). The
+PIN: the target's p2p ID is hex(registered node_fp[0..31]); an answer is taken only when SHA3-512 of the
+SENDER's authenticated ML-DSA-87 key equals the registered node_fp in all 64 bytes, and the serving side
+refuses a request whose reporter_fp is not SHA3-512 of the sender's authenticated key.
+
+**Wire (all integers big-endian; `kind(1) ‖ body`).**
+- kind `0x01` REQUEST — exactly the bytes doc §6 request, 288 bytes: `"NDS.STPROBE.v2"` padded to 16 ‖
+  chain_id[32] ‖ epoch_start u64 ‖ S(H)[64] ‖ target_fp[64] ‖ reporter_fp[64] ‖ nonce[32] ‖ deadline_ms u64.
+- kind `0x02` ANSWER — `rq[64] ‖ code(1)` and, when code = 0, three samples
+  `hdr_len u32 ‖ header(h+1) proto ‖ part_len u32 ‖ part bytes ‖ proof_len u32 ‖ part proof proto`;
+  rq = SHA3-512(the 288 request bytes); hdr_len ≤ 2048, part_len ≤ 65536, proof_len ≤ 8192, no trailing byte.
+  Codes: 0 OK, 1 MALFORMED, 2 NOT_ADDRESSED, 3 WRONG_CHAIN, 4 LATE, 5 NOT_REPORTER, 6 UNKNOWN_SET,
+  7 SET_MISMATCH, 8 NOT_MEMBER, 9 NO_BLOCKS, 10 NOT_HELD, 11 RATE, 12 NOT_SEATED, 13 FAULT.
+  ⚠ The kind byte, rq, code and sample framing are this package's choice (bytes §6 fixes the request and
+  names the three answer items only) — pending approval with the channel byte.
+
+**Samples (bytes §6).** x_i = `dna_v2_storage_sample_x(nonce, target_fp, i)`; B = 17280 × the target's
+eligible segments (`nodus_witness_storage_eligible_segments` at H); block position = x_i[0..8) mod B →
+height h (ascending); part = x_i[8..12) mod the part count in header(h+1).last_block_id. B = 0 → no probe,
+bit 0.
+
+**Serving side (any node that is a member of storage_set(H)).** In order: per-requester gap 2 s
+(monotonic; a 64-slot table), decode, chain / addressed / reporter = sender / boundary / this node's wall
+clock ≤ deadline_ms, storage_set(H) known with the request's S(H), this node a member with B > 0 — the
+samples are drawn over ITS OWN eligible blocks, so a peer cannot make it read any other block — and the
+requester holds a seat in snapshot(H); then header(h+1) from the block meta of h+1, the part P:h:i and its
+proof, each refusal answered with its code. A pruned or missing block answers NOT_HELD (B2b-1 storage nodes
+keep the full block store; segment files are B2b-2).
+
+**Reporter (a node seated in snapshot(H)), `nodus_witness_stprobe_tick`, at most every 500 ms, only while
+the version-3 lane is live and NOT block-syncing.** Probing epoch H = ⌊tip/E⌋·E (set(H) is committed in
+block H), opened once per H; targets = every member but itself (F2), each first tried at
+H + ⌊j·⌊3E/4⌋/n⌋ (order rotated by the own seat, ≤ 4 sends per pass). A probe: nonce from the OS CSPRNG
+(`nodus_random`), deadline_ms = wall clock + 10 s; the three heights and this node's OWN
+`v2_blocks.block_id` at h and h+1 are read before the request leaves; the answer is judged by
+`nodus_stprobe_answer_ok` against a monotonic deadline of the same 10 s: header hash = hash[h+1], height
+h+1, last_block_id.hash = hash[h], part count 1..1601, proof.index = sampled part, proof.total = part
+count, Part.ValidateBasic, `cmt_proof_verify` against the part-set root. Late or any failing link = NOT OK.
+At tip ≥ H+E the epoch closes (unsent targets NOT OK); once no answer is outstanding, inside
+(H+E, H+E+⌊E/2⌋] the report (bit i LSB-first = member i OK) is built and signed by the node identity —
+the seat key (`witness_cmt_raw_sign` signs consensus with the same key) — and handed to the own mempool
+through `cmt_mem_check_tx` (the `dnac_spend` path), expiry = min(tip + 100, window close). Resubmitted
+when its expiry passed with no committed (H, seat) row, or 10 blocks after a refused CheckTx; given up at
+window close. A report is sent even when every bit is 0 (members at fail_streak ≥ 3 need settled epochs
+to return, K5); none when set(H) is empty. A restart loses the epoch's results: no report for an epoch
+this process did not probe.
+
+**Report priority — NOT implemented (decision needed).** STORAGE_REPORT carries fee 0, so
+PrepareProposal's fee-per-unit order (`nodus_witness_cmt_app.c`, decision
+`2026-09-25-mempool-policy.md` item 2) places it last; only CHAIN_CONFIG has its own lane. A report class
+ahead of paying envelopes would change that recorded ordering rule, so it is left to the operator. Today's
+exposure: the window is 360 blocks at E = 720, reports are ≤ 32 per epoch at 78..110-byte calls, an
+envelope skipped by a full block stays in the mempool, and the reporter resubmits after expiry.
+
+**Open.** `nodus-cli storage register|exit|status` — the 2-leg builder belongs in the shared
+`nodus/src/client/nodus_v2_stake.c` (decision `2026-09-25-web-wallet-nodus-send-transport.md`: CLI and
+wallet share one C builder) and status needs a new `dnac_*` query in the client SDK; both outside this
+package's file list. No config key: the reporter runs when seated, the serving side answers when a
+member (the node config parser `nodus/tools/nodus_node_config.c` is outside the list).
+
+**Tests (written, not run by the builder).** `test_storage_probe` — request bytes = the §6 layout and
+rq; answer framing and bounds; the pure and the database refusals (wrong chain, not addressed, reporter ≠
+sender, not a boundary, late, unknown set, S(H) mismatch, not a member, B = 0); the answer built from a
+fixture block store for nonce-derived samples verifies; late, foreign-rq and refusal answers are NOT OK;
+NOT_HELD for a missing part / missing header(h+1); every link of the verification chain refuses on its
+own; the report call layout and the signed envelope (op 9, fee 0, expiry, one signer whose signature
+verifies over the auth digest); the epoch / window arithmetic at E = 720 and 15. Not covered: the
+NOT_SEATED refusal and the serving path's OK answer through `nodus_witness_stprobe_serve` (need a
+validator snapshot), the live channel, pacing and mempool submission (no harness scenario yet).
+
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
 **Records:** `docs/plans/2026-09-28-scan-v3-design.md`, decision

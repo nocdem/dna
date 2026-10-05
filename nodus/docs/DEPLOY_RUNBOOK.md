@@ -1192,6 +1192,56 @@ Ledger V2 preflight reads it at every open, `nodus_witness_v2_preflight.c:334-34
 605b748b, which pruned it, a restarted pruned node logged `Ledger V2 NOT ACTIVATED …
 INSPECTION_FAULT` and refused transactions (measured).
 
+## 2.6 Storage node (archive reward) — operator steps — branch only, NOT voted, NOT deployable yet
+
+Storage reward v1 rev 4 (decision `docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md`:
+the reward pays registered storage nodes for holding the block ARCHIVE). Package B2b-1 (design
+`docs/plans/2026-10-05-archive-reward-design.md` rev 4 §4; `docs/ARCHITECTURE.md` "package B2b-1")
+makes validators probe storage nodes and storage nodes answer. Nothing here applies before the
+storage rule-set generation is voted (§2.2 table, the storage placeholder row) — every step below is
+for a node on a chain where it is in force. **Deploying any of it needs the operator's word like every
+deploy.**
+
+**What a storage node is.** A node with a chain database (nodus-server with its in-process witness, or
+nodus-witness) whose node key is registered in the storage registry (SYSTEM op 7 STORAGE_REGISTER, a
+bond of exactly 1 000 000 NODUS = 10^14 raw locked from coins owned by that same key, plus the fee).
+It may also be a validator (a both-roles node earns both rewards).
+
+**1. Keep the archive.** B2b-1 answers a probe from the node's own block store (the header of h+1, the
+sampled part and its proof); segment files are package B2b-2. So a storage node runs with
+`retain_blocks` 0 (or absent) — §2.5 "Archive". A pruned node answers `NOT_HELD` for every block below
+its base and is NOT OK for that epoch.
+
+**2. Be connected to the validators on 4004.** Probes travel on channel 0x72 over the EXISTING 4004
+connection between a validator and the storage node; no new connection is dialed for a probe. Put the
+validators in the storage node's `persistent_peers` (and/or the network file), so each validator has a
+live connection to it. A storage node that is not connected to a validator when that validator's
+probe slot comes (and through the rest of the epoch) is NOT OK in that validator's report. Both ends
+must run a build that lists channel 0x72 (an older peer is never sent to on it).
+
+**3. Keep the clock in sync (NTP).** A probe carries the validator's wall-clock deadline (10 s ahead);
+the storage node refuses a request whose deadline its own clock has passed (`LATE`). Node NTP is
+already an operational obligation (the 60 s block-time tolerance of block validation); for probes a
+skew of several seconds already starts costing answers.
+
+**4. Register / exit / status — `nodus-cli storage register|exit|status`: NOT AVAILABLE in B2b-1.** The
+2-leg STORAGE_REGISTER / STORAGE_EXIT envelope builder belongs in the shared client builder
+(`nodus/src/client/nodus_v2_stake.c`, decision `2026-09-25-web-wallet-nodus-send-transport.md`: the CLI
+and the wallet build with one C builder) and status needs a new `dnac_*` query — both outside package
+B2b-1. Until they land there is no supported way to register.
+
+**5. Validators need nothing.** A node seated in snapshot(H) probes every other storage member once per
+epoch and submits its STORAGE_REPORT in the report window (H+E, H+E+⌊E/2⌋] by itself — there is no
+config switch (the reporter runs when seated; the serving side answers when the node is a member of
+storage_set(H)). Log lines to look for (tag `W_STPROBE`): `probing epoch H=… seat …`,
+`probe of … OK` / `NOT OK`, `report for H=… submitted` / `committed`, and the warnings
+`… was never reachable on 0x72` and `report window for H=… closed with no committed report`.
+
+**6. Report ordering in full blocks (open decision).** A STORAGE_REPORT pays fee 0 and PrepareProposal
+orders by fee per unit (decision `2026-09-25-mempool-policy.md` item 2), so in a run of full blocks it
+waits; the reporter resubmits after its expiry and the window is 360 blocks at E = 720. No priority
+lane exists for it (only CHAIN_CONFIG has one); adding one is an operator decision.
+
 ---
 
 ## 3. Post-deploy verification
