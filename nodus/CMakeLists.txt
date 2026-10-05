@@ -2737,13 +2737,19 @@ register_witness_test(test_hf4_names_engine)
 # registrations applied end to end on a twin GEN_STORAGE chain (rows,
 # supply conservation, the v5 SYSTEM root, refusals). A new file: no
 # existing test owns a chain that crosses both rule-set edges with real
-# 2-leg storage envelopes. The generation switch 2 -> GEN_STORAGE and the
-# v4 -> v5 root edge live in test_hf4_switch (cases F / F2); param 14 in
+# 2-leg storage envelopes. The generation switch GEN_EVM -> GEN_STORAGE and
+# the v4 -> v5 root edge live in test_hf4_switch (cases F / F2 / F3); param 16 in
 # test_hf4_params; the GEN_STORAGE table in test_hf4_table. The engine
 # halves seed genesis through the runtime selfcheck, which needs the
 # STORAGE-ORACLE pins (shared/dnac/tests/storage_oracle.py, filled in
 # nodus_witness_runtime.c and dnac.h DNAC_CFG_RULESET_GEN_STORAGE_D).
+# GEN_STORAGE is generation 4, built on the EVM generation and compiled only
+# where the EVM runtime is (decision 2026-10-05-storage-reward-is-for-
+# archive.md K10), so the GEN_STORAGE tests (test_storage_reg / _b2 / _cli)
+# are built only with NODUS_EVM_ENABLED, like test_v2_evm.
+if(NODUS_EVM_ENABLED)
 register_witness_test(test_storage_reg)
+endif()
 
 # Storage reward v1 rev 4 (the archive reward), package B2a (decisions
 # docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md,
@@ -2755,10 +2761,12 @@ register_witness_test(test_storage_reg)
 # through freeze / report / settlement / fail_streak / handoff / exit
 # release. The engine cases seed genesis through the runtime selfcheck
 # over the filled STORAGE-ORACLE pins (the test_storage_reg note above).
+if(NODUS_EVM_ENABLED)
 register_witness_test(test_storage_b2)
 if(JSONC_FOUND)
     target_compile_definitions(test_storage_b2 PRIVATE
         ARCHIVE_REWARD_KAT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/archive_reward_kat.json")
+endif()
 endif()
 
 # Archive reward, package B2b-1 — the archive probe's node side
@@ -2793,7 +2801,9 @@ register_witness_test(test_storage_segment)
 # records, the funding equation with lock = bond / fee only), the builder
 # and decoder refusals, and the dnac_storage_status reply decoder's strict
 # rules. No database, no network, no environment.
+if(NODUS_EVM_ENABLED)
 register_witness_test(test_storage_cli)
+endif()
 
 # Web wallet package (c2) — the shared CORE SPEND builder
 # (src/client/nodus_v2_spend.c): the pins ruleset == the compiled table,

@@ -71,6 +71,11 @@
  *     at 3, no EVM_ACTIVE row, param 16 at 6): block 5 is a node FAULT
  *     ("registry is not generation 3"), the DB byte-unchanged — the
  *     state the vote's rule (d) keeps out of reach of transactions.
+ *  F3. K10 — the storage edge and the EVM edge in the SAME block (params
+ *     14 and 16 both effective at 6): phase 6b' (storage) runs before
+ *     6b'' (EVM), so block 5 is a node FAULT ("registry is not generation
+ *     3"), the DB byte-unchanged — the engine-level half of the rule-(d)
+ *     ordering test in test_hf4_params.c section 4.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build; the effective heights are
@@ -1099,6 +1104,31 @@ static int t_storage_switch_not_evm_faults(void) {
     fx_close(&fx);
     return 0;
 }
+
+/* F3 — K10: the storage edge and the EVM edge in the SAME block (param 14
+ * and param 16 both effective at 6, inserted by hand — the vote's rule (d)
+ * refuses every storage vote judged before the EVM generation, so no
+ * transaction can reach this). Phase 6b' (the storage row) runs BEFORE
+ * phase 6b'' (the EVM edge), so at block 5 the registry is still
+ * generation 2: a node FAULT, the DB byte-unchanged — never a silent
+ * 2 -> 4 or a storage switch after the EVM one in one block. */
+static int t_storage_and_evm_same_block_faults(void) {
+    fixture_t fx;
+    nodus_v2_block_t b;
+    CHECK(fx_open_storage(&fx, "same", 3, 6, 6) == 0,
+          "seeded chain (param 9 at 3, params 14 and 16 both at 6)");
+    for (uint64_t h = 1; h <= 4; h++) {
+        mk_block(&b, h, NULL, 0);
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "idle block");
+    }
+    mk_block(&b, 5, NULL, 0);
+    CHECK(v2x_cmt_fault_why(fx.w, &b, V2X_FAULT,
+                            "registry is not generation 3") == 0,
+          "the storage edge in the EVM edge's block is a node FAULT, DB "
+          "byte-unchanged");
+    fx_close(&fx);
+    return 0;
+}
 #endif
 
 int main(void) {
@@ -1114,6 +1144,7 @@ int main(void) {
 #ifdef NODUS_EVM_ENABLED
         { "storage_switch_v4_to_v5",  t_storage_switch },
         { "storage_switch_not_evm",   t_storage_switch_not_evm_faults },
+        { "storage_evm_same_block",   t_storage_and_evm_same_block_faults },
 #endif
     };
     size_t failed = 0, n = sizeof(cases) / sizeof(cases[0]);
