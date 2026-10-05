@@ -42,7 +42,7 @@ only the supported read endpoints. The browser makes same-origin requests.
 
 - `wiki/`: 13 pages — a searchable home and 12 EN/TR guides. Edit the authored
   content in `wiki/content.mjs`, then run `npm run build:portals`.
-- `scan/`: explorer home plus block, transaction and address pages. Its script
+- `scan/`: explorer home, Statistics, block, transaction, address and hard forks pages. Its script
   uses the existing JSON API and labels the native coin NODUS. It does not
   rename backend fields or change consensus, the indexer, or the running chain.
   The script also renders the hard forks page (`data-page="hardforks"`, into
@@ -65,16 +65,26 @@ only the supported read endpoints. The browser makes same-origin requests.
   under a new `/tmp/nodus-sites-*` path. Internal source notes, generators and
   deployment configs are excluded. Run after rebuilding edited guide templates.
 
+Scan's home page contains search, index status and the Latest blocks list.
+It loads `/api/stats` for synchronization and pagination, but does not request
+TPS or payday history. The navigation's Statistics / İstatistikler link opens
+`scan/stats.html`, which contains supply, throughput, APY and paydays. Both
+pages refresh every 30 seconds while visible (home only on block page 1),
+and have a manual Refresh button. Statistics has no block pager.
+
 Scan displays API failure separately from an empty chain or unknown values.
 Amounts use integer formatting; non-native token amounts remain raw base units
-because the API does not supply their decimals. The home page shows three
-cards — Indexed height, Total supply (fixed) (`supply_genesis`) and
-Circulating supply (`circulating`) — and a "Where the supply is" table:
+because the API does not supply their decimals. The Statistics page shows two
+cards — Indexed height and a combined Total supply / Circulating supply
+(`supply_genesis` / `circulating`) pair with one shared NODUS suffix.
+The Details button below the pair opens the "Where the supply is" table:
 Validator rewards remaining (`reward_pool`), Storage, Compute, Bandwidth,
-Future services (`treasury` pools 1-4) and Unclaimed genesis allocation
-(`unclaimed`) — decision `2026-09-30-scan-supply-buckets`; circulating
+and Future services (`treasury` pools 1-4) — decision
+`2026-09-30-scan-supply-buckets`; circulating
 includes staked coins and the Foundation's coins. A `null` field (an older
-node) shows "—". Below the table a link leads to the main site's
+node) shows "—" independently for each amount. The supply card gets twice
+the height card's width on desktop; the two cards stack below 800 px and
+the supply pair can wrap. Below the table a link leads to the main site's
 `tokenomics.html` for how the supply is allocated. A "Throughput" section
 follows (explorer `/api/tps`): Last minute and Last hour TPS cards and a
 24-bar inline SVG chart of the last 24 UTC hours (oldest first, the newest
@@ -84,7 +94,7 @@ peak hour). TPS counts applied transactions only and is measured by block
 time up to the newest indexed block, not the visitor's clock. The chart
 uses SVG presentation attributes (no `style`, CSP `style-src 'self'`) with
 the `--lime` / `--line` colours read from `portal.css`. It loads with the
-other home figures (Refresh and the 30 s refresh on page 1) as its own
+other Statistics figures (Refresh and the 30 s refresh) as its own
 request: a failing or missing `/api/tps` shows "—" and a message in the
 chart slot without affecting the rest of the page. Below the cards, from the
 same response: "Next payday" — `block N — est. YYYY-MM-DD HH:MM UTC (≈ …)`
@@ -95,8 +105,8 @@ when the explorer could not compute it), each with a one-line note: the date
 moves later when the chain is idle; the APY is before validator commission,
 participation rules apply, fees are not counted. The "Paydays" table loads
 independently from `/api/paydays?limit=25`: newest first, block, UTC time,
-total paid and recipient count. "Load older paydays" follows `next_before`
-without moving the block pager. Automatic refresh preserves expanded history;
+total paid and recipient count. "Load older paydays" follows `next_before`.
+Automatic refresh preserves expanded history;
 manual Refresh starts again with the latest paydays. A failed payout request
 leaves TPS and APY alone. A historical summary with `available: false` shows
 "Unavailable", never zero.

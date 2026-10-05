@@ -230,26 +230,25 @@
     // Supply buckets (explorer /api/stats; decision 2026-09-30-scan-supply-buckets.md): the
     // total is supply_genesis (fixed), circulating is the explorer's own figure. treasury is
     // pool 1..9; Scan shows the four service pools. A null (older node) renders "—".
-    $('stat-total').textContent = money(stats.supply_genesis);
-    $('stat-circulating').textContent = money(stats.circulating);
+    $('stat-total').textContent = amount(stats.supply_genesis);
+    $('stat-circulating').textContent = amount(stats.circulating);
     const pools = Array.isArray(stats.treasury) && stats.treasury.length === 9 ? stats.treasury : [];
     $('bucket-reward').textContent = money(stats.reward_pool);
     $('bucket-storage').textContent = money(pools[0]);
     $('bucket-compute').textContent = money(pools[1]);
     $('bucket-bandwidth').textContent = money(pools[2]);
     $('bucket-future').textContent = money(pools[3]);
-    $('bucket-unclaimed').textContent = money(stats.unclaimed);
   }
   function statsUnavailable() {
     $('api-status').textContent = t('Index unavailable', 'İndekse erişilemiyor');
     $('staleness-banner').classList.add('hidden');
     for (const id of ['height', 'total', 'circulating']) if ($('stat-' + id)) $('stat-' + id).textContent = '—';
-    for (const id of ['reward', 'storage', 'compute', 'bandwidth', 'future', 'unclaimed']) if ($('bucket-' + id)) $('bucket-' + id).textContent = '—';
+    for (const id of ['reward', 'storage', 'compute', 'bandwidth', 'future']) if ($('bucket-' + id)) $('bucket-' + id).textContent = '—';
   }
   // Throughput (explorer /api/tps): applied transactions per second by block time, "now" being the
   // newest indexed block. tps is a decimal string with two decimals; history is 24 UTC hours,
   // oldest first (the newest is the hour in progress). Its own request: a failure here leaves the
-  // rest of the home page alone.
+  // rest of the Statistics page alone.
   const tpsText = value => typeof value === 'string' && /^\d+\.\d{2}$/.test(value) ? value : null;
   const validBucket = b => b && typeof b === 'object' && Number.isSafeInteger(b.start_ms) && Number.isSafeInteger(b.tx) && tpsText(b.tps) !== null;
   const cssColor = (name, fallback) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
@@ -518,7 +517,7 @@
   }
   async function refresh(automatic = false) {
     if(refreshing)return;refreshing=true;$('refresh-data').disabled=true;
-    const detail = page==='hardforks' ? loadGovernance() : page!=='index' ? loadDetail() : Promise.all([loadTps(), loadPaydays(automatic)]);
+    const detail = page==='stats' ? Promise.all([loadTps(), loadPaydays(automatic)]) : page==='hardforks' ? loadGovernance() : page==='index' ? Promise.resolve() : loadDetail();
     try {
       const stats=await api('/stats');displayStats(stats);
       if(page==='index')await loadBlocks(pageNumber,pageNumber===1,stats);
@@ -546,12 +545,16 @@
   });
   $('search-input').addEventListener('input',()=>{searchRequest++;$('search-results').replaceChildren();});
   $('refresh-data').addEventListener('click',()=>refresh());
-  if(page==='index'){
+  if(page==='stats'){
     // Circulating supply "Details": shows / hides the bucket table below the cards.
     $('supply-details-toggle').addEventListener('click',event=>{const open=$('supply-details').hidden;$('supply-details').hidden=!open;event.currentTarget.setAttribute('aria-expanded',String(open));});
+  }
+  if(page==='index'){
     $('pg-first').addEventListener('click',()=>loadBlocks(1,true));$('pg-prev').addEventListener('click',()=>loadBlocks(pageNumber-1));$('pg-next').addEventListener('click',()=>loadBlocks(pageNumber+1));$('pg-last').addEventListener('click',()=>loadBlocks(lastPage));
     $('pg-input').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();if(/^\d+$/.test(event.target.value))loadBlocks(Number(event.target.value));}});
-    setInterval(()=>{if(!document.hidden && pageNumber===1)refresh(true);},30000);
+  }
+  if(page==='index'||page==='stats'){
+    setInterval(()=>{if(!document.hidden && (page==='stats'||pageNumber===1))refresh(true);},30000);
   }
   refresh();
 })();

@@ -45,7 +45,7 @@ export const files = new Map([
 
 const shared = ['portal.css', 'portal.js', 'assets/nodus-mark.svg', 'assets/fonts/inter-latin.woff2', 'assets/fonts/inter-latin-ext.woff2', 'assets/fonts/OFL.txt'];
 const wikiPages = ['index', ...guides.map(guide => guide.slug)];
-const scanPages = ['index', 'block', 'tx', 'address', 'hardforks'];
+const scanPages = ['index', 'stats', 'block', 'tx', 'address', 'hardforks'];
 const mime = path => ({html:'text/html; charset=utf-8',css:'text/css; charset=utf-8',js:'text/javascript; charset=utf-8',json:'application/json; charset=utf-8',xml:'application/xml; charset=utf-8',txt:'text/plain; charset=utf-8',svg:'image/svg+xml',webp:'image/webp',woff2:'font/woff2'})[path.split('.').pop()];
 export const siteFiles = {
  'nodusnetwork.io': new Map([...files.values()].map(([source]) => [source, source])),
