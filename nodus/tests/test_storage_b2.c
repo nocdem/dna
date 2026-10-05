@@ -8,7 +8,8 @@
  *
  * Decisions: docs/plans/decisions/2026-10-05-storage-reward-is-for-
  * archive.md (R = 3, G = 1, amount = block count, 3 failed epochs →
- * skipped, K5 return after 12 settled epochs), 2026-10-05-archive-
+ * skipped, K5 return after 12 settled epochs, K5a an OK epoch with
+ * eligible blocks resets to 0 even at 3 or more), 2026-10-05-archive-
  * reward-bytes-approved.md, 2026-10-05-
  * kurultay-7-archive-reward-summary.md, 2026-10-04-storage-reward-
  * approved.md (kept parts), 2026-10-04-storage-reward-who-earns.md.
@@ -68,7 +69,7 @@
  *                     G = 1); N alone credited floor(budget·w/W); pool 1
  *                     debited exactly Σ credited (the remainder stays);
  *                     fail_streak +1 for every NOT OK member with weight
- *                     (every streak checked by the rule incl. K5);
+ *                     (every streak checked by the rule incl. K5, K5a);
  *       4E + 3        B exits;
  *       boundary 5E   settle H = 3E (all OK except M); the HANDOFF: the
  *                     eligible lists for H = 2E and H = 3E equal the
@@ -82,20 +83,26 @@
  *       boundary 6E   settle H = 4E (all OK except M): M's fail_streak is
  *                     3 and set(6E) freezes it at 3 — holders over set(6E)
  *                     never name M;
- *       boundary 7E   settle H = 5E ("all OK", M included, M with weight
- *                     from set(4E)): K5 — M at 3 adds one even when OK,
- *                     4 (no reset at 3 or more);
- *       boundary 8E   no report for H = 6E: F1 not met — every
- *                     fail_streak (M's 4 included) and pool 1 unchanged;
- *       boundary 9E   settle H = 7E ("all OK"): M, frozen at 3 in
- *                     set(6E), has weight 0 and still adds one, 5.
+ *       boundary 7E   settle H = 5E (all OK except M; M with weight from
+ *                     set(4E), where M was frozen at 1): M at 3, NOT OK,
+ *                     adds one, 4 (the skipped branch, K5);
+ *       boundary 8E   settle H = 6E ("all OK", M included; M with weight
+ *                     from set(5E), where M was frozen at 2): K5a — M at
+ *                     4, with weight and OK, resets to 0;
+ *       boundary 9E   no report for H = 7E: F1 not met — every
+ *                     fail_streak (M's 0 included) and pool 1 unchanged;
+ *                     M, frozen at 3 in set(6E), has weight 0 in H = 7E.
  *  D0. FAIL_STREAK RULE, pure (nodus_storage_fail_streak_next + holders
  *     over a hand-built 4-member frozen set): below 3 the old rule; at 3
- *     .. 13 +1 for every (weight, verdict); 14 → 0; the arc 3 failures →
- *     skipped → 12 settled epochs skipped (weight and verdict mixed) → 0
- *     and placed again → 3 new failures → skipped again. The 15 → 0
- *     return and the re-placement are proven HERE, not through the engine
- *     (that would need 12 more settled epochs of twin chains).
+ *     .. 14 weight and OK → 0 (K5a); at 3 .. 13 +1 for the other three
+ *     (weight, verdict) pairs; 14 → 0 for them; the arc 3 failures →
+ *     skipped → 12 settled epochs skipped (half with no eligible block,
+ *     never weight and OK together) → 0 and placed again → 3 new failures
+ *     → skipped again → one OK epoch with weight → 0. The 15 → 0 return,
+ *     the re-placement and the "≥ 3 with weight 0 adds one" branch are
+ *     proven HERE, not through the engine (the return would need 12 more
+ *     settled epochs of twin chains; the engine's only member at 3 or
+ *     more is M, and M has weight in the two epochs it settles there).
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build; json-c (JSONC_FOUND) for
@@ -1785,12 +1792,13 @@ static int check_settle(const expect_t *ex, const snap_t *b0,
                     b0->acc[k]), (unsigned long long)share);
             return -1;
         }
-        /* the rule restated (bytes item 4 + K5) — a SETTLED epoch only:
-         * at 3 or more +1 whatever the weight and verdict, 14 → 0; below
-         * 3 only a member with weight moves */
+        /* the rule restated (bytes item 4 + K5 + K5a) — a SETTLED epoch
+         * only: weight and OK → 0 whatever the old value; else at 3 or
+         * more +1, 14 → 0; else weight (NOT OK) +1; else unchanged */
         uint32_t want = b0->streak[k];
-        if (want >= 3u)      want = (want + 1u >= 15u) ? 0u : want + 1u;
-        else if (wt[i] > 0)  want = ok ? 0u : want + 1u;
+        if (wt[i] > 0 && ok) want = 0u;
+        else if (want >= 3u) want = (want + 1u >= 15u) ? 0u : want + 1u;
+        else if (wt[i] > 0)  want = want + 1u;
         if (b1->streak[k] != want) {
             fprintf(stderr, "member key %d: fail_streak %u, expected %u\n",
                     k, (unsigned)b1->streak[k], (unsigned)want);
@@ -1824,7 +1832,7 @@ static int submit(fixture_t *A, fixture_t *B, uint64_t h, uint8_t **envs,
     return rc;
 }
 
-/* D0. The fail_streak rule (bytes item 4 + K5), pure: the full skip /
+/* D0. The fail_streak rule (bytes item 4 + K5 + K5a), pure: the full skip /
  * return arc the engine run does not reach (15 needs 12 more settled
  * epochs), each value fed to holders over a hand-built frozen set. */
 static nodus_storage_set_t g_set_p;
@@ -1850,12 +1858,16 @@ static int t_streak_rule(void) {
     CHECK(nodus_storage_fail_streak_next(0, 1, 0) == 1, "0, NOT OK: 1");
     CHECK(nodus_storage_fail_streak_next(1, 1, 1) == 0, "1, OK: 0");
     CHECK(nodus_storage_fail_streak_next(2, 1, 0) == 3, "2, NOT OK: 3");
-    /* at 3 or more: +1 whatever the weight and verdict; 14 → 0 */
+    /* at 3 or more: weight and OK → 0 (K5a); otherwise +1; 14 → 0 */
+    for (uint32_t s = 3; s <= 14; s++)
+        CHECK(nodus_storage_fail_streak_next(s, 1, 1) == 0,
+              "K5a: ≥ 3 with weight and OK → 0");
     for (uint32_t s = 3; s < 14; s++)
         for (int e = 0; e < 2; e++)
             for (int ok = 0; ok < 2; ok++)
-                CHECK(nodus_storage_fail_streak_next(s, e, ok) == s + 1,
-                      "skipped: +1 at every settled epoch");
+                if (!(e && ok))
+                    CHECK(nodus_storage_fail_streak_next(s, e, ok) == s + 1,
+                          "skipped: +1 unless weight and OK");
     for (int e = 0; e < 2; e++)
         for (int ok = 0; ok < 2; ok++)
             CHECK(nodus_storage_fail_streak_next(14, e, ok) == 0,
@@ -1879,8 +1891,9 @@ static int t_streak_rule(void) {
     CHECK(km != 0, "M holds a segment when its streak is 0");
 
     /* the arc: 3 failures → skipped; 12 settled epochs while skipped
-     * (half of them with no eligible block, verdicts mixed) → 0, placed
-     * again; 3 new failures → skipped again */
+     * (half of them with no eligible block; OK only in epochs with none,
+     * since weight and OK together resets — K5a) → 0, placed again; 3 new
+     * failures → skipped again; one OK epoch with weight → 0 (K5a) */
     uint32_t s = 0;
     int holds = 0;
     for (int f = 0; f < 3; f++) {
@@ -1890,7 +1903,8 @@ static int t_streak_rule(void) {
     CHECK(s == 3, "three failures: 3");
     for (int ep = 1; ep <= 12; ep++) {
         CHECK(m_holds(km, s, &holds) == 0 && !holds, "skipped at 3..14");
-        s = nodus_storage_fail_streak_next(s, ep % 2, ep % 3 == 0);
+        s = nodus_storage_fail_streak_next(s, ep % 2,
+                                           ep % 2 == 0 && ep % 3 == 0);
         if (ep < 12)
             CHECK(s == 3u + (uint32_t)ep, "skipped: one per settled epoch");
     }
@@ -1900,6 +1914,9 @@ static int t_streak_rule(void) {
         s = nodus_storage_fail_streak_next(s, 1, 0);
     CHECK(s == 3, "three new failures: 3");
     CHECK(m_holds(km, s, &holds) == 0 && !holds, "skipped again");
+    s = nodus_storage_fail_streak_next(s, 1, 1);
+    CHECK(s == 0, "K5a: an OK epoch with weight at 3 resets to 0");
+    CHECK(m_holds(km, s, &holds) == 0 && holds, "placed again at once");
     return 0;
 }
 
@@ -2177,9 +2194,9 @@ static int t_engine(void) {
         }
     }
 
-    /* 6E + 1: reports for H = 5E ("all OK", M too) */
+    /* 6E + 1: reports for H = 5E (all OK but M) */
     CHECK(reports_for(&A, 6 * E_LEN + 1, 5 * E_LEN, all_seats, N_VAL,
-                      bit_all, e, l) == 0, "reports for H = 5E");
+                      bit_all_but_m, e, l) == 0, "reports for H = 5E");
     CHECK(submit(&A, &B, 6 * E_LEN + 1, e, l, N_VAL, codes) == 0, "6E+1");
     h = 6 * E_LEN + 1;
     CHECK(run_idle(&A, &B, &h, 7 * E_LEN - 1) == 0, "to 7E-1");
@@ -2189,34 +2206,46 @@ static int t_engine(void) {
     CHECK(take(A.w, &s1) == 0, "after 7E");
     {
         uint64_t W = 0;
-        CHECK(check_settle(&g_ex, &s0, &s1, ok_all, &W) == 0 && W > 0,
-              "H = 5E: all OK");
+        CHECK(check_settle(&g_ex, &s0, &s1, ok_all_but_m, &W) == 0 && W > 0,
+              "H = 5E: all OK but M");
         int mw = 0;
         for (uint32_t i = 0; i < g_ex.cur.count; i++)
             if (key_of_fp(g_ex.cur.fps[i]) == g_M && g_ex.wt[i] > 0) mw = 1;
         CHECK(mw, "M has weight in H = 5E (eligibility from set(4E), "
               "where M was frozen at 1)");
-        CHECK(s1.streak[g_M] == 4, "K5: M at 3 adds one even when OK with "
-              "weight (no reset at 3 or more)");
+        CHECK(s1.streak[g_M] == 4, "K5: M at 3, with weight and NOT OK, "
+              "adds one");
     }
 
-    /* boundary 8E: no report for H = 6E — F1 not met, nothing moves */
+    /* 7E + 1: reports for H = 6E ("all OK", M too); M's weight comes from
+     * set(5E), where M was frozen at 2 (below 3, so placed) */
+    CHECK(reports_for(&A, 7 * E_LEN + 1, 6 * E_LEN, all_seats, N_VAL,
+                      bit_all, e, l) == 0, "reports for H = 6E");
+    CHECK(submit(&A, &B, 7 * E_LEN + 1, e, l, N_VAL, codes) == 0, "7E+1");
+    h = 7 * E_LEN + 1;
     CHECK(run_idle(&A, &B, &h, 8 * E_LEN - 1) == 0, "to 8E-1");
-    CHECK(take(A.w, &s0) == 0, "before 8E");
+    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, 6 * E_LEN, &g_ex) == 0,
+          "before 8E");
+    CHECK(s0.streak[g_M] == 4, "M at 4 before 8E");
+    {
+        int mw = 0;
+        for (uint32_t i = 0; i < g_ex.cur.count; i++)
+            if (key_of_fp(g_ex.cur.fps[i]) == g_M && g_ex.wt[i] > 0) mw = 1;
+        CHECK(mw, "M has weight in H = 6E (eligibility from set(5E), "
+              "where M was frozen at 2)");
+    }
     CHECK(run_idle(&A, &B, &h, 8 * E_LEN) == 0, "boundary 8E");
     CHECK(take(A.w, &s1) == 0, "after 8E");
-    for (int k = 0; k < N_KEYS; k++)
-        CHECK(s1.streak[k] == s0.streak[k],
-              "F1 not met: every fail_streak unchanged (M's at 4 included)");
-    CHECK(s1.pool1 == s0.pool1, "F1 not met: pool 1 untouched");
-    CHECK(s1.streak[g_M] == 4, "M stays at 4");
+    {
+        uint64_t W = 0;
+        CHECK(check_settle(&g_ex, &s0, &s1, ok_all, &W) == 0 && W > 0,
+              "H = 6E: all OK");
+        CHECK(s1.streak[g_M] == 0, "K5a: M at 4, with weight and OK, "
+              "resets to 0");
+    }
 
-    /* 8E + 1: reports for H = 7E ("all OK"); M was frozen at 3 in set(6E),
-     * so M has no eligible block in (7E, 8E] and still adds one */
-    CHECK(reports_for(&A, 8 * E_LEN + 1, 7 * E_LEN, all_seats, N_VAL,
-                      bit_all, e, l) == 0, "reports for H = 7E");
-    CHECK(submit(&A, &B, 8 * E_LEN + 1, e, l, N_VAL, codes) == 0, "8E+1");
-    h = 8 * E_LEN + 1;
+    /* boundary 9E: no report for H = 7E — F1 not met, nothing moves. M,
+     * frozen at 3 in set(6E), has no eligible block in (7E, 8E] */
     CHECK(run_idle(&A, &B, &h, 9 * E_LEN - 1) == 0, "to 9E-1");
     CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, 7 * E_LEN, &g_ex) == 0,
           "before 9E");
@@ -2232,14 +2261,12 @@ static int t_engine(void) {
     }
     CHECK(run_idle(&A, &B, &h, 9 * E_LEN) == 0, "boundary 9E");
     CHECK(take(A.w, &s1) == 0, "after 9E");
-    {
-        uint64_t W = 0;
-        CHECK(check_settle(&g_ex, &s0, &s1, ok_all, &W) == 0 && W > 0,
-              "H = 7E: all OK");
-        CHECK(s1.streak[g_M] == 5, "K5: M skipped, no eligible block, "
-              "adds one");
-        CHECK(core_invariant(A.w) == 0, "the invariant holds at the end");
-    }
+    for (int k = 0; k < N_KEYS; k++)
+        CHECK(s1.streak[k] == s0.streak[k],
+              "F1 not met: every fail_streak unchanged (M's at 0 included)");
+    CHECK(s1.pool1 == s0.pool1, "F1 not met: pool 1 untouched");
+    CHECK(s1.streak[g_M] == 0, "M stays at 0");
+    CHECK(core_invariant(A.w) == 0, "the invariant holds at the end");
 
     fx_close(&A);
     fx_close(&B);

@@ -634,12 +634,13 @@ static int st_pool1_debit(nodus_witness_t *w, uint64_t observed,
 
 uint32_t nodus_storage_fail_streak_next(uint32_t old, int had_eligible,
                                         int ok) {
+    if (had_eligible && ok) return 0u;               /* K5a: even at ≥ 3  */
     if (old >= DNA_V2_STORAGE_FAIL_LIMIT) {          /* skipped (K5)      */
         if (old >= NODUS_STORAGE_FAIL_RETURN - 1u) return 0u;
         return old + 1u;
     }
     if (!had_eligible) return old;
-    return ok ? 0u : old + 1u;
+    return old + 1u;                                 /* weight, NOT OK    */
 }
 
 /* fail_streak := nv, bound to the observed value. */
@@ -817,9 +818,10 @@ static int st_settle(nodus_witness_t *w, uint64_t B,
         out->accrued = total;
     }
 
-    /* ── fail_streak (bytes item 4 + K5) — below 3 only members with an
-     *    eligible block move (OK resets, NOT OK adds one); at 3 or more
-     *    every member adds one, and 15 is reset to 0 ─────────────────── */
+    /* ── fail_streak (bytes item 4 + K5 + K5a) — an eligible block and
+     *    OK resets to 0 whatever the old value; else at 3 or more every
+     *    member adds one (14 + 1 written as 0); else below 3 an eligible
+     *    block and NOT OK adds one, no eligible block leaves it ────────── */
     for (uint32_t i = 0; i < cur->count; i++) {
         const uint32_t old = rows[row_of[i]].fail_streak;
         const uint32_t nv = nodus_storage_fail_streak_next(
