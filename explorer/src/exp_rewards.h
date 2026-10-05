@@ -24,7 +24,7 @@ typedef struct {
 
 typedef struct {
     uint64_t total;
-    uint64_t recipients;
+    uint64_t recipients; /* matching row count (payouts or releases) */
     uint64_t pending;
     int count;
     int has_next;
@@ -46,11 +46,24 @@ uint64_t exp_rewards_at_height(const exp_rewards_t *r);
  * next_from is the first unshown row's sequence (gaps are legal). */
 int exp_rewards_payday(exp_rewards_t *r, uint64_t height, uint32_t from,
                        int limit, exp_rewards_page_t *out);
+/* The same contract over kind='release' rows (graduation bond and
+ * delegation releases, one kind on the node). Payout and release rows
+ * share one (height, boundary position) sequence space, so each kind's
+ * sequences have gaps. out->recipients is the release row count; pending
+ * stays 0. Returned stake, never a reward: payday totals exclude it. */
+int exp_rewards_releases(exp_rewards_t *r, uint64_t height, uint32_t from,
+                         int limit, exp_rewards_page_t *out);
 /* Total paid within coverage (NOT balance), current pending and a page
  * ordered by (height,sequence) descending. before is exclusive; (0,0)
  * means newest. Cursor never changes total/pending. */
 int exp_rewards_address(exp_rewards_t *r, const uint8_t owner[64],
                         uint64_t before_h, uint32_t before_seq, int limit,
                         exp_rewards_page_t *out);
+/* Total released to owner within coverage and a page of release rows,
+ * same ordering and cursor as exp_rewards_address. No accrual read:
+ * pending stays 0. */
+int exp_rewards_address_releases(exp_rewards_t *r, const uint8_t owner[64],
+                                 uint64_t before_h, uint32_t before_seq,
+                                 int limit, exp_rewards_page_t *out);
 
 #endif

@@ -133,6 +133,23 @@ A newer source tip does not replace the initial summary with figures for
 paydays missing from the top of the displayed history. Refresh starts a new
 snapshot.
 
+Stake releases — the validator bonds and delegations returned at an epoch
+boundary — have their own sections. Every block page whose height is a
+multiple of 720 loads `/api/releases/<height>?limit=100` and shows a
+"Stake released / Serbest bırakılan stake" section: the line
+"Stake released: N, total X NODUS" (`count`, `total`), the owner addresses
+and amounts, and a separate `next_from` pager ("Load more stake releases").
+A payday block (a multiple of 17 280) shows both the payout and the release
+sections. Address pages show a second "Stake released" section from the
+`releases` list of `/api/rewards/<fingerprint>?limit=25` — the total
+(`released_total`) and a dated list with block links, paged by its own
+`release_before` cursor (`next_release_before`), independent of the payout
+list. A release is the owner's own stake coming back, not a reward; Scan
+never adds it to the payout figures, and an EN/TR note says so. The node
+records bond and delegation releases under one kind, so Scan does not tell
+them apart. The release pagers keep the same snapshot, empty, loading and
+unavailable states as the payout pagers, with their own EN/TR texts.
+
 Payouts occur at the block boundary and remain separate from transactions.
 The footer describes the indexer's trust
 in witness responses. A successful HTTP request does not prove a chain is active;

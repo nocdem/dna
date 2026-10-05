@@ -1087,11 +1087,15 @@ static void route_search(exp_db_t *db, const char *query, exp_json_t *j, int *st
 /* Rewards use stricter bounded query parsing: no truncated values or
  * duplicate cursor keys can become a different, apparently valid request. */
 static int rewards_query(const char *query, int kind, uint64_t *before_h,
-                          uint32_t *sequence, int *limit) {
+                          uint32_t *sequence, uint64_t *release_h,
+                          uint32_t *release_seq, int *limit) {
     unsigned seen = 0;
+    int detail = kind == 1 || kind == 3;
     *before_h = 0;
     *sequence = 0;
-    *limit = kind == 1 ? EXP_HTTP_LIMIT_MAX : EXP_HTTP_LIMIT_DEFAULT;
+    *release_h = 0;
+    *release_seq = 0;
+    *limit = detail ? EXP_HTTP_LIMIT_MAX : EXP_HTTP_LIMIT_DEFAULT;
     for (const char *p = query; *p;) {
         const char *amp = strchr(p, '&');
         size_t n = amp ? (size_t)(amp - p) : strlen(p);
@@ -1107,16 +1111,22 @@ static int rewards_query(const char *query, int kind, uint64_t *before_h,
             bit = 1;
             if (!parse_u64_strict(val, &v) || !v) return -1;
             *limit = v > EXP_HTTP_LIMIT_MAX ? EXP_HTTP_LIMIT_MAX : (int)v;
-        } else if (kind == 1 && k == 4 && memcmp(p, "from", 4) == 0) {
+        } else if (detail && k == 4 && memcmp(p, "from", 4) == 0) {
             bit = 2;
             if (!parse_u64_strict(val, &v) || v > UINT32_MAX) return -1;
             *sequence = (uint32_t)v;
-        } else if (kind != 1 && k == 6 && memcmp(p, "before", 6) == 0) {
+        } else if (!detail && k == 6 && memcmp(p, "before", 6) == 0) {
             bit = 2;
             if (kind == 2) {
                 if (!parse_position(val, before_h, sequence)) return -1;
             } else if (!parse_u64_strict(val, before_h) || !*before_h) return -1;
             if (*before_h > INT64_MAX) return -1;
+        } else if (kind == 2 && k == 14 && memcmp(p, "release_before", 14) == 0) {
+            /* the address's release list: its own cursor, independent of
+             * the payout cursor `before` */
+            bit = 4;
+            if (!parse_position(val, release_h, release_seq) ||
+                *release_h > INT64_MAX) return -1;
         } else return -1;
         if (seen & bit) return -1;
         seen |= bit;
@@ -1132,23 +1142,30 @@ static void emit_rewards_coverage(exp_json_t *j, uint64_t from, uint64_t at) {
     exp_json_raw(j, ",\"at_height\":"); exp_json_u64(j, at);
 }
 
-/* kind: 0 payday list, 1 payday detail, 2 address rewards. The only index
- * lock spans copy/revalidation of the anchor and scheduled block times.
+/* kind: 0 payday list, 1 payday detail, 2 address rewards, 3 stake
+ * releases at one epoch boundary. The only index lock spans
+ * copy/revalidation of the anchor and scheduled block times.
  * Source queries (one read transaction) never hold the sync writer out. */
 static void route_rewards(exp_http_ctx_t *ctx, int kind, const char *key,
                            const char *query, exp_json_t *j, int *status) {
-    uint64_t before = 0, height = 0;
-    uint32_t seq = 0;
+    uint64_t before = 0, height = 0, release_before = 0;
+    uint32_t seq = 0, release_seq = 0;
     int limit, n = 0, ok = 0;
+    int detail = kind == 1 || kind == 3;
     exp_block_row_t anchor, check;
     exp_payday_row_t days[EXP_REWARDS_MAX];
     exp_rewards_t *source = NULL;
     exp_rewards_page_t page;
     uint8_t owner[64];
-    if (rewards_query(query, kind, &before, &seq, &limit) != 0 ||
+    /* A payday is a multiple of 17 280; a release can only be written at
+     * an epoch boundary (nodus_witness_v2_epoch.c graduation, height a
+     * multiple of DNAC_EPOCH_LENGTH 720 = EXP_EPOCH_BLOCKS). */
+    uint64_t interval = kind == 3 ? EXP_EPOCH_BLOCKS : EXP_PAYDAY_INTERVAL_BLOCKS;
+    if (rewards_query(query, kind, &before, &seq, &release_before,
+                      &release_seq, &limit) != 0 ||
         (kind == 2 && !is_hash128(key)) ||
-        (kind == 1 && (!parse_u64_strict(key, &height) || !height ||
-                       height > INT64_MAX || height % EXP_PAYDAY_INTERVAL_BLOCKS))) {
+        (detail && (!parse_u64_strict(key, &height) || !height ||
+                    height > INT64_MAX || height % interval))) {
         json_error(j, "invalid rewards request"); *status = 400; return;
     }
 
@@ -1157,10 +1174,10 @@ static void route_rewards(exp_http_ctx_t *ctx, int kind, const char *key,
     int count = 0;
     ok = db && exp_db_query_blocks(db, UINT64_MAX, 1, &anchor, &count) == 0 && count == 1;
     if (ok && kind != 2) {
-        uint64_t h = kind == 1 ? height : anchor.height;
+        uint64_t h = detail ? height : anchor.height;
         if (kind == 0 && before && h >= before) h = before - 1;
         if (kind == 0) h -= h % EXP_PAYDAY_INTERVAL_BLOCKS;
-        for (; h && n < (kind == 1 ? 1 : limit); h -= EXP_PAYDAY_INTERVAL_BLOCKS) {
+        for (; h && n < (detail ? 1 : limit); h -= EXP_PAYDAY_INTERVAL_BLOCKS) {
             if (h > anchor.height || exp_db_query_block_by_height(db, h, &check) != 0) {
                 ok = 0; break;
             }
@@ -1215,6 +1232,27 @@ static void route_rewards(exp_http_ctx_t *ctx, int kind, const char *key,
         if (page.has_next) exp_json_u64(j, page.next_from);
         else exp_json_raw(j, "null");
         exp_json_raw(j, ","); emit_rewards_coverage(j, from, at);
+    } else if (kind == 3) {
+        /* Returned stake (bond and delegation releases share one node
+         * kind), never a reward: no payday or paid total includes it. */
+        if (exp_rewards_releases(source, height, seq, limit, &page) != 0)
+            goto unavailable;
+        exp_json_raw(j, "\"height\":"); exp_json_u64(j, height);
+        exp_json_raw(j, ",\"time\":"); exp_json_u64(j, days[0].time_ms);
+        exp_json_raw(j, ",\"total\":"); exp_json_u64_str(j, page.total);
+        exp_json_raw(j, ",\"count\":"); exp_json_u64(j, page.recipients);
+        exp_json_raw(j, ",\"releases\":[");
+        for (int i = 0; i < page.count; i++) {
+            if (i) exp_json_raw(j, ",");
+            exp_json_raw(j, "{\"address\":"); exp_json_hex(j, page.rows[i].owner, 64);
+            exp_json_raw(j, ",\"amount\":"); exp_json_u64_str(j, page.rows[i].amount);
+            exp_json_raw(j, ",\"sequence\":"); exp_json_u64(j, page.rows[i].sequence);
+            exp_json_raw(j, "}");
+        }
+        exp_json_raw(j, "],\"next_from\":");
+        if (page.has_next) exp_json_u64(j, page.next_from);
+        else exp_json_raw(j, "null");
+        exp_json_raw(j, ","); emit_rewards_coverage(j, from, at);
     } else {
         hex128_decode(key, owner);
         if (exp_rewards_address(source, owner, before, seq, limit, &page) != 0)
@@ -1234,6 +1272,27 @@ static void route_rewards(exp_http_ctx_t *ctx, int kind, const char *key,
             exp_json_raw(j, "}");
         }
         exp_json_raw(j, "],\"next_before\":");
+        if (page.has_next) json_position(j, page.rows[page.count - 1].height,
+                                         page.rows[page.count - 1].sequence);
+        else exp_json_raw(j, "null");
+        /* Stake releases: a separate list with its own cursor, appended
+         * after the payout keys (unchanged); never in paid_total. The
+         * same snapshot and request-wide budget; the page is reused. */
+        if (exp_rewards_address_releases(source, owner, release_before,
+                                         release_seq, limit, &page) != 0)
+            goto unavailable;
+        exp_json_raw(j, ",\"released_total\":"); exp_json_u64_str(j, page.total);
+        exp_json_raw(j, ",\"releases\":[");
+        for (int i = 0; i < page.count; i++) {
+            const exp_payout_t *p = &page.rows[i];
+            if (i) exp_json_raw(j, ",");
+            exp_json_raw(j, "{\"height\":"); exp_json_u64(j, p->height);
+            exp_json_raw(j, ",\"time\":"); exp_json_u64(j, p->time_ms);
+            exp_json_raw(j, ",\"amount\":"); exp_json_u64_str(j, p->amount);
+            exp_json_raw(j, ",\"sequence\":"); exp_json_u64(j, p->sequence);
+            exp_json_raw(j, "}");
+        }
+        exp_json_raw(j, "],\"next_release_before\":");
         if (page.has_next) json_position(j, page.rows[page.count - 1].height,
                                          page.rows[page.count - 1].sequence);
         else exp_json_raw(j, "null");
@@ -1288,6 +1347,7 @@ int exp_http_route(exp_http_ctx_t *ctx, const char *method, const char *path,
 
     if (strcmp(path_only, "/api/paydays") == 0 ||
         strncmp(path_only, "/api/payday/", 12) == 0 ||
+        strncmp(path_only, "/api/releases/", 14) == 0 ||
         strncmp(path_only, "/api/rewards/", 13) == 0) {
         if (strlen(path) >= sizeof(path_only) + sizeof(query) - 1 ||
             strlen(path_only) == sizeof(path_only) - 1 ||
@@ -1297,6 +1357,8 @@ int exp_http_route(exp_http_ctx_t *ctx, const char *method, const char *path,
             route_rewards(ctx, 0, NULL, query, body_out, status_out);
         else if (strncmp(path_only, "/api/payday/", 12) == 0)
             route_rewards(ctx, 1, path_only + 12, query, body_out, status_out);
+        else if (strncmp(path_only, "/api/releases/", 14) == 0)
+            route_rewards(ctx, 3, path_only + 14, query, body_out, status_out);
         else route_rewards(ctx, 2, path_only + 13, query, body_out, status_out);
         return 0;
     }

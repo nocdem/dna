@@ -78,6 +78,8 @@ static int fixture_open(fixture_t *f) {
     int rc = sql(index,
             "INSERT INTO blocks VALUES(17280,zeroblob(64),zeroblob(64),17280000,zeroblob(32),zeroblob(64),0,0),"
             "(34560,zeroblob(64),zeroblob(64),34560000,zeroblob(32),zeroblob(64),0,0),"
+            "(35280,zeroblob(64),zeroblob(64),35280000,zeroblob(32),zeroblob(64),0,0),"
+            "(36000,zeroblob(64),zeroblob(64),36000000,zeroblob(32),zeroblob(64),0,0),"
             "(51840,zeroblob(64),zeroblob(64),51840000,zeroblob(32),zeroblob(64),0,0);");
     sqlite3_close(index);
     if (rc != 0) return -1;
@@ -102,7 +104,16 @@ static int fixture_open(fixture_t *f) {
             "FROM addr_history WHERE h=34560 AND seq=0;"
             "INSERT INTO addr_history SELECT 34560,4294967295,1,owner,'release',999,token,34560 "
             "FROM addr_history WHERE h=34560 AND seq=0;"
-            "INSERT INTO v2_reward_accrual SELECT owner,23 FROM addr_history WHERE h=34560 AND seq=0;") != 0)
+            "INSERT INTO v2_reward_accrual SELECT owner,23 FROM addr_history WHERE h=34560 AND seq=0;"
+            /* A non-payday epoch boundary (35280 = 49 x 720) with three
+             * releases at gapped sequences, one above 2^53; 36000 is an
+             * in-coverage boundary with no rows. */
+            "INSERT INTO addr_history SELECT 35280,4294967295,0,owner,'release',9007199254740995,token,35280 "
+            "FROM addr_history WHERE h=34560 AND seq=0;"
+            "INSERT INTO addr_history SELECT 35280,4294967295,3,owner,'release',5,token,35280 "
+            "FROM addr_history WHERE h=34560 AND seq=4;"
+            "INSERT INTO addr_history SELECT 35280,4294967295,7,owner,'release',2,token,35280 "
+            "FROM addr_history WHERE h=34560 AND seq=0;") != 0)
         return -1;
     f->ctx.db = &f->index;
     f->ctx.rewards_db_path = f->source_path;
@@ -159,16 +170,98 @@ done:
     fixture_close(&f);
 }
 
+/* Stake releases: exact amounts, sequence paging with constant totals,
+ * empty boundary vs unavailable source, non-boundary heights, and the
+ * release list kept out of every payout total. */
+static void test_rewards_releases(void) {
+    fixture_t f;
+    char path[256];
+    const char *aa_hex =
+        "\"address\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"";
+    CHECK(fixture_open(&f) == 0);
+    /* exact amounts at a non-payday epoch boundary */
+    CHECK(expect(&f, "/api/releases/35280", 200,
+                 "\"height\":35280,\"time\":35280000,\"total\":\"9007199254741002\",\"count\":3",
+                 "\"amount\":\"9007199254740995\",\"sequence\":0",
+                 "\"next_from\":null,\"from_height\":20000,\"at_height\":51840"));
+    CHECK(expect(&f, "/api/releases/35280", 200, aa_hex, "\"amount\":\"5\",\"sequence\":3",
+                 "\"amount\":\"2\",\"sequence\":7"));
+    /* paging: total/count constant, next_from is the first unshown sequence */
+    CHECK(expect(&f, "/api/releases/35280?limit=2", 200,
+                 "\"total\":\"9007199254741002\",\"count\":3",
+                 "\"amount\":\"5\",\"sequence\":3}],\"next_from\":7", NULL));
+    CHECK(expect(&f, "/api/releases/35280?from=4&limit=2", 200,
+                 "\"total\":\"9007199254741002\",\"count\":3",
+                 "\"releases\":[{", "\"amount\":\"2\",\"sequence\":7}],\"next_from\":null"));
+    /* a release interleaved with payouts in one boundary sequence space */
+    CHECK(expect(&f, "/api/releases/34560", 200, "\"total\":\"999\",\"count\":1",
+                 "\"amount\":\"999\",\"sequence\":1}]", aa_hex));
+    CHECK(expect(&f, "/api/payday/34560", 200, "\"total\":\"9007199254741102\",\"recipients\":101",
+                 NULL, NULL));
+    CHECK(expect(&f, "/api/payday/34560?from=1&limit=1", 200,
+                 "\"amount\":\"10\",\"sequence\":2", NULL, NULL));
+    /* an empty in-coverage boundary is a real zero ... */
+    CHECK(expect(&f, "/api/releases/36000", 200,
+                 "\"height\":36000,\"time\":36000000,\"total\":\"0\",\"count\":0,\"releases\":[],\"next_from\":null",
+                 NULL, NULL));
+    /* ... an uncovered or unindexed one, or a missing source, is not */
+    CHECK(expect(&f, "/api/releases/17280", 503, "rewards unavailable", NULL, NULL));
+    CHECK(expect(&f, "/api/releases/52560", 503, "rewards unavailable", NULL, NULL));
+    f.ctx.rewards_db_path = NULL;
+    CHECK(expect(&f, "/api/releases/36000", 503, "rewards unavailable", NULL, NULL));
+    f.ctx.rewards_db_path = f.source_path;
+    /* address: releases never enter paid_total; own list, own cursor */
+    address_path(path, 'a', "?limit=1");
+    CHECK(expect(&f, path, 200, "\"paid_total\":\"9007199254741003\",\"pending\":\"23\"",
+                 "\"next_before\":\"34560:2\",\"released_total\":\"9007199254741996\"",
+                 "\"releases\":[{\"height\":35280,\"time\":35280000,\"amount\":\"2\",\"sequence\":7}],"
+                 "\"next_release_before\":\"35280:7\"}"));
+    address_path(path, 'a', "?release_before=35280:7&limit=1");
+    CHECK(expect(&f, path, 200, "\"paid_total\":\"9007199254741003\"",
+                 "\"released_total\":\"9007199254741996\",\"releases\":[{\"height\":35280,"
+                 "\"time\":35280000,\"amount\":\"9007199254740995\",\"sequence\":0}]",
+                 "\"next_release_before\":\"35280:0\""));
+    address_path(path, 'a', "?release_before=35280:0&before=34560:2&limit=2");
+    CHECK(expect(&f, path, 200,
+                 "\"items\":[{\"height\":34560,\"time\":34560000,\"amount\":\"9007199254740993\",\"sequence\":0}],\"next_before\":null",
+                 "\"releases\":[{\"height\":34560,\"time\":34560000,\"amount\":\"999\",\"sequence\":1}],"
+                 "\"next_release_before\":null", "\"paid_total\":\"9007199254741003\""));
+    address_path(path, 'c', "");
+    CHECK(expect(&f, path, 200, "\"paid_total\":\"0\"",
+                 "\"released_total\":\"0\",\"releases\":[],\"next_release_before\":null", NULL));
+    /* a corrupt release row fails the whole request, never a partial list */
+    CHECK(sql(f.source, "UPDATE addr_history SET amount=-1 WHERE h=35280 AND seq=7") == 0);
+    CHECK(expect(&f, "/api/releases/35280", 503, NULL, NULL, NULL));
+    address_path(path, 'a', "");
+    CHECK(expect(&f, path, 503, NULL, NULL, NULL));
+done:
+    fixture_close(&f);
+}
+
 static void test_rewards_invalid_requests(void) {
     fixture_t f;
+    char path[256];
     CHECK(fixture_open(&f) == 0);
     const char *bad[] = {"/api/payday/7", "/api/payday/0", "/api/payday/34560?from=4294967296",
         "/api/payday/34560?from=-1", "/api/paydays?before=0", "/api/paydays?limit=0",
         "/api/paydays?limit=1&limit=2", "/api/paydays?before=9223372036854775808",
         "/api/paydays?before=000000000000000000000000000000000000000000000000001bad",
-        "/api/rewards/aa", "/api/payday/34560?from=1x"};
+        "/api/rewards/aa", "/api/payday/34560?from=1x",
+        /* releases: only an epoch boundary (a multiple of 720) is valid */
+        "/api/releases/35281", "/api/releases/7", "/api/releases/0", "/api/releases/",
+        "/api/releases/35280?before=1", "/api/releases/35280?release_before=1:0",
+        "/api/releases/35280?from=4294967296", "/api/releases/35280?limit=1&limit=2",
+        "/api/payday/34560?release_before=1:0", "/api/paydays?release_before=1:0"};
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
         CHECK(expect(&f, bad[i], 400, NULL, NULL, NULL));
+    const char *bad_address[] = {"?release_before=35280", "?release_before=0:1",
+        "?release_before=35280:4294967296", "?release_before=35280:7&release_before=35280:0",
+        "?release_before=9223372036854775808:0"};
+    for (size_t i = 0; i < sizeof(bad_address) / sizeof(bad_address[0]); i++) {
+        address_path(path, 'a', bad_address[i]);
+        CHECK(expect(&f, path, 400, NULL, NULL, NULL));
+    }
 done:
     fixture_close(&f);
 }
@@ -271,10 +364,11 @@ done:
 
 int main(void) {
     test_rewards_routes();
+    test_rewards_releases();
     test_rewards_invalid_requests();
     test_rewards_source_faults();
     test_rewards_snapshot_and_readonly();
     test_rewards_work_budget();
-    printf("Rewards regression groups: 5; failures: %d\n", failures);
+    printf("Rewards regression groups: 6; failures: %d\n", failures);
     return failures ? 1 : 0;
 }

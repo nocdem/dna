@@ -102,7 +102,8 @@ uint64_t exp_rewards_at_height(const exp_rewards_t *r) {
     return r ? r->at_height : 0;
 }
 
-/* Every selected payout is a native boundary row. No implicit SQLite
+/* Every selected payout or release is a native boundary row (both are
+ * written by nodus_witness_addr_index_boundary). No implicit SQLite
  * conversions: corrupt/NULL/overflowing data makes the request unavailable. */
 static int rewards_row(sqlite3_stmt *s, exp_payout_t *p) {
     uint64_t i = 0, seq = 0, seconds = 0;
@@ -128,8 +129,16 @@ static int rewards_add(exp_rewards_page_t *out, const exp_payout_t *p) {
     return 0;
 }
 
-int exp_rewards_payday(exp_rewards_t *r, uint64_t height, uint32_t from,
-                       int limit, exp_rewards_page_t *out) {
+/* The node's boundary row kinds (nodus_witness_addr_index.h
+ * NODUS_ADDR_KIND_PAYOUT / NODUS_ADDR_KIND_RELEASE). */
+static const char REWARDS_KIND_PAYOUT[] = "payout";
+static const char REWARDS_KIND_RELEASE[] = "release";
+
+/* One height's rows of one boundary kind: exact whole-height total and
+ * count, plus an inclusive-from sequence page. */
+static int rewards_boundary_scan(exp_rewards_t *r, const char *kind,
+                                 uint64_t height, uint32_t from, int limit,
+                                 exp_rewards_page_t *out) {
     if (!r || !out || limit < 0 || limit > EXP_REWARDS_MAX ||
         height < r->from_height || height > r->at_height) return -1;
     memset(out, 0, sizeof(*out));
@@ -137,9 +146,10 @@ int exp_rewards_payday(exp_rewards_t *r, uint64_t height, uint32_t from,
     /* Primary-key h range: never a scan of the entire history table. */
     if (sqlite3_prepare_v2(r->db,
             "SELECT h,i,seq,owner,amount,token,ts FROM addr_history "
-            "WHERE h=?1 AND kind='payout' ORDER BY i,seq", -1, &s, NULL)
+            "WHERE h=?1 AND kind=?2 ORDER BY i,seq", -1, &s, NULL)
         != SQLITE_OK) return -1;
     sqlite3_bind_int64(s, 1, (sqlite3_int64)height);
+    sqlite3_bind_text(s, 2, kind, -1, SQLITE_STATIC);
     int rc;
     while ((rc = sqlite3_step(s)) == SQLITE_ROW) {
         exp_payout_t p;
@@ -159,25 +169,41 @@ fail:
     return -1;
 }
 
-int exp_rewards_address(exp_rewards_t *r, const uint8_t owner[64],
-                        uint64_t before_h, uint32_t before_seq, int limit,
-                        exp_rewards_page_t *out) {
+int exp_rewards_payday(exp_rewards_t *r, uint64_t height, uint32_t from,
+                       int limit, exp_rewards_page_t *out) {
+    return rewards_boundary_scan(r, REWARDS_KIND_PAYOUT, height, from, limit,
+                                 out);
+}
+
+int exp_rewards_releases(exp_rewards_t *r, uint64_t height, uint32_t from,
+                         int limit, exp_rewards_page_t *out) {
+    return rewards_boundary_scan(r, REWARDS_KIND_RELEASE, height, from, limit,
+                                 out);
+}
+
+/* One owner's rows of one boundary kind within coverage: exact total and
+ * a (height,sequence)-descending page before the exclusive cursor. */
+static int rewards_owner_scan(exp_rewards_t *r, const char *kind,
+                              const uint8_t owner[64], uint64_t before_h,
+                              uint32_t before_seq, int limit,
+                              exp_rewards_page_t *out) {
     if (!r || !owner || !out || limit < 1 || limit > EXP_REWARDS_MAX ||
         before_h > INT64_MAX) return -1;
     memset(out, 0, sizeof(*out));
     sqlite3_stmt *s = NULL;
-    /* A single owner-index range supplies BOTH the exact paid total and
+    /* A single owner-index range supplies BOTH the exact total and the
      * requested page. The VM budget bounds an address with huge history;
      * exhaustion is 503, never a partial total or a false zero. */
     if (sqlite3_prepare_v2(r->db,
             "SELECT h,i,seq,owner,amount,token,ts FROM addr_history "
             "INDEXED BY idx_addr_history_owner "
-            "WHERE owner=?1 AND h>=?2 AND h<=?3 AND kind='payout' "
+            "WHERE owner=?1 AND h>=?2 AND h<=?3 AND kind=?4 "
             "ORDER BY h DESC,i DESC,seq DESC", -1, &s, NULL) != SQLITE_OK)
         return -1;
     sqlite3_bind_blob(s, 1, owner, 64, SQLITE_STATIC);
     sqlite3_bind_int64(s, 2, (sqlite3_int64)r->from_height);
     sqlite3_bind_int64(s, 3, (sqlite3_int64)r->at_height);
+    sqlite3_bind_text(s, 4, kind, -1, SQLITE_STATIC);
     int rc;
     while ((rc = sqlite3_step(s)) == SQLITE_ROW) {
         exp_payout_t p;
@@ -188,8 +214,27 @@ int exp_rewards_address(exp_rewards_t *r, const uint8_t owner[64],
             else out->has_next = 1;
         }
     }
-    sqlite3_finalize(s); s = NULL;
-    if (rc != SQLITE_DONE) return -1;
+    sqlite3_finalize(s);
+    return rc == SQLITE_DONE ? 0 : -1;
+fail:
+    sqlite3_finalize(s);
+    return -1;
+}
+
+int exp_rewards_address_releases(exp_rewards_t *r, const uint8_t owner[64],
+                                 uint64_t before_h, uint32_t before_seq,
+                                 int limit, exp_rewards_page_t *out) {
+    return rewards_owner_scan(r, REWARDS_KIND_RELEASE, owner, before_h,
+                              before_seq, limit, out);
+}
+
+int exp_rewards_address(exp_rewards_t *r, const uint8_t owner[64],
+                        uint64_t before_h, uint32_t before_seq, int limit,
+                        exp_rewards_page_t *out) {
+    if (rewards_owner_scan(r, REWARDS_KIND_PAYOUT, owner, before_h,
+                           before_seq, limit, out) != 0) return -1;
+    sqlite3_stmt *s = NULL;
+    int rc;
     if (sqlite3_prepare_v2(r->db,
             "SELECT amount FROM v2_reward_accrual WHERE owner_fp=?1",
             -1, &s, NULL) != SQLITE_OK) return -1;

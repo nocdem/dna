@@ -135,10 +135,31 @@
       ? t(`Payout records from block ${data.from_height}; pending rewards at block ${data.at_height}.`, `Ödeme kayıtları ${data.from_height}. bloktan itibaren; bekleyen ödüller ${data.at_height}. blok itibarıyla.`)
       : t(`Payout records from block ${data.from_height}; source at block ${data.at_height}.`, `Ödeme kayıtları ${data.from_height}. bloktan itibaren; kaynak ${data.at_height}. blok itibarıyla.`);
   }
+  function releaseCoverageText(data) {
+    return t(`Stake release records from block ${data.from_height}; source at block ${data.at_height}.`, `Stake serbest bırakma kayıtları ${data.from_height}. bloktan itibaren; kaynak ${data.at_height}. blok itibarıyla.`);
+  }
+  // A list's status texts. Payouts are the default; stake releases (returned stake, not a
+  // reward — explorer /api/releases and the releases list of /api/rewards) pass their own.
+  const payoutTexts = {
+    loading: t('Loading payouts…', 'Ödemeler yükleniyor…'),
+    more: t('Load more payouts', 'Daha fazla ödeme yükle'),
+    unexpected: t('Unexpected payout response.', 'Beklenmeyen ödeme yanıtı.'),
+    changed: t('Payout records changed. Refresh to load current history.', 'Ödeme kayıtları değişti. Güncel geçmişi yüklemek için yenile.'),
+    cursor: t('Unexpected payout cursor.', 'Beklenmeyen ödeme sayfası sınırı.'),
+    unavailable: t('Payout data unavailable. ', 'Ödeme verisi alınamıyor. ')
+  };
+  const releaseTexts = {
+    loading: t('Loading stake releases…', 'Serbest bırakılan stake yükleniyor…'),
+    more: t('Load more stake releases', 'Daha fazla serbest bırakılan stake yükle'),
+    unexpected: t('Unexpected stake release response.', 'Beklenmeyen stake serbest bırakma yanıtı.'),
+    changed: t('Stake release records changed. Refresh to load current history.', 'Stake serbest bırakma kayıtları değişti. Güncel geçmişi yüklemek için yenile.'),
+    cursor: t('Unexpected stake release cursor.', 'Beklenmeyen stake serbest bırakma sayfası sınırı.'),
+    unavailable: t('Stake release data unavailable. ', 'Stake serbest bırakma verisi alınamıyor. ')
+  };
   // Every payout list owns its cursor and in-flight request. Loading block transactions or
   // address transactions cannot alter it, and refreshing invalidates an older page request.
   // Totals and coverage stay at the first-page snapshot while immutable older rows load.
-  function payoutPager({ body, button, status, columns, empty, path, validate, items, cursor, render, summary }) {
+  function payoutPager({ body, button, status, columns, empty, path, validate, items, cursor, render, summary, texts = payoutTexts }) {
     let next = null, busy = false, request = 0, expanded = false, snapshot = null;
     async function load(append = false) {
       if (append && (busy || next === null)) return;
@@ -146,18 +167,18 @@
       busy = true; button.disabled = true; status.replaceChildren();
       if (!append) {
         next = null; expanded = false; snapshot = null; button.hidden = true;
-        messageRow(body, t('Loading payouts…', 'Ödemeler yükleniyor…'), columns);
+        messageRow(body, texts.loading, columns);
       }
       body.setAttribute('aria-busy', 'true');
       try {
         const data = await api(path(append ? next : null));
         if (current !== request) return;
-        if (!validate(data)) throw new Error(t('Unexpected payout response.', 'Beklenmeyen ödeme yanıtı.'));
+        if (!validate(data)) throw new Error(texts.unexpected);
         if (append && (!snapshot || data.from_height !== snapshot.from_height || data.at_height < snapshot.at_height)) {
-          throw new Error(t('Payout records changed. Refresh to load current history.', 'Ödeme kayıtları değişti. Güncel geçmişi yüklemek için yenile.'));
+          throw new Error(texts.changed);
         }
         const records = items(data), rows = records.map(render), following = cursor(data);
-        if (append && following !== null && following === next) throw new Error(t('Unexpected payout cursor.', 'Beklenmeyen ödeme sayfası sınırı.'));
+        if (append && following !== null && following === next) throw new Error(texts.cursor);
         if (append) { body.append(...rows); expanded = true; }
         else if (rows.length) body.replaceChildren(...rows);
         else messageRow(body, empty, columns);
@@ -169,7 +190,7 @@
       } catch (error) {
         if (current !== request) return;
         if (append) errorBox(status, error);
-        else messageRow(body, t('Payout data unavailable. ', 'Ödeme verisi alınamıyor. ') + error.message, columns, true);
+        else messageRow(body, texts.unavailable + error.message, columns, true);
       } finally {
         if (current === request) { busy = false; button.disabled = false; body.setAttribute('aria-busy', 'false'); }
       }
@@ -177,12 +198,12 @@
     button.addEventListener('click', () => load(true));
     return { load, get expanded() { return expanded; }, get busy() { return busy; } };
   }
-  function payoutSection(id, title, headers) {
+  function payoutSection(id, title, headers, texts = payoutTexts) {
     const section = el('section'); section.id = id;
     const summary = el('div'); summary.id = id + '-summary';
     const coverage = el('p', '', 'scan-explanation'); coverage.id = id + '-coverage';
-    const dataTable = table(headers, [], t('Loading payouts…', 'Ödemeler yükleniyor…'), id + '-tbody');
-    const button = el('button', t('Load more payouts', 'Daha fazla ödeme yükle'), 'btn-secondary payout-more');
+    const dataTable = table(headers, [], texts.loading, id + '-tbody');
+    const button = el('button', texts.more, 'btn-secondary payout-more');
     button.id = id + '-more'; button.type = 'button'; button.hidden = true;
     const status = el('div'); status.id = id + '-error'; status.setAttribute('role', 'status');
     section.append(el('h2', title), summary, coverage, dataTable, status, button);
@@ -215,6 +236,43 @@
       summary: data => {
         view.summary.replaceChildren(fields([[t('Recorded payouts', 'Kaydedilmiş ödemeler'), money(data.paid_total)], [t('Pending next payout', 'Sonraki ödeme için biriken'), money(data.pending)]]));
         view.coverage.textContent = coverageText(data, true);
+      }
+    }).load();
+  }
+  // Stake releases (explorer /api/releases/<height>): the validator bonds and delegations the
+  // chain returned at an epoch boundary (a multiple of 720 blocks). The node records both under
+  // one kind, so the two are not told apart here. Returned stake, not a reward.
+  const releaseNote = () => el('p', t('A stake release returns a validator bond or a delegation to its owner at an epoch boundary. It is the owner’s own stake coming back, not a reward, and is not counted in payouts.', 'Stake serbest bırakma, bir validator teminatını veya bir delegasyonu bir epoch sınırında sahibine geri verir. Sahibin kendi stake’inin geri dönüşüdür; ödül değildir ve ödemelere sayılmaz.'), 'scan-explanation');
+  function loadBlockReleases(height, content) {
+    const view = payoutSection('block-releases', t('Stake released', 'Serbest bırakılan stake'), [t('Owner address', 'Sahip adresi'), t('Amount', 'Tutar')], releaseTexts);
+    view.section.append(releaseNote());
+    content.append(view.section);
+    return payoutPager({ ...view, columns: 2, texts: releaseTexts, empty: t('No stake released at this block.', 'Bu blokta serbest bırakılan stake yok.'),
+      path: from => '/releases/' + height + '?limit=100' + (from === null ? '' : '&from=' + apiValue(from)),
+      validate: data => rewardCoverage(data) && data.height === height && rawMoney(data.total) && nonnegativeInteger(data.count) && Array.isArray(data.releases) && data.releases.every(payoutRecipient) && (data.next_from === null || nonnegativeInteger(data.next_from)),
+      items: data => data.releases, cursor: data => data.next_from,
+      render: item => row([hash(item.address, 'address.html?fp=' + encodeURIComponent(item.address)), money(item.amount)]),
+      summary: data => {
+        view.summary.replaceChildren(el('p', t(`Stake released: ${data.count}, total ${money(data.total)}`, `Serbest bırakılan stake: ${data.count}, toplam ${money(data.total)}`)));
+        view.coverage.textContent = releaseCoverageText(data);
+      }
+    }).load();
+  }
+  // The address's stake releases: the releases list of /api/rewards/<fp>, paged by its own
+  // release_before cursor, independent of the payout list and of paid_total.
+  function loadAddressReleases(content) {
+    const view = payoutSection('address-releases', t('Stake released', 'Serbest bırakılan stake'), [t('Release block', 'Serbest bırakma bloğu'), t('Time', 'Zaman'), t('Amount', 'Tutar')], releaseTexts);
+    view.summary.replaceChildren(fields([[t('Stake released', 'Serbest bırakılan stake'), '—']]));
+    view.section.append(releaseNote());
+    content.append(view.section);
+    return payoutPager({ ...view, columns: 3, texts: releaseTexts, empty: t('No stake released to this address in the recorded period.', 'Kayıtlı dönemde bu adrese serbest bırakılan stake yok.'),
+      path: before => '/rewards/' + apiValue(identifier) + '?limit=25' + (before === null ? '' : '&release_before=' + apiValue(before)),
+      validate: data => rewardCoverage(data) && data.address === identifier && rawMoney(data.released_total) && Array.isArray(data.releases) && data.releases.every(rewardItem) && rewardCursor(data.next_release_before),
+      items: data => data.releases, cursor: data => data.next_release_before,
+      render: item => row([link('block.html?h=' + encodeURIComponent(item.height), item.height), time(item.time), money(item.amount)]),
+      summary: data => {
+        view.summary.replaceChildren(fields([[t('Stake released', 'Serbest bırakılan stake'), money(data.released_total)]]));
+        view.coverage.textContent = releaseCoverageText(data);
       }
     }).load();
   }
@@ -372,10 +430,12 @@
       [t('Applied transactions','Uygulanan işlemler'), b.applied_count], [t('Items in block','Bloktaki kayıtlar'), itemCount(b.n_items)]
     ]));
     const payouts = nonnegativeInteger(b.height) && b.height > 0 && b.height % 17280 === 0 ? loadBlockPayouts(b.height, content) : Promise.resolve();
+    // Stake can be released at every epoch boundary (a multiple of 720); a payday block shows both.
+    const releases = nonnegativeInteger(b.height) && b.height > 0 && b.height % 720 === 0 ? loadBlockReleases(b.height, content) : Promise.resolve();
     content.append(el('h2', t('Transactions','İşlemler')), table([t('Position','Konum'),t('Type','Tür'),t('Fee','Ücret'),t('Wire ID','Kablo kimliği')], data.items.map(itemRow), t('No transactions in this block.','Bu blokta işlem yok.'), 'block-items-tbody'));
     nextCursor = Number.isSafeInteger(data.next_from) ? data.next_from : null;
     content.append(...moreButton(() => loadMore('/block/' + apiValue(identifier) + '?from=', 'block-items-tbody', 'items', itemRow, d => Number.isSafeInteger(d.next_from) ? d.next_from : null)));
-    return payouts;
+    return Promise.all([payouts, releases]);
   }
   const recordNames = { stake: t('Stake','Stake'), delegate: t('Delegation','Delegasyon'), unstake: t('Unstake','Stake çözme'), undelegate: t('Undelegation','Delegasyon çözme'), validator_update: t('Validator update','Doğrulayıcı güncellemesi'), chain_config: t('Chain configuration','Zincir yapılandırması') };
   function renderRecord(record) {
@@ -421,11 +481,11 @@
     if (data.balance_status === 'ok' && Array.isArray(data.balances)) {
       content.append(el('h2', t('Balances by token', 'Token bazında bakiyeler')), table([t('Token','Token'),t('Total','Toplam'),t('Spendable now','Şu an harcanabilir'),t('Coins','Coin sayısı')], data.balances.filter(b => b && typeof b === 'object').map(balanceRow), t('This address holds no coins.', 'Bu adreste coin yok.')));
     }
-    const rewards = loadAddressRewards(content);
+    const rewards = loadAddressRewards(content), releases = loadAddressReleases(content);
     nextCursor = typeof data.next_before === 'string' ? data.next_before : null;
     content.append(el('h2',t('Transaction history','İşlem geçmişi')),table([t('Position','Konum'),t('Type','Tür'),t('Height','Yükseklik'),t('Time','Zaman'),t('Fee','Ücret')],data.items.map(historyRow),t('No transactions for this address.','Bu adres için işlem yok.'),'address-history-tbody'));
     content.append(...moreButton(() => loadMore('/address/' + apiValue(identifier) + '?limit=25&before=', 'address-history-tbody', 'items', historyRow, d => typeof d.next_before === 'string' ? d.next_before : null)));
-    return rewards;
+    return Promise.all([rewards, releases]);
   }
   async function loadMore(prefix, tbodyId, key, render, cursorOf) {
     if (historyLoading || nextCursor === null) return;
