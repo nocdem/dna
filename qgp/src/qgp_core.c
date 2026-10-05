@@ -70,6 +70,7 @@ static const char *const g_rc_names[QGP_E__COUNT] = {
     [QGP_E_BAD_ARCHITECTURE]         = "bad_architecture",
     [QGP_E_BELOW_FLOOR]              = "below_trust_floor",
     [QGP_E_DOWNGRADE]                = "below_highest_accepted_version",
+    [QGP_E_BOOTSTRAP_SERIAL]         = "bootstrap_must_start_at_serial_1",
 };
 
 const char *qgp_rc_str(qgp_rc_t rc)

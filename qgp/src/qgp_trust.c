@@ -13,7 +13,10 @@
  *  R-SERIAL  serial strictly greater than stored; gaps allowed;
  *  R-SIGNER  the signer is checked against the STORED state only (a key may
  *            sign the file that revokes itself);
- *  R-BOOT    bootstrap: signer must be a key of its own body; any serial;
+ *  R-BOOT    bootstrap: signer must be a key of its own body; any serial here
+ *            (oracle reading). `qgp trust-accept --bootstrap` additionally
+ *            requires the first file to be serial 1 (bootstrap = the whole
+ *            chain, docs/plans/decisions/2026-10-03-apt-repo-qgp.md);
  *  R-MONO    stored floors kept and >= (Debian comparison); new floors allowed;
  *            stored revocations kept.
  * One reading is STRICTER than the oracle (R-FLOORTOK left the grammar open):

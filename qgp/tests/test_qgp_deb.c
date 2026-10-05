@@ -510,10 +510,33 @@ static void test_real_packages(json_object *kat, const tkey_t *a, const tkey_t *
         blob_free(&prefix);
     }
 
-    /* file signature (deviation: not in the approved bytes) */
+    /* file signature (approved 2026-10-05, decisions/2026-10-03-apt-repo-qgp.md) */
     const uint8_t data[] = "qgp file signature test\n";
     uint8_t sig[QGP_SIG_LEN], m[QGP_M_FILE_LEN];
-    CHECK(qgp_filesig_msg_v1_UNAPPROVED(data, sizeof(data) - 1, m) == QGP_OK, "file msg");
+    CHECK(qgp_filesig_msg_v1(data, sizeof(data) - 1, m) == QGP_OK, "file msg");
+    {
+        /* M_file = "NDS.QGPFILE.v1" (14) + 0x00 0x00 = 16 | file_len(8, BE) | SHA3-512(file) = 88,
+         * checked against the literal string, not the implementation's tag array. */
+        static const char tag_str[] = "NDS.QGPFILE.v1";
+        uint8_t h[QGP_HASH_LEN];
+        CHECK(sizeof(m) == 88 && QGP_M_FILE_LEN == 88, "file msg is exactly 88 bytes");
+        CHECK(strlen(tag_str) == 14 && memcmp(m, tag_str, 14) == 0, "file msg tag text");
+        CHECK(m[14] == 0x00 && m[15] == 0x00, "file msg tag zero padding to 16");
+        static const uint8_t len_be[8] = { 0, 0, 0, 0, 0, 0, 0, (uint8_t)(sizeof(data) - 1) };
+        CHECK(memcmp(m + 16, len_be, 8) == 0, "file msg length big-endian at [16,24)");
+        qgp_sha3_512(data, sizeof(data) - 1, h);
+        CHECK(memcmp(m + 24, h, QGP_HASH_LEN) == 0 && 24 + QGP_HASH_LEN == 88,
+              "file msg SHA3-512 at [24,88)");
+        /* empty file: NULL data with length 0 */
+        uint8_t m0[QGP_M_FILE_LEN], h0[QGP_HASH_LEN];
+        static const uint8_t zero8[8] = { 0 };
+        static const uint8_t empty = 0;
+        CHECK(qgp_filesig_msg_v1(NULL, 0, m0) == QGP_OK, "file msg: empty file");
+        qgp_sha3_512(&empty, 0, h0);
+        CHECK(memcmp(m0, tag_str, 14) == 0 && m0[14] == 0 && m0[15] == 0 &&
+              memcmp(m0 + 16, zero8, 8) == 0 && memcmp(m0 + 24, h0, QGP_HASH_LEN) == 0,
+              "file msg: empty file layout");
+    }
     {
         static const uint8_t tag[16] = { 'N','D','S','.','Q','G','P','F','I','L','E','.','v','1',0,0 };
         uint8_t h[QGP_HASH_LEN];
@@ -521,16 +544,16 @@ static void test_real_packages(json_object *kat, const tkey_t *a, const tkey_t *
         CHECK(memcmp(m, tag, 16) == 0 && qgp_be64_get(m + 16) == sizeof(data) - 1 &&
               memcmp(m + 24, h, QGP_HASH_LEN) == 0, "file msg layout");
     }
-    CHECK(qgp_filesig_sign_v1_UNAPPROVED(data, sizeof(data) - 1, a->sk, a->pk, sig) == QGP_OK, "file sign");
-    CHECK(qgp_filesig_verify_v1_UNAPPROVED(data, sizeof(data) - 1, sig, sizeof(sig), a->pk) == QGP_OK,
+    CHECK(qgp_filesig_sign_v1(data, sizeof(data) - 1, a->sk, a->pk, sig) == QGP_OK, "file sign");
+    CHECK(qgp_filesig_verify_v1(data, sizeof(data) - 1, sig, sizeof(sig), a->pk) == QGP_OK,
           "file verify");
-    CHECK(qgp_filesig_verify_v1_UNAPPROVED(data, sizeof(data) - 2, sig, sizeof(sig), a->pk) == QGP_E_SIGNATURE,
+    CHECK(qgp_filesig_verify_v1(data, sizeof(data) - 2, sig, sizeof(sig), a->pk) == QGP_E_SIGNATURE,
           "file verify: truncated data");
-    CHECK(qgp_filesig_verify_v1_UNAPPROVED(data, sizeof(data) - 1, sig, sizeof(sig), b->pk) == QGP_E_SIGNATURE,
+    CHECK(qgp_filesig_verify_v1(data, sizeof(data) - 1, sig, sizeof(sig), b->pk) == QGP_E_SIGNATURE,
           "file verify: wrong key");
-    CHECK(qgp_filesig_verify_v1_UNAPPROVED(data, sizeof(data) - 1, sig, sizeof(sig) - 1, a->pk) == QGP_E_SIG_LEN,
+    CHECK(qgp_filesig_verify_v1(data, sizeof(data) - 1, sig, sizeof(sig) - 1, a->pk) == QGP_E_SIG_LEN,
           "file verify: short signature");
-    CHECK(qgp_filesig_sign_v1_UNAPPROVED(data, sizeof(data) - 1, a->sk, b->pk, sig) == QGP_E_KEY_MISMATCH,
+    CHECK(qgp_filesig_sign_v1(data, sizeof(data) - 1, a->sk, b->pk, sig) == QGP_E_KEY_MISMATCH,
           "file sign: sk/pk mismatch");
 
     qgp_trust_state_free(&st_a);

@@ -1,7 +1,8 @@
 /**
- * qgp_filesig.c - detached file signature. NOT IN THE APPROVED BYTES; see
- * qgp_filesig.h. Pure ML-DSA-87 (empty context) over a tagged message, the same
- * construction the approved §1/§2 messages use.
+ * qgp_filesig.c - detached file signature, format APPROVED 2026-10-05
+ * (docs/plans/decisions/2026-10-03-apt-repo-qgp.md; layout in qgp_filesig.h).
+ * Pure ML-DSA-87 (empty context) over a tagged message, the same construction
+ * the approved §1/§2 messages use.
  */
 #include "qgp_filesig.h"
 
@@ -13,9 +14,11 @@
 static const uint8_t TAG_FILE[QGP_TAG_LEN] = {
     'N', 'D', 'S', '.', 'Q', 'G', 'P', 'F', 'I', 'L', 'E', '.', 'v', '1', 0, 0
 };
+_Static_assert(QGP_TAG_LEN == 16, "file tag length");
+_Static_assert(QGP_M_FILE_LEN == 88, "M_file length");
 
-qgp_rc_t qgp_filesig_msg_v1_UNAPPROVED(const uint8_t *data, size_t len,
-                                       uint8_t out[QGP_M_FILE_LEN])
+qgp_rc_t qgp_filesig_msg_v1(const uint8_t *data, size_t len,
+                            uint8_t out[QGP_M_FILE_LEN])
 {
     static const uint8_t empty = 0;
     if ((!data && len != 0) || !out)
@@ -29,15 +32,15 @@ qgp_rc_t qgp_filesig_msg_v1_UNAPPROVED(const uint8_t *data, size_t len,
     return QGP_OK;
 }
 
-qgp_rc_t qgp_filesig_sign_v1_UNAPPROVED(const uint8_t *data, size_t len,
-                                        const uint8_t sk[QGP_SK_LEN],
-                                        const uint8_t pk[QGP_PK_LEN],
-                                        uint8_t sig[QGP_SIG_LEN])
+qgp_rc_t qgp_filesig_sign_v1(const uint8_t *data, size_t len,
+                             const uint8_t sk[QGP_SK_LEN],
+                             const uint8_t pk[QGP_PK_LEN],
+                             uint8_t sig[QGP_SIG_LEN])
 {
     if (!sk || !pk || !sig)
         return QGP_E_ARG;
     uint8_t m[QGP_M_FILE_LEN];
-    qgp_rc_t rc = qgp_filesig_msg_v1_UNAPPROVED(data, len, m);
+    qgp_rc_t rc = qgp_filesig_msg_v1(data, len, m);
     if (rc != QGP_OK)
         return rc;
     size_t sig_len = 0;
@@ -48,16 +51,16 @@ qgp_rc_t qgp_filesig_sign_v1_UNAPPROVED(const uint8_t *data, size_t len,
     return QGP_OK;
 }
 
-qgp_rc_t qgp_filesig_verify_v1_UNAPPROVED(const uint8_t *data, size_t len,
-                                          const uint8_t *sig, size_t sig_len,
-                                          const uint8_t pk[QGP_PK_LEN])
+qgp_rc_t qgp_filesig_verify_v1(const uint8_t *data, size_t len,
+                               const uint8_t *sig, size_t sig_len,
+                               const uint8_t pk[QGP_PK_LEN])
 {
     if (!sig || !pk)
         return QGP_E_ARG;
     if (sig_len != QGP_SIG_LEN)
         return QGP_E_SIG_LEN;
     uint8_t m[QGP_M_FILE_LEN];
-    qgp_rc_t rc = qgp_filesig_msg_v1_UNAPPROVED(data, len, m);
+    qgp_rc_t rc = qgp_filesig_msg_v1(data, len, m);
     if (rc != QGP_OK)
         return rc;
     if (qgp_dsa87_verify(sig, sig_len, m, sizeof(m), pk) != 0)

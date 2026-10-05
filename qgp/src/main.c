@@ -10,6 +10,12 @@
  *   qgp deb-verify <deb> --trust <dir> [--allow-downgrade]
  *   qgp trust-make <body> <sk> --serial <n> --out <file> [--prev <trust-file>]
  *   qgp trust-accept <trust-file>... --trust <dir> [--bootstrap]
+ *                                            accepts the files in the order given.
+ *                                            --bootstrap (empty <dir> only) takes the
+ *                                            WHOLE chain f1 ... fN: f1 must be serial 1
+ *                                            with a zero prev_digest, each later file
+ *                                            chains to the one before it (decision
+ *                                            docs/plans/decisions/2026-10-03-apt-repo-qgp.md)
  *
  * stdout carries command results only; diagnostics go through QGP_LOG_* (stderr).
  * Exit status: 0 success, 1 refused / failed, 2 usage error. Every failure is a
@@ -54,7 +60,8 @@ static int usage(void)
         "usage: qgp keygen <out> | sign <file> <sk> [--out <sig>] | verify <file> <sig> <pk> | "
         "deb-sign <deb> <sk> | deb-verify <deb> --trust <dir> [--allow-downgrade] | "
         "trust-make <body> <sk> --serial <n> --out <file> [--prev <trust-file>] | "
-        "trust-accept <trust-file>... --trust <dir> [--bootstrap]");
+        "trust-accept <trust-file>... --trust <dir> [--bootstrap]  "
+        "(--bootstrap: the whole chain in order, first file serial 1)");
     return EXIT_USAGE;
 }
 
@@ -154,7 +161,7 @@ static int cmd_sign(int argc, char **argv)
     size_t len = 0;
     rc = qgp_io_read_file(pos[0], QGP_FILE_MAX, &data, &len);
     if (rc == QGP_OK)
-        rc = qgp_filesig_sign_v1_UNAPPROVED(data, len, sk, pk, sig);
+        rc = qgp_filesig_sign_v1(data, len, sk, pk, sig);
     qgp_secure_memzero(sk, sizeof(sk));
     free(data);
     if (rc == QGP_OK)
@@ -181,7 +188,7 @@ static int cmd_verify(int argc, char **argv)
     if (rc == QGP_OK)
         rc = qgp_io_read_file(argv[0], QGP_FILE_MAX, &data, &len);
     if (rc == QGP_OK)
-        rc = qgp_filesig_verify_v1_UNAPPROVED(data, len, sig, sig_len, pk);
+        rc = qgp_filesig_verify_v1(data, len, sig, sig_len, pk);
     free(sig);
     free(data);
     if (rc != QGP_OK)
@@ -386,9 +393,12 @@ static int cmd_trust_accept(int argc, char **argv)
             rc = QGP_E_STATE_EXISTS;
         }
     } else if (rc == QGP_E_NO_TRUST_STATE && bootstrap) {
-        QGP_LOG_WARN(LOG_TAG, "BOOTSTRAP: pinning %s; it must have been checked by hand", files[0]);
+        QGP_LOG_WARN(LOG_TAG, "BOOTSTRAP: pinning %s as the start of the chain; the whole chain "
+                     "(serial 1 with a zero prev_digest, then every later file in order) must "
+                     "have been checked by hand", files[0]);
         rc = QGP_OK;
     }
+    const int bootstrapping = (rc == QGP_OK && !have_stored);
 
     /* Files in serial order; each one is stored before the next is checked
      * against it (R2-3: every intermediate file, in order). */
@@ -407,7 +417,19 @@ static int cmd_trust_accept(int argc, char **argv)
             char hex[2 * QGP_HASH_LEN + 1];
             qgp_hex_encode(tf.signer, QGP_HASH_LEN, hex);
             qgp_trust_file_free(&tf);
-            rc = qgp_state_store_trust(dir, f, f_len);
+            /* Bootstrap = the WHOLE chain from serial 1 (decision
+             * 2026-10-03-apt-repo-qgp). The library accepts any serial at
+             * bootstrap (oracle reading R-BOOT); the zero prev_digest is already
+             * enforced there, because the bootstrap M_trust is built with zeros.
+             * Checked before anything is stored. */
+            if (bootstrapping && i == 0 && serial != 1) {
+                QGP_LOG_ERROR(LOG_TAG, "%s: --bootstrap needs the whole trust chain: the first "
+                              "file must be serial 1 (got serial %llu), the rest follow in order",
+                              files[i], (unsigned long long)serial);
+                rc = QGP_E_BOOTSTRAP_SERIAL;
+            }
+            if (rc == QGP_OK)
+                rc = qgp_state_store_trust(dir, f, f_len);
             if (rc == QGP_OK) {
                 if (have_stored)
                     qgp_trust_stored_free(&stored);
@@ -421,8 +443,13 @@ static int cmd_trust_accept(int argc, char **argv)
                 accepted++;
             }
         }
-        if (rc != QGP_OK)
+        if (rc != QGP_OK) {
             QGP_LOG_ERROR(LOG_TAG, "%s: REFUSED (%s)", files[i], qgp_rc_str(rc));
+            if (bootstrapping && i == 0)
+                QGP_LOG_ERROR(LOG_TAG, "--bootstrap: the first file must be the start of the "
+                              "chain (serial 1, signed with a zero prev_digest by a key of its "
+                              "own body); pass the whole chain f1 ... fN in order");
+        }
         free(f);
     }
     if (have_stored)

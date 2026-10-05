@@ -108,6 +108,8 @@ typedef enum {
     QGP_E_BAD_ARCHITECTURE,
     QGP_E_BELOW_FLOOR,
     QGP_E_DOWNGRADE,
+    /* trust-accept --bootstrap: the chain must start at serial 1 (decision 2026-10-03-apt-repo-qgp) */
+    QGP_E_BOOTSTRAP_SERIAL,
     QGP_E__COUNT
 } qgp_rc_t;
 
