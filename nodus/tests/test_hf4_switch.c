@@ -97,11 +97,11 @@
  *    ctx fill is not induced here (no fault-injection hook reaches the
  *    chain_config read).
  *  - F / F2 (storage): the GEN_STORAGE pins and the storage vote literal
- *    are NOT FILLED yet (STORAGE-ORACLE markers): until the oracle fills
- *    them the runtime selfcheck fails, the seeded genesis refuses, and
- *    EVERY engine case in this file fails at fx_open — not a pass, not a
- *    skip. F pins the v4 / v5 roots by SELF-CONSISTENCY (committed ==
- *    recomputed through the two loader functions), not by an oracle
+ *    are independent-oracle literals (shared/dnac/tests/storage_oracle.py);
+ *    if they ever stop re-deriving, the runtime selfcheck fails, the
+ *    seeded genesis refuses, and EVERY engine case in this file fails at
+ *    fx_open — not a pass, not a skip. F pins the v4 / v5 roots by
+ *    SELF-CONSISTENCY (committed == recomputed through the two loader functions), not by an oracle
  *    literal; the v5 composition bytes are pinned by package A's KAT
  *    (test_roots_v2.c). No storage row exists here — the register / exit
  *    path is test_storage_reg.c.

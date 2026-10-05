@@ -98,11 +98,11 @@
  * (left behind when a CHECK aborts).
  *
  * ── HOW IT CAN LIE ──────────────────────────────────────────────────────
- *  - ⚠ The GEN_STORAGE pins and the storage vote literal are NOT FILLED
- *    (STORAGE-ORACLE markers, nodus_witness_runtime.c / dnac.h): until the
- *    independent oracle fills them the runtime selfcheck fails, so section
- *    D FAILS at its seeded genesis. Sections A, B and C do not consult the
- *    pins. A failure in D before the pins are filled is expected.
+ *  - The GEN_STORAGE pins and the storage vote literal are independent-
+ *    oracle literals (shared/dnac/tests/storage_oracle.py,
+ *    nodus_witness_runtime.c / dnac.h). If they stop re-deriving, the
+ *    runtime selfcheck fails and section D FAILS at its seeded genesis.
+ *    Sections A, B and C do not consult the pins.
  *  - Section D's eight segments are PRE-SEEDED rows (roots = SHA3-512 of
  *    a test string, published_height 1), a state the chain never writes:
  *    a real publication needs 17,280 + 2E blocks. They are absorbed into

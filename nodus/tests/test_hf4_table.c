@@ -53,11 +53,13 @@
  *       package B2); the generation-2 and NULL CORE read_plan refuse a
  *       SYSFUND leg paired with a storage op.
  *  HOW IT CAN LIE (storage): the GEN_STORAGE pins and the storage vote
- *  literal are NOT FILLED (STORAGE-ORACLE markers in
- *  nodus_witness_runtime.c / dnac.h). Until the independent oracle fills
- *  them, section 5 (selfcheck) and the 6' re-derivation FAIL — by design,
- *  the HF-4 A1 precedent. Section 8 feeds views without call bytes, so its
- *  GEN_STORAGE case proves only the parse / B2 refusals; the register /
+ *  literal are independent-oracle literals (shared/dnac/tests/
+ *  storage_oracle.py, nodus_witness_runtime.c / dnac.h); section 5
+ *  (selfcheck) and the 6' re-derivation prove the C encoders agree with
+ *  that oracle, not that the PROVISIONAL generation number / op ids /
+ *  versions (main merge order) are final. Section 8 feeds views without
+ *  call bytes, so its GEN_STORAGE case proves only the parse / B2
+ *  refusals; the register /
  *  exit execution matrix is test_storage_reg.c.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
@@ -306,8 +308,8 @@ int main(void) {
                                      &d) == 0);
         CHECK(d == (uint64_t)DNAC_CFG_RULESET_GEN2_D2);
         /* storage reward v1: the storage vote literal re-derives from the
-         * compiled GEN_STORAGE pins (FAILS until the STORAGE-ORACLE
-         * markers are filled — header "HOW IT CAN LIE") */
+         * compiled GEN_STORAGE pins (both from storage_oracle.py —
+         * header "HOW IT CAN LIE") */
         CHECK(dna_ruleset_gen_digest(NODUS_RT_GEN_STORAGE,
                                      g3[0].ruleset_hash, g3[1].ruleset_hash,
                                      DNAC_RULESET_SWITCH_SPEC_VERSION,

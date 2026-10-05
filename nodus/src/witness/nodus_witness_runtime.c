@@ -49,9 +49,15 @@
  * design.md rev 2.2 §6): a third generation, GEN_STORAGE (SYSTEM v8 —
  * ops 7..9 STORAGE_REGISTER / STORAGE_EXIT / STORAGE_REPORT appended,
  * policy ops 1..9 — / CORE v6), reached from generation 2 by the same
- * phase-6b' switch on the chain_config param-14 vote. ⚠ ITS PINS ARE NOT
- * FILLED (STORAGE-ORACLE markers): until the independent oracle supplies
- * them, selfcheck fails and the node refuses to start.
+ * phase-6b' switch on the chain_config param-14 vote. Its pins (and the
+ * vote literal in dnac.h) are INDEPENDENT-oracle literals from
+ * shared/dnac/tests/storage_oracle.py, whose control legs reproduced
+ * every generation-1 and generation-2 pin and D2 first; selfcheck
+ * re-derives them on every start. The generation number (3), the SYSTEM
+ * op ids 7..9 and the versions SYSTEM v8 / CORE v6 are PROVISIONAL:
+ * assigned in main merge order (decision 2026-10-04-storage-reward-
+ * approved.md) — if another generation merges first, the oracle is re-run
+ * and every storage pin moves.
  *
  * @file nodus_witness_runtime.c
  */
@@ -205,17 +211,28 @@ static const uint8_t SYS_METER_POLICY_DIGEST_G2[DNA_DOM_HASH_LEN] = {
  * domains), so op 9 is the one new row; the identity digest commits w_op
  * and the presence bitmap, so it differs from generation 2's.
  *
- * ⚠ STORAGE-ORACLE: NOT FILLED — 64 zero bytes. The literal must come
- * from the INDEPENDENT oracle ("NDS.METPOLID.v1" preimage, the
- * hf4_oracle.py G1 procedure with ops 1..9 weight 1), never this build's
- * serializer. Until it is filled the selfcheck fails at the policy
- * coupling check and the node REFUSES TO START (the HF-4 A1 precedent). */
+ * The literal comes from the INDEPENDENT oracle ("NDS.METPOLID.v1"
+ * preimage, the hf4_oracle.py G1 procedure with ops 1..9 weight 1) —
+ * never this build's serializer. Selfcheck re-derives it on every start.
+ * PROVISIONAL with the generation (main merge order, decision
+ * 2026-10-04-storage-reward-approved.md). */
 static dna_meter_policy_t g_sys_policy_g3;
 static int g_sys_policy_g3_ready = 0;
 
 static const uint8_t SYS_METER_POLICY_DIGEST_G3[DNA_DOM_HASH_LEN] = {
-    /* STORAGE-ORACLE: filled by ORCHESTRATOR */
-    0
+    /* GEN_STORAGE SYSTEM meter-policy identity digest ("NDS.METPOLID.v1",
+     * ops 1..9 weight 1) — S1 of shared/dnac/tests/storage_oracle.py
+     * (output storage_oracle_out.txt), whose control legs reproduced the
+     * generation-1 and generation-2 policy, SYSTEM and CORE pins and D2
+     * first. */
+    0x0a, 0xa4, 0xc6, 0x90, 0xa0, 0x5a, 0xf8, 0x82,
+    0x7a, 0x32, 0x29, 0x12, 0xa4, 0x02, 0xd8, 0x7b,
+    0x26, 0x42, 0xc9, 0x9e, 0xdc, 0x1d, 0xb8, 0x3f,
+    0x28, 0x71, 0xaf, 0x64, 0xda, 0x18, 0xc3, 0xf8,
+    0xb7, 0x4a, 0x6e, 0x5c, 0x87, 0x0e, 0xdc, 0x34,
+    0x50, 0xae, 0x04, 0x74, 0xa3, 0xc8, 0xd7, 0x27,
+    0x9e, 0xfb, 0x88, 0x4d, 0xf8, 0xb2, 0x85, 0xc8,
+    0x84, 0x8b, 0xef, 0xfb, 0x25, 0x92, 0x27, 0x66
 };
 
 /* The highest authoritative runtime op of each generation's SYSTEM policy:
@@ -431,22 +448,35 @@ static const uint8_t CORE_RULESET_HASH_G2[DNA_DOM_HASH_LEN] = {
  * Vote literal (dnac.h DNAC_CFG_RULESET_GEN_STORAGE_D) =
  *   dna_ruleset_gen_digest(3, SYSTEM v8 hash, CORE v6 hash, spec 1).
  *
- * ⚠ STORAGE-ORACLE: NOT FILLED — 64 zero bytes each. They must come from
- * the INDEPENDENT oracle over the preimages above (the hf4_oracle.py
- * procedure, whose control legs reproduce the generation-1 and -2 pins
- * first), never from this build's encoder. Until they are filled the
- * selfcheck fails ("ruleset_hash does not re-derive") and the node
- * REFUSES TO START; selfcheck re-derives all of them on every start once
- * filled. */
+ * Both come from the INDEPENDENT oracle over the preimages above
+ * (shared/dnac/tests/storage_oracle.py, the hf4_oracle.py procedure;
+ * its control legs reproduced the generation-1 and -2 pins and D2
+ * first), never from this build's encoder; selfcheck re-derives them on
+ * every start. PROVISIONAL: the generation number, the SYSTEM op ids
+ * 7..9 and the versions v8 / v6 are assigned in main merge order
+ * (decision 2026-10-04-storage-reward-approved.md) — re-run the oracle if
+ * another generation merges first. */
 static const uint8_t SYS_RULESET_HASH_G3[DNA_DOM_HASH_LEN] = {
-    /* STORAGE-ORACLE: GEN_STORAGE SYSTEM v8 ruleset_hash — filled by
-     * ORCHESTRATOR */
-    0
+    /* GEN_STORAGE SYSTEM v8 ruleset_hash — S2 of storage_oracle.py. */
+    0x42, 0xca, 0x1c, 0x9f, 0xff, 0x4b, 0x8d, 0xfc,
+    0x9e, 0x7d, 0x0c, 0xf7, 0x45, 0xa7, 0x13, 0x8c,
+    0xeb, 0x94, 0xc8, 0x07, 0x83, 0x37, 0xd1, 0x91,
+    0xfe, 0xe6, 0x0d, 0x38, 0x83, 0xac, 0x9a, 0xfd,
+    0xdc, 0xfd, 0x3a, 0x8b, 0x98, 0x14, 0x46, 0x1f,
+    0xf9, 0xa6, 0xde, 0x9d, 0x59, 0x6a, 0x37, 0x55,
+    0x5c, 0x29, 0xe2, 0x24, 0x4b, 0xeb, 0x24, 0x8d,
+    0xa4, 0x6d, 0x7d, 0x87, 0xfe, 0xf5, 0x08, 0xd2
 };
 static const uint8_t CORE_RULESET_HASH_G3[DNA_DOM_HASH_LEN] = {
-    /* STORAGE-ORACLE: GEN_STORAGE CORE v6 ruleset_hash — filled by
-     * ORCHESTRATOR */
-    0
+    /* GEN_STORAGE CORE v6 ruleset_hash — S3 of storage_oracle.py. */
+    0xb5, 0xd1, 0x32, 0x00, 0xb7, 0x61, 0x9f, 0x8c,
+    0xaa, 0xac, 0xa7, 0xf1, 0xdb, 0x1b, 0x10, 0xb4,
+    0x2c, 0xfe, 0xf7, 0x12, 0xb5, 0x7d, 0xaf, 0xde,
+    0xea, 0x89, 0x6c, 0x9f, 0x3f, 0x2f, 0xb1, 0xf8,
+    0xac, 0x91, 0xd6, 0x08, 0xe1, 0x60, 0x6b, 0x24,
+    0x8b, 0x1e, 0x2f, 0x92, 0x00, 0x81, 0x5b, 0xd1,
+    0xfe, 0x06, 0x6f, 0x49, 0xfd, 0x3d, 0x79, 0x0f,
+    0xc2, 0x1f, 0xc7, 0xba, 0xed, 0xfa, 0x71, 0x1e
 };
 
 /* ── Function tables ────────────────────────────────────────────────── */

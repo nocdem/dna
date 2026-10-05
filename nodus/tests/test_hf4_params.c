@@ -57,11 +57,10 @@
  *      the param-9 fact does NOT gate it, the param-14 fact does, and the
  *      param-14 fact does NOT gate a param-9 leg; the read plan is empty.
  *   6. slot 14 readable; a far-future param-14 row found at INT64_MAX.
- *  HOW IT CAN LIE (storage): DNAC_CFG_RULESET_GEN_STORAGE_D is NOT FILLED
- *  yet (0, STORAGE-ORACLE marker in dnac.h) — every "exactly the literal"
- *  check here holds for any literal value, so these pass with the marker;
- *  the literal's correctness is test_hf4_table.c's selfcheck
- *  re-derivation, which FAILS until the oracle fills it.
+ *  HOW IT CAN LIE (storage): every "exactly the literal" check on
+ *  DNAC_CFG_RULESET_GEN_STORAGE_D here holds for any literal value; the
+ *  literal's correctness (S4 of shared/dnac/tests/storage_oracle.py) is
+ *  test_hf4_table.c's selfcheck re-derivation.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build (the grace / epoch tests

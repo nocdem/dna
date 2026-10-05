@@ -1,0 +1,72 @@
+── CONTROL (shipped gen-1 and gen-2 literals) ────────────────────
+  [PASS] C1 gen-1 SYSTEM meter policy (ops 1..7)
+         got    8f1f9cb2a532bb287fc0d5a1d63da2cab5c4861a53e391c3f5b4b7dbdd36498bd8ca8b14501d6954fd5ac06a5e3c12bdf4af0571f331d4f5299daf2668746f32
+  [PASS] C2 gen-1 SYSTEM ruleset v6
+         got    ca05b4d957d90bab1b7be1f4b9ac8144c5dfa87d4c88948b46adc711d6de6c39003b3365fa01ac28ef95ce36f377e112d1bdd35b6a0be6e5720832921cdbefa3
+  [PASS] C3 gen-1 DNA_CORE ruleset v4
+         got    b87aabb8324dc05fd0544690180cece13b6e286078db99739caa65f006d0b1d14154ed74eab78cf48b7fc418dedcad8684a485779aacf2a0a6ae40e00d818852
+  [PASS] C4 gen-2 SYSTEM meter policy (ops 1..8)
+         got    0c251ca2920d77882bcab294311052a0681362c55b06f417f6aada46feb755b3ab304776ed33537ae07e73f79a10da3d3f4b788bd56e4c06a7172a6f19ceec87
+  [PASS] C5 gen-2 SYSTEM ruleset v7
+         got    8780a3a9129041e16db275fca2e2bfb8d21aae33371c0b4cafdbcb623159eacb74854107fad3503ee2e018ec2578377a63001e5156a07d386a7c7b55311d14b4
+  [PASS] C6 gen-2 DNA_CORE ruleset v5
+         got    20c7235b13db0f029a8c3be096e24403fd3a3e393e9ff723e0672a6027601a350586db18985e7a6ac73365be6cfe65f0fb9ad53357db2d539a1c69d93d81cae5
+  [PASS] C7 gen-2 vote literal D2
+         got    0x44dfbe7ad3c75adf
+
+── S1 GEN_STORAGE SYSTEM meter-policy digest ─────────────────────
+  policy v2, scalars 1, max_block_env_bytes = 2097152, ops 1..9 w=1
+  S1 = 0aa4c690a05af8827a322912a402d87b2642c99edc1db83f2871af64da18c3f8b74a6e5c870edc3450ae0474a3c8d7279efb884df8b285c8848beffb25922766
+  static const uint8_t SYS_METER_POLICY_DIGEST_G3[DNA_DOM_HASH_LEN] = {
+      0x0a, 0xa4, 0xc6, 0x90, 0xa0, 0x5a, 0xf8, 0x82,
+      0x7a, 0x32, 0x29, 0x12, 0xa4, 0x02, 0xd8, 0x7b,
+      0x26, 0x42, 0xc9, 0x9e, 0xdc, 0x1d, 0xb8, 0x3f,
+      0x28, 0x71, 0xaf, 0x64, 0xda, 0x18, 0xc3, 0xf8,
+      0xb7, 0x4a, 0x6e, 0x5c, 0x87, 0x0e, 0xdc, 0x34,
+      0x50, 0xae, 0x04, 0x74, 0xa3, 0xc8, 0xd7, 0x27,
+      0x9e, 0xfb, 0x88, 0x4d, 0xf8, 0xb2, 0x85, 0xc8,
+      0x84, 0x8b, 0xef, 0xfb, 0x25, 0x92, 0x27, 0x66
+  };
+
+── S2 SYSTEM ruleset v8 ──────────────────────────────────────────
+  domain 0 "SYSTEM" abi 1 rules [1, 2, 3, 4, 5, 6, 7, 8, 9] types [4, 5, 6, 7, 9, 10] policy S1
+  S2 = 42ca1c9fff4b8dfc9e7d0cf745a7138ceb94c8078337d191fee60d3883ac9afddcfd3a8b9814461ff9a6de9d596a37555c29e2244beb248da46d7d87fef508d2
+  static const uint8_t SYS_RULESET_HASH_G3[DNA_DOM_HASH_LEN] = {
+      0x42, 0xca, 0x1c, 0x9f, 0xff, 0x4b, 0x8d, 0xfc,
+      0x9e, 0x7d, 0x0c, 0xf7, 0x45, 0xa7, 0x13, 0x8c,
+      0xeb, 0x94, 0xc8, 0x07, 0x83, 0x37, 0xd1, 0x91,
+      0xfe, 0xe6, 0x0d, 0x38, 0x83, 0xac, 0x9a, 0xfd,
+      0xdc, 0xfd, 0x3a, 0x8b, 0x98, 0x14, 0x46, 0x1f,
+      0xf9, 0xa6, 0xde, 0x9d, 0x59, 0x6a, 0x37, 0x55,
+      0x5c, 0x29, 0xe2, 0x24, 0x4b, 0xeb, 0x24, 0x8d,
+      0xa4, 0x6d, 0x7d, 0x87, 0xfe, 0xf5, 0x08, 0xd2
+  };
+
+── S3 DNA_CORE ruleset v6 ────────────────────────────────────────
+  domain 1 "DNA_CORE" abi 1 rules [1, 2, 3, 4, 5, 6, 7, 8] types [1, 2, 3, 11, 12, 13] policy all-zero
+  S3 = b5d13200b7619f8caaaca7f1db1b10b42cfef712b57dafdeea896c9f3f2fb1f8ac91d608e1606b248b1e2f9200815bd1fe066f49fd3d790fc21fc7baedfa711e
+  static const uint8_t CORE_RULESET_HASH_G3[DNA_DOM_HASH_LEN] = {
+      0xb5, 0xd1, 0x32, 0x00, 0xb7, 0x61, 0x9f, 0x8c,
+      0xaa, 0xac, 0xa7, 0xf1, 0xdb, 0x1b, 0x10, 0xb4,
+      0x2c, 0xfe, 0xf7, 0x12, 0xb5, 0x7d, 0xaf, 0xde,
+      0xea, 0x89, 0x6c, 0x9f, 0x3f, 0x2f, 0xb1, 0xf8,
+      0xac, 0x91, 0xd6, 0x08, 0xe1, 0x60, 0x6b, 0x24,
+      0x8b, 0x1e, 0x2f, 0x92, 0x00, 0x81, 0x5b, 0xd1,
+      0xfe, 0x06, 0x6f, 0x49, 0xfd, 0x3d, 0x79, 0x0f,
+      0xc2, 0x1f, 0xc7, 0xba, 0xed, 0xfa, 0x71, 0x1e
+  };
+
+── S4 param-14 RULESET_GEN_STORAGE vote literal ──────────────────
+  generation      = 3, switch spec version = 1
+  preimage (152 B) = 4e44532e525347454e2e7631000000000000000342ca1c9fff4b8dfc9e7d0cf745a7138ceb94c8078337d191fee60d3883ac9afddcfd3a8b9814461ff9a6de9d596a37555c29e2244beb248da46d7d87fef508d2b5d13200b7619f8caaaca7f1db1b10b42cfef712b57dafdeea896c9f3f2fb1f8ac91d608e1606b248b1e2f9200815bd1fe066f49fd3d790fc21fc7baedfa711e00000001
+  SHA3-512        = 94bb86adadcc1266473033863a783cb279d01ded0b48ba4d887bbf1714a6e1aef77d4ed71f6c0c30fc4f478e06037e7b5849f8d88125dc4d4fcab7cc31886236
+  first 8 BE      = 0x94bb86adadcc1266
+  top bit was     = SET (cleared)
+  S4              = 0x14bb86adadcc1266ULL
+  S4 (decimal)    = 1493935781906748006
+
+  sanity: S1 != gen-2 policy: True
+  sanity: S3 != CORE v5 (version field only): True
+  sanity: S4 != D2: True
+
+control green — GEN_STORAGE values above derived from the written layouts by hashlib, not by the C encoders (descriptor contents: B1's stated preimages, checked against the design records; generation / op ids / versions PROVISIONAL, main merge order).

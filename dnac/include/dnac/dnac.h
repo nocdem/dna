@@ -937,14 +937,15 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  CORE touched), so the spec version stays 1; the generation number in
  *  the preimage keeps this value distinct from D2.
  *
- *  ⚠ STORAGE-ORACLE: NOT FILLED. The literal must come from the
- *  INDEPENDENT oracle (the hf4_oracle.py procedure over the GEN_STORAGE
- *  preimages listed at nodus_witness_runtime.c SYS_RULESET_HASH_G3) —
- *  never this build's encoder. Until it is filled,
- *  nodus_witness_runtime_selfcheck fails (the GEN_STORAGE pins are
- *  unfilled too) and the node REFUSES TO START — the HF-4 A1 precedent
- *  (commit 53243195, filled in 89f9da09). */
-#define DNAC_CFG_RULESET_GEN_STORAGE_D      0x0000000000000000ULL /* STORAGE-ORACLE: filled by ORCHESTRATOR */
+ *  The value is a literal from the INDEPENDENT oracle
+ *  (shared/dnac/tests/storage_oracle.py, S4 — the hf4_oracle.py procedure
+ *  over the GEN_STORAGE preimages listed at nodus_witness_runtime.c
+ *  SYS_RULESET_HASH_G3; its control legs reproduced D2 first) — never
+ *  this build's encoder. nodus_witness_runtime_selfcheck re-derives it on
+ *  every start. PROVISIONAL: the generation number and the inputs are
+ *  assigned in main merge order (decision 2026-10-04-storage-reward-
+ *  approved.md) — re-run the oracle if another generation merges first. */
+#define DNAC_CFG_RULESET_GEN_STORAGE_D      0x14bb86adadcc1266ULL /* S4 of shared/dnac/tests/storage_oracle.py (1493935781906748006) */
 
 /** HF-4 NAME_REGISTER price range (params 10-13), both inclusive:
  *  [10^8, 10^15] raw = [1 NODUS, 10 000 000 NODUS] (design §2 Price). */
