@@ -1224,11 +1224,45 @@ the storage node refuses a request whose deadline its own clock has passed (`LAT
 already an operational obligation (the 60 s block-time tolerance of block validation); for probes a
 skew of several seconds already starts costing answers.
 
-**4. Register / exit / status — `nodus-cli storage register|exit|status`: NOT AVAILABLE in B2b-1.** The
-2-leg STORAGE_REGISTER / STORAGE_EXIT envelope builder belongs in the shared client builder
-(`nodus/src/client/nodus_v2_stake.c`, decision `2026-09-25-web-wallet-nodus-send-transport.md`: the CLI
-and the wallet build with one C builder) and status needs a new `dnac_*` query — both outside package
-B2b-1. Until they land there is no supported way to register.
+**4. Register / exit / status — `nodus-cli storage register|exit|status` (package B2b-CLI).** Both
+transactions are signed by the NODE key — the key the storage node runs with, not a wallet key: the
+registry row is the key's own (the chain accepts exactly one signer whose fingerprint is SHA3-512 of the
+node key in the call) and the bond is paid from coins that key owns. So, on the storage node:
+
+```bash
+# 0. the node key's fingerprint (send it 1 000 000 NODUS + the fee first)
+nodus-cli -i /var/lib/nodus/identity whoami
+# 1. what the chain says about this node (works for any node with --fp <hex128>)
+nodus-cli -s 127.0.0.1:4001 -i /var/lib/nodus/identity storage status
+# 2. build and self-check without sending, then send
+nodus-cli -s 127.0.0.1:4001 -i /var/lib/nodus/identity storage register --dry-run
+nodus-cli -s 127.0.0.1:4001 -i /var/lib/nodus/identity storage register --submit 127.0.0.1:4001
+```
+
+- **`-i` is required** for `register` / `exit` (without it the CLI would use a random key; it refuses).
+  The identity directory is the node's own (`identity_path` in its config; the path above is an
+  example — use the node's).
+- **Explicit confirmation**, as every `v2-envelope` builder: `--dry-run` builds, self-checks and prints
+  everything without sending; only `--submit ip:port` sends. Before the wire id the CLI prints what is
+  sent: the node fingerprint, the bond (exactly 10^14 raw = 1 000 000 NODUS — the chain accepts no other
+  amount), the payee (the node's own fingerprint — the only payee the chain accepts before HF-5), the
+  fee, inputs and change.
+- **Generation gate.** The CLI builds for the rule-set generation the node names and refuses with a
+  plain message while it is below the storage generation (the vote has not taken effect).
+- **What it refuses on its own** (from the node's `dnac_storage_status` answer): `register` when the
+  node is already ACTIVE or EXITING; `exit` when it is not registered or not ACTIVE. If that query fails
+  it warns and lets the chain decide.
+- **Exit:** `storage exit (--dry-run | --submit ip:port)` pays only the fee. The node leaves the storage
+  set at the next epoch boundary and earns nothing after it; the bond comes back at that boundary as one
+  coin to the payee, locked 12 epochs (`DNAC_STORAGE_EXIT_LOCK_EPOCHS`). Re-registering is possible only
+  after the bond was released (row RELEASED).
+- **Status** prints the registry row (status, bond, fail_streak, registered / exit height, payee), the
+  frozen storage set for the current epoch (H, H+E] and whether this node is in it, and the segments
+  that count for it this epoch (number and blocks = number × 17280; at most the first 64 are listed).
+  **The last settled outcome is not available**: the settlement records no per-node verdict on chain
+  (it writes only fail_streak and the payee's reward accrual, and deletes the epoch's reports), so
+  fail_streak is its only trace — 0 after a good epoch with segments, growing after failed ones;
+  at 3 or more the node is skipped for placement.
 
 **5. Validators need nothing.** A node seated in snapshot(H) probes every other storage member once per
 epoch and submits its STORAGE_REPORT in the report window (H+E, H+E+⌊E/2⌋] by itself — there is no

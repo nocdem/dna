@@ -5819,7 +5819,8 @@ builder — transport-independent), `nodus_witness_storage_reporter.{h,c}` (the 
 state; the probe reaches state only through the reporter's own signed STORAGE_REPORT (design §7 D3) —
 two honest reporters may sign different bits for one target, the > 2/3 rule over reporting power settles.
 NOT in this package: segment file export, the fetch protocol, pruning interaction (B2b-2); the
-`nodus-cli storage register|exit|status` commands and a config switch (see "Open" below).
+`nodus-cli storage register|exit|status` commands (package B2b-CLI, next section) and a config switch
+(see "Open" below).
 
 **Transport — channel 0x72 on 4004 (⚠ the byte is NOT in the operator-approved channel list of decision
 `2026-09-26-witness-port-session.md` "bayt/biçim onayları" item 3, which names 0x70 / 0x71 — pending
@@ -5882,10 +5883,7 @@ ahead of paying envelopes would change that recorded ordering rule, so it is lef
 exposure: the window is 360 blocks at E = 720, reports are ≤ 32 per epoch at 78..110-byte calls, an
 envelope skipped by a full block stays in the mempool, and the reporter resubmits after expiry.
 
-**Open.** `nodus-cli storage register|exit|status` — the 2-leg builder belongs in the shared
-`nodus/src/client/nodus_v2_stake.c` (decision `2026-09-25-web-wallet-nodus-send-transport.md`: CLI and
-wallet share one C builder) and status needs a new `dnac_*` query in the client SDK; both outside this
-package's file list. No config key: the reporter runs when seated, the serving side answers when a
+**Open.** `nodus-cli storage register|exit|status` — landed in package B2b-CLI (next section). No config key: the reporter runs when seated, the serving side answers when a
 member (the node config parser `nodus/tools/nodus_node_config.c` is outside the list).
 
 **Tests (written, not run by the builder).** `test_storage_probe` — request bytes = the §6 layout and
@@ -5897,6 +5895,47 @@ own; the report call layout and the signed envelope (op 9, fee 0, expiry, one si
 verifies over the auth digest); the epoch / window arithmetic at E = 720 and 15. Not covered: the
 NOT_SEATED refusal and the serving path's OK answer through `nodus_witness_stprobe_serve` (need a
 validator snapshot), the live channel, pacing and mempool submission (no harness scenario yet).
+
+### Storage reward v1 rev 4, package B2b-CLI — `nodus-cli storage register|exit|status` and `dnac_storage_status` (2026-10-05, branch only — not versioned, not voted)
+
+Decisions `docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md` (registration, the 1M bond and
+node-key authority stay), `2026-09-25-web-wallet-nodus-send-transport.md` ("İşlem kurucu": the CLI and the
+wallet build with ONE C builder). Call bytes `docs/plans/2026-10-04-storage-reward-bytes.md` item 5.
+
+**Builder.** `nodus/src/client/nodus_v2_stake.c` builds SYSTEM ops 7 and 8 in the same 2-leg shape as the
+stake ops (leg 0 SYSTEM record leg, leg 1 CORE SYSFUND, one kind-1 signer on both): STORAGE_REGISTER call
+= node_pk[2592] ‖ bond u64 BE ‖ payee_fp[64] (2664 B, `RTN_SYS_STREG_CALL_LEN`), funding lock = bond;
+STORAGE_EXIT call = node_pk (2592 B, `RTN_SYS_STEXIT_CALL_LEN`), fee-only funding. The builder refuses a
+bond other than `DNAC_STORAGE_STAKE_MIN` and a payee other than SHA3-512(node_pk) (the exec's pre-HF-5
+rule, `rtn_storage_register_exec`); the decoder refuses such a payee too. The tuples the caller passes
+must be the GEN_STORAGE generation's — the ops do not exist below it (`rtn_gen_storage`). The web
+wallet does not build storage ops (its WASM refuses every op but 1, 2, 4 before calling the builder).
+
+**Query `dnac_storage_status`** (`handle_dnac_storage_status`, `nodus_witness_handlers.c`; reaches the
+witness through the generic `dnac_` prefix route of core and the IPC backend — no protocol change).
+Request `"a": {"fp": tstr128 lowercase hex}`. Read-only over committed tables: the `v2_storage_nodes`
+row, storage_set(H) with H = tip − tip mod E (the set governing (H, H+E]), and the node's eligible
+segments in that epoch (`nodus_witness_storage_eligible_segments`). Response `"r"`: `ch` tip, `es` H
+(0 = none yet), `found`; iff found `st` (1 ACTIVE / 2 EXITING / 3 RELEASED), `bond`, `fs` fail_streak,
+`rh`, `xh`, `payee` (hex128); `set`, `sc` member count, `mem`, `ns` eligible-segment count, `segs` the
+first min(ns, 64) k ascending. Bounded: at most 14 keys and 64 list entries (one 4 KB reply buffer).
+A store fault (a malformed row, an unreadable set, a member without a registry row) is an
+`INTERNAL_ERROR` reply, never a partial answer. **The last settled outcome is NOT available:**
+`st_settle` (`nodus_witness_v2_storage.c`) writes only fail_streak and the payee's accrual, and `st_prune`
+deletes that epoch's reports at the same boundary — no committed per-member verdict exists to read.
+Client: `nodus_client_dnac_storage_status` + the strict `nodus_dnac_storage_status_decode` (`nodus.h`).
+
+**CLI.** `nodus-cli -s <node> -i <node identity dir> storage register|exit (--dry-run | --submit ip:port)`
+signs and funds with the node identity (`-i` required), builds for the generation the node names
+(refused below `NODUS_RT_GEN_STORAGE`), checks the registry row first (register refused when ACTIVE /
+EXITING, exit when absent or not ACTIVE; a failed query only warns), prints what is sent, and submits only
+with `--submit`. `storage status [--fp <hex128>]` prints the generation and the query answer. Operator
+steps: `DEPLOY_RUNBOOK.md` §2.6 step 4.
+
+**Tests (written, not run by the builder).** `test_storage_cli` — builder-made REGISTER / EXIT envelopes
+through the GEN_STORAGE SYSTEM and CORE hooks over fabricated engine facts (read plans, the CREATE / SET
+records, Σin = change + fee + lock with lock = bond / 0), builder and decoder refusals, the status
+decoder's rules. Not covered: admission (descriptor, meter, units), the handler over a real frozen set.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 

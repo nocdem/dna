@@ -2493,6 +2493,16 @@ endif()
 # databases only; no environment.
 register_witness_test(test_storage_probe)
 
+# Storage reward v1, package B2b-CLI — `nodus-cli storage register | exit
+# | status`: the shared builder's STORAGE_REGISTER / STORAGE_EXIT envelopes
+# (src/client/nodus_v2_stake.c ops 7 / 8, decision 2026-09-25-web-wallet-
+# nodus-send-transport.md "İşlem kurucu") fed to the GEN_STORAGE SYSTEM and
+# CORE hooks over fabricated engine facts (read plans, the CREATE / SET
+# records, the funding equation with lock = bond / fee only), the builder
+# and decoder refusals, and the dnac_storage_status reply decoder's strict
+# rules. No database, no network, no environment.
+register_witness_test(test_storage_cli)
+
 # Web wallet package (c2) — the shared CORE SPEND builder
 # (src/client/nodus_v2_spend.c): the pins ruleset == the compiled table,
 # a pins-built envelope admitted by the CheckTx dry run on a seeded

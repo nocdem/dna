@@ -16,6 +16,10 @@
  * UNSTAKE (op 3) is new too: call = the signer's own 2592-byte key
  * (RTN_SYS_UNSTAKE_CALL_LEN) with a fee-only funding leg (rtn_sys_call_flow:
  * lock 0, release 0).
+ * STORAGE_REGISTER (op 7) and STORAGE_EXIT (op 8), storage reward v1
+ * package B2b-CLI: REGISTER = the STAKE class (call node_pk ‖ bond ‖
+ * payee_fp, RTN_SYS_STREG_CALL_LEN; lock = bond), EXIT = the UNSTAKE class
+ * (call = the node key, RTN_SYS_STEXIT_CALL_LEN; fee-only funding).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -47,10 +51,19 @@ _Static_assert(NODUS_V2_DELEG_CALL_LEN == 2u * DNAC_PUBKEY_SIZE + 8u,
                "DELEGATE / UNDELEGATE call = pk ‖ pk ‖ amount u64");
 _Static_assert(NODUS_V2_UNSTAKE_CALL_LEN == DNAC_PUBKEY_SIZE,
                "UNSTAKE call = the validator pk (RTN_SYS_UNSTAKE_CALL_LEN)");
+_Static_assert(NODUS_V2_STREG_CALL_LEN == DNAC_PUBKEY_SIZE + 8u + 64u,
+               "STORAGE_REGISTER call = node_pk ‖ bond u64 ‖ payee_fp "
+               "(RTN_SYS_STREG_CALL_LEN, bytes doc item 5)");
+_Static_assert(NODUS_V2_STEXIT_CALL_LEN == DNAC_PUBKEY_SIZE,
+               "STORAGE_EXIT call = the node pk (RTN_SYS_STEXIT_CALL_LEN)");
 _Static_assert((uint32_t)NODUS_V2_STAKE_OP_STAKE == DNA_SYSRULE_STAKE &&
                (uint32_t)NODUS_V2_STAKE_OP_DELEGATE == DNA_SYSRULE_DELEGATE &&
                (uint32_t)NODUS_V2_STAKE_OP_UNSTAKE == DNA_SYSRULE_UNSTAKE &&
-               (uint32_t)NODUS_V2_STAKE_OP_UNDELEGATE == DNA_SYSRULE_UNDELEGATE,
+               (uint32_t)NODUS_V2_STAKE_OP_UNDELEGATE == DNA_SYSRULE_UNDELEGATE &&
+               (uint32_t)NODUS_V2_STAKE_OP_STORAGE_REGISTER ==
+                   DNA_SYSRULE_STORAGE_REGISTER &&
+               (uint32_t)NODUS_V2_STAKE_OP_STORAGE_EXIT ==
+                   DNA_SYSRULE_STORAGE_EXIT,
                "the op enum is the wire runtime_op");
 
 static void err_reset(nodus_v2_stake_err_t *err) {
@@ -108,7 +121,8 @@ int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
         goto done;
     const uint32_t op = v->leg[0].runtime_op;
     if (op != DNA_SYSRULE_STAKE && op != DNA_SYSRULE_DELEGATE &&
-        op != DNA_SYSRULE_UNSTAKE && op != DNA_SYSRULE_UNDELEGATE)
+        op != DNA_SYSRULE_UNSTAKE && op != DNA_SYSRULE_UNDELEGATE &&
+        op != DNA_SYSRULE_STORAGE_REGISTER && op != DNA_SYSRULE_STORAGE_EXIT)
         goto done;
     if (v->leg[0].domain_id != DNA_DOMAIN_SYSTEM ||
         v->leg[1].domain_id != DNA_DOMAIN_CORE ||
@@ -138,6 +152,25 @@ int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
     } else if (op == DNA_SYSRULE_UNSTAKE) {
         /* the call IS the validator key (rtn_sys_call_identity) */
         if (slen != NODUS_V2_UNSTAKE_CALL_LEN) goto done;
+        memcpy(out->identity_pk, s, V2K_PK_LEN);
+    } else if (op == DNA_SYSRULE_STORAGE_REGISTER) {
+        /* node_pk ‖ bond u64 BE ‖ payee_fp (rtn_streg_parse) */
+        if (slen != NODUS_V2_STREG_CALL_LEN) goto done;
+        memcpy(out->identity_pk, s, V2K_PK_LEN);
+        out->amount = get_u64(s + V2K_PK_LEN);
+        memcpy(out->dest_fp, s + V2K_PK_LEN + 8, 64);
+        /* the pre-HF-5 exec rule (rtn_storage_register_exec): payee_fp ==
+         * SHA3-512(node_pk) — an envelope carrying any other payee is
+         * not one this module builds */
+        uint8_t node_fp[64];
+        if (qgp_sha3_512(out->identity_pk, V2K_PK_LEN, node_fp) != 0) {
+            rc = NODUS_V2_SPEND_ERR_HASH;
+            goto done;
+        }
+        if (memcmp(node_fp, out->dest_fp, 64) != 0) goto done;
+    } else if (op == DNA_SYSRULE_STORAGE_EXIT) {
+        /* the call IS the node key (rtn_sys_call_identity) */
+        if (slen != NODUS_V2_STEXIT_CALL_LEN) goto done;
         memcpy(out->identity_pk, s, V2K_PK_LEN);
     } else {
         if (slen != NODUS_V2_DELEG_CALL_LEN) goto done;
@@ -223,16 +256,31 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
         return NODUS_V2_SPEND_ERR_ARG;
     const nodus_v2_stake_op_t op = req->op;
     const int is_stake = op == NODUS_V2_STAKE_OP_STAKE;
-    const int is_unstake = op == NODUS_V2_STAKE_OP_UNSTAKE;
-    if (!is_stake && !is_unstake && op != NODUS_V2_STAKE_OP_DELEGATE &&
-        op != NODUS_V2_STAKE_OP_UNDELEGATE)
+    const int is_streg = op == NODUS_V2_STAKE_OP_STORAGE_REGISTER;
+    const int is_stexit = op == NODUS_V2_STAKE_OP_STORAGE_EXIT;
+    /* the call is the signer's own key alone (UNSTAKE / STORAGE_EXIT) */
+    const int is_unstake = op == NODUS_V2_STAKE_OP_UNSTAKE || is_stexit;
+    const int is_deleg = op == NODUS_V2_STAKE_OP_DELEGATE ||
+                         op == NODUS_V2_STAKE_OP_UNDELEGATE;
+    if (!is_stake && !is_streg && !is_unstake && !is_deleg)
         return NODUS_V2_STAKE_ERR_OP;
-    /* UNSTAKE's call is the signer's own key — nothing else is needed */
-    if (is_stake ? !req->dest_fp : (!is_unstake && !req->validator_pk))
+    if ((is_stake || is_streg) ? !req->dest_fp
+                               : (is_deleg && !req->validator_pk))
         return NODUS_V2_SPEND_ERR_ARG;
 
     /* what the call bytes alone decide (cmd_v2_stake's pre-I/O checks) */
-    if (is_stake) {
+    if (is_streg) {
+        /* storage reward v1 (rtn_storage_register_exec): EXACTLY the
+         * storage bond, and the payee is the node's own fingerprint until
+         * HF-5 re-keys it */
+        if (req->amount != DNAC_STORAGE_STAKE_MIN)
+            return NODUS_V2_STAKE_ERR_STORAGE_BOND;
+        uint8_t node_fp[64];
+        if (qgp_sha3_512(req->pk, V2K_PK_LEN, node_fp) != 0)
+            return NODUS_V2_SPEND_ERR_HASH;
+        if (memcmp(node_fp, req->dest_fp, 64) != 0)
+            return NODUS_V2_STAKE_ERR_PAYEE;
+    } else if (is_stake) {
         /* tokenomics-v3 P3-8 (rtn_stake_exec) — the u16 wire field alone
          * would admit values the chain refuses */
         if (req->commission_bps > (uint32_t)DNAC_COMMISSION_BPS_MAX)
@@ -265,8 +313,8 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
         if (required > fee) fee = required;
     }
 
-    /* ── need = lock + fee (rtn_sys_call_flow: UNSTAKE and UNDELEGATE
-     *    lock 0 — their funding leg pays the fee only) ───────────────── */
+    /* ── need = lock + fee (rtn_sys_call_flow: UNSTAKE, UNDELEGATE and
+     *    STORAGE_EXIT lock 0 — their funding leg pays the fee only) ──── */
     const uint64_t lock = (is_unstake || op == NODUS_V2_STAKE_OP_UNDELEGATE)
                         ? 0 : req->amount;
     if (lock > UINT64_MAX - fee) {
@@ -337,9 +385,20 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
         scall[V2K_PK_LEN + 1] = (uint8_t)req->commission_bps;
         put_u64(scall + V2K_PK_LEN + 2, req->amount);
         memcpy(scall + V2K_PK_LEN + 10, req->dest_fp, 64);
+    } else if (is_streg) {
+        /* node_pk ‖ bond u64 ‖ payee_fp[64 RAW] (rtn_streg_parse) */
+        scall_len = NODUS_V2_STREG_CALL_LEN;
+        scall = calloc(1, scall_len);
+        if (!scall) goto done;
+        memcpy(scall, req->pk, V2K_PK_LEN);
+        put_u64(scall + V2K_PK_LEN, req->amount);
+        memcpy(scall + V2K_PK_LEN + 8, req->dest_fp, 64);
     } else if (is_unstake) {
-        /* validator_pk — the signer itself (RTN_SYS_UNSTAKE_CALL_LEN;
+        /* validator_pk / node_pk — the signer itself
+         * (RTN_SYS_UNSTAKE_CALL_LEN == RTN_SYS_STEXIT_CALL_LEN;
          * rtn_sys_stake_auth binds SHA3-512(call) to the signer) */
+        _Static_assert(NODUS_V2_UNSTAKE_CALL_LEN == NODUS_V2_STEXIT_CALL_LEN,
+                       "UNSTAKE and STORAGE_EXIT share the key-only call");
         scall_len = NODUS_V2_UNSTAKE_CALL_LEN;
         scall = calloc(1, scall_len);
         if (!scall) goto done;
@@ -480,6 +539,8 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
             if (d->commission_bps != req->commission_bps ||
                 memcmp(d->dest_fp, req->dest_fp, 64) != 0)
                 goto done;
+        } else if (is_streg) {
+            if (memcmp(d->dest_fp, req->dest_fp, 64) != 0) goto done;
         } else if (is_unstake) {
             if (d->amount != 0) goto done;   /* the call carries none */
         } else if (memcmp(d->validator_pk, req->validator_pk,

@@ -48,6 +48,7 @@
 #include "witness/nodus_witness_addr_index.h"   /* dnac_addr_history     */
 #include "witness/nodus_witness_v2_claims.h"    /* HF-4: runtime_for     */
 #include "witness/nodus_witness_runtime.h"      /* HF-4: generation      */
+#include "witness/nodus_witness_v2_storage.h"   /* dnac_storage_status   */
 #include "dnac/env_wire.h"
 #include "dnac/manifest_wire.h"
 #include "dnac/ledger_ids.h"
@@ -2900,6 +2901,211 @@ static void handle_dnac_name_of(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * dnac_storage_status — storage reward v1, package B2b-CLI (decision
+ * docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md; wire:
+ * include/nodus/nodus.h beside nodus_client_dnac_storage_status).
+ *
+ * Request "a": {"fp": tstr, exactly 128 lowercase hex = SHA3-512(node_pk)}.
+ * Response "r" (READ-ONLY, committed tables only: v2_storage_nodes,
+ * v2_storage_sets / _set_members, v2_storage_segments):
+ *   "ch" u64 committed tip; "es" u64 H = ch − ch mod E, the boundary whose
+ *   frozen storage_set(H) governs epoch (H, H+E] (0: none yet);
+ *   "found" bool — the registry row exists; when found: "st" u8 status
+ *   (1 ACTIVE / 2 EXITING / 3 RELEASED), "bond" u64, "fs" u32 fail_streak,
+ *   "rh" u64 registered_height, "xh" u64 exit_height, "payee" tstr128;
+ *   "set" bool storage_set(H) exists; "sc" u32 its member count; "mem"
+ *   bool the node is a member; "ns" u64 how many segments are ELIGIBLE for
+ *   it in (H, H+E] (nodus_witness_storage_eligible_segments); "segs" the
+ *   first min(ns, NODUS_DNAC_STORAGE_SEG_MAX) of them, k ascending.
+ * The last SETTLED outcome is not in the reply: the settlement records no
+ * per-member verdict (nodus_witness_v2_storage.c st_settle writes only
+ * fail_streak and the payee accrual, and st_prune deletes the epoch's
+ * reports at the same boundary) — fail_streak is its only committed trace.
+ * A store fault is an error reply, never a partial answer.
+ * ════════════════════════════════════════════════════════════════════ */
+
+_Static_assert(NODUS_DNAC_STORAGE_SET_MAX == DNA_V2_STORAGE_SET_MAX,
+               "the status wire's set bound is the chain's");
+
+/* The registry row of `fp`. @return 1 found / 0 absent / -1 fault. */
+static int st_status_row(nodus_witness_t *w, const uint8_t fp[64],
+                         nodus_dnac_storage_status_t *o) {
+    sqlite3_stmt *st = NULL;
+    int ret = -1;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT payee_fp, bond, status, registered_height, exit_height, "
+            "fail_streak FROM v2_storage_nodes WHERE node_fp = ?1",
+            -1, &st, NULL) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    sqlite3_bind_blob(st, 1, fp, 64, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    if (rc == SQLITE_DONE) {
+        ret = 0;
+    } else if (rc == SQLITE_ROW &&
+               sqlite3_column_type(st, 0) == SQLITE_BLOB &&
+               sqlite3_column_bytes(st, 0) == 64 &&
+               sqlite3_column_blob(st, 0) != NULL) {
+        int ok = 1;
+        for (int c = 1; c <= 5; c++)
+            if (sqlite3_column_type(st, c) != SQLITE_INTEGER) ok = 0;
+        sqlite3_int64 bond = 0, stv = 0, rh = 0, xh = 0, fs = 0;
+        if (ok) {
+            bond = sqlite3_column_int64(st, 1);
+            stv  = sqlite3_column_int64(st, 2);
+            rh   = sqlite3_column_int64(st, 3);
+            xh   = sqlite3_column_int64(st, 4);
+            fs   = sqlite3_column_int64(st, 5);
+        }
+        if (ok && bond >= 0 && stv >= DNA_V2_STORAGE_ACTIVE &&
+            stv <= DNA_V2_STORAGE_RELEASED && rh >= 1 && xh >= 0 &&
+            fs >= 0 && fs <= (sqlite3_int64)UINT32_MAX) {
+            hf4_hex128(sqlite3_column_blob(st, 0), o->payee);
+            o->bond = (uint64_t)bond;
+            o->status = (uint8_t)stv;
+            o->registered_height = (uint64_t)rh;
+            o->exit_height = (uint64_t)xh;
+            o->fail_streak = (uint32_t)fs;
+            ret = 1;
+        }
+    }
+    sqlite3_finalize(st);
+    return ret;
+}
+
+static void handle_dnac_storage_status(nodus_witness_t *w,
+                                       struct nodus_tcp_conn *conn,
+                                       const uint8_t *payload, size_t len,
+                                       uint32_t txn_id) {
+    const char *hex = NULL;
+    size_t hl = 0;
+    uint8_t fp[64];
+    uint64_t tip = 0;
+    int bad = hf4_tstr_arg(payload, len, "fp", &hex, &hl) != 0 || hl != 128;
+    for (size_t i = 0; !bad && i < 64; i++) {
+        int v = 0;
+        for (int j = 0; j < 2; j++) {
+            char c = hex[2 * i + (size_t)j];
+            int d;
+            if (c >= '0' && c <= '9') d = c - '0';
+            else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+            else { bad = 1; break; }
+            v = (v << 4) | d;
+        }
+        fp[i] = (uint8_t)v;
+    }
+    if (bad) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing or invalid fp (128 lowercase hex)");
+        return;
+    }
+    if (hf4_tip(w, &tip) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_FOUND,
+                   "no version-3 chain on this node");
+        return;
+    }
+
+    nodus_dnac_storage_status_t *o = calloc(1, sizeof(*o));
+    nodus_storage_set_t *set = calloc(1, sizeof(*set));
+    uint64_t *ks = NULL;
+    uint8_t *buf = NULL;
+    const char *fault = NULL;
+    if (!o || !set) { fault = "out of memory"; goto done; }
+    o->committed_height = tip;
+
+    /* ── the registry row ─────────────────────────────────────────── */
+    {
+        int rr = st_status_row(w, fp, o);
+        if (rr < 0) { fault = "storage registry unreadable"; goto done; }
+        o->found = (rr == 1);
+    }
+
+    /* ── storage_set(H) for the current epoch (H, H+E] ────────────── */
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    o->epoch_start = tip - tip % E;
+    if (o->epoch_start != 0) {
+        int sr = nodus_witness_storage_set_get(w, o->epoch_start, set);
+        if (sr < 0) { fault = "storage set unreadable"; goto done; }
+        if (sr == 0) {
+            o->set_exists = true;
+            o->set_count = set->count;
+            for (uint32_t i = 0; i < set->count; i++)
+                if (memcmp(set->fps[i], fp, 64) == 0) o->member = true;
+        }
+    }
+    if (o->member && !o->found) {        /* registry rows never vanish   */
+        fault = "a storage set member has no registry row";
+        goto done;
+    }
+
+    /* ── its eligible segments in (H, H+E] — every published segment k
+     *    has k·P <= tip, so tip / P + 1 bounds the list ─────────────── */
+    if (o->member) {
+        const size_t cap = (size_t)(tip / (uint64_t)DNA_V2_SEGMENT_BLOCKS) + 1u;
+        size_t n = 0;
+        ks = calloc(cap, sizeof(*ks));
+        if (!ks) { fault = "out of memory"; goto done; }
+        if (nodus_witness_storage_eligible_segments(w, o->epoch_start, fp,
+                                                    ks, cap, &n) != 0) {
+            fault = "eligible segments unreadable";
+            goto done;
+        }
+        o->n_segments = n;
+        o->n_listed = n < NODUS_DNAC_STORAGE_SEG_MAX
+                    ? n : (size_t)NODUS_DNAC_STORAGE_SEG_MAX;
+        memcpy(o->segments, ks, o->n_listed * sizeof(*ks));
+    }
+
+    /* ── the reply ────────────────────────────────────────────────── */
+    {
+        const size_t cap = 4096;
+        buf = malloc(cap);
+        if (!buf) { fault = "out of memory"; goto done; }
+        cbor_encoder_t enc;
+        cbor_encoder_init(&enc, buf, cap);
+        enc_dnac_response(&enc, txn_id, "dnac_storage_status",
+                          o->found ? 14 : 8);
+        cbor_encode_cstr(&enc, "ch");    cbor_encode_uint(&enc, tip);
+        cbor_encode_cstr(&enc, "es");    cbor_encode_uint(&enc, o->epoch_start);
+        cbor_encode_cstr(&enc, "found"); cbor_encode_bool(&enc, o->found);
+        if (o->found) {
+            cbor_encode_cstr(&enc, "st");    cbor_encode_uint(&enc, o->status);
+            cbor_encode_cstr(&enc, "bond");  cbor_encode_uint(&enc, o->bond);
+            cbor_encode_cstr(&enc, "fs");
+            cbor_encode_uint(&enc, o->fail_streak);
+            cbor_encode_cstr(&enc, "rh");
+            cbor_encode_uint(&enc, o->registered_height);
+            cbor_encode_cstr(&enc, "xh");
+            cbor_encode_uint(&enc, o->exit_height);
+            cbor_encode_cstr(&enc, "payee");
+            cbor_encode_cstr(&enc, o->payee);
+        }
+        cbor_encode_cstr(&enc, "set");   cbor_encode_bool(&enc, o->set_exists);
+        cbor_encode_cstr(&enc, "sc");    cbor_encode_uint(&enc, o->set_count);
+        cbor_encode_cstr(&enc, "mem");   cbor_encode_bool(&enc, o->member);
+        cbor_encode_cstr(&enc, "ns");    cbor_encode_uint(&enc, o->n_segments);
+        cbor_encode_cstr(&enc, "segs");
+        cbor_encode_array(&enc, o->n_listed);
+        for (size_t i = 0; i < o->n_listed; i++)
+            cbor_encode_uint(&enc, o->segments[i]);
+        size_t rlen = cbor_encoder_len(&enc);
+        if (rlen > 0) nodus_tcp_send(conn, buf, rlen);
+        else fault = "response buffer overflow";
+    }
+
+done:
+    if (fault) {
+        QGP_LOG_WARN(LOG_TAG, "dnac_storage_status: %s", fault);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, fault);
+    }
+    free(buf);
+    free(ks);
+    free(set);
+    free(o);
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * dnac_token_info — Query single token by token_id
  *
  * Request:  "a": {"tid": bstr(64)}
@@ -4299,6 +4505,8 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_name_lookup(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_name_of") == 0) {
         handle_dnac_name_of(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_storage_status") == 0) {
+        handle_dnac_storage_status(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_committee_query") == 0) {
         handle_dnac_committee_query(w, conn, txn_id);
     } else if (strcmp(method, "dnac_validator_list_query") == 0) {

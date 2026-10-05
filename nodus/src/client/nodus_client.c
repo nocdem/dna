@@ -6113,6 +6113,112 @@ int nodus_dnac_name_prices_decode(const uint8_t *raw, size_t raw_len,
     return 0;
 }
 
+/* Storage reward v1, package B2b-CLI — dnac_storage_status (wire and
+ * rules: nodus.h). The v3d_* discipline: duplicate keys, truncation and
+ * wrong types refuse; unknown keys are skipped. */
+int nodus_dnac_storage_status_decode(const uint8_t *raw, size_t raw_len,
+                                     nodus_dnac_storage_status_t *out)
+{
+    cbor_decoder_t dec;
+    size_t         mc;
+    v3d_keys_t     ks;
+    cbor_item_t    k, it;
+    uint64_t       v;
+    unsigned       have = 0;            /* the 8 keys of every reply      */
+    unsigned       row = 0;             /* the 6 keys of a found row      */
+
+    if (!raw || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    memset(&ks, 0, sizeof(ks));
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0) goto bad;
+    if (mc > V3D_MAX_KEYS || mc > v3d_left(&dec) / 2) goto bad;
+    for (size_t i = 0; i < mc; i++) {
+        if (v3d_key(&dec, &ks, &k) != 0) goto bad;
+        if (KEY_EQ(k, "ch")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->committed_height) != 0)
+                goto bad;
+            have |= 1u;
+        } else if (KEY_EQ(k, "es")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->epoch_start) != 0) goto bad;
+            have |= 2u;
+        } else if (KEY_EQ(k, "found")) {
+            if (v3d_next(&dec, &it) != 0 || it.type != CBOR_ITEM_BOOL)
+                goto bad;
+            out->found = it.bool_val;
+            have |= 4u;
+        } else if (KEY_EQ(k, "set")) {
+            if (v3d_next(&dec, &it) != 0 || it.type != CBOR_ITEM_BOOL)
+                goto bad;
+            out->set_exists = it.bool_val;
+            have |= 8u;
+        } else if (KEY_EQ(k, "sc")) {
+            if (v3d_u64(&dec, NODUS_DNAC_STORAGE_SET_MAX, &v) != 0) goto bad;
+            out->set_count = (uint32_t)v;
+            have |= 16u;
+        } else if (KEY_EQ(k, "mem")) {
+            if (v3d_next(&dec, &it) != 0 || it.type != CBOR_ITEM_BOOL)
+                goto bad;
+            out->member = it.bool_val;
+            have |= 32u;
+        } else if (KEY_EQ(k, "ns")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->n_segments) != 0) goto bad;
+            have |= 64u;
+        } else if (KEY_EQ(k, "segs")) {
+            if (v3d_next(&dec, &it) != 0 || it.type != CBOR_ITEM_ARRAY ||
+                it.count > NODUS_DNAC_STORAGE_SEG_MAX)
+                goto bad;
+            for (size_t j = 0; j < it.count; j++) {
+                if (v3d_u64(&dec, UINT64_MAX, &out->segments[j]) != 0 ||
+                    out->segments[j] == 0)
+                    goto bad;
+                if (j > 0 && out->segments[j - 1] >= out->segments[j])
+                    goto bad;                    /* strictly ascending  */
+            }
+            out->n_listed = it.count;
+            have |= 128u;
+        } else if (KEY_EQ(k, "st")) {
+            if (v3d_u64(&dec, 3, &v) != 0 || v == 0) goto bad;
+            out->status = (uint8_t)v;
+            row |= 1u;
+        } else if (KEY_EQ(k, "bond")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->bond) != 0) goto bad;
+            row |= 2u;
+        } else if (KEY_EQ(k, "fs")) {
+            if (v3d_u64(&dec, UINT32_MAX, &v) != 0) goto bad;
+            out->fail_streak = (uint32_t)v;
+            row |= 4u;
+        } else if (KEY_EQ(k, "rh")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->registered_height) != 0 ||
+                out->registered_height == 0)
+                goto bad;
+            row |= 8u;
+        } else if (KEY_EQ(k, "xh")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->exit_height) != 0) goto bad;
+            row |= 16u;
+        } else if (KEY_EQ(k, "payee")) {
+            if (v3d_hex128(&dec, out->payee) != 0) goto bad;
+            row |= 32u;
+        } else if (v3d_skip(&dec, 0) != 0) {
+            goto bad;
+        }
+    }
+    if (dec.error || have != 255u) goto bad;    /* every key is required */
+    /* found ⇔ the reply carries the whole row */
+    if (out->found ? row != 63u : row != 0u) goto bad;
+    if (out->epoch_start > out->committed_height) goto bad;
+    if (!out->set_exists && (out->set_count != 0 || out->member)) goto bad;
+    if (out->member && !out->found) goto bad;   /* rows never vanish     */
+    if (!out->member && out->n_segments != 0) goto bad;
+    if (out->n_listed != (out->n_segments < NODUS_DNAC_STORAGE_SEG_MAX
+                          ? (size_t)out->n_segments
+                          : (size_t)NODUS_DNAC_STORAGE_SEG_MAX))
+        goto bad;
+    return 0;
+bad:
+    memset(out, 0, sizeof(*out));
+    return -1;
+}
+
 /* One HF-4 request: `method` with zero or one text argument; the raw
  * reply is handed to `decode`. @return 0 / NODUS_ERR_* / -1. */
 static int hf4_query(nodus_client_t *client, const char *method,
@@ -6166,6 +6272,10 @@ static int hf4_dec_prices(const uint8_t *r, size_t l, void *o) {
     return nodus_dnac_name_prices_decode(r, l,
                                          (nodus_dnac_name_prices_t *)o);
 }
+static int st_dec_status(const uint8_t *r, size_t l, void *o) {
+    return nodus_dnac_storage_status_decode(r, l,
+                                            (nodus_dnac_storage_status_t *)o);
+}
 
 int nodus_client_dnac_ruleset_info(nodus_client_t *client,
                                    nodus_dnac_ruleset_info_t *out)
@@ -6203,6 +6313,21 @@ int nodus_client_dnac_name_prices(nodus_client_t *client,
     memset(out, 0, sizeof(*out));
     return hf4_query(client, "dnac_fee_info", NULL, NULL, hf4_dec_prices,
                      out);
+}
+
+int nodus_client_dnac_storage_status(nodus_client_t *client,
+                                     const char *node_fp_hex,
+                                     nodus_dnac_storage_status_t *out)
+{
+    if (!nodus_client_is_ready(client) || !node_fp_hex || !out) return -1;
+    if (strlen(node_fp_hex) != 128) return -1;
+    for (size_t i = 0; i < 128; i++) {
+        const char c = node_fp_hex[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    return hf4_query(client, "dnac_storage_status", "fp", node_fp_hex,
+                     st_dec_status, out);
 }
 
 int nodus_client_dnac_supply_tip(nodus_client_t *client, bool *has_out,
