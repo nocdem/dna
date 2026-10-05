@@ -111,7 +111,12 @@ test('address book storage: encrypted under its own key, bound to the vault id, 
   const key = await addressBookKeyFor(phrase, id);
   const list = addAddress([], { label: 'Bob', network: 'nodus', address: NODUS }, validators);
   const text = await serializeAddressBook(id, list, key);
-  assert.ok(!text.includes('Bob') && !text.includes(NODUS));
+  // The plaintext never appears: only the sealed record's five fields are
+  // stored, and no JSON fragment of an entry is in it. (The old check,
+  // !text.includes('Bob'), failed by chance whenever the random base64 iv
+  // or ciphertext happened to contain those three letters.)
+  assert.deepEqual(Object.keys(JSON.parse(text)).sort(), ['cipher', 'ciphertext', 'id', 'iv', 'version']);
+  assert.ok(!text.includes('"label"') && !text.includes('"Bob"') && !text.includes(`"${NODUS}"`));
   assert.deepEqual(await parseAddressBook(text, id, key, validators), list);
   assert.deepEqual(await parseAddressBook(null, id, key, validators), []);
   await assert.rejects(parseAddressBook(text, otherId, key, validators), /do not match/);
