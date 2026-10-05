@@ -105,9 +105,9 @@
  *    ctx fill is not induced here (no fault-injection hook reaches the
  *    chain_config read).
  *  - F / F2 (storage): the GEN_STORAGE pins and the storage vote literal
- *    are independent-oracle literals — "STORAGE-ORACLE: NOT FILLED" (zero)
- *    since the renumbering onto the EVM generation, until the oracle
- *    re-runs; they do not run in a build without NODUS_EVM_ENABLED;
+ *    are independent-oracle literals (STORAGE-ORACLE, filled from
+ *    shared/dnac/tests/storage_oracle.py over the generation-4
+ *    preimages); they do not run in a build without NODUS_EVM_ENABLED;
  *    if they ever stop re-deriving, the runtime selfcheck fails, the
  *    seeded genesis refuses, and EVERY engine case in this file fails at
  *    fx_open — not a pass, not a skip. F pins the v4 / v5 roots by

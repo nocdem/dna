@@ -64,9 +64,9 @@
  *      does NOT gate a param-9 leg; the read plan is empty.
  *   6. slot 16 readable; a far-future param-16 row found at INT64_MAX.
  *  HOW IT CAN LIE (storage): every "exactly the literal" check on
- *  DNAC_CFG_RULESET_GEN_STORAGE_D here holds for any literal value — and
- *  the literal is the unfilled oracle placeholder 0 (STORAGE-ORACLE: NOT
- *  FILLED) until the oracle re-runs; its correctness is
+ *  DNAC_CFG_RULESET_GEN_STORAGE_D here holds for any literal value (the
+ *  literal is S4 of shared/dnac/tests/storage_oracle.py, STORAGE-ORACLE);
+ *  its correctness is
  *  test_hf4_table.c's selfcheck re-derivation. Section 5's storage half
  *  does not run in a build without NODUS_EVM_ENABLED. The same-block
  *  check is over the pure rule, not a block-level run (test_hf4_switch.c

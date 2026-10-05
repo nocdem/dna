@@ -996,11 +996,14 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  nodus_witness_runtime.c SYS_RULESET_HASH_GST) — never this build's
  *  encoder. nodus_witness_runtime_selfcheck re-derives it on every start
  *  of an EVM-enabled build. Numbers assigned in main merge order
- *  (decision 2026-10-04-storage-reward-approved.md; QEVM merged first).
- *  STORAGE-ORACLE: NOT FILLED — zero until the oracle re-runs over the
- *  generation-4 preimages (the earlier generation-3 value 0x14bb86ad…
- *  is dead). */
-#define DNAC_CFG_RULESET_GEN_STORAGE_D      0x0000000000000000ULL /* STORAGE-ORACLE: NOT FILLED */
+ *  (decision 2026-10-04-storage-reward-approved.md; QEVM merged first;
+ *  decision 2026-10-05-storage-reward-is-for-archive.md K10).
+ *  STORAGE-ORACLE: S4 of shared/dnac/tests/storage_oracle.py
+ *  (generation 4, base GEN_EVM 3), whose control legs reproduced the
+ *  generation-1/2 pins, D2, the EVM generation's pins and
+ *  DNAC_CFG_EVM_ACTIVE_D first (the earlier generation-3 value
+ *  0x14bb86ad… is dead). */
+#define DNAC_CFG_RULESET_GEN_STORAGE_D      0x0c6fd6f2484e6024ULL /* STORAGE-ORACLE: S4 of shared/dnac/tests/storage_oracle.py (896171186953543716) */
 
 /** HF-4 NAME_REGISTER price range (params 10-13), both inclusive:
  *  [10^8, 10^15] raw = [1 NODUS, 10 000 000 NODUS] (design §2 Price). */

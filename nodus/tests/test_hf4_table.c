@@ -365,7 +365,7 @@ int main(void) {
 #ifdef NODUS_EVM_ENABLED
         /* storage reward v1: the storage vote literal re-derives from the
          * compiled GEN_STORAGE pins (both oracle-filled — header "HOW IT
-         * CAN LIE"; STORAGE-ORACLE: NOT FILLED until the oracle re-runs) */
+         * CAN LIE"; STORAGE-ORACLE: shared/dnac/tests/storage_oracle.py) */
         CHECK(dna_ruleset_gen_digest(NODUS_RT_GEN_STORAGE,
                                      gS[0].ruleset_hash, gS[1].ruleset_hash,
                                      DNAC_RULESET_SWITCH_SPEC_VERSION,

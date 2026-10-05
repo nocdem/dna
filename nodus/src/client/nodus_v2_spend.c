@@ -379,9 +379,8 @@ static const uint64_t PG3_WTS[NODUS_PIN_G3_SYS_METER_OP_COUNT] =
     NODUS_PIN_G3_SYS_METER_OP_WEIGHTS_INIT;
 static const uint8_t PG3_DIG[64] = NODUS_PIN_G3_SYS_METER_POLICY_DIGEST_INIT;
 /* Storage reward v1 — GEN_STORAGE (SYSTEM v9 / CORE v7), the same reason.
- * STORAGE-ORACLE: NOT FILLED in nodus_ruleset_pins.h (zero hashes and
- * policy digest): a pins client refuses to build there until filled
- * (its policy digest check fails closed). */
+ * nodus_ruleset_pins.h carries the generator's output over the
+ * STORAGE-ORACLE pins (shared/dnac/tests/storage_oracle.py). */
 static const uint8_t PG4_CORE[64] = NODUS_PIN_G4_CORE_RULESET_HASH_INIT;
 static const uint8_t PG4_SYS[64]  = NODUS_PIN_G4_SYS_RULESET_HASH_INIT;
 static const uint32_t PG4_OPS[NODUS_PIN_G4_SYS_METER_OP_COUNT] =
