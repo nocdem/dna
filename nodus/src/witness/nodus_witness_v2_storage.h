@@ -8,7 +8,8 @@
  *
  * Decisions: docs/plans/decisions/2026-10-05-storage-reward-is-for-
  * archive.md (reward = block archive; R = 3; G = 1; amount = block count;
- * 3 failed epochs → skipped; 3 samples; full archives keep all),
+ * 3 failed epochs → skipped; 3 samples; full archives keep all; K5 a
+ * skipped member returns after 12 settled epochs),
  * 2026-10-05-archive-reward-bytes-approved.md (bytes), 2026-10-05-
  * kurultay-7-archive-reward-summary.md, 2026-10-04-storage-reward-
  * approved.md (kept parts), 2026-10-04-storage-reward-who-earns.md (only
@@ -78,10 +79,17 @@
  *   through nodus_witness_v2_accrue; pool 1 is debited by exactly Σ
  *   credited, bound to the observed balance; failed shares and the
  *   remainder stay in pool 1.
- *   fail_streak (bytes item 4): w > 0 and OK → 0; w > 0 and NOT OK → +1
- *   (saturating at UINT32_MAX); w == 0 → unchanged. Under a failed F1
- *   floor nothing is settled, so fail_streak is unchanged (reading of
- *   "nothing moves for that epoch").
+ *   fail_streak (bytes item 4 + K5), for every member of storage_set(H)
+ *   (node_fp ASC), old = the live registry value:
+ *     old < 3:  w > 0 and OK → 0; w > 0 and NOT OK → +1; w == 0 →
+ *               unchanged;
+ *     old ≥ 3:  (the member is skipped for placement) +1 whatever w and
+ *               the verdict; 14 → 0 instead of 15, so the member is placed
+ *               again by the set frozen at this boundary (12 skipped
+ *               epochs) and is skipped again after 3 new failures.
+ *   Under a failed F1 floor nothing is settled, so fail_streak is
+ *   unchanged for every member (reading of "nothing moves for that
+ *   epoch").
  *
  * @file nodus_witness_v2_storage.h
  */
@@ -103,6 +111,11 @@ extern "C" {
 /** Treasury pool that funds the storage reward (pool ids follow the
  *  tokenomics §1 order: 1 = Storage — nodus_witness_roots_v2.h). */
 #define NODUS_STORAGE_POOL_ID          1u
+
+/** fail_streak value at which a skipped member is reset to 0 (K5,
+ *  decision 2026-10-05-storage-reward-is-for-archive.md: 3 + 12 skipped
+ *  epochs). The stored value never reaches it: 14 + 1 is written as 0. */
+#define NODUS_STORAGE_FAIL_RETURN      15u
 
 /** One frozen storage set, as committed. Heap-allocate it (16.9 KB). */
 typedef struct {
@@ -194,6 +207,16 @@ int nodus_witness_storage_eligible_segments(nodus_witness_t *w,
                                             const uint8_t node_fp[64],
                                             uint64_t *ks_out, size_t cap,
                                             size_t *n_out);
+
+/** fail_streak after one SETTLED epoch (pure; header "SETTLEMENT",
+ *  bytes item 4 + K5). `old` the live value, `had_eligible` 1 iff the
+ *  member's weight in the epoch is > 0, `ok` the verdict. old ≥ 3
+ *  (DNA_V2_STORAGE_FAIL_LIMIT): old + 1, or 0 when that would be
+ *  NODUS_STORAGE_FAIL_RETURN or more; old < 3: unchanged without an
+ *  eligible block, else OK → 0 / NOT OK → old + 1. Not called under a
+ *  failed F1 floor (nothing moves). */
+uint32_t nodus_storage_fail_streak_next(uint32_t old, int had_eligible,
+                                        int ok);
 
 /** Position → height within the eligible blocks (pure): the blocks of
  *  ks[0..n) (k strictly ascending) in ascending height; position p is

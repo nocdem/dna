@@ -632,6 +632,16 @@ static int st_pool1_debit(nodus_witness_t *w, uint64_t observed,
     return (rc == SQLITE_DONE && sqlite3_changes(w->db) == 1) ? 0 : -1;
 }
 
+uint32_t nodus_storage_fail_streak_next(uint32_t old, int had_eligible,
+                                        int ok) {
+    if (old >= DNA_V2_STORAGE_FAIL_LIMIT) {          /* skipped (K5)      */
+        if (old >= NODUS_STORAGE_FAIL_RETURN - 1u) return 0u;
+        return old + 1u;
+    }
+    if (!had_eligible) return old;
+    return ok ? 0u : old + 1u;
+}
+
 /* fail_streak := nv, bound to the observed value. */
 static int st_streak_write(nodus_witness_t *w, const uint8_t fp[64],
                            uint32_t old, uint32_t nv) {
@@ -807,13 +817,13 @@ static int st_settle(nodus_witness_t *w, uint64_t B,
         out->accrued = total;
     }
 
-    /* ── fail_streak (bytes item 4) — only members with an eligible
-     *    block move; OK resets, NOT OK adds one (saturating) ────────── */
+    /* ── fail_streak (bytes item 4 + K5) — below 3 only members with an
+     *    eligible block move (OK resets, NOT OK adds one); at 3 or more
+     *    every member adds one, and 15 is reset to 0 ─────────────────── */
     for (uint32_t i = 0; i < cur->count; i++) {
-        if (wt->weight[i] == 0) continue;
         const uint32_t old = rows[row_of[i]].fail_streak;
-        const uint32_t nv = ok[i] ? 0u
-                                  : (old == UINT32_MAX ? old : old + 1u);
+        const uint32_t nv = nodus_storage_fail_streak_next(
+                                old, wt->weight[i] > 0, ok[i]);
         if (st_streak_write(w, cur->fps[i], old, nv) != 0) goto done;
     }
     ret = 0;

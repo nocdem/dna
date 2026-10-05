@@ -5774,8 +5774,11 @@ both earn through the overlap epoch, a new holder earns nothing — G = 1), weig
 segments, W over all members; F1 `P_rep·2 > P_total` else nothing moves; F2; OK iff Σ others' power
 with the bit ·3 > P_rep(m)·2; budget = pool 1 >> 16; each OK member `floor(budget·w/W)` (128-bit) through
 `nodus_witness_v2_accrue` (the exported `v2ec_accrue`) to its payee_fp; pool 1 debited exactly Σ credited,
-bound to the observed balance; fail_streak 0 on OK / +1 on NOT OK for members with weight, unchanged
-otherwise; (2) prune reports ≤ H and sets < H; (3) release every EXITING row — one locked UTXO through
+bound to the observed balance; fail_streak (`nodus_storage_fail_streak_next`, every member of set(H),
+node_fp ASC): below 3, 0 on OK / +1 on NOT OK for members with weight, unchanged otherwise; at 3 or more
+(skipped for placement) +1 at every settled epoch whatever the weight and verdict, and 14 + 1 is written
+as 0 (decision K5: automatic return after 12 skipped epochs — the reset is frozen into set(B) in step 5
+of the same boundary, so the member is placed again and is skipped again after 3 new failures); (2) prune reports ≤ H and sets < H; (3) release every EXITING row — one locked UTXO through
 `nodus_witness_v2_epoch_release_utxo` (the exported graduation writer): tx_hash = exit_id(chain, B,
 node_fp), index 201, owner payee_fp, unlock B + 12·E, status RELEASED; (4) publish every k with
 k·17280 + 2E ≤ B from the last published + 1 (`nodus_witness_storage_publish_due` — the activation
@@ -5784,14 +5787,17 @@ FAULT); (5) freeze storage_set(B) = the ACTIVE rows with their fail_streak. Engi
 touched also when the storage settlement credited or a release UTXO was written
 (`nodus_v2_epoch_result_t.storage_accrued` / `n_storage_releases`).
 
-**Readings recorded in code (not stated by the design).** A failed F1 floor leaves fail_streak unchanged;
-a (re-)registration writes fail_streak 0 (the only way back for a skipped member — exit + 12-epoch lock);
+**Readings recorded in code (not stated by the design).** A failed F1 floor leaves fail_streak unchanged
+for every member (a skipped member's count does not advance in an unsettled epoch); a (re-)registration
+writes fail_streak 0;
 every EXITING row is released at the next boundary, an exit in the boundary block itself included.
 
 **Tests (written, not run by the builder).** `test_storage_b2` — the archive KAT byte for byte (json-c),
 publication / backfill / faults over synthetic `v2_blocks`, the STORAGE_REPORT hook matrix, twin engine
-chains through freeze / report / W = 0 / one OK / all OK / remainder / fail_streak 3 and skip / handoff /
-exit release / conservation; `test_roots_v2` (leaf v2 binding, 4-leg storage_root, the STSEG empty root;
+chains through freeze / report / W = 0 / one OK / all OK / remainder / fail_streak 3 and skip / K5 +1
+while skipped (OK with weight, and with no eligible block) / F1 not met leaves it unchanged / handoff /
+exit release / conservation; the pure fail_streak arc (3 → 14 → 0 → placed again → skipped again after 3
+failures, over `nodus_witness_storage_holders`); `test_roots_v2` (leaf v2 binding, 4-leg storage_root, the STSEG empty root;
 the 2026-10-04 KAT's registry_leaf / registry_root / storage_root sections named SUPERSEDED);
 `test_storage_reg` (record 2685, its roots check through the runtime hook); `test_hf4_switch` (the empty
 4-leg storage leg). Engine cases FAIL until the STORAGE-ORACLE pins are filled.
