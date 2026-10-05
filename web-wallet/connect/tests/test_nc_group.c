@@ -852,7 +852,13 @@ static void test_json(json_object *J) {
     CHECK(json_refused(b), "N1 JSON: short invite_id refused");
     snprintf(b, sizeof(b), "{\"type\":\"nodus_group_accept\",\"v\":1,\"group_id\":\"%s\","
              "\"invite_id\":\"%s\"} ", gid, iids);
-    CHECK(json_refused(b), "N1 JSON: trailing byte refused");
+    CHECK(json_refused(b), "N1 JSON: trailing whitespace refused");
+    snprintf(b, sizeof(b), "{\"type\":\"nodus_group_accept\",\"v\":1,\"group_id\":\"%s\","
+             "\"invite_id\":\"%s\"}x", gid, iids);
+    CHECK(json_refused(b), "N1 JSON: trailing non-whitespace byte refused");
+    snprintf(b, sizeof(b), " {\"type\":\"nodus_group_accept\",\"v\":1,\"group_id\":\"%s\","
+             "\"invite_id\":\"%s\"}", gid, iids);
+    CHECK(json_refused(b), "N1 JSON: leading whitespace refused");
     snprintf(b, sizeof(b), "{\"type\":\"nodus_group_join\",\"v\":1,\"group_id\":\"%s\","
              "\"invite_id\":\"%s\"}", gid, iids);
     CHECK(json_refused(b), "N1 JSON: unknown type refused");

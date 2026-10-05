@@ -620,7 +620,8 @@ int nc_group_welcome_encode(const uint8_t group_id[NC_GROUP_ID_LEN],
 
 /**
  * Strict parse of one decrypted 1:1 plaintext (len bytes, <= 2,048, no NUL
- * inside): one JSON object (json-c strict tokener, all of len consumed);
+ * inside): one JSON object (json-c strict tokener, all of len consumed;
+ * the first byte must be '{' and the last '}' — no surrounding whitespace);
  * "type" one of the three; EXACTLY that type's field set — no missing, no
  * extra and no duplicate key (a duplicate is detected by counting the
  * object's members in the text against the parsed object); "v" the JSON

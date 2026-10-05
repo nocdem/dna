@@ -1179,8 +1179,13 @@ static void jfield_wipe(json_object *o, const char *key) {
 int nc_group_json_parse(const char *json, size_t len, nc_group_json_t *out) {
     if (!out) return NC_GROUP_REFUSED;
     memset(out, 0, sizeof(*out));
-    if (!json || len == 0 || len > NC_GROUP_JSON_MAX || memchr(json, 0, len))
+    if (!json || len < 2 || len > NC_GROUP_JSON_MAX || memchr(json, 0, len))
         return NC_GROUP_REFUSED;
+    /* Exact consumption (R2-8): the strict tokener still eats whitespace
+     * after the closing brace and reports success (json-c 0.17
+     * json_tokener.c:1293-1299 flags only a non-whitespace trailing char),
+     * so no byte outside the object is allowed, whitespace included. */
+    if (json[0] != '{' || json[len - 1] != '}') return NC_GROUP_REFUSED;
 
     json_tokener *tok = json_tokener_new();
     if (!tok) return NC_GROUP_FAULT;
