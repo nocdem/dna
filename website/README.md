@@ -93,11 +93,31 @@ block pace from the newest indexed block; "no block pace yet" without one) —
 and "Estimated APY at the current block pace" (`apy.apy` with a `%`, "—"
 when the explorer could not compute it), each with a one-line note: the date
 moves later when the chain is idle; the APY is before validator commission,
-participation rules apply, fees are not counted. Then a "Paydays" table
-(`paydays`, newest first: block and UTC time) with an empty state ("No
-payday yet — the first is at block 17 280.") and a note that amounts are
-not listed — a payday pays at the block boundary, not as a transaction, so
-Scan's address pages do not show it. The footer describes the indexer's trust
+participation rules apply, fees are not counted. The "Paydays" table loads
+independently from `/api/paydays?limit=25`: newest first, block, UTC time,
+total paid and recipient count. "Load older paydays" follows `next_before`
+without moving the block pager. Automatic refresh preserves expanded history;
+manual Refresh starts again with the latest paydays. A failed payout request
+leaves TPS and APY alone. A historical summary with `available: false` shows
+"Unavailable", never zero.
+
+Payday block pages load `/api/payday/<height>?limit=100` and show recipient
+addresses and amounts, with a separate `next_from` pager. Address pages load
+`/api/rewards/<fingerprint>?limit=25` and show recorded payouts, pending next
+payout, and a dated payout history with block links. Its `next_before` cursor
+is a literal `height:sequence`, independent of transaction history. All amounts
+are decimal strings of integer base units, formatted with BigInt at 8 decimals.
+Recorded payouts are the sum within the available history starting at
+`from_height`, not a lifetime total or wallet balance. Paid rewards are already
+included in the balance while unspent; pending rewards are not yet spendable.
+EN/TR coverage labels show the history's starting block and `at_height`, the
+source height of pending rewards on address pages (which can be ahead of the
+transaction index). Payout list and block-detail responses are bounded by the
+indexed height. Loading, empty results and unavailable sources have distinct
+states; a failed subsequent page preserves already displayed records.
+
+Payouts occur at the block boundary and remain separate from transactions.
+The footer describes the indexer's trust
 in witness responses. A successful HTTP request does not prove a chain is active;
 block timestamps and the reported index position remain visible.
 

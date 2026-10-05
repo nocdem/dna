@@ -13,6 +13,7 @@
   const identifier = rawIdentifier && /^[a-fA-F0-9]{128}$/.test(rawIdentifier) ? rawIdentifier.toLowerCase() : rawIdentifier;
   let pageNumber = 1, snapshotTip = null, lastPage = 1, blockRequest = 0, searchRequest = 0;
   let nextCursor = null, historyLoading = false, refreshing = false;
+  let paydayPager;
   const el = (tag, text, className) => {
     const node = document.createElement(tag);
     if (text !== undefined && text !== null) node.textContent = String(text);
@@ -122,6 +123,94 @@
     const error = el('div'); error.id = 'history-error'; error.setAttribute('role', 'status');
     return [error, more];
   }
+  const nonnegativeInteger = value => Number.isSafeInteger(value) && value >= 0;
+  const rawMoney = value => typeof value === 'string' && /^\d+$/.test(value);
+  const rewardCoverage = data => nonnegativeInteger(data.from_height) && nonnegativeInteger(data.at_height);
+  const rewardCursor = value => value === null || (typeof value === 'string' && /^[1-9]\d*:\d+$/.test(value));
+  const payoutItem = item => item && nonnegativeInteger(item.sequence) && rawMoney(item.amount);
+  const rewardItem = item => payoutItem(item) && nonnegativeInteger(item.height) && nonnegativeInteger(item.time);
+  const payoutRecipient = item => payoutItem(item) && typeof item.address === 'string' && /^[a-fA-F0-9]{128}$/.test(item.address);
+  function coverageText(data, pending = false) {
+    return pending
+      ? t(`Payout records from block ${data.from_height}; pending rewards at block ${data.at_height}.`, `Ödeme kayıtları ${data.from_height}. bloktan itibaren; bekleyen ödüller ${data.at_height}. blok itibarıyla.`)
+      : t(`Payout records from block ${data.from_height}; source at block ${data.at_height}.`, `Ödeme kayıtları ${data.from_height}. bloktan itibaren; kaynak ${data.at_height}. blok itibarıyla.`);
+  }
+  // Every payout list owns its cursor and in-flight request. Loading block transactions or
+  // address transactions cannot alter it, and refreshing invalidates an older page request.
+  function payoutPager({ body, button, status, columns, empty, path, validate, items, cursor, render, summary }) {
+    let next = null, busy = false, request = 0, expanded = false;
+    async function load(append = false) {
+      if (append && (busy || next === null)) return;
+      const current = ++request;
+      busy = true; button.disabled = true; status.replaceChildren();
+      if (!append) {
+        next = null; expanded = false; button.hidden = true;
+        messageRow(body, t('Loading payouts…', 'Ödemeler yükleniyor…'), columns);
+      }
+      body.setAttribute('aria-busy', 'true');
+      try {
+        const data = await api(path(append ? next : null));
+        if (current !== request) return;
+        if (!validate(data)) throw new Error(t('Unexpected payout response.', 'Beklenmeyen ödeme yanıtı.'));
+        const records = items(data), rows = records.map(render), following = cursor(data);
+        if (append && following !== null && following === next) throw new Error(t('Unexpected payout cursor.', 'Beklenmeyen ödeme sayfası sınırı.'));
+        if (append) { body.append(...rows); expanded = true; }
+        else if (rows.length) body.replaceChildren(...rows);
+        else messageRow(body, empty, columns);
+        summary(data);
+        next = following; button.hidden = next === null;
+      } catch (error) {
+        if (current !== request) return;
+        if (append) errorBox(status, error);
+        else messageRow(body, t('Payout data unavailable. ', 'Ödeme verisi alınamıyor. ') + error.message, columns, true);
+      } finally {
+        if (current === request) { busy = false; button.disabled = false; body.setAttribute('aria-busy', 'false'); }
+      }
+    }
+    button.addEventListener('click', () => load(true));
+    return { load, get expanded() { return expanded; }, get busy() { return busy; } };
+  }
+  function payoutSection(id, title, headers) {
+    const section = el('section'); section.id = id;
+    const summary = el('div'); summary.id = id + '-summary';
+    const coverage = el('p', '', 'scan-explanation'); coverage.id = id + '-coverage';
+    const dataTable = table(headers, [], t('Loading payouts…', 'Ödemeler yükleniyor…'), id + '-tbody');
+    const button = el('button', t('Load more payouts', 'Daha fazla ödeme yükle'), 'btn-secondary payout-more');
+    button.id = id + '-more'; button.type = 'button'; button.hidden = true;
+    const status = el('div'); status.id = id + '-error'; status.setAttribute('role', 'status');
+    section.append(el('h2', title), summary, coverage, dataTable, status, button);
+    return { section, summary, coverage, body: dataTable.querySelector('tbody'), button, status };
+  }
+  function loadBlockPayouts(height, content) {
+    const view = payoutSection('block-payouts', t('Reward payouts', 'Ödül ödemeleri'), [t('Recipient address', 'Alıcı adresi'), t('Amount', 'Tutar')]);
+    content.append(view.section);
+    return payoutPager({ ...view, columns: 2, empty: t('No payouts recorded for this block.', 'Bu blok için kaydedilmiş ödeme yok.'),
+      path: from => '/payday/' + height + '?limit=100' + (from === null ? '' : '&from=' + apiValue(from)),
+      validate: data => rewardCoverage(data) && data.height === height && rawMoney(data.total) && nonnegativeInteger(data.recipients) && Array.isArray(data.payouts) && data.payouts.every(payoutRecipient) && (data.next_from === null || nonnegativeInteger(data.next_from)),
+      items: data => data.payouts, cursor: data => data.next_from,
+      render: item => row([hash(item.address, 'address.html?fp=' + encodeURIComponent(item.address)), money(item.amount)]),
+      summary: data => {
+        view.summary.replaceChildren(fields([[t('Total paid', 'Ödenen toplam'), money(data.total)], [t('Recipients', 'Alıcı sayısı'), data.recipients]]));
+        view.coverage.textContent = coverageText(data);
+      }
+    }).load();
+  }
+  function loadAddressRewards(content) {
+    const view = payoutSection('address-rewards', t('Rewards', 'Ödüller'), [t('Payout block', 'Ödeme bloğu'), t('Time', 'Zaman'), t('Amount', 'Tutar')]);
+    view.summary.replaceChildren(fields([[t('Recorded payouts', 'Kaydedilmiş ödemeler'), '—'], [t('Pending next payout', 'Sonraki ödeme için biriken'), '—']]));
+    view.section.append(el('p', t('Recorded payouts cover the history shown here, not lifetime earnings or the current balance. Paid rewards are already included in your balance while unspent; pending rewards are not spendable yet.', 'Kaydedilmiş ödemeler burada gösterilen geçmişi kapsar; tüm zamanların kazancı veya mevcut bakiye değildir. Ödenen ödüller harcanmadıkları sürece zaten bakiyeye dahildir; biriken ödüller henüz harcanamaz.'), 'scan-explanation'));
+    content.append(view.section);
+    return payoutPager({ ...view, columns: 3, empty: t('No payouts for this address in the recorded period.', 'Kayıtlı dönemde bu adres için ödeme yok.'),
+      path: before => '/rewards/' + apiValue(identifier) + '?limit=25' + (before === null ? '' : '&before=' + apiValue(before)),
+      validate: data => rewardCoverage(data) && data.address === identifier && rawMoney(data.paid_total) && rawMoney(data.pending) && Array.isArray(data.items) && data.items.every(rewardItem) && rewardCursor(data.next_before),
+      items: data => data.items, cursor: data => data.next_before,
+      render: item => row([link('block.html?h=' + encodeURIComponent(item.height), item.height), time(item.time), money(item.amount)]),
+      summary: data => {
+        view.summary.replaceChildren(fields([[t('Recorded payouts', 'Kaydedilmiş ödemeler'), money(data.paid_total)], [t('Pending next payout', 'Sonraki ödeme için biriken'), money(data.pending)]]));
+        view.coverage.textContent = coverageText(data, true);
+      }
+    }).load();
+  }
   function displayStats(stats) {
     const indexed = stats.indexed_height, tip = stats.tip_height;
     const known = Number.isSafeInteger(indexed) && Number.isSafeInteger(tip);
@@ -181,7 +270,6 @@
     $('tps-minute').textContent = '—'; $('tps-hour').textContent = '—';
     $('tps-chart').replaceChildren(el('div', message, 'muted'));
     $('payday-next').textContent = '—'; $('apy-value').textContent = '—';
-    messageRow($('paydays-tbody'), message, 2);
   }
   // Next payday (explorer next_payday): a multiple of 17 280 blocks; the date is an estimate at the
   // current block pace, counted from the newest indexed block's time.
@@ -194,7 +282,23 @@
   }
   // APY (explorer apy): the explorer's own figure, shown only when every input was known.
   const apyText = a => a && tpsText(a.apy) !== null ? a.apy + ' %' : '—';
-  const paydayRow = p => row([link('block.html?h=' + encodeURIComponent(p.height), p.height), time(p.time)]);
+  const paydayRow = p => row([link('block.html?h=' + encodeURIComponent(p.height), p.height), time(p.time), p.available ? money(p.total) : t('Unavailable', 'Alınamıyor'), p.available ? p.recipients : '—']);
+  function loadPaydays(automatic) {
+    if (!paydayPager) {
+      paydayPager = payoutPager({ body: $('paydays-tbody'), button: $('paydays-more'), status: $('paydays-error'), columns: 4,
+        empty: t('No payday yet — the first is at block 17 280.', 'Henüz ödeme günü yok — ilki 17 280. blokta.'),
+        path: before => '/paydays?limit=25' + (before === null ? '' : '&before=' + apiValue(before)),
+        validate: data => rewardCoverage(data) && Array.isArray(data.paydays) && data.paydays.every(p => p && nonnegativeInteger(p.height) && nonnegativeInteger(p.time) && typeof p.available === 'boolean' && (p.available ? rawMoney(p.total) && nonnegativeInteger(p.recipients) : p.total === null && p.recipients === null)) && (data.next_before === null || nonnegativeInteger(data.next_before)),
+        items: data => data.paydays, cursor: data => data.next_before, render: paydayRow,
+        summary: data => { $('paydays-coverage').textContent = coverageText(data); }
+      });
+    }
+    // Keep older paydays visible while an automatic update refreshes the chain figures.
+    if (!automatic || (!paydayPager.expanded && !paydayPager.busy)) {
+      $('paydays-coverage').textContent = '';
+      return paydayPager.load();
+    }
+  }
   async function loadTps() {
     if (!$('tps-cards')) return;
     try {
@@ -207,9 +311,6 @@
       $('tps-chart').replaceChildren(tpsChart(data.history));
       $('payday-next').textContent = paydayText(data.next_payday, data.now_ms);
       $('apy-value').textContent = apyText(data.apy);
-      const paydays = Array.isArray(data.paydays) ? data.paydays.filter(p => p && Number.isSafeInteger(p.height) && Number.isSafeInteger(p.time)) : [];
-      $('paydays-tbody').replaceChildren(...paydays.map(paydayRow));
-      if (!paydays.length) messageRow($('paydays-tbody'), t('No payday yet — the first is at block 17 280.', 'Henüz ödeme günü yok — ilki 17 280. blokta.'), 2);
     } catch (error) { tpsUnavailable(error.message); }
   }
   async function loadBlocks(requested, fresh = false, providedStats) {
@@ -263,9 +364,12 @@
       [t('Height','Yükseklik'), b.height], [t('Block ID','Blok kimliği'), hash(b.block_id)], [t('Previous block','Önceki blok'), previous],
       [t('Timestamp','Zaman damgası'), time(b.time)], [t('Proposer','Öneren'), hash(b.proposer)], [t('State root','Durum kökü'), hash(b.global_root)],
       [t('Applied transactions','Uygulanan işlemler'), b.applied_count], [t('Items in block','Bloktaki kayıtlar'), itemCount(b.n_items)]
-    ]), el('h2', t('Transactions','İşlemler')), table([t('Position','Konum'),t('Type','Tür'),t('Fee','Ücret'),t('Wire ID','Kablo kimliği')], data.items.map(itemRow), t('No transactions in this block.','Bu blokta işlem yok.'), 'block-items-tbody'));
+    ]));
+    const payouts = nonnegativeInteger(b.height) && b.height > 0 && b.height % 17280 === 0 ? loadBlockPayouts(b.height, content) : Promise.resolve();
+    content.append(el('h2', t('Transactions','İşlemler')), table([t('Position','Konum'),t('Type','Tür'),t('Fee','Ücret'),t('Wire ID','Kablo kimliği')], data.items.map(itemRow), t('No transactions in this block.','Bu blokta işlem yok.'), 'block-items-tbody'));
     nextCursor = Number.isSafeInteger(data.next_from) ? data.next_from : null;
     content.append(...moreButton(() => loadMore('/block/' + apiValue(identifier) + '?from=', 'block-items-tbody', 'items', itemRow, d => Number.isSafeInteger(d.next_from) ? d.next_from : null)));
+    return payouts;
   }
   const recordNames = { stake: t('Stake','Stake'), delegate: t('Delegation','Delegasyon'), unstake: t('Unstake','Stake çözme'), undelegate: t('Undelegation','Delegasyon çözme'), validator_update: t('Validator update','Doğrulayıcı güncellemesi'), chain_config: t('Chain configuration','Zincir yapılandırması') };
   function renderRecord(record) {
@@ -311,9 +415,11 @@
     if (data.balance_status === 'ok' && Array.isArray(data.balances)) {
       content.append(el('h2', t('Balances by token', 'Token bazında bakiyeler')), table([t('Token','Token'),t('Total','Toplam'),t('Spendable now','Şu an harcanabilir'),t('Coins','Coin sayısı')], data.balances.filter(b => b && typeof b === 'object').map(balanceRow), t('This address holds no coins.', 'Bu adreste coin yok.')));
     }
+    const rewards = loadAddressRewards(content);
     nextCursor = typeof data.next_before === 'string' ? data.next_before : null;
     content.append(el('h2',t('Transaction history','İşlem geçmişi')),table([t('Position','Konum'),t('Type','Tür'),t('Height','Yükseklik'),t('Time','Zaman'),t('Fee','Ücret')],data.items.map(historyRow),t('No transactions for this address.','Bu adres için işlem yok.'),'address-history-tbody'));
     content.append(...moreButton(() => loadMore('/address/' + apiValue(identifier) + '?limit=25&before=', 'address-history-tbody', 'items', historyRow, d => typeof d.next_before === 'string' ? d.next_before : null)));
+    return rewards;
   }
   async function loadMore(prefix, tbodyId, key, render, cursorOf) {
     if (historyLoading || nextCursor === null) return;
@@ -334,7 +440,7 @@
     content.replaceChildren(el('div',t('Loading…','Yükleniyor…'),'loading'));
     try {
       const data=await api('/'+page+'/'+apiValue(identifier)+(page==='address'?'?limit=25':''));
-      if(page==='block')renderBlock(data,content);else if(page==='tx')renderTx(data,content);else renderAddress(data,content);
+      if(page==='block')await renderBlock(data,content);else if(page==='tx')renderTx(data,content);else await renderAddress(data,content);
     } catch(error){errorBox(content,error);}
   }
   // Hard forks (explorer /api/governance: every applied chain_config vote, (height, index)
@@ -403,9 +509,9 @@
     content.replaceChildren(el('div', t('Loading…', 'Yükleniyor…'), 'loading'));
     try { renderGovernance(await api('/governance'), content); } catch (error) { errorBox(content, error); }
   }
-  async function refresh() {
+  async function refresh(automatic = false) {
     if(refreshing)return;refreshing=true;$('refresh-data').disabled=true;
-    const detail = page==='hardforks' ? loadGovernance() : page!=='index' ? loadDetail() : loadTps();
+    const detail = page==='hardforks' ? loadGovernance() : page!=='index' ? loadDetail() : Promise.all([loadTps(), loadPaydays(automatic)]);
     try {
       const stats=await api('/stats');displayStats(stats);
       if(page==='index')await loadBlocks(pageNumber,pageNumber===1,stats);
@@ -432,13 +538,13 @@
     }catch(error){if(current===searchRequest)errorBox(results,error);}
   });
   $('search-input').addEventListener('input',()=>{searchRequest++;$('search-results').replaceChildren();});
-  $('refresh-data').addEventListener('click',refresh);
+  $('refresh-data').addEventListener('click',()=>refresh());
   if(page==='index'){
     // Circulating supply "Details": shows / hides the bucket table below the cards.
     $('supply-details-toggle').addEventListener('click',event=>{const open=$('supply-details').hidden;$('supply-details').hidden=!open;event.currentTarget.setAttribute('aria-expanded',String(open));});
     $('pg-first').addEventListener('click',()=>loadBlocks(1,true));$('pg-prev').addEventListener('click',()=>loadBlocks(pageNumber-1));$('pg-next').addEventListener('click',()=>loadBlocks(pageNumber+1));$('pg-last').addEventListener('click',()=>loadBlocks(lastPage));
     $('pg-input').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();if(/^\d+$/.test(event.target.value))loadBlocks(Number(event.target.value));}});
-    setInterval(()=>{if(!document.hidden && pageNumber===1)refresh();},30000);
+    setInterval(()=>{if(!document.hidden && pageNumber===1)refresh(true);},30000);
   }
   refresh();
 })();

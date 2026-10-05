@@ -27,7 +27,7 @@ const server = createServer(async (request, response) => {
   }
   if (url?.pathname.startsWith('/scan/api/')) {
     const endpoint = url.pathname.slice('/scan'.length);
-    if (!/^\/api\/(stats|blocks|search|governance|block\/[a-fA-F0-9]+|tx\/[a-fA-F0-9]{128}|address\/[a-fA-F0-9]{128})$/.test(endpoint) || request.url.length > 2048) {
+    if (!/^\/api\/(stats|blocks|search|governance|tps|paydays|payday\/[1-9]\d*|block\/[a-fA-F0-9]+|tx\/(?:[a-fA-F0-9]{128}|[1-9]\d*:\d+)|(?:address|rewards)\/[a-fA-F0-9]{128})$/.test(endpoint) || request.url.length > 2048) {
       response.writeHead(404).end('Not found'); return;
     }
     try {
