@@ -14,12 +14,15 @@
  *      pre-genesis empty states.
  *   3. 7/7 determinism: seven independent witness instances with identical
  *      state compute identical SYSTEM/CORE/domains/global roots.
- *   4. Storage reward v1 (test_storage_layer): the storage leg's three
- *      trees, storage_root, "NDS.SYS.v5" and the exit release identity —
- *      structural checks.
+ *   4. Storage reward v1 (test_storage_layer): the registry (leaf v2 with
+ *      fail_streak), sets and reports trees, the 4-leg storage_root
+ *      ("NDS.STOR.v2", archive reward), "NDS.SYS.v5" and the exit release
+ *      identity — structural checks (the segment trees and the archive
+ *      KATs: test_storage_b2).
  *   5. Storage reward v1 (test_storage_kat): every vector of the
  *      independent oracle's nodus/tests/vectors/storage_reward_kat.json
- *      the C hashes, byte for byte (json-c; path from CMake).
+ *      the C still hashes, byte for byte (json-c; path from CMake); the
+ *      leaf v1 / STOR.v1 sections are named SUPERSEDED.
  *
  * @file test_roots_v2.c
  */

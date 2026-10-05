@@ -88,7 +88,10 @@
  * section A — built without it, section A FAILS (never skips). Any
  * DNAC_EPOCH_LENGTH that divides nothing in particular works (every
  * height is derived from it); it must be >= 8 so heights 1..7 hold no
- * boundary. Environment: none.
+ * boundary. Environment: none. Cost: section D applies 7E + 1 blocks to
+ * each of two fixtures (≈ 10,000 block applications at the production
+ * E = 720, each followed by a SYSTEM-root recomputation) and section B
+ * inserts ≈ 120,000 synthetic v2_blocks rows — minutes, not seconds.
  *
  * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
  * One /tmp/test_storage_b2_* directory per fixture, removed at the end
@@ -972,25 +975,40 @@ static uint32_t rep_call(uint8_t *dst, uint64_t h, uint32_t seat,
     return REP_FIXED + bl;
 }
 
-/* A decoded report envelope: `legs` SYSTEM legs (the second a copy),
- * `call_len` bytes of e->call, fee `fee`, auth kind `kind`. */
+/* A decoded report envelope: leg 0 SYSTEM REPORT over `call_len` bytes
+ * of e->call, fee `fee`, auth kind `kind`; with legs == 2 a second CORE
+ * SYSFUND leg (legs are strictly ascending by domain on the wire, so the
+ * second leg of a 2-leg envelope cannot be SYSTEM again). */
 static int rh_build(rh_env_t *e, uint32_t call_len, uint64_t fee,
                     uint8_t kind, int legs) {
+    static uint8_t fund[66];
+    memset(fund, 0xA5, sizeof(fund));
+    fund[0] = 1;
+    fund[65] = 0;
     dna_env_leg_in_t lg[2];
     memset(lg, 0, sizeof(lg));
-    for (int i = 0; i < 2; i++) {
-        lg[i].hdr.domain_id = DNA_DOMAIN_SYSTEM;
-        lg[i].hdr.runtime_op = DNA_SYSRULE_STORAGE_REPORT;
-        lg[i].hdr.ruleset_version = 8;
-        lg[i].hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
-        lg[i].hdr.auth_kind = kind;
-        lg[i].hdr.call_len = call_len;
-        lg[i].hdr.auth_len = AUTH_LEN;
-        lg[i].hdr.res_max_effects = 8;
-        lg[i].hdr.res_max_effect_bytes = 16384;
-        lg[i].call_data = e->call;
-        lg[i].auth_data = e->auth[i];
-    }
+    lg[0].hdr.domain_id = DNA_DOMAIN_SYSTEM;
+    lg[0].hdr.runtime_op = DNA_SYSRULE_STORAGE_REPORT;
+    lg[0].hdr.ruleset_version = 8;
+    lg[0].hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
+    lg[0].hdr.auth_kind = kind;
+    lg[0].hdr.call_len = call_len;
+    lg[0].hdr.auth_len = AUTH_LEN;
+    lg[0].hdr.res_max_effects = 8;
+    lg[0].hdr.res_max_effect_bytes = 16384;
+    lg[0].call_data = e->call;
+    lg[0].auth_data = e->auth[0];
+    lg[1].hdr.domain_id = DNA_DOMAIN_CORE;
+    lg[1].hdr.runtime_op = DNA_CORERULE_SYSFUND;
+    lg[1].hdr.ruleset_version = 6;
+    lg[1].hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
+    lg[1].hdr.auth_kind = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+    lg[1].hdr.call_len = sizeof(fund);
+    lg[1].hdr.auth_len = AUTH_LEN;
+    lg[1].hdr.res_max_effects = 40;
+    lg[1].hdr.res_max_effect_bytes = 16384;
+    lg[1].call_data = fund;
+    lg[1].auth_data = e->auth[1];
     dna_env_in_t in;
     memset(&in, 0, sizeof(in));
     in.fee_amount = fee;
@@ -1711,15 +1729,28 @@ static int take(nodus_witness_t *w, snap_t *s) {
     return pool1_of(w, &s->pool1);
 }
 
-static int check_settle(nodus_witness_t *w, uint64_t H, const snap_t *b0,
+/* The expected weights of epoch (H, H+E], computed BEFORE the settling
+ * boundary B = H + 2E: that boundary prunes set(H−E) (sets below B−2E),
+ * so they cannot be recomputed after it. */
+typedef struct {
+    nodus_storage_set_t cur;                      /* set(H)             */
+    uint64_t wt[DNA_V2_STORAGE_SET_MAX];          /* per member of cur  */
+} expect_t;
+static expect_t g_ex;
+
+static int prep_expect(nodus_witness_t *w, uint64_t H, expect_t *ex) {
+    memset(ex, 0, sizeof(*ex));
+    if (nodus_witness_storage_set_get(w, H, &ex->cur) != 0) return -1;
+    int prc = nodus_witness_storage_set_get(w, H - E_LEN, &g_set_b);
+    if (prc < 0) return -1;
+    return expect_weights(&ex->cur, prc == 0 ? &g_set_b : NULL, ex->wt);
+}
+
+static int check_settle(const expect_t *ex, const snap_t *b0,
                         const snap_t *b1, int (*okf)(int member),
                         uint64_t *W_out) {
-    nodus_storage_set_t *cur = &g_set_a, *prev = &g_set_b;
-    uint64_t wt[DNA_V2_STORAGE_SET_MAX];
-    if (nodus_witness_storage_set_get(w, H, cur) != 0) return -1;
-    int prc = nodus_witness_storage_set_get(w, H - E_LEN, prev);
-    if (prc < 0) return -1;
-    if (expect_weights(cur, prc == 0 ? prev : NULL, wt) != 0) return -1;
+    const nodus_storage_set_t *cur = &ex->cur;
+    const uint64_t *wt = ex->wt;
     uint64_t W = 0, total = 0;
     for (uint32_t i = 0; i < cur->count; i++) W += wt[i];
     *W_out = W;
@@ -1875,12 +1906,13 @@ static int t_engine(void) {
     /* boundary 3E: settle H = E — nothing eligible (W == 0) */
     snap_t s0, s1;
     CHECK(run_idle(&A, &B, &h, 3 * E_LEN - 1) == 0, "to 3E-1");
-    CHECK(take(A.w, &s0) == 0, "before 3E");
+    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, E_LEN, &g_ex) == 0,
+          "before 3E");
     CHECK(run_idle(&A, &B, &h, 3 * E_LEN) == 0, "boundary 3E");
     CHECK(take(A.w, &s1) == 0, "after 3E");
     {
         uint64_t W = 0;
-        CHECK(check_settle(A.w, E_LEN, &s0, &s1, ok_all, &W) == 0 && W == 0,
+        CHECK(check_settle(&g_ex, &s0, &s1, ok_all, &W) == 0 && W == 0,
               "H = E: W == 0 — no credit, pool and streaks unchanged");
         CHECK(s0.pool1 == s1.pool1, "pool 1 untouched");
         CHECK(q_u64(A.w, "SELECT COUNT(*) FROM v2_storage_reports", &n) == 0
@@ -1914,18 +1946,8 @@ static int t_engine(void) {
 
     /* boundary 4E: settle H = 2E ("one OK") */
     CHECK(run_idle(&A, &B, &h, 4 * E_LEN - 1) == 0, "to 4E-1");
-    CHECK(take(A.w, &s0) == 0, "before 4E");
-    CHECK(run_idle(&A, &B, &h, 4 * E_LEN) == 0, "boundary 4E");
-    CHECK(take(A.w, &s1) == 0, "after 4E");
-    {
-        uint64_t W = 0;
-        CHECK(check_settle(A.w, 2 * E_LEN, &s0, &s1, ok_one, &W) == 0 &&
-              W > 0, "H = 2E: weighted pay to N alone, remainder stays, "
-              "fail_streak +1 for every failing member with weight");
-        CHECK(s1.streak[KX] == 0, "X (new at 2E) has weight 0: unchanged");
-        CHECK(s1.streak[g_M] == 1, "M failed once");
-    }
-    /* the HANDOFF: the engine's eligible lists equal the test's own */
+    /* the HANDOFF, at 4E − 1 (sets E, 2E, 3E all still retained): the
+     * engine's eligible lists equal the test's own */
     for (uint64_t H = 2 * E_LEN; H <= 3 * E_LEN; H += E_LEN) {
         CHECK(nodus_witness_storage_set_get(A.w, H, &g_set_a) == 0 &&
               nodus_witness_storage_set_get(A.w, H - E_LEN, &g_set_b) == 0,
@@ -1944,6 +1966,18 @@ static int t_engine(void) {
                   "engine eligibility == holders(k, set(H−E)) ∩ set(H)");
         }
     }
+    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, 2 * E_LEN, &g_ex) == 0,
+          "before 4E");
+    CHECK(run_idle(&A, &B, &h, 4 * E_LEN) == 0, "boundary 4E");
+    CHECK(take(A.w, &s1) == 0, "after 4E");
+    {
+        uint64_t W = 0;
+        CHECK(check_settle(&g_ex, &s0, &s1, ok_one, &W) == 0 && W > 0,
+              "H = 2E: weighted pay to N alone, remainder stays, "
+              "fail_streak +1 for every failing member with weight");
+        CHECK(s1.streak[KX] == 0, "X (new at 2E) has weight 0: unchanged");
+        CHECK(s1.streak[g_M] == 1, "M failed once");
+    }
 
     /* 4E + 1: all report for H = 3E (all OK but M); 4E + 3: B exits */
     CHECK(reports_for(&A, 4 * E_LEN + 1, 3 * E_LEN, all_seats, N_VAL,
@@ -1960,7 +1994,8 @@ static int t_engine(void) {
     /* boundary 5E: settle H = 3E; B released */
     uint64_t bonds0 = 0, bonds1 = 0, utxo0 = 0, utxo1 = 0;
     CHECK(run_idle(&A, &B, &h, 5 * E_LEN - 1) == 0, "to 5E-1");
-    CHECK(take(A.w, &s0) == 0, "before 5E");
+    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, 3 * E_LEN, &g_ex) == 0,
+          "before 5E");
     CHECK(nodus_witness_storage_bond_total(A.w, &bonds0) == 0 &&
           q_u64(A.w, "SELECT COALESCE(SUM(amount),0) FROM utxo_set",
                 &utxo0) == 0, "buckets before 5E");
@@ -1968,8 +2003,8 @@ static int t_engine(void) {
     CHECK(take(A.w, &s1) == 0, "after 5E");
     {
         uint64_t W = 0;
-        CHECK(check_settle(A.w, 3 * E_LEN, &s0, &s1, ok_all_but_m, &W) == 0
-              && W > 0, "H = 3E: all OK but M");
+        CHECK(check_settle(&g_ex, &s0, &s1, ok_all_but_m, &W) == 0 && W > 0,
+              "H = 3E: all OK but M");
         CHECK(s1.streak[g_M] == 2, "M failed twice");
     }
     {
@@ -2014,13 +2049,14 @@ static int t_engine(void) {
     CHECK(submit(&A, &B, 5 * E_LEN + 1, e, l, N_VAL, codes) == 0, "5E+1");
     h = 5 * E_LEN + 1;
     CHECK(run_idle(&A, &B, &h, 6 * E_LEN - 1) == 0, "to 6E-1");
-    CHECK(take(A.w, &s0) == 0, "before 6E");
+    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, 4 * E_LEN, &g_ex) == 0,
+          "before 6E");
     CHECK(run_idle(&A, &B, &h, 6 * E_LEN) == 0, "boundary 6E");
     CHECK(take(A.w, &s1) == 0, "after 6E");
     {
         uint64_t W = 0;
-        CHECK(check_settle(A.w, 4 * E_LEN, &s0, &s1, ok_all_but_m, &W) == 0
-              && W > 0, "H = 4E: all OK but M");
+        CHECK(check_settle(&g_ex, &s0, &s1, ok_all_but_m, &W) == 0 && W > 0,
+              "H = 4E: all OK but M");
         CHECK(s1.streak[g_M] == 3, "M failed three settled epochs");
         CHECK(nodus_witness_storage_set_get(A.w, 6 * E_LEN, &g_set_a) == 0,
               "set(6E)");
@@ -2050,13 +2086,14 @@ static int t_engine(void) {
     CHECK(submit(&A, &B, 6 * E_LEN + 1, e, l, N_VAL, codes) == 0, "6E+1");
     h = 6 * E_LEN + 1;
     CHECK(run_idle(&A, &B, &h, 7 * E_LEN - 1) == 0, "to 7E-1");
-    CHECK(take(A.w, &s0) == 0, "before 7E");
+    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, 5 * E_LEN, &g_ex) == 0,
+          "before 7E");
     CHECK(run_idle(&A, &B, &h, 7 * E_LEN) == 0, "boundary 7E");
     CHECK(take(A.w, &s1) == 0, "after 7E");
     {
         uint64_t W = 0;
-        CHECK(check_settle(A.w, 5 * E_LEN, &s0, &s1, ok_all, &W) == 0 &&
-              W > 0, "H = 5E: all OK");
+        CHECK(check_settle(&g_ex, &s0, &s1, ok_all, &W) == 0 && W > 0,
+              "H = 5E: all OK");
         CHECK(s1.streak[g_M] == 0, "M's fail_streak resets on OK");
         CHECK(core_invariant(A.w) == 0, "the invariant holds at the end");
     }
