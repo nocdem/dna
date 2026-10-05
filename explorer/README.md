@@ -7,8 +7,9 @@ JSON API. The Nodus Scan frontend (`scan.nodusnetwork.io`) lives in
 `website/scan/` (see `website/deploy/README.md`); the legacy
 `scan.cpunk.io` frontend is no longer in this repository.
 
-**Version 0.2.2** adds actual payout amounts, recipient pages and address
-reward history through an optional read-only local Nodus database. It
+**Version 0.2.3** adds stake releases (bond and delegation releases) from the
+same source. **Version 0.2.2** added actual payout amounts, recipient pages and
+address reward history through an optional read-only local Nodus database. It
 does not rebuild the explorer index or change the node's owner-gated RPC.
 
 **Stake releases** — the validator bonds and delegations the chain returns at

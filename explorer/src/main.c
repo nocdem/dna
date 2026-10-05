@@ -28,7 +28,7 @@
 
 /* 0.2.0: version-3 chain — height walk over dnac_v3_block, index schema
  * v2 (rebuilt from height 1 on first start). */
-#define EXPLORERD_VERSION "0.2.2"
+#define EXPLORERD_VERSION "0.2.3"
 
 #define EXPLORERD_DEFAULT_CONFIG "/etc/dna-explorer.conf"
 #define EXPLORERD_DEFAULT_DB     "/var/lib/dna-explorer/index.db"
