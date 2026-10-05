@@ -11,7 +11,9 @@
  *   docs/plans/2026-10-04-connect-groups-design.md rev 1.
  *   docs/plans/decisions/2026-10-04-connect-groups.md items 1-11.
  *   Vectors: web-wallet/test/fixtures/groups_oracle.py -> groups_kat.json
- *     (independent oracle; this file implements its 18 "readings").
+ *     (independent oracle; this file implements its 18 "readings", except
+ *     reading 13's empty message text, overridden by decision 11 — see
+ *     EMPTY TEXT).
  *
  * Layouts (all integers unsigned big-endian; every tag is the 16-byte
  * 0x00-right-padded ASCII form, also inside HKDF info and hash preimages):
