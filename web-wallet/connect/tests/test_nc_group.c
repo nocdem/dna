@@ -57,6 +57,12 @@
  *       key failing ek_check fails the whole build; record seal/open;
  *       message seal/open; HEAD build/verify; empty text refused on seal
  *       (decision 11).
+ *   G3  (package G3, not from the oracle) nc_group_kp_open_pinned: the
+ *       welcomed member opens packet v with the welcome's kp_digest and no
+ *       packet of v-1; a different digest is PREV_CONFLICT, the signature
+ *       is still checked first, a non-member finds no entry. The leave of
+ *       decision 13 encodes to exactly its text and parses back; an extra
+ *       invite_id, a missing / duplicate group_id and v = 2 are refused.
  *
  * What it requires: the native build of web-wallet/connect/tests (OpenSSL,
  * json-c); the vector file at the path compiled in (GROUPS_KAT, set by
@@ -535,6 +541,31 @@ static void test_packet_open(void) {
             CHECK(nc_group_kp_open(pkt, len, OWN_PK, G_GID, G_OWNER, 2, prev, other, kat_decap,
                                    &tab, &o) == NC_GROUP_KP_NO_ENTRY && o.group_key[0] == 0,
                   "N1 packet: a non-member finds no entry");
+            /* G3: the welcomed member holds no packet of v-1; the welcome's
+             * kp_digest (R2-7) pins packet v instead. */
+            CHECK(nc_group_kp_open_pinned(pkt, len, OWN_PK, G_GID, G_OWNER, 2, G_KP_DIGEST[2], me,
+                                          kat_decap, &tab, &o) == NC_GROUP_KP_OK &&
+                  memcmp(o.group_key, G_KEY[2], 32) == 0 && memcmp(o.digest, G_KP_DIGEST[2], 64) == 0,
+                  "pinned open: the welcome's kp_digest of v=2 opens packet 2 without packet 1");
+            uint8_t wrong_pin[64];
+            memcpy(wrong_pin, G_KP_DIGEST[2], 64);
+            wrong_pin[0] ^= 1;
+            CHECK(nc_group_kp_open_pinned(pkt, len, OWN_PK, G_GID, G_OWNER, 2, wrong_pin, me,
+                                          kat_decap, &tab, &o) == NC_GROUP_KP_PREV_CONFLICT &&
+                  o.group_key[0] == 0,
+                  "N1 pinned open: a packet whose digest != the welcome's -> PREV_CONFLICT, no key");
+            CHECK(nc_group_kp_open_pinned(pkt, len, OTH_PK, G_GID, G_OWNER, 2, G_KP_DIGEST[2], me,
+                                          kat_decap, &tab, &o) == NC_GROUP_KP_BAD_SIG,
+                  "N1 pinned open: another key's signature -> BAD_SIG (checked first)");
+            CHECK(nc_group_kp_open_pinned(pkt, len, OWN_PK, G_GID, G_OWNER, 3, G_KP_DIGEST[2], me,
+                                          kat_decap, &tab, &o) == NC_GROUP_KP_MISMATCH,
+                  "N1 pinned open: wrong version -> MISMATCH");
+            CHECK(nc_group_kp_open_pinned(pkt, len, OWN_PK, G_GID, G_OWNER, 2, NULL, me,
+                                          kat_decap, &tab, &o) == NC_GROUP_KP_BAD_STRUCTURE,
+                  "N1 pinned open: no pinned digest -> refused");
+            CHECK(nc_group_kp_open_pinned(pkt, len, OWN_PK, G_GID, G_OWNER, 2, G_KP_DIGEST[2], other,
+                                          kat_decap, &tab, &o) == NC_GROUP_KP_NO_ENTRY,
+                  "N1 pinned open: a non-member finds no entry");
             pkt[100] ^= 1;
             CHECK(nc_group_kp_open(pkt, len, OWN_PK, G_GID, G_OWNER, 2, prev, me, kat_decap, &tab,
                                    &o) == NC_GROUP_KP_BAD_SIG, "N1 packet: tampered preimage -> BAD_SIG");
@@ -958,6 +989,32 @@ static void test_json(json_object *J) {
     char nul[] = "{\"type\":\"nodus_group_accept\"}";
     CHECK(nc_group_json_parse(nul, sizeof(nul), &p) == NC_GROUP_REFUSED,
           "N1 JSON: NUL byte inside the input refused");
+
+    /* G3 — the leave (decision 13): exactly its text, three fields. */
+    char want_leave[160];
+    snprintf(want_leave, sizeof(want_leave),
+             "{\"type\":\"nodus_group_leave\",\"v\":1,\"group_id\":\"%s\"}", gid);
+    CHECK(nc_group_leave_encode(G_GID, &s, &n) == 0 && strcmp(s, want_leave) == 0 &&
+          n == strlen(want_leave), "leave encodes to the text of decision 13");
+    CHECK(nc_group_json_parse(s, n, &p) == 0 && p.type == NC_GROUP_JSON_LEAVE &&
+          memcmp(p.group_id, G_GID, 32) == 0 &&
+          memcmp(p.invite_id, (uint8_t[16]){0}, 16) == 0, "leave parses back (no invite_id)");
+    free(s);
+    CHECK(!json_refused(want_leave), "leave of decision 13 parses");
+    snprintf(b, sizeof(b), "{\"v\":1,\"group_id\":\"%s\",\"type\":\"nodus_group_leave\"}", gid);
+    CHECK(!json_refused(b), "leave with keys in another order parses");
+    snprintf(b, sizeof(b), "{\"type\":\"nodus_group_leave\",\"v\":1,\"group_id\":\"%s\","
+             "\"invite_id\":\"%s\"}", gid, iids);
+    CHECK(json_refused(b), "N1 JSON: leave with an invite_id refused (extra key)");
+    CHECK(json_refused("{\"type\":\"nodus_group_leave\",\"v\":1}"),
+          "N1 JSON: leave without group_id refused");
+    snprintf(b, sizeof(b), "{\"type\":\"nodus_group_leave\",\"v\":1,\"group_id\":\"%s\","
+             "\"group_id\":\"%s\"}", gid, gid);
+    CHECK(json_refused(b), "N1 JSON: leave with a duplicate group_id refused");
+    snprintf(b, sizeof(b), "{\"type\":\"nodus_group_leave\",\"v\":2,\"group_id\":\"%s\"}", gid);
+    CHECK(json_refused(b), "N1 JSON: leave v = 2 refused");
+    CHECK(nc_group_leave_encode(NULL, &s, &n) == NC_GROUP_REFUSED && s == NULL,
+          "N1 JSON: leave without a group id is not encoded");
 }
 
 /* ── R1 reject cases ─────────────────────────────────────────────────── */

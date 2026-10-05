@@ -333,6 +333,27 @@ nc_group_kp_status_t nc_group_kp_open(const uint8_t *data, size_t len,
                                       nc_group_decap_fn decap, void *decap_user,
                                       nc_group_kp_open_t *out);
 
+/**
+ * nc_group_kp_open for the packet a new member is WELCOMED into (R2-7: the
+ * welcome carries key_version N and kp_digest of N — the member's initial
+ * high-water mark; it holds no packet of N-1). Steps 1-3 and 5 as
+ * nc_group_kp_open; step 4 is replaced: the packet's digest (R2-2) must
+ * equal expect_digest (the welcome's kp_digest), else PREV_CONFLICT — a
+ * different packet for a version already pinned is a conflict, refused,
+ * never taken (design §3). prev_digest is not checked: the member walks
+ * forward from N (R2-7) and never reads below it (decision 12, no pre-join
+ * history). A reader rule, no byte layout.
+ */
+nc_group_kp_status_t nc_group_kp_open_pinned(const uint8_t *data, size_t len,
+                                             const uint8_t owner_pk[NC_GROUP_DSA_PK_LEN],
+                                             const uint8_t expect_group_id[NC_GROUP_ID_LEN],
+                                             const uint8_t expect_owner_fp[NC_GROUP_FP_LEN],
+                                             uint32_t expect_v,
+                                             const uint8_t expect_digest[NC_GROUP_DIGEST_LEN],
+                                             const uint8_t my_fp[NC_GROUP_FP_LEN],
+                                             nc_group_decap_fn decap, void *decap_user,
+                                             nc_group_kp_open_t *out);
+
 /* ── Record (§3 + R2-3, R2-8) ────────────────────────────────────────── */
 
 typedef struct {
@@ -570,18 +591,22 @@ int nc_group_bucket_decode(const uint8_t *data, size_t len,
                            uint32_t expect_v, uint32_t expect_day,
                            nc_group_msg_t **items_out, size_t *count_out);
 
-/* ── Invite / accept / welcome JSON (§7 + R2-7) ──────────────────────── */
+/* ── Invite / accept / welcome / leave JSON (§7 + R2-7, decision 13) ── */
 
 typedef enum {
     NC_GROUP_JSON_INVITE  = 1,   /* "nodus_group_invite"  */
     NC_GROUP_JSON_ACCEPT  = 2,   /* "nodus_group_accept"  */
-    NC_GROUP_JSON_WELCOME = 3    /* "nodus_group_welcome" */
+    NC_GROUP_JSON_WELCOME = 3,   /* "nodus_group_welcome" */
+    NC_GROUP_JSON_LEAVE   = 4    /* "nodus_group_leave" — decision 13
+                                  * (docs/plans/decisions/2026-10-04-connect-
+                                  * groups.md item 13): member -> owner,
+                                  * {"type","v","group_id"}, no invite_id   */
 } nc_group_json_type_t;
 
 typedef struct {
     nc_group_json_type_t type;
     uint8_t  group_id[NC_GROUP_ID_LEN];
-    uint8_t  invite_id[NC_GROUP_INVITE_ID_LEN];
+    uint8_t  invite_id[NC_GROUP_INVITE_ID_LEN];   /* all zero for a leave   */
     /* invite + welcome */
     uint8_t  owner_fp[NC_GROUP_FP_LEN];
     /* invite */
@@ -603,6 +628,8 @@ typedef struct {
  *   accept  = type, v, group_id, invite_id
  *   welcome = type, v, group_id, owner, addr_secret, key_version,
  *             kp_digest, invite_id
+ *   leave   = type, v, group_id   (decision 13, exactly its text:
+ *             {"type":"nodus_group_leave","v":1,"group_id":"<64 hex>"})
  * *out malloc'd NUL-terminated (the welcome carries addr_secret: the
  * caller wipes it). The name: <= 64 bytes, no NUL.
  */
@@ -621,19 +648,22 @@ int nc_group_welcome_encode(const uint8_t group_id[NC_GROUP_ID_LEN],
                             const uint8_t kp_digest[NC_GROUP_DIGEST_LEN],
                             const uint8_t invite_id[NC_GROUP_INVITE_ID_LEN],
                             char **out, size_t *out_len);
+int nc_group_leave_encode(const uint8_t group_id[NC_GROUP_ID_LEN],
+                          char **out, size_t *out_len);
 
 /**
  * Strict parse of one decrypted 1:1 plaintext (len bytes, <= 2,048, no NUL
  * inside): one JSON object (json-c strict tokener, all of len consumed;
  * the first byte must be '{' and the last '}' — no surrounding whitespace);
- * "type" one of the three; EXACTLY that type's field set — no missing, no
+ * "type" one of the four; EXACTLY that type's field set — no missing, no
  * extra and no duplicate key (a duplicate is detected by counting the
  * object's members in the text against the parsed object); "v" the JSON
  * integer 1; hex fields lowercase of the exact length; key_version a JSON
  * integer 1..2^32-1; name a string <= 64 bytes without NUL. Key order is
  * not required (reading 16). Who may send which (invite / welcome only
  * from the pinned owner == the authenticated 1:1 sender; accept only for a
- * pending invite_id of that contact, consumed once) is the caller's.
+ * pending invite_id of that contact, consumed once; leave only from a
+ * current member, decision 13) is the caller's.
  * `out` is wiped on refusal.
  */
 int nc_group_json_parse(const char *json, size_t len, nc_group_json_t *out);

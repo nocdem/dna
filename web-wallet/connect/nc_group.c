@@ -463,6 +463,20 @@ int nc_group_decap_mlkem(uint8_t ss[NC_GROUP_SS_LEN],
     return 0;
 }
 
+/* nc_group_kp_open and nc_group_kp_open_pinned: step 4 is the predecessor
+ * binding (pinned_digest NULL) or the welcome's digest (pinned_digest set,
+ * stored_prev_digest unused). */
+static nc_group_kp_status_t kp_open(const uint8_t *data, size_t len,
+                                    const uint8_t owner_pk[NC_GROUP_DSA_PK_LEN],
+                                    const uint8_t expect_group_id[NC_GROUP_ID_LEN],
+                                    const uint8_t expect_owner_fp[NC_GROUP_FP_LEN],
+                                    uint32_t expect_v,
+                                    const uint8_t *stored_prev_digest,
+                                    const uint8_t *pinned_digest,
+                                    const uint8_t my_fp[NC_GROUP_FP_LEN],
+                                    nc_group_decap_fn decap, void *decap_user,
+                                    nc_group_kp_open_t *out);
+
 nc_group_kp_status_t nc_group_kp_open(const uint8_t *data, size_t len,
                                       const uint8_t owner_pk[NC_GROUP_DSA_PK_LEN],
                                       const uint8_t expect_group_id[NC_GROUP_ID_LEN],
@@ -472,6 +486,37 @@ nc_group_kp_status_t nc_group_kp_open(const uint8_t *data, size_t len,
                                       const uint8_t my_fp[NC_GROUP_FP_LEN],
                                       nc_group_decap_fn decap, void *decap_user,
                                       nc_group_kp_open_t *out) {
+    return kp_open(data, len, owner_pk, expect_group_id, expect_owner_fp, expect_v,
+                   stored_prev_digest, NULL, my_fp, decap, decap_user, out);
+}
+
+nc_group_kp_status_t nc_group_kp_open_pinned(const uint8_t *data, size_t len,
+                                             const uint8_t owner_pk[NC_GROUP_DSA_PK_LEN],
+                                             const uint8_t expect_group_id[NC_GROUP_ID_LEN],
+                                             const uint8_t expect_owner_fp[NC_GROUP_FP_LEN],
+                                             uint32_t expect_v,
+                                             const uint8_t expect_digest[NC_GROUP_DIGEST_LEN],
+                                             const uint8_t my_fp[NC_GROUP_FP_LEN],
+                                             nc_group_decap_fn decap, void *decap_user,
+                                             nc_group_kp_open_t *out) {
+    if (!expect_digest) {
+        if (out) memset(out, 0, sizeof(*out));
+        return NC_GROUP_KP_BAD_STRUCTURE;
+    }
+    return kp_open(data, len, owner_pk, expect_group_id, expect_owner_fp, expect_v,
+                   NULL, expect_digest, my_fp, decap, decap_user, out);
+}
+
+static nc_group_kp_status_t kp_open(const uint8_t *data, size_t len,
+                                    const uint8_t owner_pk[NC_GROUP_DSA_PK_LEN],
+                                    const uint8_t expect_group_id[NC_GROUP_ID_LEN],
+                                    const uint8_t expect_owner_fp[NC_GROUP_FP_LEN],
+                                    uint32_t expect_v,
+                                    const uint8_t *stored_prev_digest,
+                                    const uint8_t *pinned_digest,
+                                    const uint8_t my_fp[NC_GROUP_FP_LEN],
+                                    nc_group_decap_fn decap, void *decap_user,
+                                    nc_group_kp_open_t *out) {
     if (!out) return NC_GROUP_KP_BAD_STRUCTURE;
     memset(out, 0, sizeof(*out));
     if (!owner_pk || !expect_group_id || !expect_owner_fp || !my_fp || !decap)
@@ -500,8 +545,12 @@ nc_group_kp_status_t nc_group_kp_open(const uint8_t *data, size_t len,
         memcmp(h.owner_fp, expect_owner_fp, NC_GROUP_FP_LEN) != 0)
         return NC_GROUP_KP_MISMATCH;
 
-    /* 4. predecessor binding (v == 1: zeros, checked by the parse) */
-    if (h.v > 1) {
+    /* 4. predecessor binding (v == 1: zeros, checked by the parse) — or,
+     * for the welcomed version, the welcome's digest of this packet */
+    if (pinned_digest) {
+        if (memcmp(out->digest, pinned_digest, NC_GROUP_DIGEST_LEN) != 0)
+            return NC_GROUP_KP_PREV_CONFLICT;
+    } else if (h.v > 1) {
         if (!stored_prev_digest) return NC_GROUP_KP_PREV_UNAVAILABLE;
         if (memcmp(h.prev_digest, stored_prev_digest, NC_GROUP_DIGEST_LEN) != 0)
             return NC_GROUP_KP_PREV_CONFLICT;
@@ -1019,7 +1068,8 @@ int nc_group_bucket_decode(const uint8_t *data, size_t len,
 /* ── invite / accept / welcome JSON ───────────────────────────────────── */
 
 static const char *const JSON_TYPE[] = {
-    NULL, "nodus_group_invite", "nodus_group_accept", "nodus_group_welcome"
+    NULL, "nodus_group_invite", "nodus_group_accept", "nodus_group_welcome",
+    "nodus_group_leave"
 };
 
 /* Copy out the encoded JSON after reading it back with the strict parser
@@ -1135,6 +1185,24 @@ int nc_group_welcome_encode(const uint8_t group_id[NC_GROUP_ID_LEN],
     return rc;
 }
 
+/* Decision 13 (docs/plans/decisions/2026-10-04-connect-groups.md item 13):
+ * {"type":"nodus_group_leave","v":1,"group_id":"<64 hex>"} — that text,
+ * that key order, compact like the others. */
+int nc_group_leave_encode(const uint8_t group_id[NC_GROUP_ID_LEN],
+                          char **out, size_t *out_len) {
+    if (!out || !out_len) return NC_GROUP_REFUSED;
+    *out = NULL;
+    *out_len = 0;
+    if (!group_id) return NC_GROUP_REFUSED;
+    char gid[2 * NC_GROUP_ID_LEN + 1];
+    hex_enc(group_id, NC_GROUP_ID_LEN, gid);
+    char buf[160];
+    int n = snprintf(buf, sizeof(buf), "{\"type\":\"%s\",\"v\":1,\"group_id\":\"%s\"}",
+                     JSON_TYPE[NC_GROUP_JSON_LEAVE], gid);
+    if (n <= 0 || (size_t)n >= sizeof(buf)) return NC_GROUP_FAULT;
+    return json_out(buf, (size_t)n, out, out_len);
+}
+
 /* Members of the top-level object as written in the text: ':' at depth 1
  * outside strings. Compared with the parsed object's member count, a
  * difference means a key appeared twice (json-c keeps the last). */
@@ -1223,6 +1291,8 @@ int nc_group_json_parse(const char *json, size_t len, nc_group_json_t *out) {
         out->type = NC_GROUP_JSON_ACCEPT;  want = 4;
     } else if (strcmp(type, JSON_TYPE[NC_GROUP_JSON_WELCOME]) == 0) {
         out->type = NC_GROUP_JSON_WELCOME; want = 8;
+    } else if (strcmp(type, JSON_TYPE[NC_GROUP_JSON_LEAVE]) == 0) {
+        out->type = NC_GROUP_JSON_LEAVE;   want = 3;
     } else {
         goto done;
     }
@@ -1236,7 +1306,9 @@ int nc_group_json_parse(const char *json, size_t len, nc_group_json_t *out) {
     int64_t iv;
     if (jfield_int(o, "v", 1, 1, &iv) != 0) goto done;
     if (jfield_hex(o, "group_id", out->group_id, NC_GROUP_ID_LEN) != 0) goto done;
-    if (jfield_hex(o, "invite_id", out->invite_id, NC_GROUP_INVITE_ID_LEN) != 0) goto done;
+    /* the leave carries no invite_id (decision 13) */
+    if (out->type != NC_GROUP_JSON_LEAVE &&
+        jfield_hex(o, "invite_id", out->invite_id, NC_GROUP_INVITE_ID_LEN) != 0) goto done;
     if (out->type == NC_GROUP_JSON_INVITE || out->type == NC_GROUP_JSON_WELCOME) {
         if (jfield_hex(o, "owner", out->owner_fp, NC_GROUP_FP_LEN) != 0) goto done;
     }
