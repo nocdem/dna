@@ -26,13 +26,14 @@ for (const node of document.querySelectorAll('.app-version')) node.textContent =
 
 const $ = id => document.getElementById(id);
 const TABS = ['home', 'chats', 'wallet', 'more'];
-const NO_ID_TEXT = 'Appears when your wallet is open';
 
 // ── app shell ──────────────────────────────────────────────────────────
 // tab: the screen shown; origin 'more' while Chats shows a screen opened
 // from the More menu (Contacts, Contact requests, Your ID & profile): Back
-// returns there, and the rail keeps More highlighted.
-let tab = 'home', origin = null, ownId = null, ownName = '', ownAvatar = '', messagesScreen = 'list';
+// returns there, and the rail keeps More highlighted. messagesClosed: no own
+// ID because Messages closed with a reason while the wallet is open
+// (messages.js onIdentity, 4th argument); the lock clears it.
+let tab = 'home', origin = null, ownId = null, ownName = '', ownAvatar = '', messagesScreen = 'list', messagesClosed = false;
 const scrollByTab = {};
 
 function setTab(next, { highlight = next } = {}) {
@@ -68,7 +69,7 @@ function badge(id, count) {
 const YOUR_ID_TEXT = 'Your ID';
 let walletNameAnswer = null;             // { name } once the wallet's lookup answered, else null
 
-function wireShell({ messagesNavigate, shortId, nodusSymbol, initials, fillAvatar, shownOwnName, profileEntryText }) {
+function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAvatar, shownOwnName, profileEntryText }) {
   const navigate = target => messagesNavigate(target);
 
   function openFromMore(target) {
@@ -190,8 +191,9 @@ function wireShell({ messagesNavigate, shortId, nodusSymbol, initials, fillAvata
       // The own profile picture (messages.js onIdentity), else the initials.
       fillAvatar(mark, ownId ? initials(ownId, name) : '··', ownId ? ownAvatar : '');
       mark.className = `contact-avatar avatar-large ${ownId ? `avatar-${parseInt(ownId[0], 16) % 6}` : 'home-avatar-empty'}`;
-      // The chain name (HF-4) first, then the short ID.
-      $(textId).textContent = ownId ? (name ? `${name} · ${shortId(ownId)}` : shortId(ownId)) : NO_ID_TEXT;
+      // The chain name (HF-4) first, then the short ID; with no ID, why
+      // (locked or opening, or Messages could not open — messages.js ownIdText).
+      $(textId).textContent = ownIdText({ id: ownId, name, closed: messagesClosed });
     }
     $('home-copy-id').disabled = !ownId;
     $('home-id-status').textContent = '';
@@ -201,14 +203,14 @@ function wireShell({ messagesNavigate, shortId, nodusSymbol, initials, fillAvata
   // lookup, and the lock that clears it.
   const nameExtension = {
     ownName({ name, confirmed } = {}) { walletNameAnswer = confirmed === true ? { name: typeof name === 'string' ? name : '' } : null; showIdentity(); },
-    locked() { walletNameAnswer = null; ownId = null; ownName = ''; ownAvatar = ''; showIdentity(); }
+    locked() { walletNameAnswer = null; ownId = null; ownName = ''; ownAvatar = ''; messagesClosed = false; showIdentity(); }
   };
 
   // Messages' host callbacks (src/connect/ui/messages.js mountMessages).
   const host = {
     onUnread(count) { badge('nav-chats-count', count); },
     onRequests(count) { for (const id of ['nav-more-count', 'more-contacts-count', 'more-requests-count']) badge(id, count); },
-    onIdentity(fp, name = '', avatarBase64 = '') { ownId = fp; ownName = fp ? name : ''; ownAvatar = fp ? avatarBase64 : ''; showIdentity(); },
+    onIdentity(fp, name = '', avatarBase64 = '', closed = false) { ownId = fp; ownName = fp ? name : ''; ownAvatar = fp ? avatarBase64 : ''; messagesClosed = !fp && closed === true; showIdentity(); },
     onScreen(screen) {
       messagesScreen = screen;
       // A conversation, Contacts or Your ID & profile covers the bottom bar
@@ -228,11 +230,11 @@ function wireShell({ messagesNavigate, shortId, nodusSymbol, initials, fillAvata
 }
 
 try {
-  const [{ configureSite, registerExtension }, { mountMessages, messagesNavigate, walletExtension, initials, vaultHost }, { shortId }, { NODUS_ASSET }, { fillAvatar }, { mountVaults, vaultExtension }, { shownOwnName, profileEntryText }] = await Promise.all([
-    import('./wallet-extensions.js'), import('./connect/ui/messages.js'), import('./connect/ui/text.js'), import('./nodus/network.js'), import('./connect/ui/dom.js'), import('./vaults/ui.js'), import('./connect/ui/chain-names.js')
+  const [{ configureSite, registerExtension }, { mountMessages, messagesNavigate, walletExtension, initials, vaultHost, ownIdText }, { NODUS_ASSET }, { fillAvatar }, { mountVaults, vaultExtension }, { shownOwnName, profileEntryText }] = await Promise.all([
+    import('./wallet-extensions.js'), import('./connect/ui/messages.js'), import('./nodus/network.js'), import('./connect/ui/dom.js'), import('./vaults/ui.js'), import('./connect/ui/chain-names.js')
   ]);
   configureSite('connect');
-  const { host, nameExtension } = wireShell({ messagesNavigate, shortId, nodusSymbol: NODUS_ASSET.symbol, initials, fillAvatar, shownOwnName, profileEntryText });
+  const { host, nameExtension } = wireShell({ messagesNavigate, ownIdText, nodusSymbol: NODUS_ASSET.symbol, initials, fillAvatar, shownOwnName, profileEntryText });
   mountMessages($('nc-root'), host);
   registerExtension(walletExtension);
   registerExtension(nameExtension);

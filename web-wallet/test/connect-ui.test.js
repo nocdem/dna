@@ -28,6 +28,7 @@ import {
   keptChainName, chainLookupNeeded, chainLookupSpaced, CHAIN_LOOKUP_SPACING_MS, chainNameAfterLookup, shownOwnName, profileEntryText, PROFILE_ENTRY_TEXT
 } from '../src/connect/ui/chain-names.js';
 import { newDiag, diagSalt, diagDay, errorText, diagText } from '../src/connect/ui/diag.js';
+import { ownIdText, OWN_ID_WAITING_TEXT, OWN_ID_CLOSED_TEXT } from '../src/connect/ui/messages.js';
 
 // A localStorage stand-in (getItem / setItem / removeItem).
 function memoryStorage() {
@@ -533,6 +534,28 @@ test('own name: the wallet\'s answered lookup wins; until then the name Messages
   assert.equal(PROFILE_ENTRY_TEXT, 'Your ID & profile');
   assert.equal(profileEntryText('jarvis'), 'jarvis — ID & profile');
   assert.equal(profileEntryText('x\ny'), 'Your ID & profile');
+});
+
+// The Home / More own-ID line (src/connect/ui/messages.js ownIdText, from
+// host.onIdentity): with no ID, "could not open" only while Messages is
+// closed with the wallet open; locked or opening keeps the waiting text.
+test('own ID line: name and short ID while open; closed and waiting placeholders told apart', () => {
+  const fp = 'ab'.repeat(64);
+  assert.equal(OWN_ID_WAITING_TEXT, 'Appears when your wallet is open');   // the exact text (test/connect-smoke.js)
+  assert.equal(OWN_ID_CLOSED_TEXT, 'Messages could not open');
+  assert.equal(ownIdText({ id: fp, name: 'jarvis' }), `jarvis · ${shortId(fp)}`);
+  assert.equal(ownIdText({ id: fp, name: '' }), shortId(fp));
+  // An ID wins over a stale closed flag.
+  assert.equal(ownIdText({ id: fp, name: '', closed: true }), shortId(fp));
+  // Locked / waiting / opening.
+  assert.equal(ownIdText({ id: null, name: '', closed: false }), OWN_ID_WAITING_TEXT);
+  assert.equal(ownIdText({ id: null, name: 'jarvis' }), OWN_ID_WAITING_TEXT);
+  assert.equal(ownIdText(), OWN_ID_WAITING_TEXT);
+  // Closed with a reason while the wallet is open (history slow, local open
+  // or identity unlock failed, connection lost).
+  assert.equal(ownIdText({ id: null, name: '', closed: true }), OWN_ID_CLOSED_TEXT);
+  // Only a literal true counts as closed.
+  assert.equal(ownIdText({ id: null, closed: 'yes' }), OWN_ID_WAITING_TEXT);
 });
 
 // The conversation's "Details" line (src/connect/ui/diag.js): the last

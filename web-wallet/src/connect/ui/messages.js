@@ -853,12 +853,32 @@ async function copyOwnId(statusNode) {
   catch { statusNode.textContent = 'Copy is unavailable. Select your ID and copy it.'; }
 }
 
+// The host's own-ID line (Nodus Connect Home #home-id and More #more-id),
+// from onIdentity: id = the own ID or null, name = the own chain name ('' =
+// none), closed = its 4th argument. The chain name first, then the short ID;
+// with no ID, why: Messages closed with a reason while the wallet is open,
+// else the wallet is locked or Messages is still opening. Pure;
+// test/connect-ui.test.js pins it.
+export const OWN_ID_WAITING_TEXT = 'Appears when your wallet is open';
+export const OWN_ID_CLOSED_TEXT = 'Messages could not open';
+export function ownIdText({ id = null, name = '', closed = false } = {}) {
+  if (id) return name ? `${name} · ${shortId(id)}` : shortId(id);
+  return closed === true ? OWN_ID_CLOSED_TEXT : OWN_ID_WAITING_TEXT;
+}
+
 // ── view: the one-time DOM ─────────────────────────────────────────────
 // root: an empty element of the host page. Every host callback is optional:
 //   onUnread(n)      the total of unread messages (a navigation badge);
 //   onRequests(n)    contact requests waiting for an answer;
-//   onIdentity(fp, name, avatarBase64)   the own ID while Messages is open,
-//                    else null; with the own verified name and picture ('' if none);
+//   onIdentity(fp, name, avatarBase64, closed)   the own ID while Messages is
+//                    open, else null; with the own verified name and picture
+//                    ('' if none); closed: true while fp is null because
+//                    Messages is closed with a reason (closeMessages: the
+//                    wallet is open but Messages failed to open — the
+//                    identity unlock, the local open, a history that did not
+//                    answer in 15 s — or closed since), false while it is
+//                    waiting or opening (resetMessages on lock sets it back
+//                    to false); ownIdText makes the host's ID line from these;
 //   onScreen(name)   the screen shown changed ('list', 'conversation',
 //                    'contacts', 'profile');
 //   onBack(from)     Back was pressed on a screen opened on its own (called
@@ -1142,8 +1162,12 @@ function render({ scroll = false } = {}) {
   // profile name is shown only on the profile screen, labelled.
   const ownName = open ? chainNameOf(ownFp) : '';
   const ownAvatar = open && typeof ownProfile?.avatar_base64 === 'string' ? ownProfile.avatar_base64 : '';
-  const idKey = id ? `${id}|${ownName}|${ownAvatar}` : null;
-  if (idKey !== notifiedId) { notifiedId = idKey; host.onIdentity?.(id, ownName, ownAvatar); }
+  // Closed (phase 'closed': the wallet is open but Messages failed to open,
+  // or closed since) is told apart from waiting / opening, so the host can
+  // say so instead of "appears when your wallet is open" (ownIdText).
+  const closed = !id && phase === 'closed';
+  const idKey = id ? `${id}|${ownName}|${ownAvatar}` : (closed ? 'closed' : null);
+  if (idKey !== notifiedId) { notifiedId = idKey; host.onIdentity?.(id, ownName, ownAvatar, closed); }
   if (screen !== notifiedScreen) { notifiedScreen = screen; host.onScreen?.(screen); }
 }
 
