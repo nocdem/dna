@@ -5795,16 +5795,23 @@ touched also when the storage settlement credited or a release UTXO was written
 
 **Readings recorded in code (not stated by the design).** A failed F1 floor leaves fail_streak unchanged
 for every member (a skipped member's count does not advance in an unsettled epoch); a (re-)registration
-writes fail_streak 0 and grace_until 0 (a revived node is new to every segment at its next boundary, so
-K9 gives it its grace there); EXIT copies both;
+writes fail_streak 0 and grace_until 0 (a revived node takes over every older segment at its next
+boundary, so K9/K9a give it its grace there); EXIT copies both;
 every EXITING row is released at the next boundary, an exit in the boundary block itself included.
 
 **K9 — the grace scales with the newly assigned segments (decision 2026-10-05-storage-reward-is-for-
 archive.md K9, operator "1" then "onaylıyorum"; replaces G = 1; pre-activation).** At every storage
-boundary H, after the publication step, for each member m of the set being frozen:
-`n(m) = |{k : published ≤ H ∧ m ∈ holders(k, set(H))} \ {k : published ≤ H−E ∧ m ∈ holders(k, set(H−E))}|`
-— the segments m holds now and did not hold one epoch ago (a segment published at H counts; an absent
-set(H−E), i.e. the first storage boundary, holds nothing). n > 0 → `grace_until = max(grace_until, H + n·E)`
+boundary H, after the publication step, for each member m of the set being frozen, counted as **K9a**
+(operator "tamam"; refines K9, no byte change):
+`n(m) = 0` when set(H−E) does not exist (the first storage boundary after activation — nobody gets grace);
+otherwise `n(m) = |{k : published ≤ H−E ∧ m ∈ holders(k, set(H)) ∧ m ∉ holders(k, set(H−E))}|`
+— the segments that already existed one epoch ago and that m TAKES OVER (registration, another holder's
+exit or skip, a set change). A segment published in (H−E, H] — at H itself included — is not counted
+(every node still has those blocks in its block store); an existing but EMPTY set(H−E) is a set. Each
+(m, k) is decided by the pure `nodus_storage_grace_counts(H, E, published, prev_exists, in_cur, in_prev)`.
+(K9 before K9a counted every k held over set(H) and not over set(H−E): a segment published at H counted,
+and an absent set(H−E) held nothing, so the first boundary gave every member n = all its segments.)
+n > 0 → `grace_until = max(grace_until, H + n·E)`
 (`nodus_storage_grace_next`, checked u64; above INT64_MAX = FAULT); the registry row and the frozen member
 row carry the value AFTER the update. **In grace** for epoch (H, H+E] iff `H < grace_until`
 (`nodus_storage_in_grace`) — the oracle's reading 4: any n > 0 puts the epoch that starts at H in grace.
@@ -5815,23 +5822,26 @@ settlement. **The one eligibility rule** (`nodus_storage_member_eligible`, throu
 probed node's answer): segment k is eligible for member m of set(H) in (H, H+E] iff m is not in grace and
 (m ∈ holders(k, set(H)) with published ≤ H — "every assigned segment counts" — or m ∈ holders(k, set(H−E))
 with published ≤ H−E — the one-epoch handoff overlap of a DISPLACED holder). One walk
-(`st_member_walk` in `nodus_witness_v2_storage.c`) emits (member, k, in_cur, in_prev) for all three
-consumers: the grace count (in_cur ∧ ¬in_prev), the weights and the eligible list. The holder's must-hold
+(`st_member_walk` in `nodus_witness_v2_storage.c`) emits (member, k, published, in_cur, in_prev) for all
+three consumers: the grace count (`nodus_storage_grace_counts`), the weights and the eligible list. The holder's must-hold
 list (`nodus_witness_sthold_must_hold`) is the same two lines WITHOUT the grace gate — a member in grace
 still fetches and keeps its segments. Consequences to know: a member joining only displaces others (holders
 are the three nearest), so only the joiner gains; when a member is skipped (fail_streak 3) or exits, the
-members taking its segments each pause n epochs; every publication (one segment per 17280 blocks ≈ 24
-epochs) gives its three holders n = 1 — one epoch in which they earn nothing on ANY segment, with few
-storage members most of the set; at the activation boundary every holder is new, so the first grace is
-(number of segments it holds) epochs, not one. The K5 interaction is a READING: a member in
+members taking its segments each pause n epochs; a publication (one segment per 17280 blocks ≈ 24
+epochs) gives its holders NO grace (K9a); at the activation boundary nobody gets grace, so every member is
+probed and paid for its assigned segments from the first epoch on (answered from its own block store
+while it still has the blocks). The K5 interaction is a READING: a member in
 grace with fail_streak ≥ 3 keeps its value (K9's "unchanged" over K5's "+1 every settled epoch"), so a long
 grace also delays its K5 return. Status wire: `dnac_storage_status` adds `"gu"` (live grace_until).
 Tests (written, not run by the builder): `test_storage_b2` section A — leaf v2 181 bytes and the 36
 `grace_rule` vectors (E = 720 and 15; new grace_until and the probed bit) against the regenerated oracle
-KAT; section D — a K9 model checked at every boundary (frozen and registry grace_until), the engine's
-eligible list checked against it before every settlement, new members' n·E grace at E, a joiner gaining
-alone, a settled epoch in grace with every bit 0 leaving every fail_streak unchanged, a gainer of a skipped
-member's segments pausing exactly n epochs with weight 0; `test_roots_v2` (grace_until bound, the 181-byte
+KAT; section D — a K9a model checked at every boundary (frozen and registry grace_until), the engine's
+eligible list checked against it before every settlement, NO grace at the first storage boundary E (every
+member's eligible list = its holdings over set(E); H = E settles all OK with W = 24·P and pays), a joiner
+taking over alone with n·E grace at 2E, a gainer of a skipped member's segments pausing exactly n epochs
+with weight 0; section D1 — `nodus_storage_grace_counts` pure (a segment published at H, H−1 or H−E+1
+gives no grace, one published at H−E does; no set(H−E) → 0), because section D cannot reach a
+publication (k = 9 is due at 9·P + 2E blocks); `test_roots_v2` (grace_until bound, the 181-byte
 preimage restated); `test_storage_reg` (record 2693; EXIT copies grace_until, a revival resets it);
 `test_storage_probe` (in grace → NO_BLOCKS, past grace → eligible); `test_storage_cli` ("gu").
 

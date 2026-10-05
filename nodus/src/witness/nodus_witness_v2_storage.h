@@ -11,7 +11,9 @@
  * 3 failed epochs → skipped; 3 samples; full archives keep all; K5 a
  * skipped member returns after 12 settled epochs; K5a an OK epoch with
  * eligible blocks resets fail_streak to 0 even at 3 or more; K9 the grace
- * scales with the number of newly assigned segments — replaces G = 1),
+ * scales with the number of newly assigned segments — replaces G = 1;
+ * K9a only a segment that already existed one epoch earlier and was
+ * taken over counts, and the first storage boundary gives no grace),
  * 2026-10-05-archive-reward-bytes-approved.md (bytes), 2026-10-05-
  * kurultay-7-archive-reward-summary.md, 2026-10-04-storage-reward-
  * approved.md (kept parts), 2026-10-04-storage-reward-who-earns.md (only
@@ -55,13 +57,21 @@
  * unique key; integer math only; no clock. Any failure is a node FAULT
  * (-2) — a boundary has no verdict class (nodus_witness_v2_epoch.h).
  *
- * ── GRACE (K9, decision 2026-10-05-storage-reward-is-for-archive.md;
- *    replaces G = 1) ──────────────────────────────────────────────────
+ * ── GRACE (K9 + K9a, decision 2026-10-05-storage-reward-is-for-
+ *    archive.md; replaces G = 1) ───────────────────────────────────────
  *   At boundary H, for each member m of storage_set(H):
- *       n(m) = |{k : published_height(k) <= H ∧ m ∈ holders(k, H)}
- *               \ {k : published_height(k) <= H − E ∧ m ∈ holders(k, H−E)}|
- *   — the segments m holds now that it did not hold one epoch ago; a
- *   segment published at H counts (STEP 4 runs first). n(m) > 0 →
+ *       n(m) = 0                         when storage_set(H−E) does not
+ *                                        exist (the first storage
+ *                                        boundary after activation);
+ *       n(m) = |{k : published_height(k) <= H − E ∧ m ∈ holders(k, H)
+ *                    ∧ m ∉ holders(k, H−E)}|      otherwise
+ *   — the segments that already existed one epoch ago and that m TAKES
+ *   OVER (registration, another holder's exit or skip, a set change).
+ *   A segment published in (H−E, H] — at H itself included — is NOT
+ *   counted: every node still holds those blocks in its block store
+ *   (K9a). An EXISTING set(H−E) with no member is a set: a member
+ *   registered after it counts every old segment it is assigned. Each
+ *   (m, k) is decided by nodus_storage_grace_counts. n(m) > 0 →
  *       grace_until(m) = max(grace_until(m), H + n(m)·E)
  *   (nodus_storage_grace_next; checked u64, a result past INT64_MAX — the
  *   stored INTEGER bound — is a FAULT). The registry row (leaf v2 field
@@ -72,8 +82,10 @@
  *   not probed (bit 0, not counted against it), weight 0 (earns
  *   nothing), fail_streak unchanged at that epoch's settlement.
  *   holders(k, X) = bytes item 3 over storage_set(X) with each member's
- *   fail_streak AS FROZEN at X; an absent set(H−E) (the first storage
- *   boundary) holds nothing, so every assigned segment is new there.
+ *   fail_streak AS FROZEN at X. At the first storage boundary nobody is
+ *   in grace: every member is probed and paid for its assigned segments
+ *   from the first epoch on (K9a replaces K9's "an absent set(H−E) holds
+ *   nothing, so every assigned segment is new there").
  *
  * ── ELIGIBILITY (nodus_storage_member_eligible — the one rule) ───────
  *   member m of storage_set(H) holds an ELIGIBLE segment k in epoch
@@ -83,8 +95,10 @@
  *   The first line is "every assigned segment counts" once the grace is
  *   over; the second keeps the one-epoch handoff: a holder DISPLACED at H
  *   (in holders(k,H−E), not in holders(k,H)) is still probed and paid for
- *   k through (H, H+E] and may delete k after H + E. (When m is not in
- *   grace, n(m) at H was 0, so every assigned k was also held at H−E.)
+ *   k through (H, H+E] and may delete k after H + E. (A member out of
+ *   grace may still hold an assigned k it did not hold at H−E without
+ *   grace for it: k published in (H−E, H], or any k at the first storage
+ *   boundary — K9a.)
  *   weight(m) = DNA_V2_SEGMENT_BLOCKS × |eligible segments of m| (K1:
  *   block count). A member must be in storage_set(H) to have a bit. The
  *   settlement, the reporter's probe list and the probed node's answer
@@ -252,6 +266,17 @@ int nodus_witness_storage_eligible_segments(nodus_witness_t *w,
  *  boundary treats it, and any value above INT64_MAX, as a FAULT). */
 int nodus_storage_grace_next(uint64_t prev, uint64_t H, uint64_t n,
                              uint64_t E, uint64_t *out);
+
+/** The K9a grace COUNT for one (member m, segment k) at boundary H (pure;
+ *  header "GRACE"): 1 iff `prev_exists` (storage_set(H−E) is a frozen
+ *  set, empty included) and H >= E and published_height <= H − E and
+ *  in_cur and not in_prev, where in_cur = m ∈ holders(k, set(H)) and
+ *  in_prev = published_height(k) <= H − E ∧ m ∈ holders(k, set(H−E)).
+ *  A segment published in (H−E, H] and every segment at the first storage
+ *  boundary (no set(H−E)) give 0. n(m) = Σ over k. @return 1 / 0. */
+int nodus_storage_grace_counts(uint64_t H, uint64_t E,
+                               uint64_t published_height, int prev_exists,
+                               int in_cur, int in_prev);
 
 /** 1 iff epoch (H, H+E] is in grace for a member whose grace_until (the
  *  value frozen with storage_set(H), i.e. AFTER the update at H) is

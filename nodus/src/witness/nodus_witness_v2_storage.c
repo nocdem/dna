@@ -501,6 +501,14 @@ int nodus_storage_grace_next(uint64_t prev, uint64_t H, uint64_t n,
     return 0;
 }
 
+int nodus_storage_grace_counts(uint64_t H, uint64_t E,
+                               uint64_t published_height, int prev_exists,
+                               int in_cur, int in_prev) {
+    if (!prev_exists || H < E) return 0;  /* first storage boundary     */
+    if (published_height > H - E) return 0;   /* new since H−E (K9a)    */
+    return (in_cur && !in_prev) ? 1 : 0;      /* taken over             */
+}
+
 int nodus_storage_in_grace(uint64_t H, uint64_t grace_until) {
     return H < grace_until ? 1 : 0;
 }
@@ -518,13 +526,13 @@ int nodus_storage_member_eligible(uint64_t H, uint64_t grace_until,
  * storage_set(H):
  *     in_cur  = m ∈ holders(k, set(H))
  *     in_prev = published_height(k) <= H − E  and  m ∈ holders(k, set(H−E))
- * `rel(ud, m, k, in_cur, in_prev)` is called once per (m, k) with at
- * least one of the two set; a holder of set(H−E) that is not a member of
- * set(H) has no index and is skipped (no bit, no pay). `prev` =
- * set(H−E), count 0 when absent. Within one member the calls come in k
- * ascending order. @return 0 / -1. */
-typedef int (*st_rel_fn)(void *ud, size_t member, uint64_t k, int in_cur,
-                         int in_prev);
+ * `rel(ud, m, k, published_height(k), in_cur, in_prev)` is called once
+ * per (m, k) with at least one of the two set; a holder of set(H−E) that
+ * is not a member of set(H) has no index and is skipped (no bit, no
+ * pay). `prev` = set(H−E), count 0 when absent. Within one member the
+ * calls come in k ascending order. @return 0 / -1. */
+typedef int (*st_rel_fn)(void *ud, size_t member, uint64_t k, uint64_t pub,
+                         int in_cur, int in_prev);
 
 static int st_member_walk(const nodus_storage_set_t *cur,
                           const nodus_storage_set_t *prev, uint64_t H,
@@ -562,7 +570,9 @@ static int st_member_walk(const nodus_storage_set_t *cur,
             else fpv[q] = 1;
         }
         for (size_t q = 0; q < nm; q++)
-            if (rel(ud, m_of[q], segs[s].k, fc[q], fpv[q]) != 0) return -1;
+            if (rel(ud, m_of[q], segs[s].k, segs[s].published_height, fc[q],
+                    fpv[q]) != 0)
+                return -1;
     }
     return 0;
 }
@@ -574,9 +584,10 @@ typedef struct {
     uint64_t weight[DNA_V2_STORAGE_SET_MAX];
 } st_weights_t;
 
-static int st_rel_weight(void *ud, size_t member, uint64_t k, int in_cur,
-                         int in_prev) {
+static int st_rel_weight(void *ud, size_t member, uint64_t k, uint64_t pub,
+                         int in_cur, int in_prev) {
     (void)k;
+    (void)pub;
     st_weights_t *wt = ud;
     if (!nodus_storage_member_eligible(wt->H, wt->cur->grace_until[member],
                                        in_cur, in_prev))
@@ -594,8 +605,9 @@ typedef struct {
     size_t    cap, n;
 } st_collect_t;
 
-static int st_rel_collect(void *ud, size_t member, uint64_t k, int in_cur,
-                          int in_prev) {
+static int st_rel_collect(void *ud, size_t member, uint64_t k, uint64_t pub,
+                          int in_cur, int in_prev) {
+    (void)pub;
     st_collect_t *c = ud;
     if (member != c->target) return 0;
     if (!nodus_storage_member_eligible(c->H, c->cur->grace_until[member],
@@ -606,17 +618,23 @@ static int st_rel_collect(void *ud, size_t member, uint64_t k, int in_cur,
     return 0;
 }
 
-/* The freeze's grace count: n(m) = segments m holds at H that it did not
- * hold at H − E (a segment published at H counts: in_prev is 0). */
+/* The freeze's grace count (K9a): n(m) = segments published at or before
+ * H − E that m holds at H and did not hold at H − E; 0 for everyone when
+ * set(H−E) does not exist. Each (m, k) through nodus_storage_grace_counts
+ * (a segment published in (H−E, H] is not counted). */
 typedef struct {
+    uint64_t H;
+    int      prev_exists;
     uint64_t n_new[DNA_V2_STORAGE_SET_MAX];
 } st_newcount_t;
 
-static int st_rel_new(void *ud, size_t member, uint64_t k, int in_cur,
-                      int in_prev) {
+static int st_rel_new(void *ud, size_t member, uint64_t k, uint64_t pub,
+                      int in_cur, int in_prev) {
     (void)k;
     st_newcount_t *nc = ud;
-    if (!in_cur || in_prev) return 0;
+    if (!nodus_storage_grace_counts(nc->H, (uint64_t)DNAC_EPOCH_LENGTH, pub,
+                                    nc->prev_exists, in_cur, in_prev))
+        return 0;
     nc->n_new[member]++;                  /* <= the segment count: no wrap */
     return 0;
 }
@@ -780,8 +798,8 @@ static int st_settle(nodus_witness_t *w, uint64_t B,
     rc = nodus_witness_storage_set_get(w, H - E, prev);
     if (rc < 0) goto done;
     if (rc == 1) prev->count = 0;         /* no set(H−E): nothing held
-                                           * before H (the freeze at H
-                                           * gave every holder grace)    */
+                                           * before H, no overlap; nobody
+                                           * got grace at H (K9a)        */
 
     /* ── weights (K1 block count; the eligibility rule, header) ───── */
     if (st_segments_load(w, H, &segs, &n_segs) != 0) goto done;
@@ -1082,13 +1100,15 @@ static int st_grace_write(nodus_witness_t *w, const uint8_t fp[64],
     return (rc == SQLITE_DONE && sqlite3_changes(w->db) == 1) ? 0 : -1;
 }
 
-/* STEP 5a — the K9 grace update over the set being frozen (header
- * "GRACE"): for each member m of `set` = storage_set(B), n(m) = the
- * segments published at or before B that m holds in set(B) and did not
- * hold in set(B−E); n > 0 → grace_until = max(grace_until, B + n·E)
- * (checked; past the stored INTEGER bound = fault), written to the
- * registry row AND to set->grace_until (the frozen copy). Runs after
- * STEP 4, so a segment published at B counts. @return 0 / -2. */
+/* STEP 5a — the K9 grace update over the set being frozen, counted per
+ * K9a (header "GRACE"): for each member m of `set` = storage_set(B),
+ * n(m) = the segments published at or before B − E that m holds in
+ * set(B) and did not hold in set(B−E) — 0 for everyone when set(B−E)
+ * does not exist (the first storage boundary); a segment published in
+ * (B−E, B], the one STEP 4 published at B included, is not counted.
+ * n > 0 → grace_until = max(grace_until, B + n·E) (checked; past the
+ * stored INTEGER bound = fault), written to the registry row AND to
+ * set->grace_until (the frozen copy). @return 0 / -2. */
 static int st_grace_update(nodus_witness_t *w, uint64_t B,
                            nodus_storage_set_t *set) {
     const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
@@ -1102,6 +1122,8 @@ static int st_grace_update(nodus_witness_t *w, uint64_t B,
     int rc = B > E ? nodus_witness_storage_set_get(w, B - E, prev) : 1;
     if (rc < 0) goto done;
     if (rc == 1) prev->count = 0;         /* nothing held before B       */
+    nc->H = B;
+    nc->prev_exists = rc == 0;            /* an empty frozen set counts  */
     if (st_segments_load(w, B, &segs, &n_segs) != 0) goto done;
     if (st_member_walk(set, prev, B, segs, n_segs, st_rel_new, nc) != 0)
         goto done;

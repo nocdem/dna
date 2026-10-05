@@ -1237,28 +1237,34 @@ displaced elsewhere, a new member) is FETCHED during its grace (1b) — over 0x7
 or from the full archives (EU-6, US-1), which keep everything in v1. **Pruning on EU-6 / US-1 stays
 forbidden** (Kurultay #7: no history-replay path for v1).
 
-**1b. The grace — why a node earns nothing for a while after it gets new segments (decision K9).**
-At every epoch boundary the chain looks at which segments each storage node holds now and which it held
-one epoch ago. If a node got `n` segments it did not hold before, the chain gives it `n` epochs to fetch
-them: it sets the node's `grace_until` to (this boundary + n × 720 blocks), or keeps the old value if
-that is later. While the epoch start is below `grace_until` the node is **in grace**: no validator
+**1b. The grace — why a node earns nothing for a while after it takes over segments (decisions K9,
+K9a).** At every epoch boundary the chain looks at which segments each storage node holds now and which
+it held one epoch ago. It counts `n` = the segments the node now holds that **already existed one epoch
+ago** (published at or before this boundary − 720) and that it did not hold then — segments it has to
+**fetch** from someone else. The chain gives it `n` epochs to do that: it sets the node's `grace_until`
+to (this boundary + n × 720 blocks), or keeps the old value if that is later. A segment published
+during the last epoch — at this boundary itself included — is **not** counted: every node still has
+those blocks in its own block store, so there is nothing to fetch (K9a). While the epoch start is below `grace_until` the node is **in grace**: no validator
 probes it, it earns **nothing — on any of its segments, the old ones too**, and a failed epoch is not
 counted against it (fail_streak does not move). After the grace every segment it holds counts again.
 What starts a grace, in plain terms:
-- **Registering.** A new node is new to every segment it gets, so it waits (number of segments it
-  holds) epochs — at ≈ 1 h per epoch, e.g. 6 segments ≈ 6 hours before it can earn.
-- **The storage activation itself.** At the first storage boundary every member is new to everything
-  it holds, so the first grace is as many epochs as segments, not one.
+- **Registering.** A node that registers after storage is active takes over every older segment it is
+  given, so it waits (number of those segments) epochs — at ≈ 1 h per epoch, e.g. 6 segments ≈ 6 hours
+  before it can earn.
 - **Another node leaving or being skipped.** When a node exits, or fails 3 epochs in a row and is
   skipped, its segments go to other members; each of them pauses for as many epochs as segments it took
   over (the accepted cost of K9). A node joining does NOT pause the others — it only takes segments
   away from them.
 - **A skipped node returning** (after 12 epochs, or at once after a good epoch) gets its segments back
   and has its own grace again.
-- **Every new segment.** A segment is published every 17 280 blocks (≈ 24 epochs); its three holders
-  are new to it, so each of them is in grace for one epoch then and earns nothing on any of its
-  segments in that epoch. With only a handful of storage nodes that is most of them, once per
-  publication.
+What does NOT start a grace (K9a):
+- **The storage activation itself.** At the first storage boundary there is no earlier set to compare
+  with, so nobody gets a grace: every member is probed and paid for the segments it holds from the
+  first epoch on. A probe is answered from the node's own block store while it has the block (step 1),
+  so **a node registered for the first storage boundary must still have the whole archive then** — not
+  pruned (step 1a) — or it is NOT OK for the blocks it lacks from the first epoch on.
+- **A new segment.** A segment is published every 17 280 blocks (≈ 24 epochs); its three holders have
+  its blocks in their own block store, so they get no grace for it and keep earning on everything.
 The node must still fetch and keep its new segments while in grace — the grace is the time to do it.
 `storage status` (step 4) shows `grace_until` and says when the node is in grace and how many grace
 epochs are left. Note: a node in grace whose fail_streak is already 3 or more keeps that value through

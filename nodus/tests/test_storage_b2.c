@@ -10,7 +10,9 @@
  * archive.md (R = 3, amount = block count, 3 failed epochs → skipped, K5
  * return after 12 settled epochs, K5a an OK epoch with eligible blocks
  * resets to 0 even at 3 or more, K9 grace = n new segments × E — replaces
- * G = 1), 2026-10-05-archive-
+ * G = 1, K9a n counts only segments published at or before H − E that
+ * the member takes over, and n = 0 at the first storage boundary),
+ * 2026-10-05-archive-
  * reward-bytes-approved.md, 2026-10-05-
  * kurultay-7-archive-reward-summary.md, 2026-10-04-storage-reward-
  * approved.md (kept parts), 2026-10-04-storage-reward-who-earns.md.
@@ -58,36 +60,37 @@
  *     param 9 at 2, param 14 at 4, eight segments PRE-SEEDED (k = 1..8,
  *     published_height 1 — see HOW IT CAN LIE). A, B, C and D (= validator
  *     0's key: the dual-role node) register at 4; X at E + 5.
- *     THE K9 MODEL runs at EVERY boundary B (apply_both → model_boundary):
- *     n(m) = |segments m holds over set(B) \ those it held over set(B−E)|
- *     from the pure holders layer, grace = max(grace, B + n·E) in plain
- *     arithmetic; the frozen member row of set(B) AND the registry row
- *     must both equal it. Before every settlement the engine's eligible
- *     list of every member (nodus_witness_storage_eligible_segments —
- *     the reporter's and the probed node's one rule) must equal the
- *     model's: 0 while H < grace, else the union of holders over set(H)
- *     and set(H−E).
- *       boundary E    first storage boundary: set(E) = {A,B,C,D}; every
- *                     member is NEW to all it holds: grace = E + n·E, some
- *                     member has n >= 2 ("several files"); none is
- *                     probed (eligible list empty); no publication (k = 9
- *                     is not due);
+ *     THE K9a MODEL runs at EVERY boundary B (apply_both →
+ *     model_boundary): n(m) = 0 without set(B−E), else |segments
+ *     published <= B − E that m holds over set(B) \ those it held over
+ *     set(B−E)| from the pure holders layer, grace = max(grace, B + n·E)
+ *     in plain arithmetic; the frozen member row of set(B) AND the
+ *     registry row must both equal it. Before every settlement the
+ *     engine's eligible list of every member
+ *     (nodus_witness_storage_eligible_segments — the reporter's and the
+ *     probed node's one rule) must equal the model's: 0 while H < grace,
+ *     else the union of holders over set(H) and set(H−E).
+ *       boundary E    first storage boundary: set(E) = {A,B,C,D}; no
+ *                     set(0), so n = 0 for every member (K9a): nobody is
+ *                     in grace, each member's eligible list is exactly
+ *                     the segments it holds over set(E) (24 in all); no
+ *                     publication (k = 9 is not due);
  *       boundary 2E   set(2E) = {A,B,C,D,X}; X alone gains (a joining
- *                     member only displaces): X's grace 2E + n·E, the
- *                     others' unchanged;
- *       2E + 1        all seven seats report for H = E with EVERY bit 0;
- *       boundary 3E   settle H = E (F1 met): every member in grace or
- *                     without a segment — W == 0, no credit, pool 1 and
- *                     every fail_streak unchanged (a 0 bit in grace is not
- *                     counted against the member);
- *       T             = the largest grace_until of set(2E) (>= 2E): from
- *                     T nobody is in grace; idle up to T + E;
+ *                     member only displaces) and n(X) > 0: a TAKEOVER by
+ *                     registration of segments that existed at E — X's
+ *                     grace 2E + n·E; the others have none;
+ *       2E + 1        all seven seats report for H = E with EVERY bit 1;
+ *       boundary 3E   settle H = E (F1 met): nobody in grace — W = 24·P,
+ *                     all OK, weighted pay, pool 1 debited by Σ shares,
+ *                     every fail_streak 0;
+ *       T             = the largest grace_until of set(2E) (X's, > 2E):
+ *                     from T nobody is in grace; idle up to T + E;
  *       T + E + 1     all seven report for H = T: only N (the always-OK
  *                     member) has every other bit; D sets only its own
  *                     bit (F2: ignored → D NOT OK); a duplicate (H, seat)
  *                     and a report past the window are refused;
- *       boundary T+2E settle H = T ("one OK"): a member that had grace
- *                     now has weight (then counts); N alone credited
+ *       boundary T+2E settle H = T ("one OK"): X, which had grace, now
+ *                     has weight (then counts); N alone credited
  *                     floor(budget·w/W); pool 1 debited exactly Σ
  *                     credited; fail_streak +1 for every NOT OK member
  *                     with weight (every streak checked by the rule incl.
@@ -128,6 +131,12 @@
  *     proven HERE, not through the engine (the return would need 12 more
  *     settled epochs of twin chains; the engine's only member at 3 or
  *     more is M, and M has weight in the two epochs it settles there).
+ *  D1. K9a GRACE COUNT, pure (nodus_storage_grace_counts, E = 15 and
+ *     720): taken over and published <= H − E → 1 (the H − E edge
+ *     included); published at H, H − 1 or H − E + 1 → 0; no set(H−E)
+ *     (the first storage boundary) → 0; held at H − E, displaced, or not
+ *     a holder → 0; H < E → 0; one member's n over a mixed schedule
+ *     counts the old segments only, and only-new segments give no grace.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build; json-c (JSONC_FOUND) for
@@ -165,10 +174,17 @@
  *    segments at T + 4E and already held one at T + 3E). With eight
  *    segments the absence of either is improbable but would FAIL the
  *    test, never pass it.
- *  - The K9 model shares the holders layer (dna_v2_segment_holders) with
+ *  - The K9a model shares the holders layer (dna_v2_segment_holders) with
  *    the engine; what it restates independently is n, the max rule, the
  *    grace gate and the union of the two holder sets. The grace
- *    arithmetic itself is also pinned by section A's oracle vectors.
+ *    arithmetic itself is also pinned by section A's oracle vectors
+ *    (which take n as an input — the K9a COUNT is not in the oracle).
+ *  - K9a's "a segment published in (H−E, H] gives no grace" is proven
+ *    by D1 (pure) only: every segment of section D is published at 1,
+ *    and the first segment the run could publish (k = 9) is due at
+ *    9·P + 2E = 155,520 + 2E blocks, ≈ 12× the run. The engine's half —
+ *    st_member_walk handing each segment's published_height to the
+ *    predicate — is exercised in D with published_height 1 only.
  *  - D's accrual row also receives its validator distribution (the
  *    merged-accrual design rev 2.2 §5.4), so D's storage credit is proven
  *    only through the pool-1 debit, never per row.
@@ -240,6 +256,7 @@ static int g_checks = 0;
 #define PK_LEN   ((size_t)QGP_DSA87_PUBLICKEYBYTES)
 #define AUTH_LEN (1u + NODUS_RT_AUTH_SIGNER_LEN)
 #define N_SEGS   8u
+#define SEG_PUB  ((uint64_t)1)     /* published_height of the seeded k */
 
 /* restated from nodus_witness_rt_native.c (static there) */
 #define OP_STSET       10u
@@ -1538,7 +1555,7 @@ static int apply_both(fixture_t *a, fixture_t *b, uint64_t h,
         return -1;
     if (sys_head_recomputes(a->w) != 0 || sys_head_recomputes(b->w) != 0)
         return -1;
-    /* the K9 model follows EVERY storage boundary (twin roots are equal,
+    /* the K9a model follows EVERY storage boundary (twin roots are equal,
      * so fixture A speaks for both) */
     if (g_model_on && h % E_LEN == 0 && model_boundary(a->w, h) != 0)
         return -1;
@@ -1763,7 +1780,7 @@ static int key_of_fp(const uint8_t fp[64]) {
     return -1;
 }
 
-/* ── the test's OWN K9 model (pure layer only: dna_v2_segment_holders
+/* ── the test's OWN K9a model (pure layer only: dna_v2_segment_holders
  *    over the engine's frozen sets; the grace arithmetic restated) ──── */
 
 /* Does `fp` hold segment k (one of the N_SEGS pre-seeded, all published
@@ -1839,10 +1856,12 @@ static int grace_of(nodus_witness_t *w, const uint8_t fp[64],
 }
 
 /* The model at a storage boundary B (called on fixture A right after the
- * block B applied): n(m) = segments m holds in set(B) that it did not
- * hold in set(B−E); n > 0 → grace = max(grace, B + n·E) — restated here
- * with plain arithmetic, NOT through nodus_storage_grace_next. Then the
- * engine must agree twice: the member row of set(B) and the registry. */
+ * block B applied): K9a — n(m) = 0 when set(B−E) does not exist, else
+ * the segments published at or before B − E that m holds in set(B) and
+ * did not hold in set(B−E); n > 0 → grace = max(grace, B + n·E) —
+ * restated here with plain arithmetic, NOT through
+ * nodus_storage_grace_counts / nodus_storage_grace_next. Then the engine
+ * must agree twice: the member row of set(B) and the registry. */
 static int model_boundary(nodus_witness_t *w, uint64_t B) {
     if (B / E_LEN >= MODEL_EPOCHS) return -1;
     int rc = nodus_witness_storage_set_get(w, B, &g_set_m);
@@ -1857,8 +1876,11 @@ static int model_boundary(nodus_witness_t *w, uint64_t B) {
         const int key = key_of_fp(g_set_m.fps[i]);
         if (key < 0) return -1;
         uint64_t n = 0;
-        for (uint64_t k = 1; k <= N_SEGS; k++) {
+        /* K9a: no set(B−E) → n = 0; else only segments published at or
+         * before B − E (every pre-seeded one is published at 1) */
+        for (uint64_t k = 1; k <= N_SEGS && prev; k++) {
             int hc = 0, hp = 0;
+            if (SEG_PUB + E_LEN > B) continue;
             if (m_holds_in(&g_set_m, k, g_set_m.fps[i], &hc) != 0 ||
                 m_holds_in(prev, k, g_set_m.fps[i], &hp) != 0)
                 return -1;
@@ -1934,15 +1956,10 @@ static int bit_all_but_m(int seat_key, int member) {
     (void)seat_key;
     return member != g_M;
 }
-/* T + 5E: everyone */
+/* 2E + 1 (H = E) and T + 5E: everyone */
 static int bit_all(int seat_key, int member) {
     (void)seat_key; (void)member;
     return 1;
-}
-/* 2E + 1 (H = E, every member in grace): nobody */
-static int bit_none(int seat_key, int member) {
-    (void)seat_key; (void)member;
-    return 0;
 }
 
 /* Settlement check for epoch H at boundary B on fixture A: weights from
@@ -2066,7 +2083,6 @@ static int check_settle(const expect_t *ex, const snap_t *b0,
 static int ok_one(int m)      { return m == g_N; }
 static int ok_all_but_m(int m){ return m != g_M; }
 static int ok_all(int m)      { (void)m; return 1; }
-static int ok_none(int m)     { (void)m; return 0; }
 
 static int submit(fixture_t *A, fixture_t *B, uint64_t h, uint8_t **envs,
                   size_t *lens, size_t n, uint32_t *codes) {
@@ -2169,6 +2185,67 @@ static int t_streak_rule(void) {
     return 0;
 }
 
+/* D1. The K9a grace count, pure (nodus_storage_grace_counts — the one
+ * predicate the freeze's n(m) goes through, st_rel_new): a segment
+ * published in (H−E, H] — at H itself included — and every segment at
+ * the first storage boundary (no set(H−E)) give no grace; a segment that
+ * existed at H−E and is taken over does. Section D cannot publish a
+ * segment inside its run (k = 9 is due at 9·P + 2E blocks), so the
+ * "newly published" half is proven HERE only. */
+static int t_grace_count(void) {
+    const uint64_t Es[2] = { 15u, 720u };
+    for (int x = 0; x < 2; x++) {
+        const uint64_t E = Es[x], H = 10u * E;
+        /* taken over: existed at H−E, held now, not held at H−E */
+        CHECK(nodus_storage_grace_counts(H, E, 1, 1, 1, 0) == 1,
+              "an old segment taken over counts");
+        CHECK(nodus_storage_grace_counts(H, E, H - E, 1, 1, 0) == 1,
+              "published exactly at H − E: existed one epoch earlier");
+        /* newly published: (H−E, H] */
+        CHECK(nodus_storage_grace_counts(H, E, H, 1, 1, 0) == 0,
+              "published at H itself: not counted");
+        CHECK(nodus_storage_grace_counts(H, E, H - E + 1, 1, 1, 0) == 0,
+              "published at H − E + 1: not counted");
+        CHECK(nodus_storage_grace_counts(H, E, H - 1, 1, 1, 0) == 0,
+              "published at H − 1: not counted");
+        /* the first storage boundary: no set(H−E) */
+        CHECK(nodus_storage_grace_counts(H, E, 1, 0, 1, 0) == 0,
+              "no set(H−E): n = 0 for everyone");
+        CHECK(nodus_storage_grace_counts(E, E, 1, 0, 1, 0) == 0,
+              "H = E, no set(0): n = 0");
+        /* held already / not held now */
+        CHECK(nodus_storage_grace_counts(H, E, 1, 1, 1, 1) == 0,
+              "held at H − E too: nothing new");
+        CHECK(nodus_storage_grace_counts(H, E, 1, 1, 0, 1) == 0,
+              "displaced (overlap only): no grace");
+        CHECK(nodus_storage_grace_counts(H, E, 1, 1, 0, 0) == 0,
+              "not a holder: no grace");
+        /* H < E: no underflow, nothing counts */
+        CHECK(nodus_storage_grace_counts(E - 1, E, 0, 1, 1, 0) == 0,
+              "H < E: nothing counts");
+        CHECK(nodus_storage_grace_counts(0, E, 0, 1, 1, 0) == 0,
+              "H = 0: nothing counts");
+        /* n(m) for one member over a schedule: segments published at
+         * 1, H − 2E, H − E (old) and H − E + 1, H (new), all taken over */
+        const uint64_t pubs[5] = { 1, H - 2 * E, H - E, H - E + 1, H };
+        uint64_t nn = 0, g = 0;
+        for (int i = 0; i < 5; i++)
+            nn += (uint64_t)nodus_storage_grace_counts(H, E, pubs[i], 1, 1,
+                                                        0);
+        CHECK(nn == 3, "n counts the three old segments only");
+        CHECK(nodus_storage_grace_next(0, H, nn, E, &g) == 0 &&
+              g == H + 3 * E, "grace_until = H + n·E with that n");
+        nn = 0;
+        for (int i = 3; i < 5; i++)
+            nn += (uint64_t)nodus_storage_grace_counts(H, E, pubs[i], 1, 1,
+                                                        0);
+        CHECK(nn == 0 && nodus_storage_grace_next(0, H, nn, E, &g) == 0 &&
+              g == 0 && nodus_storage_in_grace(H, g) == 0,
+              "only newly published segments: no grace, probed at H");
+    }
+    return 0;
+}
+
 static int t_engine(void) {
     fixture_t A, B;
     uint64_t h = 0, n = 0;
@@ -2213,8 +2290,9 @@ static int t_engine(void) {
     }
     CHECK(core_invariant(A.w) == 0, "invariant after registrations");
 
-    /* boundary E: the first storage boundary — every member is NEW to
-     * every segment it holds (no set(0)), so K9 gives each E + n·E */
+    /* boundary E: the first storage boundary — no set(0), so K9a counts
+     * n = 0 for everyone: nobody is in grace, every member is probed for
+     * exactly the segments it holds over set(E) */
     CHECK(run_idle(&A, &B, &h, E_LEN) == 0, "to E (the model checks the "
           "grace of every boundary)");
     CHECK(nodus_witness_storage_set_get(A.w, E_LEN, &g_set_a) == 0 &&
@@ -2222,25 +2300,32 @@ static int t_engine(void) {
     CHECK(q_u64(A.w, "SELECT COUNT(*) FROM v2_storage_segments", &n) == 0 &&
           n == N_SEGS, "no publication at E (k = 9 not due)");
     {
-        uint64_t nmax = 0;
+        size_t nk_total = 0;
         for (uint32_t i = 0; i < g_set_a.count; i++) {
             const int key = key_of_fp(g_set_a.fps[i]);
             CHECK(key >= 0, "member key");
-            const uint64_t nn = g_newn_at[1][key];
-            CHECK(g_grace[key] == (nn ? E_LEN + nn * E_LEN : 0),
-                  "K9 at E: grace_until = E + n·E");
-            if (nn > nmax) nmax = nn;
+            CHECK(g_newn_at[1][key] == 0 && g_grace[key] == 0 &&
+                  g_set_a.grace_until[i] == 0,
+                  "K9a at the first storage boundary: n = 0, no grace");
+            size_t held = 0;
+            for (uint64_t k = 1; k <= N_SEGS; k++) {
+                int hold = 0;
+                CHECK(m_holds_in(&g_set_a, k, g_set_a.fps[i], &hold) == 0,
+                      "holders over set(E)");
+                held += (size_t)hold;
+            }
             uint64_t ks[N_SEGS];
-            size_t nk = 1;
+            size_t nk = N_SEGS + 1;
             uint8_t fp[64];
             memcpy(fp, g_set_a.fps[i], 64);
             CHECK(nodus_witness_storage_eligible_segments(A.w, E_LEN, fp, ks,
                                                           N_SEGS, &nk) == 0
-                  && nk == 0, "in grace at E: no eligible segment — the "
-                  "member is not probed");
+                  && nk == held, "not in grace at E: every segment the "
+                  "member holds over set(E) is eligible — it is probed");
+            nk_total += nk;
         }
-        CHECK(nmax >= 2, "a new member with several segments (8 segments × "
-              "3 copies over 4 members): grace n·E with n >= 2");
+        CHECK(nk_total == (size_t)N_SEGS * DNA_V2_STORAGE_HOLDERS,
+              "8 segments × R = 3 copies over 4 members, all eligible at E");
     }
 
     /* E + 5: X registers */
@@ -2255,7 +2340,10 @@ static int t_engine(void) {
     h = E_LEN + 5;
 
     /* boundary 2E — X joins: a new member only DISPLACES (holders are the
-     * three nearest), so X alone gains; everyone else keeps its grace */
+     * three nearest), so X alone gains. Every segment X takes over was
+     * published at 1 <= 2E − E and set(E) exists: a TAKEOVER by
+     * registration, X's grace is 2E + n·E (K9a keeps K9 here); everyone
+     * else has none */
     CHECK(run_idle(&A, &B, &h, 2 * E_LEN) == 0, "to 2E");
     CHECK(nodus_witness_storage_set_get(A.w, 2 * E_LEN, &g_set_a) == 0 &&
           g_set_a.count == 5, "set(2E) = {A, B, C, D, X}");
@@ -2264,11 +2352,13 @@ static int t_engine(void) {
         CHECK(key >= 0, "member key");
         if (key == KX) {
             const uint64_t nx = g_newn_at[2][KX];
-            CHECK(g_grace[KX] == (nx ? 2 * E_LEN + nx * E_LEN : 0),
-                  "X, new at 2E: grace_until = 2E + n·E");
+            CHECK(nx > 0, "X takes over at least one segment (8 segments "
+                  "× 3 copies over 5 members; re-seed the fixture keys "
+                  "otherwise)");
+            CHECK(g_grace[KX] == 2 * E_LEN + nx * E_LEN,
+                  "X, a takeover at 2E: grace_until = 2E + n·E");
         } else {
-            CHECK(g_newn_at[2][key] == 0 &&
-                  g_grace_at[2][key] == g_grace_at[1][key],
+            CHECK(g_newn_at[2][key] == 0 && g_grace_at[2][key] == 0,
                   "a member that only loses segments gains no grace");
         }
     }
@@ -2300,9 +2390,10 @@ static int t_engine(void) {
           "fixture keys otherwise)");
     g_N = (g_M == KA) ? KC : KA;
 
-    /* 2E + 1: all seven seats report for H = E with NO bit set */
-    CHECK(reports_for(&A, 2 * E_LEN + 1, E_LEN, all_seats, N_VAL, bit_none,
-                      e, l) == 0, "seven reports for H = E, every bit 0");
+    /* 2E + 1: all seven seats report for H = E with EVERY bit set (no
+     * member is in grace at the first storage boundary — K9a) */
+    CHECK(reports_for(&A, 2 * E_LEN + 1, E_LEN, all_seats, N_VAL, bit_all,
+                      e, l) == 0, "seven reports for H = E, every bit 1");
     CHECK(submit(&A, &B, 2 * E_LEN + 1, e, l, N_VAL, codes) == 0, "2E+1");
     for (int i = 0; i < N_VAL; i++)
         CHECK(codes[i] == NODUS_V2_TX_OK, "report applies");
@@ -2310,23 +2401,26 @@ static int t_engine(void) {
     CHECK(q_u64(A.w, "SELECT COUNT(*) FROM v2_storage_reports", &n) == 0 &&
           n == N_VAL, "seven committed reports");
 
-    /* boundary 3E: settle H = E (F1 met) — every member is in grace or
-     * holds nothing: W == 0, nothing paid, and the 0 bits are NOT counted
-     * against anyone (fail_streak unchanged) */
+    /* boundary 3E: settle H = E (F1 met) — nobody is in grace (K9a):
+     * every member with a segment has weight, all OK, weighted pay from
+     * pool 1, every fail_streak 0 */
     snap_t s0, s1;
     CHECK(run_idle(&A, &B, &h, 3 * E_LEN - 1) == 0, "to 3E-1");
     CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, E_LEN, &g_ex) == 0,
           "before 3E (engine eligibility == the model's)");
+    for (uint32_t i = 0; i < g_ex.cur.count; i++)
+        CHECK(!g_ex.in_grace[i], "H = E: no member in grace (K9a)");
     CHECK(run_idle(&A, &B, &h, 3 * E_LEN) == 0, "boundary 3E");
     CHECK(take(A.w, &s1) == 0, "after 3E");
     {
         uint64_t W = 0;
-        CHECK(check_settle(&g_ex, &s0, &s1, ok_none, &W) == 0 && W == 0,
-              "H = E: in grace — W == 0, no credit");
-        CHECK(s0.pool1 == s1.pool1, "pool 1 untouched");
+        CHECK(check_settle(&g_ex, &s0, &s1, ok_all, &W) == 0 &&
+              W == (uint64_t)N_SEGS * DNA_V2_STORAGE_HOLDERS * P_LEN,
+              "H = E: no grace — every held segment counts, all OK, "
+              "weighted pay");
+        CHECK(s0.pool1 > s1.pool1, "pool 1 debited at the first settlement");
         for (int k = 0; k < N_KEYS; k++)
-            CHECK(s1.streak[k] == s0.streak[k], "a member in grace: its 0 "
-                  "bit is not counted, fail_streak unchanged");
+            CHECK(s1.streak[k] == 0, "all OK: every fail_streak 0");
         CHECK(q_u64(A.w, "SELECT COUNT(*) FROM v2_storage_reports", &n) == 0
               && n == 0, "the reports for H = E are pruned");
     }
@@ -2651,6 +2745,7 @@ int main(void) {
         { "segment_publication",  t_publication },
         { "report_hooks",         t_report_hooks },
         { "fail_streak_rule",     t_streak_rule },
+        { "grace_count_k9a",      t_grace_count },
         { "engine_twins",         t_engine },
     };
     size_t failed = 0, n = sizeof(cases) / sizeof(cases[0]);
