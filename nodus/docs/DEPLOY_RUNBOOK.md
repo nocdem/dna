@@ -1233,16 +1233,39 @@ case:** with `retain_blocks` > 0 and an assigned segment not complete the node l
 `W_STHOLD retain_blocks=… is set while N assigned segment(s) are not complete (first: k)` at start and
 at every epoch — revert to `retain_blocks` 0 or wait for the fetch to finish. The prune loop itself is
 unchanged; it does not consult the segment files. A segment newly assigned to a pruned node (a holder
-displaced elsewhere, a new member) is FETCHED during its grace epoch — over 0x73 from the other holders
+displaced elsewhere, a new member) is FETCHED during its grace (1b) — over 0x73 from the other holders
 or from the full archives (EU-6, US-1), which keep everything in v1. **Pruning on EU-6 / US-1 stays
 forbidden** (Kurultay #7: no history-replay path for v1).
+
+**1b. The grace — why a node earns nothing for a while after it gets new segments (decision K9).**
+At every epoch boundary the chain looks at which segments each storage node holds now and which it held
+one epoch ago. If a node got `n` segments it did not hold before, the chain gives it `n` epochs to fetch
+them: it sets the node's `grace_until` to (this boundary + n × 720 blocks), or keeps the old value if
+that is later. While the epoch start is below `grace_until` the node is **in grace**: no validator
+probes it, it earns **nothing — on any of its segments, the old ones too**, and a failed epoch is not
+counted against it (fail_streak does not move). After the grace every segment it holds counts again.
+What starts a grace, in plain terms:
+- **Registering.** A new node is new to every segment it gets, so it waits (number of segments it
+  holds) epochs — at ≈ 1 h per epoch, e.g. 6 segments ≈ 6 hours before it can earn.
+- **The storage activation itself.** At the first storage boundary every member is new to everything
+  it holds, so the first grace is as many epochs as segments, not one.
+- **Another node leaving or being skipped.** When a node exits, or fails 3 epochs in a row and is
+  skipped, its segments go to other members; each of them pauses for as many epochs as segments it took
+  over (the accepted cost of K9). A node joining does NOT pause the others — it only takes segments
+  away from them.
+- **A skipped node returning** (after 12 epochs, or at once after a good epoch) gets its segments back
+  and has its own grace again.
+The node must still fetch and keep its new segments while in grace — the grace is the time to do it.
+`storage status` (step 4) shows `grace_until` and says when the node is in grace and how many grace
+epochs are left. Note: a node in grace whose fail_streak is already 3 or more keeps that value through
+the grace, so a long grace also delays its automatic return.
 **Disk:** one segment is ≈ 17280 × ≈ 100 KB ≈ 1.7 GB at today's block size (design rev 4 §0); a node
 holds about 3 / (number of storage members) of all published segments (R = 3), plus up to one overlap
 epoch of a segment it is handing off. Files of segments this node no longer holds are deleted one epoch
 after the handoff (`W_STHOLD segment k deleted …`).
-**Terminal commit signatures:** the marker records whether the segment's last commit was checked against
-the validator set (`W_STSEG … terminal commit … signatures verified` vs `hash-bound only`). A pruned
-node has no historical validator set, so fetched old segments are hash-bound only — expected, logged.
+**Terminal commit signatures:** since decision K8a every segment file carries the validator set that
+signed its last commit, and the commit's signatures are always checked against it before the segment is
+complete — pruned or not (a marker without that check is not a held segment).
 
 **2. Be connected to the validators on 4004.** Probes travel on channel 0x72 over the EXISTING 4004
 connection between a validator and the storage node; no new connection is dialed for a probe. Put the
@@ -1253,7 +1276,9 @@ must run a build that lists channel 0x72 (an older peer is never sent to on it).
 (channel 0x73, package B2b-2 — ⚠ the byte is pending operator approval) also uses EXISTING 4004
 connections only: a storage node fetches from the other holders of a segment it is connected to, then
 from any connected peer (keep EU-6 / US-1 in `persistent_peers`). Serving nodes answer only a requester
-that is an ACTIVE member of the current frozen storage set, at most 4 GiB per requester per epoch.
+that is an ACTIVE member of the current frozen storage set. There is no byte limit per requester
+(decision K6a): a requester has one request in flight at a time, and the 4004 connection's send / receive
+rate limit bounds what it can draw.
 
 **3. Keep the clock in sync (NTP).** A probe carries the validator's wall-clock deadline (10 s ahead);
 the storage node refuses a request whose deadline its own clock has passed (`LATE`). Node NTP is
@@ -1292,9 +1317,11 @@ nodus-cli -s 127.0.0.1:4001 -i /var/lib/nodus/identity storage register --submit
   set at the next epoch boundary and earns nothing after it; the bond comes back at that boundary as one
   coin to the payee, locked 12 epochs (`DNAC_STORAGE_EXIT_LOCK_EPOCHS`). Re-registering is possible only
   after the bond was released (row RELEASED).
-- **Status** prints the registry row (status, bond, fail_streak, registered / exit height, payee), the
-  frozen storage set for the current epoch (H, H+E] and whether this node is in it, and the segments
-  that count for it this epoch (number and blocks = number × 17280; at most the first 64 are listed).
+- **Status** prints the registry row (status, bond, fail_streak, registered / exit height, payee,
+  grace_until — and, while the epoch start is below it, `IN GRACE this epoch … N grace epoch(s) left`,
+  see 1b), the frozen storage set for the current epoch (H, H+E] and whether this node is in it, and
+  the segments that count for it this epoch (number and blocks = number × 17280; at most the first 64
+  are listed; 0 while in grace).
   **The last settled outcome is not available**: the settlement records no per-node verdict on chain
   (it writes only fail_streak and the payee's reward accrual, and deletes the epoch's reports), so
   fail_streak is its only trace — 0 after a good epoch with segments, growing after failed ones;

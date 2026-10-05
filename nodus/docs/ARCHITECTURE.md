@@ -5686,7 +5686,7 @@ the pairing only when its caller passes `rtn_gen_storage(rt)`) — under the aut
 `rtn_sys_stake_auth` (exactly one kind-1 signer whose fp == SHA3-512(node_pk); that signature is the
 node's consent). New SYSTEM adapter ops: 8 `RTN_SYS_OP_STOR` (the row; CREATE|SET, ABSENT|EXISTS_VHASH;
 the record node_pk ‖ payee ‖ bond ‖ status ‖ registered_height ‖ exit_height — 2685 bytes since B2a
-with fail_streak u32 appended — key node_fp) and 9 `RTN_SYS_OP_STORCNT` (read-only live count,
+with fail_streak u32 appended, 2693 since K9 with grace_until u64 appended — key node_fp) and 9 `RTN_SYS_OP_STORCNT` (read-only live count,
 selector 1 = ACTIVE + EXITING).
 - `STORAGE_REGISTER` (call node_pk ‖ bond u64 ‖ payee_fp = 2664 B): bond EXACTLY
   `DNAC_STORAGE_STAKE_MIN` (10^14 raw); **payee_fp must equal node_fp** (design §1 "payee_fp (=
@@ -5727,7 +5727,8 @@ Every engine case FAILS until the STORAGE-ORACLE pins are filled.
 ### Storage reward v1 rev 4 (the ARCHIVE reward), package B2a — segment roots, frozen storage sets, reports, settlement, exit release (2026-10-05, branch only — not versioned, not voted)
 
 Decisions `docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md` (reward = block archive; R = 3;
-G = 1; amount = block count; 3 failed epochs → skipped; 3 samples; full archives keep all),
+amount = block count; 3 failed epochs → skipped; 3 samples; full archives keep all; G = 1 at B2a,
+replaced by K9 — the grace subsection below),
 `2026-10-05-archive-reward-bytes-approved.md` (bytes), `2026-10-05-kurultay-7-archive-reward-summary.md`,
 the kept parts of `2026-10-04-storage-reward-approved.md` and `2026-10-04-storage-reward-who-earns.md`.
 Design `docs/plans/2026-10-05-archive-reward-design.md` rev 4 + rev 2.2 §1, §2, §4, §5; bytes
@@ -5736,7 +5737,8 @@ Design `docs/plans/2026-10-05-archive-reward-design.md` rev 4 + rev 2.2 §1, §2
 `nodus_witness_v2_epoch.c` (step 1b'), `nodus_witness_roots_v2.c`. Inert until the param-14 vote (B1's
 generation switch); the probe client, segment files, the fetch protocol and the CLI are package B2b.
 
-**Pure layer (`ledger_roots_v2`).** `NDS.STLEAF.v2` (leaf v1 + `fail_streak` u32 BE, 173-byte preimage),
+**Pure layer (`ledger_roots_v2`).** `NDS.STLEAF.v2` (leaf v1 + `fail_streak` u32 BE + — K9 — `grace_until`
+u64 BE last, 181-byte preimage; the tag did not change because the leaf was never activated),
 `NDS.STOR.v2` (registry ‖ sets ‖ reports ‖ segments — replaces the 3-leg `NDS.STOR.v1`; `NDS.SYS.v5`
 unchanged), `Root(k)` = SHA3-512(`NDS.STSEG.v1` ‖ k ‖ 17280 ‖ hash[(k−1)·17280+1 .. k·17280]) — a plain
 hash, `dna_v2_segment_root`; segment leaf `NDS.STSGLEAF.v1` ‖ k ‖ Root(k), node `NDS.STSGNODE.v1`, empty
@@ -5749,10 +5751,11 @@ Constants `DNA_V2_SEGMENT_BLOCKS` 17280, `DNA_V2_STORAGE_HOLDERS` 3, `DNA_V2_STO
 `DNA_V2_STORAGE_SAMPLES` 3; `dnac.h` `DNAC_STORAGE_EXIT_LOCK_EPOCHS` 12, `DNAC_STORAGE_SEGMENT_DELAY_EPOCHS` 2.
 
 **Tables (base schema, typed CHECKs, WITHOUT ROWID, shape checked on every open, preflight-required).**
-`v2_storage_nodes` gains `fail_streak` (0..2^32−1). `v2_storage_sets` (epoch_start PK, set_hash, member_count
-0..256 — one row per frozen set, an empty set included); `v2_storage_set_members` (epoch_start, node_fp PK;
-`fail_streak` as frozen at epoch_start — NOT hashed by S(H), a copy of the registry leaf v2 committed at H,
-the `v2_balance_copy` class); `v2_storage_reports` ((epoch_start, seat) PK, set_hash, bitmap 0..32 bytes);
+`v2_storage_nodes` gains `fail_streak` (0..2^32−1) and `grace_until` (K9; 0..INT64_MAX — the stored-INTEGER
+bound of every u64 column; a computed value above it is a FAULT). `v2_storage_sets` (epoch_start PK, set_hash,
+member_count 0..256 — one row per frozen set, an empty set included); `v2_storage_set_members` (epoch_start,
+node_fp PK; `fail_streak` as frozen at epoch_start and `grace_until` as it stands AFTER the K9 update of that
+boundary — NOT hashed by S(H), copies of the registry leaf v2 committed at H, the `v2_balance_copy` class); `v2_storage_reports` ((epoch_start, seat) PK, set_hash, bitmap 0..32 bytes);
 `v2_storage_segments` (k PK, root, published_height — not in the leaf; contiguous 1..max). Loaders:
 `nodus_witness_storage_sets_root` (re-derives every S(H) from its members and refuses an orphan member
 row), `_reports_root`, `_segments_root`; `nodus_witness_storage_root_v2` composes the four legs.
@@ -5769,9 +5772,8 @@ accepted and ignored at settlement (F2). Described with record kind NONE.
 **The storage boundary (step 1b' of `nodus_witness_v2_epoch_boundary_apply`, after the validator
 distribution, before payday).** Gate: param 14 in effect at B (read first) and the SYSTEM runtime
 GEN_STORAGE (else FAULT). Then, in this order: (1) settle the epoch (H, H+E], H = B − 2E — eligibility
-`published_height(k) ≤ H−E ∧ m ∈ holders(k, set(H−E)) ∧ m ∈ set(H)` (continuing and displaced holders
-both earn through the overlap epoch, a new holder earns nothing — G = 1), weight = 17280 × eligible
-segments, W over all members; F1 `P_rep·2 > P_total` else nothing moves; F2; OK iff Σ others' power
+per the K9 rule (subsection below: nothing while H < grace_until, else every segment held over set(H)
+plus the handoff overlap of set(H−E); m ∈ set(H)), weight = 17280 × eligible segments, W over all members; F1 `P_rep·2 > P_total` else nothing moves; F2; OK iff Σ others' power
 with the bit ·3 > P_rep(m)·2; budget = pool 1 >> 16; each OK member `floor(budget·w/W)` (128-bit) through
 `nodus_witness_v2_accrue` (the exported `v2ec_accrue`) to its payee_fp; pool 1 debited exactly Σ credited,
 bound to the observed balance; fail_streak (`nodus_storage_fail_streak_next`, every member of set(H),
@@ -5780,19 +5782,56 @@ trails the live counter by one epoch, so a member can still hold segments of epo
 is ≥ 3, and a recovered member is not kept out for 12 epochs); else at 3 or more (skipped for placement)
 +1, and 14 + 1 is written as 0 (decision K5: automatic return after 12 skipped epochs — the reset is
 frozen into set(B) in step 5 of the same boundary, so the member is placed again and is skipped again
-after 3 new failures); else weight > 0 and NOT OK → +1; else unchanged; (2) prune reports ≤ H and sets < H; (3) release every EXITING row — one locked UTXO through
+after 3 new failures); else weight > 0 and NOT OK → +1; else unchanged — and a member IN GRACE for (H, H+E]
+is skipped by this step (K9: fail_streak unchanged); (2) prune reports ≤ H and sets < H; (3) release every EXITING row — one locked UTXO through
 `nodus_witness_v2_epoch_release_utxo` (the exported graduation writer): tx_hash = exit_id(chain, B,
 node_fp), index 201, owner payee_fp, unlock B + 12·E, status RELEASED; (4) publish every k with
 k·17280 + 2E ≤ B from the last published + 1 (`nodus_witness_storage_publish_due` — the activation
 backfill and the schedule in one rule; Root(k) from `v2_blocks.block_id`, a missing / malformed row is a
-FAULT); (5) freeze storage_set(B) = the ACTIVE rows with their fail_streak. Engine phase 6e declares CORE
+FAULT); (5) freeze storage_set(B) = the ACTIVE rows with their fail_streak, then the K9 grace update over
+that set (written to the registry and into the member rows). Engine phase 6e declares CORE
 touched also when the storage settlement credited or a release UTXO was written
 (`nodus_v2_epoch_result_t.storage_accrued` / `n_storage_releases`).
 
 **Readings recorded in code (not stated by the design).** A failed F1 floor leaves fail_streak unchanged
 for every member (a skipped member's count does not advance in an unsettled epoch); a (re-)registration
-writes fail_streak 0;
+writes fail_streak 0 and grace_until 0 (a revived node is new to every segment at its next boundary, so
+K9 gives it its grace there); EXIT copies both;
 every EXITING row is released at the next boundary, an exit in the boundary block itself included.
+
+**K9 — the grace scales with the newly assigned segments (decision 2026-10-05-storage-reward-is-for-
+archive.md K9, operator "1" then "onaylıyorum"; replaces G = 1; pre-activation).** At every storage
+boundary H, after the publication step, for each member m of the set being frozen:
+`n(m) = |{k : published ≤ H ∧ m ∈ holders(k, set(H))} \ {k : published ≤ H−E ∧ m ∈ holders(k, set(H−E))}|`
+— the segments m holds now and did not hold one epoch ago (a segment published at H counts; an absent
+set(H−E), i.e. the first storage boundary, holds nothing). n > 0 → `grace_until = max(grace_until, H + n·E)`
+(`nodus_storage_grace_next`, checked u64; above INT64_MAX = FAULT); the registry row and the frozen member
+row carry the value AFTER the update. **In grace** for epoch (H, H+E] iff `H < grace_until`
+(`nodus_storage_in_grace`) — the oracle's reading 4: any n > 0 puts the epoch that starts at H in grace.
+In grace the member is not probed (bit 0, not counted against it), has weight 0 (earns nothing on ANY of
+its segments, old ones included — the accepted cost), and its fail_streak is unchanged at that epoch's
+settlement. **The one eligibility rule** (`nodus_storage_member_eligible`, through
+`nodus_witness_storage_eligible_segments` — the settlement weights, the reporter's probe list and the
+probed node's answer): segment k is eligible for member m of set(H) in (H, H+E] iff m is not in grace and
+(m ∈ holders(k, set(H)) with published ≤ H — "every assigned segment counts" — or m ∈ holders(k, set(H−E))
+with published ≤ H−E — the one-epoch handoff overlap of a DISPLACED holder). One walk
+(`st_member_walk` in `nodus_witness_v2_storage.c`) emits (member, k, in_cur, in_prev) for all three
+consumers: the grace count (in_cur ∧ ¬in_prev), the weights and the eligible list. The holder's must-hold
+list (`nodus_witness_sthold_must_hold`) is the same two lines WITHOUT the grace gate — a member in grace
+still fetches and keeps its segments. Consequences to know: a member joining only displaces others (holders
+are the three nearest), so only the joiner gains; when a member is skipped (fail_streak 3) or exits, the
+members taking its segments each pause n epochs; at the activation boundary every holder is new, so the
+first grace is (number of segments it holds) epochs, not one. The K5 interaction is a READING: a member in
+grace with fail_streak ≥ 3 keeps its value (K9's "unchanged" over K5's "+1 every settled epoch"), so a long
+grace also delays its K5 return. Status wire: `dnac_storage_status` adds `"gu"` (live grace_until).
+Tests (written, not run by the builder): `test_storage_b2` section A — leaf v2 181 bytes and the 36
+`grace_rule` vectors (E = 720 and 15; new grace_until and the probed bit) against the regenerated oracle
+KAT; section D — a K9 model checked at every boundary (frozen and registry grace_until), the engine's
+eligible list checked against it before every settlement, new members' n·E grace at E, a joiner gaining
+alone, a settled epoch in grace with every bit 0 leaving every fail_streak unchanged, a gainer of a skipped
+member's segments pausing exactly n epochs with weight 0; `test_roots_v2` (grace_until bound, the 181-byte
+preimage restated); `test_storage_reg` (record 2693; EXIT copies grace_until, a revival resets it);
+`test_storage_probe` (in grace → NO_BLOCKS, past grace → eligible); `test_storage_cli` ("gu").
 
 **Tests (written, not run by the builder).** `test_storage_b2` — the archive KAT byte for byte (json-c),
 publication / backfill / faults over synthetic `v2_blocks`, the STORAGE_REPORT hook matrix, twin engine
@@ -5803,7 +5842,7 @@ the other pairs +1 at 3..13, 0 at 14) and the pure fail_streak arc (3 → 14 →
 again after 3 failures → an OK epoch with weight → 0 and placed, over `nodus_witness_storage_holders`;
 the "≥ 3 with no eligible block adds one" branch is proven only there); `test_roots_v2` (leaf v2 binding, 4-leg storage_root, the STSEG empty root;
 the 2026-10-04 KAT's registry_leaf / registry_root / storage_root sections named SUPERSEDED);
-`test_storage_reg` (record 2685, its roots check through the runtime hook); `test_hf4_switch` (the empty
+`test_storage_reg` (record 2693 since K9, its roots check through the runtime hook); `test_hf4_switch` (the empty
 4-leg storage leg). Engine cases FAIL until the STORAGE-ORACLE pins are filled.
 
 ### Storage reward v1 rev 4 (the ARCHIVE reward), package B2b-1 — the archive probe's node side (2026-10-05, branch only — not versioned, not voted)
@@ -5919,8 +5958,11 @@ Request `"a": {"fp": tstr128 lowercase hex}`. Read-only over committed tables: t
 row, storage_set(H) with H = tip − tip mod E (the set governing (H, H+E]), and the node's eligible
 segments in that epoch (`nodus_witness_storage_eligible_segments`). Response `"r"`: `ch` tip, `es` H
 (0 = none yet), `found`; iff found `st` (1 ACTIVE / 2 EXITING / 3 RELEASED), `bond`, `fs` fail_streak,
-`rh`, `xh`, `payee` (hex128); `set`, `sc` member count, `mem`, `ns` eligible-segment count, `segs` the
-first min(ns, 64) k ascending. Bounded: at most 14 keys and 64 list entries (one 4 KB reply buffer).
+`gu` grace_until (K9; epoch (H, H+E] is in grace while H < gu — `ns` is then 0), `rh`, `xh`, `payee`
+(hex128); `set`, `sc` member count, `mem`, `ns` eligible-segment count, `segs` the first min(ns, 64) k
+ascending. Bounded: at most 15 keys and 64 list entries (one 4 KB reply buffer). The CLI's `status`
+prints grace_until and, while `es < gu`, that the node is in grace (not probed, earns nothing, how many
+grace epochs are left).
 A store fault (a malformed row, an unreadable set, a member without a registry row) is an
 `INTERNAL_ERROR` reply, never a partial answer. **The last settled outcome is NOT available:**
 `st_settle` (`nodus_witness_v2_storage.c`) writes only fail_streak and the payee's accrual, and `st_prune`
@@ -5941,8 +5983,9 @@ decoder's rules. Not covered: admission (descriptor, meter, units), the handler 
 
 ### Storage reward v1 rev 4, package B2b-2 — segment FILES and the 0x73 FETCH (2026-10-05, branch only — not versioned, not voted)
 
-Decisions `docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md` (R = 3, G = 1, K6 the 0x72
-framing this channel follows, K8a — replaces K8 — every file carries the validator set that signed its
+Decisions `docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md` (R = 3, K9 the grace — a
+member in grace still fetches, K6 the 0x72 framing this channel follows, K6a no per-requester byte
+budget, K8a — replaces K8 — every file carries the validator set that signed its
 terminal commit and the signatures are always verified), `2026-10-05-archive-reward-bytes-approved.md`
 (bytes doc §6 chain, §7 file, §7 Clarifications K8a),
 `2026-10-05-kurultay-7-archive-reward-summary.md` (items 2, 4, 5, 7), `2026-10-03-block-pruning-7-paydays.md`
@@ -6005,9 +6048,10 @@ again); bytes after a good pair are cut.
 
 **Must hold / deletion (holder runtime, `nodus_witness_sthold_tick`, every 200 ms while the lane is live
 and not block-syncing).** At H = ⌊tip/E⌋·E this node must hold k iff me ∈ holders(k, H), or
-published_height(k) ≤ H−E and me ∈ holders(k, H−E) — the second line is exactly the probe's eligibility
-rule (`nodus_witness_v2_storage.h` "ELIGIBILITY"), so a displaced holder keeps its file through the
-overlap epoch (H, H+E] while it is still probed and paid, and deletes it at the next epoch. Deletion
+published_height(k) ≤ H−E and me ∈ holders(k, H−E) — the two lines are the probe's eligibility rule
+(`nodus_witness_v2_storage.h` "ELIGIBILITY") WITHOUT its K9 grace gate: a member in grace is not probed
+but fetches and keeps its new segments; a displaced holder keeps its file through the overlap epoch
+(H, H+E] while it is still probed and paid, and deletes it at the next epoch. Deletion
 (once per epoch, marker first, then the files, then fsync(dir)) touches only PUBLISHED segments outside
 that list; nothing is deleted when storage_set(H) is absent or a read faults (an absent set(H−E) counts
 as empty). One job at a time, smallest k first: EXPORT when the block store's base ≤ (k−1)·17280+1 and
@@ -6034,10 +6078,11 @@ whole). An undecodable message stops the peer (stop reason 423).
   proof_len u32 ‖ proof`; rq = SHA3-512(the 37 body bytes); header present (≤ 2048) iff cont = 0; body = the
   part bytes (≤ 65536) with its proof (1 … 8192), or the commit proto (1 … 599 839) with no proof, or the
   ValidatorSet proto — exactly the file's set record bytes — (1 … 342 764) with no proof; no trailing byte.
-  Codes: 0 OK, 1 NOT_MEMBER, 2 UNKNOWN_SET, 3 NOT_PUBLISHED, 4 NOT_HELD, 5 BUDGET, 6 FAULT.
-- Serving side: decode → the requester's epoch budget (4 GiB per requester per epoch, every admitted
-  request costs at least 4096 B; ⚠ NOT GROUNDED, design §9 leaves fetch budgets open) → the requester's
-  authenticated 64-byte fingerprint is a member of the CURRENT frozen set S(H) (committed; `st_freeze`
+  Codes: 0 OK, 1 NOT_MEMBER, 2 UNKNOWN_SET, 3 NOT_PUBLISHED, 4 NOT_HELD, 6 FAULT; 5 (the former
+  per-requester byte budget) is retired by K6a — never sent, never reused.
+- Serving side: decode → (K6a, operator "bayt sınırını kaldıralım": NO per-requester byte budget; what one
+  requester draws is bounded by the admission below, its one request in flight and the 4004 connection's
+  per-peer send / recv rate) → the requester's authenticated 64-byte fingerprint is a member of the CURRENT frozen set S(H) (committed; `st_freeze`
   copies only ACTIVE rows) and its registry row is ACTIVE now — the session pin: the 4004 secret
   connection authenticated its ML-DSA-87 key and the registry's node_fp must be SHA3-512 of it (design §3
   cites `nodus_inter_dial.c:150` for this pin; that file is core's 4002 dialer — on 4004 the pin is the
@@ -6064,7 +6109,7 @@ bytes, so the reporter's chain is unchanged.
 store's P:h:i, the commit); every bad piece refused before it is written (tampered part, another block's
 part, wrong header, flipped commit byte, out of order), finish refused when incomplete, a mismatching
 marker not held, a markerless .dat re-verified and republished byte-identical; the 0x73 request bytes,
-every malformed request, refusal / OK framing and bounds, the shape rule, the per-requester budget; a
+every malformed request, refusal / OK framing and bounds, the shape rule (the budget cases went with K6a); a
 whole segment fetched piece by piece byte-identical to the export (a corrupted answer refused); resume
 after a torn tail and a cut at a tampered record; the serving side's refusals; must-hold and deletion
 across the overlap (held at H, H+E, deleted at H+2E, nothing deleted without set(H), unpublished files
@@ -6076,7 +6121,7 @@ signatures; markers with flags 0 or an unknown bit not held; the 0xFFFFFFFE sele
 set from store and file; a torn or on-disk-tampered set record cut at the commit record; an export
 without validators(17280) finished by fetching the set. Not covered: a set at the 128 cap, a non-checkpoint
 ValidatorsInfo row, the live 0x73 transport (rotation, timeouts), the tick and the retain_blocks warning,
-the budget through the message handler.
+the message handler `nodus_witness_sthold_on_msg` itself.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
