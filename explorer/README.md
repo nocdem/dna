@@ -7,6 +7,10 @@ JSON API. The Nodus Scan frontend (`scan.nodusnetwork.io`) lives in
 `website/scan/` (see `website/deploy/README.md`); the legacy
 `scan.cpunk.io` frontend is no longer in this repository.
 
+**Version 0.2.2** adds actual payout amounts, recipient pages and address
+reward history through an optional read-only local Nodus database. It
+does not rebuild the explorer index or change the node's owner-gated RPC.
+
 Design: `docs/plans/2026-09-28-scan-v3-design.md` (items 4-5) and the
 decision `docs/plans/decisions/2026-09-28-scan-v3-query.md` (both
 local-only, not committed — see `feedback_plans_dir_local_only`). The v1
@@ -57,7 +61,12 @@ first, then the explorer.
 - `src/exp_http.{c,h}` — the JSON HTTP API (`exp_http_serve`), bound to
   `127.0.0.1` only. Answers from the index, except `/api/address`'s
   balance, which it reads from the node through its own chain handle and
-  a 5 s cache (`exp_balance_chain_*`; see "Balance" below).
+  a 5 s cache (`exp_balance_chain_*`; see "Balance" below), and the
+  optional rewards endpoints below.
+- `src/exp_rewards.{c,h}` — request-scoped, read-only SQLite snapshots of
+  recorded payout rows and current accrual from a co-located Nodus DB.
+  Matches the indexed anchor block, validates coverage and rows, and
+  bounds work with a deterministic SQLite VM-operation budget.
 - `src/exp_json.{c,h}` — minimal JSON emission helpers (money fields as
   decimal strings — see below).
 - `src/main.c` — CLI entry point / daemon lifecycle.
@@ -175,13 +184,26 @@ Tests: build via the messenger tree above, then run
 `ctest` (no `add_test` for it). The tests need no network: the sync paths
 run against fake `exp_sync_source_t` sources.
 
+`messenger/build/explorer/test_rewards` is a second standalone test binary.
+It needs only SQLite and writable temporary storage, and creates disposable
+source/index fixtures under unique `mkstemp` paths; no nodes, keys, network,
+live database or chain timing prerequisites. Its five groups exercise:
+actual payouts and pending (including amounts above 2^53), sequence cursors
+with gaps and over 100 recipients, coverage gaps versus a recorded empty
+payday, invalid requests/source binding/schema/rows, WAL snapshot consistency
+and absence of source writes, and deterministic query-budget exhaustion.
+The header-only synthetic explorer fixture is intentionally sparse; these
+tests cover rewards routing, not index continuity. Run both binaries; a
+nonzero exit is a failure and no group has a skip path.
+
 ## Running
 
 ```
-Usage: dna-explorerd [--config PATH] [--db PATH] [--port N] [--once] [--verify-index] [--version]
+Usage: dna-explorerd [--config PATH] [--db PATH] [--rewards-db PATH] [--port N] [--once] [--verify-index] [--version]
 
   --config PATH    witness server list, "host port" per line (default /etc/dna-explorer.conf)
   --db PATH        sqlite index db path (default /var/lib/dna-explorer/index.db)
+  --rewards-db PATH optional co-located Nodus database, opened read-only per request
   --port N         JSON API listen port (default 8390), 127.0.0.1 only
   --once           run a single sync tick and exit (smoke tests)
   --verify-index   consistency check of the index in --db (no network), print
@@ -235,7 +257,10 @@ addressed by its **position** `"<height>:<index>"`; send the `:` as it is
 | `/api/address/<fp>?before=<height:index>&limit=<n>` | `{address, balances:[{token_id, total, spendable, coins}] \| null, balance_status:"ok"\|"unavailable", items:[item], next_before}` — `balances` is the node's per-token list, token id ascending (`total`/`spendable` decimal strings, `coins` a number; see "Balance" above), `null` only with `"unavailable"`; `items` are the items touching the address (owner of a created or resolved consumed coin, or a record's validator/delegator/destination), newest first; `next_before` is the next page's cursor, `null` on a short page. |
 | `/api/governance` | `{tip, indexed_height, records:[{position, height, index, time, param_id, param_name, new_value, effective_height, wire_id, intent_id}], truncated}` — every **applied** `chain_config` vote in the index (refused items carry no record), `(height, index)` ascending. `param_name` is the `DNAC_CFG_*` name of `param_id` (`dnac/include/dnac/dnac.h`, without the prefix — e.g. `HF2_ACTIVE`, `RULESET_GEN2`, `NAME_PRICE_3P`), `null` for an id this build does not know; `new_value` is a decimal string; `effective_height` is the block from which the value is in force. `tip` is the node's last reported committed height (`/api/stats` `tip_height`), `indexed_height` the index watermark — both `null` until known; a vote between the two is not listed yet. A rule is active when `tip ≥ effective_height`. Not a page: a hard cap of 1000 records, `truncated:true` when the index holds more. A chain_config row written from the genesis document (height 0 — HF-1's `GAS_PRICE_RAW_PER_UNIT` and `TOKEN_CREATE_FEE_RAW`) is not a block item and never appears. |
 | `/api/tps` | `{now_ms, last_minute:{tx, blocks, seconds:60, tps}, last_hour:{tx, blocks, seconds:3600, tps}, next_payday:{height, blocks_left, avg_block_ms, est_ms}, paydays:[{height, time}], apy:{reward_pool, active_stake, active_validators, stake_at_tip, avg_block_ms, epochs_per_year, apy}, history:[{start_ms, tx, blocks, seconds, tps}]}` — throughput, payday and APY figures (the payday and APY parts: next row). Throughput of **applied** transactions (`applied_count`; refused items are not counted), read off the index by block time only (D4): `now_ms` is the time of the newest indexed block (highest height), never the explorer's clock, so the figures are reproducible from the index. The windows are half-open, `(now_ms − seconds·1000, now_ms]`: a block whose time is exactly `now_ms − 60000` is outside the last minute, one at `now_ms − 59999` inside. `history` is 24 hourly buckets, oldest first: `start_ms` is a UTC hour start (`start_ms % 3600000 == 0`), the newest bucket is the hour containing `now_ms`, a bucket holds the blocks with time in `[start_ms, start_ms + 1 h)` (up to `now_ms`), an hour with no block is a zero bucket. `seconds` is 3600, except the newest (in-progress) bucket: the seconds elapsed from its start to `now_ms`, rounded up, at least 1. `tps` = `tx / seconds` as a decimal **string** with exactly two decimals, rounded half up with integer arithmetic (`"0.35"`, `"3.00"`). An empty index answers `{now_ms:null, last_minute:null, last_hour:null, next_payday:null, paydays:[], apy:null, history:[]}`. Bounded cost: each span is a range scan of the covering index `idx_blocks_time` (`blocks(time_ms, applied_count)`, created on open — an existing index gains it without a rebuild) over at most 24 h of blocks; the payday pace fallback reads at most 100 heights and the paydays list at most 100 blocks, by primary key. |
-| `/api/tps` — payday and APY | **Payday cadence**: rewards are paid at a block whose height is a multiple of **17 280** = `DNAC_EPOCH_LENGTH` 720 × `payout_interval_epochs` 24 (`nodus/src/witness/nodus_witness_v2_econ.c` `nodus_witness_v2_payday_apply`: `boundary_height % 720 == 0` and `(boundary_height / 720) % interval == 0`; the live genesis `payout_interval_epochs = 24`, `nodus/tools/genesis/testnet_v3.conf.template`) — the named constant `EXP_PAYDAY_INTERVAL_BLOCKS` (`exp_db.h`); the explorer does not read the genesis, so a different interval needs a new build. **`next_payday`**: `height` = the smallest multiple of 17 280 strictly above the newest indexed height, `blocks_left` = `height` − that height, `avg_block_ms` = the mean block interval over the last hour's indexed blocks ((newest − oldest time) / (count − 1), floored), or over the last 100 indexed heights when that hour holds fewer than 2 blocks, `est_ms` = `now_ms + blocks_left × avg_block_ms` — an estimate at the current block pace (blocks come every ~60 s when idle, faster when busy), `avg_block_ms`/`est_ms` `null` with fewer than 2 blocks indexed. **`paydays`**: past paydays, newest first, at most 100 — every multiple of 17 280 at or below the newest indexed height with its block `time`; `[]` before the first (block 17 280). No amount: the explorer reads no source of a payday's total — payouts are block-boundary rows, not block items; `dnac_addr_history` (which lists `payout` rows) answers only the session's own owner (`nodus.h`, C11); `reward_pool` is debited at every epoch boundary, not at the payday (`nodus_witness_v2_econ.c` `nodus_witness_v2_settlement_apply`), so its difference is not a payday total. **`apy`** (an estimate, display only): `epochs_per_year = 31 557 600 s / (720 × avg_block_s)`, `avg_block_s` = the mean block interval over the last 24 h of block time (`avg_block_ms` here); `yearly_reward = reward_pool × (1 − (1 − 1/65536)^epochs_per_year)` — each epoch boundary pays `reward_pool >> 16` (`nodus_witness_v2_econ.c` settlement, `NODUS_V2_GEN_REWARD_DIVISOR_LOG2 = 16`, `nodus_witness_v2_gen.h`); `apy = yearly_reward / active_stake × 100` (percent). `reward_pool` comes from the stored supply buckets (`/api/stats`), `active_stake`/`active_validators` from the last accepted `dnac_validator_list_query` read (status ACTIVE, `self_stake + external_delegated`), `stake_at_tip` the tip it was read at. `reward_pool`/`active_stake` are decimal strings, `epochs_per_year`/`apy` two-decimal strings; each input is `null` when not known and `apy` is `null` unless every input is known and the stake is non-zero. It is an upper bound before validator commission: a member that misses the attendance bar leaves its share in the pool (the pool is debited only by what was credited), fees that refill the pool are ignored, and the active stake is the node's current table, not the frozen snapshot the reward is split by (stake is weighted as `floor(total_stake / 10^8)` there). Unlike the throughput figures, the pool and stake are the latest node observation, not a function of the index alone. |
+| `/api/tps` — payday and APY | **Payday cadence**: rewards are paid at a block whose height is a multiple of **17 280** = `DNAC_EPOCH_LENGTH` 720 × `payout_interval_epochs` 24 (`nodus/src/witness/nodus_witness_v2_econ.c` `nodus_witness_v2_payday_apply`: `boundary_height % 720 == 0` and `(boundary_height / 720) % interval == 0`; the live genesis `payout_interval_epochs = 24`, `nodus/tools/genesis/testnet_v3.conf.template`) — the named constant `EXP_PAYDAY_INTERVAL_BLOCKS` (`exp_db.h`); the explorer does not read the genesis, so a different interval needs a new build. **`next_payday`**: `height` = the smallest multiple of 17 280 strictly above the newest indexed height, `blocks_left` = `height` − that height, `avg_block_ms` = the mean block interval over the last hour's indexed blocks ((newest − oldest time) / (count − 1), floored), or over the last 100 indexed heights when that hour holds fewer than 2 blocks, `est_ms` = `now_ms + blocks_left × avg_block_ms` — an estimate at the current block pace (blocks come every ~60 s when idle, faster when busy), `avg_block_ms`/`est_ms` `null` with fewer than 2 blocks indexed. **`paydays`**: past paydays, newest first, at most 100 — every multiple of 17 280 at or below the newest indexed height with its block `time`; `[]` before the first (block 17 280). This legacy index-only list carries no amount; `/api/paydays` supplies actual recorded totals when the optional local reward source is configured. Payouts are block-boundary rows, not block items; the owner-gated `dnac_addr_history` RPC is unchanged. A reward-pool difference is never used as a payday total. **`apy`** (an estimate, display only): `epochs_per_year = 31 557 600 s / (720 × avg_block_s)`, `avg_block_s` = the mean block interval over the last 24 h of block time (`avg_block_ms` here); `yearly_reward = reward_pool × (1 − (1 − 1/65536)^epochs_per_year)` — each epoch boundary pays `reward_pool >> 16` (`nodus_witness_v2_econ.c` settlement, `NODUS_V2_GEN_REWARD_DIVISOR_LOG2 = 16`, `nodus_witness_v2_gen.h`); `apy = yearly_reward / active_stake × 100` (percent). `reward_pool` comes from the stored supply buckets (`/api/stats`), `active_stake`/`active_validators` from the last accepted `dnac_validator_list_query` read (status ACTIVE, `self_stake + external_delegated`), `stake_at_tip` the tip it was read at. `reward_pool`/`active_stake` are decimal strings, `epochs_per_year`/`apy` two-decimal strings; each input is `null` when not known and `apy` is `null` unless every input is known and the stake is non-zero. It is an upper bound before validator commission: a member that misses the attendance bar leaves its share in the pool (the pool is debited only by what was credited), fees that refill the pool are ignored, and the active stake is the node's current table, not the frozen snapshot the reward is split by (stake is weighted as `floor(total_stake / 10^8)` there). Unlike the throughput figures, the pool and stake are the latest node observation, not a function of the index alone. |
+| `/api/paydays?before=<height>&limit=<n>` | `{from_height, at_height, paydays:[{height, time, total, recipients, available}], next_before}` — scheduled payday heights at or below the indexed anchor, newest first; default 25, max 100. `before` is exclusive and `next_before` is the last shown height when another scheduled payday exists, otherwise null. An in-coverage payday with no payout rows has total `"0"`, recipients 0 and available true; before coverage it has null total/recipients and available false. |
+| `/api/payday/<height>?from=<sequence>&limit=<n>` | `{height, time, total, recipients, payouts:[{address, amount, sequence}], next_from, from_height, at_height}` — native boundary payout rows for one scheduled payday, sequence ascending; `from` inclusive, default 0; limit default/max 100. `next_from` is the first unshown payout's sequence, null when complete; release rows can leave gaps. Whole-payday total/count remain constant across pages. Outside source coverage or beyond indexed height is 503; a non-payday height is 400. |
+| `/api/rewards/<fp>?before=<height:sequence>&limit=<n>` | `{address, from_height, at_height, paid_total, pending, items:[{height, time, amount, sequence}], next_before}` — actual recorded payouts in the current contiguous coverage run, newest `(height, sequence)` first; default 25, max 100. `paid_total` includes all recorded payouts within that run regardless of pagination and is **not current balance**. `pending` is the source snapshot's current accrual, zero only for a valid absent row. `next_before` is the exclusive cursor of the last shown row when another row exists, else null. Send the colon literally. |
 | `/api/search?q=<term>` | `{matches:[{type, target}]}` — every match: a decimal height → `block`; a `height:index` → `tx`; a 128-hex → `tx` (wire or intent id), `block` (block id), `address` (has indexed history); a chain name (lower-case, the chain's byte rule) → `name`, target = the registering item's position. An all-digit name also matches as a height: both are listed. Empty for a term that matches nothing. |
 
 `item` = `{position, height, index, time, kind ("envelope"|"claim"|"empty"),
@@ -253,6 +278,44 @@ methods, `400` for malformed identifiers/pagination params, `413` for
 request lines over 8 KB, `503` (`{"error":"index unavailable"}`) when the
 index DB is transiently unset (e.g. an F4 reset's reopen failed), and `500`
 on an internal query failure.
+
+### Reward source and coverage
+
+The three rewards endpoints require `--rewards-db`. They use only actual
+`addr_history` rows with `kind='payout'`, `v2_reward_accrual`,
+`addr_history_mark` and `v2_blocks`. They never infer payouts from a supply
+pool difference or a wallet balance, never backfill or fabricate rows, and
+do not call or relax `dnac_addr_history`'s owner check.
+
+Every request opens the source with `SQLITE_OPEN_READONLY` (plain filename,
+no URI/`immutable`), begins one read transaction, matches the explorer's
+latest copied block `(height, block_id)` against the source, then reads its
+tip, complete-run marker and rewards in that same snapshot. A source behind
+the index, different anchor, missing marker, `from_height < 1`, inverted
+marker or `last_height != source tip` is unavailable. `from_height` is the
+start of the current **unbroken** history run; older surviving rows before
+it are excluded. Index locks are held only to copy/recheck the anchor and
+scheduled block times; no source query holds the sync writer out. The
+anchor is rechecked before success in case F4 reset the index during the
+read. The source transaction is rolled back and its handle closed on every
+exit.
+
+For `/api/paydays` and `/api/payday`, `at_height` is the indexed anchor;
+scheduled dates come from indexed block time. For `/api/rewards`,
+`at_height` is the source snapshot's current tip, possibly ahead of the
+index, because accrual is current state and cannot be reconstructed at an
+older index height. Its payout times are the recorded `ts` seconds,
+checked before multiplication to milliseconds. All amounts, including
+`paid_total` and `pending`, are exact raw-unit decimal strings.
+
+Queries use primary-key height ranges or `idx_addr_history_owner` owner
+ranges, never a full-table payout scan. A request-wide 2,000,000-operation
+SQLite progress budget (callbacks every 1,000 VM steps) bounds totals even
+for very large histories; exhaustion returns 503, never a truncated total.
+There are no busy retries. SQL faults, malformed types/64-byte blobs,
+negative/out-of-range values, non-native payout tokens and sum/time overflow
+all return 503 `{"error":"rewards unavailable"}`. Existing endpoints remain
+available when this optional source is unavailable.
 
 ## Deploy
 
@@ -285,6 +348,24 @@ on an internal query failure.
    server, then `certbot --nginx -d <site>` to provision the certificate the
    nginx config's `ssl_certificate` lines reference.
 
+For payouts, co-locate the explorer with a Nodus node whose address-history
+index is enabled and current. Add `--rewards-db /path/to/nodus.db` to the
+existing explorer service command, retaining its existing arguments.
+Provide the unprivileged `dna-explorer` user **read access only**: for a
+root-owned Nodus service, set only the database and its existing `-wal` and
+`-shm` files to owner/group `root:dna-explorer`, mode `0640`. Grant directory
+traversal only as needed; keep source directories non-writable to the
+explorer and preserve `ProtectSystem=strict`. Ensure recreated SQLite WAL
+and SHM files retain that owner/group and read-only mode, and verify the
+service user can open the live WAL database after a Nodus restart. Do not
+grant access to key files, change key modes, recursively chmod/chown the
+Nodus data directory, or run the explorer as root. A plain immutable copy
+is not a live source: immutable mode would miss new WAL commits. If safe
+WAL/SHM read access cannot be provisioned, leave the optional source
+disabled rather than broadening permissions. Restart only the explorer
+after its binary/service configuration update, then check all three
+rewards endpoints against recorded source rows and existing endpoints.
+
 Server deployment (installing the systemd unit, DNS, certbot, enabling the
 service) requires explicit user approval before being executed
 (`feedback_never_deploy_without_permission`) — this README documents the
@@ -312,6 +393,9 @@ signs nothing, votes on nothing, and cannot cause a chain split.
   newest indexed block's time, not the host clock — its throughput, payday
   and pace figures are a function of the index; its APY estimate also uses
   the last node observation of the reward pool and the active stake.
+- **D5** — reward pages use `(height, sequence)` or `sequence` total order
+  and one bound source snapshot. Current accrual is stamped with its source
+  tip; history coverage is explicit, and unrecorded periods are unknown.
 
 **Threat model (adversary: anonymous Internet client + a malicious or
 buggy witness):**

@@ -1,6 +1,6 @@
 /* exp_http — DNAC Explorer read-only JSON HTTP API.
  *
- * Minimal single-threaded HTTP/1.1 server: GET-only, 6 endpoints, over the
+ * Minimal single-threaded HTTP/1.1 server: GET-only endpoints over the
  * index db (exp_db.h). The endpoint table and the JSON shapes are in
  * explorer/README.md ("HTTP API").
  *
@@ -20,7 +20,8 @@
  * include a "?query=string" suffix — parsed internally), it dispatches to
  * the matching endpoint handler and fills a JSON body + HTTP status. It does
  * no socket I/O of its own (only a wired ctx->balance source may reach a
- * witness) — tests seed `ctx->db` (an `exp_db_t **`, e.g.
+ * witness); optional rewards_db_path reads a local SQLite snapshot outside
+ * db_lock. Tests seed `ctx->db` (an `exp_db_t **`, e.g.
  * `ctx.db = &local_db_var;`) through exp_db_write_height directly. A
  * `*ctx->db == NULL` (or `ctx->db == NULL`) exercises the 503 "index
  * unavailable" degrade path.
@@ -114,6 +115,10 @@ typedef struct {
     /* The address balance source (see exp_balance_source_t). NULL = no
      * source: every address answers "balance_status": "unavailable". */
     const exp_balance_source_t *balance;
+
+    /* Optional co-located Nodus database. Opened read-only for each rewards
+     * request, outside db_lock; NULL disables only the rewards endpoints. */
+    const char *rewards_db_path;
 } exp_http_ctx_t;
 
 /* Blocking poll() accept loop on 127.0.0.1:ctx->port. Returns when

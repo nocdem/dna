@@ -1,6 +1,7 @@
 /* exp_http — DNAC Explorer read-only JSON HTTP API. See exp_http.h. */
 
 #include "exp_http.h"
+#include "exp_rewards.h"
 
 #include <errno.h>
 #include <math.h>
@@ -1083,6 +1084,179 @@ static void route_search(exp_db_t *db, const char *query, exp_json_t *j, int *st
     *status = 200;
 }
 
+/* Rewards use stricter bounded query parsing: no truncated values or
+ * duplicate cursor keys can become a different, apparently valid request. */
+static int rewards_query(const char *query, int kind, uint64_t *before_h,
+                          uint32_t *sequence, int *limit) {
+    unsigned seen = 0;
+    *before_h = 0;
+    *sequence = 0;
+    *limit = kind == 1 ? EXP_HTTP_LIMIT_MAX : EXP_HTTP_LIMIT_DEFAULT;
+    for (const char *p = query; *p;) {
+        const char *amp = strchr(p, '&');
+        size_t n = amp ? (size_t)(amp - p) : strlen(p);
+        const char *eq = memchr(p, '=', n);
+        if (!eq || eq == p || eq + 1 == p + n) return -1;
+        size_t k = (size_t)(eq - p), vn = n - k - 1;
+        char val[48];
+        if (vn >= sizeof(val)) return -1;
+        memcpy(val, eq + 1, vn); val[vn] = '\0';
+        uint64_t v;
+        unsigned bit;
+        if (k == 5 && memcmp(p, "limit", 5) == 0) {
+            bit = 1;
+            if (!parse_u64_strict(val, &v) || !v) return -1;
+            *limit = v > EXP_HTTP_LIMIT_MAX ? EXP_HTTP_LIMIT_MAX : (int)v;
+        } else if (kind == 1 && k == 4 && memcmp(p, "from", 4) == 0) {
+            bit = 2;
+            if (!parse_u64_strict(val, &v) || v > UINT32_MAX) return -1;
+            *sequence = (uint32_t)v;
+        } else if (kind != 1 && k == 6 && memcmp(p, "before", 6) == 0) {
+            bit = 2;
+            if (kind == 2) {
+                if (!parse_position(val, before_h, sequence)) return -1;
+            } else if (!parse_u64_strict(val, before_h) || !*before_h) return -1;
+            if (*before_h > INT64_MAX) return -1;
+        } else return -1;
+        if (seen & bit) return -1;
+        seen |= bit;
+        if (!amp) break;
+        p = amp + 1;
+        if (!*p) return -1;
+    }
+    return 0;
+}
+
+static void emit_rewards_coverage(exp_json_t *j, uint64_t from, uint64_t at) {
+    exp_json_raw(j, "\"from_height\":"); exp_json_u64(j, from);
+    exp_json_raw(j, ",\"at_height\":"); exp_json_u64(j, at);
+}
+
+/* kind: 0 payday list, 1 payday detail, 2 address rewards. The only index
+ * lock spans copy/revalidation of the anchor and scheduled block times.
+ * Source queries (one read transaction) never hold the sync writer out. */
+static void route_rewards(exp_http_ctx_t *ctx, int kind, const char *key,
+                           const char *query, exp_json_t *j, int *status) {
+    uint64_t before = 0, height = 0;
+    uint32_t seq = 0;
+    int limit, n = 0, ok = 0;
+    exp_block_row_t anchor, check;
+    exp_payday_row_t days[EXP_REWARDS_MAX];
+    exp_rewards_t *source = NULL;
+    exp_rewards_page_t page;
+    uint8_t owner[64];
+    if (rewards_query(query, kind, &before, &seq, &limit) != 0 ||
+        (kind == 2 && !is_hash128(key)) ||
+        (kind == 1 && (!parse_u64_strict(key, &height) || !height ||
+                       height > INT64_MAX || height % EXP_PAYDAY_INTERVAL_BLOCKS))) {
+        json_error(j, "invalid rewards request"); *status = 400; return;
+    }
+
+    if (ctx->db_lock) pthread_rwlock_rdlock(ctx->db_lock);
+    exp_db_t *db = ctx->db ? *ctx->db : NULL;
+    int count = 0;
+    ok = db && exp_db_query_blocks(db, UINT64_MAX, 1, &anchor, &count) == 0 && count == 1;
+    if (ok && kind != 2) {
+        uint64_t h = kind == 1 ? height : anchor.height;
+        if (kind == 0 && before && h >= before) h = before - 1;
+        if (kind == 0) h -= h % EXP_PAYDAY_INTERVAL_BLOCKS;
+        for (; h && n < (kind == 1 ? 1 : limit); h -= EXP_PAYDAY_INTERVAL_BLOCKS) {
+            if (h > anchor.height || exp_db_query_block_by_height(db, h, &check) != 0) {
+                ok = 0; break;
+            }
+            days[n].height = h;
+            days[n++].time_ms = check.time_ms;
+        }
+    }
+    if (ctx->db_lock) pthread_rwlock_unlock(ctx->db_lock);
+    if (!ok || exp_rewards_open(ctx->rewards_db_path, &anchor, &source) != 0)
+        goto unavailable;
+    uint64_t from = exp_rewards_from_height(source);
+    uint64_t at = kind == 2 ? exp_rewards_at_height(source) : anchor.height;
+
+    exp_json_raw(j, "{");
+    if (kind == 0) {
+        emit_rewards_coverage(j, from, at);
+        exp_json_raw(j, ",\"paydays\":[");
+        for (int d = 0; d < n; d++) {
+            if (d) exp_json_raw(j, ",");
+            exp_json_raw(j, "{\"height\":"); exp_json_u64(j, days[d].height);
+            exp_json_raw(j, ",\"time\":"); exp_json_u64(j, days[d].time_ms);
+            if (days[d].height < from) {
+                exp_json_raw(j, ",\"total\":null,\"recipients\":null,\"available\":false}");
+            } else {
+                if (exp_rewards_payday(source, days[d].height, 0, 0, &page) != 0)
+                    goto unavailable;
+                exp_json_raw(j, ",\"total\":"); exp_json_u64_str(j, page.total);
+                exp_json_raw(j, ",\"recipients\":"); exp_json_u64(j, page.recipients);
+                exp_json_raw(j, ",\"available\":true}");
+            }
+        }
+        exp_json_raw(j, "],\"next_before\":");
+        if (n && days[n - 1].height > EXP_PAYDAY_INTERVAL_BLOCKS)
+            exp_json_u64(j, days[n - 1].height);
+        else exp_json_raw(j, "null");
+    } else if (kind == 1) {
+        if (exp_rewards_payday(source, height, seq, limit, &page) != 0)
+            goto unavailable;
+        exp_json_raw(j, "\"height\":"); exp_json_u64(j, height);
+        exp_json_raw(j, ",\"time\":"); exp_json_u64(j, days[0].time_ms);
+        exp_json_raw(j, ",\"total\":"); exp_json_u64_str(j, page.total);
+        exp_json_raw(j, ",\"recipients\":"); exp_json_u64(j, page.recipients);
+        exp_json_raw(j, ",\"payouts\":[");
+        for (int i = 0; i < page.count; i++) {
+            if (i) exp_json_raw(j, ",");
+            exp_json_raw(j, "{\"address\":"); exp_json_hex(j, page.rows[i].owner, 64);
+            exp_json_raw(j, ",\"amount\":"); exp_json_u64_str(j, page.rows[i].amount);
+            exp_json_raw(j, ",\"sequence\":"); exp_json_u64(j, page.rows[i].sequence);
+            exp_json_raw(j, "}");
+        }
+        exp_json_raw(j, "],\"next_from\":");
+        if (page.has_next) exp_json_u64(j, page.next_from);
+        else exp_json_raw(j, "null");
+        exp_json_raw(j, ","); emit_rewards_coverage(j, from, at);
+    } else {
+        hex128_decode(key, owner);
+        if (exp_rewards_address(source, owner, before, seq, limit, &page) != 0)
+            goto unavailable;
+        exp_json_raw(j, "\"address\":"); exp_json_str(j, key);
+        exp_json_raw(j, ","); emit_rewards_coverage(j, from, at);
+        exp_json_raw(j, ",\"paid_total\":"); exp_json_u64_str(j, page.total);
+        exp_json_raw(j, ",\"pending\":"); exp_json_u64_str(j, page.pending);
+        exp_json_raw(j, ",\"items\":[");
+        for (int i = 0; i < page.count; i++) {
+            const exp_payout_t *p = &page.rows[i];
+            if (i) exp_json_raw(j, ",");
+            exp_json_raw(j, "{\"height\":"); exp_json_u64(j, p->height);
+            exp_json_raw(j, ",\"time\":"); exp_json_u64(j, p->time_ms);
+            exp_json_raw(j, ",\"amount\":"); exp_json_u64_str(j, p->amount);
+            exp_json_raw(j, ",\"sequence\":"); exp_json_u64(j, p->sequence);
+            exp_json_raw(j, "}");
+        }
+        exp_json_raw(j, "],\"next_before\":");
+        if (page.has_next) json_position(j, page.rows[page.count - 1].height,
+                                         page.rows[page.count - 1].sequence);
+        else exp_json_raw(j, "null");
+    }
+    exp_json_raw(j, "}");
+    exp_rewards_close(source); source = NULL;
+    /* F4 may have reset/swapped the index while its lock was released.
+     * New heights are fine; a missing or different anchor is unavailable. */
+    if (ctx->db_lock) pthread_rwlock_rdlock(ctx->db_lock);
+    db = ctx->db ? *ctx->db : NULL;
+    ok = db && exp_db_query_block_by_height(db, anchor.height, &check) == 0 &&
+         memcmp(check.block_id, anchor.block_id, 64) == 0;
+    if (ctx->db_lock) pthread_rwlock_unlock(ctx->db_lock);
+    if (!ok) goto unavailable;
+    *status = 200;
+    return;
+unavailable:
+    exp_rewards_close(source);
+    exp_json_freebuf(j); exp_json_init(j);
+    json_error(j, "rewards unavailable");
+    *status = 503;
+}
+
 /* ── Dispatch ────────────────────────────────────────────────────────── */
 
 static void route_index(exp_http_ctx_t *ctx, const char *path_only,
@@ -1109,6 +1283,21 @@ int exp_http_route(exp_http_ctx_t *ctx, const char *method, const char *path,
      * trip (route_address) — a witness query never runs under db_lock. */
     if (strncmp(path_only, "/api/address/", 13) == 0) {
         route_address(ctx, path_only + 13, query, body_out, status_out);
+        return 0;
+    }
+
+    if (strcmp(path_only, "/api/paydays") == 0 ||
+        strncmp(path_only, "/api/payday/", 12) == 0 ||
+        strncmp(path_only, "/api/rewards/", 13) == 0) {
+        if (strlen(path) >= sizeof(path_only) + sizeof(query) - 1 ||
+            strlen(path_only) == sizeof(path_only) - 1 ||
+            strlen(query) == sizeof(query) - 1) {
+            json_error(body_out, "invalid rewards request"); *status_out = 400;
+        } else if (strcmp(path_only, "/api/paydays") == 0)
+            route_rewards(ctx, 0, NULL, query, body_out, status_out);
+        else if (strncmp(path_only, "/api/payday/", 12) == 0)
+            route_rewards(ctx, 1, path_only + 12, query, body_out, status_out);
+        else route_rewards(ctx, 2, path_only + 13, query, body_out, status_out);
         return 0;
     }
 

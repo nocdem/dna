@@ -4,6 +4,7 @@
  *   --config PATH    witness server list, "host port" per line (default
  *                     /etc/dna-explorer.conf; see exp_chain_config_load)
  *   --db PATH        sqlite index db path (default /var/lib/dna-explorer/index.db)
+ *   --rewards-db PATH optional co-located Nodus DB (read-only payout source)
  *   --port N         JSON API listen port (default 8390), 127.0.0.1 only
  *   --once           run a single exp_sync_tick() and exit (smoke tests)
  *   --verify-index   run exp_db_verify_index() against --db and exit
@@ -27,7 +28,7 @@
 
 /* 0.2.0: version-3 chain — height walk over dnac_v3_block, index schema
  * v2 (rebuilt from height 1 on first start). */
-#define EXPLORERD_VERSION "0.2.1"
+#define EXPLORERD_VERSION "0.2.2"
 
 #define EXPLORERD_DEFAULT_CONFIG "/etc/dna-explorer.conf"
 #define EXPLORERD_DEFAULT_DB     "/var/lib/dna-explorer/index.db"
@@ -46,13 +47,14 @@ static void handle_stop_signal(int sig) {
 
 static void print_usage(const char *prog) {
     fprintf(stderr,
-        "Usage: %s [--config PATH] [--db PATH] [--port N] [--once] [--verify-index] [--version]\n",
+        "Usage: %s [--config PATH] [--db PATH] [--rewards-db PATH] [--port N] [--once] [--verify-index] [--version]\n",
         prog);
 }
 
 int main(int argc, char **argv) {
     const char *config_path = EXPLORERD_DEFAULT_CONFIG;
     const char *db_path = EXPLORERD_DEFAULT_DB;
+    const char *rewards_db_path = NULL;
     int port = EXPLORERD_DEFAULT_PORT;
     int once = 0;
     int verify_index = 0;
@@ -68,6 +70,8 @@ int main(int argc, char **argv) {
             config_path = argv[++i];
         } else if (strcmp(argv[i], "--db") == 0 && i + 1 < argc) {
             db_path = argv[++i];
+        } else if (strcmp(argv[i], "--rewards-db") == 0 && i + 1 < argc) {
+            rewards_db_path = argv[++i];
         } else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
             port = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--once") == 0) {
@@ -205,6 +209,7 @@ int main(int argc, char **argv) {
     http_ctx.stop = &g_stop;
     http_ctx.db_lock = &db_lock;
     http_ctx.balance = &balance_src;
+    http_ctx.rewards_db_path = rewards_db_path;
 
     if (exp_http_serve(&http_ctx) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "exp_http_serve failed — requesting shutdown");

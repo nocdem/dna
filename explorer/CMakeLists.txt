@@ -9,6 +9,7 @@ set(EXPLORER_SOURCES
     src/exp_sync.c
     src/exp_json.c
     src/exp_http.c
+    src/exp_rewards.c
 )
 
 set(DNAC_DIR "${CMAKE_SOURCE_DIR}/../dnac")
@@ -36,6 +37,7 @@ add_executable(test_explorer
     src/exp_sync.c
     src/exp_json.c
     src/exp_http.c
+    src/exp_rewards.c
 )
 target_include_directories(test_explorer PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -46,3 +48,22 @@ target_include_directories(test_explorer PRIVATE
     ${NODUS_DIR}/src
 )
 target_link_libraries(test_explorer dna sqlite3 pthread)
+
+# Rewards source/router regressions: disposable SQLite files, no network.
+add_executable(test_rewards
+    tests/test_rewards.c
+    src/exp_db.c
+    src/exp_chain.c
+    src/exp_json.c
+    src/exp_http.c
+    src/exp_rewards.c
+)
+target_include_directories(test_rewards PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+    ${SHARED_DIR}
+    ${DNAC_DIR}/include
+    ${NODUS_DIR}/include
+    ${NODUS_DIR}/src
+)
+target_link_libraries(test_rewards dna sqlite3 pthread)

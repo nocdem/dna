@@ -284,9 +284,9 @@ uint64_t exp_next_payday_height(uint64_t height);
 /* A past payday: an indexed block whose height is a multiple of
  * EXP_PAYDAY_INTERVAL_BLOCKS (the payout runs in that block's epoch
  * boundary — nodus_witness_v2_epoch.h step 1c), and its block time. No
- * amount: the explorer reads no source of a payday's total (payouts are
- * boundary rows, not block items; dnac_addr_history is gated to the
- * session's own owner; reward_pool is debited per epoch, not per payday). */
+ * amount in this index-only /api/tps view: payouts are boundary rows, not
+ * block items. The optional exp_rewards source supplies actual amounts
+ * through /api/paydays; owner-gated dnac_addr_history stays unchanged. */
 typedef struct {
     uint64_t height;
     uint64_t time_ms;

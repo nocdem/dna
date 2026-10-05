@@ -613,3 +613,34 @@ Node-local: none of these changes a consensus byte, block, app_hash or state roo
 | `int nodus_cmt_bs_set_seen_commit_window(nodus_cmt_store_t *s, int64_t w)` | **NEW.** Sets W. CMT_OK; CMT_FAULT on NULL or `w < 0` (W unchanged). |
 | `int nodus_cmt_bs_prune_blocks(nodus_cmt_store_t *s, int64_t height, const cmt_state_t *state, uint64_t *out_pruned, int64_t *out_evidence_point)` (`nodus_witness_cmt_store.h`) | **CHANGED (behaviour) — documented deviation from cometbft v0.38.26 store/store.go:392-396 (decision item 5).** Never deletes block 1's BlockMeta row `H:1`, which the start-time V2 preflight (`nodus_witness_v2_preflight.c` check 5) reads on every open; height 1's `BH:`, `C:`, `SC:`, `EC:` and parts are deleted as before, height 1 still counts in `*out_pruned`, base still moves to `height`. Every other height unchanged (evidence-point rule as the reference). Signature and return codes unchanged. |
 | `int nodus_cmt_bs_save_block(...)`, `int nodus_cmt_bs_save_block_with_extended_commit(...)` (via `static int save_block_to_batch(...)`, `nodus_witness_cmt_store.c`) | **CHANGED (behaviour) — documented deviation from cometbft v0.38.26 store.go:574.** In the same batch that writes `C:h−1` and `SC:h`, deletes `SC:(h−1−W)` when that height is ≥ 1; a failed delete is CMT_FAULT and aborts the batch like every other write. Signatures unchanged. |
+
+
+---
+
+## 23. Scan payout display (explorer 0.2.2)
+
+Display-only, outside consensus. Source tables are read through a separate
+`SQLITE_OPEN_READONLY` handle; no schema migration, history backfill, key
+access or change to owner-gated `dnac_addr_history`. CLI `--rewards-db PATH`
+is optional and a failed source affects only the three rewards endpoints.
+
+| Function / type | Contract |
+|---|---|
+| `exp_http_ctx_t.rewards_db_path` (`explorer/src/exp_http.h`) | Optional plain filename of the co-located Nodus database. NULL means rewards unavailable. `main.c` wires the `--rewards-db` argument; existing routes remain available. |
+| `exp_rewards_t`, `exp_payout_t`, `exp_rewards_page_t` (`explorer/src/exp_rewards.h`) | Request-scoped source snapshot; payout `(height,time_ms,amount,sequence,owner[64])`; exact total, payout-row count, pending, at most 100 rows, and next-sequence metadata. Source row amounts must fit nonnegative signed 64 bits; sums are checked unsigned 64 bits. |
+| `int exp_rewards_open(const char *path, const exp_block_row_t *anchor, exp_rewards_t **out)` | Begins a read transaction before reading any source state. Requires the copied indexed height/block id to match `v2_blocks`; reads source tip and current coverage marker in that snapshot. Requires positive `from_height <= last_height == source tip` and source tip >= indexed anchor. Plain filename only, no URI/immutable/write/migration. 0 success; -1 unavailable with `*out=NULL`. Opens with READONLY/NOMUTEX, no busy retries, a request-wide 2,000,000-VM-step progress budget sampled every 1,000 steps. |
+| `void exp_rewards_close(exp_rewards_t *r)` | NULL-safe; disables progress callback, rolls back read transaction and closes source handle on every exit. |
+| `uint64_t exp_rewards_from_height(const exp_rewards_t *r)`, `uint64_t exp_rewards_at_height(const exp_rewards_t *r)` | Current contiguous history run start and source snapshot tip; 0 on NULL. |
+| `int exp_rewards_payday(exp_rewards_t *r, uint64_t height, uint32_t from, int limit, exp_rewards_page_t *out)` | Height-index range over real `kind='payout'` rows, checked native boundary rows only, sequence ascending. Whole-height total and payout-recipient row count plus inclusive `from` page; limit 0 = total/count only, 1..100 = page. `next_from` = first unshown sequence, not previous sequence + 1 (gaps allowed). Height outside coverage or any fault = -1; 0 success. |
+| `int exp_rewards_address(exp_rewards_t *r, const uint8_t owner[64], uint64_t before_h, uint32_t before_seq, int limit, exp_rewards_page_t *out)` | Owner-index range restricted to current coverage through source tip. One scan computes exact paid total and selects a descending `(height,sequence)` page, exclusive before cursor; `(0,0)` = newest. Reads current owner accrual in the same transaction; absent row is zero only after source validation. A source fault, malformed row or exhausted budget is -1, never a partial total. |
+| `static int rewards_progress(void *ctx)`, `static int rewards_u64(sqlite3_stmt *s, int col, uint64_t max, uint64_t *out)`, `static int rewards_blob64(sqlite3_stmt *s, int col, uint8_t out[64])` (`exp_rewards.c`) | Deterministic operation budget and strict integer/64-byte BLOB readers; no implicit SQLite conversion. |
+| `static int rewards_row(sqlite3_stmt *s, exp_payout_t *p)`, `static int rewards_add(exp_rewards_page_t *out, const exp_payout_t *p)` | Validates positive height, boundary item position UINT32_MAX, u32 sequence, 64-byte owner/native token, nonnegative amount, and seconds-to-ms conversion; checked total and row count. |
+| `static int rewards_query(const char *query, int kind, uint64_t *before_h, uint32_t *sequence, int *limit)` (`exp_http.c`) | Strict bounded query parsing for payday list/detail or address rewards; rejects duplicate/unknown/empty/truncated parameters and out-of-range cursors, clamps positive limit to 100. Colon is literal, matching existing API parsing. |
+| `static void emit_rewards_coverage(exp_json_t *j, uint64_t from, uint64_t at)` | Emits `from_height` and `at_height`; amounts elsewhere use exact decimal-string helpers. |
+| `static void route_rewards(exp_http_ctx_t *ctx, int kind, const char *key, const char *query, exp_json_t *j, int *status)` | `/api/paydays`, `/api/payday/<h>`, `/api/rewards/<fp>` implementation. Copies indexed anchor and scheduled dates under a short db lock, releases it for all source reads, then rechecks the anchor under lock before success (F4 reset safety). Scheduled list includes pre-coverage paydays with null amounts/counts and `available:false`. List/detail `at_height` is indexed anchor; address `at_height` is source tip so current pending has an honest stamp. Malformed requests are 400; source/coverage/binding faults are 503. Full response reset on failure prevents partially emitted totals. |
+
+Deployment and exact JSON/pagination contracts: `explorer/README.md`.
+`test_rewards` covers real-row totals, exact large amounts, bounded pages,
+coverage versus empty, malformed/unavailable sources, snapshot consistency,
+source non-mutation and deterministic work exhaustion; it uses disposable
+SQLite fixtures only. No live-node or key prerequisite.
