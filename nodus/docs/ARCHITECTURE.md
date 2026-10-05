@@ -5623,7 +5623,8 @@ rev 2.2 §1 (registration / exit) and §6 (activation); bytes `docs/plans/2026-1
 items 1, 4, 5, 6 and its Clarifications; who earns `docs/plans/decisions/2026-10-04-storage-reward-who-earns.md`.
 Package A (the pure root functions, `shared/dnac/ledger_roots_v2.{h,c}`) and its independent-oracle
 KAT came first; B1 wires them. The frozen storage set, the report (op 9) and the boundary settlement /
-exit release are package **B2** — not here.
+exit release are package **B2a** (next section), which also replaced B1's leaf v1 / storage leg v1
+with the archive-reward forms before any activation.
 
 **Numbers are provisional.** Generation, op ids and the param id are the next free ones in this branch
 (generation 3, SYSTEM ops 7/8/9, param 14); design §6 assigns them in main merge order (HF-5 and QEVM
@@ -5662,12 +5663,11 @@ chain_config reads per block, no effect when no edge fires.
 
 **The SYSTEM root (`nodus_rt_system_state_root`, `nodus_witness_roots_v2.c`).** Chosen by the RESOLVED
 runtime's generation: GEN_STORAGE or later composes `NDS.SYS.v5` = the 8 v4 legs in v4 order +
-`storage_root = dna_v2_storage_root(registry_root, sets_root, reports_root)`
-(`nodus_witness_system_root_v5`); every earlier generation `NDS.SYS.v4` exactly as before (the v4
+`storage_root` (`nodus_witness_system_root_v5`; since B2a the 4-leg `NDS.STOR.v2`, next section);
+every earlier generation `NDS.SYS.v4` exactly as before (the v4
 function only had its leg reads factored into a shared helper). Because 6b' rewrites the registry
 before the 6c re-scan reloads the runtimes, the first v5 root is H−1's own post-state, committed in
-H−1's app_hash (design D5). B1 has no frozen-set or report tables: `sets_root` / `reports_root` are the
-tagged empty roots (what B2's tables give while empty). `nodus_witness_global_root_v2`'s `out_system`
+H−1's app_hash (design D5). `nodus_witness_global_root_v2`'s `out_system`
 stays the v4 composition (test-only assembly; its `out_global` comes from the committed heads).
 `NDS.SYSPAYL.v3` (genesis payload) is unchanged.
 
@@ -5676,17 +5676,18 @@ SHA3-512(node_pk), 64 B) · `node_pk` (2592 B) · `payee_fp` (64 B) · `bond` ·
 2 EXITING / 3 RELEASED) · `registered_height` (≥ 1) · `exit_height`; typed CHECKs on every column,
 WITHOUT ROWID, in the base schema (empty on every chain before activation; no rung, user_version
 unchanged), its shape checked on EVERY open (`witness_ddl_shape_check`, generalized from the v2_names
-check), required by the S14 preflight. One scan (`storage_scan`) feeds both the registry root (leaf
-`NDS.STLEAF.v1`, bytes item 1; every row checked — types, lengths, node_fp == SHA3-512(node_pk), status,
-non-negative integers) and the supply term.
+check), required by the S14 preflight. One scan (`storage_scan`) feeds both the registry root (every
+row checked — types, lengths, node_fp == SHA3-512(node_pk), status, non-negative integers) and the
+supply term. B2a added the `fail_streak` column and the leaf v2 (`NDS.STLEAF.v2`).
 
 **The ops (`nodus_witness_rt_native.c`, the STAKE pattern).** Both are 2-leg envelopes — leg 0 the
 SYSTEM record leg, leg 1 the CORE SYSFUND funding leg (`rtn_sys_stake_shape`; `rtn_sysfund_shape` accepts
 the pairing only when its caller passes `rtn_gen_storage(rt)`) — under the authority rule
 `rtn_sys_stake_auth` (exactly one kind-1 signer whose fp == SHA3-512(node_pk); that signature is the
 node's consent). New SYSTEM adapter ops: 8 `RTN_SYS_OP_STOR` (the row; CREATE|SET, ABSENT|EXISTS_VHASH;
-the 2681-byte record node_pk ‖ payee ‖ bond ‖ status ‖ registered_height ‖ exit_height, key node_fp)
-and 9 `RTN_SYS_OP_STORCNT` (read-only live count, selector 1 = ACTIVE + EXITING).
+the record node_pk ‖ payee ‖ bond ‖ status ‖ registered_height ‖ exit_height — 2685 bytes since B2a
+with fail_streak u32 appended — key node_fp) and 9 `RTN_SYS_OP_STORCNT` (read-only live count,
+selector 1 = ACTIVE + EXITING).
 - `STORAGE_REGISTER` (call node_pk ‖ bond u64 ‖ payee_fp = 2664 B): bond EXACTLY
   `DNAC_STORAGE_STAKE_MIN` (10^14 raw); **payee_fp must equal node_fp** (design §1 "payee_fp (=
   SHA3-512(node_pk) until HF-5 re-keys it)", read fail-closed — the call carries the field, this
@@ -5698,8 +5699,8 @@ and 9 `RTN_SYS_OP_STORCNT` (read-only live count, selector 1 = ACTIVE + EXITING)
   exit_height = the executing height (a repeated exit refuses). Fee-only funding — no value moves;
   the bond's release as one locked UTXO at the next boundary (identity `dna_v2_storage_exit_id`, kind
   0x11, out index 201 — `_Static_assert`ed between 200 and 400 in `rt_native.c` and `v2_econ.c`) and
-  the RELEASED status are **package B2** (TODO-B2 at `rtn_storage_exit_exec`).
-- `STORAGE_REPORT` (op 9): owned and priced, **refused (-1) by its read plan and exec until B2**.
+  the RELEASED status are the storage boundary's (B2a, next section).
+- `STORAGE_REPORT` (op 9): owned and priced; executable since B2a (next section).
 - The scan-v3 describer describes applied register / exit legs with record kind NONE (no wire kind
   yet), so the address index and `dnac_v3_block` stay byte-unchanged and never fail on them.
 
@@ -5722,6 +5723,78 @@ owned by GEN_STORAGE only, refused by older generations' hooks, the literal re-d
 out-of-range stand-in moved from 14 to 15), `test_storage_reg` (hook matrix + engine twin: register,
 refusals, exit, duplicate exit, supply conservation), `test_v2_gas_price` (id 14 is the last id).
 Every engine case FAILS until the STORAGE-ORACLE pins are filled.
+
+### Storage reward v1 rev 4 (the ARCHIVE reward), package B2a — segment roots, frozen storage sets, reports, settlement, exit release (2026-10-05, branch only — not versioned, not voted)
+
+Decisions `docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md` (reward = block archive; R = 3;
+G = 1; amount = block count; 3 failed epochs → skipped; 3 samples; full archives keep all),
+`2026-10-05-archive-reward-bytes-approved.md` (bytes), `2026-10-05-kurultay-7-archive-reward-summary.md`,
+the kept parts of `2026-10-04-storage-reward-approved.md` and `2026-10-04-storage-reward-who-earns.md`.
+Design `docs/plans/2026-10-05-archive-reward-design.md` rev 4 + rev 2.2 §1, §2, §4, §5; bytes
+`docs/plans/2026-10-05-archive-reward-bytes.md` items 1-5, §6 and the 2026-10-04 bytes items 2, 3, 6. Code:
+`nodus_witness_v2_storage.{h,c}` (new), `shared/dnac/ledger_roots_v2.{h,c}`, `nodus_witness_rt_native.c`,
+`nodus_witness_v2_epoch.c` (step 1b'), `nodus_witness_roots_v2.c`. Inert until the param-14 vote (B1's
+generation switch); the probe client, segment files, the fetch protocol and the CLI are package B2b.
+
+**Pure layer (`ledger_roots_v2`).** `NDS.STLEAF.v2` (leaf v1 + `fail_streak` u32 BE, 173-byte preimage),
+`NDS.STOR.v2` (registry ‖ sets ‖ reports ‖ segments — replaces the 3-leg `NDS.STOR.v1`; `NDS.SYS.v5`
+unchanged), `Root(k)` = SHA3-512(`NDS.STSEG.v1` ‖ k ‖ 17280 ‖ hash[(k−1)·17280+1 .. k·17280]) — a plain
+hash, `dna_v2_segment_root`; segment leaf `NDS.STSGLEAF.v1` ‖ k ‖ Root(k), node `NDS.STSGNODE.v1`, empty
+`NDS.E.STSEG.v1` (`DNA_V2_EMPTY_STORAGE_SEGS`, appended); A(k) = SHA3-512(`NDS.STASGN.v1` ‖ Root(k));
+`dna_v2_segment_holders` — the ≤ 3 members with fail_streak < 3 of smallest A(k) XOR node_fp (big-endian,
+memcmp order), ascending distance, duplicates refused; the OFF-CHAIN §6 sample derivation
+`dna_v2_storage_sample_x` / `dna_v2_storage_sample_index` (block index = position mod B, part index mod
+parts_total; B = 0 / parts_total = 0 refused) — one implementation for the probe client and the KAT.
+Constants `DNA_V2_SEGMENT_BLOCKS` 17280, `DNA_V2_STORAGE_HOLDERS` 3, `DNA_V2_STORAGE_FAIL_LIMIT` 3,
+`DNA_V2_STORAGE_SAMPLES` 3; `dnac.h` `DNAC_STORAGE_EXIT_LOCK_EPOCHS` 12, `DNAC_STORAGE_SEGMENT_DELAY_EPOCHS` 2.
+
+**Tables (base schema, typed CHECKs, WITHOUT ROWID, shape checked on every open, preflight-required).**
+`v2_storage_nodes` gains `fail_streak` (0..2^32−1). `v2_storage_sets` (epoch_start PK, set_hash, member_count
+0..256 — one row per frozen set, an empty set included); `v2_storage_set_members` (epoch_start, node_fp PK;
+`fail_streak` as frozen at epoch_start — NOT hashed by S(H), a copy of the registry leaf v2 committed at H,
+the `v2_balance_copy` class); `v2_storage_reports` ((epoch_start, seat) PK, set_hash, bitmap 0..32 bytes);
+`v2_storage_segments` (k PK, root, published_height — not in the leaf; contiguous 1..max). Loaders:
+`nodus_witness_storage_sets_root` (re-derives every S(H) from its members and refuses an orphan member
+row), `_reports_root`, `_segments_root`; `nodus_witness_storage_root_v2` composes the four legs.
+
+**`STORAGE_REPORT` (op 9, `rtn_strep_*`).** Call epoch_start ‖ seat ‖ S(H) ‖ bitmap_len ‖ bitmap (78..110
+bytes). One SYSTEM leg, fee 0, kind 1 with exactly one signer whose fp = SHA3-512(snapshot(H) seat
+pubkey); H a boundary; applying height in (H+E, H+E+⌊E/2⌋]; storage_set(H) exists and its S(H) matches;
+bitmap_len = ⌈count/8⌉, unused high bits zero; first (H, seat) wins. Reads: `RTN_SYS_OP_STSET` (10,
+S(H) ‖ count), `RTN_SYS_OP_SNAPSEAT` (11, the seat pubkey through
+`nodus_witness_v2_epoch_authority_for_epoch`; a non-canonical H / absent snapshot / seat past the count
+is ABSENT, a verdict), `RTN_SYS_OP_STREP` (12, the row; CREATE / ABSENT). The reporter's own bit is
+accepted and ignored at settlement (F2). Described with record kind NONE.
+
+**The storage boundary (step 1b' of `nodus_witness_v2_epoch_boundary_apply`, after the validator
+distribution, before payday).** Gate: param 14 in effect at B (read first) and the SYSTEM runtime
+GEN_STORAGE (else FAULT). Then, in this order: (1) settle the epoch (H, H+E], H = B − 2E — eligibility
+`published_height(k) ≤ H−E ∧ m ∈ holders(k, set(H−E)) ∧ m ∈ set(H)` (continuing and displaced holders
+both earn through the overlap epoch, a new holder earns nothing — G = 1), weight = 17280 × eligible
+segments, W over all members; F1 `P_rep·2 > P_total` else nothing moves; F2; OK iff Σ others' power
+with the bit ·3 > P_rep(m)·2; budget = pool 1 >> 16; each OK member `floor(budget·w/W)` (128-bit) through
+`nodus_witness_v2_accrue` (the exported `v2ec_accrue`) to its payee_fp; pool 1 debited exactly Σ credited,
+bound to the observed balance; fail_streak 0 on OK / +1 on NOT OK for members with weight, unchanged
+otherwise; (2) prune reports ≤ H and sets < H; (3) release every EXITING row — one locked UTXO through
+`nodus_witness_v2_epoch_release_utxo` (the exported graduation writer): tx_hash = exit_id(chain, B,
+node_fp), index 201, owner payee_fp, unlock B + 12·E, status RELEASED; (4) publish every k with
+k·17280 + 2E ≤ B from the last published + 1 (`nodus_witness_storage_publish_due` — the activation
+backfill and the schedule in one rule; Root(k) from `v2_blocks.block_id`, a missing / malformed row is a
+FAULT); (5) freeze storage_set(B) = the ACTIVE rows with their fail_streak. Engine phase 6e declares CORE
+touched also when the storage settlement credited or a release UTXO was written
+(`nodus_v2_epoch_result_t.storage_accrued` / `n_storage_releases`).
+
+**Readings recorded in code (not stated by the design).** A failed F1 floor leaves fail_streak unchanged;
+a (re-)registration writes fail_streak 0 (the only way back for a skipped member — exit + 12-epoch lock);
+every EXITING row is released at the next boundary, an exit in the boundary block itself included.
+
+**Tests (written, not run by the builder).** `test_storage_b2` — the archive KAT byte for byte (json-c),
+publication / backfill / faults over synthetic `v2_blocks`, the STORAGE_REPORT hook matrix, twin engine
+chains through freeze / report / W = 0 / one OK / all OK / remainder / fail_streak 3 and skip / handoff /
+exit release / conservation; `test_roots_v2` (leaf v2 binding, 4-leg storage_root, the STSEG empty root;
+the 2026-10-04 KAT's registry_leaf / registry_root / storage_root sections named SUPERSEDED);
+`test_storage_reg` (record 2685, its roots check through the runtime hook); `test_hf4_switch` (the empty
+4-leg storage leg). Engine cases FAIL until the STORAGE-ORACLE pins are filled.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
@@ -6913,7 +6986,10 @@ SQLite tables managed by the witness module (`nodus_witness_db.c`):
 | `v2_treasury` | final pre-testnet wipe W-A: the nine keyless, locked treasury pools (pool_id 1..9 → balance), seeded from the genesis document; a leg of `system_state_root` and `system_payload_root`; a term of the supply equation; no exit rule (parked) |
 | `v2_balance_copy` | tokenomics-v3 P2/P3: the stake frozen at each boundary (three copies kept since P3: H−2E, H−E, H); read by the selection (okuma B) and the reward split; out of every root. PK `(epoch_start, validator_fp, owner_fp, kind)` — `kind` 0 the bond, 1 a delegation (W-B: a self-delegation shares its owner with the bond) |
 | `v2_names` | HF-4: the on-chain names (`name` BLOB PK 3..36, `owner` BLOB UNIQUE 64, `registered_height` INTEGER ≥ 1, `WITHOUT ROWID`); in the BASE schema, its DDL checked byte-for-byte on every open; written only by CORE op 8 NAME_REGISTER (generation 2); the 5th leg of `core_state_root` (`name_root`, empty = `NDS.E.NAMES.v1`) |
-| `v2_storage_nodes` | storage reward v1 (package B1, branch only): the storage-node registry (`node_fp` BLOB PK 64 = SHA3-512(node_pk), `node_pk` BLOB 2592, `payee_fp` BLOB 64, `bond`, `status` 1 ACTIVE / 2 EXITING / 3 RELEASED, `registered_height` ≥ 1, `exit_height`; typed CHECKs, `WITHOUT ROWID`); in the BASE schema, its DDL checked on every open; written only by the GEN_STORAGE SYSTEM ops STORAGE_REGISTER / STORAGE_EXIT (and, from B2, the boundary release); its registry root is part of `storage_root`, the 9th leg of `system_state_root` under `NDS.SYS.v5`; Σ bond over ACTIVE + EXITING is a term of the supply equation |
+| `v2_storage_nodes` | storage reward v1 (package B1, branch only): the storage-node registry (`node_fp` BLOB PK 64 = SHA3-512(node_pk), `node_pk` BLOB 2592, `payee_fp` BLOB 64, `bond`, `status` 1 ACTIVE / 2 EXITING / 3 RELEASED, `registered_height` ≥ 1, `exit_height`, `fail_streak` 0..2^32−1 (B2a); typed CHECKs, `WITHOUT ROWID`); in the BASE schema, its DDL checked on every open; written only by the GEN_STORAGE SYSTEM ops STORAGE_REGISTER / STORAGE_EXIT and the storage epoch boundary (B2a: exit release, fail_streak); its registry root (leaf `NDS.STLEAF.v2`) is part of `storage_root`, the 9th leg of `system_state_root` under `NDS.SYS.v5`; Σ bond over ACTIVE + EXITING is a term of the supply equation |
+| `v2_storage_sets` / `v2_storage_set_members` | archive reward (package B2a, branch only): the frozen storage sets S(H) — header (`epoch_start` PK, `set_hash`, `member_count` 0..256) and members (`epoch_start`, `node_fp`; `fail_streak` as frozen at H, not hashed by S(H)); written by the storage boundary (freeze at every storage boundary, prune below B−2E); `sets_root` leg of `storage_root` |
+| `v2_storage_reports` | archive reward (B2a): committed STORAGE_REPORTs (`epoch_start`, `seat` PK; `set_hash`; `bitmap` 0..32 B); written by the STORAGE_REPORT exec, pruned by the storage boundary after settlement; `reports_root` leg |
+| `v2_storage_segments` | archive reward (B2a): the published segment list (`k` PK, `root` = Root(k) from `v2_blocks.block_id`, `published_height`); written by the storage boundary, never pruned; `segments_root` leg |
 | `committed_transactions` | Full serialized TX data (hub/spoke queries) |
 | `addr_history` | Node-local address history index (decision 2026-10-01): one row per owner effect (h, i, seq, raw owner, kind, amount, token, fee, peer, wire, ts), written in the block transaction only while `addr_history_index` is on; out of every root; read by `dnac_addr_history`. Created rung-free by `nodus_witness_addr_index_migrate` |
 | `addr_history_mark` | Its one marker row: `from_height` (first height of the current gap-free indexed run) and `last_height` |

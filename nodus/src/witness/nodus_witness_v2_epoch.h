@@ -45,6 +45,14 @@
  *      against the snapshot entry (P2 revision 2, design §7.1),
  *      credited to `v2_reward_accrual`, reward_pool debited by exactly
  *      what was credited. Contract: nodus_witness_v2_econ.h.
+ *   1b'. THE STORAGE BOUNDARY (archive reward — storage reward v1 rev 4,
+ *      package B2a) — nodus_witness_storage_boundary_apply(w, H): inert
+ *      unless chain_config param 14 is in effect at H (and the registry
+ *      then resolves GEN_STORAGE — else FAULT); settles the storage
+ *      epoch (H−2E, H−E] from treasury pool 1, updates fail_streak,
+ *      prunes, releases EXITING storage bonds as locked UTXOs, publishes
+ *      due archive segments, freezes storage_set(H). Contract:
+ *      nodus_witness_v2_storage.h.
  *   1c. PAYDAY (P2-7) — nodus_witness_v2_payday_apply(w, H, interval):
  *      at (H / E) % payout_interval_epochs == 0 every accrual row
  *      becomes one CORE UTXO and is deleted; a no-op otherwise. Runs
