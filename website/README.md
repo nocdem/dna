@@ -177,14 +177,18 @@ files outside that allowlist. This server is for local previews.
   as not live), and the circulating-supply definition; current figures are
   linked on Scan. Linked from the top
   navigation and every footer.
-- `airdrop.html`: the NODUS airdrop for CPUNK holders, in plain language —
-  what it is (paid daily over one year, start to be announced), which CPUNK
+- `airdrop.html`: the general Airdrop page, with a 50,000,000 NODUS budget
+  (5% of total supply): 10,000,000 (1%) for the first CPUNK Community Airdrop
+  and 40,000,000 (4%) for future airdrops. The page and menu remain "Airdrop".
+  CPUNK-specific sections explain what the first campaign is (paid daily over
+  365 days, start to be announced), which CPUNK
   counts (only the CPUNK address of the holder's own Nodus Connect wallet),
   how a share is worked out (whole units of 1,000,000 CPUNK, the day's lowest
   balance), the six steps from creating a Nodus Connect account to claiming
   every day, how registrations and payouts are checked, and a safety note.
-  Links to `tokenomics.html#allocation` and to Nodus Connect. It states no
-  amounts other than the 1,000,000 CPUNK unit, no percentages and no dates.
+  Links to `tokenomics.html#allocation` and to Nodus Connect. The operator
+  explicitly authorized these public budget amounts and percentages on
+  5 October 2026. Future campaign dates and eligibility are not specified.
   Linked from the Network menu (after Tokenomics) and every footer.
 - `terms.html`, `privacy.html`: the app's Terms of Service and Privacy Policy,
   linked from every footer, not from the top navigation.
@@ -487,8 +491,10 @@ no CSP refusal; `npm run check` passed.
 2026-10-03: Added `airdrop.html` at the operator's request, in English and
 Turkish (`air.*` strings and `nav.airdrop` in `app.js`), modelled on
 `tokenomics.html`. Every statement on it comes from the facts the operator
-supplied for the page; it adds no amounts beyond the 1,000,000 CPUNK unit, no
-percentages, no dates and no price or value statements. An "Airdrop" link was
+supplied for the page; at that time it added no amounts beyond the 1,000,000
+CPUNK unit, no percentages, no dates and no price or value statements. The
+amount/percentage restriction was superseded for the budget figures on
+5 October 2026, as described above. An "Airdrop" link was
 added to the Network menu (after Tokenomics) and to the footer of every page,
 and the page was added to `sitemap.xml`. The main site now has 16 marketing
 pages. Not done in this change: the page is NOT yet registered in
@@ -585,3 +591,12 @@ no address is published.
   `tokenomics.html`.
 `npm run check` and `npm run build:portals` were run; browser validation has
 not been run for this change.
+
+
+2026-10-05: Clarified the general Airdrop program and the first CPUNK Community
+Airdrop in English and Turkish. Published the operator-approved 5% total / 1%
+CPUNK / 4% future-campaign budget, all measured against total NODUS supply.
+Tokenomics retains eleven allocations totalling 1 billion NODUS / 100%; the
+Roadmap entry stays in progress and retains its start-to-be-announced wording.
+Also corrected Tokenomics' Current figures link and instructions to use Scan
+Statistics and its five-row Details list after the requested Scan page split.
