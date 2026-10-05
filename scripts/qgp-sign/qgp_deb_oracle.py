@@ -981,7 +981,7 @@ def build_kat():
 
     kat["readings"] = READINGS
     kat["counts"] = {
-        "package_accept": 1 + len(pkg_accept),
+        "package_accept": 2 + len(pkg_accept),
         "package_reject": len(pr),
         "trust_chain": len(chain),
         "trust_accept": len(trust_accept),

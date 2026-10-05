@@ -1175,7 +1175,7 @@
   }
  ],
  "counts": {
-  "package_accept": 3,
+  "package_accept": 4,
   "package_reject": 26,
   "trust_chain": 3,
   "trust_accept": 3,
