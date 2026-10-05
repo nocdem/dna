@@ -624,3 +624,38 @@ their horizontal scroll area on narrow screens.
 section, its sidebar link and repeated budget summary from `airdrop.html`.
 The first content section is now the CPUNK campaign overview. Tokenomics
 retains the budget figures and links directly to `airdrop.html#overview`.
+
+2026-10-05, hard forks section: `roadmap.html` gains a "Hard forks: live and
+planned" section (`#hardforks`, `forks.*` keys; Turkish in `app.js`), at the
+operator's request ("bu paketleri internete siteye koymak lazım, planlananları
+da"; placement chosen: the roadmap). LIVE rows HF-1..HF-4 are copied from the
+"Live hard forks" table in `nodus/docs/DEPLOY_RUNBOOK.md` §2.2 (vote and
+effective blocks 0/0, 724/1,500, 2,206/2,926, 2,431/3,151). PLANNED: HF-5 =
+Nodus EVM and HF-6 = the role-stake package (operator numbering decision
+`docs/plans/decisions/2026-10-05-hf-numbering-evm-hf5.md`; the earlier "HF-5"
+name of the role-stake decisions in `2026-10-03-role-stake-amounts.md` is now
+HF-6), and the storage role reward, which takes the next number when ready.
+The Nodus EVM text rests on the `qevm` branch's Prague state-test run
+(17,265 pass, 0 fail, 9 documented EIP-7823 modexp deviations; blob and
+set-code transactions excluded by design) — built, not released, not voted.
+
+2026-10-05, correction (operator: "hard forks diye bir bölüm vardı"): the
+roadmap "Hard forks" section above duplicated the Scan Hard forks page and the
+Wiki's "Hard forks on the testnet" / "Planned, not live" sections, and was
+removed. Instead: Scan `hardforks.html` gains a static "Planned hard forks"
+list under the live table (`build-portals.mjs`, `planned`), the Wiki's
+"Planned, not live" names HF-5 (Nodus EVM, new item) and HF-6 (the four
+role-stake items) and says the storage reward takes the next number, and the
+roadmap keeps one planned item `history.evm.*` ("NEXT · HF-5") with the roles
+item dated "LATER · HF-6". Numbering per
+`docs/plans/decisions/2026-10-05-hf-numbering-evm-hf5.md`.
+
+2026-10-05, one roadmap item per hard fork (operator: "git geçmişinden HF'leri
+bul. her birini yaz o zaman roadmap'e. bundan sonra da ekleyelim"): the single
+"Four hard forks active on the testnet" item (`history.forks.*`) is replaced by
+`history.hf1..hf4.*`, each dated by the commit time of its effective block
+(Scan `/api/block/<h>`: block 1 2026-09-30 10:00 UTC, 724 2026-09-30 23:00,
+1,500 2026-10-01 12:47, 2,206 2026-10-02 01:31, 2,926 2026-10-02 15:54,
+2,431 2026-10-02 05:34, 3,151 2026-10-02 19:56) and naming the vote and
+effective blocks from `nodus/docs/DEPLOY_RUNBOOK.md` §2.2. The runbook now
+requires a roadmap item with every future fork.
