@@ -58,7 +58,7 @@
 import {
   MAX_MEMBERS, controlType, acceptRule, nextMembers, rotationDue, keyIsOld, dayOf, syncDays,
   bucketVersions, messageKey, orderIncoming, textProblem, nameProblem, bucketItems, pendingBuckets,
-  splitPieces, checkGroup, checkKey, checkPiece, newGroup, storedGroup
+  splitPieces, checkGroup, checkKey, checkPiece, newGroup, storedGroup, GroupError
 } from './model.js';
 
 const HEX128 = /^[0-9a-f]{128}$/;
@@ -525,10 +525,10 @@ export function createGroupsEngine(deps) {
   // (design §7). Nothing is published before the stage is kept on the device.
   async function create(name, invitees = []) {
     const problem = nameProblem(name);
-    if (problem) throw new Error(problem);
+    if (problem) throw new GroupError(problem);
     const people = [...new Set(invitees)];
-    if (people.some(fp => fp === ownFp || !isContact(fp))) throw new Error('Only your contacts can be invited.');
-    if (people.length > MAX_MEMBERS - 1) throw new Error(`A group can have at most ${MAX_MEMBERS} members.`);
+    if (people.some(fp => fp === ownFp || !isContact(fp))) throw new GroupError('Only your contacts can be invited.');
+    if (people.length > MAX_MEMBERS - 1) throw new GroupError(`A group can have at most ${MAX_MEMBERS} members.`);
     const r = core.groupRandom();
     const g = newGroup({ gid: r.group_id, owner: ownFp, name: name.trim(), role: 'owner', status: 'active' });
     g.addr = r.addr_secret;
@@ -543,12 +543,12 @@ export function createGroupsEngine(deps) {
   }
   async function invite(gid, fp) {
     const g = groups.get(gid);
-    if (!g || g.role !== 'owner' || g.status !== 'active') throw new Error('Only the group\'s owner can invite.');
-    if (!isContact(fp) || fp === ownFp) throw new Error('Only your contacts can be invited.');
+    if (!g || g.role !== 'owner' || g.status !== 'active') throw new GroupError('Only the group\'s owner can invite.');
+    if (!isContact(fp) || fp === ownFp) throw new GroupError('Only your contacts can be invited.');
     const members = current(g);
-    if (members.includes(fp) || g.joins.some(j => j.fp === fp)) throw new Error('This person is already in the group.');
+    if (members.includes(fp) || g.joins.some(j => j.fp === fp)) throw new GroupError('This person is already in the group.');
     const others = g.invites.filter(i => i.fp !== fp).length;
-    if (members.length + g.joins.length + others >= MAX_MEMBERS) throw new Error(`A group can have at most ${MAX_MEMBERS} members.`);
+    if (members.length + g.joins.length + others >= MAX_MEMBERS) throw new GroupError(`A group can have at most ${MAX_MEMBERS} members.`);
     const r = await core.groupInvite(gid, g.name);
     const next = clone(g);
     next.invites = [...next.invites.filter(i => i.fp !== fp), { fp, id: r.invite_id, at: seconds() }];
@@ -558,8 +558,8 @@ export function createGroupsEngine(deps) {
   }
   async function acceptInvite(gid) {
     const g = groups.get(gid);
-    if (!g || g.role !== 'member' || g.status !== 'invited' || !g.invite) throw new Error('This invitation is no longer open.');
-    if (!isContact(g.owner)) throw new Error('Messaging with the person who invited you is not ready yet.');
+    if (!g || g.role !== 'member' || g.status !== 'invited' || !g.invite) throw new GroupError('This invitation is no longer open.');
+    if (!isContact(g.owner)) throw new GroupError('Messaging with the person who invited you is not ready yet.');
     const json = core.groupAcceptJson(gid, g.invite.id);
     const next = clone(g);
     next.status = 'accepting';
@@ -577,7 +577,7 @@ export function createGroupsEngine(deps) {
   // shows it).
   async function leave(gid) {
     const g = groups.get(gid);
-    if (!g || g.role !== 'member' || !['accepting', 'joining', 'active'].includes(g.status)) throw new Error('You cannot leave this group.');
+    if (!g || g.role !== 'member' || !['accepting', 'joining', 'active'].includes(g.status)) throw new GroupError('You cannot leave this group.');
     const json = core.groupLeaveJson(gid);
     const next = clone(g);
     next.status = 'left';
@@ -588,8 +588,8 @@ export function createGroupsEngine(deps) {
   // rotation, HEAD last; until then the member is still listed.
   async function removeMember(gid, fp) {
     const g = groups.get(gid);
-    if (!g || g.role !== 'owner') throw new Error('Only the group\'s owner can remove members.');
-    if (fp === ownFp) throw new Error('The owner cannot be removed.');
+    if (!g || g.role !== 'owner') throw new GroupError('Only the group\'s owner can remove members.');
+    if (fp === ownFp) throw new GroupError('The owner cannot be removed.');
     const next = clone(g);
     next.invites = next.invites.filter(i => i.fp !== fp);
     next.joins = next.joins.filter(j => j.fp !== fp);
@@ -600,15 +600,16 @@ export function createGroupsEngine(deps) {
   // Send: one at a time (the composer's text is taken once — the 0.1.55
   // double-send rule of 1:1); kept on this device first, then published.
   // Returns 'busy' (another send is being kept), 'sent' or 'kept' (kept,
-  // published by a later check).
-  async function send(gid, text) {
+  // published by a later check). `onKept()`: called once the message is
+  // kept on this device (the composer is emptied then, as in 1:1).
+  async function send(gid, text, { onKept } = {}) {
     if (sending) return 'busy';
     const g = groups.get(gid);
-    if (!g || g.status !== 'active' || !g.hw) throw new Error('This group is not ready for messages yet.');
+    if (!g || g.status !== 'active' || !g.hw) throw new GroupError('This group is not ready for messages yet.');
     const problem = textProblem(text);
-    if (problem) throw new Error(problem);
+    if (problem) throw new GroupError(problem);
     const K = keyOf(g, g.hw.v), ts = now(), day = dayOf(ts);
-    if (bucketItems(messages, gid, g.hw.v, day).length >= BUCKET_ITEMS_MAX) throw new Error(`You can send at most ${BUCKET_ITEMS_MAX} messages a day to one group.`);
+    if (bucketItems(messages, gid, g.hw.v, day).length >= BUCKET_ITEMS_MAX) throw new GroupError(`You can send at most ${BUCKET_ITEMS_MAX} messages a day to one group.`);
     sending = true;
     try {
       const r = await core.groupMsgNew({ key: K.key, gid, v: String(g.hw.v), ts: String(ts), text });
@@ -618,6 +619,7 @@ export function createGroupsEngine(deps) {
       seen.add(messageKey(gid, ownFp, m.mid));
       markRead(gid);
     } finally { sending = false; }
+    try { onKept?.(); } catch { /* the view only */ }
     try { await publishPending(gid); } catch { return 'kept'; }
     return messages.some(m => m.group === gid && m.dir === 'out' && m.published !== true && m.failed !== true) ? 'kept' : 'sent';
   }

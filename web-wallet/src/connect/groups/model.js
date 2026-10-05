@@ -21,6 +21,10 @@ export const TEXT_MAX_BYTES = 4000;                // bytes item 5 / R2-8
 export const NAME_MAX_BYTES = 64;                  // bytes item 3
 export const BLOB_PIECE = 60000;                   // hex characters per staged packet piece (< the 64 KiB record)
 
+// A refusal of the groups module in plain words, meant for the user (the
+// screens show its message; any other error gets the screen's own words).
+export class GroupError extends Error {}
+
 const HEX128 = /^[0-9a-f]{128}$/, HEX64 = /^[0-9a-f]{64}$/, HEX32 = /^[0-9a-f]{32}$/;
 const U64 = /^(0|[1-9]\d{0,19})$/;
 const isMap = value => value && typeof value === 'object' && !Array.isArray(value);
