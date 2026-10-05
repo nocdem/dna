@@ -340,8 +340,9 @@ exports_common=(
   # queue by src/connect/core.js. The ones that wait on the network (every
   # one below except nc_error, nc_result, nc_words_alloc, nc_salt_pick,
   # nc_day_today, nc_lock, nc_profile_load, the three nc_hist_* and the
-  # nc_group_* below, and except nc_unlock, which only derives keys) are
-  # called with ccall
+  # codec nc_group_* below — but INCLUDING the four G3 network ones named
+  # there — and except nc_unlock, which only derives keys) are called with
+  # ccall
   # { async: true }; nc_unlock is too (harmless for a call that does not
   # suspend).
   nc_error nc_result nc_words_alloc nc_unlock
@@ -351,8 +352,8 @@ exports_common=(
   nc_contacts_get nc_contacts_add
   nc_day_today nc_outbox_send nc_outbox_get nc_ack_send nc_ack_get
   nc_hist_key nc_hist_encrypt nc_hist_decrypt
-  # groups codec (G2, connect/nc_wasm.c "groups codec"): every one is
-  # synchronous and pure — no network, never reaches emscripten_sleep. The
+  # groups codec (G2, connect/nc_wasm.c "groups codec"): every one of THESE
+  # is synchronous and pure — no network, never reaches emscripten_sleep. The
   # ones without session keys (nc_group_addr_str, nc_group_salt,
   # nc_group_record_read, nc_group_accept, nc_group_json_read) run outside
   # the op bracket like nc_salt_pick; the others enter it like nc_hist_*.
@@ -362,6 +363,13 @@ exports_common=(
   nc_group_head_new nc_group_head_read
   nc_group_msg_new nc_group_bucket_read
   nc_group_invite nc_group_accept nc_group_welcome nc_group_json_read
+  # groups G3 (connect/nc_wasm.c "groups (package G3)"). Synchronous, no
+  # session, outside the op bracket: nc_group_in_alloc (the heap input
+  # buffer), nc_group_random, nc_group_leave. WAIT ON THE NETWORK (inside
+  # the bracket, ccall { async: true }): nc_group_get, nc_group_put,
+  # nc_group_bucket_send, nc_group_bucket_fetch.
+  nc_group_in_alloc nc_group_random nc_group_leave
+  nc_group_get nc_group_put nc_group_bucket_send nc_group_bucket_fetch
   nc_lock
 )
 exports_test=(nsw_test_random_buf nsw_test_random_load nsw_test_pins_tuple nsw_test_gen_match

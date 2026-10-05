@@ -28,16 +28,20 @@
  *   - the groups codec exports (nc_group_*, package G2) are synchronous and
  *     pure (no network). Those that hold no session material
  *     (nc_group_addr_str, nc_group_salt, nc_group_record_read,
- *     nc_group_accept, nc_group_json_read) run outside the bracket, like
+ *     nc_group_accept, nc_group_json_read, and G3's nc_group_random,
+ *     nc_group_leave, nc_group_in_alloc) run outside the bracket, like
  *     nc_salt_pick; every one that uses the session's keys or the verified
- *     peer cache runs inside it, like nc_hist_*;
+ *     peer cache runs inside it, like nc_hist_*. G3's nc_group_get,
+ *     nc_group_put, nc_group_bucket_send and nc_group_bucket_fetch reach
+ *     the network (inside the bracket, session_ok);
  *   - each async export does ONE bounded network step (one GET, one GET_ALL
  *     or one PUT, each bounded by the client's request timeout) so the JS
  *     queue can put a wallet operation between two sync steps (design §6.4
- *     F7). The exceptions are the three gated writes — nc_profile_update,
- *     nc_salt_reconcile, nc_contacts_add: a read then at most one write
- *     (at most two request timeouts) — the PUT must not be split from the
- *     read it is based on (§6.4 F4). No export loops over contacts or days.
+ *     F7). The exceptions are the gated writes — nc_profile_update,
+ *     nc_salt_reconcile, nc_contacts_add, nc_group_put,
+ *     nc_group_bucket_send: a read then at most one write (at most two
+ *     request timeouts) — the PUT must not be split from the read it is
+ *     based on (§6.4 F4). No export loops over contacts, groups or days.
  *   - results are one JSON object (json-c), read with nc_result(); u64
  *     values cross as decimal strings, bytes as lowercase hex.
  *
@@ -960,13 +964,50 @@ _Static_assert(NC_FP_HEX_LEN == 2 * NC_GROUP_FP_LEN, "fingerprint hex");
                           2 + NC_GROUP_SIG_LEN)
 #define NC_GROUP_REC_MAX (NC_GROUP_REC_HEADER_LEN + NC_GROUP_RECORD_PT_MAX + NC_GROUP_GCM_TAG_LEN)
 /* A bucket may hold up to 1 MiB (NC_GROUP_BUCKET_MAX) = 2 MiB of hex, more
- * than the whole C stack ccall copies it onto. Read here: up to 256 KiB
- * (512 KiB of hex, leaving half the stack for the frames below — the deepest
- * is the ML-DSA-87 verify; its peak is not measured, the signing peak is
- * ~121 KB per scripts/build-mldsa87-sign-wasm.sh). A larger bucket is an
- * error, never a partial read. Full-size buckets need a heap input buffer
- * export (the nsw_req_env_alloc form) — not part of this package. */
+ * than the whole C stack ccall copies it onto. As a hex ARGUMENT a bucket is
+ * read up to 256 KiB (512 KiB of hex, leaving half the stack for the frames
+ * below — the deepest is the ML-DSA-87 verify; its peak is not measured, the
+ * signing peak is ~121 KB per scripts/build-mldsa87-sign-wasm.sh). A larger
+ * one is passed through the heap input buffer (nc_group_in_alloc, G3) and
+ * read up to the full 1 MiB; never a partial read. */
 #define NC_GROUP_BKT_IN_MAX (256u * 1024u)
+
+/* ── large inputs (G3): one heap buffer, the nsw_req_env_alloc form ──────
+ * The page asks for `len` bytes (nc_group_in_alloc), fills them through
+ * HEAPU8 and calls the export that consumes them IN THE SAME queue slot
+ * (src/connect/core.js): that export takes the buffer (in_take) before
+ * anything else, so it is wiped and freed on every path, and a buffer is
+ * never read twice. Up to NC_GROUP_BUCKET_MAX (1 MiB): a whole day bucket,
+ * a key packet (107,795 B at 64 members) or the own items of one bucket. */
+static uint8_t *g_in;
+static size_t   g_in_len;
+
+static void in_drop(void) {
+    if (g_in) { nc_wipe(g_in, g_in_len); free(g_in); }
+    g_in = NULL;
+    g_in_len = 0;
+}
+
+uint8_t *nc_group_in_alloc(int len) {
+    in_drop();
+    if (len <= 0 || (size_t)len > NC_GROUP_BUCKET_MAX || g_closed) return NULL;
+    g_in = malloc((size_t)len);
+    if (g_in) g_in_len = (size_t)len;
+    return g_in;
+}
+
+/* The buffer, now owned by the caller (wipe + free), or NULL. */
+static uint8_t *in_take(size_t *len) {
+    uint8_t *b = g_in;
+    *len = b ? g_in_len : 0;
+    g_in = NULL;
+    g_in_len = 0;
+    return b;
+}
+
+static void in_free(uint8_t *b, size_t len) {
+    if (b) { nc_wipe(b, len); free(b); }
+}
 
 static int parse_u32_dec(const char *s, uint32_t *out) {
     uint64_t v;
@@ -1163,19 +1204,27 @@ int nc_group_kp_new(const char *group_id_hex, const char *v_dec, const char *pre
  * trial unwrap with the session's ML-KEM-1024 key). owner_fp: the pinned
  * owner (own or verified peer cache). prev_digest_hex: the stored digest of
  * packet v-1, "" when not held (v > 1 then answers "prev_unavailable").
- * Result { status: ok | bad_structure | bad_sig | mismatch | prev_conflict
- * | prev_unavailable | no_entry } and, once the signature verified, v,
- * count, digest, prev_digest, record_digest, issued_at_ms; group_key only
- * on ok. */
+ * pinned_digest_hex (G3): "" or the welcome's kp_digest of v — the packet a
+ * new member is welcomed into, opened with nc_group_kp_open_pinned (its
+ * digest must equal it, prev_digest is not checked; prev_digest_hex must
+ * then be ""). Result { status: ok | bad_structure | bad_sig | mismatch |
+ * prev_conflict | prev_unavailable | no_entry } and, once the signature
+ * verified, v, count, digest, prev_digest, record_digest, issued_at_ms;
+ * group_key only on ok. */
 int nc_group_kp_read(const char *packet_hex, const char *owner_fp, const char *group_id_hex,
-                     const char *v_dec, const char *prev_digest_hex) {
+                     const char *v_dec, const char *prev_digest_hex,
+                     const char *pinned_digest_hex) {
     if (nc_begin() != 0) return -1;
     if (!g_unlocked) return nc_end(fail("Messages is not connected."));
     uint8_t gid[NC_GROUP_ID_LEN], ofp[NC_GROUP_FP_LEN], prev[NC_GROUP_DIGEST_LEN];
+    uint8_t pin[NC_GROUP_DIGEST_LEN];
     uint32_t v;
     bool has_prev = prev_digest_hex && prev_digest_hex[0];
+    bool has_pin = pinned_digest_hex && pinned_digest_hex[0];
     if (parse_hex_fixed(group_id_hex, gid, sizeof(gid)) != 0 || parse_u32_dec(v_dec, &v) != 0 ||
-        (has_prev && parse_hex_fixed(prev_digest_hex, prev, sizeof(prev)) != 0))
+        (has_prev && has_pin) ||
+        (has_prev && parse_hex_fixed(prev_digest_hex, prev, sizeof(prev)) != 0) ||
+        (has_pin && parse_hex_fixed(pinned_digest_hex, pin, sizeof(pin)) != 0))
         return nc_end(fail("Invalid key packet input."));
     const uint8_t *opk = NULL;
     if (group_keys_of(owner_fp, ofp, &opk, NULL) != 0) return nc_end(-1);
@@ -1185,10 +1234,11 @@ int nc_group_kp_read(const char *packet_hex, const char *owner_fp, const char *g
         return nc_end(fail("Invalid key packet (not hex, or over %u bytes).",
                            (unsigned)NC_GROUP_KP_MAX));
     nc_group_kp_open_t r;
-    nc_group_kp_status_t st = nc_group_kp_open(pkt, pl, opk, gid, ofp, v,
-                                               has_prev ? prev : NULL,
-                                               g_keys.id.node_id.bytes,
-                                               nc_group_decap_mlkem, g_keys.mlkem_sk, &r);
+    nc_group_kp_status_t st = has_pin
+        ? nc_group_kp_open_pinned(pkt, pl, opk, gid, ofp, v, pin, g_keys.id.node_id.bytes,
+                                  nc_group_decap_mlkem, g_keys.mlkem_sk, &r)
+        : nc_group_kp_open(pkt, pl, opk, gid, ofp, v, has_prev ? prev : NULL,
+                           g_keys.id.node_id.bytes, nc_group_decap_mlkem, g_keys.mlkem_sk, &r);
     free(pkt);                                 /* public bytes */
     static const char *const ST[] = { "ok", "bad_structure", "bad_sig", "mismatch",
                                       "prev_conflict", "prev_unavailable", "no_entry" };
@@ -1405,62 +1455,47 @@ int nc_group_msg_new(const char *group_key_hex, const char *group_id_hex, const 
     return nc_end(set_result(o));
 }
 
-/* Decode a day bucket read at OUTBOX(salt_v, day) and open every item with
- * the sender's key (own or verified peer cache) and group_key_v.
- * Result { status: ok | bad_structure | sender_unknown, sender (128 hex,
- * when items exist), messages: [{ message_id, timestamp_ms, status: ok |
- * bad_sig | bad_auth | refused, text_hex (ok only) }] }. "sender_unknown":
- * load that profile (nc_profile_get), then read again. NOT checked here, the
- * page's (nc_group.h nc_group_bucket_decode): the DHT value's owner ==
- * sender, and the membership rule (nc_group_msg_accept, decision 6). */
-int nc_group_bucket_read(const char *bucket_hex, const char *group_id_hex, const char *v_dec,
-                         const char *day_dec, const char *group_key_hex) {
-    if (nc_begin() != 0) return -1;
-    if (!g_unlocked) return nc_end(fail("Messages is not connected."));
-    uint8_t gid[NC_GROUP_ID_LEN], gk[NC_GROUP_KEY_LEN];
-    uint32_t v, day;
-    if (parse_hex_fixed(group_id_hex, gid, sizeof(gid)) != 0 || parse_u32_dec(v_dec, &v) != 0 ||
-        parse_u32_dec(day_dec, &day) != 0)
-        return nc_end(fail("Invalid group bucket input."));
-    uint8_t *b;
-    size_t bl;
-    if (parse_hex_var(bucket_hex, NC_GROUP_BKT_IN_MAX, &b, &bl) != 0)
-        return nc_end(fail("Invalid group bucket (not hex, or over %u bytes).",
-                           (unsigned)NC_GROUP_BKT_IN_MAX));
-    if (parse_hex_fixed(group_key_hex, gk, sizeof(gk)) != 0) {
-        free(b);
-        return nc_end(fail("Invalid group key."));
+static void fp_hex(const uint8_t fp[NC_GROUP_FP_LEN], char out[NC_FP_HEX_LEN + 1]) {
+    static const char d[] = "0123456789abcdef";
+    for (size_t i = 0; i < NC_GROUP_FP_LEN; i++) {
+        out[2 * i] = d[fp[i] >> 4];
+        out[2 * i + 1] = d[fp[i] & 15];
     }
+    out[NC_FP_HEX_LEN] = '\0';
+}
+
+/* One day bucket into `o`: decode (nc_group_bucket_decode: group / v / day
+ * equal the address inputs, one sender, unique message_ids, caps) and open
+ * every item with the sender's key (own or verified peer cache) and
+ * group_key_v. Adds "status": ok | bad_structure | wrong_owner |
+ * sender_unknown, "sender" (when items exist) and "messages". `owner`: the
+ * DHT value's owner — when given, the items' sender must be it (design §6:
+ * the value's owner == sender_fp), else "wrong_owner" and nothing is
+ * opened; NULL leaves that check to the caller. 0, or -1 on a fault. */
+static int bucket_entry(json_object *o, const uint8_t *b, size_t bl,
+                        const uint8_t gid[NC_GROUP_ID_LEN], uint32_t v, uint32_t day,
+                        const uint8_t gk[NC_GROUP_KEY_LEN], const uint8_t *owner) {
     nc_group_msg_t *items = NULL;
     size_t n = 0;
     int rc = nc_group_bucket_decode(b, bl, gid, v, day, &items, &n);
-    if (rc == NC_GROUP_FAULT) {
-        nc_wipe(gk, sizeof(gk));
-        free(b);
-        return nc_end(fail("Group bucket could not be read (fault)."));
-    }
-    json_object *o = json_object_new_object();
+    if (rc == NC_GROUP_FAULT) return -1;
     json_object *a = json_object_new_array();
     const char *status = rc == NC_GROUP_OK ? "ok" : "bad_structure";
     if (rc == NC_GROUP_OK && n > 0) {
         char sender[NC_FP_HEX_LEN + 1];
-        static const char d[] = "0123456789abcdef";
-        for (size_t i = 0; i < NC_GROUP_FP_LEN; i++) {
-            sender[2 * i] = d[items[0].sender_fp[i] >> 4];
-            sender[2 * i + 1] = d[items[0].sender_fp[i] & 15];
-        }
-        sender[NC_FP_HEX_LEN] = '\0';
+        fp_hex(items[0].sender_fp, sender);
         json_object_object_add(o, "sender", json_object_new_string(sender));
         const uint8_t *spk = NULL;
-        if (own_fp_is(sender)) {
+        if (owner && memcmp(owner, items[0].sender_fp, NC_GROUP_FP_LEN) != 0) {
+            status = "wrong_owner";
+        } else if (own_fp_is(sender)) {
             spk = g_keys.id.pk.bytes;
         } else {
             const nc_peer_t *p = peer_find(sender);
             if (p) spk = p->dsa_pk;
+            else status = "sender_unknown";
         }
-        if (!spk) {
-            status = "sender_unknown";
-        } else {
+        if (spk) {
             static const char *const ST[] = { "ok", "bad_sig", "bad_auth", "refused", "fault" };
             uint8_t text[NC_GROUP_TEXT_MAX];
             for (size_t i = 0; i < n; i++) {
@@ -1482,8 +1517,57 @@ int nc_group_bucket_read(const char *bucket_hex, const char *group_id_hex, const
     json_object_object_add(o, "status", json_object_new_string(status));
     json_object_object_add(o, "messages", a);
     free(items);                               /* pointers into b */
-    free(b);
+    return 0;
+}
+
+/* Decode a day bucket read at OUTBOX(salt_v, day) and open every item with
+ * the sender's key (own or verified peer cache) and group_key_v.
+ * bucket_hex: the bucket as hex (up to NC_GROUP_BKT_IN_MAX), or "" = the
+ * bytes the page put in the heap input buffer (nc_group_in_alloc, up to
+ * 1 MiB — G3). Result { status: ok | bad_structure | sender_unknown, sender
+ * (128 hex, when items exist), messages: [{ message_id, timestamp_ms,
+ * status: ok | bad_sig | bad_auth | refused, text_hex (ok only) }] }.
+ * "sender_unknown": load that profile (nc_profile_get), then read again.
+ * NOT checked here, the page's (nc_group.h nc_group_bucket_decode): the DHT
+ * value's owner == sender (nc_group_bucket_fetch does check it), and the
+ * membership rule (nc_group_msg_accept, decision 6). */
+int nc_group_bucket_read(const char *bucket_hex, const char *group_id_hex, const char *v_dec,
+                         const char *day_dec, const char *group_key_hex) {
+    size_t inl;
+    uint8_t *in = in_take(&inl);
+    if (nc_begin() != 0) { in_free(in, inl); return -1; }
+    if (!g_unlocked) { in_free(in, inl); return nc_end(fail("Messages is not connected.")); }
+    uint8_t gid[NC_GROUP_ID_LEN], gk[NC_GROUP_KEY_LEN];
+    uint32_t v, day;
+    if (parse_hex_fixed(group_id_hex, gid, sizeof(gid)) != 0 || parse_u32_dec(v_dec, &v) != 0 ||
+        parse_u32_dec(day_dec, &day) != 0) {
+        in_free(in, inl);
+        return nc_end(fail("Invalid group bucket input."));
+    }
+    uint8_t *b;
+    size_t bl;
+    if (bucket_hex && bucket_hex[0]) {
+        in_free(in, inl);
+        if (parse_hex_var(bucket_hex, NC_GROUP_BKT_IN_MAX, &b, &bl) != 0)
+            return nc_end(fail("Invalid group bucket (not hex, or over %u bytes).",
+                               (unsigned)NC_GROUP_BKT_IN_MAX));
+    } else {
+        if (!in) return nc_end(fail("No group bucket was given."));
+        b = in;
+        bl = inl;
+    }
+    if (parse_hex_fixed(group_key_hex, gk, sizeof(gk)) != 0) {
+        in_free(b, bl);
+        return nc_end(fail("Invalid group key."));
+    }
+    json_object *o = json_object_new_object();
+    int rc = bucket_entry(o, b, bl, gid, v, day, gk, NULL);
+    in_free(b, bl);
     nc_wipe(gk, sizeof(gk));
+    if (rc != 0) {
+        json_object_put(o);
+        return nc_end(fail("Group bucket could not be read (fault)."));
+    }
     return nc_end(set_result(o));
 }
 
@@ -1564,11 +1648,12 @@ int nc_group_welcome(const char *group_id_hex, const char *addr_secret_hex,
 
 /* Strict parse of one decrypted 1:1 plaintext (nc_group_json_parse). No
  * session key. Result { status: ok | refused } and, on ok, type (invite |
- * accept | welcome), group_id, invite_id; invite / welcome: owner; invite:
- * name (UTF-8 checked by the parser); welcome: addr_secret, key_version,
- * kp_digest. Who may send which (invite / welcome only from the pinned
- * owner == the authenticated 1:1 sender; accept only for a pending
- * invite_id of that contact, consumed once) is the page's. */
+ * accept | welcome | leave), group_id; invite_id (not for leave); invite /
+ * welcome: owner; invite: name (UTF-8 checked by the parser); welcome:
+ * addr_secret, key_version, kp_digest. Who may send which (invite / welcome
+ * only from the pinned owner == the authenticated 1:1 sender; accept only
+ * for a pending invite_id of that contact, consumed once; leave only from a
+ * current member, decision 13) is the page's. */
 int nc_group_json_read(const char *json) {
     if (!json) return fail("Invalid group message.");
     size_t len = strnlen(json, NC_GROUP_JSON_MAX + 1);   /* over the cap: refused */
@@ -1581,11 +1666,12 @@ int nc_group_json_read(const char *json) {
     json_object *o = json_object_new_object();
     json_object_object_add(o, "status", json_object_new_string(rc == NC_GROUP_OK ? "ok" : "refused"));
     if (rc == NC_GROUP_OK) {
-        static const char *const TY[] = { "", "invite", "accept", "welcome" };
+        static const char *const TY[] = { "", "invite", "accept", "welcome", "leave" };
         json_object_object_add(o, "type", json_object_new_string(TY[j.type]));
         json_object_object_add(o, "group_id", jhex(j.group_id, sizeof(j.group_id)));
-        json_object_object_add(o, "invite_id", jhex(j.invite_id, sizeof(j.invite_id)));
-        if (j.type != NC_GROUP_JSON_ACCEPT)
+        if (j.type != NC_GROUP_JSON_LEAVE)
+            json_object_object_add(o, "invite_id", jhex(j.invite_id, sizeof(j.invite_id)));
+        if (j.type == NC_GROUP_JSON_INVITE || j.type == NC_GROUP_JSON_WELCOME)
             json_object_object_add(o, "owner", jhex(j.owner_fp, sizeof(j.owner_fp)));
         if (j.type == NC_GROUP_JSON_INVITE)
             json_object_object_add(o, "name", json_object_new_string_len(j.name, (int)j.name_len));
@@ -1599,6 +1685,429 @@ int nc_group_json_read(const char *json) {
     return set_result(o);
 }
 
+/* ── groups (package G3): secrets, the leave, and the network ───────────
+ *
+ * Governing records: design docs/plans/2026-10-04-connect-groups-design.md
+ * rev 1 §3, §6; bytes items 1-7 + REV 2 (R2-4: HEAD / packet / record read
+ * with the pinned owner, HEAD written EXCLUSIVE; R2-5: buckets read
+ * owner-less, owner == sender checked here); decisions/2026-10-04-connect-
+ * groups.md item 10 (packets, records, HEAD PERMANENT — HEAD EXCLUSIVE,
+ * which is permanent too, nodus_types.h:438 — day buckets EPHEMERAL 7 days)
+ * and item 13 (leave); decisions/2026-09-30-nodus-connect-thin-core.md S3
+ * (every read three outcomes, "could not read" never leads to a write) and
+ * design rev 5 §6.4 F4 (a PUT is never split from the read it is based on).
+ *
+ * The three writes (nc_group_put, nc_group_bucket_send) read this
+ * identity's own row at the address IN THE SAME CALL, then write at most
+ * once. A read that returned only rows of OTHER owners (nc_read_one:
+ * UNREADABLE(WRONG_OWNER)) is a complete answer about this identity's row
+ * as much as EMPTY is (both are "the node returned no row of mine", F5),
+ * and is treated as EMPTY for the own write: a removed member still knows
+ * addr_secret (bytes §1) and could otherwise park a row at the next packet
+ * address and stop the owner from ever publishing it; the readers never
+ * see such rows (they read with the owner, R2-4). Every other UNREADABLE
+ * is "wait": nothing written. */
+
+#define NC_GROUP_BUCKET_TTL (7u * 24u * 3600u)   /* decision item 10: 7 days */
+
+/* The DHT key of (purpose, group_id, secret, x): SHA3-512 of the "ncg:"
+ * string (nc_group_addr; the DHT layer hashes the string once more, as
+ * nodus_ops_*_str do — nc_key_str). */
+static int group_dht_key(int purpose, const char *group_id_hex, const char *secret_hex,
+                         uint64_t x, uint8_t gid[NC_GROUP_ID_LEN], nodus_key_t *key) {
+    uint8_t sec[NC_GROUP_SECRET_LEN], k[NC_GROUP_DIGEST_LEN];
+    char s[NC_GROUP_ADDR_STR_LEN + 1];
+    if (purpose < NC_GROUP_PURPOSE_HEAD || purpose > NC_GROUP_PURPOSE_OUTBOX ||
+        parse_hex_fixed(group_id_hex, gid, NC_GROUP_ID_LEN) != 0 ||
+        parse_hex_fixed(secret_hex, sec, sizeof(sec)) != 0) {
+        nc_wipe(sec, sizeof(sec));
+        return fail("Invalid group address input.");
+    }
+    int rc = nc_group_addr((nc_group_purpose_t)purpose, gid, sec, x, k, s);
+    nc_wipe(sec, sizeof(sec));
+    if (rc != NC_GROUP_OK) return fail("Group address input refused (version or day out of range).");
+    nc_key_str(s, key);
+    return 0;
+}
+
+/* Fresh group secrets from the module's one random source (nodus-send-
+ * wasm.c qgp_platform_random). Synchronous, no session. Result { group_id,
+ * group_key, addr_secret } (32 bytes each, hex): a new group takes all
+ * three (bytes "Secrets per group"); a rotation takes group_key only. */
+int nc_group_random(void) {
+    uint8_t b[NC_GROUP_ID_LEN + NC_GROUP_KEY_LEN + NC_GROUP_SECRET_LEN];
+    if (qgp_platform_random(b, sizeof(b)) != 0) return fail("No randomness available.");
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "group_id", jhex(b, NC_GROUP_ID_LEN));
+    json_object_object_add(o, "group_key", jhex(b + NC_GROUP_ID_LEN, NC_GROUP_KEY_LEN));
+    json_object_object_add(o, "addr_secret",
+                           jhex(b + NC_GROUP_ID_LEN + NC_GROUP_KEY_LEN, NC_GROUP_SECRET_LEN));
+    nc_wipe(b, sizeof(b));
+    return set_result(o);
+}
+
+/* A member's leave (decision 13), sent to the owner over 1:1. No session
+ * key. Result { json }. */
+int nc_group_leave(const char *group_id_hex) {
+    uint8_t gid[NC_GROUP_ID_LEN];
+    if (parse_hex_fixed(group_id_hex, gid, sizeof(gid)) != 0) return fail("Invalid group id.");
+    char *js = NULL;
+    size_t jl = 0;
+    if (nc_group_leave_encode(gid, &js, &jl) != NC_GROUP_OK)
+        return fail("Group leave could not be written.");
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "json", json_object_new_string_len(js, (int)jl));
+    free(js);
+    return set_result(o);
+}
+
+/* ONE value at a HEAD (1), KEY PACKET (2) or RECORD (3) address, read with
+ * the pinned owner (R2-4: nc_read_one with expect_owner, the owner-filtered
+ * paged read — a stranger's row never shadows the owner's). secret_hex:
+ * addr_secret (1, 2) or salt_v (3); x_dec: 0 | v | v. owner_fp: the pinned
+ * owner. One bounded network step. Result { outcome: found | empty |
+ * unreadable, why, foreign (rows of other owners the node sent), data (hex,
+ * found only) }. A found value over its structure's size (HEAD 4,817 B, a
+ * packet of 64 members, a record of 64) is "unreadable" / "bad_record". */
+int nc_group_get(int purpose, const char *group_id_hex, const char *secret_hex,
+                 const char *x_dec, const char *owner_fp) {
+    if (nc_begin() != 0) return -1;
+    if (session_ok() != 0) return nc_end(-1);
+    if (purpose == NC_GROUP_PURPOSE_OUTBOX)
+        return nc_end(fail("Day buckets are read with nc_group_bucket_fetch."));
+    uint8_t gid[NC_GROUP_ID_LEN];
+    uint64_t x;
+    nodus_key_t key, owner;
+    if (parse_u64(x_dec, &x) != 0) return nc_end(fail("Invalid group address input."));
+    if (group_dht_key(purpose, group_id_hex, secret_hex, x, gid, &key) != 0) return nc_end(-1);
+    if (nc_fp_parse(owner_fp, &owner) != 0) return nc_end(fail("Invalid Nodus address."));
+    nc_read_t raw;
+    nc_read_one(&g_ctx, &key, &owner, &raw);
+    size_t cap = purpose == NC_GROUP_PURPOSE_HEAD ? NC_GROUP_HEAD_LEN
+               : purpose == NC_GROUP_PURPOSE_KEY_PACKET ? NC_GROUP_KP_MAX : NC_GROUP_REC_MAX;
+    json_object *o = json_object_new_object();
+    if (raw.outcome == NC_FOUND && raw.value &&
+        (raw.value->data_len == 0 || raw.value->data_len > cap)) {
+        add_read(o, NC_UNREADABLE, NC_WHY_BAD_RECORD);
+    } else {
+        add_read(o, raw.outcome, raw.why);
+        if (raw.outcome == NC_FOUND && raw.value)
+            json_object_object_add(o, "data", jhex(raw.value->data, raw.value->data_len));
+    }
+    json_object_object_add(o, "foreign", jstr_u64(raw.foreign));
+    nc_read_clear(&raw);
+    return nc_end(set_result(o));
+}
+
+/* The owner publishes its HEAD (1), key packet (2) or record (3) of a
+ * version: the value is in the heap input buffer (nc_group_in_alloc —
+ * a packet of 64 members is 107,795 B). Owner = the session. The bytes are
+ * checked to be this owner's for that address (HEAD: verifies under the
+ * session key for this group, x = 0; packet: parses, version x, this
+ * group, this owner; record: tag, this group, version x, size), then the
+ * own row is read IN THIS CALL (nc_read_one, owner = self):
+ *   unreadable (other than "only other owners' rows")      -> wait
+ *   found, same bytes                                      -> unchanged
+ *   found HEAD of a higher version                         -> stale (never
+ *     rolled back: another device of this owner moved on)
+ *   found HEAD of the same version: same packet digest -> unchanged,
+ *     another digest -> conflict
+ *   found packet / record with other bytes                 -> conflict (a
+ *     version is never replaced, design §3; R2-2: the owner republishes the
+ *     exact staged bytes)
+ *   empty (or only other owners' rows), or an older HEAD   -> PUT:
+ *     HEAD EXCLUSIVE, packet / record PERMANENT, ttl 0, value_id =
+ *     nodus_identity_value_id (decision item 10, R2-4).
+ * Result { status: published | unchanged | wait | stale | conflict | taken
+ * | failed, outcome, why, foreign, put_rc }. "taken" = NODUS_ERR_KEY_OWNED:
+ * the EXCLUSIVE HEAD address is held by someone else — terminal. */
+int nc_group_put(int purpose, const char *group_id_hex, const char *secret_hex,
+                 const char *x_dec) {
+    size_t vl;
+    uint8_t *val = in_take(&vl);
+    if (nc_begin() != 0) { in_free(val, vl); return -1; }
+    if (session_ok() != 0) { in_free(val, vl); return nc_end(-1); }
+    uint8_t gid[NC_GROUP_ID_LEN];
+    uint64_t x;
+    nodus_key_t key;
+    if (!val) return nc_end(fail("Nothing to publish."));
+    if (purpose == NC_GROUP_PURPOSE_OUTBOX) {
+        in_free(val, vl);
+        return nc_end(fail("Day buckets are sent with nc_group_bucket_send."));
+    }
+    if (parse_u64(x_dec, &x) != 0 ||
+        group_dht_key(purpose, group_id_hex, secret_hex, x, gid, &key) != 0) {
+        in_free(val, vl);
+        return nc_end(g_error[0] ? -1 : fail("Invalid group address input."));
+    }
+    const uint8_t *own = g_keys.id.node_id.bytes;
+    bool ok = false;
+    nc_group_head_t mine;
+    memset(&mine, 0, sizeof(mine));
+    if (purpose == NC_GROUP_PURPOSE_HEAD) {
+        ok = x == 0 && nc_group_head_verify(val, vl, g_keys.id.pk.bytes, gid, own, &mine) ==
+                       NC_GROUP_HEAD_OK;
+    } else if (purpose == NC_GROUP_PURPOSE_KEY_PACKET) {
+        nc_group_kp_hdr_t h;
+        ok = nc_group_kp_parse(val, vl, &h, NULL) == NC_GROUP_OK && h.v == x &&
+             memcmp(h.group_id, gid, NC_GROUP_ID_LEN) == 0 &&
+             memcmp(h.owner_fp, own, NC_GROUP_FP_LEN) == 0;
+    } else {
+        ok = vl >= NC_GROUP_REC_HEADER_LEN + NC_GROUP_GCM_TAG_LEN && vl <= NC_GROUP_REC_MAX &&
+             memcmp(val, nc_group_tag(NC_GROUP_TAG_GREC), NC_GROUP_TAG_LEN) == 0 &&
+             memcmp(val + NC_GROUP_TAG_LEN, gid, NC_GROUP_ID_LEN) == 0 &&
+             ((uint64_t)val[48] << 24 | (uint64_t)val[49] << 16 |
+              (uint64_t)val[50] << 8 | (uint64_t)val[51]) == x;
+    }
+    if (!ok) {
+        in_free(val, vl);
+        return nc_end(fail("These group bytes do not belong at this address: nothing was published."));
+    }
+
+    nc_read_t raw;
+    nc_read_one(&g_ctx, &key, &g_keys.id.node_id, &raw);
+    const char *status = NULL;
+    bool put = false;
+    if (raw.outcome == NC_UNREADABLE && raw.why != NC_WHY_WRONG_OWNER) {
+        status = "wait";
+    } else if (raw.outcome == NC_FOUND && raw.value) {
+        const nodus_value_t *f = raw.value;
+        if (f->data_len == vl && memcmp(f->data, val, vl) == 0) {
+            status = "unchanged";
+        } else if (purpose == NC_GROUP_PURPOSE_HEAD) {
+            nc_group_head_t found;
+            if (nc_group_head_verify(f->data, f->data_len, g_keys.id.pk.bytes, gid, own, &found) ==
+                NC_GROUP_HEAD_OK) {
+                if (found.v > mine.v) status = "stale";
+                else if (found.v == mine.v)
+                    status = memcmp(found.kp_digest, mine.kp_digest, NC_GROUP_DIGEST_LEN) == 0
+                             ? "unchanged" : "conflict";
+                else put = true;
+            } else {
+                put = true;                      /* own row, not a HEAD of this group */
+            }
+        } else {
+            status = "conflict";
+        }
+    } else {
+        put = true;                              /* empty, or only other owners' rows */
+    }
+    int put_rc = 0;
+    if (put) {
+        put_rc = nc_put(&g_ctx, &key, val, vl,
+                        purpose == NC_GROUP_PURPOSE_HEAD ? NODUS_VALUE_EXCLUSIVE
+                                                         : NODUS_VALUE_PERMANENT,
+                        0, nodus_identity_value_id(&g_keys.id));
+        status = put_rc == 0 ? "published" : put_rc == NODUS_ERR_KEY_OWNED ? "taken" : "failed";
+    }
+    in_free(val, vl);
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "status", json_object_new_string(status));
+    add_read(o, raw.outcome, raw.why);
+    json_object_object_add(o, "foreign", jstr_u64(raw.foreign));
+    json_object_object_add(o, "put_rc", json_object_new_int(put_rc));
+    nc_read_clear(&raw);
+    return nc_end(set_result(o));
+}
+
+static int u32_args(const char *v_dec, const char *day_dec, uint32_t *v, uint32_t *day) {
+    return parse_u32_dec(v_dec, v) != 0 || *v == 0 || parse_u32_dec(day_dec, day) != 0 ? -1 : 0;
+}
+
+/* The sender's own day bucket of (group, v, day), read before it is
+ * written, IN THIS CALL (design §6: "own bucket write: base = a read made in
+ * the same call; UNREADABLE -> wait, never write"). The heap input buffer
+ * (nc_group_in_alloc) holds the page's OWN items for this bucket — every one
+ * this device keeps for (group, v, day), each as nc_group_msg_new made it,
+ * concatenated; each must parse (nc_group_msg_parse), carry this group /
+ * v / day and the session as sender. salt_hex: salt_v of v. Then:
+ *   own row unreadable (other than "only other owners' rows") -> wait;
+ *   own row found -> decoded (nc_group_bucket_decode, this group / v / day,
+ *     this identity as its one sender); a row that does not decode is NOT
+ *     overwritten -> refused;
+ *   the bucket = the row's items in their order, then the page's items
+ *     whose message_id it lacks (so a node that answered "empty" for an
+ *     existing row loses nothing this device sent); nothing new ->
+ *     unchanged (no PUT); over 100 items or 1 MiB -> full (nothing written);
+ *   PUT EPHEMERAL, ttl 7 days, value_id = nodus_identity_value_id (one row
+ *     per sender, decision item 10).
+ * Result { status: published | unchanged | wait | refused | full | failed,
+ * outcome, why, count, put_rc, ids: [message_id hex of the bucket on the
+ * network after this call — published / unchanged only] }. */
+int nc_group_bucket_send(const char *group_id_hex, const char *salt_hex, const char *v_dec,
+                         const char *day_dec) {
+    size_t il;
+    uint8_t *in = in_take(&il);
+    if (nc_begin() != 0) { in_free(in, il); return -1; }
+    if (session_ok() != 0) { in_free(in, il); return nc_end(-1); }
+    uint8_t gid[NC_GROUP_ID_LEN];
+    uint32_t v, day;
+    nodus_key_t key;
+    if (!in) return nc_end(fail("No group message to send."));
+    if (u32_args(v_dec, day_dec, &v, &day) != 0 ||
+        group_dht_key(NC_GROUP_PURPOSE_OUTBOX, group_id_hex, salt_hex, day, gid, &key) != 0) {
+        in_free(in, il);
+        return nc_end(g_error[0] ? -1 : fail("Invalid group bucket input."));
+    }
+    const uint8_t *own = g_keys.id.node_id.bytes;
+    /* the page's items */
+    const uint8_t *pi[NC_GROUP_BUCKET_ITEMS_MAX];
+    size_t pl[NC_GROUP_BUCKET_ITEMS_MAX], pn = 0;
+    uint8_t pid[NC_GROUP_BUCKET_ITEMS_MAX][NC_GROUP_MSG_ID_LEN];
+    for (size_t off = 0; off < il;) {
+        nc_group_msg_t m;
+        if (pn == NC_GROUP_BUCKET_ITEMS_MAX ||
+            nc_group_msg_parse(in + off, il - off, false, &m) != NC_GROUP_OK ||
+            memcmp(m.group_id, gid, NC_GROUP_ID_LEN) != 0 || m.v != v || m.day != day ||
+            memcmp(m.sender_fp, own, NC_GROUP_FP_LEN) != 0) {
+            in_free(in, il);
+            return nc_end(fail("A group message to send is not this bucket's: nothing was sent."));
+        }
+        pi[pn] = in + off;
+        pl[pn] = m.item_len;
+        memcpy(pid[pn], m.message_id, NC_GROUP_MSG_ID_LEN);
+        pn++;
+        off += m.item_len;
+    }
+
+    nc_read_t raw;
+    nc_read_one(&g_ctx, &key, &g_keys.id.node_id, &raw);
+    const char *status = NULL;
+    nc_group_msg_t *base = NULL;
+    size_t bn = 0;
+    if (raw.outcome == NC_UNREADABLE && raw.why != NC_WHY_WRONG_OWNER) {
+        status = "wait";
+    } else if (raw.outcome == NC_FOUND && raw.value) {
+        int rc = nc_group_bucket_decode(raw.value->data, raw.value->data_len, gid, v, day,
+                                        &base, &bn);
+        if (rc == NC_GROUP_FAULT) {
+            nc_read_clear(&raw);
+            in_free(in, il);
+            return nc_end(fail("Group bucket could not be read (fault)."));
+        }
+        if (rc != NC_GROUP_OK || (bn > 0 && memcmp(base[0].sender_fp, own, NC_GROUP_FP_LEN) != 0))
+            status = "refused";
+    }
+
+    /* union: the row's items, then the page's new ones */
+    const uint8_t *all[NC_GROUP_BUCKET_ITEMS_MAX];
+    size_t all_len[NC_GROUP_BUCKET_ITEMS_MAX], an = 0, added = 0;
+    if (!status) {
+        for (size_t i = 0; i < bn && an < NC_GROUP_BUCKET_ITEMS_MAX; i++) {
+            all[an] = base[i].h;
+            all_len[an++] = base[i].item_len;
+        }
+        for (size_t j = 0; j < pn && !status; j++) {
+            bool have = false;
+            for (size_t i = 0; i < bn && !have; i++)
+                have = memcmp(base[i].message_id, pid[j], NC_GROUP_MSG_ID_LEN) == 0;
+            for (size_t k = 0; k < j && !have; k++)   /* a repeat inside the page's set */
+                have = memcmp(pid[k], pid[j], NC_GROUP_MSG_ID_LEN) == 0;
+            if (have) continue;
+            if (an == NC_GROUP_BUCKET_ITEMS_MAX) { status = "full"; break; }
+            all[an] = pi[j];
+            all_len[an++] = pl[j];
+            added++;
+        }
+        if (!status && added == 0) status = "unchanged";
+    }
+    int put_rc = 0;
+    if (!status) {
+        uint8_t *bucket = NULL;
+        size_t bl = 0;
+        int rc = nc_group_bucket_encode(all, all_len, an, &bucket, &bl);
+        if (rc == NC_GROUP_FAULT) {
+            free(base);
+            nc_read_clear(&raw);
+            in_free(in, il);
+            return nc_end(fail("Group bucket could not be written (fault)."));
+        }
+        if (rc != NC_GROUP_OK) {
+            status = "full";                       /* over 1 MiB */
+        } else {
+            put_rc = nc_put(&g_ctx, &key, bucket, bl, NODUS_VALUE_EPHEMERAL,
+                            NC_GROUP_BUCKET_TTL, nodus_identity_value_id(&g_keys.id));
+            status = put_rc == 0 ? "published" : "failed";
+        }
+        free(bucket);                              /* ciphertexts and signatures */
+    }
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "status", json_object_new_string(status));
+    add_read(o, raw.outcome, raw.why);
+    json_object_object_add(o, "put_rc", json_object_new_int(put_rc));
+    bool listed = strcmp(status, "published") == 0 || strcmp(status, "unchanged") == 0;
+    json_object_object_add(o, "count", jstr_u64(listed ? an : 0));
+    json_object *ids = json_object_new_array();
+    if (listed) {
+        for (size_t i = 0; i < an; i++) {
+            nc_group_msg_t m;
+            if (nc_group_msg_parse(all[i], all_len[i], true, &m) == NC_GROUP_OK)
+                json_object_array_add(ids, jhex(m.message_id, NC_GROUP_MSG_ID_LEN));
+        }
+    }
+    json_object_object_add(o, "ids", ids);
+    free(base);                                    /* pointers into raw.value */
+    nc_read_clear(&raw);
+    in_free(in, il);
+    return nc_end(set_result(o));
+}
+
+/* Every sender's day bucket of (group, v, day): one owner-less paged read
+ * (nc_read_all, R2-5), then per row: the row's owner, its bucket decoded
+ * against this group / v / day, its one sender == the row's owner (design
+ * §6; else "wrong_owner", nothing opened), each item verified with the
+ * sender's key (own or verified peer cache) and opened with group_key_v.
+ * NOT applied here, the page's: the membership rule (sender in record(v)
+ * and, when record(v+1) is held, in it too — decision 6), deduplication.
+ * Result { outcome, why, truncated, dropped: { undecodable, bad_signature,
+ * wrong_key }, buckets: [{ owner, status: ok | bad_structure | wrong_owner
+ * | sender_unknown, sender?, messages: [{ message_id, timestamp_ms, status,
+ * text_hex? }] }] }. "sender_unknown": load that profile, then read again. */
+int nc_group_bucket_fetch(const char *group_id_hex, const char *salt_hex, const char *v_dec,
+                          const char *day_dec, const char *group_key_hex) {
+    if (nc_begin() != 0) return -1;
+    if (session_ok() != 0) return nc_end(-1);
+    uint8_t gid[NC_GROUP_ID_LEN], gk[NC_GROUP_KEY_LEN];
+    uint32_t v, day;
+    nodus_key_t key;
+    if (u32_args(v_dec, day_dec, &v, &day) != 0)
+        return nc_end(fail("Invalid group bucket input."));
+    if (group_dht_key(NC_GROUP_PURPOSE_OUTBOX, group_id_hex, salt_hex, day, gid, &key) != 0)
+        return nc_end(-1);
+    if (parse_hex_fixed(group_key_hex, gk, sizeof(gk)) != 0)
+        return nc_end(fail("Invalid group key."));
+    nc_read_all_t all;
+    nc_read_all(&g_ctx, &key, NULL, 0, &all);
+    json_object *o = json_object_new_object();
+    add_read(o, all.outcome, all.why);
+    json_object_object_add(o, "truncated", json_object_new_boolean(all.truncated));
+    json_object *c = json_object_new_object();
+    json_object_object_add(c, "undecodable", jstr_u64(all.undecodable));
+    json_object_object_add(c, "bad_signature", jstr_u64(all.bad_sig));
+    json_object_object_add(c, "wrong_key", jstr_u64(all.wrong_key));
+    json_object_object_add(o, "dropped", c);
+    json_object *a = json_object_new_array();
+    int fault = 0;
+    for (size_t i = 0; i < all.count && !fault; i++) {
+        const nodus_value_t *val = all.values[i];
+        json_object *e = json_object_new_object();
+        char owner[NC_FP_HEX_LEN + 1];
+        fp_hex(val->owner_fp.bytes, owner);
+        json_object_object_add(e, "owner", json_object_new_string(owner));
+        if (bucket_entry(e, val->data, val->data_len, gid, v, day, gk, val->owner_fp.bytes) != 0)
+            fault = 1;
+        json_object_array_add(a, e);
+    }
+    json_object_object_add(o, "buckets", a);
+    nc_read_all_clear(&all);
+    nc_wipe(gk, sizeof(gk));
+    if (fault) {
+        json_object_put(o);
+        return nc_end(fail("Group bucket could not be read (fault)."));
+    }
+    return nc_end(set_result(o));
+}
+
 /* ── lock: synchronous, never reaches emscripten_sleep ───────────────── */
 
 /* Every Messages secret and cache. Called by the host's lock (nsw_lock,
@@ -1607,6 +2116,7 @@ int nc_group_json_read(const char *json) {
 void nc_session_wipe(void) {
     nc_keys_wipe(&g_keys);
     words_drop();
+    in_drop();
     result_drop();
     nc_wipe(g_hist_key, sizeof(g_hist_key));
     g_hist_ok = 0;
