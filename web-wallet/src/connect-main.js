@@ -102,6 +102,7 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
     setTab('home');
     scrollTo(0, 0);
     if (open) $('home-title').focus({ preventScroll: true });
+    syncNameRegistration();
   }
   new MutationObserver(syncOpen).observe($('wallet-open'), { attributes: true, attributeFilter: ['hidden'] });
 
@@ -136,6 +137,24 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
   };
 
   // Home.
+  function syncNameRegistration() {
+    const knownName = shownOwnName(walletNameAnswer, ownId ? ownName : '');
+    const open = !$('wallet-open').hidden;
+    const ready = open && !knownName && !$('quick-name').hidden && !$('quick-name').disabled;
+    $('home-name-registration').hidden = !open || !!knownName;
+    $('home-register-name').disabled = !ready;
+    $('home-name-status').textContent = ready
+      ? 'Open the name form to check availability and review the price and network fee.'
+      : ($('own-name').textContent.trim() || 'Name registration is unavailable until the wallet checks your name on the network.');
+  }
+  const nameObserver = new MutationObserver(syncNameRegistration);
+  nameObserver.observe($('quick-name'), { attributes: true, attributeFilter: ['hidden', 'disabled'] });
+  nameObserver.observe($('own-name'), { childList: true, characterData: true, subtree: true });
+  $('home-register-name').onclick = () => {
+    syncNameRegistration();
+    if ($('home-register-name').disabled) return;
+    origin = null; setTab('wallet'); $('quick-name').click();
+  };
   $('home-new-chat').onclick = () => { origin = null; setTab('chats'); navigate('add'); };
   $('home-send').onclick = () => { setTab('wallet'); $('quick-send').click(); };
   $('home-receive').onclick = () => { setTab('wallet'); $('quick-receive').click(); };
@@ -197,6 +216,7 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
     }
     $('home-copy-id').disabled = !ownId;
     $('home-id-status').textContent = '';
+    syncNameRegistration();
   }
 
   // A wallet extension (src/wallet-extensions.js): the wallet's own name

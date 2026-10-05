@@ -1,4 +1,4 @@
-import { portfolioRead, cellframeRead, historyRead } from './portfolio-routes.js';
+import { portfolioRead, cellframeRead, ixiosRead, historyRead } from './portfolio-routes.js';
 import { pastePhrase, readPhrase } from './browser-phrase.js';
 // Production bundle; all external traffic is intercepted. Public test phrase only.
 import assert from 'node:assert/strict';
@@ -23,6 +23,7 @@ await context.route('**/*', async route => {
   if (await historyRead(route)) return;
   if (await cellframeRead(route)) return;
   if (await portfolioRead(route, { ethereum: false })) return;
+  if (await ixiosRead(route)) return;
   const body = req.postDataJSON(); assert.ok(!JSON.stringify(body).includes(phrase));
   const process = async call => {
     if (call.method === 'eth_sendRawTransaction') {
@@ -38,7 +39,7 @@ await context.route('**/*', async route => {
   };
   await route.fulfill({ json: Array.isArray(body) ? await Promise.all(body.map(process)) : await process(body) });
 });
-async function fresh() { const p = await context.newPage(); p.setDefaultTimeout(10000); p.on('pageerror', error => errors.push(error.message)); await p.goto(url); await p.waitForFunction(() => typeof document.querySelector('#restore').onclick === 'function'); return p; }
+async function fresh() { const p = await context.newPage(); await p.routeWebSocket(() => true, ws => ws.close()); p.setDefaultTimeout(10000); p.on('pageerror', error => errors.push(error.message)); await p.goto(url); await p.waitForFunction(() => typeof document.querySelector('#restore').onclick === 'function'); return p; }
 async function restore(p) { await p.locator('#restore').click(); await pastePhrase(p, phrase); await p.locator('#backup-confirm').check(); await p.locator('#phrase-submit').click(); await p.locator('#wallet-open').waitFor({ state: 'visible' }); }
 async function unlock(p) { await p.locator('#unlock-password').fill(password); await p.locator('#unlock-wallet').click(); await p.locator('#wallet-open').waitFor({ state: 'visible' }); }
 // Nodus (receive-only) is the network selected on page load; sends here are on Ethereum.
@@ -60,7 +61,7 @@ try {
 
   page = await fresh(); await restore(page); await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
   assert.equal(await page.locator('#vault-risk-confirm').isChecked(), false);
-  await page.locator('#vault-password').fill(password); await page.locator('#vault-save').click();
+  await page.locator('#vault-password').fill(password); await page.locator('#vault-confirm-password').fill(password); await page.locator('#vault-save').click();
   assert.match(await page.locator('#vault-status').innerText(), /read and accept the risks/);
   assert.equal(await page.evaluate(() => localStorage.length), 0);
   // Withdrawing consent while encryption is pending must prevent persistence.
@@ -80,14 +81,14 @@ try {
   await page.waitForFunction(() => !document.querySelector('#vault-save').disabled);
   assert.equal(await page.evaluate(() => localStorage.length), 0);
   assert.match(await page.locator('#vault-status').innerText(), /Save canceled/);
-  await page.locator('#vault-password').fill('Example-pass-15');
+  await page.locator('#vault-password').fill('Example-pass-15'); await page.locator('#vault-confirm-password').fill('Example-pass-15');
   await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
   assert.match(await page.locator('#vault-status').innerText(), /16/);
   assert.equal(await page.evaluate(() => localStorage.length), 0);
-  await page.locator('#vault-password').fill('aaaaaaaaaaaaaaaa'); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
+  await page.locator('#vault-password').fill('aaaaaaaaaaaaaaaa'); await page.locator('#vault-confirm-password').fill('aaaaaaaaaaaaaaaa'); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('easy to guess'));
   assert.equal(await page.evaluate(() => localStorage.length), 0);
-  await page.locator('#vault-password').fill(password); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
+  await page.locator('#vault-password').fill(password); await page.locator('#vault-confirm-password').fill(password); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Encrypted wallet saved'));
   assert.equal(await page.locator('#vault-risk-confirm').isChecked(), false);
   assert.match(await page.locator('#wallet-storage-state').innerText(), /Encrypted copy saved/);
@@ -161,7 +162,17 @@ try {
   const savedRows = await parseActivity(preserved.activity, vaultId, addresses, activityKey);
   assert.deepEqual(savedRows.map(row => row.amount), ['0.01']);
   await restore(page);
-  await page.locator('#vault-password').fill('different-public-test-password'); await page.locator('#vault-old-password').fill(password); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-change').click();
+  for (const id of ['vault-password', 'vault-confirm-password', 'vault-old-password', 'vault-save', 'vault-change']) assert.equal(await page.locator(`#${id}`).isVisible(), false, id);
+  assert.match(await page.locator('#vault-save-explain').innerText(), /Lock this temporary session, then unlock the saved wallet/);
+  // Deliberately bypass hidden controls to exercise the backend guard too:
+  // a phrase-only session must never overwrite the authenticated saved history.
+  await page.evaluate(({ password }) => {
+    document.querySelector('#vault-password').value = 'different-public-test-password';
+    document.querySelector('#vault-confirm-password').value = 'different-public-test-password';
+    document.querySelector('#vault-old-password').value = password;
+    document.querySelector('#vault-risk-confirm').checked = true;
+    document.querySelector('#vault-change').click();
+  }, { password });
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('unlock the saved wallet'));
   assert.equal(await page.evaluate(() => localStorage.getItem('nodus.wallet.v1')), preserved.vault);
   assert.equal(await page.evaluate(() => localStorage.getItem('nodus.activity.v1')), preserved.activity);
@@ -224,7 +235,7 @@ try {
   // guard, the same-network double-send lock and its abandon escape hatch, and
   // the lower-case-address review warning, in one continuous session.
   page = await fresh(); await restore(page); await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
-  await page.locator('#vault-password').fill(password); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
+  await page.locator('#vault-password').fill(password); await page.locator('#vault-confirm-password').fill(password); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Encrypted wallet saved'));
 
   let sent = broadcasts;

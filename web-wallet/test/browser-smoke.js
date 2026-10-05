@@ -1,4 +1,4 @@
-import { portfolioRead, cellframeRead, historyRead } from './portfolio-routes.js';
+import { portfolioRead, cellframeRead, ixiosRead, historyRead } from './portfolio-routes.js';
 import { pastePhrase, readPhrase } from './browser-phrase.js';
 // Run after npm run build + npm run preview. Every external request is intercepted.
 import assert from 'node:assert/strict';
@@ -20,6 +20,7 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 960 } });
 page.setDefaultTimeout(10000);
 const errors = [], broadcasts = [], calls = [];
 page.on('pageerror', error => errors.push(error.message));
+await page.routeWebSocket(() => true, ws => ws.close());
 let cellframeBalance = '5', cellframeFail = false, networkId = '0x1', finalized = false;
 const historySeen = [];
 await page.route('**/*', async route => {
@@ -30,6 +31,7 @@ await page.route('**/*', async route => {
   if (await historyRead(route, { ethereum: address => [{ hash: '0x' + 'ab'.repeat(32), timeStamp: '1790000000', from: '0x' + '12'.repeat(20), to: address, value: '1500000000000000000', isError: '0', txreceipt_status: '1' }], seen: historySeen })) return;
   if (await cellframeRead(route, { balance: cellframeBalance, fail: cellframeFail })) return;
   if (await portfolioRead(route, { ethereum: false })) return;
+  if (await ixiosRead(route)) return;
   const body = req.postDataJSON(); calls.push(body);
   assert.ok(!JSON.stringify(body).includes(phrase));
   const process = call => {
@@ -264,8 +266,31 @@ try {
   assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
   networkId = '0x1';
   await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
-  await page.locator('#vault-password').fill('public-test-password-123'); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
+  assert.equal(await page.locator('#vault-save').isVisible(), true);
+  assert.equal(await page.locator('#vault-change').isVisible(), false);
+  assert.equal(await page.locator('#vault-old-password').isVisible(), false);
+  assert.equal(await page.locator('#vault-confirm-label').innerText(), 'Confirm password');
+  await page.locator('#vault-password').fill('public-test-password-123');
+  await page.locator('#vault-risk-confirm').check();
+  for (const confirmation of ['', 'public-test-password-typo']) {
+    await page.locator('#vault-confirm-password').fill(confirmation);
+    await page.locator('#vault-save').click();
+    assert.match(await page.locator('#vault-save-status').innerText(), /passwords do not match/);
+    assert.equal(await page.evaluate(() => localStorage.length), 0);
+    assert.equal(await page.locator('#vault-password').inputValue(), 'public-test-password-123');
+    assert.equal(await page.locator('#vault-confirm-password').inputValue(), confirmation);
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'vault-confirm-password');
+  }
+  await page.locator('#vault-password').fill('public-test-password-123'); await page.locator('#vault-confirm-password').fill('public-test-password-123'); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Encrypted wallet saved'));
+  assert.equal(await page.locator('#vault-save').isVisible(), false);
+  assert.equal(await page.locator('#vault-change').isVisible(), true);
+  assert.equal(await page.locator('#vault-old-password').isVisible(), true);
+  assert.equal(await page.locator('#vault-storage-title').innerText(), 'Change saved password');
+  assert.equal(await page.locator('#vault-confirm-label').innerText(), 'Confirm new password');
+  assert.match(await page.locator('#vault-save-explain').innerText(), /already saved/);
+  assert.match(await page.locator('#vault-save-status').innerText(), /Encrypted wallet saved/);
+  assert.equal(await page.locator('#vault-confirm-password').inputValue(), '');
   const stored = await page.evaluate(() => JSON.stringify({ ...localStorage })); assert.ok(!stored.includes(phrase)); assert.ok(!stored.includes('public-test-password-123'));
   // 0.1.41: the balances read while the wallet was NOT saved were not written
   // (localStorage was empty above); once saved they are, encrypted (decision
@@ -280,6 +305,15 @@ try {
   await page.selectOption('#chain', 'nodus'); assert.equal(await page.locator('#receive-address').innerText(), nodusAddress);
   assert.equal(await qrEmpty(), false);
   await page.locator('#lock').click(); assert.equal(await page.locator('#receive-address').textContent(), ''); assert.equal(await qrEmpty(), true); assert.equal(await page.locator('#nodus-address-status').textContent(), ''); assert.equal(await page.locator('#cellframe-address-status').innerText(), ''); await sessionReleased();
+  // Restoring the words opens a temporary session, not the saved copy.
+  await page.locator('#restore').click(); await pastePhrase(page, phrase);
+  await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
+  await page.locator('#wallet-open').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#vault-storage-title').innerText(), 'Unlock saved wallet to change password');
+  assert.match(await page.locator('#vault-save-explain').innerText(), /Lock this temporary session, then unlock the saved wallet/);
+  for (const id of ['vault-password', 'vault-confirm-password', 'vault-old-password', 'vault-risk-confirm', 'vault-save', 'vault-change']) assert.equal(await page.locator(`#${id}`).isVisible(), false, id);
+  assert.equal(await page.evaluate(() => localStorage.getItem('nodus.wallet.v1')), JSON.parse(stored)['nodus.wallet.v1']);
+  await page.locator('#lock').click(); await sessionReleased();
   await page.locator('#unlock-password').fill('incorrect-password-123'); await page.locator('#unlock-wallet').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Incorrect password'));
   // A failed unlock gives the session lock back.
@@ -288,13 +322,26 @@ try {
   assert.equal(await sessionHeld(), true); assert.equal(await page.locator('#session-conflict').isVisible(), false);
   assert.equal(await page.locator('#chain').inputValue(), 'nodus');
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
-  await page.locator('#vault-password').fill('changed-test-password-123'); await page.locator('#vault-old-password').fill('public-test-password-123');
+  assert.equal(await page.locator('#vault-save').isVisible(), false);
+  assert.equal(await page.locator('#vault-change').isVisible(), true);
+  assert.equal(await page.locator('#vault-old-password').isVisible(), true);
+  await page.locator('#vault-password').fill('changed-test-password-123'); await page.locator('#vault-confirm-password').fill('changed-test-password-123'); await page.locator('#vault-old-password').fill('public-test-password-123');
   assert.equal(await page.locator('#vault-risk-confirm').isChecked(), false);
   await page.locator('#vault-change').click();
   assert.match(await page.locator('#vault-status').innerText(), /read and accept the risks/);
   assert.equal(await page.evaluate(() => localStorage.getItem('nodus.wallet.v1')), JSON.parse(stored)['nodus.wallet.v1']);
-  await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-change').click();
+  await page.locator('#vault-risk-confirm').check();
+  await page.locator('#vault-confirm-password').fill('changed-test-password-typo'); await page.locator('#vault-change').click();
+  assert.match(await page.locator('#vault-save-status').innerText(), /passwords do not match/);
+  assert.equal(await page.locator('#vault-old-password').inputValue(), 'public-test-password-123');
+  assert.equal(await page.locator('#vault-password').inputValue(), 'changed-test-password-123');
+  assert.equal(await page.evaluate(() => localStorage.getItem('nodus.wallet.v1')), JSON.parse(stored)['nodus.wallet.v1']);
+  await page.locator('#vault-confirm-password').fill('changed-test-password-123'); await page.locator('#vault-change').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Local password changed'));
+  assert.match(await page.locator('#vault-save-status').innerText(), /Local password changed/);
+  assert.equal(await page.locator('#vault-confirm-password').inputValue(), '');
+  assert.equal(await page.locator('#vault-save').isVisible(), false);
+  assert.equal(await page.locator('#vault-change').isVisible(), true);
   await page.reload(); await page.waitForFunction(() => typeof document.querySelector('#restore').onclick === 'function');
   await page.locator('#unlock-password').fill('changed-test-password-123'); await page.locator('#unlock-wallet').click(); await page.locator('#wallet-open').waitFor({ state: 'visible' });
   await page.selectOption('#chain', 'nodus');
@@ -309,8 +356,13 @@ try {
   assert.equal(await page.locator('#vault-status').innerText(), 'Saved wallet, saved activity and message history deleted from this device.');
   assert.equal(await page.evaluate(() => localStorage.length), 0);
   await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
-  await page.locator('#vault-password').fill('public-test-password-123'); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click(); await page.locator('#lock').click(); assert.equal(await page.locator('#nodus-address-status').textContent(), '');
+  assert.equal(await page.locator('#vault-save').isVisible(), true);
+  assert.equal(await page.locator('#vault-change').isVisible(), false);
+  assert.equal(await page.locator('#vault-old-password').isVisible(), false);
+  assert.equal(await page.locator('#vault-confirm-label').innerText(), 'Confirm password');
+  await page.locator('#vault-password').fill('public-test-password-123'); await page.locator('#vault-confirm-password').fill('public-test-password-123'); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click(); await page.locator('#lock').click(); assert.equal(await page.locator('#nodus-address-status').textContent(), '');
   await page.waitForFunction(() => !document.querySelector('#vault-save').disabled); assert.equal(await page.evaluate(() => localStorage.length), 0);
+  assert.equal(await page.locator('#vault-confirm-password').inputValue(), '');
   await page.locator('#welcome').waitFor({ state: 'visible' }); assert.equal(await page.locator('#receive-address').innerText(), '');
   assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
   await page.locator('#create').click(); const created = await readPhrase(page); assert.equal(created.split(' ').length, 24); await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
@@ -342,5 +394,5 @@ try {
   const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(await page.locator('.wallet-footer .app-version').innerText(), `Version ${version}`);
   assert.deepEqual(errors, []);
-  console.log('Browser smoke passed: create/backup/restore, NODUS first and default-selected (receive-only row, no balance shown, no Send), Nodus native address/copy/lock/reopen, 4 external chain addresses, one Send / Receive panel whose heading follows the selected network and whose QR decodes to exactly the shown address (Nodus, Ethereum, BNB Smart Chain, Solana, TRON) and clears on lock, holding-row click/keyboard selection, ETH/ERC20 signed mocked broadcasts, wrong-network guard, automatic Cellframe address derivation + CPUNK balance display/error, send disabled on Cellframe, finalized scoped activity, encrypted save/unlock/change/reload/delete, KDF cancellation, temporary storage behavior, mobile layout with the QR shown, third-party license file served. No external request reached a blockchain.');
+  console.log('Browser smoke passed: create/backup/restore, NODUS first and default-selected (receive-only row, no balance shown, no Send), Nodus native address/copy/lock/reopen, 4 external chain addresses, one Send / Receive panel whose heading follows the selected network and whose QR decodes to exactly the shown address (Nodus, Ethereum, BNB Smart Chain, Solana, TRON) and clears on lock, holding-row click/keyboard selection, ETH/ERC20 signed mocked broadcasts, wrong-network guard, automatic Cellframe address derivation + CPUNK balance display/error, send disabled on Cellframe, finalized scoped activity, state-specific save/unlock/change/delete controls, matching password confirmation, phrase-only saved-copy guard, encrypted save/unlock/change/reload/delete, KDF cancellation, temporary storage behavior, mobile layout with the QR shown, third-party license file served. No external request reached a blockchain.');
 } catch (error) { console.error('UI status:', await page.locator('#wallet-status').textContent(), 'Cellframe:', await page.locator('#cellframe-address-status').textContent(), 'Page errors:', errors, 'Methods:', calls.map(c => c?.method)); throw error; } finally { await browser.close(); server?.stop(); }

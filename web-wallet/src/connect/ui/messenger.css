@@ -285,6 +285,9 @@ body[data-overlay="about"] :is(#start-screen, #wallet-open) { display: none; }
 .home-identity-text strong { color: var(--text); font-size: 16px; font-weight: 600; }
 .home-identity-text code { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .home-identity button { flex-shrink: 0; margin: 0; }
+.home-name-registration { margin-top: 12px; padding: 14px; border: 1px solid #d5f99845; border-radius: 12px; background: #25301e; }
+.home-name-registration > button { width: 100%; margin: 0 0 8px; white-space: normal; }
+.home-name-registration .hint { margin: 6px 0 0; }
 .home-avatar-empty { background: #d5f99826; color: var(--lime); }
 #home-id-status:empty { display: none; }
 .connect-app .wallet-session { margin: 12px 4px 0; }

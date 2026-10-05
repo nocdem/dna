@@ -603,7 +603,7 @@ function activity() {
   clearTimeout(lockTimer);
   // A tab that took the session over holds it before the wallet is reopened;
   // the same idle lock gives it back if nobody reopens it here.
-  const sensitive = wallet || sessionRelease || !$('phrase-form').hidden || $('unlock-wallet').disabled || $('vault-save').disabled || ['unlock-password', 'vault-password', 'vault-old-password'].some(id => $(id).value);
+  const sensitive = wallet || sessionRelease || !$('phrase-form').hidden || $('unlock-wallet').disabled || $('vault-save').disabled || ['unlock-password', 'vault-password', 'vault-confirm-password', 'vault-old-password'].some(id => $(id).value);
   if (sensitive) { idleDeadline = Date.now() + 10 * 60 * 1000; lockTimer = setTimeout(lock, 10 * 60 * 1000); }
 }
 for (const event of ['pointerdown', 'keydown', 'input']) document.addEventListener(event, activity);
@@ -1150,7 +1150,7 @@ function lock() {
   $('phrase-form').hidden = true; $('wallet-open').hidden = true; $('welcome').hidden = false;
   history.length = 0; $('account-explorer').removeAttribute('href');
   $('activity').replaceChildren(); setReceiveAddress(''); $('balances').replaceChildren(); $('recipient').value = ''; $('amount').value = '';
-  for (const id of ['unlock-password', 'vault-password', 'vault-old-password']) $(id).value = '';
+  for (const id of ['unlock-password', 'vault-password', 'vault-confirm-password', 'vault-old-password']) $(id).value = '';
   $('vault-risk-confirm').checked = false; $('vault-save-status').textContent = '';
   updateVaultUI(); clearTimeout(lockTimer); message('Wallet locked. Restore your recovery phrase or unlock your saved wallet.');
   raise('locked');
@@ -1522,12 +1522,34 @@ $('confirm-send').onclick = async () => {
 function updateVaultUI() {
   try {
     const saved = localStorage.getItem(VAULT_KEY);
+    const authenticated = !!saved && activitySession?.vault === saved;
+    $('vault-password-controls').hidden = !!saved && !authenticated;
+    $('vault-current-password').hidden = !authenticated;
+    $('vault-password-label').textContent = authenticated ? 'New password (at least 16 characters)' : 'Password (at least 16 characters)';
+    $('vault-confirm-label').textContent = authenticated ? 'Confirm new password' : 'Confirm password';
+    $('vault-save').hidden = !!saved;
+    $('vault-change').hidden = !authenticated;
+    $('vault-storage-title').textContent = authenticated ? 'Change saved password' : saved ? 'Unlock saved wallet to change password' : 'Save wallet on this device (optional)';
+    $('vault-save-explain').textContent = authenticated
+      ? 'This wallet is already saved in this browser. To change its local password, enter your current password and your new password twice, tick the box, then press Change saved password. Your recovery words and wallet addresses stay the same.'
+      : saved ? (wallet
+        ? 'A wallet is already saved on this device. Lock this temporary session, then unlock the saved wallet with its current password before changing it.'
+        : 'Unlock the saved wallet above with its current password before changing it.')
+      : 'Saving keeps this wallet in this browser on this device, locked with a password you choose. Next time you open this page here, you unlock it with that password. Without saving, you type your 24 recovery words every time. To save: choose a password below, enter it again to confirm, tick the box, then press Save current wallet. A message under the button tells you when it is saved.';
+    $('vault-storage-summary').textContent = authenticated
+      ? 'Your recovery words and saved activity stay encrypted in this browser profile on this device. This is not a cloud backup. The wallet does not store your password or upload your recovery words.'
+      : 'This saves an encrypted copy of your 24 recovery words in this browser profile on this device. It is not a cloud backup. The wallet does not store your password or upload your recovery words.';
     $('unlock-form').hidden = !!wallet || !saved;
-    $('wallet-storage-state').textContent = saved && activitySession?.vault === saved
+    $('wallet-storage-state').textContent = authenticated
       ? 'Encrypted copy saved in this browser.'
       : saved ? 'Temporary session · the saved copy has not been unlocked here.' : 'Temporary session · this wallet has not been saved on this device. To keep it here, open “Save wallet on this device” below.';
   }
   catch {
+    $('vault-password-controls').hidden = true;
+    $('vault-current-password').hidden = true;
+    $('vault-save').hidden = true; $('vault-change').hidden = true;
+    $('vault-storage-title').textContent = 'Device storage unavailable';
+    $('vault-save-explain').textContent = 'Device storage is unavailable. This wallet can only be used temporarily in this tab.';
     $('vault-status').textContent = 'Device storage is unavailable. Use a temporary wallet in this tab.';
     $('wallet-storage-state').textContent = 'Device storage is unavailable.';
   }
@@ -1623,9 +1645,14 @@ async function saveVault(change) {
     $('vault-risk-confirm').reportValidity();
     return;
   }
+  if (!$('vault-confirm-password').value || $('vault-password').value !== $('vault-confirm-password').value) {
+    saveResult('Not saved: the passwords do not match. Re-enter your chosen password in the confirmation field.');
+    $('vault-confirm-password').focus();
+    return;
+  }
   const source = wallet, operation = ++vaultOperation;
   const password = $('vault-password').value, oldPassword = $('vault-old-password').value;
-  $('vault-password').value = ''; $('vault-old-password').value = '';
+  $('vault-password').value = ''; $('vault-confirm-password').value = ''; $('vault-old-password').value = '';
   $('vault-save').disabled = true; $('vault-change').disabled = true;
   $('vault-save-status').textContent = '';
   const restore = showPreparing($(change ? 'vault-change' : 'vault-save'), { text: 'Saving…' });

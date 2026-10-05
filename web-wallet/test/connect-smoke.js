@@ -13,14 +13,17 @@
 // first: the own ID, the empty list and the add button at once, the status
 // line connecting / not connected, sending a contact request and saving the
 // profile refused offline); the Lock in More is the wallet's lock and
-// closes Messages too;
+// closes Messages too; Home shows the unavailable chain-name entry offline;
+// saving changes the device controls from Save to Change password, and deleting
+// the saved copy restores the initial Save controls;
 // the other site's fresh cross-site mark refuses an unlock (src/site-lock.js,
 // through the real page wiring); no horizontal scroll at 390 px and 320 px;
 // the wallet build has no app shell, Messages navigation or Messages UI code.
 //
 // How it can lie / what it does NOT cover: every node WebSocket is closed
 // by the test (no network), so Messages only opens locally: a memory-only
-// wallet (typed words, not saved) with no history, so there is no contact,
+// wallet (typed words, not saved at first; save/delete is checked later) with
+// no history, so there is no contact,
 // no conversation and no request — the composer's and the requests' offline
 // refusals are not reached, and no kept history is shown. Whether the
 // failed connection attempt has already been reported is not asserted (the
@@ -98,6 +101,11 @@ try {
   assert.equal(await page.locator('#nc-start').count(), 0, 'no second unlock screen');
   assert.equal(await page.locator('#start-screen').isVisible(), false);
   assert.equal(await page.locator('#tab-home').isVisible(), true);
+  assert.equal(await page.locator('#home-name-registration').isVisible(), true);
+  assert.equal(await page.locator('#home-register-name').innerText(), 'Register a chain name');
+  assert.equal(await page.locator('#home-register-name').isDisabled(), true);
+  assert.match(await page.locator('#home-name-status').innerText(), /unavailable|Reading your name|Could not read/);
+  assert.equal(await page.locator('#quick-name').isVisible(), false);
   assert.deepEqual(await page.locator('.app-nav-item .app-nav-label').allInnerTexts(), ['Home', 'Chats', 'Wallet', 'More']);
   assert.equal(await page.locator('.app-nav-item[aria-current="page"]').getAttribute('data-tab'), 'home');
   // Wide: the four entries are a left rail.
@@ -169,6 +177,37 @@ try {
   }
   await page.setViewportSize({ width: 1280, height: 960 });
 
+  // The Connect copy of the save UI follows the same real storage states.
+  await page.locator('.app-nav-item[data-tab="wallet"]').click();
+  await page.locator('#vault-storage-title').click();
+  assert.equal(await page.locator('#vault-save').isVisible(), true);
+  assert.equal(await page.locator('#vault-change').isVisible(), false);
+  assert.equal(await page.locator('#vault-old-password').isVisible(), false);
+  assert.equal(await page.locator('#vault-confirm-password').isVisible(), true);
+  await page.locator('#vault-password').fill('public-connect-test-password-2026');
+  await page.locator('#vault-confirm-password').fill('public-connect-test-password-typo');
+  await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
+  assert.match(await page.locator('#vault-save-status').innerText(), /passwords do not match/);
+  assert.equal(await page.evaluate(() => localStorage.getItem('nodus.wallet.v1')), null);
+  await page.locator('#vault-confirm-password').fill('public-connect-test-password-2026');
+  await page.locator('#vault-save').click();
+  await page.waitForFunction(() => document.querySelector('#vault-save-status').textContent.includes('Encrypted wallet saved'));
+  assert.equal(await page.locator('#vault-storage-title').innerText(), 'Change saved password');
+  assert.equal(await page.locator('#vault-save').isVisible(), false);
+  assert.equal(await page.locator('#vault-change').isVisible(), true);
+  assert.equal(await page.locator('#vault-old-password').isVisible(), true);
+  assert.equal(await page.locator('#vault-confirm-label').innerText(), 'Confirm new password');
+  assert.equal(await page.locator('#vault-confirm-password').inputValue(), '');
+  assert.match(await page.locator('#vault-save-explain').innerText(), /already saved/);
+  await page.locator('#vault-delete-details summary').click();
+  await page.locator('#vault-delete-confirm').check(); await page.locator('#vault-delete').click();
+  await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('deleted from this device'));
+  assert.equal(await page.locator('#vault-storage-title').innerText(), 'Save wallet on this device (optional)');
+  assert.equal(await page.locator('#vault-save').isVisible(), true);
+  assert.equal(await page.locator('#vault-change').isVisible(), false);
+  assert.equal(await page.locator('#vault-old-password').isVisible(), false);
+  assert.equal(await page.locator('#vault-confirm-label').innerText(), 'Confirm password');
+
   // More: the Lock there is the wallet's lock; one lock closes both.
   await page.locator('.app-nav-item[data-tab="more"]').click();
   for (const id of ['more-profile', 'more-contacts', 'more-requests', 'more-device', 'lock']) assert.equal(await page.locator(`#${id}`).isVisible(), true, id);
@@ -181,9 +220,21 @@ try {
   assert.equal(await page.locator('#nc-own-id').textContent(), '');
   assert.equal(await page.locator('#vault-delete-details').evaluate(node => node.parentElement.id), 'vault-delete-home');
 
+  assert.equal(await page.locator('#home-name-registration').isVisible(), false);
+  assert.equal(await page.locator('#home-register-name').isDisabled(), true);
+  await page.waitForFunction(async () => !(await navigator.locks.query()).held.some(lock => lock.name === 'nodus.wallet.session'));
+  await page.locator('#restore').click(); await pastePhrase(page, vectors[0].phrase);
+  await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
+  await page.locator('#wallet-open').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#tab-home').isVisible(), true);
+  assert.equal(await page.locator('#home-name-registration').isVisible(), true);
+  assert.equal(await page.locator('#home-register-name').isDisabled(), true);
+  assert.match(await page.locator('#home-name-status').innerText(), /unavailable|Reading your name|Could not read/);
+  await page.locator('.app-nav-item[data-tab="more"]').click(); await page.locator('#lock').click();
+
   assert.deepEqual(unexpected, []);
   assert.deepEqual(errors, []);
-  console.log(`Nodus Connect smoke test passed (${sockets.length} node WebSocket(s) refused by the test): one unlock opens wallet and Messages (locally, offline sends refused), cross-site refusal, one lock, no horizontal scroll at 390/320 px.`);
+  console.log(`Nodus Connect smoke test passed (${sockets.length} node WebSocket(s) refused by the test): one unlock opens wallet and Messages (locally, offline sends refused), cross-site refusal, offline chain-name entry and lock/reopen reset, save/confirmation/delete controls, no horizontal scroll at 390/320 px.`);
 } finally {
   await browser?.close();
   server?.stop();

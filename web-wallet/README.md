@@ -30,6 +30,10 @@ For Caddy, `deploy/Caddyfile` serves the static files and supplies the response 
 
 ## Implemented
 
+- **Chain-name discovery and password controls (0.1.57, 2026-10-05).** Connect Home now puts **Register a chain name** directly below the identity, with an explanation of what the name is for. It stays visible but disabled until the wallet's existing name registration entry is ready, showing the name lookup's status or an availability note. Once ready, it opens Wallet and forwards to the existing registration shortcut, which selects NODUS and focuses the form. The entry disappears when the existing own-name display knows a name, and resets on lock/reopen. No new registration transaction path, name cache or polling was added.
+  - Both sites show **Save current wallet** only without a saved copy. After saving or unlocking that copy, the section reads **Change saved password**, with current-password and new-password fields. A phrase-only session with a saved copy instead explains how to lock and unlock it; neither action nor password fields are offered. The result remains visible below the controls.
+  - Saving and changing a password both require entering the new password twice. Missing or different confirmation shows an error and focuses confirmation before encryption or storage work, preserving the entries for correction. Confirmation clears with the other password inputs on an operation or lock and participates in the existing inactivity guard. The current-password, authenticated-session, consent and saved-history protections remain in place; encryption and storage formats are unchanged.
+  - Existing browser regressions now cover these state transitions, missing/mismatched confirmation, phrase-only restore with a saved copy, and the offline Home entry. Wallet smoke/security suites also intercept IXIOS reads and close node WebSockets so release builds cannot reach a chain. These suites do not register a real name or verify registration with a live node; the Connect smoke covers the disabled entry and reset, not the connected navigation path.
 - **Operator feedback round (2026-10-03, wallet and Nodus Connect).**
   - **Earn: delegation inside each validator row.** The separate delegation form with a validator drop-down is gone. Each validator row shows its figures, its delegator places as "N/2048" ("?" when the node's answer carries no count — an older node; never 0) and, when you have one, "Your delegation: X NODUS". The row header is one button (`aria-expanded`); clicking it opens the row's own controls (`src/app.js` `renderStaking`, `expandedValidator`): with a delegation — "Add more" (any amount) and "Withdraw" (pre-filled with the full amount, with the lock note); without — an amount and "Review delegation" (with the 100-NODUS minimum note); a validator that takes no delegations or whose places are all taken says so. Every action goes through the same `prepareStake` checks and review dialog as before. A delegation whose validator is not in the list (it cannot be withdrawn here: the module needs the validator's key from the list) is listed under "Your delegations to validators not listed above", shown only when there is one.
   - **Delegator places through the module.** `crypto/nodus-send-wasm.c` keeps the validator list reply's optional `dlg` per row (`nsw_val_delegators`, -1 = unknown) and exposes the chain cap `NODUS_MAX_DELEGATORS_PER_VALIDATOR` (`nsw_const_max_delegators`, defined in `nodus/include/nodus/nodus_types.h` since this round); `send-module.js` passes them as `validators()[i].delegators` and `stakingRules.maxDelegators`; `src/adapters/nodus.js` `parseValidators` turns -1 / absent into `null`. `prepareStake` refuses, before building, a NEW delegation to a validator whose reported count is at the cap — the chain's own condition (`nodus_witness_rt_native.c` `rtn_delegate_exec`: a top-up is exempt; an unknown count is left to the chain).
@@ -166,7 +170,7 @@ the DNA Connect wallet's identity/actions/assets hierarchy as a reference.
 Creation and restore still default to temporary memory-only use. Saving a new
 encrypted copy or changing its password requires an unchecked-by-default risk
 acknowledgement alongside the storage warnings and a valid password of at least
-16 characters. The label explains the offline-guessing reason for the minimum;
+16 characters, entered twice with an exact match (0.1.57). The label explains the offline-guessing reason for the minimum;
 length alone is not a strength guarantee. Consent is rechecked before writing
 and cleared after saving or locking. Existing saved wallets can still unlock
 without a new save acknowledgement. No consent record or new secret is stored.
@@ -1982,10 +1986,12 @@ start screen after lock); Chats is Messages opened LOCALLY with no node
 once; the status line "Connecting…" or the failed-attempt text; sending a
 contact request and saving the profile are refused offline); a fresh
 `wallet` mark refuses the unlock; no horizontal scroll at 390 and 320 px on
-any screen; the Lock in More locks the wallet and Messages.
+any screen; the Lock in More locks the wallet and Messages. The Home name entry
+stays visible and disabled offline, resets on lock/reopen, and the real save /
+delete flows show only their appropriate password controls with confirmation.
 NOT covered: every node WebSocket is closed by the test, so Messages opens
-only locally, for an unsaved wallet with no history — no contact, no
-conversation, no request: the composer's and the requests' offline
+only locally, initially for an unsaved wallet with no history (the save/delete
+checks follow) — no contact, no conversation, no request: the composer's and the requests' offline
 refusals, kept history and Contacts are not reached; whether the failed
 attempt was already reported is not asserted; sending, receiving, requests
 and profile editing need a live node.
