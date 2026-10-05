@@ -45,8 +45,11 @@
 
 #define ST_P          ((uint64_t)DNA_V2_SEGMENT_BLOCKS)
 
-_Static_assert(DNA_V2_SEGMENT_BLOCKS == 17280u,
-               "archive bytes item 1: count = 17280");
+/* P = 24 epochs; 17280 at the shipped E = 720 (archive bytes item 1),
+ * asserted where it is defined (shared/dnac/ledger_roots_v2.c). The
+ * short-epoch test build (E = 15) runs P = 360. */
+_Static_assert(DNA_V2_SEGMENT_BLOCKS == 24u * (uint64_t)DNAC_EPOCH_LENGTH,
+               "a segment is one payday period of 24 epochs");
 _Static_assert(DNA_V2_STORAGE_HOLDERS == 3u && DNA_V2_STORAGE_FAIL_LIMIT == 3u,
                "decision 2026-10-05-storage-reward-is-for-archive: R = 3, "
                "skip at 3 failed epochs");

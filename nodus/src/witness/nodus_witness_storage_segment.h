@@ -234,7 +234,11 @@ extern "C" {
 /** The segment directory's file name length bound. */
 #define NODUS_SEG_PATH_MAX       512u
 
-_Static_assert(NODUS_SEG_INDEX_LEN == 207420u, "index layout");
+/* 207 420 at the shipped epoch length (P = 17280); P = 24 epochs follows
+ * DNAC_EPOCH_LENGTH only in a test build that overrides it (the Genesis
+ * Protocol short-epoch build: P = 360, 4 352 bytes). */
+_Static_assert(DNAC_EPOCH_LENGTH != 720 || NODUS_SEG_INDEX_LEN == 207420u,
+               "index layout");
 _Static_assert(NODUS_SEG_DONE_LEN == 105u, "marker layout");
 _Static_assert(NODUS_SEG_COMMIT_MAX == 599839u, "MaxCommitBytes(128)");
 _Static_assert(NODUS_SEG_VALSET_MAX == 342764u, "ValidatorSet bound (128)");

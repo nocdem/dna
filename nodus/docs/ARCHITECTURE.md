@@ -6179,7 +6179,10 @@ hash, `dna_v2_segment_root`; segment leaf `NDS.STSGLEAF.v1` ‖ k ‖ Root(k), n
 memcmp order), ascending distance, duplicates refused; the OFF-CHAIN §6 sample derivation
 `dna_v2_storage_sample_x` / `dna_v2_storage_sample_index` (block index = position mod B, part index mod
 parts_total; B = 0 / parts_total = 0 refused) — one implementation for the probe client and the KAT.
-Constants `DNA_V2_SEGMENT_BLOCKS` 17280, `DNA_V2_STORAGE_HOLDERS` 3, `DNA_V2_STORAGE_FAIL_LIMIT` 3,
+Constants `DNA_V2_SEGMENT_BLOCKS` = 24 × `DNAC_EPOCH_LENGTH` — one payday period of 24 epochs, **17280 at
+the shipped E = 720** (a compile-time `_Static_assert` in `ledger_roots_v2.c`; every "17280" in this section
+is that value) and 360 only in the Genesis Protocol short-epoch build (E = 15, so the harness scenario
+`test_storage_archive.sh` can publish a segment; production bytes unchanged), `DNA_V2_STORAGE_HOLDERS` 3, `DNA_V2_STORAGE_FAIL_LIMIT` 3,
 `DNA_V2_STORAGE_SAMPLES` 3; `dnac.h` `DNAC_STORAGE_EXIT_LOCK_EPOCHS` 12, `DNAC_STORAGE_SEGMENT_DELAY_EPOCHS` 2.
 
 **Tables (base schema, typed CHECKs, WITHOUT ROWID, shape checked on every open, preflight-required).**

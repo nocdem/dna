@@ -62,6 +62,15 @@
 #   exceed. Only test_cmt_prune.sh needs them. **Unset emits no line: the
 #   config is byte-for-byte the pre-knob config.** Set, a DIFFERENT chain
 #   id; export BEFORE bring-up. The production genesis is untouched.
+#   STAGEF_TREASURY_POOL1_RAW (default unset; archive storage reward
+#   harness, test_storage_archive.sh) is the balance of treasury pool 1
+#   (Storage, NODUS_STORAGE_POOL_ID — the pool a storage settlement pays
+#   from, nodus_witness_v2_storage.c st_pool1_get) written into the pool
+#   1 [treasury] block, ADDED to total_supply_raw (Rule P.2 counts
+#   Σ treasury). **Unset writes `balance = 0` for pool 1 exactly as
+#   before and adds 0: the config is byte-for-byte the pre-knob config.**
+#   Set (a positive integer without leading zeros, <= 10^17), a DIFFERENT
+#   chain id; export BEFORE bring-up.
 #
 #   P2P-PORT F6: on a server that reads the network file (its -h lists
 #   --network-file) the bring-up also needs a nodus-cli that prints
@@ -653,6 +662,30 @@ done
 if [ -n "$EV_MAX_AGE_BLOCKS" ] || [ -n "$EV_MAX_AGE_NS" ]; then
     echo "[ok] evidence window (harness knob): max_age_num_blocks=${EV_MAX_AGE_BLOCKS:-builder default} max_age_duration_ns=${EV_MAX_AGE_NS:-builder default}"
 fi
+# ── Archive storage reward harness (test_storage_archive.sh): treasury
+# pool 1 (Storage) — the pool the storage settlement pays from
+# (nodus_witness_v2_storage.c st_settle: budget = pool1 >> 16). Every
+# pool is 0 on a harness chain, so without this no storage settlement
+# can pay anything. OFF by default: unset keeps pool 1 at `balance = 0`
+# and adds 0 to the total — the config is byte-for-byte the pre-knob one.
+# Set, it is part of the hashed genesis document (a DIFFERENT chain id)
+# and is added to total_supply_raw like the reward reserve (Rule P.2:
+# Σ allocations + Σ self_stake + reward_pool_initial + Σ treasury ==
+# total_supply_raw). Bounded at 10^17 raw (1 000 000 000 NODUS) so the
+# total stays far inside int64 (the builder refuses a pool above
+# INT64_MAX, nodus_witness_v2_gen.c).
+POOL1_RAW="${STAGEF_TREASURY_POOL1_RAW:-}"
+case "$POOL1_RAW" in
+    '') POOL1_BAL=0 ;;
+    *[!0-9]*|0*) echo "[FAIL] STAGEF_TREASURY_POOL1_RAW='$POOL1_RAW' — must be a positive integer without leading zeros" >&2; exit 2 ;;
+    *)
+        if [ "${#POOL1_RAW}" -gt 18 ] || [ "$POOL1_RAW" -gt 100000000000000000 ]; then
+            echo "[FAIL] STAGEF_TREASURY_POOL1_RAW=$POOL1_RAW — above the harness bound 10^17 raw" >&2; exit 2
+        fi
+        POOL1_BAL="$POOL1_RAW"
+        echo "[ok] treasury pool 1 (Storage, harness knob): balance=$POOL1_BAL raw, added to total_supply_raw"
+        ;;
+esac
 # ── General multisig (config_version 5, decision 2026-09-29-general-
 # multisig.md ONAY 2): ONE GENESIS OUTPUT to a 2-of-3 address over the
 # identities of nodes 2, 3 and 4 — the coin test_cmt_multisig.sh spends
@@ -690,6 +723,9 @@ TOTAL=$(( SELF_STAKE * C + ALLOC * (C + 1) + PUMP_ALLOC * PUMP_LEAVES \
 # Trial B: the extra pump identities' leaves (section 1d). K = 1 adds
 # exactly 0, so the total — and the line that writes it — is unchanged.
 TOTAL=$(( TOTAL + PUMP_ALLOC * PUMP_LEAVES * (PUMP_IDS - 1) ))
+# Archive storage reward harness: pool 1's balance (0 when unset — the
+# total, and the line that writes it, unchanged).
+TOTAL=$(( TOTAL + POOL1_BAL ))
 echo "[ok] reward reserve: reward_pool_initial=$REWARD_POOL payout_interval_epochs=$PAYOUT_INTERVAL"
 
 CONF="$BASE_DIR/v2_genesis.conf"
@@ -858,11 +894,13 @@ CONF="$BASE_DIR/v2_genesis.conf"
     # unstake_destination_fp (the release has never cared whether that
     # address is one key or M-of-N; the production genesis names the
     # Foundation multisig address there), and no block moves a pool.
+    # Archive storage reward harness: pool 1 carries STAGEF_TREASURY_POOL1_RAW
+    # when set (POOL1_BAL, above); unset it is 0 — the same line as before.
     for p in $(seq 1 9); do
         echo ""
         echo "[treasury]"
         echo "pool_id = $p"
-        echo "balance = 0"
+        if [ "$p" = 1 ]; then echo "balance = $POOL1_BAL"; else echo "balance = 0"; fi
     done
     # General multisig (config_version 5): the genesis output (above).
     if [ -n "$MSIG_ADDR" ]; then

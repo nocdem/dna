@@ -1295,7 +1295,9 @@ What does NOT start a grace (K9a):
   first epoch on. A probe is answered from the node's own block store while it has the block (step 1),
   so **a node registered for the first storage boundary must still have the whole archive then** — not
   pruned (step 1a) — or it is NOT OK for the blocks it lacks from the first epoch on.
-- **A new segment.** A segment is published every 17 280 blocks (≈ 24 epochs); its three holders have
+- **A new segment.** A segment is published every 17 280 blocks (24 epochs — the segment length is
+  defined as 24 × the epoch length, `DNA_V2_SEGMENT_BLOCKS`, 17 280 at the shipped 720 and fixed by a
+  compile-time check; only the Genesis Protocol short-epoch build runs 360); its three holders have
   its blocks in their own block store, so they get no grace for it and keep earning on everything.
 The node must still fetch and keep its new segments while in grace — the grace is the time to do it.
 `storage status` (step 4) shows `grace_until` and says when the node is in grace and how many grace

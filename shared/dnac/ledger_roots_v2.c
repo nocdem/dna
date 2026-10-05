@@ -17,6 +17,18 @@
 
 #include "crypto/hash/qgp_sha3.h"
 
+/* Archive bytes item 1: count = 17280 at the shipped epoch length. P is
+ * 24 epochs (ledger_roots_v2.h DNA_V2_SEGMENT_BLOCKS); only a test build
+ * that overrides DNAC_EPOCH_LENGTH (the Genesis Protocol short-epoch
+ * build) gets another P. A production build whose P is not 17280 does
+ * not compile. (A C expression, not #if: an undefined epoch length must
+ * fail the build, never skip the check.) */
+_Static_assert(DNAC_EPOCH_LENGTH != 720 || DNA_V2_SEGMENT_BLOCKS == 17280u,
+               "archive bytes item 1: count = 17280 at E = 720");
+_Static_assert(DNA_V2_SEGMENT_BLOCKS > 0u &&
+               DNA_V2_SEGMENT_BLOCKS <= 0xFFFFFFFFu,
+               "the segment preimage carries count as a u32 (bytes item 1)");
+
 /* All tags are EXACTLY 16 bytes, zero-padded ASCII. */
 #define TAG_LEN 16
 

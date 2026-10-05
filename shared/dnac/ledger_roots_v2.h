@@ -317,6 +317,7 @@
 #include <stddef.h>
 
 #include "ledger_ids.h"
+#include "dnac/dnac.h"   /* DNAC_EPOCH_LENGTH (DNA_V2_SEGMENT_BLOCKS)  */
 
 #ifdef __cplusplus
 extern "C" {
@@ -691,9 +692,16 @@ int dna_v2_storage_root(const uint8_t registry_root[DNA_V2_ROOT_LEN],
  * docs/plans/2026-10-05-archive-reward-bytes.md items 1-3 and §6 (copied
  * in the "Composition preimages" block above). Pure; no database. */
 
-/** Blocks per segment P (bytes item 1: count = 17280, a CONSTANT of the
- *  preimage — not a chain parameter and not overridable). */
-#define DNA_V2_SEGMENT_BLOCKS        17280u
+/** Blocks per segment P = one payday period of 24 epochs (design rev 4:
+ *  "each payday period (17,280 blocks) is one file"; decision 2026-10-05-
+ *  storage-reward-is-for-archive.md item 2). A compile-time CONSTANT of
+ *  the preimage (bytes item 1: count = 17280), not a chain parameter: at
+ *  the shipped DNAC_EPOCH_LENGTH (720) it is exactly 17280 — asserted in
+ *  ledger_roots_v2.c — so production bytes are unchanged. It follows the
+ *  epoch length only so the Genesis Protocol short-epoch build
+ *  (-DDNAC_EPOCH_LENGTH=15: P = 360) can publish a segment inside a
+ *  harness run; the KATs are production-E only. */
+#define DNA_V2_SEGMENT_BLOCKS        (24u * DNAC_EPOCH_LENGTH)
 /** Holders per segment R (decision 2026-10-05-storage-reward-is-for-
  *  archive.md K4: R = 3). */
 #define DNA_V2_STORAGE_HOLDERS       3u
