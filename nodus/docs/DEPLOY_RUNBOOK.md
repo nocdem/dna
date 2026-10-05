@@ -1197,7 +1197,8 @@ INSPECTION_FAULT` and refused transactions (measured).
 Storage reward v1 rev 4 (decision `docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md`:
 the reward pays registered storage nodes for holding the block ARCHIVE). Package B2b-1 (design
 `docs/plans/2026-10-05-archive-reward-design.md` rev 4 §4; `docs/ARCHITECTURE.md` "package B2b-1")
-makes validators probe storage nodes and storage nodes answer. Nothing here applies before the
+makes validators probe storage nodes and storage nodes answer; package B2b-2 (rev 4 §3; "package
+B2b-2") keeps the assigned segments as files and fetches missing ones. Nothing here applies before the
 storage rule-set generation is voted (§2.2 table, the storage placeholder row) — every step below is
 for a node on a chain where it is in force. **Deploying any of it needs the operator's word like every
 deploy.**
@@ -1207,17 +1208,51 @@ nodus-witness) whose node key is registered in the storage registry (SYSTEM op 7
 bond of exactly 1 000 000 NODUS = 10^14 raw locked from coins owned by that same key, plus the fee).
 It may also be a validator (a both-roles node earns both rewards).
 
-**1. Keep the archive.** B2b-1 answers a probe from the node's own block store (the header of h+1, the
-sampled part and its proof); segment files are package B2b-2. So a storage node runs with
-`retain_blocks` 0 (or absent) — §2.5 "Archive". A pruned node answers `NOT_HELD` for every block below
-its base and is NOT OK for that epoch.
+**1. Keep the archive — until the node's segment files are complete.** A probe is answered from the
+node's own block store (the header of h+1, the sampled part and its proof) while the store has the
+block, and — package B2b-2 (`docs/ARCHITECTURE.md` "package B2b-2") — from the node's SEGMENT FILE once
+the store no longer has it. A storage node keeps one file per assigned payday segment in
+`<data dir>/segments` (nodus.json `"segment_dir"`: one directory name under the data dir, default
+`segments`), exported from its own block store when the segment is published, or fetched over channel
+0x73 from other holders / any node that still has the blocks. Without B2b-2 (or before its files are
+complete) a pruned node answers `NOT_HELD` for every block below its base and is NOT OK for that epoch.
+
+**1a. When a storage node may enable pruning (`retain_blocks`, §2.5).** Only when ALL of these hold
+(decision `2026-10-03-block-pruning-7-paydays.md`, rollout change 2026-10-05: EU-1 and EU-4 do not
+prune until this package is live):
+- every node in the storage role runs a build with package B2b-2 (both 0x72 serving from files and the
+  0x73 channel — an older peer neither serves nor fetches files);
+- this node's log shows, for the CURRENT epoch, `W_STHOLD epoch H=<H>: <N> segment(s) to hold, 0 not
+  complete yet` (logged once per epoch; the count of incomplete segments falls only at the next
+  epoch's line — `W_STSEG segment <k> complete and published` marks each one as it finishes), and `ls <data dir>/segments` lists `seg-<k>.ok` for every assigned k (a segment is held
+  only with its `.ok` marker);
+- the node has run at least one full epoch after that line without `W_STHOLD` / `W_STSEG` errors.
+Then set `retain_blocks` 120960 (§2.5) and restart. **A startup warning tells you when this is not the
+case:** with `retain_blocks` > 0 and an assigned segment not complete the node logs
+`W_STHOLD retain_blocks=… is set while N assigned segment(s) are not complete (first: k)` at start and
+at every epoch — revert to `retain_blocks` 0 or wait for the fetch to finish. The prune loop itself is
+unchanged; it does not consult the segment files. A segment newly assigned to a pruned node (a holder
+displaced elsewhere, a new member) is FETCHED during its grace epoch — over 0x73 from the other holders
+or from the full archives (EU-6, US-1), which keep everything in v1. **Pruning on EU-6 / US-1 stays
+forbidden** (Kurultay #7: no history-replay path for v1).
+**Disk:** one segment is ≈ 17280 × ≈ 100 KB ≈ 1.7 GB at today's block size (design rev 4 §0); a node
+holds about 3 / (number of storage members) of all published segments (R = 3), plus up to one overlap
+epoch of a segment it is handing off. Files of segments this node no longer holds are deleted one epoch
+after the handoff (`W_STHOLD segment k deleted …`).
+**Terminal commit signatures:** the marker records whether the segment's last commit was checked against
+the validator set (`W_STSEG … terminal commit … signatures verified` vs `hash-bound only`). A pruned
+node has no historical validator set, so fetched old segments are hash-bound only — expected, logged.
 
 **2. Be connected to the validators on 4004.** Probes travel on channel 0x72 over the EXISTING 4004
 connection between a validator and the storage node; no new connection is dialed for a probe. Put the
 validators in the storage node's `persistent_peers` (and/or the network file), so each validator has a
 live connection to it. A storage node that is not connected to a validator when that validator's
 probe slot comes (and through the rest of the epoch) is NOT OK in that validator's report. Both ends
-must run a build that lists channel 0x72 (an older peer is never sent to on it).
+must run a build that lists channel 0x72 (an older peer is never sent to on it). The segment fetch
+(channel 0x73, package B2b-2 — ⚠ the byte is pending operator approval) also uses EXISTING 4004
+connections only: a storage node fetches from the other holders of a segment it is connected to, then
+from any connected peer (keep EU-6 / US-1 in `persistent_peers`). Serving nodes answer only a requester
+that is an ACTIVE member of the current frozen storage set, at most 4 GiB per requester per epoch.
 
 **3. Keep the clock in sync (NTP).** A probe carries the validator's wall-clock deadline (10 s ahead);
 the storage node refuses a request whose deadline its own clock has passed (`LATE`). Node NTP is
