@@ -15,9 +15,11 @@
  *     SYSTEM runtime over fabricated engine facts (a decoded 2-leg
  *     envelope, a verdict, mediated-read results):
  *       A1 read plans: REGISTER = [row (op 8, key SHA3-512(node_pk)),
- *          live count (op 9, selector 1)]; EXIT = [row]; REPORT refused.
+ *          live count (op 9, selector 1)]; EXIT = [row]; a malformed
+ *          REPORT refused (the report rule itself: test_storage_b2).
  *       A2 REGISTER happy path: one CREATE / ABSENT on op 8 keyed node_fp,
- *          the 2681-byte record = node_pk ‖ payee ‖ bond ‖ ACTIVE ‖ h ‖ 0.
+ *          the 2685-byte record = node_pk ‖ payee ‖ bond ‖ ACTIVE ‖ h ‖ 0
+ *          ‖ fail_streak 0 (archive reward, leaf v2).
  *       A3 refusals, each -1 (a verdict, never -2): signer fp != SHA3-512
  *          (node_pk); two signers; auth_kind 2; bond one under and one
  *          over DNAC_STORAGE_STAKE_MIN; payee_fp != node_fp; live count
@@ -151,7 +153,7 @@ static int g_checks = 0;
 /* restated from nodus_witness_rt_native.c (static there) */
 #define OP_STOR        8u
 #define OP_STORCNT     9u
-#define STOR_REC_LEN   2681u
+#define STOR_REC_LEN   2685u   /* archive reward: + fail_streak u32 BE */
 #define STOR_PAYEE_OFF 2592u
 #define STOR_BOND_OFF  2656u
 #define STOR_STAT_OFF  2664u
@@ -390,12 +392,15 @@ static int t_hooks(void) {
                                         NODUS_RT_MAX_READS, &n) == 0 &&
               n == 1 && rq[0].op_id == OP_STOR &&
               memcmp(rq[0].key, g_k[KA].fp, 64) == 0, "EXIT plans the row");
+        /* package B2a made REPORT executable; this one carries an 8-byte
+         * call and a nonzero fee, both refused (its full matrix is
+         * test_storage_b2) */
         CHECK(hk_build(&e, DNA_SYSRULE_STORAGE_REPORT, call, 8, 1,
                        DNA_CORERULE_SYSFUND, 1) == 0, "report envelope");
         CHECK(nodus_rt_system_read_plan(s3, &e.view, 0, &g_ctx, rq,
                                         NODUS_RT_MAX_READS, &n) == -1,
-              "REPORT refused (package B2)");
-        CHECK(hk_exec(s3, &e, 0, NULL) == -1, "REPORT exec refused");
+              "a malformed REPORT plans nothing");
+        CHECK(hk_exec(s3, &e, 0, NULL) == -1, "a malformed REPORT refused");
     }
 
     /* ── A2. REGISTER happy path ──────────────────────────────────── */
@@ -845,14 +850,41 @@ static int st_row(nodus_witness_t *w, int node, st_row_t *r) {
     return ret;
 }
 
-static int roots_agree(fixture_t *a, fixture_t *b) {
-    uint8_t ca[64], cb[64], fa[64], fb[64];
-    if (nodus_witness_v2_committed_global_root(a->w, ca) != 0 ||
-        nodus_witness_v2_committed_global_root(b->w, cb) != 0 ||
-        nodus_witness_global_root_v2(a->w, fa, NULL, NULL, NULL) != 0 ||
-        nodus_witness_global_root_v2(b->w, fb, NULL, NULL, NULL) != 0)
+/* The committed SYSTEM head root equals a fresh recomputation by the
+ * RESOLVED runtime's own state-root hook (v4 or v5 by generation). The
+ * archive-reward package replaced the recomputation through
+ * nodus_witness_global_root_v2, whose SYSTEM leg is always the v4
+ * composition (nodus_witness_roots_v2.h) and so cannot equal a committed
+ * root past the storage edge. */
+static int sys_head_recomputes(nodus_witness_t *w) {
+    sqlite3_stmt *st = NULL;
+    uint8_t committed[64], now[64];
+    int ok = -1;
+    if (sqlite3_prepare_v2(w->db, "SELECT head FROM v2_domain_heads WHERE "
+                           "domain_id = 0", -1, &st, NULL) != SQLITE_OK)
         return -1;
-    if (memcmp(ca, fa, 64) != 0 || memcmp(cb, fb, 64) != 0) return -1;
+    if (sqlite3_step(st) == SQLITE_ROW &&
+        sqlite3_column_bytes(st, 0) == DNA_V2_DOMHEAD_ENC_LEN) {
+        memcpy(committed, (const uint8_t *)sqlite3_column_blob(st, 0) + 4,
+               64);
+        ok = 0;
+    }
+    sqlite3_finalize(st);
+    const nodus_domain_runtime_t *rt = NULL;
+    if (ok != 0 ||
+        nodus_witness_v2_runtime_for(w, DNA_DOMAIN_SYSTEM, 1, &rt) != 0 ||
+        !rt || !rt->state_root || rt->state_root(rt, w, now) != 0)
+        return -1;
+    return memcmp(committed, now, 64) == 0 ? 0 : -1;
+}
+
+static int roots_agree(fixture_t *a, fixture_t *b) {
+    uint8_t ca[64], cb[64];
+    if (nodus_witness_v2_committed_global_root(a->w, ca) != 0 ||
+        nodus_witness_v2_committed_global_root(b->w, cb) != 0)
+        return -1;
+    if (sys_head_recomputes(a->w) != 0 || sys_head_recomputes(b->w) != 0)
+        return -1;
     return memcmp(ca, cb, 64) == 0 ? 0 : -1;
 }
 

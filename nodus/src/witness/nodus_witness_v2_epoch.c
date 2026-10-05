@@ -15,6 +15,7 @@
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_vset.h"
 #include "witness/nodus_witness_addr_index.h"  /* node-local release rows */
+#include "witness/nodus_witness_v2_storage.h"  /* archive reward: step 1b' */
 #include "witness/nodus_witness_emission.h"  /* DNAC_DECIMAL_UNIT (Rule N
                                                 weight floor, round 6)   */
 
@@ -290,6 +291,27 @@ static int v2ep_release_utxo(nodus_witness_t *w,
                                           owner_fp128, amount) != 0)
         return -2;
     return 0;
+}
+
+/* Archive reward: the storage exit release (nodus_witness_v2_storage.c,
+ * bytes doc 2026-10-04 item 6) writes its locked UTXO through THIS one
+ * writer — one row convention for every boundary release. Contract:
+ * nodus_witness_v2_epoch.h. */
+int nodus_witness_v2_epoch_release_utxo(nodus_witness_t *w,
+                                        const uint8_t nullifier[64],
+                                        const uint8_t tx_hash[64],
+                                        uint32_t output_index,
+                                        const uint8_t *owner_fp128,
+                                        uint64_t amount,
+                                        uint64_t block_height,
+                                        uint64_t unlock_block) {
+    if (!w || !w->db || !nullifier || !tx_hash || !owner_fp128) return -2;
+    if (amount > V2EP_STORE_MAX || block_height > V2EP_STORE_MAX ||
+        unlock_block > V2EP_STORE_MAX)
+        return -2;
+    return v2ep_release_utxo(w, nullifier, tx_hash, output_index,
+                             owner_fp128, amount, block_height,
+                             unlock_block);
 }
 
 /* active_count -= 1, READ FIRST and bound to the observed value (the
@@ -1573,6 +1595,27 @@ int nodus_witness_v2_epoch_boundary_apply(
         QGP_LOG_ERROR(LOG_TAG, "reward distribution failed at boundary "
                       "%llu", (unsigned long long)global_height);
         return -2;
+    }
+
+    /* ── 1b'. THE STORAGE BOUNDARY (archive reward — storage reward v1
+     * rev 4, package B2a; contract nodus_witness_v2_storage.h) ────────
+     * Inert unless chain_config param 14 is in effect at this height and
+     * the registry resolves GEN_STORAGE: settle the epoch (H−2E, H−E] of
+     * the storage set, prune, release EXITING bonds, publish due
+     * segments, freeze storage_set(H). AFTER 1b and BEFORE 1c (design
+     * docs/plans/2026-10-04-storage-reward-v1-design.md rev 2.2 §5
+     * "after validator distribution, before payday"), so a paying
+     * boundary also pays the storage credit it just accrued. */
+    {
+        nodus_storage_boundary_t sb;
+        if (nodus_witness_storage_boundary_apply(w, global_height, chain_id,
+                                                 &sb) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "storage boundary failed at %llu",
+                          (unsigned long long)global_height);
+            return -2;
+        }
+        out->storage_accrued = sb.accrued;
+        out->n_storage_releases = sb.n_released;
     }
 
     /* ── 1c. PAYDAY (tokenomics-v3 P2, P2-7) ──────────────────────────

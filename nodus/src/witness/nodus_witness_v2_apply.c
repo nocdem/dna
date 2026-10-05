@@ -4236,8 +4236,13 @@ cmt_claim_failed:
              * UTXO (a genesis seat's to the Foundation multisig
              * address), so a graduate is again proof that utxo_set — a
              * CORE leg — moved, and the graduate count is the input. */
+            /* Archive reward (storage reward v1 rev 4, design rev 2.2
+             * §5.6 "CORE when storage credit > 0 or an exit UTXO is
+             * created"): the storage boundary's accrual credits and exit
+             * release UTXOs are CORE legs too. */
             if (ep.n_graduates > 0 || ep.dist_accrued > 0 ||
-                ep.n_payday_utxos > 0) {
+                ep.n_payday_utxos > 0 || ep.storage_accrued > 0 ||
+                ep.n_storage_releases > 0) {
                 dom_ctx_t *dcore = dom_for(doms, n_dom, DNA_DOMAIN_CORE);
                 if (!dcore) {
                     V2AP_FAULT("phase 6e: the boundary moved CORE state "

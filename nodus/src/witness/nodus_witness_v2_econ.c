@@ -784,6 +784,17 @@ static int v2ec_accrue(nodus_witness_t *w, const uint8_t owner_fp[64],
     return 0;
 }
 
+/* Archive reward (design docs/plans/2026-10-05-archive-reward-design.md
+ * rev 4 §5 "each OK member accrues …"): the storage settlement
+ * (nodus_witness_v2_storage.c) credits through THIS path — the same
+ * read-first, value-bound write, the same zero rule, the same bound —
+ * never a second accrual writer. Contract: nodus_witness_v2_econ.h. */
+int nodus_witness_v2_accrue(nodus_witness_t *w, const uint8_t owner_fp[64],
+                            uint64_t x) {
+    if (!w || !w->db || !owner_fp) return -2;
+    return v2ec_accrue(w, owner_fp, x);
+}
+
 /* One (owner, amount) row this module reads: a copy(src) row of a
  * member (with its kind), or an accrual row (kind unused). */
 typedef struct {

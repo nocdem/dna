@@ -373,6 +373,14 @@ static void rtn_put32(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16);
     p[2] = (uint8_t)(v >> 8);  p[3] = (uint8_t)v;
 }
+/* archive reward (STORAGE_REPORT call / storage record) */
+static uint32_t rtn_get32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+static uint16_t rtn_get16(const uint8_t *p) {
+    return (uint16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1]);
+}
 
 /* ══════════════════════════════════════════════════════════════════════
  * The shared authorization implementation — kinds 1, 2 and 3
@@ -3576,6 +3584,15 @@ const nodus_domain_adapter_t NODUS_RT_CORE_ADAPTER = {
 #define RTN_SYS_OP_STOR      8u  /* CREATE|SET + read: v2_storage_nodes  */
 #define RTN_SYS_OP_STORCNT   9u  /* READ-ONLY: live (ACTIVE + EXITING)
                                   * row count, the cap admission input   */
+/* Archive reward (storage reward v1 rev 4, package B2a) — the
+ * STORAGE_REPORT reads and its row, appended. */
+#define RTN_SYS_OP_STSET    10u  /* READ-ONLY: frozen storage_set(H)
+                                  * header — S(H) ‖ count u32 BE         */
+#define RTN_SYS_OP_SNAPSEAT 11u  /* READ-ONLY: snapshot(H) seat pubkey
+                                  * (rev 2.2 §4 "new mediated SYSTEM
+                                  * read: validator snapshot by
+                                  * epoch_start")                        */
+#define RTN_SYS_OP_STREP    12u  /* CREATE + read: v2_storage_reports    */
 
 /* The canonical validator record (exact 5381 bytes — RTN_VAL_REC_LEN,
  * pinned by the static assert below; O11 shipped it at 5397, see the
@@ -3682,7 +3699,7 @@ _Static_assert(RTN_DEL_KEY_LEN <= (uint32_t)DNA_EFFECT_MAX_KEY_LEN,
 #define RTN_CC_VAL_LEN   88u
 #define RTN_CC_KEY_LEN   12u     /* param_id u32 BE ‖ effective u64 BE  */
 
-/* Storage reward v1 — the canonical storage registry record (exact 2681
+/* Storage reward v1 — the canonical storage registry record (exact 2685
  * bytes): every v2_storage_nodes column except the key, in table order.
  *   [0..2591]     node_pk             DNAC_PUBKEY_SIZE
  *   [2592..2655]  payee_fp            64 B raw
@@ -3690,26 +3707,52 @@ _Static_assert(RTN_DEL_KEY_LEN <= (uint32_t)DNA_EFFECT_MAX_KEY_LEN,
  *   [2664]        status              u8 (DNA_V2_STORAGE_ACTIVE..RELEASED)
  *   [2665..2672]  registered_height   u64 BE
  *   [2673..2680]  exit_height         u64 BE
+ *   [2681..2684]  fail_streak         u32 BE (archive reward, bytes doc
+ *                                     2026-10-05 item 4 — written by the
+ *                                     storage boundary only; REGISTER
+ *                                     writes 0, EXIT copies it)
  * The KEY is node_fp = SHA3-512(node_pk) (64 B, untagged — the bytes doc
  * clarification "node_fp = SHA3-512(node_pk) with NO prefix"), a pure
  * function of the value's node_pk, so key and value cannot disagree
- * (rtn_stor_rec_ok). The registry LEAF (bytes doc item 1) hashes node_fp
- * and the five scalar columns — the roots loader, not this record. */
+ * (rtn_stor_rec_ok). The registry LEAF (v2) hashes node_fp and the six
+ * scalar columns — the roots loader, not this record. */
 #define RTN_STOR_PK_OFF      0u
 #define RTN_STOR_PAYEE_OFF   ((uint32_t)DNAC_PUBKEY_SIZE)
 #define RTN_STOR_BOND_OFF    (RTN_STOR_PAYEE_OFF + 64u)
 #define RTN_STOR_STATUS_OFF  (RTN_STOR_BOND_OFF + 8u)
 #define RTN_STOR_REGH_OFF    (RTN_STOR_STATUS_OFF + 1u)
 #define RTN_STOR_EXITH_OFF   (RTN_STOR_REGH_OFF + 8u)
-#define RTN_STOR_REC_LEN     (RTN_STOR_EXITH_OFF + 8u)
+#define RTN_STOR_FAIL_OFF    (RTN_STOR_EXITH_OFF + 8u)
+#define RTN_STOR_REC_LEN     (RTN_STOR_FAIL_OFF + 4u)
 #define RTN_STOR_KEY_LEN     64u
-_Static_assert(RTN_STOR_REC_LEN == 2681u, "storage record layout drifted");
+_Static_assert(RTN_STOR_REC_LEN == 2685u, "storage record layout drifted");
 _Static_assert(RTN_STOR_REC_LEN <= (uint32_t)DNA_EFFECT_MAX_VALUE_LEN,
                "storage record no longer fits one typed effect value");
 /** STORCNT selector: 1 = the LIVE rows (status ACTIVE or EXITING) — the
  *  set the design's cap counts ("ACTIVE+EXITING rows =
  *  NODUS_STORAGE_SET_MAX", rev 2.2 §1). Any other selector fails closed. */
 #define RTN_STORCNT_SEL_LIVE 1u
+
+/* Archive reward (storage reward v1 rev 4) — STORAGE_REPORT (op 9).
+ * Call (bytes doc docs/plans/2026-10-04-storage-reward-bytes.md item 3,
+ * untagged): epoch_start u64 BE ‖ seat u32 BE ‖ S(H)[64] ‖ bitmap_len
+ * u16 BE ‖ bitmap[bitmap_len], bitmap_len 0..32 — 78..110 bytes.
+ * Reads / row:
+ *   STSET    key epoch_start(8)              value S(H)[64] ‖ count(4)
+ *   SNAPSEAT key epoch_start(8) ‖ seat(4)    value the seat's pubkey
+ *   STREP    key epoch_start(8) ‖ seat(4)    value S(H)[64] ‖
+ *                                            bitmap_len(2) ‖ bitmap */
+#define RTN_STREP_FIXED_LEN   (8u + 4u + 64u + 2u)
+#define RTN_STREP_CALL_MAX    (RTN_STREP_FIXED_LEN + DNA_V2_STORAGE_BITMAP_MAX)
+#define RTN_STSET_KEY_LEN     8u
+#define RTN_STSET_VAL_LEN     (64u + 4u)
+#define RTN_STREP_KEY_LEN     12u
+#define RTN_STREP_VAL_MIN     (64u + 2u)
+#define RTN_STREP_VAL_MAX     (64u + 2u + DNA_V2_STORAGE_BITMAP_MAX)
+_Static_assert(RTN_STREP_CALL_MAX == 110u, "report call bound drifted");
+_Static_assert(RTN_STREP_CALL_MAX < RTN_SYS_DELEGATE_CALL_LEN,
+               "the report call is no longer dominated by the DELEGATE "
+               "call — re-derive the worst-case envelope asserts");
 
 /* CHAIN_CONFIG call v2 exact length: RTN_CC_CALL_LEN — defined with the
  * capacity-derivation asserts near the top of this file. */
@@ -4106,7 +4149,12 @@ static int rtn_storage_register_exec(const dna_env_view_t *env,
     rtn_put64(rec + RTN_STOR_BOND_OFF, c.bond);
     rec[RTN_STOR_STATUS_OFF] = DNA_V2_STORAGE_ACTIVE;
     rtn_put64(rec + RTN_STOR_REGH_OFF, ctx->global_height);
-    /* exit_height stays 0 */
+    /* exit_height stays 0; fail_streak stays 0 — a (re-)registration is a
+     * fresh record (archive reward reading: a member skipped at
+     * fail_streak >= 3 never gets a new eligible block, so its streak
+     * never moves again; exit + re-registration, with its 12-epoch bond
+     * lock, is the one way back — reported as an open reading, design
+     * rev 4 §2 does not state it) */
     if (!rtn_stor_rec_ok(rec, node_fp)) return -1;   /* e.g. a height
                                           * past the INTEGER bound: the
                                           * VERDICT class, never first the
@@ -4144,15 +4192,15 @@ static int rtn_storage_register_exec(const dna_env_view_t *env,
  * observed record). The funding leg is fee-only (rtn_sys_call_flow: lock
  * = release = 0) — NO value moves in this block.
  *
- * TODO-B2 — THE RELEASE STEP IS NOT HERE: at the next epoch boundary B
- * the node leaves the frozen storage set, and the boundary settlement
- * (package B2) releases the bond as ONE locked UTXO to payee_fp with
- * unlock = B + 12·E (F3), identity dna_v2_storage_exit_id(chain_id, B,
- * node_fp) / dna_v2_storage_exit_nullifier (kind 0x11, out index 201),
- * and sets the row RELEASED — which removes the bond from the supply
- * term (claims.c storage_bonds) exactly as the UTXO adds it back. Until
- * B2 lands an EXITING row stays EXITING (bond still counted, still in
- * supply — conservation holds).
+ * THE RELEASE STEP IS NOT HERE: at the next epoch boundary B the node
+ * leaves the frozen storage set (only ACTIVE rows are frozen), and the
+ * storage boundary (nodus_witness_v2_storage.c step 3, package B2a)
+ * releases the bond as ONE locked UTXO to payee_fp with unlock = B +
+ * 12·E (F3), identity dna_v2_storage_exit_id(chain_id, B, node_fp) /
+ * dna_v2_storage_exit_nullifier (kind 0x11, out index 201), and sets the
+ * row RELEASED — which removes the bond from the supply term (claims.c
+ * storage_bonds) exactly as the UTXO adds it back. fail_streak is copied
+ * unchanged.
  * @return 0 / -1 verdict / -2 node fault.
  */
 static int rtn_storage_exit_exec(const dna_env_view_t *env,
@@ -4206,6 +4254,157 @@ static int rtn_storage_exit_exec(const dna_env_view_t *env,
     return 0;
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+ * SYSTEM — STORAGE_REPORT (op 9) — archive reward, package B2a. Design
+ * docs/plans/2026-10-04-storage-reward-v1-design.md rev 2.2 §4 (kept by
+ * rev 4 §5); call bytes docs/plans/2026-10-04-storage-reward-bytes.md
+ * item 3. GEN_STORAGE only.
+ *
+ * A seated validator of snapshot(H) attests, after the epoch (H, H+E]
+ * ends, which members of storage_set(H) passed its off-chain probe. The
+ * envelope: ONE SYSTEM leg, fee_amount 0 (no SYSTEM fee sink exists —
+ * the CHAIN_CONFIG precedent; all-SYSTEM envelopes are exempt from the
+ * HF-1 gas price), auth_kind 1 with EXACTLY one verified signer whose
+ * fingerprint is SHA3-512 of snapshot(H).entries[seat].pubkey (the
+ * consensus key of that seat — keyed by (H, seat), so it survives a key
+ * rotation of the validator row).
+ *
+ * Pure parse rules (read plan AND exec): call 78..110 bytes, exact;
+ * bitmap_len <= 32; H a boundary (H % E == 0, H >= E); the applying
+ * height h inside the WINDOW (H+E, H+E+floor(E/2)] (checked adds) — an
+ * exec rule, so CheckTx at tip+1 judges the same.
+ * Read rules (exec): storage_set(H) exists and its S(H) equals the
+ * call's; bitmap_len == ceil(count/8) and the unused high bits of the
+ * last byte are zero; seat < |snapshot(H)| and the signer is that seat;
+ * no committed report for (H, seat) yet (first applied wins; the CREATE
+ * / ABSENT precondition is the backstop). The reporter's own bit about
+ * itself (when its node key is also a storage member) is accepted and
+ * IGNORED at settlement (F2, nodus_witness_v2_storage.c).
+ * Every refusal is a VERDICT (-1); -2 only for this node's own faults.
+ * ════════════════════════════════════════════════════════════════════ */
+
+typedef struct {
+    uint64_t       h;
+    uint32_t       seat;
+    const uint8_t *set_hash;             /* [64]                         */
+    uint16_t       bitmap_len;
+    const uint8_t *bitmap;
+} rtn_strep_call_t;
+
+/* Parse + every rule that needs no read. @return 0 / -1. */
+static int rtn_strep_static(const dna_env_view_t *env, uint16_t leg_index,
+                            const nodus_rt_exec_ctx_t *ctx,
+                            rtn_strep_call_t *c) {
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    if (env->leg_count != 1 || leg_index != 0) return -1;
+    if (env->leg[leg_index].auth_kind != NODUS_RT_AUTHKIND_DSA87_MULTI_V1)
+        return -1;
+    if (env->fee_amount != 0) return -1;     /* no SYSTEM fee sink      */
+    const uint32_t len = env->leg[leg_index].call_len;
+    if (len < RTN_STREP_FIXED_LEN || len > RTN_STREP_CALL_MAX) return -1;
+    const uint8_t *p = env->buf + env->call_off[leg_index];
+    c->h = rtn_get64(p);
+    c->seat = rtn_get32(p + 8);
+    c->set_hash = p + 12;
+    c->bitmap_len = rtn_get16(p + 76);
+    c->bitmap = p + RTN_STREP_FIXED_LEN;
+    if (c->bitmap_len > DNA_V2_STORAGE_BITMAP_MAX) return -1;
+    if (len != RTN_STREP_FIXED_LEN + (uint32_t)c->bitmap_len) return -1;
+    if (c->h == 0 || (c->h % E) != 0) return -1;   /* a boundary H      */
+    uint64_t open = 0, close = 0;
+    if (dna_ck_add_u64(c->h, E, &open) != 0 ||
+        dna_ck_add_u64(open, E / 2, &close) != 0)
+        return -1;
+    if (!(ctx->global_height > open && ctx->global_height <= close))
+        return -1;                           /* outside the WINDOW       */
+    return 0;
+}
+
+/* Reads (ascending (op_id, key)): [0] STSET(H) [1] SNAPSEAT(H, seat)
+ * [2] STREP(H, seat). */
+static int rtn_strep_read_plan(const dna_env_view_t *env,
+                               uint16_t leg_index,
+                               const nodus_rt_exec_ctx_t *ctx,
+                               nodus_rt_read_req_t *reqs_out,
+                               uint16_t max_reqs, uint16_t *n_out) {
+    rtn_strep_call_t c;
+    if (rtn_strep_static(env, leg_index, ctx, &c) != 0) return -1;
+    if (max_reqs < 3) return -1;
+    memset(reqs_out, 0, 3 * sizeof(reqs_out[0]));
+    reqs_out[0].op_id = RTN_SYS_OP_STSET;
+    reqs_out[0].key_len = (uint16_t)RTN_STSET_KEY_LEN;
+    rtn_put64(reqs_out[0].key, c.h);
+    reqs_out[1].op_id = RTN_SYS_OP_SNAPSEAT;
+    reqs_out[1].key_len = (uint16_t)RTN_STREP_KEY_LEN;
+    rtn_put64(reqs_out[1].key, c.h);
+    rtn_put32(reqs_out[1].key + 8, c.seat);
+    reqs_out[2].op_id = RTN_SYS_OP_STREP;
+    reqs_out[2].key_len = (uint16_t)RTN_STREP_KEY_LEN;
+    memcpy(reqs_out[2].key, reqs_out[1].key, RTN_STREP_KEY_LEN);
+    *n_out = 3;
+    return 0;
+}
+
+static int rtn_strep_exec(const dna_env_view_t *env, uint16_t leg_index,
+                          const nodus_rt_exec_ctx_t *ctx,
+                          const nodus_rt_read_res_t *reads,
+                          uint16_t n_reads,
+                          uint8_t *res_out, size_t res_cap,
+                          size_t *res_len_out) {
+    rtn_strep_call_t c;
+    if (rtn_strep_static(env, leg_index, ctx, &c) != 0) return -1;
+    if (!ctx->auth || ctx->auth->n_signers != 1) return -1;
+    if (n_reads != 3 || !reads) return -2;
+
+    /* ── storage_set(H): exists, S(H) matches, bitmap shape ───────── */
+    const nodus_rt_read_res_t *sr = &reads[0];
+    if (!sr->present) return -1;             /* no frozen set at H      */
+    if (sr->value_len != RTN_STSET_VAL_LEN) return -2;
+    if (memcmp(sr->value, c.set_hash, 64) != 0) return -1;
+    const uint32_t count = rtn_get32(sr->value + 64);
+    if (count > DNA_V2_STORAGE_SET_MAX) return -2;
+    if ((uint32_t)c.bitmap_len != (count + 7u) / 8u) return -1;
+    if ((count % 8u) != 0 && c.bitmap_len > 0 &&
+        (c.bitmap[c.bitmap_len - 1] >> (count % 8u)) != 0)
+        return -1;                           /* unused high bits set     */
+
+    /* ── the seat and its consensus key ───────────────────────────── */
+    const nodus_rt_read_res_t *kr = &reads[1];
+    if (!kr->present) return -1;             /* seat not in snapshot(H)  */
+    if (kr->value_len != (uint32_t)DNAC_PUBKEY_SIZE) return -2;
+    {
+        uint8_t fp[64];
+        if (qgp_sha3_512(kr->value, DNAC_PUBKEY_SIZE, fp) != 0) return -2;
+        if (memcmp(fp, ctx->auth->signer_fp[0], 64) != 0) return -1;
+    }
+
+    /* ── first applied (H, seat) wins ─────────────────────────────── */
+    if (reads[2].present) return -1;
+
+    uint8_t key[RTN_STREP_KEY_LEN], val[RTN_STREP_VAL_MAX];
+    rtn_put64(key, c.h);
+    rtn_put32(key + 8, c.seat);
+    memcpy(val, c.set_hash, 64);
+    val[64] = (uint8_t)(c.bitmap_len >> 8);
+    val[65] = (uint8_t)c.bitmap_len;
+    if (c.bitmap_len > 0)
+        memcpy(val + RTN_STREP_VAL_MIN, c.bitmap, c.bitmap_len);
+
+    dna_effect_in_t eff;
+    memset(&eff, 0, sizeof(eff));
+    eff.hdr.op_id = RTN_SYS_OP_STREP;
+    eff.hdr.effect_kind = DNA_EFFECT_CREATE;
+    eff.hdr.precond_tag = DNA_EFFECT_PRE_ABSENT;   /* first-wins backstop */
+    eff.hdr.key_len = (uint16_t)RTN_STREP_KEY_LEN;
+    eff.hdr.value_len = RTN_STREP_VAL_MIN + (uint32_t)c.bitmap_len;
+    eff.key = key;
+    eff.value = val;
+    if (dna_effect_result_encode(&eff, 1, res_out, res_cap,
+                                 res_len_out) != 0)
+        return -2;
+    return 0;
+}
+
 int nodus_rt_system_read_plan(const nodus_domain_runtime_t *rt,
                               const dna_env_view_t *env, uint16_t leg_index,
                               const nodus_rt_exec_ctx_t *ctx,
@@ -4222,9 +4421,10 @@ int nodus_rt_system_read_plan(const nodus_domain_runtime_t *rt,
         return rtn_storage_read_plan(env, leg_index, reqs_out, max_reqs,
                                      n_out);
     case DNA_SYSRULE_STORAGE_REPORT:
-        /* ⚠ package B2 (see nodus_rt_system_exec): refused until the
-         * report rule exists. TODO-B2: the report read plan. */
-        return -1;
+        /* archive reward (package B2a): the report read plan */
+        if (!rtn_gen_storage(rt)) return -1;
+        return rtn_strep_read_plan(env, leg_index, ctx, reqs_out, max_reqs,
+                                   n_out);
     case DNA_SYSRULE_STAKE:
         return rtn_stake_read_plan(env, leg_index, reqs_out, max_reqs,
                                    n_out);
@@ -5204,15 +5404,12 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
         return rtn_storage_exit_exec(env, leg_index, ctx, reads, n_reads,
                                      res_out, res_cap, res_len_out);
     case DNA_SYSRULE_STORAGE_REPORT:
-        /* ⚠ NOT EXECUTABLE IN THIS PACKAGE (storage reward v1 package
-         * B1). The GEN_STORAGE descriptor OWNS and PRICES op 9 so the
-         * rule-set identity is final, but the report rule (design rev
-         * 2.2 §4: window, seat in snapshot(H), S(H) match, bitmap shape,
-         * first-wins) is package B2's. Until B2 lands every STORAGE_REPORT
-         * leg is a deterministic REFUSAL (-1) on every node — never a
-         * fault, never applied. TODO-B2: replace this refusal with the
-         * report exec. */
-        return -1;
+        /* archive reward (package B2a): the report rule (design rev 2.2
+         * §4 — window, seat in snapshot(H), S(H) match, bitmap shape,
+         * first-wins). Contract above rtn_strep_static. */
+        if (!rtn_gen_storage(rt)) return -1;
+        return rtn_strep_exec(env, leg_index, ctx, reads, n_reads,
+                              res_out, res_cap, res_len_out);
     case DNA_SYSRULE_STAKE:
         return rtn_stake_exec(env, leg_index, ctx, reads, n_reads,
                               res_out, res_cap, res_len_out);
@@ -5682,8 +5879,8 @@ static int rtn_sys_stor_fetch(nodus_witness_t *w, const uint8_t *key,
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
             "SELECT node_pk, payee_fp, bond, status, registered_height, "
-            "exit_height FROM v2_storage_nodes WHERE node_fp = ?1",
-            -1, &st, NULL) != SQLITE_OK)
+            "exit_height, fail_streak FROM v2_storage_nodes "
+            "WHERE node_fp = ?1", -1, &st, NULL) != SQLITE_OK)
         return -1;
     sqlite3_bind_blob(st, 1, key, RTN_STOR_KEY_LEN, SQLITE_TRANSIENT);
     int rc = sqlite3_step(st);
@@ -5695,9 +5892,11 @@ static int rtn_sys_stor_fetch(nodus_witness_t *w, const uint8_t *key,
         sqlite3_int64 stat = sqlite3_column_int64(st, 3);
         sqlite3_int64 rh   = sqlite3_column_int64(st, 4);
         sqlite3_int64 eh   = sqlite3_column_int64(st, 5);
+        sqlite3_int64 fs   = sqlite3_column_int64(st, 6);
         if (pk && sqlite3_column_bytes(st, 0) == DNAC_PUBKEY_SIZE &&
             py && sqlite3_column_bytes(st, 1) == 64 &&
             bond >= 0 && rh >= 1 && eh >= 0 &&
+            fs >= 0 && fs <= (sqlite3_int64)UINT32_MAX &&
             stat >= (sqlite3_int64)DNA_V2_STORAGE_ACTIVE &&
             stat <= (sqlite3_int64)DNA_V2_STORAGE_RELEASED) {
             memset(rec, 0, RTN_STOR_REC_LEN);
@@ -5707,6 +5906,7 @@ static int rtn_sys_stor_fetch(nodus_witness_t *w, const uint8_t *key,
             rec[RTN_STOR_STATUS_OFF] = (uint8_t)stat;
             rtn_put64(rec + RTN_STOR_REGH_OFF, (uint64_t)rh);
             rtn_put64(rec + RTN_STOR_EXITH_OFF, (uint64_t)eh);
+            rtn_put32(rec + RTN_STOR_FAIL_OFF, (uint32_t)fs);
             out = 0;
         }
     } else if (rc == SQLITE_DONE) {
@@ -5759,6 +5959,116 @@ static int rtn_stor_rec_ok(const uint8_t *v, const uint8_t *key) {
     return 1;
 }
 
+/* ── Archive reward — the STORAGE_REPORT reads (package B2a) ──────────
+ * Same discipline as the registry fetch: typed columns, every malformed
+ * shape a FAULT, an absent row a value. */
+
+/* storage_set(H) header: S(H) ‖ member_count u32 BE (the STORED hash;
+ * the sets_root loader re-derives it from the members on every root, so
+ * a read and the committed root cannot disagree on an honest node).
+ * 0 = found, 1 = absent, -1 = fault. */
+static int rtn_sys_stset_fetch(nodus_witness_t *w, const uint8_t *key,
+                               uint16_t key_len,
+                               uint8_t val[RTN_STSET_VAL_LEN]) {
+    if (key_len != RTN_STSET_KEY_LEN) return -1;
+    const uint64_t h = rtn_get64(key);
+    if (h > (uint64_t)INT64_MAX) return 1;   /* no row can carry it      */
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT set_hash, member_count FROM v2_storage_sets "
+            "WHERE epoch_start = ?1", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)h);
+    int rc = sqlite3_step(st);
+    int out = -1;
+    if (rc == SQLITE_ROW) {
+        if (sqlite3_column_type(st, 0) == SQLITE_BLOB &&
+            sqlite3_column_bytes(st, 0) == 64 &&
+            sqlite3_column_blob(st, 0) &&
+            sqlite3_column_type(st, 1) == SQLITE_INTEGER &&
+            sqlite3_column_int64(st, 1) >= 0 &&
+            sqlite3_column_int64(st, 1) <=
+                (sqlite3_int64)DNA_V2_STORAGE_SET_MAX) {
+            memcpy(val, sqlite3_column_blob(st, 0), 64);
+            rtn_put32(val + 64, (uint32_t)sqlite3_column_int64(st, 1));
+            out = 0;
+        }
+    } else if (rc == SQLITE_DONE) {
+        out = 1;
+    }
+    sqlite3_finalize(st);
+    return out;
+}
+
+/* snapshot(H).entries[seat].pubkey through the ONE snapshot authority
+ * (nodus_witness_v2_epoch_authority_for_epoch). A non-canonical H (0 or
+ * not a multiple of E), an absent snapshot or a seat past its count is
+ * ABSENT — a value, so a report naming them is a VERDICT, never a fault.
+ * 0 = found, 1 = absent, -1 = fault. */
+static int rtn_sys_snapseat_fetch(nodus_witness_t *w, const uint8_t *key,
+                                  uint16_t key_len,
+                                  uint8_t pk[DNAC_PUBKEY_SIZE]) {
+    if (key_len != RTN_STREP_KEY_LEN) return -1;
+    const uint64_t h = rtn_get64(key);
+    const uint32_t seat = rtn_get32(key + 8);
+    if (h == 0 || (h % (uint64_t)DNAC_EPOCH_LENGTH) != 0) return 1;
+    dna_vset_snapshot_t *snap = NULL;
+    int rc = nodus_witness_v2_epoch_authority_for_epoch(w, h, &snap, NULL,
+                                                        NULL);
+    if (rc == 1) return 1;
+    if (rc != 0 || !snap) return -1;
+    int out = 1;
+    if (seat < (uint32_t)snap->active_count) {
+        memcpy(pk, snap->entries[seat].pubkey, DNAC_PUBKEY_SIZE);
+        out = 0;
+    }
+    dna_vset_free(&snap);
+    return out;
+}
+
+/* v2_storage_reports row as S(H) ‖ bitmap_len u16 BE ‖ bitmap.
+ * 0 = found (*len set), 1 = absent, -1 = fault. */
+static int rtn_sys_strep_fetch(nodus_witness_t *w, const uint8_t *key,
+                               uint16_t key_len,
+                               uint8_t val[RTN_STREP_VAL_MAX],
+                               uint32_t *len) {
+    if (key_len != RTN_STREP_KEY_LEN) return -1;
+    const uint64_t h = rtn_get64(key);
+    if (h > (uint64_t)INT64_MAX) return 1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT set_hash, bitmap FROM v2_storage_reports "
+            "WHERE epoch_start = ?1 AND seat = ?2", -1, &st, NULL)
+        != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)h);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)rtn_get32(key + 8));
+    int rc = sqlite3_step(st);
+    int out = -1;
+    if (rc == SQLITE_ROW) {
+        const int bl = sqlite3_column_bytes(st, 1);
+        if (sqlite3_column_type(st, 0) == SQLITE_BLOB &&
+            sqlite3_column_bytes(st, 0) == 64 &&
+            sqlite3_column_blob(st, 0) &&
+            sqlite3_column_type(st, 1) == SQLITE_BLOB && bl >= 0 &&
+            bl <= (int)DNA_V2_STORAGE_BITMAP_MAX &&
+            (bl == 0 || sqlite3_column_blob(st, 1))) {
+            memcpy(val, sqlite3_column_blob(st, 0), 64);
+            val[64] = (uint8_t)(bl >> 8);
+            val[65] = (uint8_t)bl;
+            if (bl > 0)
+                memcpy(val + RTN_STREP_VAL_MIN, sqlite3_column_blob(st, 1),
+                       (size_t)bl);
+            *len = RTN_STREP_VAL_MIN + (uint32_t)bl;
+            out = 0;
+        }
+    } else if (rc == SQLITE_DONE) {
+        out = 1;
+    }
+    sqlite3_finalize(st);
+    return out;
+}
+
 static nodus_adapter_status_t rtn_sys_probe(
         const nodus_domain_adapter_t *ad, struct nodus_witness *wns,
         uint32_t dom, const nodus_adapter_op_t *op,
@@ -5775,6 +6085,20 @@ static nodus_adapter_status_t rtn_sys_probe(
             f->version = rtn_get64(rec + RTN_STOR_REGH_OFF);
             if (dna_effect_value_hash(rec, RTN_STOR_REC_LEN,
                                       f->value_hash) != 0)
+                return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        }
+        return NODUS_ADAPTER_OK;
+    }
+    if (op->op_id == RTN_SYS_OP_STREP) {
+        /* archive reward: the ABSENT backstop of a report CREATE */
+        uint8_t val[RTN_STREP_VAL_MAX];
+        uint32_t vl = 0;
+        int rc = rtn_sys_strep_fetch(w, key, key_len, val, &vl);
+        if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        f->exists = (rc == 0);
+        if (f->exists) {
+            f->version = 0;
+            if (dna_effect_value_hash(val, vl, f->value_hash) != 0)
                 return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         }
         return NODUS_ADAPTER_OK;
@@ -5928,6 +6252,41 @@ static nodus_adapter_status_t rtn_sys_read(
         *present = 1;                    /* a COUNT always answers — 0
                                           * rows is a VALUE              */
         *vlen = 8;
+        return NODUS_ADAPTER_OK;
+    }
+    /* archive reward (package B2a): the three STORAGE_REPORT reads */
+    if (op->op_id == RTN_SYS_OP_STSET) {
+        uint8_t val[RTN_STSET_VAL_LEN];
+        int rc = rtn_sys_stset_fetch(w, key, key_len, val);
+        if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        if (rc == 1) return NODUS_ADAPTER_OK;        /* absent           */
+        if (cap < RTN_STSET_VAL_LEN) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        memcpy(value, val, RTN_STSET_VAL_LEN);
+        *present = 1;
+        *vlen = RTN_STSET_VAL_LEN;
+        return NODUS_ADAPTER_OK;
+    }
+    if (op->op_id == RTN_SYS_OP_SNAPSEAT) {
+        uint8_t pk[DNAC_PUBKEY_SIZE];
+        int rc = rtn_sys_snapseat_fetch(w, key, key_len, pk);
+        if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        if (rc == 1) return NODUS_ADAPTER_OK;        /* absent           */
+        if (cap < DNAC_PUBKEY_SIZE) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        memcpy(value, pk, DNAC_PUBKEY_SIZE);
+        *present = 1;
+        *vlen = DNAC_PUBKEY_SIZE;
+        return NODUS_ADAPTER_OK;
+    }
+    if (op->op_id == RTN_SYS_OP_STREP) {
+        uint8_t val[RTN_STREP_VAL_MAX];
+        uint32_t vl = 0;
+        int rc = rtn_sys_strep_fetch(w, key, key_len, val, &vl);
+        if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        if (rc == 1) return NODUS_ADAPTER_OK;        /* absent           */
+        if (cap < vl) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        memcpy(value, val, vl);
+        *present = 1;
+        *vlen = vl;
         return NODUS_ADAPTER_OK;
     }
     return NODUS_ADAPTER_ERR_STORAGE_FAULT;
@@ -6119,8 +6478,8 @@ static nodus_adapter_status_t rtn_sys_mutate(
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         if (sqlite3_prepare_v2(w->db,
                 "INSERT INTO v2_storage_nodes (node_fp, node_pk, payee_fp, "
-                "bond, status, registered_height, exit_height) "
-                "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "bond, status, registered_height, exit_height, fail_streak) "
+                "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 -1, &st, NULL) != SQLITE_OK)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         sqlite3_bind_blob(st, 1, key, RTN_STOR_KEY_LEN, SQLITE_TRANSIENT);
@@ -6135,6 +6494,8 @@ static nodus_adapter_status_t rtn_sys_mutate(
             (sqlite3_int64)rtn_get64(value + RTN_STOR_REGH_OFF));
         sqlite3_bind_int64(st, 7,
             (sqlite3_int64)rtn_get64(value + RTN_STOR_EXITH_OFF));
+        sqlite3_bind_int64(st, 8,
+            (sqlite3_int64)rtn_get32(value + RTN_STOR_FAIL_OFF));
     } else if (op->op_id == RTN_SYS_OP_STOR && kind == DNA_EFFECT_SET) {
         /* node_pk is NOT updatable: it is what the key hashes, and
          * rtn_stor_rec_ok already proved the two agree */
@@ -6143,8 +6504,9 @@ static nodus_adapter_status_t rtn_sys_mutate(
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         if (sqlite3_prepare_v2(w->db,
                 "UPDATE v2_storage_nodes SET payee_fp = ?1, bond = ?2, "
-                "status = ?3, registered_height = ?4, exit_height = ?5 "
-                "WHERE node_fp = ?6", -1, &st, NULL) != SQLITE_OK)
+                "status = ?3, registered_height = ?4, exit_height = ?5, "
+                "fail_streak = ?7 WHERE node_fp = ?6", -1, &st, NULL)
+            != SQLITE_OK)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
         sqlite3_bind_blob(st, 1, value + RTN_STOR_PAYEE_OFF, 64,
                           SQLITE_TRANSIENT);
@@ -6156,6 +6518,34 @@ static nodus_adapter_status_t rtn_sys_mutate(
         sqlite3_bind_int64(st, 5,
             (sqlite3_int64)rtn_get64(value + RTN_STOR_EXITH_OFF));
         sqlite3_bind_blob(st, 6, key, RTN_STOR_KEY_LEN, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 7,
+            (sqlite3_int64)rtn_get32(value + RTN_STOR_FAIL_OFF));
+    } else if (op->op_id == RTN_SYS_OP_STREP && kind == DNA_EFFECT_CREATE) {
+        /* archive reward: the committed STORAGE_REPORT row — STRICT
+         * insert (the ABSENT precondition already ruled). The value is
+         * S(H) ‖ bitmap_len u16 BE ‖ bitmap, its length exact. */
+        if (key_len != RTN_STREP_KEY_LEN || !value ||
+            value_len < RTN_STREP_VAL_MIN || value_len > RTN_STREP_VAL_MAX)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        const uint64_t h = rtn_get64(key);
+        const uint16_t bl = rtn_get16(value + 64);
+        if (h < 1 || h > (uint64_t)INT64_MAX ||
+            value_len != RTN_STREP_VAL_MIN + (uint32_t)bl)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        static const uint8_t empty_blob[1] = { 0 };
+        if (sqlite3_prepare_v2(w->db,
+                "INSERT INTO v2_storage_reports (epoch_start, seat, "
+                "set_hash, bitmap) VALUES (?1, ?2, ?3, ?4)",
+                -1, &st, NULL) != SQLITE_OK)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)h);
+        sqlite3_bind_int64(st, 2, (sqlite3_int64)rtn_get32(key + 8));
+        sqlite3_bind_blob(st, 3, value, 64, SQLITE_TRANSIENT);
+        /* a zero-length bitmap is bound with a NON-NULL pointer so it
+         * stores as an empty BLOB (a NULL pointer would store SQL NULL
+         * and fail the NOT NULL / typeof CHECK) */
+        sqlite3_bind_blob(st, 4, bl ? value + RTN_STREP_VAL_MIN : empty_blob,
+                          (int)bl, SQLITE_TRANSIENT);
     } else {
         return NODUS_ADAPTER_ERR_STORAGE_FAULT;
     }
@@ -6172,7 +6562,7 @@ static nodus_adapter_status_t rtn_sys_mutate(
     return NODUS_ADAPTER_OK;
 }
 
-static const nodus_adapter_op_t RTN_SYS_OPS[7] = {
+static const nodus_adapter_op_t RTN_SYS_OPS[10] = {
     { RTN_SYS_OP_CC,
       NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_CREATE),
       NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_ABSENT),
@@ -6217,13 +6607,26 @@ static const nodus_adapter_op_t RTN_SYS_OPS[7] = {
                 NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_EXISTS_VHASH)),
       (uint16_t)RTN_STOR_KEY_LEN, (uint16_t)RTN_STOR_KEY_LEN,
       RTN_STOR_REC_LEN, RTN_STOR_REC_LEN },
-    { RTN_SYS_OP_STORCNT,   0, 0, 1, 1, 0, 8 }
+    { RTN_SYS_OP_STORCNT,   0, 0, 1, 1, 0, 8 },
+    /* archive reward (package B2a) — the STORAGE_REPORT reads (both
+     * read-only) and its row (CREATE / ABSENT only: first wins, a report
+     * is never rewritten; the storage boundary prunes it by direct SQL
+     * after settlement, the attendance / balance-copy precedent). */
+    { RTN_SYS_OP_STSET,     0, 0, (uint16_t)RTN_STSET_KEY_LEN,
+      (uint16_t)RTN_STSET_KEY_LEN, 0, RTN_STSET_VAL_LEN },
+    { RTN_SYS_OP_SNAPSEAT,  0, 0, (uint16_t)RTN_STREP_KEY_LEN,
+      (uint16_t)RTN_STREP_KEY_LEN, 0, (uint32_t)DNAC_PUBKEY_SIZE },
+    { RTN_SYS_OP_STREP,
+      NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_CREATE),
+      NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_ABSENT),
+      (uint16_t)RTN_STREP_KEY_LEN, (uint16_t)RTN_STREP_KEY_LEN,
+      RTN_STREP_VAL_MIN, RTN_STREP_VAL_MAX }
 };
 
 const nodus_domain_adapter_t NODUS_RT_SYSTEM_ADAPTER = {
     .adapter_version = NODUS_DOMAIN_ADAPTER_V1,
     .ops = RTN_SYS_OPS,
-    .n_ops = 7,
+    .n_ops = 10,
     .probe = rtn_sys_probe,
     .mutate = rtn_sys_mutate,
     .read = rtn_sys_read
@@ -6438,6 +6841,22 @@ static int rtn_desc_system(const dna_env_view_t *env, uint16_t leg,
         if (rtn_sys_stake_shape(env, leg) != 0) return -1;
         if (rtn_sys_call_identity(DNA_SYSRULE_STORAGE_EXIT, p, len, &npk)
             != 0)
+            return -1;
+        out->rec = NODUS_RT_DESC_REC_NONE;
+        return 0;
+    }
+    /* archive reward (package B2a): an applied STORAGE_REPORT leg is
+     * DESCRIBED (single leg, exact call framing) and writes no record
+     * kind — the B1 REC_NONE reason above: the address index fails the
+     * block when an APPLIED leg cannot be described, and a storage
+     * report record kind on the scan-v3 wire is a later wire decision.
+     * The window and the reads are not re-judged here (the leg already
+     * applied). */
+    case DNA_SYSRULE_STORAGE_REPORT: {
+        if (env->leg_count != 1 || leg != 0) return -1;
+        if (len < RTN_STREP_FIXED_LEN || len > RTN_STREP_CALL_MAX)
+            return -1;
+        if (len != RTN_STREP_FIXED_LEN + (uint32_t)rtn_get16(p + 76))
             return -1;
         out->rec = NODUS_RT_DESC_REC_NONE;
         return 0;

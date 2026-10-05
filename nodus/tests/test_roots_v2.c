@@ -107,6 +107,11 @@ static const char *EMPTY_KAT[DNA_V2_EMPTY__COUNT] = {
     /* STREG  */ "e3baaef6bebc5af765294b1a22c723cb44df33001b7445decfce7ac78c425ee5fc4a9885b74988bcab1f709f490b8f05907c322490840a125cf8ceaa3559550f",
     /* STSET  */ "28f2ffe6cdba270ae0be208e511f9a9e4bd0ff6722f25ea37f7bbe8083913a42d77e083decd60c2744ca5b1bae37c512243de3c7184dd06cfb78880476901586",
     /* STREP  */ "6cfdc71da8dede41e5d32ba4cb13788d7a726d3cbec565aef0b470050bdf317718ffc5d255031ec441de63338252a3ccaa283f139ff59424d34c72e8e49d0982",
+    /* Archive reward — SHA3-512 of "NDS.E.STSEG.v1" zero-padded to 16
+     * bytes, pinned from the INDEPENDENT oracle
+     * (nodus/tests/vectors/archive_reward_kat.json "empty_roots",
+     * generator archive_reward_oracle.py; author != auditor). */
+    /* STSEG  */ "d50e4a36ac95b3e6101193f47fc7b362b5e1706ef259aba91f4d08f8e7b4846341df6ff0c0f2452554cba06a75dc1c943696ec8fe49600717bb1a11fb03801fe",
 };
 /* tokenomics-v3 P2 (P2-8) re-pin: the supply leaf gained reward_pool and
  * the tag "NDS.SUPPLY.v2"; the CORE composition gained a 7th leg
@@ -1170,6 +1175,10 @@ static int test_storage_layer(void) {
         m = r[0]; m.exit_height++;
         CHECK(dna_v2_storage_node_leaf_hash(&m, h) == 0 &&
               memcmp(h, lf[0], 64) != 0, "exit_height not bound"); OK();
+        /* archive reward: the leaf v2 binds fail_streak (bytes item 4) */
+        m = r[0]; m.fail_streak = 1;
+        CHECK(dna_v2_storage_node_leaf_hash(&m, h) == 0 &&
+              memcmp(h, lf[0], 64) != 0, "fail_streak not bound"); OK();
     }
 
     /* S(H): count 0 legal, count > 0, order, bound. */
@@ -1328,22 +1337,26 @@ static int test_storage_layer(void) {
               "reports root hashed an over-long bitmap"); OK();
     }
 
-    /* storage_root: three legs, each bound, order bound, NULL refused. */
+    /* storage_root (archive reward: "NDS.STOR.v2", FOUR legs — bytes
+     * item 5): each bound, order bound, NULL refused. */
     uint8_t sr[64];
     {
-        uint8_t l[3][64];
-        for (int i = 0; i < 3; i++) fill(l[i], 64, (uint8_t)(0xC0 + i));
-        CHECK(dna_v2_storage_root(l[0], l[1], l[2], sr) == 0, "storage root");
+        uint8_t l[4][64];
+        for (int i = 0; i < 4; i++) fill(l[i], 64, (uint8_t)(0xC0 + i));
+        CHECK(dna_v2_storage_root(l[0], l[1], l[2], l[3], sr) == 0,
+              "storage root");
         OK();
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 4; i++) {
             l[i][0] ^= 1;
-            CHECK(dna_v2_storage_root(l[0], l[1], l[2], h) == 0 &&
+            CHECK(dna_v2_storage_root(l[0], l[1], l[2], l[3], h) == 0 &&
                   memcmp(h, sr, 64) != 0, "storage leg not bound"); OK();
             l[i][0] ^= 1;
         }
-        CHECK(dna_v2_storage_root(l[1], l[0], l[2], h) == 0 &&
+        CHECK(dna_v2_storage_root(l[1], l[0], l[2], l[3], h) == 0 &&
               memcmp(h, sr, 64) != 0, "storage leg order not bound"); OK();
-        CHECK(dna_v2_storage_root(l[0], l[1], NULL, h) != 0,
+        CHECK(dna_v2_storage_root(l[0], l[1], l[2], l[2], h) == 0 &&
+              memcmp(h, sr, 64) != 0, "segments leg not bound"); OK();
+        CHECK(dna_v2_storage_root(l[0], l[1], l[2], NULL, h) != 0,
               "storage root accepted a NULL leg"); OK();
     }
 
@@ -1541,21 +1554,6 @@ static int kat_eq(const uint8_t got[64], json_object *o, const char *key) {
     return 0;
 }
 
-static int kat_row(json_object *r, dna_v2_storage_node_row_t *row) {
-    uint64_t st = 0;
-    memset(row, 0, sizeof(*row));
-    if (kat_hex(r, "node_fp", row->node_fp, 64) != 0 ||
-        kat_hex(r, "payee_fp", row->payee_fp, 64) != 0 ||
-        kat_uint(r, "bond", UINT64_MAX, &row->bond) != 0 ||
-        kat_uint(r, "status", 0xFF, &st) != 0 ||
-        kat_uint(r, "registered_height", UINT64_MAX,
-                 &row->registered_height) != 0 ||
-        kat_uint(r, "exit_height", UINT64_MAX, &row->exit_height) != 0)
-        return -1;
-    row->status = (uint8_t)st;
-    return 0;
-}
-
 static int kat_report(json_object *r, dna_v2_storage_report_t *rep) {
     uint64_t seat = 0, bl = 0;
     memset(rep, 0, sizeof(*rep));
@@ -1609,7 +1607,6 @@ static int kat_set(json_object *e, const char *count_key, uint64_t *h_out,
 #define KCHECK(cond) do { if (!(cond)) { rc = 1; goto out; } } while (0)
 
 static int test_storage_kat(void) {
-    static dna_v2_storage_node_row_t rows[DNA_V2_STORAGE_SET_MAX];
     static dna_v2_storage_report_t   reps[DNA_V2_STORAGE_SET_MAX];
     static uint64_t                  hs[DNA_V2_STORAGE_SET_MAX];
     static uint8_t                   ss[DNA_V2_STORAGE_SET_MAX][64];
@@ -1626,7 +1623,13 @@ static int test_storage_kat(void) {
     snprintf(g_kv, sizeof(g_kv), "%s", "(file)");
     KCHECK(vec && json_object_is_type(vec, json_type_object));
 
-    /* Every section is known: compared, or named as not hashed here. */
+    /* Every section is known: compared, or named as not hashed here.
+     * Archive reward (decision 2026-10-05-archive-reward-bytes-approved.md,
+     * bytes doc 2026-10-05 items 4-5): "registry_leaf" / "registry_root"
+     * ("NDS.STLEAF.v1", no fail_streak) and "storage_root" ("NDS.STOR.v1",
+     * 3 legs) are SUPERSEDED — those forms were replaced before any
+     * activation, so this build no longer hashes them; their v2 forms are
+     * compared against archive_reward_kat.json in test_storage_b2. */
     json_object_object_foreach(vec, sec, sval) {
         (void)sval;
         static const char *known[] = {
@@ -1662,51 +1665,7 @@ static int test_storage_kat(void) {
         }
     }
 
-    /* registry_leaf */
-    {
-        size_t n = 0;
-        snprintf(g_kv, sizeof(g_kv), "%s", "registry_leaf");
-        json_object *a = kat_arr(vec, "registry_leaf", SIZE_MAX, &n);
-        KCHECK(a && n > 0);
-        for (size_t i = 0; i < n; i++) {
-            json_object *v = json_object_array_get_idx(a, i);
-            json_object *nm = kj(v, "name");
-            snprintf(g_kv, sizeof(g_kv), "registry_leaf[%s]",
-                     nm ? json_object_get_string(nm) : "?");
-            KCHECK(kat_row(v, &rows[0]) == 0);
-            KCHECK(dna_v2_storage_node_leaf_hash(&rows[0], h) == 0);
-            KCHECK(kat_eq(h, v, "leaf"));
-            compared++;
-        }
-    }
-
-    /* registry_root — every row's leaf, then the root */
-    {
-        size_t n = 0;
-        snprintf(g_kv, sizeof(g_kv), "%s", "registry_root");
-        json_object *a = kat_arr(vec, "registry_root", SIZE_MAX, &n);
-        KCHECK(a && n > 0);
-        for (size_t i = 0; i < n; i++) {
-            json_object *v = json_object_array_get_idx(a, i);
-            uint64_t want = 0;
-            size_t m = 0;
-            snprintf(g_kv, sizeof(g_kv), "registry_root[%zu]", i);
-            KCHECK(kat_uint(v, "n", DNA_V2_STORAGE_SET_MAX, &want) == 0);
-            snprintf(g_kv, sizeof(g_kv), "registry_root[n=%llu]",
-                     (unsigned long long)want);
-            json_object *rs = kat_arr(v, "rows_sorted", (size_t)want, &m);
-            KCHECK(rs);
-            for (size_t j = 0; j < m; j++) {
-                json_object *r = json_object_array_get_idx(rs, j);
-                KCHECK(kat_row(r, &rows[j]) == 0);
-                KCHECK(dna_v2_storage_node_leaf_hash(&rows[j], h) == 0);
-                KCHECK(kat_eq(h, r, "leaf"));
-            }
-            KCHECK(dna_v2_storage_registry_root(rows, m, h) == 0);
-            KCHECK(kat_eq(h, v, "root"));
-            compared++;
-        }
-    }
+    /* registry_leaf / registry_root — SUPERSEDED (leaf v1), see above */
 
     /* set_hash — S(H) */
     {
@@ -1800,26 +1759,7 @@ static int test_storage_kat(void) {
         }
     }
 
-    /* storage_root */
-    {
-        size_t n = 0;
-        snprintf(g_kv, sizeof(g_kv), "%s", "storage_root");
-        json_object *a = kat_arr(vec, "storage_root", SIZE_MAX, &n);
-        KCHECK(a && n > 0);
-        for (size_t i = 0; i < n; i++) {
-            json_object *v = json_object_array_get_idx(a, i);
-            json_object *nm = kj(v, "name");
-            uint8_t rr[64], sr[64], pr[64];
-            snprintf(g_kv, sizeof(g_kv), "storage_root[%s]",
-                     nm ? json_object_get_string(nm) : "?");
-            KCHECK(kat_hex(v, "registry_root", rr, 64) == 0 &&
-                   kat_hex(v, "sets_root", sr, 64) == 0 &&
-                   kat_hex(v, "reports_root", pr, 64) == 0);
-            KCHECK(dna_v2_storage_root(rr, sr, pr, h) == 0);
-            KCHECK(kat_eq(h, v, "storage_root"));
-            compared++;
-        }
-    }
+    /* storage_root — SUPERSEDED ("NDS.STOR.v1", 3 legs), see above */
 
     /* system_v5 — the 8 v4 legs, named and in v4 order, then storage */
     {
@@ -1898,8 +1838,9 @@ static int test_storage_kat(void) {
     }
 
     printf("storage reward oracle: %d vectors compared, %d values equal "
-           "(not hashed here: tags, register_exit_body, probe_seed)\n",
-           compared, g_checks - checks0);
+           "(not hashed here: tags, register_exit_body, probe_seed; "
+           "superseded by the archive bytes: registry_leaf, registry_root, "
+           "storage_root)\n", compared, g_checks - checks0);
 out:
     json_object_put(root);
     return rc;

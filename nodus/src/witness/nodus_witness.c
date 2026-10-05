@@ -351,6 +351,14 @@ static const char *WITNESS_DB_SCHEMA =
      * "NDS.SYS.v5" from the storage activation). The exact DDL and why it
      * lives in the base schema: nodus_witness.h NODUS_V2_STORAGE_DDL_BODY. */
     NODUS_V2_STORAGE_DDL ";"
+    /* Archive reward (storage reward v1 rev 4) — the frozen sets, their
+     * members, the reports and the segment list: the storage leg's other
+     * four trees. DDLs and why they live in the base schema:
+     * nodus_witness.h NODUS_V2_STSETS_DDL_BODY and the three after it. */
+    NODUS_V2_STSETS_DDL ";"
+    NODUS_V2_STMEMB_DDL ";"
+    NODUS_V2_STREPS_DDL ";"
+    NODUS_V2_STSEGS_DDL ";"
     "CREATE TABLE IF NOT EXISTS v2_balance_copy ("
     "  epoch_start INTEGER NOT NULL,"
     "  validator_fp BLOB NOT NULL,"
@@ -749,6 +757,23 @@ static int witness_db_open_attempt(nodus_witness_t *witness,
     if (rc != SQLITE_OK) {
         witness_db_open_fail(witness);
         return rc;
+    }
+    /* archive reward: the four storage-leg tables, the same check, in a
+     * fixed order */
+    {
+        static const struct { const char *t; const char *ddl; } ST[] = {
+            { "v2_storage_sets",        NODUS_V2_STSETS_DDL },
+            { "v2_storage_set_members", NODUS_V2_STMEMB_DDL },
+            { "v2_storage_reports",     NODUS_V2_STREPS_DDL },
+            { "v2_storage_segments",    NODUS_V2_STSEGS_DDL }
+        };
+        for (size_t i = 0; i < sizeof(ST) / sizeof(ST[0]); i++) {
+            rc = witness_ddl_shape_check(witness->db, ST[i].t, ST[i].ddl);
+            if (rc != SQLITE_OK) {
+                witness_db_open_fail(witness);
+                return rc;
+            }
+        }
     }
 
     /* Schema v12 migration (Phase 1 / Task 1.1). Idempotent; aborts on

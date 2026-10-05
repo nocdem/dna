@@ -146,6 +146,23 @@ extern "C" {
  *  shape of DNAC_SELF_STAKE_AMOUNT. Not a chain_config parameter. */
 #define DNAC_STORAGE_STAKE_MIN       (1000000ULL * 100000000ULL)    /* 1M × 10^8 raw */
 
+/** Storage reward v1 — the exit lock: a STORAGE_EXIT's bond is released
+ *  at the next epoch boundary B as ONE locked UTXO with unlock_block =
+ *  B + DNAC_STORAGE_EXIT_LOCK_EPOCHS × DNAC_EPOCH_LENGTH (design
+ *  docs/plans/2026-10-04-storage-reward-v1-design.md rev 2.2 §1 / F3
+ *  "exit lock 12 epochs"; the witness boundary writes it,
+ *  nodus/src/witness/nodus_witness_v2_storage.c). Not a chain_config
+ *  parameter. */
+#define DNAC_STORAGE_EXIT_LOCK_EPOCHS        12
+
+/** Archive reward — the publication delay: segment k (heights
+ *  ((k−1)·17280, k·17280]) is published in the storage leg at the first
+ *  storage epoch boundary B >= k·17280 + DNAC_STORAGE_SEGMENT_DELAY_EPOCHS
+ *  × DNAC_EPOCH_LENGTH (design docs/plans/2026-10-05-archive-reward-
+ *  design.md rev 4 §1 "published … at boundary k·P + 2E"; bytes doc
+ *  2026-10-05 item 1). Not a chain_config parameter. */
+#define DNAC_STORAGE_SEGMENT_DELAY_EPOCHS    2
+
 /** Minimum TX fee enforced at verify time (v0.17.1+).
  *  All non-GENESIS TXs must have `committed_fee >= DNAC_MIN_FEE_RAW`.
  *  Value is 0.01 DNAC = 10^6 raw units. Raise/lower via future release

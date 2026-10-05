@@ -166,7 +166,12 @@ int nodus_witness_v2_preflight(nodus_witness_t *w,
             /* storage reward v1: the SYSTEM storage leg reads it from the
              * storage activation; base schema (nodus_witness.h
              * NODUS_V2_STORAGE_DDL) */
-            "v2_storage_nodes"
+            "v2_storage_nodes",
+            /* archive reward (storage reward v1 rev 4): the storage
+             * leg's other four trees; base schema (nodus_witness.h
+             * NODUS_V2_STSETS_DDL and the three after it) */
+            "v2_storage_sets", "v2_storage_set_members",
+            "v2_storage_reports", "v2_storage_segments"
         };
         for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); i++) {
             int t = pf_table_exists(w, required[i]);

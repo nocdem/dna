@@ -17,6 +17,7 @@
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_v2_claims.h"
 #include "witness/nodus_witness_v2_pools.h"
+#include "witness/nodus_witness_v2_storage.h"   /* archive-leg loaders */
 #include "nodus/nodus_chain_config.h"
 #include "dnac/dnac.h"                  /* DNAC_PUBKEY_SIZE (storage rows) */
 #include "crypto/hash/qgp_sha3.h"       /* storage rows: node_fp check     */
@@ -429,20 +430,24 @@ int nodus_witness_treasury_total(nodus_witness_t *w, uint64_t *out) {
  * if it did the root would fail, never skip). */
 
 /* Scan every row. On success *rows is malloc'd (NULL when n == 0) and
- * the caller frees it. @return 0 / -1. */
+ * the caller frees it. @return 0 / -1.
+ * Archive reward (bytes 2026-10-05 item 4): the 8th column fail_streak
+ * (u32 range), read with the same typed-column discipline. */
 static int storage_scan(nodus_witness_t *w, dna_v2_storage_node_row_t **rows,
                         size_t *n_out) {
-    static const char *const want_type[7] = {
-        "blob", "blob", "blob", "integer", "integer", "integer", "integer"
+    static const char *const want_type[8] = {
+        "blob", "blob", "blob", "integer", "integer", "integer", "integer",
+        "integer"
     };
     *rows = NULL;
     *n_out = 0;
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(w->db,
         "SELECT node_fp, node_pk, payee_fp, bond, status, "
-        "registered_height, exit_height, typeof(node_fp), typeof(node_pk), "
-        "typeof(payee_fp), typeof(bond), typeof(status), "
-        "typeof(registered_height), typeof(exit_height) "
+        "registered_height, exit_height, fail_streak, typeof(node_fp), "
+        "typeof(node_pk), typeof(payee_fp), typeof(bond), typeof(status), "
+        "typeof(registered_height), typeof(exit_height), "
+        "typeof(fail_streak) "
         "FROM v2_storage_nodes ORDER BY node_fp ASC", -1, &st, NULL);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "storage registry scan prepare failed: %s",
@@ -461,8 +466,8 @@ static int storage_scan(nodus_witness_t *w, dna_v2_storage_node_row_t **rows,
             cap *= 2;
         }
         int ok = 1;
-        for (int c = 0; c < 7 && ok; c++) {
-            const char *t = (const char *)sqlite3_column_text(st, 7 + c);
+        for (int c = 0; c < 8 && ok; c++) {
+            const char *t = (const char *)sqlite3_column_text(st, 8 + c);
             ok = t && strcmp(t, want_type[c]) == 0;
         }
         const uint8_t *fp = sqlite3_column_blob(st, 0);
@@ -472,11 +477,13 @@ static int storage_scan(nodus_witness_t *w, dna_v2_storage_node_row_t **rows,
         sqlite3_int64 stat = sqlite3_column_int64(st, 4);
         sqlite3_int64 rh   = sqlite3_column_int64(st, 5);
         sqlite3_int64 eh   = sqlite3_column_int64(st, 6);
+        sqlite3_int64 fs   = sqlite3_column_int64(st, 7);
         ok = ok && fp && pk && py &&
              sqlite3_column_bytes(st, 0) == 64 &&
              sqlite3_column_bytes(st, 1) == DNAC_PUBKEY_SIZE &&
              sqlite3_column_bytes(st, 2) == 64 &&
              bond >= 0 && rh >= 1 && eh >= 0 &&
+             fs >= 0 && fs <= (sqlite3_int64)UINT32_MAX &&
              stat >= (sqlite3_int64)DNA_V2_STORAGE_ACTIVE &&
              stat <= (sqlite3_int64)DNA_V2_STORAGE_RELEASED;
         if (ok) {
@@ -502,6 +509,7 @@ static int storage_scan(nodus_witness_t *w, dna_v2_storage_node_row_t **rows,
         r[n].status = (uint8_t)stat;
         r[n].registered_height = (uint64_t)rh;
         r[n].exit_height = (uint64_t)eh;
+        r[n].fail_streak = (uint32_t)fs;
         n++;
     }
     if (!fail && rc != SQLITE_DONE) {
@@ -515,6 +523,13 @@ static int storage_scan(nodus_witness_t *w, dna_v2_storage_node_row_t **rows,
     *rows = r;
     *n_out = n;
     return 0;
+}
+
+int nodus_witness_storage_registry_load(nodus_witness_t *w,
+                                        dna_v2_storage_node_row_t **rows,
+                                        size_t *n_out) {
+    if (!w || !w->db || !rows || !n_out) return -1;
+    return storage_scan(w, rows, n_out);
 }
 
 int nodus_witness_storage_registry_root(nodus_witness_t *w,
@@ -549,16 +564,15 @@ int nodus_witness_storage_bond_total(nodus_witness_t *w, uint64_t *out) {
 
 int nodus_witness_storage_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     if (!w || !w->db || !out) return -1;
-    uint8_t reg[64], sets[64], reps[64];
+    uint8_t reg[64], sets[64], reps[64], segs[64];
+    /* archive reward (bytes 2026-10-05 item 5): the four legs in the
+     * approved order, each from its own table (the loaders of the three
+     * archive tables: nodus_witness_v2_storage.c) */
     if (nodus_witness_storage_registry_root(w, reg) != 0) return -1;
-    /* ⚠ package B1: the frozen-set and report tables are package B2's,
-     * so these two legs are their tagged EMPTY roots — exactly what B2's
-     * tables yield while empty (dna_v2_storage_sets_root /
-     * dna_v2_storage_reports_root with n == 0). TODO-B2: read both
-     * tables here. */
-    if (dna_v2_storage_sets_root(NULL, NULL, 0, sets) != 0) return -1;
-    if (dna_v2_storage_reports_root(NULL, 0, reps) != 0) return -1;
-    return dna_v2_storage_root(reg, sets, reps, out);
+    if (nodus_witness_storage_sets_root(w, sets) != 0) return -1;
+    if (nodus_witness_storage_reports_root(w, reps) != 0) return -1;
+    if (nodus_witness_storage_segments_root(w, segs) != 0) return -1;
+    return dna_v2_storage_root(reg, sets, reps, segs, out);
 }
 
 /* ── attendance_root (tokenomics-v3 P1, D-4 / S-2) ─────────────────────

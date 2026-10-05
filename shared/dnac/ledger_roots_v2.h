@@ -90,9 +90,15 @@
  *   the P1 ATTEP / P2 ACLEAF precedent; the proof is an INDEPENDENT
  *   oracle KAT over this contract (author != auditor).
  *   storage       "NDS.SYS.v5"      system_state_root v5 (9 legs, the
- *   (storage      "NDS.STOR.v1"     storage_root APPENDED last) and the
- *    reward v1)                     storage leg composition
- *                 "NDS.STLEAF.v1"   storage registry leaf
+ *   (storage      "NDS.STOR.v2"     storage_root APPENDED last) and the
+ *    reward v1)                     storage leg composition (4 legs —
+ *                                   archive reward; "NDS.STOR.v1", the
+ *                                   3-leg form, was replaced before any
+ *                                   activation and is retired, never
+ *                                   reused)
+ *                 "NDS.STLEAF.v2"   storage registry leaf (fail_streak
+ *                                   appended; "NDS.STLEAF.v1" retired
+ *                                   the same way)
  *                 "NDS.STRNODE.v1"  storage registry Merkle inner node
  *                 "NDS.STSET.v1"    frozen storage set hash S(H)
  *                 "NDS.STSLEAF.v1"  frozen-sets leaf
@@ -110,6 +116,24 @@
  *   externally referenced; proven by an INDEPENDENT oracle KAT before
  *   merge (author != auditor). "NDS.STPROBE.v1" (bytes item 7) is an
  *   OFF-CHAIN probe seed and is NOT defined here.
+ *   archive       "NDS.STSEG.v1"    segment root Root(k) (a PLAIN hash
+ *   (storage                        over 17,280 header hashes)
+ *    reward v1    "NDS.STSGLEAF.v1" segment list leaf
+ *    rev 4)       "NDS.STSGNODE.v1" segment list Merkle inner node
+ *                 "NDS.E.STSEG.v1"  segments_root with NO segment
+ *                 "NDS.STASGN.v1"   assignment key A(k)
+ *                 "NDS.STSAMP.v1"   OFF-CHAIN probe sample x_i (never a
+ *                                   consensus input; here so the probe
+ *                                   client and the KAT share ONE
+ *                                   implementation)
+ *   Archive tags: decision 2026-10-05-archive-reward-bytes-approved.md
+ *   (bytes doc docs/plans/2026-10-05-archive-reward-bytes.md items 1-5,
+ *   §6). Collision scan 2026-10-05: `git grep -E` of each new tag over
+ *   the tree (oracle vectors excluded) — no prior use. SELF-CONSISTENT,
+ *   not externally referenced; the independent oracle
+ *   nodus/tests/vectors/archive_reward_oracle.py is the KAT.
+ *   "NDS.STPROBE.v2" (the off-chain probe REQUEST, bytes §6) is a wire
+ *   of the probe client and is NOT defined here.
  *   (domains_root has NO empty tag: SYSTEM must always be present — an
  *    empty domain list is a hard error, not an empty tree.)
  *
@@ -213,12 +237,32 @@
  *     precedent). Used from the storage activation height on; before it
  *     "NDS.SYS.v4" above, unchanged. "NDS.SYSPAYL.v3" is unchanged —
  *     storage is not seeded at genesis.
- *   storage_root = SHA3-512("NDS.STOR.v1" ‖ registry_root[64]
- *       ‖ sets_root[64] ‖ reports_root[64])
- *   registry leaf = SHA3-512("NDS.STLEAF.v1" ‖ node_fp[64] ‖ payee_fp[64]
+ *   storage_root = SHA3-512("NDS.STOR.v2" ‖ registry_root[64]
+ *       ‖ sets_root[64] ‖ reports_root[64] ‖ segments_root[64])
+ *       (archive bytes item 5 — replaces the 3-leg "NDS.STOR.v1")
+ *   registry leaf = SHA3-512("NDS.STLEAF.v2" ‖ node_fp[64] ‖ payee_fp[64]
  *       ‖ bond(8 BE) ‖ status(1) ‖ registered_height(8 BE)
- *       ‖ exit_height(8 BE))   — status 1 ACTIVE, 2 EXITING, 3 RELEASED
- *       (0 and > 3 invalid: refused, never hashed); 16 + 153 = 169 B.
+ *       ‖ exit_height(8 BE) ‖ fail_streak(4 BE))   — status 1 ACTIVE,
+ *       2 EXITING, 3 RELEASED (0 and > 3 invalid: refused, never
+ *       hashed); 16 + 157 = 173 B (archive bytes item 4).
+ *   ── archive reward (bytes doc 2026-10-05 items 1-3, §6) ──
+ *   Root(k) = SHA3-512("NDS.STSEG.v1" ‖ k(8 BE) ‖ count(4 BE) = 17280
+ *       ‖ hash[(k−1)·17280 + 1] ‖ … ‖ hash[k·17280])  — hash[h] the
+ *       64-byte v2_blocks.block_id at height h, ascending; k >= 1 and
+ *       k·17280 <= UINT64_MAX. A PLAIN hash (1,105,948-byte preimage).
+ *   segment leaf = SHA3-512("NDS.STSGLEAF.v1" ‖ k(8 BE) ‖ Root(k)[64])
+ *   segments_root = tagged Merkle over the segment leaves, STRICTLY
+ *       ascending k, inner "NDS.STSGNODE.v1", n == 0 ->
+ *       DNA_V2_EMPTY_STORAGE_SEGS ("NDS.E.STSEG.v1").
+ *   A(k) = SHA3-512("NDS.STASGN.v1" ‖ Root(k)[64])
+ *   holders(k) = the DNA_V2_STORAGE_HOLDERS (3) members with
+ *       fail_streak < DNA_V2_STORAGE_FAIL_LIMIT (3) of smallest
+ *       A(k) XOR node_fp read as a 64-byte big-endian integer (memcmp
+ *       order); fewer eligible -> all eligible; duplicates refused.
+ *   x_i = SHA3-512("NDS.STSAMP.v1" ‖ nonce[32] ‖ target_fp[64] ‖ i(4 BE))
+ *       (OFF-CHAIN); block index = BE u64 x_i[0..8) mod B, part index =
+ *       BE u32 x_i[8..12) mod parts_total; B == 0 / parts_total == 0
+ *       refused.
  *   registry_root = tagged Merkle over the registry leaves, STRICTLY
  *       ascending node_fp (duplicates reject), inner "NDS.STRNODE.v1",
  *       n == 0 -> DNA_V2_EMPTY_STORAGE_REG ("NDS.E.STREG.v1").
@@ -300,6 +344,8 @@ typedef enum {
     DNA_V2_EMPTY_STORAGE_REG,     /* "NDS.E.STREG.v1" registry   */
     DNA_V2_EMPTY_STORAGE_SETS,    /* "NDS.E.STSET.v1" frozen sets */
     DNA_V2_EMPTY_STORAGE_REPORTS, /* "NDS.E.STREP.v1" reports    */
+    /* archive reward (2026-10-05 bytes item 2) — APPENDED. */
+    DNA_V2_EMPTY_STORAGE_SEGS,    /* "NDS.E.STSEG.v1" segments   */
     DNA_V2_EMPTY__COUNT
 } dna_v2_empty_kind_t;
 
@@ -504,9 +550,12 @@ int dna_v2_attendance_root(const uint64_t *epoch_starts,
 /* ── storage_root (storage reward v1) ──────────────────────────────────
  * Decision 2026-10-04-storage-reward-approved.md; exact bytes
  * docs/plans/2026-10-04-storage-reward-bytes.md items 1-6 (copied in the
- * "Composition preimages" block above). Three trees — the registry, the
- * frozen storage sets, the reports — composed into ONE leg,
- * storage_root, which is the 9th leg of system_state_root v5. Same
+ * "Composition preimages" block above). Archive reward (decision
+ * 2026-10-05-archive-reward-bytes-approved.md; bytes doc
+ * docs/plans/2026-10-05-archive-reward-bytes.md items 1-5): FOUR trees —
+ * the registry (leaf v2), the frozen storage sets, the reports, the
+ * published segment list — composed into ONE leg, storage_root
+ * ("NDS.STOR.v2"), which is the 9th leg of system_state_root v5. Same
  * Merkle rules as every other tree here. Pure; no database. */
 
 /** The storage set cap (design rev 2.2 F3: storage set max 256). */
@@ -535,10 +584,12 @@ typedef struct {
     uint8_t  status;                     /* DNA_V2_STORAGE_ACTIVE..     */
     uint64_t registered_height;
     uint64_t exit_height;
+    uint32_t fail_streak;                /* archive bytes item 4        */
 } dna_v2_storage_node_row_t;
 
-/** leaf = SHA3-512("NDS.STLEAF.v1" ‖ node_fp[64] ‖ payee_fp[64] ‖
- *  bond(8 BE) ‖ status(1) ‖ registered_height(8 BE) ‖ exit_height(8 BE)).
+/** leaf = SHA3-512("NDS.STLEAF.v2" ‖ node_fp[64] ‖ payee_fp[64] ‖
+ *  bond(8 BE) ‖ status(1) ‖ registered_height(8 BE) ‖ exit_height(8 BE)
+ *  ‖ fail_streak(4 BE)) — archive bytes item 4 (replaces the v1 leaf).
  *  @return 0 / -1 (NULL, status outside 1..3). */
 int dna_v2_storage_node_leaf_hash(const dna_v2_storage_node_row_t *row,
                                   uint8_t out[DNA_V2_ROOT_LEN]);
@@ -596,12 +647,97 @@ int dna_v2_storage_report_leaf_hash(const dna_v2_storage_report_t *rep,
 int dna_v2_storage_reports_root(const dna_v2_storage_report_t *reps,
                                 size_t n, uint8_t out[DNA_V2_ROOT_LEN]);
 
-/** storage_root = SHA3-512("NDS.STOR.v1" ‖ registry_root ‖ sets_root ‖
- *  reports_root). @return 0 / -1. */
+/** storage_root = SHA3-512("NDS.STOR.v2" ‖ registry_root ‖ sets_root ‖
+ *  reports_root ‖ segments_root) — archive bytes item 5 (the 3-leg
+ *  "NDS.STOR.v1" form is replaced). @return 0 / -1. */
 int dna_v2_storage_root(const uint8_t registry_root[DNA_V2_ROOT_LEN],
                         const uint8_t sets_root[DNA_V2_ROOT_LEN],
                         const uint8_t reports_root[DNA_V2_ROOT_LEN],
+                        const uint8_t segments_root[DNA_V2_ROOT_LEN],
                         uint8_t out[DNA_V2_ROOT_LEN]);
+
+/* ── archive reward (storage reward v1 rev 4) ──────────────────────────
+ * Decision 2026-10-05-archive-reward-bytes-approved.md; design
+ * docs/plans/2026-10-05-archive-reward-design.md rev 4; bytes
+ * docs/plans/2026-10-05-archive-reward-bytes.md items 1-3 and §6 (copied
+ * in the "Composition preimages" block above). Pure; no database. */
+
+/** Blocks per segment P (bytes item 1: count = 17280, a CONSTANT of the
+ *  preimage — not a chain parameter and not overridable). */
+#define DNA_V2_SEGMENT_BLOCKS        17280u
+/** Holders per segment R (decision 2026-10-05-storage-reward-is-for-
+ *  archive.md K4: R = 3). */
+#define DNA_V2_STORAGE_HOLDERS       3u
+/** fail_streak at which a member is skipped for placement (K2: 3). */
+#define DNA_V2_STORAGE_FAIL_LIMIT    3u
+/** Probe samples per target per epoch (K3: 3) — off-chain. */
+#define DNA_V2_STORAGE_SAMPLES       3u
+/** The probe nonce length (bytes §6). */
+#define DNA_V2_STORAGE_NONCE_LEN     32u
+
+/** Root(k) over EXACTLY DNA_V2_SEGMENT_BLOCKS 64-byte header hashes
+ *  hashes[0] = hash[(k−1)·P + 1] … hashes[P−1] = hash[k·P] (bytes item
+ *  1). Refuses k == 0 and a k whose last height k·P overflows u64.
+ *  @return 0 / -1 (NULL, bad k, allocation). */
+int dna_v2_segment_root(uint64_t k,
+                        const uint8_t (*hashes)[DNA_V2_ROOT_LEN],
+                        uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** segment leaf = SHA3-512("NDS.STSGLEAF.v1" ‖ k(8 BE) ‖ root[64]).
+ *  @return 0 / -1. */
+int dna_v2_segment_leaf_hash(uint64_t k,
+                             const uint8_t root[DNA_V2_ROOT_LEN],
+                             uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** segments_root over (k, Root(k)) pairs STRICTLY ascending k (an equal
+ *  or descending neighbour rejects); inner "NDS.STSGNODE.v1"; odd node
+ *  promoted; n == 1 the leaf; n == 0 -> DNA_V2_EMPTY_STORAGE_SEGS.
+ *  @return 0 / -1. */
+int dna_v2_segments_root(const uint64_t *ks,
+                         const uint8_t (*roots)[DNA_V2_ROOT_LEN],
+                         size_t n, uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** A(k) = SHA3-512("NDS.STASGN.v1" ‖ root[64]) (bytes item 3).
+ *  @return 0 / -1. */
+int dna_v2_segment_assign_key(const uint8_t root[DNA_V2_ROOT_LEN],
+                              uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** holders(k) (bytes item 3): among the n members (node_fps[i] =
+ *  SHA3-512(node_pk), fail_streaks[i] its frozen streak), the at most
+ *  DNA_V2_STORAGE_HOLDERS with fail_streak < DNA_V2_STORAGE_FAIL_LIMIT
+ *  whose A XOR node_fp is smallest as a 64-byte big-endian integer.
+ *  out_idx[0..*n_out) receives their indices into node_fps in ASCENDING
+ *  distance (rank 0 = closest); *n_out = min(3, eligible members), 0
+ *  when none is eligible. The input order does not matter. Two equal
+ *  node_fps anywhere in the list are refused (no tie rule exists — the
+ *  registry key makes them impossible). n <= DNA_V2_STORAGE_SET_MAX.
+ *  @return 0 / -1. */
+int dna_v2_segment_holders(const uint8_t a_key[DNA_V2_ROOT_LEN],
+                           const uint8_t (*node_fps)[DNA_V2_ROOT_LEN],
+                           const uint32_t *fail_streaks, size_t n,
+                           size_t out_idx[DNA_V2_STORAGE_HOLDERS],
+                           size_t *n_out);
+
+/** OFF-CHAIN probe sample (bytes §6): x_i = SHA3-512("NDS.STSAMP.v1" ‖
+ *  nonce[32] ‖ target_fp[64] ‖ i(4 BE)). Never a consensus input — the
+ *  ONE implementation the probe client and the KAT share.
+ *  @return 0 / -1. */
+int dna_v2_storage_sample_x(const uint8_t nonce[DNA_V2_STORAGE_NONCE_LEN],
+                            const uint8_t target_fp[DNA_V2_ROOT_LEN],
+                            uint32_t i, uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** OFF-CHAIN probe sample indices (bytes §6 + Clarifications): block
+ *  index = BE u64 of x_i[0..8) mod B — a 0-based POSITION in the target's
+ *  eligible blocks in ascending height (not a height); part index = BE
+ *  u32 of x_i[8..12) mod parts_total, 0-based. B == 0 (no eligible block
+ *  → no probe, bit 0) and parts_total == 0 (impossible: a block has >= 1
+ *  part) are refused. Either out pointer may be NULL.
+ *  @return 0 / -1. */
+int dna_v2_storage_sample_index(const uint8_t x[DNA_V2_ROOT_LEN],
+                                uint64_t eligible_blocks,
+                                uint32_t parts_total,
+                                uint64_t *block_index,
+                                uint32_t *part_index);
 
 /** exit_id = SHA3-512("NDS.STEXIT.v1" ‖ chain_id[32] ‖
  *  u32be(DNA_DOMAIN_CORE) ‖ release_height(8 BE) ‖ node_fp[64]).

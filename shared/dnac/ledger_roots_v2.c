@@ -73,8 +73,12 @@ static const uint8_t TAG_TRNODE[TAG_LEN]  = "NDS.TRNODE.v1\0\0";
  * tree and every branch, no prior use. SELF-CONSISTENT, not externally
  * referenced — proven by an independent oracle KAT before merge. */
 static const uint8_t TAG_SYS_V5[TAG_LEN]   = "NDS.SYS.v5\0\0\0\0\0";
-static const uint8_t TAG_STOR[TAG_LEN]     = "NDS.STOR.v1\0\0\0\0";
-static const uint8_t TAG_STLEAF[TAG_LEN]   = "NDS.STLEAF.v1\0\0";
+/* Archive reward (decision 2026-10-05-archive-reward-bytes-approved.md;
+ * bytes doc docs/plans/2026-10-05-archive-reward-bytes.md items 4-5):
+ * "NDS.STOR.v1" (3 legs) and "NDS.STLEAF.v1" (no fail_streak) were
+ * replaced before any activation — retired, never reused. */
+static const uint8_t TAG_STOR[TAG_LEN]     = "NDS.STOR.v2\0\0\0\0";
+static const uint8_t TAG_STLEAF[TAG_LEN]   = "NDS.STLEAF.v2\0\0";
 static const uint8_t TAG_STRNODE[TAG_LEN]  = "NDS.STRNODE.v1\0";
 static const uint8_t TAG_STSET[TAG_LEN]    = "NDS.STSET.v1\0\0\0";
 static const uint8_t TAG_STSLEAF[TAG_LEN]  = "NDS.STSLEAF.v1\0";
@@ -82,6 +86,15 @@ static const uint8_t TAG_STSNODE[TAG_LEN]  = "NDS.STSNODE.v1\0";
 static const uint8_t TAG_STREP[TAG_LEN]    = "NDS.STREP.v1\0\0\0";
 static const uint8_t TAG_STRPNODE[TAG_LEN] = "NDS.STRPNODE.v1";
 static const uint8_t TAG_STEXIT[TAG_LEN]   = "NDS.STEXIT.v1\0\0";
+/* Archive reward (bytes doc 2026-10-05 items 1-3, §6) — collision scan
+ * 2026-10-05: `git grep -E` over the tree (oracle vectors excluded), no
+ * prior use. SELF-CONSISTENT; the independent oracle KAT
+ * (nodus/tests/vectors/archive_reward_kat.json) is the proof. */
+static const uint8_t TAG_STSEG[TAG_LEN]    = "NDS.STSEG.v1\0\0\0\0";
+static const uint8_t TAG_STSGLEAF[TAG_LEN] = "NDS.STSGLEAF.v1";
+static const uint8_t TAG_STSGNODE[TAG_LEN] = "NDS.STSGNODE.v1";
+static const uint8_t TAG_STASGN[TAG_LEN]   = "NDS.STASGN.v1\0\0\0";
+static const uint8_t TAG_STSAMP[TAG_LEN]   = "NDS.STSAMP.v1\0\0\0";
 
 static const uint8_t TAG_EMPTY[DNA_V2_EMPTY__COUNT][TAG_LEN] = {
     "NDS.E.VSET.v1\0\0",   /* DNA_V2_EMPTY_VSET     */
@@ -98,6 +111,7 @@ static const uint8_t TAG_EMPTY[DNA_V2_EMPTY__COUNT][TAG_LEN] = {
     "NDS.E.STREG.v1\0",    /* DNA_V2_EMPTY_STORAGE_REG     */
     "NDS.E.STSET.v1\0",    /* DNA_V2_EMPTY_STORAGE_SETS    */
     "NDS.E.STREP.v1\0",    /* DNA_V2_EMPTY_STORAGE_REPORTS */
+    "NDS.E.STSEG.v1\0",    /* DNA_V2_EMPTY_STORAGE_SEGS (archive) */
 };
 
 static void put_be32(uint32_t v, uint8_t out[4]) {
@@ -450,7 +464,8 @@ int dna_v2_storage_node_leaf_hash(const dna_v2_storage_node_row_t *row,
     if (row->status < DNA_V2_STORAGE_ACTIVE ||
         row->status > DNA_V2_STORAGE_RELEASED)
         return -1;                         /* 0 / unknown: never hashed  */
-    uint8_t pre[TAG_LEN + 2 * DNA_V2_ROOT_LEN + 8 + 1 + 8 + 8];
+    /* archive bytes item 4: the v1 preimage + fail_streak(4 BE), last */
+    uint8_t pre[TAG_LEN + 2 * DNA_V2_ROOT_LEN + 8 + 1 + 8 + 8 + 4];
     size_t off = 0;
     memcpy(pre + off, TAG_STLEAF, TAG_LEN);              off += TAG_LEN;
     memcpy(pre + off, row->node_fp, DNA_V2_ROOT_LEN);    off += DNA_V2_ROOT_LEN;
@@ -459,6 +474,7 @@ int dna_v2_storage_node_leaf_hash(const dna_v2_storage_node_row_t *row,
     pre[off++] = row->status;
     put_be64(row->registered_height, pre + off);         off += 8;
     put_be64(row->exit_height, pre + off);               off += 8;
+    put_be32(row->fail_streak, pre + off);               off += 4;
     return qgp_sha3_512(pre, off, out) == 0 ? 0 : -1;
 }
 
@@ -594,15 +610,174 @@ int dna_v2_storage_reports_root(const dna_v2_storage_report_t *reps,
 int dna_v2_storage_root(const uint8_t registry_root[DNA_V2_ROOT_LEN],
                         const uint8_t sets_root[DNA_V2_ROOT_LEN],
                         const uint8_t reports_root[DNA_V2_ROOT_LEN],
+                        const uint8_t segments_root[DNA_V2_ROOT_LEN],
                         uint8_t out[DNA_V2_ROOT_LEN]) {
-    if (!registry_root || !sets_root || !reports_root || !out) return -1;
-    uint8_t pre[TAG_LEN + 3 * DNA_V2_ROOT_LEN];
+    if (!registry_root || !sets_root || !reports_root || !segments_root ||
+        !out)
+        return -1;
+    /* archive bytes item 5: leg order registry, sets, reports, segments */
+    uint8_t pre[TAG_LEN + 4 * DNA_V2_ROOT_LEN];
     memcpy(pre, TAG_STOR, TAG_LEN);
     memcpy(pre + TAG_LEN, registry_root, DNA_V2_ROOT_LEN);
     memcpy(pre + TAG_LEN + DNA_V2_ROOT_LEN, sets_root, DNA_V2_ROOT_LEN);
     memcpy(pre + TAG_LEN + 2 * DNA_V2_ROOT_LEN, reports_root,
            DNA_V2_ROOT_LEN);
+    memcpy(pre + TAG_LEN + 3 * DNA_V2_ROOT_LEN, segments_root,
+           DNA_V2_ROOT_LEN);
     return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
+}
+
+/* ── archive reward (storage reward v1 rev 4) ──────────────────────────
+ * Contract: ledger_roots_v2.h ("Composition preimages", archive block). */
+
+int dna_v2_segment_root(uint64_t k,
+                        const uint8_t (*hashes)[DNA_V2_ROOT_LEN],
+                        uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!hashes || !out) return -1;
+    if (k == 0) return -1;                       /* height 0: no segment */
+    if (k > UINT64_MAX / DNA_V2_SEGMENT_BLOCKS) return -1;   /* k·P fits */
+    /* tag(16) ‖ k(8) ‖ count(4) ‖ 17280 × 64 = 1,105,948 bytes */
+    const size_t pre_len = (size_t)TAG_LEN + 8 + 4 +
+                           (size_t)DNA_V2_SEGMENT_BLOCKS * DNA_V2_ROOT_LEN;
+    uint8_t *pre = malloc(pre_len);
+    if (!pre) return -1;
+    size_t off = 0;
+    memcpy(pre + off, TAG_STSEG, TAG_LEN);              off += TAG_LEN;
+    put_be64(k, pre + off);                             off += 8;
+    put_be32(DNA_V2_SEGMENT_BLOCKS, pre + off);         off += 4;
+    memcpy(pre + off, hashes,
+           (size_t)DNA_V2_SEGMENT_BLOCKS * DNA_V2_ROOT_LEN);
+    int rc = qgp_sha3_512(pre, pre_len, out) == 0 ? 0 : -1;
+    free(pre);
+    return rc;
+}
+
+int dna_v2_segment_leaf_hash(uint64_t k,
+                             const uint8_t root[DNA_V2_ROOT_LEN],
+                             uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!root || !out) return -1;
+    uint8_t pre[TAG_LEN + 8 + DNA_V2_ROOT_LEN];
+    memcpy(pre, TAG_STSGLEAF, TAG_LEN);
+    put_be64(k, pre + TAG_LEN);
+    memcpy(pre + TAG_LEN + 8, root, DNA_V2_ROOT_LEN);
+    return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
+}
+
+int dna_v2_segments_root(const uint64_t *ks,
+                         const uint8_t (*roots)[DNA_V2_ROOT_LEN],
+                         size_t n, uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!out || (n > 0 && (!ks || !roots))) return -1;
+    if (n == 0)
+        return dna_v2_empty_root(DNA_V2_EMPTY_STORAGE_SEGS, out);
+    for (size_t i = 1; i < n; i++)
+        if (ks[i - 1] >= ks[i]) return -1;   /* strictly ascending k     */
+
+    uint8_t (*level)[DNA_V2_ROOT_LEN] = malloc(n * sizeof(*level));
+    if (!level) return -1;
+    for (size_t i = 0; i < n; i++) {
+        if (dna_v2_segment_leaf_hash(ks[i], roots[i], level[i]) != 0) {
+            free(level);
+            return -1;
+        }
+    }
+    int rc = tagged_merkle(TAG_STSGNODE, level, n, out);
+    free(level);
+    return rc;
+}
+
+int dna_v2_segment_assign_key(const uint8_t root[DNA_V2_ROOT_LEN],
+                              uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!root || !out) return -1;
+    uint8_t pre[TAG_LEN + DNA_V2_ROOT_LEN];
+    memcpy(pre, TAG_STASGN, TAG_LEN);
+    memcpy(pre + TAG_LEN, root, DNA_V2_ROOT_LEN);
+    return qgp_sha3_512(pre, sizeof(pre), out) == 0 ? 0 : -1;
+}
+
+/* XOR distance of member i, written to d (64 bytes, big-endian integer:
+ * memcmp order IS the unsigned integer order). */
+static void seg_distance(const uint8_t a[DNA_V2_ROOT_LEN],
+                         const uint8_t fp[DNA_V2_ROOT_LEN],
+                         uint8_t d[DNA_V2_ROOT_LEN]) {
+    for (size_t b = 0; b < DNA_V2_ROOT_LEN; b++) d[b] = a[b] ^ fp[b];
+}
+
+int dna_v2_segment_holders(const uint8_t a_key[DNA_V2_ROOT_LEN],
+                           const uint8_t (*node_fps)[DNA_V2_ROOT_LEN],
+                           const uint32_t *fail_streaks, size_t n,
+                           size_t out_idx[DNA_V2_STORAGE_HOLDERS],
+                           size_t *n_out) {
+    if (!a_key || !out_idx || !n_out) return -1;
+    if (n > 0 && (!node_fps || !fail_streaks)) return -1;
+    if (n > DNA_V2_STORAGE_SET_MAX) return -1;
+    *n_out = 0;
+    /* duplicates: no tie rule exists (bytes item 3 relies on distinct
+     * node hashes), so any equal pair refuses — every member, eligible
+     * or not, is checked. O(n^2) over n <= 256. */
+    for (size_t i = 0; i < n; i++)
+        for (size_t j = i + 1; j < n; j++)
+            if (memcmp(node_fps[i], node_fps[j], DNA_V2_ROOT_LEN) == 0)
+                return -1;
+
+    /* Selection of the R smallest distances by insertion into a sorted
+     * array of at most R — the order is a TOTAL order (distinct fps give
+     * distinct distances under XOR with one key), so the result does not
+     * depend on the input order. */
+    uint8_t best_d[DNA_V2_STORAGE_HOLDERS][DNA_V2_ROOT_LEN];
+    size_t best_i[DNA_V2_STORAGE_HOLDERS];
+    size_t nb = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (fail_streaks[i] >= DNA_V2_STORAGE_FAIL_LIMIT) continue;
+        uint8_t d[DNA_V2_ROOT_LEN];
+        seg_distance(a_key, node_fps[i], d);
+        size_t pos = nb;
+        while (pos > 0 &&
+               memcmp(best_d[pos - 1], d, DNA_V2_ROOT_LEN) > 0)
+            pos--;
+        if (pos >= DNA_V2_STORAGE_HOLDERS) continue;   /* not in the top R */
+        size_t last = nb < DNA_V2_STORAGE_HOLDERS ? nb
+                                                  : DNA_V2_STORAGE_HOLDERS - 1;
+        for (size_t s = last; s > pos; s--) {
+            memcpy(best_d[s], best_d[s - 1], DNA_V2_ROOT_LEN);
+            best_i[s] = best_i[s - 1];
+        }
+        memcpy(best_d[pos], d, DNA_V2_ROOT_LEN);
+        best_i[pos] = i;
+        if (nb < DNA_V2_STORAGE_HOLDERS) nb++;
+    }
+    for (size_t s = 0; s < nb; s++) out_idx[s] = best_i[s];
+    *n_out = nb;
+    return 0;
+}
+
+int dna_v2_storage_sample_x(const uint8_t nonce[DNA_V2_STORAGE_NONCE_LEN],
+                            const uint8_t target_fp[DNA_V2_ROOT_LEN],
+                            uint32_t i, uint8_t out[DNA_V2_ROOT_LEN]) {
+    if (!nonce || !target_fp || !out) return -1;
+    uint8_t pre[TAG_LEN + DNA_V2_STORAGE_NONCE_LEN + DNA_V2_ROOT_LEN + 4];
+    size_t off = 0;
+    memcpy(pre + off, TAG_STSAMP, TAG_LEN);           off += TAG_LEN;
+    memcpy(pre + off, nonce, DNA_V2_STORAGE_NONCE_LEN);
+    off += DNA_V2_STORAGE_NONCE_LEN;
+    memcpy(pre + off, target_fp, DNA_V2_ROOT_LEN);    off += DNA_V2_ROOT_LEN;
+    put_be32(i, pre + off);                           off += 4;
+    return qgp_sha3_512(pre, off, out) == 0 ? 0 : -1;
+}
+
+int dna_v2_storage_sample_index(const uint8_t x[DNA_V2_ROOT_LEN],
+                                uint64_t eligible_blocks,
+                                uint32_t parts_total,
+                                uint64_t *block_index,
+                                uint32_t *part_index) {
+    if (!x) return -1;
+    if (eligible_blocks == 0 || parts_total == 0) return -1;
+    uint64_t b = 0;
+    for (int j = 0; j < 8; j++) b = (b << 8) | x[j];
+    uint32_t p = ((uint32_t)x[8] << 24) | ((uint32_t)x[9] << 16) |
+                 ((uint32_t)x[10] << 8) | (uint32_t)x[11];
+    if (block_index) *block_index = b % eligible_blocks;
+    if (part_index)  *part_index = p % parts_total;
+    return 0;
 }
 
 /* The EPGRAD identity pattern (nodus_witness_v2_epoch.c grad_id /

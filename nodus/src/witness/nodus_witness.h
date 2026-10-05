@@ -217,13 +217,21 @@ typedef struct {
  *   status             1 ACTIVE / 2 EXITING / 3 RELEASED
  *   registered_height  the height of the (re-)registration (>= 1)
  *   exit_height        the height of the STORAGE_EXIT (0 = none)
+ *   fail_streak        archive reward (bytes doc docs/plans/2026-10-05-
+ *                      archive-reward-bytes.md item 4): consecutive
+ *                      settled epochs NOT OK while the member had >= 1
+ *                      eligible block; 0 on OK; >= 3 skips the member
+ *                      for placement (u32 range)
  * The v2_names discipline: typed CHECKs on every column (one storage
  * class, BINARY order), WITHOUT ROWID, in the BASE schema (an empty table
  * on every chain before the storage activation — no migration rung,
  * user_version unchanged), its exact shape checked on EVERY open
  * (nodus_witness.c witness_ddl_shape_check over this same text). The
- * registry leaf hashes every column except node_pk (bytes doc item 1);
- * node_pk is kept so the node's identity is recoverable from state. */
+ * registry leaf hashes every column except node_pk (leaf v2, archive
+ * bytes item 4); node_pk is kept so the node's identity is recoverable
+ * from state. B1's 7-column shape was never on any main-line database
+ * (branch p1-storage-reward only), so the column is part of the base
+ * shape, not a migration. */
 #define NODUS_V2_STORAGE_DDL_BODY                                         \
     "v2_storage_nodes(node_fp BLOB NOT NULL PRIMARY KEY CHECK("           \
     "typeof(node_fp)='blob' AND length(node_fp)=64), node_pk BLOB NOT "   \
@@ -234,9 +242,93 @@ typedef struct {
     "status)='integer' AND status IN (1, 2, 3)), registered_height "      \
     "INTEGER NOT NULL CHECK(typeof(registered_height)='integer' AND "     \
     "registered_height >= 1), exit_height INTEGER NOT NULL CHECK(typeof(" \
-    "exit_height)='integer' AND exit_height >= 0)) WITHOUT ROWID"
+    "exit_height)='integer' AND exit_height >= 0), fail_streak INTEGER "  \
+    "NOT NULL CHECK(typeof(fail_streak)='integer' AND fail_streak "       \
+    "BETWEEN 0 AND 4294967295)) WITHOUT ROWID"
 #define NODUS_V2_STORAGE_DDL                                              \
     "CREATE TABLE IF NOT EXISTS " NODUS_V2_STORAGE_DDL_BODY
+
+/* Archive reward (decision docs/plans/decisions/2026-10-05-archive-
+ * reward-bytes-approved.md; design docs/plans/2026-10-05-archive-reward-
+ * design.md rev 4 §1-§5, rev 2.2 §2/§4/§5) — the four tables of the
+ * storage leg beside the registry, same discipline (typed CHECKs, WITHOUT
+ * ROWID, base schema, exact shape checked on EVERY open, preflight-
+ * required). Written ONLY by the GEN_STORAGE STORAGE_REPORT exec (reports)
+ * and the storage epoch boundary (nodus_witness_v2_storage.c: sets,
+ * members, segments, report pruning). Empty on every chain before the
+ * storage activation (their tagged-empty roots).
+ *
+ * v2_storage_sets — one row per frozen storage set S(H) (rev 2.2 §2,
+ * bytes 2026-10-04 item 2), INCLUDING an empty set (count 0 is a real
+ * sets leaf, so it needs a row of its own):
+ *   epoch_start   the boundary H the set was frozen at
+ *   set_hash      S(H) as frozen; the sets_root loader re-derives it from
+ *                 the member rows and fails on any difference
+ *   member_count  |storage_set(H)|, 0..256 */
+#define NODUS_V2_STSETS_DDL_BODY                                          \
+    "v2_storage_sets(epoch_start INTEGER NOT NULL PRIMARY KEY CHECK("     \
+    "typeof(epoch_start)='integer' AND epoch_start >= 1), set_hash BLOB " \
+    "NOT NULL CHECK(typeof(set_hash)='blob' AND length(set_hash)=64), "   \
+    "member_count INTEGER NOT NULL CHECK(typeof(member_count)='integer' " \
+    "AND member_count BETWEEN 0 AND 256)) WITHOUT ROWID"
+#define NODUS_V2_STSETS_DDL                                               \
+    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STSETS_DDL_BODY
+
+/* v2_storage_set_members — the members of each frozen set, node_fp ASC
+ * is the bitmap order (bit i = member i):
+ *   epoch_start, node_fp  the key (node_fp = SHA3-512(node_pk))
+ *   fail_streak           the member's registry fail_streak AS FROZEN at
+ *                         epoch_start — the input of holders(k, H)
+ *                         (bytes item 3 "fail_streak < 3") for the grace
+ *                         and handoff rule two boundaries later (design
+ *                         rev 4 §2). NOT hashed by S(H) (bytes item 2 is
+ *                         node_fp only): it is a deterministic copy of
+ *                         the registry leaf v2 committed at H (the
+ *                         v2_balance_copy class). */
+#define NODUS_V2_STMEMB_DDL_BODY                                          \
+    "v2_storage_set_members(epoch_start INTEGER NOT NULL CHECK(typeof("   \
+    "epoch_start)='integer' AND epoch_start >= 1), node_fp BLOB NOT NULL "\
+    "CHECK(typeof(node_fp)='blob' AND length(node_fp)=64), fail_streak "  \
+    "INTEGER NOT NULL CHECK(typeof(fail_streak)='integer' AND "           \
+    "fail_streak BETWEEN 0 AND 4294967295), PRIMARY KEY (epoch_start, "   \
+    "node_fp)) WITHOUT ROWID"
+#define NODUS_V2_STMEMB_DDL                                               \
+    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STMEMB_DDL_BODY
+
+/* v2_storage_reports — the committed STORAGE_REPORTs (rev 2.2 §4, bytes
+ * 2026-10-04 item 3), first applied (epoch_start, seat) wins:
+ *   epoch_start, seat  the key (seat = index in snapshot(epoch_start))
+ *   set_hash           S(H) the report was made against (== the frozen)
+ *   bitmap             bitmap_len = ceil(count/8) bytes, 0..32 (LSB-first
+ *                      bit i = member i) */
+#define NODUS_V2_STREPS_DDL_BODY                                          \
+    "v2_storage_reports(epoch_start INTEGER NOT NULL CHECK(typeof("       \
+    "epoch_start)='integer' AND epoch_start >= 1), seat INTEGER NOT NULL "\
+    "CHECK(typeof(seat)='integer' AND seat BETWEEN 0 AND 4294967295), "   \
+    "set_hash BLOB NOT NULL CHECK(typeof(set_hash)='blob' AND "           \
+    "length(set_hash)=64), bitmap BLOB NOT NULL CHECK(typeof(bitmap)="    \
+    "'blob' AND length(bitmap) <= 32), PRIMARY KEY (epoch_start, seat)) " \
+    "WITHOUT ROWID"
+#define NODUS_V2_STREPS_DDL                                               \
+    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STREPS_DDL_BODY
+
+/* v2_storage_segments — the published segment list (archive bytes items
+ * 1-2), never pruned:
+ *   k                 the segment number (heights ((k−1)·17280, k·17280])
+ *   root              Root(k) from v2_blocks.block_id
+ *   published_height  the storage boundary that published it — NOT in the
+ *                     leaf (bytes item 2 is (k, Root(k))); implied by the
+ *                     committed segments_root history, and the input of
+ *                     the grace rule (a segment is eligible in epoch
+ *                     (H, H+E] only when published at or before H−E) */
+#define NODUS_V2_STSEGS_DDL_BODY                                          \
+    "v2_storage_segments(k INTEGER NOT NULL PRIMARY KEY CHECK(typeof(k)=" \
+    "'integer' AND k >= 1), root BLOB NOT NULL CHECK(typeof(root)='blob' "\
+    "AND length(root)=64), published_height INTEGER NOT NULL CHECK("      \
+    "typeof(published_height)='integer' AND published_height >= 1)) "     \
+    "WITHOUT ROWID"
+#define NODUS_V2_STSEGS_DDL                                               \
+    "CREATE TABLE IF NOT EXISTS " NODUS_V2_STSEGS_DDL_BODY
 _Static_assert(DNAC_PUBKEY_SIZE == 2592,
                "NODUS_V2_STORAGE_DDL spells the node_pk length 2592");
 _Static_assert(NODUS_V2_ACTIVE_SET_MAX <= DNAC_MAX_ACTIVE_VALIDATORS,

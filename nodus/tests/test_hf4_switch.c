@@ -1019,15 +1019,19 @@ static int t_storage_switch(void) {
               "CORE's root did not move");
         CHECK(us.ruleset_version == 8 && uc.ruleset_version == 6,
               "the H14-1 updates name GEN_STORAGE");
-        /* the v5 storage leg over the EMPTY registry: storage_root of
-         * three tagged-empty trees (package B1 has no sets/reports) */
-        uint8_t st_root[64], reg[64], sets[64], reps[64], want[64];
+        /* the v5 storage leg over the EMPTY registry: storage_root
+         * ("NDS.STOR.v2", archive bytes item 5) of four tagged-empty
+         * trees — no set is frozen and no segment published before the
+         * first storage boundary */
+        uint8_t st_root[64], reg[64], sets[64], reps[64], segs[64];
+        uint8_t want[64];
         CHECK(nodus_witness_storage_root_v2(fx.w, st_root) == 0,
               "storage_root");
         CHECK(dna_v2_storage_registry_root(NULL, 0, reg) == 0 &&
               dna_v2_storage_sets_root(NULL, NULL, 0, sets) == 0 &&
               dna_v2_storage_reports_root(NULL, 0, reps) == 0 &&
-              dna_v2_storage_root(reg, sets, reps, want) == 0,
+              dna_v2_segments_root(NULL, NULL, 0, segs) == 0 &&
+              dna_v2_storage_root(reg, sets, reps, segs, want) == 0,
               "the empty storage leg");
         CHECK(memcmp(st_root, want, 64) == 0,
               "an empty registry = the empty storage leg");

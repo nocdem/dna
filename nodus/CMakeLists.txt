@@ -288,6 +288,12 @@ set(NODUS_SOURCES
     # (the O15J red-team's L2-F5). The spec is the shipped V1
     # implementation, cited line by line in the source.
     src/witness/nodus_witness_v2_econ.c
+    # Storage reward v1 rev 4 (the archive reward), package B2a — frozen
+    # storage sets, segment roots + publication, assignment, the storage
+    # boundary (settlement, fail_streak, exit release), the storage leg's
+    # archive-era loaders (decision docs/plans/decisions/2026-10-05-
+    # archive-reward-bytes-approved.md).
+    src/witness/nodus_witness_v2_storage.c
     src/witness/nodus_witness_v2_preflight.c
     # R3 W4 — nodus_witness_v2_qc.c and nodus_witness_v2_finalize.c are
     # DELETED with the closed consensus lane: QC assembly and the legacy
@@ -2445,6 +2451,22 @@ register_witness_test(test_hf4_names_engine)
 # STORAGE-ORACLE pins are filled the engine halves of these tests FAIL at
 # the seeded genesis (selfcheck) — expected, the HF-4 A1 precedent.
 register_witness_test(test_storage_reg)
+
+# Storage reward v1 rev 4 (the archive reward), package B2a (decisions
+# docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md,
+# 2026-10-05-archive-reward-bytes-approved.md): the C byte layouts against
+# the independent oracle's nodus/tests/vectors/archive_reward_kat.json
+# (items 1-5 and the §6 sample derivation, json-c at run time — without
+# json-c the KAT case FAILS, it does not skip), segment publication and
+# backfill over synthetic v2_blocks rows, and twin GEN_STORAGE chains
+# through freeze / report / settlement / fail_streak / handoff / exit
+# release. ⚠ The engine cases FAIL at the seeded genesis until the
+# STORAGE-ORACLE pins are filled (the test_storage_reg precedent).
+register_witness_test(test_storage_b2)
+if(JSONC_FOUND)
+    target_compile_definitions(test_storage_b2 PRIVATE
+        ARCHIVE_REWARD_KAT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/archive_reward_kat.json")
+endif()
 
 # Web wallet package (c2) — the shared CORE SPEND builder
 # (src/client/nodus_v2_spend.c): the pins ruleset == the compiled table,
