@@ -51,6 +51,7 @@ struct nodus_sthold_rt {
     uint64_t  no_export_k;              /* an export that failed: fetch  */
     /* the job */
     nodus_seg_build_t *job;
+    int64_t   open_after_ms;            /* backoff after a node fault     */
     int       mode;
     int       next_mode;                /* after the resume scan         */
     /* the fetch client */
@@ -299,6 +300,13 @@ static void job_close(struct nodus_sthold_rt *rt, bool discard) {
     rt->retry_at_ms = 0;
 }
 
+/* A node-side failure: close the job (its partial file stays) and open
+ * none before NODUS_STFETCH_RETRY_MS. */
+static void job_fault(struct nodus_sthold_rt *rt) {
+    job_close(rt, false);
+    rt->open_after_ms = mono_ms() + NODUS_STFETCH_RETRY_MS;
+}
+
 static void mark_held(struct nodus_sthold_rt *rt, uint64_t k) {
     for (size_t i = 0; i < rt->n_want; i++)
         if (rt->want[i] == k) rt->held[i] = 1;
@@ -470,11 +478,12 @@ static void job_finish(struct nodus_sthold_rt *rt) {
     if (nodus_seg_build_finish(rt->job) == 0) {
         rt->job = NULL;                  /* freed by the publish */
         mark_held(rt, k);
+        job_close(rt, false);
     } else {
         QGP_LOG_ERROR(LOG_TAG, "segment %" PRIu64 ": publish failed — the "
                       "partial file is kept and resumed", k);
+        job_fault(rt);
     }
-    job_close(rt, false);
 }
 
 /* An answer to the outstanding request. */
@@ -506,12 +515,14 @@ static void take_answer(nodus_witness_t *w, struct nodus_sthold_rt *rt,
         }
     }
     if (v == NODUS_SEG_V_IO || v == NODUS_SEG_V_FAULT ||
-        v == NODUS_SEG_V_NO_LEDGER || v == NODUS_SEG_V_ORDER) {
-        /* this node, not the peer: close (the partial file stays) */
+        v == NODUS_SEG_V_NO_LEDGER || v == NODUS_SEG_V_ORDER ||
+        v == NODUS_SEG_V_COMMIT_VALSET) {
+        /* this node, not the peer (its disk, its ledger, its own
+         * validator set): close — the partial file stays — and back off */
         QGP_LOG_ERROR(LOG_TAG, "segment %" PRIu64 ": %s while writing a "
                       "fetched piece — job closed, resumed later",
                       nodus_seg_build_k(rt->job), nodus_seg_v_str(v));
-        job_close(rt, false);
+        job_fault(rt);
         return;
     }
     if (v != NODUS_SEG_V_OK) {
@@ -654,8 +665,11 @@ void nodus_witness_sthold_tick(nodus_witness_t *w) {
     if (!rt->have_assign || rt->assign_H != H)
         assign(w, rt, dir, H, me);
 
-    /* open the next job: the smallest must-hold k not held */
+    /* open the next job: the smallest must-hold k not held (after a
+     * node-side failure, not before NODUS_STFETCH_RETRY_MS) */
     if (!rt->job) {
+        if (rt->open_after_ms != 0 && now < rt->open_after_ms) return;
+        rt->open_after_ms = 0;
         for (size_t i = 0; i < rt->n_want; i++) {
             if (rt->held[i]) continue;
             if (nodus_seg_held(dir, rt->want[i]) == 1) {
@@ -664,7 +678,10 @@ void nodus_witness_sthold_tick(nodus_witness_t *w) {
             }
             if (nodus_seg_build_open(dir, rt->want[i], w->db, &rt->job) != 0) {
                 QGP_LOG_ERROR(LOG_TAG, "segment %" PRIu64 ": cannot open its "
-                              "build in %s", rt->want[i], dir);
+                              "build in %s — retry in %d s", rt->want[i], dir,
+                              NODUS_STFETCH_RETRY_MS / 1000);
+                rt->job = NULL;
+                rt->open_after_ms = now + NODUS_STFETCH_RETRY_MS;
                 return;
             }
             rt->next_mode = (rt->no_export_k != rt->want[i] &&
@@ -686,7 +703,7 @@ void nodus_witness_sthold_tick(nodus_witness_t *w) {
         if (rc < 0) {
             QGP_LOG_ERROR(LOG_TAG, "segment %" PRIu64 ": resume scan fault",
                           nodus_seg_build_k(rt->job));
-            job_close(rt, false);
+            job_fault(rt);
             return;
         }
         if (rc == 0) return;
