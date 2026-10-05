@@ -5885,7 +5885,8 @@ exposure: the window is 360 blocks at E = 720, reports are ≤ 32 per epoch at 7
 envelope skipped by a full block stays in the mempool, and the reporter resubmits after expiry.
 
 **Open.** `nodus-cli storage register|exit|status` — landed in package B2b-CLI (next section). No config key: the reporter runs when seated, the serving side answers when a
-member (the node config parser `nodus/tools/nodus_node_config.c` is outside the list).
+member (the node config parser `nodus/tools/nodus_node_config.c` was outside the list; package B2b-2 adds
+only `segment_dir`, the segment files' directory — no on/off switch).
 
 **Tests (written, not run by the builder).** `test_storage_probe` — request bytes = the §6 layout and
 rq; answer framing and bounds; the pure and the database refusals (wrong chain, not addressed, reporter ≠

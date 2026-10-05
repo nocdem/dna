@@ -1220,8 +1220,9 @@ complete) a pruned node answers `NOT_HELD` for every block below its base and is
 **1a. When a storage node may enable pruning (`retain_blocks`, §2.5).** Only when ALL of these hold
 (decision `2026-10-03-block-pruning-7-paydays.md`, rollout change 2026-10-05: EU-1 and EU-4 do not
 prune until this package is live):
-- every node in the storage role runs a build with package B2b-2 (both 0x72 serving from files and the
-  0x73 channel — an older peer neither serves nor fetches files);
+- every node in the storage role AND the full archives EU-6 / US-1 run a build with package B2b-2 (0x72
+  serving from files, the 0x73 channel — an older peer neither serves nor fetches files, and the full
+  archives are the fetch source of last resort for a newly assigned segment);
 - this node's log shows, for the CURRENT epoch, `W_STHOLD epoch H=<H>: <N> segment(s) to hold, 0 not
   complete yet` (logged once per epoch; the count of incomplete segments falls only at the next
   epoch's line — `W_STSEG segment <k> complete and published` marks each one as it finishes), and `ls <data dir>/segments` lists `seg-<k>.ok` for every assigned k (a segment is held
