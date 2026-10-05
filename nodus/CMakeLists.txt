@@ -294,6 +294,13 @@ set(NODUS_SOURCES
     # archive-era loaders (decision docs/plans/decisions/2026-10-05-
     # archive-reward-bytes-approved.md).
     src/witness/nodus_witness_v2_storage.c
+    # Archive reward, package B2b-1 — the transport-independent half of the
+    # archive probe: the channel 0x72 wire, the serving side's checks and
+    # answer builder, the reporter's verification chain against its own
+    # v2_blocks, the STORAGE_REPORT builder (design docs/plans/2026-10-05-
+    # archive-reward-design.md rev 4 §4; bytes doc §6). Off-chain: nothing
+    # here is a consensus input.
+    src/witness/nodus_witness_storage_probe.c
     src/witness/nodus_witness_v2_preflight.c
     # R3 W4 — nodus_witness_v2_qc.c and nodus_witness_v2_finalize.c are
     # DELETED with the closed consensus lane: QC assembly and the legacy
@@ -637,6 +644,13 @@ if(NOT WIN32)
         src/witness/nodus_witness_vset.c
         src/witness/nodus_witness_genesis_seed.c
         src/witness/nodus_witness_chain_config.c
+        # Archive reward, package B2b-1 — the archive probe's runtime: the
+        # reporter (a seated validator probes every other storage member
+        # once per epoch over channel 0x72 and submits its STORAGE_REPORT)
+        # and the serving side (a storage member answers from its block
+        # store). Here, beside nodus_witness_p2p.c, because it sends on
+        # the 4004 host.
+        src/witness/nodus_witness_storage_reporter.c
     )
 
     # ── Phase-C C1 (2026-07-21): shielded-pool ZK verify stack ─────────

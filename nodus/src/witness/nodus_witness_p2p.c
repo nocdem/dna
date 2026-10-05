@@ -19,6 +19,7 @@
 #include "witness/nodus_witness_committee.h"
 #include "witness/nodus_witness_v2_join.h"
 #include "witness/nodus_witness_v2_sync2.h"
+#include "witness/nodus_witness_storage_reporter.h"  /* channel 0x72 */
 #include "protocol/nodus_tier3.h"
 #include "crypto/nodus_sign.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -946,6 +947,7 @@ typedef struct {
 #define NODUS_P2P_STOP_MEMR         410   /* mempool/reactor.go:182        */
 #define NODUS_P2P_STOP_DECODE_0X70  420   /* peer.go:418-429               */
 #define NODUS_P2P_STOP_DECODE_0X71  421
+#define NODUS_P2P_STOP_DECODE_0X72  422
 #define NODUS_P2P_STOP_BSYNC_BASE   430   /* + cmt_bsync_stop_reason_t     */
 
 struct nodus_witness_p2p {
@@ -975,6 +977,7 @@ struct nodus_witness_p2p {
     cmt_p2p_ch_desc_t           bs_desc[1];
     cmt_p2p_ch_desc_t           gb_desc[1];
     cmt_p2p_ch_desc_t           cc_desc[1];
+    cmt_p2p_ch_desc_t           sp_desc[1];      /* 0x72 archive probe */
 
     /* the worker */
     pthread_mutex_t             mu;
@@ -2078,16 +2081,28 @@ static void lane_gc(nodus_witness_p2p_t *p)
     }
 }
 
-/* SHA3-512(the authenticated ML-DSA-87 key)[0..31] (file header). */
-static bool peer_wid(const cmt_p2p_peer_t *peer, uint8_t out[32])
+/* SHA3-512(the authenticated ML-DSA-87 key), all 64 bytes — the node
+ * fingerprint a registry row is keyed by (the archive probe's pin). */
+static bool peer_fp(const cmt_p2p_peer_t *peer,
+                    uint8_t out[QGP_SHA3_512_DIGEST_LENGTH])
 {
     const uint8_t *pk;
-    uint8_t fp[QGP_SHA3_512_DIGEST_LENGTH];
 
     if (peer == NULL || peer->conn == NULL || peer->conn->sc == NULL ||
         !cmt_p2p_sc_is_authenticated(peer->conn->sc) ||
         (pk = cmt_p2p_sc_remote_pubkey(peer->conn->sc)) == NULL ||
-        qgp_sha3_512(pk, CMT_P2P_SC_DSA_PK_SIZE, fp) != 0) {
+        qgp_sha3_512(pk, CMT_P2P_SC_DSA_PK_SIZE, out) != 0) {
+        return false;
+    }
+    return true;
+}
+
+/* SHA3-512(the authenticated ML-DSA-87 key)[0..31] (file header). */
+static bool peer_wid(const cmt_p2p_peer_t *peer, uint8_t out[32])
+{
+    uint8_t fp[QGP_SHA3_512_DIGEST_LENGTH];
+
+    if (!peer_fp(peer, fp)) {
         return false;
     }
     memcpy(out, fp, 32);
@@ -2711,6 +2726,35 @@ static void cc_receive(void *ctx, cmt_p2p_peer_t *src, uint8_t ch_id,
                                            &m.cc_appr_req);
 }
 
+/* 0x72 — the archive probe (package B2b-1; nodus_witness_storage_
+ * reporter.h). No reference counterpart (R-P2P-5). The sender's identity
+ * handed on is the FULL SHA3-512 of its authenticated key — the probe
+ * pins the registry's 64-byte node_fp, not the 32-byte p2p ID. A message
+ * that does not decode stops the peer, as on 0x70 / 0x71. */
+static const cmt_p2p_ch_desc_t *sp_channels(void *ctx, int *n)
+{
+    *n = 1;
+    return ((nodus_witness_p2p_t *)ctx)->sp_desc;
+}
+
+static void sp_receive(void *ctx, cmt_p2p_peer_t *src, uint8_t ch_id,
+                       const uint8_t *msg, size_t len)
+{
+    nodus_witness_p2p_t *p = (nodus_witness_p2p_t *)ctx;
+    uint8_t fp[QGP_SHA3_512_DIGEST_LENGTH];
+
+    (void)ch_id;
+    if (p->w == NULL || !peer_fp(src, fp)) {
+        return;
+    }
+    if (nodus_witness_stprobe_on_msg(p->w, cmt_p2p_peer_id(src), fp, msg,
+                                     len) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "undecodable 0x72 message from %s",
+                     cmt_p2p_peer_id(src));
+        cmt_p2p_switch_stop_peer_for_error(&p->sw, src, NODUS_P2P_STOP_DECODE_0X72);
+    }
+}
+
 /* ── the lane's host rows (cmt_conr_host_t, cmt_memr_host_t) ────────── */
 
 /* peer.go:258-268 Send / TrySend (R-P2P-19: Send ≡ TrySend). */
@@ -3211,6 +3255,14 @@ static void fill_descs(nodus_witness_p2p_t *p)
     p->cc_desc[0].send_queue_capacity = NODUS_P2P_CCAPPR_SEND_QUEUE;
     p->cc_desc[0].recv_buffer_capacity = 0;
     p->cc_desc[0].recv_message_capacity = (int)NODUS_T3_CC_APPR_MSG_MAX;
+    /* 0x72 — the archive probe (nodus_witness_p2p.h; ⚠ NOT GROUNDED, the
+     * byte awaits the operator's approval). Its largest message is an
+     * answer of three samples (NODUS_STPROBE_MSG_MAX). */
+    p->sp_desc[0].id = NODUS_P2P_CH_STPROBE;
+    p->sp_desc[0].priority = NODUS_P2P_STPROBE_PRIORITY;
+    p->sp_desc[0].send_queue_capacity = NODUS_P2P_STPROBE_SEND_QUEUE;
+    p->sp_desc[0].recv_buffer_capacity = 0;
+    p->sp_desc[0].recv_message_capacity = (int)NODUS_STPROBE_MSG_MAX;
 }
 
 static int add_reactor(nodus_witness_p2p_t *p, const char *name,
@@ -3352,6 +3404,7 @@ nodus_witness_p2p_t *nodus_witness_p2p_new(struct nodus_witness *w,
     chans[n_chans++] = p->mem_desc[0].id;
     chans[n_chans++] = NODUS_P2P_CH_GBUNDLE;
     chans[n_chans++] = NODUS_P2P_CH_CC_APPR;
+    chans[n_chans++] = NODUS_P2P_CH_STPROBE;
     if (p->cfg.pex) {
         chans[n_chans++] = CMT_P2P_PEX_CHANNEL;
     }
@@ -3446,7 +3499,9 @@ nodus_witness_p2p_t *nodus_witness_p2p_new(struct nodus_witness *w,
         add_reactor(p, "GBUNDLE", gb_channels, noop_peer, noop_peer, noop_remove,
                     gb_receive) != CMT_OK ||
         add_reactor(p, "CCAPPR", cc_channels, noop_peer, noop_peer, noop_remove,
-                    cc_receive) != CMT_OK) {
+                    cc_receive) != CMT_OK ||
+        add_reactor(p, "STPROBE", sp_channels, noop_peer, noop_peer, noop_remove,
+                    sp_receive) != CMT_OK) {
         QGP_LOG_ERROR(LOG_TAG, "reactor registration failed");
         goto fail;
     }

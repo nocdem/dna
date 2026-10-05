@@ -54,7 +54,7 @@
  *     the 32-byte version-3 chain id in hex (a joiner that has not adopted
  *     yet puts its genesis pin there — the same 32 bytes), P2P version 8,
  *     channels 0x40 (first, as node/node.go:948-954 lists
- *     BlocksyncChannel first), 0x20-0x23, 0x30, 0x70, 0x71 and 0x00 when
+ *     BlocksyncChannel first), 0x20-0x23, 0x30, 0x70, 0x71, 0x72 and 0x00 when
  *     PEX is on, a non-empty moniker, an IP-literal listen address. A peer
  *     of an older build does not list 0x40; nothing is ever sent to it on
  *     that channel (cmt_p2p_peer.c peer_has_channel, peer.go:309-325).
@@ -73,9 +73,11 @@
  *   · the REACTORS: PEX (0x00), the consensus reactor cmt_conr
  *     (0x20-0x23), the mempool reactor cmt_memr (0x30), the block sync
  *     reactor cmt_bsync (0x40; decision 2026-09-29-blocksync-before-
- *     testnet.md), and two nodus reactors — 0x70 the genesis bundle (the
- *     former tier-3 verbs 24/25) and 0x71 the governance approval (the
- *     former verbs 40/41). Registration order is CONSENSUS, MEMPOOL,
+ *     testnet.md), and three nodus reactors — 0x70 the genesis bundle (the
+ *     former tier-3 verbs 24/25), 0x71 the governance approval (the
+ *     former verbs 40/41) and 0x72 the archive probe (storage reward
+ *     package B2b-1, nodus_witness_storage_reporter.h; the byte awaits
+ *     operator approval). Registration order is CONSENSUS, MEMPOOL,
  *     BLOCKSYNC: the consensus shim's InitPeer assigns the peer's index,
  *     so it must run first. The reference registers MEMPOOL, BLOCKSYNC,
  *     CONSENSUS (setup.go:432-435) but runs InitPeer / AddPeer by ranging
@@ -190,6 +192,25 @@ struct nodus_witness;
  *  2026-09-26-cc-approval-via-own-node.md — a node asks each seat once),
  *  plus one slot of slack. */
 #define NODUS_P2P_CCAPPR_SEND_QUEUE    2
+
+/** Archive probe — the storage reward's off-chain probe request / answer
+ *  (package B2b-1; design docs/plans/2026-10-05-archive-reward-design.md
+ *  rev 4 §4, request bytes docs/plans/2026-10-05-archive-reward-bytes.md
+ *  §6; message layout nodus_witness_storage_probe.h). ⚠ NOT IN THE
+ *  OPERATOR-APPROVED CHANNEL LIST above (decision 2026-09-26-witness-
+ *  port-session.md "bayt/biçim onayları" item 3 names 0x70 and 0x71
+ *  only): 0x72 is this package's choice, pending the operator's approval
+ *  of the byte. It collides with no reference channel (0x00, 0x20-0x23,
+ *  0x30, 0x38, 0x40, 0x60, 0x61 — the same item). A peer of an older
+ *  build does not list it and is never sent to on it
+ *  (cmt_p2p_peer.c peer_has_channel). */
+#define NODUS_P2P_CH_STPROBE  0x72
+/** 1, as the other nodus channels: a probe answer (~200 KB) must never
+ *  starve votes. */
+#define NODUS_P2P_STPROBE_PRIORITY     1
+/** 4 messages: a reporter sends at most NODUS_STPROBE_SENDS_PER_TICK
+ *  requests per pass, a server one answer per request. ⚠ NOT GROUNDED. */
+#define NODUS_P2P_STPROBE_SEND_QUEUE   4
 
 /* ══ config (reference config.go:562-639 names; nodus.json keys) ══════ */
 

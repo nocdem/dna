@@ -45,6 +45,9 @@ struct nodus_witness_p2p;
  * opaque — nodus_witness_chain_config.c. */
 typedef struct nodus_cc_collect nodus_cc_collect_t;
 
+/* The archive probe's runtime, opaque — nodus_witness_storage_reporter.c. */
+struct nodus_stprobe_rt;
+
 /** How long one approval collection waits for the seats it asked, from
  *  its start, in milliseconds of the MONOTONIC clock (nodus_p2p_mono_ns).
  *  The per-seat budget the CLI used when it dialed each seat itself
@@ -471,6 +474,15 @@ typedef struct nodus_witness {
      * nodus_witness_cc_collect_abort). RUNTIME ONLY — never persisted,
      * never a consensus input. */
     nodus_cc_collect_t          *cc_collect;
+
+    /* The archive probe's runtime (storage reward package B2b-1,
+     * nodus_witness_storage_reporter.h): the reporter's probing and
+     * reporting epochs and the serving side's requester gaps. Heap,
+     * created on first use, freed by nodus_witness_close
+     * (nodus_witness_stprobe_free). RUNTIME ONLY — never persisted, never
+     * a consensus input: it reaches state only through this node's own
+     * signed STORAGE_REPORT (design rev 4 §7 D3). */
+    struct nodus_stprobe_rt     *stprobe;
 
     /* CC-OPS-004 / Q16 — chain_config_history lookup cache.
      *
